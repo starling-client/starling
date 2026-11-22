@@ -6,6 +6,8 @@ pub trait Hooks {
     /// remove entries, or cancel to make the list empty. Mods can read the world,
     /// but cannot write it during the spawn pass.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
@@ -13,5 +15,11 @@ pub trait Hooks {
         neoforge = "LevelEvent.PotentialSpawns",
         cancellable = true
     )]
-    fn potential_spawns();
+    fn potential_spawns(
+        dimension: &str,
+        category: &str,
+        pos: [i32; 3],
+        entries: &mut Vec<SpawnEntry>,
+        canceled: &mut bool,
+    );
 }

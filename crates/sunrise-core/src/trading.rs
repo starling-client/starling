@@ -11,7 +11,9 @@ pub fn modified_cost_count(
 ) -> u32 {
     let base = base as i32;
     let demand_diff = ((base.wrapping_mul(demand) as f32 * multiplier).floor() as i32).max(0);
-    (base + demand_diff + special_price).clamp(1, maximum as i32) as u32
+    base.wrapping_add(demand_diff)
+        .wrapping_add(special_price)
+        .clamp(1, maximum as i32) as u32
 }
 
 #[cfg(test)]

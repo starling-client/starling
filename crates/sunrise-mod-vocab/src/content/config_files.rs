@@ -34,6 +34,10 @@ pub trait ConfigFiles {
     ) -> Result<Vec<ConfigEntry>, ConfigFileError>;
     /// What is at `path`; None where nothing is.
     fn stat(&self, path: &ConfigPath) -> Result<Option<ConfigStat>, ConfigFileError>;
+    /// Removes the file, confined as `write` is: `Ok(true)` when it was
+    /// there, `Ok(false)` when nothing was. A folder is refused with
+    /// `NotAFile` and never removed.
+    fn remove(&self, file: &ConfigPath) -> Result<bool, ConfigFileError>;
 }
 
 /// A relative, `/`-separated path, checked once. Each component must satisfy

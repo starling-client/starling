@@ -1,5 +1,9 @@
 # Design: stale handle errors
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [the mod API reference](../../modding/src/reference/api.md) for the current native API.
+> Check each operation for its refusal result; this proposal does not establish a blanket native stale-handle contract. The guest refusal representation, traps and cross-runtime fixtures are historical.
+
 Provisional answer to [#1644](https://github.com/arismoko/horizon/issues/1644): **typed stale errors for ordinary handle reads and writes**. This question is small enough for an issue comment proposing the answer, as Ari permits; this short page records that proposal for review, not implemented behavior.
 
 ## Proposed contract
@@ -18,10 +22,10 @@ Current owners below were inspected; they establish entry points, not complete m
 
 | Route | Verified file:line owner |
 | --- | --- |
-| Entity position / level | `crates/sunrise-mod-vocab/src/host/entities.rs:123,143`; `crates/sunrise-client/src/game/modding/native_entity_refs.rs:675,735` |
-| Entity clear_fire | `crates/sunrise-mod-vocab/src/host/entities.rs:744`; `crates/sunrise-client/src/game/modding/native_entity_state.rs:232` |
-| Player name / action_bar | `crates/sunrise-mod-vocab/src/host/players.rs:54,302`; `crates/sunrise-client/src/game/modding/native_server.rs:1152,1196` |
-| Level block reads | `crates/sunrise-mod-vocab/src/host/levels.rs:190,211,217`; `crates/sunrise-client/src/game/modding/native_level_refs.rs:433,518,530` |
+| Entity position / level | `crates/sunrise-mod-vocab/src/host/entity_position.rs:13`, `crates/sunrise-mod-vocab/src/host/entity_identity.rs:43`; `crates/sunrise-client/src/game/modding/native_entity_refs.rs:675,735` |
+| Entity clear_fire | `crates/sunrise-mod-vocab/src/host/entity_fire_frost.rs:43`; `crates/sunrise-client/src/game/modding/native_entity_state.rs:232` |
+| Player name / action_bar | `crates/sunrise-mod-vocab/src/host/player_session.rs:20`, `crates/sunrise-mod-vocab/src/host/player_messages.rs:20`; `crates/sunrise-client/src/game/modding/native_server.rs:1152,1196` |
+| Level block reads | `crates/sunrise-mod-vocab/src/host/level_blocks.rs:29`, `crates/sunrise-mod-vocab/src/host/level_blocks.rs:50`; `crates/sunrise-client/src/game/modding/native_level_refs.rs:433,518,530` |
 | Lifecycle lookup | `crates/sunrise-client/src/join_seq/residency/table.rs:24` defines Found, Taken, Missing |
 
 Vanilla 26.3 inspection via `/workspace/sunrise/tools/rea_vanilla.py method net.minecraft.world.entity.Entity isRemoved` shows removal is tested by a non-null removal reason. It does not define Rust retained-handle errors or verify all read/write routes. This proposal changes Sunrise lifetime reporting, not vanilla gameplay. The issue asserts no NeoForge counterpart. The public [26.3 Entity Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/minecraft/world/entity/Entity.html) was inaccessible; NeoForge 26.3 lifetime behavior is unverified. Require public documentation before adopting any claimed counterpart; no NeoForge source or patches were consulted.

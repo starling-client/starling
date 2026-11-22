@@ -105,7 +105,10 @@ fn acquire_snapshots(
                     {
                         io::Error::new(
                             io::ErrorKind::NotFound,
-                            "this managed installation has unregistered cache directories; use Sunrise Launcher Play from the same launcher data directory with the intended instance and installed version (sunrise-launcher play --instance <instance> --version <tag>)",
+                            format!(
+                                "{} is in the launcher's data folder but has no cache lease there; start the game with the launcher's Play (sunrise-launcher play --instance <instance> --version <tag>), and update the launcher if it was already started that way",
+                                snapshot.tree.path.display()
+                            ),
                         )
                     }
                     error => lease_error(error),

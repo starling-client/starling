@@ -14,15 +14,14 @@ pub(super) fn apply(poses: &mut Poses, angles: [[u32; 3]; 2]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mobs::anim::{PoseEntry, key};
     #[test]
     fn nonfinite_components_preserve_the_original_angles() {
         let mut poses = Poses::default();
         poses
             .map
-            .insert(crate::mobs::anim::key("right_arm"), [0.25; 9]);
-        poses
-            .map
-            .insert(crate::mobs::anim::key("left_arm"), [0.5; 9]);
+            .insert(key("right_arm"), PoseEntry::new([0.25; 9]));
+        poses.map.insert(key("left_arm"), PoseEntry::new([0.5; 9]));
         apply(
             &mut poses,
             [

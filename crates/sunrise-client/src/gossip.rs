@@ -1,9 +1,9 @@
 //! Villager gossip (`GossipContainer` and `GossipType`): what a villager
 //! remembers about each player, how it fades by the day, how it spreads from
 //! villager to villager and the reputation it adds up to.
+use std::collections::BTreeMap;
 use sunrise_core::nbt::Tag;
 use sunrise_core::random::{LegacyRandom, RandomSource};
-use std::collections::BTreeMap;
 
 /// `ReputationEventType` amounts.
 pub const REPUTATION_CHANGE_PER_EVENT: i32 = 25;

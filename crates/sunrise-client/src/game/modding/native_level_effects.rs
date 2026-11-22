@@ -3,11 +3,24 @@
 //! Every player in range hears or sees them, as `ServerLevel.playSound` and
 //! `sendParticles` send them. They return false on a client, for a handle of
 //! an earlier open, or for arguments the network can't carry.
+use super::journal_level_write::PendingWrite;
 use super::native_hooks::{mod_particles_ok, mod_sound_ok};
 use super::{Game, creatures::NativeSound, lan_particles::QueuedParticle};
+use mod_api::{LevelRef, PlayerRef, PlayerWorldRefusal, SoundSource};
 use sunrise_client::particles::ParticleOptions;
 use sunrise_world::registry::BlockStateId;
-use mod_api::{LevelRef, SoundSource};
+
+/// Validated inputs for queueing or deferring a level or entity-bound native sound.
+pub(super) struct NativeSoundRequest<'a> {
+    pub(super) level: LevelRef,
+    pub(super) sound: &'a str,
+    pub(super) at: [f64; 3],
+    pub(super) source: SoundSource,
+    pub(super) volume: f32,
+    pub(super) pitch: f32,
+    pub(super) except: Option<u32>,
+    pub(super) entity: Option<i32>,
+}
 
 impl Game<'_> {
     /// The level's dimension id, for a handle of this open on the server.
@@ -17,10 +30,11 @@ impl Game<'_> {
     }
     /// Plays sound event `sound` at `at` for the players in this level
     /// within range (16 blocks, times the volume above 1), as
-    /// `ServerLevel.playSound(null, ...)` does, under `source`'s volume
-    /// slider. A `minecraft:` event must be registered; a mod's goes by name
-    /// and is heard where its resources define it. True means queued, not
-    /// heard.
+    /// `ServerLevel.playSound(except, ...)` does, under `source`'s volume
+    /// slider, leaving out `except`'s client (a fake player has none, so it
+    /// leaves out no one; a stale one queues nothing). A `minecraft:` event
+    /// must be registered; a mod's goes by name and is heard where its
+    /// resources define it. True means queued, not heard.
     pub(super) fn level_play_sound(
         &mut self,
         level: LevelRef,
@@ -29,42 +43,61 @@ impl Game<'_> {
         source: SoundSource,
         volume: f32,
         pitch: f32,
+        except: Option<PlayerRef>,
     ) -> bool {
-        self.native_queue_sound(level, sound, at, source, volume, pitch, None)
-            .is_some()
+        let except = match except {
+            None => None,
+            Some(player) => match self.player_connection(player) {
+                Ok(conn) => Some(conn),
+                // A fake player has no client to leave out.
+                Err(PlayerWorldRefusal::NoConnection) => None,
+                Err(_) => return false,
+            },
+        };
+        self.native_queue_sound(NativeSoundRequest {
+            level,
+            sound,
+            at,
+            source,
+            volume,
+            pitch,
+            except,
+            entity: None,
+        })
     }
-    /// `level_play_sound`, leaving out the player on connection
-    /// `except` (`Level.playSound(except, ...)`): the queued sound, None
-    /// when it can't be sent.
-    pub(super) fn native_queue_sound(
-        &mut self,
-        level: LevelRef,
-        sound: &str,
-        at: [f64; 3],
-        source: SoundSource,
-        volume: f32,
-        pitch: f32,
-        except: Option<u32>,
-    ) -> Option<&mut NativeSound> {
-        let dimension = self.native_level_dimension(level)?;
-        if !mod_sound_ok(sound, at, source.index(), volume, pitch) {
-            return None;
+    /// Queue or defer a validated level or entity-bound sound (`Level.playSound`), leaving out
+    /// `except` and optionally binding to `entity`. Inside an open transaction the sound waits in
+    /// `PendingWrite::Sound` until root commit (drawing its seed on publish) and discards on abort.
+    pub(super) fn native_queue_sound(&mut self, request: NativeSoundRequest<'_>) -> bool {
+        let NativeSoundRequest {
+            level,
+            sound,
+            at,
+            source,
+            volume,
+            pitch,
+            except,
+            entity,
+        } = request;
+        let Some(dimension) = self.native_level_dimension(level) else {
+            return false;
+        };
+        if self.lan.is_none() || !mod_sound_ok(sound, at, source.index(), volume, pitch) {
+            return false;
         }
-        // `Level.playSound` draws `soundSeedGenerator.nextLong` at the call;
-        // without a host nothing can be sent, as the flush already did.
-        let seed = self.lan.as_ref()?.hub.next_sound_seed();
-        self.creatures.lan_sounds.push(NativeSound {
+        self.emit_level_effect(PendingWrite::Sound(NativeSound {
             dimension,
             sound: sound.to_owned(),
             at,
             source: source.index() as i32,
             volume,
             pitch,
-            seed,
+            seed: 0,
             except,
-            entity: None,
-        });
-        self.creatures.lan_sounds.last_mut()
+            entity,
+            skip_hooks: false,
+        }));
+        true
     }
     /// Sends `count` particles around `at` to the players in this level
     /// within 32 blocks, as `ServerLevel.sendParticles` does: each offset is
@@ -90,7 +123,7 @@ impl Game<'_> {
         if !mod_particles_ok(options, state, state_ok, at, spread, speed) {
             return false;
         }
-        self.creatures.lan_particles.push(QueuedParticle {
+        self.emit_level_effect(PendingWrite::Particles(QueuedParticle {
             dimension,
             options: options.clone(),
             state,
@@ -99,7 +132,7 @@ impl Game<'_> {
             speed: [speed; 3],
             count,
             randomization: 0,
-        });
+        }));
         true
     }
 }

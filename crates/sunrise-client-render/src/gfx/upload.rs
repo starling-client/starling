@@ -125,9 +125,8 @@ mod tests {
     use super::*;
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&Default::default())).ok()
+        let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;
+        Some((device, queue))
     }
 
     /// Every mip level of one layer, read back as tightly packed RGBA8.
@@ -178,6 +177,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn belt_uploads_match_queue_writes_on_every_mip_level() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -266,6 +266,7 @@ mod tests {
     /// (the entity batch while mobs appear) got a new exact-size buffer each
     /// frame, all of them kept, until the game ran out of memory.
     #[test]
+    #[ignore = "daily"]
     fn growing_large_writes_reuse_the_belt_buffers() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -323,6 +324,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn belt_buffer_writes_land_in_order_at_their_offsets() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {

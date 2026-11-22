@@ -7,8 +7,6 @@ mod holder_sets;
 use crate::item_data::Levels;
 use crate::items::{ItemStack, Items};
 pub use holder_sets::HolderSetBinding;
-use sunrise_core::nbt::Tag;
-use sunrise_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -18,6 +16,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use sunrise_core::nbt::Tag;
+use sunrise_core::random::{LegacyRandom, RandomSource};
 
 impl Items {
     /// Vanilla's enchantment-provider tag gives 1.0; non-members give 0.0.
@@ -138,10 +138,16 @@ pub struct Cost {
     pub per_level: i32,
 }
 impl Cost {
+    fn decoded_fields(v: &Value) -> (Option<i32>, Option<i32>) {
+        let int = |name| v[name].as_i64().and_then(|n| i32::try_from(n).ok());
+        (int("base"), int("per_level_above_first"))
+    }
+
     fn parse(v: &Value) -> Self {
+        let (base, per_level) = Self::decoded_fields(v);
         Self {
-            base: v["base"].as_i64().unwrap_or(1) as i32,
-            per_level: v["per_level_above_first"].as_i64().unwrap_or(0) as i32,
+            base: base.unwrap_or(1),
+            per_level: per_level.unwrap_or(0),
         }
     }
     pub fn calculate(self, level: u32) -> i32 {
@@ -192,10 +198,15 @@ pub struct Enchantments {
     custom_damage: HashMap<Arc<str>, Vec<DamageValueEffect>>,
     /// Enchantment tags in vanilla `HolderSet` order (nested tags expanded in place).
     pub tags: HashMap<String, Vec<Arc<str>>>,
-    pub entity_tags: HashMap<String, HashSet<String>>,
+    pub entity_tags: Arc<HashMap<String, HashSet<String>>>,
     pub damage_tags: HashMap<String, HashSet<String>>,
     pub props: HashMap<Arc<str>, ItemProps>,
     lang: HashMap<String, String>,
+    /// The mods' `isPrimaryItemFor` answers resolved for this snapshot
+    /// (`ItemPart::is_primary_item_for`).
+    primary_answers: sunrise_world::enchantment_answers::AnswerTable,
+    /// The item's support answer, resolved at install for this registry snapshot.
+    support_answers: sunrise_world::enchantment_answers::AnswerTable,
 }
 
 fn string_list(v: &Value) -> Vec<String> {
@@ -208,65 +219,118 @@ fn string_list(v: &Value) -> Vec<String> {
         _ => vec![],
     }
 }
-fn read_tag_dir(dir: &Path) -> HashMap<String, sunrise_world::tag_layers::TagLayers> {
-    read_tag_dir_in(dir, "minecraft")
-}
-/// The resource root's `data/` namespaces other than `minecraft`, in name
-/// order: content mods' files land there (`sunrise_client::mod_content`'s
-/// overlay), as a data pack's namespaces do in `RegistryDataLoader`.
-fn other_namespaces(root: &Path) -> Vec<String> {
-    let mut out = sunrise_world::json_folder::namespaces(&root.join("data"));
-    out.retain(|ns| ns != "minecraft");
-    out
-}
-fn read_tag_dir_in(
-    dir: &Path,
-    namespace: &str,
-) -> HashMap<String, sunrise_world::tag_layers::TagLayers> {
-    let Ok(folder) = sunrise_world::json_folder::read(dir) else {
-        return HashMap::new();
-    };
-    folder
-        .files
-        .iter()
-        .filter_map(|file| {
-            let v = serde_json::from_slice::<Value>(file.bytes().ok()?).ok()?;
-            Some((
-                format!("{namespace}:{}", file.name),
-                sunrise_world::tag_layers::TagLayers::from_file(&v),
-            ))
-        })
-        .collect()
-}
-/// Expand a tag keeping first-seen order and applying removals before its parent uses it.
-fn expand_ordered(
-    name: &str,
-    raw: &HashMap<String, sunrise_world::tag_layers::TagLayers>,
-    out: &mut Vec<String>,
-    depth: u32,
-) {
-    if depth > 16 {
-        return;
-    }
-    if let Some(layers) = raw.get(name) {
-        let members = layers.build(|tag| {
-            let mut child = Vec::new();
-            expand_ordered(tag, raw, &mut child, depth + 1);
-            child
-        });
-        for member in members {
-            if !out.contains(&member) {
-                out.push(member);
-            }
-        }
-    }
-}
 /// Roman numerals as in `enchantment.level.N` (falls back to the number).
 pub fn level_name(level: u32) -> String {
     const NAMES: [&str; 10] = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
     NAMES
         .get(level.wrapping_sub(1) as usize)
         .map_or_else(|| level.to_string(), |s| (*s).to_owned())
+}
+
+/// `Enchantment.getFullname`: append the level unless both it and the holder's maximum are one.
+pub fn format_full_name(
+    mut description: String,
+    level: u32,
+    max_level: u32,
+    suffix: impl FnOnce(u32) -> String,
+) -> String {
+    if level != 1 || max_level != 1 {
+        description.push(' ');
+        description.push_str(&suffix(level));
+    }
+    description
+}
+
+/// Decode a winning pack definition's top-level fields for registry sync.
+/// Holder sets and effect payloads are bound after the registry phase.
+pub fn decode_pack_definition(mut value: Value) -> Result<Value, String> {
+    let fields = value
+        .as_object_mut()
+        .ok_or("expected an enchantment object")?;
+    for (name, range) in [
+        ("max_level", 1..=255),
+        ("weight", 1..=1024),
+        ("anvil_cost", 0..=i64::from(i32::MAX)),
+    ] {
+        let n = fields
+            .get(name)
+            .and_then(Value::as_i64)
+            .filter(|n| range.contains(n))
+            .ok_or_else(|| format!("{name} must be an integer in {range:?}"))?;
+        fields.insert(name.into(), Value::from(n));
+    }
+    for name in ["min_cost", "max_cost"] {
+        let cost = fields
+            .get(name)
+            .ok_or_else(|| format!("{name} is required"))?;
+        let (base, per_level) = Cost::decoded_fields(cost);
+        let cost = Cost {
+            base: base.ok_or_else(|| format!("{name}.base must be an integer"))?,
+            per_level: per_level
+                .ok_or_else(|| format!("{name}.per_level_above_first must be an integer"))?,
+        };
+        fields.insert(
+            name.into(),
+            serde_json::json!({"base": cost.base,"per_level_above_first": cost.per_level}),
+        );
+    }
+    for name in ["supported_items", "primary_items", "exclusive_set"] {
+        match fields.get(name) {
+            Some(Value::String(_) | Value::Array(_) | Value::Object(_)) => {}
+            None | Some(Value::Null) if name != "supported_items" => {
+                fields.remove(name);
+            }
+            _ => return Err(format!("{name} must be a holder set")),
+        }
+    }
+    let slots = fields
+        .get("slots")
+        .and_then(Value::as_array)
+        .ok_or("slots must be a list of equipment slot groups")?;
+    for slot in slots {
+        if !matches!(
+            slot.as_str(),
+            Some(
+                "any"
+                    | "mainhand"
+                    | "offhand"
+                    | "hand"
+                    | "feet"
+                    | "legs"
+                    | "chest"
+                    | "head"
+                    | "armor"
+                    | "body"
+                    | "saddle"
+            )
+        ) {
+            return Err("slots must contain equipment slot groups".into());
+        }
+    }
+    match fields.get("effects") {
+        Some(Value::Null) => {
+            fields.remove("effects");
+        }
+        Some(Value::Object(_)) | None => {}
+        _ => return Err("effects must be a component map".into()),
+    }
+    fields.retain(|name, _| {
+        matches!(
+            name.as_str(),
+            "description"
+                | "max_level"
+                | "weight"
+                | "anvil_cost"
+                | "min_cost"
+                | "max_cost"
+                | "supported_items"
+                | "primary_items"
+                | "exclusive_set"
+                | "slots"
+                | "effects"
+        )
+    });
+    Ok(value)
 }
 
 /// One registry entry from its definition (`Enchantment.DIRECT_CODEC`).
@@ -307,6 +371,12 @@ fn parse_entry(
             .map(|s| Arc::from(s.as_str()))
             .collect(),
     };
+    let item_holders = |value| {
+        string_list(value)
+            .iter()
+            .map(|holder| sunrise_world::enchantment_answers::canonical_item_holder(holder))
+            .collect()
+    };
     let key = v["description"]["translate"].as_str().unwrap_or("");
     Ok(Enchantment {
         native_post_attack,
@@ -326,8 +396,8 @@ fn parse_entry(
         anvil_cost: v["anvil_cost"].as_u64().unwrap_or(0) as u32,
         min_cost: Cost::parse(&v["min_cost"]),
         max_cost: Cost::parse(&v["max_cost"]),
-        supported: string_list(&v["supported_items"]),
-        primary: v.get("primary_items").map(string_list),
+        supported: item_holders(&v["supported_items"]),
+        primary: v.get("primary_items").map(item_holders),
         exclusive: exclusive.into_iter().collect(),
         slots: string_list(&v["slots"]),
         effects: v["effects"].clone(),
@@ -363,59 +433,18 @@ impl Enchantments {
         overlay: &sunrise_world::loot::PackOverlay,
         defaults: &sunrise_world::item_defaults::ItemDefaults,
     ) -> crate::Result<Self> {
-        let data = root.join("data/minecraft");
-        let mut raw_tags = read_tag_dir(&data.join("tags/enchantment"));
-        let namespaces = other_namespaces(root);
-        // Mods' own enchantment tags (`data/<ns>/tags/enchantment/`): an
-        // `exclusive_set` or a tag of the mod's enchantments.
-        for ns in &namespaces {
-            let dir = root.join("data").join(ns).join("tags/enchantment");
-            for (id, values) in read_tag_dir_in(&dir, ns) {
-                raw_tags.insert(id, values);
-            }
-        }
-        for (id, files) in overlay.tag_kind("enchantment") {
-            for bytes in files {
-                let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
-                    continue;
-                };
-                raw_tags.entry(id.clone()).or_default().push(&v);
-            }
-        }
-        let tags: HashMap<String, Vec<Arc<str>>> = raw_tags
-            .keys()
-            .map(|k| {
-                let mut v = Vec::new();
-                expand_ordered(k, &raw_tags, &mut v, 0);
-                (
-                    k.clone(),
-                    v.into_iter().map(|s| Arc::from(s.as_str())).collect(),
-                )
-            })
-            .collect();
-        let unordered = |raw: HashMap<String, sunrise_world::tag_layers::TagLayers>| -> HashMap<String, HashSet<String>> {
-            raw.keys()
-                .map(|k| {
-                    let mut v = Vec::new();
-                    expand_ordered(k, &raw, &mut v, 0);
-                    (k.clone(), v.into_iter().collect())
-                })
-                .collect()
-        };
-        let entity_tags = unordered(read_tag_dir(&data.join("tags/entity_type")));
-        let damage_tags = match sunrise_world::damage_source::Catalog::load(root, overlay) {
-            Ok(catalog) => catalog
-                .tags()
-                .map(|tag| {
-                    (
-                        tag.to_owned(),
-                        catalog.tag_members(tag).map(str::to_owned).collect(),
-                    )
-                })
-                .collect(),
-            // Small tools/fixtures may not carry the prepared catalog.
-            Err(_) => unordered(read_tag_dir(&data.join("tags/damage_type"))),
-        };
+        let mut enchantments = Self::load_definitions(root, overlay, defaults)?;
+        use crate::items::ingredient_defaults::{LoadEntityTags, component_tables};
+        let (_, tags) = component_tables(root, overlay, LoadEntityTags::Prepared)?;
+        enchantments.entity_tags = tags.members().clone();
+        Ok(enchantments)
+    }
+
+    pub(crate) fn load_definitions(
+        root: &Path,
+        overlay: &sunrise_world::loot::PackOverlay,
+        defaults: &sunrise_world::item_defaults::ItemDefaults,
+    ) -> crate::Result<Self> {
         // The registry lists entries sorted by id, like the data-pack loader.
         let mut files: BTreeMap<String, Value> =
             crate::items::data_files(root, "enchantment", overlay)
@@ -428,6 +457,42 @@ impl Enchantments {
                 binding.bind(id, value)?;
             }
         }
+        Self::load_selected(
+            root,
+            overlay,
+            defaults,
+            files.iter().map(|(id, value)| (id.as_str(), value)),
+        )
+    }
+
+    /// Assemble gameplay behavior from the selected, holder-bound definitions in id order.
+    pub fn load_selected<'a>(
+        root: &Path,
+        overlay: &sunrise_world::loot::PackOverlay,
+        defaults: &sunrise_world::item_defaults::ItemDefaults,
+        files: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    ) -> crate::Result<Self> {
+        let files: Vec<_> = files.into_iter().collect();
+        let admitted: HashSet<_> = files.iter().map(|&(id, _)| id).collect();
+        let tags = sunrise_world::tag_layers::load(root, "enchantment", overlay, |id| {
+            admitted.contains(id)
+        })?
+        .into_iter()
+        .map(|(name, ids)| (name, ids.into_iter().map(Arc::from).collect()))
+        .collect();
+        let damage_tags = match sunrise_world::damage_source::Catalog::load(root, overlay) {
+            Ok(catalog) => catalog
+                .tags()
+                .map(|tag| {
+                    (
+                        tag.to_owned(),
+                        catalog.tag_members(tag).map(str::to_owned).collect(),
+                    )
+                })
+                .collect(),
+            // Small tools/fixtures may not carry the prepared catalog.
+            Err(_) => crate::items::load_tags(root, "damage_type", overlay)?,
+        };
         let lang: HashMap<String, String> =
             sunrise_core::prepared_files::read(&root.join("assets/minecraft/lang/en_us.json"))
                 .ok()
@@ -459,7 +524,10 @@ impl Enchantments {
         // Mods' English names for their enchantments (`assets/<ns>/lang/`),
         // under vanilla's, which win a clash.
         let mut lang = lang;
-        for ns in &namespaces {
+        for ns in sunrise_world::json_folder::namespaces(&root.join("data"))
+            .into_iter()
+            .filter(|ns| ns != "minecraft")
+        {
             let path = root.join("assets").join(ns).join("lang/en_us.json");
             let Some(map) = sunrise_core::prepared_files::read(&path)
                 .ok()
@@ -475,14 +543,14 @@ impl Enchantments {
         }
         let mut custom_damage = HashMap::new();
         let list = files
-            .iter()
+            .into_iter()
             .filter_map(|(id, v)| {
                 match resolve_damage_effects(
                     &v["effects"],
                     DAMAGE_EFFECT_IDS.get().map_or(&[], Vec::as_slice),
                 ) {
                     Ok(Some(nodes)) => {
-                        custom_damage.insert(Arc::from(id.as_str()), nodes);
+                        custom_damage.insert(Arc::from(id), nodes);
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -522,11 +590,22 @@ impl Enchantments {
             index,
             custom_damage,
             tags,
-            entity_tags,
+            entity_tags: Default::default(),
             damage_tags,
             props,
             lang,
+            primary_answers: Default::default(),
+            support_answers: Default::default(),
         })
+    }
+    /// The `isPrimaryItemFor` answers the server resolved for this snapshot when its parts
+    /// installed; selection reads them.
+    pub fn primary_answers(&self) -> &sunrise_world::enchantment_answers::AnswerTable {
+        &self.primary_answers
+    }
+    /// The support answers resolved for this snapshot when its parts installed.
+    pub fn support_answers(&self) -> &sunrise_world::enchantment_answers::AnswerTable {
+        &self.support_answers
     }
     pub fn get(&self, id: &str) -> Option<&Enchantment> {
         self.index.get(id).map(|&i| &self.list[i])
@@ -641,17 +720,31 @@ impl Enchantments {
             crate::properties::item_matches(spec, item, |tag| items.item_in_tag(tag, item))
         })
     }
-    /// `Enchantment.canEnchant` / `isSupportedItem`.
-    pub fn can_enchant(&self, items: &Items, id: &str, item: &str) -> bool {
-        self.get(id)
-            .is_some_and(|e| Self::item_in(items, &e.supported, item))
+    fn supports(&self, items: &Items, e: &Enchantment, item: &str) -> bool {
+        self.support_answers
+            .answer(item, &e.id)
+            .unwrap_or_else(|| Self::item_in(items, &e.supported, item))
     }
-    /// `Enchantment.isPrimaryItem`.
+    /// Support for `AnvilMenu.createResult`: only the anvil treats a left-hand
+    /// enchanted book as supported without an explicit part answer.
+    pub fn can_enchant_in_anvil(&self, items: &Items, e: &Enchantment, item: &str) -> bool {
+        if item == "minecraft:enchanted_book" {
+            self.support_answers.answer(item, &e.id).unwrap_or(true)
+        } else {
+            self.supports(items, e, item)
+        }
+    }
+    /// Explicit install-time support, or vanilla `Enchantment.isSupportedItem`.
+    pub fn can_enchant(&self, items: &Items, id: &str, item: &str) -> bool {
+        self.get(id).is_some_and(|e| self.supports(items, e, item))
+    }
+    /// The `isPrimaryItemFor` default: a plain book, or support before the primary tag.
     pub fn is_primary(&self, items: &Items, e: &Enchantment, item: &str) -> bool {
-        Self::item_in(items, &e.supported, item)
-            && e.primary
-                .as_ref()
-                .is_none_or(|p| Self::item_in(items, p, item))
+        item == "minecraft:book"
+            || (self.supports(items, e, item)
+                && e.primary
+                    .as_ref()
+                    .is_none_or(|p| Self::item_in(items, p, item)))
     }
     /// `Enchantment.areCompatible`.
     pub fn compatible(&self, a: &str, b: &str) -> bool {
@@ -689,14 +782,13 @@ impl Enchantments {
         let Some(e) = self.get(id) else {
             return (format!("{id} {}", level_name(level)), false);
         };
-        let mut name = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
-        if (level != 1 || e.max_level != 1) && numeric {
-            name.push(' ');
-            name.push_str(&level.to_string());
-        } else if level != 1 || e.max_level != 1 {
-            name.push(' ');
+        let description = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
+        let name = format_full_name(description, level, e.max_level, |level| {
+            if numeric {
+                return level.to_string();
+            }
             let key = format!("enchantment.level.{level}");
-            let suffix = tr(&key)
+            tr(&key)
                 .or_else(|| self.lang.get(&key).cloned())
                 .unwrap_or_else(|| {
                     if (1..=10).contains(&level) {
@@ -704,9 +796,8 @@ impl Enchantments {
                     } else {
                         key
                     }
-                });
-            name.push_str(&suffix);
-        }
+                })
+        });
         (name, self.is_curse(id))
     }
     /// Tooltip lines for a level list, in `#tooltip_order` then remaining order.
@@ -766,7 +857,10 @@ impl Enchantments {
             _ => selected.max(bookcases * 2),
         }
     }
-    /// `EnchantmentHelper.getAvailableEnchantmentResults`.
+    /// `EnchantmentHelper.getAvailableEnchantmentResults` offers only enchantments for which
+    /// the item is primary. A plain book qualifies by default; other items need support and
+    /// membership in `primary_items` if present. This snapshot's `ItemPart::is_primary_item_for`
+    /// answers can override that default for any item, including books ([`Self::primary_answers`]).
     pub fn available_results(
         &self,
         items: &Items,
@@ -774,11 +868,14 @@ impl Enchantments {
         item: &str,
         pool: &[Arc<str>],
     ) -> Vec<(Arc<str>, u32)> {
-        let book = item == "minecraft:book";
         let mut out = Vec::new();
         for id in pool {
             let Some(e) = self.get(id) else { continue };
-            if !(book || self.is_primary(items, e, item)) {
+            if !self
+                .primary_answers
+                .answer(item, &e.id)
+                .unwrap_or_else(|| self.is_primary(items, e, item))
+            {
                 continue;
             }
             for level in (1..=e.max_level).rev() {
@@ -1031,14 +1128,66 @@ impl Enchantments {
                 .sum()
         })
     }
+    /// A resolved entity-type tag from the same pack stack as these enchantments.
+    pub fn entity_in_tag(&self, entity: &str, tag: &str) -> bool {
+        self.entity_tags
+            .get(tag)
+            .is_some_and(|set| set.contains(entity))
+    }
+
+    /// `EnchantmentHelper.runIterationOnEquipment`, restricted to enchantments
+    /// that can answer `isImmuneToDamage`.
+    pub fn damage_immunities<'a>(
+        &'a self,
+        equipment: impl IntoIterator<Item = (&'a [(Arc<str>, u32)], &'a str)> + 'a,
+    ) -> impl Iterator<Item = (&'a Arc<str>, u32)> + 'a {
+        equipment.into_iter().flat_map(move |(levels, slot)| {
+            levels.iter().filter_map(move |(id, level)| {
+                let enchantment = self.get(id)?;
+                let matches_slot = enchantment.slots.iter().any(|group| match group.as_str() {
+                    "any" => true,
+                    "armor" => matches!(slot, "head" | "chest" | "legs" | "feet" | "body"),
+                    "hand" => matches!(slot, "mainhand" | "offhand"),
+                    group => group == slot,
+                });
+                (matches_slot
+                    && enchantment
+                        .effects
+                        .get("minecraft:damage_immunity")
+                        .is_some())
+                .then_some((id, *level))
+            })
+        })
+    }
+
+    /// `Enchantment.isImmuneToDamage`: a registered, active enchantment must
+    /// match the current source, not just declare a damage immunity effect.
+    pub fn is_damage_immune<'a>(
+        &self,
+        active: impl IntoIterator<Item = (&'a Arc<str>, u32)>,
+        context: &EffectContext<'_>,
+        random: &mut LegacyRandom,
+    ) -> bool {
+        active.into_iter().any(|(id, level)| {
+            self.get(id).is_some_and(|enchantment| {
+                enchantment.effects["minecraft:damage_immunity"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|entry| {
+                        entry.get("requirements").is_none_or(|requirement| {
+                            self.condition(requirement, level, context, random)
+                        })
+                    })
+            })
+        })
+    }
+
     fn entity_matches(&self, spec: &Value, entity: Option<&str>) -> bool {
         let Some(entity) = entity else { return false };
         match spec.as_str() {
             Some(s) => match s.strip_prefix('#') {
-                Some(tag) => self
-                    .entity_tags
-                    .get(tag)
-                    .is_some_and(|t| t.contains(entity)),
+                Some(tag) => self.entity_in_tag(entity, tag),
                 None => s == entity,
             },
             None => string_list(spec).iter().any(|s| s == entity),
@@ -1489,13 +1638,14 @@ pub mod tests {
             ("tags/wpenchant:enchantment/fixture".to_owned(), vec![tag]),
         ];
         write("items.json", &json!({}));
+        write("entity-types.json", &json!({"minecraft:pig": {}}));
         let defaults = sunrise_world::item_defaults::read(&root).unwrap();
         let base = Enchantments::load(&root, &defaults).unwrap();
         let loaded = Enchantments::load_with(
             &root,
             &sunrise_world::loot::PackOverlay {
                 files: &files,
-                ..sunrise_world::loot::PackOverlay::NONE
+                ..sunrise_world::loot::PackOverlay::default()
             },
             &defaults,
         )
@@ -1695,7 +1845,7 @@ pub mod tests {
         )];
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,
-            ..sunrise_world::loot::PackOverlay::NONE
+            ..sunrise_world::loot::PackOverlay::default()
         };
         let loaded = Enchantments::load_with(&root, &overlay, &defaults).unwrap();
         assert_eq!(
@@ -1708,7 +1858,7 @@ pub mod tests {
         )];
         let overlay = sunrise_world::loot::PackOverlay {
             files: &files,
-            ..sunrise_world::loot::PackOverlay::NONE
+            ..sunrise_world::loot::PackOverlay::default()
         };
         assert!(
             Enchantments::load_with(&root, &overlay, &defaults)
@@ -1838,10 +1988,12 @@ pub mod tests {
             index,
             custom_damage: HashMap::new(),
             tags,
-            entity_tags,
+            entity_tags: Arc::new(entity_tags),
             damage_tags,
             props,
             lang: HashMap::new(),
+            primary_answers: Default::default(),
+            support_answers: Default::default(),
         }
     }
     pub fn sample_items() -> Items {
@@ -1867,6 +2019,96 @@ pub mod tests {
             ["minecraft:iron_boots".to_owned()].into_iter().collect(),
         );
         Items::for_tests(item_tags)
+    }
+
+    #[test]
+    fn support_precedes_primary_tags_and_primary_answers_can_withhold_books() {
+        let (mut e, items) = (sample(), sample_items());
+        let sharp: Arc<str> = "minecraft:sharpness".into();
+        let index = e.index[&sharp];
+        e.list[index].primary = Some(vec![
+            "minecraft:stick".into(),
+            "minecraft:iron_sword".into(),
+        ]);
+        let at_30 =
+            |item: &str| e.available_results(&items, 30, item, std::slice::from_ref(&sharp));
+        assert!(at_30("minecraft:stick").is_empty());
+        assert_eq!(at_30("minecraft:iron_sword"), [(sharp.clone(), 3)]);
+        e.support_answers().install(HashMap::from([
+            (
+                "minecraft:stick".into(),
+                HashMap::from([(sharp.clone(), true)]),
+            ),
+            (
+                "minecraft:glass".into(),
+                HashMap::from([(sharp.clone(), true)]),
+            ),
+            (
+                "minecraft:iron_sword".into(),
+                HashMap::from([(sharp.clone(), false)]),
+            ),
+        ]));
+        assert_eq!(
+            at_30("minecraft:stick"),
+            [(sharp.clone(), 3)],
+            "support can admit an item in primary_items but outside supported_items"
+        );
+        assert!(
+            at_30("minecraft:glass").is_empty(),
+            "support does not bypass primary_items"
+        );
+        assert!(
+            at_30("minecraft:iron_sword").is_empty(),
+            "primary_items does not bypass support"
+        );
+        assert_eq!(at_30("minecraft:book"), [(sharp.clone(), 3)]);
+        e.primary_answers().install(HashMap::from([(
+            "minecraft:book".into(),
+            HashMap::from([(sharp.clone(), false)]),
+        )]));
+        assert!(
+            at_30("minecraft:book").is_empty(),
+            "a primary answer can withhold the plain book's default eligibility"
+        );
+    }
+
+    #[test]
+    fn items_random_enchantment_reads_support_without_filtering_unrestricted_rolls() {
+        let mut items = sample_items();
+        items.enchantments = sample().into();
+        for (item, supported) in [
+            ("minecraft:diamond_sword", true),
+            ("minecraft:enchanted_book", false),
+        ] {
+            for compatible in [true, false] {
+                let table = json!({"pools":[{"rolls":1,"entries":[{
+                    "type":"minecraft:item", "name":item, "modifier":[{
+                        "type":"minecraft:enchant_randomly", "options":"minecraft:mending", "only_compatible":compatible
+                    }]
+                }]}]});
+                let roll = || {
+                    items.inline_loot_table(&table, &mut sunrise_core::random::LegacyRandom::new(1))
+                        [0]
+                    .crafting_enchantments()
+                    .to_vec()
+                };
+                let answers = items.enchantments.support_answers();
+                for answer in [None, Some(false), Some(true), None] {
+                    match answer {
+                        Some(value) => answers.install(HashMap::from([(
+                            item.into(),
+                            HashMap::from([("minecraft:mending".into(), value)]),
+                        )])),
+                        None => answers.clear(),
+                    }
+                    if !compatible || answer.unwrap_or(supported) {
+                        assert_eq!(roll(), [(Arc::from("minecraft:mending"), 1)]);
+                    } else {
+                        assert!(roll().is_empty(), "{item}, {answer:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2163,9 +2405,14 @@ mod ignite_tests {
             std::process::id()
         ));
         std::fs::create_dir_all(root.join("data/minecraft/tags/enchantment")).unwrap();
+        let entries = root.join("data/minecraft/enchantment");
+        std::fs::create_dir_all(&entries).unwrap();
+        for id in ["sharpness", "smite"] {
+            std::fs::write(entries.join(format!("{id}.json")), "{}").unwrap();
+        }
         std::fs::write(root.join("items.json"), "{}").unwrap();
-        std::fs::write(root.join("data/minecraft/tags/enchantment/conditional.json"), json!({"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:sharpness"]}).to_string()).unwrap();
-        let files = vec![("tags/minecraft:enchantment/conditional".into(), vec![json!({"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:smite"],"remove":["minecraft:sharpness"]}).to_string().into_bytes()])];
+        std::fs::write(root.join("data/minecraft/tags/enchantment/conditional.json"), json!({"neoforge:conditions":[{"type":"neoforge:never"}],"values":["minecraft:sharpness"]}).to_string()).unwrap();
+        let files = vec![("tags/minecraft:enchantment/conditional".into(), vec![json!({"neoforge:conditions":[{"type":"neoforge:never"}],"values":["minecraft:smite"],"remove":["minecraft:sharpness"]}).to_string().into_bytes()])];
         let defaults = sunrise_world::item_defaults::read(&root).unwrap();
         let base = Enchantments::load(&root, &defaults).unwrap();
         assert_eq!(

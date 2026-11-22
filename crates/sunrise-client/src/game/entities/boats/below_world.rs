@@ -21,13 +21,7 @@ impl Game<'_> {
         if !below_world(self.boats[i].position.y, self.world.shape.min_y) {
             return false;
         }
-        self.eject_boat_mobs(i, true);
-        let id = self.boats[i].id;
-        self.release_vehicle_container(id);
-        self.unpack_loot(super::super::container_loot::LootTarget::Boat(id), None);
-        let b = self.boats.remove(i);
-        self.drop_vehicle_contents(b.position.components(), &b.items);
-        self.boat_removed(&b);
+        self.kill_vehicle_object(crate::game::commands::Target::Boat(self.boats[i].id));
         true
     }
 
@@ -45,11 +39,7 @@ impl Game<'_> {
         if !below_world(self.carts[i].position.y, self.world.shape.min_y) {
             return Some(i);
         }
-        self.eject_cart_mobs(i);
-        self.release_vehicle_container(id);
-        self.unpack_loot(super::super::container_loot::LootTarget::Cart(id), None);
-        let c = self.carts.remove(i);
-        self.drop_vehicle_contents(c.position.components(), &c.items);
+        self.kill_vehicle_object(crate::game::commands::Target::Cart(id));
         self.native_tick_post_one(round, id, kind);
         None
     }
@@ -74,7 +64,7 @@ mod tests {
     /// its chunk storage extends lower, and spills the container's contents.
     /// Vehicles on the line or above it survive this tick.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_tick_discards_the_vehicles_under_the_world() {
         use sunrise_client::chunk::Chunk;
         use sunrise_core::position::ChunkPos;
@@ -119,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn saved_deep_end_boat_loads_then_is_discarded_and_extreme_scans_terminate() {
         use super::super::Boat;
         use sunrise_client::{chunk::Chunk, motion::PlayerMotion};

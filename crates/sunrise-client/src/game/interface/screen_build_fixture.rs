@@ -5,6 +5,8 @@
 //! hovers, the pause menu's buttons and icons, and the chat and command block
 //! screens' widgets, in the format of `VanillaScreenBuildOracle`.
 use super::{Game, Screen, screen_build::ScreenLayout};
+use serde_json::Value;
+use std::io::Write as _;
 use sunrise_client::{
     Result,
     chat::{ChatAbilities, ChatScreen, ChatVisibility, Commands},
@@ -16,8 +18,6 @@ use sunrise_client::{
     text::Text,
     window::GuiSize,
 };
-use serde_json::Value;
-use std::io::Write as _;
 
 /// A container screen's block and block entity at the fixture's one position.
 const POS: (i32, i32, i32) = (0, 0, 0);

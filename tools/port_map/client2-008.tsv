@@ -6,10 +6,10 @@ EquipmentClientInfo.TrimPredicate.validate	skip:java		codec validator; TrimOverr
 EquipmentClientInfo.TrimPredicate.matches	port	crates/sunrise-client-render/src/trims.rs::TrimOverride::matches	material and pattern id comparison
 ModelBakery.bakeModels	port	crates/sunrise-client-render/src/models/catalog.rs::StateModels::from_facts_with_models	bakes block states; gap: minor: items and standalone models bake in separate fns (item_bake.rs::bake_item_model)
 ModelBakery.ModelBakerImpl.getModel	port	crates/sunrise-assets/src/resolve.rs::ModelLibrary::resolve	an unknown id falls back to the missing model
-ModelDiscovery.createAndQueueWrapper	inline	crates/sunrise-client-render/src/model_library.rs::ParsedModels::block_models	parent queue; no wrapper object is kept
+ModelDiscovery.createAndQueueWrapper	inline	crates/sunrise-client-render/src/model_library.rs::ParsedModels::reachable_library	parent queue; no wrapper object is kept
 ModelDiscovery.addSpecialModel	inline	crates/sunrise-assets/src/resolve.rs::ModelLibrary::with_shared_item_generator	gap: minor: only builtin/generated is registered; a non-root special model is not rejected
 ModelDiscovery.resolve	port	crates/sunrise-assets/src/resolve.rs::ModelLibrary::resolve	resolved per model id, not as a batch map
-ModelDiscovery.discoverDependencies	inline	crates/sunrise-client-render/src/model_library.rs::ParsedModels::block_models	pushes each model's parent until the set is complete
+ModelDiscovery.discoverDependencies	inline	crates/sunrise-client-render/src/model_library.rs::ParsedModels::reachable_library	pushes each model's parent until the set is complete
 ModelDiscovery.propagateValidity	port	crates/sunrise-assets/src/resolve.rs::ModelLibrary::resolve	a chain that reaches a cycle is an error when resolved
 ModelDiscovery.ModelWrapper.updateSlot	skip:java		per-model result cache
 ModelDiscovery.ModelWrapper.getSimpleProperty	skip:java		per-model result cache
@@ -21,7 +21,7 @@ ModelGroupCollector.GroupKey.create	skip:java		group key of build
 ModelGroupCollector.GroupKey.getColoringValues	skip:java		group key of build
 ModelManager.reload	port	crates/sunrise-client-render/src/assets.rs::RenderAssets::load	one synchronous load: models, block states, item infos, then bake and store
 ModelManager.loadBlockModels	port	crates/sunrise-client-render/src/model_library.rs::ParsedModels::load	every models/**.json by id, parsed in parallel
-ModelManager.discoverModelDependencies	port	crates/sunrise-client-render/src/model_library.rs::ParsedModels::block_models	referenced models and their parents
+ModelManager.discoverModelDependencies	port	crates/sunrise-client-render/src/model_library.rs::ParsedModels::reachable_library	referenced models and their parents
 ModelManager.loadModels	port	crates/sunrise-client-render/src/models/catalog.rs::StateModels::from_facts_with_models	bakes block states and their models
 ModelManager.createBlockStateToModelDispatch	inline	crates/sunrise-client-render/src/models/catalog.rs::StateModels::from_facts_with_models	missing model for a state without a baked model
 ModelManager.buildModelGroups	skip:java		wrapper of ModelGroupCollector.build; render sharing only

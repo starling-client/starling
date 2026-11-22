@@ -8,6 +8,10 @@ use crate::cit_assets::{self, model_id, sprite_id};
 use crate::hud::cit_glint::GlintTextures;
 use crate::items::ItemStack;
 use glam::Vec3;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+};
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_assets::{
     item_bake::{BakedItemModel, bake_resolved},
@@ -15,10 +19,6 @@ use sunrise_assets::{
     resolve::{MISSING_MODEL, ModelLibrary},
 };
 use sunrise_core::nbt::Tag;
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
-};
 
 /// A baked layer and its quad corners, as `ItemRenderer::bake` and `quad_extents` give them.
 pub(super) type Baked = (Arc<BakedItemModel>, Arc<Vec<Vec3>>);
@@ -369,12 +369,12 @@ impl ItemRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_assets::item_model::{DisplayContext, NoEnv, StackView};
     use std::{
         collections::BTreeSet,
         fs,
         path::{Path, PathBuf},
     };
+    use sunrise_assets::item_model::{DisplayContext, NoEnv, StackView};
 
     const CIT: &str = "assets/minecraft/optifine/cit";
 

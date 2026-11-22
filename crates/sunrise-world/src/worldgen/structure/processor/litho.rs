@@ -9,12 +9,12 @@
 //! the blocks chosen do not.
 use super::{BlockStateId, DecodeError, Modifier, ProcessorList, ProcessorRandom};
 use crate::worldgen::{block_feature::FeatureBlockBindings, structure::StructureResources};
+use serde_json::Value;
+use std::collections::BTreeSet;
 use sunrise_core::{
     position::BlockPos,
     random::{LegacyRandom, position_seed},
 };
-use serde_json::Value;
-use std::collections::BTreeSet;
 
 /// `random_mode` (`condition`, `set_block`) or `mode` (`apply_random`).
 #[derive(Clone, Copy, Debug)]

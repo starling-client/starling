@@ -1,0 +1,12 @@
+ids = [
+    "hook:chunk_data_load",
+    "hook:chunk_data_save",
+    "method:ChunkDiskHost::job",
+    "type:ChunkDiskContextWire",
+    "handle:ChunkDiskContextWire::new",
+    "type:ChunkDiskFailure",
+    "type:ChunkDiskKind",
+    "type:ChunkDiskPhase",
+]
+why = "Chunk disk callbacks can borrow the captured identity instead of cloning it. The job now counts the actual uncompressed disk NBT, including names, compound terminators, mixed-list wrappers and unknown entries, and refuses data that cannot be written without truncation."
+migrate = "Replace `ChunkDiskContextWire` with `ChunkDiskContext` (including `ChunkDiskContextWire::new(...)` with `ChunkDiskContext::new(...)`). Keep `let job = host.job();` and read its fields through the borrow; use `(*host.job()).clone()` only if you need to keep the entire identity after the callback. `ChunkDiskContext`, `ChunkDiskFailure`, `ChunkDiskKind` and `ChunkDiskPhase` are local values, not `Wire` types. If a typed payload used them, replace them with the fields you actually send, such as `job.world.get()` (`u64`), `job.pos` (`[i32; 2]`), `matches!(job.kind, ChunkDiskKind::Full)` (`bool`) or `matches!(job.phase, ChunkDiskPhase::Save)` (`bool`); send the refusal's `mod_id`, `key` or `reason` as strings. Keep using `event.data.get/set/remove` with a persistence codec. Ensure each named `value` tag fits in 65,536 disk NBT bytes and 64 container levels, the whole named `sunrise:attachments` entry fits in 1,048,576 bytes, and the codec writes valid NBT without overlong modified UTF-8 names or strings. Rebuild against the SDK to record version 2 of the load and save hooks."

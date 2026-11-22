@@ -98,11 +98,13 @@ class GameBootCheck(unittest.TestCase):
                 check.fixtures(path)
 
     def test_the_committed_list_names_fixtures_that_exist(self):
-        for name in check.fixtures():
-            function = name.rsplit("::", 1)[-1]
-            found = subprocess.run(["git", "grep", "-q", "-E", rf"fn {function}\b", "--", "crates/*.rs"],
-                                   cwd=check.ROOT)
-            self.assertEqual(found.returncode, 0, f"{name} is not defined anywhere under crates/")
+        functions = {name: name.rsplit("::", 1)[-1] for name in check.fixtures()}
+        # One search for every name: a search per name read the whole tree once each.
+        found = subprocess.run(["git", "grep", "-h", "-o", "-E", rf"fn ({'|'.join(set(functions.values()))})\b",
+                                "--", "crates/*.rs"], cwd=check.ROOT, capture_output=True, text=True)
+        defined = {line.split()[1] for line in found.stdout.splitlines()}
+        for name, function in functions.items():
+            self.assertIn(function, defined, f"{name} is not defined anywhere under crates/")
 
     def test_main_fails_naming_each_offender(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -8,8 +8,8 @@ use super::{
     value_provider::IntProvider,
 };
 use crate::registry::BlockStateId;
-use sunrise_core::random::{InvalidBound, RandomSource};
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::random::{InvalidBound, RandomSource};
 #[derive(Clone, Debug)]
 pub struct ReplaceBlobsFeature {
     targets: Arc<BTreeSet<BlockStateId>>,

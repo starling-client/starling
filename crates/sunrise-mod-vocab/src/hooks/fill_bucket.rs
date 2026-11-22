@@ -7,10 +7,12 @@ pub trait Hooks {
     /// and the bucket does nothing. Server-side, for every player of the
     /// world (`host.players().acting_player()` says who).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_fill_bucket",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
         neoforge = "none (NeoForge 26.3 has no bucket-fill event)"
     )]
-    fn fill_bucket();
+    fn fill_bucket(stack: &ItemStack, pos: [i32; 3], canceled: &mut bool);
 }

@@ -42,7 +42,8 @@ use glam::Mat4;
 /// One real frame's inputs.
 pub struct Inputs<'a> {
     /// This frame's colour without the hand and HUD: `display` size, a filterable
-    /// float texture (gamma-encoded RGB, the swapchain's values) that can be copied from.
+    /// float texture (gamma-encoded RGB: the swapchain's values, or the float frame's light
+    /// past 1, which the blend keeps) that can be copied from.
     pub color: &'a wgpu::TextureView,
     /// This frame's depth: `Depth32Float` at `render_size`, reversed (1 at the near
     /// plane, 0 at the far one), finite, jittered by `jitter`.
@@ -777,7 +778,7 @@ mod tests {
             .collect();
         for (i, (color, _)) in frames.iter().enumerate() {
             let mut encoder = device.create_command_encoder(&Default::default());
-            flow.dispatch(&device, &queue, &mut encoder, color, i == 0);
+            flow.dispatch(&device, &queue, &mut encoder, color, None, i == 0);
             interpolation.dispatch(
                 &device,
                 &queue,
@@ -831,6 +832,7 @@ mod tests {
     /// (FSR prefers the game's vectors unless they clearly don't: primaries make it
     /// clear). The first 10 frames after a reset use the game's vectors only.
     #[test]
+    #[ignore = "daily"]
     fn moves_what_the_optical_flow_follows_halfway() {
         let _gpu = crate::gfx::test_gpu::lock();
         let mut shifts = vec![[0, 0]; 20];
@@ -850,6 +852,7 @@ mod tests {
 
     /// The camera turning: the game's motion vectors put the made frame halfway.
     #[test]
+    #[ignore = "daily"]
     fn moves_the_view_halfway_with_the_camera() {
         let _gpu = crate::gfx::test_gpu::lock();
         let size = [512.0, 288.0];
@@ -869,6 +872,7 @@ mod tests {
     /// Something moving on its own with its own motion vectors (the camera still): the
     /// made frame is halfway, as with the camera's.
     #[test]
+    #[ignore = "daily"]
     fn moves_what_has_its_own_motion_vectors_halfway() {
         let _gpu = crate::gfx::test_gpu::lock();
         let size = [512.0, 288.0];

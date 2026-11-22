@@ -9,7 +9,7 @@
 //!
 //! - **Breaking**: it can stop any mod that uses the item from compiling or meaning the same.
 //!   A removed record; a changed contract (a hook's side or kind, a retyped field or argument, a
-//!   signature, a method no longer on wasm); a variant added to an exhaustive enum or a required
+//!   signature); a variant added to an exhaustive enum or a required
 //!   item added to a trait mods implement (the container's own hash covers those sets); an impl
 //!   a type no longer has; a supertrait a trait mods call no longer has, or gains when the new
 //!   one is not known to keep `dyn Trait` valid (`Clone`, `Sized`, a trait with generic methods).
@@ -19,15 +19,18 @@
 //!   `..`), or a struct's public field set changing in a field its records do not list (its
 //!   `fields_hash`); a struct that is no longer
 //!   constructible (only a mod that builds it with a literal); a public path that goes (only a
-//!   mod that names the item by it); a hook's `version` (only a mod whose manifest names it); a
-//!   type's wire form or wire layout (`shape`; wasm mods only); a method of a trait mods only call
+//!   mod that names the item by it); a hook's `version` (only a mod whose manifest names it) or a
+//!   behaviour's (only a mod that relies on it); a
+//!   type's wire form or wire layout (`shape`; only when using that encoding); a method of a trait mods only call
 //!   that moved unchanged to a supertrait it still has (only a call written by trait path).
-//! - **Additive**: a new record (a field of a struct mods cannot build, a variant of a
-//!   `#[non_exhaustive]` enum, a defaulted method), and changes that only widen an item: now on
-//!   wasm, now crossing the wasm boundary, now constructible, an impl gained, a new public path,
+//! - **Additive**: a new record (a behaviour, a field of a struct mods cannot build, a variant of a
+//!   `#[non_exhaustive]` enum, a defaulted method), and changes that only widen an item: now implementing
+//!   `Wire`, now constructible, an impl gained, a new public path,
 //!   a marker or object-safe API supertrait gained by a trait mods only call (`Send`, `Sync`,
 //!   `'static`, `Debug`, `Any`), an item no longer required, an enum no longer
 //!   `#[non_exhaustive]`.
+//! - **Advisory**: a listed internal added, removed or changed. Native internals are pinned to
+//!   an exact build and are not covered by the change-note gate.
 //!
 //! A container's members are reported with it once: when a type, trait or hook is added or
 //! removed, or its hashed member set (`members`, `required`, whether a hook has an output)
@@ -46,9 +49,11 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Class {
+    /// A listed internal's change, visible in the report without a change-note requirement.
+    Advisory,
     Additive,
     /// Breaks only a mod that builds the value with a full literal, names a hook version, or
-    /// is a wasm mod; the fit test judges each mod.
+    /// uses a particular wire encoding.
     Conditional,
     Breaking,
 }
@@ -58,6 +63,7 @@ pub enum Class {
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Identical,
+    Advisory,
     Additive,
     Conditional,
     Breaking,
@@ -96,8 +102,7 @@ pub struct Change {
     pub notes: Vec<Note>,
 }
 
-/// The comparison of two surfaces: breaking changes first, then conditional, then additive,
-/// each by id.
+/// The comparison of two surfaces, from breaking changes down to advisory ones, each by id within its class.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diff {
     /// The old document's hash.
@@ -115,7 +120,7 @@ struct Entry {
     view: Value,
     /// What the diff compares outside the hash: public `paths`; a type's `impls`, `wire`,
     /// `wire_form`, `shape`, `constructible` and `fields_hash`; a called trait's `bounds`; a
-    /// hook's `version`.
+    /// hook's or behaviour's `version`.
     extra: Map<String, Value>,
 }
 
@@ -211,6 +216,23 @@ fn entries(surface: &Surface) -> BTreeMap<String, Entry> {
         put(&r.id, &r.hash, json(&r.contract), Map::new());
     }
     for r in &surface.capabilities {
+        put(&r.id, &r.hash, json(&r.contract), Map::new());
+    }
+    for tag in &surface.extension_tags {
+        put(
+            &format!("extension_tag:{}/{}", tag.registry, tag.id),
+            &crate::contract_hash(&(&tag.registry, &tag.id)),
+            json(&(&tag.registry, &tag.id)),
+            Map::new(),
+        );
+    }
+    for r in &surface.behaviours {
+        // A behaviour's hash holds nothing: its version is all the diff compares.
+        let mut view = json(&r.contract);
+        let extra = take(&mut view, &["version"]);
+        put(&r.id, &r.hash, view, extra);
+    }
+    for r in &surface.engine_items {
         put(&r.id, &r.hash, json(&r.contract), Map::new());
     }
     map
@@ -360,13 +382,14 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
                 (ChangeKind::Added, vec![line])
             }
             (Some(a), Some(b)) => {
-                let mut lines = if a.hash == b.hash {
+                let unchanged = a.hash == b.hash;
+                let mut lines = if unchanged {
                     Vec::new()
                 } else {
                     describe(id, &a.view, &b.view)
                 };
                 lines.extend(extras(id, &a.extra, &b.extra, &free));
-                if a.hash != b.hash && lines.is_empty() {
+                if !unchanged && lines.is_empty() {
                     lines.push((
                         "its contract changed in a field this tool does not know".into(),
                         Class::Breaking,
@@ -379,11 +402,15 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
             }
             (None, None) => continue,
         };
-        let class = lines
-            .iter()
-            .map(|(_, c)| *c)
-            .max()
-            .expect("one line at least");
+        let class = if record_kind(id) == "internal" {
+            Class::Advisory
+        } else {
+            lines
+                .iter()
+                .map(|(_, c)| *c)
+                .max()
+                .expect("one line at least")
+        };
         changes.insert(
             id.clone(),
             Change {
@@ -468,6 +495,7 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
     changes.sort_by(|a, b| b.class.cmp(&a.class).then_with(|| a.id.cmp(&b.id)));
     let verdict = match changes.iter().map(|c| c.class).max() {
         None => Verdict::Identical,
+        Some(Class::Advisory) => Verdict::Advisory,
         Some(Class::Additive) => Verdict::Additive,
         Some(Class::Conditional) => Verdict::Conditional,
         Some(Class::Breaking) => Verdict::Breaking,
@@ -570,39 +598,45 @@ fn extras(
     }
     let (x, y) = (get(old, "version"), get(new, "version"));
     if x != y {
+        let affects = if id.starts_with("behaviour:") {
+            "a mod that relies on this behaviour"
+        } else {
+            "a mod that names this hook's version in its manifest"
+        };
         lines.push((
             format!(
-                "version {} → {}: affects only a mod that names this hook's version in its manifest",
+                "version {} → {}: affects only {affects}",
                 show(&x),
                 show(&y)
             ),
             Class::Conditional,
         ));
     }
-    let (x, y) = (get(old, "shape"), get(new, "shape"));
-    if x != y {
-        lines.push((
-            format!(
-                "wire layout: {} → {}: affects wasm mods only",
-                quoted("shape", &x),
-                quoted("shape", &y)
-            ),
-            Class::Conditional,
-        ));
-    }
     let wire = |map: &Map<String, Value>| get(map, "wire") == Value::Bool(true);
     match (wire(old), wire(new)) {
-        (false, true) => lines.push(("now crosses the wasm boundary".into(), Class::Additive)),
+        (false, false) => {}
+        (false, true) => lines.push(("now implements `Wire`".into(), Class::Additive)),
         (true, false) => lines.push((
-            "no longer crosses the wasm boundary: affects wasm mods only".into(),
+            "no longer implements `Wire`: affects users of this encoding".into(),
             Class::Conditional,
         )),
-        _ => {
+        (true, true) => {
+            let (x, y) = (get(old, "shape"), get(new, "shape"));
+            if x != y {
+                lines.push((
+                    format!(
+                        "wire layout: {} → {}: affects users of this encoding",
+                        quoted("shape", &x),
+                        quoted("shape", &y)
+                    ),
+                    Class::Conditional,
+                ));
+            }
             let (x, y) = (get(old, "wire_form"), get(new, "wire_form"));
             if x != y {
                 lines.push((
                     format!(
-                        "wire form: {} → {}: affects wasm mods only",
+                        "wire form: {} → {}: affects users of this encoding",
                         quoted("wire_form", &x),
                         quoted("wire_form", &y)
                     ),
@@ -787,8 +821,6 @@ fn describe(id: &str, old: &Value, new: &Value) -> Vec<(String, Class)> {
                     lines.push((format!("{word}s reordered"), Breaking));
                 }
             }
-            ("wasm", _, Value::Bool(true)) => lines.push(("now on wasm".into(), Additive)),
-            ("wasm", _, Value::Bool(false)) => lines.push(("no longer on wasm".into(), Breaking)),
             ("required", _, Value::Bool(false)) => {
                 lines.push(("now has a default".into(), Additive))
             }
@@ -863,6 +895,38 @@ fn pair<T>(
     lines
 }
 
+const ENGINE_KINDS: [(&str, &str); 2] = [
+    ("loop", "Published loops"),
+    ("internal", "Listed internals (advisory)"),
+];
+
+fn record_kind(id: &str) -> &str {
+    id.split_once(':').map_or("", |(kind, _)| kind)
+}
+
+fn write_change(text: &mut String, change: &Change) {
+    let kind = match change.kind {
+        ChangeKind::Added => "added",
+        ChangeKind::Removed => "removed",
+        ChangeKind::Changed => "changed",
+    };
+    text.push_str(&format!("- {} ({kind})\n", change.id));
+    for line in &change.what {
+        if line != kind {
+            text.push_str(&format!("    {line}\n"));
+        }
+    }
+    if !change.members.is_empty() {
+        text.push_str(&format!("    members: {}\n", change.members.join(", ")));
+    }
+    for note in &change.notes {
+        text.push_str(&format!("    why ({}): {}\n", note.file, note.why));
+        if let Some(migrate) = &note.migrate {
+            text.push_str(&format!("    migrate: {migrate}\n"));
+        }
+    }
+}
+
 impl Diff {
     /// Attaches a note to the changes it names; returns the ids it names that did not change.
     pub fn attach(&mut self, note: &Note, ids: &[String]) -> Vec<String> {
@@ -888,7 +952,7 @@ impl Diff {
             .filter(|c| c.class == Class::Breaking && c.notes.is_empty())
     }
 
-    /// The report as text: the verdict and counts, then breaking, conditional and additive changes.
+    /// The verdict and counts, engine catalog changes, then API changes by class.
     pub fn to_text(&self) -> String {
         let count = |class| self.changes.iter().filter(|c| c.class == class).count();
         let (breaking, conditional, additive) = (
@@ -896,51 +960,73 @@ impl Diff {
             count(Class::Conditional),
             count(Class::Additive),
         );
+        let engine_changes = self.changes.iter().any(|change| {
+            ENGINE_KINDS
+                .iter()
+                .any(|(kind, _)| *kind == record_kind(&change.id))
+        });
+        let advisory = if engine_changes {
+            format!(", {} advisory", count(Class::Advisory))
+        } else {
+            String::new()
+        };
         let verdict = match self.verdict {
             Verdict::Identical => "identical",
+            Verdict::Advisory => "advisory",
             Verdict::Additive => "additive",
             Verdict::Conditional => "conditional",
             Verdict::Breaking => "breaking",
         };
         let mut text = format!(
-            "Surface: {verdict} ({breaking} breaking, {conditional} conditional, {additive} additive; {} breaking without a note)\nOld {}, new {}\n",
+            "Surface: {verdict} ({breaking} breaking, {conditional} conditional, {additive} additive{advisory}; {} breaking without a note)\nOld {}, new {}\n",
             self.undeclared().count(),
             self.old,
             self.new
         );
-        for (class, title, n) in [
-            (Class::Breaking, "Breaking", breaking),
+        if engine_changes {
+            text.push_str("\nEngine catalogs (loop removals and changes are breaking)\n");
+            for (prefix, title) in ENGINE_KINDS {
+                let records = || self.changes.iter().filter(|c| record_kind(&c.id) == prefix);
+                // Only an audit includes internals; show their section when they change.
+                if prefix == "internal" && records().next().is_none() {
+                    continue;
+                }
+                let count = |kind| records().filter(|c| c.kind == kind).count();
+                text.push_str(&format!(
+                    "{title}: {} added, {} removed, {} changed\n",
+                    count(ChangeKind::Added),
+                    count(ChangeKind::Removed),
+                    count(ChangeKind::Changed),
+                ));
+                for change in
+                    records().filter(|c| c.kind != ChangeKind::Added || !c.notes.is_empty())
+                {
+                    write_change(&mut text, change);
+                }
+            }
+        }
+        for (class, title) in [
+            (Class::Breaking, "Breaking"),
             (
                 Class::Conditional,
-                "Conditional: breaks only the mods the fit test names",
-                conditional,
+                "Conditional: breaks only some mods (the fit test names them; a behaviour's version is for the mods that rely on it)",
             ),
-            (Class::Additive, "Additive", additive),
+            (Class::Additive, "Additive"),
         ] {
-            if n == 0 {
-                continue;
-            }
-            text.push_str(&format!("\n{title} ({n})\n"));
-            for change in self.changes.iter().filter(|c| c.class == class) {
-                let kind = match change.kind {
-                    ChangeKind::Added => "added",
-                    ChangeKind::Removed => "removed",
-                    ChangeKind::Changed => "changed",
-                };
-                text.push_str(&format!("- {} ({kind})\n", change.id));
-                for line in &change.what {
-                    if line != kind {
-                        text.push_str(&format!("    {line}\n"));
-                    }
-                }
-                if !change.members.is_empty() {
-                    text.push_str(&format!("    members: {}\n", change.members.join(", ")));
-                }
-                for note in &change.notes {
-                    text.push_str(&format!("    why ({}): {}\n", note.file, note.why));
-                    if let Some(migrate) = &note.migrate {
-                        text.push_str(&format!("    migrate: {migrate}\n"));
-                    }
+            let changes: Vec<_> = self
+                .changes
+                .iter()
+                .filter(|c| {
+                    c.class == class
+                        && !ENGINE_KINDS
+                            .iter()
+                            .any(|(kind, _)| *kind == record_kind(&c.id))
+                })
+                .collect();
+            if !changes.is_empty() {
+                text.push_str(&format!("\n{title} ({})\n", changes.len()));
+                for change in changes {
+                    write_change(&mut text, change);
                 }
             }
         }

@@ -3,13 +3,13 @@
 //! prints costs, clues and applied enchantments in the oracle's format.
 //!
 //! usage: enchanting_fixture RESOURCES INPUT OUTPUT
+use std::{fmt::Write as _, fs, path::Path, sync::Arc};
 use sunrise_client::{
     enchant::Enchantments,
     items::{ItemStack, Items},
     stations,
 };
 use sunrise_world::loot::PackOverlay;
-use std::{fmt::Write as _, fs, path::Path, sync::Arc};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().collect();

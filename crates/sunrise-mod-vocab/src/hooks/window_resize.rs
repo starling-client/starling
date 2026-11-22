@@ -5,10 +5,11 @@ pub trait Hooks {
     /// `width` and `height` are physical pixels; `gui_width` and `gui_height` are scaled GUI pixels.
     /// Fires only when physical or scaled dimensions change.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "WindowResizeEvent",
         cancellable = false
     )]
-    fn window_resize();
+    fn window_resize(width: u32, height: u32, gui_width: u32, gui_height: u32);
 }

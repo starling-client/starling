@@ -267,7 +267,7 @@ fn malformed_dye_payloads_reject_whole_recipes_with_component_errors() {
             "type":"neoforge:components", "items":"minecraft:red_dye", "components":patch
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -280,9 +280,14 @@ fn malformed_dye_payloads_reject_whole_recipes_with_component_errors() {
             )],
             &load,
         )
-        .unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/invalid_dye.json"),
+            "{refused}"
+        );
+        assert!(refused.contains("minecraft:dye"), "{refused}");
     }
 }
 
@@ -343,9 +348,10 @@ fn sheep_color_components_compile_recipes_and_match_live_values() {
     });
     assert_eq!(allocations.calls, 0, "{allocations:?}");
     assert_eq!(allocations.bytes, 0);
-    stack
-        .data_mut()
-        .set_loot_component("minecraft:custom_data", &Some(Tag::Int(1)));
+    stack.data_mut().set_loot_component(
+        "minecraft:custom_data",
+        &Some(Tag::compound([("extra", Tag::Int(1))])),
+    );
     assert!(loose.test_in(&context, &stack));
     assert!(!ingredient.test_in(&context, &stack));
     assert!(recipes.craft(&context, &[Some(stack.clone())], 1).is_none());
@@ -420,7 +426,6 @@ fn malformed_sheep_color_payloads_reject_whole_recipes_with_component_errors() {
     let items = Items::empty();
     let load = load();
     let root = tempfile::tempdir().unwrap();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [Tag::Byte(0), Tag::End, Tag::List(vec![])] {
         let rule = IngredientRule::Components {
             patch: sunrise_core::nbt::Compound::from([("minecraft:sheep/color".into(), value)]),
@@ -448,7 +453,7 @@ fn malformed_sheep_color_payloads_reject_whole_recipes_with_component_errors() {
         let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
         assert!(error.contains("minecraft:sheep/color"), "{error}");
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -470,28 +475,14 @@ fn malformed_sheep_color_payloads_reject_whole_recipes_with_component_errors() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
-        assert!(recipes.recipe_matches(
-            &context,
-            "fixture:valid_sibling",
-            &[Some(ItemStack::new("minecraft:stick", 1))],
-            1
-        ));
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid_sheep_color.json"),
+            "{refused}"
         );
-        assert!(
-            recipes
-                .craft(
-                    &context,
-                    &[Some(ItemStack::new("minecraft:sheep_spawn_egg", 1))],
-                    1
-                )
-                .is_none()
-        );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 
@@ -641,11 +632,10 @@ fn shulker_color_components_compile_match_and_distinguish_absence_from_defaults(
 }
 
 #[test]
-fn malformed_shulker_color_payloads_omit_recipes_with_component_errors() {
+fn malformed_shulker_color_payloads_refuse_load_with_component_errors() {
     let items = Items::empty();
     let load = load();
     let root = tempfile::tempdir().unwrap();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [Tag::Byte(0), Tag::End, Tag::List(vec![])] {
         let rule = IngredientRule::Components {
             patch: sunrise_core::nbt::Compound::from([("minecraft:shulker/color".into(), value)]),
@@ -679,7 +669,7 @@ fn malformed_shulker_color_payloads_omit_recipes_with_component_errors() {
         let error = components::validate_recipe_components(&source, &items).unwrap_err();
         assert!(error.contains("minecraft:shulker/color"), "{error}");
         assert!(Ingredient::parse(&source, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -701,28 +691,14 @@ fn malformed_shulker_color_payloads_omit_recipes_with_component_errors() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
-        assert!(recipes.recipe_matches(
-            &context,
-            "fixture:valid_sibling",
-            &[Some(ItemStack::new("minecraft:stick", 1))],
-            1
-        ));
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid_shulker_color.json"),
+            "{refused}"
         );
-        assert!(
-            recipes
-                .craft(
-                    &context,
-                    &[Some(ItemStack::new("minecraft:shulker_spawn_egg", 1))],
-                    1
-                )
-                .is_none()
-        );
+        assert!(refused.contains(&error), "{refused}");
     }
     for value in [
         Tag::End,
@@ -839,9 +815,10 @@ fn cat_collar_components_compile_recipes_match_live_values_and_preserve_defaults
         stack
             .data_mut()
             .set_loot_component("minecraft:cat/collar", &Some(Tag::String(color.into())));
-        stack
-            .data_mut()
-            .set_loot_component("minecraft:custom_data", &Some(Tag::Int(7)));
+        stack.data_mut().set_loot_component(
+            "minecraft:custom_data",
+            &Some(Tag::compound([("extra", Tag::Int(7))])),
+        );
         assert!(
             !ingredient.test_in(&context, &stack),
             "strict extra component"
@@ -919,7 +896,6 @@ fn malformed_cat_collar_payloads_reject_whole_recipes_with_component_errors() {
     let items = Items::empty();
     let load = load();
     let root = tempfile::tempdir().unwrap();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [Tag::Byte(0), Tag::End, Tag::List(vec![])] {
         let rule = IngredientRule::Components {
             patch: sunrise_core::nbt::Compound::from([("minecraft:cat/collar".into(), value)]),
@@ -950,7 +926,7 @@ fn malformed_cat_collar_payloads_reject_whole_recipes_with_component_errors() {
         let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
         assert!(error.contains("minecraft:cat/collar"), "{error}");
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -972,24 +948,14 @@ fn malformed_cat_collar_payloads_reject_whole_recipes_with_component_errors() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
-        assert!(recipes.recipe_matches(
-            &context,
-            "fixture:valid_sibling",
-            &[Some(ItemStack::new("minecraft:paper", 1))],
-            1
-        ));
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid_cat_collar.json"),
+            "{refused}"
         );
-        assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .is_none()
-        );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 
@@ -1137,7 +1103,6 @@ fn malformed_wolf_collar_payloads_reject_whole_recipes_with_component_errors() {
     let items = Items::empty();
     let load = load();
     let root = tempfile::tempdir().unwrap();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [Tag::Byte(0), Tag::End, Tag::List(vec![])] {
         let rule = IngredientRule::Components {
             patch: sunrise_core::nbt::Compound::from([("minecraft:wolf/collar".into(), value)]),
@@ -1168,7 +1133,7 @@ fn malformed_wolf_collar_payloads_reject_whole_recipes_with_component_errors() {
         let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
         assert!(error.contains("minecraft:wolf/collar"), "{error}");
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -1190,28 +1155,14 @@ fn malformed_wolf_collar_payloads_reject_whole_recipes_with_component_errors() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
-        assert!(recipes.recipe_matches(
-            &context,
-            "fixture:valid_sibling",
-            &[Some(ItemStack::new("minecraft:paper", 1))],
-            1
-        ));
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid_wolf_collar.json"),
+            "{refused}"
         );
-        assert!(
-            recipes
-                .craft(
-                    &context,
-                    &[Some(ItemStack::new("minecraft:wolf_spawn_egg", 1))],
-                    1
-                )
-                .is_none()
-        );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 
@@ -1389,7 +1340,7 @@ fn malformed_cushion_color_payloads_reject_whole_recipes_with_component_errors()
             "type":"neoforge:components", "items":"minecraft:red_cushion", "components":patch
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -1402,9 +1353,14 @@ fn malformed_cushion_color_payloads_reject_whole_recipes_with_component_errors()
             )],
             &load,
         )
-        .unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/invalid_cushion_color.json"),
+            "{refused}"
+        );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 
@@ -1560,7 +1516,7 @@ fn tropical_fish_base_color_recipes_match_independent_colors_and_defaults() {
 }
 
 #[test]
-fn malformed_tropical_fish_base_colors_omit_recipes_with_component_errors() {
+fn malformed_tropical_fish_base_colors_refuse_load_with_component_errors() {
     let items = Items::empty();
     let load = load();
     let root = tempfile::tempdir().unwrap();
@@ -1590,7 +1546,7 @@ fn malformed_tropical_fish_base_colors_omit_recipes_with_component_errors() {
             "components":patch
         });
         assert!(Ingredient::parse(&source, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -1603,9 +1559,14 @@ fn malformed_tropical_fish_base_colors_omit_recipes_with_component_errors() {
             )],
             &load,
         )
-        .unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/invalid_tropical_fish_base_color.json"),
+            "{refused}"
+        );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 
@@ -1831,7 +1792,7 @@ fn malformed_tropical_fish_pattern_colors_reject_whole_recipes_with_component_er
             "components":patch
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -1844,8 +1805,13 @@ fn malformed_tropical_fish_pattern_colors_reject_whole_recipes_with_component_er
             )],
             &load,
         )
-        .unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/invalid_tropical_fish_pattern_color.json"),
+            "{refused}"
+        );
+        assert!(refused.contains(&error), "{refused}");
     }
 }

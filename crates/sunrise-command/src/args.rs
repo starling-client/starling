@@ -1,13 +1,14 @@
 //! Argument types (Brigadier's and Minecraft's `ArgumentType`s): parsing with
 //! the vanilla error messages and completion suggestions.
 use super::{CmdResult, CommandError, Context, Reader, SuggestionsBuilder};
-use sunrise_client_core::text::Text;
 use std::{fmt, sync::Arc};
+use sunrise_client_core::text::Text;
 
 pub use sunrise_client_core::registries::{
     CustomCompletionAction, Registries, RegistryIds, modify_custom_completions,
 };
-pub use sunrise_core::game_mode::GameMode;
+use sunrise_core::java_float_parse::{parse_java_double, parse_java_float};
+pub use sunrise_core::{game_mode::GameMode, text::parse_java_integer as java_parse_int};
 
 /// How much of the command line a registered custom argument takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,11 +23,33 @@ pub enum CustomArgumentKind {
 /// One completion a registered custom argument offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomSuggestion {
-    /// The text that replaces the typed prefix.
+    /// The text that replaces the typed prefix, or the part of it `replace_start` sends the
+    /// replacement from.
     pub text: String,
     /// An optional explanation shown beside the completion.
     pub tooltip: Option<String>,
+    /// The byte offset into the prefix where the replacement starts; `None` replaces the whole
+    /// prefix. A mod uses it to complete one token inside a greedy text argument.
+    pub replace_start: Option<usize>,
 }
+
+/// One argument a command's dispatcher parsed before the one being completed: its name from the
+/// usage and the text the input covers for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParsedArgument {
+    /// The name between the brackets of the usage, `<name:kind>`.
+    pub name: String,
+    /// The text the input covers for the parsed argument.
+    pub text: String,
+}
+
+/// The most candidates a reply keeps for one argument (`ServerSuggestionProvider.limitSuggestionCount`),
+/// counted after the engine's own matching and bounds checks.
+pub const MAX_PROVIDER_SUGGESTIONS: usize = 1000;
+/// The longest completion text, in UTF-16 code units (STRING_UTF8's limit).
+pub const MAX_SUGGESTION_TEXT: usize = 32767;
+/// The longest tooltip, in bytes of Java modified UTF-8 (the NBT string limit).
+pub const MAX_SUGGESTION_TOOLTIP: usize = 65535;
 
 /// A mod's registered argument type, as the dispatcher parses and completes it.
 ///
@@ -37,7 +60,10 @@ pub struct CustomArgument {
     id: Arc<str>,
     kind: CustomArgumentKind,
     parse: Arc<dyn Fn(&str) -> Result<String, Text> + Send + Sync>,
-    suggest: Arc<dyn Fn(&str) -> Vec<CustomSuggestion> + Send + Sync>,
+    suggest: Arc<dyn Fn(&Registries, &str) -> Vec<CustomSuggestion> + Send + Sync>,
+    provider: Option<
+        Arc<dyn Fn(&Registries, &str, &[ParsedArgument]) -> Vec<CustomSuggestion> + Send + Sync>,
+    >,
 }
 
 impl fmt::Debug for CustomArgument {
@@ -45,25 +71,46 @@ impl fmt::Debug for CustomArgument {
         f.debug_struct("CustomArgument")
             .field("id", &self.id)
             .field("kind", &self.kind)
+            .field("provider", &self.provider.is_some())
             .finish()
     }
 }
 
 impl CustomArgument {
     /// A custom argument type `id` (such as `mymod:machine`) that reads a [`CustomArgumentKind`],
-    /// validates it with `parse` and completes it with `suggest`.
+    /// validates it with `parse` and completes it with `suggest`, which also sees the registries
+    /// the request is for (the sender and their permission).
     pub fn new(
         id: impl Into<Arc<str>>,
         kind: CustomArgumentKind,
         parse: impl Fn(&str) -> Result<String, Text> + Send + Sync + 'static,
-        suggest: impl Fn(&str) -> Vec<CustomSuggestion> + Send + Sync + 'static,
+        suggest: impl Fn(&Registries, &str) -> Vec<CustomSuggestion> + Send + Sync + 'static,
     ) -> Self {
         Self {
             id: id.into(),
             kind,
             parse: Arc::new(parse),
             suggest: Arc::new(suggest),
+            provider: None,
         }
+    }
+    /// The same type, with a suggestion provider the type declares: the dispatcher asks it, with
+    /// the typed prefix, the arguments parsed before it and the registries carrying the sender,
+    /// instead of `suggest`.
+    pub fn with_provider(
+        mut self,
+        provider: impl Fn(&Registries, &str, &[ParsedArgument]) -> Vec<CustomSuggestion>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.provider = Some(Arc::new(provider));
+        self
+    }
+    /// Whether the type declares a suggestion provider: its arguments are answered by that
+    /// provider alone, and no completion listener may add to, replace or erase the answer.
+    pub(crate) fn declares_provider(&self) -> bool {
+        self.provider.is_some()
     }
     /// The registered type's namespaced id.
     pub fn id(&self) -> &str {
@@ -134,6 +181,11 @@ pub enum ArgType {
     Resource(Resource),
     /// A plain identifier; suggestions come from the named list.
     Id(&'static str),
+    /// Vanilla's free identifier (`minecraft:resource_location`): a `namespace:path` of
+    /// identifier characters, canonical with the `minecraft` namespace when it is left out, with
+    /// no registry to check and no list of its own to suggest: the node asks the server, which
+    /// answers from the mods' own suggestions.
+    Identifier,
     /// ResourceArgument over a registry (the element must exist).
     Res(&'static str),
     /// ResourceKeyArgument (checked when the command runs).
@@ -507,6 +559,8 @@ pub enum Arg {
     ScoreHolder(ScoreHolderArg),
     IntRange(IntRange),
     DoubleRange(DoubleRange),
+    /// Options already decoded by a registered common particle type.
+    Particle(Box<mod_vocab::ParticleOptions>),
     /// A custom argument: the id of its registered type and its canonical value.
     Custom {
         kind: Arc<str>,
@@ -561,6 +615,80 @@ pub fn matches_sub_str(input: &str, candidate: &str) -> bool {
             Some(i) => index += i + 1,
             None => return false,
         }
+    }
+}
+/// The arguments the dispatcher parsed before the one being completed, each with the text the
+/// input covers for it (`CommandContext`'s arguments at the suggestion point, without the
+/// argument whose text starts at `start`).
+fn parsed_arguments(context: &Context, input: &str, start: usize) -> Vec<ParsedArgument> {
+    context
+        .args
+        .iter()
+        .filter(|argument| argument.range.0 < start)
+        .map(|argument| ParsedArgument {
+            name: argument.name.clone(),
+            text: input
+                .get(argument.range.0..argument.range.1)
+                .unwrap_or_default()
+                .to_owned(),
+        })
+        .collect()
+}
+
+/// The bytes a text occupies in Java modified UTF-8: a tooltip's NBT string limit counts those.
+fn modified_utf8_len(text: &str) -> usize {
+    text.encode_utf16()
+        .map(sunrise_core::modified_utf8::unit_len)
+        .sum()
+}
+
+/// SharedSuggestionProvider.suggest for a mod's answer: the engine keeps the candidates that
+/// match the typed text (at its start, or after each `.`, `_` or `/`) within the protocol's text
+/// bounds and the reply's count. A candidate past a bound is dropped by name in the diagnostics
+/// and the others stay; nothing here panics.
+fn add_provider_suggestions(builder: &mut SuggestionsBuilder, candidates: Vec<CustomSuggestion>) {
+    let (count, lower) = (candidates.len(), builder.remaining_lower());
+    // The cap counts what the reply keeps, not what the provider answered: a candidate that does
+    // not match the typed text, equals it (the builder adds nothing for it), repeats an earlier
+    // text and tooltip pair, or is past a bound, spends none of it, so a long list of those
+    // before the useful ones still completes.
+    let typed = builder.remaining();
+    let mut seen = std::collections::HashSet::new();
+    let mut kept = 0;
+    for candidate in candidates {
+        if kept == MAX_PROVIDER_SUGGESTIONS {
+            break;
+        }
+        if candidate.text == typed
+            || !matches_sub_str(&lower, &candidate.text.to_lowercase())
+            || !seen.insert((candidate.text.clone(), candidate.tooltip.clone()))
+        {
+            continue;
+        }
+        // Suggestions use STRING_UTF8 (UTF-16 length); tooltips are literal NBT strings, whose
+        // modified UTF-8 byte length is an unsigned u16.
+        let tooltip = candidate.tooltip.as_deref().map_or(0, modified_utf8_len);
+        if candidate.text.encode_utf16().count() > MAX_SUGGESTION_TEXT
+            || tooltip > MAX_SUGGESTION_TOOLTIP
+        {
+            eprintln!(
+                "mod command argument provider suggestion `{}` is past the protocol's text \
+                 limit; dropped",
+                candidate.text
+            );
+            continue;
+        }
+        match candidate.tooltip {
+            Some(tooltip) => builder.suggest_tooltip(candidate.text, tooltip),
+            None => builder.suggest(candidate.text),
+        }
+        kept += 1;
+    }
+    if count > MAX_PROVIDER_SUGGESTIONS {
+        eprintln!(
+            "mod command argument provider answered {count} suggestions; at most \
+             {MAX_PROVIDER_SUGGESTIONS} are kept"
+        );
     }
 }
 /// SharedSuggestionProvider.filterResources (no prefix).
@@ -676,7 +804,7 @@ pub fn read_int_bounds(reader: &mut Reader) -> CmdResult<IntRange> {
 /// MinMaxBounds.Doubles.fromReader.
 pub fn read_double_bounds(reader: &mut Reader) -> CmdResult<DoubleRange> {
     let start = reader.cursor;
-    let b = read_bounds(reader, java_parse_double, "parsing.double.invalid")?;
+    let b = read_bounds(reader, parse_java_double, "parsing.double.invalid")?;
     if let (Some(l), Some(h)) = b
         && l > h
     {
@@ -687,75 +815,7 @@ pub fn read_double_bounds(reader: &mut Reader) -> CmdResult<DoubleRange> {
 }
 /// MinMaxBounds.FloatDegrees.fromReader (no swap check).
 pub fn read_float_bounds(reader: &mut Reader) -> CmdResult<(Option<f32>, Option<f32>)> {
-    read_bounds(
-        reader,
-        |s| java_parse_double(s).map(|v| v as f32),
-        "parsing.float.invalid",
-    )
-}
-/// Integer.parseInt over number characters.
-pub fn java_parse_int(s: &str) -> Option<i32> {
-    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    s.parse().ok()
-}
-/// Double.parseDouble over the characters StringReader reads as a number.
-pub fn java_parse_double(s: &str) -> Option<f64> {
-    let t = s.trim_matches(|c: char| c <= ' ');
-    let body = t.strip_prefix(['-', '+']).unwrap_or(t);
-    if body.is_empty() || body == "." {
-        return None;
-    }
-    let body = body.strip_suffix(['d', 'D', 'f', 'F']).unwrap_or(body);
-    if body == "NaN" || body == "Infinity" {
-        return t.parse::<f64>().ok().or(Some(if t.starts_with('-') {
-            f64::NEG_INFINITY
-        } else if body == "NaN" {
-            f64::NAN
-        } else {
-            f64::INFINITY
-        }));
-    }
-    let mut chars = body.chars().peekable();
-    let mut digits = 0;
-    while chars.peek().is_some_and(char::is_ascii_digit) {
-        chars.next();
-        digits += 1;
-    }
-    if chars.peek() == Some(&'.') {
-        chars.next();
-        while chars.peek().is_some_and(char::is_ascii_digit) {
-            chars.next();
-            digits += 1;
-        }
-    }
-    if digits == 0 {
-        return None;
-    }
-    if matches!(chars.peek(), Some('e' | 'E')) {
-        chars.next();
-        if matches!(chars.peek(), Some('+' | '-')) {
-            chars.next();
-        }
-        let mut exp = 0;
-        while chars.peek().is_some_and(char::is_ascii_digit) {
-            chars.next();
-            exp += 1;
-        }
-        if exp == 0 {
-            return None;
-        }
-    }
-    if chars.next().is_some() {
-        return None;
-    }
-    let clean: String = t
-        .trim_end_matches(['d', 'D', 'f', 'F'])
-        .trim_start_matches('+')
-        .to_owned();
-    clean.parse::<f64>().ok()
+    read_bounds(reader, parse_java_float, "parsing.float.invalid")
 }
 fn parse_coord_int(reader: &mut Reader) -> CmdResult<Coord> {
     if reader.can_read() && reader.peek() == '^' {
@@ -1078,6 +1138,11 @@ fn particle_options(id: &str, t: &sunrise_core::nbt::Tag) -> Result<(), String> 
         let _ = snbt;
         return Err(super::codec::either(first, "Not a string".into()));
     }
+    if id == "minecraft:item"
+        && let Some(item) = get(map, "item")
+    {
+        sunrise_world::item_defaults::validate_stack_tag(item)?;
+    }
     Ok(())
 }
 /// TimeArgument units.
@@ -1169,6 +1234,9 @@ impl ArgType {
             }
             ArgType::Word => Arg::Str(reader.read_unquoted_string().to_owned()),
             ArgType::Str => Arg::Str(reader.read_string()?),
+            // ResourceLocationArgument: the longest run of identifier characters, canonicalised
+            // to `namespace:path`; an upper-case or two-colon token is `argument.id.invalid`.
+            ArgType::Identifier => Arg::Str(read_id(reader)?),
             ArgType::Greedy => {
                 let s = reader.remaining().to_owned();
                 reader.cursor = reader.string.len();
@@ -1422,7 +1490,7 @@ impl ArgType {
                     .map(char::len_utf8)
                     .sum();
                 match (run > 0)
-                    .then(|| super::selector::java_uuid(&rest[..run]))
+                    .then(|| sunrise_core::text::parse_java_uuid(&rest[..run]))
                     .flatten()
                 {
                     Some(_) => {
@@ -1661,10 +1729,19 @@ impl ArgType {
                 } else {
                     sunrise_core::nbt::Tag::Compound(Default::default())
                 };
-                if let Err(m) = particle_options(&id, &options) {
-                    return Err(CommandError::tr("particle.invalidOptions", &[&m]));
+                if let sunrise_core::nbt::Tag::Compound(fields) = &options
+                    && let Some(result) =
+                        reg.particle_options.and_then(|decode| decode(&id, fields))
+                {
+                    Arg::Particle(Box::new(
+                        result.map_err(|m| CommandError::tr("particle.invalidOptions", &[&m]))?,
+                    ))
+                } else {
+                    if let Err(m) = particle_options(&id, &options) {
+                        return Err(CommandError::tr("particle.invalidOptions", &[&m]));
+                    }
+                    Arg::Str(reader.string[start..reader.cursor].to_owned())
                 }
-                Arg::Str(reader.string[start..reader.cursor].to_owned())
             }
             ArgType::Enum(words) => {
                 let word = reader.read_unquoted_string();
@@ -1937,15 +2014,38 @@ impl ArgType {
             ArgType::Anchor => builder.suggest_matching(["eyes", "feet"]),
             ArgType::Component | ArgType::Style | ArgType::NbtTag => super::snbt::suggest(builder),
             ArgType::Swizzle | ArgType::Message | ArgType::Nbt => {}
-            ArgType::Custom(custom) => {
-                let prefix = builder.remaining().to_owned();
-                for suggestion in (custom.suggest)(&prefix) {
-                    match suggestion.tooltip {
-                        Some(tooltip) => builder.suggest_tooltip(suggestion.text, tooltip),
-                        None => builder.suggest(suggestion.text),
+            ArgType::Custom(custom) => match &custom.provider {
+                Some(provider) => {
+                    let prefix = builder.remaining().to_owned();
+                    let arguments = parsed_arguments(context, builder.input, builder.start);
+                    let candidates = provider(reg, &prefix, &arguments);
+                    add_provider_suggestions(builder, candidates);
+                }
+                None => {
+                    let prefix = builder.remaining().to_owned();
+                    for suggestion in (custom.suggest)(reg, &prefix) {
+                        // A suggestion may replace only the tail of the text argument, from its
+                        // offset: a completion for the token a greedy text is typing. One that
+                        // starts past the typed text or inside a character is left out rather than
+                        // panicking where the chat applies it (the game refuses it by name first).
+                        let start = match suggestion.replace_start {
+                            Some(offset)
+                                if offset <= prefix.len() && prefix.is_char_boundary(offset) =>
+                            {
+                                builder.start + offset
+                            }
+                            Some(_) => continue,
+                            None => builder.start,
+                        };
+                        match suggestion.tooltip {
+                            Some(tooltip) => {
+                                builder.suggest_at_tooltip(start, suggestion.text, tooltip)
+                            }
+                            None => builder.suggest_at(start, suggestion.text),
+                        }
                     }
                 }
-            }
+            },
             _ => {}
         }
     }

@@ -1,6 +1,5 @@
 //! Server-side profiler controls. Export and durable filesystem work run only on stop.
 use super::{Game, R, err};
-use sunrise_client::{save, text::Text};
 #[cfg(test)]
 use mod_platform::__private::profiler;
 use std::{
@@ -8,6 +7,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+use sunrise_client::{save, text::Text};
 
 #[derive(Clone, Copy)]
 enum Action {
@@ -37,7 +37,7 @@ impl Game<'_> {
 fn run(action: Action, game_dir: &Path) -> R<Vec<Text>> {
     #[cfg(test)]
     crate::game::api_values::install_test_platform();
-    let profiler = sunrise_engine_slots::platform()
+    let profiler = mod_api::__private::platform::platform()
         .map_err(|e| err("sunrise.modprofile.writeFailed", &[&e.to_string()]))?;
     match action {
         Action::Start => {

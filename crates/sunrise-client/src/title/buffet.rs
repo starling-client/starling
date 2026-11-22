@@ -160,7 +160,7 @@ fn row_at(state: &State, cursor: (f32, f32), size: (f32, f32)) -> Option<usize> 
     rows.get(row).copied()
 }
 /// A press on the screen: the search box, the list, or the scrollbar.
-pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
+pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) -> bool {
     let rows = state.rows();
     let (top, bottom, left, content) = list_area(size, rows.len());
     let field = search_box(size.0.ceil());
@@ -169,11 +169,13 @@ pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
         .scroll
         .press(cursor, left + ROW_WIDTH + 6.0, top, bottom, content)
     {
-        return;
+        return true;
     }
     if let Some(row) = row_at(state, cursor, size) {
         state.select(row);
+        return true;
     }
+    state.query_focused
 }
 /// The focus landed on the row at `cursor`: it is selected, and the search box no longer has the
 /// keys. Whether a row was there.
@@ -198,8 +200,10 @@ pub(super) fn drag(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
     let (top, bottom, _, content) = list_area(size, rows.len());
     state.scroll.drag(cursor.1, top, bottom, content);
 }
-pub(super) fn release(state: &mut State) {
+pub(super) fn release(state: &mut State) -> bool {
+    let handled = state.scroll.held();
     state.scroll.release();
+    handled
 }
 /// Done and Cancel, 150 wide and 8 apart in the footer
 /// (`LinearLayout.horizontal().spacing(8)`); Done needs a biome.

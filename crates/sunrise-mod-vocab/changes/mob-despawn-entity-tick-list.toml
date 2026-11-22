@@ -1,0 +1,3 @@
+ids = ["hook:mob_despawn"]
+why = "mob_despawn version 3 fires only for mobs on the entity tick list, as vanilla's despawn check runs: the mob's chunk must be entity-ticking. Listed mobs beyond the simulation distance still check despawning without ticking; mobs in loaded chunks that are not entity-ticking neither check nor fire the hook."
+migrate = "A listener that relied on hearing every loaded mob hears only the listed ones; rebuild against this SDK."

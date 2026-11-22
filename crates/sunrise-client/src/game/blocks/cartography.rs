@@ -8,16 +8,16 @@ use super::{
     Game,
     maps::{MapData, map_id, shown_on_frame},
 };
-use sunrise_client::{hud::HudBatch, items::ItemStack, menu::Maps};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
 };
+use sunrise_client::{hud::HudBatch, items::ItemStack, menu::Maps};
 
 /// The level's maps as a menu sees them (`ContainerLevelAccess`): the
 /// states of the maps the click can reach, and the copies it makes.
 #[derive(Clone)]
-pub(super) struct LevelMaps {
+pub(in crate::game) struct LevelMaps {
     states: RefCell<HashMap<i32, (bool, u8)>>,
     next_id: Cell<i32>,
     /// (new id, source id, scaled) for each copy made.
@@ -74,7 +74,7 @@ impl Game<'_> {
         }
     }
 
-    /// The scaled and locked copies a menu made (`level.setMapData`).
+    /// The scaled and locked copies a menu made (`level.setMapData`), staged if a transaction is open.
     pub(super) fn register_made_maps(&mut self, maps: LevelMaps) {
         for (id, source, scale) in maps.made.into_inner() {
             let Some(data) = self
@@ -105,7 +105,7 @@ impl Game<'_> {
         let id = map.as_ref().and_then(map_id);
         let state = id.and_then(|id| self.map(id).map(|m| (m.locked, m.scale)));
         let mut locked = false;
-        let error = "gui/sprites/container/cartography_table/error";
+        let error = "container/cartography_table/error";
         if let Some((is_locked, scale)) = state {
             if is_locked {
                 locked = true;
@@ -121,7 +121,7 @@ impl Game<'_> {
         let sprite = |batch: &mut HudBatch, game: &Self, name: &str, x: f32, y: f32| {
             batch.sprite(
                 &game.gui.atlas,
-                &format!("gui/sprites/container/cartography_table/{name}"),
+                &format!("container/cartography_table/{name}"),
                 ox + x,
                 oy + y,
             );
@@ -164,7 +164,7 @@ impl Game<'_> {
             return;
         };
         for d in map.decorations.iter().filter(|d| shown_on_frame(d.sprite)) {
-            let Some(s) = self.gui.atlas.sprites.get(d.sprite).copied() else {
+            let Some(s) = self.gui.atlas.gui_rect(d.sprite).copied() else {
                 continue;
             };
             batch.quad(
@@ -198,7 +198,7 @@ impl Game<'_> {
         }
         // A native mod's own icons (`native_map_decorations`).
         for d in self.mod_map_decorations(id, true) {
-            let Some(s) = self.gui.atlas.sprites.get(d.sprite.as_str()).copied() else {
+            let Some(s) = self.gui.atlas.gui_rect(d.sprite.as_str()).copied() else {
                 continue;
             };
             batch.quad(
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn crafting_map_takes_use_real_saved_maps() {
         use sunrise_client::menu::{Env, Input, Kind, Menu};
         super::super::native_entity_refs::tests::with_game(|game| {

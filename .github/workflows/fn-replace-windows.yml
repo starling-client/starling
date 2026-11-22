@@ -1,0 +1,89 @@
+name: fn-replace windows
+# Function replacement on Windows (fn-replace, branch-only): the server SDK built with the launcher's
+# windows-gnu toolchain, the launcher's native build of the check mods against it (patch crates, the
+# carried horizon-mixins patch, the registry route), and the patched engine linked. No vanilla data in
+# CI, so the server does not start; the build and link are what this checks.
+on:
+  push:
+    branches: [fn-replace-windows]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: The launcher's pinned Rust
+        id: rust
+        run: |
+          echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}-x86_64-pc-windows-gnu
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fn-replace-windows
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+      - name: Server SDK
+        run: python tools/prebuilt_game.py build prebuilt --server
+      - name: Exported names, toward Windows' 65,535
+        run: python tools/prebuilt_game.py exports prebuilt | tee -a "$GITHUB_STEP_SUMMARY"
+      # The launcher reads its SDK from a signed release folder (as fn-replace-check.yml does): this one's SDK, one leg,
+      # signed with a throwaway key whose public half only a debug-assertions launcher trusts.
+      - name: Assemble the SDK release folder, signed with a throwaway key
+        run: |
+          commit=$(git rev-parse HEAD)
+          python tools/prebuilt_game.py pack prebuilt legs/sdk-leg-windows-server --with-tool
+          python tools/prebuilt_game.py gather legs dist
+          python tools/sdk_api_source.py build api-source
+          python tools/sdk_api_source.py archive api-source dist/api-source.tar.xz
+          python tools/prebuilt_game.py index dist
+          EPHEMERAL=yes bash tools/ci/sign_release.sh "sdk-$commit" dist/*
+          echo "SUNRISE_SDK_TRUSTED_KEY=$(cat dist/ephemeral.pub)" >> "$GITHUB_ENV"
+          rm dist/ephemeral.pub
+          mkdir -p sdk-base
+          mv dist "sdk-base/sdk-$commit"
+      # Release, as players get it: the debug launcher overflows Windows' 1 MiB main-thread stack, so the
+      # release build keeps its optimizations and turns debug assertions on, as fn-replace-check.yml does.
+      # The launcher lives in sunrise-org/sunrise-launcher: the commit pinned in tools/ci/launcher-pin.
+      - name: Launcher (built with MSVC on the pinned Rust)
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: true
+        run: |
+          tools/ci/launcher_checkout.sh "$RUNNER_TEMP/sunrise-launcher"
+          rustup toolchain install "$(cat tools/ci/rust-version)-x86_64-pc-windows-msvc" --profile minimal
+          (cd "$RUNNER_TEMP/sunrise-launcher" && cargo +"$(cat "$GITHUB_WORKSPACE/tools/ci/rust-version")-x86_64-pc-windows-msvc" build --release --locked)
+          echo "LAUNCHER=$RUNNER_TEMP/sunrise-launcher/target/release/sunrise-launcher.exe" >> "$GITHUB_ENV"
+      - name: Function replacement check (build and link)
+        run: |
+          FNR_MODS="alpha beta support fdshape registry" tools/ci/fn_replace_check.sh \
+            "$LAUNCHER" sdk-base fnr-scratch 2>&1 | tee fnr-check.log
+          grep -F 'Function replacement:' fnr-check.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Refusals by name
+        if: always()
+        run: |
+          for set in "alpha overwrite2" refused refused_state; do
+            FNR_KEEP=1 FNR_MODS="$set" tools/ci/fn_replace_check.sh "$LAUNCHER" sdk-base fnr-scratch > "refusal-${set// /_}.log" 2>&1 && { echo "$set built"; exit 1; } || true
+            grep -E 'E_[A-Z_]+' "refusal-${set// /_}.log" | head -5 | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fn-replace-windows-logs
+          path: |
+            fnr-check.log
+            refusal-*.log
+            fnr-scratch/launcher/native/build.log
+          if-no-files-found: warn
+          retention-days: 7

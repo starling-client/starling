@@ -1,8 +1,9 @@
 //! `/execute` (ExecuteCommand): walk the parsed redirect chain, forking and
 //! filtering command sources, then run the final command once per source,
 //! reporting each result to the `store` callbacks of its source.
-use super::{Arg, Context, Dim, Game, R, Target, data::DataRef, err};
+use super::{Arg, Context, Dim, Game, R, Target, data::DataRef, err, wrap_degrees};
 use sunrise_client::{command::CommandError, nbt_path::NbtPath, text::Text};
+use sunrise_core::geometry::trig;
 use sunrise_core::nbt::Tag;
 
 /// `CommandSourceStack` fields Sunrise models: the executing entity (None for
@@ -102,8 +103,11 @@ impl Game<'_> {
             cart: None,
         }
     }
-    /// The server as a source (function ticks and schedules): the world spawn.
+    /// The server as a source (function ticks and schedules,
+    /// `MinecraftServer.createCommandSourceStack`): the world spawn, in its level
+    /// (`findRespawnDimension`), whichever level is in place.
     pub(in crate::game) fn server_source(&self) -> Source {
+        let level = self.world_spawn_level();
         Source {
             entity: None,
             pos: self.server_position(),
@@ -111,8 +115,8 @@ impl Game<'_> {
             eyes: false,
             silent: true,
             store: None,
-            dimension: self.dim,
-            origin_dimension: self.dim,
+            dimension: level,
+            origin_dimension: level,
             origin_player: false,
             level: None,
             block: None,
@@ -156,6 +160,18 @@ impl Game<'_> {
                 .iter()
                 .find(|o| o.id == id)
                 .map_or([0.0; 2], |o| [o.yaw, o.pitch]),
+            Target::General(id) => self
+                .resident_entities
+                .general
+                .row(id)
+                .map(|row| row.rotation)
+                .or_else(|| {
+                    self.remote
+                        .as_ref()
+                        .and_then(|r| r.general.rows.get(&(id as i32)))
+                        .map(|row| row.rotation)
+                })
+                .unwrap_or([0.0; 2]),
             _ => [0.0; 2],
         }
     }
@@ -870,30 +886,37 @@ impl Game<'_> {
                         .iter()
                         .find(|m| m.id == id)
                         .and_then(|m| {
-                            if attacker {
+                            use sunrise_client::mobs::{Species, Who, ai::brain_target};
+                            if !attacker && m.species() == Species::Warden {
+                                return self
+                                    .warden_attack_target(m, None)
+                                    .map(|(_, target)| target);
+                            }
+                            let who = if attacker {
                                 m.ai.last_hurt_by
                             } else {
-                                m.ai.target
-                            }
-                        })
-                        .map(|w| match w {
-                            sunrise_client::mobs::Who::Player => {
-                                // LivingEntity.getLastHurtByMob is the player
-                                // who hit it, not whichever client is reading it.
-                                match self
-                                    .last_hurt_by_player
-                                    .get(&id)
-                                    .and_then(|credit| self.resolve_player_credit(*credit))
-                                {
-                                    Some(Some(conn))
-                                        if attacker && self.lan_acting != Some(conn) =>
-                                    {
-                                        Target::Guest(conn)
-                                    }
-                                    _ => Target::Player,
+                                // `Mob.getTarget`, as brain-backed mobs override it.
+                                brain_target(m).unwrap_or(m.ai.target)
+                            }?;
+                            match who {
+                                Who::Player => {
+                                    let conn = if attacker {
+                                        // `getLastHurtByMob`: the player who hit it,
+                                        // not whichever client is reading it.
+                                        self.last_hurt_by_player.get(&id).and_then(|credit| {
+                                            self.resolve_player_credit(*credit).flatten()
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                    Some(
+                                        conn.filter(|&conn| self.lan_acting != Some(conn))
+                                            .map_or(Target::Player, Target::Guest),
+                                    )
                                 }
+                                Who::Mob(i) if attacker => Some(Target::Mob(i)),
+                                Who::Mob(i) => self.level_entity(i as i32),
                             }
-                            sunrise_client::mobs::Who::Mob(i) => Target::Mob(i),
                         })
                         .into_iter()
                         .collect(),
@@ -962,12 +985,15 @@ impl Game<'_> {
     /// The highest block of a heightmap type at a column (`Level.getHeight`).
     fn heightmap_at(&self, kind: &str, x: i32, z: i32) -> i32 {
         let top = self.world.top_y();
+        let facts = self.res.facts();
         for y in (self.world.bottom_y()..top).rev() {
             let state = self.world.block(x, y, z);
-            if state == self.world.air {
+            // `Heightmap.NOT_AIR` is `!state.isAir()`, so cave air and void
+            // air are skipped as well as air.
+            if facts.is_air(state) {
                 continue;
             }
-            let facts = self.res.facts().get(state);
+            let facts = facts.get(state);
             let blocks = facts.legacy_solid || facts.fluid != sunrise_client::blocks::Fluid::None;
             let leaves = self
                 .pack
@@ -1047,10 +1073,13 @@ impl Game<'_> {
         let from = self.anchor_position(&s);
         let (dx, dy, dz) = (to[0] - from[0], to[1] - from[1], to[2] - from[2]);
         let horizontal = (dx * dx + dz * dz).sqrt();
-        let pitch = (-(dy.atan2(horizontal).to_degrees())) as f32;
-        let yaw = (dz.atan2(dx).to_degrees() - 90.0) as f32;
+        // `CommandSourceStack.facing`: `Mth.atan2` times the folded
+        // `Mth.RAD_TO_DEG`, cast to float, then `Mth.wrapDegrees`. The yaw
+        // stays in -180..180, so a south-east target is -135 and not 225.
+        let pitch = wrap_degrees(-trig::atan2_degrees(dy, horizontal));
+        let yaw = wrap_degrees(trig::atan2_degrees(dz, dx) - 90.0);
         Source {
-            rot: [yaw.rem_euclid(360.0), pitch],
+            rot: [yaw, pitch],
             ..s
         }
     }
@@ -1263,10 +1292,23 @@ impl Game<'_> {
                             return Ok((false, 0));
                         };
                         let st =
-                            sunrise_client::save::block_entity_encode::encode((0, 0, 0), se, &name);
-                        let dt =
-                            sunrise_client::save::block_entity_encode::encode((0, 0, 0), de, &name);
-                        if st != dt {
+                            self.encode_live_block_entity((x, y, z), se, &name, self.res.items());
+                        let dt = self.encode_live_block_entity(
+                            (dx, dy, dz),
+                            de,
+                            &name,
+                            self.res.items(),
+                        );
+                        // Each capture receives its real position; saveCustomOnly compares payloads.
+                        let without_pos = |mut tag: sunrise_core::nbt::Tag| {
+                            if let sunrise_core::nbt::Tag::Compound(fields) = &mut tag {
+                                for key in ["x", "y", "z"] {
+                                    fields.remove(&key.into());
+                                }
+                            }
+                            tag
+                        };
+                        if without_pos(st) != without_pos(dt) {
                             return Ok((false, 0));
                         }
                     }
@@ -1320,6 +1362,10 @@ fn is_player_in_place(
 }
 
 #[cfg(test)]
+#[path = "execute_facing_tests.rs"]
+mod execute_facing_tests;
+
+#[cfg(test)]
 mod tests {
     use super::is_player_in_place;
     use sunrise_client::lan::playerdata::ints_uuid;
@@ -1369,7 +1415,7 @@ mod passenger_relation_tests {
         assert_eq!(game.score.board.score("#s", "h150u").unwrap().value, 1);
     }
     #[test]
-    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn h150_actual_registered_passengers_select_direct_live_mob_and_boat_children() {
         with_game(|game| {
             game.build_registries();
@@ -1570,9 +1616,9 @@ mod passenger_relation_tests {
 mod terminal_fork_tests {
     use super::Game;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
     use sunrise_core::position::ChunkPos;
-    use std::sync::Arc;
 
     fn capture(game: &mut Game<'_>, command: &str) -> (Vec<String>, Vec<(bool, i32)>) {
         game.chat_capture = Some(Vec::new());
@@ -1589,7 +1635,7 @@ mod terminal_fork_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn terminal_conditions_keep_the_fork_state_and_callbacks() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();

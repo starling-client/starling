@@ -5,7 +5,6 @@ use sunrise_mod_package::manifest::{Manifest, Property};
 fn package_snapshot(
     manifest: &Manifest,
     kind: mod_api::PackageKind,
-    runtime: Option<mod_api::PackageRuntime>,
     has_icon: bool,
 ) -> mod_api::PackageInfo {
     let mut details = mod_api::PackageDetails::default();
@@ -16,7 +15,6 @@ fn package_snapshot(
     details.homepage.clone_from(&manifest.homepage);
     details.issues.clone_from(&manifest.issues);
     details.icon_path = has_icon.then(|| "icon.png".to_owned());
-    details.runtime = runtime;
     details.properties = manifest
         .properties
         .iter()
@@ -87,7 +85,7 @@ fn package_snapshot(
         .collect();
     mod_api::PackageInfo::new(
         manifest.id.clone(),
-        manifest.version.clone(),
+        manifest.version.to_string(),
         kind,
         manifest.side,
         std::iter::once(&manifest.id)
@@ -97,23 +95,15 @@ fn package_snapshot(
         dependencies,
     )
     .with_details(details)
+    .with_served_by(manifest.served_by.clone())
 }
 impl TryIntoApi for sunrise_mod_package::manifest::Package {
     type Api = mod_api::PackageInfo;
     type Error = std::convert::Infallible;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        let (kind, runtime) = if self.manifest.wasm.is_some() {
-            (
-                mod_api::PackageKind::Code,
-                Some(mod_api::PackageRuntime::Wasm),
-            )
-        } else {
-            (mod_api::PackageKind::Content, None)
-        };
         Ok(package_snapshot(
             &self.manifest,
-            kind,
-            runtime,
+            mod_api::PackageKind::Content,
             self.icon.is_some(),
         ))
     }
@@ -125,22 +115,24 @@ impl TryIntoApi for sunrise_mod_package::packages::AdjacentManifest {
         Ok(package_snapshot(
             &self.manifest,
             mod_api::PackageKind::Code,
-            Some(mod_api::PackageRuntime::Native),
             self.has_icon,
         ))
     }
 }
 
-pub(in crate::game) fn install_packages(
-    native: &[sunrise_mod_package::packages::AdjacentManifest],
-    content: &[sunrise_mod_package::selection::SelectedPackage],
-) -> Result<(), sunrise_engine_slots::PlatformRefusal> {
-    let native: Vec<_> = native.iter().map(|p| p.try_into_api().unwrap()).collect();
+pub(in crate::game) fn install_packages<'a>(
+    native: impl IntoIterator<Item = &'a sunrise_mod_package::packages::AdjacentManifest>,
+    content: impl IntoIterator<Item = &'a sunrise_mod_package::selection::SelectedPackage>,
+) -> Result<(), mod_api::__private::platform::PlatformRefusal> {
+    let native: Vec<_> = native
+        .into_iter()
+        .map(|p| p.try_into_api().unwrap())
+        .collect();
     let content: Vec<_> = content
-        .iter()
+        .into_iter()
         .map(|p| p.package.try_into_api().unwrap())
         .collect();
-    (sunrise_engine_slots::platform()?.install_packages)(&native, &content);
+    (mod_api::__private::platform::platform()?.install_packages)(&native, &content);
     Ok(())
 }
 
@@ -160,7 +152,7 @@ mod tests {
         let source = manifest(
             "load_before=['later']\n[dependencies]\nbase={version='^1',optional=true,order='none',side='server',reason='Shared API',url='https://example.test/api'}\n[incompatible]\nbad={version='<2',side='client',reason='Conflict'}\n[discouraged]\nslow='*'",
         );
-        let snapshot = package_snapshot(&source, mod_api::PackageKind::Content, None, false);
+        let snapshot = package_snapshot(&source, mod_api::PackageKind::Content, false);
         let rows = snapshot.dependencies();
         assert_eq!(rows.len(), 4);
         assert_eq!(
@@ -217,7 +209,6 @@ mod tests {
             let snapshot = package_snapshot(
                 &manifest(&format!("side='{side}'\n")),
                 mod_api::PackageKind::Content,
-                None,
                 false,
             );
             assert_eq!(snapshot.side(), expected);
@@ -233,17 +224,12 @@ mod tests {
              [dependencies]\nother = { version = '^1', optional = true }\n\
              [properties]\ntier = 3\n",
         );
-        let info = package_snapshot(
-            &manifest,
-            mod_api::PackageKind::Code,
-            Some(mod_api::PackageRuntime::Wasm),
-            true,
-        );
+        let info = package_snapshot(&manifest, mod_api::PackageKind::Code, true);
         assert_eq!(info.name(), "Test");
         assert_eq!(info.homepage(), Some("https://example.org"));
         assert_eq!(info.issues(), None);
         assert_eq!(info.icon_path(), Some("icon.png"));
-        assert_eq!(info.runtime(), Some(mod_api::PackageRuntime::Wasm));
+        assert_eq!(info.kind(), mod_api::PackageKind::Code);
         let [dependency] = info.dependencies() else {
             panic!("one dependency")
         };
@@ -259,15 +245,15 @@ mod tests {
     }
 
     #[test]
-    fn a_native_package_and_a_content_package_convert_with_their_runtime() {
+    fn a_native_package_and_a_content_package_convert_with_their_kind() {
         let native = sunrise_mod_package::packages::AdjacentManifest {
             path: std::path::PathBuf::from("sunrise-native-mods/test"),
             manifest: manifest("[properties]\ntier = 3\n"),
             has_icon: true,
+            runtime: None,
         };
         let info = native.try_into_api().unwrap();
         assert_eq!(info.kind(), mod_api::PackageKind::Code);
-        assert_eq!(info.runtime(), Some(mod_api::PackageRuntime::Native));
         assert_eq!(info.icon_path(), Some("icon.png"));
         assert_eq!(
             info.property("tier"),
@@ -276,11 +262,29 @@ mod tests {
         let content = sunrise_mod_package::manifest::Package {
             manifest: manifest(""),
             icon: None,
-            layouts: Default::default(),
         };
         let info = content.try_into_api().unwrap();
         assert_eq!(info.kind(), mod_api::PackageKind::Content);
-        assert_eq!(info.runtime(), None);
         assert_eq!(info.icon_path(), None);
+        assert_eq!(info.served_by(), None);
+    }
+
+    #[test]
+    fn package_metadata_propagates_served_by_without_merging_namespaces() {
+        let content = manifest("served_by='horizon_java'\nnamespaces=['runes_extra']\n");
+        let info = package_snapshot(&content, mod_api::PackageKind::Content, false);
+        assert_eq!(info.served_by(), Some("horizon_java"));
+        assert_eq!(
+            info.namespaces().collect::<Vec<_>>(),
+            ["test", "runes_extra"]
+        );
+
+        let host = manifest(&format!(
+            "[native]\ngame='26.3'\nsunrise='{}'\nserves_content=true\n",
+            "a".repeat(40)
+        ));
+        let host_info = package_snapshot(&host, mod_api::PackageKind::Code, false);
+        assert_eq!(host_info.served_by(), None);
+        assert_eq!(host_info.namespaces().collect::<Vec<_>>(), ["test"]);
     }
 }

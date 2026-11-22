@@ -51,8 +51,8 @@ pub fn interact(mob: &mut Mob, stack: &mut ItemStack, client: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     fn sheep() -> Mob {
         let mut kind = crate::mobs::sensor_scan_tests::kind();

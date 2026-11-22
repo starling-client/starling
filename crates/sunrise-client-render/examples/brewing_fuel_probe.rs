@@ -1,4 +1,8 @@
 //! Headless production brewing-fuel component fixture.
+use std::{
+    io::{BufRead, Write},
+    path::Path,
+};
 use sunrise_client_render::{
     brewing::{Brewing, BrewingStand, brewing_fuel},
     providers::Providers,
@@ -8,10 +12,6 @@ use sunrise_items::{
     items::{ItemStack, Items},
 };
 use sunrise_world::loot::PackOverlay;
-use std::{
-    io::{BufRead, Write},
-    path::Path,
-};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();

@@ -3,7 +3,8 @@
 sunrise-prepare artifacts::tests::a_folder_missing_a_library_loses_to_a_complete_one lib daily child-process
 sunrise-prepare artifacts::tests::a_prism_install_prepares_without_a_server_jar lib daily child-process
 sunrise-prepare artifacts::tests::a_prism_install_without_netty_natives_prepares lib daily child-process
-sunrise-prepare artifacts::tests::a_rewritten_version_file_falls_back_to_mojangs lib daily child-process
+sunrise-prepare artifacts::tests::a_reissued_version_file_with_the_pinned_content_is_used lib daily child-process
+sunrise-prepare artifacts::tests::a_rewritten_version_file_is_used_by_its_content_else_mojangs lib daily child-process
 sunrise-prepare artifacts::tests::an_atlauncher_install_prepares lib daily child-process
 sunrise-prepare artifacts::tests::imported_files_are_reused_without_the_official_install lib daily child-process
 sunrise-prepare artifacts::tests::named_inputs_prepare_without_a_minecraft_folder lib daily child-process
@@ -12,4 +13,5 @@ sunrise-prepare artifacts::tests::reuse_rejects_corrupt_imports lib daily child-
 sunrise-prepare artifacts::tests::reuse_skips_a_bad_sibling_and_repairs_bad_current_imports lib daily child-process
 sunrise-prepare artifacts::tests::the_error_names_the_folders_looked_in lib daily child-process
 sunrise-prepare artifacts::tests::the_prism_version_file_is_found_flat_or_in_its_folder lib daily child-process
+sunrise-prepare exporters_write_to_their_log_file_without_a_console test:hidden_exporters daily windows # #![cfg(windows)]; starts processes
 sunrise-prepare selects_a_compatible_compiler_and_runtime test:java_selection daily child-process

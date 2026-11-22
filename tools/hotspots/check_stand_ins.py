@@ -9,34 +9,24 @@ This script reads source text only (no build) and fails on:
    that does not define the one item it is named after (its own impls and `use` lines may sit beside it); a name with
    a file in both folders; and a `shared.rs` that defines stand-ins in `mod stubs` (only `use` lines stay there) or
    has a `mod api` again.
-2. A type named in a hook's signature (`crates/sunrise-mod-vocab/src/hooks/*.rs`) that no dispatch-test fixture
-   defines or re-exports.
-3. The wire loopback test (its root and `tests/wire_loopback/*.rs`): an `impl Trait for X` of a vocabulary trait
-   that lacks a required (bodiless) method, associated type or const of that trait; and an `impl` of a generated
-   union trait (`CapabilityProviders`, `Registrar`) for X without an `impl` of every member trait for X. The union's
-   members are the `pub trait *CapabilityProviders` / `*Registrar` in `crates/sunrise-mod-vocab/src/parts/*.rs`,
-   as `sunrise-mod-api-gen/src/parts.rs` bounds them. `#[host_area]` traits are skipped: their methods get generated
-   defaults (`impl_host_areas!`).
+2. A type named in a generated dispatch signature (`crates/sunrise-mod-vocab/src/hooks/*.rs`) that no
+   dispatch-test fixture defines or re-exports. Raw render hooks do not generate dispatch, and `#[engine]`
+   parameters are not part of the listener signature.
 
 Known false negatives (these still surface only in the rollup's build):
 - names the generator introduces rather than the hook signature: `Answered<T>` from `answered_by`, an `out =`
-  output type such as `StandaloneModelForm`, `BlockEntityTickReply` from tick dispatch;
-- a derive or a method the generated dispatch needs on an existing stub (`#[derive(Clone)]`,
-  `__begin_tick_listener`), and a stand-in whose shape (fields, variants, generics) no longer fits;
-- a vocabulary trait name defined more than once (each hook file declares its own `Hooks`): not checked;
-- an `impl` written by a macro in the loopback;
-- a required trait item with a `#[cfg(...)]` attribute: the check cannot evaluate the condition, so it never
-  requires such an item.
+  output type such as `StandaloneModelRegistration`;
+- a derive or a method the generated dispatch needs on an existing stub, and a stand-in whose shape
+  (fields, variants, generics) no longer fits;
 - names are matched by their last segment: a stand-in, trait or impl target is one name across the files read, so
   two different types of the same name in different modules count as one;
 - the source scanner does not nest block comments: `/* a /* b */ c */` ends at the first `*/`, and its tail is
   read as code.
 
-Every input path above must exist and yield at least one hook and one union member, or the check fails naming the
-path: a rename never turns a check off silently. To run it on a tree from before the loopback moved into its own
-crate, point --loopback at the old root:
+Every input path above must exist and the hook catalog must yield at least one hook: a rename never
+turns the check off silently.
 
-    python3 tools/hotspots/check_stand_ins.py [--root DIR] [--loopback crates/sunrise-mod-wasm/tests/wire_loopback.rs]
+    python3 tools/hotspots/check_stand_ins.py [--root DIR]
 """
 
 import argparse
@@ -48,13 +38,10 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures"
 FOLDERS = ("stubs", "api")
 HOOKS = "crates/sunrise-mod-vocab/src/hooks"
-VOCAB = "crates/sunrise-mod-vocab/src"
-PARTS = "crates/sunrise-mod-vocab/src/parts"
-UNIONS = ("CapabilityProviders", "Registrar")
-LOOPBACK = "crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback.rs"
 # Names a hook signature may use without a fixture: the prelude, std and generic placeholders the generator keeps.
 STD = {"Option", "Some", "None", "Vec", "String", "Box", "Result", "Ok", "Err", "Arc", "Rc", "Self", "HashMap",
-       "BTreeMap", "HashSet", "BTreeSet", "Cow", "Duration", "PhantomData", "Fn", "FnMut", "FnOnce", "Send", "Sync"}
+       "BTreeMap", "HashSet", "BTreeSet", "Cow", "Duration", "Path", "PhantomData", "Fn", "FnMut", "FnOnce", "Send",
+       "Sync"}
 NAMED = re.compile(r"\b(struct|enum|trait|type|union|fn|mod|const|static)\s+([A-Za-z_]\w*)")
 
 
@@ -177,10 +164,9 @@ def module_body(text, name):
     return text[match.end() - 1 + 1:block_end(text, match.end() - 1) - 1]
 
 
-def missing_inputs(root, loopback):
+def missing_inputs(root):
     """The input paths that do not exist: each would otherwise make its check find nothing."""
-    paths = [FIXTURES, *(f"{FIXTURES}/{folder}" for folder in FOLDERS), f"{FIXTURES}/shared.rs", HOOKS, PARTS,
-             loopback]
+    paths = [FIXTURES, *(f"{FIXTURES}/{folder}" for folder in FOLDERS), f"{FIXTURES}/shared.rs", HOOKS]
     return [f"{path}: missing; tools/hotspots/check_stand_ins.py reads it. If it moved, update the script's path."
             for path in paths if not (root / path).exists()]
 
@@ -218,19 +204,31 @@ def check_fixture_files(root):
 
 
 HOOK = re.compile(r"#\[hook\((?:[^()]|\([^()]*\))*\)\]\s*fn\s+(\w+)\s*(<[^>]*>)?\s*\(")
+TARGET = re.compile(r'\btarget\s*=\s*(?:r#*)?"')
+ENGINE = re.compile(r"\s*#\[\s*engine\s*\]")
 
 
 def signature(text, start):
-    """The parameters and return type of the fn whose `(` is at `start - 1`: up to its body or `;`."""
+    """The listener parameters and return type of the fn whose `(` is at `start - 1`."""
+    parts = []
+    in_parameters = True
     depth = 1
     for i in range(start, len(text)):
-        if text[i] in ";{" and depth == 0:
-            return text[start:i]
-        if text[i] in "([<{":
+        char = text[i]
+        if char in ";{" and depth == 0:
+            break
+        if in_parameters and char in ",)" and depth == 1:
+            if not ENGINE.match(text, start):
+                parts.append(text[start:i])
+            start = i + 1
+            in_parameters = char == ","
+        if char in "([<{":
             depth += 1
-        elif text[i] in ")]>}" and not (text[i] == ">" and text[i - 1] == "-"):
+        elif char in ")]>}" and not (char == ">" and text[i - 1] == "-"):
             depth -= 1
-    return text[start:]
+    else:
+        i = len(text)
+    return " ".join([*parts, text[start:i]])
 
 
 def check_hook_types(root):
@@ -239,15 +237,21 @@ def check_hook_types(root):
     for path in fixtures.rglob("*.rs"):
         known |= defined_names(strip(path.read_text()))
     hook_files = sorted((root / HOOKS).glob("*.rs"))
-    texts = {path: strip(path.read_text()) for path in hook_files}
-    for text in texts.values():
+    texts = {}
+    for path in hook_files:
+        source = path.read_text()
+        text = strip(source)
+        texts[path] = source, text
         known |= {m.group(2) for m in NAMED.finditer(text)}
-    if not any(HOOK.search(text) for text in texts.values()):
+    if not any(HOOK.search(text) for _, text in texts.values()):
         return [f"{HOOKS}: no `#[hook(...)] fn` found; the hook-signature check would check nothing. If the "
                 "declaration form changed, update tools/hotspots/check_stand_ins.py."]
     missing = {}
-    for path, text in texts.items():
+    for path, (source, text) in texts.items():
         for match in HOOK.finditer(text):
+            target = TARGET.search(text, match.start(), match.end())
+            if target and source.startswith("mod_render::render::", target.end()):
+                continue
             generics = set(re.findall(r"\b([A-Z]\w*)", match.group(2) or ""))
             for name in re.findall(r"\b([A-Z]\w*)", signature(text, match.end())):
                 if name not in known and name not in generics:
@@ -259,98 +263,18 @@ def check_hook_types(root):
             for name, hooks in sorted(missing.items())]
 
 
-TRAIT = re.compile(r"\bpub\s+trait\s+([A-Za-z_]\w*)[^{;]*\{")
-
-
-def vocab_traits(root):
-    """name -> (file, required items, host_area); a name defined twice maps to None."""
-    traits = {}
-    for path in sorted((root / VOCAB).rglob("*.rs")):
-        text = strip(path.read_text())
-        for match in TRAIT.finditer(text):
-            name = match.group(1)
-            before = text[:match.start()].rstrip()
-            attributes = re.search(r"((?:#\[(?:[^\[\]]|\[[^\]]*\])*\]\s*)*)$", before).group(1)
-            body = text[match.end():block_end(text, match.end() - 1) - 1]
-            required = set()
-            for item in top_level(body):
-                if re.match(r"\s*(?:#\[(?:[^\[\]]|\[[^\]]*\])*\]\s*)*#\[\s*cfg\s*\(", item):
-                    continue  # its condition is not evaluated: never required (docstring)
-                item = without_attributes(item)
-                head = re.match(r"(?:unsafe\s+)?(fn|type|const)\s+([A-Za-z_]\w*)", item)
-                if head and item.endswith(";") and not (head.group(1) != "fn" and "=" in item):
-                    required.add(head.group(2))
-            entry = (path.relative_to(root), required, "host_area" in attributes)
-            traits[name] = None if name in traits else entry
-    return traits
-
-
-IMPL = re.compile(r"\bimpl\s*(?:<[^{]*?>)?\s*((?:[A-Za-z_]\w*::)*)([A-Za-z_]\w*)\s*(?:<[^{]*?>)?\s+for\s+"
-                  r"([A-Za-z_][\w:]*)(?:<[^{]*?>)?\s*(?:where[^{]*)?\{")
-
-
-def loopback_files(root, loopback):
-    path = root / loopback
-    return [path, *sorted((path.parent / path.stem).glob("*.rs"))]
-
-
-def check_loopback(root, loopback=LOOPBACK):
-    files = loopback_files(root, loopback)
-    traits = vocab_traits(root)
-    members = {union: [] for union in UNIONS}
-    for path in sorted((root / PARTS).glob("*.rs")):
-        for match in TRAIT.finditer(strip(path.read_text())):
-            for union in UNIONS:
-                if match.group(1).endswith(union) and match.group(1) != union:
-                    members[union].append(match.group(1))
-    if not members["CapabilityProviders"]:
-        return [f"{PARTS}: no `pub trait *CapabilityProviders` found; the union check would check nothing. If the "
-                "provider traits moved, update tools/hotspots/check_stand_ins.py."]
-    problems, impls = [], []
-    for path in files:
-        text = strip(path.read_text())
-        rel = path.relative_to(root)
-        local = {m.group(1) for m in re.finditer(r"\btrait\s+([A-Za-z_]\w*)", text)}
-        for match in IMPL.finditer(text):
-            prefix, name, target = match.groups()
-            if name in local or prefix not in ("", "mod_api::", "mod_api::prelude::"):
-                continue
-            body = text[match.end():block_end(text, match.end() - 1) - 1]
-            written = {m.group(2) for m in (re.match(r"(?:pub\s+)?(?:unsafe\s+)?(fn|type|const)\s+([A-Za-z_]\w*)",
-                                                     without_attributes(i)) for i in top_level(body)) if m}
-            impls.append((name, target, written, rel, text.count("\n", 0, match.start()) + 1))
-    # Member impls may sit in any file of the loopback: a target name is one type across the test target.
-    implemented = {(name, target) for name, target, _, _, _ in impls}
-    for name, target, written, rel, line in impls:
-        if name in UNIONS:
-            for member in members[name]:
-                if (member, target) not in implemented:
-                    problems.append(f"{rel}:{line}: `{target}` implements the union `{name}`, so it needs "
-                                    f"`impl {member} for {target}` (a trait in {PARTS}/): add it to {rel}.")
-            continue
-        entry = traits.get(name)
-        if not entry or entry[2]:
-            continue
-        source, required, _ = entry
-        for item in sorted(required - written):
-            problems.append(f"{rel}:{line}: `impl {name} for {target}` lacks `{item}`, required by {source}: "
-                            f"add it to that impl in {rel}.")
-    return problems
-
-
-def problems(root, loopback=LOOPBACK):
-    missing = missing_inputs(root, loopback)
+def problems(root):
+    missing = missing_inputs(root)
     if missing:
         return missing
-    return check_fixture_files(root) + check_hook_types(root) + check_loopback(root, loopback)
+    return check_fixture_files(root) + check_hook_types(root)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--root", type=Path, default=ROOT)
-    ap.add_argument("--loopback", default=LOOPBACK, help="the wire loopback root, relative to --root")
     args = ap.parse_args(argv)
-    found = problems(args.root, args.loopback)
+    found = problems(args.root)
     for problem in found:
         print(problem, file=sys.stderr)
     if found:

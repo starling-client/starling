@@ -1,32 +1,47 @@
-# Installs sunrise-server (docs/server.md) on Windows: the current Sunrise Nightly (the only build Sunrise ships;
-# GitHub's latest release while there is none), downloaded from GitHub Releases and checked against the release's
-# signed SHA256SUMS when OpenSSL 3 is found (docs/release-flow.md, "Signed checksums"), else against the SHA-256
-# GitHub publishes for it. OpenSSL is looked for on the PATH and in Git for Windows, which ships it.
+# Installs sunrise-server (docs/server.md) on Windows: by default the current Sunrise Nightly (GitHub's latest release
+# while there is none), or the release -Version names, downloaded from GitHub Releases and checked against the release's
+# signed SHA256SUMS (docs/release-flow.md, "Signed checksums") by sunrise-verify, a small program this script
+# downloads and checks against the SHA-256 pinned below before it runs it. A download that can't be verified is not
+# installed.
 #
-#   irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
-#   & ([scriptblock]::Create((irm .../install.ps1))) -Version v0.5.0 -Dir D:\Sunrise
+#   irm https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.ps1 | iex
+#   & ([scriptblock]::Create((irm .../install.ps1))) -Version 26.3-0.1.0 -Dir D:\Sunrise
+#
+# A stable release's tag (26.3-0.1.0) puts the server on that stable line, which `sunrise-server update` then follows.
 #
 # Releases go to <Dir>\releases\<version>, <Dir>\current points at the one in use, and <Dir>\bin (added to
 # your PATH) holds sunrise-server.cmd and sunrise-prepare.cmd. The game files you prepare from your own
 # Minecraft stay in <Dir>\game-files across updates. Nothing of Mojang's is downloaded. No admin rights.
 param(
     [string]$Version = "latest",
-    [string]$Dir = (Join-Path $env:LOCALAPPDATA "Sunrise")
+    [string]$Dir = (Join-Path $env:LOCALAPPDATA "Sunrise"),
+    # For CI fixtures only (never in the docs): GitHub's own SHA-256 is all that is checked.
+    [switch]$InsecureChecksumOnly
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$Repo = "horizon-rust/horizon"
-# Sunrise's release public keys, base64: copy of crates/sunrise-release-sign/release-keys.txt (rotation adds a key
-# there first; keep the two in step, and install.sh's RELEASE_KEYS too).
-$ReleaseKeys = @("MU4oiIQcCxkZvbwSjjXs7SySCuM6ywRQ3nGaJYZG0gw=")
+$Repo = "sunrise-org/sunrise"
+# sunrise-verify, the release checker the install pins: its SHA-256 per platform,
+# from release verifier@$VerifierVersion. "unpinned" until the first verifier release exists.
+# >>> verifier pin (tools/ci/pin_verifier.py rewrites this block; do not edit it by hand)
+$VerifierVersion = '1.0.0'
+$VerifierSha256 = @{
+    'linux-x86_64' = '310bba30dd6dba7147d9a14692c4efb5887875c6d6eca953a5e888106f5a7630'
+    'linux-aarch64' = '5e293dbc2552db7a7df79105005425463b7b0eef2d97ff30a8e65d156f0c50b6'
+    'macos-arm64' = '0b934c07fe4003bc25554a95adef2dfc3a3b73e84b9647e100d0a3acd472e11e'
+    'macos-x64' = '912223491295e60f2d338a141b47fe2deab161608b1b8b02134ca7b7bdf0430b'
+    'windows-x64' = 'd26077550c2b8695db181d3f32ba1cb7f2f22cff455f78d6148a298df56f9b79'
+    'windows-arm64' = 'ef5bbdf1440c303c0e8c6056159fc46166727257f1e6a1b98ef63def7932d1d9'
+}
+# <<< verifier pin
 $Fallback = $null
 $Architecture = $env:PROCESSOR_ARCHITEW6432
 if (-not $Architecture) { $Architecture = $env:PROCESSOR_ARCHITECTURE }
 switch ($Architecture) {
-    "AMD64" { $Asset = "sunrise-windows-x64.zip" }
+    "AMD64" { $Platform = "windows-x64"; $Asset = "sunrise-windows-x64.zip" }
     # A release without an ARM64 build installs the x64 one, which Windows runs under emulation.
-    "ARM64" { $Asset = "sunrise-windows-arm64.zip"; $Fallback = "sunrise-windows-x64.zip" }
+    "ARM64" { $Platform = "windows-arm64"; $Asset = "sunrise-windows-arm64.zip"; $Fallback = "sunrise-windows-x64.zip" }
     default { throw "No Sunrise release for Windows on $Architecture yet: build it from source (docs/server.md)" }
 }
 
@@ -40,6 +55,9 @@ if ($Version -eq "latest") {
 }
 $Tag = $Release.tag_name
 $RawTag = $Tag
+if ($Tag -ceq "dev" -or $Tag.StartsWith("dev-")) {
+    throw "$Tag is a Dev build, made to test main: servers don't install it. Install the Nightly (the default) or a stable release (-Version <tag>)."
+}
 # A Nightly installs under its date and commit, as `sunrise-server update` names it:
 # "Nightly 2026-10-28 <middle dot> 0c02067" is nightly-2026-10-28-0c02067 ([char]0xB7: this file stays ASCII).
 # Its signature is checked for exactly that version, so the title must name it (as
@@ -62,98 +80,78 @@ if (-not $Item) { throw "Release $Tag has no $Asset" }
 $Digest = $null
 if ($Item.digest -and $Item.digest.StartsWith("sha256:")) { $Digest = $Item.digest.Substring(7) }
 
-# The first OpenSSL 3 on the PATH or in Git for Windows (its usr\bin and mingw64\bin), else what was found instead.
-function Find-OpenSsl {
-    $Candidates = @()
-    $OnPath = Get-Command openssl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($OnPath) { $Candidates += $OnPath.Source }
-    $Git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($Git) {
-        # git.exe is in Git\cmd, Git\bin or Git\mingw64\bin.
-        $Folder = Split-Path $Git.Source
-        foreach ($Up in 1, 2) {
-            $Folder = Split-Path $Folder
-            if (-not $Folder) { break }
-            foreach ($Sub in "usr\bin\openssl.exe", "mingw64\bin\openssl.exe") {
-                $Path = Join-Path $Folder $Sub
-                if (Test-Path -LiteralPath $Path -PathType Leaf) { $Candidates += $Path }
-            }
-        }
-    }
-    $Other = $null
-    foreach ($Path in $Candidates) {
-        $ErrorActionPreference = "Continue"
-        $Said = (& $Path version 2>$null | Select-Object -First 1)
-        if ("$Said" -match "^OpenSSL ([3-9]|[1-9][0-9])\.") { return @{ Path = $Path } }
-        if (-not $Other -and $Said) { $Other = ("$Said" -split " ")[0..1] -join " " }
-    }
-    return @{ Path = $null; Other = $Other }
-}
-
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ("sunrise-install-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
-    # The signature (docs/release-flow.md, "Signed checksums"): SHA256SUMS.sig holds one base64 Ed25519 signature
-    # per line over "horizon release <tag>\n" + SHA256SUMS. A Nightly is checked against SHA256SUMS.v2.sig instead,
-    # signed for its own version (nightly-<date>-<commit>, from its title), never the channel's SHA256SUMS.sig: an
-    # older Nightly can't be passed off as the current one (docs/security.md, "Nightly signatures"). Windows can't
-    # check Ed25519 by itself, so this needs OpenSSL 3; without it the install says so and keeps GitHub's SHA-256.
-    $Expect = $Digest
+    # A Nightly is checked against SHA256SUMS.v2.sig, signed for its own version (nightly-<date>-<commit>, from its
+    # title), never the channel's SHA256SUMS.sig: an older Nightly can't be passed off as the current one
+    # (docs/security.md, "Nightly signatures").
     if ($Nightly) { $SigTag = $Nightly; $SigFile = "SHA256SUMS.v2.sig" } else { $SigTag = $RawTag; $SigFile = "SHA256SUMS.sig" }
-    $OpenSsl = Find-OpenSsl
-    if (-not $OpenSsl.Path -and $OpenSsl.Other) {
-        Write-Host "Note: $($OpenSsl.Other) can't check Ed25519 signatures (OpenSSL 3 is needed), so the release signature was not checked; checking GitHub's SHA-256 only."
-    } elseif (-not $OpenSsl.Path) {
-        Write-Host "Note: OpenSSL isn't installed (Git for Windows includes it), so the release signature was not checked; checking GitHub's SHA-256 only."
+    $Files = Join-Path $Tmp "files"
+    New-Item -ItemType Directory -Path $Files | Out-Null
+    $Zip = Join-Path $Files $Asset
+    if ($InsecureChecksumOnly) {
+        Write-Warning "-InsecureChecksumOnly: the release signature is NOT checked, only the SHA-256 GitHub publishes for the download. Anyone who can change the release can change that too. This is for test fixtures, not for servers."
+        if (-not $Digest) { throw "Release $Tag publishes no SHA-256 for $Asset" }
+        Write-Host "Downloading Sunrise $Tag ($Asset)..."
+        Invoke-WebRequest -Uri $Item.browser_download_url -OutFile $Zip
+        $Got = (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLowerInvariant()
+        if ($Got -ne $Digest.ToLowerInvariant()) {
+            throw "$Asset doesn't match its SHA-256 (got $Got, expected $Digest): not installed"
+        }
     } else {
+        # The verifier: the pinned version's binary for this platform, run only when its SHA-256 is the pinned one.
+        # The pin is the trust anchor (tools/ci/pin_verifier.py); nothing outside this file can change it.
+        $Pin = $VerifierSha256[$Platform]
+        $VerifierFrom = $VerifierVersion
+        if (-not $VerifierFrom -or $VerifierFrom -eq "unpinned") {
+            throw "This script has no pinned sunrise-verify yet, so it can't check the release signature: not installed. Use the install.ps1 from Sunrise's main branch."
+        }
+        if (-not $Pin -or $Pin -eq "unpinned") { throw "There is no sunrise-verify for $Platform (the signature check needs it): not installed" }
+        $Verifier = Join-Path $Tmp "sunrise-verify.exe"
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/$Repo/releases/download/verifier%40$VerifierFrom/sunrise-verify-$Platform.exe" -OutFile $Verifier
+        } catch {
+            throw "Could not download sunrise-verify $VerifierFrom for $Platform (needed to check the release signature): not installed"
+        }
+        $Got = (Get-FileHash -Algorithm SHA256 $Verifier).Hash.ToLowerInvariant()
+        if ($Got -ne $Pin.ToLowerInvariant()) {
+            throw "sunrise-verify for $Platform isn't the pinned build (got $Got, expected $Pin): not installed. The download may have been tampered with; please report it on Discord or GitHub."
+        }
+
         $SumsItem = $Release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
         $SigItem = $Release.assets | Where-Object { $_.name -eq $SigFile } | Select-Object -First 1
-        if ($Nightly -and (-not $SumsItem -or -not $SigItem)) {
-            throw "$Tag has no $SigFile (its signature for this exact build): it was published before Nightlies were signed for their own version, so it can't be checked. Install the current Nightly (-Version latest) instead."
-        } elseif (-not $SumsItem -or -not $SigItem) {
-            Write-Host "Note: release $Tag has no signed checksums (it was published before signing began), so the signature was not checked; checking GitHub's SHA-256 only."
-        } else {
-            $Sums = Join-Path $Tmp "SHA256SUMS"
-            $Sigs = Join-Path $Tmp "SHA256SUMS.sig"
-            Invoke-WebRequest -UseBasicParsing -Uri $SumsItem.browser_download_url -OutFile $Sums
-            Invoke-WebRequest -UseBasicParsing -Uri $SigItem.browser_download_url -OutFile $Sigs
-            $Message = Join-Path $Tmp "message"
-            [IO.File]::WriteAllBytes($Message, [byte[]]([Text.Encoding]::ASCII.GetBytes("horizon release $SigTag`n") + [IO.File]::ReadAllBytes($Sums)))
-            $KeyDer = Join-Path $Tmp "key.der"
-            $Signature = Join-Path $Tmp "signature"
-            $Signed = $false
-            foreach ($Key in $ReleaseKeys) {
-                # The raw 32-byte key in an Ed25519 SubjectPublicKeyInfo, the form OpenSSL reads.
-                $Prefix = [byte[]](0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00)
-                [IO.File]::WriteAllBytes($KeyDer, [byte[]]($Prefix + [Convert]::FromBase64String($Key)))
-                foreach ($Line in [IO.File]::ReadAllLines($Sigs)) {
-                    if (-not $Line.Trim()) { continue }
-                    try { [IO.File]::WriteAllBytes($Signature, [Convert]::FromBase64String($Line.Trim())) } catch { continue }
-                    $ErrorActionPreference = "Continue"
-                    & $OpenSsl.Path pkeyutl -verify -rawin -pubin -keyform DER -inkey $KeyDer -in $Message -sigfile $Signature 2>&1 | Out-Null
-                    if ($LASTEXITCODE -eq 0) { $Signed = $true }
-                    $ErrorActionPreference = "Stop"
-                }
-            }
-            if (-not $Signed) {
-                throw "$Tag's SHA256SUMS signature doesn't match Sunrise's release key: not installed. The download may have been tampered with; please report it on Discord or GitHub."
-            }
-            $Expect = $null
-            foreach ($Line in [IO.File]::ReadAllLines($Sums)) {
-                if ($Line -match "^([0-9a-fA-F]{64}) [ *](.+)$" -and $Matches[2] -eq $Asset) { $Expect = $Matches[1]; break }
-            }
-            if (-not $Expect) { throw "The signed SHA256SUMS doesn't list ${Asset}: not installed" }
-            Write-Host "Release signature OK (Sunrise release key)."
+        if (-not $SumsItem) {
+            throw "Release $Tag has no SHA256SUMS (its checksum list), so it can't be checked: not installed"
+        } elseif (-not $SigItem -and $Nightly) {
+            throw "$Tag has no $SigFile (its signature for this exact build): it was published before Nightlies were signed for their own version, so it can't be checked: not installed. Install the current Nightly (-Version latest) instead."
+        } elseif (-not $SigItem) {
+            throw "Release $Tag has no $SigFile (the signature of its checksum list), so it can't be checked: not installed"
         }
-    }
-    if (-not $Expect) { throw "Release $Tag publishes no SHA-256 for $Asset" }
-
-    Write-Host "Downloading Sunrise $Tag ($Asset)..."
-    $Zip = Join-Path $Tmp $Asset
-    Invoke-WebRequest -Uri $Item.browser_download_url -OutFile $Zip
-    $Got = (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLowerInvariant()
-    if ($Got -ne $Expect.ToLowerInvariant()) {
-        throw "$Asset doesn't match its SHA-256 (got $Got, expected $Expect): not installed"
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $SumsItem.browser_download_url -OutFile (Join-Path $Files "SHA256SUMS")
+            Invoke-WebRequest -UseBasicParsing -Uri $SigItem.browser_download_url -OutFile (Join-Path $Files $SigFile)
+        } catch { throw "Could not download SHA256SUMS and ${SigFile}: not installed" }
+        Write-Host "Downloading Sunrise $Tag ($Asset)..."
+        try { Invoke-WebRequest -Uri $Item.browser_download_url -OutFile $Zip } catch { throw "Could not download ${Asset}: not installed" }
+        # The same check the launcher and `sunrise-server update` make, with the keys built into the verifier. Only an
+        # exit code of 0 from this very run passes: the code from any earlier program is cleared first, and a verifier
+        # that fails to start leaves none.
+        $global:LASTEXITCODE = $null
+        $Code = $null
+        $ErrorActionPreference = "Continue"
+        try {
+            $Said = (& $Verifier verify --tag $SigTag --signature $SigFile --only $Asset $Files 2>&1 | Out-String).Trim()
+            $Code = $global:LASTEXITCODE
+        } catch {
+            $Said = "sunrise-verify could not run: $($_.Exception.Message)"
+        } finally {
+            $ErrorActionPreference = "Stop"
+        }
+        if ($Code -isnot [int] -or $Code -ne 0) {
+            throw "The release check failed ($SigFile for $SigTag), so $Tag was not installed: $Said. The download may have been tampered with; please report it on Discord or GitHub."
+        }
+        Write-Host "Release signature OK (Sunrise release key)."
     }
     $Unpacked = Join-Path $Tmp "x"
     Expand-Archive -Path $Zip -DestinationPath $Unpacked

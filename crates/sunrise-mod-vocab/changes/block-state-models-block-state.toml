@@ -1,0 +1,3 @@
+ids = ["method:RenderAssets::block_state_models", "method:RenderAssets::block_state_model"]
+why = "#3134: both model lookups take the same BlockState a mod reads from a level or placement event, not the engine's numeric BlockStateId. block_state_models still returns an empty list for a valid state without a baked binding; an unknown state returns UnknownModel from both."
+migrate = "Pass the BlockState directly to render_assets().block_state_models(state) and render_assets().block_state_model(state). Rebuild native mods against the new signature."

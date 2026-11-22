@@ -27,7 +27,7 @@ impl Hooks for SaveOnSpawnJoin {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated homes"]
+#[ignore = "daily"]
 fn spawn_batches_refuse_saves_until_all_rows_are_published() {
     for planned in [false, true] {
         let root = PathBuf::from(std::env::var_os("SUNRISE_HOME").unwrap())
@@ -73,9 +73,9 @@ fn spawn_batches_refuse_saves_until_all_rows_are_published() {
             assert_eq!(succeeded.load(Ordering::SeqCst), 0);
             assert_eq!(game.mobs.len(), 2);
             game.save.flush().unwrap();
-            assert!(game.save.load_entities(0, 0).is_empty());
+            assert!(game.save.load_entities(0, 0).unwrap().is_empty());
             game.save_game().unwrap();
-            assert_eq!(game.save.load_entities(0, 0).len(), 2);
+            assert_eq!(game.save.load_entities(0, 0).unwrap().len(), 2);
         });
     }
 }

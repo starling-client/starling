@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use sunrise_perf_format::v1::{Capture, Side, Unit as TickUnit};
 use serde::{Deserialize, Serialize};
+use sunrise_perf_format::v1::{Capture, Side, Unit as TickUnit};
 
 use crate::diff_calls::{CallSeries, call_series};
 use crate::error::{Error, side_name};

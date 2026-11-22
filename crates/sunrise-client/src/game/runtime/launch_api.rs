@@ -140,7 +140,6 @@ impl std::error::Error for UsageError {}
 fn content() -> serde_json::Value {
     use sunrise_mod_package::manifest;
     serde_json::json!({
-        // 0.1 was the WebAssembly code line: no build runs it any more.
         "mod": { "api": [manifest::API] },
         "native_mod": { "exact_build": true, "rebuild": true },
         // The lines it draws: a newer one is read and checked, not drawn yet.
@@ -333,8 +332,8 @@ mod tests {
 
     #[test]
     fn game_uses_the_command_selection_context() {
-        use sunrise_mod_package::selection::{LaunchArguments, content_packages};
         use std::{collections::BTreeSet, fs, process::Command};
+        use sunrise_mod_package::selection::{LaunchArguments, content_packages};
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

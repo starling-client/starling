@@ -1,5 +1,13 @@
 //! Test transport for registry-backed noise-stage filling against vanilla doFill.
 use crate::support::common::tag;
+use serde_json::Value;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    io::{self, Write},
+    path::Path,
+    sync::Arc,
+};
 use sunrise_core::{
     density::{
         Beardifier, JigsawJunction, RigidPiece, SamplerContext, StructureBounds, TerrainAdjustment,
@@ -8,14 +16,6 @@ use sunrise_core::{
     noise::DensityVolume,
     position::ChunkPos,
     random::{LegacyRandom, PositionalRandom, RandomSource, XoroshiroRandom},
-};
-use serde_json::Value;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    io::{self, Write},
-    path::Path,
-    sync::Arc,
 };
 use {
     sunrise_core::nbt::Tag,

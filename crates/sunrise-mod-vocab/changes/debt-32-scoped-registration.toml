@@ -1,0 +1,121 @@
+ids = [
+    "hook:component_types.types",
+    "type:ComponentTypesEvent.types",
+    "handle:ComponentTypesEvent::register",
+    "hook:create_skull_models.models",
+    "type:CreateSkullModelsEvent.models",
+    "handle:CreateSkullModelsEvent::register",
+    "hook:map_decoration_types.types",
+    "type:MapDecorationTypesEvent.types",
+    "handle:MapDecorationTypesEvent::register",
+    "hook:register_entity_spectator_shaders.shaders",
+    "type:RegisterEntitySpectatorShadersEvent.shaders",
+    "handle:RegisterEntitySpectatorShadersEvent::register",
+    "hook:register_fluid_models.models",
+    "type:RegisterFluidModelsEvent.models",
+    "handle:RegisterFluidModelsEvent::register",
+    "hook:register_render_pipelines.pipelines",
+    "type:RegisterRenderPipelinesEvent.pipelines",
+    "hook:register_texture_atlases.atlases",
+    "type:RegisterTextureAtlasesEvent.atlases",
+    "handle:RegisterTextureAtlasesEvent::register",
+    "hook:block_entity_type_add_blocks.additions",
+    "type:BlockEntityTypeAddBlocksEvent.additions",
+    "hook:register_particle_groups.groups",
+    "type:RegisterParticleGroupsEvent.groups",
+    "handle:RegisterParticleGroupsEvent::register",
+    "type:ParticleGroup",
+    "type:ParticleGroup.id",
+    "hook:register_layer_definitions.layers",
+    "type:RegisterLayerDefinitionsEvent.layers",
+    "hook:standalone_models.models",
+    "hook:standalone_models.forms",
+    "type:StandaloneModelsEvent.models",
+    "type:StandaloneModelsEvent.forms",
+    "type:StandaloneModelForm",
+    "type:StandaloneModelForm.Rotated",
+    "type:StandaloneModelForm.Combined",
+    "handle:StandaloneModelForm::id",
+    "handle:StandaloneModelsEvent::register_model",
+    "handle:StandaloneModelsEvent::register",
+    "type:StandaloneModelBakeContext",
+    "handle:StandaloneModelBakeContext::append_dependency",
+    "type:StandaloneModelBakeError",
+    "type:StandaloneModelBakeError.UndeclaredDependency",
+    "type:StandaloneModelBakeError.DependencyBake",
+    "type:StandaloneModelBakeError.Rejected",
+]
+why = "Scoped registration methods let each listener append without reading, editing or removing earlier registrations. A phase refusal discards only that listener's additions; a listener panic on any registration-append hook (version 3, except model layers and render pipelines at version 4) rolls back only that listener's staged additions, disables that mod's listener for the session with a log line and error toast without writing a fatal crash report, and lets subsequent listeners run. Particle groups follow NeoForge RegisterParticleGroupsEvent (version 3): any nonempty namespace and path is allowed including minecraft, duplicate IDs fail client startup without invoking factories, and accepted factories construct once per particle engine. Model layers follow NeoForge ClientHooks.registerLayerDefinition and vanilla LayerDefinitions.createRoots / ModelLayerLocation (version 4): keep the ':' and '#' delimiters, validate namespace and path with Identifier.fromNamespaceAndPath rules, and accept empty namespace, path, and layer components; duplicate mod registrations keep the last supplier before running suppliers once at startup, and exact collisions with vanilla layer keys in entity-models.json fail client startup. Render pipelines follow NeoForge RegisterRenderPipelinesEvent and RenderPipelines.registerCustomPipelines (version 4): the mod-namespace ownership gate is removed, mod pipeline IDs are unique even across required and optional declarations because Sunrise looks them up by ID alone, and vanilla collisions are checked in the matching registry. Standalone model bakers follow NeoForge StandaloneModelLoader: they assemble declared files at resource load, a failed append_dependency returns Err without mutating the assembly or latching across calls, the baker's Result decides publication, and non-panic failures re-run on subsequent reloads. Atlas timing and duplicate parity are separate from this API change."
+migrate = """
+All registration-append hooks (`block_entity_type_add_blocks`, `component_types`, `create_skull_models`, `map_decoration_types`, `register_entity_spectator_shaders`, `register_fluid_models`, `register_layer_definitions`, `register_particle_groups`, `register_render_pipelines`, `register_texture_atlases`, and `standalone_models`) are version 3, except `register_layer_definitions` and `register_render_pipelines`, which are version 4: if a listener panics, only that listener's staged registrations are rolled back, later mods' listeners continue, and the panicking mod's listener is disabled for the session (logged and shown as a mod error toast, with no fatal crash report).
+In Hooks::component_types, replace event.types.push(id) with event.register(id), passing the same owned String.
+In Hooks::create_skull_models, replace event.models.push(model) with event.register(model), passing the same SkullModel.
+In Hooks::map_decoration_types, replace event.types.push(decoration) with event.register(decoration), passing the same MapDecorationType.
+In Hooks::register_entity_spectator_shaders, replace event.shaders.push(shader) with event.register(shader), passing the same EntitySpectatorShader.
+In Hooks::register_fluid_models, replace event.models.push(model) with event.register(model), passing the same FluidModel.
+In Hooks::register_render_pipelines, replace event.pipelines.push(pipeline) with event.register(pipeline), passing the same RenderPipeline. Any valid Identifier is accepted (no mod-namespace ownership gate). Rename duplicate mod pipeline IDs even if their required/optional policies differ, and update the corresponding `render_pipeline(&id)` lookups. A collision with the matching required or optional vanilla registry fails client startup, as in NeoForge `RenderPipelines.registerCustomPipelines` (hook version 4).
+In Hooks::register_texture_atlases, replace event.atlases.push(atlas) with event.register(atlas), passing the same TextureAtlasRegistration.
+For multiple entries, call event.register(entry) once per entry in the same order.
+In Hooks::block_entity_type_add_blocks, replace event.additions.push((kind, block)) with event.modify(kind, &[block]). For one block list shared by matching types, call event.modify_matching(predicate, blocks). Read event.types as before to inspect registered type keys.
+The event is borrowed only during the listener call. Reading, replacing or removing earlier staged entries has no replacement.
+
+In Hooks::register_particle_groups, replace `event.groups.push(ParticleGroup { id, blend, particles })` with:
+
+```rust
+if let Ok(id) = Identifier::parse(&id) {
+    event.register(id, move || ParticleGroup { blend, particles: particles.clone() });
+}
+```
+
+Use a nonempty namespace and path (any namespace, including `minecraft`, is allowed). Duplicate
+IDs fail client startup instead of being dropped (hook version 3, matching NeoForge
+`RegisterParticleGroupsEvent`). Store the `Identifier` separately if you formerly read
+`ParticleGroup.id`. `ParticleGroup` no longer implements `Wire`; for your own payload, define a
+separate `#[derive(Wire)]` record for the data you send, and construct `ParticleGroup` from that
+data in the factory. Factories are `Fn() -> ParticleGroup + Send + Sync + 'static`: capture owned
+data and return a fresh definition per engine. Sprite reloads reuse that definition.
+
+In Hooks::register_layer_definitions, move mesh and layer construction into a supplier:
+replace `event.layers.push((id, create_golem_layer()))` with `event.register(id, create_golem_layer)`.
+For an inline definition use `event.register(id, move || LayerDefinition::create(build_mesh(), 64, 32))`,
+with your own mesh and texture dimensions. The supplier is `Fn() -> LayerDefinition + Send + Sync + 'static`;
+capture owned inputs, and if reusing a definition already built, return `definition.clone()`.
+The game retains only the definition after the startup freeze, not the supplier. Keep both
+separators in `<namespace>:<path>#<layer>`; any of the three components may be empty. Duplicate
+mod registrations for the same ID keep the last supplier instead of the first (matching
+NeoForge `ClientHooks.registerLayerDefinition`), and an exact collision with a vanilla layer key
+in `entity-models.json` fails client startup (matching vanilla `LayerDefinitions.createRoots`,
+hook version 4). Pass the same ID to `ClientHost::bake_layer`.
+
+In `Hooks::standalone_models`, replace `event.models.push(id)` with `event.register_model(id)`.
+`StandaloneModelForm` and its `id()` accessor are gone; keep the result ID separately. Replace
+`event.forms.push(StandaloneModelForm::Rotated { id, model, turns, uvlock })` with:
+
+```rust
+event.register(id, [model.clone()], move |bake| {
+    bake.append_dependency(&model, turns, uvlock)
+});
+```
+
+Replace `event.forms.push(StandaloneModelForm::Combined { id, parts })` with:
+
+```rust
+event.register(id, parts.clone(), move |bake| {
+    for part in &parts {
+        bake.append_dependency(part, [0; 3], false)?;
+    }
+    Ok(())
+});
+```
+
+Declare every file ID that the baker may append. The baker is `Send + Sync + 'static` and may run
+on a resource worker; capture owned inputs, not the event or `RegistrationContext`. Its
+`StandaloneModelBakeContext` is borrowed for that invocation only. Return
+`Err(StandaloneModelBakeError::Rejected(reason))` to decline the bake. A failed
+`append_dependency` returns `Err` without mutating the assembly; propagate it with `?` to discard
+the model, or handle it and return `Ok(())` to keep the valid appends. Non-panic failures apply
+only to that resource load and re-run on later reloads; only a panic disables the callback for
+the session. A successfully baked plain file takes precedence; otherwise the first successful
+baker for an ID wins. Keep the same namespaced result ID in `RenderAssets::model` lookups and
+resolve it again after each successful resource load.
+"""

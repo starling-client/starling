@@ -1,8 +1,8 @@
 //! Chat components as sent on the network (ComponentSerialization in NBT form)
 //! flattened to display strings, with `translate` keys resolved through a
 //! language table (en_us.json) and Java `String.format` style arguments.
-use sunrise_core::nbt::{JavaString, Tag};
 use std::collections::HashMap;
+use sunrise_core::nbt::{JavaString, Tag};
 
 /// A language table: translation key -> pattern.
 pub type Language = HashMap<String, String>;

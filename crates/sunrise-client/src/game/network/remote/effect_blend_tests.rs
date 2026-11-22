@@ -1,13 +1,13 @@
 //! Ordinary effect blends through the public handle and the client's packet/countdown paths.
 use super::super::{Game, execution_role::ExecutionRole, native_entity_refs::tests::with_game};
+use mod_api::LivingRef;
+use mod_platform::__private::part_tests::effect_key;
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::geometry::Vec3;
 use sunrise_protocol::{
     connection::Pipe,
     packets::play::{self, Clientbound as C},
 };
-use mod_api::LivingRef;
-use mod_platform::__private::part_tests::effect_key;
 
 fn with_client(test: impl FnOnce(&mut Game<'_>, LivingRef, i32)) {
     with_game(|game| {
@@ -65,7 +65,7 @@ fn assert_blend(game: &Game<'_>, living: LivingRef, expected: [f32; 6]) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn ordinary_effect_blends_follow_the_client_lifecycle() {
     with_client(|game, living, speed| {
         assert_eq!(
@@ -111,7 +111,7 @@ fn ordinary_effect_blends_follow_the_client_lifecycle() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn ordinary_effect_first_read_does_not_restart_the_blend() {
     for duration in [100, -1] {
         for ticks in [1, 2] {
@@ -136,7 +136,7 @@ fn ordinary_effect_first_read_does_not_restart_the_blend() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn ordinary_effect_infinite_partial_ticks_follow_the_blend_direction() {
     with_client(|game, living, speed| {
         update(game, speed, 100, 10);
@@ -189,7 +189,7 @@ fn ordinary_effect_infinite_partial_ticks_follow_the_blend_direction() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn ordinary_effect_packets_preserve_or_skip_the_blend() {
     with_client(|game, living, speed| {
         // forceAddEffect copies the old blend, even when shouldBlend is false.

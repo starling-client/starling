@@ -34,10 +34,9 @@ thread_local! {
     static NEAR_BUF_POOL: std::cell::RefCell<Vec<Vec<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// What `push_entities` pushes: who, where, whether it rides a vehicle (`Entity.isPassenger`),
-/// whether it shares the pusher's root vehicle (`isPassengerOfSameVehicle`), and whether it is
-/// itself a vehicle.
-pub(super) type PushTarget = (Who, Vec3, bool, bool, bool);
+/// The selected object and whether it was a passenger for the cramming count.
+/// A paused round also pins the mob's join so it cannot push a replacement.
+pub(super) type PushTarget = (Who, bool, Option<crate::join_seq::JoinSeq>);
 thread_local! {
     static PUSH_TARGETS: std::cell::RefCell<Vec<PushTarget>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -115,22 +114,6 @@ struct RaycastBlockCache<'b> {
     section_key: (i32, i32, i32),
     section: Option<&'b crate::chunk::Section>,
     section_uniform_air: bool,
-}
-
-impl<'a> MobWorld<'a> {
-    /// Creates a lightweight view for creature despawn evaluation without entity collections.
-    pub fn despawn_view(&self) -> MobWorld<'a> {
-        MobWorld {
-            others: &[],
-            others_grid: None,
-            others_index: None,
-            others_villagers: None,
-            others_solid: None,
-            player: None,
-            teams: std::sync::Arc::clone(&self.teams),
-            ..self.clone()
-        }
-    }
 }
 
 /// Single non-spectator player position helper for creature ticking despawn checks.
@@ -312,6 +295,41 @@ impl MobWorld<'_> {
     pub fn has_tag(&self, tag: &str, block: &str) -> bool {
         self.block_tags.get(tag).is_some_and(|s| s.contains(block))
     }
+    /// `EntityType.is`: membership in the owning side's bound tags.
+    pub fn entity_has(&self, tag: &str, id: &str) -> bool {
+        self.items
+            .is_some_and(|items| items.entity_type_tags.contains(tag, id))
+    }
+    /// Membership in a prebound gameplay tag, indexed by the mob type's registry slot.
+    #[inline]
+    pub fn entity_tag_bit(&self, kind: &super::MobType, bit: u8) -> bool {
+        self.items.is_some_and(|items| {
+            items
+                .entity_type_tags
+                .has_bit(kind.flags.entity_tag_slot, bit)
+        })
+    }
+    /// The state's [`crate::items::BlockTagFlags`]: 0 when this view carries
+    /// no table.
+    #[inline]
+    pub fn state_flags(&self, state: BlockStateId) -> u16 {
+        self.block_tag_flags
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(0)
+    }
+    /// Whether the state carries `flag` ([`crate::items::BlockTagFlags`]).
+    #[inline]
+    pub fn state_flag(&self, state: BlockStateId, flag: u16) -> bool {
+        self.state_flags(state) & flag != 0
+    }
+    /// Whether the block at `(x, y, z)` carries `flag`
+    /// ([`crate::items::BlockTagFlags`]): [`Self::has_tag`] without the tag
+    /// hash.
+    #[inline]
+    pub fn block_flag(&self, x: i32, y: i32, z: i32, flag: u16) -> bool {
+        self.state_flag(self.world.block(x, y, z), flag)
+    }
     /// `findBlocksInBoxByManhattanDistance(at, range_xz, range_y).filterState(..).findFirst()`:
     /// the first block `matches` accepts (given its position and name), going
     /// out from `at` by Manhattan distance as `BlockPos.withinBoxByManhattanDistance` does.
@@ -376,9 +394,7 @@ impl MobWorld<'_> {
             // Scaffolding, liquids (a strider stands on lava) and powder snow
             // take the entity's context; every other state has its cached shape.
             let is_contextual = context.is_some() && self.collision.has_context_rule(state);
-            if !is_contextual
-                && let Ok(Some(shape)) = self.collision.cached_shapes().cached_shape(state)
-            {
+            if !is_contextual && let Ok(Some(shape)) = self.collision.static_shape(state) {
                 return shape.clip(from, to, p).map(|_| ());
             }
             let shape = match &context {
@@ -411,12 +427,28 @@ impl MobWorld<'_> {
             } else {
                 [0.0; 3]
             };
+            let published = sunrise_client::collisions::published_outline(
+                self.world,
+                self.collision,
+                state,
+                [p.x, p.y, p.z],
+            );
+            let cached = self.collision.cached_shapes();
+            let context = published
+                .is_none()
+                .then(|| cached.context_outline_shape(state, EntityContextKind::Living))
+                .flatten();
+            let o = if context.is_some() {
+                self.collision.cached_shapes().shape_offset(
+                    state,
+                    sunrise_world::collision::ShapeChannel::ContextOutline,
+                    [p.x, p.y, p.z],
+                )
+            } else {
+                o
+            };
             let o = Vec3::new(o[0], o[1], o[2]);
-            let declared = self
-                .collision
-                .cached_shapes()
-                .context_outline_shape(state, EntityContextKind::Living);
-            let hit = match declared {
+            let hit = match published.or(context) {
                 Some(shape) => {
                     VoxelShape::clip_boxes(shape.boxes().iter().map(|b| b.move_by(o)), from, to, p)
                 }
@@ -470,7 +502,7 @@ impl MobWorld<'_> {
             if !self.collision.may_collide(state) {
                 return None;
             }
-            if let Ok(Some(shape)) = self.collision.cached_shapes().cached_shape(state) {
+            if let Ok(Some(shape)) = self.collision.static_shape(state) {
                 return shape.clip(from, to, p).map(|hit| hit.location);
             }
             let shape = self
@@ -498,7 +530,7 @@ impl MobWorld<'_> {
             if !self.collision.may_collide(state) {
                 return None;
             }
-            if let Ok(Some(shape)) = self.collision.cached_shapes().cached_shape(state) {
+            if let Ok(Some(shape)) = self.collision.static_shape(state) {
                 return shape.clip(from, to, p).map(|_| [p.x, p.y, p.z]);
             }
             let shape = self
@@ -534,7 +566,7 @@ impl MobWorld<'_> {
     /// top slab and upside-down stairs do, and as a 14/16 snow layer does not.
     pub fn top_face_full(&self, p: [i32; 3]) -> bool {
         let state = self.world.block(p[0], p[1], p[2]);
-        if self.facts.get(state).full_collision {
+        if self.facts.get(state).full_collision && !self.collision.publishes_shapes(state) {
             return true;
         }
         let mut scene = SceneCollisions {
@@ -652,17 +684,44 @@ impl MobWorld<'_> {
                 creative: p.creative,
                 passenger: p.passenger,
             }),
-            Who::Mob(id) => self.seen(id).map(|s| TargetInfo {
-                position: s.position,
-                eye_y: s.eye_y,
-                bounds: s.bounds,
-                hitbox: s.hitbox,
-                alive: s.alive,
-                can_be_seen_as_enemy: !s.playing_dead,
-                is_player: false,
-                creative: false,
-                passenger: s.passenger,
-            }),
+            Who::Mob(id) => self
+                .seen(id)
+                .map(|s| TargetInfo {
+                    position: s.position,
+                    eye_y: s.eye_y,
+                    bounds: s.bounds,
+                    hitbox: s.hitbox,
+                    alive: s.alive,
+                    can_be_seen_as_enemy: !s.playing_dead,
+                    is_player: false,
+                    creative: false,
+                    passenger: s.passenger,
+                })
+                .or_else(|| {
+                    self.armor_stands.iter().find(|s| s.id == id).map(|s| {
+                        let (width, height, eye) = s.probe_dimensions();
+                        let half = width / 2.0;
+                        let bounds = Aabb::new(
+                            Vec3::new(s.position.x - half, s.position.y, s.position.z - half),
+                            Vec3::new(
+                                s.position.x + half,
+                                s.position.y + height,
+                                s.position.z + half,
+                            ),
+                        );
+                        TargetInfo {
+                            position: s.position,
+                            eye_y: s.position.y + eye,
+                            bounds,
+                            hitbox: bounds,
+                            alive: s.health > 0.0,
+                            can_be_seen_as_enemy: false,
+                            is_player: false,
+                            creative: false,
+                            passenger: false,
+                        }
+                    })
+                }),
         }
     }
     /// The other mobs whose boxes may meet `area` (callers test the boxes),
@@ -708,14 +767,13 @@ impl MobWorld<'_> {
             .or_else(|| self.passenger_objects.iter().find(|s| s.id == id))
     }
     pub fn seen(&self, id: u32) -> Option<&Seen> {
-        let own = match self.others_index {
+        match self.others_index {
             Some(index) => index
                 .get(&id)
                 .and_then(|&i| self.others.get(i as usize))
                 .filter(|s| s.id == id),
             None => self.others.iter().find(|s| s.id == id),
-        };
-        own.or_else(|| self.foreign?.seen(id))
+        }
     }
     /// Living mobs of the given species within `range` of `from`, nearest first.
     pub fn nearby<'s>(
@@ -754,9 +812,9 @@ impl MobWorld<'_> {
 
 /// Level.clip with VISUAL shapes and no fluids: the block the segment first
 /// hits, None inside when it hits nothing and outside when the segment is
-/// too long to walk. Glass and copper grates (`TransparentBlock`) and bars and panes
-/// (`IronBarsBlock`) have no visual shape; mud, soul sand and powder snow
-/// look like full blocks.
+/// too long to walk. Glass and copper grates (`TransparentBlock`), bars and panes
+/// (`IronBarsBlock`) and powder snow have no visual shape; mud and soul sand
+/// look like full blocks; fences and snow layers use their outline.
 pub fn visual_clip<W: DynamicCollisionWorld>(
     facts: &BlockFacts,
     collision: &BlockCollisionRegistry,
@@ -766,31 +824,50 @@ pub fn visual_clip<W: DynamicCollisionWorld>(
     to: Vec3,
 ) -> Option<Option<[i32; 3]>> {
     let full = Aabb::new(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0));
-    let result = traverse_blocks(from, to, 512, |p: BlockPos| {
-        let id = state(p.x, p.y, p.z);
-        if facts.is_air(id) {
-            return None;
-        }
-        let name = facts.get(id).name.trim_start_matches("minecraft:");
-        if name.ends_with("glass")
-            || name.ends_with("glass_pane")
-            || name.ends_with("_bars")
-            || name.ends_with("copper_grate")
-        {
-            return None;
-        }
-        if matches!(name, "mud" | "soul_sand" | "powder_snow") {
-            return full
-                .move_by(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)))
-                .clip(from, to)
+    let result =
+        traverse_blocks(from, to, 512, |p: BlockPos| {
+            let id = state(p.x, p.y, p.z);
+            if facts.is_air(id) {
+                return None;
+            }
+            let name = facts.get(id).name.trim_start_matches("minecraft:");
+            if name.ends_with("glass")
+                || name.ends_with("glass_pane")
+                || name.ends_with("_bars")
+                || name.ends_with("copper_grate")
+                || name == "powder_snow"
+            {
+                return None;
+            }
+            // FenceBlock and SnowLayerBlock: their outline (a fence's collision shape is 24 px tall).
+            let vanilla_fence = facts
+                .get(id)
+                .name
+                .strip_prefix("minecraft:")
+                .is_some_and(|n| n.ends_with("_fence"));
+            if name == "snow" || vanilla_fence {
+                return VoxelShape::clip_boxes(
+                    facts.get(id).outline.iter().map(|b| {
+                        Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]))
+                    }),
+                    from,
+                    to,
+                    p,
+                )
                 .map(|_| [p.x, p.y, p.z]);
-        }
-        if let Ok(Some(shape)) = collision.cached_shapes().cached_shape(id) {
-            return shape.clip(from, to, p).map(|_| [p.x, p.y, p.z]);
-        }
-        let shape = collision.collision_shape(scene, id, [p.x, p.y, p.z]).ok()?;
-        shape.clip(from, to, p).map(|_| [p.x, p.y, p.z])
-    });
+            }
+            if matches!(name, "mud" | "soul_sand") {
+                return full
+                    .move_by(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)))
+                    .clip(from, to)
+                    .map(|_| [p.x, p.y, p.z]);
+            }
+            if let Ok(Some(shape)) = collision.static_shape(id) {
+                return shape.clip(from, to, p).map(|_| [p.x, p.y, p.z]);
+            }
+            let shape = collision.collision_shape(scene, id, [p.x, p.y, p.z]).ok()?;
+            shape.clip(from, to, p).map(|_| [p.x, p.y, p.z])
+        });
     result.ok()
 }
 
@@ -919,6 +996,34 @@ impl TestResources {
             .as_ref()
     }
 }
+/// A built test world with the generic damage key installed for its mocked contact Part.
+#[cfg(test)]
+pub(crate) fn with_built_contact_test_world(
+    build: impl FnOnce(&mut crate::world::World, &sunrise_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes, mod_api::DamageTypeKey),
+) -> bool {
+    struct Contact(std::sync::Arc<std::sync::OnceLock<mod_api::DamageTypeKey>>);
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Contact {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            let requested = r.damage_type_key("minecraft:generic");
+            assert_eq!(*self.0.get_or_init(|| requested), requested);
+        }
+    }
+    let key = std::sync::Arc::new(std::sync::OnceLock::new());
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "contact",
+        Box::new(Contact(key.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods.clone(), || {
+        mod_platform::__private::part_tests::install_parts_fixture(&mods).unwrap();
+        with_built_test_world(&[], build, |world, types| {
+            f(world, types, *key.get().unwrap())
+        })
+    })
+}
+
 /// Runs `f` over a fresh `World` (`build` places its blocks) on `resources`.
 #[cfg(test)]
 fn run_test_world(
@@ -946,6 +1051,7 @@ fn run_test_world(
     build(&mut world, registry);
     let lid_openers = std::collections::HashMap::new();
     let w = MobWorld {
+        side: &crate::motion::surface::DrySide(&motion.health.damage),
         mob_maps: sunrise_client::neoforge_mob_maps::NeoForgeMobMaps::vanilla(),
         goal_host: None,
         teams: Default::default(),
@@ -968,9 +1074,9 @@ fn run_test_world(
         others,
         live_mobs: None,
         dragon: None,
+        armor_stands: &[],
         leash_boats: &[],
         who_lookup: None,
-        foreign: None,
         others_grid: None,
         others_index: None,
         passenger_objects: &[],
@@ -984,6 +1090,7 @@ fn run_test_world(
         thundering: false,
         level: sunrise_core::LevelKey::OVERWORLD,
         block_tags: &items.block_tags,
+        block_tag_flags: items.block_tag_flags.bits(),
         landing: &motion.landing,
         biomes,
         mob_griefing,
@@ -1059,6 +1166,7 @@ mod scaffolding_sight_tests {
     /// ScaffoldingBlock.getCollisionShape: a viewer below the block sees
     /// through it, one above does not (issue 9607).
     #[test]
+    #[ignore = "daily"]
     fn scaffolding_blocks_sight_only_from_above() {
         let ran = super::with_built_test_world(
             &[],
@@ -1077,7 +1185,104 @@ mod scaffolding_sight_tests {
                 assert!(!w.line_of_sight_for(Some(66.0), above, below));
             },
         );
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
+    }
+
+    /// `ClipContext.Block.VISUAL` (Creaking's `isLookingAtMe`): a fence and a snow layer use their
+    /// outline, not the 24 px / one-layer-shorter collision shape; powder snow has none.
+    #[test]
+    #[ignore = "daily"]
+    fn visual_sight_uses_the_fence_outline_and_skips_powder_snow() {
+        use sunrise_core::nbt::Tag;
+        let ran = super::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let snow4 = registry
+                    .saved_state_id(&Tag::compound([
+                        ("id", Tag::String("minecraft:snow".into())),
+                        (
+                            "properties",
+                            Tag::compound([("layers", Tag::String("4".into()))]),
+                        ),
+                    ]))
+                    .unwrap();
+                for (x, name) in [(0, "oak_fence"), (2, "powder_snow")] {
+                    let id = registry
+                        .default_state(&format!("minecraft:{name}"))
+                        .unwrap();
+                    world.set(x, 65, 0, id).unwrap();
+                }
+                world.set(4, 65, 0, snow4).unwrap();
+            },
+            |w, _| {
+                let see = |x: f64, y0: f64, y1: f64| {
+                    w.visual_clear_between(Vec3::new(x, y0, 0.5), Vec3::new(x, y1, 0.5))
+                };
+                // Fence: outline top 66.0, collision top 66.5.
+                assert!(see(0.5, 67.0, 66.2));
+                assert!(!see(0.5, 67.0, 65.5));
+                // Enters the fence's cell below its outline top, crosses the collider above it and
+                // misses the outline.
+                assert!(
+                    w.visual_clear_between(Vec3::new(0.1, 65.9, 0.5), Vec3::new(0.5, 66.3, 0.5))
+                );
+                // Powder snow never blocks a visual ray.
+                assert!(see(2.5, 66.5, 65.1));
+                // Four layers: outline top 65.5, collision top 65.375.
+                assert!(!see(4.5, 66.0, 65.45));
+            },
+        );
+        assert!(ran, "vanilla data is missing");
+    }
+
+    /// A part that answers for the viewer is asked through the sight fast path, which reads a
+    /// state's cached shape unless the state has a contextual rule: glass blocks sight, and
+    /// opens for a viewer the part lets through.
+    #[test]
+    #[ignore = "daily"]
+    fn a_part_answers_for_the_viewer_through_the_sight_fast_path() {
+        use crate::native_client_hooks::test_hooks::{COLLISION_ANSWER, install, loop_context};
+        use sunrise_world::{block_collision::BlockCollisionRegistry, part_collision::InParts};
+        install();
+        let ran = super::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let glass = registry.default_state("minecraft:glass").unwrap();
+                world.set(0, 65, 0, glass).unwrap();
+            },
+            |w, _| {
+                let glass = w.world.block(0, 65, 0);
+                let from = Vec3::new(0.5, 64.0 + 1.62, 0.5);
+                let to = Vec3::new(0.5, 67.0, 0.5);
+                let see = || w.line_of_sight_for(Some(64.0), from, to);
+                let marked: &BlockCollisionRegistry<'_> = w.collision;
+                // Not opted in: the cached cube blocks sight, parts or not.
+                COLLISION_ANSWER
+                    .with_borrow_mut(|answer| *answer = Some(Box::new(|_| Some(Vec::new()))));
+                let context = std::sync::Arc::new(loop_context());
+                let parts = std::rc::Rc::new(crate::collision_parts::ModParts::new(context));
+                let _in = InParts::enter(parts.clone());
+                assert!(!see());
+                // Opted in, the part lets this viewer through: the fast path asked it.
+                marked.set_part_states([glass]);
+                parts.begin_tick(&std::sync::Arc::new(loop_context()));
+                assert!(see());
+                // Opted in, the part keeps the shape: sight is blocked again.
+                COLLISION_ANSWER.with_borrow_mut(|answer| *answer = Some(Box::new(|_| None)));
+                parts.begin_tick(&std::sync::Arc::new(loop_context()));
+                assert!(!see());
+                marked.set_part_states([]);
+            },
+        );
+        assert!(ran, "vanilla data is missing");
     }
 }
 

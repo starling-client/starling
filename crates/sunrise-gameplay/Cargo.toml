@@ -1,0 +1,28 @@
+[package]
+name = "sunrise-gameplay"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Vanilla's logical side: the gameplay the server jar holds, common code included"
+
+[dependencies]
+log = "0.4"
+mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
+serde_json = "1.0.151"
+sunrise-client-core = { path = "../sunrise-client-core" }
+sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false }
+sunrise-assets = { path = "../sunrise-assets" }
+sunrise-core = { path = "../sunrise-core" }
+sunrise-items = { path = "../sunrise-items" }
+sunrise-protocol = { path = "../sunrise-protocol" }
+sunrise-mod-runtime = { path = "../sunrise-mod-runtime" }
+sunrise-threads = { path = "../sunrise-threads" }
+sunrise-world = { path = "../sunrise-world" }
+
+[dev-dependencies]
+mod_platform = { package = "sunrise-mod-api", path = "../sunrise-mod-api", features = ["testing"] }
+sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false, features = ["test-mob-kind"] }
+
+[lints]
+workspace = true

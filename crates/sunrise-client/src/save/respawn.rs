@@ -89,7 +89,7 @@ mod tests {
             )),
             ..Level::default()
         };
-        write_dat(&file, original.player_tag()).unwrap();
+        write_dat(&file, original.player_tag(&Default::default())).unwrap();
         let tag = read_dat(&file).expect("actual written NBT player file");
         assert_eq!(
             tag.get("respawn").unwrap().get("pitch"),

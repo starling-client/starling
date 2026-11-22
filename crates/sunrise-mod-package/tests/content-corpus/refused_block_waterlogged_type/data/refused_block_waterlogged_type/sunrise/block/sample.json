@@ -1,0 +1,1 @@
+{"template": "minecraft:stone", "state_properties": {"waterlogged": {"type": "enum", "values": ["dry"]}}}

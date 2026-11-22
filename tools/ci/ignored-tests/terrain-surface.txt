@@ -1,0 +1,3 @@
+# Generator surface host queries need prepared resources and game initialization.
+sunrise-client game::native_world_columns::tests::terrain_surface_reads_flat_layers_without_chunks lib daily resources
+sunrise-client game::native_world_columns::tests::terrain_surface_refuses_before_sampling lib daily resources

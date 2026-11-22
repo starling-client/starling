@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Yhdistä automaattisesti",
+  "sunrise.extras.auto_reconnect.tooltip": "Liittyy uudelleen palvelimeen yhteyden katkeamisen tai uudelleenkäynnistyksen jälkeen, ei koskaan potkaisun tai kiellon jälkeen."
+}

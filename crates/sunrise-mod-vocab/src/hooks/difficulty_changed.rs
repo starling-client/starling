@@ -9,9 +9,11 @@ pub trait Hooks {
     /// go through, and it is told only when the difficulty is another one. It
     /// only hears: the change has already happened. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_difficulty_changed",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "DifficultyChangeEvent"
     )]
-    fn difficulty_changed();
+    fn difficulty_changed(from: &str, to: &str);
 }

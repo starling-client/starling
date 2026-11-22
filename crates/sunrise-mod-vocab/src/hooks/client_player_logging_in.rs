@@ -6,10 +6,11 @@ pub trait Hooks {
     /// is the server's entity ID. Client-side,
     /// once per connection, including single player.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ClientPlayerNetworkEvent.LoggingIn",
         cancellable = false
     )]
-    fn client_player_logging_in();
+    fn client_player_logging_in(player_id: i32, uuid: u128);
 }

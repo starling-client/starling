@@ -1,7 +1,7 @@
 use super::*;
+use mod_api::{DataPackFilesEvent, Registrar, RegistrationContext, ServerHost};
 use sunrise_client::mobs::{self, Mob};
 use sunrise_core::geometry::Vec3;
-use mod_api::{DataPackFilesEvent, Registrar, RegistrationContext, ServerHost};
 
 const TAG: &str = "sunrise:villager_secondary_poi/farmer";
 struct Tags(Arc<AtomicBool>);
@@ -110,7 +110,7 @@ fn fixture(run: impl FnOnce(&mut crate::game::Game<'_>, &Arc<AtomicBool>, &mut M
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn successful_reload_removes_secondary_tag_entries() {
     fixture(|game, enabled, mob| {
         enabled.store(false, Ordering::SeqCst);
@@ -121,7 +121,7 @@ fn successful_reload_removes_secondary_tag_entries() {
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn failed_reload_preparation_keeps_secondary_tag_entries() {
     fixture(|game, enabled, mob| {
         enabled.store(false, Ordering::SeqCst);

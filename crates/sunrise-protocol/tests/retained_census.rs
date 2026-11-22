@@ -1,9 +1,9 @@
 //! A separate test binary owns this allocator. The unique tag isolates the
 //! retained values from the harness and the allocations made by census() itself.
+use std::collections::BTreeMap;
 use sunrise_core::nbt::{JavaString, Tag};
 use sunrise_protocol::retained::OwnedHeap;
 use sunrise_threads::{CensusAllocator, heap_census};
-use std::collections::BTreeMap;
 
 #[global_allocator]
 static ALLOCATOR: CensusAllocator = CensusAllocator;
@@ -26,6 +26,15 @@ fn assert_covers_charge<T>(
     build: impl FnOnce() -> T,
     charge: impl FnOnce(&T) -> usize,
 ) {
+    assert_charge(case, build, charge, None);
+}
+
+fn assert_charge<T>(
+    case: &str,
+    build: impl FnOnce() -> T,
+    charge: impl FnOnce(&T) -> usize,
+    expected_live: Option<usize>,
+) {
     assert_eq!(live_bytes(), 0, "previous case leaked tagged storage");
     let value = {
         // Direct tag() is unconditional: the alloc-census feature is unnecessary
@@ -38,14 +47,19 @@ fn assert_covers_charge<T>(
     // backing allocator's metadata/rounding, exactly the accounting boundary here.
     let observed = live_bytes();
     let charged = charge(&value);
-    assert!(
-        observed > 0,
-        "{case}: census must observe real retained storage"
-    );
-    assert!(
-        charged >= observed,
-        "{case}: charge {charged} undercounts {observed} live requested bytes"
-    );
+    if let Some(expected) = expected_live {
+        assert_eq!(observed, expected, "{case}: live retained storage");
+        assert_eq!(charged, expected, "{case}: exact empty-storage charge");
+    } else {
+        assert!(
+            observed > 0,
+            "{case}: census must observe real retained storage"
+        );
+        assert!(
+            charged >= observed,
+            "{case}: charge {charged} undercounts {observed} live requested bytes"
+        );
+    }
     drop(value);
     assert_eq!(
         live_bytes(),
@@ -56,15 +70,31 @@ fn assert_covers_charge<T>(
 
 #[test]
 fn opaque_map_charges_cover_independently_observed_live_layouts() {
+    assert_charge(
+        "fresh empty NBT compound",
+        sunrise_core::nbt::Compound::new,
+        OwnedHeap::owned_heap_bytes,
+        Some(0),
+    );
+    assert_charge(
+        "unused entry keeps the empty compound allocation-free",
+        || {
+            let mut map = sunrise_core::nbt::Compound::new();
+            drop(map.entry(JavaString::from("unused")));
+            map
+        },
+        OwnedHeap::owned_heap_bytes,
+        Some(0),
+    );
     assert_covers_live_layout("populated NBT compound", || {
         (0..4096)
             .map(|i| (JavaString::from(i.to_string().as_str()), Tag::Int(i)))
-            .collect::<BTreeMap<_, _>>()
+            .collect::<sunrise_core::nbt::Compound>()
     });
     assert_covers_live_layout("nested maps and spare child capacities", || {
-        let mut outer = BTreeMap::new();
+        let mut outer = sunrise_core::nbt::Compound::new();
         for i in 0..64 {
-            let mut inner = BTreeMap::new();
+            let mut inner = sunrise_core::nbt::Compound::new();
             for j in 0..31 {
                 let mut units = Vec::with_capacity(100);
                 units.push(j);
@@ -86,7 +116,7 @@ fn opaque_map_charges_cover_independently_observed_live_layouts() {
         Tag::Compound(outer)
     });
     assert_covers_live_layout("insert/remove churn", || {
-        let mut map = BTreeMap::new();
+        let mut map = sunrise_core::nbt::Compound::new();
         for i in (0..4096).rev() {
             map.insert(JavaString::from(i.to_string().as_str()), Tag::Int(i));
         }
@@ -95,6 +125,14 @@ fn opaque_map_charges_cover_independently_observed_live_layouts() {
                 map.remove(&JavaString::from(i.to_string().as_str()));
             }
         }
+        map
+    });
+    assert_covers_live_layout("allocated then emptied NBT compound", || {
+        let mut map = sunrise_core::nbt::Compound::new();
+        for i in 0..128 {
+            map.insert(JavaString::from(i.to_string().as_str()), Tag::Int(i));
+        }
+        map.clear();
         map
     });
     assert_covers_live_layout("retained empty root", || {
@@ -108,12 +146,12 @@ fn opaque_map_charges_cover_independently_observed_live_layouts() {
         map
     });
 
+    use std::collections::HashSet;
     use sunrise_protocol::{
         packets::configuration::{RegistryData, RegistryEntry, RegistryTags, TagEntry, UpdateTags},
         registry::Dynamic,
         retained::fresh_hash_table_bytes,
     };
-    use std::collections::HashSet;
     #[repr(align(128))]
     #[derive(Hash, PartialEq, Eq)]
     struct Aligned(u32);
@@ -137,7 +175,7 @@ fn opaque_map_charges_cover_independently_observed_live_layouts() {
             for round in 0..2 {
                 for i in 0..40 {
                     let mut entries = Vec::with_capacity(100);
-                    let mut nbt = BTreeMap::new();
+                    let mut nbt = sunrise_core::nbt::Compound::new();
                     nbt.insert(
                         JavaString::from("nested"),
                         Tag::ByteArray(Vec::with_capacity(3000)),

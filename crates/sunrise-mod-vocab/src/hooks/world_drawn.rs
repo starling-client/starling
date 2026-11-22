@@ -9,5 +9,5 @@ pub trait Hooks {
         target = "mod_render::render::world_drawn",
         neoforge = "RenderLevelStageEvent.AfterLevel"
     )]
-    fn world_drawn();
+    fn world_drawn(world: &mut WorldDrawn<'_>);
 }

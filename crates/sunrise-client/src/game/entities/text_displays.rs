@@ -20,6 +20,17 @@ pub(super) enum Shows {
     Item,
 }
 
+impl Shows {
+    /// The display's entity type, as the tick hooks name it.
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Text => "minecraft:text_display",
+            Self::Block => "minecraft:block_display",
+            Self::Item => "minecraft:item_display",
+        }
+    }
+}
+
 pub(super) struct RemoteTextDisplay {
     pub data: TextDisplayData,
     shows: Shows,
@@ -208,10 +219,43 @@ impl Game<'_> {
             d.move_to(position, rotation);
         }
     }
+    /// The displays' tick on a client. EntityTickEvent: once for the family,
+    /// or each alone of a type a mod named, right before and right after its own
+    /// tick; a canceled one keeps its state.
     pub(super) fn tick_text_displays(&mut self) {
-        for display in self.text_displays.values_mut() {
-            display.tick();
+        let mut round = self.native_tick_round();
+        if !round.listening() {
+            for display in self.text_displays.values_mut() {
+                display.tick();
+            }
+            return;
         }
+        let mut alone = Vec::new();
+        for (&id, display) in &self.text_displays {
+            if round.alone_kind(display.shows.kind()) {
+                alone.push((id, display.shows.kind()));
+            } else {
+                round.add(
+                    id as u32,
+                    super::native_ticks::TickKind::Fixed(display.shows.kind()),
+                );
+            }
+        }
+        self.native_tick_pre_batch(&mut round);
+        for (&id, display) in &mut self.text_displays {
+            if !round.alone_kind(display.shows.kind()) && !round.canceled(id as u32) {
+                display.tick();
+            }
+        }
+        for (id, kind) in alone {
+            if self.native_tick_pre_one(&mut round, id as u32, kind) {
+                if let Some(display) = self.text_displays.get_mut(&id) {
+                    display.tick();
+                }
+                self.native_tick_post_one(&round, id as u32, kind);
+            }
+        }
+        self.native_tick_post_batch(round);
     }
     /// The camera's yaw and pitch as `DisplayRenderer` reads them (the
     /// front view turns around).
@@ -568,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn handle_teleport_keeps_display_easing() {
         use crate::game::{commands::OtherEntity, native_entity_refs::tests::with_game};
         use sunrise_core::geometry::Vec3;

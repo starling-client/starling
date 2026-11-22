@@ -1,0 +1,3 @@
+ids = ["method:LevelHost::block_states"]
+why = "A level view exposes the block-state facts service over the same tables as `host.block_states()`."
+migrate = "Additive: nothing to change. It answers None or Unavailable on a view with no block-state tables."

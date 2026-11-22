@@ -78,6 +78,21 @@ class PortLedgerJarOnlyTests(unittest.TestCase):
                         self.assertIn("Child.missing", stale)
 
 
+class PortLedgerRustParseTests(unittest.TestCase):
+    def test_an_attribute_with_an_equals_does_not_hide_its_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rust = root / "crates/example/src/lib.rs"
+            rust.parent.mkdir(parents=True)
+            rust.write_text("impl Game {\n"
+                            "    #[sunrise_loop(name = \"block_entities.tick\", side = \"server\")]\n"
+                            "    pub(super) fn tick_block_entities(&mut self) {}\n"
+                            "}\n", encoding="utf-8")
+            with mock.patch.object(port_ledger, "ROOT", root):
+                fns = port_ledger.parse_rust("crates/example/src/lib.rs")["fns"]
+        self.assertEqual([(f["name"], f.get("owner")) for f in fns], [("tick_block_entities", "Game")])
+
+
 class PortLedgerCliTests(unittest.TestCase):
     """--json is read the same before or after the query's name (port_ledger.py's docstring)."""
 

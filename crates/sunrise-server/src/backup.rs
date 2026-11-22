@@ -3,13 +3,13 @@
 //! (`save-off`, `save-all`), and writes again once the zip is done (`save-on`), so players stay online.
 //! A restore puts the backup's world in place of the current one, which is moved aside, never deleted.
 
-use sunrise_server_launch::config::Config;
 use std::{
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
     time::SystemTime,
 };
+use sunrise_server_launch::config::Config;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const DIR: &str = "backups";

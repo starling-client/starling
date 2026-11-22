@@ -98,6 +98,45 @@ python3 tools/perf_bench.py --table stress-sunrise stress-vanilla
 
 Besides the FPS table, `--table` then gives each scene's median frame CPU time (Sunrise), client tick time and resident memory. Chests stay closed: opening them needs a player, which neither driver has. The stress scenes use 26.3's command syntax, so they are not for `--game neoforge`.
 
+### Comparing two builds
+
+`--compare BEFORE AFTER` runs games of two build folders alternately, in the order B A A B B A A B..., which
+counterbalances the order within each block of four games; pair *k* is games 2*k* and 2*k*+1. `--repeats` is the number
+of pairs per render distance and window size: even, so the blocks are whole, and at least 6, which the interval needs.
+Each figure of each scene goes through `sunrise_bench::compare`'s statistic ([benchmark-report.md](benchmark-report.md)):
+the Hodges-Lehmann estimate of after minus before, its exact signed-rank 95% interval (nominal, for independent and
+symmetric pair differences) and the verdict.
+
+- **Gated:** frame time p50 and p99, and the server thread's tick time p50 and p99; `menu_hold` gates frame time only,
+  because Options may pause the integrated server.
+- **The rule:** a gated figure passes when its point estimate, computed from unrounded values plus how far rounding can
+  move it (half of 0.1 ms for tick times), is at most `--budget` percent (default 3, #2510's pooled gate) of the before
+  figure. Its interval is reported beside it ("ci95 within 3%"): a wide interval around no change is noise to report,
+  not a slowdown. A gated figure any game lacks fails (`missing`).
+- **Why not the interval:** `/tick query` sees only the server's last 100 ticks, in 0.1 ms steps, however long the
+  flight, so tick intervals are wider than 3% on one machine unless the run has many more pairs (hours per scene).
+- **Reported, not gated:** CPU and GPU frame p50.
+- **Output:** the table on the terminal; the workload (scenes, seconds, `--graphics`, packs), each game's build, start
+  and end times and figures, and the results in `benchmarks/perf/<label>-compare-rd<N>.json`. The exit status is 1 when a
+  gated figure fails.
+
+```sh
+python3 tools/perf_bench.py --compare target-base/release target/release --budget 3 --repeats 6 --distances 16 --offscreen
+```
+
+The server tick figures are vanilla's `/tick query` after each flight: the integrated server's last 100 ticks, in 0.1 ms
+steps. They count only when all 100 fall inside the flight (`--seconds` 5 or more at 20 TPS); otherwise they're missing.
+A joined server's ticks aren't read, so `--compare` runs single player. When rounding alone (half a 0.1 ms step) is more
+than the budget allows, a before tick time under about 1.7 ms at 3%, the row says "below resolution: not gated": it is
+shown, but neither passes nor fails, and the scene's frame figures are gated as usual. A missing tick figure still fails.
+
+Set-up options for Sunrise: `--graphics KEY:VALUE` (a line of `sunrise-graphics.txt`, repeatable), `--resource-pack PATH`
+(turned on in `options.txt`, repeatable) and `--shader-pack PATH` (picked through `SUNRISE_SHADER_PACK`, a folder or a
+zip); a report records them under `conditions`. `--scenes menu_hold` holds the Options screen open for `--seconds` at the
+village flight's start while Tab steps the focus every 250 ms (#2498's menu path), on fixed deadlines. The taps go through
+the control socket's `key`, which reaches the Options screen's own key handling but not the window's keyboard-focus
+driver (`key_focus_key`); no control command older builds have reaches that driver.
+
 On Windows, run `python tools\perf_bench.py ...` the same way. Sunrise's control endpoint there is a localhost TCP port, which the game writes to a `.json` file in the temporary folder. `--build` can point at an installed release (`%APPDATA%\sunrise-launcher\versions\vX.Y.Z`, with `--resources` its `.local\sunrise-client\26.3`), and the report then gives that release's version.
 
 ## Frame pacing

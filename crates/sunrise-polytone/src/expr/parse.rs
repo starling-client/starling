@@ -69,16 +69,23 @@ struct Parser {
     locals: Vec<String>,
     /// A legacy math expression: `lerp`, `smoothstep` and `color` take their old argument order.
     legacy: bool,
+    /// How deep the parser has recursed (`expr` and `statement` calls now open).
+    nesting: usize,
 }
+
+/// A tree being built and its height: 1 for a leaf, one more than its highest child otherwise.
+type Built = (Expr, usize);
 
 /// The statements and how many local slots they use.
 pub(super) fn parse(src: &str) -> Result<(Vec<Stmt>, usize), String> {
     let tokens = tokens(src)?;
+    super::budget::check_tokens(&tokens).map_err(|e| e.to_string())?;
     let mut p = Parser {
         legacy: legacy::is_legacy(&tokens),
         tokens,
         pos: 0,
         locals: Vec::new(),
+        nesting: 0,
     };
     let body = p.statements(false)?;
     Ok((body, p.locals.len()))
@@ -139,6 +146,29 @@ impl Parser {
         }
     }
 
+    /// One more level of the parser's recursion, refused past [`MAX_NESTING`].
+    ///
+    /// [`MAX_NESTING`]: super::budget::MAX_NESTING
+    fn enter(&mut self) -> Result<(), String> {
+        self.nesting += 1;
+        if self.nesting > super::budget::MAX_NESTING {
+            return Err(super::budget::OverBudget::Nesting.to_string());
+        }
+        Ok(())
+    }
+
+    /// `e`, whose highest child is `children` high: refused past [`MAX_HEIGHT`], so no tree the
+    /// walks recurse into is ever built higher.
+    ///
+    /// [`MAX_HEIGHT`]: super::budget::MAX_HEIGHT
+    fn node(e: Expr, children: usize) -> Result<Built, String> {
+        let height = children + 1;
+        if height > super::budget::MAX_HEIGHT {
+            return Err(super::budget::OverBudget::Height.to_string());
+        }
+        Ok((e, height))
+    }
+
     fn statements(&mut self, in_block: bool) -> Result<Vec<Stmt>, String> {
         let mut out = Vec::new();
         loop {
@@ -160,13 +190,20 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Result<Stmt, String> {
+        self.enter()?;
+        let statement = self.statement_inner();
+        self.nesting -= 1;
+        statement
+    }
+
+    fn statement_inner(&mut self) -> Result<Stmt, String> {
         if matches!(self.peek(), Some(Token::Ident(s)) if s == "if") {
             let mut branches = Vec::new();
             let mut otherwise = Vec::new();
             loop {
                 self.pos += 1;
                 self.expect("(")?;
-                let condition = self.expr(0)?;
+                let condition = self.expr(0)?.0;
                 self.expect(")")?;
                 branches.push((condition, self.block()?));
                 if !matches!(self.peek(), Some(Token::Ident(s)) if s == "else") {
@@ -194,7 +231,7 @@ impl Parser {
             if let Some(op) = op {
                 let name = name.clone();
                 self.pos += 2;
-                let value = self.expr(0)?;
+                let value = self.expr(0)?.0;
                 let slot = match self.locals.iter().position(|l| *l == name) {
                     Some(slot) => slot,
                     None if op.is_none() => {
@@ -206,101 +243,131 @@ impl Parser {
                 return Ok(Stmt::Assign(slot, op, value));
             }
         }
-        Ok(Stmt::Expr(self.expr(0)?))
+        Ok(Stmt::Expr(self.expr(0)?.0))
     }
 
     /// Precedence climbing: ternary 1, `||` 2, `&&` 3, equality 4, comparison 5, `+ -` 6,
-    /// `* / %` 7, unary 8, `^` 9 (right to left, so `-2^2` is -4).
-    fn expr(&mut self, min: u8) -> Result<Expr, String> {
-        let mut left = self.unary()?;
+    /// `* / %` 7, unary 8, `^` 9 (right to left, so `-2^2` is -4). Each node's height is known
+    /// as it is built.
+    fn expr(&mut self, min: u8) -> Result<Built, String> {
+        self.enter()?;
+        let e = self.expr_inner(min);
+        self.nesting -= 1;
+        e
+    }
+
+    fn expr_inner(&mut self, min: u8) -> Result<Built, String> {
+        let (mut left, mut height) = self.unary()?;
         loop {
             let Some(Token::Punct(op)) = self.peek().cloned() else {
-                return Ok(left);
+                return Ok((left, height));
             };
-            if op == "?" && min <= 1 {
+            (left, height) = if op == "?" && min <= 1 {
                 self.pos += 1;
-                let then = self.expr(1)?;
+                let (then, a) = self.expr(1)?;
                 self.expect(":")?;
-                let otherwise = self.expr(1)?;
-                left = Expr::Cond(Box::new(left), Box::new(then), Box::new(otherwise));
+                let (otherwise, b) = self.expr(1)?;
+                let e = Expr::Cond(Box::new(left), Box::new(then), Box::new(otherwise));
+                Self::node(e, height.max(a).max(b))?
             } else if op == "||" && min <= 2 {
                 self.pos += 1;
-                left = Expr::Or(Box::new(left), Box::new(self.expr(3)?));
+                let (right, h) = self.expr(3)?;
+                Self::node(Expr::Or(Box::new(left), Box::new(right)), height.max(h))?
             } else if op == "&&" && min <= 3 {
                 self.pos += 1;
-                left = Expr::And(Box::new(left), Box::new(self.expr(4)?));
+                let (right, h) = self.expr(4)?;
+                Self::node(Expr::And(Box::new(left), Box::new(right)), height.max(h))?
             } else if let Some((bin, prec)) = binary(op).filter(|b| b.1 >= min) {
                 self.pos += 1;
-                left = Expr::Binary(bin, Box::new(left), Box::new(self.expr(prec + 1)?));
+                let (right, h) = self.expr(prec + 1)?;
+                Self::node(
+                    Expr::Binary(bin, Box::new(left), Box::new(right)),
+                    height.max(h),
+                )?
             } else {
-                return Ok(left);
-            }
+                return Ok((left, height));
+            };
         }
     }
 
-    fn unary(&mut self) -> Result<Expr, String> {
+    fn unary(&mut self) -> Result<Built, String> {
         if self.eat("-") {
-            return Ok(Expr::Neg(Box::new(self.unary()?)));
+            self.enter()?;
+            let (operand, h) = self.unary()?;
+            self.nesting -= 1;
+            return Self::node(Expr::Neg(Box::new(operand)), h);
         }
         if self.eat("!") {
-            return Ok(Expr::Not(Box::new(self.unary()?)));
+            self.enter()?;
+            let (operand, h) = self.unary()?;
+            self.nesting -= 1;
+            return Self::node(Expr::Not(Box::new(operand)), h);
         }
         self.eat("+");
-        let base = self.postfix()?;
+        let (base, height) = self.postfix()?;
         if self.eat("^") {
-            let exponent = self.unary()?;
-            return Ok(Expr::Binary(BinOp::Pow, Box::new(base), Box::new(exponent)));
+            self.enter()?;
+            let (exponent, h) = self.unary()?;
+            self.nesting -= 1;
+            let e = Expr::Binary(BinOp::Pow, Box::new(base), Box::new(exponent));
+            return Self::node(e, height.max(h));
         }
-        Ok(base)
+        Ok((base, height))
     }
 
-    fn arguments(&mut self) -> Result<Vec<Expr>, String> {
+    /// The arguments, and the highest of them (0 for none).
+    fn arguments(&mut self) -> Result<(Vec<Expr>, usize), String> {
         let mut args = Vec::new();
+        let mut highest = 0;
         if self.eat(")") {
-            return Ok(args);
+            return Ok((args, highest));
         }
         loop {
-            args.push(self.expr(0)?);
+            let (arg, h) = self.expr(0)?;
+            args.push(arg);
+            highest = highest.max(h);
             if self.eat(")") {
-                return Ok(args);
+                return Ok((args, highest));
             }
             self.expect(",")?;
         }
     }
 
-    fn postfix(&mut self) -> Result<Expr, String> {
-        let mut e = self.primary()?;
+    fn postfix(&mut self) -> Result<Built, String> {
+        let (mut e, mut height) = self.primary()?;
         while self.eat(".") {
             let Some(Token::Ident(name)) = self.peek().cloned() else {
                 return Err(self.error("expected a method name"));
             };
             self.pos += 1;
-            let args = if self.eat("(") {
+            let (args, h) = if self.eat("(") {
                 self.arguments()?
             } else {
-                Vec::new()
+                (Vec::new(), 0)
             };
-            e = Expr::Method(Box::new(e), method_name(&name).into(), args);
+            let method = Expr::Method(Box::new(e), method_name(&name).into(), args);
+            (e, height) = Self::node(method, height.max(h))?;
         }
-        Ok(e)
+        Ok((e, height))
     }
 
-    fn primary(&mut self) -> Result<Expr, String> {
+    fn primary(&mut self) -> Result<Built, String> {
         let token = self
             .peek()
             .cloned()
             .ok_or_else(|| self.error("expected a value"))?;
         self.pos += 1;
-        Ok(match token {
-            Token::Num(n) => Expr::Const(Value::Num(n)),
-            Token::Str(s) => Expr::Const(Value::Str(s.into())),
+        let leaf = |e: Expr| Ok((e, 1));
+        match token {
+            Token::Num(n) => leaf(Expr::Const(Value::Num(n))),
+            Token::Str(s) => leaf(Expr::Const(Value::Str(s.into()))),
             Token::Punct("(") => {
                 let e = self.expr(0)?;
                 self.expect(")")?;
-                e
+                Ok(e)
             }
             Token::Ident(name) if self.eat("(") => {
-                let args = self.arguments()?;
+                let (args, highest) = self.arguments()?;
                 let legacy = legacy::FUNCTIONS.iter().filter(|_| self.legacy);
                 if let Some(&(_, fewest, most, f)) =
                     legacy.chain(MATH).find(|entry| entry.0 == name)
@@ -316,38 +383,40 @@ impl Parser {
                             args.len()
                         ));
                     }
-                    Expr::Call(f, args)
+                    Self::node(Expr::Call(f, args), highest)
                 } else if HOST_FUNCTIONS.contains(&name.as_str()) {
-                    Expr::Host(name.into(), args)
+                    Self::node(Expr::Host(name.into(), args), highest)
                 } else if let Some(draw) = legacy::random(&name, args) {
-                    draw
+                    // `Random.name(args)`: the root under it, a level above its arguments.
+                    Self::node(draw, highest.max(1))
                 } else {
-                    return Err(format!("unknown function {name}"));
+                    Err(format!("unknown function {name}"))
                 }
             }
             Token::Ident(name) => match name.as_str() {
-                "true" => Expr::Const(Value::Bool(true)),
-                "false" => Expr::Const(Value::Bool(false)),
-                "PI" => Expr::Const(Value::Num(std::f64::consts::PI)),
-                "TAU" => Expr::Const(Value::Num(std::f64::consts::TAU)),
-                "E" => Expr::Const(Value::Num(std::f64::consts::E)),
-                "PSI" => Expr::Const(Value::Num(std::f64::consts::GOLDEN_RATIO)),
+                "true" => leaf(Expr::Const(Value::Bool(true))),
+                "false" => leaf(Expr::Const(Value::Bool(false))),
+                "PI" => leaf(Expr::Const(Value::Num(std::f64::consts::PI))),
+                "TAU" => leaf(Expr::Const(Value::Num(std::f64::consts::TAU))),
+                "E" => leaf(Expr::Const(Value::Num(std::f64::consts::E))),
+                "PSI" => leaf(Expr::Const(Value::Num(std::f64::consts::GOLDEN_RATIO))),
                 _ => match (
                     Root::parse(&name),
                     self.locals.iter().position(|l| *l == name),
                 ) {
-                    (_, Some(slot)) => Expr::Local(slot),
-                    (Some(root), None) => Expr::Root(root),
+                    (_, Some(slot)) => leaf(Expr::Local(slot)),
+                    (Some(root), None) => leaf(Expr::Root(root)),
+                    // A legacy variable's tree is a fixed one, at most six high (`SPEED`).
                     (None, None) => match legacy::variable(&name) {
-                        Some(e) => e?,
-                        None => return Err(format!("unknown name {name}")),
+                        Some(e) => Ok((e?, legacy::VARIABLE_HEIGHT)),
+                        None => Err(format!("unknown name {name}")),
                     },
                 },
             },
             Token::Punct(_) => {
                 self.pos -= 1;
-                return Err(self.error("expected a value"));
+                Err(self.error("expected a value"))
             }
-        })
+        }
     }
 }

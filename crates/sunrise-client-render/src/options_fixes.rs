@@ -1,6 +1,8 @@
 //! The `OPTIONS` data fixers of 26.3 (`DataFixTypes.OPTIONS`), applied to the
 //! raw key/value strings of an `options.txt` older than the current version.
 use std::collections::HashMap;
+use sunrise_core::java_float_parse::{parse_java_double, parse_java_float};
+pub use sunrise_core::text::parse_java_integer as java_parse_int;
 
 /// A fixer threw an exception; vanilla abandons loading the file.
 #[derive(Debug)]
@@ -124,71 +126,6 @@ const LWJGL3: &[(i32, &str)] = &[
     (44, "key.z"),
 ];
 
-/// `Integer.parseInt(String)`.
-pub fn java_parse_int(text: &str) -> Option<i32> {
-    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    text.parse::<i32>().ok()
-}
-
-enum Number<'a> {
-    Special(f64),
-    Decimal(bool, &'a str),
-}
-
-fn java_number(text: &str) -> Option<Number<'_>> {
-    let t = text.trim_matches(|c: char| c <= ' ');
-    let (negative, body) = match t.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, t.strip_prefix('+').unwrap_or(t)),
-    };
-    match body {
-        "NaN" => return Some(Number::Special(f64::NAN)),
-        "Infinity" => {
-            return Some(Number::Special(if negative {
-                f64::NEG_INFINITY
-            } else {
-                f64::INFINITY
-            }));
-        }
-        _ => {}
-    }
-    let body = body.strip_suffix(['f', 'F', 'd', 'D']).unwrap_or(body);
-    if body.is_empty()
-        || !body
-            .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
-        || !body.chars().any(|c| c.is_ascii_digit())
-    {
-        return None;
-    }
-    Some(Number::Decimal(negative, body))
-}
-
-/// `Double.parseDouble(String)` for decimal and special forms.
-pub fn java_parse_double(text: &str) -> Option<f64> {
-    match java_number(text)? {
-        Number::Special(v) => Some(v),
-        Number::Decimal(negative, body) => body
-            .parse::<f64>()
-            .ok()
-            .map(|v| if negative { -v } else { v }),
-    }
-}
-
-/// `Float.parseFloat(String)`.
-pub fn java_parse_float(text: &str) -> Option<f32> {
-    match java_number(text)? {
-        Number::Special(v) => Some(v as f32),
-        Number::Decimal(negative, body) => body
-            .parse::<f32>()
-            .ok()
-            .map(|v| if negative { -v } else { v }),
-    }
-}
-
 fn rename(raw: &mut Raw, from: &str, to: &str, fix: impl FnOnce(&str) -> String) {
     if let Some(old) = raw.remove(from) {
         let value = fix(&old);
@@ -249,7 +186,7 @@ pub fn update(raw: &mut Raw, version: i32) -> Result<(), FixFailed> {
     if version < 1936
         && let Some(opacity) = raw.get("chatOpacity")
     {
-        let background = java_parse_double(opacity).map_or(0.5, |v| (0.9 * v + 0.1) / 2.0);
+        let background = parse_java_double(opacity).map_or(0.5, |v| (0.9 * v + 0.1) / 2.0);
         raw.insert(
             "textBackgroundOpacity".into(),
             sunrise_core::java_number::double_to_string(background),
@@ -287,7 +224,7 @@ pub fn update(raw: &mut Raw, version: i32) -> Result<(), FixFailed> {
     if version < 3943
         && let Some(v) = raw.get_mut("menuBackgroundBlurriness")
     {
-        let value = java_parse_float(v).map_or(5, |d| ((d * 10.0) + 0.5).floor() as i32);
+        let value = parse_java_float(v).map_or(5, |d| ((d * 10.0) + 0.5).floor() as i32);
         *v = value.to_string();
     }
     if version < 4651 {

@@ -2,13 +2,13 @@
 //! vanilla's default, parser and serializer. Reading a value writes its
 //! normalized form back, so storing afterwards rewrites the file the way the
 //! vanilla server does on start; the legacy keys are dropped.
-use super::json::{self, Json};
-use sunrise_core::{
-    random::java_string_hash,
-    text::{parse_java_integer, parse_java_long},
+use super::{
+    json::{self, Json},
+    seed_text::parse_seed,
 };
+pub use sunrise_core::text::parse_java_uuid as parse_uuid;
+use sunrise_core::text::{parse_java_integer, parse_java_long};
 use sunrise_java_properties::{Properties, date_string, now_millis};
-use sunrise_protocol::crypto::md5;
 
 /// MinecraftServer.ServerResourcePackInfo.
 #[derive(Clone, Debug, PartialEq)]
@@ -181,32 +181,6 @@ pub fn generate_secret_key(entropy: &mut dyn Entropy) -> String {
         .collect()
 }
 
-/// UUID.nameUUIDFromBytes.
-pub fn name_uuid(bytes: &[u8]) -> u128 {
-    let mut h = md5(bytes);
-    h[6] = (h[6] & 0x0f) | 0x30;
-    h[8] = (h[8] & 0x3f) | 0x80;
-    u128::from_be_bytes(h)
-}
-
-/// UUID.fromString (the lenient JDK parser: five dash-separated hex groups).
-pub fn parse_uuid(s: &str) -> Option<u128> {
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 5 || s.len() > 36 {
-        return None;
-    }
-    let mut v = [0u64; 5];
-    for (i, p) in parts.iter().enumerate() {
-        if p.is_empty() || p.len() > 16 {
-            return None;
-        }
-        v[i] = u64::from_str_radix(p, 16).ok()?;
-    }
-    let msb = (v[0] & 0xffff_ffff) << 32 | (v[1] & 0xffff) << 16 | (v[2] & 0xffff);
-    let lsb = (v[3] & 0xffff) << 48 | (v[4] & 0xffff_ffff_ffff);
-    Some(u128::from(msb) << 64 | u128::from(lsb))
-}
-
 /// Boolean.valueOf.
 fn java_bool(s: &str) -> bool {
     s.eq_ignore_ascii_case("true")
@@ -217,7 +191,7 @@ struct Reader {
 }
 impl Reader {
     fn raw(&self, key: &str) -> Option<String> {
-        self.p.get(key).map(str::to_owned)
+        self.p.get(key)
     }
     fn get<V>(
         &mut self,
@@ -231,12 +205,10 @@ impl Reader {
         v
     }
     fn string(&mut self, key: &str, default: &str) -> String {
-        self.get(
-            key,
-            |s| Some(s.to_owned()),
-            String::clone,
-            default.to_owned(),
-        )
+        self.raw(key).unwrap_or_else(|| {
+            self.p.put(key, default.to_owned());
+            default.to_owned()
+        })
     }
     fn int(&mut self, key: &str, default: i32) -> i32 {
         self.get(key, parse_java_integer, i32::to_string, default)
@@ -373,9 +345,12 @@ impl ServerProperties {
         let pause_when_empty_seconds = r.int("pause-when-empty-seconds", 60);
         let accepts_transfers = r.boolean("accepts-transfers", false);
         // The constructor body.
+        let configured_seed =
+            r.p.get_java("level-seed")
+                .and_then(|s| parse_seed(s.as_units()));
         let level_seed = r.string("level-seed", "");
         let generate_structures = r.boolean("generate-structures", true);
-        let (seed, random_seed) = match parse_seed(&level_seed) {
+        let (seed, random_seed) = match configured_seed {
             Some(s) => (s, false),
             None => (entropy.next_long(), true),
         };
@@ -535,16 +510,6 @@ impl ServerProperties {
     }
 }
 
-/// WorldOptions.parseSeed: empty is none, a long is itself, anything else
-/// hashes as a Java string.
-pub fn parse_seed(s: &str) -> Option<i64> {
-    let s = s.trim_matches(|c: char| c <= ' ');
-    if s.is_empty() {
-        return None;
-    }
-    Some(parse_java_long(s).unwrap_or_else(|| i64::from(java_string_hash(s.encode_utf16()))))
-}
-
 fn server_pack_info(
     id: &str,
     url: &str,
@@ -577,7 +542,7 @@ fn server_pack_info(
     }
     let prompt = parse_prompt(prompt, warnings);
     let id = if id.is_empty() {
-        let uuid = name_uuid(url.as_bytes());
+        let uuid = sunrise_core::md5::name_uuid(url.as_bytes());
         warnings.push(format!(
             "resource-pack-id missing, using default of {}",
             sunrise_protocol::crypto::uuid_string(uuid)
@@ -685,8 +650,8 @@ mod tests {
             assert_eq!(p.max_players, 12, "{value}");
             assert_eq!(p.max_tick_time, 12, "{value}");
             assert_eq!(p.function_permission_level, 0);
-            assert_eq!(p.raw.get("max-players"), Some("12"));
-            assert_eq!(p.raw.get("max-tick-time"), Some("12"));
+            assert_eq!(p.raw.get("max-players").as_deref(), Some("12"));
+            assert_eq!(p.raw.get("max-tick-time").as_deref(), Some("12"));
         }
     }
 
@@ -706,10 +671,27 @@ mod tests {
         assert_eq!((p.difficulty, p.game_mode, p.max_world_size), (3, 1, 12));
         assert_eq!(p.entity_broadcast_range_percentage, 12);
         assert_eq!((p.seed, p.random_seed), (12, false));
-        assert_eq!(p.raw.get("difficulty"), Some("hard"));
-        assert_eq!(p.raw.get("gamemode"), Some("creative"));
-        assert_eq!(p.raw.get("max-world-size"), Some("12"));
-        assert_eq!(p.raw.get("entity-broadcast-range-percentage"), Some("12"));
+        assert_eq!(p.raw.get("difficulty").as_deref(), Some("hard"));
+        assert_eq!(p.raw.get("gamemode").as_deref(), Some("creative"));
+        assert_eq!(p.raw.get("max-world-size").as_deref(), Some("12"));
+        assert_eq!(
+            p.raw.get("entity-broadcast-range-percentage").as_deref(),
+            Some("12")
+        );
+    }
+
+    #[test]
+    fn server_seed_hashes_unpaired_utf16_before_utf8_store() {
+        let text = "level-seed=\\u0000\\uD800\\u0020\n";
+        let raw = Properties::load_file(text.as_bytes()).unwrap();
+        let p = ServerProperties::new(raw, &mut Fixed).unwrap();
+        // java.util.Properties.load → String.trim → String.hashCode on Temurin 25.0.5.
+        assert_eq!((p.seed, p.random_seed), (55_296, false));
+        assert_eq!(
+            p.raw.get_java("level-seed").unwrap().as_units(),
+            [0, 0xd800, 0x20]
+        );
+        assert!(p.stored(0).contains("level-seed=\0? "));
     }
 
     #[test]
@@ -743,6 +725,24 @@ mod tests {
         assert!(p.random_seed);
         assert_eq!(p.seed, 7);
     }
+    #[test]
+    fn resource_pack_id_accepts_java_digits_but_rejects_signed_long_overflow() {
+        // Temurin 25 UUID.fromString, including the non-canonical fallback.
+        for (id, expected) in [
+            (
+                "d2Acd4F-０ａ-adB1-ED8-fB5",
+                Some(0x0d2a_cd4f_000a_adb1_0ed8_0000_0000_0fb5),
+            ),
+            ("ffffffffffffffff-0-0-0-0", None),
+        ] {
+            let mut raw = Properties::default();
+            raw.put("resource-pack", "https://example.invalid/pack.zip".into());
+            raw.put("resource-pack-id", id.into());
+            let p = ServerProperties::new(raw, &mut Fixed).unwrap();
+            assert_eq!(p.resource_pack.map(|pack| pack.id), expected, "{id}");
+        }
+    }
+
     #[test]
     fn parses_like_vanilla() {
         let mut raw = Properties::default();

@@ -1,6 +1,7 @@
 //! The enchanting power around an enchanting table (`EnchantmentMenu.slotsChanged`): the
 //! bookshelves and the blocks whose parts answer `enchant_power_bonus`.
-use super::Game;
+use super::{Game, native_world_read::BlockProviderQuery};
+use mod_api::LevelRef;
 use sunrise_client::stations::bookshelf_offsets;
 use sunrise_core::position::BlockPos;
 use sunrise_world::registry::BlockStateId;
@@ -12,6 +13,7 @@ impl Game<'_> {
     /// it at 15.
     pub(super) fn count_bookshelves(&self, pos: [i32; 3]) -> i32 {
         let table = BlockPos::new(pos[0], pos[1], pos[2]);
+        let level = self.native_current_level();
         let power: f32 = bookshelf_offsets()
             .into_iter()
             .filter(|o| {
@@ -21,10 +23,11 @@ impl Game<'_> {
                     pos[2] + o[2] / 2,
                 ))
             })
-            .map(|o| {
+            // An already-active provider contributes nothing to the offer sum.
+            .filter_map(|o| {
                 let at = BlockPos::new(pos[0] + o[0], pos[1] + o[1], pos[2] + o[2]);
                 let state = self.world.block(at.x, at.y, at.z);
-                self.enchant_power(state, at, table)
+                self.enchant_power_for_table(level, state, at, table)
             })
             .sum();
         // A negative sum would make vanilla's `nextInt(bookcases + 1)` throw.
@@ -38,24 +41,45 @@ impl Game<'_> {
             .is_some_and(|tag| tag.contains(&*self.res.facts().get(state).name))
     }
 
-    /// Shared enchant-power answer: block parts may override the provider-tag default;
-    /// both offers and the client particle-table rebuild use this answer.
+    /// Raw provider answer. The explicit read returns it as given.
     pub(in crate::game) fn enchant_power(
         &self,
+        level: Option<LevelRef>,
         state: BlockStateId,
         pos: BlockPos,
         table: BlockPos,
-    ) -> f32 {
-        let own = self
-            .items()
-            .default_enchant_power(&self.res.facts().get(state).name);
+    ) -> Option<f32> {
+        let mut power = self.default_enchant_power(state);
         if !super::api_values::block_state::block_listens(mod_api::HookId::EnchantPowerBonus, state)
         {
-            return own;
+            return Some(power);
         }
-        let mut power = own;
-        self.native_enchant_power_bonus(state, pos, table, &mut power);
-        if power.is_finite() { power } else { own }
+        self.with_block_provider_query(state, BlockProviderQuery::EnchantPower, || {
+            self.native_enchant_power_bonus(level, state, pos, table, &mut power);
+            power
+        })
+    }
+
+    fn default_enchant_power(&self, state: BlockStateId) -> f32 {
+        self.items()
+            .default_enchant_power(&self.res.facts().get(state).name)
+    }
+
+    /// Offers and particles ignore non-finite overrides and keep the tag default.
+    fn enchant_power_for_table(
+        &self,
+        level: Option<LevelRef>,
+        state: BlockStateId,
+        pos: BlockPos,
+        table: BlockPos,
+    ) -> Option<f32> {
+        self.enchant_power(level, state, pos, table).map(|power| {
+            if power.is_finite() {
+                power
+            } else {
+                self.default_enchant_power(state)
+            }
+        })
     }
 
     /// Snapshot at world entry/parts reload, or after received tags and tag-update listeners
@@ -68,7 +92,9 @@ impl Game<'_> {
             self.pack.assets.registry.len(),
             |state| {
                 let origin = BlockPos::new(0, 0, 0);
-                self.enchant_power(state, origin, origin)
+                // An already-active provider supplies no particle source.
+                self.enchant_power_for_table(None, state, origin, origin)
+                    .unwrap_or_default()
             },
             |state| self.enchant_transmits(state),
         );

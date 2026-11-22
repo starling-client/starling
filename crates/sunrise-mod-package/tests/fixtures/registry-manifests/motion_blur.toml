@@ -1,0 +1,40 @@
+id = "motion_blur"
+name = "Motion Blur"
+version = "0.1.0"
+description = "Adds smooth motion blur."
+authors = ["GeorgeDev22"]
+license = "MIT"
+homepage = "https://github.com/GeorgeDev22/sunrise-motion-blur"
+issues = "https://github.com/GeorgeDev22/sunrise-motion-blur/issues"
+api = "0.2"
+side = "client"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+sunrise = "2d8126336e579777eabf9b2fd8b3d476236a04f2"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+# The game calls these as it draws each frame. Its frame types and wgpu can only be named in
+# these helpers, so they read the frame and draw; the mod's crate decides what.
+
+[[native.mixin]]
+id = "render_needs"
+target = "sunrise_mod_render::render::render_needs"
+kind = "HEAD"
+helper = "src/mixins/render_needs.rs"
+bindings = [{ name = "needs", ty = "&mut RenderNeeds", value = "&mut *needs" }]
+
+[[native.mixin]]
+id = "world_drawn"
+target = "sunrise_mod_render::render::world_drawn"
+kind = "HEAD"
+helper = "src/mixins/world_drawn.rs"
+bindings = [{ name = "world", ty = "&mut WorldDrawn<'_>", value = "&mut *world" }]
+
+[[native.mixin]]
+id = "hand_drawn"
+target = "sunrise_mod_render::render::hand_drawn"
+kind = "HEAD"
+helper = "src/mixins/hand_drawn.rs"
+bindings = [{ name = "hand", ty = "&mut HandDrawn<'_>", value = "&mut *hand" }]

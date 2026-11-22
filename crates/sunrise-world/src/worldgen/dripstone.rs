@@ -13,8 +13,8 @@ use super::{
     value_provider::{FloatProvider, IntProvider},
 };
 use crate::{heightmap::HeightmapType, registry::BlockStateId};
-use sunrise_core::{geometry::trig, random::RandomSource};
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::{geometry::trig, random::RandomSource};
 
 fn query<E>(error: PlacementQueryError) -> FeatureExecutionError<E> {
     FeatureExecutionError::Query(error)

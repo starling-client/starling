@@ -1,4 +1,12 @@
 //! Probe for tools/test_marker_particles_parity.py.
+use serde_json::Value;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::Path,
+    sync::Arc,
+};
 use sunrise_client::{
     Result,
     animate_tick::{
@@ -20,14 +28,6 @@ use sunrise_core::{
     random::{RandomSource, position_seed},
 };
 use sunrise_world::{chunk::BlockState, registry::BlockStateId};
-use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-    sync::Arc,
-};
 
 /// A `minecraft:name[k=v,...]` block state, as the cases write one.
 fn parse_state(spec: &str) -> BlockState {
@@ -65,7 +65,7 @@ fn column_offset(x: i32, z: i32) -> [f64; 3] {
 
 pub fn main() -> Result<()> {
     let args: Vec<String> = crate::args().collect();
-    let root = Path::new(".local/sunrise-client/26.3");
+    let root = &Path::new(".local/sunrise-client").join(sunrise_core::VANILLA_VERSION);
     let assets = Assets::load(root)?;
     let facts = BlockFacts::load(root, assets.registry)?;
     let biomes = Biomes::load(&sunrise_assets::resource_source::ResourceRoot::directory(
@@ -180,6 +180,7 @@ pub fn main() -> Result<()> {
                 gateway_particles: &|_, _| 0,
                 thundering: false,
                 ultrawarm: false,
+                block_parts: None,
             };
             engine.clear();
             engine.sounds.clear();
@@ -230,6 +231,7 @@ pub fn main() -> Result<()> {
                 gateway_particles: &|_, _| 0,
                 thundering: false,
                 ultrawarm: false,
+                block_parts: None,
             };
             let pos = [0, 64, 0];
             // Every particle the level is asked for: the engine records them
@@ -302,6 +304,7 @@ pub fn main() -> Result<()> {
             gateway_particles: &|_, _| 0,
             thundering: false,
             ultrawarm: false,
+            block_parts: None,
         };
         engine.seed_randoms(1057, 0, 0);
         engine.requested = Some(Vec::new());

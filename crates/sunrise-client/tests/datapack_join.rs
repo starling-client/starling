@@ -6,6 +6,15 @@
 //! are needed. The process holds one set of declarations and one served and received set, so
 //! the tests take turns.
 extern crate sunrise_client_lib as sunrise_client;
+use mod_api::{
+    DatapackCandidate, DatapackField, DatapackFieldKind, DatapackRegistryDeclaration,
+    DatapackRegistrySet, DatapackRegistrySync, DatapackValue,
+};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     chunk::MIN_Y,
     datapack_net,
@@ -32,15 +41,6 @@ use sunrise_world::{
     item_defaults::ItemData,
     native_load_context::{DataLoadOrigin, LoadContext, LoadInputs},
     registry::BlockStateId,
-};
-use mod_api::{
-    DatapackCandidate, DatapackField, DatapackFieldKind, DatapackReadError,
-    DatapackRegistryDeclaration, DatapackRegistrySet, DatapackRegistrySync, DatapackValue,
-};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant},
 };
 
 static TURN: Mutex<()> = Mutex::new(());
@@ -80,15 +80,14 @@ fn candidate(power: i64) -> DatapackCandidate {
 }
 
 fn first_set(power: i64) -> Arc<DatapackRegistrySet> {
-    Arc::new(DatapackRegistrySet::first(
-        candidate(power),
-        datapack_net::next_session(),
-    ))
+    Arc::new(DatapackRegistrySet::from_candidate(candidate(power)))
 }
 
 fn power(set: &DatapackRegistrySet) -> Option<DatapackValue> {
-    let handle = set.handle("example:spell", "addon:fire").ok()?;
-    set.get(&handle).ok()?.get("power").cloned()
+    set.get("example:spell", "addon:fire")
+        .ok()?
+        .get("power")
+        .cloned()
 }
 
 fn start_lan() -> Lan {
@@ -120,6 +119,7 @@ impl Host {
             &sunrise_protocol::registry::Builtin::default(),
             &[],
             &[],
+            Default::default(),
         );
         let config = HubConfig {
             allow_flight: false,
@@ -134,6 +134,7 @@ impl Host {
             seed: 1,
             max_players: 8,
             levels: Default::default(),
+            level_seeds: Default::default(),
         };
         let load = Arc::new(
             load_context(DataLoadOrigin::ServerDataLoad)
@@ -159,6 +160,7 @@ impl Host {
             next_entity: &mut self.next_entity,
             spawn: [8.5, f64::from(MIN_Y + 5), 8.5],
             spawn_angle: [0.0; 2],
+            spawn_dimension: "minecraft:overworld",
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -215,6 +217,7 @@ fn connect(port: u16, name: &str, data: &Arc<ItemData>) -> Session {
         ClientInformation::new(8),
         Arc::new(Default::default()),
         Arc::clone(data),
+        Arc::default(),
     )
 }
 
@@ -229,6 +232,23 @@ fn drive<T>(
         host.tick();
         for receipt in session.poll() {
             let (event, _credit) = receipt.into_parts();
+            let event = match event {
+                Event::Configuration(task) => {
+                    let Some(effect) = task.handle() else {
+                        continue;
+                    };
+                    effect
+                }
+                Event::Cookie(task) => {
+                    task.handle();
+                    continue;
+                }
+                Event::FinishConfiguration(change) => {
+                    change.acknowledge();
+                    continue;
+                }
+                event => event,
+            };
             if let Some(found) = done(host, event) {
                 return found;
             }
@@ -256,7 +276,6 @@ fn a_client_that_offers_the_registry_joins_and_reads_the_entry() {
     let session = connect(host.port(), "Mage", &data);
     join(&mut host, &session);
     let received = datapack_net::received().expect("the snapshot arrived before the join ended");
-    assert_eq!(received.generation(), 1);
     assert_eq!(power(&received), Some(DatapackValue::Int(7)));
 }
 
@@ -300,7 +319,7 @@ fn refused_client(brand: &str) -> (String, bool) {
     }
     c.send(&cfg::Serverbound::ClientInformation(ClientInformation::new(4)).encode())
         .unwrap();
-    let mut name = sunrise_protocol::buf::Writer::new();
+    let mut name = ::sunrise_core::vanilla_bytes::Writer::new();
     name.string(brand);
     c.send(
         &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
@@ -370,19 +389,13 @@ fn a_required_registry_refuses_a_client_without_the_mod_before_any_registry_data
 #[ignore = "daily"]
 fn a_reload_snapshot_gives_the_client_generation_two_and_stales_old_handles() {
     let _turn = begin();
-    let first = first_set(7);
-    datapack_net::serve(Some(first.clone()));
+    datapack_net::serve(Some(first_set(7)));
     let (_resources, data) = Resources::new("reload");
     let mut host = Host::start();
     let session = connect(host.port(), "Mage", &data);
     join(&mut host, &session);
     let joined = datapack_net::received().unwrap();
-    assert_eq!(joined.generation(), 1);
-    let held = joined.handle("example:spell", "addon:fire").unwrap();
-    assert_eq!(
-        joined.get(&held).unwrap().get("power"),
-        Some(&DatapackValue::Int(7))
-    );
+    assert_eq!(power(&joined), Some(DatapackValue::Int(7)));
     // The host registers the guest on a tick after the client joined.
     let deadline = Instant::now() + Duration::from_secs(30);
     while host.joined.is_empty() {
@@ -394,8 +407,8 @@ fn a_reload_snapshot_gives_the_client_generation_two_and_stales_old_handles() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    // What `/reload` does: publish the next generation, then send each joined client its snapshot.
-    datapack_net::serve(Some(Arc::new(first.reload(candidate(9)).unwrap())));
+    // What `/reload` does: publish the new set, then send each joined client its snapshot.
+    datapack_net::serve(Some(first_set(9)));
     let datapack_net::Step::Send(data) = datapack_net::reload_payload(
         host.hub
             .guests
@@ -430,17 +443,15 @@ fn a_reload_snapshot_gives_the_client_generation_two_and_stales_old_handles() {
         _ => None,
     });
     let next = datapack_net::received().unwrap();
-    assert_eq!(next.generation(), 2);
     assert_eq!(power(&next), Some(DatapackValue::Int(9)));
-    assert_eq!(next.get(&held), Err(DatapackReadError::StaleGeneration));
+    assert_eq!(power(&joined), Some(DatapackValue::Int(7)));
 }
 
 #[test]
 #[ignore = "daily"]
 fn a_refused_reload_disconnects_instead_of_retaining_the_old_generation() {
     let _turn = begin();
-    let first = first_set(7);
-    datapack_net::serve(Some(first.clone()));
+    datapack_net::serve(Some(first_set(7)));
     let (_resources, data) = Resources::new("refused_reload");
     let mut host = Host::start();
     let session = connect(host.port(), "Mage", &data);
@@ -463,7 +474,7 @@ fn a_refused_reload_disconnects_instead_of_retaining_the_old_generation() {
         .sender
         .clone();
     sender.datapack_offer = Some(Arc::from([255_u8]));
-    datapack_net::serve(Some(Arc::new(first.reload(candidate(9)).unwrap())));
+    datapack_net::serve(Some(first_set(9)));
     datapack_net::reload_connection(&sender);
     drive(&mut host, &session, |_, event| match event {
         Event::Disconnected { reason, .. } => {
@@ -475,4 +486,128 @@ fn a_refused_reload_disconnects_instead_of_retaining_the_old_generation() {
         }
         _ => None,
     });
+}
+
+#[test]
+#[ignore = "daily"]
+fn an_incomplete_configuration_snapshot_refuses_finish_after_earlier_replies() {
+    let _turn = begin();
+    let (_resources, data) = Resources::new("incomplete_configuration");
+    let (client, server) = sunrise_protocol::connection::Pipe::pair();
+    let session = Session::connect_local(
+        client,
+        "Mage",
+        None,
+        ClientInformation::new(8),
+        Arc::new(sunrise_protocol::text::Language::new()),
+        data,
+        Arc::default(),
+    );
+    let mut server = Connection::local(server);
+    server
+        .reader
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    server.recv().unwrap(); // Handshake.
+    server.recv().unwrap(); // Login hello.
+    server
+        .send(
+            &login::Clientbound::LoginFinished(login::LoginFinished {
+                profile: login::GameProfile {
+                    uuid: 1,
+                    name: "Mage".into(),
+                    properties: vec![],
+                },
+                session: 1,
+            })
+            .encode(),
+        )
+        .unwrap();
+    server.recv().unwrap(); // Login acknowledged.
+    server.recv().unwrap(); // Brand.
+    server.recv().unwrap(); // Client information.
+
+    let partial = datapack_net::chunks(&vec![0; 1 << 20])
+        .unwrap()
+        .next()
+        .unwrap();
+    for packet in [
+        cfg::Clientbound::CookieRequest(cfg::CookieRequest {
+            key: "test:cookie".into(),
+        }),
+        cfg::Clientbound::Ping(cfg::Ping { id: 11 }),
+        cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+            channel: datapack_net::CHANNEL.into(),
+            data: partial,
+        }),
+        cfg::Clientbound::FinishConfiguration(Empty),
+    ] {
+        server.send(&packet.encode()).unwrap();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frozen = Vec::new();
+    loop {
+        frozen.extend(
+            session
+                .poll()
+                .into_iter()
+                .map(|receipt| receipt.into_parts()),
+        );
+        if frozen
+            .iter()
+            .any(|(event, _)| matches!(event, Event::FinishConfiguration(_)))
+        {
+            break;
+        }
+        assert!(
+            session.accepts_packets(),
+            "the reader closed ahead of the main turn"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "finish never reached the main turn"
+        );
+        std::thread::yield_now();
+    }
+    for (event, _credit) in frozen {
+        match event {
+            Event::Cookie(task) => task.handle(),
+            Event::Configuration(task) => {
+                assert!(task.handle().is_none());
+            }
+            Event::FinishConfiguration(task) => task.acknowledge(),
+            Event::Status(_) => {}
+            _ => panic!("unexpected event before finish"),
+        }
+    }
+    for expected in [
+        cfg::Serverbound::CookieResponse(cfg::CookieResponse {
+            key: "test:cookie".into(),
+            payload: None,
+        }),
+        cfg::Serverbound::Pong(cfg::Ping { id: 11 }),
+    ] {
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(cfg::Serverbound::decode(id, &body).unwrap(), expected);
+    }
+    assert!(
+        server
+            .recv()
+            .expect_err("a failed Finish must not ACK or enter Play")
+            .is_end_of_stream()
+    );
+    loop {
+        for receipt in session.poll() {
+            if let (Event::Disconnected { reason, .. }, _) = receipt.into_parts() {
+                assert!(
+                    reason.contains("Incomplete datapack registry snapshot"),
+                    "{reason}"
+                );
+                return;
+            }
+        }
+        assert!(Instant::now() < deadline, "refusal not reported");
+        std::thread::yield_now();
+    }
 }

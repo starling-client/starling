@@ -19,17 +19,15 @@ struct Observer(Seen);
 impl BlockPart for Observer {}
 #[mod_api::sunrise_part]
 impl BlockEntityPart for Observer {
-    fn block_entity_data_received(
-        &self,
-        host: &dyn mod_api::ClientHost,
-        event: &mut mod_api::BlockEntityDataReceivedEvent<'_>,
-    ) {
-        self.0.lock().unwrap().push((
-            event.source,
-            event.entity.position(host).unwrap(),
-            event.tag.clone(),
-            event.entity.data(host).unwrap(),
-        ));
+    fn block_entity_data_received(&self, event: &mut mod_api::BlockEntityDataReceivedEvent<'_>) {
+        let (pos, nbt) = event
+            .subject
+            .with_view(|view| (view.position(), view.nbt().clone()))
+            .expect("live resident client block entity");
+        self.0
+            .lock()
+            .unwrap()
+            .push((event.source, pos, event.tag.clone(), nbt));
     }
 }
 struct TestMod(Seen);
@@ -43,7 +41,7 @@ impl Hooks for TestMod {
     }
 }
 #[test]
-#[ignore = "requires prepared resources; isolated canonical block entity membership"]
+#[ignore = "daily"]
 fn block_entity_data_received_after_merge() {
     if run_fresh_cases(
         "game::remote::block_entity_data_tests::block_entity_data_received_after_merge",

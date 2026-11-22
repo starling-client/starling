@@ -31,8 +31,7 @@ The dedicated server is the game itself, run headless:
   online. It supports `pause-when-empty-seconds`, `player-idle-timeout` and the autosave.
 - **Console (stdin).** `stop`, `save-all`, `save-on`/`save-off`, `list [uuids]`, `op`/`deop`,
   `whitelist on|off|list|reload|add|remove`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `banlist`, `kick` and
-  `say` behave as in `DedicatedServer`. `tempban <player> <duration> [reason]` is Sunrise's own: a ban that
-  ends by itself ([hosting](hosting.md#temporary-bans)). Every other command goes to the game's own dispatcher as the
+  `say` behave as in `DedicatedServer`. Every other command goes to the game's own dispatcher as the
   server (permission level 4). The log follows vanilla's Log4j pattern, in `logs/latest.log` and on stdout.
 - **Player names.** `usercache.json` in the universe folder works as vanilla's `CachedUserNameToIdResolver`.
   Players are added when they join and kept for a month, and the file keeps the 1000 most recently used,
@@ -87,7 +86,7 @@ every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P
 clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output. `server-mods` reads the canonical `LoadedMods` package
 inventory on this same server thread and answers `{"mods":[{"id":"example","version":"1"}]}`.
-It includes native, wasm and content packages installed in that inventory, in inventory order; an empty
+It includes native and content packages installed in that inventory, in inventory order; an empty
 inventory is `{"mods":[]}`. The supervisor's `GET /api/v1/mods` uses this query, never a build-record fallback.
 
 **A proxy moving a player between two servers** uses more requests on this endpoint (`lan/arrivals.rs`,
@@ -96,7 +95,7 @@ inventory is `{"mods":[]}`. The supervisor's `GET /api/v1/mods` uses this query,
 
 ```toml
 [transfer]
-enabled = false              # true: take a proxy's player-* requests; needs Velocity forwarding (forwarding.secret)
+enabled = false              # true: take a proxy's player-* requests; refused at start since Velocity forwarding was removed
 expect_seconds = 10          # how long a player the proxy announced is waited for, when it names no time
 max_expect_seconds = 60      # the longest the proxy may ask for
 max_expected = 64            # players waited for at once
@@ -111,10 +110,9 @@ with vanilla's `accepts-transfers`, which is about the transfer packet a server 
 every `player-*` request and `transfer-status` are answered `{"error": "transfers are off on this server"}`, the
 engine keeps no table and does nothing for transfers on a tick.
 
-With it on, the engine refuses to start unless Velocity forwarding is on (`forwarding.secret`,
-[velocity-forwarding.md](velocity-forwarding.md)). The proxy must be the only way in: a player who joined a
-source server directly would find there the older copy of itself that a hand-over left behind, and items would
-double.
+With it on, the engine refuses to start. The proxy must be the only way in: a player who joined a source server
+directly would find there the older copy of itself that a hand-over left behind, and items would double. Velocity
+forwarding made sure of that, and Sunrise no longer has it.
 
 **Who can ask.** The requests do not widen who can reach the engine: they use the control endpoint, a Unix socket
 or TCP on 127.0.0.1 only (sunrise-server starts it on TCP with a token). A proxy on another machine needs
@@ -325,8 +323,8 @@ velocity that is not finite numbers (a rotation past what a float holds too). A 
 (`RootVehicle`) puts the player back on it at the vehicle's own place, so a request that names a position for such a
 record is refused. The border, the blocks and the chunks are not checked,
 as a vanilla server does not check the place its player file names. The player is teleported to the position (the
-client confirms a new teleport id), so an anticheat never sees the arrival as a move, however far it is from the
-export.
+client confirms a new teleport id), so the arrival is a teleport, never judged as a move (vanilla's speed and
+collision checks), however far it is from the export.
 
 **The view follows the imported position.** `recentered` says whether the import moved the player to another chunk
 than the one its view was built around (only possible with the `position` part, and only once the player has been sent
@@ -359,7 +357,7 @@ byte of the hand-over, calls `player-drop` and the target is as it was. A proxy 
 player that is dropped by itself after `max_hold_seconds`, with a warning in the log.
 
 **A hand-over, in order.** A proxy moving a player from server A to server B, without a loading screen. Both run
-with `[transfer]` on and behind the proxy's Velocity forwarding:
+with `[transfer]` on:
 
 1. `player-expect <uuid>` on B: B holds the player's next login.
 2. `player-export <uuid> freeze` on A: the record and its `handover` id, and A stops acting on the player's inputs.
@@ -468,11 +466,13 @@ comes out of the headless-engine work.
 **One-command install** (`packaging/server/`):
 
 - Linux and macOS:
-  `curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh`
+  `curl -fsSL https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.sh | sh`
   The script picks the release archive for the OS and architecture (on Linux x86_64 the server archive,
   on macOS arm64 the game's), downloads it from GitHub Releases, and checks it against the release's signed
-  `SHA256SUMS` when OpenSSL 3 is installed, else against the SHA-256 GitHub publishes for each asset
-  (docs/security.md). It never asks for sudo. Options: `--version vX.Y.Z`, `--dir` (default
+  `SHA256SUMS` with `sunrise-verify`, which it downloads and accepts only with the SHA-256 pinned in the script;
+  it refuses the install on any failure (docs/security.md, "The first install"). It installs the Nightly unless
+  told otherwise. It never asks for sudo. Options: `--version` (a release's tag: a stable one such as `26.3-0.1.0`
+  puts the server on that stable line), `--dir` (default
   `~/.local/share/sunrise`), `--bin` (default `~/.local/bin`), and `--archive FILE` to install an archive
   already on the machine (a build of your own; no download and no checksum).
   A Linux release from before the server archive installs the full game, which links ALSA's and udev's
@@ -481,10 +481,10 @@ comes out of the headless-engine work.
   any that are missing, `init` warns, and `run` stops at once with what to install, rather than restarting
   a game that can't load.
 - Windows:
-  `irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex`
-  The script does the same into `%LOCALAPPDATA%\Sunrise` (`-Version`, `-Dir`), with junctions instead of
-  links (no admin rights), and adds `bin` to the user's PATH. It finds OpenSSL 3 on the PATH or in Git for
-  Windows to check the signature.
+  `irm https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.ps1 | iex`
+  The script does the same into `%LOCALAPPDATA%\Sunrise` (`-Version <tag>`, such as `-Version 26.3-0.1.0` for a
+  stable line, and `-Dir`), with junctions instead of links (no admin rights), and adds `bin` to the user's PATH. It
+  checks the signature with the pinned `sunrise-verify` the same way.
 - **Layout.** Each release goes to `<dir>/releases/<tag>` and `<dir>/current` points at the one in use, so an
   update or a rollback is one link. `<bin>/sunrise-server` and `<bin>/sunrise-prepare` are two-line launchers
   that run `current`. The prepared game files live in `<dir>/game-files/sunrise-client` and each release's
@@ -533,16 +533,6 @@ The owner edits only `server.toml`. The supervisor writes `server.properties` fr
 start, so the engine stays exactly vanilla. The file is short: typed sections for what owners change, and
 a `[properties]` table that passes any other vanilla key through unchanged.
 
-For Unix wasm compilation, add `"wasm.compile_timeout_secs" = "120"` under
-`[properties]` to allow 120 seconds per uncached module. The engine reads this
-runtime setting from the dedicated game directory's `server.properties`; edit the
-TOML when using the supervisor. Zero or non-numeric values publish a refusal naming
-the setting and value, excluding the affected package's code and content. Unix cache
-trust/write failures and compiler failures refuse compilation rather than drop the
-deadline; restore a private writable `.sunrise-cache/wasm` and working executable.
-Removing the key restores the available-thread default; see the
-[wasm compilation settings](modding/src/how-to/wasm-mods.md#compilation-time-setting)
-for the exact formula and platform limitations.
 
 ```toml
 # Sunrise server settings (docs/server.md). The server writes them into server.properties before
@@ -577,44 +567,23 @@ restart_on_crash = true
 
 [backups]
 every = "6h"                 # automatic backups while the server runs: 30m, 6h, 1d...; "0" turns them off
-keep = 12                    # automatic backups kept (backups made by hand are never deleted)
+keep = 12                    # 1–1000 automatic backups kept (backups made by hand are never deleted)
+                             # Fix an invalid value directly here: config set must load this file first.
 
 [updates]
 keep = 1                     # other releases kept by updates, besides the one in use and the one rollback goes to
 ```
 
 This is the file `init` writes today, and it also writes `[panel]` (`bind = "127.0.0.1:8130"` and
-`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. `[entities]` (mob AI far from players, off) is written only when set ([hosting](hosting.md)). The defaults are vanilla 26.3's (a test checks
+`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. The defaults are vanilla 26.3's (a test checks
 each one). Unknown keys are errors, as are a typed key set again under `[properties]` and values vanilla would
 refuse. There is no `backups.before_update` setting: an update always backs up the world first (section 7).
 
-- **`[entities]`: villagers that cannot move.** Not vanilla, so off. `villager_lobotomize = true` makes the
-  engine skip the brain of a villager that is *stuck*, and `villager_lobotomize_check_interval = 100` (ticks)
-  is how often each villager is rechecked (staggered by id). The game reads the section itself, and
-  `init` leaves it out until it is set. A villager is stuck when it rides something, or when the cells it can walk to
-  (a free block at its height, down a fall of up to 3, or one block up with room above; beds and slabs count as
-  cells it can step onto) number at most 6 and no door villagers open leads out. So a 1×1 cell, a 1×2 cell with a bed, or a
-  pocket with a workstation are stuck whatever covers the head; a room of 3×3, open ground, or a cell with a door
-  are not; a sleeping villager never is. A stuck villager skips its brain (sensors,
-  behaviours, schedule, gossip spreading, sleep, farming, breeding, panic, point-of-interest searches) and
-  keeps gravity, damage, despawning, trading with its XP and level-ups, and its trades. Its job site
-  stays: while it would work (ticks 2000 to 9000 of the day) it restocks as `WorkAtPoi` does, every 300 ticks with a
-  workstation still there, at most twice a day. When the cell opens, the next recheck gives it its brain
-  back. A villager that was never free does not claim a job site or a bed.
-- **Entity collision cap (`[entities] max_collisions`).** Off (0) is vanilla. In a crowded pen every mob pushes
-  every mob it overlaps each tick, so the work grows with the square of the crowd (about 8 ms a tick on a
-  79-player server with crowded chicken farms). `max_collisions = N` (not in the file until you add it) makes a
-  mob push at most N other mobs per tick. The pushes a mob receives count as well: a mob that has had N this
-  tick is skipped by the others, and the counts start again every tick. The mobs pushed are the first N in
-  vanilla's order, so the result is the same from run to run. `max_entity_cramming` still counts every entity
-  in the box before the cap applies, so cramming damage is vanilla's. It covers mobs pushing mobs: players,
-  boats and minecarts push as in vanilla. It reaches the game as `SUNRISE_MAX_ENTITY_COLLISIONS`, at the next
-  start; with the setting at 0 a variable already in the server's environment still applies.
 - **Import.** `sunrise-server init` in a folder with a `server.properties`, or `sunrise-server import
   server.properties`, reads it with vanilla's own parser (`ServerProperties`). Keys with typed fields go into
   their sections; any other key that differs from vanilla's default goes into `[properties]`. Keys left at
-  their defaults are dropped, so the TOML stays short. The original file is kept as
-  `server.properties.imported`.
+  their defaults are dropped, so the TOML stays short. `init` keeps the original beside the new file as
+  `server.properties.imported`; `import` only writes `server.toml` and leaves the file it read where it is.
 - **Changes made in game.** The engine writes `server.properties` itself, for example after `/whitelist on`.
   After it stops, the supervisor compares the file with what it wrote and copies any changed keys back into
   `server.toml`, so an in-game change survives the next start. Edits go through `toml_edit`, so the owner's
@@ -638,18 +607,19 @@ sunrise-server run                       supervisor + engine in the foreground; 
 sunrise-server start | stop | restart    in the background (detached `run`); start also resumes a stopped supervisor
 sunrise-server status [--json]           up?, uptime, TPS, MSPT, players, RAM, CPU, crashes
 sunrise-server cmd <command…>            one console command, with its output
+sunrise-server report [SECONDS] [--no-samples]   record a performance report, 1 to 600 s (hosting.md)
 sunrise-server console                   attach: the live log, and send commands (Ctrl-D detaches)
 sunrise-server logs [-f] [-n N]
 sunrise-server op|deop <player>
 sunrise-server whitelist on|off|list|add|remove [player]
 sunrise-server players [--json]          who is online, operators, whitelist, bans
 sunrise-server kick|ban <player> [reason]   pardon <player>   ban-ip <address|player> [reason]   pardon-ip <address>
-sunrise-server backup [NAME]             backups             restore <backup> [--yes]
+sunrise-server backup [NAME]             backups [--json]    restore <backup> [--dimension ID] [--yes]
 sunrise-server import <server.properties>
 sunrise-server config [--json]           config set KEY=VALUE... [--json]
 sunrise-server service install|uninstall|print [--system]
 sunrise-server panel                     the panel's address and a one-time login link
-sunrise-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
+sunrise-server update [--check [--json]] [--version TAG] [--timeout S]     rollback [--timeout S]
 sunrise-server update --archive FILE --version NAME     an archive you have (your own build)
 sunrise-server mcp                       MCP server on stdio (section 8)
 sunrise-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
@@ -728,20 +698,23 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   hosting panel's console) still ends both, and while the game is stopped that stdin takes `start` and `stop`.
   `sunrise-server start` or `POST /api/v1/start` starts the game again; `sunrise-server stop` and the management
   protocol's `server/stop` (as vanilla's, the process exits) still shut down both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
-- **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
-  lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
-  5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
-  reason in `status` and the panel.
+- **Crash restart.** If the engine exits without being asked to stop, the supervisor restarts it after 5 s
+  (the last 2000 log lines stay in `logs` and the panel, and the engine's crash report in `crash-reports/`),
+  and doubles the wait up to 5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a
+  broken world, and shows the reason in `status` and the panel.
 - **Updates** (`crates/sunrise-server/src/update.rs`), for a `sunrise-server` installed by `install.sh` or
   `install.ps1`. Releases ship often (release-flow.md), so updates stay opt-in: a running server looks for a
   newer release a minute after it starts and then every 6 hours, and only says so, in its log, in `status`
   and in the panel (`SUNRISE_NO_UPDATE_CHECK=1` turns the check off). `update --check` asks GitHub once.
   `update`:
-  1. downloads the current Nightly's archive for this computer (the only build Sunrise ships since 2026-10-28;
-     GitHub's latest release while there is none; on Linux the server build; `--version` picks another: a
-     `vX.Y.Z` release, or a `nightly-<date>` of the last 7 days) and checks it against its SHA256SUMS, whose Ed25519
+  1. downloads the newest build of the server's channel for this computer: on a stable release (`26.3-0.1.0`), the
+     newest published stable release of its line (the same Minecraft version and Sunrise major, `26.3-0.x`: never
+     a Nightly, whose mod API may differ, nor the next major, which a server moves to with `--version`); on any
+     other build, the current Nightly (GitHub's latest release while there is none). On Linux it takes the server
+     build. `--version` picks another: a stable release's tag, a `vX.Y.Z` release, or a `nightly-<date>` of the
+     last 7 days; a Dev build (`dev-<date>-<commit>`) is refused. It checks the archive against its SHA256SUMS, whose Ed25519
      signature must check with a key built into `sunrise-server` (docs/release-flow.md, "Signed checksums"),
-     signed for the Nightly channel: an unsigned or tampered build is refused. A Nightly installs as
+     signed for the Nightly's own version or the stable release's tag: an unsigned or tampered build is refused. A Nightly installs as
      `nightly-<date>-<commit>`, newer than every `vX.Y.Z`; another build of the same day is an update too;
   2. unpacks it into `<dir>/releases/<tag>`, beside the others, with its game files linked to
      `<dir>/game-files` as the installers do;

@@ -16,7 +16,7 @@ fn git(root: &Path, args: &[&str]) {
 
 #[test]
 #[ignore = "daily"]
-fn client_and_server_layouts_require_and_ship_std() {
+fn client_and_server_layouts_require_and_ship_companion_programs() {
     let root = std::env::temp_dir().join(format!("xtask-packaging-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     for name in [
@@ -26,6 +26,7 @@ fn client_and_server_layouts_require_and_ship_std() {
         "crates/sunrise-prepare/fixture",
         "research-lock.json",
         "LICENSE",
+        "LICENSES/MIT-Horizon.txt",
         "packaging/PLAY.txt",
         "exporters/manifest.json",
     ] {
@@ -67,8 +68,9 @@ fn client_and_server_layouts_require_and_ship_std() {
         for name in [
             "sunrise-client",
             "sunrise-ctl",
-            "sunrise-prepare",
+            "sunrise-perf",
             "sunrise-server",
+            "sunrise-port-pack",
         ] {
             fs::write(source.join(format!("{name}{suffix}")), b"program").unwrap();
         }
@@ -85,8 +87,8 @@ fn client_and_server_layouts_require_and_ship_std() {
             };
             let missing = run();
             assert!(!missing.status.success());
-            assert!(String::from_utf8_lossy(&missing.stderr).contains("sunrise-wasm-std.wasm"));
-            fs::write(source.join("sunrise-wasm-std.wasm"), b"wasm-member").unwrap();
+            assert!(String::from_utf8_lossy(&missing.stderr).contains("sunrise-prepare"));
+            fs::write(source.join(format!("sunrise-prepare{suffix}")), b"program").unwrap();
             let packed = run();
             assert!(
                 packed.status.success(),
@@ -94,8 +96,8 @@ fn client_and_server_layouts_require_and_ship_std() {
                 String::from_utf8_lossy(&packed.stderr)
             );
             assert_eq!(
-                fs::read(out.join("sunrise-wasm-std.wasm")).unwrap(),
-                b"wasm-member"
+                fs::read(out.join(format!("sunrise-prepare{suffix}"))).unwrap(),
+                b"program"
             );
             let engine = if task == "package" {
                 "sunrise-client"
@@ -107,7 +109,10 @@ fn client_and_server_layouts_require_and_ship_std() {
                 b"program"
             );
             assert!(out.join("exporters/manifest.json").is_file());
-            fs::remove_file(source.join("sunrise-wasm-std.wasm")).unwrap();
+            for notice in ["LICENSE", "LICENSES/MIT-Horizon.txt"] {
+                assert_eq!(fs::read(out.join(notice)).unwrap(), b"fixture");
+            }
+            fs::remove_file(source.join(format!("sunrise-prepare{suffix}"))).unwrap();
         }
     }
     fs::remove_dir_all(root).unwrap();

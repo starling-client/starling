@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: unknown field `versoin`, expected one of `id`, `name`, `version`, `description`, `authors`, `license`, `license_url`, `credits`, `homepage`, `issues`, `api`, `side`, `capabilities`, `namespaces`, `served_by`, `dependencies`, `incompatible`, `discouraged`, `load_before`, `jar`, `native`, `runtime`, `internals`, `properties` (line 4, column 1); did you mean `version`?
+
+icon:
+unavailable

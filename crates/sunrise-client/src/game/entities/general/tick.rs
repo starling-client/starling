@@ -17,9 +17,18 @@
 
 use super::super::Game;
 use super::super::commands::Target;
+use super::super::native_ticks::TickRound;
 use super::{GeneralTypeCatalog, general_type_catalog};
-use sunrise_client::join_seq::JoinSeq;
 use mod_api::EntityRef;
+use sunrise_client::join_seq::JoinSeq;
+
+struct GeneralTickPass<'a> {
+    born: JoinSeq,
+    catalog: &'a GeneralTypeCatalog,
+    subscribed: &'a [bool],
+    epoch: Option<mod_api::WorldEpoch>,
+    round: TickRound,
+}
 
 impl Game<'_> {
     /// The general rows' entity phase: roots in join order, each root's
@@ -46,9 +55,14 @@ impl Game<'_> {
         // One bit per type slot, resolved once per pass. The rows keep plain
         // slots, so the walk itself never names a type until a part hears it.
         let subscribed = general_tick_subscribed(catalog);
-        let epoch = self.native_lifecycle.epoch();
         let entity_ticking = self.entity_ticking_area();
-        let mut round = self.native_tick_round();
+        let mut pass = GeneralTickPass {
+            born,
+            catalog,
+            subscribed: &subscribed,
+            epoch: self.native_lifecycle.epoch(),
+            round: self.native_tick_round(),
+        };
         // The walk stays on the live list, as the ordered run's does: a
         // lifted pass would take every row's residency slot, and a part's
         // writes reach its row through that slot. What joins during the pass
@@ -64,172 +78,189 @@ impl Game<'_> {
             &self.resident_entities.general.rows,
             self.resident_entities.general.mount_writes,
         );
+        let index = &mut self.resident_entities.general.riders;
+        index.ticked.clear();
+        index.ticked.resize(total, false);
+
+        // Walk wholly general branches from the roots first. If a branch
+        // crosses a vanilla vehicle, its general riders follow after that
+        // vehicle has moved and after any general ancestors have been seated.
+        let mut foreign = std::mem::take(&mut index.foreign_parents);
+        foreign.clear();
         for index in 0..total {
-            let (id, slot, join, mount, at) = {
-                let row = &self.resident_entities.general.rows[index];
-                (row.id, row.type_slot, row.join, row.mount, row.position)
-            };
-            // A rider ticks inside its vehicle's tick (`tickNonPassenger`
-            // never takes one as a root); a row of this tick's join waits
-            // for the next pass.
-            if mount.is_some() || join >= born {
+            let row = &self.resident_entities.general.rows[index];
+            if row.join >= born {
                 continue;
             }
-            // ServerLevel.tick: only entities in entity-ticking chunks tick.
-            if !entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
-                continue;
-            }
-            // Live before anything: an earlier row's callback can have
-            // queued this row's removal — `entity_remove` leaves it in the
-            // list until the sweep — or rewritten its mount. The ordered
-            // run re-resolves its join before each entity
-            // (`run_ordered_ticks`' `locate`), and the mob tick checks
-            // `removed`; this walk re-reads the row by its index.
-            if !general_row_live(self, index, mount) {
-                continue;
-            }
-            let kind = catalog.key(slot);
-            let ticks = !round.listening() || self.native_tick_pre_one(&mut round, id, kind);
-            // A row that rides nothing and whose Pre was canceled skips its
-            // bookkeeping too (the ruling's only-skip list); a Pre's
-            // listeners may also have removed or remounted the row, and a
-            // row that no longer ticks hears no Post, as a merged item's
-            // does not (the round's own `not_ticked`).
-            if ticks {
-                if general_row_live(self, index, mount) {
-                    // `Entity.commonTick`'s setOldPosAndRot: the row's
-                    // previous position is its current one. The rest of the
-                    // common tick (tick counting, invulnerable time) has no
-                    // row field yet.
-                    self.resident_entities.general.rows[index].previous =
-                        self.resident_entities.general.rows[index].position;
-                    if subscribed.get(slot).copied().unwrap_or(false)
-                        && let Some(epoch) = epoch
-                    {
-                        self.dispatch_general_tick(kind, epoch, id);
+            if let Some(vehicle) = row.mount {
+                if self.general_row(vehicle).is_none() {
+                    let mut depth = 1;
+                    let mut parent = vehicle;
+                    while depth <= self.riding_link_limit() {
+                        let Some(next) = self.vehicle_of_any(parent) else {
+                            break;
+                        };
+                        depth += 1;
+                        parent = next;
                     }
-                    if round.listening() {
-                        self.native_tick_post_one(&round, id, kind);
-                    }
-                } else {
-                    round.not_ticked(id);
+                    foreign.push((depth, row.vehicle_order, index));
                 }
+            } else if entity_ticking(row.position.x.floor() as i32, row.position.z.floor() as i32) {
+                self.tick_general_branch(index, None, &mut pass);
             }
-            // The vehicle's canceled Pre does not stop its passengers: every
-            // rider still takes its own ride tick.
-            self.tick_general_riders(index, born, catalog, &subscribed, epoch, &mut round);
         }
+        foreign.sort_unstable();
+        for &(_, _, index) in &foreign {
+            let row = &self.resident_entities.general.rows[index];
+            let Some(vehicle) = row.mount else { continue };
+            if self.general_row(vehicle).is_some() {
+                continue;
+            }
+            let root = self.native_root_vehicle_id(row.id, Target::General(row.id));
+            if self.entity(vehicle).is_none() {
+                if !self.persist.off_level.contains_key(&vehicle) {
+                    self.dismount_general(row.id, vehicle);
+                }
+                continue;
+            }
+            if let Some([x, _, z]) =
+                root.and_then(|root| self.entity(root).and_then(|e| self.entity_position(e)))
+                && entity_ticking(x.floor() as i32, z.floor() as i32)
+            {
+                self.tick_general_branch(index, Some(vehicle), &mut pass);
+            }
+        }
+        self.resident_entities.general.riders.foreign_parents = foreign;
         Ok(())
     }
 
-    /// One vehicle's riders, each with its own ride tick: Pre, bookkeeping,
-    /// tick, Post, then that rider's own riders, depth first — the flat
-    /// order of the maintainers' ruling, not a nested one. A canceled
-    /// rider's Pre skips only its entity tick and its Post: the rider still
-    /// follows its vehicle (the bookkeeping runs), and its own passengers
-    /// still tick; a rider removed in its own Pre — canceled or not —
-    /// neither ticks nor walks its descendants. The parent's callbacks are
-    /// re-checked at every edge (`tickPassenger`'s `getVehicle` gate): a
-    /// rider the callback removed or dismounted does not tick in this pass.
-    /// A rider that joined this tick waits for the next pass with its root
-    /// — a tree joins whole.
-    fn tick_general_riders(
+    /// Visit one general branch once, without recursing on the mod's graph.
+    fn tick_general_branch(
         &mut self,
-        vehicle: usize,
-        born: JoinSeq,
-        catalog: &GeneralTypeCatalog,
-        subscribed: &[bool],
-        epoch: Option<mod_api::WorldEpoch>,
-        round: &mut crate::game::native_ticks::TickRound,
+        index: usize,
+        mount: Option<u32>,
+        pass: &mut GeneralTickPass<'_>,
     ) {
-        // The vehicle's rider chain, each edge once: the index was resolved
-        // before the walk began, so rows joining mid-pass never appear here.
-        let mut child = self.resident_entities.general.riders.first_child[vehicle];
-        while let Some(index) = child {
-            child = self.resident_entities.general.riders.next_sibling[index];
-            let (id, slot, join, mount) = {
-                let row = &self.resident_entities.general.rows[index];
-                (row.id, row.type_slot, row.join, row.mount)
+        let mut pending = std::mem::take(&mut self.resident_entities.general.riders.pending);
+        pending.push((index, mount));
+        while let Some((index, mount)) = pending.pop() {
+            let Some(id) = self.tick_general_at(index, mount, pass) else {
+                continue;
             };
-            if join >= born {
-                continue;
+            let from = pending.len();
+            let riders = &self.resident_entities.general.riders;
+            let mut child = riders.first_child[index];
+            while let Some(index) = child {
+                pending.push((index, Some(id)));
+                child = riders.next_sibling[index];
             }
-            // `tickPassenger`'s own gate: the rider still rides this
-            // vehicle, and no callback has queued its removal.
-            if mount != Some(self.resident_entities.general.rows[vehicle].id)
-                || !general_row_live(self, index, mount)
-            {
-                continue;
-            }
-            let kind = catalog.key(slot);
-            let ticks = !round.listening() || self.native_tick_pre_one(round, id, kind);
-            // Liveness is re-checked after the Pre whether it was canceled
-            // or not: a rider removed in its own Pre — canceled or not —
-            // neither ticks nor walks its descendants, and a row that no
-            // longer ticks hears no Post.
-            if !general_row_live(self, index, mount) {
-                if ticks {
-                    round.not_ticked(id);
-                }
-                continue;
-            }
-            // The bookkeeping runs even for a canceled rider: it still
-            // follows its vehicle (the ruling).
-            self.resident_entities.general.rows[index].previous =
-                self.resident_entities.general.rows[index].position;
+            pending[from..].reverse();
+        }
+        self.resident_entities.general.riders.pending = pending;
+    }
+
+    /// A joined row and its whole general branch, in boarding order. A
+    /// canceled root skips its tick but not its passengers. On a passenger
+    /// tick, cancellation still leaves its seat and bookkeeping intact.
+    fn tick_general_at(
+        &mut self,
+        index: usize,
+        mount: Option<u32>,
+        pass: &mut GeneralTickPass<'_>,
+    ) -> Option<u32> {
+        let row = &self.resident_entities.general.rows[index];
+        if row.join >= pass.born
+            || self.resident_entities.general.riders.ticked[index]
+            || !general_row_live(self, index, mount)
+        {
+            return None;
+        }
+        let (id, slot) = (row.id, row.type_slot);
+        // A callback can dismount a passenger, but cannot make it tick again
+        // if its new root/seat is reached later in this pass.
+        self.resident_entities.general.riders.ticked[index] = true;
+        let kind = pass.catalog.key(slot);
+        let ticks = !pass.round.listening() || self.native_tick_pre_one(&mut pass.round, id, kind);
+        if !general_row_live(self, index, mount) {
             if ticks {
-                if subscribed.get(slot).copied().unwrap_or(false)
-                    && let Some(epoch) = epoch
-                {
-                    self.dispatch_general_tick(kind, epoch, id);
-                }
-                if round.listening() {
-                    self.native_tick_post_one(round, id, kind);
-                }
+                pass.round.not_ticked(id);
             }
-            self.tick_general_riders(index, born, catalog, subscribed, epoch, round);
+            return None;
+        }
+        if ticks || mount.is_some() {
+            self.begin_general_row_tick(index, mount);
+        }
+        if ticks {
+            if pass.subscribed.get(slot).copied().unwrap_or(false)
+                && let Some(epoch) = pass.epoch
+            {
+                self.dispatch_general_tick(kind, epoch, id);
+            }
+            if pass.round.listening() {
+                self.native_tick_post_one(&pass.round, id, kind);
+            }
+        }
+        if !general_row_live(self, index, mount) {
+            return None;
+        }
+        if mount.is_some() {
+            self.position_general_row(index);
+        }
+        if self
+            .resident_entities
+            .general
+            .riders
+            .mob_vehicles
+            .contains(&id)
+            && let Some(seat) = self.general_seat(id, false)
+        {
+            let mut at = 0;
+            while let Some(mob) = self.mobs.get_mut(at) {
+                if !mob.removed && mob.extra.mount == Some(id) {
+                    seat.position_mob(mob);
+                    let rider = mob.id;
+                    self.snap_mob_passengers(rider);
+                }
+                at += 1;
+            }
+        }
+        general_row_live(self, index, mount).then_some(id)
+    }
+
+    fn begin_general_row_tick(&mut self, index: usize, mount: Option<u32>) {
+        let row = &mut self.resident_entities.general.rows[index];
+        row.previous = row.position;
+        row.boarding_cooldown = (row.boarding_cooldown - 1).max(0);
+        if mount.is_some() {
+            row.velocity = sunrise_core::geometry::Vec3::ZERO;
+        }
+    }
+
+    fn position_general_row(&mut self, index: usize) {
+        let row = &self.resident_entities.general.rows[index];
+        let Some(vehicle) = row.mount else { return };
+        let at = self.general_passenger_position(vehicle, row.id);
+        if let Some(at) = at {
+            let row = &mut self.resident_entities.general.rows[index];
+            let (id, before) = (row.id, row.position);
+            row.position = at;
+            row.fall_distance = 0.0;
+            self.entity_section_step(id, [before.x, before.y, before.z], [at.x, at.y, at.z]);
         }
     }
 
     /// One row's subscribed behavior, contained: the dispatch runs in a
-    /// transaction, so a native panic unwinding out of it (caught here, as
-    /// the mob tick's is) or a wasm trap inside it (a wasm dispatch fails
-    /// without unwinding) rolls back every write the row's parts made —
-    /// their counters and listener edits — and nothing leaves the row. The
-    /// pass's lift stays balanced either way, and the next row ticks as if
-    /// nothing happened; a panicking subscriber is reported, not disabled.
+    /// transaction. A panic aborts the row's writes without unbalancing the pass.
     fn dispatch_general_tick(&mut self, kind: &str, epoch: mod_api::WorldEpoch, id: u32) {
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mod_api::run_transaction(self, |game, _| {
-                let before = game.wasm_dispatch_failures.get();
-                game.native_general_entity_tick(kind, EntityRef::new(epoch, id));
-                (game.wasm_dispatch_failures.get() == before)
-                    .then_some(())
-                    .ok_or(())
-            })
-        }));
-        match outcome {
-            Ok(Ok(())) => {}
-            // A wasm trap: the runtime poisoned the caller's group and told
-            // the log; the transaction above aborted with this refusal.
-            Ok(Err(())) => {
-                log::error!(
-                    "general entity {kind} #{id}: its tick's writes were rolled back after a wasm dispatch failure"
-                );
+        let failures = mod_api::runtime::isolated_failures();
+        let _ = mod_api::run_transaction(self, |game, _| {
+            game.tick_general_row_scoped(kind, EntityRef::new(epoch, id));
+            if mod_api::runtime::isolated_failures() == failures {
+                Ok(())
+            } else {
+                Err(())
             }
-            // A native panic: the unwind aborted the transaction as it
-            // passed, and the thread-local mod attribution named the part.
-            Err(payload) => {
-                let panic = payload
-                    .downcast_ref::<&str>()
-                    .map(|text| (*text).to_owned())
-                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "box".to_owned());
-                log::error!(
-                    "general entity {kind} #{id}: its tick's writes were rolled back after a native mod panicked: {panic}"
-                );
-            }
-        }
+        });
     }
 }
 

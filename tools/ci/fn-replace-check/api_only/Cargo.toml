@@ -6,4 +6,3 @@ publish = false
 
 [dependencies]
 sunrise-mod-api = { path = ".sunrise/sdk/api/crates/sunrise-mod-api" }
-sunrise-mod-points = { path = ".sunrise/sdk/api/crates/sunrise-mod-points" }

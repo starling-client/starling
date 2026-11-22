@@ -91,9 +91,14 @@ fn applying_components_normalizes_damage_and_refuses_bad_patches_atomically() {
         (Some(Tag::Long(i64::MAX)), None, StackError::InvalidDamage),
         (None, Some(Tag::Int(0)), StackError::InvalidDamage),
         (
-            Some(Tag::Int(0)),
+            Some(Tag::Int(-1)),
             Some(Tag::Compound(Compound::new())),
-            StackError::ConflictingDamage,
+            StackError::InvalidDamage,
+        ),
+        (
+            Some(Tag::Int(0)),
+            Some(Tag::Int(1)),
+            StackError::InvalidDamage,
         ),
     ] {
         let mut incoming: Compound = [("test:number".into(), Tag::Int(8))].into();
@@ -107,6 +112,20 @@ fn applying_components_normalizes_damage_and_refuses_bad_patches_atomically() {
         assert_eq!(stack.apply_components(&incoming), Err(error));
         assert_eq!(stack, before);
     }
+    // A removal wins over a value in the same patch for damage, matching ordinary components.
+    stack
+        .apply_components(
+            &[
+                ("minecraft:damage".into(), Tag::Int(4)),
+                ("!minecraft:damage".into(), Tag::Compound(Compound::new())),
+            ]
+            .into(),
+        )
+        .unwrap();
+    assert_eq!(stack.damage_component(), None);
+    let patch = stack.components().unwrap().as_nbt();
+    assert!(!patch.contains_key(&"minecraft:damage".into()));
+    assert!(patch.contains_key(&"!minecraft:damage".into()));
     stack
         .apply_components(&[("minecraft:damage".into(), Tag::Short(0))].into())
         .unwrap();
@@ -131,9 +150,9 @@ fn applying_components_normalizes_damage_and_refuses_bad_patches_atomically() {
             .contains_key(&"!minecraft:damage".into())
     );
     stack
-        .apply_components(&[("minecraft:damage".into(), Tag::Long(u32::MAX.into()))].into())
+        .apply_components(&[("minecraft:damage".into(), Tag::Long((1_i64 << 32) + 7))].into())
         .unwrap();
-    assert_eq!(stack.damage_component(), Some(u32::MAX));
+    assert_eq!(stack.damage_component(), Some(7));
     assert!(
         !stack
             .components()

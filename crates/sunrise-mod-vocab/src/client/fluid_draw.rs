@@ -45,10 +45,10 @@ impl FluidBoxOptions {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum FluidBoxError {
-    /// The stack is not `minecraft:water` or `minecraft:lava` without components: an
-    /// unresolved fluid, another fluid, or one with a component patch.
+    /// The stack's fluid does not resolve, or is the empty fluid.
     UnsupportedFluid,
-    /// The loaded resources have no still sprite for the fluid.
+    /// The fluid is neither water nor lava and has no look
+    /// (`data/<mod>/sunrise/fluid/<name>.json`), or the loaded resources have no sprite for it.
     MissingSprite,
     /// A bound is not finite or beyond 1,048,576 blocks, a minimum exceeds its maximum, the
     /// box would tile into more than 65,536 quads, or the shrink ratio is outside `0.0..=1.0`.

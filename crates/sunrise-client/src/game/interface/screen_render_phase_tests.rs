@@ -1,12 +1,5 @@
 //! Resource-backed Game screen hooks rendered by the real software-Vulkan HUD pipeline.
 use super::{Game, Screen};
-use sunrise_client::{
-    chunk::Chunk,
-    containers::BlockEntity,
-    gfx::entity_pixel_test::render_hud,
-    hud::{HudBatch, rgba},
-    items::ItemStack,
-};
 use mod_api::{
     ClientHost, Hooks, ModEntry, ScreenRenderBackgroundEvent, ScreenRenderForegroundEvent,
 };
@@ -14,6 +7,13 @@ use mod_platform::testing::with_mods;
 use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
+};
+use sunrise_client::{
+    chunk::Chunk,
+    containers::BlockEntity,
+    gfx::entity_pixel_test::render_hud,
+    hud::{HudBatch, rgba},
+    items::ItemStack,
 };
 
 const SIZE: [u32; 2] = [320, 240];

@@ -10,6 +10,7 @@ pub trait Hooks {
     /// last word. Asked wherever the harvest rule is: the dig's progress (both sides, so a client
     /// predicts it), the break and a door's break.
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "collect",
         out = "can_harvest",
@@ -17,5 +18,5 @@ pub trait Hooks {
         key = "state",
         neoforge = "IBlockExtension.canHarvestBlock"
     )]
-    fn can_harvest_block();
+    fn can_harvest_block(player: u32, pos: [i32; 3], state: BlockState, can_harvest: &mut bool);
 }

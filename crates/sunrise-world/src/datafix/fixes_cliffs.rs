@@ -118,15 +118,15 @@ fn structure_settings_flatten(cx: &mut Cx) {
         let Some(Tag::Compound(dims)) = v.get_mut("dimensions") else {
             return;
         };
-        for dim in dims.values_mut() {
+        dims.for_each_mut(|_, dim| {
             let Some(settings) = dim.get_mut("generator").and_then(|g| g.get_mut("settings"))
             else {
-                continue;
+                return;
             };
             if let Some(structures) = settings.get_mut("structures") {
                 *structures = flatten_structures(structures);
             }
-        }
+        });
     });
 }
 
@@ -1348,7 +1348,7 @@ fn update_carving_masks(level: &mut Tag, sections: usize, below: usize) {
         None => empty_map(),
     };
     if let Tag::Compound(c) = &mut masks {
-        for v in c.values_mut() {
+        c.for_each_mut(|_, v| {
             let bytes = as_byte_buffer(Some(v)).unwrap_or_default();
             // `BitSet.valueOf(bytes).toLongArray()`: little-endian words,
             // trailing zero words dropped.
@@ -1366,7 +1366,7 @@ fn update_carving_masks(level: &mut Tag, sections: usize, below: usize) {
             let mut out = vec![0i64; 64 * sections];
             out[64 * below..64 * below + words.len()].copy_from_slice(&words);
             *v = Tag::LongArray(out);
-        }
+        });
     }
     // `updateMapValues` of something that is not a map leaves it unchanged.
     set(level, "CarvingMasks", masks);

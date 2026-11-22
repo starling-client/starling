@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Ponowne łączenie",
+  "sunrise.extras.auto_reconnect.tooltip": "Ponownie dołącza do serwera po utracie połączenia lub restarcie, nigdy po wyrzuceniu lub banie."
+}

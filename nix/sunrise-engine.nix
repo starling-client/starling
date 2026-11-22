@@ -7,6 +7,7 @@
   pkg-config,
   callPackage,
   version,
+  polyformShield,
 }:
 rustPlatform.buildRustPackage {
   pname = "sunrise-engine";
@@ -32,7 +33,7 @@ rustPlatform.buildRustPackage {
   meta = {
     description = "Sunrise's headless game engine, run by sunrise-server";
     homepage = "https://playsunrise.net";
-    license = lib.licenses.mit;
+    license = polyformShield; # flake.nix
     mainProgram = "sunrise-engine";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };

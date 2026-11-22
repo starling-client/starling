@@ -9,39 +9,38 @@
 //! tree stands in and draws from the decorator's own random through
 //! [`GroundLevel`], so with the decorator's own provider kept, the blocks and the
 //! draws are vanilla's.
-use crate::{BlockState, BlockStateId, StructureRandom};
+use crate::{BlockState, RandomSource};
 use std::sync::Arc;
 
 /// A mod's ground provider: NeoForge's `AlterGroundEvent.StateProvider`.
 /// Implemented once, kept by the game, deterministic and stateless.
 pub trait GroundStateProvider: Send + Sync + 'static {
-    /// `StateProvider.getState`: the state to place at `pos`, or None to try
-    /// the next position down the column, as the decorator's own provider
-    /// answers where it finds no ground it replaces. Draw only from
-    /// `level.random()`, so the same seed gives the same ground.
-    fn state_at(&self, level: &mut dyn GroundLevel, pos: [i32; 3]) -> Option<BlockStateId>;
+    /// `StateProvider.getState`: the canonical block state to place at `pos`, or
+    /// `None` to try the next position down the column. A state the game's
+    /// registry lacks stops the feature. Draw only from `level.random()`, so
+    /// the same seed gives the same ground.
+    fn state_at(&self, level: &mut dyn GroundLevel, pos: [i32; 3]) -> Option<BlockState>;
 }
 
 /// What a ground provider reads while the decorator asks it: vanilla's
 /// `WorldGenLevel` as far as ground needs it, and the decorator's random.
 pub trait GroundLevel {
-    /// `BlockGetter.getBlockState`: the block at `pos` in the region the tree
-    /// decorates.
-    fn block_state(&mut self, pos: [i32; 3]) -> BlockStateId;
-    /// The decorator's own provider at `pos`
+    /// `BlockGetter.getBlockState`: the canonical state at `pos` in the region
+    /// the tree decorates.
+    fn block_state(&mut self, pos: [i32; 3]) -> BlockState;
+    /// The decorator's own canonical state at `pos`
     /// (`BlockStateProvider.getOptionalState`), drawing from the same random:
     /// what [`GroundProvider::Decorator`] answers.
-    fn decorator_state(&mut self, pos: [i32; 3]) -> Option<BlockStateId>;
+    fn decorator_state(&mut self, pos: [i32; 3]) -> Option<BlockState>;
     /// The decorator's random (`TreeDecorator.Context.random()`): a provider's
     /// draws come between the decorator's own, in the order it asks.
-    fn random(&mut self) -> &mut dyn StructureRandom;
+    fn random(&mut self) -> &mut dyn RandomSource;
 }
 
 /// The provider a tree decorator places its ground with:
 /// `AlterGroundEvent.getStateProvider`.
 #[derive(Clone)]
 // exhaustive: the decorator's own or a mod's; a third kind is a contract change
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum GroundProvider {
     /// The decorator's own (`AlterGroundDecorator.provider`).
     Decorator,
@@ -62,8 +61,8 @@ impl PartialEq for GroundProvider {
 }
 
 impl GroundProvider {
-    /// This provider's state at `pos`, or None to try the next position down.
-    pub fn state_at(&self, level: &mut dyn GroundLevel, pos: [i32; 3]) -> Option<BlockStateId> {
+    /// This provider's canonical state at `pos`, or `None` to try the next position down.
+    pub fn state_at(&self, level: &mut dyn GroundLevel, pos: [i32; 3]) -> Option<BlockState> {
         match self {
             Self::Decorator => level.decorator_state(pos),
             Self::Mod(provider) => provider.state_at(level, pos),
@@ -94,7 +93,7 @@ pub fn native_on_tree_grow(
     context: &crate::OwningWorldgen<'_>,
     state: BlockState,
     pos: [i32; 3],
-    random: &mut dyn StructureRandom,
+    random: &mut dyn RandomSource,
     soil: &mut Option<Option<BlockState>>,
 ) {
     crate::dispatch_on_tree_grow(context, state, pos, random, soil);

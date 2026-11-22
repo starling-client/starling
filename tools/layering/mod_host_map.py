@@ -15,8 +15,9 @@ DISPATCH = re.compile(r"^mod_api::(HookId|Flow|Hooks|__subscriptions|Interaction
                       r"|__private::(listened|has_\w+_hook|built|enter|\w+Call))(::|$)")
 TESTING = re.compile(r"^mod_api::(testing|__private::(part_tests|with_test_packages))\b")
 MORE = re.compile(r"^mod_api::(\w*Host|HostSide|Backend\w*|RegistrationContext|Registr\w*|ModEntry|Mods|content"
-                  r"|__private::(game|install|mods|\w+_key\w*|\w+_id|resolve_\w+|block_definitions|check_access"
-                  r"|LoadAccess|ModPhase|PhaseOwner|current_phase|backend\w*|set_mod_enabled|mark_game_thread))\b")
+                  r"|ConfigContext|ReloadContext|ClientReloadListenerContext|ClientSetupContext"
+                  r"|__private::(game|install|mods|\w+_key\w*|\w+_id|resolve_\w+|block_definitions"
+                  r"|RegistrationGuard|registration_open|backend\w*|set_mod_enabled|mark_game_thread))\b")
 
 
 def area(path):

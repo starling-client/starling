@@ -9,10 +9,10 @@ use crate::{
     environment::Sky,
     world::World,
 };
-use sunrise_core::random::{LegacyRandom, RandomSource};
-use sunrise_world::registry::BlockStateId;
 pub use mod_api::client::fog::{FogData, FogType};
 use std::path::Path;
+use sunrise_core::random::{LegacyRandom, RandomSource};
+use sunrise_world::registry::BlockStateId;
 
 /// Per-biome water fog end multipliers (`visual/water_fog_end_distance`).
 #[derive(Default)]

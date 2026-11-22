@@ -3,13 +3,14 @@
 //! save), so a world upgraded from before 1.18 meets its old terrain without
 //! a seam.
 use super::biome::BiomeId;
+use std::sync::Arc;
+use sunrise_core::mth::floor_f32;
 use sunrise_core::{
     density::{DensityBlender, DensitySampler, SampleError, SamplerContext},
     noise::{DensityVolume, Noise, NormalNoise},
     position::ChunkPos,
     random::XoroshiroRandom,
 };
-use std::sync::Arc;
 
 const QUARTS_PER_SECTION: i32 = 4;
 const MAX_INSIDE: i32 = QUARTS_PER_SECTION - 1;
@@ -128,14 +129,6 @@ fn index_z(index: usize) -> i32 {
         return zero_if_negative(index - MAX_INSIDE);
     }
     MAX_OUTSIDE - zero_if_negative(index - COLUMN_INSIDE_COUNT - MAX_OUTSIDE)
-}
-fn floor_f32(value: f32) -> i32 {
-    let truncated = value as i32;
-    if value < truncated as f32 {
-        truncated - 1
-    } else {
-        truncated
-    }
 }
 
 impl BlendingData {
@@ -688,9 +681,6 @@ impl Blender {
             + 0.5
             + f64::from(noise.get3(f64::from(z), f64::from(x), f64::from(y)) * 4.0f32);
         Some(distance.distance(sx, sy, sz) < 4.0)
-    }
-    pub fn has_carving_filter(&self) -> bool {
-        self.carving.is_some()
     }
 
     /// `Blender.OutputBuffer` for the columns of `volume`: the alpha and

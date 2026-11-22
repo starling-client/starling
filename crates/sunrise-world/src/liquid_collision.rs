@@ -4,8 +4,8 @@ use crate::{
     chunk::BlockState, collision_context::CollisionContext, entity_obstruction::EntityIdentity,
     fluid::FluidState,
 };
-use sunrise_core::{geometry::VoxelShape, position::BlockPos};
 use std::io;
+use sunrise_core::{geometry::VoxelShape, position::BlockPos};
 
 pub trait LiquidCollisionWorld {
     type Error;

@@ -127,6 +127,29 @@ fn statements(tokens: &[&str]) -> Vec<Statement> {
     out
 }
 
+/// The tokens among `tokens` that declare a member of a struct or a block (`vaNormal` in
+/// `struct S { vec3 vaNormal; };` or `buffer B { vec3 vaNormal; } params;`), at file scope or
+/// in a function: those of each body whose `{` follows a name or `struct` (not a function's,
+/// after `)`, nor a statement's, nor an initializer list's), read as the scanner reads members
+/// (`scan::members`). A member keeps its name, as each access to it (`params.vaNormal`) does;
+/// a block without an instance makes its members globals of the stage, which the scan
+/// declares, so they aren't renamed either.
+fn members(tokens: &[&str]) -> BTreeSet<usize> {
+    let mut members = BTreeSet::new();
+    for (open, &t) in tokens.iter().enumerate() {
+        if t != "{" {
+            continue;
+        }
+        let prev = (0..open).rev().find(|&j| significant(tokens[j]));
+        if prev.is_some_and(|j| {
+            super::scan::is_ident(tokens[j]) && !matches!(tokens[j], "else" | "do")
+        }) {
+            members.extend(super::scan::members(tokens, open).0);
+        }
+    }
+    members
+}
+
 fn classify(tokens: &[&str], range: std::ops::Range<usize>) -> Statement {
     let words: Vec<&str> = tokens[range.clone()]
         .iter()
@@ -187,7 +210,12 @@ fn classify(tokens: &[&str], range: std::ops::Range<usize>) -> Statement {
     } else {
         let mut names = Vec::new();
         let first = words.iter().position(|w| matches!(*w, "(" | "="));
-        if let Some(p) = words.iter().position(|w| *w == "struct") {
+        // A struct's `struct` comes before its body; a function's body may define structs.
+        let head = words.iter().position(|w| matches!(*w, "(" | "{"));
+        if let Some(p) = words[..head.unwrap_or(words.len())]
+            .iter()
+            .position(|w| *w == "struct")
+        {
             names.extend(words.get(p + 1).map(|s| s.to_string()));
         } else if let Some(p) = first.filter(|&p| words[p] == "(") {
             // A function.
@@ -330,29 +358,23 @@ fn combine(
             _ => {}
         }
     }
-    // Implicit terrain inputs must be set for each pulled source vertex, alongside
-    // declared attributes. Keep the vertex stage's name separate from geometry globals.
-    let chunk_fade = inputs
-        .inputs
-        .attributes
-        .iter()
-        .find(|(name, _)| name == "mc_chunkFade")
-        .filter(|_| {
-            super::uses_name(&vertex.code, "mc_chunkFade")
-                && !super::scan::Stage::scan(vertex, naga::ShaderStage::Vertex)
-                    .globals
-                    .contains("mc_chunkFade")
-        });
-    if chunk_fade.is_some() {
-        defined.insert("mc_chunkFade".to_owned());
-    }
+    // The game inputs the vertex stage reads without declaring them (terrain's fade, a
+    // `vaPosition`...) are set for each pulled source vertex, alongside declared attributes,
+    // under the vertex stage's own names, apart from the geometry stage's globals.
+    let implicit = super::implicit_inputs(
+        &inputs.inputs.attributes,
+        vertex,
+        &super::scan::Stage::scan(vertex, naga::ShaderStage::Vertex),
+    );
+    defined.extend(implicit.iter().map(|(name, _, _)| name.to_string()));
     let renamed: BTreeSet<&str> = defined
         .iter()
         .map(String::as_str)
         .chain(vs_outs.iter().map(|(n, _)| n.as_str()))
         .collect();
+    let members = members(&vs_tokens);
     for (i, t) in vs_tokens.iter().enumerate() {
-        if vs_text[i] != *t {
+        if vs_text[i] != *t || members.contains(&i) {
             continue;
         }
         let prev = (0..i).rev().find(|&j| significant(vs_tokens[j]));
@@ -381,8 +403,8 @@ fn combine(
          int hz_n; int hz_strip; int hz_tri; int hz_want_tri; int hz_want_corner; bool hz_found; bool hz_primary;\n\
          vec4 hz_ring_Position[3]; vec4 hz_res_Position; vec4 hz_vs_Position; int hz_vs_vertex;\n",
     );
-    if chunk_fade.is_some() {
-        head.push_str("float hz_vs_mc_chunkFade;\n");
+    for (name, _, ty) in &implicit {
+        writeln!(head, "{ty} hz_vs_{name};").unwrap();
     }
     for (name, ty) in &vs_outs {
         let (base, array) = split_type(ty);
@@ -432,8 +454,8 @@ fn combine(
     main.push_str("        hz_vs_vertex = int(hz_vertex_index);\n");
     main.push_str(&inputs.pull);
     main.push_str(&body);
-    if let Some((_, value)) = chunk_fade {
-        writeln!(main, "        hz_vs_mc_chunkFade = {value};").unwrap();
+    for (name, value, ty) in &implicit {
+        writeln!(main, "        hz_vs_{name} = {ty}({value});").unwrap();
     }
     for (name, ty) in &vs_attributes {
         let value = inputs
@@ -604,8 +626,28 @@ mod tests {
     use crate::pack::tests::zip;
     use crate::{Macros, Pack, preprocess};
 
+    /// A geometry stage that passes each triangle through with the vertex stage's `vNormal`.
+    const PASS_GSH: &str = "#version 430\nlayout(triangles) in;\n\
+                            layout(triangle_strip, max_vertices = 3) out;\n\
+                            in vec3 vNormal[];\nout vec3 gNormal;\nvoid main() {\n    \
+                            for (int i = 0; i < 3; i++) {\n        gNormal = vNormal[i];\n        \
+                            gl_Position = gl_in[i].gl_Position;\n        EmitVertex();\n    }\n    \
+                            EndPrimitive();\n}\n";
+    /// The fragment stage after [`PASS_GSH`].
+    const PASS_FSH: &str = "#version 430\nin vec3 gNormal;\nvoid main() {\n    gl_FragData[0] = vec4(gNormal, 1.0);\n}\n";
+
     /// `vsh`, `gsh` and `fsh` (a pack's shadow program) folded and translated.
     fn fold(vsh: &str, gsh: &str, fsh: &str) -> Result<(Program, u32), Vec<Error>> {
+        fold_given(vsh, gsh, fsh, Vec::new())
+    }
+
+    /// `fold`, the game giving `attributes` (`GbuffersInputs::attributes`).
+    fn fold_given(
+        vsh: &str,
+        gsh: &str,
+        fsh: &str,
+        attributes: Vec<(String, String)>,
+    ) -> Result<(Program, u32), Vec<Error>> {
         let pack = Pack::from_zip_bytes(
             "P.zip",
             zip(&[
@@ -622,6 +664,7 @@ mod tests {
                                layout(location = 0) in vec3 hz_v_pos;"
                     .into(),
                 body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+                attributes,
                 ..Default::default()
             },
             pull: "        hz_v_pos = uintBitsToFloat(uvec3(hz_vertices[hz_vertex_index * 3u], \
@@ -653,6 +696,148 @@ mod tests {
         assert_eq!(triangles, 2);
         assert_eq!(program.vertex.entry_points.len(), 1);
         assert_eq!(program.fragment.entry_points.len(), 1);
+    }
+
+    /// A vertex stage under a geometry stage reads the game's `vaPosition` and `vaNormal`
+    /// without declaring them, as one without a geometry stage does: they're set for each
+    /// pulled vertex. Without either one, the stage is refused.
+    #[test]
+    fn a_vertex_stage_under_a_geometry_stage_reads_undeclared_game_inputs() {
+        let vsh = "#version 430\nout vec3 vNormal;\nvoid main() {\n    vNormal = vaNormal;\n    \
+                   gl_Position = gl_ModelViewProjectionMatrix * vec4(vaPosition, 1.0);\n}\n";
+        let given = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| (name.to_string(), "hz_Vertex.xyz".to_owned()))
+                .collect()
+        };
+        if let Err(errors) = fold_given(vsh, PASS_GSH, PASS_FSH, given(&["vaPosition", "vaNormal"]))
+        {
+            panic!("{errors:?}");
+        }
+        for kept in ["vaPosition", "vaNormal"] {
+            assert!(
+                fold_given(vsh, PASS_GSH, PASS_FSH, given(&[kept])).is_err(),
+                "only {kept} given"
+            );
+        }
+    }
+
+    /// A struct of the vertex stage with members named as game inputs (`vaNormal`, `vaColor`)
+    /// keeps them: the implicit inputs are renamed for the fold (`hz_vs_vaNormal`), the members
+    /// and each access to them (`value.vaNormal`) aren't. Beside them the stage reads the real
+    /// `vaNormal` and `vaPosition` undeclared. The stage's own names in a struct's body, a
+    /// member's type (`Inner`) and an array's size (`N`), are renamed with their declarations.
+    #[test]
+    fn a_struct_member_named_as_a_game_input_keeps_its_name_under_a_geometry_stage() {
+        let vsh = "#version 430\nconst int N = 2;\nstruct Inner { float a; };\n\
+                   struct Sample { vec3 vaNormal; Inner[2] inner; float w, vaColor[N]; };\n\
+                   out vec3 vNormal;\nvoid main() {\n    Sample value;\n    \
+                   value.vaNormal = vaNormal;\n    value.vaColor[1] = 1.0;\n    \
+                   value.inner[1].a = 2.0;\n    \
+                   vNormal = value.vaNormal * value.vaColor[1] * value.inner[1].a;\n    \
+                   gl_Position = gl_ModelViewProjectionMatrix * vec4(vaPosition, 1.0);\n}\n";
+        let given = vec![
+            ("vaPosition".to_owned(), "hz_Vertex.xyz".to_owned()),
+            ("vaNormal".to_owned(), "hz_Vertex.xyz".to_owned()),
+            ("vaColor".to_owned(), "hz_Color".to_owned()),
+        ];
+        if let Err(errors) = fold_given(vsh, PASS_GSH, PASS_FSH, given) {
+            panic!("{errors:?}");
+        }
+    }
+
+    /// The same with structs defined in a function, one in `main` and one in a block in it
+    /// (GLSL 4.60, 4.1.8: a struct may be defined in any scope), under a vertex stage that
+    /// never reads the game's `vaNormal` nor `vaColor`: their members keep their names too.
+    #[test]
+    fn a_struct_member_in_a_function_keeps_its_name_under_a_geometry_stage() {
+        let vsh = "#version 430\nout vec3 vNormal;\nvoid main() {\n    \
+                   struct Sample { vec3 vaNormal; float w, vaColor[2]; };\n    Sample value;\n    \
+                   value.vaNormal = vec3(1.0);\n    value.vaColor[1] = 2.0;\n    \
+                   vNormal = value.vaNormal * value.vaColor[1];\n    \
+                   if (vNormal.x > 0.0) {\n        struct Inner { vec3 vaNormal; };\n        \
+                   Inner inner;\n        inner.vaNormal = vNormal;\n        vNormal = inner.vaNormal;\n    }\n    \
+                   gl_Position = gl_ModelViewProjectionMatrix * vec4(vaPosition, 1.0);\n}\n";
+        let given = vec![
+            ("vaPosition".to_owned(), "hz_Vertex.xyz".to_owned()),
+            ("vaNormal".to_owned(), "hz_Vertex.xyz".to_owned()),
+            ("vaColor".to_owned(), "hz_Color".to_owned()),
+        ];
+        if let Err(errors) = fold_given(vsh, PASS_GSH, PASS_FSH, given) {
+            panic!("{errors:?}");
+        }
+    }
+
+    /// The names of `module`'s globals, and of its structs' members.
+    fn names(module: &naga::Module) -> (Vec<String>, Vec<String>) {
+        let globals = (module.global_variables.iter())
+            .filter_map(|(_, g)| g.name.clone())
+            .collect();
+        let members = (module.types.iter())
+            .flat_map(|(_, t)| match &t.inner {
+                naga::TypeInner::Struct { members, .. } => members.clone(),
+                _ => Vec::new(),
+            })
+            .filter_map(|m| m.name)
+            .collect();
+        (globals, members)
+    }
+
+    /// The game's `vaPosition` and `vaNormal`, as the entities' inputs give them.
+    fn position_and_normal() -> Vec<(String, String)> {
+        vec![
+            ("vaPosition".to_owned(), "hz_Vertex.xyz".to_owned()),
+            ("vaNormal".to_owned(), "hz_Vertex.xyz".to_owned()),
+        ]
+    }
+
+    /// A buffer block's field named `vaNormal` keeps its name under a geometry stage, as each
+    /// access to it (`params.vaNormal`) does, beside the game's `vaNormal`, which the stage
+    /// reads undeclared, given for the fold as `hz_vs_vaNormal`.
+    #[test]
+    fn a_buffer_field_named_as_a_game_input_keeps_its_name_under_a_geometry_stage() {
+        let vsh = "#version 430\nlayout(std430, binding = 2) buffer Params { float w; vec3 vaNormal; } params;\n\
+                   out vec3 vNormal;\nvoid main() {\n    vNormal = params.vaNormal + vaNormal;\n    \
+                   gl_Position = gl_ModelViewProjectionMatrix * vec4(vaPosition, 1.0);\n}\n";
+        let (program, _) = fold_given(vsh, PASS_GSH, PASS_FSH, position_and_normal())
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let (globals, members) = names(&program.vertex);
+        assert!(members.iter().any(|m| m == "vaNormal"), "{members:?}");
+        assert!(globals.iter().any(|g| g == "hz_vs_vaNormal"), "{globals:?}");
+    }
+
+    /// A block without an instance makes its members globals of the stage (GLSL 4.60, 4.3.9):
+    /// a buffer block's field `vaNormal` is what the stage reads as `vaNormal`, and an `out`
+    /// block's member `vaNormal` what it writes (an output of the fold's, `hz_vs_vaNormal`), so
+    /// the game gives no `vaNormal` of its own beside them: it would be declared twice.
+    #[test]
+    fn a_block_member_without_an_instance_is_the_stages_own_under_a_geometry_stage() {
+        let vsh = |block: &str, read: &str| {
+            format!(
+                "#version 430\n{block}\nout vec3 vNormal;\nvoid main() {{\n    {read}\n    \
+                 gl_Position = gl_ModelViewProjectionMatrix * vec4(vaPosition, 1.0);\n}}\n"
+            )
+        };
+        let buffer = vsh(
+            "layout(std430, binding = 2) buffer Params { float w; vec3 vaNormal; };",
+            "vNormal = vaNormal;",
+        );
+        let (program, _) = fold_given(&buffer, PASS_GSH, PASS_FSH, position_and_normal())
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let (globals, members) = names(&program.vertex);
+        assert!(members.iter().any(|m| m == "vaNormal"), "{members:?}");
+        assert!(
+            !globals.iter().any(|g| g == "hz_vs_vaNormal"),
+            "{globals:?}"
+        );
+        let output = vsh(
+            "out Extra { vec3 vaNormal; };",
+            "vaNormal = vec3(1.0);\n    vNormal = vaNormal;",
+        );
+        if let Err(errors) = fold_given(&output, PASS_GSH, PASS_FSH, position_and_normal()) {
+            panic!("{errors:?}");
+        }
     }
 
     /// Stages that pass their varyings in interface blocks (GLSL 4.60, 4.3.9), members with

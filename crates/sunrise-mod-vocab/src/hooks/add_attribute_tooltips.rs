@@ -10,15 +10,21 @@ pub trait Hooks {
     /// asked either way. `player` and `player_entity_id` are the local player's,
     /// `None` for the recipe book's search text, which has none and drops the colours, and for a stack
     /// nested in another's tooltip (a crossbow's loaded projectile); `advanced`
-    /// (F3+H) and `creative` (a creative tab's own slot) are the tooltip's `TooltipFlag`. Asked
-    /// each frame the tooltip shows, only while a mod listens. Client-side.
+    /// (F3+H) and `creative` (a creative tab's own slot) are the tooltip's `TooltipFlag`.
+    /// Asked when lines are built for display, recipe book search or `ItemResource::tooltip`.
+    /// Display and resource-query builds skip it when the stack hides its entire tooltip.
+    /// Reentrant line queries do not dispatch it.
+    /// Client-side, only while a mod listens.
     /// A component deeper than 512 nodes refuses capture or the whole writeback;
     /// no event field is applied if any Text field fails conversion.
     #[hook(
+        receiver = "read",
+        dispatch = "api_carrier",
         side = "client",
         contract = "listen",
         neoforge = "AddAttributeTooltipsEvent",
-        cancellable = false
+        cancellable = false,
+        version = 2
     )]
     fn add_attribute_tooltips(
         player: Option<u128>,

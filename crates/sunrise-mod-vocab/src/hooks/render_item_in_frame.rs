@@ -6,11 +6,13 @@ pub trait Hooks {
 
 `render_item_in_frame(entity_id, pos, stack, canceled)` runs before a visible item frame draws its item or map, including glow and invisible frames. Set `canceled` to hide the item without hiding the frame."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "RenderItemInFrameEvent",
         cancellable = true
     )]
-    fn render_item_in_frame();
+    fn render_item_in_frame(entity_id: u32, pos: [i32; 3], stack: &ItemStack, canceled: &mut bool);
 }

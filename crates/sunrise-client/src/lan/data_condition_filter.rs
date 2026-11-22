@@ -17,10 +17,7 @@ mod tests {
     use super::*;
     #[test]
     fn damage_winner_does_not_evaluate_discarded_root_definition() {
-        let conditions = sunrise_world::conditions::LoadConditions::new([]).with_lookup(
-            std::collections::BTreeMap::from([("testmod".into(), "testmod".into())]),
-            |_, _| None,
-        );
+        let conditions = sunrise_world::conditions::LoadConditions::new([]);
         let mut root = vec![(
             ("testmod".into(), "damage".into()),
             serde_json::json!({"neoforge:conditions":[{"type":"testmod:nope"}]}),

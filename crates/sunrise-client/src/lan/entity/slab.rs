@@ -164,7 +164,7 @@ mod tests {
             kind: "minecraft:item".into(),
             ..Default::default()
         };
-        ServerEntity::new(&e, Some(1), &Riding::default())
+        ServerEntity::new(&e, &mut |_| Some(1), &Riding::default()).unwrap()
     }
 
     /// One tick meeting `ids` in order: each one's slot and whether it was

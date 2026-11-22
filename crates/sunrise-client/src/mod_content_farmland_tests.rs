@@ -1,4 +1,5 @@
 use super::*;
+use std::{collections::HashMap, convert::Infallible, result::Result};
 use sunrise_core::{
     geometry::{Aabb, Vec3, VoxelShape},
     position::{BlockPos, ChunkPos},
@@ -15,7 +16,6 @@ use sunrise_world::{
     movement_properties::MovementProperties,
     registry::{BlockStateId, BlockTableFile},
 };
-use std::{collections::HashMap, convert::Infallible, result::Result};
 
 struct World {
     blocks: HashMap<BlockPos, BlockStateId>,
@@ -153,7 +153,7 @@ fn unknown_farmland_base_is_a_typed_load_error() {
 }
 
 #[test]
-#[ignore = "full content root: needs prepared vanilla data"]
+#[ignore = "daily"]
 fn farmland_base_reaches_drying_cover_and_trample() {
     let Some(base) = prepared() else { return };
     let scratch =

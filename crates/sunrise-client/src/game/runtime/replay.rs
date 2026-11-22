@@ -3,22 +3,23 @@
 //! platform (docs/layers.md, "Replays"); Studio's editor (`studio.rs`) builds on it.
 
 use super::{Game, PendingWorldEntry, Screen};
-use sunrise_client::{
-    Result,
-    studio::{Metadata, ReplayDriver},
-    text::Text,
-};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use sunrise_client::{
+    Result,
+    packet_source::PacketSource,
+    studio::{Metadata, ReplayDriver},
+    text::Text,
 };
 
 /// The packet replay a `Game` plays, if any, and its playback clock.
 #[derive(Default)]
 pub(super) struct Replay {
     /// The packet replay playing, if any.
-    pub(super) driver: Option<ReplayDriver>,
+    pub(super) driver: Option<Box<dyn PacketSource>>,
     /// Camera perspective to restore after leaving replay playback.
     pub(super) previous_camera_type: Option<sunrise_client::camera::CameraType>,
     /// Replay opened from the title screen owns the synthetic remote session.
@@ -313,7 +314,7 @@ impl Game<'_> {
             .replay
             .driver
             .as_ref()
-            .map_or(0, ReplayDriver::position_ms);
+            .map_or(0, |driver| driver.position_ms());
         let packets = if self.replay.standalone {
             let packets = self
                 .replay
@@ -350,6 +351,14 @@ impl Game<'_> {
     ) {
         for pkt in packets {
             match sunrise_protocol::packets::play::Clientbound::decode(pkt.id, &pkt.payload) {
+                Ok(sunrise_protocol::packets::play::Clientbound::CustomPayload(payload))
+                    if payload.channel == sunrise_protocol::attachment_sync::CHANNEL =>
+                {
+                    match sunrise_protocol::attachment_sync::decode_staged(payload) {
+                        Ok(staged) => self.apply_staged_attachment_sync(staged),
+                        Err(error) => log::debug!("Studio replay skipped attachment sync: {error}"),
+                    }
+                }
                 Ok(packet) => {
                     let _ = self.handle_packet(packet);
                 }
@@ -557,7 +566,6 @@ impl Game<'_> {
                 }
                 _ => Ok(Some(json!({ "error": "unknown studio replay subcommand" }))),
             },
-            Some("screen") if super::studio::EDITOR => self.studio_screen_control(words),
             _ => Ok(Some(json!({ "error": "unknown studio command" }))),
         }
     }
@@ -669,10 +677,10 @@ impl Game<'_> {
             self.replay.previous_camera_type = Some(self.camera_type);
             self.replay.standalone = standalone;
         }
-        self.replay.driver = Some(driver);
+        self.replay.driver = Some(Box::new(driver));
         self.camera_type = sunrise_client::camera::CameraType::FirstPerson;
         self.title = None;
-        self.screen = Screen::Playing;
+        self.activate_screen(Screen::Playing);
         self.capture(false);
         self.dragging = false;
         // Apply timestamp-zero login, player pose, and chunk packets before the first rendered
@@ -710,11 +718,11 @@ impl Game<'_> {
         self.replay.virtual_tick_ms = 0.0;
         self.capture(false);
         if standalone {
+            self.reset_client_item_use();
             if let Some(mut remote) = self.remote.take() {
                 remote.session.disconnect();
             }
             self.using = None;
-            self.end_mod_use();
             if let Err(error) = self.finish_close_world() {
                 log::error!("Failed to close standalone Studio replay cleanly: {error}");
             }
@@ -723,12 +731,12 @@ impl Game<'_> {
             // restore. Start the next world in first person with visible hands.
             self.camera_type = sunrise_client::camera::CameraType::FirstPerson;
             if let Some(title) = self.title.as_mut() {
-                title.mode = sunrise_client::title::Mode::Main;
+                title.activate_mode(sunrise_client::title::Mode::Main);
             }
         } else if self.integrated.is_none() && self.lan.is_none() {
             let _ = self.close_world();
             if let Some(title) = self.title.as_mut() {
-                title.mode = sunrise_client::title::Mode::Main;
+                title.activate_mode(sunrise_client::title::Mode::Main);
             }
         }
         closed
@@ -838,6 +846,7 @@ impl Game<'_> {
             &r.builtin,
             &biome_names,
             &registry,
+            self.res.shared_items(),
         );
 
         let mut count = 0;

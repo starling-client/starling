@@ -1,0 +1,4 @@
+# The daily tests of sunrise-client-render: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-client-render gfx::core_particles::tests::a_type_the_frame_has_no_room_left_for_keeps_its_quads lib daily slow
+sunrise-client-render gfx::core_particles::tests::the_quads_drawn_on_the_cpu_fit_the_device lib daily slow

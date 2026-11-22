@@ -154,6 +154,6 @@ the minimal engine integration seam; any required pure-move prerequisites; and p
 regression coverage. Generic pages v2 availability does not by itself resolve these questions.
 
 This proposal and the split checklist need maintainer approval. Do not open the implementation
-series merely because docs CI passed or `run-parity` was added. Do not close #14224, replace its
+series merely because docs CI passed. Do not close #14224, replace its
 history, push the isolated merge result, or change another contributor's branch as part of
 preparing the plan. Every later PR links the accepted spec and its exact work-package ID.

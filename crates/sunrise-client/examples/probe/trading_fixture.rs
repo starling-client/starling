@@ -3,19 +3,21 @@
 //! the merchant menu, NBT) and prints the same lines.
 //!
 //! usage: trading_fixture RESOURCES INPUT VANILLA_OUTPUT OUTPUT
+use std::{collections::HashMap, fmt::Write as _, fs, path::Path};
 use sunrise_client::{
     enchant::Enchantments,
     entity_nbt,
     gossip::{GossipType, Gossips},
     items::{ItemStack, Items},
     menu::{Env, Input, Kind, Menu},
-    merchant::{self, Event, MerchantOffer, Session, TradeContext, TradeEnv, Trader, Trades},
+    merchant::{
+        self, Event, ItemCost, MerchantOffer, Session, TradeContext, TradeEnv, Trader, Trades,
+    },
     random_sequences::RandomSequences,
 };
 use sunrise_core::nbt::Tag;
 use sunrise_core::random::{LegacyRandom, RandomSource};
 use sunrise_world::loot::PackOverlay;
-use std::{collections::HashMap, fmt::Write as _, fs, path::Path};
 
 const PLAYER: [i32; 4] = [0, 0x1234, 0, 0x5678];
 
@@ -89,10 +91,10 @@ fn canon_str(t: &Tag) -> String {
     canon(t, &mut s);
     s
 }
-fn stack(s: Option<&ItemStack>) -> String {
+fn stack(s: Option<&ItemStack>, items: &Items) -> String {
     match s {
         None => "-".into(),
-        Some(s) => canon_str(&sunrise_client::save::item_to_nbt(s)),
+        Some(s) => canon_str(&sunrise_client::save::item_to_nbt(s, items)),
     }
 }
 
@@ -288,7 +290,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     writeln!(
                         out,
                         "{name} v{k} {}",
-                        canon_str(&entity_nbt::offers_to_nbt(&m.trader.offers))
+                        canon_str(&entity_nbt::offers_to_nbt(&m.trader.offers, &items))
                     )?;
                 }
                 let mut line = format!("{name} draws");
@@ -296,6 +298,43 @@ pub fn main() -> sunrise_client::Result<()> {
                     write!(line, " {}", world.sequences.get(&id, seed).next_int())?;
                 }
                 writeln!(out, "{line}")?;
+            }
+            "offer_int" => {
+                let number = |key| kv[key].parse::<i32>().unwrap();
+                let mut offer = MerchantOffer {
+                    base_cost_a: ItemCost {
+                        stack: ItemStack::new("minecraft:emerald", number("base") as u32),
+                    },
+                    cost_b: None,
+                    result: ItemStack::new("minecraft:bread", 1),
+                    uses: number("uses"),
+                    max_uses: number("max"),
+                    reward_exp: false,
+                    special_price_diff: number("special"),
+                    demand: number("demand"),
+                    price_multiplier: kv["multiplier"].parse().unwrap(),
+                    xp: number("xp"),
+                };
+                let before = offer.cost_a_count(&items);
+                offer.update_demand();
+                offer.add_special_price_diff(number("delta"));
+                let mut session = Session::new(vec![offer], true);
+                session.level = 5;
+                session.xp = number("start");
+                session.notify_trade(0, None, &items);
+                let o = &mut session.offers[0];
+                let used = o.uses;
+                o.reset_uses();
+                writeln!(
+                    out,
+                    "{name} {before} {} {} {} {used} {} {} {}",
+                    o.demand,
+                    o.special_price_diff,
+                    o.cost_a_count(&items),
+                    o.uses,
+                    o.xp,
+                    session.xp
+                )?;
             }
             "price" => {
                 let mut m = world.merchant(&kv["v"], origin);
@@ -361,7 +400,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 }
                 let mob =
                     entity_nbt::mob_from_nbt(&tag, &types, 1, None).ok_or("unreadable villager")?;
-                let back = entity_nbt::mob_to_nbt(&mob, [0; 4], None, None, |_| None);
+                let back = entity_nbt::mob_to_nbt(&mob, [0; 4], None, None, |_| None, &items);
                 writeln!(out, "{name} snbt {text}")?;
                 let mut kept = sunrise_core::nbt::Compound::new();
                 for key in [
@@ -403,6 +442,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     can_equip: None,
                     known_recipes: None,
                     slot_rules: None,
+                    stacked: None,
                 };
                 trade(&mut out, name, &kv, &mut world, &env, origin)?;
             }
@@ -506,7 +546,7 @@ fn trade(
         let mut line = format!("{name} {k} {s} menu {open_menu}");
         if open_menu {
             for i in 0..3 {
-                write!(line, " {}", stack(menu.slot(i)))?;
+                write!(line, " {}", stack(menu.slot(i), env.items))?;
             }
             write!(
                 line,
@@ -514,11 +554,11 @@ fn trade(
                 menu.merchant.as_ref().map_or(0, |s| s.future_xp)
             )?;
         }
-        write!(line, " carried {}", stack(menu.carried.as_ref()))?;
+        write!(line, " carried {}", stack(menu.carried.as_ref(), env.items))?;
         line.push_str(" inv");
         for i in 0..36 {
             if let Some(st) = menu.player_item(i) {
-                write!(line, " {i}={}", stack(Some(st)))?;
+                write!(line, " {i}={}", stack(Some(st), env.items))?;
             }
         }
         let sess = menu

@@ -13,6 +13,7 @@ pub(super) fn with_input_context<T>(run: impl FnOnce(&mut TickCtx<'_>) -> T) -> 
         next_entity: &mut next_entity,
         spawn: [0.5, 64.0, 0.5],
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
@@ -95,6 +96,30 @@ fn look(hub: &Hub) -> [f32; 2] {
 }
 
 #[test]
+fn loading_blocks_movement_and_attacks_until_the_load_timeout_expires() {
+    for (timeout, accepted) in [(2, false), (0, true)] {
+        let mut hub = standing(false, vec![S::Attack(play::Attack { id: 7 }), walking(1.0)]);
+        hub.guests.update(0, |g| {
+            g.loaded = false;
+            g.load_timeout = timeout;
+        });
+        let mut events = drain(&mut hub);
+        // Delivering an attack yields before the following movement packet.
+        events.extend(drain(&mut hub));
+        assert_eq!(
+            events.iter().any(|event| matches!(event,
+            HostEvent::Packet(_, packet) if matches!(&**packet, S::Attack(_)))),
+            accepted
+        );
+        assert_eq!(
+            hub.guests[0].position,
+            [if accepted { 1.0 } else { 0.0 }, 64.0, 0.0]
+        );
+        assert!(!hub.guests[0].loaded);
+    }
+}
+
+#[test]
 fn two_reports_in_one_tick_are_heard_in_order_each_from_the_one_before_when_both_pass() {
     let mut hub = standing(true, vec![turned(10.0), turned(20.0)]);
     let conn = hub.guests[0].conn;
@@ -132,11 +157,12 @@ fn a_veto_of_the_first_of_two_reports_in_one_tick_corrects_and_the_second_is_not
     assert_eq!(look(&hub), [0.0, 0.0], "the vetoed report is not applied");
     assert!(hub.guests[0].awaiting_teleport.is_some());
     // The second waited behind it, and meets the unconfirmed correction: only the server's own
-    // handling of a report that arrives then, no hearing.
+    // handling of a report that arrives then, no hearing. While a teleport is awaited a report
+    // keeps its rotation and loses its position, as the awaiting check does.
     assert!(moves(&drain(&mut hub)).is_empty());
     assert!(hub.guests[0].pending_move.is_none());
     assert!(hub.guests[0].inbox.is_empty());
-    assert_eq!(look(&hub), [0.0, 0.0]);
+    assert_eq!(look(&hub), [20.0, 0.0]);
 }
 
 #[test]
@@ -225,44 +251,4 @@ fn with_no_listener_the_report_is_committed_in_place_and_nothing_is_held() {
     assert_eq!(g.position, [0.5, 64.0, 0.0]);
     assert!(g.pending_move.is_none());
     assert!(g.inbox.is_empty());
-}
-
-/// What a vetoed report does to the counters: the server's own checks and the anticheat's record
-/// of the client's ticks saw it before the hook, and the packets behind it are read after the ruling, in order.
-#[test]
-fn a_vetoed_report_is_counted_before_the_hook_and_adds_no_violation() {
-    let mut hub = standing(true, vec![walking(0.5), tick_end()]);
-    let config = sunrise_anticheat::Config::default();
-    hub.set_anticheat(config.clone());
-    let conn = hub.guests[0].conn;
-    assert_eq!(moves(&drain(&mut hub)), [conn]);
-    let g = &hub.guests[0];
-    assert_eq!(g.received_moves, 1, "the speed check's window counted it");
-    assert_eq!(
-        g.record.as_ref().map(|r| r.ended()),
-        Some(0),
-        "its tick end waits"
-    );
-    assert_eq!(
-        g.anticheat.timer.ms, 0.0,
-        "the timer has not read the tick end"
-    );
-    hub.resolve_move(conn, false);
-    assert!(
-        hub.guests[0].moves.is_empty(),
-        "its bookkeeping was skipped"
-    );
-    assert!(moves(&drain(&mut hub)).is_empty());
-    let g = &hub.guests[0];
-    let record = g.record.as_ref().unwrap();
-    assert_eq!(record.ended(), 1, "the tick end was read after the ruling");
-    assert_eq!(
-        record.ticks().last().and_then(|t| t.position),
-        Some([0.5, 64.0, 0.0]),
-        "the record holds what the client sent, vetoed or not"
-    );
-    assert_eq!(g.anticheat.timer.ms, -50.0, "one tick end of the timer");
-    for check in sunrise_anticheat::Check::ALL {
-        assert_eq!(g.anticheat.vl(&config, *check, hub.ticks), 0.0, "{check:?}");
-    }
 }

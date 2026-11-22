@@ -1,13 +1,13 @@
 //! Shared revision identities for engine block entities and their API snapshots, and the
 //! one-shot client update fields queued under them.
-use sunrise_core::nbt::Compound;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use sunrise_core::nbt::Compound;
 
 static MADE: AtomicU64 = AtomicU64::new(0);
 /// The batches waiting for a block change, by identity. Kept here so that the plain-data
-/// entity crosses to wasm and is saved, cloned and compared without them.
+/// entity is saved, cloned and compared without them.
 static UPDATE_FIELDS: Mutex<BTreeMap<u64, Compound>> = Mutex::new(BTreeMap::new());
 /// How many batches wait: with none, as nearly always, no call takes the lock.
 static WAITING: AtomicUsize = AtomicUsize::new(0);
@@ -31,6 +31,14 @@ pub fn set_client_update_fields(identity: u64, fields: Compound) {
         waiting.insert(identity, fields);
     }
     WAITING.store(waiting.len(), Ordering::Relaxed);
+}
+
+/// Copy the batch waiting under `identity` without consuming it.
+pub fn snapshot_client_update_fields(identity: u64) -> Option<Compound> {
+    if WAITING.load(Ordering::Relaxed) == 0 {
+        return None;
+    }
+    update_fields().get(&identity).cloned()
 }
 
 /// Take the batch waiting under `identity`: the next call finds none.

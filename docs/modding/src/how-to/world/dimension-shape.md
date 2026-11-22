@@ -4,9 +4,11 @@
 
 `LevelRef::dimension` returns a `DimensionKey`, a small `Copy` value that names the dimension
 for as long as the game runs, custom dimensions included. Compare it with another key or with
-`DimensionKey::OVERWORLD`, `NETHER` and `END`; `level.dimension().id(host)` gives the name
-(`minecraft:the_nether`). On a client, `host.level(name)` gives the level it shows under the
-name the server calls it, whether or not that is a vanilla dimension.
+`DimensionKey::OVERWORLD`, `NETHER` and `END`; `level.dimension().id(host)` borrows the name
+as `Option<&str>` (for example, `Some("minecraft:the_nether")`). It returns `None`
+without a backend or for an unissued slot. Copy the name only if you need to retain it
+beyond the host borrow. On a client, `host.level(name)` gives the level it shows under
+the name the server calls it, whether or not that is a vanilla dimension.
 
 ## Dimension shape
 
@@ -64,7 +66,11 @@ whether or not the client has the mod that registered the level.
 
 `sky_color`, `fog_color` (`#rrggbb`) and `cloud_height` set the sky overhead, the fog at the
 sunrise and the clouds' height; left as None they are the Overworld's. A client of a server draws a
-level of a mod or a pack with the sky the server's type gives it, as the host does.
+level with the sky the server's type gives it, as the host does: a level of a mod or a pack, and a
+built-in level whose type a data pack changed. Resource packs' Polytone dimension modifiers apply
+over that type only when it is one of the three vanilla types (`minecraft:overworld`,
+`minecraft:the_nether`, `minecraft:the_end`); a mod's dimension type is drawn without them, even in a
+built-in level.
 
 `day_cycle` picks the timelines and the clock the dimension type names: `overworld` (the day and moon
 cycles, the villagers' schedule and the Overworld's clock, the default), `nether` (the schedule only,
@@ -95,10 +101,6 @@ A registered dimension is the level stem and dimension type a data pack would gi
 data pack: a pack with `data/mymod/dimension/pocket.json` or `data/mymod/dimension_type/pocket.json`
 replaces that half of it, in the worlds that have the pack.
 
-`register_dimension` is the same call in a mod built to `mod.wasm`, as the settings are plain
-data. A wasm mod's dimension can name only the game's own generator, `minecraft:noise`, with a
-vanilla biome source or one a native mod registered: a chunk generator and a biome source are code,
-and `register_chunk_generator` and `register_biome_source` are native only.
 
 ## Sending a player to a dimension
 
@@ -109,15 +111,17 @@ as `Entity.teleport` with a portal's transition. It works for a player, a mob, a
 trident, a firework and the thrown items and fireballs a chunk saves. The entity keeps its motion;
 set it first with `entity.set_velocity` to stop or turn it.
 
+Bind a [server command](../entities/server-commands.md) in `Hooks::register_commands`.
+This executor accepts a player source and returns `Some(1)` when the move is queued:
+
 ```rust,ignore
-fn run_mod_command(&self, host: &mut dyn ServerHost, event: &mut RunModCommandEvent<'_>) -> Flow {
-    let CommandSource::Player { player, .. } = event.source else {
-        return Flow::Continue;
+event.commands.push(Command::new("pocket").executes(|host, source, _| {
+    let CommandSource::Player { player, .. } = source else {
+        return None;
     };
-    let entity = player.entity();
-    entity.teleport_to_level(host, "mymod:pocket", [8.5, 100.0, 8.5], None);
-    Flow::Cancel
-}
+    player.entity().teleport_to_level(host, "mymod:pocket", [8.5, 100.0, 8.5], None)
+        .then_some(1)
+}));
 ```
 
 `pos` is in the destination's own coordinates: nothing scales it by the level's
@@ -166,12 +170,50 @@ goes back. Match it with a final `Custom(_)` arm. The game's own rules read the 
 too (water that evaporates, fast lava, infiniburn, piglin portals), and `player_respawn_position` may send a player to
 a `Custom` level.
 
+`crop_grow_post` version 2 always reports the growing plant's pre-growth state as
+`original_state`, including sugar cane and kelp or vine heads. This diverges from
+NeoForge. `state` is the current block at the reported position: the new cane or
+head for those plants. Age-only sugar cane steps emit no Post; a full-age stem
+still emits Post if no fruit was placed. Cactus and chorus report the plant's
+position, not the position above it used by Pre.
+
 ## Players, structures and chunk watchers
 
-`level.online_players(host)` lists the real online players in that server level, including
-when it is parked. Obtain a chunk with `host.chunk(level, pos)`, then call
-`chunk.watchers(host)` to ask which players were sent it and have it inside their
-view distance; fake players watch nothing.
+`level.visit_online_players(host, &mut visit)` visits the real online players in that server
+level without building a list, even if the level is parked. In the active level the local
+or acting player comes first, then the placed guests in server order; a parked level has
+only its placed guests. Fake players and players displaced by a nested guest turn are skipped.
+The callback takes a `PlayerRef` and can make shared reads through the same host. Return
+`core::ops::ControlFlow::Break(())` to stop or `Continue(())` to keep going. The call returns
+`Ok(Break(()))` if you stopped it or `Ok(Continue(()))` if it finished, including when
+the level had no players. A stale level gives `Err(LevelReadError::Stale)`; a client or
+unavailable world access gives `Err(LevelReadError::Unavailable)`. Neither calls the visitor.
+
+If you need mutable host access, collect only the handles that will receive the effect.
+For example, select players above a world y-coordinate (`min_y: f64`) with a shared
+read, then send each a message. This example is from a context that can propagate
+both visit and send errors:
+
+```rust,ignore
+use core::ops::ControlFlow::Continue;
+
+let mut recipients = Vec::new();
+let _ = level.visit_online_players(host, &mut |player| {
+    if player.entity().position(host).is_some_and(|pos| pos[1] > min_y) {
+        recipients.push(player);
+    }
+    Continue(())
+})?;
+for player in recipients {
+    let _ = player.tell(host, message.clone())?;
+}
+```
+
+For typed payloads, `ToClient::send_in_level` and `ToClient::send_near` already handle
+collecting recipients before sending.
+
+Obtain a chunk with `host.chunk(level, pos)`, then call `chunk.watchers(host)` to ask which
+players were sent it and have it inside their view distance; fake players watch nothing.
 
 `level.find_nearest_structure(host, structure, StructureSearch::new(origin, radius))` searches
 for a structure id or `#tag` and returns its structure and locate position. This is a
@@ -192,7 +234,7 @@ Removal returns whether that ticket was removed; overlapping tickets remain inde
 Only the mod that added a ticket can remove it. `level.has_water_ticket(host, pos)` tests
 whether any ticket covers a block. Both calls reach active or parked server levels without
 loading chunks; unavailable/stale handles and clients answer `false` (adding answers `None`).
-Adding requires an enabled mod call, and native and wasm use the same generated boundary.
+Adding requires an enabled mod call.
 
 Tickets are chunk-indexed, in memory only, and never force chunks to load. They are removed
 on explicit removal, level unload, or their owner's disable; re-enabling does not restore
@@ -205,11 +247,12 @@ pay only the empty-index guard, not a mod scan or callback.
 
 ## Saving a level
 
-`level.request_save(host)` asks the server to save a level, as the autosave and `/save-all` do, with its
-chunks on disk when it ends. The save runs at the start of the next server tick, not inside the call (a hook
-may be running in the tick that is saving), and a level asked for twice before then is saved once. The call
-answers whether the request was taken. `level_save` fires with the level's dimension once it was written; a
-save that fails fires nothing and is logged.
+`level.request_save(host)` asks the server to save a level, as the autosave and `/save-all` do. The
+save runs at the start of the next server tick, not inside the call; multiple requests before
+then save it once. The call answers whether the request was taken, not whether the save succeeded.
+`level_save` fires with the level's dimension after the save pass, even if an individual record
+could not be written. As in vanilla, those failures are logged but do not fail the pass. A failed
+awaited storage flush fails the pass and does not fire `level_save`.
 
 Inside a hook, use `level.request_save(host)`, not a synchronous `save-all` command.
 While an entity pass or held-out row is borrowed, synchronous saving refuses with vanilla's
@@ -259,7 +302,7 @@ place of the noise.
 
 A generator in an unowned namespace, an empty name, a name that is not a folder of the world (as
 for a dimension), an id registered twice and `minecraft:noise` stop the game at startup with a
-message naming the mod. Wasm mods can register dimensions using `minecraft:noise`, but cannot register a chunk generator.
+message naming the mod.
 
 A level stem naming a generator nobody registered, say after its mod was removed, is an error for
 whoever opens that level, not for the world: a teleport there fails and is logged, and a player
@@ -294,5 +337,4 @@ for a dimension), an id registered twice and an empty `possible_biomes` stop the
 with a message naming the mod, and so does a dimension whose `mod_biome_source` nobody registered.
 The source may come from a mod that loads later. A level whose world lacks one of the possible
 biomes refuses to open, naming the source and the biome, as does a level stem naming a source that
-is gone. A wasm mod's registrar refuses `register_biome_source`, naming the source: `BiomeSource`
-is not bound by the generated wasm worker interface.
+is gone.

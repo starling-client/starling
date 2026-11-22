@@ -13,7 +13,6 @@
 //! (`adb forward` to a phone): a client there writes the same file with
 //! `"remote": true` and gets screenshots back in the reply (`screenshot -`).
 use crate::block_entity_render::StaticCacheFrameStats;
-use sunrise_threads::alloc_count::{Counts, ON};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
@@ -26,6 +25,7 @@ use std::{
     thread,
     time::Instant,
 };
+use sunrise_threads::alloc_count::{Counts, ON};
 
 #[cfg(unix)]
 pub use std::os::unix::net::{UnixListener, UnixStream};
@@ -696,9 +696,41 @@ mod tests {
     #[test]
     fn the_series_cover_every_frame_the_summary_counts() {
         let mut stats = FrameStats::default();
-        for ms in [4.0, 5.0, 6.0] {
+        let span = |name, ms, cpu_ms| crate::spans::Span {
+            name,
+            ms,
+            cpu_ms,
+            depth: 1,
+        };
+        let samples = [
+            vec![
+                span("unload_block_entities", 0.25, 0.125),
+                span("unload_block_entities", 0.125, 0.0625),
+                span("order_uploads", 0.5, 0.25),
+                span("upload_queue", 1.0, 0.5),
+                span("upload_queue", 0.125, 0.0625),
+                span("load_block_entities", 0.25, 0.125),
+                span("load_block_entities", 0.125, 0.0625),
+                span("block_entity_items", 0.125, 0.0625),
+                span("block_entity_items", 0.0625, 0.03125),
+            ],
+            vec![],
+            vec![
+                span("upload", 0.25, 0.125),
+                span("block_entity_items", 0.25, 0.125),
+            ],
+        ];
+        let uploads = [[7, 8192], [0, 0], [2, 1024]];
+        let block_entity_work = [[3, 256], [0, 0], [0, 324]];
+        for (((ms, spans), uploads), work) in [4.0, 5.0, 6.0]
+            .into_iter()
+            .zip(samples)
+            .zip(uploads)
+            .zip(block_entity_work)
+        {
             stats.record(ms);
             stats.record_cpu(ms / 2.0);
+            stats.record_streaming_work(5, 13, 23, uploads, work, &spans);
         }
         let mut summary = stats.summary();
         assert!(summary.get("frame_ms").is_none());
@@ -707,6 +739,42 @@ mod tests {
         assert_eq!(summary["cpu_ms"], serde_json::json!([2.0, 2.5, 3.0]));
         assert_eq!(summary["gpu_ms"], serde_json::json!([]));
         assert_eq!(summary["frames"], 3);
+        assert!(summary.get("streaming_work").is_none());
+        assert!(summary.get("streaming_uploads").is_none());
+        assert!(summary.get("streaming_block_entities").is_none());
+        assert!(summary.get("streaming_span_ms").is_none());
+
+        stats.add_flight_series(&mut summary);
+        assert_eq!(
+            summary["streaming_work"],
+            serde_json::json!([[5, 13, 23], [5, 13, 23], [5, 13, 23]])
+        );
+        assert_eq!(
+            summary["streaming_uploads"],
+            serde_json::json!([[7, 8192], [0, 0], [2, 1024]])
+        );
+        assert_eq!(
+            summary["streaming_block_entities"],
+            serde_json::json!([[3, 256], [0, 0], [0, 324]])
+        );
+        assert_eq!(
+            summary["streaming_span_ms"],
+            serde_json::json!({
+                "unload_block_entities": [0.375, null, null],
+                "order_uploads": [0.5, null, null],
+                "upload_queue": [1.125, null, null],
+                "load_block_entities": [0.375, null, null],
+                "block_entity_items": [0.1875, null, 0.25],
+            })
+        );
+
+        stats.reset();
+        let mut summary = stats.summary();
+        stats.add_flight_series(&mut summary);
+        assert!(summary.get("streaming_work").is_none());
+        assert!(summary.get("streaming_uploads").is_none());
+        assert!(summary.get("streaming_block_entities").is_none());
+        assert!(summary.get("streaming_span_ms").is_none());
     }
 
     #[test]
@@ -804,6 +872,15 @@ pub struct FrameStats {
     gpu: Vec<f32>,
     /// Milliseconds per frame phase (`PHASES`), one entry per rendered frame.
     phases: Vec<[f32; PHASES.len()]>,
+    /// Per rendered frame during a raw flight: unload entries visited, upload
+    /// elements sorted and upload elements merged.
+    streaming_work: Vec<[u64; 3]>,
+    /// Meshes submitted to the renderer and their bytes at the upload budget's vertex size.
+    streaming_uploads: Vec<[u64; 2]>,
+    /// Column-load writes and item-render entity visits, per rendered frame.
+    streaming_block_entities: Vec<[u64; 2]>,
+    /// The same frames' wall milliseconds, by streaming span. None when it did not run.
+    streaming_spans: Vec<[Option<f32>; STREAMING_SPANS.len()]>,
     static_snapshot_rebuilds: u64,
     static_snapshot_bytes_built: u64,
     static_bytes_uploaded: u64,
@@ -823,6 +900,14 @@ pub struct FrameStats {
 /// The parts of a frame's CPU time: world streaming and uploads, game ticks,
 /// building the frame's geometry and HUD, and the renderer's own work.
 pub const PHASES: [&str; 4] = ["update", "tick", "prepare", "render"];
+
+const STREAMING_SPANS: [&str; 5] = [
+    "unload_block_entities",
+    "order_uploads",
+    "upload_queue",
+    "load_block_entities",
+    "block_entity_items",
+];
 
 fn percentiles(values: &[f32]) -> serde_json::Value {
     let mut sorted = values.to_vec();
@@ -898,11 +983,54 @@ impl FrameStats {
         self.static_entities_drawn += stats.static_entities_drawn;
         self.dynamic_entities_drawn += stats.dynamic_entities_drawn;
     }
+    /// Streaming work and wall times for one rendered frame of a raw flight.
+    pub fn record_streaming_work(
+        &mut self,
+        visited: u64,
+        sorted: usize,
+        merged: usize,
+        mesh_uploads: [u64; 2],
+        block_entity_work: [u64; 2],
+        spans: &[crate::spans::Span],
+    ) {
+        if self.streaming_work.len() < Self::LIMIT {
+            self.streaming_work
+                .push([visited, sorted as u64, merged as u64]);
+            self.streaming_uploads.push(mesh_uploads);
+            self.streaming_block_entities.push(block_entity_work);
+            let mut times = [None; STREAMING_SPANS.len()];
+            for span in spans {
+                if let Some(index) = STREAMING_SPANS.iter().position(|&name| name == span.name) {
+                    *times[index].get_or_insert(0.0) += span.ms;
+                }
+            }
+            self.streaming_spans.push(times);
+        }
+    }
+
     /// Adds every frame's time (`frame_ms`, `cpu_ms`, `gpu_ms`) to a summary.
     pub fn add_series(&self, summary: &mut serde_json::Value) {
         summary["frame_ms"] = self.millis.clone().into();
         summary["cpu_ms"] = self.cpu.clone().into();
         summary["gpu_ms"] = self.gpu.clone().into();
+    }
+
+    /// Adds streaming measurements only to a raw flight reply.
+    pub fn add_flight_series(&self, summary: &mut serde_json::Value) {
+        if !self.streaming_work.is_empty() {
+            summary["streaming_work"] = serde_json::json!(self.streaming_work);
+            summary["streaming_uploads"] = serde_json::json!(self.streaming_uploads);
+            summary["streaming_block_entities"] = serde_json::json!(self.streaming_block_entities);
+            summary["streaming_span_ms"] = STREAMING_SPANS
+                .iter()
+                .enumerate()
+                .map(|(index, &name)| {
+                    let times: Vec<_> = self.streaming_spans.iter().map(|t| t[index]).collect();
+                    (name.to_owned(), serde_json::json!(times))
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into();
+        }
     }
     /// One frame's allocations: this thread's since the last frame, all threads' since then.
     pub fn record_allocs(&mut self, window: Counts, process: Counts, now: Instant) {
@@ -975,6 +1103,10 @@ impl FrameStats {
         self.cpu.clear();
         self.gpu.clear();
         self.phases.clear();
+        self.streaming_work.clear();
+        self.streaming_uploads.clear();
+        self.streaming_block_entities.clear();
+        self.streaming_spans.clear();
         self.static_snapshot_rebuilds = 0;
         self.static_snapshot_bytes_built = 0;
         self.static_bytes_uploaded = 0;

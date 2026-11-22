@@ -6,6 +6,8 @@ pub trait Hooks {
     /// final size was applied. Server-side, including the single-player
     /// server.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_world_border_bounds_change_finish",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event; Bukkit's WorldBorderBoundsChangeFinish)",

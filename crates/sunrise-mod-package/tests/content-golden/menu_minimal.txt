@@ -1,0 +1,88 @@
+manifest:
+Manifest {
+    id: "menu_minimal",
+    name: "Menu minimal",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/menu_minimal",
+    ),
+    files: [
+        "data/menu_minimal/sunrise/menu/empty.json",
+        "data/menu_minimal/sunrise/menu/ordinary_grid.json",
+    ],
+    blocks: [],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [
+        MenuType {
+            id: "menu_minimal:empty",
+            slots: 0,
+            player_inventory: true,
+            data_slots: 0,
+            owned_slots: None,
+            results: [],
+            inputs: [],
+            crafting: None,
+            links: None,
+        },
+        MenuType {
+            id: "menu_minimal:ordinary_grid",
+            slots: 10,
+            player_inventory: true,
+            data_slots: 0,
+            owned_slots: None,
+            results: [],
+            inputs: [],
+            crafting: Some(
+                MenuCrafting {
+                    grid: 1,
+                    size: 3,
+                    result: 0,
+                },
+            ),
+            links: None,
+        },
+    ],
+    namespaces: [
+        "menu_minimal",
+    ],
+}

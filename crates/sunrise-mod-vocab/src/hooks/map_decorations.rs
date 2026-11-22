@@ -15,11 +15,14 @@ pub trait Hooks {
     /// The client half of `MapDecorationType` and `addDecoration`: a type
     /// registered on the server and saved in the map's data is not here.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_map_decorations",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "decorations",
         neoforge = "MapDecorationType",
         cancellable = false
     )]
-    fn map_decorations();
+    fn map_decorations(map: &mod_api::MapInfo<'_>, decorations: &mut Vec<mod_api::MapDecoration>);
 }

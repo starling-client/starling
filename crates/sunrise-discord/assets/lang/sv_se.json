@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord rik närvaro",
+  "sunrise.extras.discord_presence.tooltip": "Visar Playing Sunrise på din Discord-profil medan Discord körs: menyer, singelspelare eller multiplayer, dimensionen och spelad tid. Aldrig en världsnamn eller en serveradress."
+}

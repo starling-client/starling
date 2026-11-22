@@ -26,7 +26,7 @@ let _ = player.set_chunk_areas(host, &[]);
 - **Not a player.** An area is a chunk ticket. It counts as no player for natural spawning, mob caps, despawning, spawners, sleeping, raids, the dragon fight or the random-tick rules that look for a player nearby. Terrain generated for an area is saved like any other.
 - **Lifetime.** Areas are never saved. They end when the player leaves.
 - **The player's own level.** An area there holds its ticket, but its chunks are sent only within the player's normal view.
-- **A level opened after the player logged in** (a [runtime level](../world/runtime-levels.md#players-and-clients)): its client cannot name it, so an area there is kept but nothing of the level is sent to it. When a runtime level closes, the clients that viewed it drop its world.
+- **A level opened after the player logged in** (a [runtime level](../world/runtime-levels.md#players-and-clients)) is viewed like any other by a client of this version. An older Sunrise client cannot name it: an area there is kept, but nothing of the level is sent to it. When a runtime level closes, the clients that viewed it drop its world.
 - **Refusals.** A call that breaks a limit changes nothing; the areas asked before stay. `ChunkAreaRefusal` names the limit and its value:
   - `NotOnline`: the player is not online on this server.
   - `RadiusTooLarge { radius, max: 32 }`.
@@ -35,11 +35,11 @@ let _ = player.set_chunk_areas(host, &[]);
   - `TooManyLevels { asked, cap }`: more levels besides the player's own than its client can view. `cap` is the client's own answer: 2 for a Sunrise client, 0 for vanilla or an older Sunrise.
   - `TooManyChunks { cap, level, asked, limit }`: more chunks in `level` than the server setting `cap` allows; `limit` is its value now.
   - `Unavailable`: a level handle of an earlier open of the world, or a call from outside any mod's hook (the engine keeps each mod's areas apart by its id).
-- **The chunk caps** are server settings ([hosting](https://github.com/arismoko/horizon/blob/main/docs/hosting.md#other-levels-a-mod-shows-a-player-max_viewed_)). Chunks are counted as the union of every mod's areas, by mode. A `Loaded` area loads one ring past its radius, so it counts (2r + 3)² chunks; a `Ticking` area's square counts as ticking and the two rings it loads around it as loaded.
+- **The chunk caps** are server settings ([hosting](https://github.com/sunrise-org/sunrise/blob/main/docs/hosting.md#other-levels-a-mod-shows-a-player-max_viewed_)). Chunks are counted as the union of every mod's areas, by mode. A `Loaded` area loads one ring past its radius, so it counts (2r + 3)² chunks; a `Ticking` area's square counts as ticking and the two rings it loads around it as loaded.
 
   | `ChunkCap` | Setting | Default |
   |---|---|---|
-  | `LoadedPerPlayer` | `max_viewed_loaded_chunks`, per player and level | 2048, and at most |
+  | `LoadedPerPlayer` | `max_viewed_loaded_chunks`, per player and level | 2048; at most 4489, and 2048 for an older Sunrise client |
   | `TickingPerPlayer` | `max_viewed_ticking_chunks`, per player and level | 441 |
   | `LoadedPerLevel` | `max_viewed_loaded_chunks_per_level`, every player together | 16384 |
   | `TickingPerLevel` | `max_viewed_ticking_chunks_per_level`, every player together | 3528 |

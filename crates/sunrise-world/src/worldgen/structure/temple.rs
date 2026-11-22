@@ -1,11 +1,11 @@
 //! Desert pyramids and jungle temples (DesertPyramidPiece, JungleTemplePiece).
+use std::sync::Mutex;
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_core::{
     geometry::Direction,
     position::BlockPos,
     random::{LegacyRandom, PositionalRandom, RandomSource},
 };
-use std::sync::Mutex;
 use {
     super::{
         legacy::{HORIZONTAL, LegacyPiece, PieceContext, Result, random_horizontal},

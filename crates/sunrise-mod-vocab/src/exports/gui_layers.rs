@@ -1,1 +1,3 @@
-pub use client::gui_layers::{GuiLayer, GuiLayerPlacement};
+pub use client::gui_layers::{
+    GuiLayerDraw, GuiLayerPlacement, GuiLayerRegistrar, GuiLayerWrapContext, GuiLayerWrapper,
+};

@@ -1,0 +1,31 @@
+name: daily catch-up
+# GitHub delivers almost none of this repository's scheduled events, the daily's included: each push to main starts
+# the day's real daily once 09:00 UTC has passed and none has (tools/ci/daily_catch_up.py). Its own workflow, so no
+# push cancels it mid-dispatch (dyna-checks replaces main's older runs) and its failure never touches the gate. One
+# run at a time, never cancelled, so a push right behind another sees the daily the first one started. On Dyna's
+# small runner while the repository's switch is on: its token only starts the daily, on main, from main's script.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: daily-catch-up
+  cancel-in-progress: false
+jobs:
+  catch-up:
+    if: github.repository == 'sunrise-org/sunrise'
+    runs-on: ${{ vars.DYNA_CI_SELF_HOSTED == 'true' && 'dyna-small' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/ci/daily_catch_up.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/daily_catch_up.py

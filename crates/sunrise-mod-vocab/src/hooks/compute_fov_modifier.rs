@@ -5,10 +5,16 @@ pub trait Hooks {
     /// effects and before zoom and easing.
     /// Invalid values or values outside 0.01..=10 revert to base.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ComputeFovModifierEvent",
         cancellable = false
     )]
-    fn compute_fov_modifier();
+    fn compute_fov_modifier(
+        player: &mod_api::client::camera::FovPlayer,
+        base: f32,
+        modifier: &mut f32,
+    );
 }

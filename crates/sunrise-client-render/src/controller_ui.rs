@@ -1,8 +1,7 @@
 //! Sunrise's controller settings screen, on the settings shell (`settings_shell`): one player's
 //! `PadSettings`, which that player's options hold, as pages of rows, and what pressing them does.
 //! The shell draws and drives it, Undo, the search and each binding's wait included. It says whose
-//! settings they are and what device the game sees; which controller drives which player stays
-//! the splitscreen router's.
+//! settings they are and what device the game sees.
 use crate::{
     gamepad::{self, GlyphOf, GlyphStyle, MenuJob, PadSettings},
     lang,
@@ -357,7 +356,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     pages
 }
 
-/// The controller a player's game sees, from its own reader or the splitscreen router.
+/// The controller the game sees.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Device {
     pub name: String,
@@ -401,7 +400,7 @@ impl Item {
             _ => None,
         }
     }
-    fn slider(self, s: &Settings) -> Option<f32> {
+    fn slider(self, s: &Settings) -> Option<f64> {
         match self {
             Item::Option(o) => o.slider_position(s),
             _ => None,
@@ -561,7 +560,7 @@ impl Screen for ControllerScreen {
             Item::Bind(_) | Item::Info(_) => Vec::new(),
         }
     }
-    fn slide(&mut self, s: &mut Settings, item: Item, position: f32) {
+    fn slide(&mut self, s: &mut Settings, item: Item, position: f64) {
         if let Item::Option(o) = item {
             o.set_slider(s, position);
         }

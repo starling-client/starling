@@ -61,18 +61,19 @@ fn listening(_: mod_api::HookId) -> impl Iterator<Item = (bool, &'static Listene
 }
 struct Entered { next: usize, count: usize }
 impl Iterator for Entered {
-    type Item = &'static Listener;
+    type Item = (&'static str, &'static Listener);
     fn next(&mut self) -> Option<Self::Item> {
         if self.next == self.count { return None; }
         let listener = &LISTENERS[self.next];
         self.next += 1;
         OWNER.set(listener.id);
-        Some(listener)
+        Some((listener.id, listener))
     }
 }
 impl Drop for Entered { fn drop(&mut self) { OWNER.set("outside"); } }
-fn entered(_: mod_api::HookId, _: &str) -> Entered { Entered { next: 0, count: ACTIONS.with_borrow(Vec::len) } }
+fn entered_with_id(_: mod_api::HookId, _: &str) -> Entered { Entered { next: 0, count: ACTIONS.with_borrow(Vec::len) } }
 mod runtime {
+    pub fn invoke<T>(_: super::mod_api::HookId, _: &str, _: &str, call: impl FnOnce() -> T) -> Option<T> { Some(call()) }
     pub struct ListenerScope;
     impl ListenerScope {
         pub fn new() -> Self { Self }

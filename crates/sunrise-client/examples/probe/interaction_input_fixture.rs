@@ -1,9 +1,9 @@
-use sunrise_client::interaction_input::{
-    Button, InteractionInput, InteractionWorld, TargetUseWorld, release_on_screen_open,
-    use_on_target,
-};
 use serde_json::Value;
 use std::io::{BufRead, Write};
+use sunrise_client::interaction_input::{
+    Button, InteractionWorld, TargetUseWorld, release_on_screen_open, tick, use_on_target,
+};
+use sunrise_client::keymapping::KeyState;
 
 struct World {
     using: bool,
@@ -14,8 +14,18 @@ struct World {
     delay: u32,
     events: Vec<String>,
     passing: bool,
+    input: [KeyState; 3],
 }
 impl InteractionWorld for World {
+    fn pending_clicks(&self, button: Button) -> u32 {
+        self.input[button as usize].pending_clicks() as u32
+    }
+    fn consume_click(&mut self, button: Button) -> bool {
+        self.input[button as usize].consume_click()
+    }
+    fn is_down(&self, button: Button) -> bool {
+        self.input[button as usize].is_down
+    }
     // The fixture's targets don't change within a tick.
     fn pick_hit_result(&mut self) {}
     fn release_hit_result(&mut self) {}
@@ -102,24 +112,27 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             delay: row["delay"].as_u64().unwrap() as u32,
             events: vec![],
             passing: row["passing"].as_bool().unwrap_or(false),
+            input: Default::default(),
         };
-        let mut input = InteractionInput::default();
         let screen = row["screen"].as_bool().unwrap_or(false);
         if screen {
             // A keybind opened a screen: Gui.setScreen already ran
             // KeyMapping.releaseAll, so the same handleKeybinds call releases an
             // active use; with the screen open nothing else acts this tick.
             release_on_screen_open(&mut world);
-            input.tick(&mut world, false, false);
+            tick(&mut world);
         } else {
             for button in row["clicks"].as_array().unwrap() {
-                input.press(match button.as_u64().unwrap() {
+                let button = match button.as_u64().unwrap() {
                     0 => Button::Attack,
                     1 => Button::Use,
                     _ => Button::Pick,
-                });
+                };
+                world.input[button as usize].click();
             }
-            input.tick(&mut world, flag("attack_down"), flag("use_down"));
+            world.input[Button::Attack as usize].is_down = flag("attack_down");
+            world.input[Button::Use as usize].is_down = flag("use_down");
+            tick(&mut world);
         }
         writeln!(out, "== {i}")?;
         for event in world.events {

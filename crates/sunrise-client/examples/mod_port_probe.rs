@@ -8,6 +8,8 @@
 //! WORK is a `sunrise-port-pack` work folder: `oracle/facts.json` and
 //! `mods/<id>/carry/`. The root is built in `WORK/sunrise-root`.
 extern crate sunrise_client_lib as sunrise_client;
+use serde_json::{Map, Value, json};
+use std::{collections::BTreeMap, fs, path::Path};
 use sunrise_client::{
     Result,
     assets::Assets,
@@ -21,8 +23,6 @@ use sunrise_client::{
 use sunrise_core::{geometry::Axis, random::LegacyRandom};
 use sunrise_world::chunk::BlockState;
 use sunrise_world::loot::PackOverlay;
-use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
 
 fn boxes(list: impl IntoIterator<Item = [f64; 6]>) -> Value {
     let mut v: Vec<[f64; 6]> = list.into_iter().collect();
@@ -116,7 +116,7 @@ fn main() -> Result<()> {
         .map_err(step("items"))?;
     let recipes = Recipes::load(&root, &items, &PackOverlay::NONE, &server_load())
         .map_err(step("recipes"))?;
-    let stations = StationRecipes::load(&root, &items, &PackOverlay::NONE, &server_load());
+    let stations = StationRecipes::load(&root, &items, &PackOverlay::NONE, &server_load())?;
     let enchantments = Enchantments::load(&root, &defaults)?;
     let collisions =
         sunrise_client::collisions::load(&root, registry).map_err(step("collisions"))?;

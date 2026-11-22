@@ -1,13 +1,13 @@
 use super::api_values::{StackReadError, TryIntoApi};
 use super::native_live_holder_tests::{mod_holder, with_mod_parts};
-use sunrise_client::containers::{BlockEntity, ModBlockEntity, ModContainer};
-use sunrise_client::items::ItemStack;
-use sunrise_core::nbt::Tag;
 use mod_api::{
     BlockEntityItemError as Error, Host, HostTransaction, ITEMS, ItemResource, ServerHost,
     Transaction,
 };
-use std::sync::Arc;
+use std::{ops::ControlFlow, sync::Arc};
+use sunrise_client::containers::{BlockEntity, ModBlockEntity, ModContainer};
+use sunrise_client::items::ItemStack;
+use sunrise_core::nbt::Tag;
 
 fn commit(host: &mut dyn ServerHost, test: impl FnOnce(&mut dyn ServerHost, &Transaction)) {
     host.transaction(|host, tx| {
@@ -18,7 +18,7 @@ fn commit(host: &mut dyn ServerHost, test: impl FnOnce(&mut dyn ServerHost, &Tra
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn internal_slots_preserve_automation_limits_and_nested_transactions() {
     const NAME: &str = "game::native_block_entity_item_tests::internal_slots_preserve_automation_limits_and_nested_transactions";
     with_mod_parts(NAME, |root| {
@@ -76,7 +76,7 @@ fn internal_slots_preserve_automation_limits_and_nested_transactions() {
                 let level = entity.level(host).unwrap();
                 let external = level.capability(host, &ITEMS, [1, 64, 1], None).unwrap();
                 assert_eq!(
-                    external.insert(host, tx, 1, &ItemResource::of(&diamond), 1),
+                    external.insert_at(host, tx, 1, &ItemResource::of(&diamond), 1),
                     0
                 );
             });
@@ -107,6 +107,10 @@ fn internal_slots_preserve_automation_limits_and_nested_transactions() {
             assert_eq!(aborted, Err(()));
             assert_eq!(get(game, 0), Ok(Some(dirt.clone())));
             assert_eq!(get(game, 1), Ok(None));
+            assert!(
+                game.world.modified.is_empty(),
+                "aborted writes need no save"
+            );
             commit(game, |host, tx| {
                 assert_eq!(
                     set(
@@ -126,7 +130,10 @@ fn internal_slots_preserve_automation_limits_and_nested_transactions() {
                 ))
             );
             assert_eq!(get(game, 1), Ok(Some(diamond.clone())));
-            assert!(!game.world.modified.is_empty());
+            assert!(
+                game.world.modified.contains(&(0, 0)),
+                "committed internal slot writes require a save"
+            );
             let BlockEntity::Mod(holder) = game.world.block_entities.get(&pos).unwrap() else {
                 panic!()
             };
@@ -267,7 +274,7 @@ fn container_holder(game: &mut super::Game<'_>, keys: usize) -> mod_api::BlockEn
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn container_moves_roll_back_slots_and_saved_data_in_any_order() {
     const NAME: &str = "game::native_block_entity_item_tests::container_moves_roll_back_slots_and_saved_data_in_any_order";
     with_mod_parts(NAME, |root| {
@@ -289,22 +296,22 @@ fn container_moves_roll_back_slots_and_saved_data_in_any_order() {
                 )
             };
             commit(game, |host, tx| {
-                assert_eq!(items.insert(host, tx, 0, &dirt, 10), 10)
+                assert_eq!(items.insert_at(host, tx, 0, &dirt, 10), 10)
             });
             let before = saved(game);
             // Slot writes, then a whole-entity write, then slots again, through nested
             // transactions that commit into one that aborts.
             let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                assert_eq!(items.extract(host, tx, 0, &dirt, 4), 4);
-                assert_eq!(items.insert(host, tx, 3, &dirt, 7), 7);
+                assert_eq!(items.extract_at(host, tx, 0, &dirt, 4), 4);
+                assert_eq!(items.insert_at(host, tx, 3, &dirt, 7), 7);
                 host.transaction(|host, child| {
-                    assert_eq!(items.insert(host, child, 0, &dirt, 50), 50);
+                    assert_eq!(items.insert_at(host, child, 0, &dirt, 50), 50);
                     assert_eq!(entity.set_data_slots(host, vec![7]), Ok(true));
-                    assert_eq!(items.extract(host, child, 3, &dirt, 2), 2);
+                    assert_eq!(items.extract_at(host, child, 3, &dirt, 2), 2);
                     Ok::<_, ()>(())
                 })?;
                 host.transaction(|host, child| {
-                    assert_eq!(items.insert(host, child, 8, &dirt, 1), 1);
+                    assert_eq!(items.insert_at(host, child, 8, &dirt, 1), 1);
                     Err::<(), ()>(())
                 })
                 .unwrap_err();
@@ -320,9 +327,9 @@ fn container_moves_roll_back_slots_and_saved_data_in_any_order() {
             );
             // The same writes committed stay.
             commit(game, |host, tx| {
-                assert_eq!(items.extract(host, tx, 0, &dirt, 4), 4);
+                assert_eq!(items.extract_at(host, tx, 0, &dirt, 4), 4);
                 assert_eq!(entity.set_data_slots(host, vec![9]), Ok(true));
-                assert_eq!(items.insert(host, tx, 5, &dirt, 3), 3);
+                assert_eq!(items.insert_at(host, tx, 5, &dirt, 3), 3);
             });
             let (slots, nbt, data) = saved(game);
             assert_eq!(slots[0].as_ref().map(|s| s.count), Some(6));
@@ -357,7 +364,7 @@ fn holder_state(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_container_move_keeps_one_slot_not_the_entity() {
     const NAME: &str =
         "game::native_block_entity_item_tests::a_container_move_keeps_one_slot_not_the_entity";
@@ -374,9 +381,9 @@ fn a_container_move_keeps_one_slot_not_the_entity() {
                     (game as &mut dyn ServerHost)
                         .transaction(|host, tx| {
                             let moved = if put {
-                                items.insert(host, tx, 0, &dirt(), 1)
+                                items.insert_at(host, tx, 0, &dirt(), 1)
                             } else {
-                                items.extract(host, tx, 0, &dirt(), 1)
+                                items.extract_at(host, tx, 0, &dirt(), 1)
                             };
                             assert_eq!(moved, 1);
                             Ok::<_, ()>(())
@@ -406,7 +413,7 @@ fn a_container_move_keeps_one_slot_not_the_entity() {
             let hopper = level.capability(game, &ITEMS, [3, 64, 1], None).unwrap();
             let root = game.transaction_open();
             (game as &mut dyn ServerHost)
-                .transaction(|host, tx| Ok::<_, ()>(hopper.insert(host, tx, 0, &dirt(), 1)))
+                .transaction(|host, tx| Ok::<_, ()>(hopper.insert_at(host, tx, 0, &dirt(), 1)))
                 .unwrap();
             assert_eq!(game.journal_kept(), (1, 0));
             game.transaction_close(&root, false);
@@ -416,7 +423,7 @@ fn a_container_move_keeps_one_slot_not_the_entity() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_child_whole_capture_keeps_its_older_slot_entries() {
     const NAME: &str =
         "game::native_block_entity_item_tests::a_child_whole_capture_keeps_its_older_slot_entries";
@@ -427,7 +434,7 @@ fn a_child_whole_capture_keeps_its_older_slot_entries() {
             let items = level.capability(game, &ITEMS, [1, 64, 1], None).unwrap();
             let insert = |host: &mut dyn ServerHost, slot: usize, n: u32| {
                 host.transaction(|host, tx| {
-                    assert_eq!(items.insert(host, tx, slot, &dirt(), n), n);
+                    assert_eq!(items.insert_at(host, tx, slot, &dirt(), n), n);
                     Ok::<_, ()>(())
                 })
                 .unwrap()
@@ -506,7 +513,7 @@ fn a_child_whole_capture_keeps_its_older_slot_entries() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn an_insert_past_a_short_mod_list_rolls_back_its_length() {
     const NAME: &str = "game::native_block_entity_item_tests::an_insert_past_a_short_mod_list_rolls_back_its_length";
     with_mod_parts(NAME, |root| {
@@ -521,7 +528,7 @@ fn an_insert_past_a_short_mod_list_rolls_back_its_length() {
             let items = level.capability(game, &ITEMS, [1, 64, 1], None).unwrap();
             let before = holder_state(game);
             let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                assert_eq!(items.insert(host, tx, 5, &dirt(), 7), 7);
+                assert_eq!(items.insert_at(host, tx, 5, &dirt(), 7), 7);
                 Err(())
             });
             assert!(aborted.is_err());
@@ -565,7 +572,7 @@ fn slots_at(game: &super::Game<'_>, pos: (i32, i32, i32)) -> Option<Vec<Option<I
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn each_slot_journalled_container_aborts_to_its_exact_stacks() {
     const NAME: &str = "game::native_block_entity_item_tests::each_slot_journalled_container_aborts_to_its_exact_stacks";
     with_mod_parts(NAME, |root| {
@@ -584,14 +591,14 @@ fn each_slot_journalled_container_aborts_to_its_exact_stacks() {
                 let aborted: Result<(), ()> =
                     (game as &mut dyn ServerHost).transaction(|host, _| {
                         host.transaction(|host, tx| {
-                            assert_eq!(items.extract(host, tx, 0, &stone, 10), 10);
-                            assert_eq!(items.insert(host, tx, 1, &dirt(), 5), 5);
+                            assert_eq!(items.extract_at(host, tx, 0, &stone, 10), 10);
+                            assert_eq!(items.insert_at(host, tx, 1, &dirt(), 5), 5);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
                         host.transaction(|host, tx| {
-                            assert_eq!(items.extract(host, tx, 2, &dirt(), 3), 3);
-                            assert_eq!(items.insert(host, tx, 0, &stone, 4), 4);
+                            assert_eq!(items.extract_at(host, tx, 2, &dirt(), 3), 3);
+                            assert_eq!(items.insert_at(host, tx, 0, &stone, 4), 4);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
@@ -616,48 +623,72 @@ fn each_slot_journalled_container_aborts_to_its_exact_stacks() {
     });
 }
 
-/// `LevelRef::set_block` writes the world at once, outside the transaction (on `main` too), so
-/// an abort after it doesn't bring the old block back. What the slot journal must not do is
-/// write a kept slot into the block entity that replaced the one it was taken from.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_kept_slot_goes_back_only_into_the_block_entity_it_came_from() {
     const NAME: &str = "game::native_block_entity_item_tests::a_kept_slot_goes_back_only_into_the_block_entity_it_came_from";
     with_mod_parts(NAME, |root| {
         super::native_entity_refs::tests::with_game_at(root, |game| {
             let entity = mod_holder(game);
             let level = entity.level(game).unwrap();
-            let pos = (3, 64, 1);
-            let replace = |game: &mut super::Game<'_>, block: &str, commit: bool| {
-                container_at(game, pos, "minecraft:chest");
-                let items = level.capability(game, &ITEMS, [3, 64, 1], None).unwrap();
-                let stone =
-                    ItemResource::of(&ItemStack::new("minecraft:stone", 1).try_into_api().unwrap());
+            let at @ [x, y, z] = [3, 64, 1];
+            let pos = (x, y, z);
+            let [chest, barrel, air] = ["minecraft:chest", "minecraft:barrel", "minecraft:air"]
+                .map(|name| mod_api::prelude::BlockStatesHost::block_state_id(game, name).unwrap());
+            let stone =
+                ItemResource::of(&ItemStack::new("minecraft:stone", 1).try_into_api().unwrap());
+            let replace = |game: &mut super::Game<'_>, state, commit: bool| {
+                let items = level.capability(game, &ITEMS, at, None).unwrap();
                 let result: Result<(), ()> =
                     (game as &mut dyn ServerHost).transaction(|host, tx| {
-                        // Takes from the chest's full slot 0: the slot kept is its 64 stone, which
-                        // an abort must not write into whatever replaced the chest.
-                        assert_eq!(items.extract(host, tx, 0, &stone, 10), 10);
-                        let state = host.block_state_id(block).unwrap();
+                        assert_eq!(items.extract_at(host, tx, 0, &stone, 10), 10);
                         assert!(
                             level
-                                .set_block(host, [3, 64, 1], state, mod_api::BlockUpdateFlags::NONE)
+                                .set_block(host, at, state, mod_api::BlockUpdateFlags::NONE)
                                 .unwrap()
                         );
+                        assert_eq!(level.block_state(host, at), Some(state));
                         if commit { Ok(()) } else { Err(()) }
                     });
                 assert_eq!(result.is_ok(), commit);
             };
-            replace(game, "minecraft:air", false);
-            assert_eq!(slots_at(game, pos), None, "removed, as on main");
-            replace(game, "minecraft:barrel", false);
-            let barrel = slots_at(game, pos).expect("the barrel's block entity");
+
+            let before = container_at(game, pos, "minecraft:chest");
+            for state in [air, barrel] {
+                replace(game, state, false);
+                assert_eq!(level.block_state(game, at), Some(chest));
+                assert_eq!(slots_at(game, pos).as_ref(), Some(&before));
+            }
+
+            replace(game, barrel, true);
+            assert_eq!(level.block_state(game, at), Some(barrel));
+            let slots = slots_at(game, pos).expect("the barrel's block entity");
             assert!(
-                barrel.iter().all(Option::is_none),
-                "the chest's kept slot was not written into the barrel: {barrel:?}"
+                slots.iter().all(Option::is_none),
+                "the chest's kept slot must not be written into the barrel: {slots:?}"
             );
-            replace(game, "minecraft:air", true);
+
+            container_at(game, pos, "minecraft:chest");
+            replace(game, air, true);
+            assert_eq!(level.block_state(game, at), Some(air));
             assert_eq!(slots_at(game, pos), None);
+
+            // An engine-side swap outside the journal survives abort. Even an entity of the
+            // same kind at the same position must not receive the old chest's 64 stone.
+            container_at(game, pos, "minecraft:chest");
+            let items = level.capability(game, &ITEMS, at, None).unwrap();
+            let seal = game.transaction_open();
+            let tx = game.transaction_current().unwrap();
+            assert_eq!(items.extract_at(game, &tx, 0, &stone, 10), 10);
+            game.world
+                .block_entities
+                .replace(pos, BlockEntity::for_block("minecraft:chest").unwrap());
+            game.transaction_close(&seal, false);
+            let slots = slots_at(game, pos).expect("the replacement chest's block entity");
+            assert!(
+                slots.iter().all(Option::is_none),
+                "the kept slot must not be restored into the replacement chest: {slots:?}"
+            );
             assert!(game.transactions.is_empty());
         });
     });
@@ -684,12 +715,12 @@ fn timing_container_moves_beside_saved_data() {
                 commit(game, |host, _| {
                     for _ in 0..500 {
                         host.transaction(|host, tx| {
-                            assert_eq!(items.insert(host, tx, 0, &dirt(), 1), 1);
+                            assert_eq!(items.insert_at(host, tx, 0, &dirt(), 1), 1);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
                         host.transaction(|host, tx| {
-                            assert_eq!(items.extract(host, tx, 0, &dirt(), 1), 1);
+                            assert_eq!(items.extract_at(host, tx, 0, &dirt(), 1), 1);
                             Ok::<_, ()>(())
                         })
                         .unwrap();
@@ -706,7 +737,7 @@ fn timing_container_moves_beside_saved_data() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn storage_asks_a_game_container_by_kind_and_rolls_back_with_its_transaction() {
     const NAME: &str = "game::native_block_entity_item_tests::storage_asks_a_game_container_by_kind_and_rolls_back_with_its_transaction";
     with_mod_parts(NAME, |root| {
@@ -757,10 +788,18 @@ fn storage_asks_a_game_container_by_kind_and_rolls_back_with_its_transaction() {
                 [64, 36, 5],
                 "slots back as they were, in their order"
             );
-            let mut page = mod_api::StoragePage::new(64).unwrap();
-            assert_eq!(storage.page(game, 0, &mut page), Ok(None));
-            assert_eq!(page.entries().len(), 3);
-            // A furnace's top takes only into its input, and its bottom gives only its result.
+            let mut visited = Vec::new();
+            storage
+                .visit_entries(game, &mut |kind, amount| {
+                    visited.push((kind.clone(), amount));
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+            assert_eq!(
+                visited,
+                [(stone.clone(), 64), (stone.clone(), 36), (dirt, 5)]
+            );
+            // A furnace exposes only its input from above, and its output then fuel from below.
             let furnace = game
                 .pack
                 .assets
@@ -768,10 +807,11 @@ fn storage_asks_a_game_container_by_kind_and_rolls_back_with_its_transaction() {
                 .default_state("minecraft:furnace")
                 .unwrap();
             game.world.set(5, 64, 1, furnace).unwrap();
-            game.world.block_entities.insert(
-                (5, 64, 1),
-                BlockEntity::for_block("minecraft:furnace").unwrap(),
-            );
+            let (fuel, output) = ("minecraft:coal", "minecraft:iron_ingot");
+            let mut furnace_entity = BlockEntity::for_block("minecraft:furnace").unwrap();
+            furnace_entity.slots_mut()[1] = Some(ItemStack::new(fuel, 7));
+            furnace_entity.slots_mut()[2] = Some(ItemStack::new(output, 11));
+            game.world.block_entities.insert((5, 64, 1), furnace_entity);
             let top = level
                 .capability(
                     game,
@@ -792,6 +832,15 @@ fn storage_asks_a_game_container_by_kind_and_rolls_back_with_its_transaction() {
                 assert_eq!(top.insert(host, tx, &stone, 200), 64, "the input slot only");
                 assert_eq!(bottom.extract(host, tx, &stone, 64), 0, "not the input");
             });
+            assert_eq!(top.amount(game, &stone), Ok(64), "input is still occupied");
+            let mut bottom_entries = Vec::new();
+            bottom
+                .visit_entries(game, &mut |kind, amount| {
+                    bottom_entries.push((kind.clone(), amount));
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+            assert_eq!(bottom_entries, [(of(output), 11), (of(fuel), 7)]);
             assert!(game.transactions.is_empty());
         });
     });
@@ -808,7 +857,7 @@ fn whole_state(game: &super::Game<'_>, pos: (i32, i32, i32)) -> String {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn storage_writes_abort_to_the_exact_state_of_every_container_kind() {
     const NAME: &str = "game::native_block_entity_item_tests::storage_writes_abort_to_the_exact_state_of_every_container_kind";
     with_mod_parts(NAME, |root| {
@@ -838,7 +887,6 @@ fn storage_writes_abort_to_the_exact_state_of_every_container_kind() {
                 // Blaze powder goes to its fuel slot, the one slot it takes.
                 ("minecraft:brewing_stand", None, "minecraft:blaze_powder"),
             ];
-            let mut answered = Vec::new();
             for (block, side, item) in kinds {
                 // Placed as the game places it, so each gets its own block entity.
                 for name in ["minecraft:air", block] {
@@ -847,10 +895,9 @@ fn storage_writes_abort_to_the_exact_state_of_every_container_kind() {
                         .unwrap();
                 }
                 game.hoppers.remove(&pos);
-                let Some(storage) = level.capability(game, &mod_api::STORAGE, [3, 64, 1], side)
-                else {
-                    continue;
-                };
+                let storage = level
+                    .capability(game, &mod_api::STORAGE, [3, 64, 1], side)
+                    .unwrap_or_else(|| panic!("{block} must answer STORAGE"));
                 let resource = of(item);
                 let before = whole_state(game, pos);
                 let aborted: Result<(), ()> =
@@ -875,32 +922,14 @@ fn storage_writes_abort_to_the_exact_state_of_every_container_kind() {
                     assert_eq!(storage.insert(host, tx, &resource, 1), 1, "{block}")
                 });
                 assert_eq!(storage.amount(game, &resource), Ok(1), "{block}");
-                answered.push(block);
             }
-            eprintln!("STORAGE answered for: {answered:?}");
-            for block in [
-                "minecraft:chest",
-                "minecraft:barrel",
-                "minecraft:shulker_box",
-                "minecraft:dispenser",
-                "minecraft:hopper",
-                "minecraft:furnace",
-                "minecraft:jukebox",
-                "minecraft:brewing_stand",
-            ] {
-                assert!(answered.contains(&block), "{block} answers STORAGE");
-            }
-            assert!(
-                !answered.contains(&"minecraft:decorated_pot"),
-                "a pot takes items from hoppers only, never through the capability"
-            );
             assert!(game.transactions.is_empty());
         });
     });
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn an_aborted_bulk_transfer_conserves_every_item() {
     const NAME: &str =
         "game::native_block_entity_item_tests::an_aborted_bulk_transfer_conserves_every_item";
@@ -930,13 +959,12 @@ fn an_aborted_bulk_transfer_conserves_every_item() {
             };
             let (before_a, before_b) = (slots_at(game, a), slots_at(game, b));
             let before = total(game);
-            let aborted: Result<u64, mod_api::StorageError> = (game as &mut dyn ServerHost)
-                .transaction(|host, tx| {
-                    let moved =
-                        mod_api::transfer_matching(host, &from, &to, |_| true, u64::MAX, tx)?;
-                    assert!(moved > 0);
-                    Err(mod_api::StorageError::ZeroPage)
-                });
+            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, tx| {
+                let moved = mod_api::transfer_matching(host, &from, &to, |_| true, u64::MAX, tx)
+                    .expect("test transfer succeeds");
+                assert!(moved > 0);
+                Err(())
+            });
             assert!(aborted.is_err());
             assert_eq!((slots_at(game, a), slots_at(game, b)), (before_a, before_b));
             let moved = (game as &mut dyn ServerHost)
@@ -1053,8 +1081,15 @@ fn timing_storage_against_items_across_barrel_cells() {
                     moves += 1;
                     let abort = moves.is_multiple_of(10);
                     let result = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                        let n = mod_api::move_resources(host, &below, &above, |_| true, 8, tx)
-                            .map_err(|_| 0u32)?;
+                        let n = mod_api::resource_util::move_resources(
+                            host,
+                            &below,
+                            &above,
+                            |_| true,
+                            8,
+                            Some(tx),
+                        )
+                        .map_err(|_| 0u32)?;
                         if abort && n > 0 { Err(n) } else { Ok(n) }
                     });
                     moved += result.unwrap_or(0);
@@ -1098,7 +1133,6 @@ fn timing_storage_against_items_across_barrel_cells() {
                 })
                 .collect();
             let mut awake = vec![true; pipes.len()];
-            let mut page = mod_api::StoragePage::new(mod_api::MAX_STORAGE_PAGE).unwrap();
             let mut moves = 0u32;
             let mut run_storage = |game: &mut super::Game<'_>| {
                 let mut moved = 0;
@@ -1106,8 +1140,13 @@ fn timing_storage_against_items_across_barrel_cells() {
                     if !awake[cell] {
                         continue;
                     }
-                    from.page(game, 0, &mut page).unwrap();
-                    let Some((kind, _)) = page.entries().first().cloned() else {
+                    let mut first = None;
+                    from.visit_entries(game, &mut |kind, _| {
+                        first = Some(kind.clone());
+                        ControlFlow::Break(())
+                    })
+                    .unwrap();
+                    let Some(kind) = first else {
                         awake[cell] = false;
                         continue;
                     };

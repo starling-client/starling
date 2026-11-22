@@ -12,12 +12,12 @@
 //! through the nether portal it stands in; `falling` counts physical falling
 //! blocks by dimension, block and gravity.
 use super::Game;
-use sunrise_client::{Result, text::Text};
 use serde_json::{Value, json};
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
+use sunrise_client::{Result, text::Text};
 
 /// A message as `[text, style]` runs with adjacent equal styles merged; the
 /// style lists colour, bold, italic, underlined, strikethrough, obfuscated
@@ -92,11 +92,9 @@ impl Game<'_> {
         };
         let (conn, dim, back) = (guest.conn, super::Dim::from_id(&guest.dimension), self.dim);
         self.enter_level(dim)?;
-        let swap = self
-            .enter_guest_in_dimension(conn, back)
+        let result = self
+            .with_guest_swap(conn, back, f)
             .ok_or("command harness: owner is already acting")?;
-        let result = f(self);
-        self.leave_guest(swap);
         if let Some(host) = self.lan.as_mut() {
             host.hub.sync_all_effects();
         }
@@ -160,13 +158,13 @@ impl Game<'_> {
                 plan,
             ))
         })?;
-        // Start travel after restoring the owner's body: change_level updates
-        // its hub record, which leave_guest would otherwise overwrite.
+        // Start travel after the turn restores the owner's body to the hub.
+        // Otherwise the turn would overwrite the hub record updated by change_level.
         self.in_owner_level(|g| {
             if g.lan.is_none() {
                 return Err("command harness: no hub".into());
             }
-            g.start_server_trip(conn, plan.dim, Some(plan), false);
+            g.start_server_trip(conn, plan.dim, Some(plan));
             Ok(())
         })
     }
@@ -343,7 +341,7 @@ impl Game<'_> {
                             .ok_or("projectile type: missing model")?;
                         // Read the live save adapter's type, not the generic selector alias.
                         // No Duration value is supplied by this admission observation.
-                        let saved = sunrise_client::entity_nbt::arrow_to_nbt(p, actual, None, None, None)
+                        let saved = sunrise_client::entity_nbt::arrow_to_nbt(p, actual, None, None, None, g.res.items())
                             .ok_or("projectile type: not an actual arrow")?;
                         Ok(json!({"uuid":actual,"kind":sunrise_client::entity_nbt::kind(&saved)
                             .ok_or("projectile type: missing saved type")?,
@@ -561,6 +559,24 @@ impl Game<'_> {
                     let record = json!({"cmd":format!("#player_state {}",op["label"].as_str().unwrap_or("")),"messages":[],"results":[],"state":state});
                     out.push_str(&record.to_string());
                     out.push('\n');
+                }
+                "align_game_time" => {
+                    let target = op["target"]
+                        .as_i64()
+                        .ok_or("align_game_time: missing target")?;
+                    let current = self.harness_owner(|g| Ok(g.world.game_time))?;
+                    if current > target {
+                        return Err("align_game_time: target is in the past".into());
+                    }
+                    for _ in current..target {
+                        if Instant::now() > deadline {
+                            return Err("align_game_time: deadline exceeded".into());
+                        }
+                        self.tick_server(false)?;
+                    }
+                    if self.harness_owner(|g| Ok(g.world.game_time))? != target {
+                        return Err("align_game_time: ticks did not reach the target".into());
+                    }
                 }
                 "tick" => {
                     self.chat_capture = Some(Vec::new());

@@ -8,9 +8,6 @@ fn check<T: Wire>(values: Vec<T>, expected: &[u8]) {
     let mut again = Writer::new();
     again.put(&decoded);
     assert_eq!(again.bytes(), expected);
-    let mut owned = Writer::new();
-    owned.put_owned(decoded);
-    assert_eq!(owned.bytes(), expected);
     for end in 0..expected.len() {
         assert!(Reader::decode::<Vec<T>>(&expected[..end]).is_err());
     }
@@ -62,7 +59,7 @@ fn numeric_lists_preserve_little_endian_bytes() {
         2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 255, 255, 255, 255,
     ];
     let mut writer = Writer::new();
-    writer.put_owned(nested.clone());
+    writer.put(&nested);
     assert_eq!(writer.bytes(), expected);
     assert_eq!(Reader::decode::<Vec<Vec<i32>>>(&expected).unwrap(), nested);
 }

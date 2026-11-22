@@ -1,0 +1,9 @@
+# The daily tests of sunrise-client-render: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-client-render gfx::core_text::expression_tests::a_pack_world_and_see_through_text_read_poly_globals lib daily slow
+sunrise-client-render gfx::core_text::expression_tests::a_pack_world_and_see_through_text_read_their_expression_uniforms lib daily slow
+sunrise-client-render gfx::core_text::expression_tests::a_world_text_pipeline_over_the_block_limit_is_refused_alone lib daily slow
+sunrise-client-render gfx::core_text::expression_tests::a_world_text_sampler_is_bound_to_the_stage_that_reads_it lib daily slow
+sunrise-client-render hud::pack_text::gpu_tests::a_pack_gui_text_reads_its_expression_uniform lib daily slow
+sunrise-client-render hud::pack_text::gpu_tests::a_pack_gui_text_reads_poly_globals lib daily slow
+sunrise-client-render hud::pack_text::gpu_tests::a_pack_gui_text_samples_the_atlas_in_its_fragment_stage lib daily slow

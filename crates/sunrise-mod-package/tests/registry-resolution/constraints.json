@@ -1,0 +1,73 @@
+{
+  "index": {
+    "schema": 1,
+    "projects": [
+      {"id": "fireflies", "kind": "mod", "name": "Fireflies", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "fireflies.smod", "url": "https://example.test/fireflies/0.1.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "0.1.0", "game": "26.3", "dependencies": [{"id": "library", "version": "^1"}]}
+      ]},
+      {"id": "scorpions", "kind": "mod", "name": "Scorpions", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "scorpions.smod", "url": "https://example.test/scorpions/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "wrapper", "version": "^1"}]}
+      ]},
+      {"id": "expanded", "kind": "mod", "name": "Expanded", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "expanded.smod", "url": "https://example.test/expanded/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "library", "version": "^2"}]}
+      ]},
+      {"id": "wrapper", "kind": "mod", "name": "Wrapper", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "wrapper.smod", "url": "https://example.test/wrapper/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "library", "version": "=1.0.0"}]}
+      ]},
+      {"id": "library", "kind": "mod", "name": "Library", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "library.smod", "url": "https://example.test/library/2.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "2.0.0", "game": "26.3"},
+        {"api": "0.2", "file": {"name": "library.smod", "url": "https://example.test/library/1.1.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}, "version": "1.1.0", "game": "26.3", "dependencies": [{"id": "stale", "version": "^1"}]},
+        {"api": "0.2", "file": {"name": "library.smod", "url": "https://example.test/library/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}, "version": "1.0.0", "game": "26.3"}
+      ]},
+      {"id": "stale", "kind": "mod", "name": "Stale", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "stale.smod", "url": "https://example.test/stale/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3"}
+      ]},
+      {"id": "unrelated", "kind": "mod", "name": "Unrelated", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "unrelated.smod", "url": "https://example.test/unrelated/2.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "2.0.0", "game": "26.3"}
+      ]},
+      {"id": "not_requested", "kind": "mod", "name": "Not requested", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "not_requested.smod", "url": "https://example.test/not_requested/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "library", "version": "^1"}, {"id": "unrelated", "version": "^2"}]}
+      ]}
+    ],
+    "revoked": []
+  },
+  "game": "26.3",
+  "cases": [
+    {
+      "name": "a later transitive constraint narrows an earlier choice and drops its stale outgoing edge",
+      "requests": [{"id": "scorpions"}, {"id": "fireflies"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"fireflies": {"status": "installable", "version": "0.1.0"}, "scorpions": {"status": "installable", "version": "1.0.0"}}, "install": [{"id": "fireflies", "version": "0.1.0"}, {"id": "library", "version": "1.0.0"}, {"id": "scorpions", "version": "1.0.0"}, {"id": "wrapper", "version": "1.0.0"}], "required_by": {"library": ["fireflies", "scorpions"], "wrapper": ["scorpions"]}},
+      "refusals": {}
+    },
+    {
+      "name": "two requested roots with disjoint ranges are refused together, but an unrelated root is not",
+      "requests": [{"id": "unrelated"}, {"id": "fireflies"}, {"id": "expanded"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"unrelated": {"status": "installable", "version": "2.0.0"}}, "install": [{"id": "unrelated", "version": "2.0.0"}]},
+      "refusals": {"fireflies": ["fireflies", "expanded", "library", "^1", "^2", "no listed version"], "expanded": ["fireflies", "expanded", "library", "^1", "^2", "no listed version"]}
+    },
+    {
+      "name": "an already-installed owner can rule out the newest candidate",
+      "requests": [{"id": "fireflies"}],
+      "installed": [{"id": "wrapper", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"fireflies": {"status": "installable", "version": "0.1.0"}}, "install": [{"id": "fireflies", "version": "0.1.0"}, {"id": "library", "version": "1.0.0"}], "required_by": {"library": ["fireflies"]}},
+      "refusals": {}
+    },
+    {
+      "name": "an upgrade cannot break an installed owner",
+      "requests": [{"id": "library", "version": "2.0.0"}],
+      "installed": [{"id": "wrapper", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, {"id": "library", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {"library": ["library", "2.0.0", "wrapper", "=1.0.0", "no listed version"]}
+    }
+  ]
+}

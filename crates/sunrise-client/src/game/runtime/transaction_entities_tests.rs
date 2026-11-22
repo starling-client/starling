@@ -6,13 +6,13 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
-use sunrise_client::{chunk::Chunk, items::ItemStack, mobs::StoredEffect};
-use sunrise_core::nbt::{Tag, parse_snbt};
-use sunrise_mod_runtime::attachments::Holder;
 use mod_api::{
     AttachmentType, EntityConstructingEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent,
     EntityRef, Flow, Hooks, HostSide, RemovalReason, ServerHost,
 };
+use sunrise_client::{chunk::Chunk, items::ItemStack, mobs::StoredEffect};
+use sunrise_core::nbt::{Tag, parse_snbt};
+use sunrise_mod_runtime::attachments::Holder;
 
 use super::{Dim, Game, commands::Target, lan_entities::ENTITY_ID_HEADROOM};
 
@@ -60,10 +60,14 @@ static KIND_OF_PENDING: Mutex<Option<Option<String>>> = Mutex::new(None);
 /// `a_level_commit_told_inside_another_levels_commit_keeps_its_own_batch`: 0 is off.
 static NEST: AtomicU8 = AtomicU8::new(0);
 
-/// Hears construction, joins and leaves; marks each entity it constructs; keeps sheep out.
+/// Hears construction, joins and leaves; marks each entity it constructs; keeps sheep and
+/// snowballs out.
 struct Observer;
 #[mod_api::__subscriptions]
 impl Hooks for Observer {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.register_attachment_type("journal:mark", false).unwrap();
+    }
     fn entity_constructing(&self, host: HostSide<'_>, event: &mut EntityConstructingEvent) {
         if let (HostSide::Server(host), Holder::Entity(id)) = (host, event.holder) {
             HEARD.lock().unwrap().constructed.push(id);
@@ -84,7 +88,12 @@ impl Hooks for Observer {
         drop(heard);
         let pending = PENDING.lock().unwrap().take();
         if let Some(entity) = pending {
-            *KIND_OF_PENDING.lock().unwrap() = Some(entity.kind(host).map(|key| key.id(host)));
+            *KIND_OF_PENDING.lock().unwrap() = Some(
+                entity
+                    .kind(host)
+                    .and_then(|key| key.id(host))
+                    .map(|name| name.as_str().to_owned()),
+            );
         }
         let answers = {
             let mut on_join = ON_JOIN.lock().unwrap();
@@ -134,7 +143,7 @@ impl Hooks for Observer {
             }
             _ => {}
         }
-        if event.kind == "minecraft:sheep" {
+        if matches!(event.kind, "minecraft:sheep" | "minecraft:snowball") {
             Flow::Cancel
         } else {
             Flow::Continue
@@ -186,7 +195,7 @@ fn boat_with_rider(game: &mut Game<'_>) -> (EntityRef, EntityRef) {
     let boat = summon(game, "minecraft:oak_boat", "{}").unwrap();
     let cow = summon(game, "minecraft:cow", "{}").unwrap();
     let (boat, cow) = (game.entity(boat).unwrap(), game.entity(cow).unwrap());
-    assert!(game.entity_start_riding(cow, boat, true));
+    assert!(game.entity_start_riding(cow, boat, true).is_ok());
     heard();
     (boat, cow)
 }
@@ -213,6 +222,45 @@ fn a_spawn_then_abort_leaves_no_entity_map_or_hook() {
         game.native_leaves_flush();
         assert_eq!(heard(), Heard::default(), "no join and no leave");
         assert_eq!(game.next_entity, next + 1, "its id is burnt");
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_mob_removed_in_a_transaction_leaves_once_at_the_root_commit() {
+    const NAME: &str = "game::transaction_entities_tests::a_mob_removed_in_a_transaction_leaves_once_at_the_root_commit";
+    with_observer(NAME, |game| {
+        let pig = summon(game, "minecraft:pig", "{}").unwrap();
+        game.native_joins_flush(false, 0);
+        assert_eq!(heard().joined, [pig]);
+
+        // A removal the transaction takes back never leaves.
+        let seal = game.transaction_open();
+        assert!(game.entity_discard(game.entity(pig).unwrap()));
+        assert!(
+            heard().left.is_empty(),
+            "the leave waits for the root commit"
+        );
+        game.transaction_close(&seal, false);
+        assert!(game.entity(pig).is_some(), "the abort brings it back");
+        game.native_leaves_flush();
+        assert!(heard().left.is_empty(), "an aborted removal is never told");
+
+        // A committed one leaves at the root commit, and once.
+        let seal = game.transaction_open();
+        assert!(game.entity_discard(game.entity(pig).unwrap()));
+        assert!(
+            heard().left.is_empty(),
+            "the leave waits for the root commit"
+        );
+        game.transaction_close(&seal, true);
+        assert_eq!(game.entity(pig), None);
+        assert_eq!(heard().left, [pig], "told at the root commit");
+        game.native_leaves_flush();
+        assert!(
+            heard().left.is_empty(),
+            "the later sweep does not tell it again"
+        );
     });
 }
 
@@ -255,6 +303,42 @@ fn a_join_cancelled_at_commit_leaves_a_stale_handle() {
         let heard = heard();
         assert_eq!(heard.joined, [sheep]);
         assert!(heard.left.is_empty(), "never announced, so it never leaves");
+    });
+}
+
+/// `LevelRef::spawn_entity` of a thrown projectile: its join is told at the call outside a
+/// transaction, so a mod keeping it out refuses the call, and at the root commit inside one,
+/// with only that spawn in the transaction.
+#[test]
+#[ignore = "daily"]
+fn a_thrown_spawn_joins_at_the_call_or_the_root_commit() {
+    const NAME: &str =
+        "game::transaction_entities_tests::a_thrown_spawn_joins_at_the_call_or_the_root_commit";
+    with_observer(NAME, |game| {
+        use mod_api::{EntitySpawn, Identifier, SpawnBody};
+        let level = game.level(game.dim.id()).unwrap();
+        let thrown = |game: &mut Game<'_>, kind: &str| {
+            let key = game.item_key(&Identifier::parse(kind).unwrap()).unwrap();
+            let item = mod_api::ItemStack::new(key, 1).unwrap();
+            let spawn = EntitySpawn::new(SpawnBody::Thrown { item });
+            game.level_spawn_entity(level, kind, [1.5, 70.0, 1.5], &spawn)
+        };
+        let projectiles = game.creatures.projectiles.len();
+        let next = game.next_entity;
+        assert_eq!(thrown(game, "minecraft:snowball"), None, "kept out at once");
+        assert_eq!(heard().joined, [next + 1]);
+        assert_eq!(game.creatures.projectiles.len(), projectiles);
+        let egg = thrown(game, "minecraft:egg").unwrap();
+        assert_eq!(heard().joined, [egg.id()]);
+
+        let seal = game.transaction_open();
+        let held = thrown(game, "minecraft:egg").unwrap();
+        let kept_out = thrown(game, "minecraft:snowball").expect("the handle comes back at once");
+        assert!(heard().joined.is_empty(), "the joins wait");
+        game.transaction_close(&seal, true);
+        assert_eq!(heard().joined, [held.id(), kept_out.id()]);
+        assert!(game.entity(held.id()).is_some());
+        assert_eq!(game.entity(kept_out.id()), None);
     });
 }
 
@@ -595,7 +679,7 @@ struct Fixture {
 #[ignore = "daily"]
 fn exhausted_ids_refuse_every_mod_spawn() {
     const NAME: &str = "game::transaction_entities_tests::exhausted_ids_refuse_every_mod_spawn";
-    let rows: [(&str, Spawn); 13] = [
+    let rows: [(&str, Spawn); 14] = [
         ("summon", |game, _| {
             summon(game, "minecraft:pig", "{}").is_some()
         }),
@@ -624,6 +708,11 @@ fn exhausted_ids_refuse_every_mod_spawn() {
         ("level_spawn_mob", |game, f| {
             let reason = mod_api::SpawnReason::Command;
             (game.level_spawn_mob(f.level, "minecraft:cow", [1.5, 70.0, 1.5], reason)).is_some()
+        }),
+        ("level_spawn_entity", |game, f| {
+            let reason = mod_api::SpawnReason::Command;
+            let spawn = mod_api::EntitySpawn::new(mod_api::SpawnBody::Living { reason });
+            (game.level_spawn_entity(f.level, "minecraft:cow", [1.5, 70.0, 1.5], &spawn)).is_some()
         }),
         ("level_block_drops", |game, f| {
             game.level_block_drops(f.level, [1, 70, 1], None, None)
@@ -797,20 +886,20 @@ fn a_pending_boat_removal_is_hidden_from_selectors_until_it_commits() {
         let boat = summon(game, "minecraft:oak_boat", "{}").unwrap();
         let handle = game.entity(boat).unwrap();
         let target = Target::Boat(boat);
-        assert!(game.level_candidates().contains(&target));
+        assert!(game.level_candidates(false).contains(&target));
 
         let seal = game.transaction_open();
         assert!(game.entity_discard(handle));
         assert_eq!(game.entity(boat), None, "the handle is stale");
         assert!(
-            !game.level_candidates().contains(&target),
+            !game.level_candidates(false).contains(&target),
             "selectors do not find it"
         );
-        assert!(!game.global_selector_candidates().contains(&target));
+        assert!(!game.global_selector_candidates(false).contains(&target));
         game.transaction_close(&seal, false);
         assert_eq!(game.entity(boat), Some(handle));
         assert!(
-            game.level_candidates().contains(&target),
+            game.level_candidates(false).contains(&target),
             "an abort brings it back"
         );
 
@@ -819,7 +908,7 @@ fn a_pending_boat_removal_is_hidden_from_selectors_until_it_commits() {
         game.transaction_close(&seal, true);
         assert_eq!(game.entity(boat), None);
         assert!(
-            !game.level_candidates().contains(&target),
+            !game.level_candidates(false).contains(&target),
             "a commit removed it"
         );
     });
@@ -963,6 +1052,12 @@ fn a_nested_commit_from_a_join_listener_tells_its_join_before_its_removal() {
 fn a_level_commit_told_inside_another_levels_commit_keeps_its_own_batch() {
     const NAME: &str = "game::transaction_entities_tests::a_level_commit_told_inside_another_levels_commit_keeps_its_own_batch";
     with_observer(NAME, |game| {
+        game.set_allow_commands(true);
+        game.build_registries();
+        assert!(game.run_command("difficulty normal"));
+        let _rx = super::lan::world_spawn_sync_tests::host_for(game);
+        game.lan.as_mut().unwrap().hub.guests.clear();
+        heard();
         game.enter_level(Dim::Nether).unwrap();
         game.world
             .chunks

@@ -2,4 +2,5 @@
 # where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
 sunrise-core biome::tests::corner_jitter_matches_quart_at_block lib daily slow
 sunrise-core biome::tests::quart_at_block_matches_reference lib daily slow
+sunrise-core geometry::carried::tests::no_report_fits_off_the_deck_or_through_it lib daily slow
 sunrise-core paletted::tests::index_check_matches_an_entry_by_entry_scan lib daily slow

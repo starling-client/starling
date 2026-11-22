@@ -87,12 +87,12 @@ pub fn cube_styles(faces: &[BakedFace]) -> Option<[CubeStyle; 6]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use sunrise_assets::{
         bake::{BlockModelTransform, bake_model_transformed},
         model::CuboidModel,
         resolve::ModelLibrary,
     };
-    use serde_json::json;
     #[test]
     fn projected_cube_uvs_match_baked_quarter_turns() {
         let faces: serde_json::Map<String, serde_json::Value> = Direction::ALL

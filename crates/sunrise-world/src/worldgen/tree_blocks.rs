@@ -8,8 +8,8 @@ use crate::{
     fluid::FluidKind,
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::geometry::Direction;
 use std::{collections::BTreeMap, sync::Arc};
+use sunrise_core::geometry::Direction;
 
 pub(crate) const AIR: u32 = 1;
 pub(crate) const LEAVES: u32 = 1 << 1;

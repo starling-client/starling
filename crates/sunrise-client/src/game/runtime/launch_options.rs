@@ -14,14 +14,6 @@ pub(crate) struct Options {
     /// `--pregen`: enable the command even when the saved Extras switch is off.
     pub(super) pregen: bool,
     pub(super) frames: Option<u64>,
-    /// A splitscreen player: the split window paces every player's frames, not each its own.
-    pub(super) paced_by_split: bool,
-    /// A splitscreen player other than P1: its windows are the split's (P1 alone decides
-    /// fullscreen; this game neither asks for it nor adopts it into its options).
-    pub(super) split_guest: bool,
-    /// A splitscreen guest drawn in Window 1, the game's own window: its F11 leaves that
-    /// window to P1.
-    pub(super) split_in_main_window: bool,
     /// `--world-frames N`: exit after N frames drawn in the world (smoke runs; the world may load slowly).
     pub(super) world_frames: Option<u64>,
     pub(super) screenshot_after: Option<u64>,
@@ -71,24 +63,27 @@ pub(crate) struct Options {
     pub(super) mods: mods::ModsState,
     /// What this Game executes; independent of its current server connection.
     pub(super) execution_role: execution_role::ExecutionRole,
+    /// The server's report source survives returned errors until the launch reports them.
+    pub(crate) save_failure_diagnostics: sunrise_client::chunk_io::SaveFailureDiagnostics,
     /// `--fullscreen` (vanilla's): the window opens fullscreen whatever options.txt says,
     /// as vanilla's DisplayData does, without saving it there.
     pub(super) fullscreen: bool,
-    /// `--game-dir DIR`: the folder `read` makes the working directory (saves, options.txt...);
-    /// none for a splitscreen player's game, which shares P1's working directory.
+    /// `--game-dir DIR`: the folder `read` makes the working directory (saves, options.txt...).
     pub(super) game_dir: Option<PathBuf>,
     /// `--quickPlaySingleplayer`, checked once the game folder is known.
     pub(super) quick_play: Option<String>,
     pub(super) session_file: Option<String>,
     /// `--session-stdin`: the session file's JSON comes on standard input instead.
     pub(super) session_stdin: bool,
+    /// Why this game plays without an account: the launcher's `SUNRISE_OFFLINE_REASON`, or a
+    /// session it could not read. The title screen shows it once.
+    pub(super) offline_reason: Option<String>,
 }
 
 impl Options {
-    /// Whether this `Game` is the process's client start: not a dedicated server, and not
-    /// a splitscreen guest, whose `run` is another local player joining the same process.
+    /// Whether this `Game` is the process's client.
     pub(super) fn is_client_start(&self) -> bool {
-        self.execution_role.is_client() && !self.split_guest
+        self.execution_role.is_client()
     }
     /// The name to join servers with: the one given, else the offline name kept
     /// next to options.txt (created on first use).
@@ -137,11 +132,15 @@ impl Options {
                 // The chat key pair, ready before the first join.
                 sunrise_client::auth::prepare_chat_keys(true);
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("Sunrise: not signed in: {e}"),
-        }
-        if !o.developer_single_player {
-            split::launcher::read_now();
+            Ok(None) => {
+                o.offline_reason = std::env::var("SUNRISE_OFFLINE_REASON")
+                    .ok()
+                    .filter(|reason| !reason.is_empty());
+            }
+            Err(e) => {
+                eprintln!("Sunrise: not signed in: {e}");
+                o.offline_reason = Some(e);
+            }
         }
         if let Some(dir) = o.game_dir.take() {
             std::fs::create_dir_all(&dir)
@@ -182,7 +181,7 @@ impl Options {
     }
     pub(super) fn from_launch(launch: LaunchArguments) -> Result<Option<Self>> {
         let installation_side = launch.installation_side();
-        let LaunchArguments { context, rest } = launch;
+        let LaunchArguments { context, rest, .. } = launch;
         let sibling = std::env::current_exe()?
             .parent()
             .ok_or("missing executable directory")?
@@ -201,9 +200,6 @@ impl Options {
             test_terrain: false,
             pregen: false,
             frames: None,
-            paced_by_split: false,
-            split_guest: false,
-            split_in_main_window: false,
             world_frames: None,
             screenshot_after: None,
             timeout: None,
@@ -237,11 +233,13 @@ impl Options {
                 ..Default::default()
             },
             execution_role: execution_role::ExecutionRole::Client,
+            save_failure_diagnostics: Default::default(),
             fullscreen: false,
             game_dir: Some(context.game_dir),
             quick_play: None,
             session_file: std::env::var("SUNRISE_SESSION_FILE").ok(),
             session_stdin: false,
+            offline_reason: None,
         };
         for argument in rest {
             match argument {

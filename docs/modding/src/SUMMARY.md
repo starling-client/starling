@@ -2,13 +2,17 @@
 
 [Modding Sunrise](introduction.md)
 
+# For players
+
+- [Installing and using mods](players/installing-mods.md)
+
 # Getting started
 
-- [Installing and using mods](start/installing.md)
+- [Install the mod tool](start/install-tool.md)
 - [Your first content mod](start/first-content-mod.md)
 - [Your first native mod](start/first-mod.md)
-- [Your first WebAssembly mod](start/first-wasm-mod.md)
 - [Writing hooks](start/writing-hooks.md)
+- [Using an AI agent](for-agents.md)
 
 # Concepts
 
@@ -25,7 +29,6 @@
 - [Registry keys](concepts/registry-keys.md)
 - [Wire types](concepts/wire-types.md)
 - [Dependencies between mods](concepts/dependencies.md)
-- [Injections](concepts/injections.md)
 - [The native route](concepts/native-route.md)
 - [Testing a mod](concepts/testing.md)
 
@@ -33,7 +36,6 @@
 
 - [Content mods](how-to/content-mods.md)
 - [Native mods: building and shipping](how-to/native-mods.md)
-- [WebAssembly mods](how-to/wasm-mods.md)
 - [Config files and settings](how-to/mod-settings.md)
 - [Publishing your mod](how-to/publish.md)
 - [Levels, dimensions and blocks](how-to/world.md)
@@ -50,7 +52,7 @@
 - [The mod SDK](reference/sdk.md)
 <!-- The hook-notes preprocessor supplies this chapter and its published URL from catalog notes. -->
 - [Hook notes]()
-<!-- The counterparts preprocessor renders the current declarations at the published URL. -->
+<!-- The counterparts preprocessor supplies this chapter and its published URL from catalog declarations. -->
 - [NeoForge counterparts]()
 - [The process, versions and game tests](reference/process-environment.md)
 - [Maths and network NBT](reference/maths-and-network-nbt.md)

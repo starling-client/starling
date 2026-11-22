@@ -4,9 +4,9 @@
 
 use super::Game;
 use crate::game::game_tests::tests::server_game;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::geometry::Vec3;
-use std::sync::Arc;
 
 /// A game whose player stands in chunk (0, 0), with lit chunks loaded in
 /// `order`.
@@ -31,7 +31,7 @@ fn game_loading<'a>(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn chunks_random_tick_in_the_same_order_however_they_loaded() {
     let mut loaded: Vec<(i32, i32)> = (-8..=8)
         .flat_map(|x| (-8..=8).map(move |z| (x, z)))

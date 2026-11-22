@@ -43,3 +43,6 @@
 .sunrise-mod-data/
 # Release-only compiled original exporter bundle.
 /exporters/
+
+# Visual Studio editor state.
+.vs/

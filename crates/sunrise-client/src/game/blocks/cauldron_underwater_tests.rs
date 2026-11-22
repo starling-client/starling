@@ -66,18 +66,23 @@ fn set(game: &mut Game<'_>, at: [i32; 3], block: &str) {
 }
 
 /// Empty `bucket` onto the empty cauldron at 8 100 8, with `above` in the cell
-/// over it; the cauldron's state afterwards.
-fn click_under(game: &mut Game<'_>, above: &str, bucket: &str) -> String {
+/// over it; the outcome and cauldron's state afterwards.
+fn click_under(
+    game: &mut Game<'_>,
+    above: &str,
+    bucket: &str,
+) -> (sunrise_client::cauldron::Outcome, String) {
     set(game, [8, 100, 8], "minecraft:cauldron");
     set(game, [8, 101, 8], above);
     game.inventory[0] = Some(ItemStack::new(bucket, 1));
-    assert!(game.use_on_cauldron([8, 100, 8]).unwrap(), "{above}");
-    name(game, [8, 100, 8])
+    let outcome = game.use_on_cauldron([8, 100, 8]).unwrap();
+    (outcome, name(game, [8, 100, 8]))
 }
 
 #[test]
 #[ignore = "daily"]
 fn a_cauldron_under_water_swallows_a_lava_or_powder_snow_bucket() {
+    use sunrise_client::cauldron::Outcome;
     let mut resources = None;
     let mut game = game(&mut resources);
     for (bucket, filled) in [
@@ -97,17 +102,16 @@ fn a_cauldron_under_water_swallows_a_lava_or_powder_snow_bucket() {
             "minecraft:seagrass",
             "minecraft:bubble_column",
         ] {
-            let got = click_under(&mut game, above, bucket);
+            let (outcome, got) = click_under(&mut game, above, bucket);
+            assert_eq!(outcome, Outcome::Consume, "{bucket} under {above}");
             assert_eq!(got, "minecraft:cauldron", "{bucket} under {above}");
             assert_eq!(held(&game).as_deref(), Some(bucket), "under {above}");
         }
         // Air and lava are not water, so the bucket empties into the cauldron.
         for above in ["minecraft:air", "minecraft:lava"] {
-            assert_eq!(
-                click_under(&mut game, above, bucket),
-                filled,
-                "{bucket} under {above}"
-            );
+            let (outcome, got) = click_under(&mut game, above, bucket);
+            assert_eq!(outcome, Outcome::Success, "{bucket} under {above}");
+            assert_eq!(got, filled, "{bucket} under {above}");
             assert_eq!(held(&game).as_deref(), Some("minecraft:bucket"));
         }
     }

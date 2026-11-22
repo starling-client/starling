@@ -1,0 +1,1 @@
+{"source": "minecraft:lava", "neighbour": {"fluid_tag": "#minecraft:water"}, "becomes": {"source": "minecraft:basalt"}}

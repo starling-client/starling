@@ -1,27 +1,21 @@
 //! Load and match hook adapters at the engine boundary.
+use mod_api::{IngredientDefinition, RecipePropertyAddition};
 use sunrise_world::native_load_context::LoadContext;
-use mod_api::RecipePropertyAddition;
-/// A recipe ingredient of a mod's own kind: the entry named a type in a
-/// namespace outside `minecraft:`, and the loader kept it for this call.
-/// The kind and the converted NBT data the file wrote are here; fill `items` with the
-/// item ids the ingredient matches (item ids only: components are not
-/// checked here; a match-time hook follows separately). Duplicates are
-/// removed keeping first-seen order. The load calls it once per occurrence
-/// (nested ones included), before any table parses the recipes; the
-/// answer must be the same every time. With no listener the load refuses the recipe file
-/// before this runs; an empty answer keeps an unplaceable recipe.
+
+/// Ask for this occurrence's custom ingredient definition before parsing the recipe tables.
+/// The first answer supplies ordered candidates and the owning mod's match predicate.
 #[inline(never)]
 pub fn native_ingredient(
     context: &sunrise_world::native_load_context::LoadContext,
     kind: &str,
     data: &sunrise_core::nbt::Compound,
-    items: &mut Vec<String>,
+    definition: &mut Option<mod_api::Answered<IngredientDefinition>>,
 ) {
     mod_api::dispatch_ingredient(
         &sunrise_client_render::api_context::LoadReader(context).context(),
         kind,
         data,
-        items,
+        definition,
     );
 }
 /// Items a mod's own recipe type takes in a station slot, added to the
@@ -46,25 +40,19 @@ pub fn native_recipe_property_sets(
         additions,
     );
 }
-/// A mod's own ingredient kind, matching a concrete stack at craft time:
-/// the ingredient's `test` calls here with the kind, its NBT compound and the
-/// stack being matched, `accept` already true (the load-time list named
-/// the item). Set `accept` to false to refuse the stack — its components
-/// are the usual reason. The hook may be called many times a craft; the
-/// answer must be the same for the same stack.
+/// Whether two of `stack`'s item may be combined in a crafting grid to repair it
+/// (`IItemExtension.isCombineRepairable`, which `RepairItemRecipe.canCombine` asks) is being
+/// decided: `repairable` starts with vanilla's answer, whether the stack has durability, and
+/// the parts of the stack's item may change it. Asked inside recipe matching on both sides.
 #[inline(never)]
-pub fn native_ingredient_test(
+pub fn native_is_combine_repairable(
     context: &sunrise_world::native_load_context::LoopContext,
-    kind: &str,
-    data: &sunrise_core::nbt::Compound,
     stack: &mod_api::ItemStack,
-    accept: &mut bool,
+    repairable: &mut bool,
 ) {
-    mod_api::dispatch_ingredient_test(
+    mod_api::dispatch_is_combine_repairable(
         &sunrise_client_render::api_context::LoopReader(context).context(),
-        kind,
-        data,
         stack,
-        accept,
+        repairable,
     );
 }

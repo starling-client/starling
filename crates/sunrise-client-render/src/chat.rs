@@ -220,6 +220,8 @@ struct Message {
     /// The lines it wrapped to the last time it was laid out (0 while hidden).
     wrapped: usize,
     content: Text,
+    /// Cached visual substitutions. `None` is pending; `Some(None)` is unchanged text.
+    inline_images: Option<Option<Text>>,
     tag: Option<std::sync::Arc<Tag>>,
     source: ChatSource,
     /// `GuiMessage.signature`: a signed player message's, for deletion.
@@ -316,6 +318,9 @@ fn time_alpha(ticks: f32, added: u64) -> f32 {
 #[derive(Default)]
 pub struct Chat {
     messages: Vec<Message>,
+    /// Atlas, mod and colour settings used by the cached substitutions.
+    inline_images_revision: Option<([u64; 3], bool)>,
+    inline_images_pending: bool,
     /// Wrapped lines, newest first.
     lines: Vec<Line>,
     /// Sent messages and commands (ChatComponent.recentChat).
@@ -437,6 +442,7 @@ impl Chat {
                 repeats: 1,
                 wrapped: 0,
                 content,
+                inline_images: None,
                 tag: tag.map(std::sync::Arc::new),
                 source: ChatSource::Player,
                 signature: signature.map(Box::new),
@@ -461,6 +467,7 @@ impl Chat {
                 repeats: 1,
                 wrapped: 0,
                 content,
+                inline_images: None,
                 tag,
                 source,
                 signature: None,
@@ -473,10 +480,10 @@ impl Chat {
             return;
         }
         // ChatComponent.logChatMessage: every message shown is in the log.
-        let plain = message.content.plain();
-        crate::logging::write_only(log::Level::Info, &format!("[CHAT] {plain}"));
+        let plain = format!("[CHAT] {}", message.content.plain());
+        crate::logging::write_current(log::Level::Info, &plain, self.log);
         if self.log {
-            println!("[CHAT] {plain}");
+            println!("{plain}");
         }
         message.time = self.now();
         self.received += 1;
@@ -503,6 +510,7 @@ impl Chat {
             return;
         }
         message.wrapped = self.add_lines(font, &message, focused);
+        self.inline_images_pending = true;
         self.messages.insert(0, message);
         self.messages.truncate(100);
     }
@@ -564,7 +572,12 @@ impl Chat {
     /// A message's lines before wrapping: [`Chat::displayed`], with PvP & HUD's time before it
     /// and count after it, in grey.
     fn message_text(&self, message: &Message) -> Text {
-        let content = self.displayed(&message.content);
+        let content = message
+            .inline_images
+            .as_ref()
+            .and_then(Option::as_ref)
+            .cloned()
+            .unwrap_or_else(|| self.displayed(&message.content));
         if !self.qol.timestamps && message.repeats <= 1 {
             return content;
         }
@@ -587,6 +600,40 @@ impl Chat {
         }
         out
     }
+    /// Whether chat needs to sample a changed image resolver or newly stored messages.
+    pub fn inline_images_stale(&self, revision: Option<[u64; 3]>) -> bool {
+        self.inline_images_revision != revision.map(|rev| (rev, self.options.colors))
+            || revision.is_some() && self.inline_images_pending
+    }
+
+    /// Prepare image substitutions on stored messages, without changing their source or tags.
+    /// Refreshing the displayed lines also updates their click and hover positions.
+    pub fn refresh_inline_images(
+        &mut self,
+        atlas: &HudAtlas,
+        revision: Option<[u64; 3]>,
+        substitute: impl Fn(&Text) -> Option<Text>,
+    ) {
+        let revision = revision.map(|rev| (rev, self.options.colors));
+        let refresh_all = self.inline_images_revision != revision;
+        self.inline_images_revision = revision;
+        self.inline_images_pending = false;
+        let mut changed = false;
+        for i in 0..self.messages.len() {
+            let message = &self.messages[i];
+            if !refresh_all && message.inline_images.is_some() {
+                continue;
+            }
+            let image_text = revision.map(|_| substitute(&self.displayed(&message.content)));
+            changed |= message.inline_images.as_ref().and_then(Option::as_ref)
+                != image_text.as_ref().and_then(Option::as_ref);
+            self.messages[i].inline_images = image_text;
+        }
+        if changed {
+            self.rewrap(&atlas.font);
+        }
+    }
+
     /// PvP & HUD's chat options; a change lays the lines out again.
     pub fn set_qol(&mut self, atlas: &HudAtlas, qol: ChatQol) {
         if self.qol != qol {
@@ -712,12 +759,14 @@ impl Chat {
             repeats: 1,
             wrapped: 0,
             content: Self::deleted_marker(),
+            inline_images: None,
             tag: Some(std::sync::Arc::new(Tag::system_single_player(
                 SYSTEM_INDICATOR,
             ))),
             source: ChatSource::Server,
             signature: None,
         };
+        self.inline_images_pending = true;
         // refreshTrimmedMessages.
         self.rewrap(font);
         None
@@ -1384,8 +1433,7 @@ pub struct ChatScreen {
     /// `CommandSuggestions.setRestrictions`: what the Chat option allows.
     pub abilities: ChatAbilities,
     pub layout: SuggestLayout,
-    /// `MouseHandler.lastClick`: a click within 250 ms of the last one on
-    /// this screen is a double click.
+    /// The last non-suggestion left press seen by this screen's live click path.
     last_click: Option<std::time::Instant>,
 }
 /// Local completions waiting for the server's reply to request `id`.
@@ -2156,8 +2204,26 @@ impl ChatScreen {
             self.history_pos = new;
         }
     }
+    /// Classify a live left click before passing it to [`Self::click`].
+    /// Suggestion clicks leave the clock alone; input misses still advance it.
+    pub fn live_double_click(&mut self, x: f64, y: f64) -> bool {
+        if self
+            .suggestions
+            .as_ref()
+            .is_some_and(|l| l.contains(x as i32, y as i32))
+        {
+            return false;
+        }
+        // Keep the existing per-screen timing for live presses.
+        let now = std::time::Instant::now();
+        let double_click = self
+            .last_click
+            .is_some_and(|at| now.duration_since(at).as_millis() < 250);
+        self.last_click = Some(now);
+        double_click
+    }
     /// A left click (`ChatScreen.mouseClicked`): a suggestion, else the input.
-    pub fn click(&mut self, m: &Measure, c: &Commands, x: f64, y: f64) -> bool {
+    pub fn click(&mut self, m: &Measure, c: &Commands, x: f64, y: f64, double_click: bool) -> bool {
         if let Some(mut l) = self.suggestions.take() {
             let (xi, yi) = (x as i32, y as i32);
             if l.contains(xi, yi) {
@@ -2171,15 +2237,8 @@ impl ChatScreen {
             }
             self.suggestions = Some(l);
         }
-        // MouseHandler: the same screen's click within 250 ms is a double
-        // click, which selects the word under the pointer.
-        let now = std::time::Instant::now();
-        let double = self
-            .last_click
-            .is_some_and(|at| now.duration_since(at).as_millis() < 250);
-        self.last_click = Some(now);
         if self.input.contains(x, y) {
-            self.input.click(m, x, false, double);
+            self.input.click(m, x, false, double_click);
             return true;
         }
         false

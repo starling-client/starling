@@ -24,13 +24,13 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod client_packet_send_tests {
+    use mod_api::{ClientHost, ClientPacketSendEvent, Flow, Hooks, ModEntry};
+    use mod_platform::testing::with_mods;
+    use std::sync::{Arc, Mutex};
     use sunrise_protocol::packets::{
         configuration::CustomPayload,
         play::{Serverbound, SetCarriedItem},
     };
-    use mod_api::{ClientHost, ClientPacketSendEvent, Flow, Hooks, ModEntry};
-    use mod_platform::testing::with_mods;
-    use std::sync::{Arc, Mutex};
 
     /// Drops payloads on `example:secret`, logging every packet it hears.
     struct Filter(Arc<Mutex<Vec<String>>>);
@@ -59,7 +59,7 @@ mod client_packet_send_tests {
     /// `Connection.send`: the mod hears each packet the game sends and cancels the one it
     /// filters; without a listener nothing is cancelled.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_mod_hears_and_cancels_packets_the_game_sends() {
         let slot = Serverbound::SetCarriedItem(SetCarriedItem { slot: 2 });
         crate::game::native_entity_refs::tests::with_game(|game| {

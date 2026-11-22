@@ -70,6 +70,15 @@ impl DerefMut for ResidentAttachments {
 }
 
 impl AttachmentHost for ResidentAttachments {
+    fn validate_attachment(
+        &self,
+        namespace: &str,
+        name: &str,
+        sync: bool,
+    ) -> Result<(), AttachmentError> {
+        let _ = (namespace, name, sync);
+        Ok(())
+    }
     fn attachments(
         &mut self,
         _: Holder,

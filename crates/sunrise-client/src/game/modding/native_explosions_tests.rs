@@ -1,30 +1,27 @@
-//! `LevelRef::explode`'s contract through both mod targets: a native call of the handle method
-//! and a wasm guest's call through the generated forwarder, each on a fresh game, on the stack
-//! a wasm guest runs on. The source and interactions are #3929's; the damage type, the
-//! calculator, the effects and the unbounded radius #4009's.
+//! `LevelRef::explode` through native mod calls: source, interactions, damage type,
+//! calculator, effects and unbounded radius.
 #![cfg(test)]
 use crate::game::Game;
-use crate::game::native_entity_refs::tests::{bind_local_player, run_on_guest_stack, with_game};
-use sunrise_client::{chunk::Chunk, mobs::Mob, mobs::Who, motion::PlayerMotion};
+use crate::game::native_entity_refs::tests::{
+    bind_local_player, run_fresh_cases, run_with_game_stack, with_game,
+};
+use mod_api::{
+    EntityRef, ExplodeError, ExplosionCalculator, ExplosionDetonateEvent, ExplosionInteraction,
+    ExplosionSettings, ExplosionStartEvent, Flow, HitHost, Hooks, LivingDamagePostEvent,
+    LivingDeathEvent, LivingExperienceDropEvent, LootDropsEvent, ModEntry, ServerHost,
+};
+use std::sync::{Arc, Mutex};
+use sunrise_client::{
+    chunk::Chunk,
+    mobs::Mob,
+    mobs::Who,
+    motion::PlayerMotion,
+    projectiles::{Projectile, ProjectileKind},
+};
 use sunrise_core::{
     geometry::Vec3,
     position::{BlockPos, ChunkPos},
 };
-use mod_api::{
-    EntityRef, ExplodeError, ExplosionCalculator, ExplosionDetonateEvent, ExplosionInteraction,
-    ExplosionSettings, ExplosionStartEvent, Flow, Hooks, LevelRandomHost, LivingDamagePostEvent,
-    LivingDeathEvent, ModEntry, ServerHost,
-    wire::{Reader, Writer},
-};
-use std::sync::{Arc, Mutex};
-
-/// How the call reaches the game.
-#[derive(Clone, Copy, Debug)]
-enum Via {
-    Native,
-    Wasm,
-}
-const BOTH: [Via; 2] = [Via::Native, Via::Wasm];
 
 /// One `explode` call.
 struct Blast {
@@ -52,104 +49,20 @@ impl Blast {
 /// What `explode` answers.
 type Answer = Result<(), ExplodeError>;
 
-/// Runs `blast` in the overworld through `via` and checks its answer.
-fn explode(game: &mut Game<'_>, via: Via, blast: Blast, expected: Answer) {
+/// Runs `blast` in the overworld and checks its answer.
+fn explode(game: &mut Game<'_>, blast: Blast, expected: Answer) {
     let level = game.level("minecraft:overworld").unwrap();
-    match via {
-        Via::Native => assert_eq!(
-            level.explode(
-                game,
-                blast.source,
-                blast.center,
-                blast.radius,
-                blast.fire,
-                blast.interaction,
-                blast.settings
-            ),
-            expected
+    assert_eq!(
+        level.explode(
+            game,
+            blast.source,
+            blast.center,
+            blast.radius,
+            blast.fire,
+            blast.interaction,
+            blast.settings
         ),
-        Via::Wasm => wasm_explode(game, level, blast, expected),
-    }
-}
-
-/// A guest whose server tick calls `level_explode` through its import and
-/// answers the tick only when the host's answer is `expected` (it traps otherwise).
-fn wasm_explode(game: &mut Game<'_>, level: mod_api::LevelRef, blast: Blast, expected: Answer) {
-    let mut input = Writer::new();
-    input.put(&level);
-    input.put(&blast.source);
-    input.put(&blast.center);
-    input.put(&blast.radius);
-    input.put(&blast.fire);
-    input.put(&blast.interaction);
-    input.put(&blast.settings);
-    let mut answer = Writer::new();
-    answer.put(&expected);
-    let mut reply = Writer::new();
-    reply.put(&mod_api::ServerTickPhase::ServerTickEnd {
-        world_running: true,
-    });
-    let escape = |bytes: &[u8]| {
-        bytes
-            .iter()
-            .map(|b| format!("\\{b:02x}"))
-            .collect::<String>()
-    };
-    let check = answer
-        .bytes()
-        .iter()
-        .enumerate()
-        .map(|(i, byte)| {
-            format!(
-                "i32.const {} i32.load8_u i32.const {byte} i32.ne if unreachable end ",
-                32768 + i
-            )
-        })
-        .collect::<String>();
-    let id = sunrise_mod_wasm::fixture::import_id("BackendMut", "level_explode").unwrap();
-    let bytes = wat::parse_str(format!(
-        r#"(module
-          (@custom "dylink.0" "\01\04\00\00\00\00")
-          (import "env" "memory" (memory 1))
-          (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "sunrise" "host" (func $host (param i32 i32 i32 i32 i32) (result i32)))
-          (import "sunrise" "host_reply" (func (param i32)))
-          (func (export "sunrise_layout") (result i64) i64.const {layout})
-          (data (i32.const 4096) "{input}")
-          (data (i32.const 16384) "{reply}")
-          (func (export "sunrise_in") (param i32) (result i32) i32.const 512)
-          (func (export "sunrise_hook") (param i32) (result i64)
-            i32.const {id} i32.const 4096 i32.const {input_len} i32.const 32768 i32.const 4096 call $host drop
-            {check}
-            i64.const {reply_at}))"#,
-        layout = *mod_api::wire::LAYOUT,
-        input = escape(input.bytes()),
-        reply = escape(reply.bytes()),
-        input_len = input.bytes().len(),
-        reply_at = (16384u64 << 32) | reply.bytes().len() as u64,
-    ))
-    .unwrap();
-    let module = sunrise_mod_wasm::fixture::module(&bytes).unwrap();
-    let mut context = Writer::new();
-    context.put(&mod_api::Authority::DedicatedServer);
-    context.put(&level.epoch());
-    context.put(&mod_api::TickId::new(1));
-    let context: mod_api::LifecycleContext = Reader::new(context.bytes()).take().unwrap();
-    let mut tick = mod_api::ServerTickEvent {
-        context: &context,
-        phase: mod_api::ServerTickPhase::ServerTickStart {
-            world_running: true,
-        },
-    };
-    Hooks::server_tick(&module, game, &mut tick);
-    assert!(
-        matches!(
-            tick.phase,
-            mod_api::ServerTickPhase::ServerTickEnd {
-                world_running: true
-            }
-        ),
-        "the guest saw the answer {expected:?}"
+        expected
     );
 }
 
@@ -186,34 +99,70 @@ fn mob(game: &mut Game<'_>, id: u32, kind: &str, at: Vec3, health: f32) {
     let mut mob = Mob::new(id, kind, at, 0.0);
     mob.persistent = true;
     mob.no_ai = true;
-    mob.on_ground = true;
+    mob.ground.on_ground = true;
     mob.health = health;
     game.mobs.push(mob);
 }
 
-/// What `living_death` heard: the dying entity, the damage type and the causing entity.
-type Deaths = Arc<Mutex<Vec<(u32, String, i32)>>>;
-struct Deathwatch(Deaths);
+#[derive(Default)]
+struct DeathObservations {
+    sources: Vec<(u32, String, i32)>,
+    loot_players: Vec<Option<u128>>,
+    experience: Vec<(u32, Option<u128>, i32)>,
+}
+struct Deathwatch(Arc<Mutex<DeathObservations>>);
 #[mod_api::__subscriptions]
 impl Hooks for Deathwatch {
     fn living_death(&self, _: &mut dyn ServerHost, event: &mut LivingDeathEvent<'_>) -> Flow {
         let source = event.source;
-        self.0
-            .lock()
-            .unwrap()
-            .push((event.entity, source.damage_type.into(), source.causing));
+        self.0.lock().unwrap().sources.push((
+            event.entity,
+            source.damage_type.into(),
+            source.causing,
+        ));
+        Flow::Continue
+    }
+
+    fn loot_drops(&self, _: &mut dyn ServerHost, event: &mut LootDropsEvent<'_>) {
+        if event.context.entity == Some((41, "minecraft:zombie")) {
+            self.0
+                .lock()
+                .unwrap()
+                .loot_players
+                .push(event.context.player);
+        }
+    }
+
+    fn living_experience_drop(
+        &self,
+        _: &mut dyn ServerHost,
+        event: &mut LivingExperienceDropEvent,
+    ) -> Flow {
+        self.0.lock().unwrap().experience.push((
+            event.entity,
+            event.attacking_player,
+            event.original,
+        ));
         Flow::Continue
     }
 }
 
-/// A blast at (4.5, 80, 4.5) whose source `source` makes (it answers the
-/// source's entity id) kills a zombie on one health beside it: what the
-/// zombie's death names, and whether a player is credited with the kill
-/// (`last_hurt_by_player`). The player in place is entity 11, out of reach.
-fn kill(via: Via, source: impl Fn(&mut Game<'_>) -> u32) -> (Vec<(u32, String, i32)>, bool) {
+/// A loaded arena with the player clear of the blast.
+fn credit_arena(game: &mut Game<'_>) {
+    floor(game);
+    assert!(game.run_command("difficulty normal"));
+    game.player = Some(PlayerMotion::new(game.motion, Vec3::new(14.5, 80.0, 14.5)).unwrap());
+    bind_local_player(game, 11, 123);
+    game.set_mode_id(0);
+    game.next_entity = 100;
+    game.load_ticking_neighbourhood(0, 0);
+    game.update_chunk_tickets();
+}
+
+/// A blast kills a zombie on one health; check its source and rewards at the hit boundary.
+fn kill(source: fn(&mut Game<'_>) -> u32, (causing, damage_type, credited): (i32, &str, bool)) {
     crate::entry::install_client_hooks();
-    let deaths = Deaths::default();
-    let mut credited = false;
+    let deaths = Arc::new(Mutex::new(DeathObservations::default()));
     mod_platform::testing::with_mods(
         vec![ModEntry::new(
             "explode-deaths",
@@ -222,12 +171,7 @@ fn kill(via: Via, source: impl Fn(&mut Game<'_>) -> u32) -> (Vec<(u32, String, i
         .into(),
         || {
             with_game(|game| {
-                floor(game);
-                game.player =
-                    Some(PlayerMotion::new(game.motion, Vec3::new(14.5, 80.0, 14.5)).unwrap());
-                bind_local_player(game, 11, 123);
-                game.set_mode_id(0);
-                game.next_entity = 100;
+                credit_arena(game);
                 mob(game, 41, "minecraft:zombie", Vec3::new(6.0, 80.0, 4.5), 1.0);
                 let id = source(game);
                 let source = game.entity(id);
@@ -240,28 +184,90 @@ fn kill(via: Via, source: impl Fn(&mut Game<'_>) -> u32) -> (Vec<(u32, String, i
                     interaction: ExplosionInteraction::None,
                     settings: ExplosionSettings::default(),
                 };
-                explode(game, via, blast, Ok(()));
-                credited = game.last_hurt_by_player.contains_key(&41);
+                let mob_kills = |game: &Game<'_>| game.stats.get("custom", "minecraft:mob_kills");
+                let expected_kills = mob_kills(game) + if credited { 1 } else { 0 };
+                let expected_credit = credited.then(|| game.entity(11).unwrap());
+                explode(game, blast, Ok(()));
+                let corpse = game.living(game.entity(41).unwrap()).unwrap();
+                assert_eq!(corpse.alive(game), Some(false));
+                assert_eq!(corpse.kill_credit(game), expected_credit);
+                assert_eq!(mob_kills(game), expected_kills);
+                // Monster's base reward for an adult zombie with no equipment.
+                let xp: i32 = game
+                    .orbs
+                    .iter()
+                    .map(|orb| orb.value * orb.count as i32)
+                    .sum();
+                assert_eq!(xp, if credited { 5 } else { 0 });
+
                 game.tick_creature_entities().unwrap();
+                assert_eq!(mob_kills(game), expected_kills);
+                assert_eq!(corpse.kill_credit(game), expected_credit);
+                // LivingEntity.tickDeath removes the body at tick 20, before
+                // the remembered player would expire on its own.
+                for _ in 1..20 {
+                    game.tick_creature_entities().unwrap();
+                }
+                assert!(game.entity(41).is_none());
+                assert!(!game.last_hurt_by_player.contains_key(&41));
+                assert_eq!(mob_kills(game), expected_kills);
             })
         },
     );
-    let deaths = deaths.lock().unwrap().clone();
-    (deaths, credited)
+    let deaths = deaths.lock().unwrap();
+    assert_eq!(deaths.sources, [(41, damage_type.to_owned(), causing)]);
+    assert_eq!(deaths.loot_players, [credited.then_some(123)]);
+    assert_eq!(
+        deaths.experience.as_slice(),
+        credited.then_some((41, Some(123), 5)).as_slice()
+    );
 }
 
-/// [`kill`] through both targets, each answering `expected`.
 fn kills(name: &str, source: fn(&mut Game<'_>) -> u32, expected: (i32, &'static str, bool)) {
-    crate::game::in_own_process(&format!("game::native_explosions_tests::{name}"), || {
-        run_on_guest_stack(move || {
-            for via in BOTH {
-                let (causing, damage_type, credited) = expected;
-                assert_eq!(
-                    kill(via, source),
-                    (vec![(41, damage_type.to_owned(), causing)], credited),
-                    "{via:?}"
-                );
+    if run_fresh_cases(
+        &format!("game::native_explosions_tests::{name}"),
+        "SUNRISE_EXPLOSION_DEATH_CHILD",
+        &["blast"],
+    ) {
+        return;
+    }
+    run_with_game_stack(move || kill(source, expected));
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_player_hit_expires_on_a_living_mob_after_the_last_memory_tick() {
+    if run_fresh_cases(
+        "game::native_explosions_tests::a_player_hit_expires_on_a_living_mob_after_the_last_memory_tick",
+        "SUNRISE_MOB_CREDIT_EXPIRY_CHILD",
+        &["expiry"],
+    ) {
+        return;
+    }
+    run_with_game_stack(|| {
+        with_game(|game| {
+            credit_arena(game);
+            mob(game, 41, "minecraft:pig", Vec3::new(6.0, 80.0, 4.5), 10.0);
+            let living = game.living(game.entity(41).unwrap()).unwrap();
+            assert!(game.mob_hits_mob(
+                41,
+                1.0,
+                sunrise_client::mobs::Damage::player([14.5, 80.0, 14.5])
+            ));
+            assert_eq!(living.alive(game), Some(true));
+            assert_eq!(living.kill_credit(game).map(|killer| killer.id()), Some(11));
+
+            // LivingEntity.resolvePlayerResponsibleForDamage starts the timer at
+            // 100; baseTick keeps the reference when it decrements to zero.
+            for _ in 0..100 {
+                game.tick_creature_entities().unwrap();
             }
+            assert_eq!(living.kill_credit(game).map(|killer| killer.id()), Some(11));
+            assert!(game.last_hurt_by_player.contains_key(&41));
+            game.tick_creature_entities().unwrap();
+            assert_eq!(living.alive(game), Some(true));
+            assert_eq!(living.kill_credit(game), None);
+            assert!(!game.last_hurt_by_player.contains_key(&41));
         });
     });
 }
@@ -371,42 +377,40 @@ fn a_players_fishing_bobber_credits_the_player() {
 #[test]
 #[ignore = "daily"]
 fn a_mob_blast_breaks_blocks_only_when_its_source_may_grief() {
-    run_on_guest_stack(|| {
-        for via in BOTH {
-            for griefing in [false, true] {
-                with_game(|game| {
-                    floor(game);
-                    assert!(game.ui.rules.set(
-                        "mob_griefing",
-                        sunrise_client::gamerules::Value::Bool(griefing),
-                    ));
-                    mob(
-                        game,
-                        42,
-                        "minecraft:creeper",
-                        Vec3::new(8.5, 80.0, 8.5),
-                        20.0,
-                    );
-                    let blast = Blast {
-                        source: game.entity(42),
-                        center: [8.5, 80.0, 8.5],
-                        radius: 3.0,
-                        fire: false,
-                        interaction: ExplosionInteraction::Mob,
-                        settings: ExplosionSettings::default(),
-                    };
-                    explode(game, via, blast, Ok(()));
-                    let (under, floor) = (name(game, [8, 79, 8]), stone(game));
-                    if griefing {
-                        assert_eq!(under, "minecraft:air", "{via:?}");
-                        assert!(floor < 256, "{via:?}: {floor}");
-                    } else {
-                        assert_eq!((under.as_str(), floor), ("minecraft:stone", 256), "{via:?}");
-                    }
-                    // The source is spared by its own blast.
-                    assert_eq!(game.mobs[0].health, 20.0, "{via:?}");
-                });
-            }
+    run_with_game_stack(|| {
+        for griefing in [false, true] {
+            with_game(|game| {
+                floor(game);
+                assert!(game.ui.rules.set(
+                    "mob_griefing",
+                    sunrise_client::gamerules::Value::Bool(griefing),
+                ));
+                mob(
+                    game,
+                    42,
+                    "minecraft:creeper",
+                    Vec3::new(8.5, 80.0, 8.5),
+                    20.0,
+                );
+                let blast = Blast {
+                    source: game.entity(42),
+                    center: [8.5, 80.0, 8.5],
+                    radius: 3.0,
+                    fire: false,
+                    interaction: ExplosionInteraction::Mob,
+                    settings: ExplosionSettings::default(),
+                };
+                explode(game, blast, Ok(()));
+                let (under, floor) = (name(game, [8, 79, 8]), stone(game));
+                if griefing {
+                    assert_eq!(under, "minecraft:air");
+                    assert!(floor < 256, "{floor}");
+                } else {
+                    assert_eq!((under.as_str(), floor), ("minecraft:stone", 256));
+                }
+                // The source is spared by its own blast.
+                assert_eq!(game.mobs[0].health, 20.0);
+            });
         }
     });
 }
@@ -414,95 +418,88 @@ fn a_mob_blast_breaks_blocks_only_when_its_source_may_grief() {
 #[test]
 #[ignore = "daily"]
 fn a_trigger_blast_presses_a_button_and_breaks_nothing() {
-    run_on_guest_stack(|| {
-        for via in BOTH {
-            with_game(|game| {
-                floor(game);
-                assert!(game.run_command("setblock 6 80 4 minecraft:stone_button[face=floor]"));
-                let blast = Blast {
-                    source: None,
-                    center: [4.5, 80.5, 4.5],
-                    radius: 3.0,
-                    fire: false,
-                    interaction: ExplosionInteraction::Trigger,
-                    settings: ExplosionSettings::default(),
-                };
-                explode(game, via, blast, Ok(()));
-                let state = game.world.block(6, 80, 4);
-                let powered = game
-                    .pack
-                    .assets
-                    .registry
-                    .state(state)
-                    .and_then(|s| s.properties.get("powered").cloned());
-                assert_eq!(name(game, [6, 80, 4]), "minecraft:stone_button", "{via:?}");
-                assert_eq!(powered.as_deref(), Some("true"), "{via:?}");
-                assert_eq!(stone(game), 256, "{via:?}");
-            });
-        }
+    run_with_game_stack(|| {
+        with_game(|game| {
+            floor(game);
+            assert!(game.run_command("setblock 6 80 4 minecraft:stone_button[face=floor]"));
+            let blast = Blast {
+                source: None,
+                center: [4.5, 80.5, 4.5],
+                radius: 3.0,
+                fire: false,
+                interaction: ExplosionInteraction::Trigger,
+                settings: ExplosionSettings::default(),
+            };
+            explode(game, blast, Ok(()));
+            let state = game.world.block(6, 80, 4);
+            let powered = game
+                .pack
+                .assets
+                .registry
+                .state(state)
+                .and_then(|s| s.properties.get("powered").cloned());
+            assert_eq!(name(game, [6, 80, 4]), "minecraft:stone_button");
+            assert_eq!(powered.as_deref(), Some("true"));
+            assert_eq!(stone(game), 256);
+        });
     });
 }
 
 #[test]
 #[ignore = "daily"]
 fn a_blast_that_keeps_blocks_still_lights_fire() {
-    run_on_guest_stack(|| {
-        for via in BOTH {
-            with_game(|game| {
-                floor(game);
-                let blast = Blast {
-                    source: None,
-                    center: [8.5, 80.5, 8.5],
-                    radius: 4.0,
-                    fire: true,
-                    interaction: ExplosionInteraction::None,
-                    settings: ExplosionSettings::default(),
-                };
-                explode(game, via, blast, Ok(()));
-                let fires = (0..16)
-                    .flat_map(|x| (0..16).map(move |z| [x, 80, z]))
-                    .filter(|&p| name(game, p) == "minecraft:fire")
-                    .count();
-                assert!(fires > 0, "{via:?}");
-                assert_eq!(stone(game), 256, "{via:?}");
-            });
-        }
+    run_with_game_stack(|| {
+        with_game(|game| {
+            floor(game);
+            let blast = Blast {
+                source: None,
+                center: [8.5, 80.5, 8.5],
+                radius: 4.0,
+                fire: true,
+                interaction: ExplosionInteraction::None,
+                settings: ExplosionSettings::default(),
+            };
+            explode(game, blast, Ok(()));
+            let fires = (0..16)
+                .flat_map(|x| (0..16).map(move |z| [x, 80, z]))
+                .filter(|&p| name(game, p) == "minecraft:fire")
+                .count();
+            assert!(fires > 0);
+            assert_eq!(stone(game), 256);
+        });
     });
 }
 
 #[test]
 #[ignore = "daily"]
 fn an_invalid_source_explodes_nothing() {
-    run_on_guest_stack(|| {
-        for via in BOTH {
-            with_game(|game| {
-                floor(game);
-                mob(
-                    game,
-                    43,
-                    "minecraft:zombie",
-                    Vec3::new(8.5, 80.0, 9.5),
-                    20.0,
-                );
-                let live = game.entity(43).unwrap();
-                let stale =
-                    EntityRef::new(mod_api::WorldEpoch::new(live.epoch().get() + 1), live.id());
-                let nothing = EntityRef::new(live.epoch(), 9999);
-                for source in [stale, nothing] {
-                    let blast = Blast {
-                        source: Some(source),
-                        center: [8.5, 80.5, 8.5],
-                        radius: 4.0,
-                        fire: true,
-                        interaction: ExplosionInteraction::Block,
-                        settings: ExplosionSettings::default(),
-                    };
-                    explode(game, via, blast, Err(ExplodeError::Unavailable));
-                }
-                assert_eq!(stone(game), 256, "{via:?}");
-                assert_eq!(game.mobs[0].health, 20.0, "{via:?}");
-            });
-        }
+    run_with_game_stack(|| {
+        with_game(|game| {
+            floor(game);
+            mob(
+                game,
+                43,
+                "minecraft:zombie",
+                Vec3::new(8.5, 80.0, 9.5),
+                20.0,
+            );
+            let live = game.entity(43).unwrap();
+            let stale = EntityRef::new(mod_api::WorldEpoch::new(live.epoch().get() + 1), live.id());
+            let nothing = EntityRef::new(live.epoch(), 9999);
+            for source in [stale, nothing] {
+                let blast = Blast {
+                    source: Some(source),
+                    center: [8.5, 80.5, 8.5],
+                    radius: 4.0,
+                    fire: true,
+                    interaction: ExplosionInteraction::Block,
+                    settings: ExplosionSettings::default(),
+                };
+                explode(game, blast, Err(ExplodeError::Unavailable));
+            }
+            assert_eq!(stone(game), 256);
+            assert_eq!(game.mobs[0].health, 20.0);
+        });
     });
 }
 
@@ -526,34 +523,28 @@ impl Hooks for Listener {
     fn explosion_detonate(&self, _: &mut dyn ServerHost, _: &mut ExplosionDetonateEvent<'_>) {
         self.0.lock().unwrap().detonates += 1;
     }
-    fn living_damage_post(
-        &self,
-        _: &mut dyn LevelRandomHost,
-        event: &mut LivingDamagePostEvent<'_>,
-    ) {
+    fn living_damage_post(&self, _: &mut dyn HitHost, event: &mut LivingDamagePostEvent<'_>) {
         let heard = (i64::from(event.entity), event.source.damage_type.to_owned());
         self.0.lock().unwrap().damage.push(heard);
     }
 }
 
-/// Runs `test` on a fresh game with a stone floor through both targets, the
+/// Runs `test` on a fresh game with a stone floor, the
 /// [`Listener`] hearing it, and hands it what was heard.
-fn heard(test: impl Fn(&mut Game<'_>, Via, &Arc<Mutex<Heard>>) + Send + Sync + 'static) {
+fn heard(test: impl Fn(&mut Game<'_>, &Arc<Mutex<Heard>>) + Send + Sync + 'static) {
     crate::entry::install_client_hooks();
-    run_on_guest_stack(move || {
-        for via in BOTH {
-            let heard = Arc::new(Mutex::new(Heard::default()));
-            let mods = vec![ModEntry::new(
-                "explode-heard",
-                Box::new(Listener(heard.clone())),
-            )];
-            mod_platform::testing::with_mods(mods.into(), || {
-                with_game(|game| {
-                    floor(game);
-                    test(game, via, &heard);
-                })
-            });
-        }
+    run_with_game_stack(move || {
+        let heard = Arc::new(Mutex::new(Heard::default()));
+        let mods = vec![ModEntry::new(
+            "explode-heard",
+            Box::new(Listener(heard.clone())),
+        )];
+        mod_platform::testing::with_mods(mods.into(), || {
+            with_game(|game| {
+                floor(game);
+                test(game, &heard);
+            })
+        });
     });
 }
 
@@ -597,7 +588,7 @@ fn register_fuel_tank(game: &mut Game<'_>) {
 #[test]
 #[ignore = "daily"]
 fn a_mod_damage_type_names_the_death_message_and_is_what_living_damage_hears() {
-    heard(move |game, via, heard| {
+    heard(move |game, heard| {
         register_fuel_tank(game);
         mob(
             game,
@@ -614,14 +605,14 @@ fn a_mod_damage_type_names_the_death_message_and_is_what_living_damage_hears() {
             },
             ..Blast::at([8.5, 80.5, 8.5], 4.0)
         };
-        explode(game, via, blast, Ok(()));
+        explode(game, blast, Ok(()));
         let heard = heard.lock().unwrap();
-        assert_eq!(heard.starts, ["test:fuel_tank"], "{via:?}");
-        assert_eq!(heard.damage, [(44, "test:fuel_tank".to_owned())], "{via:?}");
+        assert_eq!(heard.starts, ["test:fuel_tank"]);
+        assert_eq!(heard.damage, [(44, "test:fuel_tank".to_owned())]);
         let zombie = game.mobs.remove(0);
-        assert!(zombie.health < 20.0, "{via:?}: {}", zombie.health);
+        assert!(zombie.health < 20.0, "{}", zombie.health);
         let death = game.mob_death_message(&zombie, None).component();
-        assert_eq!(death["translate"], "death.attack.fuelTank", "{via:?}");
+        assert_eq!(death["translate"], "death.attack.fuelTank");
     });
 }
 
@@ -629,7 +620,7 @@ fn a_mod_damage_type_names_the_death_message_and_is_what_living_damage_hears() {
 #[ignore = "daily"]
 fn immune_blocks_survive_and_every_other_cell_resists_nothing() {
     for immune in [Some("minecraft:logs"), None] {
-        heard(move |game, via, _| {
+        heard(move |game, _| {
             assert!(game.run_command("setblock 8 80 10 minecraft:oak_log"));
             assert!(game.run_command("setblock 8 80 6 minecraft:obsidian"));
             let blast = Blast {
@@ -642,25 +633,19 @@ fn immune_blocks_survive_and_every_other_cell_resists_nothing() {
                 },
                 ..Blast::at([8.5, 80.5, 8.5], 6.0)
             };
-            explode(game, via, blast, Ok(()));
+            explode(game, blast, Ok(()));
             let (log, obsidian) = (name(game, [8, 80, 10]), name(game, [8, 80, 6]));
-            assert_eq!(
-                name(game, [8, 79, 8]),
-                "minecraft:air",
-                "{via:?} {immune:?}"
-            );
+            assert_eq!(name(game, [8, 79, 8]), "minecraft:air", "{immune:?}");
             if immune.is_some() {
                 // The tag replaces the rule: obsidian's 1200 counts for nothing.
                 assert_eq!(
                     (log.as_str(), obsidian.as_str()),
-                    ("minecraft:oak_log", "minecraft:air"),
-                    "{via:?}"
+                    ("minecraft:oak_log", "minecraft:air")
                 );
             } else {
                 assert_eq!(
                     (log.as_str(), obsidian.as_str()),
-                    ("minecraft:air", "minecraft:obsidian"),
-                    "{via:?}"
+                    ("minecraft:air", "minecraft:obsidian")
                 );
             }
         });
@@ -671,7 +656,7 @@ fn immune_blocks_survive_and_every_other_cell_resists_nothing() {
 #[ignore = "daily"]
 fn a_calculator_that_damages_no_entities_leaves_health_while_blocks_break() {
     for damages_entities in [false, true] {
-        heard(move |game, via, heard| {
+        heard(move |game, heard| {
             mob(
                 game,
                 45,
@@ -689,14 +674,14 @@ fn a_calculator_that_damages_no_entities_leaves_health_while_blocks_break() {
                 },
                 ..Blast::at([8.5, 80.5, 8.5], 4.0)
             };
-            explode(game, via, blast, Ok(()));
-            assert!(stone(game) < 256, "{via:?}: blocks break");
+            explode(game, blast, Ok(()));
+            assert!(stone(game) < 256, "blocks break");
             let health = game.mobs[0].health;
             if damages_entities {
-                assert!(health < 20.0, "{via:?}: {health}");
+                assert!(health < 20.0, "{health}");
             } else {
-                assert_eq!(health, 20.0, "{via:?}");
-                assert!(heard.lock().unwrap().damage.is_empty(), "{via:?}");
+                assert_eq!(health, 20.0);
+                assert!(heard.lock().unwrap().damage.is_empty());
             }
         });
     }
@@ -706,7 +691,7 @@ fn a_calculator_that_damages_no_entities_leaves_health_while_blocks_break() {
 #[ignore = "daily"]
 fn a_knockback_multiplier_of_zero_leaves_velocity_unchanged() {
     for knockback_multiplier in [Some(0.0), None] {
-        heard(move |game, via, _| {
+        heard(move |game, _| {
             mob(
                 game,
                 46,
@@ -725,13 +710,13 @@ fn a_knockback_multiplier_of_zero_leaves_velocity_unchanged() {
                 },
                 ..Blast::at([8.5, 80.5, 8.5], 4.0)
             };
-            explode(game, via, blast, Ok(()));
+            explode(game, blast, Ok(()));
             let zombie = &game.mobs[0];
-            assert!(zombie.health < 20.0, "{via:?}: hurt either way");
+            assert!(zombie.health < 20.0, "hurt either way");
             if knockback_multiplier.is_some() {
-                assert_eq!(zombie.velocity, Vec3::new(0.0, 0.0, 0.0), "{via:?}");
+                assert_eq!(zombie.velocity, Vec3::new(0.0, 0.0, 0.0));
             } else {
-                assert!(zombie.velocity.x > 0.0, "{via:?}: {:?}", zombie.velocity);
+                assert!(zombie.velocity.x > 0.0, "{:?}", zombie.velocity);
             }
         });
     }
@@ -740,7 +725,7 @@ fn a_knockback_multiplier_of_zero_leaves_velocity_unchanged() {
 #[test]
 #[ignore = "daily"]
 fn a_radius_of_48_breaks_a_block_40_blocks_from_the_centre() {
-    heard(move |game, via, _| {
+    heard(move |game, _| {
         for x in 1..4 {
             game.world
                 .chunks
@@ -752,8 +737,8 @@ fn a_radius_of_48_breaks_a_block_40_blocks_from_the_centre() {
         // The ray along (1, 1/15, 1/15) from the centre crosses this block
         // 39.7 blocks out.
         assert!(game.run_command("setblock 48 103 11 minecraft:dirt"));
-        explode(game, via, Blast::at([8.5, 100.5, 8.5], 48.0), Ok(()));
-        assert_eq!(name(game, [48, 103, 11]), "minecraft:air", "{via:?}");
+        explode(game, Blast::at([8.5, 100.5, 8.5], 48.0), Ok(()));
+        assert_eq!(name(game, [48, 103, 11]), "minecraft:air");
     });
 }
 
@@ -811,7 +796,7 @@ fn an_unknown_damage_type_particle_or_tag_explodes_nothing() {
 /// A blast with `settings` beside a zombie answers `refusal` through both
 /// targets: no block breaks, the zombie keeps its health and no hook hears it.
 fn refused(settings: ExplosionSettings, refusal: ExplodeError) {
-    heard(move |game, via, heard| {
+    heard(move |game, heard| {
         mob(
             game,
             47,
@@ -823,13 +808,10 @@ fn refused(settings: ExplosionSettings, refusal: ExplodeError) {
             settings: settings.clone(),
             ..Blast::at([8.5, 80.5, 8.5], 4.0)
         };
-        explode(game, via, blast, Err(refusal));
-        assert_eq!(stone(game), 256, "{via:?} {refusal:?}");
-        assert_eq!(game.mobs[0].health, 20.0, "{via:?} {refusal:?}");
-        assert!(
-            heard.lock().unwrap().starts.is_empty(),
-            "{via:?} {refusal:?}"
-        );
+        explode(game, blast, Err(refusal));
+        assert_eq!(stone(game), 256, "{refusal:?}");
+        assert_eq!(game.mobs[0].health, 20.0, "{refusal:?}");
+        assert!(heard.lock().unwrap().starts.is_empty(), "{refusal:?}");
     });
 }
 
@@ -880,7 +862,7 @@ fn primed_tnt_that_went_through_a_portal_spares_a_portal_unless_a_calculator_is_
         (true, true, false),
     ];
     for (source, calculator, survives) in cases {
-        heard(move |game, via, _| {
+        heard(move |game, _| {
             portal(game);
             let source = source.then(|| {
                 let id = tnt(game, None);
@@ -895,20 +877,16 @@ fn primed_tnt_that_went_through_a_portal_spares_a_portal_unless_a_calculator_is_
                 },
                 ..Blast::at([8.5, 80.5, 8.5], 4.0)
             };
-            explode(game, via, blast, Ok(()));
+            explode(game, blast, Ok(()));
             let case = (source.is_some(), calculator);
-            assert_eq!(name(game, [8, 79, 8]), "minecraft:air", "{via:?} {case:?}");
+            assert_eq!(name(game, [8, 79, 8]), "minecraft:air", "{case:?}");
             let expected = if survives {
                 "minecraft:nether_portal"
             } else {
                 "minecraft:air"
             };
-            assert_eq!(name(game, [8, 80, 10]), expected, "{via:?} {case:?}");
-            assert_eq!(
-                name(game, [7, 80, 10]),
-                "minecraft:obsidian",
-                "{via:?} {case:?}"
-            );
+            assert_eq!(name(game, [8, 80, 10]), expected, "{case:?}");
+            assert_eq!(name(game, [7, 80, 10]), "minecraft:obsidian", "{case:?}");
         });
     }
 }
@@ -916,7 +894,6 @@ fn primed_tnt_that_went_through_a_portal_spares_a_portal_unless_a_calculator_is_
 #[test]
 #[ignore = "daily"]
 fn a_wind_charge_source_brings_its_tag_calculator_unless_a_calculator_is_passed() {
-    use sunrise_client::projectiles::{Projectile, ProjectileKind};
     // (source, calculator, obsidian survives)
     let cases = [
         (true, false, false),
@@ -924,7 +901,7 @@ fn a_wind_charge_source_brings_its_tag_calculator_unless_a_calculator_is_passed(
         (true, true, true),
     ];
     for (source, calculator, survives) in cases {
-        heard(move |game, via, _| {
+        heard(move |game, _| {
             assert!(game.run_command("setblock 8 80 10 minecraft:obsidian"));
             assert!(game.run_command("setblock 8 80 6 minecraft:bedrock"));
             let source = source.then(|| {
@@ -941,21 +918,17 @@ fn a_wind_charge_source_brings_its_tag_calculator_unless_a_calculator_is_passed(
                 },
                 ..Blast::at([8.5, 80.5, 8.5], 4.0)
             };
-            explode(game, via, blast, Ok(()));
+            explode(game, blast, Ok(()));
             let case = (source.is_some(), calculator);
-            assert_eq!(name(game, [8, 79, 8]), "minecraft:air", "{via:?} {case:?}");
+            assert_eq!(name(game, [8, 79, 8]), "minecraft:air", "{case:?}");
             // `#blocks_wind_charge_explosions` (barrier, bedrock) stands either way.
-            assert_eq!(
-                name(game, [8, 80, 6]),
-                "minecraft:bedrock",
-                "{via:?} {case:?}"
-            );
+            assert_eq!(name(game, [8, 80, 6]), "minecraft:bedrock", "{case:?}");
             let expected = if survives {
                 "minecraft:obsidian"
             } else {
                 "minecraft:air"
             };
-            assert_eq!(name(game, [8, 80, 10]), expected, "{via:?} {case:?}");
+            assert_eq!(name(game, [8, 80, 10]), expected, "{case:?}");
         });
     }
 }
@@ -963,16 +936,154 @@ fn a_wind_charge_source_brings_its_tag_calculator_unless_a_calculator_is_passed(
 #[test]
 #[ignore = "daily"]
 fn a_non_finite_radius_is_refused_and_one_of_zero_finds_no_blocks() {
-    heard(move |game, via, heard| {
+    heard(move |game, heard| {
         for radius in [f32::NAN, f32::INFINITY] {
             let blast = Blast::at([8.5, 80.5, 8.5], radius);
-            explode(game, via, blast, Err(ExplodeError::InvalidBlast));
+            explode(game, blast, Err(ExplodeError::InvalidBlast));
         }
-        assert!(heard.lock().unwrap().starts.is_empty(), "{via:?}");
+        assert!(heard.lock().unwrap().starts.is_empty());
         // As in vanilla: the start hook, no blocks, no detonate.
-        explode(game, via, Blast::at([8.5, 79.5, 8.5], 0.0), Ok(()));
-        assert_eq!(stone(game), 256, "{via:?}");
+        explode(game, Blast::at([8.5, 79.5, 8.5], 0.0), Ok(()));
+        assert_eq!(stone(game), 256);
         let heard = heard.lock().unwrap();
-        assert_eq!((heard.starts.len(), heard.detonates), (1, 0), "{via:?}");
+        assert_eq!((heard.starts.len(), heard.detonates), (1, 0));
+    });
+}
+
+/// A still zombie at (11.5, 80, 8.5) and the survival player, flying or not,
+/// at (5.5, 80, 8.5): on either side of a [`wind_blast`]. The player is not
+/// bound to an entity id, so no detonate list leaves them out.
+fn targets(game: &mut Game<'_>, flying: bool) {
+    game.player = Some(PlayerMotion::new(game.motion, Vec3::new(5.5, 80.0, 8.5)).unwrap());
+    game.set_mode_id(0);
+    game.player.as_mut().unwrap().flying = flying;
+    game.next_entity = 100;
+    mob(
+        game,
+        48,
+        "minecraft:zombie",
+        Vec3::new(11.5, 80.0, 8.5),
+        20.0,
+    );
+}
+
+/// A wind charge of `kind` above the blast, as its source.
+fn wind_charge(game: &mut Game<'_>, kind: ProjectileKind) -> Option<EntityRef> {
+    let charge = Projectile::new(kind, Vec3::new(8.5, 86.5, 8.5), None);
+    let id = game.add_projectile(charge);
+    game.entity(id)
+}
+
+/// A blast at (8.5, 80.5, 8.5), radius 4, that keeps its blocks.
+fn wind_blast(source: Option<EntityRef>, calculator: Option<ExplosionCalculator>) -> Blast {
+    Blast {
+        source,
+        interaction: ExplosionInteraction::None,
+        settings: ExplosionSettings {
+            calculator,
+            ..Default::default()
+        },
+        ..Blast::at([8.5, 80.5, 8.5], 4.0)
+    }
+}
+
+/// A calculator that pushes by 1 and damages no one.
+fn unhurt() -> Option<ExplosionCalculator> {
+    Some(ExplosionCalculator {
+        damages_entities: false,
+        ..Default::default()
+    })
+}
+
+/// The zombie's and the player's velocity, both stilled again.
+fn pushes(game: &mut Game<'_>) -> (Vec3, Vec3) {
+    let still = Vec3::new(0.0, 0.0, 0.0);
+    let zombie = std::mem::replace(&mut game.mobs[0].velocity, still);
+    let player = &mut game.player.as_mut().unwrap().velocity;
+    (zombie, std::mem::replace(player, still))
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_wind_charge_source_damages_neither_a_mob_nor_a_player() {
+    for kind in [ProjectileKind::WindCharge, ProjectileKind::BreezeWindCharge] {
+        heard(move |game, heard| {
+            targets(game, false);
+            let source = wind_charge(game, kind.clone());
+            explode(game, wind_blast(source, None), Ok(()));
+            let player = game.player.as_ref().unwrap().health.health();
+            assert_eq!((game.mobs[0].health, player), (20.0, 20.0), "{kind:?}");
+            assert!(heard.lock().unwrap().damage.is_empty(), "{kind:?}");
+            // Knockback still applies.
+            let (zombie, player) = pushes(game);
+            assert!(zombie.x > 0.0 && player.x < 0.0, "{kind:?}");
+        });
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_wind_charge_source_pushes_by_1_22_for_a_players_and_1_for_a_breezes() {
+    let cases = [
+        (ProjectileKind::WindCharge, 1.22_f32),
+        (ProjectileKind::BreezeWindCharge, 1.0),
+    ];
+    for (kind, multiplier) in cases {
+        heard(move |game, _| {
+            targets(game, false);
+            explode(game, wind_blast(None, unhurt()), Ok(()));
+            let plain = pushes(game);
+            let source = wind_charge(game, kind.clone());
+            explode(game, wind_blast(source, None), Ok(()));
+            let wind = pushes(game);
+            let m = f64::from(multiplier);
+            for (wind, plain) in [(wind.0, plain.0), (wind.1, plain.1)] {
+                assert!(plain.x.abs() > 0.1, "{kind:?}: {plain:?}");
+                let scaled = Vec3::new(plain.x * m, plain.y * m, plain.z * m);
+                let off = (wind.x - scaled.x).abs()
+                    + (wind.y - scaled.y).abs()
+                    + (wind.z - scaled.z).abs();
+                assert!(off < 1.0e-9, "{kind:?}: {wind:?} vs {scaled:?}");
+            }
+        });
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_flying_player_is_not_moved_by_a_wind_charge_source() {
+    for kind in [ProjectileKind::WindCharge, ProjectileKind::BreezeWindCharge] {
+        heard(move |game, _| {
+            targets(game, true);
+            let source = wind_charge(game, kind.clone());
+            explode(game, wind_blast(source, None), Ok(()));
+            let (zombie, player) = pushes(game);
+            assert!(zombie.x > 0.0, "{kind:?}: {zombie:?}");
+            assert_eq!(player, Vec3::new(0.0, 0.0, 0.0), "{kind:?}");
+            // The default calculator pushes a flying player like any other.
+            explode(game, wind_blast(None, None), Ok(()));
+            let (_, player) = pushes(game);
+            assert!(player.x < 0.0, "{kind:?}: {player:?}");
+        });
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_passed_calculator_replaces_a_wind_charges_entity_rules() {
+    heard(move |game, _| {
+        targets(game, false);
+        explode(game, wind_blast(None, unhurt()), Ok(()));
+        let (plain, _) = pushes(game);
+        let source = wind_charge(game, ProjectileKind::WindCharge);
+        let calculator = Some(ExplosionCalculator::default());
+        explode(game, wind_blast(source, calculator), Ok(()));
+        // The calculator's rules: both are damaged, and pushed by its 1, not
+        // the charge's 1.22.
+        let player = game.player.as_ref().unwrap().health.health();
+        assert!(game.mobs[0].health < 20.0);
+        assert!(player < 20.0, "{player}");
+        let (zombie, _) = pushes(game);
+        assert_eq!(zombie, plain);
     });
 }

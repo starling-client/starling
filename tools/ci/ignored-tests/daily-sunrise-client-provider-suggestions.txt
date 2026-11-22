@@ -1,0 +1,1 @@
+sunrise-client game::native_command_completion_tests::a_providers_answer_reaches_the_player_without_passing_through_the_completion_listener lib daily resources

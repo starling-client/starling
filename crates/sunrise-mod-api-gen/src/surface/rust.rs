@@ -1,12 +1,13 @@
 //! Rust as the surface writes it: one normalising function for types and signatures (paths
 //! relative to `mod_api`, lifetimes kept, one spacing), and each type's wire layout description
 //! for the shape function.
-use super::wire_forms::WireForm;
-use crate::index::{Found, Index, ItemId};
-use mod_surface::shape::{Body, Definition, Scalar, Shape};
+use crate::index::{Found, Index, ItemId, OutsideSeam};
+use mod_source::index::Binding;
+use mod_source::layouts::{GenericName, WireForm, Wires, param_names};
+use mod_surface::shape::Shape;
 use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 use quote::ToTokens;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use syn::visit_mut::VisitMut;
 use syn::{Item, Type};
 
@@ -127,9 +128,62 @@ pub(super) struct Paths<'p, 'a> {
     pub(super) index: &'p mut Index<'a>,
     pub(super) public: &'p HashMap<ItemId, Vec<String>>,
     pub(super) module: usize,
-    /// Generic parameters in scope (and `Self`), written as they are.
-    pub(super) params: Vec<String>,
+    /// Generic parameters in scope, written as they are.
+    pub(super) params: Vec<GenericName>,
     pub(super) refs: BTreeSet<String>,
+    pub(super) check: Option<(&'p ExternalTypes<'p>, ItemId)>,
+    /// Private aliases already followed while checking this public item's types.
+    pub(super) aliases: HashSet<ItemId>,
+}
+
+/// A visitor cannot return an error. Keep the first disallowed path and its owning item.
+pub(super) struct ExternalTypes<'a> {
+    outside: &'a OutsideSeam,
+    public: &'a HashMap<ItemId, Vec<String>>,
+    first: std::cell::RefCell<Option<String>>,
+}
+
+impl<'a> ExternalTypes<'a> {
+    pub(super) fn new(outside: &'a OutsideSeam, public: &'a HashMap<ItemId, Vec<String>>) -> Self {
+        Self {
+            outside,
+            public,
+            first: Default::default(),
+        }
+    }
+
+    fn inspect(
+        &self,
+        index: &mut Index<'_>,
+        module: usize,
+        id: ItemId,
+        path: &[String],
+        rooted: bool,
+    ) {
+        let result = self.outside.external_path(index, module, path, rooted);
+        if matches!(result, Ok(None)) {
+            return;
+        }
+        self.first.borrow_mut().get_or_insert_with(|| {
+            let owner = self.public.get(&id).map_or_else(
+                || {
+                    let (_, name) =
+                        super::walk::defined(index.item(id)).expect("a named surface item");
+                    format!("{}::{name}", super::module_name(index, id.module))
+                },
+                |public| format!("mod_api::{}", public.join("::")),
+            );
+            match result {
+                Ok(Some(path)) => OutsideSeam::error(&owner, &path),
+                Err(error) => format!("{owner}: {error}"),
+                Ok(None) => unreachable!("a disallowed path or resolution error"),
+            }
+        });
+    }
+
+    pub(super) fn finish(&self) -> Result<(), String> {
+        self.first.take().map_or(Ok(()), Err)
+    }
 }
 
 /// The id prefix of a public item that a signature can name.
@@ -142,30 +196,185 @@ pub(super) fn ref_kind(item: &Item) -> Option<&'static str> {
 }
 
 impl Paths<'_, '_> {
+    fn rooted_item(&mut self, path: &[String]) -> Option<ItemId> {
+        match self.index.resolve_type_binding(self.module, path, true) {
+            Ok(Binding::Found(Found::Item(id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn record_ref(&mut self, path: &[String], rooted: bool) {
+        let found = if rooted {
+            self.rooted_item(path)
+        } else {
+            self.index
+                .resolve_type_path(self.module, path)
+                .ok()
+                .and_then(|found| match found {
+                    Found::Item(id) => Some(id),
+                    Found::External { .. } | Found::Module(_) => None,
+                })
+        };
+        if let Some(id) = found
+            && let (Some(public), Some(kind)) =
+                (self.public.get(&id), ref_kind(self.index.item(id)))
+        {
+            self.refs.insert(format!("{kind}:{}", public.join("::")));
+        }
+    }
+
+    fn inspect_private_alias(&mut self, id: ItemId, arguments: &syn::PathArguments) {
+        let Item::Type(mut alias) = self.index.item(id).clone() else {
+            return;
+        };
+        if !self.aliases.insert(id) {
+            return;
+        }
+        // Explicit positional type arguments replace matching type defaults. Match each
+        // argument against its declared parameter kind: an unbraced const such as `N` is
+        // represented as a syntactic type by syn, but still occupies a const parameter slot.
+        let mut supplied_types = HashSet::new();
+        if let syn::PathArguments::AngleBracketed(arguments) = arguments {
+            let mut arguments = arguments
+                .args
+                .iter()
+                .filter(|argument| {
+                    !matches!(
+                        argument,
+                        syn::GenericArgument::AssocType(_)
+                            | syn::GenericArgument::AssocConst(_)
+                            | syn::GenericArgument::Constraint(_)
+                    )
+                })
+                .peekable();
+            for param in &alias.generics.params {
+                match param {
+                    syn::GenericParam::Lifetime(_) => {
+                        if matches!(arguments.peek(), Some(syn::GenericArgument::Lifetime(_))) {
+                            arguments.next();
+                        }
+                    }
+                    syn::GenericParam::Type(param) => {
+                        if matches!(arguments.peek(), Some(syn::GenericArgument::Type(_))) {
+                            arguments.next();
+                            supplied_types.insert(param.ident.to_string());
+                        }
+                    }
+                    syn::GenericParam::Const(_) => {
+                        if matches!(
+                            arguments.peek(),
+                            Some(syn::GenericArgument::Const(_) | syn::GenericArgument::Type(_))
+                        ) {
+                            arguments.next();
+                        }
+                    }
+                }
+            }
+        }
+        for param in &mut alias.generics.params {
+            if let syn::GenericParam::Type(param) = param
+                && supplied_types.contains(&param.ident.to_string())
+            {
+                param.default = None;
+            }
+        }
+        let old_module = self.module;
+        let old_params = std::mem::replace(&mut self.params, param_names(&alias.generics));
+        let old_refs = std::mem::take(&mut self.refs);
+        self.module = id.module;
+        self.visit_generics_mut(&mut alias.generics);
+        let mut ty = *alias.ty;
+        self.visit_type_mut(&mut ty);
+        let alias_refs = std::mem::take(&mut self.refs);
+        self.module = old_module;
+        self.params = old_params;
+        self.refs = old_refs;
+        self.refs.extend(alias_refs);
+        self.aliases.remove(&id);
+    }
+
     fn rewrite(&mut self, path: &mut syn::Path) {
         let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        if path.leading_colon.is_none()
-            && segments.len() == 1
-            && self.params.iter().any(|p| *p == segments[0])
-            || segments.first().is_some_and(|s| s == "Self")
+        let rooted = path.leading_colon.is_some();
+        // Syn parses a bare const argument as a type path. It can name a const
+        // parameter, but the head of a qualified type path is in the type namespace.
+        if !rooted
+            && segments.first().is_some_and(|first| {
+                first == "Self"
+                    || self
+                        .params
+                        .iter()
+                        .any(|param| param.name == *first && (param.is_type || segments.len() == 1))
+            })
         {
             return;
         }
-        let written = match self.index.resolve_path(self.module, &segments) {
-            Ok(Found::Item(id)) => match self.public.get(&id) {
-                Some(public) => {
-                    if let Some(kind) = ref_kind(self.index.item(id)) {
-                        self.refs.insert(format!("{kind}:{}", public.join("::")));
-                    }
-                    public.clone()
+        let found = if rooted {
+            // `::` starts at the extern prelude. Resolve known API crates from their own roots,
+            // not from this module where a local module may shadow the crate name.
+            self.rooted_item(&segments).map(Found::Item).map_or_else(
+                || {
+                    Ok(Found::External {
+                        module: self.module,
+                        path: segments.clone(),
+                        rooted,
+                    })
+                },
+                Ok,
+            )
+        } else {
+            self.index.resolve_type_path(self.module, &segments)
+        };
+        let written = match found {
+            Ok(Found::Item(id)) => {
+                if let Some((check, owner)) = self.check {
+                    check.inspect(self.index, self.module, owner, &segments, rooted);
                 }
-                None => vec![segments.last().cloned().unwrap_or_default()],
-            },
-            Ok(Found::External(full)) if STD.contains(&full[0].as_str()) => {
-                vec![full.last().cloned().unwrap_or_default()]
+                match self.public.get(&id) {
+                    Some(public) => {
+                        if let Some(kind) = ref_kind(self.index.item(id)) {
+                            self.refs.insert(format!("{kind}:{}", public.join("::")));
+                        }
+                        public.clone()
+                    }
+                    None => {
+                        let arguments = path
+                            .segments
+                            .last()
+                            .map(|segment| segment.arguments.clone())
+                            .unwrap_or(syn::PathArguments::None);
+                        self.inspect_private_alias(id, &arguments);
+                        // Keep imported module qualifiers in the published spelling. A direct
+                        // path from an indexed crate root still normalises to its last segment.
+                        let owner = &self.index.modules[id.module].krate;
+                        if *owner != self.index.modules[self.module].krate
+                            && segments.first() != Some(owner)
+                        {
+                            segments.clone()
+                        } else {
+                            vec![segments.last().cloned().unwrap_or_default()]
+                        }
+                    }
+                }
             }
-            Ok(Found::External(full)) => full,
-            Err(_) => segments.clone(),
+            Ok(Found::External { path: full, .. }) => {
+                if let Some((check, id)) = self.check {
+                    // Keep the written alias for namespace checks; `full` has already discarded
+                    // whether the local import was a type, value, or module.
+                    check.inspect(self.index, self.module, id, &segments, rooted);
+                }
+                if STD.contains(&full[0].as_str()) {
+                    vec![full.last().cloned().unwrap_or_default()]
+                } else {
+                    full
+                }
+            }
+            Err(_) | Ok(Found::Module(_)) => {
+                if let Some((check, id)) = self.check {
+                    check.inspect(self.index, self.module, id, &segments, rooted);
+                }
+                segments.clone()
+            }
         };
         if written == segments {
             return;
@@ -188,7 +397,25 @@ impl Paths<'_, '_> {
 impl VisitMut for Paths<'_, '_> {
     fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
         syn::visit_mut::visit_type_path_mut(self, ty);
-        if ty.qself.is_none() {
+        if let Some(qself) = &ty.qself {
+            let trait_path: Vec<String> = ty
+                .path
+                .segments
+                .iter()
+                .take(qself.position)
+                .map(|segment| segment.ident.to_string())
+                .collect();
+            self.record_ref(&trait_path, ty.path.leading_colon.is_some());
+            if let Some((check, id)) = self.check {
+                check.inspect(
+                    self.index,
+                    self.module,
+                    id,
+                    &trait_path,
+                    ty.path.leading_colon.is_some(),
+                );
+            }
+        } else {
             self.rewrite(&mut ty.path);
         }
     }
@@ -199,133 +426,45 @@ impl VisitMut for Paths<'_, '_> {
     fn visit_attribute_mut(&mut self, _: &mut syn::Attribute) {}
 }
 
-/// The generic parameter names of `generics`, lifetimes left out.
-pub(super) fn param_names(generics: &syn::Generics) -> Vec<String> {
-    generics
-        .params
-        .iter()
-        .filter_map(|param| match param {
-            syn::GenericParam::Type(t) => Some(t.ident.to_string()),
-            syn::GenericParam::Const(c) => Some(c.ident.to_string()),
-            syn::GenericParam::Lifetime(_) => None,
-        })
-        .collect()
-}
-
-/// Builds wire layout descriptions of the types the API's types contain, keyed by their
-/// defining path, which never enters a shape. A type is described by how it crosses
-/// ([`WireForm`]); one that does not cross, or crosses by a hand-written impl that declares no
-/// layout, gets no definition, so every shape that contains it is refused.
-pub(super) struct Layouts<'f> {
-    pub(super) table: BTreeMap<String, Definition>,
-    keys: HashMap<ItemId, String>,
-    pending: Vec<ItemId>,
+/// The game's crates: types cross as their derive or hand-written impl says, and an opaque type
+/// is written with the public paths of the API.
+pub(super) struct GameWires<'f> {
     forms: &'f HashMap<ItemId, WireForm>,
     ids: &'f HashMap<ItemId, Vec<String>>,
+    check: Option<&'f ExternalTypes<'f>>,
+    item: std::cell::Cell<Option<ItemId>>,
 }
 
-impl<'f> Layouts<'f> {
+impl<'f> GameWires<'f> {
     pub(super) fn new(
         forms: &'f HashMap<ItemId, WireForm>,
         ids: &'f HashMap<ItemId, Vec<String>>,
+        check: Option<&'f ExternalTypes<'f>>,
     ) -> Self {
         Self {
-            table: BTreeMap::new(),
-            keys: HashMap::new(),
-            pending: Vec::new(),
             forms,
             ids,
+            check,
+            item: Default::default(),
         }
     }
+}
 
-    /// The key of `id`'s definition, scheduling it to be described.
-    pub(super) fn key(&mut self, index: &Index<'_>, id: ItemId) -> String {
-        if let Some(key) = self.keys.get(&id) {
-            return key.clone();
-        }
-        let module = &index.modules[id.module];
-        let name = match index.item(id) {
-            Item::Struct(i) => i.ident.to_string(),
-            Item::Enum(i) => i.ident.to_string(),
-            Item::Union(i) => i.ident.to_string(),
-            _ => String::new(),
-        };
-        let key = std::iter::once(module.krate.to_owned())
-            .chain(module.path.iter().cloned())
-            .chain([name, format!("#{}", id.item)])
-            .collect::<Vec<_>>()
-            .join("::");
-        self.keys.insert(id, key.clone());
-        self.pending.push(id);
-        key
+impl Wires for GameWires<'_> {
+    fn form(&self, id: ItemId, attrs: &[syn::Attribute], derives: &[String]) -> Option<WireForm> {
+        self.item.set(Some(id));
+        super::wire_forms::form_of(id, attrs, derives, self.forms)
     }
-
-    /// The type a key names, for a note.
-    pub(super) fn named(&self, key: &str) -> String {
-        let name = key.rsplit_once("::#").map_or(key, |(name, _)| name);
-        self.keys
-            .iter()
-            .find(|(_, k)| k.as_str() == key)
-            .and_then(|(id, _)| self.ids.get(id))
-            .map_or_else(|| name.to_owned(), |path| path.join("::"))
+    fn path(&self, id: ItemId) -> Option<&[String]> {
+        self.ids.get(&id).map(Vec::as_slice)
     }
-
-    /// Describes every scheduled type and those they contain.
-    pub(super) fn finish(&mut self, index: &mut Index<'_>) {
-        while let Some(id) = self.pending.pop() {
-            let key = self.keys[&id].clone();
-            let item = index.item(id).clone();
-            let (attrs, generics) = match &item {
-                Item::Struct(s) => (&s.attrs, &s.generics),
-                Item::Enum(e) => (&e.attrs, &e.generics),
-                Item::Union(u) => (&u.attrs, &u.generics),
-                _ => continue,
-            };
-            let names = param_names(generics);
-            let derives = super::derives(attrs);
-            let body = match super::wire_forms::form_of(id, attrs, &derives, self.forms) {
-                None | Some(WireForm::Manual) => continue,
-                Some(WireForm::Via(ty, module)) => {
-                    Body::Via(self.shape(index, module, &ty, &names, 0))
-                }
-                Some(WireForm::Fields(fields, module)) => Body::Record(
-                    fields
-                        .iter()
-                        .map(|(name, ty)| (name.clone(), self.shape(index, module, ty, &names, 0)))
-                        .collect(),
-                ),
-                Some(WireForm::Derive) => match &item {
-                    Item::Struct(s) => self.fields(index, id.module, &s.fields, &names),
-                    Item::Enum(e) => Body::Enum(
-                        e.variants
-                            .iter()
-                            .map(|v| {
-                                (
-                                    v.ident.to_string(),
-                                    self.fields(index, id.module, &v.fields, &names),
-                                )
-                            })
-                            .collect(),
-                    ),
-                    Item::Union(u) => {
-                        let fields = syn::Fields::Named(u.fields.clone());
-                        self.fields(index, id.module, &fields, &names)
-                    }
-                    _ => continue,
-                },
-            };
-            self.table.insert(
-                key,
-                Definition {
-                    params: names.len(),
-                    body,
-                },
-            );
-        }
-    }
-
-    /// A type the description does not look into, as the surface writes it.
-    fn opaque(&self, index: &mut Index<'_>, module: usize, ty: &Type, params: &[String]) -> Shape {
+    fn opaque(
+        &self,
+        index: &mut Index<'_>,
+        module: usize,
+        ty: &Type,
+        params: &[GenericName],
+    ) -> Shape {
         let mut ty = ty.clone();
         let mut paths = Paths {
             index,
@@ -333,221 +472,10 @@ impl<'f> Layouts<'f> {
             module,
             params: params.to_vec(),
             refs: BTreeSet::new(),
+            check: self.check.zip(self.item.get()),
+            aliases: HashSet::new(),
         };
         paths.visit_type_mut(&mut ty);
         Shape::Opaque(print(ty.to_token_stream()))
-    }
-
-    fn fields(
-        &mut self,
-        index: &mut Index<'_>,
-        module: usize,
-        fields: &syn::Fields,
-        params: &[String],
-    ) -> Body {
-        match fields {
-            syn::Fields::Named(named) => Body::Record(
-                named
-                    .named
-                    .iter()
-                    .map(|f| {
-                        (
-                            f.ident
-                                .as_ref()
-                                .map(ToString::to_string)
-                                .unwrap_or_default(),
-                            self.shape(index, module, &f.ty, params, 0),
-                        )
-                    })
-                    .collect(),
-            ),
-            syn::Fields::Unnamed(unnamed) => Body::Tuple(
-                unnamed
-                    .unnamed
-                    .iter()
-                    .map(|f| self.shape(index, module, &f.ty, params, 0))
-                    .collect(),
-            ),
-            syn::Fields::Unit => Body::Unit,
-        }
-    }
-
-    /// The layout description of `ty`, written in `module` with type parameters `params`.
-    /// `depth` bounds alias expansion.
-    pub(super) fn shape(
-        &mut self,
-        index: &mut Index<'_>,
-        module: usize,
-        ty: &Type,
-        params: &[String],
-        depth: usize,
-    ) -> Shape {
-        let boxed = |s: Shape| Box::new(s);
-        match ty {
-            Type::Paren(inner) => self.shape(index, module, &inner.elem, params, depth),
-            Type::Group(inner) => self.shape(index, module, &inner.elem, params, depth),
-            Type::Reference(r) => match &*r.elem {
-                Type::Path(p) if p.path.is_ident("str") => Shape::Scalar(Scalar::Str),
-                elem => self.shape(index, module, elem, params, depth),
-            },
-            Type::Slice(s) => Shape::List(boxed(self.shape(index, module, &s.elem, params, depth))),
-            Type::Array(a) => match &a.len {
-                syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Int(n),
-                    ..
-                }) => match n.base10_parse::<u64>() {
-                    Ok(n) => {
-                        Shape::Array(boxed(self.shape(index, module, &a.elem, params, depth)), n)
-                    }
-                    Err(_) => self.opaque(index, module, ty, params),
-                },
-                _ => self.opaque(index, module, ty, params),
-            },
-            Type::Tuple(t) if t.elems.is_empty() => Shape::Scalar(Scalar::Unit),
-            Type::Tuple(t) => Shape::Tuple(
-                t.elems
-                    .iter()
-                    .map(|e| self.shape(index, module, e, params, depth))
-                    .collect(),
-            ),
-            Type::Path(p) if p.qself.is_none() => {
-                self.path(index, module, ty, &p.path, params, depth)
-            }
-            _ => self.opaque(index, module, ty, params),
-        }
-    }
-
-    fn path(
-        &mut self,
-        index: &mut Index<'_>,
-        module: usize,
-        ty: &Type,
-        path: &syn::Path,
-        params: &[String],
-        depth: usize,
-    ) -> Shape {
-        let opaque = self.opaque(index, module, ty, params);
-        let Some(last) = path.segments.last() else {
-            return opaque;
-        };
-        let name = last.ident.to_string();
-        let args: Vec<Type> = match &last.arguments {
-            syn::PathArguments::AngleBracketed(a) => a
-                .args
-                .iter()
-                .filter_map(|arg| match arg {
-                    syn::GenericArgument::Type(t) => Some(t.clone()),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        if path.segments.len() == 1
-            && let Some(position) = params.iter().position(|p| *p == name)
-        {
-            return Shape::Param(position);
-        }
-        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        let resolved = index.resolve_path(module, &segments);
-        if let Ok(Found::Item(id)) = resolved {
-            match index.item(id).clone() {
-                Item::Struct(_) | Item::Enum(_) | Item::Union(_) => {
-                    let key = self.key(index, id);
-                    let args = args
-                        .iter()
-                        .map(|a| self.shape(index, module, a, params, depth))
-                        .collect();
-                    return Shape::Named(key, args);
-                }
-                Item::Type(alias) if depth < 16 => {
-                    // An alias is its target, its parameters replaced by the arguments.
-                    let names = param_names(&alias.generics);
-                    let mut target = (*alias.ty).clone();
-                    let mut substitute = Substitute {
-                        names: &names,
-                        args: &args,
-                    };
-                    substitute.visit_type_mut(&mut target);
-                    let _ = substitute;
-                    return self.shape(index, id.module, &target, params, depth + 1);
-                }
-                _ => return opaque,
-            }
-        }
-        let one = |this: &mut Self, index: &mut Index<'_>, i: usize| {
-            args.get(i)
-                .map(|a| this.shape(index, module, a, params, depth))
-                .unwrap_or(Shape::Opaque(String::new()))
-        };
-        let scalar = match name.as_str() {
-            "bool" => Some(Scalar::Bool),
-            "char" => Some(Scalar::Char),
-            "u8" => Some(Scalar::U8),
-            "u16" => Some(Scalar::U16),
-            "u32" => Some(Scalar::U32),
-            "u64" => Some(Scalar::U64),
-            "u128" => Some(Scalar::U128),
-            "usize" => Some(Scalar::Usize),
-            "i8" => Some(Scalar::I8),
-            "i16" => Some(Scalar::I16),
-            "i32" => Some(Scalar::I32),
-            "i64" => Some(Scalar::I64),
-            "i128" => Some(Scalar::I128),
-            "isize" => Some(Scalar::Isize),
-            "f32" => Some(Scalar::F32),
-            "f64" => Some(Scalar::F64),
-            "str" | "String" | "Cow" => Some(Scalar::Str),
-            "Duration" => Some(Scalar::Duration),
-            _ => None,
-        };
-        if let Some(scalar) = scalar {
-            if name == "Cow"
-                && !matches!(args.first(), Some(Type::Path(p)) if p.path.is_ident("str"))
-            {
-                return one(self, index, 0);
-            }
-            return Shape::Scalar(scalar);
-        }
-        match name.as_str() {
-            "Vec" | "VecDeque" => Shape::List(Box::new(one(self, index, 0))),
-            "HashSet" | "BTreeSet" | "IndexSet" => Shape::Set(Box::new(one(self, index, 0))),
-            "HashMap" | "BTreeMap" | "IndexMap" => {
-                Shape::Map(Box::new(one(self, index, 0)), Box::new(one(self, index, 1)))
-            }
-            "Option" => Shape::Option(Box::new(one(self, index, 0))),
-            "Result" if args.len() == 2 => {
-                Shape::Result(Box::new(one(self, index, 0)), Box::new(one(self, index, 1)))
-            }
-            "Box" | "Arc" | "Rc" => match args.first() {
-                Some(Type::Path(p)) if p.path.is_ident("str") => Shape::Scalar(Scalar::Str),
-                Some(Type::Slice(s)) => {
-                    Shape::List(Box::new(self.shape(index, module, &s.elem, params, depth)))
-                }
-                Some(Type::TraitObject(_)) | None => opaque,
-                Some(_) => one(self, index, 0),
-            },
-            _ => opaque,
-        }
-    }
-}
-
-/// Replaces an alias's type parameters by its arguments.
-struct Substitute<'s> {
-    names: &'s [String],
-    args: &'s [Type],
-}
-
-impl VisitMut for Substitute<'_> {
-    fn visit_type_mut(&mut self, ty: &mut Type) {
-        if let Type::Path(p) = ty
-            && p.qself.is_none()
-            && p.path.segments.len() == 1
-            && let Some(i) = self.names.iter().position(|n| p.path.is_ident(n))
-            && let Some(arg) = self.args.get(i)
-        {
-            *ty = arg.clone();
-            return;
-        }
-        syn::visit_mut::visit_type_mut(self, ty);
     }
 }

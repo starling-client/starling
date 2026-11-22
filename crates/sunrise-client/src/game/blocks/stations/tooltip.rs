@@ -49,10 +49,7 @@ impl Game<'_> {
         };
         let before = place;
         let mut cancel = false;
-        let mut draw = crate::game::host::draw::GameDrawContext {
-            game: self,
-            surface: batch,
-        };
+        let mut draw = crate::game::host::draw::GameDrawContext::new(self, batch);
         self.native_render_tooltip_pre(mod_api::__private::RenderTooltipPreCall {
             draw: &mut draw,
             stack: stack.as_ref(),
@@ -104,6 +101,17 @@ impl Game<'_> {
         }
         let after_name_index = lines.len().min(1);
         lines.splice(after_name_index..after_name_index, after_name);
+        self.draw_stack_tooltip_lines(batch, stack, lines, x, y);
+    }
+    /// Draw already-built item lines, keeping the stack's image, style and gather hooks.
+    pub(in crate::game) fn draw_stack_tooltip_lines(
+        &mut self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        lines: Vec<(sunrise_client::text::Text, u32)>,
+        x: f32,
+        y: f32,
+    ) {
         let mut component = None;
         self.native_tooltip_component(stack, &mut component);
         let images: Vec<TooltipImage> = tooltip_component_size(component)
@@ -268,7 +276,7 @@ impl Game<'_> {
         for element in elements {
             match element {
                 TooltipElement::Text(text, color) => {
-                    let text = text.try_into_engine(&()).ok()?;
+                    let text = sunrise_client_lib::api_text::to_engine_inprocess(&text);
                     if max_width < 0 {
                         result.push(Element::Text(text.resolve_legacy(), color));
                     } else {
@@ -330,7 +338,7 @@ fn layout(sizes: &[[f32; 2]], extra_space: bool) -> ([f32; 2], Vec<f32>) {
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn rendered_image_callback_receives_whole_box() {
         use mod_api::{
             ClientHost, Hooks, ItemPart, ModEntry, Mods, Registrar,
@@ -385,7 +393,7 @@ mod tests {
         let mods: Mods = vec![ModEntry::new("image", Box::new(Mod))].into();
         crate::game::api_values::install_parts(&mods).unwrap();
         mod_platform::testing::with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
+            crate::game::native_entity_refs::tests::with_client_game(|game| {
                 DRAWN.store(false, Ordering::Relaxed);
                 game.draw_stack_tooltip(
                     &mut HudBatch::scratch([320, 240]),
@@ -394,6 +402,46 @@ mod tests {
                     20.0,
                 );
                 assert!(DRAWN.load(Ordering::Relaxed));
+                // Rendering reads may carry nonresident stacks; the resident write
+                // conversion must not suppress an item's tooltip image callback.
+                let mut stack = ItemStack::new("minecraft:stick", 65)
+                    .try_into_api()
+                    .unwrap();
+                for remove_damage in [false, true] {
+                    stack
+                        .set_components(
+                            [(
+                                sunrise_core::nbt::JavaString::from(if remove_damage {
+                                    "!minecraft:max_damage"
+                                } else {
+                                    "minecraft:max_damage"
+                                }),
+                                if remove_damage {
+                                    sunrise_core::nbt::Tag::Compound(Default::default())
+                                } else {
+                                    sunrise_core::nbt::Tag::Int(250)
+                                },
+                            )]
+                            .into(),
+                        )
+                        .unwrap();
+                    stack.set_damage(251);
+                    assert!(
+                        crate::game::api_values::TryIntoEngine::try_into_engine(
+                            &stack,
+                            game.items()
+                        )
+                        .is_err()
+                    );
+                    DRAWN.store(false, Ordering::Relaxed);
+                    game.draw_tooltip_item_part(
+                        &mut HudBatch::scratch([320, 240]),
+                        &stack,
+                        [22.0, 20.0],
+                        [70.0, 46.0],
+                    );
+                    assert!(DRAWN.load(Ordering::Relaxed));
+                }
             });
         });
     }

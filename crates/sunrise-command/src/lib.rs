@@ -25,7 +25,12 @@ mod vanilla_order;
 
 pub use args::{
     Arg, ArgType, CustomArgument, CustomArgumentKind, CustomCompletionAction, CustomSuggestion,
+    MAX_PROVIDER_SUGGESTIONS, MAX_SUGGESTION_TEXT, MAX_SUGGESTION_TOOLTIP, ParsedArgument,
     Registries, modify_custom_completions,
+};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use sunrise_client_core::text::Text;
 
@@ -88,20 +93,39 @@ impl CommandError {
         e.key = key.to_owned();
         e
     }
-    /// CommandSyntaxException.getContext: up to ten characters before the
-    /// cursor followed by "<--[HERE]".
-    pub fn context(&self) -> Option<String> {
+    /// The cursor as Java counts it (`CommandSyntaxException.getCursor`): UTF-16 code units
+    /// before it, where `cursor` is a byte offset into `input`. Without an input, the byte
+    /// offset itself.
+    pub fn java_cursor(&self) -> usize {
+        match &self.input {
+            Some(input) => utf16_units(input, self.cursor),
+            None => self.cursor,
+        }
+    }
+    /// The parts of CommandSyntaxException.getContext: up to ten characters before the
+    /// cursor, whether more precede them (the leading "..."), and the rest of the input.
+    /// Java's characters are UTF-16 code units, so a character outside the Basic
+    /// Multilingual Plane counts two, and a pair the ten-unit window cuts in half shows
+    /// its kept half as U+FFFD.
+    pub fn context_window(&self) -> Option<ContextWindow<'_>> {
         let input = self.input.as_ref()?;
-        let cursor = self.cursor.min(input.len());
-        let start = (0..=cursor.saturating_sub(10))
-            .rev()
-            .find(|&i| input.is_char_boundary(i))
-            .unwrap_or(0);
+        let cursor = floor_char_boundary(input, self.cursor);
+        let before: Vec<u16> = input[..cursor].encode_utf16().collect();
+        Some(ContextWindow {
+            ellipsis: before.len() > 10,
+            before: String::from_utf16_lossy(&before[before.len().saturating_sub(10)..]),
+            after: &input[cursor..],
+        })
+    }
+    /// CommandSyntaxException.getContext: the window before the cursor followed by
+    /// "<--[HERE]".
+    pub fn context(&self) -> Option<String> {
+        let window = self.context_window()?;
         let mut out = String::new();
-        if cursor > 10 {
+        if window.ellipsis {
             out.push_str("...");
         }
-        out.push_str(&input[start..cursor]);
+        out.push_str(&window.before);
         out.push_str("<--[HERE]");
         Some(out)
     }
@@ -112,7 +136,7 @@ impl CommandError {
                 "command.context.parse_error",
                 &[
                     self.message.clone(),
-                    Text::literal(self.cursor.to_string()),
+                    Text::literal(self.java_cursor().to_string()),
                     Text::literal(context),
                 ],
             ),
@@ -120,7 +144,33 @@ impl CommandError {
         }
     }
 }
+/// The input around a [`CommandError`]'s cursor, as `CommandSyntaxException.getContext` cuts it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextWindow<'a> {
+    /// More than ten UTF-16 units precede the cursor, so the window starts with "...".
+    pub ellipsis: bool,
+    /// The last ten UTF-16 units before the cursor (fewer near the start).
+    pub before: String,
+    /// The input from the cursor on.
+    pub after: &'a str,
+}
 pub type CmdResult<T> = Result<T, CommandError>;
+
+/// The largest char boundary of `text` at or before byte `byte`.
+fn floor_char_boundary(text: &str, byte: usize) -> usize {
+    let byte = byte.min(text.len());
+    (0..=byte)
+        .rev()
+        .find(|&i| text.is_char_boundary(i))
+        .unwrap_or(0)
+}
+
+/// UTF-16 code units in `text` before byte `byte`: a byte cursor as a Java string index.
+pub fn utf16_units(text: &str, byte: usize) -> usize {
+    text[..floor_char_boundary(text, byte)]
+        .encode_utf16()
+        .count()
+}
 
 /// Brigadier StringReader over a command line (byte cursor on char boundaries).
 #[derive(Clone, Debug)]
@@ -370,6 +420,21 @@ pub struct ParsedArg {
     pub value: Arg,
     pub range: Range,
 }
+/// Identifies an executor registration within one authoritative command tree.
+// no wire: the incarnation and slot identify code in this process only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutorKey {
+    incarnation: u64,
+    slot: usize,
+}
+
+impl ExecutorKey {
+    /// The registration slot, usable only while the dispatcher owns this key.
+    pub fn slot(self) -> usize {
+        self.slot
+    }
+}
+
 /// CommandContextBuilder: the nodes and arguments parsed so far.
 #[derive(Clone, Debug)]
 pub struct Context {
@@ -377,6 +442,8 @@ pub struct Context {
     pub nodes: Vec<(usize, Range)>,
     pub args: Vec<ParsedArg>,
     pub command: Option<&'static str>,
+    /// The authorized executable node's process-local registration, if any.
+    pub executor: Option<ExecutorKey>,
     pub range: Range,
     pub child: Option<Box<Context>>,
     /// Literal words parsed so far (mode keywords such as `masked`).
@@ -389,6 +456,7 @@ impl Context {
             nodes: Vec::new(),
             args: Vec::new(),
             command: None,
+            executor: None,
             range: (start, start),
             child: None,
             literals: Vec::new(),
@@ -534,15 +602,7 @@ impl<'a> SuggestionsBuilder<'a> {
         self.remaining().to_lowercase()
     }
     pub fn suggest(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        if text != self.remaining() {
-            self.out.push(Suggestion {
-                range: (self.start, self.input.len()),
-                text,
-                tooltip: None,
-                int_value: None,
-            });
-        }
+        self.suggest_at(self.start, text);
     }
     /// SuggestionsBuilder.suggest(int).
     pub fn suggest_int(&mut self, value: i32) {
@@ -554,15 +614,46 @@ impl<'a> SuggestionsBuilder<'a> {
         });
     }
     pub fn suggest_tooltip(&mut self, text: impl Into<String>, tooltip: impl Into<String>) {
+        self.suggest_at_tooltip(self.start, text, tooltip);
+    }
+    /// `SuggestionsBuilder.suggest` for a replacement that starts `start` bytes into the input:
+    /// the text from there to the cursor is replaced, so a completion can apply to one token of a
+    /// longer text argument (a mod's greedy text being split into words). A `start` past the
+    /// input or inside a character suggests nothing, rather than panicking where the range is
+    /// used.
+    pub fn suggest_at(&mut self, start: usize, text: impl Into<String>) {
         let text = text.into();
-        if text != self.remaining() {
-            self.out.push(Suggestion {
-                range: (self.start, self.input.len()),
-                text,
-                tooltip: Some(tooltip.into()),
-                int_value: None,
-            });
+        if !self.replaces_something(start) || text == self.input[start..] {
+            return;
         }
+        self.out.push(Suggestion {
+            range: (start, self.input.len()),
+            text,
+            tooltip: None,
+            int_value: None,
+        });
+    }
+    /// [`Self::suggest_at`] with an explanation.
+    pub fn suggest_at_tooltip(
+        &mut self,
+        start: usize,
+        text: impl Into<String>,
+        tooltip: impl Into<String>,
+    ) {
+        let text = text.into();
+        if !self.replaces_something(start) || text == self.input[start..] {
+            return;
+        }
+        self.out.push(Suggestion {
+            range: (start, self.input.len()),
+            text,
+            tooltip: Some(tooltip.into()),
+            int_value: None,
+        });
+    }
+    /// Whether `start` can begin a replacement range of the input.
+    fn replaces_something(&self, start: usize) -> bool {
+        start <= self.input.len() && self.input.is_char_boundary(start)
     }
     pub fn offset(&self, start: usize) -> SuggestionsBuilder<'a> {
         SuggestionsBuilder::new(self.input, start)
@@ -632,6 +723,13 @@ pub fn merge_suggestions(input: &str, list: Vec<Suggestion>) -> (Range, Vec<Sugg
             s.text,
             &input[s.range.1..end]
         );
+        // Padding grows the text past what the suggestion itself holds: a long prefix, and a
+        // suggestion starting later, expand to the whole merged range. Each one was within the
+        // packet's limit alone, so the expanded text is measured again and the ones that no
+        // longer fit are left out, keeping the others.
+        if text.encode_utf16().count() > MAX_SUGGESTION_TEXT {
+            continue;
+        }
         let expanded = Suggestion {
             range: (start, end),
             text,
@@ -645,6 +743,10 @@ pub fn merge_suggestions(input: &str, list: Vec<Suggestion>) -> (Range, Vec<Sugg
         if seen.insert((expanded.text.clone(), expanded.tooltip.clone())) {
             out.push(expanded);
         }
+    }
+    if out.is_empty() {
+        // Every completion was too long to send: nothing to show, and no range to show it in.
+        return ((0, 0), out);
     }
     let ints = out.iter().filter(|s| s.int_value.is_some()).count();
     if ints == 0 || ints == out.len() {
@@ -757,10 +859,17 @@ impl Suggests {
 /// command nesting.
 const MAX_PARSE_DEPTH: usize = 128;
 
+#[derive(Clone, Debug)]
+struct ExecutorBindings {
+    incarnation: u64,
+    slots: HashMap<usize, usize>,
+}
+
 /// The command tree (CommandDispatcher). Node 0 is the root.
 #[derive(Clone, Debug)]
 pub struct Dispatcher {
     pub nodes: Vec<Node>,
+    executors: Option<ExecutorBindings>,
 }
 impl Default for Dispatcher {
     fn default() -> Self {
@@ -782,7 +891,23 @@ impl Dispatcher {
                 suggests: None,
                 restricted: false,
             }],
+            executors: None,
         }
+    }
+    /// After building the server tree, install its node-to-registration table under a fresh
+    /// incarnation. Clones preserve the keys, but another installation invalidates them.
+    pub fn replace_executor_bindings(&mut self, slots: HashMap<usize, usize>) {
+        static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(0);
+        self.executors = (!slots.is_empty()).then(|| ExecutorBindings {
+            incarnation: NEXT_INCARNATION.fetch_add(1, Ordering::Relaxed),
+            slots,
+        });
+    }
+    /// Check the incarnation before using a parsed key or its node IDs with this tree.
+    pub fn owns_executor(&self, key: ExecutorKey) -> bool {
+        self.executors
+            .as_ref()
+            .is_some_and(|bindings| bindings.incarnation == key.incarnation)
     }
     /// This tree as a player without elevated permissions has it
     /// (ClientPacketListener.restrictedSuggestionsProvider): no restricted node.
@@ -1040,6 +1165,16 @@ impl Dispatcher {
             context.command = self.nodes[child]
                 .command
                 .filter(|_| self.nodes[child].execution_permission <= level);
+            context.executor = None;
+            if context.command.is_some()
+                && let Some(bindings) = &self.executors
+                && let Some(&slot) = bindings.slots.get(&child)
+            {
+                context.executor = Some(ExecutorKey {
+                    incarnation: bindings.incarnation,
+                    slot,
+                });
+            }
             let redirect = self.nodes[child].redirect;
             if reader.can_read_n(if redirect.is_none() { 2 } else { 1 }) {
                 reader.skip();
@@ -1110,7 +1245,11 @@ impl Dispatcher {
         cursor: usize,
         reg: &Registries,
     ) -> (Range, Vec<Suggestion>) {
-        let (range, list, _) = self.suggestions_within(parse, cursor, reg, u8::MAX);
+        let (range, list, _, _) = self.suggestions_within(parse, cursor, reg, u8::MAX);
+        // CommandDispatcher.getCompletionSuggestions: a merged empty list is
+        // `Suggestions.empty()` — `StringRange.at(0)`. The token range the chat
+        // merge needs is only kept by the `client_suggestions` entries.
+        let range = if list.is_empty() { (0, 0) } else { range };
         (range, list)
     }
     /// The suggestions the player's chat shows: the client's tree only holds
@@ -1121,7 +1260,7 @@ impl Dispatcher {
         cursor: usize,
         reg: &Registries,
     ) -> (Range, Vec<Suggestion>) {
-        let (range, list, _) = self.suggestions_within(parse, cursor, reg, reg.permission);
+        let (range, list, _, _) = self.suggestions_within(parse, cursor, reg, reg.permission);
         (range, list)
     }
     /// [`Self::client_suggestions`], and whether a node at the cursor asks
@@ -1133,7 +1272,21 @@ impl Dispatcher {
         cursor: usize,
         reg: &Registries,
     ) -> (Range, Vec<Suggestion>, bool) {
-        self.suggestions_within(parse, cursor, reg, reg.permission)
+        let (range, list, ask, _) = self.suggestions_within(parse, cursor, reg, reg.permission);
+        (range, list, ask)
+    }
+    /// [`Self::client_suggestions`], and whether an argument at the cursor answers from a
+    /// suggestion provider its type declares: that answer is the argument's own, so no
+    /// completion listener may add to, replace or erase it (`tab_complete` is asked for
+    /// ordinary completions only).
+    pub fn client_suggestions_owned(
+        &self,
+        parse: &ParseResults,
+        cursor: usize,
+        reg: &Registries,
+    ) -> (Range, Vec<Suggestion>, bool) {
+        let (range, list, _, owned) = self.suggestions_within(parse, cursor, reg, reg.permission);
+        (range, list, owned)
     }
     fn suggestions_within(
         &self,
@@ -1141,12 +1294,13 @@ impl Dispatcher {
         cursor: usize,
         reg: &Registries,
         permission: u8,
-    ) -> (Range, Vec<Suggestion>, bool) {
+    ) -> (Range, Vec<Suggestion>, bool, bool) {
         let (parent, start, context) = parse.context.suggestion_context(cursor);
         let start = start.min(cursor);
         let truncated = &parse.input[..cursor.min(parse.input.len())];
         let mut all = Vec::new();
         let mut ask = false;
+        let mut owned = false;
         for &child in &self.nodes[parent].children {
             if self.nodes[child].permission > permission {
                 continue;
@@ -1159,16 +1313,31 @@ impl Dispatcher {
                         builder.suggest(l.clone());
                     }
                 }
-                NodeKind::Argument { ty, name } => match &self.nodes[child].suggests {
-                    Some(provider) => provider.suggest(&mut builder, reg, &parse.context),
-                    None => ty.suggest(&mut builder, reg, context, name),
-                },
+                NodeKind::Argument { ty, name } => {
+                    // A type that declares a provider answers for its argument: that answer is the
+                    // argument's own, and nothing else may add to it.
+                    owned |= matches!(ty, ArgType::Custom(custom) if custom.declares_provider());
+                    match &self.nodes[child].suggests {
+                        Some(provider) => provider.suggest(&mut builder, reg, &parse.context),
+                        None => ty.suggest(&mut builder, reg, context, name),
+                    }
+                }
                 NodeKind::Root => {}
             }
             all.extend(builder.out);
         }
         let (range, list) = merge_suggestions(truncated, all);
-        (range, list, ask)
+        // The reply's range is the builder's, covering the token being typed, even when nothing
+        // is suggested locally: a node that asks the server (`ask_server`, and the mods' own
+        // `tab_complete` answers for the free `id`) brings its completions with the server's
+        // reply, which the chat applies to that token. The empty list's `(0, 0)` would paste
+        // what the server adds at the start of the line.
+        let range = if list.is_empty() {
+            (start, truncated.len())
+        } else {
+            range
+        };
+        (range, list, ask, owned)
     }
     fn smart_usage_of(&self, node: usize, optional: bool, deep: bool, level: u8) -> Option<String> {
         let n = &self.nodes[node];

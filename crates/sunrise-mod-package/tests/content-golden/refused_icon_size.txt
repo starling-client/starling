@@ -1,0 +1,5 @@
+manifest:
+refused: icon.png exceeds 256 KiB
+
+icon:
+unavailable

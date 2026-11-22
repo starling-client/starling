@@ -20,6 +20,7 @@ use ring::signature::{ED25519, UnparsedPublicKey};
 const KEYS: &str = include_str!("../native-build-keys.txt");
 
 /// The first line of a request's text: a new layout gets a new number, and so new keys.
+// "horizon native build" stays through the rename, like "horizon release": signed and parsed bytes.
 const REQUEST_HEADER: &str = "horizon native build request 1";
 
 /// The public keys prebuilt native builds are signed with: those in `native-build-keys.txt`. A

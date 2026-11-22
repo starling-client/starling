@@ -12,7 +12,7 @@ impl Game<'_> {
                     };
                     let ticks = player.fire_ticks;
                     let at = [player.position.x, player.position.y, player.position.z];
-                    if ticks > 0 {
+                    if player.is_on_fire() {
                         let pitch = extinguish_pitch(game.particles.random());
                         game.audio.play_on(
                             SoundSource::Players.index(),
@@ -32,7 +32,7 @@ impl Game<'_> {
                 let Some(mob) = self.mobs.iter_mut().find(|mob| mob.id == id) else {
                     return false;
                 };
-                // Own random, kind-owned fire immunity, sound outbox, then clearFire.
+                // Own random, effective fire immunity, sound outbox, then clearFire.
                 mob.extinguish_fire();
                 mob.needs_sync = true;
                 true
@@ -44,7 +44,7 @@ impl Game<'_> {
                 let stand = &self.armor_stands[index];
                 let ticks = stand.fire_ticks;
                 let at = [stand.position.x, stand.position.y, stand.position.z];
-                if ticks > 0 {
+                if stand.is_on_fire() {
                     let pitch = extinguish_pitch(self.particles.random());
                     self.audio.play_on(
                         SoundSource::Neutral.index(),

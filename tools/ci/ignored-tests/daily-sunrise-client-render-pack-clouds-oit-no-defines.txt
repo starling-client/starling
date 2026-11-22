@@ -1,0 +1,3 @@
+# The daily tests of sunrise-client-render: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-client-render gfx::core_clouds::tests::a_clouds_shader_ignoring_the_stage_defines_draws_location_0_in_each_stage lib daily slow

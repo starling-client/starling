@@ -4,9 +4,9 @@
 //! and lava falls, raises bubble columns over magma and soul sand and fixes
 //! block shapes against their neighbours.
 use super::Game;
+use std::sync::Arc;
 use sunrise_client::{Result, blocks::Fluid};
 use sunrise_core::position::BlockPos;
-use std::sync::Arc;
 
 /// Block.UPDATE_INVISIBLE | UPDATE_KNOWN_SHAPE | UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS.
 const POSTPROCESS_FLAGS: i32 = 276;

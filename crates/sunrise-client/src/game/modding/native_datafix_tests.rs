@@ -2,8 +2,8 @@
 //! takes its profession, and the refusals come back typed: a future version, data too deep to read, and a riding
 //! chain the fixes make too deep.
 use super::native_entity_refs::tests::with_game;
-use sunrise_core::nbt::{Compound, Tag, parse_snbt};
 use mod_api::NbtUpgradeError;
+use sunrise_core::nbt::{Compound, Tag, parse_snbt};
 
 fn compound(text: &str) -> Compound {
     match parse_snbt(text).unwrap().0 {

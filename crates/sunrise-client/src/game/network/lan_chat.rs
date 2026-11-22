@@ -2,7 +2,7 @@
 //! packets (ServerGamePacketListenerImpl.handleChatCommand and
 //! handleSignedChatCommand), and the message commands whose text they sign
 //! (SayCommand, EmoteCommands, MsgCommand), relayed by the hub as chat.
-use super::Game;
+use super::{Game, commands::Target};
 use sunrise_client::{
     command::{Arg, ParseResults},
     lan::{
@@ -107,9 +107,7 @@ impl Game<'_> {
             self.detect_rate_spam(conn, true);
             return;
         }
-        if self.chat_filter_command(i, command) {
-            self.guest_command(conn, command, None);
-        }
+        self.guest_command(conn, command, None);
         self.detect_rate_spam(conn, true);
     }
 
@@ -145,15 +143,71 @@ impl Game<'_> {
         for event in events {
             self.lan_log_event(event);
         }
-        if let Some(signed) = signed
-            && self.chat_filter_command(i, &p.command)
-        {
+        if let Some(signed) = signed {
             self.guest_command(conn, &p.command, Some(signed));
         }
         // The lambda counts the command even when its arguments failed to decode.
         if ran {
             self.detect_rate_spam(conn, true);
         }
+    }
+
+    /// A player's chat line, once `server_chat` has left it: `chat_recipient` is asked of each
+    /// receiver (`shown` is what players read), the line goes to everyone it keeps nobody from,
+    /// and the log keeps it. None when there is no hub.
+    pub(super) fn lan_broadcast_chat(
+        &mut self,
+        message: &ChatMessage,
+        bound: &play::ChatTypeBound,
+        line: String,
+        name: &str,
+        shown: &str,
+    ) -> Option<()> {
+        let hidden = self.chat_hidden_from(|_| (message.sender, name, shown))?;
+        let mut chat = Vec::new();
+        let host = self.lan.as_mut()?;
+        host.hub
+            .broadcast_chat(message, bound, line, &hidden, &mut chat);
+        for event in chat {
+            self.lan_log_event(event);
+        }
+        Some(())
+    }
+
+    /// Unsigned `/say` from the command dispatcher. Returns whether the acting player's copy
+    /// should go with its captured command output. `None` refuses reentrant `/say`.
+    pub(super) fn lan_broadcast_source_say(
+        &mut self,
+        name: &Text,
+        message: &Text,
+        captured_for: Option<u32>,
+    ) -> Option<bool> {
+        use sunrise_client::lan::data::component_nbt;
+
+        let hidden = self.chat_hidden_from(|game| {
+            let sender = match game.source_entity() {
+                Some(Target::Player) => game.lan_acting_uuid.unwrap_or_else(|| game.own_uuid()),
+                Some(Target::Guest(conn)) => game.command_guest(conn).map_or(0, |guest| guest.uuid),
+                _ => 0, // PlayerChatMessage.system uses the nil UUID.
+            };
+            (sender, name.plain(), message.plain())
+        })?;
+        let Some(host) = &self.lan else {
+            return Some(false);
+        };
+        host.hub.broadcast_source_chat(
+            "say_command",
+            component_nbt(&name.component()),
+            component_nbt(&message.component()),
+            captured_for,
+            &hidden,
+        );
+        Some(
+            captured_for.is_some()
+                && !self
+                    .lan_acting_uuid
+                    .is_some_and(|uuid| hidden.contains(&uuid)),
+        )
     }
 
     /// SayCommand, EmoteCommands and MsgCommand for a guest: chat to the
@@ -251,8 +305,16 @@ impl Game<'_> {
             } else {
                 "emote_command"
             };
+            let (sender, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+            let Some(hidden) = self.chat_hidden_from(|_| (sender, name.as_str(), text.as_str()))
+            else {
+                return true;
+            };
+            let Some(host) = self.lan.as_mut() else {
+                return false;
+            };
             host.hub
-                .broadcast_command_chat(i, chat_type, message, text, &mut events);
+                .broadcast_command_chat(i, chat_type, message, text, &hidden, &mut events);
         }
         for event in events {
             self.lan_log_event(event);

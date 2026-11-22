@@ -37,13 +37,13 @@ fn geometry_matches_pre_residency_vertex_snapshots() {
 }
 
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = crate::gfx::test_gpu::instance();
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+    let adapter = crate::gfx::test_gpu::adapter()?;
     eprintln!("End sky test adapter: {:?}", adapter.get_info());
-    pollster::block_on(adapter.request_device(&Default::default())).ok()
+    crate::gfx::test_gpu::optional_device_with(&adapter, &Default::default())
 }
 
 #[test]
+#[ignore = "daily"]
 fn resident_buffer_survives_frames_and_refreshes_with_the_atlas() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, _)) = device() else {
@@ -85,6 +85,7 @@ fn resident_buffer_survives_frames_and_refreshes_with_the_atlas() {
 /// The actual entity shader and celestial blend, comparing the old combined
 /// vertex stream with a resident sky draw followed by a separate flash draw.
 #[test]
+#[ignore = "daily"]
 fn separate_draws_match_combined_celestial_pixels() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = device() else {

@@ -28,32 +28,7 @@ use sunrise_core::{
 /// The handle of the local player among a bell's gathered entities.
 const PLAYER: u64 = u64::MAX;
 
-/// `ContainerOpenersCounter.getEntitiesWithContainerOpen` as Sunrise can
-/// answer it: of the containers players have open at this moment, the ones at
-/// `key` (`ChestBlockEntity$1.isOwnContainer` compares the menu's container
-/// with the block entity, and a double chest counts for both halves).
-pub(super) fn openers_at(open: &[(i32, i32, i32)], key: (i32, i32, i32)) -> i32 {
-    open.iter().filter(|&&at| at == key).count() as i32
-}
-
-/// `ContainerOpenersCounter.recheckOpeners`: the opener count a recount finds
-/// at `key`, and the count it replaces. The entry is dropped at zero, as
-/// `Game::count_opener` does when the last opener leaves, so the next opener to
-/// arrive counts from zero.
-pub(super) fn recheck_opener_count(
-    counts: &mut std::collections::HashMap<(i32, i32, i32), i32>,
-    open: &[(i32, i32, i32)],
-    key: (i32, i32, i32),
-) -> (i32, i32) {
-    let previous = counts.get(&key).copied().unwrap_or(0);
-    let count = openers_at(open, key);
-    if count == 0 {
-        counts.remove(&key);
-    } else if count != previous {
-        counts.insert(key, count);
-    }
-    (previous, count)
-}
+pub(super) use sunrise_gameplay::container_openers::recheck_opener_count;
 
 impl Game<'_> {
     /// `BlockEntity.triggerEvent(a, b)` on the client copy of the block entity at `pos`.
@@ -124,6 +99,10 @@ impl Game<'_> {
     }
     /// `container_opener_event` for a player who is not a spectator (a guest).
     pub(super) fn container_openers_changed(&mut self, key: (i32, i32, i32), open: bool) -> bool {
+        // Declared containers use their own counter, even on a lid-bearing template.
+        if self.mod_menu_at(key).is_some() {
+            return false;
+        }
         let pos = [key.0, key.1, key.2];
         let state = self.world.block(pos[0], pos[1], pos[2]).0;
         match self.be_anims.ticker(state) {
@@ -298,14 +277,8 @@ impl Game<'_> {
         }
         let mut positions: Vec<_> = self.be_anims.bells.keys().copied().collect();
         positions.sort_unstable();
-        let raiders = self
-            .res
-            .stations()
-            .enchantments
-            .entity_tags
-            .get("minecraft:raiders")
-            .cloned()
-            .unwrap_or_default();
+        let raiders = self.items().entity_type_tags.clone();
+        let raiders = raiders.members().get("minecraft:raiders");
         for pos in positions {
             if self
                 .be_anims
@@ -314,13 +287,13 @@ impl Game<'_> {
             {
                 self.be_anims.bells.remove(&pos);
             } else if self.block_ticking_area()(pos[0], pos[2]) {
-                self.tick_bell(pos, &raiders);
+                self.tick_bell(pos, raiders);
             }
         }
     }
 
     /// `BellBlockEntity.tick` and `makeRaidersGlow`, using live entity/tag state.
-    fn tick_bell(&mut self, pos: [i32; 3], raiders: &std::collections::HashSet<String>) {
+    fn tick_bell(&mut self, pos: [i32; 3], raiders: Option<&std::collections::HashSet<String>>) {
         let player = self.player_view().map(|p| BellEntity {
             position: [p.position.x, p.position.y, p.position.z],
             alive: p.alive,
@@ -335,7 +308,7 @@ impl Game<'_> {
             Some(BellEntity {
                 position: [m.position.x, m.position.y, m.position.z],
                 alive: m.alive() && !m.removed,
-                raider: raiders.contains(&m.kind.id),
+                raider: raiders.is_some_and(|raiders| raiders.contains(&m.kind.id)),
             })
         };
         let tick = self
@@ -375,16 +348,19 @@ impl Game<'_> {
         }
     }
 
-    /// The client tickers of the loaded animated and mod block entities, once
-    /// per client tick (`ClientLevel.tickBlockEntities`).
+    /// The server tickers of the bells and conduits, which a server runs in its block-entity pass.
+    pub(super) fn tick_block_entity_servers(&mut self) {
+        self.tick_conduit_servers();
+        self.tick_bell_servers();
+    }
+
+    /// The client tickers of the loaded animated block entities, once per client tick
+    /// (`ClientLevel.tickBlockEntities`).
     pub(super) fn tick_block_entity_anims(&mut self) {
-        // A client's mod block entities with a client ticker (none off a server's client).
-        self.client_tick_mod_block_entities();
         // A server has no window, but its bells, gateways and conduits still run
         // their server tickers; a client of one only animates what it is sent.
         if self.remote.is_none() {
-            self.tick_conduit_servers();
-            self.tick_bell_servers();
+            self.tick_block_entity_servers();
         }
         let Some(r) = &self.renderer else {
             return;
@@ -411,14 +387,8 @@ impl Game<'_> {
             Some(p) if !self.spectator() => vec![[p.position.x, p.position.y, p.position.z]],
             _ => Vec::new(),
         };
-        let raiders = self
-            .res
-            .stations()
-            .enchantments
-            .entity_tags
-            .get("minecraft:raiders")
-            .cloned()
-            .unwrap_or_default();
+        let raiders = self.items().entity_type_tags.clone();
+        let raiders = raiders.members().get("minecraft:raiders");
         let frames = self
             .res
             .items()
@@ -463,7 +433,7 @@ impl Game<'_> {
                     // Integrated servers already ticked this state above, independently
                     // of drawn block entities. Remote clients only animate their copy.
                     if self.remote.is_some() {
-                        self.tick_bell(pos, &raiders);
+                        self.tick_bell(pos, raiders);
                     }
                 }
                 Ticker::Conduit => {
@@ -674,23 +644,29 @@ impl Game<'_> {
                 ambient: true,
                 ..EffectInstance::new("conduit_power", 260, 0)
             };
-            g.potions.effects.add(power);
+            g.apply_player_effect(power);
         });
     }
     /// `Entity.isInRain`: rain at the block position or at the top of the box.
     pub(super) fn in_rain(&mut self, at: Vec3, top: f64) -> bool {
-        let p = BlockPos::new(
-            at.x.floor() as i32,
-            at.y.floor() as i32,
-            at.z.floor() as i32,
-        );
-        let up = BlockPos::new(p.x, top.floor() as i32, p.z);
         // A server's client has no live biome features to ask: it answers from
         // the chunks and the weather it was sent.
         if self.remote.is_some() {
+            return self.rain_falls_on(at, top);
+        }
+        let (p, up) = rain_positions(at, top);
+        self.with_level(|b, level, _| b.is_raining_at(level, p) || b.is_raining_at(level, up))
+    }
+    /// [`Self::in_rain`] read without the level access (no snapshot, no flushes): a server's
+    /// client asks the chunks and weather it was sent, single player the side's read-only
+    /// `Level.isRainingAt`.
+    pub(super) fn rain_falls_on(&self, at: Vec3, top: f64) -> bool {
+        use sunrise_client::motion::SideLevel;
+        let (p, up) = rain_positions(at, top);
+        if self.remote.is_some() {
             return self.raining_at(p) || self.raining_at(up);
         }
-        self.with_level(|b, level, _| b.is_raining_at(level, p) || b.is_raining_at(level, up))
+        self.is_raining_at(&self.world, p) || self.is_raining_at(&self.world, up)
     }
     /// `ConduitBlockEntity.updateAndAttackTarget`: while the conduit hunts
     /// (42 frame blocks) its target stays until it dies or leaves the 8
@@ -740,18 +716,25 @@ impl Game<'_> {
                 self.mark_block_entity_updated(key);
             }
         }
-        let Some(m) = conduit
+        let Some(index) = conduit
             .target
-            .and_then(|id| self.mobs.iter_mut().find(|m| m.id == id))
+            .and_then(|id| self.mob_index.find(&self.mobs, id))
         else {
             return;
         };
+        let m = &mut self.mobs[index];
         let at = [m.position.x, m.position.y, m.position.z];
         m.damage(
-            crate::game::entity::damage_level_of!(self),
+            crate::game::entity::damage_level_of!(
+                self,
+                &sunrise_client::health::NO_ATTACK,
+                no_push,
+                None
+            ),
             4.0,
             Damage::of(DamageKind::Magic),
         );
+        self.finish_mob_damage_at(index);
         self.audio
             .play("minecraft:block.conduit.attack.target", Some(at), 1.0, 1.0);
     }
@@ -766,7 +749,9 @@ impl Game<'_> {
         let near: Vec<(u32, bool, Vec3, f64)> = self
             .mobs
             .iter()
-            .filter(|m| m.hostile() && !m.removed && m.bounds().intersects(area))
+            // `instanceof Enemy`, not the monster category: the zombie horse,
+            // camel husk and zombie nautilus are `Animal`s.
+            .filter(|m| m.is_enemy() && !m.removed && m.bounds().intersects(area))
             .map(|m| {
                 let top = m.position.y + f64::from(m.height());
                 (m.id, m.fluids.in_water, m.position, top)
@@ -787,9 +772,14 @@ impl Game<'_> {
             .unwrap_or(0);
         Some(candidates[pick as usize])
     }
-    /// The conduit's `destroyTarget` as the client draws it.
+    /// The conduit's `destroyTarget` as the client draws it: the block
+    /// entity's `Target`, which `sendBlockUpdated` keeps in step for every
+    /// window; the server's own copy answers where there is no block entity.
     fn conduit_target(&self, pos: [i32; 3]) -> Option<ConduitTarget> {
-        let id = self.be_anims.conduit_servers.get(&pos)?.target?;
+        let id = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+            Some(BlockEntity::Conduit(target)) => self.mob_by_uuid((*target)?)?,
+            _ => self.be_anims.conduit_servers.get(&pos)?.target?,
+        };
         let m = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
         Some(ConduitTarget {
             position: [m.position.x, m.position.y, m.position.z],
@@ -964,13 +954,20 @@ impl Game<'_> {
     }
 }
 
+/// `Entity.isInRain`'s two positions: `blockPosition()` and the same column at the box's top.
+fn rain_positions(at: Vec3, top: f64) -> (BlockPos, BlockPos) {
+    let p = BlockPos::new(
+        at.x.floor() as i32,
+        at.y.floor() as i32,
+        at.z.floor() as i32,
+    );
+    (p, BlockPos::new(p.x, top.floor() as i32, p.z))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn replacing_a_gateway_discards_its_old_cooldown() {
         use crate::game::*;
         let root = std::path::PathBuf::from(
@@ -1059,57 +1056,6 @@ mod tests {
             "the replacement starts its own cooldown"
         );
     }
-
-    /// A chest a player opened, then closed without the close path (a death, a
-    /// teleport, a dropped connection): the tracked count is stale and the
-    /// five-tick recheck has to correct it, which is what closes the lid and
-    /// plays the close sound.
-    #[test]
-    fn a_stale_opener_count_is_recounted_away() {
-        let mut counts = HashMap::new();
-        let chest = (1, 2, 3);
-        // Opened: `incrementOpeners` made it one.
-        assert_eq!(recheck_opener_count(&mut counts, &[chest], chest), (0, 1));
-        assert_eq!(counts.get(&chest), Some(&1));
-        // Nobody has it open any more.
-        assert_eq!(recheck_opener_count(&mut counts, &[], chest), (1, 0));
-        assert_eq!(counts.get(&chest), None, "the entry goes at zero");
-        // The next opener counts from zero, so the lid still opens and the
-        // sound still plays.
-        assert_eq!(recheck_opener_count(&mut counts, &[chest], chest), (0, 1));
-    }
-
-    #[test]
-    fn a_recount_that_agrees_leaves_the_count_alone() {
-        let mut counts = HashMap::new();
-        let chest = (1, 2, 3);
-        recheck_opener_count(&mut counts, &[chest], chest);
-        assert_eq!(
-            recheck_opener_count(&mut counts, &[chest], chest),
-            (1, 1),
-            "no change, so no sound and no block event"
-        );
-        assert_eq!(counts.get(&chest), Some(&1));
-    }
-
-    /// A double chest answers for both halves: a player with the left half open
-    /// is an opener of the right half too.
-    #[test]
-    fn both_halves_of_a_double_chest_count() {
-        let (left, right) = ((1, 2, 3), (1, 2, 4));
-        let open = [left, right];
-        let mut counts = HashMap::new();
-        assert_eq!(recheck_opener_count(&mut counts, &open, right), (0, 1));
-        assert_eq!(counts.get(&right), Some(&1));
-        // Two players on the same half, and someone on another chest.
-        let elsewhere = (9, 9, 9);
-        let open = [left, left, elsewhere];
-        assert_eq!(recheck_opener_count(&mut counts, &open, left), (0, 2));
-        assert_eq!(counts.get(&left), Some(&2));
-        assert_eq!(recheck_opener_count(&mut counts, &open, elsewhere), (0, 1));
-        assert_eq!(openers_at(&open, elsewhere), 1);
-        assert_eq!(openers_at(&open, (0, 0, 0)), 0);
-    }
 }
 
 #[cfg(test)]
@@ -1134,6 +1080,221 @@ mod bell_ownership_tests {
 }
 
 #[cfg(test)]
+mod conduit_target_tests {
+    //! `ConduitBlockEntity.selectNewTarget` picks `Enemy`s only, and its
+    //! `Target` reaches every window through `sendBlockUpdated`; the window
+    //! then spits a nautilus particle at the mob.
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, execution_role, load_resources};
+    use std::sync::Arc;
+    use sunrise_client::chunk::Chunk;
+
+    const CONDUIT: [i32; 3] = [8, 100, 8];
+
+    fn game_with(
+        resources: &mut Option<Arc<crate::game::Resources>>,
+        role: execution_role::ExecutionRole,
+    ) -> Game<'_> {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("SUNRISE_TEST_RESOURCES")
+                .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            role,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = role;
+        let res = resources.insert(loaded.resources);
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game
+    }
+
+    /// A conduit in a loaded chunk.
+    fn setup(game: &mut Game<'_>) {
+        for command in [
+            "difficulty normal",
+            "forceload add 0 0",
+            "setblock 8 100 8 minecraft:conduit",
+        ] {
+            assert!(game.run_command(command), "{command}");
+        }
+    }
+
+    /// A level of a server.
+    fn game(resources: &mut Option<Arc<crate::game::Resources>>) -> Game<'_> {
+        let mut game = game_with(resources, execution_role::ExecutionRole::IntegratedServer);
+        setup(&mut game);
+        game
+    }
+
+    /// A window of one: a client game with no conduit state of its own, and a
+    /// conduit block whose block entity arrives from the server.
+    fn client(resources: &mut Option<Arc<crate::game::Resources>>) -> Game<'_> {
+        let mut game = game_with(resources, execution_role::ExecutionRole::Client);
+        let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
+        game.connect_local(pipe, "Window").unwrap();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:conduit")
+            .expect("the conduit's block state");
+        game.world
+            .set(CONDUIT[0], CONDUIT[1], CONDUIT[2], state)
+            .unwrap();
+        // The block entity a chunk's block entities build (`from_name`).
+        game.world.block_entities.insert(
+            (CONDUIT[0], CONDUIT[1], CONDUIT[2]),
+            BlockEntity::Conduit(None),
+        );
+        game
+    }
+
+    /// A mob of `kind` beside the conduit, in the water.
+    fn summon(game: &mut Game<'_>, kind: &str) -> u32 {
+        assert!(game.run_command(&format!("summon minecraft:{kind} 4.5 100 8.5")));
+        let id = game.mobs.last().unwrap().id;
+        game.mobs.last_mut().unwrap().fluids.in_water = true;
+        id
+    }
+
+    /// `selectNewTarget`'s `instanceof Enemy`: the monster-category animals
+    /// (a zombie horse, camel husk, zombie nautilus) are not enemies, so a
+    /// conduit beside them picks nothing; a zombie is.
+    #[test]
+    #[ignore = "daily"]
+    fn a_conduit_hunts_only_enemies() {
+        let mut resources = None;
+        let mut game = game(&mut resources);
+        for kind in ["zombie_horse", "camel_husk", "zombie_nautilus"] {
+            summon(&mut game, kind);
+        }
+        assert_eq!(
+            game.conduit_new_target(CONDUIT),
+            None,
+            "monster-category animals are not Enemy"
+        );
+        let zombie = summon(&mut game, "zombie");
+        assert_eq!(game.conduit_new_target(CONDUIT), Some(zombie));
+    }
+
+    /// `updateAndAttackTarget` puts the target in the block entity's `Target`
+    /// and sends it (`sendBlockUpdated`); the window loads that tag, finds the
+    /// mob and `animationTick` draws one nautilus particle at its eye. A tag
+    /// without a `Target` takes the mob away again.
+    #[test]
+    #[ignore = "daily"]
+    fn a_conduits_target_reaches_the_client_as_a_particle() {
+        let mut server_resources = None;
+        let mut server = game(&mut server_resources);
+        let drowned = summon(&mut server, "drowned");
+        server.world.block_log = Some(Vec::new());
+        server.conduit_attack(&mut ConduitServer::default(), CONDUIT, true);
+        let uuid = server.persist.uuids[&drowned];
+        let key = (CONDUIT[0], CONDUIT[1], CONDUIT[2]);
+        // What `sendBlockUpdated` puts on the wire.
+        let tag = crate::lan::chunks::entity_tag(
+            &server.world.block_entities[&key],
+            false,
+            &Default::default(),
+        )
+        .expect("a conduit has an update tag");
+        assert_eq!(tag.get("Target"), Some(&Tag::IntArray(uuid.to_vec())));
+        assert!(
+            server.world.block_log.as_ref().unwrap().contains(&key),
+            "the new target is sent"
+        );
+        // The window: no `conduit_servers` of its own, the same mob, and the
+        // server's tag through `handleBlockEntityData`.
+        let mut client_resources = None;
+        let mut client = client(&mut client_resources);
+        let watched = client
+            .spawn_mob(
+                "drowned",
+                [4.5, 100.0, 8.5],
+                false,
+                crate::game::creatures::SpawnSite::Plain,
+            )
+            .expect("a mob for the window");
+        client.persist.uuids.insert(watched, uuid);
+        let kind = client
+            .remote
+            .as_ref()
+            .and_then(|r| r.builtin.get("minecraft:block_entity_type"))
+            .and_then(|ids| ids.id("minecraft:conduit"))
+            .expect("the conduit's block entity type");
+        client.remote_block_entity_data(
+            CONDUIT,
+            kind,
+            mod_api::BlockEntityDataSource::UpdatePacket,
+            &tag,
+        );
+        let target = client
+            .conduit_target(CONDUIT)
+            .expect("the window sees the hunted mob");
+        let (position, eye_y) = {
+            let m = client.mobs.iter().find(|m| m.id == watched).unwrap();
+            (m.position, m.eye_y())
+        };
+        assert_eq!(target.eye_y, eye_y);
+        let mut anims = sunrise_client::block_entity_anim::Conduit::default();
+        let particles = anims.client_tick(
+            CONDUIT,
+            1,
+            |_| true,
+            |_| false,
+            Some(target),
+            &mut client.world.random,
+        );
+        // One particle, at the eye: a frame's own particles need a frame block.
+        assert_eq!(particles.len(), 1);
+        assert_eq!(particles[0].0, [position.x, eye_y, position.z]);
+        // The conduit stopped hunting: its empty tag drops the target.
+        client.remote_block_entity_data(
+            CONDUIT,
+            kind,
+            mod_api::BlockEntityDataSource::UpdatePacket,
+            &Tag::Compound(Default::default()),
+        );
+        assert!(
+            client.conduit_target(CONDUIT).is_none(),
+            "the target is dropped"
+        );
+    }
+}
+
+#[cfg(test)]
 mod gateway_age_tests {
     use super::*;
     use crate::game::game_tests::tests::server_game;
@@ -1141,7 +1302,7 @@ mod gateway_age_tests {
     /// `TheEndGatewayBlockEntity.portalTick`: an age that moved is a change
     /// to save.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_gateway_that_ages_marks_the_chunk() {
         let mut resources = None;
         let mut game = server_game(&mut resources);

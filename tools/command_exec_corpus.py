@@ -2711,6 +2711,7 @@ def function_return_fixtures(group_names):
         functions.update(anger_functions())
     if 'macro source type error' in group_names:
         functions.update({'command_macro:apply': '$scoreboard players add #hits macro_error $(amount)\n',
+                          'command_macro:decimal': '$data modify storage command_macro:args written set value "$(amount)"\n',
                           'command_macro:admit': 'scoreboard players add #admit macro_error 1\n',
                           'command_macro:fail': 'return fail\n',
                           'command_macro:zero': 'return 0\n'})
@@ -2772,6 +2773,10 @@ def macro_source_type_error():
                 cmd('/scoreboard players get #r macro_error', expect_result=0),
                 cmd('/scoreboard players get #s macro_error', expect_result=int(name == 'zero')),
                 cmd('/scoreboard players get #hits macro_error', expect_result=count)]
+    for amount, text in [('0.1f', '.100000001490116'), ('-1e-16d', '-0')]:
+        ops += [cmd(f'/data modify storage command_macro:args decimal set value {{amount:{amount}}}', expect_result=1),
+                cmd('/function command_macro:decimal with storage command_macro:args decimal'),
+                cmd(f'/execute if data storage command_macro:args {{written:"{text}"}}', expect_result=1)]
     ops += setup('/execute store result score #elapsed macro_error run time query gametime',
                  '/scoreboard players operation #elapsed macro_error -= #clock macro_error')
     return ops + [cmd('/scoreboard players get #elapsed macro_error', expect_result=0)]
@@ -2979,6 +2984,27 @@ def compute():
         cmd('/compute block 8 400 8 integer 1'),
         cmd('/compute block 100000 64 100000 integer 1'),
         cmd('/execute store result score @s cmp run compute default integer 5'),
+        # DataCommands.decorateModification's compute source: the same providers,
+        # stored into the target instead of printed.
+        cmd('/data merge storage harness:compute {x:1}'),
+        cmd('/data modify storage harness:compute x set compute default integer {type:"minecraft:constant",value:5}'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute x set compute default float {type:"minecraft:constant",value:2.5}'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute x set compute default integer {type:"minecraft:pow",base:0,exponent:0}'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute x set compute default integer {value:5}'),
+        cmd('/data modify storage harness:compute x set compute default integer minecraft:nonexistent'),
+        cmd('/data get storage harness:compute x'),
+        cmd('/data modify storage harness:compute list set value []'),
+        cmd('/data modify storage harness:compute list append compute default float {type:"minecraft:mul",inputs:[1.5,4]}'),
+        cmd('/data get storage harness:compute list'),
+        *setup('/setblock 8 229 8 minecraft:smoker'),
+        cmd('/data modify storage harness:compute block_value set compute block 8 229 8 integer minecraft:cooking/time_coal'),
+        cmd('/data get storage harness:compute block_value'),
+        *setup('/setblock 8 229 8 minecraft:air'),
+        cmd('/data modify storage harness:compute entity_value set compute entity @s integer {type:"minecraft:constant",value:1}'),
+        cmd('/data get storage harness:compute entity_value'),
     ]
 
 
@@ -5539,6 +5565,48 @@ def numeric_array_edits(include_storage_side_effects=False):
     return ops
 
 
+def cube_split():
+    """#8037: `AbstractCubeMob.remove` splits a dead slime or magma cube bigger than size 1 when its body goes, 20
+    ticks after its death. The count (`getSplitCount`, `2 + random.nextInt(3)`) and each child's yaw
+    (`setUpSplitCube`: `random.nextFloat() * 360`) come from the parent's own random, and each child sits at
+    `(i % 2 - 0.5) * width / 2`, `(i / 2 - 0.5) * width / 2` (a cube's width is `0.52 * size`). The third cube
+    falls while it dies and lands on the tick its body goes, when the landing's splash and squish draw from the same
+    random."""
+    x0, y0, z0 = 4096 - 384, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           {'op': 'sync_randoms', 'uniquifier': 8037, 'entity_id': 8_037_000, 'level_seed': 8037}]
+    # Kind, Size tag, x, z, height above the floor. A dying body falls (not with NoAI): from 11.4 it has moved 10.81
+    # blocks after 19 ticks and 12.0 after 20, so it lands on the tick its body goes.
+    cubes = [('slime', 3, x0 + 4.5, z0 + 4.5, 0), ('magma_cube', 1, x0 + 11.5, z0 + 11.5, 0),
+             ('slime', 1, x0 + 4.5, z0 + 11.5, 11.4)]
+    for kind, tag, x, z, up in cubes:
+        # Persistent: no player is within 128 blocks, where a monster despawns at once (Mob.checkDespawn).
+        flags = 'PersistenceRequired:1b' + ('' if up else ',NoAI:1b')
+        ops.append(cmd(f'/summon minecraft:{kind} {x} {y0 + up} {z} {{Size:{tag},{flags}}}', expect_result=1))
+    for kind, _, x, z, up in cubes:
+        # A blow, not /kill: a /kill'ed mob starts dying a tick early in Sunrise (#15443).
+        ops.append(cmd(f'/damage @e[type={kind},x={x},y={y0 + up},z={z},distance=..1,limit=1] 1000 minecraft:generic',
+                       expect_result=1))
+    # LivingEntity.tickDeath removes the body on the 20th tick after the death, and the split comes with it:
+    # the dying bodies are still there after 19.
+    for n in (19, 1):
+        ops.append({'op': 'tick', 'n': n})
+        ops.append(cmd(f'/execute if entity @e[x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]'))
+    for kind, _, x, z, _ in cubes:
+        ops.append(cmd(f'/execute if entity @e[type={kind},x={x},y={y0},z={z},distance=..3]'))
+        # One reference point per quadrant, so no two children tie on distance.
+        for sx, sz in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            child = f'@e[type={kind},x={x + sx},y={y0},z={z + sz * 0.9},distance=..4,sort=nearest,limit=1]'
+            for key in ('Pos[0]', 'Pos[1]', 'Pos[2]', 'Rotation[0]', 'Size'):
+                ops.append(cmd(f'/data get entity {child} {key}'))
+    area = f'x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16'
+    return ops + setup(*[SHRINK_SULFUR_CUBES.format(f'@e[type={kind},{area}]') for kind in ('slime', 'magma_cube')],
+                       f'/kill @e[type=!player,{area}]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
 
 def sulfur_cube_fuse_ticks(immediate_power=False):
     """SulfurCube.tickFuse runs with NoAI; customServerAiStep timers do not (#9018)."""
@@ -7235,6 +7303,41 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def dying_selector_candidates():
+    """`@e` and `@n` keep only `Entity.isAlive`: a pig `/damage` killed, and an armor stand loaded with no health,
+    stay in the level until `tickDeath` removes them, yet neither is selected. The dying pig is nearer the origin than
+    the living one, so `@n` shows which one it took."""
+    x0, y0, z0 = 4288, 260, 4288
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    dying, living, stand = (f'000010c0-0000-0000-0000-{n:012x}' for n in (1, 2, 3))
+    ops += [
+        cmd(f'/summon pig {x0 + 4}.5 {y0} {z0 + 4}.5 {{UUID:[I;4288,0,0,1],NoAI:1b}}', expect_result=1),
+        cmd(f'/summon pig {x0 + 10}.5 {y0} {z0 + 4}.5 {{UUID:[I;4288,0,0,2],NoAI:1b}}', expect_result=1),
+        cmd(f'/summon armor_stand {x0 + 2}.5 {y0} {z0 + 4}.5 {{UUID:[I;4288,0,0,3],Health:0.0f}}', expect_result=1),
+        cmd(f'/damage {dying} 100'),
+    ]
+    origin = f'x={x0 + 3}.5,y={y0},z={z0 + 4}.5,distance=..12'
+
+    def reads(*bodies):
+        for uuid in bodies:
+            ops.append(cmd(f'/data get entity {uuid} Health'))
+        ops.append(cmd(f'/execute if entity @e[type=!item,{origin}]'))
+        ops.append(cmd(f'/execute if entity @e[type=pig,{origin}]'))
+        ops.append(cmd(f'/execute if entity @e[type=armor_stand,{origin}]'))
+        ops.append(cmd(f'/data get entity @n[type=pig,{origin}] UUID'))
+        ops.append(cmd(f'/data get entity @n[type=!item,{origin}] UUID'))
+        ops.append(cmd(f'/data get entity @e[type=!item,{origin},sort=nearest,limit=1] UUID'))
+
+    # The stand is read only before it ticks: how long its body then stays (`tickDeath`) is not this group's.
+    reads(dying, living, stand)
+    ops.append({'op': 'tick', 'n': 1})
+    reads(dying, living)
+    ops.append({'op': 'tick', 'n': 20})
+    reads(dying, living)
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 def falling_block_fall_float():
     """#13701: `Entity.checkFallDamage` adds each step down narrowed to a float (`fallDistance -= (float)ya`);
     a falling block never runs `baseTick`, so it is never in water and every step counts."""
@@ -7383,6 +7486,15 @@ def zombie_villager_summoned_data():
         else:
             ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
             ops.append(cmd(f'/data get entity {uuid} VillagerData'))
+    # Compare the whole compound: IsBaby and ConversionPlayer collide in the
+    # Java map, so a path query would miss the inherited field's insertion order.
+    # Load an existing longer Strength effect: the cure does not replace it or
+    # instantiate attack_damage, leaving no identity-hash attribute order to compare.
+    ops += [cmd(f'/summon zombie_villager {x0 + 12}.5 {y0} {z0 + 4}.5 '
+                '{UUID:[I;13262,0,4,1],NoAI:1b,ConversionTime:2000,ConversionPlayer:[I;1,2,3,4],'
+                'active_effects:[{id:"minecraft:strength",duration:4000,show_icon:1b}],'
+                'VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}}', expect_result=1),
+            cmd('/data get entity 000033ce-0000-0000-0000-000400000001')]
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
 
@@ -7458,6 +7570,28 @@ def thrown_projectile_rotation():
         ops += [cmd(f'/data get entity 00003908-0000-0000-0000-{n:04x}00000001 Rotation')
                 for n in range(1, len(cases) + 1)]
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 16},z={z0 - 16},dx=32,dy=32,dz=32]')
+
+
+def item_frame_rotation():
+    """#13848: `ItemFrame.setDirection` turns a frame with its facing (`yRot` from the 2D data value on a wall,
+    `xRot` 90 or -90 on a floor or ceiling), and `Entity.saveWithoutId` writes it as `Rotation`. A `Facing` out of
+    0..5 is `Direction.from3DDataValue`'s `abs(data % 6)`. Away from other groups: a forced chunk two columns
+    from another's keeps that one loaded but not ticking when it starts."""
+    x0, y0, z0 = 3200, 260, 3712
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 3} {z0 + 15} stone', False)]
+    frames = [('glow_item_frame', ''), ('item_frame', ',Facing:1b'), ('item_frame', ',Facing:2b'),
+              ('item_frame', ',Facing:3b'), ('glow_item_frame', ',Facing:4b'), ('item_frame', ',Facing:5b'),
+              ('item_frame', ',Facing:7b'), ('item_frame', ',Facing:-1b')]
+    for n, (kind, facing) in enumerate(frames, 1):
+        x = x0 + 1 + n
+        ops += [cmd(f'/setblock {x} {y0 + 5} {z0 + 8} air', False),
+                cmd(f'/summon {kind} {x}.5 {y0 + 5}.5 {z0 + 8}.5 {{UUID:[I;14100,0,{n},1],Fixed:1b{facing}}}',
+                    expect_result=1),
+                cmd(f'/data get entity 00003714-0000-0000-0000-{n:04x}00000001 Rotation'),
+                cmd(f'/data get entity 00003714-0000-0000-0000-{n:04x}00000001 Facing')]
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', f'/forceload remove {x0} {z0}')
 
 
 def living_short_timers():
@@ -7877,6 +8011,30 @@ def vehicle_fall_clip():
         reads()
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def armadillo_scute_time():
+    """#15784: `Armadillo`'s constructor draws `scuteTime = pickNextScuteDropTime()` (`random.nextInt(6000) + 6000`)
+    from the entity's own random, and `readAdditionalSaveData` replaces it only when the tag has `scute_time`. An
+    armadillo summoned without the key keeps the constructor's draw; one with it keeps the saved value. Both engines'
+    randoms are synced before each summon; NoAI keeps `customServerAiStep` from counting it down.
+    """
+    x0, y0, z0 = 5568, 250, 5568
+    # Entities tick once every chunk within 2 columns is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 3) for dz in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    for n, extra in enumerate(('', ',scute_time:4321'), 1):
+        ops.append({'op': 'sync_randoms', 'uniquifier': 15784 + n, 'entity_id': 15_784_000 + 1000 * n,
+                    'level_seed': 15784})
+        ops.append(cmd(f'/summon armadillo {x0 + 4 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;15784,0,{n},1],NoAI:1b,'
+                       f'Silent:1b,PersistenceRequired:1b{extra}}}', expect_result=1))
+        ops.append(cmd(f'/data get entity 00003da8-0000-0000-0000-{n:04x}00000001 scute_time'))
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity 00003da8-0000-0000-0000-{n:04x}00000001 scute_time'))
+    return ops + setup(f'/kill @e[x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16,type=!player]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
 
@@ -8376,15 +8534,18 @@ def groups():
         ('explosion player experience', explosion_player_experience()),
         ('explosion creaking heart experience', explosion_creaking_heart_experience()),
         ('comparator setblock output', comparator_setblock_output()),
+        ('cube split', cube_split()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('ominous spawner loaded fields', ominous_spawner_loaded_entity_fields()),
         ('thrown projectile rotation', thrown_projectile_rotation()),
+        ('item frame rotation', item_frame_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('dying selector candidates', dying_selector_candidates()),
         ('falling block fall float', falling_block_fall_float()),
         ('explosion infested blocks', explosion_infested_blocks()),
         ('jigsaw default joint', jigsaw_default_joint()),
@@ -8490,6 +8651,7 @@ def groups():
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
+        ('armadillo scute time', armadillo_scute_time()),
         ('orb fall distance', orb_fall_distance()),
         ('rocket fall distance', rocket_fall_distance()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),

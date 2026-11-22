@@ -3,6 +3,14 @@ use super::super::dedicated::{SLOW_TICK_MS, report::Recording};
 use super::super::perf_remote::Done;
 use super::super::profile_capture::{reply_text, shown};
 use super::super::{Game, tick_profile};
+use std::io;
+use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+    mpsc::Sender,
+};
+use std::time::Instant;
 use sunrise_client::client_perf::{
     Join,
     request::{Failed, ProfileSide, StartOptions, Stopped, Threads},
@@ -15,14 +23,6 @@ use sunrise_perf_format::{
     files,
     v1::{GpuMode, Start, StopReason, Trigger},
 };
-use std::io;
-use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
-    mpsc::Sender,
-};
-use std::time::Instant;
 
 /// How far the server thread has got with the side of a capture the window asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

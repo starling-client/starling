@@ -1,0 +1,29 @@
+ids = [
+    "type:DatapackHandle",
+    "handle:DatapackHandle::registry",
+    "handle:DatapackHandle::entry",
+    "type:DatapackGenerationExhausted",
+    "type:DatapackGenerationExhausted.Exhausted",
+    "type:DatapackReadError.WrongSession",
+    "type:DatapackReadError.StaleGeneration",
+    "handle:LevelRef::datapack_handle",
+    "handle:LevelRef::datapack_read",
+    "type:DatapackSnapshot",
+    "type:DatapackSnapshot.session",
+    "type:DatapackSnapshot.generation",
+    "handle:DatapackRegistrySet::first",
+    "handle:DatapackRegistrySet::reload",
+    "handle:DatapackRegistrySet::generation",
+    "handle:DatapackRegistrySet::handle",
+    "handle:DatapackRegistrySet::get",
+    "handle:DatapackRegistrySet::received",
+    "handle:DatapackRegistrySet::received_next",
+]
+why = "Removed DatapackHandle, DatapackGenerationExhausted, session/generation counters on DatapackRegistrySet and DatapackSnapshot, and DatapackReadError::{WrongSession, StaleGeneration}, making DatapackRegistrySet construction infallible and matching vanilla net.minecraft.network.protocol.configuration.ClientboundRegistryDataPacket (ClientboundUpdateRegistriesPacket) and net.minecraft.world.level.Level#registryAccess. Also allowed parked loaded server dimensions in LevelRef::datapack_read and LevelRef::datapack_entries on the logical server, matching vanilla net.minecraft.server.level.ServerLevel#registryAccess."
+migrate = """
+- Replace `let handle = level.datapack_handle(host, registry, entry)?; level.datapack_read(host, &handle, &mut |e| ...)?;` with `level.datapack_read(host, registry, entry, &mut |e| ...)?;`. The visitor also accepts loaded parked server dimensions.
+- Replace `let handle = set.handle(registry, entry)?; set.get(&handle)?` with `set.get(registry, entry)?`. Retain the `(registry, entry)` names instead of a `DatapackHandle` and use those names instead of `handle.registry()` and `handle.entry()`. Remove match arms for `DatapackReadError::WrongSession` and `DatapackReadError::StaleGeneration`.
+- On world open, use `DatapackRegistrySet::from_candidate(candidate)` instead of `DatapackRegistrySet::first(candidate, session)`. On reload, build and validate the new candidate first; after validation succeeds, construct and publish `DatapackRegistrySet::from_candidate(candidate)` instead of `old_set.reload(candidate)?`. Leave the old set installed if candidate validation fails. Remove the `DatapackGenerationExhausted` import and handling and any `set.generation()` comparisons; read the currently published set by name.
+- On the client, replace both `DatapackRegistrySet::received(&snapshot, candidate, session)` and `old_set.received_next(&snapshot, candidate)` with `DatapackRegistrySet::received(candidate)` after validating the snapshot into a candidate. Publish the returned set directly instead of branching on an optional newer generation. Omit `session` and `generation` when constructing a `DatapackSnapshot`.
+- Behavior only (`handle:LevelRef::datapack_entries`): keep `level.datapack_entries(host, registry)`; it now accepts any loaded server dimension handle, including a parked one. Stale or unloaded level handles still return `None`.
+"""

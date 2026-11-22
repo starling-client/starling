@@ -52,7 +52,7 @@ pub enum Entry<H> {
 pub struct Dispatcher<H> {
     maps: [HashMap<String, Entry<H>>; 4],
     custom: HashMap<String, HashMap<String, Entry<H>>>,
-    /// Item-tag entries by block, in registration order; asked after the exact entries.
+    /// Item-tag entries by block, in registration order; asked before exact item entries.
     tagged: HashMap<String, Vec<(String, H)>>,
 }
 impl<H> Default for Dispatcher<H> {
@@ -81,9 +81,19 @@ impl Dispatcher<()> {
     }
 }
 impl<H> Dispatcher<H> {
-    /// The dye tag wins terminally, including when its handler passes; then the exact
-    /// item entry, then the first item-tag entry whose tag `in_tag` says holds the item,
-    /// read against the tags loaded now.
+    /// Read an exact registration without considering the dye branch or tags.
+    pub fn exact_entry(&self, block: &str, item: &str) -> Option<&Entry<H>> {
+        match index(block) {
+            Some(i) => self.maps[i].get(item),
+            None => self.custom.get(block)?.get(item),
+        }
+    }
+
+    /// Matches vanilla `CauldronInteraction.Dispatcher.get`: item-tag entries precede exact
+    /// item entries. Vanilla's dye tag on `minecraft:water_cauldron` is checked first (or a
+    /// mod's replacement for `minecraft:cauldron_can_remove_dye`), then other registered tag
+    /// entries in registration order against the tags loaded now, and finally exact item
+    /// entries.
     pub fn select(
         &self,
         block: &str,
@@ -92,59 +102,83 @@ impl<H> Dispatcher<H> {
         in_tag: impl Fn(&str) -> bool,
     ) -> Option<Entry<&H>> {
         if block == "minecraft:water_cauldron" && removes_dye {
+            if !self.tagged.is_empty()
+                && let Some((_, handler)) = self.tagged.get(block).and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|(tag, _)| tag == "minecraft:cauldron_can_remove_dye")
+                })
+            {
+                return Some(Entry::Mod(handler));
+            }
             return Some(Entry::Dye);
         }
-        let exact = match index(block) {
-            Some(i) => self.maps[i].get(item),
-            None => self.custom.get(block).and_then(|map| map.get(item)),
-        };
-        if let Some(entry) = exact {
-            return Some(match entry {
-                Entry::Vanilla(action) => Entry::Vanilla(*action),
-                Entry::Mod(handler) => Entry::Mod(handler),
-                Entry::Dye => Entry::Dye,
-            });
+        if !self.tagged.is_empty()
+            && let Some((_, handler)) = self
+                .tagged
+                .get(block)
+                .and_then(|entries| entries.iter().find(|(tag, _)| in_tag(tag)))
+        {
+            return Some(Entry::Mod(handler));
         }
-        let (_, handler) = self
-            .tagged
-            .get(block)?
-            .iter()
-            .find(|(tag, _)| in_tag(tag))?;
-        Some(Entry::Mod(handler))
+        self.exact_entry(block, item).map(|entry| match entry {
+            Entry::Vanilla(action) => Entry::Vanilla(*action),
+            Entry::Mod(handler) => Entry::Mod(handler),
+            Entry::Dye => Entry::Dye,
+        })
     }
     /// Explicit membership rather than a block-name convention.
     pub fn contains_block(&self, block: &str) -> bool {
         index(block).is_some() || self.custom.contains_key(block)
     }
-    /// Preparation-only insertion. Returns the occupied entry without replacing it.
-    pub fn register(&mut self, block: String, item: String, handler: H) -> Result<(), &Entry<H>> {
+    /// Preparation-only insertion. Overwrites any existing entry in place and returns any
+    /// displaced mod handler so the caller can drop it inside its owner's unwind boundary.
+    pub fn register(&mut self, block: String, item: String, handler: H) -> Option<H> {
         let map = match index(&block) {
             Some(i) => &mut self.maps[i],
             None => self.custom.entry(block).or_default(),
         };
-        match map.entry(item) {
-            std::collections::hash_map::Entry::Occupied(entry) => Err(entry.into_mut()),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(Entry::Mod(handler));
-                Ok(())
-            }
+        match map.insert(item, Entry::Mod(handler)) {
+            Some(Entry::Mod(old)) => Some(old),
+            _ => None,
         }
     }
     /// Preparation-only insertion of an item-tag entry, which declares a custom block as
-    /// `register` does. Returns the handler already holding the tag on that block.
-    pub fn register_tag(&mut self, block: String, tag: String, handler: H) -> Result<(), &H> {
+    /// `register` does. Overwrites an existing entry for the same tag in place, keeping its
+    /// registration position and returning any displaced mod handler for fenced disposal.
+    pub fn register_tag(&mut self, block: String, tag: String, handler: H) -> Option<H> {
         if index(&block).is_none() {
             self.custom.entry(block.clone()).or_default();
         }
         let entries = self.tagged.entry(block).or_default();
         match entries.iter().position(|(held, _)| *held == tag) {
-            Some(at) => Err(&entries[at].1),
+            Some(at) => Some(std::mem::replace(&mut entries[at].1, handler)),
             None => {
                 entries.push((tag, handler));
-                Ok(())
+                None
             }
         }
     }
+    /// Visit the keys of the custom entries, without exposing their callbacks.
+    pub fn for_each_mod_entry(&self, mut emit: impl FnMut(&str, &str, bool)) {
+        for block in self.blocks() {
+            let items = match index(&block) {
+                Some(i) => &self.maps[i],
+                None => &self.custom[&block],
+            };
+            for (item, entry) in items {
+                if matches!(entry, Entry::Mod(_)) {
+                    emit(&block, item, false);
+                }
+            }
+            if let Some(tags) = self.tagged.get(&block) {
+                for (tag, _) in tags {
+                    emit(&block, tag, true);
+                }
+            }
+        }
+    }
+
     /// Complete prepared dispatcher set, including declared custom blocks.
     pub fn blocks(&self) -> Vec<String> {
         let mut blocks = [

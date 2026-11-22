@@ -1,28 +1,35 @@
 //! Entity model layer registration, baking and drawing.
 
 pub trait Hooks {
-    /// Entity model layers built in code (NeoForge's
-    /// `EntityRenderersEvent.RegisterLayerDefinitions`): push each one's id,
-    /// `<mod id>:<model>#<layer>` as a `ModelLayerLocation` names it
-    /// (`mymod:golem#main`), and its `LayerDefinition`, as the mod's
-    /// `createBodyLayer()` builds it. `native_bake_layer` bakes one into the
-    /// `ModelPart` tree `native_draw_model_part` draws. Asked once at start,
-    /// on the client. An id in vanilla's namespace, not of that form, or
-    /// registered already is logged and left out. API @API:model_layers@.
+    /// Register suppliers for entity model layers (NeoForge's
+    /// `EntityRenderersEvent.RegisterLayerDefinitions`). Called once at client startup.
+    /// Use [`RegisterLayerDefinitionsEvent::register`] to bind each layer ID to its supplier;
+    /// accepted suppliers run once when the layer table is frozen. Bake the realized
+    /// definitions through `ClientHost::bake_layer`. API @API:model_layers@.
     #[notes = r#"## Entity model layers
 
 `Hooks::register_layer_definitions` is the client registration-phase counterpart of NeoForge 26.3's
-`EntityRenderersEvent.RegisterLayerDefinitions`. It receives a `RegistrationContext`, once at
-client startup, and collects `(id, LayerDefinition)` entries in dependency order. Dedicated
-and integrated server roles do not fire this client event. IDs are `<mod id>:<model>#<layer>`;
-vanilla-namespace, malformed and duplicate IDs are logged and left out.
+`EntityRenderersEvent.RegisterLayerDefinitions`. It receives a `RegistrationContext` once at
+client startup. Call `event.register(id, supplier)` to stage a supplier that builds a
+`LayerDefinition`. Dedicated and integrated server roles do not fire this client event.
+IDs have the form `<namespace>:<path>#<layer>` matching vanilla's `ModelLayerLocation`. Both
+separators are required; namespace and path follow vanilla `Identifier` rules and may be empty.
+The layer string is unrestricted, including empty. Malformed IDs are logged and dropped. An exact
+collision with a vanilla layer key in `entity-models.json` fails client startup (matching vanilla
+`LayerDefinitions.createRoots`). When multiple registrations target the same ID, the last
+registration wins (matching NeoForge `ClientHooks.registerLayerDefinition`).
+
+The game deduplicates accepted registrations (last-wins) and invokes each winning supplier once
+when assembling the frozen layer table. Overwritten suppliers never run. A supplier that is
+disabled, refuses or panics leaves no definition. Bakes and resource reloads do not call
+suppliers again.
 
 A `LayerDefinition` holds a `MeshDefinition` of named parts whose `CubeListBuilder` boxes sit
 at a `PartPose`, on a texture of the given size. Texture offsets, mirroring and
 `CubeDeformation` match vanilla's model builders. This listener is compiled in the API tests:
 
 ```rust,ignore
-{{#include ../../../../crates/sunrise-client/tests/mod_api_hooks.rs:register_layer_definitions}}
+{{#include ../../../../crates/sunrise-client/tests/it/mod_api_hooks.rs:register_layer_definitions}}
 ```
 
 `ClientHost::bake_layer` bakes a registered layer or a vanilla layer by its
@@ -37,11 +44,16 @@ are texels, +y down and the front towards -z; convert the mob's frame with scale
 `[1.0, -1.0, -1.0]` then translation `[0.0, -1.501, 0.0]`, as `LivingEntityRenderer` does.
 The sprite is the entity texture ID and the tint is `0xRRGGBB`."#]
     #[hook(
+        receiver = "associated",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "layers",
         context = "registration",
-        neoforge = "EntityRenderersEvent.RegisterLayerDefinitions"
+        answered_by = "mod",
+        registration_append = "custom",
+        neoforge = "EntityRenderersEvent.RegisterLayerDefinitions",
+        version = 4
     )]
-    fn register_layer_definitions();
+    fn register_layer_definitions(layers: &mut Vec<Answered<LayerDefinitionRegistration>>);
 }

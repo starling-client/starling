@@ -1,0 +1,3 @@
+ids = ["handle:LegacyRandom::begin_item", "handle:LegacyRandom::end_item", "handle:LegacyRandom::finish_lane", "handle:LegacyRandom::lane_done"]
+why = "Removes the ordered random lanes (LegacyRandom::begin_item, end_item, finish_lane and lane_done), which only the parallel mob island loop used; that loop was never compiled into the game and is deleted."
+migrate = "Draw from the random directly; nothing in the game or a mod called the lane methods."

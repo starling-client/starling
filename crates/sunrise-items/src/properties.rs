@@ -105,15 +105,7 @@ pub fn repairable(component: &Tag, item: &str, in_tag: impl FnMut(&str) -> bool)
 
 /// An NBT numeric component converted with Java's integer conversion rules.
 pub fn component_int(value: &Tag) -> Option<i32> {
-    Some(match value {
-        Tag::Byte(n) => i32::from(*n),
-        Tag::Short(n) => i32::from(*n),
-        Tag::Int(n) => *n,
-        Tag::Long(n) => *n as i32,
-        Tag::Float(n) => f32::from_bits(*n) as i32,
-        Tag::Double(n) => f64::from_bits(*n) as i32,
-        _ => return None,
-    })
+    sunrise_core::nbt::numeric_int(value)
 }
 
 /// An NBT number read as a component's float value.

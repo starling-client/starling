@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject local game artifacts even when somebody uses git add -f."""
+"""Reject local game artifacts and removed commercial features even when somebody uses git add -f."""
 
 import argparse
 import collections
@@ -13,9 +13,25 @@ ORIGINAL_JDK_TOOLS = {
     # Original observer of public Paper API events, with no server implementation code.
     "tools/fixtures/paper-trace-plugin/PaperTrace.java",
     "tools/JfrSummary.java",
+    # Original generator of the Java character tables: calls only the public Character API and prints ranges; no JDK implementation source.
+    "tools/JavaCharacterTables.java",
     "tests/java/JfrFixture.java",
+<<<<<<< sync-sunrise-1
     "tests/java/GameFolderChecks.java",
     # Our own comparison driver; it calls the player's pinned vanilla jars at run time and carries none of their code.
+=======
+    # Original differential-fuzz driver for java.lang.Math: calls only the public Math API on generated inputs (its
+    # "mthtable" case applies Mth's one-line sine-table formula, as crates/sunrise-core/src/geometry/trig.rs does).
+    "tools/jmath_fuzz/JmathFuzz.java",
+    # Original differential-fuzz driver for vanilla's math helpers: no game source; it calls the 26.3 jar's methods at
+    # run time (public ones, and Entity's private getInputVector by reflection) from the player's own prepared jars.
+    "tools/jmath_fuzz/VanillaMathFuzz.java",
+    # HISTORY-ONLY: the modified UTF-8 speed driver moved to mods/sunrise/src/test/java/dev/sunriselab/parity/.
+    # Keep its old path allowed so --history/--pre-push accept its legitimate historical addition.
+    "tools/modified_utf8_kit/java/Mutf8Bench.java",
+    # HISTORY-ONLY: this original comparison driver is no longer in the current tree.
+    # Keep its old path allowed so --history/--pre-push accept its legitimate historical addition.
+>>>>>>> sunrise/main
     "tools/refactors/api-pr3/JsonNbtOracle.java",
 }
 # The Android app's own classes (packaging/android/build_apk.py), Sunrise's code like the above.
@@ -47,6 +63,36 @@ RETIRED_TABLES = {"crates/sunrise-world/src/datafix/flat_tables.rs",
 TABLE_FINGERPRINTS = [r"minecraft:[a-z_]+\.[0-9]+", "[0-9]+(\t|\\\\t)minecraft:[a-z_]+(\t|\\\\t)"]
 TABLE_ENTRIES = 50
 
+# Commercial features #1473 removed from this fork. A sync from a tree that still
+# has them must not bring the paths back. Checked on the current tree only, not
+# on --history/--range/--pre-push: the files remain in git history from before
+# the removal, and main's history scan would otherwise fail.
+REMOVED_COMMERCIAL_PREFIXES = (
+    "crates/sunrise-cosmetics",
+    # Upstream's in-game side of the cosmetics (emotes, the emote wheel, their effects).
+    "crates/sunrise-client/src/game/cosmetics",
+    "crates/sunrise-client/src/game/interface/cosmetics",
+    "crates/sunrise-official-servers",
+)
+# The launcher lives in sunrise-org/sunrise-launcher (launcher split D1); its removed commercial pages and sculk art
+# went with the tree, so nothing under launcher/ comes back.
+REMOVED_TREE = "launcher/"
+
+
+def commercial(path):
+    """True when `path` is a removed commercial crate or game module, or anything under the removed launcher/ tree."""
+    if path.startswith(REMOVED_TREE):
+        return True
+    parsed = PurePosixPath(path)
+    for prefix in REMOVED_COMMERCIAL_PREFIXES:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+        parent = PurePosixPath(prefix)
+        # partner.rs besides a partner/ folder, and the same for cosmetics, shop, wardrobe, wardrobe_page.
+        if parsed.parent == parent.parent and parsed.stem == parent.name:
+            return True
+    return False
+
 
 def prohibited(path):
     parsed = PurePosixPath(path)
@@ -54,8 +100,10 @@ def prohibited(path):
     if path in ORIGINAL_JDK_TOOLS or path in ORIGINAL_ANDROID:
         return False
     # Original Sunrise mod sources may also be tracked.
-    if parsed.suffix == ".java" and path.startswith(("mods/sunrise/src/", "mods/sunrise-lab/src/")):
-        return not ("/dev/sunriselab/" in path)
+    # History keeps the paths from before the Sunrise rename (mods/horizon, dev.horizonlab).
+    if parsed.suffix == ".java" and path.startswith(("mods/sunrise/src/", "mods/sunrise-lab/src/",
+                                                     "mods/horizon/src/", "mods/horizon-lab/src/")):
+        return not ("/dev/sunriselab/" in path or "/dev/horizonlab/" in path)
     return (
         bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS)
         or parsed.suffix.lower() in PRIVATE_EXTENSIONS
@@ -78,20 +126,30 @@ def copied_tables():
 
 
 def paths_in_repository(history=False, revisions=None):
+    """The set of paths in the tree, or in the history of `revisions` (every ref when None)."""
     if not history:
         result = subprocess.check_output(["git", "ls-files", "-z"])
-        return result.decode("utf-8").split("\0")
+        return set(result.decode("utf-8").split("\0"))
     # An empty push (including deletions only) must not fall back to HEAD or --all.
     if revisions is not None and not revisions:
-        return []
+        return set()
     roots = ["--all"] if revisions is None else revisions
     # Include diffs against merge parents so merge-resolution-only artifacts are caught.
     # --no-renames: a rename is listed as a deletion and an addition, so both paths still show, and git skips its
     # rename search on every large merge diff (53 s -> 8 s on main's whole history).
     # Git pushes the stored objects, not the history presented by local replace refs.
-    result = subprocess.check_output(["git", "--no-replace-objects", "log", "--format=", "--name-only",
-                                      "-z", "-m", "--no-renames", *roots, "--"])
-    return [path.lstrip("\n") for path in result.decode("utf-8").split("\0")]
+    # Millions of entries in a long history repeat a few thousand paths: read the log as a stream into a set, so
+    # memory follows the distinct paths, not the length of the history (main's whole log held at once took 1.9 GB).
+    paths, pending = set(), b""
+    with subprocess.Popen(["git", "--no-replace-objects", "log", "--format=", "--name-only",
+                           "-z", "-m", "--no-renames", *roots, "--"], stdout=subprocess.PIPE) as log:
+        while chunk := log.stdout.read(1 << 20):
+            *entries, pending = (pending + chunk).split(b"\0")
+            paths.update(entries)
+    if log.returncode:
+        raise subprocess.CalledProcessError(log.returncode, log.args)
+    paths.add(pending)
+    return {path.decode("utf-8").lstrip("\n") for path in paths}
 
 
 def pushed_revisions(stream):
@@ -116,13 +174,21 @@ def main():
     revisions = (pushed_revisions(sys.stdin) if args.pre_push else [args.range] if args.range
                  else ["HEAD"] if args.history else None)
     history = args.history or args.pre_push or bool(args.range)
-    # Millions of entries in a long history repeat a few thousand paths: judge each path once.
-    rejected = sorted(path for path in set(paths_in_repository(history, revisions)) if path and prohibited(path))
+    # Each path is judged once.
+    tracked = paths_in_repository(history, revisions)
+    rejected = sorted(path for path in tracked if path and prohibited(path))
     tables = [] if history else sorted(copied_tables())
+    # The current tree only: history still contains the pre-removal paths.
+    brought_back = [] if history else sorted(path for path in tracked if path and commercial(path))
     if tables:
         print("Vanilla's data fixer tables come from the player's jar (sunrise-prepare), not from Git:",
               file=sys.stderr)
         for path in tables:
+            print(f"  {path}", file=sys.stderr)
+        return 1
+    if brought_back:
+        print("Removed commercial features must not come back:", file=sys.stderr)
+        for path in brought_back:
             print(f"  {path}", file=sys.stderr)
         return 1
     if rejected:

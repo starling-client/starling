@@ -1,14 +1,68 @@
 //! A key press while a world is open (`KeyboardHandler.keyPress` and the gameplay mappings).
 use super::inventory_input::drop_whole_stack;
 use super::*;
+use sunrise_client::keybinds::VanillaMappingSlot;
+
+const GUI_KEYS: [&str; 5] = [
+    "key.toggleGui",
+    "key.advancements",
+    "key.socialInteractions",
+    "key.chat",
+    "key.command",
+];
 
 impl Game<'_> {
+    /// `new InventoryScreen(player)`: the player's inventory, or in creative
+    /// mode the creative inventory `InventoryScreen.init` swaps in.
+    pub(super) fn open_player_inventory(&mut self) {
+        if self.creative {
+            self.set_screen(Screen::Creative);
+            self.refresh_creative_tabs();
+            self.creative_screen.reopen();
+            self.refresh_saved_hotbars();
+        } else {
+            self.set_screen(Screen::Inventory);
+        }
+        self.capture(false);
+    }
     /// A key press while a world is open (keyboard or control socket). `key`
     /// is the vanilla default the pressed mapping translates to, `raw` the
     /// physical key as pressed (the same where the caller had no window key):
     /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
+        // Scripted presses and controller presses are delivered to the same mappings
+        // as window input; direct screen keys remain immediate.
+        if !self.mod_mappings_screen_open() && !self.replay.playing() {
+            let key = if key == KeyCode::Enter {
+                KeyCode::KeyT
+            } else {
+                key
+            };
+            if let Some(slot) = VanillaMappingSlot::by_default_key(key)
+                && Self::tick_mapping(slot.definition().0)
+            {
+                self.vanilla_mappings.click(slot);
+                return Ok(());
+            }
+        }
+        self.immediate_key_pressed(key, raw)
+    }
+
+    pub(super) fn tick_mapping(name: &str) -> bool {
+        matches!(
+            name,
+            "key.togglePerspective"
+                | "key.smoothCamera"
+                | "key.inventory"
+                | "key.quickActions"
+                | "key.swapOffhand"
+                | "key.drop"
+        ) || GUI_KEYS.contains(&name)
+            || name.starts_with("key.hotbar.")
+    }
+
+    pub(super) fn immediate_key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         self.direct_craft_stop();
         if self.screen == Screen::Playing && self.replay.playing() {
             self.studio_key(key);
@@ -30,20 +84,17 @@ impl Game<'_> {
             return Ok(());
         }
         if self.sort_key_press(key)
-            || sunrise_client::keybinds::key_name(key)
-                .is_some_and(|name| self.hud_editor_key_press(name))
+            || sunrise_client::keybinds::key_name(key).is_some_and(|name| {
+                self.hud_editor_key_press(name) || self.shader_pack_key_press(name)
+            })
         {
             return Ok(());
         }
         if key == KeyCode::Escape && self.mod_browser_back() {
             return Ok(());
         }
-        if self.remote.is_some() && self.remote_key(key)? {
-            return Ok(());
-        }
         match key {
             KeyCode::Escape => match self.screen {
-                Screen::EmoteWheel => self.close_emote_wheel(None),
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
                     if self.replay.playing() && self.captured {
@@ -59,7 +110,7 @@ impl Game<'_> {
                     self.pad_clear_focus();
                     self.mod_browser_closed();
                     self.carried = None;
-                    self.set_screen(Screen::Playing);
+                    self.set_screen_with(Screen::Playing, |g| g.close_creative_menu());
                     self.capture(true);
                 }
                 Screen::Paused | Screen::Inventory => {
@@ -68,7 +119,14 @@ impl Game<'_> {
                     if self.screen == Screen::Inventory && self.recipe_book_escape() {
                         return Ok(());
                     }
-                    self.close_container();
+                    // AbstractContainerScreen.onClose closes the menu (on a server, with
+                    // a ServerboundContainerClosePacket); PauseScreen.onClose only
+                    // swaps the screen.
+                    if self.screen == Screen::Inventory {
+                        self.close_container();
+                    } else {
+                        self.pad_clear_focus();
+                    }
                     self.pause_focus = None;
                     self.set_screen(Screen::Playing);
                     self.pause_menu = true;
@@ -95,7 +153,6 @@ impl Game<'_> {
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
-                Screen::Studio => self.close_studio_screen(),
                 Screen::HudEditor => self.close_hud_editor(),
             },
             // `checkHotbarKeyPressed`: the keys the controls bind to the off
@@ -132,7 +189,6 @@ impl Game<'_> {
                 && self.creative_screen.tab().search
                 && self.search_tab_hotbar_key(key) => {}
             KeyCode::KeyT if self.screen == Screen::Inventory => self.recipe_focus_search(),
-            KeyCode::KeyT if self.screen == Screen::Playing => self.open_chat_method(""),
             // CreativeModeInventoryScreen.keyPressed: the chat key opens the
             // search tab from another tab, and `ignoreTextInput` drops the
             // letter it would have typed.
@@ -145,88 +201,17 @@ impl Game<'_> {
                     self.creative_ignore_text = true;
                 }
             }
-            // key.advancements.
-            KeyCode::KeyL if self.screen == Screen::Playing => {
-                self.open_advancements(false);
-                // Opened from the keybinds, like the inventory: vanilla releases
-                // an active use in the same tick.
-                self.release_use_for_keybind_screen();
-            }
-            // key.socialInteractions (Gui.handleKeybinds): only on a server; in single player
-            // the action bar says so, and the narrator.
-            KeyCode::KeyP if self.screen == Screen::Playing && !self.is_multiplayer_server() => {
-                let message = sunrise_client::text::Text::translate(
-                    "multiplayer.socialInteractions.not_available",
-                    &[],
-                );
-                self.titles.set_overlay(message.clone(), false);
-                self.say_system_now(&message);
-            }
-            KeyCode::KeyP if self.screen == Screen::Playing => {
-                self.open_social(false);
-                self.release_use_for_keybind_screen();
-            }
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
-            // key.emote (Sunrise's): the emote wheel, a tap again closes it.
-            KeyCode::KeyB if self.screen == Screen::Playing && super::cosmetics::enabled() => {
-                self.open_emote_wheel();
-            }
-            KeyCode::KeyB if self.screen == Screen::EmoteWheel => self.close_emote_wheel(None),
-            KeyCode::Digit1
-            | KeyCode::Digit2
-            | KeyCode::Digit3
-            | KeyCode::Digit4
-            | KeyCode::Digit5
-            | KeyCode::Digit6
-            | KeyCode::Digit7
-            | KeyCode::Digit8
-                if self.screen == Screen::EmoteWheel =>
-            {
-                let slot = (key as u32).wrapping_sub(KeyCode::Digit1 as u32) as usize;
-                self.close_emote_wheel(Some(slot));
-            }
-            // key.quickActions: only open if a datapack provides dialog actions.
-            KeyCode::KeyG if self.screen == Screen::Playing => {
-                if self.has_quick_actions() {
-                    self.open_quick_actions();
-                }
-            }
-            KeyCode::Slash if self.screen == Screen::Playing => self.open_chat_method("/"),
-            // key.toggleGui is a KeyMapping: it clicks only with no screen open.
-            KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
             KeyCode::F11 => self.toggle_fullscreen(),
-            KeyCode::F5 if self.screen == Screen::Playing && !self.replay.playing() => {
-                self.cycle_camera()
-            }
             KeyCode::KeyE
                 if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
             KeyCode::KeyE => match self.screen {
-                Screen::Playing if self.spectator() || self.in_portal_transition() => {}
-                Screen::Playing => {
-                    // handleKeybinds: the number keys select before key.inventory.
-                    self.select_queued_hotbar();
-                    // key.inventory while riding a tamed mount opens its inventory.
-                    if !self.open_ridden_mount_menu() {
-                        if self.tutorial.open_inventory() {
-                            self.persist_tutorial_step();
-                        }
-                        if self.creative {
-                            self.set_screen(Screen::Creative);
-                            self.refresh_creative_tabs();
-                            self.creative_screen.reopen();
-                            self.refresh_saved_hotbars();
-                        } else {
-                            self.set_screen(Screen::Inventory);
-                        }
-                        self.capture(false);
-                    }
-                }
                 Screen::Creative => {
                     self.pad_clear_focus();
                     if let Some(c) = self.carried.take() {
                         let _ = self.add_stack_to_inventory(c);
                     }
-                    self.set_screen(Screen::Playing);
+                    self.set_screen_with(Screen::Playing, |g| g.close_creative_menu());
                     self.capture(true);
                 }
                 Screen::Inventory => {
@@ -236,6 +221,7 @@ impl Game<'_> {
                 }
                 _ => {}
             },
+<<<<<<< sync-sunrise-1
             // key.swapOffhand: on a server, ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND
             // (the server swaps the hands and sends both slots back; spectators can't).
             KeyCode::KeyF if self.screen == Screen::Playing && self.remote.is_some() => {
@@ -289,6 +275,8 @@ impl Game<'_> {
                     self.hotbar_presses.push(slot);
                 }
             }
+=======
+>>>>>>> sunrise/main
             _ if self.screen == Screen::Paused && self.pause_menu => {
                 self.pause_key(key)?;
             }
@@ -300,6 +288,86 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// Minecraft.handleKeybinds and Gui.handleKeybinds, in their polling order.
+    /// Opening a screen releases the live mappings, including clicks not yet reached.
+    pub(super) fn handle_play_keybinds(&mut self) {
+        while self.consume_mapping_click("key.togglePerspective") {
+            self.cycle_camera();
+        }
+        while self.consume_mapping_click("key.smoothCamera") {
+            self.smooth_camera_action();
+        }
+        for name in GUI_KEYS {
+            if name == "key.command" && self.mod_mappings_screen_open() {
+                break;
+            }
+            while self.consume_mapping_click(name) {
+                match name {
+                    "key.toggleGui" => self.toggle_hide_gui(),
+                    "key.advancements" => self.open_advancements(false),
+                    "key.socialInteractions" if self.is_multiplayer_server() => {
+                        self.open_social(false)
+                    }
+                    "key.socialInteractions" => {
+                        let message = sunrise_client::text::Text::translate(
+                            "multiplayer.socialInteractions.not_available",
+                            &[],
+                        );
+                        self.titles.set_overlay(message.clone(), false);
+                        self.say_system_now(&message);
+                    }
+                    "key.chat" => self.open_chat_method(""),
+                    "key.command" => self.open_chat_method("/"),
+                    _ => unreachable!("listed GUI key"),
+                }
+            }
+        }
+        self.select_queued_hotbar();
+        while self.consume_mapping_click("key.inventory") {
+            self.open_inventory_key_action();
+        }
+        while self.consume_mapping_click("key.quickActions") {
+            self.open_quick_actions();
+        }
+        while self.consume_mapping_click("key.swapOffhand") {
+            if !self.spectator() {
+                if self.remote.is_some() {
+                    self.remote_swap_hands();
+                } else {
+                    self.own_swap_hands();
+                }
+            }
+        }
+        while self.consume_mapping_click("key.drop") {
+            if !self.spectator() {
+                if self.remote.is_some() {
+                    let all = self.has_control_down() || self.input_takes_stack_drop();
+                    self.remote_drop(all);
+                } else {
+                    let all = drop_whole_stack(self.modifiers) || self.input_takes_stack_drop();
+                    self.drop_held_item(all);
+                }
+            }
+        }
+    }
+
+    /// The inventory key either asks the vehicle's server menu or opens the local inventory.
+    pub(super) fn open_inventory_key_action(&mut self) {
+        if self.in_portal_transition() {
+            return;
+        }
+        if self.remote.is_some() && (self.riding_mount_with_menu() || self.riding_chest_boat()) {
+            self.remote_request_mount_inventory();
+        } else if self.remote.is_some() || (!self.spectator() && !self.open_ridden_mount_menu()) {
+            if self.tutorial.open_inventory() {
+                self.persist_tutorial_step();
+            }
+            self.recipe_ui.reset_screen();
+            self.craft_size = 2;
+            self.open_player_inventory();
+        }
+    }
+
     /// handlePlayerAction SWAP_ITEM_WITH_OFFHAND for the window's own player
     /// with no server: the mods hear it as a server's players
     /// (`player_swap_hands`), and may stop it or change what each hand gets.
@@ -338,12 +406,12 @@ impl Game<'_> {
 #[cfg(test)]
 mod swap_hands_tests {
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_client::items::ItemStack;
     use mod_api::{Flow, Hooks, PlayerSwapHandsEvent, ServerHost};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    use sunrise_client::items::ItemStack;
 
     /// Puts a torch in the off hand instead of the sword, or cancels; counts the calls.
     struct Torch(Arc<AtomicBool>, Arc<AtomicUsize>);
@@ -369,7 +437,7 @@ mod swap_hands_tests {
     /// The window's own swap contract: a cancel
     /// keeps both hands, and a listener's stack lands in the off hand.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_own_player_swap_asks_the_listener_for_each_hand() {
         let (cancel, calls) = (
             Arc::new(AtomicBool::new(true)),
@@ -416,7 +484,7 @@ mod swap_hands_tests {
     /// both hands as they were, and a listener's stack reaches its off-hand
     /// slot.
     #[test]
-    #[ignore = "needs prepared resources and isolated scratch homes/cwd"]
+    #[ignore = "daily"]
     fn a_guest_swap_through_its_connection_is_heard_once_and_sends_the_hands() {
         use crate::game::play_ping_tests::{fixture, output};
         use sunrise_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
@@ -491,6 +559,111 @@ mod swap_hands_tests {
                 g.offhand.as_ref().map(|s| &*s.item),
                 Some("minecraft:torch")
             );
+        });
+    }
+}
+
+#[cfg(test)]
+mod pause_close_tests {
+    use crate::game::{Screen, native_entity_refs::tests::with_game};
+    use sunrise_protocol::packets::play::Serverbound as S;
+    use winit::keyboard::KeyCode;
+
+    /// On a server, Escape out of the inventory closes its menu with a
+    /// ServerboundContainerClosePacket; Escape out of the pause menu sends
+    /// nothing (PauseScreen.onClose only swaps the screen).
+    #[test]
+    #[ignore = "daily"]
+    fn escape_out_of_the_pause_menu_closes_no_container() {
+        with_game(|game| {
+            let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
+            peer.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            while peer.recv().is_ok() {}
+            for (screen, closes) in [(Screen::Paused, 0), (Screen::Inventory, 1)] {
+                game.set_screen(screen);
+                game.key_pressed(KeyCode::Escape, KeyCode::Escape).unwrap();
+                assert_eq!(game.screen, Screen::Playing);
+                let mut sent = 0;
+                while let Ok((id, bytes)) = peer.recv() {
+                    if matches!(S::decode(id, &bytes), Ok(S::ContainerClose(_))) {
+                        sent += 1;
+                    }
+                }
+                assert_eq!(sent, closes, "Escape out of {screen:?}");
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod creative_close_tests {
+    use crate::game::{Screen, native_entity_refs::tests::with_game};
+    use mod_api::{ClientHost, Hooks, ModEntry, ScreenOpening, ScreenOpeningEvent};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use sunrise_protocol::packets::play::Serverbound as S;
+    use winit::keyboard::KeyCode;
+
+    /// Keeps the open screen while `veto` is set.
+    struct Veto(Arc<AtomicBool>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Veto {
+        fn screen_opening(
+            &self,
+            _host: &dyn ClientHost,
+            _event: &mut ScreenOpeningEvent<'_>,
+        ) -> Option<ScreenOpening> {
+            self.0
+                .load(Ordering::SeqCst)
+                .then_some(ScreenOpening::Cancel)
+        }
+    }
+
+    /// On a server, leaving the creative inventory closes its menu, window 0, with one
+    /// ServerboundContainerClosePacket (LocalPlayer.closeContainer), by Escape and by the
+    /// inventory key; a close a mod vetoes keeps the screen and tells the server nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn leaving_the_creative_inventory_tells_the_server() {
+        let veto = Arc::new(AtomicBool::new(true));
+        let mods: mod_api::Mods = vec![ModEntry::new("veto", Box::new(Veto(veto.clone())))].into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
+                peer.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                    .unwrap();
+                let closes = |peer: &mut sunrise_protocol::connection::ConnReader| {
+                    let mut closed = Vec::new();
+                    while let Ok((id, bytes)) = peer.recv() {
+                        if let Ok(S::ContainerClose(p)) = S::decode(id, &bytes) {
+                            closed.push(p.container);
+                        }
+                    }
+                    closed
+                };
+                veto.store(false, Ordering::SeqCst);
+                game.set_screen(Screen::Creative);
+                closes(&mut peer);
+                veto.store(true, Ordering::SeqCst);
+                game.key_pressed(KeyCode::Escape, KeyCode::Escape).unwrap();
+                assert_eq!(
+                    game.screen,
+                    Screen::Creative,
+                    "a vetoed close keeps the screen"
+                );
+                assert!(closes(&mut peer).is_empty());
+                veto.store(false, Ordering::SeqCst);
+                for key in [KeyCode::Escape, KeyCode::KeyE] {
+                    game.set_screen(Screen::Creative);
+                    closes(&mut peer);
+                    game.key_pressed(key, key).unwrap();
+                    assert_eq!(game.screen, Screen::Playing, "{key:?}");
+                    assert_eq!(closes(&mut peer), [0], "{key:?}");
+                }
+            });
         });
     }
 }

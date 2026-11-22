@@ -1,0 +1,2 @@
+ids = ["type:RidePlayerRefusal", "handle:EntityRef::ride_player"]
+why = "Adds EntityRef::ride_player, vanilla's Entity.startRiding with a player as the vehicle (Tinkers' Construct's piggyback pack): a mob seated on a server player at its passenger point, told to every client including the vehicle player's own, with named refusals. EntityRef::start_riding keeps refusing a player vehicle. entity_mount can now name minecraft:player as vehicle_kind; its hook version stays, since vehicle_kind was always an entity type id and no field changed."

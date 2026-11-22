@@ -1,4 +1,12 @@
 //! Original comparison transport for terracotta bands and surface queries.
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{self, Write},
+    path::Path,
+    sync::Arc,
+};
 use sunrise_core::{
     noise::{NanRange, Noise},
     random::{LegacyRandom, PositionalRandom, RandomSource, XoroshiroRandom},
@@ -9,14 +17,6 @@ use sunrise_world::{
         decode_noise,
         material_surface::{ClayBandBlocks, ClayBands, MaterialSurface},
     },
-};
-use serde_json::Value;
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::{self, Write},
-    path::Path,
-    sync::Arc,
 };
 #[derive(Debug)]
 struct ConstantNoise(f32);

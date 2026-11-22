@@ -4,8 +4,8 @@
 Fluid cases send UseItem into a deep pool; a UseItemOn control has a mob
 under the last look direction. Compare spawn, egg count and used stat. Covers
 lava/water sources, flowing lava, a solid obstruction, waterlogged blocks,
-creative, adventure (with/without can_place_on) and peaceful monster eggs, and the
-Ender Dragon's egg on a block (Sunrise simulates the dragon apart from other mobs).
+creative, adventure (with/without can_place_on), peaceful monster eggs, removed
+and replaced entity_data, and the Ender Dragon's egg on a block.
 """
 import json
 try:
@@ -25,6 +25,9 @@ CASES = [
     ('adventure-allowed', 'lava', 'strider', 'adventure',
      '[minecraft:can_place_on={blocks:"minecraft:lava"}]', True),
     ('peaceful', 'lava', 'zombie', 'survival', '', False),
+    ('removed-type', 'water', 'zombie', 'survival', '[!minecraft:entity_data]', False),
+    ('configured-type', 'water', 'pig', 'survival',
+     '[minecraft:entity_data={id:"minecraft:cow",NoAI:1b}]', True),
     ('block-use-dragon', 'stone', 'ender_dragon', 'survival', '', True),
 ]
 SCRIPT = [("setup", ["chat on", "cmd Alice gamerule spawn_mobs false"])]
@@ -47,14 +50,18 @@ for name, block, mob, mode, component, spawn in CASES:
         *([f'cmd Alice gamemode {mode}'] if mode != 'creative' else []),
     ]
     previous_mode = mode
+    target = 'minecraft:cow,nbt={NoAI:1b}' if name == 'configured-type' else f'minecraft:{mob}'
+    no_original_type = ([f'cmd Alice execute unless entity @e[type=minecraft:{mob}]']
+                        if name == 'configured-type' else [])
     SCRIPT += [(name + '-setup', setup), (name + '-use', ['use-on Alice 4 80 -1' if name.startswith('block-use') else 'use Alice 50']),
                (name + '-check', [
-                   f'cmd Alice execute {"if" if spawn else "unless"} entity @e[type=minecraft:{mob}]',
+                   f'cmd Alice execute {"if" if spawn else "unless"} entity @e[type={target}]',
+                   *no_original_type,
                    f'cmd Alice clear @s {egg} 0',
                    f'cmd Alice execute {"if" if spawn else "unless"} score @s eggs matches 1..',
                ])]
-    EXPECTED += [f'{name}-check pass', f'{name}-check eggs {7 if spawn and mode != "creative" else 8}',
-                 f'{name}-check pass']
+    EXPECTED += [f'{name}-check pass'] * (1 + len(no_original_type))
+    EXPECTED += [f'{name}-check eggs {7 if spawn and mode != "creative" else 8}', f'{name}-check pass']
 
 
 def shown(lines):

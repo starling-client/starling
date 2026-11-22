@@ -3,6 +3,9 @@
 pub trait Hooks {
     /// A player's display name was formatted. Replace `displayname` to change it.
     /// Both sides: `context.side()` says which. It runs wherever vanilla asks `Player.getDisplayName()`: when a chat line, a join or leave line, a command's feedback, a death message or an advancement message is built, and for the name tag over a player (every frame it shows, so it is not asked when no mod listens). Answer from the arguments and `context` alone, and fast: `context` holds the side, the registries and the settings of the resource generation, and a `/reload` builds the next one.
+    /// A name the API can't carry (a component tree deeper than the text limit) skips the
+    /// listeners for that call; a `displayname` the engine can't take back is dropped, and the
+    /// name stays as it was.
     #[hook(
         side = "both",
         contract = "collect",
@@ -13,5 +16,5 @@ pub trait Hooks {
         version = 2,
         target = "sunrise_client_lib::lan::hub::native_player_name_format"
     )]
-    fn player_name_format();
+    fn player_name_format(username: &Text, displayname: &mut Text);
 }

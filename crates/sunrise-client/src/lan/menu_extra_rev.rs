@@ -1,9 +1,8 @@
 //! The menu-extra revision capability, server side. In configuration the server asks a client
-//! whose brand is Sunrise's which `sunrise:menu_extra` payload layout it reads, and keeps the
-//! answer for play (`PlayerSender::menu_extra_rev`). A vanilla client is never asked. A client
-//! that does not answer before it acknowledges `FinishConfiguration`, or answers another
-//! revision, is sent the legacy layout (a menu of a block, never one without).
-//! An answer the server did not ask for, or a second one, closes the connection.
+//! whose brand is Sunrise's which `sunrise:menu_extra` revision it reads, and keeps the
+//! answer for play (`PlayerSender::menu_extra_rev`). A vanilla client is never asked.
+//! An answer the server did not ask for, a second one, or an unsupported revision (0 or above
+//! `menu_extra::REVISION`) closes the connection.
 use sunrise_protocol::{menu_extra, packets::configuration as cfg};
 
 /// One configuration phase's exchange.
@@ -50,20 +49,22 @@ mod tests {
     #[test]
     fn an_answer_is_kept_only_when_asked_and_once() {
         let mut cap = Capability::default();
-        assert!(cap.receive(&menu_extra::answer()).is_err(), "unasked");
+        let answer = menu_extra::answer(menu_extra::REVISION);
+        assert!(cap.receive(&answer).is_err(), "unasked");
         let _ = cap.query();
-        assert_eq!(cap.receive(&menu_extra::answer()).unwrap(), ());
+        assert_eq!(cap.receive(&answer).unwrap(), ());
         assert_eq!(cap.revision(), menu_extra::REVISION);
-        assert!(cap.receive(&menu_extra::answer()).is_err(), "second");
+        assert!(cap.receive(&answer).is_err(), "second");
     }
 
     #[test]
-    fn another_revisions_answer_keeps_the_legacy_layout() {
-        let mut cap = Capability::default();
-        let _ = cap.query();
-        let older = [1, menu_extra::REVISION + 1];
-        assert_eq!(cap.receive(&older).unwrap(), ());
-        assert_eq!(cap.revision(), 0);
+    fn unsupported_revision_answer_is_rejected() {
+        for invalid in [0, menu_extra::REVISION + 1] {
+            let mut cap = Capability::default();
+            let _ = cap.query();
+            assert!(cap.receive(&menu_extra::answer(invalid)).is_err());
+            assert_eq!(cap.revision(), 0);
+        }
     }
 
     /// What a client saw and what the server kept for play.
@@ -86,16 +87,16 @@ mod tests {
     /// A client with `brand` joins a server and answers the revision query once it is asked.
     fn join(brand: &str, answer: Option<&[u8]>) -> Joined {
         use crate::lan::{Lan, NetConfig, NetEvent};
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+        use sunrise_core::vanilla_bytes::Writer;
         use sunrise_protocol::{
-            buf::Writer,
             connection::Connection,
             crypto::offline_uuid,
             packets::{Empty, handshake, login},
             payload_negotiation::{self as negotiation, Control, Manifest},
-        };
-        use std::{
-            sync::Arc,
-            time::{Duration, Instant},
         };
 
         let config = NetConfig {
@@ -215,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_sunrise_client_keeps_the_legacy_layout() {
+    fn a_silent_sunrise_client_has_revision_zero() {
         assert_eq!(
             join("sunrise", None),
             Joined {
@@ -223,6 +224,15 @@ mod tests {
                 kept: Ok(0),
             }
         );
+    }
+
+    #[test]
+    fn an_unsupported_revision_answer_disconnects_the_client() {
+        for invalid in [0, menu_extra::REVISION + 1] {
+            let joined = join("sunrise", Some(&[1, invalid]));
+            assert_eq!(joined.asked, Some(menu_extra::query()));
+            assert!(joined.kept.is_err());
+        }
     }
 
     #[test]

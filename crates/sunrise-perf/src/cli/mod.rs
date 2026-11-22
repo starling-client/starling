@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sunrise_perf_format::v1::Side;
 use serde::Serialize;
+use sunrise_perf_format::v1::Side;
 
 use crate::follow::Follower;
 use crate::mcp;

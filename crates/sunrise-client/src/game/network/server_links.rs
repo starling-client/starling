@@ -190,9 +190,9 @@ impl Game<'_> {
         batch.sprite_scaled(
             atlas,
             if wh {
-                "gui/sprites/dialog/warning_button_highlighted"
+                "dialog/warning_button_highlighted"
             } else {
-                "gui/sprites/dialog/warning_button"
+                "dialog/warning_button"
             },
             wx,
             wy,
@@ -251,7 +251,7 @@ impl Game<'_> {
         }
     }
     /// A click on `Screen::ServerLinks`: a link, the warning button or Back.
-    pub(super) fn server_links_click(&mut self) -> Result<()> {
+    pub(super) fn server_links_click(&mut self) -> Result<bool> {
         let (w, h) = self.gui_size();
         let links = self.server_links().to_vec();
         let top = list_top(h, links.len()) - self.links_ui.scroll.trunc();
@@ -263,7 +263,7 @@ impl Game<'_> {
         {
             self.audio.play_button_click();
             self.click_link(&links[i].link);
-            return Ok(());
+            return Ok(true);
         }
         let title = Text::translate("menu.server_links.title", &[]);
         let tw = self.gui.atlas.font.width_text(&title);
@@ -271,14 +271,15 @@ impl Game<'_> {
         if ui::hovered(self.cursor, wx, wy, WARNING_BUTTON, WARNING_BUTTON) {
             self.audio.play_button_click();
             self.set_screen(Screen::DialogWarning);
-            return Ok(());
+            return Ok(true);
         }
         let (bx, by) = back_button(w, h);
         if ui::hovered(self.cursor, bx, by, 200.0, 20.0) {
             self.audio.play_button_click();
             self.set_screen(Screen::Paused);
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
     /// `Screen.clickUrlAction`: "Web Links" off ignores the click; "Prompt on
     /// Links" asks with ConfirmLinkScreen, else the browser opens directly.
@@ -374,7 +375,7 @@ impl Game<'_> {
     }
     /// ConfirmLinkScreen's answer: yes opens the browser, the middle button
     /// copies the link, no closes; all return to Server Links.
-    pub(super) fn confirm_link_click(&mut self) {
+    pub(super) fn confirm_link_click(&mut self) -> bool {
         let (w, h) = self.gui_size();
         let url = self.links_ui.confirm.clone().unwrap_or_default();
         let layout = confirm_link_layout(&self.gui.atlas, (w, h), &url, self.links_ui.trusted);
@@ -391,8 +392,9 @@ impl Game<'_> {
                 _ => {}
             }
             self.set_screen(self.confirm_link_back());
-            return;
+            return true;
         }
+        false
     }
     /// `DialogScreen.WarningScreen`: the custom-screens note, a disconnect
     /// button ("Custom screen rejected" is the shown reason) and Back.
@@ -441,7 +443,7 @@ impl Game<'_> {
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
     }
     /// WarningScreen's answer: disconnect, or back to Server Links.
-    pub(super) fn dialog_warning_click(&mut self) -> Result<()> {
+    pub(super) fn dialog_warning_click(&mut self) -> Result<bool> {
         let (w, h) = self.gui_size();
         let layout = dialog_warning_layout(&self.gui.atlas, (w, h));
         for (i, (x, y)) in layout.buttons.iter().enumerate() {
@@ -452,17 +454,17 @@ impl Game<'_> {
             if i == 0 {
                 // DialogConnectionAccess.disconnect: leave with the custom
                 // screens' reason.
-                let reason = self.translate_with_fallback(
+                self.leave_server(Some(Text::translate_with_fallback(
                     "menu.custom_screen_info.disconnect",
                     "Custom screen rejected",
-                );
-                self.leave_server(Some(reason))?;
+                    &[],
+                )))?;
             } else {
                 self.set_screen(Screen::ServerLinks);
             }
-            return Ok(());
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 }
 

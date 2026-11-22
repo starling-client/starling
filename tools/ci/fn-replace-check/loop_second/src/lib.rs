@@ -14,8 +14,8 @@ impl mod_api::Hooks for Mod {
     }
     fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut mod_api::BlocksEvent<'_>) {
         event
-            .blocks
-            .push(mod_api::Block::new(COUNTER, "minecraft:stone"));
+            .register(mod_api::Block::new(COUNTER, "minecraft:stone"))
+            .unwrap();
     }
 }
 

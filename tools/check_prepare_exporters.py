@@ -42,8 +42,9 @@ def normalize(path):
         value = clean(value)
     elif path.name == 'creative-inventory.json':
         for tab in value['tabs']:
-            if 'tags' in tab:
-                tab['tags'] = [sorted(tags) for tags in tab['tags']]
+            for entry in tab.get('search_metadata', []):
+                if 'tags' in entry:
+                    entry['tags'] = sorted(entry['tags'])
     return value
 
 

@@ -1,11 +1,11 @@
 //! Transport for the vanilla quad sorting / viewpoint parity gate.
-use sunrise_client::gfx::translucency::{SortState, Sorter, quad_center};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
     fs,
     io::{BufWriter, Write},
 };
+use sunrise_client::gfx::translucency::{SortState, Sorter, quad_center};
 
 #[derive(Deserialize)]
 struct Case {
@@ -31,7 +31,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|&camera| {
                 let update = state
-                    .update(camera, case.origin, &mut cache_sorter)
+                    .update(camera, camera, case.origin, false, &mut cache_sorter)
                     .is_some();
                 let local = std::array::from_fn(|i| (camera[i] - f64::from(case.origin[i])) as f32);
                 json!({"indices": sorter.sort(&centers, local), "update": update})

@@ -7,9 +7,9 @@ use crate::{
     registries::Registries,
     text::{self, Style, Text},
 };
-use sunrise_core::nbt::Tag;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use sunrise_core::nbt::Tag;
 
 /// A text component in its JSON form (what `ComponentSerialization` holds).
 pub type Comp = Value;
@@ -499,6 +499,8 @@ impl CollisionRule {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Team {
+    /// Told apart from a team added later under this name.
+    pub identity: Identity,
     pub name: String,
     pub display_name: Comp,
     pub color: Option<String>,
@@ -513,8 +515,9 @@ pub struct Team {
     pub players: HashSetOrder,
 }
 impl Team {
-    fn new(name: &str) -> Self {
+    fn new(name: &str, identity: Identity) -> Self {
         Self {
+            identity,
             name: name.to_owned(),
             display_name: literal(name),
             color: None,
@@ -688,8 +691,19 @@ pub fn death_message_reaches(board: &Scoreboard, dying: &str, other: &str) -> bo
 
 // ---- objectives and scores ---------------------------------------------
 
+/// The identity the board gives each objective and team it adds: never reused, not saved, and left out of
+/// comparisons, so two boards with the same contents are equal.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Identity(pub u64);
+impl PartialEq for Identity {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct Objective {
+    /// Told apart from an objective added later under this name.
+    pub identity: Identity,
     pub name: String,
     pub criteria: String,
     pub display_name: Comp,
@@ -770,6 +784,8 @@ pub struct Scoreboard {
     pub teams: Vec<Team>,
     team_order: OpenOrder,
     team_of: BTreeMap<String, String>,
+    /// The identity the next added objective gets.
+    next_identity: Identity,
 }
 impl Default for Scoreboard {
     fn default() -> Self {
@@ -783,6 +799,7 @@ impl Default for Scoreboard {
             teams: Vec::new(),
             team_order: OpenOrder::default(),
             team_of: BTreeMap::new(),
+            next_identity: Identity(1),
         }
     }
 }
@@ -794,6 +811,19 @@ impl Scoreboard {
     fn reorder(&mut self) {
         ranked(&mut self.objectives, &self.objective_order, |o| &o.name);
         ranked(&mut self.teams, &self.team_order, |t| &t.name);
+    }
+    /// Puts back a copy of this board taken earlier. Identities handed out since stay used: an
+    /// objective added and rolled back is never mistaken for one added after.
+    pub fn restore(&mut self, saved: Scoreboard) {
+        let next = self.next_identity.0.max(saved.next_identity.0);
+        *self = saved;
+        self.next_identity = Identity(next);
+    }
+    pub fn team_by_identity(&self, identity: u64) -> Option<&Team> {
+        self.teams.iter().find(|t| t.identity.0 == identity)
+    }
+    pub fn objective_by_identity(&self, identity: u64) -> Option<&Objective> {
+        self.objectives.iter().find(|o| o.identity.0 == identity)
     }
     pub fn objective(&self, name: &str) -> Option<&Objective> {
         self.objectives.iter().find(|o| o.name == name)
@@ -820,7 +850,10 @@ impl Scoreboard {
         if self.objective(name).is_some() {
             return false;
         }
+        let identity = self.next_identity;
+        self.next_identity = Identity(identity.0 + 1);
         self.objectives.push(Objective {
+            identity,
             name: name.to_owned(),
             criteria: criteria.to_owned(),
             display_name,
@@ -986,7 +1019,9 @@ impl Scoreboard {
     }
     pub fn add_team(&mut self, name: &str) -> &mut Team {
         if self.team(name).is_none() {
-            self.teams.push(Team::new(name));
+            let identity = self.next_identity;
+            self.next_identity = Identity(identity.0 + 1);
+            self.teams.push(Team::new(name, identity));
             self.team_order.insert(name);
             self.reorder();
         }
@@ -1277,7 +1312,7 @@ fn entity_uuids(tag: &mut Tag) {
     match tag {
         Tag::Compound(c) => {
             let show_entity = matches!(c.get(&"action".into()), Some(Tag::String(a)) if a.to_string_lossy() == "show_entity");
-            for (k, v) in c.iter_mut() {
+            c.for_each_mut(|k, v| {
                 if show_entity && k.to_string_lossy() == "uuid" {
                     let ints = match v {
                         Tag::List(l) => l
@@ -1298,7 +1333,7 @@ fn entity_uuids(tag: &mut Tag) {
                 } else {
                     entity_uuids(v);
                 }
-            }
+            });
         }
         Tag::List(l) => l.iter_mut().for_each(entity_uuids),
         _ => {}
@@ -1423,7 +1458,7 @@ mod tests {
     /// and as insertion; `getFormattedDisplayName` brackets the name in it.
     #[test]
     fn a_teams_formatted_name_inserts_the_team_name() {
-        let team = Team::new("reds");
+        let team = Team::new("reds", Identity::default());
         let c = team.formatted_display_name().component();
         assert_eq!(c["translate"], "chat.square_brackets");
         let inner = &c["with"][0];
@@ -1433,6 +1468,62 @@ mod tests {
         // `{"text":"reds"}` or its short form `"reds"`: the same component.
         let value = &inner["hover_event"]["value"];
         assert!(value == "reds" || value["text"] == "reds", "{value}");
+    }
+
+    /// An objective added under a removed one's name is another objective, and a board put back
+    /// from a copy never gives a rolled-back objective's identity to a later one.
+    #[test]
+    fn an_objective_added_again_under_its_name_has_a_new_identity() {
+        let add = |sb: &mut Scoreboard, name: &str| {
+            sb.add_objective(
+                name,
+                "dummy",
+                literal(name),
+                RenderType::Integer,
+                false,
+                None,
+            );
+            sb.objective(name).unwrap().identity.0
+        };
+        let mut sb = Scoreboard::default();
+        let first = add(&mut sb, "a");
+        sb.remove_objective("a");
+        assert!(sb.objective_by_identity(first).is_none());
+        let second = add(&mut sb, "a");
+        assert_ne!(first, second);
+        assert!(sb.objective_by_identity(first).is_none());
+        let saved = sb.clone();
+        let rolled_back = add(&mut sb, "b");
+        sb.restore(saved);
+        assert!(sb.objective("b").is_none());
+        assert!(sb.objective_by_identity(rolled_back).is_none());
+        assert_ne!(add(&mut sb, "b"), rolled_back);
+        // Identities are not part of what a board is: the same contents are equal.
+        let mut other = Scoreboard::default();
+        add(&mut other, "x");
+        let mut twin = Scoreboard::default();
+        add(&mut twin, "y");
+        add(&mut twin, "x");
+        twin.remove_objective("y");
+        assert_eq!(other, twin);
+    }
+
+    /// A team added again under a removed one's name is another team, and a restored board never
+    /// gives a rolled-back team's identity to a later one.
+    #[test]
+    fn a_team_added_again_under_its_name_has_a_new_identity() {
+        let mut sb = Scoreboard::default();
+        let first = sb.add_team("a").identity.0;
+        sb.remove_team("a");
+        assert!(sb.team_by_identity(first).is_none());
+        let second = sb.add_team("a").identity.0;
+        assert_ne!(first, second);
+        let saved = sb.clone();
+        let rolled_back = sb.add_team("b").identity.0;
+        sb.restore(saved);
+        assert!(sb.team("b").is_none());
+        assert!(sb.team_by_identity(rolled_back).is_none());
+        assert_ne!(sb.add_team("b").identity.0, rolled_back);
     }
 
     fn board() -> Scoreboard {

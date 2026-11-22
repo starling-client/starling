@@ -8,6 +8,7 @@ use super::{
 };
 use crate::blocks::Fluid;
 use crate::fast_hash::FxHashMap;
+use crate::items::BlockTagFlags;
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_core::position::BlockPos;
 
@@ -25,10 +26,13 @@ impl MobWorld<'_> {
         })
     }
     /// WalkNodeEvaluator.getPathTypeStatic.
+    /// A mod's supplied path is classified through here, so every block step
+    /// saturates: a finite coordinate at `i32::MIN` or `i32::MAX` is never
+    /// refused, and never overflows a checked build either (#4443).
     pub fn path_type_static(&self, x: i32, y: i32, z: i32) -> PathType {
         let t = self.path_type_from_state(x, y, z);
         if t == PathType::Open && y > self.world.bottom_y() {
-            match self.path_type_from_state(x, y - 1, z) {
+            match self.path_type_from_state(x, y.saturating_sub(1), z) {
                 PathType::Open | PathType::Water | PathType::Lava | PathType::Walkable => {
                     PathType::Open
                 }
@@ -45,7 +49,8 @@ impl MobWorld<'_> {
         }
     }
     /// WalkNodeEvaluator.checkNeighbourBlocks: the first neighbour that gives a node a type
-    /// (`getAdjacentBlockPathType`) decides it.
+    /// (`getAdjacentBlockPathType`) decides it. The neighbour step saturates, so a
+    /// node at the edge of the `i32` range still reads its eight neighbours (#4443).
     pub fn check_neighbours(&self, x: i32, y: i32, z: i32, t: PathType) -> PathType {
         for dx in -1..=1 {
             for dy in -1..=1 {
@@ -53,7 +58,11 @@ impl MobWorld<'_> {
                     if dx == 0 && dz == 0 {
                         continue;
                     }
-                    let pos = [x + dx, y + dy, z + dz];
+                    let pos = [
+                        x.saturating_add(dx),
+                        y.saturating_add(dy),
+                        z.saturating_add(dz),
+                    ];
                     let state = self.world.block(pos[0], pos[1], pos[2]);
                     let own = self.path_type_from_state(pos[0], pos[1], pos[2]);
                     let facts = self.facts.get(state);
@@ -62,7 +71,7 @@ impl MobWorld<'_> {
                     } else if data::vanilla_burning_block(
                         &facts.name,
                         facts.emission > 0,
-                        self.has_tag("minecraft:fire", &facts.name),
+                        self.state_flag(state, BlockTagFlags::FIRE),
                     ) {
                         Some(PathType::FireInNeighbor)
                     } else {
@@ -74,9 +83,10 @@ impl MobWorld<'_> {
                     if let Some(adjacent) = adjacent {
                         return adjacent;
                     }
-                    // A declined block answer keeps this neighbour's fluid
-                    // contribution before the vanilla type mappings.
-                    if matches!(facts.fluid, Fluid::Water | Fluid::Modded) {
+                    // Custom fluids retain their default neighbour contribution.
+                    // Vanilla water contributes through its classified path type:
+                    // a solid waterlogged block is BLOCKED, not WATER.
+                    if facts.fluid == Fluid::Modded {
                         return PathType::WaterBorder;
                     }
                     if let Some(adjacent) = data::vanilla_adjacent(own) {
@@ -87,9 +97,40 @@ impl MobWorld<'_> {
         }
         t
     }
-    /// WalkNodeEvaluator.getFloorLevel(level, pos).
+    /// WalkNodeEvaluator.getFloorLevel(level, pos). Saturating, as the
+    /// neighbour step is: a follower asking under a node at `i32::MIN` lands on
+    /// the same block instead of overflowing (#4443).
     pub fn floor_level(&self, x: i32, y: i32, z: i32) -> f64 {
-        f64::from(y - 1) + f64::from(self.data.state(self.world.block(x, y - 1, z)).top)
+        let below = y.saturating_sub(1);
+        f64::from(below) + self.collision_top(x, below, z)
+    }
+    /// The block's collision top (0 for an empty shape), as `getFloorLevel`,
+    /// `MoveControl.tick` and `EvokerAttackSpellGoal.createSpellEntity` read it: the shape
+    /// at this cell for published or displaced collision (#1666, #1710), else the state's
+    /// cached height.
+    pub fn collision_top(&self, x: i32, y: i32, z: i32) -> f64 {
+        let state = self.world.block(x, y, z);
+        if !self.collision.has_positioned_collision(state) {
+            return f64::from(self.data.state(state).top);
+        }
+        self.bound_collision_shape(state, [x, y, z])
+            .filter(|shape| !shape.is_empty())
+            .map_or(0.0, |shape| shape.max(sunrise_core::geometry::Axis::Y))
+    }
+    /// `getCollisionShape(level, pos)` of `state` at `p` through the collision binding:
+    /// the shape its block entity publishes, else the declared one. None when the query
+    /// fails.
+    pub fn bound_collision_shape(
+        &self,
+        state: sunrise_world::registry::BlockStateId,
+        p: [i32; 3],
+    ) -> Option<sunrise_core::geometry::VoxelShape> {
+        let mut scene = crate::collisions::SceneCollisions {
+            world: self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        self.collision.collision_shape(&mut scene, state, p).ok()
     }
 }
 
@@ -143,15 +184,16 @@ pub enum Evaluator {
     Amphibious { prefers_shallow: bool },
 }
 
+pub mod heap;
+
 #[derive(Clone, Debug)]
 pub struct Node {
     pub x: i32,
     pub y: i32,
     pub z: i32,
-    heap: i32,
+    heap: heap::Key,
     g: f32,
     h: f32,
-    f: f32,
     came_from: Option<u32>,
     pub closed: bool,
     walked: f32,
@@ -164,10 +206,9 @@ impl Node {
             x,
             y,
             z,
-            heap: -1,
+            heap: heap::Key::default(),
             g: 0.0,
             h: 0.0,
-            f: 0.0,
             came_from: None,
             closed: false,
             walked: 0.0,
@@ -185,6 +226,18 @@ impl Node {
     }
     fn manhattan(&self, x: i32, y: i32, z: i32) -> f32 {
         ((x - self.x).abs() + (y - self.y).abs() + (z - self.z).abs()) as f32
+    }
+}
+
+impl std::borrow::Borrow<heap::Key> for Node {
+    fn borrow(&self) -> &heap::Key {
+        &self.heap
+    }
+}
+
+impl std::borrow::BorrowMut<heap::Key> for Node {
+    fn borrow_mut(&mut self) -> &mut heap::Key {
+        &mut self.heap
     }
 }
 
@@ -249,12 +302,12 @@ impl Path {
             if !is_cauldron(node.x, node.y, node.z) {
                 continue;
             }
-            self.nodes[i].y = node.y + 1;
+            self.nodes[i].y = node.y.saturating_add(1);
             if let Some(&next) = self.nodes.get(i + 1)
                 && node.y >= next.y
             {
                 self.nodes[i + 1] = PathNode {
-                    y: node.y + 1,
+                    y: node.y.saturating_add(1),
                     ..next
                 };
             }
@@ -277,7 +330,7 @@ struct Target {
 pub struct FinderBuffers {
     pub nodes: Vec<Node>,
     pub index: FxHashMap<(i32, i32, i32), u32>,
-    pub heap: Vec<u32>,
+    pub heap: heap::OpenSet,
     pub types: FxHashMap<(i32, i32, i32), PathType>,
     pub statics: std::cell::RefCell<FxHashMap<(i32, i32, i32), PathType>>,
     pub collisions: FxHashMap<[u64; 6], bool>,
@@ -288,7 +341,7 @@ impl FinderBuffers {
         Self {
             nodes: Vec::with_capacity(256),
             index: FxHashMap::default(),
-            heap: Vec::with_capacity(256),
+            heap: heap::OpenSet::with_capacity(256),
             types: FxHashMap::default(),
             statics: std::cell::RefCell::new(FxHashMap::default()),
             collisions: FxHashMap::default(),
@@ -316,7 +369,7 @@ pub struct Finder<'a, 'w> {
     eval: Evaluator,
     nodes: Vec<Node>,
     index: FxHashMap<(i32, i32, i32), u32>,
-    heap: Vec<u32>,
+    heap: heap::OpenSet,
     types: FxHashMap<(i32, i32, i32), PathType>,
     /// `path_type` of each position asked during this query: it reads up to
     /// 26 blocks, and overlapping mob boxes ask for the same positions.
@@ -383,7 +436,7 @@ impl<'a, 'w> Finder<'a, 'w> {
                 (
                     Vec::with_capacity(128),
                     FxHashMap::default(),
-                    Vec::with_capacity(128),
+                    heap::OpenSet::with_capacity(128),
                     FxHashMap::default(),
                     std::cell::RefCell::new(FxHashMap::default()),
                     FxHashMap::default(),
@@ -418,10 +471,13 @@ impl<'a, 'w> Finder<'a, 'w> {
         }
         self.mob.malus(t)
     }
-    // --- world access -------------------------------------------------
-    fn state(&self, x: i32, y: i32, z: i32) -> data::StateData {
-        self.w.data.state(self.w.world.block(x, y, z))
+    /// The static `PathType` of a position under this finder's evaluator,
+    /// through the world's cached classification. One classification per
+    /// position: a mod's supplied path is classified here on submit.
+    pub fn path_type_at(&self, x: i32, y: i32, z: i32) -> PathType {
+        self.path_type(x, y, z)
     }
+    // --- world access -------------------------------------------------
     fn pathfindable(&self, x: i32, y: i32, z: i32, kind: PathComputationType) -> bool {
         self.w.data.pathfindable(self.w.world.block(x, y, z), kind)
     }
@@ -436,7 +492,7 @@ impl<'a, 'w> Finder<'a, 'w> {
     }
     /// WalkNodeEvaluator.getFloorLevel(level, pos).
     pub fn static_floor(&self, x: i32, y: i32, z: i32) -> f64 {
-        f64::from(y - 1) + f64::from(self.state(x, y - 1, z).top)
+        self.w.floor_level(x, y, z)
     }
     fn floor_level(&self, x: i32, y: i32, z: i32) -> f64 {
         let amphibious = matches!(self.eval, Evaluator::Amphibious { .. });
@@ -489,7 +545,12 @@ impl<'a, 'w> Finder<'a, 'w> {
                         (-1, 0, 0),
                         (1, 0, 0),
                     ] {
-                        if self.type_from_state(x + dx, y + dy, z + dz) == PathType::Blocked {
+                        if self.type_from_state(
+                            x.saturating_add(dx),
+                            y.saturating_add(dy),
+                            z.saturating_add(dz),
+                        ) == PathType::Blocked
+                        {
                             return PathType::WaterBorder;
                         }
                     }
@@ -510,13 +571,14 @@ impl<'a, 'w> Finder<'a, 'w> {
     fn fly_path_type(&self, x: i32, y: i32, z: i32) -> PathType {
         let mut t = self.type_from_state(x, y, z);
         if t == PathType::Open && y > self.w.world.bottom_y() {
-            let below = self.type_from_state(x, y - 1, z);
+            let below_y = y.saturating_sub(1);
+            let below = self.type_from_state(x, below_y, z);
             t = match below {
                 PathType::Fire | PathType::Lava => PathType::Fire,
                 PathType::Damaging => PathType::Damaging,
                 PathType::Cocoa => PathType::Cocoa,
                 PathType::Fence => {
-                    if [x, y - 1, z] != self.mob.block_position() {
+                    if [x, below_y, z] != self.mob.block_position() {
                         PathType::Fence
                     } else {
                         t
@@ -537,7 +599,11 @@ impl<'a, 'w> Finder<'a, 'w> {
         for dx in 0..self.entity_width {
             for dy in 0..self.entity_height {
                 for dz in 0..self.entity_depth {
-                    let mut t = self.path_type(x + dx, y + dy, z + dz);
+                    let mut t = self.path_type(
+                        x.saturating_add(dx),
+                        y.saturating_add(dy),
+                        z.saturating_add(dz),
+                    );
                     if t == PathType::DoorWoodClosed
                         && self.mob.can_open_doors
                         && self.mob.can_pass_doors
@@ -549,7 +615,7 @@ impl<'a, 'w> Finder<'a, 'w> {
                     }
                     if t == PathType::Rail
                         && self.path_type(mp[0], mp[1], mp[2]) != PathType::Rail
-                        && self.path_type(mp[0], mp[1] - 1, mp[2]) != PathType::Rail
+                        && self.path_type(mp[0], mp[1].saturating_sub(1), mp[2]) != PathType::Rail
                     {
                         t = PathType::UnpassableRail;
                     }
@@ -606,13 +672,20 @@ impl<'a, 'w> Finder<'a, 'w> {
     }
     fn swim_path_type(&self, x: i32, y: i32, z: i32) -> PathType {
         let mut last = (x, y, z);
-        for xx in x..x + self.entity_width {
-            for yy in y..y + self.entity_height {
-                for zz in z..z + self.entity_depth {
+        for xx in x..x.saturating_add(self.entity_width) {
+            for yy in y..y.saturating_add(self.entity_height) {
+                for zz in z..z.saturating_add(self.entity_depth) {
                     let fluid = self.fluid(xx, yy, zz);
                     if let Some(t) = swim_cell_type(
                         fluid,
-                        || self.pathfindable(xx, yy - 1, zz, PathComputationType::Water),
+                        || {
+                            self.pathfindable(
+                                xx,
+                                yy.saturating_sub(1),
+                                zz,
+                                PathComputationType::Water,
+                            )
+                        },
                         || self.is_air(xx, yy, zz),
                     ) {
                         return t;
@@ -1247,89 +1320,6 @@ impl<'a, 'w> Finder<'a, 'w> {
             && m(self, west_down);
         push(self, swd, ok, out);
     }
-    // --- binary heap (vanilla BinaryHeap) --------------------------------
-    fn heap_insert(&mut self, n: u32) {
-        let i = self.heap.len();
-        self.heap.push(n);
-        self.nodes[n as usize].heap = i as i32;
-        self.up_heap(i);
-    }
-    fn heap_pop(&mut self) -> u32 {
-        let popped = self.heap[0];
-        let last = self.heap.pop().unwrap_or(popped);
-        if !self.heap.is_empty() {
-            self.heap[0] = last;
-            self.nodes[last as usize].heap = 0;
-            self.down_heap(0);
-        }
-        self.nodes[popped as usize].heap = -1;
-        popped
-    }
-    fn change_cost(&mut self, n: u32, cost: f32) {
-        let old = self.nodes[n as usize].f;
-        self.nodes[n as usize].f = cost;
-        let i = self.nodes[n as usize].heap as usize;
-        if cost < old {
-            self.up_heap(i);
-        } else {
-            self.down_heap(i);
-        }
-    }
-    fn up_heap(&mut self, mut i: usize) {
-        let node = self.heap[i];
-        let cost = self.nodes[node as usize].f;
-        while i > 0 {
-            let parent_i = (i - 1) >> 1;
-            let parent = self.heap[parent_i];
-            if cost >= self.nodes[parent as usize].f {
-                break;
-            }
-            self.heap[i] = parent;
-            self.nodes[parent as usize].heap = i as i32;
-            i = parent_i;
-        }
-        self.heap[i] = node;
-        self.nodes[node as usize].heap = i as i32;
-    }
-    fn down_heap(&mut self, mut i: usize) {
-        let node = self.heap[i];
-        let cost = self.nodes[node as usize].f;
-        let size = self.heap.len();
-        loop {
-            let left_i = 1 + (i << 1);
-            let right_i = left_i + 1;
-            if left_i >= size {
-                break;
-            }
-            let left = self.heap[left_i];
-            let left_cost = self.nodes[left as usize].f;
-            let (right, right_cost) = if right_i >= size {
-                (u32::MAX, f32::INFINITY)
-            } else {
-                (
-                    self.heap[right_i],
-                    self.nodes[self.heap[right_i] as usize].f,
-                )
-            };
-            if left_cost < right_cost {
-                if left_cost >= cost {
-                    break;
-                }
-                self.heap[i] = left;
-                self.nodes[left as usize].heap = i as i32;
-                i = left_i;
-            } else {
-                if right_cost >= cost {
-                    break;
-                }
-                self.heap[i] = right;
-                self.nodes[right as usize].heap = i as i32;
-                i = right_i;
-            }
-        }
-        self.heap[i] = node;
-        self.nodes[node as usize].heap = i as i32;
-    }
     // --- PathFinder.findPath ------------------------------------------------
     fn best_h(&self, n: u32, targets: &mut [Target]) -> f32 {
         let mut best = f32::MAX;
@@ -1373,9 +1363,8 @@ impl<'a, 'w> Finder<'a, 'w> {
         self.nodes[from as usize].g = 0.0;
         let h = self.best_h(from, &mut targets);
         self.nodes[from as usize].h = h;
-        self.nodes[from as usize].f = h;
         self.heap.clear();
-        self.heap_insert(from);
+        self.heap.insert(&mut self.nodes, from, h);
         let mut count = 0;
         let mut neighbors = Vec::with_capacity(32);
         let (fx, fy, fz) = {
@@ -1387,7 +1376,7 @@ impl<'a, 'w> Finder<'a, 'w> {
             if count >= max_visited {
                 break;
             }
-            let current = self.heap_pop();
+            let current = self.heap.pop(&mut self.nodes).expect("nonempty open set");
             self.nodes[current as usize].closed = true;
             let mut any = false;
             for t in targets.iter_mut() {
@@ -1419,7 +1408,7 @@ impl<'a, 'w> Finder<'a, 'w> {
                 let walked = cw + distance;
                 self.nodes[neighbor as usize].walked = walked;
                 let tentative = cg + distance + self.nodes[neighbor as usize].cost_malus;
-                let in_open = self.nodes[neighbor as usize].heap >= 0;
+                let in_open = self.nodes[neighbor as usize].heap.is_open();
                 if walked < max_path_length
                     && (!in_open || tentative < self.nodes[neighbor as usize].g)
                 {
@@ -1428,10 +1417,10 @@ impl<'a, 'w> Finder<'a, 'w> {
                     let h = self.best_h(neighbor, &mut targets) * 1.5;
                     self.nodes[neighbor as usize].h = h;
                     if in_open {
-                        self.change_cost(neighbor, tentative + h);
+                        self.heap
+                            .change_cost(&mut self.nodes, neighbor, tentative + h);
                     } else {
-                        self.nodes[neighbor as usize].f = tentative + h;
-                        self.heap_insert(neighbor);
+                        self.heap.insert(&mut self.nodes, neighbor, tentative + h);
                     }
                 }
             }

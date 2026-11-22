@@ -2,18 +2,18 @@
 
 A mod opens a level of its own while the server runs and closes it again: an instanced dungeon, a
 minigame arena, a pocket dimension per player. `host.runtime_levels()` has `open`, `unload`, `delete`
-and `is_open`, the same on a native and a wasm mod.
+and `is_open`.
+
+In `Hooks::register_commands`, bind an operator-only [server command](../entities/server-commands.md).
+Return `Some(1)` after `open` accepts the request or `None` if it refuses:
 
 ```rust,ignore
-fn run_mod_command(&self, host: &mut dyn ServerHost, event: &mut RunModCommandEvent<'_>) -> Flow {
+event.commands.push(Command::op("openarena", 2).executes(|host, _, _| {
     let level = RuntimeLevel::new("mymod:pocket", RuntimeGenerator::Mod("mymod:arena".into()), 4242);
-    match host.runtime_levels().open("mymod:instance/ab12", level) {
-        Ok(handle) => { /* the level opens after this tick's levels have ticked */ }
-        Err(RuntimeLevelError::CapReached) => { /* the server keeps no more open */ }
-        Err(_) => {}
-    }
-    Flow::Cancel
-}
+    // On success the level opens after this tick's levels have ticked.
+    host.runtime_levels().open("mymod:instance/ab12", level).ok()?;
+    Some(1)
+}));
 ```
 
 ## What a level is made of
@@ -29,8 +29,7 @@ fn run_mod_command(&self, host: &mut dyn ServerHost, event: &mut RunModCommandEv
   name is `UnknownDimensionType`; a data pack's own dimension types are not offered yet.
 - **`generator`** is `RuntimeGenerator::Flat` (bedrock, two dirt, a grass block, over plains),
   `Void` (air), or `Mod(name)`, a chunk generator a native mod registered
-  ([`register_chunk_generator`](dimension-shape.md#chunk-generators)). A wasm mod can name a
-  generator a native mod installed; one nobody installed is `UnknownGenerator`. A noise
+  ([`register_chunk_generator`](dimension-shape.md#chunk-generators)). An unregistered generator returns `UnknownGenerator`. A noise
   generator is `NoiseUnsupported` for now.
 - **`seed`** is the level's own. It reaches the mod generator (`ChunkAccess::seed`), the level's block-tick
   and level randoms and the hashed seed clients are sent. It does not change structures or
@@ -51,7 +50,13 @@ never names a later open of the same id: it reads as stale, like a handle from a
 A folder that exists under the id is reopened as it was saved, a persistent level after an
 unload or a restart. Nothing reopens a runtime level by itself at the next start: the mod
 reopens what it keeps, and a player saved in a level that was not reopened keeps the usual
-fallback.
+fallback. At server startup the Overworld, Nether and End are published in that order, each
+firing `level_load` before the next is available. The server then validates and activates their
+saved tickets and waits for the ticketed chunks before `server_started`, even if no player
+visits those levels. In `Hooks::validate_tickets`, a controller's owning mod can remove saved
+tickets through `event.validation`. The callback sees its removals immediately. As with
+[staged registration](../../concepts/load-phases.md#registration-and-setup), a panic or phase
+refusal discards those edits before the saved tickets take hold. Other controllers still validate.
 
 Success means queue admission, not apply completion. Apply failures are logged with the
 requesting mod and level id. A failed open rolls back publication and frees the id for retry;
@@ -67,7 +72,7 @@ the opened level, whereas the Host still names the current level.
 while a player, or an arrival that has not landed, is in the level, both when it is called and
 when it is applied: move the players out first with `entity.teleport_to_level`. `NotOpen` is the
 answer for a level that is not open (or still waiting to open). The idle close the game gives
-every level without players applies too, as to any other level: a runtime level nobody is in and
+custom levels without players applies to runtime levels too: a runtime level nobody is in and
 no forced chunk holds is saved and dropped from memory after 300 ticks (`level_unload` fires), but
 it stays open: `is_open` still says true, and the level opens again from its folder, with
 `level_load`, when a player or a mod enters it. Only `unload` or `delete` closes it for good.
@@ -128,19 +133,18 @@ a Sunrise client forgets a level the server opened after it logged in, so a long
 many instances keeps none of them. A level opened again under the same id after a `delete`
 reaches the client afresh, with nothing of the old one.
 
-A client learns at login which levels the server has, and names the levels it views by their place
-in that list. A runtime level opened after a player logged in is not in that player's list:
-[chunk areas](../entities/chunk-areas.md) there are kept, but nothing of the level is sent to that
-player's client, which sees it only by going in. A player who logged in after the level opened
-views it as any other level. When a runtime level closes, by `unload` or `delete`, every client
-that viewed it drops its world of it; the areas stay, and show the level again once it is open
-again, to the clients that can name it.
+A runtime level opened after a player logged in is viewed through [chunk areas](../entities/chunk-areas.md)
+like any other level, by a Sunrise client of this version. A client of an older version names the
+levels it views by their place in the list it got at login, where such a level is not: the areas
+there are kept, but nothing of the level is sent to it, and it sees the level only by going in.
+When a runtime level closes, by `unload` or `delete`, every client that viewed it drops its world
+of it; the areas stay, and show the level again once it is open again.
 
 ## The cap
 
 A server keeps at most 64 runtime levels open or waiting, whichever mods opened them: the
 65th `open` is `CapReached`. A server sets another number with `sunrise-max-runtime-levels` in
 `server.properties`; a server run by `sunrise-server` sets it under `[properties]` in `server.toml`
-([hosting](https://github.com/arismoko/horizon/blob/main/docs/hosting.md)). An unloaded or deleted level frees its place when the request is applied; the idle close does not free it.
+([hosting](https://github.com/sunrise-org/sunrise/blob/main/docs/hosting.md)). An unloaded or deleted level frees its place when the request is applied; the idle close does not free it.
 
 Every refusal is also logged with the name of the mod that asked.

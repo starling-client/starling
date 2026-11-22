@@ -1,6 +1,6 @@
+use std::{error::Error, io::Write};
 use sunrise_client::text_display::TextDisplayData;
 use sunrise_protocol::{ids, packets::play::Clientbound};
-use std::{error::Error, io::Write};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = crate::args().collect();

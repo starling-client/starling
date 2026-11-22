@@ -8,10 +8,11 @@ pub trait Hooks {
     /// which keeps advancing. Outside a world both use the window clock.
     /// Listener writes do not change this frame's captured interpolation. Client-side.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         version = 2,
         neoforge = "RenderFrameEvent.Pre"
     )]
-    fn render_frame_pre();
+    fn render_frame_pre(elapsed: Duration, world_partial_tick: f32, partial_tick: f32);
 }

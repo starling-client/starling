@@ -91,6 +91,14 @@ impl Game<'_> {
             return;
         };
         convert_to_zombie_villager(&old, z);
+        for rider in self.mobs.iter_mut() {
+            if rider.extra.mount == Some(old.id) {
+                rider.extra.mount = Some(id);
+            }
+        }
+        if old.extra.mount.is_some() {
+            self.position_riders();
+        }
         if !self.mobs[k].silent {
             let at = self.mobs[k].position;
             self.level_event_at(
@@ -162,6 +170,14 @@ impl Game<'_> {
             return;
         };
         let drops = convert_to_villager(&old, v, nausea);
+        for rider in self.mobs.iter_mut() {
+            if rider.extra.mount == Some(old.id) {
+                rider.extra.mount = Some(vid);
+            }
+        }
+        if old.extra.mount.is_some() {
+            self.position_riders();
+        }
         for stack in drops {
             self.spawn_item(
                 stack,
@@ -235,6 +251,8 @@ impl Game<'_> {
                 origin,
                 tool: None,
                 block_pos: None,
+                target: None,
+                interacting: None,
             };
             adv::conditions(&c["player"], &ctx(&me), w)
                 && adv::conditions(&c["zombie"], &ctx(&zombie), w)
@@ -259,7 +277,7 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.previous_head_pitch = from.head_pitch;
     to.fall_distance = from.fall_distance;
     to.hurt_time = from.hurt_time;
-    to.on_ground = from.on_ground;
+    to.ground.on_ground = from.ground.on_ground;
     to.fire_ticks = from.fire_ticks;
     to.persistent = from.persistent;
     to.custom_name = from.custom_name.clone();
@@ -274,14 +292,27 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.invulnerable_time = from.invulnerable_time;
     to.no_gravity = from.no_gravity;
     to.silent = from.silent;
+    to.extra.mount = from.extra.mount;
+    to.extra.passenger = from.extra.passenger;
+    to.fluids.boat = from.fluids.boat;
+    to.extra.leash = from.extra.leash;
+    to.extra.leash_pending = from.extra.leash_pending;
+    to.extra.leash_player = from.extra.leash_player;
     for slot in sunrise_items::equipment::MAINHAND..=sunrise_items::equipment::BODY {
         to.extra
             .set_slot_stack(slot, from.extra.slot_stack(slot).cloned());
     }
     to.extra.gear = from.extra.gear.clone();
     to.retain_effects(|_| false);
+    // `convertCommon` copies each effect with `addEffect`: one the new mob
+    // cannot be affected by is refused (an undead zombie villager takes no
+    // Poison or Regeneration), and `onEffectAdded` stores the attribute
+    // modifiers of the rest. `new MobEffectInstance(effect)` keeps the icon flag.
     for effect in &from.extra.effects {
-        to.load_effect(*effect);
+        to.add_effect(effect.id, effect.duration, effect.amplifier);
+        if let Some(copy) = to.extra.effects.iter_mut().find(|e| e.id == effect.id) {
+            copy.show_icon = effect.show_icon;
+        }
     }
 
     // VillagerData and the trades, experience and gossip.
@@ -335,7 +366,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn conversions_preserve_body_equipment() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
@@ -389,80 +420,165 @@ mod tests {
         assert!(!is_zombie(Species::Skeleton) && !is_zombie(Species::Villager));
     }
 
+    /// A villager-shaped mob of `species` with the registered `attributes`.
+    fn test_mob(id: u32, species: Species, name: &str, attributes: &[(&str, f64)]) -> Mob {
+        use std::sync::Arc;
+        use sunrise_client::mobs::{Anim, Brain, MobType, Part};
+        use sunrise_core::geometry::Vec3;
+        let kind = MobType {
+            shadow: None,
+            id: name.into(),
+            species,
+            width: 0.6,
+            height: 1.95,
+            eye_height: 1.74,
+            category: "monster".into(),
+            max_health: 20.0,
+            speed: 0.23,
+            flying_speed: 0.4,
+            attack_damage: 3.0,
+            attack_knockback: 0.0,
+            follow_range: 35.0,
+            step_height: 0.6,
+            armor: 0.0,
+            armor_toughness: 0.0,
+            knockback_resistance: 0.0,
+            jump_strength: 0.42,
+            attributes: Arc::new(
+                attributes
+                    .iter()
+                    .map(|(name, v)| ((*name).to_owned(), *v))
+                    .collect(),
+            ),
+            item_stack_limits: Arc::default(),
+            attribute_bounds: Default::default(),
+            gravity: 0.08,
+            safe_fall_distance: 3.0,
+            fall_damage_multiplier: 1.0,
+            water_efficiency: 0.0,
+            water_slowdown: 0.8,
+            air_speed: 0.02,
+            baby_scale: 0.5,
+            head_rot_speed: 10.0,
+            max_head_x_rot: 40.0,
+            max_head_y_rot: 75.0,
+            ambient_interval: 80,
+            flags: Default::default(),
+            model: Arc::new(Part {
+                name: "root".into(),
+                pose: [0.0; 9],
+                polygons: Vec::new(),
+                children: Vec::new(),
+            }),
+            layers: Default::default(),
+            texture: String::new(),
+            brain: Brain::Passive,
+            anim: Anim::Humanoid { zombie_arms: true },
+            sounds: ["entity.villager.ambient"; 3],
+            sound_overrides: Default::default(),
+            food: Arc::default(),
+            tempt: Arc::default(),
+            passenger_attachments: Vec::new(),
+        };
+        Mob::new(id, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    /// #478: `convertCommon` copies each effect with `addEffect`, so the
+    /// cured villager and the infected zombie villager hold each effect's
+    /// attribute modifier (0.2F x 2 for Speed II), once.
+    #[test]
+    fn a_conversion_stores_the_copied_effects_modifiers() {
+        use sunrise_client::mobs::finalize::{Attr, modifier_amount, value};
+        let speed = [("minecraft:movement_speed", 0.5)];
+        let mut villager = test_mob(1, Species::Villager, "minecraft:villager", &speed);
+        villager.add_effect("minecraft:speed", -1, 1);
+        let mut zombie = test_mob(
+            2,
+            Species::ZombieVillager,
+            "minecraft:zombie_villager",
+            &speed,
+        );
+        convert_to_zombie_villager(&villager, &mut zombie);
+        assert_eq!(
+            modifier_amount(&zombie, Attr::MovementSpeed, "minecraft:effect.speed"),
+            Some(0.400_000_005_960_464_5)
+        );
+        assert_eq!(value(&zombie, Attr::MovementSpeed), 0.700_000_002_980_232_2);
+        let mut cured = test_mob(3, Species::Villager, "minecraft:villager", &speed);
+        convert_to_villager(&zombie, &mut cured, false);
+        assert_eq!(
+            modifier_amount(&cured, Attr::MovementSpeed, "minecraft:effect.speed"),
+            Some(0.400_000_005_960_464_5)
+        );
+        let held = cured.extra.attributes.as_ref().unwrap();
+        assert_eq!(
+            held.modifiers
+                .iter()
+                .filter(|x| x.id == "minecraft:effect.speed")
+                .count(),
+            1
+        );
+    }
+
+    /// #478: the copies go through `addEffect`, so a poisoned, regenerating
+    /// villager's infection leaves the undead zombie villager with neither
+    /// (`canBeAffected`), while its Speed comes along with the modifier and
+    /// the icon flag it had.
+    #[test]
+    fn an_infected_villager_keeps_only_the_effects_a_zombie_villager_takes() {
+        use sunrise_client::mobs::finalize::{Attr, modifier_amount};
+        let speed = [("minecraft:movement_speed", 0.5)];
+        let mut villager = test_mob(1, Species::Villager, "minecraft:villager", &speed);
+        villager.add_effect("minecraft:poison", 200, 0);
+        villager.add_effect("minecraft:regeneration", 200, 0);
+        villager.add_effect("minecraft:speed", 200, 0);
+        villager.extra.effects[2].show_icon = false;
+        let mut zombie = test_mob(
+            2,
+            Species::ZombieVillager,
+            "minecraft:zombie_villager",
+            &speed,
+        );
+        std::sync::Arc::make_mut(&mut zombie.kind).flags.undead = true;
+        convert_to_zombie_villager(&villager, &mut zombie);
+        let held: Vec<_> = zombie
+            .extra
+            .effects
+            .iter()
+            .map(|e| (e.id, e.duration, e.amplifier, e.show_icon))
+            .collect();
+        assert_eq!(held, [("minecraft:speed", 200, 0, false)]);
+        assert_eq!(
+            modifier_amount(&zombie, Attr::MovementSpeed, "minecraft:effect.speed"),
+            Some(0.200_000_002_980_232_24)
+        );
+    }
+
     /// `ConversionType.convertCommon` copies Silent, NoAI, LeftHanded,
     /// NoGravity and Invulnerable onto the mob that replaces the old one.
     #[test]
     fn infection_and_the_cure_keep_the_common_flags() {
-        use sunrise_client::mobs::{Anim, Brain, MobType, Part};
-        use sunrise_core::geometry::Vec3;
-        use std::sync::Arc;
-        let mob = |id, species, name: &str| {
-            let kind = MobType {
-                shadow: None,
-                id: name.into(),
-                species,
-                width: 0.6,
-                height: 1.95,
-                eye_height: 1.74,
-                category: "monster".into(),
-                max_health: 20.0,
-                speed: 0.23,
-                flying_speed: 0.4,
-                attack_damage: 3.0,
-                attack_knockback: 0.0,
-                follow_range: 35.0,
-                step_height: 0.6,
-                armor: 0.0,
-                armor_toughness: 0.0,
-                knockback_resistance: 0.0,
-                jump_strength: 0.42,
-                attributes: Arc::default(),
-                item_stack_limits: Arc::default(),
-                attribute_bounds: Default::default(),
-                gravity: 0.08,
-                safe_fall_distance: 3.0,
-                fall_damage_multiplier: 1.0,
-                water_efficiency: 0.0,
-                water_slowdown: 0.8,
-                air_speed: 0.02,
-                baby_scale: 0.5,
-                head_rot_speed: 10.0,
-                max_head_x_rot: 40.0,
-                max_head_y_rot: 75.0,
-                ambient_interval: 80,
-                flags: Default::default(),
-                model: Arc::new(Part {
-                    name: "root".into(),
-                    pose: [0.0; 9],
-                    polygons: Vec::new(),
-                    children: Vec::new(),
-                }),
-                layers: Default::default(),
-                texture: String::new(),
-                brain: Brain::Passive,
-                anim: Anim::Humanoid { zombie_arms: true },
-                sounds: ["entity.villager.ambient"; 3],
-                sound_overrides: Default::default(),
-                food: Arc::default(),
-                tempt: Arc::default(),
-                passenger_attachments: Vec::new(),
-            };
-            Mob::new(id, Arc::new(kind), Vec3::ZERO, 0.0)
-        };
+        let mob = |id, species, name: &str| test_mob(id, species, name, &[]);
         let mut villager = mob(1, Species::Villager, "minecraft:villager");
         villager.silent = true;
         villager.no_ai = true;
         villager.no_gravity = true;
         villager.invulnerable_flag = true;
         villager.extra.left_handed = true;
+        villager.extra.mount = Some(99);
+        villager.extra.passenger = true;
         let mut zombie = mob(2, Species::ZombieVillager, "minecraft:zombie_villager");
         assert!(!zombie.silent && !zombie.no_ai && !zombie.extra.left_handed);
+        assert_eq!(zombie.extra.mount, None);
+        assert!(!zombie.extra.passenger);
         convert_to_zombie_villager(&villager, &mut zombie);
         assert!(zombie.silent);
         assert!(zombie.no_ai);
         assert!(zombie.no_gravity);
         assert!(zombie.invulnerable_flag);
         assert!(zombie.extra.left_handed);
+        assert_eq!(zombie.extra.mount, Some(99));
+        assert!(zombie.extra.passenger);
         let mut cured = mob(3, Species::Villager, "minecraft:villager");
         convert_to_villager(&zombie, &mut cured, true);
         assert!(cured.silent);
@@ -470,6 +586,8 @@ mod tests {
         assert!(cured.no_gravity);
         assert!(cured.invulnerable_flag);
         assert!(cured.extra.left_handed);
+        assert_eq!(cured.extra.mount, Some(99));
+        assert!(cured.extra.passenger);
         // The cure keeps no equipment: picked-up gear drops, cursed gear goes
         // to the inventory, the rest vanishes.
         use sunrise_client::mobs::finalize::{

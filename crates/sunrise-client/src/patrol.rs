@@ -4,7 +4,7 @@
 //! are made by the caller, so the game and the differential test
 //! (`tools/test_raid_parity.py`) run the same decisions and random draws.
 use crate::mobs::{
-    Species,
+    MobType,
     spawn_rules::{self, Reason, SpawnLevel},
 };
 use sunrise_core::random::RandomSource;
@@ -63,6 +63,7 @@ impl PatrolSpawner {
         &mut self,
         level: &L,
         spawn_enemies: bool,
+        pillager: &MobType,
         random: &mut R,
         spawn: &mut dyn FnMut(&L, Member, &mut R) -> bool,
     ) {
@@ -100,7 +101,7 @@ impl PatrolSpawner {
         for i in 0..group {
             pos[1] = level.motion_blocking_no_leaves(pos[0], pos[2]);
             let leader = i == 0;
-            if !spawn_member(level, pos, leader, random, spawn) && leader {
+            if !spawn_member(level, pillager, pos, leader, random, spawn) && leader {
                 break;
             }
             pos[0] += random.next_int_bound(5).unwrap_or(0) - random.next_int_bound(5).unwrap_or(0);
@@ -113,23 +114,17 @@ impl PatrolSpawner {
 /// whose `checkPatrollingMonsterSpawnRules` pass.
 fn spawn_member<L: PatrolLevel, R: RandomSource>(
     level: &L,
+    pillager: &MobType,
     pos: [i32; 3],
     leader: bool,
     random: &mut R,
     spawn: &mut dyn FnMut(&L, Member, &mut R) -> bool,
 ) -> bool {
     let [x, y, z] = pos;
-    if !spawn_rules::is_valid_empty_spawn(Species::Pillager, level, x, y, z) {
+    if !spawn_rules::is_valid_empty_spawn(pillager.species, level, x, y, z) {
         return false;
     }
-    if !spawn_rules::check_spawn_rules(
-        "minecraft:pillager",
-        Species::Pillager,
-        level,
-        Reason::Patrol,
-        random,
-        pos,
-    ) {
+    if !spawn_rules::patrolling_monster_rules(pillager.species, level, Reason::Patrol, x, y, z) {
         return false;
     }
     spawn(level, Member { pos, leader }, random)
@@ -219,37 +214,16 @@ impl GameplayAttributes {
         let mut out = Self::default();
         let timelines: std::collections::HashMap<String, Value> =
             list("timeline").into_iter().collect();
-        // Tag values with nested tags and removals resolved.
-        fn tag(data: &std::path::Path, name: &str, out: &mut Vec<String>) {
-            fn resolve(
-                data: &std::path::Path,
-                name: &str,
-                active: &mut std::collections::HashSet<String>,
-            ) -> Vec<String> {
-                let name = name
-                    .trim_start_matches('#')
-                    .trim_start_matches("minecraft:");
-                if !active.insert(name.to_owned()) {
-                    return Vec::new();
-                }
-                let file = data.join(format!("tags/timeline/{name}.json"));
-                let members = std::fs::read(file)
-                    .ok()
-                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                    .map(|v| {
-                        sunrise_world::tag_layers::TagLayers::from_file(&v)
-                            .build(|child| resolve(data, child, active))
-                    })
-                    .unwrap_or_default();
-                active.remove(name);
-                members
-            }
-            for id in resolve(data, name, &mut Default::default()) {
-                if !out.contains(&id) {
-                    out.push(id);
-                }
-            }
-        }
+        let tags = sunrise_world::tag_layers::load(
+            root,
+            "timeline",
+            &sunrise_world::loot::PackOverlay::NONE,
+            |id| timelines.contains_key(id),
+        )
+        .unwrap_or_else(|error| {
+            log::warn!("Sunrise: timeline tags unavailable: {error}");
+            Default::default()
+        });
         for (dim, v) in list("dimension_type") {
             for key in keys {
                 if let Some(b) = v["attributes"][key].as_bool() {
@@ -260,13 +234,23 @@ impl GameplayAttributes {
                 }
             }
             let mut names = Vec::new();
-            match &v["timelines"] {
-                Value::String(s) if s.starts_with('#') => tag(&data, s, &mut names),
-                Value::String(s) => names.push(s.clone()),
-                Value::Array(a) => {
-                    names.extend(a.iter().filter_map(|x| x.as_str()).map(str::to_owned))
+            let entries = match &v["timelines"] {
+                Value::Array(list) => list.as_slice(),
+                value => std::slice::from_ref(value),
+            };
+            for id in entries.iter().filter_map(Value::as_str) {
+                if let Some(tag) = id.strip_prefix('#') {
+                    if let Ok(tag) = sunrise_core::identifier::Identifier::parse(tag) {
+                        names.extend(
+                            tags.get(tag.to_string().as_str())
+                                .into_iter()
+                                .flatten()
+                                .cloned(),
+                        );
+                    }
+                } else {
+                    names.push(id.to_owned());
                 }
-                _ => {}
             }
             for name in names {
                 let Some(t) = timelines.get(&name) else {
@@ -337,7 +321,7 @@ impl GameplayAttributes {
 mod tag_cycle_tests {
     use super::*;
     #[test]
-    fn mutual_timeline_tags_terminate_from_either_dimension() {
+    fn an_optional_timeline_cycle_does_not_block_a_required_reference() {
         let root = tempfile::tempdir().unwrap();
         let write = |path: &str, value: serde_json::Value| {
             let path = root.path().join(format!("data/minecraft/{path}.json"));
@@ -350,7 +334,7 @@ mod tag_cycle_tests {
         );
         write(
             "tags/timeline/b",
-            serde_json::json!({"values":["#minecraft:a", "minecraft:blocked"]}),
+            serde_json::json!({"values":[{"id":"#minecraft:a", "required":false}, "minecraft:blocked"]}),
         );
         write(
             "timeline/blocked",

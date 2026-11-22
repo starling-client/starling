@@ -1,9 +1,9 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
+use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType};
+use std::collections::HashSet;
 use sunrise_core::nbt::Tag;
 use sunrise_mod_runtime::attachments::{ATTACHMENTS_KEY, AttachmentCodec, AttachmentError};
-use mod_api::{AttachmentQueriesMut, AttachmentType};
-use std::collections::HashSet;
 
 static PROJECTILE_VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "saved_projectile",
@@ -21,7 +21,7 @@ static PROJECTILE_VALUE: AttachmentType<i32> = AttachmentType {
 };
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saved_spit_and_bullet_query_before_access_and_round_trip() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -107,7 +107,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
 };
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -182,7 +182,7 @@ fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
             assert_ne!(entity.id(), 0, "{kind}");
             VALUE.set(game, Holder::Entity(entity.id()), 19).unwrap();
             let old = game.query_mut(&VALUE).unwrap();
-            let row = old.iter().next().unwrap().unwrap();
+            let row = old.iter().try_next().unwrap().unwrap();
             let work = index.lock().unwrap().work_count();
             // Exercise the clone-replay boundary used by vehicle/projectile ticks.
             match kind {
@@ -228,7 +228,78 @@ fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
                 Err(mod_api::AttachmentRowError::StaleHolder),
                 "{kind}"
             );
-            assert_eq!(*row.value(), 19);
+            assert_eq!(
+                row.with_value(game.attachment_frame_borrow(), |value| *value)
+                    .unwrap(),
+                19
+            );
         }
+    });
+}
+
+/// The saved-binding families whose first store used to stay unindexed (#995): each publishes
+/// exactly its own row, and the removal sweep retires it. Mobs, paintings, dragon parts and
+/// general rows already have their own first-store tests.
+#[test]
+#[ignore = "daily"]
+fn saved_binding_family_first_stores_publish_to_queries() {
+    with_game(|game| {
+        game.options.dedicated = Some(Vec::new());
+        game.native_level_opened(Dim::Overworld);
+        let index = game.attachment_indexes[&Dim::Overworld].clone();
+        let key = ("saved_entity".into(), "value".into());
+        macro_rules! family {
+            ($kind:literal, $nbt:literal, $($field:ident).+) => {{
+                game.summon_with_nbt(concat!("minecraft:", $kind), [0.5, 70.0, 0.5], $nbt)
+                    .unwrap();
+                game.lan_assign_ids();
+                let id = game$(.$field)+.last().unwrap().id;
+                let holder = Holder::Entity(id);
+                let entity = game.entity(id).unwrap();
+                assert!(
+                    index.lock().unwrap().snapshot(&key).is_empty(),
+                    "{} publishes before a store",
+                    $kind
+                );
+                VALUE.set(game, holder, 7).unwrap();
+                {
+                    let query = game.query(&VALUE).unwrap();
+                    let mut rows = query.iter();
+                    let rows: Vec<_> = std::iter::from_fn(|| rows.try_next().unwrap()).collect();
+                    assert_eq!(rows.len(), 1, "{} first store", $kind);
+                    assert_eq!(rows[0].holder, AttachmentHolder::Entity(entity), "{}", $kind);
+                    assert_eq!(rows[0].with_value(game.attachment_frame_borrow(), |value| *value), Ok(7), "{}", $kind);
+                }
+                assert!(game.entity_discard(entity), "{} discard", $kind);
+                game.native_removals_flush();
+                assert!(
+                    index.lock().unwrap().snapshot(&key).is_empty(),
+                    "{} sweep",
+                    $kind
+                );
+            }};
+        }
+        family!("item", r#"{Item:{id:"minecraft:stone",count:1}}"#, dropped);
+        family!("experience_orb", "{Value:1s}", orbs);
+        family!("arrow", "{}", creatures.projectiles);
+        family!("armor_stand", "{}", armor_stands);
+        family!("item_frame", "{Facing:3b}", item_frames);
+        family!("oak_boat", "{}", boats);
+        family!("minecart", "{}", carts);
+        // The gate stays narrow: a family without saved binding stores without publishing.
+        game.summon_with_nbt("minecraft:tnt", [0.5, 70.0, 0.5], "{}")
+            .unwrap();
+        game.lan_assign_ids();
+        let id = game.tnts[0].id;
+        VALUE.set(game, Holder::Entity(id), 9).unwrap();
+        assert!(
+            game.query(&VALUE)
+                .unwrap()
+                .iter()
+                .try_next()
+                .unwrap()
+                .is_none(),
+            "unindexed family"
+        );
     });
 }

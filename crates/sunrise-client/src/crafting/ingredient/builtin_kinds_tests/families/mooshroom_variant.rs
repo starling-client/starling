@@ -90,9 +90,7 @@ fn mooshroom_variant_recipe_codec_preserves_names_defaults_removal_and_strictnes
         };
         let error = components::validate(&rule, &items).unwrap_err();
         assert!(error.starts_with("component minecraft:mooshroom/variant: "));
-        let recipes = compile(&items, patch, false);
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|entries| entries.is_empty()));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
     // A pack-supplied prototype exercises inheritance independently of vanilla's
     // absent item default (MushroomCow.Variant.DEFAULT is only the mob default).
@@ -130,8 +128,10 @@ fn mooshroom_variant_recipe_codec_preserves_names_defaults_removal_and_strictnes
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(omitted.craft(&context, &[Some(egg.clone())], 1).is_none());
     assert!(removal.craft(&context, &[Some(egg.clone())], 1).is_none());
-    egg.data_mut()
-        .set_other("minecraft:custom_data", Some(Tag::Int(3)));
+    egg.data_mut().set_other(
+        "minecraft:custom_data",
+        Some(Tag::compound([("extra", Tag::Int(3))])),
+    );
     assert!(loose.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_none());
     egg.data_mut().set_other("minecraft:custom_data", None);
@@ -179,11 +179,10 @@ fn mooshroom_variant_recipe_codec_preserves_names_defaults_removal_and_strictnes
 }
 
 #[test]
-fn mooshroom_variant_boundary_refusals_keep_a_valid_sibling() {
+fn mooshroom_variant_boundary_refusals_refuse_whole_load() {
     const ID: &str = "minecraft:mooshroom/variant";
     let items = Items::empty();
     let load = load();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [
         Tag::End,
         Tag::Byte(0),
@@ -237,19 +236,15 @@ fn mooshroom_variant_boundary_refusals_keep_a_valid_sibling() {
         let ingredient = serde_json::json!({"type":"neoforge:components", "items":"minecraft:mooshroom_spawn_egg", "components":{(ID):payload}});
         assert!(Ingredient::parse(&ingredient, &items).is_none());
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(root.path(), &items, &sunrise_world::loot::PackOverlay::NONE, vec![
+        let refused = crate::crafting::Recipes::from_sources(root.path(), &items, &sunrise_world::loot::PackOverlay::NONE, vec![
             ("fixture:bad".into(), serde_json::json!({"type":"minecraft:crafting_shapeless", "ingredients":[ingredient], "result":{"id":"minecraft:diamond"}})),
             ("fixture:good".into(), serde_json::json!({"type":"minecraft:crafting_shapeless", "ingredients":["minecraft:stick"], "result":{"id":"minecraft:emerald"}})),
-        ], &load).unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
-        assert_eq!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .unwrap()
-                .item
-                .as_ref(),
-            "minecraft:emerald"
+        ], &load).err().unwrap().to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/bad.json"),
+            "{refused}"
         );
+        assert!(refused.contains(ID), "{refused}");
     }
     let whole_null = serde_json::json!({"type":"neoforge:components", "items":"minecraft:mooshroom_spawn_egg", "components":null});
     assert!(Ingredient::parse(&whole_null, &items).is_none());

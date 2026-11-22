@@ -12,11 +12,20 @@ pub trait Hooks {
     /// and `native_draw_item`. Set `canceled` to leave out vanilla's arm;
     /// what the mods drew stays. Client-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
+        version = 2,
         contract = "cancel",
         out = "canceled",
         neoforge = "RenderArmEvent",
         cancellable = true
     )]
-    fn render_arm();
+    fn render_arm(
+        player: u128,
+        player_entity_id: i32,
+        left: bool,
+        draw: &mut dyn BlockEntityDrawContext,
+        canceled: &mut bool,
+    );
 }

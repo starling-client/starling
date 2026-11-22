@@ -54,15 +54,20 @@ fn a_saved_book_loads_exactly_and_the_vanilla_pairs_stay() {
 }
 
 #[test]
-fn both_flags_are_written_zero_too_in_id_order() {
+fn both_flags_are_written_for_each_book_including_zero() {
     let mut books = CustomBooks::default();
     books.set(POT, FILTERING).unwrap();
     books.set("demo:anvil", OPEN).unwrap();
     let Some(Tag::Compound(written)) = books.write() else {
         panic!("an extension");
     };
-    let ids: Vec<String> = written.keys().map(JavaString::to_string_lossy).collect();
+    let ids: Vec<_> = books.iter().map(|(id, _)| id).collect();
     assert_eq!(ids, ["demo:anvil", POT]);
+    assert_eq!(written.len(), 2);
+    assert_eq!(
+        written.get(&JavaString::from("demo:anvil")),
+        Some(&entry(Tag::Byte(1), Tag::Byte(0)))
+    );
     assert_eq!(
         written.get(&JavaString::from(POT)),
         Some(&entry(Tag::Byte(0), Tag::Byte(1)))
@@ -401,4 +406,110 @@ fn only_the_players_own_recipe_book_is_budgeted() {
             .try_fold(&named.tag, |tag, key| tag.get(key));
         assert_eq!(book.map(|b| b.get(EXTENSION)), Some(None), "{path:?}");
     }
+}
+
+#[test]
+fn explicit_java_fields_load_and_save_flat_without_extension_duplicates() {
+    let fields = vec![(
+        POT.to_owned(),
+        (
+            "isModCookingGuiOpen".to_owned(),
+            "isModCookingFilteringCraftable".to_owned(),
+        ),
+    )];
+    for (open, filtering) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut java = saved(Some(Tag::compound([
+            (POT, entry(Tag::Byte(1), Tag::Byte(1))),
+            (OVEN, entry(Tag::Byte(0), Tag::Byte(1))),
+        ])));
+        let Tag::Compound(map) = &mut java else {
+            unreachable!()
+        };
+        if open {
+            map.insert("isModCookingGuiOpen".into(), Tag::Byte(1));
+        }
+        if filtering {
+            map.insert("isModCookingFilteringCraftable".into(), Tag::Byte(1));
+        }
+        let loaded = Settings::read_with_fields(Some(&java), &|_| true, &fields);
+        assert_eq!(loaded.custom.get(POT), BookFlags { open, filtering });
+        assert_eq!(loaded.custom.get(OVEN), FILTERING);
+        assert!(loaded.open[BookType::Furnace.index()]);
+        let written = loaded.write_with_fields(&fields);
+        assert_eq!(
+            written.get("isModCookingGuiOpen"),
+            open.then_some(&Tag::Byte(1))
+        );
+        assert_eq!(
+            written.get("isModCookingFilteringCraftable"),
+            filtering.then_some(&Tag::Byte(1))
+        );
+        let extension = written.get(EXTENSION).unwrap();
+        assert!(extension.get(POT).is_none());
+        assert_eq!(
+            extension.get(OVEN),
+            Some(&entry(Tag::Byte(0), Tag::Byte(1)))
+        );
+        let again = Settings::read_with_fields(Some(&written), &|_| true, &fields);
+        assert_eq!(again.custom, loaded.custom);
+    }
+}
+
+#[test]
+fn installed_field_declaration_roundtrips_the_player_book() {
+    struct Cooking;
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Cooking {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            r.recipe_book_type_with_fields(
+                "demo:cooking_pot",
+                "isModCookingGuiOpen",
+                "isModCookingFilteringCraftable",
+            )
+            .unwrap();
+        }
+    }
+    let mods = [mod_api::ModEntry::new("demo", Box::new(Cooking))];
+    mod_platform::__private::part_tests::install_parts_fixture(&mods).unwrap();
+    assert_eq!(
+        mod_api::RecipeBookTypeKey::registered_save_fields(),
+        vec![(
+            POT.to_owned(),
+            (
+                "isModCookingGuiOpen".to_owned(),
+                "isModCookingFilteringCraftable".to_owned()
+            )
+        )]
+    );
+    let java = Tag::compound([
+        ("recipes", Tag::List(vec![])),
+        ("toBeDisplayed", Tag::List(vec![])),
+        ("isModCookingGuiOpen", Tag::Byte(2)),
+        ("isModCookingFilteringCraftable", Tag::Int(1)),
+    ]);
+    let loaded = Settings::read_valid(Some(&java), &|_| true);
+    assert_eq!(
+        loaded.custom.get(POT),
+        OPEN,
+        "nonzero bytes are true; non-bytes are false"
+    );
+    let written = loaded.write();
+    assert_eq!(written.get("isModCookingGuiOpen"), Some(&Tag::Byte(1)));
+    assert!(written.get("isModCookingFilteringCraftable").is_none());
+    assert!(written.get(EXTENSION).is_none());
+    let raw = sunrise_core::nbt::write_named(
+        &NamedTag {
+            name: "".into(),
+            tag: written,
+        },
+        Limits::saved(),
+    )
+    .unwrap();
+    let (parsed, _) = read_saved(&raw).unwrap();
+    assert_eq!(
+        Settings::read_valid(Some(&parsed.tag), &|_| true)
+            .custom
+            .get(POT),
+        OPEN
+    );
 }

@@ -12,11 +12,13 @@ pub trait Hooks {
     /// every tick doesn't keep the name up. Only the `ItemPart`s attached to
     /// `stack`'s item are asked. Client-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "IItemExtension.getHighlightTip"
     )]
-    fn highlight_tip();
+    fn highlight_tip(stack: &ItemStack, name: &mut Text);
 }

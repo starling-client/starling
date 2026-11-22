@@ -4,10 +4,10 @@
 //! `SimpleEnergyHandler`. They act where the world is simulated, never on a client's copy, and
 //! only on the level in place; their writes are kept by the transaction they are given.
 use super::Game;
-use sunrise_client::containers::{BlockEntity, ModEnergyBuffer};
-use sunrise_core::nbt::{Compound, JavaString, Tag};
 use mod_api::{BlockSide, Transaction};
 use std::sync::Arc;
+use sunrise_client::containers::{BlockEntity, ModEnergyBuffer};
+use sunrise_core::nbt::{Compound, JavaString, Tag};
 
 /// The amount in `nbt`: the int `energy`, as `SimpleEnergyHandler` saves it;
 /// anything else, or a negative, reads as empty.
@@ -35,9 +35,8 @@ fn extract_amount(buffer: &ModEnergyBuffer, energy: i32, asked: i32) -> i32 {
 }
 
 impl Game<'_> {
-    /// The buffer of the mod block at `at` in the level in place and the energy it holds (its
-    /// block entity's, and not the placeholder standing in while it ticks), if `at`'s side
-    /// reaches a fill or a drain (none: every side does).
+    /// The buffer of the mod block at `at` in the level in place and the energy it holds,
+    /// if `at`'s side reaches a fill or a drain (none: every side does).
     fn energy_buffer(&self, at: BlockSide) -> Option<(Arc<ModEnergyBuffer>, i32)> {
         if !self.level_in_place(at.level) {
             return None;
@@ -50,11 +49,8 @@ impl Game<'_> {
         let reached = at.side.is_none_or(|face| {
             buffer.insert_faces[face as usize] || buffer.extract_faces[face as usize]
         });
-        // The block entity is out of the world while it ticks.
         match self.world.block_entities.get(&(x, y, z)) {
-            Some(BlockEntity::Mod(m)) if reached && !m.id().is_empty() => {
-                Some((Arc::clone(buffer), read_energy(&m.nbt)))
-            }
+            Some(BlockEntity::Mod(m)) if reached => Some((Arc::clone(buffer), read_energy(&m.nbt))),
             _ => None,
         }
     }
@@ -151,22 +147,24 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn entity_energy_and_fluids_move_and_roll_back() {
         use super::super::super::native_entity_refs::tests::with_game;
+        use mod_api::{
+            BlockUpdateFlags, ENERGY, ENTITY_ENERGY, ENTITY_FLUIDS, Holder, move_energy,
+            resource_util::move_resources,
+        };
+        use mod_platform::__private::part_tests::{ROBOT_FLUID, game_thread};
         use sunrise_client::chunk::Chunk;
         use sunrise_client::containers::{ModBlockEntity, ModBlockEntityFields};
         use sunrise_client::entities::ArmorStand;
         use sunrise_client::fast_hash::FxHashMap;
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::{Direction, Vec3};
-        use mod_api::{
-            BlockUpdateFlags, ENERGY, ENTITY_ENERGY, ENTITY_FLUIDS, Holder, move_energy,
-            move_resources,
-        };
-        use mod_platform::__private::part_tests::{ROBOT_FLUID, game_thread};
         with_game(|game| {
             let _mods = game_thread();
+            // Installing the capability fixture replaces the registry snapshot.
+            crate::game::mods::register_iterated_registries(&game.options.resources).unwrap();
             game.options.dedicated = Some(Vec::new());
             game.world
                 .chunks
@@ -236,13 +234,20 @@ mod tests {
             let tank = stand.capability(host, &ENTITY_FLUIDS, None).unwrap();
             let from = other.capability(host, &ENTITY_FLUIDS, None).unwrap();
             assert_eq!(
-                host.transaction(|host, tx| move_resources(host, &from, &tank, |_| true, 100, tx)),
+                host.transaction(|host, tx| move_resources(
+                    host,
+                    &from,
+                    &tank,
+                    |_| true,
+                    100,
+                    Some(tx)
+                )),
                 Ok(100)
             );
             assert_eq!((from.amount(host, 0), tank.amount(host, 0)), (500, 100));
             let abort: Result<(), ()> = host.transaction(|host, tx| {
                 assert_eq!(
-                    move_resources(host, &from, &tank, |_| true, 100, tx),
+                    move_resources(host, &from, &tank, |_| true, 100, Some(tx)),
                     Ok(100)
                 );
                 Err(())
@@ -294,14 +299,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_buffers_energy_moves_by_its_sides_and_limits_and_an_abort_puts_it_back() {
         use super::super::super::native_entity_refs::tests::with_game;
+        use mod_api::{BlockUpdateFlags, ENERGY, move_energy};
         use sunrise_client::chunk::Chunk;
         use sunrise_client::containers::{ModBlockEntity, ModBlockEntityFields};
         use sunrise_client::fast_hash::FxHashMap;
         use sunrise_core::geometry::Direction;
-        use mod_api::{BlockUpdateFlags, ENERGY, move_energy};
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             game.world

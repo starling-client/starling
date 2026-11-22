@@ -233,6 +233,7 @@ fn multisampled_targets_pass(device: &wgpu::Device, encoder: &mut wgpu::CommandE
 /// Each layer of a `Depth32Float` texture cleared to its own depth, then copied whole into
 /// another after a multisampled two-target pass: the copy reads the same depths as the source.
 #[test]
+#[ignore = "daily"]
 fn a_copied_depth_texture_keeps_its_depth() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else { return };

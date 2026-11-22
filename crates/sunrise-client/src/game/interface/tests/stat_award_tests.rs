@@ -19,11 +19,14 @@ impl Hooks for Rewrite {
     ) -> Flow {
         match self.0.load(Ordering::Relaxed) {
             0 => event.value *= 2,
-            1 => {
+            1 if event.stat_type.as_str() == "minecraft:custom"
+                && event.stat.as_str() == "minecraft:jump" =>
+            {
                 *event.stat_type = "minecraft:custom".into();
                 *event.stat = "rewrite:steps".into();
                 event.value = 3;
             }
+            1 => return Flow::Continue,
             2 => {
                 *event.stat = "test:missing".into();
                 event.value = 99;
@@ -52,7 +55,7 @@ impl Hooks for Rewrite {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
     let mode = Arc::new(AtomicUsize::new(0));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -115,7 +118,7 @@ fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn lan_guest_awards_and_leave_game_apply_the_edited_amount() {
     let mode = Arc::new(AtomicUsize::new(0));
     let mods: mod_api::Mods =
@@ -150,7 +153,7 @@ fn lan_guest_awards_and_leave_game_apply_the_edited_amount() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn deferred_award_rewrites_only_after_outer_commit_and_abort_emits_nothing() {
     use crate::game::transactions::DeferredEffect;
     let mode = Arc::new(AtomicUsize::new(0));
@@ -256,7 +259,7 @@ fn break_stone(game: &mut Game<'_>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn real_integrated_stone_break_updates_counter_score_and_dirty_award() {
     let mode = Arc::new(AtomicUsize::new(0));
     let mods = vec![mod_api::ModEntry::new(
@@ -295,7 +298,9 @@ fn real_integrated_stone_break_updates_counter_score_and_dirty_award() {
             {
                 let player = game.player.as_mut().unwrap();
                 player.ground.on_ground = true;
+                let side = game_side!(game);
                 let mut world = sunrise_client::motion::MotionWorld {
+                    side: &side,
                     entities: &[],
                     player,
                     scene: &mut game.world,
@@ -417,6 +422,12 @@ fn lan_real_break_and_jump(mods: mod_api::Mods, custom: &str, mode: Option<&Atom
             let play = &mut game.lan.as_mut().unwrap().play.get_mut(&12).unwrap();
             assert_eq!(play.stats.get("custom", custom), 3);
             assert_eq!(play.stats.get("custom", "minecraft:jump"), 0);
+            if mode.is_some() {
+                assert_eq!(play.stats.get("custom", "minecraft:play_time"), 1);
+                assert_eq!(play.stats.get("custom", "minecraft:total_world_time"), 1);
+                assert_eq!(play.stats.get("custom", "minecraft:time_since_death"), 1);
+                assert_eq!(play.stats.get("custom", "minecraft:time_since_rest"), 1);
+            }
             let dirty = play.stats.take_dirty();
             assert!(dirty.contains(&("minecraft:custom".into(), custom.into(), 3)));
             game.lan.as_ref().unwrap().hub.send_stats(12, &dirty);
@@ -441,7 +452,7 @@ fn lan_real_break_and_jump(mods: mod_api::Mods, custom: &str, mode: Option<&Atom
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn real_lan_break_and_jump_use_registered_rewrite_targets() {
     let mode = Arc::new(AtomicUsize::new(0));
     let mods = vec![mod_api::ModEntry::new(
@@ -453,7 +464,7 @@ fn real_lan_break_and_jump_use_registered_rewrite_targets() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn lan_noncanonical_rewrite_keeps_the_entire_original_award() {
     let mode = Arc::new(AtomicUsize::new(6));
     let mods = vec![mod_api::ModEntry::new(
@@ -493,36 +504,6 @@ fn lan_noncanonical_rewrite_keeps_the_entire_original_award() {
                 .unwrap();
             }
         });
-    });
-}
-
-#[test]
-#[ignore = "needs SUNRISE_TEST_RESOURCES, SUNRISE_WASM_FIXTURE and SUNRISE_WASM_STD; build with sunrise-mod-wasm/listener-fixture"]
-fn wasm_real_break_and_jump_rewrite_awards() {
-    sunrise_guest_stack::run_on_guest_stack(|| {
-        use sunrise_mod_package::manifest::Package;
-        use sunrise_mod_wasm::{WasmPackage, load};
-        let path = std::path::PathBuf::from(std::env::var_os("SUNRISE_WASM_FIXTURE").unwrap());
-        let manifest = Package::read(&path).unwrap().manifest;
-        let info = mod_api::PackageInfo::new(
-            manifest.id.clone(),
-            manifest.version.clone(),
-            mod_api::PackageKind::Code,
-            mod_api::Side::Both,
-            vec![manifest.id.clone()],
-            vec![],
-        );
-        let loaded = load(
-            &std::fs::read(std::env::var_os("SUNRISE_WASM_STD").unwrap()).unwrap(),
-            vec![WasmPackage {
-                manifest,
-                module: Package::read_wasm(&path).unwrap(),
-            }],
-        );
-        assert!(loaded.refused.is_empty(), "{:?}", loaded.refused);
-        assert_eq!(loaded.mods.len(), 1);
-        loaded.initialize(&[info]).unwrap();
-        lan_real_break_and_jump(loaded.mods.into(), "wasm_fixture:steps", None);
     });
 }
 

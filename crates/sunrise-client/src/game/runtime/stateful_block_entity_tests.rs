@@ -1,10 +1,10 @@
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn stateful_creation_uses_actual_state_and_preserves_existing_entity() {
     use crate::game::native_entity_refs::tests::{record_key, run_fresh_cases, with_game_at};
-    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
     use mod_api::{self, *};
     use std::sync::{Arc, Mutex, OnceLock};
+    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
 
     if run_fresh_cases(
         "game::stateful_block_entity_tests::stateful_creation_uses_actual_state_and_preserves_existing_entity",
@@ -36,8 +36,8 @@ fn stateful_creation_uses_actual_state_and_preserves_existing_entity() {
         }
         fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut BlocksEvent<'_>) {
             event
-                .blocks
-                .push(mod_api::Block::new(BLOCK, "minecraft:white_banner"));
+                .register(mod_api::Block::new(BLOCK, "minecraft:white_banner"))
+                .unwrap();
         }
     }
     #[mod_api::sunrise_part]
@@ -148,7 +148,7 @@ fn stateful_creation_uses_actual_state_and_preserves_existing_entity() {
         // outer Game write wrapper and still creates exactly one instance.
         let written = game.with_level(|_, level, ticks| {
             LevelWriteHost::set_block(
-                &mut crate::game::mod_api_host::LevelTicks { level, ticks },
+                &mut crate::game::mod_api_host::LevelTicks::new(level, ticks),
                 [3, 64, 0],
                 populated_api,
                 BlockUpdateFlags::NONE,
@@ -169,5 +169,12 @@ fn stateful_creation_uses_actual_state_and_preserves_existing_entity() {
                 .get(&"progress".into()),
             Some(&Tag::Int(37))
         );
+        // The placement and survival view reads the same live entity.
+        game.with_level(|_, level, ticks| {
+            let view = level.view(ticks);
+            let data = mod_api::LevelHost::block_entity_data(&view, second)
+                .expect("the view forwards a block entity's data");
+            assert_eq!(data.get(&"progress".into()), Some(&Tag::Int(37)));
+        });
     });
 }

@@ -23,11 +23,16 @@ fn foreground_gui_preserves_draws_and_dispatches_with_visibility_flags() {
         (true, false, vec![99]),
     ] {
         let mut batch = HudBatch(vec![99]);
-        dispatch_gui_render_post(&TestHost, &mut batch, hidden, focused);
+        dispatch_gui_render_post(
+            &TestHost,
+            |listen| {
+                assert!(listen(&mut batch));
+            },
+            hidden,
+            focused,
+        );
         assert_eq!(batch.0, expected);
     }
-    let mut batch = HudBatch(vec![99]);
     install(Vec::<ModEntry>::new().into());
-    dispatch_gui_render_post(&TestHost, &mut batch, true, true);
-    assert_eq!(batch.0, [99]);
+    dispatch_gui_render_post(&TestHost, |_| panic!("no listener"), true, true);
 }

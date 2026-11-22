@@ -138,9 +138,13 @@ pub fn tick_animation(m: &mut Mob) {
     let moving =
         m.limb_speed > 1.0e-5 || m.yaw != m.previous_yaw || m.head_pitch != m.previous_head_pitch;
     let baby = m.is_baby();
-    m.extra
-        .axolotl
-        .tick(baby, m.fluids.in_water, m.on_ground, moving, m.age as f32);
+    m.extra.axolotl.tick(
+        baby,
+        m.fluids.in_water,
+        m.ground.on_ground,
+        moving,
+        m.age as f32,
+    );
 }
 #[cfg(test)]
 mod axolotl_parity_tests {

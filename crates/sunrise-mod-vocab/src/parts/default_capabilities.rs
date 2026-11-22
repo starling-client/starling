@@ -1,6 +1,5 @@
 //! Type-bound declarations consumed by the game's default capability providers.
 use super::*;
-use crate::wire::{Reader, Wire, WireError, Writer};
 
 /// A registered item's dynamic slot count. The item type is bound at registration; this
 /// callback runs only for an actual runtime lookup, never to infer whether it is registered.
@@ -8,8 +7,6 @@ pub trait ItemContainerProvider: Send + Sync {
     /// The item's slot count now, or none to let the next registration answer.
     fn slots(&self, host: &dyn Host) -> Option<u32>;
 }
-
-crate::wire::wire_handlers::handler!(dyn ItemContainerProvider, "ItemContainerProvider");
 
 impl<F: Fn(&dyn Host) -> Option<u32> + Send + Sync> ItemContainerProvider for F {
     fn slots(&self, host: &dyn Host) -> Option<u32> {
@@ -66,13 +63,13 @@ pub trait DefaultCapabilitiesCapabilityProviders {
 
 impl DefaultCapabilitiesCapabilityProviders for InstalledProviders {
     fn block_container(&self, block: &str) -> Option<crate::ModContainer> {
-        first_enabled(installed()?.keys.default_block_containers.get(block)?)
+        declared_block_container(block).cloned()
     }
     fn block_fluids(&self, block: &str) -> Option<crate::ModFluidTanks> {
-        first_enabled(installed()?.keys.default_block_fluids.get(block)?)
+        first_enabled(installed()?.keys.default_block_fluids.get(block)?).cloned()
     }
     fn block_energy(&self, block: &str) -> Option<crate::ModEnergyBuffer> {
-        first_enabled(installed()?.keys.default_block_energy.get(block)?)
+        first_enabled(installed()?.keys.default_block_energy.get(block)?).cloned()
     }
     fn item_container_provider(
         &self,
@@ -92,9 +89,13 @@ impl DefaultCapabilitiesCapabilityProviders for InstalledProviders {
     }
 }
 
-fn first_enabled<T: Clone>(declarations: &[(usize, T)]) -> Option<T> {
+pub(super) fn declared_block_container(block: &str) -> Option<&'static crate::ModContainer> {
+    first_enabled(installed()?.keys.default_block_containers.get(block)?)
+}
+
+fn first_enabled<T>(declarations: &[(usize, T)]) -> Option<&T> {
     declarations
         .iter()
         .find(|(index, _)| crate::mod_index_on(*index))
-        .map(|(_, declaration)| declaration.clone())
+        .map(|(_, declaration)| declaration)
 }

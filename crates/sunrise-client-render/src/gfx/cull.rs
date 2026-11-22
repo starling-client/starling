@@ -28,8 +28,11 @@
 //! multi-draw on the CPU (Mesa's on Intel Gen9) pay per entry. Phase 2's
 //! counts come from the GPU, which reads them from the draws themselves:
 //! Vulkan's native multi-draw, DirectX 12's `ExecuteIndirect`, and Metal's,
-//! which wgpu replays as one indirect draw per entry. Translucent draws are
-//! not culled.
+//! which wgpu replays as one indirect draw per entry. A section's translucent draw
+//! (`place_translucent`) waits for the same test: the box covers its quads too, and the
+//! translucent pass comes after, with phase 2's depth. The picture needs no more than that:
+//! a box that fails everywhere against phase 1's depth fails against the final one, which is
+//! only nearer, and so does every translucent fragment inside it.
 //!
 //! Metal cannot force the depth test before a fragment shader that writes
 //! storage (naga writes no `[[early_fragment_tests]]`), nor can DirectX 12
@@ -58,6 +61,8 @@ pub fn section_box(bounds: Option<[glam::Vec3; 2]>) -> [[f32; 3]; 2] {
         [(low - pad).to_array(), (high + pad).to_array()]
     })
 }
+/// A section with no test over its translucent quads (`Renderer::translucent_tests`).
+pub const NO_TEST: u32 = u32::MAX;
 /// The bit that marks a far tile's slot (`Renderer::tile_cull_slot`): tiles
 /// count their slots apart from the sections' resident ones.
 pub const TILE: u32 = 1 << 31;
@@ -432,9 +437,9 @@ impl Cull {
     }
 
     /// Start a frame: take in the results that came back, and tell whether
-    /// the frame culls.
-    pub fn begin(&mut self, device: &wgpu::Device) -> bool {
-        let _ = device.poll(wgpu::PollType::Poll);
+    /// the frame culls. The caller polls the device first (the frame's one poll,
+    /// `Renderer::draw_frame`).
+    pub fn begin(&mut self) -> bool {
         for i in 0..READBACKS {
             let r = &mut self.readbacks[(self.next + i) % READBACKS];
             if r.state.load(Ordering::Acquire) != MAPPED {
@@ -528,6 +533,14 @@ impl Cull {
         let t = &mut self.test_data[test as usize].data;
         t[1 + 2 * pass as usize] = first;
         t[2] |= draws << (16 * pass);
+    }
+
+    /// `test`'s translucent draw, at `draw` in phase 2's list: it too waits for the test to
+    /// see the section's box. The draw's place is in the box corners' unused fourth words (exact as a float below 2^24).
+    pub fn place_translucent(&mut self, test: u32, draw: u32) {
+        let t = &mut self.test_data[test as usize];
+        t.low[3] = draw as f32;
+        t.high[3] = 1.0;
     }
 
     fn push(&mut self, index: usize, bounds: [[f32; 3]; 2], slot: u32, indices: u32) {

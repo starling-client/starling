@@ -2,10 +2,10 @@
 //! on the hub's viewed areas (`lan::viewed_levels`), which own the caps, the tickets and what is
 //! sent. Each mod's areas are kept apart by the id of the mod whose call this is.
 use super::Game;
-use sunrise_client::lan::viewed_levels::areas as engine;
 use mod_api::{
     ChunkArea, ChunkAreaMode, ChunkAreaRefusal, ChunkCap, ChunkPos, LevelRef, PlayerRef,
 };
+use sunrise_client::lan::viewed_levels::areas as engine;
 
 fn mode(mode: ChunkAreaMode) -> engine::ChunkAreaMode {
     match mode {
@@ -110,7 +110,6 @@ mod tests {
         Dim, Game,
         view_pass::tests::{Sent, host_a_viewer, open_game, sent},
     };
-    use sunrise_client::lan::{Out, viewed_levels::areas as engine};
     use mod_api::{
         ChunkArea,
         ChunkAreaMode::*,
@@ -121,6 +120,7 @@ mod tests {
         sync::mpsc::Receiver,
         time::{Duration, Instant},
     };
+    use sunrise_client::lan::{Out, viewed_levels::areas as engine};
 
     fn in_mod(id: &'static str) -> ModGuard {
         mod_platform::content::crash::enter_native_mod(ModCall {
@@ -173,7 +173,7 @@ mod tests {
     /// stays through all of it; withdrawing the mod's areas forgets the chunks 52 ticks later,
     /// then closes the level.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and a scratch SUNRISE_HOME"]
+    #[ignore = "daily"]
     fn a_mods_areas_reach_the_client_and_refusals_come_back_typed() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let home =

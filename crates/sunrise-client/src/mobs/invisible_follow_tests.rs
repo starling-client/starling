@@ -2,12 +2,13 @@
 use super::goals::{Cx, FollowMob};
 use super::{Mob, Species};
 use crate::mobs::world::with_test_world;
-use sunrise_core::geometry::Vec3;
 use std::sync::Arc;
+use sunrise_core::geometry::Vec3;
 
 /// `FollowMobGoal.canUse` skips an invisible mob (`!isInvisible()`), which
 /// is the flag or the invisibility effect.
 #[test]
+#[ignore = "daily"]
 fn a_follow_mob_goal_ignores_an_invisible_mob() {
     use crate::mobs::sensor_scan_tests::kind;
     let mut outcomes = Vec::new();
@@ -22,6 +23,7 @@ fn a_follow_mob_goal_ignores_an_invisible_mob() {
             target.invisible = invisible;
             let seen = [target.seen(None, &crate::items::Items::empty())];
             let world = crate::mobs::MobWorld {
+                side: sunrise_client::motion::dry_side(),
                 others: &seen,
                 ..w.clone()
             };

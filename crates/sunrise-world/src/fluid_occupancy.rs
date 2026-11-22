@@ -5,8 +5,8 @@ use crate::{
     fluid::FluidState,
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::{geometry::Aabb, position::BlockPos};
 use std::{fmt, io};
+use sunrise_core::{geometry::Aabb, position::BlockPos};
 
 pub struct FluidPresence<'r> {
     registry: &'r BlockRegistry,

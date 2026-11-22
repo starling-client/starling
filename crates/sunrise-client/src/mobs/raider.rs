@@ -114,10 +114,6 @@ pub fn state(m: &Mob) -> Option<&State> {
 pub fn state_mut(m: &mut Mob) -> &mut State {
     m.extra.raider.get_or_insert_with(Box::default)
 }
-/// `Raider.getCurrentRaid() != null`.
-pub fn in_raid(m: &Mob) -> bool {
-    state(m).is_some_and(|s| s.raid_id.is_some())
-}
 pub fn has_active_raid(m: &Mob) -> bool {
     state(m).is_some_and(|s| s.active_raid)
 }
@@ -707,7 +703,7 @@ impl Goal for HoldGroundAttack {
 }
 
 /// The saved fields (`PatrollingMonster` and `Raider.addAdditionalSaveData`).
-pub fn write_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn write_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     let Some(s) = state(m) else { return };
     match s.patrol_target {
         Some(p) => {
@@ -762,6 +758,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "daily"]
     fn companions_and_shout_range_match_the_full_scan() {
         use crate::mobs::{
             Seen, seen_grid::SeenGrid, sensor_scan_tests::kind, world::with_test_world,
@@ -788,20 +785,24 @@ mod tests {
             .map(|m| m.seen(None, &crate::items::Items::empty()))
             .collect();
         let grid = SeenGrid::new(seen.iter().map(|s| s.bounds));
-        with_test_world(&seen, |w, _| {
-            let indexed = MobWorld {
-                others_grid: Some(&grid),
-                ..w.clone()
-            };
-            let mut found = 0;
-            for m in mobs.iter().filter(|m| is_raider(m.species())) {
-                let scan = companions(m, w);
-                assert_eq!(companions(m, &indexed), scan);
-                assert_eq!(shout_range(m, &indexed), shout_range(m, w));
-                found += scan.len();
-            }
-            assert!(found > 0);
-        });
+        assert!(
+            with_test_world(&seen, |w, _| {
+                let indexed = MobWorld {
+                    side: sunrise_client::motion::dry_side(),
+                    others_grid: Some(&grid),
+                    ..w.clone()
+                };
+                let mut found = 0;
+                for m in mobs.iter().filter(|m| is_raider(m.species())) {
+                    let scan = companions(m, w);
+                    assert_eq!(companions(m, &indexed), scan);
+                    assert_eq!(shout_range(m, &indexed), shout_range(m, w));
+                    found += scan.len();
+                }
+                assert!(found > 0);
+            }),
+            "vanilla data is missing"
+        );
     }
     #[test]
     fn raiders_and_leaders() {
@@ -830,7 +831,8 @@ mod tests {
                 .is_some_and(|d| d.ominous_banner)
         );
         assert!(is_captain(&m));
-        let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
+        let saved =
+            crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None, &Default::default());
         let chances = saved.get("drop_chances").unwrap();
         assert_eq!(
             chances.get("head"),
@@ -864,42 +866,47 @@ mod tests {
 
     /// `RaiderCelebration.tick` jumps only when the raider is not a passenger.
     #[test]
+    #[ignore = "daily"]
     fn a_celebrating_raider_does_not_jump_while_riding() {
         use crate::mobs::world::with_test_world;
         use std::sync::Arc;
-        let _ = with_test_world(&[], |w, _| {
-            let jumped = |seed: i64, riding: bool| {
-                let mut k = (*crate::mobs::sensor_scan_tests::kind()).clone();
-                k.id = "minecraft:pillager".into();
-                k.species = Species::Pillager;
-                let mut m = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
-                m.random.set_seed(seed);
-                m.extra.raider = Some(Box::default());
-                if riding {
-                    m.extra.mount = Some(9);
-                }
-                let mut goal = Celebration;
-                let mut test_level = crate::health::TestLevel::new(1);
-                let mut events = Vec::new();
-                let mut cx = Cx {
-                    w,
-                    level: &mut test_level.level(),
-                    events: &mut events,
+        assert!(
+            with_test_world(&[], |w, _| {
+                let jumped = |seed: i64, riding: bool| {
+                    let mut k = (*crate::mobs::sensor_scan_tests::kind()).clone();
+                    k.id = "minecraft:pillager".into();
+                    k.species = Species::Pillager;
+                    let mut m = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
+                    m.random.set_seed(seed);
+                    m.extra.raider = Some(Box::default());
+                    if riding {
+                        m.extra.mount = Some(9);
+                    }
+                    let mut goal = Celebration;
+                    let mut test_level = crate::health::TestLevel::new(1);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w,
+                        level: &mut test_level.level(),
+                        events: &mut events,
+                    };
+                    goal.tick(&mut m, &mut cx);
+                    m.ai.jumping
                 };
-                goal.tick(&mut m, &mut cx);
-                m.ai.jumping
-            };
-            let seed = (1..500)
-                .find(|seed| jumped(*seed, false))
-                .expect("some seed celebrates with a jump");
-            assert!(jumped(seed, false));
-            assert!(!jumped(seed, true));
-        });
+                let seed = (1..500)
+                    .find(|seed| jumped(*seed, false))
+                    .expect("some seed celebrates with a jump");
+                assert!(jumped(seed, false));
+                assert!(!jumped(seed, true));
+            }),
+            "vanilla data is missing"
+        );
     }
 
     /// `ObtainRaidLeaderBannerGoal.canContinueToUse` ends with
     /// `!cannotPickUpBanner()`: a raid that is over stops the banner chase.
     #[test]
+    #[ignore = "daily"]
     fn a_banner_chase_stops_when_the_raid_ends() {
         use crate::mobs::world::with_built_test_world;
         use std::sync::Arc;
@@ -936,7 +943,7 @@ mod tests {
                     Vec3::new(0.5, 1.0, 0.5),
                     0.0,
                 );
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m.extra.raider = Some(Box::default());
                 let s = state_mut(&mut m);
                 s.active_raid = true;

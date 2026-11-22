@@ -5,11 +5,10 @@ use sunrise_client::{hotbar, items::ItemStack, keybinds, text::Text};
 use sunrise_core::nbt::Tag;
 
 impl Game<'_> {
-    /// Whether the key bound to `mapping` is held, or the controller button bound to it.
+    /// Whether the live mapping is held, regardless of the device's current state.
     pub(super) fn mapped_key_down(&self, mapping: &str) -> bool {
-        keybinds::key_code(self.settings.keys.get(mapping))
-            .is_some_and(|k| self.physical_keys.contains(&k))
-            || self.input_holds(mapping)
+        keybinds::VanillaMappingSlot::by_name(mapping)
+            .is_some_and(|slot| self.vanilla_mappings.is_down(slot))
     }
 
     /// `CreativeModeInventoryScreen.selectTab` on the HOTBAR tab: each saved
@@ -65,9 +64,10 @@ impl Game<'_> {
         self.creative_screen.set_saved_hotbars(items);
     }
     /// `CreativeModeInventoryScreen.handleHotbarLoadOrSave` for the hotbar key
-    /// `index`: load puts the saved row in the hotbar (the creative slot
-    /// packets follow from the inventory change), save stores the hotbar and
-    /// says so on the action bar.
+    /// `index`: load puts the saved row in the hotbar and, on a server, sends
+    /// each of its nine slots at once (`handleCreativeModeItemAdd`, changed or
+    /// not), so a drop later in the tick drops what the server now holds; save
+    /// stores the hotbar and says so on the action bar.
     pub(super) fn hotbar_load_or_save(&mut self, index: usize, load: bool) {
         let path = Self::options_path().with_file_name("hotbar.nbt");
         let known = |id: &str| self.items().get(id).is_some();
@@ -75,11 +75,12 @@ impl Game<'_> {
         if load {
             for (slot, stack) in rows[index].iter().enumerate() {
                 self.inventory[slot] = stack.clone();
+                self.remote_creative_slot_add(slot);
             }
             return;
         }
         rows[index] = self.inventory[..hotbar::SIZE].to_vec();
-        if let Err(e) = hotbar::save(&path, &rows) {
+        if let Err(e) = hotbar::save(&path, &rows, self.items()) {
             // saveHotbar sets the message inside its try, so a failed save says nothing.
             log::warn!("the creative hotbar was not saved: {e}");
             return;

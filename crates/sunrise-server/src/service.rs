@@ -3,11 +3,11 @@
 //! logon on Windows. The service runs `sunrise-server run`, which restarts the game if it crashes; the
 //! service manager restarts the supervisor itself.
 
-use sunrise_server_launch::config;
 use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use sunrise_server_launch::config;
 
 /// The service's name for a server folder: `sunrise-server-<folder>`, in letters, digits and dashes.
 pub fn name(dir: &Path) -> String {
@@ -102,7 +102,7 @@ pub fn systemd_unit(program: &Path, dir: &Path, user: Option<&str>) -> String {
     format!(
         "[Unit]
 Description=Sunrise server in {dir}
-Documentation=https://github.com/horizon-rust/horizon/blob/main/docs/server.md
+Documentation=https://github.com/sunrise-org/sunrise/blob/main/docs/server.md
 Wants=network-online.target
 After=network-online.target
 

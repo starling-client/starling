@@ -13,11 +13,19 @@ pub trait Hooks {
     /// `legs`, `chest` and `head`; a mob's `body` (a horse's armor).
     /// Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "ArmorHurtEvent",
         cancellable = true
     )]
-    fn armor_hurt();
+    fn armor_hurt(
+        player: Option<u128>,
+        entity: u32,
+        kind: &str,
+        source: &HurtSource<'_>,
+        entries: &mut Vec<mod_api::ArmorHurt>,
+        cancel: &mut bool,
+    );
 }

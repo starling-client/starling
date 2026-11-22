@@ -5,11 +5,11 @@ use crate::{
     items::ItemStack,
     save::{Level, put, read_dat, uuid_from_tag, uuid_tag, write_dat},
 };
-use sunrise_protocol::crypto::uuid_string;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use sunrise_protocol::crypto::uuid_string;
 use {
     sunrise_core::nbt::Tag,
     sunrise_mod_runtime::attachments::{ATTACHMENTS_KEY, attachment_compound},
@@ -79,9 +79,11 @@ pub fn with_warden(guest: &mut Guest, tracker: Option<Tag>) -> &mut Guest {
 /// between its two renames leaves, `write_dat`).
 pub fn load(guest: &mut Guest, world: &Path) -> bool {
     let file = path(world, guest.uuid);
-    let Some(tag) = read_dat(&file).or_else(|| read_dat(&file.with_extension("dat_old"))) else {
+    let Some(mut tag) = read_dat(&file).or_else(|| read_dat(&file.with_extension("dat_old")))
+    else {
         return false;
     };
+    crate::save::adopt_horizon_player(&mut tag);
     let mut level = Level {
         health: 20.0,
         food: 20,
@@ -119,7 +121,7 @@ pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> boo
 /// Save the world's single-player owner: its state into `level` (`store`),
 /// then to the file level.dat names, which it loads ([`load_owner`]), and to
 /// its own file, so that the one it loads is never the older of the two.
-pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
+pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path, items: &crate::items::Items) {
     // `MinecraftServer.saveAllChunks`: `saveDataTag(worldData, getSingleplayerProfile().id())`
     // — the server's own profile on every save, never the stale `singleplayer_uuid` a
     // world arrived with (a Realms download, a server world). The player file written is
@@ -128,10 +130,10 @@ pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
     store(guest, level, None);
     // `saveDataTag`: level.dat carries the profile the player file is named after, so the
     // file the owner loads next is the one just written.
-    if let Err(e) = level.write(world) {
+    if let Err(e) = level.write(world, items) {
         log::warn!("Sunrise: the owner's playerdata is not saved: {e}");
     }
-    save(guest, world);
+    save(guest, world, items);
 }
 
 /// Move a world that older Sunrise builds named by the offline profile to the account's
@@ -143,7 +145,13 @@ pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
 /// `old` is `offline_uuid(player name)`, `new` the account's UUID. False when the world
 /// is not this owner's (another account's world, a world made under another name): its
 /// files and level data are left alone.
-pub fn migrate_owner(world: &Path, level: &mut Level, old: u128, new: u128) -> bool {
+pub fn migrate_owner(
+    world: &Path,
+    level: &mut Level,
+    old: u128,
+    new: u128,
+    items: &crate::items::Items,
+) -> bool {
     if old == new {
         return false;
     }
@@ -185,6 +193,7 @@ pub fn migrate_owner(world: &Path, level: &mut Level, old: u128, new: u128) -> b
         return false;
     }
     if let Some(mut tag) = source {
+        crate::save::adopt_horizon_player(&mut tag);
         // The player file is named after its `UUID` (`PlayerDataStorage.save`).
         put(&mut tag, "UUID", uuid_tag(new_ints));
         if let Err(e) = write_dat(&new_file, tag.clone()) {
@@ -209,7 +218,7 @@ pub fn migrate_owner(world: &Path, level: &mut Level, old: u128, new: u128) -> b
     // `saveDataTag`: `singleplayer_uuid` is the profile the world's player file is named
     // after. Written before the account's first session saves, so an interrupted first
     // open still finds the file written above.
-    if let Err(e) = level.write(world) {
+    if let Err(e) = level.write(world, items) {
         log::warn!("Sunrise: cannot save the migrated owner: {e}");
         return false;
     }
@@ -230,8 +239,7 @@ pub fn face_world_spawn(guest: &mut Guest, known: bool, [yaw, pitch]: [f32; 2]) 
 /// Give a guest the player state read into `level`.
 pub fn apply(guest: &mut Guest, level: &Level) {
     if let Some(p) = level.position {
-        guest.position = p;
-        guest.previous_position = p;
+        guest.place(p);
     }
     guest.yaw = level.rotation[0];
     guest.pitch = level.rotation[1];
@@ -343,28 +351,28 @@ pub fn apply(guest: &mut Guest, level: &Level) {
 
 /// The shared player compound for logout and autosave snapshots, and for
 /// `player-export`'s record (`arrivals::export_record`).
-pub fn player_tag(guest: &Guest) -> Tag {
+pub fn player_tag(guest: &Guest, items: &crate::items::Items) -> Tag {
     let mut level = Level {
         player_uuid: Some(uuid_ints(guest.uuid)),
         ..Level::default()
     };
     store(guest, &mut level, None);
-    level.player_tag()
+    level.player_tag(items)
 }
 
 /// Save a leaving guest, including its saved vehicle tree.
-pub fn save(guest: &Guest, world: &Path) {
+pub fn save(guest: &Guest, world: &Path, items: &crate::items::Items) {
     let file = path(world, guest.uuid);
-    if let Err(e) = write_dat(&file, player_tag(guest)) {
+    if let Err(e) = write_dat(&file, player_tag(guest, items)) {
         log::warn!("Sunrise: {} is not saved: {e}", file.display());
     }
 }
 
 /// [`save`], synced to the disk and saying whether the file was written: a hand-over's commit
 /// point (`player-confirm`) answers only once it is.
-pub fn save_now(guest: &Guest, world: &Path) -> Result<(), String> {
+pub fn save_now(guest: &Guest, world: &Path, items: &crate::items::Items) -> Result<(), String> {
     let file = path(world, guest.uuid);
-    crate::save::write_dat_durable(&file, player_tag(guest))
+    crate::save::write_dat_durable(&file, player_tag(guest, items))
         .map_err(|e| format!("{} is not saved: {e}", file.display()))
 }
 
@@ -408,12 +416,12 @@ pub struct Autosaves {
 }
 
 impl Autosaves {
-    pub fn enqueue(&mut self, guest: &Guest, world: &Path) {
+    pub fn enqueue(&mut self, guest: &Guest, world: &Path, items: &crate::items::Items) {
         let snapshot = Snapshot {
             uuid: guest.uuid,
             name: guest.name.clone(),
             file: path(world, guest.uuid),
-            tag: player_tag(guest),
+            tag: player_tag(guest, items),
         };
         if self.writer.is_none() {
             let (send, receive) = std::sync::mpsc::channel::<Snapshot>();
@@ -460,9 +468,14 @@ impl Autosaves {
     }
 
     /// Serialize a newer logout snapshot after every queued autosave.
-    pub fn save_after(&mut self, guest: &Guest, world: &Path) -> Vec<SavedPlayer> {
+    pub fn save_after(
+        &mut self,
+        guest: &Guest,
+        world: &Path,
+        items: &crate::items::Items,
+    ) -> Vec<SavedPlayer> {
         let saved = self.completed(true);
-        save(guest, world);
+        save(guest, world, items);
         saved
     }
 
@@ -688,8 +701,8 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
 mod tests {
     use super::*;
     use crate::lan::{Joined, PlayerSender};
-    use sunrise_protocol::packets::configuration::ClientInformation;
     use std::sync::{Arc, atomic::AtomicI32, mpsc};
+    use sunrise_protocol::packets::configuration::ClientInformation;
 
     fn guest() -> Guest {
         let (tx, _rx) = mpsc::channel();
@@ -780,7 +793,7 @@ mod tests {
         g.equipment
             .set(sunrise_items::equipment::SADDLE, Some(saddle));
         g.armor[0] = Some(ItemStack::new("minecraft:iron_helmet", 1));
-        save(&g, &dir);
+        save(&g, &dir, &Default::default());
         let tag = read_dat(&path(&dir, 7)).unwrap();
         let equipment = tag.get("equipment").unwrap();
         for key in ["body", "saddle", "head"] {
@@ -798,7 +811,10 @@ mod tests {
             "equipment",
             Tag::compound([(
                 "saddle",
-                crate::save::item_to_nbt(&ItemStack::new("minecraft:saddle", 1)),
+                crate::save::item_to_nbt(
+                    &ItemStack::new("minecraft:saddle", 1),
+                    &Default::default(),
+                ),
             )]),
         )]));
         let mut vanilla = guest();
@@ -838,7 +854,7 @@ mod tests {
         let mut saves = Autosaves::default();
         for uuid in 1..=150 {
             let mut g = holding(uuid, "minecraft:diamond", 5);
-            saves.enqueue(&g, &dir);
+            saves.enqueue(&g, &dir, &Default::default());
             // Subsequent live changes cannot alter the queued snapshot.
             g.inventory[0] = None;
         }
@@ -851,8 +867,16 @@ mod tests {
             assert!(load(&mut loaded, &dir));
             assert_eq!(first_item(&loaded), Some(("minecraft:diamond", 5)));
         }
-        saves.enqueue(&holding(1, "minecraft:gold_ingot", 7), &dir);
-        saves.enqueue(&holding(1, "minecraft:emerald", 9), &dir);
+        saves.enqueue(
+            &holding(1, "minecraft:gold_ingot", 7),
+            &dir,
+            &Default::default(),
+        );
+        saves.enqueue(
+            &holding(1, "minecraft:emerald", 9),
+            &dir,
+            &Default::default(),
+        );
         assert_eq!(saves.completed(true).len(), 2);
         assert!(saves.writes_finished().unwrap());
         let mut loaded = guest();
@@ -861,9 +885,17 @@ mod tests {
         assert_eq!(first_item(&loaded), Some(("minecraft:emerald", 9)));
         // The barrier protects the synchronous, newer logout snapshot.
         for uuid in 1..=150 {
-            saves.enqueue(&holding(uuid, "minecraft:diamond", 5), &dir);
+            saves.enqueue(
+                &holding(uuid, "minecraft:diamond", 5),
+                &dir,
+                &Default::default(),
+            );
         }
-        saves.save_after(&holding(1, "minecraft:iron_ingot", 11), &dir);
+        saves.save_after(
+            &holding(1, "minecraft:iron_ingot", 11),
+            &dir,
+            &Default::default(),
+        );
         drop(saves);
         assert!(load(&mut loaded, &dir));
         assert_eq!(first_item(&loaded), Some(("minecraft:iron_ingot", 11)));
@@ -876,7 +908,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("players"), b"not a directory").unwrap();
         let mut saves = Autosaves::default();
-        saves.enqueue(&holding(1, "minecraft:diamond", 5), &dir);
+        saves.enqueue(
+            &holding(1, "minecraft:diamond", 5),
+            &dir,
+            &Default::default(),
+        );
         assert!(saves.completed(true).is_empty());
         assert!(saves.writes_finished().is_err());
         assert!(saves.completed(false).is_empty());
@@ -884,9 +920,17 @@ mod tests {
         drop(saves);
         std::fs::remove_file(dir.join("players")).unwrap();
         let mut saves = Autosaves::default();
-        saves.enqueue(&holding(1, "minecraft:diamond", 5), &dir);
+        saves.enqueue(
+            &holding(1, "minecraft:diamond", 5),
+            &dir,
+            &Default::default(),
+        );
         for uuid in 2..=150 {
-            saves.enqueue(&holding(uuid, "minecraft:diamond", 5), &dir);
+            saves.enqueue(
+                &holding(uuid, "minecraft:diamond", 5),
+                &dir,
+                &Default::default(),
+            );
         }
         drop(saves);
         for uuid in 1..=150 {
@@ -911,20 +955,28 @@ mod tests {
         std::fs::write(bad.join("players"), b"not a directory").unwrap();
         let mut saves = Autosaves::default();
         let g = holding(2, "minecraft:emerald", 9);
-        saves.enqueue(&holding(1, "minecraft:diamond", 5), &bad);
-        saves.enqueue(&g, &good);
-        saves.enqueue(&holding(3, "minecraft:diamond", 5), &bad);
+        saves.enqueue(
+            &holding(1, "minecraft:diamond", 5),
+            &bad,
+            &Default::default(),
+        );
+        saves.enqueue(&g, &good, &Default::default());
+        saves.enqueue(
+            &holding(3, "minecraft:diamond", 5),
+            &bad,
+            &Default::default(),
+        );
         let saved = saves.completed(true);
         assert_eq!(saved.iter().map(|p| p.uuid).collect::<Vec<_>>(), vec![2]);
         assert!(saves.writes_finished().is_err());
         assert!(saves.writes_finished().unwrap());
-        save(&g, &reference);
+        save(&g, &reference, &Default::default());
         assert_eq!(
             read_dat(&path(&good, 2)).unwrap(),
             read_dat(&path(&reference, 2)).unwrap()
         );
         std::fs::remove_file(bad.join("players")).unwrap();
-        saves.enqueue(&g, &bad);
+        saves.enqueue(&g, &bad, &Default::default());
         assert_eq!(saves.completed(true).len(), 1);
         assert!(saves.writes_finished().unwrap());
         for dir in [bad, good, reference] {
@@ -946,10 +998,18 @@ mod tests {
             thread: std::thread::spawn(|| {}),
         });
         saves.pending = 1;
-        saves.enqueue(&holding(1, "minecraft:diamond", 5), &dir);
+        saves.enqueue(
+            &holding(1, "minecraft:diamond", 5),
+            &dir,
+            &Default::default(),
+        );
         assert_eq!(saves.completed(true).len(), 1);
         assert!(saves.writes_finished().is_err());
-        saves.enqueue(&holding(2, "minecraft:emerald", 9), &dir);
+        saves.enqueue(
+            &holding(2, "minecraft:emerald", 9),
+            &dir,
+            &Default::default(),
+        );
         assert!(saves.writer.is_some());
         assert_eq!(saves.completed(true).len(), 1);
         assert!(saves.writes_finished().unwrap());
@@ -967,10 +1027,14 @@ mod tests {
         // older; vanilla's loadPlayerData reads the named one for the owner.
         let owner = sunrise_protocol::crypto::offline_uuid("Player46606");
         let dir = world("named");
-        save(&holding(owner, "minecraft:diamond", 5), &dir);
+        save(
+            &holding(owner, "minecraft:diamond", 5),
+            &dir,
+            &Default::default(),
+        );
         let mut level = Level::default();
         store(&holding(owner, "minecraft:gold_ingot", 7), &mut level, None);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let named = ints_uuid(level.player_uuid.unwrap());
         assert_ne!(
             named, owner,
@@ -990,7 +1054,11 @@ mod tests {
         let dir = world("own");
         let mut level = Level::default();
         level.write_without_player(&dir).unwrap();
-        save(&holding(owner, "minecraft:diamond", 5), &dir);
+        save(
+            &holding(owner, "minecraft:diamond", 5),
+            &dir,
+            &Default::default(),
+        );
         let saved = Level::read(&dir).unwrap();
         let mut g = guest();
         g.uuid = owner;
@@ -1024,7 +1092,7 @@ mod tests {
             31,
         )
         .unwrap();
-        save(&original, &dir);
+        save(&original, &dir, &Default::default());
         let mut loaded = guest();
         loaded.uuid = original.uuid;
         let index = std::sync::Arc::new(std::sync::Mutex::new(
@@ -1060,8 +1128,8 @@ mod tests {
         let mut level = Level::default();
         for (item, count) in [("minecraft:diamond", 5), ("minecraft:gold_ingot", 7)] {
             store(&holding(owner, item, count), &mut level, None);
-            level.write(&dir).unwrap();
-            save(&holding(owner, item, count), &dir);
+            level.write(&dir, &Default::default()).unwrap();
+            save(&holding(owner, item, count), &dir, &Default::default());
         }
         let named = path(&dir, ints_uuid(level.player_uuid.unwrap()));
         for file in [&named, &path(&dir, owner)] {
@@ -1090,9 +1158,18 @@ mod tests {
         let dir = world("leave");
         let mut level = Level::default();
         store(&holding(owner, "minecraft:diamond", 5), &mut level, None);
-        level.write(&dir).unwrap();
-        save(&holding(owner, "minecraft:diamond", 5), &dir);
-        save_owner(&holding(owner, "minecraft:gold_ingot", 7), &mut level, &dir);
+        level.write(&dir, &Default::default()).unwrap();
+        save(
+            &holding(owner, "minecraft:diamond", 5),
+            &dir,
+            &Default::default(),
+        );
+        save_owner(
+            &holding(owner, "minecraft:gold_ingot", 7),
+            &mut level,
+            &dir,
+            &Default::default(),
+        );
         let saved = Level::read(&dir).unwrap();
         let mut g = guest();
         g.uuid = owner;
@@ -1118,10 +1195,16 @@ mod tests {
             ..Level::default()
         };
         store(&holding(old, "minecraft:diamond", 5), &mut level, None);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
 
         let mut read = Level::read(&dir).unwrap();
-        assert!(migrate_owner(&dir, &mut read, old, new));
+        assert!(migrate_owner(
+            &dir,
+            &mut read,
+            old,
+            new,
+            &Default::default()
+        ));
         let moved = read_dat(&path(&dir, new)).expect("the account's player file");
         assert_eq!(
             uuid_from_tag(moved.get("UUID")),
@@ -1160,12 +1243,22 @@ mod tests {
             ..Level::default()
         };
         store(&holding(old, "minecraft:diamond", 5), &mut level, None);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        save(&holding(new, "minecraft:emerald", 9), &dir);
+        save(
+            &holding(new, "minecraft:emerald", 9),
+            &dir,
+            &Default::default(),
+        );
 
         let mut read = Level::read(&dir).unwrap();
-        assert!(migrate_owner(&dir, &mut read, old, new));
+        assert!(migrate_owner(
+            &dir,
+            &mut read,
+            old,
+            new,
+            &Default::default()
+        ));
         let moved = read_dat(&path(&dir, new)).unwrap();
         assert_eq!(uuid_from_tag(moved.get("UUID")), Some(uuid_ints(new)));
         assert!(!path(&dir, old).exists());
@@ -1188,7 +1281,7 @@ mod tests {
             ..Level::default()
         };
         store(&holding(old, "minecraft:diamond", 5), &mut level, None);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let mut root = read_dat(&dir.join("level.dat")).unwrap();
         if let Tag::Compound(root) = &mut root
             && let Some(Tag::Compound(data)) = root.get_mut(&"Data".into())
@@ -1199,7 +1292,13 @@ mod tests {
 
         let mut read = Level::read(&dir).unwrap();
         assert_eq!(read.player_uuid, None);
-        assert!(migrate_owner(&dir, &mut read, old, new));
+        assert!(migrate_owner(
+            &dir,
+            &mut read,
+            old,
+            new,
+            &Default::default()
+        ));
         assert!(path(&dir, new).is_file());
         assert!(!path(&dir, old).exists());
         assert_eq!(read.player_uuid, Some(uuid_ints(new)));
@@ -1217,11 +1316,17 @@ mod tests {
             ..Level::default()
         };
         store(&holding(other, "minecraft:diamond", 5), &mut level, None);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let before = read_dat(&dir.join("level.dat")).unwrap();
 
         let mut read = Level::read(&dir).unwrap();
-        assert!(!migrate_owner(&dir, &mut read, old, new));
+        assert!(!migrate_owner(
+            &dir,
+            &mut read,
+            old,
+            new,
+            &Default::default()
+        ));
         assert_eq!(read_dat(&dir.join("level.dat")).unwrap(), before);
         assert!(!path(&dir, new).exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1245,7 +1350,7 @@ mod tests {
         });
         let mut level = Level::default();
         store(&g, &mut level, None);
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         let mut read = Level::default();
         read.read_player(&tag);
         read.player_extra = Some(tag);
@@ -1290,7 +1395,7 @@ mod tests {
     fn round_trip(g: &Guest) -> (Tag, Guest) {
         let mut level = Level::default();
         store(g, &mut level, None);
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         let mut read = Level::default();
         read.read_player(&tag);
         read.player_extra = Some(tag.clone());
@@ -1320,7 +1425,7 @@ mod tests {
     fn a_numeric_fall_flying_reads_as_a_glide() {
         let mut level = Level::default();
         store(&guest(), &mut level, None);
-        let mut tag = level.player_tag();
+        let mut tag = level.player_tag(&Default::default());
         put(&mut tag, "FallFlying", Tag::Int(1));
         let mut read = Level::default();
         read.read_player(&tag);
@@ -1453,7 +1558,7 @@ mod tests {
         g.post_effects = vec!["minecraft:invert".into(), "pack:glow".into()];
         let mut level = Level::default();
         store(&g, &mut level, None);
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         let mut read = Level::default();
         read.read_player(&tag);
         read.player_extra = Some(tag);
@@ -1463,7 +1568,7 @@ mod tests {
         // The cleared list is written over the loaded file.
         g.post_effects.clear();
         store(&g, &mut read, None);
-        let tag = read.player_tag();
+        let tag = read.player_tag(&Default::default());
         assert!(matches!(
             tag.get("post_effects"),
             Some(sunrise_core::nbt::Tag::List(l)) if l.is_empty()
@@ -1558,7 +1663,7 @@ mod tests {
         g.new_body(false);
         let mut level = Level::default();
         store(&g, &mut level, None);
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         let mut read = Level::default();
         read.read_player(&tag);
         read.player_extra = Some(tag);
@@ -1587,7 +1692,7 @@ mod tests {
         g.motion = Some(Box::new(motion));
         let mut level = Level::default();
         store(&g, &mut level, None);
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         let mut read = Level::default();
         read.read_player(&tag);
         read.player_extra = Some(tag);
@@ -1613,7 +1718,7 @@ mod tests {
         let g = guest();
         let mut level = Level::default();
         store(&g, &mut level, Some(root.clone()));
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         assert_eq!(tag.get("RootVehicle"), Some(&root));
         let mut read = Level::default();
         read.read_player(&tag);
@@ -1624,7 +1729,10 @@ mod tests {
         // Saved again before the horse is back, the file keeps it whole.
         let mut again = Level::default();
         store(&back, &mut again, None);
-        assert_eq!(again.player_tag().get("RootVehicle"), Some(&root));
+        assert_eq!(
+            again.player_tag(&Default::default()).get("RootVehicle"),
+            Some(&root)
+        );
     }
 
     fn abilities(g: &Guest) -> (i8, f32) {
@@ -1656,7 +1764,7 @@ mod tests {
         assert_eq!(abilities(&g), (0, 2.5));
         g.abilities.may_build = false;
         g.abilities.instabuild = true;
-        save(&g, &dir);
+        save(&g, &dir, &Default::default());
         let tag = read_dat(&path(&dir, g.uuid)).unwrap();
         let saved = |key: &str| tag.get("abilities").and_then(|a| a.get(key)).cloned();
         assert_eq!(saved("flySpeed"), Some(Tag::Float(2.5f32.to_bits())));
@@ -1697,9 +1805,13 @@ mod tests {
         let owner = sunrise_protocol::crypto::offline_uuid("Owner");
         let friend = sunrise_protocol::crypto::offline_uuid("Friend");
         let dir = world("server-world");
-        save(&holding(friend, "minecraft:netherite_ingot", 9), &dir);
+        save(
+            &holding(friend, "minecraft:netherite_ingot", 9),
+            &dir,
+            &Default::default(),
+        );
         let mut level = Level::default();
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let _ = std::fs::remove_file(dir.join("level.dat_old"));
         let mut tag = read_dat(&dir.join("level.dat")).unwrap();
         if let Some(Tag::Compound(data)) = tag.get_mut("Data") {
@@ -1715,7 +1827,7 @@ mod tests {
         // The owner's save names the owner, and leaves the friend's file alone.
         let before = std::fs::read(path(&dir, friend)).unwrap();
         let mut level = read;
-        save_owner(&g, &mut level, &dir);
+        save_owner(&g, &mut level, &dir, &Default::default());
         assert_eq!(level.player_uuid, Some(uuid_ints(owner)));
         assert_eq!(std::fs::read(path(&dir, friend)).unwrap(), before);
         assert!(exists(&dir, owner));
@@ -1728,7 +1840,11 @@ mod tests {
         // loads it instead of starting a new player.
         let account = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
         let dir = world("download");
-        save(&holding(account, "minecraft:diamond", 5), &dir);
+        save(
+            &holding(account, "minecraft:diamond", 5),
+            &dir,
+            &Default::default(),
+        );
         let mut level = Level::default();
         level.write_without_player(&dir).unwrap();
         let mut tag = read_dat(&dir.join("level.dat")).unwrap();

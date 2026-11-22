@@ -27,9 +27,9 @@ use super::{
     playerdata,
 };
 use crate::save::Level;
+use serde_json::Value;
 use sunrise_core::nbt::{Limits, Tag, read_named};
 use sunrise_world::attributes::{Definition, entity::Catalog};
-use serde_json::Value;
 
 /// The parts of a record, in the order the replies list them.
 pub const PARTS: [&str; 10] = [
@@ -456,7 +456,8 @@ impl Kept {
             g.abilities = mode.abilities;
         }
         if let Some((position, previous, yaw, pitch, head, ground, vehicle)) = self.position {
-            (g.position, g.previous_position) = (position, previous);
+            g.place(position); // loaded before `addEntity`: the tickets start there
+            g.previous_position = previous;
             (g.yaw, g.pitch, g.head_yaw, g.on_ground) = (yaw, pitch, head, ground);
             // The vehicle the player rode goes with where it stands.
             g.saved_vehicle = vehicle;
@@ -580,8 +581,7 @@ pub fn import_player(
         // What the request says of where the player stands wins over the record.
         let a = &request.arrival;
         if let Some(p) = a.position {
-            g.position = p;
-            g.previous_position = p;
+            g.place(p);
         }
         if let Some([yaw, pitch]) = a.rotation {
             g.yaw = yaw;

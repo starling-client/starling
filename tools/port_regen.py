@@ -55,19 +55,15 @@ def candidate(version, base, path):
 
 
 def pinned_lock(lock, manifest, manifest_sha1):
-    """research-lock.json pinned to the version this manifest describes. The same version keeps its block (and
-    the republished version JSONs it accepts); another version gets a new one."""
-    game = lock["minecraft"]
-    same = (game["version"] == manifest["id"]
-            and manifest_sha1 in [game["manifest_sha1"], *game.get("accepted_manifest_sha1", [])]
-            and game["client_sha1"] == manifest["downloads"]["client"]["sha1"]
-            and game["server_sha1"] == manifest["downloads"]["server"]["sha1"])
-    if same:
+    """research-lock.json pinned to the version this manifest describes. A version JSON with the pinned content
+    (tools/lab.py pinned_content_differs) keeps the block; another version gets a new one."""
+    if not lab.pinned_content_differs(lock["minecraft"], manifest):
         return lock
     return {**lock, "minecraft": {
         "version": manifest["id"], "manifest_sha1": manifest_sha1,
         "client_sha1": manifest["downloads"]["client"]["sha1"],
         "server_sha1": manifest["downloads"]["server"]["sha1"],
+        "libraries_sha256": lab.libraries_digest(manifest),
         "java_major": manifest["javaVersion"]["majorVersion"],
     }}
 

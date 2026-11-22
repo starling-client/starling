@@ -120,7 +120,8 @@ def main():
     env["SUNRISE_FISHING_RESOURCES"] = str(lab.RESOURCES)
     env["SUNRISE_FISHING_REFERENCE"] = str(work / "fishing-reference.json")
     env["SUNRISE_FISHING_CAST_REFERENCE"] = str(work / "fishing-casts-reference.json")
-    subprocess.run(["cargo", "test", "--profile", "fast", "-p", "sunrise-client", "--lib",
+    # Use the test profile parity CI prebuilds, with its lower opt-level for the game lib test.
+    subprocess.run(["cargo", "test", "--locked", "-p", "sunrise-client", "--lib",
                     "game::fishing::tests::fishing_retrieve_reference", "--", "--exact", "--ignored"],
                    cwd=lab.ROOT, env=env, check=True)
     print("fishing: ground prediction, bobbing, seeded catch timers, loot and XP match vanilla")

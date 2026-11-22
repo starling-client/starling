@@ -18,6 +18,7 @@
   libxrandr,
   libxcb,
   version,
+  polyformShield,
 }:
 let
   # wgpu and winit open these with dlopen, so the linker never records them.
@@ -60,7 +61,7 @@ rustPlatform.buildRustPackage {
   meta = {
     description = "Sunrise, Minecraft: Java Edition 26.3 rewritten in Rust, and sunrise-ctl";
     homepage = "https://playsunrise.net";
-    license = lib.licenses.mit;
+    license = polyformShield; # flake.nix
     mainProgram = "sunrise-client";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };

@@ -1,5 +1,9 @@
 # Design: unified fluid declaration
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [fluid declarations](../../modding/src/concepts/registry-keys.md#fluids-and-effects) for the current native API.
+> `declare_fluid` and `declare_world_fluid` are distinct. The proposed unified guest schema, generated call tables and round-trip fixtures are historical.
+
 Provisional proposal for [#2436](https://github.com/arismoko/horizon/issues/2436).
 Maintainer approval is required before implementation. No Rust changes land with
 this note.

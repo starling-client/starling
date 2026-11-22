@@ -1,6 +1,20 @@
 use super::*;
-use sunrise_protocol::payload_negotiation::{Flow, Manifest, RegistrationPhase};
 use std::{sync::mpsc, time::Duration};
+use sunrise_protocol::payload_negotiation::{Flow, Manifest, RegistrationPhase};
+
+thread_local! {
+    static PAYLOAD_WAIT_ENTERED: std::cell::RefCell<Option<mpsc::Sender<()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+pub(super) fn notify_payload_wait_entered() {
+    PAYLOAD_WAIT_ENTERED.with_borrow_mut(|sender| {
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(());
+        }
+    });
+}
 
 fn connection() -> Arc<Connection> {
     let mut manifest = Manifest::builder();
@@ -64,6 +78,75 @@ fn close_releases_a_waiting_configuration_without_running_queued_work() {
     assert!(connection.epoch().is_none());
     drop(pending);
     thread.join().unwrap();
+}
+
+#[test]
+fn epoch_end_wakes_a_dedicated_payload_receiver_before_the_main_root_finishes() {
+    use crate::lan::{NetEvent, PlayerSender};
+    use crate::raw_payloads::{
+        Classified, Endpoint, Incoming, MainQueue, dispatch,
+        raw_channel_tests::{CHANNEL, serverbound, with_vanilla_peer},
+    };
+
+    with_vanilla_peer(|transport| {
+        let epoch = transport.epoch().unwrap();
+        let Classified::Raw(deliveries) =
+            Incoming::classify(&transport, Phase::Play, serverbound(CHANNEL, 1)).unwrap()
+        else {
+            panic!("expected one delivery per raw-channel listener");
+        };
+        let [first, later]: [Incoming; 2] = deliveries.try_into().ok().unwrap();
+        let first_lease = Arc::downgrade(&first.lease);
+        let later_lease = Arc::downgrade(&later.lease);
+        let (sender, _) = PlayerSender::payload_executor_test_sender(transport.clone());
+        let endpoint = Endpoint::server(sender);
+        let (events, receiver) = crate::lan::event_channel();
+
+        dispatch(
+            first,
+            endpoint.clone(),
+            MainQueue::Server {
+                events: events.clone(),
+                endpoint: endpoint.clone(),
+                conn: Some(1),
+            },
+        );
+        let mut turn = receiver.take_turn().into_iter();
+        let (NetEvent::RawPayload(held), _credit) = turn.next().unwrap().into_parts() else {
+            panic!("expected the main root");
+        };
+        assert!(turn.next().is_none());
+
+        let (entered, parked) = mpsc::channel();
+        let (done, result) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            PAYLOAD_WAIT_ENTERED.with_borrow_mut(|sender| *sender = Some(entered));
+            dispatch(
+                later,
+                endpoint.clone(),
+                MainQueue::Server {
+                    events,
+                    endpoint,
+                    conn: None,
+                },
+            );
+            let _ = done.send(());
+        });
+        let bound = Duration::from_secs(2);
+        parked
+            .recv_timeout(bound)
+            .expect("the dedicated waiter parks");
+        transport.begin_configuration();
+        result
+            .recv_timeout(bound)
+            .expect("epoch invalidation wakes the receiver while the main root is held");
+        assert!(!epoch.active());
+        assert!(first_lease.upgrade().is_some());
+        assert!(later_lease.upgrade().is_none());
+        assert!(receiver.take_turn().is_empty(), "old work was canceled");
+        drop(held);
+        worker.join().unwrap();
+    });
 }
 
 #[test]

@@ -10,6 +10,8 @@ pub trait Hooks {
     /// the stack alone. Only the `ItemPart`s attached to `stack`'s item are
     /// asked: an item with none costs one table lookup.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "collect",
         out = "mod_id",
@@ -18,5 +20,5 @@ pub trait Hooks {
         host = "read",
         neoforge = "IItemExtension.getCreatorModId"
     )]
-    fn creator_mod_id();
+    fn creator_mod_id(stack: &ItemStack, mod_id: &mut Option<String>);
 }

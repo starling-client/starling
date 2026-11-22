@@ -153,6 +153,23 @@ object!(Sound<'a> {
     hit: SoundId<'a> = SoundId::default() => typed,
     fall: SoundId<'a> = SoundId::default() => typed,
 });
+pub(super) struct OffsetLimits(pub (f32, f32));
+impl<'de> Deserialize<'de> for OffsetLimits {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (horizontal, vertical) = <(f32, f32)>::deserialize(d)?;
+        if !horizontal.is_finite()
+            || !(0.0..=0.25).contains(&horizontal)
+            || !vertical.is_finite()
+            || !(0.0..=0.2).contains(&vertical)
+        {
+            return Err(serde::de::Error::custom(
+                "offset_limits: finite horizontal 0..=0.25 and vertical 0..=0.2 required",
+            ));
+        }
+        Ok(Self((horizontal, vertical)))
+    }
+}
+
 object!(Entry<'a> {
     id: Option<u64> = None => value(unsigned),
     emission: Value = Value::Null => typed,
@@ -171,6 +188,7 @@ object!(Entry<'a> {
     ignited_by_lava: bool = false => value(flag),
     push: Option<String> = None => value(text),
     render_shape: Option<String> = None => value(text),
+    spawn_terrain_particles: Option<bool> = None => value(|v: Value| v.as_bool()),
     no_destroy_overlay: bool = false => value(flag),
     full_collision: bool = false => value(flag),
     friction: f64 = 0.0 => value(number),
@@ -179,6 +197,7 @@ object!(Entry<'a> {
     pick_item: Option<String> = None => value(text),
     sound: Sound<'a> = Sound::default() => typed,
     offset: bool = false => value(flag),
+    offset_limits: Option<OffsetLimits> = None => typed,
     outline_offset: Option<bool> = None => value(|v: Value| v.as_bool()),
     map_color: Option<u64> = None => value(unsigned),
     outline: Option<&'a RawValue> = None => typed,

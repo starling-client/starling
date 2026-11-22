@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GitHub-hosted launcher/game headers; callers retain their exact package list.
+# GitHub-hosted game headers and the pinned toolchain's packages (the name is from when the launcher shared it); callers retain their exact package list.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/apt_retry.sh"
 # apt update normally succeeds with stale indexes after DNS failures. Treat any

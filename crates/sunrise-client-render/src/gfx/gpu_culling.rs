@@ -91,7 +91,7 @@ use std::{
 /// One section (`gpu_culling.wgsl`'s `Section`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct Record {
+pub(crate) struct Record {
     /// Section x, y (from the level's bottom), z and arena page; -1: a free id.
     key: [i32; 4],
     /// The first vertex of its solid quads (a draw's base vertex, an i32: a
@@ -107,7 +107,7 @@ pub(super) struct Record {
 }
 
 /// In `Record::a[3]`: the CPU draws the section's solid quads while it fades
-/// (gfx.rs `SectionGpu::gpu_fading`), and the pass leaves it out.
+/// (`SectionGpu::gpu_fading`), and the pass leaves it out.
 const FADING: u32 = 1;
 
 impl Record {
@@ -337,32 +337,88 @@ const TEST_READ: wgpu::BufferUsages = if cfg!(test) {
 };
 
 /// What a frame's pass works from.
-pub(super) struct FrameInputs<'a> {
-    pub camera: DVec3,
+#[derive(Clone, Copy)]
+pub(crate) struct FrameInputs<'a> {
+    pub(super) camera: DVec3,
     /// The level's lowest block y and its height in sections.
-    pub min_y: i32,
-    pub sections: i32,
+    pub(super) min_y: i32,
+    pub(super) sections: i32,
     /// The render distance in columns, as the walk takes it.
-    pub radius: i32,
+    pub(super) radius: i32,
     /// The frustum the walk culls with (a GPU frame has no water mirror).
-    pub frustum: &'a Frustum,
+    pub(super) frustum: &'a Frustum,
     /// The cave-culling graph, while cave culling runs and has one
     /// (`Occlusion::reach`); `None`: every section counts as reached.
-    pub reach: Option<Reach<'a>>,
+    pub(super) reach: Option<Reach<'a>>,
     /// The eye (`view::projection_center`), while solid quads facing away
     /// from it are left out (`sides_on`); `None`: every solid quad is drawn. A
     /// GPU frame has no water mirror, whose eye below would see more of them.
-    pub eye: Option<Vec3>,
+    pub(super) eye: Option<Vec3>,
     /// The world pass's view projection (gfx.rs `globals.view_proj`), and
     /// whether occlusion culling is on: frames that can run its test then
     /// do, by its gate (`GpuCulling::occluding`).
-    pub view_proj: Mat4,
-    pub occlude: bool,
+    pub(super) view_proj: Mat4,
+    pub(super) occlude: bool,
+}
+
+impl<'a> FrameInputs<'a> {
+    /// Construct a basic set of GPU culling frame inputs with defaults for optional passes.
+    #[inline]
+    pub(super) fn new(
+        camera: DVec3,
+        min_y: i32,
+        sections: i32,
+        radius: i32,
+        frustum: &'a Frustum,
+    ) -> Self {
+        Self {
+            camera,
+            min_y,
+            sections,
+            radius,
+            frustum,
+            reach: None,
+            eye: None,
+            view_proj: Mat4::IDENTITY,
+            occlude: false,
+        }
+    }
+
+    #[inline]
+    pub(super) fn with_reach(mut self, reach: Option<Reach<'a>>) -> Self {
+        self.reach = reach;
+        self
+    }
+
+    #[inline]
+    pub(super) fn with_eye(mut self, eye: Option<Vec3>) -> Self {
+        self.eye = eye;
+        self
+    }
+
+    #[inline]
+    pub(super) fn with_view_proj(mut self, view_proj: Mat4) -> Self {
+        self.view_proj = view_proj;
+        self
+    }
+
+    #[inline]
+    pub(super) fn with_occlude(mut self, occlude: bool) -> Self {
+        self.occlude = occlude;
+        self
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(super) fn with_camera(mut self, camera: DVec3) -> Self {
+        self.camera = camera;
+        self
+    }
 }
 
 /// What `GpuCulling::prepare` made of a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Prepared {
+pub(crate) enum Prepared {
     /// The pass is ready: `dispatch` it, and `draw`.
     Gpu,
     /// The frame's frustum planes would leave the test's integers (`HEADROOM`),
@@ -438,7 +494,7 @@ fn tables(input: &FrameInputs<'_>, words: &mut Vec<u32>) -> Option<Params> {
             .map(|&o| f64::from(f32::from_bits(o)).abs());
         sizes.fold(0.0, f64::max) + 24.0
     });
-    let planes = input.frustum.planes.map(|p| {
+    let planes = input.frustum.planes().map(|p| {
         if p.is_finite() {
             p.as_dvec4()
         } else {
@@ -622,7 +678,7 @@ impl Grown {
 /// The section table as the CPU keeps it, by id, and what changed since
 /// `GpuCulling::prepare` last wrote it.
 #[derive(Default)]
-pub(super) struct Records {
+pub(crate) struct Records {
     records: Vec<Record>,
     /// Free ids below the table's end, a bit each (64 a word, lowest bit first).
     free: Vec<u64>,
@@ -795,7 +851,7 @@ impl Records {
 /// until a frame has decided them, just after GPU culling was switched on.
 /// The ends of sections that went or were handed back are skipped as they come.
 #[derive(Default)]
-pub(super) struct Fades {
+pub(crate) struct Fades {
     due: BinaryHeap<Reverse<(Instant, SectionKey)>>,
     pub fade_ms: Option<u64>,
 }
@@ -980,7 +1036,7 @@ impl BoxTest {
 
 /// The pass, its buffers and the records it draws from: made when GPU culling
 /// is switched on, dropped when it is switched off.
-pub(super) struct GpuCulling {
+pub(crate) struct GpuCulling {
     /// `gpu_culling.wgsl`'s entry points: apply, cull, scan, scatter.
     pipelines: [wgpu::ComputePipeline; 4],
     layout: wgpu::BindGroupLayout,
@@ -1575,12 +1631,10 @@ impl GpuCulling {
     /// The statistics that came back, their readbacks freed: the newest
     /// frame's, as (frame, [sections drawn, section draws, draw calls]), the
     /// pass's counts added to the CPU's part. Called as a frame starts, so a
-    /// copy no submission took (a frame that failed on the way) is dropped.
-    pub fn collect(&mut self, device: &wgpu::Device) -> Option<(u64, [usize; 3])> {
+    /// copy no submission took (a frame that failed on the way) is dropped. The caller polls
+    /// the device first (the frame's one poll, `Renderer::draw_frame`).
+    pub fn collect(&mut self) -> Option<(u64, [usize; 3])> {
         self.current = None;
-        if device.poll(wgpu::PollType::Poll).is_err() {
-            return None;
-        }
         let mut newest: Option<(u64, [usize; 3])> = None;
         for r in &self.readbacks {
             if r.state.load(Ordering::Acquire) != MAPPED {
@@ -1708,17 +1762,7 @@ mod tests {
     /// A frame of the overworld's 24 sections, cave culling off, every solid
     /// quad drawn.
     fn inputs(camera: DVec3, radius: i32, frustum: &Frustum) -> FrameInputs<'_> {
-        FrameInputs {
-            camera,
-            min_y: crate::chunk::MIN_Y,
-            sections: 24,
-            radius,
-            frustum,
-            reach: None,
-            eye: None,
-            view_proj: Mat4::IDENTITY,
-            occlude: false,
-        }
+        FrameInputs::new(camera, crate::chunk::MIN_Y, 24, radius, frustum)
     }
 
     /// The frustum `draw_frame` culls with for the view and projection `m`, and
@@ -1726,7 +1770,7 @@ mod tests {
     fn through(m: Mat4) -> (Frustum, Vec3) {
         let eye = super::super::view::projection_center(m).expect("a perspective");
         let planes = super::super::frustum(m);
-        (Frustum { planes }, eye)
+        (Frustum::from_planes(planes), eye)
     }
 
     /// A view as `draw_frame` builds one, looking `yaw` and `pitch` out to
@@ -1884,6 +1928,7 @@ mod tests {
     /// occlusion test's (the pass's with `gpu_occlusion.wgsl`) with it.
     #[test]
     fn the_shaders_validate() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use naga::valid::Capabilities as C;
         let pass = include_str!("gpu_culling.wgsl");
         let test = [pass, include_str!("gpu_occlusion.wgsl")].concat();
@@ -1904,6 +1949,7 @@ mod tests {
     /// mark the whole table.
     #[test]
     fn records_keep_ids_page_counts_and_moves() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut records = Records::default();
         let a = records.insert(Record::new((0, 0, 0), 0, 0, 1, 7));
         let b = records.insert(Record::new((1, 0, 0), 0, 256, 2, 9));
@@ -2058,6 +2104,7 @@ mod tests {
     /// finite, are `UNBOUNDED`; no bounds are the cell.
     #[test]
     fn boxes_round_outward_and_meet_their_cell() {
+        let _gpu = crate::gfx::test_gpu::lock();
         // Each axis's low and high ends.
         let ends = |packed: u32| -> [[i32; 2]; 3] {
             std::array::from_fn(|axis| {
@@ -2095,6 +2142,7 @@ mod tests {
     /// constants both sides use.
     #[test]
     fn params_and_records_match_the_shader() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let module = naga::front::wgsl::parse_str(include_str!("gpu_culling.wgsl")).unwrap();
         let mut layouter = naga::proc::Layouter::default();
         layouter.update(module.to_ctx()).unwrap();
@@ -2192,6 +2240,7 @@ mod tests {
     /// from the camera's at every render distance to 130.
     #[test]
     fn the_shaders_near_is_in_view_distance() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let (cam_x, cam_z) = (-37, 1_234_567);
         for r in 0..=130 {
             let params = Params {
@@ -2220,6 +2269,7 @@ mod tests {
     /// float's key passes a NaN threshold's, either way.
     #[test]
     fn order_keys_compare_as_their_floats() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut floats = Vec::new();
         for x in [
             0.0,
@@ -2265,6 +2315,7 @@ mod tests {
     /// which GPU culling never meets, is drawn whole.
     #[test]
     fn the_shaders_runs_are_facing_runs() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0xBB67_AE85_84CA_A73B);
         let mut meshes: Vec<Sides> = (0..2_000).map(|_| sorted_sides(&mut rng)).collect();
         let special = [
@@ -2364,6 +2415,7 @@ mod tests {
     /// exactly the quads of the buckets seen.
     #[test]
     fn a_section_has_at_most_four_runs() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let eye = [order_key(0.0); 3];
         let mut most = 0;
         // Each bucket empty (0), seen (1) or left out (2); the other never left out.
@@ -2402,6 +2454,7 @@ mod tests {
     /// infinity.
     #[test]
     fn planes_past_i32_take_the_cpu_path() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0x0F1E_2D3C_4B5A_6978);
         let mut words = Vec::new();
         for _ in 0..500 {
@@ -2431,10 +2484,7 @@ mod tests {
                 (Vec3::new(0.5, f32::NAN, -0.25), false),
                 (Vec3::NEG_INFINITY, true),
             ] {
-                let input = FrameInputs {
-                    eye: Some(eye),
-                    ..inputs(DVec3::new(x, 64.5, z), radius, &frustum)
-                };
+                let input = inputs(DVec3::new(x, 64.5, z), radius, &frustum).with_eye(Some(eye));
                 assert_eq!(tables(&input, &mut words).is_some(), fits, "eye {eye}");
             }
         }
@@ -2452,6 +2502,7 @@ mod tests {
     /// origin, the difference facing compares.
     #[test]
     fn the_integer_test_keeps_what_the_walk_keeps() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0x5DEE_CE66_D1CE_4E5B);
         let mut words = Vec::new();
         let (mut listed, mut near_sections, mut rejected, mut inside) = (0, 0, 0, 0);
@@ -2496,7 +2547,9 @@ mod tests {
             };
             if case == 9 {
                 // Not finite: it rejects nothing, as in `intersects`.
-                frustum.planes[3] = Vec4::NAN;
+                let mut planes = *frustum.planes();
+                planes[3] = Vec4::NAN;
+                frustum = Frustum::from_planes(planes);
             }
             let rows = if ahead { 3..6 } else { 0..24 };
             // Each section's value is its record's box.
@@ -2523,10 +2576,7 @@ mod tests {
                     inside += usize::from(frustum.contains(min, top + Vec3::splat(16.0)));
                 }
             }
-            let input = FrameInputs {
-                eye: Some(eye),
-                ..inputs(camera, radius, &frustum)
-            };
+            let input = inputs(camera, radius, &frustum).with_eye(Some(eye));
             let mut params =
                 tables(&input, &mut words).unwrap_or_else(|| panic!("case {case}: the planes fit"));
             params.pages = 1;
@@ -2535,7 +2585,7 @@ mod tests {
             // Every term rounds up: at least the plane's component times its
             // origin or box end, which f64 holds exactly.
             let n = nx + ny + nz;
-            let planes = frustum.planes.iter().enumerate();
+            let planes = frustum.planes().iter().enumerate();
             for (j, p) in planes.filter(|(_, p)| p.is_finite()) {
                 for i in 0..n {
                     let axis = usize::from(i >= nx) + usize::from(i >= nx + ny);
@@ -2605,6 +2655,7 @@ mod tests {
     /// somewhere: the margin is needed.
     #[test]
     fn the_margin_covers_production_rounding() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0x1405_7B7E_F767_814F);
         let min_y = crate::chunk::MIN_Y;
         let mut words = Vec::new();
@@ -2666,9 +2717,8 @@ mod tests {
                 }));
                 let plane = normal.extend(-normal.dot(corner)).as_vec4();
                 let plane = plane / plane.truncate().length();
-                let frustum = Frustum {
-                    planes: [plane, Vec4::W, Vec4::W, Vec4::W, Vec4::W, Vec4::W],
-                };
+                let frustum =
+                    Frustum::from_planes([plane, Vec4::W, Vec4::W, Vec4::W, Vec4::W, Vec4::W]);
                 let walk_keeps = |t: f64| {
                     let camera = base + normal * t;
                     let o = origin(camera, low).as_vec3();
@@ -2731,7 +2781,46 @@ mod tests {
         assert!(worst[2].max(worst[3]) > 1.0 / SCALE, "{worst:?}");
     }
 
-    use crate::gfx::test_gpu::culling::on_each_device;
+    /// A device on `adapter` that draws counts with first instances, if it
+    /// can. Not Intel's Gen11 and Gen12 Vulkan driver, which gets first
+    /// instances wrong and is never offered GPU culling (`supported`).
+    fn device(adapter: &wgpu::Adapter, name: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
+        let needed =
+            wgpu::Features::MULTI_DRAW_INDIRECT_COUNT | wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        let timing = adapter.features()
+            & (wgpu::Features::TIMESTAMP_QUERY
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                | wgpu::Features::SHADER_EARLY_DEPTH_TEST);
+        if !adapter.features().contains(needed)
+            || super::super::flat::is_broken_intel_vulkan(&adapter.get_info())
+        {
+            return None;
+        }
+        eprintln!("GPU culling on {} ({name})", adapter.get_info().name);
+        crate::gfx::test_gpu::optional_device_with(
+            adapter,
+            &wgpu::DeviceDescriptor {
+                required_features: needed | timing,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// `test` on each device here that draws counts with first instances
+    /// (`test_gpu::each_adapter`).
+    fn on_each_device(test: impl Fn(&wgpu::Device, &Queue)) {
+        let mut tested = false;
+        for (adapter, name) in crate::gfx::test_gpu::each_adapter() {
+            if let Some((device, queue)) = device(&adapter, name) {
+                test(&device, &Queue::new(queue, false));
+                tested = true;
+            }
+        }
+        if !tested {
+            eprintln!("no GPU with indirect count draws: skipped");
+        }
+    }
 
     fn read(
         device: &wgpu::Device,
@@ -2776,7 +2865,9 @@ mod tests {
     /// (`FADING`, sent as updates or with the whole table): the pass leaves
     /// them to the CPU.
     #[test]
+    #[ignore = "daily"]
     fn the_gpu_draws_what_the_integer_test_keeps() {
+        let _gpu = crate::gfx::test_gpu::lock();
         on_each_device(draws_match);
     }
 
@@ -2833,7 +2924,9 @@ mod tests {
             }
             let (mut frustum, center) = view(&mut rng);
             if case == 9 {
-                frustum.planes[rng.below(6) as usize] = Vec4::NAN;
+                let mut planes = *frustum.planes();
+                planes[rng.below(6) as usize] = Vec4::NAN;
+                frustum = Frustum::from_planes(planes);
             }
             // The eye in two cases of three, the view's own (`projection_center`).
             let eye = if at_edge {
@@ -2957,27 +3050,22 @@ mod tests {
             }
             let whole = gpu.records.all_dirty;
             if let Some(t) = &mut timing {
-                t.begin(device, queue);
+                t.begin(
+                    device,
+                    queue,
+                    &std::sync::atomic::AtomicBool::new(false),
+                    super::super::in_flight::poll_live,
+                )
+                .unwrap();
             }
             let mut encoder = device.create_command_encoder(&Default::default());
-            let input = FrameInputs {
-                camera,
-                min_y,
-                sections: height,
-                radius,
-                frustum: &frustum,
-                reach,
-                eye,
-                view_proj: Mat4::IDENTITY,
-                occlude: false,
-            };
+            let input = FrameInputs::new(camera, min_y, height, radius, &frustum)
+                .with_reach(reach)
+                .with_eye(eye);
             if case == 7 {
                 // Planes past the integers: the CPU draws that frame, nothing is
                 // written, and the records that changed wait for the next.
-                let up = FrameInputs {
-                    camera: camera + DVec3::Y * 2.0e7,
-                    ..input
-                };
+                let up = input.with_camera(camera + DVec3::Y * 2.0e7);
                 let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &up, None);
                 assert_eq!(prepared, Prepared::Cpu, "case 7");
                 assert!(gpu.records.all_dirty || !gpu.records.dirty.is_empty());
@@ -3094,7 +3182,7 @@ mod tests {
             // The reads above waited for the GPU.
             let (kept, drawn) = (kept_sections as usize, draw_count as usize);
             assert_eq!(
-                gpu.collect(device),
+                gpu.collect(),
                 Some((case as u64, [cpu[0] + kept, cpu[1] + drawn, cpu[2]])),
                 "case {case}: statistics"
             );
@@ -3138,7 +3226,9 @@ mod tests {
 
     /// Detail times both phases and the uploads and leaves counts and draws as an untimed frame's.
     #[test]
+    #[ignore = "daily"]
     fn detail_times_both_phases_and_leaves_the_draws_alone() {
+        let _gpu = crate::gfx::test_gpu::lock();
         on_each_device(|device, queue| {
             let mut rng = Rng(0x1F83_D9AB_FB41_BD6B);
             let (frustum, _) = view(&mut rng);
@@ -3173,20 +3263,17 @@ mod tests {
                 let mut out = Vec::new();
                 for frame in 0..12 {
                     if let Some(t) = timing {
-                        t.begin(device, queue);
+                        t.begin(
+                            device,
+                            queue,
+                            &std::sync::atomic::AtomicBool::new(false),
+                            super::super::in_flight::poll_live,
+                        )
+                        .unwrap();
                     }
                     let mut encoder = device.create_command_encoder(&Default::default());
-                    let input = FrameInputs {
-                        camera: DVec3::new(0.5, 70.0, 0.5),
-                        min_y: -64,
-                        sections: 24,
-                        radius: 5,
-                        frustum: &frustum,
-                        reach: None,
-                        eye: None,
-                        view_proj: Mat4::IDENTITY,
-                        occlude: true,
-                    };
+                    let input = FrameInputs::new(DVec3::new(0.5, 70.0, 0.5), -64, 24, 5, &frustum)
+                        .with_occlude(true);
                     let prepared = gpu.prepare(
                         device,
                         queue,
@@ -3250,7 +3337,9 @@ mod tests {
     /// buffer the device lost after its mapping goes `FAILED`, never copied into
     /// or unmapped again (as `timing::GpuTimer`'s), so the statistics stop.
     #[test]
+    #[ignore = "daily"]
     fn the_statistics_come_back_with_their_frame() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use super::super::submit::{AfterSubmit, Job};
         on_each_device(|device, queue| {
             for threaded in [false, true] {
@@ -3268,6 +3357,7 @@ mod tests {
                         encoder,
                         surface: None,
                         after,
+                        lost: None,
                     };
                     if let Err(back) = queue.submit_later(job) {
                         queue.submit([back.encoder.finish()]);
@@ -3280,14 +3370,14 @@ mod tests {
                 let landed = |gpu: &mut GpuCulling| {
                     queue.landed();
                     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-                    gpu.collect(device)
+                    gpu.collect()
                 };
                 for f in 1..=3 {
                     assert!(frame(&mut gpu, f), "frame {f}, threaded {threaded}");
                 }
                 assert!(!frame(&mut gpu, 4), "a full ring, threaded {threaded}");
                 assert_eq!(landed(&mut gpu), Some((3, [3 + 5, 10 + 7, 3])));
-                assert_eq!(gpu.collect(device), None);
+                assert_eq!(gpu.collect(), None);
                 assert!(frame(&mut gpu, 5));
                 assert_eq!(landed(&mut gpu), Some((5, [5 + 5, 10 + 7, 3])));
                 // Frame 6's buffer destroyed after its mapping (#6320).
@@ -3296,7 +3386,7 @@ mod tests {
                 queue.landed();
                 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                 gpu.readbacks[lost].buffer.destroy();
-                assert_eq!(gpu.collect(device), None);
+                assert_eq!(gpu.collect(), None);
                 for f in 7..=12 {
                     let sent = frame(&mut gpu, f);
                     let back = landed(&mut gpu);
@@ -3321,7 +3411,9 @@ mod tests {
     /// its origin's bits to a pixel of its own; a quad turned away leaves its
     /// pixel clear.
     #[test]
+    #[ignore = "daily"]
     fn the_count_draws_draw_each_kept_section_with_its_origin() {
+        let _gpu = crate::gfx::test_gpu::lock();
         on_each_device(draws_land);
     }
 
@@ -3450,9 +3542,7 @@ struct Quad {
         // the distance, and draws all their quads. The second, from another
         // camera in the same column, keeps those in its view: fewer, and draws
         // those of their quads that can face its eye.
-        let all = Frustum {
-            planes: [Vec4::W; 6],
-        };
+        let all = Frustum::from_planes([Vec4::W; 6]);
         let lens = super::super::world_projection(70.0, 16.0 / 9.0, 512.0);
         let (ahead, eye) = through(lens * crate::camera::view_matrix(0.0, 0.0));
         let frames = [
@@ -3473,17 +3563,7 @@ struct Quad {
                 }
             }
             let mut encoder = device.create_command_encoder(&Default::default());
-            let input = FrameInputs {
-                camera,
-                min_y,
-                sections: levels,
-                radius,
-                frustum,
-                reach: None,
-                eye,
-                view_proj: Mat4::IDENTITY,
-                occlude: false,
-            };
+            let input = FrameInputs::new(camera, min_y, levels, radius, frustum).with_eye(eye);
             let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input, None);
             assert_eq!(prepared, Prepared::Gpu, "frame {frame}");
             let mut params = tables(&input, &mut words).expect("the planes fit");

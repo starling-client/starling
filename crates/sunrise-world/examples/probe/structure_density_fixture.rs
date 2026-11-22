@@ -1,15 +1,15 @@
 //! Original JSON transport for structure-density comparison.
+use serde_json::Value;
+use std::{
+    fs,
+    io::{self, Write},
+};
 use sunrise_core::{
     density::{
         Beardifier, DensitySampler, JigsawJunction, RigidPiece, SamplerContext, StructureBounds,
         TerrainAdjustment,
     },
     noise::DensityVolume,
-};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{self, Write},
 };
 fn n(v: &Value) -> i32 {
     v.as_i64().unwrap() as i32

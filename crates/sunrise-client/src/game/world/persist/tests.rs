@@ -3,8 +3,146 @@ use super::*;
 
 include!("position_load_tests.rs");
 
+mod transient_entities {
+    use super::*;
+    use crate::game::native_entity_refs::tests::{bind_local_player, with_game};
+    use mod_api::EntityRef;
+
+    fn with_server(test: impl FnOnce(&mut Game<'_>)) {
+        mod_platform::testing::with_mods(Default::default(), || {
+            with_game(|game| {
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+                test(game);
+            });
+        });
+    }
+
+    fn display(game: &mut Game<'_>) -> EntityRef {
+        let target = game
+            .summon_with_nbt("minecraft:text_display", [4.0, 64.0, 4.0], "{}")
+            .unwrap()
+            .unwrap();
+        game.entity(game.resident_target_id(target).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_transient_display_is_live_and_can_resume_saving_with_its_uuid() {
+        with_server(|game| {
+            let display = display(game);
+            let chunks = HashSet::from([(0, 0)]);
+            assert_eq!(display.set_persistent(game, false), Ok(true));
+            assert_eq!(display.set_persistent(game, false), Ok(true));
+            assert_eq!(game.entity(display.id()), Some(display));
+            let uuid =
+                sunrise_client::lan::playerdata::uuid_ints(game.entity_uuid(display).unwrap());
+            assert_eq!(game.entity_chunks(&chunks, false), vec![((0, 0), vec![])]);
+            let capture = game.snapshot_entity_chunks(&chunks, EntitySnapshot::Structure);
+            assert_eq!(capture[0].1.len(), 1);
+            assert_eq!(entity_nbt::uuid(&capture[0].1[0]), Some(uuid));
+
+            assert_eq!(display.set_persistent(game, true), Ok(true));
+            let restored = game.entity_chunks(&chunks, false);
+            assert_eq!(restored[0].1.len(), 1);
+            assert_eq!(entity_nbt::uuid(&restored[0].1[0]), Some(uuid));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn unloading_a_transient_display_erases_its_old_record() {
+        with_server(|game| {
+            let display = display(game);
+            game.save_entities(true).unwrap();
+            assert_eq!(game.save.load_entities(0, 0).unwrap().len(), 1);
+            assert_eq!(display.set_persistent(game, false), Ok(true));
+            assert_eq!(
+                game.save.load_entities(0, 0).unwrap().len(),
+                1,
+                "setting the flag does not rewrite an old snapshot"
+            );
+
+            let chunk = game.world.chunks.remove(&(0, 0)).unwrap();
+            game.unload_entities(std::slice::from_ref(&chunk));
+            game.save.flush().unwrap();
+            assert_eq!(game.entity(display.id()), None);
+            let records = game.save.load_entities(0, 0).unwrap();
+            assert!(records.is_empty());
+            game.world.chunks.insert((0, 0), chunk);
+            game.world.queue_entity_nbt((0, 0), records);
+            game.spawn_loaded_entities();
+            assert!(game.others.is_empty());
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn the_root_controls_chunk_and_player_vehicle_saves_but_not_logout_removal() {
+        with_server(|game| {
+            let root = game
+                .summon_with_nbt(
+                    "minecraft:pig",
+                    [4.0, 64.0, 4.0],
+                    r#"{Passengers:[{id:"minecraft:chicken",UUID:[I;0,0,0,321]}]}"#,
+                )
+                .unwrap()
+                .unwrap();
+            let root = game.entity(game.resident_target_id(root).unwrap()).unwrap();
+            let rider = game.mob_passenger_ids(root.id())[0];
+            let chunks = HashSet::from([(0, 0)]);
+            assert_eq!(
+                game.entity(rider).unwrap().set_persistent(game, false),
+                Ok(true)
+            );
+            let saved = game.entity_chunks(&chunks, false);
+            let Some(Tag::List(passengers)) = saved[0].1[0].get("Passengers") else {
+                panic!("marking the rider alone must not drop it from its vehicle");
+            };
+            assert_eq!(entity_nbt::uuid(&passengers[0]), Some([0, 0, 0, 321]));
+            let (wrapper, attach) = game.snapshot_parent_vehicle(rider, &[], false).unwrap();
+            assert_eq!(attach, [0, 0, 0, 321]);
+            assert_eq!(
+                wrapper
+                    .get("Entity")
+                    .and_then(|tree| tree.get("Passengers")),
+                Some(&Tag::List(passengers.clone()))
+            );
+
+            assert_eq!(root.set_persistent(game, false), Ok(true));
+            assert_eq!(game.entity_chunks(&chunks, false), vec![((0, 0), vec![])]);
+            assert_eq!(game.snapshot_parent_vehicle(rider, &[], false), None);
+            assert!(game.entity(root.id()).is_some());
+            assert_eq!(game.snapshot_parent_vehicle(rider, &[], true), None);
+            assert_eq!(game.entity(root.id()), None);
+            assert_eq!(game.entity(rider), None);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_persistence_write_refuses_players_stale_handles_clients_and_setup() {
+        with_server(|game| {
+            let display = display(game);
+            game.player =
+                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            bind_local_player(game, 100, 25);
+            let player = game.entity(100).unwrap();
+            assert_eq!(player.set_persistent(game, false), Ok(false));
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+            assert_eq!(display.set_persistent(game, false), Ok(false));
+            game.options.execution_role =
+                crate::game::execution_role::ExecutionRole::IntegratedServer;
+            assert!(display.discard(game));
+            assert_eq!(display.set_persistent(game, false), Ok(false));
+        });
+    }
+}
+
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn neutral_load_restores_only_the_saved_live_target_with_or_without_listeners() {
     use std::sync::{Arc, Mutex};
 
@@ -112,7 +250,7 @@ fn neutral_load_restores_only_the_saved_live_target_with_or_without_listeners() 
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn resident_other_and_fangs_load_tick_and_reset() {
     super::super::native_entity_refs::tests::with_game(|game| {
         game.others.clear();
@@ -163,7 +301,7 @@ fn resident_other_and_fangs_load_tick_and_reset() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn comparator_and_hopper_live_state_survives_chunk_reload() {
     use super::super::{Audio, Options, Progress, Settings, load_resources};
     use sunrise_client::{containers::BlockEntity, items::ItemStack, save};
@@ -331,12 +469,23 @@ fn comparator_and_hopper_live_state_survives_chunk_reload() {
         .block_entities
         .insert(barrel, BlockEntity::Chest(vec![None; 27]));
     let batch = game.with_entities(game.world.chunks.values());
-    let encoded = save::encode(&batch[0], game.pack.assets.registry, world_biomes!(game));
+    let encoded = save::encode(
+        &batch[0],
+        game.pack.assets.registry,
+        world_biomes!(game),
+        &Default::default(),
+    );
     // Streaming removes the resident chunk before preparing its save.
     let resident = game.world.chunks.remove(&(0, 0)).unwrap();
     let unloaded = game.with_entities([&resident]);
     assert_eq!(
-        save::encode(&unloaded[0], game.pack.assets.registry, world_biomes!(game)).tag,
+        save::encode(
+            &unloaded[0],
+            game.pack.assets.registry,
+            world_biomes!(game),
+            game.res.items()
+        )
+        .tag,
         encoded.tag
     );
     game.world.chunks.insert((0, 0), resident);
@@ -432,7 +581,7 @@ fn comparator_and_hopper_live_state_survives_chunk_reload() {
 const MOUNT: [i32; 4] = [1, 2, 3, 4];
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn deferred_zombie_finalization_keeps_unknown_profession_through_save_and_cure() {
     super::super::native_entity_refs::tests::with_game(|game| {
         let mut tag = entity("minecraft:zombie_villager");
@@ -464,6 +613,7 @@ fn deferred_zombie_finalization_keeps_unknown_profession_through_save_and_cure()
             None,
             Some(game.pack.assets.registry),
             |_| None,
+            &Default::default(),
         );
         let restored = entity_nbt::mob_from_nbt(
             &saved,
@@ -580,7 +730,8 @@ fn entity_attachment_boundary_does_not_alias_equal_uuid_passengers() {
     let child_id = root_id;
     let mut data = Attachments::default();
     key.set(&mut data, Holder::Level, 29).unwrap();
-    let maps = [(12, data)].into();
+    let mut maps = crate::game::native_colliders::EntityMaps::default();
+    maps.insert(12, data);
     let mut root = Tag::compound([
         ("UUID", Tag::IntArray(root_id.to_vec())),
         (
@@ -661,7 +812,7 @@ fn saved_attachments_read_over_a_constructed_map_but_not_a_live_one() {
 /// with its `UUID`, and `sunrise:attachments` where the mod set one), loaded and saved again:
 /// each comes back on the entity with its UUID, and its attachments with it.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_older_save_loads_its_entities_attachments_back_onto_them() {
     use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
@@ -808,7 +959,7 @@ fn an_older_save_loads_its_entities_attachments_back_onto_them() {
 /// A lingering potion's cloud is an entity of its chunk: unloading the chunk writes it and
 /// takes it out of the level, so loading the chunk again gives back one cloud, not two.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_lingering_cloud_leaves_with_its_chunk() {
     use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
@@ -942,7 +1093,7 @@ fn a_fresh_add_is_told_apart_from_a_load_and_unmarked() {
 /// `NeutralMob.addPersistentAngerSaveData` names the mob the anger is at,
 /// also one never saved yet (a mob gets its UUID when it is first saved).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn anger_at_a_mob_not_saved_yet_names_it() {
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());

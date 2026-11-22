@@ -141,9 +141,13 @@ impl SpecialModel {
 
     pub fn decode(v: &Value) -> Result<Self> {
         let m = object(v)?;
-        let float_or = |key: &str, default: f32| get(m, key).map_or(Ok(default), float);
         let id = ident(required(m, "type")?)?;
-        let builtin = BuiltinSpecialType::from_id(&id).ok_or_else(|| {
+        Self::decode_builtin(&id, m)
+    }
+
+    pub(super) fn decode_builtin(id: &str, m: &Map<String, Value>) -> Result<Self> {
+        let float_or = |key: &str, default: f32| get(m, key).map_or(Ok(default), float);
+        let builtin = BuiltinSpecialType::from_id(id).ok_or_else(|| {
             err(&format!(
                 "unknown special model type {id}: no mod registered it"
             ))

@@ -159,6 +159,10 @@ impl Mob {
         if self.species() == super::Species::Turtle {
             return super::turtle::move_control(self);
         }
+        // Camel.CamelMoveControl.tick: a walk target stands it up first.
+        if super::camel::is_camel(self.species()) {
+            return super::camel::move_control(self, w, events);
+        }
         let attr_speed = self.movement_speed();
         match self.ai.mov.kind {
             MoveKind::Custom => super::ai::custom_move_control(self, w, events),
@@ -182,7 +186,7 @@ impl Mob {
                     let y_rot = trig::atan2_degrees(zd, xd) - 90.0;
                     self.yaw = rotlerp(self.yaw, y_rot, 90.0);
                     let speed = (self.ai.mov.speed_modifier
-                        * if self.on_ground {
+                        * if self.ground.on_ground {
                             attr_speed
                         } else {
                             // getAttributeValue(FLYING_SPEED): a summon's base counts.
@@ -308,14 +312,13 @@ impl Mob {
                     self.position.z.floor() as i32,
                 );
                 let state = w.world.block(bx, by, bz);
-                let top = w.data.state(state).top;
+                // `getCollisionShape(level, pos).max(Y)`: a published shape's (#1666).
+                let top = w.collision_top(bx, by, bz);
                 let name = &w.facts.get(state).name;
                 let door_or_fence = name.ends_with("_door") || name.ends_with("fence");
                 if yd > self.kind.step_height
                     && xd * xd + zd * zd < f64::from(self.width().max(1.0))
-                    || top > 0.0
-                        && self.position.y < f64::from(top) + f64::from(by)
-                        && !door_or_fence
+                    || top > 0.0 && self.position.y < top + f64::from(by) && !door_or_fence
                 {
                     self.ai.jump = true;
                     self.ai.mov.operation = Operation::Jumping;
@@ -323,7 +326,7 @@ impl Mob {
             }
             Operation::Jumping => {
                 self.set_speed((self.ai.mov.speed_modifier * attr_speed) as f32);
-                if self.on_ground || self.is_in_liquid() {
+                if self.ground.on_ground || self.is_in_liquid() {
                     self.ai.mov.operation = Operation::Wait;
                 }
             }
@@ -494,8 +497,8 @@ impl Mob {
 #[cfg(test)]
 mod goat_head_tests {
     use super::*;
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     fn mob(species: Species) -> Mob {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();

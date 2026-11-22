@@ -1,8 +1,8 @@
 //! `Level.setBlock`, `LevelChunk.setBlockState` and the
 //! `CollectingNeighborUpdater` that orders neighbour and shape updates.
 use super::{
-    LevelAccess, LevelEvent, Signals, Sim, classes::Class, flags, orientation::Orientation,
-    states::BlockId,
+    Behaviours, LevelAccess, LevelEvent, Signals, Sim, classes::Class, flags,
+    orientation::Orientation, states::BlockId,
 };
 use crate::{fluid::FluidState, registry::BlockStateId};
 use sunrise_core::{
@@ -11,6 +11,19 @@ use sunrise_core::{
     random::{LegacyRandom, RandomSource},
     ticks::{ScheduleResult, TickPriority},
 };
+
+impl Behaviours {
+    /// Whether an existing block entity survives this state change. Vanilla's
+    /// `shouldChangedStateKeepBlockEntity` also keeps copper chests and copper
+    /// golem statues across their weathering states.
+    pub fn keeps_block_entity(&self, old: BlockStateId, new: BlockStateId) -> bool {
+        let (old, new) = (self.block(old), self.block(new));
+        let tags = &self.tags;
+        old == new
+            || (tags.copper_chests.contains(old) && tags.copper_chests.contains(new))
+            || (tags.copper_golem_statues.contains(old) && tags.copper_golem_statues.contains(new))
+    }
+}
 
 /// `NeighborUpdater.UPDATE_ORDER`.
 pub(crate) const UPDATE_ORDER: [Direction; 6] = [
@@ -200,6 +213,24 @@ impl Update {
     }
 }
 
+/// A stored block write paused before block-entity removal and neighbor effects.
+#[must_use]
+pub struct BlockWrite {
+    pos: BlockPos,
+    state: BlockStateId,
+    old: BlockStateId,
+    flags: i32,
+    remove_entity: bool,
+}
+
+impl BlockWrite {
+    /// The removal whose pre-effects must run with the old row still resident.
+    pub fn effectful_removal(&self) -> Option<BlockStateId> {
+        (self.remove_entity && self.flags & flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0)
+            .then_some(self.old)
+    }
+}
+
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub fn fluid_at(&self, pos: BlockPos) -> FluidState {
         self.b.fluid(self.state(pos))
@@ -245,9 +276,23 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.level.emit(LevelEvent::Sound {
             pos,
             sound: sound.clone(),
+            source: None,
             volume,
             pitch,
         });
+    }
+    pub(super) fn fence_gate_sound(&mut self, pos: BlockPos, sound: Option<std::sync::Arc<str>>) {
+        // Keep the pitch draw even when the gate has no sound at this site.
+        let pitch = self.random().next_float() * 0.1 + 0.9;
+        if let Some(sound) = sound {
+            self.level.emit(LevelEvent::Sound {
+                pos,
+                sound,
+                source: Some(super::LevelSoundSource::Blocks),
+                volume: 1.0,
+                pitch,
+            });
+        }
     }
     pub fn game_event(&mut self, pos: BlockPos, event: &'static str) {
         self.level.emit(LevelEvent::GameEvent {
@@ -312,12 +357,35 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         update_flags: i32,
         limit: i32,
     ) -> bool {
-        if !self.is_in_valid_bounds(pos) || !self.level.is_loaded(pos) {
-            return false;
-        }
-        let Some(old) = self.chunk_set_block_state(pos, state, update_flags) else {
+        let Some(write) = self.begin_block_write(pos, state, update_flags) else {
             return false;
         };
+        self.finish_block_write(write, None, limit)
+    }
+
+    pub(super) fn finish_block_write(
+        &mut self,
+        write: BlockWrite,
+        removal_updates: Option<u8>,
+        limit: i32,
+    ) -> bool {
+        let BlockWrite {
+            pos,
+            state,
+            old,
+            flags: update_flags,
+            remove_entity,
+        } = write;
+        if !self.finish_chunk_write(
+            pos,
+            old,
+            state,
+            update_flags,
+            remove_entity,
+            removal_updates,
+        ) {
+            return false;
+        }
         let new = self.state(pos);
         if new == state {
             if update_flags & flags::UPDATE_CLIENTS != 0
@@ -325,7 +393,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             {
                 self.level.send_block_updated(pos);
             }
-            if update_flags & flags::UPDATE_NEIGHBORS != 0 {
+            // The two-argument LevelAccessor.updateNeighborsAt is a no-op on ClientLevel.
+            if update_flags & flags::UPDATE_NEIGHBORS != 0 && !self.level.is_client_side() {
                 let old_block = self.block_of(old);
                 self.update_neighbors_at(pos, old_block);
                 if self.has_analog_output(state) {
@@ -355,13 +424,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.ticks.updater.notices.push_back((pos, old, new));
         }
     }
-    /// `LevelChunk.setBlockState`: the previous state when the write happened.
-    fn chunk_set_block_state(
+    /// The storage and invalidations at the start of `LevelChunk.setBlockState`.
+    pub(super) fn begin_block_write(
         &mut self,
         pos: BlockPos,
         state: BlockStateId,
         update_flags: i32,
-    ) -> Option<BlockStateId> {
+    ) -> Option<BlockWrite> {
+        if !self.is_in_valid_bounds(pos) || !self.level.is_loaded(pos) {
+            return None;
+        }
         let current = self.state(pos);
         if current == state {
             return None;
@@ -370,13 +442,50 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if old == state {
             return None;
         }
-        self.level.observe_block_changed(pos, old, state);
-        let new_block = self.block_of(state);
-        let block_changed = self.block_of(old) != new_block;
+        // A wire's own power and shape feed neither cached wire input, so a
+        // cascade's own writes keep its cache; any other write can change one.
+        let wire = self.b.named.redstone_wire;
+        let (old_wire, new_wire) = (self.b.is_block(old, wire), self.b.is_block(state, wire));
+        if !old_wire || !new_wire {
+            self.ticks.wire_graph.invalidate();
+        } else {
+            // Keep the node's copy of the power in step with the level.
+            let power = self.b.table.int(state, self.b.props.power) as u8;
+            self.ticks.wire_graph.set_power(pos, power);
+        }
+        self.level
+            .observe_block_changed(pos, old, state, update_flags);
+        let block_changed = self.block_of(old) != self.block_of(state);
         if block_changed && self.b.instance_of(old, super::classes::Class::Comparator) {
             // LevelChunk removes the old ComparatorBlockEntity with its output.
             self.ticks.comparator_outputs.remove(&pos);
         }
+        let remove_entity = block_changed
+            && self.block_of(old) != self.b.named.moving_piston
+            && (self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
+                || self.level.has_native_block_entity(old)
+                || self.level.has_mod_block_entity(pos))
+            && !self.b.keeps_block_entity(old, state);
+        Some(BlockWrite {
+            pos,
+            state,
+            old,
+            flags: update_flags,
+            remove_entity,
+        })
+    }
+
+    fn finish_chunk_write(
+        &mut self,
+        pos: BlockPos,
+        old: BlockStateId,
+        state: BlockStateId,
+        update_flags: i32,
+        remove_entity: bool,
+        removal_updates: Option<u8>,
+    ) -> bool {
+        let new_block = self.block_of(state);
+        let block_changed = self.block_of(old) != new_block;
         if block_changed && self.block_of(old) == self.b.named.moving_piston {
             // PistonMovingBlockEntity.preRemoveSideEffects -> finalTick; the
             // block is already replaced, so only the entity goes away. The
@@ -387,16 +496,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let side_effects = update_flags & flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
                 self.land_carried(pos, piston.moved_state, false, side_effects);
             }
-        } else if block_changed
-            && (self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
-                || self.level.has_native_block_entity(old)
-                || self.level.has_mod_block_entity(pos))
-            && !self.keeps_block_entity(state, old)
-        {
-            // BlockEntity.preRemoveSideEffects (unless UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS)
-            // and removeBlockEntity, before the neighbours hear of the removal.
-            let side_effects = update_flags & flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
-            let updates = self.level.remove_block_entity(pos, old, side_effects);
+        } else if remove_entity {
+            // A Game-backed write may already have run removal with live entity insertion.
+            // Other adapters run the same removal here, before any neighbor updates.
+            let updates = removal_updates.unwrap_or_else(|| {
+                let side_effects = update_flags & flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
+                self.level.remove_block_entity(pos, old, side_effects)
+            });
             for _ in 0..updates {
                 // JukeboxBlockEntity.onSongChanged.
                 let block = self.block_of(old);
@@ -404,34 +510,28 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
         let moved = update_flags & flags::UPDATE_MOVE_BY_PISTON != 0;
-        if (block_changed
-            || self
-                .b
-                .block_data(new_block)
-                .is(super::classes::Class::BaseRail))
+        let server_side = !self.level.is_client_side();
+        if server_side
+            && (block_changed
+                || self
+                    .b
+                    .block_data(new_block)
+                    .is(super::classes::Class::BaseRail))
             && (update_flags & flags::UPDATE_NEIGHBORS != 0 || moved)
         {
             self.affect_neighbors_after_removal(old, pos, moved);
         }
         if self.block_of(self.state(pos)) != new_block {
-            return None;
+            return false;
         }
-        if update_flags & flags::UPDATE_SKIP_ON_PLACE == 0 {
+        if server_side && update_flags & flags::UPDATE_SKIP_ON_PLACE == 0 {
             self.on_place(state, pos, old, moved);
         }
         let landed = self.state(pos);
         if self.block_of(landed) == new_block {
             self.level.ensure_block_entity(pos, landed);
         }
-        Some(old)
-    }
-    /// `BlockState.shouldChangedStateKeepBlockEntity(oldState)`: copper chests
-    /// and copper golem statues keep theirs across their weathering states.
-    fn keeps_block_entity(&self, new: BlockStateId, old: BlockStateId) -> bool {
-        let (new, old) = (self.block_of(new), self.block_of(old));
-        let tags = &self.b.tags;
-        (tags.copper_chests.contains(new) && tags.copper_chests.contains(old))
-            || (tags.copper_golem_statues.contains(new) && tags.copper_golem_statues.contains(old))
+        true
     }
     /// `MovingPistonBlock.destroy`: a `moving_piston` that goes away takes the
     /// piston base behind it with it when that base is extended (a head that was
@@ -675,7 +775,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
         if !running {
+            // One run is one cascade; the wire cache lives exactly as long.
+            self.ticks.wire_graph.begin();
             self.run_updates();
+            self.ticks.wire_graph.end();
         }
     }
     fn run_updates(&mut self) {

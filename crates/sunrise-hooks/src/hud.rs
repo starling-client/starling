@@ -1,6 +1,6 @@
 //! HUD drawing (docs/layers.md, "Platform registries"): a crate above the engine draws on the HUD
-//! where the extras do, in the corners they share, without an engine file naming it. With no layer
-//! registered the engine builds no canvas.
+//! where the extras do, in the corners they share, or over everything, without an engine file
+//! naming it. With no layer registered the engine builds no canvas.
 use crate::TooLate;
 use crate::registry::Registry;
 
@@ -27,20 +27,36 @@ pub trait Canvas {
     /// A filled rectangle.
     fn fill(&mut self, x: f32, y: f32, w: f32, h: f32, argb: u32);
     /// Where a `w` × `h` box goes in `corner`: below (or above) what the corner holds already,
-    /// the minimap, the PvP widgets and mods' boxes. `None` while the corner is hidden (the debug
+    /// then any earlier layer in that corner. `None` while the corner is hidden (the debug
     /// screen covers the top left): draw nothing there then.
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> Option<(f32, f32)>;
 }
 
-/// Something a crate draws on the HUD, every frame the HUD is drawn (not with F1, nor under a
-/// screen that hides it). It reads its own state and must return quickly.
+/// When a [`Layer`] draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Stage {
+    /// With the HUD, every frame it is drawn (not with F1, nor under a screen that hides it),
+    /// stacked around occupied corners.
+    #[default]
+    Hud,
+    /// After the debug screen and before foreground GUI overlays such as input feedback. Drawn
+    /// over menus, toasts and the title screen, F1 included. Nothing is stacked there:
+    /// [`Canvas::place`] is `None`.
+    Top,
+}
+
+/// Something a crate draws on the HUD. It reads its own state and must return quickly.
 pub trait Layer: Sync {
     fn draw(&self, canvas: &mut dyn Canvas);
+    /// When it draws: with the HUD unless it says otherwise.
+    fn stage(&self) -> Stage {
+        Stage::Hud
+    }
 }
 
 static LAYERS: Registry<dyn Layer> = Registry::new();
 
-/// Adds `layer` to the HUD, above the layers registered before it. Before the game starts, as
+/// Adds `layer` to the HUD, after the layers registered before it in the same stage. Before the game starts, as
 /// [`crate::register`].
 pub fn register(layer: &'static dyn Layer) -> Result<(), TooLate> {
     LAYERS.register(layer)

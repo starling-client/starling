@@ -114,8 +114,6 @@ fn waxed_defaults_and_removal_preserve_presence() {
 #[test]
 fn waxed_malformed_payloads_reject_whole_recipes_with_component_errors() {
     let items = Items::empty();
-    let load = load();
-    let root = tempfile::tempdir().unwrap();
     for payload in [
         serde_json::json!(true),
         serde_json::json!(0),
@@ -143,22 +141,10 @@ fn waxed_malformed_payloads_reject_whole_recipes_with_component_errors() {
             "components":{"minecraft:waxed":payload}
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
-            root.path(),
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
             &items,
-            &sunrise_world::loot::PackOverlay::NONE,
-            vec![(
-                "fixture:invalid_waxed".into(),
-                serde_json::json!({
-                    "type":"minecraft:crafting_shapeless", "ingredients":[ingredient],
-                    "result":{"id":"minecraft:diamond"}
-                }),
-            )],
-            &load,
-        )
-        .unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+            ingredient["components"].clone(),
+        );
     }
 }
 
@@ -222,29 +208,24 @@ fn rollup_boundary_and_absence_4105() {
         let ingredient = serde_json::json!({"type":"neoforge:components","items":"minecraft:map","components":{"minecraft:waxed":value}});
         let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
         assert!(error.contains("minecraft:waxed"), "{error}");
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            ingredient["components"].clone(),
+        );
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
         let recipes = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
-            vec![
-                ("fixture:invalid_waxed".into(), recipe(ingredient)),
-                (
-                    "fixture:valid".into(),
-                    recipe(serde_json::json!("minecraft:map")),
-                ),
-            ],
+            vec![(
+                "fixture:valid".into(),
+                recipe(serde_json::json!("minecraft:map")),
+            )],
             &load,
         )
         .unwrap();
         assert_eq!(recipes.crafting.len(), 1);
-        assert!(!recipes.recipe_matches(
-            &context,
-            "fixture:invalid_waxed",
-            &[Some(ItemStack::new("minecraft:map", 1))],
-            1
-        ));
         assert!(recipes.recipe_matches(
             &context,
             "fixture:valid",

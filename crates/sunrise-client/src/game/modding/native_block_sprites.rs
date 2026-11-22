@@ -1,11 +1,11 @@
 //! Where blocks' textures are in the block sprite arrays, for a client mod drawing blocks with the player's own
 //! textures (resource packs included) in its own pass: with `WorldDrawn::block_sprites`, the arrays themselves.
 use super::Game;
+use mod_api::{AtlasRegion, ColorResolver, Identifier, LevelReadError};
 use sunrise_client::block_sprites::{BlockSprites, Lookup, SpriteRef};
+use sunrise_client::chunk::Chunk;
 use sunrise_world::registry::BlockStateId;
-use mod_api::{AtlasRegion, Identifier};
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// For a client mod: what each block (`minecraft:grass_block`, `oak_log[axis=x]`; properties left out take the
     /// block's default) draws on each of its six sides, as the mesher bakes its model: each face's sprite (array and
@@ -29,34 +29,52 @@ impl Game<'_> {
     /// For a client mod: each texture's sprite by name (`minecraft:block/stone`, `block/stone`), none for one no
     /// model uses. API 380.
     pub(super) fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<SpriteRef>> {
-        let lookup = self.native_sprite_lookup();
+        let atlas = self
+            .stitching_block_atlas
+            .as_ref()
+            .unwrap_or(&self.pack.render);
+        let split = self
+            .renderer
+            .as_ref()
+            .map_or(u32::MAX, |r| r.sprite_split());
         textures
             .iter()
-            .map(|texture| lookup.texture(texture))
+            .map(|name| sunrise_client::block_sprites::texture_at(atlas, split, name))
             .collect()
     }
+    /// `ClientLevel.getBlockTint(pos, resolver)`, without consulting block or fluid tint sources.
+    pub(super) fn biome_tint(
+        &self,
+        pos: [i32; 3],
+        resolver: ColorResolver,
+    ) -> Result<u32, LevelReadError> {
+        self.native_client_level()
+            .ok_or(LevelReadError::Unavailable)?;
+        Ok(sunrise_client::mesher::biome_tint(
+            pos,
+            resolver,
+            &self.tint_region(pos),
+            self.mesh_biomes(),
+            self.streaming.biome_zoom,
+            self.streaming.biome_blend,
+        ))
+    }
+
     /// For a client mod drawing a block's faces itself (a copycat drawing its material's, from
     /// `block_sprites`): the 0xRRGGBB colour a face of `state` with tint index `tint_index` is
     /// multiplied by at `pos`, as the chunk mesher tints it there (`MeshTables::block_tints`:
     /// `BlockColors`, biome blend included). None for an untinted face. A fluid's face
     /// (`block_sprites::fluid_faces`: water at tint index 0) takes the water colour the fluid
-    /// mesher gives it (`MeshTables::water_tint`, the packs' water colormap included). This client's copy of the
-    /// world: the chunks around `pos` it has, as break particles read them (`particle_sprite`).
+    /// mesher gives it (`MeshTables::water_tint`, the packs' water colormap included). Both read the
+    /// mesher's current biome colours, including after `refresh_biome_colors`.
     pub(super) fn block_tint_color(
         &self,
         state: BlockStateId,
         tint_index: i32,
         pos: [i32; 3],
     ) -> Option<u32> {
-        let (cx, cz) = (pos[0] >> 4, pos[2] >> 4);
-        let region: [[Option<&sunrise_client::chunk::Chunk>; 3]; 3] = std::array::from_fn(|dz| {
-            std::array::from_fn(|dx| {
-                self.world
-                    .chunks
-                    .get(&(cx + dx as i32 - 1, cz + dz as i32 - 1))
-                    .map(|c| &**c)
-            })
-        });
+        let region = self.tint_region(pos);
+        let biomes = self.mesh_biomes();
         let block = self
             .pack
             .context
@@ -69,7 +87,7 @@ impl Game<'_> {
                 self.pack.context.tables.water_tint(
                     pos,
                     &region,
-                    world_biomes!(self),
+                    biomes,
                     self.streaming.biome_zoom,
                     self.streaming.biome_blend,
                 )
@@ -79,27 +97,47 @@ impl Game<'_> {
             state,
             pos,
             &region,
-            world_biomes!(self),
+            biomes,
             self.streaming.biome_zoom,
             self.streaming.biome_blend,
             self.streaming.nether_shading,
         );
         tints(tint_index)
     }
+
+    /// The mesher's 3×3 chunk region centred on the chunk that contains `pos`.
+    fn tint_region(&self, [x, _, z]: [i32; 3]) -> [[Option<&Chunk>; 3]; 3] {
+        let (cx, cz) = (x >> 4, z >> 4);
+        std::array::from_fn(|dz| {
+            std::array::from_fn(|dx| {
+                self.world
+                    .chunks
+                    .get(&(cx + dx as i32 - 1, cz + dz as i32 - 1))
+                    .map(AsRef::as_ref)
+            })
+        })
+    }
+
     /// For a client mod: changes each time the resources load (a resource pack turned on or off can move every
     /// sprite): ask `block_sprites` again then. API 380.
     pub(super) fn block_sprites_version(&self) -> u64 {
-        self.pack.context.render.generation
+        self.stitching_block_atlas
+            .as_ref()
+            .unwrap_or(&self.pack.render)
+            .generation
     }
     /// For a client mod: where GUI sprite `sprite` lies in the GUI atlas and its size, none for one the atlas lacks
-    /// (a server's metrics-only atlas lacks them all). The atlas names vanilla's sprites by path alone
-    /// (`gui/sprites/container/slot`) and a mod's with its namespace (`mymod:gui/panel`).
+    /// or whose entry its definition removed (a server's metrics-only atlas lacks them all). The atlas names its
+    /// sprites by GUI id: `container/slot` or `minecraft:container/slot`, a mod's `mymod:panel`.
     pub(super) fn gui_sprite(&self, sprite: &Identifier) -> Option<AtlasRegion> {
-        let r = if sprite.namespace() == "minecraft" {
-            self.gui.atlas.sprites.get(sprite.path())
+        let found = if sprite.namespace() == "minecraft" {
+            self.gui.atlas.gui_lookup(sprite.path())
         } else {
-            self.gui.atlas.sprites.get(&sprite.to_string())
-        }?;
+            self.gui.atlas.gui_lookup(&sprite.to_string())
+        };
+        let Some(sunrise_client::hud::GuiSprite::Present { rect: r, .. }) = found else {
+            return None;
+        };
         Some(AtlasRegion::new([r.u0, r.v0, r.u1, r.v1], [r.w, r.h]))
     }
     fn native_sprite_lookup(&self) -> Lookup<'_> {
@@ -115,8 +153,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod texture_atlas_stitched_tests {
     use mod_api::{
-        AtlasRegion, ClientHost, Hooks, Identifier, ModEntry, RegisterRuntimeSpritesEvent,
-        RegistrationContext, RuntimeSprite, SpriteRef, TextureAtlas, TextureAtlasStitchedEvent,
+        AtlasRegion, ClientHost, Hooks, Identifier, ModEntry, SpriteRef, TextureAtlas,
+        TextureAtlasStitchedEvent,
     };
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
@@ -127,35 +165,10 @@ mod texture_atlas_stitched_tests {
         atlases: Vec<TextureAtlas>,
         stone: Option<SpriteRef>,
         slot: Option<AtlasRegion>,
-        registrations: u32,
-        runtime_block: Option<SpriteRef>,
-        runtime_gui: Option<AtlasRegion>,
     }
     struct Keeper(Arc<Mutex<Kept>>);
     #[mod_api::__subscriptions]
     impl Hooks for Keeper {
-        fn register_runtime_sprites(
-            &self,
-            _: &RegistrationContext,
-            event: &mut RegisterRuntimeSpritesEvent<'_>,
-        ) {
-            use crate::game::client_reload::fixture_png;
-            let mut kept = self.0.lock().unwrap();
-            kept.registrations += 1;
-            if kept.registrations == 1 {
-                event.sprites.push(RuntimeSprite {
-                    atlas: TextureAtlas::Blocks,
-                    id: id("keeper:block/marker"),
-                    png: fixture_png(2, 2, 32),
-                });
-            }
-            event.sprites.push(RuntimeSprite {
-                atlas: TextureAtlas::Gui,
-                id: id("keeper:gui/marker"),
-                png: fixture_png(kept.registrations + 2, 3, 64),
-            });
-        }
-
         fn texture_atlas_stitched(
             &self,
             host: &mut dyn ClientHost,
@@ -166,11 +179,9 @@ mod texture_atlas_stitched_tests {
             match event.atlas {
                 TextureAtlas::Blocks => {
                     kept.stone = host.texture_sprites(&["minecraft:block/stone"])[0];
-                    kept.runtime_block = host.texture_sprites(&["keeper:block/marker"])[0];
                 }
                 TextureAtlas::Gui => {
-                    kept.slot = host.gui_sprite(&id("gui/sprites/container/slot"));
-                    kept.runtime_gui = host.gui_sprite(&id("keeper:gui/marker"));
+                    kept.slot = host.gui_sprite(&id("container/slot"));
                 }
                 _ => {}
             }
@@ -181,10 +192,228 @@ mod texture_atlas_stitched_tests {
         Identifier::parse(text).unwrap()
     }
 
+    /// A mod's sprite source: a 2x2 block sprite no model names, and a GUI sprite one pixel
+    /// wider each time the GUI atlas is asked, so a reload's answer differs from the first load's.
+    #[derive(Default)]
+    struct Marker {
+        gui_asks: u32,
+        block: Option<SpriteRef>,
+        gui: Option<AtlasRegion>,
+    }
+    struct Source(Arc<Mutex<Marker>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Source {
+        fn register_sprite_sources(
+            &self,
+            _: &mod_api::RegistrationContext,
+            event: &mut mod_api::RegisterSpriteSourcesEvent<'_>,
+        ) {
+            let marker = Arc::clone(&self.0);
+            event.register(id("marker:own"), move |input| {
+                let mut marker = marker.lock().unwrap();
+                let mut output = Vec::new();
+                match input.atlas.to_string().as_str() {
+                    "minecraft:blocks" => output.push(mod_api::SpriteSourceOutput::Pixels {
+                        sprite: id("marker:block/own"),
+                        width: 2,
+                        height: 2,
+                        rgba: [32, 64, 96, 255].repeat(4),
+                    }),
+                    "minecraft:gui" => {
+                        marker.gui_asks += 1;
+                        let width = 2 + marker.gui_asks;
+                        output.push(mod_api::SpriteSourceOutput::Pixels {
+                            sprite: id("marker:own"),
+                            width,
+                            height: 3,
+                            rgba: [64, 96, 32, 255].repeat((width * 3) as usize),
+                        });
+                        // A sprite the first load publishes and the reload no longer does.
+                        if marker.gui_asks == 1 {
+                            output.push(mod_api::SpriteSourceOutput::Pixels {
+                                sprite: id("marker:first_only"),
+                                width: 2,
+                                height: 2,
+                                rgba: [9, 9, 9, 255].repeat(4),
+                            });
+                        }
+                        // The replacement of a walked vanilla sprite, of another size.
+                        output.push(mod_api::SpriteSourceOutput::Pixels {
+                            sprite: id("container/slot"),
+                            width: 5,
+                            height: 5,
+                            rgba: [255, 0, 255, 255].repeat(25),
+                        });
+                    }
+                    _ => {}
+                }
+                Ok(output)
+            });
+        }
+        fn texture_atlas_stitched(
+            &self,
+            host: &mut dyn ClientHost,
+            event: &mut TextureAtlasStitchedEvent,
+        ) {
+            let mut marker = self.0.lock().unwrap();
+            match event.atlas {
+                TextureAtlas::Blocks => {
+                    marker.block = host.texture_sprites(&["marker:block/own"])[0];
+                }
+                TextureAtlas::Gui => marker.gui = host.gui_sprite(&id("marker:own")),
+                _ => {}
+            }
+        }
+    }
+
+    /// The prepared resources with the definitions `files` (relative path, bytes) laid over them:
+    /// every other file is linked, never copied.
+    #[cfg(unix)]
+    fn shadowed(base: &std::path::Path, files: &[(&str, Vec<u8>)]) -> tempfile::TempDir {
+        fn mirror(src: &std::path::Path, dst: &std::path::Path, files: &[(Vec<&str>, &[u8])]) {
+            for entry in std::fs::read_dir(src).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let name = name.to_str().unwrap();
+                let under: Vec<_> = files
+                    .iter()
+                    .filter(|(path, _)| path[0] == name)
+                    .map(|(path, bytes)| (path[1..].to_vec(), *bytes))
+                    .collect();
+                let to = dst.join(name);
+                match under.iter().find(|(rest, _)| rest.is_empty()) {
+                    Some((_, bytes)) => std::fs::write(&to, bytes).unwrap(),
+                    None if under.is_empty() => {
+                        std::os::unix::fs::symlink(entry.path(), &to).unwrap();
+                    }
+                    None => {
+                        std::fs::create_dir(&to).unwrap();
+                        mirror(&entry.path(), &to, &under);
+                    }
+                }
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let files: Vec<(Vec<&str>, &[u8])> = files
+            .iter()
+            .map(|(path, bytes)| (path.split('/').collect(), bytes.as_slice()))
+            .collect();
+        mirror(base, root.path(), &files);
+        root
+    }
+
+    /// The game's own definition of `atlas` with an entry of the mod's source type added.
+    #[cfg(unix)]
+    fn with_marker_entry(base: &std::path::Path, atlas: &str) -> (String, Vec<u8>) {
+        let path = format!("assets/minecraft/atlases/{atlas}.json");
+        let mut definition: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(base.join(&path)).unwrap()).unwrap();
+        definition["sources"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"type": "marker:own"}));
+        (path, serde_json::to_vec(&definition).unwrap())
+    }
+
+    /// A registered sprite source's output is published by atlas and id through the real host,
+    /// at startup and after a reload: a block sprite no model names, a GUI sprite of another size
+    /// each time, and a walked vanilla GUI sprite replaced by the source's pixels, all found by
+    /// their ids; what the source never made, or made only before the reload, is none.
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "daily"]
+    fn a_sprite_source_publishes_its_sprites_by_atlas_and_id_through_the_host() {
+        use mod_api::__private::game::RegistrationContextNew;
+
+        // Both resource loads need the source type, whose registry is process-wide.
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::native_block_sprites::texture_atlas_stitched_tests::a_sprite_source_publishes_its_sprites_by_atlas_and_id_through_the_host",
+            "SUNRISE_SPRITE_SOURCE_ATLAS_TEST_CHILD",
+            &["atlas"],
+        ) {
+            return;
+        }
+        let base = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+        let files: Vec<_> = ["blocks", "gui"]
+            .map(|atlas| with_marker_entry(&base, atlas))
+            .into();
+        let files: Vec<_> = files.iter().map(|(p, b)| (p.as_str(), b.clone())).collect();
+        let root = shadowed(&base, &files);
+        let marker = Arc::new(Mutex::new(Marker::default()));
+        let mods: mod_api::Mods = vec![ModEntry::new(
+            "marker",
+            Box::new(Source(Arc::clone(&marker))),
+        )]
+        .into();
+        with_mods(mods, || {
+            let role = crate::game::execution_role::ExecutionRole::Client;
+            let mut sources = Vec::new();
+            super::Game::native_register_sprite_sources(
+                &mod_api::RegistrationContext::new(),
+                &mut sources,
+            );
+            assert_eq!(
+                sunrise_client_render::mod_sprite_sources::register(sources),
+                ["marker:own"]
+            );
+            super::super::native_entity_refs::tests::with_game_role(
+                root.path().to_owned(),
+                role,
+                |game| {
+                    game.texture_atlases_stitched();
+                    {
+                        let mut marker = marker.lock().unwrap();
+                        assert!(
+                            marker.block.take().is_some(),
+                            "no model names the block sprite"
+                        );
+                        assert_eq!(marker.gui.map(|s| s.size), Some([3, 3]));
+                    }
+                    assert_eq!(
+                        game.gui_sprite(&id("container/slot")).map(|s| s.size),
+                        Some([5, 5])
+                    );
+                    assert_eq!(game.gui_sprite(&id("marker:no_such_sprite")), None);
+                    assert_eq!(
+                        game.gui_sprite(&id("marker:first_only")).map(|s| s.size),
+                        Some([2, 2])
+                    );
+                    game.spawn_pack_reload(super::super::packs::ReloadKind::Selection)
+                        .unwrap();
+                    let started = std::time::Instant::now();
+                    while game.pack_reload.is_some() {
+                        assert!(
+                            started.elapsed().as_secs() < 300,
+                            "the reload never finished"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        game.drive_pack_reload();
+                    }
+                    let marker = marker.lock().unwrap();
+                    assert!(marker.block.is_some(), "published again after the reload");
+                    assert_eq!(
+                        game.gui_sprite(&id("marker:first_only")),
+                        None,
+                        "a sprite the reload no longer makes is gone"
+                    );
+                    assert_eq!(
+                        marker.gui.map(|s| s.size),
+                        Some([4, 3]),
+                        "the reload's own answer, not the first load's"
+                    );
+                    assert_eq!(
+                        game.gui_sprite(&id("container/slot")).map(|s| s.size),
+                        Some([5, 5])
+                    );
+                },
+            );
+        });
+    }
+
     /// `TextureAtlasStitchedEvent`: the mod hears the blocks' atlas and then the GUI's, finds a
     /// sprite of each, and hears both again after a resource reload.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_mod_finds_its_sprites_each_time_an_atlas_is_stitched() {
         let kept = Arc::new(Mutex::new(Kept::default()));
         let mods: mod_api::Mods =
@@ -197,11 +426,6 @@ mod texture_atlas_stitched_tests {
                     let kept = kept.lock().unwrap();
                     assert_eq!(kept.atlases, [TextureAtlas::Blocks, TextureAtlas::Gui]);
                     assert!(kept.stone.is_some(), "stone is in the block arrays");
-                    assert!(
-                        kept.runtime_block.is_some(),
-                        "no model references this block sprite"
-                    );
-                    assert_eq!(kept.runtime_gui.map(|sprite| sprite.size), Some([3, 3]));
                     let slot = kept.slot.expect("the slot sprite is in the GUI atlas");
                     assert_eq!(slot.size, [18, 18], "the slot's own pixels");
                     let [u0, v0, u1, v1] = slot.uv;
@@ -209,10 +433,7 @@ mod texture_atlas_stitched_tests {
                     assert!(0.0 <= v0 && v0 < v1 && v1 <= 1.0, "{:?}", slot.uv);
                 }
                 // A mod's namespace is part of the name; one the atlas lacks is none.
-                assert_eq!(
-                    game.gui_sprite(&id("mymod:gui/sprites/container/slot")),
-                    None
-                );
+                assert_eq!(game.gui_sprite(&id("mymod:container/slot")), None);
                 assert_eq!(game.gui_sprite(&id("gui/no_such_sprite")), None);
                 // F3+T: the reload stages on a worker and applies here.
                 kept.lock().unwrap().atlases.clear();
@@ -229,12 +450,6 @@ mod texture_atlas_stitched_tests {
                 }
                 let kept = kept.lock().unwrap();
                 assert_eq!(kept.atlases, [TextureAtlas::Blocks, TextureAtlas::Gui]);
-                assert_eq!(kept.registrations, 2);
-                assert!(
-                    kept.runtime_block.is_none(),
-                    "omitted sprite leaves the new atlas"
-                );
-                assert_eq!(kept.runtime_gui.map(|sprite| sprite.size), Some([4, 3]));
                 assert_eq!(
                     kept.slot.map(|s| s.size),
                     Some([18, 18]),
@@ -345,6 +560,105 @@ mod quad_on_tests {
     }
 }
 
+#[cfg(test)]
+mod biome_tint_tests {
+    use super::Game;
+    use crate::game::native_entity_refs::tests::with_client_game;
+    use mod_api::{
+        Authority, BiomeColorsEvent, ClientHost, ColorResolver, Hooks, ModEntry,
+        prelude::BlockStatesHost,
+    };
+    use std::sync::Arc;
+    use sunrise_client::chunk::Chunk;
+
+    const GRASS: u32 = 0xAD_248B;
+    const FOLIAGE: u32 = 0x34_D1EF;
+    const WATER: u32 = 0xDA_5227;
+    const POS: [i32; 3] = [8, 64, 8]; // The whole blend square samples this plains chunk.
+
+    fn with_stock_client_biomes(test: impl FnOnce(&mut Game<'_>)) {
+        struct Seasons;
+        #[mod_api::__subscriptions]
+        impl Hooks for Seasons {
+            fn biome_colors(&self, _: &dyn ClientHost, event: &mut BiomeColorsEvent<'_>) {
+                if event.biome == "minecraft:plains" {
+                    event.colors.grass = GRASS;
+                    event.colors.foliage = FOLIAGE;
+                    event.colors.water = WATER;
+                }
+            }
+        }
+
+        let mods = vec![ModEntry::new("test_seasons", Box::new(Seasons))].into();
+        mod_platform::testing::with_mods(mods, || {
+            with_client_game(|game| {
+                // The replay fixture opens a client level without connecting to a server.
+                game.init_remote_for_replay().unwrap();
+                game.native_lifecycle.begin_open(Authority::RemoteClient);
+
+                let plains_id = game.res.biomes().id("minecraft:plains");
+                let mut chunk = Chunk::empty(0, 0);
+                for qy in 0..chunk.sections.len() as i32 * 4 {
+                    for qz in 0..4 {
+                        for qx in 0..4 {
+                            chunk.set_biome_cell(qx, qy, qz, plains_id);
+                        }
+                    }
+                }
+                game.world.chunks.insert((0, 0), Arc::new(chunk));
+                game.streaming.biome_blend = 1;
+
+                // Stock server biome definitions do not install a world-specific table.
+                assert!(game.world_biomes.is_none());
+                test(game);
+                assert!(game.world_biomes.is_none());
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn biome_tint_reads_refreshed_colours_with_stock_server_biomes() {
+        with_stock_client_biomes(|game| {
+            let host: &mut dyn ClientHost = game;
+            assert_ne!(
+                host.biome_tint(POS, ColorResolver::Grass),
+                Ok(0xFF00_0000 | GRASS)
+            );
+            host.refresh_biome_colors();
+            assert_eq!(
+                host.biome_tint(POS, ColorResolver::Grass),
+                Ok(0xFF00_0000 | GRASS)
+            );
+            assert_eq!(
+                host.biome_tint(POS, ColorResolver::Foliage),
+                Ok(0xFF00_0000 | FOLIAGE)
+            );
+
+            let worker = game.worker_context();
+            let plains = worker.biomes.get(worker.biomes.id("minecraft:plains"));
+            assert_eq!((plains.grass, plains.foliage), (GRASS, FOLIAGE));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn face_tints_read_refreshed_colours_with_stock_server_biomes() {
+        with_stock_client_biomes(|game| {
+            let grass = BlockStatesHost::block_state_id(game, "minecraft:grass_block").unwrap();
+            let water = BlockStatesHost::block_state_id(game, "minecraft:water").unwrap();
+            let host: &mut dyn ClientHost = game;
+            assert_ne!(host.block_tint_color(grass, 0, POS).unwrap(), GRASS);
+            assert_ne!(host.block_tint_color(water, 0, POS).unwrap(), WATER);
+
+            host.refresh_biome_colors();
+
+            assert_eq!(host.block_tint_color(grass, 0, POS), Some(GRASS));
+            assert_eq!(host.block_tint_color(water, 0, POS), Some(WATER));
+        });
+    }
+}
+
 /// `block_tint_color`, the colour a copycat multiplies its material's tinted faces by.
 #[cfg(test)]
 mod block_tint_color_tests {
@@ -352,15 +666,15 @@ mod block_tint_color_tests {
     /// (tint index 0, as `block_sprites` reports it); stone has no tint, and an untinted
     /// face (-1) none either.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_tinted_face_takes_its_colour_where_it_stands() {
         super::super::native_entity_refs::tests::with_client_game(|game| {
             let registry = game.pack.context.assets.registry;
             let grass = registry.default_state("minecraft:grass_block").unwrap();
             let stone = registry.default_state("minecraft:stone").unwrap();
             let water = registry.default_state("minecraft:water").unwrap();
-            use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
             use std::sync::Arc;
+            use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
             static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../.local")
@@ -439,6 +753,7 @@ mod block_tint_color_tests {
                 biomes: biomes.clone(),
                 light: old.light.clone(),
                 hidden_states: old.hidden_states.clone(),
+                part_tables: old.part_tables.clone(),
             });
             game.world_biomes = Some(biomes.clone());
             game.streaming.biome_blend = 0;

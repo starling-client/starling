@@ -1,13 +1,13 @@
 //! Biome temperature sampling and a worker-local vanilla temperature cache.
 use super::{DecodeError, Object, number_text, optional, required};
+use std::{
+    collections::{HashMap, VecDeque, hash_map::Entry},
+    sync::{Arc, OnceLock},
+};
 use sunrise_core::{
     noise::{Noise, NoiseStack, SimplexNoise},
     position::BlockPos,
     random::LegacyRandom,
-};
-use std::{
-    collections::{HashMap, VecDeque, hash_map::Entry},
-    sync::{Arc, OnceLock},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

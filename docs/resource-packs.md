@@ -44,7 +44,7 @@ harness named checks that loader against vanilla).
 | Item definitions and item models (all model types, display transforms, tints) | `items/`, `models/item/` | works | `test_item_model_parity` |
 | Custom entity models (OptiFine/EMF): a `.jem` reshapes a mob's model layer, with its animations and texture, or a block entity's model (chests, shulker boxes, banners, heads, bells, books, conduits, decorated pots) with its texture but no animations yet; Entity Model Features' files win over OptiFine's | `optifine/cem/`, `emf/cem/` | partly | `mobs::cem`, `mobs::cem_anim`, `block_entity_cem` and `block_entity_render` unit tests, `sunrise-optifine` `cem::files` (which file wins); trapped and ender chests read only their own files and copper chests keep vanilla's model; no sign, hanging sign or bed models, no per-bone textures, no random models, no textures under `optifine/` (vanilla's own entity models are code in 26.3, which `test_entity_model_parity` checks) |
 | Random entity textures (OptiFine/ETF): numbered variants and their rules (biome, height, name, profession, colour, baby, health, moon, time, weather, size, blocks), chosen per entity from its UUID and rechecked once a second | `optifine/random/`, `optifine/mob/`, `mcpatcher/mob/`, `etf/random/`, `textures/entity/` with a `.properties` | partly | `sunrise-optifine` `random` and `random_textures` tests, `mobs::random_textures` tests; no `nbt.*` or ETF's extra conditions (teams, items...), no block entities |
-| Connected textures (OptiFine/Continuity): every method (`ctm`, `ctm_compact` with `ctm.N`, `horizontal`, `vertical`, `horizontal+vertical`, `vertical+horizontal`, `top`, `random`, `repeat`, `fixed`, `overlay`, `overlay_ctm`/`_random`/`_repeat`/`_fixed`, and Continuity's `overlay_horizontal`/`_vertical`/`_h+v`/`_v+h`), `matchTiles`/`matchBlocks` and the file-name forms, `tiles` (ranges, names, paths, `<skip>`, `<default>`), `weight`, `faces`, `biomes`, `heights` (and the old `minHeight`/`maxHeight`), `connect`, `connectTiles`/`connectBlocks`, `innerSeams`, `weights`, `randomLoops`, `symmetry`, `linked`, `width`/`height`, `tintIndex`/`tintBlock`, `layer`; Continuity's `orient`, `prioritize`, `optifineOnly` and its stacked-pane culling; tiles a rule picked matched again by another; panes drawn with OptiFine's unmirrored UVs | `optifine/ctm/**/*.properties` (and `mcpatcher/ctm/`) in any namespace, with their tiles | partly | `sunrise-optifine` `ctm` and `ctm::connect` tests (the tile tables read off OptiFine's template images), `connected` and `mesher::quarter_tests` tests; `name=` rules are not loaded (the client meshing chunks never receives block entities' custom names, so they could never match); `random` picks from its own fixed hash, so random tiles land in other places than in OptiFine (same weights); tiles glow with their `_e` overlays, sharing the emissive row's table and limits (block overlays come first) |
+| Connected textures (OptiFine/Continuity): every method (`ctm`, `ctm_compact` with `ctm.N`, `horizontal`, `vertical`, `horizontal+vertical`, `vertical+horizontal`, `top`, `random`, `repeat`, `fixed`, `overlay`, `overlay_ctm`/`_random`/`_repeat`/`_fixed`, and Continuity's `overlay_horizontal`/`_vertical`/`_h+v`/`_v+h`), `matchTiles`/`matchBlocks` and the file-name forms, `tiles` (ranges, names, paths, `<skip>`, `<default>`), `weight`, `faces`, `biomes`, `heights` (and the old `minHeight`/`maxHeight`), `connect`, `connectTiles`/`connectBlocks`, `innerSeams`, `weights`, `randomLoops`, `symmetry`, `linked`, `width`/`height`, `tintIndex`/`tintBlock`, `layer`; Continuity's `orient`, `prioritize`, `optifineOnly` and its stacked-pane culling; tiles a rule picked matched again by another; panes drawn with OptiFine's unmirrored UVs | `optifine/ctm/**/*.properties` (and `mcpatcher/ctm/`) in any namespace, with their tiles | partly | `sunrise-optifine` `ctm` and `sunrise-connected` tests (the tile tables read off OptiFine's template images), `connected` and `mesher::quarter_tests` tests; `name=` rules are not loaded (the client meshing chunks never receives block entities' custom names, so they could never match); `random` picks from its own fixed hash, so random tiles land in other places than in OptiFine (same weights); tiles glow with their `_e` overlays, sharing the emissive row's table and limits (block overlays come first) |
 | Emissive textures (OptiFine/ETF): `<texture>_e.png` (or the pack's `suffix.emissive`) drawn full bright over mobs, their layers and armour, armour stands, the elytra, the dragon, thrown tridents, block entities, placed blocks and connected-texture tiles | `<texture>_e.png` beside its texture (also random variants' and blink frames'); the suffix from `optifine/emissive.properties`, `etf/emissive.properties` or `textures/emissive.properties` | partly | `sunrise-optifine` `emissive` tests, `mobs::render::emissive_tests`, `block_entity_render` and `native_emissive` tests; at most 96 block overlays (native mods keep 32 more), cutout; none on translucent faces, nor on blocks whose texture is pixel-identical to another's (they share a layer); not over items, armour trims, other projectiles, minecarts or end crystals |
 | Blinking textures (ETF): `<texture>_blink.png` and `_blink2.png`, `blinkLength`/`blinkFrequency` | `textures/entity/`, random variants' folders | works | `sunrise-optifine` `blink` tests, `mobs::render` blink test; sleeping villagers keep their eyes shut |
 | Textures, any resolution (16x to 512x) | `textures/` | works | atlases stitched from the overlay; Faithful 32x, Default HD 128x and FPBR checked |
@@ -72,15 +72,15 @@ harness named checks that loader against vanilla).
 | Armour trims on items | `atlases/items.json`, `textures/trims/items/` | works | `paletted_permutations` (`atlas_sources.rs` tests) |
 | Armour trims on worn armour | `textures/trims/entity/`, `textures/palettes/`, `palette` metadata | works | `trims.rs` (`PalettedTextureManager`), drawn by `game/armor_stands.rs` and the mob renderer |
 | Particles | `particles/`, `textures/particle/` | works | `test_particle_providers_parity` |
-| Sky: sun, moon phases, stars, end sky, clouds, rain and snow | `atlases/celestials.json`, `textures/environment/` | works | `test_environment_render_parity`, `test_cloud_render_parity`, `test_weather_render_parity` |
+| Sky: sun, moon phases, stars, end sky, clouds, rain and snow | `atlases/celestials.json`, `textures/environment/` | works | `test_environment_render_parity`, `test_cloud_render_parity`, `test_weather_render_parity`; a `clouds.png` vanilla reads past (taller than wide, with a cell in its first or last column: `NativeImage.getPixel` throws) fails the load as vanilla's does, dropping every selected pack (`clouds::load`, `packs::clouds_reload_tests`) |
 | Title panorama | `textures/gui/title/background/` | works | `gfx/panorama.rs` loads it from the overlay |
 | Screen overlays: vignette, pumpkin, powder snow, nausea, underwater, world border | `textures/misc/` | works | `test_world_border_render_parity`, `test_hud_parity`; loaded from the overlay |
 | Enchantment glint | `textures/misc/enchanted_glint_*` | works | `item_render/gui.rs`, `hud/cit_glint.rs`, `entity.wgsl` |
 | Maps: background, decorations | `textures/map/`, `atlases/map_decorations.json` | works | loaded from the overlay |
 | Paintings, mob effect icons | `atlases/paintings.json`, `textures/mob_effect/` | works | loaded from the overlay |
 | Locator bar styles | `waypoint_style/` | works | `locator_bar.rs` loads `waypoint_style/*.json` (`WaypointStyleManager`); `game/locator_bar.rs` draws the bar |
-| Post effects (spectating a creeper, spider or enderman; glowing outlines) | `post_effect/`, `shaders/post/` | works | `post_chain.rs` reads `post_effect/*.json` and `post_glsl.rs` translates the `shaders/post/*.vsh`/`.fsh` with naga, with depth inputs, persistent targets and `TextureInput` |
-| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects), `core/rendertype_lines` the block outline (both strokes of a high contrast one; hitboxes, chunk borders and other debug lines still draw natively), and `core/sky` and `core/stars` the overworld's sky disc and stars, translated by naga (`sunrise-client-render` `core_shader.rs`, `hud/pack_text.rs`, `gfx/core_lines.rs`, `gfx/core_sky.rs`); the other core shaders aren't run (#13218) |
+| Post effects (spectating a creeper, spider or enderman; glowing outlines) | `post_effect/`, `shaders/post/` | works | `post_chain.rs` reads `post_effect/*.json` and `post_glsl.rs` translates the `shaders/post/*.vsh`/`.fsh` with naga (their imports resolved as the core shaders' are), with depth inputs, persistent targets and `TextureInput`; a pass binds only what its stages read. One rule for a refused pass, whatever refuses it (more blocks, samplers or `uniform` keywords than the device binds to both stages, checked before any analysis; more than a stage's limit read; the translator; its configuration; or the device, for its modules, layout or pipeline): a pass naming vanilla's shaders runs on the built-in stand-ins, and any other refuses its effect, named in the log |
+| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects) and the world's text on vanilla's polygon-offset and see-through paths (text displays, name tags; other world text, Improved Transparency's depth-tested text and the native world text among them, draws with native shaders), `core/rendertype_lines` the block outline (both strokes of a high contrast one; hitboxes, chunk borders and other debug lines still draw natively), `core/sky` and `core/stars` the overworld's sky disc and stars, `core/lightmap` (with `core/screenquad`) the 16x16 light texture from `LightmapInfo`, and `core/clouds` the clouds from the faces `CloudRenderer.buildMesh` encodes (`CloudFaces`, read as a storage buffer) and `CloudInfo`, under Improved Transparency through `OIT_CLOUDS`' three stages with each stage's defines and samplers (natively under a shader pack or HDR output's cloud marks); a pack's `core/clouds` that any of these pipelines can't be made from fails the load as vanilla's `ShaderManager.apply` does, dropping every selected pack, and a pack replacing only an include the clouds use changes them, both the pack's and the native clouds taking the layer's bottom from `EnvironmentAttributes.CLOUD_HEIGHT` probed at the camera each frame (`minecraft:visual/cloud_height`, 192.33 by default; on a server, the dimension type the server synchronized sets it, a data pack's Overworld included; the packs' Polytone dimension modifiers apply over it only for the three vanilla type IDs, `minecraft:overworld`, `minecraft:the_nether` and `minecraft:the_end`, each with its own file, and a mod's type is drawn without them); each of these but the clouds takes the packs' Polytone expression uniforms on its own shaders (`polytone/shader_modifiers`, `polytone_post.rs`, `gfx/expression_blocks.rs`), translated by naga (`sunrise-client-render` `core_shader.rs`, `hud/pack_text.rs`, `gfx/core_lines.rs`, `gfx/core_sky.rs`, `gfx/core_lightmap.rs`, `gfx/core_clouds.rs`, `gfx/core_text.rs`); the other core shaders aren't run (#13218) |
 | OptiFine / CIT Resewn custom item textures (`type=item`: `texture`, `model`, `texture.<name>`, `model.<name>`; `type=armor`: `texture`, `texture.<layer>` with the pre-1.21.2 layer names such as `diamond_layer_1`, `leather_layer_2_overlay`; `type=elytra`: `texture`; `type=enchantment` layers on GUI items; `useGlint=false` in `cit.properties`, which removes vanilla's glint from items) | `optifine/cit/`, `mcpatcher/cit/`, `citresewn/cit/` | partly | `item_render/cit.rs`, `cit_armor.rs`, `cit_glint.rs` and `hud/cit_glint.rs` tests; enchantment layers on held, dropped, framed and worn items, and `anim/` glints, come later; special renderers (heads, shields, banners) keep their vanilla look; only players and armour stands wear CIT armour and elytra, other mobs keep vanilla's; worn trims are unchanged; armour textures above 1024x512 (16 times vanilla's 64x32) draw vanilla |
 | GPU warn list, regional compliance | `gpu_warnlist.json`, `regional_compliancies.json` | n/a | OpenGL driver warnings and play-time notices for some regions; not used |
 
@@ -88,12 +88,72 @@ Summary: 50 rows; 42 work, 7 partly (OptiFine/EMF entity models, random entity t
 emissive textures, CIT, GUI sprite scaling, core shaders), 1 doesn't apply. Every vanilla loader in the list above
 reads the pack; what is left is the GUI scaling types and the core shaders, plus the OptiFine-format extras.
 
+### Polytone expression uniforms on core shaders
+
+A pack's `assets/<ns>/polytone/shader_modifiers/<shader>.json` (`minecraft/.../core/lightmap.json` is the shader
+`minecraft:core/lightmap`) maps uniform block names to expressions (wiki "Expression Uniforms on Any Shader"). The
+packs' lightmap (`core/lightmap` with `core/screenquad`), sky (`core/sky`), stars (`core/stars`), block outline
+(`core/rendertype_lines`) and text (`core/text`: the GUI's, the polygon-offset text of text displays and name tags,
+and the see-through text, each pipeline with its own blocks; other world text draws natively) take them, each from
+its own shaders' files (`gfx/expression_blocks.rs`):
+
+- A block one of its stages reads, declared `uniform Name { float value; };`, holds its expression's value each
+  frame. The sky, stars, outline and text each use a single modifier file (the text's for all three of its
+  programs). Only the lightmap uses two files: for a block read by both stages or defined in both files, it looks in
+  the fragment shader's (`core/lightmap`) first, then in the vertex shader's (`core/screenquad`). Otherwise, it uses
+  the file for the stage that reads the block. A block no stage reads is not bound, and a stage that only declares
+  it doesn't decide its shape. If a block a stage reads is not one float, or has no expression, the affected
+  pipeline uses its built-in shader (the light texture is computed natively, the text drawn natively).
+- Each block, vanilla's and `LightmapInfo` included, of each of these pipelines is bound only to the stages that read it, and counts against
+  the device's limit of uniform blocks per stage (`max_uniform_buffers_per_shader_stage`, 12 by default) for those
+  stages only: a shader over it in either stage is refused.
+- The expression context is the frame's, as the packs' post chains and particles see it: the weather, the game and
+  day time, the dimension and its sky, the player's place and motion, the camera's light, biome and climate, and
+  the packs' config entries (`polytone/config_entries`). Fullbright skips only the lightmap's expressions.
+- Limits: a file is read up to 64 KiB, with at most 16 uniforms, each a GLSL identifier of at most 64 characters
+  not starting `gl_`. An expression has at most 1024 tokens; its tree is at most 64 levels high and its parse
+  nests at most 16 levels deep (a statement, its expression, each bracket and each unary operator), both checked as
+  it is parsed. A file over any of these, or whose path names no shader, is refused whole, named by its path in the
+  log.
+- Where no world runs (the title screen and its menus, a loading screen, the file fixer, the saving screen), the
+  text's expression uniforms and `PolyGlobals` are 0: the game gives the text none of them, and the frame writes
+  zeros.
+- The programs are resolved once when the pack's shaders load. Each frame evaluates them for the installed pack
+  pipelines; each pipeline uploads 16 bytes per expression uniform when it prepares a draw.
+- Polytone's `PolyGlobals` block (wiki "Extra Shader Uniforms": the projection and model-view matrices, the sun's
+  angle, the day time, the frame's ticks, and the player's block and position) is given to each of these shaders
+  and to every post effect's pass that reads it, with the same values, in the same std140 layout (`sunrise-polytone`
+  `globals.rs`). A pack declaring the block itself reads the same values as in Java with
+  Polytone 26.3: on a core sky shader and a post chain, its pixels are within the spread a control pack without
+  the block shows between the two. It is bound only to the stages
+  that read it, before the expression uniforms, and counts against the same limit.
+- `#moj_import <polytone_globals.glsl>` (or `#include`) declares the block with the `polyPlayerPos` and
+  `polyPositionFromDepth` helpers where the packs don't have that file: a built-in that follows the public wiki.
+  Polytone 26.3 (6.8.6, the only build for 26.3) has no such file, so a pack importing it loads here and not in that
+  Java build. Polytone 6.11 on 26.2 has it (through `#moj_import`) and gives the same block position, offset, sun
+  angle, delta time and projection form in the same scene; its `polyPositionFromDepth` takes the depth with OpenGL's
+  convention (`depth * 2 - 1`), which on 26.3's reverse-Z depth buffer (0 to 1) gives other positions. Sunrise
+  follows the wiki's contract (the position from the screen uv and the depth buffer's value) and gives the
+  geometric hit. Its day time read 6001 in a scene where Sunrise gives 6000 (both suns at 6000's angle); not
+  matched. A pack's own file is read instead of the built-in, and one that can't be read refuses the shader by its
+  path.
+- The game builds the block only when something reads it, at most once a frame: when an installed pack core shader
+  reads it (the lightmap's not under fullbright, which keeps the light texture white; the text's only where a world
+  runs), or when a post effect that runs has a pass reading it. Each reading core pipeline writes its 176 bytes to
+  the GPU when it uploads its blocks for its draw; a post pass writes them when it draws (zeros on a frame without
+  them, as on the title screen).
+- The block is the game's, on the core and post shaders alike: a shader declaring it other than that layout (each
+  member of its type at its offset; a leading part of the block is fine), a `shader_modifiers` file giving it, a
+  post chain's expression uniform of that name, or a pass's `uniforms` giving it, is refused, named in the log. A
+  `shader_modifiers` file giving another block the pipeline fills itself (the lightmap's `LightmapInfo`) is refused
+  the same way.
+
 ## Gaps and their work
 
 | Gap | Size | Where |
 | --- | --- | --- |
 | GUI scaling `tile`, `stretch` | small | `ui.rs` |
-| Core shaders but GUI text, the block outline, the sky and the stars | large | [#13218](https://github.com/horizon-rust/horizon/issues/13218) |
+| Core shaders but the text (GUI, polygon-offset world, see-through), the block outline, the sky, the stars, the lightmap and the clouds | large | [#13218](https://github.com/horizon-rust/horizon/issues/13218) |
 
 ## Testing a pack
 

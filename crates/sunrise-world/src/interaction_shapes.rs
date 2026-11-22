@@ -1,6 +1,6 @@
 //! Complete registry-bound interaction shapes for ray-face overrides.
-use sunrise_core::geometry::VoxelShape;
 use std::io;
+use sunrise_core::geometry::VoxelShape;
 use {
     crate::{
         collision::CachedCollisionRegistry,

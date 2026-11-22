@@ -3,12 +3,13 @@
 //! repository root) and are skipped when those are absent.
 use super::*;
 use crate::chunk::BlockState;
-use sunrise_core::random::RandomSource;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::OnceLock,
 };
+use sunrise_core::geometry::VoxelShape;
+use sunrise_core::random::RandomSource;
 pub(super) struct Fixture {
     pub(super) registry: BlockRegistry,
     pub(super) behaviours: Behaviours,
@@ -103,6 +104,7 @@ pub(crate) struct TestLevel {
     /// `ShulkerBoxBlockEntity.isClosed` at a position: `true` for a shut lid,
     /// `false` for an open box. Positions not listed have no block entity.
     pub shulker_closed: HashMap<BlockPos, bool>,
+    pub published: HashMap<BlockPos, VoxelShape>,
     /// The containers `container_open` reports as open.
     pub opened: HashSet<BlockPos>,
     /// `Level.getWorldBorder`, for `within_world_border`: centred on the
@@ -150,6 +152,7 @@ impl TestLevel {
             note_players: std::cell::RefCell::new(Vec::new()),
             refuse_portals: false,
             shulker_closed: HashMap::new(),
+            published: HashMap::new(),
             opened: HashSet::new(),
             border: sunrise_core::geometry::border::BorderGeometry::new(
                 [0.0, 0.0],
@@ -185,6 +188,9 @@ impl LevelAccess for TestLevel {
     }
     fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
         self.shulker_closed.get(&pos).copied()
+    }
+    fn published_collision_shape(&self, pos: BlockPos, _: BlockStateId) -> Option<VoxelShape> {
+        self.published.get(&pos).cloned()
     }
     fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
         vanilla || self.analog_states.contains(&state)
@@ -234,7 +240,7 @@ impl LevelAccess for TestLevel {
             .unwrap_or(vanilla)
     }
     fn adjust_analog_output(
-        &self,
+        &mut self,
         pos: BlockPos,
         _state: BlockStateId,
         _direction: Direction,
@@ -493,11 +499,12 @@ macro_rules! world {
     }};
 }
 #[test]
+#[ignore = "daily"]
 fn block_observation_follows_successful_commits_only() {
     use std::cell::RefCell;
     #[derive(Debug, PartialEq)]
     enum Observation {
-        Block(BlockPos, BlockStateId, BlockStateId),
+        Block(BlockPos, BlockStateId, BlockStateId, i32),
         Neighbor,
     }
     struct Observer {
@@ -522,11 +529,17 @@ fn block_observation_follows_successful_commits_only() {
         fn game_time(&self) -> i64 {
             self.inner.game_time()
         }
-        fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+        fn observe_block_changed(
+            &self,
+            pos: BlockPos,
+            old: BlockStateId,
+            new: BlockStateId,
+            flags: i32,
+        ) {
             assert_eq!(self.block_state(pos), new);
             self.seen
                 .borrow_mut()
-                .push(Observation::Block(pos, old, new));
+                .push(Observation::Block(pos, old, new, flags));
         }
         fn observe_neighbor_changed(
             &self,
@@ -539,7 +552,7 @@ fn block_observation_follows_successful_commits_only() {
             self.seen.borrow_mut().push(Observation::Neighbor);
         }
     }
-    let Some(f) = fixture() else { return };
+    let f = fixture().expect("prepared resources for the block observation test");
     let b = &f.behaviours;
     let mut level = Observer {
         inner: TestLevel::new(b),
@@ -551,7 +564,7 @@ fn block_observation_follows_successful_commits_only() {
     let stone = f.registry.default_state("minecraft:stone").unwrap();
     assert!(b.set_block(&mut level, &mut ticks, pos, stone, flags::UPDATE_ALL));
     let seen = level.seen.borrow();
-    assert_eq!(seen[0], Observation::Block(pos, b.air(), stone));
+    assert_eq!(seen[0], Observation::Block(pos, b.air(), stone, 3));
     assert!(seen[1..].contains(&Observation::Neighbor));
     drop(seen);
     level.seen.borrow_mut().clear();
@@ -567,10 +580,16 @@ fn block_observation_follows_successful_commits_only() {
         flags::UPDATE_ALL
     ));
     assert!(level.seen.borrow().is_empty());
-    assert!(b.set_block(&mut level, &mut ticks, pos, b.air(), flags::UPDATE_ALL));
+    assert!(b.set_block(
+        &mut level,
+        &mut ticks,
+        pos,
+        b.air(),
+        flags::UPDATE_CLIENTS | flags::UPDATE_KNOWN_SHAPE,
+    ));
     assert_eq!(
-        level.seen.borrow()[0],
-        Observation::Block(pos, stone, b.air())
+        *level.seen.borrow(),
+        [Observation::Block(pos, stone, b.air(), 18)]
     );
 }
 
@@ -1619,6 +1638,90 @@ fn wire_connects_only_to_the_block_that_answers_should_redstone_wire_connect_to(
     assert_eq!(connection(&mut w), before);
 }
 
+/// `affectNeighborsAfterRemoval` calls `updatePowerStrength` with the wire's
+/// REMOVED state: the power that state still carries decides whether the
+/// position's six neighbours are updated again (the write itself already
+/// updated them once). Reading the level's power — air by then — skipped that
+/// fan-out inside a neighbour-update run's wire cache (#3230).
+#[test]
+fn a_dropped_wire_notifies_its_neighbours_from_its_removed_state() {
+    use std::cell::RefCell;
+    struct Observer {
+        inner: TestLevel,
+        seen: RefCell<Vec<BlockPos>>,
+    }
+    impl crate::level::BlockEntityNeighbors for Observer {}
+    impl LevelAccess for Observer {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn observe_neighbor_changed(
+            &self,
+            _: &mut Ticks,
+            pos: BlockPos,
+            _: BlockStateId,
+            _: BlockId,
+            _: bool,
+        ) {
+            self.seen.borrow_mut().push(pos);
+        }
+    }
+    let Some(f) = fixture() else {
+        return;
+    };
+    let b = &f.behaviours;
+    let mut level = Observer {
+        inner: TestLevel::new(b),
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    let pos = BlockPos::new(0, 1, 0);
+    let support = BlockPos::new(0, 0, 0);
+    let stone = f.registry.default_state("minecraft:stone").unwrap();
+    let wire = b.table.set_int(
+        f.registry.default_state("minecraft:redstone_wire").unwrap(),
+        b.props.power,
+        7,
+    );
+    level.set_raw(support, stone);
+    level.set_raw(pos, wire);
+    // Removing the support drops the wire mid-run, so the removal cascade is
+    // processed with the run's wire cache open.
+    b.set_block(&mut level, &mut ticks, support, b.air(), flags::UPDATE_ALL);
+    assert_eq!(
+        level.block_state(pos),
+        b.air(),
+        "the unsupported wire drops"
+    );
+    let heard = |at: BlockPos| level.seen.borrow().iter().filter(|&&pos| pos == at).count();
+    for (dx, dy, dz) in [
+        (0, -1, 0),
+        (0, 1, 0),
+        (0, 0, -1),
+        (0, 0, 1),
+        (-1, 0, 0),
+        (1, 0, 0),
+    ] {
+        assert_eq!(
+            heard(BlockPos::new(pos.x + dx, pos.y + dy, pos.z + dz)),
+            2,
+            "heard at ({dx}, {dy}, {dz}) of the wire"
+        );
+    }
+}
+
 #[test]
 fn connections_follow_connects_to_both_ways() {
     // Each kind with its block and the side values for connected and not.
@@ -1785,6 +1888,78 @@ fn a_fence_gate_plays_the_open_and_close_sound_of_its_data() {
             .fence_gate_exploded(&mut w.level, &mut w.ticks, blasted)
     );
     assert_eq!(sounds(&w), [close]);
+}
+
+#[test]
+#[ignore = "daily"]
+fn fence_gate_sites_play_distinct_sounds() {
+    let root = std::env::var_os("SUNRISE_RESOURCES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.local/sunrise-client")
+                .join(sunrise_core::VANILLA_VERSION)
+        });
+    let registry = data::load_registry(&root).expect("prepared registry");
+    let mut behaviours = Behaviours::load(&registry, &root).expect("prepared behaviours");
+    let state = registry.default_state("minecraft:oak_fence_gate").unwrap();
+    let block = behaviours.table.block(state);
+    behaviours.blocks[block.0 as usize].gate_open =
+        ["gate:use.open", "gate:blast.open", "gate:wire.open"].map(|s| Some(s.into()));
+    behaviours.blocks[block.0 as usize].gate_close =
+        ["gate:use.close", "gate:blast.close", "gate:wire.close"].map(|s| Some(s.into()));
+    let f = Fixture {
+        registry,
+        behaviours,
+    };
+    let mut w = World::new(&f);
+    w.floor(0, 10, "stone");
+    let gate = w.id("oak_fence_gate", &[("facing", "north")]);
+    let sounds = |w: &World| {
+        w.level
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                LevelEvent::Sound { sound, source, .. } => {
+                    assert_eq!(*source, Some(LevelSoundSource::Blocks), "{sound}");
+                    Some(sound.to_string())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let pos = BlockPos::new(0, 1, 0);
+    w.put(pos, gate);
+    w.use_block(pos);
+    assert_eq!(sounds(&w), ["gate:use.open"]);
+    w.level.events.clear();
+    w.use_block(pos);
+    assert_eq!(sounds(&w), ["gate:use.close"]);
+    w.level.events.clear();
+    let powered = BlockPos::new(1, 1, 0);
+    w.set(powered, w.id("redstone_block", &[]));
+    assert_eq!(sounds(&w), ["gate:wire.open"]);
+    w.level.events.clear();
+    // Powered gates ignore explosions, with no sound or random pitch draw.
+    assert!(
+        !w.f.behaviours
+            .fence_gate_exploded(&mut w.level, &mut w.ticks, pos)
+    );
+    assert!(sounds(&w).is_empty());
+    w.set(powered, w.b().air());
+    assert_eq!(sounds(&w), ["gate:wire.close"]);
+    w.level.events.clear();
+    assert!(
+        w.f.behaviours
+            .fence_gate_exploded(&mut w.level, &mut w.ticks, pos)
+    );
+    assert_eq!(sounds(&w), ["gate:blast.open"]);
+    w.level.events.clear();
+    assert!(
+        w.f.behaviours
+            .fence_gate_exploded(&mut w.level, &mut w.ticks, pos)
+    );
+    assert_eq!(sounds(&w), ["gate:blast.close"]);
 }
 
 #[test]
@@ -2597,6 +2772,43 @@ fn dripstone_fills_cauldrons() {
     assert_eq!(w.name(BlockPos::new(0, 5, 0)), "water_cauldron[level=1]");
 }
 
+/// `PointedDripstoneBlock.canGrow`: the fluid two blocks above the tip must be
+/// water AND a source (`FluidState.is(Fluids.WATER)` and `isSource`), so
+/// flowing and falling water, which are other fluids of the family, grow nothing.
+#[test]
+fn a_dripstone_tip_grows_only_under_a_water_source() {
+    let mut w = world!();
+    let block = w.id("dripstone_block", &[]);
+    let tip = w.id(
+        "pointed_dripstone",
+        &[("vertical_direction", "down"), ("thickness", "tip")],
+    );
+    let stone = w.id("stone", &[]);
+    let top = BlockPos::new(0, 9, 0);
+    // Whether any pointed dripstone stands in the column besides the first tip.
+    let grown = |w: &World| {
+        (0..9).any(|y| {
+            w.name(BlockPos::new(0, y, 0))
+                .starts_with("pointed_dripstone")
+        })
+    };
+    for (level, expect) in [("0", true), ("1", false), ("8", false)] {
+        w.put(BlockPos::new(0, 11, 0), w.id("water", &[("level", level)]));
+        w.put(BlockPos::new(0, 10, 0), block);
+        w.put(top, tip);
+        w.put(BlockPos::new(0, 2, 0), stone);
+        for y in 0..9 {
+            if y != 2 {
+                w.put(BlockPos::new(0, y, 0), w.id("air", &[]));
+            }
+        }
+        for _ in 0..4000 {
+            w.b().random_tick(&mut w.level, &mut w.ticks, top);
+        }
+        assert_eq!(grown(&w), expect, "water level {level}");
+    }
+}
+
 #[test]
 fn a_level_can_answer_for_a_blocks_signal() {
     let mut w = world!();
@@ -3204,6 +3416,113 @@ fn using_storage_and_interactable_blocks_succeeds() {
 }
 
 #[test]
+#[ignore = "daily"]
+fn a_published_shape_decides_support_over_the_declared_one() {
+    use sunrise_core::geometry::{Aabb, Vec3};
+    let mut w = world!();
+    let pos = BlockPos::new(0, 1, 0);
+    let torch_pos = BlockPos::new(0, 2, 0);
+    w.put(torch_pos, w.id("torch", &[]));
+    let torch = w.get(torch_pos);
+    let slab = VoxelShape::from_box(Aabb::new(Vec3::ZERO, Vec3::new(1.0, 0.25, 1.0))).unwrap();
+    // A full block that publishes a slab loses its support.
+    w.put(pos, w.id("stone", &[]));
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(sim.sturdy(pos, Direction::Up) && sim.can_support_center(pos, Direction::Up));
+    assert!(sim.can_survive(torch, torch_pos));
+    w.level.published.insert(pos, slab.clone());
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(!sim.sturdy(pos, Direction::Up));
+    assert!(!sim.can_support_rigid_block(pos));
+    assert!(!sim.can_survive(torch, torch_pos));
+    // A slab that publishes a full cube gains it.
+    w.level.published.clear();
+    w.put(pos, w.id("stone_slab", &[("type", "bottom")]));
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(!sim.sturdy(pos, Direction::Up));
+    w.level.published.insert(pos, VoxelShape::block());
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(sim.sturdy(pos, Direction::Up));
+    assert!(sim.can_survive(torch, torch_pos));
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_published_face_decides_whether_lichen_attaches() {
+    let mut w = world!();
+    let pos = BlockPos::new(0, 1, 0);
+    let lichen_pos = BlockPos::new(0, 2, 0);
+    let lichen = w.id(
+        "glow_lichen",
+        &[
+            ("down", "true"),
+            ("up", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("east", "false"),
+            ("west", "false"),
+        ],
+    );
+    w.put(lichen_pos, lichen);
+    // A full block holds lichen on its top face; one that publishes an empty shape does not.
+    w.put(pos, w.id("stone", &[]));
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(sim.multiface_can_attach_at(pos, Direction::Down));
+    assert!(sim.can_survive(lichen, lichen_pos));
+    w.level.published.insert(pos, VoxelShape::empty());
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(!sim.multiface_can_attach_at(pos, Direction::Down));
+    assert!(!sim.can_survive(lichen, lichen_pos));
+    // A slab that publishes a full cube holds it.
+    w.level.published.clear();
+    w.put(pos, w.id("stone_slab", &[("type", "bottom")]));
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(!sim.multiface_can_attach_at(pos, Direction::Down));
+    w.level.published.insert(pos, VoxelShape::block());
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(sim.multiface_can_attach_at(pos, Direction::Down));
+    assert!(sim.collision_face_full_at(pos, Direction::Up));
+    assert!(sim.can_survive(lichen, lichen_pos));
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_published_shape_decides_whether_snow_stands() {
+    let mut w = world!();
+    let pos = BlockPos::new(0, 1, 0);
+    let snow_pos = BlockPos::new(0, 2, 0);
+    w.put(snow_pos, w.id("snow", &[("layers", "1")]));
+    let snow = w.get(snow_pos);
+    w.put(pos, w.id("stone", &[]));
+    assert!(
+        w.b()
+            .sim(&mut w.level, &mut w.ticks)
+            .can_survive(snow, snow_pos)
+    );
+    // A full block that publishes an empty shape no longer holds snow.
+    w.level.published.insert(pos, VoxelShape::empty());
+    assert!(
+        !w.b()
+            .sim(&mut w.level, &mut w.ticks)
+            .can_survive(snow, snow_pos)
+    );
+    // A slab that publishes a full cube does.
+    w.level.published.clear();
+    w.put(pos, w.id("stone_slab", &[("type", "bottom")]));
+    assert!(
+        !w.b()
+            .sim(&mut w.level, &mut w.ticks)
+            .can_survive(snow, snow_pos)
+    );
+    w.level.published.insert(pos, VoxelShape::block());
+    assert!(
+        w.b()
+            .sim(&mut w.level, &mut w.ticks)
+            .can_survive(snow, snow_pos)
+    );
+}
+
+#[test]
 fn open_shulker_box_supports_only_through_its_base_plate() {
     let mut w = world!();
     let pos = BlockPos::new(0, 1, 0);
@@ -3739,8 +4058,8 @@ fn flowers_and_saplings_can_be_placed_in_flower_pots() {
 
 #[test]
 fn update_shape_hook_can_answer_for_the_block() {
-    use sunrise_core::ticks::TickPriority;
     use std::cell::RefCell;
+    use sunrise_core::ticks::TickPriority;
 
     struct Shaper {
         inner: TestLevel,
@@ -3887,10 +4206,11 @@ fn update_shape_hook_can_answer_for_the_block() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn the_level_chooses_the_state_a_block_is_placed_in() {
     use crate::fluid::{FluidKind, FluidState};
-    use sunrise_core::geometry::Vec3;
     use std::cell::RefCell;
+    use sunrise_core::geometry::Vec3;
 
     /// What one call of the hook was asked.
     struct Asked {
@@ -3911,6 +4231,9 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         /// What it answers for that block.
         answer: Option<Option<BlockStateId>>,
         asked: RefCell<Vec<Asked>>,
+        unloaded: Option<BlockPos>,
+        max_y: i32,
+        rewrite_on_update: Option<(BlockPos, BlockStateId)>,
     }
     impl crate::level::BlockEntityNeighbors for Placer {}
     impl LevelAccess for Placer {
@@ -3920,8 +4243,21 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
             self.inner.set_raw(pos, state)
         }
+        fn send_block_updated(&mut self, pos: BlockPos) {
+            // Model a side effect after the chunk accepts the write, but
+            // before Level.setBlock returns to BlockItem.
+            if let Some((at, state)) = self.rewrite_on_update
+                && at == pos
+            {
+                self.rewrite_on_update = None;
+                self.inner.set_raw(pos, state);
+            }
+        }
         fn is_loaded(&self, pos: BlockPos) -> bool {
-            self.inner.is_loaded(pos)
+            self.unloaded != Some(pos)
+        }
+        fn max_y(&self) -> i32 {
+            self.max_y
         }
         fn random(&mut self) -> &mut LegacyRandom {
             self.inner.random()
@@ -3934,6 +4270,8 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         }
         fn before_state_for_placement(
             &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             context: &PlacementContext,
             fluid: FluidState,
@@ -3980,7 +4318,7 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
             first.fluid,
         )
     }
-    let Some(f) = fixture() else { return };
+    let f = fixture().expect("prepared resources");
     let b = &f.behaviours;
     let stone = f.registry.default_state("minecraft:stone").unwrap();
     let furnace = f.registry.default_state("minecraft:furnace").unwrap();
@@ -3997,6 +4335,9 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         block: furnace_block,
         answer: Some(Some(facing("east"))),
         asked: RefCell::new(Vec::new()),
+        unloaded: None,
+        max_y: 320,
+        rewrite_on_update: None,
     };
     let mut ticks = Ticks::new(0);
     ticks.add_empty_chunk(ChunkPos::new(0, 0)).unwrap();
@@ -4102,18 +4443,152 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
     assert_eq!(pos, front);
     assert_eq!(item, "minecraft:furnace");
     assert!(replace_clicked, "the front block is air: it is replaced");
-    // A made-up id is not trusted, nor is another block's state: the block
-    // places as vanilla's would.
+    // A made-up id is not trusted: the fallback remains vanilla's state.
     level.answer = Some(Some(BlockStateId(u32::MAX)));
     assert_eq!(
         b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
         Some(furnace)
     );
-    level.answer = Some(Some(b.default_of(stairs)));
-    assert_eq!(
-        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
-        Some(furnace)
+    // The resolved candidate can belong to another block. Place that block,
+    // including its companion and sound, even though the item is a furnace.
+    let door = f.registry.default_state("minecraft:oak_door").unwrap();
+    let mut upper = f.registry.state(door).unwrap().clone();
+    upper.properties.insert("half".into(), "upper".into());
+    let upper = f.registry.resolve(&upper).unwrap();
+    level.answer = Some(Some(door));
+    level.inner.events.clear();
+    ctx.clicked_pos = ground;
+    let placed = b
+        .place_block_with_context(&mut level, &mut ticks, &ctx)
+        .unwrap();
+    let pos = BlockPos::new(0, 1, 0);
+    assert_eq!(placed.context.pos, pos);
+    assert!(placed.matches_candidate);
+    assert_eq!(level.block_state(pos), door);
+    let top = BlockPos::new(0, 2, 0);
+    assert_eq!(level.block_state(top), upper);
+    assert!(level.inner.events.iter().any(|event| matches!(
+        event,
+        LevelEvent::Sound { pos: at, sound, .. }
+            if *at == pos && &**sound == "minecraft:block.wood.place"
+    )));
+
+    // A held door asks for space above. A furnace selecting a door does not
+    // call the door's getStateForPlacement, so its placed-by writes there anyway.
+    level.set_raw(pos, b.air());
+    level.set_raw(top, stone);
+    let mut held_door = ctx.clone();
+    held_door.item = "minecraft:oak_door".into();
+    assert!(
+        b.placement_preview(&mut level, &mut ticks, &held_door)
+            .is_none()
     );
+    level.asked.borrow_mut().clear();
+    assert!(
+        b.place_block_with_context(&mut level, &mut ticks, &ctx)
+            .is_some()
+    );
+    assert_eq!(level.asked.borrow().len(), 1);
+    assert_eq!(level.block_state(top), upper);
+
+    // An unloaded or out-of-height companion's write can fail; BlockItem still
+    // placed the lower half, and must report success so its caller consumes it.
+    for (at, max_y) in [(Some(top), 320), (None, 2)] {
+        level.set_raw(pos, b.air());
+        level.set_raw(top, b.air());
+        level.unloaded = at;
+        level.max_y = max_y;
+        assert!(
+            b.place_block_with_context(&mut level, &mut ticks, &ctx)
+                .is_some()
+        );
+        assert_eq!(level.block_state(pos), door);
+        assert_eq!(level.block_state(top), b.air());
+    }
+    level.max_y = 320;
+    level.set_raw(pos, b.air());
+
+    level.answer = Some(Some(
+        f.registry.default_state("minecraft:command_block").unwrap(),
+    ));
+    assert!(
+        b.place_block_with_context(&mut level, &mut ticks, &ctx)
+            .is_none()
+    );
+    ctx.can_use_game_master_blocks = true;
+    assert!(b.placement_preview(&mut level, &mut ticks, &ctx).is_some());
+
+    // A command block item cannot get around its operator gate by selecting stone.
+    let mut other_item = ctx.clone();
+    other_item.item = "minecraft:command_block".into();
+    other_item.can_use_game_master_blocks = false;
+    level.block = b.block(f.registry.default_state(&other_item.item).unwrap());
+    level.answer = Some(Some(stone));
+    level.asked.borrow_mut().clear();
+    assert!(
+        b.placement_preview(&mut level, &mut ticks, &other_item)
+            .is_none()
+    );
+    assert!(level.asked.borrow().is_empty());
+    other_item.can_use_game_master_blocks = true;
+    assert_eq!(
+        b.placement_preview(&mut level, &mut ticks, &other_item)
+            .unwrap()
+            .state,
+        stone
+    );
+
+    // A cactus won't survive on stone, but the scaffolding item does not require
+    // the selected candidate to survive; a furnace item does.
+    let cactus = f.registry.default_state("minecraft:cactus").unwrap();
+    other_item.item = "minecraft:scaffolding".into();
+    level.block = b.block(f.registry.default_state(&other_item.item).unwrap());
+    level.answer = Some(Some(cactus));
+    assert_eq!(
+        b.placement_preview(&mut level, &mut ticks, &other_item)
+            .unwrap()
+            .state,
+        cactus
+    );
+    level.block = furnace_block;
+    assert!(b.placement_preview(&mut level, &mut ticks, &ctx).is_none());
+
+    // Replacing the primary during its write is still a successful item use,
+    // but the door's tag and companion are not applied to that other block.
+    level.set_raw(top, b.air());
+    level.answer = Some(Some(door));
+    level.rewrite_on_update = Some((pos, stone));
+    let placed = b
+        .place_block_with_state(&mut level, &mut ticks, &ctx, |state| {
+            assert_eq!(
+                state, door,
+                "item data must not act on the substituted post-write block"
+            );
+            (state, state)
+        })
+        .unwrap();
+    assert!(!placed.matches_candidate);
+    assert_eq!(placed.state, stone);
+    assert_eq!(level.block_state(top), b.air());
+
+    // A same-block rewrite still calls setPlacedBy, using the state that actually
+    // landed, not the facing that the placement Part supplied before the write.
+    let bed = f.registry.default_state("minecraft:red_bed").unwrap();
+    let mut foot = f.registry.state(bed).unwrap().clone();
+    foot.properties.insert("facing".into(), "east".into());
+    let east_foot = f.registry.id(&foot).unwrap();
+    foot.properties.insert("part".into(), "head".into());
+    let east_head = f.registry.id(&foot).unwrap();
+    level.set_raw(pos, b.air());
+    level.answer = Some(Some(bed));
+    level.rewrite_on_update = Some((pos, east_foot));
+    let placed = b
+        .place_block_with_context(&mut level, &mut ticks, &ctx)
+        .unwrap();
+    assert!(placed.matches_candidate);
+    assert_eq!(level.block_state(pos), east_foot);
+    assert_eq!(level.block_state(BlockPos::new(1, 1, 0)), east_head);
+    assert_eq!(level.block_state(BlockPos::new(0, 1, -1)), b.air());
 }
 
 #[test]
@@ -4151,29 +4626,35 @@ fn survive_hooks_answer_for_the_block() {
         }
         fn before_can_survive(
             &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
             _pos: BlockPos,
             state: BlockStateId,
             survives: &mut Option<bool>,
-        ) {
+        ) -> bool {
             self.asked.set(self.asked.get() + 1);
             if let Some((block, answer)) = self.survive
                 && self.b.block(state) == block
             {
                 *survives = Some(answer);
             }
+            false
         }
         fn before_may_place_on(
             &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             ground: BlockStateId,
             _ground_pos: BlockPos,
             may: &mut Option<bool>,
-        ) {
+        ) -> bool {
             if let Some((plant, on)) = self.ground
                 && self.b.block(state) == plant
             {
                 *may = Some(self.b.block(ground) == on);
             }
+            false
         }
     }
     let Some(f) = fixture() else { return };
@@ -4665,6 +5146,7 @@ mod removal {
 mod fluid_tick;
 mod interact;
 mod pistons;
+mod portals;
 mod redstone;
 mod respawn_anchor;
 

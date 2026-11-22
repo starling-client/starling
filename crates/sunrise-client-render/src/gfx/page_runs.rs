@@ -21,7 +21,7 @@ const GROUP_SHIFT: u32 = 62;
 
 /// One section's draws: `start..start + len` of the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Run {
+pub(crate) struct Run {
     key: u64,
     pub start: u32,
     pub len: u32,
@@ -30,7 +30,7 @@ pub(super) struct Run {
 }
 
 #[derive(Default)]
-pub(super) struct PageRuns {
+pub(crate) struct PageRuns {
     runs: Vec<Run>,
     scratch: Vec<([u32; 5], (u32, Option<u32>))>,
 }

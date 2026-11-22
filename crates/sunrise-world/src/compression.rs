@@ -1,9 +1,10 @@
 //! Region codecs, including lz4-java's block framing (not the LZ4 frame format).
-use flate2::{Compression as Level, Decompress, FlushDecompress, Status};
+use flate2::{Decompress, FlushDecompress, Status};
 use std::{
-    io::{self, Read, Write},
+    io,
     sync::atomic::{AtomicU8, Ordering},
 };
+use sunrise_deflate::Deflater;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -87,16 +88,7 @@ impl Compression {
                 output.extend_from_slice(bytes);
                 Ok(())
             }
-            Self::Gzip => {
-                let decoder = flate2::read::MultiGzDecoder::new(bytes);
-                decoder
-                    .take((max_output as u64).saturating_add(1))
-                    .read_to_end(output)?;
-                if output.len() > max_output {
-                    return Err(invalid("decompression limit exceeded"));
-                }
-                Ok(())
-            }
+            Self::Gzip => gzip_into(bytes, max_output, output, GzipStream::Java),
             Self::Zlib => zlib_into(bytes, max_output, output),
             Self::Lz4 => {
                 LZ4_BUFFER.with_borrow_mut(|buffer| decode_lz4(bytes, max_output, output, buffer))
@@ -104,30 +96,168 @@ impl Compression {
         }
     }
 
+    /// Gzip and zlib write the bytes `GZIPOutputStream` and
+    /// `DeflaterOutputStream` write at their defaults: zlib 1.3.2's, as the
+    /// JDK bundles it.
     pub fn encode(self, bytes: &[u8]) -> io::Result<Vec<u8>> {
         match self {
             Self::None => Ok(bytes.to_vec()),
-            Self::Gzip => {
-                let mut encoder = flate2::write::GzEncoder::new(Vec::new(), Level::default());
-                encoder.write_all(bytes)?;
-                encoder.finish()
-            }
-            Self::Zlib => {
-                let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Level::default());
-                encoder.write_all(bytes)?;
-                encoder.finish()
-            }
+            Self::Gzip | Self::Zlib => DEFLATER.with_borrow_mut(|(deflater, output)| {
+                output.clear();
+                if self == Self::Gzip {
+                    deflater.gzip(bytes, output);
+                } else {
+                    deflater.zlib(bytes, output);
+                }
+                let encoded = output.as_slice().to_vec();
+                if output.capacity() > SCRATCH_KEPT {
+                    *output = Vec::new();
+                }
+                Ok(encoded)
+            }),
             Self::Lz4 => Ok(encode_lz4(bytes)),
         }
     }
 }
 
+/// The most deflate output capacity a thread keeps between writes.
+const SCRATCH_KEPT: usize = 1 << 20;
+
 thread_local! {
     /// This thread's zlib inflater, reset for each chunk instead of a new
     /// one (and its window) allocated every time.
     static INFLATER: std::cell::RefCell<Option<Decompress>> = const { std::cell::RefCell::new(None) };
+    /// This thread's deflate encoder and its output, kept between writes: the
+    /// encoder's 250 KiB of state is allocated once, and the output keeps its
+    /// capacity up to [`SCRATCH_KEPT`]. The encoder reserves room for the
+    /// worst case, which is about the input's size, so a larger write frees it
+    /// after copying its stream out.
+    static DEFLATER: std::cell::RefCell<(Deflater, Vec<u8>)> =
+        std::cell::RefCell::new((Deflater::new(), Vec::new()));
     /// This thread's LZ4 compressed-block scratch, retained between chunk reads.
     static LZ4_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Decode one complete gzip member, refusing any compressed suffix, including a second member.
+/// For internal file formats that require an exact envelope; Java-format reads use [`Compression::Gzip`].
+pub fn decode_single_gzip_member(bytes: &[u8], max_output: usize) -> io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    gzip_into(bytes, max_output, &mut output, GzipStream::SingleMember)?;
+    Ok(output)
+}
+
+#[derive(Clone, Copy)]
+enum GzipStream {
+    Java,
+    SingleMember,
+}
+
+/// `GZIPInputStream` recognizes optional fields and verifies FHCRC, but does
+/// not reject reserved FLG bits. Return the raw DEFLATE input, if recognized.
+fn gzip_body(bytes: &[u8]) -> Option<&[u8]> {
+    let (header, mut body) = bytes.split_at_checked(10)?;
+    if header[..3] != [0x1f, 0x8b, 8] {
+        return None;
+    }
+    let flags = header[3];
+    if flags & 4 != 0 {
+        let (len, rest) = body.split_first_chunk::<2>()?;
+        body = rest.get(usize::from(u16::from_le_bytes(*len))..)?;
+    }
+    for flag in [8, 16] {
+        if flags & flag != 0 {
+            let end = body.iter().position(|&b| b == 0)?;
+            body = &body[end + 1..];
+        }
+    }
+    if flags & 2 != 0 {
+        let (expected, rest) = body.split_first_chunk::<2>()?;
+        let actual = crc32fast::hash(&bytes[..bytes.len() - body.len()]);
+        if actual as u16 != u16::from_le_bytes(*expected) {
+            return None;
+        }
+        body = rest;
+    }
+    Some(body)
+}
+
+fn gzip_into(
+    bytes: &[u8],
+    max_output: usize,
+    output: &mut Vec<u8>,
+    stream: GzipStream,
+) -> io::Result<()> {
+    let mut body = gzip_body(bytes).ok_or_else(|| invalid("invalid gzip header"))?;
+    if output.len() > max_output {
+        return Err(invalid("decompression limit exceeded"));
+    }
+    let limit = max_output.saturating_add(1);
+    INFLATER.with_borrow_mut(|inflater| {
+        let decoder = inflater.get_or_insert_with(|| Decompress::new(false));
+        loop {
+            decoder.reset(false);
+            let start = output.len();
+            loop {
+                let before_in = decoder.total_in() as usize;
+                let before_out = output.len();
+                let input = &body[before_in..];
+                let room = limit - before_out;
+                if output.capacity() == before_out {
+                    let want = (before_out - start).max(input.len().min(1024)).max(64);
+                    output.reserve_exact(want.min(room));
+                }
+                let status = if output.capacity() - before_out <= room {
+                    decoder.decompress_vec(input, output, FlushDecompress::None)
+                } else {
+                    // A reused buffer can already have more spare space than
+                    // the limit allows. Don't inflate past the one-byte probe.
+                    output.resize(before_out + room.min(8192), 0);
+                    let status =
+                        decoder.decompress(input, &mut output[before_out..], FlushDecompress::None);
+                    output.truncate(start + decoder.total_out() as usize);
+                    status
+                };
+                let status = match status {
+                    Ok(status) => status,
+                    Err(e) => {
+                        // A stream reader does not deliver the failed call's bytes.
+                        output.truncate(before_out);
+                        return Err(invalid(e.to_string()));
+                    }
+                };
+                if output.len() > max_output {
+                    return Err(invalid("decompression limit exceeded"));
+                }
+                if status == Status::StreamEnd {
+                    break;
+                }
+                if decoder.total_in() as usize == before_in && output.len() == before_out {
+                    return Err(invalid("truncated gzip body"));
+                }
+            }
+            let (trailer, remaining) = body[decoder.total_in() as usize..]
+                .split_first_chunk::<8>()
+                .ok_or_else(|| invalid("truncated gzip trailer"))?;
+            let crc = u32::from_le_bytes(trailer[..4].try_into().unwrap());
+            let size = u32::from_le_bytes(trailer[4..].try_into().unwrap());
+            if crc != crc32fast::hash(&output[start..]) || size != (output.len() - start) as u32 {
+                return Err(invalid("invalid gzip trailer"));
+            }
+            if matches!(stream, GzipStream::SingleMember) {
+                return if remaining.is_empty() {
+                    Ok(())
+                } else {
+                    Err(invalid("bytes follow the gzip member"))
+                };
+            }
+            // A bad next header ends the Java stream. Once a header is recognized,
+            // a damaged or missing block/trailer remains an error.
+            let Some(next) = gzip_body(remaining) else {
+                return Ok(());
+            };
+            body = next;
+        }
+    })
 }
 
 /// The zlib stream in `bytes` decoded onto `output`, at most `max_output`
@@ -179,13 +309,17 @@ fn zlib_blocks(
     loop {
         let before_in = decoder.total_in();
         let before_out = decoder.total_out();
-        let status = decoder
-            .decompress(
-                &bytes[before_in as usize..],
-                &mut block,
-                FlushDecompress::None,
-            )
-            .map_err(|e| invalid(e.to_string()))?;
+        let status = match decoder.decompress(
+            &bytes[before_in as usize..],
+            &mut block,
+            FlushDecompress::None,
+        ) {
+            Ok(status) => status,
+            // InflaterInputStream ends the stream if a dictionary is required
+            // but none was supplied.
+            Err(e) if e.needs_dictionary().is_some() => return Ok(()),
+            Err(e) => return Err(invalid(e.to_string())),
+        };
         let produced = (decoder.total_out() - before_out) as usize;
         if produced > max_output.saturating_sub(output.len()) {
             return Err(invalid("decompression limit exceeded"));
@@ -388,12 +522,6 @@ mod tests {
     /// lz4-java 1.10.1's.
     #[test]
     fn lz4_blocks_are_read_as_lz4_java_reads_them() {
-        let hex = |s: &str| -> Vec<u8> {
-            (0..s.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-                .collect()
-        };
         let lz4 = |s: &str| Compression::Lz4.decode(&hex(s), usize::MAX);
         const END: &str = "4c5a34426c6f636b16000000000000000000000000";
         // The issue's stream: its last match ends 2 bytes before the output's end.
@@ -417,6 +545,98 @@ mod tests {
             [0; 16]
         );
     }
+    #[test]
+    fn gzip_ignores_junk_after_a_complete_member_but_checks_later_members() {
+        // GZIPOutputStream's output for [41], captured from Temurin 25.0.5.
+        let first = [
+            0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0xd3, 4, 0, 0xe1, 0x77, 0xb0, 0x90, 1, 0, 0, 0,
+        ];
+        assert_eq!(decode_single_gzip_member(&first, 2).unwrap(), [41]);
+        for junk in [&[0, 0, 0][..], &first[..3], &[7; 20]] {
+            let input = [&first[..], junk].concat();
+            assert_eq!(Compression::Gzip.decode(&input, 2).unwrap(), [41]);
+            assert!(decode_single_gzip_member(&input, 2).is_err());
+        }
+        let mut two = [first, first].concat();
+        assert_eq!(Compression::Gzip.decode(&two, 2).unwrap(), [41, 41]);
+        assert!(decode_single_gzip_member(&two, 2).is_err());
+        two[2 * first.len() - 8] ^= 1;
+        assert!(Compression::Gzip.decode(&two, 2).is_err());
+        assert!(Compression::Gzip.decode(&first[..3], 2).is_err());
+    }
+
+    #[test]
+    fn gzip_accepts_reserved_bits_and_checks_optional_header_crc() {
+        // Temurin 25.0.5 GZIPInputStream reads [41] from this fixture: all
+        // FLG bits set, 3 extra bytes, a name, a comment and a valid FHCRC.
+        let member = [
+            0x1f, 0x8b, 8, 0xff, 0, 0, 0, 0, 0, 0xff, 3, 0, 0xa6, 0, 0xc4, b't', b'e', b's', b't',
+            0, b'n', b'a', b'm', b'e', 0, 0x14, 0x67, 0xd3, 4, 0, 0xe1, 0x77, 0xb0, 0x90, 1, 0, 0,
+            0,
+        ];
+        assert_eq!(Compression::Gzip.decode(&member, 1).unwrap(), [41]);
+        assert_eq!(
+            Compression::Gzip
+                .decode(&[member, member].concat(), 2)
+                .unwrap(),
+            [41, 41],
+        );
+        let mut wrong_crc = member;
+        wrong_crc[26] ^= 1;
+        assert!(Compression::Gzip.decode(&wrong_crc, 1).is_err());
+        assert_eq!(
+            Compression::Gzip
+                .decode(&[member, wrong_crc].concat(), 1)
+                .unwrap(),
+            [41],
+        );
+        // A good continuation header with no body is not trailing junk.
+        assert!(
+            Compression::Gzip
+                .decode(&[&member[..], &member[..27]].concat(), 2)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn gzip_keeps_only_bytes_from_successful_inflate_calls() {
+        // One non-final stored block, then an invalid block type (BTYPE=3).
+        // The stored block fills one output window and produces another 256
+        // bytes in the same call that encounters the invalid block type.
+        const WINDOW: usize = 8192;
+        let len = (WINDOW + 256) as u16;
+        let mut gzip = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0];
+        gzip.extend_from_slice(&len.to_le_bytes());
+        gzip.extend_from_slice(&(!len).to_le_bytes());
+        gzip.resize(gzip.len() + WINDOW, b'a');
+        gzip.resize(gzip.len() + 256, b'b');
+        gzip.push(0x07);
+        for capacity in [WINDOW, 4 * WINDOW] {
+            // The second buffer already has more spare capacity than the
+            // decode budget, so this also exercises the capped-output path.
+            let mut raw = Vec::with_capacity(capacity);
+            assert!(
+                Compression::Gzip
+                    .decode_into(&gzip, 2 * WINDOW, &mut raw)
+                    .is_err()
+            );
+            assert_eq!(raw, [b'a'; WINDOW]);
+        }
+    }
+
+    #[test]
+    fn zlib_needs_dictionary_is_end_of_stream_like_inflater_input_stream() {
+        // A valid zlib header with FDICT set and a dictionary identifier, no
+        // dictionary supplied. Temurin 25.0.5 InflaterInputStream reads no bytes.
+        let needs_dictionary = [0x78, 0xf9, 0x77, 0x0a, 0xed, 0x81];
+        assert!(
+            Compression::Zlib
+                .decode(&needs_dictionary, 32)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn all_codecs_roundtrip_and_enforce_limits() {
         for codec in [
@@ -449,6 +669,13 @@ mod tests {
     /// each stream, and 8 KiB blocks copied out.
     fn blockwise(bytes: &[u8], max_output: usize, output: &mut Vec<u8>) -> io::Result<()> {
         zlib_blocks(&mut Decompress::new(true), bytes, max_output, output)
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// Inflating in place keeps what the block decoder kept and fails as it
@@ -561,6 +788,23 @@ mod tests {
         assert_eq!(Compression::selected(), Compression::Lz4);
         assert!(Compression::configure("deflate"));
         assert_eq!(Compression::selected(), Compression::Zlib);
+    }
+    /// Bytes Temurin 25.0.5 wrote for 8193 zero bytes through
+    /// `DeflaterOutputStream` and `GZIPOutputStream`; zlib-rs, the encoder
+    /// before, wrote a different distance code.
+    #[test]
+    fn deflate_writes_the_jdks_bytes() {
+        let zeros = [0; 8193];
+        assert_eq!(
+            Compression::Zlib.encode(&zeros).unwrap(),
+            hex("789cedc1010d000000c2a0f74f6d0e37a000000000000000807b0320010001")
+        );
+        assert_eq!(
+            Compression::Gzip.encode(&zeros).unwrap(),
+            hex(
+                "1f8b08000000000000ffedc1010d000000c2a0f74f6d0e37a000000000000000807b03494cb82501200000"
+            )
+        );
     }
     #[test]
     fn checksums_reject_corruption() {

@@ -1,7 +1,7 @@
 //! Command-tag data carried to a converted mob's new entity ID.
+use std::io::Write;
 use sunrise_client::entity_nbt;
 use sunrise_core::nbt::Tag;
-use std::io::Write;
 
 pub fn main() {
     let args: Vec<_> = super::args().collect();

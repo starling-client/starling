@@ -1,5 +1,4 @@
-//! `mod-api`: fill new native hooks' placeholder bodies in the hand-written source, and write
-//! the layouts of the foreign types that cross to wasm mods from the locked source.
+//! Fill new native hooks' placeholder bodies in the hand-written source.
 use std::path::{Path, PathBuf};
 
 fn checkout() -> Result<PathBuf, String> {
@@ -12,19 +11,7 @@ fn checkout() -> Result<PathBuf, String> {
 
 pub fn run() -> Result<(), String> {
     let root = checkout()?;
-    sunrise_mod_api_gen::fill_hooks(&root)?;
-    sunrise_mod_api_gen::crossing::write_foreign_layouts(&root)
-}
-
-/// Prints the wasm boundary coverage chapter for the book preprocessor, without writing a source
-/// file.
-pub fn coverage() -> Result<(), String> {
-    sunrise_mod_api_gen::generated_on_stdout();
-    print!(
-        "{}",
-        sunrise_mod_api_gen::generate_wire_coverage(&checkout()?)?
-    );
-    Ok(())
+    sunrise_mod_api_gen::fill_hooks(&root)
 }
 
 /// Prints the hook-notes chapter for the book preprocessor, without writing a source file.
@@ -33,6 +20,17 @@ pub fn notes() -> Result<(), String> {
     print!(
         "{}",
         sunrise_mod_api_gen::generate_hook_notes(&checkout()?)?
+    );
+    Ok(())
+}
+
+/// Prints the NeoForge counterparts chapter for the book preprocessor, without writing a source
+/// file.
+pub fn counterparts() -> Result<(), String> {
+    sunrise_mod_api_gen::generated_on_stdout();
+    print!(
+        "{}",
+        sunrise_mod_api_gen::generate_counterparts(&checkout()?)?
     );
     Ok(())
 }

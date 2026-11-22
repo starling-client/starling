@@ -4,7 +4,7 @@ impl Mob {
     /// Short `LivingEntity.knockback` entry, delegating to the full entry with
     /// `comes_from_effect = false`. Both entries are independent native internals points.
     /// API access refuses the `Mob` receiver and the unmirrored `DamageLevel`/`Damage`
-    /// context; wasm refuses internals at load rather than silently skipping a listener.
+    /// context.
     /// The living hook runs once, before resistance, motion changes and random draws.
     #[sunrise_mod_api_macros::replaceable]
     pub fn knockback(
@@ -79,7 +79,7 @@ impl Mob {
         let (kx, kz) = (xd / len * power, zd / len * power);
         self.velocity = Vec3::new(
             self.velocity.x / 2.0 - kx,
-            if self.on_ground {
+            if self.ground.on_ground {
                 (self.velocity.y / 2.0 + power).min(0.4)
             } else {
                 self.velocity.y

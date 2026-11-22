@@ -1,8 +1,8 @@
 //! PNG encoding follows the owning-thread screenshot hook, never the frame thread.
 use super::Game;
+use std::path::PathBuf;
 use sunrise_client::gfx::{PendingScreenshot, ScreenshotSave};
 use sunrise_client::text::Text;
-use std::path::PathBuf;
 
 pub struct ScreenshotWrite {
     save: ScreenshotSave,

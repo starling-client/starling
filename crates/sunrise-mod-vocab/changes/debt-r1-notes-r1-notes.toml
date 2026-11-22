@@ -1,0 +1,3 @@
+ids = ["handle:BakedModelView::quad"]
+why = "Vanilla QuadCollection.getAll exposes an indexed quad list, and NeoForge ModelEvent.BakingCompleted exposes the published baking result for reading. BakedModelView::quad lends one quad directly from the published model, without visiting the previous quads or copying the geometry."
+migrate = "Replace view.quads[i] or view.quads().nth(i) with view.quad(i); handle None for an out-of-range index. Keep using view.quads() for a full traversal. During model_baking_completed, get the view from host.render_assets().baked_model(key)."

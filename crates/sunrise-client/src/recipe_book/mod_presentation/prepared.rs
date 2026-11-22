@@ -4,7 +4,7 @@ use super::*;
 
 pub struct PreparedBook {
     tab_ids: Vec<String>,
-    icons: Vec<String>,
+    icons: Vec<(String, Option<String>)>,
     recipes: Vec<PreparedRecipe>,
 }
 struct PreparedRecipe {
@@ -23,13 +23,14 @@ impl ModBookPanel<'_> {
     pub fn prepare(&self, resolver: &dyn DisplayResolver) -> PreparedBook {
         let mut book = PreparedBook {
             tab_ids: vec![self.search_group().to_owned()],
-            icons: vec!["minecraft:compass".into()],
+            icons: vec![("minecraft:compass".into(), None)],
             recipes: Vec::new(),
         };
         for category in self.categories() {
             let index = book.tab_ids.len();
             book.tab_ids.push(category.id.clone());
-            book.icons.push(category.icon.clone());
+            book.icons
+                .push((category.icon.clone(), category.secondary_icon.clone()));
             for recipe in &category.displays {
                 let displays = recipe
                     .displays
@@ -140,7 +141,7 @@ impl PreparedBook {
                 .iter()
                 .enumerate()
                 .map(|(index, icon)| TabView {
-                    icons: (icon.clone(), None),
+                    icons: icon.clone(),
                     selected: if index == 0 {
                         category.is_none()
                     } else {
@@ -159,7 +160,11 @@ fn ingredients(
     resolver: &dyn DisplayResolver,
 ) -> Vec<crate::crafting::Ingredient> {
     let slots: Vec<&Slot> = match display {
-        Display::Shaped { ingredients, .. } | Display::Shapeless { ingredients, .. } => ingredients
+        Display::Shaped { ingredients, .. }
+        | Display::Shapeless { ingredients, .. }
+        | Display::Custom {
+            slots: ingredients, ..
+        } => ingredients
             .iter()
             .filter(|slot| !matches!(slot, Slot::Empty))
             .collect(),

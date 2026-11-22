@@ -40,6 +40,7 @@ pub(super) fn isolated() -> bool {
 
 pub(super) struct WeaponProbe {
     pub(super) expected: Option<mod_api::ItemStack>,
+    pub(super) expected_source: Option<(&'static str, i32)>,
     pub(super) swap: Option<mod_api::ItemStack>,
     pub(super) seen: Arc<Mutex<usize>>,
 }
@@ -51,10 +52,11 @@ impl mod_api::Hooks for WeaponProbe {
         event: &mut mod_api::LootDropsEvent<'_>,
     ) {
         assert!(event.context.tool.is_none());
-        assert_eq!(event.context.weapon_item(host), self.expected);
-        if let Some(expected) = &self.expected {
-            wasm_weapon_dispatch(host, event, expected);
+        if let Some(expected) = self.expected_source {
+            let source = event.context.damage_source.unwrap();
+            assert_eq!((source.damage_type, source.causing), expected);
         }
+        assert_eq!(event.context.weapon_item(host), self.expected);
         if let Some(axe) = &self.swap {
             let source = event.context.damage_source.unwrap();
             let living = host
@@ -66,7 +68,6 @@ impl mod_api::Hooks for WeaponProbe {
                     .unwrap()
             );
             assert_eq!(event.context.weapon_item(host), Some(axe.clone()));
-            wasm_weapon_dispatch(host, event, axe);
         }
         *self.seen.lock().unwrap() += 1;
     }
@@ -82,6 +83,7 @@ fn weapon_case(item: &str, enchantment: &str, level: u32, projectile: bool, swap
         game.save = Arc::new(sunrise_client::save::SaveDir::new(
             scratch.path().join("save"),
             sunrise_client::save::LevelShape::OVERWORLD,
+            Some(Default::default()),
         ));
         game.build_registries();
         game.next_entity = 1000;
@@ -132,6 +134,7 @@ fn weapon_case(item: &str, enchantment: &str, level: u32, projectile: bool, swap
             "weapon_probe",
             Box::new(WeaponProbe {
                 expected: Some(expected),
+                expected_source: None,
                 swap: swap.then_some(axe),
                 seen: seen.clone(),
             }),
@@ -188,40 +191,39 @@ fn weapon_case(item: &str, enchantment: &str, level: u32, projectile: bool, swap
                 game.mobs.push(victim);
                 damage.kind = game.projectile_damage_kind(&shot);
                 assert!(game.damage_projectile_with_weapon(&shot, 70, 100.0, damage, None));
-                victim = game.mobs.iter().find(|mob| mob.id == 70).unwrap().clone();
-                drop(shot);
+            } else {
+                game.mob_die(&victim);
             }
-            game.mob_died(&victim);
         });
         assert_eq!(*seen.lock().unwrap(), 1);
     });
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn death_weapon_a_longbow_power_ii_survives_hand_change() {
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+    crate::game::native_entity_refs::tests::run_with_game_stack(|| {
         weapon_case("minecraft:bow", "minecraft:power", 2, true, false);
     });
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn death_weapon_b_crossbow_piercing_i() {
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+    crate::game::native_entity_refs::tests::run_with_game_stack(|| {
         weapon_case("minecraft:crossbow", "minecraft:piercing", 1, true, false);
     });
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn death_weapon_c_trident_loyalty_ii() {
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+    crate::game::native_entity_refs::tests::run_with_game_stack(|| {
         weapon_case("minecraft:trident", "minecraft:loyalty", 2, true, false);
     });
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn death_weapon_d_sharpness_v_sword_reads_live_axe() {
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+    crate::game::native_entity_refs::tests::run_with_game_stack(|| {
         weapon_case(
             "minecraft:diamond_sword",
             "minecraft:sharpness",
@@ -232,7 +234,7 @@ fn death_weapon_d_sharpness_v_sword_reads_live_axe() {
     });
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn death_weapon_e_fall_has_no_weapon() {
     if isolated() {
         return;
@@ -243,6 +245,7 @@ fn death_weapon_e_fall_has_no_weapon() {
         game.save = Arc::new(sunrise_client::save::SaveDir::new(
             scratch.path().join("save"),
             sunrise_client::save::LevelShape::OVERWORLD,
+            Some(Default::default()),
         ));
         game.build_registries();
         let loot = sunrise_world::loot::LootData::load(
@@ -257,6 +260,7 @@ fn death_weapon_e_fall_has_no_weapon() {
             "fall_weapon_probe",
             Box::new(WeaponProbe {
                 expected: None,
+                expected_source: None,
                 swap: None,
                 seen: seen.clone(),
             }),
@@ -272,107 +276,50 @@ fn death_weapon_e_fall_has_no_weapon() {
             let mut victim = Mob::new(70, ty, Vec3::ZERO, 0.0);
             victim.health = 0.0;
             victim.last_damage = Some((Damage::fall(), 0));
-            game.mob_died(&victim);
+            game.mob_die(&victim);
         });
         assert_eq!(*seen.lock().unwrap(), 1);
     });
 }
 
-// The producer calls WeaponProbe with its real context. Dispatch that same context to
-// a real guest, checking either the recorded stack on the wire or the live backend.
-fn wasm_weapon_dispatch(
-    host: &mut dyn mod_api::ServerHost,
-    event: &mut mod_api::LootDropsEvent<'_>,
-    expected: &mod_api::ItemStack,
-) {
-    use mod_api::{Hooks, wire::Writer};
-    let mut request = Writer::new();
-    let mut answer = Writer::new();
-    let recorded = event.context.weapon.is_some();
-    if !recorded {
-        let source = event.context.damage_source.unwrap();
-        let entity = host.entity(source.direct as u32).unwrap();
-        let living = host.living(entity).unwrap();
-        request.put(&living);
-        answer.put(&Some(expected.clone()));
-    } else {
-        answer.put(expected);
+#[test]
+#[ignore = "daily"]
+fn a_player_credited_death_drops_experience_without_a_loot_snapshot() {
+    if isolated() {
+        return;
     }
-    let escape = |bytes: &[u8]| {
-        bytes
+    crate::game::native_entity_refs::tests::with_game(|game| {
+        game.build_registries();
+        game.next_entity = 1000;
+        game.server_loot.set(None);
+        game.orbs.clear();
+        let pos = [2.0, 64.0, 0.0];
+        let mut mob = Mob::new(
+            70,
+            game.res
+                .mob_types()
+                .get("minecraft:zombie")
+                .unwrap()
+                .clone(),
+            Vec3::new(pos[0], pos[1], pos[2]),
+            0.0,
+        );
+        mob.health = 0.0;
+        game.mobs.push(mob.clone());
+        game.drop_death_loot(
+            &mut mob,
+            None,
+            true,
+            sunrise_world::loot::LootEntity::new("minecraft:player"),
+            false,
+            pos,
+            None,
+        );
+        let total: i64 = game
+            .orbs
             .iter()
-            .map(|b| format!("\\{b:02x}"))
-            .collect::<String>()
-    };
-    let backend = sunrise_mod_wasm::fixture::import_id("Backend", "living_weapon_item").unwrap();
-    let check = if recorded {
-        // Borrowed stacks are embedded in the hook frame. Find the complete encoded
-        // stack, including count, damage and components, not merely its item ID.
-        "i32.const 512 local.set $start global.get $length i32.const 512 i32.add local.set $end"
-            .to_owned()
-    } else {
-        format!(
-            r#"
-          i32.const {backend} i32.const 4096 i32.const {request_len}
-          i32.const 16384 i32.const 8192 call $host local.set $length
-          local.get $length i32.const {answer_len} i32.ne if unreachable end
-          i32.const 16384 local.set $start
-          i32.const 16384 local.get $length i32.add local.set $end
-        "#,
-            request_len = request.bytes().len(),
-            answer_len = answer.bytes().len()
-        )
-    };
-    let bytes = wat::parse_str(format!(
-        r#"(module
-      (@custom "dylink.0" "\01\04\00\00\00\00")
-      (import "env" "memory" (memory 1))
-      (import "env" "__indirect_function_table" (table 1 funcref))
-      (import "sunrise" "host" (func $host (param i32 i32 i32 i32 i32) (result i32)))
-      (import "sunrise" "host_reply" (func (param i32)))
-      (func (export "sunrise_layout") (result i64) i64.const {layout})
-      (global $length (mut i32) (i32.const 0))
-      (data (i32.const 4096) "{request}")
-      (data (i32.const 32768) "{answer}")
-      (func (export "sunrise_in") (param i32) (result i32)
-        local.get 0 global.set $length i32.const 512)
-      (func (export "sunrise_hook") (param i32) (result i64)
-        (local $start i32) (local $end i32) (local $i i32) (local $length i32)
-        {check}
-        (block $found (loop $search
-          local.get $start i32.const {answer_len} i32.add local.get $end i32.gt_u if unreachable end
-          i32.const 0 local.set $i
-          (block $different (loop $compare
-            local.get $i i32.const {answer_len} i32.eq br_if $found
-            local.get $start local.get $i i32.add i32.load8_u
-            i32.const 32768 local.get $i i32.add i32.load8_u i32.ne br_if $different
-            local.get $i i32.const 1 i32.add local.set $i br $compare))
-          local.get $start i32.const 1 i32.add local.set $start br $search))
-        ;; Successful assertion returns an empty drops vector (u32 length zero).
-        i32.const 49152 i32.const 0 i32.store
-        i64.const 211106232532996)
-    )"#,
-        layout = *mod_api::wire::LAYOUT,
-        request = escape(request.bytes()),
-        answer = escape(answer.bytes()),
-        answer_len = answer.bytes().len()
-    ))
-    .unwrap();
-    let module = sunrise_mod_wasm::fixture::module(&bytes).unwrap();
-    let mut sentinel = expected.clone();
-    sentinel
-        .set_count(if expected.count() == 1 { 2 } else { 1 })
-        .unwrap();
-    let mut drops = vec![sentinel];
-    module.loot_drops(
-        host,
-        &mut mod_api::LootDropsEvent {
-            context: event.context,
-            drops: &mut drops,
-        },
-    );
-    assert!(
-        drops.is_empty(),
-        "guest must assert the producer weapon and return successfully"
-    );
+            .map(|orb| i64::from(orb.value) * i64::from(orb.count))
+            .sum();
+        assert_eq!(total, 5, "an adult unequipped zombie's experience");
+    });
 }

@@ -143,8 +143,7 @@ thread_local! {
     static STEPPERS: RefCell<(Vec<[f32; 4]>, Vec<[f32; 4]>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
-/// Splitscreen: one player's buttons and focus targets, kept aside while another player's game
-/// runs on this thread ([`take`] and [`put`] around each turn).
+/// A local view's widget and focus state, saved and restored with [`take`] and [`put`].
 #[derive(Default)]
 pub struct Saved(
     (Vec<Widget>, Vec<Widget>, u64),

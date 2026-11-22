@@ -5,8 +5,6 @@
 extern crate sunrise_client_lib as sunrise_client;
 #[path = "../src/test_resources.rs"]
 mod test_resources;
-use sunrise_client::{assets::Assets, item_render::ItemRenderer};
-use sunrise_world::native_load_context::DataLoadOrigin;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     hash::{Hash, Hasher},
@@ -14,6 +12,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering::Relaxed},
     time::Instant,
 };
+use sunrise_client::{assets::Assets, item_render::ItemRenderer};
+use sunrise_world::native_load_context::DataLoadOrigin;
 
 struct CountingAllocator;
 const TRACK: bool = option_env!("SUNRISE_BENCH_COUNT_ALLOCATIONS").is_some();

@@ -329,6 +329,7 @@ impl Game<'_> {
             rgba(0x10, 0x10, 0x10, 0xC0),
             rgba(0x10, 0x10, 0x10, 0xD0),
         );
+        self.draw_deferred_subtitles(batch);
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Background);
         let Some(mut screen) = self.block_editor.take() else {
             self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
@@ -438,7 +439,7 @@ impl Game<'_> {
         }
     }
 
-    pub(super) fn block_editor_click(&mut self) {
+    pub(super) fn block_editor_click(&mut self) -> bool {
         let size = self
             .renderer
             .as_ref()
@@ -452,7 +453,7 @@ impl Game<'_> {
         };
         let Some(items) = self.with_block_editor(|s, e| s.editor.items(e, b.width, b.height))
         else {
-            return;
+            return false;
         };
         // The widgets in the order they were added: the last on top.
         for item in items.iter().rev() {
@@ -473,17 +474,17 @@ impl Game<'_> {
                     }) {
                         self.block_editor_outcome(outcome);
                     }
-                    return;
+                    return true;
                 }
                 Item::Slider { id, x, y, w, .. } if ui::hovered(cursor, *x, *y, *w, 20.0) => {
                     let (id, x, w) = (*id, *x, *w);
-                    let value = ui::slider_value(x, w, cursor.0);
+                    let value = ui::slider_value(x, w, cursor.0) as f32;
                     if let Some(mut screen) = self.block_editor.take() {
                         screen.dragging = Some((id, x, w));
                         screen.editor.slide(id, value);
                         self.block_editor = Some(screen);
                     }
-                    return;
+                    return true;
                 }
                 Item::Edit { index, x, y, w } if ui::hovered(cursor, *x, *y, *w, 20.0) => {
                     let index = *index;
@@ -495,11 +496,12 @@ impl Game<'_> {
                         }
                         self.block_editor = Some(screen);
                     }
-                    return;
+                    return true;
                 }
                 _ => {}
             }
         }
+        false
     }
 
     /// The cursor moved with a slider held (`AbstractSliderButton.onDrag`).
@@ -508,15 +510,15 @@ impl Game<'_> {
         if let Some(screen) = self.block_editor.as_mut()
             && let Some((id, sx, sw)) = screen.dragging
         {
-            screen.editor.slide(id, ui::slider_value(sx, sw, x));
+            screen.editor.slide(id, ui::slider_value(sx, sw, x) as f32);
         }
     }
 
     /// The left button released: a held slider lets go.
-    pub(super) fn block_editor_release(&mut self) {
-        if let Some(screen) = self.block_editor.as_mut() {
-            screen.dragging = None;
-        }
+    pub(super) fn block_editor_release(&mut self) -> bool {
+        self.block_editor
+            .as_mut()
+            .is_some_and(|screen| screen.dragging.take().is_some())
     }
 
     pub(super) fn block_editor_key(&mut self, event: &KeyEvent) {
@@ -853,7 +855,7 @@ mod tests {
     /// A single-player jigsaw edit is applied by the game that is its own
     /// server, as `handleSetJigsawBlock` does there, and marks the chunk.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_local_jigsaw_edit_applies_and_marks_the_chunk() {
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);

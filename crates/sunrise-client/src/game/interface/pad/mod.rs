@@ -5,22 +5,26 @@
 //! `sunrise-ctl pad` injects a virtual pad on top of the real one.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 use sunrise_client::actions::Action;
 use sunrise_client::held::Source;
 use sunrise_client::{
     Result,
-    controller_notice::{Notice, NoticeId, Priority},
+    controller_notice::Notice,
     controller_ui::Device,
     gamepad::{
         self, Button, Edges, GlyphOf, GlyphStyle, HealthWatch, MenuJob, PadState, Route, Rumble,
     },
+<<<<<<< sync-sunrise-1
     input_mode::InputMode,
+=======
+    hud::HudBatch,
+>>>>>>> sunrise/main
     keymapping::SNEAK,
     pad_glyph::{Glyph, Glyphs},
 };
 use sunrise_client_input::radial;
-use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
@@ -48,12 +52,17 @@ fn style_named(name: &str) -> Result<GlyphStyle> {
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
 pub(super) struct Pads {
+<<<<<<< sync-sunrise-1
     /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
     pub(super) feed: Option<PadState>,
     /// The pad behind `feed`.
     feed_source: Option<PadId>,
     /// The real controllers and the DualSense's output, or Android's controllers.
     #[cfg(any(feature = "controllers", target_os = "android"))]
+=======
+    /// The real controllers and the DualSense's output.
+    #[cfg(feature = "controllers")]
+>>>>>>> sunrise/main
     devices: hardware::Devices,
     /// The virtual pad of `sunrise-ctl pad`.
     injected: PadState,
@@ -91,6 +100,8 @@ pub(super) struct Pads {
     pub(super) device: Option<Device>,
     /// Controllers that came and went at this game's own reader since the last poll.
     connections: Vec<Connection>,
+    /// The right stick's turn still easing out under the cinematic camera.
+    look: gamepad::SmoothLook,
     /// The cursor the pad drives in menus.
     pub(super) menu: super::pad_menu::MenuCursor,
     /// The radial menu while its opener is held, and the page it stays on.
@@ -99,8 +110,6 @@ pub(super) struct Pads {
     radial_runs: RadialRuns,
     /// The moments the radial menu's overlay moves from (`radial_overlay::Look`).
     pub(super) radial_look: sunrise_client_render::radial_overlay::Look,
-    /// The player's skin for the overlay's Emote face, read as it opens.
-    radial_face: Option<String>,
     /// The D-pad's quiet after the menu closed on a D-pad opener.
     radial_settle: radial::DpadSettle,
     /// The narrator said the page shown, and the slot selected.
@@ -150,7 +159,6 @@ mod hardware;
 #[cfg(test)]
 mod parity_tests;
 mod radial_play;
-pub(super) use hardware::{PadId, PadRouter};
 
 /// How many of the radial menu's last actions `pad status` lists.
 const RADIAL_RUNS_KEPT: usize = 16;
@@ -186,6 +194,7 @@ enum Connection {
     Disconnected { active: bool },
 }
 
+<<<<<<< sync-sunrise-1
 /// What a controller did since the last frame.
 #[cfg_attr(not(feature = "controllers"), allow(dead_code))]
 pub(in crate::game) enum PadEvent {
@@ -248,6 +257,20 @@ mod no_router {
         pub(in crate::game) fn style(&self, _: PadId) -> sunrise_client::gamepad::GlyphStyle {
             sunrise_client::gamepad::GlyphStyle::Auto
         }
+=======
+/// A build without the `controllers` feature (the server build, which must not need libudev): no
+/// hardware pads, only `sunrise-ctl pad`'s virtual one.
+#[cfg(not(feature = "controllers"))]
+mod hardware {
+    use super::{super::Game, Pads};
+    use serde_json::{Value, json};
+    use sunrise_client::gamepad::{PadState, Pulse, Rumble};
+
+    impl Pads {
+        pub(super) fn read(&mut self) -> PadState {
+            PadState::default()
+        }
+>>>>>>> sunrise/main
     }
 }
 
@@ -297,24 +320,6 @@ impl Pads {
     /// A replay's pad button, in place of `pad`'s line.
     pub(super) fn inject_button(&mut self, button: Button, down: bool) {
         self.injected.set(button, down);
-    }
-    /// Splitscreen: this player's pad state, from `source`. Another pad, or
-    /// none: the old one's A going away isn't a release.
-    /// `peaks`: the furthest its sticks leant since the last feed (`Pads::peaks`).
-    pub(super) fn feed_from(
-        &mut self,
-        source: Option<PadId>,
-        state: PadState,
-        peaks: [[f32; 2]; 2],
-    ) {
-        self.peaks = peaks;
-        if self.feed_source != source {
-            self.feed_source = source;
-            self.menu.armed = None;
-            self.radial.cancel();
-            self.menu.stop_craft();
-        }
-        self.feed = Some(state);
     }
     /// The device the controller settings name: a real one, else `sunrise-ctl`'s virtual pad.
     pub(super) fn device_or_virtual(&self) -> Option<Device> {
@@ -435,11 +440,26 @@ impl Game<'_> {
                 .radial_look
                 .observe(None, std::time::Instant::now());
             self.pad.in_use = false;
+<<<<<<< sync-sunrise-1
             PadState::default()
         };
         // A Nintendo pad going by its letters is read that way: its own, or the one
         // splitscreen's router feeds this player.
         let hardware = if enabled && self.pad.by_letter(&self.settings.controller) {
+=======
+            // The keyboard's menu focus follows its widget all the same.
+            self.pad_menu_frame(event_loop);
+            return;
+        }
+        // A scripted run leaves the person's pad at rest and unread, just like its
+        // keyboard and mouse. Reading it could change the active pad mid-run.
+        let hardware = if self.scripted_run() {
+            PadState::default()
+        } else {
+            self.pad.read()
+        };
+        let hardware = if self.pad.by_letter(&self.settings.controller) {
+>>>>>>> sunrise/main
             hardware.by_letter()
         } else {
             hardware
@@ -501,6 +521,7 @@ impl Game<'_> {
             self.pad.in_use = self.input_mode == InputMode::Pad;
             self.pad.keyboard_took_over = false;
         }
+<<<<<<< sync-sunrise-1
         let state = state.merge(&self.pad.touch);
         for button in std::mem::take(&mut self.pad.touch_taps) {
             self.pad.touch.set(button, false);
@@ -513,6 +534,14 @@ impl Game<'_> {
             self.pad_drop_frame();
             self.pad_output_frame();
         }
+=======
+        let previous_move = self.pad_move();
+        self.pad.state = state;
+        self.resume_stick_mappings(previous_move);
+        self.pad_radial_frame();
+        self.pad_drop_frame();
+        self.pad_output_frame();
+>>>>>>> sunrise/main
         // Damage from any source, here or on a server; nothing counts on
         // the title screen.
         let health = self
@@ -742,13 +771,11 @@ impl Game<'_> {
                     return Ok(());
                 }
                 let screen_open = self.screen != Screen::Playing || self.title.is_some();
-                let was = self.keys.held(Action::Sneak);
-                self.toggles.pad_toggle(SNEAK, screen_open);
-                self.sync_toggle(SNEAK);
-                if !was && self.keys.held(Action::Sneak) {
-                    // The pad's latch: a keyboard handoff leaves it.
-                    self.keys.press(KeyCode::ShiftLeft, Source::Pad);
-                    self.keys.release(&KeyCode::ShiftLeft, Source::Keyboard);
+                self.keys.resume_device_input(&KeyCode::ShiftLeft);
+                if !screen_open {
+                    let state = self.vanilla_mappings.toggle_state_mut(SNEAK);
+                    state.pad_toggle();
+                    state.click();
                 }
                 self.key_pressed(KeyCode::ShiftLeft, KeyCode::ShiftLeft)
             }
@@ -767,7 +794,7 @@ impl Game<'_> {
             }
             Route::SmoothCamera => {
                 if down {
-                    self.smooth_camera_action();
+                    self.queue_mapping_click("key.smoothCamera");
                 }
                 Ok(())
             }
@@ -784,7 +811,12 @@ impl Game<'_> {
                 }
                 Ok(())
             }
-            Route::Held => Ok(()),
+            Route::Held => {
+                if let Some(key) = Action::parse(action).and_then(Action::key) {
+                    self.mapped_key(key, down, false, key, Source::Pad)?;
+                }
+                Ok(())
+            }
             Route::Mouse(button) => {
                 let playing = self.title.is_none() && self.screen == Screen::Playing;
                 // What the window path tells mods and the click counters. Pick block isn't one
@@ -833,7 +865,7 @@ impl Game<'_> {
     }
 
     /// B and Start: what Escape does where the pad is.
-    pub(super) fn pad_back(&mut self) -> Result<()> {
+    pub(in crate::game) fn pad_back(&mut self) -> Result<()> {
         // The death confirm's buttons wait a second, as its Escape does.
         if self
             .ui
@@ -850,7 +882,10 @@ impl Game<'_> {
         if self.screen == Screen::Options {
             return self.options_key(KeyCode::Escape, None);
         }
-        if let Some(title) = self.title.as_mut() {
+        // A mod's screen in front of the title takes the Escape itself.
+        if self.title_input_active()
+            && let Some(title) = self.title.as_mut()
+        {
             title.escape();
             self.save_title_options();
             return Ok(());
@@ -892,6 +927,27 @@ impl Game<'_> {
         gamepad::move_vector(stick, settings.move_deadzone)
     }
 
+    /// A changed stick component is input for that direction, even below the digital
+    /// threshold. Positive and negative travel take over their own mappings only.
+    fn resume_stick_mappings(&mut self, previous: Option<[f32; 2]>) {
+        let before = previous.unwrap_or_default();
+        let after = self.pad_move().unwrap_or_default();
+        for (axis, (positive, negative)) in [
+            (KeyCode::KeyA, KeyCode::KeyD),
+            (KeyCode::KeyW, KeyCode::KeyS),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if before[axis].max(0.0) != after[axis].max(0.0) {
+                self.keys.resume_device_input(&positive);
+            }
+            if before[axis].min(0.0) != after[axis].min(0.0) {
+                self.keys.resume_device_input(&negative);
+            }
+        }
+    }
+
     /// The right stick turns the view, once per frame (`Entity.turn`).
     pub(super) fn pad_look(&mut self, seconds: f32) {
         let settings = &self.settings.controller;
@@ -904,16 +960,14 @@ impl Game<'_> {
             return;
         }
         // A long frame (a hitch) must not spin the view.
-        let (yaw, pitch) = gamepad::look_delta(
-            self.pad.state.right,
-            settings,
-            seconds.min(0.1),
-            self.scoping(),
-        );
+        let seconds = seconds.min(0.1);
+        let turn = gamepad::look_delta(self.pad.state.right, settings, seconds, self.scoping());
+        // The cinematic camera eases the stick's turn in and out, as it does the mouse's.
+        let (yaw, pitch) = self.pad.look.turn(turn, seconds, self.smooth_camera);
         if yaw == 0.0 && pitch == 0.0 {
             return;
         }
-        self.look_turn(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
+        self.look_turn(yaw / 0.15, pitch / 0.15);
     }
 
     /// Vibrate the active pad, when vibration is on and the pad is the one
@@ -930,10 +984,7 @@ impl Game<'_> {
         self.pad_vibrate(rumble, pulse);
     }
 
-    /// `sunrise-ctl pad ...`.
-    /// A controller came or went with no splitscreen router: say so on this view, in its one
-    /// notice. Nothing here decides what the controller drives; a player who turned controllers
-    /// off isn't told about them.
+    /// Show a controller connection change without changing which device drives the game.
     fn pad_connection_notice(&mut self, change: Connection) {
         // The pad that was playing is gone: nothing is driving until another is touched.
         if matches!(change, Connection::Disconnected { active: true }) {
@@ -942,34 +993,37 @@ impl Game<'_> {
         if !self.settings.controller.enabled {
             return;
         }
-        let split =
-            |key: &str| sunrise_client::lang::get(&format!("sunrise.splitscreen.prompt.{key}"));
+        let label = sunrise_client::lang::get;
         let notice = match change {
             Connection::Connected(family) => Notice::new(
-                NoticeId::Connection,
-                Priority::Info,
-                split("controller_connected"),
-                sunrise_client::lang::get("sunrise.pad.notice.connected.press"),
+                label("sunrise.controller.notice.controller_connected"),
+                label("sunrise.pad.notice.connected.press"),
             )
             // In the new pad's own glyphs, its letters included: pressed, it plays.
             .with_glyph(Glyph::menu(
                 MenuJob::Confirm,
                 Glyphs::of(&self.settings.controller, family),
             )),
-            Connection::Disconnected { active } => Notice::new(
-                NoticeId::Connection,
-                if active {
-                    Priority::Attention
-                } else {
-                    Priority::Info
-                },
-                split("controller_disconnected"),
-                split("controller_disconnected.hint"),
+            Connection::Disconnected { .. } => Notice::new(
+                label("sunrise.controller.notice.controller_disconnected"),
+                label("sunrise.controller.notice.controller_disconnected.hint"),
             ),
         };
-        self.split_hud.notice.raise(notice);
+        self.controller_notice.raise(notice);
     }
 
+    /// Connection notices sit below the boss bars and last as long as a toast.
+    pub(super) fn draw_controller_notice(&mut self, batch: &mut HudBatch) {
+        let shown_for = Duration::from_secs_f64(5.0 * self.settings.notification_display_time);
+        self.controller_notice.draw(
+            batch,
+            &self.gui.atlas,
+            self.ui.room.below_top(18.0),
+            shown_for,
+        );
+    }
+
+    /// `sunrise-ctl pad ...`.
     pub(super) fn pad_command(&mut self, words: &[&str]) -> Result<Value> {
         let arg = |i: usize| -> Result<&str> {
             words
@@ -1000,7 +1054,7 @@ impl Game<'_> {
                         "reason": why, "strong": p.strong, "weak": p.weak, "ms": p.millis,
                     })),
                     "in_use": self.pad.in_use,
-                    "notice": self.split_hud.notice.showing().map(|(title, body)| {
+                    "notice": self.controller_notice.showing().map(|(title, body)| {
                         json!({ "title": title, "body": body })
                     }),
                     "menu": self.pad_menu_status(),

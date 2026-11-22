@@ -1,14 +1,14 @@
 //! Block-model tints without a level, including blank and invalid tint indices.
-use sunrise_client::{
-    assets::Assets, blocks::BlockFacts, item_render::ItemRenderer, mesher::MeshTables, models,
-};
-use sunrise_world::registry::BlockStateId;
 use serde_json::Value;
 use std::{
     fs,
     io::{BufWriter, Write},
     path::Path,
 };
+use sunrise_client::{
+    assets::Assets, blocks::BlockFacts, item_render::ItemRenderer, mesher::MeshTables, models,
+};
+use sunrise_world::registry::BlockStateId;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = crate::args().collect();

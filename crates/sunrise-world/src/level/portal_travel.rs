@@ -3,11 +3,11 @@
 //! and `NetherPortalBlock.createDimensionTransition`.
 use super::{Behaviours, LevelAccess, Sim, Ticks};
 use crate::fluid::FluidKind;
+use std::cmp::Ordering;
 use sunrise_core::{
     geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, VoxelShape},
     position::BlockPos,
 };
-use std::cmp::Ordering;
 use {
     crate::registry::BlockStateId,
     sunrise_core::java_hash_map::{JavaHashMap, JavaKey},

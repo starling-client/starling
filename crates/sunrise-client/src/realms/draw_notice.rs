@@ -32,10 +32,10 @@ impl Screen {
         // The grid starts at the entry's content origin: the entry's own +2.
         let content_x = rx + 2.0;
         // `ImageWidget.sprite(20, 20, icon/info)`, padded 7.
-        crate::ui::blit_sprite(
+        crate::ui::nine_slice(
             batch,
             atlas,
-            "gui/sprites/icon/info",
+            "icon/info",
             content_x + 7.0,
             y + 7.0,
             20.0,
@@ -75,11 +75,11 @@ impl Screen {
             let hovered =
                 crate::ui::hovered(cursor, dismiss[0], dismiss[1], dismiss[2], dismiss[3]);
             let sprite = if hovered {
-                "gui/sprites/widget/cross_button_highlighted"
+                "widget/cross_button_highlighted"
             } else {
-                "gui/sprites/widget/cross_button"
+                "widget/cross_button"
             };
-            crate::ui::blit_sprite(
+            crate::ui::nine_slice(
                 batch,
                 atlas,
                 sprite,

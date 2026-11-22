@@ -1,0 +1,1 @@
+cargo-sunrise-mod run_writes_native_registration_logs_to_latest_log test:run daily own-sdk # Boots the daily head's game; book-quickstart.yml supplies its SDK.

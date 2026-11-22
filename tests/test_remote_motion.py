@@ -5,15 +5,19 @@ import subprocess
 import tempfile
 import unittest
 
+from tools.ci import rust_tests
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
 class RemoteMotionTests(unittest.TestCase):
     def test_mob_velocity_reaches_squid_animation(self):
-        source = (next(ROOT.glob('crates/sunrise-client/src/game/*/remote/mod.rs'))).read_text()
-        start = source.index("    fn remote_motion(")
-        end = source.index("    fn apply_remote_health(", start)
+        source = (ROOT / "crates/sunrise-client/src/game/network/remote/motion.rs").read_text(encoding="utf-8")
+        code = rust_tests.blank(source)
+        start = code.index("fn remote_motion(")
+        opening = code.index("{", start)
+        method_source = source[start:rust_tests.matching_brace(code, opening)]
         fixture = r'''
 #![allow(dead_code)]
 use std::collections::HashMap;
@@ -33,8 +37,9 @@ struct Entity {
 trait EditEntity { fn update<R>(&mut self, i: usize, edit: impl FnOnce(&mut Entity) -> R) -> R; }
 impl EditEntity for Vec<Entity> { fn update<R>(&mut self, i: usize, edit: impl FnOnce(&mut Entity) -> R) -> R { edit(&mut self[i]) }
 }
+struct PendingItem { join: u64, position: [f64; 3], velocity: Vec3 }
 #[derive(Default)]
-struct Remote { pending_items: HashMap<i32, ((), Vec3)> }
+struct Remote { pending_items: HashMap<i32, PendingItem> }
 #[derive(Default)]
 struct Creatures { projectiles: Vec<Entity> }
 #[derive(Default)]
@@ -55,7 +60,7 @@ impl MobIndex {
 struct Game {
     mobs: Vec<Entity>, mob_index: MobIndex, dropped: Vec<Entity>, falling: Vec<Entity>, tnts: Vec<Entity>, orbs: Vec<Entity>,
     creatures: Creatures, dragon_fireballs: Vec<Entity>, tridents: Vec<Entity>,
-    rockets: Vec<Entity>, carts: Vec<Entity>, remote: Option<Remote>,
+    rockets: Vec<Entity>, carts: Vec<Entity>, boats: Vec<Entity>, remote: Option<Remote>,
     potions: Potions, end: End,
 }
 impl Game {
@@ -75,9 +80,22 @@ fn main() {
     }
     game.remote_motion(43, [0.1, 0.2, 0.3]);
     assert_eq!(game.dropped[0].velocity, Vec3::new(0.1, 0.2, 0.3));
+    // The stack has not arrived yet: retain the admission slot and store the motion.
+    game.remote = Some(Remote { pending_items: HashMap::from([(48, PendingItem {
+        join: 7, position: [1.0, 2.0, 3.0], velocity: Vec3::default(),
+    })]) });
+    game.remote_motion(48, [-0.5, 0.0, 0.2]);
+    let pending = &game.remote.as_ref().unwrap().pending_items[&48];
+    assert_eq!(pending.velocity, Vec3::new(-0.5, 0.0, 0.2));
+    assert_eq!((pending.join, pending.position), (7, [1.0, 2.0, 3.0]));
     game.carts.push(Entity { id: 44, ..Entity::default() });
     game.remote_motion(44, [-0.7, 0.25, 1.5]);
     assert_eq!(game.carts[0].velocity, Vec3::new(-0.7, 0.25, 1.5));
+    // Entity.lerpMotion on a boat, the one its own player drives included.
+    game.boats.push(Entity { id: 47, ..Entity::default() });
+    game.remote_motion(47, [0.0; 3]);
+    game.remote_motion(47, [0.3, -0.1, 0.2]);
+    assert_eq!(game.boats[0].velocity, Vec3::new(0.3, -0.1, 0.2));
     game.remote_motion(999, [1.0; 3]); // Untracked entity is harmless.
     // AbstractArrow.lerpMotion: life restarts on any motion; only a non-zero
     // motion takes a stuck arrow or trident out of its block.
@@ -101,11 +119,13 @@ fn main() {
     game.remote_motion(45, [0.1, 0.0, 0.0]);
     assert!(!game.tridents[0].in_ground);
 }
-'''.replace("METHOD", source[start:end])
+'''.replace("METHOD", method_source)
         with tempfile.TemporaryDirectory(prefix="remote-motion-") as directory:
             path = Path(directory)
             (path / "main.rs").write_text(fixture)
-            subprocess.run(["rustc", "--edition=2024", str(path / "main.rs"), "-o", str(path / "probe")],
-                           check=True, capture_output=True, text=True)
+            compile_result = subprocess.run(
+                ["rustc", "--edition=2024", str(path / "main.rs"), "-o", str(path / "probe")],
+                capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
             result = subprocess.run([str(path / "probe")], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

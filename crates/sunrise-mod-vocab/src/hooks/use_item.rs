@@ -21,7 +21,10 @@ pub trait Hooks {
     ///     host.commands().run_command("say not a client prediction");
     /// }
     /// ```
+    /// A client without this mod predicts vanilla here; the server corrects it.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_use_on",
+        dispatch = "api_carrier",
         side = "both",
         version = 2,
         contract = "replace",
@@ -60,7 +63,10 @@ pub trait Hooks {
     /// (a guest's own, never the host's), this client's own player on a client.
     /// They name who clicked from the event alone, unlike `players().acting_player()`,
     /// which only answers while the host has set the acting player.
+    /// A client without this mod predicts vanilla here; the server corrects it.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_use_item",
+        dispatch = "api_carrier",
         side = "both",
         version = 2,
         contract = "replace",

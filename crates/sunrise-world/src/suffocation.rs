@@ -4,12 +4,12 @@ use crate::{
     compression::invalid,
     registry::BlockStateId,
 };
-use sunrise_core::geometry::{ShapeOp, VoxelShape};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::Arc,
 };
+use sunrise_core::geometry::{ShapeOp, VoxelShape};
 
 #[derive(Clone, Copy, Debug)]
 pub enum SuffocationDefinition {
@@ -72,6 +72,11 @@ impl<'r> SuffocationRegistry<'r> {
                 SuffocationDefinition::TaggedFullCollision => {
                     if !causes_suffocation.contains(&state.name) {
                         Rule::Constant(false)
+                    } else if collisions.publishes_shapes(id)
+                        || collisions.cached_shapes().offset_collision(id)
+                    {
+                        // Publication and declared offsets make the full-shape answer positional.
+                        Rule::DynamicFull
                     } else if let Some(shape) = collisions.cached_shapes().cached_shape(id)? {
                         let identity = std::ptr::from_ref(shape);
                         let full = if let Some(full) = full_shapes.get(&identity) {

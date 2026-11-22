@@ -90,19 +90,100 @@ fn state(sprite: &str, foil: FoilType, display: DisplayContext) -> ItemRenderSta
         display,
         layers: vec![LayerRender {
             geometry: LayerGeometry::Quads(Arc::new(baked)),
-            tints: vec![],
+            tints: LayerTints::Owned(Vec::new()),
             foil,
             matrix: Mat4::IDENTITY,
             particle: sprite.into(),
             uses_block_light: false,
             extents: Arc::new(vec![]),
+            display,
         }],
         oversized_in_gui: false,
         animated: false,
         cit_glint: None,
         hdr_tier: 0,
         hdr_light: 0,
+        held_tint: None,
     }
+}
+
+#[test]
+fn held_item_tint_is_per_draw_on_cpu_and_gpu() {
+    use crate::{
+        gfx::entity_skin::{self, SkinFrame},
+        mobs::skin::{Skin, SkinModels},
+    };
+
+    let root = fixture("held-item-tint");
+    let data = crate::test_resources::item_data(
+        &root,
+        sunrise_world::native_load_context::DataLoadOrigin::ClientPreload,
+    )
+    .unwrap();
+    let renderer = ItemRenderer::load(
+        &sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
+        &data,
+    )
+    .unwrap();
+    fs::remove_dir_all(root).unwrap();
+    let sprite = "item/book";
+    let sprites = HashMap::from([(
+        sprite.into(),
+        Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 8,
+            h: 16,
+        },
+    )]);
+    let mut plain = state(sprite, FoilType::None, DisplayContext::ThirdPersonRightHand);
+    let LayerGeometry::Quads(baked) = &mut plain.layers[0].geometry else {
+        unreachable!()
+    };
+    Arc::get_mut(baked).unwrap().quads[0].tint_index = 0;
+    plain.layers[0].tints = LayerTints::Owned(vec![0x7F_FF_60_11]);
+    let mut tinted = plain.clone();
+    // The high byte is ignored. With ambient-only lighting on the south face,
+    // the blue byte goes 17 -> 13 -> 5; lighting before tinting would give 4.
+    tinted.set_held_tint(0x23_80_40_C8);
+    let lights = Some((Vec3::NEG_Z, Vec3::NEG_Z));
+    let pose = Mat4::from_translation(Vec3::Y);
+    let mut cpu = Vec::new();
+    let mut frame = SkinFrame::default();
+    let mut models = SkinModels::default();
+    for draw in [&plain, &tinted, &plain] {
+        draw.submit(
+            &renderer,
+            &sprites,
+            &NoHost,
+            pose,
+            &mut WorldSink {
+                out: &mut cpu,
+                light: 0xF0F0,
+                lights,
+                glint: None,
+                tier: 0,
+            },
+        );
+        assert!(draw.submit_skinned(
+            &renderer,
+            &sprites,
+            pose,
+            (0xF0F0, lights, 0),
+            &mut Skin::new(&mut models, &mut frame),
+        ));
+    }
+    let gpu = entity_skin::expand(&frame.new_model, &frame);
+    assert_eq!(
+        bytemuck::cast_slice::<_, u8>(&gpu),
+        bytemuck::cast_slice::<_, u8>(&cpu)
+    );
+    assert_eq!(
+        cpu.iter().map(|v| v.color).collect::<Vec<_>>(),
+        [[0x7F_06_26_66; 4], [0x7F_05_09_33; 4], [0x7F_06_26_66; 4]].concat()
+    );
 }
 
 #[test]
@@ -235,6 +316,24 @@ fn gui_glint_matches_pinned_vanilla_atlas_input() {
             [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]
         );
     }
+    // A layer keeps the display context it was resolved for when another state holds it (a
+    // nested stack under another item's display): a GUI glint follows the layer's own, in both
+    // directions.
+    for (outer, inner, outer_gui) in [
+        (DisplayContext::Fixed, DisplayContext::Gui, false),
+        (DisplayContext::Gui, DisplayContext::Fixed, true),
+    ] {
+        let book = "minecraft:item/enchanted_book";
+        let mut state = state(book, FoilType::Standard, outer);
+        state
+            .layers
+            .extend(self::state(book, FoilType::Standard, inner).layers);
+        let mut quads = Vec::new();
+        state.submit(&renderer, &sprites, &NoHost, Mat4::IDENTITY, &mut quads);
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[0].gui_glint_uv.is_some(), outer_gui, "{outer:?}");
+        assert_eq!(quads[1].gui_glint_uv.is_some(), !outer_gui, "{inner:?}");
+    }
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -340,8 +439,8 @@ fn invalid_and_generated_sprites_match_vanilla() {
     fs::write(path, atlas.to_string()).unwrap();
     for (name, w, h, color) in [
         ("trim", 8, 16, [255; 4]),
-        ("palettes/key", 1, 1, [255; 4]),
-        ("palettes/red", 1, 1, [255, 0, 0, 255]),
+        ("key", 1, 1, [255; 4]),
+        ("red", 1, 1, [255, 0, 0, 255]),
     ] {
         png(
             &root.join(format!("assets/test/textures/{name}.png")),
@@ -375,6 +474,43 @@ fn invalid_and_generated_sprites_match_vanilla() {
         [19.0 / 128.0, 37.0 / 64.0, 27.0 / 128.0, 53.0 / 64.0]
     );
     assert!(!atlas.contains_key("test:missing_alias"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn namespaces_sharing_a_prefix_are_all_listed_in_the_glint_atlas() {
+    // `a0:` sorts before `a:` as an identifier, though `assets/a/` comes first as a path.
+    let root = std::env::temp_dir().join(format!("sunrise-glint-prefix-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("assets/minecraft/atlases")).unwrap();
+    fs::write(
+        root.join("assets/minecraft/atlases/items.json"),
+        r#"{"sources":[{"type":"single","resource":"a:item/one"},{"type":"single","resource":"a0:item/two"}]}"#,
+    )
+    .unwrap();
+    png(
+        &root.join("assets/a/textures/item/one.png"),
+        16,
+        16,
+        [255; 4],
+    );
+    png(
+        &root.join("assets/a0/textures/item/two.png"),
+        16,
+        16,
+        [255; 4],
+    );
+    let atlas = glint_atlas::load(
+        &sunrise_assets::resource_source::ResourceSource::directory(root.clone()),
+        1,
+        16384,
+    )
+    .unwrap();
+    // Each is its own 16 x 16 cell; one the listing missed would be the missing sprite's.
+    let corner = |name: &str| [atlas[name].u0, atlas[name].v0];
+    assert_ne!(corner("a:item/one"), corner("a0:item/two"));
+    assert_ne!(corner("a:item/one"), corner("missingno"));
+    assert_ne!(corner("a0:item/two"), corner("missingno"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -466,7 +602,7 @@ fn glint_atlas_reads_prepared_images_and_metadata_together() {
 }
 
 #[test]
-#[ignore = "requires the player's prepared pinned 26.3 resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn prepared_item_atlas_matches_pinned_vanilla() {
     let root =
         PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources"));
@@ -592,4 +728,66 @@ fn external_item_atlas_oracle() {
         }
         assert!(seen.into_iter().all(|v| v));
     }
+}
+
+/// A posed item has a depth of its own, as a GUI model does: its vertices carry a depth from the
+/// turn (nearest 0, farthest 1) and one run takes the depth test within the item's own bounds.
+#[test]
+fn a_posed_item_has_a_depth_of_its_own() {
+    let root = fixture("posed");
+    let data = crate::test_resources::item_data(
+        &root,
+        sunrise_world::native_load_context::DataLoadOrigin::ClientPreload,
+    )
+    .unwrap();
+    let renderer = ItemRenderer::load(
+        &sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        &data,
+    )
+    .unwrap();
+    let sprite = Rect {
+        u0: 0.2,
+        v0: 0.3,
+        u1: 0.4,
+        v1: 0.5,
+        w: 16,
+        h: 16,
+    };
+    let sprites = HashMap::from([("item/enchanted_book".to_owned(), sprite)]);
+    let mut batch = crate::hud::HudBatch::scratch([64, 64]);
+    // A flat face about its centre (40.75, 30.5), 16 pixels a block, turned 60 degrees about y:
+    // its corners land at x 40.75 +- 4 (16 * 0.5 * cos 60) and y 30.5 +- 8, one side nearer.
+    let pose = Mat4::from_translation(Vec3::new(40.75, 30.5, 0.0))
+        * Mat4::from_scale(Vec3::new(16.0, -16.0, 16.0))
+        * Mat4::from_rotation_y(60f32.to_radians());
+    assert!(gui::draw_posed(
+        &state(
+            "minecraft:item/enchanted_book",
+            FoilType::None,
+            DisplayContext::Gui
+        ),
+        &gui::GuiItemEnv {
+            renderer: &renderer,
+            sprites: &sprites,
+            host: &NoHost,
+        },
+        &mut batch,
+        pose,
+        GlintFrame::default(),
+    ));
+    assert_eq!(batch.vertices.len(), 6);
+    let depths: Vec<f32> = batch.vertices.iter().map(|v| v.depth).collect();
+    assert_eq!(depths.iter().copied().fold(f32::INFINITY, f32::min), 0.0);
+    assert_eq!(
+        depths.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+        1.0
+    );
+    // The scissor takes every pixel the bounds [36.75, 44.75] x [22.5, 38.5] touch, including
+    // the column centred at x = 44.5: rounding the edges out gives a width of 9 and a height of 17.
+    assert_eq!(batch.scale, 1.0);
+    assert_eq!(
+        batch.blends,
+        [(0..6, crate::hud::Blend::Depth([36, 22, 9, 17]))]
+    );
+    fs::remove_dir_all(root).ok();
 }

@@ -1,7 +1,7 @@
 //! Physical process information, frozen before any mod is loaded.
-use sunrise_mod_package::selection::{Argument, LaunchArguments};
 use mod_api::{Dist, RuntimeEnvironment};
 use std::sync::OnceLock;
+use sunrise_mod_package::selection::{Argument, LaunchArguments};
 
 static ENVIRONMENT: OnceLock<RuntimeEnvironment> = OnceLock::new();
 
@@ -35,6 +35,10 @@ pub(crate) fn capture(launch: &LaunchArguments) {
             std::env::var("SUNRISE_GAME_TESTS").ok().as_deref(),
         ))
         .expect("process runtime environment captured once");
+}
+
+pub(crate) fn try_get() -> Option<&'static RuntimeEnvironment> {
+    ENVIRONMENT.get()
 }
 
 pub(crate) fn get() -> &'static RuntimeEnvironment {

@@ -33,11 +33,13 @@ the stack as holding none and is logged once for that item. The hook is
 client-only; the server keeps the fluid in the stack's own data, through `ITEM_FLUIDS` and the item's
 components, as before."##]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "none (FluidUtil.getFirstStackContained over Capabilities.Fluid.ITEM, read by DynamicFluidContainerModel; Sunrise's ITEM_FLUIDS needs a server place, so the client model asks the item)"
     )]
-    fn contained_fluid();
+    fn contained_fluid(stack: &mod_api::ItemStack, fluid: &mut Option<mod_api::FluidKey>);
 }

@@ -3,9 +3,9 @@
 //! worldgen worker threads, so a generator keeps no mutable state and its
 //! chunk carries no `Host`.
 use crate::registry::BlockStateId;
-use sunrise_core::position::ChunkPos;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
+use sunrise_core::position::ChunkPos;
 
 /// The chunk a generator fills: vanilla's `ChunkAccess`, as far as terrain
 /// needs it. Positions are world blocks.

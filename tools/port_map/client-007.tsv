@@ -11,7 +11,7 @@ SkeletonModel.createBodyLayer	skip:data		layer baked into entity-models.json, lo
 SkeletonModel.createDefaultSkeletonMesh	skip:data		layer baked into entity-models.json, loaded by key
 SkeletonModel.createSingleModelDualBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SkeletonModel.setupAnim	port	crates/sunrise-client/src/mobs/anim.rs::setup	skeleton melee pose in the Skeleton branch of setup
-SkeletonModel.translateToHand	port	crates/sunrise-client/src/mobs/render.rs::hand_base	held item hand offset for skeletons (plus or minus one pixel)
+SkeletonModel.translateToHand	port	crates/sunrise-client/src/mobs/render.rs::translate_to_hand	held item hand offset for skeletons (plus or minus one pixel)
 MagmaCubeModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SlimeModel.createOuterBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SlimeModel.createInnerBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
@@ -88,7 +88,7 @@ PlayerEarsModel.createEarsLayer	port	crates/sunrise-client/src/mobs/render.rs::e
 PlayerModel.createMesh	skip:data		layer baked into entity-models.json, loaded by key
 PlayerModel.createArmorMeshSet	skip:data		layer baked into entity-models.json, loaded by key
 PlayerModel.setupAnim	port	crates/sunrise-client/src/mobs/anim.rs::setup	the hat, jacket, sleeve and pant toggles hide their layers (anim::player_model_visibility); humanoid pose is in the Humanoid branch
-PlayerModel.translateToHand	port	crates/sunrise-client/src/mobs/render.rs::hand_base	gap: minor: slim-arm 0.5 pixel hand offset not applied
+PlayerModel.translateToHand	port	crates/sunrise-client/src/mobs/render.rs::translate_to_hand	slim arms shift the hand by half a pixel, outward on each side
 BlockModelLighter.prepareQuadAmbientOcclusion	port	crates/sunrise-client-render/src/mesher/lighting.rs::ambient_occlusion	per-vertex AO brightness and smooth light from the corner samples
 BlockModelLighter.prepareQuadFlat	port	crates/sunrise-client-render/src/mesher/lighting.rs::flat_shaped	light only; the directional colour is applied in Mesher::face
 BlockModelLighter.prepareQuadShape	port	crates/sunrise-client-render/src/mesher/lighting.rs::shape	face bounds, partial and cubic flags

@@ -1,5 +1,9 @@
 # Design: effect added
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [the mod API reference](../../modding/src/reference/api.md) for the current native API.
+> The proposed native-and-guest acceptance case below is historical.
+
 **Accepted with changes** for [#835](https://github.com/arismoko/horizon/issues/835), per the [maintainer decision](https://github.com/arismoko/horizon/pull/2329#issuecomment-6729847069). This remains a provisional design, not an implemented contract. The [additional requirement](https://github.com/arismoko/horizon/pull/2329#issuecomment-6729860519) withholds adoption of the pre-apply Added moment until the public NeoForge 26.3 contract is verified.
 
 ## Evidence and vanilla moment
@@ -24,7 +28,7 @@ Keep vanilla first-insertion behavior and effect-type onEffectAdded separate fro
 
 Before implementation, verify the published counterpart's timing, logical side, mutability, cancellation, source/previous payload and unchanged/hidden-update behavior using public documentation only. Write the exact catalog signature and Host observation guarantees from that evidence. Today's catalog places Added after the first-insertion callback; moving it before mutation changes Host reads. If the verified counterpart is after mutation, preserve that public moment; internal stale tokens must not move it. Class-level coverage and vanilla algorithms do not establish this contract.
 
-Define API-owned snapshots for incoming and previous full instances, effect keys, optional source identity and hidden chains; keep engine store types internal. Explicitly settle whether the source can be nonliving rather than narrowing it accidentally to LivingRef. Require shared-memory Wire layouts, generated coverage updates and registration/load refusal for unsupported payload capabilities; existing `Hooks::mob_effect_added` coverage does not prove redesigned payload support. Keep frozen injection-point machinery untouched.
+Define API-owned snapshots for incoming and previous full instances, effect keys, optional source identity and hidden chains; keep engine store types internal. Explicitly settle whether the source can be nonliving rather than narrowing it accidentally to LivingRef. Require shared-memory Wire layouts, generated coverage updates and registration/load refusal for unsupported payload capabilities; existing `Hooks::mob_effect_added` coverage does not prove redesigned payload support.
 
 ## Route owners to migrate
 

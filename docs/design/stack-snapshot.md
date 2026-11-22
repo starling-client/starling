@@ -1,5 +1,9 @@
 # Scoped whole-stack rollback for internals mods
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [transactions](../modding/src/concepts/transactions.md) for the current native API.
+> The proposed savepoint and its cross-runtime tests are decision history, not a current API.
+
 Proposal for [#1407](https://github.com/arismoko/horizon/issues/1407); this note does not authorize an implementation. TreeFall needs to retain a whole stack while trying a step and put it back if that step fails. The issue does not establish a need to keep snapshots across callbacks or ticks.
 
 ## Decision for review

@@ -125,7 +125,7 @@ pub fn animate(m: &mut Mob) {
 }
 /// The brain memory holding the explored positions
 /// (`SNIFFER_EXPLORED_POSITIONS`).
-pub fn to_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn to_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     use sunrise_core::nbt::Tag;
     let list: Vec<Tag> = m
         .extra

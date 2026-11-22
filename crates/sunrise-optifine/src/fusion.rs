@@ -5,7 +5,7 @@
 //! `fusion:connecting` block model ([`model`]), and which tiles of a connecting texture's image a
 //! face draws ([`layout`]).
 //!
-//! The layouts read the neighbour masks of [`crate::ctm::connect`], which OptiFine's connected
+//! The layouts read the neighbour masks of `sunrise_connected`, which OptiFine's connected
 //! textures build too: the two formats share how a face finds its neighbours.
 //!
 //! Written from Fusion's public wiki (its texture type, model type and model predicate pages)

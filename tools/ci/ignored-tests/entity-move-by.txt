@@ -1,0 +1,2 @@
+sunrise-client game::native_move_by_tests::an_area_query_lists_the_frames_and_paintings_in_the_box lib daily resources
+sunrise-client game::native_move_by_tests::move_by_stops_at_a_wall_and_refuses_what_has_no_physics lib daily resources

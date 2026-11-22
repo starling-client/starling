@@ -2,7 +2,7 @@ name: pack load bench
 # How long resource packs take to load: crates/sunrise-client-render/examples/pack_load_bench.rs on generated packs
 # (no game files), on the branch and then on `base` with the branch's copy of the bench, on the same runner, so a pull
 # request can show its numbers next to main's. Started by hand, or by a push to a `pack-bench/*` branch (a fork can't
-# start a workflow its main lacks), against horizon-rust/horizon's main.
+# start a workflow its main lacks), against sunrise-org/sunrise's main.
 on:
   push:
     branches: ['pack-bench/**']
@@ -53,7 +53,7 @@ jobs:
           BASE: ${{ inputs.base || 'main' }}
           SCALE: ${{ inputs.scale || '1' }}
         run: |
-          git fetch https://github.com/horizon-rust/horizon.git "$BASE"
+          git fetch https://github.com/sunrise-org/sunrise.git "$BASE"
           # Our runners keep the folder beside the checkout between jobs.
           git worktree remove --force ../base 2> /dev/null || rm -rf ../base
           git worktree prune
@@ -66,8 +66,11 @@ jobs:
             --example pack_load_bench -- --scale "$SCALE") > base.md \
             || echo "The bench does not build on the base." > base.md
       - name: Summary
+        # Through the environment, as the step before: an input pasted into the script would run.
+        env:
+          BASE: ${{ inputs.base || 'main' }}
         run: |
           {
             echo "### Branch ($(git rev-parse --short HEAD))"; cat head.md
-            echo; echo "### Base (${{ inputs.base || 'main' }})"; cat base.md
+            echo; echo "### Base ($BASE)"; cat base.md
           } | tee -a "$GITHUB_STEP_SUMMARY"

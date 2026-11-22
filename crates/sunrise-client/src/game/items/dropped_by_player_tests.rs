@@ -1,12 +1,12 @@
 //! The held item's say on the drop key: `ItemPart::on_dropped_by_player` heard by a trait mod
 //! through a guest's drop.
 use super::native_guest_turn_tests::with_guests;
-use sunrise_client::items::ItemStack;
 use mod_api::{
     self, Flow, Hooks, ItemPart, ItemTossEvent, OnDroppedByPlayerEvent, Registrar,
     RegistrationContext, ServerHost,
 };
 use std::sync::{Arc, Mutex};
+use sunrise_client::items::ItemStack;
 
 /// What the Part and `item_toss` heard, and what the Part answers.
 #[derive(Default)]
@@ -85,7 +85,7 @@ fn held(game: &super::Game<'_>) -> (Option<u32>, i32) {
 /// `item_toss` and sends the guest its inventory back; an allowed one drops as before, and an
 /// item without the Part is not asked.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_part_keeps_the_stack_in_the_slot() {
     let probe = Probe::default();
     with_probe(&probe, || {

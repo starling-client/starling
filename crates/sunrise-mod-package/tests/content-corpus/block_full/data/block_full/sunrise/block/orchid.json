@@ -1,0 +1,16 @@
+{
+  "template": "minecraft:blue_orchid",
+  "suspicious_stew_effects": [
+    {
+      "id": "minecraft:night_vision",
+      "duration": 40
+    },
+    {
+      "id": "minecraft:speed"
+    },
+    {
+      "id": "minecraft:haste",
+      "duration": "invalid"
+    }
+  ]
+}

@@ -7,10 +7,16 @@ pub trait Hooks {
     /// enchanted book for a book). Fires after the levels are paid, before
     /// `enchant_item`. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PlayerEnchantItemEvent",
         cancellable = false
     )]
-    fn player_enchant_item();
+    fn player_enchant_item(
+        player: u128,
+        player_entity_id: i32,
+        item: &ItemStack,
+        enchantments: &[(std::sync::Arc<str>, u32)],
+    );
 }

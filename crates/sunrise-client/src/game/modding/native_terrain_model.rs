@@ -2,15 +2,15 @@
 //! (`BlockEntityDrawContext::terrain_model`): explicit solid/cutout/cutout-mipped selection,
 //! directional shading, UV shift and shrink, and tint.
 use super::{Game, native_block_entity_draw::BlockEntityDraw};
+use mod_api::{
+    ModelError, ModelRef, TerrainMaterial, TerrainModelError, TerrainModelOptions, TerrainShade,
+};
 use sunrise_client::{
     models::catalog::BakedFace,
     terrain_model::{
         NativeModelMaterial, NativeModelRenderOptions, NativeModelShade, NativeModelUvShift,
         draw_model,
     },
-};
-use mod_api::{
-    ModelError, ModelRef, TerrainMaterial, TerrainModelError, TerrainModelOptions, TerrainShade,
 };
 
 impl Game<'_> {
@@ -27,17 +27,15 @@ impl Game<'_> {
         if fields.generation != self.standalone_geometry.generation() {
             return Err(TerrainModelError::Model(ModelError::StaleModel));
         }
-        let model = self
+        let faces = self
             .standalone_geometry
             .instance_slot(fields.slot)
-            .and_then(|_| self.pack.render.model_catalog.model_by_slot(fields.slot))
+            .and_then(|_| self.model_faces(fields.slot))
             .ok_or(TerrainModelError::Model(ModelError::UnknownModel))?;
-        let light = self.native_draw_light(draw);
         let layers = &self.pack.render.sprite_layers;
         draw_terrain_model(
             draw,
-            &model.faces,
-            light,
+            faces,
             |name| {
                 layers
                     .get(name)
@@ -73,36 +71,40 @@ fn engine_options(options: TerrainModelOptions<'_>) -> NativeModelRenderOptions<
         }),
         uv_shrink_ratio: options.uv_shrink_ratio,
         tint: options.tint,
+        color: options.color,
+        ..Default::default()
     }
 }
 
-/// Appends `faces` under `draw`'s pose at `light`, or appends nothing and returns `Refused` when
+/// Appends `faces` under `draw`'s pose, or appends nothing and returns `Refused` when
 /// the renderer refuses the model or `options`.
 fn draw_terrain_model(
     draw: &mut BlockEntityDraw,
     faces: &[BakedFace],
-    light: u32,
     sprite_layer: impl Fn(&str) -> Option<u32>,
     options: TerrainModelOptions<'_>,
 ) -> Result<(), TerrainModelError> {
     let pose = draw.pose();
+    let light = draw.element_ambient();
     let vertices = draw.vertices_mut();
-    draw_model(
+    let start = vertices.len();
+    let drawn = draw_model(
         faces,
         pose,
         light,
         engine_options(options),
         sprite_layer,
         |vertex| vertices.push(vertex),
-    )
-    .then_some(())
-    .ok_or(TerrainModelError::Refused)
+    );
+    draw.lit_since(start, BlockEntityDraw::cell_centre, draw.light() & 0xffff);
+    drawn.then_some(()).ok_or(TerrainModelError::Refused)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::{Mat4, Vec3};
+    use mod_api::TerrainUvShift;
     use sunrise_assets::{
         bake::{RenderType, bake_flat_face},
         model::{Direction, Material},
@@ -115,7 +117,6 @@ mod tests {
         },
         mesher::Vertex,
     };
-    use mod_api::TerrainUvShift;
 
     /// A full south face of `sprite` (layer 7) in `render_type`, tinted when `tint_index` >= 0.
     fn face(render_type: Option<RenderType>, tint_index: i32) -> BakedFace {
@@ -157,7 +158,7 @@ mod tests {
             diffuse_lights(false),
             Vec::new(),
         );
-        let result = draw_terrain_model(&mut draw, faces, 0xF0F0, sprite, options);
+        let result = draw_terrain_model(&mut draw, faces, sprite, options);
         (result, draw.into_vertices())
     }
 
@@ -200,11 +201,17 @@ mod tests {
     }
 
     #[test]
-    fn a_translucent_quad_refuses_the_models_materials_but_not_a_chosen_one() {
+    fn a_translucent_quad_takes_the_translucent_material_under_the_models_and_a_chosen_one_wins() {
         let faces = [face(None, -1), face(Some(RenderType::Translucent), -1)];
         let (result, vertices) = drawn(&faces, TerrainModelOptions::default());
-        assert_eq!(result, Err(TerrainModelError::Refused));
-        assert!(vertices.is_empty());
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            materials(&vertices),
+            [
+                TERRAIN_MODEL_SOLID_OVERLAY,
+                sunrise_client::gfx::TERRAIN_MODEL_TRANSLUCENT_OVERLAY
+            ]
+        );
         let (result, vertices) = drawn(
             &faces,
             TerrainModelOptions::default().with_material(TerrainMaterial::Cutout),

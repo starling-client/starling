@@ -1,7 +1,7 @@
 //! What replies and the command line share: closed vocabularies as enums, the envelope, and rounding.
 
-use sunrise_perf_format::v1 as proto;
 use serde::{Deserialize, Serialize};
+use sunrise_perf_format::v1 as proto;
 
 /// A string that names none of an enum's variants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,14 +123,6 @@ impl Op {
             | Op::Frames
             | Op::Bench => false,
         }
-    }
-
-    /// Ops that read the samples section.
-    pub fn reads_samples(self) -> bool {
-        matches!(
-            self,
-            Op::Hot | Op::Tree | Op::Callers | Op::Callees | Op::Split | Op::Group | Op::Frames
-        )
     }
 
     pub fn answered() -> String {

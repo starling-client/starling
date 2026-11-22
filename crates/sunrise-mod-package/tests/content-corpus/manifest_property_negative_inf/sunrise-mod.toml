@@ -1,0 +1,6 @@
+id = "manifest_property_negative_inf"
+name = "Manifest property negative_inf"
+version = "1.0.0"
+
+[properties]
+ratio = -inf

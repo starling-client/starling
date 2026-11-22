@@ -1,0 +1,4 @@
+id = "refused_manifest_bad_homepage"
+name = "Refused manifest bad homepage"
+version = "1.2.3"
+homepage = "ftp://example.test/info"

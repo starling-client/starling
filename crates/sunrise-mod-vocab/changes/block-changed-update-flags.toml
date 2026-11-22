@@ -1,0 +1,3 @@
+ids = ["hook:block_changed", "type:BlockChangedEvent"]
+why = "Version 2 reports the BlockUpdateFlags applied to the authoritative state write. A listener can distinguish a write that suppresses neighbour shape updates from one that requests them, without keeping state around calls to set_block. The hook still fires once per changed state before block side effects and neighbour updates."
+migrate = "Rebuild native listeners against the version 2 hook. Use event.flags.contains(BlockUpdateFlags::KNOWN_SHAPE) to check for a known-shape write."

@@ -1086,8 +1086,8 @@ mod tests {
 
     #[test]
     fn equip_displacement_uses_the_visible_items_scale() {
-        use sunrise_assets::item_model::{ClientItem, ItemModels, StackView};
         use serde_json::json;
+        use sunrise_assets::item_model::{ClientItem, ItemModels, StackView};
 
         let mut models = ItemModels::default();
         for (item, scale) in [("minecraft:spear", 1.95), ("minecraft:sword", 1.0)] {

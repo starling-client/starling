@@ -1,0 +1,3 @@
+ids = ["hook:is_primary_item_for"]
+why = "is_primary_item_for version 2 starts from the resolved supports_enchantment answer before the primary_items tag check; a plain book defaults to true but a primary listener may withhold it. Support and primary remain install-time per-item/per-enchantment answers using default stacks, not component-dependent held-stack queries. The independent world loot engine now reads the primary snapshot as its documented contract requires."
+migrate = "Use supports_enchantment to change eligibility for anvil, /enchant and compatibility-filtered random loot; primary eligibility inherits support unless its own listener changes the answer. Answer both hooks from the default item stack, the enchantment and the installed tags."

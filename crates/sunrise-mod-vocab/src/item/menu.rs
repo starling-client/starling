@@ -105,9 +105,54 @@ pub enum DragKind {
 pub struct MenuButtonContext {
     pub player: u128,
     pub player_entity_id: i32,
-    pub pos: [i32; 3],
+    /// The block backing the menu, or None when the menu was opened without a block.
+    pub pos: Option<[i32; 3]>,
     pub id: i32,
 }
+
+#[cfg(test)]
+mod menu_button_context_tests {
+    use super::MenuButtonContext;
+    use crate::wire::{Reader, Writer};
+
+    #[test]
+    fn menu_button_context_round_trips_with_and_without_a_block_position() {
+        for pos in [None, Some([12, -4, 29])] {
+            let context = MenuButtonContext {
+                player: 0x1234,
+                player_entity_id: 57,
+                pos,
+                id: 8,
+            };
+            let mut writer = Writer::new();
+            writer.put(&context);
+            let decoded = Reader::decode::<MenuButtonContext>(writer.bytes()).unwrap();
+            assert_eq!(decoded.player, context.player);
+            assert_eq!(decoded.player_entity_id, context.player_entity_id);
+            assert_eq!(decoded.pos, context.pos);
+            assert_eq!(decoded.id, context.id);
+        }
+    }
+
+    #[test]
+    fn stacked_on_other_direction_round_trips_on_wire() {
+        use super::{StackedOnOther, StackedOnOtherDirection};
+        for direction in [
+            StackedOnOtherDirection::Event,
+            StackedOnOtherDirection::CarriedOnOther,
+            StackedOnOtherDirection::OtherStackedOnMe,
+        ] {
+            let click = StackedOnOther::new(Some(7), Some(9), 1, 2, 3, true, None, None)
+                .with_direction(direction);
+            let mut writer = Writer::new();
+            writer.put(&click);
+            let decoded = Reader::decode::<StackedOnOther>(writer.bytes()).unwrap();
+            assert_eq!(decoded, click);
+            assert_eq!(decoded.direction, direction);
+        }
+    }
+}
+
 /// The logical side on which a menu click runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // exhaustive: a closed set the game matches without a wildcard
@@ -116,157 +161,246 @@ pub enum LogicalSide {
     Client,
     Server,
 }
-/// Operations on the clicked slot, including its placement and take rules.
-pub trait SlotView {
-    fn item(&self) -> Option<ItemStack>;
-    /// Test placement without imposing resident stack count or damage maxima.
-    /// Unknown item identities or unrepresentable component payloads still refuse.
-    fn may_place(&self, stack: &ItemStack) -> bool;
-    fn may_pickup(&self) -> bool;
-    fn allow_modification(&self) -> bool;
-    fn safe_insert(&mut self, stack: Option<ItemStack>, count: u32) -> Option<ItemStack>;
-    fn safe_take(&mut self, count: u32, max: u32) -> Option<ItemStack>;
+/// Which phase of a pickup click (`AbstractContainerMenu.tryItemClickBehaviourOverride`) is
+/// asking `item_stacked_on_other`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// exhaustive: NeoForge's event, then vanilla's carried-on-other and other-on-me overrides
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum StackedOnOtherDirection {
+    /// The global `Hooks::item_stacked_on_other` event, before either item override.
+    #[default]
+    Event,
+    /// `Item.overrideStackedOnOther`: the carried (cursor) stack's `ItemPart`, asked first.
+    CarriedOnOther,
+    /// `Item.overrideOtherStackedOnMe`: the clicked slot stack's `ItemPart`, asked second.
+    OtherStackedOnMe,
 }
-// no wire: borrowed call-scoped view; transport uses owned snapshots rather than serializing references.
-/// Access to the carried stack, as `createCarriedSlotAccess`.
-// exhaustive: the game builds it with a literal; mods only read it
-pub struct CarriedAccess<'a>(#[doc(hidden)] pub &'a mut Option<ItemStack>);
-impl CarriedAccess<'_> {
-    pub fn get(&self) -> Option<&ItemStack> {
-        self.0.as_ref()
-    }
-    pub fn set(&mut self, stack: Option<ItemStack>) {
-        *self.0 = stack;
-    }
-}
-// no wire: borrowed call-scoped view; transport uses owned snapshots rather than serializing references.
-/// A pickup click's slot and cursor, including empty stacks.
-// exhaustive: the game builds it with a literal; mods only read it
-pub struct StackedOnOther<'a> {
+/// A pickup click on a menu slot, as `item_stacked_on_other` is asked about it: the stacks are the
+/// ones the click found, frozen before any listener ran. A listener answers through
+/// [`StackedOnOtherResult`]; it does not write these.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct StackedOnOther {
+    /// The clicking player's UUID, when a player is clicking.
     pub player: Option<u128>,
+    /// The clicking player's entity id, when a player is clicking.
     pub player_entity_id: Option<i32>,
+    /// The clicked slot's menu index.
     pub slot: usize,
+    /// Which container the slot is in, as the menu numbers them.
     pub container: usize,
+    /// The slot's index in that container.
     pub container_slot: usize,
+    /// A left-button click (a right-button click is not primary).
     pub primary: bool,
-    pub carried: CarriedAccess<'a>,
-    pub clicked: &'a mut dyn SlotView,
-    pub cancellation_result: bool,
+    /// The stack on the cursor, `None` when it is empty.
+    pub carried: Option<ItemStack>,
+    /// The stack in the clicked slot, `None` when it is empty.
+    pub clicked: Option<ItemStack>,
+    /// Which phase of `tryItemClickBehaviourOverride` is firing: the global event, the carried
+    /// stack's `ItemPart` (`CarriedOnOther`), or the clicked stack's `ItemPart`
+    /// (`OtherStackedOnMe`).
+    pub direction: StackedOnOtherDirection,
 }
-/// What `AnvilUpdateEvent` asks about once `createResult` made vanilla's
-/// result with a left input, and what the mods may change: the `output`,
-/// its level `cost` and `material_cost`, the units of `right` used (0 or
-/// more than it holds: all of it), each starting at vanilla's.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct AnvilUpdate {
-    pub left: ItemStack,
-    pub right: Option<ItemStack>,
-    /// The rename box's text, `None` when the client sent none.
-    pub name: Option<String>,
-    /// Vanilla's result for these inputs (`getVanillaResult`), whatever
-    /// the mods set.
-    pub vanilla: AnvilVanilla,
-    pub output: Option<ItemStack>,
-    /// Signed level cost, preserved as set by `AnvilUpdateEvent.setXpCost`.
-    /// A negative cost prevents taking the result (as does zero), not a level refund.
-    pub xp_cost: i32,
-    pub material_cost: i32,
-}
-/// `AnvilUpdateEvent.VanillaResult`: the output, level cost and material
-/// cost `createResult` made.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct AnvilVanilla {
-    pub output: Option<ItemStack>,
-    pub xp_cost: i32,
-    pub material_cost: i32,
-}
-impl AnvilUpdate {
-    /// The question about `vanilla`, the result `createResult` made from
-    /// these inputs and name: the output, level cost and material cost
-    /// start at its own.
+impl StackedOnOther {
+    /// The click `slot` (menu index) of `container`'s slot `container_slot`, with the stacks it found.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        left: ItemStack,
-        right: Option<ItemStack>,
-        name: Option<String>,
-        vanilla: &crate::item::stations::AnvilResult,
+        player: Option<u128>,
+        player_entity_id: Option<i32>,
+        slot: usize,
+        container: usize,
+        container_slot: usize,
+        primary: bool,
+        carried: Option<ItemStack>,
+        clicked: Option<ItemStack>,
     ) -> Self {
-        let vanilla = AnvilVanilla {
-            output: vanilla.result.clone(),
-            xp_cost: vanilla.cost,
-            material_cost: i32::try_from(vanilla.repair_item_count_cost).unwrap_or(i32::MAX),
-        };
         Self {
-            left,
-            right,
-            name,
-            output: vanilla.output.clone(),
-            xp_cost: vanilla.xp_cost,
-            material_cost: vanilla.material_cost,
-            vanilla,
+            player,
+            player_entity_id,
+            slot,
+            container,
+            container_slot,
+            primary,
+            carried,
+            clicked,
+            direction: StackedOnOtherDirection::Event,
         }
     }
 
-    /// The mods' answer, in place of `result`: a cancel leaves no result at
-    /// cost 0; otherwise their output, signed level cost and nonnegative
-    /// material cost. A changed output is no longer only a rename.
-    pub fn answer(self, cancel: bool, result: &mut crate::item::stations::AnvilResult) {
-        if cancel {
-            *result = crate::item::stations::AnvilResult::default();
-            return;
-        }
-        result.only_renaming &= self.output == self.vanilla.output;
-        result.cost = self.xp_cost;
-        result.repair_item_count_cost = self.material_cost.max(0) as u32;
-        result.result = self.output;
+    /// This click in the given `direction` phase.
+    pub fn with_direction(mut self, direction: StackedOnOtherDirection) -> Self {
+        self.direction = direction;
+        self
     }
 }
-/// What `GrindstoneEvent.OnPlaceItem` asks about once the inputs changed,
-/// and what the mods may set: an `output` (none until a mod sets one) and,
-/// with it, `xp` (-1 for vanilla's experience). `vanilla_output` is the
-/// vanilla's result, to read; set `output` to replace it.
+/// Whether a listener keeps the original stack or replaces it.
+#[derive(Clone, Debug, Default, PartialEq)]
+// exhaustive: a stack is left alone or replaced, nothing else
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum StackResult {
+    /// Leave the original stack unchanged.
+    #[default]
+    Keep,
+    /// Replace the stack: `None` empties it.
+    Set(Option<ItemStack>),
+}
+/// What a listener does to the clicked slot's stack in [`StackedOnOtherResult`].
+#[derive(Clone, Debug, Default, PartialEq)]
+// exhaustive: a clicked slot is left alone, directly written, or taken from
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum ClickedStackResult {
+    /// Leave the clicked slot unchanged.
+    #[default]
+    Keep,
+    /// Directly write the clicked slot (`Slot.set`): `None` clears the slot without running
+    /// `Slot.onTake` side effects.
+    Set(Option<ItemStack>),
+    /// Take `count` items from the clicked slot via `Slot.safeTake` / `Slot.onTake`, running the
+    /// slot's take side effects (such as furnace smelting experience, `recipes_used`, crafting
+    /// remainders, or potion take hooks). Valid only in `ItemPart` overrides (refused for global
+    /// listeners); `count` must be at least `1` and at most the slot's current stack size.
+    /// Two accepted takes run their effects separately, in carried-then-clicked order.
+    Take(u32),
+}
+/// A listener's answer to [`StackedOnOther`], validated once and applied once.
+///
+/// For global `Hooks::item_stacked_on_other` listeners (`StackedOnOtherDirection::Event`), setting
+/// a stack is allowed only on a cancelled click that is also `handled` (and
+/// [`ClickedStackResult::Take`] is refused); on any other answer the click is refused and nothing
+/// changes.
+///
+/// For `ItemPart::item_stacked_on_other` overrides (`CarriedOnOther` / `OtherStackedOnMe`),
+/// [`ClickedStackResult::Set`] performs a direct write (without `Slot.onTake` side effects, even
+/// when clearing a result/output slot to `None`), while [`ClickedStackResult::Take`] takes from
+/// the clicked slot through `Slot.safeTake` / `Slot.onTake`. A replaced stack must be a valid
+/// stack (a known item, a count of at least one within the item's maximum).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct StackedOnOtherResult {
+    /// `ItemStackedOnOtherEvent.setCancellationResult`: on a cancelled click, whether the click
+    /// is done (`true`: the listener's work is all of it) or the plain pickup still runs.
+    pub handled: bool,
+    /// The cursor after the click.
+    pub carried: StackResult,
+    /// The clicked slot edit after the click.
+    pub clicked: ClickedStackResult,
+}
+/// The inputs and vanilla result of `AnvilMenu.createResult`, borrowed for
+/// the `anvil_update` callback. Edits by earlier listeners do not change these values.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct GrindstonePlace {
-    pub top: Option<ItemStack>,
-    pub bottom: Option<ItemStack>,
-    pub vanilla_output: Option<ItemStack>,
+// no wire: borrows the converted stacks and rename text for the hook call.
+pub struct AnvilUpdateInputs<'a> {
+    /// The stack in the left input slot. The hook is not asked without one.
+    pub left: &'a ItemStack,
+    /// The stack in the right input slot, if present.
+    pub right: Option<&'a ItemStack>,
+    /// The rename box's text, `None` if the client sent none.
+    pub name: Option<&'a str>,
+    /// The result calculated by vanilla, if any.
+    pub vanilla_output: Option<&'a ItemStack>,
+    /// The level cost calculated by vanilla.
+    pub vanilla_xp_cost: i32,
+    /// The number of material items vanilla would charge from the right slot.
+    pub vanilla_material_cost: i32,
+}
+
+/// The shared answer to `anvil_update`. It starts at `Keep` and vanilla's costs.
+/// The game applies the final edits after dispatch; cancellation leaves no output
+/// and zero costs, while an invalid replacement output is logged and ignored
+/// (keeping vanilla's output).
+#[derive(Clone, Debug, PartialEq)]
+// exhaustive: the game builds it with a literal
+// no wire: staged edits are applied in-process at the end of the hook call.
+pub struct AnvilUpdateEdits {
+    /// Keep vanilla's output, or set a replacement. `Set(None)` clears it.
+    /// A replacement differing from vanilla must be a valid stack; an invalid
+    /// stack is logged and ignored, leaving vanilla's output intact.
+    pub output: StackResult,
+    /// Signed level cost during listener dispatch (`AnvilUpdateEvent.setXpCost`).
+    /// Negative values clamp to `0` when applied (`AnvilMenu.setCost`), and a
+    /// zero cost prevents taking the result (`AnvilMenu.mayPickup`).
+    pub xp_cost: i32,
+    /// Units consumed from the right slot. Negative values clamp to zero;
+    /// zero or a value exceeding the stack consumes all of it on take.
+    pub material_cost: i32,
+}
+/// The inputs and vanilla result of `GrindstoneMenu.createResult`, borrowed for
+/// the `grindstone_place` callback. Edits by earlier listeners do not change these values.
+#[derive(Clone, Debug, PartialEq)]
+// exhaustive: the game builds it with a literal; mods only read it
+// no wire: borrows the converted stacks for the hook call.
+pub struct GrindstonePlaceInputs<'a> {
+    /// The stack in the top input slot, if present.
+    pub top: Option<&'a ItemStack>,
+    /// The stack in the bottom input slot, if present.
+    pub bottom: Option<&'a ItemStack>,
+    /// The result calculated by vanilla, if any.
+    pub vanilla_output: Option<&'a ItemStack>,
+}
+
+/// The shared answer to `grindstone_place`, initially no override and `-1` XP.
+/// Cancellation is checked before converting `output`; an invalid replacement is logged
+/// and ignored so vanilla's result stays intact.
+#[derive(Clone, Debug, PartialEq)]
+// exhaustive: the game builds it with a literal
+// no wire: staged edits are applied in-process at the end of the hook call.
+pub struct GrindstonePlaceEdits {
+    /// Leave vanilla's result and experience with `None`, or replace the result with a
+    /// valid stack. To clear the result, cancel the hook instead.
     pub output: Option<ItemStack>,
+    /// Experience to award when the replacement is taken. Any negative value falls
+    /// through to vanilla's award; nonnegative values set the award.
     pub xp: i32,
 }
-/// A grindstone result taken, as `GrindstoneEvent.OnTakeItem` reports it:
-/// the inputs, the experience (-1 for vanilla's, or what OnPlaceItem set)
-/// and what the inputs hold afterwards (empty, as vanilla's).
+/// The input stacks before the grindstone result was taken, borrowed for the
+/// `grindstone_take` callback. Edits by earlier listeners do not change this snapshot.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct GrindstoneTake {
-    pub top: Option<ItemStack>,
-    pub bottom: Option<ItemStack>,
+// no wire: borrows the converted pre-take stacks for the hook call.
+pub struct GrindstoneTakeInputs<'a> {
+    /// The stack in the top input slot before the take, if present.
+    pub top: Option<&'a ItemStack>,
+    /// The stack in the bottom input slot before the take, if present.
+    pub bottom: Option<&'a ItemStack>,
+}
+
+/// The shared answer to `grindstone_take`. Both remainders start at `None`;
+/// cancellation is checked before converting remainders, and an invalid remainder is
+/// logged and ignored as an empty slot.
+#[derive(Clone, Debug, PartialEq)]
+// exhaustive: the game builds it with a literal
+// no wire: staged edits are applied in-process at the end of the hook call.
+pub struct GrindstoneTakeEdits {
+    /// Experience to award, initially the resolved award (`>= 0`, from `grindstone_place`
+    /// or vanilla's pre-rolled award). Non-positive values (`<= 0`) spawn no experience orbs.
     pub xp: i32,
+    /// A valid replacement for the top input, or `None` to empty the slot.
     pub new_top: Option<ItemStack>,
+    /// A valid replacement for the bottom input, or `None` to empty the slot.
     pub new_bottom: Option<ItemStack>,
 }
-/// An anvil craft as `AnvilCraftEvent` reports it: the inputs and the result
-/// taken, before the crafting changed anything.
+/// The anvil inputs and result before the take. Both `anvil_craft_pre` and
+/// `anvil_craft_post` borrow this same snapshot for their callback.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct AnvilCraft {
-    pub left: Option<ItemStack>,
-    pub right: Option<ItemStack>,
-    pub output: ItemStack,
+// no wire: borrows the pre-take snapshot for this hook call.
+pub struct AnvilCraftInputs<'a> {
+    /// The stack in the left slot before the take, if present.
+    pub left: Option<&'a ItemStack>,
+    /// The stack in the right slot before the take, if present.
+    pub right: Option<&'a ItemStack>,
+    /// The result stack that was taken.
+    pub output: &'a ItemStack,
 }
 
-/// One of a menu's own (non-player) containers: the key a `menu_slot_rules` ask names its slot's
-/// container by (`event.container`, with `event.slot` indexing inside it) and
-/// [`MenuSlotContext::slot`] reads by. A plain menu has `Main` only; a mod menu type with a
-/// crafting grid keeps its grid slots in `Grid` and its crafted result in `Result` (slot 0);
-/// a slot of the player's inventory is `Player`'s.
+/// One of a menu's containers: the key a `menu_slot_rules` ask names its slot's container by
+/// (`event.container`, with `event.slot` indexing inside it) and [`MenuSlotContext::slot`] reads
+/// by. A plain menu has `Main` and `Player`; a mod menu type with a crafting grid keeps its grid
+/// slots in `Grid` and its crafted result in `Result` (slot 0).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -278,40 +412,38 @@ pub enum MenuContainer {
     Grid,
     /// A crafting grid's result slot.
     Result,
-    /// The player's inventory, which an ask can be about but the context does not copy
-    /// ([`MenuSlotContext::slot`] reads nothing there).
+    /// The player's inventory, using vanilla `Inventory` indices: `0..36` inventory, `36..40`
+    /// armor (feet, legs, chest, head) and `40` offhand.
     Player,
 }
-/// Who and where a `menu_slot_rules` ask is about: the menu's player, its block entity and
-/// its own containers' slots. The game fills it the same way on the server and on the client's
-/// prediction, once per click plan; mods read it.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// The menu's player, its block entity and a read-only view of its live slots for one
+/// `menu_slot_rules` ask, on either the server or the predicting client. Read only the slots
+/// needed to answer the rule; the view cannot outlive the ask.
+// no wire: this view borrows the menu's live slots during a click.
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct MenuSlotContext {
+pub struct MenuSlotContext<'a> {
     /// The UUID of the player whose menu it is; None where no player is known.
     pub player: Option<u128>,
     /// The block entity the menu belongs to; None when the menu is not a block's
     /// (opened by a mod with no block, a vehicle's, the player's own inventory).
     pub pos: Option<[i32; 3]>,
-    /// The menu's own containers' slots as they stand when the click plans, read only (not
-    /// the player's inventory): one entry per [`MenuContainer`] in its order (`Main`, `Grid`,
-    /// `Result`), each in that container's slot order. Read one with [`Self::slot`].
-    pub slots: Vec<Vec<Option<ItemStack>>>,
+    read: &'a dyn Fn(MenuContainer, usize) -> Option<ItemStack>,
 }
-impl MenuSlotContext {
-    /// A context of `player`, the block entity at `pos` and the containers' `slots`, one entry
-    /// per [`MenuContainer`] in its order.
+impl<'a> MenuSlotContext<'a> {
+    /// Lend a read of the menu's live slots, with the player and block position of this ask.
+    /// The reader returns `None` for empty, absent or unrepresentable slots.
     pub fn new(
         player: Option<u128>,
         pos: Option<[i32; 3]>,
-        slots: Vec<Vec<Option<ItemStack>>>,
+        read: &'a dyn Fn(MenuContainer, usize) -> Option<ItemStack>,
     ) -> Self {
-        Self { player, pos, slots }
+        Self { player, pos, read }
     }
-    /// What slot `index` of `container` holds, keyed as the ask names its own slot; None when
-    /// it is empty or the menu has no such slot.
-    pub fn slot(&self, container: MenuContainer, index: usize) -> Option<&ItemStack> {
-        self.slots.get(container as usize)?.get(index)?.as_ref()
+
+    /// Read one slot at its backing index, converting just that stack to an API value.
+    /// Returns `None` if it is empty, absent or cannot be represented. For `Player`, indices follow
+    /// vanilla `Inventory`: `0..36` inventory, `36..40` armor (feet-to-head) and `40` offhand.
+    pub fn slot(&self, container: MenuContainer, index: usize) -> Option<ItemStack> {
+        (self.read)(container, index)
     }
 }

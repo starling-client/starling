@@ -23,7 +23,7 @@ static POOL: AtomicPtr<Pool> = AtomicPtr::new(std::ptr::null_mut());
 static CONTROL: Mutex<()> = Mutex::new(());
 thread_local! { static SLOT: Cell<(usize, usize)> = const { Cell::new((0, 0)) }; }
 
-/// One call, shared by native and wasm timing producers. Names are resolved at load time.
+/// One call, shared by mod timing producers. Names are resolved at load time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Record {
     pub mod_id: &'static str,
@@ -91,7 +91,7 @@ impl Report {
         let mut mods: Vec<_> = mods.into_iter().collect();
         mods.sort_by_key(|(id, total)| (std::cmp::Reverse(*total), *id));
         let mut text = format!(
-            "Inclusive native/wasm call timings (ns); dropped: {}\n",
+            "Inclusive native mod call timings (ns); dropped: {}\n",
             self.dropped
         );
         for (id, total) in mods {

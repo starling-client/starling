@@ -1,0 +1,3 @@
+ids = ["type:Screen", "type:Screen.slots", "type:ScreenSlot"]
+why = "Screen slots now declare an optional Slot.getNoItemIcon GUI sprite alongside their position."
+migrate = "Existing Screen literals must replace Some([x, y]) with Some(ScreenSlot { position: [x, y], no_item_icon: None }). The new field is optional but the slot element type changes; rebuild native mods."

@@ -3,9 +3,9 @@ use crate::game::{
     Dim,
     native_entity_refs::tests::{with_client_game, with_game},
 };
-use sunrise_core::nbt::Tag;
 use mod_api::{AttachmentType, EntityConstructingEvent, Hooks, HostSide};
 use std::sync::{Arc, Mutex};
+use sunrise_core::nbt::Tag;
 
 const VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "constructing",
@@ -21,6 +21,10 @@ struct Listener(Calls);
 
 #[mod_api::__subscriptions]
 impl Hooks for Listener {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.register_attachment_type("constructing:value", false)
+            .unwrap();
+    }
     fn entity_constructing(&self, host: HostSide<'_>, event: &mut EntityConstructingEvent) {
         self.0
             .lock()
@@ -67,7 +71,7 @@ fn tag(kind: &str, uuid: i32) -> Tag {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn spawn_summon_and_disk_load_initialize_before_first_attachment_read() {
     observe(|calls| {
         with_game(|game| {
@@ -138,7 +142,7 @@ fn spawn_summon_and_disk_load_initialize_before_first_attachment_read() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn borrowed_spawn_first_read_and_dimension_transfer_keep_one_initialization() {
     observe(|calls| {
         with_game(|game| {
@@ -182,6 +186,7 @@ fn borrowed_spawn_first_read_and_dimension_transfer_keep_one_initialization() {
                 "minecraft:oak_boat",
                 "minecraft:minecart",
                 "minecraft:arrow",
+                "minecraft:armor_stand",
             ]
             .into_iter()
             .enumerate()
@@ -238,23 +243,6 @@ fn borrowed_spawn_first_read_and_dimension_transfer_keep_one_initialization() {
                     "{kind} transferred, not constructed"
                 );
             }
-            let count = calls.lock().unwrap().len();
-            let state = game.take_transferred_entity_state(replacement);
-            assert!(
-                game.load_listed_transferred(
-                    "minecraft:armor_stand",
-                    Some([900, 2, 3, 4]),
-                    None,
-                    tag("minecraft:armor_stand", 900),
-                    state,
-                )
-                .is_err()
-            );
-            assert!(
-                game.armor_stands.is_empty(),
-                "unsupported transfer never constructs a fallback"
-            );
-            assert_eq!(calls.lock().unwrap().len(), count);
             // Constructor ownership is pruned by object identity before UUID cleanup.
             // Equal UUIDs must not make an unreachable object's marker erase a survivor;
             // player holders and objects belonging to parked levels stay untouched.
@@ -292,7 +280,7 @@ fn spawn_info() -> sunrise_protocol::packets::play::SpawnInfo {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn client_login_tracking_and_retracking_initialize_the_client_store_once() {
     use sunrise_protocol::packets::play::{self, Clientbound as C};
     observe(|calls| {
@@ -404,7 +392,7 @@ fn client_login_tracking_and_retracking_initialize_the_client_store_once() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn server_players_initialize_on_join_and_new_respawn_but_not_rebind() {
     observe(|calls| {
         crate::game::native_guest_turn_tests::with_guests(|game| {
@@ -463,6 +451,12 @@ struct Saving(Kinds);
 
 #[mod_api::__subscriptions]
 impl Hooks for Saving {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.register_attachment_type("constructing:value", false)
+            .unwrap();
+        r.register_attachment_type("constructing:saved", false)
+            .unwrap();
+    }
     fn entity_constructing(&self, host: HostSide<'_>, event: &mut EntityConstructingEvent) {
         self.0
             .lock()
@@ -476,7 +470,7 @@ impl Hooks for Saving {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_by_type() {
     let kinds = Kinds::default();
     let mods = vec![mod_api::ModEntry::new(
@@ -541,9 +535,14 @@ fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_b
             assert!(game.entity_attachments.contains_key(&ghost));
             use mod_api::{AttachmentQueries, AttachmentQueriesMut};
             let batch = game.query_mut(&SAVED).unwrap();
-            assert_eq!(batch.iter().count(), 1);
-            let row = batch.iter().next().unwrap().unwrap();
-            assert_eq!(*row.value(), 7);
+            let mut rows = batch.iter();
+            let row = rows.try_next().unwrap().unwrap();
+            assert!(rows.try_next().unwrap().is_none());
+            assert_eq!(
+                row.with_value(game.attachment_frame_borrow(), |value| *value)
+                    .unwrap(),
+                7
+            );
             // Serialize by object ID: the child's equal UUID cannot select the root's map.
             crate::game::persist::write_attachments(&mut child, ghost, &game.entity_attachments);
             let child_state = game.take_transferred_entity_state(ghost);
@@ -567,17 +566,27 @@ fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_b
                 2,
                 "transfer is not reconstruction"
             );
-            assert_eq!(game.query(&SAVED).unwrap().iter().count(), 1);
+            let batch = game.query(&SAVED).unwrap();
+            let mut rows = batch.iter();
+            assert!(rows.try_next().unwrap().is_some());
+            assert!(rows.try_next().unwrap().is_none());
             assert_eq!(
                 row.set(game, 88),
                 Err(mod_api::AttachmentRowError::StaleHolder)
             );
-            assert_eq!(*row.value(), 7);
+            assert_eq!(
+                row.with_value(game.attachment_frame_borrow(), |value| *value)
+                    .unwrap(),
+                7
+            );
             game.persist.off_level.remove(&refused);
             game.forget_entity(refused);
             game.prune_entity_attachments();
             assert_eq!(SAVED.get(game, Holder::Entity(arrived)), Ok(9));
-            assert_eq!(game.query(&SAVED).unwrap().iter().count(), 1);
+            let batch = game.query(&SAVED).unwrap();
+            let mut rows = batch.iter();
+            assert!(rows.try_next().unwrap().is_some());
+            assert!(rows.try_next().unwrap().is_none());
             game.forget_entity(arrived);
             game.mobs.retain(|mob| mob.id != arrived);
             let rebuilt = game.load_mob(tag("minecraft:pig", 200), None).unwrap();
@@ -592,7 +601,7 @@ fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_b
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn mob_constructor_first_store_binds_only_the_resident_lifetime() {
     use mod_api::AttachmentQueries;
     observe(|_| {
@@ -615,10 +624,13 @@ fn mob_constructor_first_store_binds_only_the_resident_lifetime() {
                     .is_bound()
             );
             let batch = game.query(&VALUE).unwrap();
-            let rows: Vec<_> = batch.iter().collect();
-            assert_eq!(rows.len(), 1);
-            let row = rows[0].as_ref().unwrap();
-            assert_eq!(row.value, &41);
+            let mut rows = batch.iter();
+            let row = rows.try_next().unwrap().unwrap();
+            assert!(rows.try_next().unwrap().is_none());
+            assert_eq!(
+                row.with_value(game.attachment_frame_borrow(), |value| *value),
+                Ok(41)
+            );
             assert_eq!(
                 row.holder,
                 mod_api::AttachmentHolder::Entity(game.entity(id).unwrap())
@@ -628,12 +640,16 @@ fn mob_constructor_first_store_binds_only_the_resident_lifetime() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn marker_constructor_store_reaches_its_real_owned_map() {
     use std::sync::atomic::{AtomicBool, Ordering};
     struct Store(Arc<AtomicBool>);
     #[mod_api::__subscriptions]
     impl Hooks for Store {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            r.register_attachment_type("constructing:value", false)
+                .unwrap();
+        }
         fn entity_constructing(&self, host: HostSide<'_>, event: &mut EntityConstructingEvent) {
             if let HostSide::Server(host) = host {
                 assert_eq!(VALUE.set(host, event.holder, 41), Ok(()));
@@ -644,7 +660,7 @@ fn marker_constructor_store_reaches_its_real_owned_map() {
     let ran = Arc::new(AtomicBool::new(false));
     mod_platform::testing::with_mods(
         vec![mod_api::ModEntry::new(
-            "store",
+            "constructing",
             Box::new(Store(ran.clone())),
         )]
         .into(),
@@ -660,7 +676,7 @@ fn marker_constructor_store_reaches_its_real_owned_map() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn cancelled_mob_creation_forgets_constructor_payload_and_identity() {
     struct Cancel;
     #[mod_api::__subscriptions]
@@ -706,7 +722,7 @@ fn cancelled_mob_creation_forgets_constructor_payload_and_identity() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn dragon_part_constructor_first_read_indexes_payload_and_same_id_replacement_reconstructs() {
     use mod_api::AttachmentQueries;
     observe(|calls| {
@@ -720,10 +736,13 @@ fn dragon_part_constructor_first_read_indexes_payload_and_same_id_replacement_re
             assert_eq!(VALUE.get_existing(game, holder), Ok(Some(41)));
             assert!(game.dragon.as_mut().unwrap().parts[0].2.is_bound());
             let batch = game.query(&VALUE).unwrap();
-            let rows: Vec<_> = batch.iter().collect();
-            assert_eq!(rows.len(), 1);
-            let row = rows[0].as_ref().unwrap();
-            assert_eq!(row.value, &41);
+            let mut rows = batch.iter();
+            let row = rows.try_next().unwrap().unwrap();
+            assert!(rows.try_next().unwrap().is_none());
+            assert_eq!(
+                row.with_value(game.attachment_frame_borrow(), |value| *value),
+                Ok(41)
+            );
             assert_eq!(
                 row.holder,
                 mod_api::AttachmentHolder::Entity(game.entity(421).unwrap())
@@ -745,7 +764,14 @@ fn dragon_part_constructor_first_read_indexes_payload_and_same_id_replacement_re
             game.spawn_remote_dragon(420, [1.0, 80.0, 1.0], 0.0);
             assert!(!game.entity_attachments.contains_key(&421));
             assert!(!game.entity_initialization.initialized.contains(&holder));
-            assert!(game.query(&VALUE).unwrap().iter().next().is_none());
+            assert!(
+                game.query(&VALUE)
+                    .unwrap()
+                    .iter()
+                    .try_next()
+                    .unwrap()
+                    .is_none()
+            );
             assert_eq!(VALUE.get_existing(game, holder), Ok(Some(41)));
             assert_eq!(
                 calls
@@ -756,14 +782,24 @@ fn dragon_part_constructor_first_read_indexes_payload_and_same_id_replacement_re
                     .count(),
                 2
             );
-            assert_eq!(game.query(&VALUE).unwrap().iter().count(), 1);
+            let batch = game.query(&VALUE).unwrap();
+            let mut rows = batch.iter();
+            assert!(rows.try_next().unwrap().is_some());
+            assert!(rows.try_next().unwrap().is_none());
             game.remove_remote_dragon(420);
             // No prune pass between removal and network-ID reuse.
             assert!(!game.entity_attachments.contains_key(&421));
             assert!(!game.entity_initialization.initialized.contains(&holder));
             game.spawn_remote_dragon(420, [1.0, 80.0, 1.0], 0.0);
             assert!(!game.entity_attachments.contains_key(&421));
-            assert!(game.query(&VALUE).unwrap().iter().next().is_none());
+            assert!(
+                game.query(&VALUE)
+                    .unwrap()
+                    .iter()
+                    .try_next()
+                    .unwrap()
+                    .is_none()
+            );
             assert_eq!(VALUE.get_existing(game, holder), Ok(Some(41)));
             assert_eq!(
                 calls
@@ -774,7 +810,10 @@ fn dragon_part_constructor_first_read_indexes_payload_and_same_id_replacement_re
                     .count(),
                 3
             );
-            assert_eq!(game.query(&VALUE).unwrap().iter().count(), 1);
+            let batch = game.query(&VALUE).unwrap();
+            let mut rows = batch.iter();
+            assert!(rows.try_next().unwrap().is_some());
+            assert!(rows.try_next().unwrap().is_none());
         });
     });
 }

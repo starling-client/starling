@@ -4,13 +4,13 @@
 //! (`EnchantmentHelper.onProjectileSpawned`). One path for every spawn site:
 //! bows, crossbows, thrown items, dispensers, mobs and the mod host.
 use super::{Game, enchant_effects::look_impulse};
+use serde_json::Value;
 use sunrise_client::{
     enchant::{EffectContext, level_value},
     items::ItemStack,
     projectiles::Projectile,
 };
 use sunrise_world::worldgen::value_provider::FloatProvider;
-use serde_json::Value;
 
 use super::projectile_spawned_validation::{requirements_supported, valid_ranges};
 

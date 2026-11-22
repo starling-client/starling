@@ -554,6 +554,70 @@ impl PalettedContainer {
             }
         }
     }
+    /// One bit per entry in `out`, entry `i` in bit `i` of `out`, from the
+    /// stored ids in one pass: `out[i] = candidate(value of entry i)`.
+    /// `out.len() * 64` must be the number of entries. A single-value palette
+    /// costs one call and fills `out` at once; a list palette resolves
+    /// `candidate` once per palette entry and then sets the bits as it reads
+    /// the words, without an unpacked copy of the section. Every branch writes
+    /// all of `out`, so a reused destination never keeps a bit from an earlier
+    /// container.
+    #[inline]
+    pub fn candidate_bits(&self, out: &mut [u64], mut candidate: impl FnMut(u32) -> bool) {
+        let entries = self.strategy.entries();
+        assert_eq!(out.len() * 64, entries);
+        out.fill(0);
+        match &self.palette {
+            Palette::Single(value) => {
+                if candidate(*value) {
+                    out.fill(u64::MAX);
+                }
+            }
+            Palette::List(list) => {
+                let mut candidates = [false; 256];
+                for (i, &value) in list.iter().enumerate() {
+                    candidates[i] = candidate(value);
+                }
+                let bits = usize::from(self.bits);
+                let per = 64 / bits;
+                let m = mask(self.bits);
+                let mut entry = 0;
+                for &word in &self.words {
+                    for slot in 0..per.min(entries - entry) {
+                        let id = ((word >> (slot * bits)) & m) as usize;
+                        if candidates[id] {
+                            out[entry >> 6] |= 1 << (entry & 63);
+                        }
+                        entry += 1;
+                    }
+                }
+            }
+            Palette::Global => {
+                let bits = usize::from(self.bits);
+                let per = 64 / bits;
+                let m = mask(self.bits);
+                let mut entry = 0;
+                let mut last: Option<(u32, bool)> = None;
+                for &word in &self.words {
+                    for slot in 0..per.min(entries - entry) {
+                        let value = ((word >> (slot * bits)) & m) as u32;
+                        let hit = match last {
+                            Some((seen, hit)) if seen == value => hit,
+                            _ => {
+                                let hit = candidate(value);
+                                last = Some((value, hit));
+                                hit
+                            }
+                        };
+                        if hit {
+                            out[entry >> 6] |= 1 << (entry & 63);
+                        }
+                        entry += 1;
+                    }
+                }
+            }
+        }
+    }
     /// The palette id of every entry in index order, and the list palette
     /// they index (`get(i)` is `list[ids[i]]`), without looking the values
     /// up; `None` (and `ids` untouched) for a single-value or global palette.
@@ -1097,6 +1161,34 @@ mod tests {
             c.set(i, 3);
         }
         assert_eq!(c.uniform(), Some(3));
+    }
+    #[test]
+    fn candidate_bits_overwrites_a_reused_mask() {
+        let list = PalettedContainer::from_values(
+            BLOCKS,
+            &(0..4096).map(|i| (i % 7) as u32).collect::<Vec<_>>(),
+        );
+        let global = PalettedContainer::from_values(
+            BLOCKS,
+            &(0..4096).map(|i| (i % 300) as u32).collect::<Vec<_>>(),
+        );
+        let single_false = PalettedContainer::new(BLOCKS, 1);
+        let single_true = PalettedContainer::new(BLOCKS, 3);
+        for container in [&single_false, &single_true, &list, &global] {
+            let mut values = vec![0u32; 4096];
+            container.unpack(&mut values);
+            let mut expected = vec![0u64; 64];
+            for (i, &value) in values.iter().enumerate() {
+                if value % 3 == 0 {
+                    expected[i >> 6] |= 1 << (i & 63);
+                }
+            }
+            // A destination still holding an earlier answer's bits is
+            // overwritten whole, whichever palette storage the container has.
+            let mut out = vec![u64::MAX; 64];
+            container.candidate_bits(&mut out, |value| value % 3 == 0);
+            assert_eq!(out, expected);
+        }
     }
     #[test]
     fn rejects_malformed_wire_data() {

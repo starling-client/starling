@@ -7,11 +7,13 @@ pub trait Hooks {
     /// to leave its damage and wobble unchanged. The attack itself still
     /// completes. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_vehicle_damage",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge has no such event; Bukkit's VehicleDamageEvent)",
         cancellable = true
     )]
-    fn vehicle_damage();
+    fn vehicle_damage(kind: &str, damage: &mut f32, cancel: &mut bool);
 }

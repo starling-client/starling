@@ -18,11 +18,11 @@ use super::{
 };
 use crate::health::DamageLevel;
 use crate::projectiles::{Projectile, ProjectileKind};
+use mod_api::SoundSource;
 use sunrise_core::{
     geometry::{Vec3, trig},
     random::{LegacyRandom, RandomSource},
 };
-use mod_api::SoundSource;
 
 /// `Activity` (the ones these brains use).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -920,7 +920,7 @@ impl B {
                 {
                     return false;
                 }
-                if !m.on_ground
+                if !m.ground.on_ground
                     || m.fluids.in_water
                     || super::breeze::pose(m) != super::breeze::STANDING
                 {
@@ -1292,7 +1292,7 @@ fn shoot_tick(m: &mut Mob, cx: &mut Bx) {
 }
 /// `LongJump.canRun`.
 fn long_jump_can_run(m: &mut Mob, cx: &mut Bx) -> bool {
-    if !m.on_ground && !m.fluids.in_water {
+    if !m.ground.on_ground && !m.fluids.in_water {
         return false;
     }
     if m.floats() {
@@ -1379,7 +1379,7 @@ fn long_jump_tick(m: &mut Mob, cx: &mut Bx) {
         return;
     }
     let landed_in_water = m.fluids.in_water && !mem(m).breeze_leaving_water.present();
-    if pose == super::breeze::LONG_JUMPING && (m.on_ground || landed_in_water) {
+    if pose == super::breeze::LONG_JUMPING && (m.ground.on_ground || landed_in_water) {
         breeze_sound(m, cx, "entity.breeze.land", 1.0);
         super::breeze::set_pose(m, super::breeze::STANDING);
         let hurt = mem(m).hurt_by.present();
@@ -1444,16 +1444,6 @@ fn act_of(activity: mod_api::Activity) -> Result<Act, mod_api::BehaviorRefusal> 
     })
 }
 
-/// The list's `(prio, activity, is a mod's)` keys, in `Brain.tick`'s start
-/// order — the inspection the goal selector's `entries` gives goals' tests.
-pub fn entry_keys(m: &Mob) -> Option<Vec<(i32, Act, bool)>> {
-    brain(m).map(|b| {
-        b.list
-            .iter()
-            .map(|e| (e.prio, e.act, matches!(e.b, B::Mod(_))))
-            .collect()
-    })
-}
 fn run_one(seed: i64, kids: Vec<(B, i32)>) -> B {
     B::RunOne(Box::new(RunOne {
         running: false,

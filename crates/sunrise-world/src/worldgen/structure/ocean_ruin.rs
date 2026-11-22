@@ -4,8 +4,8 @@ use crate::{
     heightmap::HeightmapType,
     worldgen::{DecodeError, block_feature::FeatureBlockBindings},
 };
-use sunrise_core::random::RandomSource;
 use std::sync::Arc;
+use sunrise_core::random::RandomSource;
 use {
     super::{
         Mirror, Rotation, StructureResources, StructureTemplate,
@@ -365,8 +365,8 @@ pub fn post_process(piece: &TemplatePiece, c: &mut PieceContext<'_>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::{position::ChunkPos, random::LegacyRandom};
     use std::{collections::BTreeMap, path::Path, sync::Mutex};
+    use sunrise_core::{position::ChunkPos, random::LegacyRandom};
     use {
         crate::{
             fluid::FluidState,

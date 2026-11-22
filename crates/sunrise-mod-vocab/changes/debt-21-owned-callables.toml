@@ -1,0 +1,16 @@
+ids = [
+    "method:prelude::ModStateServerHost::schedule_task",
+    "hook:scheduled_task",
+    "hook:scheduled_task.id",
+    "hook:scheduled_task.owner",
+    "hook:scheduled_task.token",
+    "method:Hooks::scheduled_task",
+    "type:ScheduledTaskEvent",
+    "type:ScheduledTaskEvent.id",
+    "type:ScheduledTaskEvent.owner",
+    "type:ScheduledTaskEvent.token",
+    "type:ScheduleError",
+    "type:ScheduleError.Unavailable",
+]
+why = "The server now queues the caller's callable instead of broadcasting a token to unrelated mods, matching vanilla net.minecraft.server.MinecraftServer#schedule(TickTask) and BlockableEventLoop#runAllTasks. The callable receives a fresh server host with journaled writes, runs (and drops on cancellation or world close) under the scheduling mod's identity when attributed, and drains to exhaustion at both server_tick start and end so delay_ticks == 0 runs in the current tick. Scheduling outside a mod callback succeeds without a shared global cap, while named mods remain capped at MAX_PENDING_TASKS (logging a warning naming the mod). TaskId is an opaque, globally unique cancellation capability without a public u64 field, and cancel_task withdraws any waiting task by TaskId alone."
+migrate = "Replace `host.schedule_task(delay, token)` with `host.schedule_task(delay, Box::new(move |host| { /* former handler body */ }))`. Move the data keyed by the token into the closure and use its `host` parameter; remove the `Hooks::scheduled_task` method, its `ScheduledTaskEvent` import, and the owner/token comparisons. Store the opaque `TaskId` returned by `schedule_task` (do not construct `TaskId(n)` or read `.0`) if you need `host.cancel_task(id)`, which now cancels any waiting task for that id without requiring the same mod identity and never aliases across world resets; to persist work, store your own deadline and data and schedule a new closure after reopening. Pass `delay_ticks = 1` instead of `0` if you relied on `0` being deferred to the next tick, because `delay_ticks = 0` now drains to exhaustion in the current tick. Remove match arms on `ScheduleError::NotInMod`, handle `ScheduleError::Unavailable` for calls without an available server world, and add a wildcard arm when matching the now non-exhaustive error. If an attributed task panics, fix the callback and restart the game or server: the failed task rolls back and that mod's scheduled callbacks are skipped for the session, while other mods' tasks continue."

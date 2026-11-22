@@ -9,10 +9,10 @@
 //!
 //! Written from ETF's README ("Blinking textures"); no mod's source was read.
 
-use sunrise_assets::resource_source::ResourceSource;
 use std::collections::HashMap;
 #[cfg(test)]
 use std::fs;
+use sunrise_assets::resource_source::ResourceSource;
 
 use crate::paths::files_under;
 use crate::properties::Properties;

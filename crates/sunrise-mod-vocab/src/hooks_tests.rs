@@ -201,50 +201,62 @@ fn native_switch_skips_and_resumes_subscribed_hooks() {
 }
 
 #[test]
-fn movement_input_writes_back_all_fields() {
-    struct Movement;
+fn movement_input_listeners_share_edits_in_order() {
+    struct Scale;
     #[mod_api::__subscriptions]
-    impl Hooks for Movement {
-        fn movement_input(&self, _host: &dyn ClientHost, event: &mut MovementInputEvent) {
-            event.forward = -0.5;
-            event.strafe = 0.25;
-            event.jump = true;
-            event.sneak = true;
-            assert!(!event.forward_key);
-            assert!(event.backward_key);
-            assert!(!event.left_key);
-            assert!(event.right_key);
-            assert!(!event.sprint);
-            event.forward_key = true;
-            event.backward_key = false;
-            event.left_key = true;
-            event.right_key = false;
-            event.sprint = true;
+    impl Hooks for Scale {
+        fn movement_input_update(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut MovementInputUpdateEvent<'_>,
+        ) {
+            event.input.move_vector[1] *= 0.5;
         }
     }
-    let mods = [ModEntry::new("movement", Box::new(Movement))];
-    install(mods.into());
-    let (mut forward, mut strafe, mut jump, mut sneak) = (1.0, 0.0, false, false);
-    let (mut forward_key, mut backward_key, mut left_key, mut right_key, mut sprint) =
-        (false, true, false, true, false);
-    dispatch_movement_input(
-        &FakeHost::new(),
-        crate::__private::MovementInputCall {
-            forward: &mut forward,
-            strafe: &mut strafe,
-            jump: &mut jump,
-            sneak: &mut sneak,
-            forward_key: &mut forward_key,
-            backward_key: &mut backward_key,
-            left_key: &mut left_key,
-            right_key: &mut right_key,
-            sprint: &mut sprint,
+    struct Jump;
+    #[mod_api::__subscriptions]
+    impl Hooks for Jump {
+        fn movement_input_update(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut MovementInputUpdateEvent<'_>,
+        ) {
+            assert_eq!(event.input.move_vector, [-0.25, 0.5]);
+            assert!(event.input.key_presses.forward);
+            assert!(event.input.key_presses.right);
+            event.input.key_presses.jump = true;
+        }
+    }
+    let mut input = MovementInput {
+        move_vector: [-0.25, 1.0],
+        key_presses: MovementKeys {
+            forward: true,
+            right: true,
+            ..MovementKeys::default()
+        },
+    };
+    testing::with_dispatch(
+        vec![
+            ModEntry::new("scale", Box::new(Scale)),
+            ModEntry::new("jump", Box::new(Jump)),
+        ]
+        .into(),
+        || {
+            dispatch_movement_input_update(
+                &FakeHost::new(),
+                crate::__private::MovementInputUpdateCall { input: &mut input },
+            );
         },
     );
-    assert_eq!((forward, strafe, jump, sneak), (-0.5, 0.25, true, true));
+    assert_eq!(input.move_vector, [-0.25, 0.5]);
     assert_eq!(
-        (forward_key, backward_key, left_key, right_key, sprint),
-        (true, false, true, false, true),
+        input.key_presses,
+        MovementKeys {
+            forward: true,
+            right: true,
+            jump: true,
+            ..MovementKeys::default()
+        }
     );
 }
 
@@ -263,6 +275,7 @@ fn recipe_book_categories_accept_mod_declarations() {
                 id: "mymod:crushing".into(),
                 recipe_type: "mymod:crusher".into(),
                 icon: "minecraft:stone".into(),
+                secondary_icon: None,
                 target_menu: "mymod:crusher".into(),
                 book: crate::item::recipe_book::RecipeBookTypeKey {
                     id: "mymod:crusher".into(),
@@ -637,8 +650,12 @@ fn server_inventory_operations_take_a_server_host(
 #[allow(dead_code)]
 fn delayed_tasks_take_a_server_host(
     host: &mut dyn ServerHost,
+    id: TaskId,
 ) -> (Result<TaskId, ScheduleError>, bool) {
-    (host.schedule_task(20, 7), host.cancel_task(TaskId(1)))
+    (
+        host.schedule_task(20, Box::new(|_| {})),
+        host.cancel_task(id),
+    )
 }
 
 /// Compile-only: a mod reads a level's dimension type, and registers a dimension with its own.
@@ -737,7 +754,8 @@ fn level_queries_take_their_hosts(
     shooter: EntityRef,
     tool: &ItemStack,
 ) {
-    let _: Option<Vec<PlayerRef>> = level.online_players(read);
+    let _: Result<core::ops::ControlFlow<()>, LevelReadError> =
+        level.visit_online_players(read, &mut |_: PlayerRef| core::ops::ControlFlow::Break(()));
     let _: Option<Vec<PlayerRef>> = chunk.watchers(read);
     let _: Option<StructureSearchResult> = level.find_nearest_structure(
         read,
@@ -753,6 +771,14 @@ fn level_queries_take_their_hosts(
     let _: Option<bool> = level.has_collisions(read, [0.0, 64.0, 0.0, 1.0, 65.0, 1.0]);
     let _: Option<Vec<EntityRayHit>> =
         level.ray_trace_entities(read, [0.0; 3], [8.0, 0.0, 0.0], 0.3, Some(shooter));
+    let _: Result<Option<EntityRayHit>, LevelReadError> = level.ray_trace_nearest_entity(
+        read,
+        [0.0; 3],
+        [8.0, 0.0, 0.0],
+        0.3,
+        Some(shooter),
+        &mut |entity: EntityRef| entity != shooter,
+    );
     let _: Result<Option<Vec<ItemStack>>, StackWriteError> =
         level.block_drops(server, [0, 64, 0], Some(tool), Some(shooter));
     let _: Result<Option<Vec<ItemStack>>, StackWriteError> = level.roll_loot(
@@ -865,6 +891,15 @@ fn spawn_policy_writes_take_a_server_host(
         [0.5, 64.0, 0.5],
         SpawnReason::Command,
     );
+    let mut spawn = EntitySpawn::new(SpawnBody::Living {
+        reason: SpawnReason::Command,
+    });
+    spawn.velocity = [0.0, 0.5, 0.0];
+    let _: Option<EntityRef> =
+        level.spawn_entity(server, "minecraft:zombie", [0.5, 64.0, 0.5], &spawn);
+    let missile = EntitySpawn::new(SpawnBody::General);
+    let shot = level.spawn_entity(server, "mymod:missile", [0.5, 65.0, 0.5], &missile);
+    let _: Option<EntityRef> = shot.and_then(|shot| shot.owner(read));
 }
 
 /// Compile-only: a passage is registered and removed through its level on a server host.
@@ -872,4 +907,279 @@ fn spawn_policy_writes_take_a_server_host(
 fn passages_take_a_server_host(server: &mut dyn ServerHost, level: LevelRef, passage: Passage) {
     let id: Result<PassageId, PassageRegistrationError> = level.register_passage(server, passage);
     let _: bool = level.remove_passage(server, id.unwrap());
+}
+
+#[test]
+fn panicking_listener_is_disabled_for_that_hook_and_reported_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ModA {
+        pre: Arc<AtomicUsize>,
+        post: Arc<AtomicUsize>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for ModA {
+        fn client_tick_pre(&self, _: &mut dyn ClientHost, _: &mut ClientTickPreEvent) {
+            self.pre.fetch_add(1, Ordering::Relaxed);
+            panic!("mod_a client_tick_pre failure");
+        }
+        fn client_tick_post(&self, _: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
+            self.post.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct ModB {
+        pre: Arc<AtomicUsize>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for ModB {
+        fn client_tick_pre(&self, _: &mut dyn ClientHost, _: &mut ClientTickPreEvent) {
+            self.pre.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let a_pre = Arc::new(AtomicUsize::new(0));
+    let a_post = Arc::new(AtomicUsize::new(0));
+    let b_pre = Arc::new(AtomicUsize::new(0));
+
+    testing::with_dispatch(
+        vec![
+            ModEntry::new(
+                "mod_a",
+                Box::new(ModA {
+                    pre: a_pre.clone(),
+                    post: a_post.clone(),
+                }),
+            ),
+            ModEntry::new("mod_b", Box::new(ModB { pre: b_pre.clone() })),
+        ]
+        .into(),
+        || {
+            let mut host = FakeHost::new();
+
+            // Dispatch #1: mod_a panics without unwinding out of dispatch, and mod_b still runs.
+            dispatch_client_tick_pre(&mut host);
+            assert_eq!(a_pre.load(Ordering::Relaxed), 1);
+            assert_eq!(b_pre.load(Ordering::Relaxed), 1);
+
+            // Dispatch #2: mod_a is disabled for client_tick_pre, while mod_b keeps running.
+            dispatch_client_tick_pre(&mut host);
+            assert_eq!(a_pre.load(Ordering::Relaxed), 1);
+            assert_eq!(b_pre.load(Ordering::Relaxed), 2);
+
+            // mod_a's other hook still runs: disablement is per (hook, mod), not whole-mod.
+            dispatch_client_tick_post(&mut host);
+            assert_eq!(a_post.load(Ordering::Relaxed), 1);
+
+            assert_eq!(
+                crate::__private::take_hook_panics(),
+                [crate::__private::HookPanicReport {
+                    mod_id: "mod_a",
+                    hook: "client_tick_pre",
+                }]
+            );
+
+            // Dispatch #3: mod_a stays skipped and no duplicate report is queued.
+            dispatch_client_tick_pre(&mut host);
+            assert_eq!(a_pre.load(Ordering::Relaxed), 1);
+            assert_eq!(b_pre.load(Ordering::Relaxed), 3);
+            assert!(crate::__private::take_hook_panics().is_empty());
+        },
+    );
+}
+
+#[test]
+fn callback_and_registration_contain_panicking_payload_destructors() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Secondary;
+    impl Drop for Secondary {
+        fn drop(&mut self) {
+            panic!("must not drop the secondary panic payload");
+        }
+    }
+
+    struct Payload(Arc<AtomicUsize>);
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            // The real crash hook must still defer to dispatch while the payload drops.
+            self.0.store(
+                crate::runtime::hook_dispatch_depth() as usize,
+                Ordering::Relaxed,
+            );
+            std::panic::panic_any(Secondary);
+        }
+    }
+
+    struct Panicker(Arc<AtomicUsize>);
+    #[crate::__subscriptions]
+    impl Hooks for Panicker {
+        fn client_tick_pre(&self, _: &mut dyn ClientHost, _: &mut ClientTickPreEvent) {
+            std::panic::panic_any(Payload(self.0.clone()));
+        }
+    }
+
+    struct Healthy(Arc<AtomicUsize>);
+    #[crate::__subscriptions]
+    impl Hooks for Healthy {
+        fn client_tick_pre(&self, _: &mut dyn ClientHost, _: &mut ClientTickPreEvent) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let drop_depth = Arc::new(AtomicUsize::new(0));
+    let healthy_calls = Arc::new(AtomicUsize::new(0));
+    testing::with_dispatch(
+        vec![
+            ModEntry::new("mod_payload", Box::new(Panicker(drop_depth.clone()))),
+            ModEntry::new("mod_healthy", Box::new(Healthy(healthy_calls.clone()))),
+        ]
+        .into(),
+        || {
+            dispatch_client_tick_pre(&mut FakeHost::new());
+            assert_eq!(drop_depth.swap(0, Ordering::Relaxed), 1);
+            assert_eq!(crate::runtime::hook_dispatch_depth(), 0);
+            assert_eq!(healthy_calls.load(Ordering::Relaxed), 1);
+
+            assert!(!crate::runtime::invoke_registration("mod_payload", || {
+                std::panic::panic_any(Payload(drop_depth.clone()));
+            }));
+            assert_eq!(drop_depth.load(Ordering::Relaxed), 1);
+            assert_eq!(crate::runtime::hook_dispatch_depth(), 0);
+            assert!(crate::runtime::invoke_registration("mod_healthy", || {
+                healthy_calls.fetch_add(1, Ordering::Relaxed);
+            }));
+            assert_eq!(healthy_calls.load(Ordering::Relaxed), 2);
+            assert_eq!(
+                crate::__private::take_hook_panics(),
+                [
+                    crate::__private::HookPanicReport {
+                        mod_id: "mod_payload",
+                        hook: "client_tick_pre",
+                    },
+                    crate::__private::HookPanicReport {
+                        mod_id: "mod_payload",
+                        hook: "register",
+                    },
+                ],
+            );
+        },
+    );
+}
+
+#[test]
+fn world_phase_cloned_event_fields_roll_back_on_panic() {
+    struct Panicker;
+    #[crate::__subscriptions]
+    impl Hooks for Panicker {
+        fn broadcast_message(&self, _: &dyn Host, event: &mut BroadcastMessageEvent<'_>) -> Flow {
+            *event.line = Text::literal("corrupted");
+            panic!("boom in broadcast_message");
+        }
+    }
+    struct Observer(Arc<std::sync::Mutex<Option<Text>>>);
+    #[crate::__subscriptions]
+    impl Hooks for Observer {
+        fn broadcast_message(&self, _: &dyn Host, event: &mut BroadcastMessageEvent<'_>) -> Flow {
+            *self.0.lock().unwrap() = Some(event.line.clone());
+            *event.line = Text::literal("clean");
+            Flow::Continue
+        }
+    }
+
+    let observed = Arc::new(std::sync::Mutex::new(None));
+    testing::with_dispatch(
+        vec![
+            ModEntry::new("panicker", Box::new(Panicker)),
+            ModEntry::new("observer", Box::new(Observer(observed.clone()))),
+        ]
+        .into(),
+        || {
+            let host = FakeHost::new();
+            let mut line = Text::literal("hello");
+            let mut cancel = false;
+            dispatch_broadcast_message(&host, &mut line, &mut cancel);
+            assert_eq!(
+                observed.lock().unwrap().as_ref(),
+                Some(&Text::literal("hello"))
+            );
+            assert_eq!(line, Text::literal("clean"));
+            assert!(!cancel);
+            assert_eq!(
+                crate::__private::take_hook_panics(),
+                [crate::__private::HookPanicReport {
+                    mod_id: "panicker",
+                    hook: "broadcast_message",
+                }]
+            );
+        },
+    );
+}
+
+#[test]
+fn register_configuration_tasks_rolls_back_staged_tasks_on_panic() {
+    struct StubTask(Identifier);
+    impl ConfigurationTask for StubTask {
+        fn task_type(&self) -> &Identifier {
+            &self.0
+        }
+        fn start(&mut self, _: &mut dyn ServerHost, _: &mut ConfigurationTaskContext<'_>) {}
+    }
+    struct PanickingRegistrar;
+    #[crate::__subscriptions]
+    impl Hooks for PanickingRegistrar {
+        fn register_configuration_tasks(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut RegisterConfigurationTasksEvent<'_>,
+        ) {
+            event.register(StubTask(Identifier::parse("test:shared_task").unwrap()));
+            panic!("panic after staging configuration task");
+        }
+    }
+    struct HealthyRegistrar;
+    #[crate::__subscriptions]
+    impl Hooks for HealthyRegistrar {
+        fn register_configuration_tasks(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut RegisterConfigurationTasksEvent<'_>,
+        ) {
+            event.register(StubTask(Identifier::parse("test:shared_task").unwrap()));
+        }
+    }
+
+    testing::with_dispatch(
+        vec![
+            ModEntry::new("panicker", Box::new(PanickingRegistrar)),
+            ModEntry::new("healthy", Box::new(HealthyRegistrar)),
+        ]
+        .into(),
+        || {
+            let mut host = FakeHost::new();
+            let mut registration = crate::__private::ConfigurationTaskRegistration::default();
+            dispatch_register_configuration_tasks(
+                &mut host,
+                crate::__private::configuration_connection(1, 1),
+                42,
+                "Steve",
+                &mut registration,
+            );
+            assert_eq!(registration.failure(), None);
+            let tasks = registration.into_tasks();
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].owner.id(), "healthy");
+            assert_eq!(
+                tasks[0].task_type(),
+                &Identifier::parse("test:shared_task").unwrap()
+            );
+            assert_eq!(
+                crate::__private::take_hook_panics(),
+                [crate::__private::HookPanicReport {
+                    mod_id: "panicker",
+                    hook: "register_configuration_tasks",
+                }]
+            );
+        },
+    );
 }

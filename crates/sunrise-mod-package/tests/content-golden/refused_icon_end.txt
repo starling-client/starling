@@ -1,0 +1,5 @@
+manifest:
+refused: icon.png: CRC error: expected 0xae426083 have 0xae426082 while decoding ChunkType { type: IEND, critical: true, private: false, reserved: false, safecopy: false } chunk.
+
+icon:
+unavailable

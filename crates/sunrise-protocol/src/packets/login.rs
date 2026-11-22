@@ -1,25 +1,48 @@
 //! Login state: offline/online hello, encryption request, compression,
 //! login plugin queries and the finished game profile.
 use crate::{
-    buf::{Bool, Bytes, Ident, Opt, RestN, Str, StrN, Uuid, VarInt},
+    Result,
+    buf::{Bool, Bytes, Codec, Ident, Opt, Reader, RestN, Str, StrN, Uuid, VarInt},
     packet, packet_enum,
     packets::Empty,
+    retained::OwnedHeap,
 };
+use sunrise_core::{profile::AccountProperty, vanilla_bytes::Writer};
 
-packet!(
-    /// com.mojang.authlib.properties.Property.
-    Property {
-        name: String => StrN<64>,
-        value: String => Str,
-        signature: Option<String> => Opt<StrN<1024>>,
+/// The network form of authlib's profile property.
+pub(crate) struct PropertyCodec;
+
+impl Codec<AccountProperty> for PropertyCodec {
+    fn read(r: &mut Reader) -> Result<AccountProperty> {
+        Ok(AccountProperty {
+            name: StrN::<64>::read(r)?,
+            value: Str::read(r)?,
+            signature: Opt::<StrN<1024>>::read(r)?,
+        })
     }
-);
+
+    fn write(v: &AccountProperty, w: &mut Writer) {
+        StrN::<64>::write(&v.name, w);
+        Str::write(&v.value, w);
+        Opt::<StrN<1024>>::write(&v.signature, w);
+    }
+}
+
+impl OwnedHeap for AccountProperty {
+    fn owned_heap_bytes(&self) -> usize {
+        self.name
+            .owned_heap_bytes()
+            .saturating_add(self.value.owned_heap_bytes())
+            .saturating_add(self.signature.owned_heap_bytes())
+    }
+}
+
 packet!(
     /// ByteBufCodecs.GAME_PROFILE.
     GameProfile {
         uuid: u128 => Uuid,
         name: String => StrN<16>,
-        properties: Vec<Property> => crate::buf::List<Property>,
+        properties: Vec<AccountProperty> => crate::buf::List<PropertyCodec>,
     }
 );
 packet!(Disconnect { reason_json: String => StrN<262144> });
@@ -79,7 +102,7 @@ mod tests {
         let profile = GameProfile {
             uuid: crate::crypto::offline_uuid("Sunrise"),
             name: "Sunrise".into(),
-            properties: vec![Property {
+            properties: vec![AccountProperty {
                 name: "textures".into(),
                 value: "e30=".into(),
                 signature: None,

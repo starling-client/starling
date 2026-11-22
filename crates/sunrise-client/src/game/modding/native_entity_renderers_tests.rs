@@ -4,7 +4,6 @@
 //! refused by name, and a resource reload keeps the registered renderer in use.
 use super::Game;
 use super::native_entity_renderers::EntityRendererTable;
-use sunrise_client::{mesher::Vertex, projectiles::ThrownType};
 use mod_api::{BlockEntityDrawContext, EntityRenderState, EntityRenderer};
 use std::{
     collections::BTreeMap,
@@ -13,6 +12,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
+use sunrise_client::{mesher::Vertex, projectiles::ThrownType};
 
 /// Draws one stone quad a block wide, `height` blocks above the entity; `drew` says whether it was
 /// asked and the sprite was there.
@@ -108,9 +108,13 @@ fn resolve(ids: &[&str]) -> (EntityRendererTable, Vec<String>) {
             )
         })
         .collect();
-    EntityRendererTable::resolve(&registered, &TYPES, &Default::default(), |id| {
-        ["minecraft:oak_boat", "ruby:bolt", "ruby:dart"].contains(&id)
-    })
+    EntityRendererTable::resolve(
+        &registered,
+        &TYPES,
+        &Default::default(),
+        &crate::game::general::GeneralTypeCatalog::freeze(&[]).unwrap(),
+        |id| ["minecraft:oak_boat", "ruby:bolt", "ruby:dart"].contains(&id),
+    )
 }
 
 #[test]
@@ -240,7 +244,7 @@ fn in_scene(test: &str, check: impl FnOnce(&mut Game<'_>, &Scene)) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_registered_thrown_type_draws_the_later_renderer_and_no_item() {
     in_scene(
         "a_registered_thrown_type_draws_the_later_renderer_and_no_item",
@@ -255,7 +259,7 @@ fn a_registered_thrown_type_draws_the_later_renderer_and_no_item() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_unregistered_thrown_type_still_draws_its_item() {
     in_scene(
         "an_unregistered_thrown_type_still_draws_its_item",
@@ -273,7 +277,7 @@ fn an_unregistered_thrown_type_still_draws_its_item() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_vanilla_boat_is_unchanged_by_a_registration_for_its_type() {
     in_scene(
         "a_vanilla_boat_is_unchanged_by_a_registration_for_its_type",
@@ -281,7 +285,7 @@ fn a_vanilla_boat_is_unchanged_by_a_registration_for_its_type() {
             game.boats
                 .push(super::boats::Boat::new(100, "oak".into(), feet(), 0.0));
             let mut boat = Vec::new();
-            game.boat_geometry(CAMERA, 1.0, &mut boat);
+            game.boat_geometry(CAMERA, 1.0, &mut boat, 0..game.boats.len());
             assert!(!boat.is_empty(), "its vanilla model");
             assert!(
                 boat.iter().all(|v| above(v) < 2.0),
@@ -298,7 +302,7 @@ fn a_vanilla_boat_is_unchanged_by_a_registration_for_its_type() {
 /// A failing renderer falls back to the item and is asked no more; only a reload's fresh table asks
 /// it again, so this also fails when a reload does not rebuild the table (or does not finish).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_failed_renderer_draws_the_item_until_a_resource_reload_resolves_it_again() {
     in_scene(
         "a_failed_renderer_draws_the_item_until_a_resource_reload_resolves_it_again",

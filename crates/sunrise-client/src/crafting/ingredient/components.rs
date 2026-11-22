@@ -1,8 +1,8 @@
 //! Component patches are validated and decoded once, before publication.
 use super::*;
+use std::collections::HashMap;
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_items::item_data::ingredient_components::{component_equal, removed, visit_components};
-use std::collections::HashMap;
 
 /// Decoded patch and item prototypes shared by concrete candidate checks.
 #[derive(Clone, Debug)]
@@ -28,8 +28,7 @@ fn component_id(id: &str) -> Result<String, String> {
         .map(|id| id.to_string())
         .map_err(|error| error.to_string())
 }
-pub(super) fn validate(rule: &IngredientRule, items: &Items) -> Result<(), String> {
-    let IngredientRule::Components { patch, removed, .. } = rule;
+fn validate_key(id: &str, visited: &mut HashSet<String>, items: &Items) -> Result<String, String> {
     let known = |id: &str| {
         items
             .component_registry
@@ -44,32 +43,49 @@ pub(super) fn validate(rule: &IngredientRule, items: &Items) -> Result<(), Strin
             || sunrise_command::item::DECODED_COMPONENTS.contains(&id)
             || sunrise_protocol::item::custom::id(id).is_some()
     };
-    let mut visited = HashSet::new();
-    for id in patch
-        .keys()
-        .map(|key| key.to_string_lossy())
-        .chain(removed.iter().cloned())
-    {
-        let id = component_id(&id)?;
-        if !visited.insert(id.clone()) {
-            return Err(format!("repeated component {id}"));
-        }
-        if !known(&id) {
-            return Err(format!("unregistered component {id}"));
-        }
+    let id = component_id(id)?;
+    if sunrise_world::item_defaults::is_transient_component(&id) {
+        return Err(format!("'{id}' is not a persistent component"));
     }
-    for (id, value) in patch {
-        let id = component_id(&id.to_string_lossy())?;
-        if id.starts_with("minecraft:") {
-            sunrise_command::item::decoded_component_value(&id, value, &items.component_registry)
-                .map_err(|error| format!("component {id}: {error}"))?;
+    if !visited.insert(id.clone()) {
+        return Err(format!("repeated component {id}"));
+    }
+    if !known(&id) {
+        return Err(format!("unregistered component {id}"));
+    }
+    Ok(id)
+}
+fn decode_rule_entries(
+    rule: &IngredientRule,
+    items: &Items,
+) -> Result<(Compound, HashSet<String>, Vec<String>), String> {
+    let IngredientRule::Components { patch, removed, .. } = rule;
+    let mut visited = HashSet::new();
+    let mut patched = HashSet::with_capacity(patch.len());
+    let mut normalized_removed = Vec::with_capacity(removed.len());
+    let mut decoded = Compound::new();
+    for (raw_id, value) in patch {
+        let name = validate_key(&raw_id.to_string_lossy(), &mut visited, items)?;
+        let value = if name.starts_with("minecraft:") {
+            sunrise_command::item::decoded_component_value(&name, value, &items.component_registry)
+                .map_err(|error| format!("component {name}: {error}"))?
         } else {
             // component_types declares persistent, arbitrary NBT values.
             sunrise_core::nbt::validate_component_value(value)
-                .map_err(|error| format!("component {id}: {error}"))?;
-        }
+                .map_err(|error| format!("component {name}: {error}"))?;
+            value.clone()
+        };
+        patched.insert(name.clone());
+        decoded.insert(name.as_str().into(), value);
     }
-    Ok(())
+    for raw_id in removed {
+        normalized_removed.push(validate_key(raw_id, &mut visited, items)?);
+    }
+    Ok((decoded, patched, normalized_removed))
+}
+#[cfg(test)]
+pub(super) fn validate(rule: &IngredientRule, items: &Items) -> Result<(), String> {
+    decode_rule_entries(rule, items).map(|_| ())
 }
 impl ComponentPredicate {
     pub(super) fn compile(
@@ -77,28 +93,8 @@ impl ComponentPredicate {
         candidates: &HashSet<String>,
         items: &Items,
     ) -> Result<Self, String> {
-        validate(rule, items)?;
-        let IngredientRule::Components {
-            patch,
-            removed,
-            strict,
-        } = rule;
-        let decoded = patch
-            .iter()
-            .map(|(id, value)| {
-                let name = component_id(&id.to_string_lossy())?;
-                let value = if name.starts_with("minecraft:") {
-                    sunrise_command::item::decoded_component_value(
-                        &name,
-                        value,
-                        &items.component_registry,
-                    )?
-                } else {
-                    value.clone()
-                };
-                Ok((name.as_str().into(), value))
-            })
-            .collect::<Result<Compound, String>>()?;
+        let (decoded, patched, removed) = decode_rule_entries(rule, items)?;
+        let IngredientRule::Components { strict, .. } = rule;
         let expected = decode(decoded.clone());
         let defaults = candidates
             .iter()
@@ -115,14 +111,8 @@ impl ComponentPredicate {
         Ok(Self {
             expected,
             retained: decoded,
-            patched: patch
-                .keys()
-                .map(|key| component_id(&key.to_string_lossy()))
-                .collect::<Result<_, _>>()?,
-            removed: removed
-                .iter()
-                .map(|id| component_id(id))
-                .collect::<Result<_, _>>()?,
+            patched,
+            removed,
             strict: *strict,
             defaults,
         })
@@ -252,92 +242,105 @@ pub(super) fn json_patch(data: &serde_json::Map<String, Value>) -> Option<Compou
     crate::json_nbt::json_to_compound(normalized.as_ref().unwrap_or(data)).ok()
 }
 
-// Keep conversion failures alongside codec errors at the recipe publication boundary.
-pub(super) fn validate_recipe_components(value: &Value, items: &Items) -> Result<(), String> {
-    let object = value.as_object().ok_or("malformed components ingredient")?;
-    let keys = object
-        .get("components")
-        .and_then(Value::as_object)
-        .map(|patch| {
-            patch
-                .keys()
-                .map(|id| id.strip_prefix('!').unwrap_or(id).to_owned())
-                .collect()
-        })
-        .unwrap_or_default();
-    let ids = IngredientRule::Components {
-        patch: Default::default(),
-        removed: keys,
-        strict: false,
-    };
-    validate(&ids, items)?;
-    let conversion_error = std::cell::RefCell::new(None);
-    let parsed = WalkedIngredient::walk(
-        value,
-        &items.item_tag_order,
-        &|_| None,
-        &resolved_items,
-        &|data| {
-            let mut converted = sunrise_core::nbt::Compound::new();
-            for (id, value) in data {
-                let single = serde_json::Map::from_iter([(id.clone(), value.clone())]);
-                match json_patch(&single) {
-                    Some(field) => converted.extend(field),
-                    None => {
-                        *conversion_error.borrow_mut() =
-                            Some(format!("component {id}: malformed JSON payload"));
-                        return None;
-                    }
-                }
-            }
-            Some(converted)
-        },
-    );
-    if let Some(error) = conversion_error.into_inner() {
-        return Err(error);
+/// Validate component keys and convert the JSON patch once during ingredient decoding.
+pub(super) fn convert_component_patch(
+    data: &serde_json::Map<String, Value>,
+    items: &Items,
+) -> Result<Compound, String> {
+    let mut visited = HashSet::with_capacity(data.len());
+    for raw_id in data.keys() {
+        let id = raw_id.strip_prefix('!').unwrap_or(raw_id);
+        validate_key(id, &mut visited, items)?;
     }
-    let rule = parsed
-        .and_then(|parsed| parsed.rule)
-        .ok_or_else(|| "malformed components ingredient".to_owned())?;
-    validate(&rule, items)
+    let mut converted = Compound::new();
+    for (id, value) in data {
+        let single = serde_json::Map::from_iter([(id.clone(), value.clone())]);
+        match json_patch(&single) {
+            Some(field) => converted.extend(field),
+            None => return Err(format!("component {id}: malformed JSON payload")),
+        }
+    }
+    Ok(converted)
 }
 
-pub(super) fn validate_recipe(value: &Value, items: &Items, recipe: &str) -> bool {
-    match value {
-        Value::Object(object) => match ingredient_kind(object) {
-            Some("neoforge:components") => {
-                if let Err(error) = validate_recipe_components(value, items) {
-                    log::warn!("recipe {recipe} rejected: {error}");
-                    return false;
-                }
-                true
-            }
-            Some("neoforge:compound" | "neoforge:intersection") => ["children", "ingredients"]
-                .iter()
-                .filter_map(|key| object.get(*key))
-                .all(|value| validate_recipe(value, items, recipe)),
-            Some("neoforge:difference") => ["base", "subtracted"]
-                .iter()
-                .filter_map(|key| object.get(*key))
-                .all(|value| validate_recipe(value, items, recipe)),
-            Some("neoforge:custom_display") => object
-                .get("base")
-                .is_none_or(|value| validate_recipe(value, items, recipe)),
-            _ => {
-                crate::crafting::INGREDIENT_KEYS
-                    .iter()
-                    .filter_map(|key| object.get(*key))
-                    .all(|value| validate_recipe(value, items, recipe))
-                    && crate::crafting::INGREDIENT_MAPS
-                        .iter()
-                        .filter_map(|key| object.get(*key).and_then(Value::as_object))
-                        .flat_map(|map| map.values())
-                        .all(|value| validate_recipe(value, items, recipe))
-            }
-        },
-        Value::Array(values) => values
-            .iter()
-            .all(|value| validate_recipe(value, items, recipe)),
-        _ => true,
+#[cfg(test)]
+pub(super) fn validate_recipe_components(value: &Value, items: &Items) -> Result<(), String> {
+    Ingredient::parse_with_error(value, items, &|_, _| None).map(|_| ())
+}
+
+/// Validate only recipe/ingredient codecs; a native ingredient's own JSON is opaque.
+pub(super) fn persistent_recipe(value: &Value) -> Result<(), String> {
+    if !value["type"]
+        .as_str()
+        .is_some_and(|kind| kind.starts_with("minecraft:"))
+    {
+        return Ok(());
     }
+    sunrise_world::item_defaults::validate_stack(&value["result"])?;
+    for key in crate::crafting::INGREDIENT_KEYS {
+        persistent_ingredient(&value[key])?;
+    }
+    for key in crate::crafting::INGREDIENT_MAPS {
+        for ingredient in value[key]
+            .as_object()
+            .into_iter()
+            .flat_map(|map| map.values())
+        {
+            persistent_ingredient(ingredient)?;
+        }
+    }
+    Ok(())
+}
+fn persistent_ingredient(value: &Value) -> Result<(), String> {
+    if let Some(values) = value.as_array() {
+        for value in values {
+            persistent_ingredient(value)?;
+        }
+    } else if let Some(object) = value.as_object() {
+        match ingredient_kind(object) {
+            Some("neoforge:components") => {
+                sunrise_world::item_defaults::validate_component_map(&value["components"])?
+            }
+            Some("neoforge:compound" | "neoforge:intersection") => {
+                for key in ["children", "ingredients"] {
+                    persistent_ingredient(&value[key])?;
+                }
+            }
+            Some("neoforge:difference") => {
+                persistent_ingredient(&value["base"])?;
+                persistent_ingredient(&value["subtracted"])?;
+            }
+            Some("neoforge:custom_display") => {
+                persistent_ingredient(&value["base"])?;
+                persistent_display(&value["display"])?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+fn persistent_display(value: &Value) -> Result<(), String> {
+    match value["type"].as_str().unwrap_or("") {
+        "minecraft:item_stack" => sunrise_world::item_defaults::validate_stack(&value["item"])?,
+        "minecraft:composite" => {
+            for display in value["contents"].as_array().into_iter().flatten() {
+                persistent_display(display)?;
+            }
+        }
+        "minecraft:with_any_potion" | "minecraft:only_with_component" => {
+            persistent_display(&value["contents"])?
+        }
+        "minecraft:dyed" => persistent_display(&value["target"])?,
+        "minecraft:smithing_trim" => {
+            for key in ["base", "material", "pattern"] {
+                persistent_display(&value[key])?;
+            }
+        }
+        "minecraft:with_remainder" => {
+            persistent_display(&value["input"])?;
+            persistent_display(&value["remainder"])?;
+        }
+        _ => {}
+    }
+    Ok(())
 }

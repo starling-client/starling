@@ -54,10 +54,10 @@ fn padded_reuse_resets_missing_neighbors_and_matches_chunk_reads_across_layouts(
         let mut region = [[None; 3]; 3];
         region[1][1] = Some(&center);
         region[1][2] = Some(&neighbor);
-        pad.fill(&region, 1, &mut own);
+        pad.fill::<false>(&region, 1, &mut own);
         let buffers = (pad.blocks.as_ptr(), pad.light.as_ptr());
         for current in [region, [[None; 3]; 3], region] {
-            pad.fill(&current, 1, &mut own);
+            pad.fill::<false>(&current, 1, &mut own);
             for y in -B..16 + B {
                 for z in -B..16 + B {
                     for x in -B..16 + B {
@@ -119,7 +119,7 @@ fn padded_fill_reads_every_neighbour_and_its_light_like_chunk_reads() {
         let region: [[Option<&Chunk>; 3]; 3] =
             std::array::from_fn(|rz| std::array::from_fn(|rx| Some(&chunks[rz * 3 + rx])));
         for sy in [0, 1, 30, 31] {
-            pad.fill(&region, sy, &mut own);
+            pad.fill::<false>(&region, sy, &mut own);
             let base_y = min_y + sy * 16;
             for y in -B..16 + B {
                 for z in -B..16 + B {
@@ -147,7 +147,7 @@ fn padded_fill_reads_every_neighbour_and_its_light_like_chunk_reads() {
 /// With a shader pack lighting the faces, every face of a lone stone block has one colour; the
 /// game's face shading (up 1.0, down 0.5, north/south 0.8, east/west 0.6) is left to the pack.
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn a_shader_pack_lights_the_faces_itself() {
     let root = std::env::var_os("SUNRISE_MESH_TEST_RESOURCES")
         .map(std::path::PathBuf::from)
@@ -192,6 +192,7 @@ fn a_shader_pack_lights_the_faces_itself() {
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
             hidden_states: &[],
+            part_tables: Default::default(),
         };
         let mut colours: Vec<u32> = mesher
             .mesh(&region, 0)
@@ -211,7 +212,7 @@ fn a_shader_pack_lights_the_faces_itself() {
 /// block and of a lava source takes the dimension's up-face brightness, as Iris 1.11.7 gives our
 /// probe pack: 0.9 in the Nether (`CardinalLighting.NETHER`'s up, 229 of 255), 1.0 elsewhere.
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn a_shader_pack_lights_every_nether_face_like_an_up_face() {
     let root = std::env::var_os("SUNRISE_MESH_TEST_RESOURCES")
         .map(std::path::PathBuf::from)
@@ -257,6 +258,7 @@ fn a_shader_pack_lights_every_nether_face_like_an_up_face() {
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
             hidden_states: &[],
+            part_tables: Default::default(),
         };
         let mesh = mesher.mesh(&region, 0);
         // Both blocks' six faces: 2 × 6 quads of 4 vertices.
@@ -272,7 +274,7 @@ fn a_shader_pack_lights_every_nether_face_like_an_up_face() {
 }
 
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn separate_ao_passes_ao_in_alpha_without_darkening_rgb() {
     let root = std::env::var_os("SUNRISE_MESH_TEST_RESOURCES")
         .map(std::path::PathBuf::from)
@@ -318,6 +320,7 @@ fn separate_ao_passes_ao_in_alpha_without_darkening_rgb() {
         translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
         hidden_states: &[],
+        part_tables: Default::default(),
     };
     let mesh = mesher.mesh(&region, 0);
     assert!(!mesh.solid.is_empty());
@@ -330,7 +333,7 @@ fn separate_ao_passes_ao_in_alpha_without_darkening_rgb() {
 }
 
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
     let root = std::env::var_os("SUNRISE_MESH_TEST_RESOURCES")
         .map(std::path::PathBuf::from)
@@ -402,6 +405,7 @@ fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
             hidden_states: &[],
+            part_tables: Default::default(),
         };
         for (case, (center, east)) in [
             (&empty, None),
@@ -477,7 +481,7 @@ fn benchmark_padded_reuse() {
     // Warm both code paths and the process allocator before recording samples.
     for _ in 0..1024 {
         std::hint::black_box(Padded::new(std::hint::black_box(&region), 0));
-        pad.fill(std::hint::black_box(&region), 0, &mut own);
+        pad.fill::<false>(std::hint::black_box(&region), 0, &mut own);
         std::hint::black_box(&pad);
     }
     for sample in 0..9 {
@@ -486,7 +490,7 @@ fn benchmark_padded_reuse() {
             let start = std::time::Instant::now();
             for _ in 0..ITERATIONS {
                 if reused {
-                    pad.fill(std::hint::black_box(&region), 0, &mut own);
+                    pad.fill::<false>(std::hint::black_box(&region), 0, &mut own);
                     std::hint::black_box(&pad);
                 } else {
                     std::hint::black_box(Padded::new(std::hint::black_box(&region), 0));
@@ -509,7 +513,7 @@ fn benchmark_padded_reuse() {
 /// north-east to south-west as Iris 1.11.7's do in our probes (`fluid::splits_north_east`);
 /// without one it keeps vanilla's north-west start (`FluidRenderer.tesselate`).
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn a_shader_pack_s_still_water_top_starts_at_its_south_west_corner() {
     let root = std::env::var_os("SUNRISE_MESH_TEST_RESOURCES")
         .map(std::path::PathBuf::from)
@@ -560,6 +564,7 @@ fn a_shader_pack_s_still_water_top_starts_at_its_south_west_corner() {
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
             hidden_states: &[],
+            part_tables: Default::default(),
         };
         let mesh = mesher.mesh(&region, 0);
         // The top and its backward face, both from the same first corner.

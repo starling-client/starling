@@ -4,15 +4,11 @@ use super::*;
 use crate::game::api_values::{TryIntoApi, TryIntoEngine};
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn stack_particle_crosses_server_packet_and_resolves_apple() {
     let mut transfer = None;
     crate::game::native_entity_refs::tests::with_game(|game| {
-        mod_api::__private::resolve_particles(["minecraft:item"], |id| {
-            sunrise_client::particles::ParticleType::from_name(id)
-                .map(|ty| mod_api::__private::ParticleKind::Vanilla(ty as u32))
-        })
-        .unwrap();
+        // The game fixture resolves the particle providers, as content_root does.
         let stack = ItemStack::new("minecraft:apple", 1);
         let api_stack = stack.try_into_api().unwrap();
         let key = mod_api::__private::particle_named_key("minecraft:item").unwrap();

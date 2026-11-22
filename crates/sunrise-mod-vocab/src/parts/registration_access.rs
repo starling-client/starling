@@ -1,5 +1,6 @@
 //! Cold authoring hooks and the scoped key-membership boundary.
 use super::*;
+use crate::RegistryName;
 
 // no wire: this selector is native registration plumbing, never a mod payload.
 // hidden: platform-owned instrumentation plumbing, not a mod authoring surface.
@@ -11,8 +12,10 @@ pub enum RegistrationKeyKind {
     Item,
     Fluid,
     Effect,
+    DamageType,
     BlockEntityType,
     EntityType,
+    GameEvent,
     Particle,
     GameRule,
 }
@@ -24,7 +27,7 @@ pub enum RegistrationKeyKind {
 pub struct RegistrationAccess {
     pub active: &'static std::sync::atomic::AtomicUsize,
     pub contains: fn(RegistrationKeyKind, u32) -> Option<bool>,
-    pub name: fn(RegistrationKeyKind, u32) -> Option<String>,
+    pub name: fn(RegistrationKeyKind, u32) -> Option<RegistryName>,
     pub in_scope: fn() -> bool,
     pub install: fn(
         &[ModEntry],
@@ -33,7 +36,6 @@ pub struct RegistrationAccess {
     ) -> Result<(), Vec<String>>,
 }
 
-#[cfg(any(not(target_arch = "wasm32"), test))]
 pub(crate) fn registration_membership(kind: RegistrationKeyKind, slot: u32) -> Option<bool> {
     #[cfg(test)]
     if let Some(result) =
@@ -49,11 +51,13 @@ pub(crate) fn registration_membership(kind: RegistrationKeyKind, slot: u32) -> O
         .flatten()
 }
 
-pub(crate) fn registration_name(kind: RegistrationKeyKind, slot: u32) -> Option<String> {
+pub(crate) fn registration_name(kind: RegistrationKeyKind, slot: u32) -> Option<RegistryName> {
     #[cfg(test)]
-    if let Some(result) =
-        with_registering_keys(|keys| keys.map(|keys| names(keys, kind).id(slot).map(str::to_owned)))
-    {
+    if let Some(result) = with_registering_keys(|keys| {
+        keys.map(|keys| {
+            crate::content::registry_keys::registry_name_snapshot(names(keys, kind), slot)
+        })
+    }) {
         return result;
     }
     let access = &crate::dispatch_scope::backend()?.registration;
@@ -94,7 +98,12 @@ pub fn install_parts(
 /// Consume owned declarations and derive the lookup indexes here, never from caller bits.
 pub fn install_input(input: super::installation::InstalledInput) {
     let mut installed: Installed = input.into();
-    installed.keys.index_hooks();
+    static EPOCHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    installed.epoch = EPOCHS.fetch_add(1, Ordering::Relaxed);
+    installed.namespace_authority = crate::parts::current_namespace_authority();
+    installed
+        .keys
+        .index_hooks(&installed.menu_recipe_books, &installed.namespace_authority);
     installed.hook_bits = installed.keys.hooks.iter().map(Option::is_some).collect();
     installed.tag_hook_bits = vec![false; HOOK_COUNT];
     for (_, part) in &installed.tags.blocks {
@@ -110,7 +119,12 @@ pub fn install_input(input: super::installation::InstalledInput) {
         }
     }
     #[cfg(any(test, feature = "testing"))]
-    TEST_PARTS.set(Some(Box::leak(Box::new(installed))));
+    {
+        installed.registry_keys = crate::content::registry_keys::share_requests(std::mem::take(
+            &mut installed.registry_keys,
+        ));
+        TEST_PARTS.set(Some(Box::leak(Box::new(installed))));
+    }
     #[cfg(not(any(test, feature = "testing")))]
     if INSTALLED.set(installed).is_err() {
         log::warn!("Mod parts already installed; keeping the first table");
@@ -141,8 +155,10 @@ fn names(
         RegistrationKeyKind::Item => &keys.items,
         RegistrationKeyKind::Fluid => &keys.fluids,
         RegistrationKeyKind::Effect => &keys.effects,
+        RegistrationKeyKind::DamageType => &keys.damage_types,
         RegistrationKeyKind::BlockEntityType => &keys.block_entity_types,
         RegistrationKeyKind::EntityType => &keys.entity_types,
+        RegistrationKeyKind::GameEvent => &keys.game_events,
         RegistrationKeyKind::Particle => &keys.particles,
         RegistrationKeyKind::GameRule => &keys.game_rules,
     }

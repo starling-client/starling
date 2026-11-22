@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_fluid_block_collision",
+    name: "Refused fluid block collision",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: data/refused_fluid_block_collision/sunrise/fluid/sample.json: block refused_fluid_block_collision:sample is declared twice

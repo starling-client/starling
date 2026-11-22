@@ -14,6 +14,13 @@
 //! survive and only what the game changed is replaced.
 use sunrise_core::nbt::{Compound, Tag};
 
+/// The unsigned-byte slot addressed by a saved `Items` row, if it names one.
+pub fn saved_item_slot(entry: &Tag) -> Option<usize> {
+    crate::nbt_value::number(entry.get("Slot"))
+        .filter(|slot| (-128..=255).contains(slot))
+        .map(|slot| usize::from(slot as u8))
+}
+
 fn string(s: &str) -> Tag {
     Tag::String(s.into())
 }
@@ -81,6 +88,7 @@ pub fn gateway_exit(tag: &Tag) -> Option<[i32; 3]> {
 struct Fields<'a> {
     input: &'a Tag,
     out: Compound,
+    stack: &'a dyn Fn(&Tag) -> Option<Tag>,
 }
 impl<'a> Fields<'a> {
     /// Every key of `tag` but the metadata the tail of `canonical` writes.
@@ -157,8 +165,8 @@ impl<'a> Fields<'a> {
     }
     /// `BaseContainerBlockEntity`: the custom name and the lock.
     fn base_container(&mut self) {
-        self.component("CustomName");
         self.lock();
+        self.component("CustomName");
     }
     /// `RandomizableContainer.tryLoadLootTable` / `trySaveLootTable`; true when the
     /// block entity has a loot table (and so saves no items).
@@ -177,7 +185,7 @@ impl<'a> Fields<'a> {
     }
     /// `ContainerHelper.loadAllItems` + `saveAllItems`.
     fn items(&mut self, size: usize, also_when_empty: bool) {
-        let items = items(self.input.get("Items"), size);
+        let items = items(self.input.get("Items"), size, self.stack);
         if !items.is_empty() || also_when_empty {
             self.put("Items", Tag::List(items));
         }
@@ -190,7 +198,7 @@ impl<'a> Fields<'a> {
     }
     /// An optional `ItemStack` (`RecordItem`, `Book`, `item`).
     fn item(&mut self, key: &str) -> bool {
-        match self.input.get(key).and_then(stack) {
+        match self.input.get(key).and_then(self.stack) {
             Some(item) => {
                 self.put(key, item);
                 true
@@ -257,7 +265,7 @@ fn template(tag: &Tag) -> Option<Tag> {
     }
 }
 /// `ItemStackWithSlot` entries of a container of `size` slots, by ascending slot.
-fn items(tag: Option<&Tag>, size: usize) -> Vec<Tag> {
+fn items(tag: Option<&Tag>, size: usize, stack: &dyn Fn(&Tag) -> Option<Tag>) -> Vec<Tag> {
     let mut slots: Vec<Option<Tag>> = vec![None; size];
     if let Some(Tag::List(list)) = tag {
         for entry in list {
@@ -409,11 +417,23 @@ pub fn is_known_type(id: &str) -> bool {
 /// entity compound with `id`, `x`, `y`, `z`); None for an unknown type or a tag
 /// without a position.
 pub fn canonical(tag: &Tag) -> Option<Tag> {
+    canonical_with_stack(tag, &stack, None).map(Tag::Compound)
+}
+
+/// Canonical block entity fields with the caller's saved-stack codec.
+/// Only actual stack fields use this codec; templates and opaque metadata stay intact.
+/// A save snapshot may carry already-encoded live items alongside pending loot.
+pub fn canonical_with_stack(
+    tag: &Tag,
+    stack: &dyn Fn(&Tag) -> Option<Tag>,
+    live_items: Option<Tag>,
+) -> Option<Compound> {
     let id = id(tag)?;
     let (x, y, z) = (int(tag.get("x"))?, int(tag.get("y"))?, int(tag.get("z"))?);
     let mut f = Fields {
         input: tag,
         out: Compound::new(),
+        stack,
     };
     // A mod's type: its own fields as loaded (`saveAdditional`), the
     // position, and its component patch only when it has one, as a mod block
@@ -421,16 +441,13 @@ pub fn canonical(tag: &Tag) -> Option<Tag> {
     if crate::block_entity_types::declared(&id) {
         f.custom(tag);
         let mut out = f.out;
-        out.insert("id".into(), string(&id));
-        out.insert("x".into(), Tag::Int(x));
-        out.insert("y".into(), Tag::Int(y));
-        out.insert("z".into(), Tag::Int(z));
         if let Some(c @ Tag::Compound(patch)) = tag.get("components")
             && !patch.is_empty()
         {
             out.insert("components".into(), c.clone());
         }
-        return Some(Tag::Compound(out));
+        write_metadata(&mut out, &id, [x, y, z]);
+        return Some(out);
     }
     match id.as_str() {
         "minecraft:furnace" | "minecraft:smoker" | "minecraft:blast_furnace" => {
@@ -787,11 +804,9 @@ pub fn canonical(tag: &Tag) -> Option<Tag> {
         _ => return None,
     }
     let mut out = f.out;
-    out.insert("id".into(), string(&id));
-    out.insert("x".into(), Tag::Int(x));
-    out.insert("y".into(), Tag::Int(y));
-    out.insert("z".into(), Tag::Int(z));
-    out.insert("keepPacked".into(), Tag::Byte(0));
+    if let Some(items) = live_items {
+        out.insert("Items".into(), items);
+    }
     out.insert(
         "components".into(),
         match tag.get("components") {
@@ -799,7 +814,17 @@ pub fn canonical(tag: &Tag) -> Option<Tag> {
             _ => Tag::Compound(Compound::new()),
         },
     );
-    Some(Tag::Compound(out))
+    write_metadata(&mut out, &id, [x, y, z]);
+    out.insert("keepPacked".into(), Tag::Byte(0));
+    Some(out)
+}
+
+/// `BlockEntity.saveMetadata`, after the caller has written additional fields and components.
+pub fn write_metadata(out: &mut Compound, id: &str, pos: [i32; 3]) {
+    out.insert("id".into(), string(id));
+    for (key, v) in ["x", "y", "z"].into_iter().zip(pos) {
+        out.insert(key.into(), Tag::Int(v));
+    }
 }
 
 /// `VibrationSystem.Data` for a sensor with no pending vibration.
@@ -826,29 +851,43 @@ fn is_record(item: &Compound) -> bool {
 /// `loaded` what Sunrise encodes right after decoding it, and `current` what Sunrise
 /// encodes now. Whatever the game left unchanged since loading keeps its original
 /// form (including the detail Sunrise does not model, such as styled text), what it
-/// changed takes the current value, and keys Sunrise never models stay.
-pub fn overlay(original: &Tag, loaded: &Tag, current: &Tag) -> Tag {
-    if current == loaded {
-        return original.clone();
-    }
+/// changed takes the current value, and keys Sunrise never models stay. The outer
+/// table follows the live writer; unchanged values keep their original tables.
+/// A slotless mod's `Items` field is payload, not inventory: the current value
+/// (or its absence) is authoritative, including the order of any list it holds.
+pub fn overlay(original: &Tag, loaded: &Tag, current: &Tag, items_are_payload: bool) -> Tag {
     match (original, loaded, current) {
         (Tag::Compound(o), Tag::Compound(l), Tag::Compound(c)) => {
-            let mut out = Compound::new();
-            for (key, cv) in c {
-                let value = match (o.get(key), l.get(key)) {
-                    (Some(ov), Some(lv)) => overlay(ov, lv, cv),
-                    _ => cv.clone(),
-                };
-                out.insert(key.clone(), value);
-            }
+            let payload_key = items_are_payload.then(|| "Items".into());
+            let mut out = c.clone();
+            out.for_each_mut(|key, value| {
+                if payload_key.as_ref() != Some(key)
+                    && let (Some(ov), Some(lv)) = (o.get(key), l.get(key))
+                {
+                    *value = overlay_value(ov, lv, value);
+                }
+            });
             // Keys the game never models (or models only when present) survive;
             // keys it removed are gone.
             for (key, ov) in o {
-                if !c.contains_key(key) && !l.contains_key(key) {
+                if payload_key.as_ref() != Some(key) && !c.contains_key(key) && !l.contains_key(key)
+                {
                     out.insert(key.clone(), ov.clone());
                 }
             }
             Tag::Compound(out)
+        }
+        _ => overlay_value(original, loaded, current),
+    }
+}
+
+fn overlay_value(original: &Tag, loaded: &Tag, current: &Tag) -> Tag {
+    if current == loaded {
+        return original.clone();
+    }
+    match (original, loaded, current) {
+        (Tag::Compound(_), Tag::Compound(_), Tag::Compound(_)) => {
+            overlay(original, loaded, current, false)
         }
         (Tag::List(o), Tag::List(l), Tag::List(c)) if keyed_by_slot(c) && keyed_by_slot(l) => {
             let slot = |t: &Tag| int(t.get("Slot"));
@@ -860,7 +899,7 @@ pub fn overlay(original: &Tag, loaded: &Tag, current: &Tag) -> Tag {
                             list.iter().find(|t| int(t.get("Slot")) == slot)
                         }
                         match (find(o, s), find(l, s)) {
-                            (Some(ov), Some(lv)) => overlay(ov, lv, cv),
+                            (Some(ov), Some(lv)) => overlay_value(ov, lv, cv),
                             _ => cv.clone(),
                         }
                     })
@@ -1080,7 +1119,7 @@ mod tests {
             "{id:\"minecraft:sign\",front_text:{messages:[\"a\",\"\",\"\",\"\"]},\
              back_text:{messages:[\"y\",\"\",\"\",\"\"]}}",
         );
-        let merged = overlay(&original, &loaded, &current);
+        let merged = overlay(&original, &loaded, &current, false);
         assert_eq!(merged.get("front_text"), original.get("front_text"));
         assert_eq!(merged.get("back_text"), current.get("back_text"));
         assert_eq!(merged.get("extra"), original.get("extra"));
@@ -1102,7 +1141,7 @@ mod tests {
         )]);
         let loaded = Tag::compound([("Items", Tag::List(vec![item(0, 1, ""), item(1, 1, "")]))]);
         let current = Tag::compound([("Items", Tag::List(vec![item(0, 1, ""), item(1, 5, "")]))]);
-        let merged = overlay(&original, &loaded, &current);
+        let merged = overlay(&original, &loaded, &current, false);
         let Some(Tag::List(items)) = merged.get("Items") else {
             panic!("items")
         };

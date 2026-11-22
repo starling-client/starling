@@ -1,0 +1,8 @@
+{
+  "title": "Workshop",
+  "icon": "minecraft:anvil",
+  "items": [
+    "minecraft:anvil",
+    "minecraft:copper_ingot"
+  ]
+}

@@ -1,0 +1,4 @@
+# Published-shape support tests build a level over the prepared block registry (`world!()`).
+sunrise-world level::tests::a_published_shape_decides_support_over_the_declared_one lib daily resources
+sunrise-world level::tests::a_published_shape_decides_whether_snow_stands lib daily resources
+sunrise-world level::tests::a_published_face_decides_whether_lichen_attaches lib daily resources

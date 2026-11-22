@@ -6,7 +6,10 @@ use super::{
     classes::Class,
     update::{above, below, rel},
 };
-use crate::{fluid::FluidState, registry::BlockStateId};
+use crate::{
+    fluid::{FluidKind, FluidState},
+    registry::BlockStateId,
+};
 use sunrise_core::{geometry::Direction, position::BlockPos, random::RandomSource};
 
 /// `SculkSensorBlock.ACTIVE_TICKS` (calibrated sensors use 10).
@@ -96,6 +99,13 @@ pub fn unpack_faces(data: i32) -> Vec<Direction> {
         .collect()
 }
 
+/// `FluidState.is(Fluids.WATER)`: the source water fluid, which every
+/// waterlogged state holds (`Fluids.WATER.getSource(...)`), but neither
+/// flowing water nor another fluid.
+fn is_water(fluid: FluidState) -> bool {
+    fluid.kind() == FluidKind::Water
+}
+
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn sculk_rand(&mut self, bound: i32) -> i32 {
         self.random().next_int_bound(bound).unwrap_or(0)
@@ -107,6 +117,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: sound.into(),
+            source: None,
             volume,
             pitch,
         });
@@ -382,8 +393,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Some(faces) if !faces.is_empty() => {
                     let b = self.b;
-                    let water = b.is_block(state, b.named.water) && b.fluid(state).is_source();
-                    if !b.is_air(state) && !water {
+                    if !b.is_air(state) && !is_water(b.fluid(state)) {
                         return false;
                     }
                     return self.sculk_regrow(pos, state, faces);
@@ -399,7 +409,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let mut state = b.default_of(b.named.sculk_vein);
         let mut any = false;
         for &face in faces {
-            if b.multiface_can_attach(self.state(rel(pos, face)), face) {
+            if self.multiface_can_attach_at(rel(pos, face), face) {
                 state = self.vein_with_face(state, face, true);
                 any = true;
             }
@@ -462,8 +472,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if self.vein_has_face(old, face) {
             return false;
         }
-        self.b
-            .multiface_can_attach(self.state(rel(pos, face)), face)
+        self.multiface_can_attach_at(rel(pos, face), face)
     }
     /// `MultifaceBlock.getStateForPlacement` for the sculk vein.
     fn sculk_state_for_placement(
@@ -478,7 +487,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let b = self.b;
         let base = if self.is_vein(old) {
             old
-        } else if b.fluid(old) == FluidState::WATER {
+        } else if is_water(b.fluid(old)) {
             b.table
                 .set_bool(b.default_of(b.named.sculk_vein), b.props.waterlogged, true)
         } else {
@@ -507,8 +516,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
         let fluid = b.fluid(existing);
-        if fluid != FluidState::EMPTY && !(b.is_block(existing, b.named.water) && fluid.is_source())
-        {
+        if fluid != FluidState::EMPTY && !is_water(fluid) {
             return false;
         }
         if self.sculk_in_tag(existing, "minecraft:fire") {
@@ -567,6 +575,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         self.emit(LevelEvent::Sound {
                             pos,
                             sound: sounds.place.clone(),
+                            source: None,
                             volume: 1.0,
                             pitch: 1.0,
                         });

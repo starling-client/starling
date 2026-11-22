@@ -1,8 +1,639 @@
-//! Restricted views for registration and data loading.
-/// The owning boundary that starts a data load.
+//! Restricted views for registration, data loading, configuration, reload, and client setup.
+use std::{collections::BTreeMap, sync::Arc};
+
+/// Fallback empty [`crate::ConfigFiles`] service returned by default context implementations.
+struct EmptyConfigFiles;
+
+impl crate::ConfigFiles for EmptyConfigFiles {
+    fn read(&self, _: &crate::ConfigPath) -> Result<Vec<u8>, crate::ConfigFileError> {
+        Err(crate::ConfigFileError::NoCallingMod)
+    }
+    fn write(&self, _: &crate::ConfigPath, _: &[u8]) -> Result<(), crate::ConfigFileError> {
+        Err(crate::ConfigFileError::NoCallingMod)
+    }
+    fn list(
+        &self,
+        _: &crate::ConfigPath,
+        _: Option<&str>,
+        _: u32,
+    ) -> Result<Vec<crate::ConfigEntry>, crate::ConfigFileError> {
+        Err(crate::ConfigFileError::NoCallingMod)
+    }
+    fn stat(
+        &self,
+        _: &crate::ConfigPath,
+    ) -> Result<Option<crate::ConfigStat>, crate::ConfigFileError> {
+        Err(crate::ConfigFileError::NoCallingMod)
+    }
+    fn remove(&self, _: &crate::ConfigPath) -> Result<bool, crate::ConfigFileError> {
+        Err(crate::ConfigFileError::NoCallingMod)
+    }
+}
+
+const EMPTY_CONFIG_FILES: EmptyConfigFiles = EmptyConfigFiles;
+
+/// Context for config registration and initial loading (`register_configs`, `config_loading`).
+/// Exposes mod settings and the calling mod's `config/` files, not a game host.
+/// Config reloading and unloading instead lend the polling or stopping game's host.
+pub trait ConfigContext {
+    /// A mod's registered setting `key`. Returns `None` for another mod's id or an
+    /// unregistered key.
+    fn setting(&self, _mod_id: &str, _key: &str) -> Option<String> {
+        None
+    }
+    /// The calling mod's own files in the game's `config/` folder.
+    fn config_files(&self) -> &'static dyn crate::ConfigFiles {
+        &EMPTY_CONFIG_FILES
+    }
+}
+
+/// Phase-scoped read-only context for data-reload hooks (`add_server_reload_listeners`,
+/// `data_maps_updated`, `default_components_bound`, `tags_updated`).
+///
+/// Exposes process metadata, completed registries, tags, recipes, data maps, and published
+/// data resources without world, level, entity, or mutation access. Use `block_states()` and
+/// `fluid_states()` for table lookups, and pass this context to [`crate::ItemResource::damageable`],
+/// [`crate::ItemResource::foil`], or [`crate::ItemResource::repairable`] for item metadata.
+pub trait ReloadContext:
+    crate::prelude::BlockStatesHost
+    + crate::HostBlockStates
+    + crate::HostFluidStates
+    + crate::HostItemResourceMetadata
+    + crate::prelude::KeysHost
+    + crate::prelude::TagsHost
+    + crate::prelude::TextHost
+    + crate::prelude::RecipesHost
+    + crate::prelude::RecipePropertiesHost
+    + crate::prelude::ResourcesHost
+    + crate::prelude::MathHost
+    + crate::prelude::PayloadTokensHost
+    + crate::prelude::PayloadDropsHost
+{
+    /// Physical process, not the logical side of this hook.
+    fn dist(&self) -> crate::Dist {
+        crate::Dist::DedicatedServer
+    }
+    /// Exact Minecraft version supported by this process.
+    fn game_version(&self) -> &'static str {
+        ""
+    }
+    /// The engine's `DataVersion` written into level data and chunks.
+    fn server_data_version(&self) -> i32 {
+        0
+    }
+    /// Sunrise version printed in crash reports.
+    fn sunrise_version(&self) -> &'static str {
+        ""
+    }
+    /// Whether the player left mod `mod_id` enabled.
+    fn on(&self, _mod_id: &str) -> bool {
+        false
+    }
+    /// A mod's registered setting `key`.
+    fn setting(&self, _mod_id: &str, _key: &str) -> Option<String> {
+        None
+    }
+    /// Startup opt-in for test-only content.
+    fn game_tests_enabled(&self) -> bool {
+        false
+    }
+    /// Whether mod `id` is loaded in this process.
+    fn is_loaded(&self, _id: &str) -> bool {
+        false
+    }
+    /// Cooldown group id for `stack`.
+    fn item_cooldown_group(&self, _stack: &crate::ItemStack) -> String {
+        String::new()
+    }
+    /// Default max stack size of `item`.
+    fn max_stack_size(&self, _item: crate::ItemKey) -> Option<u32> {
+        None
+    }
+    /// Default durability of `item`.
+    fn max_damage(&self, _item: crate::ItemKey) -> Option<u32> {
+        None
+    }
+    /// Resolve an item identifier to its process-local key.
+    fn item_key(&self, _id: &crate::Identifier) -> Option<crate::ItemKey> {
+        None
+    }
+    /// Item `item`'s default value of component `component`.
+    fn item_default_component(
+        &self,
+        _item: crate::ItemKey,
+        _component: &str,
+    ) -> Option<crate::Tag> {
+        None
+    }
+    /// `ItemStack.getHoverName()` as a text component.
+    fn hover_name(&self, _stack: &crate::ItemStack) -> Result<crate::Text, crate::TextFormError> {
+        Err(crate::TextFormError::Unavailable)
+    }
+    /// Item `item`'s cooking-fuel burn time in ticks.
+    fn item_burn_time(&self, _item: crate::ItemKey) -> Option<i32> {
+        None
+    }
+    /// Item `item`'s chance to raise a composter's level.
+    fn item_compost_chance(&self, _item: crate::ItemKey) -> Option<f32> {
+        None
+    }
+    /// Whether `entity_type` is in entity-type tag `tag`.
+    fn entity_type_in_tag(&self, _entity_type: &str, _tag: &str) -> bool {
+        false
+    }
+    /// `DefaultAttributes.getSupplier(type).getValue(attribute)`: the entity type's default
+    /// attribute value within the attribute's range, including installed mod types and additions.
+    /// `None` before publication, or for an unknown type, a missing supplier or attribute.
+    fn entity_type_default_attribute(&self, entity_type: &str, attribute: &str) -> Option<f64> {
+        crate::__private::entity_type_default_attribute(entity_type, attribute)
+    }
+    /// Published NBT value of `entry` in `registry`'s data map `map`.
+    fn data_map_value(
+        &self,
+        _registry: &str,
+        _entry: &str,
+        _map: &str,
+    ) -> Result<Option<&crate::Tag>, crate::DataMapError> {
+        Err(crate::DataMapError::Unavailable)
+    }
+    /// Published NBT entries of data map `map` in `registry`, sorted by entry ID.
+    fn data_map_entries(
+        &self,
+        _registry: &str,
+        _map: &str,
+    ) -> Result<&[(String, crate::Tag)], crate::DataMapError> {
+        Err(crate::DataMapError::Unavailable)
+    }
+    /// Pin the exact id of an installed game-event slot.
+    fn game_event_key_id(
+        &self,
+        _key: crate::GameEventKey,
+    ) -> Result<crate::RegistryName, crate::GameEventKeyError> {
+        Err(crate::GameEventKeyError::Unavailable)
+    }
+    /// Borrow the canonical block id for `key`.
+    fn block_key_id(&self, _key: crate::BlockKey) -> Option<&str> {
+        None
+    }
+    /// Borrow the canonical item id for `key`.
+    fn item_key_id(&self, _key: crate::ItemKey) -> Option<&str> {
+        None
+    }
+    /// Numeric item registry id for `key`.
+    fn item_registry_id(&self, _key: crate::ItemKey) -> Option<u32> {
+        None
+    }
+    /// Borrow the canonical effect id for `key`.
+    fn effect_key_id(&self, _key: crate::EffectKey) -> Option<&str> {
+        None
+    }
+    /// Registered `MobEffect.getCategory()` for `key`.
+    fn effect_category(&self, _key: crate::EffectKey) -> Option<crate::EffectCategory> {
+        None
+    }
+    /// Borrow the canonical fluid id for `key`.
+    fn fluid_key_id(&self, _key: crate::FluidKey) -> Option<&str> {
+        None
+    }
+    /// Borrow the canonical block-entity-type id for `key`.
+    fn block_entity_type_key_id(&self, _key: crate::BlockEntityTypeKey) -> Option<&str> {
+        None
+    }
+    /// Pin the canonical entity-type id for `key`.
+    fn entity_type_key_id(&self, _key: crate::EntityTypeKey) -> Option<crate::RegistryName> {
+        None
+    }
+    /// Pin the canonical menu-type id for `key`.
+    fn menu_key_id(&self, _key: crate::MenuKey) -> Option<crate::RegistryName> {
+        None
+    }
+    /// Pin the canonical enchantment id for `key`.
+    fn enchantment_key_id(&self, _key: crate::EnchantmentKey) -> Option<crate::RegistryName> {
+        None
+    }
+    /// Borrow the canonical biome id for `key`.
+    fn biome_key_id(&self, _key: crate::BiomeKey) -> Result<&str, crate::BiomeKeyError> {
+        Err(crate::BiomeKeyError::Unavailable)
+    }
+    /// Borrow the canonical dimension id for `key`.
+    fn dimension_key_id(&self, _key: crate::DimensionKey) -> Option<&str> {
+        None
+    }
+    /// Exact load-time item key membership for a component-independent `ingredient`.
+    fn recipe_ingredient_item_keys(
+        &self,
+        _ingredient: &crate::Ingredient,
+    ) -> Result<Arc<[crate::ItemKey]>, crate::IngredientKeysError> {
+        Err(crate::IngredientKeysError::UnknownItem)
+    }
+}
+
+/// Fallback empty client render-assets / instance-groups service returned by default
+/// [`ClientReloadHost`] implementations (such as startup reload registration before a game exists).
+struct EmptyClientReloadServices;
+
+impl crate::RenderAssets for EmptyClientReloadServices {
+    fn model(&self, _: &crate::Identifier) -> Result<crate::ModelRef, crate::ModelError> {
+        Err(crate::ModelError::UnknownModel)
+    }
+    fn render_pipeline(
+        &self,
+        _: &crate::Identifier,
+    ) -> Result<crate::RenderPipelineRef, crate::RenderPipelineError> {
+        Err(crate::RenderPipelineError::Unknown)
+    }
+    fn animation(&self, _: &crate::Identifier) -> Option<crate::AnimationHolder> {
+        None
+    }
+    fn block_state_model(
+        &self,
+        _: crate::BlockState,
+    ) -> Result<crate::ModelRef, crate::ModelError> {
+        Err(crate::ModelError::UnknownModel)
+    }
+    fn block_state_models(
+        &self,
+        _: crate::BlockState,
+    ) -> Result<crate::BakedModelKeys<'_>, crate::ModelError> {
+        Err(crate::ModelError::UnknownModel)
+    }
+    fn baked_model(
+        &self,
+        _: crate::BakedModelKey,
+    ) -> Result<crate::BakedModelView<'_>, crate::ModelError> {
+        Err(crate::ModelError::UnknownModel)
+    }
+}
+
+impl crate::InstanceGroups for EmptyClientReloadServices {
+    fn create_group(
+        &self,
+        _: crate::ModelRef,
+        _: u32,
+    ) -> Result<crate::InstanceGroupRef, crate::GroupError> {
+        Err(crate::GroupError::Stale)
+    }
+}
+
+const EMPTY_CLIENT_RELOAD_SERVICES: EmptyClientReloadServices = EmptyClientReloadServices;
+
+/// Phase-scoped read-only host for client resource reload hooks
+/// (`client_resources_reloaded`, and [`ClientReloadListenerContext::published`] on later
+/// reloads).
+///
+/// Named `ClientReloadHost` rather than `ClientReloadContext` because [`crate::ClientReloadContext`]
+/// is the per-listener asset file reader passed to `ClientReloadListener::prepare`.
+pub trait ClientReloadHost: ReloadContext + crate::prelude::ItemParticlesClientHost {
+    /// Published client render assets: standalone models, render pipelines, animations,
+    /// and baked block-state models.
+    fn render_assets(&self) -> &dyn crate::RenderAssets {
+        &EMPTY_CLIENT_RELOAD_SERVICES
+    }
+    /// Persistent model instance groups.
+    fn instance_groups(&self) -> &dyn crate::InstanceGroups {
+        &EMPTY_CLIENT_RELOAD_SERVICES
+    }
+    /// Atomically overwrite retained model copies in `group`.
+    fn instance_group_write(
+        &self,
+        _group: crate::InstanceGroupRef,
+        _first: u32,
+        _instances: &[crate::ModelInstance],
+    ) -> Result<(), crate::GroupError> {
+        Err(crate::GroupError::Stale)
+    }
+    /// Set the drawn length of `group`.
+    fn instance_group_set_len(
+        &self,
+        _group: crate::InstanceGroupRef,
+        _len: u32,
+    ) -> Result<(), crate::GroupError> {
+        Err(crate::GroupError::Stale)
+    }
+    /// Replace the transform of `group`.
+    fn instance_group_set_transform(
+        &self,
+        _group: crate::InstanceGroupRef,
+        _transform: [f32; 12],
+    ) -> Result<(), crate::GroupError> {
+        Err(crate::GroupError::Stale)
+    }
+    /// Retire retained model copies in `group`.
+    fn instance_group_destroy(
+        &self,
+        _group: crate::InstanceGroupRef,
+    ) -> Result<(), crate::GroupError> {
+        Err(crate::GroupError::Stale)
+    }
+    /// Whether `stack`'s resolved model uses block lighting in `context`.
+    fn item_uses_block_light(
+        &self,
+        _stack: &crate::ItemStack,
+        _context: crate::ItemDisplayContext,
+    ) -> bool {
+        false
+    }
+    /// Resolved block sprites for each requested block state.
+    fn block_sprites(&self, blocks: &[crate::BlockState]) -> Vec<Option<crate::BlockSprites>> {
+        vec![None; blocks.len()]
+    }
+    /// Resolved block-atlas sprites for each requested texture name.
+    fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<crate::SpriteRef>> {
+        vec![None; textures.len()]
+    }
+    /// GUI atlas region for `sprite`.
+    fn gui_sprite(&self, _sprite: &crate::Identifier) -> Option<crate::AtlasRegion> {
+        None
+    }
+    /// Monotonic version of the published block-sprites table.
+    fn block_sprites_version(&self) -> u64 {
+        0
+    }
+}
+
+/// Phase-scoped context for `Hooks::add_client_reload_listeners`.
+///
+/// Initial client resource loading runs on a loader thread before any `Game` or published
+/// asset tables exist, so this trait directly exposes only the process, mod-roster,
+/// settings, math-profile, and local text facts available on both startup and later
+/// reloads. On later reloads, [`published`](Self::published) returns `Some(&dyn ClientReloadHost)`
+/// for reading the currently published client assets and registries; on initial startup it
+/// returns `None`.
+pub trait ClientReloadListenerContext {
+    /// Physical process, not the logical side of this hook.
+    fn dist(&self) -> crate::Dist {
+        crate::Dist::Client
+    }
+    /// Exact Minecraft version supported by this process.
+    fn game_version(&self) -> &'static str {
+        ""
+    }
+    /// The engine's `DataVersion` written into level data and chunks.
+    fn server_data_version(&self) -> i32 {
+        0
+    }
+    /// Sunrise version printed in crash reports.
+    fn sunrise_version(&self) -> &'static str {
+        ""
+    }
+    /// Startup opt-in for test-only content.
+    fn game_tests_enabled(&self) -> bool {
+        false
+    }
+    /// Whether the player left mod `mod_id` enabled.
+    fn on(&self, _mod_id: &str) -> bool {
+        false
+    }
+    /// Whether mod `id` is loaded in this process.
+    fn is_loaded(&self, _id: &str) -> bool {
+        false
+    }
+    /// A mod's registered setting `key`. Returns `None` for another mod's id or an
+    /// unregistered key.
+    fn setting(&self, _mod_id: &str, _key: &str) -> Option<String> {
+        None
+    }
+    /// Math backend profile active in this process.
+    fn math_profile(&self) -> crate::MathProfile;
+    /// Plain string form of `text` using the currently active client language (or fallback
+    /// keys during initial startup before language assets are published).
+    fn text_string(&self, _text: &crate::Text) -> String {
+        String::new()
+    }
+    /// Published client assets and registries from the previous completed load.
+    ///
+    /// Returns `None` on initial startup before any client resources have been published,
+    /// and `Some` on later reloads (F3+T, resource-pack changes, server resource packs).
+    fn published(&self) -> Option<&dyn ClientReloadHost> {
+        None
+    }
+}
+
+/// Phase-scoped context for `Hooks::client_setup`.
+///
+/// Extends [`ClientReloadHost`] with client setup services (options, key mappings, audio,
+/// local sound handles, text measurement, translations, client registries, config/data files,
+/// and non-world window/view/screen options) without exposing world-only level, entity, or
+/// gameplay mutation methods.
+pub trait ClientSetupContext:
+    ClientReloadHost
+    + crate::prelude::AudioClientHost
+    + crate::prelude::ClientInputClientHost
+    + crate::prelude::ClientNarratorClientHost
+    + crate::prelude::ClientOptionsClientHost
+    + crate::prelude::ClientTextClientHost
+    + crate::prelude::DrawClientHost
+    + crate::prelude::PayloadsClientHost
+    + crate::prelude::ScoreboardClientHost
+{
+    /// The calling mod's own files in the game's `config/` folder.
+    fn config_files(&self) -> &'static dyn crate::ConfigFiles {
+        &EMPTY_CONFIG_FILES
+    }
+    /// The calling mod's bulk files in `sunrise-mod-data/<mod id>/`.
+    fn data_files(&self) -> &'static dyn crate::ConfigFiles {
+        &EMPTY_CONFIG_FILES
+    }
+    /// Translate a language key in the client's current language.
+    fn translate(&self, _key: &str) -> Option<String> {
+        None
+    }
+    /// Registered enchantments, in registry order.
+    fn enchantments(&self) -> Vec<crate::EnchantmentInfo> {
+        Vec::new()
+    }
+    /// Registered potions, in registry order.
+    fn potions(&self) -> Vec<crate::PotionInfo> {
+        Vec::new()
+    }
+    /// `Enchantment.getMinCost(level)` for `id`.
+    fn enchantment_min_cost(&self, _id: &str, _level: u32) -> Option<i32> {
+        None
+    }
+    /// Whether enchantment `id` supports `item`.
+    fn enchantment_supports(&self, _id: &str, _item: crate::ItemKey) -> bool {
+        false
+    }
+    /// Every sound event the client's resources have (`SoundManager.getAvailableSounds`).
+    fn sound_events(&self) -> Vec<crate::Identifier> {
+        Vec::new()
+    }
+    /// The output devices sound can play on (`SoundEngine.getAvailableSoundDevices`).
+    fn audio_devices(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// The output device the options ask for (`Options.soundDevice`).
+    fn audio_device(&self) -> String {
+        String::new()
+    }
+    /// Play a local client sound (`SoundEngine.playDelayed`), returning its control handle.
+    fn play_local_sound(&self, _sound: &crate::SoundPlay, _after: u32) -> Option<crate::SoundRef> {
+        None
+    }
+    /// Muffle client sounds over `ticks` client ticks, leaving `exempt` events clear.
+    fn muffle_sounds(
+        &mut self,
+        _amount: f32,
+        _lowpass: f32,
+        _ticks: u32,
+        _exempt: &[&str],
+    ) -> bool {
+        false
+    }
+    /// The particles alive in the client's particle engine (`ParticleEngine.countParticles`).
+    fn particle_count(&self) -> u32 {
+        0
+    }
+    /// Clear active client particles and emitters (`ParticleEngine.clearParticles`).
+    fn clear_particles(&self) -> bool {
+        false
+    }
+    /// Current playback state of a local sound handle started with `play_local_sound`.
+    fn sound_state(&self, _sound: crate::SoundRef) -> Option<crate::SoundState> {
+        None
+    }
+    /// Stop a local sound handle.
+    fn sound_stop(&self, _sound: crate::SoundRef) -> bool {
+        false
+    }
+    /// Fade a local sound handle's volume to `volume` over `ticks` unpaused ticks.
+    fn sound_fade(&self, _sound: crate::SoundRef, _volume: f32, _ticks: u32) -> bool {
+        false
+    }
+    /// Move a playing positional local sound handle to `position`.
+    fn sound_move_to(&self, _sound: crate::SoundRef, _position: [f64; 3]) -> bool {
+        false
+    }
+    /// Set a playing local sound handle's pitch.
+    fn sound_set_pitch(&self, _sound: crate::SoundRef, _pitch: f32) -> bool {
+        false
+    }
+    /// Current binding name for a resolved vanilla key mapping handle.
+    fn vanilla_key_mapping_binding(
+        &self,
+        _mapping: crate::VanillaKeyMappingRef,
+    ) -> Result<&str, crate::MappingError> {
+        Err(crate::MappingError::Unavailable)
+    }
+    /// Logical held state for a resolved vanilla gameplay key mapping handle.
+    fn vanilla_key_mapping_is_down(
+        &self,
+        _mapping: crate::VanillaKeyMappingRef,
+    ) -> Result<bool, crate::MappingError> {
+        Err(crate::MappingError::Unavailable)
+    }
+    /// Physical key/button held state for a resolved vanilla key mapping handle.
+    fn vanilla_key_mapping_physical_down(
+        &self,
+        _mapping: crate::VanillaKeyMappingRef,
+    ) -> Result<bool, crate::MappingError> {
+        Err(crate::MappingError::Unavailable)
+    }
+    /// Translated Controls label for a resolved vanilla key mapping handle.
+    fn vanilla_key_mapping_translated_key_message(
+        &self,
+        _mapping: crate::VanillaKeyMappingRef,
+    ) -> Result<crate::Text, crate::MappingError> {
+        Err(crate::MappingError::Unavailable)
+    }
+    /// Current binding name and modifiers for a resolved mod key mapping handle.
+    fn mod_key_mapping_binding(
+        &self,
+        _mapping: crate::ModKeyMappingRef,
+    ) -> Result<(&str, crate::ClientModifiers), crate::ModKeyRefusal> {
+        Err(crate::ModKeyRefusal::Unavailable)
+    }
+    /// Held state for a resolved mod key mapping handle.
+    fn mod_key_mapping_is_down(
+        &self,
+        _mapping: crate::ModKeyMappingRef,
+    ) -> Result<bool, crate::ModKeyRefusal> {
+        Err(crate::ModKeyRefusal::Unavailable)
+    }
+    /// Translated Controls label for a resolved mod key mapping handle.
+    fn mod_key_mapping_translated_key_message(
+        &self,
+        _mapping: crate::ModKeyMappingRef,
+    ) -> Result<crate::Text, crate::MappingError> {
+        Err(crate::MappingError::Unavailable)
+    }
+    /// Consume one pending click on a resolved mod key mapping handle.
+    fn mod_key_mapping_consume_click(
+        &mut self,
+        _mapping: crate::ModKeyMappingRef,
+    ) -> Result<bool, crate::ModKeyRefusal> {
+        Err(crate::ModKeyRefusal::Unavailable)
+    }
+    /// Rebind an owned mod key mapping handle and persist it to `sunrise-mods.txt`.
+    fn mod_key_mapping_set_binding(
+        &mut self,
+        _mapping: crate::ModKeyMappingRef,
+        _key: &str,
+        _modifiers: crate::ClientModifiers,
+    ) -> Result<(), crate::ModKeyRefusal> {
+        Err(crate::ModKeyRefusal::Unavailable)
+    }
+    /// Reset an owned mod key mapping handle to its declared default binding.
+    fn mod_key_mapping_reset_binding(
+        &mut self,
+        _mapping: crate::ModKeyMappingRef,
+    ) -> Result<(), crate::ModKeyRefusal> {
+        Err(crate::ModKeyRefusal::Unavailable)
+    }
+    /// The HUD tick counter (`Hud.getGuiTicks`).
+    fn gui_ticks(&self) -> i32 {
+        0
+    }
+    /// Effective HUD and hand visibility mode.
+    fn hud_mode(&self) -> crate::HudMode {
+        crate::HudMode::AllVisible
+    }
+    /// Select HUD and hand visibility mode.
+    fn set_hud_mode(&mut self, _mode: crate::HudMode) {}
+    /// Current camera perspective (`Options.getCameraType`).
+    fn camera_type(&self) -> crate::CameraType {
+        crate::CameraType::FirstPerson
+    }
+    /// Request the window's camera perspective.
+    fn set_camera_type(&self, _camera_type: crate::CameraType) {}
+    /// Whether the client is currently paused.
+    fn is_paused(&self) -> bool {
+        false
+    }
+    /// Configured menu background blur radius (`menuBackgroundBlurriness`).
+    fn menu_blur_radius(&self) -> f32 {
+        0.0
+    }
+    /// Last window focus state reported by the window system.
+    fn window_focused(&self) -> bool {
+        false
+    }
+    /// Whether the debug overlay is currently visible.
+    fn debug_overlay_visible(&self) -> bool {
+        false
+    }
+    /// Whether a physical key or mouse button is currently down.
+    fn is_key_down(&self, _key: &str) -> bool {
+        false
+    }
+    /// The same screen identifier provided to screen hooks, if a screen is open.
+    fn observed_screen_id(&self) -> Option<crate::ScreenId> {
+        None
+    }
+    /// The mod whose custom screen is currently open, if any.
+    fn mod_screen(&self) -> Option<&str> {
+        None
+    }
+    /// The open screen's title as plain text, if any.
+    fn screen_title(&self) -> Option<String> {
+        None
+    }
+}
+
+/// The owning boundary that starts a data load, as reported by [`DataLoadContext::origin`].
+// no wire: identifies the owner of a local data load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum DataLoadOrigin {
     /// Server data loading, including a reload.
     ServerDataLoad,
@@ -10,286 +641,28 @@ pub enum DataLoadOrigin {
     ClientPreload,
 }
 
-/// The side that owns a resource-generation loop.
+/// The side of the local resource-generation loop, as reported by [`LoopContext::side`].
+// no wire: identifies the owner of a local loop, not an installation or join contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum LoopSide {
     /// A server loop.
     Server,
     /// A client loop.
     Client,
 }
-use std::{collections::BTreeMap, sync::Arc};
 
-/// The permission boundary of the current owning thread. Only the game advances it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum ModPhase {
-    /// Package discovery, before declarations.
-    Packages,
-    /// Once-only declarations, without a Host.
-    Registration,
-    /// One side's startup, before its configs and world.
-    Setup,
-    /// Config loading: settings reads and scoped config files.
-    Config,
-    /// The owning game's normal runtime.
-    World,
-    /// Restricted data or asset loading, including published resource queries,
-    /// returning to its entering phase.
-    Reloading,
+/// Whether startup registration is currently open on this thread.
+///
+/// Use this in a scripting binding before accepting declarations: a script called, for example,
+/// from `Hooks::player_logged_in` is too late. This read does not grant a registrar or reopen
+/// registration. Only the relevant registration hook can submit its declarations.
+pub fn registration_open() -> bool {
+    crate::dispatch_scope::backend().is_some_and(|backend| (backend.registration_open)())
 }
 
-/// A refused engine transition never changes the phase or dispatches a hook.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum PhaseError {
-    /// The token belongs to another thread.
-    WrongThread,
-    /// The requested edge is not part of the phase machine.
-    Transition {
-        /// Unchanged current phase.
-        from: ModPhase,
-        /// Refused destination.
-        to: ModPhase,
-    },
-}
-impl std::fmt::Display for PhaseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mod phase transition refused: {self:?}")
-    }
-}
-impl std::error::Error for PhaseError {}
-
-// no wire: plain phase snapshot for the engine-owned load-state socket.
-// hidden: platform-owned instrumentation plumbing, not a mod authoring surface.
-#[doc(hidden)]
-#[derive(Clone, Copy)]
-// exhaustive: the platform or fixture constructs this process-local record as a complete unit.
-pub struct PhaseState {
-    pub phase: ModPhase,
-    pub resume: Option<ModPhase>,
-}
-// no wire: thread-bound phase authority or RAII restoration guard; never transferred as data.
-/// Engine-only authority for one thread; moving it does not transfer authority.
-#[derive(Clone)]
-#[non_exhaustive]
-pub struct PhaseOwner {
-    thread: std::thread::ThreadId,
-    fallback: Arc<std::sync::Mutex<PhaseState>>,
-}
-impl PhaseOwner {
-    /// Bind a new owning thread (or a loader) to its initial phase. Registration
-    /// is process-owned; a new side starts at Setup after those tables are frozen.
-    pub fn new(initial: ModPhase) -> Self {
-        let state = PhaseState {
-            phase: initial,
-            resume: None,
-        };
-        let owner = Self {
-            thread: std::thread::current().id(),
-            fallback: Arc::new(std::sync::Mutex::new(state)),
-        };
-        owner.write_state(state);
-        owner
-    }
-    fn read_state(&self) -> PhaseState {
-        crate::dispatch_scope::backend().map_or_else(
-            || {
-                *self
-                    .fallback
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-            },
-            |backend| (backend.phase_state)(),
-        )
-    }
-    fn write_state(&self, state: PhaseState) {
-        if let Some(backend) = crate::dispatch_scope::backend() {
-            (backend.set_phase)(state);
-        } else {
-            *self
-                .fallback
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = state;
-        }
-    }
-    /// A loader's temporary thread-local phase; the calling thread's state is restored.
-    pub fn scope(initial: ModPhase) -> PhaseScope {
-        let previous = crate::dispatch_scope::backend().map_or(
-            PhaseState {
-                phase: current_phase(),
-                resume: None,
-            },
-            |backend| (backend.phase_state)(),
-        );
-        PhaseScope {
-            owner: Self::new(initial),
-            previous,
-            _thread: std::marker::PhantomData,
-        }
-    }
-    /// Advance a legal edge on the bound thread, without dispatching anything.
-    pub fn advance(&self, to: ModPhase) -> Result<(), PhaseError> {
-        if self.thread != std::thread::current().id() {
-            return Err(PhaseError::WrongThread);
-        }
-        {
-            let mut state = self.read_state();
-            let from = state.phase;
-            match (from, to) {
-                (ModPhase::Packages, ModPhase::Registration)
-                | (ModPhase::Registration, ModPhase::Setup)
-                | (ModPhase::Setup, ModPhase::Config)
-                | (ModPhase::Config, ModPhase::World)
-                | (ModPhase::World, ModPhase::Config) => {}
-                (ModPhase::Setup | ModPhase::World, ModPhase::Reloading) => {
-                    state.resume = Some(from);
-                }
-                (ModPhase::Reloading, _) if state.resume == Some(to) => {
-                    state.resume = None;
-                }
-                _ => return Err(PhaseError::Transition { from, to }),
-            }
-            state.phase = to;
-            self.write_state(state);
-            Ok(())
-        }
-    }
-    /// Load configs before returning to normal runtime, including on failure.
-    pub fn config(&self) -> Result<PhaseGuard<'_>, PhaseError> {
-        self.advance(ModPhase::Config)?;
-        Ok(PhaseGuard {
-            owner: self,
-            resume: ModPhase::World,
-            _thread: std::marker::PhantomData,
-        })
-    }
-    /// Nest a reload in Setup or World; errors and panics restore the caller's phase.
-    pub fn reloading(&self) -> Result<PhaseGuard<'_>, PhaseError> {
-        let resume = self.read_state().phase;
-        self.advance(ModPhase::Reloading)?;
-        Ok(PhaseGuard {
-            owner: self,
-            resume,
-            _thread: std::marker::PhantomData,
-        })
-    }
-}
-
-// no wire: thread-bound phase authority or RAII restoration guard; never transferred as data.
-/// A temporary loader context, not authority transferred to a worker.
-// exhaustive: engine-only constructor and private state
-pub struct PhaseScope {
-    owner: PhaseOwner,
-    previous: PhaseState,
-    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
-}
-impl std::ops::Deref for PhaseScope {
-    type Target = PhaseOwner;
-    fn deref(&self) -> &PhaseOwner {
-        &self.owner
-    }
-}
-impl Drop for PhaseScope {
-    fn drop(&mut self) {
-        self.owner.write_state(self.previous);
-    }
-}
-
-// no wire: thread-bound phase authority or RAII restoration guard; never transferred as data.
-/// Engine-only phase scope, restored during unwinding too.
-// exhaustive: only the engine constructs it
-pub struct PhaseGuard<'a> {
-    owner: &'a PhaseOwner,
-    resume: ModPhase,
-    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
-}
-impl Drop for PhaseGuard<'_> {
-    fn drop(&mut self) {
-        self.owner
-            .advance(self.resume)
-            .expect("scoped phase returns to its declared destination");
-    }
-}
-
-/// The current owning phase, or the initial phase before the platform installs its reader.
-pub fn current_phase() -> ModPhase {
-    crate::dispatch_scope::backend().map_or(
-        if cfg!(test) {
-            ModPhase::World
-        } else {
-            ModPhase::Packages
-        },
-        |backend| (backend.current_phase)(),
-    )
-}
-/// The catalog-owned access class of a generated game operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum LoadAccess {
-    /// No extra load access beyond the phase's metadata/settings exceptions.
-    WorldOnly,
-    /// Registry and immutable metadata available in setup and reload.
-    Metadata,
-    /// The existing client setup reads, not general reload permissions.
-    ClientSetup,
-    /// Published asset/data facts, including resource-cache queries.
-    PublishedResources,
-}
-
-/// The default body of a host method: a test double that does not implement it gets the access
-/// check, then a panic naming the method.
-pub(crate) fn unprovided(method: &'static str, operation: &'static str, access: LoadAccess) -> ! {
-    check_access(operation, access);
-    unimplemented!("{}", method)
-}
-
-/// One cell read at the generated API boundary, not a tick scan or registry lookup.
-/// Native callers currently panic on refusal. The wasm host dispatcher checks
-/// `access_allowed` before entering these methods and returns a named phase refusal
-/// instead; the guest must never consult its own independent phase state.
-#[inline]
-pub fn check_access(operation: &str, access: LoadAccess) {
-    assert!(
-        access_allowed(operation, access),
-        "mod API {operation} is unavailable during {:?}",
-        current_phase()
-    );
-}
-
-/// Whether an operation is available in this thread's current load phase.
-#[inline]
-pub fn access_allowed(operation: &str, access: LoadAccess) -> bool {
-    let phase = current_phase();
-    if phase == ModPhase::World {
-        return true;
-    }
-    let metadata = access == LoadAccess::Metadata;
-    let settings = operation == "setting";
-    match phase {
-        ModPhase::World => true,
-        ModPhase::Setup => {
-            settings
-                || metadata
-                || matches!(
-                    access,
-                    LoadAccess::ClientSetup | LoadAccess::PublishedResources
-                )
-        }
-        ModPhase::Config => settings || operation == "config_files",
-        ModPhase::Reloading => settings || metadata || access == LoadAccess::PublishedResources,
-        ModPhase::Packages | ModPhase::Registration => false,
-    }
-}
-
-/// Whether a package contains compiled code or content alone.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+/// Whether a loaded package contains compiled code or content alone.
+// no wire: describes an entry in the local package inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PackageKind {
@@ -299,9 +672,16 @@ pub enum PackageKind {
     Content,
 }
 
-/// Read-only package metadata available during registration.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+/// Read-only metadata from the local package inventory, in dispatch order through [`LoadedMods`].
+/// Read it directly; to send or store package facts, copy the fields you need into your own record.
+///
+/// ```compile_fail,E0277
+/// use mod_api::{PackageInfo, wire::Writer};
+/// fn write_package(writer: &mut Writer, package: &PackageInfo) {
+///     writer.put(package);
+/// }
+/// ```
+// no wire: this snapshot is for inspecting packages in the current process.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct PackageInfo {
@@ -314,6 +694,8 @@ pub struct PackageInfo {
     /// Its `[dependencies]` rows, sorted by id.
     pub(crate) dependencies: Vec<crate::PackageDependency>,
     pub(crate) details: crate::PackageDetails,
+    /// Native runtime mod that serves code-side parts for this content package, if any.
+    pub(crate) served_by: Option<String>,
 }
 
 impl PackageInfo {
@@ -334,12 +716,22 @@ impl PackageInfo {
             namespaces,
             dependencies,
             details: crate::PackageDetails::default(),
+            served_by: None,
         }
     }
     /// The same snapshot with the manifest's descriptive fields.
     pub fn with_details(mut self, details: crate::PackageDetails) -> Self {
         self.details = details;
         self
+    }
+    /// The same snapshot with its serving native runtime mod ID, for content packages.
+    pub fn with_served_by(mut self, served_by: Option<String>) -> Self {
+        self.served_by = served_by;
+        self
+    }
+    /// The native runtime mod that serves code-side parts for this content package, if any.
+    pub fn served_by(&self) -> Option<&str> {
+        self.served_by.as_deref()
     }
     /// Package identifier.
     pub fn id(&self) -> &str {
@@ -397,20 +789,17 @@ impl PackageInfo {
     pub fn icon_path(&self) -> Option<&str> {
         self.details.icon_path.as_deref()
     }
-    /// How its code runs; `None` for a content package.
-    pub fn runtime(&self) -> Option<crate::PackageRuntime> {
-        self.details.runtime
-    }
-    /// One value of its manifest's `[properties]` table.
+    /// One value of its manifest's `[properties]` table. Only the complete manifest's byte
+    /// limit applies; there is no separate property count or size limit.
     pub fn property(&self, key: &str) -> Option<&crate::PropertyValue> {
         self.details.properties.get(key)
     }
 }
 
 // no wire: shared immutable loader inventory; contexts query it through LoadReader rather than transferring its Arc storage.
-/// The registries and settings registration reads: captured by the engine once, before the
-/// first registration hook runs, and the same for every registration step. Lookups are binary
-/// searches over sorted lists, so a clone of the context copies nothing.
+/// The instance directory, registries and settings that registration reads: captured by the
+/// engine once, before the first registration hook, and the same for every registration step.
+/// Registry and settings lookups are binary searches over sorted lists.
 #[derive(Clone)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct RegistrationData {
@@ -423,11 +812,17 @@ pub struct RegistrationData {
     /// The same load-owned behavior owners that supply the game's default providers.
     capability_coverage: Option<fn(crate::ProvidedBy, &str, &str) -> bool>,
     block_entity_coverage: Option<fn(&str, &str) -> bool>,
+    /// Each package's checked runtime files, by mod ID.
+    runtime_files: Arc<std::collections::BTreeMap<String, Arc<dyn crate::RuntimeFileSource>>>,
+    /// Each enabled package's content files, by mod ID.
+    package_files: Arc<std::collections::BTreeMap<String, Arc<dyn crate::PackageFileSource>>>,
+    /// Registration exposes only the enabled and admitted rows, not all installed code.
+    visible_mods: Option<LoadedMods>,
 }
 
 impl RegistrationData {
     /// The engine's snapshot: `registries` maps a registry name to its names in ID order,
-    /// `settings` a mod ID to its settings.
+    /// `settings` a mod ID to its settings, and `instance_dir` is the startup game directory.
     pub fn new(
         registries: BTreeMap<String, Vec<String>>,
         settings: BTreeMap<String, BTreeMap<String, String>>,
@@ -439,6 +834,9 @@ impl RegistrationData {
             runtime,
             capability_coverage: None,
             block_entity_coverage: None,
+            runtime_files: Default::default(),
+            package_files: Default::default(),
+            visible_mods: None,
             registries: registries
                 .into_iter()
                 .map(|(name, ids)| (name, ids.into()))
@@ -448,6 +846,51 @@ impl RegistrationData {
                 .map(|(id, values)| (id, values.into_iter().collect()))
                 .collect(),
         }
+    }
+    /// The engine's initial load shares the published registration settings
+    /// rather than capturing the same startup files again on its workers.
+    /// Without a registration publication, the load owns a fresh capture.
+    pub fn initial_settings_snapshot() -> Option<Arc<[(String, Arc<[(String, String)]>)]>> {
+        registration_data().map(|data| data.settings)
+    }
+    /// Bind each package's checked runtime files, by mod ID: what
+    /// [`RegistrationContext::runtime_files`] serves.
+    pub fn with_runtime_files(
+        mut self,
+        files: std::collections::BTreeMap<String, Arc<dyn crate::RuntimeFileSource>>,
+    ) -> Self {
+        self.runtime_files = Arc::new(files);
+        self
+    }
+    pub(crate) fn runtime_source(&self, mod_id: &str) -> Option<Arc<dyn crate::RuntimeFileSource>> {
+        self.runtime_files.get(mod_id).cloned()
+    }
+    /// Bind each enabled package's content files, by mod ID: what
+    /// [`RegistrationContext::package_files`] serves.
+    pub fn with_package_files(
+        mut self,
+        files: std::collections::BTreeMap<String, Arc<dyn crate::PackageFileSource>>,
+    ) -> Self {
+        let installed = LoadedMods::new();
+        self.visible_mods = Some(LoadedMods {
+            entries: installed
+                .iter()
+                .filter(|p| files.contains_key(p.id()))
+                .cloned()
+                .collect(),
+            authority: installed.authority,
+        });
+        self.package_files = Arc::new(files);
+        self
+    }
+    pub(crate) fn package_source(&self, mod_id: &str) -> Option<Arc<dyn crate::PackageFileSource>> {
+        self.package_files.get(mod_id).cloned()
+    }
+    /// The startup-enabled snapshot shared by the mod-facing phase contexts.
+    // hidden: backend access to the snapshot; mods use their context's `mods()`.
+    #[doc(hidden)]
+    pub fn visible_mods(&self) -> Option<&LoadedMods> {
+        self.visible_mods.as_ref()
     }
     /// Bind the game's pure type-coverage projection. It reads no world or runtime position.
     pub fn with_capability_coverage(
@@ -459,13 +902,17 @@ impl RegistrationData {
         self.block_entity_coverage = Some(block_entity_coverage);
         self
     }
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
+    fn instance_dir(&self) -> &crate::InstanceDirectory {
+        &self.instance_dir
+    }
+    fn registry(&self, name: &str) -> Option<&[String]> {
         let at = self
             .registries
-            .binary_search_by(|(known, _)| known.as_str().cmp(name));
-        Some(self.registries[at.ok()?].1.clone())
+            .binary_search_by(|(known, _)| known.as_str().cmp(name))
+            .ok()?;
+        Some(self.registries[at].1.as_ref())
     }
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         let mod_at = self
             .settings
             .binary_search_by(|(known, _)| known.as_str().cmp(mod_id))
@@ -474,7 +921,7 @@ impl RegistrationData {
         let at = values
             .binary_search_by(|(known, _)| known.as_str().cmp(key))
             .ok()?;
-        Some(values[at].1.clone())
+        Some(values[at].1.as_str())
     }
 }
 
@@ -499,23 +946,37 @@ pub(crate) fn block_entity_covers(kind: &str, block: &str) -> bool {
         .is_some_and(|coverage| coverage(kind, block))
 }
 /// Read-only view of the startup package inventory, shared: cloning it copies no package.
-// no wire: zero-byte phase token: decoding rebinds the installed package inventory rather than transferring entries.
+// no wire: the loader publishes the inventory locally; callers borrow or clone the view.
 #[derive(Clone)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct LoadedMods {
     pub(crate) entries: Arc<[PackageInfo]>,
+    pub(crate) authority: Arc<crate::parts::NamespaceAuthority>,
 }
 
 impl LoadedMods {
+    #[cfg(test)]
+    pub(crate) fn from_entries(entries: Arc<[PackageInfo]>) -> Self {
+        let authority = Arc::new(crate::parts::NamespaceAuthority::from_packages(&entries));
+        Self { entries, authority }
+    }
+
     pub(crate) fn new() -> Self {
         #[cfg(test)]
-        if let Some(entries) = TEST_PACKAGES.with_borrow(Clone::clone) {
-            return Self { entries };
+        if let Some((entries, authority)) = TEST_PACKAGES.with_borrow(Clone::clone) {
+            return Self { entries, authority };
         }
-        Self {
-            entries: crate::dispatch_scope::backend()
-                .map_or_else(|| Arc::from([]), |backend| (backend.packages)()),
-        }
+        let (entries, authority) = crate::dispatch_scope::backend().map_or_else(
+            || (Arc::from([]), Arc::default()),
+            |backend| ((backend.packages)(), (backend.namespace_authority)()),
+        );
+        Self { entries, authority }
+    }
+
+    fn enabled_at_startup() -> Self {
+        crate::dispatch_scope::backend()
+            .and_then(|backend| (backend.visible_packages)())
+            .unwrap_or_else(Self::new)
     }
 
     /// Package IDs in dispatch order.
@@ -534,29 +995,6 @@ impl LoadedMods {
     }
 }
 
-/// Why a registration read was refused.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum RegistrationReadError {
-    /// The engine supplied no registry or settings data to this context.
-    Unavailable,
-    /// The registry name is not a namespaced identifier (`minecraft:item`).
-    InvalidRegistryName(String),
-    /// No built-in registry has this name.
-    UnknownRegistry(String),
-    /// The setting key is empty or names a path rather than one key.
-    InvalidSettingKey(String),
-    /// No loaded package has this ID, so it has no settings to read.
-    UnknownMod(String),
-}
-impl std::fmt::Display for RegistrationReadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "registration read refused: {self:?}")
-    }
-}
-impl std::error::Error for RegistrationReadError {}
-
 /// A registration phase's view. Declarations go on the hook's event; there is
 /// no world, handle constructor, transaction or game Host at this point.
 ///
@@ -565,7 +1003,7 @@ impl std::error::Error for RegistrationReadError {}
 /// captured once before the first of them runs, so an answer never depends on
 /// dispatch order or on which hook asks:
 ///
-/// - [`mods`](Self::mods): the loaded packages.
+/// - [`mods`](Self::mods): the enabled, admitted packages at startup.
 /// - [`registry`](Self::registry): the built-in registries, as `registries.json` lists them.
 ///   Entries that mods declare during registration are not in it; a mod already has its own
 ///   declarations on its event or registrar.
@@ -590,14 +1028,13 @@ impl std::error::Error for RegistrationReadError {}
 /// }
 /// ```
 // exhaustive: its fields are private, so mods cannot build or destructure it
-// no wire: phase context has a custom Wire layout for its derived directory value and the game's startup screen (a held resource); other host tables rebind locally.
+// no wire: the phase context owns local registration state and the startup screen.
 pub struct RegistrationContext {
     pub(crate) mods: LoadedMods,
     pub(crate) data: Option<RegistrationData>,
-    pub(crate) declaration_refusals: std::sync::Mutex<Vec<String>>,
-    pub(crate) self_refusal: std::sync::Mutex<Option<String>>,
-    pub(crate) warnings: std::sync::Mutex<Vec<crate::LoadingMessage>>,
-    pub(crate) instance_dir: Option<crate::InstanceDirectory>,
+    pub(crate) declaration_refusals:
+        Arc<std::sync::Mutex<Vec<crate::__private::DeclarationRefusal>>>,
+    pub(crate) listener: Option<&'static str>,
     /// The game's startup screen, for [`progress`](Self::progress) and
     /// [`message`](Self::message); none without a game.
     pub(crate) startup: Option<Arc<dyn crate::StartupScreen>>,
@@ -607,17 +1044,25 @@ pub struct RegistrationContext {
 impl RegistrationContext {
     pub(crate) fn new() -> Self {
         let data = registration_data();
-        let instance_dir = data.as_ref().map(|data| data.instance_dir.clone());
         let runtime = data.as_ref().map(|data| data.runtime.clone());
         Self {
             mods: LoadedMods::new(),
             data,
             declaration_refusals: Default::default(),
-            self_refusal: Default::default(),
-            warnings: Default::default(),
-            instance_dir,
+            listener: None,
             startup: crate::world::startup_progress::installed(),
             runtime,
+        }
+    }
+
+    pub(crate) fn for_mod(&self, mod_id: &'static str) -> Self {
+        Self {
+            mods: self.mods.clone(),
+            data: self.data.clone(),
+            declaration_refusals: Arc::clone(&self.declaration_refusals),
+            listener: Some(mod_id),
+            startup: self.startup.clone(),
+            runtime: self.runtime.clone(),
         }
     }
 
@@ -643,54 +1088,39 @@ impl RegistrationContext {
             .expect("registration runtime environment is installed")
     }
 
-    /// The instance directory captured before registration, identically on native
-    /// and wasm. This is data only, not permission to access a filesystem.
+    /// The instance directory captured before registration, or `None` when no registration
+    /// snapshot is installed. This is data only, not permission to access a filesystem.
     /// The value preserves the host OS's raw path encoding, including non-UTF-8 names.
-    pub fn instance_dir(&self) -> Result<&crate::InstanceDirectory, RegistrationReadError> {
-        self.instance_dir
-            .as_ref()
-            .ok_or(RegistrationReadError::Unavailable)
+    pub fn instance_dir(&self) -> Option<&crate::InstanceDirectory> {
+        Some(self.data.as_ref()?.instance_dir())
     }
 
-    /// The loaded-mod view, independent of this phase's event or registrar.
+    /// Packages enabled and admitted at startup, independent of the event or registrar.
+    /// Native code switched off at startup still registers but does not appear here.
     pub fn mods(&self) -> &LoadedMods {
-        &self.mods
+        self.data
+            .as_ref()
+            .and_then(|data| data.visible_mods.as_ref())
+            .unwrap_or(&self.mods)
     }
 
-    /// A built-in registry's names in ID order, for validating the keys a mod declares.
-    pub fn registry(&self, name: &str) -> Result<Arc<[String]>, RegistrationReadError> {
-        if crate::Identifier::parse_namespaced(name).is_none() {
-            return Err(RegistrationReadError::InvalidRegistryName(name.to_owned()));
-        }
-        self.data()?
-            .registry(name)
-            .ok_or_else(|| RegistrationReadError::UnknownRegistry(name.to_owned()))
+    /// Borrows a built-in registry's names in ID order, or returns `None` if the registry
+    /// is unavailable or no registration snapshot is installed.
+    pub fn registry(&self, name: &str) -> Option<&[String]> {
+        self.data.as_ref()?.registry(name)
     }
 
-    /// A loaded mod's setting as it was when registration began: `Ok(None)` when the mod
-    /// has not set it. The key is one setting's name, not a path.
-    pub fn setting(
-        &self,
-        mod_id: &str,
-        key: &str,
-    ) -> Result<Option<String>, RegistrationReadError> {
-        if key.is_empty() || matches!(key, "." | "..") || key.contains(['/', '\\', '\0']) {
-            return Err(RegistrationReadError::InvalidSettingKey(key.to_owned()));
-        }
-        let data = self.data()?;
-        if self.mods.get(mod_id).is_none() {
-            return Err(RegistrationReadError::UnknownMod(mod_id.to_owned()));
-        }
-        Ok(data.setting(mod_id, key))
-    }
-
-    fn data(&self) -> Result<&RegistrationData, RegistrationReadError> {
-        self.data.as_ref().ok_or(RegistrationReadError::Unavailable)
+    /// Borrows a mod's captured setting as it was when registration began, or returns `None`
+    /// when it was not captured or no registration snapshot is installed.
+    pub fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
+        self.data.as_ref()?.setting(mod_id, key)
     }
 }
 
-/// A data load's read-only view. The owning loader supplies its origin and
-/// metadata; reading already-loaded data never creates this context.
+/// A data load's read-only view. The loader freezes the metadata for this
+/// resource generation before dispatch. The metadata getters lend that data
+/// without file I/O. Copy data only if it must outlive the context borrow.
+/// Reading already-loaded data never creates this context.
 ///
 /// ```compile_fail
 /// use mod_api::{DataLoadContext, Host};
@@ -713,35 +1143,37 @@ pub trait DataLoadContext {
     /// The phase selected at the owning load boundary.
     fn origin(&self) -> DataLoadOrigin;
 
-    /// Registry names in ID order, from this resource generation's snapshot.
-    fn registry(&self, name: &str) -> Option<Arc<[String]>>;
+    /// Borrows registry names in ID order, or returns `None` if the registry
+    /// is unavailable.
+    fn registry(&self, name: &str) -> Option<&[String]>;
 
     /// Resolve a fluid name against this load's registered fluid identities.
     fn fluid_key(&self, id: &str) -> Option<crate::FluidKey>;
 
-    /// The fluid tags this load's resources hold (`data/<ns>/tags/fluid`):
-    /// each tag id to the fluids it names, in the sources' order — what a
-    /// recipe's fluid ingredient resolves its `#tag`s with. `None` where the
-    /// load reads no recipe resources.
-    fn fluid_tags(&self) -> Option<Arc<[(String, Arc<[String]>)]>> {
+    /// Borrows the recipe pass's fluid tags (`data/<ns>/tags/fluid`), with each
+    /// tag's members in source order. `None` means the load has no recipe
+    /// overlay; `Some(&[])` means the overlay has no fluid tags.
+    fn fluid_tags(&self) -> Option<&[(String, Arc<[String]>)]> {
         None
     }
 
-    /// A loaded mod's setting captured at the owning load boundary, without file I/O.
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String>;
+    /// Borrows a captured setting, or returns `None` if it was not captured.
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
 
-    /// The same loaded-mod view available during registration.
-    fn mods(&self) -> LoadedMods;
+    /// Borrows the loaded-mod inventory in dispatch order.
+    fn mods(&self) -> &LoadedMods;
 }
 
-/// Immutable resource-generation reads supplied by an owning loader.
+/// Immutable resource-generation reads supplied by an owning loader. Return
+/// borrows into the captured data; the getters must not read files.
 pub trait LoadReader: Sync {
-    /// Registry names in ID order.
-    fn registry(&self, name: &str) -> Option<Arc<[String]>>;
-    /// Fluid tags and their members in source order.
-    fn fluid_tags(&self) -> Arc<[(String, Arc<[String]>)]>;
-    /// A captured setting, without file I/O.
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String>;
+    /// Borrows registry names in ID order, or returns `None` if unavailable.
+    fn registry(&self, name: &str) -> Option<&[String]>;
+    /// Borrows recipe fluid tags with members in source order. Return `None`
+    /// without a recipe overlay and `Some(&[])` when it has no fluid tags.
+    fn fluid_tags(&self) -> Option<&[(String, Arc<[String]>)]>;
+    /// Borrows a captured setting, or returns `None` if it was not captured.
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
 }
 
 // no wire: borrowed phase-scoped host readers; authority stays with their owning thread.
@@ -761,7 +1193,7 @@ impl<'a> OwningLoad<'a> {
         Self {
             source,
             origin,
-            mods: LoadedMods::new(),
+            mods: LoadedMods::enabled_at_startup(),
         }
     }
 }
@@ -770,27 +1202,29 @@ impl DataLoadContext for OwningLoad<'_> {
     fn origin(&self) -> DataLoadOrigin {
         self.origin
     }
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
+    fn registry(&self, name: &str) -> Option<&[String]> {
         self.source.registry(name)
     }
     fn fluid_key(&self, id: &str) -> Option<crate::FluidKey> {
         crate::content::registry_keys::fluid_key(id)
     }
-    fn fluid_tags(&self) -> Option<Arc<[(String, Arc<[String]>)]>> {
-        Some(self.source.fluid_tags())
+    fn fluid_tags(&self) -> Option<&[(String, Arc<[String]>)]> {
+        self.source.fluid_tags()
     }
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         self.source.setting(mod_id, key)
     }
-    fn mods(&self) -> LoadedMods {
-        self.mods.clone()
+    fn mods(&self) -> &LoadedMods {
+        &self.mods
     }
 }
 
-/// The view of a hook fired inside a menu, recipe or player-list loop, where no
-/// game is at hand: the side, the registries, the settings and the mod list.
-/// The side that owns the loop builds it once per resource generation; a hook
-/// never builds one, and its answers never change while it is held.
+/// The frozen resource-generation view of a hook fired inside a menu, recipe or
+/// player-list loop: the side, registries, settings, mod list and authoritative item
+/// tags. A loop without a tag-bearing snapshot (for example, the sound engine) returns
+/// `None` from tag reads even after world tags sync. The side that owns the loop builds
+/// this view; its answers never change while held. Metadata getters return borrows
+/// tied to this context and do no file I/O.
 ///
 /// ```compile_fail
 /// use mod_api::{Host, LoopContext};
@@ -805,6 +1239,19 @@ impl DataLoadContext for OwningLoad<'_> {
 /// }
 /// ```
 pub trait LoopContext {
+    /// Membership in this generation's authoritative item tags. `None` means the
+    /// snapshot is unavailable or a member of this tag could not be bound. Absent
+    /// or empty tags in a loaded snapshot answer `Some(false)`. Reads allocate
+    /// nothing and perform no file I/O.
+    fn is_in_tag(&self, item: crate::ItemKey, tag: crate::TagKey) -> Option<bool>;
+
+    /// Borrow the bound item members in authoritative order for this generation.
+    /// `None` means the snapshot was unavailable or a member of this tag could not
+    /// be bound at publication; no partial list is returned. A missing or empty tag
+    /// in a loaded snapshot returns `Some(&[])`. On clients these are the server's
+    /// synced tags, never the local pack's. Reads allocate nothing.
+    fn items_in_tag(&self, tag: crate::TagKey) -> Option<&[crate::ItemKey]>;
+
     /// Whether a mod-created recipe property set accepts an item ID. Unknown
     /// sets/items and vanilla set keys return false. Use this in
     /// `menu_slot_rules` for the same filter on server and client prediction.
@@ -815,27 +1262,34 @@ pub trait LoopContext {
     /// The side whose loop fires the hook.
     fn side(&self) -> LoopSide;
 
-    /// Registry names in ID order, from the resource generation's snapshot.
-    fn registry(&self, name: &str) -> Option<Arc<[String]>>;
+    /// Borrows registry names in ID order, or returns `None` if the registry
+    /// is unavailable.
+    fn registry(&self, name: &str) -> Option<&[String]>;
 
-    /// A loaded mod's setting captured when this context was built, without file I/O.
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String>;
+    /// Borrows a captured setting, or returns `None` if it was not captured.
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
 
-    /// The same loaded-mod view available during registration.
-    fn mods(&self) -> LoadedMods;
+    /// Borrows the loaded-mod inventory in dispatch order.
+    fn mods(&self) -> &LoadedMods;
 }
 
-/// Immutable resource-generation reads supplied by an owning loop.
+#[path = "loop_item_tags.rs"]
+mod loop_item_tags;
+pub use loop_item_tags::BoundItemTags;
+
+/// Immutable resource-generation reads supplied by an owning loop. The getters
+/// borrow the captured metadata and must not read files. Item tags are bound
+/// separately when the generation is published.
 pub trait LoopReader: Sync {
     /// Mod-created recipe property membership from the owning generation.
     fn mod_recipe_property_contains(&self, set: &str, item: crate::ItemKey) -> bool {
         let _ = (set, item);
         false
     }
-    /// Registry names in ID order.
-    fn registry(&self, name: &str) -> Option<Arc<[String]>>;
-    /// A captured setting, without file I/O.
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String>;
+    /// Borrows registry names in ID order, or returns `None` if unavailable.
+    fn registry(&self, name: &str) -> Option<&[String]>;
+    /// Borrows a captured setting, or returns `None` if it was not captured.
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
 }
 
 // no wire: borrowed phase-scoped host readers; authority stays with their owning thread.
@@ -845,46 +1299,58 @@ pub trait LoopReader: Sync {
 // exhaustive: its fields are private; only the game builds it
 pub struct OwningLoop<'a> {
     source: &'a dyn LoopReader,
+    item_tags: Option<&'a BoundItemTags>,
     side: LoopSide,
     mods: LoadedMods,
 }
 
 impl<'a> OwningLoop<'a> {
-    /// Borrow a loop's immutable reader at its owning boundary.
-    pub fn new(side: LoopSide, source: &'a dyn LoopReader) -> Self {
+    /// Borrow a loop's immutable reader and its already-bound tags at the owning boundary.
+    pub fn new(
+        side: LoopSide,
+        source: &'a dyn LoopReader,
+        item_tags: Option<&'a BoundItemTags>,
+    ) -> Self {
         Self {
             source,
+            item_tags,
             side,
-            mods: LoadedMods::new(),
+            mods: LoadedMods::enabled_at_startup(),
         }
     }
 }
 
 impl LoopContext for OwningLoop<'_> {
+    fn is_in_tag(&self, item: crate::ItemKey, tag: crate::TagKey) -> Option<bool> {
+        self.item_tags?.contains(tag, item)
+    }
+    fn items_in_tag(&self, tag: crate::TagKey) -> Option<&[crate::ItemKey]> {
+        self.item_tags?.items(tag)
+    }
     fn mod_recipe_property_contains(&self, set: &str, item: crate::ItemKey) -> bool {
         self.source.mod_recipe_property_contains(set, item)
     }
     fn side(&self) -> LoopSide {
         self.side
     }
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
+    fn registry(&self, name: &str) -> Option<&[String]> {
         self.source.registry(name)
     }
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         self.source.setting(mod_id, key)
     }
-    fn mods(&self) -> LoadedMods {
-        self.mods.clone()
+    fn mods(&self) -> &LoadedMods {
+        &self.mods
     }
 }
 
 /// The view of a hook fired while a feature generates, where no game is at
 /// hand: on a worldgen worker thread, or on the server thread when a sapling
-/// grows. It carries the server's registries, its settings and the mod list;
-/// the server builds it once per resource generation, a hook never builds one,
-/// and its answers never change while it is held. There are no writes, no
-/// level or entity handles and no transaction: what the generating region
-/// holds is the hook's own arguments.
+/// grows. It lends the server's registries, settings and mod list from the
+/// frozen resource generation. The metadata borrows are tied to this host
+/// and the getters do no file I/O. There are no writes, no level or entity
+/// handles and no transactions: the hook's arguments provide access to the
+/// generating region.
 ///
 /// ```compile_fail
 /// use mod_api::{Host, WorldgenHost};
@@ -899,14 +1365,15 @@ impl LoopContext for OwningLoop<'_> {
 /// }
 /// ```
 pub trait WorldgenHost {
-    /// Registry names in ID order, from the server's resource generation.
-    fn registry(&self, name: &str) -> Option<Arc<[String]>>;
+    /// Borrows registry names in ID order, or returns `None` if the registry
+    /// is unavailable.
+    fn registry(&self, name: &str) -> Option<&[String]>;
 
-    /// A loaded mod's setting captured when the server built this view, without file I/O.
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String>;
+    /// Borrows a captured setting, or returns `None` if it was not captured.
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
 
-    /// The same loaded-mod view available during registration.
-    fn mods(&self) -> LoadedMods;
+    /// Borrows the loaded-mod inventory in dispatch order.
+    fn mods(&self) -> &LoadedMods;
 
     /// `BlockState.setValue`: `state` with its property `key` set to `value`; `state` itself
     /// when it already has that value, None when its block has no such property or value.
@@ -918,14 +1385,24 @@ pub trait WorldgenHost {
     ) -> Option<crate::BlockState>;
 }
 
+// no wire: a process-local borrow of frozen worldgen metadata.
+/// Immutable world-generation reads supplied by the owning engine boundary.
+// hidden: engine plumbing, re-exported through __private for the game.
+#[doc(hidden)]
+pub trait WorldgenReader: Sync {
+    /// Borrows registry names in ID order.
+    fn registry(&self, name: &str) -> Option<&[String]>;
+    /// Borrows a captured setting, without file I/O.
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
+}
+
 // no wire: borrowed phase-scoped host readers; authority stays with their owning thread.
 /// The server's world generation, as a [`WorldgenHost`].
 // hidden: the game's side of the context, not part of the mod surface
 #[doc(hidden)]
 // exhaustive: its fields are private; only the game builds it
 pub struct OwningWorldgen<'a> {
-    registry: &'a dyn Fn(&str) -> Option<Arc<[String]>>,
-    setting: &'a dyn Fn(&str, &str) -> Option<String>,
+    source: &'a dyn WorldgenReader,
     state_with_property: &'a StateWithProperty<'a>,
     mods: LoadedMods,
 }
@@ -935,31 +1412,28 @@ type StateWithProperty<'a> =
     dyn Fn(crate::BlockState, &str, &str) -> Option<crate::BlockState> + 'a;
 
 impl<'a> OwningWorldgen<'a> {
-    /// The server's registries, mod settings and block states, read through the game's
-    /// worldgen context.
+    /// Borrow the owning engine's frozen metadata reader and block-state query.
     pub fn new(
-        registry: &'a dyn Fn(&str) -> Option<Arc<[String]>>,
-        setting: &'a dyn Fn(&str, &str) -> Option<String>,
+        source: &'a dyn WorldgenReader,
         state_with_property: &'a StateWithProperty<'a>,
     ) -> Self {
         Self {
-            registry,
-            setting,
+            source,
             state_with_property,
-            mods: LoadedMods::new(),
+            mods: LoadedMods::enabled_at_startup(),
         }
     }
 }
 
 impl WorldgenHost for OwningWorldgen<'_> {
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
-        (self.registry)(name)
+    fn registry(&self, name: &str) -> Option<&[String]> {
+        self.source.registry(name)
     }
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
-        (self.setting)(mod_id, key)
+    fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
+        self.source.setting(mod_id, key)
     }
-    fn mods(&self) -> LoadedMods {
-        self.mods.clone()
+    fn mods(&self) -> &LoadedMods {
+        &self.mods
     }
     fn state_with_property(
         &self,
@@ -973,25 +1447,20 @@ impl WorldgenHost for OwningWorldgen<'_> {
 
 #[cfg(test)]
 thread_local! {
-    static TEST_PACKAGES: std::cell::RefCell<Option<Arc<[PackageInfo]>>> = const { std::cell::RefCell::new(None) };
+    static TEST_PACKAGES: std::cell::RefCell<Option<(Arc<[PackageInfo]>, Arc<crate::parts::NamespaceAuthority>)>> = const { std::cell::RefCell::new(None) };
 }
-/// Runs `f` with only the packages `ids` installed, for tests.
+
 #[cfg(test)]
-pub fn with_test_packages<R>(ids: &[&str], f: impl FnOnce() -> R) -> R {
-    let packages: Vec<_> = ids
-        .iter()
-        .map(|id| {
-            PackageInfo::new(
-                (*id).to_owned(),
-                "1".to_owned(),
-                PackageKind::Code,
-                crate::Side::Client,
-                vec![(*id).to_owned()],
-                vec![],
-            )
-        })
-        .collect();
-    with_test_package_inventory(packages, f)
+pub(crate) fn test_owns_namespace(owner: &str, namespace: &str) -> Option<bool> {
+    TEST_PACKAGES.with_borrow(|slot| {
+        slot.as_ref()
+            .map(|(_, authority)| authority.owns(owner, namespace))
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn test_namespace_authority() -> Option<Arc<crate::parts::NamespaceAuthority>> {
+    TEST_PACKAGES.with_borrow(|slot| slot.as_ref().map(|(_, authority)| authority.clone()))
 }
 
 #[cfg(test)]
@@ -999,7 +1468,9 @@ pub(crate) fn with_test_package_inventory<R>(
     packages: Vec<PackageInfo>,
     f: impl FnOnce() -> R,
 ) -> R {
-    let previous = TEST_PACKAGES.replace(Some(packages.into()));
+    let entries: Arc<[PackageInfo]> = packages.into();
+    let authority = Arc::new(crate::parts::NamespaceAuthority::from_packages(&entries));
+    let previous = TEST_PACKAGES.replace(Some((entries, authority)));
     let result = f();
     TEST_PACKAGES.set(previous);
     result
@@ -1009,39 +1480,10 @@ pub(crate) fn with_test_package_inventory<R>(
 pub(crate) use crate::testing::TestReader;
 
 #[test]
-fn phase_authority_advances_without_a_platform_backend() {
-    let owner = PhaseOwner::new(ModPhase::Packages);
-    owner.advance(ModPhase::Registration).unwrap();
-    let other = owner.clone();
-    assert_eq!(
-        std::thread::spawn(move || other.advance(ModPhase::Setup))
-            .join()
-            .unwrap(),
-        Err(PhaseError::WrongThread)
-    );
-    owner.advance(ModPhase::Setup).unwrap();
-    {
-        let _reload = owner.reloading().unwrap();
-    }
-    owner.advance(ModPhase::Config).unwrap();
-    owner.advance(ModPhase::World).unwrap();
-    {
-        let _config = owner.config().unwrap();
-    }
-    assert_eq!(
-        owner.advance(ModPhase::Setup),
-        Err(PhaseError::Transition {
-            from: ModPhase::World,
-            to: ModPhase::Setup
-        })
-    );
-}
-
-#[test]
 fn the_registration_context_lists_installed_packages_with_their_details() {
     let details = crate::PackageDetails {
         name: "Machines".to_owned(),
-        runtime: Some(crate::PackageRuntime::Native),
+        properties: BTreeMap::from([("ratio".to_owned(), crate::PropertyValue::Float(0.5))]),
         ..Default::default()
     };
     let packages = vec![
@@ -1055,7 +1497,7 @@ fn the_registration_context_lists_installed_packages_with_their_details() {
                 "base".to_owned(),
                 "^1".to_owned(),
                 crate::DependencyKind::Required,
-                crate::DependencyOrder::After,
+                crate::DependencyOrder::Before,
                 crate::Side::Both,
                 None,
                 None,
@@ -1079,10 +1521,18 @@ fn the_registration_context_lists_installed_packages_with_their_details() {
         );
         let machines = context.mods().get("machines").unwrap();
         assert_eq!(machines.name(), "Machines");
-        assert_eq!(machines.runtime(), Some(crate::PackageRuntime::Native));
+        assert_eq!(machines.kind(), PackageKind::Code);
+        assert_eq!(
+            machines.property("ratio"),
+            Some(&crate::PropertyValue::Float(0.5))
+        );
         assert!(machines.depends_on("base"));
+        assert_eq!(
+            machines.dependencies()[0].order(),
+            crate::DependencyOrder::Before
+        );
         let base = context.mods().get("base").unwrap();
-        assert_eq!(base.runtime(), None);
+        assert_eq!(base.kind(), PackageKind::Content);
         assert!(context.mods().get("missing").is_none());
     });
 }

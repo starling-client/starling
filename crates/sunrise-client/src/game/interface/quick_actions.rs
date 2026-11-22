@@ -42,9 +42,14 @@ impl Game<'_> {
     }
 
     /// `getQuickActionsDialog().ifPresent(showDialog(holder, gui.screen()))`.
-    pub(super) fn open_quick_actions(&mut self) {
-        if let Some(dialog) = self.quick_actions_dialog() {
-            self.show_dialog(&dialog);
-        }
+    /// Returns whether a dialog screen actually opened.
+    pub(super) fn open_quick_actions(&mut self) -> bool {
+        let Some(dialog) = self.quick_actions_dialog() else {
+            return false;
+        };
+        let before_rev = self.dialog_screen_key();
+        let before_screen = self.screen;
+        self.show_dialog(&dialog);
+        self.dialog_screen_key() != before_rev || self.screen != before_screen
     }
 }

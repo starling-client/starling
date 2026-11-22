@@ -1,14 +1,16 @@
 //! Original GPU probes of the production terrain inputs, without a resource or shader pack.
 
-use super::PackAtlas;
-use crate::mesher::{TerrainVertex, UV_STEPS};
+use crate::gfx::pack_post::terrain_tables;
+use crate::mesher::TerrainVertex;
+use sunrise_render_core::UV_STEPS;
+use sunrise_render_shaderpack::pack_atlas::PackAtlas;
 use wgpu::util::DeviceExt;
 
 #[test]
+#[ignore = "daily"]
 fn mid_tex_coord_follows_each_quads_mapped_corners() {
     let _gpu = crate::gfx::test_gpu::lock();
-    let instance = crate::gfx::test_gpu::instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
         return;
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
@@ -128,14 +130,14 @@ fn mid_tex_coord_follows_each_quads_mapped_corners() {
 /// 8, sprites of 2, 4 and 1 px at (9, 1), (1, 1) and (9, 5)): flat draws map a quad's UVs onto its
 /// sprite's own pixels, so a corner is half the sprite's own side from `mc_midTexCoord`.
 #[test]
+#[ignore = "daily"]
 fn flat_draws_map_uvs_onto_a_stitched_sprite() {
     let _gpu = crate::gfx::test_gpu::lock();
-    let instance = crate::gfx::test_gpu::instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
         return;
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-    let array = super::tests::upscaled_array(&device, &queue, &[2, 4, 1]);
+    let array = super::midpoint_support::upscaled_array(&device, &queue, &[2, 4, 1]);
     let mut encoder = device.create_command_encoder(&Default::default());
     let atlas =
         PackAtlas::stitched(&device, &mut encoder, &[array], 3, 4, &[2, 4, 1], 0, 0).unwrap();
@@ -179,10 +181,10 @@ fn flat_draws_map_uvs_onto_a_stitched_sprite() {
 /// Whole blocks and sixteenths stay where they are, and so does a place float rounding put a hair
 /// below a grid line: Iris reads plants offset by 9/15 exactly on a half block.
 #[test]
+#[ignore = "daily"]
 fn terrain_vertices_go_down_to_the_32768th_below_them() {
     let _gpu = crate::gfx::test_gpu::lock();
-    let instance = crate::gfx::test_gpu::instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
         return;
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
@@ -252,11 +254,11 @@ fn terrain_vertices_go_down_to_the_32768th_below_them() {
 /// vertices it holds: a whole tinted face with its own ambient occlusion per corner
 /// (`separateAo`), two more, and a slab's top kept as its vertices (`packed::FULL`).
 #[test]
+#[ignore = "daily"]
 fn compact_records_feed_a_pack_the_vertices_they_hold() {
     let _gpu = crate::gfx::test_gpu::lock();
     use crate::mesher::packed;
-    let instance = crate::gfx::test_gpu::instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
         return;
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
@@ -303,7 +305,7 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
         .into_iter()
         .flat_map(|(x, y)| face(x, y))
         .collect();
-    let records = packed::layout(&solid, &[tint; 4]);
+    let records: Vec<[u32; 6]> = packed::layout(&solid, &[tint; 4]);
     assert_eq!(
         packed::packed_quads(&records, 4),
         3,
@@ -566,10 +568,7 @@ fn sample_page(
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
     let rects = buffer(
-        bytemuck::cast_slice(&super::super::pack_post::terrain_tables(
-            &[],
-            &atlas.rects_table(),
-        )),
+        bytemuck::cast_slice(&terrain_tables(&[], &atlas.rects_table())),
         wgpu::BufferUsages::STORAGE,
     );
     let bindings = [

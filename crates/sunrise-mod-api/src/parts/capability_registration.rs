@@ -63,7 +63,7 @@ impl PartRegistrar {
             || self.parts.capabilities.get(name).is_some_and(|types| {
                 types.iter().any(|(kind, providers)| {
                     !providers.is_empty()
-                        && (self.block_entity_types.iter().any(|declaration| {
+                        && (self.block_entity_types.iter().any(|(_, declaration)| {
                             declaration.id == **kind
                                 && declaration.blocks.iter().any(|block| block == id)
                         }) || mod_vocab::__private::parts_installation::block_entity_covers(

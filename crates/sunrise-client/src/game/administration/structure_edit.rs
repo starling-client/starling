@@ -63,13 +63,8 @@ pub(super) struct StructureEditor {
 
 /// `DecimalFormat("0.0###")` of the integrity.
 fn format_integrity(value: f32) -> String {
-    let text = format!("{:.4}", f64::from(value));
-    let trimmed = text.trim_end_matches('0');
-    if trimmed.ends_with('.') {
-        format!("{trimmed}0")
-    } else {
-        trimmed.to_owned()
-    }
+    use sunrise_core::java_number::{DecimalPattern, format_decimal};
+    format_decimal(f64::from(value), DecimalPattern::Integrity)
 }
 
 impl StructureEditor {
@@ -124,8 +119,9 @@ impl StructureEditor {
             strict: b.strict,
             show_air: b.show_air,
             show_bounding_box: b.show_bounding_box,
-            integrity: self.value(INTEGRITY).trim().parse().unwrap_or(1.0),
-            seed: self.value(SEED).parse().unwrap_or(0),
+            integrity: sunrise_core::java_float_parse::parse_java_float(self.value(INTEGRITY))
+                .unwrap_or(1.0),
+            seed: sunrise_core::text::parse_java_long(self.value(SEED)).unwrap_or(0),
         })
     }
 }
@@ -437,6 +433,8 @@ mod tests {
         assert_eq!(format_integrity(0.5), "0.5");
         assert_eq!(format_integrity(0.1), "0.1");
         assert_eq!(format_integrity(0.123_456), "0.1235");
+        assert_eq!(format_integrity(0.03125), "0.0312"); // exact even tie
+        assert_eq!(format_integrity(f32::INFINITY), "∞");
     }
 
     #[test]
@@ -447,7 +445,8 @@ mod tests {
         let mut editor = StructureEditor::new(&block);
         editor.edits[POS].set_value("-2");
         editor.edits[SIZE].set_value("junk");
-        editor.edits[INTEGRITY].set_value("0.5");
+        editor.edits[INTEGRITY].set_value("0x1p-1");
+        editor.edits[SEED].set_value("+１２");
         let mut entity = BlockEntity::StructureBlock(Box::new(block));
         let Outcome::Send(S::SetStructureBlock(p)) = editor.done(&mut entity, (1, 2, 3)) else {
             panic!("done sends")
@@ -458,6 +457,7 @@ mod tests {
         // An unparsable coordinate is 0, as `parseCoordinate`.
         assert_eq!((p.offset, p.size), ([-2, 1, 0], [0, 4, 5]));
         assert_eq!(p.integrity, 0.5);
+        assert_eq!(p.seed, 12);
     }
 
     #[test]

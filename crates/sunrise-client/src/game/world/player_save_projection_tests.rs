@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig, playerdata},
@@ -7,7 +8,6 @@ use sunrise_client::{
 use sunrise_core::nbt::Tag;
 use sunrise_core::position::ChunkPos;
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 fn check(tag: &Tag, grace: i32, particles: bool, phase: &str, failures: &mut Vec<String>) {
     let expected = [
@@ -43,7 +43,7 @@ fn raw(marker: &str, grace: i32, particles: bool) -> Tag {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+#[ignore = "daily"]
 fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         game.world_root = std::env::current_dir().unwrap().join("h157-owner");
@@ -83,7 +83,7 @@ fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
         let live = game.player_nbt().unwrap();
         check(&live, 37, true, "live nondefault beats raw", &mut failures);
         check(
-            &game.level.player_tag(),
+            &game.level.player_tag(&Default::default()),
             37,
             true,
             "actual saved writer",
@@ -107,7 +107,7 @@ fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
         game.player = None;
         game.sync_level();
         check(
-            &game.level.player_tag(),
+            &game.level.player_tag(&Default::default()),
             99,
             false,
             "no body raw retention",
@@ -156,6 +156,7 @@ fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -205,7 +206,7 @@ fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
         assert_eq!(game.player.as_ref().unwrap().impulse.reset_grace_time, 37);
         assert!(game.player.as_ref().unwrap().spawn_extra_particles_on_fall);
         // Read the real writer before another sync can hide a context leak.
-        let restored = game.level.player_tag();
+        let restored = game.level.player_tag(&Default::default());
         assert_eq!(
             restored.get("h157_marker"),
             Some(&Tag::String("owner".into()))
@@ -222,7 +223,7 @@ fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
         assert_eq!(guest.motion.as_ref().unwrap().impulse.reset_grace_time, 7);
         playerdata::store(guest, &mut saved_guest, None);
         check(
-            &saved_guest.player_tag(),
+            &saved_guest.player_tag(&Default::default()),
             7,
             false,
             "guest store reads its live body",

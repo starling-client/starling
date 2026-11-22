@@ -1,7 +1,7 @@
 //! The registries VanillaCommandParseOracle exports (`registries` mode), as
 //! the command dispatcher reads them; shared by the command fixtures.
-use sunrise_client::command::{Registries, args::RegistryIds};
 use serde_json::Value;
+use sunrise_client::command::{Registries, args::RegistryIds};
 
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()

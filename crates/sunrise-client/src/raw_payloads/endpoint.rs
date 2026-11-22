@@ -4,12 +4,12 @@ use crate::{
     lan::{PlayerSender, config_payloads::ConfigSender},
     net::{Event, PreparedPayload, queued_writer::QueuedWriter},
 };
-use sunrise_protocol::{connection::Framing, frame, payload_negotiation::Phase};
 use mod_api::{PayloadBytes, PayloadFrameStage, PayloadId, PayloadSendError, Text};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use sunrise_protocol::{connection::Framing, frame, payload_negotiation::Phase};
 
 #[derive(Clone)]
 pub struct Endpoint(Target);
@@ -22,7 +22,10 @@ enum Target {
         events: crate::net::ingress::Producer<Event>,
     },
     Server(PlayerSender),
-    Configuration(ConfigSender),
+    Configuration {
+        sender: ConfigSender,
+        session: Option<std::sync::Weak<crate::lan::configuration_tasks::Session>>,
+    },
 }
 /// Retains no endpoint, sender, producer, writer, transport or payload lease.
 #[cfg(any(test, feature = "test-payload-probe"))]
@@ -51,12 +54,30 @@ impl Observation {
 pub enum Prepared {
     Client(PreparedPayload),
     Server(crate::lan::conn::PreparedPayload),
+    /// A `Droppable` send: it reserves nothing, and publication queues it for the writer.
+    Droppable(
+        Arc<super::droppable::Queue>,
+        Arc<mod_api::__private::game::DropCounters>,
+        Vec<u8>,
+    ),
 }
 impl Prepared {
     pub fn publish(self) -> Result<(), PayloadSendError> {
         match self {
             Self::Client(send) => send.publish(),
             Self::Server(send) => send.publish(),
+            Self::Droppable(queue, counters, body) => {
+                queue.push(std::time::Instant::now(), &counters, body);
+                Ok(())
+            }
+        }
+    }
+    /// Extract a server `PreparedPayload` as a `Body::Prepared` for inclusion inside
+    /// an entity pairing bundle.
+    pub(crate) fn into_prepared_body(self, epoch: Arc<Epoch>) -> Option<crate::lan::Body> {
+        match self {
+            Self::Server(prepared) => Some(prepared.into_prepared_body(epoch)),
+            Self::Client(_) | Self::Droppable(..) => None,
         }
     }
 }
@@ -77,8 +98,19 @@ impl Endpoint {
     pub fn server(sender: PlayerSender) -> Self {
         Self(Target::Server(sender))
     }
-    pub fn configuration(sender: ConfigSender) -> Self {
-        Self(Target::Configuration(sender))
+    pub fn configuration(
+        sender: ConfigSender,
+        session: Option<std::sync::Weak<crate::lan::configuration_tasks::Session>>,
+    ) -> Self {
+        Self(Target::Configuration { sender, session })
+    }
+    pub fn configuration_session(
+        &self,
+    ) -> Option<&std::sync::Weak<crate::lan::configuration_tasks::Session>> {
+        match &self.0 {
+            Target::Configuration { session, .. } => session.as_ref(),
+            _ => None,
+        }
     }
     pub fn side(&self) -> Side {
         match self.0 {
@@ -90,7 +122,7 @@ impl Endpoint {
         match &self.0 {
             Target::Client { transport, .. } => transport,
             Target::Server(sender) => sender.payload_transport(),
-            Target::Configuration(sender) => sender.payload_transport(),
+            Target::Configuration { sender, .. } => sender.payload_transport(),
         }
     }
     #[cfg(any(test, feature = "test-payload-probe"))]
@@ -115,7 +147,7 @@ impl Endpoint {
                 })
             }
             Target::Server(sender) => sender.payload_diagnostic_observer(),
-            Target::Configuration(_) => Box::new(|| "configuration sender not observed".into()),
+            Target::Configuration { .. } => Box::new(|| "configuration sender not observed".into()),
         };
         Observation {
             transport: Arc::downgrade(self.transport()),
@@ -146,6 +178,11 @@ impl Endpoint {
             });
         }
         let len = encoded_len(epoch.phase, self.side(), id, bytes.0.len());
+        if epoch.peer.local.has_droppable()
+            && let Some(counters) = epoch.peer.local.droppable(&id.0)
+        {
+            return self.prepare_droppable(epoch, id, bytes, len, counters);
+        }
         match &self.0 {
             Target::Client {
                 writer,
@@ -172,7 +209,7 @@ impl Endpoint {
                     .prepare_payload(encode(epoch.phase, self.side(), id, bytes), id)
                     .map(Prepared::Server)
             }
-            Target::Configuration(sender) => {
+            Target::Configuration { sender, .. } => {
                 preflight(sender.framing(), sender.payload_capacity(), len, id)?;
                 sender
                     .prepare_payload(encode(epoch.phase, self.side(), id, bytes), id)
@@ -180,9 +217,51 @@ impl Endpoint {
             }
         }
     }
+    /// A `Droppable` send takes no reservation: it is bounded by its own queue. Frame limits
+    /// still refuse here, so no waiting send can fail framing later.
+    fn prepare_droppable(
+        &self,
+        epoch: &Arc<Epoch>,
+        id: &PayloadId,
+        bytes: PayloadBytes,
+        len: usize,
+        counters: &Arc<mod_api::__private::game::DropCounters>,
+    ) -> Result<Prepared, PayloadSendError> {
+        let framing = match &self.0 {
+            Target::Client {
+                writer,
+                configuring,
+                ..
+            } => {
+                if configuring.load(Ordering::Acquire) != (epoch.phase == Phase::Configuration) {
+                    return Err(PayloadSendError::WrongProtocol(id.clone()));
+                }
+                let writer = writer.lock().unwrap();
+                writer
+                    .as_ref()
+                    .filter(|writer| writer.accepts_packets())
+                    .ok_or(PayloadSendError::Disconnected)?
+                    .framing()
+            }
+            Target::Server(sender) => sender.payload_framing(),
+            Target::Configuration { sender, .. } => sender.framing(),
+        };
+        preflight(framing, usize::MAX, len, id)?;
+        let queue = self
+            .transport()
+            .connection
+            .as_ref()
+            .and_then(|connection| connection.droppable())
+            .ok_or(PayloadSendError::Disconnected)?;
+        Ok(Prepared::Droppable(
+            queue.clone(),
+            counters.clone(),
+            encode(epoch.phase, self.side(), id, bytes),
+        ))
+    }
     /// A failure closes this physical connection only; a client reason joins its ordered events.
     pub fn disconnect(&self, reason: Text) {
-        let reason = crate::api_text::to_engine(&reason).unwrap_or_else(|error| {
+        let reason = crate::api_text::to_serialized_engine(&reason).unwrap_or_else(|error| {
             crate::text::Text::tr(
                 "disconnect.genericReason",
                 &[&format!("invalid payload disconnect reason: {error:?}")],
@@ -190,20 +269,30 @@ impl Endpoint {
         });
         self.transport().close();
         match &self.0 {
-            Target::Client { writer, events, .. } => {
-                let _ = events.send(Event::Disconnected {
+            Target::Client {
+                writer,
+                configuring,
+                events,
+                ..
+            } => {
+                let writer = writer.lock().unwrap();
+                let _ = events.send_terminal(Event::Disconnected {
                     reason: reason.plain(),
                     key: None,
                     from_server: false,
                 });
-                if let Some(writer) = writer.lock().unwrap().as_ref() {
-                    writer.shutdown();
+                if let Some(writer) = writer.as_ref() {
+                    if configuring.load(Ordering::Acquire) {
+                        writer.shutdown();
+                    } else {
+                        writer.close_after_pending();
+                    }
                 }
             }
             Target::Server(sender) => {
                 sender.disconnect(crate::lan::data::component_nbt(&reason.component()))
             }
-            Target::Configuration(sender) => {
+            Target::Configuration { sender, .. } => {
                 sender.disconnect(crate::lan::data::component_nbt(&reason.component()))
             }
         }

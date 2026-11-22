@@ -3,12 +3,13 @@ use super::{
     Transport,
     connection::{Epoch, IngressLease, MainTask},
 };
-use sunrise_protocol::{packets::custom_payload::CustomPayload, payload_negotiation::Phase};
 use mod_api::{
     __private::game::PayloadReceiver, PayloadBytes, PayloadContextError, PayloadId,
     PayloadSendError, PayloadWork,
 };
 use std::sync::Arc;
+use std::time::Instant;
+use sunrise_protocol::{packets::custom_payload::CustomPayload, payload_negotiation::Phase};
 
 pub enum Body {
     Payload(PayloadBytes),
@@ -28,12 +29,15 @@ pub struct Incoming {
     /// A raw channel's delivery to one of its declaring mods: a handler's
     /// error is that mod's fault, not the peer's, and doesn't end the session.
     pub raw: bool,
+    pub(super) turn: Option<super::connection::PayloadTurn>,
 }
 const _: () = assert!(std::mem::size_of::<Incoming>() <= 256);
 pub enum Classified {
     Application(Incoming),
-    /// A raw channel's message, once for each declaring mod in load order.
+    /// A raw channel's message, once per non-poisoned receiver in load order.
     Raw(Vec<Incoming>),
+    /// A negotiated packet whose receiving callback has already panicked.
+    Skipped,
     Other(CustomPayload),
 }
 #[derive(Debug)]
@@ -72,6 +76,9 @@ impl Incoming {
             Classified::Raw(_) => Err(PayloadSendError::EncodeFailed(
                 "a raw channel has several receivers".into(),
             )),
+            Classified::Skipped => Err(PayloadSendError::EncodeFailed(
+                "the receiving callback was skipped".into(),
+            )),
             Classified::Other(packet) => {
                 Err(PayloadSendError::UnknownPayload(PayloadId(packet.channel)))
             }
@@ -106,13 +113,36 @@ impl Incoming {
                 packet,
             ));
         }
+        // A negotiated engine message goes on to the engine's own decoder.
+        if epoch.peer.engine_receives(phase, &packet.channel) {
+            return Ok(Classified::Other(packet));
+        }
         let receiver = match epoch.peer.receiver(phase, &packet.channel) {
-            Ok(receiver) => receiver.clone(),
+            Ok(receiver) => receiver,
             Err(PayloadSendError::UnknownPayload(_)) => {
                 return Self::raw(transport, &epoch, phase, packet);
             }
             Err(error) => return Err(fail(error, packet)),
         };
+        // Negotiation still applies to a poisoned channel, but no callback credit is needed.
+        if receiver.poisoned() {
+            return Ok(Classified::Skipped);
+        }
+        // A client over the serverbound byte budget loses the send, counted, never the session.
+        if epoch.peer.local.has_droppable()
+            && epoch.peer.side == super::Side::Server
+            && let Some(counters) = epoch.peer.local.droppable(&packet.channel)
+            && let Some(queue) = transport
+                .connection
+                .as_ref()
+                .and_then(|connection| connection.droppable())
+            && !queue.admit(Instant::now(), packet.data.len())
+        {
+            counters
+                .budget
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(Classified::Raw(Vec::new()));
+        }
         let owned = packet
             .channel
             .capacity()
@@ -121,6 +151,7 @@ impl Incoming {
             id: PayloadId(packet.channel.clone()),
             error,
         })?;
+        let receiver = receiver.clone();
         let main = epoch.main_task();
         Ok(Classified::Application(Self {
             epoch,
@@ -131,6 +162,7 @@ impl Incoming {
             lease: Arc::new(lease),
             work_lease: None,
             raw: false,
+            turn: None,
         }))
     }
     /// A serverbound play message on a raw channel: one delivery for each
@@ -148,6 +180,9 @@ impl Incoming {
         }
         let mut deliveries = Vec::with_capacity(receivers.len());
         for receiver in receivers {
+            if receiver.poisoned() {
+                continue;
+            }
             let owned = packet.channel.capacity().saturating_add(packet.data.len());
             let lease = transport.reserve_ingress(owned).map_err(|error| Failure {
                 id: PayloadId(packet.channel.clone()),
@@ -162,6 +197,7 @@ impl Incoming {
                 lease: Arc::new(lease),
                 work_lease: None,
                 raw: true,
+                turn: None,
             });
         }
         Ok(Classified::Raw(deliveries))
@@ -190,6 +226,7 @@ impl Incoming {
             lease: self.lease.clone(),
             work_lease: Some(lease),
             raw: self.raw,
+            turn: None,
         })
     }
 }

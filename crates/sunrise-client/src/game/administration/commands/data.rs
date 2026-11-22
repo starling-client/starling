@@ -24,10 +24,52 @@ pub(in crate::game) enum DataRef {
 fn empty() -> Tag {
     Tag::Compound(Compound::new())
 }
+/// What the model keeps outside a stored block entity's `encoded` form
+/// (`BlockEntity.saveWithFullMetadata`): the lock, the hopper's
+/// `TransferCooldown` (`HopperBlockEntity.saveAdditional`), the custom name
+/// and the pending loot table.
+pub(in crate::game) fn stored_block_entity_data(
+    world: &sunrise_client::world::World,
+    key: (i32, i32, i32),
+    name: &str,
+    entity: &BlockEntity,
+    items: &sunrise_client::items::Items,
+    hopper_cooldown: impl FnOnce() -> i32,
+) -> Tag {
+    let pending = world
+        .chunks
+        .get(&(key.0 >> 4, key.2 >> 4))
+        .and_then(|chunk| chunk.saved.as_ref())
+        .and_then(|saved| saved.pending_loot.get(&key));
+    save::block_entity_encode::data_with(
+        key,
+        entity,
+        name,
+        save::block_entity_encode::DataFields {
+            lock: world.block_lock(key),
+            custom_name: world.block_names.get(&key),
+            pending,
+            hopper_cooldown: (name == "minecraft:hopper").then(hopper_cooldown),
+        },
+        items,
+        |_| None,
+    )
+}
 fn set_key(tag: &mut Tag, key: &str, value: Tag) {
     if let Tag::Compound(c) = tag {
         c.insert(JavaString::from(key), value);
     }
+}
+/// `SummonCommand.spawnEntity`'s name for a kind no command target stands for:
+/// its entity type's. An item is the exception: `EntityType`'s factory leaves
+/// `ItemStack.EMPTY`, which `ItemEntity.readAdditionalSaveData` discards, and
+/// `ItemEntity.getName` reads that empty stack's `getItemName` — an empty
+/// component, not the type's name.
+pub(super) fn summon_type_name(kind: &str) -> Text {
+    if kind.trim_start_matches("minecraft:") == "item" {
+        return Text::empty();
+    }
+    Text::translate(&super::entity_name_key(kind), &[])
 }
 /// `EntityType.loadEntityRecursive` snaps every entity of the stack,
 /// passengers included, to the position (`/summon`, `summon`).
@@ -79,7 +121,7 @@ impl Game<'_> {
     pub(in crate::game) fn player_nbt(&mut self) -> Option<Tag> {
         self.player.as_ref()?;
         self.sync_level();
-        let mut tag = self.level.player_tag();
+        let mut tag = self.level.player_tag(self.res.items());
         if let Some(u) = self.saved_player_uuid() {
             set_key(&mut tag, "UUID", Tag::IntArray(u.to_vec()));
         }
@@ -101,25 +143,29 @@ impl Game<'_> {
         Some(tag)
     }
     fn entity_nbt_in_level(&mut self, t: Target) -> Option<Tag> {
+        self.entity_tag_in_level(t, true)
+    }
+
+    fn entity_tag_in_level(&mut self, t: Target, include_id: bool) -> Option<Tag> {
         let player_uuid = self.saved_player_uuid();
-        Some(match t {
+        let mut tag = match t {
             // `FishingHook.shouldBeSaved` is false, and it keeps no compound here.
             // Neither is saved: `FishingHook.shouldBeSaved` and
             // `EnderDragonPart.shouldBeSaved` are false.
             Target::Hook(_) | Target::DragonPart(_) => return None,
             // Stage 3's save owns the general record; none is saved here.
             Target::General(_) => return None,
-            Target::Guest(_) => {
-                return self
-                    .for_player(t, |g| g.command_target_nbt(Target::Player))
-                    .flatten();
-            }
-            Target::Player => return self.player_nbt(),
+            Target::Guest(_) => self.for_player(t, |g| g.player_nbt()).flatten()?,
+            Target::Player => self.player_nbt()?,
             Target::Mob(id) => {
                 // `saveWithoutId` writes the entity as saved, riders under
                 // `Passengers`: `/data get` reads the same tree persistence does (#1519).
                 let i = self.mobs.iter().position(|m| m.id == id)?;
-                let mut tag = self.mob_tree_nbt(i);
+                let mut tag = if include_id {
+                    self.mob_tree_nbt(i)
+                } else {
+                    self.mob_tree_tag_without_id(i)
+                };
                 let session = self
                     .lan_trade_conn(id)
                     .and_then(|conn| self.lan_trade_session(conn))
@@ -131,7 +177,10 @@ impl Game<'_> {
                             .map(|m| &*m.session)
                     });
                 if let (Some(session), Tag::Compound(data)) = (session, &mut tag) {
-                    data.insert("Offers".into(), entity_nbt::offers_to_nbt(&session.offers));
+                    data.insert(
+                        "Offers".into(),
+                        entity_nbt::offers_to_nbt(&session.offers, self.res.items()),
+                    );
                     data.insert("Xp".into(), Tag::Int(session.xp));
                 }
                 tag
@@ -139,7 +188,7 @@ impl Game<'_> {
             Target::Item(id) => {
                 let uuid = self.uuid_for(id);
                 let e = self.dropped.iter().find(|e| e.id == id)?;
-                let mut tag = entity_nbt::item_entity_to_nbt_with_items(
+                let mut tag = entity_nbt::item_entity_to_nbt(
                     e,
                     uuid,
                     self.persist.raw.get(&id),
@@ -151,12 +200,18 @@ impl Game<'_> {
             Target::Stand(id) => {
                 let uuid = self.uuid_for(id);
                 let a = self.armor_stands.iter().find(|a| a.id == id)?;
-                entity_nbt::armor_stand_to_nbt(a, uuid, self.persist.raw.get(&id))
+                entity_nbt::armor_stand_tag(
+                    a,
+                    uuid,
+                    self.persist.raw.get(&id),
+                    self.res.items(),
+                    include_id,
+                )
             }
             Target::Frame(id) => {
                 let uuid = self.uuid_for(id);
                 let f = self.item_frames.iter().find(|f| f.id == id)?;
-                entity_nbt::item_frame_to_nbt(f, uuid, self.persist.raw.get(&id))
+                entity_nbt::item_frame_to_nbt(f, uuid, self.persist.raw.get(&id), self.res.items())
             }
             Target::Painting(id) => {
                 let uuid = self.uuid_for(id);
@@ -167,9 +222,9 @@ impl Game<'_> {
                 let uuid = self.uuid_for(id);
                 let i = self.boats.iter().position(|b| b.id == id)?;
                 let b = &self.boats[i];
-                let mut tag = b.to_nbt(uuid, self.persist.raw.get(&id));
+                let mut tag = b.to_nbt(uuid, self.persist.raw.get(&id), self.res.items());
                 // Entity.saveWithoutId: the actual runtime passenger tree.
-                self.put_mob_passengers(&mut tag, id);
+                self.put_passengers(&mut tag, id);
                 // AbstractBoat.addAdditionalSaveData: the live or pending leash.
                 self.write_boat_leash(&mut tag, i);
                 self.save_portal_cooldown(id, &mut tag);
@@ -178,8 +233,8 @@ impl Game<'_> {
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
                 let c = self.carts.iter().find(|c| c.id == id)?;
-                let mut tag = c.to_nbt(uuid, self.persist.raw.get(&id));
-                self.put_mob_passengers(&mut tag, id);
+                let mut tag = c.to_nbt(uuid, self.persist.raw.get(&id), self.res.items());
+                self.put_passengers(&mut tag, id);
                 self.save_portal_cooldown(id, &mut tag);
                 tag
             }
@@ -191,7 +246,7 @@ impl Game<'_> {
             Target::Other(id) => {
                 let uuid = self.uuid_for(id);
                 let o = self.others.iter().find(|o| o.id == id)?.clone();
-                self.other_to_nbt(&o, uuid)
+                self.other_tag(&o, uuid, include_id)
             }
             Target::Orb(id) => {
                 let uuid = self.uuid_for(id);
@@ -229,13 +284,17 @@ impl Game<'_> {
                 let raw = self.persist.raw.get(&id);
                 // Projectile.addAdditionalSaveData stores the retained EntityReference,
                 // including an owner that is not currently resolved to a live entity.
-                let mut tag =
-                    entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
-                        .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
-                        .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
-                        .or_else(|| {
-                            entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw)
-                        })?;
+                let mut tag = entity_nbt::arrow_to_nbt(
+                    p,
+                    uuid,
+                    p.owner_uuid.or(owner),
+                    in_block,
+                    raw,
+                    self.res.items(),
+                )
+                .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw, self.res.items()))
+                .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw, self.res.items()))
+                .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw))?;
                 self.save_projectile_portal_cooldown(p, &mut tag);
                 tag
             }
@@ -250,7 +309,7 @@ impl Game<'_> {
                 let d = self.dragon.as_ref().filter(|d| d.id == id)?;
                 let raw = self.persist_anon("minecraft:ender_dragon", d.position);
                 let uuid = self.persist.uuids.get(&id).copied();
-                let tag = d.to_nbt(uuid.unwrap_or_else(random_uuid), raw);
+                let tag = d.to_nbt(uuid.unwrap_or_else(random_uuid), raw, self.res.items());
                 crate::game::persist::with_raw(tag, self.persist.raw.get(&id))
             }
             Target::Tnt(id) => {
@@ -276,16 +335,26 @@ impl Game<'_> {
                     f.drop_item,
                     f.damage,
                     f.fall_distance,
-                    f.on_ground,
+                    f.ground.on_ground,
                     f.rotation,
                     uuid,
                 );
-                crate::game::persist::with_raw(tag, raw)
+                let mut tag = crate::game::persist::with_raw(tag, raw);
+                if let Tag::Compound(fields) = &mut tag {
+                    // Its simulated fire, not a saved copy's (`with_raw` keeps those).
+                    fields.insert("Fire".into(), Tag::Short(f.fire_ticks as i16));
+                }
+                tag
             }
             Target::Rocket(id) => {
                 let uuid = self.uuid_for(id);
                 let r = self.rockets.iter().find(|r| r.id == id)?;
-                r.to_nbt(uuid, player_uuid, self.persist.raw.get(&id))
+                r.to_nbt(
+                    uuid,
+                    player_uuid,
+                    self.persist.raw.get(&id),
+                    self.res.items(),
+                )
             }
             Target::Cloud(id) => {
                 let uuid = self.uuid_for(id);
@@ -352,7 +421,12 @@ impl Game<'_> {
             Target::Trident(id) => {
                 let uuid = self.uuid_for(id);
                 let t = self.tridents.iter().find(|t| t.id == id)?;
-                t.to_nbt(uuid, self.pack.assets.registry, self.persist.raw.get(&id))
+                t.to_nbt(
+                    uuid,
+                    self.pack.assets.registry,
+                    self.persist.raw.get(&id),
+                    self.res.items(),
+                )
             }
             Target::Spawner(id) => {
                 let s = self.ominous_spawners.iter().find(|s| s.id == id)?;
@@ -363,6 +437,7 @@ impl Game<'_> {
                     s.spawn_item_after,
                     s.uuid,
                     s.raw.as_deref(),
+                    self.res.items(),
                 )
             }
             // LeashFenceKnotEntity saves nothing of its own: the common
@@ -391,13 +466,25 @@ impl Game<'_> {
                 set_key(&mut tag, "Fire", Tag::Short(0));
                 tag
             }
-        })
+        };
+        if !include_id
+            && !matches!(t, Target::Mob(_) | Target::Stand(_) | Target::Other(_))
+            && let Tag::Compound(c) = &mut tag
+        {
+            c.remove(&"id".into());
+        }
+        Some(tag)
     }
     /// `Entity.load` of new data (`EntityDataAccessor.setData`): the entity is
     /// rebuilt from its compound, keeping its id and UUID. Also what
     /// `TypedEntityData.loadInto` is: a spawn egg's data on the mob it spawned.
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
+        // `Entity.load` keeps only the fields it reads, so vanilla drops a key it
+        // does not know on `EntityDataAccessor.setData` (and on
+        // `TypedEntityData.loadInto`). `sunrise:finalize` is worldgen's, and
+        // `Game::load_mob` would run the finalize it asks for on the next load.
+        strip_finalize_tree(&mut tag);
         // Entity.load does not read Passengers: the riders stay, and so do the
         // passengers the load kept raw (none, when it kept none).
         let kept_passengers = match t {
@@ -443,13 +530,13 @@ impl Game<'_> {
                     .is_none();
                 if let Some(slot) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // LivingEntity.readAdditionalSaveData only replaces a decoded
-                    // Brain. Keep the Allay's modeled LIKED_PLAYER when the
-                    // required root memory map cannot load; valid empty maps clear it.
-                    let keep_liked_player = slot.species() == sunrise_client::mobs::Species::Allay
-                        && !matches!(
-                            tag.get("Brain").and_then(|brain| brain.get("memories")),
-                            Some(Tag::Compound(_))
-                        );
+                    // Brain. A missing or unreadable memory map is not an empty map.
+                    let unreadable_brain = !matches!(
+                        tag.get("Brain").and_then(|brain| brain.get("memories")),
+                        Some(Tag::Compound(_))
+                    );
+                    let keep_liked_player =
+                        unreadable_brain && slot.species() == sunrise_client::mobs::Species::Allay;
                     // Runtime identity and lifetime stay on the resident owner.
                     new.join = slot.join;
                     new.random = slot.random.clone();
@@ -465,6 +552,12 @@ impl Game<'_> {
                     slot.extra.boarding_cooldown = old.extra.boarding_cooldown;
                     slot.rider = old.rider;
                     // Runtime-only state (AI, animation) carries over.
+                    // Reset saved armadillo sensors from the resident random.
+                    if slot.species() == sunrise_client::mobs::Species::Armadillo
+                        && tag.get("Brain").is_some()
+                    {
+                        sunrise_client::mobs::armadillo::delay_sensors(slot);
+                    }
                     // Entity.load keeps the unsaved Allay.jukeboxPos and
                     // DATA_DANCING of the entity it loads into.
                     if slot.species() == sunrise_client::mobs::Species::Allay {
@@ -501,6 +594,12 @@ impl Game<'_> {
                     }
                     if slot.species() == sunrise_client::mobs::Species::Shulker {
                         sunrise_client::mobs::shulker::keep_eased_peek(slot, &old);
+                    }
+                    if unreadable_brain
+                        && let (Some(st), Some(was)) =
+                            (slot.extra.warden.as_mut(), old.extra.warden)
+                    {
+                        st.brain = was.brain;
                     }
                     slot.ai = old.ai;
                     // Mob.readAdditionalSaveData updates persistent home fields,
@@ -621,7 +720,7 @@ impl Game<'_> {
                     b.previous_yaw = yaw;
                     b.pitch = entity_nbt::rotation(&tag)[1];
                     b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
-                    b.on_ground = entity_nbt::flag(&tag, "OnGround");
+                    b.ground.on_ground = entity_nbt::flag(&tag, "OnGround");
                     b.fire_ticks = crate::game::boats::saved_fire(&tag);
                     b.ticks_frozen = crate::game::boats::saved_ticks_frozen(&tag);
                     if b.chest {
@@ -658,7 +757,8 @@ impl Game<'_> {
                     falling.no_gravity = no_gravity;
                     falling.drop_item = drop_item;
                     falling.fall_distance = fall_distance;
-                    falling.on_ground = entity_nbt::flag(&tag, "OnGround");
+                    falling.ground.on_ground = entity_nbt::flag(&tag, "OnGround");
+                    falling.fire_ticks = crate::game::boats::saved_fire(&tag);
                     falling.damage = damage;
                     // Keep id/join, start_pos, portal state and stuck multiplier.
                     set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
@@ -688,7 +788,7 @@ impl Game<'_> {
                 tnt.velocity = entity_nbt::motion(&tag);
                 tnt.rotation = entity_nbt::rotation(&tag);
                 tnt.fuse = super::super::persist::tnt_fuse(&tag);
-                tnt.on_ground = entity_nbt::flag(&tag, "OnGround");
+                tnt.ground.on_ground = entity_nbt::flag(&tag, "OnGround");
                 tnt.fall_distance =
                     sunrise_client::save::float(tag.get("fall_distance")).unwrap_or(0.0);
                 tnt.no_gravity = entity_nbt::flag(&tag, "NoGravity");
@@ -716,7 +816,7 @@ impl Game<'_> {
                 orb.velocity = new.velocity;
                 orb.value = new.value;
                 orb.age = new.age;
-                orb.on_ground = new.on_ground;
+                orb.ground.on_ground = new.ground.on_ground;
                 orb.count = new.count;
                 orb.health = new.health;
                 orb.no_gravity = new.no_gravity;
@@ -811,7 +911,7 @@ impl Game<'_> {
                     p.yaw = yaw;
                     p.pitch = pitch;
                     p.no_gravity = entity_nbt::flag(&tag, "NoGravity");
-                    p.on_ground = entity_nbt::flag(&tag, "OnGround");
+                    p.ground.on_ground = entity_nbt::flag(&tag, "OnGround");
                 });
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
@@ -873,7 +973,8 @@ impl Game<'_> {
             return false;
         };
         let name = self.data_block_name(pos);
-        let before = sunrise_client::save::block_entity_encode::encode(key, e, &name);
+        let before =
+            sunrise_client::save::block_entity_encode::encode(key, e, &name, self.res.items());
         if let Tag::Compound(c) = &mut tag {
             for k in ["id", "x", "y", "z"] {
                 if let Some(v) = before.get(k) {
@@ -885,7 +986,8 @@ impl Game<'_> {
             return false;
         };
         let rolled = self.take_loot_table(key, &tag, &mut new);
-        let after = sunrise_client::save::block_entity_encode::encode(key, &new, &name);
+        let after =
+            sunrise_client::save::block_entity_encode::encode(key, &new, &name, self.res.items());
         // The lock is outside the model: a tag that only changes it still
         // changes the block entity.
         let lock_changed = self.world.block_lock(key) != tag.get("lock");
@@ -900,10 +1002,14 @@ impl Game<'_> {
             false
         };
         if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
+            // BlockInput.place calls loadWithComponents even when its before/after
+            // saves are equal. DataCommands instead rejects a no-op before setData.
+            self.notify_block_entity_load_additional(key);
             return false;
         }
         self.world.block_entities.insert(key, new);
         self.world.set_block_lock(key, &tag);
+        self.notify_block_entity_load_additional(key);
         self.update_spawner_display(key);
         self.command_block_loaded(key, was_auto);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
@@ -976,9 +1082,41 @@ impl Game<'_> {
             });
             return true;
         }
+        if let Target::Spawner(id) = t {
+            let Some(i) = self.ominous_spawners.iter().position(|s| s.id == id) else {
+                return false;
+            };
+            self.ominous_spawners.update(i, |spawner| {
+                let raw = &mut **spawner.raw.get_or_insert_with(|| Box::new(empty()));
+                if tags.is_empty() {
+                    if let Tag::Compound(map) = raw {
+                        map.remove(&"Tags".into());
+                    }
+                } else {
+                    set_key(
+                        raw,
+                        "Tags",
+                        Tag::List(
+                            tags.iter()
+                                .map(|s| Tag::String(s.as_str().into()))
+                                .collect(),
+                        ),
+                    );
+                }
+            });
+            return true;
+        }
         let Some(raw) = self.raw_mut(t) else {
             return false;
         };
+        // `Entity.saveWithoutId` writes `Tags` only for a nonempty live set:
+        // removing the last tag leaves no key.
+        if tags.is_empty() {
+            if let Tag::Compound(map) = raw {
+                map.remove(&"Tags".into());
+            }
+            return true;
+        }
         let list = tags
             .iter()
             .map(|s| Tag::String(s.as_str().into()))
@@ -1043,12 +1181,12 @@ impl Game<'_> {
             })
             .unwrap_or(0);
         Some(Tag::compound([
+            ("OutputSignal", Tag::Int(output)),
+            ("components", empty()),
             ("id", Tag::String("minecraft:comparator".into())),
             ("x", Tag::Int(p[0])),
             ("y", Tag::Int(p[1])),
             ("z", Tag::Int(p[2])),
-            ("components", empty()),
-            ("OutputSignal", Tag::Int(output)),
         ]))
     }
 
@@ -1067,10 +1205,7 @@ impl Game<'_> {
             .moving_pistons
             .iter()
             .find(|(at, _)| *at == pos)?;
-        let mut tag = self.moving_piston_to_nbt(pos, piston);
-        // BlockEntity.saveWithoutMetadata includes the component map.
-        set_key(&mut tag, "components", empty());
-        Some(tag)
+        Some(self.moving_piston_to_nbt(pos, piston))
     }
     pub(in crate::game) fn data_ref_named(
         &mut self,
@@ -1120,6 +1255,7 @@ impl Game<'_> {
     pub(in crate::game) fn data_of(&mut self, r: &DataRef) -> R<Tag> {
         match r {
             // EntityDataAccessor.getData: Entity.saveWithoutId.
+<<<<<<< sync-sunrise-1
             DataRef::Entity(t) => {
                 let mut tag = self
                     .command_target_nbt(*t)
@@ -1152,6 +1288,15 @@ impl Game<'_> {
                 Self::write_pending_loot(&self.world, key, &mut tag);
                 Ok(tag)
             }
+=======
+            DataRef::Entity(t) => self
+                .in_target_level(*t, |g| g.entity_tag_in_level(*t, false))
+                .flatten()
+                .ok_or_else(|| err("argument.entity.notfound.entity", &[])),
+            DataRef::Block(p) => self
+                .block_entity_nbt(*p)
+                .ok_or_else(|| err("commands.data.block.invalid", &[])),
+>>>>>>> sunrise/main
             DataRef::Storage(id) => Ok(self.score.storage.get(id)),
         }
     }
@@ -1163,26 +1308,41 @@ impl Game<'_> {
         if let Some(tag) = self.moving_piston_data(p) {
             return Some(tag);
         }
+        self.full_block_entity_data(p)
+    }
+    /// `BlockEntity.saveWithFullMetadata` of the stored block entity at `p`,
+    /// for [`Self::block_entity_nbt`].
+    /// Comparators and decorated pots come from their own views; any other
+    /// entry gets what the model keeps outside it: the hopper's
+    /// `TransferCooldown` (`HopperBlockEntity.saveAdditional`), the custom
+    /// name and the pending loot table.
+    fn full_block_entity_data(&self, p: [i32; 3]) -> Option<Tag> {
         if let Some(tag) = self.comparator_data(p).or_else(|| self.pot_data(p)) {
             return Some(tag);
         }
         let key = (p[0], p[1], p[2]);
         let name = self.data_block_name(p);
         let e = self.world.block_entities.get(&key)?;
-        let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
-        if name == "minecraft:hopper" {
-            set_key(
-                &mut tag,
-                "TransferCooldown",
-                Tag::Int(self.hopper_cooldown(key)),
-            );
-        }
-        if let (Some(custom), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
-            map.entry("CustomName".into())
-                .or_insert_with(|| custom.clone());
-        }
-        Self::write_pending_loot(&self.world, key, &mut tag);
-        Some(tag)
+        let pending = self
+            .world
+            .chunks
+            .get(&(key.0 >> 4, key.2 >> 4))
+            .and_then(|chunk| chunk.saved.as_ref())
+            .and_then(|saved| saved.pending_loot.get(&key));
+        let items = self.items();
+        Some(save::block_entity_encode::data_with(
+            key,
+            e,
+            &name,
+            save::block_entity_encode::DataFields {
+                lock: self.world.block_lock(key),
+                custom_name: self.world.block_names.get(&key),
+                pending,
+                hopper_cooldown: (name == "minecraft:hopper").then(|| self.hopper_cooldown(key)),
+            },
+            items,
+            |row| self.capture_block_entity_payload(key, &name, row, items),
+        ))
     }
     pub(in crate::game) fn set_data_of(&mut self, r: &DataRef, tag: Tag) -> R<()> {
         match r {
@@ -1223,6 +1383,7 @@ impl Game<'_> {
                         self.world.block_entities.insert(key, new);
                     }
                     self.world.set_block_lock(key, &tag);
+                    self.notify_block_entity_load_additional(key);
                     self.update_spawner_display(key);
                     self.command_block_loaded(key, was_auto);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),
@@ -1249,7 +1410,8 @@ impl Game<'_> {
     ) -> bool {
         let state = self.world.block(key.0, key.1, key.2);
         let name = &self.res.facts().get(state).name;
-        let Some((_, mut new)) = save::decode_block_entity_for_block(tag, name) else {
+        let previous = self.world.block_entities.get(&key);
+        let Some((_, mut new)) = save::decode_block_entity_replacing(tag, name, previous) else {
             return false;
         };
         self.take_loot_table(key, tag, &mut new);
@@ -1293,28 +1455,8 @@ impl Game<'_> {
             ),
         }
     }
-    fn query_text(&self, r: &DataRef, data: &Tag, path: Option<&NbtPath>) -> Text {
-        // Only a block's writer supplies this provenance: the live piston's
-        // fields, or any other block entity's saveWithFullMetadata. The same
-        // compound in storage or an entity keeps default order.
-        let root = path.is_none_or(|p| p.is_field_path(&[]));
-        let piston = if let DataRef::Block(p) = r
-            && self.moving_piston_data(*p).is_some()
-        {
-            match path {
-                _ if root => Some(snbt::PistonPart::Entity),
-                Some(p) if p.is_field_path(&["blockState"]) => Some(snbt::PistonPart::State),
-                Some(p) if p.is_field_path(&["blockState", "properties"]) => {
-                    Some(snbt::PistonPart::Properties)
-                }
-                _ => None,
-            }
-        } else if matches!(r, DataRef::Block(_)) && root {
-            Some(snbt::PistonPart::BlockEntity)
-        } else {
-            None
-        };
-        let pretty = piston.map_or_else(|| snbt::pretty(data), |p| snbt::pretty_piston(data, p));
+    fn query_text(&self, r: &DataRef, data: &Tag) -> Text {
+        let pretty = snbt::pretty(data);
         match r {
             DataRef::Entity(_) => {
                 Text::translate("commands.data.entity.query", &[self.data_name(r), pretty])
@@ -1409,7 +1551,7 @@ impl Game<'_> {
             "data.get" => {
                 let data = self.data_of(&target)?;
                 if ctx.get("path").is_none() {
-                    let message = self.query_text(&target, &data, None);
+                    let message = self.query_text(&target, &data);
                     self.system_feedback(message);
                     return Ok(1);
                 }
@@ -1422,7 +1564,7 @@ impl Game<'_> {
                     return Ok(value);
                 }
                 let value = data_cmd::get_value(&tag, &path)?;
-                let message = self.query_text(&target, &tag, Some(&path));
+                let message = self.query_text(&target, &tag);
                 self.system_feedback(message);
                 Ok(value)
             }
@@ -1474,6 +1616,28 @@ impl Game<'_> {
                 return Ok(0);
             };
             vec![sunrise_client::command::snbt::parse_fully(text)?]
+        } else if ctx.get("provider").is_some() {
+            // `LootContextSources`' compute source: the provider's value in the
+            // command's loot context, as a one-tag source.
+            let compute = self.compute_context(ctx)?;
+            let integer = ctx.literals.iter().any(|l| l == "integer");
+            let registry = if integer {
+                "minecraft:context_int_provider"
+            } else {
+                "minecraft:context_float_provider"
+            };
+            let (_, provider) = self.provider_arg(ctx, registry)?;
+            if integer {
+                // ContextIntProvider.getInt: an ArithmeticException reads as 0.
+                let value = self.provider_int(&provider, &compute).unwrap_or(0);
+                vec![Tag::Int(value)]
+            } else {
+                // ContextFloatProvider.getFloat: a failure or a non-finite
+                // value reads as 0.
+                let value = self.provider_float(&provider, &compute).unwrap_or(0.0);
+                let value = if value.is_finite() { value } else { 0.0 };
+                vec![Tag::Float(value.to_bits())]
+            }
         } else {
             let source = self.data_ref(ctx, 1)?;
             let data = self.data_of(&source)?;
@@ -1639,9 +1803,12 @@ impl Game<'_> {
                                 .collect(),
                         )
                     };
+                    // `TagCommand.listTags` tracks each entity's tag count and
+                    // sends with `sendFeedback`'s default element type, NON_ZERO:
+                    // the single form names the one entity that has tags.
                     tracker
                         .message(
-                            true,
+                            false,
                             None,
                             |h, _| {
                                 Text::translate(
@@ -1658,7 +1825,9 @@ impl Game<'_> {
                         )?
                         .0
                 };
-                self.feedback(message);
+                // `TagCommand.listTags` reports with `sendFeedback(source, false, …)`:
+                // the operators are not told, unlike `addTag`/`removeTag` (`true`).
+                self.feedback_unbroadcast(message);
                 return Ok(count as i32);
             }
         }?;
@@ -1747,6 +1916,11 @@ impl Game<'_> {
         if !matches!(tag, Tag::Compound(_)) {
             return Err(err("argument.nbt.expected.compound", &[]));
         }
+        // SummonCommand.createEntity with an NBT argument passes
+        // `finalize = false`: the mob is what its compound says, and the
+        // `sunrise:finalize` marker worldgen leaves on a structure mob is not
+        // the player's to set.
+        strip_finalize_tree(&mut tag);
         set_key(&mut tag, "id", Tag::String(kind.into()));
         // Turtle.readAdditionalSaveData chooses its home before SummonCommand's snapTo.
         // Preserve that load-stage default while the shared loader receives the final Pos.
@@ -1757,6 +1931,9 @@ impl Game<'_> {
                 [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
             });
             set_key(&mut tag, "home_pos", Tag::IntArray(home.to_vec()));
+        }
+        if self.difficulty_id() == 0 {
+            self.prune_peaceful_summon_passengers(&mut tag);
         }
         place_summoned(&mut tag, pos);
         // ServerLevel.tryAddFreshEntityWithPassengers: a UUID of the tree that
@@ -1780,6 +1957,44 @@ impl Game<'_> {
         }
         Ok(target)
     }
+
+    /// Checked `EntityType.loadEntityRecursive` drops an ineligible passenger
+    /// and its entire subtree before UUID admission. Filter only the summon
+    /// input; the shared loader must still restore those entities from saves.
+    fn prune_peaceful_summon_passengers(&self, tag: &mut Tag) {
+        let Tag::Compound(compound) = tag else { return };
+        if let Some(Tag::List(riders)) = compound.get_mut(&"Passengers".into()) {
+            riders.retain_mut(|rider| {
+                if let Some(kind) = entity_nbt::kind(rider)
+                    && self
+                        .res
+                        .mob_types()
+                        .get(&kind)
+                        .is_some_and(|t| !t.allowed_in_peaceful())
+                {
+                    return false;
+                }
+                self.prune_peaceful_summon_passengers(rider);
+                true
+            });
+        }
+    }
+}
+
+/// `sunrise:finalize` off `tag` and off the riders under its `Passengers`:
+/// only worldgen leaves it, for a structure mob the game finishes when its
+/// chunk loads (`Game::load_mob`), never for a player to ask for. Taken off the
+/// compounds a player's NBT arrives in: `/summon`'s argument, `/data`'s and the
+/// `minecraft:entity_data` component's (`Game::apply_entity_nbt`), and
+/// `native_summon`, which takes `/summon`'s argument.
+pub(in crate::game) fn strip_finalize_tree(tag: &mut Tag) {
+    let Tag::Compound(c) = tag else { return };
+    c.remove(&"sunrise:finalize".into());
+    if let Some(Tag::List(passengers)) = c.get_mut(&"Passengers".into()) {
+        for passenger in passengers {
+            strip_finalize_tree(passenger);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1791,7 +2006,7 @@ mod tests {
     /// `lan_guest_joined`'s placement-only pass, between a forced write and
     /// the tracker pass, must not spend the marks in either dimension.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn guest_placement_keeps_forced_metadata_in_each_dimension() {
         use sunrise_client::lan::entity::{EntityState, States};
         with_game(|game| {
@@ -1826,7 +2041,7 @@ mod tests {
     /// display's load marks its start delay forced
     /// (`Display.setTransformationInterpolationDelay`).
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn merging_display_nbt_keeps_the_uuid_and_forces_the_start_delay() {
         with_game(|game| {
             let mut raw = Compound::new();
@@ -1878,6 +2093,7 @@ mod tests {
                     range: (0, 23),
                 }],
                 command: None,
+                executor: None,
                 range: (0, 23),
                 child: None,
                 literals: vec![],
@@ -1906,7 +2122,7 @@ mod wolf_live_anger_tests {
     use sunrise_core::nbt::Tag;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn live_wolf_anger_writes_use_the_level_clock_and_keep_bee_state() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2010,7 +2226,7 @@ mod boat_passenger_tree_tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_game;
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn actual_boat_getter_projects_runtime_children_and_existing_bookkeeping() {
         with_game(|game| {
             game.build_registries();
@@ -2179,6 +2395,7 @@ mod boat_passenger_tree_tests {
 #[cfg(test)]
 mod loot_table_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use std::sync::Arc;
     use sunrise_client::{
         chunk::Chunk,
         containers::BlockEntity,
@@ -2186,7 +2403,6 @@ mod loot_table_tests {
         save::{self, ChunkExtras, PendingContainerLoot},
     };
     use sunrise_core::nbt::Tag;
-    use std::sync::Arc;
 
     const TABLE: &str = "minecraft:chests/simple_dungeon";
 
@@ -2195,7 +2411,7 @@ mod loot_table_tests {
         let live = game.world.chunks.get(&(0, 0)).unwrap().clone();
         let chunk = game.with_entities([&live]).remove(0);
         let registry = game.pack.assets.registry;
-        let encoded = save::encode(&chunk, registry, game.res.biomes());
+        let encoded = save::encode(&chunk, registry, game.res.biomes(), &Default::default());
         let Some(Tag::List(list)) = encoded.tag.get("block_entities") else {
             panic!("no block entities");
         };
@@ -2219,7 +2435,7 @@ mod loot_table_tests {
     /// RandomizableContainer.tryLoadLootTable: a tag without a table loads an
     /// empty chest that stays so, and one with a table keeps it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn data_commands_on_an_unopened_loaded_chest_survive_a_save_and_reload() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2316,6 +2532,9 @@ mod loot_table_tests {
 }
 
 #[cfg(test)]
+mod compute_tests;
+
+#[cfg(test)]
 mod saved_tag_tests;
 
 #[cfg(test)]
@@ -2325,13 +2544,16 @@ mod mod_block_entity_tests;
 mod residency_tests;
 
 #[cfg(test)]
+mod hopper_cooldown_tests;
+
+#[cfg(test)]
 mod arrow_owner_tests {
     use super::Target;
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use sunrise_core::nbt::Tag;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn loaded_arrow_getter_uses_registered_owner_reference_without_raw() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2443,7 +2665,7 @@ mod modern_literal_tests {
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn admitted_modern_literals_reach_actual_storage_as_typed_tags() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2560,9 +2782,9 @@ mod modern_literal_tests {
 #[cfg(test)]
 mod bell_command_identity_tests {
     use super::*;
+    use std::sync::Arc;
     use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
     use sunrise_core::{geometry::Vec3, position::ChunkPos};
-    use std::sync::Arc;
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.build_registries();
@@ -2584,7 +2806,7 @@ mod bell_command_identity_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn placed_bell_is_a_real_stored_entity_with_command_metadata() {
         with_game(|game| {
             let clock = game.world.game_time;
@@ -2623,7 +2845,13 @@ mod bell_command_identity_tests {
             }
             // No raw input: factory/model and the real common writer supply metadata.
             let fresh = BlockEntity::for_block("minecraft:bell").unwrap();
-            let tag = save::block_entity_data((-3, 204, 11), &fresh, "minecraft:bell", None);
+            let tag = save::block_entity_encode::data(
+                (-3, 204, 11),
+                &fresh,
+                "minecraft:bell",
+                Default::default(),
+                &Default::default(),
+            );
             assert_eq!(tag.get("x"), Some(&Tag::Int(-3)));
             assert_eq!(tag.get("y"), Some(&Tag::Int(204)));
             assert_eq!(tag.get("z"), Some(&Tag::Int(11)));
@@ -2655,13 +2883,13 @@ mod bell_command_identity_tests {
 #[cfg(test)]
 mod falling_live_adoption_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, commands::Target, load_resources};
+    use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
     use sunrise_core::nbt::Tag;
     use sunrise_core::{
         geometry::Vec3,
         position::{BlockPos, ChunkPos},
     };
-    use std::sync::Arc;
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2714,7 +2942,7 @@ mod falling_live_adoption_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn commands_mutate_the_resident_falling_model_without_rejoining() {
         with_game(|game| {
             let uuid = "000003d4-0000-0000-0000-000000000001";
@@ -2806,7 +3034,7 @@ mod vehicle_container_tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn loaded_vehicle_saves_own_only_their_container_fields() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.build_registries();
@@ -3042,3 +3270,7 @@ mod vehicle_container_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "finalize_marker_tests.rs"]
+mod finalize_marker_tests;

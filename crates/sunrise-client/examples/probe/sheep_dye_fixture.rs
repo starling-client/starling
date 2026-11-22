@@ -1,4 +1,5 @@
 //! Actual production sheep-dye interaction without prepared resources.
+use std::{io::Write, sync::Arc};
 use sunrise_client::{
     Result,
     items::ItemStack,
@@ -6,7 +7,6 @@ use sunrise_client::{
 };
 use sunrise_core::geometry::Vec3;
 use sunrise_core::nbt::Tag;
-use std::{io::Write, sync::Arc};
 
 fn kind() -> Arc<MobType> {
     Arc::new(MobType {

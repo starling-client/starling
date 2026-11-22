@@ -1,28 +1,35 @@
+#[path = "support/sdk.rs"]
+mod sdk_fixture;
+
+use sdk_fixture::OfflineSdk;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant},
 };
-struct Fixture(PathBuf);
+const BUILD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const MIXINS: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+struct Fixture {
+    dir: PathBuf,
+    sdk: OfflineSdk,
+}
 impl Fixture {
     fn new(name: &str) -> Self {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
             "../../target/bounded-{name}-{}",
             std::process::id()
         ));
-        fs::create_dir_all(&p).unwrap();
-        Self(p)
+        fs::create_dir_all(&dir).unwrap();
+        let sdk = OfflineSdk::new(&dir);
+        Self { dir, sdk }
     }
     fn run(&self, args: &[&str]) -> String {
-        self.run_launcher(args, "sunrise-launcher")
-    }
-    fn run_launcher(&self, args: &[&str], launcher: &str) -> String {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-sunrise-mod"))
+        let mut child = self
+            .sdk
+            .command(&self.dir)
             .args(args)
-            .env("SUNRISE_LAUNCHER", launcher)
-            .env("SUNRISE_SDK_BASE", self.0.join("no-sdk"))
-            .current_dir(&self.0)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -42,30 +49,24 @@ impl Fixture {
         assert!(!output.status.success());
         String::from_utf8(output.stderr).unwrap()
     }
-    fn manifest(&self) {
-        fs::write(self.0.join("sunrise-mod.toml"), format!("id='example'\nname='Test'\nversion='1.0.0'\napi='0.2'\ncapabilities=['registries']\n[native]\ngame='26.3'\nsunrise='{}'\nmixins='{}'\n", "a".repeat(40), "b".repeat(40))).unwrap();
+    fn manifest(&self, declarations: &str) {
+        fs::write(self.dir.join("sunrise-mod.toml"), format!("id='example'\nname='Test'\nversion='1.0.0'\napi='0.2'\ncapabilities=['registries']\n[native]\ngame='26.3'\nsunrise='{BUILD}'\nmixins='{MIXINS}'\n{declarations}")).unwrap();
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
+        fs::remove_dir_all(&self.dir).unwrap();
     }
 }
 fn large(path: &Path, limit: u64) {
     fs::File::create(path).unwrap().set_len(limit + 1).unwrap();
 }
-const COMMANDS: &[&[&str]] = &[
-    &["inject", "add", "lower::run", "--kind", "head"],
-    &["inject", "update"],
-    &["inject", "sync", "--repo", "game"],
-    &["internals", "add", "lower::run"],
-    &["internals", "sync"],
-];
+const COMMANDS: &[&[&str]] = &[&["internals", "add", "lower::run"], &["internals", "sync"]];
 #[test]
 #[ignore = "daily"]
 fn bounded_manifest_commands() {
     let f = Fixture::new("manifest");
-    let path = f.0.join("sunrise-mod.toml");
+    let path = f.dir.join("sunrise-mod.toml");
     let limit = sunrise_mod_package::manifest::MAX_MANIFEST;
     large(&path, limit);
     for args in COMMANDS {
@@ -83,7 +84,7 @@ fn bounded_manifest_commands() {
 fn bounded_special_manifests() {
     use std::os::unix::fs::symlink;
     let f = Fixture::new("special");
-    let path = f.0.join("sunrise-mod.toml");
+    let path = f.dir.join("sunrise-mod.toml");
     symlink("/dev/zero", &path).unwrap();
     for args in COMMANDS {
         assert!(f.run(args).contains("not a regular file"));
@@ -95,81 +96,44 @@ fn bounded_special_manifests() {
         assert!(f.run(args).contains("not a regular file"));
     }
 }
-#[test]
-#[ignore = "daily"]
-fn bounded_catalog_commands() {
-    for (name, relative, commands) in [
-        (
-            "points",
-            format!("{}/build-data/points.json", "a".repeat(40)),
-            &COMMANDS[..2],
-        ),
-        (
-            "old",
-            "old/build-data/internals.json".into(),
-            &COMMANDS[1..2],
-        ),
-        (
-            "internals",
-            format!("{}/build-data/internals.json", "a".repeat(40)),
-            &COMMANDS[..2],
-        ),
-    ] {
-        let f = Fixture::new(name);
-        f.manifest();
-        let cache = f.0.join(".sunrise/cache");
-        let current = cache.join("a".repeat(40)).join("build-data");
-        fs::create_dir_all(&current).unwrap();
-        fs::write(cache.join("a".repeat(40)).join("build"), "a".repeat(40)).unwrap();
-        let header = r#""schema":1,"build":{"commit":"c"}"#;
-        fs::write(
-            current.join("internals.json"),
-            format!(r#"{{{header},"internals":[]}}"#),
-        )
-        .unwrap();
-        fs::write(
-            current.join("points.json"),
-            format!(r#"{{{header},"sites":[]}}"#),
-        )
-        .unwrap();
-        let path = cache.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        large(&path, 256 << 20);
-        let before = fs::read(f.0.join("sunrise-mod.toml")).unwrap();
-        for args in commands {
-            let error = f.run(args);
-            assert!(
-                error.contains(path.file_name().unwrap().to_str().unwrap())
-                    && error.contains("268435456"),
-                "{error}"
-            );
-            assert_eq!(fs::metadata(&path).unwrap().len(), (256 << 20) + 1);
-            assert_eq!(fs::read(f.0.join("sunrise-mod.toml")).unwrap(), before);
-        }
-    }
-}
-
 #[cfg(unix)]
 #[test]
 #[ignore = "daily"]
-fn bounded_discovery_reread() {
-    use std::os::unix::fs::PermissionsExt;
-    let f = Fixture::new("discovery");
-    f.manifest();
-    let launcher = f.0.join("launcher");
-    fs::write(
-        &launcher,
-        "#!/bin/sh\ntruncate -s 33554433 sunrise-mod.toml\necho '[]'\n",
-    )
-    .unwrap();
-    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
-    let error = f.run_launcher(COMMANDS[4], launcher.to_str().unwrap());
+fn sync_refuses_a_cargo_manifest_fifo_without_waiting() {
+    let f = Fixture::new("cargo-fifo");
+    f.manifest("");
+    let cargo = f.dir.join("Cargo.toml");
+    let c = std::ffi::CString::new(cargo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let path = f.dir.join("sunrise-mod.toml");
+    let before = fs::read(&path).unwrap();
+    let error = f.run(&["internals", "sync"]);
     assert!(
-        error.contains("sunrise-mod.toml") && error.contains("33554432"),
+        error.contains("Cargo.toml") && error.contains("not a regular file"),
         "{error}"
     );
-    assert_eq!(
-        fs::metadata(f.0.join("sunrise-mod.toml")).unwrap().len(),
-        33554433
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+#[ignore = "daily"]
+fn bounded_catalog_commands() {
+    const LIMIT: u64 = 256 << 20;
+    let f = Fixture::new("internals-catalog");
+    f.manifest("");
+    f.sdk.release(BUILD, MIXINS);
+    f.sdk.prefetch(&f.dir, BUILD, BUILD);
+    let data = f.dir.join(".sunrise/cache").join(BUILD).join("build-data");
+    fs::create_dir_all(&data).unwrap();
+    let catalog = data.join("internals.json");
+    large(&catalog, LIMIT);
+    let manifest = f.dir.join("sunrise-mod.toml");
+    let before = fs::read(&manifest).unwrap();
+    let error = f.run(&["internals", "add", "lower::run"]);
+    assert!(
+        error.contains("internals.json") && error.contains(&LIMIT.to_string()),
+        "{error}"
     );
+    assert_eq!(fs::metadata(&catalog).unwrap().len(), LIMIT + 1);
+    assert_eq!(fs::read(manifest).unwrap(), before);
 }

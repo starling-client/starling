@@ -38,7 +38,11 @@ fn compile_selector(source: &str, reg: &sunrise_client::command::Registries) -> 
     let mut reader = sunrise_client::command::Reader::new(source);
     match sunrise_client::command::selector::parse(&mut reader, reg, true) {
         Err(e) => Some(match e.context() {
-            Some(context) => format!("{} at position {}: {context}", e.message.plain(), e.cursor),
+            Some(context) => format!(
+                "{} at position {}: {context}",
+                e.message.plain(),
+                e.java_cursor()
+            ),
             None => e.message.plain(),
         }),
         Ok(_) if reader.can_read() => {

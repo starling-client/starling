@@ -1,11 +1,11 @@
 //! Text adapter for differential checks; no vanilla logic lives in the adapter.
+use std::io::{self, BufRead, Write};
 use sunrise_core::geometry::{
     Aabb, Axis, BlockHit, Direction, Vec3, VoxelShape, block_floor_height, candidate_step_heights,
     entity_collision_bounds, resolve_shape_movement, resolve_step_movement,
     sweep_intersected_blocks,
 };
 use sunrise_core::position::BlockPos;
-use std::io::{self, BufRead, Write};
 
 struct Input<'a>(std::str::SplitWhitespace<'a>);
 impl Input<'_> {

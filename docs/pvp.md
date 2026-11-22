@@ -38,6 +38,9 @@ Each feature is built from what it visibly does, never from another client's or 
 - Colour (solid), opacity 10-100%, thickness 1-4 times vanilla's width, and an optional fill that tints the
   targeted block's faces at 25%. Turned on, its first settings are vanilla's: black at 40%, vanilla's width.
 - With Accessibility's high contrast outline, the colour replaces the bright stroke and the black one stays.
+- Under a shader pack whose line program widens its own line (Complementary Reimagined), the bright stroke takes
+  the pack's width and the thickness doesn't apply to it. The high contrast outline's black stroke still shows
+  around it, wider by as much as the game draws it wider: (7 minus vanilla's width) times the thickness.
 - The fill draws each box of the block's shape (`getShape`, the boxes the outline's edges come from) as
   translucent faces after translucent terrain, 0.002 out from the block. Only while the outline shows.
 - Cost: the stroke is vanilla's draw with another colour and width; the fill adds at most a few dozen quads.
@@ -51,7 +54,7 @@ Each feature is built from what it visibly does, never from another client's or 
 
 ## HUD widgets (each default off)
 
-Boxes in the screen corners, placed like the minimap and mods' boxes (`extras_hud::Corners`), each in a corner of
+Boxes in the screen corners, placed like mods' boxes (`extras_hud::Corners`), each in a corner of
 its own, with an optional dark background (on by default). F3's debug screen takes the top corners as it does from
 mods' boxes. Code: `crates/sunrise-client-render/src/pvp_hud.rs` (lines, cache, layout) and `game/extras/pvp.rs`.
 
@@ -164,27 +167,6 @@ resource pack moves them in hand, and the ones 1.8.9 didn't have (crossbow, trid
 Legacy also leaves out what 1.9 added around a hit: the sweep arc and the damage hearts a server sends, and
 with **1.8 hit sounds** (`combatSounds`) the `entity.player.attack.*` sounds (strong, weak, crit, sweep,
 knockback, no damage); hurt sounds and crit particles stay. `pvp::Combat`.
-
-## 1.8 combat in worlds you host (`combatRules`, default off)
-
-The other options only change the look; this one changes the rules, so it applies only where Sunrise is the
-server: single player (its server thread) and the worlds you open to LAN, at once when switched, and a dedicated
-server whose `server.toml` has `[combat]` `legacy = true` ([hosting.md](hosting.md)). Servers you join keep their
-own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrentItem`:
-
-- no attack cooldown (every hit is full strength) and no sweep;
-- weapon damage as in 1.8.9: base 1, plus 4 for a sword, 3 for an axe, 2 for a pickaxe, 1 for a shovel, plus the
-  material (wood and gold 0, stone 1, iron 2, diamond 3; netherite 4 and copper 1, which 1.8.9 didn't have);
-  items 1.8.9 didn't have (trident, mace...) keep 26.3's damage;
-- Strength multiplies by 1 + 1.3 per level, Weakness subtracts 0.5 per level;
-- Sharpness adds 1.25 per level, Smite and Bane of Arthropods 2.5 per level against their targets;
-- a critical hit (×1.5) needs a fall, not a charge, and can be a sprinting hit.
-- knockback on players as `EntityLivingBase.knockBack`: it lifts a player in the air too (combos), and knockback
-  resistance is a chance to take none instead of a cut; the sprint and Knockback push is added on top (0.1 up)
-  instead of halving the motion first.
-
-Code: `crates/sunrise-client/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
-`game/world/legacy_rules.rs`; `lan_e2e.py --check legacy-pvp` measures it between two games.
 
 It is only the look: the client sends a server exactly what Modern sends (same attacks, same timing, no
 block-hit packets), so vanilla servers and their anticheats see nothing new. Code: `first_person.rs`

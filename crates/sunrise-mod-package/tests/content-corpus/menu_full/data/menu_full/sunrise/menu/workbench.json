@@ -1,0 +1,21 @@
+{
+  "slots": 12,
+  "player_inventory": false,
+  "data_slots": 3,
+  "results": [
+    6
+  ],
+  "inputs": [
+    5,
+    7
+  ],
+  "crafting": {
+    "grid": 1,
+    "size": 2,
+    "result": 0
+  },
+  "links": {
+    "from": 8,
+    "count": 2
+  }
+}

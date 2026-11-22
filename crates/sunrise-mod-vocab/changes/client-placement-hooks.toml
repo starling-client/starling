@@ -1,0 +1,3 @@
+ids = ["hook:can_survive", "hook:may_place_on", "hook:can_sustain_plant", "hook:state_for_placement", "method:BlockPart::can_survive", "method:BlockPart::may_place_on", "method:BlockPart::can_sustain_plant", "method:BlockPart::state_for_placement"]
+why = "Version 2 asks the four hooks on both sides, as vanilla does: a client asks them from its placement prediction and its own shape updates, with a read-only LevelSide host over its loaded copy of the level."
+migrate = "Version 2 is catalog metadata, not a manifest option. Rebuild with LevelSide instead of &dyn LevelHost; answer None on a client where only a server can decide, and the template's rule predicts."

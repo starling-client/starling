@@ -1,0 +1,230 @@
+name: verifier
+# `sunrise-verify`, the release checker the server install scripts pin (packaging/server/install.sh and install.ps1):
+# the same `verify` the launcher and `sunrise-server update` run, with the keys built in from release-keys.txt, as one
+# static binary per platform. Published as the release `verifier@X.Y.Z`: a prerelease, never "latest" (install.sh reads
+# releases/latest as a fallback), with the six binaries, SHA256SUMS and a build-provenance attestation.
+#
+# The trust anchor is not a signature. The install scripts on main pin each binary's SHA-256
+# (tools/ci/pin_verifier.py verifier@X.Y.Z --commit <dispatch sha> checks the files' attestation, then rewrites the pin
+# block, in an ordinary pull request), so this workflow
+# holds no secret, uses no environment and changes no key. A new release is needed only when the verify code or
+# release-keys.txt changes.
+#
+# By dispatch only. A real run is `-f dry_run=false` on main and publishes; any other run (the default, or any other
+# ref) builds everything, checks it, and publishes nothing, as mod-tool.yml's dry run does.
+#   gh workflow run verifier.yml -f version=1.0.0 -f dry_run=false      (from main)
+# `publish` creates the tag verifier@X.Y.Z itself at the dispatch commit (create-only, so an existing tag is never moved)
+# and then the release with --verify-tag.
+# - `decide` (read-only token) checks the version, refuses an existing tag, and decides whether this run publishes.
+# - `build` compiles one binary per platform on a hosted runner, size-optimised and static (musl; the static CRT on
+#   Windows), with no secret; the profile comes from CARGO_PROFILE_RELEASE_* here, so the workspace profiles stay as
+#   they are. The binary is built without the `test-key` feature, and a step checks that the test key's name is not in it.
+# - `assemble` writes SHA256SUMS and checks the file set.
+# - `publish` exists only for a publishing run on main and is the only job with a write token: it attests the files
+#   and creates the release. It compiles nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The verifier's version, X.Y.Z (the release is verifier@X.Y.Z)
+        type: string
+        required: true
+      dry_run:
+        description: Build and check, publish nothing (a real run is on main with this off)
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  # One publishing run at a time; a dry run has a group of its own, so it never holds up or cancels a real one.
+  group: verifier${{ (inputs.dry_run || github.ref != 'refs/heads/main') && '-dry-run' || '' }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      publish: ${{ steps.decide.outputs.publish }}
+    steps:
+      - id: decide
+        env:
+          VERSION: ${{ inputs.version }}
+          DRY: ${{ inputs.dry_run }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          number='(0|[1-9][0-9]{0,8})'
+          [[ "$VERSION" =~ ^$number\.$number\.$number$ ]] || { echo "::error::version must be X.Y.Z, not '$VERSION'"; exit 1; }
+          tag="verifier@$VERSION"
+          # An existing release or tag is never replaced: a pinned hash must keep meaning the same file. Only a 404 is
+          # "absent": any other answer (a rate limit, a server error) refuses.
+          for path in "releases/tags/$tag" "git/ref/tags/$tag"; do
+            if gh api "repos/$GH_REPO/$path" > /dev/null 2> "$RUNNER_TEMP/error"; then
+              echo "::error::refused: $tag already exists here ($path)"; exit 1
+            fi
+            grep -q 'HTTP 404' "$RUNNER_TEMP/error" || { cat "$RUNNER_TEMP/error"; echo "::error::couldn't look up $path"; exit 1; }
+          done
+          publish=false
+          if [ "$GITHUB_REF" = refs/heads/main ] && [ "$DRY" = false ]; then publish=true; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [ "$publish" = true ]; then echo "### Publishing $tag from $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          else echo "### Dry run of $tag from $GITHUB_REF ($GITHUB_SHA): nothing is published" >> "$GITHUB_STEP_SUMMARY"; fi
+
+  build:
+    needs: decide
+    name: build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: linux-x86_64, os: ubuntu-22.04, target: x86_64-unknown-linux-musl, ext: '', run: true}
+          - {platform: linux-aarch64, os: ubuntu-22.04-arm, target: aarch64-unknown-linux-musl, ext: '', run: true}
+          - {platform: macos-arm64, os: macos-15, target: aarch64-apple-darwin, ext: '', run: true, deployment: '11.0'}
+          - {platform: macos-x64, os: macos-15, target: x86_64-apple-darwin, ext: '', run: false, deployment: '10.13'}
+          - {platform: windows-x64, os: windows-latest, target: x86_64-pc-windows-msvc, ext: .exe, run: true}
+          - {platform: windows-arm64, os: windows-latest, target: aarch64-pc-windows-msvc, ext: .exe, run: false}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      NAME: sunrise-verify-${{ matrix.platform }}${{ matrix.ext }}
+      # Small and the same everywhere: size-optimised, fat LTO, no unwinding, no symbols.
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: z
+      CARGO_PROFILE_RELEASE_LTO: fat
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '1'
+      CARGO_PROFILE_RELEASE_PANIC: abort
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The pinned Rust
+        id: rust
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          targets: ${{ matrix.target }}
+      - name: musl-gcc, for ring's C and assembly
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          DEPLOYMENT: ${{ matrix.deployment }}
+        run: |
+          set -euo pipefail
+          flags="--remap-path-prefix=$PWD=/src --remap-path-prefix=$HOME/.cargo=/cargo"
+          case "$TARGET" in
+            *-windows-msvc) flags="$flags -C target-feature=+crt-static" ;;
+            *-linux-musl) flags="$flags -C target-feature=+crt-static"; export "CC_${TARGET//-/_}=musl-gcc" ;;
+            *-apple-darwin) export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT" ;;
+          esac
+          export RUSTFLAGS="$flags"
+          cargo build --release --locked -p sunrise-release-sign --bin sunrise-verify --target "$TARGET"
+          mkdir dist
+          ext=""; case "$TARGET" in *windows*) ext=.exe ;; esac
+          cp "target/$TARGET/release/sunrise-verify$ext" "dist/$NAME"
+          ls -l dist
+      # A release build never reads the install tests' key (the `test-key` feature is off), so its variable's name is not
+      # in the file at all.
+      - name: No test key in the binary
+        run: |
+          if grep -q SUNRISE_VERIFY_TEST_KEY "dist/$NAME"; then echo "::error::$NAME was built with the test-key feature"; exit 1; fi
+      - name: Static, and it starts (where the runner can run it)
+        env:
+          RUNNABLE: ${{ matrix.run }}
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform }}" in
+            linux-*) file "dist/$NAME" | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked' ;;
+            macos-*) otool -L "dist/$NAME" | tee /dev/stderr | awk 'NR>1 && $1 !~ /^(\/usr\/lib|\/System\/Library)\// { bad=1 } END { exit bad }' ;;
+          esac
+          if [ "$RUNNABLE" = true ]; then
+            chmod +x "dist/$NAME"
+            # No arguments: its usage line, and a failure exit.
+            if out=$("dist/$NAME" 2>&1); then echo "::error::ran with no arguments and succeeded"; exit 1; fi
+            echo "$out"
+            grep -q 'usage: sunrise-verify' <<< "$out"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verifier-${{ matrix.platform }}
+          path: dist/${{ env.NAME }}
+          if-no-files-found: error
+
+  assemble:
+    needs: [decide, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: verifier-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS, and exactly the six binaries
+        run: |
+          set -euo pipefail
+          cd dist
+          export LC_ALL=C
+          ls -l
+          expected="sunrise-verify-linux-aarch64 sunrise-verify-linux-x86_64 sunrise-verify-macos-arm64 sunrise-verify-macos-x64 sunrise-verify-windows-arm64.exe sunrise-verify-windows-x64.exe"
+          [ "$(ls | tr '\n' ' ' | sed 's/ $//')" = "$expected" ] || { echo "::error::unexpected file set"; exit 1; }
+          sha256sum * > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verifier-release
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [decide, assemble]
+    # The only job with a write token, and only for a publishing run on main.
+    if: needs.decide.outputs.publish == 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write  # the verifier@X.Y.Z release
+      id-token: write  # the provenance attestation
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.decide.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verifier-release
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Tag verifier@X.Y.Z here, never over another tag
+        run: |
+          set -euo pipefail
+          # Checked again here (a tag or release made since `decide` ran is never replaced); only a 404 is "absent".
+          for path in "releases/tags/$TAG" "git/ref/tags/$TAG"; do
+            if gh api "repos/$GH_REPO/$path" > /dev/null 2> "$RUNNER_TEMP/error"; then
+              echo "::error::refused: $TAG already exists here ($path)"; exit 1
+            fi
+            grep -q 'HTTP 404' "$RUNNER_TEMP/error" || { cat "$RUNNER_TEMP/error"; echo "::error::couldn't look up $path"; exit 1; }
+          done
+          # POST git/refs creates and never overwrites: a conflict fails the run.
+          gh api -X POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" > /dev/null
+      - name: Release
+        run: |
+          set -euo pipefail
+          notes="sunrise-verify, the release checker packaging/server/install.sh and install.ps1 pin by SHA-256 (built from $GITHUB_SHA by verifier.yml; the files carry a build-provenance attestation). Not a Sunrise release."
+          gh release create "$TAG" dist/* --verify-tag --prerelease --latest=false --title "Verifier ${TAG#verifier@}" --notes "$notes"

@@ -1,0 +1,4 @@
+id = "refused_manifest_bad_namespace"
+name = "Refused manifest bad namespace"
+version = "1.2.3"
+namespaces = ["Not_Lowercase"]

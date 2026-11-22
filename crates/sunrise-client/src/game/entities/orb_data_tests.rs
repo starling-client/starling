@@ -3,8 +3,8 @@
 //! reads the new `Age` into the same live orb
 //! (tools/test_orb_data_parity.py measures the same on vanilla 26.3).
 use super::*;
-use sunrise_core::nbt::{Tag, parse_snbt};
 use std::sync::Arc;
+use sunrise_core::nbt::{Tag, parse_snbt};
 
 const ORB: &str = "00000009-0000-0000-0000-000000000001";
 
@@ -28,7 +28,7 @@ fn run(game: &mut Game<'_>, command: &str) -> (bool, Option<String>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_merged_age_reaches_the_same_live_orb() {
     game(|game| {
         let saved = parse_snbt(
@@ -99,7 +99,7 @@ fn orb<'a>(game: &'a Game<'_>, id: u32) -> &'a sunrise_client::entities::Experie
 /// stale one; and the portal cooldown is read while a live portal process
 /// stays.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_merge_keeps_the_live_orb_and_its_portal_process() {
     use sunrise_client::nether_portal::{PortalState, Process};
     game(|game| {

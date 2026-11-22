@@ -5,6 +5,10 @@ tick. `BlockCapabilityCache` keeps what one lookup found and gives it back while
 depends on has changed. It is the caching half of NeoForge's `BlockCapabilityCache`, without the
 listener: the cache is polled, never told.
 
+For a yes/no question from a read-only level view (for example, in placement prediction), use
+`LevelHost::has_item_capability`. It does not construct or cache a handler. This cache belongs to
+the server-side acquisition and transfer path.
+
 ## Making one
 
 ```rust,ignore
@@ -18,9 +22,11 @@ keeps is bounded by the number of caches you make.
 ## Polling it
 
 ```rust,ignore
+use mod_api::resource_util::move_resources;
+
 // Each tick, inside a transaction `tx`, with `own` your own handler.
 if let Some(items) = west.get(host) {
-    move_resources(host, items, own, |_| true, 8, tx)?;
+    move_resources(host, items, own, |_| true, 8, Some(tx))?;
 }
 ```
 
@@ -35,8 +41,7 @@ they were at the lookup:
 - **No provider said its answer there changed.** The level keeps a capability generation per
   position (`level.capability_generation(host, pos)`), which `invalidate_capabilities` moves on;
   see below.
-- **No mod was switched on or off since.** The count comes from the game through the host, so a
-  wasm mod's cache sees the same switches as a native one.
+- **No mod was switched on or off since.** The count comes from the game through the host.
 
 When any of these differs, `get` looks the capability up again with `LevelRef::capability`. A
 successful poll allocates nothing and asks no provider.

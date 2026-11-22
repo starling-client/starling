@@ -30,29 +30,16 @@ impl Game<'_> {
     }
 
     pub(super) fn guest_drop_carried(&mut self, gi: usize) {
-        let carried = self
-            .lan
-            .as_mut()
-            .and_then(|host| host.hub.guests.update(gi, |g| g.carried.take()));
-        if let Some(c) = carried {
-            self.drop_guest_items(gi, vec![c]);
-        }
-    }
-
-    /// `AbstractContainerMenu.removed`: what a closing player held on the
-    /// cursor goes back into their inventory (`placeItemBackInInventory`,
-    /// dropped only if it doesn't fit), and their client's cursor empties
-    /// with the inventory it is sent.
-    pub(in crate::game) fn guest_carried_back(&mut self, gi: usize) {
-        let carried = self
-            .lan
-            .as_mut()
-            .and_then(|host| host.hub.guests.update(gi, |g| g.carried.take()));
-        if let Some(c) = carried {
-            self.lan_place_back(gi, vec![c]);
-            if let Some(host) = self.lan.as_mut() {
-                host.hub.send_inventory(gi);
-            }
+        let carried = self.with_own_record(gi, |host, _| {
+            let conn = host.hub.guests[gi].conn;
+            let mut stacks = host.hub.take_closed_menu_cursors(conn).collect::<Vec<_>>();
+            host.hub
+                .guests
+                .update(gi, |g| stacks.extend(g.take_menu_cursors()));
+            Some(stacks)
+        });
+        if let Some(carried) = carried.filter(|stacks| !stacks.is_empty()) {
+            self.drop_guest_items(gi, carried);
         }
     }
 
@@ -67,9 +54,9 @@ impl Game<'_> {
             g.position[2],
         ];
         let (yaw, pitch) = (g.yaw, g.pitch);
+        let mut r = sunrise_client::random_source::entity(); // the guest's Entity.random
         for stack in stacks {
-            let r = &mut self.world.random;
-            let v = sunrise_client::entities::drop_motion(r, yaw, pitch, false);
+            let v = sunrise_client::entities::drop_motion(&mut r, yaw, pitch, false);
             self.spawn_item(stack, eye, v, 40);
         }
     }
@@ -254,7 +241,8 @@ impl Game<'_> {
     /// `hit` with `hand`, after the packet's sequence is acknowledged: reach, the hit's place in
     /// its block, the build height, spawn protection and the border, then
     /// `ServerPlayerGameMode.useItemOn`, and the blocks the client predicted sent back. True
-    /// when the use consumed (`InteractionResult` a success or a consume). A fake player's
+    /// when the use ends the click. An optional receipt reports block and item phases before
+    /// their block updates. The packet handler answers refusals. A fake player's
     /// `PlayerRef::perform_action` runs it as the packet does.
     pub(in crate::game) fn guest_use_item_on(
         &mut self,
@@ -262,8 +250,16 @@ impl Game<'_> {
         gi: usize,
         hit: Hit,
         hand: Hand,
+        receipt: Option<i64>,
     ) -> Result<bool, ActionRefused> {
-        let mut consumed = false;
+        use super::super::cauldron_prediction::{UseOnOutcome, use_result};
+
+        let reply = |game: &Self, outcome| {
+            if let (Some(receipt), Some(host)) = (receipt, &game.lan) {
+                host.hub.send_to(conn, &use_result(receipt, outcome));
+            }
+        };
+        let (mut consumed, mut block_fell_through) = (false, false);
         let Some(host) = self.lan.as_mut() else {
             return Err(ActionRefused::Stale);
         };
@@ -318,43 +314,58 @@ impl Game<'_> {
             .contains(f64::from(hit.pos[0]), f64::from(hit.pos[2]))
         {
             if spectator && self.spectator_use_portal(conn, gi, hit.pos) {
+                reply(self, UseOnOutcome::default());
                 return Ok(true);
             }
             let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
             let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
-            let used = self
-                .as_guest_at(gi, conn, |g| {
-                    let attempt = g.was_block_placement_attempt(hand);
-                    let saved = (g.forced_hit, g.guest_use);
-                    g.forced_hit = Some(hit);
-                    g.guest_use = Some(GuestUse::OnBlock(hand));
-                    let swings = g.swings_started;
-                    let predicted = g.predicted_swings;
-                    let consumed = g.with_block_use_original(hand, |g| {
-                        let consumed = matches!(g.use_item(), Ok(Some(_)));
-                        if consumed && !g.use_failed {
-                            g.finish_block_use(hit.pos, hand);
-                        }
-                        consumed
-                    });
-                    (g.forced_hit, g.guest_use) = saved;
-                    reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
-                    (
-                        g.swings_started != swings && g.predicted_swings == predicted,
-                        consumed,
-                        attempt,
-                    )
-                })
-                .ok();
-            consumed = used.is_some_and(|u| u.1);
-            let swung = used.map(|u| u.0);
-            self.lan_swing_back(conn, swung);
+            let used = self.as_guest_at(gi, conn, |g| {
+                let attempt = g.was_block_placement_attempt(hand);
+                let saved = (g.forced_hit, g.guest_use);
+                g.forced_hit = Some(hit);
+                g.guest_use = Some(GuestUse::on_block(hand));
+                let swings = g.swings_started;
+                let predicted = g.predicted_swings;
+                let result = g.with_block_use_original(hand, |g| {
+                    let result = g.use_item();
+                    if matches!(result, Ok(Some(_))) && !g.use_failed {
+                        g.finish_block_use(hit.pos, hand);
+                    }
+                    result
+                });
+                let fell_through = matches!(
+                    g.guest_use,
+                    Some(GuestUse::OnBlock {
+                        block_fell_through: true,
+                        ..
+                    })
+                );
+                (g.forced_hit, g.guest_use) = saved;
+                reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
+                (
+                    g.swings_started != swings && g.predicted_swings == predicted,
+                    result.map(|used| used.is_some()),
+                    attempt,
+                    fell_through,
+                )
+            });
+            let (swung, result, attempt, fell_through) = used.map_err(|_| ActionRefused::Stale)?;
+            block_fell_through = fell_through;
+            self.lan_swing_back(conn, Some(swung));
             self.guest_use_sounds(conn, logged, heard);
             // A placement that did nothing at the top or bottom of the
             // world says why. Vanilla asks twice for the top (once
             // before the swing, once in the check that also has the
             // bottom), so a player there is told twice.
-            if let Some((_, false, true)) = used {
+            consumed = match result {
+                Ok(consumed) => consumed,
+                Err(error) => {
+                    log::warn!("block interaction for guest {conn} refused: {error:#}");
+                    refused = Some(ActionRefused::InvalidTarget);
+                    false
+                }
+            };
+            if !consumed && attempt && refused.is_none() {
                 if face == [0, 1, 0] && hit.pos[1] >= max_y {
                     self.build_limit_message(conn, true, max_y);
                     self.build_limit_message(conn, true, max_y);
@@ -366,21 +377,23 @@ impl Game<'_> {
             self.build_limit_message(conn, true, max_y);
             refused = Some(ActionRefused::Protected);
         }
+        // Let a waiting client run the item prediction while it still sees the
+        // pre-use blocks, under the same sequence that will settle the changes.
+        if refused.is_none() {
+            reply(
+                self,
+                UseOnOutcome {
+                    block_fell_through,
+                    passed: !spectator && !consumed,
+                },
+            );
+        }
         // The client predicted a result: correct it with what really is.
         let Some(host) = self.lan.as_mut() else {
             return refused.map_or(Ok(consumed), Err);
         };
-        for pos in [
-            hit.pos,
-            [
-                hit.pos[0] + face[0],
-                hit.pos[1] + face[1],
-                hit.pos[2] + face[2],
-            ],
-        ] {
-            let state = self.world.block(pos[0], pos[1], pos[2]).0 as i32;
-            host.hub
-                .send_to(conn, &C::BlockUpdate(play::BlockUpdate { pos, state }));
+        for pos in [hit.pos, hit.beside()] {
+            host.hub.send_authoritative_block(conn, &self.world, pos);
         }
         refused.map_or(Ok(consumed), Err)
     }
@@ -666,9 +679,19 @@ impl Game<'_> {
         };
         let (old_yaw, old_pitch) = (host.hub.guests[gi].yaw, host.hub.guests[gi].pitch);
         let boat = self.boats.iter().position(|boat| boat.id as i32 == id);
-        // A packet names its target already. Keep the attacker's actual yaw
-        // for the boat's knockback instead of aiming a ray at its center.
-        if boat.is_none() && self.look_at_entity(gi, id, None).is_none() {
+        let general = match u32::try_from(id).ok().and_then(|id| self.general_row(id)) {
+            Some(row) => {
+                let catalog = crate::game::general::general_type_catalog();
+                if !catalog.pickable(row.type_slot) {
+                    return Ok(false);
+                }
+                Some((row.id, catalog.key(row.type_slot)))
+            }
+            None => None,
+        };
+        // A packet names its target already. Boats and general rows use that target
+        // with the attacker's actual aim instead of casting a new ray at its center.
+        if boat.is_none() && general.is_none() && self.look_at_entity(gi, id, None).is_none() {
             return Err(ActionRefused::InvalidTarget);
         }
         // A mace's smash sets the attacker's velocity and sends it at once, before the
@@ -682,6 +705,8 @@ impl Game<'_> {
                 if let Some(index) = boat {
                     g.strike_boat(index);
                     g.swing_arm();
+                } else if let Some((id, kind)) = general {
+                    g.strike_general_row(id, kind);
                 } else {
                     g.attack();
                 }
@@ -692,6 +717,10 @@ impl Game<'_> {
             .ok()
             .flatten();
         self.send_guest_motion(conn, sent);
+        if general.is_some() {
+            // The plain row refused damage, even though the attack spent its charge.
+            return Ok(false);
+        }
         // The mob now answers to this guest (game/network/lan_mobs.rs).
         let Some(host) = self.lan.as_mut() else {
             return Err(ActionRefused::Stale);

@@ -16,6 +16,5 @@ pub trait ResourcesHost {
     /// `mymod:machines/furnace.json`. Missing, unreadable and files above
     /// [`MAX_RESOURCE_BYTES`](crate::MAX_RESOURCE_BYTES) return `None`; a client side (or one without that
     /// stack) also returns `None`. This read never reloads packs.
-    #[access(PublishedResources)]
     fn resource(&self, pack_type: PackType, identifier: &Identifier) -> Option<Vec<u8>>;
 }

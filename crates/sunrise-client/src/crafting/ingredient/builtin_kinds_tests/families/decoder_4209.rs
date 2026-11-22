@@ -1,9 +1,9 @@
 use super::*;
 #[test]
 fn use_effects_component_recipe_decodes_defaults_bounds_and_matches() {
-    use crate::crafting::{Recipes, ResolvedRecipe, ResolvedSources};
-    use sunrise_world::loot::PackOverlay;
+    use crate::crafting::{Recipes, ResolvedSources};
     use std::sync::Arc;
+    use sunrise_world::loot::PackOverlay;
 
     let mut items = Items::empty();
     items.component_defaults = Arc::new(std::collections::HashMap::from([(
@@ -45,27 +45,29 @@ fn use_effects_component_recipe_decodes_defaults_bounds_and_matches() {
         r#"{"speed_multiplier":1.001}"#,
     ];
     let recipe = |name: &str, patch: &str, strict: bool| {
-        let file = Arc::new(
+        (
+            format!("fixture:{name}"),
             serde_json::from_str::<serde_json::Value>(&format!(
                 r#"{{"type":"minecraft:crafting_shaped","pattern":["A"],"key":{{"A":{{"type":"neoforge:components","items":"minecraft:stick","components":{patch},"strict":{strict}}}}},"result":{{"id":"minecraft:diamond"}}}}"#,
             ))
             .unwrap(),
-        );
-        ResolvedRecipe {
-            name: format!("fixture:{name}"),
-            resolved: file.clone(),
-            file,
-        }
+        )
     };
-    let mut sources = ResolvedSources::default();
-    for (name, patch, strict) in valid {
-        sources.recipes.push(recipe(name, patch, strict));
-    }
-    for (index, payload) in invalid.iter().enumerate() {
+    let sources = ResolvedSources::resolve(
+        valid
+            .iter()
+            .map(|(name, patch, strict)| recipe(name, patch, *strict))
+            .collect(),
+        &items,
+        &load(),
+    )
+    .unwrap();
+    for payload in &invalid {
         let patch = format!(r#"{{"minecraft:use_effects":{payload}}}"#);
-        sources
-            .recipes
-            .push(recipe(&format!("invalid_{index}"), &patch, false));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            serde_json::from_str(&patch).unwrap(),
+        );
         let rule = IngredientRule::Components {
             patch: crate::json_nbt::json_to_compound(
                 serde_json::from_str::<serde_json::Value>(&patch)
@@ -86,13 +88,6 @@ fn use_effects_component_recipe_decodes_defaults_bounds_and_matches() {
     let recipes =
         Recipes::from_resolved(&std::env::temp_dir(), &items, &PackOverlay::NONE, &sources)
             .unwrap();
-    for (index, _) in invalid.iter().enumerate() {
-        assert!(
-            recipes
-                .recipe(&format!("fixture:invalid_{index}"))
-                .is_none()
-        );
-    }
     let load = load();
     let context = load.loop_context(LoopSide::Server, []);
     let matches = |name: &str, stack: &ItemStack| {

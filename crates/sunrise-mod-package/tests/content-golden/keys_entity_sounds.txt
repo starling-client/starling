@@ -1,0 +1,92 @@
+manifest:
+Manifest {
+    id: "keys_entity_sounds",
+    name: "Entity sound forms",
+    version: Version {
+        major: 1,
+        minor: 0,
+        patch: 0,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/keys_entity_sounds",
+    ),
+    files: [
+        "data/keys_entity_sounds/sunrise/entity_type/listener.json",
+    ],
+    blocks: [],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [
+        EntityType {
+            id: "keys_entity_sounds:listener",
+            template: "minecraft:zombie",
+            allowed_in_peaceful: None,
+            shadow_radius: None,
+            shadow_strength: None,
+            item: None,
+            damage: 0.0,
+            attributes: {},
+            passenger_attachments: [],
+            sounds: EntitySounds {
+                ambient: Some(
+                    Mute(
+                        None,
+                    ),
+                ),
+                hurt: Some(
+                    Mute(
+                        None,
+                    ),
+                ),
+                death: Some(
+                    Id(
+                        "keys_entity_sounds:farewell",
+                    ),
+                ),
+                step: Some(
+                    Mute(
+                        None,
+                    ),
+                ),
+            },
+        },
+    ],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "keys_entity_sounds",
+    ],
+}

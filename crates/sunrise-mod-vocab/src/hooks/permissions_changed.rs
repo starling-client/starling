@@ -10,11 +10,19 @@ pub trait Hooks {
     /// the list (`operators/clear`) is not a call to either, as in vanilla. Dedicated
     /// servers only; a single-player world has no operator list. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "PermissionsChangedEvent",
         cancellable = true
     )]
-    fn permissions_changed();
+    fn permissions_changed(
+        player: u128,
+        player_entity_id: Option<i32>,
+        name: &str,
+        old: PermissionLevel,
+        new: PermissionLevel,
+        cancel: &mut bool,
+    );
 }

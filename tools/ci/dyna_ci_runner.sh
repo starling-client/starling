@@ -15,16 +15,17 @@ now=${NOW:-$(date +%s)}
 reference=$now
 reason="live lease checked against current time"
 # A run queued behind main can outlive the short renewable lease snapshot. In
-# snapshot mode trust only a lease valid at creation, and never wait over 1 hour.
+# snapshot mode trust only a lease valid at the snapshot's reference time (CREATED:
+# the attempt's creation or start, from dyna_ci_route.sh), and never over 1 hour after it.
 if [ "${LEASE_SOURCE:-live}" = snapshot ]; then
   reference=${CREATED:-}
   case "$reference" in
-    '' | *[!0-9]*) reference=$now; reason="snapshot rejected: run creation time unavailable" ;;
+    '' | *[!0-9]*) reference=$now; reason="snapshot rejected: the snapshot's reference time is unavailable" ;;
     *) if [ "$reference" -gt "$now" ] || [ "$((now - reference))" -gt 3600 ]; then
          reference=$now
-         reason="snapshot rejected: run age outside 0..3600 seconds"
+         reason="snapshot rejected: the snapshot's age is outside 0..3600 seconds"
        else
-         reason="snapshot lease checked at run creation; age=$((now - reference)) seconds (limit 3600)"
+         reason="snapshot lease checked at its reference time; snapshot age=$((now - reference)) seconds (limit 3600)"
        fi ;;
   esac
 fi

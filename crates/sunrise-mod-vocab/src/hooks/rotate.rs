@@ -30,5 +30,10 @@ pub trait Hooks {
         target = "mod_api::world::rotation::native_rotate",
         neoforge = "IBlockExtension.rotate"
     )]
-    fn rotate();
+    fn rotate(
+        state: BlockState,
+        pos: [i32; 3],
+        rotation: StructureRotation,
+        rotated: &mut BlockState,
+    );
 }

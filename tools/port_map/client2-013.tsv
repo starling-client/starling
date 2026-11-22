@@ -58,8 +58,8 @@ ScreenRectangle.intersection	port	crates/sunrise-client-render/src/screen_draw.r
 ScreenRectangle.intersects	skip:other		no caller in the 26.3 client GUI code; pure geometry predicate
 ScreenRectangle.encompasses	skip:other		used by GuiRenderState for element batching bounds; Sunrise appends quads to the HUD batch without it
 ScreenRectangle.containsPoint	port	crates/sunrise-client-render/src/screen_draw.rs::inside	the same half-open point-in-rectangle test
-ScreenRectangle.transformAxisAligned	skip:other		bounds of a rectangle under a GUI pose, for the GUI scissor; Sunrise clips the quads themselves (hud.rs HudBatch::clip_since)
-ScreenRectangle.transformMaxBounds	skip:other		bounds of a rotated rectangle under a GUI pose; Sunrise clips the quads themselves (hud.rs HudBatch::clip_since)
+ScreenRectangle.transformAxisAligned	skip:other		bounds of a rectangle under a GUI pose, for the GUI scissor; Sunrise clips the quads themselves (hud/batch.rs HudBatch::clip_since)
+ScreenRectangle.transformMaxBounds	skip:other		bounds of a rotated rectangle under a GUI pose; Sunrise clips the quads themselves (hud/batch.rs HudBatch::clip_since)
 DynamicAtlasAllocator	skip:other		slot allocator for the GUI item atlas; Sunrise has no item atlas and draws items into the HUD batch (item_render/gui.rs)
 GuiItemAtlas.computeTextureSizeFor	skip:other		atlas texture sizing; Sunrise has no item atlas
 GuiItemAtlas.tryPrepareFor	skip:other		atlas space check; Sunrise has no item atlas
@@ -70,7 +70,7 @@ GuiRenderer.render	inline	crates/sunrise-client-render/src/screen_draw.rs::paint
 GuiRenderer.clearUnusedOversizedItemRenderers	skip:other		GPU renderer cache cleanup; Sunrise's gui_drawn cache is bounded (DRAWN_LIMIT)
 GuiRenderer.prepare	inline	crates/sunrise-client-render/src/screen_draw.rs::paint	gap: minor: the prepare step is folded into paint's single pass; no separate mesh build
 GuiRenderer.addElementsToMeshes	skip:other		vertex batching by pipeline and scissor; HudBatch appends quads in order
-GuiRenderer.executeDrawRange	port	crates/sunrise-client-render/src/hud.rs::HudRenderer::draw_range	draws a range of the batch with its blend, depth and scissor state
+GuiRenderer.executeDrawRange	port	crates/sunrise-client-render/src/hud/renderer.rs::HudRenderer::draw_range	draws a range of the batch with its blend, depth and scissor state
 GuiRenderer.addElementToMesh	skip:other		vertex batching by pipeline and scissor; HudBatch appends quads in order
 GuiRenderer.prepareText	inline	crates/sunrise-client-render/src/screen_draw.rs::paint	text is drawn at its own pose through Draw::Text (batch.text_styled)
 GuiRenderer.prepareItemElements	port	crates/sunrise-client/src/item_render/gui.rs::draw	gap: minor: oversized items are drawn unclipped into the HUD batch, not into a picture-in-picture texture
@@ -79,9 +79,9 @@ GuiRenderer.preparePictureInPictureState	skip:other		picture-in-picture pool dis
 GuiRenderer.submitBlitFromItemAtlas	inline	crates/sunrise-client/src/item_render/gui.rs::draw	the atlas slot blit is the item drawn at its GUI position
 GuiRenderer.prepareItemAtlas	skip:other		item atlas creation and resize; Sunrise has no item atlas
 GuiRenderer.getGuiScaleInvalidatingItemAtlasIfChanged	skip:other		item atlas invalidation on GUI scale change; Sunrise has no item atlas
-GuiRenderer.executeDraw	port	crates/sunrise-client-render/src/hud.rs::HudRenderer::draw_range	one pipeline, vertex buffer, scissor and index range draw
+GuiRenderer.executeDraw	port	crates/sunrise-client-render/src/hud/renderer.rs::HudRenderer::draw_range	one pipeline, vertex buffer, scissor and index range draw
 GuiRenderer.scissorChanged	skip:other		batching compare of scissor rectangles
-GuiRenderer.enableScissor	port	crates/sunrise-client-render/src/hud.rs::HudBatch::clip_since	gap: minor: the rectangle arrives already intersected with the outer scissor (GuiGraphicsExtractor); a nested clip replaces the outer one in paint
+GuiRenderer.enableScissor	port	crates/sunrise-client-render/src/hud/batch.rs::HudBatch::clip_since	gap: minor: the rectangle arrives already intersected with the outer scissor (GuiGraphicsExtractor); a nested clip replaces the outer one in paint
 GuiRenderer.close	skip:other		GPU resource release
 TextureSetup.singleTextureWithLightmap	skip:other		GPU texture binding with the lightmap; Sunrise's lighting is in the mesh
 TextureSetup.getSortKey	skip:other		draw sort key for batching; Sunrise appends in order

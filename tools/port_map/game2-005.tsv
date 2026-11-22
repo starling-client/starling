@@ -1,6 +1,6 @@
 ZombieVillager.defineSynchedData	skip:java		SynchedEntityData definitions; Sunrise keeps the fields on Mob and sets them at spawn
 ZombieVillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	zombie villager save arm; cure and gossip go through zombie_villager::write_nbt
-ZombieVillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	load arm; cure and gossip go through zombie_villager::read_nbt
+ZombieVillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	load arm; cure and gossip go through zombie_villager::read_nbt
 ZombieVillager.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	ZombieVillager arm: villager type, then profession, then zombie spawn
 ZombieVillager.initializeZombieVillagerData	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	profession drawn in the same arm, from a seeded fresh RNG rather than the mob random
 ZombieVillager.handleEntityEvent	port	crates/sunrise-client/src/mobs/zombie_villager.rs::start_converting	cure sound (event 16) is queued when the cure starts
@@ -15,12 +15,13 @@ ZombifiedPiglin.playAngerSound	port	crates/sunrise-client/src/mobs/undead.rs::zo
 ZombifiedPiglin.setTarget	port	crates/sunrise-client/src/mobs/undead.rs::zombified_piglin_step	anger and timers start on the first tick with a target, not inside setTarget
 ZombifiedPiglin.checkZombifiedPiglinSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	ZombifiedPiglin arm: not peaceful and not on a nether wart block
 ZombifiedPiglin.checkSpawnObstruction	port	crates/sunrise-client/src/mobs/spawn_selection.rs::spawn_obstruction	the Mob default two tests: no liquid, unobstructed
-CatSpawner.spawnInVillage	port	crates/sunrise-client/src/game/mobs/cat_spawner.rs::Game::spawn_cat_in_village	village cats: more than four claimed beds within 48 blocks and fewer than five cats
-CatSpawner.spawnCat	port	crates/sunrise-client/src/game/mobs/cat_spawner.rs::Game::spawn_cat	black variant inside cats_spawn_as_black structures; persistence flag from the caller
+CatSpawner.spawnInVillage	port	crates/sunrise-gameplay/src/cat_spawner.rs::village_takes_cat	village cats: more than four claimed beds within 48 blocks and fewer than five cats
+CatSpawner.spawnInHut	port	crates/sunrise-gameplay/src/cat_spawner.rs::hut_takes_cat	hut cats: no cat within 16 blocks
+CatSpawner.spawnCat	port	crates/sunrise-gameplay/src/cat_spawner.rs::spawn_cat	black variant inside cats_spawn_as_black structures; persistence flag from the caller
 InventoryCarrier.pickUpItem	port	crates/sunrise-client/src/game/mobs/villagers.rs::Game::villager_pickups	gap: minor: villager arm only; piglins, sulfur cubes, pandas and others have their own pickup fns
 AbstractVillager.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	villager arm: type, then the baby group
 AbstractVillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Offers; Villager inventory via villager::write_nbt, WanderingTrader inventory via extra.inventory, including empty
-AbstractVillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	Offers via read_villager; Villager inventory via villager::read_nbt, WanderingTrader via eight-slot extra.inventory; aggregation gap retained
+AbstractVillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Offers via read_villager; Villager inventory via villager::read_nbt, WanderingTrader via eight-slot extra.inventory; aggregation gap retained
 AbstractVillager.getSlot	missing		minor: commands cannot address a villager inventory slot (container.N); mob slot names cover weapon, armour and saddle only
 AbstractVillager.addOffersFromItemListings	port	crates/sunrise-client/src/merchant.rs::Trades::offers_from_set	the allow_duplicates path: a picked trade stays in the pool
 AbstractVillager.addOffersFromItemListingsWithoutDuplicates	port	crates/sunrise-client/src/merchant.rs::Trades::offers_from_set	the no-duplicates path: a picked trade leaves the pool
@@ -66,9 +67,9 @@ WanderingTrader.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt
 WanderingTrader.rewardTradeXp	port	crates/sunrise-client/src/merchant.rs::Session::notify_trade	the orb for offers that reward experience; the trader gets no villager XP
 WanderingTrader.WanderToPositionGoal.isTooFarAway	port	crates/sunrise-client/src/mobs/trader.rs::too_far
 WanderingTraderSpawner.getTraderData	port	crates/sunrise-client/src/game/mobs/wandering_trader.rs::Game::load_trader_data
-WanderingTraderSpawner.tryToSpawnLlamaFor	port	crates/sunrise-client/src/game/mobs/wandering_trader.rs::Game::spawn_trader_llama
-WanderingTraderSpawner.findSpawnPositionNear	port	crates/sunrise-client/src/game/mobs/wandering_trader.rs::Game::find_trader_spawn_near
-WanderingTraderSpawner.hasEnoughSpace	port	crates/sunrise-client/src/game/mobs/wandering_trader.rs::Game::trader_has_space
+WanderingTraderSpawner.tryToSpawnLlamaFor	port	crates/sunrise-gameplay/src/wandering_trader.rs::spawn_llama
+WanderingTraderSpawner.findSpawnPositionNear	port	crates/sunrise-gameplay/src/wandering_trader.rs::find_spawn_near
+WanderingTraderSpawner.hasEnoughSpace	port	crates/sunrise-gameplay/src/wandering_trader.rs::has_space
 Inventory.setSelectedSlot	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::set_selected	invalid slot is an error here, not a thrown exception
 Inventory.hasRemainingSpaceForItem	port	crates/sunrise-world/src/inventory_pickup.rs::remaining
 Inventory.getFreeSlot	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::free_slot
@@ -120,7 +121,7 @@ Player.debugInfo	skip:debug
 Player.printPlayerPermissions	skip:debug
 PlayerEquipment.set	port	crates/sunrise-world/src/player_equipment.rs::set	main hand goes to the selected slot
 PlayerEquipment.get	port	crates/sunrise-world/src/player_equipment.rs::get	main hand reads the selected slot
-ProfilePublicKey.Data.hasExpired	port	crates/sunrise-protocol/src/secure_chat.rs::ProfileKey::has_expired	gap: minor: the grace-period overload is not separate
+ProfilePublicKey.Data.hasExpired	port	crates/sunrise-protocol/src/secure_chat.rs::ProfileKey::has_expired	hasExpired() is has_expired; the Duration overload is ProfileKey::has_expired_with, which the chat validator calls with EXPIRY_GRACE_PERIOD (8 hours, ProfilePublicKey.EXPIRY_GRACE_PERIOD)
 ProfilePublicKey.Data.equals	skip:java		value equality of the key record
 StackedContents.take	inline	crates/sunrise-client/src/menu/place.rs::Picker::try_pick	the count subtraction when a pick succeeds
 StackedContents.getUniqueAvailableIngredientItems	inline	crates/sunrise-client/src/menu/place.rs::Picker::new	the stocked items that some ingredient accepts

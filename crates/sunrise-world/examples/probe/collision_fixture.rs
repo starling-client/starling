@@ -1,13 +1,13 @@
 //! Queries imported cached shapes through resident section state IDs.
-use sunrise_core::{
-    geometry::{Aabb, Axis, Vec3},
-    position::BlockPos,
-};
 use std::{
     error::Error,
     fs,
     io::{BufRead, Write},
     path::PathBuf,
+};
+use sunrise_core::{
+    geometry::{Aabb, Axis, Vec3},
+    position::BlockPos,
 };
 use {
     sunrise_core::{

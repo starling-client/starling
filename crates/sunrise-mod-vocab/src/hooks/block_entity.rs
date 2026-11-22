@@ -11,6 +11,8 @@ pub trait Hooks {
     /// start with an empty compound. The level is read-only, as `newBlockEntity`
     /// gets no level.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "replace",
         out = "entity",
@@ -19,5 +21,5 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_block_entity",
         neoforge = "none (vanilla EntityBlock.newBlockEntity; NeoForge adds no event or extension for it)"
     )]
-    fn block_entity();
+    fn block_entity(block: &str, state: BlockState, entity: &mut Option<Compound>);
 }

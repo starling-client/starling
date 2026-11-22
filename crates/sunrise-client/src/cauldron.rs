@@ -351,13 +351,12 @@ pub fn interact_selected<H>(
                 .with_event("minecraft:fluid_place")
         }
         Action::CleanBanner => {
-            let layers = held.data().map_or(0, |d| d.banner_patterns.len());
-            if layers == 0 {
+            if held.banner_layers().is_empty() {
                 return pass();
             }
             let mut cleaned = held.clone();
             cleaned.count = 1;
-            cleaned.data_mut().banner_patterns.pop();
+            cleaned.data_mut().banner_layers_mut().pop();
             cleaned.tidy();
             create_filled_result(player, cleaned, false);
             changed_lowered(cauldron, None, "clean_banner")

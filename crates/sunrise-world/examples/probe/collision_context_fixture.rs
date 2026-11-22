@@ -1,13 +1,13 @@
 use crate::support::shapes::emit;
-use sunrise_core::{
-    geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
-    position::BlockPos,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::{
+    geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
+    position::BlockPos,
 };
 use {
     sunrise_core::{nbt, nbt::Limits},
@@ -396,8 +396,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ]
                 .into(),
             };
-            let rule =
-                sunrise_world::block_collision::ScaffoldingCollision::from_state(&state)?.unwrap();
+            let rule = sunrise_world::block_collision::ScaffoldingCollision::from_state(&state)?;
             emit(
                 &mut out,
                 &rule.shape(

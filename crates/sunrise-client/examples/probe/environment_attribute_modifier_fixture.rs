@@ -1,7 +1,7 @@
 //! Environment attribute entries for tools/test_environment_attribute_modifier_parity.py: each
 //! case parses an entry for an attribute and applies it to a subject value.
-use sunrise_world::environment_attributes::{ATTRIBUTES, Attribute, Entry, Kind, Value, attribute};
 use std::{error::Error, fmt::Write};
+use sunrise_world::environment_attributes::{ATTRIBUTES, Attribute, Entry, Kind, Value, attribute};
 
 fn bits(f: f32) -> String {
     format!("{:08x}", f.to_bits())

@@ -1,49 +1,52 @@
 //! Server dialogs (`net.minecraft.server.dialog`): what `Dialog.DIRECT_CODEC`
 //! decodes from a `show_dialog` packet, the values its inputs hold, and the
 //! click event an action makes of them (`Action.createAction`).
-use crate::text::Text;
-use sunrise_core::nbt::Tag;
+mod encode;
+
+use crate::{command::Registries, text::Text};
 use serde_json::{Value, json};
+use std::{cell::RefCell, num::NonZeroUsize};
+use sunrise_core::{identifier::Identifier, nbt::Tag};
 
 /// `CommonDialogData` and the type's own fields.
 #[derive(Clone, Debug)]
-pub struct Dialog {
-    pub kind: Kind,
-    pub title: Text,
-    pub external_title: Option<Text>,
+pub struct Dialog<T = Text> {
+    pub kind: Kind<T>,
+    pub title: T,
+    pub external_title: Option<T>,
     pub can_close_with_escape: bool,
     pub pause: bool,
     pub after_action: AfterAction,
-    pub body: Vec<Body>,
-    pub inputs: Vec<Input>,
+    pub body: Vec<Body<T>>,
+    pub inputs: Vec<Input<T>>,
 }
 
 /// The dialog types (`DialogTypes`).
 #[derive(Clone, Debug)]
-pub enum Kind {
+pub enum Kind<T = Text> {
     /// `NoticeDialog`: one button, "OK" when the server names none.
-    Notice(Button),
+    Notice(Button<T>),
     Confirmation {
-        yes: Button,
-        no: Button,
+        yes: Button<T>,
+        no: Button<T>,
     },
     MultiAction {
-        actions: Vec<Button>,
-        exit: Option<Button>,
-        columns: i32,
+        actions: Vec<Button<T>>,
+        exit: Option<Button<T>>,
+        columns: NonZeroUsize,
     },
     ServerLinks {
-        exit: Option<Button>,
-        columns: i32,
+        exit: Option<Button<T>>,
+        columns: NonZeroUsize,
         button_width: i32,
     },
     /// `DialogListDialog`: its dialogs as sent (ids, a tag or inline dialogs),
     /// and one button per dialog they resolve to (`set_list`).
     DialogList {
         dialogs: Tag,
-        entries: Vec<Button>,
-        exit: Option<Button>,
-        columns: i32,
+        entries: Vec<Button<T>>,
+        exit: Option<Button<T>>,
+        columns: NonZeroUsize,
         button_width: i32,
     },
 }
@@ -58,9 +61,9 @@ pub enum AfterAction {
 
 /// `ActionButton`: `CommonButtonData` and what it does.
 #[derive(Clone, Debug)]
-pub struct Button {
-    pub label: Text,
-    pub tooltip: Option<Text>,
+pub struct Button<T = Text> {
+    pub label: T,
+    pub tooltip: Option<T>,
     pub width: i32,
     pub action: Option<Action>,
 }
@@ -95,13 +98,13 @@ pub enum Click {
 
 /// `DialogBody`.
 #[derive(Clone, Debug)]
-pub enum Body {
+pub enum Body<T = Text> {
     /// `PlainMessage`: centred text wrapped to `width`.
-    Message { contents: Text, width: i32 },
+    Message { contents: T, width: i32 },
     /// `ItemBody`: the item as `ItemStackTemplate` sent it.
     Item {
         item: Tag,
-        description: Option<(Text, i32)>,
+        description: Option<(T, i32)>,
         show_decorations: bool,
         show_tooltip: bool,
         width: i32,
@@ -111,17 +114,17 @@ pub enum Body {
 
 /// `Input`: the key its value goes by, and its control.
 #[derive(Clone, Debug)]
-pub struct Input {
+pub struct Input<T = Text> {
     pub key: String,
-    pub control: Control,
+    pub control: Control<T>,
 }
 
 /// `InputControl`.
 #[derive(Clone, Debug)]
-pub enum Control {
+pub enum Control<T = Text> {
     Text {
         width: i32,
-        label: Text,
+        label: T,
         label_visible: bool,
         initial: String,
         max_length: i32,
@@ -129,7 +132,7 @@ pub enum Control {
         multiline: Option<(Option<i32>, Option<i32>)>,
     },
     Boolean {
-        label: Text,
+        label: T,
         initial: bool,
         on_true: String,
         on_false: String,
@@ -137,13 +140,13 @@ pub enum Control {
     SingleOption {
         width: i32,
         /// Each option's id, its label and whether it is the initial one.
-        options: Vec<(String, Option<Text>, bool)>,
-        label: Text,
+        options: Vec<(String, Option<T>, bool)>,
+        label: T,
         label_visible: bool,
     },
     NumberRange {
         width: i32,
-        label: Text,
+        label: T,
         label_format: String,
         start: f32,
         end: f32,
@@ -163,15 +166,6 @@ pub enum InputValue {
     Slider(f32),
 }
 
-fn text(t: &Tag) -> Text {
-    crate::scoreboard::comp_text(&crate::scoreboard::tag_to_json(t))
-}
-fn string(t: Option<&Tag>) -> Option<String> {
-    match t? {
-        Tag::String(s) => Some(s.to_string_lossy()),
-        _ => None,
-    }
-}
 fn number(t: Option<&Tag>) -> Option<f64> {
     Some(match t? {
         Tag::Byte(v) => f64::from(*v),
@@ -183,81 +177,12 @@ fn number(t: Option<&Tag>) -> Option<f64> {
         _ => return None,
     })
 }
-fn int(t: &Tag, key: &str, default: i32) -> i32 {
-    number(t.get(key)).map_or(default, |v| v as i32)
-}
-fn boolean(t: &Tag, key: &str, default: bool) -> bool {
-    number(t.get(key)).map_or(default, |v| v != 0.0)
-}
-fn list(t: Option<&Tag>) -> &[Tag] {
-    match t {
-        Some(Tag::List(items)) => items,
-        _ => &[],
-    }
-}
 /// A registry name without its default namespace.
 fn path(id: &str) -> &str {
     id.strip_prefix("minecraft:").unwrap_or(id)
 }
 
-impl Button {
-    /// `ActionButton.CODEC`.
-    fn parse(t: &Tag) -> Option<Self> {
-        Some(Self {
-            label: text(t.get("label")?),
-            tooltip: t.get("tooltip").map(text),
-            width: int(t, "width", 150),
-            action: t.get("action").and_then(Action::parse),
-        })
-    }
-    /// `NoticeDialog.DEFAULT_ACTION`.
-    fn ok() -> Self {
-        Self {
-            label: Text::translate("gui.ok", &[]),
-            tooltip: None,
-            width: 150,
-            action: None,
-        }
-    }
-}
-
-impl Click {
-    /// `ClickEvent.CODEC`, from its `action` (a click event in a component)
-    /// or `type` (an action) field.
-    pub fn parse(t: &Tag, kind: &str) -> Option<Self> {
-        let s = |key| string(t.get(key));
-        Some(match path(kind) {
-            // ClickEvent.OpenUrl's url is an ExtraCodecs.UNTRUSTED_URI.
-            "open_url" => {
-                Self::OpenUrl(s("url").filter(|url| crate::component::untrusted_http_url(url))?)
-            }
-            "run_command" => Self::RunCommand(s("command")?),
-            "suggest_command" => Self::SuggestCommand(s("command")?),
-            "show_dialog" => Self::ShowDialog(t.get("dialog")?.clone()),
-            "change_page" => Self::ChangePage(int(t, "page", 1)),
-            "copy_to_clipboard" => Self::CopyToClipboard(s("value")?),
-            "custom" => Self::Custom {
-                id: s("id")?,
-                payload: t.get("payload").cloned(),
-            },
-            _ => return None,
-        })
-    }
-}
-
 impl Action {
-    /// `Action.CODEC`, dispatched on `type`.
-    fn parse(t: &Tag) -> Option<Self> {
-        let kind = string(t.get("type"))?;
-        Some(match path(&kind) {
-            "dynamic/run_command" => Self::RunCommand(string(t.get("template"))?),
-            "dynamic/custom" => Self::Custom {
-                id: string(t.get("id"))?,
-                additions: t.get("additions").cloned(),
-            },
-            other => Self::Static(Click::parse(t, other)?),
-        })
-    }
     /// `createAction`: the click event, given each input's key, control and value.
     pub fn click(&self, inputs: &[Input], values: &[InputValue]) -> Option<Click> {
         let values = || inputs.iter().zip(values);
@@ -326,75 +251,6 @@ fn escape(s: &str) -> String {
 }
 
 impl Control {
-    /// `InputControl.MAP_CODEC`, dispatched on `type`.
-    fn parse(t: &Tag) -> Option<Self> {
-        let label = || t.get("label").map(text);
-        Some(match path(&string(t.get("type"))?) {
-            "text" => {
-                let initial = string(t.get("initial")).unwrap_or_default();
-                let max_length = int(t, "max_length", 32);
-                // TextInput: the default text may not be longer than the length.
-                if initial.encode_utf16().count() > max_length.max(0) as usize {
-                    return None;
-                }
-                Self::Text {
-                    width: int(t, "width", 200),
-                    label: label()?,
-                    label_visible: boolean(t, "label_visible", true),
-                    initial,
-                    max_length,
-                    multiline: t.get("multiline").map(|m| {
-                        let get = |key| number(m.get(key)).map(|v| v as i32);
-                        (get("max_lines"), get("height"))
-                    }),
-                }
-            }
-            "boolean" => Self::Boolean {
-                label: label()?,
-                initial: boolean(t, "initial", false),
-                on_true: string(t.get("on_true")).unwrap_or_else(|| "true".into()),
-                on_false: string(t.get("on_false")).unwrap_or_else(|| "false".into()),
-            },
-            "single_option" => {
-                // SingleOptionInput.Entry.CODEC: a full entry or just its id.
-                let options: Vec<_> = list(t.get("options"))
-                    .iter()
-                    .map(|o| match o {
-                        Tag::String(id) => Some((id.to_string_lossy(), None, false)),
-                        o => Some((
-                            string(o.get("id"))?,
-                            o.get("display").map(text),
-                            boolean(o, "initial", false),
-                        )),
-                    })
-                    .collect::<Option<_>>()?;
-                // A non-empty list with at most one initial entry.
-                if options.is_empty() || options.iter().filter(|o| o.2).count() > 1 {
-                    return None;
-                }
-                Self::SingleOption {
-                    width: int(t, "width", 200),
-                    options,
-                    label: label()?,
-                    label_visible: boolean(t, "label_visible", true),
-                }
-            }
-            "number_range" => {
-                let float = |key| number(t.get(key)).map(|v| v as f32);
-                Self::NumberRange {
-                    width: int(t, "width", 200),
-                    label: label()?,
-                    label_format: string(t.get("label_format"))
-                        .unwrap_or_else(|| "options.generic_value".into()),
-                    start: float("start")?,
-                    end: float("end")?,
-                    initial: float("initial"),
-                    step: float("step"),
-                }
-            }
-            _ => return None,
-        })
-    }
     /// The value it starts with.
     pub fn initial(&self) -> InputValue {
         match self {
@@ -534,104 +390,782 @@ pub fn number_string(v: f32) -> String {
     }
 }
 
-impl Body {
-    /// `DialogBody.DIALOG_BODY_CODEC`.
-    fn parse(t: &Tag) -> Option<Self> {
-        let message = |t: &Tag| -> Option<(Text, i32)> {
-            // PlainMessage.CODEC: the full form or just its contents.
-            match t {
-                Tag::Compound(_) if t.get("contents").is_some() => {
-                    Some((text(t.get("contents")?), int(t, "width", 200)))
-                }
-                t => Some((text(t), 200)),
-            }
-        };
-        Some(match path(&string(t.get("type"))?) {
-            "plain_message" => {
-                let (contents, width) = message(t)?;
-                Self::Message { contents, width }
-            }
-            "item" => Self::Item {
-                item: t.get("item")?.clone(),
-                description: t.get("description").and_then(message),
-                show_decorations: boolean(t, "show_decorations", true),
-                show_tooltip: boolean(t, "show_tooltip", true),
-                width: int(t, "width", 16),
-                height: int(t, "height", 16),
-            },
+/// Where a dialog is read from: a data pack's JSON at world open, or the NBT a
+/// server sends. Each reads a value as the matching `DynamicOps` does
+/// (`JsonOps`, `NbtOps`), so one decoder serves both.
+trait Source: Sized {
+    const NBT: bool;
+    fn component_json(&self) -> Option<std::borrow::Cow<'_, Value>>;
+    /// An object's field. A JSON `null` is an absent field (`JsonOps`' `MapLike`).
+    fn get(&self, key: &str) -> Option<&Self>;
+    fn is_map(&self) -> bool;
+    fn list(&self) -> Option<&[Self]>;
+    fn string(&self) -> Option<String>;
+    fn boolean(&self) -> Option<bool>;
+    /// `Number.intValue`.
+    fn int(&self) -> Option<i32>;
+    /// `Number.floatValue`.
+    fn float(&self) -> Option<f32>;
+    fn tag(&self) -> Tag;
+}
+
+impl Source for Tag {
+    const NBT: bool = true;
+
+    fn component_json(&self) -> Option<std::borrow::Cow<'_, Value>> {
+        sunrise_core::json_nbt::tag_to_json(self)
+            .ok()
+            .map(std::borrow::Cow::Owned)
+    }
+
+    fn get(&self, key: &str) -> Option<&Self> {
+        Tag::get(self, key)
+    }
+    fn is_map(&self) -> bool {
+        matches!(self, Tag::Compound(_))
+    }
+    fn list(&self) -> Option<&[Self]> {
+        match self {
+            Tag::List(items) => Some(items),
+            _ => None,
+        }
+    }
+    fn string(&self) -> Option<String> {
+        match self {
+            Tag::String(s) => Some(s.to_string_lossy()),
+            _ => None,
+        }
+    }
+    /// `NbtOps.getBooleanValue`: any number but zero.
+    fn boolean(&self) -> Option<bool> {
+        number(Some(self)).map(|n| n != 0.0)
+    }
+    fn int(&self) -> Option<i32> {
+        Some(match self {
+            Tag::Byte(v) => i32::from(*v),
+            Tag::Short(v) => i32::from(*v),
+            Tag::Int(v) => *v,
+            Tag::Long(v) => *v as i32,
+            // `Mth.floor`.
+            Tag::Float(v) => f32::from_bits(*v).floor() as i32,
+            Tag::Double(v) => f64::from_bits(*v).floor() as i32,
             _ => return None,
         })
     }
+    fn float(&self) -> Option<f32> {
+        number(Some(self)).map(|v| v as f32)
+    }
+    fn tag(&self) -> Tag {
+        self.clone()
+    }
 }
 
-impl Dialog {
-    /// `Dialog.DIRECT_CODEC`; `None` for a type or field it can't read
-    /// (vanilla fails the whole packet then).
-    pub fn parse(t: &Tag) -> Option<Self> {
-        let button = |key: &str| t.get(key).and_then(Button::parse);
-        let kind = match path(&string(t.get("type"))?) {
-            "notice" => Kind::Notice(match t.get("action") {
-                Some(b) => Button::parse(b)?,
-                None => Button::ok(),
-            }),
+impl Source for Value {
+    const NBT: bool = false;
+
+    fn component_json(&self) -> Option<std::borrow::Cow<'_, Value>> {
+        Some(std::borrow::Cow::Borrowed(self))
+    }
+
+    fn get(&self, key: &str) -> Option<&Self> {
+        Value::get(self, key).filter(|v| !v.is_null())
+    }
+    fn is_map(&self) -> bool {
+        self.is_object()
+    }
+    fn list(&self) -> Option<&[Self]> {
+        self.as_array().map(Vec::as_slice)
+    }
+    fn string(&self) -> Option<String> {
+        self.as_str().map(str::to_owned)
+    }
+    /// `JsonOps.getBooleanValue`: a JSON boolean, never a number.
+    fn boolean(&self) -> Option<bool> {
+        self.as_bool()
+    }
+    /// `LazilyParsedNumber.intValue`: the integer part's low 32 bits.
+    fn int(&self) -> Option<i32> {
+        let n = self.as_number()?;
+        Some(match (n.as_i64(), n.as_u64()) {
+            (Some(v), _) => v as i32,
+            (_, Some(v)) => v as i32,
+            _ => n.as_f64()?.trunc() as i128 as i32,
+        })
+    }
+    fn float(&self) -> Option<f32> {
+        self.as_number()?.as_f64().map(|v| v as f32)
+    }
+    fn tag(&self) -> Tag {
+        crate::lan::data::json_to_nbt(self)
+    }
+}
+
+/// A dialog another entry or the registry holds (`Dialog.CODEC`'s holder).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reference {
+    /// A registry id, with its namespace.
+    Id(String),
+    /// A `#` tag, without the `#`.
+    Tag(String),
+}
+
+/// The registries shared by the dialog and its text components.
+struct Reader<'a> {
+    registries: &'a Registries,
+    item: &'a dyn Fn(&str) -> bool,
+    references: RefCell<Vec<Reference>>,
+}
+
+/// The path of a failing field: its name, then the path inside it.
+fn at(key: &str, inner: String) -> String {
+    match inner.chars().next() {
+        None => key.to_owned(),
+        Some('[') => format!("{key}{inner}"),
+        _ => format!("{key}.{inner}"),
+    }
+}
+/// A field the codec defaults when absent (`optionalFieldOf`). A field that is
+/// there and unreadable fails; it is never defaulted.
+fn optional<S: Source, T>(
+    t: &S,
+    key: &str,
+    read: impl FnOnce(&S) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    t.get(key)
+        .map(read)
+        .transpose()
+        .map_err(|inner| at(key, inner))
+}
+/// A field the codec requires (`fieldOf`).
+fn required<S: Source, T>(
+    t: &S,
+    key: &str,
+    read: impl FnOnce(&S) -> Result<T, String>,
+) -> Result<T, String> {
+    optional(t, key, read)?.ok_or_else(|| key.to_owned())
+}
+/// A list's members, each read or the list refused with the member's path.
+fn members<S: Source, T>(
+    t: &S,
+    mut read: impl FnMut(&S) -> Result<T, String>,
+) -> Result<Vec<T>, String> {
+    t.list()
+        .ok_or_default()?
+        .iter()
+        .enumerate()
+        .map(|(i, member)| read(member).map_err(|inner| at(&format!("[{i}]"), inner)))
+        .collect()
+}
+/// `ExtraCodecs.intRange`.
+fn ranged<S: Source>(t: &S, low: i32, high: i32) -> Result<i32, String> {
+    t.int().filter(|n| (low..=high).contains(n)).ok_or_default()
+}
+fn boolean<S: Source>(t: &S) -> Result<bool, String> {
+    t.boolean().ok_or_default()
+}
+fn string<S: Source>(t: &S) -> Result<String, String> {
+    t.string().ok_or_default()
+}
+fn float<S: Source>(t: &S) -> Result<f32, String> {
+    t.float().ok_or_default()
+}
+/// `StringTemplate.isValidVariableName`, over UTF-16 units as Java reads them.
+fn variable_name(name: &str) -> bool {
+    name.encode_utf16().all(|unit| {
+        unit == u16::from(b'_') || sunrise_core::java_character::is_letter_or_digit(unit)
+    })
+}
+/// `Identifier.CODEC`.
+fn identifier<S: Source>(value: &S) -> Result<String, String> {
+    Identifier::parse(&string(value)?)
+        .map(|id| id.to_string())
+        .map_err(|_| String::new())
+}
+/// `ExtraCodecs.CHAT_STRING`.
+fn chat_string(s: &str) -> bool {
+    s.chars()
+        .all(|c| c != '\u{a7}' && c >= ' ' && c != '\u{7f}')
+}
+/// `ParsedTemplate.CODEC`: `StringTemplate.fromString` accepts a string with at
+/// least one `$(name)`, each name valid and closed.
+fn template(s: &str) -> bool {
+    let mut rest = s;
+    let mut variables = 0;
+    while let Some(at) = rest.find("$(") {
+        let Some(end) = rest[at + 2..].find(')') else {
+            return false;
+        };
+        if !variable_name(&rest[at + 2..at + 2 + end]) {
+            return false;
+        }
+        variables += 1;
+        rest = &rest[at + 3 + end..];
+    }
+    variables > 0
+}
+
+impl Reader<'_> {
+    fn dialog_nbt<S: Source>(&self, t: &S) -> Result<Tag, String> {
+        let dialog = self.dialog(
+            t,
+            |v| self.text(v, |click| click.encode("action")),
+            || Tag::compound([("translate", Tag::String("gui.ok".into()))]),
+        )?;
+        Ok(dialog.encode())
+    }
+
+    fn text<S: Source>(&self, t: &S, mut click: impl FnMut(Click) -> Tag) -> Result<Tag, String> {
+        let json = t.component_json().ok_or_default()?;
+        let built =
+            crate::text_grammar::build_for_dialog(&json, self.registries, S::NBT, self.item)
+                .ok_or_default()?;
+        self.component_nbt(t, built, &mut click)
+    }
+
+    /// Emit the fields selected by the shared component grammar. Its child
+    /// components keep the shape of the source, so the click codec still sees
+    /// the original JsonOps/NbtOps values (including an inline dialog).
+    fn component_nbt<S: Source>(
+        &self,
+        source: &S,
+        built: Value,
+        project_click: &mut impl FnMut(Click) -> Tag,
+    ) -> Result<Tag, String> {
+        match built {
+            Value::Array(items) => {
+                let sources = source.list().ok_or_default()?;
+                Ok(Tag::List(
+                    sources
+                        .iter()
+                        .zip(items)
+                        .map(|(raw, item)| self.component_nbt(raw, item, project_click))
+                        .collect::<Result<_, _>>()?,
+                ))
+            }
+            Value::Object(fields) => {
+                let mut out = sunrise_core::nbt::Compound::new();
+                for (key, value) in fields {
+                    let tag = match key.as_str() {
+                        "extra" | "with" | "separator" => self.component_nbt(
+                            source.get(&key).ok_or_default()?,
+                            value,
+                            project_click,
+                        )?,
+                        "fallback" if value.is_object() || value.is_array() => self.component_nbt(
+                            source.get(&key).ok_or_default()?,
+                            value,
+                            project_click,
+                        )?,
+                        "click_event" => {
+                            let click = source.get(&key).ok_or_default()?;
+                            let action = required(click, "action", string)?;
+                            project_click(self.click(click, &action)?)
+                        }
+                        "hover_event" => {
+                            let raw = source.get(&key).ok_or_default()?;
+                            let Value::Object(fields) = value else {
+                                unreachable!("decoded hover event")
+                            };
+                            let child = match fields["action"].as_str() {
+                                Some("show_text") => Some("value"),
+                                Some("show_entity") => Some("name"),
+                                _ => None,
+                            };
+                            Tag::compound(
+                                fields
+                                    .into_iter()
+                                    .map(|(key, value)| {
+                                        let tag = if child == Some(key.as_str()) {
+                                            self.component_nbt(
+                                                raw.get(&key).ok_or_default()?,
+                                                value,
+                                                project_click,
+                                            )?
+                                        } else {
+                                            crate::lan::data::json_to_nbt(&value)
+                                        };
+                                        Ok((sunrise_core::nbt::JavaString::from(key.as_str()), tag))
+                                    })
+                                    .collect::<Result<Vec<_>, String>>()?,
+                            )
+                        }
+                        _ => crate::lan::data::json_to_nbt(&value),
+                    };
+                    out.insert(key.as_str().into(), tag);
+                }
+                Ok(Tag::Compound(out))
+            }
+            value => Ok(crate::lan::data::json_to_nbt(&value)),
+        }
+    }
+
+    /// `Dialog.DIRECT_CODEC`, dispatched on `type`.
+    fn dialog<S: Source, T>(
+        &self,
+        t: &S,
+        text: impl Fn(&S) -> Result<T, String> + Copy,
+        default_label: impl FnOnce() -> T,
+    ) -> Result<Dialog<T>, String> {
+        if !t.is_map() {
+            return Err(String::new());
+        }
+        let kind = required(t, "type", string)?;
+        let pause = optional(t, "pause", boolean)?.unwrap_or(true);
+        let after_action = optional(t, "after_action", |v| match string(v)?.as_str() {
+            "close" => Ok(AfterAction::Close),
+            "none" => Ok(AfterAction::None),
+            "wait_for_response" => Ok(AfterAction::WaitForResponse),
+            _ => Err(String::new()),
+        })?
+        .unwrap_or(AfterAction::Close);
+        // CommonDialogData: a dialog that pauses must unpause after an action.
+        if pause && after_action == AfterAction::None {
+            return Err("after_action: cannot be none when pause is true".into());
+        }
+        let columns = || {
+            let n = optional(t, "columns", |v| ranged(v, 1, i32::MAX))?.unwrap_or(2);
+            NonZeroUsize::new(n as usize).ok_or_else(|| "columns".to_owned())
+        };
+        let width = || -> Result<i32, String> {
+            Ok(optional(t, "button_width", |v| ranged(v, 1, 1024))?.unwrap_or(150))
+        };
+        let button = |key| optional(t, key, |v| self.button(v, text));
+        let kind = match path(&kind) {
+            "notice" => Kind::Notice(button("action")?.unwrap_or_else(|| Button {
+                label: default_label(),
+                tooltip: None,
+                width: 150,
+                action: None,
+            })),
             "confirmation" => Kind::Confirmation {
-                yes: button("yes")?,
-                no: button("no")?,
+                yes: required(t, "yes", |v| self.button(v, text))?,
+                no: required(t, "no", |v| self.button(v, text))?,
             },
             "multi_action" => Kind::MultiAction {
-                actions: list(t.get("actions"))
-                    .iter()
-                    .map(Button::parse)
-                    .collect::<Option<Vec<_>>>()
-                    .filter(|a| !a.is_empty())?,
-                exit: button("exit_action"),
-                columns: int(t, "columns", 2),
+                actions: required(t, "actions", |v| {
+                    members(v, |b| self.button(b, text)).and_then(|actions| {
+                        (!actions.is_empty()).then_some(actions).ok_or_default()
+                    })
+                })?,
+                exit: button("exit_action")?,
+                columns: columns()?,
             },
             "server_links" => Kind::ServerLinks {
-                exit: button("exit_action"),
-                columns: int(t, "columns", 2),
-                button_width: int(t, "button_width", 150),
+                exit: button("exit_action")?,
+                columns: columns()?,
+                button_width: width()?,
             },
             "dialog_list" => Kind::DialogList {
-                dialogs: t.get("dialogs")?.clone(),
+                dialogs: required(t, "dialogs", |v| self.holders(v))?,
                 entries: Vec::new(),
-                exit: button("exit_action"),
-                columns: int(t, "columns", 2),
-                button_width: int(t, "button_width", 150),
+                exit: button("exit_action")?,
+                columns: columns()?,
+                button_width: width()?,
             },
-            _ => return None,
+            _ => return Err("type".into()),
         };
         // DialogBody.COMPACT_LIST_CODEC: one body, or a list of them.
-        // A body or input it cannot read fails the whole dialog.
-        let body = match t.get("body") {
-            Some(Tag::List(items)) => items.iter().map(Body::parse).collect::<Option<_>>()?,
-            Some(one) => vec![Body::parse(one)?],
-            None => Vec::new(),
-        };
-        let inputs = list(t.get("inputs"))
-            .iter()
-            .map(|i| {
-                Some(Input {
-                    key: string(i.get("key"))?,
-                    control: Control::parse(i)?,
-                })
-            })
-            .collect::<Option<_>>()?;
-        Some(Self {
+        let body = optional(t, "body", |v| match v.list() {
+            Some(_) => members(v, |b| self.body(b, text)),
+            None => Ok(vec![self.body(v, text)?]),
+        })?
+        .unwrap_or_default();
+        let inputs =
+            optional(t, "inputs", |v| members(v, |i| self.input(i, text)))?.unwrap_or_default();
+        Ok(Dialog {
             kind,
-            title: text(t.get("title")?),
-            external_title: t.get("external_title").map(text),
-            can_close_with_escape: boolean(t, "can_close_with_escape", true),
-            pause: boolean(t, "pause", true),
-            after_action: match string(t.get("after_action")).as_deref() {
-                Some("none") => AfterAction::None,
-                Some("wait_for_response") => AfterAction::WaitForResponse,
-                _ => AfterAction::Close,
-            },
+            title: required(t, "title", text)?,
+            external_title: optional(t, "external_title", text)?,
+            can_close_with_escape: optional(t, "can_close_with_escape", boolean)?.unwrap_or(true),
+            pause,
+            after_action,
             body,
             inputs,
         })
     }
+
+    /// `Dialog.CODEC`: an id of the dialog registry, or the dialog itself.
+    fn holder<S: Source>(&self, t: &S) -> Result<Tag, String> {
+        if t.is_map() {
+            return self.dialog_nbt(t);
+        }
+        let id = identifier(t)?;
+        self.references.borrow_mut().push(Reference::Id(id.clone()));
+        Ok(Tag::String(id.as_str().into()))
+    }
+
+    /// `Dialog.LIST_CODEC`: a `#tag`, or one holder, or a list of them.
+    fn holders<S: Source>(&self, t: &S) -> Result<Tag, String> {
+        if let Some(id) = t.string().as_deref().and_then(|s| s.strip_prefix('#')) {
+            let tag = Identifier::parse(id)
+                .map_err(|_| String::new())?
+                .to_string();
+            self.references
+                .borrow_mut()
+                .push(Reference::Tag(tag.clone()));
+            Ok(Tag::String(format!("#{tag}").as_str().into()))
+        } else if t.list().is_some() {
+            Ok(Tag::List(members(t, |holder| self.holder(holder))?))
+        } else {
+            self.holder(t)
+        }
+    }
+
+    /// `ActionButton.CODEC`.
+    fn button<S: Source, T>(
+        &self,
+        t: &S,
+        text: impl Fn(&S) -> Result<T, String>,
+    ) -> Result<Button<T>, String> {
+        if !t.is_map() {
+            return Err(String::new());
+        }
+        Ok(Button {
+            label: required(t, "label", &text)?,
+            tooltip: optional(t, "tooltip", &text)?,
+            width: optional(t, "width", |v| ranged(v, 1, 1024))?.unwrap_or(150),
+            action: optional(t, "action", |v| self.action(v))?,
+        })
+    }
+
+    /// `Action.CODEC`, dispatched on `type`.
+    fn action<S: Source>(&self, t: &S) -> Result<Action, String> {
+        if !t.is_map() {
+            return Err(String::new());
+        }
+        let kind = required(t, "type", string)?;
+        Ok(match path(&kind) {
+            "dynamic/run_command" => Action::RunCommand(required(t, "template", |v| {
+                string(v).and_then(|s| template(&s).then_some(s).ok_or_default())
+            })?),
+            "dynamic/custom" => Action::Custom {
+                id: required(t, "id", identifier)?,
+                additions: optional(t, "additions", |v| {
+                    v.is_map().then(|| v.tag()).ok_or_default()
+                })?,
+            },
+            kind => Action::Static(self.click(t, kind)?),
+        })
+    }
+
+    /// `ClickEvent.CODEC`, from its `action` (a click event in a component)
+    /// or `type` (an action) field.
+    fn click<S: Source>(&self, t: &S, kind: &str) -> Result<Click, String> {
+        let command = || {
+            required(t, "command", |v| {
+                string(v).and_then(|s| chat_string(&s).then_some(s).ok_or_default())
+            })
+        };
+        Ok(match kind {
+            // ClickEvent.OpenUrl's url is an ExtraCodecs.UNTRUSTED_URI.
+            "open_url" => Click::OpenUrl(required(t, "url", |v| {
+                string(v).and_then(|url| {
+                    crate::component::untrusted_http_url(&url)
+                        .then_some(url)
+                        .ok_or_default()
+                })
+            })?),
+            "run_command" => Click::RunCommand(command()?),
+            "suggest_command" => Click::SuggestCommand(command()?),
+            "show_dialog" => Click::ShowDialog(required(t, "dialog", |v| self.holder(v))?),
+            "change_page" => Click::ChangePage(required(t, "page", |v| ranged(v, 1, i32::MAX))?),
+            "copy_to_clipboard" => Click::CopyToClipboard(required(t, "value", string)?),
+            "custom" => Click::Custom {
+                id: required(t, "id", identifier)?,
+                payload: t.get("payload").map(S::tag),
+            },
+            _ => return Err("type".into()),
+        })
+    }
+
+    /// `Input.CODEC`: its key, and `InputControl.MAP_CODEC` dispatched on `type`.
+    fn input<S: Source, T>(
+        &self,
+        t: &S,
+        text: impl Fn(&S) -> Result<T, String>,
+    ) -> Result<Input<T>, String> {
+        if !t.is_map() {
+            return Err(String::new());
+        }
+        let kind = required(t, "type", string)?;
+        let key = required(t, "key", |v| {
+            string(v).and_then(|s| variable_name(&s).then_some(s).ok_or_default())
+        })?;
+        let label = || required(t, "label", &text);
+        let label_visible = || -> Result<bool, String> {
+            Ok(optional(t, "label_visible", boolean)?.unwrap_or(true))
+        };
+        let width = || -> Result<i32, String> {
+            Ok(optional(t, "width", |v| ranged(v, 1, 1024))?.unwrap_or(200))
+        };
+        let control = match path(&kind) {
+            "text" => {
+                let initial = optional(t, "initial", string)?.unwrap_or_default();
+                let max_length =
+                    optional(t, "max_length", |v| ranged(v, 1, i32::MAX))?.unwrap_or(32);
+                // TextInput: the default text may not be longer than the length.
+                if initial.encode_utf16().count() > max_length as usize {
+                    return Err("initial".into());
+                }
+                Control::Text {
+                    width: width()?,
+                    label: label()?,
+                    label_visible: label_visible()?,
+                    initial,
+                    max_length,
+                    multiline: optional(t, "multiline", |m| {
+                        if !m.is_map() {
+                            return Err(String::new());
+                        }
+                        Ok((
+                            optional(m, "max_lines", |v| ranged(v, 1, i32::MAX))?,
+                            optional(m, "height", |v| ranged(v, 1, 512))?,
+                        ))
+                    })?,
+                }
+            }
+            "boolean" => Control::Boolean {
+                label: label()?,
+                initial: optional(t, "initial", boolean)?.unwrap_or(false),
+                on_true: optional(t, "on_true", string)?.unwrap_or_else(|| "true".into()),
+                on_false: optional(t, "on_false", string)?.unwrap_or_else(|| "false".into()),
+            },
+            "single_option" => {
+                // SingleOptionInput.Entry.CODEC: a full entry or just its id.
+                let options = required(t, "options", |v| {
+                    members(v, |o| match o.string() {
+                        Some(id) => Ok((id, None, false)),
+                        None if o.is_map() => Ok((
+                            required(o, "id", string)?,
+                            optional(o, "display", &text)?,
+                            optional(o, "initial", boolean)?.unwrap_or(false),
+                        )),
+                        None => Err(String::new()),
+                    })
+                })?;
+                // A non-empty list with at most one initial entry.
+                if options.is_empty() || options.iter().filter(|o| o.2).count() > 1 {
+                    return Err("options".into());
+                }
+                Control::SingleOption {
+                    width: width()?,
+                    options,
+                    label: label()?,
+                    label_visible: label_visible()?,
+                }
+            }
+            "number_range" => {
+                let start = required(t, "start", float)?;
+                let end = required(t, "end", float)?;
+                let initial = optional(t, "initial", float)?;
+                // `Float.MIN_VALUE` up to `Float.MAX_VALUE`.
+                let step = optional(t, "step", |v| {
+                    float(v).and_then(|s| {
+                        (s >= f32::from_bits(1) && s <= f32::MAX)
+                            .then_some(s)
+                            .ok_or_default()
+                    })
+                })?;
+                // The initial value lies between the ends, whichever is lower.
+                if let Some(initial) = initial {
+                    let (initial, start, end) =
+                        (f64::from(initial), f64::from(start), f64::from(end));
+                    // `Math.min` and `Math.max` are NaN when either end is.
+                    let (low, high) = match start.is_nan() || end.is_nan() {
+                        true => (f64::NAN, f64::NAN),
+                        false => (start.min(end), start.max(end)),
+                    };
+                    if initial < low || initial > high {
+                        return Err("initial".into());
+                    }
+                }
+                Control::NumberRange {
+                    width: width()?,
+                    label: label()?,
+                    label_format: optional(t, "label_format", string)?
+                        .unwrap_or_else(|| "options.generic_value".into()),
+                    start,
+                    end,
+                    initial,
+                    step,
+                }
+            }
+            _ => return Err("type".into()),
+        };
+        Ok(Input { key, control })
+    }
+
+    /// `PlainMessage.CODEC`: the full form or just its contents.
+    fn message<S: Source, T>(
+        &self,
+        t: &S,
+        text: impl Fn(&S) -> Result<T, String>,
+    ) -> Result<(T, i32), String> {
+        let full = || -> Result<(T, i32), String> {
+            Ok((
+                required(t, "contents", &text)?,
+                optional(t, "width", |v| ranged(v, 1, 1024))?.unwrap_or(200),
+            ))
+        };
+        full().or_else(|error| text(t).map(|text| (text, 200)).map_err(|_| error))
+    }
+
+    /// `DialogBody.DIALOG_BODY_CODEC`, dispatched on `type`.
+    fn body<S: Source, T>(
+        &self,
+        t: &S,
+        text: impl Fn(&S) -> Result<T, String>,
+    ) -> Result<Body<T>, String> {
+        if !t.is_map() {
+            return Err(String::new());
+        }
+        let kind = required(t, "type", string)?;
+        Ok(match path(&kind) {
+            "plain_message" => {
+                let (contents, width) = self.message(t, &text)?;
+                Body::Message { contents, width }
+            }
+            "item" => Body::Item {
+                item: required(t, "item", |v| self.stack(v))?,
+                description: optional(t, "description", |v| self.message(v, &text))?,
+                show_decorations: optional(t, "show_decorations", boolean)?.unwrap_or(true),
+                show_tooltip: optional(t, "show_tooltip", boolean)?.unwrap_or(true),
+                width: optional(t, "width", |v| ranged(v, 1, 256))?.unwrap_or(16),
+                height: optional(t, "height", |v| ranged(v, 1, 256))?.unwrap_or(16),
+            },
+            _ => return Err("type".into()),
+        })
+    }
+
+    /// `ItemStackTemplate.CODEC`: an item's id, or `id`, `count` and `components`.
+    fn stack<S: Source>(&self, t: &S) -> Result<Tag, String> {
+        let item = |t: &S| {
+            let id = identifier(t)?;
+            (id != "minecraft:air" && (self.item)(&id))
+                .then_some(id)
+                .ok_or_default()
+        };
+        let (id, count, components) = if t.is_map() {
+            (
+                required(t, "id", item)?,
+                optional(t, "count", |v| ranged(v, 1, 99))?.unwrap_or(1),
+                // The persistent component patch itself is not decoded yet.
+                optional(t, "components", |v| {
+                    v.is_map().then(|| v.tag()).ok_or_default()
+                })?,
+            )
+        } else {
+            (item(t)?, 1, None)
+        };
+        Ok(Tag::compound(
+            [
+                ("id", Tag::String(id.as_str().into())),
+                ("count", Tag::Int(count)),
+            ]
+            .into_iter()
+            .chain(components.map(|patch| ("components", patch))),
+        ))
+    }
+}
+
+/// `Option::ok_or_else(String::new)`: a value no field name can add to.
+trait OkOrDefault<T> {
+    fn ok_or_default(self) -> Result<T, String>;
+}
+impl<T> OkOrDefault<T> for Option<T> {
+    fn ok_or_default(self) -> Result<T, String> {
+        self.ok_or_else(String::new)
+    }
+}
+
+impl Dialog {
+    /// Decode a packet dialog against the dynamic registry of the phase that sent it.
+    pub fn parse_in_registry(
+        t: &Tag,
+        registries: &Registries,
+        item: &dyn Fn(&str) -> bool,
+        dynamic: Option<&sunrise_protocol::registry::Dynamic>,
+    ) -> Option<Self> {
+        Self::parse(t, registries, item, &|reference| {
+            let Some(dynamic) = dynamic else {
+                return false;
+            };
+            match reference {
+                Reference::Id(id) => dynamic
+                    .id("minecraft:dialog", id)
+                    .and_then(|id| dynamic.data("minecraft:dialog", id))
+                    .is_some(),
+                Reference::Tag(id) => dynamic.tag("minecraft:dialog", id).is_some(),
+            }
+        })
+    }
+
+    /// `Dialog.DIRECT_CODEC` over the connection's item and dialog registries.
+    pub fn parse(
+        t: &Tag,
+        registries: &Registries,
+        item: &dyn Fn(&str) -> bool,
+        bound: &dyn Fn(&Reference) -> bool,
+    ) -> Option<Self> {
+        let reader = Reader {
+            registries,
+            item,
+            references: RefCell::default(),
+        };
+        let dialog = reader
+            .dialog(
+                t,
+                |value| {
+                    use crate::text::ClickEvent;
+                    let mut clicks = Vec::new();
+                    let component = reader.text(value, |click| {
+                        let index = Tag::Int(clicks.len() as i32);
+                        clicks.push(match click {
+                            Click::OpenUrl(url) => ClickEvent::OpenUrl(url),
+                            Click::RunCommand(command) => ClickEvent::RunCommand(command),
+                            Click::SuggestCommand(command) => ClickEvent::SuggestCommand(command),
+                            Click::ShowDialog(holder) => ClickEvent::ShowDialog(holder.into()),
+                            Click::ChangePage(page) => ClickEvent::ChangePage(page),
+                            Click::CopyToClipboard(text) => ClickEvent::CopyToClipboard(text),
+                            Click::Custom { id, payload } => ClickEvent::Custom {
+                                id,
+                                payload: payload.map(Into::into),
+                            },
+                        });
+                        index
+                    })?;
+                    Ok(crate::component::text_with_decoded_clicks(
+                        &crate::scoreboard::tag_to_json(&component),
+                        &clicks,
+                    ))
+                },
+                || Text::translate("gui.ok", &[]),
+            )
+            .ok()?;
+        reader
+            .references
+            .into_inner()
+            .iter()
+            .all(bound)
+            .then_some(dialog)
+    }
+
+    /// `Dialog.DIRECT_CODEC` on a data pack's file at world open, with the
+    /// dialogs it names: the path of the failing field, or the dialog.
+    pub(crate) fn decode_pack(
+        value: &Value,
+        registries: &crate::command::Registries,
+        item: &dyn Fn(&str) -> bool,
+    ) -> Result<(Tag, Vec<Reference>), String> {
+        let reader = Reader {
+            registries,
+            item,
+            references: RefCell::default(),
+        };
+        let dialog = reader.dialog_nbt(value)?;
+        Ok((dialog, reader.references.into_inner()))
+    }
+
     /// `onCancel`: what Escape (or closing it) does.
     pub fn on_cancel(&self) -> Option<&Action> {
         match &self.kind {
@@ -667,7 +1201,7 @@ impl Dialog {
     }
     /// `DialogListDialogScreen.createListActions`: a button for each of `dialogs`
     /// (what the list names), labelled by its external title, opening it.
-    pub fn set_list(&mut self, dialogs: &[Tag]) {
+    pub fn set_list(&mut self, dialogs: &[Tag], decode: impl Fn(&Tag) -> Option<Dialog>) {
         let Kind::DialogList {
             entries,
             button_width,
@@ -679,7 +1213,7 @@ impl Dialog {
         *entries = dialogs
             .iter()
             .filter_map(|tag| {
-                let sub = Dialog::parse(tag)?;
+                let sub = decode(tag)?;
                 Some(Button {
                     label: sub.external_title.unwrap_or(sub.title),
                     tooltip: None,
@@ -736,7 +1270,7 @@ impl Dialog {
             "title": self.title.plain(),
             "body": self.body.iter().map(|b| match b {
                 Body::Message { contents, .. } => contents.plain(),
-                Body::Item { item, .. } => string(item.get("id")).unwrap_or_default(),
+                Body::Item { item, .. } => item.get("id").and_then(Source::string).unwrap_or_default(),
             }).collect::<Vec<_>>(),
             "inputs": inputs,
             "buttons": self.buttons().iter().map(|b| b.label.plain()).collect::<Vec<_>>(),
@@ -753,6 +1287,10 @@ impl Dialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(tag: &Tag) -> Option<Dialog> {
+        Dialog::parse(tag, &Registries::default(), &|_| false, &|_| false)
+    }
 
     fn s(v: &str) -> Tag {
         Tag::String(v.into())
@@ -811,7 +1349,7 @@ mod tests {
 
     #[test]
     fn decodes_a_multi_action_dialog_with_defaults() {
-        let d = Dialog::parse(&register()).unwrap();
+        let d = parse(&register()).unwrap();
         assert_eq!(d.title.plain(), "Register");
         assert!(!d.can_close_with_escape);
         assert!(d.pause);
@@ -825,7 +1363,7 @@ mod tests {
         else {
             panic!("{:?}", d.kind)
         };
-        assert_eq!((actions.len(), exit.is_none(), *columns), (2, true, 2));
+        assert_eq!((actions.len(), exit.is_none(), columns.get()), (2, true, 2));
         assert_eq!(actions[0].width, 150);
         assert!(d.on_cancel().is_none());
         let [
@@ -846,10 +1384,52 @@ mod tests {
     }
 
     #[test]
+    fn a_packet_dialog_with_a_malformed_nested_member_is_refused() {
+        let button = |extra: (&str, Tag)| Tag::compound([("label", s("L")), extra]);
+        let multi = |actions: Vec<Tag>| {
+            Tag::compound([
+                ("type", s("minecraft:multi_action")),
+                ("title", s("T")),
+                ("actions", Tag::List(actions)),
+            ])
+        };
+        // `NbtOps` reads any number as a boolean and floors a float to an int.
+        let kept = multi(vec![button(("width", Tag::Double(150.9f64.to_bits())))]);
+        assert_eq!(
+            parse(&kept).unwrap().buttons()[0].width,
+            150,
+            "a double width is floored"
+        );
+        for wrong in [
+            ("width", s("wide")),
+            ("width", Tag::Int(0)),
+            ("action", s("run")),
+            (
+                "action",
+                Tag::compound([("type", s("minecraft:run_command"))]),
+            ),
+        ] {
+            assert!(
+                parse(&multi(vec![
+                    button(("width", Tag::Int(20))),
+                    button(wrong.clone())
+                ]))
+                .is_none(),
+                "{wrong:?}"
+            );
+        }
+    }
+
+    #[test]
     fn open_url_actions_take_only_web_links() {
         let open = |url: &str| {
             let action = Tag::compound([("type", s("minecraft:open_url")), ("url", s(url))]);
-            Action::parse(&action).and_then(|a| a.click(&[], &[]))
+            let reader = Reader {
+                registries: &Registries::default(),
+                item: &|_| true,
+                references: RefCell::default(),
+            };
+            reader.action(&action).ok().and_then(|a| a.click(&[], &[]))
         };
         assert_eq!(
             open("https://example.com/a"),
@@ -869,7 +1449,7 @@ mod tests {
 
     #[test]
     fn actions_carry_the_input_values() {
-        let d = Dialog::parse(&register()).unwrap();
+        let d = parse(&register()).unwrap();
         let values = [InputValue::Text("p\"w".into())];
         let Kind::MultiAction { actions, .. } = &d.kind else {
             unreachable!()
@@ -898,7 +1478,7 @@ mod tests {
     #[test]
     fn the_button_that_does_what_escape_does() {
         let notice = |escape: i8| {
-            Dialog::parse(&Tag::compound([
+            parse(&Tag::compound([
                 ("type", s("notice")),
                 ("title", s("Hi")),
                 ("can_close_with_escape", Tag::Byte(escape)),
@@ -908,19 +1488,19 @@ mod tests {
         assert_eq!(notice(1).escape_button(), Some(0));
         assert_eq!(notice(0).escape_button(), None);
         // Multi-action with no exit button: Escape has no button to be.
-        assert_eq!(Dialog::parse(&register()).unwrap().escape_button(), None);
+        assert_eq!(parse(&register()).unwrap().escape_button(), None);
     }
 
     #[test]
     fn a_notice_without_an_action_has_ok() {
-        let d = Dialog::parse(&Tag::compound([("type", s("notice")), ("title", s("Hi"))])).unwrap();
+        let d = parse(&Tag::compound([("type", s("notice")), ("title", s("Hi"))])).unwrap();
         let Kind::Notice(b) = &d.kind else {
             unreachable!()
         };
         assert_eq!(b.label, Text::translate("gui.ok", &[]));
         // Without a title, or with an unknown type, there is no dialog.
-        assert!(Dialog::parse(&Tag::compound([("type", s("notice"))])).is_none());
-        assert!(Dialog::parse(&Tag::compound([("type", s("x")), ("title", s("Hi"))])).is_none());
+        assert!(parse(&Tag::compound([("type", s("notice"))])).is_none());
+        assert!(parse(&Tag::compound([("type", s("x")), ("title", s("Hi"))])).is_none());
     }
 
     #[test]

@@ -2,11 +2,11 @@
 //! cell or many, by the rule its rays use (`Game::cell_explosion_resistance`), without exploding
 //! anything.
 use super::{Game, explosion::PartAnswers};
-use sunrise_client::mobs::DamageKind;
 use mod_api::{
     EntityRef, ExplosionInteraction, ExplosionResistance, LevelRef, ResistanceCells,
     ResistanceCellsError,
 };
+use sunrise_client::mobs::DamageKind;
 
 impl Game<'_> {
     /// The resistance the blast `level.explode(source, center, radius, fire, interaction)` would

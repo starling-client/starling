@@ -1,0 +1,3 @@
+ids = ["hook:play_level_sound_at_position", "hook:play_level_sound_at_entity"]
+why = "For a transactional server request, play_level_sound_at_position and play_level_sound_at_entity run synchronously at the call; only the resolved effect is deferred. Sounds emitted by a level-sound listener are not re-dispatched to level-sound listeners."
+migrate = "Rebuild against the updated SDK. When editing a transactional sound, return edits or cancellation before the call returns; the hook will not run again at commit. Sounds you emit inside either hook are no longer re-dispatched to level-sound listeners."

@@ -209,7 +209,7 @@ struct Pass {
     /// The conditions of the module being visited.
     cfg: Vec<String>,
     /// Widening only: the items and fields visited are made public and listed nowhere, for a
-    /// lower-crate shape the wasm internals table walks (#589 W).
+    /// lower-crate shape the internals table walks.
     reaching: bool,
     discovery: bool,
 }
@@ -656,8 +656,7 @@ impl Pass {
             return Ok(index);
         }
         let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        // Staged source copies materialize directory-derived declarations before widening them.
-        // Store that same text so source spans and edits still address the exact bytes parsed.
+        // The host forwarders are widened as written into the copy: spans address the expanded text.
         let text = crate::game_modules::expand(path, &text)?;
         let parsed = syn::parse_file(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let lines = std::iter::once(0)
@@ -1300,7 +1299,7 @@ impl Pass {
             }
         }
         self.cfg.clear();
-        // Each shape's module path, item and fields, public in the staged copy, so the wasm
+        // Each shape's module path, item and fields, public in the staged copy, so the
         // internals table at the game's root can walk it. The mod API's own types keep theirs.
         let reached: Vec<String> = self
             .entries
@@ -1416,7 +1415,7 @@ pub fn catalog(root: &Path) -> Result<Vec<Internal>, String> {
 /// `internals.json` has them: what a crossing rule over the game reads.
 pub fn rule_catalog(root: &Path) -> Result<Vec<Internal>, String> {
     let mut entries = catalog(root)?;
-    entries.extend(crate::crossing::foreign_internals());
+    entries.extend(crate::crossing::foreign_internals(root)?);
     Ok(entries)
 }
 
@@ -1652,10 +1651,8 @@ mod tests {
         let module = "use super::Game; impl Game { fn action(&self) -> u8 { 7 } }";
         let before = Fixture::new(source);
         before.put("crates/sunrise-client/src/game/feature.rs", module);
-        let after = Fixture::new(
-            "struct Game;\ninclude!(concat!(env!(\"OUT_DIR\"), \"/game_modules.rs\"));",
-        );
-        after.put("crates/sunrise-client/src/game/runtime/.game-area", "");
+        let after =
+            Fixture::new("struct Game;\n#[path = \"game/runtime/feature.rs\"]\nmod feature;");
         after.put(
             "crates/sunrise-client/src/game/runtime/feature.rs",
             "include!(\"feature/shared.rs\");",
@@ -1677,20 +1674,21 @@ mod tests {
             widen_with(&after.0, &[]).unwrap().entries
         );
         assert!(after.game().contains("pub mod feature;"));
-        assert!(!after.game().contains("game_modules.rs"));
     }
 
     #[test]
-    fn materialized_game_modules_survive_source_tree_relocation() {
+    fn path_declared_game_modules_survive_source_tree_relocation() {
         let mut fixture = Fixture::new(
-            "struct Game;\nmod native_hooks;\ninclude!(concat!(env!(\"OUT_DIR\"), \"/game_modules.rs\"));",
+            "struct Game;\nmod native_hooks;\n#[path = \"game/runtime/feature.rs\"]\nmod feature;\n#[path = \"game/network/lan_actions/mod.rs\"]\nmod lan_actions;",
         );
-        fixture.put("crates/sunrise-client/src/game/runtime/.game-area", "");
         fixture.put(
             "crates/sunrise-client/src/game/runtime/feature.rs",
             "use super::Game; impl Game { fn action(&self) {} }",
         );
-        fixture.put("crates/sunrise-client/src/game/native_hooks/mod.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/native_hook_modules.rs\"));\ninclude!(\"shared.rs\");");
+        fixture.put(
+            "crates/sunrise-client/src/game/native_hooks/mod.rs",
+            "mod area;\ninclude!(\"shared.rs\");",
+        );
         fixture.put(
             "crates/sunrise-client/src/game/native_hooks/shared.rs",
             "struct State;",
@@ -1699,8 +1697,10 @@ mod tests {
             "crates/sunrise-client/src/game/native_hooks/area.rs",
             "use super::super::Game; impl Game { fn native_action(&self) {} }",
         );
-        fixture.put("crates/sunrise-client/src/game/network/.game-area", "");
-        fixture.put("crates/sunrise-client/src/game/network/lan_actions/mod.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/lan_action_modules.rs\"));\ninclude!(\"shared.rs\");");
+        fixture.put(
+            "crates/sunrise-client/src/game/network/lan_actions/mod.rs",
+            "mod turns;\ninclude!(\"shared.rs\");",
+        );
         fixture.put(
             "crates/sunrise-client/src/game/network/lan_actions/shared.rs",
             "struct GuestState;",
@@ -1937,7 +1937,7 @@ union Value { #[cfg(windows)] windows: u32, #[cfg(test)] test_field: u32 }
     }
 
     #[test]
-    fn reachable_lower_shapes_are_transitive_and_widened_for_the_wasm_table() {
+    fn reachable_lower_shapes_are_transitive_and_visible_to_the_staged_table() {
         let fixture = shapes_fixture(
             "use std::time::Duration; struct Game { stack: sunrise_items::ItemStack, external: Duration }\n",
         );
@@ -2304,36 +2304,6 @@ pub struct ItemStack { a: First, b: Second, c: second::Kind }
         assert!(!declared.shape_only);
         assert_eq!(declared.cfg, first.cfg);
         assert_eq!(declared.hash, first.hash);
-    }
-
-    #[test]
-    fn conditional_layouts_remain_unwalkable_after_staging() {
-        let fixture = Fixture::new(
-            "struct Guarded { #[cfg(feature = \"audio\")] sound: u8 }\nenum Cases { #[cfg_attr(feature = \"audio\", cfg(unix))] Audio, Normal }\n",
-        );
-        let widened = widen_with(&fixture.0, &[]).unwrap();
-        // Opacity is decided by the crossing rule, not the source collector. Check
-        // the staged signatures too: widening must not discard conditional members.
-        for entries in [
-            widened.entries,
-            collect(&fixture.0, &[], false)
-                .unwrap()
-                .entries
-                .into_values()
-                .collect(),
-        ] {
-            let rule = crate::crossing::Rule::new(&entries);
-            for name in ["Guarded", "Cases"] {
-                let ty = syn::parse_str(name).unwrap();
-                let shape = rule.shape("sunrise_client::game", None, &ty);
-                assert!(matches!(shape, crate::crossing::Shape::Named(..)));
-                assert_eq!(
-                    rule.crossing_of(&shape),
-                    crate::crossing::Crossing::Opaque,
-                    "{name}"
-                );
-            }
-        }
     }
 
     #[test]

@@ -1,8 +1,7 @@
-//! StrictMath-exact operations, pure on native and wasm, with identical bits.
+//! Pure, StrictMath-exact operations.
 //!
 //! The fdlibm `sin`, `cos`, `tan`, `exp` and `pow` algorithms use ordered IEEE
-//! double operations without FMA or platform/libm calls. They are linked into
-//! each guest: no operation crosses a Host import. NaN payloads are unspecified.
+//! double operations without FMA, platform libm or `Host` calls. NaN payloads are unspecified.
 pub use sunrise_core::jmath::fdlibm::{cbrt, cos, exp, hypot, log, log10, pow, sin, tan};
 pub use sunrise_core::jmath::{acos, asin, atan, atan2};
 #[cfg(test)]

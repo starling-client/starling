@@ -21,13 +21,7 @@ cargo build --release --locked --target aarch64-pc-windows-msvc `
   -p sunrise-prepare --bin sunrise-prepare -p sunrise-server --bin sunrise-server
 ```
 
-The launcher has a separate workspace:
-
-```powershell
-cd launcher
-cargo test --release --locked --target aarch64-pc-windows-msvc --lib
-cargo build --release --locked --target aarch64-pc-windows-msvc
-```
+The launcher is built in its own repository, [sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher); the same cargo commands with `--target aarch64-pc-windows-msvc` run in a checkout of it.
 
 ## Releases and limitations
 
@@ -54,6 +48,6 @@ binary for the wrong game.
 On Windows ARM64, `Graphics API: Auto` tries DirectX 12 before Vulkan following a device-loss observed
 in testing. Vulkan remains selectable in settings.
 
-The `Windows ARM64 game and launcher` check in `ci.yml` runs only by hand
+The Windows ARM64 game check in `ci.yml` runs only by hand
 (`gh workflow run checks --ref <branch>`); the Nightly and launcher releases build these archives on
 every run.

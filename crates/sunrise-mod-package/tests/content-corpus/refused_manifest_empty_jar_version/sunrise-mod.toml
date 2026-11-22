@@ -1,0 +1,7 @@
+id = "refused_manifest_empty_jar_version"
+name = "Refused manifest empty jar version"
+version = "1.2.3"
+[[jar]]
+id = "overlay"
+version = ""
+sha512 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

@@ -1,0 +1,37 @@
+ids = [
+    "handle:PlayerRef::inventory",
+    "handle:PlayerRef::inventory_slots",
+    "handle:PlayerRef::ender_chest",
+    "handle:PlayerRef::with_inventory",
+    "handle:PlayerRef::with_ender_chest",
+    "handle:LivingRef::equipment",
+    "handle:LivingRef::hand_item",
+    "handle:LivingRef::weapon_item",
+    "handle:LivingRef::with_equipment",
+    "handle:LivingRef::with_hand_item",
+    "handle:LivingRef::with_weapon_item",
+    "handle:ItemEntityRef::stack",
+    "handle:ItemEntityRef::with_stack",
+    "handle:ItemPlace::stack",
+    "handle:ItemPlace::with_stack",
+    "type:item::item_stack::InventoryView",
+    "handle:item::item_stack::InventoryView::get",
+    "handle:item::item_stack::InventoryView::iter",
+    "type:item::item_stack::ItemStackView",
+    "handle:item::item_stack::ItemStackView::from_stack",
+    "handle:item::item_stack::ItemStackView::item",
+    "handle:item::item_stack::ItemStackView::count",
+    "handle:item::item_stack::ItemStackView::damage",
+    "handle:item::item_stack::ItemStackView::damage_component",
+    "handle:item::item_stack::ItemStackView::project",
+]
+why = "Inventory reads lend slots by their original indices; held and dropped stack reads lend one stack. Looking at an item, count or damage no longer copies stacks or encodes the resident stack's components. Reads do not load chunks; reading a chest vehicle's EntitySlot unpacks its pending loot table without a player, preserving occupied slots and filling empty slots (vanilla ContainerEntity.getChestVehicleItem and LootTable.fill; NeoForge ContainerEntity patch), PlayerCursor reads follow AbstractContainerMenu.getCarried without gating on player liveness, and dropped-item reads see live state, including earlier writes in the same transaction."
+migrate = '''
+- `player.inventory(host)` -> `player.with_inventory(host, |view| { for (_, stack) in view.iter().take_while(|(slot, _)| *slot < 36) { /* inspect stack */ } })`. This keeps the old main-inventory range. `player.inventory_slots(host)` -> `player.with_inventory(host, |view| { /* use view.iter() for every occupied (slot, stack) pair */ })`. `player.ender_chest(host)` -> `player.with_ender_chest(host, |view| { /* use view.iter() for occupied ender-chest slots */ })`. For a single numbered slot use `view.get(n)` inside either callback, not a position in the iterator. The outer `None` means the inventory is unavailable; an available empty inventory still runs the callback. `get(n)` returns `None` for an empty, unreadable or out-of-range slot. Iteration skips those slots without renumbering them.
+- `living.equipment(host, slot)` -> `living.with_equipment(host, slot, |stack| ...)`; `living.hand_item(host, hand)` -> `living.with_hand_item(host, hand, |stack| ...)`; `living.weapon_item(host)` -> `living.with_weapon_item(host, |stack| ...)`. The last reads the live attacker's weapon on the server, including active Riptide. `LootDrops::weapon_item(host)` still returns an owned snapshot and prefers the recorded projectile weapon. `UnspawnedMobRef::equipment` is unchanged.
+- `item.stack(host)` on `ItemEntityRef` -> `item.with_stack(host, |stack| ...)`. `Ok(true)` from `item.set_stack(host, stack)` means the live stack was written immediately; later reads see it. To roll back that write with other edits from a block-entity ticker, wrap them in `event.subject.transaction(|scope, _tx| { ... })`, use `scope.host()` for the dropped item, and return `Err` to roll back the journaled changes. Without an open transaction the write is not rolled back. `place.stack(host)` on `ItemPlace` -> `place.with_stack(host, |stack| ...)`. For just a count or an occupancy check, use `place.amount(host)` or `place.amount(host) != 0`. A backed menu slot reads its provider, not its display copy, and `OneByOne` exposes and projects a count of one. `PlaceProvider::stack` and `MenuRef::slot` are unchanged.
+- `ItemPlace::EntitySlot` reads (`with_stack`, `resource`, `amount`) on a chest minecart or chest boat, and `ItemPlace::EntitySlot` transfers (`insert`, `extract`, `exchange`) on a chest boat (matching chest minecarts), now lazily unpack any pending vehicle loot table with no player (`ContainerEntity.getChestVehicleItem` / `unpackChestVehicleLootTable`); do not assume reading an unopened loot vehicle is side-effect-free, even if a slot already contains an item. `ItemPlace::PlayerCursor` reads (`with_stack`, `resource`, `amount`) no longer gate on player liveness (`AbstractContainerMenu.getCarried`), so a still-current menu's cursor may read a stack from a dead guest; check the player's living state (`alive(host)`) yourself if you want to skip dead guests. For cursor component updates, replace any special cursor-edit workaround with `menu.cursor().edit(host, tx, |stack| { ... })` directly (see `debt-13-resolved-component-edits.toml`).
+- Move `item()`, `count()`, `damage()` and `damage_component()` reads into the callback and return the scalar you need, for example `living.with_hand_item(host, hand, |stack| stack.count())`. A single-stack read returns `None` without running the callback when the stack is empty or unavailable. Neither view can leave the callback. For component decoding, call `stack.project()` before using the owned stack's component methods; handle `None` as a projection refusal, not proof of an empty slot. For a retained value, return the projection, for example `player.with_inventory(host, |view| view.get(n)?.project()).flatten()` if unavailable, empty and refusal may all use the same path. Keep the nested options separate when you need to distinguish them. To retain a main-inventory list, add `.map(|(_, stack)| stack.project()).collect::<Option<Vec<_>>>()` to the main-inventory iterator inside the callback, and handle `None` from collection if any stack cannot project. Use `ItemStackView::from_stack(&stack)` to lend a value you already own.
+- A native mixin selecting `ItemPlace::MenuSlot{menu,slot:n}.stack` changes its selector to `ItemPlace::MenuSlot{menu,slot:n}.with_stack` if the call now uses the view. A row that reads the result must use `Option<R>` with `R` the callback's result type, not `Option<ItemStack>` unless the callback itself returns an owned `ItemStack`.
+- Game-side backend implementations (not mod call sites): remove `PlayerInventoryBackend::player_inventory`; `player_inventory_slots` and `player_ender_chest` now take `&mut dyn for<'a> FnMut(InventoryView<'a>)` and return `Option<()>`. `LivingBackend::{living_equipment,living_hand_item,living_weapon_item}`, `ItemEntitiesBackend::item_entity_stack` and `ItemsBackendMut::game_stack` now take `&mut dyn for<'a> FnMut(ItemStackView<'a>)` and return `Option<()>`. Call the reader once on success and return `None` without calling it on refusal.
+'''

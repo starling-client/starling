@@ -141,7 +141,7 @@ def main():
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main',
                       'nogui']
-    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    sunrise_server = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     vanilla, sunrise = [], []
     for case in CASES:
         vanilla += run_case('vanilla', vanilla_server, build, case)

@@ -1,0 +1,3 @@
+ids = ["type:EntityRenderState"]
+why = "Item frames and glow item frames read the registered entity renderer table (#1296): a renderer for minecraft:item_frame or minecraft:glow_item_frame draws in place of the frame model and the item or map on its face, and EntityRenderState gains item_frame (facing, glow, invisibility, rotation, and whether it holds an item or a filled map). Some for those types, none for every other family. The stack itself is not in the state (plain numbers only); a renderer that needs it reads it in a hook. New route, no hook version change."
+migrate = "Additive. Existing renderers compile; item_frame is None unless the entity is an item frame or glow item frame."

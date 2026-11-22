@@ -1,0 +1,246 @@
+manifest:
+Manifest {
+    id: "keys_block_forms",
+    name: "Block selector and gate forms",
+    version: Version {
+        major: 1,
+        minor: 0,
+        patch: 0,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/keys_block_forms",
+    ),
+    files: [
+        "data/keys_block_forms/sunrise/block/gate.json",
+        "data/keys_block_forms/sunrise/block/shelf.json",
+    ],
+    blocks: [
+        Block {
+            id: "keys_block_forms:gate",
+            template: "minecraft:oak_fence_gate",
+            properties: BlockProperties {
+                hardness: None,
+                explosion_resistance: None,
+                light: None,
+                dynamic_light: None,
+                requires_tool: None,
+                friction: None,
+                map_color: None,
+                sounds: None,
+                random_ticks: None,
+                render_shape: None,
+                push_reaction: None,
+                occludes: None,
+                destroy_overlay: None,
+                offset: None,
+                max_horizontal_offset: None,
+                max_vertical_offset: None,
+                instrument: None,
+                ignited_by_lava: None,
+                replaceable: None,
+                skip_same_block_faces: None,
+                vegetation: false,
+            },
+            shapes: None,
+            collision_shapes: None,
+            outline_context_shapes: {},
+            collision_context_shapes: {},
+            interaction_shapes: None,
+            shapes_from_block_entity: false,
+            context_collision: None,
+            state_light: None,
+            state_properties: {},
+            default_state: {},
+            item: true,
+            open_sound: Some(
+                All(
+                    "keys_block_forms:gate_open",
+                ),
+            ),
+            close_sound: Some(
+                Sites {
+                    on_use: Some(
+                        "keys_block_forms:gate_close_use",
+                    ),
+                    on_explosion: Some(
+                        "keys_block_forms:gate_close_explosion",
+                    ),
+                    on_redstone: Some(
+                        "keys_block_forms:gate_close_redstone",
+                    ),
+                },
+            ),
+            block_item: None,
+            pick_item: None,
+            components: {},
+            suspicious_stew_effects: None,
+            connects_to: None,
+            thickness: None,
+            wood_type: None,
+            wall_block: None,
+            sign_text_color: None,
+            sign_text_glow: None,
+            base_block: None,
+        },
+        Block {
+            id: "keys_block_forms:shelf",
+            template: "minecraft:stone",
+            properties: BlockProperties {
+                hardness: None,
+                explosion_resistance: None,
+                light: None,
+                dynamic_light: None,
+                requires_tool: None,
+                friction: None,
+                map_color: None,
+                sounds: None,
+                random_ticks: None,
+                render_shape: None,
+                push_reaction: None,
+                occludes: None,
+                destroy_overlay: None,
+                offset: None,
+                max_horizontal_offset: None,
+                max_vertical_offset: None,
+                instrument: None,
+                ignited_by_lava: None,
+                replaceable: None,
+                skip_same_block_faces: None,
+                vegetation: false,
+            },
+            shapes: None,
+            collision_shapes: Some(
+                BlockShapes(
+                    StateValues {
+                        property: "",
+                        properties: [
+                            "raised",
+                        ],
+                        values: {
+                            "true": [
+                                [
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    0.25,
+                                    1.0,
+                                ],
+                            ],
+                        },
+                        default: Some(
+                            [
+                                [
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    0.5,
+                                    1.0,
+                                ],
+                            ],
+                        ),
+                    },
+                ),
+            ),
+            outline_context_shapes: {},
+            collision_context_shapes: {},
+            interaction_shapes: Some(
+                BlockShapes(
+                    StateValues {
+                        property: "",
+                        properties: [
+                            "raised",
+                        ],
+                        values: {
+                            "true": [
+                                [
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    0.25,
+                                    1.0,
+                                ],
+                            ],
+                        },
+                        default: Some(
+                            [
+                                [
+                                    0.1875,
+                                    0.0,
+                                    0.1875,
+                                    0.8125,
+                                    0.5,
+                                    0.8125,
+                                ],
+                            ],
+                        ),
+                    },
+                ),
+            ),
+            shapes_from_block_entity: false,
+            context_collision: None,
+            state_light: None,
+            state_properties: {
+                "raised": Boolean,
+            },
+            default_state: {},
+            item: true,
+            open_sound: None,
+            close_sound: None,
+            block_item: None,
+            pick_item: None,
+            components: {},
+            suspicious_stew_effects: None,
+            connects_to: None,
+            thickness: None,
+            wood_type: None,
+            wall_block: None,
+            sign_text_color: None,
+            sign_text_glow: None,
+            base_block: None,
+        },
+    ],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "keys_block_forms",
+    ],
+}

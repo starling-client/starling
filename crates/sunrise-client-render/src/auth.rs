@@ -11,6 +11,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError, RwLock},
     time::{Duration, SystemTime},
 };
+use sunrise_java_properties::now_millis;
 
 /// MinecraftServicesEnvironment.PROD.
 pub const DEFAULT_DISCOVERY: &str = "https://discovery.minecraftservices.com/minecraft/client";
@@ -392,13 +393,6 @@ impl ChatKeyPair {
     }
 }
 
-/// Epoch milliseconds now.
-pub fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
-}
-
 /// Instant.parse for the services' UTC times
 /// (`2022-07-30T23:05:24.548227Z`): epoch milliseconds.
 pub fn parse_instant(text: &str) -> Option<i64> {
@@ -515,7 +509,7 @@ pub fn prepare_chat_keys(now: bool) {
     prepare_chat_keys_for(session, now);
 }
 
-/// Prepare keys for this player, independently of the other local accounts.
+/// Prepare keys for this account, independently of other accounts.
 pub fn prepare_chat_keys_for(session: Arc<AuthSession>, now: bool) {
     let uuid = session.uuid;
     let mut accounts = CHAT_KEYS.lock().unwrap();
@@ -551,12 +545,7 @@ pub fn prepare_chat_keys_for(session: Arc<AuthSession>, now: bool) {
     }
 }
 
-/// The chat key pair fetched so far, unless it has expired.
-pub fn chat_keys() -> Option<Arc<ChatKeyPair>> {
-    chat_keys_for(current()?.uuid)
-}
-
-/// This account's key pair; another local player's keys can never be returned.
+/// This account's key pair; keys for other accounts are never returned.
 pub fn chat_keys_for(uuid: u128) -> Option<Arc<ChatKeyPair>> {
     CHAT_KEYS
         .lock()
@@ -594,7 +583,7 @@ pub fn own_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct JoinedProfile {
     pub uuid: u128,
-    pub properties: Vec<sunrise_protocol::packets::login::Property>,
+    pub properties: Vec<sunrise_core::profile::AccountProperty>,
 }
 
 /// HttpDiscoveryService.buildQuery: `URLEncoder.encode(value, UTF-8)`.
@@ -657,7 +646,7 @@ pub fn parse_joined(body: &str) -> Option<JoinedProfile> {
         .into_iter()
         .flatten()
         .filter_map(|p| {
-            Some(sunrise_protocol::packets::login::Property {
+            Some(sunrise_core::profile::AccountProperty {
                 name: p.get("name")?.as_str()?.to_owned(),
                 value: p.get("value")?.as_str()?.to_owned(),
                 signature: p

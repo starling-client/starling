@@ -11,8 +11,8 @@
 use super::{ModelNormals, Part, anim::Poses};
 use crate::fast_hash::FxHashMap;
 use crate::gfx::entity_skin::{SkinFrame, SkinJob, SkinPart, SkinVertex};
-use sunrise_assets::item_bake::BakedItemModel;
 use std::sync::Arc;
+use sunrise_assets::item_bake::BakedItemModel;
 
 /// A stored model: where its vertices start, and per part (pre-order) its
 /// own vertices and the end of its subtree, for the walk.
@@ -873,8 +873,8 @@ mod tests {
             heightmaps: Default::default(),
             animations: MobData::load_animations(&root),
             biome_tags: Default::default(),
-            entity_tags: Default::default(),
             villager_hats: Default::default(),
+            frame_models: Default::default(),
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
@@ -884,6 +884,7 @@ mod tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
+            vanilla_spawn_placements: None,
             resolved: Default::default(),
         };
         // Every texture its own rect, so a swapped texture shows.
@@ -940,8 +941,7 @@ mod tests {
                         &atlas,
                         0x50a0,
                         &data,
-                        Default::default(),
-                        None,
+                        &mut render::FrameDraw::default(),
                         &mut gpu,
                         &mut skin,
                     );

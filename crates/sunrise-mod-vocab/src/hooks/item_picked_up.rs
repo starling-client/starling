@@ -14,10 +14,11 @@ pub trait Hooks {
     /// window's own player of a world it ticks itself, whose pickup pass
     /// lifts the items out of the level, it reads as unavailable. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "ItemEntityPickupEvent.Pre",
         version = 2
     )]
-    fn item_picked_up();
+    fn item_picked_up(player: u128, item: ItemEntityRef, can_pickup: &mut TriState);
 }

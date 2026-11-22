@@ -18,7 +18,7 @@ EntityRenderDispatcher.shouldRender	skip:other		frustum culling only; Sunrise cu
 EntityRenderDispatcher.extractEntity	skip:other		render-state wrapper with a crash report; Sunrise has no separate extraction stage
 EntityRenderDispatcher.fillRendererDetails	skip:debug		crash report detail
 EntityRenderDispatcher.onResourceManagerReload	skip:data		renderer rebuild on resource reload; Sunrise loads its assets from files
-EntityRenderer.getBoundingBoxForCulling	port	crates/sunrise-client/src/game/interface/entity_culling/mod.rs::cull_box	Entity.getInterpolatedBoundingBox(partialTick) - the box at the frame's position - grown by 0.5 for the frustum test; the renderer overrides have their own rows, and a dropped item's is game/interface/item_draw.rs::dropped_item_cull_box
+EntityRenderer.getBoundingBoxForCulling	port	crates/sunrise-client-gameplay/src/entity_occlusion.rs::cull_box	Entity.getInterpolatedBoundingBox(partialTick) - the box at the frame's position - grown by 0.5 for the frustum test; the renderer overrides have their own rows, and a dropped item's is game/interface/item_draw.rs::dropped_item_cull_box
 EntityRenderer.getBlockLightLevel	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::mob_geometry	burning mobs, projectiles and dropped items drawn at full block light (game/mobs/creatures/mod.rs::Game::mob_geometry, game/interface/item_draw.rs::Game::dropped_item_geometry); other entities use world light
 EntityRenderer.submit	inline	crates/sunrise-client/src/game.rs::Game::entity_geometry	leash ropes and name tags drawn in their own passes from there
 EntityRenderer.shouldShowName	port	crates/sunrise-client/src/game/interface/names.rs::Game::name_tags	named mob under the crosshair
@@ -55,18 +55,18 @@ GuardianRenderer.getPosition	inline	crates/sunrise-client/src/mobs/guardian.rs::
 GuardianRenderer.submit	port	crates/sunrise-client/src/mobs/guardian.rs::beam_geometry	beam to the attack target
 GuardianRenderer.vertex	inline	crates/sunrise-client/src/mobs/guardian.rs::beam_geometry	vertex built inline
 GuardianRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/guardian.rs::beam	beam attack scale and time
-HappyGhastRenderer.getBoundingBoxForCulling	port	crates/sunrise-client/src/game/interface/entity_culling/mod.rs::cull_box	setMinY(minY - getBbHeight() / 2) for the riders hanging below it
+HappyGhastRenderer.getBoundingBoxForCulling	port	crates/sunrise-client-gameplay/src/entity_occlusion.rs::cull_box	setMinY(minY - getBbHeight() / 2) for the riders hanging below it
 HappyGhastRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/happy_ghast.rs::wearing_harness	the harnessed state is read here; the harness (body item) is drawn by render::layers
 HoglinRenderer.isShaking	port	crates/sunrise-client/src/mobs/render.rs::shaking	converting hoglin shakes
 HorseRenderer.getTextureLocation	port	crates/sunrise-client/src/mobs/render.rs::body	variant and baby texture
 HorseRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/equine.rs::markings	variant, markings and armour layer
 HumanoidMobRenderer.getArmPose	port	crates/sunrise-client/src/mobs/anim.rs::humanoid_arm_poses	item declarations and get_arm_pose replacements staged by gameplay before humanoid animation
 HumanoidMobRenderer.usesSpearPose	inline	crates/sunrise-client/src/mobs/anim.rs::pose_arm	spear pose check folded into the arm pose
-HumanoidMobRenderer.extractRenderState	port	crates/sunrise-client/src/game/network/remote/mod.rs::tick_remote_arm_poses	select humanoid poses, fire get_arm_pose with ClientHost, stage answers for both arms
+HumanoidMobRenderer.extractRenderState	port	crates/sunrise-client/src/game/network/remote/tick.rs::tick_remote_arm_poses	select humanoid poses, fire get_arm_pose with ClientHost, stage answers for both arms
 HumanoidMobRenderer.extractHumanoidRenderState	port	crates/sunrise-client/src/game/interface/perspective.rs::held_arm_poses	borrow typed held items, main arm, use state and selected poses for get_arm_pose
 HumanoidMobRenderer.getEquipmentIfRenderable	port	crates/sunrise-client/src/mobs/render.rs::humanoid_armor	armour slot shown only when renderable
 IllagerRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/illager.rs::holding_crossbow	crossbow charge and aggressive pose
-IllusionerRenderer.getBoundingBoxForCulling	port	crates/sunrise-client/src/game/interface/entity_culling/mod.rs::cull_box	inflate(3, 0, 3), room for the mirror images drawn outside the box
+IllusionerRenderer.getBoundingBoxForCulling	port	crates/sunrise-client-gameplay/src/entity_occlusion.rs::cull_box	inflate(3, 0, 3), room for the mirror images drawn outside the box
 IllusionerRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/illusioner.rs::offsets	mirror-image offsets; casting flag
 IronGolemRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/golem.rs::client_tick	the offered poppy is drawn by game/mobs/mob_blocks.rs::Game::golem_flower_geometry, the damage cracks by render::layers (golem::crackiness)
 IronGolemRenderer.setupRotations	port	crates/sunrise-client/src/mobs/render.rs::base_transform_at	the 6.5-degree triangle wave over a 13-block walk phase
@@ -77,7 +77,7 @@ ItemFrameRenderer.getRenderOffset	inline	crates/sunrise-client/src/game/entities
 ItemFrameRenderer.extractRenderState	inline	crates/sunrise-client/src/game/entities/frames.rs::Game::frame_geometry	direction, item, rotation, glow and map read there
 LeashKnotRenderer.submit	port	crates/sunrise-client/src/game/entities/leads.rs::Game::leash_geometry	knot drawn with the rope pass
 LightningBoltRenderer.quad	inline	crates/sunrise-client-render/src/gfx/lightning.rs::geometry	quad built inline
-LivingEntityRenderer.getBoundingBoxForCulling	port	crates/sunrise-client/src/game/interface/entity_culling/mod.rs::cull_box	inflate(0.5) all round for a living entity wearing a dragon head
+LivingEntityRenderer.getBoundingBoxForCulling	port	crates/sunrise-client-gameplay/src/entity_occlusion.rs::cull_box	inflate(0.5) all round for a living entity wearing a dragon head
 LivingEntityRenderer.isEntityUpsideDown	port	crates/sunrise-client/src/mobs/render.rs::base_transform_at	upside-down flip for Dinnerbone and Grumm
 LivingEntityRenderer.isUpsideDownName	inline	crates/sunrise-client/src/mobs/render.rs::base_transform_at	name check folded into the flip
 LivingEntityRenderer.extractNameTags	port	crates/sunrise-client/src/game/interface/names.rs::Game::name_tags	gap: minor: unsure whether the name-tag distance attributes are read
@@ -122,7 +122,7 @@ ShulkerBulletRenderer.extractRenderState	inline	crates/sunrise-client/src/game/m
 ShulkerRenderer.shouldRender	skip:other		frustum culling only
 ShulkerRenderer.getTextureLocation	port	crates/sunrise-client/src/mobs/shulker.rs::texture	colour texture
 ShulkerRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/shulker.rs::rotations	peek and head angles
-SnifferRenderer.getBoundingBoxForCulling	port	crates/sunrise-client/src/game/interface/entity_culling/mod.rs::cull_box	inflate(0.6) all round
+SnifferRenderer.getBoundingBoxForCulling	port	crates/sunrise-client-gameplay/src/entity_occlusion.rs::cull_box	inflate(0.6) all round
 SnifferRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/sniffer.rs::anim	searching state and animation clocks
 SnowGolemRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/body_anim.rs::snow_golem	the carved pumpkin is drawn unless sheared, by crates/sunrise-client/src/game/mobs/mob_blocks.rs::Game::worn_block_geometry
 SquidRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/aquatic.rs::squid_ai_step	tentacle cycle clock
@@ -152,4 +152,4 @@ TropicalFishRenderer.submit	port	crates/sunrise-client/src/mobs/render.rs::body	
 TropicalFishRenderer.setupRotations	inline	crates/sunrise-client/src/mobs/aquatic.rs::rotations	the same body rotation, cod included
 TurtleRenderer.getShadowRadius	inline	crates/sunrise-client/src/shadows.rs::mob_shadow_radius	the same path, with the turtle's 0.3 age factor and its 0.83 renderer factor
 TurtleRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/body_anim.rs::turtle	on-land, laying and egg states
-VexRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/vex.rs::anim	charging pose; held item in mobs/render.rs::hand_base
+VexRenderer.extractRenderState	port	crates/sunrise-client/src/mobs/vex.rs::anim	charging pose; held item in mobs/render.rs::translate_to_hand

@@ -10,6 +10,8 @@ pub trait Hooks {
     /// does (planks, wool and leaves yes; stone no). Answer only for your own
     /// blocks. The level is read-only.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "ignites",
@@ -18,5 +20,11 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::ignited_by_lava::GameLevel<'_>::native_ignited_by_lava",
         neoforge = "IBlockExtension.ignitedByLava"
     )]
-    fn ignited_by_lava();
+    fn ignited_by_lava(
+        dimension: LevelDimension,
+        state: BlockState,
+        pos: BlockPos,
+        face: Direction,
+        ignites: &mut Option<bool>,
+    );
 }

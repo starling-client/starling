@@ -1,0 +1,7 @@
+ids = [
+    "type:MoveCause.Carried",
+    "handle:MoveCause::ALL",
+    "hook:entity_move",
+]
+why = "A moving collider carries the entities standing on it as a collided move with the new cause Carried, so an entity_move listener sees it (a listener may cancel or replace the delta like any other cause). entity_move is version 2: a listener written for version 1 now hears moves of a cause it never heard. MoveCause is non_exhaustive, so a listener that matches causes has a wildcard arm already."
+migrate = "Rebuild against this SDK. Let a listener that only cares about its own causes ignore MoveCause::Carried (the wildcard arm)."

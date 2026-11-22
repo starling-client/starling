@@ -1,7 +1,7 @@
 //! Native support tests over an already-selected block support shape. Selecting
 //! that shape from block/world/entity behavior is the caller's responsibility.
-use sunrise_core::geometry::{Aabb, Direction, ShapeError, ShapeOp, Vec3, VoxelShape};
 use std::sync::OnceLock;
+use sunrise_core::geometry::{Aabb, Direction, ShapeError, ShapeOp, Vec3, VoxelShape};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SupportType {
     Full,
@@ -130,6 +130,10 @@ impl<'r> CachedBlockSupportRegistry<'r> {
     pub fn cached_shape(&self, state: BlockStateId) -> io::Result<Option<&VoxelShape>> {
         self.shapes.cached_shape(state)
     }
+    /// Whether the state's block entity publishes the block's shapes.
+    pub fn publishes_shapes(&self, state: BlockStateId) -> bool {
+        self.shapes.publishes_shapes(state)
+    }
     pub fn is_face_sturdy(
         &self,
         state: BlockStateId,
@@ -203,6 +207,16 @@ impl<'r> BlockSupportRegistry<'r> {
         direction: Direction,
         support: SupportType,
     ) -> Result<bool, SupportQueryError<W::Error>> {
+        // Only a state that may publish asks the block entity, for the shape it holds.
+        if self.cached.publishes_shapes(state)
+            && let Some(shape) = world
+                .published_collision_shape(position, state)
+                .map_err(|e| SupportQueryError::Dynamic(DynamicSupportError::World(e)))?
+        {
+            return support
+                .is_supporting(&shape, direction)
+                .map_err(|e| SupportQueryError::Dynamic(DynamicSupportError::Shape(e)));
+        }
         if let Some(result) = self
             .cached
             .is_face_sturdy(state, direction, support)

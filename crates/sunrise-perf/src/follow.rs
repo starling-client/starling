@@ -1,6 +1,6 @@
+use prost::Message;
 use sunrise_perf_format::v1::{Attachment, Capture, Side};
 use sunrise_perf_format::{FORMAT, Field};
-use prost::Message;
 
 use crate::error::Error;
 use crate::inflate::GzipInflater;

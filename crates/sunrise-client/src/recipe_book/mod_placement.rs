@@ -7,51 +7,17 @@ use crate::{
     crafting::{Ingredient, Placement},
     menu::place::custom_plan::{MenuPlacement, PlacementRefusal},
 };
-use mod_api::{PlacementInfo, RecipeBookDisplayEntry};
+use mod_api::{PlacementInfo, RecipeBookDisplayEntry, item::crafting::Shape};
 
-// A rejected native declaration may contain a tree too deep even to drop recursively.
-// Drain every new placement value before its category batch is dropped on refusal.
-struct BatchGuard<'a> {
-    values: &'a mut [RecipeBookCategory],
-    accepted: bool,
-}
-impl Drop for BatchGuard<'_> {
-    fn drop(&mut self) {
-        if self.accepted {
-            return;
-        }
-        for category in &mut *self.values {
-            for entry in &mut category.displays {
-                if let Some(info) = entry.placement.take() {
-                    let mut pending: Vec<_> = info.cells.into_iter().flatten().collect();
-                    while let Some(mut ingredient) = pending.pop() {
-                        if let Some((_, children)) = ingredient.children.take() {
-                            pending.extend(children);
-                        }
-                        if let Some((_, data)) = ingredient.custom.take() {
-                            for (_, tag) in data {
-                                sunrise_core::nbt::discard_tag(tag);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 fn invalid(reason: impl Into<String>) -> DisplayLoadError {
     DisplayLoadError::InvalidPlacement(reason.into())
 }
 
 pub(super) fn validate_batch(
-    values: &mut [RecipeBookCategory],
+    values: &[RecipeBookCategory],
     resources: &dyn DisplayResources,
 ) -> Result<(), DisplayLoadError> {
-    let mut guard = BatchGuard {
-        values,
-        accepted: false,
-    };
-    for category in &*guard.values {
+    for category in values {
         for entry in &category.displays {
             let Some(info) = &entry.placement else {
                 continue;
@@ -61,7 +27,6 @@ pub(super) fn validate_batch(
             })?;
         }
     }
-    guard.accepted = true;
     Ok(())
 }
 fn validate(info: &PlacementInfo, resources: &dyn DisplayResources) -> Result<(), String> {
@@ -72,65 +37,67 @@ fn validate(info: &PlacementInfo, resources: &dyn DisplayResources) -> Result<()
     {
         return Err("shape dimensions disagree with cells".into());
     }
-    // This is only a preflight for values provably unable to cross Wire. The
-    // derived codec below, not a second decoder or local depth budget, decides
-    // acceptance identically for native and wasm declarations. A record and
-    // each recursive ingredient record contributes one reader level;
-    // category/entry/info/ingredient start at four (lists/options/tuples
-    // do not add reader depth).
-    // Reject that proven lower bound before invoking the recursive encoder.
-    let mut pending: Vec<_> = info
-        .cells
-        .iter()
-        .flatten()
-        .map(|value| (value, 4usize))
-        .collect();
-    while let Some((ingredient, depth)) = pending.pop() {
-        if depth > usize::from(mod_api::wire::MAX_DEPTH) {
-            return Err("Wire refused placement: ingredient exceeds depth".into());
-        }
-        if ingredient.items.iter().any(|id| !resources.item(id)) {
-            return Err("unknown ingredient item".into());
-        }
-        let ordered: std::collections::HashSet<_> = ingredient.order.iter().cloned().collect();
-        if !ordered.is_subset(&ingredient.items)
-            || (simple_ingredient(ingredient) && ordered != ingredient.items)
-            || ordered.len() != ingredient.order.len()
-        {
-            return Err("ingredient holder order disagrees with its items".into());
-        }
-        if let Some((kind, _)) = &ingredient.custom
-            && (ingredient.children.is_some()
-                || !super::super::custom_books::valid_book_id(kind)
-                || kind.starts_with("minecraft:"))
-        {
-            return Err("custom ingredient kind is invalid or mixed with a child shape".into());
-        }
-        // Tag owns its independent, iterative vanilla depth budget.
-        // The shared codec below validates it; ingredient depth is not NBT depth.
-        if let Some((shape, children)) = &ingredient.children {
-            if children.is_empty()
-                || matches!(shape, mod_api::item::crafting::Shape::Difference)
-                    && children.len() != 2
-            {
+    for root in info.cells.iter().flatten() {
+        validate_ingredient(root, resources)?;
+    }
+    Ok(())
+}
+
+fn validate_node_header<'a>(
+    ingredient: &'a mod_api::Ingredient,
+    resources: &dyn DisplayResources,
+) -> Result<(std::slice::Iter<'a, mod_api::Ingredient>, bool), String> {
+    if ingredient.items.iter().any(|id| !resources.item(id)) {
+        return Err("unknown ingredient item".into());
+    }
+    if ingredient.custom.is_some() && (ingredient.children.is_some() || ingredient.rule.is_some()) {
+        return Err("custom ingredient cannot also have a child shape or built-in rule".into());
+    }
+    let children = match &ingredient.children {
+        Some((shape, children)) => {
+            let valid = match shape {
+                Shape::Compound | Shape::Intersection => !children.is_empty(),
+                Shape::Difference => children.len() == 2,
+                Shape::CustomDisplay => children.len() == 1,
+            };
+            if !valid {
                 return Err("ingredient shape has invalid children".into());
             }
-            pending.extend(children.iter().map(|value| (value, depth + 1)));
+            children.iter()
+        }
+        None => [].iter(),
+    };
+    let simple = ingredient.rule.is_none() && ingredient.custom.is_none();
+    Ok((children, simple))
+}
+
+fn validate_ingredient(
+    root: &mod_api::Ingredient,
+    resources: &dyn DisplayResources,
+) -> Result<(), String> {
+    let (children, simple) = validate_node_header(root, resources)?;
+    let mut stack = vec![(root, children, simple)];
+    loop {
+        let next = stack.last_mut().expect("non-empty validate stack").1.next();
+        if let Some(child) = next {
+            let (children, simple) = validate_node_header(child, resources)?;
+            stack.push((child, children, simple));
+        } else {
+            let (ingredient, _, simple) = stack.pop().expect("non-empty validate stack");
+            let ordered: std::collections::HashSet<&String> = ingredient.order.iter().collect();
+            if ordered.len() != ingredient.order.len()
+                || !ordered.iter().all(|id| ingredient.items.contains(*id))
+                || (simple && ordered.len() != ingredient.items.len())
+            {
+                return Err("ingredient holder order disagrees with its items".into());
+            }
+            if let Some(parent) = stack.last_mut() {
+                parent.2 &= simple;
+            } else {
+                return Ok(());
+            }
         }
     }
-    let mut output = mod_api::wire::Writer::new();
-    output.put(info);
-    if let Some(error) = output.error() {
-        return Err(format!("Wire refused placement: {error}"));
-    }
-    // Preserve the actual hook field's enclosing category and entry record
-    // levels. Lists, options and tuples add no reader level.
-    // This uses the shared reader, with no parallel placement codec.
-    let mut input = mod_api::wire::Reader::new(output.bytes());
-    let _: PlacementInfo = input
-        .nested(|input| input.nested(|input| input.take()))
-        .map_err(|error| format!("Wire refused placement: {error}"))?;
-    Ok(())
 }
 
 pub(super) fn compile(
@@ -154,7 +121,11 @@ pub(super) fn compile(
         cells,
         info.shape.map(|[w, h]| (usize::from(w), usize::from(h))),
     );
-    match MenuPlacement::new(menu.into(), placement, layout) {
+    let compiled = match layout.declaration() {
+        mod_api::RecipeBookLayout::Mod => MenuPlacement::for_mod(menu.into(), placement),
+        _ => MenuPlacement::new(menu.into(), placement, layout),
+    };
+    match compiled {
         Ok(plan) => Ok(Some(plan)),
         Err(PlacementRefusal::NotPlaceable) => Ok(None),
         Err(error) => Err(invalid(format!(
@@ -163,37 +134,60 @@ pub(super) fn compile(
         ))),
     }
 }
-// Only called after validate_batch accepted the shared Wire form.
+// Only called after validate_batch accepted the native declaration.
 fn convert(value: &mod_api::Ingredient) -> Ingredient {
-    Ingredient {
-        items: value.items.clone(),
-        order: value.order.clone(),
-        custom: value.custom.clone(),
+    let convert_leaf = |node: &mod_api::Ingredient| Ingredient {
+        items: node.items.clone(),
+        order: node.order.clone(),
+        tag: None,
+        custom: node.custom.clone(),
         rule: None,
         compiled: None,
-        display: value.display.as_deref().cloned(),
+        display: node.display.as_deref().cloned(),
         component_defaults: Default::default(),
         shown: None,
-        children: value
-            .children
-            .as_ref()
-            .map(|(shape, children)| (shape.clone(), children.iter().map(convert).collect())),
-    }
-}
-
-// Bound the walk before consulting an untrusted native provider's recursive tree.
-fn simple_ingredient(ingredient: &mod_api::Ingredient) -> bool {
-    let mut pending = vec![(ingredient, 0usize)];
-    while let Some((ingredient, depth)) = pending.pop() {
-        if depth > usize::from(mod_api::wire::MAX_DEPTH)
-            || ingredient.rule.is_some()
-            || ingredient.custom.is_some()
-        {
-            return false;
+        children: None,
+    };
+    let Some((root_shape, root_kids)) = &value.children else {
+        return convert_leaf(value);
+    };
+    let mut stack: Vec<(
+        &mod_api::Ingredient,
+        Shape,
+        std::slice::Iter<'_, mod_api::Ingredient>,
+        Vec<Ingredient>,
+    )> = vec![(
+        value,
+        root_shape.clone(),
+        root_kids.iter(),
+        Vec::with_capacity(root_kids.len()),
+    )];
+    loop {
+        let next = stack.last_mut().expect("non-empty convert stack").2.next();
+        if let Some(child) = next {
+            if let Some((shape, kids)) = &child.children {
+                stack.push((
+                    child,
+                    shape.clone(),
+                    kids.iter(),
+                    Vec::with_capacity(kids.len()),
+                ));
+            } else {
+                stack
+                    .last_mut()
+                    .expect("non-empty convert stack")
+                    .3
+                    .push(convert_leaf(child));
+            }
+        } else {
+            let (node, shape, _, children) = stack.pop().expect("non-empty convert stack");
+            let mut converted = convert_leaf(node);
+            converted.children = Some((shape, children));
+            if let Some(parent) = stack.last_mut() {
+                parent.3.push(converted);
+            } else {
+                return converted;
+            }
         }
-        if let Some((_, children)) = &ingredient.children {
-            pending.extend(children.iter().map(|child| (child, depth + 1)));
-        }
     }
-    true
 }

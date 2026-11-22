@@ -5,6 +5,12 @@ It is a `WorldOnly` operation: call it through the client host while a world is 
 server code or a title-screen callback. The choice is kept for the session even while the panel
 is hidden; it is not a saved player preference.
 
+In every style the mouse wheel pages the panel while the pointer is over it: one page per notch,
+down to the next page and up to the previous one, stopping at the first and last page (it does not
+wrap, even in Classic). Recipe pages shown in the panel's place turn the same way, and the mod hears
+the turn as it does from the arrows. A notch over the panel does not reach the screen underneath;
+scrolling anywhere else is unchanged. No hook is needed for this.
+
 `PanelStyle` has three variants:
 
 - `RecipeBook` (the default) uses recipe-book page arrows and a plain search field.

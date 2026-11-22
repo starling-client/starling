@@ -1,5 +1,9 @@
 # Permission nodes and handlers: proposed design
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [typed server commands](../../modding/src/how-to/entities/server-commands.md) for the current native API.
+> The permission nodes and gather/query hooks are proposals, not current command APIs. The guest dispatch and tests below are historical.
+
 **Status: the approved design for #1034 (merged in #2876); the build is #1034 and is not done.** The two gather hooks and the query API described here do not exist yet; the build follows this document. It does not change sound hooks or existing permissions.
 
 ## Boundary and existing contracts

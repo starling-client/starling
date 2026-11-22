@@ -1,8 +1,8 @@
 //! A `workGroups` over wgpu's 65535 per dimension runs, and its programs read the work group
 //! built-ins of the dispatch they declared. The programs are original.
 use super::destination_tests::Fixture;
-use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 fn pack() -> Post {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -45,6 +45,7 @@ fn pack() -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_dispatch_over_the_limit_reads_its_declared_work_groups() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

@@ -80,7 +80,7 @@ impl Game<'_> {
                 id: m.id,
                 position: [m.position.x, m.position.y, m.position.z],
                 // Vec3.horizontalDistance.
-                speed: m.velocity.x.hypot(m.velocity.z),
+                speed: sunrise_core::geometry::length(m.velocity.x, m.velocity.z),
                 baby: m.is_baby(),
                 // NeutralMob.isAngry: the anger end time is ahead.
                 angry: is_bee

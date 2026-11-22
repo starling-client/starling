@@ -7,6 +7,9 @@ pub trait Hooks {
     /// when a world opens.
     /// Set `ticks` to true to make it tick, and never clear a value an earlier mod or mixin set.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_block_entity_ticks",
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "block_entity",
@@ -14,5 +17,5 @@ pub trait Hooks {
         host = "read",
         neoforge = "none (vanilla EntityBlock.getTicker; NeoForge adds no event or extension for it)"
     )]
-    fn block_entity_ticks();
+    fn block_entity_ticks(block: &str, ticks: &mut bool);
 }

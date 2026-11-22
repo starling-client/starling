@@ -28,16 +28,16 @@
 //! chunk corner, then buried in the terrain or moved onto Nether land.
 //! Repurposed's overworld mineshafts are not centred: their top goes 15
 //! blocks under the terrain around the chunk.
-use sunrise_core::{
-    position::ChunkPos,
-    random::{LegacyRandom, RandomSource, WorldgenRandom},
-};
 use serde_json::Value;
 use std::{
     cell::RefCell,
     collections::{HashSet, VecDeque},
     rc::Rc,
     sync::Arc,
+};
+use sunrise_core::{
+    position::ChunkPos,
+    random::{LegacyRandom, RandomSource, WorldgenRandom},
 };
 use {
     super::{

@@ -1,6 +1,7 @@
 //! Production residency regressions for projectile ownership.
 #![cfg(test)]
 use crate::game::Game;
+use std::sync::{Arc, Mutex};
 use sunrise_client::{
     motion::PlayerMotion,
     projectiles::{Projectile, ProjectileKind},
@@ -9,7 +10,6 @@ use sunrise_core::geometry::Vec3;
 use sunrise_mod_runtime::attachments::{
     AttachmentType, Attachments, HasAttachmentLifetime, Holder, index::AttachmentIndex,
 };
-use std::sync::{Arc, Mutex};
 
 fn arrow(id: u32, at: [f64; 3]) -> Projectile {
     let mut p = Projectile::new(
@@ -35,7 +35,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
 };
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn projectile_restore_entries_keep_the_bound_arrow() {
     for path in 0..3 {
         let exercise = |game: &mut Game<'_>| {

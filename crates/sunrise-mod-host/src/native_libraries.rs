@@ -3,7 +3,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{ffi::CStr, path::Path};
 
-/// Commit used for the pinned SDK ABI.
+/// Commit used for the pinned SDK ABI; `dev` for a build that names none.
 pub const GAME_BUILD_ID: &str = env!("SUNRISE_GAME_BUILD_ID");
 /// Compiler release used for the pinned Rust ABI.
 pub const RUSTC_VERSION: &str = env!("SUNRISE_RUSTC_VERSION");
@@ -21,13 +21,105 @@ struct Library {
     identity: String,
 }
 
-fn verify(folder: &Path, libraries: &[Library]) -> Result<(), String> {
+/// A build identity is `<build id> <mod id> <version> <rustc release> <panic strategy>`.
+/// Returns the build id, the rustc release and the panic strategy.
+fn identity_parts(identity: &str) -> Option<(&str, &str, &str)> {
+    let parts: Vec<_> = identity.split_whitespace().collect();
+    (parts.len() == 5).then(|| (parts[0], parts[3], parts[4]))
+}
+
+/// The shared libraries an image needs: the dynamic section's `DT_NEEDED` entries on ELF, the
+/// imported libraries on Mach-O and PE.
+fn needed_libraries(bytes: &[u8]) -> Result<Vec<String>, String> {
+    use object::{
+        Object,
+        read::elf::{Dyn, ElfFile64},
+    };
+    let file = object::File::parse(bytes).map_err(|e| e.to_string())?;
+    if let object::File::Elf64(_) = &file {
+        let elf = ElfFile64::<object::Endianness>::parse(bytes).map_err(|e| e.to_string())?;
+        let endian = elf.endian();
+        let Some((entries, link)) = elf
+            .elf_section_table()
+            .dynamic(endian, bytes)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
+        let strings = elf
+            .elf_section_table()
+            .strings(endian, bytes, link)
+            .map_err(|e| e.to_string())?;
+        return entries
+            .iter()
+            .filter(|entry| entry.tag32(endian) == Some(object::elf::DT_NEEDED as i32))
+            .map(|entry| {
+                let name = entry.string(endian, strings).map_err(|e| e.to_string())?;
+                Ok(String::from_utf8_lossy(name).into_owned())
+            })
+            .collect();
+    }
+    Ok(file
+        .imports()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|import| String::from_utf8_lossy(import.library()).into_owned())
+        .collect())
+}
+
+/// The libstd image an image needs (`libstd-<hash>.so`, `std-<hash>.dll`), if any.
+fn std_library(needed: &[String]) -> Option<&str> {
+    needed.iter().map(String::as_str).find(|name| {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        name.strip_prefix("lib").unwrap_or(name).starts_with("std-")
+    })
+}
+
+/// The Rust allocator shim a `#[global_allocator]` defines (`__rust_alloc` and its family,
+/// whatever the platform or symbol version prefixes it with). The game's std provides them and
+/// every image binds to that one.
+const ALLOCATOR_SHIM: [&str; 3] = ["__rust_alloc", "__rust_dealloc", "__rust_realloc"];
+
+/// Refuses a library before any of its code runs: it must unwind, use the game's libstd and
+/// define no allocator.
+fn check_image(id: &str, bytes: &[u8], game_std: Option<&str>) -> Result<(), String> {
+    use object::Object;
+    let needed =
+        needed_libraries(bytes).map_err(|e| format!("mod {id}: unreadable library: {e}"))?;
+    if std_library(&needed) != game_std || game_std.is_none() {
+        return Err(format!(
+            "mod {id}: its libstd is {:?}, not the game's {game_std:?}: build the mod against this game's SDK, which shares one std",
+            std_library(&needed)
+        ));
+    }
+    let file =
+        object::File::parse(bytes).map_err(|e| format!("mod {id}: unreadable library: {e}"))?;
+    let exports = file
+        .exports()
+        .map_err(|e| format!("mod {id}: unreadable library: {e}"))?;
+    if let Some(shim) = exports.iter().find_map(|export| {
+        let name = String::from_utf8_lossy(export.name());
+        ALLOCATOR_SHIM
+            .iter()
+            .any(|shim| name.contains(shim))
+            .then(|| name.into_owned())
+    }) {
+        return Err(format!(
+            "mod {id}: the library defines the allocator symbol {shim}, so it has its own #[global_allocator]; the game's allocator serves every mod, remove it"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks each record row against the installation and returns the bytes the hash covers.
+fn verify(folder: &Path, libraries: &[Library]) -> Result<Vec<Vec<u8>>, String> {
+    let mut images = Vec::new();
     for library in libraries {
-        if library.identity.split_whitespace().next() != Some(GAME_BUILD_ID)
-            || library.identity.split_whitespace().last() != Some(RUSTC_VERSION)
+        if identity_parts(&library.identity)
+            .is_none_or(|(build, rustc, _)| build != GAME_BUILD_ID || rustc != RUSTC_VERSION)
         {
             return Err(format!(
-                "mod {}: incompatible build identity {:?}; game {GAME_BUILD_ID} rustc {RUSTC_VERSION}",
+                "mod {}: incompatible build identity {:?}; game {GAME_BUILD_ID} rustc {RUSTC_VERSION}. The library was built for another game build or Rust release: rebuild the mod for this build (`cargo sunrise-mod update --sunrise {GAME_BUILD_ID}`, then `cargo sunrise-mod build`)",
                 library.id, library.identity
             ));
         }
@@ -58,18 +150,21 @@ fn verify(folder: &Path, libraries: &[Library]) -> Result<(), String> {
         }
         let bytes = std::fs::read(&path)
             .map_err(|error| format!("mod {}: {}: {error}", library.id, library.file))?;
-        let actual = format!("{:x}", Sha256::digest(bytes));
+        let actual = format!("{:x}", Sha256::digest(&bytes));
         if actual != library.sha256 {
             return Err(format!(
                 "mod {}: library {} hash mismatch (expected {}, found {actual})",
                 library.id, library.file, library.sha256
             ));
         }
+        images.push(bytes);
     }
-    Ok(())
+    Ok(images)
 }
 
-fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::NativeMod>, String> {
+/// Checks and loads every native library `folder`'s `native-mods.json` lists, refusing by mod name.
+/// Public so the daily linkage probe (`tools/native_dylib_probe`) goes through the loader the game uses.
+pub fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::NativeMod>, String> {
     let path = folder.join("native-mods.json");
     let record = match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<Record>(&bytes)
@@ -77,7 +172,18 @@ fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::Native
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("native-mods.json: {e}")),
     };
-    verify(folder, &record.libraries)?;
+    let exe = std::fs::read(std::env::current_exe().map_err(|e| e.to_string())?)
+        .map_err(|e| format!("the game executable: {e}"))?;
+    let game_needed = needed_libraries(&exe).map_err(|e| format!("the game executable: {e}"))?;
+    let game_std = std_library(&game_needed);
+    // Every image is read and refused before any of them is loaded: no code of a refused library runs.
+    for (row, image) in record
+        .libraries
+        .iter()
+        .zip(verify(folder, &record.libraries)?)
+    {
+        check_image(&row.id, &image, game_std)?;
+    }
     let mut loaded = Vec::new();
     for row in &record.libraries {
         let path = folder.join(&row.file);
@@ -109,9 +215,16 @@ fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::Native
             let identity = CStr::from_ptr(pointer)
                 .to_str()
                 .map_err(|e| format!("mod {}: {e}", row.id))?;
+            if identity_parts(identity).is_some_and(|(_, _, panic)| panic != "unwind") {
+                return Err(format!(
+                    "mod {}: built with panic=abort ({identity:?}); the game unwinds a refused Host call through the mod's frames, so a native mod must be built with panic=unwind",
+                    row.id
+                ));
+            }
             if identity != row.identity
-                || identity.split_whitespace().next() != Some(GAME_BUILD_ID)
-                || identity.split_whitespace().last() != Some(RUSTC_VERSION)
+                || identity_parts(identity).is_none_or(|(build, rustc, _)| {
+                    build != GAME_BUILD_ID || rustc != RUSTC_VERSION
+                })
             {
                 return Err(format!(
                     "mod {}: identity {identity:?}, expected {:?}; game {GAME_BUILD_ID} rustc {RUSTC_VERSION}",
@@ -185,8 +298,6 @@ pub fn packages_beside(
 
 /// Start the fixed executable, registering checked native libraries before the engine seal.
 pub fn main() {
-    crate::prepare_main_stack();
-    crate::exit_if_compile_child();
     let startup = sunrise_client::entry::prepare();
     let result = std::env::current_exe()
         .map_err(|e| e.to_string())
@@ -195,7 +306,25 @@ pub fn main() {
         eprintln!("Sunrise: refusing native startup: {error}");
         std::process::exit(1);
     });
+<<<<<<< sync-sunrise-1
     crate::main_with(opened.entries, &opened.slots, opened.built, startup);
+=======
+    let mut entries = Vec::new();
+    let mut built = Vec::new();
+    let mut installs = Vec::new();
+    // Every patch copy is installed and checked before any mod's hook factory runs, as the
+    // generated `main` did: a factory may call a patched function, and a refused install stops
+    // the start before any mod code beyond the installs has run.
+    for library in &libraries {
+        installs.extend((library.installs)());
+    }
+    sunrise_client::entry::installed(&installs);
+    for library in libraries {
+        entries.extend((library.entries)());
+        built.extend_from_slice(library.built);
+    }
+    crate::main_with(entries, Box::leak(built.into_boxed_slice()), startup);
+>>>>>>> sunrise/main
 }
 
 #[cfg(test)]
@@ -209,7 +338,7 @@ mod tests {
             file: "test.so".into(),
             sha256: format!("{:x}", Sha256::digest(b"valid")),
             id: "example".into(),
-            identity: format!("{GAME_BUILD_ID} example 1 {RUSTC_VERSION}"),
+            identity: format!("{GAME_BUILD_ID} example 1 {RUSTC_VERSION} unwind"),
         };
         assert!(
             verify(&folder, std::slice::from_ref(&row))
@@ -219,8 +348,8 @@ mod tests {
         std::fs::write(folder.join("test.so"), b"valid").unwrap();
         verify(&folder, std::slice::from_ref(&row)).unwrap();
         for identity in [
-            format!("wrong example 1 {RUSTC_VERSION}"),
-            format!("{GAME_BUILD_ID} example 1 wrong"),
+            format!("wrong example 1 {RUSTC_VERSION} unwind"),
+            format!("{GAME_BUILD_ID} example 1 wrong unwind"),
         ] {
             let valid = std::mem::replace(&mut row.identity, identity);
             let error = verify(&folder, std::slice::from_ref(&row)).unwrap_err();

@@ -7,9 +7,9 @@ use super::{
     goals::{Cx, Goal, JUMP, LOOK, MOVE, goal_clone, reduced},
 };
 use crate::blocks::Fluid;
+use std::ops::ControlFlow;
 use sunrise_core::geometry::trig::Mth;
 use sunrise_core::random::RandomSource;
-use sunrise_world::move_gate::MoveGate;
 
 /// `Entity.getMotionDirection`: the horizontal step of the yaw
 /// (`Direction.fromYRot`: south, west, north, east).
@@ -107,7 +107,9 @@ impl Goal for SwimToTreasure {
         let (y, x) = (m.kind.max_head_y_rot + 20.0, m.kind.max_head_x_rot);
         m.look_at_speed(next, y, x);
         m.nav_move_to(cx.w, next, 1.3);
-        if m.random.next_int_bound(80).unwrap_or(1) == 0 {
+        // `adjustedTickDelay(80)`: this goal does not require every tick, so
+        // 40, and the draw is the level's random, not the dolphin's.
+        if cx.level.random().next_int_bound(reduced(80)).unwrap_or(1) == 0 {
             // Entity event 38: happy villager particles about the dolphin.
             cx.events.push(MobEvent::AroundSelf {
                 mob: m.id,
@@ -233,7 +235,7 @@ impl Goal for Jump {
             || m.head_pitch == 0.0
             || m.head_pitch.abs() >= 10.0
             || !m.fluids.in_water)
-            && !m.on_ground
+            && !m.ground.on_ground
     }
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         let [sx, sz] = motion_step(m.yaw);
@@ -262,7 +264,7 @@ impl Goal for Jump {
             // Mth.rotLerp(0.2, xRot, 0).
             m.head_pitch += 0.2 * super::living::wrap(0.0 - m.head_pitch);
         } else if v.length() > f64::from(1.0e-5f32) {
-            let horizontal = v.x.hypot(v.z);
+            let horizontal = sunrise_core::geometry::length(v.x, v.z);
             m.head_pitch = ((-v.y).atan2(horizontal) * f64::from(180.0f32)
                 / f64::from(std::f32::consts::PI)) as f32;
         }
@@ -281,6 +283,8 @@ pub struct FollowPlayerRidden {
     following: bool,
     recalc: i32,
     leading: bool,
+    // One rider sample belongs to the whole move, even if its landing yields again.
+    pending_rider: Option<(sunrise_core::geometry::Vec3, f32)>,
 }
 impl FollowPlayerRidden {
     pub fn new(nautilus: bool) -> Self {
@@ -289,6 +293,7 @@ impl FollowPlayerRidden {
             following: false,
             recalc: 0,
             leading: false,
+            pending_rider: None,
         }
     }
     /// `Entity.hasMovedHorizontallyRecently` of the rider, and the player's
@@ -346,10 +351,39 @@ impl Goal for FollowPlayerRidden {
     /// `FollowPlayerRiddenEntityGoal.stop`.
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.following = false;
+        self.pending_rider = None;
     }
     /// `FollowPlayerRiddenEntityGoal.tick`.
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        let Some(p) = self.rider(cx) else { return };
+        self.move_to_rider(m, cx, false);
+    }
+
+    fn tick_until_movement_pause(
+        &mut self,
+        m: &mut Mob,
+        cx: &mut Cx,
+    ) -> Option<super::living::TravelPause> {
+        self.move_to_rider(m, cx, true)
+    }
+
+    fn after_movement(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if let Some((position, yaw)) = self.pending_rider.take() {
+            self.repath(m, cx, position, yaw);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl FollowPlayerRidden {
+    fn move_to_rider(
+        &mut self,
+        m: &mut Mob,
+        cx: &mut Cx,
+        pause: bool,
+    ) -> Option<super::living::TravelPause> {
+        let p = self.rider(cx)?;
         let (position, yaw) = (p.position, p.yaw);
         let speed = if self.leading { 0.01 } else { 0.015 };
         let input = sunrise_core::geometry::Vec3::new(
@@ -358,7 +392,23 @@ impl Goal for FollowPlayerRidden {
             f64::from(m.ai.zza),
         );
         m.move_relative(speed, input);
-        m.do_move(cx.w, cx.level, cx.events, &mut MoveGate::new());
+        if let ControlFlow::Break(movement) =
+            m.travel_move(cx.w, cx.level, cx.events, pause, |_, _, _, _| {})
+        {
+            self.pending_rider = Some((position, yaw));
+            return Some(movement);
+        }
+        self.repath(m, cx, position, yaw);
+        None
+    }
+
+    fn repath(
+        &mut self,
+        m: &mut Mob,
+        cx: &mut Cx,
+        position: sunrise_core::geometry::Vec3,
+        yaw: f32,
+    ) {
         self.recalc -= 1;
         if self.recalc > 0 {
             return;
@@ -462,12 +512,8 @@ impl Goal for MoveToItem {
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(at) = m.extra.point {
             m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
-            cx.events.push(MobEvent::Sound(
-                "entity.dolphin.play",
-                [m.position.x, m.position.y, m.position.z],
-                1.0,
-                1.0,
-            ));
+            // `Entity.playSound(DOLPHIN_PLAY, 1.0, 1.0)` is silent-aware.
+            m.sound("entity.dolphin.play", cx.events);
         }
         self.cooldown = 0;
     }
@@ -580,6 +626,7 @@ mod target_tests {
     /// `Dolphin.canAttack`: a baby takes nobody as its target, so a hit on it
     /// is not answered; an adult does take the one that hurt it.
     #[test]
+    #[ignore = "daily"]
     fn a_baby_dolphin_spares_whatever_hurt_it() {
         let ran = with_test_world(&[], |w, _| {
             assert!(
@@ -591,6 +638,106 @@ mod target_tests {
                 "an adult dolphin takes its attacker"
             );
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
+    }
+}
+
+#[cfg(test)]
+mod treasure_play_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use crate::mobs::{Species, sensor_scan_tests::kind};
+    use sunrise_core::geometry::Vec3;
+
+    fn dolphin() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:dolphin".into();
+        k.species = Species::Dolphin;
+        Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0)
+    }
+
+    /// `DolphinSwimToTreasureGoal.tick`: `level.getRandom().nextInt(this.adjustedTickDelay(80))`,
+    /// the level's random and 40 ticks for a goal that does not tick every tick.
+    #[test]
+    #[ignore = "daily"]
+    fn a_dolphin_hearts_its_treasure_on_the_levels_random_every_40_ticks() {
+        let mut out = None;
+        if !with_test_world(&[], |w, _| {
+            let mut runs = Vec::new();
+            // 119: `new Random(119).nextInt(40) == 0`, but `nextInt(80) != 0`;
+            // 1: neither is 0. Vanilla draws 40 from the level's random.
+            for seed in [119, 1] {
+                let mut m = dolphin();
+                // A treasure far enough that `canContinueToUse` holds.
+                m.extra.home = Some([40, 64, 40]);
+                let mut lr = crate::health::TestLevel::new(seed);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    level: &mut lr.level(),
+                    events: &mut events,
+                };
+                let mut goal = SwimToTreasure::default();
+                goal.tick(&mut m, &mut cx);
+                let heart = events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::AroundSelf { event: 38, .. }));
+                runs.push((seed, goal.stuck, heart));
+            }
+            out = Some(runs);
+        }) {
+            return;
+        }
+        for (seed, stuck, _) in out.as_ref().unwrap() {
+            assert!(!stuck, "seed {seed}: the dolphin found no spot to swim to");
+        }
+        let runs = out.unwrap();
+        assert!(
+            runs[0].2,
+            "seed 119: the level's random says heart (nextInt(40) == 0)"
+        );
+        assert!(
+            !runs[1].2,
+            "seed 1: the level's random says no heart (nextInt(40) != 0)"
+        );
+    }
+
+    /// `Dolphin.MoveToItemGoal.start`: `playSound(DOLPHIN_PLAY, 1.0, 1.0)`,
+    /// which `Entity.playSound` drops for a silent dolphin.
+    #[test]
+    #[ignore = "daily"]
+    fn a_silent_dolphin_makes_no_sound_swimming_to_an_item() {
+        let ran = with_test_world(&[], |w, _| {
+            for silent in [false, true] {
+                let mut m = dolphin();
+                m.extra.point = Some([8.5, 64.0, 0.5]);
+                m.silent = silent;
+                let mut lr = crate::health::TestLevel::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    level: &mut lr.level(),
+                    events: &mut events,
+                };
+                MoveToItem::default().start(&mut m, &mut cx);
+                let sounds: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::Sound(name, at, volume, pitch) => {
+                            Some((*name, *at, *volume, *pitch))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if silent {
+                    assert!(sounds.is_empty(), "a silent dolphin squeaked: {sounds:?}");
+                } else {
+                    let feet = [m.position.x, m.position.y, m.position.z];
+                    assert_eq!(sounds, vec![("entity.dolphin.play", feet, 1.0, 1.0)]);
+                }
+            }
+        });
+        assert!(ran, "vanilla data is missing");
     }
 }

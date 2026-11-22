@@ -50,7 +50,7 @@ fn effect_registry_order_is_distinct_from_requested_slot_order() {
         },
     )
     .unwrap();
-    assert_eq!(resolved.indices, [2, 0, 1]);
+    assert_eq!(resolved.indices, [Some(2), Some(0), Some(1)]);
     assert_eq!(resolved.keys, [1, 2, 0]);
     assert_eq!(resolved.names.id(0), Some("test:later"));
     assert_eq!(resolved.names.id(1), Some("minecraft:speed"));
@@ -63,6 +63,27 @@ fn effect_registry_order_is_distinct_from_requested_slot_order() {
             id: "test:later".to_owned(),
         }]
     );
+}
+
+#[test]
+fn withdrawn_effect_requests_keep_later_slots_aligned() {
+    let mut names = Names::default();
+    assert_eq!(names.request("optional", "absent:comfort"), Ok(0));
+    assert_eq!(names.request("present", "present:comfort"), Ok(1));
+    names.withdraw("optional", "absent:comfort");
+    let resolved = sunrise_mod_runtime::registry_keys::resolve_effects(
+        &names,
+        ["present:comfort", "minecraft:speed"],
+        |id| match id {
+            "present:comfort" => Some(0),
+            "minecraft:speed" => Some(1),
+            _ => None,
+        },
+    )
+    .unwrap();
+    assert_eq!(resolved.indices, [None, Some(0), Some(1)]);
+    assert_eq!(resolved.keys, [1, 2]);
+    assert_eq!(resolved.names.id(1), Some("present:comfort"));
 }
 
 #[test]

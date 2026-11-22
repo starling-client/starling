@@ -5,6 +5,7 @@
 use crate::particles::{ParticleOptions, ParticleType};
 use sunrise_client_core::potions;
 use sunrise_protocol::entity_data::Value;
+use sunrise_world::attributes::Operation;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectInstance {
@@ -132,16 +133,17 @@ impl EffectInstance {
         }
         self.client_blend = (self.client_blend.1, !self.ends_within(0));
     }
-    /// Counts down this instance and its hidden chain without promoting it.
+    /// `MobEffectInstance.tickDownDuration` and `mapDuration`: tick the hidden
+    /// chain too, preserving both zero and the infinite sentinel.
     pub fn tick_down(&mut self) {
         if let Some(h) = self.hidden.as_mut() {
             h.tick_down();
         }
-        if !self.infinite() {
-            self.duration -= 1;
+        if self.duration != 0 && !self.infinite() {
+            self.duration = self.duration.wrapping_sub(1);
         }
     }
-    fn downgrade(&mut self) {
+    fn downgrade(&mut self) -> bool {
         if self.duration == 0
             && let Some(h) = self.hidden.take()
         {
@@ -152,6 +154,9 @@ impl EffectInstance {
             self.visible = h.visible;
             self.show_icon = h.show_icon;
             self.hidden = h.hidden;
+            true
+        } else {
+            false
         }
     }
 }
@@ -166,6 +171,10 @@ pub enum EffectAction {
     Exhaust(f32),
     /// FoodData.eat(nutrition, saturation modifier).
     Eat(i32, f32),
+    /// The active instance promoted its hidden effect, or updated in place.
+    Update(&'static str, i32),
+    /// The active instance expired or its tick returned false.
+    Remove(&'static str),
 }
 /// `shouldApplyEffectTickThisTick` + `applyEffectTick` for the periodic effects.
 fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
@@ -214,12 +223,19 @@ pub fn scaled_duration(duration: i32, scale: f32) -> i32 {
         ((duration as f32 * scale).floor() as i32).max(1)
     }
 }
-/// `MobEffect.particleFactory`: the omens have particles of their own, any
-/// other effect an entity effect in its colour, faint when ambient.
+/// `MobEffect.particleFactory`: the omens and the four effects `MobEffects`
+/// registers with a particle of their own (Wind Charged `SMALL_GUST`,
+/// Weaving `ITEM_COBWEB`, Oozing `ITEM_SLIME`, Infested `INFESTED`) show
+/// that one; any other effect an entity effect in its colour, faint when
+/// ambient.
 pub fn effect_particle(effect: &str, ambient: bool) -> Option<ParticleOptions> {
     Some(match effect.trim_start_matches("minecraft:") {
         "trial_omen" => ParticleOptions::simple(ParticleType::TrialOmen),
         "raid_omen" => ParticleOptions::simple(ParticleType::RaidOmen),
+        "wind_charged" => ParticleOptions::simple(ParticleType::SmallGust),
+        "weaving" => ParticleOptions::simple(ParticleType::ItemCobweb),
+        "oozing" => ParticleOptions::simple(ParticleType::ItemSlime),
+        "infested" => ParticleOptions::simple(ParticleType::Infested),
         other => {
             let color = potions::effect(other)?.color;
             let channel = |shift: u32| ((color >> shift) & 255) as f32 / 255.0;
@@ -429,7 +445,13 @@ impl PlayerEffects {
     /// ticked; the next tick refreshes Raid Omen and drops Bad Omen.
     pub fn tick_with(
         &mut self,
-        omen: &mut dyn FnMut(&EffectInstance, i32, &mut Vec<EffectAction>, bool) -> OmenTick,
+        omen: &mut dyn FnMut(
+            &EffectInstance,
+            i32,
+            &mut Vec<EffectAction>,
+            bool,
+            &[EffectInstance],
+        ) -> OmenTick,
         absorption_empty: bool,
         keep_expired: &[&'static str],
     ) -> (Vec<EffectAction>, bool) {
@@ -445,7 +467,7 @@ impl PlayerEffects {
                 if keep_expired.contains(&e.id) {
                     i += 1;
                 } else {
-                    self.list.remove(i);
+                    actions.push(EffectAction::Remove(self.list.remove(i).id));
                 }
                 continue;
             }
@@ -457,24 +479,26 @@ impl PlayerEffects {
             if let Some(a) = periodic(e.id, t, e.amplifier) {
                 actions.push(a);
             }
-            omen(e, t, &mut actions, false);
+            omen(e, t, &mut actions, false, &self.list);
             let answer = match e.id {
-                "bad_omen" => omen(e, t, &mut actions, true),
-                "raid_omen" if t == 1 => omen(e, t, &mut actions, true),
-                id if potions::is_mod_effect(id) => omen(e, t, &mut actions, true),
+                "bad_omen" => omen(e, t, &mut actions, true, &self.list),
+                "raid_omen" if t == 1 => omen(e, t, &mut actions, true, &self.list),
+                id if potions::is_mod_effect(id) => omen(e, t, &mut actions, true, &self.list),
                 "absorption" if absorption_empty => OmenTick::Remove,
                 _ => OmenTick::Continue,
             };
             match answer {
                 OmenTick::Continue => {}
                 OmenTick::Remove => {
-                    self.list.remove(i);
+                    actions.push(EffectAction::Remove(self.list.remove(i).id));
                     continue;
                 }
                 OmenTick::Add(effect) => {
                     if let Some(existing) = self.list.iter_mut().find(|x| x.id == effect.id) {
-                        existing.update(&effect);
-                        self.list.remove(i);
+                        if existing.update(&effect) {
+                            actions.push(EffectAction::Update(existing.id, existing.amplifier));
+                        }
+                        actions.push(EffectAction::Remove(self.list.remove(i).id));
                         continue;
                     }
                     self.list.push(effect);
@@ -484,13 +508,15 @@ impl PlayerEffects {
             }
             let e = &mut self.list[i];
             e.tick_down();
-            e.downgrade();
+            if e.downgrade() {
+                actions.push(EffectAction::Update(e.id, e.amplifier));
+            }
             // `MobEffectEvent.Expired`: a kept expiry leaves the effect at
             // no ticks instead of removing it here.
             if e.infinite() || e.duration > 0 || keep_expired.contains(&e.id) {
                 i += 1;
             } else {
-                self.list.remove(i);
+                actions.push(EffectAction::Remove(self.list.remove(i).id));
             }
         }
         (actions, added)
@@ -555,6 +581,7 @@ impl PlayerEffects {
             fire_resistance: self.get("fire_resistance").is_some(),
             dolphins_grace: self.get("dolphins_grace").is_some(),
             weaving: self.get("weaving").is_some(),
+            infested: self.get("infested").is_some(),
             water_breathing: self.get("water_breathing").is_some()
                 || self.get("conduit_power").is_some(),
             breath_of_the_nautilus: self.get("breath_of_the_nautilus").is_some(),
@@ -562,11 +589,11 @@ impl PlayerEffects {
         }
     }
     /// Attribute modifiers of active effects: (attribute, id, amount, operation).
-    pub fn modifiers(&self) -> Vec<(&'static str, &'static str, f64, &'static str)> {
+    pub fn modifiers(&self) -> Vec<EffectModifier> {
         let mut out = Vec::new();
         for e in &self.list {
             if let Some((a, id, amount, op)) = effect_modifier(e.id) {
-                out.push((a, id, amount * f64::from(e.amplifier + 1), op));
+                out.push((a, id, amount * f64::from(e.amplifier.wrapping_add(1)), op));
             }
         }
         out
@@ -595,6 +622,8 @@ pub struct StatusFlags {
     pub dolphins_grace: bool,
     /// Weaving: cobwebs hold half as much (`WebBlock.entityInside`).
     pub weaving: bool,
+    /// Infested: a hit that is not blocked rolls `InfestedMobEffect.onMobHurt`.
+    pub infested: bool,
     pub water_breathing: bool,
     pub breath_of_the_nautilus: bool,
     /// Armor enchantment protection per damage type id (`EnchantmentHelper.getDamageProtection`).
@@ -609,73 +638,86 @@ impl StatusFlags {
     }
 }
 
+pub type EffectModifier = (&'static str, &'static str, f64, Operation);
+
 /// The attribute modifier an effect adds at amplifier 0
 /// (`MobEffect.addAttributeModifier`): (attribute, id, amount, operation).
 /// Each level multiplies the amount (`amplifier + 1`). Vanilla's amounts are
 /// `float` literals widened to the modifier's `double`, so `f64::from` the
 /// `f32` to keep the low digits.
-pub fn effect_modifier(effect: &str) -> Option<(&'static str, &'static str, f64, &'static str)> {
+pub fn effect_modifier(effect: &str) -> Option<EffectModifier> {
     match effect {
         "speed" => Some((
             "minecraft:movement_speed",
             "minecraft:effect.speed",
             f64::from(0.2f32),
-            "add_multiplied_total",
+            Operation::AddMultipliedTotal,
         )),
         "slowness" => Some((
             "minecraft:movement_speed",
             "minecraft:effect.slowness",
             f64::from(-0.15f32),
-            "add_multiplied_total",
+            Operation::AddMultipliedTotal,
         )),
         "haste" => Some((
             "minecraft:attack_speed",
             "minecraft:effect.haste",
             f64::from(0.1f32),
-            "add_multiplied_total",
+            Operation::AddMultipliedTotal,
         )),
         "mining_fatigue" => Some((
             "minecraft:attack_speed",
             "minecraft:effect.mining_fatigue",
             f64::from(-0.1f32),
-            "add_multiplied_total",
+            Operation::AddMultipliedTotal,
         )),
         "strength" => Some((
             "minecraft:attack_damage",
             "minecraft:effect.strength",
             3.0,
-            "add_value",
+            Operation::AddValue,
         )),
         "weakness" => Some((
             "minecraft:attack_damage",
             "minecraft:effect.weakness",
             -4.0,
-            "add_value",
+            Operation::AddValue,
         )),
         "jump_boost" => Some((
             "minecraft:safe_fall_distance",
             "minecraft:effect.jump_boost",
             1.0,
-            "add_value",
+            Operation::AddValue,
         )),
         "health_boost" => Some((
             "minecraft:max_health",
             "minecraft:effect.health_boost",
             4.0,
-            "add_value",
+            Operation::AddValue,
         )),
         "absorption" => Some((
             "minecraft:max_absorption",
             "minecraft:effect.absorption",
             4.0,
-            "add_value",
+            Operation::AddValue,
         )),
-        "luck" => Some(("minecraft:luck", "minecraft:effect.luck", 1.0, "add_value")),
+        "invisibility" => Some((
+            "minecraft:waypoint_transmit_range",
+            "minecraft:effect.waypoint_transmit_range_hide",
+            -1.0,
+            Operation::AddMultipliedTotal,
+        )),
+        "luck" => Some((
+            "minecraft:luck",
+            "minecraft:effect.luck",
+            1.0,
+            Operation::AddValue,
+        )),
         "unluck" => Some((
             "minecraft:luck",
             "minecraft:effect.unluck",
             -1.0,
-            "add_value",
+            Operation::AddValue,
         )),
         _ => None,
     }
@@ -774,7 +816,8 @@ mod tests {
         let mut convert = |e: &EffectInstance,
                            _: i32,
                            _: &mut Vec<EffectAction>,
-                           dispatch: bool| match (dispatch, e.id) {
+                           dispatch: bool,
+                           _: &[EffectInstance]| match (dispatch, e.id) {
             (true, "bad_omen") => OmenTick::Add(EffectInstance::new("raid_omen", 600, e.amplifier)),
             _ => OmenTick::Continue,
         };
@@ -815,6 +858,7 @@ mod tests {
             0xFF0000,
             potions::Category::Neutral,
             None,
+            "ruby".into(),
         )]);
         let mut fx = PlayerEffects::default();
         fx.add(EffectInstance::new(
@@ -830,7 +874,7 @@ mod tests {
         ordered.add(EffectInstance::new("ruby:glow", 10, 0));
         ordered.add(EffectInstance::new("wither", 40, 0));
         let (actions, _) = ordered.tick_with(
-            &mut |_, _, actions, dispatch| {
+            &mut |_, _, actions, dispatch, _| {
                 if dispatch {
                     actions.push(EffectAction::Eat(2, 0.5));
                 }
@@ -862,7 +906,11 @@ mod tests {
         fx.add(EffectInstance::new("ruby:glow", 3, 1));
         fx.add(EffectInstance::new("ruby:bleed", -1, 0));
         let mut seen = Vec::new();
-        let mut answer = |e: &EffectInstance, t: i32, _: &mut Vec<EffectAction>, dispatch: bool| {
+        let mut answer = |e: &EffectInstance,
+                          t: i32,
+                          _: &mut Vec<EffectAction>,
+                          dispatch: bool,
+                          _: &[EffectInstance]| {
             if !dispatch {
                 return OmenTick::Continue;
             }
@@ -889,7 +937,11 @@ mod tests {
         let mut fx = PlayerEffects::default();
         fx.add(EffectInstance::new("raid_omen", 2, 0));
         let mut seen = Vec::new();
-        let mut watch = |e: &EffectInstance, _: i32, _: &mut Vec<EffectAction>, dispatch: bool| {
+        let mut watch = |e: &EffectInstance,
+                         _: i32,
+                         _: &mut Vec<EffectAction>,
+                         dispatch: bool,
+                         _: &[EffectInstance]| {
             if !dispatch {
                 return OmenTick::Continue;
             }
@@ -970,7 +1022,7 @@ mod tests {
                 "minecraft:max_absorption",
                 "minecraft:effect.absorption",
                 4.0,
-                "add_value",
+                Operation::AddValue,
             )]
         );
         fx.add(EffectInstance::new("absorption", 2400, 3));
@@ -980,7 +1032,7 @@ mod tests {
                 "minecraft:max_absorption",
                 "minecraft:effect.absorption",
                 16.0,
-                "add_value",
+                Operation::AddValue,
             )]
         );
     }

@@ -5,8 +5,8 @@
 //! hands over ([`Inbox::deliver`]), within the server's [`Offer`]. A tile
 //! refused, lost or unreadable comes back as no columns: `Lod` asks again.
 use super::{Bucket, Offer, Request, SIDE, decode_reply, reply_id};
-use crate::lod::{Column, Surface};
 use crate::streaming::{LodSampler, LodSource};
+use crate::{columns::Surface, lod::Column};
 use std::{
     collections::HashMap,
     sync::{

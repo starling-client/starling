@@ -1,5 +1,13 @@
 //! Java Edition NBT with lossless UTF-16 strings and 26.3 mixed-list wrappers.
-use std::collections::BTreeMap;
+use crate::{
+    java_hash_map::{IntoIter, Iter, JavaHashMap, JavaKey},
+    modified_utf8,
+    random::java_string_hash,
+};
+use std::{
+    cmp::Ordering,
+    hash::{Hash, Hasher},
+};
 
 /// Java strings can contain unpaired surrogates, which Rust UTF-8 strings cannot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -30,9 +38,280 @@ impl JavaString {
     pub fn to_string_lossy(&self) -> String {
         String::from_utf16_lossy(&self.0)
     }
+    /// Encoded byte length for Java's `DataOutput.writeUTF`, including each surrogate separately.
+    pub fn modified_utf8_len(&self) -> usize {
+        modified_utf8::encoded_len(&self.0)
+    }
 }
 
-pub type Compound = BTreeMap<JavaString, Tag>;
+impl JavaKey for JavaString {
+    fn java_hash(&self) -> i32 {
+        java_string_hash(self.0.iter().copied())
+    }
+
+    fn comparable_compare(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+
+    fn tie_break(&self, _other: &Self) -> Ordering {
+        unreachable!("unequal strings are Comparable")
+    }
+}
+
+/// `CompoundTag`'s Java HashMap, including collision, resize and tree-bin history.
+/// Traversal depends on the map's history; equality and hashing do not. Rust
+/// ownership cloning preserves this history; [`copy_tag`] performs Java's deep copy.
+/// The header is allocated only on first insertion, keeping scalar/list Tags compact.
+/// An emptied map retains its header and bucket capacity to preserve its history.
+#[non_exhaustive]
+#[derive(Default)]
+pub struct Compound(Option<Box<JavaHashMap<JavaString, Tag>>>);
+
+/// Allocation-free borrowed compound traversal, including the never-populated map.
+pub struct CompoundIter<'a> {
+    inner: Option<Iter<'a, JavaString, Tag>>,
+}
+impl<'a> Iterator for CompoundIter<'a> {
+    type Item = (&'a JavaString, &'a Tag);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.as_mut()?.next()
+    }
+    fn fold<B, F: FnMut(B, Self::Item) -> B>(self, acc: B, f: F) -> B {
+        match self.inner {
+            Some(iter) => iter.fold(acc, f),
+            None => acc,
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner
+            .as_ref()
+            .map_or((0, Some(0)), Iterator::size_hint)
+    }
+}
+impl ExactSizeIterator for CompoundIter<'_> {}
+impl std::iter::FusedIterator for CompoundIter<'_> {}
+
+/// Owned traversal moves the existing slab's entries, without cloning keys.
+pub struct CompoundIntoIter {
+    inner: Option<IntoIter<JavaString, Tag>>,
+}
+impl Iterator for CompoundIntoIter {
+    type Item = (JavaString, Tag);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.as_mut()?.next()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner
+            .as_ref()
+            .map_or((0, Some(0)), Iterator::size_hint)
+    }
+}
+impl ExactSizeIterator for CompoundIntoIter {}
+impl std::iter::FusedIterator for CompoundIntoIter {}
+
+/// An entry defers allocating a never-populated map until a value is inserted.
+pub struct CompoundEntry<'a> {
+    map: &'a mut Compound,
+    key: JavaString,
+}
+impl<'a> CompoundEntry<'a> {
+    pub fn or_insert(self, value: Tag) -> &'a mut Tag {
+        self.or_insert_with(|| value)
+    }
+    pub fn or_insert_with(self, make: impl FnOnce() -> Tag) -> &'a mut Tag {
+        if self.map.0.is_none() {
+            let value = make();
+            return self
+                .map
+                .0
+                .insert(Box::new(JavaHashMap::default()))
+                .entry(self.key)
+                .or_insert(value);
+        }
+        self.map
+            .0
+            .as_deref_mut()
+            .expect("allocated map")
+            .entry(self.key)
+            .or_insert_with(make)
+    }
+}
+
+impl Compound {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// `CompoundTag.shallowCopy` when the source is owned: rebuild the outer
+    /// map at Java's copy-constructor capacity and move its values unchanged.
+    /// Unlike [`copy_tag`], this preserves the history of every nested map.
+    pub fn into_shallow_copy(self) -> Self {
+        Self(
+            self.0
+                .filter(|map| !map.is_empty())
+                .map(|map| Box::new(map.into_copy())),
+        )
+    }
+    pub fn len(&self) -> usize {
+        self.0.as_deref().map_or(0, JavaHashMap::len)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.as_deref().is_none_or(JavaHashMap::is_empty)
+    }
+    pub fn get(&self, key: &JavaString) -> Option<&Tag> {
+        self.0.as_deref()?.get(key)
+    }
+    pub fn get_mut(&mut self, key: &JavaString) -> Option<&mut Tag> {
+        self.0.as_deref_mut()?.get_mut(key)
+    }
+    pub fn contains_key(&self, key: &JavaString) -> bool {
+        self.get(key).is_some()
+    }
+    pub fn insert(&mut self, key: JavaString, value: Tag) -> Option<Tag> {
+        self.0
+            .get_or_insert_with(|| Box::new(JavaHashMap::default()))
+            .put(key, value)
+    }
+    pub fn remove(&mut self, key: &JavaString) -> Option<Tag> {
+        self.0.as_deref_mut()?.remove(key)
+    }
+    pub fn clear(&mut self) {
+        if let Some(map) = self.0.as_deref_mut() {
+            map.clear();
+        }
+    }
+    pub fn entry(&mut self, key: JavaString) -> CompoundEntry<'_> {
+        CompoundEntry { map: self, key }
+    }
+    pub fn iter(&self) -> CompoundIter<'_> {
+        CompoundIter {
+            inner: self.0.as_deref().map(JavaHashMap::entries),
+        }
+    }
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &JavaString> {
+        self.iter().map(|(key, _)| key)
+    }
+    pub fn values(&self) -> impl ExactSizeIterator<Item = &Tag> {
+        self.iter().map(|(_, value)| value)
+    }
+    /// Mutate values in exact Java traversal order without allocating or cloning keys.
+    pub fn for_each_mut(&mut self, visit: impl FnMut(&JavaString, &mut Tag)) {
+        if let Some(map) = self.0.as_deref_mut() {
+            map.for_each_mut(visit);
+        }
+    }
+    pub fn into_values(self) -> impl ExactSizeIterator<Item = Tag> {
+        self.into_iter().map(|(_, value)| value)
+    }
+    pub fn retain(&mut self, keep: impl FnMut(&JavaString, &mut Tag) -> bool) {
+        if let Some(map) = self.0.as_deref_mut() {
+            map.retain(keep);
+        }
+    }
+    /// Boxed header and map arrays only; key/value descendants are excluded.
+    pub fn storage_bytes(&self) -> usize {
+        self.0.as_deref().map_or(0, |map| {
+            size_of::<JavaHashMap<JavaString, Tag>>().saturating_add(map.storage_bytes())
+        })
+    }
+    fn clone_with(&self, mut clone_value: impl FnMut(&Tag) -> Tag) -> Self {
+        Self(
+            self.0
+                .as_deref()
+                .map(|map| Box::new(map.clone_with(&mut clone_value))),
+        )
+    }
+    fn values_in_storage_order(&self) -> impl Iterator<Item = &Tag> {
+        self.0
+            .as_deref()
+            .into_iter()
+            .flat_map(JavaHashMap::values_in_storage_order)
+    }
+}
+impl Clone for Compound {
+    fn clone(&self) -> Self {
+        self.clone_with(Clone::clone)
+    }
+}
+impl std::fmt::Debug for Compound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+impl PartialEq for Compound {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self
+                .iter()
+                .all(|(key, value)| other.get(key) == Some(value))
+    }
+}
+impl Eq for Compound {}
+impl Hash for Compound {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let sum = self.iter().fold(0u64, |sum, (key, value)| {
+            let mut entry = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut entry);
+            value.hash(&mut entry);
+            sum.wrapping_add(entry.finish())
+        });
+        self.len().hash(state);
+        sum.hash(state);
+    }
+}
+impl Extend<(JavaString, Tag)> for Compound {
+    fn extend<T: IntoIterator<Item = (JavaString, Tag)>>(&mut self, entries: T) {
+        for (key, value) in entries {
+            self.insert(key, value);
+        }
+    }
+}
+impl FromIterator<(JavaString, Tag)> for Compound {
+    fn from_iter<T: IntoIterator<Item = (JavaString, Tag)>>(entries: T) -> Self {
+        let mut entries = entries.into_iter();
+        let Some((first_key, first_value)) = entries.next() else {
+            return Self::new();
+        };
+        let (lower, upper) = entries.size_hint();
+        let capacity = if upper == Some(lower) {
+            lower.saturating_add(1)
+        } else {
+            0
+        };
+        let mut map = Box::new(JavaHashMap::with_reserved_nodes(capacity));
+        map.put(first_key, first_value);
+        for (key, value) in entries {
+            map.put(key, value);
+        }
+        Self(Some(map))
+    }
+}
+impl<const N: usize> From<[(JavaString, Tag); N]> for Compound {
+    fn from(entries: [(JavaString, Tag); N]) -> Self {
+        entries.into_iter().collect()
+    }
+}
+impl IntoIterator for Compound {
+    type Item = (JavaString, Tag);
+    type IntoIter = CompoundIntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        CompoundIntoIter {
+            inner: self.0.map(|map| (*map).into_iter()),
+        }
+    }
+}
+impl<'a> IntoIterator for &'a Compound {
+    type Item = (&'a JavaString, &'a Tag);
+    type IntoIter = CompoundIter<'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+impl std::ops::Index<&JavaString> for Compound {
+    type Output = Tag;
+    fn index(&self, key: &JavaString) -> &Tag {
+        self.get(key).expect("compound key exists")
+    }
+}
 
 /// Float and double variants hold their IEEE bit patterns. Java's disk output
 /// canonicalizes NaNs (`DataOutputStream.writeFloat`); its network output
@@ -90,19 +369,47 @@ impl Tag {
     }
 }
 
-/// Clone opaque NBT with an explicit work list, without recursive cloning.
-/// The returned tree retains ordinary Tag ownership and drop behavior.
+/// Decode an NBT number as `NbtOps.getNumberValue` followed by Java's `Number.intValue`.
+pub fn numeric_int(value: &Tag) -> Option<i32> {
+    Some(match value {
+        Tag::Byte(n) => i32::from(*n),
+        Tag::Short(n) => i32::from(*n),
+        Tag::Int(n) => *n,
+        Tag::Long(n) => *n as i32,
+        Tag::Float(n) => f32::from_bits(*n) as i32,
+        Tag::Double(n) => f64::from_bits(*n) as i32,
+        _ => return None,
+    })
+}
+
+/// Stack-safe Rust ownership clone, preserving compound bucket and tree history.
 pub fn clone_tag(root: &Tag) -> Tag {
+    clone_tree(root, false)
+}
+
+/// `CompoundTag.copy` and `ListTag.copy`: recursively copy values, inserting
+/// each compound's Java traversal into a fresh default-capacity HashMap.
+pub fn copy_tag(root: &Tag) -> Tag {
+    clone_tree(root, true)
+}
+
+fn clone_tree(root: &Tag, java_copy: bool) -> Tag {
     match root {
         Tag::List(values) if values.is_empty() => return root.clone(),
-        Tag::Compound(values) if values.is_empty() => return root.clone(),
+        Tag::Compound(values) if values.is_empty() => {
+            return if java_copy {
+                Tag::Compound(Compound::new())
+            } else {
+                root.clone()
+            };
+        }
         Tag::List(_) | Tag::Compound(_) => {}
         _ => return root.clone(),
     }
     enum Work<'a> {
         Enter(&'a Tag),
         List(usize),
-        Compound(Vec<JavaString>),
+        Compound(&'a Compound),
     }
     let mut work = vec![Work::Enter(root)];
     let mut done = Vec::new();
@@ -113,8 +420,12 @@ pub fn clone_tag(root: &Tag) -> Tag {
                 work.extend(values.iter().rev().map(Work::Enter));
             }
             Work::Enter(Tag::Compound(values)) => {
-                work.push(Work::Compound(values.keys().cloned().collect()));
-                work.extend(values.values().rev().map(Work::Enter));
+                work.push(Work::Compound(values));
+                if java_copy {
+                    work.extend(values.values().map(Work::Enter));
+                } else {
+                    work.extend(values.values_in_storage_order().map(Work::Enter));
+                }
             }
             Work::Enter(
                 value @ (Tag::End
@@ -133,9 +444,16 @@ pub fn clone_tag(root: &Tag) -> Tag {
                 let values = done.split_off(done.len() - len);
                 done.push(Tag::List(values));
             }
-            Work::Compound(keys) => {
-                let values = done.split_off(done.len() - keys.len());
-                done.push(Tag::Compound(keys.into_iter().zip(values).collect()));
+            Work::Compound(source) => {
+                let start = done.len() - source.len();
+                let mut children = done.drain(start..).rev();
+                let copy = if java_copy {
+                    source.keys().cloned().zip(children.by_ref()).collect()
+                } else {
+                    source.clone_with(|_| children.next().expect("cloned child"))
+                };
+                drop(children);
+                done.push(Tag::Compound(copy));
             }
         }
     }
@@ -144,7 +462,11 @@ pub fn clone_tag(root: &Tag) -> Tag {
 
 /// Release a boundary-owned tag without recursive list/compound drops.
 pub fn discard_tag(root: Tag) {
-    let mut pending = vec![root];
+    let mut pending: Vec<_> = match root {
+        Tag::List(values) => values,
+        Tag::Compound(values) => values.into_values().collect(),
+        _ => return,
+    };
     while let Some(tag) = pending.pop() {
         match tag {
             Tag::List(values) => pending.extend(values),
@@ -189,6 +511,12 @@ pub struct NamedTag {
     pub name: JavaString,
     pub tag: Tag,
 }
+
+/// How deep the disk writer nests containers before it refuses, as a guard on its own
+/// recursion and nothing else. Vanilla's `NbtIo.write` has no nesting limit: it writes a tree
+/// deeper than `NbtAccounter.MAX_STACK_DEPTH` (512) and the later read fails with "depth > 512",
+/// so a region write uses this bound where a read uses [`Limits::max_depth`].
+pub const DISK_WRITE_NESTING_GUARD: usize = 2048;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -285,6 +613,144 @@ impl std::error::Error for Error {}
 /// Hands a streamed list's elements to the caller one at a time (see
 /// [`read_named_streaming`]).
 type Visit<'s> = &'s mut dyn FnMut(&mut ListElements<'_, '_, '_>) -> Result<(), Error>;
+
+mod packed;
+#[doc(hidden)]
+pub use packed::{pack_network, unpack_network};
+
+/// Outputs of the same decoder. The tape retains compound entries in insertion
+/// order; the tree output inserts them immediately and also supports disk quotas.
+trait DecodeOutput {
+    type Value;
+    type List;
+    type Map;
+    type Key;
+
+    fn scalar(&mut self, offset: usize, wire: &[u8], value: Tag) -> Self::Value;
+    fn array(&mut self, kind: ArrayKind, offset: usize, bytes: &[u8]) -> Self::Value;
+    fn list(&mut self, offset: usize, len: usize) -> Self::List;
+    fn push(&mut self, list: &mut Self::List, value: Self::Value);
+    fn end_list(&mut self, list: Self::List) -> Self::Value;
+    fn compound(&mut self) -> Self::Map;
+    fn contains(&self, map: &Self::Map, key: &JavaString) -> bool;
+    fn key(&mut self, offset: usize, wire: &[u8], key: JavaString) -> Self::Key;
+    fn insert(&mut self, map: &mut Self::Map, key: Self::Key, value: Self::Value) -> bool;
+    fn end_compound(&mut self, map: Self::Map) -> Self::Value;
+}
+
+#[derive(Clone, Copy)]
+enum ArrayKind {
+    Byte,
+    Int,
+    Long,
+}
+
+impl ArrayKind {
+    fn width(self) -> usize {
+        match self {
+            Self::Byte => 1,
+            Self::Int => 4,
+            Self::Long => 8,
+        }
+    }
+
+    fn tag(self, bytes: &[u8], native: bool) -> Tag {
+        match self {
+            Self::Byte => Tag::ByteArray(bytes.to_vec()),
+            Self::Int => Tag::IntArray(
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&word| {
+                        if native {
+                            i32::from_ne_bytes(word)
+                        } else {
+                            i32::from_be_bytes(word)
+                        }
+                    })
+                    .collect(),
+            ),
+            Self::Long => Tag::LongArray(
+                bytes
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|&word| {
+                        if native {
+                            i64::from_ne_bytes(word)
+                        } else {
+                            i64::from_be_bytes(word)
+                        }
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+struct Tree;
+
+impl DecodeOutput for Tree {
+    type Value = Tag;
+    type List = Vec<Tag>;
+    type Map = Compound;
+    type Key = JavaString;
+
+    fn scalar(&mut self, _: usize, _: &[u8], value: Tag) -> Tag {
+        match value {
+            Tag::Float(bits) => float_tag(bits),
+            Tag::Double(bits) => double_tag(bits),
+            value => value,
+        }
+    }
+    fn array(&mut self, kind: ArrayKind, _: usize, bytes: &[u8]) -> Tag {
+        kind.tag(bytes, false)
+    }
+    fn list(&mut self, _: usize, len: usize) -> Vec<Tag> {
+        Vec::with_capacity(len)
+    }
+    fn push(&mut self, list: &mut Vec<Tag>, value: Tag) {
+        list.push(unwrap_list_element(value));
+    }
+    fn end_list(&mut self, list: Vec<Tag>) -> Tag {
+        Tag::List(list)
+    }
+    fn compound(&mut self) -> Compound {
+        Compound::new()
+    }
+    fn contains(&self, map: &Compound, key: &JavaString) -> bool {
+        map.contains_key(key)
+    }
+    fn key(&mut self, _: usize, _: &[u8], key: JavaString) -> JavaString {
+        key
+    }
+    fn insert(&mut self, map: &mut Compound, key: JavaString, value: Tag) -> bool {
+        map.insert(key, value).is_none()
+    }
+    fn end_compound(&mut self, map: Compound) -> Tag {
+        Tag::Compound(map)
+    }
+}
+
+fn float_tag(bits: u32) -> Tag {
+    Tag::Float(if f32::from_bits(bits) == 0.0 { 0 } else { bits })
+}
+
+fn double_tag(bits: u64) -> Tag {
+    Tag::Double(if f64::from_bits(bits) == 0.0 { 0 } else { bits })
+}
+
+/// ListTag.addAndUnwrap checks the final map after any duplicate keys.
+fn unwrap_list_element(mut value: Tag) -> Tag {
+    if let Tag::Compound(map) = &mut value
+        && map.len() == 1
+        && let Some(inner) = map.remove(&JavaString::default())
+    {
+        return inner;
+    }
+    value
+}
 
 struct Reader<'a, 's> {
     bytes: &'a [u8],
@@ -405,96 +871,99 @@ impl<'a> Reader<'a, '_> {
         Ok((element_id, len))
     }
     fn payload(&mut self, id: u8, depth: usize) -> Result<Tag, Error> {
+        self.decode(id, depth, &mut Tree)
+    }
+    fn decode<O: DecodeOutput>(
+        &mut self,
+        id: u8,
+        depth: usize,
+        output: &mut O,
+    ) -> Result<O::Value, Error> {
         self.entry(id, depth)?;
         match id {
-            9 => self.list_payload(depth),
-            10 => self.compound_payload(depth),
-            _ => self.scalar_payload(id),
+            9 => self.list_payload(depth, output),
+            10 => self.compound_payload(depth, output),
+            7 => self.array_payload(ArrayKind::Byte, output),
+            11 => self.array_payload(ArrayKind::Int, output),
+            12 => self.array_payload(ArrayKind::Long, output),
+            _ => self.scalar_payload(id, output),
         }
     }
     // Scalar temporaries must not occupy every recursive container frame.
-    fn scalar_payload(&mut self, id: u8) -> Result<Tag, Error> {
-        Ok(match id {
+    fn scalar_payload<O: DecodeOutput>(
+        &mut self,
+        id: u8,
+        output: &mut O,
+    ) -> Result<O::Value, Error> {
+        let offset = self.offset;
+        let tag = match id {
             0 => Tag::End,
             1 => Tag::Byte(self.byte()? as i8),
             2 => Tag::Short(i16::from_be_bytes(self.number()?)),
             3 => Tag::Int(i32::from_be_bytes(self.number()?)),
             4 => Tag::Long(i64::from_be_bytes(self.number()?)),
-            5 => {
-                let bits = u32::from_be_bytes(self.number()?);
-                Tag::Float(if f32::from_bits(bits) == 0.0 { 0 } else { bits })
-            }
-            6 => {
-                let bits = u64::from_be_bytes(self.number()?);
-                Tag::Double(if f64::from_bits(bits) == 0.0 { 0 } else { bits })
-            }
-            7 => {
-                let len = self.count(1)?;
-                self.charge(len as u64)?;
-                Tag::ByteArray(self.take(len)?.to_vec())
-            }
+            5 => Tag::Float(u32::from_be_bytes(self.number()?)),
+            6 => Tag::Double(u64::from_be_bytes(self.number()?)),
             8 => {
                 let value = self.string()?;
                 self.charge(2 * value.0.len() as u64)?;
                 Tag::String(value)
             }
-
-            11 => {
-                let len = self.count(4)?;
-                self.charge(4 * len as u64)?;
-                let mut values = Vec::with_capacity(len);
-                for _ in 0..len {
-                    values.push(i32::from_be_bytes(self.number()?));
-                }
-                Tag::IntArray(values)
-            }
-            12 => {
-                let len = self.count(8)?;
-                self.charge(8 * len as u64)?;
-                let mut values = Vec::with_capacity(len);
-                for _ in 0..len {
-                    values.push(i64::from_be_bytes(self.number()?));
-                }
-                Tag::LongArray(values)
-            }
             _ => return Err(self.error("unknown tag type")),
-        })
+        };
+        Ok(output.scalar(offset, &self.bytes[offset..self.offset], tag))
     }
-    fn list_payload(&mut self, depth: usize) -> Result<Tag, Error> {
+    fn array_payload<O: DecodeOutput>(
+        &mut self,
+        kind: ArrayKind,
+        output: &mut O,
+    ) -> Result<O::Value, Error> {
+        let width = kind.width();
+        let bytes = self.count(width)? * width;
+        self.charge(bytes as u64)?;
+        let offset = self.offset;
+        Ok(output.array(kind, offset, self.take(bytes)?))
+    }
+    fn list_payload<O: DecodeOutput>(
+        &mut self,
+        depth: usize,
+        output: &mut O,
+    ) -> Result<O::Value, Error> {
         let (element_id, len) = self.list_header()?;
         self.charge(4 * len as u64)?;
-        let mut values = Vec::with_capacity(len);
+        let mut values = output.list(self.offset - 4, len);
         for _ in 0..len {
-            let mut value = self.payload(element_id, depth + 1)?;
-            if let Tag::Compound(map) = &mut value
-                && map.len() == 1
-                && map.contains_key(&JavaString::default())
-            {
-                value = map.remove(&JavaString::default()).unwrap();
-            }
-            values.push(value);
+            let value = self.decode(element_id, depth + 1, output)?;
+            output.push(&mut values, value);
         }
-        Ok(Tag::List(values))
+        Ok(output.end_list(values))
     }
-    fn compound_payload(&mut self, depth: usize) -> Result<Tag, Error> {
+    fn compound_payload<O: DecodeOutput>(
+        &mut self,
+        depth: usize,
+        output: &mut O,
+    ) -> Result<O::Value, Error> {
         let paths = std::mem::take(&mut self.entering);
         let parent = self.holds_bounded(paths, depth);
-        let mut map = Compound::new();
+        let mut map = output.compound();
         loop {
             let id = self.byte()?;
             if id == 0 {
                 break;
             }
+            let offset = self.offset;
             let name = self.string()?;
+            let wire = &self.bytes[offset..self.offset];
             self.charge(28 + 2 * name.0.len() as u64)?;
-            if self.strict && map.contains_key(&name) {
+            if self.strict && output.contains(&map, &name) {
                 return Err(self.error("duplicate key"));
             }
-            let value = if id == 9 && depth <= 1 && self.streams(&name) {
-                self.stream_list(depth + 1)?
+            let (key, value) = if id == 9 && depth <= 1 && self.streams(&name) {
+                let value = self.stream_list(depth + 1)?;
+                (output.key(offset, wire, name), output.scalar(0, &[], value))
             } else if parent && !self.strict && self.bounds(&name) {
                 match self.bounded_payload(id, depth + 1)? {
-                    Some(value) => value,
+                    Some(value) => (output.key(offset, wire, name), output.scalar(0, &[], value)),
                     None => continue,
                 }
             } else {
@@ -503,14 +972,15 @@ impl<'a> Reader<'a, '_> {
                 } else {
                     0
                 };
-                self.payload(id, depth + 1)?
+                let key = output.key(offset, wire, name);
+                (key, self.decode(id, depth + 1, output)?)
             };
             // Java maps retain the last duplicate key and charge new entries only.
-            if map.insert(name, value).is_none() {
+            if output.insert(&mut map, key, value) {
                 self.charge(36)?;
             }
         }
-        Ok(Tag::Compound(map))
+        Ok(output.end_compound(map))
     }
     fn bounds(&self, name: &JavaString) -> bool {
         self.bounded.is_some_and(|b| is_key(name, b.key))
@@ -685,14 +1155,8 @@ impl ListElements<'_, '_, '_> {
             return Ok(None);
         }
         self.left -= 1;
-        let mut value = self.reader.payload(self.element_id, self.depth)?;
-        if let Tag::Compound(map) = &mut value
-            && map.len() == 1
-            && map.contains_key(&JavaString::default())
-        {
-            value = map.remove(&JavaString::default()).unwrap();
-        }
-        Ok(Some(value))
+        let value = self.reader.payload(self.element_id, self.depth)?;
+        Ok(Some(unwrap_list_element(value)))
     }
     /// An error at the current position in the input.
     pub fn error(&self, reason: &'static str) -> Error {
@@ -704,49 +1168,37 @@ fn is_key(name: &JavaString, key: &str) -> bool {
     name.0.iter().copied().eq(key.encode_utf16())
 }
 
-/// `DataInput.readUTF`'s decoding, accepting its overlong sequences; `None`
-/// for bytes that aren't modified UTF-8.
+/// `DataInput.readUTF`'s decoding; `None` for bytes that aren't modified UTF-8.
 fn modified_utf8(bytes: &[u8]) -> Option<JavaString> {
-    if bytes.is_ascii() {
-        return Some(JavaString(bytes.iter().map(|&b| u16::from(b)).collect()));
-    }
-    let len = bytes.len();
-    let mut units = Vec::with_capacity(len);
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        let (unit, size) = match b {
-            0..=127 => (u16::from(b), 1),
-            192..=223 if i + 1 < len && bytes[i + 1] & 0xc0 == 0x80 => {
-                ((u16::from(b & 31) << 6) | u16::from(bytes[i + 1] & 63), 2)
-            }
-            224..=239
-                if i + 2 < len && bytes[i + 1] & 0xc0 == 0x80 && bytes[i + 2] & 0xc0 == 0x80 =>
-            {
-                (
-                    (u16::from(b & 15) << 12)
-                        | (u16::from(bytes[i + 1] & 63) << 6)
-                        | u16::from(bytes[i + 2] & 63),
-                    3,
-                )
-            }
-            _ => return None,
-        };
-        // Match DataInput.readUTF, including accepted overlong sequences.
-        units.push(unit);
-        i += size;
-    }
-    Some(JavaString(units))
+    modified_utf8::decode(bytes).map(JavaString)
 }
 
 /// Read a file root (type, modified-UTF name, payload), returning bytes consumed.
 pub fn read_named(bytes: &[u8], limits: Limits) -> Result<(NamedTag, usize), Error> {
+    read_named_with_heap(bytes, limits, None)
+}
+
+/// [`read_named`] under a vanilla `NbtAccounter` heap quota: `quota` is in
+/// its estimated heap bytes, not encoded bytes (the root name is not charged).
+pub fn read_named_quota(
+    bytes: &[u8],
+    limits: Limits,
+    quota: u64,
+) -> Result<(NamedTag, usize), Error> {
+    read_named_with_heap(bytes, limits, Some(quota))
+}
+
+fn read_named_with_heap(
+    bytes: &[u8],
+    limits: Limits,
+    quota: Option<u64>,
+) -> Result<(NamedTag, usize), Error> {
     let mut reader = Reader {
         bytes,
         offset: 0,
         limits,
         nodes: 0,
-        heap: None,
+        heap: quota.map(|quota| (0, quota)),
         stream: None,
         bounded: None,
         strict: false,
@@ -833,7 +1285,11 @@ pub fn read_named_streaming(
 
 /// Read a network root (type and payload, without the file name field).
 pub fn read_network(bytes: &[u8], limits: Limits) -> Result<(Tag, usize), Error> {
-    let mut reader = Reader {
+    read_network_with_reader(&mut network_reader(bytes, limits), &mut Tree)
+}
+
+fn network_reader(bytes: &[u8], limits: Limits) -> Reader<'_, 'static> {
+    Reader {
         bytes,
         offset: 0,
         limits,
@@ -844,17 +1300,19 @@ pub fn read_network(bytes: &[u8], limits: Limits) -> Result<(Tag, usize), Error>
         strict: false,
         entering: 0,
         rejected: 0,
-    };
-    read_network_with_reader(&mut reader)
+    }
 }
 
-fn read_network_with_reader(reader: &mut Reader<'_, '_>) -> Result<(Tag, usize), Error> {
+fn read_network_with_reader<O: DecodeOutput>(
+    reader: &mut Reader<'_, '_>,
+    output: &mut O,
+) -> Result<(O::Value, usize), Error> {
     let id = reader.byte()?;
     // NbtIo.readAnyTag returns End directly without loading its payload.
     let tag = if id == 0 {
-        Tag::End
+        output.scalar(1, &[], Tag::End)
     } else {
-        reader.payload(id, 0)?
+        reader.decode(id, 0, output)?
     };
     Ok((tag, reader.offset))
 }
@@ -890,40 +1348,23 @@ impl Writer {
         self.put(&len.to_be_bytes())
     }
     fn string(&mut self, string: &JavaString) -> Result<(), Error> {
-        let len: usize = string
-            .0
-            .iter()
-            .map(|&c| match c {
-                1..=127 => 1,
-                0..=2047 => 2,
-                _ => 3,
-            })
-            .sum();
-        let Ok(len) = u16::try_from(len) else {
+        let len = modified_utf8::encoded_len(&string.0);
+        let Ok(prefix) = u16::try_from(len) else {
             if self.empty_long_strings {
                 return self.put(&0u16.to_be_bytes());
             }
             return Err(self.error("modified UTF-8 exceeds 65535 bytes"));
         };
-        self.put(&len.to_be_bytes())?;
-        // One byte per unit (most strings): written at once while they fit.
-        if usize::from(len) == string.0.len()
-            && usize::from(len) <= self.limits.max_bytes.saturating_sub(self.bytes.len())
-        {
-            self.bytes.extend(string.0.iter().map(|&c| c as u8));
-            return Ok(());
+        self.put(&prefix.to_be_bytes())?;
+        let room = self.limits.max_bytes.saturating_sub(self.bytes.len());
+        if len > room {
+            // Where writing one unit at a time stops: at the first unit that doesn't fit.
+            return Err(Error {
+                offset: self.bytes.len() + modified_utf8::fitting_len(&string.0, room),
+                reason: "byte limit exceeded",
+            });
         }
-        for &c in &string.0 {
-            match c {
-                1..=127 => self.put(&[c as u8])?,
-                0..=2047 => self.put(&[0xc0 | (c >> 6) as u8, 0x80 | (c & 63) as u8])?,
-                _ => self.put(&[
-                    0xe0 | (c >> 12) as u8,
-                    0x80 | ((c >> 6) & 63) as u8,
-                    0x80 | (c & 63) as u8,
-                ])?,
-            }
-        }
+        modified_utf8::encode(&string.0, len, &mut self.bytes);
         Ok(())
     }
     fn payload(&mut self, tag: &Tag, depth: usize) -> Result<(), Error> {
@@ -1105,222 +1546,19 @@ pub fn compare_nbt(expected: &Tag, actual: Option<&Tag>) -> bool {
     }
 }
 
-/// SNBT (`TagParser`): compounds, lists, typed arrays, quoted and bare
-/// strings, booleans and suffixed numbers. Returns the tag and the bytes read.
-pub fn parse_snbt(text: &str) -> Result<(Tag, usize), String> {
-    let mut p = Snbt {
-        s: text.as_bytes(),
-        i: 0,
-        depth: 0,
-    };
-    let tag = p.value()?;
-    Ok((tag, p.i))
-}
-/// Nesting deeper than NBT's own limit (`NbtAccounter`'s 512) is refused
-/// rather than overflowing the stack.
-const SNBT_MAX_DEPTH: usize = 512;
-struct Snbt<'a> {
-    s: &'a [u8],
-    i: usize,
-    depth: usize,
-}
-impl Snbt<'_> {
-    fn skip(&mut self) {
-        while self.i < self.s.len() && self.s[self.i].is_ascii_whitespace() {
-            self.i += 1;
-        }
-    }
-    fn peek(&mut self) -> Option<u8> {
-        self.skip();
-        self.s.get(self.i).copied()
-    }
-    fn expect(&mut self, c: u8) -> Result<(), String> {
-        if self.peek() == Some(c) {
-            self.i += 1;
-            Ok(())
-        } else {
-            Err(format!("expected '{}' at {}", c as char, self.i))
-        }
-    }
-    fn bare(c: u8) -> bool {
-        c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b'+')
-    }
-    fn string(&mut self) -> Result<String, String> {
-        match self.peek() {
-            Some(q @ (b'"' | b'\'')) => {
-                self.i += 1;
-                let mut out = Vec::new();
-                while let Some(&c) = self.s.get(self.i) {
-                    self.i += 1;
-                    if c == b'\\' {
-                        if let Some(&n) = self.s.get(self.i) {
-                            self.i += 1;
-                            out.push(match n {
-                                b'n' => b'\n',
-                                b't' => b'\t',
-                                other => other,
-                            });
-                        }
-                    } else if c == q {
-                        return String::from_utf8(out).map_err(|e| e.to_string());
-                    } else {
-                        out.push(c);
-                    }
-                }
-                Err("unterminated string".into())
-            }
-            _ => {
-                let start = self.i;
-                while self.s.get(self.i).is_some_and(|&c| Self::bare(c)) {
-                    self.i += 1;
-                }
-                if start == self.i {
-                    return Err(format!("expected a value at {start}"));
-                }
-                Ok(String::from_utf8_lossy(&self.s[start..self.i]).into_owned())
-            }
-        }
-    }
-    fn value(&mut self) -> Result<Tag, String> {
-        match self.peek() {
-            Some(b'{') => {
-                if self.depth >= SNBT_MAX_DEPTH {
-                    return Err(format!("tag nesting too deep at {}", self.i));
-                }
-                self.depth += 1;
-                let tag = self.compound();
-                self.depth -= 1;
-                tag
-            }
-            Some(b'[') => {
-                if self.depth >= SNBT_MAX_DEPTH {
-                    return Err(format!("tag nesting too deep at {}", self.i));
-                }
-                self.depth += 1;
-                let tag = self.list();
-                self.depth -= 1;
-                tag
-            }
-            Some(b'"' | b'\'') => Ok(Tag::String(JavaString::from(self.string()?.as_str()))),
-            _ => {
-                let word = self.string()?;
-                Ok(Self::scalar(&word))
-            }
-        }
-    }
-    fn compound(&mut self) -> Result<Tag, String> {
-        self.i += 1;
-        let mut map = Compound::new();
-        if self.peek() == Some(b'}') {
-            self.i += 1;
-            return Ok(Tag::Compound(map));
-        }
-        loop {
-            let key = self.string()?;
-            self.expect(b':')?;
-            map.insert(JavaString::from(key.as_str()), self.value()?);
-            match self.peek() {
-                // SnbtGrammar: an entry may be followed by a comma before the brace.
-                Some(b',') => {
-                    self.i += 1;
-                    if self.peek() == Some(b'}') {
-                        self.i += 1;
-                        return Ok(Tag::Compound(map));
-                    }
-                }
-                Some(b'}') => {
-                    self.i += 1;
-                    return Ok(Tag::Compound(map));
-                }
-                _ => return Err(format!("expected ',' or '}}' at {}", self.i)),
-            }
-        }
-    }
-    fn list(&mut self) -> Result<Tag, String> {
-        self.i += 1;
-        let typed = match (self.s.get(self.i), self.s.get(self.i + 1)) {
-            (Some(&t @ (b'B' | b'I' | b'L')), Some(b';')) => {
-                self.i += 2;
-                Some(t)
-            }
-            _ => None,
-        };
-        let mut items = Vec::new();
-        if self.peek() != Some(b']') {
-            loop {
-                items.push(self.value()?);
-                match self.peek() {
-                    // SnbtGrammar: a list or array may end with a comma.
-                    Some(b',') => {
-                        self.i += 1;
-                        if self.peek() == Some(b']') {
-                            break;
-                        }
-                    }
-                    Some(b']') => break,
-                    _ => return Err(format!("expected ',' or ']' at {}", self.i)),
-                }
-            }
-        }
-        self.i += 1;
-        let long = |t: &Tag| match *t {
-            Tag::Byte(v) => i64::from(v),
-            Tag::Short(v) => i64::from(v),
-            Tag::Int(v) => i64::from(v),
-            Tag::Long(v) => v,
-            _ => 0,
-        };
-        Ok(match typed {
-            Some(b'B') => Tag::ByteArray(items.iter().map(|t| long(t) as u8).collect()),
-            Some(b'I') => Tag::IntArray(items.iter().map(|t| long(t) as i32).collect()),
-            Some(_) => Tag::LongArray(items.iter().map(long).collect()),
-            None => Tag::List(items),
-        })
-    }
-    /// A bare word: a typed number, a boolean, or else a string.
-    /// `FloatTag.valueOf` / `DoubleTag.valueOf` canonicalize either zero sign.
-    fn scalar(word: &str) -> Tag {
-        match word {
-            "true" => return Tag::Byte(1),
-            "false" => return Tag::Byte(0),
-            _ => {}
-        }
-        let lower = word.to_ascii_lowercase();
-        let (body, suffix) = match lower.as_bytes().last() {
-            Some(c @ (b'b' | b's' | b'l' | b'f' | b'd')) => (&word[..word.len() - 1], Some(*c)),
-            _ => (word, None),
-        };
-        // Only digits (and an exponent) make a number: a word like `nan` or
-        // `infd` that Rust's float parse would take is a string here.
-        if body
-            .bytes()
-            .any(|c| c.is_ascii_alphabetic() && c != b'e' && c != b'E')
-        {
-            return Tag::String(JavaString::from(word));
-        }
-        let parsed = match suffix {
-            Some(b'b') => body.parse::<i8>().ok().map(Tag::Byte),
-            Some(b's') => body.parse::<i16>().ok().map(Tag::Short),
-            Some(b'l') => body.parse::<i64>().ok().map(Tag::Long),
-            Some(b'f') => body
-                .parse::<f32>()
-                .ok()
-                .map(|v| Tag::Float(if v == 0.0 { 0 } else { v.to_bits() })),
-            Some(_) => body
-                .parse::<f64>()
-                .ok()
-                .map(|v| Tag::Double(if v == 0.0 { 0 } else { v.to_bits() })),
-            None if body.contains('.') || body.contains('e') || body.contains('E') => body
-                .parse::<f64>()
-                .ok()
-                .map(|v| Tag::Double(if v == 0.0 { 0 } else { v.to_bits() })),
-            None => body.parse::<i32>().ok().map(Tag::Int),
-        };
-        parsed.unwrap_or_else(|| Tag::String(JavaString::from(word)))
-    }
+/// Run the next recursive step over a materialized tree without a binary-read depth limit.
+#[doc(hidden)]
+pub fn with_tree_stack<T>(step: impl FnOnce() -> T) -> T {
+    stacker::maybe_grow(64 * 1024, 1024 * 1024, step)
 }
 
-/// A tag as its network NBT bytes (`write_network`), the form it crosses to a wasm mod in; a
+#[path = "nbt_snbt.rs"]
+mod snbt;
+pub use snbt::{
+    SnbtError, parse_snbt, parse_snbt_argument, parse_snbt_utf16, snbt_suggestions, snbt_whitespace,
+};
+
+/// A tag as its network NBT bytes (`write_network`); a
 /// tag past the default limits is refused, with the reason.
 impl TryFrom<&Tag> for Vec<u8> {
     type Error = Error;
@@ -1395,7 +1633,7 @@ impl Tag {
             entering: 0,
             rejected: 0,
         };
-        read_network_with_reader(&mut reader)
+        read_network_with_reader(&mut reader, &mut Tree)
     }
 }
 
@@ -1511,6 +1749,100 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn collecting_into_a_compound_keeps_insertion_order_whatever_the_size_hint() {
+        let entries =
+            || (0..40).map(|i| (JavaString::from(format!("key{i}").as_str()), Tag::Int(i)));
+        let mut inserted = Compound::new();
+        for (key, value) in entries() {
+            inserted.insert(key, value);
+        }
+        let order = |map: &Compound| map.keys().map(|key| key.0.clone()).collect::<Vec<_>>();
+        // `entries()` reports an exact size; the filter reports only an upper bound.
+        let exact: Compound = entries().collect();
+        let inexact: Compound = entries().filter(|_| true).collect();
+        assert_eq!(order(&exact), order(&inserted));
+        assert_eq!(order(&inexact), order(&inserted));
+    }
+
+    #[test]
+    fn compound_collision_history_survives_snbt_binary_and_copies() {
+        // Java String.hashCode("Aa") == String.hashCode("BB") == 2112.
+        // Replacement stays in place; removing and reinserting moves the key.
+        let Tag::Compound(mut parsed) = parse_snbt("{BB:1,Aa:2,BB:3}").unwrap().0 else {
+            panic!("compound");
+        };
+        let order = |map: &Compound| map.keys().map(|key| key.0.clone()).collect::<Vec<_>>();
+        assert_eq!(order(&parsed), [vec![66, 66], vec![65, 97]]);
+        assert_eq!(parsed.get(&"BB".into()), Some(&Tag::Int(3)));
+        let Tag::Compound(copied) = clone_tag(&Tag::Compound(parsed.clone())) else {
+            panic!("compound");
+        };
+        assert_eq!(order(&copied), [vec![66, 66], vec![65, 97]]);
+        let wire = [
+            10, 3, 0, 2, 66, 66, 0, 0, 0, 3, 3, 0, 2, 65, 97, 0, 0, 0, 2, 0,
+        ];
+        assert_eq!(
+            write_network(&Tag::Compound(parsed.clone()), Limits::default()).unwrap(),
+            wire
+        );
+        let (Tag::Compound(decoded), used) = read_network(&wire, Limits::default()).unwrap() else {
+            panic!("compound");
+        };
+        assert_eq!(used, wire.len());
+        assert_eq!(order(&decoded), [vec![66, 66], vec![65, 97]]);
+        assert_eq!(parsed.remove(&"BB".into()), Some(Tag::Int(3)));
+        parsed.insert("BB".into(), Tag::Int(3));
+        assert_eq!(order(&parsed), [vec![65, 97], vec![66, 66]]);
+        assert_eq!(parsed, decoded);
+        let mut set = std::collections::HashSet::new();
+        set.insert(Tag::Compound(parsed));
+        set.insert(Tag::Compound(decoded));
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn compound_resize_uses_the_java_runtime_bucket_split_golden() {
+        // Java 25's distinct-hash resize fixture, using one-unit Strings
+        // (whose hashes equal those UTF-16 units).
+        let hashes = [1, 17, 33, 49, 0, 16, 2, 18, 34, 3, 35, 4, 20];
+        let mut map = Compound::new();
+        for id in [5, 1, 4, 0, 7, 3, 6, 2, 12, 8, 10, 9] {
+            map.insert(JavaString(vec![hashes[id]]), Tag::Int(id as i32));
+        }
+        assert_eq!(
+            map.values().cloned().collect::<Vec<_>>(),
+            [5, 4, 1, 0, 3, 2, 7, 6, 8, 10, 9, 12].map(Tag::Int),
+        );
+        map.insert(JavaString(vec![4]), Tag::Int(11));
+        assert_eq!(
+            map.into_values().collect::<Vec<_>>(),
+            [4, 0, 2, 6, 8, 10, 9, 11, 5, 1, 3, 7, 12].map(Tag::Int),
+        );
+    }
+
+    #[test]
+    fn compound_keeps_unpaired_utf16_keys_distinct_and_lossless() {
+        let high = JavaString(vec![0xd800]);
+        let low = JavaString(vec![0xdc00]);
+        let replacement = JavaString(vec![0xfffd]);
+        let map = Compound::from([
+            (high.clone(), Tag::Int(1)),
+            (low.clone(), Tag::Int(2)),
+            (replacement.clone(), Tag::Int(3)),
+        ]);
+        assert_eq!(map.get(&high), Some(&Tag::Int(1)));
+        assert_eq!(map.get(&low), Some(&Tag::Int(2)));
+        assert_eq!(map.get(&replacement), Some(&Tag::Int(3)));
+        let bytes = write_network(&Tag::Compound(map), Limits::default()).unwrap();
+        let (Tag::Compound(decoded), _) = read_network(&bytes, Limits::default()).unwrap() else {
+            panic!("compound");
+        };
+        assert_eq!(decoded.get(&high), Some(&Tag::Int(1)));
+        assert_eq!(decoded.get(&low), Some(&Tag::Int(2)));
+        assert_eq!(decoded.get(&replacement), Some(&Tag::Int(3)));
+    }
+
     /// SnbtGrammar: a compound, list or typed array may end with one comma; a
     /// comma alone or two in a row are errors.
     #[test]
@@ -1950,6 +2282,140 @@ mod tests {
             (named, rejected),
             (plain, 0),
             "only the root's `p` is bounded"
+        );
+    }
+
+    #[test]
+    fn string_tree_bins_and_ordered_mutation_match_java25_runtime() {
+        // Independent Temurin 25.0.5+8 HashMap<String, Integer> oracle.
+        let keys = [
+            "AaAaAaAa", "AaAaAaBB", "AaAaBBAa", "AaAaBBBB", "AaBBAaAa", "AaBBAaBB", "AaBBBBAa",
+            "AaBBBBBB", "BBAaAaAa", "BBAaAaBB", "BBAaBBAa", "BBAaBBBB", "BBBBAaAa", "BBBBAaBB",
+            "BBBBBBAa", "BBBBBBBB",
+        ];
+        let mut map = Compound::new();
+        let order = |map: &Compound| {
+            map.keys()
+                .map(|key| key.to_string().unwrap())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        for (i, key) in keys.into_iter().enumerate() {
+            map.insert(key.into(), Tag::Int(i as i32));
+            match i + 1 {
+                11 => assert_eq!(
+                    order(&map),
+                    "AaAaBBBB,AaAaAaAa,AaAaAaBB,AaAaBBAa,AaBBAaAa,AaBBAaBB,AaBBBBAa,AaBBBBBB,BBAaAaAa,BBAaAaBB,BBAaBBAa"
+                ),
+                12 => assert_eq!(
+                    order(&map),
+                    "AaAaBBBB,AaAaAaAa,AaAaAaBB,AaAaBBAa,AaBBAaAa,AaBBAaBB,AaBBBBAa,AaBBBBBB,BBAaAaAa,BBAaAaBB,BBAaBBAa,BBAaBBBB"
+                ),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            order(&map),
+            "AaAaBBBB,AaAaAaAa,AaAaAaBB,AaAaBBAa,AaBBAaAa,AaBBAaBB,AaBBBBAa,AaBBBBBB,BBAaAaAa,BBAaAaBB,BBAaBBAa,BBAaBBBB,BBBBAaAa,BBBBAaBB,BBBBBBAa,BBBBBBBB"
+        );
+        assert_eq!(map.remove(&"AaAaBBBB".into()), Some(Tag::Int(3)));
+        let expected = "AaBBAaAa,AaAaAaAa,AaAaAaBB,AaAaBBAa,AaBBAaBB,AaBBBBAa,AaBBBBBB,BBAaAaAa,BBAaAaBB,BBAaBBAa,BBAaBBBB,BBBBAaAa,BBBBAaBB,BBBBBBAa,BBBBBBBB";
+        assert_eq!(order(&map), expected);
+        let root = Tag::Compound(map);
+        for retained in [root.clone(), clone_tag(&root)] {
+            let Tag::Compound(mut retained) = retained else {
+                panic!("compound")
+            };
+            assert_eq!(retained.remove(&"AaAaAaAa".into()), Some(Tag::Int(0)));
+            retained.insert("AaAaAaAa".into(), Tag::Int(0));
+            assert_eq!(
+                order(&retained),
+                "BBAaBBBB,AaBBAaAa,AaAaAaBB,AaAaAaAa,AaAaBBAa,AaBBAaBB,AaBBBBAa,AaBBBBBB,BBAaAaAa,BBAaAaBB,BBAaBBAa,BBBBAaAa,BBBBAaBB,BBBBBBAa,BBBBBBBB"
+            );
+        }
+        let Tag::Compound(mut copy) = copy_tag(&root) else {
+            panic!("compound")
+        };
+        assert_eq!(order(&copy), expected);
+        assert_eq!(copy.remove(&"AaAaAaAa".into()), Some(Tag::Int(0)));
+        copy.insert("AaAaAaAa".into(), Tag::Int(0));
+        assert_eq!(
+            order(&copy),
+            "BBAaAaAa,AaBBAaAa,AaAaAaBB,AaAaAaAa,AaAaBBAa,AaBBAaBB,AaBBBBAa,AaBBBBBB,BBAaAaBB,BBAaBBAa,BBAaBBBB,BBBBAaAa,BBBBAaBB,BBBBBBAa,BBBBBBBB"
+        );
+        let Tag::Compound(mut map) = root else {
+            panic!("compound")
+        };
+        let mut visited = Vec::new();
+        map.for_each_mut(|key, value| {
+            visited.push(key.to_string().unwrap());
+            *value = Tag::Byte(1);
+        });
+        assert_eq!(visited.join(","), expected);
+        assert!(map.values().all(|value| *value == Tag::Byte(1)));
+    }
+
+    #[test]
+    fn complete_nested_patch_pairs_retain_both_entries_in_java_order() {
+        for source in [
+            r#"{"minecraft:custom_data":{BB:"first",Aa:"second"},"!minecraft:custom_data":{}}"#,
+            r#"{"!minecraft:custom_data":{},"minecraft:custom_data":{BB:"first",Aa:"second"}}"#,
+        ] {
+            let Tag::Compound(mut map) = parse_snbt(source).unwrap().0 else {
+                panic!("compound")
+            };
+            let order = |map: &Compound| {
+                map.keys()
+                    .map(|key| key.to_string().unwrap())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                order(&map),
+                ["!minecraft:custom_data", "minecraft:custom_data"]
+            );
+            let Some(Tag::Compound(nested)) = map.get(&"minecraft:custom_data".into()) else {
+                panic!("nested data");
+            };
+            assert_eq!(order(nested), ["BB", "Aa"]);
+            assert_eq!(
+                map.get(&"!minecraft:custom_data".into()),
+                Some(&Tag::Compound(Compound::new()))
+            );
+            for i in 0..31 {
+                map.insert(format!("k{i}").as_str().into(), Tag::Int(i));
+            }
+            let expected = "k30,k11,k10,k13,k12,k15,k14,k17,k16,k19,k18,k0,k1,!minecraft:custom_data,k2,k3,k20,k4,k5,k22,k6,k21,k7,k24,k8,k23,k9,k26,k25,k28,k27,k29,minecraft:custom_data";
+            assert_eq!(order(&map).join(","), expected);
+            assert_eq!(order(&map.clone()).join(","), expected);
+        }
+    }
+
+    #[test]
+    fn entry_after_removal_and_retain_keep_java_collision_history() {
+        let mut map = Compound::from([("BB".into(), Tag::Int(1)), ("Aa".into(), Tag::Int(2))]);
+        map.remove(&"BB".into());
+        *map.entry("BB".into()).or_insert_with(|| Tag::Int(3)) = Tag::Int(4);
+        *map.entry("Aa".into())
+            .or_insert_with(|| panic!("occupied value")) = Tag::Int(5);
+        assert_eq!(
+            map.iter()
+                .map(|(key, value)| (key.to_string().unwrap(), value.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("Aa".to_owned(), Tag::Int(5)),
+                ("BB".to_owned(), Tag::Int(4))
+            ],
+        );
+        let mut visited = Vec::new();
+        map.retain(|key, value| {
+            visited.push(key.to_string().unwrap());
+            *value = Tag::Int(15);
+            key.0 != [66, 66]
+        });
+        assert_eq!(visited, ["Aa", "BB"]);
+        assert_eq!(
+            map.into_iter().collect::<Vec<_>>(),
+            [(JavaString::from("Aa"), Tag::Int(15))],
         );
     }
 }

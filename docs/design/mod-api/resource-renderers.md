@@ -1,5 +1,8 @@
 # Design: resource-backed special item renderers
 
+> The current native contract is in “Settled on the build.” The original proposal below it is historical.
+> See [special item renderers](../../modding/src/how-to/client/special-item-renderers.md) for the current native API.
+
 Provisional answer to [#876](https://github.com/arismoko/horizon/issues/876):
 what resource-backed baked geometry and typed stack-derived state may a special
 renderer submit? Geometry belongs in resources; callbacks select and pose baked
@@ -7,43 +10,57 @@ parts only where ordinary item-model properties cannot express the behavior.
 
 ## Settled on the build
 
-The owner's answer to the [build plan](https://github.com/arismoko/horizon/issues/876#issuecomment-6864610602)
-settles these points against the reference. Where a later section of this page
-says otherwise, this section wins; "ours" marks what Sunrise adds.
+The [original build plan](https://github.com/arismoko/horizon/issues/876#issuecomment-6864610602)
+set the registration and resource lifecycle. This section describes the current native contract,
+which supersedes the proposal below.
 
-- **Registration.** `register_special_model_renderer` (singular, after the
-  reference's event) is asked once per process at start, before the first
-  resource load, never on a reload; every resource load resolves it into the
-  table. Stage 1 ([how-to](../../modding/src/how-to/client/special-item-renderers.md))
-  implements it.
-- **Duplicates.** A later registration of an id replaces the earlier one,
-  vanilla ids included, as the reference does. Ours: one log line names both
-  registrants. Nothing is refused for being a duplicate or a vanilla id.
-- **An unknown type id.** Only that item's model fails: an error log naming the
-  id and the item, the item draws the missing model, the rest of the reload goes
-  on, and the item's previous model is not kept. "A failed reload keeps the
-  previous holder" applies only to a whole-reload failure of ours.
-- **Data.** The renderer reads what it needs from the whole stack; nothing
-  declares inputs, and no cap applies to the stack beyond the reference's.
-  Extraction is cached by the stack's equality, so an unchanged stack is
-  extracted once across frames and nothing is copied per frame for it.
-- **`base`** supplies only render properties (lighting, particle, display
-  transforms), which the engine applies; the renderer never sees them.
-- **Extents.** None: the reference doesn't check declared extents or cull by
-  them, so the API has none and the engine takes none from the mod. It takes the
-  drawn parts' own quads.
-- **Threads.** The node's `config` decodes, and models bake, on the reload's
-  worker threads; extraction and drawing run on the client's main thread.
-- **Failures.** The reference doesn't catch a throw. Ours is stricter in the safe
-  direction: a renderer that errors, panics or traps is refused with one log line
-  naming the id, and the item draws the missing model; a decode or bake failure
-  loses only that item. The callback gets a `ClientHost` (every hook gets a host).
-- **Out of scope.** The block side is a separate reference registration that runs
-  on every reload, not part of #876.
-- **Matrix rows 5 and 7** each need their own test; a test that the callback never
-  runs inside a lifted pass shows row 6 only.
+- **Registration.** The client fires `register_special_model_renderer` once at startup, before
+  loading resources. A `SpecialModelFactory` pairs a decoder with a bake function that consumes
+  its typed output. Each resource load uses the registered factories to decode and bake each
+  `minecraft:special` node, without firing the event again. The last registration of a type
+  wins, including for vanilla types; the game logs the replacement.
+- **Definition failures.** An unknown type or an error or panic in decode or bake refuses the
+  enclosing item definition, not the whole resource load. The item draws the missing model; it
+  does not keep its old definition or try one from a lower pack.
+- **Draws.** On each draw, `extract_argument` receives a `ClientHost` and the borrowed stack
+  that selected the node. It can read effective components without constructing an owned patch.
+  `submit` takes the typed argument and the actual display and time context, and submits baked
+  geometry or nested stacks in scoped poses. The game keeps no draw recipe or answer cache.
+  These callbacks run on the client's frame, not inside a tick's lifted pass or action transaction.
+- **Draw state.** The engine applies the `base` model's GUI light, particle and display
+  transforms, plus the node's own `transformation`. The outer item's foil applies to direct
+  geometry, and a nested stack uses its own foil, tints and display transform. Packed light,
+  overlay and outline stay on the ordinary item draw path. Extents come from the submitted
+  geometry; the mod does not declare them. Tints are packed ARGB, not HDR colors.
+- **Draw failures.** An error, panic or invalid geometry or pose undoes the entire special layer,
+  including its nested submissions. Ordinary refusals are reported each time without disabling
+  the renderer. A panic logs and shows an error toast naming the mod, and disables only that
+  registration's draw callback for the session, even across reloads. Only the outermost refused
+  layer draws the missing model; independent layers remain intact.
+- **Leases.** The bake context issues leases for the current resource load. Submit them only in
+  that load. Once resolved, an item render state retains its baked geometry independently and
+  can finish drawing after a reload without a separate retirement step.
+- **Cost.** Unmatched registrations do not invoke mod callbacks. The allocation regression check
+  compares built-in scenes with and without an unmatched registration. The [direct-submission
+  benchmark](../../performance/special-item-renderers.md) compares the same geometry drawn
+  through a built-in model and through a registered renderer.
+- **Out of scope.** Block renderers use a separate registration and are not part of this contract.
+
+### Why recipes became submissions
+
+`8019bce5490` introduced named-model recipes to let a renderer choose and pose pack geometry
+while the engine retained the normal item draw state. The recipes used Wire for the then-existing
+guest boundary; they did not need disk or network transport. `685572c8626` retained the stack
+cache and added a frame policy for answers that depend on display or time. Direct submission
+replaces both policies: each draw extracts a fresh argument and submits baked geometry under the
+actual context. Neither recipe-part nor nested-stack count caps apply; only `(stack, display)`
+recursion cycles are refused.
 
 ## Reference and boundary
+
+The sections below record the original proposal, including the guest route and its
+acceptance matrix. Where they differ from “Settled on the build” above, they do
+not describe the current contract.
 
 Vanilla 26.3 `SpecialModelRenderers.bootstrap` registers type identifiers and
 unbaked codecs. `SpecialModelWrapper.update` extracts an argument from the stack,
@@ -192,14 +209,14 @@ Future implementation tests use original assets, not third-party model files.
 | Original cube A and two separated cubes B; boolean component false/true | Exactly 6/12 resource quads selected in both inventory and hand |
 | Same true stack in ground, frame, head and other-player hand | B selected in all four; engine context transforms differ |
 | Resource reload changes B to three cubes | True stack selects 18 quads after commit; 0 new draws reference old holder |
-| Reload fails with unknown special type | Named error; previous holder remains active; initial load displays missing model |
-| Queue old state, reload, drain | Old lease valid until drain; retirement occurs once after root commit |
-| Rollback lifted preparation/reload | 0 published draws, retirements or journal entries |
+| Reload with an unknown special type | Named error naming the item; that item draws the missing model and the reload goes on (Settled) |
+| Queue old state, reload, drain | Old state still draws its 12 quads after the reload; its baked models are released once, when the last state holding them drops (no retirement step: Settled, Leases); a new resolve draws 18 |
+| Rollback lifted preparation/reload | 0 published draws, retirements or journal entries; the renderer is asked 0 times inside a tick's lifted pass (Settled, When it runs) |
 | Save during action savepoint | Refused; no persisted partial state |
 | NaN transform, 257 instances, stale part, oversized input | Entire custom layer refused; 0 partial instances |
 | Native panic / wasm trap followed by vanilla cube | Custom layer missing marker; vanilla cube still 6 quads |
-| Unsupported raw-pipeline capability / duplicate registration | Named registration refusal; no partial type installation |
-| White 1, linear RGB 2, encoded tint 0.5 | Shader values 1, 2, approximately 0.21763764; frame alpha engine-owned |
+| Unsupported raw-pipeline capability / duplicate registration | Unsupported capability: named registration refusal. Duplicate or vanilla id: not refused; the last registration wins, with one log line naming both (Settled) |
+| White 1, encoded tint 0.5 | Shader values 1 and approximately 0.21763764, through vanilla's tint path; frame alpha engine-owned. Linear RGB 2 waits for a typed HDR tint (Settled, Colour) |
 | Native and wasm, same inputs | Identical part slots, transforms, tint and refusal outcomes |
 | No listener, repeated built-in scenes | Identical baseline output; 0 extension callbacks/allocations |
 
@@ -222,5 +239,3 @@ Future implementation tests use original assets, not third-party model files.
   Recommendation: use the existing lifecycle holder with the budgets above,
   test representative original scenes, and enlarge only extension limits with
   measured evidence; preserve vanilla capacity throughout.
-
-Renderer answers depend only on stack and configuration. Host-state changes do not invalidate a continuously drawn unchanged stack. Answers drop after all views stop drawing the stack or resources reload.

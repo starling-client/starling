@@ -22,6 +22,5 @@ fn main() {
         std::fs::write(out_dir.join(format!("{area}_fixtures.rs")), includes)
             .expect("writing Part fixture includes");
     }
-    sunrise_mod_api_gen::generate(&root, &out_dir, sunrise_mod_api_gen::Target::Api)
-        .expect("generating the mod API");
+    sunrise_mod_api_gen::generate_api_parts(&root, &out_dir).expect("generating the Part modules");
 }

@@ -1,0 +1,13 @@
+sunrise-client game::lan_actions::guest_body::tests::travel::a_player_travel_replacement_commits_displacement_and_corrects_velocity lib daily resources
+sunrise-client game::lan_actions::guest_body::tests::travel::a_player_travel_veto_holds_new_reports_not_previously_accepted_ones lib daily resources
+sunrise-client game::lan_actions::guest_body::tests::travel::a_tiny_travel_edit_and_move_veto_leave_the_player_outcome_unchanged lib daily resources
+sunrise-client game::lan_actions::guest_body::tests::travel::an_edit_absorbed_by_collision_still_sends_one_correction lib daily resources
+sunrise-client game::lan_actions::guest_body::tests::travel::an_unchanged_player_travel_outcome_keeps_vanilla_reports_and_packets lib daily resources
+sunrise-client game::lan_actions::guest_body::tests::travel::another_travel_replacement_waits_for_the_first_correction_acknowledgement lib daily resources
+sunrise-client game::native_living_travel_sweep_tests::a_move_veto_still_holds_a_travel_that_ran lib daily resources
+sunrise-client game::native_living_travel_sweep_tests::a_replaced_travel_velocity_steer_its_tick lib daily resources
+sunrise-client game::native_living_travel_sweep_tests::one_travel_fires_once_and_its_move_beside_and_noai_fires_nobody lib daily resources
+sunrise-client-lib mobs::living::travel::tests::custom_mob_travel_reports_the_route_it_runs lib daily resources
+sunrise-client-lib motion::travel::tests::a_cancelled_flying_travel_moves_and_damps_nothing lib daily resources
+sunrise-client-lib motion::travel::tests::a_flying_player_damps_the_replaced_vertical_speed lib daily resources
+sunrise-client-lib motion::travel::tests::a_replayed_travel_ignores_a_cancel lib daily resources

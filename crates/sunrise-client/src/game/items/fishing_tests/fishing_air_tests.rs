@@ -1,11 +1,11 @@
 //! `FishingHook.getOpenWaterTypeForBlock` tests `!state.isAir()`, and `isAir()` covers
 //! cave_air and void_air: a hook over a source under a cave's air is open water, so its
 //! catch can be treasure. (A stone block is not air, so it is not open water either.)
-use super::{FISHING_TABLE, fishing_loot};
+use super::{FISHING_TABLE, fishing_loot, hook_params};
 use sunrise_world::loot::LootStack;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn cave_air_above_a_water_source_is_open_water_and_catches_treasure() {
     let mut resources = None;
     let mut game = crate::game::game_tests::tests::server_game(&mut resources);
@@ -46,7 +46,7 @@ fn cave_air_above_a_water_source_is_open_water_and_catches_treasure() {
 
     // The flag the hook's retrieval reads: `gameplay/fishing`'s treasure entry is
     // conditioned on `in_open_water`, so the cave's air decides whether treasure comes.
-    let loot = sunrise_client::structure_blocks::loot_data(
+    let loot = sunrise_world::loot::LootData::load(
         &game.options.resources,
         &game.pack_files(),
         game.res.item_defaults(),
@@ -72,9 +72,9 @@ fn cave_air_above_a_water_source_is_open_water_and_catches_treasure() {
                     &mut sequences,
                     &mut level_random,
                     seed,
-                    0.0,
                     None,
                     open_water,
+                    &hook_params(0.0, None),
                 )
             })
             .collect()

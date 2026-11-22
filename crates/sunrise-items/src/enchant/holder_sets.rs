@@ -19,11 +19,20 @@ impl HolderSetBinding {
     ) -> crate::Result<Self> {
         enchantments.sort();
         enchantments.dedup();
+        use sunrise_world::tag_layers;
+        let item_tags = tag_layers::load(root, "item", overlay, |id| {
+            defaults.entries().contains_key(id)
+        })?;
+        let enchantment_tags = tag_layers::load(root, "enchantment", overlay, |id| {
+            enchantments
+                .binary_search_by(|key| key.as_str().cmp(id))
+                .is_ok()
+        })?;
         Ok(Self {
             items: defaults.entries().keys().cloned().collect(),
             enchantments,
-            item_tags: crate::items::load_tag_lists(root, "item", overlay)?,
-            enchantment_tags: crate::items::load_tag_lists(root, "enchantment", overlay)?,
+            item_tags,
+            enchantment_tags,
         })
     }
     /// Whether a definition needs binding; plain vanilla forms remain untouched.

@@ -9,7 +9,7 @@ impl Game<'_> {
     /// sends it, so this comes just before `native_chunk_sent` for the same
     /// chunk. Told after the server's network step for the level, with the
     /// state after that step: the order per player and chunk is vanilla's.
-    /// Not told for the far ring's columns past the view distance. Server-side.
+    /// Server-side.
     pub(in crate::game) fn native_chunk_watch(&mut self, player: PlayerRef, chunk: ChunkRef) {
         self.fire_chunk_watch(player, chunk);
     }
@@ -17,7 +17,7 @@ impl Game<'_> {
     /// at the end of `PlayerChunkSender.sendChunk`), after
     /// `native_chunk_watch`, so a mod can send its own data for the chunk
     /// now. Told after the server's network step, as `native_chunk_watch`.
-    /// Not told for the far ring's columns. Server-side.
+    /// Server-side.
     pub(in crate::game) fn native_chunk_sent(&mut self, player: PlayerRef, chunk: ChunkRef) {
         self.fire_chunk_sent(player, chunk);
     }

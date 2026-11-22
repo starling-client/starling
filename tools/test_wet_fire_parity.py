@@ -48,7 +48,7 @@ def main():
     # parity.py sets no SUNRISE_TEST_RESOURCES: default to the prepared resources, as the other harnesses do.
     resources = Path(os.environ.get("SUNRISE_TEST_RESOURCES", lab.RESOURCES))
     if not (resources / "movement-properties.nbt").is_file():
-        raise RuntimeError("SUNRISE_TEST_RESOURCES must contain prepared 26.3 resources")
+        raise RuntimeError(f"SUNRISE_TEST_RESOURCES must contain prepared {lab.VERSION} resources")
     build = lab.LOCAL / "wet-fire-parity"
     build.mkdir(parents=True, exist_ok=True)
     lock, jars, libraries = base.verify_artifacts()
@@ -80,7 +80,7 @@ def main():
         server_jar_sha256=lab.digest(jars["server"], "sha256"),
         matched_observations=len(actual),
         scope="Full stationary Mob.tick: health, fire timer and extinguish sounds; native contact-boundary RNG assertions. No full movement or rendering."))
-    print("82 full mob-tick wet-fire observations match vanilla 26.3")
+    print(f"82 full mob-tick wet-fire observations match vanilla {lab.VERSION}")
 
 
 if __name__ == "__main__":

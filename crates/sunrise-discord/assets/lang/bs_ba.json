@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Prikazuje igranje Sunrise na vašem Discord profilu dok Discord radi: meniji, za jednog igrača ili za više igrača, dimenziju i vrijeme igranja. Nikada ime svijeta ili adresu servera."
+}

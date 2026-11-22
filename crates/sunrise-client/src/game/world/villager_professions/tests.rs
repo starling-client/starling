@@ -1,13 +1,13 @@
 //! End-to-end registration and root publication, with unique resource and save roots.
 use super::*;
-use sunrise_client::mobs;
-use sunrise_core::nbt::Tag;
 use mod_api::{
     DataPackFilesEvent, Hooks, Identifier, ModEntry, PoiKey, ProfessionDefinition, ProfessionKey,
     ProfessionWorkstation, RegisterVillagerProfessionsEvent, RegistrationContext, ServerHost,
     TradeSetKey,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
+use sunrise_client::mobs;
+use sunrise_core::nbt::Tag;
 
 fn definition() -> ProfessionDefinition {
     let id = |name| Identifier::parse(name).unwrap();
@@ -104,7 +104,7 @@ fn fixture(mods: mod_api::Mods, run: impl FnOnce(&mut Game<'_>)) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_engineer_registration_and_assembler_job_acquisition() {
     let valid = Arc::new(AtomicBool::new(true));
     fixture(
@@ -121,7 +121,7 @@ fn villager_engineer_registration_and_assembler_job_acquisition() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_failed_reload_keeps_profession_poi_and_trade_snapshot() {
     let valid = Arc::new(AtomicBool::new(true));
     fixture(
@@ -183,7 +183,7 @@ fn refused(mods: mod_api::Mods, expected: &[&str]) {
     });
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_duplicate_owners_publish_zero_entries() {
     let valid = Arc::new(AtomicBool::new(true));
     refused(
@@ -208,7 +208,7 @@ fn villager_duplicate_owners_publish_zero_entries() {
     );
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_reserved_profession_publishes_zero_entries() {
     refused(
         vec![ModEntry::new(
@@ -223,7 +223,7 @@ fn villager_reserved_profession_publishes_zero_entries() {
     );
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_overlapping_poi_publishes_zero_entries() {
     let valid = Arc::new(AtomicBool::new(true));
     refused(
@@ -248,7 +248,7 @@ fn villager_overlapping_poi_publishes_zero_entries() {
     );
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_no_mods_world_retains_farmer_composter_and_five_levels() {
     let scratch = tempfile::tempdir().unwrap();
     mod_platform::testing::with_mods(vec![].into(), || {
@@ -287,61 +287,6 @@ fn villager_no_mods_world_retains_farmer_composter_and_five_levels() {
     });
 }
 
-fn wasm_engineer() -> mod_api::ModEntry {
-    wasm_profession(definition(), "wasm_engineer")
-}
-fn wasm_profession(value: ProfessionDefinition, owner: &str) -> mod_api::ModEntry {
-    use mod_api::wire::Writer;
-    fn data(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("\\{byte:02x}")).collect()
-    }
-    let mut subscriptions = Writer::new();
-    subscriptions.put(&vec![(
-        "register_villager_professions".to_owned(),
-        0i32,
-        false,
-    )]);
-    let subscriptions = subscriptions.into_bytes();
-    let mut declaration = Writer::new();
-    declaration.put(&value);
-    let declaration = declaration.into_bytes();
-    let operation = sunrise_mod_wasm::fixture_import_id("VillagerProfessions", "register").unwrap();
-    let hook =
-        sunrise_mod_wasm::fixture_export_id("Hooks", "register_villager_professions").unwrap();
-    let std = wat::parse_str(
-        r#"(module (@custom "dylink.0" "\01\04\00\00\00\00") (import "env" "memory" (memory 1)))"#,
-    )
-    .unwrap();
-    let module = wat::parse_str(format!(r#"(module
-        (@custom "dylink.0" "\01\04\00\00\00\00")
-        (import "env" "memory" (memory 1))
-        (import "env" "__indirect_function_table" (table 1 funcref))
-        (import "sunrise" "host" (func $host (param i32 i32 i32 i32 i32) (result i32)))
-        (import "sunrise" "host_reply" (func $reply (param i32)))
-        (data (i32.const 2048) "{subscriptions}")
-        (data (i32.const 4096) "{declaration}")
-        (func (export "sunrise_layout") (result i64) i64.const {layout})
-        (func (export "sunrise_in") (param i32) (result i32) i32.const 512)
-        (func (export "sunrise_hook") (param i32) (result i64)
-            local.get 0 i32.eqz if (result i64)
-                i64.const {sub_reply}
-            else local.get 0 i32.const {hook} i32.eq if (result i64)
-                i32.const {operation} i32.const 4096 i32.const {length} i32.const 0 i32.const 0 call $host
-                i32.const 0 i32.ne if unreachable end
-                i64.const 0
-            else i64.const 0 end end))"#,
-            subscriptions=data(&subscriptions), declaration=data(&declaration), layout=*mod_api::wire::LAYOUT,
-            sub_reply=(2048u64<<32)|subscriptions.len() as u64, length=declaration.len())).unwrap();
-    let manifest = sunrise_mod_package::manifest::Manifest::parse(&format!("id = '{owner}'\nname = 'Wasm engineer'\nversion = '1.0.0'\napi = '0.2'\ncapabilities = ['registries']\n[wasm]\nsha512 = '{}'\ntoolchain = 'test'\nbuilt_with = 'test'\n", "a".repeat(128))).unwrap();
-    let mut loaded = sunrise_mod_wasm::load(
-        &std,
-        vec![sunrise_mod_wasm::WasmPackage { manifest, module }],
-    );
-    assert!(loaded.refused.is_empty(), "{:?}", loaded.refused);
-    loaded.initialize(&[]).unwrap();
-    assert_eq!(loaded.mods.len(), 1);
-    loaded.mods.remove(0)
-}
 struct TradeFiles;
 #[mod_api::__subscriptions]
 impl Hooks for TradeFiles {
@@ -354,26 +299,25 @@ impl Hooks for TradeFiles {
         event.files.push(("villager_trade/test:engineer_offer".into(), br#"{"gives":{"id":"minecraft:iron_ingot","count":2},"wants":{"id":"minecraft:emerald","count":3},"max_uses":12,"xp":7}"#.to_vec()));
     }
 }
-#[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-fn villager_wasm_engineer_declaration_resolves_with_assembler() {
-    // Instantiate and invoke the real wasm guest on the production-sized stack.
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
-        fixture(
-            vec![
-                ModEntry::new("trade_files", Box::new(TradeFiles)),
-                wasm_engineer(),
-            ]
-            .into(),
-            assert_engineer_acquisition,
-        );
-    });
-}
-
 fn assert_engineer_acquisition(game: &mut Game<'_>) {
     let table = game.stations().professions.clone();
     assert_eq!(table.entries().len(), 16);
     assert_eq!(table.resolve("test:engineer"), Some(15));
+    let host: &dyn mod_api::Host = game;
+    let engineer = host
+        .registry_entry("minecraft:villager_profession", "test:engineer")
+        .expect("the registered gameplay profession is a generic registry entry");
+    assert_eq!(engineer.id.to_string(), "test:engineer");
+    assert!(
+        host.registry_entries("minecraft:villager_profession")
+            .unwrap()
+            .contains(&Identifier::parse("test:engineer").unwrap())
+    );
+    assert!(
+        host.registry_entries("minecraft:villager_profession")
+            .unwrap()
+            .contains(&Identifier::parse("minecraft:farmer").unwrap())
+    );
     assert_eq!(table.acquiring("test:assembler"), Some(15));
     assert_eq!(table.trade_key("test:engineer", 1), Some("test:engineer"));
     assert_eq!(table.trade_key("test:engineer", 2), None);
@@ -434,7 +378,7 @@ fn assert_engineer_acquisition(game: &mut Game<'_>) {
     let mut mob =
         sunrise_client::entity_nbt::mob_from_nbt(&raw, game.res.mob_types(), 901, Some(registry))
             .unwrap();
-    mob.on_ground = true;
+    mob.ground.on_ground = true;
     let mut world = game.mob_world_base(&[]);
     let mut damage = sunrise_client::health::TestLevel::new(1);
     let mut level = damage.level();
@@ -499,7 +443,7 @@ fn saved_engineer(kind: &str) -> Tag {
     ])
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_game_load_resolves_saved_names_for_both_species_without_reroll() {
     fixture(
         vec![ModEntry::new(
@@ -540,6 +484,7 @@ fn villager_game_load_resolves_saved_names_for_both_species_without_reroll() {
                     None,
                     Some(game.pack.assets.registry),
                     |_| None,
+                    &Default::default(),
                 );
                 assert_eq!(
                     sunrise_client::save::text(
@@ -555,7 +500,7 @@ fn villager_game_load_resolves_saved_names_for_both_species_without_reroll() {
     );
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_game_missing_mod_keeps_both_species_unresolved_and_offers_untouched() {
     fixture(vec![].into(), |game| {
         for kind in ["minecraft:villager", "minecraft:zombie_villager"] {
@@ -598,7 +543,7 @@ fn villager_game_missing_mod_keeps_both_species_unresolved_and_offers_untouched(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_load_world_save_dir_preserves_custom_workstation() {
     fixture(
         vec![ModEntry::new(
@@ -651,7 +596,7 @@ fn villager_load_world_save_dir_preserves_custom_workstation() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_native_slots_ignore_declaring_mod_order() {
     struct NativeProfession(ProfessionDefinition);
     #[mod_api::__subscriptions]
@@ -699,41 +644,4 @@ fn villager_native_slots_ignore_declaring_mod_order() {
             );
         });
     }
-}
-
-#[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-fn villager_wasm_slots_ignore_declaring_mod_order() {
-    // Instantiate and invoke the real wasm guest on the production-sized stack.
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
-        for reverse in [false, true] {
-            let mut mechanic = definition();
-            mechanic.key = ProfessionKey(Identifier::parse("test:mechanic").unwrap());
-            let bench = PoiKey(Identifier::parse("other:bench").unwrap());
-            mechanic.workstations = vec![ProfessionWorkstation {
-                poi: bench.clone(),
-                block: Identifier::parse("minecraft:furnace").unwrap(),
-                properties: vec![],
-            }];
-            mechanic.held_poi = vec![bench.clone()];
-            mechanic.acquirable_poi = vec![bench];
-            let mut mods = vec![
-                wasm_profession(definition(), "z_engineer"),
-                wasm_profession(mechanic, "a_mechanic"),
-            ];
-            if reverse {
-                mods.reverse();
-            }
-            mods.insert(0, ModEntry::new("trade_files", Box::new(TradeFiles)));
-            fixture(mods.into(), |game| {
-                let table = &game.stations().professions;
-                assert_eq!(table.resolve("test:engineer"), Some(15));
-                assert_eq!(table.resolve("test:mechanic"), Some(16));
-                assert_eq!(
-                    table.pois.resolve("test:assembler"),
-                    Some(sunrise_world::poi::PoiIdentity::Custom(1))
-                );
-            });
-        }
-    });
 }

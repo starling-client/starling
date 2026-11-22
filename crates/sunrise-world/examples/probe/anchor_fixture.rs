@@ -1,11 +1,11 @@
 //! Original comparison transport for generation bounds and vertical anchors.
-use sunrise_world::worldgen::anchor::{VerticalAnchor, WorldGenerationContext};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_world::worldgen::anchor::{VerticalAnchor, WorldGenerationContext};
 fn anchor(
     a: VerticalAnchor,
     context: WorldGenerationContext,

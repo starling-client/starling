@@ -7,8 +7,10 @@ rust-version.workspace = true
 description = "The client's lowest layer: chat text and translations, SNBT and NBT paths, the scoreboard, boss bars, game rules and the registry and particle tables commands name"
 
 [dependencies]
+log = "0.4"
 sunrise-assets = { path = "../sunrise-assets" }
 sunrise-core = { path = "../sunrise-core" }
+mod_vocab = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
 sunrise-world = { path = "../sunrise-world" }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 

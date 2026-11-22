@@ -29,14 +29,26 @@ pub enum ModelError {
 }
 
 /// An item requested at registration; its load-owned slot identifies the canonical name.
-// no wire: decoding validates the u32 slot with ItemKey::from_slot on the host; wasm carries the host-issued opaque token without consulting guest tables.
+// no wire: decoding validates the u32 slot with ItemKey::from_slot on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: only registration creates a key
 pub struct ItemKey(pub(crate) u32);
 
+impl ItemKey {
+    /// The numeric registry id used by the game's item-scatter seeds, on either side.
+    /// Reads this side's prepared registry, with mod items after vanilla in content-plan order;
+    /// the number is not synced by the server. Returns `None` before registry completion or
+    /// if this key does not resolve. Unlike [`KeysHost::registry_protocol_id`], this read does
+    /// not require a connection. Save and send identifiers, never these session-local numbers.
+    pub fn registry_id(self, host: &dyn Host) -> Option<u32> {
+        crate::backend_of(host)?.item_registry_id(self)
+    }
+}
+
 /// A menu type (`minecraft:generic_9x3`) in the built-in menu registry, in
-/// registration order. A key stays valid until the game exits.
-// no wire: decoding validates the u32 slot with MenuKey::from_slot on the host; wasm carries the host-issued opaque token without consulting guest tables.
+/// registration order. A key stays valid until the game exits; `key.id(host)`
+/// pins its namespaced name, if available.
+// no wire: decoding validates the u32 slot with MenuKey::from_slot on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: only the load-owned table creates keys
 pub struct MenuKey(pub(crate) u32);
@@ -44,7 +56,8 @@ pub struct MenuKey(pub(crate) u32);
 /// An enchantment (`minecraft:sharpness`) in the data-loaded enchantment
 /// registry, in registry order. Keys keep their identity across reloads; a
 /// reload changes which entries the table lists, not what an existing slot names.
-// no wire: decoding validates the u32 slot with EnchantmentKey::from_slot on the host; wasm carries the host-issued opaque token without consulting guest tables.
+/// `key.id(host)` pins the name, if available, independently of a later reload.
+// no wire: decoding validates the u32 slot with EnchantmentKey::from_slot on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: only the load-owned table creates keys
 pub struct EnchantmentKey(pub(crate) u32);
@@ -111,7 +124,8 @@ pub struct ContainerLootFilled<'a> {
     pub block: Option<[i32; 3]>,
     /// The container entity id, for a vehicle target.
     pub entity: Option<u32>,
-    /// The UUID of the player whose open starts the fill; None otherwise.
+    /// The UUID of the player whose open starts the fill. None for other accesses,
+    /// including vehicle slot reads during a player action.
     pub opener: Option<u128>,
 }
 
@@ -149,8 +163,11 @@ pub struct LootDrops<'a> {
     pub weapon: Option<&'a ItemStack>,
     /// The breaking or using tool (`LootContextParams.TOOL`). Always None for
     /// entity deaths. For the attacker's live hand, resolve `damage_source.causing`
-    /// through `host.entity`, then `host.living`, and read `living.hand_item(host, Hand::Main)`.
-    /// This reads when called, including changes made by earlier loot listeners.
+    /// through `host.entity`, then `host.living`, and read
+    /// `living.with_hand_item(host, Hand::Main, |stack| stack.item())`. To retain the
+    /// hand stack or inspect its components, call [`crate::ItemStackView::project`] in
+    /// the callback and handle a refused projection. This reads when called, including
+    /// changes made by earlier loot listeners.
     pub tool: Option<&'a ItemStack>,
     /// The radius of the explosion that broke the block.
     pub explosion: Option<f32>,
@@ -172,7 +189,8 @@ impl LootDrops<'_> {
     /// stack, preserving components even after the shooter changes hands.
     /// Otherwise reads the direct entity's weapon when called: a player's recorded
     /// auto-spin stack during Riptide, otherwise the live main hand.
-    /// Returns None for non-death drops or an absent or unavailable weapon.
+    /// Returns an owned snapshot, or `None` for non-death drops or a weapon that is absent,
+    /// unavailable or cannot be projected into an owned stack.
     pub fn weapon_item(&self, host: &dyn Host) -> Option<ItemStack> {
         let source = self.damage_source?;
         if let Some(weapon) = self.weapon {
@@ -180,7 +198,9 @@ impl LootDrops<'_> {
         }
         let entity = host.entity(u32::try_from(source.direct).ok().filter(|id| *id != 0)?)?;
         let living = host.living(entity)?;
-        backend_of(host)?.living_weapon_item(living)
+        living
+            .with_weapon_item(host, |stack| stack.project())
+            .flatten()
     }
 }
 
@@ -299,7 +319,6 @@ impl StatType {
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 pub struct ItemFished {
     /// The bobber's entity id and position.
     pub hook: u32,
@@ -310,7 +329,6 @@ pub struct ItemFished {
 /// The slots an item's attribute modifier applies in (vanilla's
 /// `EquipmentSlotGroup`).
 #[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EquipmentSlotGroup {
@@ -342,7 +360,6 @@ pub enum EquipmentSlotGroup {
 /// `ItemAttributeModifiers.Entry`): the attribute (`minecraft:armor`), the
 /// modifier, and the slots it applies in.
 #[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemAttributeModifier {
@@ -373,9 +390,7 @@ impl ItemAttributeModifier {
 /// edits them (`ItemAttributeModifierEvent`'s list). It starts as the
 /// stack's own `minecraft:attribute_modifiers`, or its item's, in order.
 // exhaustive: its fields are private, so mods only edit it through its methods
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(sunrise_mod_api_macros::Wire, Clone, Debug, Default, PartialEq)]
 pub struct ItemAttributeModifiers {
     pub(crate) entries: Vec<ItemAttributeModifier>,
     pub(crate) changed: bool,
@@ -466,9 +481,7 @@ impl ItemAttributeModifiers {
 /// (`minecraft:sharpness`) with its level, in order. Private fields, edited
 /// through methods, so the game knows whether a mod changed them.
 // exhaustive: its fields are private, so mods only edit it through its methods
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(sunrise_mod_api_macros::Wire, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ItemEnchantments {
     pub(crate) entries: Vec<(Identifier, u32)>,
     pub(crate) changed: bool,
@@ -668,15 +681,27 @@ pub struct ScopedActionResult {
     pub held: Option<ItemStack>,
     /// Other nonempty inventory stacks, then offhand, carried stack and armor, in that order.
     pub other: Vec<ItemStack>,
+    /// Stacks the action produced that the API can't represent (a saved item this game build
+    /// doesn't have) and that went back into the world: never destroyed or replaced, each lies
+    /// where the actor stood as an item entity with the default pickup delay, and is in neither
+    /// `held` nor `other`. That item entity joins the level as any drop does, so an
+    /// `entity_join_level` listener that keeps it out discards it, and it is not counted.
+    pub unrepresentable: u32,
 }
 
 impl ScopedActionResult {
     /// The outcome and inventory returned by a scoped action.
-    pub fn new(outcome: ActionOutcome, held: Option<ItemStack>, other: Vec<ItemStack>) -> Self {
+    pub fn new(
+        outcome: ActionOutcome,
+        held: Option<ItemStack>,
+        other: Vec<ItemStack>,
+        unrepresentable: u32,
+    ) -> Self {
         Self {
             outcome,
             held,
             other,
+            unrepresentable,
         }
     }
 }
@@ -730,7 +755,7 @@ pub enum UsePhase {
     ItemBeforeBlock,
     /// `BlockBehaviour.useItemOn`, before the block's Part and template.
     Block,
-    /// `Item.useOn`, after the block passed and before the item's Part.
+    /// `Item.useOn`, after the block passes or is skipped and before the item's Part.
     ItemAfterBlock,
 }
 

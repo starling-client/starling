@@ -1,12 +1,12 @@
 use crate::support::common::f64_bits;
-use sunrise_core::geometry::Vec3;
-use sunrise_world::living_motion::*;
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::geometry::Vec3;
+use sunrise_world::living_motion::*;
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())
 }
@@ -136,7 +136,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "power" => jump_power(&mut w, single(&f["scale"]))
                 .and_then(|v| writeln!(w.out, "float {:08x}", fbits(v))),
-            "jump" => jump_from_ground(&mut w),
+            "jump" => jump_from_ground(&mut w).map(|_| ()),
             "gravity" => {
                 gravity(&mut w).and_then(|v| writeln!(w.out, "double {:016x}", f64_bits(v)))
             }

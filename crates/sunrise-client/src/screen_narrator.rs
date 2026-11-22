@@ -11,9 +11,9 @@
 //! it when due. The frames only record while the narrator can speak
 //! (`shouldRunNarration`), whatever its status.
 use crate::widgets::{self, ElementType, ListKind, Narratable, Narration, ScreenInfo, What};
-use sunrise_narrator::screen::{Output, Priority, ScreenNarration, Trigger, find_narratable};
 use std::collections::HashMap;
 use std::time::Instant;
+use sunrise_narrator::screen::{Output, Priority, ScreenNarration, Trigger, find_narratable};
 
 /// `InputType`: what the player used last on a screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

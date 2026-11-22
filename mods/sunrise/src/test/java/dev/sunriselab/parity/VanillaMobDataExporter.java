@@ -86,7 +86,10 @@ public final class VanillaMobDataExporter {
         return out;
     }
 
-    private static JsonObject placements() {
+    private static JsonObject placements() throws ReflectiveOperationException {
+        var field = SpawnPlacements.class.getDeclaredField("DATA_BY_TYPE");
+        field.setAccessible(true);
+        var registrations = (Map<?, ?>) field.get(null);
         var out = new JsonObject();
         for (var type : BuiltInRegistries.ENTITY_TYPE) {
             var placement = SpawnPlacements.getPlacementType(type);
@@ -96,6 +99,7 @@ public final class VanillaMobDataExporter {
             var o = new JsonObject();
             o.addProperty("placement", name);
             o.addProperty("heightmap", SpawnPlacements.getHeightmapType(type).getSerializedName());
+            o.addProperty("registered", registrations.containsKey(type));
             out.add(BuiltInRegistries.ENTITY_TYPE.getKey(type).toString(), o);
         }
         return out;

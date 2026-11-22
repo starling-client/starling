@@ -9,11 +9,11 @@ use super::{
     state_provider::{BlockStateProvider, StateProviderError},
     value_provider::IntProvider,
 };
+use serde_json::value::RawValue;
 use sunrise_core::{
     geometry::Direction,
     random::{InvalidBound, RandomSource},
 };
-use serde_json::value::RawValue;
 
 #[derive(Clone, Debug)]
 struct Layer {
@@ -192,8 +192,8 @@ mod ceiling_tests {
         registry::BlockRegistry,
         worldgen::state_provider::{StateProviderBindings, StateProviderCatalog},
     };
-    use sunrise_core::nbt::Tag;
     use std::collections::{BTreeMap, BTreeSet};
+    use sunrise_core::nbt::Tag;
 
     #[test]
     fn column_layer_ceiling() {
@@ -212,7 +212,10 @@ mod ceiling_tests {
         for bottom in ["false", "true"] {
             for code in 0..81 {
                 let mut n = code;
-                let mut props = BTreeMap::from([("bottom".into(), Tag::String(bottom.into()))]);
+                let mut props = sunrise_core::nbt::Compound::from([(
+                    "bottom".into(),
+                    Tag::String(bottom.into()),
+                )]);
                 for side in ["north", "east", "south", "west"] {
                     props.insert(
                         side.into(),
@@ -226,7 +229,7 @@ mod ceiling_tests {
                 ]));
             }
         }
-        let mut defaults: BTreeMap<_, _> = names
+        let mut defaults: sunrise_core::nbt::Compound = names
             .iter()
             .enumerate()
             .map(|(i, name)| ((*name).into(), Tag::Int(i as i32)))

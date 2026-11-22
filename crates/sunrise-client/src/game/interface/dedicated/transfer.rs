@@ -10,10 +10,10 @@
 //! tick. The rules are `lan/arrivals.rs`'s. All of them are refused while `server.toml`'s
 //! `[transfer]` is off, and those that bring a player in once the server has begun to stop.
 use crate::game::{Dim, Game};
-use sunrise_client::lan::arrivals;
-use sunrise_protocol::packets::play::{self, Clientbound as C};
 use serde_json::{Value, json};
 use std::time::Instant;
+use sunrise_client::lan::arrivals;
+use sunrise_protocol::packets::play::{self, Clientbound as C};
 
 impl Game<'_> {
     /// A proxy's `player-*` request; the reply is one JSON line, `{"ok": true, ...}` or
@@ -312,9 +312,13 @@ impl Game<'_> {
         let i = host.hub.imported_arrival(uuid, id)?;
         let g = host.hub.guests.take_for_save(i);
         let written =
-            sunrise_client::lan::playerdata::save_now(&g, &self.world_root).and_then(|()| {
-                self.write_arrival_records(self.lan.as_ref().expect("server host is present"), &g)
-            });
+            sunrise_client::lan::playerdata::save_now(&g, &self.world_root, self.res.items())
+                .and_then(|()| {
+                    self.write_arrival_records(
+                        self.lan.as_ref().expect("server host is present"),
+                        &g,
+                    )
+                });
         let name = g.name.clone();
         let host = self.lan.as_mut().expect("server host is present");
         host.hub.guests.insert(i, g);
@@ -362,12 +366,7 @@ impl Game<'_> {
         if let Err(e) = self.enter_level(level) {
             return json!({ "error": format!("the player's level could not be opened: {e}") });
         }
-        // Nothing is sent to the client by this: it is for a player who is leaving.
-        self.guest_close_all(conn);
-        // The inventory's own 2x2 grid too (`InventoryMenu.removed`): `guest_close_all` empties it
-        // only with a real `ContainerClose(0)`, and a frozen client's is dropped. Its items are
-        // not in the player compound, so they would be lost with `player-release moved`.
-        self.lan_crafting_closed(conn, Some(0));
+        self.guest_close_menus_for_save(conn);
         if let Err(e) = self.enter_level(back) {
             log::error!("could not reopen {}: {e}", back.id());
         }

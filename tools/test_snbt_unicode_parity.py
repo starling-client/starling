@@ -75,7 +75,7 @@ def main():
     report = build / 'report.json'
     report.unlink(missing_ok=True)
     paths = ['crates/sunrise-world/src/snbt_text.rs', 'crates/sunrise-core/src/nbt.rs',
-             'crates/sunrise-world/tests/integration/snbt_unicode_order.rs',
+             'crates/sunrise-world/tests/it/snbt_unicode_order.rs',
              'crates/sunrise-world/examples/probe/main.rs',
              'crates/sunrise-world/examples/probe/snbt_unicode_fixture.rs',
              'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSnbtUnicodeOracle.java',

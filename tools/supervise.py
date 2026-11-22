@@ -149,8 +149,7 @@ def save(args):
         if git("status", "--porcelain", cwd=path):
             git("add", "-A", cwd=path)
             git("commit", "-q", "-m", f"WIP: unfinished {path.name} parity work\n\nWork in progress saved when its agent "
-                "stopped; may not build or pass its harnesses yet.\n\n"
-                "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>", cwd=path)
+                "stopped; may not build or pass its harnesses yet.", cwd=path)
             print(f"{path.name}: committed unfinished work")
         git("push", "-q", "origin", f"HEAD:{branch}", cwd=path)
         print(f"{path.name}: {branch} pushed at {git('rev-parse', '--short', 'HEAD', cwd=path)}")

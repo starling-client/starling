@@ -9,9 +9,6 @@ sunrise-client-render core_shader::glsl_fixups::tests::thousands_of_calls_are_le
 sunrise-client-render gfx::inter_stage_tests::no_pipeline_exceeds_the_weakest_gpus_inter_stage_limit lib daily slow
 sunrise-client-render gfx::occlusion::tests::same_sections_as_vanilla lib daily slow
 sunrise-client-render gfx::occlusion::tests::vertical_clamping_only_adds_overdraw lib daily slow
-sunrise-client-render gfx::pack_timing::tests::stages_split_a_render_pass_in_a_plain_frame_and_kept_frames_hold_them lib daily slow
-sunrise-client-render gfx::pack_timing::tests::the_heavy_part_of_a_pass_has_the_largest_time lib daily slow
-sunrise-client-render gfx::pack_uniforms::ftransform_test::ftransform_applies_the_model_view_matrix_before_the_projection lib daily slow
 sunrise-client-render gfx::panorama::tests::original_resolution_texels_and_vanilla_cube_orientation_are_preserved lib daily slow
 sunrise-client-render gfx::readback::tests::a_16_bit_unorm_frame_reaches_an_8_bit_swapchain lib daily slow
 sunrise-client-render gfx::readback::tests::a_float_frame_finishes_on_8_bits_before_the_overlays lib daily slow
@@ -22,6 +19,7 @@ sunrise-client-render gfx::screenshot_readback::tests::a_background_save_writes_
 sunrise-client-render gfx::sunrise_fan::tests::angular_sector_matches_all_triangle_search lib daily slow
 sunrise-client-render gfx::tests::fading_sections_go_to_the_cpu_and_come_back lib daily slow
 sunrise-client-render gfx::tests::shaders_translate_to_hlsl_for_directx_12_and_glsl_for_opengl lib daily slow
+sunrise-client-render graphics_style::tests::the_settings_screens_name_only_sprites_the_game_has lib daily resources
 sunrise-client-render graphics_ui::tests::hdr_sliders_step_through_every_value_they_can_be_set_to lib daily slow
 sunrise-client-render hud::pictures::tests::realms_pictures_do_not_enlarge_the_startup_atlas lib daily slow
 sunrise-client-render light::tests::a_tall_column_relights_as_its_full_light_and_keys_its_sections lib daily slow
@@ -39,7 +37,6 @@ sunrise-client-render radial_overlay::tests::every_action_has_an_icon_and_every_
 sunrise-client-render skins::tests::a_failed_download_is_retried_after_the_wait lib daily network
 sunrise-client-render skins::tests::http_get_reads_2xx_bodies lib daily network
 sunrise-client-render skins::tests::profiles_resolve_through_the_services lib daily network
-sunrise-client-render split_ui::tests::locale_switch_and_pack_overrides_keep_the_same_draft lib daily child-process
 sunrise-client-render streaming::cover_tests::the_buckets_answer_as_the_scan lib daily slow
 sunrise-client-render streaming::cover_tests::the_grid_answers_as_the_scan lib daily slow
-sunrise-client-render sunrise_fan::tests::angular_sector_matches_all_triangle_search test:sunrise_shader daily slow
+sunrise-client-render sunrise_shader::sunrise_fan::tests::angular_sector_matches_all_triangle_search test:it daily slow

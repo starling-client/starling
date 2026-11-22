@@ -33,7 +33,14 @@ fn spell_ticks_load_into_the_live_counter() {
                 value.unwrap_or(0),
                 "{name}: {value:?}"
             );
-            let saved = mob_to_nbt(&loaded, [1, 2, 3, 4], None, None, |_| None);
+            let saved = mob_to_nbt(
+                &loaded,
+                [1, 2, 3, 4],
+                None,
+                None,
+                |_| None,
+                &Default::default(),
+            );
             assert_eq!(saved.get("SpellTicks"), Some(&Tag::Int(value.unwrap_or(0))));
         }
     }
@@ -55,7 +62,7 @@ fn spell_ticks_save_the_mutated_model_without_a_raw_fallback() {
         for value in [29, 27, 20, 0, -2] {
             m.extra.counter = value;
             for raw in [None, Some(&raw)] {
-                let saved = mob_to_nbt(&m, [1, 2, 3, 4], raw, None, |_| None);
+                let saved = mob_to_nbt(&m, [1, 2, 3, 4], raw, None, |_| None, &Default::default());
                 assert_eq!(saved.get("SpellTicks"), Some(&Tag::Int(value)), "{name}");
                 if raw.is_some() {
                     assert_eq!(saved.get("audit:unrelated"), Some(&Tag::Int(7)));

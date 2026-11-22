@@ -1,5 +1,6 @@
 //! Game event regressions for server-side block actions.
 use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+use std::sync::Arc;
 use sunrise_client::{
     chunk::Chunk,
     containers::BlockEntity,
@@ -7,9 +8,8 @@ use sunrise_client::{
     mobs::{Mob, Who},
 };
 use sunrise_core::geometry::Vec3;
-use std::sync::Arc;
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn entering_hive_posts_block_change_from_bee() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         game.world
@@ -40,7 +40,7 @@ fn entering_hive_posts_block_change_from_bee() {
     });
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn lowering_cauldron_by_bottle_posts_block_change_without_source() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         game.world
@@ -55,7 +55,10 @@ fn lowering_cauldron_by_bottle_posts_block_change_without_source() {
         game.world.set(2, 4, 3, water).unwrap();
         *game.held_mut() = Some(ItemStack::new("minecraft:glass_bottle", 1));
         super::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
-        assert!(game.use_on_cauldron([2, 4, 3]).unwrap());
+        assert_eq!(
+            game.use_on_cauldron([2, 4, 3]).unwrap(),
+            sunrise_client::cauldron::Outcome::Success
+        );
         super::sculk::TEST_POSTED_EVENTS.with(|events| {
             assert!(events.borrow().as_ref().unwrap().contains(&(
                 "minecraft:block_change",
@@ -67,7 +70,7 @@ fn lowering_cauldron_by_bottle_posts_block_change_without_source() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn tying_to_fence_and_knot_posts_block_attach_from_player() {
     use sunrise_client::mobs::leash::Holder;
     crate::game::native_entity_refs::tests::with_game(|game| {
@@ -92,7 +95,7 @@ fn tying_to_fence_and_knot_posts_block_attach_from_player() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saddling_a_pig_posts_equip_from_the_pig() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
@@ -148,7 +151,7 @@ fn saddling_a_pig_posts_equip_from_the_pig() {
 /// no source (`Context.of(state)`) - so sculk sensors, calibrated sensors and
 /// wardens hear it.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_landing_posts_the_block_game_event_its_rule_posts() {
     use crate::motion::{MotionEvent, MotionWorld, PlayerMotion};
     use sunrise_client::landing::FallEvent;
@@ -202,7 +205,9 @@ fn a_landing_posts_the_block_game_event_its_rule_posts() {
     let land = |game: &mut Game<'_>, state| {
         let mut player = PlayerMotion::new(game.motion, Vec3::new(2.5, 5.0, 3.5)).unwrap();
         {
+            let side = game_side!(game);
             let mut world = MotionWorld {
+                side: &side,
                 entities: &[],
                 player: &mut player,
                 scene: &mut game.world,
@@ -284,7 +289,7 @@ fn a_landing_posts_the_block_game_event_its_rule_posts() {
 /// off first (`lowerFillLevel`'s `BLOCK_CHANGE`, already posted) and then
 /// posts `FLUID_PICKUP`, while washing a banner posts only the `BLOCK_CHANGE`.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cauldron_use_posts_its_fluid_event_after_the_sound() {
     use sunrise_world::registry::BlockStateId;
     type Posted = (&'static str, [f64; 3], Option<Who>);
@@ -292,7 +297,11 @@ fn a_cauldron_use_posts_its_fluid_event_after_the_sound() {
         game.world.set(2, 4, 3, cauldron).unwrap();
         *game.held_mut() = Some(held);
         super::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
-        assert!(game.use_on_cauldron([2, 4, 3]).unwrap(), "the use acts");
+        assert_eq!(
+            game.use_on_cauldron([2, 4, 3]).unwrap(),
+            sunrise_client::cauldron::Outcome::Success,
+            "the use acts"
+        );
         super::sculk::TEST_POSTED_EVENTS.with(|events| events.borrow_mut().take().unwrap())
     }
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
@@ -417,7 +426,7 @@ fn a_cauldron_use_posts_its_fluid_event_after_the_sound() {
     let mut banner = ItemStack::new("minecraft:white_banner", 1);
     banner
         .data_mut()
-        .banner_patterns
+        .banner_layers_mut()
         .push(sunrise_items::banner_layer::BannerLayer::new(
             "minecraft:stripe_top",
             "minecraft:red",

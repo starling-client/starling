@@ -2,7 +2,7 @@
 
 What a player's agent, a script or a pack maker can do with `sunrise-launcher`: install and run versions, manage
 accounts, settings, mods, modpacks and hosted servers, from a terminal or over MCP. The launcher itself:
-[launcher/README.md](../../launcher/README.md).
+[the launcher's README](https://github.com/sunrise-org/sunrise-launcher/blob/main/README.md).
 
 ## Overview
 
@@ -25,7 +25,7 @@ the MCP server is off.
 
 ## Reference
 
-[launcher-commands.md](../launcher-commands.md), generated from `launcher/src/cli.rs`: every command, its arguments
+[launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md), generated from `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/cli.rs`: every command, its arguments
 and its MCP tool.
 
 ## Examples

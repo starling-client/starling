@@ -14,11 +14,13 @@ pub trait Hooks {
     /// blocks), a TNT minecart and a sulfur cube. Server-side and in single
     /// player.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_tnt_primed",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         cancellable = true,
         neoforge = "none (NeoForge has no TNT priming event; the primed TNT entity joins with EntityJoinLevelEvent)"
     )]
-    fn tnt_primed();
+    fn tnt_primed(player: Option<u128>, pos: [i32; 3], cancel: &mut bool);
 }

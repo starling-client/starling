@@ -8,13 +8,13 @@
 //! state and its contexts carry no `Host`.
 use super::legacy::LegacyPiece;
 use super::start::StartContext;
+use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_core::{
     position::ChunkPos,
     random::{LegacyRandom, WorldgenRandom},
 };
-use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
 
 /// A structure type's engine side: vanilla's `StructureType` bound to the
 /// pieces' `StructurePieceType` loader, as the executable's adapter sees it.
@@ -93,9 +93,9 @@ mod tests {
     use super::*;
     use crate::worldgen::structure::legacy::{PieceContext, Result};
     use crate::worldgen::structure::start::StructureKind;
-    use sunrise_core::bounding_box::BoundingBox;
     use serde_json::json;
     use std::collections::BTreeSet;
+    use sunrise_core::bounding_box::BoundingBox;
 
     /// A type whose every piece is its box: positions it got, in a tag.
     struct Boxed(Vec<[i32; 3]>);

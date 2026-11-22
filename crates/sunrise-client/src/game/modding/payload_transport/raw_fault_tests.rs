@@ -2,16 +2,16 @@
 //! vanilla-shaped TCP peer that never answers the Sunrise payload query: the first declaring
 //! mod stages a write and fails, the second commits its own; the first's write is rolled back
 //! before the second runs, each runs once per message in load order, and the connection stays.
-use sunrise_protocol::{
-    connection::Connection,
-    packets::{Empty, configuration as cfg, play},
-};
 use mod_api::{
     Hooks, IPayloadContext, IPayloadHandler, ModEntry, PayloadBytes, PayloadId, Registrar,
 };
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
+};
+use sunrise_protocol::{
+    connection::Connection,
+    packets::{Empty, configuration as cfg, play},
 };
 
 const NAME: &str = "game::payload_transport::raw_fault_tests::a_failing_raw_handler_rolls_back_alone_and_the_next_one_commits";
@@ -34,18 +34,29 @@ impl IPayloadHandler for Step {
         bytes: PayloadBytes,
         context: &mut dyn IPayloadContext,
     ) -> Result<(), mod_api::PayloadHandleError> {
+<<<<<<< sync-sunrise-1
         self.step(bytes, context)
             .map_err(mod_api::PayloadHandleError::Failed)
     }
 }
 impl Step {
     fn step(&self, bytes: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), String> {
+=======
+>>>>>>> sunrise/main
         assert_eq!(std::thread::current().name(), Some("Server thread"));
         let round = bytes.0[0];
-        let player = context.player().map_err(|e| format!("{e:?}"))?;
-        let host = context.server_host().map_err(|e| format!("{e:?}"))?;
-        let living = host.living(player.entity()).ok_or("no living player")?;
-        let seen = living.health(host).ok_or("no health")?;
+        let player = context
+            .player()
+            .map_err(|e| mod_api::PayloadHandleError::Failed(format!("{e:?}")))?;
+        let host = context
+            .server_host()
+            .map_err(|e| mod_api::PayloadHandleError::Failed(format!("{e:?}")))?;
+        let living = host
+            .living(player.entity())
+            .ok_or_else(|| mod_api::PayloadHandleError::Failed("no living player".into()))?;
+        let seen = living
+            .health(host)
+            .ok_or_else(|| mod_api::PayloadHandleError::Failed("no health".into()))?;
         self.log.lock().unwrap().push((self.name, round, seen));
         if self.fails {
             assert!(living.set_health(host, STAGED));
@@ -54,13 +65,17 @@ impl Step {
                 Some(STAGED),
                 "the write is staged in place"
             );
-            return Err("refused after staging a write".into());
+            // A failed delivery discards its explicit disconnect with its writes.
+            context.disconnect(mod_api::Text::literal("discard this failed handler's kick"));
+            return Err(mod_api::PayloadHandleError::Failed(
+                "refused after staging a write".into(),
+            ));
         }
         assert!(living.set_health(host, COMMITTED));
         context
             .reply(&PayloadId(CHANNEL.into()), bytes)
             .map(drop)
-            .map_err(|e| format!("reply: {e:?}"))
+            .map_err(|e| mod_api::PayloadHandleError::Failed(format!("reply: {e:?}")))
     }
 }
 struct Declares(Arc<Step>);
@@ -75,7 +90,7 @@ impl Hooks for Declares {
 }
 
 #[test]
-#[ignore = "needs SUNRISE_TEST_RESOURCES; starts an integrated server and a physical TCP client"]
+#[ignore = "daily"]
 fn a_failing_raw_handler_rolls_back_alone_and_the_next_one_commits() {
     super::tests::require_resources();
     if super::super::native_entity_refs::tests::run_fresh_cases(

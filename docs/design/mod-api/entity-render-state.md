@@ -1,5 +1,9 @@
 # Design: entity render state
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [entity rendering](../../modding/src/how-to/client/entity-renderers.md) for the current native API.
+> The proposed guest callback dispatch, failure handling and acceptance matrix below are historical.
+
 Provisional answer to [#897](https://github.com/arismoko/horizon/issues/897):
 introduce one owner-thread entity preparation operation, after complete base and
 specialized extraction and before model posing or geometry emission. All entity
@@ -51,7 +55,7 @@ returning decisions/records and never reaching upward into Game.
 
 World mobs, remote and own players must share this operation. Inventory/entity
 previews, spawner displays, first-person arms, projectiles, item/display entities,
-shadow views and screenshot/split-view entry paths require a full caller audit
+shadow views and screenshot entry paths require a full caller audit
 before implementation: the table is verified evidence for the named paths,
 not a claim those additional routes are covered. Recommend full-entity previews
 use view-scoped records; first-person arms remain a separate presentation unless

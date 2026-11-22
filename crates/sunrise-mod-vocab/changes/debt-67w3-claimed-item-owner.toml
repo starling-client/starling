@@ -1,0 +1,28 @@
+ids = [
+    "method:prelude::ClientInputClientHost::claim_items",
+    "method:prelude::ClientInputClientHost::poll",
+    "type:HeldItemSlot",
+    "type:HeldItemSlot.id",
+    "type:HeldItemSlot.count",
+    "type:HeldItemSlot.slot",
+    "type:HeldItemSlot.custom_name",
+    "type:HeldItemSlot.custom_data",
+    "type:ModEvent",
+    "type:ModEvent.UseStart",
+    "type:ModEvent.UseStop",
+    "trait:ClientItemUseBehavior",
+    "method:ClientItemUseBehavior::use_item",
+    "method:ClientItemUseBehavior::release_using",
+    "method:ClientItemUseBehavior::on_stop_using",
+    "method:ItemsRegistrar::register_client_item_use",
+]
+why = "Client main-hand input now calls one owner registered for the item rather than queueing start and stop events with SNBT copies. The owner gets the live typed stack while the same item kind stays in the active slot (rebound on tick and release like LivingEntity.useItem), and an input release (including screen-open keybinds releasing key mappings) is distinct from a reset. Ordinary item use on both sides is unchanged."
+migrate = '''
+Replace `host.claim_items(mod_id, ids)` with `let key = r.item_key("mymod:tool"); r.register_client_item_use(key, Arc::new(Behavior));` in `Hooks::register`, once per item. Implement `ClientItemUseBehavior` for `Behavior` and import `std::sync::Arc`. Do not pass a mod ID. Registering a second behavior for the same item refuses startup, even if both registrations are from the same mod.
+
+Remove `host.poll(mod_id)` and the `ModEvent` match. Move `UseStart` handling to `ClientItemUseBehavior::use_item(host, stack, slot)` and `UseStop` cleanup to `on_stop_using(host, stack, slot, ticks_held)`. Move release-only actions to `release_using(host, stack, slot, ticks_held)`. The game clears the active capture before the end callbacks. Releasing the input (including keybinds that open a screen and release key mappings, or focus loss observed on the next tick, matching `Minecraft.handleKeybinds`) while the same item kind is still in the selected active slot and the player can still use it runs `release_using` before `on_stop_using`. A reset, such as switching slots, replacing the item with a different kind, dying or disconnecting, runs only `on_stop_using`. A disabled owner gets neither callback.
+
+Use the borrowed `&ItemStack` instead of `HeldItemSlot`: replace `.id` with `stack.item()`, `.count` with `stack.count()`, and `.slot` with the separate `slot: u32` argument. Both end methods receive the elapsed held ticks separately as `ticks_held: u32`; the start has no elapsed-ticks argument. While the same item kind remains in the active slot, each tick and release rebinds the stack to the live slot contents (matching `LivingEntity.updatingUsingItem` and `LivingEntity.releaseUsingItem`); if the slot is emptied or replaced by a different kind, `on_stop_using` receives the last valid stack of the captured item kind. Replace `.custom_name` and `.custom_data` with typed `Tag` entries for `minecraft:custom_name` and `minecraft:custom_data`, respectively. For example: `stack.components().and_then(|c| c.as_nbt().get(&mod_api::JavaString::from("minecraft:custom_data")))`. Or decode a component with `stack.get(&descriptor)`.
+
+These callbacks consume local input, send no item use or release packet, and do not make the player use or block with the item. Track intercepted input in the callbacks rather than with `local_item_use()`, `living_used_item_hand(living)` or `living_is_blocking(living)`, which report ordinary living-item use only. For actual living-item behavior, keep using `ItemPart::use_item` and `ItemPart::release_using` on both sides.
+'''

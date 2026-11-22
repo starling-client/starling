@@ -1,9 +1,7 @@
 //! Direct ArmorTrim holders, using the existing stream holder convention.
-use crate::{
-    Result,
-    buf::{Reader, Writer},
-};
+use crate::{Result, buf::Reader};
 use sunrise_core::nbt::Tag;
+use sunrise_core::vanilla_bytes::Writer;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrimHolder<T> {

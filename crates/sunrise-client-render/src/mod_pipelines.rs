@@ -5,84 +5,258 @@
 //! entry points after it, and checks the whole shader, so the renderer (`gfx::mod_pipelines`) is
 //! only ever handed WGSL that compiles. A required pipeline the load cannot build fails the load;
 //! an optional one is logged and left out. A frame reads none of this by name.
-//!
-//! Colour follows the mod render colour rule (docs/design/mod-api/mod-render-colour.md):
-//! the mod's function reads and returns linear light, and the generated entry points convert
-//! from the quad's vanilla-space colour and to the frame, which stores vanilla's 2.2 encoding
-//! in every format the renderer draws today.
+//! The shader's composition and checks live in `sunrise_shader_api::mod_pipeline`, shared with
+//! `cargo sunrise-mod check`.
 use mod_api::{
-    Identifier, PipelineBlend, RenderPipeline, RenderPipelineError, RenderPipelineRef, WorldDepth,
+    Identifier, PipelineBlend, PipelineTexture, PipelineTextureError, RenderPipeline,
+    RenderPipelineError, RenderPipelineRef, WorldDepth,
 };
-use naga::valid::{Capabilities, ValidationFlags, Validator};
-use std::sync::OnceLock;
-
-/// The folder under each namespace's `shaders` the fragment files are read from.
-const FOLDER: &str = "shaders/pipeline";
-
-/// The function a pipeline's file defines.
-const FUNCTION: &str = "pipeline_fragment";
-
-/// What a pipeline's file can use, before it in the shader. Names starting `sunrise_` are the
-/// renderer's own.
-const PRELUDE_TYPES: &str = "\
-// What `pipeline_fragment` is given for each fragment.
-struct PipelineInput {
-    // The quad's texture coordinate here, as its corners gave it.
-    uv: vec2<f32>,
-    // The quad's colour in linear light; alpha is coverage.
-    color: vec4<f32>,
-    // This point in blocks, relative to the camera.
-    position: vec3<f32>,
-}
-// The frame's values, the same for every fragment.
-struct PipelineFrame {
-    // The world picture's size in pixels.
-    viewport: vec2<f32>,
-    // Seconds of game time, smooth between ticks, wrapping to 0 every hour.
-    time: f32,
-}
-@group(0) @binding(0) var<uniform> sunrise_pipeline_view: mat4x4<f32>;
-@group(0) @binding(1) var<uniform> frame: PipelineFrame;
-";
-
-/// The entry points, after the pipeline's file: the vertex stage, and a fragment stage that
-/// hands the mod linear light and stores its answer as the frame holds colour.
-const ENTRIES: &str = "
-struct SunrisePipelineVertex {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) position: vec3<f32>,
-}
-@vertex fn sunrise_vs_pipeline(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
-    @location(2) color: vec4<f32>) -> SunrisePipelineVertex {
-    var out: SunrisePipelineVertex;
-    out.clip = sunrise_pipeline_view * vec4<f32>(position, 1.0);
-    out.uv = uv;
-    out.color = color;
-    out.position = position;
-    return out;
-}
-@fragment fn sunrise_fs_pipeline(in: SunrisePipelineVertex) -> @location(0) vec4<f32> {
-    let result = pipeline_fragment(PipelineInput(in.uv, sunrise_decode_rgba(in.color), in.position));
-    // Coverage only: no light rides in the frame's alpha, and NaN covers nothing.
-    let coverage = clamp(select(0.0, result.a, result.a > 0.0), 0.0, 1.0);
-    return vec4<f32>(sunrise_encode(result.rgb), coverage);
-}
-";
-
-/// The renderer's entry points in a built pipeline's shader.
-pub const VERTEX_ENTRY: &str = "sunrise_vs_pipeline";
-pub const FRAGMENT_ENTRY: &str = "sunrise_fs_pipeline";
+use std::{collections::BTreeMap, sync::OnceLock};
+use sunrise_shader_api::mod_pipeline::{FOLDER, compose_with};
 
 static REGISTERED: OnceLock<Vec<RenderPipeline>> = OnceLock::new();
 
-/// Publish the mods' registrations once at startup, as `register_render_pipelines` left them:
-/// each id once, in a namespace its mod owns. A pipeline's place in the list is its slot.
-pub fn register(pipelines: Vec<RenderPipeline>) {
-    if REGISTERED.set(pipelines).is_err() {
+/// Canonical vanilla 26.3 required render pipeline paths under the `minecraft` namespace
+/// (`RenderPipelines.PIPELINES_BY_LOCATION`, sorted for binary search).
+const BUILTIN_REQUIRED_PIPELINES: &[&str] = &[
+    "pipeline/animate_sprite_blit",
+    "pipeline/animate_sprite_interpolate",
+    "pipeline/armor_cutout_no_cull",
+    "pipeline/armor_cutout_no_cull_glint",
+    "pipeline/armor_decal_cutout_no_cull",
+    "pipeline/armor_translucent",
+    "pipeline/banner_pattern",
+    "pipeline/beacon_beam_opaque",
+    "pipeline/beacon_beam_translucent",
+    "pipeline/blit_depth",
+    "pipeline/blit_depth_bounds",
+    "pipeline/blit_depth_during_depth_bounds",
+    "pipeline/block_screen_effect",
+    "pipeline/breeze_wind",
+    "pipeline/celestial",
+    "pipeline/clouds",
+    "pipeline/crosshair",
+    "pipeline/crumbling",
+    "pipeline/cutout_block",
+    "pipeline/cutout_terrain",
+    "pipeline/cutout_terrain_multidraw",
+    "pipeline/debug_filled_box",
+    "pipeline/debug_points",
+    "pipeline/debug_quads",
+    "pipeline/debug_triangle_fan",
+    "pipeline/dragon_rays",
+    "pipeline/end_crystal_beam",
+    "pipeline/end_gateway",
+    "pipeline/end_portal",
+    "pipeline/end_sky",
+    "pipeline/energy_swirl",
+    "pipeline/entity_cutout",
+    "pipeline/entity_cutout_cull",
+    "pipeline/entity_cutout_dissolve",
+    "pipeline/entity_cutout_z_offset",
+    "pipeline/entity_outline_blit",
+    "pipeline/entity_shadow",
+    "pipeline/entity_solid",
+    "pipeline/entity_solid_glint",
+    "pipeline/entity_solid_offset_forward",
+    "pipeline/entity_translucent",
+    "pipeline/entity_translucent_cull",
+    "pipeline/entity_translucent_emissive",
+    "pipeline/eyes",
+    "pipeline/fire_screen_effect",
+    "pipeline/flat_clouds",
+    "pipeline/glint",
+    "pipeline/gui",
+    "pipeline/gui_invert",
+    "pipeline/gui_nausea_overlay",
+    "pipeline/gui_opaque_textured_background",
+    "pipeline/gui_text",
+    "pipeline/gui_text_grayscale",
+    "pipeline/gui_text_highlight",
+    "pipeline/gui_textured",
+    "pipeline/gui_textured_premultiplied_alpha",
+    "pipeline/integrate_depth",
+    "pipeline/item_cutout",
+    "pipeline/item_translucent",
+    "pipeline/item_translucent_glint",
+    "pipeline/leash",
+    "pipeline/lightmap",
+    "pipeline/lightning",
+    "pipeline/lines",
+    "pipeline/lines_depth_bias",
+    "pipeline/lines_translucent",
+    "pipeline/lines_translucent_no_depth_write",
+    "pipeline/mojang_logo",
+    "pipeline/oit_accumulate_beacon_beam",
+    "pipeline/oit_accumulate_breeze_wind",
+    "pipeline/oit_accumulate_clouds",
+    "pipeline/oit_accumulate_crumbling",
+    "pipeline/oit_accumulate_debug_filled_box",
+    "pipeline/oit_accumulate_debug_points",
+    "pipeline/oit_accumulate_debug_quads",
+    "pipeline/oit_accumulate_debug_triangle_fan",
+    "pipeline/oit_accumulate_dragon_rays",
+    "pipeline/oit_accumulate_energy_swirl",
+    "pipeline/oit_accumulate_entity",
+    "pipeline/oit_accumulate_entity_cull",
+    "pipeline/oit_accumulate_entity_emissive",
+    "pipeline/oit_accumulate_entity_shadow",
+    "pipeline/oit_accumulate_eyes",
+    "pipeline/oit_accumulate_flat_clouds",
+    "pipeline/oit_accumulate_item",
+    "pipeline/oit_accumulate_item_glint",
+    "pipeline/oit_accumulate_item_glint_special",
+    "pipeline/oit_accumulate_lightning",
+    "pipeline/oit_accumulate_lines_translucent",
+    "pipeline/oit_accumulate_particle",
+    "pipeline/oit_accumulate_terrain",
+    "pipeline/oit_accumulate_terrain_multidraw",
+    "pipeline/oit_accumulate_text",
+    "pipeline/oit_accumulate_text_grayscale",
+    "pipeline/oit_accumulate_text_grayscale_polygon_offset",
+    "pipeline/oit_accumulate_text_polygon_offset",
+    "pipeline/oit_accumulate_translucent_block",
+    "pipeline/oit_accumulate_weather",
+    "pipeline/oit_accumulate_world_border",
+    "pipeline/oit_composite",
+    "pipeline/oit_depth_bounds_beacon_beam",
+    "pipeline/oit_depth_bounds_breeze_wind",
+    "pipeline/oit_depth_bounds_clouds",
+    "pipeline/oit_depth_bounds_crumbling",
+    "pipeline/oit_depth_bounds_cull",
+    "pipeline/oit_depth_bounds_debug_filled_box",
+    "pipeline/oit_depth_bounds_debug_points",
+    "pipeline/oit_depth_bounds_debug_quads",
+    "pipeline/oit_depth_bounds_debug_triangle_fan",
+    "pipeline/oit_depth_bounds_dragon_rays",
+    "pipeline/oit_depth_bounds_energy_swirl",
+    "pipeline/oit_depth_bounds_entity",
+    "pipeline/oit_depth_bounds_entity_cull",
+    "pipeline/oit_depth_bounds_entity_emissive",
+    "pipeline/oit_depth_bounds_entity_shadow",
+    "pipeline/oit_depth_bounds_eyes",
+    "pipeline/oit_depth_bounds_flat_clouds",
+    "pipeline/oit_depth_bounds_item",
+    "pipeline/oit_depth_bounds_item_glint",
+    "pipeline/oit_depth_bounds_item_glint_special",
+    "pipeline/oit_depth_bounds_lightning",
+    "pipeline/oit_depth_bounds_lines_translucent",
+    "pipeline/oit_depth_bounds_particle",
+    "pipeline/oit_depth_bounds_terrain",
+    "pipeline/oit_depth_bounds_terrain_multidraw",
+    "pipeline/oit_depth_bounds_text",
+    "pipeline/oit_depth_bounds_text_grayscale",
+    "pipeline/oit_depth_bounds_text_grayscale_polygon_offset",
+    "pipeline/oit_depth_bounds_text_polygon_offset",
+    "pipeline/oit_depth_bounds_translucent_block",
+    "pipeline/oit_depth_bounds_weather",
+    "pipeline/oit_depth_bounds_world_border",
+    "pipeline/oit_transmittance_beacon_beam",
+    "pipeline/oit_transmittance_breeze_wind",
+    "pipeline/oit_transmittance_clouds",
+    "pipeline/oit_transmittance_crumbling",
+    "pipeline/oit_transmittance_debug_filled_box",
+    "pipeline/oit_transmittance_debug_points",
+    "pipeline/oit_transmittance_debug_quads",
+    "pipeline/oit_transmittance_debug_triangle_fan",
+    "pipeline/oit_transmittance_dragon_rays",
+    "pipeline/oit_transmittance_energy_swirl",
+    "pipeline/oit_transmittance_entity",
+    "pipeline/oit_transmittance_entity_cull",
+    "pipeline/oit_transmittance_entity_emissive",
+    "pipeline/oit_transmittance_entity_shadow",
+    "pipeline/oit_transmittance_eyes",
+    "pipeline/oit_transmittance_flat_clouds",
+    "pipeline/oit_transmittance_item",
+    "pipeline/oit_transmittance_item_glint",
+    "pipeline/oit_transmittance_item_glint_special",
+    "pipeline/oit_transmittance_lightning",
+    "pipeline/oit_transmittance_lines_translucent",
+    "pipeline/oit_transmittance_particle",
+    "pipeline/oit_transmittance_terrain",
+    "pipeline/oit_transmittance_terrain_multidraw",
+    "pipeline/oit_transmittance_text",
+    "pipeline/oit_transmittance_text_grayscale",
+    "pipeline/oit_transmittance_text_grayscale_polygon_offset",
+    "pipeline/oit_transmittance_text_polygon_offset",
+    "pipeline/oit_transmittance_translucent_block",
+    "pipeline/oit_transmittance_weather",
+    "pipeline/oit_transmittance_world_border",
+    "pipeline/oit_water_mask",
+    "pipeline/opaque_particle",
+    "pipeline/outline_cull",
+    "pipeline/outline_no_cull",
+    "pipeline/panorama",
+    "pipeline/secondary_block_outline",
+    "pipeline/sky",
+    "pipeline/solid_block",
+    "pipeline/solid_terrain",
+    "pipeline/solid_terrain_multidraw",
+    "pipeline/stars",
+    "pipeline/sunrise_sunset",
+    "pipeline/text",
+    "pipeline/text_grayscale",
+    "pipeline/text_grayscale_polygon_offset",
+    "pipeline/text_grayscale_see_through",
+    "pipeline/text_polygon_offset",
+    "pipeline/text_see_through",
+    "pipeline/tracy_blit",
+    "pipeline/translucent_block",
+    "pipeline/translucent_particle",
+    "pipeline/translucent_terrain",
+    "pipeline/translucent_terrain_multidraw",
+    "pipeline/vignette",
+    "pipeline/water_mask",
+    "pipeline/weather",
+    "pipeline/world_border",
+];
+
+/// Canonical vanilla 26.3 optional render pipeline paths under the `minecraft` namespace
+/// (`RenderPipelines.OPTIONAL_PIPELINES_BY_LOCATION`, sorted for binary search).
+const BUILTIN_OPTIONAL_PIPELINES: &[&str] = &["pipeline/wireframe", "pipeline/wireframe_multidraw"];
+
+/// Publish the mods' registrations once at startup, as `register_render_pipelines` left them.
+/// Mod pipeline IDs are unique across the table because lookup uses the ID alone. Check each
+/// mod ID against the corresponding vanilla required or optional registry, as NeoForge's
+/// `RenderPipelines.registerCustomPipelines` does. A collision fails startup without committing
+/// the table. A pipeline's place in the list is its slot.
+pub fn register(pipelines: Vec<RenderPipeline>) -> Result<(), String> {
+    register_into(&REGISTERED, pipelines)
+}
+
+fn register_into(
+    slot: &OnceLock<Vec<RenderPipeline>>,
+    pipelines: Vec<RenderPipeline>,
+) -> Result<(), String> {
+    let mut seen = BTreeMap::new();
+    for pipeline in &pipelines {
+        let (builtins, kind) = if pipeline.optional {
+            (BUILTIN_OPTIONAL_PIPELINES, "optional")
+        } else {
+            (BUILTIN_REQUIRED_PIPELINES, "required")
+        };
+        if pipeline.id.namespace() == "minecraft"
+            && builtins.binary_search(&pipeline.id.path()).is_ok()
+        {
+            return Err(format!(
+                "Duplicate {kind} render pipeline registration: {} collides with a built-in vanilla pipeline (registered by {})",
+                pipeline.id,
+                pipeline.owner()
+            ));
+        }
+        if let Some(first_owner) = seen.insert(&pipeline.id, pipeline.owner()) {
+            return Err(format!(
+                "Duplicate render pipeline registration: {} (registered by {} and {})",
+                pipeline.id,
+                first_owner,
+                pipeline.owner()
+            ));
+        }
+    }
+    if slot.set(pipelines).is_err() {
         log::warn!("Render pipelines already registered; keeping the first list");
     }
+    Ok(())
 }
 
 /// The registered pipelines; none until registration publishes them.
@@ -103,6 +277,16 @@ pub struct Built {
     pub depth: WorldDepth,
     /// Whether the load may go on without it ([`RenderPipeline::optional()`]).
     pub optional: bool,
+    /// What its shader samples, if anything.
+    pub texture: Option<BuiltTexture>,
+}
+
+/// A textured pipeline's texture as a load found it ([`PipelineTexture`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuiltTexture {
+    /// A sprite of the 2D atlas, by its name there (`block/stone`, `powah:block/energy_charge`),
+    /// looked up when the renderer builds the pipeline.
+    Sprite(String),
 }
 
 /// The registered pipelines as one resource load built them, by slot. An optional pipeline the
@@ -129,6 +313,8 @@ impl Pipelines {
         })
     }
 
+    /// Build every registered pipeline, reading fragment files with `read`. A pipeline's
+    /// texture is named here; its sprite is looked up when the renderer builds it.
     pub(crate) fn build(
         registered: &[RenderPipeline],
         generation: u64,
@@ -139,18 +325,46 @@ impl Pipelines {
             .iter()
             .map(|pipeline| {
                 let file = fragment_file(&pipeline.fragment);
-                match read(&file).and_then(|text| compose(&text)) {
-                    Ok(shader) => Some(Built {
+                // A refusal reads `<file>[:<line>:<column>]: <message>`, the shader's own
+                // `Problem`s printed as the pack checker prints them. The checks run contained:
+                // a panic in naga on a mod's shader refuses the pipeline, with no crash report.
+                let loaded = read(&file)
+                    .map_err(|cause| format!("{file}: {cause}"))
+                    .and_then(|text| {
+                        crate::crash::contain(|| {
+                            compose_with(&file, &text, pipeline.texture.is_some())
+                        })
+                        .map_err(|panic| format!("{file}: checking it panicked: {panic}"))?
+                        .map_err(|problems| {
+                            problems
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        })
+                    })
+                    .and_then(|shader| {
+                        let texture = match &pipeline.texture {
+                            None => None,
+                            Some(texture) => Some(load_texture(texture).map_err(|cause| {
+                                format!("its texture: {}", texture_refusal(cause))
+                            })?),
+                        };
+                        Ok((shader, texture))
+                    });
+                match loaded {
+                    Ok((shader, texture)) => Some(Built {
                         owner: pipeline.owner().to_owned(),
                         id: pipeline.id.clone(),
                         shader,
                         blend: pipeline.blend,
                         depth: pipeline.depth,
                         optional: pipeline.optional,
+                        texture,
                     }),
                     Err(reason) => {
                         let refusal = format!(
-                            "render pipeline {} from mod {} refused: {file}: {reason}",
+                            "render pipeline {} from mod {} refused: {reason}",
                             pipeline.id,
                             pipeline.owner()
                         );
@@ -257,127 +471,34 @@ fn fragment_file(fragment: &Identifier) -> String {
     )
 }
 
-/// The prelude a pipeline's file follows.
-fn prelude() -> String {
-    format!(
-        "{PRELUDE_TYPES}{}",
-        sunrise_shader_api::stages::COLOR_HELPERS
-    )
-}
-
-/// The whole shader of a pipeline whose file is `text`, or why the file is refused, with the
-/// file's own line where there is one.
-pub fn compose(text: &str) -> Result<String, String> {
-    let prelude = prelude();
-    let mut shader = format!("{prelude}{text}\n");
-    let located = |at: Option<usize>, message: String| match at
-        .and_then(|at| at.checked_sub(prelude.len()))
-        .filter(|at| *at <= text.len())
-    {
-        Some(at) => format!(
-            "line {}: {message}",
-            text.as_bytes()[..at]
-                .iter()
-                .filter(|b| **b == b'\n')
-                .count()
-                + 1
-        ),
-        None => message,
-    };
-    // First without the entry points, so a missing or mistyped function is reported as such
-    // rather than as a call that doesn't resolve.
-    let module = naga::front::wgsl::parse_str(&shader).map_err(|e| {
-        let at = e
-            .labels()
-            .next()
-            .and_then(|(span, _)| span.to_range())
-            .map(|range| range.start);
-        located(at, e.message().to_owned())
-    })?;
-    for (_, function) in module.functions.iter() {
-        if function.expressions.iter().any(|(_, expression)| matches!(expression,
-            naga::Expression::GlobalVariable(handle) if module.global_variables[*handle].name.as_deref() == Some("sunrise_pipeline_view"))) {
-            return Err("sunrise_pipeline_view is vertex-only".into());
+/// `texture` as a load finds it, or its named refusal.
+fn load_texture(texture: &PipelineTexture) -> Result<BuiltTexture, PipelineTextureError> {
+    match texture {
+        PipelineTexture::Sprite(id) => {
+            // A file's path or name is not a sprite key.
+            let path = id.path();
+            if path.starts_with("textures/") || path.ends_with(".png") {
+                return Err(PipelineTextureError::NotASpriteKey);
+            }
+            // Named as the 2D atlas names the blocks and items atlases' sprites.
+            Ok(BuiltTexture::Sprite(match id.namespace() {
+                "minecraft" => path.to_owned(),
+                _ => id.to_string(),
+            }))
         }
+        // A texture kind a later API adds is one this game has no route for yet.
+        _ => Err(PipelineTextureError::NoSuchTextureFile),
     }
-    if !module.overrides.is_empty() {
-        return Err("override declarations are not supported".into());
-    }
-    signature(&module)?;
-    if !module.entry_points.is_empty() {
-        return Err("it declares an entry point; the game supplies both stages".into());
-    }
-    if module
-        .global_variables
-        .iter()
-        .filter(|(_, variable)| variable.binding.is_some())
-        .count()
-        != 2
-    {
-        return Err("it declares a binding; a pipeline reads only `frame` and its input".into());
-    }
-    shader.push_str(ENTRIES);
-    let module = naga::front::wgsl::parse_str(&shader).map_err(|e| e.message().to_owned())?;
-    Validator::new(ValidationFlags::all(), Capabilities::default())
-        .validate(&module)
-        .map_err(|e| {
-            let at = e
-                .spans()
-                .next()
-                .and_then(|(span, _)| span.to_range())
-                .map(|range| range.start);
-            let mut message = e.as_inner().to_string();
-            let mut source = std::error::Error::source(e.as_inner());
-            while let Some(inner) = source {
-                message += &format!(": {inner}");
-                source = inner.source();
-            }
-            located(at, message)
-        })?;
-    Ok(shader)
 }
 
-/// `fn pipeline_fragment(input: PipelineInput) -> vec4<f32>`, or what the file has instead.
-fn signature(module: &naga::Module) -> Result<(), String> {
-    let expected = format!("expected `fn {FUNCTION}(input: PipelineInput) -> vec4<f32>`");
-    let (_, function) = module
-        .functions
-        .iter()
-        .find(|(_, function)| function.name.as_deref() == Some(FUNCTION))
-        .ok_or_else(|| format!("no function `{FUNCTION}`: {expected}"))?;
-    let takes_input = matches!(
-        function.arguments.as_slice(),
-        [argument] if module.types[argument.ty].name.as_deref() == Some("PipelineInput")
-    );
-    let returns_color = function.result.as_ref().is_some_and(|result| {
-        matches!(
-            module.types[result.ty].inner,
-            naga::TypeInner::Vector {
-                size: naga::VectorSize::Quad,
-                scalar: naga::Scalar::F32,
-            }
-        )
-    });
-    if takes_input && returns_color {
-        Ok(())
-    } else {
-        Err(format!("`{FUNCTION}` has another signature: {expected}"))
-    }
+/// The diagnostics line of a refused texture: its named cause, then what it means.
+pub fn texture_refusal(cause: PipelineTextureError) -> String {
+    format!("{cause:?}: {cause}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fragment_cannot_read_vertex_uniform() {
-        assert!(compose("fn pipeline_fragment(input: PipelineInput) -> vec4<f32> { return sunrise_pipeline_view * input.color; }").unwrap_err().contains("sunrise_pipeline_view"));
-    }
-
-    #[test]
-    fn overrides_without_defaults_are_refused() {
-        assert!(compose("override strength: f32; fn pipeline_fragment(input: PipelineInput) -> vec4<f32> { return input.color * strength; }").unwrap_err().contains("override"));
-    }
 
     const GLOW: &str = "\
 fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
@@ -395,60 +516,6 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
     }
     fn id(text: &str) -> Identifier {
         Identifier::parse(text).unwrap()
-    }
-
-    #[test]
-    fn a_file_with_the_function_composes_into_a_shader_with_both_entry_points() {
-        let shader = compose(GLOW).unwrap();
-        let module = naga::front::wgsl::parse_str(&shader).unwrap();
-        let entries: Vec<_> = module
-            .entry_points
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(entries, [VERTEX_ENTRY, FRAGMENT_ENTRY]);
-    }
-
-    #[test]
-    fn a_refused_file_says_what_is_wrong_and_where() {
-        let refused = |text: &str| compose(text).unwrap_err();
-        assert!(refused("").starts_with("no function `pipeline_fragment`"));
-        assert!(
-            refused("fn pipeline_fragment(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }")
-                .contains("another signature")
-        );
-        assert!(
-            refused(
-                "fn pipeline_fragment(input: PipelineInput) -> vec3<f32> { return input.position; }"
-            )
-            .contains("another signature")
-        );
-        // A syntax error is reported on the file's own line, not the composed shader's.
-        let broken = "// a comment\nfn pipeline_fragment(input: PipelineInput) -> vec4<f32> {\n    return vec4<f32>(1.0)\n}\n";
-        let message = refused(broken);
-        assert!(
-            message.starts_with("line 3:") || message.starts_with("line 4:"),
-            "{message}"
-        );
-        // A type error is found by validation, with the file's line too.
-        let mistyped = "fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {\n    let x: f32 = input.uv;\n    return vec4<f32>(x);\n}\n";
-        assert!(
-            refused(mistyped).starts_with("line 2:"),
-            "{}",
-            refused(mistyped)
-        );
-        assert!(
-            refused(&format!(
-                "@group(0) @binding(2) var<uniform> mine: vec4<f32>;\n{GLOW}"
-            ))
-            .contains("declares a binding")
-        );
-        assert!(
-            refused(&format!(
-                "{GLOW}@fragment fn mine() -> @location(0) vec4<f32> {{ return vec4<f32>(1.0); }}\n"
-            ))
-            .contains("declares an entry point")
-        );
     }
 
     #[test]
@@ -519,7 +586,7 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
         .unwrap_err();
         assert!(
             error.starts_with(
-                "required render pipeline example:beam from mod  refused: assets/example/shaders/pipeline/beam.wgsl: "
+                "required render pipeline example:beam from mod  refused: assets/example/shaders/pipeline/beam.wgsl:1:1: "
             ),
             "{error}"
         );
@@ -557,5 +624,174 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
         assert_eq!(fixed.slot(handle), Err(RenderPipelineError::Stale));
         let again = fixed.resolve(&id("example:glow")).unwrap();
         assert_eq!(fixed.slot(again), Ok(0));
+    }
+
+    /// Sprites are named as the 2D atlas names them; an id naming a file is refused by name,
+    /// and a required pipeline's refusal fails the load with the named cause.
+    #[test]
+    fn a_textured_pipeline_names_its_sprite_and_refuses_a_file_path() {
+        use mod_api::PipelineTexture;
+        let pipeline = |id: &str| {
+            let name = Identifier::parse("test:glow").unwrap();
+            RenderPipeline::new(
+                name.clone(),
+                name,
+                PipelineBlend::Additive,
+                WorldDepth::Tested,
+            )
+            .textured(PipelineTexture::Sprite(Identifier::parse(id).unwrap()))
+        };
+        let shader = |_: &str| Ok(GLOW.to_owned());
+        let built = |id| {
+            Pipelines::build(&[pipeline(id)], 1, shader)
+                .map(|set| set.built()[0].as_ref().unwrap().texture.clone().unwrap())
+        };
+        assert_eq!(
+            built("minecraft:block/stone"),
+            Ok(BuiltTexture::Sprite("block/stone".into()))
+        );
+        assert_eq!(
+            built("powah:block/energy_charge"),
+            Ok(BuiltTexture::Sprite("powah:block/energy_charge".into()))
+        );
+        assert_eq!(
+            load_texture(&PipelineTexture::Sprite(
+                Identifier::parse("test:textures/glow").unwrap()
+            )),
+            Err(PipelineTextureError::NotASpriteKey)
+        );
+        assert_eq!(
+            built("test:effect/glow.png"),
+            Err("required render pipeline test:glow from mod  refused: its texture: NotASpriteKey: the id names a file, not a sprite key".into())
+        );
+    }
+
+    #[test]
+    fn register_checks_builtin_required_and_optional_registries_and_duplicates() {
+        use mod_api::__private::game::RegistrationContextNew;
+        use mod_api::{Hooks, ModEntry, RegisterRenderPipelinesEvent, RegistrationContext};
+
+        assert!(BUILTIN_REQUIRED_PIPELINES.windows(2).all(|w| w[0] < w[1]));
+        assert!(BUILTIN_OPTIONAL_PIPELINES.windows(2).all(|w| w[0] < w[1]));
+
+        struct Register(&'static [(&'static str, bool)]);
+        #[mod_api::__subscriptions]
+        impl Hooks for Register {
+            fn register_render_pipelines(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterRenderPipelinesEvent<'_>,
+            ) {
+                for &(name, optional) in self.0 {
+                    let p = pipeline(name, name);
+                    event.register(if optional { p.optional() } else { p });
+                }
+            }
+        }
+
+        // Free `minecraft:` location plus cross-registry reuse (optional at a built-in
+        // required location, required at a built-in optional location) are all allowed.
+        mod_platform::testing::with_mods(
+            vec![
+                ModEntry::new(
+                    "first",
+                    Box::new(Register(&[
+                        ("minecraft:glow", false),
+                        ("minecraft:pipeline/solid_terrain", true),
+                        ("minecraft:pipeline/wireframe", false),
+                        ("other:beam", false),
+                    ])),
+                ),
+                ModEntry::new("second", Box::new(Register(&[("second:halo", false)]))),
+            ]
+            .into(),
+            || {
+                let mut staged = Vec::new();
+                mod_api::dispatch_register_render_pipelines(
+                    &RegistrationContext::new(),
+                    &mut staged,
+                );
+                let slot = OnceLock::new();
+                register_into(&slot, staged).unwrap();
+                let stored = slot.get().unwrap();
+                assert_eq!(stored.len(), 5);
+                assert_eq!(stored[0].id, id("minecraft:glow"));
+                assert_eq!(stored[0].owner(), "first");
+                assert_eq!(stored[1].id, id("minecraft:pipeline/solid_terrain"));
+                assert!(stored[1].optional);
+                assert_eq!(stored[2].id, id("minecraft:pipeline/wireframe"));
+                assert!(!stored[2].optional);
+                assert_eq!(stored[3].id, id("other:beam"));
+                assert_eq!(stored[4].id, id("second:halo"));
+                assert_eq!(stored[4].owner(), "second");
+            },
+        );
+
+        // Built-in required collision fails naming the ID and mod.
+        mod_platform::testing::with_mods(
+            vec![ModEntry::new(
+                "first",
+                Box::new(Register(&[("minecraft:pipeline/solid_terrain", false)])),
+            )]
+            .into(),
+            || {
+                let mut staged = Vec::new();
+                mod_api::dispatch_register_render_pipelines(
+                    &RegistrationContext::new(),
+                    &mut staged,
+                );
+                let slot = OnceLock::new();
+                let error = register_into(&slot, staged).unwrap_err();
+                assert!(
+                    error.contains("minecraft:pipeline/solid_terrain"),
+                    "{error}"
+                );
+                assert!(error.contains("first"), "{error}");
+                assert!(slot.get().is_none());
+            },
+        );
+
+        // Built-in optional collision fails naming the ID and mod.
+        mod_platform::testing::with_mods(
+            vec![ModEntry::new(
+                "first",
+                Box::new(Register(&[("minecraft:pipeline/wireframe", true)])),
+            )]
+            .into(),
+            || {
+                let mut staged = Vec::new();
+                mod_api::dispatch_register_render_pipelines(
+                    &RegistrationContext::new(),
+                    &mut staged,
+                );
+                let slot = OnceLock::new();
+                let error = register_into(&slot, staged).unwrap_err();
+                assert!(error.contains("minecraft:pipeline/wireframe"), "{error}");
+                assert!(error.contains("first"), "{error}");
+                assert!(slot.get().is_none());
+            },
+        );
+
+        // Mod IDs collide even across required and optional registrations: lookup uses only the ID.
+        mod_platform::testing::with_mods(
+            vec![
+                ModEntry::new("first", Box::new(Register(&[("shared:glow", false)]))),
+                ModEntry::new("second", Box::new(Register(&[("shared:glow", true)]))),
+            ]
+            .into(),
+            || {
+                let mut staged = Vec::new();
+                mod_api::dispatch_register_render_pipelines(
+                    &RegistrationContext::new(),
+                    &mut staged,
+                );
+                let slot = OnceLock::new();
+                let error = register_into(&slot, staged).unwrap_err();
+                assert!(error.contains("shared:glow"), "{error}");
+                assert!(error.contains("first"), "{error}");
+                assert!(error.contains("second"), "{error}");
+                assert!(slot.get().is_none());
+            },
+        );
     }
 }

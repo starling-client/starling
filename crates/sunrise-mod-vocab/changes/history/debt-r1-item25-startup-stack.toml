@@ -1,0 +1,23 @@
+# Engine embedding history only: these exports were never in the mod API surface.
+ids = [
+    "fn:sunrise_game::prepare_main_stack",
+    "fn:sunrise_platform::prepare_main_stack",
+    "fn:sunrise_mod_host::prepare_main_stack",
+]
+why = """
+Native startup no longer needs a guest stack guard. Vanilla 26.3 constructs the client on the render thread in
+`net.minecraft.client.main.Main.main` and starts the server thread in `MinecraftServer.spin`; NeoForge's client and
+server `Main` patches add mod loading, not a stack guard. Sunrise keeps its startup order and restores the pre-guest
+8 MiB Windows executable reservation from `45b9aa75ff7` and `639ccd4e575` for by-value `Game` construction. Game
+workers use the same 8 MiB host stack adopted for `Game` on the integrated server in `0eaf8850ecf`. The extra 128 MiB
+from `119509e0a2b2` only served the retired guest runtime. Save order is unchanged: vanilla's `IOWorker.runStore`
+still anchors the background write, and NeoForge's patch to `SerializableChunkData.copyOf` serializes chunk attachments
+before the write, without a guest stack.
+"""
+migrate = """
+Native mods keep their code and manifest. If you embed the game, remove calls to and imports of
+`sunrise_game::prepare_main_stack`, `sunrise_platform::prepare_main_stack` and `sunrise_mod_host::prepare_main_stack`.
+Keep hook registration followed by `sunrise_game::main()`. For your own Windows executable, reserve the main stack at
+the link with `/STACK:8388608` (MSVC) or `-Wl,--stack,8388608` (GNU). If your tool reads `sunrise-prebuilt.json`, stop
+reading `link_args`: the SDK sets the flag when linking its fixed executable, and there is no replacement field.
+"""

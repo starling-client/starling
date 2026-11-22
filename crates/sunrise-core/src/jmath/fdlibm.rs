@@ -31,7 +31,7 @@
 //!
 //! The separate strict modules supply the non-FMA fdlibm `sin`, `cos`, `tan`,
 //! `exp` and `pow`, including full argument reduction. They are linked locally
-//! on native and wasm; the engine's platform-selected Math paths are unchanged.
+//! on supported targets; the engine's platform-selected Math paths are unchanged.
 
 mod strict_exp_pow;
 mod strict_trig;

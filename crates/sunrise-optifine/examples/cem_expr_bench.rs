@@ -5,8 +5,8 @@
 //!
 //! `cargo run --release -p sunrise-optifine --example cem_expr_bench`
 
-use sunrise_optifine::cem::expr::compile;
 use std::{hint::black_box, time::Instant};
+use sunrise_optifine::cem::expr::compile;
 
 const NAMES: &[&str] = &[
     "limb_swing",

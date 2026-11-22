@@ -1,0 +1,3 @@
+ids = ["hook:humanoid_setup_anim"]
+why = "humanoid_setup_anim version 2 also fires for armor stands after real humanoid head, walk and riding preparation, before arm posing. Their saved rotations then replace rotation edits while position edits survive."
+migrate = "Listeners now receive armor stands and independently animated stand armor models. Check entity_type when an edit should apply only to other humanoids; use position edits for changes that must survive the stand's saved pose."

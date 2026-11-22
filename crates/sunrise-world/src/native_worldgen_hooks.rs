@@ -2,7 +2,9 @@
 //! the worldgen workers, and on the server thread when a sapling grows. No game
 //! is at hand there, so a hook gets the server's [`WorldgenContext`] instead.
 use crate::{
-    native_load_context::WorldgenContext, registry::BlockStateId, worldgen::structure::Rotation,
+    native_load_context::WorldgenContext,
+    registry::{BlockRegistry, BlockStateId},
+    worldgen::structure::Rotation,
 };
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
@@ -20,6 +22,10 @@ pub trait WorldgenRandom {
     fn next_double(&mut self) -> f64;
     /// `nextBoolean`.
     fn next_boolean(&mut self) -> bool;
+    /// `nextInt()`.
+    fn next_int(&mut self) -> i32;
+    /// `nextGaussian`, with the stream's cached second value as the engine keeps it.
+    fn next_gaussian(&mut self) -> f64;
 }
 
 /// What a mod's ground provider reads while the tree decorator asks it for
@@ -43,13 +49,22 @@ pub trait TreeGrowAccess: WorldgenRandom {
     fn block_state(&mut self, pos: [i32; 3]) -> Option<BlockStateId>;
 }
 
+/// A ground provider's block state could not cross the mod boundary.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvalidGroundState;
+
 /// A ground provider a mod put in place of the tree decorator's own, as the
 /// executable's adapter hands it over. `Send + Sync` because neighbouring
 /// chunks decorate at once on worker threads.
 pub trait ModGroundProvider: Send + Sync {
-    /// The state to place at `pos`, or None to try the next position down the
-    /// column (`AlterGroundEvent.StateProvider.getState`).
-    fn state_at(&self, access: &mut dyn GroundAccess, pos: [i32; 3]) -> Option<BlockStateId>;
+    /// The checked state to place at `pos`, or `Ok(None)` to try the next position
+    /// down the column (`AlterGroundEvent.StateProvider.getState`). An invalid
+    /// state is an error, not a request to try another position.
+    fn state_at(
+        &self,
+        access: &mut dyn GroundAccess,
+        pos: [i32; 3],
+    ) -> Result<Option<BlockStateId>, InvalidGroundState>;
 }
 
 /// The tree whose ground `AlterGroundDecorator.place` alters: the decorator
@@ -61,6 +76,8 @@ pub struct AlterGroundTree<'a> {
     pub roots: &'a [[i32; 3]],
     /// Never empty: the decorator fires nothing for a tree without them.
     pub positions: &'a [[i32; 3]],
+    /// The registry the placement reads and writes, if the world supplies one.
+    pub registry: Option<&'a BlockRegistry>,
 }
 
 /// Feature-generation hooks, installed before any world opens.

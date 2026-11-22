@@ -16,8 +16,8 @@ ChatComponent.getLineHeight	port	crates/sunrise-client-render/src/chat.rs::ChatO
 ChatComponent.saveAsDraft	port	crates/sunrise-client/src/game/interface/chat.rs::Game::keep_chat_draft	the text left in the box becomes the draft unless the screen was closed on purpose without Save Chat Drafts or the text was sent
 ChatComponent.createScreen	port	crates/sunrise-client/src/game/interface/chat.rs::Game::open_chat_method	T or / opens the chat with the draft kept last time, a command draft only for /, else with its prefix, and records whether the box starts on a draft
 ChatComponent.preserveCurrentChatScreen	missing		minor: unsure: Sunrise keeps no chat screen across a dimension change; game/blocks/nether_portal.rs:577 only leaves Chat alone during a portal effect, the change path was not checked
-ChatComponent.storeState	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::poll_remote	no snapshot: the Reconfigured arm only resets boss bars and registries, so the chat survives a reconfigure without a copy
-ChatComponent.restoreState	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::poll_remote	no restore: the chat is never cleared on Reconfigured, so there is nothing to put back
+ChatComponent.storeState	inline	crates/sunrise-client/src/game/network/remote/raw_ingress.rs::Game::poll_remote_events	no snapshot: the Reconfigured arm only resets boss bars and registries, so the chat survives a reconfigure without a copy
+ChatComponent.restoreState	inline	crates/sunrise-client/src/game/network/remote/raw_ingress.rs::Game::poll_remote_events	no restore: the chat is never cleared on Reconfigured, so there is nothing to put back
 ChatComponent.ClickableTextOnlyGraphicsAccess.updatePose	skip:ui		pose bookkeeping of the text collector; chat draws with its own scale and translate
 ChatComponent.DrawingBackgroundGraphicsAccess.updatePose	skip:ui		pose bookkeeping of the text collector; chat draws with its own scale and translate
 ChatComponent.DrawingBackgroundGraphicsAccess.handleMessage	port	crates/sunrise-client-render/src/chat.rs::Chat::layout	line text drawn at its bottom with the text opacity
@@ -92,7 +92,7 @@ DebugScreenOverlay.toggleNetworkCharts	port	crates/sunrise-client/src/debug_char
 DebugScreenOverlay.toggleFpsCharts	port	crates/sunrise-client/src/debug_chart.rs::DebugCharts::toggle_fps	toggles the fps chart and clears the others
 DebugScreenOverlay.toggleLightmapTexture	port	crates/sunrise-client/src/debug_chart.rs::DebugCharts::toggle_lightmap	toggles the lightmap and clears the others
 DebugScreenOverlay.toggleProfilerChart	port	crates/sunrise-client/src/debug_chart.rs::DebugCharts::toggle_fps	the chart key turns the FPS chart on (and the F3 overlay with it), turning the network and lightmap charts off
-DebugScreenOverlay.logRemoteSample	missing		minor: unsure: the debug_sample packet is only named in sunrise-protocol/src/ids.rs, so a server's samples are not logged
+DebugScreenOverlay.logRemoteSample	port	crates/sunrise-client/src/debug_chart.rs::DebugCharts::log_remote_sample	from ClientboundDebugSample
 EditBox.createNarrationMessage	inline	crates/sunrise-client/src/screen_narrator.rs::narrate	narrate's edit-box arm: gui.narrate.editBox(message, value); Narratable::edit_box is recorded by ui::EditBox::draw and screen_draw's field
 EditBox.setInvertHighlightedTextColor	port	crates/sunrise-client-render/src/ui.rs::EditBox::draw_with_skin	the selected text inverts unless the box turns it off (the anvil's rename box does)
 EditBox.getHighlighted	port	crates/sunrise-client-render/src/ui.rs::EditBox::selected_text	the text between cursor and highlight

@@ -1,0 +1,18 @@
+ids = ["hook:camera_submersion"]
+why = """
+Vanilla and NeoForge's `LevelExtractor.extractPlayerState` use the player's tick-sampled eye fluid for water overlay
+eligibility, not `Camera.getFluidInCamera`. `EntityFluidInteraction.update` includes an eye at the water surface.
+`LocalPlayer.tick` reaches `Entity.baseTick`'s fluid update through death tick 20. `LocalPlayer.tickDeath`
+then removes the player from the level, and `LevelExtractor.extractPlayerState` keeps using that last sample.
+Sunrise still lets camera-submersion listeners override the overlay, but the input starts at that sample.
+The other readers at `Camera.getFluidInCamera` sites still use camera geometry and `state_at_viewpoint`.
+"""
+migrate = """
+Keep assigning `*event.fog_type = FogType::Water` in `Hooks::camera_submersion` to force the first-person water
+screen overlay, or `*event.fog_type = FogType::Atmospheric` to clear it. For the overlay read at the player's eye,
+the input is now `Water` if the player's tick sampled water there, or `Atmospheric` otherwise, not the result of a
+separate camera geometry test. If you used `state_at_viewpoint` to alter this overlay as a side effect of changing
+fog, keep it for the fog and set `event.fog_type` in `camera_submersion` at the eye for the overlay.
+
+A failed listener does not change fog or water-overlay eligibility. A panic disables only the offending `camera_submersion` listener for the session. Client player tick callbacks still run through the death tick that removes the local player, then stop; move work that must continue on the death screen to a screen callback.
+"""

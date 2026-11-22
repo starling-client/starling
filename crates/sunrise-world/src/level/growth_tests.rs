@@ -762,6 +762,7 @@ fn a_template_with_entities_and_no_blocks_places_them() {
         let settings = TemplateSettings {
             mirror: Mirror::None,
             rotation: Rotation::None,
+            pivot: [0; 3],
             ignore_entities,
             known_shape: false,
             integrity: 1.0,
@@ -908,6 +909,7 @@ fn a_non_strict_template_updates_its_shapes_and_neighbours() {
         let settings = TemplateSettings {
             mirror: Mirror::None,
             rotation: Rotation::None,
+            pivot: [0; 3],
             ignore_entities: true,
             known_shape: strict,
             integrity: 1.0,

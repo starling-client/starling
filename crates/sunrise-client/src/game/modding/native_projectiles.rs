@@ -5,36 +5,115 @@
 //! through whatever it hit.
 use super::{
     Game,
-    creatures::{ProjWorld, pickable_projectile_hit},
+    commands::Target,
+    creatures::ProjWorld,
     dragon::{CRYSTAL_IDS, SPECIAL},
     lan_pvp::meets_players,
     native_hooks::mob_kind,
 };
+use mod_api::TransactionSeal;
+use std::ops::Range;
 use sunrise_client::{
-    arrows::ArrowEvent,
-    join_seq::JoinList,
+    arrows::{ArrowEvent, ArrowSound},
+    fast_hash::{FxHashMap, FxHashSet},
+    join_seq::{JoinList, JoinSeq},
     mobs::Who,
     projectiles::{Hit, Projectile},
 };
-use sunrise_core::geometry::Vec3;
-use std::ops::Range;
+use sunrise_core::{geometry::Vec3, position::BlockPos};
+
+#[cfg(test)]
+#[path = "native_projectiles/impact_probe.rs"]
+pub(in crate::game) mod impact_probe;
+
+/// The hit target state an independent projectile decided against before a hook.
+#[derive(PartialEq)]
+pub(super) enum ImpactTarget {
+    Block(sunrise_world::registry::BlockStateId),
+    Entity(mod_api::EntityRef, [f64; 3]),
+}
 
 /// A projectile's impact in one tick of `tick_projectiles`.
 pub(super) struct Impact {
     /// Where the projectile was in the tick's list.
-    pub index: usize,
+    pub index: Option<usize>,
+    /// The original flight's keep decision, once section movement has been accounted for.
+    pub keep: bool,
     /// The projectile before the tick.
     pub before: Projectile,
     pub hit: Hit,
+    pub target: Option<ImpactTarget>,
+    /// An earlier impact can break a wind charge's vehicle. Tell its real hit at apply.
+    pub wind_vehicle: bool,
     /// Where its hit is in the tick's `hits`.
     pub hit_slot: usize,
     /// Where its arrow events are in the tick's `arrow_events`.
     pub events: Range<usize>,
 }
 
+pub(super) struct ProjectileHit {
+    pub projectile: Projectile,
+    pub hit: Hit,
+    /// An ordinary (not deferred) block arrow finished its first tick already;
+    /// dispatch that shot after the landing, just as for a deferred arrow.
+    pub shot_after_hit: bool,
+}
+
+pub(super) type ProjectileShot = (Option<Who>, Option<u32>, [f64; 3]);
+
+/// A notified hit still waiting to be applied after the intervening callbacks.
+pub(super) struct PendingImpact {
+    keep: bool,
+    canceled: bool,
+    target: Option<ImpactTarget>,
+}
+
 /// The type the mods know a projectile by: a spectral arrow is its own.
 fn projectile_type(p: &Projectile) -> &'static str {
     p.entity_type()
+}
+
+/// Closes an impact's existing world journal even if a listener unwinds.
+pub(super) struct ImpactTransaction<'game, 'resources> {
+    pub game: &'game mut Game<'resources>,
+    pub seal: Option<TransactionSeal>,
+}
+
+impl<'game, 'resources> ImpactTransaction<'game, 'resources> {
+    pub(super) fn new(game: &'game mut Game<'resources>, enabled: bool) -> Self {
+        let seal = enabled.then(|| game.transaction_open());
+        Self { game, seal }
+    }
+
+    pub(super) fn close(mut self, commit: bool) {
+        if let Some(seal) = self.seal.take() {
+            self.game.transaction_close(&seal, commit);
+        }
+    }
+}
+
+impl Drop for ImpactTransaction<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(seal) = self.seal.take() {
+            self.game.transaction_close(&seal, false);
+        }
+    }
+}
+
+/// Events produced by applying the contact, not the arrow's earlier flight.
+pub(super) fn projectile_impact_event(event: &ArrowEvent) -> bool {
+    matches!(
+        event,
+        ArrowEvent::Block { .. }
+            | ArrowEvent::Sound {
+                sound: ArrowSound::HitGround
+                    | ArrowSound::CrossbowHit
+                    | ArrowSound::TridentHitGround
+                    | ArrowSound::TridentHit,
+                ..
+            }
+            | ArrowEvent::Drop
+    )
 }
 
 /// An owned flight pass restored only if its dispatch unwinds.
@@ -54,6 +133,60 @@ impl Drop for ProjectileDispatch<'_, '_> {
 }
 
 impl Game<'_> {
+    /// Snapshot the hit precondition so listener writes can invalidate its
+    /// application without rerunning the collision decision.
+    pub(super) fn native_impact_target(&self, hit: Hit) -> Option<ImpactTarget> {
+        let (entity, block, _, _) = self.pearl_hit(hit);
+        if let Some(id) = entity {
+            let entity = self.entity(id)?;
+            Some(ImpactTarget::Entity(entity, self.entity_position(entity)?))
+        } else if matches!(hit, Hit::Block { .. }) {
+            Some(ImpactTarget::Block(
+                self.world.block(block[0], block[1], block[2]),
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Dispatch a hit for a projectile ticked outside the shared projectile list.
+    /// The caller checks the server opt-in gate and exposes the live projectile
+    /// before calling; misses never dispatch.
+    pub(super) fn native_separate_projectile_impact(
+        &mut self,
+        projectile: u32,
+        kind: &str,
+        owner: Option<Who>,
+        hit: Hit,
+    ) -> bool {
+        if matches!(hit, Hit::None) {
+            return false;
+        }
+        let owner = match owner {
+            Some(Who::Mob(id)) => self.native_impact_entity_id(id),
+            Some(Who::Player) => self.own_entity_id() as u32,
+            None => 0,
+        };
+        let (entity, block, face, at) = self.pearl_hit(hit);
+        let entity_kind = entity
+            .and_then(|id| self.entity(id))
+            .and_then(|entity| self.entity_kind(entity)?.id(self));
+        let mut canceled = false;
+        self.native_projectile_impact(mod_api::__private::ProjectileImpactCall {
+            dimension: self.dim.id(),
+            projectile,
+            kind,
+            owner,
+            entity,
+            entity_kind: entity_kind.as_deref().unwrap_or_default(),
+            block,
+            face,
+            at,
+            canceled: &mut canceled,
+        });
+        canceled
+    }
+
     /// Guard just the dispatch: normal completion returns the still-owned pass
     /// to its caller, which restores explicitly at the established tick boundary.
     pub(super) fn with_projectile_dispatch(
@@ -104,29 +237,24 @@ impl Game<'_> {
         }
     }
 
-    /// `native_projectile_impact` for a player's thrown trident, which
-    /// `tick_tridents` flies rather than `tick_projectiles`: it hit the mob
-    /// `mob`, or with `mob` None the block at `block` on its `face`, at `at`.
-    /// Whether a mod canceled it.
+    /// `ProjectileImpactEvent` for a player's trident, once its tick has exposed the owner.
     pub(super) fn native_trident_impact(
         &mut self,
         trident: u32,
         guest: Option<u32>,
-        mob: Option<u32>,
-        block: [i32; 3],
-        face: [i32; 3],
-        at: Vec3,
+        hit: Hit,
     ) -> bool {
-        if !self.native_hears_impacts() {
-            return false;
-        }
         let owner = self.native_thrower(guest);
-        let (entity, entity_kind) = match mob {
-            Some(id) => {
+        let (entity, entity_kind, block, face, at) = match hit {
+            Hit::Entity {
+                who: Who::Mob(id),
+                at,
+            } => {
                 let (entity, kind) = self.native_impact_entity(id);
-                (Some(entity), kind)
+                (Some(entity), kind, [0; 3], [0; 3], at)
             }
-            None => (None, String::new()),
+            Hit::Block { pos, face, at } => (None, String::new(), pos, face, at),
+            _ => return false,
         };
         let dimension = self.dim.id();
         let mut canceled = false;
@@ -176,6 +304,9 @@ impl Game<'_> {
         }
         if let Some(cart) = self.carts.iter().find(|c| c.id == id) {
             return (id, cart.kind.id().into());
+        }
+        if let Some(boat) = self.boats.iter().find(|b| b.id == id) {
+            return (id, boat.entity_type_name().into());
         }
         if self.lan_guest_entities().iter().any(|&(_, e)| e == id) {
             return (id, "minecraft:player".into());
@@ -237,123 +368,131 @@ impl Game<'_> {
         }
     }
 
-    /// `native_projectile_impact` for each of `impacts`: whether the mods
-    /// canceled it. A hit on a wind charge is not told.
-    fn native_projectile_impacts(&mut self, impacts: &[Impact]) -> Vec<bool> {
-        let dimension = self.dim.id();
-        let mut canceled = Vec::with_capacity(impacts.len());
-        for impact in impacts {
-            let p = &impact.before;
-            let (entity, entity_kind, block, face, at) = match impact.hit {
-                Hit::Block { pos, at, face } => (None, String::new(), pos, face, at),
-                Hit::Entity {
-                    who: Who::Mob(id),
-                    at,
-                } => {
-                    if pickable_projectile_hit(id).is_some() {
-                        canceled.push(false);
-                        continue;
-                    }
-                    let (entity, kind) = self.native_impact_entity(id);
-                    (Some(entity), kind, [0; 3], [0; 3], at)
-                }
-                // A server's players are hit as their entities, never as `Player`.
-                Hit::Entity {
-                    who: Who::Player, ..
-                } => {
-                    canceled.push(false);
-                    continue;
-                }
-                Hit::None => {
-                    canceled.push(false);
-                    continue;
-                }
-            };
-            let owner = self.native_impact_owner(p);
-            let mut stop = false;
-            self.native_projectile_impact(mod_api::__private::ProjectileImpactCall {
-                dimension,
-                projectile: p.id,
-                kind: projectile_type(p),
-                owner,
-                entity,
-                entity_kind: &entity_kind,
-                block,
-                face,
-                at: [at.x, at.y, at.z],
-                canceled: &mut stop,
-            });
-            canceled.push(stop);
-        }
+    /// An explicitly removed owner is already gone to simulation, even while its row
+    /// waits for the root transaction and the level's ordinary removal sweep.
+    pub(super) fn projectile_removal_pending(&self, id: u32) -> bool {
+        let target = Target::Projectile(id);
+        self.removal_pending(&target) || self.persist.removals.contains(&target)
+    }
+
+    fn native_projectile_impact_canceled(&mut self, p: &Projectile, hit: Hit) -> bool {
+        let (entity, entity_kind, block, face, at) = match hit {
+            Hit::Block { pos, at, face } => (None, String::new(), pos, face, at),
+            Hit::Entity { who, at } => {
+                let (entity, kind) = match who {
+                    Who::Mob(id) => self.native_impact_entity(id),
+                    Who::Player => (self.own_entity_id() as u32, "minecraft:player".into()),
+                };
+                (Some(entity), kind, [0; 3], [0; 3], at)
+            }
+            Hit::None => return false,
+        };
+        let mut canceled = false;
+        self.native_projectile_impact(mod_api::__private::ProjectileImpactCall {
+            dimension: self.dim.id(),
+            projectile: p.id,
+            kind: projectile_type(p),
+            owner: self.native_impact_owner(p),
+            entity,
+            entity_kind: &entity_kind,
+            block,
+            face,
+            at: [at.x, at.y, at.z],
+            canceled: &mut canceled,
+        });
         canceled
     }
 
-    /// The end of a tick of `tick_projectiles` that met `impacts`, with
-    /// `projectiles` in place (those it keeps, as `listed` says of the tick's
-    /// list): the mods hear each, and a projectile one canceled flies the tick
-    /// again from before it, through what it hit. Its hit and its arrow events are
-    /// taken out of `hits` and `arrow_events`, and it goes back among the
-    /// projectiles. One a mod removed in its hook stays removed.
+    /// Hand back the owning rows (including terminal impacts) while mods run. A veto
+    /// alone replays the flight; all other captured contacts keep their row until the
+    /// apply boundary (or, for an explicit discard, the removal sweep).
     pub(super) fn native_settle_impacts(
         &mut self,
         projectiles: &mut JoinList<Projectile, false>,
-        removed: &mut JoinList<Projectile, false>,
-        listed: &[bool],
         impacts: Vec<Impact>,
-        hits: &mut Vec<(Projectile, Hit)>,
-        arrow_events: &mut Vec<(Vec3, ArrowEvent)>,
-    ) {
-        // The mods see the projectiles where they will be, as `projectile_hit` does.
-        // Move the already-lifted pass: lifting it again would leave its outer
-        // pass unpaired when the empty original batch is replaced below.
+        hits: &mut Vec<ProjectileHit>,
+        arrow_events: &mut Vec<(u32, Vec3, ArrowEvent)>,
+        shoots: &mut Vec<ProjectileShot>,
+    ) -> FxHashMap<JoinSeq, PendingImpact> {
+        // Close the already-lifted pass, not a new one over the spawn buffer.
         self.creatures.projectiles.restore(
             projectiles.take_owned_pass(),
             sunrise_client::join_seq::RestoreOrder::SurvivorsFirst,
         );
-        let canceled = self.native_projectile_impacts(&impacts);
-        *projectiles = self.creatures.projectiles.lift();
-        if !canceled.contains(&true) {
-            return;
+        let mut canceled = Vec::with_capacity(impacts.len());
+        for impact in &impacts {
+            canceled.push(
+                !impact.wind_vehicle
+                    && impact.index.is_some()
+                    && self.entity(impact.before.id).is_some()
+                    && self.native_projectile_impact_canceled(&impact.before, impact.hit),
+            );
         }
+        *projectiles = self.creatures.projectiles.lift();
+        let places: FxHashMap<_, _> = projectiles
+            .iter()
+            .enumerate()
+            .map(|(index, p)| (p.join, index))
+            .collect();
         let mut drop_hits = vec![false; hits.len()];
         let mut drop_events = vec![false; arrow_events.len()];
         let mut flown = Vec::new();
-        for (impact, _) in impacts.into_iter().zip(canceled).filter(|(_, c)| *c) {
-            drop_hits[impact.hit_slot] = true;
-            drop_events[impact.events.clone()].fill(true);
-            let present = projectiles.iter().position(|q| q.id == impact.before.id);
-            if self
-                .persist
-                .removals
-                .contains(&super::commands::Target::Projectile(impact.before.id))
-                || present.is_none() && listed[impact.index]
-            {
-                continue;
-            }
+        let mut retired = FxHashSet::default();
+        let mut append = FxHashSet::default();
+        let mut pending = FxHashMap::default();
+        for (impact, canceled) in impacts.into_iter().zip(canceled) {
             let mut before = impact.before;
-            // Replaying a canceled impact must not repeat the first-tick event
-            // already queued by the original tick.
-            before.has_been_shot = hits[impact.hit_slot].0.has_been_shot;
-            let (p, keep, events) = self.native_projectile_through(before);
-            flown.extend(events);
-            match (present, keep) {
-                (Some(i), true) => {
-                    projectiles.store_back(i, p);
+            let snapshot = &hits[impact.hit_slot].projectile;
+            if canceled
+                && !self.projectile_removal_pending(before.id)
+                && let Some(&index) = places.get(&before.join)
+                && &projectiles[index] == snapshot
+                && impact.target.is_some()
+                && impact.target == self.native_impact_target(impact.hit)
+            {
+                drop_hits[impact.hit_slot] = true;
+                for i in impact.events {
+                    drop_events[i] = true;
                 }
-                (Some(i), false) => {
-                    projectiles.remove(i);
+                // Preserve the first shot already queued by the original flight.
+                before.has_been_shot = snapshot.has_been_shot;
+                if let (Some(arrow), Some(snapshot)) = (&mut before.arrow, &snapshot.arrow) {
+                    arrow.has_been_shot = snapshot.has_been_shot;
                 }
-                (None, true) => {
-                    let i = removed
-                        .iter()
-                        .position(|q| q.id == p.id)
-                        .expect("unlisted impact owner");
-                    let mut owner = removed.remove(i);
-                    sunrise_client::join_seq::store_back(&mut owner, p);
-                    projectiles.push(owner);
+                let (p, keep, events) = self.native_projectile_through(before);
+                for (at, event) in events {
+                    if event == ArrowEvent::ShootEvent && matches!(impact.hit, Hit::Block { .. }) {
+                        shoots.push((p.owner, p.guest, at.components()));
+                    } else {
+                        flown.push((p.id, at, event));
+                    }
                 }
-                (None, false) => {}
+                let join = p.join;
+                if keep {
+                    projectiles.store_back(index, p);
+                    if !impact.keep {
+                        append.insert(join);
+                    }
+                } else {
+                    retired.insert(join);
+                }
+            } else {
+                pending.insert(
+                    before.join,
+                    PendingImpact {
+                        keep: impact.keep,
+                        canceled,
+                        target: impact.target,
+                    },
+                );
             }
+        }
+        projectiles.retain(|p| !retired.contains(&p.join));
+        if !append.is_empty() {
+            // A terminal projectile which continues keeps its join, but goes at the tail,
+            // as in the existing canceled-hit replay. Never retire/recreate its attachment.
+            let replayed = projectiles.extract_if(|p| append.contains(&p.join));
+            projectiles.extend(replayed);
         }
         let mut n = 0;
         hits.retain(|_| {
@@ -366,6 +505,167 @@ impl Game<'_> {
             !drop_events[n - 1]
         });
         arrow_events.extend(flown);
+        pending
+    }
+
+    /// The contact still belongs to the same projectile with the same motion.
+    fn captured_projectile_index(&self, p: &Projectile) -> Option<usize> {
+        let i = self.creatures.projectiles.locate(p.join)?;
+        let live = &self.creatures.projectiles[i];
+        (live.position == p.position
+            && live.velocity == p.velocity
+            && live.owner == p.owner
+            && live.guest == p.guest
+            && live.owner_uuid == p.owner_uuid
+            && live.kind == p.kind
+            && live.stuck == p.stuck
+            && live.arrow.as_ref().map(|a| a.no_physics) == p.arrow.as_ref().map(|a| a.no_physics))
+        .then_some(i)
+    }
+
+    /// Tell the actual contact in tick order, once earlier hits have had a chance to break
+    /// the vehicle. A listener-invalidated contact never asks the world for another hit.
+    pub(super) fn apply_vehicle_wind_impact(
+        &mut self,
+        mut p: Projectile,
+        mut hit: Hit,
+        mut pending: PendingImpact,
+        mut before: Projectile,
+    ) -> Option<(Projectile, Hit)> {
+        let index = self.captured_projectile_index(&p)?;
+        if pending.target.is_some() && self.wind_vehicle_broken(hit) {
+            let from = p.position;
+            (p, pending.keep, hit) = self.broken_vehicle_retick(before.clone());
+            pending.target = self.native_impact_target(hit);
+            self.creatures.projectiles.store_back(index, p.clone());
+            self.entity_section_step(p.id, from.components(), p.position.components());
+            if self.projectile_removal_pending(p.id) {
+                return None;
+            }
+            let index = self.captured_projectile_index(&p)?;
+            if hit == Hit::None {
+                let ceiling = if pending.keep {
+                    self.wind_ceiling_contact(&p)
+                } else {
+                    None
+                };
+                if !pending.keep || ceiling.is_some() {
+                    self.creatures.projectiles.remove(index);
+                }
+                return ceiling.map(|hit| (p, hit));
+            }
+        }
+        if pending.target.is_none() || pending.target != self.native_impact_target(hit) {
+            return None;
+        }
+        let canceled = self.native_projectile_impact_canceled(&p, hit);
+        if self.projectile_removal_pending(p.id) {
+            return None;
+        }
+        if canceled {
+            let index = self.captured_projectile_index(&p)?;
+            if pending.target != self.native_impact_target(hit) {
+                return None;
+            }
+            // A plain veto keeps the projectile's original owner, as other cancel-only replays do.
+            before.has_been_shot = p.has_been_shot;
+            let (through, keep, _) = self.native_projectile_through(before);
+            if keep {
+                let to = through.position;
+                self.creatures.projectiles.store_back(index, through);
+                if !pending.keep
+                    && let Some(owner) = self.creatures.projectiles.extract(p.join)
+                {
+                    let end = self.creatures.projectiles.len();
+                    self.creatures.projectiles.put_back(end, owner);
+                }
+                self.entity_section_step(p.id, p.position.components(), to.components());
+            } else {
+                self.creatures.projectiles.remove(index);
+            }
+            return None;
+        }
+        self.apply_captured_impact(p, hit, pending)
+            .map(|p| (p, hit))
+    }
+
+    /// Recheck and apply the captured response after the earlier callbacks.
+    pub(super) fn apply_captured_impact(
+        &mut self,
+        snapshot: Projectile,
+        hit: Hit,
+        pending: PendingImpact,
+    ) -> Option<Projectile> {
+        let i = self.captured_projectile_index(&snapshot)?;
+        if pending.canceled
+            || pending.target.is_none()
+            || pending.target != self.native_impact_target(hit)
+        {
+            return None;
+        }
+        let mut p = self.creatures.projectiles[i].clone();
+        if let (Some(_), Hit::Block { pos, .. }) = (&p.arrow, hit) {
+            let from = p.position;
+            {
+                let rain = self.arrow_rain();
+                sunrise_client::arrows::apply_block_contact(
+                    &mut p,
+                    &self.arrow_scene(&rain),
+                    BlockPos::new(pos[0], pos[1], pos[2]),
+                );
+            }
+            let events = p
+                .arrow
+                .as_mut()
+                .map(|a| std::mem::take(&mut a.events))
+                .unwrap_or_default();
+            if pending.keep {
+                self.creatures.projectiles.store_back(i, p.clone());
+                self.entity_section_step(p.id, from.components(), p.position.components());
+            } else {
+                self.creatures.projectiles.remove(i);
+            }
+            for event in events {
+                self.arrow_event(p.position, event);
+            }
+        } else if !pending.keep {
+            self.creatures.projectiles.remove(i);
+        }
+        Some(p)
+    }
+
+    /// `AbstractArrow.tick` resumes after a refused contact or after publishing
+    /// the accepted hit and `PROJECTILE_LAND`. A discarded arrow is already done.
+    pub(super) fn finish_deferred_arrow_tick(&mut self, id: u32, join: JoinSeq) {
+        if self.projectile_removal_pending(id) {
+            return;
+        }
+        let Some(i) = self.creatures.projectiles.locate(join) else {
+            return;
+        };
+        let mut p = self.creatures.projectiles[i].clone();
+        let keep = {
+            let rain = self.arrow_rain();
+            sunrise_client::arrows::finish_block_contact(&mut p, &self.arrow_scene(&rain))
+        };
+        let events = p
+            .arrow
+            .as_mut()
+            .map(|a| std::mem::take(&mut a.events))
+            .unwrap_or_default();
+        let (owner, guest, at) = (p.owner, p.guest, p.position);
+        if keep {
+            self.creatures.projectiles.store_back(i, p);
+        } else {
+            self.creatures.projectiles.remove(i);
+        }
+        for event in events {
+            if event == ArrowEvent::ShootEvent {
+                self.projectile_shoot_event(owner, guest, at.components());
+            } else {
+                self.arrow_event(at, event);
+            }
+        }
     }
 
     /// `p`, as it was before its tick, flown that tick through what it hit
@@ -422,6 +722,9 @@ mod impact_panic_tests;
 #[cfg(test)]
 mod nested_spawn_tests {
     use super::*;
+    use crate::game::native_entity_refs::tests::run_fresh_cases;
+
+    const CASE: &str = "SUNRISE_PROJECTILE_NESTED_SPAWN_CASE";
 
     fn impact_handoff_balances_the_pass(park: bool) {
         use sunrise_client::join_seq::residency::{Change, Journal, Kind, Owner};
@@ -453,9 +756,8 @@ mod nested_spawn_tests {
             let child_join = game.creatures.projectiles[0].join;
             game.native_settle_impacts(
                 &mut pass,
-                &mut JoinList::default(),
-                &[],
                 Vec::new(),
+                &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
             );
@@ -493,20 +795,39 @@ mod nested_spawn_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn impact_handoff_balances_the_active_owner() {
-        impact_handoff_balances_the_pass(false);
+        if !run_fresh_cases(
+            "game::native_projectiles::nested_spawn_tests::impact_handoff_balances_the_active_owner",
+            CASE,
+            &["active-owner"],
+        ) {
+            impact_handoff_balances_the_pass(false);
+        }
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn impact_handoff_balances_the_parked_owner() {
-        impact_handoff_balances_the_pass(true);
+        if !run_fresh_cases(
+            "game::native_projectiles::nested_spawn_tests::impact_handoff_balances_the_parked_owner",
+            CASE,
+            &["parked-owner"],
+        ) {
+            impact_handoff_balances_the_pass(true);
+        }
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn impact_exposure_retains_the_existing_spawn_buffer_for_the_next_pass() {
+        if run_fresh_cases(
+            "game::native_projectiles::nested_spawn_tests::impact_exposure_retains_the_existing_spawn_buffer_for_the_next_pass",
+            CASE,
+            &["spawn-buffer"],
+        ) {
+            return;
+        }
         crate::game::native_entity_refs::tests::with_game(|game| {
             fn shot(id: u32) -> Projectile {
                 let mut p = Projectile::new(
@@ -535,9 +856,8 @@ mod nested_spawn_tests {
             expected.push((72, join));
             game.native_settle_impacts(
                 &mut taken,
-                &mut JoinList::default(),
-                &[],
                 Vec::new(),
+                &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
             );
@@ -570,7 +890,7 @@ mod pearl_hit_tests {
     /// `ender_pearl_teleport`'s hit fields: a block and its face normal, or an
     /// entity with the cell of its hit point and no face.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_pearl_tells_the_block_face_or_the_entity_it_hit() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let wall = Hit::Block {
@@ -595,7 +915,7 @@ mod pearl_hit_tests {
 
     /// A dragon part is the dragon and the local player is its own entity.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_pearl_names_the_dragon_for_a_part_and_the_local_player_by_its_own_id() {
         use crate::game::dragon::Dragon;
         crate::game::native_entity_refs::tests::with_game(|game| {
@@ -623,7 +943,7 @@ mod pearl_hit_tests {
 
     /// A listener hears the hit through `native_pearl_teleport` and its write comes back.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_listening_mod_hears_the_pearls_hit_and_its_target_comes_back() {
         use crate::game::dragon::Dragon;
         use mod_api::{EnderPearlTeleportEvent, Flow, Hooks, ModEntry, ServerHost};
@@ -649,8 +969,6 @@ mod pearl_hit_tests {
         let mods: mod_api::Mods = vec![ModEntry::new("hear", Box::new(Hear(heard.clone())))].into();
         mod_platform::testing::with_mods(mods, || {
             crate::game::native_entity_refs::tests::with_game(|game| {
-                let _phase =
-                    mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
                 let mut dragon = Dragon::new(Vec3::ZERO, 0.0, 0);
                 dragon.id = 225009;
                 game.dragon.replace(dragon);

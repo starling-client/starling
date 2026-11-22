@@ -1,12 +1,12 @@
 use super::*;
 
-impl GameLevel<'_> {
-    /// On an authoritative server, `IBlockExtension.canSustainPlant` for the
-    /// soil `ground` at `ground_pos` and the plant `state` above it, asked
-    /// before the plant answers its own `mayPlaceOn`: `Some(true)` lets the
-    /// plant stand there, `Some(false)` refuses it, and left `None` the
-    /// plant's own rule answers. Answer only for your own soil. The level is
-    /// read-only.
+impl LevelView<'_> {
+    /// `IBlockExtension.canSustainPlant` for the soil `ground` at `ground_pos`
+    /// and the plant `state` above it, asked before the plant answers its own
+    /// `mayPlaceOn`: `Some(true)` lets the plant stand there, `Some(false)`
+    /// refuses it, and left `None` the plant's own rule answers. Answer only for
+    /// your own soil. The level is read-only. Asked on both sides: a client asks
+    /// it from its placement prediction and its own shape updates.
     #[inline(always)]
     pub(in crate::game) fn native_can_sustain_plant(
         &self,
@@ -15,7 +15,8 @@ impl GameLevel<'_> {
         ground: BlockStateId,
         ground_pos: BlockPos,
         sustains: &mut Option<bool>,
+        inert: &mut bool,
     ) {
-        self.fire_can_sustain_plant(dimension, state, ground, ground_pos, sustains);
+        self.fire_can_sustain_plant(dimension, state, ground, ground_pos, sustains, inert);
     }
 }

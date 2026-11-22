@@ -1,9 +1,6 @@
 use super::*;
-impl<R: RandomSource> Context<'_, R> {
-    /// The context a mod's own loot kinds see: drawn lazily, only when
-    /// the table has a mod's kind, so the random stays untouched without.
-    pub(super) fn native_ctx(&mut self) -> LootContext<'_> {
-        let seed = self.random.next_long();
+impl<'a, R: RandomSource> Context<'a, R> {
+    pub(super) fn roll_facts(&self, seed: i64) -> LootContext<'a> {
         LootContext {
             queried_table_id: self.query.id(),
             queried_stack: self.query.queried_stack.clone(),
@@ -56,9 +53,38 @@ impl LootData {
             entity: None,
             enchanted_level: None,
         };
-        let mut items = Vec::new();
-        c.table_raw(table, json, &mut |c, stack| c.data.split(stack, &mut items));
-        c.query.finish(Some(table));
+        let items = c.roll_root(Some(table), json);
+        *random = c.random;
+        items
+    }
+
+    /// [`Self::roll`] with the entity parameters of `params` (a fishing hook
+    /// as `this` and its owner as the attacker), and `params.luck` as the
+    /// luck. The entity predicates read them, and a hook's `in_open_water`
+    /// still reads `open_water`.
+    pub fn roll_as<R: RandomSource + Clone>(
+        &self,
+        table: &str,
+        random: &mut R,
+        biome: Option<&str>,
+        open_water: Option<bool>,
+        params: &EntityLootParams,
+    ) -> Vec<LootStack> {
+        let Some(json) = self.tables.get(table) else {
+            return Vec::new();
+        };
+        let mut c = Context {
+            query: query::current_query(),
+            data: self,
+            random: random.clone(),
+            biome,
+            visited: Vec::new(),
+            luck: params.luck,
+            open_water,
+            entity: Some(params),
+            enchanted_level: None,
+        };
+        let items = c.roll_root(Some(table), json);
         *random = c.random;
         items
     }
@@ -80,11 +106,7 @@ impl LootData {
             entity: None,
             enchanted_level: None,
         };
-        let mut items = Vec::new();
-        c.table_raw("<root>", table, &mut |c, stack| {
-            c.data.split(stack, &mut items)
-        });
-        c.query.finish(None);
+        let items = c.roll_root(None, table);
         *random = c.random;
         items
     }

@@ -27,7 +27,7 @@ Install stable Rust, Python 3.10+ and JDK 25 (`java` and `javac` on PATH).
 On Linux install the build prerequisites in [CONTRIBUTING](../CONTRIBUTING.md).
 Use your own Minecraft 26.3 installation and server jar: `lab.py prepare`
 imports and checks them against `research-lock.json`; it does not download Mojang's game.
-See [the research lab](research-lab.md) for non-default installation paths.
+Use `python3 tools/lab.py prepare --help` for non-default installation paths.
 
 From the repository root, on Linux:
 

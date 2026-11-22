@@ -1,10 +1,6 @@
 use crate::item::crafting::{IngredientRule, Shape};
 use serde_json::Value;
 use std::collections::HashSet;
-/// Where `Ingredient::resolve` leaves the hook's answer inside the occurrence
-/// it resolved. Written and read only here; the loads that own the sources
-/// never send or save it.
-const RESOLVED_ITEMS: &str = "sunrise:resolved_items";
 
 /// The kind an ingredient object names: `neoforge:ingredient_type` in
 /// current NeoForge, `type` in older packs.
@@ -19,22 +15,6 @@ fn is_custom(kind: &str) -> bool {
     kind.contains(':') && !kind.starts_with("minecraft:")
 }
 
-/// Takes the answer `resolve` left out of `data`.
-// hidden: the game-owned ingredient adapter reads the answer a mod's `resolve` left, not a mod-facing call.
-#[doc(hidden)]
-pub fn resolved_items(data: &mut sunrise_core::nbt::Compound) -> Option<Vec<String>> {
-    let answer = data.remove(&RESOLVED_ITEMS.into())?;
-    let sunrise_core::nbt::Tag::List(answer) = answer else {
-        return None;
-    };
-    answer
-        .iter()
-        .map(|i| match i {
-            sunrise_core::nbt::Tag::String(s) => s.to_string().ok(),
-            _ => None,
-        })
-        .collect()
-}
 /// Keep first-seen order, drop the rest.
 // hidden: a game-side helper, not part of the mod surface
 #[doc(hidden)]
@@ -48,41 +28,40 @@ pub fn dedup_keep_order(items: &mut Vec<String>) {
 /// their children walked the same way, each answered by the flat list of
 /// ids it matches in the order the sources named them. A kind outside the
 /// shapes is answered by the wrapper's `custom` as the walk meets it, so a
-/// shape sees its ids like any child's: the item ingredient gives the list
-/// its hook left at load, a fluid one none, which fails the file. Existing
-/// empty tags and custom answers retain their predicate but cannot be placed.
+/// shape sees its ids like any child's. A missing answer fails the parse.
+/// Existing empty tags and custom answers retain their predicate but cannot
+/// be placed.
 #[derive(Clone, Debug)]
 // hidden: shared parser output for the game-owned ingredient adapter, not a mod-facing recipe.
 #[doc(hidden)]
 #[non_exhaustive]
-pub struct WalkedIngredient {
+pub struct WalkedIngredient<A> {
     /// The ids it accepts, however the source shape named them.
     pub set: HashSet<String>,
     /// The same ids in the sources' order (`HolderSet`).
     pub order: Vec<String>,
     /// Compound, intersection, difference or custom display children.
     pub children: Option<(Shape, Vec<Self>)>,
-    /// A kind outside the standard shapes: the kind and its NBT compound, as the
-    /// file wrote it, without the wrapper's answer.
-    pub custom: Option<(String, sunrise_core::nbt::Compound)>,
+    /// The wrapper's payload for a kind outside the standard shapes.
+    pub custom: Option<A>,
     /// Component restrictions, independent of the enumerable item list.
     pub rule: Option<IngredientRule>,
     /// Slot display override, independent of matching.
     pub display: Option<sunrise_core::nbt::Compound>,
 }
 // no wire: borrowed parser or registration callbacks execute only in their owning process.
-/// The wrapper's answer for a kind outside the standard shapes: the ids it
-/// matches, taken out of its metadata, or none to fail the file.
+/// Answers the original JSON and kind with placement ids and a custom
+/// payload, or none to fail the file.
 // hidden: the game-owned ingredient adapter supplies custom ids while walking JSON.
 #[doc(hidden)]
-pub type CustomIds<'a> = &'a dyn Fn(&mut sunrise_core::nbt::Compound) -> Option<Vec<String>>;
+pub type CustomIds<'a, A> = &'a dyn Fn(&Value, &str) -> Option<(Vec<String>, A)>;
 // no wire: borrowed parser or registration callbacks execute only in their owning process.
 /// Game-owned JSON-to-NBT boundary for the hidden recipe parser.
 // hidden: supplied by the game's ingredient adapter to the parser, not a mod-facing type.
 #[doc(hidden)]
 pub type IngredientData<'a> =
     &'a dyn Fn(&serde_json::Map<String, Value>) -> Option<sunrise_core::nbt::Compound>;
-impl WalkedIngredient {
+impl<A> WalkedIngredient<A> {
     /// Only component-independent ingredients can use item-list matching.
     pub fn is_simple(&self) -> bool {
         self.rule.is_none()
@@ -99,12 +78,36 @@ impl WalkedIngredient {
         v: &Value,
         tags: &std::collections::HashMap<String, Vec<String>>,
         block_tags: &dyn Fn(&str) -> Option<Vec<String>>,
-        custom: CustomIds<'_>,
+        custom: CustomIds<'_, A>,
         convert: IngredientData<'_>,
     ) -> Option<Self> {
-        Self::walk_resolved(v, tags, block_tags, custom, convert, &|id| {
+        Self::walk_resolved_with_components(v, tags, block_tags, custom, convert, convert, &|id| {
             Some(id.to_owned())
         })
+    }
+
+    /// Walk `v` with separate converters for `neoforge:components` patches and
+    /// `neoforge:custom_display` slot displays so component validation happens
+    /// during the single decode pass.
+    // hidden: game-owned single-pass ingredient decoder boundary.
+    #[doc(hidden)]
+    pub fn walk_with_components(
+        v: &Value,
+        tags: &std::collections::HashMap<String, Vec<String>>,
+        block_tags: &dyn Fn(&str) -> Option<Vec<String>>,
+        custom: CustomIds<'_, A>,
+        convert_components: IngredientData<'_>,
+        convert_display: IngredientData<'_>,
+    ) -> Option<Self> {
+        Self::walk_resolved_with_components(
+            v,
+            tags,
+            block_tags,
+            custom,
+            convert_components,
+            convert_display,
+            &|id| Some(id.to_owned()),
+        )
     }
 
     // hidden: the game-owned adapter resolves ids using its own load-time registry.
@@ -113,8 +116,20 @@ impl WalkedIngredient {
         v: &Value,
         tags: &std::collections::HashMap<String, Vec<String>>,
         block_tags: &dyn Fn(&str) -> Option<Vec<String>>,
-        custom: CustomIds<'_>,
+        custom: CustomIds<'_, A>,
         convert: IngredientData<'_>,
+        resolve: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<Self> {
+        Self::walk_resolved_with_components(v, tags, block_tags, custom, convert, convert, resolve)
+    }
+
+    fn walk_resolved_with_components(
+        v: &Value,
+        tags: &std::collections::HashMap<String, Vec<String>>,
+        block_tags: &dyn Fn(&str) -> Option<Vec<String>>,
+        custom: CustomIds<'_, A>,
+        convert_components: IngredientData<'_>,
+        convert_display: IngredientData<'_>,
         resolve: &dyn Fn(&str) -> Option<String>,
     ) -> Option<Self> {
         let mut list: Vec<String> = Vec::new();
@@ -130,6 +145,13 @@ impl WalkedIngredient {
                         return;
                     }
                 },
+                // `Ingredient.NON_AIR_HOLDER_SET_CODEC`: a directly named id is
+                // never air, or the file fails; a tag's members aren't checked,
+                // as vanilla checks only the direct list (#1273).
+                None if s == "minecraft:air" || s == "air" => {
+                    valid = false;
+                    return;
+                }
                 None => vec![s.to_owned()],
             };
             for i in more {
@@ -142,9 +164,24 @@ impl WalkedIngredient {
         };
         match v {
             Value::String(s) => add(s),
-            Value::Array(a) => a.iter().filter_map(Value::as_str).for_each(&mut add),
+            // `HolderSet`'s list: every entry is an id, so any other value
+            // fails the file rather than being dropped (#1273).
+            Value::Array(a) => {
+                for entry in a {
+                    add(entry.as_str()?);
+                }
+            }
             Value::Object(o) => {
-                return Self::walk_object(o, tags, block_tags, custom, convert, resolve);
+                return Self::walk_object(
+                    v,
+                    o,
+                    tags,
+                    block_tags,
+                    custom,
+                    convert_components,
+                    convert_display,
+                    resolve,
+                );
             }
             _ => return None,
         }
@@ -176,11 +213,13 @@ impl WalkedIngredient {
     /// stack. A kind outside these is the wrapper's `custom`; one of
     /// `minecraft:`'s the wrapper does not know still fails the file.
     fn walk_object(
+        v: &Value,
         o: &serde_json::Map<String, Value>,
         tags: &std::collections::HashMap<String, Vec<String>>,
         block_tags: &dyn Fn(&str) -> Option<Vec<String>>,
-        custom: CustomIds<'_>,
-        convert: IngredientData<'_>,
+        custom: CustomIds<'_, A>,
+        convert_components: IngredientData<'_>,
+        convert_display: IngredientData<'_>,
         resolve: &dyn Fn(&str) -> Option<String>,
     ) -> Option<Self> {
         // Current NeoForge marks a custom ingredient with
@@ -200,7 +239,17 @@ impl WalkedIngredient {
             "neoforge:compound" => {
                 let subs: Vec<Self> = children()?
                     .iter()
-                    .map(|s| Self::walk_resolved(s, tags, block_tags, custom, convert, resolve))
+                    .map(|s| {
+                        Self::walk_resolved_with_components(
+                            s,
+                            tags,
+                            block_tags,
+                            custom,
+                            convert_components,
+                            convert_display,
+                            resolve,
+                        )
+                    })
                     .collect::<Option<_>>()?;
                 let mut seen = Vec::new();
                 for sub in &subs {
@@ -218,40 +267,56 @@ impl WalkedIngredient {
             "neoforge:intersection" => {
                 let subs: Vec<Self> = children()?
                     .iter()
-                    .map(|s| Self::walk_resolved(s, tags, block_tags, custom, convert, resolve))
+                    .map(|s| {
+                        Self::walk_resolved_with_components(
+                            s,
+                            tags,
+                            block_tags,
+                            custom,
+                            convert_components,
+                            convert_display,
+                            resolve,
+                        )
+                    })
                     .collect::<Option<_>>()?;
-                nested = Some((Shape::Intersection, subs.clone()));
-                subs.first()?
+                let kept = subs
+                    .first()?
                     .order
                     .iter()
                     .filter(|i| subs[1..].iter().all(|s| s.set.contains(*i)))
                     .cloned()
-                    .collect()
+                    .collect();
+                nested = Some((Shape::Intersection, subs));
+                kept
             }
             // The base's ids without the subtracted's.
             "neoforge:difference" => {
-                let base = Self::walk_resolved(
+                let base = Self::walk_resolved_with_components(
                     o.get("base")?,
                     tags,
                     block_tags,
                     custom,
-                    convert,
+                    convert_components,
+                    convert_display,
                     resolve,
                 )?;
-                let gone = Self::walk_resolved(
+                let gone = Self::walk_resolved_with_components(
                     o.get("subtracted")?,
                     tags,
                     block_tags,
                     custom,
-                    convert,
+                    convert_components,
+                    convert_display,
                     resolve,
                 )?;
-                nested = Some((Shape::Difference, vec![base.clone(), gone.clone()]));
-                base.order
+                let kept = base
+                    .order
                     .iter()
                     .filter(|i| !gone.is_simple() || !gone.set.contains(*i))
                     .cloned()
-                    .collect()
+                    .collect();
+                nested = Some((Shape::Difference, vec![base, gone]));
+                kept
             }
             "neoforge:block_tag" => {
                 let tag = o.get("tag")?.as_str()?;
@@ -266,15 +331,16 @@ impl WalkedIngredient {
                 if !matches!(o.get("items")?, Value::String(_) | Value::Array(_)) {
                     return None;
                 }
-                let mut base = Self::walk_resolved(
+                let mut base = Self::walk_resolved_with_components(
                     o.get("items")?,
                     tags,
                     block_tags,
                     custom,
-                    convert,
+                    convert_components,
+                    convert_display,
                     resolve,
                 )?;
-                let mut patch = convert(o.get("components")?.as_object()?)?;
+                let mut patch = convert_components(o.get("components")?.as_object()?)?;
                 let mut removed = Vec::new();
                 patch.retain(|key, _| {
                     if let Some(id) = key.to_string_lossy().strip_prefix('!') {
@@ -296,31 +362,32 @@ impl WalkedIngredient {
                 return Some(base);
             }
             "neoforge:custom_display" => {
-                let base = Self::walk_resolved(
+                let base = Self::walk_resolved_with_components(
                     o.get("base")?,
                     tags,
                     block_tags,
                     custom,
-                    convert,
+                    convert_components,
+                    convert_display,
                     resolve,
                 )?;
-                let mut shown = base.clone();
-                shown.rule = None;
-                shown.custom = None;
-                shown.children = Some((Shape::CustomDisplay, vec![base]));
-                shown.display = Some(convert(o.get("display")?.as_object()?)?);
-                return Some(shown);
+                return Some(Self {
+                    set: base.set.clone(),
+                    order: base.order.clone(),
+                    children: Some((Shape::CustomDisplay, vec![base])),
+                    custom: None,
+                    rule: None,
+                    display: Some(convert_display(o.get("display")?.as_object()?)?),
+                });
             }
-            // A kind outside these shapes: the wrapper answers it — the
-            // item ingredient asks its hook, a fluid one fails the file.
+            // The wrapper defines both the candidate ids and the custom payload.
             k if is_custom(k) => {
-                let mut data = convert(o)?;
-                let list = custom(&mut data)?;
+                let (list, answer) = custom(v, k)?;
                 return Some(Self {
                     set: list.iter().cloned().collect(),
                     order: list,
                     children: None,
-                    custom: Some((k.to_owned(), data)),
+                    custom: Some(answer),
                     rule: None,
                     display: None,
                 });
@@ -341,3 +408,7 @@ impl WalkedIngredient {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "ingredient_parser_tests.rs"]
+mod tests;

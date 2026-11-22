@@ -17,6 +17,7 @@ SELECTORS = [
     '@e[x=1,y=2,z=3,dx=4,dy=5,dz=6]', '@e[x=1.5]', '@e[level=5..10]', '@e[level=3]', '@a[gamemode=survival]', '@a[gamemode=!creative]',
     '@e[name="Bob"]', '@e[name=Bob]', '@e[name=!Bob]', '@e[advancements={minecraft:story/root=true}]',
     '@e[advancements={minecraft:story/root={a=true}}]', '@e[predicate=minecraft:foo]', '@e[predicate=!minecraft:foo]',
+    '@e[x_rotation=1.0000000596046448..2]', '@e[y_rotation=0x1p-1..90]',
     '@e[x_rotation=..0]', '@e[y_rotation=90..180]', '@e[x_rotation=0]', '@e[limit=0]', '@e[limit=3]', '@e[sort=random]',
     '@e[sort=furthest]', '@e[sort=arbitrary]', '@e[type=player]', '@a[type=player]', '@e[distance=..5,limit=1]', '@e[ ]',
     '@e[ type = pig ]', '@e[type=pig , limit=2]', '@e[type=pig,]', '@e[,]', '@a[ name = "x" ]',
@@ -67,8 +68,14 @@ BAD_NBT_COMPOUNDS = [
     '{a:"unterminated}', '{a:[}', '{a:1b2}', '{a:300b}', '{a:99999999999}', '{a:[I;1.5]}', '{a:1 b:2}', '{a:{}', '{a:1}x',
     '{"":1}', '{a:\\}', '{a:"\\x"}', '{a:0x}', '{a:1.2.3}', '{a:--1}',
 ]
-NBT_TAGS = ['1', '1b', '"str"', '[1,2]', '{a:1}', 'true', '1.5', '[B;1b]', '1s', '1L', '1.5f', '2d', "'x'", 'bare', '[]', '[I;1]', '0', '-1']
-BAD_NBT_TAGS = ['', '[', '{', '"x', '[1,"a"]', '1b2', '[B;1', '1.5.5', '[I;1b]', '1,', '{a}', ']']
+NBT_TAGS = [
+    '1', '1b', '"str"', '[1,2]', '{a:1}', 'true', '1.5', '[B;1b]', '1s', '1L', '1.5f', '2d', "'x'", 'bare', '[]', '[I;1]', '0', '-1',
+    '[I;1_2i,0xFFui,0b1_1]',
+]
+BAD_NBT_TAGS = [
+    '', '[', '{', '"x', '[1,"a"]', '1b2', '[B;1', '1.5.5', '[I;1b]', '1,', '{a}', ']',
+    'bool(1', '1._', '0b_', '9223372036854775808ui', '18446744073709551616ui', '[I;18446744073709551616ui]',
+]
 NBT_PATHS = [
     'foo', 'foo.bar', 'foo[0]', 'foo[]', 'foo[{a:1}]', '{a:1}', 'foo{a:1}', '"quoted key".x', 'a.b[2].c', '[0]', 'foo[-1]', 'a[0][1]',
     'a[0].b', 'a{b:1}.c', '"a b"', "'a b'", 'a.b.c.d', '{}', 'a[{}]', 'a[ 0 ]', 'a.', 'Items[{Slot:0b}].id', 'a[{b:{c:1}}]',

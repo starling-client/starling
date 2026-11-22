@@ -1,25 +1,45 @@
 //! Tags as resource packs' files name them (`#minecraft:logs`): the ids
 //! `data/<namespace>/tags/<registry>/<path>.json` holds, nested tags included, read from a pack
 //! overlay root (which links the vanilla data) and kept once read.
-use sunrise_assets::resource_source::ResourceSource;
 use serde_json::Value as Json;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use sunrise_assets::resource_source::ResourceSource;
+use sunrise_world::tag_layers::TagLayers;
 
-/// `minecraft:` for an id without a namespace.
-fn full_id(id: &str) -> String {
-    if id.contains(':') {
-        id.to_owned()
-    } else {
-        format!("minecraft:{id}")
-    }
+/// Bind tags read from a resource source (directory, archive or indexed pack).
+pub(super) fn bind(
+    root: &ResourceSource,
+    registry: &str,
+    contains: impl Fn(&str) -> bool,
+) -> HashMap<String, Vec<String>> {
+    let kind = format!("tags/{registry}");
+    let separator = format!("/{kind}/");
+    let raw = root
+        .list_under("data", &[&kind])
+        .into_iter()
+        .filter_map(|file| {
+            let (namespace, name) = file.strip_prefix("data/")?.split_once(&separator)?;
+            let name = name.strip_suffix(".json")?;
+            let json = serde_json::from_slice::<Json>(&root.read(&file).ok()?).ok()?;
+            let layer = TagLayers::from_file(json)
+                .inspect_err(|err| log::warn!("Sunrise: couldn't read tag file {file}: {err}"))
+                .ok()?;
+            Some((format!("{namespace}:{name}"), layer))
+        })
+        .collect();
+    TagLayers::bind(registry, &raw, contains)
 }
 
-/// The tags under one root, read on first use.
+type TagsByName = HashMap<String, Arc<HashSet<String>>>;
+
+/// The tags under one root, bound on first use of a registry.
 #[derive(Debug)]
 pub struct Tags {
     root: ResourceSource,
-    cache: Mutex<HashMap<(String, String), Arc<HashSet<String>>>>,
+    cache: Mutex<HashMap<String, TagsByName>>,
+    report: Json,
+    empty: Arc<HashSet<String>>,
 }
 
 impl Tags {
@@ -27,64 +47,48 @@ impl Tags {
         Self {
             root: root.clone(),
             cache: Mutex::default(),
+            report: root
+                .read("registries.json")
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default(),
+            empty: Arc::default(),
         }
     }
 
     /// The ids in `tag` (`minecraft:logs`, without the `#`) of `registry` (`block`,
-    /// `entity_type`, `worldgen/biome`...); empty for a tag no file defines.
+    /// `entity_type`, `worldgen/biome`...); empty for an unbound tag.
     pub fn members(&self, registry: &str, tag: &str) -> Arc<HashSet<String>> {
-        let key = (registry.to_owned(), full_id(tag));
-        if let Some(hit) = self
-            .cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
-        {
-            return hit.clone();
-        }
-        let mut out = HashSet::new();
-        self.collect(registry, &key.1, &mut out, &mut HashSet::new());
-        let out = Arc::new(out);
-        self.cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key, out.clone());
-        out
+        let name = sunrise_core::identifier::Identifier::parse(tag).map(|id| id.to_string());
+        let Ok(name) = name else {
+            return self.empty.clone();
+        };
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let tags = cache.entry(registry.to_owned()).or_insert_with(|| {
+            let reported = self.report[format!("minecraft:{registry}")]["entries"].as_object();
+            bind(&self.root, registry, |id| {
+                if let Some(entries) = reported {
+                    entries.contains_key(id)
+                } else if matches!(registry, "dimension_type" | "worldgen/biome") {
+                    id.split_once(':').is_some_and(|(ns, name)| {
+                        self.root
+                            .contains(&format!("data/{ns}/{registry}/{name}.json"))
+                    })
+                } else {
+                    // Standalone visual pack sources don't necessarily include a registry report.
+                    true
+                }
+            })
+            .into_iter()
+            .map(|(name, ids)| (name, Arc::new(ids.into_iter().collect())))
+            .collect()
+        });
+        tags.get(&name).unwrap_or(&self.empty).clone()
     }
 
     /// Whether `id` is in `tag` of `registry`.
     pub fn contains(&self, registry: &str, tag: &str, id: &str) -> bool {
         self.members(registry, tag).contains(id)
-    }
-
-    /// The tag's ids into `out`; `seen` stops a tag that includes itself.
-    fn collect(
-        &self,
-        registry: &str,
-        tag: &str,
-        out: &mut HashSet<String>,
-        seen: &mut HashSet<String>,
-    ) {
-        if !seen.insert(tag.to_owned()) {
-            return;
-        }
-        let (namespace, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
-        let file = format!("data/{namespace}/tags/{registry}/{path}.json");
-        let Some(json) = self
-            .root
-            .read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Json>(&b).ok())
-        else {
-            return;
-        };
-        let members = sunrise_world::tag_layers::TagLayers::from_file(&json).build(|inner| {
-            let mut child = HashSet::new();
-            self.collect(registry, &full_id(inner), &mut child, seen);
-            child.into_iter().collect()
-        });
-        out.extend(members.into_iter().map(|id| full_id(&id)));
-        seen.remove(tag);
     }
 }
 
@@ -110,7 +114,7 @@ mod tests {
         // A tag that includes the one including it.
         write(
             "data/pack/tags/block/fancy.json",
-            serde_json::json!({"values": ["minecraft:cherry_log", "#minecraft:logs"]}),
+            serde_json::json!({"values": ["minecraft:cherry_log", {"id":"#minecraft:logs","required":false}]}),
         );
         let tags = Tags::new(&ResourceSource::directory(root.clone()));
         let mut logs: Vec<String> = tags.members("block", "logs").iter().cloned().collect();

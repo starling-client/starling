@@ -1,0 +1,3 @@
+ids = ["method:ParticleProvider::extract", "type:ParticleExtractView", "type:ParticleQuad", "trait:QuadParticleRenderState"]
+why = "Sprite-set providers can submit their own opaque and translucent quads during frame extraction, without changing registration or batch ticking."
+migrate = "No source migration needed. Existing providers inherit their ordinary quad. Override extract to submit a custom quad, call add_default for the ordinary draw, or emit nothing."

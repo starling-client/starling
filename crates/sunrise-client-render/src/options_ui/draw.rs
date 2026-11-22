@@ -7,15 +7,11 @@ pub(super) enum FrameDraw {
     Calibration(crate::hdr_calibration::Layout),
     Shell(Page),
     RadialName,
-    SplitSetup,
-    SplitProfiles,
     Studio([f32; 4]),
     Mods,
     Packs,
     Standard(std::sync::Arc<OptionsLayout>),
     Tooltip(Option<Vec<Text>>, Option<[f32; 4]>),
-    Label(Option<String>),
-    SplitHelp(Option<String>),
     Draws(Vec<Draw>, Option<usize>),
     Complete,
 }
@@ -95,26 +91,12 @@ impl OptionsUi {
             FrameDraw::Shell(page)
         } else if page == Page::Studio {
             FrameDraw::Studio(self.studio.draw_background(batch, atlas, in_world))
-        } else if matches!(
-            page,
-            Page::SplitSetup | Page::SplitProfiles | Page::Mods | Page::Packs
-        ) {
+        } else if matches!(page, Page::Mods | Page::Packs) {
             if page == Page::Packs {
                 self.watch_data_packs(atlas, (w, h));
             }
-            let (bw, bh) = if page == Page::SplitProfiles {
-                (w.ceil(), h.ceil())
-            } else {
-                (w, h)
-            };
-            ui::menu_background(batch, atlas, 0.0, 0.0, bw, bh, in_world);
+            ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
             match page {
-                Page::SplitSetup => {
-                    self.split_setup.on = s.extras.splitscreen;
-                    self.split_setup.size = (w, h);
-                    FrameDraw::SplitSetup
-                }
-                Page::SplitProfiles => FrameDraw::SplitProfiles,
                 Page::Mods => FrameDraw::Mods,
                 Page::Packs => FrameDraw::Packs,
                 _ => unreachable!(),
@@ -173,15 +155,6 @@ impl OptionsUi {
                     .draw_contents(batch, atlas, cursor);
                 FrameDraw::Complete
             }
-            FrameDraw::SplitSetup => {
-                FrameDraw::SplitHelp(self.split_setup.draw_contents(batch, atlas, cursor))
-            }
-            FrameDraw::SplitProfiles => FrameDraw::Label(self.split_profiles.draw_contents(
-                batch,
-                atlas,
-                cursor,
-                self.pad_glyphs,
-            )),
             FrameDraw::Studio(rect) => {
                 self.studio.draw_contents(batch, atlas, cursor, rect);
                 FrameDraw::Complete
@@ -229,21 +202,6 @@ impl OptionsUi {
                         Some(rect) => ui::tooltip_menu(batch, atlas, &lines, cursor, rect),
                         None => ui::tooltip(batch, atlas, &lines, cursor),
                     }
-                }
-            }
-            FrameDraw::Label(tip) => {
-                if let Some(tip) = tip {
-                    ui::tooltip(batch, atlas, &[Text::literal(tip)], cursor);
-                }
-            }
-            FrameDraw::SplitHelp(tip) => {
-                if let Some(tip) = tip {
-                    ui::tooltip(
-                        batch,
-                        atlas,
-                        &atlas.font.split(&Text::literal(tip), 170.0),
-                        cursor,
-                    );
                 }
             }
             FrameDraw::Draws(draws, tooltip) => {

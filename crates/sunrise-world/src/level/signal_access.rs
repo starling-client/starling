@@ -11,6 +11,17 @@ pub trait SignalAccess {
     fn block_state(&self, pos: BlockPos) -> BlockStateId;
     /// The current shulker lid state used by wire support checks.
     fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool>;
+    /// The collision shape the block entity at `pos` published for its block
+    /// (`shapes_from_block_entity`), by one lookup, when `state` is of a block that may
+    /// publish and its block entity holds one. None otherwise, and for a level that keeps no
+    /// block entities: support then comes from the state's declared shape.
+    fn published_collision_shape(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+    ) -> Option<sunrise_core::geometry::VoxelShape> {
+        None
+    }
     /// The block's signal-source answer after its Part.
     fn adjust_signal_source(&self, state: BlockStateId, vanilla: bool) -> bool;
     /// Whether weak-power queries have a subscribed Part.
@@ -52,6 +63,13 @@ impl<L: LevelAccess + ?Sized> SignalAccess for L {
     }
     fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
         LevelAccess::shulker_is_closed(self, pos)
+    }
+    fn published_collision_shape(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+    ) -> Option<sunrise_core::geometry::VoxelShape> {
+        LevelAccess::published_collision_shape(self, pos, state)
     }
     fn adjust_signal_source(&self, state: BlockStateId, vanilla: bool) -> bool {
         LevelAccess::adjust_signal_source(self, state, vanilla)

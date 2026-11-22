@@ -1,0 +1,2 @@
+ids = ["handle:ItemPlace::on_crafted_by", "type:item::item_stack::CraftedByError"]
+why = "Add ItemPlace::on_crafted_by for server-side menu slots and cursors. It applies vanilla ItemStack.onCraftedBy processing, including item post-processing and the crafted statistic, under the caller's transaction, and refuses places the caller does not hold with CraftedByError::NotHeld."

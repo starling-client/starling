@@ -54,7 +54,9 @@ class WireStreamTest(unittest.TestCase):
         self.assertEqual(run[1]['packets'][0], ('attack', {'entity': 'e1'}))
 
     def test_an_answer_between_two_packets_of_a_tick_is_misplaced(self):
-        entries = [LOGIN, mark(), c2s('player_command', varint(42) + varint(1) + varint(0)), c2s('pong', b'\0\0\0\1'),
+        # The chunk batch acknowledgement is the network thread's (handleChunkBatchFinished): it may land there.
+        entries = [LOGIN, mark(), c2s('player_command', varint(42) + varint(1) + varint(0)),
+                   c2s('chunk_batch_received', struct.pack('>f', 3.5)), c2s('pong', b'\0\0\0\1'),
                    c2s('move_player_status_only', b'\x01'), TICK_END]
         [run] = wire_stream.scenarios(entries)
         self.assertEqual(run[0]['packets'][0], ('player_command', {'entity': 'self', 'action': 'start_sprinting',

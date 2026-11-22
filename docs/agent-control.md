@@ -8,7 +8,7 @@ Players read [Control Sunrise with your AI agent](https://playsunrise.net/docs/a
 
 The command lists are generated, so they can't drift:
 
-- [launcher-commands.md](launcher-commands.md): every `sunrise-launcher` command, its arguments
+- [launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md): every `sunrise-launcher` command, its arguments
   and its MCP tool. It comes from the CLI's clap definition (`cli_tools::markdown`), and the
   launcher test `the_launcher_reference_is_up_to_date` fails when it is stale or a tool is missing.
 - [sunrise-ctl-commands.md](sunrise-ctl-commands.md): every `sunrise-ctl` command, its MCP tool
@@ -22,9 +22,9 @@ The command lists are generated, so they can't drift:
 | Game control socket | `sunrise-client --control` / `--control-socket PATH`, or Agent Control on in Sunrise Settings > AI Agent (`crates/sunrise-client/src/control.rs`; commands in `src/game/runtime/control.rs`, `agent.rs`, `ui_control.rs`, `saves_control.rs` and friends) | text line in, one JSON line out; Unix socket, or localhost TCP and a token where there is none |
 | `sunrise-ctl` | `crates/sunrise-client/src/bin/sunrise-ctl/` | CLI over the socket; one table of commands (`commands.rs`) gives the help, the argument checks, the MCP tools and the reference |
 | `sunrise-ctl mcp` | same | MCP over stdio, one tool per command of the table |
-| Launcher CLI | `launcher/src/cli.rs` | `sunrise-launcher <command> [--json]` |
-| Launcher MCP | `launcher/src/mcp.rs`, `cli_tools.rs`, `game_tools.rs` | `sunrise-launcher mcp` (stdio): every CLI command as a tool, the session tools, and the game's tools as `game_*` |
-| Connecting | `launcher/src/agents.rs`, `agents_page.rs`; `src/game/runtime/agent_settings.rs` | `sunrise-launcher agent-config`; Settings > AI in the launcher; Sunrise Settings > AI Agent in the game |
+| Launcher CLI | `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/cli.rs` | `sunrise-launcher <command> [--json]` |
+| Launcher MCP | `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/mcp.rs`, `cli_tools.rs`, `game_tools.rs` | `sunrise-launcher mcp` (stdio): every CLI command as a tool, the session tools, and the game's tools as `game_*` |
+| Connecting | `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/agents.rs`, `agents_page.rs`; `src/game/runtime/agent_settings.rs` | `sunrise-launcher agent-config`; Settings > AI in the launcher; Sunrise Settings > AI Agent in the game |
 | No AI | `crates/sunrise-core/src/no_ai.rs` | `noAi:true` in `<game home>/sunrise-extras.txt`, read by every surface |
 
 ## One MCP server for everything
@@ -64,8 +64,12 @@ left alone.
 
 ## Protocol revisions
 
-All three servers share one implementation, `crates/sunrise-mcp`, so they advertise and answer
-the same revisions. There are two of them.
+`sunrise-ctl mcp` and [`sunrise-server mcp`](server.md#8-control-api-and-mcp) share the
+implementation in `crates/sunrise-mcp`. The separate launcher has its own MCP implementation.
+Its `game_*` tools depend on the stdio wire contract with the installed game's `sunrise-ctl mcp`,
+not on this crate.
+
+The shared implementation serves two revisions:
 
 - `2026-07-28` is stateless: there is no handshake, and every request carries its version and
   its capabilities in `_meta` (`io.modelcontextprotocol/protocolVersion`,
@@ -211,10 +215,13 @@ turn the switch off.
   under control. A game the player starts from the window is not, until they turn Agent Control
   on. An open socket lets any program of that user drive the game, so it opens only when an agent
   asked for the game, or when the player chose it.
-- **The window an agent opens** comes up without the focus (on Windows and macOS; X11 focuses it
-  anyway): the person keeps their keyboard, and the game keeps its pointer grab to itself, as
-  `--offscreen` does, so the system pointer is never taken, hidden or moved. Once the person
-  clicks into the window it is an ordinary one, and that click takes the pointer.
+- **The window an agent opens** asks for no focus, and belongs to the agent until a person
+  presses a mouse button inside it. Until then the game keeps its pointer grab to itself, as
+  `--offscreen` does, so the system pointer is never taken, hidden or moved, and the person's
+  keys, wheel and mouse motion don't reach the game, even if the system gives the window the
+  focus (X11 does, and Windows can): the focus alone claims nothing. Closing the window still
+  works. That first press makes it an ordinary window and takes the pointer; the agent's own
+  input plays before and after it.
 - **Headless:** `sunrise-ctl launch --headless` (`sunrise-client --headless --control`) starts a
   game with no display, no window and no GPU: it runs where no display server is (an SSH session,
   a server) and runs its own loop instead of winit's (`game/runtime/headless.rs`), one frame a tick. It
@@ -330,9 +337,10 @@ who took over mid-test.
   recorded: a stray key or mouse move can't spoil the run. The run's own input (the socket, the
   replay) still plays. Clicking into the window or away from it takes effect when the run ends,
   and the game's pointer grab stays inside the game until then, so the system pointer is never
-  taken or moved; closing the window still ends the run. A key held as the run starts stays
-  down until it is pressed again. Outside these runs nothing is held back; a game no one at
-  the computer should touch runs `--offscreen` or `--headless`.
+  taken or moved; closing the window still ends the run. A click during the run doesn't claim
+  an agent's window no one has clicked yet: it takes one after the run. A key held as the run
+  starts stays down until it is pressed again. Outside these runs nothing is held back; a game
+  no one at the computer should touch runs `--offscreen` or `--headless`.
 - `state` and `status` have an `input` section: `last_origin`, per-origin `counts`,
   `user_since_agent` and `last_user_age_s`.
 - `input-log [--since SEQ] [--limit N] [--origin ORIGIN]` lists the newest 512 input events:
@@ -422,9 +430,10 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
 - The server's own randoms and entity ids are its own: a summoned mob's facing and variant, and
   mob AI during a step, can differ when other server work drew on them first, and ids follow the
   order the server loads and creates entities in, which loading changes from run to run. What an
-  id seeds can then differ: a minecart's offset against z-fighting, a mob's client random. Give
-  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene. An end
-  crystal's spin and bob start from its position instead, so they are the same in every run.
+  id seeds can then differ: a minecart's offset against z-fighting, a mob's client random, a
+  dropped item's model when its model picks one at random. Give facings and variants in the
+  command (`{Rotation:[0f,0f]}`) for a repeatable scene. An end crystal's and a dropped item's spin
+  and bob start from their position instead, so they are the same in every run.
 - A script should wait until the world has loaded before it changes it: a command that acts on
   what is loaded (`kill @e`, `fill`) finds more or less of it otherwise.
 - The player still ticks while frozen, as in vanilla: stand the player on a block (it falls
@@ -465,8 +474,7 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   - `setting`: Agent Control on opens the endpoint, the AI Agent page, Copy, and off closes it;
   - `repro`: origins in `state`/`input-log`, record-start/stop, the bundle's entries, and a
     replay ending near the recorded state.
-- **`tools/launcher_mcp_e2e.py`** drives `sunrise-launcher mcp`: the generated tools, `play` and
-  the `game_*` tools, `confirm`, `agent-config` and `--test`, and No AI.
+- The launcher's MCP server (`sunrise-launcher mcp`) is tested in [sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher).
 
 ## Later
 

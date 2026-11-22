@@ -16,7 +16,6 @@ use super::{
 };
 use crate::block_properties::{BlockPropertiesRegistry, BlockProperty, BoundBlockProperty};
 use crate::registry::{BlockRegistry, BlockStateId, BlockStateJsonCodec};
-use sunrise_core::random::{InvalidBound, RandomSource};
 use noise::NoiseProvider;
 use properties::StateProperties;
 use serde_json::value::RawValue;
@@ -24,6 +23,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, OnceLock},
 };
+use sunrise_core::random::{InvalidBound, RandomSource};
 const DIRECTIONS: [&str; 6] = ["down", "up", "north", "south", "west", "east"];
 type Rotations = Arc<Vec<[BlockStateId; 6]>>;
 

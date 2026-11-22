@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
 use sunrise_telemetry::Item;
 use sunrise_telemetry::batch::{self, Batch};
 use sunrise_telemetry::payload::{Payload, Perf, Settings, Source, System, Timings};
 use sunrise_telemetry_server::store::Store;
 use sunrise_telemetry_server::{App, Config, router};
-use http_body_util::BodyExt;
-use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const DAY: u32 = 20_741;

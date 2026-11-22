@@ -1,8 +1,7 @@
 //! `[[native.loop]]`: a native mod's type in the slot of a hot loop the game publishes. Like a
 //! mixin, its helper is game code: compiled into the launcher's patch crate beside the loop, it
 //! names the game's own types, pinned to the exact build. The launcher compiles one copy of the
-//! loop with the installed mods' slots and installs it through the loop's entry function. Native
-//! only: a wasm mod is refused by name.
+//! loop with the installed mods' slots and installs it through the loop's entry function.
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -33,8 +32,6 @@ fn default_priority() -> i32 {
 /// Why a package's loop rows are refused before anything is built; `id` is `package:row`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoopError {
-    /// `E_LOOP_WASM`: a wasm mod declared a loop row; a loop slot is game code, native only.
-    Wasm { id: String, target: String },
     /// `E_LOOP_INVALID`: an empty `loop`, a `helper` that is not a Rust file under `src/`, or a
     /// `with` that is not an identifier.
     Invalid {
@@ -47,10 +44,6 @@ pub enum LoopError {
 impl fmt::Display for LoopError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Wasm { id, target } => write!(
-                f,
-                "E_LOOP_WASM: {id}: {target}: [[native.loop]] compiles game code; only native mods can fill a loop"
-            ),
             Self::Invalid { id, field, fix } => {
                 write!(f, "E_LOOP_INVALID: {id}: invalid {field}; {fix}")
             }
@@ -116,21 +109,6 @@ mod tests {
         assert_eq!(row.priority, 1000);
         let manifest = Manifest::parse(&format!("{HEADER}{}{ROW}priority=-5\n", native())).unwrap();
         assert_eq!(manifest.native.unwrap().r#loop[0].priority, -5);
-    }
-
-    #[test]
-    fn a_wasm_mod_is_refused_by_name() {
-        let wasm = format!(
-            "[wasm]\nsha512='{}'\ntoolchain='nightly'\n",
-            "a".repeat(128)
-        );
-        let error = Manifest::parse(&format!("{HEADER}{wasm}{}{ROW}", native())).unwrap_err();
-        assert!(
-            error.contains(
-                "E_LOOP_WASM: sample:slow: block_entities.tick: [[native.loop]] compiles game code"
-            ),
-            "{error}"
-        );
     }
 
     #[test]

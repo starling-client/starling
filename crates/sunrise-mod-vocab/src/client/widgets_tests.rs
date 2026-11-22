@@ -33,11 +33,11 @@ impl EffectsClientHost for Fake {
     }
 }
 
-/// What the widgets asked the game to draw: each button as (label, active, highlighted), each
-/// field's view; every character 6 pixels wide, from 4 pixels in.
+/// What the widgets asked the game to draw: each button and each field's view.
+/// Every field character is 6 pixels wide, from 4 pixels in.
 #[derive(Default)]
 struct Recorder {
-    buttons: Vec<(Text, bool, bool)>,
+    buttons: Vec<(Text, bool, bool, Option<ButtonSprites>)>,
     fields: Vec<TextFieldView>,
 }
 impl DrawContext for Recorder {
@@ -47,9 +47,11 @@ impl DrawContext for Recorder {
         label: &Text,
         active: bool,
         highlighted: bool,
+        sprites: Option<&ButtonSprites>,
     ) -> Result<(), crate::text::TextFormError> {
         label.validate_depth()?;
-        self.buttons.push((label.clone(), active, highlighted));
+        self.buttons
+            .push((label.clone(), active, highlighted, sprites.cloned()));
         Ok(())
     }
     fn widget_text_field(&mut self, field: &TextFieldView) -> TextFieldLayout {
@@ -186,6 +188,7 @@ fn double_clicks_select_words_and_drags_select_text() {
 fn tab_moves_the_focus_and_keys_press_the_focused_button() {
     let host = Fake::default();
     let (mut widgets, [a, b, copy, done]) = screen();
+    widgets.button_mut(done).unwrap().sprites = Some(ButtonSprites::new("test:done"));
     let tab = |widgets: &mut Widgets, modifiers| {
         widgets.key_pressed(&host, "key.keyboard.tab", modifiers);
         widgets.focused()
@@ -233,6 +236,10 @@ fn tab_moves_the_focus_and_keys_press_the_focused_button() {
 fn drawing_asks_the_game_for_each_widget() {
     let host = Fake::default();
     let (mut widgets, [a, b, copy, done]) = screen();
+    let mut sprites = ButtonSprites::new("test:copy");
+    sprites.highlighted = Some("test:copy_hovered".into());
+    sprites.label_offset = [1.0, -2.0];
+    widgets.button_mut(copy).unwrap().sprites = Some(sprites.clone());
     widgets.button_mut(done).unwrap().active = false;
     widgets.set_focus(&host, Some(b));
     let mut draw = Recorder::default();
@@ -240,8 +247,8 @@ fn drawing_asks_the_game_for_each_widget() {
     assert_eq!(
         draw.buttons,
         [
-            (Text::literal("Copy"), true, true),
-            (Text::literal("Done"), false, false)
+            (Text::literal("Copy"), true, true, Some(sprites)),
+            (Text::literal("Done"), false, false, None)
         ]
     );
     assert_eq!(

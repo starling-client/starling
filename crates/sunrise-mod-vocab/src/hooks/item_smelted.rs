@@ -11,10 +11,16 @@ pub trait Hooks {
     /// passes the taken stack with 0. Fires before `furnace_extract`.
     /// Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PlayerEvent.ItemSmeltedEvent",
         cancellable = false
     )]
-    fn item_smelted();
+    fn item_smelted(
+        player: u128,
+        player_entity_id: i32,
+        stack: Option<&ItemStack>,
+        amount_removed: u32,
+    );
 }

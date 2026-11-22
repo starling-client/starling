@@ -129,6 +129,36 @@ class ConceptPages(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, "root-relative link"):
                     pages.validate(text, "concepts/parts/a-item.md", self.src, {})
 
+    def test_stale_repository_and_book_site_urls_are_refused(self):
+        for url in ("https://github.com/arismoko/horizon",
+                    "https://github.com/horizon-rust/horizon/blob/main/docs/x.md",
+                    "https://arismoko.github.io/sunrise/start/",
+                    "https://horizon-rust.github.io/sunrise/",
+                    "https://sunrise-org.github.io/sunrise/start/first-mod.html",
+                    "https://github.com/horizon-rust/horizon-mods/releases/download/x/y.hmod",
+                    "https://horizon-rust.github.io/horizon-mods/icons/coords_hud.png"):
+            with self.subTest(url=url):
+                with self.assertRaises(AssertionError):
+                    pages.validate(f"[x]({url})", "concepts/parts/a-item.md", self.src, {})
+
+    def test_upstream_projects_and_placeholders_keep_their_urls(self):
+        for url in ("https://github.com/arismoko/horizon-machine-sample",
+                    "https://github.com/horizon-rust/horizon-mixins/blob/main/docs/mixin-api.md",
+                    "https://github.com/sunrise-org/sunrise-mods/releases/download/x/y.smod",
+                    "https://sunrise-org.github.io/sunrise-mods/icons/coords_hud.png",
+                    "https://playsunrise.net/docs/modding/start/first-mod",
+                    "https://github.com/OWNER/REPO/releases/download/<tag>/<name>"):
+            with self.subTest(url=url):
+                pages.validate(f"[x]({url})", "concepts/parts/a-item.md", self.src, {})
+
+    def test_rendered_stale_urls_are_refused(self):
+        output = self.src / "html"
+        path = output / "concepts/parts.html"
+        path.parent.mkdir(parents=True)
+        path.write_text('<a href="https://github.com/arismoko/horizon">x</a>')
+        with self.assertRaises(AssertionError):
+            pages.check_html(output, self.src / "concepts/..")
+
     def test_links_in_code_are_not_checked(self):
         text = "```markdown\n[example](missing.md)\n```\n\nInline `[x](gone.md)` code.\n"
         pages.validate(text, "concepts/parts/a-item.md", self.src, {})

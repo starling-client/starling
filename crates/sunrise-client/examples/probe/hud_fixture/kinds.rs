@@ -1,4 +1,5 @@
 //! The overlay case kinds of the HUD parity fixture.
+use serde_json::Value;
 use sunrise_client::{
     brewing,
     chat::{Chat, ChatOptions},
@@ -11,7 +12,6 @@ use sunrise_client::{
     scoreboard::{NumberFormat, RenderType, Scoreboard},
     text::{self, Text},
 };
-use serde_json::Value;
 
 fn int(c: &Value, k: &str, d: i64) -> i32 {
     c[k].as_i64().unwrap_or(d) as i32

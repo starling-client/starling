@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::native_hooks::block_entity_client_tick::Game<'_>::client_tick_mod_block_entities", "point:sunrise_client::game::spawner::Game<'_>::tick_remote_spawners"]
+why = "#3279: a server's client now ticks spawners, trial spawners, vaults and mod block entities from one ticker list, snapshotted at the tick's start, as vanilla does. The separate mod block entity and spawner client ticks were removed."
+migrate = "Retarget an [[inject]] row on either point to sunrise_client::game::native_hooks::block_entity_client_tick::Game<'_>::tick_client_block_entities, which runs every client ticker in list order, and update hash if pinned."

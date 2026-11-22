@@ -1,22 +1,15 @@
-//! Sunrise's optional extras (minimap, lighting, inventory tools): their
+//! Sunrise's optional extras (lighting, inventory tools): their
 //! settings, kept in `sunrise-extras.txt` next to `options.txt` so that file
 //! stays exactly vanilla's, and the logic behind them. Every extra is off by
 //! default; see `docs/extras.md`. Sunrise's own switches outside the Extras page
 //! (No AI, Agent Control) are kept here too.
-use std::{collections::VecDeque, fs, path::Path};
+use std::{collections::VecDeque, path::Path};
 
 pub const FILE: &str = "sunrise-extras.txt";
 /// The name the options screen uses while the sort key waits for a key.
 pub const SORT_KEY: &str = "sunrise.sort";
-/// The 3D skin layers line, here and in the `options.txt` that held it first.
-const SKIN_LAYERS_KEY: &str = "threeDSkinLayers";
-/// The emote wheel's key, here and in the `key_key.emote` line #10092 wrote to `options.txt`.
-const EMOTE_KEY: &str = "emoteKey";
-const OLD_EMOTE_LINE: &str = "key_key.emote";
-
-/// The minimap's sizes in GUI pixels, and its zooms in blocks per pixel.
-pub const MINIMAP_SIZES: [(u8, &str); 3] = [(64, "Small"), (96, "Medium"), (128, "Large")];
-pub const MINIMAP_ZOOMS: [f32; 4] = [0.5, 1.0, 2.0, 4.0];
+/// The name the options screen uses while the shader pack key waits for a key.
+pub const SHADER_PACK_KEY: &str = "sunrise.shader_pack_key";
 
 /// A screen corner for an overlay.
 pub use mod_api::client::extras::Corner;
@@ -32,15 +25,6 @@ pub struct Extras {
     pub fullbright: bool,
     /// Held, dropped and burning light sources light their surroundings (`dynamic_light`).
     pub dynamic_lights: bool,
-    pub zoom: bool,
-    /// A vanilla key name (`key.keyboard.z`).
-    pub zoom_key: String,
-    /// The zoom the key starts at.
-    pub zoom_level: u8,
-    /// Ease through vanilla's FOV easing (as the spyglass does).
-    pub zoom_smooth: bool,
-    /// Divide mouse turning by the zoom.
-    pub zoom_sensitivity: bool,
     /// Far terrain a zoom magnifies is planned finer, so a spyglass does not
     /// show the coarse cells it was given for an unzoomed screen
     /// (`lod::Aim`). Costs far tiles while the zoom is held and gives them
@@ -48,30 +32,6 @@ pub struct Extras {
     /// (`lodDistance`) and the view is actually zoomed. Off by default until
     /// a measurement shows the extra tiles land while the zoom is still held.
     pub lod_zoom_detail: bool,
-    /// The FPS counter and keystrokes extras are official mods now: their
-    /// old settings stay here, kept as they were.
-    pub fps: bool,
-    pub fps_corner: Corner,
-    /// Also show the minimum and 1% low.
-    pub fps_lows: bool,
-    pub keystrokes: bool,
-    pub keystrokes_corner: Corner,
-    /// Clicks per second under the mouse buttons.
-    pub keystrokes_cps: bool,
-    /// The official mods once installed for the extras they replace, by mod
-    /// id (`movedToMods`).
-    pub moved: Vec<String>,
-    pub minimap: bool,
-    pub minimap_corner: Corner,
-    /// Side in GUI pixels (`MINIMAP_SIZES`).
-    pub minimap_size: u8,
-    pub minimap_round: bool,
-    /// Blocks per pixel (`MINIMAP_ZOOMS`).
-    pub minimap_zoom: f32,
-    /// Turn with the player (forward up) instead of north up.
-    pub minimap_rotate: bool,
-    /// Retry lost multiplayer connections (`reconnect`).
-    pub auto_reconnect: bool,
     /// Positional sounds leave a few static sound channels free for UI sounds
     /// and others played to the listener (`sound_engine::HEARD_RESERVE`).
     pub ui_sound_reserve: bool,
@@ -91,10 +51,11 @@ pub struct Extras {
     pub sort: bool,
     /// A vanilla key name: sorts the part under the cursor.
     pub sort_key: String,
-    /// The emote wheel's key (`key.emote`), as the game last saved it. The live binding is
-    /// `Settings::keys`, bound in Controls with the vanilla ones; it is only kept in this file
-    /// so that `options.txt` stays vanilla's (`Settings::load` hands it over, `save` takes it back).
-    pub emote_key: String,
+    /// A vanilla key name: turns the picked shader pack off and on.
+    pub shader_pack_key: String,
+    /// The last non-empty shader pack pick, for the toggle key to resume. It follows every
+    /// non-empty pick, whether by menu or by key, and turning shaders off keeps it.
+    pub last_shader_pack: String,
     /// A new chat line slides in from the left while it fades in (`Chat::layout`).
     pub chat_animation: bool,
     /// The indicator bar at the left of a chat line (on by default, as vanilla).
@@ -107,16 +68,6 @@ pub struct Extras {
     /// F3+R and F3+E start/stop a repro recording and write its bundle (off by
     /// default: a recording copies the world).
     pub repro_keys: bool,
-    /// Another controller can join P1's world (`splitscreen`, off by default).
-    pub splitscreen: bool,
-    /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
-    /// 2 top and bottom (`splitscreenTwo`).
-    pub splitscreen_two: u8,
-    /// Three players on a screen: 0 one wide on top, 1 one tall on the left, 2 side by side
-    /// (`splitscreenThree`).
-    pub splitscreen_three: u8,
-    /// Splitscreen: each player's name in the corner of their view (`splitscreenNames`).
-    pub splitscreen_names: bool,
     /// The wheel over a cycle button in the settings changes it (`CycleButton.mouseScrolled`,
     /// on by default as vanilla); off, the wheel only scrolls the list.
     pub wheel_cycles_settings: bool,
@@ -128,10 +79,11 @@ pub struct Extras {
     /// built-in track and leaving the off ones out (`musicPage`, off by
     /// default: vanilla plays exactly as before).
     pub music_page: bool,
-    /// 3D skin layers (`threeDSkinLayers`, Options → Skin Customization): each
-    /// painted texel of a player's outer layer drawn as a slab
-    /// (`sunrise_client::mobs::skin_layers`).
-    pub three_d_skin_layers: bool,
+    /// Lines no setting here reads, by key and as written, kept in file order so a setting that moved to a store survives a run without it.
+    unknown: Vec<(String, String)>,
+    /// The file is there but couldn't be read whole (an I/O error, or bytes that aren't UTF-8):
+    /// it is never written over, so nothing in it is lost.
+    keep_file: bool,
     /// The PvP & HUD page's options (`pvp`).
     pub pvp: crate::pvp::Pvp,
 }
@@ -142,26 +94,7 @@ impl Default for Extras {
             pregen: false,
             fullbright: false,
             dynamic_lights: false,
-            zoom: false,
-            zoom_key: "key.keyboard.z".into(),
-            zoom_level: 4,
-            zoom_smooth: true,
-            zoom_sensitivity: true,
             lod_zoom_detail: false,
-            fps: false,
-            fps_corner: Corner::TopLeft,
-            fps_lows: false,
-            keystrokes: false,
-            keystrokes_corner: Corner::TopLeft,
-            keystrokes_cps: true,
-            moved: Vec::new(),
-            minimap: false,
-            minimap_corner: Corner::TopRight,
-            minimap_size: 96,
-            minimap_round: false,
-            minimap_zoom: 1.0,
-            minimap_rotate: false,
-            auto_reconnect: false,
             ui_sound_reserve: false,
             own_name_tag: false,
             skip_modded_splashes_if_vanilla_modified: true,
@@ -170,20 +103,18 @@ impl Default for Extras {
             mouse_tweaks_wheel: true,
             sort: false,
             sort_key: "key.keyboard.unknown".into(),
-            emote_key: crate::keybinds::KeyBinds::default_of("key.emote").into(),
+            shader_pack_key: "key.keyboard.k".into(),
+            last_shader_pack: String::new(),
             chat_animation: false,
             chat_indicator: true,
             no_ai: false,
             agent_control: false,
             repro_keys: false,
-            splitscreen: false,
-            splitscreen_two: 0,
-            splitscreen_three: 0,
-            splitscreen_names: true,
             wheel_cycles_settings: false,
             music_off: Vec::new(),
             music_page: false,
-            three_d_skin_layers: false,
+            unknown: Vec::new(),
+            keep_file: false,
             pvp: Default::default(),
         }
     }
@@ -193,14 +124,16 @@ fn bool_text(v: bool) -> &'static str {
 }
 impl Extras {
     pub fn load(dir: &Path) -> Self {
-        fs::read_to_string(dir.join(FILE))
-            .map(|t| Self::parse(&t))
-            .unwrap_or_default()
+        let (text, keep) = Self::read_text(dir);
+        Self::from_text(&text, keep)
     }
     pub fn parse(text: &str) -> Self {
         let mut e = Self::default();
-        for line in text.lines() {
+        for raw in text.split_inclusive('\n') {
+            let line = raw.trim_end_matches(['\n', '\r']);
             let Some((key, value)) = line.split_once(':') else {
+                // Not `key:value`: no setting reads it, and it is kept as written.
+                e.unknown.push((String::new(), raw.to_owned()));
                 continue;
             };
             let value = value.trim();
@@ -214,47 +147,7 @@ impl Extras {
                 "pregen" => e.pregen = flag(e.pregen),
                 "fullbright" => e.fullbright = flag(e.fullbright),
                 "dynamicLights" => e.dynamic_lights = flag(e.dynamic_lights),
-                "zoom" => e.zoom = flag(e.zoom),
-                "zoomKey" if value.starts_with("key.") => e.zoom_key = value.to_owned(),
-                "zoomLevel" => {
-                    if let Ok(v) = value.parse::<u8>() {
-                        e.zoom_level = v.clamp(2, 10);
-                    }
-                }
-                "zoomSmooth" => e.zoom_smooth = flag(e.zoom_smooth),
-                "zoomSensitivity" => e.zoom_sensitivity = flag(e.zoom_sensitivity),
                 "lodZoomDetail" => e.lod_zoom_detail = flag(e.lod_zoom_detail),
-                "fps" => e.fps = flag(e.fps),
-                "fpsCorner" => e.fps_corner = Corner::parse(value, e.fps_corner),
-                "fpsLows" => e.fps_lows = flag(e.fps_lows),
-                "keystrokes" => e.keystrokes = flag(e.keystrokes),
-                "keystrokesCorner" => {
-                    e.keystrokes_corner = Corner::parse(value, e.keystrokes_corner)
-                }
-                "keystrokesCps" => e.keystrokes_cps = flag(e.keystrokes_cps),
-                "movedToMods" => {
-                    e.moved = value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                }
-                "minimap" => e.minimap = flag(e.minimap),
-                "minimapCorner" => e.minimap_corner = Corner::parse(value, e.minimap_corner),
-                "minimapSize" => {
-                    if let Some(&(v, _)) = MINIMAP_SIZES.iter().find(|s| s.0.to_string() == value) {
-                        e.minimap_size = v;
-                    }
-                }
-                "minimapShape" => e.minimap_round = value == "round",
-                "minimapZoom" => {
-                    if let Some(&z) = MINIMAP_ZOOMS.iter().find(|z| z.to_string() == value) {
-                        e.minimap_zoom = z;
-                    }
-                }
-                "minimapRotate" => e.minimap_rotate = flag(e.minimap_rotate),
-                "autoReconnect" => e.auto_reconnect = flag(e.auto_reconnect),
                 "uiSoundReserve" => e.ui_sound_reserve = flag(e.ui_sound_reserve),
                 "ownNameTag" => e.own_name_tag = flag(e.own_name_tag),
                 "skipModdedSplashesIfVanillaModified" => {
@@ -265,19 +158,24 @@ impl Extras {
                 "mouseTweaks" => e.mouse_tweaks = flag(e.mouse_tweaks),
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
-                "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
-                EMOTE_KEY if value.starts_with("key.") => e.emote_key = value.to_owned(),
+                "sortKey" => {
+                    if value.starts_with("key.") {
+                        e.sort_key = value.to_owned();
+                    }
+                }
+                "shaderPackKey" => {
+                    if value.starts_with("key.") {
+                        e.shader_pack_key = value.to_owned();
+                    }
+                }
+                "lastShaderPack" => e.last_shader_pack = value.to_owned(),
                 "chatAnimation" => e.chat_animation = flag(e.chat_animation),
                 "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 sunrise_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "reproKeys" => e.repro_keys = flag(e.repro_keys),
-                "splitscreen" => e.splitscreen = flag(e.splitscreen),
-                "splitscreenTwo" => e.splitscreen_two = value.parse().unwrap_or(0).min(2),
-                "splitscreenThree" => e.splitscreen_three = value.parse().unwrap_or(0).min(2),
-                "splitscreenNames" => e.splitscreen_names = flag(e.splitscreen_names),
-                // A new name: `wheelCyclesSettings` was written as true by every
-                // install while it was the default, so it says nothing of a choice.
+                // Retired: every install wrote `wheelCyclesSettings` as true while it was the default.
+                "wheelCyclesSettings" => {}
                 "wheelCyclesListSettings" => {
                     e.wheel_cycles_settings = flag(e.wheel_cycles_settings)
                 }
@@ -290,106 +188,69 @@ impl Extras {
                         .collect()
                 }
                 "musicPage" => e.music_page = flag(e.music_page),
-                SKIN_LAYERS_KEY => e.three_d_skin_layers = flag(e.three_d_skin_layers),
                 key => {
-                    e.pvp.parse_line(key, value);
+                    if !e.pvp.parse_line(key, value) {
+                        e.unknown.push((key.to_owned(), raw.to_owned()));
+                    }
                 }
             }
         }
         e
     }
+    /// Every line, the kept ones included.
     pub fn serialize(&self) -> String {
-        let mut text = format!(
-            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nskipModdedSplashesIfVanillaModified:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\n{}:{}\n",
-            bool_text(self.pack_browser),
-            bool_text(self.pregen),
-            bool_text(self.fullbright),
-            bool_text(self.dynamic_lights),
-            bool_text(self.zoom),
-            self.zoom_key,
-            self.zoom_level,
-            bool_text(self.zoom_smooth),
-            bool_text(self.zoom_sensitivity),
-            bool_text(self.lod_zoom_detail),
-            bool_text(self.fps),
-            self.fps_corner.name(),
-            bool_text(self.fps_lows),
-            bool_text(self.keystrokes),
-            self.keystrokes_corner.name(),
-            bool_text(self.keystrokes_cps),
-            self.moved.join(","),
-            bool_text(self.minimap),
-            self.minimap_corner.name(),
-            self.minimap_size,
-            if self.minimap_round {
-                "round"
-            } else {
-                "square"
-            },
-            self.minimap_zoom,
-            bool_text(self.minimap_rotate),
-            bool_text(self.auto_reconnect),
-            bool_text(self.ui_sound_reserve),
-            bool_text(self.own_name_tag),
-            bool_text(self.skip_modded_splashes_if_vanilla_modified),
-            bool_text(self.hide_block_particles),
-            bool_text(self.mouse_tweaks),
-            bool_text(self.mouse_tweaks_wheel),
-            bool_text(self.sort),
-            self.sort_key,
-            bool_text(self.chat_animation),
-            bool_text(self.chat_indicator),
-            sunrise_core::no_ai::KEY,
-            bool_text(self.no_ai),
-            bool_text(self.agent_control),
-            bool_text(self.repro_keys),
-            bool_text(self.splitscreen),
-            self.splitscreen_two,
-            self.splitscreen_three,
-            bool_text(self.splitscreen_names),
-            bool_text(self.wheel_cycles_settings),
-            self.music_off.join(","),
-            bool_text(self.music_page),
-            SKIN_LAYERS_KEY,
-            bool_text(self.three_d_skin_layers),
-        );
-        text.push_str(&format!("{EMOTE_KEY}:{}\n", self.emote_key));
-        self.pvp.serialize(&mut text);
-        text
+        self.serialize_but(&|_| false)
     }
-    /// Adopts the settings `options.txt` held before they moved here, while
-    /// this file (`own`) has no line of its own: 3D skin layers and the emote key were
-    /// `options.txt` lines. Vanilla's `Options.save` drops lines it doesn't
-    /// know, so it is read there once, the first start after the update.
-    pub fn read_old_options(&mut self, own: &str, options_txt: &str) {
-        fn line<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-            text.lines().find_map(|l| {
-                l.split_once(':')
-                    .filter(|(key, _)| *key == name)
-                    .map(|(_, value)| value)
-            })
+    /// `serialize`, leaving out the kept lines `owned` claims: a store wrote those itself.
+    fn serialize_but(&self, owned: &dyn Fn(&str) -> bool) -> String {
+        let mut text = String::new();
+        let mut push = |key: &str, value: &dyn std::fmt::Display| {
+            text.push_str(&format!("{key}:{value}\n"));
+        };
+        push("packBrowser", &bool_text(self.pack_browser));
+        push("pregen", &bool_text(self.pregen));
+        push("fullbright", &bool_text(self.fullbright));
+        push("dynamicLights", &bool_text(self.dynamic_lights));
+        push("lodZoomDetail", &bool_text(self.lod_zoom_detail));
+        push("uiSoundReserve", &bool_text(self.ui_sound_reserve));
+        push("ownNameTag", &bool_text(self.own_name_tag));
+        push(
+            "skipModdedSplashesIfVanillaModified",
+            &bool_text(self.skip_modded_splashes_if_vanilla_modified),
+        );
+        push("hideBlockParticles", &bool_text(self.hide_block_particles));
+        push("mouseTweaks", &bool_text(self.mouse_tweaks));
+        push("mouseTweaksWheel", &bool_text(self.mouse_tweaks_wheel));
+        push("sort", &bool_text(self.sort));
+        push("sortKey", &self.sort_key);
+        push("shaderPackKey", &self.shader_pack_key);
+        push("lastShaderPack", &self.last_shader_pack);
+        push("chatAnimation", &bool_text(self.chat_animation));
+        push("chatIndicator", &bool_text(self.chat_indicator));
+        push(sunrise_core::no_ai::KEY, &bool_text(self.no_ai));
+        push("agentControl", &bool_text(self.agent_control));
+        push("reproKeys", &bool_text(self.repro_keys));
+        push(
+            "wheelCyclesListSettings",
+            &bool_text(self.wheel_cycles_settings),
+        );
+        push("musicOff", &self.music_off.join(","));
+        push("musicPage", &bool_text(self.music_page));
+        self.pvp.serialize(&mut text);
+        // As written: only the file's last record can lack a line end, and nothing follows it here.
+        for (key, raw) in &self.unknown {
+            if !owned(key) {
+                text.push_str(raw);
+            }
         }
-        if line(own, SKIN_LAYERS_KEY).is_none()
-            && let Some(value) = line(options_txt, SKIN_LAYERS_KEY)
-        {
-            self.three_d_skin_layers = value == "true";
-        }
-        // The emote key was a `key_key.emote` line of options.txt (#10092): a rebound key is kept.
-        if line(own, EMOTE_KEY).is_none()
-            && let Some(value) = line(options_txt, OLD_EMOTE_LINE).map(str::trim)
-            && value.starts_with("key.")
-            && (value == "key.keyboard.unknown"
-                || crate::keybinds::key_code(value).is_some()
-                || crate::keybinds::mouse_button(value).is_some())
-        {
-            self.emote_key = value.to_owned();
-        }
+        text
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
     /// another name (a vanilla mapping).
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
         match name {
             SORT_KEY => self.sort_key = value,
+            SHADER_PACK_KEY => self.shader_pack_key = value,
             crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             _ => return false,
         }
@@ -399,13 +260,54 @@ impl Extras {
     /// setup gains no file. The settings stores of this file follow these lines
     /// (`sunrise_hooks::settings`).
     pub fn save(&self, dir: &Path) {
+        let mut stores = String::new();
+        let stores_default = sunrise_hooks::settings::engine::append(FILE, &mut stores);
+        self.save_with(dir, &stores, stores_default);
+    }
+    /// `save` with the stores' lines of this file made: a kept line goes only when a store
+    /// wrote its key. A file that couldn't be read, or a failed write, leaves the old file.
+    fn save_with(&self, dir: &Path, stores: &str, stores_default: bool) {
+        use sunrise_hooks::settings::engine;
         let path = dir.join(FILE);
-        let mut text = self.serialize();
-        let stores_default = sunrise_hooks::settings::engine::append(FILE, &mut text);
-        if *self == Self::default() && stores_default && !path.exists() {
+        if self.keep_file || (*self == Self::default() && stores_default && !path.exists()) {
             return;
         }
-        let _ = fs::write(path, text);
+        let written = engine::keys(stores);
+        let mut text = self.serialize_but(&|key| written.contains(&key));
+        if !stores.is_empty() && !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(stores);
+        if let Err(e) = engine::replace(&path, &text) {
+            log::warn!("Sunrise: {FILE} is not saved: {e}");
+        }
+    }
+    /// The file's text in `dir` (empty when there is none), and whether the file must be kept
+    /// as it is: it couldn't be read (its settings stay at their defaults) or had bytes that
+    /// aren't UTF-8 (its other lines load).
+    pub fn read_text(dir: &Path) -> (String, bool) {
+        match sunrise_hooks::settings::engine::read(&dir.join(FILE)) {
+            Ok(None) => (String::new(), false),
+            Ok(Some(read)) => {
+                if read.lossy {
+                    log::warn!(
+                        "Sunrise: {FILE} has bytes that aren't UTF-8, so it won't be saved over"
+                    );
+                }
+                (read.text, read.lossy)
+            }
+            Err(e) => {
+                log::warn!("Sunrise: {FILE} could not be read, so it won't be saved over: {e}");
+                (String::new(), true)
+            }
+        }
+    }
+    /// The settings of `text` from [`Self::read_text`]; `keep` leaves the file as it is.
+    pub fn from_text(text: &str, keep: bool) -> Self {
+        Self {
+            keep_file: keep,
+            ..Self::parse(text)
+        }
     }
 }
 
@@ -500,11 +402,6 @@ impl Cps {
         self.clicks.len()
     }
 }
-/// Two players sharing a window (`splitscreen_two`): halves this way.
-pub const SPLIT_TWO: [&str; 3] = ["Auto", "Side by side", "Top and bottom"];
-/// Three players sharing a window (`splitscreen_three`).
-pub const SPLIT_THREE: [&str; 3] = ["One wide on top", "One tall on the left", "Side by side"];
-
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
@@ -512,7 +409,6 @@ pub enum Item {
     DynamicLights,
     OwnNameTag,
     HideBlockParticles,
-    AutoReconnect,
     UiSoundReserve,
     /// The Music... page on Music & Sounds (`Music page`).
     MusicPage,
@@ -520,6 +416,8 @@ pub enum Item {
     MouseTweaksWheel,
     Sort,
     SortKey,
+    /// Turns the picked shader pack off and on, from the Extras page's key.
+    ShaderPackKey,
     /// A new chat line slides in and fades in (`Chat::layout`).
     ChatAnimation,
     /// The coloured bar at the left of a chat line.
@@ -529,8 +427,6 @@ pub enum Item {
     AgentControl,
     /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
     ReproKeys,
-    /// On the Splitscreen settings page.
-    Splitscreen,
     WheelCyclesSettings,
     /// The Select Resource Packs screen's Add button (Modrinth).
     PackBrowser,
@@ -542,9 +438,8 @@ pub enum Item {
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use Item::*;
     // Fullbright, Dynamic lights and Hide block-break particles change the picture: they
-    // are on the graphics screen's Quality page (`graphics_ui::rows`), not here. The Cosmetics
-    // group comes last, from the cosmetics' own section (`pages::Place::Extras`) while they are
-    // offered.
+    // are on the graphics screen's Quality page (`graphics_ui::rows`), not here. A section a crate
+    // adds joins the group its title names (`sunrise_hooks::pages::Place::Extras`).
     vec![
         Err("sunrise.extras.header.third_person"),
         Ok(OwnNameTag),
@@ -558,8 +453,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(ChatIndicator),
         Err("sunrise.extras.header.world"),
         Ok(Pregen),
+        Ok(ShaderPackKey),
         Err("sunrise.extras.header.multiplayer"),
-        Ok(AutoReconnect),
         Err("sunrise.extras.header.sound"),
         Ok(UiSoundReserve),
         Ok(MusicPage),
@@ -576,17 +471,16 @@ impl Item {
             Item::DynamicLights => "sunrise.extras.dynamic_lights",
             Item::OwnNameTag => "sunrise.extras.own_name_tag",
             Item::HideBlockParticles => "sunrise.extras.hide_block_particles",
-            Item::AutoReconnect => "sunrise.extras.auto_reconnect",
             Item::UiSoundReserve => "sunrise.extras.ui_sound_reserve",
             Item::MusicPage => "sunrise.extras.music_page",
             Item::MouseTweaks => "sunrise.extras.mouse_tweaks",
             Item::MouseTweaksWheel => "sunrise.extras.mouse_tweaks_wheel",
             Item::Sort => "sunrise.extras.sort",
             Item::SortKey => "sunrise.extras.sort_key",
+            Item::ShaderPackKey => "sunrise.extras.shader_pack_key",
             Item::NoAi => "sunrise.extras.no_ai",
             Item::AgentControl => "sunrise.extras.agent_control",
             Item::ReproKeys => "sunrise.extras.repro_keys",
-            Item::Splitscreen => "sunrise.extras.splitscreen",
             Item::ChatAnimation => "sunrise.extras.chat_animation",
             Item::ChatIndicator => "sunrise.extras.chat_indicator",
             Item::WheelCyclesSettings => "sunrise.extras.wheel_cycles_settings",
@@ -602,17 +496,16 @@ impl Item {
             Item::DynamicLights => "sunrise.extras.dynamic_lights.tooltip",
             Item::OwnNameTag => "sunrise.extras.own_name_tag.tooltip",
             Item::HideBlockParticles => "sunrise.extras.hide_block_particles.tooltip",
-            Item::AutoReconnect => "sunrise.extras.auto_reconnect.tooltip",
             Item::UiSoundReserve => "sunrise.extras.ui_sound_reserve.tooltip",
             Item::MusicPage => "sunrise.extras.music_page.tooltip",
             Item::MouseTweaks => "sunrise.extras.mouse_tweaks.tooltip",
             Item::MouseTweaksWheel => "sunrise.extras.mouse_tweaks_wheel.tooltip",
             Item::Sort => "sunrise.extras.sort.tooltip",
             Item::SortKey => "sunrise.extras.sort_key.tooltip",
+            Item::ShaderPackKey => "sunrise.extras.shader_pack_key.tooltip",
             Item::NoAi => "sunrise.extras.no_ai.tooltip",
             Item::AgentControl => "sunrise.extras.agent_control.tooltip",
             Item::ReproKeys => "sunrise.extras.repro_keys.tooltip",
-            Item::Splitscreen => "sunrise.extras.splitscreen.tooltip",
             Item::ChatAnimation => "sunrise.extras.chat_animation.tooltip",
             Item::ChatIndicator => "sunrise.extras.chat_indicator.tooltip",
             Item::WheelCyclesSettings => "sunrise.extras.wheel_cycles_list_settings.tooltip",
@@ -637,19 +530,18 @@ impl Item {
             Item::DynamicLights => "Dynamic lights",
             Item::OwnNameTag => "Own name tag",
             Item::HideBlockParticles => "Hide block-break particles",
-            Item::AutoReconnect => "Auto-reconnect",
             Item::UiSoundReserve => "Keep channels for UI sounds",
             Item::MusicPage => "Music page",
             Item::MouseTweaks => "Mouse Tweaks controls",
             Item::MouseTweaksWheel => "Scroll wheel moves items",
             Item::Sort => "Sort buttons",
             Item::SortKey => "Sort key",
+            Item::ShaderPackKey => "Shader pack key",
             Item::ChatAnimation => "Smooth chat",
             Item::ChatIndicator => "Message indicator",
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::ReproKeys => "Recording shortcuts",
-            Item::Splitscreen => "Splitscreen",
             Item::WheelCyclesSettings => "Scroll wheel changes settings",
             Item::PackBrowser => "Resource pack browser",
             Item::Pregen => "Chunk pregeneration",
@@ -663,11 +555,10 @@ impl Item {
             UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            ChatIndicator => ChatAnimation,
             Pvp(o) => return o.parent().map(Pvp),
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
-            | AutoReconnect | NoAi | AgentControl | ReproKeys | Splitscreen | ChatAnimation
-            | WheelCyclesSettings | MusicPage | PackBrowser | Pregen => {
+            | ChatAnimation | ChatIndicator | NoAi | AgentControl | ReproKeys
+            | WheelCyclesSettings | MusicPage | PackBrowser | Pregen | ShaderPackKey => {
                 return None;
             }
         })
@@ -688,9 +579,6 @@ impl Item {
             Item::HideBlockParticles => {
                 "Hides the debris particles that burst from a broken block and crumble off the one you mine. Other particles stay."
             }
-            Item::AutoReconnect => {
-                "Rejoins a server after a lost connection or a restart, never after a kick or ban."
-            }
             Item::UiSoundReserve => {
                 "Sounds in the world leave 16 of the 247 sound channels free, so a flood of them (a big explosion) can't silence menu clicks."
             }
@@ -709,15 +597,15 @@ impl Item {
             Item::SortKey => {
                 "Sorts the part under the cursor. Click, then press a key; Escape unbinds it."
             }
+            Item::ShaderPackKey => {
+                "Turns the picked shader pack off and on. Click, then press a key; Escape unbinds it. The pick is remembered across restarts."
+            }
             Item::ChatAnimation => {
                 "A new chat line slides in from the left while it fades in, instead of appearing whole."
             }
             Item::ChatIndicator => "The coloured bar at the left of a chat line.",
             Item::NoAi => {
                 "Hides and turns off every AI feature: agent control, sunrise-ctl and the MCP servers. The launcher's switch too."
-            }
-            Item::Splitscreen => {
-                "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
             }
             Item::AgentControl => {
                 "Your own AI agent can play this game through sunrise-ctl or an MCP client, on this computer only."
@@ -745,10 +633,8 @@ impl Item {
             Item::ChatAnimation => Some(Cost::None),
             Item::OwnNameTag
             | Item::HideBlockParticles
-            | Item::AutoReconnect
             | Item::MouseTweaks
             | Item::Sort
-            | Item::Splitscreen
             | Item::WheelCyclesSettings
             | Item::PackBrowser => Some(Cost::None),
             _ => None,
@@ -761,7 +647,6 @@ impl Item {
             Item::DynamicLights => e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag,
             Item::HideBlockParticles => e.hide_block_particles,
-            Item::AutoReconnect => e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve,
             Item::MusicPage => e.music_page,
             Item::MouseTweaks => e.mouse_tweaks,
@@ -772,7 +657,6 @@ impl Item {
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::ReproKeys => e.repro_keys,
-            Item::Splitscreen => e.splitscreen,
             Item::WheelCyclesSettings => e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser,
             Item::Pregen => e.pregen,
@@ -784,6 +668,7 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
+            Item::ShaderPackKey => crate::keybinds::display_name(&e.shader_pack_key).plain(),
             Item::Pvp(o) if o.switch(&e.pvp).is_none() => o.value(&e.pvp).unwrap_or_default(),
             other => match other.switch(e) {
                 Some(true) => crate::lang::get_or("On", "On"),
@@ -799,7 +684,6 @@ impl Item {
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
             Item::HideBlockParticles => e.hide_block_particles = !e.hide_block_particles,
-            Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
             Item::MusicPage => e.music_page = !e.music_page,
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
@@ -810,18 +694,18 @@ impl Item {
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::ReproKeys => e.repro_keys = !e.repro_keys,
-            Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
             Item::Pregen => e.pregen = !e.pregen,
             Item::Pvp(o) => o.cycle(&mut e.pvp, back),
-            Item::SortKey => {}
+            Item::SortKey | Item::ShaderPackKey => {}
         }
     }
     /// The key name the options screen waits on for a key item.
     pub fn key_name(self) -> Option<&'static str> {
         match self {
             Item::SortKey => Some(SORT_KEY),
+            Item::ShaderPackKey => Some(SHADER_PACK_KEY),
             Item::Pvp(crate::pvp::Opt::HudEditorKey) => Some(crate::pvp::HUD_EDITOR_KEY),
             _ => None,
         }
@@ -831,10 +715,136 @@ impl Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn all_set() -> Extras {
+        Extras {
+            pack_browser: true,
+            pregen: true,
+            fullbright: true,
+            music_off: vec!["a".into(), "b".into()],
+            own_name_tag: true,
+            ..Extras::default()
+        }
+    }
+
+    #[test]
+    fn serialize_keeps_the_format_of_main() {
+        let default = include_str!("../tests/fixtures/extras_default.txt");
+        assert_eq!(Extras::default().serialize(), default);
+        let set = include_str!("../tests/fixtures/extras_set.txt");
+        assert_eq!(all_set().serialize(), set);
+    }
+
+    #[test]
+    fn lines_nobody_owns_survive_a_load_and_save() {
+        let text = "ownNameTag:true\ndiscordPresence:true\nfutureKey:7\n";
+        let e = Extras::parse(text);
+        assert!(e.own_name_tag);
+        assert_eq!(
+            e.unknown,
+            [
+                ("discordPresence".into(), "discordPresence:true\n".into()),
+                ("futureKey".into(), "futureKey:7\n".into())
+            ]
+        );
+        let out = e.serialize();
+        assert!(out.contains("\nownNameTag:true\n"));
+        assert!(out.ends_with("discordPresence:true\nfutureKey:7\n"));
+        assert_eq!(Extras::parse(&out), e);
+        let dir = std::env::temp_dir().join(format!("extras-unknown-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let only_moved = Extras::parse("discordPresence:true\n");
+        only_moved.save(&dir);
+        assert!(
+            fs::read_to_string(dir.join(FILE))
+                .unwrap()
+                .contains("discordPresence:true\n")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_bad_value_for_a_known_key_is_dropped_not_kept() {
+        let e = Extras::parse("sortKey:foo\n");
+        assert!(e.unknown.is_empty());
+        let out = e.serialize();
+        assert_eq!(out.matches("\nsortKey:").count(), 1, "{out}");
+        assert!(!out.contains("foo"));
+        let e = Extras::parse("hudEditorKey:foo\n");
+        assert!(e.unknown.is_empty());
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("extras-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_kept_line_goes_only_when_a_store_wrote_its_key() {
+        let dir = scratch("store-wrote");
+        let e = Extras::parse("discordPresence:true\nother:1\n");
+        // A store that skipped the key this time (another seat's save): the line stays.
+        e.save_with(&dir, "", false);
+        let text = fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(text.contains("\ndiscordPresence:true\nother:1\n"), "{text}");
+        // A store that wrote it: its line, once.
+        e.save_with(&dir, "discordPresence:false\n", false);
+        let text = fs::read_to_string(dir.join(FILE)).unwrap();
+        assert_eq!(text.matches("discordPresence:").count(), 1, "{text}");
+        assert!(text.ends_with("other:1\ndiscordPresence:false\n"), "{text}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn kept_lines_keep_their_spacing_and_line_ends() {
+        let e = Extras::parse("futureKey : 7 \r\nno colon here\nownNameTag:true\nlast:x");
+        let out = e.serialize();
+        assert!(out.contains("futureKey : 7 \r\nno colon here\n"), "{out:?}");
+        assert!(out.ends_with("\nlast:x"), "{out:?}");
+        assert!(e.own_name_tag);
+        // A store's lines after an unterminated last record start on a line of their own.
+        let dir = scratch("unterminated");
+        e.save_with(&dir, "discordPresence:true\n", false);
+        let text = fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(
+            text.ends_with("\nlast:x\ndiscordPresence:true\n"),
+            "{text:?}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_never_saved_over() {
+        let dir = scratch("unreadable");
+        // Bytes that aren't UTF-8 cost only themselves: every other line still loads, and a
+        // save leaves the file's bytes as they were.
+        let bytes = b"ownNameTag:true\nname:\xff\nno colon \xfe\n";
+        fs::write(dir.join(FILE), bytes).unwrap();
+        let mut e = Extras::load(&dir);
+        assert!(e.own_name_tag);
+        e.fullbright = true;
+        e.save(&dir);
+        assert_eq!(fs::read(dir.join(FILE)).unwrap(), bytes);
+        // A file that can't be read at all (a folder in its place) is left alone.
+        let other = scratch("unreadable-dir");
+        fs::create_dir_all(other.join(FILE).join("kept")).unwrap();
+        let e = Extras::load(&other);
+        assert!(e.keep_file);
+        let mut changed = e.clone();
+        changed.own_name_tag = true;
+        changed.save(&other);
+        assert!(other.join(FILE).join("kept").is_dir());
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(other);
+    }
 
     #[test]
     fn a_saved_wheel_setting_from_before_the_default_changed_is_dropped() {
-        assert!(!Extras::parse("wheelCyclesSettings:true\n").wheel_cycles_settings);
+        let old = Extras::parse("wheelCyclesSettings:true\n");
+        assert!(!old.wheel_cycles_settings && old.unknown.is_empty());
         let on = Extras {
             wheel_cycles_settings: true,
             ..Extras::default()
@@ -846,7 +856,6 @@ mod tests {
     fn everything_is_off_by_default_and_round_trips() {
         let d = Extras::default();
         assert!(!d.fullbright && !d.dynamic_lights);
-        assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
         assert!(!d.hide_block_particles && !d.pregen);
         assert!(!d.music_page && d.music_off.is_empty());
@@ -859,20 +868,6 @@ mod tests {
         Item::DynamicLights.cycle(&mut e, false);
         assert_eq!(Item::DynamicLights.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
-        e.zoom = true;
-        e.zoom_key = "key.keyboard.c".into();
-        e.zoom_level = 6;
-        e.fps_corner = Corner::BottomRight;
-        e.keystrokes = true;
-        e.keystrokes_cps = false;
-        e.moved = vec!["fps_overlay".into(), "keystrokes".into()];
-        e.minimap = true;
-        e.minimap_size = 128;
-        e.minimap_round = true;
-        e.minimap_zoom = 0.5;
-        e.minimap_rotate = true;
-        e.minimap_corner = Corner::BottomLeft;
-        e.auto_reconnect = true;
         Item::Pregen.cycle(&mut e, false);
         assert_eq!(Item::Pregen.switch(&e), Some(true));
         Item::OwnNameTag.cycle(&mut e, false);
@@ -889,9 +884,6 @@ mod tests {
         e.sort_key = "key.keyboard.r".into();
         e.chat_animation = true;
         e.chat_indicator = false;
-        assert!(!e.splitscreen);
-        Item::Splitscreen.cycle(&mut e, false);
-        assert_eq!(Item::Splitscreen.switch(&e), Some(true));
         Item::WheelCyclesSettings.cycle(&mut e, false);
         assert_eq!(Item::WheelCyclesSettings.switch(&e), Some(true));
         e.music_off = vec![
@@ -906,11 +898,9 @@ mod tests {
 
     #[test]
     fn bad_lines_keep_defaults() {
-        let e = Extras::parse("zoom:maybe\nzoomLevel:99\nfpsCorner:middle\nzoomKey:z\nnoise");
-        assert!(!e.zoom);
-        assert_eq!(e.zoom_level, 10);
-        assert_eq!(e.fps_corner, Corner::TopLeft);
-        assert_eq!(e.zoom_key, "key.keyboard.z");
+        let e = Extras::parse("sort:maybe\nsortKey:r\nnoise");
+        assert!(!e.sort);
+        assert_eq!(e.sort_key, "key.keyboard.unknown");
     }
 
     #[test]
@@ -993,13 +983,35 @@ mod tests {
         let mut e = Extras::default();
         Item::Sort.cycle(&mut e, true);
         assert_eq!(Item::Sort.value(&e), "On");
-        // The minimap's old keys still parse, for the move to its mod.
-        assert_eq!(
-            Extras::parse("minimapSize:7\nminimapZoom:3").minimap_zoom,
-            1.0
-        );
         for item in rows().into_iter().flatten() {
             assert!(!item.caption().is_empty() && !item.description().is_empty());
         }
+    }
+
+    /// The shader pack key is bound to K out of the box, rebinds through the generic extra-key
+    /// machinery, and the remembered pick round-trips with it.
+    #[test]
+    fn the_shader_pack_key_binds_and_remembers_the_pick() {
+        let mut e = Extras::default();
+        assert_eq!(e.shader_pack_key, "key.keyboard.k");
+        assert_eq!(e.last_shader_pack, "");
+        assert_eq!(Item::ShaderPackKey.key_name(), Some(SHADER_PACK_KEY));
+        assert!(Item::ShaderPackKey.value(&e).contains('K'));
+        assert!(e.set_key(SHADER_PACK_KEY, "key.keyboard.j".into()));
+        assert_eq!(e.shader_pack_key, "key.keyboard.j");
+        assert!(!e.set_key("key.toggleGui", "key.keyboard.j".into()));
+        e.last_shader_pack = "A.zip".into();
+        let back = Extras::parse(&e.serialize());
+        assert_eq!(
+            (
+                back.shader_pack_key.as_str(),
+                back.last_shader_pack.as_str()
+            ),
+            ("key.keyboard.j", "A.zip")
+        );
+        // A bad value is dropped, not kept: the default stays.
+        let bad = Extras::parse("shaderPackKey:foo\n");
+        assert_eq!(bad.shader_pack_key, "key.keyboard.k");
+        assert!(bad.unknown.is_empty());
     }
 }

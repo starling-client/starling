@@ -5,12 +5,12 @@
 use crate::game::{Game, Screen};
 use sunrise_client::{
     containers::BlockEntity,
+    creative::Creative,
     hud::{HudBatch, rgba},
     inv_sort,
     items::ItemStack,
     keybinds,
     menu::Input,
-    stations::hover_name,
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
 
@@ -48,7 +48,7 @@ impl Game<'_> {
         let container: Vec<usize> = self
             .slots()
             .into_iter()
-            .filter(|s| (300..500).contains(s))
+            .filter(|&s| crate::game::inventory_slots::container_slot_index(s).is_some())
             .collect();
         if chest_like && !container.is_empty() {
             buttons.push(((160.0, 5.0), container));
@@ -134,16 +134,17 @@ impl Game<'_> {
             return;
         }
         let views: Vec<Option<ItemStack>> = slots.iter().map(|&s| self.slot_view(s)).collect();
+        let order = self.stock_sort_order();
         let clicks = {
             let rank = |s: &ItemStack| {
-                let order = self.creative_screen.order_of(s).unwrap_or(usize::MAX);
-                (order, hover_name(&self.pack.names, s))
+                let order = Creative::order_of(&order, s).unwrap_or(usize::MAX);
+                (order, self.stack_hover_name(s))
             };
             let max = |s: &ItemStack| self.max_stack(s);
             inv_sort::plan(&views, &rank, &max)
         };
         for i in clicks {
-            self.tweak_click(slots[i], 0, Input::Pickup);
+            self.slot_click(slots[i], 0, Input::Pickup);
         }
     }
 }

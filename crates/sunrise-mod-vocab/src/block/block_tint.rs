@@ -9,9 +9,10 @@
 use crate::{BiomeColors, BlockMetadata, BlockState, Direction, FluidState, LightLayer};
 use std::sync::Arc;
 
-/// The colour calculations block tints blend over the biomes around a block (vanilla's
+/// The colour calculations the client blends over the biomes around a block (vanilla's
 /// `BiomeColors` resolvers, `ColorResolver`): vanilla's four, and the ones mods register in
-/// `register_color_resolvers`.
+/// `register_color_resolvers`. Pass one to `ClientHost::biome_tint` or
+/// [`BlockAndTintGetter::block_tint`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: the game blends every resolver, so a new one must be handled there
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -29,10 +30,9 @@ pub enum ColorResolver {
 }
 
 /// A mod's colour resolver, as the game keeps it: what [`ColorResolvers::register`] returns, to
-/// pass to [`BlockAndTintGetter::block_tint`]. Process-local; do not persist it.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// pass to `ClientHost::biome_tint` or [`BlockAndTintGetter::block_tint`].
+/// Process-local; do not persist it.
+#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct ModColorResolver(pub(crate) u32);
 
@@ -66,8 +66,9 @@ pub struct ResolverBiome {
 
 /// A mod's colour resolver: vanilla's `ColorResolver`, which the game blends over the biomes
 /// around a block as it blends its own (`ClientLevel.calculateBlockTint`, over the biome blend
-/// radius) and caches per section while it meshes. Held by the game and asked on the meshing
-/// workers, so it keeps no mutable state and gets no `Host`.
+/// radius) and caches per section while it meshes. The client can also ask it directly through
+/// `ClientHost::biome_tint`. It can run on meshing workers, so it keeps no mutable state and gets
+/// no `Host`.
 pub trait BiomeColorResolver: Send + Sync + 'static {
     /// `getColor(biome, x, z)`: the colour of `biome` (`minecraft:plains`) at block column
     /// `(x, z)`, 0xRRGGBB.
@@ -78,8 +79,8 @@ pub trait BiomeColorResolver: Send + Sync + 'static {
 /// `RegisterColorHandlersEvent.ColorResolvers`.
 pub trait ColorResolvers {
     /// `register(resolver)`: adds `resolver` to the ones the game blends and caches, and returns
-    /// the [`ColorResolver`] a block tint source passes to
-    /// [`BlockAndTintGetter::block_tint`].
+    /// the [`ColorResolver`] to pass to `ClientHost::biome_tint`, or to
+    /// [`BlockAndTintGetter::block_tint`] inside a block tint source.
     fn register(&mut self, resolver: Arc<dyn BiomeColorResolver>) -> ColorResolver;
 }
 
@@ -89,17 +90,44 @@ pub trait ColorResolvers {
 // exhaustive: its field is private; the game builds it
 pub struct ColorResolverRegistry {
     resolvers: Vec<Arc<dyn BiomeColorResolver>>,
+    start: usize,
 }
 
 impl ColorResolvers for ColorResolverRegistry {
     fn register(&mut self, resolver: Arc<dyn BiomeColorResolver>) -> ColorResolver {
-        let index = u32::try_from(self.resolvers.len()).expect("at most u32::MAX colour resolvers");
+        let index = u32::try_from(self.start + self.resolvers.len())
+            .expect("at most u32::MAX colour resolvers");
         self.resolvers.push(resolver);
         ColorResolver::Mod(ModColorResolver(index))
     }
 }
 
 impl ColorResolverRegistry {
+    /// Commit this listener's resolver tail using the indices issued during registration.
+    // hidden: the engine stages one listener at a time; mods receive only the registrar trait.
+    #[doc(hidden)]
+    pub fn register_listener(&mut self, listen: &mut dyn FnMut(&mut dyn ColorResolvers) -> bool) {
+        let mut tail = Self {
+            resolvers: Vec::new(),
+            start: self.resolvers.len(),
+        };
+        if listen(&mut tail) {
+            self.resolvers.append(&mut tail.resolvers);
+        } else {
+            let owner = crate::content::crash::current_native_mod();
+            for resolver in tail.resolvers {
+                crate::runtime::discard_registration(
+                    (
+                        crate::generated::HookId::RegisterColorResolvers,
+                        "register_color_resolvers",
+                    ),
+                    owner,
+                    resolver,
+                );
+            }
+        }
+    }
+
     /// The resolvers, each at the index its handle names.
     pub fn into_resolvers(self) -> Arc<[Arc<dyn BiomeColorResolver>]> {
         self.resolvers.into()
@@ -212,7 +240,6 @@ pub enum VanillaTint {
 /// One layer of a block's tint list: one of vanilla's sources or a mod's own.
 #[derive(Clone)]
 // exhaustive: mods build one; the game evaluates both kinds
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum TintLayer {
     /// A vanilla source, evaluated by the game as for its own blocks.
     Vanilla(VanillaTint),
@@ -254,7 +281,6 @@ pub trait BlockTintSources {
 /// The game's [`BlockTintSources`]: the registrations in order.
 #[derive(Default)]
 // exhaustive: its field is private; the game builds it
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct BlockTintRegistry {
     registrations: Vec<(Vec<TintLayer>, Vec<String>)>,
 }
@@ -266,6 +292,30 @@ impl BlockTintSources for BlockTintRegistry {
 }
 
 impl BlockTintRegistry {
+    /// Append this listener's tint sources only if its registration succeeds.
+    // hidden: the engine stages one listener at a time; mods receive only the registrar trait.
+    #[doc(hidden)]
+    pub fn register_listener(&mut self, listen: &mut dyn FnMut(&mut dyn BlockTintSources) -> bool) {
+        let mut tail = Self::default();
+        if listen(&mut tail) {
+            self.registrations.append(&mut tail.registrations);
+        } else {
+            let owner = crate::content::crash::current_native_mod();
+            for (layers, _) in tail.registrations {
+                for layer in layers {
+                    crate::runtime::discard_registration(
+                        (
+                            crate::generated::HookId::RegisterBlockTintSources,
+                            "register_block_tint_sources",
+                        ),
+                        owner,
+                        layer,
+                    );
+                }
+            }
+        }
+    }
+
     /// Each block's layers, the last registration for a block winning, in block-id order.
     pub fn into_layers(self) -> std::collections::BTreeMap<String, Arc<[TintLayer]>> {
         let mut by_block = std::collections::BTreeMap::new();
@@ -292,6 +342,100 @@ mod tests {
                 0
             }
         }
+    }
+
+    #[test]
+    fn panicking_color_registration_leaves_the_first_slot_for_the_next_listener() {
+        use crate::{Hooks, ModEntry, RegisterColorResolversEvent, RegistrationContext};
+        use std::sync::Mutex;
+
+        struct PanicPayload;
+        impl Drop for PanicPayload {
+            fn drop(&mut self) {
+                panic!("resolver registration panic payload panicked on drop");
+            }
+        }
+
+        struct Listener {
+            resolver: Arc<dyn BiomeColorResolver>,
+            handles: Arc<Mutex<Vec<ColorResolver>>>,
+            fails: bool,
+        }
+        #[crate::__subscriptions]
+        impl Hooks for Listener {
+            fn register_color_resolvers(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterColorResolversEvent<'_>,
+            ) {
+                let handle = event.resolvers.register(self.resolver.clone());
+                self.handles.lock().unwrap().push(handle);
+                if self.fails {
+                    std::panic::panic_any(PanicPayload);
+                }
+            }
+        }
+
+        let failed_handles = Arc::new(Mutex::new(Vec::new()));
+        let healthy_handles = Arc::new(Mutex::new(Vec::new()));
+        let healthy: Arc<dyn BiomeColorResolver> = Arc::new(Cold);
+        crate::testing::with_dispatch(
+            vec![
+                ModEntry::new(
+                    "failed_resolver",
+                    Box::new(Listener {
+                        resolver: Arc::new(Cold),
+                        handles: failed_handles.clone(),
+                        fails: true,
+                    }),
+                ),
+                ModEntry::new(
+                    "healthy_resolver",
+                    Box::new(Listener {
+                        resolver: healthy.clone(),
+                        handles: healthy_handles.clone(),
+                        fails: false,
+                    }),
+                ),
+            ]
+            .into(),
+            || {
+                let mut registry = ColorResolverRegistry::default();
+                let context = RegistrationContext::new();
+                crate::dispatch_register_color_resolvers(&context, |listen| {
+                    registry.register_listener(listen)
+                });
+                assert_eq!(
+                    crate::__private::take_hook_panics(),
+                    [crate::__private::HookPanicReport {
+                        mod_id: "failed_resolver",
+                        hook: "register_color_resolvers",
+                    }]
+                );
+                crate::dispatch_register_color_resolvers(&context, |listen| {
+                    registry.register_listener(listen)
+                });
+                assert_eq!(
+                    *failed_handles.lock().unwrap(),
+                    [ColorResolver::Mod(ModColorResolver(0))]
+                );
+                assert_eq!(
+                    *healthy_handles.lock().unwrap(),
+                    [
+                        ColorResolver::Mod(ModColorResolver(0)),
+                        ColorResolver::Mod(ModColorResolver(1))
+                    ]
+                );
+                assert!(crate::__private::take_hook_panics().is_empty());
+                let resolvers = registry.into_resolvers();
+                assert_eq!(resolvers.len(), 2);
+                assert!(
+                    resolvers
+                        .iter()
+                        .all(|resolver| Arc::ptr_eq(resolver, &healthy))
+                );
+            },
+        );
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub trait Hooks {
     /// same on each, from the level host and the event alone. With no part attached to the
     /// state, the cost is one table lookup per rail read. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "collect",
         out = "shape",
@@ -19,5 +21,11 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::rails::GameLevel<'_>::native_rail_direction",
         neoforge = "IBaseRailBlockExtension.getRailDirection"
     )]
-    fn rail_direction();
+    fn rail_direction(
+        dimension: LevelDimension,
+        state: BlockState,
+        pos: BlockPos,
+        cart: Option<EntityRef>,
+        shape: &mut RailShape,
+    );
 }

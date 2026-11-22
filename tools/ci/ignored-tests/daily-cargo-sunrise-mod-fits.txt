@@ -1,0 +1,2 @@
+cargo-sunrise-mod fits_judges_declared_game_code_by_each_builds_data test:fits daily child-process
+cargo-sunrise-mod update_names_the_declared_game_code_the_new_build_changed test:fits daily child-process

@@ -4,18 +4,20 @@
 //! from the camel beside its dash sound
 //! (tools/test_camel_jump_parity.py measures the same on vanilla 26.3).
 use crate::game::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
     motion::PlayerMotion,
 };
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 const GUEST: &str = "CamelGuest";
 
 /// A host on a stone floor with one connected, placed guest (conn 2).
-pub(super) fn game() -> Game<'static> {
+pub(super) fn game<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -37,7 +39,7 @@ pub(super) fn game() -> Game<'static> {
     let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
     options.resources = root.clone();
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -88,6 +90,7 @@ pub(super) fn game() -> Game<'static> {
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -188,9 +191,10 @@ fn selected(game: &mut Game<'_>) -> Option<String> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_saddled_camels_riding_jump_posts_entity_action() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     scene(&mut game, true);
     jump(&mut game, 100);
     // The jump is accepted: Camel.handleStartJump's setDashing(true).
@@ -210,22 +214,25 @@ fn a_saddled_camels_riding_jump_posts_entity_action() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_jump_without_power_or_saddle_posts_nothing() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     scene(&mut game, true);
     jump(&mut game, 0);
     assert_eq!(selected(&mut game), None, "no power");
-    let mut game = self::game();
+    let mut resources = None;
+    let mut game = self::game(&mut resources);
     scene(&mut game, false);
     jump(&mut game, 100);
     assert_eq!(selected(&mut game), None, "no saddle");
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_scene_sensor_hears_a_mob_beside_it() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     scene(&mut game, true);
     assert!(game.run_command("summon pig 11.5 100 10.5 {NoAI:1b,Silent:1b,UUID:[I;51774,0,1,1]}"));
     assert!(game.run_command("damage 0000ca3e-0000-0000-0000-000100000001 1"));
@@ -253,9 +260,10 @@ fn posted_actions(game: &mut Game<'_>, jumps: &[i32]) -> usize {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn control_each_accepted_jump_posts_one_entity_action() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     scene(&mut game, true);
     assert_eq!(posted_actions(&mut game, &[0]), 0, "refused: no power");
     assert_eq!(posted_actions(&mut game, &[100]), 1, "one accepted jump");
@@ -264,7 +272,8 @@ fn control_each_accepted_jump_posts_one_entity_action() {
         2,
         "two accepted, one refused"
     );
-    let mut game = self::game();
+    let mut resources = None;
+    let mut game = self::game(&mut resources);
     scene(&mut game, false);
     assert_eq!(posted_actions(&mut game, &[100]), 0, "refused: no saddle");
 }

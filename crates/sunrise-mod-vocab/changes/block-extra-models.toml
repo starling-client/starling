@@ -1,0 +1,5 @@
+ids = [
+    "method:prelude::ClientRenderClientHost::set_block_extra_models",
+    "type:BlockExtraModelsError",
+]
+why = "#2763: Native client mods attach registered standalone models to a position through the live client Host, for NeoForge ModelData-style geometry without a block state per combination. A refused call changes nothing: NotLoaded means the position is outside a resident column or the level height, Model means the handle is stale or is not a registered standalone model. A resend of a resident column preserves attachments at unchanged cells; unloading the column clears them. After the block geometry, extra faces draw in block and list order. Drawing stops before the next face whose worst-case expansion cannot fit the section's upload budget, so the last model may be partially drawn. Resolve new handles in client_resources_reloaded and reapply in the next live client callback; the reload and setup contexts do not expose this setter."

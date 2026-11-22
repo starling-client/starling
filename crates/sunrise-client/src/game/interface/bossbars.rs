@@ -3,19 +3,19 @@ use super::{
     Dim, Game,
     commands::{R, Target, err},
 };
+use std::collections::{HashMap, HashSet};
 use sunrise_client::{
     boss_overlay,
     bossbar::{self, BossBars},
     command::{Arg, Context},
     mobs::Species,
     save,
-    scoreboard::{self as sb, Comp, json_to_tag},
+    scoreboard::{self as sb, Comp, canonical_component, json_to_tag},
     scoreboard_cmd::format_list,
     text::Text,
 };
 use sunrise_core::{identifier::Identifier, java_hash_map::JavaHashMap, nbt::Tag};
 use sunrise_protocol::packets::play::{self, BossAction, Clientbound as C};
-use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub(super) struct BossState {
@@ -25,6 +25,8 @@ pub(super) struct BossState {
     loaded: bool,
     /// What each viewer was last sent, so a change becomes one packet.
     sent: HashMap<u128, HashMap<u128, Offer>>,
+    /// The last custom name of the fight dragon.
+    dragon_name: Option<Tag>,
 }
 
 impl BossState {
@@ -139,6 +141,8 @@ impl Game<'_> {
     /// the progress is clamped.
     pub(in crate::game) fn set_bossbar_value(&mut self, id: &str, value: bool, v: i32) {
         if let Some(b) = self.bosses.bars.get_mut(id) {
+            // CustomBossEvent.setValue/setMax store the number verbatim and
+            // clamp only the progress derived from it.
             if value {
                 b.value = v;
             } else {
@@ -303,7 +307,8 @@ impl Game<'_> {
             "bossbar.set.name" => {
                 let name = self.component_json(ctx, "name")?;
                 let b = self.bosses.bars.get_mut(bar).expect("checked");
-                if b.name == name {
+                // BossBarCommands.setName: Component.equals, not its JSON spelling.
+                if canonical_component(&b.name) == canonical_component(&name) {
                     return Err(err("commands.bossbar.set.name.unchanged", &[]));
                 }
                 b.name = name;
@@ -468,7 +473,9 @@ impl Game<'_> {
                 if out.iter().any(|(uuid, _)| *uuid == ints) {
                     continue;
                 }
-                out.push((ints, Text::literal(g.name.clone())));
+                // `Player::getDisplayName`: the team's formatting, the
+                // `/tell` click, the entity hover and the name for shift-click.
+                out.push((ints, self.player_text(&g.name, g.uuid)));
             }
         }
         out
@@ -497,6 +504,7 @@ impl Game<'_> {
             return;
         }
         self.load_bossbars();
+        self.update_dragon_bar_name();
         let now = boss_overlay::now_millis();
         let viewers = self.boss_viewers();
         let live: HashSet<u128> = viewers.iter().map(|v| v.uuid).collect();
@@ -520,6 +528,28 @@ impl Game<'_> {
         };
         for (conn, packet) in &packets {
             host.hub.send_to(*conn, packet);
+        }
+    }
+    /// `EnderDragonFight.updateDragon`: the fight's dragon's custom name
+    /// becomes the bar's, and stays after the name is removed.
+    fn update_dragon_bar_name(&mut self) {
+        // `EnderDragon.aiStep` calls `updateDragon` only while it has AI (and
+        // is alive); `kill`/`tickDeath` call it too, so a dead dragon updates.
+        let ticks = self.dragon.as_ref().is_some_and(|d| !d.alive() || !d.no_ai);
+        if !ticks || !self.is_fight_dragon() {
+            return;
+        }
+        let custom = self
+            .dragon
+            .as_ref()
+            .filter(|d| d.id != 0)
+            .and_then(|d| self.persist_raw(d.id))
+            .and_then(|raw| raw.get("CustomName"))
+            .cloned();
+        if let Some(custom) = custom {
+            self.bosses.dragon_name = Some(json_to_tag(
+                &sunrise_client::entity_nbt::name_text(&custom).component(),
+            ));
         }
     }
     fn boss_viewers(&self) -> Vec<Viewer> {
@@ -590,7 +620,11 @@ impl Game<'_> {
         {
             out.push(Offer {
                 id: bossbar::stable_uuid("minecraft:ender_dragon"),
-                name: translate_tag("entity.minecraft.ender_dragon"),
+                name: self
+                    .bosses
+                    .dragon_name
+                    .clone()
+                    .unwrap_or_else(|| translate_tag("entity.minecraft.ender_dragon")),
                 progress,
                 color: 0,
                 overlay: 0,
@@ -763,9 +797,9 @@ struct Offer {
 
 #[cfg(test)]
 pub(super) mod audience_tests {
+    use std::sync::Arc;
     use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
     use sunrise_protocol::packets::configuration::ClientInformation;
-    use std::sync::Arc;
 
     pub(in crate::game) fn add_real_and_fake(game: &mut super::super::Game<'_>) {
         game.player = None;
@@ -782,6 +816,7 @@ pub(super) mod audience_tests {
             max_players: 20,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         };
         game.lan_host(
             super::super::lan::LanSettings {
@@ -828,7 +863,7 @@ pub(super) mod audience_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fake_players_are_not_boss_viewers() {
         super::super::native_entity_refs::tests::with_game(|game| {
             add_real_and_fake(game);
@@ -842,6 +877,10 @@ pub(super) mod audience_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "tests/bossbar_names_tests.rs"]
+mod bossbar_names_tests;
 
 #[cfg(test)]
 mod listing_tests {
@@ -901,3 +940,7 @@ mod listing_tests {
         assert_eq!(ids(&state), ["audit:second", "audit:test"]);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/bossbar_store_tests.rs"]
+mod bossbar_store_tests;

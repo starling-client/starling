@@ -12,7 +12,6 @@ it moves (`Entity.ignoreExplosion` and `ArmorStand.ignoreExplosion`'s `isInvisib
 """
 import os
 from pathlib import Path
-import platform
 import re
 import shutil
 import subprocess
@@ -40,20 +39,17 @@ NETHERITE = [f'cmd Alice item replace entity @s armor.{s} with minecraft:netheri
 # to the bed, and an armour stand and an item at the edge of the blast, past
 # the damage but inside the push, which are the two that survive it.
 VICTIMS = ('stand', 'invisible', 'item', 'boat', 'edge')
+EDGE_ITEM = '@e[tag=edge-item,limit=1]'
+DRAG_TICKS = 10
 
 
 def victim_facts(tag):
     """What the blast did to one victim: whether it is still there, and its
     position and motion if it is."""
     at = f'@e[tag={tag},limit=1]'
-    facts = [f'cmd Alice execute if entity {at}',
-             f'cmd Alice data get entity {at} Pos',
-             f'cmd Alice data get entity {at} Motion']
-    if tag == 'edge-item':
-        # The edge item's motion decays with its own ticks, so its age says
-        # which tick the value belongs to.
-        facts.append(f'cmd Alice data get entity {at} Age')
-    return facts
+    return [f'cmd Alice execute if entity {at}',
+            f'cmd Alice data get entity {at} Pos',
+            f'cmd Alice data get entity {at} Motion']
 
 
 def scene(index, facing, place):
@@ -101,22 +97,15 @@ def scene(index, facing, place):
     pos = f'{at[0]} 200.0 {at[1]}'
     return [*cmds, f'cmd Alice tp Alice {pos} 0 0', f'pos Alice {pos} 0 0 1', 'ticks 20',
             'cmd Alice effect give @s minecraft:instant_health 1 10 true', 'ticks 5',
-            # The two servers need not advance the same number of game ticks
-            # between the same commands, and a push on an item decays every
-            # tick, so the survivor is read as whole compounds (`Age`, `Pos` and
-            # `Motion` from one snapshot) at two pinned ages, with the age it had
-            # when the blast landed read first. That is enough to compare both
-            # the push itself and the rate it decays at, whatever the pacing.
-            'cmd Alice data get entity @e[tag=edge-item,limit=1] Age',
-            f'useblock Alice {hx} 200 {hz}',
-            'waitage @e[tag=edge-item,limit=1] 81',
-            'cmd Alice data get entity @e[tag=edge-item,limit=1]',
-            'waitage @e[tag=edge-item,limit=1] 91',
-            'cmd Alice data get entity @e[tag=edge-item,limit=1]',
-            'cmd Alice execute if entity @e[tag=edge-item,limit=1]',
-            'cmd Alice data get entity @s Health',
+            # Keep entity ticks frozen through the click and its reply so the
+            # first snapshot reads the impulse before any drag. The second
+            # `frozen` barrier also flushes the queued explosion packet.
+            'cmd Alice tick freeze', 'frozen',
+            f'useblock Alice {hx} 200 {hz}', 'frozen', f'cmd Alice data get entity {EDGE_ITEM}',
+            f'tickstep {DRAG_TICKS}', f'cmd Alice data get entity {EDGE_ITEM}',
+            f'cmd Alice execute if entity {EDGE_ITEM}', 'cmd Alice data get entity @s Health',
             *[line for tag in VICTIMS for line in victim_facts(tag)],
-            'cmd Alice kill @e[type=!player]']
+            'cmd Alice kill @e[type=!player]', 'cmd Alice tick unfreeze']
 
 
 CASES = {f'{f}-{p}': scene(i, f, p) for i, f in enumerate(FACINGS) for p in ('behind-foot', 'beside-head', 'beside-foot-hidden')}
@@ -141,78 +130,34 @@ def nine(text):
     return 'data ' + ' '.join(f'{float(v.rstrip("df")):.9f}' for v in found.group(1)[1:-1].split(', '))
 
 
-# The survivor's whole NBT in one reply: `Age`, `Pos` and `Motion` from one
-# snapshot, so the motion can be rescaled to a fixed age rather than compared at
-# whatever tick each server's read landed on.
 COMPOUND = re.compile(r'has the following entity data: \{(.*)\}$')
-AGE_REF = 71
-AIR_DRAG = 0.98
 
 
-def snapshot(text):
-    """One compound reply as `(age, motion, pos)`: the survivor's own tick
-    counter, how it moves and where it is."""
-    found = COMPOUND.search(text)
-    if not found:
-        return None
-    body = found.group(1)
+def snapshot(body):
+    """The survivor's own tick counter, full-precision motion and health."""
     age = re.search(r'\bAge:\s*(-?\d+)', body)
     motion = re.search(r'\bMotion:\s*\[([^\]]+)\]', body)
-    pos = re.search(r'\bPos:\s*\[([^\]]+)\]', body)
     health = re.search(r'\bHealth:\s*(-?\d+)', body)
-    if not (age and motion and pos and health):
-        return None
-    number = lambda v: float(v.strip().rstrip('dfb'))  # NBT prints doubles with a `d` suffix
-    return (int(age.group(1)), [number(v) for v in motion.group(1).split(',')],
-            [number(v) for v in pos.group(1).split(',')], int(health.group(1)))
-
-
-def age_pinned(blast_age, shots):
-    """Two facts about the survivor that no longer depend on how many ticks
-    either server spent between commands:
-
-    - the blast's push: the first snapshot's motion carried back over the ticks
-      since `blast_age` with vanilla's `Entity.getAirDrag`. A tick of slack
-      between the blast and the read is worth 2%, so it is compared to two
-      decimals; the divergences this looks for are tens of percent.
-    - the decay itself, `(|motion| later / |motion| earlier) ** (1 / ticks)`,
-      which is `getAirDrag`'s 0.98 per tick whatever ages the reads landed on.
-    """
-    if blast_age is None or not shots:
-        return None
-    age1, motion1, _, health1 = shots[0]
-    scale = AIR_DRAG ** -(age1 - blast_age)
-    line = ('data push ' + ' '.join(f'{v * scale:.2f}' for v in motion1)
-            + f' health {health1}')
-    if len(shots) > 1 and shots[1][0] != age1:
-        age2, motion2, _, _ = shots[1]
-        first = sum(v * v for v in motion1) ** 0.5
-        second = sum(v * v for v in motion2) ** 0.5
-        if first > 0.0:
-            line += f' keep {(second / first) ** (1.0 / (age2 - age1)):.4f}'
-    return line
+    if not (age and motion and health):
+        raise AssertionError(f'incomplete edge-item snapshot: {body}')
+    vector = ' '.join(str(float(v.strip().removesuffix('d'))) for v in motion.group(1).split(','))
+    return int(age.group(1)), vector, int(health.group(1))
 
 
 def compared(lines):
     cases = {}
-    last_age = {}
-    shots_of = {}
+    ages = {}
     for line in lines:
-        who, step, text = line.split(' ', 2)
+        _, step, text = line.split(' ', 2)
         step = step.removeprefix('step=')
         if step not in CASES:
             continue
         kept = cases.setdefault(step, [])
-        plain = re.search(r'has the following entity data:\s*(-?\d+)s?$', text)
-        if plain is not None:
-            last_age[step] = int(plain.group(1))
-            continue
-        shot = snapshot(text)
-        if shot is not None:
-            shots = shots_of.setdefault(step, [])
-            shots.append(shot)
-            if len(shots) == 2:
-                kept.append(age_pinned(last_age.get(step), shots))
+        if found := COMPOUND.search(text):
+            age, motion, health = snapshot(found.group(1))
+            ticks = ages.setdefault(step, [])
+            ticks.append(age)
+            kept.append(f'data item after {age - ticks[0]} ticks: {motion} health {health}')
         elif 'has the following entity data' in text:
             kept.append(nine(text))
         elif text.startswith(('explode push', 'error', 'disconnected')):
@@ -220,6 +165,10 @@ def compared(lines):
         elif text.removeprefix('chat ').startswith(('Test passed', 'Test failed')):
             # `/execute if entity`: whether the victim survived the blast.
             kept.append(text.removeprefix('chat '))
+    for step in cases:
+        ticks = ages.get(step, [])
+        if len(ticks) != 2 or ticks[1] - ticks[0] != DRAG_TICKS:
+            raise AssertionError(f'{step}: expected two edge-item snapshots {DRAG_TICKS} ticks apart, got ages {ticks}')
     return cases
 
 
@@ -241,7 +190,7 @@ def main():
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    sunrise_server = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.KnockbackClient']
     kb.CASES, kb.SETUP, kb.PLAYERS = CASES, SETUP, ('Alice',)
     kb.PROPERTIES['allow-flight'] = 'true'
@@ -251,6 +200,8 @@ def main():
     differ = []
     for case in CASES:
         want, got = vanilla.get(case, []), sunrise.get(case, [])
+        if not any(l.startswith('explode push') for l in want):
+            raise AssertionError(f'{case}: vanilla recorded no blast push: {want}')
         if not any('entity data' in l for l in want) or any(l.startswith(('error', 'disconnected')) for l in want):
             raise AssertionError(f'{case}: vanilla recorded no health or failed: {want}')
         if want != got:

@@ -9,8 +9,10 @@ except ImportError:
 
 
 def make_input(build):
-    resources = lab.LOCAL / 'sunrise-client' / '26.3'
-    items = json.loads((resources / 'items.json').read_text())
+    text = (lab.RESOURCES / 'items.json').read_text()
+    # The oracle reads the same item defaults beside its input, whatever the pinned version.
+    (build / 'items.json').write_text(text)
+    items = json.loads(text)
     rows = [dict(item=item, creative=creative, count=count, tool=tool)
             for item in sorted(items)
             for creative in (False, True)

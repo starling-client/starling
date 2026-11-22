@@ -136,7 +136,8 @@ pub(crate) fn conditions_pass(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool 
         };
         match c["type"].as_str() {
             Some("neoforge:mod_loaded") => c["modid"].as_str().is_some_and(loaded),
-            Some("neoforge:true") => true,
+            Some("neoforge:always") => true,
+            Some("neoforge:never") => false,
             Some("neoforge:not") => !pass(&c["value"], loaded),
             Some("neoforge:and") => all("values"),
             Some("neoforge:or") => {
@@ -438,6 +439,20 @@ mod tests {
             assert_eq!(lost[kind], 1);
         }
         assert!(!upgrade_pool_element(&mut delegate.clone(), &mut lost));
+    }
+
+    #[test]
+    fn constant_conditions_gate_modifier_conversion() {
+        let mut report = Upgrade::default();
+        let mut file = json!({
+            "type": "lithostitched:add_template_pool_elements",
+            "template_pools": "demo:pool",
+            "elements": [],
+            "neoforge:conditions": [{"type": "neoforge:always"}],
+        });
+        assert!(modifier(&file, &|_| false, &mut report).is_some());
+        file["neoforge:conditions"][0]["type"] = json!("neoforge:never");
+        assert!(modifier(&file, &|_| false, &mut report).is_none());
     }
 
     #[test]

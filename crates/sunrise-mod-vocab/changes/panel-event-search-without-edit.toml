@@ -1,0 +1,3 @@
+ids = ["hook:panel_event"]
+why = "Version 2: PanelEvent::Search can now arrive without a player edit. After the panel's owner calls panel_search, it hears the new text as Search on the first frame that draws its search box, the event the player's typing sends. Its other events are unchanged."
+migrate = "Treat Search as the box's new text, whoever changed it; a mod that calls panel_search hears its own text back once, outside that call."

@@ -1,6 +1,6 @@
 //! CreateWorldScreen: the Game, World and More tabs under a MenuTabBar, with
 //! Create New World and Cancel in a 33-pixel footer.
-use super::{Button, Title};
+use super::{Button, Title, preset_editors::PresetEditorFactories};
 use crate::{
     hud::{HudAtlas, HudBatch},
     text::Text,
@@ -503,7 +503,7 @@ pub(super) fn buttons(
     h: f32,
     creative: bool,
     o: &WorldOptions,
-    editors_ready: bool,
+    editors: Option<&PresetEditorFactories>,
 ) -> Vec<Button> {
     let b = |x: f32, y: f32, w: f32, label: String, enabled: bool, id: u8| Button {
         x,
@@ -567,7 +567,7 @@ pub(super) fn buttons(
                 gy,
                 150.0,
                 tr("selectWorld.customizeType"),
-                (editors_ready && super::preset_editors::editor(o.preset_id()).is_some())
+                editors.is_some_and(|editors| editors.has_editor(o.preset_id()))
                     || (o.custom_preset.is_none()
                         && matches!(
                             o.world_type,
@@ -776,10 +776,10 @@ impl Title {
             crate::widgets::record(&label.plain(), [x, 0.0, tw, TAB_BAR], true);
             crate::widgets::target_as([x, 0.0, tw, TAB_BAR], crate::widgets::Kind::Tab(selected));
             let sprite = match (selected, ui::hovered(cursor, x, 0.0, tw, TAB_BAR)) {
-                (true, true) => "gui/sprites/widget/tab_selected_highlighted",
-                (true, false) => "gui/sprites/widget/tab_selected",
-                (false, true) => "gui/sprites/widget/tab_highlighted",
-                (false, false) => "gui/sprites/widget/tab",
+                (true, true) => "widget/tab_selected_highlighted",
+                (true, false) => "widget/tab_selected",
+                (false, true) => "widget/tab_highlighted",
+                (false, false) => "widget/tab",
             };
             ui::nine_slice(batch, atlas, sprite, x, 0.0, tw, TAB_BAR, u32::MAX);
             let lw = atlas.font.width_text(&label).floor();

@@ -71,7 +71,6 @@ Prints one JSON object on stdout and exits 0. `sunrise` is the build's version; 
     2,
     101
   ],
-  "sunrise": "<version>",
   "launch_api": "0.1.1",
   "minecraft": "26.3",
   "options": [
@@ -127,7 +126,8 @@ Prints one JSON object on stdout and exits 0. `sunrise` is the build's version; 
       "name": "--launch-api",
       "value": null
     }
-  ]
+  ],
+  "sunrise": "<version>"
 }
 ```
 

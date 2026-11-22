@@ -1,4 +1,4 @@
-//! Reload-stable definitions, shared by native and wasm mods.
+//! Reload-stable recipe definitions.
 use mod_api::*;
 use std::sync::RwLock;
 
@@ -19,16 +19,16 @@ impl Processing {
         self.recipes.write().unwrap().clear();
     }
 
-    fn publish(&self, host: &dyn Host) {
-        let next = host
+    fn publish(&self, context: &dyn ReloadContext) {
+        let next = context
             .recipes_of_type("example:processing")
             .iter()
             .filter_map(|recipe| {
                 Some(Definition {
-                    ingredient: host
+                    ingredient: context
                         .recipe_ingredient(&recipe.json["ingredient"].to_string())
                         .ok()??,
-                    result: host
+                    result: context
                         .recipe_result(&recipe.json["result"].to_string())
                         .ok()??,
                 })
@@ -55,9 +55,9 @@ impl Hooks for Processing {
         self.clear();
     }
 
-    fn tags_updated(&self, host: HostSide<'_>, _: &mut TagsUpdatedEvent) {
-        if let HostSide::Server(host) = host {
-            self.publish(host);
+    fn tags_updated(&self, context: &dyn ReloadContext, event: &mut TagsUpdatedEvent) {
+        if matches!(event.cause, TagsUpdateCause::ServerDataLoad { .. }) {
+            self.publish(context);
         }
     }
 

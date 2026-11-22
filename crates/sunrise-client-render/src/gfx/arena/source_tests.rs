@@ -24,12 +24,10 @@ fn read(
 }
 
 #[test]
-#[ignore = "offscreen GPU control; run explicitly with an available adapter"]
+#[ignore = "daily"]
 fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
     let _gpu = crate::gfx::test_gpu::lock();
-    let instance = crate::gfx::test_gpu::instance();
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-        .expect("GPU control requires an adapter");
+    let adapter = crate::gfx::test_gpu::adapter().expect("GPU control requires an adapter");
     eprintln!("TERRAIN_SOURCE_ARENA_ADAPTER {:?}", adapter.get_info());
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let mut arena = Arena::new(&device, 24, GRAIN, true);
@@ -37,6 +35,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
     let mut encoder = device.create_command_encoder(&Default::default());
     let mut uploads = super::super::upload::Uploads::new(&device);
     let first = arena.alloc(&device, &mut encoder, 4).unwrap();
+    assert_eq!(arena.bytes(), GRAIN * 24);
     assert!(
         arena.sources(first.0).is_none(),
         "default geometry allocates no source buffer"
@@ -58,10 +57,14 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         4,
         &[source],
     );
+    let bytes_per_vertex = 24 + 8 / 4;
+    assert_eq!(arena.bytes(), GRAIN * bytes_per_vertex);
     let second = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
     assert_eq!(second, (first.0, GRAIN), "grew the first page");
+    assert_eq!(arena.bytes(), 2 * GRAIN * bytes_per_vertex);
     let third = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
     assert_ne!(third.0, first.0, "move crosses pages");
+    assert_eq!(arena.bytes(), 4 * GRAIN * bytes_per_vertex);
     arena.copy(&mut encoder, first, third, 4);
     arena.release(first.0, first.1, 4);
     let reused = arena.alloc_existing(4).unwrap();
@@ -136,6 +139,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         arena.sources(at.0).is_none(),
         "sidecar refused without losing vertices"
     );
+    assert_eq!(arena.bytes(), GRAIN * 24);
     assert!(super::super::pack_post::block_ids(&device, &queue, &[0; 128], &[0, 1]).is_none());
     uploads.finish(&encoder);
     queue.submit([encoder.finish()]);

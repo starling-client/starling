@@ -1,5 +1,14 @@
 //! Isolated process: the load callbacks and custom-component IDs install once.
 use glam::Mat4;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use sunrise_assets::item_model::{DisplayContext, NoEnv, StackView};
 use sunrise_client_lib::{
     self as client,
@@ -11,15 +20,6 @@ use sunrise_world::{
     loot::{LootData, PackOverlay},
     native_load_context::{DataLoadOrigin, LoadContext, LoadInputs},
     native_load_hooks::{self, NativeLoadHooks},
-};
-use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeMap, HashMap},
-    fs,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
 };
 
 static CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -74,16 +74,11 @@ fn default_components_reader_baseline() -> client::Result<()> {
             loot_table_load: |_, _, _| {},
             modify_default_components: |context, item, _| {
                 assert_eq!(context.origin(), DataLoadOrigin::ClientPreload);
-                assert_eq!(
-                    *context.registry("minecraft:item").unwrap(),
-                    ["probe:token"]
-                );
+                assert_eq!(context.registry("minecraft:item").unwrap(), ["probe:token"]);
                 if item == "probe:token" {
                     CALLS.fetch_add(1, Ordering::Relaxed);
                 }
             },
-            loot_function: |_, _, _, _, _| {},
-            loot_condition: |_, _, _, _, _| {},
         })
         .is_ok()
     );
@@ -193,7 +188,7 @@ fn default_components_reader_baseline() -> client::Result<()> {
     );
     assert_eq!(
         identity,
-        "0df20aa03226c10182811a27c1cbcd9ad9ba957e48b1713a5ebc6ee8156af0aa"
+        "6853606353c84d0e38b0c56e739ab8f6190596666396277794ecfc30f7545239"
     );
     fs::remove_dir_all(&root)?;
     Ok(())

@@ -3,8 +3,8 @@
 //! through [`LiveFeatures`].
 use super::{Behaviours, LevelAccess, LevelEvent, Sim, feature_world::LevelFeatureWorld, flags};
 use crate::{registry::BlockStateId, worldgen::live::LiveFeatures};
-use sunrise_core::{position::BlockPos, random::RandomSource};
 use std::sync::{Arc, RwLock};
+use sunrise_core::{position::BlockPos, random::RandomSource};
 
 /// Runtime extensions of [`Behaviours`] that depend on the worldgen bundle.
 #[derive(Default)]
@@ -74,11 +74,12 @@ impl Behaviours {
             let unbounded =
                 sunrise_core::bounding_box::BoundingBox::new([i32::MIN; 3], [i32::MAX; 3]);
             for piece in &jigsaw.pieces {
-                let mut place_feature =
-                    |w: &mut LevelFeatureWorld<'_, '_, L>,
-                     r: &mut sunrise_core::random::LegacyRandom,
-                     name: &str,
-                     p: [i32; 3]| { Ok(features.place_placed(name, w, r, p)) };
+                let mut place_feature = |w: &mut LevelFeatureWorld<'_, '_, L>,
+                                         r: &mut sunrise_core::random::LegacyRandom,
+                                         name: &str,
+                                         p: [i32; 3]| {
+                    Ok(features.place_placed(name, w, r, p).unwrap_or(false))
+                };
                 if let Err(e) = piece.place(
                     &mut world,
                     &jigsaw.resources,
@@ -132,11 +133,12 @@ impl Behaviours {
                 features: &features,
                 entities: Vec::new(),
             };
-            let mut place_feature =
-                |w: &mut LevelFeatureWorld<'_, '_, L>,
-                 r: &mut sunrise_core::random::LegacyRandom,
-                 name: &str,
-                 p: [i32; 3]| { Ok(features.place_placed(name, w, r, p)) };
+            let mut place_feature = |w: &mut LevelFeatureWorld<'_, '_, L>,
+                                     r: &mut sunrise_core::random::LegacyRandom,
+                                     name: &str,
+                                     p: [i32; 3]| {
+                Ok(features.place_placed(name, w, r, p).unwrap_or(false))
+            };
             for cx in cx0..=cx1 {
                 for cz in cz0..=cz1 {
                     let chunk_box = sunrise_core::bounding_box::BoundingBox::new(
@@ -337,10 +339,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         placed
     }
     /// `PlacedFeature.place(level, generator, level.random, pos)`.
-    pub(crate) fn place_placed_feature(&mut self, name: &str, pos: BlockPos) -> bool {
+    pub(crate) fn place_placed_feature(
+        &mut self,
+        name: &str,
+        pos: BlockPos,
+    ) -> Result<bool, crate::worldgen::placement::PlacementQueryError> {
         let b = self.b;
         let Some(features) = b.live_features() else {
-            return false;
+            return Ok(false);
         };
         let mut random = self.random().clone();
         let placed = {

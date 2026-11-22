@@ -271,12 +271,6 @@ static TABLE: LazyLock<Vec<Def>> = LazyLock::new(|| {
     t
 });
 
-/// Mth.floor for doubles.
-fn floor_int(v: f64) -> i32 {
-    let i = v as i32;
-    if v < f64::from(i) { i - 1 } else { i }
-}
-
 fn number(json: &Json) -> Option<&str> {
     match json {
         Json::Number(n) => Some(n),
@@ -305,7 +299,7 @@ fn double_range(v: f64, lo: f64, hi: f64) -> Option<f64> {
     // Double.compareTo: -0.0 sorts below 0.0 and NaN above everything.
     (v.total_cmp(&lo).is_ge() && v.total_cmp(&hi).is_le() && !v.is_nan()).then_some(v)
 }
-fn log_mouse(value: i32) -> f64 {
+pub(crate) fn log_mouse(value: i32) -> f64 {
     sunrise_core::jmath::pow(10.0, f64::from(value) / 100.0)
 }
 fn unit_alt(json: &Json) -> Option<f64> {
@@ -374,7 +368,7 @@ impl Spec {
             }
             (Spec::Fov, V::Int(x)) => (30..=110).contains(x).then(|| v.clone()),
             (Spec::WheelSensitivity, V::Double(x)) => {
-                let i = floor_int(sunrise_core::jmath::log10(*x) * 100.0);
+                let i = sunrise_core::mth::floor(sunrise_core::jmath::log10(*x) * 100.0);
                 (-200..=100).contains(&i).then(|| V::Double(log_mouse(i)))
             }
             (Spec::Unit, V::Double(x)) => (*x >= 0.0 && *x <= 1.0).then(|| v.clone()),
@@ -494,8 +488,6 @@ pub struct OptionsFile {
     values: Vec<V>,
     /// `fullscreenResolution`, kept verbatim.
     pub fullscreen_resolution: Option<String>,
-    /// Startup-only wasm compile setting, preserved verbatim, validated by the mod host.
-    pub wasm_compile_timeout_secs: Option<String>,
 }
 
 impl Default for OptionsFile {
@@ -503,7 +495,6 @@ impl Default for OptionsFile {
         Self {
             values: TABLE.iter().map(|d| d.default.clone()).collect(),
             fullscreen_resolution: None,
-            wasm_compile_timeout_secs: None,
         }
     }
 }
@@ -604,7 +595,6 @@ impl OptionsFile {
                 raw.insert(k.to_owned(), v.to_owned());
             }
         }
-        file.wasm_compile_timeout_secs = raw.get("wasm.compile_timeout_secs").cloned();
         let version = raw
             .get("version")
             .and_then(|v| crate::options_fixes::java_parse_int(v))
@@ -670,11 +660,6 @@ impl OptionsFile {
     /// `Options.save`.
     pub fn serialize(&self) -> String {
         let mut out = format!("version:{}\n", sunrise_world::DATA_VERSION);
-        if let Some(value) = &self.wasm_compile_timeout_secs {
-            out.push_str("wasm.compile_timeout_secs:");
-            out.push_str(value);
-            out.push('\n');
-        }
         for (d, v) in TABLE.iter().zip(&self.values) {
             let rendered = match (d.kind, v) {
                 (Kind::Option(spec), v) => match spec.encode(v) {
@@ -849,6 +834,13 @@ mod control_tests {
     use super::*;
 
     #[test]
+    fn plain_integer_options_accept_java_decimal_digits() {
+        // Temurin 25 Integer.parseInt("+٢９") returns 29.
+        let file = OptionsFile::parse("overrideWidth:+٢９\n");
+        assert_eq!(file.get("overrideWidth"), Some(&V::Int(29)));
+    }
+
+    #[test]
     fn describes_values_with_what_they_accept() {
         let f = OptionsFile::default();
         let fov = f.describe("fov").unwrap();
@@ -897,24 +889,6 @@ mod control_tests {
             f.set_text("nope", "1")
                 .unwrap_err()
                 .contains("unknown option")
-        );
-    }
-    #[test]
-    fn preserves_startup_compile_setting_without_adding_an_unset_value() {
-        for value in ["120", "0", "not-numeric"] {
-            let input = format!("wasm.compile_timeout_secs:{value}\n");
-            let saved = OptionsFile::parse(&input).serialize();
-            assert_eq!(
-                OptionsFile::parse(&saved)
-                    .wasm_compile_timeout_secs
-                    .as_deref(),
-                Some(value)
-            );
-        }
-        assert!(
-            OptionsFile::parse(&OptionsFile::default().serialize())
-                .wasm_compile_timeout_secs
-                .is_none()
         );
     }
 }

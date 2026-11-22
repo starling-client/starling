@@ -7,8 +7,8 @@
 //! turn, for anyone but that player. What changes reaches the player's client as any
 //! change to their food or experience does.
 use super::Game;
-use sunrise_client::entities::Experience;
 use mod_api::{PlayerExperience, PlayerRef};
+use sunrise_client::entities::Experience;
 
 impl Game<'_> {
     /// Whether `player` still names the same player on this server.
@@ -137,6 +137,12 @@ impl Game<'_> {
     pub(super) fn player_set_experience_levels(&mut self, player: PlayerRef, levels: i32) -> bool {
         self.native_player_write(player, |game| game.experience.level = levels)
     }
+    /// `Player.totalExperience`: sets the total as it is, keeping the level
+    /// and the progress. A negative total is refused: a mod-API policy, as
+    /// `Player.giveExperiencePoints` never takes it below 0.
+    pub(super) fn player_set_total_experience(&mut self, player: PlayerRef, total: i32) -> bool {
+        total >= 0 && self.native_player_write(player, |game| game.experience.total = total)
+    }
     /// `ExperienceOrb.playerTouch`: Mending repairs the player's damaged
     /// items with `points` first (`ExperienceOrb.repairPlayerItems`), then
     /// only the rest goes to their experience
@@ -172,9 +178,9 @@ impl Game<'_> {
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::*;
+    use mod_api::{EntityRef, WorldEpoch};
     use sunrise_client::{items::ItemStack, motion::PlayerMotion};
     use sunrise_core::geometry::Vec3;
-    use mod_api::{EntityRef, WorldEpoch};
 
     /// The acting player with a body, as a hook's turn finds them.
     fn acting_player(game: &mut super::Game<'_>) -> PlayerRef {
@@ -184,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn points_repair_a_damaged_mending_item_before_experience() {
         with_game(|game| {
             let player = acting_player(game);
@@ -209,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn levels_are_added_taken_and_clamped_at_zero() {
         with_game(|game| {
             let player = acting_player(game);
@@ -232,7 +238,23 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn the_total_is_set_alone_and_a_negative_one_is_refused() {
+        with_game(|game| {
+            let player = acting_player(game);
+            game.experience.level = 5;
+            game.experience.progress = 0.5;
+            assert!(game.player_set_total_experience(player, 1234));
+            assert_eq!(game.player_experience(player).unwrap().total, 1234);
+            assert_eq!(game.experience.level, 5, "the level is kept");
+            assert_eq!(game.experience.progress, 0.5, "the progress is kept");
+            assert!(!game.player_set_total_experience(player, -1));
+            assert_eq!(game.experience.total, 1234, "a refusal writes nothing");
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn more_points_than_an_int_are_refused_untouched() {
         with_game(|game| {
             let player = acting_player(game);
@@ -256,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_stale_handle_gives_nothing() {
         with_game(|game| {
             let player = acting_player(game);
@@ -266,6 +288,7 @@ mod tests {
             );
             assert!(!game.player_give_experience_points(stale, 10));
             assert!(!game.player_give_levels(stale, 1));
+            assert!(!game.player_set_total_experience(stale, 10));
             assert_eq!(game.experience.total, 0);
             assert_eq!(game.experience.level, 0);
         });

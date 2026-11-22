@@ -1,6 +1,6 @@
 use super::*;
-use sunrise_core::geometry::{Axis, VoxelShape};
 use std::sync::Arc;
+use sunrise_core::geometry::{Axis, VoxelShape};
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

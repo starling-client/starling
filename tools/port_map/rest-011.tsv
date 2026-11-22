@@ -4,17 +4,17 @@ RateKickingConnection.tickSecond	inline	crates/sunrise-client/src/lan/conn.rs::P
 UnconfiguredPipelineHandler.Inbound.channelRead	skip:other		Netty guard for packets before a protocol is set; Sunrise's connection loops only read their own phase
 UnconfiguredPipelineHandler.Inbound.write	skip:other		Netty guard for configuration tasks on the inbound pipeline; no pipeline in Sunrise
 UnconfiguredPipelineHandler.Outbound.write	skip:other		Netty guard for packets sent before a protocol is set; no pipeline in Sunrise
-VarInt.getByteSize	port	crates/sunrise-protocol/src/buf.rs::varint_size
+VarInt.getByteSize	port	crates/sunrise-core/src/vanilla_bytes.rs::varint_size
 VarLong.getByteSize	skip:java		byte-size helper with no caller here; Sunrise writes varlongs and measures the buffer
 Varint21FrameDecoder.copyVarint	inline	crates/sunrise-protocol/src/frame.rs::split	the 3-byte length read and the 'length wider than 21 bits' error
 Varint21FrameDecoder.decode	port	crates/sunrise-protocol/src/frame.rs::split	the length prefix is read by frame::header, which refuses a zero frame as corrupted, and split cuts the frame at it
 ChatType.bind	port	crates/sunrise-client/src/lan/hub/chat.rs::Hub::handle_chat	the bound takes the chat type and the sender's display name
 ChatTypeDecoration.incomingDirectMessage	skip:data		chat_type registry bootstrap; the msg decorations come from the chat_type data
 ChatTypeDecoration.outgoingDirectMessage	skip:data		chat_type registry bootstrap; the msg decorations come from the chat_type data
-ChatTypeDecoration.decorate	port	crates/sunrise-client/src/game/network/remote/mod.rs::chat_type_decorate	the chat type's translation with its style, on the client when a PlayerChat or DisguisedChat arrives
-ChatTypeDecoration.resolveParameters	port	crates/sunrise-client/src/game/network/remote/mod.rs::chat_type_decorate	the parameter list (sender, target, content) built in format_chat
+ChatTypeDecoration.decorate	port	crates/sunrise-client/src/game/network/remote/chat.rs::chat_type_decorate	the chat type's translation with its style, on the client when a PlayerChat or DisguisedChat arrives
+ChatTypeDecoration.resolveParameters	port	crates/sunrise-client/src/game/network/remote/chat.rs::chat_type_decorate	the parameter list (sender, target, content) built in format_chat
 ClickEvent.Action.filterForSerialization	port	crates/sunrise-client-core/src/component.rs::object_style	gap: minor: a disallowed action (open_file) is dropped; vanilla refuses the whole component
-CommonComponents.optionStatus	port	crates/sunrise-client-render/src/options_ui.rs::on_off	options.on / options.off text
+CommonComponents.optionStatus	port	crates/sunrise-client-render/src/options_ui_values.rs::on_off	options.on / options.off text
 CommonComponents.joinForNarration	port	crates/sunrise-client-render/src/widgets.rs::join_for_narration	the parts joined with ". " (NARRATION_SEPARATOR), as vanilla; every narrated title-and-message screen goes through it
 Component.tryCollapseToString	skip:java		JSON shape only: Text always writes the object form, which reads the same
 Component.copy	skip:java		clone; Text is Clone
@@ -49,7 +49,7 @@ HoverEvent.EntityTooltipInfo.getTooltipLines	port	crates/sunrise-client/src/game
 HoverEvent.EntityTooltipInfo.equals	skip:java		value equality
 HoverEvent.EntityTooltipInfo.hashCode	skip:java		hashing
 LastSeenMessages.updateSignature	inline	crates/sunrise-protocol/src/secure_chat.rs::signed_payload	the last-seen list written into the signed payload
-LastSeenMessages.Packed.unpack	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_packet	PlayerChat arm
+LastSeenMessages.Packed.unpack	inline	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_chat_packet	PlayerChat arm
 LastSeenMessages.Update.verifyChecksum	inline	crates/sunrise-protocol/src/secure_chat.rs::LastSeenValidator::apply_update	the checksum check; 0 means not checked
 LastSeenMessagesTracker.addPending	port	crates/sunrise-protocol/src/secure_chat.rs::LastSeenTracker::add_pending
 LastSeenMessagesTracker.addEntry	port	crates/sunrise-protocol/src/secure_chat.rs::LastSeenTracker::add_pending	inlined
@@ -78,7 +78,7 @@ RemoteChatSession.createMessageValidator	port	crates/sunrise-protocol/src/secure
 ResolutionContext.Builder.build	skip:java		builder
 SignableCommand.getArgument	port	crates/sunrise-client/src/lan/hub/chat.rs::Hub::signed_arguments	the command's message arguments, looked up by name
 SignedMessageBody.updateSignature	inline	crates/sunrise-protocol/src/secure_chat.rs::signed_payload	salt, time, content and last seen in the signed payload
-SignedMessageBody.Packed.unpack	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_packet	PlayerChat arm: the last seen only, the body is not kept
+SignedMessageBody.Packed.unpack	inline	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_chat_packet	PlayerChat arm: the last seen only, the body is not kept
 SignedMessageChain.encoder	port	crates/sunrise-protocol/src/secure_chat.rs::Encoder::sign
 SignedMessageChain.Decoder.unsigned	port	crates/sunrise-protocol/src/secure_chat.rs::Chain::unpack	no session: unsigned, or refused when the server enforces secure chat
 SignedMessageLink.updateSignature	inline	crates/sunrise-protocol/src/secure_chat.rs::signed_payload	sender, session and index in the signed payload
@@ -116,7 +116,7 @@ KeybindContents.getNestedComponent	port	crates/sunrise-client-core/src/key_displ
 KeybindContents.visit	port	crates/sunrise-client-core/src/key_display.rs::display_name	visits the nested key text
 KeybindContents.equals	skip:java		value equality
 ObjectContents.resolve	inline	crates/sunrise-client-core/src/component.rs::inline_object	the object's own fallback text: '[sprite]' for a sprite and '[name head]' for a player head, replaced by the drawn sprite
-ObjectContents.visit	port	crates/sunrise-client-render/src/hud.rs::draw_inline_object	the sprite or player head is drawn at the text's U+FFFC placeholder span, with the hat toggle and the span's tint
+ObjectContents.visit	port	crates/sunrise-client-render/src/hud/batch.rs::draw_inline_object	the sprite or player head is drawn at the text's U+FFFC placeholder span, with the hat toggle and the span's tint
 PlainTextContents.LiteralContents.visit	skip:java		leaf of the visit walk; Text holds the literal in its spans
 ScoreContents.findTargetName	inline	crates/sunrise-client/src/game/administration/commands/text_commands.rs::Game::resolve_score_component	a selector matching one entity is that entity, none is the name, more than one is an error
 ScoreContents.getScore	port	crates/sunrise-client/src/game/administration/commands/text_commands.rs::Game::resolve_score_component	the objective's value in the holder's format; empty when there is none

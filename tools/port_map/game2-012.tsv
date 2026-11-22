@@ -115,8 +115,8 @@ ChorusPlantBlock.updateShape	port	crates/sunrise-world/src/level/shapes.rs::Sim:
 ChorusPlantBlock.tick	port	crates/sunrise-world/src/level/tick.rs::Sim::tick_block	Destroys the plant when it cannot survive.
 ChorusPlantBlock.canSurvive	port	crates/sunrise-world/src/level/survive.rs::Sim::can_survive_class	Plant or support tag below, or a plant neighbour with support under it.
 ChorusPlantBlock.createBlockStateDefinition	skip:data		Block state properties come from extracted data.
-CommandBlock.neighborChanged	port	crates/sunrise-client/src/game/administration/command_blocks.rs::set_powered	Stores the redstone power and marks the condition when it turns on.
-CommandBlock.getAnalogOutputSignal	port	crates/sunrise-client/src/game/administration/command_blocks.rs::analog_signal	Success count of the command block.
+CommandBlock.neighborChanged	port	crates/sunrise-gameplay/src/command_blocks.rs::set_powered	Stores the redstone power and marks the condition when it turns on.
+CommandBlock.getAnalogOutputSignal	port	crates/sunrise-gameplay/src/command_blocks.rs::analog_signal	Success count of the command block.
 CommandBlock.rotate	skip:data		Rotation is a precomputed table from extracted data.
 CommandBlock.createBlockStateDefinition	skip:data		Block state properties come from extracted data.
 ComparatorBlock.getOutputSignal	port	crates/sunrise-world/src/level/redstone.rs::Sim::comparator_output	Stored output signal of the comparator.

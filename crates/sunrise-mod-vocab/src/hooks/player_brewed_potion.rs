@@ -5,9 +5,10 @@ pub trait Hooks {
     /// (`BrewingStandMenu.PotionSlot.onTake`): `player` is their UUID and
     /// `player_entity_id` their network id.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PlayerBrewedPotionEvent"
     )]
-    fn player_brewed_potion();
+    fn player_brewed_potion(player: u128, player_entity_id: i32, stack: &ItemStack);
 }

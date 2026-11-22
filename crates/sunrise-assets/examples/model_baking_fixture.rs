@@ -1,12 +1,12 @@
-use sunrise_assets::{
-    bake::{BlockModelTransform, ElementMatrix, bake_model_transformed},
-    model::*,
-    resolve::ModelLibrary,
-};
 use serde_json::{Value, json};
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_assets::{
+    bake::{BlockModelTransform, ElementMatrix, bake_model_transformed},
+    model::*,
+    resolve::ModelLibrary,
 };
 fn bits(value: f32) -> u32 {
     if value.is_nan() {

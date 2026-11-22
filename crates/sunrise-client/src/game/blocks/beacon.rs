@@ -17,6 +17,7 @@ use sunrise_client::{
     test_instance_block::Status,
     text::Text,
 };
+use sunrise_client_render::block_entity_reach::Reach;
 use sunrise_core::position::BlockPos;
 use sunrise_protocol::packets::play::{self, Serverbound as S};
 use sunrise_world::registry::BlockStateId;
@@ -388,9 +389,9 @@ impl Game<'_> {
             ambient: true,
             ..EffectInstance::new(id, duration, amp)
         };
-        self.potions.effects.add(ambient(primary, amplifier));
+        self.apply_player_effect(ambient(primary, amplifier));
         if let Some(s) = secondary.filter(|&s| b.levels >= 4 && s != primary) {
-            self.potions.effects.add(ambient(s, 0));
+            self.apply_player_effect(ambient(s, 0));
         }
     }
     /// Opening the menu shows the beacon's current powers.
@@ -593,12 +594,7 @@ impl Game<'_> {
                 } else {
                     "button"
                 };
-                batch.sprite(
-                    atlas,
-                    &format!("gui/sprites/container/beacon/{sprite}"),
-                    bx + x,
-                    by + y,
-                );
+                batch.sprite(atlas, &format!("container/beacon/{sprite}"), bx + x, by + y);
                 batch.sprite_scaled(
                     atlas,
                     icon,
@@ -635,16 +631,9 @@ impl Game<'_> {
             107.0,
             paid && sel[0].is_some(),
             false,
-            "gui/sprites/container/beacon/confirm",
+            "container/beacon/confirm",
         );
-        button(
-            batch,
-            190.0,
-            107.0,
-            true,
-            false,
-            "gui/sprites/container/beacon/cancel",
-        );
+        button(batch, 190.0, 107.0, true, false, "container/beacon/cancel");
         let slots: Vec<usize> = (0..36).chain([INPUT]).collect();
         self.draw_hovered_slot_highlight(batch, false, ox, oy);
         for i in slots {
@@ -692,45 +681,26 @@ impl Game<'_> {
         };
         let time = (self.world.game_time.rem_euclid(40)) as f32 + alpha as f32;
         let scoping = self.scoping();
-        // `BeaconRenderer.shouldRender` culls at the render distance; far
-        // terrain extends that to its own distance.
-        let view = f64::from(self.terrain_distance() * 16);
-        let world = &self.world;
-        if self.lod.is_some() {
-            // The beam stays after its chunk unloads; once the chunk is back,
-            // its block entity decides whether the beam is still there.
-            self.far_beacons.retain(|&pos, _| {
-                let (x, _, z) = pos;
-                !world.chunks.contains_key(&(x >> 4, z >> 4))
-                    || world
-                        .block_entities
-                        .get(&pos)
-                        .is_some_and(|e| beam(e).is_some() || is_test_instance_beam(e))
-            });
-        } else {
-            self.far_beacons.clear();
-        }
-        let test_beams: Vec<_> = world
-            .block_entities
-            .iter()
-            .filter_map(|(k, e)| Some((*k, self.test_instance_beam(e)?)))
-            .collect();
-        for (k, e) in &world.block_entities {
-            if let Some(sections) = beam(e) {
-                self.far_beacons.insert(*k, sections.to_vec());
-            }
-        }
-        for (k, sections) in test_beams {
-            self.far_beacons.insert(k, sections);
-        }
-        for (k, sections) in &self.far_beacons {
+        // `BeaconRenderer.shouldRender` and `TestInstanceRenderer.shouldRender` cull at the
+        // effective render distance.
+        let view = self.effective_render_distance();
+        let beams = self.world.block_entities.iter().filter_map(|(k, e)| {
+            let (reach, sections) = match beam(e) {
+                Some(sections) => (Reach::Beacon, std::borrow::Cow::Borrowed(sections)),
+                None => (
+                    Reach::TestInstance,
+                    std::borrow::Cow::Owned(self.test_instance_beam(e)?),
+                ),
+            };
+            Some((k, reach, sections))
+        });
+        for (k, reach, sections) in beams {
             let base = glam::DVec3::new(f64::from(k.0) + 0.5, f64::from(k.1), f64::from(k.2) + 0.5);
-            let offset = base - camera;
-            let horizontal = glam::DVec2::new(offset.x, offset.z).length();
-            if horizontal >= view {
+            if !reach.should_render([k.0, k.1, k.2], camera, view) {
                 continue;
             }
-            let distance = horizontal as f32;
+            let offset = base - camera;
+            let distance = glam::DVec2::new(offset.x, offset.z).length() as f32;
             let scale = if scoping {
                 1.0
             } else {
@@ -740,17 +710,15 @@ impl Game<'_> {
                 - camera)
                 .as_vec3();
             let start = out.len();
-            sunrise_client::block_entity_render::beacon_beam(origin, sections, time, scale, s, out);
+            sunrise_client::block_entity_render::beacon_beam(
+                origin, &sections, time, scale, s, out,
+            );
             // HDR output: the beam shines (entity.wgsl fs_hdr_mark).
             for v in &mut out[start..] {
                 v.layer |= u32::from(sunrise_client::mesher::BRIGHT) << 16;
             }
         }
     }
-}
-/// Whether a test instance block shows a beam (`getBeamSections` not empty).
-fn is_test_instance_beam(e: &BlockEntity) -> bool {
-    matches!(e, BlockEntity::TestInstanceBlock(b) if b.data.status != Status::Cleared)
 }
 /// The beam sections of an active beacon (`BeaconRenderer` draws no beam for
 /// a beacon without a pyramid or with all sections cleared).

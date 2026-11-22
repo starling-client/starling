@@ -12,11 +12,16 @@ Use biome content, region declarations and level handles to control biome genera
 | Find the nearest biome or tag | `LevelRef::find_closest_biome` with a `BiomeSearch` | Server |
 | Change a biome | `LevelRef::set_biome`, one 4x4x4 cell, as `/fillbiome` does | Server |
 | Run bone meal at a position | `LevelRef::bone_meal` | Server |
+| Place a feature (a tree, a patch, an ore vein) | `LevelRef::place_feature`, as `/place feature` does ([placing a template](placing-a-template.md#placing-a-feature)) | Server |
+| Add a feature type of my own (my tree's shape) | `Registrar::register_feature_type`, named by a configured feature's `"type"` ([feature types](feature-types.md)) | Both |
+| Read a position's blended biome tint | [`ClientHost::biome_tint(pos, resolver)`](read-biome-data.md#read-blended-biome-tints-on-the-client), or `BlockAndTintGetter::block_tint(pos, resolver)` in `BlockTintSource` callbacks | Client |
 | Tint foliage, grass or water by biome | The `register_color_resolvers` hook for new colour resolvers, and the `biome_colors` hook to change a biome's own colours | Client |
 
 Code and file modifiers support features, spawns, spawn costs, carvers, climate and effects. They apply additions,
 then removals, then modifications when the world loads, after its data packs. Mods cannot choose explicit phases
-or supply custom biome-modifier serializers ([content mods](../content-mods.md)).
+or supply custom biome-modifier serializers ([content mods](../content-mods.md)). Colour-resolver handles
+refer to the slots of [successfully registered resolvers](../../concepts/load-phases.md#registration-and-setup);
+a failed callback does not consume a slot.
 
 ## Adopt installed biome regions
 

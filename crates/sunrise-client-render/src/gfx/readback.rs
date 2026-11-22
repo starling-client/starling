@@ -181,9 +181,8 @@ mod tests {
     const F: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&Default::default())).ok()
+        let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;
+        Some((device, queue))
     }
 
     fn texture(device: &wgpu::Device, usage: wgpu::TextureUsages) -> wgpu::Texture {
@@ -348,8 +347,7 @@ mod tests {
     #[ignore = "daily"]
     fn a_16_bit_unorm_frame_reaches_an_8_bit_swapchain() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
             return;
         };
         let wide = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
@@ -361,7 +359,9 @@ mod tests {
             required_features: wide,
             ..Default::default()
         };
-        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&descriptor)) else {
+        let Some((device, queue)) =
+            crate::gfx::test_gpu::optional_device_with(&adapter, &descriptor)
+        else {
             return;
         };
         let color = wgpu::Color {
@@ -381,11 +381,11 @@ mod tests {
     #[ignore = "daily"]
     fn a_float_frame_reaches_an_8_bit_swapchain() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
             return;
         };
-        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        let Some((device, queue)) =
+            crate::gfx::test_gpu::optional_device_with(&adapter, &Default::default())
         else {
             return;
         };

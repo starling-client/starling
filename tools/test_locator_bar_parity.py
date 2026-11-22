@@ -207,7 +207,7 @@ def generate_world(server_command, build):
     return directory / 'world'
 
 
-def run_side(label, server_command, client_command, build, world):
+def run_side(label, server_command, client_command, build, world, *, script=SCRIPT, step_ticks=None):
     directory = build / label
     port = server_dir(directory, world)
     out = build / f'{label}.txt'
@@ -219,7 +219,7 @@ def run_side(label, server_command, client_command, build, world):
             client = Client(client_command, port, out, log)
             joined = []
             try:
-                for step, console, actions in SCRIPT:
+                for step, console, actions in script:
                     client.tell(f'step {step}')
                     for command in console:
                         server.console(command)
@@ -232,7 +232,7 @@ def run_side(label, server_command, client_command, build, world):
                             joined.append(rest[0])
                         elif verb == 'quit':
                             joined.remove(rest[0])
-                    client.wait(server, joined, STEP_TICKS)
+                    client.wait(server, joined, (step_ticks or {}).get(step, STEP_TICKS))
                 client.end()
             finally:
                 client.kill()
@@ -266,7 +266,7 @@ def sides(name, binary=None):
                                                       cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    sunrise_server = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.LocatorBarClient']
     return lock, build, vanilla_server, sunrise_server, client
 

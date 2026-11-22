@@ -4,6 +4,7 @@ use sunrise_core::{geometry::Vec3, position::BlockPos};
 
 pub struct RestitutionInput {
     pub block: BlockStateId,
+    pub effect_position: BlockPos,
     pub collided_x: bool,
     pub collided_z: bool,
     pub vertical_collision: bool,
@@ -19,7 +20,11 @@ pub trait RestitutionWorld {
     fn velocity(&mut self) -> Result<Vec3, Self::Error>;
     fn effective_gravity(&mut self) -> Result<f64, Self::Error>;
     fn block_suppresses_bounce(&mut self, block: BlockStateId) -> Result<bool, Self::Error>;
-    fn block_bounce_restitution(&mut self, block: BlockStateId) -> Result<f32, Self::Error>;
+    fn block_bounce_restitution(
+        &mut self,
+        block: BlockStateId,
+        position: BlockPos,
+    ) -> Result<f32, Self::Error>;
     fn air_drag(&mut self) -> Result<f32, Self::Error>;
     fn movement_support_position(&mut self) -> Result<BlockPos, Self::Error>;
     /// `Block.bounceOn`: the entity bounced off `block`; `movement` is what the bounce leaves
@@ -75,7 +80,8 @@ pub fn restitute_movement<W: RestitutionWorld>(
             {
                 bounce = 0.0;
             } else {
-                let mut block = world.block_bounce_restitution(input.block)?;
+                let mut block =
+                    world.block_bounce_restitution(input.block, input.effect_position)?;
                 if !input.living {
                     block *= 0.8f32;
                 }

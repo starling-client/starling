@@ -1,6 +1,7 @@
 //! Observable fire state, sounds and ordered random draws through typed handles.
 #![cfg(test)]
 use crate::game::native_entity_refs::tests::with_game;
+use std::sync::Arc;
 use sunrise_client::{
     entities::{ArmorStand, ItemEntity},
     items::ItemStack,
@@ -11,7 +12,6 @@ use sunrise_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
 };
-use std::sync::Arc;
 
 // java.util.Random(1234): first floats .6465821266174316, .2597898840904236,
 // then .9513576626777649. Java float arithmetic gives pitch bits 0x3fe09a90.
@@ -20,7 +20,7 @@ const THIRD: f32 = 0.95135766;
 const PITCH: u32 = 0x3fe09a90;
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn extinguish_fire_uses_mob_kind_immunity_and_own_random_unlike_silent_clear() {
     with_game(|game| {
         let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
@@ -66,7 +66,7 @@ fn extinguish_fire_uses_mob_kind_immunity_and_own_random_unlike_silent_clear() {
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn extinguish_fire_preserves_player_guest_stand_and_item_sound_routes() {
     crate::game::native_guest_turn_tests::with_guests(|game| {
         let at = Vec3::new(3.0, 64.0, 5.0);

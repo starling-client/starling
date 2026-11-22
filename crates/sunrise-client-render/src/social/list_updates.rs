@@ -1,4 +1,4 @@
-use super::service::{Failure, Service, fetch_friends, session};
+use super::service::{Answer, Failure, Service, fetch_friends, session};
 use super::{FriendData, ResultCode, lock, parse_friends};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -140,32 +140,43 @@ pub(super) fn update_friend_data() {
     inner.service.pending = false;
     inner.handler.forced = false;
     inner.handler.last_update = Some(Instant::now());
+    let inner = &mut *inner;
+    apply_friend_data_answer(&mut inner.service, &mut inner.handler, result);
+}
+
+/// `getFriendData`'s answer: the cached lists and their ETag change only together,
+/// when a fresh body parses. A 304, an empty body or a parse failure keeps both.
+fn apply_friend_data_answer(
+    service: &mut Service,
+    handler: &mut Handler,
+    result: Result<Answer, Failure>,
+) {
     match result {
         Ok(answer) => {
             if let Some(retry) = answer.retry_after {
-                inner.service.friends_poll = Some(retry);
-            }
-            if let Some(etag) = answer.etag {
-                inner.service.friends_etag = Some(etag);
+                service.friends_poll = Some(retry);
             }
             if answer.status != 304 && !answer.body.is_empty() {
                 match parse_friends(&answer.body) {
-                    Some(data) => inner.service.friends_cache = data,
+                    Some(data) => {
+                        service.friends_cache = data;
+                        service.friends_etag = answer.etag;
+                    }
                     None => {
                         // authlib's parse failure is an ERROR result: the handler keeps
                         // the cached lists and shows the generic error.
-                        inner.handler.latest = inner.service.friends_cache.clone();
-                        inner.handler.state = State::GenericError;
+                        handler.latest = service.friends_cache.clone();
+                        handler.state = State::GenericError;
                         return;
                     }
                 }
             }
-            inner.handler.latest = inner.service.friends_cache.clone();
-            inner.handler.state = State::Success;
+            handler.latest = service.friends_cache.clone();
+            handler.state = State::Success;
         }
         Err(failure) => {
-            inner.handler.latest = inner.service.friends_cache.clone();
-            inner.handler.state = State::of(failure.code);
+            handler.latest = service.friends_cache.clone();
+            handler.state = State::of(failure.code);
             log::warn!(
                 "Friends List update failed with result code: {:?}",
                 failure.code
@@ -176,7 +187,99 @@ pub(super) fn update_friend_data() {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Friend;
     use super::*;
+
+    fn answer(status: u16, etag: Option<&str>, body: &str) -> Answer {
+        Answer {
+            status,
+            etag: etag.map(str::to_owned),
+            retry_after: None,
+            body: body.to_owned(),
+        }
+    }
+
+    fn data(name: &str) -> FriendData {
+        FriendData {
+            friends: vec![Friend {
+                id: 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef,
+                name: name.into(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn seeded() -> (Service, Handler) {
+        let mut service = Service::default();
+        service.friends_etag = Some("A".into());
+        service.friends_cache = data("Alice");
+        (service, Handler::default())
+    }
+
+    const BOB: &str = r#"{"friends":[{"profileId":"0123456789abcdef0123456789abcdef","name":"Bob"}],"incomingRequests":[],"outgoingRequests":[]}"#;
+
+    #[test]
+    fn etag_survives_304_with_a_new_header() {
+        let (mut service, mut handler) = seeded();
+        apply_friend_data_answer(&mut service, &mut handler, Ok(answer(304, Some("B"), "")));
+        assert_eq!(service.friends_etag.as_deref(), Some("A"));
+        assert_eq!(service.friends_cache, data("Alice"));
+        assert_eq!(handler.state, State::Success);
+        assert_eq!(handler.latest, data("Alice"));
+    }
+
+    #[test]
+    fn etag_survives_empty_200_with_a_new_header() {
+        let (mut service, mut handler) = seeded();
+        apply_friend_data_answer(&mut service, &mut handler, Ok(answer(200, Some("B"), "")));
+        assert_eq!(service.friends_etag.as_deref(), Some("A"));
+        assert_eq!(service.friends_cache, data("Alice"));
+        assert_eq!(handler.state, State::Success);
+    }
+
+    #[test]
+    fn etag_survives_malformed_200_body() {
+        let (mut service, mut handler) = seeded();
+        apply_friend_data_answer(&mut service, &mut handler, Ok(answer(200, Some("B"), "{")));
+        assert_eq!(service.friends_etag.as_deref(), Some("A"));
+        assert_eq!(service.friends_cache, data("Alice"));
+        assert_eq!(handler.state, State::GenericError);
+        assert_eq!(handler.latest, data("Alice"));
+    }
+
+    #[test]
+    fn valid_200_without_etag_clears_old_etag() {
+        let (mut service, mut handler) = seeded();
+        apply_friend_data_answer(&mut service, &mut handler, Ok(answer(200, None, BOB)));
+        assert_eq!(service.friends_etag, None);
+        assert_eq!(service.friends_cache, data("Bob"));
+        assert_eq!(handler.state, State::Success);
+        assert_eq!(handler.latest, data("Bob"));
+    }
+
+    #[test]
+    fn valid_200_with_etag_replaces_both() {
+        let (mut service, mut handler) = seeded();
+        apply_friend_data_answer(&mut service, &mut handler, Ok(answer(200, Some("B"), BOB)));
+        assert_eq!(service.friends_etag.as_deref(), Some("B"));
+        assert_eq!(service.friends_cache, data("Bob"));
+    }
+
+    #[test]
+    fn failed_request_keeps_etag() {
+        let (mut service, mut handler) = seeded();
+        apply_friend_data_answer(
+            &mut service,
+            &mut handler,
+            Err(Failure {
+                code: ResultCode::Unauthorized,
+            }),
+        );
+        assert_eq!(service.friends_etag.as_deref(), Some("A"));
+        assert_eq!(service.friends_cache, data("Alice"));
+        assert_eq!(handler.state, State::Unauthorized);
+        assert_eq!(handler.latest, data("Alice"));
+    }
 
     #[test]
     fn result_codes_map_to_the_handlers_states() {

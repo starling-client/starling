@@ -2,25 +2,11 @@
 //! a server in its Multiplayer list (vanilla's `ServerStatusPinger`): a handshake asking for the
 //! status state, a status request, and the server's JSON answer. Nothing about the asker is sent.
 //!
-//! The launcher shows the official server's count beside "N playing now", and the telemetry
-//! server writes it down every minute for playsunrise.net/stats (`history`, the `official`
-//! series). [`OFFICIAL_ADDRESS`] is the official server's built-in address for both; the launcher
-//! takes the current one from `launcher/links.json`.
+//! The launcher's Multiplayer list shows each server's count, and the telemetry server can write
+//! one server's down every minute (`history`, the `official` series).
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
-
-/// Sunrise's official survival server (SMP), from `sunrise_addresses`. The launcher's server list
-/// offers the same entry (`launcher/src/server_list.rs`) until links.json names another; the
-/// telemetry server's `SUNRISE_TELEMETRY_OFFICIAL_SERVER` overrides it there.
-pub const OFFICIAL_ADDRESS: &str = sunrise_addresses::OFFICIAL_SERVER;
-
-/// The official server's earlier addresses ([`sunrise_addresses::OFFICIAL_SERVER_PREVIOUS`]).
-pub const OFFICIAL_PREVIOUS: &[&str] = sunrise_addresses::OFFICIAL_SERVER_PREVIOUS;
-
-/// [`OFFICIAL_ADDRESS`] with the port its SRV record gives, for askers that don't look SRV up
-/// (the telemetry server).
-pub const OFFICIAL_STATUS_ADDRESS: &str = sunrise_addresses::OFFICIAL_SERVER_STATUS;
 
 /// The port a server address without one means.
 pub const DEFAULT_PORT: u16 = 25565;

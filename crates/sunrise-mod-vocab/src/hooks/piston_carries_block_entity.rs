@@ -32,12 +32,20 @@ pub trait Hooks {
     /// `IBlockExtension.getRelocability` is an unrelated region-copy query that
     /// pistons do not ask. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "replace",
         out = "movable",
         scope = "block",
         key = "state",
+        neoforge = "none (NeoForge has no counterpart; IBlockExtension.getRelocability is unrelated)",
         target = "sunrise_client::game::native_hooks::piston_carries_block_entity::GameLevel<'_>::native_piston_carries_block_entity"
     )]
-    fn piston_carries_block_entity();
+    fn piston_carries_block_entity(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        movable: &mut Option<bool>,
+    );
 }

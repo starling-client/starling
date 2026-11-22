@@ -1,0 +1,3 @@
+ids = ["hook:register_load_conditions"]
+why = "register_load_conditions version 2 allows registration in any namespace, matching condition type registration. Built-in and duplicate IDs refuse mod load. Foreign registrations do not own a condition namespace or change its unknown-ID handling."
+migrate = "Implement Hooks::register_load_conditions and rebuild against this SDK. Registrants may use another namespace; each full ID still has exactly one handler."

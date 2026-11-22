@@ -3,17 +3,21 @@ use super::Game;
 use mod_api::LevelRef;
 
 impl Game<'_> {
-    /// The datapack registry set of this level's world session, when the level is the open one:
-    /// the server's own, or on a client the one its server sent at the join.
+    /// The datapack registry set of this level's world session: on the logical server, the
+    /// server's own set for both the active dimension and any parked loaded dimension
+    /// (matching vanilla `Level.registryAccess()` on `ServerLevel`); on a client, the set its
+    /// server sent at the join for the active client level.
     fn level_datapack_set(
         &self,
         level: LevelRef,
     ) -> Option<std::sync::Arc<mod_api::DatapackRegistrySet>> {
-        (self.level_handle_current(level) && level.dimension() == self.native_level_key())
-            .then_some(())?;
         if self.is_logical_server() {
+            self.native_level_world(level)?;
             self.mods.datapack_registries.clone()
         } else {
+            if !self.level_handle_current(level) || level.dimension() != self.native_level_key() {
+                return None;
+            }
             sunrise_client::datapack_net::received()
         }
     }
@@ -34,28 +38,22 @@ impl Game<'_> {
         Some(entries)
     }
 
-    /// A handle to one entry at the generation now loaded.
-    pub(super) fn level_datapack_handle(
+    /// Visit the published entry `entry` of `registry`.
+    pub(super) fn level_datapack_read(
         &self,
         level: LevelRef,
         registry: &str,
         entry: &str,
-    ) -> Result<mod_api::DatapackHandle, mod_api::DatapackReadError> {
-        self.level_datapack_set(level)
-            .ok_or(mod_api::DatapackReadError::UnknownRegistry)?
-            .handle(registry, entry)
-    }
-
-    /// The fields of the entry a handle names, after the handle's session and generation check.
-    pub(super) fn level_datapack_read(
-        &self,
-        level: LevelRef,
-        handle: &mod_api::DatapackHandle,
-    ) -> Result<Vec<(String, mod_api::DatapackValue)>, mod_api::DatapackReadError> {
+        visit: &mut dyn FnMut(&mod_api::DatapackEntry),
+    ) -> Result<(), mod_api::DatapackReadError> {
         let set = self
             .level_datapack_set(level)
             .ok_or(mod_api::DatapackReadError::UnknownRegistry)?;
-        Ok(set.get(handle)?.values.clone())
+        if !set.registry_available(registry) {
+            return Err(mod_api::DatapackReadError::UnknownRegistry);
+        }
+        visit(set.get(registry, entry)?);
+        Ok(())
     }
 }
 
@@ -64,7 +62,7 @@ mod tests {
     use mod_api::{DatapackReadError as E, *};
 
     #[test]
-    #[ignore = "needs prepared resources and isolated homes"]
+    #[ignore = "daily"]
     fn level_registry_reads_check_world_session_and_generation() {
         struct RegistryMod;
         #[mod_api::__subscriptions]
@@ -87,60 +85,94 @@ mod tests {
                 super::super::native_entity_refs::tests::with_game(|game| {
                     game.install_live_features();
                     let level = game.level(game.dim.id()).unwrap();
-                    let candidate = || {
+                    let candidate = |power: i64| {
                         DatapackCandidate::build(
                             mod_api::__private::datapack_registry_declarations(),
                             &[(
                                 "data/addon/example/spell/fire.json".into(),
-                                vec![("pack".to_owned(), br#"{"power":7}"#.to_vec())],
+                                vec![(
+                                    "pack".to_owned(),
+                                    format!(r#"{{"power":{power}}}"#).into_bytes(),
+                                )],
                             )],
                         )
                         .unwrap()
                     };
-                    let first = DatapackRegistrySet::first(candidate(), 123);
-                    game.mods.datapack_registries = Some(std::sync::Arc::new(first.clone()));
+                    game.mods.datapack_registries = Some(std::sync::Arc::new(
+                        DatapackRegistrySet::from_candidate(candidate(7)),
+                    ));
                     assert_eq!(
                         game.level_datapack_entries(level, "example:spell"),
                         Some(vec!["addon:fire".into()])
                     );
+                    let mut visited_refusal = false;
+                    let mut unexpected_visit = |_: &DatapackEntry| visited_refusal = true;
                     for invalid in [
                         LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension()),
                         LevelRef::new(level.epoch(), DimensionKey::NETHER),
                     ] {
                         assert_eq!(game.level_datapack_entries(invalid, "example:spell"), None);
                         assert_eq!(
-                            game.level_datapack_handle(invalid, "example:spell", "addon:fire"),
+                            game.level_datapack_read(
+                                invalid,
+                                "example:spell",
+                                "addon:fire",
+                                &mut unexpected_visit,
+                            ),
                             Err(E::UnknownRegistry)
                         );
                     }
-                    let handle = game
-                        .level_datapack_handle(level, "example:spell", "addon:fire")
-                        .unwrap();
+                    let mut visits = 0;
+                    game.level_datapack_read(level, "example:spell", "addon:fire", &mut |entry| {
+                        assert_eq!(entry.values, [("power".to_owned(), DatapackValue::Int(7))]);
+                        visits += 1;
+                    })
+                    .unwrap();
+                    assert_eq!(visits, 1);
+                    // Open and park the Nether; parked loaded server dimensions share registryAccess.
+                    game.enter_level(crate::game::Dim::Nether).unwrap();
+                    game.enter_level(crate::game::Dim::Overworld).unwrap();
+                    let parked = LevelRef::new(level.epoch(), DimensionKey::NETHER);
                     assert_eq!(
-                        game.level_datapack_read(level, &handle),
-                        Ok(vec![("power".into(), DatapackValue::Int(7))])
+                        game.level_datapack_entries(parked, "example:spell"),
+                        Some(vec!["addon:fire".into()])
                     );
+                    let mut parked_visits = 0;
+                    game.level_datapack_read(parked, "example:spell", "addon:fire", &mut |entry| {
+                        assert_eq!(entry.values, [("power".to_owned(), DatapackValue::Int(7))]);
+                        parked_visits += 1;
+                    })
+                    .unwrap();
+                    assert_eq!(parked_visits, 1);
                     assert_eq!(
-                        game.level_datapack_handle(level, "example:missing", "addon:fire"),
+                        game.level_datapack_read(
+                            level,
+                            "example:missing",
+                            "addon:fire",
+                            &mut unexpected_visit,
+                        ),
                         Err(E::UnknownRegistry)
                     );
                     assert_eq!(
-                        game.level_datapack_handle(level, "example:spell", "addon:missing"),
+                        game.level_datapack_read(
+                            level,
+                            "example:spell",
+                            "addon:missing",
+                            &mut unexpected_visit,
+                        ),
                         Err(E::MissingEntry)
                     );
-                    game.mods.datapack_registries =
-                        Some(std::sync::Arc::new(first.reload(candidate()).unwrap()));
-                    assert_eq!(
-                        game.level_datapack_read(level, &handle),
-                        Err(E::StaleGeneration)
-                    );
                     game.mods.datapack_registries = Some(std::sync::Arc::new(
-                        DatapackRegistrySet::first(candidate(), 124),
+                        DatapackRegistrySet::from_candidate(candidate(9)),
                     ));
-                    assert_eq!(
-                        game.level_datapack_read(level, &handle),
-                        Err(E::WrongSession)
-                    );
+                    let mut reloaded_visits = 0;
+                    game.level_datapack_read(parked, "example:spell", "addon:fire", &mut |entry| {
+                        assert_eq!(entry.values, [("power".to_owned(), DatapackValue::Int(9))]);
+                        reloaded_visits += 1;
+                    })
+                    .unwrap();
+                    assert_eq!(reloaded_visits, 1);
+                    assert!(!visited_refusal);
                 });
             },
         );

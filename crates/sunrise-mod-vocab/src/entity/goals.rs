@@ -7,7 +7,7 @@
 //! ```no_run
 //! # use mod_api::{
 //! #     EntityPart, Goal, GoalContext, GoalFlags, GoalRegistrar, Hooks, Registrar,
-//! #     RegistrationContext, RandomSource,
+//! #     RegistrationContext,
 //! # };
 //! # use std::sync::atomic::{AtomicU32, Ordering};
 //! #[derive(Default)]
@@ -36,10 +36,10 @@
 //!         "Stare"
 //!     }
 //!     fn can_use(&mut self, cx: &mut GoalContext<'_>) -> bool {
-//!         cx.random().next_int_bound(40).unwrap_or(0) == 0
+//!         cx.random().next_int_bound(40) == 0
 //!     }
 //!     fn start(&mut self, cx: &mut GoalContext<'_>) {
-//!         self.ticks = 20 + cx.random().next_int_bound(40).unwrap_or(0) as u32;
+//!         self.ticks = 20 + cx.random().next_int_bound(40) as u32;
 //!     }
 //!     fn tick(&mut self, cx: &mut GoalContext<'_>) {
 //!         self.ticks -= 1;
@@ -60,7 +60,7 @@
 //!     }
 //! }
 //! ```
-use crate::{Host, LegacyRandom, LivingRef, MobRef};
+use crate::{Host, LivingRef, MobRef, MoveToPathError, PathNode, RandomSource};
 
 /// The MOVE, LOOK, JUMP and TARGET bits a [`Goal`] claims, as vanilla's
 /// `Goal.Flag` set does: at most one goal holding each flag runs at a time, and
@@ -232,13 +232,27 @@ impl<'a> GoalContext<'a> {
     }
     /// The mob's own random (`mob.getRandom()`): the stream vanilla's goals
     /// draw from, so a mod's draws keep the mob's stream in shape.
-    pub fn random(&mut self) -> &mut LegacyRandom {
+    pub fn random(&mut self) -> &mut dyn RandomSource {
         self.inner.random()
     }
     /// `getNavigation().moveTo(x, y, z, speed)`: start a path to `at`. False
     /// when the numbers are not ones the pathfinder takes or no path starts.
+    /// As in vanilla, a goal of the mob's own that creates a path replaces
+    /// this one next tick.
     pub fn move_to(&mut self, at: [f64; 3], speed: f64) -> bool {
         self.inner.move_to(at, speed)
+    }
+    /// `getNavigation().moveTo(path, speed)`: follow a path the mod computed,
+    /// as [`MobRef::move_to_path`](crate::MobRef::move_to_path) does on the
+    /// handle. The engine classifies each node's type on submit and trims the
+    /// path; the path is followed as given rather than judged by that type.
+    /// A supplied path keeps no recompute target, so a block change on it or
+    /// the stuck check drops it without a search. As in vanilla, a goal of the
+    /// mob's own that creates a path replaces this one next tick. The mob this
+    /// goal runs on is always there, so the refusals are `NotFinite` and
+    /// `Empty`, the same [`MoveToPathError`] the handle answers.
+    pub fn move_to_path(&mut self, path: Vec<PathNode>, speed: f64) -> Result<(), MoveToPathError> {
+        self.inner.move_to_path(path, speed)
     }
     /// `getNavigation().stop()`.
     pub fn stop_navigation(&mut self) {
@@ -269,9 +283,11 @@ pub trait GoalCxBackend {
     /// `GoalContext::mob`.
     fn mob(&self) -> MobRef;
     /// `GoalContext::random`.
-    fn random(&mut self) -> &mut LegacyRandom;
+    fn random(&mut self) -> &mut dyn RandomSource;
     /// `GoalContext::move_to`.
     fn move_to(&mut self, at: [f64; 3], speed: f64) -> bool;
+    /// `GoalContext::move_to_path`.
+    fn move_to_path(&mut self, path: Vec<PathNode>, speed: f64) -> Result<(), MoveToPathError>;
     /// `GoalContext::stop_navigation`.
     fn stop_navigation(&mut self);
     /// `GoalContext::look_at`.

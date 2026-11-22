@@ -1,0 +1,4 @@
+id = "refused_manifest_reserved_namespace"
+name = "Refused manifest reserved namespace"
+version = "1.2.3"
+namespaces = ["sunrise"]

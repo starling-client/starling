@@ -1,8 +1,9 @@
 //! Lookup and save order of the entities a chunk loads with, across storage
-//! families. `tools/test_chunk_entity_order_parity.py` compares the printed
-//! sequences with the real `PersistentEntitySectionManager`.
+//! families, of an entity spawned during play and of one that crosses into
+//! another section. `tools/test_chunk_entity_order_parity.py` compares the
+//! printed sequences with the real `PersistentEntitySectionManager`.
 use super::*;
-use crate::game::native_entity_refs::tests::with_game;
+use crate::game::native_entity_refs::tests::{collect_game_all_entities, with_game};
 
 fn doubles(values: [f64; 3]) -> Tag {
     Tag::List(
@@ -31,7 +32,7 @@ fn name(tag: &Tag) -> i32 {
 /// Every lookup member's name, in lookup order.
 fn lookup_order(game: &mut Game<'_>) -> Vec<i32> {
     let level = game.level(game.dim.id()).unwrap();
-    let members = game.level_all_entities(level).unwrap();
+    let members = collect_game_all_entities(game, level).unwrap();
     members
         .into_iter()
         .filter_map(|e| game.persist.uuids.get(&e.id()).copied())
@@ -59,7 +60,7 @@ fn snapshot(game: &mut Game<'_>) -> Vec<i32> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn chunk_loaded_families_keep_vanilla_lookup_and_save_order() {
     with_game(|game| {
         let a = (0, 0);
@@ -129,7 +130,40 @@ fn chunk_loaded_families_keep_vanilla_lookup_and_save_order() {
         let state = game.capture_vehicle_tree_state(pig).unwrap();
         game.remove_vehicle_tree(pig);
         lookup.push(snapshot(game));
+        // An arrow is fired while the pig is away. It joins its storage with
+        // no id, and only gets one after the pig is back.
+        let arrow = sunrise_client::projectiles::Projectile::new(
+            sunrise_client::projectiles::ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(21.5, 70.0, 2.5),
+            None,
+        );
+        game.creatures.projectiles.push(arrow);
         game.restore_vehicle_tree_state(tag, state).unwrap();
+        crate::game::entity_residency::assign_resident_ids!(
+            game.creatures.projectiles,
+            p,
+            &mut game.next_entity,
+            Some(&p.attachment_lifetime)
+        );
+        let arrow = game.creatures.projectiles.last().unwrap().id;
+        game.persist.uuids.insert(arrow, [2703, 0, 0, 14]);
+        lookup.push(snapshot(game));
+        // The TNT falls from section 4 into section -2, behind the armor stand.
+        // Its id since the reload: the map still holds the one it had before.
+        let uuids = &game.persist.uuids;
+        let tnt = game
+            .tnts
+            .iter_mut()
+            .find(|t| uuids.get(&t.id) == Some(&[2703, 0, 0, 1]));
+        let tnt = tnt.unwrap();
+        tnt.position.y = -20.0;
+        // Its movement boundary reports the crossing as it happens.
+        let tnt = tnt.id;
+        game.resident_entities.table.get_mut().entered_section(tnt);
         lookup.push(snapshot(game));
         let mut chunks = game.entity_chunks(&HashSet::from([a, b]), false);
         chunks.sort_by_key(|(key, _)| *key);
@@ -142,16 +176,52 @@ fn chunk_loaded_families_keep_vanilla_lookup_and_save_order() {
                 vec![9, 10, 13, 11, 12],
                 vec![9, 10, 13, 11, 12, 6, 1, 2, 3, 4, 5, 7, 8],
                 vec![9, 10, 13, 11, 12, 6, 1, 3, 4, 5, 7, 8],
-                vec![9, 10, 13, 11, 12, 6, 1, 3, 4, 5, 7, 8, 2],
+                vec![9, 10, 13, 11, 12, 6, 1, 3, 4, 5, 7, 8, 14, 2],
+                vec![9, 10, 13, 11, 12, 6, 1, 3, 4, 5, 7, 8, 14, 2],
             ]
         );
         assert_eq!(unload, vec![vec![0, 0, 6, 1, 2, 3, 4, 7, 8]]);
         assert_eq!(
             save,
             vec![
-                vec![0, 0, 6, 1, 3, 4, 7, 2, 8],
-                vec![1, 0, 9, 10, 13, 11, 12]
+                vec![0, 0, 6, 3, 4, 7, 2, 8, 1],
+                vec![1, 0, 9, 10, 13, 11, 12, 14]
             ]
         );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_crossing_without_a_listener_saves_after_the_entity_already_in_the_section() {
+    with_game(|game| {
+        assert!(!mod_api::__private::listened(
+            mod_api::HookId::EntityEnteringSection
+        ));
+        let key = (0, 0);
+        game.world
+            .chunks
+            .insert(key, Arc::new(Chunk::empty(key.0, key.1)));
+        // The pig joins first, in section 0; the zombie after it, in section 4.
+        game.world.queue_entity_nbt(
+            key,
+            vec![
+                saved("minecraft:pig", 1, [3.5, 10.0, 3.5], vec![]),
+                saved("minecraft:zombie", 2, [2.5, 70.0, 2.5], vec![]),
+            ],
+        );
+        game.spawn_loaded_entities();
+        let save =
+            |game: &mut Game<'_>| saved_order(&game.entity_chunks(&HashSet::from([key]), false));
+        assert_eq!(save(game), vec![vec![0, 0, 1, 2]]);
+        // The pig walks up into section 4, which already holds the zombie.
+        let id = game.mob_by_uuid([2703, 0, 0, 1]).unwrap();
+        let pig = game.mobs.iter().position(|m| m.id == id).unwrap();
+        let from = game.mobs[pig].position;
+        let to = Vec3::new(from.x, 70.0, from.z);
+        game.mobs.update(pig, |m| m.position = to);
+        game.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
+        // Vanilla's onMove puts it at the end of that section, after the zombie.
+        assert_eq!(save(game), vec![vec![0, 0, 2, 1]]);
     });
 }

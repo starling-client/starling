@@ -55,7 +55,7 @@ enum View {
     GameRules,
 }
 #[derive(Clone, Copy, PartialEq)]
-struct Snapshot {
+pub(super) struct Snapshot {
     default_mode: i32,
     personal_mode: i32,
     cheats: bool,
@@ -634,7 +634,7 @@ impl Game<'_> {
         port.max_length = 5;
         // The world is the server thread's when there is one.
         let state = match &self.integrated {
-            Some(server) => match server.call(|g| g.server_options()) {
+            Some(server) => match server.ask(super::owner_link::OwnerRequest::ServerOptions) {
                 Some(state) => state,
                 None => return,
             },
@@ -832,16 +832,7 @@ impl Game<'_> {
         );
         let p = Popup::lock_question(&atlas.font, o.difficulty, (w, h));
         let (fx, fy, fw, fh) = p.frame;
-        ui::nine_slice(
-            batch,
-            atlas,
-            "gui/sprites/popup/background",
-            fx,
-            fy,
-            fw,
-            fh,
-            u32::MAX,
-        );
+        ui::nine_slice(batch, atlas, "popup/background", fx, fy, fw, fh, u32::MAX);
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Background);
         for (line, x, y) in &p.lines {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
@@ -1000,20 +991,18 @@ impl Game<'_> {
                     (true, true) => "_highlighted",
                     (true, false) => "",
                 };
-                let sprite = format!("gui/sprites/widget/{lock}_button{state}");
+                let sprite = format!("widget/{lock}_button{state}");
                 batch.sprite_scaled(atlas, &sprite, bx, by, 20.0, 20.0, u32::MAX);
                 continue;
             }
             ui::button_as(
                 batch,
                 atlas,
-                bx,
-                by,
-                bw,
-                20.0,
+                [bx, by, bw, 20.0],
                 &o.label(b),
                 active,
                 hover,
+                None,
                 |rect| o.narration(b, rect, tr),
             );
             if b == Button::Lan {
@@ -1182,24 +1171,25 @@ impl Game<'_> {
     }
 
     /// The button came up: a held scrollbar lets go (onRelease).
-    pub(super) fn world_options_release(&mut self) {
+    pub(super) fn world_options_release(&mut self) -> bool {
         if let Some(o) = self.world_options.as_mut()
             && let Some(rules) = o.rules.as_mut()
         {
-            rules.release();
+            return rules.release();
         }
+        false
     }
 
-    pub(super) fn world_options_click(&mut self) {
+    pub(super) fn world_options_click(&mut self) -> bool {
         let Some(mut o) = self.world_options.take() else {
-            return;
+            return false;
         };
         let (w, h) = self.gui_size();
         match o.view {
             View::Options => {}
             View::GameRules => {
                 let atlas = &self.gui.atlas;
-                let exit = o.rules.as_mut().and_then(|rules| {
+                let (exit, handled) = o.rules.as_mut().map_or((None, false), |rules| {
                     if rules.clicks_button(atlas, self.cursor, (w, h)) {
                         self.audio.play_button_click();
                     }
@@ -1209,7 +1199,7 @@ impl Game<'_> {
                 if let Some(exit) = exit {
                     self.close_game_rules(exit);
                 }
-                return;
+                return handled;
             }
             View::LockQuestion => {
                 let p = Popup::lock_question(&self.gui.atlas.font, o.difficulty, (w, h));
@@ -1222,12 +1212,15 @@ impl Game<'_> {
                 }
                 match hit {
                     // Yes: apply, then back to the pause menu; No: back to the options.
-                    Some(0) => return self.apply_and_close_world_options(o),
+                    Some(0) => {
+                        self.apply_and_close_world_options(o);
+                        return true;
+                    }
                     Some(_) => o.view = View::Options,
                     None => {}
                 }
                 self.world_options = Some(o);
-                return;
+                return hit.is_some();
             }
             View::Restrictions => {
                 let r =
@@ -1249,7 +1242,7 @@ impl Game<'_> {
                     self.open_options_at(false, sunrise_client::options_ui::Page::Chat);
                     self.options_to_world_options = true;
                 }
-                return;
+                return action || done;
             }
         }
         let inside = self.cursor.1 >= HEADER && self.cursor.1 < h - FOOTER;
@@ -1300,14 +1293,19 @@ impl Game<'_> {
             Some(Button::Cancel) => {
                 self.world_options = Some(o);
                 self.close_world_options();
-                return;
+                return true;
             }
             // A new lock asks first.
             Some(Button::Apply) if o.locked != o.initial.locked => o.view = View::LockQuestion,
-            Some(Button::Apply) => return self.apply_and_close_world_options(o),
+            Some(Button::Apply) => {
+                self.apply_and_close_world_options(o);
+                return true;
+            }
             None => {}
         }
+        let handled = hit.is_some() || o.port.focused;
         self.world_options = Some(o);
+        handled
     }
 
     fn apply_and_close_world_options(&mut self, o: WorldOptions) {
@@ -1701,7 +1699,7 @@ impl Game<'_> {
         }
     }
 
-    fn apply_world_options(&mut self, before: &Snapshot, wanted: &Snapshot) {
+    pub(super) fn apply_world_options(&mut self, before: &Snapshot, wanted: &Snapshot) {
         if self.external_server() {
             if self.ui.registries.permission >= 2 {
                 if wanted.difficulty != before.difficulty {
@@ -1719,7 +1717,11 @@ impl Game<'_> {
             // The server applies them; the window tells what came of
             // Open to LAN (ShareToLanScreen's messages).
             let (b, w) = (*before, *wanted);
-            server.call(move |g| g.apply_world_options(&b, &w));
+            server.ask(|done| super::owner_link::OwnerRequest::ApplyWorldOptions {
+                before: b,
+                wanted: w,
+                done,
+            });
             if w.lan != b.lan || (w.lan && w.port != b.port) {
                 let message = match (w.lan, self.lan_port()) {
                     (true, Some(port)) => Text::translate(

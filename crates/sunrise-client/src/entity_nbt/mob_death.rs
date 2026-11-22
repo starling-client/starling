@@ -1,21 +1,15 @@
 //! The existing living-health clocks plus Sunrise's cancelled-die continuation.
-use crate::{
-    mobs::Mob,
-    save::{number, put},
-};
+use super::EntityTagWriter;
+use crate::{mobs::Mob, save::number};
 use sunrise_core::nbt::Tag;
 
-pub(super) fn write(mob: &Mob, tag: &mut Tag) {
-    put(tag, "Health", Tag::Float(mob.health.max(0.0).to_bits()));
+pub(super) fn write(mob: &Mob, out: &mut EntityTagWriter) {
+    out.insert("Health".into(), Tag::Float(mob.health.max(0.0).to_bits()));
     // LivingEntity.addAdditionalSaveData: (short) casts, nothing clamped.
-    put(tag, "HurtTime", Tag::Short(mob.hurt_time as i16));
-    put(tag, "DeathTime", Tag::Short(mob.death_time as i16));
-    if mob.death_canceled {
-        put(tag, "sunrise:death_canceled", Tag::Byte(1));
-    } else if tag.get("sunrise:death_canceled").is_some()
-        && let Tag::Compound(map) = tag
-    {
-        map.remove(&"sunrise:death_canceled".into());
+    out.insert("HurtTime".into(), Tag::Short(mob.hurt_time as i16));
+    out.insert("DeathTime".into(), Tag::Short(mob.death_time as i16));
+    if !mob.death_canceled {
+        out.remove(&"sunrise:death_canceled".into());
     }
 }
 

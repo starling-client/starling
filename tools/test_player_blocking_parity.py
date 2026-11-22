@@ -24,7 +24,10 @@ def corpus():
                 stack({'!minecraft:max_damage': {}}),
                 stack({'!minecraft:damage': {}}),
                 stack({'minecraft:unbreakable': {}, 'minecraft:enchantments': {'minecraft:unbreaking': 3}}),
-                stack({'!minecraft:damage': {}, 'minecraft:enchantments': {'minecraft:unbreaking': 3}})]
+                stack({'!minecraft:damage': {}, 'minecraft:enchantments': {'minecraft:unbreaking': 3}}),
+                stack({'minecraft:blocks_attacks': {
+                    'item_damage': {'threshold': 0, 'base': 1, 'factor': 0}}}),
+                ]
     for item in variants:
         for damage in [0, 2, 8]:
             for pierce, behind, creative in [(False, False, False), (True, False, False),
@@ -60,7 +63,7 @@ def main():
                     'dev.sunriselab.parity.VanillaPlayerBlockingOracle', str(cases), str(native)], check=True)
     binary = args.binary
     if binary is None:
-        subprocess.run(['cargo', 'build', '-p', 'sunrise-client', '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         binary = lab.cargo_target() / 'debug' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     resources = args.resources or lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     rust = work / 'rust.txt'

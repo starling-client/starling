@@ -8,7 +8,8 @@ pub trait Hooks {
         out = "discard",
         scope = "block",
         key = "state",
-        neoforge = "none (Block.updateEntityAfterFallOn; dropped-item contact)"
+        neoforge = "none (Block.updateEntityAfterFallOn; dropped-item contact)",
+        version = 2
     )]
     fn item_after_vertical_collision(
         dimension: &str,

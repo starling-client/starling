@@ -13,7 +13,6 @@ impl Game<'_> {
             .as_ref()
             .map_or(&[][..], |log| log.get(logged..).unwrap_or(&[]))
             .to_vec();
-        let facts = self.res.facts();
         // BlockItem.place: `playSound(player, ...)`, for the others only. The
         // placer's client plays it as its block appears. The place sound is the
         // one the block's parts answered the placement with (`place_sound_type`).
@@ -47,9 +46,10 @@ impl Game<'_> {
                 }
             }
         }
+        let behaviours = self.res.behaviours();
         let hand_operated = !changed.is_empty()
             && changed.iter().all(|&(x, y, z)| {
-                crate::game::remote::hand_operated(&facts.get(self.world.block(x, y, z)).name)
+                crate::game::remote::hand_operated(behaviours, self.world.block(x, y, z))
             });
         if hand_operated && let Some(capture) = self.audio.capture.as_mut() {
             sounds.extend(capture.drain(heard.min(capture.len())..));
@@ -135,6 +135,8 @@ impl Game<'_> {
         if let Some(host) = self.lan.as_ref() {
             host.hub.finish_captured_sounds();
         }
+        // A stop whose removal waited for these sounds follows that removal (#4522).
+        self.run_tracking_after_sounds();
     }
 
     pub(super) fn send_captured_level_sound(

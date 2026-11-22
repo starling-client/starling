@@ -33,9 +33,8 @@ override TEST_PACK: bool = false;
 ";
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = crate::gfx::test_gpu::instance();
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-    pollster::block_on(adapter.request_device(&Default::default())).ok()
+    let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;
+    Some((device, queue))
 }
 
 /// What a 0.2 stage reads of a 1x1 frame (`scene_color`): the world cleared to `clear`, in
@@ -216,6 +215,7 @@ fn assert_near(got: [f32; 4], want: [f32; 3], what: &str) {
 // "linear" it mixes light, `0.25 * decode(src) + 0.75 * decode(bg)`: Sunrise's
 // (0.4606, 0.2200, 0.1965), the pack's (0.4590, 0.1467, 0.4132).
 #[test]
+#[ignore = "daily"]
 fn translucent_draws_blend_in_the_light_the_frame_holds() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = gpu() else {
@@ -240,6 +240,7 @@ fn translucent_draws_blend_in_the_light_the_frame_holds() {
 // (0.3, 0.7, 1.5) decodes to (0.0707, 0.4563, 2.4401), the pack's light (0.25, 0.5, 2.0) and
 // the clear colour, gamma (0.8, 0.2, 0.5), to (0.6121, 0.0290, 0.2176).
 #[test]
+#[ignore = "daily"]
 fn stages_read_the_same_light_under_either_blend() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = gpu() else {
@@ -273,6 +274,7 @@ fn stages_read_the_same_light_under_either_blend() {
 // visible: under "linear" the frame stores (0.5 * 0.8 + 0.5 * 0.4812)^2.2 = 0.3757, not the
 // 0.5 a mix in light gives; under "gamma" the result is already gamma, 0.5 * 0.8 + 0.5 * 0.2.
 #[test]
+#[ignore = "daily"]
 fn a_fading_section_mixes_toward_the_fog_in_gamma() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
@@ -393,11 +395,9 @@ fn only_a_float_frame_holds_linear_light() {
         for (linear_pack, linear_blend) in [(false, false), (true, false), (true, true)] {
             let (mut caps, reading) = window(None, None);
             caps.float_frame = float_frame;
-            let request = FrameRequest {
-                linear_pack,
-                linear_blend,
-                hdr_float: false,
-            };
+            let request = FrameRequest::new()
+                .with_linear_pack(linear_pack)
+                .with_linear_blend(linear_blend);
             let frame = resolve_frame(
                 &settings,
                 request,

@@ -30,7 +30,7 @@ public final class VanillaWorldSpawnPacketOracle {
         net.minecraft.server.Bootstrap.bootStrap();
         emit("context", "minecraft:overworld", 100, 140, -20, 0.0F, 0.0F);
         emit("changed", "minecraft:overworld", 100, 140, -20, 0.0F, 0.0F);
-        emit("override", "minecraft:the_end", 9, 70, -4, 0.0F, 0.0F);
+        emit("other_dimension", "minecraft:the_end", 100, 140, -20, 0.0F, 0.0F);
         emit("angle", "minecraft:overworld", -7, 90, 12, 45.0F, -10.0F);
         emit("respawn", "minecraft:overworld", 0, 80, 0, 45.0F, -10.0F);
         emit("normalized", "minecraft:overworld", -7, 90, 12, 405.0F, 100.0F);

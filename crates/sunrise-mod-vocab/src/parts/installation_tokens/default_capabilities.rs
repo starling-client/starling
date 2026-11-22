@@ -1,10 +1,7 @@
 //! Engine access to the same type-bound default providers registration queries observe.
 /// This block's first enabled item-container declaration.
-pub fn block_container(block: &str) -> Option<crate::ModContainer> {
-    crate::parts::DefaultCapabilitiesCapabilityProviders::block_container(
-        &crate::InstalledProviders,
-        block,
-    )
+pub fn block_container(block: &str) -> Option<&'static crate::ModContainer> {
+    crate::parts::default_capabilities::declared_block_container(block)
 }
 /// This block's first enabled fluid-tank declaration.
 pub fn block_fluids(block: &str) -> Option<crate::ModFluidTanks> {

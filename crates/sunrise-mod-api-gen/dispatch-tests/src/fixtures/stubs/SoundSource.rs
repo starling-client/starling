@@ -1,2 +1,4 @@
 #[derive(Clone, Copy)]
-pub(super) enum SoundSource {}
+pub(super) enum SoundSource {
+    Master,
+}

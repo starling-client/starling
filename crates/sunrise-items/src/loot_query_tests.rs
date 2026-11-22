@@ -3,18 +3,214 @@ thread_local! {
     static OBSERVED_ABILITY: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
 }
 use super::*;
-use sunrise_core::random::LegacyRandom;
-use sunrise_world::loot::query;
 use serde_json::json;
 use std::rc::Rc;
+use sunrise_core::random::LegacyRandom;
+use sunrise_world::loot::query;
+struct QueryCodec;
+impl sunrise_world::loot::types::Registry for QueryCodec {
+    fn contains(&self, kind: &str, function: bool) -> bool {
+        !function && kind == "test:query"
+    }
+    fn validate(&self, _: &str, _: &Value, _: bool) -> std::result::Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    fn conditional(&self, _: &str) -> bool {
+        true
+    }
+    fn apply(
+        &self,
+        _: &str,
+        _: &Value,
+        _: &sunrise_world::loot::LootContext<'_>,
+        _: &mut dyn sunrise_world::loot::types::RollRandom,
+        _: &dyn sunrise_world::loot::LootTags,
+        stack: &sunrise_world::loot::LootStack,
+    ) -> std::result::Result<sunrise_world::loot::LootStack, String> {
+        Ok(stack.clone())
+    }
+    fn test(
+        &self,
+        _: &str,
+        _: &Value,
+        ctx: &sunrise_world::loot::LootContext<'_>,
+        _: &mut dyn sunrise_world::loot::types::RollRandom,
+        _: &dyn sunrise_world::loot::LootTags,
+    ) -> std::result::Result<bool, String> {
+        OBSERVED_CONTEXT.with(|value| {
+            *value.borrow_mut() = Some((ctx.table_id().to_owned(), ctx.queried_stack.clone()))
+        });
+        Ok(true)
+    }
+}
 fn data(tables: Vec<(&str, Value)>) -> Items {
     let mut items = Items::for_tests(HashMap::new());
+    items.loot_types = sunrise_world::loot::types::Types::new(Arc::new(QueryCodec));
     items.loot = Arc::new(tables.into_iter().map(|(k, v)| (k.into(), v)).collect());
     items
 }
 fn table(id: &str) -> Value {
     json!({"pools":[{"rolls":1,"condition":{"type":"neoforge:loot_table_id","loot_table_id":id},"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}]})
 }
+#[test]
+fn every_root_splits_after_outer_functions_with_one_random_draw() {
+    let nested = json!({"pools":[{"rolls":1,
+        "condition":{"type":"neoforge:loot_table_id","loot_table_id":"neoforge:unknown_loot_table"},
+        "entries":[{"type":"minecraft:item","name":"minecraft:gold_ingot"},
+                   {"type":"minecraft:item","name":"minecraft:diamond"}]}],
+        "modifier":{"type":"minecraft:set_count","count":200}});
+    let root = json!({"pools":[{"rolls":1,"entries":[
+        {"type":"minecraft:loot_table","value":"test:nested"}]}],
+        "modifier":[{"type":"minecraft:set_count","count":130},
+                    {"type":"minecraft:set_components","components":{"minecraft:max_stack_size":64}}]});
+    let id = "minecraft:entities/zombie";
+    let block_id = "minecraft:blocks/stone";
+    let data = data(vec![
+        (id, root.clone()),
+        (block_id, root.clone()),
+        ("test:nested", nested),
+    ]);
+    let registry = BlockRegistry::from_facts_json(&br#"{"defaults":{"minecraft:stone":0},"states":[["stone",false,false,"","minecraft:stone"]]}"#[..]).unwrap();
+    // Only the child's two-entry weighted choice advances this random.
+    let mut expected_random = LegacyRandom::new(0);
+    assert_eq!(expected_random.next_int_bound(2).unwrap(), 1);
+    let expected_state = <(u64, Option<f64>)>::from(&expected_random);
+    for adapter in 0..7 {
+        let query = Rc::new(query::LootQuery::default());
+        let mut random = LegacyRandom::new(0);
+        let drops = query::with_query(query.clone(), || match adapter {
+            0 => data.loot_table(id, false, None, &mut random),
+            1 => data.roll_loot_table(id, None, None, &mut random).unwrap(),
+            2 => data.inline_loot_table(&root, &mut random),
+            3 => data.entity_drops("zombie", false, None, &mut random),
+            4 => data.loot_table_from(id, false, None, &mut random),
+            5 => data.block_drops(
+                &registry,
+                BlockStateId(0),
+                Default::default(),
+                &mut random,
+                None,
+            ),
+            _ => data.interact_loot(
+                id,
+                &registry,
+                BlockStateId(0),
+                None,
+                None,
+                &mut random,
+                &mut crate::random_sequences::RandomSequences::default(),
+                0,
+            ),
+        });
+        let observed: Vec<_> = drops.iter().map(|s| (&*s.item, s.count)).collect();
+        let expected = vec![
+            ("minecraft:diamond", 64),
+            ("minecraft:diamond", 64),
+            ("minecraft:diamond", 2),
+        ];
+        assert_eq!(observed, expected, "adapter {adapter}");
+        assert_eq!(
+            <(u64, Option<f64>)>::from(&random),
+            expected_state,
+            "adapter {adapter}"
+        );
+        assert_eq!(
+            query.id().as_deref(),
+            Some(if adapter == 2 {
+                "neoforge:unknown_loot_table"
+            } else if adapter == 5 {
+                block_id
+            } else {
+                id
+            })
+        );
+    }
+}
+
+#[test]
+fn public_block_and_interaction_roots_complete_on_the_selected_random() {
+    use crate::random_sequences::RandomSequences;
+    use sunrise_core::nbt::Tag;
+
+    // A wall block resolves the standing block's actual table, not its own name.
+    let registry = BlockRegistry::from_facts_json(&br#"{"defaults":{"minecraft:oak_wall_sign":0},"states":[["oak_wall_sign",false,false,"","minecraft:oak_wall_sign"]]}"#[..]).unwrap();
+    for interaction in [false, true] {
+        for named_sequence in [false, true] {
+            let id = if interaction {
+                "test:interact"
+            } else {
+                "minecraft:blocks/oak_sign"
+            };
+            let mut root = json!({"pools":[{"rolls":1,
+                "condition":{"type":"neoforge:loot_table_id","loot_table_id":"neoforge:unknown_loot_table"},
+                "entries":[{"type":"minecraft:item","name":"minecraft:gold_ingot"},
+                           {"type":"minecraft:item","name":"minecraft:diamond"}]}]});
+            if named_sequence {
+                root["random_sequence"] = json!("test:selected");
+            }
+            let items = data(vec![(id, root)]);
+            let mut sequences = RandomSequences::from_nbt(&Tag::compound([(
+                "sequences",
+                Tag::compound([
+                    (
+                        "test:selected",
+                        Tag::compound([("source", Tag::LongArray(vec![17, 23]))]),
+                    ),
+                    (
+                        "test:untouched",
+                        Tag::compound([("source", Tag::LongArray(vec![31, 47]))]),
+                    ),
+                ]),
+            )]));
+            let mut expected_sequence = sequences.get("test:selected", 0).clone();
+            let untouched = sequences.get("test:untouched", 0).state_words();
+            let mut random = LegacyRandom::new(0);
+            let mut expected_random = random.clone();
+            let pick = if named_sequence {
+                expected_sequence.next_int_bound(2).unwrap()
+            } else {
+                expected_random.next_int_bound(2).unwrap()
+            };
+            let expected_item = ["minecraft:gold_ingot", "minecraft:diamond"][pick as usize];
+            let query = Rc::new(query::LootQuery::default());
+            let drops = query::with_query(query.clone(), || {
+                if interaction {
+                    items.interact_loot(
+                        id,
+                        &registry,
+                        BlockStateId(0),
+                        None,
+                        None,
+                        &mut random,
+                        &mut sequences,
+                        0,
+                    )
+                } else {
+                    items.block_drops(
+                        &registry,
+                        BlockStateId(0),
+                        Default::default(),
+                        &mut random,
+                        Some((&mut sequences, 0)),
+                    )
+                }
+            });
+            assert_eq!(drops.len(), 1);
+            assert_eq!((&*drops[0].item, drops[0].count), (expected_item, 1));
+            assert_eq!(query.id().as_deref(), Some(id));
+            assert_eq!(
+                <(u64, Option<f64>)>::from(&random),
+                <(u64, Option<f64>)>::from(&expected_random)
+            );
+            assert_eq!(
+                sequences.get("test:selected", 0).state_words(),
+                expected_sequence.state_words()
+            );
+            assert_eq!(sequences.get("test:untouched", 0).state_words(), untouched);
+        }
+    }
+}
+
 #[test]
 fn queried_id_is_written_after_root_and_first_wins() {
     for (guard, preset, count) in [
@@ -96,16 +292,6 @@ fn queried_context_and_ability_reach_native_adapter() {
             },
             loot_table_load: |_, _, _| {},
             modify_default_components: |_, _, _| {},
-            loot_function: |_, _, _, _, _| {},
-            loot_condition: |kind, _, ctx, holds, _| {
-                if kind == "test:query" {
-                    OBSERVED_CONTEXT.with(|v| {
-                        *v.borrow_mut() =
-                            Some((ctx.table_id().to_owned(), ctx.queried_stack.clone()))
-                    });
-                    *holds = true;
-                }
-            },
             loot_ability: |tool, ability, holds| {
                 OBSERVED_ABILITY
                     .with(|v| *v.borrow_mut() = Some((tool.item.clone(), ability.to_owned())));
@@ -263,7 +449,7 @@ fn queried_ability_default_sets_have_literal_outcomes() {
     assert!(!items.vanilla_can_perform("minecraft:diamond_sword", "sword_sweep"));
 }
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn queried_ability_tags_use_prepared_item_sets() {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
@@ -301,6 +487,8 @@ fn queried_ability_tags_use_prepared_item_sets() {
         entity_levels: None,
         block_levels: None,
         target: None,
+        target_entity: None,
+        interacting_entity: None,
         location: None,
         keep_empty: false,
     };
@@ -312,4 +500,451 @@ fn queried_ability_tags_use_prepared_item_sets() {
     ] {
         assert!(!context.condition(&invalid, &mut LegacyRandom::new(9)));
     }
+}
+
+#[test]
+fn root_modifiers_chain_before_unsigned_caller_consumption() {
+    use sunrise_world::loot::{
+        LootStack,
+        global_modifiers::{
+            AddTableModifier, DecodedModifier, GlobalLootModifiers, ModifierApply, ModifierFile,
+            ModifierRoll,
+        },
+    };
+    struct Stage(bool);
+    impl ModifierApply for Stage {
+        fn apply(
+            &self,
+            roll: &mut dyn ModifierRoll,
+            generated: &[LootStack],
+        ) -> std::result::Result<Vec<LootStack>, String> {
+            if self.0 {
+                assert_eq!(
+                    generated
+                        .iter()
+                        .map(|stack| stack.count)
+                        .collect::<Vec<_>>(),
+                    [-3, 200, 200]
+                );
+                return Ok(generated.to_vec());
+            }
+            assert_eq!(
+                generated
+                    .iter()
+                    .map(|stack| stack.count)
+                    .collect::<Vec<_>>(),
+                [64, 64, 2]
+            );
+            assert!(matches!(
+                roll.facts().table_id(),
+                "minecraft:entities/zombie"
+                    | "minecraft:blocks/stone"
+                    | "neoforge:unknown_loot_table"
+            ));
+            assert_eq!(roll.next_long(), LegacyRandom::new(31).next_long());
+            let raw = roll.roll_raw("test:raw")?;
+            assert_eq!(
+                raw.iter().map(|stack| stack.count).collect::<Vec<_>>(),
+                [200]
+            );
+            let mut negative = generated[0].clone();
+            negative.count = -3;
+            Ok(vec![negative, raw[0].clone()])
+        }
+    }
+    let root = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}],
+        "modifier":[{"type":"minecraft:set_count","count":130},{"type":"minecraft:set_components","components":{"minecraft:max_stack_size":64}}]});
+    let raw = json!({"pools":[
+        {"rolls":1,"entries":[{"type":"minecraft:loot_table","value":"test:raw"}]},
+        {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:gold_ingot","modifier":{"type":"minecraft:set_count","count":200}}]}
+    ]});
+    let mut items = data(vec![
+        ("minecraft:entities/zombie", root.clone()),
+        ("minecraft:blocks/stone", root.clone()),
+        ("test:raw", raw),
+    ]);
+    let files = ["test:first", "test:add", "test:last"]
+        .into_iter()
+        .map(|id| ModifierFile {
+            id: id.into(),
+            pack: "test".into(),
+            path: id.into(),
+            read: Box::new(|| Ok(br#"{"type":"test:stage"}"#.to_vec())),
+        });
+    items.global_modifiers = Arc::new(GlobalLootModifiers::load(
+        files,
+        &sunrise_world::conditions::LoadConditions::vanilla(),
+        |id, _, _| {
+            let (priority, apply): (_, Arc<dyn ModifierApply>) = match id {
+                "test:first" => (1001, Arc::new(Stage(false))),
+                "test:add" => (
+                    1000,
+                    Arc::new(AddTableModifier {
+                        table: "test:raw".into(),
+                    }),
+                ),
+                _ => (999, Arc::new(Stage(true))),
+            };
+            Ok(DecodedModifier {
+                priority,
+                condition: None,
+                apply,
+            })
+        },
+        |error| panic!("{error}"),
+    ));
+    let registry = BlockRegistry::from_facts_json(&br#"{"defaults":{"minecraft:stone":0},"states":[["stone",false,false,"","minecraft:stone"]]}"#[..]).unwrap();
+    let mut expected = LegacyRandom::new(31);
+    expected.next_long();
+    for adapter in 0..7 {
+        let mut random = LegacyRandom::new(31);
+        let drops = match adapter {
+            0 => items.loot_table("minecraft:entities/zombie", false, None, &mut random),
+            1 => items
+                .roll_loot_table("minecraft:entities/zombie", None, None, &mut random)
+                .unwrap(),
+            2 => items.inline_loot_table(&root, &mut random),
+            3 => items.entity_drops("zombie", false, None, &mut random),
+            4 => items.loot_table_from("minecraft:entities/zombie", false, None, &mut random),
+            5 => items.block_drops(
+                &registry,
+                BlockStateId(0),
+                Default::default(),
+                &mut random,
+                None,
+            ),
+            _ => items.interact_loot(
+                "minecraft:entities/zombie",
+                &registry,
+                BlockStateId(0),
+                None,
+                None,
+                &mut random,
+                &mut crate::random_sequences::RandomSequences::default(),
+                0,
+            ),
+        };
+        assert_eq!(
+            drops.iter().map(|stack| stack.count).collect::<Vec<_>>(),
+            [0, 200, 200],
+            "adapter {adapter}"
+        );
+        assert_eq!(
+            <(u64, Option<f64>)>::from(&random),
+            <(u64, Option<f64>)>::from(&expected)
+        );
+    }
+}
+
+#[test]
+fn block_dynamic_stacks_are_materialized_before_the_pass_and_raw_output_is_unsplit() {
+    use sunrise_world::loot::{
+        LootStack,
+        global_modifiers::{
+            DecodedModifier, GlobalLootModifiers, ModifierApply, ModifierFile, ModifierRoll,
+        },
+    };
+    struct Dynamic;
+    impl ModifierApply for Dynamic {
+        fn apply(
+            &self,
+            roll: &mut dyn ModifierRoll,
+            generated: &[LootStack],
+        ) -> std::result::Result<Vec<LootStack>, String> {
+            assert_eq!(
+                generated
+                    .iter()
+                    .map(|stack| (stack.item.as_str(), stack.count))
+                    .collect::<Vec<_>>(),
+                [
+                    ("minecraft:diamond", 64),
+                    ("minecraft:diamond", 64),
+                    ("minecraft:diamond", 2),
+                ]
+            );
+            let raw = roll.roll_raw("test:dynamic")?;
+            assert_eq!(
+                raw.iter()
+                    .map(|stack| (stack.item.as_str(), stack.count))
+                    .collect::<Vec<_>>(),
+                [("minecraft:diamond", 130)]
+            );
+            let mut output = generated.to_vec();
+            output.extend(raw);
+            Ok(output)
+        }
+    }
+    let table = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:dynamic","name":"minecraft:sherds"}]}]});
+    let mut items = data(vec![
+        ("minecraft:blocks/decorated_pot", table.clone()),
+        ("test:dynamic", table),
+    ]);
+    items.global_modifiers = Arc::new(GlobalLootModifiers::load(
+        [ModifierFile {
+            id: "test:dynamic".into(),
+            pack: "test".into(),
+            path: "dynamic.json".into(),
+            read: Box::new(|| Ok(br#"{"type":"test:dynamic"}"#.to_vec())),
+        }],
+        &sunrise_world::conditions::LoadConditions::vanilla(),
+        |_, _, _| {
+            Ok(DecodedModifier {
+                priority: 1000,
+                condition: None,
+                apply: Arc::new(Dynamic),
+            })
+        },
+        |error| panic!("{error}"),
+    ));
+    let registry = BlockRegistry::from_facts_json(&br#"{"defaults":{"minecraft:decorated_pot":0},"states":[["decorated_pot",false,false,"","minecraft:decorated_pot"]]}"#[..]).unwrap();
+    let mut supplied = ItemStack::new("minecraft:diamond", 130);
+    supplied.data_mut().set_other(
+        "minecraft:max_stack_size",
+        Some(sunrise_core::nbt::Tag::Int(64)),
+    );
+    let mut random = LegacyRandom::new(31);
+    let before = <(u64, Option<f64>)>::from(&random);
+    let output = items.block_drops(
+        &registry,
+        BlockStateId(0),
+        BlockLootRoll {
+            dynamic: &[supplied],
+            ..Default::default()
+        },
+        &mut random,
+        None,
+    );
+    assert_eq!(
+        output.iter().map(|stack| stack.count).collect::<Vec<_>>(),
+        [64, 64, 2, 130]
+    );
+    assert_eq!(<(u64, Option<f64>)>::from(&random), before);
+}
+
+/// What a root pass's modifier sees of a roll: THIS_ENTITY's type, the tool's
+/// item and the origin.
+type Seen = (Option<String>, Option<String>, Option<[f64; 3]>);
+
+/// Rolls `table` once through `roll_loot_table` with `this` (a type id) as
+/// THIS_ENTITY, `tool` and `origin` as a caller supplies them. Returns the
+/// number of stacks, and what a global modifier saw of the context.
+fn roll_as_caller(
+    table: Value,
+    this: Option<&str>,
+    tool: Option<&str>,
+    origin: Option<[f64; 3]>,
+) -> (usize, Seen) {
+    use std::sync::Mutex;
+    use sunrise_world::loot::{
+        LootPlace, LootStack,
+        global_modifiers::{
+            DecodedModifier, GlobalLootModifiers, ModifierApply, ModifierFile, ModifierRoll,
+        },
+        with_native_loot_place,
+    };
+    struct Watch(Arc<Mutex<Option<Seen>>>);
+    impl ModifierApply for Watch {
+        fn apply(
+            &self,
+            roll: &mut dyn ModifierRoll,
+            generated: &[LootStack],
+        ) -> std::result::Result<Vec<LootStack>, String> {
+            let facts = roll.facts();
+            *self.0.lock().unwrap() = Some((
+                facts.entity.map(|e| e.kind.clone()),
+                facts.tool.as_ref().map(|t| t.item.clone()),
+                facts.place.as_ref().and_then(|p| p.origin),
+            ));
+            Ok(generated.to_vec())
+        }
+    }
+    let seen = Arc::new(Mutex::new(None));
+    let mut items = data(vec![("test:caller", table)]);
+    let watch = seen.clone();
+    items.global_modifiers = Arc::new(GlobalLootModifiers::load(
+        [ModifierFile {
+            id: "test:watch".into(),
+            pack: "test".into(),
+            path: "watch".into(),
+            read: Box::new(|| Ok(br#"{"type":"test:watch"}"#.to_vec())),
+        }],
+        &sunrise_world::conditions::LoadConditions::vanilla(),
+        move |_, _, _| {
+            Ok(DecodedModifier {
+                priority: 1,
+                condition: None,
+                apply: Arc::new(Watch(watch.clone())),
+            })
+        },
+        |error| panic!("{error}"),
+    ));
+    let entity = this.map(sunrise_world::loot::LootEntity::new);
+    let matcher = |predicate: &Value, entity: &sunrise_world::loot::LootEntity| {
+        predicate["type"].as_str() == Some(&entity.kind)
+    };
+    let held = tool.map(|item| ItemStack::new(item, 1));
+    let place = LootPlace {
+        origin,
+        ..Default::default()
+    };
+    let drops = with_native_loot_place(place, || {
+        items
+            .roll_loot_table(
+                "test:caller",
+                held.as_ref(),
+                entity.as_ref().map(|e| (e, &matcher as &EntityMatcher)),
+                &mut LegacyRandom::new(5),
+            )
+            .unwrap()
+    });
+    let seen = seen.lock().unwrap().take().expect("the modifier pass ran");
+    (drops.len(), seen)
+}
+type EntityMatcher = dyn Fn(&Value, &sunrise_world::loot::LootEntity) -> bool;
+
+fn table_for_this(kind: &str) -> Value {
+    json!({"pools":[{"rolls":1,
+        "conditions":[{"type":"minecraft:entity_properties","entity":"this","predicate":{"type":kind}}],
+        "entries":[{"type":"minecraft:item","name":"minecraft:gold_ingot"}]}]})
+}
+
+/// A mod's roll call names a real entity: its type reaches the conditions
+/// (through the matcher) and the modifiers, with the tool and origin it gave.
+#[test]
+fn a_mod_roll_names_the_entity_it_was_given() {
+    let (stacks, seen) = roll_as_caller(
+        table_for_this("minecraft:cow"),
+        Some("minecraft:cow"),
+        Some("minecraft:shears"),
+        Some([1.5, 64.0, -2.5]),
+    );
+    assert_eq!(stacks, 1);
+    assert_eq!(
+        seen,
+        (
+            Some("minecraft:cow".into()),
+            Some("minecraft:shears".into()),
+            Some([1.5, 64.0, -2.5])
+        )
+    );
+    let (stacks, seen) = roll_as_caller(table_for_this("minecraft:cow"), None, None, None);
+    assert_eq!(stacks, 0);
+    assert_eq!(seen, (None, None, None));
+}
+
+/// `LootContextParamSets.PIGLIN_BARTER`: THIS_ENTITY is the piglin and nothing
+/// else is supplied (no tool, no origin).
+#[test]
+fn a_barter_roll_names_the_piglin_and_nothing_else() {
+    let (stacks, seen) = roll_as_caller(
+        table_for_this("minecraft:piglin"),
+        Some("minecraft:piglin"),
+        None,
+        None,
+    );
+    assert_eq!(stacks, 1);
+    assert_eq!(seen, (Some("minecraft:piglin".into()), None, None));
+}
+
+/// `LootContextParamSets.ADVANCEMENT_REWARD`: THIS_ENTITY is the rewarded player
+/// and the ORIGIN their position; no tool.
+#[test]
+fn an_advancement_reward_roll_names_the_player_and_their_position() {
+    let (stacks, seen) = roll_as_caller(
+        table_for_this("minecraft:player"),
+        Some("minecraft:player"),
+        None,
+        Some([10.5, 70.0, -3.25]),
+    );
+    assert_eq!(stacks, 1);
+    assert_eq!(
+        seen,
+        (
+            Some("minecraft:player".into()),
+            None,
+            Some([10.5, 70.0, -3.25])
+        )
+    );
+}
+
+/// `Block.dropFromBlockInteractLootTable`: `entity_properties` on
+/// `interacting_entity` reads the clicking player, and `this` (not a
+/// `block_interact` parameter) stays unselected.
+#[test]
+fn an_interaction_drop_selects_the_interacting_entity() {
+    let named = |who: &str| {
+        json!({"pools":[{"rolls":1,
+            "conditions":[{"type":"minecraft:entity_properties","entity":who,"predicate":{"type":"minecraft:player"}}],
+            "entries":[{"type":"minecraft:item","name":"minecraft:gold_ingot"}]}]})
+    };
+    let items = data(vec![
+        ("test:interacting", named("interacting_entity")),
+        ("test:this", named("this")),
+    ]);
+    let registry = BlockRegistry::from_facts_json(&br#"{"defaults":{"minecraft:stone":0},"states":[["stone",false,false,"","minecraft:stone"]]}"#[..]).unwrap();
+    let player = sunrise_world::loot::LootEntity::new("minecraft:player");
+    let zombie = sunrise_world::loot::LootEntity::new("minecraft:zombie");
+    let matcher: &EntityMatcher = &|predicate, entity| predicate["type"] == entity.kind;
+    let roll = |id: &str, actor: Option<&sunrise_world::loot::LootEntity>| {
+        items
+            .interact_loot(
+                id,
+                &registry,
+                BlockStateId(0),
+                actor.map(|a| (a, matcher)),
+                None,
+                &mut LegacyRandom::new(0),
+                &mut crate::random_sequences::RandomSequences::default(),
+                0,
+            )
+            .len()
+    };
+    assert_eq!(roll("test:interacting", Some(&player)), 1);
+    assert_eq!(roll("test:interacting", Some(&zombie)), 0);
+    assert_eq!(roll("test:interacting", None), 0);
+    assert_eq!(roll("test:this", Some(&player)), 0);
+}
+
+/// `copy_components` names its source as a `LootContext.EntityTarget`: the
+/// clicking player's custom data reaches the drop, and an interaction without
+/// that entity copies nothing.
+#[test]
+fn an_interaction_drop_copies_components_from_the_interacting_entity() {
+    let items = data(vec![(
+        "test:copy",
+        json!({"pools":[{"rolls":1,"entries":[{
+            "type":"minecraft:item","name":"minecraft:gold_ingot",
+            "modifier":{"type":"minecraft:copy_components","source":"interacting_entity",
+                "include":["minecraft:custom_data"]}}]}]}),
+    )]);
+    let registry = BlockRegistry::from_facts_json(&br#"{"defaults":{"minecraft:stone":0},"states":[["stone",false,false,"","minecraft:stone"]]}"#[..]).unwrap();
+    let mut player = sunrise_world::loot::LootEntity::new("minecraft:player");
+    player.components.insert(
+        "minecraft:custom_data".into(),
+        sunrise_core::nbt::Tag::compound([("flag", sunrise_core::nbt::Tag::Long(7))]),
+    );
+    let matcher: &EntityMatcher = &|_, _| true;
+    let roll = |actor: Option<&sunrise_world::loot::LootEntity>| {
+        let mut stacks = items.interact_loot(
+            "test:copy",
+            &registry,
+            BlockStateId(0),
+            actor.map(|a| (a, matcher)),
+            None,
+            &mut LegacyRandom::new(0),
+            &mut crate::random_sequences::RandomSequences::default(),
+            0,
+        );
+        assert_eq!(stacks.len(), 1);
+        crate::item_data::component_snapshot(&stacks.remove(0))
+    };
+    let copied = roll(Some(&player)).expect("the player's custom data was copied");
+    assert_eq!(
+        copied.get("minecraft:custom_data"),
+        Some(&sunrise_core::nbt::Tag::compound([(
+            "flag",
+            sunrise_core::nbt::Tag::Long(7)
+        )]))
+    );
+    assert_eq!(roll(None), None, "no interacting entity, nothing to copy");
 }

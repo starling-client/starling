@@ -1,8 +1,8 @@
 #![cfg(test)]
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_client::gamerules::Value;
 use mod_api::{Hooks, ModEntry, ServerHost};
 use std::sync::{Arc, Mutex};
+use sunrise_client::gamerules::Value;
 
 struct Observe(Arc<Mutex<Vec<&'static str>>>);
 fn assert_rules(host: &dyn ServerHost) {
@@ -48,7 +48,7 @@ impl Hooks for Observe {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn early_server_game_rules_saved_and_creation_values() {
     for dedicated in [false, true] {
         for saved in [false, true] {
@@ -62,7 +62,7 @@ fn early_server_game_rules_saved_and_creation_values() {
                     game_rules: create.rules.by_name(),
                     ..Default::default()
                 };
-                level.write(scratch.path()).unwrap();
+                level.write(scratch.path(), &Default::default()).unwrap();
                 create.rules.save(scratch.path()).unwrap();
             }
             let observed = Arc::new(Mutex::new(Vec::new()));

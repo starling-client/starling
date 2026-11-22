@@ -294,9 +294,11 @@ fn component_text(tag: &Tag) -> String {
     match tag {
         Tag::String(s) => s.to_string_lossy(),
         // Component.getString: translations and key binds resolved.
-        Tag::Compound(_) | Tag::List(_) => {
+        // The editor sends these lines back to the server: a key only Sunrise's own files give
+        // stays the key, as in vanilla's client, so a server's sign can't tell this client by it.
+        Tag::Compound(_) | Tag::List(_) => sunrise_client_core::lang::returned_to_server(|| {
             scoreboard::comp_text(&scoreboard::tag_to_json(tag)).plain()
-        }
+        }),
         _ => String::new(),
     }
 }
@@ -331,6 +333,32 @@ pub fn editor_sprite(folder: &str, wood: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A sign's lines are what the editor sends back: a translation key only Sunrise's own files
+    /// give stays the key, as vanilla's client leaves it.
+    #[test]
+    fn a_sign_resolves_no_key_only_sunrise_gives() {
+        use sunrise_client_core::lang;
+        let key = "sunrise.osk.close";
+        let side = Tag::compound([(
+            "messages",
+            Tag::List(vec![
+                Tag::compound([("translate", Tag::String(key.into()))]),
+                Tag::String("plain".into()),
+                Tag::String("".into()),
+            ]),
+        )]);
+        let tag = Tag::compound([("front_text", side)]);
+        let english = || lang::Language::load(&[], "en_us");
+        let screens = lang::scoped(english(), || lang::get(key)).0;
+        assert_ne!(screens, key, "the screens do know the key");
+        let (lines, _) = lang::scoped(english(), || {
+            let mut decoded = SignData::default();
+            decoded.decode(&tag);
+            decoded.front.lines
+        });
+        assert_eq!(lines[0], key);
+        assert_eq!(lines[1], "plain");
+    }
     /// `SignText.CODEC` reads messages as a list: a string field fails the
     /// whole side, taking its colour and glow with it.
     #[test]

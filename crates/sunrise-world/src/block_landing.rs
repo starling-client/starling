@@ -5,8 +5,8 @@ use crate::{
     movement_properties::MovementProperties,
     registry::BlockStateId,
 };
-use sunrise_core::position::BlockPos;
 use std::{collections::BTreeMap, fmt, io};
+use sunrise_core::position::BlockPos;
 #[derive(Clone, Debug)]
 pub enum FallDefinition {
     Default,
@@ -82,6 +82,114 @@ pub enum LandingEvent {
     BlockDestroy,
 }
 
+/// The remaining work after a registered block's landing pre-effects.
+#[derive(Debug)]
+pub enum BlockFall {
+    Done,
+    Trample(FarmlandTrample),
+    Damage(FallDamageCall),
+}
+
+/// The selected `causeFallDamage` call, including HoneyBlock's sound after it returns.
+#[derive(Clone, Copy, Debug)]
+pub struct FallDamageCall {
+    owner: DamageSourceOwner,
+    kind: LandingDamage,
+    distance: f64,
+    multiplier: f32,
+    honey_fall_sound: Option<(f32, f32)>,
+}
+
+impl FallDamageCall {
+    fn new(owner: DamageSourceOwner, kind: LandingDamage, distance: f64, multiplier: f32) -> Self {
+        Self {
+            owner,
+            kind,
+            distance,
+            multiplier,
+            honey_fall_sound: None,
+        }
+    }
+
+    /// Resolve the operands for a body that can suspend inside `causeFallDamage`.
+    pub fn resolve<W: BlockLandingWorld>(
+        self,
+        world: &mut W,
+    ) -> Result<(f64, f32, W::DamageSource), LandingError<W::Error>> {
+        let source = world
+            .damage_source(self.owner, self.kind)
+            .map_err(LandingError::World)?;
+        Ok((self.distance, self.multiplier, source))
+    }
+
+    /// Resolve the selected source and apply `causeFallDamage`, but not the block's tail.
+    pub fn apply<W: BlockLandingWorld>(
+        self,
+        world: &mut W,
+    ) -> Result<bool, LandingError<W::Error>> {
+        let (distance, multiplier, source) = self.resolve(world)?;
+        world
+            .cause_fall_damage(distance, multiplier, source)
+            .map_err(LandingError::World)
+    }
+
+    /// The block work that follows the selected hurt, without its damage operands.
+    pub fn tail(self) -> FallDamageTail {
+        FallDamageTail(self.honey_fall_sound)
+    }
+
+    fn finish<W: BlockLandingWorld>(self, world: &mut W) -> Result<(), LandingError<W::Error>> {
+        let damaged = self.apply(world)?;
+        self.tail().after_hurt(world, damaged)
+    }
+}
+
+/// The registered block's reaction after the selected hurt returns.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FallDamageTail(Option<(f32, f32)>);
+
+impl FallDamageTail {
+    /// Finish the block's reaction once the owning hurt has returned.
+    pub fn after_hurt<W: BlockLandingWorld>(
+        self,
+        world: &mut W,
+        damaged: bool,
+    ) -> Result<(), LandingError<W::Error>> {
+        if damaged && let Some((volume, pitch)) = self.0 {
+            let sound = world.known_sound(LandingSound::HoneyFall);
+            world
+                .entity_sound(sound, volume, pitch)
+                .map_err(LandingError::World)?;
+        }
+        Ok(())
+    }
+}
+
+/// A successful trample check, before either the lift or `Block.fallOn`.
+#[derive(Clone, Copy, Debug)]
+pub struct FarmlandTrample {
+    pub position: BlockPos,
+    pub state: BlockStateId,
+    pub base: BlockStateId,
+    pub distance: f64,
+    damage: FallDamageCall,
+}
+
+impl FarmlandTrample {
+    /// The superclass call selected from the original farmland, before the write.
+    pub fn damage_call(self) -> FallDamageCall {
+        self.damage
+    }
+
+    /// `super.fallOn` always follows the trample decision, even on refusal or cancellation.
+    pub fn finish_fall<W: BlockLandingWorld>(
+        self,
+        world: &mut W,
+    ) -> Result<(), LandingError<W::Error>> {
+        self.damage.finish(world)
+    }
+}
+
 pub trait BlockLandingWorld: BlockPushWorld {
     type DamageSource: Copy;
     type Sound: Copy;
@@ -92,14 +200,6 @@ pub trait BlockLandingWorld: BlockPushWorld {
     fn under_spawn_protection(&mut self, position: BlockPos) -> Result<bool, Self::Error>;
     fn mob_griefing(&mut self) -> Result<bool, Self::Error>;
     fn entity_dimensions(&self) -> (f32, f32);
-    fn cancel_farmland_trample(
-        &mut self,
-        _position: BlockPos,
-        _state: BlockStateId,
-        _distance: f64,
-    ) -> bool {
-        false
-    }
     fn suppressing_bounce(&mut self) -> Result<bool, Self::Error>;
     fn damage_source(
         &mut self,
@@ -254,6 +354,13 @@ impl BlockLandingRegistry {
             .copied()
             .ok_or_else(|| LandingError::Data(invalid("landing state outside registry")))
     }
+    /// Whether the state plays the stock shelf mushroom bounce sound.
+    pub fn has_shelf_bounce(&self, state: BlockStateId) -> bool {
+        self.states
+            .get(state.0 as usize)
+            .is_some_and(|s| s.shelf_mushroom_bounce)
+    }
+
     pub fn bounce_on<W: BlockLandingWorld>(
         &self,
         world: &mut W,
@@ -342,18 +449,50 @@ impl BlockLandingRegistry {
         entity: LandingEntityKind,
         distance: f64,
     ) -> Result<(), LandingError<W::Error>> {
+        self.fall_on_until_trample(world, state, position, entity, distance, false)
+            .map(|_| ())
+    }
+
+    /// Run `fallOn` synchronously, unless the owner must handle a selected trample.
+    pub fn fall_on_until_trample<W: BlockLandingWorld>(
+        &self,
+        world: &mut W,
+        state: BlockStateId,
+        position: BlockPos,
+        entity: LandingEntityKind,
+        distance: f64,
+        pause_trample: bool,
+    ) -> Result<Option<FarmlandTrample>, LandingError<W::Error>> {
+        match self.begin_fall_on(world, state, position, entity, distance, pause_trample)? {
+            BlockFall::Done => {}
+            BlockFall::Trample(trample) => return Ok(Some(trample)),
+            BlockFall::Damage(call) => call.finish(world)?,
+        }
+        Ok(None)
+    }
+
+    /// Run the selected `fallOn` rule up to its call to `causeFallDamage`, or
+    /// up to the trample if the owner must handle it.
+    pub fn begin_fall_on<W: BlockLandingWorld>(
+        &self,
+        world: &mut W,
+        state: BlockStateId,
+        position: BlockPos,
+        entity: LandingEntityKind,
+        distance: f64,
+        pause_trample: bool,
+    ) -> Result<BlockFall, LandingError<W::Error>> {
         let data = self.state(state)?;
-        match data.rule {
-            Rule::Default => {}
+        let superclass = FallDamageCall::new(
+            DamageSourceOwner::Entity,
+            LandingDamage::Fall,
+            distance * f64::from(1.0f32 - data.reduction),
+            1.0,
+        );
+        let call = match data.rule {
+            Rule::Default => superclass,
             Rule::Hay => {
-                cause(
-                    world,
-                    DamageSourceOwner::Level,
-                    LandingDamage::Fall,
-                    distance,
-                    0.2,
-                )?;
-                return Ok(());
+                FallDamageCall::new(DamageSourceOwner::Level, LandingDamage::Fall, distance, 0.2)
             }
             Rule::Honey { volume, pitch } => {
                 let sound = world.known_sound(LandingSound::HoneySlide);
@@ -365,31 +504,21 @@ impl BlockLandingRegistry {
                         .broadcast_entity_event(54)
                         .map_err(LandingError::World)?;
                 }
-                if cause(
-                    world,
-                    DamageSourceOwner::Level,
-                    LandingDamage::Fall,
-                    distance,
-                    0.2,
-                )? {
-                    let sound = world.known_sound(LandingSound::HoneyFall);
-                    world
-                        .entity_sound(sound, volume * 0.5, pitch * 0.75)
-                        .map_err(LandingError::World)?;
-                }
-                return Ok(());
-            }
-            Rule::Slime => {
-                if !world.suppressing_bounce().map_err(LandingError::World)? {
-                    cause(
-                        world,
+                FallDamageCall {
+                    honey_fall_sound: Some((volume * 0.5, pitch * 0.75)),
+                    ..FallDamageCall::new(
                         DamageSourceOwner::Level,
                         LandingDamage::Fall,
                         distance,
-                        0.0,
-                    )?;
+                        0.2,
+                    )
                 }
-                return Ok(());
+            }
+            Rule::Slime => {
+                if world.suppressing_bounce().map_err(LandingError::World)? {
+                    return Ok(BlockFall::Done);
+                }
+                FallDamageCall::new(DamageSourceOwner::Level, LandingDamage::Fall, distance, 0.0)
             }
             Rule::PowderSnow => {
                 if (distance >= 4.0 || distance.is_nan()) && entity.living() {
@@ -400,18 +529,14 @@ impl BlockLandingRegistry {
                         .entity_sound(sound, 1.0, 1.0)
                         .map_err(LandingError::World)?;
                 }
-                return Ok(());
+                return Ok(BlockFall::Done);
             }
-            Rule::DripstoneTip => {
-                cause(
-                    world,
-                    DamageSourceOwner::Level,
-                    LandingDamage::Stalagmite,
-                    distance + 2.5,
-                    2.0,
-                )?;
-                return Ok(());
-            }
+            Rule::DripstoneTip => FallDamageCall::new(
+                DamageSourceOwner::Level,
+                LandingDamage::Stalagmite,
+                distance + 2.5,
+                2.0,
+            ),
             Rule::Farmland { base } => {
                 if world.is_server_level()
                     && f64::from(world.random_float().map_err(LandingError::World)?)
@@ -427,9 +552,16 @@ impl BlockLandingRegistry {
                     };
                     if allowed {
                         let (width, height) = world.entity_dimensions();
-                        if width * width * height > 0.512f32
-                            && !world.cancel_farmland_trample(position, state, distance)
-                        {
+                        if width * width * height > 0.512f32 {
+                            if pause_trample {
+                                return Ok(BlockFall::Trample(FarmlandTrample {
+                                    position,
+                                    state,
+                                    base,
+                                    distance,
+                                    damage: superclass,
+                                }));
+                            }
                             let next = push_entities_up(world, state, base, position)
                                 .map_err(LandingError::Push)?;
                             world
@@ -441,34 +573,15 @@ impl BlockLandingRegistry {
                         }
                     }
                 }
+                superclass
             }
             Rule::TurtleEgg { remaining } => {
                 if entity != LandingEntityKind::Zombie {
                     self.destroy_egg(world, remaining, state, position, entity, 3)?;
                 }
+                superclass
             }
-        }
-        cause(
-            world,
-            DamageSourceOwner::Entity,
-            LandingDamage::Fall,
-            distance * f64::from(1.0f32 - data.reduction),
-            1.0,
-        )?;
-        Ok(())
+        };
+        Ok(BlockFall::Damage(call))
     }
-}
-fn cause<W: BlockLandingWorld>(
-    world: &mut W,
-    owner: DamageSourceOwner,
-    kind: LandingDamage,
-    distance: f64,
-    multiplier: f32,
-) -> Result<bool, LandingError<W::Error>> {
-    let source = world
-        .damage_source(owner, kind)
-        .map_err(LandingError::World)?;
-    world
-        .cause_fall_damage(distance, multiplier, source)
-        .map_err(LandingError::World)
 }

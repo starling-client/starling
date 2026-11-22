@@ -1,0 +1,3 @@
+ids = ["hook:animate_tick", "type:AnimateTickEvent"]
+why = "Adds the client BlockPart animate_tick hook, version 1: vanilla's Block.animateTick for a mod block, called from ClientLevel.animateTick's sampling for a picked position whose block has a part answering it, inside the pick after the block's vanilla effects and before its fluid's, with the client's level, the position, the state and the level's random."
+migrate = "Nothing to migrate. Attach a BlockPart to the block and implement animate_tick; add particles with host.add_particle and play sounds with host.play_local_sound, drawing odds from event.random."

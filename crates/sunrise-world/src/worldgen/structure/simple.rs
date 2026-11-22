@@ -1,7 +1,7 @@
 //! Small piece-based structures: buried treasure, igloo, swamp hut, shipwreck.
 use crate::heightmap::HeightmapType;
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use std::sync::{Arc, Mutex};
+use sunrise_core::{geometry::Direction, random::RandomSource};
 use {
     super::{
         Mirror, Rotation, StructureResources, StructureTemplate,

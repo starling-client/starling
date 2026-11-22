@@ -1,0 +1,33 @@
+ids = [
+    "type:ClientExecutor",
+    "handle:ClientExecutor::execute",
+    "method:prelude::ServicesClientHost::client_executor",
+    "type:AudioStreamState.Unplaced",
+    "type:SpecFault.StereoPositioned",
+    "type:AudioRefusal.MemoryLimit",
+    "method:AudioStreamSource::push",
+    "method:AudioStreamSource::set_placement",
+    "handle:AudioStreamRef::push",
+    "handle:AudioStreamRef::set_placement",
+    "handle:AudioStreamRef::set_flat",
+    "handle:AudioStreamRef::set_position",
+    "handle:AudioStreamRef::set_entity",
+]
+why = '''
+Vanilla 26.3's `Minecraft.runTick` drains `PacketProcessor.processQueuedPackets` before `runAllTasks`.
+`BlockableEventLoop.execute` hands off-thread work to the client, and `doRunTask` runs against the live client, reports failures, and continues unrelated tasks. NeoForge's `MainThreadPayloadHandler` and `ClientPayloadContext.enqueueWork` put off-thread payload work in the packet phase. Sunrise's executor runs with a live `ClientHost` after the packet phase, including packets published during packet handling. A deferred packet also defers tasks. As with `TitleScreen` calling `Minecraft.stop`, quitting stops the drain. Sunrise isolates a native panic with the same log and client error toast as a hook panic and disables that mod's executor for the rest of the client session. There is no extra transaction around a task.
+
+NeoForge's `SoundInstance.getStream` and vanilla's `Channel.pumpBuffers` / `ChannelAccess.scheduleTick` anchor pull playback and draining to EOF. Invalid frame counts stop the voice before the source is dropped; a read panic also retires that source callback with an attributed error log and toast, without stopping unrelated streams. High-rate PCM is downsampled across bounded reads without dropping the source advance between output frames. PCM memory counts against both the mod and pool until its ring and source job retire, so one mod cannot exhaust the pool. The game logs resource refusals naming the mod.
+
+`SoundEngine.calculateVolume` clamps volume; `Channel.setSelfPosition` takes finite positions without a block-coordinate cap. Stereo uses OpenAL's direct multi-channel behavior. `EntityBoundSoundInstance.tick` and `SoundEngine.tickInGameSound` stop following removed entities, even while muted. `Minecraft.setLevel`, `disconnect`, and `clearClientLevel` stop sound through `updateLevelInEngines`; NeoForge's old-level unload is posted first. Streams opened from unload or disconnecting stop at that transition too. Same-level respawn keeps its streams. `ClientPacketListener.handleStopSoundEvent` uses the client thread for sound changes; on Sunrise that is also where retargeting resolves an entity against the live level.
+'''
+migrate = '''
+Replace `host.open_audio_stream(&spec)` and `stream.push(&pcm)` with `host.open_audio_stream(&spec, Box::new(source))`. Implement `AudioStream::read(&mut self, pcm: &mut [i16]) -> usize`: return a whole interleaved frame count, or `0` when done. To play temporary silence, return a positive count within the zeroed slice without writing to it. Network or async producers enqueue PCM into their own bounded nonblocking buffer for `read` to drain. Host fakes take the new `Box<dyn AudioStream>` argument. Remove `AudioStreamSource::push` from custom test sources, and remove `AUDIO_STREAM_RING_MAX_MS` imports.
+
+Replace `stream.set_placement(&placement)` with `stream.set_flat()`, `stream.set_position(at)`, or `stream.set_entity(host, entity)` for `Flat`, `At(at)` and `Entity(entity)`, respectively. In custom `AudioStreamSource` implementations, use `fn set_placement(&self, placement: &StreamPlacement, entity_pos: Option<[f64; 3]>) -> bool`. Use the passed position for an already-resolved entity. Check the placement call's `bool`: `false` changes nothing. A move that loses a race with entity removal is refused on the stopped stream. `true` publishes the placement immediately, including inside an executor task.
+
+For a worker or network-thread producer, in `client_setup` take `let Some(executor) = host.client_executor() else { return; };` and clone it into the worker. Submit `executor.execute(Box::new(move |host| { if !stream.set_entity(host, entity) { /* report refusal */ } }))`, moving an owned stream handle or its `Arc` clone and the `EntityRef`, not the old host or payload context. An entity removed in the packet phase is no longer tracked when the task runs. Flat and point moves still take no host. Keep `IPayloadContext::enqueue_work` when a task depends on that payload's epoch or reply context. The executor survives a disconnect, but the task must recheck retained world handles when it runs. A panic disables the panicking owner's queued work and retained executors until a new client session; other owners still run. Keep using ordinary errors for recoverable failures. Already-applied live effects are not undone; existing journals keep their own behavior.
+
+Remove `AudioStreamState::Unplaced` and `SpecFault::StereoPositioned` match arms. Open with an `Entity` only while it is tracked (`SpecFault::Position` otherwise). Reopen a stopped stream after the new level transition, not in unload or disconnecting. Remove `AUDIO_STREAM_RATE_MIN` and `AUDIO_STREAM_RATE_MAX`; only zero returns `SpecFault::Rate`. Only NaN is refused for volume, and out-of-range volume clamps to `0.0..=1.0`. Stereo accepts point and entity placements but plays without panning or fading. Handle `AudioRefusal::MemoryLimit` as an opening failure: stopped streams still count until retirement. The per-mod stream limit is 256 and the total limit is 1,024.
+
+'''

@@ -3,13 +3,13 @@
 //! message goes to the command's issuer
 //! (tools/test_test_pos_guest_parity.py measures the same on vanilla 26.3).
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
     motion::PlayerMotion,
 };
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 pub(super) const GUEST: &str = "H274Guest";
 
@@ -82,6 +82,7 @@ pub(super) fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -123,7 +124,7 @@ fn run(game: &mut Game<'_>, command: &str) -> (bool, Vec<String>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn test_pos_as_a_guest_uses_the_guest_s_view() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);
@@ -164,7 +165,7 @@ fn test_pos_as_a_guest_uses_the_guest_s_view() {
 /// connected player and a guest whose view finds no test are refused as
 /// before, and every place and view is back afterwards.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn test_pos_refuses_other_sources_and_restores_the_views() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);

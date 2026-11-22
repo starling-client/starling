@@ -1,7 +1,7 @@
 //! Tooltip display visibility oracle companion for tools/test_tooltip_display_parity.py.
+use std::{error::Error, fmt::Write};
 use sunrise_client::{item_tooltip::tooltip_display, items::ItemStack};
 use sunrise_core::nbt::Tag;
-use std::{error::Error, fmt::Write};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = crate::args().collect();

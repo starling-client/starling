@@ -1,12 +1,12 @@
-use sunrise_world::{
-    component_patch::{Patch, Prototype},
-    item_stack_storage::{CopyResult, ItemStackData},
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_world::{
+    component_patch::{Patch, Prototype},
+    item_stack_storage::{CopyResult, ItemStackData},
 };
 type Stack = ItemStackData<u8, usize, i32>;
 fn optional(v: Option<i32>) -> String {

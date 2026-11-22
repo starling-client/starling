@@ -2,28 +2,27 @@
 // catalog-order: 0338
 
 pub trait Hooks {
-    /// A trade of a villager or a wandering trader was made
-    /// (`MerchantResultSlot.onTake` once the offer is taken): `merchant` is
-    /// the trader's entity id and `kind` its type (`minecraft:villager`,
-    /// `minecraft:wandering_trader`), `offer` the live one in the trading
-    /// session (not a copy) as the trade left it: `uses` counted, `result`
-    /// what the player got. Once per trade, so a shift-click that trades
-    /// several times is heard for each, after the trade's statistic and
-    /// `villager_trade` trigger. A mod may change the offer (Bukkit's
-    /// `PlayerTradeEvent#getTrade` is mutable): `uses`, `max_uses`, `demand`,
-    /// `special_price_diff`, `price_multiplier`, `xp`. The change stands: the
-    /// next click and the offers sent to the player see it. Not asked for a
-    /// trade window without a trader. The player's state is swapped in
-    /// (`host.players().acting_player()`). Server-side. Version 2: was a listen hook
-    /// returning the offer read-only; now collects the live offer as `out`
-    /// (the moment upstream's separate `merchant_offer_traded` covered).
+    /// A server player's take from a villager or wandering trader, once per trade, after its
+    /// statistic and `villager_trade` criterion. `merchant` is the trader's entity id, `kind`
+    /// its type, and `offer` the post-take snapshot: the use is counted and the result is what
+    /// that iteration took. `host.players().acting_player()` names the player.
+    ///
+    /// This non-cancellable collect can edit the live offer for subsequent takes, including
+    /// later iterations of the same shift-click or throw-all. It cannot change what the current
+    /// iteration paid or received. The guest's whole result click and the listeners' transaction
+    /// writes commit together. A listener unwind, an invalid offer answer, changed take
+    /// preconditions, or an enclosing abort leaves no partial trade. A write through the `Host`
+    /// to any player's inventory, cursor or menu storage makes the take stale.
+    #[notes = "NeoForge's TradeWithVillagerEvent at MerchantResultSlot.onTake. This non-cancellable collect receives the post-take offer for each trade, with the acting player swapped in. Accepted offer edits affect the next iteration and reach the client's menu snapshot on commit; observing alone keeps the usual offer-refresh timing. MerchantRef edits and menu replacements that conflict with the active click are refused. `player_trade` is the completed-click notice, once the click commits."]
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_trade_with_villager",
+        dispatch = "direct",
         side = "server",
         contract = "collect",
         out = "offer",
         neoforge = "TradeWithVillagerEvent",
         cancellable = false,
-        version = 2
+        version = 4
     )]
-    fn trade_with_villager();
+    fn trade_with_villager(merchant: u32, kind: &str, offer: &mut MerchantOffer);
 }

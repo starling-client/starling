@@ -201,8 +201,7 @@ pub fn protection_points(g: &Gear, kind: DamageKind) -> f32 {
     let source = super::Damage::of(kind);
     let fire = source.is_fire();
     let projectile = source.is_projectile();
-    let explosion = matches!(kind, DamageKind::Explosion | DamageKind::Fireworks)
-        || matches!(kind, DamageKind::Named(n) if n.has(super::NamedDamage::IS_EXPLOSION));
+    let explosion = kind.is_explosion();
     let fall = matches!(kind, DamageKind::Fall | DamageKind::Stalagmite)
         || matches!(kind, DamageKind::Named(n) if n.has(super::NamedDamage::IS_FALL));
     let mut total = 0.0;

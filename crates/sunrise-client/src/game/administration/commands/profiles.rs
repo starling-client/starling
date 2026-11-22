@@ -291,7 +291,7 @@ impl Game<'_> {
             let hub = &self.lan.as_ref()?.hub;
             hub.online_players()
                 .find(|g| g.name.eq_ignore_ascii_case(name))
-                .map(|g| g.address.ip().to_string())
+                .map(|g| g.ip_address().to_owned())
         };
         let ip = if is_ip {
             Some(target)
@@ -310,7 +310,7 @@ impl Game<'_> {
             .map(|h| {
                 h.hub
                     .online_players()
-                    .filter(|g| g.address.ip().to_string() == ip)
+                    .filter(|g| g.ip_address() == ip)
                     .map(|g| (g.uuid, g.name.clone()))
                     .collect()
             })

@@ -10,6 +10,8 @@ pub trait Hooks {
     /// authoritative server; the level is read-only. With no part attached to the state, the
     /// cost is one table lookup. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "fertile",
@@ -18,5 +20,5 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::is_fertile::GameLevel<'_>::native_is_fertile",
         neoforge = "IBlockExtension.isFertile"
     )]
-    fn is_fertile();
+    fn is_fertile(dimension: LevelDimension, state: BlockState, pos: BlockPos, fertile: &mut bool);
 }

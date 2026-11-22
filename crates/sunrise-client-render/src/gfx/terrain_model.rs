@@ -1,18 +1,30 @@
-//! Opaque/cutout terrain-sheet native models, with ordinary culling and depth writes.
+//! Terrain-sheet native models: solid, cutout and cutout-mipped (ordinary culling and depth
+//! writes), and the translucent moving block (`RenderPipelines.TRANSLUCENT_BLOCK`: alpha cutout
+//! 0.1, `BlendFunction.TRANSLUCENT`, `DepthStencilState.DEFAULT`).
+/// The sampler of vanilla's moving-block setup (`RenderTypes.createMovingBlockSetup`, which
+/// `SOLID_MOVING_BLOCK`, `CUTOUT_MOVING_BLOCK` and `TRANSLUCENT_MOVING_BLOCK` all bind): clamped,
+/// linear minification, nearest magnification, mipmapped.
+pub(super) const MOVING_BLOCK_SAMPLER: wgpu::SamplerDescriptor<'static> = wgpu::SamplerDescriptor {
+    label: Some("Moving block (linear min, nearest mag, mipmapped)"),
+    min_filter: wgpu::FilterMode::Linear,
+    ..super::fluid::SAMPLER
+};
+
 pub(super) fn pipelines(
     device: &wgpu::Device,
     layout: Option<&wgpu::PipelineLayout>,
     shader: &wgpu::ShaderModule,
     format: wgpu::TextureFormat,
     sprite_constants: &[(&str, f64)],
-) -> [wgpu::RenderPipeline; 3] {
+) -> [wgpu::RenderPipeline; 4] {
     std::array::from_fn(|i| {
         let mut constants = sprite_constants.to_vec();
+        // A blended material keeps its alpha: it does not carry the light marker.
         constants.push((
             "HDR_WRITE_LIGHT",
-            f64::from(u8::from(format == super::LINEAR_FRAME)),
+            f64::from(u8::from(format == super::LINEAR_FRAME && i < 3)),
         ));
-        constants.push(("NATIVE_MODEL_ALPHA_CUTOFF", [0.0, 0.1, 0.5][i]));
+        constants.push(("NATIVE_MODEL_ALPHA_CUTOFF", [0.0, 0.1, 0.5, 0.1][i]));
         // The ordinary Vertex ABI is unchanged. This material's private payload uses
         // normal's four bytes for a float z, and glint UV for float normal x/y.
         let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint32,3=>Unorm8x4,4=>Uint8x4,5=>Uint32,6=>Float32x2];
@@ -22,6 +34,7 @@ pub(super) fn pipelines(
                     "Native model solid",
                     "Native model cutout",
                     "Native model cutout mipmapped",
+                    "Native model translucent",
                 ][i],
             ),
             layout,
@@ -59,7 +72,7 @@ pub(super) fn pipelines(
                 },
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: None,
+                    blend: (i == 3).then_some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

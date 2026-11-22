@@ -1,9 +1,9 @@
 //! Registry-bound block movement coefficients, identities and reloadable tags.
-use sunrise_core::position::BlockPos;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, io,
 };
+use sunrise_core::position::BlockPos;
 use {
     crate::{
         DATA_VERSION,

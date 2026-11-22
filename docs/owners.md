@@ -13,7 +13,7 @@ file with vanilla's own parser:
 - keys that have a field below go into their section of `server.toml`;
 - any other key that differs from vanilla's default goes into `[properties]`;
 - keys left at their defaults are dropped, so the file stays short;
-- your original is kept as `server.properties.imported`.
+- `init` keeps your original as `server.properties.imported`; `import` leaves the file it read where it is.
 
 The world folder, `ops.json`, `whitelist.json`, the ban lists and `usercache.json` keep vanilla's names and
 formats, so going back to a vanilla server works too.
@@ -31,6 +31,7 @@ formats, so going back to a vanilla server works too.
 | `enforce-whitelist` | `[server] enforce_whitelist` | `false` |
 | `view-distance` | `[server] view_distance` | `10` |
 | `simulation-distance` | `[server] simulation_distance` | `10` |
+| `sunrise-admin-feedback-to-ops` | `[server] admin_feedback_to_ops` | `true` |
 | `level-name` | `[world] name` | `"world"` |
 | `level-seed` | `[world] seed` | `""` (random on first start) |
 | `gamemode` | `[world] game_mode` | `"survival"` |
@@ -38,7 +39,8 @@ formats, so going back to a vanilla server works too.
 | `hardcore` | `[world] hardcore` | `false` |
 
 Two details differ from vanilla's file: `white-list` becomes `whitelist`, and a seed may be a number or any
-text (vanilla hashes text), written as a string.
+text (vanilla hashes text), written as a string. The three `sunrise-` keys are Sunrise's own: vanilla has no
+such keys, and the server writes them into `server.properties` for the game.
 
 ## Every other key
 
@@ -70,8 +72,9 @@ These belong to `sunrise-server`, not to the game:
 - **In-game changes survive.** When the game changes a setting itself (`/whitelist on`), the supervisor copies
   it back into `server.toml` after the game stops, and keeps your comments and order.
 - **Changes apply at the next restart.** `sunrise-server config set KEY=VALUE` edits the file without opening
-  it; on a running server it applies `difficulty`, `defaultgamemode` and `whitelist on|off` live. There is no
-  full live reload yet.
+  it; on a running server it applies the difficulty, the default game mode, the whitelist switch, `motd`,
+  `max_players` and the `[backups]` and `[updates]` settings at once, and says which settings wait for the next
+  start. There is no full live reload yet.
 
 ## Planned: limiting a server to Sunrise clients
 

@@ -24,7 +24,7 @@ impl Json {
             _ => None,
         }
     }
-    fn insert(entries: &mut Vec<(Vec<u16>, Json)>, key: Vec<u16>, value: Json) {
+    pub(super) fn insert(entries: &mut Vec<(Vec<u16>, Json)>, key: Vec<u16>, value: Json) {
         if let Some(e) = entries.iter_mut().find(|(k, _)| *k == key) {
             e.1 = value;
         } else {

@@ -3,39 +3,33 @@
 <p class="lede">Sunrise is Minecraft: Java Edition 26.3 written in Rust. This book shows you how to make mods
 for it: new blocks and items from data files, and Rust code that hooks into the game.</p>
 
-![A Sunrise mod is one .smod package. Its sunrise-mod.toml manifest, assets/ and data/ are read by every
-game. A content mod stops there; a code mod adds a Rust crate, built either natively by the launcher or to
-mod.wasm for the game's sandbox.](images/mod-kinds.svg)
+![A Sunrise mod is one .smod package. A content mod holds a manifest, assets and data. A native mod
+also holds a Rust crate built for the exact game build.](images/mod-kinds.svg)
 
-## Three kinds of mod, one package
+## Two kinds of mod, one package
 
-Every Sunrise mod ships as one `.smod` file: a zip holding a `sunrise-mod.toml` manifest, the mod's
-`assets/` and `data/` folders, and, for a code mod, its Rust source or compiled `mod.wasm`.
+Every Sunrise mod ships as one `.smod` file: a zip holding a `sunrise-mod.toml` manifest and any
+`assets/` and `data/` folders the mod provides.
 
 | Kind | What it holds | How it runs |
 | --- | --- | --- |
-| **Content mod** | `assets/` and `data/`: blocks, items, recipes, loot, tags, models, textures, world generation | The game reads it at start-up. No code. |
-| **Native mod** | A Rust crate using the mod API, beside its content | The launcher compiles it on the player's machine against the exact game build it runs with. Full speed, full trust. |
-| **WebAssembly mod** | `mod.wasm`, built from the same Rust source | The game runs it in a sandbox with limits on time and memory. No compiler on the player's machine. |
+| **Content mod** | Data and assets: blocks, items, recipes, loot, tags, models, textures, world generation | The game reads them at startup. No code. |
+| **Native mod** | A Rust crate, its lockfile, and any content the mod provides | The code runs in the game process. It is compiled against the exact game build, using the prebuilt SDK. |
 
-Native and WebAssembly mods are written against the same API, `mod_api` (the `sunrise-mod-api` crate),
-with the same hooks, Parts, attachments and `[dependencies]`. The build target is the only difference.
+Native mods use `mod_api` (the `sunrise-mod-api` crate) for hooks, Parts and attachments.
 
 ## Where to start
 
 <div class="cards">
 
-[**Install and play with mods**](start/installing.md)
+[**Install and play with mods**](players/installing-mods.md)
 Where mods go, how to turn them on, and what the Mods screen shows.
 
 [**Make a content mod**](start/first-content-mod.md)
 A new block with its item, model, recipe and loot, in a few files.
 
 [**Make a native mod**](start/first-mod.md)
-A Rust mod that answers a hook, built and run by the launcher.
-
-[**Make a WebAssembly mod**](start/first-wasm-mod.md)
-The same Rust, built to `mod.wasm` and run in the game's sandbox.
+A Rust mod that answers a hook, built and run by `cargo sunrise-mod`.
 
 </div>
 
@@ -48,5 +42,5 @@ The same Rust, built to `mod.wasm` and run in the game's sandbox.
 - **Reference** lists the manifest, the package and registry formats, and links the
   [API reference](reference/api.md), which documents every hook, event and `Host` method.
 
-The complete example mod is [sunrise-machine-sample](https://github.com/arismoko/horizon-machine-sample).
+The complete example mod is [sunrise-machine-sample](https://github.com/sunrise-org/sunrise-machine-sample).
 A coding agent can start from [`llms.txt`](llms.txt).

@@ -1,0 +1,3 @@
+ids = ["hook:menu_slot_rules"]
+why = "menu_slot_rules version 5 adds may_pickup (Slot.mayPickup), true on entry: on a mod menu type a part's false now refuses every take from the slot, asked with the stack it holds."
+migrate = "Existing listeners keep working: leave may_pickup alone to keep the slot's own answer. Set it false to refuse a take; a display-only slot sets may_pickup and may_place false. Add may_pickup at construction sites of MenuSlotRulesEvent."

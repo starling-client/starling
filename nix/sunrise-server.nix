@@ -7,6 +7,7 @@
   callPackage,
   sunrise-engine,
   version,
+  polyformShield,
 }:
 rustPlatform.buildRustPackage {
   pname = "sunrise-server";
@@ -36,7 +37,7 @@ rustPlatform.buildRustPackage {
       Minecraft 26.3 with sunrise-prepare (docs/hosting.md).
     '';
     homepage = "https://playsunrise.net";
-    license = lib.licenses.mit;
+    license = polyformShield; # flake.nix
     mainProgram = "sunrise-server";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };

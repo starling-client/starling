@@ -3,6 +3,8 @@ pub trait Hooks {
     /// Register namespaced test functions before the world's test definitions load.
     /// Each function runs with a ServerHost once per attempt in the real test level.
     /// The runner retains ownership of retries, timeout and completion.
+    /// A listener that panics or incurs a phase refusal publishes neither its definitions
+    /// nor its functions.
     #[notes = r#"## In-world game tests
 
 `register_game_tests` runs once per world open before test-instance definitions resolve their functions.
@@ -14,12 +16,17 @@ The callback receives a `ServerHost` and `GameTestContext`: use `context.level` 
 `Pending`; pending attempts keep the ordinary timeout. Each retry invokes the function again.
 Definitions retain resolved callbacks only for their world snapshot. Unknown functions fail normally;
 `minecraft:always_pass` remains built in. Data-pack test definitions override code-registered defaults. Registration refuses duplicates, invalid names and the vanilla
-namespace. This adds no sequence engine and no per-tick registry lookup."#]
+namespace. A panic or phase refusal discards both the listener's functions and its definitions,
+leaving their keys available to later listeners. This adds no sequence engine and no per-tick registry lookup."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
+        staged_surface = "functions",
+        version = 2,
         host = "read",
         neoforge = "RegisterGameTestsEvent"
     )]
-    fn register_game_tests();
+    fn register_game_tests(functions: &mut dyn GameTests);
 }

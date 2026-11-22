@@ -1,4 +1,6 @@
 //! Headless trade costs/modifiers: no game, window or server is started.
+use serde_json::{Value, json};
+use std::{collections::HashMap, fs, path::Path};
 use sunrise_client::{
     enchant::Enchantments,
     items::{ItemStack, Items},
@@ -6,8 +8,6 @@ use sunrise_client::{
 };
 use sunrise_core::random::{LegacyRandom, RandomSource};
 use sunrise_world::loot::PackOverlay;
-use serde_json::{Value, json};
-use std::{collections::HashMap, fs, path::Path};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<_> = crate::args().collect();

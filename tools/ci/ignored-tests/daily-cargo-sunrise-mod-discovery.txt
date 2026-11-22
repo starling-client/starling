@@ -1,0 +1,2 @@
+# Checks malformed native discovery inputs through the command-line binary.
+cargo-sunrise-mod sync_refuses_a_cargo_manifest_fifo_without_waiting test:bounded_reads daily child-process

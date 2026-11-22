@@ -44,6 +44,8 @@ pub enum Argument {
 pub struct LaunchArguments {
     pub context: ModSelectionContext,
     pub rest: Vec<Argument>,
+    /// Whether `--home` or `SUNRISE_HOME` named the home, even as the platform default.
+    pub home_given: bool,
 }
 
 #[derive(Debug)]
@@ -57,6 +59,19 @@ impl fmt::Display for MissingValue {
 impl std::error::Error for MissingValue {}
 
 impl LaunchArguments {
+    /// The private home: the game home `--home` or `SUNRISE_HOME` named, where a host whose game
+    /// folder runs no code (a phone's shared storage) keeps what the game needs. `None` when
+    /// no one named a home.
+    pub fn private_home(&self) -> Option<&Path> {
+        self.home_given.then_some(self.context.home.as_path())
+    }
+
+    /// The folder holding `.sunrise-cache`: the private home when there is one, else the game
+    /// folder, where the caches have always been.
+    pub fn cache_home(&self) -> &Path {
+        self.private_home().unwrap_or(&self.context.game_dir)
+    }
+
     /// The installation receiving dependency declarations: an integrated server
     /// belongs to the client installation; `--dedicated` selects the server one.
     pub fn installation_side(&self) -> crate::manifest::Side {
@@ -120,6 +135,7 @@ impl LaunchArguments {
         default_home: &Path,
         env_home: Option<&OsStr>,
     ) -> Result<Self, MissingValue> {
+        let mut home_given = env_home.is_some_and(|v| !v.is_empty());
         let mut context = ModSelectionContext {
             game_dir: cwd.to_path_buf(),
             home: cwd.join(
@@ -161,14 +177,21 @@ impl LaunchArguments {
                     let value = args.next().ok_or_else(|| MissingValue(arg.clone()))?;
                     match arg.as_str() {
                         "--game-dir" | "--gameDir" => context.game_dir = cwd.join(value),
-                        "--home" => context.home = cwd.join(value),
+                        "--home" => {
+                            context.home = cwd.join(value);
+                            home_given = true;
+                        }
                         "--dev-mod" => context.dev_mods.push(cwd.join(value)),
                         _ => rest.push(Argument::Value(arg, value)),
                     }
                 }
             }
         }
-        Ok(Self { context, rest })
+        Ok(Self {
+            context,
+            rest,
+            home_given,
+        })
     }
 }
 
@@ -234,6 +257,23 @@ mod tests {
                 .unwrap()
                 .is_information_request()
         );
+    }
+
+    #[test]
+    fn the_private_home_is_a_home_someone_named() {
+        let game = Path::new("/start");
+        let implicit = parse(&[], None);
+        assert_eq!(implicit.private_home(), None);
+        assert_eq!(implicit.cache_home(), game);
+        // Named as the platform default, it still counts as given.
+        for launch in [
+            parse(&["--home", "/default"], None),
+            parse(&[], Some("/default")),
+        ] {
+            assert_eq!(launch.private_home(), Some(Path::new("/default")));
+            assert_eq!(launch.cache_home(), Path::new("/default"));
+        }
+        assert_eq!(parse(&[], Some("")).private_home(), None);
     }
 
     fn parse(args: &[&str], home: Option<&str>) -> LaunchArguments {

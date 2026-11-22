@@ -16,6 +16,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 
+pub mod folder;
 pub mod native_build;
 
 /// The checksum list's asset name.
@@ -30,7 +31,9 @@ pub const SIGNATURE_V2: &str = "SHA256SUMS.v2.sig";
 
 const KEYS: &str = include_str!("../release-keys.txt");
 const LEGACY: &str = include_str!("../legacy-releases.txt");
-const FORK_KEYS: &str = include_str!("../fork-release-keys.txt");
+
+/// The repository whose releases this build installs and checks: Sunrise's.
+pub const REPOSITORY: &str = "sunrise-org/sunrise";
 
 /// An Ed25519 public key.
 pub type PublicKey = [u8; 32];
@@ -38,21 +41,60 @@ pub type PublicKey = [u8; 32];
 /// The public keys built in: those in `release-keys.txt`. A file that doesn't parse gives none,
 /// so every download is refused rather than trusted (a test keeps the file valid).
 pub fn trusted_keys() -> Vec<PublicKey> {
-    trusted_keys_for("horizon-rust/horizon")
+    trusted_keys_for(REPOSITORY)
 }
 
-/// Repository-scoped release trust. Unknown repositories and an unconfigured fork fail closed.
-/// The fork's public release keys have one canonical home: `fork-release-keys.txt`.
+/// Repository-scoped release trust: [`REPOSITORY`]'s keys are `release-keys.txt`; any other
+/// repository (upstream's and arismoko's included) has none and fails closed.
 pub fn trusted_keys_for(repository: &str) -> Vec<PublicKey> {
-    parse_keys(repository_keys(repository, KEYS, FORK_KEYS)).unwrap_or_default()
+    parse_keys(repository_keys(repository, KEYS)).unwrap_or_default()
 }
 
-fn repository_keys<'a>(repository: &str, upstream: &'a str, fork: &'a str) -> &'a str {
-    match repository {
-        "horizon-rust/horizon" => upstream,
-        "arismoko/horizon" => fork,
-        _ => "",
+/// The environment variable that adds one more trusted SDK key: exactly one base64 Ed25519 public key, what
+/// `tools/ci/sign_release.sh` writes to `ephemeral.pub` under `EPHEMERAL=yes`. A value that is not exactly one
+/// key is reported on stderr and adds nothing.
+pub const SDK_KEY_VAR: &str = "SUNRISE_SDK_TRUSTED_KEY";
+
+/// The keys an SDK release (`sdk-<build>`) may be signed with: [`trusted_keys_for`] and, in a build with
+/// `debug_assertions` only, the key in [`SDK_KEY_VAR`]. The daily run signs its own SDK with a throwaway key per
+/// run and hands the public half to a debug-assertions launcher through that variable, so its SDK is checked end
+/// to end without a release key. A release build does not compile the variable's lookup at all, so no environment
+/// can add trust to a shipped launcher or `cargo sunrise-mod`. SDK trust only: game and launcher releases are
+/// checked with [`trusted_keys_for`].
+pub fn sdk_keys_for(repository: &str) -> Vec<PublicKey> {
+    let mut keys = trusted_keys_for(repository);
+    keys.extend(extra_sdk_keys());
+    keys
+}
+
+#[cfg(debug_assertions)]
+fn extra_sdk_keys() -> Vec<PublicKey> {
+    let Ok(text) = std::env::var(SDK_KEY_VAR) else {
+        return Vec::new();
+    };
+    match parse_keys(&text) {
+        Ok(keys) if keys.len() == 1 => keys,
+        Ok(keys) => {
+            eprintln!(
+                "{SDK_KEY_VAR} ignored: expected exactly one public key, found {}",
+                keys.len()
+            );
+            Vec::new()
+        }
+        Err(error) => {
+            eprintln!("{SDK_KEY_VAR} ignored: {error}");
+            Vec::new()
+        }
     }
+}
+
+#[cfg(not(debug_assertions))]
+fn extra_sdk_keys() -> Vec<PublicKey> {
+    Vec::new()
+}
+
+fn repository_keys<'a>(repository: &str, keys: &'a str) -> &'a str {
+    if repository == REPOSITORY { keys } else { "" }
 }
 
 /// The keys in a keys file: one base64 key per line; blank lines and `#` comments are skipped.
@@ -72,6 +114,7 @@ pub fn parse_keys(text: &str) -> Result<Vec<PublicKey>, String> {
 
 /// What a signature covers: the tag, then the checksum list.
 pub fn message(tag: &str, sums: &[u8]) -> Vec<u8> {
+    // The signed prefix stays "horizon release" through the rename: verifiers outside this repo check these bytes.
     let mut message = format!("horizon release {tag}\n").into_bytes();
     message.extend_from_slice(sums);
     message
@@ -141,27 +184,27 @@ pub fn verify(
 /// release's, nor a release's for a nightly's.
 pub const NIGHTLY: &str = "nightly";
 
-/// The channel snapshots are signed for (release.yml kind snapshot, through nightly-build.yml): a
-/// commit of main built to test it after merge, published as `snapshot-<date>-<commit>`. No
+/// The channel Dev builds are signed for (release.yml kind dev, through nightly-build.yml): a
+/// commit of main built to test it after merge, published as `dev-<date>-<commit>`. No
 /// launcher lists or updates to one; a developer installs one by its tag.
-pub const SNAPSHOT: &str = "snapshot";
+pub const DEV: &str = "dev";
 
 /// The channels of builds that are not releases. Each is signed for its own name and for each
 /// build's own version (`<channel>-<date>-<commit>`), so no build passes for another channel's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
     Nightly,
-    Snapshot,
+    Dev,
 }
 
 impl Channel {
-    const ALL: [Channel; 2] = [Channel::Nightly, Channel::Snapshot];
+    const ALL: [Channel; 2] = [Channel::Nightly, Channel::Dev];
 
-    /// The channel's tag, which its channel signature is for: [`NIGHTLY`] or [`SNAPSHOT`].
+    /// The channel's tag, which its channel signature is for: [`NIGHTLY`] or [`DEV`].
     pub const fn tag(self) -> &'static str {
         match self {
             Channel::Nightly => NIGHTLY,
-            Channel::Snapshot => SNAPSHOT,
+            Channel::Dev => DEV,
         }
     }
 
@@ -169,7 +212,7 @@ impl Channel {
     const fn title(self) -> &'static str {
         match self {
             Channel::Nightly => "Nightly",
-            Channel::Snapshot => "Snapshot",
+            Channel::Dev => "Dev",
         }
     }
 
@@ -231,6 +274,10 @@ fn is_date(text: &str) -> bool {
 /// (design: the SDK is published as its own signed release per build).
 pub const SDK_PREFIX: &str = "sdk-";
 
+/// The tag of the rolling mod tool release (`mod-tool`, mod-tool.yml): the newest `cargo-sunrise-mod` built from main,
+/// whose sums are signed for exactly this tag. It is never a game release.
+pub const MOD_TOOL: &str = "mod-tool";
+
 /// Whether `tag` names a mod SDK's release (`sdk-…`), whatever follows the prefix.
 pub fn is_sdk(tag: &str) -> bool {
     tag.starts_with(SDK_PREFIX)
@@ -238,7 +285,7 @@ pub fn is_sdk(tag: &str) -> bool {
 
 /// The signed SHA-256 of `asset` in release `tag`, or why the download must be refused.
 /// `sums` and `signature` are the release's SHA256SUMS and SHA256SUMS.sig, None when it has none.
-/// A nightly or a snapshot is never a release: their tags are refused here, whatever their
+/// A Nightly or Dev build is never a stable release: their tags are refused here, whatever their
 /// signature ([`build_digest`] checks those). Nor is a mod SDK: its files are never game files
 /// ([`sdk_digest`] checks those).
 pub fn signed_digest(
@@ -254,9 +301,9 @@ pub fn signed_digest(
                 "{tag} is a Nightly build: only a launcher with Nightly turned on installs it."
             ));
         }
-        Some(Channel::Snapshot) => {
+        Some(Channel::Dev) => {
             return Err(format!(
-                "{tag} is a snapshot build: only `sunrise-launcher install {tag}` installs it."
+                "{tag} is a Dev build, made to test main: it is never installed as a release."
             ));
         }
         None => {}
@@ -264,6 +311,11 @@ pub fn signed_digest(
     if is_sdk(tag) {
         return Err(format!(
             "{tag} is a mod SDK, not a game release: it is never installed as the game."
+        ));
+    }
+    if tag == MOD_TOOL {
+        return Err(format!(
+            "{tag} is the mod tool, not a game release: it is never installed as the game."
         ));
     }
     digest_in(tag, tag, asset, sums, signature, keys)
@@ -294,8 +346,8 @@ pub fn sdk_digest(
 
 /// The version a build of `channel` names in its GitHub title, strictly: on the Nightly channel
 /// `Nightly 2026-10-28 · 0c02067` (as nightly-build.yml writes it) gives
-/// `nightly-2026-10-28-0c02067`, on the snapshot channel `Snapshot 2026-11-13 · 0c02067` gives
-/// `snapshot-2026-11-13-0c02067`. Anything else is None, the other channel's title included: the
+/// `nightly-2026-10-28-0c02067`, on the Dev channel `Dev 2026-11-13 · 0c02067` gives
+/// `dev-2026-11-13-0c02067`. Anything else is None, the other channel's title included: the
 /// caller says which channel it asked for, never the title. A build is verified against the
 /// version it installs as, so a title that doesn't name its date and commit is refused rather than
 /// dated by when GitHub says it was published.
@@ -330,8 +382,8 @@ pub fn is_build(channel: Channel, version: &str) -> bool {
 /// installs as `version` (`<channel>-<date>-<commit>`, from [`build_title_version`]): `signature`
 /// is its [`SIGNATURE_V2`], which must sign `sums` for exactly that version. A version of the other
 /// channel is refused before any signature is read; a release's list, a channel signature
-/// (`nightly`, `snapshot`) and another build's are refused by the signature, so an older Nightly
-/// can't be passed off as tonight's, nor a snapshot as a Nightly.
+/// (`nightly`, `dev`) and another build's are refused by the signature, so an older Nightly
+/// can't be passed off as tonight's, nor a Dev build as a Nightly.
 pub fn build_digest(
     channel: Channel,
     version: &str,
@@ -520,55 +572,86 @@ impl SigningKey {
 mod tests {
     #[test]
     fn repository_trust_is_isolated_and_unknown_repositories_fail_closed() {
-        let (upstream, _) = SigningKey::generate().unwrap();
-        let (fork, _) = SigningKey::generate().unwrap();
-        let upstream_text = upstream.public_base64();
-        let fork_text = fork.public_base64();
-        let keys = |repo| parse_keys(repository_keys(repo, &upstream_text, &fork_text)).unwrap();
+        let (sunrise, _) = SigningKey::generate().unwrap();
+        let (other, _) = SigningKey::generate().unwrap();
+        let sunrise_text = sunrise.public_base64();
+        let keys = |repo| parse_keys(repository_keys(repo, &sunrise_text)).unwrap();
         let sums = sums_file(&[("game.tar.gz".into(), "ab".repeat(32))]);
         let tag = "nightly-2026-11-10-abcdef0";
-        for (repository, signer, other) in [
-            ("horizon-rust/horizon", &upstream, &fork),
-            ("arismoko/horizon", &fork, &upstream),
+        let signed = |key: &SigningKey, repo| {
+            verify(
+                tag,
+                sums.as_bytes(),
+                &key.sign(tag, sums.as_bytes()),
+                &keys(repo),
+            )
+            .is_ok()
+        };
+        assert!(signed(&sunrise, REPOSITORY));
+        assert!(!signed(&other, REPOSITORY));
+        assert!(
+            verify(
+                "nightly",
+                sums.as_bytes(),
+                &sunrise.sign(tag, sums.as_bytes()),
+                &keys(REPOSITORY)
+            )
+            .is_err()
+        );
+        for repository in [
+            "horizon-rust/horizon",
+            "arismoko/horizon",
+            "unknown/sunrise",
         ] {
-            assert!(
-                verify(
-                    tag,
-                    sums.as_bytes(),
-                    &signer.sign(tag, sums.as_bytes()),
-                    &keys(repository)
-                )
-                .is_ok()
-            );
-            assert!(
-                verify(
-                    tag,
-                    sums.as_bytes(),
-                    &other.sign(tag, sums.as_bytes()),
-                    &keys(repository)
-                )
-                .is_err()
-            );
-            assert!(
-                verify(
-                    "nightly",
-                    sums.as_bytes(),
-                    &signer.sign(tag, sums.as_bytes()),
-                    &keys(repository)
-                )
-                .is_err()
-            );
+            assert!(keys(repository).is_empty(), "{repository}");
+            assert!(trusted_keys_for(repository).is_empty(), "{repository}");
         }
-        assert!(keys("unknown/sunrise").is_empty());
-        assert!(trusted_keys_for("unknown/sunrise").is_empty());
+        assert_eq!(trusted_keys_for(REPOSITORY), parse_keys(KEYS).unwrap());
         assert_eq!(
-            trusted_keys_for("horizon-rust/horizon"),
-            parse_keys(KEYS).unwrap()
+            parse_keys(KEYS).unwrap(),
+            parse_keys("r53xb3cuafGxZSicLz06KC+xXp9NJdPH8snNmXo5pAc=").unwrap()
         );
+    }
+
+    /// Runs in both profiles (CI runs it with `--release` too): the variable's key is trusted for an SDK
+    /// exactly when `debug_assertions` is on, and never for a game or launcher release.
+    #[test]
+    fn sdk_key_variable_is_honoured_only_with_debug_assertions() {
+        let (signer, _) = SigningKey::generate().unwrap();
+        let public = parse_keys(&signer.public_base64()).unwrap()[0];
+        // SAFETY: this is the only test that touches the variable, and nothing else here reads it.
+        unsafe { std::env::set_var(SDK_KEY_VAR, signer.public_base64()) };
+        let repository = REPOSITORY;
+        let trusted = sdk_keys_for(repository).contains(&public);
+        assert_eq!(trusted, cfg!(debug_assertions));
         assert_eq!(
-            trusted_keys_for("arismoko/horizon"),
-            parse_keys(FORK_KEYS).unwrap()
+            sdk_keys_for(repository).len(),
+            trusted_keys_for(repository).len() + usize::from(cfg!(debug_assertions))
         );
+        assert!(!trusted_keys_for(repository).contains(&public));
+        let sums = sums_file(&[("sdk.json".into(), "ab".repeat(32))]);
+        let signature = signer.sign("sdk-abc", sums.as_bytes());
+        assert_eq!(
+            verify(
+                "sdk-abc",
+                sums.as_bytes(),
+                &signature,
+                &sdk_keys_for(repository)
+            )
+            .is_ok(),
+            cfg!(debug_assertions)
+        );
+        let (second, _) = SigningKey::generate().unwrap();
+        // Unparseable, empty, and more than one key: none is trusted (debug builds also report it on stderr).
+        for bad in [
+            "not a key".to_string(),
+            String::new(),
+            format!("{}\n{}", signer.public_base64(), second.public_base64()),
+        ] {
+            unsafe { std::env::set_var(SDK_KEY_VAR, &bad) };
+            assert_eq!(sdk_keys_for(repository), trusted_keys_for(repository));
+        }
+        unsafe { std::env::remove_var(SDK_KEY_VAR) };
     }
 
     use super::*;
@@ -635,6 +718,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_mod_tools_signed_list_is_never_a_game_release() {
+        let (key, sums, signature) = signed(MOD_TOOL);
+        let keys = [key.public()];
+        // Signed for its own tag, correctly, and still refused as a game release by name.
+        assert!(
+            signed_digest(
+                MOD_TOOL,
+                "sunrise-linux-x86_64.tar.gz",
+                Some(sums.as_bytes()),
+                Some(&signature),
+                &keys
+            )
+            .is_err()
+        );
+        assert!(verify(MOD_TOOL, sums.as_bytes(), &signature, &keys).is_ok());
+        // And its signature is not valid for a game release's tag.
+        assert!(verify("v2026.11.13", sums.as_bytes(), &signature, &keys).is_err());
     }
 
     #[test]
@@ -824,11 +927,11 @@ mod tests {
         assert!(!is_build(Channel::Nightly, "nightly-2026-10-28-0c02067-x"));
     }
 
-    /// A snapshot's signature never passes for a Nightly, nor a Nightly's for a snapshot, though one
-    /// key signs both; the release channel refuses snapshot tags as it refuses nightly ones.
+    /// A Dev build's signature never passes for a Nightly or vice versa, though one
+    /// key signs both; the release channel refuses Dev tags as it refuses nightly ones.
     #[test]
-    fn snapshot_and_nightly_signatures_never_pass_for_each_other() {
-        const SNAPSHOT_BUILD: &str = "snapshot-2026-11-13-0c02067";
+    fn dev_and_nightly_signatures_never_pass_for_each_other() {
+        const DEV_BUILD: &str = "dev-2026-11-13-0c02067";
         const NIGHTLY_BUILD: &str = "nightly-2026-11-13-0c02067";
         let asset = "sunrise-windows-x64.zip";
         let digest = |channel, version: &str, signed_for: &str| {
@@ -842,35 +945,34 @@ mod tests {
                 &[key.public()],
             )
         };
-        use Channel::{Nightly, Snapshot};
+        use Channel::{Dev, Nightly};
         assert_eq!(
-            digest(Snapshot, SNAPSHOT_BUILD, SNAPSHOT_BUILD),
+            digest(Dev, DEV_BUILD, DEV_BUILD),
             Ok(sha256_hex(b"windows"))
         );
         assert_eq!(
             digest(Nightly, NIGHTLY_BUILD, NIGHTLY_BUILD),
             Ok(sha256_hex(b"windows"))
         );
-        assert!(digest(Nightly, NIGHTLY_BUILD, SNAPSHOT_BUILD).is_err());
-        assert!(digest(Snapshot, SNAPSHOT_BUILD, NIGHTLY_BUILD).is_err());
+        assert!(digest(Nightly, NIGHTLY_BUILD, DEV_BUILD).is_err());
+        assert!(digest(Dev, DEV_BUILD, NIGHTLY_BUILD).is_err());
         // A genuine build of the other channel, asked for on this one: refused before its
         // signature is read, though that signature is valid for it.
-        let other = digest(Nightly, SNAPSHOT_BUILD, SNAPSHOT_BUILD).unwrap_err();
-        assert!(other.contains("doesn't name a Nightly build"), "{other}");
-        assert!(digest(Snapshot, NIGHTLY_BUILD, NIGHTLY_BUILD).is_err());
+        assert!(digest(Nightly, DEV_BUILD, DEV_BUILD).is_err());
+        assert!(digest(Dev, NIGHTLY_BUILD, NIGHTLY_BUILD).is_err());
         assert_eq!(
-            build_title_version(Nightly, "Snapshot 2026-11-13 · 0c02067"),
+            build_title_version(Nightly, "Dev 2026-11-13 · 0c02067"),
             None
         );
         assert_eq!(
-            build_title_version(Snapshot, "Nightly 2026-11-13 · 0c02067"),
+            build_title_version(Dev, "Nightly 2026-11-13 · 0c02067"),
             None
         );
         assert!(
-            digest(Snapshot, SNAPSHOT_BUILD, SNAPSHOT).is_err(),
+            digest(Dev, DEV_BUILD, DEV).is_err(),
             "the channel's signature"
         );
-        for tag in [SNAPSHOT, SNAPSHOT_BUILD] {
+        for tag in [DEV, DEV_BUILD] {
             let (key, sums, signature) = signed(tag);
             let err = signed_digest(
                 tag,
@@ -879,7 +981,7 @@ mod tests {
                 Some(&signature),
                 &[key.public()],
             );
-            assert!(err.unwrap_err().contains("snapshot build"), "{tag}");
+            assert!(err.is_err(), "{tag}");
         }
     }
 
@@ -887,46 +989,35 @@ mod tests {
     fn channels_are_read_from_their_prefix_only() {
         assert_eq!(Channel::of("nightly"), Some(Channel::Nightly));
         assert_eq!(Channel::of("nightly-2026-10-27"), Some(Channel::Nightly));
-        assert_eq!(Channel::of("snapshot"), Some(Channel::Snapshot));
-        assert_eq!(
-            Channel::of("snapshot-2026-11-13-0c02067"),
-            Some(Channel::Snapshot)
-        );
+        assert_eq!(Channel::of("dev"), Some(Channel::Dev));
+        assert_eq!(Channel::of("dev-2026-11-13-0c02067"), Some(Channel::Dev));
         for tag in [
             "v0.2.81",
             "nightlyx",
-            "snapshots-2026-11-13",
+            "devel-2026-11-13",
             "prebuilt-0c02067",
             "",
-            "Snapshot",
+            "Dev",
         ] {
             assert_eq!(Channel::of(tag), None, "{tag:?}");
         }
-        assert!(!is_nightly("snapshot-2026-11-13-0c02067"));
+        assert!(!is_nightly("dev-2026-11-13-0c02067"));
         assert_eq!(
-            build_title_version(Channel::Snapshot, "Snapshot 2026-11-13 · 0c02067").as_deref(),
-            Some("snapshot-2026-11-13-0c02067")
+            build_title_version(Channel::Dev, "Dev 2026-11-13 · 0c02067").as_deref(),
+            Some("dev-2026-11-13-0c02067")
         );
         for title in [
-            "Snapshot 2026-11-13",
-            "snapshot 2026-11-13 · 0c02067",
-            "Snapshot2026-11-13 · 0c02067",
+            "Dev 2026-11-13",
+            "dev 2026-11-13 · 0c02067",
+            "Dev2026-11-13 · 0c02067",
             "Release 2026-11-13 · 0c02067",
-            "Snapshot 2026-11-13 · 0C02067",
+            "Dev 2026-11-13 · 0C02067",
         ] {
-            assert_eq!(
-                build_title_version(Channel::Snapshot, title),
-                None,
-                "{title:?}"
-            );
+            assert_eq!(build_title_version(Channel::Dev, title), None, "{title:?}");
         }
-        assert!(is_build(Channel::Snapshot, "snapshot-2026-11-13-0c02067"));
-        for version in [
-            "snapshot-2026-11-13",
-            "snapshot",
-            "release-2026-11-13-0c02067",
-        ] {
-            assert!(!is_build(Channel::Snapshot, version), "{version}");
+        assert!(is_build(Channel::Dev, "dev-2026-11-13-0c02067"));
+        for version in ["dev-2026-11-13", "dev", "release-2026-11-13-0c02067"] {
+            assert!(!is_build(Channel::Dev, version), "{version}");
         }
     }
 

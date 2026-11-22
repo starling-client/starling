@@ -7,31 +7,35 @@ rust-version.workspace = true
 description = "The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer, the HUD, menus and settings; no gameplay"
 
 [dependencies]
-sunrise-guest-stack = { path = "../sunrise-guest-stack" }
 # The settings stores of the crates above the engine (docs/layers.md, "Platform registries").
 sunrise-hooks = { path = "../sunrise-hooks" }
 sunrise-mod-runtime = { path = "../sunrise-mod-runtime" }
 mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
 sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
-sunrise-engine-slots = { path = "../sunrise-engine-slots" }
-# The GUI atlas's pixels, kept compressed once uploaded (hud.rs `pack_pixels`).
+# The GUI atlas's pixels, kept compressed once uploaded (hud/atlas.rs `pack_pixels`).
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 sunrise-assets = { path = "../sunrise-assets" }
+sunrise-audio-input = { path = "../sunrise-audio-input", optional = true }
 sunrise-client-core = { path = "../sunrise-client-core" }
 sunrise-client-input = { path = "../sunrise-client-input" }
 sunrise-command = { path = "../sunrise-command" }
 sunrise-core = { path = "../sunrise-core" }
 sunrise-hdr = { path = "../sunrise-hdr" }
 sunrise-items = { path = "../sunrise-items" }
+sunrise-java-properties = { path = "../sunrise-java-properties" }
 sunrise-mod-package = { path = "../sunrise-mod-package" }
 # The narrator option's status and whether the narrator is there (Options.narrator).
 sunrise-narrator = { path = "../sunrise-narrator" }
-# OptiFine-format pack files: random entity textures (hud.rs), connected textures
+# OptiFine-format pack files: random entity textures (hud/atlas_pack.rs), connected textures
 # (connected.rs) and custom item texture rules (cit.rs).
+sunrise-connected = { path = "../sunrise-connected" }
 sunrise-optifine = { path = "../sunrise-optifine" }
 sunrise-perf-format = { path = "../sunrise-perf-format" }
 sunrise-polytone = { path = "../sunrise-polytone" }
+sunrise-border = { path = "../sunrise-border" }
 sunrise-protocol = { path = "../sunrise-protocol" }
+sunrise-render-core = { path = "../sunrise-render-core" }
+sunrise-render-shaderpack = { path = "../sunrise-render-shaderpack" }
 sunrise-shader-api = { path = "../sunrise-shader-api" }
 sunrise-shaders = { path = "../sunrise-shaders" }
 sunrise-system = { path = "../sunrise-system" }
@@ -55,6 +59,8 @@ png = "0.18"
 image-webp = { version = "0.2", default-features = false }
 zune-jpeg = { version = "0.4", default-features = false, features = ["std"] }
 pollster = "0.4"
+# Use the GLSL frontend's preprocessor to select active core-shader imports.
+pp-rs = "0.2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 sha1 = "0.10"
@@ -70,6 +76,11 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "time"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd"))'.dependencies]
+# CPAL 0.16's ALSA enumeration drops failed opens and hides the PCM addresses.
+alsa = { version = "0.9", optional = true }
+libc = { version = "0.2", optional = true }
+
 [target.'cfg(windows)'.dependencies]
 # Resource pack overlays link vanilla's untouched folders (no admin rights, unlike symlinks).
 junction = "1"
@@ -79,20 +90,30 @@ wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
-# Sound output: sunrise-client's `audio` feature.
-audio = ["dep:cpal"]
+# Sound output and input: sunrise-client's `audio` feature.
+audio = ["dep:cpal", "dep:alsa", "dep:libc", "dep:sunrise-audio-input"]
 # Helpers sunrise-client's tests build their fixtures with.
 test-support = []
-# The `scene_replay` example's allocator counts allocations (sunrise-threads' `alloc-count`).
-alloc-count = ["sunrise-threads/alloc-count"]
-
-# sunrise-client's `sunrise-extras`: asking the device for hardware ray tracing on request
-# (`gfx/ray_query.rs`, `SUNRISE_RAY_TRACING=1`). Without it the device is requested as without
-# the variable.
-sunrise-extras = []
 
 [lints]
 workspace = true
+
+# Each installs the process-wide render slots and must run in its own process.
+[[test]]
+name = "render_slots"
+path = "tests/render_slots.rs"
+
+[[test]]
+name = "world_view_slots"
+path = "tests/world_view_slots.rs"
+
+[[test]]
+name = "standard_pack_gpu_entities"
+path = "tests/standard_pack_gpu_entities.rs"
+
+[[example]]
+name = "standard_pack_gpu_entities"
+path = "examples/standard_pack_gpu_entities.rs"
 
 [dev-dependencies]
 tempfile = "3"

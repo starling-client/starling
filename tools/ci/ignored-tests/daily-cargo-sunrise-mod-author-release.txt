@@ -1,0 +1,5 @@
+cargo-sunrise-mod native_release::a_reviewed_exact_source_can_add_binaries_without_repacking test:publish daily child-process
+cargo-sunrise-mod native_release::an_asset_write_failure_leaves_no_registry_entry_or_pr_draft test:publish daily child-process
+cargo-sunrise-mod native_release::binaries_with_a_known_source_break_or_missing_sdk_leave_no_output test:publish daily child-process
+cargo-sunrise-mod native_release::describe_builds_binds_each_signed_host_without_compiling test:publish daily child-process
+cargo-sunrise-mod native_release::signed_binaries_stage_with_the_original_source_for_new_and_existing_versions test:publish daily child-process

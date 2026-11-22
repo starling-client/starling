@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
+use ureq::OrAnyStatus;
 
 const API: &str = "https://api.modrinth.com/v2";
 pub(crate) const AGENT: &str = "horizon-rust/horizon sunrise-port-pack/0.1 (docs/modpacks.md)";
@@ -77,14 +78,6 @@ impl Cache {
     }
 }
 
-/// Resolve the missing manifest jars in one exact-SHA-512 request, after download consent.
-pub fn jar_urls(
-    jars: &[&sunrise_mod_package::manifest::JarRef],
-) -> Result<BTreeMap<String, String>, String> {
-    let hashes: Vec<_> = jars.iter().map(|jar| jar.sha512()).collect();
-    jar_file_urls(version_files(hashes, "sha512")?)
-}
-
 fn version_files(hashes: impl Serialize, algorithm: &str) -> Result<Value, String> {
     post(
         &format!("{API}/version_files"),
@@ -92,56 +85,35 @@ fn version_files(hashes: impl Serialize, algorithm: &str) -> Result<Value, Strin
     )
 }
 
-fn jar_file_urls(found: Value) -> Result<BTreeMap<String, String>, String> {
-    #[derive(Deserialize)]
-    struct Version {
-        files: Vec<File>,
-    }
-    #[derive(Deserialize)]
-    struct File {
-        hashes: BTreeMap<String, String>,
-        url: String,
-    }
-    let versions: BTreeMap<String, Version> =
-        serde_json::from_value(found).map_err(|e| format!("Modrinth version files: {e}"))?;
-    Ok(versions
-        .into_iter()
-        .filter_map(|(hash, version)| {
-            version
-                .files
-                .into_iter()
-                .find(|file| {
-                    file.hashes
-                        .get("sha512")
-                        .is_some_and(|actual| actual.eq_ignore_ascii_case(&hash))
-                })
-                .map(|file| (hash, file.url))
-        })
-        .collect())
-}
-
 fn post(url: &str, body: &Value) -> Result<Value, String> {
-    let response = crate::net::agent(url)
-        .post(url)
-        .set("User-Agent", AGENT)
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
-        .map_err(|e| format!("{url}: {e}"))?;
-    read(url, response)
+    let response = sunrise_proxy::agent("port-pack-modrinth-post", url, |builder| {
+        builder.redirects(0)
+    })
+    .map_err(|e| format!("Modrinth: {e}"))?
+    .post(url)
+    .set("User-Agent", AGENT)
+    .set("Content-Type", "application/json")
+    .send_string(&body.to_string())
+    .or_any_status()
+    .map_err(|e| format!("Modrinth: {}", e.kind()))?;
+    read(response)
 }
 
 fn get(url: &str) -> Result<Value, String> {
-    let response = crate::net::agent(url)
-        .get(url)
-        .set("User-Agent", AGENT)
-        .call()
-        .map_err(|e| format!("{url}: {e}"))?;
-    read(url, response)
+    let response = sunrise_proxy::get(url, &[("User-Agent", AGENT)], None)
+        .map_err(|e| format!("Modrinth: {e}"))?;
+    read(response)
 }
 
-fn read(url: &str, response: ureq::Response) -> Result<Value, String> {
-    let text = response.into_string().map_err(|e| format!("{url}: {e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("{url}: {e}"))
+fn read(response: ureq::Response) -> Result<Value, String> {
+    let status = response.status();
+    if status >= 300 {
+        return Err(format!("Modrinth: HTTP {status}"));
+    }
+    let text = response
+        .into_string()
+        .map_err(|e| format!("Modrinth: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("Modrinth: {e}"))
 }
 
 /// Percent-encoding for a query value.
@@ -159,34 +131,75 @@ fn encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        time::Duration,
+    };
 
     #[test]
-    fn exact_hash_selects_the_file_not_the_versions_primary_jar() {
-        let hash = "a".repeat(128);
-        let other = "b".repeat(128);
-        let found = serde_json::json!({
-            hash.clone(): {"files": [
-                {"primary": true, "url": "wrong.jar", "hashes": {"sha512": other}},
-                {"url": "exact.jar", "hashes": {"sha512": hash}}
-            ]},
-            other.clone(): {"files": [
-                {"url": "other.jar", "hashes": {"sha512": other.to_uppercase()}}
-            ]}
+    #[ignore = "daily"]
+    fn metadata_get_reselects_the_proxy_but_post_reports_the_redirect() {
+        const ORIGIN: &str = "SUNRISE_PORT_PACK_TEST_MODRINTH_ORIGIN";
+        if let Ok(base) = std::env::var(ORIGIN) {
+            assert_eq!(get(&format!("{base}/get")).unwrap(), serde_json::json!([]));
+            let error = post(&format!("{base}/post"), &serde_json::json!({})).unwrap_err();
+            assert!(error.contains("302"), "{error}");
+            return;
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let redirect = "HTTP/1.1 302 Found\r\nLocation: http://metadata.invalid/body\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            for (request_line, response) in [
+                ("GET /get HTTP/1.1", redirect),
+                (
+                    "GET http://metadata.invalid/body HTTP/1.1",
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]",
+                ),
+                ("POST /post HTTP/1.1", redirect),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(line.trim_end(), request_line);
+                loop {
+                    line.clear();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                if request_line.starts_with("POST") {
+                    let mut body = [0; 2];
+                    reader.read_exact(&mut body).unwrap();
+                    assert_eq!(&body, b"{}");
+                }
+                stream.write_all(response.as_bytes()).unwrap();
+            }
         });
-        assert_eq!(
-            jar_file_urls(found).unwrap(),
-            BTreeMap::from([
-                (hash.clone(), "exact.jar".into()),
-                (other, "other.jar".into()),
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "modrinth::tests::metadata_get_reselects_the_proxy_but_post_reports_the_redirect",
             ])
-        );
-        assert!(jar_file_urls(serde_json::json!({})).unwrap().is_empty());
+            .env(ORIGIN, &base)
+            .env("HTTP_PROXY", &base)
+            .env("NO_PROXY", "")
+            .output()
+            .unwrap();
         assert!(
-            jar_file_urls(serde_json::json!({hash.clone(): {"files": []}}))
-                .unwrap()
-                .is_empty()
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
-        assert!(jar_file_urls(serde_json::json!({hash.clone(): {"files": "broken"}})).is_err());
-        assert!(jar_file_urls(serde_json::json!([])).is_err());
+        server.join().unwrap();
     }
 }

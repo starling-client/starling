@@ -11,7 +11,7 @@ impl mod_api::ItemPart for Accept23 {
         assert!(
             event
                 .entity
-                .equipment(host, mod_api::EquipmentSlot::Head)
+                .with_equipment(host, mod_api::EquipmentSlot::Head, |_| ())
                 .is_none()
         );
         self.0.lock().unwrap().push(event.entity.id());

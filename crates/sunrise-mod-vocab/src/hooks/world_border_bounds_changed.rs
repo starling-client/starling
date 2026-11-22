@@ -5,6 +5,8 @@ pub trait Hooks {
     /// The server world's border bounds changed, either immediately or when
     /// its timed size change was requested.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_world_border_bounds_changed",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"

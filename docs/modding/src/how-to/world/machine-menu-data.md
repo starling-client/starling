@@ -1,8 +1,8 @@
 # Declaring a machine's menu data
 
 A mod block entity has two different kinds of storage: external item access uses
-transactional Parts, while internal slots use the handle methods below; integer menu data is read with
-`BlockEntityRef::data_slots` and changed on a server Host. Menu data is transient:
+transactional Parts, while the machine's own ticker uses its resident view. Outside the ticker,
+use a `BlockEntityRef` and the Host to read or write internal slots and menu data. Menu data is transient:
 creation and loading both start with an empty data vector, even when the saved
 payload contains the machine's progress.
 
@@ -26,7 +26,8 @@ vector when preparing a newly created or loaded machine. For a progress display,
 use one element initialized from the progress value in its saved payload.
 Do not reset the vector to its initial values on every tick.
 
-The method accepts at most the game's mod-menu data-slot limit (256).
+Block-backed menus use the signed 16-bit property index of `ClientboundContainerSetDataPacket`.
+The method accepts every index from zero through `i16::MAX`.
 It returns `Ok(true)` when it changes the vector, `Ok(false)` for identical values,
 or `BlockEntityDataError::TooManySlots` with the submitted count and limit. It
 never silently clamps a vector. `BlockEntityDataError::Unavailable` means the
@@ -36,10 +37,14 @@ handle cannot reach a writable mod holder in the server level in place.
 
 After sizing, call `entity.set_data_slot(host, index, value)` for scalar updates.
 This method does not resize: an absent index returns `Ok(false)`. Both methods use the
-same write target, journal and `setChanged` path. Nested transactions retain their
+same silent storage write target and journal. Because menu data is transient and not
+serialized, writes do not mark the chunk unsaved, send a block update, or emit a
+neighbor notice; call `set_changed` explicitly when persisted state changes. Transactions retain their
 ordinary behavior; an aborted outer transaction restores the vector that existed
-before its first write, including writes committed by children. The normal menu
-broadcast delivers committed changes to viewers.
+before its first write, including writes committed by children. Block-backed menu
+broadcast sends committed values at indices 0 through 32,767 as signed shorts, as
+vanilla does. Larger indices remain in memory but are not sent by `ContainerSetData`.
+To draw those values on the client, see [Draw a progress bar and a fuel gauge](../client/menu-gauges.md).
 
 The public handle resolves one entity's lifecycle generation as well as its level
 and position. Removal, replacement and chunk reload make it stale; in-place data
@@ -57,36 +62,63 @@ insertion; it enforces automation policy. Vanilla containers are unavailable her
 
 Indices use the current container's declared count. Lazy slots read empty; saved
 excess slots are neither exposed nor truncated. `None` clears, identical values
-return `Ok(false)`, and real changes send `Changed` at root commit. Nested abort
+return `Ok(false)`. A committed change marks the chunk unsaved without notifying
+comparators or neighbours. Call `set_changed` explicitly to notify. Nested abort
 restores ordinary before-images, including committed-child writes. Invalid
 indices, unknown/air/zero-count stacks and counts above the registered or
 component-overridden maximum return `BlockEntityItemError`, never a partial write
 or silent count clamp. A stale handle refuses a replacement rather than accessing
 its container; acquire a new handle for the replacement.
 
-## Skip unchanged tick write-back
+## Borrow the ticking machine
 
-The existing `BlockEntityPart::block_entity_tick` event has the same reply on native
-and wasm. It defaults to `Changed`, retaining full checked payload write-back.
-When no payload should be written back, set:
+`BlockEntityPart::block_entity_tick` receives a `BlockEntityTickEvent<'_>` and no
+separate Host argument. It runs only if the block currently supports that entity type. If a resident
+ticker finds an incompatible block, the game warns once and skips the tick. The next valid tick clears
+the warning so a later mismatch is reported again.
+Its `subject` lends the live row. Use the view for the machine's own data,
+saved fields and internal slots. Derive owned values from the view before taking
+the Host for other objects. Each `with_view` loan checks that
+the same entity instance is still loaded in the same level (same generation) and
+that the live block at `pos` is still valid for the block entity's type
+(`BlockEntityType.isValid`). In-place block-state updates to another valid state
+keep the loan valid and expose the updated live `BlockState` through `view.state()`;
+removal, replacement, or an invalid block returns `None`.
 
 ```rust,ignore
-*event.reply = BlockEntityTickReply::Unchanged;
+fn block_entity_tick(&self, event: &mut BlockEntityTickEvent<'_>) {
+    let tick = &mut event.subject;
+    let Some((level, pos)) = tick.with_view(|view| (view.level(), view.position())) else {
+        return;
+    };
+    let above = [pos[0], pos[1] + 1, pos[2]];
+    let obstructed = level.block(tick.host(), above) != Some(self.air);
+    tick.with_view(|mut view| view.set_data_slot(0, i32::from(obstructed)));
+}
 ```
 
-This discards all edits to `event.entity`, omits the reply snapshot encode/decode,
-preserves the original revision, and causes no tick-only chunk dirty mark or
-container/comparator effects. Removal or replacement during the callback prevents
-restoring the original entity. Independent Host writes still have their own normal
-effects. The input snapshot is still sent; this is not batching or a validity cache.
+`item_slot` lends a read-only stack; call `to_owned` only if you need it after
+releasing the view. `set_nbt` edits a saved field without reloading the entity:
+`"Items"` is reserved only on container-backed block entities whose block declares
+engine-managed item slots (`item_slots() > 0`); on slotless block entities
+(`item_slots() == 0`), `set_nbt("Items", ...)` writes or removes the NBT field
+directly and clears any disk-decoded fallback item slots.
+Ticker-view writes do not automatically mark the chunk unsaved, send a block
+update, or notify neighbors—call `set_changed` explicitly through `tick.host()`
+when persisted state changes (matching vanilla `BlockEntity.setChanged` /
+`AbstractFurnaceBlockEntity.serverTick`). Normal menu sync still runs for transient
+data slots. If a neighbor write must commit with the subject edit, use
+`tick.transaction` and return `Err` if reacquiring the subject or checking its
+inputs fails. A read-only or no-op loan does not copy or journal storage. A type
+with no subscriber skips the tick entirely; pending load notices still come first.
 
 ## One-shot client effects
 
 To tell clients about something that happened once, such as a burst of particles, queue
-fields instead of writing them to the saved `nbt`. In `block_entity_tick`, or another
-event with a mutable entity, native and wasm mods alike call
-`event.entity.set_client_update_fields(fields)`, then `host.block_entity_sync(event.pos)`.
-A later call replaces the batch; an empty compound clears it.
+fields instead of writing them to the saved `nbt`. In `block_entity_tick`, queue
+fields with `tick.with_view(|mut view| view.set_client_update_fields(fields))`, then
+request a sync through `tick.host().block_entity_sync(pos)`. A later call replaces
+the batch; an empty compound clears it.
 
 The next block change that reaches a viewer puts the fields over what
 `block_entity_update_tag` gives, or sends them alone without one, in one packet for every
@@ -96,8 +128,9 @@ or unloading the block entity drops it. It is never saved, cloned or compared, a
 not change the entity's revision.
 
 If the merged tag exceeds the 2 MiB network-NBT limit, the game drops the fields,
-logs a warning, and sends the original update tag instead. A transaction that rolls
-the block entity back also drops any batch queued before it.
+logs a warning, and sends the original update tag instead. When a transaction rolls back
+the block entity, it restores the batch waiting before the transaction's first edit.
+If a sync was requested, that batch still goes out on the next block change with viewers.
 
 A client merges the fields into its copy's `nbt` as any update field, and they stay there
 until sent again: put a counter in them to tell one effect from the next.
@@ -113,6 +146,12 @@ return `Result<bool, BlockEntityError>`: handle `Err(BlockEntityError::Stale)` b
 or reacquiring the handle. `Ok(false)` means unchanged data or an unsupported operation,
 not a stale identity. Item and data-vector methods return `BlockEntityItemError` and
 `BlockEntityDataError`, respectively.
+
+`entity.lock(host)` borrows the stored vanilla item predicate while the shared Host
+borrow lasts. An explicit empty predicate is present; no predicate is `None`.
+To change it, `entity.set_lock(host, Some(lock))` still replaces the entire predicate;
+`None` clears it. `entity.data(host)` instead builds an owned save snapshot without
+identity or position metadata.
 
 ## When its chunk unloads
 
@@ -146,7 +185,7 @@ the call, so a change made in it is not kept, and the chunk may already have lef
 handle's reads find nothing there. It is not called when the world closes, nor on a client when its whole
 level goes, and never for a vanilla block entity. The chunk-wide notice is `chunk_unload`, a
 server hook told after the chunk's block entities; a client is told of the block entities alone
-([hook notes](https://github.com/arismoko/horizon/blob/main/crates/horizon-mod-vocab/src/hooks/on_chunk_unloaded.rs)).
+([hook notes](https://github.com/sunrise-org/sunrise/blob/main/crates/sunrise-mod-vocab/src/hooks/on_chunk_unloaded.rs)).
 
 ## Client ticks: a machine's hum
 
@@ -158,11 +197,13 @@ paused or frozen), in vanilla's ticker order. A loaded copy ticks whether or not
 wall, out of view or beyond `block_entity_view_distance`, where `block_entity_submit` is not called. It is
 never called on a server, and a type that doesn't opt in costs nothing.
 
-The event has the copy's `pos`, its `block_entity` handle, its block `state` and its `entity` data, read only,
-and the host is a `ClientHost`. The data is what the frame's handling of the server's packets merged into the
-copy (`block_entity_update_tag`, and `block_entity_data_received` told before): a frame handles what has
-arrived, then runs its client ticks, so every tick of one frame sees the same data, and an update that arrives
-during a frame is seen from the next frame's first tick.
+The event carries `event.subject: BlockEntityClientScope<'_>`: call `event.subject.with_view(|view| ...)`
+to read the resident copy's handle, position, level, block state, data slots, item slots and merged NBT
+directly (no per-tick snapshot copy), then call `event.subject.host()` for the `ClientHost`. The resident
+data is what the frame's handling of the server's packets merged into the copy (`block_entity_update_tag`,
+and `block_entity_data_received` told before): a frame handles what has arrived, then runs its client ticks,
+so every tick of one frame sees the same data, and an update that arrives during a frame is seen from the
+next frame's first tick.
 
 Here a machine whose update tag carries `running` starts a looping hum on the first client tick it runs and
 fades it out when it stops:
@@ -189,24 +230,29 @@ impl mod_api::BlockEntityPart for Hum {
     }
     fn block_entity_client_tick(
         &self,
-        host: &mut dyn mod_api::ClientHost,
         event: &mut mod_api::BlockEntityClientTickEvent<'_>,
     ) {
-        let running = matches!(event.entity.nbt.get(&"running".into()), Some(mod_api::Tag::Byte(1)));
+        let Some((handle, pos, running)) = event.subject.with_view(|view| {
+            let running = matches!(view.nbt().get(&"running".into()), Some(mod_api::Tag::Byte(1)));
+            (view.handle(), view.position(), running)
+        }) else {
+            return;
+        };
+        let host = event.subject.host();
         let mut hums = HUMS.lock().unwrap();
-        match (running, hums.get(&event.block_entity).copied()) {
+        match (running, hums.get(&handle).copied()) {
             (true, None) => {
-                let [x, y, z] = event.pos.map(|c| f64::from(c) + 0.5);
+                let [x, y, z] = pos.map(|c| f64::from(c) + 0.5);
                 let play = mod_api::SoundPlay::at("mymod:machine.hum", mod_api::SoundSource::Blocks, [x, y, z])
                     .looping(0);
                 if let Some(sound) = host.play_local_sound(&play, 0) {
-                    hums.insert(event.block_entity, sound);
+                    hums.insert(handle, sound);
                 }
             }
             (false, Some(sound)) => {
                 // A fade to 0 stops the sound when it ends.
                 sound.fade(&*host, 0.0, 20);
-                hums.remove(&event.block_entity);
+                hums.remove(&handle);
             }
             _ => {}
         }
@@ -239,25 +285,56 @@ or changing levels stops every sound. Add particles from the same tick with `hos
 ([hook notes](../../reference/hook-notes.md#client-ticks-hums-smoke-and-moving-parts)).
 
 `player.open_menu(host, entity)` also returns `Result<bool, BlockEntityError>`:
-`Ok(true)` means opened, `Ok(false)` means a non-provider, cancelled open or
-unconnected/wrong-level player, and `Err(BlockEntityError::Stale)` means the entity
+`Ok(true)` means opened, `Ok(false)` means a non-provider, cancelled open,
+or unconnected/wrong-level player, and
+`Err(BlockEntityError::Stale)` means the entity
 does not resolve. It never opens a replacement through an old handle.
 
-To open a content mod menu type with no block (a backpack item's use, an entity, a command),
-call `player.open_mod_menu(host, menu, title, extra, pos, replace)` (NeoForge's
+## Blockless status menus
+
+To open a content mod menu type with no block (from an item, an entity or a command),
+call `player.open_mod_menu(host, request)` with a `ModMenuOpen` request (NeoForge's
 `openMenu(provider, extraDataWriter)`). `menu` is the type's `MenuKey`. `extra`, at most
-32 KiB, is what the client's `host.screen_extra_data()` returns while the screen is open, on
-native and wasm alike. `pos`, when given, is what `screen_pos()` returns; otherwise it returns
-`None`. The type's container slots show empty, and their clicks reach `native_menu_clicked`,
-as `open_menu`'s do. It returns the window id, or `Ok(None)` when a mod cancelled the open.
-It refuses with an `OpenMenuError`: `NotModMenu`, `PlayerUnavailable` (stale, fake, or a
-vanilla client), `TooLarge`, or `Title` when the title could not cross; a cancelled or
-refused open closes nothing.
+1,048,555 bytes (vanilla's 1 MiB clientbound custom payload limit minus the 21-byte
+envelope header), is one-time context. Decode `open.extra` in the registered client screen factory.
+It is an empty slice when no payload matched this opening. Reusing a window id does not reuse
+its previous context. Keep owned decoded values if the screen needs them later; the bytes are
+borrowed only during construction. `pos` is an optional hint offered to the factory and later
+returned by `screen_pos()`. Neither is live data or block backing.
+The menu's declared container slots, if any, start empty. Opening returns the window id or
+`Ok(None)` when vetoed. Invalid type,
+connection or client support, opening bytes, data count or
+title returns `OpenMenuError`. Neither a refused nor a cancelled open closes the old menu.
+
+For a slotless status screen, declare `data/mymod/sunrise/menu/status.json` as
+`{ "slots": 0, "player_inventory": false, "data_slots": 2 }`. Register a screen factory
+for `mymod:status` with an empty slot layout. Add a draw callback to the screen for its presentation; attach a `MenuPart` for server menu behavior. Open it with two signed values, in index order:
+
+```rust,ignore
+let mut request = ModMenuOpen::new(status, Text::translate("mymod.status", vec![]));
+request.data = vec![-80_000, 7];
+player.open_mod_menu(host, request)?;
+```
+
+The negotiated blockless payload sends initial `i32` values after the window opens, at
+indices 0 through 65,535. Larger declared indices remain in server storage. A client
+without the required layout is refused with `OpenMenuError::PlayerUnavailable`. In the draw
+callback, read `frame.data.get(index)`; values are not available before they arrive. The owning mod
+gets the live `MenuRef` from `player.container_menu(host)` or the open event and calls, for
+example, `menu.set_data_slot(host, 0, 120_000)?`. It returns `true` for a changed value,
+`false` for a repeat, and refuses unsupported, stale or foreign menus and undeclared indices.
+Updates go only to this player and this window. Within a transaction, another write sees the
+pending value, but a full resend only includes committed values. Commit sends the final changed
+values and abort discards pending writes. Closing or replacing the menu discards its data.
+Buttons and validity still use `menu_button` and `menu_still_valid`; neither needs a slot.
 
 The menu the player had open closes on the server first, as a close does: its `removed`, one
 `player_container_close`, and the cursor stack and crafting grids back to the inventory. Then
-the new menu is built, its screen opened and its contents sent, and the next tick's
-`player_container_open` tells of it. `replace` is the Java `MenuProvider`'s choice
+the new menu is built, its screen opened and its contents sent, and `player_container_open`
+tells of it synchronously. Version 2 names the type string `menu_type` (also on
+`player_container_close`) and supplies `menu: Option<MenuRef>`, valid during the open callback,
+as `PlayerRef::container_menu` does. It is `None` for crafting tables, merchants, workstations,
+lecterns and mount inventories. `replace` is the Java `MenuProvider`'s choice
 (`shouldTriggerClientSideContainerClosingOnOpen`), as for
 [`open_menu`](../../concepts/capabilities/menu-slots.md#a-mods-chest-menu):
 `MenuReplace::CloseFirst`, vanilla's default, first sends the client a close for the old
@@ -265,16 +342,156 @@ window, which centres the mouse again; `MenuReplace::InPlace` sends none, so the
 its screen and its mouse where they are until the new screen replaces it, as when one
 screen of a machine leads to the next.
 
+## The menu's screen
+
+Register a constructor in `Hooks::register` with `register_menu_screen`, as with NeoForge's
+`RegisterMenuScreensEvent`. The client calls it once for the opening, after the menu's type and
+slots are known and before the window is shown. It returns a fresh `MenuScreen`. If a custom
+menu or a stock opener with excluded slots has no registered factory, the client warns and
+keeps its current menu without sending a close. When a selected factory returns `None` or
+produces an invalid layout, the client refuses that opening.
+
+Stock menu types already have a screen. To put your own screen over a hopper-like
+menu, declare a distinct type in `data/mymod/sunrise/menu/hopper_menu.json`
+with `{ "slots": 5, "player_inventory": true }`. Set `ModContainer.menu` on your
+block to `Some("mymod:hopper_menu".into())`, with the same five backing slots, and
+register your factory with `r.register_menu_screen("mymod:hopper_menu", factory)`.
+In the factory, place the five slots at `[44 + 18 * i, 20]` in GUI pixels and the
+player inventory at `[8, 51]` to match the hopper layout. The vanilla hopper
+continues to open its built-in screen.
+
+```rust,ignore
+use mod_api::{ClientHost, MenuScreen, MenuScreenLayout, MenuScreenOpen, ScreenSlot};
+use std::sync::Arc;
+
+r.register_menu_screen("mymod:backpack", Arc::new(
+    |_: &dyn ClientHost, open: MenuScreenOpen<'_>| {
+        if open.backing_slots != 9 {
+            return None;
+        }
+        Some(MenuScreen::new(MenuScreenLayout {
+            width: 176.0,
+            height: 133.0,
+            slots: (0..9)
+                .map(|i| Some(ScreenSlot {
+                    position: [8.0 + 18.0 * i as f32, 18.0],
+                    no_item_icon: None,
+                }))
+                .collect(),
+            inventory_x: 8.0,
+            inventory_y: 51.0,
+            ..Default::default()
+        }))
+    },
+)).unwrap();
+```
+
+`open.menu` names the active type; `open.block` is the verified mod block whose container opened
+it, or `None` without a matching block. This lets one constructor handle different openers
+without retaining the borrowed context. Factories are keyed directly by menu type, matching
+NeoForge's `RegisterMenuScreensEvent` and vanilla's `MenuScreens.SCREENS`: any mod may register
+a screen for a custom menu type (including another mod's or a non-built-in `minecraft:*` menu
+type), while built-in vanilla menu types that already have screens in `MenuScreens.SCREENS` and
+duplicate registrations for the same menu type are refused.
+
+Add only the callbacks the new screen uses: `with_draw(|host, frame, draw| ...)`,
+`with_click(|host, frame, right| ...)` and `with_tooltip(|host, frame, slot, lines| ...)`.
+The window owns the callbacks until the screen is closed or replaced. Decode `open.extra`
+in the factory and move any needed owned values into the callbacks. Live integer updates
+arrive separately in `frame.data`.
+
+### Custom menu screens and initially inactive slots
+
+Define a custom menu type for your machine's slots and register its screen factory with
+`r.register_menu_screen(MENU, ...)`. Leave `None` (or omit trailing entries) in
+`MenuScreenLayout::slots` for slots that should start inactive/hidden (`Slot.isActive()`);
+their physical indices stay unchanged, and any mod may activate or hide them later with
+`host.set_screen_slot`.
+
+```rust,ignore
+use mod_api::{ClientHost, MenuScreen, MenuScreenLayout, MenuScreenOpen, ModContainer, Registrar, ScreenSlot};
+use std::sync::Arc;
+
+fn register_machine(r: &mut dyn Registrar) -> Result<(), String> {
+    const BLOCK: &str = "mymod:machine";
+    const MENU: &str = "mymod:machine";
+    let block = r.block_key(BLOCK);
+    r.block_container(&block, ModContainer {
+        slots: 5,
+        faces: std::array::from_fn(|_| vec![0, 1]),
+        inputs: vec![0],
+        outputs: vec![1],
+        insert_rules: vec![],
+        menu: Some(MENU.into()),
+    });
+    r.register_menu_screen(MENU, Arc::new(
+        |_: &dyn ClientHost, open: MenuScreenOpen<'_>| {
+            if open.block != Some(BLOCK) {
+                return None;
+            }
+            Some(MenuScreen::new(MenuScreenLayout {
+                width: 176.0,
+                height: 166.0,
+                slots: vec![
+                    Some(ScreenSlot { position: [44.0, 35.0], no_item_icon: None }),
+                    Some(ScreenSlot { position: [116.0, 35.0], no_item_icon: None }),
+                ],
+                inventory_x: 8.0,
+                inventory_y: 84.0,
+                ..MenuScreenLayout::default()
+            }))
+        },
+    ))
+}
+```
+
+A `None` entry or omitted trailing slot stays indexed in the container backing and starts
+inactive on the client screen, without changing server-side slot validation. To prevent
+players from placing into or taking from a backing slot, attach a `MenuPart` to the menu type
+and set both `event.may_place` and `event.may_pickup` to `false` in `menu_slot_rules` when
+`event.container == MenuContainer::Main` and the backing index is one of those slots.
+If the extra backing indices are not needed, declare only the exposed slots on the menu type.
+
+A click callback returns `None` to leave the press alone or `Some(id)` to consume it and
+send that button to the server. The active menu's server `MenuPart` handles accepted IDs
+in `menu_button` after the normal window and menu checks and `menu_button_valid`. Do not use a client hit test or
+opening data as authority. `event.subject` is a live `BlockEntityScope`: call
+`event.subject.with_view(...)` to read or edit the backing resident block entity in place
+(it returns `None` on a blockless menu, where `event.context.pos` is also `None`, or after
+removal/replacement), `event.subject.host()` for server Host operations, and
+`event.subject.transaction(...)` for atomic edits across the subject and world storage.
+Write cursor changes through `event.carried`; each write validates at the boundary, and a
+panicking button callback is contained (discarding its carried-stack edit and rolling back
+any open transaction) and disabled for `menu_button` for the rest of the session. If a
+different hook panics, a button callback that returns normally can still change the cursor.
+In the block's [`menu_quick_move`](../../concepts/capabilities/menu-slots.md#writing-slot-storage),
+`event.subject` is the same live `BlockEntityScope` (per-write boundary validation in place,
+with `subject.transaction(...)` when edits must commit atomically across the subject and other
+world storage). A panicking quick-move callback loses its `stack` and `handled` outputs and
+is disabled for that hook, but a later Part can still handle the move.
+A [bound recipe book](../items/recipe-book-categories.md#binding-a-book-to-a-menu) works for
+blockless menus when its recipe slots have native slot backing. Register a screen factory
+for the bound menu and set `MenuScreenLayout::recipe_book` to the bound book; a missing or
+different book or invalid geometry refuses that client opening.
+
+## Laying a screen's slots out again
+
+A screen whose slots move while it is open (Tinkers' tinker station, which lays its input slots out for the
+tool being built) calls `host.set_screen_slot(menu, slot, Some([x, y]))` on the client, or `None` to hide a
+slot ([moving or hiding a mod screen's slots](../client/screens.md#moving-or-hiding-a-mod-screens-slots)). Only
+the screen changes: server-side slot rules do not change.
+
 ## Receiving synchronized data
 
 Implement `block_entity_data_received` on the block entity's part to react on the
-client after its synchronized tag has merged. It receives a `BlockEntityRef` and
-the arriving compound; reads through the handle already see the new data. This
+client after its synchronized tag has merged. It receives `event.subject: BlockEntityClientReadScope<'_>`
+(`with_view` lends a read-only `BlockEntityReadView` that already sees the merged copy, and `host()`
+borrows `&dyn ClientHost`) together with the arriving compound `event.tag`. This
 listen notice carries `BlockEntityDataSource::Chunk` or `UpdatePacket`. A chunk
 with an empty compound sends no notice. An update packet with an empty compound
 sends one notice; a packet with no tag sends none. Repeated identical packets
-each notify, and the event contains only the arriving fields, while handle reads
-see the merged copy.
+each notify, and `event.tag` contains only the arriving fields, while the scoped view
+sees the merged copy.
 It cannot change the arriving tag. Vanilla entities, missing tags, missing client
 entities and mismatched types do not call it. Server tag production uses
 `block_entity_update_tag`.

@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn the_tools_keys_pass_through_and_the_packages_are_checked() {
         let row = format!(
-            "{ROW}selector='self.interval'\nordinal=1\nrequire=1\ncancellable=true\npriority=5\nbindings=[{{name='n',ty='u32',value='n'}}]\nslice={{from={{selector='a',ordinal=0,require=1}}}}\nvariable={{name='n',ordinal=0,at='STORE'}}\n"
+            "{ROW}selector='self.interval'\nordinal=1\nrequire=1\nfingerprint='abc123'\ncancellable=true\npriority=5\nbindings=[{{name='n',ty='u32',value='n'}}]\nslice={{from={{selector='a',ordinal=0,require=1}}}}\nvariable={{name='n',ordinal=0,at='STORE'}}\n"
         );
         let manifest = parse(&native(), &row).unwrap();
         let mixin = &manifest.native.as_ref().unwrap().mixin[0];
@@ -248,10 +248,6 @@ mod tests {
 
     #[test]
     fn hostile_shapes_are_refused_without_panicking() {
-        let wasm = format!(
-            "[wasm]\nsha512='{}'\ntoolchain='nightly'\n",
-            "a".repeat(128)
-        );
         let shapes = [
             // a kind that is no string, or an empty one
             ROW.replace("kind='MODIFY_EXPRESSION_VALUE'", "kind=3"),
@@ -274,32 +270,13 @@ mod tests {
             format!("{ROW}kind='HEAD'\n"),
         ];
         for shape in &shapes {
-            for code in [native(), wasm.clone(), String::new()] {
+            for code in [native(), String::new()] {
                 assert!(parse(&code, shape).is_err(), "{shape}{code}");
             }
         }
         // Unicode in an id is the tool's to judge, and is carried as written.
         let manifest = parse(&native(), &ROW.replace("id='autosave'", "id='épée-✓'")).unwrap();
         assert_eq!(manifest.native.unwrap().mixin[0].id, "épée-✓");
-    }
-
-    #[test]
-    fn the_native_or_wasm_refusal_does_not_mask_another_error() {
-        let wasm = format!(
-            "[wasm]\nsha512='{}'\ntoolchain='nightly'\n",
-            "a".repeat(128)
-        );
-        // The wasm table itself is wrong: that stays the error, whatever `[native]` holds.
-        let broken = wasm.replace("toolchain='nightly'\n", "toolchain=3\n");
-        for code in [broken.clone(), format!("{broken}{}", native())] {
-            let error = parse(&code, ROW).unwrap_err();
-            assert!(!error.contains("not both"), "{error}");
-        }
-        let error = parse(&format!("{broken}{}", native()), ROW).unwrap_err();
-        assert!(error.contains("invalid type"), "{error}");
-        // Not TOML at all.
-        let error = parse(&format!("{wasm}= ="), ROW).unwrap_err();
-        assert!(!error.contains("not both"), "{error}");
     }
 
     #[test]

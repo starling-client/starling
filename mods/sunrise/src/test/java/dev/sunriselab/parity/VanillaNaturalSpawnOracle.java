@@ -42,6 +42,8 @@ import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.entity.EntityTypeTest;
+import net.minecraft.world.level.entity.LevelCallback;
+import net.minecraft.world.level.entity.PersistentEntitySectionManager;
 import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.FlatLevelSource;
@@ -137,6 +139,24 @@ public final class VanillaNaturalSpawnOracle {
         @Override public double nextGaussian() { return 0.0; }
     }
 
+    /** Two configured spawner attempts with a fixed offset between their centers. */
+    static final class SpawnAttempts extends net.minecraft.world.level.levelgen.LegacyRandomSource {
+        final double[] doubles;
+        int positions, heights, yaws;
+        SpawnAttempts(double dx) {
+            super(0L);
+            doubles = new double[] {0, 0, 0, 0, dx, 0, 0, 0};
+        }
+        @Override public double nextDouble() { return doubles[positions++]; }
+        @Override public int nextInt(int bound) {
+            if (bound != 3) throw new IllegalStateException("unexpected bounded draw");
+            heights++;
+            return 1;
+        }
+        @Override public float nextFloat() { yaws++; return 0.75F; }
+        @Override public int next(int bits) { throw new IllegalStateException("unexpected random draw"); }
+    }
+
     static final class Lvl extends ServerLevel {
         Lvl() { super(null, null, null, null, null, null, false, 0L, List.of(), false); }
         RegistryAccess registries;
@@ -230,8 +250,28 @@ public final class VanillaNaturalSpawnOracle {
             boolean finalizing = StackWalker.getInstance().walk(f -> f.anyMatch(x -> x.getMethodName().equals("finalizeSpawn")));
             return finalizing ? spawnerNeutral : spawnerRandom;
         }
+        // Unrelated oracle modes have their own entity fixtures. Obstruction
+        // batches exercise both real ServerLevel UUID gates.
+        boolean sectionAdmission;
+        void enableSectionAdmission() throws Exception {
+            sectionAdmission = true;
+            var created = new LevelCallback<Entity>() {
+                @Override public void onCreated(Entity e) { entities.add(e); }
+                @Override public void onDestroyed(Entity e) { entities.remove(e); }
+                @Override public void onTickingStart(Entity e) {}
+                @Override public void onTickingEnd(Entity e) {}
+                @Override public void onTrackingStart(Entity e) {}
+                @Override public void onTrackingEnd(Entity e) {}
+                @Override public void onSectionChange(Entity e) {}
+            };
+            put(this, ServerLevel.class, "entityManager", new PersistentEntitySectionManager<>(Entity.class, created, null));
+        }
         @Override public boolean tryAddFreshEntityWithPassengers(Entity entity) {
-            addFreshEntityWithPassengers(entity);
+            if (sectionAdmission) {
+                if (!super.tryAddFreshEntityWithPassengers(entity)) return false;
+            } else {
+                addFreshEntityWithPassengers(entity);
+            }
             log.add(tick + " spawn " + BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()) + " " + bits(entity.getX()) + " " + bits(entity.getY()) + " " + bits(entity.getZ()) + " " + yaw(entity));
             return true;
         }
@@ -297,6 +337,7 @@ public final class VanillaNaturalSpawnOracle {
             return out;
         }
         @Override public boolean addFreshEntity(Entity entity) {
+            if (sectionAdmission) return super.addFreshEntity(entity);
             if (entity instanceof OminousItemSpawner spawner && tick >= 0) {
                 try {
                     Field delay = OminousItemSpawner.class.getDeclaredField("spawnItemAfterTicks");
@@ -542,7 +583,8 @@ public final class VanillaNaturalSpawnOracle {
     /**
      * TrialSpawner.tickServer `ticks` times from game time `t0` at `spos`, on a
      * trial spawner block in state `state` (ominous when `ominous=1`) loaded
-     * from `snbt` (base64 SNBT). Every `kill` ticks the mobs it spawned die.
+     * from `snbt` (base64 SNBT). `warmup_snbt`, if provided, is loaded first
+     * on the same spawner. Every `kill` ticks the mobs it spawned die.
      */
     static void trialCase(Lvl level, Map<String, String> c, RegistryAccess access, HolderLookup<net.minecraft.world.level.block.Block> blockLookup,
                           RandomSource mainRandom, List<String> log) throws Exception {
@@ -553,12 +595,15 @@ public final class VanillaNaturalSpawnOracle {
         BlockState block = net.minecraft.commands.arguments.blocks.BlockStateParser.parseForBlock(blockLookup,
             "minecraft:trial_spawner[trial_spawner_state=" + c.getOrDefault("state", "waiting_for_players") + ",ominous=" + c.getOrDefault("ominous", "0").equals("1") + "]", false).blockState();
         level.blocks.add(Map.entry(new Box(at.getX(), at.getY(), at.getZ(), at.getX(), at.getY(), at.getZ()), block));
-        var nbt = net.minecraft.nbt.TagParser.parseCompoundFully(new String(Base64.getDecoder().decode(c.get("snbt")), StandardCharsets.UTF_8));
         var entity = new net.minecraft.world.level.block.entity.TrialSpawnerBlockEntity(at, block);
         entity.setLevel(level);
         level.trial = entity;
         level.trialMobs = 0;
-        entity.getTrialSpawner().load(net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, access, nbt));
+        var spawner = entity.getTrialSpawner();
+        for (String data : c.containsKey("warmup_snbt") ? List.of(c.get("warmup_snbt"), c.get("snbt")) : List.of(c.get("snbt"))) {
+            var nbt = net.minecraft.nbt.TagParser.parseCompoundFully(new String(Base64.getDecoder().decode(data), StandardCharsets.UTF_8));
+            spawner.load(net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, access, nbt));
+        }
         int ticks = Integer.parseInt(c.getOrDefault("ticks", "1"));
         long t0 = Long.parseLong(c.getOrDefault("t0", "0"));
         int kill = Integer.parseInt(c.getOrDefault("kill", "0"));
@@ -568,7 +613,7 @@ public final class VanillaNaturalSpawnOracle {
                 level.tick = t;
                 level.time = t0 + t;
                 BlockState state = level.getBlockState(at);
-                entity.getTrialSpawner().tickServer(level, at, state.getValue(net.minecraft.world.level.block.TrialSpawnerBlock.OMINOUS));
+                spawner.tickServer(level, at, state.getValue(net.minecraft.world.level.block.TrialSpawnerBlock.OMINOUS));
                 // Mobs discarded as the spawner turned ominous leave the level.
                 level.entities.removeIf(Entity::isRemoved);
                 if (kill > 0 && t % kill == kill - 1) {
@@ -584,7 +629,7 @@ public final class VanillaNaturalSpawnOracle {
             level.spawnerRandom = null;
         }
         var out = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, access);
-        entity.getTrialSpawner().store(out);
+        spawner.store(out);
         CompoundTag saved = out.buildResult();
         String next = saved.getCompound("spawn_data").flatMap(d -> d.getCompound("entity")).flatMap(e -> e.getString("id")).orElse("-");
         log.add("end state=" + level.getBlockState(at).getValue(net.minecraft.world.level.block.TrialSpawnerBlock.STATE).getSerializedName()
@@ -654,6 +699,8 @@ public final class VanillaNaturalSpawnOracle {
         level.structures = structures;
         Map2 chunkMap = (Map2) alloc(Map2.class);
         chunkMap.level = level;
+        put(source, ServerChunkCache.class, "chunkMap", chunkMap);
+        put(chunkMap, ChunkMap.class, "entityMap", new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>());
 
         Method createState = NaturalSpawner.class.getMethod("createState", int.class, ServerLevel.class, NaturalSpawner.ChunkGetter.class, LocalMobCapCalculator.class);
         Method canSpawn = NaturalSpawner.SpawnState.class.getDeclaredMethod("canSpawn", EntityType.class, Level.class, BlockPos.class, net.minecraft.world.level.chunk.ChunkAccess.class);
@@ -783,7 +830,97 @@ public final class VanillaNaturalSpawnOracle {
                     Chunk chunk = (Chunk) alloc(Chunk.class);
                     chunk.level = level;
                     chunk.at = new ChunkPos(Integer.parseInt(cp[0]), Integer.parseInt(cp[1]));
-                    if (mode.equals("spawner")) {
+                    if (mode.equals("obstruction")) {
+                        level.tick = -1;
+                        // The same already accepted entities are visible in vanilla even when
+                        // Sunrise defers the list insert until the spawn pass returns.
+                        double z = Double.parseDouble(c.get("z"));
+                        double dx = Double.parseDouble(c.get("dx"));
+                        String installation = c.get("installation");
+                        if (installation.equals("falling")) {
+                            net.minecraft.world.entity.item.FallingBlockEntity.fall(level,
+                                BlockPos.containing(8.5, 64, z), Blocks.SAND.defaultBlockState());
+                        } else if (!installation.equals("empty")) {
+                            var nbt = net.minecraft.nbt.TagParser.parseCompoundFully(c.get("entity_data"));
+                            nbt.putString("id", c.get("type"));
+                            var obstacle = Objects.requireNonNull(EntityType.loadEntityRecursive(
+                                net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, access, nbt),
+                                level, EntitySpawnReason.LOAD, e -> {
+                                    e.snapTo(8.5 + dx, 64, z, e.getYRot(), e.getXRot());
+                                    return e;
+                                }));
+                            level.addFreshEntityWithPassengers(obstacle);
+                            if (installation.equals("removed")) {
+                                obstacle.discard();
+                                level.entities.remove(obstacle); // an untracked section no longer returns it
+                            }
+                            if (installation.equals("dragon-part")) {
+                                var part = ((net.minecraft.world.entity.boss.enderdragon.EnderDragon) obstacle).getSubEntities()[0];
+                                part.setPos(8.5, 64, z);
+                                level.entities.add(part); // Level.getEntities also visits the separate dragon parts.
+                            }
+                        }
+                        var pig = Objects.requireNonNull(EntityTypes.PIG.create(level, EntitySpawnReason.NATURAL));
+                        double x = installation.equals("pending-riders") ? 8.625 : 8.5;
+                        pig.setPos(x, 64, z);
+                        boolean clear = level.noCollision(EntityTypes.PIG.getSpawnAABB(x, 64, z));
+                        log.add("obstruction " + clear + " " + pig.checkSpawnObstruction(level));
+                    } else if (mode.equals("obstruction_batch") || mode.equals("obstruction_admission")) {
+                        boolean admission = mode.equals("obstruction_admission");
+                        String installation = c.get("installation");
+                        level.enableSectionAdmission();
+                        double z = Double.parseDouble(c.get("z"));
+                        if (installation.equals("admission-resident")) {
+                            var resident = Objects.requireNonNull(EntityTypes.SHULKER.create(level, EntitySpawnReason.LOAD));
+                            resident.setPos(2.5, 64, z);
+                            resident.setUUID(new UUID(0, 101));
+                            if (!level.addFreshEntity(resident)) throw new IllegalStateException("resident control refused");
+                        }
+                        int residentsBefore = level.entities.size();
+                        BlockPos at = BlockPos.containing(8.5, 64, z);
+                        var draws = new SpawnAttempts(Double.parseDouble(c.get("dx")));
+                        level.spawnerRandom = draws;
+                        put(level, Level.class, "random", draws);
+                        var data = net.minecraft.nbt.TagParser.parseCompoundFully(c.get("entity_data"));
+                        data.putString("id", c.get("type"));
+                        var nbt = net.minecraft.nbt.TagParser.parseCompoundFully("{Delay:0s,SpawnCount:2s,SpawnRange:1s,MaxNearbyEntities:8s,MinSpawnDelay:20s,MaxSpawnDelay:20s,SpawnPotentials:[],SpawnData:{custom_spawn_rules:{}}}");
+                        if (installation.equals("admission-intra")) nbt.putShort("SpawnCount", (short) 1);
+                        nbt.getCompoundOrEmpty("SpawnData").put("entity", data);
+                        var spawner = new net.minecraft.world.level.block.entity.SpawnerBlockEntity(at, Blocks.SPAWNER.defaultBlockState());
+                        spawner.getSpawner().load(level, at, net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, access, nbt));
+                        level.tick = 0;
+                        spawner.getSpawner().serverTick(level, at);
+                        level.spawnerRandom = null;
+                        if (draws.positions != draws.heights * 4) throw new IllegalStateException("incomplete position draw");
+                        var added = level.entities.subList(residentsBefore, level.entities.size());
+                        long accepted = added.stream().filter(e -> !e.isPassenger()).count();
+                        if (!admission) {
+                            if (draws.heights != 2) throw new IllegalStateException("expected two sets of position draws");
+                            log.clear();
+                            log.add("batch " + accepted + " " + draws.yaws);
+                        } else {
+                            var out = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, access);
+                            spawner.getSpawner().save(out);
+                            var delay = out.buildResult().getShortOr("Delay", (short) -1);
+                            var installed = String.join(",", added.stream().map(e -> e.getType() == EntityTypes.ITEM_DISPLAY
+                                ? "relay" : BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath()).toList());
+                            var pig = Objects.requireNonNull(EntityTypes.PIG.create(level, EntitySpawnReason.NATURAL));
+                            pig.setPos(9.35, 64, z);
+                            boolean clear = level.noCollision(EntityTypes.PIG.getSpawnAABB(9.35, 64, z));
+                            int shulkers = level.getEntities(EntityTypeTest.forExactClass(net.minecraft.world.entity.monster.Shulker.class),
+                                new AABB(7, 63, z - 1, 11, 66, z + 1), EntitySelector.NO_SPECTATORS).size();
+                            var queries = clear + ":" + pig.checkSpawnObstruction(level) + ":" + shulkers;
+                            long burst = log.stream().filter(e -> e.equals("0 levent 2004 0")).count();
+                            long place = log.stream().filter(e -> e.startsWith("0 gevent minecraft:entity_place ")).count();
+                            long anim = log.stream().filter(e -> e.equals("0 eevent 20")).count();
+                            long reset = log.stream().filter(e -> e.equals("0 bevent 1 0")).count();
+                            log.clear();
+                            log.add("admission " + accepted + ":" + draws.heights + ":" + draws.yaws + ":" + delay
+                                + ":" + burst + ":" + place + ":" + anim + ":" + reset + ":" + (installed.isEmpty() ? "-" : installed)
+                                + " " + queries + "/" + queries);
+                        }
+                        level.sectionAdmission = false;
+                    } else if (mode.equals("spawner")) {
                         // SpawnerBlockEntity.serverTick, `ticks` times, at `spos`, loaded from `snbt` (base64 SNBT).
                         level.spawnerRandom = mainRandom;
                         level.tick = -1;

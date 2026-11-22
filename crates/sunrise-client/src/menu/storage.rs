@@ -78,7 +78,6 @@ impl Menu {
 
     pub(super) fn touch(&mut self) {
         self.stamp.advance();
-        self.state.slot_snapshot.clear();
     }
 
     /// Commit a staged edit into this same menu; do not install the private
@@ -100,8 +99,6 @@ pub struct State {
     pub(super) registry_id: Option<Box<str>>,
     /// The block whose menu this is, for `menu_slot_rules`; None with no block.
     pub(super) block_pos: Option<[i32; 3]>,
-    /// The parts' copy of the slots for this click plan; emptied by every mutation.
-    pub(super) slot_snapshot: super::SlotSnapshot,
     pub(super) slots: Vec<Slot>,
     pub(super) containers: [Vec<Option<ItemStack>>; 4],
     pub(super) grid_size: usize,
@@ -109,6 +106,9 @@ pub struct State {
     pub carried: Option<ItemStack>,
     pub data: Vec<i32>,
     pub creative: bool,
+    /// The menu is a server's client's copy (its level no `ServerLevel`): `CraftingMenu` and
+    /// `InventoryMenu.slotsChanged` work out no crafting result there; the server sends it.
+    pub on_client: bool,
     /// The selected hotbar slot (`Inventory.selected`).
     pub selected: usize,
     /// Dropped stacks (canonical text), `xp+N` and the like, in order.
@@ -159,8 +159,13 @@ pub struct State {
     /// for a shift-click), for `ItemSmithedEvent`: the template, base and
     /// addition as they were before the take used them, and the stack taken.
     pub item_smithed: Vec<([Option<ItemStack>; 3], ItemStack)>,
+    /// The authoritative click's take recorder, never enabled during prediction.
+    pub(super) takes: Option<super::click::TakeTracker>,
     /// `FurnaceResultSlot.removeCount`.
     pub(super) output_removed: u32,
+    /// Stacks transferred out of a furnace by a take, shift-click or hotbar swap, independent of
+    /// whether `item_smelted` has a listener. Direct `Slot.set` edits never record an extraction.
+    pub furnace_extracted: Vec<(ItemStack, u32)>,
     /// `LivingEntity.onEquipItem` calls that change the item: the
     /// `EquipmentSlot` name and the new stack, in order, for the caller.
     pub equipped: Vec<(&'static str, Option<ItemStack>)>,
@@ -184,23 +189,29 @@ pub struct State {
     pub combined: bool,
     /// The caller fires `AnvilCraftEvent.Pre` for a taken anvil result: its
     /// `onTake` waits in `anvil_craft` for the caller to run `anvil_take`, or
-    /// to refuse the take with `anvil_cancel` (from an `anvil_undo` made
-    /// before the click).
+    /// on cancel to skip `anvil_take` and `anvil_craft_post` (matching NeoForge
+    /// `AnvilMenu.onTake` returning early without undoing the item move).
     pub anvil_hook: bool,
     /// The anvil result taken while `anvil_hook` is set, as it was before
     /// crafting.
-    pub anvil_craft: Option<AnvilCraft>,
-    /// The caller fires `GrindstoneEvent.OnTakeItem` for a taken grindstone
-    /// result: its `onTake` waits in `grind_take` for `grindstone_taken`.
+    pub anvil_craft: Option<AnvilCraftSnapshot>,
+    /// Defer a grindstone result's `onTake` to the caller, which can dispatch
+    /// `GrindstoneEvent.OnTakeItem` before applying the experience and replacements.
     pub grind_hook: bool,
-    /// The grindstone result taken while `grind_hook` is set, with its
-    /// inputs as they were.
-    pub grind_take: Option<GrindstoneTake>,
+    /// The pre-take inputs and initial experience for a deferred `onTake`.
+    pub grind_take: Option<PendingGrindstoneTake>,
     /// `GrindstoneEvent.OnPlaceItem`'s experience for the result now in the
     /// slot, or -1 for vanilla's.
     pub(super) grind_xp: i32,
     /// `AnvilMenu.createResult` ran since `anvil_created` last asked.
     pub(super) anvil_made: bool,
+    /// `GrindstoneMenu.createResult` ran since `grindstone_created` last asked.
+    pub(super) grind_made: bool,
+    /// Suspend multi-slot clicks whenever `createResult` runs so callers can deliver
+    /// `anvil_update` / `grindstone_place` live between slot writes.
+    pub(super) track_results: bool,
+    /// Further setChanged calls for the same input write, after the current result hook.
+    pub(super) more_results: usize,
     /// The enchanting table's item changed to an enchantable one: the caller
     /// (with a level) fills the costs and clues (`slotsChanged`'s
     /// `access.execute`).

@@ -1,7 +1,7 @@
 //! Direct readiness regressions: no pool thread, sweep, tick or timer can help.
 use super::*;
-use sunrise_protocol::connection::Connection;
 use std::sync::mpsc;
+use sunrise_protocol::connection::Connection;
 
 const PIPE_CAPACITY: usize = 64 * 1024;
 struct Quiet;

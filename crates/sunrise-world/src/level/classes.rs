@@ -20,6 +20,11 @@ macro_rules! classes {
     };
 }
 
+/// The reserved namespace for tags generated from block classes, not loaded from packs.
+pub fn is_generated_tag(tag: &str) -> bool {
+    tag.starts_with("sunrise:class/")
+}
+
 classes! {
     Block = "Block" => "sunrise:class/block",
     Air = "AirBlock" => "sunrise:class/air",
@@ -306,6 +311,7 @@ pub enum Interface {
     Entity,
     WeatheringCopper,
     CaveVines,
+    GameMaster,
 }
 impl Interface {
     pub fn from_java(name: &str) -> Option<Self> {
@@ -318,6 +324,7 @@ impl Interface {
             "EntityBlock" => Self::Entity,
             "WeatheringCopper" => Self::WeatheringCopper,
             "CaveVines" => Self::CaveVines,
+            "GameMasterBlock" => Self::GameMaster,
             _ => return None,
         })
     }

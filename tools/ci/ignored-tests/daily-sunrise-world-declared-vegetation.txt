@@ -1,0 +1,1 @@
+sunrise-world level::data::cache::tests::declared_vegetation_survives_a_warm_cache lib daily resources

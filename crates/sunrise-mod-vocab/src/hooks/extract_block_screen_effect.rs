@@ -1,26 +1,42 @@
 //! The `extract_block_screen_effect` hooks and helpers: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// Before one of the first-person view's block overlays (`ScreenEffectRenderer`) is drawn,
-    /// once a frame each is shown: `Block` with the view-blocking `state` at `pos` the camera is
-    /// inside, `Water` with the `state` at the eye's block `pos` while the eye is under water, and
-    /// `Fire` with fire's default `state` at the player's block `pos` while they burn. Never for a
-    /// spectator; `Fire` only in first person. Set `canceled` to leave that overlay out; the
-    /// frame, the other block overlays and the HUD's camera overlays are drawn as before. Set
-    /// `custom_draw` to draw it yourself (`block_screen_effect_draw`), canceled or not.
-    /// `partial_tick` is the world's.
-    /// Client-side.
+    /// Before an overlay from `ScreenEffectRenderer` is drawn, once a frame per eligible overlay:
+    /// `Block` with the view-blocking `state` at `pos` the camera is
+    /// inside, `Water` with water's default `state` at the eye's block `pos`, and `Fire` with
+    /// fire's default `state` at the player's block `pos`. Never for a spectator; `Water` and
+    /// `Fire` only in first person. Water eligibility comes from the player's eye fluid, sampled
+    /// through death tick 20. While the death screen stays open after removal, extraction keeps
+    /// that last sample. `camera_submersion` can still override it at the eye.
+    /// Cancel to leave the vanilla overlay out, except that a selected fire renderer still decides
+    /// whether its vanilla quads follow it. Use [`ExtractBlockScreenEffectEvent::set_custom_renderer`]
+    /// to prepend or replace the quads. A failed listener leaves the previous choice and
+    /// cancellation intact so later eligible listeners still run. A panic disables that mod's
+    /// listener for the session and is reported in the log and the client error toast.
+    /// `partial_tick` is world interpolation; `player_partial_tick` is local-player interpolation,
+    /// which continues when the level is frozen. Client-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "ExtractBlockScreenEffectEvent",
-        cancellable = true
+        cancellable = true,
+        version = 3
     )]
     #[notes = r##"## Block screen effects
 
-`extract_block_screen_effect(effect, state, pos, partial_tick, canceled, custom_draw)` is NeoForge's `ExtractBlockScreenEffectEvent`: once a frame for each of the first-person view's block overlays that is shown, before its quads are built. `Block` is the view-blocking block the camera is inside, `Water` the block at the eye while it is under water, and `Fire` fire's default state at the player's block while they burn (first person only). None of them fire for a spectator. Set `canceled` to leave that one overlay out; the other overlays and the HUD's camera overlays (vignette, pumpkin, portal, freezing) stay.
+`extract_block_screen_effect` fires before block, water and fire overlays are drawn. Water and fire are first-person only. Water uses the player's eye fluid sampled through death tick 20 and kept after removal until respawn. `camera_submersion` can override that sample. The event carries the default water state at the player's eye block, including inside a waterlogged block. The event's `set_custom_renderer` is NeoForge's `setCustomRenderer`: the last eligible listener to set a renderer for an overlay wins. Cancellation skips listeners that did not opt in with `#[listener(receive_cancelled)]`, but it does not clear a renderer. A canceled overlay with no renderer draws nothing. For block and water, cancellation suppresses the vanilla quads even if a renderer was selected. For fire, cancellation uses a no-op only if no renderer was selected; otherwise a renderer that returns `false` still precedes vanilla fire.
 
-Set `custom_draw`, NeoForge's `setCustomRenderer`, to draw the overlay yourself: `block_screen_effect_draw` is then asked about it later in the frame. A mod can't hand over a renderer object, so the flag stands in for the renderer and the hook for its `submit`. Vanilla's overlay still draws after the mod's, unless the draw hook sets `replace_vanilla` or the overlay was canceled. A canceled overlay with `custom_draw` set still gets the draw hook, and returning `Flow::Cancel` keeps a `custom_draw` set on the event; canceling without it is `CustomBlockScreenEffectRenderer.NO_OP`. Canceling skips later mods, so they neither see the overlay nor set `custom_draw` on it. The player and the camera are on `ClientHost` (`local_player`, `camera`, `camera_entity`, `camera_type`), and `partial_tick` is `getWorldPartialTick`, the same value the draw hook gets. `getPlayerPartialTick` is not provided. With no listener the frame pays one `listened` check."##]
-    fn extract_block_screen_effect();
+After extraction, the game calls each selected renderer's `submit` in block, water, fire order. It submits just before its own overlay and can return `true` to suppress that overlay's vanilla quads. A failed submission contributes no quads and does not change extraction's vanilla drawing decision. A panic disables that mod's submission for that overlay kind for the session, not its extraction hook or its other overlay submissions. Panics name the mod in the log and client error toast. Earlier overlays, later overlays and the HUD's camera overlays are unaffected. `CameraDrawContext` takes camera-space quads under the first-person hand's projection, after the level and hand and before the GUI. The player and camera can be read on `ClientHost`; `partial_tick` is `getWorldPartialTick` at both stages, and `player_partial_tick` is `getPlayerPartialTick` at extraction. Nothing drawn outlives the frame, and no GPU handle is exposed."##]
+    fn extract_block_screen_effect(
+        effect: mod_api::BlockScreenEffect,
+        state: mod_api::BlockState,
+        pos: BlockPos,
+        partial_tick: f32,
+        player_partial_tick: f32,
+        canceled: &mut bool,
+        renderer: &mut Option<mod_api::__private::SelectedBlockScreenEffectRenderer>,
+    );
 }

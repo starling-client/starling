@@ -14,14 +14,14 @@
 //! them (pipe read, decryption, framing, inflate). `decode` is `play::Clientbound::decode`, and
 //! `sections` parses chunk packets' sections (overworld: 24 sections; `--biome-bits` from the server's
 //! biome registry, 7 for vanilla's 65 biomes). `--repeat N` keeps each stage's fastest of N runs.
+use std::{collections::BTreeMap, error::Error, time::Instant};
+use sunrise_core::vanilla_bytes::write_varint;
 use sunrise_protocol::{
     Direction, State,
-    buf::write_varint,
     connection::{Connection, Pipe},
     ids,
     packets::play::Clientbound,
 };
-use std::{collections::BTreeMap, error::Error, time::Instant};
 
 struct Packet {
     id: i32,

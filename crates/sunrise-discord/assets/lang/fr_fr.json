@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Présence Discord",
+  "sunrise.extras.discord_presence.tooltip": "Affiche « Joue à Sunrise » sur votre profil Discord tant que Discord fonctionne : menus, solo ou multijoueur, la dimension et le temps de jeu. Jamais le nom d'un monde ni l'adresse d'un serveur."
+}

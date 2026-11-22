@@ -2,11 +2,11 @@
 //! uncompressed `servers.dat`: `{servers: [{name, ip, icon?, acceptTextures?,
 //! acceptedCodeOfConduct?, hidden}]}`. Hidden entries (servers joined by
 //! Direct Connection or quick play) are not shown but keep their settings.
+use std::path::Path;
 use sunrise_core::{
     nbt,
     nbt::{JavaString, NamedTag, Tag},
 };
-use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerEntry {

@@ -140,11 +140,11 @@ mod tests {
     use super::super::Dim;
     use super::super::native_entity_refs::tests::with_game;
     use super::*;
+    use mod_api::{MobRef, WorldEpoch};
     use sunrise_client::{entities::ArmorStand, mobs::Mob};
     use sunrise_core::geometry::Vec3;
     use sunrise_core::nbt::Tag;
     use sunrise_protocol::entity_data::{Value, serializer};
-    use mod_api::{MobRef, WorldEpoch};
 
     fn dragon_in(game: &mut Game<'_>) -> (EntityRef, DragonRef) {
         let mut dragon = Dragon::new(Vec3::ZERO, 0.0, 0);
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn dragon_target_change_can_be_cancelled() {
         struct Cancel;
         #[mod_api::__subscriptions]
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_dragon_is_a_mob_with_mob_state() {
         with_game(|game| {
             let kind = game
@@ -212,7 +212,11 @@ mod tests {
             assert_eq!(mob.persistence_required(game), Some(false));
             assert!(mob.set_persistence_required(game));
             assert_eq!(mob.persistence_required(game), Some(true));
-            let saved = game.dragon.as_ref().unwrap().to_nbt([0; 4], None);
+            let saved = game
+                .dragon
+                .as_ref()
+                .unwrap()
+                .to_nbt([0; 4], None, &Default::default());
             assert_eq!(saved.get("PersistenceRequired"), Some(&Tag::Byte(1)));
             assert!(Dragon::from_nbt(&saved, 0).unwrap().persistent);
             // `getBooleanOr` takes any nonzero number as true.
@@ -262,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_phase_is_read_set_synced_and_saved() {
         with_game(|game| {
             let (entity, dragon) = dragon_in(game);
@@ -296,7 +300,11 @@ mod tests {
                 } else {
                     assert_eq!(synced, Some(&(16, serializer::INT, Value::Int(i as i32))));
                 }
-                let saved = game.dragon.as_ref().unwrap().to_nbt([0; 4], None);
+                let saved = game
+                    .dragon
+                    .as_ref()
+                    .unwrap()
+                    .to_nbt([0; 4], None, &Default::default());
                 assert_eq!(saved.get("DragonPhase"), Some(&Tag::Int(i as i32)));
                 let loaded = Dragon::from_nbt(&saved, 0).unwrap();
                 assert_eq!(loaded.native_phase(), phase);
@@ -337,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn leaving_flaming_discards_the_cloud_at_once() {
         use super::super::dragon::Breath;
         with_game(|game| {
@@ -383,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_invulnerable_player_is_not_a_target() {
         with_game(|game| {
             let (entity, _) = dragon_in(game);
@@ -446,7 +454,9 @@ mod tests {
                 ])
             );
             assert_eq!(
-                game.entity_kind(*part).map(|kind| kind.id(game)).as_deref(),
+                game.entity_kind(*part)
+                    .and_then(|kind| kind.id(game))
+                    .as_deref(),
                 Some("minecraft:ender_dragon")
             );
             assert_eq!(game.entity_rotation(*part), Some([0.0, 0.0]));
@@ -467,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_dragons_parts_resolve_as_entities_of_their_own() {
         with_game(|game| {
             let (entity, _) = dragon_in(game);
@@ -513,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_dragon_that_has_no_id_yet_has_no_parts() {
         with_game(|game| {
             game.dragon.replace(Dragon::new(Vec3::ZERO, 0.0, 0));
@@ -525,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_clients_dragon_parts_resolve_through_its_own_copy() {
         use super::super::execution_role::ExecutionRole;
         use sunrise_protocol::connection::Pipe;
@@ -546,6 +556,13 @@ mod tests {
             let dragon = game.entity(15).unwrap();
             assert_parts_are_the_dragons_own(game, dragon);
             let parts = game.entity_parts(dragon).unwrap();
+            for part in &parts {
+                assert_eq!(part.vehicle(game), None);
+                assert_eq!(part.root_vehicle(game), Some(*part));
+                assert_eq!(part.is_passenger(game), Some(false));
+                assert_eq!(part.is_vehicle(game), Some(false));
+                assert_eq!(part.passengers(game), Some(Vec::new()));
+            }
             // The window's own player is not one, and a stale handle is none.
             assert_eq!(game.entity(7).map(|e| e.id()), Some(7));
             let stale = EntityRef::new(WorldEpoch::new(dragon.epoch().get() + 1), parts[3].id());

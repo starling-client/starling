@@ -36,7 +36,7 @@ ChiseledBookShelfBlockEntity.canTakeItem	port	crates/sunrise-client/src/game/mac
 ChiseledBookShelfBlockEntity.applyImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::place	Items as container component
 ChiseledBookShelfBlockEntity.collectImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::collect	Items as container component
 CommandBlockEntity.onModeSwitch	port	crates/sunrise-client/src/game/administration/command_blocks.rs::Game::apply_command_block	mode switch; the AUTO schedule follows the setAutomatic step
-CommandBlockEntity.isConditional	port	crates/sunrise-client/src/game/administration/command_blocks.rs::conditional
+CommandBlockEntity.isConditional	port	crates/sunrise-gameplay/src/command_blocks.rs::conditional
 CommandBlockEntity.applyImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::place	custom name component
 CommandBlockEntity.collectImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::collect	custom name component
 CommandBlockEntity.removeComponentsFromTag	port	crates/sunrise-client/src/block_entity_item.rs::pick	CustomName, conditionMet and powered left out of the item data
@@ -96,7 +96,7 @@ LecternBlockEntity.resolveBook	missing		`books.rs::view_pages` reads a written b
 LecternBlockEntity.createCommandSourceStack	missing		only `resolveBook` builds it; a page's RunCommand goes through `click_command`, which has no lectern source, so a relative coordinate resolves at the player
 LecternBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	Book and Page, the page clamped to the book's first and last page
 LecternBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	Book and Page
-SculkCatalystBlockEntity.CatalystListener.tryAwardItSpreadsAdvancement	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::mob_died	kill_mob_near_sculk_catalyst fires when the catalyst takes a mob's experience
+SculkCatalystBlockEntity.CatalystListener.tryAwardItSpreadsAdvancement	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::mob_die	kill_mob_near_sculk_catalyst fires when the catalyst takes a mob's experience
 SculkShriekerBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	shrieker state from the sculk arm
 SculkShriekerBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	shrieker state from the sculk arm
 SculkShriekerBlockEntity.tryGetPlayer	inline	crates/sunrise-client/src/game/blocks/sculk.rs::Game::sculk_listen	ctx.player flag decides whether a player set it off

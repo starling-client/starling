@@ -81,10 +81,15 @@ public final class VanillaDispenserOracle {
             int index = 0;
             for (var line : (Iterable<String>) lines::iterator) {
                 var f = JsonParser.parseString(line).getAsJsonObject();
+                EXACT = f.has("exact") && f.get("exact").getAsBoolean();
                 // Three runs: a value from an unseeded random rarely repeats thrice.
                 List<String> a = attempt(f), b = attempt(f), c = attempt(f);
                 out.print("case " + index++ + "\n");
-                for (String s : merge(merge(a, b), c)) out.print(s + "\n");
+                // An exact case is printed whole from its first run, with no merge: any
+                // difference between the runs is reported, never marked or dropped.
+                List<String> kept = EXACT ? a : merge(merge(a, b), c);
+                for (String s : kept) out.print(s + "\n");
+                if (EXACT && !(a.equals(b) && a.equals(c))) out.print("nondeterministic\n");
             }
         }
     }
@@ -126,7 +131,11 @@ public final class VanillaDispenserOracle {
         return out;
     }
 
+    /** The running case is exact (`"exact": true`): `num` prints raw bits. */
+    static boolean EXACT;
+
     static String num(double v) {
+        if (EXACT) return Long.toHexString(Double.doubleToRawLongBits(v));
         return String.format(Locale.ROOT, "%.6f", v);
     }
 

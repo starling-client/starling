@@ -1,5 +1,11 @@
 //! Repeated movement over the same owned actor and resident scene as the client.
 #![forbid(unsafe_code)]
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, Write},
+    path::PathBuf,
+};
 use sunrise_client::{
     Result,
     assets::Assets,
@@ -13,12 +19,6 @@ use sunrise_core::{position::BlockPos, random::RandomSource};
 use sunrise_world::attributes::{Modifier, Operation};
 use sunrise_world::move_gate::MoveGate;
 use sunrise_world::movement_statistics::{self, MovementStat, MovementStatisticsWorld};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{BufRead, Write},
-    path::PathBuf,
-};
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())
 }
@@ -321,6 +321,7 @@ pub fn main() -> Result<()> {
             .unwrap_or_default();
         for op in f["ops"].as_array().unwrap() {
             let mut world = MotionWorld {
+                side: sunrise_client::motion::dry_side(),
                 entities: &entities,
                 player: &mut player,
                 scene: &mut scene,

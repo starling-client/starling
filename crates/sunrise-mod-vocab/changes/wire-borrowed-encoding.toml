@@ -1,0 +1,3 @@
+ids = ["handle:wire::Writer::put_owned", "method:wire::Wire::put_owned"]
+why = "Encoding no longer has to transfer ownership into a guest resource table. Wire has one borrowed encoder; bytes and limits are unchanged."
+migrate = "Replace writer.put_owned(value) with writer.put(&value). If you call the trait method directly, replace Wire::put_owned(value, out) with Wire::put(&value, out). Remove put_owned overrides from handwritten Wire impls; keep the borrowed put. Encoding does not drop its input. To dispose of deeply nested NBT, drain an explicit work stack: push Tag::List children and Compound::into_values() entries, and drop leaves."

@@ -19,8 +19,8 @@ impl Game<'_> {
             }
         };
         if let Some(r) = &self.remote {
-            for &id in r.passenger_vehicles.values() {
-                include(id);
+            for seat in r.passenger_vehicles.values() {
+                include(seat.vehicle);
             }
         }
         // Shared/server riding paths can also set these links without a
@@ -58,7 +58,7 @@ impl Game<'_> {
             // SetPassengers packet preceded the vehicle's removal. Otherwise
             // mobs and other players keep their passenger pose after it is gone.
             if vehicles.contains(&(id as u32)) {
-                self.remote_set_passengers(id, &[]);
+                self.remote_clear_passengers(id);
             }
             // Before the crystals go: the dragon's beam index follows them.
             self.remove_remote_dragon(id);
@@ -92,7 +92,7 @@ impl Game<'_> {
         self.tnts.retain(|t| keep(t.id));
         let mut camera_removed = false;
         if let Some(r) = self.remote.as_mut() {
-            r.passenger_vehicles.retain(|_, v| keep(*v));
+            r.passenger_vehicles.retain(|_, seat| keep(seat.vehicle));
             if r.camera.is_some_and(|id| removed.contains(&(id as u32))) {
                 r.camera = None;
                 camera_removed = true;
@@ -109,7 +109,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn remove_entities_detaches_only_removed_vehicles() {
         use crate::game::{
             Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
@@ -178,8 +178,8 @@ mod tests {
             }))
             .unwrap();
         }
-        game.remote_set_passengers(40, &[42]);
-        game.remote_set_passengers(41, &[43]);
+        game.remote_set_passengers(40, vec![42]);
+        game.remote_set_passengers(41, vec![43]);
         assert_eq!(game.armor_stands[0].vehicle, Some(40));
         assert_eq!(game.mobs[0].extra.mount, Some(41));
         game.handle_packet(C::RemoveEntities(play::RemoveEntities {
@@ -192,13 +192,13 @@ mod tests {
         assert_eq!(r.entities[&43].vehicle, Some(41));
         assert_eq!(game.mobs[0].extra.mount, Some(41));
         assert!(game.mobs[0].extra.passenger);
-        assert_eq!(r.passenger_vehicles.get(&42), None);
-        assert_eq!(r.passenger_vehicles.get(&43), Some(&41));
+        assert_eq!(r.passenger_vehicle(42), None);
+        assert_eq!(r.passenger_vehicle(43), Some(41));
         assert_eq!(game.falling.iter().map(|e| e.id).collect::<Vec<_>>(), [45]);
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn add_entity_replaces_falling_block_without_removing_other_ids() {
         use crate::game::{
             Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn remove_entities_filters_mixed_entity_lists() {
         use crate::game::{
             Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,

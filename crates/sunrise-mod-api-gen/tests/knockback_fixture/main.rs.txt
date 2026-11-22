@@ -27,6 +27,7 @@ fn main() {
                 velocity: Vec3::default(), ground: Ground { on_ground: true }, entity_id: 1,
             }),
             level,
+            last_hurt_by_player: (),
         };
         let attack = Attack { attacker: 0 };
         if full {

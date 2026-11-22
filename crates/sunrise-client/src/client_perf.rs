@@ -5,17 +5,17 @@ use crate::server_perf::{
     self, CaptureEnd, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved,
     ServerPerf, TickDetail, WorldCounts,
 };
-use sunrise_perf_format::FieldSender;
-use sunrise_perf_format::v1::{
-    BenchResult, Machine, Side, Start, StopReason, Trigger, WarningCode,
-};
-use sunrise_protocol::connection::Counters;
 use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use sunrise_perf_format::FieldSender;
+use sunrise_perf_format::v1::{
+    BenchResult, Machine, Side, Start, StopReason, Trigger, WarningCode,
+};
+use sunrise_protocol::connection::Counters;
 
 pub mod request;
 
@@ -267,6 +267,10 @@ impl ClientPerf {
         self.perf.memory_snapshot(t, label, rows)
     }
 
+    pub fn memory_cost(&self) -> Option<crate::server_perf::MemoryCost> {
+        self.perf.memory_cost()
+    }
+
     /// Records `code` in the running capture; false when none runs.
     pub fn warn(&mut self, t: f64, code: WarningCode) -> bool {
         self.perf.warn(t, code)
@@ -274,11 +278,6 @@ impl ClientPerf {
 
     pub fn status(&self, t: f64) -> Option<CaptureStatus> {
         self.perf.status(t)
-    }
-
-    /// The seconds left in the running capture's window.
-    pub fn remaining_s(&self, t: f64) -> Option<f64> {
-        self.window.map(|(end, _)| (end - t).max(0.0))
     }
 }
 

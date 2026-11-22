@@ -1,8 +1,8 @@
 //! Turning hanging entities for mods: a painting's or item frame's facing
 //! (`entity_set_hanging_direction`) and an item frame's item (`entity_set_item_frame_rotation`).
 use super::{Game, commands::Target};
-use sunrise_core::geometry::Direction;
 use mod_api::EntityRef;
+use sunrise_core::geometry::Direction;
 
 impl Game<'_> {
     /// `HangingEntity.setDirection`: the facing, from which the yaw, pitch and bounds follow.

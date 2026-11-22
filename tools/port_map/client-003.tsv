@@ -24,26 +24,26 @@ ChatListener.tick	port	crates/sunrise-client/src/game/network/remote/chat_queue.
 ChatListener.setMessageDelay	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::chat_delay_ms	Chat Delay in milliseconds, as Java truncates it, read when a chat line arrives
 ChatListener.flushQueue	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::flush_chat_queue	each message through accept_chat, so it counts as processed
 ChatListener.acceptNextDelayedMessage	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::accept_next_delayed_message	the chat.queue row's click shows one held message, without moving the delay timer
-ChatListener.removeFromDelayedMessageQueue	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_delete_chat
+ChatListener.removeFromDelayedMessageQueue	inline	crates/sunrise-client/src/game/network/remote/chat.rs::Game::handle_delete_chat
 ChatListener.handleMessage	port	crates/sunrise-client/src/game/network/remote/mod.rs::handle_player_chat	a line with a delay goes into remote.chat_queue instead of the chat
-ChatListener.handlePlayerChatMessage	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_packet	gap: player: no Only Show Secure Chat filter, no server filter-mask text, no block or friend-only hiding of chat lines
-ChatListener.handleChatMessageError	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_chat_message_error	the red italic chat.validation_error in the message's chat type, tagged chatError; gap: minor: a blocked or friends-only sender is not skipped (no social list), no narration, no markMessageAsProcessed
-ChatListener.handleDisguisedChatMessage	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_packet	gap: minor: no narration and no chat log entry
+ChatListener.handlePlayerChatMessage	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_chat_packet	gap: player: no Only Show Secure Chat filter, no server filter-mask text, no block or friend-only hiding of chat lines
+ChatListener.handleChatMessageError	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::handle_chat_message_error	the red italic chat.validation_error in the message's chat type, tagged chatError; gap: minor: a blocked or friends-only sender is not skipped (no social list), no narration, no markMessageAsProcessed
+ChatListener.handleDisguisedChatMessage	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_disguised_chat_packet	gap: minor: no narration and no chat log entry
 ChatListener.showMessageToPlayer	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_line	gap: player: trust, block, friend-only and secure-only checks are not run before showing
-ChatListener.evaluateTrustLevel	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_trust
+ChatListener.evaluateTrustLevel	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust
 ChatListener.logPlayerMessage	skip:service		feeds the chat log that chat reports read
 ChatListener.logSystemMessage	skip:service		feeds the chat log that chat reports read
-ChatListener.handleSystemMessage	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_packet	gap: minor: hide-matched-names and friend filtering are not applied to system lines
+ChatListener.handleSystemMessage	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_system_chat_packet	gap: minor: hide-matched-names and friend filtering are not applied to system lines
 ChatListener.guessChatUUID	skip:service		social lookup of a name in a system line, used only for blocking and hiding
-ChatListener.isSenderLocalPlayer	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_trust	the local player's own message on their own server is secure
+ChatListener.isSenderLocalPlayer	inline	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust	the local player's own message on their own server is secure
 ChatLog.codec	skip:java		serializer of the chat log
 ChatLog.loggedChatEvents	skip:service		chat log for chat reports
 ChatLog.push	skip:service		chat log for chat reports
 ChatLog.lookup	skip:service		chat log for chat reports
-ChatTrustLevel.evaluate	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_trust	secure, modified (signed content gone or the font changed) or not secure (unsigned or expired)
-ChatTrustLevel.isModified	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_trust	the signed content is not in the line, or the replacement uses another font
-ChatTrustLevel.containsModifiedStyle	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_trust	the font check over the replacement component
-ChatTrustLevel.createTag	port	crates/sunrise-client/src/game/network/remote/mod.rs::ChatTrust::tag	secure has no tag; modified keeps the signed content, not secure and error have theirs
+ChatTrustLevel.evaluate	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust	secure, modified (signed content gone or the font changed) or not secure (unsigned or expired)
+ChatTrustLevel.isModified	inline	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust	the signed content is not in the line, or the replacement uses another font
+ChatTrustLevel.containsModifiedStyle	inline	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust	the font check over the replacement component
+ChatTrustLevel.createTag	port	crates/sunrise-client/src/game/network/remote/chat.rs::ChatTrust::tag	secure has no tag; modified keeps the signed content, not secure and error have theirs
 GuiMessage.splitLines	port	crates/sunrise-client-render/src/chat.rs::Chat::add_lines	gap: minor: no width reserved for a tag icon; Sunrise draws no icon tags
 GuiMessageTag.chatModified	port	crates/sunrise-client-render/src/chat.rs::Tag::modified	the modified tooltip with the original content in grey
 GuiMessageTag.Icon.extractRenderState	port	crates/sunrise-client-render/src/chat.rs::Chat::focused_tags	the chat_modified icon is drawn at the end of a message while chat is focused

@@ -19,6 +19,8 @@ pub struct EffectDef {
     pub id: &'static str,
     /// Position in the process-owned effect registry, resolved when an instance is created.
     pub index: usize,
+    /// The content mod that declared this entry; none for vanilla effects.
+    pub owner: Option<&'static str>,
     pub color: u32,
     pub category: Category,
     pub instant: bool,
@@ -46,6 +48,7 @@ const fn fx(index: usize, id: &'static str, color: u32, category: Category) -> E
     EffectDef {
         index,
         id,
+        owner: None,
         color,
         category,
         instant: false,
@@ -112,7 +115,7 @@ static MOD_EFFECTS: OnceLock<Vec<EffectDef>> = OnceLock::new();
 /// effects stay those of the first call until the game restarts.
 /// Each comes with its declared sort order, none for its colour.
 pub fn register_mod_effects(
-    effects: impl IntoIterator<Item = (String, u32, Category, Option<i32>)>,
+    effects: impl IntoIterator<Item = (String, u32, Category, Option<i32>, String)>,
 ) -> bool {
     if MOD_EFFECTS.get().is_some() {
         return false;
@@ -120,7 +123,7 @@ pub fn register_mod_effects(
     let defs: Vec<EffectDef> = effects
         .into_iter()
         .enumerate()
-        .map(|(index, (id, color, category, sort_order))| {
+        .map(|(index, (id, color, category, sort_order, owner))| {
             debug_assert!(id.contains(':'), "{id} has no namespace");
             let def = fx(
                 EFFECTS.len() + index,
@@ -130,6 +133,7 @@ pub fn register_mod_effects(
             );
             EffectDef {
                 sort_order: sort_order.unwrap_or(def.sort_order),
+                owner: Some(Box::leak(owner.into_boxed_str())),
                 ..def
             }
         })
@@ -398,21 +402,31 @@ mod tests {
     #[test]
     fn mod_effects_follow_vanilla_once_registered() {
         assert!(register_mod_effects([
-            ("ruby:glow".to_owned(), 0xFF0000, Category::Neutral, None),
+            (
+                "ruby:glow".to_owned(),
+                0xFF0000,
+                Category::Neutral,
+                None,
+                "declaring-mod".into()
+            ),
             (
                 "ruby:first".to_owned(),
                 0x0000FF,
                 Category::Neutral,
-                Some(-5)
+                Some(-5),
+                "declaring-mod".into()
             ),
         ]));
         assert!(!register_mod_effects([(
             "ruby:late".to_owned(),
             1,
             Category::Harmful,
-            None
+            None,
+            "other-mod".into()
         )]));
         let glow = effect("ruby:glow").unwrap();
+        assert_eq!(glow.owner, Some("declaring-mod"));
+        assert_eq!(effect("speed").unwrap().owner, None);
         assert_eq!(
             (glow.color, glow.category, glow.instant),
             (0xFF0000, Category::Neutral, false)

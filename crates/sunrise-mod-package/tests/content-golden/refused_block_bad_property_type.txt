@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_block_bad_property_type",
+    name: "Refused block bad property type",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: data/refused_block_bad_property_type/sunrise/block/sample.json: ignited_by_lava: invalid type: string "yes", expected a boolean at line 1 column 71

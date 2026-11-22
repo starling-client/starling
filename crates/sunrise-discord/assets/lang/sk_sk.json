@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Rich Presence v Discorde",
+  "sunrise.extras.discord_presence.tooltip": "Zobrazuje Playing Sunrise vo vašom profile Discord, keď je Discord spustený: ponuky, pre jedného hráča alebo pre viacerých hráčov, dimenziu a hraný čas. Nikdy nie svetový názov alebo adresa servera."
+}

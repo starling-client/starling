@@ -52,7 +52,7 @@ impl Game<'_> {
             make_campfire_smoke(&mut self.particles, pos, signal, true);
         }
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        self.predict_blocks(&vec![(at, unlit)], seq);
+        self.predict_blocks(&[(at, unlit)], seq);
         true
     }
 

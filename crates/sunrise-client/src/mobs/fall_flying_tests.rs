@@ -3,8 +3,8 @@
 //! The expected flags are vanilla 26.3's, measured on loaded husks summoned
 //! with `FallFlying:1b` (tools/test_mob_glide_state_parity.py).
 use super::*;
-use sunrise_core::nbt::Tag;
 use std::sync::Arc;
+use sunrise_core::nbt::Tag;
 
 fn husk(types: &crate::mobs::MobTypes, no_ai: bool, chest_damage: Option<u32>) -> Mob {
     let kind = Arc::new(types.types["minecraft:husk"].clone());
@@ -32,7 +32,7 @@ fn tick_once(m: &mut Mob, w: &MobWorld) {
 
 /// `LivingEntity.readAdditionalSaveData`: `setSharedFlag(7, FallFlying)`.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_loaded_mob_keeps_its_saved_glide_flag() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -70,7 +70,7 @@ fn a_loaded_mob_keeps_its_saved_glide_flag() {
 /// `LivingEntity.addAdditionalSaveData`: `putBoolean(FallFlying, isFallFlying())`,
 /// whatever the tag the mob was loaded from said.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_saved_mob_writes_its_current_glide_flag() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -85,7 +85,14 @@ fn a_saved_mob_writes_its_current_glide_flag() {
             ] {
                 let mut m = husk(types, true, None);
                 m.extra.fall_flying = gliding;
-                let tag = crate::entity_nbt::mob_to_nbt(&m, [168, 0, 0, 1], raw, None, |_| None);
+                let tag = crate::entity_nbt::mob_to_nbt(
+                    &m,
+                    [168, 0, 0, 1],
+                    raw,
+                    None,
+                    |_| None,
+                    &Default::default(),
+                );
                 assert_eq!(
                     flag(&tag),
                     Some(Tag::Byte(expected)),
@@ -101,7 +108,7 @@ fn a_saved_mob_writes_its_current_glide_flag() {
 /// whose next damage breaks it, stops gliding on its first tick, NoAI or not;
 /// a whole elytra keeps the flag.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_mob_that_cannot_glide_stops_gliding_on_its_first_tick() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -111,7 +118,7 @@ fn a_mob_that_cannot_glide_stops_gliding_on_its_first_tick() {
                 for (chest, gliding) in [(None, false), (Some(431), false), (Some(0), true)] {
                     let mut m = husk(types, no_ai, chest);
                     tick_once(&mut m, w);
-                    assert!(!m.on_ground, "the husk is in the air");
+                    assert!(!m.ground.on_ground, "the husk is in the air");
                     assert_eq!(
                         m.extra.fall_flying, gliding,
                         "NoAI {no_ai}, elytra damage {chest:?}"
@@ -126,7 +133,7 @@ fn a_mob_that_cannot_glide_stops_gliding_on_its_first_tick() {
 /// `LivingEntity.canGlide`: on the ground, riding, or levitating, a mob with
 /// a whole elytra stops gliding too, with or without AI.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_grounded_riding_or_levitating_mob_stops_gliding() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -134,7 +141,7 @@ fn a_grounded_riding_or_levitating_mob_stops_gliding() {
         |w, types| {
             for no_ai in [false, true] {
                 let mut grounded = husk(types, no_ai, Some(0));
-                grounded.on_ground = true;
+                grounded.ground.on_ground = true;
                 let mut riding = husk(types, no_ai, Some(0));
                 riding.extra.mount = Some(99);
                 let mut levitating = husk(types, no_ai, Some(0));
@@ -159,7 +166,7 @@ fn a_grounded_riding_or_levitating_mob_stops_gliding() {
 /// the mob's own tick and on no other; a mob that stops gliding counts from
 /// 0 again.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_glider_wears_on_the_twentieth_and_fortieth_glide_ticks() {
     use sunrise_core::equipment_slot::EquipmentSlot;
     let ran = crate::mobs::world::with_built_test_world(
@@ -189,7 +196,7 @@ fn a_glider_wears_on_the_twentieth_and_fortieth_glide_ticks() {
                 assert_eq!(m.extra.fall_fly_ticks, t, "tick {t}");
             }
             assert_eq!(worn_at, [20, 40]);
-            m.on_ground = true;
+            m.ground.on_ground = true;
             tick_once(&mut m, w);
             assert!(!m.extra.fall_flying);
             assert_eq!(m.extra.fall_fly_ticks, 0, "the count starts again");
@@ -202,7 +209,7 @@ fn a_glider_wears_on_the_twentieth_and_fortieth_glide_ticks() {
 /// one `nextInt(size)` from the mob's own random and picks that slot; the
 /// other glide ticks, and a refused glide, draw nothing.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn the_wear_draws_once_from_the_mobs_own_random() {
     use sunrise_core::equipment_slot::EquipmentSlot;
     let ran = crate::mobs::world::with_built_test_world(
@@ -229,12 +236,11 @@ fn the_wear_draws_once_from_the_mobs_own_random() {
                 let mut expected = m.random.clone();
                 let mut events = Vec::new();
                 update_fall_flying(&mut m, w, &mut events);
+                let glides = (ticks + 1) % 10 == 0;
                 if wears {
                     assert_eq!(expected.next_int_bound(1), Ok(0));
-                    assert_eq!(events.len(), 1, "count {ticks}");
-                } else {
-                    assert!(events.is_empty(), "count {ticks}");
                 }
+                assert_eq!(events.len(), usize::from(wears) + usize::from(glides));
                 assert_eq!(m.random.next_long(), expected.next_long(), "count {ticks}");
             }
             two.extra.fall_fly_ticks = 19;
@@ -243,10 +249,13 @@ fn the_wear_draws_once_from_the_mobs_own_random() {
             update_fall_flying(&mut two, w, &mut events);
             assert!(matches!(
                 events[..],
-                [MobEvent::GliderWear {
-                    slot: EquipmentSlot::Chest,
-                    ..
-                }]
+                [
+                    MobEvent::GliderWear {
+                        slot: EquipmentSlot::Chest,
+                        ..
+                    },
+                    MobEvent::GameEvent { .. }
+                ]
             ));
             let _ = expected.next_int_bound(1);
             assert_eq!(two.random.next_long(), expected.next_long());
@@ -271,7 +280,7 @@ fn the_wear_draws_once_from_the_mobs_own_random() {
 /// the glider it picked: checked for every damage of the elytra's own
 /// maximum.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn the_wear_of_a_glide_never_breaks_the_glider() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -290,6 +299,56 @@ fn the_wear_of_a_glide_never_breaks_the_glider() {
                 }
             }
             assert_eq!(eligible, max - 1, "0 to 430 glide, 431 does not");
+        },
+    );
+    assert!(ran, "the prepared resources were not found");
+}
+
+/// `updateFallFlying` posts `ELYTRA_GLIDE` at the mob on every 10th glide
+/// tick, after the wear on the 20th, and on no other tick.
+#[test]
+#[ignore = "daily"]
+fn a_gliding_mob_posts_elytra_glide_on_every_tenth_glide_tick() {
+    let ran = crate::mobs::world::with_built_test_world(
+        &[],
+        |_, _| {},
+        |w, types| {
+            let mut m = husk(types, true, Some(0));
+            let mut glided_at = Vec::new();
+            for t in 1..=40 {
+                let mut events = Vec::new();
+                assert!(tick(
+                    &mut m,
+                    w,
+                    &mut crate::health::TestLevel::new(2).level(),
+                    &mut events
+                ));
+                let glides: Vec<_> = events
+                    .iter()
+                    .filter(|e| {
+                        matches!(e, MobEvent::GameEvent { event, .. }
+                            if *event == "minecraft:elytra_glide")
+                    })
+                    .collect();
+                if t % 10 == 0 {
+                    assert!(
+                        matches!(glides[..], [MobEvent::GameEvent { source: 1, at, .. }]
+                        if *at == [m.position.x, m.position.y, m.position.z])
+                    );
+                    glided_at.push(t);
+                } else {
+                    assert!(glides.is_empty(), "tick {t}");
+                }
+                if t % 20 == 0 {
+                    assert!(matches!(events.last(), Some(MobEvent::GameEvent { .. })));
+                    assert!(
+                        events
+                            .iter()
+                            .any(|e| matches!(e, MobEvent::GliderWear { .. }))
+                    );
+                }
+            }
+            assert_eq!(glided_at, [10, 20, 30, 40]);
         },
     );
     assert!(ran, "the prepared resources were not found");

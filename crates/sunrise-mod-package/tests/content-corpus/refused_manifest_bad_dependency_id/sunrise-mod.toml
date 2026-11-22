@@ -1,0 +1,5 @@
+id = "refused_manifest_bad_dependency_id"
+name = "Refused manifest bad dependency id"
+version = "1.2.3"
+[dependencies]
+"Other-Mod" = "*"

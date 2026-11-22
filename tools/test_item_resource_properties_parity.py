@@ -102,7 +102,7 @@ def main():
         scope='Seven effective ItemResource reads against real client/server ItemStacks with '
               'loaded registry defaults and tags. Rust uses a resource-backed Game and its existing '
               'duration, damageability, glint, rarity and repair consumers; changed-default HUD calculations and '
-              'patched mod-item use completion. Bar colors are RGB24. Does not draw a GUI or exercise guest transport.'))
+              'patched mod-item use completion. Bar colors are RGB24. Does not draw a GUI.'))
     print(f'{len(rows)} effective item property cases match both vanilla jars: {report}', flush=True)
 
 

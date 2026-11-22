@@ -11,6 +11,5 @@ pub trait ItemParticlesClientHost {
     /// packs and stack component overrides. Returns `None` for an invalid stack
     /// or unavailable resources/provider. Available in Setup, Reloading and World.
     /// Resolve again after a resource reload; this read allocates the sprite list.
-    #[access(PublishedResources)]
     fn item_particle_options(&self, stack: &ItemStack) -> Option<ParticleOptions>;
 }

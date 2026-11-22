@@ -2,8 +2,12 @@
 //! bots"): a mod that drives a server player itself (a fake client sending its own moves) asks
 //! where the player's movement code would take them in one tick, and which block shapes are in
 //! a box. Nothing runs unless a mod calls it, and neither changes the player or the level.
-use super::Game;
+use super::{Game, glide_wear, shield, worn_boots};
+use mod_api::{PlayerInput, SimulatedMove};
+use std::io;
+use std::ops::ControlFlow;
 use sunrise_client::collisions::SceneCollisions;
+use sunrise_client::items::ItemStack;
 use sunrise_client::motion::{MotionWorld, PlayerMotion};
 use sunrise_client::sprint::Keys;
 use sunrise_core::geometry::{Aabb, Vec3, VoxelShape};
@@ -12,9 +16,6 @@ use sunrise_world::block_collision_scan::{
     BlockCollisionScan, BlockCollisionWorld, CollisionBlock,
 };
 use sunrise_world::collision_context::CollisionContext;
-use mod_api::{PlayerInput, SimulatedMove};
-use std::io;
-use std::ops::ControlFlow;
 
 /// The most block cells `native_collision_boxes` looks at: a box of about 100 blocks a side.
 const COLLISION_CELLS: usize = 1_000_000;
@@ -37,7 +38,6 @@ fn input_keys(input: &PlayerInput) -> Option<Keys> {
         shift: input.sneak,
         sprint: input.sprint,
         analog: (!key(forward) || !key(strafe)).then_some([strafe, forward]),
-        ..Keys::default()
     })
 }
 
@@ -63,10 +63,11 @@ impl Game<'_> {
     /// play it (`LocalPlayer.aiStep` and `Player.travel`): walking and strafing (`forward` and
     /// `strafe`, -1..1), jumping, sneaking (slower, and held at edges), sprinting (with a
     /// forward input only), looking `yaw` and `pitch`; gravity, friction, block speed factors,
-    /// stepping up, swimming and climbing as the server's movement prediction replays a client
-    /// tick. It starts from where the player is now, with `input.velocity` when given (the
-    /// velocity the last call returned: the server doesn't keep a bot's own), else the server's
-    /// copy. Nothing is changed: the player stays where they are until the mod moves them (a
+    /// stepping up, swimming and climbing use the client's movement tick. The simulator reads
+    /// the player's current gear and item use. It starts where the player is now, with
+    /// `input.velocity` when given (the last simulated velocity, which the server doesn't keep),
+    /// otherwise it uses the server's copy. Nothing is changed: the player stays where they are
+    /// until the mod moves them (a
     /// move packet from its bot, `native_teleport_player`), and the level is only read.
     ///
     /// None off a server, for a player not here (another level than the one in place, a
@@ -89,15 +90,27 @@ impl Game<'_> {
         }
         let keys = input_keys(&input)?;
         self.player_name(player)?;
-        let mut body = self.native_bot_body(player.uuid())?;
+        let (mut body, unswapped) = self.native_bot_body(player.uuid())?;
         body.yaw = input.yaw;
         body.pitch = input.pitch.clamp(-90.0, 90.0);
         if let Some([x, y, z]) = input.velocity {
             body.velocity = Vec3::new(x, y, z);
         }
-        // Game.sync_player_body's part that depends on the blocks, as the replay does.
-        body.nudge = crate::game::closest_space_nudge(&body, &self.world, self.res.facts());
+        // Game.sync_player_body's part that depends on the blocks.
+        body.nudge = crate::game::closest_space_nudge(
+            &body,
+            &self.world,
+            self.collision,
+            self.level_suffocation(),
+        );
+        let sprinting = sprints(&input) && !body.item_use_slows_sprint;
+        let mut side = game_side!(self);
+        if let Some(conn) = unswapped {
+            let guest = self.lan.as_ref()?.hub.guest(conn)?;
+            side.player_equipment = acting_equipment!(guest);
+        }
         MotionWorld {
+            side: &side,
             entities: &[],
             player: &mut body,
             scene: &mut self.world,
@@ -110,7 +123,7 @@ impl Game<'_> {
             damage_hooks: &self.damage_hooks,
             block_registries: Some(&self.pack.block_registries),
         }
-        .replayed_tick(keys, sprints(&input))
+        .replayed_tick(keys, sprinting)
         .ok()?;
         let (p, v) = (body.position, body.velocity);
         let mut result = SimulatedMove::default();
@@ -122,19 +135,25 @@ impl Game<'_> {
         Some(result)
     }
 
-    /// A copy of the body of server player `uuid` in the level in place, as it stands now: the
-    /// acting player's swapped in, or a guest's as `lan_actions` swaps it in.
-    fn native_bot_body(&self, uuid: u128) -> Option<PlayerMotion> {
+    /// A copy of server player `uuid`'s body in the level in place, and the connection to lend
+    /// equipment from if the guest's state has not been swapped into Game.
+    fn native_bot_body(&self, uuid: u128) -> Option<(PlayerMotion, Option<u32>)> {
         if self.lan_acting_uuid == Some(uuid) {
             self.lan_acting?;
             let p = self.player.as_ref()?;
-            return (p.health.health() > 0.0 && !p.spectator && self.riding.is_none())
-                .then(|| p.clone());
+            let mut body = (p.health.health() > 0.0 && !p.spectator && self.riding.is_none())
+                .then(|| p.clone())?;
+            body.glider = self.glider_worn();
+            body.leather_boots = worn_boots::leather_boots(&self.armor);
+            let using = self.using.and_then(|(slot, _)| self.stack_in(slot));
+            self.set_bot_item_use(&mut body, using);
+            return Some((body, None));
         }
         if self.lan_acting.is_some() {
             return None;
         }
-        let g = self.lan.as_ref()?.hub.guests.iter().find(|g| {
+        let host = self.lan.as_ref()?;
+        let g = host.hub.guests.iter().find(|g| {
             g.placed
                 && !g.dead
                 && g.uuid == uuid
@@ -152,7 +171,35 @@ impl Game<'_> {
         body.flying = g.abilities.flying;
         body.flying_speed = g.abilities.flying_speed;
         body.fall_flying = g.fall_flying;
-        Some(body)
+        body.glider = glide_wear::gliding_slots(
+            self.res.items(),
+            &g.armor,
+            g.inventory.get(g.selected).and_then(Option::as_ref),
+            g.offhand.as_ref(),
+        )
+        .next()
+        .is_some();
+        body.leather_boots = worn_boots::leather_boots(&g.armor);
+        let using = host
+            .play
+            .get(&g.conn)
+            .and_then(|play| play.using())
+            .and_then(|(slot, _)| {
+                if slot == shield::OFFHAND_SLOT {
+                    g.offhand.as_ref()
+                } else {
+                    g.inventory.get(slot)?.as_ref()
+                }
+            });
+        self.set_bot_item_use(&mut body, using);
+        Some((body, Some(g.conn)))
+    }
+
+    /// A simulated copy reads the current stack rather than inheriting an earlier use.
+    fn set_bot_item_use(&self, body: &mut PlayerMotion, using: Option<&ItemStack>) {
+        let item = using.and_then(|stack| self.res.items().get(&stack.item));
+        body.item_use_speed = item.map(|item| item.use_speed);
+        body.item_use_slows_sprint = item.is_some_and(|item| !item.can_sprint);
     }
 
     /// The block collision boxes in `aabb` (`[min_x, min_y, min_z, max_x, max_y, max_z]`) of the
@@ -340,6 +387,157 @@ mod tests {
         assert!(sprints(&i));
         i.sprint = false;
         assert!(!sprints(&i));
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn guest_equipment_and_item_use_shape_native_movement() {
+        use crate::game::native_entity_refs::tests::with_game;
+        use crate::game::native_item_places::tests::{guest, open_to_lan};
+        use sunrise_client::{chunk::Chunk, items::ItemStack};
+
+        with_game(|game| {
+            open_to_lan(game);
+            game.streaming
+                .insert_remote(&mut game.world, Chunk::empty(0, 0));
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            game.world.set(1, 63, 1, stone).unwrap();
+            let mut guest = guest(1);
+            guest.position = [1.5, 64.0, 1.5];
+            guest.on_ground = true;
+            guest.loaded = true;
+            guest.motion = Some(Box::new(
+                PlayerMotion::new(game.motion, Vec3::new(1.5, 64.0, 1.5)).unwrap(),
+            ));
+            guest.offhand = Some(ItemStack::new("minecraft:bow", 1));
+            let uuid = guest.uuid;
+            game.lan.as_mut().unwrap().hub.guests.push(guest);
+            let player = game.player(uuid).unwrap();
+
+            let run = |game: &mut Game<'_>| {
+                let mut forward = input(1.0, 0.0);
+                forward.sprint = true;
+                game.player_simulate_move(player, forward).unwrap()
+            };
+            let free = run(game);
+            game.as_guest(1, |game| game.using = Some((shield::OFFHAND_SLOT, 0)))
+                .unwrap();
+            let using = run(game);
+            assert!(free.sprinting && !using.sprinting);
+            assert!(using.position[2] > 1.5 && using.position[2] < free.position[2]);
+
+            game.as_guest(1, |game| game.using = None).unwrap();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(1, |guest| {
+                    guest.position[1] = 80.0;
+                    guest.on_ground = false;
+                })
+                .unwrap();
+            let jump = |game: &mut Game<'_>| {
+                let mut jump = input(0.0, 0.0);
+                jump.jump = true;
+                jump.velocity = Some([0.0, -0.4, 0.0]);
+                game.player_simulate_move(player, jump).unwrap()
+            };
+            let fall = jump(game);
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(1, |guest| {
+                    guest.armor[1] = Some(ItemStack::new("minecraft:elytra", 1));
+                })
+                .unwrap();
+            let glide = jump(game);
+            assert_eq!(fall.velocity[2], 0.0);
+            assert!(glide.velocity[2] > 0.0 && glide.velocity[1] > fall.velocity[1]);
+            let live = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
+            assert!(!live.motion.as_ref().unwrap().fall_flying);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn guest_movement_preview_uses_the_guests_damage_immunity() {
+        use crate::game::native_entity_refs::tests::with_game;
+        use crate::game::native_item_places::tests::{guest, open_to_lan};
+        use std::cell::Cell;
+        use sunrise_client::{chunk::Chunk, health::DamageHooks};
+
+        // The movement result doesn't expose health. Observe committed damage to the
+        // simulated body through its game-owned hook table, not through the live guest.
+        thread_local! {
+            static HITS: Cell<u32> = const { Cell::new(0) };
+        }
+        crate::game::in_own_process(
+            "game::native_bots::tests::guest_movement_preview_uses_the_guests_damage_immunity",
+            || {
+                with_game(|game| {
+                    open_to_lan(game);
+                    // The fixture hasn't opened a world to bind its item predicates to the
+                    // level's damage types yet.
+                    let mut items = world_items!(game).clone();
+                    std::sync::Arc::make_mut(&mut items.enchantments)
+                        .bind_damage_catalog(&game.health_resources.damage);
+                    game.server_items = Some(std::sync::Arc::new(items));
+                    game.streaming
+                        .insert_remote(&mut game.world, Chunk::empty(0, 0));
+                    let magma = game
+                        .pack
+                        .assets
+                        .registry
+                        .default_state("minecraft:magma_block")
+                        .unwrap();
+                    game.world.set(1, 63, 1, magma).unwrap();
+                    let at = Vec3::new(1.5, 64.0, 1.5);
+                    let mut guest = guest(1);
+                    guest.position = [at.x, at.y, at.z];
+                    guest.on_ground = true;
+                    guest.loaded = true;
+                    let mut body = PlayerMotion::new(game.motion, at).unwrap();
+                    body.entity_id = guest.entity_id;
+                    guest.motion = Some(Box::new(body));
+                    let uuid = guest.uuid;
+                    game.lan.as_mut().unwrap().hub.guests.push(guest);
+                    let player = game.player(uuid).unwrap();
+                    game.damage_hooks = DamageHooks {
+                        post: Some(|_, _, _| HITS.with(|hits| hits.set(hits.get() + 1))),
+                        ..DamageHooks::NONE
+                    };
+                    let preview = |game: &mut Game<'_>| {
+                        let mut falling = input(0.0, 0.0);
+                        falling.velocity = Some([0.0, -0.08, 0.0]);
+                        let preview = game.player_simulate_move(player, falling).unwrap();
+                        assert!(preview.on_ground);
+                        HITS.replace(0)
+                    };
+                    assert_eq!(preview(game), 1, "magma hurts the unprotected preview");
+
+                    let mut boots = ItemStack::new("minecraft:leather_boots", 1);
+                    boots.enchant("minecraft:frost_walker", 1);
+                    game.lan
+                        .as_mut()
+                        .unwrap()
+                        .hub
+                        .update_guest(1, |guest| guest.armor[3] = Some(boots))
+                        .unwrap();
+                    assert_eq!(game.lan_acting, None);
+                    assert_eq!(
+                        preview(game),
+                        0,
+                        "only the unswapped guest wears Frost Walker"
+                    );
+                })
+            },
+        );
     }
 
     #[test]

@@ -2,15 +2,44 @@
 //! and the `cfg`s they are compiled under, following `mod` declarations, `#[path]`s and inline
 //! modules.
 
-use mod_source::modules::{ModuleFile, walk_module_files};
+use mod_source::modules::{ModuleFile, test_only, walk_module_files};
 use quote::ToTokens;
 use std::{
-    cell::RefCell,
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
-use syn::Type;
+use syn::{Attribute, Expr, Item, Type};
+
+/// Production inline declarations of `name` inside the parent module's items.
+pub(crate) fn inline_module_items<'a>(
+    items: &'a [Item],
+    name: &'a str,
+) -> impl Iterator<Item = &'a [Item]> {
+    items.iter().filter_map(move |item| match item {
+        Item::Mod(module) if module.ident == name && !test_only(&module.attrs) => {
+            module.content.as_ref().map(|(_, items)| items.as_slice())
+        }
+        _ => None,
+    })
+}
+
+/// Syn puts attributes on the concrete expression nodes, not on the enclosing enum.
+pub(crate) fn expr_attrs(expr: &Expr) -> &[Attribute] {
+    macro_rules! attrs {
+        ($($variant:ident),+ $(,)?) => {
+            match expr {
+                $(Expr::$variant(node) => &node.attrs,)+
+                _ => &[],
+            }
+        };
+    }
+    attrs!(
+        Array, Assign, Async, Await, Binary, Block, Break, Call, Cast, Closure, Const, Continue,
+        Field, ForLoop, Group, If, Index, Infer, Let, Lit, Loop, Macro, Match, MethodCall, Paren,
+        Path, Range, RawAddr, Reference, Repeat, Return, Struct, Try, TryBlock, Tuple, Unary,
+        Unsafe, While, Yield,
+    )
+}
 
 /// The files of the game's module `module` ([`walk_module_files`]), each parsed with the game's
 /// generated module lists expanded. With `every_build`, the replaceable functions: those every
@@ -21,38 +50,14 @@ pub(crate) fn module_files(
     dir: PathBuf,
     every_build: bool,
 ) -> Result<Vec<ModuleFile>, String> {
-    let key = (module.clone(), path.clone(), dir.clone(), every_build);
-    if let Some(files) = WALKS.with(|walks| walks.borrow().as_ref()?.get(&key).cloned()) {
-        return Ok(files);
-    }
-    let files = walk_module_files(module, path, dir, every_build, crate::game_modules::parse)?;
-    WALKS.with(|walks| {
-        if let Some(walks) = walks.borrow_mut().as_mut() {
-            walks.insert(key, files.clone());
-        }
-    });
-    Ok(files)
-}
-
-type WalkKey = (String, PathBuf, PathBuf, bool);
-
-thread_local! {
-    static WALKS: RefCell<Option<HashMap<WalkKey, Vec<ModuleFile>>>> = const { RefCell::new(None) };
-}
-
-/// Runs `run` with [`module_files`] remembering each walk, for one generation whose sources don't
-/// change while it runs (a build script's): it walks and parses the same module trees several
-/// times, once to list what to track and again to read them. Never around a pass that edits the
-/// files it walks, such as staging.
-pub(crate) fn with_walk_cache<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(Option<HashMap<WalkKey, Vec<ModuleFile>>>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            WALKS.with(|walks| *walks.borrow_mut() = self.0.take());
-        }
-    }
-    let _reset = Reset(WALKS.with(|walks| walks.replace(Some(HashMap::new()))));
-    run()
+    walk_module_files(
+        module,
+        path,
+        dir,
+        every_build,
+        false,
+        crate::game_modules::parse_signatures,
+    )
 }
 
 /// The files of `sunrise_client::game`; see [`module_files`] for `every_build`.
@@ -144,7 +149,7 @@ mod tests {
     /// target's file under its condition; it has no default file, and none is needed.
     #[test]
     fn per_target_module_paths_are_followed_and_need_no_default_file() {
-        let dir = std::env::temp_dir().join(format!("points-cfg-attr-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("module-cfg-attr-{}", std::process::id()));
         let src = dir.join("src");
         std::fs::create_dir_all(src.join("control")).unwrap();
         std::fs::write(
@@ -182,33 +187,9 @@ mod tests {
                 ),
             ]
         );
-        // Every build compiles neither, so the point walk leaves the module out.
+        // Every build compiles neither, so the replaceable-function walk leaves the module out.
         let every = module_files("k".into(), src.join("lib.rs"), src, true).unwrap();
         assert_eq!(every.len(), 1);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// Inside one generation a walk is read once; outside it, every walk reads the tree again.
-    #[test]
-    fn a_generation_reuses_its_module_walks_and_only_inside_its_scope() {
-        let dir = std::env::temp_dir().join(format!("points-walk-cache-{}", std::process::id()));
-        let src = dir.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("lib.rs"), "mod a;\n").unwrap();
-        std::fs::write(src.join("a.rs"), "pub fn a() {}").unwrap();
-        let modules = |files: Vec<ModuleFile>| {
-            let mut modules: Vec<_> = files.into_iter().map(|file| file.module).collect();
-            modules.sort();
-            modules
-        };
-        let walk = || module_files("k".into(), src.join("lib.rs"), src.clone(), true).unwrap();
-        with_walk_cache(|| {
-            assert_eq!(modules(walk()), ["k", "k::a"]);
-            // The tree is read once: an edit during the generation is not seen.
-            std::fs::write(src.join("lib.rs"), "").unwrap();
-            assert_eq!(modules(walk()), ["k", "k::a"]);
-        });
-        assert_eq!(modules(walk()), ["k"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1,0 +1,53 @@
+ids = [
+    "hook:register_configuration_tasks",
+    "hook:register_configuration_tasks.tasks",
+    "type:RegisterConfigurationTasksEvent.tasks",
+    "handle:RegisterConfigurationTasksEvent::register",
+    "type:ConfigurationTask",
+    "type:ConfigurationTask.id",
+    "handle:ConfigurationTask::new",
+    "trait:ConfigurationTask",
+    "method:ConfigurationTask::task_type",
+    "method:ConfigurationTask::start",
+    "method:ConfigurationTask::tick",
+    "hook:configuration_task_start",
+    "hook:configuration_task_start.connection",
+    "hook:configuration_task_start.task_type",
+    "method:Hooks::configuration_task_start",
+    "type:ConfigurationTaskStartEvent",
+    "type:ConfigurationTaskStartEvent.connection",
+    "type:ConfigurationTaskStartEvent.task_type",
+    "hook:configuration_task_tick",
+    "hook:configuration_task_tick.connection",
+    "hook:configuration_task_tick.task_type",
+    "hook:configuration_task_tick.finished",
+    "method:Hooks::configuration_task_tick",
+    "type:ConfigurationTaskTickEvent",
+    "type:ConfigurationTaskTickEvent.connection",
+    "type:ConfigurationTaskTickEvent.task_type",
+    "type:ConfigurationTaskTickEvent.finished",
+    "type:ConfigurationConnection",
+    "handle:ConfigurationConnection::send_payload",
+    "handle:ConfigurationConnection::finish",
+    "handle:ConfigurationConnection::fail",
+    "method:prelude::ConfigurationTasksServerHost::configuration_finish",
+    "method:prelude::ConfigurationTasksServerHost::configuration_fail",
+    "type:ConfigurationTaskContext",
+    "handle:ConfigurationTaskContext::has_channel",
+    "handle:ConfigurationTaskContext::send_payload",
+    "handle:ConfigurationTaskContext::finish",
+    "handle:ConfigurationTaskContext::fail",
+    "type:ConfigurationTaskError",
+    "type:ConfigurationTaskError.WrongContext",
+    "method:IPayloadContext::finish_configuration_task",
+]
+why = "Each configuring connection owns a FIFO queue of native task objects, following NeoForge RegisterConfigurationTasksEvent.register and vanilla ServerConfigurationPacketListenerImpl.startNextTask. A task runs as its registering mod. Sunrise contains panics in task type lookup, start, tick and disposal, so one failing implementation does not stop unrelated peers or mods. A panicking registration listener cannot publish its pending registrations."
+migrate = """
+In `Hooks::register_configuration_tasks` (v3), replace `event.tasks.push(ConfigurationTask::new(id))` with `event.register(MyTask { id, ... })`. The call returns `()` and appends in FIFO order; it does not reject empty or duplicate task types. Implement `ConfigurationTask: Send + 'static`, returning your identifier from `task_type(&self) -> &Identifier`. Keep the task state on `self`. Keep `task_type` and `Drop` non-panicking: a task callback panic is reported and disables that mod's implementation for the session; a registration, start or tick panic fails the current peer's admission. A panic in the registration listener instead discards only its pending tasks and journaled writes and disables that listener.
+
+Move `configuration_task_start` and `configuration_task_tick` into `ConfigurationTask::start` and optional `ConfigurationTask::tick`, taking `&mut self`, `&mut dyn ServerHost` and `&mut ConfigurationTaskContext<'_>`. Use `context.has_channel(host, channel)` and `context.send_payload(host, channel, bytes)` in place of connection-level reads and sends. Use `context.finish()` instead of setting `event.finished` or finishing through the old connection handle, and `context.fail(reason)` for an ordinary admission failure. A task callback's finish request publishes after its transaction and deferred sends succeed.
+
+For a reply, call `cx.finish_configuration_task(&task_type)` in a server configuration payload handler; custom `IPayloadContext` implementations take `&Identifier`. Both main-thread and network-thread configuration handlers can use it without an extra `enqueue_work`. Completion is scoped to the receiving connection and current task type, not to a mod-retained task instance. Handle `ConfigurationTaskError::WrongType` for a different running type, `NotRunning` when no task can complete or this handler already requested it, and `WrongContext` outside a server configuration handler. On the network thread, the staged completion takes effect after replies under the active-epoch check and is discarded on handler failure, disconnect or epoch change.
+
+`ConfigurationTasksServerHost::configuration_send_payload` takes the `ConfigurationConnection` from registration, not a task token. Prefer `context.send_payload` from `start` or `tick`. You can send for as long as the peer is configuring, even after a task finishes; a transport refusal returns `Payload`, and an ended epoch returns `Disconnected`. In Play, send via the admitted player instead. Task objects, connection capabilities, contexts and errors are local; transmit only your own challenge and reply data, not these values.
+"""

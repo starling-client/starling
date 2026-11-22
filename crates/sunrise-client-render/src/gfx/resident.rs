@@ -32,6 +32,12 @@ impl Column {
     }
 }
 
+/// Vertex arena bytes and the separately counted animation data of a resident mesh.
+/// Neither may change in place; remeshing replaces the value.
+pub(crate) trait ResidentSize {
+    fn census_bytes(&self) -> (u64, usize);
+}
+
 /// Values of type `T` per section key, in a dense list with stable keys and
 /// slots that move only when a section is removed.
 pub struct Resident<T> {
@@ -45,6 +51,13 @@ pub struct Resident<T> {
     slots: FxHashMap<SectionKey, u32>,
     columns: Vec<Column>,
     column_index: FxHashMap<(i32, i32), u32>,
+    /// Sum of the capacities of the columns' section and mark lists.
+    column_slots: usize,
+    vertex_bytes: u64,
+    animated_bytes: usize,
+    /// Calls that removed sections so far: a user that keeps its own per-section state
+    /// (the ray scene) sees from it whether any went.
+    removals: u64,
 }
 
 impl<T> Default for Resident<T> {
@@ -57,6 +70,10 @@ impl<T> Default for Resident<T> {
             slots: FxHashMap::default(),
             columns: Vec::new(),
             column_index: FxHashMap::default(),
+            column_slots: 0,
+            vertex_bytes: 0,
+            animated_bytes: 0,
+            removals: 0,
         }
     }
 }
@@ -65,9 +82,11 @@ impl<T> Resident<T> {
     pub fn len(&self) -> usize {
         self.items.len()
     }
-    /// Heap bytes of its own lists and maps, not counting what a `T` points
-    /// to (`sunrise-ctl memory`). A hash map entry costs its pair and a
-    /// control byte.
+    pub fn vertex_bytes(&self) -> u64 {
+        self.vertex_bytes
+    }
+    /// Heap bytes of its lists, maps and animation data (`sunrise-ctl memory`).
+    /// A hash map entry costs its pair and a control byte.
     pub fn heap_bytes(&self) -> usize {
         use std::mem::size_of;
         self.items.capacity() * size_of::<(SectionKey, T)>()
@@ -75,12 +94,9 @@ impl<T> Resident<T> {
             + self.marked.capacity() * size_of::<bool>()
             + self.slots.capacity() * (size_of::<(SectionKey, u32)>() + 1)
             + self.columns.capacity() * size_of::<Column>()
-            + self
-                .columns
-                .iter()
-                .map(|c| (c.sections.capacity() + c.marked.capacity()) * size_of::<(i32, u32)>())
-                .sum::<usize>()
+            + self.column_slots * size_of::<(i32, u32)>()
             + self.column_index.capacity() * (size_of::<((i32, i32), u32)>() + 1)
+            + self.animated_bytes
     }
     pub fn contains(&self, key: SectionKey) -> bool {
         self.slots.contains_key(&key)
@@ -135,14 +151,25 @@ impl<T> Resident<T> {
     pub fn min_y(&self) -> i32 {
         self.min_y
     }
+    /// Changes whenever sections were removed (`remove`, `remove_columns`, `clear`).
+    pub fn removals(&self) -> u64 {
+        self.removals
+    }
     pub fn clear(&mut self) {
+        self.removals += 1;
         self.items.clear();
         self.bounds.clear();
         self.marked.clear();
         self.slots.clear();
         self.columns.clear();
         self.column_index.clear();
+        self.column_slots = 0;
+        self.vertex_bytes = 0;
+        self.animated_bytes = 0;
     }
+}
+
+impl<T: ResidentSize> Resident<T> {
     /// Adds or replaces `key`'s value with default 16x16x16 bounds.
     #[cfg(test)]
     pub fn insert(&mut self, key: SectionKey, value: T) {
@@ -163,8 +190,14 @@ impl<T> Resident<T> {
         bounds: Option<[Vec3; 2]>,
         marked: bool,
     ) {
+        let (vertices, animated) = value.census_bytes();
+        self.vertex_bytes += vertices;
+        self.animated_bytes += animated;
         if let Some(&slot) = self.slots.get(&key) {
-            self.items[slot as usize].1 = value;
+            let old = std::mem::replace(&mut self.items[slot as usize].1, value);
+            let (vertices, animated) = old.census_bytes();
+            self.vertex_bytes -= vertices;
+            self.animated_bytes -= animated;
             self.bounds[slot as usize] = bounds;
             self.mark_slot(slot, marked);
             return;
@@ -190,13 +223,18 @@ impl<T> Resident<T> {
                 self.columns.last_mut().expect("just pushed")
             }
         };
+        let slots_before = column.sections.capacity() + column.marked.capacity();
         column.sections.push((key.1, slot));
         if marked {
             column.marked.push((key.1, slot));
         }
+        self.column_slots += column.sections.capacity() + column.marked.capacity() - slots_before;
         column.low = column.low.min(key.1);
         column.high = column.high.max(key.1);
     }
+}
+
+impl<T> Resident<T> {
     /// Marks or unmarks the section at `key`, if it is resident.
     pub fn set_marked(&mut self, key: SectionKey, marked: bool) {
         if let Some(&slot) = self.slots.get(&key) {
@@ -212,7 +250,9 @@ impl<T> Resident<T> {
         let (x, y, z) = self.items[slot as usize].0;
         let column = &mut self.columns[self.column_index[&(x, z)] as usize];
         if marked {
+            let slots_before = column.marked.capacity();
             column.marked.push((y, slot));
+            self.column_slots += column.marked.capacity() - slots_before;
         } else {
             let at = column
                 .marked
@@ -222,10 +262,17 @@ impl<T> Resident<T> {
             column.marked.swap_remove(at);
         }
     }
+}
+
+impl<T: ResidentSize> Resident<T> {
     /// Removes every section of the `gone` columns, the others keeping their order and
     /// marks: one pass over the store, where `remove` moves a slot and looks its column
     /// up for each.
     pub fn remove_columns(&mut self, gone: &FxHashSet<(i32, i32)>) -> Vec<T> {
+        self.removals += 1;
+        self.column_slots = 0;
+        self.vertex_bytes = 0;
+        self.animated_bytes = 0;
         // Every column (a far teleport): emptied, without a lookup per section.
         if self.columns.iter().all(|c| gone.contains(&(c.x, c.z))) {
             self.bounds.clear();
@@ -256,6 +303,7 @@ impl<T> Resident<T> {
     }
     pub fn remove(&mut self, key: SectionKey) -> Option<T> {
         let slot = self.slots.remove(&key)?;
+        self.removals += 1;
         self.mark_slot(slot, false);
         let c = self.column_index[&(key.0, key.2)] as usize;
         let column = &mut self.columns[c];
@@ -266,6 +314,7 @@ impl<T> Resident<T> {
             .expect("section in its column");
         column.sections.swap_remove(at);
         if column.sections.is_empty() {
+            self.column_slots -= column.sections.capacity() + column.marked.capacity();
             self.column_index.remove(&(key.0, key.2));
             self.columns.swap_remove(c);
             if let Some(moved) = self.columns.get(c) {
@@ -277,6 +326,9 @@ impl<T> Resident<T> {
         let _ = self.bounds.swap_remove(slot as usize);
         let _ = self.marked.swap_remove(slot as usize);
         let (_, value) = self.items.swap_remove(slot as usize);
+        let (vertices, animated) = value.census_bytes();
+        self.vertex_bytes -= vertices;
+        self.animated_bytes -= animated;
         // The last item now sits in `slot`: point its key and column, and its
         // column's marked list if it is marked, at it.
         if let Some(&(moved, _)) = self.items.get(slot as usize) {
@@ -502,6 +554,26 @@ impl<T> Resident<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl ResidentSize for () {
+        fn census_bytes(&self) -> (u64, usize) {
+            (0, 0)
+        }
+    }
+
+    impl ResidentSize for [i32; 3] {
+        fn census_bytes(&self) -> (u64, usize) {
+            (0, 0)
+        }
+    }
+
+    impl ResidentSize for u32 {
+        fn census_bytes(&self) -> (u64, usize) {
+            // The low bit stands for mutable draw state, not geometry.
+            let mesh = *self >> 1;
+            (u64::from(mesh) * 256, mesh as usize % 8)
+        }
+    }
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -536,9 +608,7 @@ mod tests {
             for radius in [2, 6, 10] {
                 let projection = super::super::world_projection(70.0, 16.0 / 9.0, 512.0);
                 let view = crate::camera::view_matrix(yaw, pitch);
-                let frustum = Frustum {
-                    planes: super::super::frustum(projection * view),
-                };
+                let frustum = Frustum::from_planes(super::super::frustum(projection * view));
                 let mut fast = Vec::new();
                 // Columns past the distance kept for distant terrain.
                 let beyond = |x: i32, z: i32| (x + z).rem_euclid(3) == 0;
@@ -596,9 +666,9 @@ mod tests {
         }
         let camera = DVec3::new(0.5, -8.0, 0.5);
         let projection = super::super::world_projection(70.0, 16.0 / 9.0, 512.0);
-        let frustum = Frustum {
-            planes: super::super::frustum(projection * crate::camera::view_matrix(0.0, 5.0)),
-        };
+        let frustum = Frustum::from_planes(super::super::frustum(
+            projection * crate::camera::view_matrix(0.0, 5.0),
+        ));
         let inside = r
             .columns
             .iter()
@@ -629,6 +699,28 @@ mod tests {
     /// its marked sections.
     fn check(r: &Resident<u32>, model: &HashMap<SectionKey, (u32, bool)>) {
         assert_eq!(r.len(), model.len());
+        assert_eq!(
+            r.vertex_bytes(),
+            model
+                .values()
+                .map(|(v, _)| u64::from(v / 2) * 256)
+                .sum::<u64>()
+        );
+        let heap_bytes = r.items.capacity() * size_of::<(SectionKey, u32)>()
+            + r.bounds.capacity() * size_of::<Option<[Vec3; 2]>>()
+            + r.marked.capacity() * size_of::<bool>()
+            + r.slots.capacity() * (size_of::<(SectionKey, u32)>() + 1)
+            + r.columns.capacity() * size_of::<Column>()
+            + r.columns
+                .iter()
+                .map(|c| (c.sections.capacity() + c.marked.capacity()) * size_of::<(i32, u32)>())
+                .sum::<usize>()
+            + r.column_index.capacity() * (size_of::<((i32, i32), u32)>() + 1)
+            + model
+                .values()
+                .map(|(v, _)| (*v as usize / 2) % 8)
+                .sum::<usize>();
+        assert_eq!(r.heap_bytes(), heap_bytes);
         let mut seen = 0;
         for column in &r.columns {
             assert!(!column.sections.is_empty());
@@ -657,6 +749,31 @@ mod tests {
             assert!(r.contains(*key));
             assert_eq!(r.is_marked(*key), marked, "{key:?}");
         }
+    }
+
+    #[test]
+    fn every_removal_changes_the_count_and_nothing_else_does() {
+        let mut r = Resident::default();
+        let start = r.removals();
+        r.insert((0, 0, 0), 1u32);
+        r.insert((0, 1, 0), 2);
+        r.insert((1, 0, 0), 3);
+        r.insert((0, 0, 0), 4);
+        r.set_marked((0, 0, 0), true);
+        assert_eq!(r.remove((5, 0, 5)), None);
+        assert_eq!(
+            r.removals(),
+            start,
+            "inserts, replacements, marks and misses"
+        );
+        r.remove((0, 1, 0));
+        let one = r.removals();
+        assert_ne!(one, start);
+        r.remove_columns(&[(1, 0)].into_iter().collect());
+        let two = r.removals();
+        assert_ne!(two, one);
+        r.clear();
+        assert_ne!(r.removals(), two);
     }
 
     #[test]
@@ -728,13 +845,16 @@ mod tests {
             assert_eq!(seen.len(), model.len());
         }
         for (_, value, _) in r.iter_mut() {
-            *value += 1;
+            *value ^= 1;
         }
-        for (key, (value, _)) in &model {
-            assert_eq!(r.find(*key), Some(&(value + 1)));
+        for (key, (value, _)) in &mut model {
+            *value ^= 1;
+            assert_eq!(r.find(*key), Some(&*value));
         }
+        check(&r, &model);
         r.clear();
-        assert_eq!(r.len(), 0);
+        model.clear();
+        check(&r, &model);
         assert!(r.columns.is_empty() && r.marked.is_empty());
     }
 
@@ -783,9 +903,9 @@ mod tests {
             (DVec3::new(100.0, -60.0, -3.0), 270.0, -80.0),
             (DVec3::new(8.0, 64.0, 8.0), 45.0, 89.0),
         ] {
-            let view = Frustum {
-                planes: super::super::frustum(projection * crate::camera::view_matrix(yaw, pitch)),
-            };
+            let view = Frustum::from_planes(super::super::frustum(
+                projection * crate::camera::view_matrix(yaw, pitch),
+            ));
             inside += r
                 .columns
                 .iter()
@@ -840,9 +960,9 @@ mod tests {
         }
         let camera = DVec3::new(8.5, 100.0, 8.5);
         let projection = super::super::world_projection(70.0, 16.0 / 9.0, 1024.0);
-        let frustum = Frustum {
-            planes: super::super::frustum(projection * crate::camera::view_matrix(30.0, 35.0)),
-        };
+        let frustum = Frustum::from_planes(super::super::frustum(
+            projection * crate::camera::view_matrix(30.0, 35.0),
+        ));
         let (mut old, mut new) = (Duration::MAX, Duration::MAX);
         let (mut list, mut keys) = (Vec::new(), Vec::new());
         let mut sum = 0i64;
@@ -884,9 +1004,7 @@ mod tests {
         let camera = DVec3::new(8.0, f64::from(crate::chunk::MIN_Y + 15), -2.0);
         let projection = super::super::world_projection(70.0, 16.0 / 9.0, 512.0);
         let view = crate::camera::view_matrix(0.0, -60.0);
-        let frustum = Frustum {
-            planes: super::super::frustum(projection * view),
-        };
+        let frustum = Frustum::from_planes(super::super::frustum(projection * view));
 
         // Tight bounds culls the section whose geometry is entirely outside the frustum
         let mut out = Vec::new();
@@ -948,9 +1066,7 @@ mod tests {
 
         for (desc, yaw, pitch) in test_views {
             let view = crate::camera::view_matrix(yaw, pitch);
-            let frustum = Frustum {
-                planes: super::super::frustum(projection * view),
-            };
+            let frustum = Frustum::from_planes(super::super::frustum(projection * view));
 
             let mut out_fallback = Vec::new();
             let mut out_tight = Vec::new();

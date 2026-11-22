@@ -1,0 +1,2 @@
+ids = ["handle:CreativeModeTabInfo::new", "type:CreativeModeTabInfo", "type:CreativeModeTabInfo.display_name", "type:CreativeModeTabs"]
+why = "A creative tab now carries its title as `display_name`, a translatable component with the tab's `itemGroup.*` key and its title text as the fallback, so a mod can label any tab. `CreativeModeTabInfo::new` takes it after `category`, and the wire layout of the tab and its catalog gains the field."

@@ -1,0 +1,3 @@
+ids = ["method:Tags::items", "method:Tags::blocks", "method:Tags::fluids", "type:TagMembers"]
+why = "A bound item, block or fluid tag can have no members after absent optional entries are skipped. The Tags list methods distinguish this from an unbound tag (including one with a missing required entry) or an unavailable snapshot."
+migrate = "Match TagMembers::Members(keys) for ordered members, TagMembers::Missing for an absent tag, and TagMembers::Unavailable when the registry snapshot or a key mapping is not ready. An empty Members list is not Missing. Include a fallback arm because TagMembers is non-exhaustive. Tags::is_in_tag keeps its Option<bool> signature and returns None until the item tag table is applied."

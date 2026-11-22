@@ -8,10 +8,8 @@
 //! and its two axes as three doubles each, its width and height, the centre's destination,
 //! then the turn as a byte), for a removal that many numbers. A refusal (2) has the
 //! passage's number as a long and the reason as a byte.
-use crate::{
-    Error, Result,
-    buf::{Reader, Writer},
-};
+use crate::{Error, Result, buf::Reader};
+use sunrise_core::vanilla_bytes::Writer;
 
 /// The custom payload channel.
 pub const CHANNEL: &str = "sunrise:passage_sync";

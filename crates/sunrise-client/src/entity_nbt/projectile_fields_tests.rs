@@ -8,7 +8,15 @@ fn arrow_keeps_its_saved_air() {
     let raw = parse("{id:\"minecraft:arrow\",Pos:[1d,200d,1d],Air:32767s,Fire:7s}");
     let (arrow, _) = arrow_from_nbt(&raw, None, |_| None).unwrap();
     assert_eq!(arrow.air_supply, 32767);
-    let saved = arrow_to_nbt(&arrow, [197, 0, 0, 1], None, None, Some(&raw)).unwrap();
+    let saved = arrow_to_nbt(
+        &arrow,
+        [197, 0, 0, 1],
+        None,
+        None,
+        Some(&raw),
+        &Default::default(),
+    )
+    .unwrap();
     assert_eq!(saved.get("Air"), Some(&Tag::Short(32767)));
     assert_eq!(saved.get("Fire"), Some(&Tag::Short(7)));
     let absent = parse("{id:\"minecraft:arrow\",Pos:[1d,200d,1d]}");

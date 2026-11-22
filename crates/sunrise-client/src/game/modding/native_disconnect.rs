@@ -1,8 +1,8 @@
 //! A client mod leaving the world, NeoForge's `IClientCommonPacketListenerExtension.disconnect`.
 //! The server half is `native_player_disconnect`.
 use super::Game;
-use sunrise_client::{Result, text::Text};
 use mod_api::{DisconnectError, WorldEpoch};
+use sunrise_client::{Result, text::Text};
 
 /// A client mod's request to leave, carried out at the end of the frame.
 pub(super) struct LeaveRequest {
@@ -43,7 +43,7 @@ impl Game<'_> {
             return Ok(());
         }
         let left = match request.reason {
-            Some(reason) => self.leave_server(Some(reason.plain())),
+            Some(reason) => self.leave_server(Some(reason)),
             None => self.close_world(),
         };
         // A hook the leaving fired (a disconnect or unload listener) may have asked again: that

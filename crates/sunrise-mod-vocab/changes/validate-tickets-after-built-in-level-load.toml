@@ -1,0 +1,3 @@
+ids = ["hook:validate_tickets"]
+why = "Startup ticket validation now runs after every built-in level is published, so a validator can resolve all built-in levels."
+migrate = "Rebuild against the updated SDK. A startup validator may resolve the Overworld, Nether and End without waiting for a player to visit them."

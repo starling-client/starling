@@ -1,11 +1,11 @@
 //! File limits at the developer-tool input boundary.
-pub use sunrise_mod_package::manifest::MAX_MANIFEST;
 use std::{
     fmt, fs,
     io::{self, Read},
     path::{Path, PathBuf},
 };
-// points.json is already about 9 MiB; leave ample growth room.
+pub use sunrise_mod_package::manifest::MAX_MANIFEST;
+// Bound the decoded internals catalog before parsing it.
 pub const MAX_CATALOG: u64 = 256 << 20;
 // The largest checked-in slot list is sunrise.txt (2,839 bytes). Lists contain
 // declarations, not source; 4 MiB leaves substantial room for mod declarations.
@@ -37,8 +37,28 @@ impl From<ReadError> for String {
     }
 }
 pub fn read(path: &Path, limit: u64) -> Result<String, ReadError> {
+    String::from_utf8(read_bytes(path, limit, Symlinks::Follow)?).map_err(|e| {
+        ReadError::Io(
+            path.to_owned(),
+            io::Error::new(io::ErrorKind::InvalidData, e),
+        )
+    })
+}
+
+/// Whether the final component may be a symlink to a regular file.
+pub enum Symlinks {
+    Follow,
+    Refuse,
+}
+
+pub fn read_bytes(path: &Path, limit: u64, symlinks: Symlinks) -> Result<Vec<u8>, ReadError> {
     let io_error = |e| ReadError::Io(path.to_owned(), e);
-    if !fs::metadata(path).map_err(io_error)?.is_file() {
+    let metadata = match symlinks {
+        Symlinks::Follow => fs::metadata(path),
+        Symlinks::Refuse => fs::symlink_metadata(path),
+    }
+    .map_err(io_error)?;
+    if !metadata.is_file() {
         return Err(ReadError::NotRegular(path.to_owned()));
     }
     let mut options = fs::OpenOptions::new();
@@ -47,7 +67,11 @@ pub fn read(path: &Path, limit: u64) -> Result<String, ReadError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
+        let no_follow = match symlinks {
+            Symlinks::Follow => 0,
+            Symlinks::Refuse => libc::O_NOFOLLOW,
+        };
+        options.custom_flags(libc::O_NONBLOCK | no_follow);
     }
     let file = options.open(path).map_err(io_error)?;
     if !file.metadata().map_err(io_error)?.is_file() {
@@ -56,7 +80,7 @@ pub fn read(path: &Path, limit: u64) -> Result<String, ReadError> {
     read_limited(file, limit, path)
 }
 /// Reads at most `limit + 1` bytes, so an endless or huge input is refused without being buffered.
-fn read_limited(reader: impl Read, limit: u64, path: &Path) -> Result<String, ReadError> {
+fn read_limited(reader: impl Read, limit: u64, path: &Path) -> Result<Vec<u8>, ReadError> {
     let io_error = |e| ReadError::Io(path.to_owned(), e);
     let mut bytes = Vec::new();
     reader
@@ -66,7 +90,7 @@ fn read_limited(reader: impl Read, limit: u64, path: &Path) -> Result<String, Re
     if bytes.len() as u64 > limit {
         return Err(ReadError::TooLarge(path.to_owned(), limit));
     }
-    String::from_utf8(bytes).map_err(|e| io_error(io::Error::new(io::ErrorKind::InvalidData, e)))
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -81,6 +105,20 @@ mod tests {
         assert!(matches!(read(&path, 3), Err(ReadError::TooLarge(ref p, 3)) if p == &path));
         fs::remove_file(path).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn text_reads_accept_user_symlinks_but_binary_reads_can_refuse_them() {
+        let work = tempfile::tempdir().unwrap();
+        let source = work.path().join("manifest");
+        let path = work.path().join("symlink");
+        fs::write(&source, "text").unwrap();
+        std::os::unix::fs::symlink(source, &path).unwrap();
+        assert_eq!(read(&path, 4).unwrap(), "text");
+        assert!(
+            matches!(read_bytes(&path, 4, Symlinks::Refuse), Err(ReadError::NotRegular(p)) if p == path)
+        );
+    }
+
     /// Hands out `b'a'` forever, but fails any read after `cap` bytes were taken.
     struct Endless {
         taken: u64,
@@ -107,14 +145,14 @@ mod tests {
             Err(ReadError::TooLarge(_, 3))
         ));
         let at_the_limit = io::Cursor::new(b"aaa".to_vec());
-        assert_eq!(read_limited(at_the_limit, 3, path).unwrap(), "aaa");
+        assert_eq!(read_limited(at_the_limit, 3, path).unwrap(), b"aaa");
     }
     #[test]
     fn the_sentinel_byte_does_not_overflow_at_the_largest_limit() {
         let reader = io::Cursor::new(b"ab".to_vec());
         assert_eq!(
             read_limited(reader, u64::MAX, Path::new("max")).unwrap(),
-            "ab"
+            b"ab"
         );
     }
 }

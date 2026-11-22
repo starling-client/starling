@@ -1,5 +1,4 @@
 use super::{Hook, HostAccess, PhaseContext, Side};
-use syn::Type;
 
 /// The hook's host parameter type and the expression passed by its native method.
 #[derive(Debug, PartialEq, Eq)]
@@ -9,13 +8,16 @@ pub(super) struct HostParam {
 }
 
 /// Whether the hook's host is a level host: a `GameLevel` method, or a hook marked
-/// `"host": "level"` whose receiver is another level (a hit's `HitLevel`).
+/// `"host": "level"` or `"host": "hit"` whose receiver is another level (a hit's `HitLevel`).
 pub(super) fn is_level(hook: &Hook) -> bool {
-    hook.host == Some(HostAccess::Level) || game_level(hook)
+    matches!(
+        hook.host,
+        Some(HostAccess::Level | HostAccess::LevelRandomSide | HostAccess::Hit)
+    ) || game_level(hook)
 }
 
 fn game_level(hook: &Hook) -> bool {
-    hook.target.contains("::GameLevel<")
+    hook.target.contains("::GameLevel<") || hook.target.contains("::LevelView<")
 }
 
 /// Validate catalog access restrictions against the hook's receiver.
@@ -42,9 +44,23 @@ pub(super) fn validate(
             HostAccess::Level
                 if !game_level(hook)
                     && !ticks
-                    && (hook.side == Side::Server && mutable == Some(true)
+                    && (hook.side == Side::Server && mutable.is_some()
                         || hook.side == Side::Both && mutable == Some(false)) => {}
-            HostAccess::Read | HostAccess::Level => {
+            HostAccess::LevelRandomSide
+                if !game_level(hook)
+                    && !ticks
+                    && hook.side == Side::Both
+                    && mutable == Some(true) => {}
+            // A hit's capability is the server hit's: a both-side hit's host only reads.
+            HostAccess::Hit
+                if !game_level(hook)
+                    && !ticks
+                    && hook.side == Side::Server
+                    && mutable == Some(true) => {}
+            HostAccess::Read
+            | HostAccess::Level
+            | HostAccess::LevelRandomSide
+            | HostAccess::Hit => {
                 return Err(format!("{name}: this entry takes no host marker"));
             }
         }
@@ -58,7 +74,11 @@ pub(super) fn validate(
             "{name}: a both-side hook with a &self target takes host \"read\""
         ));
     }
-    if is_level && hook.side == Side::Both && (mutable == Some(true) || ticks) {
+    if is_level
+        && hook.side == Side::Both
+        && (mutable == Some(true) || ticks)
+        && hook.host != Some(HostAccess::LevelRandomSide)
+    {
         return Err(format!(
             "{name}: a both-side level hook takes the read kind until a client level seam exists"
         ));
@@ -66,43 +86,41 @@ pub(super) fn validate(
     Ok(())
 }
 
-/// Remove the native phase input from the event, selecting its public context.
-pub(super) fn context_param(
-    hook: &Hook,
-    args: &mut Vec<(String, &Type)>,
-) -> Result<Option<HostParam>, String> {
-    let Some(kind) = hook.context else {
-        return Ok(None);
-    };
-    let name = &hook.name;
-    let expected = match kind {
-        PhaseContext::Registration => "RegistrationContext",
-        PhaseContext::DataLoad => "LoadContext",
-        PhaseContext::Loop => "LoopContext",
-        PhaseContext::Worldgen => "OwningWorldgen",
-    };
-    let valid = args.first().is_some_and(|(name, ty)| {
-        name == "context"
-            && matches!(ty, Type::Reference(reference)
-            if reference.mutability.is_none() && matches!(&*reference.elem, Type::Path(path)
-                if path.path.segments.last().is_some_and(|segment| segment.ident == expected)))
-    });
-    if !valid {
-        return Err(format!(
-            "{name}: phase context requires first input context: &{expected}<'_>"
-        ));
-    }
-    args.remove(0);
-    Ok(Some(HostParam {
-        ty: match kind {
+/// The phase input is declared by `context`, separate from the event fields.
+pub(super) fn context_param(hook: &Hook) -> Option<HostParam> {
+    Some(HostParam {
+        ty: match hook.context? {
             PhaseContext::Registration => "&RegistrationContext",
             PhaseContext::DataLoad => "&dyn DataLoadContext",
             PhaseContext::Loop => "&dyn LoopContext",
             PhaseContext::Worldgen => "&dyn WorldgenHost",
+            PhaseContext::ChunkDisk => "&dyn ChunkDiskHost",
+            PhaseContext::Config => "&dyn ConfigContext",
+            PhaseContext::Reload => "&dyn ReloadContext",
+            PhaseContext::ClientReload => "&dyn ClientReloadHost",
+            PhaseContext::ClientReloadListener => "&dyn ClientReloadListenerContext",
+            PhaseContext::ClientSetup => "&mut dyn ClientSetupContext",
+            PhaseContext::PackDiscovery => "&mut dyn PackDiscoveryContext",
         }
         .into(),
         call: "context",
-    }))
+    })
+}
+
+pub(super) fn phase_engine_type(phase: PhaseContext) -> &'static str {
+    match phase {
+        PhaseContext::Registration => "&mod_api::RegistrationContext",
+        PhaseContext::DataLoad => "&sunrise_world::native_load_context::LoadContext<'_>",
+        PhaseContext::Loop => "&sunrise_world::native_load_context::LoopContext",
+        PhaseContext::Worldgen => "&mod_api::OwningWorldgen<'_>",
+        PhaseContext::ChunkDisk => "&mod_api::OwningChunkDisk<'_>",
+        PhaseContext::Config => "&dyn mod_api::ConfigContext",
+        PhaseContext::Reload => "&dyn mod_api::ReloadContext",
+        PhaseContext::ClientReload => "&dyn mod_api::ClientReloadHost",
+        PhaseContext::ClientReloadListener => "&dyn mod_api::ClientReloadListenerContext",
+        PhaseContext::ClientSetup => "&mut dyn mod_api::ClientSetupContext",
+        PhaseContext::PackDiscovery => "&mut dyn mod_api::PackDiscoveryContext",
+    }
 }
 
 /// Select the host once for both generated signatures and the native call.
@@ -124,10 +142,22 @@ pub(super) fn host_param(hook: &Hook, mutable: Option<bool>, ticks: bool) -> Opt
                 call,
             };
         }
+        if hook.host == Some(HostAccess::LevelRandomSide) {
+            return HostParam {
+                ty: "LevelRandomSide".into(),
+                call: "self.level_random_side()",
+            };
+        }
         if hook.side == Side::Both {
             return HostParam {
                 ty: "LevelSide".into(),
                 call: "super::mod_api_host::level_side(self)",
+            };
+        }
+        if hook.host == Some(HostAccess::Hit) {
+            return HostParam {
+                ty: "&mut dyn HitHost".into(),
+                call: "self",
             };
         }
         let kind = if is_level {
@@ -148,7 +178,7 @@ pub(super) fn host_param(hook: &Hook, mutable: Option<bool>, ticks: bool) -> Opt
         HostParam {
             ty: format!("&{mutable}dyn {kind}"),
             call: if ticks {
-                "&mut super::mod_api_host::LevelTicks { level: self, ticks }"
+                "&mut super::mod_api_host::LevelTicks::new(self, ticks)"
             } else {
                 "self"
             },
@@ -162,45 +192,29 @@ mod tests {
 
     #[test]
     fn phase_context_is_not_an_event_field_or_game_host() {
-        for (kind, input, public) in [
+        for (kind, public) in [
+            (PhaseContext::Registration, "&RegistrationContext"),
+            (PhaseContext::DataLoad, "&dyn DataLoadContext"),
+            (PhaseContext::Loop, "&dyn LoopContext"),
+            (PhaseContext::Worldgen, "&dyn WorldgenHost"),
+            (PhaseContext::ChunkDisk, "&dyn ChunkDiskHost"),
+            (PhaseContext::Config, "&dyn ConfigContext"),
+            (PhaseContext::Reload, "&dyn ReloadContext"),
+            (PhaseContext::ClientReload, "&dyn ClientReloadHost"),
             (
-                PhaseContext::Registration,
-                "&RegistrationContext",
-                "&RegistrationContext",
+                PhaseContext::ClientReloadListener,
+                "&dyn ClientReloadListenerContext",
             ),
-            (
-                PhaseContext::DataLoad,
-                "&LoadContext<'_>",
-                "&dyn DataLoadContext",
-            ),
-            (PhaseContext::Loop, "&LoopContext", "&dyn LoopContext"),
-            (
-                PhaseContext::Worldgen,
-                "&OwningWorldgen",
-                "&dyn WorldgenHost",
-            ),
+            (PhaseContext::ClientSetup, "&mut dyn ClientSetupContext"),
+            (PhaseContext::PackDiscovery, "&mut dyn PackDiscoveryContext"),
         ] {
             let hook = Hook {
                 context: Some(kind),
                 ..Hook::sample("sunrise_client::game::Game<'_>::native_phase", Side::Both)
             };
-            let ty = syn::parse_str(input).unwrap();
-            let output = syn::parse_quote!(&mut Vec<String>);
-            let mut args = vec![("context".into(), &ty), ("values".into(), &output)];
-            assert_eq!(
-                context_param(&hook, &mut args).unwrap(),
-                Some(HostParam {
-                    ty: public.into(),
-                    call: "context",
-                })
-            );
-            assert_eq!(args.len(), 1);
-            assert_eq!(args[0].0, "values");
+            assert_eq!(context_param(&hook).unwrap().ty, public);
             assert!(validate(&hook, "phase", false, None, false).is_ok());
             assert!(validate(&hook, "phase", false, Some(true), false).is_err());
-            assert!(context_param(&hook, &mut args).is_err());
-            let mutable = syn::parse_str(&input.replacen('&', "&mut ", 1)).unwrap();
-            assert!(context_param(&hook, &mut vec![("context".into(), &mutable)]).is_err());
         }
     }
 }

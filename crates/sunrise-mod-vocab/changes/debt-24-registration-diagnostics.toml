@@ -1,0 +1,3 @@
+ids = ["behaviour:registration_rollback"]
+why = "The registration pass rolls back once on refusal. Following NeoForge ModLoader.addLoadingIssue, it now publishes all reasons and warnings in order, verbatim, without truncation or a count limit."
+migrate = "In Hooks::register call r.warn(key, args) and r.refuse(reason) on &mut dyn Registrar, not cx.warn or cx.refuse on RegistrationContext. A refusal still rolls back the mod's registrations; every reported reason is shown."

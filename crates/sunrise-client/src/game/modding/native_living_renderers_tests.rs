@@ -4,16 +4,16 @@
 //! `render_living_pre` skips it, and a failing renderer leaves the type its own model until a
 //! resource reload resolves it again.
 use super::Game;
-use sunrise_client::{mesher::Vertex, mobs::Mob};
 use mod_api::{
-    BlockEntityDrawContext, EntityRenderLayer, EntityRenderState, EntityRenderer, Hooks,
-    LayerTarget, Pose, PosedParts, RegisterEntityLayersEvent, RegisterEntityRenderersEvent,
+    BlockEntityDrawContext, EntityRenderLayer, EntityRenderState, EntityRenderer, FrameModel,
+    Hooks, LayerTarget, Pose, RegisterEntityLayersEvent, RegisterEntityRenderersEvent,
     RegistrationContext, RenderLivingPostEvent, RenderLivingPreEvent,
 };
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU32, Ordering},
 };
+use sunrise_client::{mesher::Vertex, mobs::Mob};
 
 /// What the scene's mod heard, in order, and the entities whose `render_living_pre` it cancels.
 #[derive(Default)]
@@ -75,18 +75,20 @@ impl EntityRenderer for Flaky {
     }
 }
 
-/// A layer on the zombie: draws a quad 200 blocks up and records whether it had posed parts.
+/// Records whether the body model was present. When a replacement drew, adds a raised quad.
 struct Layer(Shared);
 impl EntityRenderLayer for Layer {
     fn submit(
         &self,
         entity: &EntityRenderState,
-        parts: Option<&PosedParts>,
+        model: Option<&dyn FrameModel>,
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String> {
-        let event = format!("layer {} parts {}", entity.id, parts.is_some());
+        let event = format!("layer {} model {}", entity.id, model.is_some());
         self.0.lock().unwrap().events.push(event);
-        raised_quad(draw, 200.0);
+        if model.is_none() {
+            raised_quad(draw, 200.0);
+        }
         Ok(())
     }
 }
@@ -117,9 +119,11 @@ impl Hooks for Scene {
         _: &RegistrationContext,
         event: &mut RegisterEntityLayersEvent<'_>,
     ) {
-        let target = LayerTarget::Entity("minecraft:zombie".into());
         let layer = Arc::new(Layer(self.heard.clone()));
-        event.layers.add(target, layer).unwrap();
+        for kind in ["minecraft:zombie", "minecraft:cow"] {
+            let target = LayerTarget::Entity(kind.into());
+            event.layers.add(target, layer.clone()).unwrap();
+        }
     }
     fn render_living_pre(
         &self,
@@ -137,9 +141,11 @@ impl Hooks for Scene {
         event: &mut RenderLivingPostEvent<'_>,
     ) {
         let mut heard = self.heard.lock().unwrap();
-        heard
-            .events
-            .push(format!("living_post {}", event.entity.id));
+        heard.events.push(format!(
+            "living_post {} model {}",
+            event.entity.id,
+            event.model.is_some()
+        ));
     }
 }
 
@@ -211,7 +217,7 @@ fn in_scene(test: &str, check: impl FnOnce(&mut Game<'_>, &Shared, &Flaky)) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_registered_living_type_draws_its_renderer_in_place_of_its_model() {
     in_scene(
         "a_registered_living_type_draws_its_renderer_in_place_of_its_model",
@@ -227,20 +233,61 @@ fn a_registered_living_type_draws_its_renderer_in_place_of_its_model() {
                 [
                     "living_pre 91",
                     "renderer 91 body 30 baby false Standing",
-                    "layer 91 parts false",
-                    "living_post 91"
+                    "layer 91 model false",
+                    "living_post 91 model false"
                 ]
             );
             let cow = frame(game, "minecraft:cow", 92);
             assert!(!cow.is_empty(), "an unregistered type draws its model");
             assert!(cow.iter().all(|v| above(v) < 3.0), "{cow:?}");
-            assert_eq!(events(heard), ["living_pre 92", "living_post 92"]);
+            assert_eq!(
+                events(heard),
+                [
+                    "living_pre 92",
+                    "layer 92 model true",
+                    "living_post 92 model true"
+                ]
+            );
         },
     );
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
+fn a_screens_entity_keeps_the_layers_beside_a_registered_renderer() {
+    in_scene(
+        "a_screens_entity_keeps_the_layers_beside_a_registered_renderer",
+        |game, heard, _| {
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:zombie")
+                .unwrap()
+                .clone();
+            let at = sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5);
+            let zombie = Mob::new_remote(93, kind, at, 0.0);
+            let mut out = Vec::new();
+            game.gui_entity_geometry(&zombie, &mut out);
+            // Seen from its feet: the renderer's quad 100 up, then the layer's 200 up.
+            let heights: Vec<f32> = out
+                .chunks(4)
+                .map(|q| q.iter().map(|v| v.pos[1]).fold(f32::MAX, f32::min).round())
+                .collect();
+            assert_eq!(
+                heights,
+                [100.0, 200.0],
+                "both geometries, and no vanilla model"
+            );
+            let heard = events(heard);
+            assert_eq!(heard.len(), 2, "{heard:?}");
+            assert!(heard[0].starts_with("renderer 93 "), "{heard:?}");
+            assert_eq!(heard[1], "layer 93 model false");
+        },
+    );
+}
+
+#[test]
+#[ignore = "daily"]
 fn a_canceled_living_pre_skips_a_registered_renderer() {
     in_scene(
         "a_canceled_living_pre_skips_a_registered_renderer",
@@ -256,7 +303,7 @@ fn a_canceled_living_pre_skips_a_registered_renderer() {
 /// A failing renderer leaves the type its model and is asked no more; only a reload's fresh table
 /// asks it again.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_failed_renderer_draws_the_types_model_until_a_resource_reload() {
     in_scene(
         "a_failed_renderer_draws_the_types_model_until_a_resource_reload",
@@ -280,7 +327,7 @@ fn a_failed_renderer_draws_the_types_model_until_a_resource_reload() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_sleeping_or_baby_frame_reads_as_the_model_lays_it() {
     super::native_entity_refs::tests::with_client_game(|game| {
         let kind = game
@@ -304,7 +351,7 @@ fn a_sleeping_or_baby_frame_reads_as_the_model_lays_it() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn own_yaw_is_independent_of_body_rotation_across_a_wrap() {
     super::native_entity_refs::tests::with_client_game(|game| {
         let kind = game
@@ -332,7 +379,7 @@ fn own_yaw_is_independent_of_body_rotation_across_a_wrap() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn extracted_living_signs_death_time_and_hurt_overlay_are_literal() {
     super::native_entity_refs::tests::with_client_game(|game| {
         let kind = game

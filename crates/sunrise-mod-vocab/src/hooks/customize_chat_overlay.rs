@@ -10,10 +10,17 @@ pub trait Hooks {
     /// clicks and hovers on messages, stay where vanilla puts them, as with NeoForge.
     /// Client-side.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "CustomizeGuiOverlayEvent.Chat",
         cancellable = false
     )]
-    fn customize_chat_overlay();
+    fn customize_chat_overlay(
+        gui_width: i32,
+        gui_height: i32,
+        focused: bool,
+        x: &mut i32,
+        y: &mut i32,
+    );
 }

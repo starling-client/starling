@@ -1,0 +1,1 @@
+sunrise-world loot::types::argument_tests::prepared_vanilla_loot_arguments_decode lib daily resources

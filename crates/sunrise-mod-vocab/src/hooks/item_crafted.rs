@@ -15,10 +15,11 @@ pub trait Hooks {
     /// included, and not for a stonecutter's, a smithing table's or a
     /// furnace's result. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PlayerEvent.ItemCraftedEvent",
         version = 2
     )]
-    fn item_crafted();
+    fn item_crafted(player: u128, recipe: &str, stack: &ItemStack, inputs: &[Option<ItemStack>]);
 }

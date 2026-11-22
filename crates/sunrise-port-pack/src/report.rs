@@ -230,8 +230,8 @@ fn old_layout(work: &Path, key: &str) -> OldLayout {
     }
     let recipes = match count("recipes_old_result") {
         0 => String::new(),
-        1 => "1 recipe result names `item`, which 26.3 skips; ".to_owned(),
-        n => format!("{n} recipe results name `item`, which 26.3 skips; "),
+        1 => "1 recipe result names `item`, moved to outside/; ".to_owned(),
+        n => format!("{n} recipe results name `item`, moved to outside/; "),
     };
     OldLayout::Renamed(format!(
         "made for Minecraft 1.20 or older: {renamed} data files moved to 1.21's folder names, \
@@ -272,7 +272,10 @@ fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
             differences += 1;
         }
     }
-    let mut gaps = Vec::new();
+    let version_note = carry["version_unreadable"]
+        .as_str()
+        .map(crate::check::version_note);
+    let mut gaps: Vec<String> = version_note.iter().cloned().collect();
     if left_blocks > 0 {
         gaps.push(format!(
             "{left_blocks} blocks left out (no vanilla template)"
@@ -318,6 +321,7 @@ fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
         } else {
             "nothing registered to compare".into()
         };
+        let what = version_note.map_or(what.clone(), |note| format!("{what}; {note}"));
         return Some((Status::Partial, what));
     }
     let mut summary = format!("{blocks} blocks, {items} items");
@@ -479,7 +483,7 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
 
 /// What a pack's mods add up to, for the headline above the numbers. It counts the report's own
 /// rows and tiers; resource packs and shader packs are not mods and are left out.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Summary {
     /// Mods that need a port: all but the "not needed" ones.
     pub needing: usize,

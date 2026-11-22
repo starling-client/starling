@@ -14,3 +14,19 @@ pub enum UseAnimation {
     Bundle,
     Spear,
 }
+
+/// `ItemUseAnimation.BY_ID`: names in network ID order.
+pub const NAMES: [&str; 12] = [
+    "none",
+    "eat",
+    "drink",
+    "block",
+    "bow",
+    "trident",
+    "crossbow",
+    "spyglass",
+    "toot_horn",
+    "brush",
+    "bundle",
+    "spear",
+];

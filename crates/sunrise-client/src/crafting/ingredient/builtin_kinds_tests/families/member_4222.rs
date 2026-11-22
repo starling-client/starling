@@ -130,10 +130,7 @@ fn parrot_variant_recipe_codec_presence_strictness_and_borrowed_matching() {
         };
         let error = components::validate(&rule, &items).unwrap_err();
         assert!(error.starts_with("component minecraft:parrot/variant:"));
-        let invalid = parrot_variant_recipes(&items, patch, false);
-        assert!(invalid.crafting.is_empty());
-        assert!(invalid.cooking.is_empty());
-        assert!(invalid.by_type.values().all(|recipes| recipes.is_empty()));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
     // Synthetic supplied prototype exercises inherited values; vanilla supplies none.
     let mut prototypes = Items::empty();
@@ -178,8 +175,10 @@ fn parrot_variant_recipe_codec_presence_strictness_and_borrowed_matching() {
             "minecraft:parrot/variant",
             Some(Tag::String("green".into())),
         );
-        egg.data_mut()
-            .set_other("minecraft:custom_data", Some(Tag::Int(3)));
+        egg.data_mut().set_other(
+            "minecraft:custom_data",
+            Some(Tag::compound([("extra", Tag::Int(3))])),
+        );
         assert!(loose.craft(&context, &[Some(egg.clone())], 1).is_some());
         assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_none());
         let removed = Tag::compound([(
@@ -291,7 +290,7 @@ fn rollup_rejection_and_absence_matrix_4222() {
         assert!(error.contains("minecraft:parrot/variant"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -304,13 +303,14 @@ fn rollup_rejection_and_absence_matrix_4222() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 

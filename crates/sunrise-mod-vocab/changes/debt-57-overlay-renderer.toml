@@ -1,0 +1,47 @@
+ids = [
+    "hook:extract_block_screen_effect",
+    "hook:extract_block_screen_effect.custom_draw",
+    "hook:extract_block_screen_effect.player_partial_tick",
+    "method:Hooks::extract_block_screen_effect",
+    "type:ExtractBlockScreenEffectEvent",
+    "type:ExtractBlockScreenEffectEvent.custom_draw",
+    "type:ExtractBlockScreenEffectEvent.player_partial_tick",
+    "handle:ExtractBlockScreenEffectEvent::set_custom_renderer",
+    "hook:block_screen_effect_draw",
+    "method:Hooks::block_screen_effect_draw",
+    "type:BlockScreenEffectDrawEvent",
+    "trait:BlockScreenEffectRenderer",
+    "method:BlockScreenEffectRenderer::submit",
+    "type:BlockScreenEffectRender",
+]
+why = """
+Extraction chooses the last renderer an eligible listener selects instead of setting a flag and broadcasting a draw hook.
+Vanilla's `LevelExtractor.extractPlayerState` and `ScreenEffectRenderer.submit` gate water to first person.
+Vanilla and NeoForge's `LevelExtractor.extractPlayerState` use the player's tick-sampled `isEyeInFluid(WATER)`.
+`EntityFluidInteraction.update` includes an eye exactly at the surface; the `Camera.getFluidInCamera` geometry test
+excludes it. The sample updates through the local player's removal at death tick 20, then stays unchanged until respawn.
+Sunrise still lets `camera_submersion` override water eligibility, starting with the player's eye sample.
+NeoForge passes both interpolation values from `LevelExtractor.extractPlayerState` and supplies the default water state
+at the eye in `ClientHooks.extractWaterScreenEffect`. Sunrise requires that state when loading resources rather than
+skipping the hook if it is absent. NeoForge's `ExtractBlockScreenEffectEvent.setCanceled` and
+`ScreenEffectRenderer.submit` patch suppress canceled fire with a no-op only when no renderer was selected.
+"""
+migrate = """
+- In `Hooks::extract_block_screen_effect`, change the event parameter to `&mut ExtractBlockScreenEffectEvent<'_>`.
+  Replace `event.custom_draw = true` with `event.set_custom_renderer(&MY_RENDERER)`, passing a static renderer.
+  Replace `event.custom_draw = false` with `event.set_custom_renderer(&VANILLA_ONLY)`, where `VANILLA_ONLY` implements
+  `BlockScreenEffectRenderer::submit` by drawing nothing and returning `false`.
+- Remove `Hooks::block_screen_effect_draw` and move its drawing into
+  `BlockScreenEffectRenderer::submit(&self, host: &dyn ClientHost, render: BlockScreenEffectRender<'_>) -> bool`.
+  Use `render.effect`, `render.state`, `render.pos`, `render.partial_tick`, `render.hide_gui` and `render.draw` in place
+  of the former `BlockScreenEffectDrawEvent` fields. Instead of setting `replace_vanilla`, return `true` to suppress the
+  vanilla quads, or `false` to prepend yours. If a Host phase refusal interrupts submission, none of its quads are kept.
+- Keep `Flow::Cancel` and `#[listener(receive_cancelled)]` on extraction. Cancellation suppresses vanilla block and water
+  quads; for fire it does so only if no renderer was selected. Return `true` from a selected fire renderer if vanilla fire
+  must not follow its quads.
+- For water, `event.state` is now the default water state. If you need the actual block, read it from the client's level
+  with `level.block_state(host, [event.pos.x, event.pos.y, event.pos.z])`.
+- Keep `event.partial_tick` for world interpolation and use `event.player_partial_tick` for local-player interpolation.
+
+Only a completed extraction changes the chosen renderer or cancellation. A submission interrupted by a phase refusal publishes no quads; refusals are reported each time without disabling the renderer. A panic also publishes no quads and disables only that mod’s submission for that effect kind for the session.
+"""

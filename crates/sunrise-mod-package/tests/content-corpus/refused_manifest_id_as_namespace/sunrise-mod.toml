@@ -1,0 +1,4 @@
+id = "refused_manifest_id_as_namespace"
+name = "Refused manifest id as namespace"
+version = "1.2.3"
+namespaces = ["refused_manifest_id_as_namespace"]

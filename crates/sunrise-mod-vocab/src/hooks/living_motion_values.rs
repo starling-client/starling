@@ -14,7 +14,7 @@ pub trait Hooks {
         target = "sunrise_client_lib::motion::native_living_jump_power",
         neoforge = "none (vanilla LivingEntity.getJumpPower; not LivingEvent.LivingJumpEvent)"
     )]
-    fn living_jump_power();
+    fn living_jump_power(entity: u32, kind: &str, power: &mut f32);
     /// A living entity's movement speed (`LivingEntity.getSpeed`) is about to drive its travel on the ground and through fluids. `entity` is its id and `kind` its type; a mod may change `speed`. Fires on both sides, on the client's replayed ticks too, with the loop `context` of the side that ticks the entity (its registries, settings and mod list): register the mod on both, and keep the listener a pure function of its inputs so prediction and the server agree. Beyond NeoForge: there is no counterpart. Diverges from upstream: new hook.
     #[hook(
         side = "both",
@@ -25,7 +25,7 @@ pub trait Hooks {
         target = "sunrise_client_lib::motion::native_living_speed",
         neoforge = "none (vanilla LivingEntity.getSpeed; NeoForge adds no event or extension for it)"
     )]
-    fn living_speed();
+    fn living_speed(entity: u32, kind: &str, speed: &mut f32);
     /// A living entity's airborne acceleration (`LivingEntity.getFlyingSpeed`) is about to be used by its travel. `entity` is its id and `kind` its type; a mod may change `speed`. Fires on both sides, on the client's replayed ticks too, with the loop `context` of the side that ticks the entity (its registries, settings and mod list): register the mod on both, and keep the listener a pure function of its inputs so prediction and the server agree. Beyond NeoForge: there is no counterpart. Diverges from upstream: new hook.
     #[hook(
         side = "both",
@@ -36,5 +36,5 @@ pub trait Hooks {
         target = "sunrise_client_lib::motion::native_living_flying_speed",
         neoforge = "none (vanilla LivingEntity.getFlyingSpeed; NeoForge adds no event or extension for it)"
     )]
-    fn living_flying_speed();
+    fn living_flying_speed(entity: u32, kind: &str, speed: &mut f32);
 }

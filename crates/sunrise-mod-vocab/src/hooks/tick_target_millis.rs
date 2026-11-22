@@ -10,10 +10,12 @@ pub trait Hooks {
     /// at its own rate. Client-side. Beyond NeoForge: there is no counterpart. Diverges from
     /// upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         cancellable = false,
         neoforge = "none (vanilla Minecraft.getTickTargetMillis; NeoForge adds no event or extension for it)"
     )]
-    fn tick_target_millis();
+    fn tick_target_millis(millis: &mut f32);
 }

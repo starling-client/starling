@@ -83,7 +83,8 @@ pub fn parse(text: &str) -> Result<Vec<ListedInternal>, String> {
     struct Internals {
         internals: Vec<ListedInternal>,
     }
-    let (_, body) = crate::build_data::read::<Internals>(crate::build_data::INTERNALS, text)?;
+    let (_, body) = crate::build_data::read::<Internals>(crate::build_data::INTERNALS, text)
+        .map_err(|error| error.to_string())?;
     Ok(body.internals)
 }
 

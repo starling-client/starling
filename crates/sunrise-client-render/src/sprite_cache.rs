@@ -1,14 +1,19 @@
 //! Decoded block sprites kept on disk between launches (M-11): reading and
 //! decoding ~1300 small PNGs is most of `Sprites::load`. One file per resource
-//! cache location, valid only while the resource source's textures have the
-//! same identities/change stamps (or open archive contents) and format version; anything
-//! else (missing, corrupt, stale, unwritable) means the normal decoding path.
+//! cache location, valid only while the resource source's textures and atlas
+//! definitions have the same identities/change stamps (or open archive contents)
+//! and format version; anything else (missing, corrupt, stale, unwritable) means the normal decoding path.
 use crate::{mipmap::Strategy, resource_source::ResourceRoot};
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    hash::{DefaultHasher, Hash, Hasher},
+    path::PathBuf,
+};
 
 const MAGIC: &[u8; 4] = b"HSPR";
 /// Bump when `Decoded` or the decoding in `Sprites::decode` changes.
-const VERSION: u32 = 2;
+const VERSION: u32 = 4;
 const FILE: &str = "sunrise-sprites.cache";
 
 /// What decoding one texture gives, before it takes a layer.
@@ -33,10 +38,19 @@ pub(crate) struct SpriteCache {
 }
 
 impl SpriteCache {
-    /// The cache of `root`: its stored entries when still valid, else empty.
-    /// `None` when the textures cannot be fingerprinted (no caching then).
-    pub fn open(root: &ResourceRoot) -> Option<Self> {
-        let fingerprint = root.source().fingerprint_under("assets", &["textures"])?;
+    /// The cache of `root`: its stored entries when still valid, else empty. `listing` identifies
+    /// what its atlas sources listed, mods' answers included. `None` when the textures cannot be
+    /// fingerprinted (no caching then).
+    pub fn open(root: &ResourceRoot, listing: u64) -> Option<Self> {
+        // The atlas definitions too: a sprite they cut or recolour changes with them as well
+        // as with its sheet. What the listing made of them, whatever code answered, changes it
+        // with them.
+        let mut hash = DefaultHasher::new();
+        root.source()
+            .fingerprint_under("assets", &["atlases", "textures"])?
+            .hash(&mut hash);
+        listing.hash(&mut hash);
+        let fingerprint = hash.finish();
         fs::create_dir_all(root.cache()).ok()?;
         let path = root.cache().join(FILE);
         let entries = fs::read(&path)
@@ -230,11 +244,11 @@ mod tests {
         let root = scratch("invalidate");
         let png = root.join("assets/minecraft/textures/block/x.png");
         fs::write(&png, b"one").unwrap();
-        let mut cache = SpriteCache::open(&ResourceRoot::directory(root.clone())).unwrap();
+        let mut cache = SpriteCache::open(&ResourceRoot::directory(root.clone()), 0).unwrap();
         cache.insert("minecraft:block/x", sample(1, None));
         cache.save();
         assert!(
-            SpriteCache::open(&ResourceRoot::directory(root.clone()))
+            SpriteCache::open(&ResourceRoot::directory(root.clone()), 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_some()
@@ -243,18 +257,18 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(30));
         fs::write(&png, b"two").unwrap();
         assert!(
-            SpriteCache::open(&ResourceRoot::directory(root.clone()))
+            SpriteCache::open(&ResourceRoot::directory(root.clone()), 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_none()
         );
         // A new file also invalidates.
-        let mut cache = SpriteCache::open(&ResourceRoot::directory(root.clone())).unwrap();
+        let mut cache = SpriteCache::open(&ResourceRoot::directory(root.clone()), 0).unwrap();
         cache.insert("minecraft:block/x", sample(1, None));
         cache.save();
         fs::write(root.join("assets/minecraft/textures/block/y.png"), b"y").unwrap();
         assert!(
-            SpriteCache::open(&ResourceRoot::directory(root.clone()))
+            SpriteCache::open(&ResourceRoot::directory(root.clone()), 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_none()
@@ -262,7 +276,7 @@ mod tests {
         // Corrupt cache file: empty, no error.
         fs::write(root.join(FILE), b"HSPR junk").unwrap();
         assert!(
-            SpriteCache::open(&ResourceRoot::directory(root.clone()))
+            SpriteCache::open(&ResourceRoot::directory(root.clone()), 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_none()
@@ -296,11 +310,11 @@ mod tests {
         let packs = [Pack::mod_layer("jar".into(), Source::Zip(jar.clone()))];
         let source = packs::resources(ResourceSource::directory(base.clone()), &packs).unwrap();
         let before = ResourceRoot::new(base.clone(), root.join("cache"), source);
-        let mut cache = SpriteCache::open(&before).unwrap();
+        let mut cache = SpriteCache::open(&before, 0).unwrap();
         cache.insert("minecraft:block/x", sample(1, None));
         cache.save();
         assert!(
-            SpriteCache::open(&before)
+            SpriteCache::open(&before, 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_some()
@@ -327,7 +341,7 @@ mod tests {
             packs::resources(ResourceSource::directory(base.clone()), &packs).unwrap(),
         );
         assert!(
-            SpriteCache::open(&touched)
+            SpriteCache::open(&touched, 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_some(),
@@ -345,28 +359,28 @@ mod tests {
         assert_eq!(before.source().read(name).unwrap(), b"before");
         assert_eq!(after.source().read(name).unwrap(), b"after");
         assert!(
-            SpriteCache::open(&before)
+            SpriteCache::open(&before, 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_some()
         );
         assert!(
-            SpriteCache::open(&after)
+            SpriteCache::open(&after, 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_none()
         );
-        let mut cache = SpriteCache::open(&after).unwrap();
+        let mut cache = SpriteCache::open(&after, 0).unwrap();
         cache.insert("minecraft:block/x", sample(2, None));
         cache.save();
         assert!(
-            SpriteCache::open(&before)
+            SpriteCache::open(&before, 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .is_none()
         );
         assert_eq!(
-            SpriteCache::open(&after)
+            SpriteCache::open(&after, 0)
                 .unwrap()
                 .get("minecraft:block/x")
                 .unwrap()

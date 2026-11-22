@@ -8,11 +8,11 @@
 //! and its rotation mode turns them as it turns a sprite quad (`+Z` facing the camera for
 //! `look_at_xyz`, world axes for `none`).
 use glam::{Quat, Vec3};
-use sunrise_assets::resource_source::ResourceSource;
 use serde_json::{Map, Value as Json};
 use std::collections::HashMap;
 #[cfg(test)]
 use std::path::Path;
+use sunrise_assets::resource_source::ResourceSource;
 
 /// One face of a model particle: corners in blocks around the model's centre, in drawing order,
 /// with their texture coordinates inside the sprite (0 to 1).

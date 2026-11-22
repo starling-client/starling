@@ -5,7 +5,6 @@
 
 use crate::api::Shared;
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
-use sunrise_server_launch::config::Discord;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -13,6 +12,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use sunrise_server_launch::config::Discord;
 
 /// Lines wait this long for others to join their picture.
 const BATCH: Duration = Duration::from_secs(2);
@@ -35,10 +35,10 @@ pub fn start(shared: Arc<Shared>, settings: Discord) {
 
 fn forward(shared: &Shared, settings: &Discord) {
     let wanted = |kind: &str| settings.events.iter().any(|e| e == kind);
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(20))
-        .user_agent(concat!("sunrise-server/", env!("CARGO_PKG_VERSION")))
-        .build();
+    let agent = match webhook_agent(settings.webhook.trim()) {
+        Ok(agent) => agent,
+        Err(e) => return crate::supervisor::note(shared, "WARN", &format!("Discord: {e}")),
+    };
     let font = FontRef::try_from_slice(FONT).expect("the bundled font parses");
     let mut glyphs = HashMap::new();
     let mut cursor = shared.events.lock().unwrap().after(u64::MAX, &wanted).0;
@@ -93,6 +93,15 @@ fn forward(shared: &Shared, settings: &Discord) {
         }
         (pending, skipped, since) = (Vec::new(), 0, None);
     }
+}
+
+fn webhook_agent(webhook: &str) -> Result<ureq::Agent, sunrise_proxy::ProxyError> {
+    sunrise_proxy::agent("sunrise-server-discord", webhook, |builder| {
+        builder
+            .redirects(0)
+            .timeout(Duration::from_secs(20))
+            .user_agent(concat!("sunrise-server/", env!("CARGO_PKG_VERSION")))
+    })
 }
 
 /// One line of chat: coloured runs.
@@ -283,7 +292,7 @@ fn post(
         let now = Instant::now();
         // Errors never say the URL: it holds the webhook's token.
         let response = match sent {
-            Ok(response) => response,
+            Ok(response) if response.status() < 300 => response,
             Err(ureq::Error::Status(429, response)) => {
                 let wait = retry_after(response);
                 limiter.posted(now, wait);
@@ -293,9 +302,12 @@ fn post(
             Err(ureq::Error::Status(code @ (401 | 403 | 404), _)) => {
                 return Err(Failure::Gone(code));
             }
-            Err(ureq::Error::Status(code, _)) => {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => {
                 limiter.posted(now, GAP);
-                return Err(Failure::Other(format!("the webhook answered {code}")));
+                return Err(Failure::Other(format!(
+                    "the webhook answered {}",
+                    response.status()
+                )));
             }
             Err(ureq::Error::Transport(t)) => {
                 limiter.posted(now, GAP * 5);
@@ -564,14 +576,6 @@ mod tests {
             death("Bob fell from a high place"),
             "Bob fell from a high place (Kim0)"
         );
-        // A message the server's chat filter held back never reaches Discord, whatever the settings say.
-        let filtered = json!({"type": "chat_filtered", "name": "Kim0", "message": "x"});
-        assert!(Line::from_event(&filtered).is_none());
-        let asked = Discord {
-            events: vec!["chat_filtered".into()],
-            ..Discord::default()
-        };
-        assert!(asked.check().is_err());
     }
 
     #[test]
@@ -612,6 +616,53 @@ mod tests {
         assert!(limiter.ready(now + Duration::from_secs(7)));
         assert_eq!(secs(Some("1.5")), Duration::from_millis(1500));
         assert_eq!(secs(Some("9999")), Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_webhook_redirect_reports_the_status_without_the_token() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let webhook = format!("http://{}/dummy-token", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), "POST /dummy-token HTTP/1.1");
+            let mut length = None;
+            loop {
+                line.clear();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("Content-Length")
+                {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+            reader.read_exact(&mut vec![0; length.unwrap()]).unwrap();
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let result = post(
+            &webhook_agent(&webhook).unwrap(),
+            &webhook,
+            &[],
+            &FontRef::try_from_slice(FONT).unwrap(),
+            &mut HashMap::new(),
+            &mut Limiter::default(),
+        );
+        assert!(
+            matches!(result, Err(Failure::Other(message)) if message.contains("302") && !message.contains("dummy-token"))
+        );
+        server.join().unwrap();
     }
 
     #[test]

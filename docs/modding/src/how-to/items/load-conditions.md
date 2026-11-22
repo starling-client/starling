@@ -5,8 +5,14 @@ register it from
 `Hooks::register_load_conditions` using its `RegistrationContext` and
 `event.conditions.register(Identifier::parse("testmod:flag").unwrap(), Flag)`.
 Registration happens once per mod load, with one handler per id and a read-only
-`RegistrationContext`. The name must belong to the calling mod's namespace. Duplicate names refuse registration and name both owners;
-a registration error refuses admission even if you ignore it.
+`RegistrationContext`. Any mod may register an unused ID in any namespace:
+mod B can register `a:x` while mod A registers `a:y`. Built-in IDs such as
+`neoforge:always`, `neoforge:never` and `neoforge:mod_loaded` cannot be replaced.
+A duplicate ID names both mods in the error. A completed listener's registration error
+refuses admission even if the listener ignores it. A
+[failed registration callback](../../concepts/load-phases.md#registration-and-setup) publishes
+neither handlers nor preparation errors.
+Later listeners can still register those IDs.
 
 ```rust,ignore
 struct Flag;
@@ -35,35 +41,21 @@ A recipe can use the registered name alongside the built-in conditions:
 The handler receives a borrowed raw JSON value: the condition's object without
 `type`. It reads and validates its own arguments, retaining JSON booleans,
 numbers, strings, lists and objects. Invalid mod input must return
-`ConditionError`; handlers must not panic while reading it. `ConditionError`
-has explicit Wire encoding. Native and WebAssembly registrants cross the same generated route.
-Handlers run in the server's candidate data reload, before the entries become
-visible. Results are retained for each entry and condition payload in that
-candidate, so repeated readers do not call the handler again. A new reload
-reevaluates the entry. Handlers must not mutate live data. A native handler
-panic becomes a named reload error ("handler panicked"), keeping the previous
-usable data. A wasm trap follows the runtime's normal failure policy.
+`ConditionError`; handlers must not panic while reading it.
+Startup data loaders and the server's candidate data reload both use registered
+handlers before entries become visible. Results are retained for each entry and
+condition payload in that load, so repeated readers do not call the handler
+again. A new load reevaluates the entry. Handlers must not mutate live data.
+A handler panic becomes a named load error ("handler panicked").
 
 `true` loads the entry; `false` omits it, without exposing a lower pack's
-version. A callback error refuses the reload and names the file. The previous
-usable recipe and resource generation stays installed.
+version. The loader handles callback errors and unknown condition types as
+[described in Conditional data](conditional-data.md#errors-by-loader).
 
-A namespace is owned only when a loaded mod registered at least one condition
-in it. A loaded mod ID alone does not own a condition namespace. An unknown
-name in an owned namespace refuses reload, naming the file, condition and
-registering mod. This refusal also applies at every depth inside `not`, `and` and `or`,
-even beside an already false or true branch.
-
-An unknown name in any other namespace fails closed:
-the file is absent if the unknown id appears anywhere inside `not`, `and` or
-`or`, at any depth. Evaluation visits every branch, so `or(true, othermod:unknown)`
-also leaves the file absent. One ERROR-level log entry per file names that file
-and all its distinct unknown condition ids; repeated occurrences do not produce
-extra entries within one candidate reload. The vanilla view used outside a
-candidate reload has no per-file store, so it logs once per evaluation.
+Registering an ID works the same in every namespace. The evaluator resolves
+all condition types before it tests any of them, including children of
+`not`, `and` and `or`. Neither `neoforge:mod_loaded` nor an already true or
+false branch can guard an unknown condition ID.
 
 The public [NeoForge data load condition documentation](https://docs.neoforged.net/docs/resources/server/conditions/)
-describes `ICondition` and the top-level `neoforge:conditions` array. Sunrise's
-owned-namespace refusal is the Sunrise-specific addition described above.
-Foreign unknown ids leave the file absent and produce an error-level diagnostic;
-they do not themselves refuse the whole reload.
+describes `ICondition` and the top-level `neoforge:conditions` array.

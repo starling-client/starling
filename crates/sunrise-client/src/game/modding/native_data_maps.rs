@@ -13,26 +13,18 @@
 //! `data_maps/<ns>:<registry folder>/<map path>`), merged each time the
 //! server's tables are built: a world's first open and every `/reload`.
 use super::Game;
+use super::data_map_files::{self, folder};
 use super::data_map_json::to_tag;
-use sunrise_core::nbt::Tag;
 pub use mod_api::game::DataMapType;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-
-/// The folder a registry's data maps are under (`DataMapLoader`): its path for
-/// a `minecraft` registry, `<namespace>/<path>` for another.
-fn folder(registry: &str) -> String {
-    match registry.split_once(':') {
-        Some(("minecraft", path)) => path.to_owned(),
-        Some((namespace, path)) => format!("{namespace}/{path}"),
-        None => registry.to_owned(),
-    }
-}
+use std::collections::{BTreeMap, HashMap, HashSet};
+use sunrise_core::{identifier::Identifier, nbt::Tag};
 
 /// The registries mods read through a typed key (`DataMapEntry`): always
 /// known, even where the command registries list no ids.
-const TYPED: [&str; 8] = [
+const TYPED: [&str; 9] = [
     "minecraft:item",
     "minecraft:block",
     "minecraft:fluid",
@@ -41,6 +33,7 @@ const TYPED: [&str; 8] = [
     "minecraft:enchantment",
     "minecraft:block_entity_type",
     "minecraft:villager_profession",
+    "minecraft:worldgen/biome",
 ];
 
 /// The registries a data load resolves maps against.
@@ -57,13 +50,12 @@ pub(crate) trait MapRegistries {
 /// A world's registries while its server tables build: every registry's ids
 /// as the command registries hold them (built in, the packs' and content
 /// mods'), the world's loaded datapack registries (the authority for a
-/// mod-declared one the command ids do not list), the loaded item and block
-/// tags, and another registry's tags read from the same packs on first use.
+/// mod-declared one the command ids do not list), the tags bound on the
+/// staged items, and another registry's tags read from the same packs on first use.
 pub(crate) struct WorldRegistries<'a> {
     ids: BTreeMap<&'a str, &'a [String]>,
     datapack: Option<&'a mod_api::DatapackRegistrySet>,
-    item_tags: &'a HashMap<String, HashSet<String>>,
-    block_tags: &'a HashMap<String, HashSet<String>>,
+    items: &'a sunrise_client::items::Items,
     root: &'a std::path::Path,
     overlay: &'a sunrise_world::loot::PackOverlay<'a>,
     id_sets: RefCell<HashMap<String, HashSet<String>>>,
@@ -81,8 +73,7 @@ impl<'a> WorldRegistries<'a> {
         Self {
             ids: ids.into_iter().collect(),
             datapack,
-            item_tags: &items.item_tags,
-            block_tags: &items.block_tags,
+            items,
             root,
             overlay,
             id_sets: RefCell::default(),
@@ -141,8 +132,11 @@ impl MapRegistries for WorldRegistries<'_> {
                 .unwrap_or_default()
         };
         match registry {
-            "minecraft:item" => members(self.item_tags),
-            "minecraft:block" => members(self.block_tags),
+            "minecraft:item" => members(&self.items.item_tags),
+            "minecraft:block" => members(&self.items.block_tags),
+            sunrise_client::items::EntityTypeTags::REGISTRY => {
+                members(self.items.entity_type_tags.members())
+            }
             _ => {
                 let mut loaded = self.tags.borrow_mut();
                 let tags = loaded.entry(registry.to_owned()).or_insert_with(|| {
@@ -158,203 +152,124 @@ impl MapRegistries for WorldRegistries<'_> {
     }
 }
 
-/// The merged values of every registered type: registry, then type id, to the
-/// value of each entry that has one.
-pub(crate) enum MapValues {
-    Json(BTreeMap<String, Value>),
-    Decoded(BTreeMap<String, Tag>),
-}
+pub(super) type LoadedMaps<V> = BTreeMap<String, HashMap<String, BTreeMap<String, V>>>;
+
+/// The winning JSON by registry, then map id, then entry id in sorted order.
+#[cfg(test)]
+pub(super) type MergedDataMaps = LoadedMaps<Value>;
+
 #[derive(Default)]
 pub(crate) struct DataMaps {
-    maps: BTreeMap<String, HashMap<String, MapValues>>,
+    pub(super) biome_keys: mod_api::__private::BiomeKeys,
+    maps: BTreeMap<String, HashMap<String, Vec<(String, Tag)>>>,
     pub(super) mob_maps: std::sync::Arc<sunrise_client::neoforge_mob_maps::NeoForgeMobMaps>,
 }
 
 /// `minecraft:` for an id written without a namespace.
-fn full_id(id: &str) -> String {
+fn full_id(id: &str) -> Cow<'_, str> {
     if id.contains(':') {
-        id.to_owned()
+        Cow::Borrowed(id)
     } else {
-        format!("minecraft:{id}")
+        Cow::Owned(format!("minecraft:{id}"))
     }
 }
 
-/// A file's value for an entry: the data itself, or the wrapper
-/// `{"value": ..., "replace": false}` (`DataMapEntry`'s codec), which may also
-/// carry `neoforge:conditions` (`WithConditions`): a value whose conditions
-/// fail is no value. `replace` only matters to mergers, which types don't have
-/// yet: a newer value overrides.
-fn entry_value(
-    raw: &Value,
-    conditions: &sunrise_world::conditions::LoadConditions,
-    path: &str,
-) -> Option<Value> {
-    if let Value::Object(map) = raw
-        && let Some(value) = map.get("value")
-        && map.iter().all(|(k, v)| {
-            k == "value" || k == "neoforge:conditions" || (k == "replace" && v.is_boolean())
-        })
-    {
-        return conditions.allows_file(raw, path).then(|| value.clone());
-    }
-    (!raw.is_null()).then(|| raw.clone())
-}
-
-/// One file over what earlier files made of the type: `replace` clears it,
-/// `values` attach (a tag to every entry in it), then `remove` takes entries
-/// away, as `DataMapFile` is applied. False when the file isn't a data map.
-fn apply_file(
-    map: &mut BTreeMap<String, Value>,
-    file: &Value,
-    registry: &str,
+/// Merge the types' values from the server's tables' pack files, in pack order (mods' below
+/// the packs'), with ids and tags resolved against `registries`. Unknown registries and bad
+/// type ids are left out with a warning; a file that isn't a valid data map or contains an
+/// undecodable value is skipped atomically with an error.
+pub(super) fn load_maps<V: Clone>(
+    types: &[DataMapType],
+    overlay: &sunrise_world::loot::PackOverlay<'_>,
     registries: &dyn MapRegistries,
-    conditions: &sunrise_world::conditions::LoadConditions,
-    path: &str,
-) -> bool {
-    let (Some(root), Some(values)) = (file.as_object(), file.get("values")) else {
-        return false;
-    };
-    let Some(values) = values.as_object() else {
-        return false;
-    };
-    if root.get("replace").and_then(Value::as_bool) == Some(true) {
-        map.clear();
-    }
-    let mut unknown = BTreeSet::new();
-    // The members of a tag or the entry itself, if the registry holds it.
-    let mut members = |key: &str| -> Vec<String> {
-        match key.strip_prefix('#') {
-            // A tag's members go through the same membership check the entry
-            // does: a tag naming an id the registry doesn't hold publishes
-            // nothing for it.
-            Some(tag) => registries
-                .tag(registry, &full_id(tag))
-                .into_iter()
-                .filter(|member| {
-                    let held = registries.contains(registry, member);
-                    if !held {
-                        unknown.insert(member.clone());
-                    }
-                    held
-                })
-                .collect(),
-            None if registries.contains(registry, &full_id(key)) => vec![full_id(key)],
-            None => {
-                unknown.insert(full_id(key));
-                Vec::new()
-            }
+    decode: impl Fn(&str, &Value) -> Result<V, String>,
+) -> LoadedMaps<V> {
+    let mut maps: LoadedMaps<V> = BTreeMap::new();
+    for ty in types {
+        if !registries.known(&ty.registry) {
+            log::warn!(
+                "Sunrise: data map {} is for {}, a registry the game doesn't name: left out",
+                ty.id,
+                ty.registry
+            );
+            continue;
         }
-    };
-    for (key, raw) in values {
-        let Some(value) = entry_value(raw, conditions, path) else {
+        let Some(id) = Identifier::parse_namespaced(&ty.id) else {
+            log::warn!(
+                "Sunrise: data map type {} is not a valid namespaced identifier: left out",
+                ty.id
+            );
             continue;
         };
-        for entry in members(key) {
-            map.insert(entry, value.clone());
+        let registered = maps.entry(ty.registry.clone()).or_default();
+        if registered.contains_key(&ty.id) {
+            log::warn!(
+                "Sunrise: data map {} registered twice: the first is kept",
+                ty.id
+            );
+            continue;
         }
-    }
-    for removal in root
-        .get("remove")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        // An entry or `{"key": entry}`, as `DataMapEntry.Removal` reads it.
-        let key = removal.as_str().or_else(|| removal["key"].as_str());
-        for entry in key.map(&mut members).unwrap_or_default() {
-            map.remove(&entry);
-        }
-    }
-    if !unknown.is_empty() {
-        log::warn!(
-            "Sunrise: {path}: {registry} has no {}: skipped",
-            unknown.into_iter().collect::<Vec<_>>().join(", ")
+        let (map, _) = data_map_files::load(
+            &id,
+            &ty.registry,
+            BTreeMap::new(),
+            overlay,
+            |tag| registries.tag(&ty.registry, tag),
+            |raw| {
+                // A direct object can have a field named `value`; only an object with
+                // exactly the entry wrapper's fields is unwrapped. Conditions are already read.
+                if let Value::Object(object) = raw
+                    && let Some(value) = object.get("value")
+                    && object
+                        .iter()
+                        .all(|(k, v)| k == "value" || (k == "replace" && v.is_boolean()))
+                {
+                    decode(&ty.id, value)
+                } else {
+                    decode(&ty.id, raw)
+                }
+            },
+            |entry| registries.contains(&ty.registry, entry),
         );
+        registered.insert(ty.id.clone(), map);
     }
-    true
+    maps
+}
+
+/// Merge the types' raw JSON values in unit tests that do not test a specific codec.
+#[cfg(test)]
+fn load_json_maps(
+    types: &[DataMapType],
+    overlay: &sunrise_world::loot::PackOverlay<'_>,
+    registries: &dyn MapRegistries,
+) -> MergedDataMaps {
+    load_maps(types, overlay, registries, |_, value| Ok(value.clone()))
 }
 
 impl DataMaps {
-    /// The types' values from `files` (the server's tables' pack files, in
-    /// pack order, mods' below the packs'), ids and tags resolved against
-    /// `registries`. A type for a registry the game doesn't name, or with a
-    /// bad id, is left out with a warning; a file that isn't a data map is
-    /// skipped alone.
+    pub(crate) fn with_biome_keys(mut self, keys: mod_api::__private::BiomeKeys) -> Self {
+        self.biome_keys = keys;
+        self
+    }
+
+    /// Merge the pack files and publish their winning values as NBT.
     pub(crate) fn load(
         types: &[DataMapType],
         overlay: &sunrise_world::loot::PackOverlay<'_>,
         registries: &dyn MapRegistries,
     ) -> Self {
-        let mut maps: BTreeMap<String, HashMap<String, MapValues>> = BTreeMap::new();
-        for ty in types {
-            if !registries.known(&ty.registry) {
-                log::warn!(
-                    "Sunrise: data map {} is for {}, a registry the game doesn't name: left out",
-                    ty.id,
-                    ty.registry
-                );
-                continue;
+        let merged = load_maps(types, overlay, registries, |_, value| {
+            to_tag(value).map_err(|_| "value cannot be represented as NBT".to_owned())
+        });
+        let mut published = Self::default();
+        for (registry, maps) in merged {
+            let mut types = HashMap::with_capacity(maps.len());
+            for (id, values) in maps {
+                types.insert(id, values.into_iter().collect());
             }
-            let valid = |s: &str| {
-                !s.is_empty()
-                    && s.chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-./".contains(c))
-            };
-            let ok = ty
-                .id
-                .split_once(':')
-                .is_some_and(|(ns, path)| ns != "minecraft" && valid(ns) && valid(path));
-            if !ok {
-                log::warn!(
-                    "Sunrise: data map type {} is not a mod's id: left out",
-                    ty.id
-                );
-                continue;
-            }
-            let registered = maps.entry(ty.registry.clone()).or_default();
-            if registered.contains_key(&ty.id) {
-                log::warn!(
-                    "Sunrise: data map {} registered twice: the first is kept",
-                    ty.id
-                );
-                continue;
-            }
-            let (ns, path) = ty.id.split_once(':').unwrap_or_default();
-            let wanted = format!("data_maps/{ns}:{}/{path}", folder(&ty.registry));
-            let mut map = BTreeMap::new();
-            if let Some((_, versions)) = overlay.files.iter().find(|(k, _)| *k == wanted) {
-                for bytes in versions {
-                    let file = serde_json::from_slice::<Value>(bytes).ok();
-                    if file
-                        .as_ref()
-                        .is_some_and(|file| !overlay.conditions.allows_file(file, &wanted))
-                    {
-                        continue;
-                    }
-                    let applied = file.is_some_and(|file| {
-                        apply_file(
-                            &mut map,
-                            &file,
-                            &ty.registry,
-                            registries,
-                            overlay.conditions,
-                            &wanted,
-                        )
-                    });
-                    if !applied {
-                        log::warn!(
-                            "Sunrise: a data map file of {} is not a data map, skipped",
-                            ty.id
-                        );
-                    }
-                }
-            }
-            registered.insert(ty.id.clone(), MapValues::Json(map));
+            published.maps.insert(registry, types);
         }
-        Self {
-            maps,
-            ..Self::default()
-        }
+        published
     }
 
     pub(crate) fn with_builtins(mut self, builtin: super::neoforge_mob_maps::Loaded) -> Self {
@@ -363,7 +278,7 @@ impl DataMaps {
                 .maps
                 .entry(definition.registry.to_owned())
                 .or_default()
-                .insert(definition.id.to_owned(), values)
+                .insert(definition.id.to_owned(), values.into_iter().collect())
                 .is_some()
             {
                 log::warn!(
@@ -376,68 +291,46 @@ impl DataMaps {
         self
     }
 
-    /// Every entry map `type_id` of `registry` gives a value, with its merged
-    /// JSON; none where the map wasn't loaded.
-    pub(crate) fn json_values(
-        &self,
-        registry: &str,
-        type_id: &str,
-    ) -> impl Iterator<Item = (&str, &Value)> {
-        self.maps
-            .get(registry)
-            .and_then(|maps| maps.get(type_id))
-            .and_then(|values| match values {
-                MapValues::Json(values) => Some(values),
-                MapValues::Decoded(_) => None,
-            })
-            .into_iter()
-            .flatten()
-            .map(|(entry, value)| (entry.as_str(), value))
-    }
-
     /// The registries with a loaded type, in id order: what `data_maps_updated` names.
     pub(crate) fn registries(&self) -> Vec<String> {
         self.maps.keys().cloned().collect()
     }
 
     /// Map `type_id` of `registry`, refused where no mod registered it there.
-    fn map(&self, registry: &str, type_id: &str) -> Result<&MapValues, mod_api::DataMapError> {
+    fn map(
+        &self,
+        registry: &str,
+        type_id: &str,
+    ) -> Result<&[(String, Tag)], mod_api::DataMapError> {
         self.maps
             .get(registry)
             .and_then(|maps| maps.get(type_id))
+            .map(Vec::as_slice)
             .ok_or(mod_api::DataMapError::UnknownType)
     }
 
     /// `entry`'s value in map `type_id` of `registry`, as NBT: none where the
-    /// map gives it none, refused where no mod registered the map there.
+    /// map gives it none.
     fn value(
         &self,
         registry: &str,
         type_id: &str,
         entry: &str,
-    ) -> Result<Option<Tag>, mod_api::DataMapError> {
-        match self.map(registry, type_id)? {
-            MapValues::Json(values) => values.get(entry).map(to_tag).transpose(),
-            MapValues::Decoded(values) => Ok(values.get(entry).cloned()),
+    ) -> Result<Option<&Tag>, mod_api::DataMapError> {
+        let rows = self.map(registry, type_id)?;
+        match rows.binary_search_by(|(id, _)| id.as_str().cmp(entry)) {
+            Ok(index) => Ok(Some(&rows[index].1)),
+            Err(_) => Ok(None),
         }
     }
 
     /// Every entry map `type_id` of `registry` gives a value, in id order.
-    fn entries(
+    pub(in crate::game) fn entries(
         &self,
         registry: &str,
         type_id: &str,
-    ) -> Result<Vec<(String, Tag)>, mod_api::DataMapError> {
-        match self.map(registry, type_id)? {
-            MapValues::Json(values) => values
-                .iter()
-                .map(|(entry, value)| Ok((entry.clone(), to_tag(value)?)))
-                .collect(),
-            MapValues::Decoded(values) => Ok(values
-                .iter()
-                .map(|(entry, value)| (entry.clone(), value.clone()))
-                .collect()),
-        }
+    ) -> Result<&[(String, Tag)], mod_api::DataMapError> {
+        self.map(registry, type_id)
     }
 }
 
@@ -457,7 +350,7 @@ impl Game<'_> {
 impl Game<'_> {
     /// The server's merged data maps, none unless this is a server whose
     /// tables were built from packs and mods' files.
-    fn loaded_data_maps(&self) -> Result<&DataMaps, mod_api::DataMapError> {
+    pub(super) fn loaded_data_maps(&self) -> Result<&DataMaps, mod_api::DataMapError> {
         if self.serving.is_none() && self.options.dedicated.is_none() {
             return Err(mod_api::DataMapError::Unavailable);
         }
@@ -466,15 +359,14 @@ impl Game<'_> {
             .map(|tables| &tables.data_maps)
             .ok_or(mod_api::DataMapError::Unavailable)
     }
-    /// Entry `entry` of `registry`: its value in data map `map`, before the map decodes it:
-    /// the merged JSON the server's data packs and mods' files gave it, as NBT. `Ok(None)`
-    /// where it has none.
+    /// Entry `entry` of `registry`: its published NBT value in data map `map`, or
+    /// `Ok(None)` where the map gives it none.
     pub(in crate::game) fn data_map_value(
         &self,
         registry: &str,
         entry: &str,
         map: &str,
-    ) -> Result<Option<Tag>, mod_api::DataMapError> {
+    ) -> Result<Option<&Tag>, mod_api::DataMapError> {
         self.loaded_data_maps()?
             .value(registry, map, &full_id(entry))
     }
@@ -483,7 +375,7 @@ impl Game<'_> {
         &self,
         registry: &str,
         map: &str,
-    ) -> Result<Vec<(String, Tag)>, mod_api::DataMapError> {
+    ) -> Result<&[(String, Tag)], mod_api::DataMapError> {
         self.loaded_data_maps()?.entries(registry, map)
     }
 }
@@ -495,28 +387,66 @@ mod tests {
 
     #[test]
     fn data_map_read_refuses_lossy_payloads_instead_of_successful_substitutes() {
+        let registries =
+            Fixture::with(&[("minecraft:item", "minecraft:logs", &["minecraft:oak_log"])]);
         for value in [
+            json!(null),
             json!({"nested": [null]}),
             json!(9223372036854775809_u64),
             json!(u64::MAX),
         ] {
-            let maps = DataMaps {
-                maps: BTreeMap::from([(
-                    "minecraft:item".to_owned(),
-                    HashMap::from([(
-                        "test:map".to_owned(),
-                        MapValues::Json(BTreeMap::from([("minecraft:stone".to_owned(), value)])),
-                    )]),
-                )]),
-                ..DataMaps::default()
-            };
-            assert_eq!(
-                maps.value("minecraft:item", "test:map", "minecraft:stone"),
-                Err(mod_api::DataMapError::Undecodable)
+            let layers = files(&[(
+                "data_maps/test:item/map",
+                &[
+                    json!({"values": {"minecraft:stick": 7, "minecraft:coal": 3}}),
+                    json!({
+                        "replace": true,
+                        "values": {"minecraft:oak_log": 4, "minecraft:stone": value.clone()},
+                        "remove": ["minecraft:coal"]
+                    }),
+                    json!({
+                        "replace": true,
+                        "values": {"#minecraft:logs": value}
+                    }),
+                    json!({"values": {"minecraft:birch_log": 6}}),
+                ],
+            )]);
+            let maps = DataMaps::load(
+                &[ty("test:map", "minecraft:item")],
+                &sunrise_world::loot::PackOverlay {
+                    files: &layers,
+                    ..sunrise_world::loot::PackOverlay::default()
+                },
+                &registries,
             );
             assert_eq!(
-                maps.value("minecraft:item", "test:map", "minecraft:air"),
+                maps.value("minecraft:item", "test:map", "minecraft:stick"),
+                Ok(Some(&Tag::Int(7)))
+            );
+            assert_eq!(
+                maps.value("minecraft:item", "test:map", "minecraft:coal"),
+                Ok(Some(&Tag::Int(3)))
+            );
+            assert_eq!(
+                maps.value("minecraft:item", "test:map", "minecraft:oak_log"),
                 Ok(None)
+            );
+            assert_eq!(
+                maps.value("minecraft:item", "test:map", "minecraft:stone"),
+                Ok(None)
+            );
+            assert_eq!(
+                maps.value("minecraft:item", "test:map", "minecraft:birch_log"),
+                Ok(Some(&Tag::Int(6)))
+            );
+            let expected = [
+                ("minecraft:birch_log".to_owned(), Tag::Int(6)),
+                ("minecraft:coal".to_owned(), Tag::Int(3)),
+                ("minecraft:stick".to_owned(), Tag::Int(7)),
+            ];
+            assert_eq!(
+                maps.entries("minecraft:item", "test:map"),
+                Ok(expected.as_slice())
             );
         }
     }
@@ -537,7 +467,7 @@ mod tests {
                 "neoforge:villager_compostables",
                 "minecraft:wheat_seeds"
             ),
-            Ok(Some(Tag::compound([(
+            Ok(Some(&Tag::compound([(
                 "can_villager_compost",
                 Tag::Byte(1)
             )])))
@@ -604,48 +534,63 @@ mod tests {
             .collect()
     }
 
-    fn load(files: &[(String, Vec<Vec<u8>>)]) -> DataMaps {
+    fn load(files: &[(String, Vec<Vec<u8>>)]) -> MergedDataMaps {
         let registries = Fixture::with(&[(
             "minecraft:item",
             "minecraft:logs",
             &["minecraft:oak_log", "minecraft:birch_log"],
         )]);
-        DataMaps::load(
+        load_json_maps(
             &[ty("mymod:fuel", "minecraft:item")],
             &sunrise_world::loot::PackOverlay {
                 files,
-                ..sunrise_world::loot::PackOverlay::NONE
+                ..sunrise_world::loot::PackOverlay::default()
             },
             &registries,
         )
     }
 
-    fn get<'a>(maps: &'a DataMaps, entry: &str) -> Option<&'a Value> {
-        let MapValues::Json(values) = &maps.maps["minecraft:item"]["mymod:fuel"] else {
-            panic!("JSON map");
-        };
-        values.get(entry)
+    fn get<'a>(maps: &'a MergedDataMaps, entry: &str) -> Option<&'a Value> {
+        maps["minecraft:item"]["mymod:fuel"].get(entry)
     }
 
     #[test]
     fn a_value_reads_as_nbt_and_a_map_no_mod_registered_is_refused() {
-        let f = files(&[(
-            "data_maps/mymod:item/fuel",
-            &[json!({"values": {
-                "minecraft:coal": 1600,
-                "minecraft:stick": {"burn": 3_000_000_000_i64}
-            }})],
-        )]);
-        let maps = load(&f);
+        let f = files(&[
+            (
+                "data_maps/mymod:item/fuel",
+                &[json!({"values": {
+                    "minecraft:coal": 1600,
+                    "minecraft:stick": {"burn": 3_000_000_000_i64}
+                }})],
+            ),
+            (
+                "data_maps/minecraft:item/fuel",
+                &[json!({"values": {
+                    "minecraft:coal": 800
+                }})],
+            ),
+        ]);
+        let maps = DataMaps::load(
+            &[
+                ty("mymod:fuel", "minecraft:item"),
+                ty("minecraft:fuel", "minecraft:item"),
+            ],
+            &sunrise_world::loot::PackOverlay {
+                files: &f,
+                ..sunrise_world::loot::PackOverlay::default()
+            },
+            &Fixture::default(),
+        );
         let value =
             |registry: &str, type_id: &str, entry: &str| maps.value(registry, type_id, entry);
         assert_eq!(
             value("minecraft:item", "mymod:fuel", "minecraft:coal"),
-            Ok(Some(Tag::Int(1600)))
+            Ok(Some(&Tag::Int(1600)))
         );
         assert_eq!(
             value("minecraft:item", "mymod:fuel", "minecraft:stick"),
-            Ok(Some(Tag::Compound(
+            Ok(Some(&Tag::Compound(
                 [("burn".into(), Tag::Long(3_000_000_000))]
                     .into_iter()
                     .collect()
@@ -654,6 +599,10 @@ mod tests {
         assert_eq!(
             value("minecraft:item", "mymod:fuel", "minecraft:stone"),
             Ok(None)
+        );
+        assert_eq!(
+            value("minecraft:item", "minecraft:fuel", "minecraft:coal"),
+            Ok(Some(&Tag::Int(800)))
         );
         assert_eq!(
             value("minecraft:block", "mymod:fuel", "minecraft:coal"),
@@ -692,8 +641,8 @@ mod tests {
         let f = files(&[(
             "data_maps/test:entity_type/weight",
             &[json!({"values": {
-                "minecraft:pig": 3,
-                "#minecraft:skeletons": 5,
+                "pig": 3,
+                "#skeletons": 5,
                 "minecraft:missing": 9
             }})],
         )]);
@@ -701,26 +650,31 @@ mod tests {
             &[ty("test:weight", "minecraft:entity_type")],
             &sunrise_world::loot::PackOverlay {
                 files: &f,
-                ..sunrise_world::loot::PackOverlay::NONE
+                ..sunrise_world::loot::PackOverlay::default()
             },
             &registries,
         );
         let value = |entry| maps.value("minecraft:entity_type", "test:weight", entry);
-        assert_eq!(value("minecraft:pig"), Ok(Some(Tag::Int(3))));
-        assert_eq!(value("minecraft:stray"), Ok(Some(Tag::Int(5))));
+        let pig = value("minecraft:pig").unwrap().unwrap();
+        assert_eq!(pig, &Tag::Int(3));
+        assert_eq!(value("minecraft:stray"), Ok(Some(&Tag::Int(5))));
         assert_eq!(value("minecraft:cow"), Ok(None));
         // An id the registry doesn't hold is skipped.
         assert_eq!(value("minecraft:missing"), Ok(None));
         // A tag member the registry doesn't hold is skipped with the plain ids.
         assert_eq!(value("minecraft:ghost"), Ok(None));
+        let entries = maps
+            .entries("minecraft:entity_type", "test:weight")
+            .unwrap();
         assert_eq!(
-            maps.entries("minecraft:entity_type", "test:weight"),
-            Ok(vec![
+            entries,
+            &[
                 ("minecraft:pig".to_owned(), Tag::Int(3)),
                 ("minecraft:skeleton".to_owned(), Tag::Int(5)),
                 ("minecraft:stray".to_owned(), Tag::Int(5)),
-            ])
+            ]
         );
+        assert!(std::ptr::eq(pig, &entries[0].1));
         assert_eq!(maps.registries(), ["minecraft:entity_type"]);
     }
 
@@ -772,13 +726,19 @@ mod tests {
                 "minecraft:stick": {"neoforge:conditions": [
                     {"type": "neoforge:mod_loaded", "modid": "absent"}], "value": 2},
                 "minecraft:planks": {"neoforge:conditions": [
-                    {"type": "neoforge:true"}], "value": 3}
+                    {"type": "neoforge:always"}], "value": 3},
+                "minecraft:coal_block": {"neoforge:conditions": [
+                    {"type": "neoforge:always"}], "neoforge:value": 9},
+                "minecraft:kelp": {"neoforge:conditions": [
+                    {"type": "neoforge:always"}], "burn": 2}
             }})],
         )]);
         let maps = load(&f);
         assert_eq!(get(&maps, "minecraft:coal"), Some(&json!(1)));
         assert_eq!(get(&maps, "minecraft:stick"), None);
         assert_eq!(get(&maps, "minecraft:planks"), Some(&json!(3)));
+        assert_eq!(get(&maps, "minecraft:coal_block"), Some(&json!(9)));
+        assert_eq!(get(&maps, "minecraft:kelp"), Some(&json!({"burn": 2})));
     }
 
     #[test]
@@ -801,6 +761,39 @@ mod tests {
             Some(&json!({"burn": 300}))
         );
         assert_eq!(get(&maps, "minecraft:stone"), None);
+    }
+
+    #[test]
+    fn a_bad_value_condition_does_not_replace_or_apply_any_values_in_its_layer() {
+        let layers = files(&[(
+            "data_maps/mymod:item/fuel",
+            &[
+                json!({"values":{"minecraft:stick":2,"minecraft:coal":3}}),
+                json!({"replace":true,"values":{"minecraft:oak_log":4,"minecraft:planks":{
+                "value":5,"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"minecraft:missing"}}]
+            }},"remove":["minecraft:coal"]}),
+                json!({"values":{"minecraft:birch_log":6}}),
+            ],
+        )]);
+        let maps = load(&layers);
+        assert_eq!(get(&maps, "minecraft:stick"), Some(&json!(2)));
+        assert_eq!(get(&maps, "minecraft:coal"), Some(&json!(3)));
+        assert_eq!(get(&maps, "minecraft:oak_log"), None);
+        assert_eq!(get(&maps, "minecraft:planks"), None);
+        assert_eq!(get(&maps, "minecraft:birch_log"), Some(&json!(6)));
+    }
+
+    #[test]
+    fn a_malformed_layer_envelope_preserves_earlier_values() {
+        let lower = json!({"values": {"minecraft:coal": 10}});
+        for invalid in [
+            json!({"replace": true, "values": {}, "remove": false}),
+            json!({"replace": "true", "values": {"minecraft:coal": 20}}),
+            json!({"values": {"minecraft:coal": 20}, "remove": ["minecraft:coal", {"key": false}]}),
+        ] {
+            let files = files(&[("data_maps/mymod:item/fuel", &[lower.clone(), invalid])]);
+            assert_eq!(get(&load(&files), "minecraft:coal"), Some(&json!(10)));
+        }
     }
 
     #[test]
@@ -871,48 +864,56 @@ mod tests {
             .push(json!({"nothing": true}).to_string().into_bytes());
         let maps = load(&f);
         assert_eq!(get(&maps, "minecraft:coal"), Some(&json!(1)));
-        let maps = DataMaps::load(
+        let mc_files = files(&[(
+            "data_maps/minecraft:item/fuel",
+            &[json!({"values": {"minecraft:coal": 2}})],
+        )]);
+        let maps = load_json_maps(
             &[
                 ty("minecraft:fuel", "minecraft:item"),
                 ty("mymod:x", "test:nowhere"),
                 ty("nonamespace", "minecraft:item"),
+                ty("Bad:Caps", "minecraft:item"),
+                ty("a/b:c", "minecraft:item"),
+                ty("..:x", "minecraft:item"),
                 ty("mymod:a", "minecraft:block"),
                 ty("mymod:a", "minecraft:block"),
             ],
-            &sunrise_world::loot::PackOverlay::NONE,
+            &sunrise_world::loot::PackOverlay {
+                files: &mc_files,
+                ..sunrise_world::loot::PackOverlay::default()
+            },
             &Fixture::default(),
         );
-        // Only the one good type, registered once, empty.
-        assert_eq!(maps.maps.len(), 1);
-        let blocks = &maps.maps["minecraft:block"];
+        // Both valid types are accepted (minecraft:fuel on item, mymod:a once on block);
+        // unknown registries and malformed identifiers are left out.
+        assert_eq!(maps.len(), 2);
+        let items = &maps["minecraft:item"];
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items["minecraft:fuel"].get("minecraft:coal"),
+            Some(&json!(2))
+        );
+        let blocks = &maps["minecraft:block"];
         assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks["mymod:a"], MapValues::Json(values) if values.is_empty()));
+        assert!(blocks["mymod:a"].is_empty());
     }
 
     #[test]
-    fn conditional_layers_are_skipped_before_replace_and_remove() {
+    fn top_level_conditions_do_not_suppress_map_layers() {
         let f = files(&[(
             "data_maps/mymod:item/fuel",
             &[
                 json!({"values":{"minecraft:coal":1}}),
-                json!({"neoforge:conditions":[{"type":"unsupported"}],"replace":true}),
-                json!({"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"provider"}],"remove":["minecraft:coal"],"values":{"minecraft:stick":2}}),
+                json!({"neoforge:conditions":[{"type":"neoforge:never"}],"replace":true,"values":{
+                    "minecraft:stick":2,
+                    "minecraft:coal":{"neoforge:conditions":[{"type":"neoforge:never"}],"value":3}
+                }}),
             ],
         )]);
-        let off = load(&f);
-        assert_eq!(get(&off, "minecraft:coal"), Some(&json!(1)));
-        assert!(get(&off, "minecraft:stick").is_none());
-        let enabled = sunrise_world::conditions::LoadConditions::new(["provider"]);
-        let on = DataMaps::load(
-            &[ty("mymod:fuel", "minecraft:item")],
-            &sunrise_world::loot::PackOverlay {
-                files: &f,
-                conditions: &enabled,
-            },
-            &Fixture::default(),
-        );
-        assert!(get(&on, "minecraft:coal").is_none());
-        assert_eq!(get(&on, "minecraft:stick"), Some(&json!(2)));
+        let maps = load(&f);
+        assert_eq!(get(&maps, "minecraft:stick"), Some(&json!(2)));
+        assert!(get(&maps, "minecraft:coal").is_none());
     }
 
     #[test]
@@ -923,17 +924,15 @@ mod tests {
             "data_maps/mymod:block/hardness",
             &[json!({"values": {"#minecraft:logs": 2}})],
         )]);
-        let maps = DataMaps::load(
+        let maps = load_json_maps(
             &[ty("mymod:hardness", "minecraft:block")],
             &sunrise_world::loot::PackOverlay {
                 files: &f,
-                ..sunrise_world::loot::PackOverlay::NONE
+                ..sunrise_world::loot::PackOverlay::default()
             },
             &registries,
         );
-        let MapValues::Json(map) = &maps.maps["minecraft:block"]["mymod:hardness"] else {
-            panic!("JSON map");
-        };
+        let map = &maps["minecraft:block"]["mymod:hardness"];
         assert_eq!(map.get("minecraft:oak_log"), Some(&json!(2)));
     }
 }

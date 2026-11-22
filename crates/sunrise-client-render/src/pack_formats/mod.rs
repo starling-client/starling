@@ -24,6 +24,10 @@ impl PackFormats for Formats {
         Some(sunrise_optifine::emissive::suffix(root))
     }
 
+    fn connected(&self, root: &ResourceSource) -> Vec<sunrise_connected::Rule> {
+        sunrise_optifine::ctm::load_engine(root)
+    }
+
     fn custom_sky(
         &self,
         root: &crate::resource_source::ResourceSource,

@@ -6,17 +6,19 @@ use super::Game;
 use sunrise_client::actions::Action;
 use sunrise_client::{
     blocks::Fluid,
+    first_person::Hand,
     hud::HudBatch,
-    items::ItemStack,
+    items::{EntityTypeTags, ItemStack},
     mobs::{Mob, MobEvent, Species, Who, equine},
     motion::{MotionWorld, PlayerMotion},
     pose::{Dimensions, Pose},
     sprint::Keys,
 };
 use sunrise_core::{
-    geometry::{Aabb, Vec3, VoxelShape, trig},
+    geometry::{Aabb, Vec3, VoxelShape},
     random::RandomSource,
 };
+use sunrise_world::living_air::escape_vector;
 
 pub(super) fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
     let item = match species {
@@ -27,20 +29,6 @@ pub(super) fn steering_item(species: Species, main: Option<&str>, offhand: Optio
     main == Some(item) || offhand == Some(item)
 }
 
-/// `passengerAttachments` minus the player's 0.6 vehicle attachment.
-fn seat(s: Species) -> f64 {
-    let attach = match s {
-        Species::Pig => 0.86875,
-        Species::Strider => 1.7,
-        Species::Horse => 1.44375,
-        Species::Llama | Species::TraderLlama => 1.37,
-        Species::Donkey => 1.1125,
-        Species::Mule => 1.2125,
-        Species::Nautilus | Species::ZombieNautilus => 1.1375,
-        _ => 1.31875,
-    };
-    attach - 0.6
-}
 #[derive(Default)]
 pub(super) struct MountState {
     /// `jumpRidingTicks`: -10 cooling down after a jump, >= 0 charging.
@@ -101,22 +89,28 @@ fn eating(species: Species, item: &str) -> Option<(f32, i32, u8, bool)> {
 }
 /// `EntityTypeTags.DISMOUNTS_UNDERWATER` (`Entity.dismountsUnderwater`): the mounts that throw their
 /// riders off when the rider's eyes are in water.
-pub(super) fn dismounts_underwater(species: Species) -> bool {
-    matches!(
-        species,
-        Species::Camel
-            | Species::Chicken
-            | Species::Donkey
-            | Species::HappyGhast
-            | Species::Horse
-            | Species::Llama
-            | Species::Mule
-            | Species::Pig
-            | Species::Ravager
-            | Species::Spider
-            | Species::Strider
-            | Species::TraderLlama
-            | Species::ZombieHorse
+fn dismounts_underwater(tags: &EntityTypeTags, mount: &Mob) -> bool {
+    tags.has_bit(
+        mount.kind.flags.entity_tag_slot,
+        EntityTypeTags::DISMOUNTS_UNDERWATER,
+    )
+}
+
+/// `EntityAttachments.transformPoint`: `Vec3.yRot(-yRot * (float) (Math.PI / 180.0))`,
+/// an attachment point turned with the vehicle.
+fn turned(a: [f64; 3], yaw: f32) -> Vec3 {
+    Vec3::new(a[0], a[1], a[2]).rotate_y(-yaw * (std::f64::consts::PI / 180.0) as f32)
+}
+
+/// `Entity.getPassengerRidingPosition` for a player on `m`: the vehicle's
+/// attachment point, turned with it, less the player's own vehicle attachment
+/// (`Avatar.DEFAULT_VEHICLE_ATTACHMENT`, a `Vec3(0.0, 0.6, 0.0)` of doubles).
+fn seat_of(m: &sunrise_client::mobs::Mob, attachment: [f64; 3]) -> Vec3 {
+    let at = turned(attachment, m.yaw);
+    Vec3::new(
+        m.position.x + at.x,
+        m.position.y + at.y - 0.6,
+        m.position.z + at.z,
     )
 }
 
@@ -163,7 +157,7 @@ impl Game<'_> {
             // second rider and a horse or nautilus opens its inventory.
             return matches!(m.species(), Species::Pig | Species::Strider).then_some(false);
         }
-        if self.keys.held(Action::Sneak) {
+        if self.held_mapping(Action::Sneak) {
             return None;
         }
         // attemptToShearEquipment takes the body slot before the saddle: horse
@@ -200,21 +194,22 @@ impl Game<'_> {
         }
         Some(true)
     }
-    /// `Pig` / `Strider.mobInteract`: saddle an adult, or ride a saddled one.
+    /// `Pig.mobInteract` / `Strider.mobInteract`: saddle an adult, or ride a saddled mount with no passenger.
     fn interact_steerable(&mut self, index: usize, item: &str) -> bool {
         let held = self.inventory[self.selected].clone();
-        let m = &mut self.mobs[index];
+        let sneaking = self.held_mapping(Action::Sneak);
+        let m = &self.mobs[index];
         if m.is_baby() || !m.alive() || Some(m.id) == self.riding {
             return false;
         }
         let at = m.center();
         if item == "minecraft:saddle" && !m.extra.saddled() {
-            m.set_saddle(held.map(|s| ItemStack { count: 1, ..s }));
             let sound = if m.species() == Species::Strider {
                 "minecraft:entity.strider.saddle"
             } else {
                 "minecraft:entity.pig.saddle"
             };
+            self.mobs[index].set_saddle(held.map(|s| ItemStack { count: 1, ..s }));
             self.audio.play(sound, Some(at), 1.0, 1.0);
             self.consume_held();
             let id = self.mobs[index].id;
@@ -227,7 +222,7 @@ impl Game<'_> {
         }
         // Pig.mobInteract: held food goes to Animal.mobInteract, not a ride.
         let food = m.kind.food.iter().any(|f| f.as_str() == item);
-        if !m.extra.saddled() || food || self.keys.held(Action::Sneak) {
+        if !m.extra.saddled() || food || sneaking || self.has_seated_passengers(m.id) {
             return false;
         }
         // `Strider.canAddPassenger`: a strider whose eyes are in lava has no
@@ -255,20 +250,27 @@ impl Game<'_> {
         if self.mobs[i].species() != species || !equine::boost(&mut self.mobs[i]) {
             return false;
         }
-        if let Some(stack) = self.inventory[self.selected].clone() {
+        let slot = self.held_slot();
+        let hand = self.hand;
+        if let Some(stack) = self.stack_in(slot).cloned() {
             let (updated, broken) = self.damage_stack(&stack, wear, true);
-            if self.inventory[self.selected].as_ref() == Some(&stack) {
-                self.inventory[self.selected] = updated;
+            if self.stack_in(slot) == Some(&stack) {
+                *self.stack_in_mut(slot) = updated;
                 if let Some(broken) = broken {
-                    self.player_equipment_broke(
-                        sunrise_core::equipment_slot::EquipmentSlot::MainHand,
-                        &broken,
-                    );
+                    use sunrise_core::equipment_slot::EquipmentSlot;
+                    let equipment = match hand {
+                        Hand::Main => EquipmentSlot::MainHand,
+                        Hand::Off => EquipmentSlot::OffHand,
+                    };
+                    self.player_equipment_broke(equipment, &broken);
                     self.award_stat("broken", &broken.item, 1);
+                    self.player_item_destroyed(&stack, Some(hand));
                     // hurtAndConvertOnBreak keeps the broken stick's components.
-                    let mut rod = stack.transmute("minecraft:fishing_rod", 1);
-                    rod.damage = 0;
-                    self.inventory[self.selected] = Some(rod);
+                    if self.stack_in(slot).is_none() {
+                        let mut rod = stack.transmute("minecraft:fishing_rod", 1);
+                        rod.damage = 0;
+                        *self.stack_in_mut(slot) = Some(rod);
+                    }
                 }
             }
         }
@@ -280,12 +282,13 @@ impl Game<'_> {
         let held = self.held().cloned();
         let m = &self.mobs[index];
         let species = m.species();
+        // Pigs and striders check occupancy only for boarding, not for saddling.
+        if matches!(species, Species::Pig | Species::Strider) {
+            return self.interact_steerable(index, item);
+        }
         // A server player rides it already (`isVehicle`: no seat, no feeding).
         if self.ridden_by_guest(m.id) {
             return false;
-        }
-        if matches!(species, Species::Pig | Species::Strider) {
-            return self.interact_steerable(index, item);
         }
         if sunrise_client::mobs::llama::is_llama(species) {
             return self.interact_llama(index, item);
@@ -315,8 +318,8 @@ impl Game<'_> {
         if species == Species::SkeletonHorse && !m.extra.tame {
             return false;
         }
-        let sneaking =
-            self.keys.held(Action::Sneak) || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
+        let sneaking = self.held_mapping(Action::Sneak)
+            || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
         // Horse / ZombieHorse.mobInteract: food is fed, and anything else in
         // hand makes an untamed one mad instead of seating the player.
         let dandelion = [self.held(), self.offhand.as_ref()]
@@ -375,16 +378,41 @@ impl Game<'_> {
             && !m.extra.chested
         {
             m.extra.chested = true;
-            Some("minecraft:entity.donkey.chest")
+            // AbstractChestedHorse.playChestEquipsSound, which Mule overrides
+            // with its own chest sound.
+            Some(match species {
+                Species::Mule => "minecraft:entity.mule.chest",
+                _ => "minecraft:entity.donkey.chest",
+            })
         } else {
             None
         };
         if let Some(sound) = sound {
-            let pitch =
-                (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
             let chest = item == "minecraft:chest";
-            self.audio
-                .play(sound, Some(at), if chest { 0.5 } else { 1.0 }, pitch);
+            let m = &mut self.mobs[index];
+            let silent = m.silent;
+            // `LivingEntity.onEquipItem`: a saddle's or armour's equip sound plays
+            // at the mount's feet at pitch `1.0F`, seeded with the mount's own
+            // random's `nextLong`. `AbstractChestedHorse.playChestEquipsSound`
+            // pitches a chest's sound from two floats of that same random, which
+            // it draws even while silent, at volume 1.0.
+            let pitch = if chest {
+                (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0
+            } else {
+                1.0
+            };
+            let seed = if chest || silent {
+                None
+            } else {
+                Some(m.random.next_long())
+            };
+            let feet = [m.position.x, m.position.y, m.position.z];
+            if !silent {
+                match seed {
+                    Some(seed) => self.audio.play_seeded(sound, Some(feet), 1.0, pitch, seed),
+                    None => self.audio.play(sound, Some(feet), 1.0, pitch),
+                }
+            }
             self.consume_held();
             if !chest {
                 let id = self.mobs[index].id;
@@ -396,7 +424,8 @@ impl Game<'_> {
                 .insert((at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4));
             return true;
         }
-        // doPlayerRide
+        // doPlayerRide: `AbstractHorse.doPlayerRide` turns the rider to the
+        // horse's yaw before it seats them.
         let id = self.mobs[index].id;
         if !self.native_may_board(id) {
             return true;
@@ -544,11 +573,12 @@ impl Game<'_> {
         };
         // `Player.rideTick`: a sneaking rider gets off (`wantsToStopRiding`), and so does one on a
         // dead mount. `LivingEntity.baseTick`: so does a rider whose eyes are in water on a mount
-        // of the `dismounts_underwater` tag (a server's player too: `leave_guest` tells their
+        // of the `dismounts_underwater` tag (a server's player too: the put-back at the end of `guest_turn` tells their
         // client). When `entity_mount` keeps it on, the mount still reads this tick's input.
         let i = if keys.shift
             || !self.mobs[i].alive()
-            || (dismounts_underwater(self.mobs[i].species()) && self.rider_eyes_in_water())
+            || (dismounts_underwater(&self.items().entity_type_tags, &self.mobs[i])
+                && self.rider_eyes_in_water())
         {
             self.dismount_mount();
             let Some(i) = self.mount_index().filter(|&i| self.mobs[i].alive()) else {
@@ -582,6 +612,7 @@ impl Game<'_> {
                 self.audio.play(&sound, Some(at), 0.4, 1.0);
             }
         }
+        let sprint = keys.sprint || self.held_mapping(Action::Sprint);
         let m = &mut self.mobs[i];
         let pending = m.rider.map_or(0.0, |r| r.jump);
         m.rider = Some(equine::Rider {
@@ -591,7 +622,7 @@ impl Game<'_> {
             pitch: self.pitch,
             jump: if jump > 0.0 { jump } else { pending },
             steer,
-            sprint: keys.sprint || self.keys.held(Action::Sprint),
+            sprint,
             jumping: keys.jump,
             sneak: keys.shift,
             // A server's player (a LAN guest, single player's window) drives
@@ -604,6 +635,7 @@ impl Game<'_> {
     /// zombie on a chicken): with their eyes in water they get off it.
     pub(super) fn dismount_underwater_mob_riders(&mut self) {
         let blocked = self.mobs_below_off_level();
+        let tags = &self.items().entity_type_tags;
         let swimmers: Vec<u32> = self
             .mobs
             .iter()
@@ -611,12 +643,20 @@ impl Game<'_> {
             .filter_map(|m| {
                 let mount = m.extra.mount?;
                 let under = self.mobs.iter().find(|v| v.id == mount)?;
-                dismounts_underwater(under.species()).then_some(m.id)
+                dismounts_underwater(tags, under).then_some(m.id)
             })
             .collect();
         for rider in swimmers {
             self.dismount_mob(rider);
         }
+    }
+    /// This player's index in `vehicle`'s `getPassengers`, 0 when it is not listed.
+    fn own_passenger_index(&self, vehicle: u32) -> usize {
+        let own = self.riding_player().map(|(id, _)| id);
+        self.seated_passengers(vehicle)
+            .iter()
+            .position(|&(_, id, player)| player && Some(id) == own)
+            .unwrap_or(0)
     }
     /// `positionRider`: the player sits on the mount after it moves.
     pub(super) fn position_rider(&mut self) {
@@ -624,60 +664,32 @@ impl Game<'_> {
             return;
         };
         let m = &self.mobs[i];
-        let mut at = Vec3::new(m.position.x, m.position.y + seat(m.species()), m.position.z);
-        if &*m.kind.id == "minecraft:player" || &*m.kind.id == "minecraft:mannequin" {
-            // Avatar attachments follow pose and minecraft:scale, just as for
-            // remote avatars riding other avatars. Do not guess a standing height.
-            at = sunrise_client::mobs::riders::seat(
-                sunrise_client::mobs::riders::passenger_attachment(m),
-                f64::from(0.6_f32),
-                m.position,
-                m.yaw,
-            );
-        } else if sunrise_client::mobs::camel::is_camel(m.species()) {
+        // `Entity.getPassengerRidingPosition`: the vehicle type's own passenger
+        // attachment (`EntityAttachments`, `getClamped(PASSENGER, 0, yRot)`),
+        // turned with the vehicle, less the player's own vehicle attachment
+        // (`Avatar.DEFAULT_VEHICLE_ATTACHMENT`).
+        let mut at = if sunrise_client::mobs::camel::is_camel(m.species()) {
             // Camel.getPassengerAttachmentPoint: the driver half a block
             // forward, at the body anchor (lower while sitting), turned with
-            // the camel.
-            let a = sunrise_client::mobs::camel::passenger_attachment(m);
-            let turned = Vec3::new(a[0], a[1], a[2])
-                .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
-            at = Vec3::new(
-                m.position.x + turned.x,
-                m.position.y + turned.y - 0.6,
-                m.position.z + turned.z,
-            );
-        }
+            // the camel. Its point already carries the camel's own scale.
+            seat_of(m, sunrise_client::mobs::camel::passenger_attachment(m))
+        } else {
+            seat_of(m, sunrise_client::mobs::riders::type_attachment(m))
+        };
         if m.species() == Species::HappyGhast {
-            // The attachment of the player's seat on the harnessed back.
-            let seat = self.remote.as_ref().map_or(0, |r| r.passenger_index);
-            let a = sunrise_client::mobs::riders::happy_ghast_attachment(seat);
-            let turned = Vec3::new(a[0], a[1], a[2])
-                .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
-            at = Vec3::new(
-                m.position.x + turned.x,
-                m.position.y + turned.y - 0.6,
-                m.position.z + turned.z,
-            );
-        }
-        if sunrise_client::mobs::llama::is_llama(m.species()) {
-            // The passenger attachment (0, 1.37, -0.3), half of it for a baby.
-            let (y, z) = if m.is_baby() {
-                (0.81, -0.15)
-            } else {
-                (1.37, -0.3)
-            };
-            let yaw = f64::from(m.yaw.to_radians());
-            at = Vec3::new(
-                m.position.x - z * yaw.sin(),
-                m.position.y + y - 0.6,
-                m.position.z + z * yaw.cos(),
+            // The attachment of the player's place in `getPassengers`, in the ghast's own dimensions.
+            let seat = self
+                .remote
+                .as_ref()
+                .map_or_else(|| self.own_passenger_index(m.id), |r| r.passenger_index);
+            at = seat_of(
+                m,
+                sunrise_client::mobs::riders::passenger_attachment_at(m, seat),
             );
         }
         // AbstractHorse.getPassengerAttachmentPoint: the rider slides back and
         // up while the horse rears.
-        let rear = equine::rear_offset(m);
-        let rear = Vec3::new(rear[0], rear[1], rear[2])
-            .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
+        let rear = turned(equine::rear_offset(m), m.yaw);
         at = Vec3::new(at.x + rear.x, at.y + rear.y, at.z + rear.z);
         // The tick a rider takes its seat is a teleport (`Entity.moveTo`), which
         // sets the old position too: the camera must not sweep from where the
@@ -692,7 +704,8 @@ impl Game<'_> {
             p.fall_distance = 0.0;
         }
     }
-    /// `removePassenger` + `getDismountLocationForPassenger`: beside the mount.
+    /// `removePassenger` + `getDismountLocationForPassenger`: where the mount
+    /// lets the rider out.
     pub(super) fn dismount_mount(&mut self) {
         let Some(id) = self.riding else {
             return;
@@ -740,6 +753,7 @@ impl Game<'_> {
             yaw,
             width: p.dimensions.width,
             poses: rider_poses(p),
+            main_arm_left: self.settings.main_hand_left,
         };
         dismount_location(mount, &rider, &GameDismountWorld(self))
     }
@@ -845,7 +859,7 @@ impl Game<'_> {
                     self.dismount_mount();
                 } else {
                     // ejectPassengers: a server's player gets off too
-                    // (leave_guest tells their client).
+                    // (the put-back at the end of `guest_turn` tells their client).
                     let rider = self.lan.as_ref().and_then(|h| {
                         h.hub
                             .guests
@@ -910,38 +924,68 @@ impl Game<'_> {
     /// player, the server players and the mob on its back each get it, with
     /// their own safe distance and armour.
     pub(super) fn fall_to_passengers(&mut self, mob: u32, distance: f64, modifier: f32) {
-        if self.riding == Some(mob) {
-            self.rider_fall_damage(distance, modifier);
-        }
-        let guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |h| {
-            h.hub
-                .guests
-                .iter()
-                .filter(|g| g.vehicle == Some(mob) && Some(g.conn) != self.lan_acting)
-                .map(|g| g.conn)
-                .collect()
-        });
-        for conn in guests {
-            self.guest_hit_by(conn, |g| g.rider_fall_damage(distance, modifier));
-        }
-        let riders: Vec<u32> = self
-            .mobs
-            .iter()
-            .filter(|m| m.extra.mount == Some(mob))
-            .map(|m| m.id)
-            .collect();
-        for rider in riders {
-            if let Some(r) = self.mobs.iter_mut().find(|m| m.id == rider) {
-                let mut events = Vec::new();
-                r.cause_fall_damage_from(
-                    &self.loop_context,
-                    crate::game::entity::damage_level_of!(self),
-                    distance,
-                    modifier,
-                    &mut events,
-                );
-                let _ = self.handle_mob_events(events);
+        let seats = self.seated_passengers(mob);
+        for (_, id, player) in seats {
+            if player {
+                if self.riding == Some(mob)
+                    && self
+                        .player
+                        .as_ref()
+                        .is_some_and(|p| p.entity_id as u32 == id)
+                {
+                    self.rider_fall_damage(distance, modifier);
+                } else if let Some(conn) = self.lan.as_ref().and_then(|host| {
+                    host.hub
+                        .guests
+                        .iter()
+                        .find(|g| g.entity_id as u32 == id && g.vehicle == Some(mob))
+                        .map(|g| g.conn)
+                }) {
+                    self.guest_hit_by(conn, |g| g.rider_fall_damage(distance, modifier));
+                }
+                continue;
             }
+            let Some(i) = self.mob_index.find(&self.mobs, id) else {
+                continue;
+            };
+            let join = self.mobs[i].join;
+            let fall = sunrise_client::mobs::living::PassengerFall { distance, modifier };
+            let mut resume = None;
+            let mut events = Vec::new();
+            while let Some(i) = self.mob_index.find(&self.mobs, id) {
+                let rider = &mut self.mobs[i];
+                if rider.join != join
+                    || rider.removed
+                    || (resume.is_none() && rider.extra.mount != Some(mob))
+                {
+                    break;
+                }
+                let level = crate::game::entity::damage_level_of!(
+                    self,
+                    &sunrise_client::health::NO_ATTACK,
+                    no_push,
+                    None
+                );
+                let pause = match resume.take() {
+                    None => rider.passenger_fall_until_pause(
+                        &self.loop_context,
+                        level,
+                        &mut events,
+                        fall,
+                    ),
+                    Some(pause) => rider.resume_passenger_fall(level, &mut events, pause),
+                };
+                let Some(pause) = pause else {
+                    break;
+                };
+                if let Some(passengers) = pause.passengers() {
+                    self.fall_to_passengers(id, passengers.distance, passengers.modifier);
+                } else {
+                    self.finish_mob_damage_at(i);
+                }
+                resume = Some(pause);
+            }
+            let _ = self.handle_mob_events(events);
         }
     }
     /// The player this game runs (the local one, or the server player it acts
@@ -953,7 +997,9 @@ impl Game<'_> {
         let Some(player) = self.player.as_mut() else {
             return;
         };
+        let side = game_side!(self);
         let _ = MotionWorld {
+            side: &side,
             entities: &[],
             player,
             scene: &mut self.world,
@@ -967,6 +1013,9 @@ impl Game<'_> {
             block_registries: Some(&self.pack.block_registries),
         }
         .cause_mount_fall(distance, modifier);
+        if self.lan_acting.is_some() {
+            self.finish_guest_damage();
+        }
     }
     /// `PlayerRideableJumping`: horses, camels and nautili (the dash).
     fn jumps(species: Species) -> bool {
@@ -981,22 +1030,6 @@ impl Game<'_> {
     /// `willPrioritizeJumpInfo`: charging a jump or recharging.
     pub(super) fn mount_jumping(&self) -> bool {
         self.mount.jump_scale > 0.0 || self.mount.jump_ticks < 0
-    }
-    /// `Hud.extractVehicleHealth` (a native mod's `minecraft:vehicle_health`
-    /// layer, only while riding a mount). Returns the mount's heart count
-    /// (`getVehicleMaxHearts`).
-    pub(super) fn draw_mount_hud(&mut self, batch: &mut HudBatch, w: i32, h: i32) -> i32 {
-        let Some(i) = self.mount_index() else {
-            return 0;
-        };
-        let m = &self.mobs[i];
-        let hearts = sunrise_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
-        let draws = sunrise_client::hud_layout::vehicle_health(w, h, hearts, m.health);
-        self.keep_status_rows(&draws, w, h);
-        self.gui_layer("minecraft:vehicle_health", batch, |g, batch| {
-            sunrise_client::hud_layout::paint(batch, &g.gui.atlas, &draws);
-        });
-        hearts
     }
     /// The jump bar when it is the contextual bar.
     pub(super) fn draw_jump_bar(&self, batch: &mut HudBatch, w: i32, h: i32) {
@@ -1017,13 +1050,12 @@ impl Game<'_> {
 }
 
 /// The mount a rider gets off: its kind, where it stands, its box,
-/// `getBbWidth`, `getBbHeight` and body yaw.
+/// `getBbWidth` and body yaw.
 struct Mount {
     species: Species,
     position: Vec3,
     bounds: Aabb,
     width: f32,
-    height: f32,
     yaw: f32,
 }
 impl Mount {
@@ -1033,7 +1065,6 @@ impl Mount {
             position: m.position,
             bounds: m.bounds(),
             width: m.width(),
-            height: m.height(),
             yaw: m.yaw,
         }
     }
@@ -1052,6 +1083,7 @@ struct Rider {
     yaw: f32,
     width: f32,
     poses: Vec<(Pose, Dimensions)>,
+    main_arm_left: bool,
 }
 /// `Player.getDismountPoses`: standing, crouching, then crawling.
 const DISMOUNT_POSES: [Pose; 3] = [Pose::Standing, Pose::Crouching, Pose::Swimming];
@@ -1067,8 +1099,6 @@ fn rider_poses(p: &PlayerMotion) -> Vec<(Pose, Dimensions)> {
 }
 /// The level queries a dismount makes.
 trait DismountWorld {
-    /// A full collision block (the generic rule's test).
-    fn full_collision(&self, p: [i32; 3]) -> bool;
     /// `getFluidState(pos).is(FluidTags.LAVA)`.
     fn lava(&self, p: [i32; 3]) -> bool;
     /// `BlockGetter.getBlockFloorHeight(pos)`.
@@ -1078,13 +1108,6 @@ trait DismountWorld {
 }
 struct GameDismountWorld<'a, 'g>(&'a Game<'g>);
 impl DismountWorld for GameDismountWorld<'_, '_> {
-    fn full_collision(&self, p: [i32; 3]) -> bool {
-        let g = self.0;
-        g.res
-            .facts()
-            .get(g.world.block(p[0], p[1], p[2]))
-            .full_collision
-    }
     fn lava(&self, p: [i32; 3]) -> bool {
         let g = self.0;
         g.res.facts().get(g.world.block(p[0], p[1], p[2])).fluid == Fluid::Lava
@@ -1100,7 +1123,8 @@ impl DismountWorld for GameDismountWorld<'_, '_> {
         self.0.can_dismount_to(bounds)
     }
 }
-/// `getDismountLocationForPassenger`, and the pose the rider takes there.
+/// `getDismountLocationForPassenger`, and the pose the rider takes there: each
+/// vehicle class's own rule, and `Entity`'s on top of the mount for the rest.
 fn dismount_location(
     mount: &Mount,
     rider: &Rider,
@@ -1109,43 +1133,134 @@ fn dismount_location(
     if mount.species == Species::Strider {
         return strider_dismount_location(mount, rider, world);
     }
-    // Beside the mount, else on top of it.
-    let yaw = mount.yaw.to_radians();
-    let side = Vec3::new(f64::from(yaw.cos()), 0.0, f64::from(yaw.sin()));
-    let w = f64::from(mount.width) / 2.0 + 0.4;
-    let base = mount.position;
-    let candidates = [
-        Vec3::new(base.x - side.x * w, base.y, base.z - side.z * w),
-        Vec3::new(base.x + side.x * w, base.y, base.z + side.z * w),
-        Vec3::new(base.x, base.y + f64::from(mount.height), base.z),
-    ];
-    let spot = candidates
-        .into_iter()
-        .find(|c| {
-            let f = |dy: i32| {
-                world.full_collision([
-                    c.x.floor() as i32,
-                    c.y.floor() as i32 + dy,
-                    c.z.floor() as i32,
-                ])
-            };
-            !f(0) && !f(1)
-        })
-        .unwrap_or(candidates[2]);
-    (spot, None)
+    // `Camel` is an `AbstractHorse`, so the horse rule comes first.
+    if equine::is_equine(mount.species) {
+        return horse_dismount_location(mount, rider, world);
+    }
+    if sunrise_client::mobs::drops::is_animal(mount.species) {
+        return animal_dismount_location(mount, rider, world);
+    }
+    // Entity.getDismountLocationForPassenger: on top of the vehicle's box.
+    (
+        Vec3::new(
+            mount.position.x,
+            mount.bounds.max_position().y,
+            mount.position.z,
+        ),
+        None,
+    )
 }
-/// `Entity.getCollisionHorizontalEscapeVector`: out of the vehicle's box
-/// along `yaw`, to the edge of the square it spans.
-fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) -> Vec3 {
-    // 1.0E-5F: a float literal widened to double.
-    let distance = (vehicle_width + passenger_width + f64::from(1.0e-5_f32)) / 2.0;
-    let radians = f64::from(yaw * 0.017_453_292);
-    let (sin, cos) = (-trig::sin(radians), trig::cos(radians));
-    let max = f64::from(sin.abs().max(cos.abs()));
-    Vec3::new(
-        f64::from(sin) * distance / max,
-        0.0,
-        f64::from(cos) * distance / max,
+/// `AbstractHorse.getDismountLocationForPassenger`: out of the horse's box to
+/// the main hand's side first, then the other, then its own position.
+fn horse_dismount_location(
+    mount: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+) -> (Vec3, Option<Pose>) {
+    // HumanoidArm: the main hand is the right one unless the player set it.
+    let main = if rider.main_arm_left { -90.0 } else { 90.0 };
+    for turn in [main, -main] {
+        let direction = escape_vector(
+            f64::from(mount.width),
+            f64::from(rider.width),
+            mount.yaw + turn,
+        );
+        if let Some(found) = horse_side(mount, rider, world, direction) {
+            return found;
+        }
+    }
+    (mount.position, None)
+}
+/// `AbstractHorse.getDismountLocationInDirection`: from the horse's feet up to
+/// 0.75 above its box, in each of the rider's dismount poses.
+fn horse_side(
+    mount: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+    direction: Vec3,
+) -> Option<(Vec3, Option<Pose>)> {
+    let (x, z) = (
+        mount.position.x + direction.x,
+        mount.position.z + direction.z,
+    );
+    let bottom = mount.bounds.min_position().y.floor() as i32;
+    let limit = mount.bounds.max_position().y + 0.75;
+    for (pose, dimensions) in &rider.poses {
+        let mut y = bottom;
+        loop {
+            let floor = world.floor_height([x.floor() as i32, y, z.floor() as i32]);
+            if f64::from(y) + floor > limit {
+                break;
+            }
+            // DismountHelper.isBlockFloorValid.
+            if !floor.is_infinite() && floor < 1.0 {
+                let at = Vec3::new(x, f64::from(y) + floor, z);
+                if world.can_dismount_to(dimensions.bounds(at)) {
+                    return Some((at, Some(*pose)));
+                }
+            }
+            y += 1;
+            if f64::from(y) >= limit {
+                break;
+            }
+        }
+    }
+    None
+}
+/// `Animal.getDismountLocationForPassenger`: the eight blocks around the
+/// mount, its own facing's right side first, at the mount's own height.
+fn animal_dismount_location(
+    mount: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+) -> (Vec3, Option<Pose>) {
+    // Entity.getMotionDirection: Direction.fromYRot, in doubles.
+    let turn = (f64::from(mount.yaw) / 90.0 + 0.5).floor() as i32;
+    let (fx, fz) = [(0, 1), (-1, 0), (0, -1), (1, 0)][(turn & 3) as usize];
+    // Direction.getClockWise.
+    let (rx, rz) = (-fz, fx);
+    // DismountHelper.offsetsForDirection.
+    let offsets = [
+        (rx, rz),
+        (-rx, -rz),
+        (rx - fx, rz - fz),
+        (-rx - fx, -rz - fz),
+        (fx + rx, fz + rz),
+        (fx - rx, fz - rz),
+        (-fx, -fz),
+        (fx, fz),
+    ];
+    let (bx, by, bz) = (
+        mount.position.x.floor() as i32,
+        mount.position.y.floor() as i32,
+        mount.position.z.floor() as i32,
+    );
+    for (pose, dimensions) in &rider.poses {
+        for (dx, dz) in offsets {
+            let p = [bx + dx, by, bz + dz];
+            let floor = world.floor_height(p);
+            if floor.is_infinite() || floor >= 1.0 {
+                continue;
+            }
+            // Vec3.upFromBottomCenterOf.
+            let at = Vec3::new(
+                f64::from(p[0]) + 0.5,
+                f64::from(p[1]) + floor,
+                f64::from(p[2]) + 0.5,
+            );
+            if world.can_dismount_to(dimensions.bounds(at)) {
+                return (at, Some(*pose));
+            }
+        }
+    }
+    // `super.getDismountLocationForPassenger`.
+    (
+        Vec3::new(
+            mount.position.x,
+            mount.bounds.max_position().y,
+            mount.position.z,
+        ),
+        None,
     )
 }
 /// `Strider.getDismountLocationForPassenger`: the columns along the rider's
@@ -1294,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn steering_stick_break_converts_to_fishing_rod() {
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
@@ -1332,32 +1447,6 @@ mod tests {
             assert_eq!(rod.damage, 0, "the rod starts whole");
             assert_eq!(rod.custom_name().as_deref(), Some("Old Nag"));
         });
-    }
-
-    #[test]
-    fn the_mounts_that_throw_a_swimmer_off_are_the_dismounts_underwater_tag() {
-        // data/minecraft/tags/entity_type/dismounts_underwater.json of 26.3.
-        for species in [
-            Species::Camel,
-            Species::Chicken,
-            Species::Donkey,
-            Species::HappyGhast,
-            Species::Horse,
-            Species::Llama,
-            Species::Mule,
-            Species::Pig,
-            Species::Ravager,
-            Species::Spider,
-            Species::Strider,
-            Species::TraderLlama,
-            Species::ZombieHorse,
-        ] {
-            assert!(dismounts_underwater(species), "{species:?}");
-        }
-        // Not in the tag: a skeleton horse swims with its rider, a camel husk is not the camel.
-        for species in [Species::SkeletonHorse, Species::CamelHusk, Species::Cow] {
-            assert!(!dismounts_underwater(species), "{species:?}");
-        }
     }
 
     /// A mob of the prepared resources' type `kind` (None without them).
@@ -1546,9 +1635,6 @@ mod tests {
         }
     }
     impl DismountWorld for Sea {
-        fn full_collision(&self, p: [i32; 3]) -> bool {
-            self.solid(p)
-        }
         fn lava(&self, p: [i32; 3]) -> bool {
             p[1] <= 30 && !self.solid(p)
         }
@@ -1581,7 +1667,6 @@ mod tests {
                 Vec3::new(x + 0.45, SURFACE + 1.7, z + 0.45),
             ),
             width: 0.9,
-            height: 1.7,
             yaw: 0.0,
         }
     }
@@ -1593,6 +1678,7 @@ mod tests {
                 .iter()
                 .map(|&pose| (pose, pose.dimensions(1.0)))
                 .collect(),
+            main_arm_left: false,
         }
     }
     fn block_of(at: Vec3) -> [i32; 3] {
@@ -1679,6 +1765,9 @@ mod tests {
             None,
         )
         .ok()?;
+        game.reset_entity_residency();
+        game.native_lifecycle
+            .begin_open(mod_api::Authority::IntegratedServer);
         game.creative = false;
         game.options.dedicated = Some(Vec::new());
         game.world.chunks.insert(
@@ -1837,14 +1926,208 @@ mod tests {
         assert_eq!(game.mobs[0].extra.age, -23800, "camel cactus ages 10 s");
     }
 
+    /// Equips `item` on mob 0 and collects the sounds and the `minecraft:equip`
+    /// game events it made.
+    fn equip(game: &mut Game<'_>, item: &str) -> (bool, Shown) {
+        game.inventory[game.selected] = Some(ItemStack::new(item, 2));
+        game.audio.capture = Some(Vec::new());
+        crate::game::sculk::TEST_POSTED_EVENTS
+            .with(|events| *events.borrow_mut() = Some(Vec::new()));
+        let used = game.interact_mount(0, item);
+        let sounds = game
+            .audio
+            .capture
+            .take()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.event, s.position, s.volume, s.pitch))
+            .collect();
+        let events = crate::game::sculk::TEST_POSTED_EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(event, _, _)| *event == "minecraft:equip")
+                .collect()
+        });
+        (used, Shown { sounds, events })
+    }
+
+    /// `LivingEntity.onEquipItem`: a saddle or horse armour plays its equip sound
+    /// at pitch `1.0F`, at the mount's feet, seeded with the mount's own random's
+    /// `nextLong`. A chest's sound is `AbstractChestedHorse.playChestEquipsSound`'s,
+    /// pitched from two floats of that random at volume 1.0. A silent mount plays
+    /// nothing (and a silent saddle or armour draws no seed either), and the
+    /// level's random draws nothing in any of it.
     #[test]
-    fn the_escape_vector_reaches_the_edge_of_the_square() {
-        let edge = (0.9 + 0.6 + f64::from(1.0e-5_f32)) / 2.0;
-        let v = escape_vector(0.9, 0.6, 0.0);
-        assert!((v.z - edge).abs() < 1.0e-6 && v.x.abs() < 1.0e-6);
-        // Facing west of south: the corner of the square.
-        let v = escape_vector(0.9, 0.6, 45.0);
-        assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
+    #[ignore = "daily"]
+    fn saddling_and_armouring_play_at_pitch_one_from_the_mounts_own_random() {
+        let mut resources = None;
+        let Some(mut game) = server_game(&mut resources) else {
+            return;
+        };
+        let at = [1.5, 64.0, -2.5];
+        mount(&mut game, "minecraft:horse", 1, at, 7);
+        let level_random = game.world.random.clone().next_long();
+        let (used, shown) = equip(&mut game, "minecraft:saddle");
+        assert!(used, "a tamed horse takes the saddle: {shown:?}");
+        assert_eq!(
+            shown.sounds,
+            vec![("minecraft:entity.horse.saddle".to_string(), at, 1.0, 1.0)],
+            "{shown:?}"
+        );
+        assert_eq!(
+            shown.events,
+            vec![("minecraft:equip", at, Some(Who::Mob(1)))]
+        );
+        let mut r = sunrise_core::random::LegacyRandom::new(7);
+        r.next_long();
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            r.next_double(),
+            "one nextLong for the equip sound's seed, and nothing else"
+        );
+        assert_eq!(
+            game.world.random.clone().next_long(),
+            level_random,
+            "the level's own random drew nothing"
+        );
+
+        // Horse armour takes the same path and seeds from the same random.
+        let (used, shown) = equip(&mut game, "minecraft:iron_horse_armor");
+        assert!(used, "a tamed horse takes armour: {shown:?}");
+        assert_eq!(
+            shown.sounds,
+            vec![("minecraft:entity.horse.armor".to_string(), at, 1.0, 1.0)],
+            "{shown:?}"
+        );
+        let mut r = sunrise_core::random::LegacyRandom::new(7);
+        r.next_long();
+        r.next_long();
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            r.next_double(),
+            "a nextLong for each equip sound"
+        );
+
+        // A donkey's chest is pitched from its own random's two floats, at
+        // volume 1.0 and still at its feet.
+        let feet = [0.5, 64.0, 0.5];
+        mount(&mut game, "minecraft:donkey", 2, feet, 11);
+        let level_random = game.world.random.clone().next_long();
+        let (used, shown) = equip(&mut game, "minecraft:chest");
+        assert!(used, "a tamed donkey takes a chest: {shown:?}");
+        let mut r = sunrise_core::random::LegacyRandom::new(11);
+        let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
+        assert_eq!(
+            shown.sounds,
+            vec![(
+                "minecraft:entity.donkey.chest".to_string(),
+                feet,
+                1.0,
+                pitch
+            )],
+            "{shown:?}"
+        );
+        assert_eq!(
+            game.world.random.clone().next_long(),
+            level_random,
+            "the level's own random drew nothing"
+        );
+
+        // A silent mount plays no equip sound and draws no seed; the equip
+        // event still goes out.
+        let feet = [0.5, 64.0, 2.5];
+        mount(&mut game, "minecraft:horse", 3, feet, 13);
+        game.mobs[0].silent = true;
+        let (used, shown) = equip(&mut game, "minecraft:saddle");
+        assert!(used, "a silent horse still takes the saddle");
+        assert!(shown.sounds.is_empty(), "{shown:?}");
+        assert_eq!(
+            shown.events,
+            vec![("minecraft:equip", feet, Some(Who::Mob(3)))]
+        );
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            sunrise_core::random::LegacyRandom::new(13).next_double(),
+            "a silent mount's equip draws nothing"
+        );
+    }
+
+    /// `AbstractChestedHorse.equipChest`: a tamed donkey or mule given a chest
+    /// plays its chest sound at volume 1.0 (`AbstractChestedHorse`
+    /// `playChestEquipsSound` uses `DONKEY_CHEST`, `Mule` overrides it with
+    /// `MULE_CHEST`) and posts no mob equip event, which only the saddle and
+    /// the armour do.
+    #[test]
+    #[ignore = "daily"]
+    fn a_chest_on_a_donkey_or_mule_plays_its_own_sound_at_full_volume() {
+        let mut resources = None;
+        let Some(mut game) = server_game(&mut resources) else {
+            return;
+        };
+        for (kind, sound) in [
+            ("minecraft:donkey", "minecraft:entity.donkey.chest"),
+            ("minecraft:mule", "minecraft:entity.mule.chest"),
+        ] {
+            mount(&mut game, kind, 5, [2.5, 64.0, 2.5], 7);
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:chest", 1));
+            game.audio.capture = Some(Vec::new());
+            crate::game::sculk::TEST_POSTED_EVENTS
+                .with(|events| *events.borrow_mut() = Some(Vec::new()));
+            assert!(game.interact_mount(0, "minecraft:chest"), "{kind}");
+            let sounds: Vec<_> = game
+                .audio
+                .capture
+                .take()
+                .unwrap()
+                .into_iter()
+                .map(|s| (s.event, s.position, s.volume, s.pitch))
+                .collect();
+            let equip_events = crate::game::sculk::TEST_POSTED_EVENTS
+                .with(|events| events.borrow_mut().take().unwrap_or_default());
+            crate::game::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = None);
+            assert!(game.mobs[0].extra.chested, "{kind} wears the chest");
+            assert_eq!(sounds.len(), 1, "{kind}: {sounds:?}");
+            assert_eq!(sounds[0].0, sound, "{kind} chest sound");
+            assert_eq!(sounds[0].2, 1.0, "{kind} chest sound volume");
+            assert!(
+                (0.8..=1.2).contains(&sounds[0].3),
+                "{kind} chest pitch {} outside vanilla's 0.8..1.2",
+                sounds[0].3
+            );
+            assert!(
+                equip_events.is_empty(),
+                "{kind} posted a mob equip event: {equip_events:?}"
+            );
+        }
+    }
+
+    /// `CamelHusk.interact` sets `PersistenceRequired` before it hands the click
+    /// on, so a husk a player saddled is kept past the monster category's 128
+    /// blocks (`Mob.checkDespawn` reads `isPersistenceRequired`).
+    #[test]
+    #[ignore = "daily"]
+    fn a_camel_husk_keeps_itself_once_clicked() {
+        let mut resources = None;
+        let Some(mut game) = server_game(&mut resources) else {
+            return;
+        };
+        mount(&mut game, "minecraft:camel_husk", 7, [1.5, 64.0, -2.5], 7);
+        assert!(!game.mobs[0].persistent);
+        assert!(
+            !sunrise_client::mobs::ai::requires_custom_persistence(&game.mobs[0]),
+            "nothing else keeps it: the click must"
+        );
+        game.inventory[0] = Some(ItemStack::new("minecraft:saddle", 1));
+        let target = Some(crate::game::InteractTarget {
+            id: 7,
+            location: [0.0; 3],
+        });
+        assert!(game.interact_mob(target).unwrap(), "the saddle is used");
+        assert!(game.mobs[0].extra.saddled(), "the saddle went on");
+        assert!(game.mobs[0].persistent, "a clicked camel husk stays");
     }
 }
 
@@ -1853,7 +2136,70 @@ mod off_level_tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn underwater_dismount_uses_the_levels_current_mount_tag() {
+        crate::game::in_own_process(
+            "game::mounts::off_level_tests::underwater_dismount_uses_the_levels_current_mount_tag",
+            || {
+                crate::game::native_entity_refs::tests::with_game(|game| {
+                    let tags = &game.items().entity_type_tags;
+                    // Default membership from the 26.3 dismounts_underwater tag.
+                    for (kind, expected) in [
+                        ("minecraft:camel", true),
+                        ("minecraft:chicken", true),
+                        ("minecraft:donkey", true),
+                        ("minecraft:happy_ghast", true),
+                        ("minecraft:horse", true),
+                        ("minecraft:llama", true),
+                        ("minecraft:mule", true),
+                        ("minecraft:pig", true),
+                        ("minecraft:ravager", true),
+                        ("minecraft:spider", true),
+                        ("minecraft:strider", true),
+                        ("minecraft:trader_llama", true),
+                        ("minecraft:zombie_horse", true),
+                        ("minecraft:skeleton_horse", false),
+                        ("minecraft:camel_husk", false),
+                        ("minecraft:cow", false),
+                    ] {
+                        let mob_type = game.res.mob_types().get(kind).unwrap().clone();
+                        let mob = Mob::new(0, mob_type, Vec3::ZERO, 0.0);
+                        assert_eq!(dismounts_underwater(tags, &mob), expected, "{kind}");
+                    }
+
+                    for (id, kind, mount) in [
+                        (71, "minecraft:pig", None),
+                        (72, "minecraft:zombie", Some(71)),
+                        (73, "minecraft:cow", None),
+                        (74, "minecraft:zombie", Some(73)),
+                    ] {
+                        let kind = game.res.mob_types().get(kind).unwrap().clone();
+                        let mut mob = Mob::new(id, kind, Vec3::ZERO, 0.0);
+                        mob.extra.mount = mount;
+                        mob.fluids.eye_in_water = true;
+                        game.mobs.push(mob);
+                    }
+                    let mut items = game.items().clone();
+                    items.set_entity_type_tags(EntityTypeTags::from_ordered(
+                        [(
+                            "minecraft:dismounts_underwater".into(),
+                            vec!["minecraft:cow".into()],
+                        )]
+                        .into(),
+                        items.entity_type_tags.ids().clone(),
+                    ));
+                    game.server_items = Some(std::sync::Arc::new(items));
+
+                    game.dismount_underwater_mob_riders();
+                    assert_eq!(game.mob_object(72).unwrap().extra.mount, Some(71));
+                    assert_eq!(game.mob_object(74).unwrap().extra.mount, None);
+                });
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn underwater_dismount_skips_deep_frozen_descendants() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
@@ -1884,3 +2230,15 @@ pub(in crate::game) mod sneak_dismount_tests;
 #[cfg(test)]
 #[path = "tests/strider_lava_boarding_tests.rs"]
 mod strider_lava_boarding_tests;
+
+#[cfg(test)]
+#[path = "tests/steerable_boarding_tests.rs"]
+mod steerable_boarding_tests;
+
+#[cfg(test)]
+#[path = "tests/ride_dismount_tests.rs"]
+mod ride_dismount_tests;
+
+#[cfg(test)]
+#[path = "tests/ride_seat_tests.rs"]
+mod ride_seat_tests;

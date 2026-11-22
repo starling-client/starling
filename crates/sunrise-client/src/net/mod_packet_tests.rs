@@ -1,10 +1,8 @@
 use super::*;
-use sunrise_protocol::{
-    buf::Writer,
-    connection::{Connection, Pipe},
-};
 use mod_api::{Identifier, SendPacketError, ServerboundPlayPacket};
 use std::time::Duration;
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_protocol::connection::{Connection, Pipe};
 
 fn connected() -> (Session, Connection) {
     let (a, b) = Pipe::pair();

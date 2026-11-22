@@ -2,7 +2,7 @@
 use crate::Identifier;
 
 /// A move of a level's clock (NeoForge's `ClockAdjustment`). The game resolves it once every
-/// listener has run. Case order is part of the wasm link contract.
+/// listener has run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -68,8 +68,7 @@ mod tests {
         );
     }
 
-    /// Every case crosses the wasm boundary and back, and a listener's replacement is what the
-    /// host reads after it (the event's `&mut` field is written back through the same codec).
+    /// Each case round-trips through the codec, including a listener's replacement.
     #[test]
     fn every_case_survives_the_wire_and_writes_back() {
         use crate::wire::{Reader, Writer};
@@ -89,7 +88,7 @@ mod tests {
         for case in &cases {
             assert_eq!(&send(case), case);
         }
-        // The guest gets the host's value, replaces it, and the host reads the replacement.
+        // The listener gets the initial value and replaces it; the caller reads the replacement.
         let mut guest = send(&cases[2]);
         assert_eq!(guest, ClockAdjustment::Relative(-1_000));
         guest = ClockAdjustment::Marker(Identifier::parse("example:mod_dawn").unwrap());

@@ -114,7 +114,7 @@ def main():
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     sources = [PARITY / 'VanillaTextDisplayRenderOracle.java', lab.ROOT / 'crates/sunrise-client/src/text_display.rs',
-               lab.ROOT / 'crates/sunrise-client-render/src/hud.rs', lab.ROOT / 'crates/sunrise-client-render/src/font.rs']
+               lab.ROOT / 'crates/sunrise-client-render/src/hud.rs', lab.ROOT / 'crates/sunrise-client-render/src/hud/batch.rs', lab.ROOT / 'crates/sunrise-client-render/src/hud/batch_text.rs', lab.ROOT / 'crates/sunrise-client-render/src/font.rs']
     tested = base.source_hashes(sources)
     chosen = cases(args.count)
     inputs = build / 'cases.jsonl'

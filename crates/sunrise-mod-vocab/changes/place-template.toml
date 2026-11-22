@@ -1,0 +1,3 @@
+ids = ["type:StructureTemplateSource"]
+why = "structure_template reads a template; place_template places one through the engine's own placement (/place template's path), so block-entity data and the template's entities arrive as vanilla places them. It is new surface, not a change to an old one: nothing is removed or renamed, and every existing call keeps its meaning."
+migrate = "A mod that placed blocks one at a time from structure_template's snapshot can pass a StructureTemplateSource (id for the world's own template, nbt for structure NBT the mod carries) to host.place_template(source, at, at, rotation, mirror) to get vanilla's block entities and entities. Rebuild native mods against the updated SDK; no old call changes."

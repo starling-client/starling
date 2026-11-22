@@ -115,16 +115,14 @@ class VocabularyStateGate(unittest.TestCase):
         files['other.rs'] = '#[path = "fixture.rs"] pub(crate) mod live;'
         self.assertEqual(len(violations(files, {})), 1)
 
-    def test_unsafe_exception_cannot_spread_to_other_source(self):
-        files = {'lib.rs': '#![deny(unsafe_code)]',
-                 '__private/points.rs': '#[expect(unsafe_code)] unsafe impl Send for Raw {}'}
-        self.assertEqual(unsafe_violations(files), [])
-        files['value.rs'] = '#[allow(unsafe_code)] unsafe fn added() {}'
+    def test_unsafe_and_lint_suppressions_have_no_exceptions(self):
+        files = {'lib.rs': '#![forbid(unsafe_code)]',
+                 'value.rs': '#[allow(unsafe_code)] unsafe fn added() {}'}
         self.assertEqual(len(unsafe_violations(files)), 2)
         files['value.rs'] = '// unsafe fn text() {}\nconst HELP: &str = "unsafe";'
         self.assertEqual(unsafe_violations(files), [])
-        files['lib.rs'] = ''
-        self.assertIn('must retain', unsafe_violations(files)[0])
+        files['lib.rs'] = '#![deny(unsafe_code)]'
+        self.assertIn('must retain #![forbid(unsafe_code)]', unsafe_violations(files)[0])
 
     def test_changed_cache_type_and_stale_permission_are_rejected(self):
         allowed = {'value.rs::cache::VALUE': {'type': 'OnceLock<String>'}}

@@ -167,25 +167,32 @@ impl LevelHeight {
     /// of 16, at least 16 high, within `DimensionType.MIN_Y` (-2032) and
     /// `MAX_Y` (2031), and a logical height within the height.
     pub fn of_json(v: &Value) -> Option<Self> {
+        Self::decode(v, false)
+    }
+
+    pub(crate) fn decode(v: &Value, complete: bool) -> Option<Self> {
         let int = |k: &str| i32::try_from(v[k].as_i64()?).ok();
         let (min_y, height) = (int("min_y")?, int("height")?);
-        let logical_height = int("logical_height").unwrap_or(height);
+        let logical_height = int("logical_height").or_else(|| (!complete).then_some(height))?;
+        let flag = |key: &str, default| v[key].as_bool().or_else(|| (!complete).then_some(default));
         let valid = min_y % 16 == 0
             && height % 16 == 0
             && height >= 16
             && min_y >= -2032
             && i64::from(min_y) + i64::from(height) <= 2032
             && (0..=height).contains(&logical_height);
-        valid.then_some(Self {
+        if !valid {
+            return None;
+        }
+        Some(Self {
             min_y,
             height,
             logical_height,
-            has_skylight: v["has_skylight"].as_bool().unwrap_or(true),
-            // The codec requires has_ceiling; a type the packs leave it out
-            // of gets the open-sky default.
-            has_ceiling: v["has_ceiling"].as_bool().unwrap_or(false),
+            has_skylight: flag("has_skylight", true)?,
+            has_ceiling: flag("has_ceiling", false)?,
         })
     }
+
     /// A level stem's `type` (a dimension type id, or one inline), with the
     /// packs' `types` over the vanilla ones.
     pub fn of_type(ty: &Value, types: &BTreeMap<String, String>) -> Option<Self> {

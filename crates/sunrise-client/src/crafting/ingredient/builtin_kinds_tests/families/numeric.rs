@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn components_match_damage_ignore_count_and_refuse_empty() {
     let items = resources();
     let ingredient = parse(
@@ -33,7 +33,6 @@ fn components_map_id_decodes_signed_numbers_and_matches_live_values() {
         r#"{"type":"neoforge:components","items":"minecraft:filled_map","components":{"minecraft:map_id":4294967289}}"#,
     ] {
         let json: Value = serde_json::from_str(source).unwrap();
-        assert!(Ingredient::validate_recipe(&json, &items, "fixture:map_id"));
         let ingredient = Ingredient::parse(&json, &items).unwrap();
         assert_eq!(
             ingredient.shown.as_ref().unwrap()[0].data().unwrap().map_id,
@@ -91,11 +90,14 @@ fn components_map_id_decodes_signed_numbers_and_matches_live_values() {
         "ingredients": [bad],
         "result": {"id": "minecraft:map"},
     });
-    assert!(!Ingredient::validate_recipe(
-        &bad_recipe,
-        &items,
-        "fixture:bad_map_id"
-    ));
+    assert!(
+        crate::crafting::ResolvedSources::resolve(
+            vec![("demo:bad_map".into(), bad_recipe)],
+            &items,
+            &load,
+        )
+        .is_err()
+    );
 
     let mut defaults = Items::empty();
     defaults.component_defaults = std::sync::Arc::new(std::collections::HashMap::from([(
@@ -134,7 +136,7 @@ fn components_map_id_decodes_signed_numbers_and_matches_live_values() {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn components_strict_counts_max_damage_default_and_custom_name() {
     let items = resources();
     let ingredient = parse(
@@ -368,9 +370,14 @@ fn ominous_bottle_amplifier_codec_loads_matches_and_rejects_out_of_range() {
             )],
             &load,
         )
-        .unwrap();
-        assert!(refused.crafting.is_empty());
-        assert!(refused.by_type.values().all(|recipes| recipes.is_empty()));
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/invalid_amplifier.json"),
+            "{refused}"
+        );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 
@@ -645,7 +652,10 @@ fn minimum_attack_charge_recipe_decodes_and_matches_float_values() {
     ] {
         let json: Value = serde_json::from_str(source).unwrap();
         assert!(Ingredient::parse(&json, &items).is_none(), "{source}");
-        assert!(recipe(&json).crafting.is_empty(), "{source}");
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            json["components"].clone(),
+        );
         let rule = IngredientRule::Components {
             patch: crate::json_nbt::json_to_compound(json["components"].as_object().unwrap())
                 .unwrap(),
@@ -867,7 +877,10 @@ fn use_cooldown_recipe_decodes_record_and_matches_borrowed_values() {
         serde_json::json!({"seconds":2,"cooldown_group":"a:b:c"}),
     ] {
         let json = ingredient_json(value);
-        assert!(compile(json.clone()).crafting.is_empty(), "{json}");
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            json["components"].clone(),
+        );
         let rule = IngredientRule::Components {
             patch: crate::json_nbt::json_to_compound(json["components"].as_object().unwrap())
                 .unwrap(),

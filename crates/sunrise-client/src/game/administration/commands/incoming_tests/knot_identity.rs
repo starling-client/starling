@@ -4,6 +4,7 @@
 //! knot made again after its last lead went is a new entity, and the same
 //! fence position in another level is another knot.
 use crate::game::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
@@ -12,7 +13,6 @@ use sunrise_client::{
 };
 use sunrise_core::position::ChunkPos;
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 const PIG: &str = "0000609a-0000-0000-0000-000000000001";
 const OTHER_PIG: &str = "0000609a-0000-0000-0000-000000000003";
@@ -96,7 +96,7 @@ fn mob(game: &mut Game<'_>, uuid: &str) -> usize {
 
 /// The knots the level in place's selectors list, by entity id.
 fn knots(game: &Game<'_>) -> Vec<u32> {
-    game.level_candidates()
+    game.level_candidates(false)
         .into_iter()
         .filter_map(|t| match t {
             super::Target::Knot(id) => Some(id),
@@ -145,6 +145,7 @@ fn host(game: &mut Game<'_>) {
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -175,7 +176,7 @@ fn host(game: &mut Game<'_>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_server_that_starts_tracking_later_shows_the_same_knot() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -211,7 +212,7 @@ fn a_server_that_starts_tracking_later_shows_the_same_knot() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn two_leads_on_one_fence_share_one_knot() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -235,7 +236,7 @@ fn two_leads_on_one_fence_share_one_knot() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_knot_tied_again_after_its_last_lead_is_a_new_entity() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -263,7 +264,7 @@ fn a_knot_tied_again_after_its_last_lead_is_a_new_entity() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_same_fence_position_in_another_level_is_another_knot() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -314,7 +315,7 @@ fn the_same_fence_position_in_another_level_is_another_knot() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn commands_that_would_move_or_remove_a_natural_knot_fail() {
     let mut resources = None;
     let mut game = game(&mut resources);

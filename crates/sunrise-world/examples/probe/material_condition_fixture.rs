@@ -1,4 +1,12 @@
 //! Original comparison transport for material conditions and cache behavior.
+use serde_json::Value;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    io::{self, Write},
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use sunrise_core::{
     density::{ConstantSampler, DensitySampler, SampleError, SamplerContext},
     noise::{DensityVolume, NanRange, Noise},
@@ -17,14 +25,6 @@ use sunrise_world::worldgen::{
     },
     material_surface::{ClayBandBlocks, MaterialSurface},
     tags::TagDefinitions,
-};
-use serde_json::Value;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    io::{self, Write},
-    path::Path,
-    sync::{Arc, Mutex},
 };
 use {
     sunrise_core::nbt::Tag,

@@ -1,5 +1,9 @@
 # Design: moving structures
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [transactions](../../modding/src/concepts/transactions.md) for the current native API.
+> The carrier handles and Parts below are proposals, not the current API. Guest dispatch, trap handling and the guest axis of the test matrix are historical; LAN guest players are unrelated.
+
 Proposed contract for arismoko/horizon issue #794; this document requests design
 agreement and does not claim an implemented feature. One game-owned carrier entity
 owns a sparse collection of local block cells, their block entities and attachments.

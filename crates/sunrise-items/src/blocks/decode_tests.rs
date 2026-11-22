@@ -197,3 +197,26 @@ fn a_state_past_the_registry_has_airs_facts() {
     assert_eq!(&*facts.get(id(2)).name, "minecraft:air");
     assert!(facts.is_air(id(2)));
 }
+
+#[test]
+fn explicit_offset_limits_are_read_and_invalid_limits_refused_at_the_table_boundary() {
+    let data: Gameplay<'_> =
+        serde_json::from_str(r#"{"states":[{"offset":true,"offset_limits":[0.125,0.2]}]}"#)
+            .unwrap();
+    let states = data.states.0.unwrap();
+    assert_eq!(states[0].offset_limits.as_ref().unwrap().0, (0.125, 0.2));
+    for limits in [
+        "[-1,0]",
+        "[0.3,0]",
+        "[0.25,0.3]",
+        "[0.25]",
+        "[1e300,0]",
+        "false",
+    ] {
+        let input = format!(r#"{{"states":[{{"offset_limits":{limits}}}]}}"#);
+        assert!(
+            serde_json::from_str::<Gameplay<'_>>(&input).is_err(),
+            "{input}"
+        );
+    }
+}

@@ -4,6 +4,8 @@
 //! the recipe, the slots `Book::ghost` fills and the stacks each cycles through.
 //!
 //! usage: ghost_recipe_fixture RESOURCES CASES OUTPUT
+use serde_json::Value;
+use std::{fmt::Write as _, fs, path::Path};
 use sunrise_client::{
     crafting::Recipes,
     item_data::{canon_stack, parse_stack},
@@ -11,8 +13,6 @@ use sunrise_client::{
     recipe_book::{Book, BookType, GhostTarget, RecipeIndex},
 };
 use sunrise_world::loot::PackOverlay;
-use serde_json::Value;
-use std::{fmt::Write as _, fs, path::Path};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
@@ -63,7 +63,11 @@ pub fn main() -> sunrise_client::Result<()> {
                     GhostTarget::Input => (0, false),
                     GhostTarget::Fuel => (1, false),
                 };
-                let stacks: Vec<String> = slot.items.iter().map(|s| canon_stack(Some(s))).collect();
+                let stacks: Vec<String> = slot
+                    .items
+                    .iter()
+                    .map(|s| canon_stack(Some(s), &items))
+                    .collect();
                 let _ = write!(
                     out,
                     "{index}{}={} ",

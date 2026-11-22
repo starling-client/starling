@@ -15,11 +15,6 @@ use super::{
 use crate::registry::BlockStateId;
 pub use codec::{MaterialBiomeTag, MaterialConditionReference, MaterialConditionRegistry};
 pub use density::MaterialDensitySources;
-use sunrise_core::noise::Noise;
-use sunrise_core::{
-    position::BlockPos,
-    random::{PositionalRandom, RandomSource},
-};
 pub use library::MaterialRuleLibrary;
 pub use noise::MaterialNoiseSources;
 use rule::CompiledRule;
@@ -28,6 +23,11 @@ pub use rule::{MaterialRule, MaterialRuleError};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
+};
+use sunrise_core::noise::Noise;
+use sunrise_core::{
+    position::BlockPos,
+    random::{PositionalRandom, RandomSource},
 };
 
 /// Surface inputs come from the material system. Implementations should keep

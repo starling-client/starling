@@ -9,32 +9,43 @@ macro_rules! native_mods {
 
 #[inline(never)]
 pub fn entries() -> Vec<mod_api::ModEntry> {
+    /* MOD_LOGGERS */
     native_mods! {
     /* MOD_ENTRIES */
     }
 }
 
-#[inline(never)]
-pub fn slots() -> Vec<mod_api::__private::points::SlotListener> {
-    vec![
-/* MOD_SLOTS */
-    ]
-}
-
 fn installs() -> Vec<(&'static str, &'static [&'static str], bool)> {
     vec![
-/* MOD_REDIRECTS */
-    ]
+    /* MOD_REDIRECTS */
+        ]
 }
 static BUILT: &[mod_api::__private::native::BuiltMod] = &[
 /* BUILT_MODS */
 ];
 #[unsafe(no_mangle)]
 pub extern "C" fn sunrise_native_build() -> *const std::os::raw::c_char {
-    b"/* NATIVE_BUILD */\0".as_ptr().cast()
+    // The build identity ends with the panic strategy this library was compiled with: the game
+    // unwinds a refused Host call through the mod's frames, so it refuses `abort` at load.
+    static IDENTITY: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            let panic = if cfg!(panic = "unwind") {
+                "unwind"
+            } else {
+                "abort"
+            };
+            std::ffi::CString::new(format!("/* NATIVE_BUILD */ {panic}")).expect("no NUL")
+        })
+        .as_ptr()
 }
 #[unsafe(no_mangle)]
 pub fn sunrise_native_mod_v1() -> &'static mod_api::__private::native::NativeMod {
-    static MOD: std::sync::OnceLock<mod_api::__private::native::NativeMod> = std::sync::OnceLock::new();
-    MOD.get_or_init(|| mod_api::__private::native::NativeMod::new(entries, slots, BUILT, installs))
+    static MOD: std::sync::OnceLock<mod_api::__private::native::NativeMod> =
+        std::sync::OnceLock::new();
+    MOD.get_or_init(|| mod_api::__private::native::NativeMod {
+        entries,
+        built: BUILT,
+        installs,
+    })
 }

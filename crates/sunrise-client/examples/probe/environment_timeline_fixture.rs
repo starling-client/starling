@@ -1,7 +1,7 @@
 //! Easings and timeline tracks for tools/test_environment_timeline_parity.py.
+use std::{error::Error, fmt::Write};
 use sunrise_world::environment_attributes::{Entry, Value, attribute};
 use sunrise_world::environment_timeline::{Easing, Track};
-use std::{error::Error, fmt::Write};
 
 fn bits(f: f32) -> String {
     format!("{:08x}", f.to_bits())

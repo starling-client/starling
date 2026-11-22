@@ -61,7 +61,9 @@ fn burn_in(game: &mut Game<'_>, pos: [i32; 3]) {
             to: at,
             original: None,
         });
+        let side = game_side!(game);
         let mut w = MotionWorld {
+            side: &side,
             entities: &[],
             player,
             scene: &mut game.world,

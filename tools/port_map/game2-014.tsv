@@ -43,7 +43,7 @@ LecternBlock.changePowered	port	crates/sunrise-client/src/game/interface/books.r
 LecternBlock.updateBelow	inline	crates/sunrise-client/src/game/interface/books.rs::Game::set_lectern_powered	neighbour update below the lectern
 LecternBlock.affectNeighborsAfterRemoval	port	crates/sunrise-world/src/level/hooks.rs::Sim::affect_neighbors_after_removal	powered lectern updates the block below on removal
 LecternBlock.getDirectSignal	port	crates/sunrise-world/src/level/redstone.rs::Sim::state_direct_signal	gap: minor: no Lectern arm; the power of a powered lectern comes from the data table's strong value
-LecternBlock.getAnalogOutputSignal	port	crates/sunrise-client/src/game/interface/books.rs::lectern_signal	page-based comparator signal, 0 without a book
+LecternBlock.getAnalogOutputSignal	port	crates/sunrise-gameplay/src/lectern.rs::lectern_signal	page-based comparator signal, 0 without a book
 LecternBlock.useWithoutItem	port	crates/sunrise-client/src/game/interface/books.rs::Game::open_lectern	opens the book view when a book is on the lectern
 LecternBlock.getMenuProvider	port	crates/sunrise-client/src/game/interface/books.rs::Game::lectern_menu	the lectern menu over the block entity's book and page
 LeverBlock.makeShapes	skip:data	-	collision and outline shapes are precomputed from the data

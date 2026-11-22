@@ -5,9 +5,11 @@ saved-data application, before it ticks. The hook fires for fresh placement,
 saved chunk loads and client chunk reception. It corresponds to NeoForge's
 `IBlockEntityExtension.onLoad`.
 
-The event supplies a `BlockEntityRef`. Use its data methods with the supplied
-`HostSide` to read the applied saved data. Dispatch is keyed by the block entity
-type ID.
+The event supplies `event.subject: BlockEntitySideScope<'_>`: match
+`BlockEntitySideScope::Server(scope)` for a mutable `BlockEntityView` and `&mut dyn ServerHost`
+sequentially, or `BlockEntitySideScope::Client(scope)` for a read-only `BlockEntityReadView`
+and `&mut dyn ClientHost` sequentially. Both views already see the applied saved data. Dispatch
+is keyed by the block entity type ID.
 
 ## Delivery rules
 

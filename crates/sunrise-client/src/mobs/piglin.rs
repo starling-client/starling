@@ -10,9 +10,9 @@ use super::{
         RandomLookAround, Stroll, TARGET, TargetState, goal_clone, target_continue,
     },
 };
+use std::f32::consts::PI;
 use sunrise_core::geometry::{Vec3, trig::Mth};
 use sunrise_core::random::{LegacyRandom, RandomSource};
-use std::f32::consts::PI;
 
 /// `PiglinAi.ADMIRE_DURATION`.
 pub const ADMIRE: i32 = 119;
@@ -24,17 +24,6 @@ const CONVERSION: i32 = 300;
 /// `PiglinAi.CELEBRATION_TIME`: how long the `CELEBRATE_LOCATION` and
 /// `DANCING` memories last.
 const CELEBRATION: i32 = 300;
-
-/// `ZombifiedPiglin.populateDefaultEquipmentSlots`: a golden sword, or one
-/// time in 20 a golden spear, off `random` (`Pig.thunderHit` passes the pig's
-/// own, `this.getRandom()`).
-pub fn default_equipment(random: &mut LegacyRandom) -> &'static str {
-    if random.next_int_bound(20).unwrap_or(1) == 0 {
-        "minecraft:golden_spear"
-    } else {
-        "minecraft:golden_sword"
-    }
-}
 
 /// `PiglinAi.BARTERING_ITEM`: vanilla's barter currency, compared by item.
 pub const BARTERING_ITEM: &str = "minecraft:gold_ingot";
@@ -2358,7 +2347,7 @@ pub fn hoglin_anim(m: &Mob, s: &State, p: &mut Poses) {
 
 /// `Brain.Packed`: the guarded-block live ANGRY_AT entry. The existing
 /// anger counter supplies its remaining long TTL, not an absolute timestamp.
-pub fn write_guarded_anger(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn write_guarded_anger(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     use sunrise_core::nbt::{Compound, Tag};
     let Some(actor) = m.extra.piglin.guarded_angry_at else {
         return;
@@ -2445,25 +2434,36 @@ mod brute_sound_tests {
     /// the fight activity and growls `entity.piglin_brute.angry`, losing the
     /// target is silent, and a piglin keeps `entity.piglin.angry`.
     #[test]
-    fn a_brute_names_the_brute_growl() {
+    fn a_brute_with_a_target_selects_the_fight_activity() {
         let mut brute = mob(Species::PiglinBrute);
         brute.ai.target = Some(Who::Player);
         assert_eq!(activity(&brute), Activity::Fight);
+    }
+
+    /// The growl itself, with the activity switch.
+    #[test]
+    #[ignore = "daily"]
+    fn a_brute_names_the_brute_growl() {
+        let mut brute = mob(Species::PiglinBrute);
+        brute.ai.target = Some(Who::Player);
         // The switch itself takes a level; it runs where the vanilla data is.
-        with_test_world(&[], |w, _| {
-            let mut events = Vec::new();
-            update_activity(&mut brute, w, &mut events);
-            assert_eq!(sounds(&events), ["entity.piglin_brute.angry"]);
-            brute.ai.target = None;
-            let mut events = Vec::new();
-            update_activity(&mut brute, w, &mut events);
-            assert!(sounds(&events).is_empty());
-            let mut piglin = mob(Species::Piglin);
-            piglin.ai.target = Some(Who::Player);
-            let mut events = Vec::new();
-            update_activity(&mut piglin, w, &mut events);
-            assert_eq!(sounds(&events), ["entity.piglin.angry"]);
-        });
+        assert!(
+            with_test_world(&[], |w, _| {
+                let mut events = Vec::new();
+                update_activity(&mut brute, w, &mut events);
+                assert_eq!(sounds(&events), ["entity.piglin_brute.angry"]);
+                brute.ai.target = None;
+                let mut events = Vec::new();
+                update_activity(&mut brute, w, &mut events);
+                assert!(sounds(&events).is_empty());
+                let mut piglin = mob(Species::Piglin);
+                piglin.ai.target = Some(Who::Player);
+                let mut events = Vec::new();
+                update_activity(&mut piglin, w, &mut events);
+                assert_eq!(sounds(&events), ["entity.piglin.angry"]);
+            }),
+            "vanilla data is missing"
+        );
     }
 
     /// `PiglinBruteAi.maybePlayActivitySound`: the level random is drawn on
@@ -2550,6 +2550,7 @@ mod hurt_broadcast_tests {
     /// `PiglinBruteAi.wasHurtBy` is `PiglinAi.maybeRetaliate`, which calls the adult piglins
     /// around it, the regular ones too (#7790).
     #[test]
+    #[ignore = "daily"]
     fn a_brute_hit_by_the_player_calls_the_piglins_around_it() {
         let mut events = Vec::new();
         let ran = with_test_world(&[], |w, _| {
@@ -2584,8 +2585,8 @@ mod hurt_broadcast_tests {
 mod crossbow_tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     fn piglin() -> Mob {
         let mut kind = kind();
@@ -2610,6 +2611,7 @@ mod crossbow_tests {
         std::fs::remove_dir_all(&root).unwrap();
         let death = Death {
             loot: &loot,
+            this_nbt: None,
             damage: None,
             player: None,
             player_killed: false,
@@ -2710,6 +2712,7 @@ mod conversion_tests {
     use crate::mobs::world::with_test_world;
 
     #[test]
+    #[ignore = "daily"]
     fn converting_piglin_drops_its_inventory_before_conversion() {
         let ran = with_test_world(&[], |w, types| {
             let at = [0.5, 64.0, 0.5];
@@ -2769,13 +2772,14 @@ mod conversion_tests {
             assert!(m.extra.inventory.is_empty());
         });
         // Without the vanilla data there is nothing to check.
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     /// `Piglin.finishConversion` cancels the admire before it converts: the
     /// item in the off hand is dropped at the piglin's feet and the zombified
     /// piglin does not carry it, where Sunrise used to hand it over.
     #[test]
+    #[ignore = "daily"]
     fn a_converted_piglin_drops_the_item_it_was_admiring() {
         let ran = with_test_world(&[], |w, types| {
             let mut m = Mob::new(
@@ -2814,7 +2818,7 @@ mod conversion_tests {
                 "the new mob carries nothing"
             );
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }
 
@@ -2861,7 +2865,14 @@ mod cannot_hunt_save_tests {
             let m = crate::entity_nbt::mob_from_nbt(&saved(raw), &types, 1, None).unwrap();
             assert_eq!(m.extra.piglin.cannot_hunt, expected);
             assert_eq!(can_hunt(&m), !expected);
-            let out = crate::entity_nbt::mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+            let out = crate::entity_nbt::mob_to_nbt(
+                &m,
+                [1, 2, 3, 4],
+                None,
+                None,
+                |_| None,
+                &Default::default(),
+            );
             assert_eq!(out.get("CannotHunt"), Some(&Tag::Byte(i8::from(expected))));
         }
     }
@@ -2872,15 +2883,15 @@ mod brute_home_tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use crate::mobs::world::with_built_test_world;
-    use sunrise_world::registry::BlockRegistry;
     use std::sync::Arc;
+    use sunrise_world::registry::BlockRegistry;
 
     fn brute(at: Vec3, home: Option<[i32; 3]>) -> Mob {
         let mut kind = kind();
         Arc::make_mut(&mut kind).species = Species::PiglinBrute;
         let mut m = Mob::new(1, kind, at, 0.0);
         m.extra.home = home;
-        m.on_ground = true;
+        m.ground.on_ground = true;
         m
     }
     /// A stone floor under the brute, and the chunks the pathfinder reads.
@@ -2915,75 +2926,87 @@ mod brute_home_tests {
     /// that is near home, past a hundred blocks, or without the memory does
     /// not.
     #[test]
+    #[ignore = "daily"]
     fn a_brute_that_wanders_off_walks_back_home() {
-        with_built_test_world(&[], build, |w, _| {
-            let mut test_level = crate::health::TestLevel::new(3);
-            let mut events = Vec::new();
-            for (label, home, walks) in [
-                ("far enough to walk back", Some([24, 0, 0]), true),
-                ("near home", Some([5, 0, 0]), false),
-                ("past the memory's reach", Some([120, 0, 0]), false),
-                ("no home", None, false),
-            ] {
-                let mut m = brute(Vec3::new(0.5, 0.0, 0.5), home);
-                register_brute(&mut m);
+        assert!(
+            with_built_test_world(&[], build, |w, _| {
+                let mut test_level = crate::health::TestLevel::new(3);
+                let mut events = Vec::new();
+                for (label, home, walks) in [
+                    ("far enough to walk back", Some([24, 0, 0]), true),
+                    ("near home", Some([5, 0, 0]), false),
+                    ("past the memory's reach", Some([120, 0, 0]), false),
+                    ("no home", None, false),
+                ] {
+                    let mut m = brute(Vec3::new(0.5, 0.0, 0.5), home);
+                    register_brute(&mut m);
+                    let mut cx = Cx {
+                        w,
+                        level: &mut test_level.level(),
+                        events: &mut events,
+                    };
+                    let (running, target) = tick_goals(&mut m, &mut cx);
+                    if walks {
+                        assert!(running, "{label}: the brute sets off home");
+                        assert_eq!(target, home, "{label}: and the walk ends at home");
+                    } else {
+                        assert!(!running, "{label}: no walk home");
+                        assert_eq!(target, None, "{label}: and no path");
+                    }
+                }
+            }),
+            "vanilla data is missing"
+        );
+    }
+    /// `StrollToPoi.nextOkStartTime`: after a try the brute waits 80 ticks before the
+    /// next one, so a home out of reach is not searched for on every tick.
+    #[test]
+    #[ignore = "daily"]
+    fn a_brute_tries_the_way_home_once_every_80_ticks() {
+        assert!(
+            with_built_test_world(&[], build, |w, _| {
+                let mut test_level = crate::health::TestLevel::new(3);
+                let mut events = Vec::new();
                 let mut cx = Cx {
                     w,
                     level: &mut test_level.level(),
                     events: &mut events,
                 };
-                let (running, target) = tick_goals(&mut m, &mut cx);
-                if walks {
-                    assert!(running, "{label}: the brute sets off home");
-                    assert_eq!(target, home, "{label}: and the walk ends at home");
-                } else {
-                    assert!(!running, "{label}: no walk home");
-                    assert_eq!(target, None, "{label}: and no path");
-                }
-            }
-        });
-    }
-    /// `StrollToPoi.nextOkStartTime`: after a try the brute waits 80 ticks before the
-    /// next one, so a home out of reach is not searched for on every tick.
-    #[test]
-    fn a_brute_tries_the_way_home_once_every_80_ticks() {
-        with_built_test_world(&[], build, |w, _| {
-            let mut test_level = crate::health::TestLevel::new(3);
-            let mut events = Vec::new();
-            let mut cx = Cx {
-                w,
-                level: &mut test_level.level(),
-                events: &mut events,
-            };
-            let mut m = brute(Vec3::new(0.5, 0.0, 0.5), Some([24, 0, 0]));
-            let mut goal = BruteStrollHome { next_ok: 0 };
-            assert!(goal.can_use(&mut m, &mut cx), "the first try finds a path");
-            m.ai.pending_path = None;
-            assert!(
-                !goal.can_use(&mut m, &mut cx),
-                "no second search in the same 80 ticks"
-            );
-            assert_eq!(goal.next_ok, w.game_time + 80);
-        });
+                let mut m = brute(Vec3::new(0.5, 0.0, 0.5), Some([24, 0, 0]));
+                let mut goal = BruteStrollHome { next_ok: 0 };
+                assert!(goal.can_use(&mut m, &mut cx), "the first try finds a path");
+                m.ai.pending_path = None;
+                assert!(
+                    !goal.can_use(&mut m, &mut cx),
+                    "no second search in the same 80 ticks"
+                );
+                assert_eq!(goal.next_ok, w.game_time + 80);
+            }),
+            "vanilla data is missing"
+        );
     }
     /// `PiglinBruteAi.wasHurtBy` erases nothing: a hit does not cost the brute
     /// the home it walks back to. `PiglinAi.wasHurtBy` erases
     /// CELEBRATE_LOCATION, which is the same field for a piglin.
     #[test]
+    #[ignore = "daily"]
     fn a_hit_leaves_the_brutes_home_alone() {
-        with_built_test_world(&[], build, |w, _| {
-            let mut lr = LegacyRandom::new(5);
-            let mut events = Vec::new();
-            let mut m = brute(Vec3::new(0.5, 0.0, 0.5), Some([24, 0, 0]));
-            piglin_hurt(&mut m, w, &mut lr, &mut events, Who::Mob(999));
-            assert_eq!(m.extra.home, Some([24, 0, 0]), "the brute keeps it");
-            let mut kind = kind();
-            Arc::make_mut(&mut kind).species = Species::Piglin;
-            let mut piglin = Mob::new(2, kind, Vec3::new(0.5, 0.0, 0.5), 0.0);
-            piglin.extra.home = Some([24, 0, 0]);
-            piglin_hurt(&mut piglin, w, &mut lr, &mut events, Who::Mob(999));
-            assert_eq!(piglin.extra.home, None, "the piglin drops its celebration");
-        });
+        assert!(
+            with_built_test_world(&[], build, |w, _| {
+                let mut lr = LegacyRandom::new(5);
+                let mut events = Vec::new();
+                let mut m = brute(Vec3::new(0.5, 0.0, 0.5), Some([24, 0, 0]));
+                piglin_hurt(&mut m, w, &mut lr, &mut events, Who::Mob(999));
+                assert_eq!(m.extra.home, Some([24, 0, 0]), "the brute keeps it");
+                let mut kind = kind();
+                Arc::make_mut(&mut kind).species = Species::Piglin;
+                let mut piglin = Mob::new(2, kind, Vec3::new(0.5, 0.0, 0.5), 0.0);
+                piglin.extra.home = Some([24, 0, 0]);
+                piglin_hurt(&mut piglin, w, &mut lr, &mut events, Who::Mob(999));
+                assert_eq!(piglin.extra.home, None, "the piglin drops its celebration");
+            }),
+            "vanilla data is missing"
+        );
     }
     /// `ATE_RECENTLY` is separate from hunt cooldown and shields in offhand are retained.
     #[test]
@@ -3010,8 +3033,8 @@ mod hoglin_pacified_feeding_tests {
     use crate::mobs::ai::{feed_animal, takes_food};
     use crate::mobs::sensor_scan_tests::kind;
     use crate::mobs::world::with_built_test_world;
-    use sunrise_world::registry::BlockRegistry;
     use std::sync::Arc;
+    use sunrise_world::registry::BlockRegistry;
 
     /// A stone floor under the origin and, at `(3, 0, 0)`, a warped fungus
     /// (one of `#hoglin_repellents`) while `repellent` is set.
@@ -3083,6 +3106,7 @@ mod hoglin_pacified_feeding_tests {
     /// The baby's branch asks `canAgeUp`, not `canFallInLove`, so a pacified
     /// baby still grows up, and no other species reads the hoglin's memory.
     #[test]
+    #[ignore = "daily"]
     fn a_pacified_hoglin_refuses_breeding_food_and_a_baby_still_grows() {
         let mut level = LegacyRandom::new(0);
         let ran = with_built_test_world(&[], build(true), |w, _| {
@@ -3113,7 +3137,7 @@ mod hoglin_pacified_feeding_tests {
             cow.extra.ints[0] = 200;
             assert!(takes_food(&cow), "another species ignores the memory");
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
     /// `BecomePassiveIfMemoryPresent.create(NEAREST_REPELLENT, 200)` sets
     /// `PACIFIED` for 200 ticks while the sensor holds the repellent, and the
@@ -3121,6 +3145,7 @@ mod hoglin_pacified_feeding_tests {
     /// the fungus keeps the adult refusing food for the rest of the 200 ticks,
     /// then it breeds again (`HoglinAi.wasHurtBy` is the other way out).
     #[test]
+    #[ignore = "daily"]
     fn pacification_outlives_the_repellent_by_200_ticks() {
         let mut level = LegacyRandom::new(0);
         let ran = with_built_test_world(&[], build(true), |w, _| {
@@ -3142,6 +3167,6 @@ mod hoglin_pacified_feeding_tests {
             assert!(feed_animal(&mut m, &mut level, None).is_some());
             assert_eq!(m.extra.in_love, 600);
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }

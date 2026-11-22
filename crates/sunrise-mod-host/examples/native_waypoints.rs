@@ -59,7 +59,7 @@ impl Hooks for Waypoints {
         if let Some((path, position)) = host
             .client_session()
             .client_server()
-            .and_then(|server| waypoint_path(&server.save_folder?, host.dimension()))
+            .and_then(|server| waypoint_path(server.save_folder?, host.dimension()))
             .zip(host.local_player().and_then(|player| {
                 player
                     .entity()
@@ -85,7 +85,7 @@ impl Hooks for Waypoints {
         let path = host
             .client_session()
             .client_server()
-            .and_then(|server| waypoint_path(&server.save_folder?, dimension));
+            .and_then(|server| waypoint_path(server.save_folder?, dimension));
         let mut markers = self.0.lock().unwrap();
         if markers.path != path {
             markers.manual = path.as_ref().and_then(|path| read_waypoint(host, path));
@@ -131,11 +131,9 @@ impl Hooks for Waypoints {
 }
 
 fn main() {
-    sunrise_mod_host::exit_if_compile_child();
     let startup = sunrise_client::entry::prepare();
     sunrise_mod_host::main_with(
         vec![ModEntry::new("waypoints", Box::<Waypoints>::default())],
-        &[],
         &[],
         startup,
     );

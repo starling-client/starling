@@ -2,7 +2,7 @@
 //! defaults, `key_<name>:key.keyboard.x` persistence, display names, and the
 //! translation of rebound physical keys back to the default keys the game
 //! logic listens for.
-use std::collections::BTreeMap;
+use std::{collections::HashMap, sync::LazyLock};
 use winit::{event::MouseButton, keyboard::KeyCode};
 
 /// (name, default key, category) in Options.keyMappings order.
@@ -74,17 +74,6 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.debug.lightmapTexture", "key.keyboard.4", "debug"),
     ("key.debug.improvedTransparency", "key.keyboard.x", "debug"),
 ];
-/// Sunrise's own key mappings: bound in Controls like the vanilla ones, but kept in
-/// `sunrise-extras.txt` (`emoteKey`), never in `options.txt`, which stays exactly vanilla's
-/// (`MAPPINGS` is what the options parity harness compares with the pinned client).
-pub const SUNRISE_MAPPINGS: &[(&str, &str, &str)] = &[
-    // The emote wheel (docs/cosmetics.md), on a key vanilla leaves free.
-    ("key.emote", "key.keyboard.b", "multiplayer"),
-];
-/// Every mapping the game binds: vanilla's in `Options.keyMappings` order, then Sunrise's.
-pub fn all_mappings() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
-    MAPPINGS.iter().chain(SUNRISE_MAPPINGS)
-}
 /// Mappings Options builds as `ToggleKeyMapping` (hold or toggle by option).
 pub fn is_toggle(name: &str) -> bool {
     matches!(name, "key.sneak" | "key.sprint" | "key.use" | "key.attack")
@@ -292,16 +281,38 @@ pub fn mouse_name(button: MouseButton) -> String {
         MouseButton::Middle => "key.mouse.middle".into(),
         MouseButton::Back => "key.mouse.4".into(),
         MouseButton::Forward => "key.mouse.5".into(),
-        MouseButton::Other(n) => format!("key.mouse.{}", n + 1),
+        MouseButton::Other(n) => format!("key.mouse.{}", u32::from(n) + 1),
     }
 }
+/// `InputConstants.getKey` for a mouse button: the three named buttons, else
+/// the name's number in vanilla's numbering (`InputConstants$Type`, as
+/// [`crate::key_names::MOUSE`]: left 1, middle 2, right 3, then 4 and up). 6
+/// and up are the inverse of [`mouse_name`] for `Other(5)` and above;
+/// `Other(0)` to `Other(4)` share their names with vanilla's five numbered
+/// buttons. A number no button has resolves to none.
 pub fn mouse_button(name: &str) -> Option<MouseButton> {
+    if let Some(button) = named_mouse_button(name) {
+        return Some(button);
+    }
+    Some(
+        match name.strip_prefix("key.mouse.")?.parse::<i32>().ok()? {
+            n @ 1..=3 => crate::key_names::MOUSE
+                .iter()
+                .find(|(k, _)| *k == n)
+                .and_then(|(_, named)| named_mouse_button(named))?,
+            4 => MouseButton::Back,
+            5 => MouseButton::Forward,
+            n if n >= 6 => MouseButton::Other(u16::try_from(n - 1).ok()?),
+            _ => return None,
+        },
+    )
+}
+/// The three buttons vanilla names (`key.mouse.left`, `middle`, `right`).
+fn named_mouse_button(name: &str) -> Option<MouseButton> {
     Some(match name {
         "key.mouse.left" => MouseButton::Left,
         "key.mouse.right" => MouseButton::Right,
         "key.mouse.middle" => MouseButton::Middle,
-        "key.mouse.4" => MouseButton::Back,
-        "key.mouse.5" => MouseButton::Forward,
         _ => return None,
     })
 }
@@ -391,76 +402,146 @@ pub fn raw_key_code(physical: winit::keyboard::PhysicalKey) -> u32 {
     }
 }
 
-/// Current bindings by mapping name.
+/// An engine-side index into [`MAPPINGS`], shared by all binding sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VanillaMappingSlot(usize);
+
+impl VanillaMappingSlot {
+    /// Resolve a canonical mapping name (e.g. `key.jump`), not a key name.
+    pub fn by_name(name: &str) -> Option<Self> {
+        // Looked up per held-mapping read, which a server makes on every player turn.
+        static BY_NAME: LazyLock<
+            sunrise_core::fast_hash::FxHashMap<&'static str, VanillaMappingSlot>,
+        > = LazyLock::new(|| {
+            VanillaMappingSlot::all()
+                .map(|slot| (slot.definition().0, slot))
+                .collect()
+        });
+        BY_NAME.get(name).copied()
+    }
+
+    /// The gameplay mapping whose default is `key`, independent of its current binding.
+    pub fn by_default_key(key: KeyCode) -> Option<Self> {
+        static BY_KEY: LazyLock<HashMap<KeyCode, VanillaMappingSlot>> = LazyLock::new(|| {
+            VanillaMappingSlot::all()
+                .filter(|slot| slot.definition().2 != "debug")
+                .filter_map(|slot| Some((slot.default_input()?.ok()?, slot)))
+                .collect()
+        });
+        BY_KEY.get(&key).copied()
+    }
+
+    /// Resolve an index only if it names a row in [`MAPPINGS`].
+    pub const fn from_index(index: usize) -> Option<Self> {
+        if index < MAPPINGS.len() {
+            Some(Self(index))
+        } else {
+            None
+        }
+    }
+
+    /// The in-process index, not a persisted key mapping name.
+    pub const fn index(self) -> usize {
+        self.0
+    }
+
+    /// The canonical mapping name, default binding name, and category, in that order.
+    pub const fn definition(self) -> (&'static str, &'static str, &'static str) {
+        MAPPINGS[self.index()]
+    }
+
+    /// The default input for routing to gameplay (`Ok` for keyboard, `Err` for mouse).
+    /// `None` means the default is unbound or unsupported.
+    pub fn default_input(self) -> Option<Result<KeyCode, MouseButton>> {
+        static DEFAULTS: LazyLock<[Option<Result<KeyCode, MouseButton>>; MAPPINGS.len()]> =
+            LazyLock::new(|| std::array::from_fn(|index| decode_input(MAPPINGS[index].1)));
+        DEFAULTS[self.index()]
+    }
+
+    fn all() -> impl Iterator<Item = Self> {
+        (0..MAPPINGS.len()).map(Self)
+    }
+}
+
+fn decode_input(name: &str) -> Option<Result<KeyCode, MouseButton>> {
+    key_code(name)
+        .map(Ok)
+        .or_else(|| mouse_button(name).map(Err))
+}
+
+const UNBOUND: &str = "key.keyboard.unknown";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Binding {
+    name: String,
+    physical: Option<Result<KeyCode, MouseButton>>,
+}
+
+/// Current bindings, indexed in [`MAPPINGS`] order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyBinds {
-    keys: BTreeMap<&'static str, String>,
+    bindings: Box<[Binding; MAPPINGS.len()]>,
 }
 impl Default for KeyBinds {
     fn default() -> Self {
         Self {
-            keys: all_mappings()
-                .map(|(n, d, _)| (*n, (*d).to_owned()))
-                .collect(),
+            bindings: Box::new(std::array::from_fn(|index| {
+                let slot = VanillaMappingSlot(index);
+                Binding {
+                    name: slot.definition().1.to_owned(),
+                    physical: slot.default_input(),
+                }
+            })),
         }
     }
-}
-/// Each default key once, in order: two mappings that share a default key
-/// (Pick Block and the spectator hotbar both on the middle button) are one
-/// press of it, not two.
-fn distinct<T: PartialEq>(keys: Vec<T>) -> Vec<T> {
-    let mut out = Vec::with_capacity(keys.len());
-    for k in keys {
-        if !out.contains(&k) {
-            out.push(k);
-        }
-    }
-    out
 }
 
 impl KeyBinds {
+    /// Lend the current binding name, including unbound and unsupported names.
+    pub fn binding_at(&self, slot: VanillaMappingSlot) -> &str {
+        &self.bindings[slot.index()].name
+    }
+    /// Read the decoded binding (`Ok` for keyboard, `Err` for mouse), or `None`
+    /// if it is unbound or unsupported.
+    pub fn physical_at(&self, slot: VanillaMappingSlot) -> Option<Result<KeyCode, MouseButton>> {
+        self.bindings[slot.index()].physical
+    }
     pub fn get(&self, name: &str) -> &str {
-        self.keys
-            .get(name)
-            .map_or("key.keyboard.unknown", String::as_str)
+        VanillaMappingSlot::by_name(name).map_or(UNBOUND, |slot| self.binding_at(slot))
     }
     pub fn default_of(name: &str) -> &'static str {
-        all_mappings()
-            .find(|m| m.0 == name)
-            .map_or("key.keyboard.unknown", |m| m.1)
+        VanillaMappingSlot::by_name(name).map_or(UNBOUND, |slot| slot.definition().1)
     }
     pub fn is_default(&self, name: &str) -> bool {
-        self.get(name) == Self::default_of(name)
+        VanillaMappingSlot::by_name(name)
+            .is_none_or(|slot| self.binding_at(slot) == slot.definition().1)
     }
     /// `KeyBindsScreen.extractRenderState`: Reset All is active only while a
     /// mapping differs from its default (`KeyMapping.isDefault`, the bound key
     /// against `defaultKey`).
     pub fn changed_from_defaults(&self) -> bool {
-        self.keys.keys().any(|name| !self.is_default(name))
+        VanillaMappingSlot::all().any(|slot| self.binding_at(slot) != slot.definition().1)
     }
     pub fn set(&mut self, name: &str, key: &str) {
-        if let Some((n, _, _)) = all_mappings().find(|m| m.0 == name) {
-            self.keys.insert(n, key.to_owned());
+        if let Some(slot) = VanillaMappingSlot::by_name(name) {
+            self.bindings[slot.index()] = Binding {
+                name: key.to_owned(),
+                physical: decode_input(key),
+            };
         }
     }
     /// Publish these bindings as the ones `keybind` text components show
     /// (`KeybindResolver`). Only the active set calls this: on load and after
     /// the options change it.
     pub fn sync_action_bindings(&self) {
-        replace_action_bindings(self.keys.iter().map(|(n, d)| (*n, d.as_str())));
+        replace_action_bindings(
+            VanillaMappingSlot::all().map(|slot| (slot.definition().0, self.binding_at(slot))),
+        );
     }
     /// The bindings `options.txt` holds: vanilla's mappings only.
     pub fn saved(&self) -> Vec<(&'static str, String)> {
-        MAPPINGS
-            .iter()
-            .map(|(n, _, _)| (*n, self.get(n).to_owned()))
-            .collect()
-    }
-    /// Sunrise's own bindings, for `sunrise-extras.txt`.
-    pub fn sunrise_saved(&self) -> Vec<(&'static str, String)> {
-        SUNRISE_MAPPINGS
-            .iter()
-            .map(|(n, _, _)| (*n, self.get(n).to_owned()))
+        VanillaMappingSlot::all()
+            .map(|slot| (slot.definition().0, self.binding_at(slot).to_owned()))
             .collect()
     }
     pub fn reset_all(&mut self) {
@@ -468,27 +549,31 @@ impl KeyBinds {
     }
     /// Mappings sharing `name`'s key (KeyMapping.same), for conflict marks.
     pub fn conflicts(&self, name: &str) -> Vec<&'static str> {
-        let key = self.get(name);
-        if key == "key.keyboard.unknown" {
+        let Some(current) = VanillaMappingSlot::by_name(name) else {
+            return Vec::new();
+        };
+        let key = self.binding_at(current);
+        if key == UNBOUND {
             return Vec::new();
         }
-        all_mappings()
-            .filter(|(n, _, _)| {
-                *n != name && self.get(n) == key && (!self.is_default(n) || !self.is_default(name))
+        let moved = key != current.definition().1;
+        VanillaMappingSlot::all()
+            .filter(|&slot| {
+                slot != current
+                    && self.binding_at(slot) == key
+                    && (moved || key != slot.definition().1)
             })
-            .map(|(n, _, _)| *n)
+            .map(|slot| slot.definition().0)
             .collect()
     }
-    /// The mapping a physical input triggers (first in list order).
-    pub fn mapping_for(&self, key: &str) -> Option<&'static str> {
-        self.mappings_for(key).next()
+    /// Every slot bound to `key`, in [`MAPPINGS`] order.
+    pub fn slots_for<'a>(&'a self, key: &'a str) -> impl Iterator<Item = VanillaMappingSlot> + 'a {
+        VanillaMappingSlot::all().filter(move |&slot| self.binding_at(slot) == key)
     }
     /// Every mapping a physical input triggers, in list order: like
     /// `KeyMapping.set`/`click`, one key drives all the mappings bound to it.
     pub fn mappings_for<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'static str> + 'a {
-        all_mappings()
-            .map(|m| m.0)
-            .filter(move |n| self.get(n) == key)
+        self.slots_for(key).map(|slot| slot.definition().0)
     }
     /// The mappings bound to `key` that [`KeyBinds::translate_all`] follows:
     /// all but the debug keys. Those act only with F3 held
@@ -499,15 +584,22 @@ impl KeyBinds {
         &'a self,
         key: &'a str,
     ) -> impl Iterator<Item = &'static str> + 'a {
-        all_mappings()
-            .filter(|m| m.2 != "debug")
-            .map(|m| m.0)
-            .filter(move |n| self.get(n) == key)
+        self.translated_slots(key).map(|slot| slot.definition().0)
+    }
+    fn translated_slots<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> impl Iterator<Item = VanillaMappingSlot> + 'a {
+        VanillaMappingSlot::all()
+            .filter(move |&slot| slot.definition().2 != "debug" && self.binding_at(slot) == key)
     }
     /// Whether a mapping (other than a debug key) whose default is `key` was
     /// bound elsewhere.
     fn default_moved(&self, key: &str) -> bool {
-        all_mappings().any(|(n, d, c)| *d == key && *c != "debug" && !self.is_default(n))
+        VanillaMappingSlot::all().any(|slot| {
+            let (_, default, category) = slot.definition();
+            default == key && category != "debug" && self.binding_at(slot) != default
+        })
     }
     /// Translate a physical key into the default key of the mapping it is
     /// bound to, so game code written against vanilla defaults follows the
@@ -524,24 +616,30 @@ impl KeyBinds {
         let Some(name) = key_name(key) else {
             return vec![Ok(key)];
         };
-        let bound: Vec<_> = self
-            .translated_mappings(name)
-            .filter_map(|mapping| {
-                let default = Self::default_of(mapping);
-                match key_code(default) {
-                    Some(code) => Some(Ok(code)),
-                    None => mouse_button(default).map(Err),
-                }
-            })
-            .collect();
-        if !bound.is_empty() {
-            return distinct(bound);
+        self.translate_input(name, Ok(key))
+    }
+    fn translate_input(
+        &self,
+        name: &str,
+        input: Result<KeyCode, MouseButton>,
+    ) -> Vec<Result<KeyCode, MouseButton>> {
+        // Compare the original names: decoding e.g. `key.mouse.1` would also
+        // match `key.mouse.left`, which the name-based controls don't do.
+        let mut bound = Vec::new();
+        for default in self
+            .translated_slots(name)
+            .filter_map(VanillaMappingSlot::default_input)
+        {
+            // A shared default (Pick Block and spectator hotbar) is one press.
+            if !bound.contains(&default) {
+                bound.push(default);
+            }
         }
-        // An unbound key whose default meaning was moved elsewhere is inert.
-        if self.default_moved(name) {
-            return Vec::new();
+        // An unbound input whose default meaning moved elsewhere is inert.
+        if bound.is_empty() && !self.default_moved(name) {
+            bound.push(input);
         }
-        vec![Ok(key)]
+        bound
     }
     /// `Minecraft.handleKeybinds`: key.pickItem and key.spectatorHotbar share the middle button by
     /// default and are separate mappings, so a press of what `input` is bound to acts only as the
@@ -561,57 +659,35 @@ impl KeyBinds {
     }
     /// [`KeyBinds::translate_all`] for a mouse button.
     pub fn translate_mouse_all(&self, button: MouseButton) -> Vec<Result<KeyCode, MouseButton>> {
-        let name = mouse_name(button);
-        let bound: Vec<_> = self
-            .translated_mappings(&name)
-            .filter_map(|mapping| {
-                let default = Self::default_of(mapping);
-                match mouse_button(default) {
-                    Some(b) => Some(Err(b)),
-                    None => key_code(default).map(Ok),
-                }
-            })
-            .collect();
-        if !bound.is_empty() {
-            return distinct(bound);
-        }
-        if self.default_moved(&name) {
-            return Vec::new();
-        }
-        vec![Err(button)]
+        self.translate_input(&mouse_name(button), Err(button))
     }
     /// `AbstractContainerScreen.checkHotbarMouseClicked`: off hand, then hotbar.
     pub fn container_mouse_key(&self, button: MouseButton, creative: bool) -> Option<KeyCode> {
-        let name = mouse_name(button);
-        if matches!(button, MouseButton::Left | MouseButton::Right)
-            || (creative && self.get("key.pickItem") == name)
-        {
+        if matches!(button, MouseButton::Left | MouseButton::Right) {
             return None;
         }
-        std::iter::once("key.swapOffhand")
-            .chain(
-                MAPPINGS
-                    .iter()
-                    .map(|m| m.0)
-                    .filter(|n| n.starts_with("key.hotbar.")),
-            )
-            .find(|mapping| self.get(mapping) == name)
-            .and_then(|mapping| key_code(Self::default_of(mapping)))
+        let name = mouse_name(button);
+        if creative && self.get("key.pickItem") == name {
+            return None;
+        }
+        self.container_key(&name)
     }
     /// `AbstractContainerScreen.checkHotbarKeyPressed`: the off hand and the
     /// hotbar slots, as the controls bind them now. Answers the key the menu
     /// acts on (`KeyF` for the off hand, `DigitN` for a slot), so a rebound key
     /// swaps instead of reaching the screen.
     pub fn container_hotbar_key(&self, key: KeyCode) -> Option<KeyCode> {
-        let name = key_name(key)?;
-        if self.get("key.swapOffhand") == name {
-            return Some(KeyCode::KeyF);
-        }
-        MAPPINGS
-            .iter()
-            .filter(|m| m.0.starts_with("key.hotbar."))
-            .find(|m| self.get(m.0) == name)
-            .and_then(|m| key_code(Self::default_of(m.0)))
+        self.container_key(key_name(key)?)
+    }
+    fn container_key(&self, name: &str) -> Option<KeyCode> {
+        let offhand = VanillaMappingSlot::by_name("key.swapOffhand")
+            .filter(|&slot| self.binding_at(slot) == name);
+        let slot = offhand.or_else(|| {
+            VanillaMappingSlot::all().find(|&slot| {
+                slot.definition().0.starts_with("key.hotbar.") && self.binding_at(slot) == name
+            })
+        })?;
+        slot.default_input()?.ok()
     }
 }
 
@@ -638,6 +714,64 @@ mod tests {
         assert!(!keys.middle_acts(z, true));
         assert!(keys.middle_acts(middle, true));
         assert!(!keys.middle_acts(middle, false));
+    }
+    /// #1646: the name `mouse_name` writes for each named button, and for
+    /// `Other(5)` up to the last button winit can name, reads back.
+    #[test]
+    fn every_saved_mouse_button_name_reads_back() {
+        use MouseButton::*;
+        for button in [
+            Left,
+            Right,
+            Middle,
+            Back,
+            Forward,
+            Other(5),
+            Other(6),
+            Other(99),
+            Other(u16::MAX),
+        ] {
+            assert_eq!(
+                mouse_button(&mouse_name(button)),
+                Some(button),
+                "{button:?}"
+            );
+        }
+        assert_eq!(mouse_name(Other(5)), "key.mouse.6");
+        assert_eq!(mouse_name(Other(u16::MAX)), "key.mouse.65536");
+    }
+    /// `InputConstants.getKey`: a name outside the named ones reads its number
+    /// with `Integer.parseInt` as the button, in vanilla's numbering
+    /// (`InputConstants$Type`: left 1, middle 2, right 3), and a number no
+    /// button has never resolves.
+    #[test]
+    fn a_numbered_mouse_name_reads_as_vanillas_button() {
+        use MouseButton::*;
+        for (name, button) in [
+            ("key.mouse.1", Left),
+            ("key.mouse.2", Middle),
+            ("key.mouse.3", Right),
+            ("key.mouse.4", Back),
+            ("key.mouse.5", Forward),
+            ("key.mouse.+7", Other(6)),
+            ("key.mouse.007", Other(6)),
+        ] {
+            assert_eq!(mouse_button(name), Some(button), "{name}");
+        }
+        for name in [
+            "key.mouse.0",
+            "key.mouse.-6",
+            "key.mouse.65537",
+            "key.mouse.2147483648",
+            "key.mouse.-2147483648",
+            "key.mouse.six",
+            "key.mouse.",
+            "key.mouse.6 ",
+            "key.mouse6",
+            "key.keyboard.6",
+        ] {
+            assert_eq!(mouse_button(name), None, "{name}");
+        }
     }
     #[test]
     fn container_mouse_hotkeys_follow_slot_bindings_and_pick_item_priority() {

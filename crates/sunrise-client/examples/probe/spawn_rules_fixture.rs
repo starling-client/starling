@@ -3,17 +3,22 @@
 //! `VanillaSpawnRulesOracle` and prints `mobs::spawn_rules`' answers.
 //!
 //! usage: spawn_rules_fixture RESOURCES INPUT OUTPUT
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt::Write as _,
+    fs,
+    path::Path,
+};
 use sunrise_client::{
     assets::Assets,
     blocks::BlockFacts,
     items::Items,
     mobs::{
-        MobTypes,
+        MobType, MobTypes,
         data::MobData,
         spawn_rules::{self, Reason, SpawnLevel},
         spawn_selection::{
-            self, Heightmap, MobType as SelectionMobType, NaturalLevel, SpawnCost, StructureAt,
-            StructureSpawns, spawn_aabb,
+            self, Heightmap, NaturalLevel, SpawnCost, StructureAt, StructureSpawns, spawn_aabb,
         },
     },
 };
@@ -22,12 +27,6 @@ use sunrise_core::random::{LegacyRandom, RandomSource};
 use sunrise_world::dimension_type::DimensionFacts;
 use sunrise_world::loot::PackOverlay;
 use sunrise_world::{chunk::BlockState, registry::BlockStateId};
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    fmt::Write as _,
-    fs,
-    path::Path,
-};
 
 struct Column<'a> {
     border: sunrise_core::geometry::border::BorderGeometry,
@@ -131,7 +130,7 @@ impl NaturalLevel for Column<'_> {
     fn has_ceiling(&self) -> bool {
         false
     }
-    fn mob_type(&self, _entity: &str) -> Option<SelectionMobType> {
+    fn mob_type(&self, _entity: &str) -> Option<&MobType> {
         None
     }
     fn biome_spawns(
@@ -316,7 +315,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 kind.height as f32,
             );
             let obstruction =
-                spawn_selection::spawn_obstruction(s, &level, bounds, Some(&[]), x0, y, z0);
+                spawn_selection::spawn_obstruction(s, &level, bounds, true, x0, y, z0);
             let _ = writeln!(out, "{name} {obstruction}");
             continue;
         }
@@ -324,8 +323,7 @@ pub fn main() -> sunrise_client::Result<()> {
         let s = kind.species;
         let ok = spawn_rules::is_spawn_position_ok(c["type"], s, &level, x0, y, z0);
         let rules = spawn_rules::check_spawn_rules(
-            c["type"],
-            s,
+            kind.into(),
             &level,
             reason(&get("reason", "natural")),
             &mut random,

@@ -1,0 +1,206 @@
+name: Build and publish a planned mod release
+on:
+  workflow_call:
+    inputs:
+      commit:
+        required: true
+        type: string
+      tool_commit:
+        required: true
+        type: string
+      matrix:
+        required: true
+        type: string
+      rebuild:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  SUNRISE_MOD_PUBLIC_KEY: ${{ vars.SUNRISE_MOD_PUBLIC_KEY }}
+  SUNRISE_MOD_REGISTRY_OWNER: ${{ vars.SUNRISE_MOD_REGISTRY_OWNER }}
+  SUNRISE_MOD_SUMMARY: ${{ vars.SUNRISE_MOD_SUMMARY }}
+  SUNRISE_MOD_CATEGORIES: ${{ vars.SUNRISE_MOD_CATEGORIES }}
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+          # Rebuilds get their source only from the verified reviewed package.
+          sparse-checkout: ${{ inputs.rebuild && '.github' || '' }}
+      - uses: ./.github/actions/sunrise-release-tool
+        with:
+          triple: ${{ matrix.triple }}
+          commit: ${{ inputs.tool_commit }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sunrise-release-plan
+          path: ${{ runner.temp }}/sunrise-release/plan/
+      - name: Check, test and build the planned host
+        env:
+          HOST: ${{ matrix.name }}
+        run: python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release.py" build --work "$RUNNER_TEMP/sunrise-release" --host "$HOST"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sunrise-release-host-${{ matrix.name }}
+          path: ${{ runner.temp }}/sunrise-release/host-results/${{ matrix.name }}/
+          if-no-files-found: error
+          overwrite: true
+
+  sign:
+    needs: build
+    runs-on: ubuntu-22.04
+    environment: sunrise-mod-signing
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /sunrise-mod.toml
+            /icon.png
+      - uses: ./.github/actions/sunrise-release-tool
+        with:
+          commit: ${{ inputs.tool_commit }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sunrise-release-plan
+          path: ${{ runner.temp }}/sunrise-release/plan/
+      - name: Find the original signed batch on a retry
+        id: saved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release_github.py" saved
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.saved.outputs.id != ''
+        with:
+          artifact-ids: ${{ steps.saved.outputs.id }}
+          path: ${{ runner.temp }}/sunrise-release/signed/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.saved.outputs.id == ''
+        with:
+          pattern: sunrise-release-host-*
+          path: ${{ runner.temp }}/sunrise-release/downloads/
+      - name: Collect host directories by their artifact names
+        if: steps.saved.outputs.id == ''
+        run: |
+          work="$RUNNER_TEMP/sunrise-release"
+          mkdir -p "$work/host-results"
+          for dir in "$work"/downloads/sunrise-release-host-*; do
+            host=${dir##*/sunrise-release-host-}
+            mv "$dir" "$work/host-results/$host"
+          done
+      - name: Sign the author assets (never runs mod code)
+        if: steps.saved.outputs.id == ''
+        env:
+          SUNRISE_MOD_SIGNING_KEY: ${{ secrets.SUNRISE_MOD_SIGNING_KEY }}
+          SUNRISE_MOD_SIGNING_PASSPHRASE: ${{ secrets.SUNRISE_MOD_SIGNING_PASSPHRASE }}
+        run: python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release.py" sign --work "$RUNNER_TEMP/sunrise-release"
+      - name: Preflight the exact signed files against the registry
+        run: |
+          work="$RUNNER_TEMP/sunrise-release"
+          python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release_github.py" registry --work "$work" --registry "$work/registry"
+          python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release.py" stage --work "$work" \
+            --registry "$work/registry" --published "$work/published.json" --out "$work/preflight"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.saved.outputs.id == ''
+        with:
+          name: sunrise-release-signed
+          path: ${{ runner.temp }}/sunrise-release/signed/
+          if-no-files-found: error
+          retention-days: 30
+
+  upload:
+    needs: sign
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: ./.github/actions/sunrise-release-tool
+        with:
+          commit: ${{ inputs.tool_commit }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sunrise-release-plan
+          path: ${{ runner.temp }}/sunrise-release/plan/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sunrise-release-signed
+          path: ${{ runner.temp }}/sunrise-release/signed/
+      - name: Upload missing assets without replacing any remote bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release_github.py" upload --work "$RUNNER_TEMP/sunrise-release"
+
+  registry:
+    needs: upload
+    runs-on: ubuntu-22.04
+    environment: sunrise-mod-registry
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /sunrise-mod.toml
+            /icon.png
+      - uses: ./.github/actions/sunrise-release-tool
+        with:
+          commit: ${{ inputs.tool_commit }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sunrise-release-plan
+          path: ${{ runner.temp }}/sunrise-release/plan/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sunrise-release-signed
+          path: ${{ runner.temp }}/sunrise-release/signed/
+      - name: Stage registry files from the verified uploaded batch
+        run: |
+          work="$RUNNER_TEMP/sunrise-release"
+          python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release_github.py" registry --work "$work" --registry "$work/registry"
+          python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release.py" stage --work "$work" \
+            --registry "$work/registry" --published "$work/published.json" --out "$work/submission"
+      - name: Show the draft or open a pull request from the configured registry fork
+        env:
+          GH_TOKEN: ${{ secrets.SUNRISE_MOD_REGISTRY_TOKEN }}
+          SUNRISE_MOD_REGISTRY_FORK: ${{ vars.SUNRISE_MOD_REGISTRY_FORK }}
+        run: |
+          work="$RUNNER_TEMP/sunrise-release"
+          python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release_github.py" submit --work "$work" \
+            --registry "$work/registry" --submission "$work/submission"
+      # Keep the draft only once submit has rechecked the stable pins.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sunrise-registry-submission
+          path: |
+            ${{ runner.temp }}/sunrise-release/submission/PULL_REQUEST.md
+            ${{ runner.temp }}/sunrise-release/submission/mods/
+            ${{ runner.temp }}/sunrise-release/submission/icons/
+            ${{ runner.temp }}/sunrise-release/submission/ALREADY_LISTED
+          if-no-files-found: error
+          overwrite: true

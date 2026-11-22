@@ -4,6 +4,8 @@
 //! the shown screen's GUI calls in the oracle's JSON form.
 //!
 //! usage: pack_screen_fixture RESOURCES CASES OUTPUT
+use serde_json::{Value, json};
+use std::{fmt::Write as _, fs, path::PathBuf, sync::Arc};
 use sunrise_client::{
     hud::{HudAtlas, PACK_ICON_SIZE},
     lang,
@@ -12,8 +14,6 @@ use sunrise_client::{
     screen_draw::{Draw, Measure},
     text::Text,
 };
-use serde_json::{Value, json};
-use std::{fmt::Write as _, fs, path::PathBuf, sync::Arc};
 
 /// Styled runs: [text, rgb or null, bold, italic, underlined, strikethrough, obfuscated].
 pub fn runs(t: &Text) -> Value {

@@ -19,7 +19,6 @@ impl Game<'_> {
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Requests vanilla's menu background blur for this frame, with a per-frame guard
     /// so blur is applied at most once per frame. Returns true if blur was newly
@@ -62,7 +61,7 @@ impl Game<'_> {
         argb: u32,
     ) -> bool {
         let atlas = &self.gui.atlas;
-        if !atlas.sprites.contains_key(sprite) {
+        if atlas.gui_rect(sprite).is_none() {
             return false;
         }
         let [x, y, w, h] = rect;

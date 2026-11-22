@@ -83,11 +83,13 @@ def build_rust():
 
 def run_vanilla(classpath, world, out, target=None):
     # The oracle replaces OUT itself: left in place, an unchanged run's outputs can be reused.
+    # With a CI seed keep, only the input seeds are kept: always upgrade fresh on both engines.
+    env = {**os.environ, 'PARITY_JAVA_CACHE': '0'} if os.environ.get('SUNRISE_DATAFIX_SEED_KEEP') else None
     log = out.parent / (out.name + '.log')
     with log.open('w') as f:
         result = subprocess.run(['java', '-Xmx3g', '-Djava.awt.headless=true', '-cp', classpath,
                                  'dev.sunriselab.parity.VanillaDataFixOracle', str(world), str(out), *([str(target)] if target else [])],
-                                stdout=f, stderr=subprocess.STDOUT)
+                                env=env, stdout=f, stderr=subprocess.STDOUT)
     if result.returncode:
         # The traceback of a failed check names the command, not why the JVM stopped: show its exit and last output.
         how = f'exit {result.returncode}' + (' (killed by signal %d)' % -result.returncode if result.returncode < 0 else '')
@@ -213,15 +215,23 @@ def main():
     p.add_argument('--band', type=int, metavar='TARGET', help='check the data fixes up to this DataVersion only (not the '
                    'file fixes), on the sample worlds saved before it, for developing the fixes of a range of versions')
     args = p.parse_args()
+    if os.environ.get('SUNRISE_DATAFIX_SEEDS_OUTCOME') == 'failure':
+        sys.exit('seed preparation failed, see datafix-seeds.log')
     import datafix_worlds
     import file_lock
     WORLDS.parent.mkdir(parents=True, exist_ok=True)
     with open(WORLDS.parent / 'generate.lock', 'w') as handle:
         file_lock.lock(handle)  # another process may be generating them
-        missing = [v for v in [*datafix_worlds.VERSIONS, *datafix_worlds.VARIANTS] if not (datafix_worlds.worlds_dir(v) / v / 'level.dat').exists()]
-        if missing:
-            print('generating sample worlds:', ' '.join(missing), flush=True)
-            subprocess.run([sys.executable, str(ROOT / 'tools' / 'datafix_worlds.py'), *missing], cwd=ROOT, check=True)
+        seed_keep = os.environ.get('SUNRISE_DATAFIX_SEED_KEEP')
+        if seed_keep:
+            import datafix_seeds
+            if not datafix_seeds.snapshot_complete(LOCAL):
+                datafix_seeds.prepare(LOCAL, seed_keep)
+        else:
+            missing = [v for v in [*datafix_worlds.VERSIONS, *datafix_worlds.VARIANTS] if not (datafix_worlds.worlds_dir(v) / v / 'level.dat').exists()]
+            if missing:
+                print('generating sample worlds:', ' '.join(missing), flush=True)
+                subprocess.run([sys.executable, str(ROOT / 'tools' / 'datafix_worlds.py'), *missing], cwd=ROOT, check=True)
     worlds = sorted(p.name for d in (WORLDS, LOCAL / 'worlds-pre-1.17') if d.is_dir() for p in d.iterdir() if p.is_dir())
     band = args.band
     if band and not args.versions:  # worlds in the layout of before 1.16, saved before the target

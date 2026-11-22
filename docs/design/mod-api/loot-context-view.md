@@ -1,6 +1,14 @@
 # Design: Read-only typed loot context
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [loot functions and conditions](../../modding/src/how-to/items/loot-functions-and-conditions.md) for the current native API.
+> The guest snapshot and acceptance plan below is historical; use the current codec registration contract.
+
 Provisional proposal for [#2647](https://github.com/arismoko/horizon/issues/2647). Docs only; approval precedes code. Broaden the existing `LootContext` snapshot at the condition/function evaluation boundary. Do not provide a mutable Host, live world access, or another loot hook. [#2648](https://github.com/arismoko/horizon/issues/2648) owns the narrow tags view. [PR #2595](https://github.com/arismoko/horizon/pull/2595) owns `LevelRef::roll_loot` and its FISHING-shaped input; this proposal neither expands that input nor changes random ownership.
+
+The codec registration contract supersedes the seed convention in this older proposal:
+registered types borrow the actual selected random and snapshots carry seed zero. See the
+[loot type guide](../../modding/src/how-to/items/loot-functions-and-conditions.md).
 
 ## Evidence and current routes
 
@@ -13,9 +21,9 @@ Verified repository-relative owners:
 | Route | Owner |
 | --- | --- |
 | Existing API snapshot and nested Wire values | `crates/sunrise-mod-vocab/src/world/snapshots.rs:104`, `:129`, `:140`, `:174`, `:187`, `:199` |
-| Condition/function catalog, authoritative server | `crates/sunrise-mod-vocab/src/hooks/loot_condition.rs:9`, `loot_function.rs:10` |
-| Guarded conversion and dispatch, immutable context | `crates/sunrise-client/src/game/modding/api_values/loot_values.rs:7`, `:24`, `:174` |
-| Engine callbacks and borrowed context | `crates/sunrise-world/src/loot.rs:89`, `:103`, `:120`; forwarding `crates/sunrise-world/src/native_load_hooks.rs:40`, `:51` |
+| Registered condition/function map codecs, authoritative server | `crates/sunrise-mod-vocab/src/loot_types.rs`, `parts/loot_types.rs` |
+| Guarded conversion and type dispatch, immutable context | `crates/sunrise-client/src/game/modding/loot_types.rs`, `api_values/loot_values.rs` |
+| Engine type validation and borrowed random/context | `crates/sunrise-world/src/loot_types.rs` |
 | World evaluator: custom condition, context capture, custom function | `crates/sunrise-world/src/loot.rs:1583`, `:1613`, `:2107` |
 | Items evaluator: context capture, custom condition/function | `crates/sunrise-items/src/items.rs:2049`, `:2234`, `:2627` |
 | Place scope shared by both evaluators | `crates/sunrise-world/src/loot.rs:187`, `:200` |

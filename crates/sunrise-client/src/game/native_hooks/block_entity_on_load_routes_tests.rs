@@ -1,21 +1,24 @@
 #[cfg(test)]
 mod tests {
+    use crate::game::remote::RemoteDimensionEntry;
     use crate::game::{
         Game,
         native_entity_refs::tests::{run_fresh_cases, with_game_role},
     };
-    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
     use mod_api::*;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
+    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
     type Log = Arc<Mutex<Vec<(&'static str, i32)>>>;
+    type Payloads = Arc<Mutex<Vec<(BlockEntityRef, i32, [i32; 3], LevelRef)>>>;
     struct Listener {
         air: BlockKey,
         replacement: BlockKey,
         log: Log,
         replace: Arc<AtomicBool>,
+        report_payload: bool,
     }
     #[mod_api::sunrise_part]
     impl BlockPart for Listener {}
@@ -27,24 +30,51 @@ mod tests {
         fn block_entity_ticks(&self, _: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
             event.ticks = true;
         }
-        fn block_entity_tick(&self, _: &mut dyn ServerHost, _: &mut BlockEntityTickEvent<'_>) {
+        fn block_entity_tick(&self, _: &mut BlockEntityTickEvent<'_>) {
             self.log.lock().unwrap().push(("tick", -1));
         }
-        fn block_entity_on_load(&self, host: HostSide, event: &mut BlockEntityOnLoadEvent) {
-            let (label, data) = match &host {
-                HostSide::Server(h) => ("load", event.entity.data(&**h).unwrap()),
-                HostSide::Client(h) => ("client_load", event.entity.data(&**h).unwrap()),
+        fn block_entity_load_additional(&self, event: &mut BlockEntityLoadAdditionalEvent<'_>) {
+            if self.report_payload {
+                let count = event.tag.get(&"count".into()).unwrap();
+                let seen = event
+                    .subject
+                    .with_view(|view| view.nbt().get(&"count".into()).cloned())
+                    .expect("live resident block entity");
+                assert_eq!(seen.as_ref(), Some(count));
+                let Tag::Int(count) = count else {
+                    panic!("save count is an int")
+                };
+                self.log.lock().unwrap().push(("payload", *count));
+                // This Part's event view is local. A later Part still sees the installed compound.
+                static OTHER: std::sync::OnceLock<Compound> = std::sync::OnceLock::new();
+                event.tag = OTHER.get_or_init(Compound::new);
+            }
+        }
+        fn block_entity_on_load(&self, event: &mut BlockEntityOnLoadEvent<'_>) {
+            let (label, count, pos, level) = match &mut event.subject {
+                BlockEntitySideScope::Server(scope) => scope
+                    .with_view(|view| {
+                        let Some(Tag::Int(count)) = view.nbt().get(&"count".into()) else {
+                            panic!("missing saved count")
+                        };
+                        ("load", *count, view.position(), view.level())
+                    })
+                    .expect("live resident server block entity"),
+                BlockEntitySideScope::Client(scope) => scope
+                    .with_view(|view| {
+                        let Some(Tag::Int(count)) = view.nbt().get(&"count".into()) else {
+                            panic!("missing saved count")
+                        };
+                        ("client_load", *count, view.position(), view.level())
+                    })
+                    .expect("live resident client block entity"),
             };
-            let Some(Tag::Int(count)) = data.get(&"count".into()) else {
-                panic!("missing saved count")
-            };
-            self.log.lock().unwrap().push((label, *count));
+            self.log.lock().unwrap().push((label, count));
             if self.replace.load(Ordering::SeqCst) {
-                let HostSide::Server(host) = host else {
+                let BlockEntitySideScope::Server(scope) = &mut event.subject else {
                     panic!()
                 };
-                let pos = event.entity.position(host).unwrap();
-                let level = event.entity.level(host).unwrap();
+                let host = scope.host();
                 let state = BlockState::of(&host.block_states(), self.replacement, &[]).unwrap();
                 let air = BlockState::of(&host.block_states(), self.air, &[]).unwrap();
                 assert_eq!(
@@ -58,9 +88,27 @@ mod tests {
             }
         }
     }
+    struct PayloadPeer(Payloads);
+    #[mod_api::sunrise_part]
+    impl BlockPart for PayloadPeer {}
+    #[mod_api::sunrise_part]
+    impl BlockEntityPart for PayloadPeer {
+        fn block_entity_load_additional(&self, event: &mut BlockEntityLoadAdditionalEvent<'_>) {
+            let Some(Tag::Int(count)) = event.tag.get(&"count".into()) else {
+                panic!("the second Part did not read the applied payload");
+            };
+            let (entity, pos, level) = event
+                .subject
+                .with_view(|view| (view.handle(), view.position(), view.level()))
+                .expect("live resident block entity");
+            self.0.lock().unwrap().push((entity, *count, pos, level));
+        }
+    }
+
     struct User {
         log: Log,
         replace: Arc<AtomicBool>,
+        payloads: Option<Payloads>,
     }
     #[mod_api::__subscriptions]
     impl Hooks for User {
@@ -78,21 +126,27 @@ mod tests {
                     replacement,
                     log: self.log.clone(),
                     replace: self.replace.clone(),
+                    report_payload: self.payloads.is_some(),
                 },
             )
             .unwrap();
+            if let Some(payloads) = &self.payloads {
+                r.block_entity_part(&key, PayloadPeer(payloads.clone()))
+                    .unwrap();
+            }
         }
         fn items(&self, _: &RegistrationContext, e: &mut ItemsEvent<'_>) {
             let mut item = Item::new("test:box_shulker_box", "minecraft:purple_shulker_box");
             item.block = Some("test:box_shulker_box".into());
-            e.items.push(item);
+            e.register(item).unwrap();
         }
         fn blocks(&self, _: &RegistrationContext, e: &mut BlocksEvent<'_>) {
             // Its item is the shulker box item above, not a block item of its own.
-            e.blocks
-                .push(Block::new("test:box_shulker_box", "minecraft:barrel").with_item(false));
-            e.blocks
-                .extend(["test:a", "test:b"].map(|id| Block::new(id, "minecraft:white_banner")));
+            e.register(Block::new("test:box_shulker_box", "minecraft:barrel").with_item(false))
+                .unwrap();
+            for block in ["test:a", "test:b"].map(|id| Block::new(id, "minecraft:white_banner")) {
+                e.register(block).unwrap();
+            }
         }
     }
     fn with_fixture(replace: bool, f: impl FnOnce(&mut Game<'_>, Log, Arc<AtomicBool>)) {
@@ -107,13 +161,25 @@ mod tests {
         role: crate::game::execution_role::ExecutionRole,
         f: impl FnOnce(&mut Game<'_>, Log, Arc<AtomicBool>),
     ) {
+        with_fixture_options(replace, role, false, |game, log, replace, _| {
+            f(game, log, replace)
+        });
+    }
+    fn with_fixture_options(
+        replace: bool,
+        role: crate::game::execution_role::ExecutionRole,
+        report_payload: bool,
+        f: impl FnOnce(&mut Game<'_>, Log, Arc<AtomicBool>, Payloads),
+    ) {
         let log = Log::default();
+        let payloads = Payloads::default();
         let replace = Arc::new(AtomicBool::new(replace));
         let mods: Mods = vec![ModEntry::new(
             "test",
             Box::new(User {
                 log: log.clone(),
                 replace: replace.clone(),
+                payloads: report_payload.then(|| payloads.clone()),
             }),
         )]
         .into();
@@ -137,7 +203,7 @@ mod tests {
                 game.level_set_block(level, [1, 63, 1], stone, BlockUpdateFlags::NONE)
                     .unwrap();
             }
-            f(game, log, replace);
+            f(game, log, replace, payloads);
         });
     }
     fn place(game: &mut Game<'_>) {
@@ -153,7 +219,7 @@ mod tests {
         ));
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_entity_on_load_reentrant_replacement_is_bounded() {
         const NAME: &str = "game::native_hooks::block_entity_on_load_routes_tests::tests::block_entity_on_load_reentrant_replacement_is_bounded";
         if run_fresh_cases(NAME, "SUNRISE_ON_LOAD_REENTRANT", &["run"]) {
@@ -177,7 +243,7 @@ mod tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_entity_on_load_shared_type_replacement_has_fresh_handle() {
         const NAME: &str = "game::native_hooks::block_entity_on_load_routes_tests::tests::block_entity_on_load_shared_type_replacement_has_fresh_handle";
         if run_fresh_cases(NAME, "SUNRISE_ON_LOAD_SHARED_TYPE", &["run"]) {
@@ -224,7 +290,76 @@ mod tests {
         );
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn saved_payload_notices_distinguish_loads_from_attachment_and_api_edits() {
+        const NAME: &str = "game::native_hooks::block_entity_on_load_routes_tests::tests::saved_payload_notices_distinguish_loads_from_attachment_and_api_edits";
+        if run_fresh_cases(NAME, "SUNRISE_LOAD_PAYLOAD", &["run"]) {
+            return;
+        }
+        with_fixture_options(
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            true,
+            |game, log, _, payloads| {
+                game.build_registries();
+                game.set_allow_commands(true);
+                place(game);
+                game.fire_pending_block_entity_loads();
+                assert!(game.run_command("data merge block 1 64 1 {count:19}"));
+                let level = game.level("minecraft:overworld").unwrap();
+                let entity = game.block_entity(level, [1, 64, 1]).unwrap();
+                assert_eq!(
+                    entity.merge_data(game, Compound::from([("count".into(), Tag::Int(29))])),
+                    Ok(true)
+                );
+                assert_eq!(*log.lock().unwrap(), [("load", 7), ("payload", 19)]);
+                assert_eq!(*payloads.lock().unwrap(), [(entity, 19, [1, 64, 1], level)]);
+
+                let stone = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:stone")
+                    .unwrap();
+                game.world.set(2, 63, 1, stone).unwrap();
+                assert!(game.run_command("clone 1 64 1 1 64 1 2 64 1"));
+                let clone = game.block_entity(level, [2, 64, 1]).unwrap();
+                assert_ne!(clone, entity);
+                assert_eq!(
+                    *payloads.lock().unwrap(),
+                    [
+                        (entity, 19, [1, 64, 1], level),
+                        (clone, 29, [2, 64, 1], level)
+                    ]
+                );
+                game.fire_pending_block_entity_loads();
+                assert_eq!(
+                    *log.lock().unwrap(),
+                    [("load", 7), ("payload", 19), ("payload", 29), ("load", 29),]
+                );
+
+                let key = (1, 64, 1);
+                let saved = game.world.block_entities.remove(&key).unwrap();
+                let mut chunk = Chunk::empty(0, 0);
+                chunk.block_entities.push((key, saved));
+                game.world.install_chunk_block_entities(&mut chunk);
+                game.fire_pending_block_entity_loads();
+                assert_eq!(
+                    *log.lock().unwrap(),
+                    [
+                        ("load", 7),
+                        ("payload", 19),
+                        ("payload", 29),
+                        ("load", 29),
+                        ("payload", 29),
+                        ("load", 29),
+                    ]
+                );
+            },
+        );
+    }
+    #[test]
+    #[ignore = "daily"]
     fn block_entity_on_load_command_placement() {
         const NAME: &str = "game::native_hooks::block_entity_on_load_routes_tests::tests::block_entity_on_load_command_placement";
         if run_fresh_cases(NAME, "SUNRISE_ON_LOAD_COMMAND", &["run"]) {
@@ -238,7 +373,7 @@ mod tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_entity_on_load_dispenser_placement() {
         const NAME: &str = "game::native_hooks::block_entity_on_load_routes_tests::tests::block_entity_on_load_dispenser_placement";
         if run_fresh_cases(NAME, "SUNRISE_ON_LOAD_DISPENSER", &["run"]) {
@@ -261,7 +396,7 @@ mod tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_entity_on_load_falling_block_placement() {
         const NAME: &str = "game::native_hooks::block_entity_on_load_routes_tests::tests::block_entity_on_load_falling_block_placement";
         if run_fresh_cases(NAME, "SUNRISE_ON_LOAD_FALLING", &["run"]) {
@@ -292,7 +427,7 @@ mod tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_entity_on_load_stale_queued_identity_is_skipped() {
         const NAME: &str = "game::native_hooks::block_entity_on_load_routes_tests::tests::block_entity_on_load_stale_queued_identity_is_skipped";
         if run_fresh_cases(NAME, "SUNRISE_ON_LOAD_STALE", &["run"]) {
@@ -313,7 +448,7 @@ mod tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_entity_on_load_real_client_chunk_receive() {
         use sunrise_protocol::{
             chunk::{BlockEntityInfo, ChunkData, LightData, Paletted, Section, Strategy},
@@ -344,7 +479,7 @@ mod tests {
                         portal_cooldown: 0,
                         sea_level: 63,
                     },
-                    false,
+                    RemoteDimensionEntry::Login,
                     sunrise_client::level_loading::Reason::Other,
                 );
                 let remote = game.remote.as_mut().unwrap();

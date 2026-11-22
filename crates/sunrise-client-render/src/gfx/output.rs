@@ -1,7 +1,7 @@
 //! The output each renderer owns (docs/design/hdr-linear-light.md): what its destination
 //! offers and its display reports, resolved with the settings and the pack into one snapshot
 //! that the settings screens, calibration, F3 and the frame read. Nothing here is shared
-//! between renderers. A split view or an offscreen renderer never changes what a window
+//! between renderers. An offscreen renderer never changes what a window
 //! offers or reports.
 use super::hdr::Output;
 use crate::graphics::{Graphics, HdrMode, Reported};
@@ -76,13 +76,58 @@ impl DisplayReading {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameRequest {
     /// A shader API 0.2 pack is picked under `SUNRISE_HDR_FRAME=float`: its frame is float.
-    pub linear_pack: bool,
+    pub(crate) linear_pack: bool,
     /// That pack's `[frame] blend` is `"linear"`: its frame holds linear light where it is
     /// float (`linear_blend`).
-    pub linear_blend: bool,
+    pub(crate) linear_blend: bool,
     /// Under `SUNRISE_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is
     /// the layered float one wherever HDR output goes.
-    pub hdr_float: bool,
+    pub(crate) hdr_float: bool,
+}
+
+impl FrameRequest {
+    /// Construct a default `FrameRequest` with all flags set to false.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            linear_pack: false,
+            linear_blend: false,
+            hdr_float: false,
+        }
+    }
+
+    #[inline]
+    pub const fn with_linear_pack(mut self, linear_pack: bool) -> Self {
+        self.linear_pack = linear_pack;
+        self
+    }
+
+    #[inline]
+    pub const fn with_linear_blend(mut self, linear_blend: bool) -> Self {
+        self.linear_blend = linear_blend;
+        self
+    }
+
+    #[inline]
+    pub const fn with_hdr_float(mut self, hdr_float: bool) -> Self {
+        self.hdr_float = hdr_float;
+        self
+    }
+
+    #[inline]
+    pub const fn linear_pack(&self) -> bool {
+        self.linear_pack
+    }
+
+    #[inline]
+    pub const fn linear_blend(&self) -> bool {
+        self.linear_blend
+    }
+
+    #[inline]
+    pub const fn hdr_float(&self) -> bool {
+        self.hdr_float
+    }
 }
 
 /// What a renderer's frame is drawn in, and what the hand, overlays and HUD draw on.
@@ -388,16 +433,8 @@ pub(crate) mod tests {
     /// draws in, as `Renderer::new` picked it before the snapshot.
     #[test]
     fn the_resolver_picks_one_output_and_frame_for_each_combination() {
-        let no_pack = FrameRequest {
-            linear_pack: false,
-            linear_blend: false,
-            hdr_float: true,
-        };
-        let pack_0_2 = FrameRequest {
-            linear_pack: true,
-            linear_blend: false,
-            hdr_float: true,
-        };
+        let no_pack = FrameRequest::new().with_hdr_float(true);
+        let pack_0_2 = no_pack.with_linear_pack(true);
         // A 0.1 pack, or none without the float switch; a refused, missing or disabled
         // pick asks as no pack does (`picked_pack_shape`).
         let legacy = FrameRequest::default();
@@ -506,11 +543,7 @@ pub(crate) mod tests {
                 hdr_failed_start: Some(failed.into()),
                 ..Graphics::default()
             };
-            let request = FrameRequest {
-                linear_pack: false,
-                linear_blend: false,
-                hdr_float: true,
-            };
+            let request = FrameRequest::new().with_hdr_float(true);
             let on = |driver: Option<&str>| {
                 let (mut caps, reading) = window(Some(Output::Pq), Some(true));
                 caps.held = held(&settings, driver);
@@ -749,11 +782,7 @@ pub(crate) mod tests {
             hdr: HdrMode::On,
             ..Graphics::default()
         };
-        let no_pack = FrameRequest {
-            linear_pack: false,
-            linear_blend: false,
-            hdr_float: true,
-        };
+        let no_pack = FrameRequest::new().with_hdr_float(true);
         let (caps, reading) = window(Some(Output::Pq), Some(true));
         let layered = snapshot(&on, no_pack, caps, reading);
         assert!(layered.frame.hud_layer && layered.display().hdr);

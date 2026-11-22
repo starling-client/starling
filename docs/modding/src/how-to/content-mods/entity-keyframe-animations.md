@@ -2,8 +2,7 @@
 
 A mod or resource pack can ship a NeoForge-format entity animation. Resolve it through the
 client's `RenderAssets::animation`, bake its bone names against your `ModelPart` tree once,
-and keep the result for playback. Native and wasm mods use the same types and sampler;
-vanilla mobs use that sampler too.
+and keep the result for playback. Vanilla mobs use that sampler too.
 
 ## Write the resource
 
@@ -49,9 +48,7 @@ are published-resource reads, not per-frame work. For example, renderer-owned st
 its model and baked animation together:
 
 ```rust,ignore
-use mod_api::{
-    AnimationError, AnimationState, Identifier, KeyframeAnimation, ModelPart, RenderAssets,
-};
+use mod_api::{AnimationState, Identifier, KeyframeAnimation, ModelPart, RenderAssets};
 
 struct AnimatedModel {
     root: ModelPart,
@@ -64,17 +61,8 @@ impl AnimatedModel {
         Self { root, animation: None, state: AnimationState::new() }
     }
 
-    /// Fails, naming them, on an animation that names registered types: see below.
-    fn reload(
-        &mut self,
-        assets: &dyn RenderAssets,
-        id: &Identifier,
-    ) -> Result<(), AnimationError> {
-        self.animation = None;
-        if let Some(holder) = assets.animation(id) {
-            self.animation = Some(holder.bake(&self.root)?);
-        }
-        Ok(())
+    fn reload(&mut self, assets: &dyn RenderAssets, id: &Identifier) {
+        self.animation = assets.animation(id).map(|holder| holder.bake(&self.root));
     }
 
     fn start(&mut self, tick_count: i32) {
@@ -90,10 +78,10 @@ impl AnimatedModel {
 }
 ```
 
-Call `reload` from those lifecycle hooks with the published assets and ID, reporting its
-error, and `start` when that entity begins the action. Keep a separate animation state for
-each animated entity. A new state is stopped; `start_if_stopped` does not restart an already
-playing animation, `animate_when` starts or stops with a condition, and `stop` ends playback.
+Call `reload` from those lifecycle hooks with the published assets and ID, and `start` when
+that entity begins the action. Keep a separate animation state for each animated entity. A new
+state is stopped; `start_if_stopped` does not restart an already playing animation,
+`animate_when` starts or stops with a condition, and `stop` ends playback.
 
 Baking follows vanilla 26.3's `ModelPart.createPartLookup`: the name `root` always means the
 actual root, even if a child is also named `root`. Other names select the first match,
@@ -119,21 +107,22 @@ renderer, alongside the [resolved-model drawing](../client/model-drawing.md) fac
 
 ## Registered targets and interpolations
 
-A mod adds its own targets and interpolations with `register_json_animation_types` (NeoForge's
-`RegisterJsonAnimationTypesEvent`), once at start; files may then name them. What they do is an
-`AnimationTypes` the playing mod implements: `convert_target` turns a registered target's file
-values into its values once at bake (unchanged by default, where the built-in targets convert
-with `posVec`, `degreeVec` and `scaleVec`), `apply_target` puts a sampled value on the part, and
-`interpolate` answers a segment into a keyframe with a registered interpolation. They run in the
-playing mod, called directly: no hook is dispatched per sample.
+A mod registers custom targets and interpolations once at client startup in
+`Hooks::register_json_animation_types` (NeoForge's `RegisterJsonAnimationTypesEvent`), binding
+each identifier directly to its callbacks via `event.register_target(id, apply, convert_target)`
+and `event.register_interpolation(id, interpolate)`.
 
-An animation that names registered types is baked with `holder.bake_with(&root, types)` into a
-`TypedKeyframeAnimation`, which keeps `types` and plays with the same `apply`, `apply_scaled`,
-`apply_walk` and `apply_static`. `bake` refuses such an animation, naming it and its types, so a
-registered channel is never skipped in silence. An ID one mod registered loads in any mod's
-file, but plays only where an `AnimationTypes` provides it: the registering mod's own, or one a
-mod depending on it supplies. `bake_with` refuses an `AnimationTypes` that lacks one of the
-animation's types, once, and the error names the animation, that type and the mod that
-registered it.
-See the [`register_json_animation_types` documentation](https://github.com/arismoko/horizon/blob/main/crates/horizon-mod-vocab/src/hooks/register_json_animation_types.rs)
+When animation files are parsed during resource load and reload, each custom target's
+`convert_target` transforms its keyframe `[x, y, z]` vectors into internal units (matching
+NeoForge's `AnimationParser`, just as the built-in targets apply `posVec`, `degreeVec` and
+`scaleVec`), and the bound target and interpolation callbacks are attached directly to the
+parsed `AnimationHolder`. Baking with `holder.bake(&root)` produces a `KeyframeAnimation` that
+invokes those bound callbacks directly during `apply`, `apply_scaled`, `apply_walk` and
+`apply_static`, with no lookup per sample. Any mod's animation file can use a custom target or
+interpolation registered by another mod without needing a separate implementation at bake time.
+
+Any valid `<namespace>:<path>` identifier (including `minecraft:`) is accepted; duplicates and
+collisions with the five built-ins (`minecraft:position`, `minecraft:rotation`,
+`minecraft:scale`, `minecraft:linear`, `minecraft:catmullrom`) are rejected as registration
+errors. See the [`register_json_animation_types` documentation](https://github.com/sunrise-org/sunrise/blob/main/crates/sunrise-mod-vocab/src/hooks/register_json_animation_types.rs)
 for the registration contract.

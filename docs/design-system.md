@@ -5,11 +5,10 @@ vanilla has no screen for (the on-screen keyboard a controller types with). Ever
 and the HUD are not part of it: they are vanilla's, because parity is the point of the game, and
 Sunrise's own settings are pages built from vanilla's widgets, the way mods add theirs.
 
-The tokens live in one place, `crates/sunrise-theme`. The launcher (`launcher/src/theme.rs`)
-and the game (`crates/sunrise-client/src/ui_theme.rs`) read them as Rust constants, and the
-website reads them as CSS custom properties generated from the same crate
-(`cargo run -p xtask -- tokens` writes `crates/sunrise-theme/tokens.css`, which the website's build
-reads from main; a test fails when the file is out of date). Change a value in the crate and all three follow.
+The game reads Rust tokens from `crates/sunrise-theme`; the website reads the CSS custom properties
+it generates (`cargo run -p xtask -- tokens` writes `crates/sunrise-theme/tokens.css`, which the
+website's build reads from main; a test fails when the file is out of date). The standalone
+launcher has its own theme crate (`https://github.com/sunrise-org/sunrise-launcher/tree/main/crates/theme`).
 
 ## Where it comes from
 
@@ -134,7 +133,7 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
 
 ## Surfaces
 
-- **Launcher** (`launcher/`): moving to the Night look below, screen by screen; screens not rebuilt
+- **Launcher** (`https://github.com/sunrise-org/sunrise-launcher`): moving to the Night look below, screen by screen; screens not rebuilt
   yet draw the Blocks parts in the night's colours (`Night::blocks`). A top bar (wordmark, the pages as
   tabs, the account chip, Settings), a sidebar (the instances, the hosted servers, the launcher's
   own version and channel at its foot), and the page over a stone texture. Home opens on a pixel
@@ -148,22 +147,18 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   pixels sits in the footer.
 - **Game**: vanilla's screens. The on-screen keyboard is a rounded plate of keys in the page
   colour, the focused key in the accent. Sunrise's graphics, controller, Extras and Shaders
-  settings screens take the Blocks palette below in a lighter form (`graphics_style.rs`, through
-  the shared `settings_shell.rs`).
+  settings screens draw with vanilla's widgets and list background (`graphics_style.rs`, through
+  the shared `settings_shell.rs`; #452, Q2).
 
 ## Blocks
 
-A blocky, Minecraft-like look in Sunrise's purple, for the website, the redesigned launcher and
-the game's graphics, controller, Extras and Shaders settings screens:
+A blocky, Minecraft-like look in Sunrise's purple, for the website and the redesigned launcher:
 Minecraft's inventory rather than a document. Its colours are `sunrise_theme::Blocks`
 (`BLOCKS_LIGHT`, `BLOCKS_DARK`), which `tokens.css` carries under the same names as before plus
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`
 of the main action. The game's other menus keep `LIGHT` and `DARK`.
 
-In the game these settings screens draw the Blocks palette in GUI pixels, lighter than the
-website's blocks so the world stays in view: square panels of the page colour, see-through, with a
-1 px edge and no bevel or lip, flat controls, the violet face on Done, and vanilla's font rather
-than Pixelify. Hover and focus are vanilla's white edge.
+The game's settings screens don't use Blocks: they draw vanilla's widgets (see **Game** above).
 
 - **Pixel type for what names and what you act on.** Headings, navigation, buttons and the
   wordmark use Pixelify Sans (OFL; Medium, SemiBold, Bold); paragraphs and numbers stay in Geist
@@ -176,16 +171,16 @@ than Pixelify. Hover and focus are vanilla's white edge.
   bevel and a 4 px lip; it sinks a pixel when pressed. Code and fields are sunk wells.
 - **Inventory tabs** switch the kinds in Mods: the open tab joins the panel under it.
 - **Slots** hold pictures: a mod's or pack's own icon and gallery images from its source,
-  downloaded when first shown and kept on disk (`launcher/src/browser/images.rs`); the launcher
+  downloaded when first shown and kept on disk (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/browser/images.rs`); the launcher
   ships no third-party pictures. Plain Minecraft shows Sunrise's own grass block
-  (`tools/launcher_grass_block.py`), Sunrise the brand icon (`docs/media/brand/icon.svg`). Sources are named in text ("from Modrinth"): Modrinth's logo is
+  (drawn by `tools/launcher_grass_block.py` in sunrise-launcher), Sunrise the brand icon (`docs/media/brand/icon.svg`). Sources are named in text ("from Modrinth"): Modrinth's logo is
   all rights reserved, so it is not shown.
 - **No ads.** The fork's launcher has no partner banners, sponsor links or upstream Discord links.
   This diverges from upstream.
 - **Pixel art drawn in code.** The stone behind the pages is close shades of the page colour
   (`TILE_SHADES`), never Minecraft's stone; the landscape is a banded sky, a sun cut in slices like
   the mark, hills and square trees (a sunset in dark, a dawn in light). The launcher bakes them in
-  `launcher/src/art.rs` at the window's scale so each texel covers whole device pixels; the website
+  `https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/art.rs` at the window's scale so each texel covers whole device pixels; the website
   draws them in its `scripts/art.mjs`.
 - **Icons**: Pixelarticons (MIT), 24 unit pixel SVGs in `crates/sunrise-theme/icons/pixel/`, tinted
   with the text colour.
@@ -241,20 +236,23 @@ Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
 | `accent-hi` | `#a08cff` | `#5333c9` | accent text, focus ring |
 | `success`, `warn`, `danger` | `#5fd39a` `#f5b45a` `#ff8a78` | `#136336` `#7a4f00` `#a3301d` | Ready, updates, errors |
 
-- **Motion that means something**: the sky drifts slowly and stops when the window is hidden or
-  unfocused; the interface moves only to show cause and effect (a row arrives where it was added,
-  progress fills). Reduced motion: nothing moves. The launcher's sky (`launcher/src/sky.rs`) moves
-  in whole texels on a half-second beat, so it asks for two frames a second at most;
-  `SUNRISE_LAUNCHER_MOTION=off` stills it, `always` keeps it moving unfocused (for recordings).
+- **Motion that means something**: the interface moves only to show cause and effect (a row
+  arrives where it was added, progress fills). Every theme draws the same flat pages; Home's page
+  between the sidebars holds the theme's animated pixel scene (Sunrise's coast at first light,
+  `https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/coast.rs`, or the theme's painted sky from `https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/sky.rs`), which Settings › Appearance › Home background
+  turns plain. The sky moves in whole texels on a half-second beat, keeps its drift off the hero,
+  and stops when the window is hidden. Reduced motion: nothing moves
+  (`https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/clock.rs`); `SUNRISE_LAUNCHER_MOTION=off` stills everything, `always`
+  keeps it moving unfocused (for recordings).
 - **Copy says what happens** ("Downloads 26.3 and Java 21, about 600 MB"), never praises.
 - The specimen (`SUNRISE_LAUNCHER_PAGE=specimen sunrise-launcher`) draws the type and colours in the
   launcher itself.
-- **The frame** (`launcher/src/shell.rs`): the sidebar is one plate from the window's top to its
+- **The frame** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/shell.rs`): the sidebar is one plate from the window's top to its
   bottom (the wordmark, instances by group, servers, the launcher's version); the top bar over the
   pages has no plate, only a rule. A selected row or tab sits on `card_hi` cut in steps (two for
   rows, one for tabs and icon buttons); a hovered one gets the same shape at half its opacity,
   eased in. A row's second line is its state, after a small square in the state's colour.
-- **Home** (`launcher/src/home.rs`): the selected instance's name in the display cut over the bare
+- **Home** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/home.rs`): the selected instance's name in the display cut over the bare
   sky, a caption above it naming what it plays and its state (the same square), and when it was
   played below. Play is the main action (`night::PLAY` tall, cut in one step); the version picker
   is a raised control of the same height; Mods and Folder are quiet buttons. A Sunrise instance
@@ -263,7 +261,7 @@ Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
   bar, what is happening with the time left, and the steps (game files, Java, sounds, prepare,
   play), the current one lit, those done ticked: steps, never the log
   (`SUNRISE_LAUNCHER_PAGE=getting-ready` shows it for screenshots, nothing runs).
-- **Instance icons** (`launcher/src/instance_icons.rs`): the sidebar's rows, Home's hero (beside
+- **Instance icons** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/instance_icons.rs`): the sidebar's rows, Home's hero (beside
   the name) and the instance dialog show the same icon. Its own picture first (`icon.png` in its
   game folder: one the player chose with Choose image…, scaled to 128 pixels, or its modpack's
   icon from where it was installed), else the block or colour chosen in the dialog, else its
@@ -271,29 +269,29 @@ Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
   Sunrise's for Sunrise. The letter tile is the last resort. The New instance dialog's loader
   cards show the same logos. Pixel-art logos are scaled by whole
   pixels; each is decoded once per size.
-- **The instance's tabs** (`launcher/src/home_tabs.rs`): under Home's hero, one tab at a time
+- **The instance's tabs** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/home_tabs.rs`): under Home's hero, one tab at a time
   instead of one long page: Overview (what Play needs: the instance, the game or its resources,
   the account), Worlds, Multiplayer, Packs, then Screenshots and Console once they have something.
   A tab names how many it holds ("Worlds 3"); its own buttons (Add server, Open folder) sit at the
   strip's end, where a list's header would put them (`SUNRISE_LAUNCHER_PAGE=worlds`, `packs`...
   opens one for screenshots).
-- **The Mods tab** (`launcher/src/instance_mods.rs`): the instance's mods on one nearly opaque
+- **The Mods tab** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/instance_mods.rs`): the instance's mods on one nearly opaque
   card, its loader in the header ("Fabric mods", "Sunrise mods") beside a filter. A row is the
   mod's own icon (Modrinth's, else its jar's, else a glyph), its name and version, where it comes from (Modrinth,
   "needed by another mod", or a local file by name), an update as an amber pill when the browser
   found one, and a switch (a Java jar turned off is renamed `.disabled`). Update all and Add mods
   sit at the strip's end (`SUNRISE_LAUNCHER_PAGE=instance-mods`).
-- **Sign in with Microsoft** (`launcher/src/microsoft.rs`): every button that signs in is
+- **Sign in with Microsoft** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/microsoft.rs`): every button that signs in is
   Microsoft's own, drawn as Microsoft publishes it: 41 pixels tall, its four-square symbol, the text
   semibold at 15 pixels, `#2F2F2F` with white text at night, white with `#5E5E5E` text and a
   `#8C8C8C` border at dawn, square corners. Not one of the launcher's cut plates: Microsoft's
   guidelines ask for the button as it is.
-- **The sign-in sheet** (`launcher/src/owner_page.rs`, the owner gate): an opaque plate over the
+- **The sign-in sheet** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/owner_page.rs`, the owner gate): an opaque plate over the
   dimmed launcher, never instead of it. It says why (the account that owns Java Edition, no install
   needed), the code in mono on a raised box with Copy, and Open link as the main action; the window
   goes on by itself once Microsoft answers (`SUNRISE_LAUNCHER_PAGE=sign-in` shows it with a made-up
   code for screenshots).
-- **New instance** (`launcher/src/new_instance.rs`): an opaque plate over the dimmed launcher,
+- **New instance** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/new_instance.rs`): an opaque plate over the dimmed launcher,
   tabs for the kind (Sunrise, Vanilla, Modded). A Java kind lists Mojang's versions (search,
   Snapshots, Old; the newest release chosen), Modded adds the loader (Fabric, Quilt, Forge or NeoForge, with its logo, at its newest
   stable version), and the name follows the choice ("Fabric 1.21.4") until the player types one.
@@ -307,28 +305,26 @@ screen by screen, replacing Night where they differ; the mockup is the reference
 colour, state and motion. Its tokens are `sunrise_theme::glass`; `tokens.css` carries the colours
 as `--glass-*`.
 
-- **The scene is the background**: a pixel sunset over three ridges with trees, clouds, stars, a
-  meteor now and then and fireflies (`launcher/src/scene.rs`), a port of the website's
-  `SunriseScene` with its seeds and sums, so a window shows the picture the mockup shows at the
-  same size. It eases with the pointer and stops 10 s after the window loses focus;
-  `SUNRISE_LAUNCHER_MOTION` works as for Night. Dark appearance only so far; Light keeps the dawn.
-- **Frosted plates, round corners, no borders.** A plate is the scene behind it blurred 24 px and
-  saturated 140 %, under white at 6 % and the accent's dark violet (`base`) at 22 %. Menus and
-  popovers take the same glass with a shadow (the mockup's darker `hzl-float` read as another
-  material beside the cards); toasts keep it. Corners (`glass::radius`): dialogs 28, panels 20,
-  menus 16, the Play group 14, rows and chips 12, buttons and tabs 10. No pixel steps, no strokes.
-- **Motion as the website plays it** (`launcher/src/motion.rs`): hovers ease over `quick`'s
+- **The scene is the background**, on Home only, between the sidebars: Sunrise's own coast at
+  first light (`https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/coast.rs`: dithered bands from night to amber, the sun half
+  out of a still sea, a block island with a tree, glints, ripples, clouds, birds and stars) or a
+  theme's painted sky (`sky.rs`). It moves a texel at a time on a slow beat and stops 10 s after
+  the window loses focus; `SUNRISE_LAUNCHER_MOTION` works as for Night. The setup window draws
+  the coast too.
+- **Solid plates, the player's corners.** A plate is the theme's card colour under a faint 1 px
+  line (`https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/glass.rs`), so nothing under a dialog reads through it; menus and
+  popovers take the same fill with a shadow. Corners are the player's (Settings › Appearance ›
+  Corners, 4 px unless changed), the same on every element.
+- **Motion as the website plays it** (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/motion.rs`): hovers ease over `quick`'s
   150 ms curve, toasts and a new page arrive as `hzl-pop` (a fade and a 6 px rise over 200 ms,
   `cubic-bezier(0.2, 0.7, 0.2, 1)`), a switch's knob slides for 200 ms. Menus open at once. Under
   reduced motion each is drawn where it ends.
-- **Light**: plates are white at 84 % over the dawn sky washed with white (55 %), so the page
-  reads white; icons and text on the accent keep `on-accent`.
 - **One accent, mixed like the mockup.** `accent` (`#6b4bff`) fills the main action;
   `accent-soft` (half accent, half white in OKLab) draws progress, ticks, links and the focus ring;
   text on the accent turns dark when a player's accent is light. `Glass::new` does the mockup's
   `color-mix` sums, so a player's own accent comes out as the website's would.
-- **White text at a few opacities** (`glass::ink`: 100, 80, 70, 60, 50, 45, 40 %) and white fills
-  for states (`glass::fill`: hover 5 %, field 7 %, button 8 %, selected 10 %, active 12 %).
+- **White text at a few opacities** (100, 80, 70, 60, 50, 45, 40 %) and white fills for states
+  (hover 5 %, field 7 %, button 8 %, selected 10 %, active 12 %).
   Live `#4ade80`, busy `#f2c46b`, destructive `#ff8a8a`.
 - **Type**: Geist for everything; Bricolage Grotesque SemiBold for page, instance and dialog names,
   at the optical size a browser picks for them: `Bricolage Grotesque Display` (56) and

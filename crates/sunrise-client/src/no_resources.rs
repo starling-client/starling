@@ -275,16 +275,16 @@ mod tests {
         })
     }
 
-    /// A hook's answer, with the game's own Sunrise strings and another page.
+    /// A hook's answer, built from the engine's own strings, and another page.
     const GET: GetTheGame = GetTheGame {
-        address: "https://example.org/get",
-        title: "sunrise.get_the_game.title",
+        address: "https://example.org/download-the-launcher",
+        title: "sunrise.missing_mods.title",
         paragraphs: &[
-            "sunrise.get_the_game.about",
-            "sunrise.get_the_game.minecraft",
-            "sunrise.get_the_game.download",
+            "sunrise.no_resources.prepare",
+            "sunrise.plain.official",
+            "sunrise.no_resources.looked_in",
         ],
-        button: "sunrise.get_the_game.button",
+        button: "sunrise.missing_mods.backup_open",
     };
 
     /// The screen in English, every key it asks for there.
@@ -318,16 +318,20 @@ mod tests {
     #[test]
     fn a_hook_gives_the_text_and_the_page() {
         let screen = screen(Some(GET));
-        assert_eq!(screen.title, "Start Sunrise from the launcher");
+        assert_eq!(screen.title, "Mods are missing");
+        assert_eq!(
+            screen.paragraphs[1],
+            "Official Sunrise with launcher, mods and updates: playsunrise.net"
+        );
         assert_eq!(
             screen.paragraphs[2],
-            "Download the launcher at example.org/get, then press Play there."
+            "No prepared game files in example.org/download-the-launcher"
         );
         assert_eq!(
             screen.buttons[0],
             (
-                "Download the launcher".to_owned(),
-                Action::Open("https://example.org/get")
+                "Back Up and Open".to_owned(),
+                Action::Open("https://example.org/download-the-launcher")
             )
         );
     }

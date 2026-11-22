@@ -1,0 +1,3 @@
+ids = ["trait:MobEffectPart", "handle:Registrar::mob_effect_part", "method:EffectsRegistrar::attach_mob_effect_part", "type:MobEffectPartError"]
+why = "The effect Part scope allows multiple code packages to attach independent behaviour to one content-declared effect. Attachments require the declaring package itself or a declared required or optional dependency. Vanilla effects and duplicate concrete Part types refuse at registration."
+migrate = "Resolve an EffectKey and attach a MobEffectPart. Declare the effect's actual content package as a dependency when attaching foreign behaviour. An absent optional dependency skips the attachment; present but unknown effects refuse normally."

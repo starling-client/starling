@@ -1,9 +1,9 @@
 //! Player candidates for EntityGetter.isUnobstructed while a guest owns the
 //! game body. Identity keeps borrowed ancestor bodies distinct from hub copies.
 use super::Dim;
-use sunrise_core::geometry::Aabb;
 use std::cell::Cell;
 use std::rc::Rc;
+use sunrise_core::geometry::Aabb;
 
 #[derive(Clone, Copy)]
 pub(super) struct BuildingPlayer {
@@ -189,15 +189,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn for_player_keeps_the_outer_body_in_its_original_dimension() {
         use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
         use sunrise_client::{
             lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
             motion::PlayerMotion,
         };
         use sunrise_protocol::packets::configuration::ClientInformation;
-        use std::sync::{Arc, atomic::AtomicI32, mpsc};
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
         let loaded = load_resources(
@@ -264,6 +264,7 @@ mod tests {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();

@@ -1,0 +1,3 @@
+ids = ["hook:can_rider_interact", "type:CanRiderInteractEvent"]
+why = "Adds the client EntityPart can_rider_interact hook, version 1, mirroring IEntityExtension.canRiderInteract. Ordinary picks apply the root-vehicle rule through one running-nearest accumulator; attack-range component rays do not filter vehicle relatives."
+migrate = "Attach an EntityPart to a candidate's entity type and set event.allowed to true to let a rider pick it normally. No action is needed to retain vanilla's default false."

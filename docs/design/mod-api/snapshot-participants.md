@@ -1,12 +1,16 @@
 # Design: snapshot participants
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [transactions](../../modding/src/concepts/transactions.md) for the current native API.
+> Participant snapshots below were proposed, not a current rollback API. The guest runtime path, restore steps and target-parity gates are historical.
+
 Provisional proposal for [#999](https://github.com/arismoko/horizon/issues/999), not an implemented guarantee. Named question: **what native-and-wasm participant contract can preserve synchronous rollback given reentry?**
 
 Recommend runtime-owned transactional participant values, with generated typed access, and callback-free rollback. Arbitrary mutable guest fields with snapshot/restore callbacks remain unsupported until the runtime can prove equivalent guarantees on both targets. An exported participant resource alone does not solve reentry. This recommendation narrows the requested arbitrary-state contract and requires maintainer approval before implementation.
 
 ## Evidence and counterpart limits
 
-The issue body and all three comments were read, including Ari's release explanation and our claim. The original same-group reentry diagnosis is historical: `crates/sunrise-mod-wasm/src/runtime.rs:536` now admits resumed synchronous calls at :557, but :547 refuses guest execution during native panic. Normal reentry is therefore insufficient evidence for unwind restoration. The component-model boundary discussed historically in [#1903](https://github.com/arismoko/horizon/issues/1903) is already gone; generated shared-memory Wire is the current boundary. Nothing here requires WIT, lifting/lowering, a particular store API, guest pointers, or a particular memory layout.
+The issue body and all three comments were read, including Ari's release explanation and our claim. In the removed guest runtime, `crates/sunrise-mod-wasm/src/runtime.rs:536` admitted resumed synchronous calls at :557, but :547 refused guest execution during native panic. Normal reentry was therefore insufficient evidence for unwind restoration. At the time of this proposal, generated shared-memory Wire had already replaced the component-model boundary discussed in [#1903](https://github.com/arismoko/horizon/issues/1903). Nothing here requires WIT, lifting/lowering, a particular store API, guest pointers, or a particular memory layout.
 
 Vanilla has no Sunrise participant interface. The pinned 26.3 `ItemStack.copy` bytecode was requested with `python3 tools/rea_vanilla.py method net.minecraft.world.item.ItemStack copy`; it returns EMPTY for empty stacks, otherwise copies count and components and preserves pop time. Stack copying cannot establish mod participant callback ordering.
 
@@ -14,7 +18,7 @@ The public [26.3 SnapshotJournal Javadoc](https://aldak.netlify.app/javadoc/26.3
 
 ## Routes and existing owners
 
-References are repository-relative at this worktree's HEAD. They identify current integration owners, not completed participant support.
+References are repository-relative at the audit revision. They identify the original integration owners, including the removed guest runtime, not completed participant support.
 
 | Route | Verified owner | Proposed treatment |
 | --- | --- | --- |
@@ -71,6 +75,6 @@ Filed stages: **none**. First verify public 26.3 ordering and approve the narrow
 
 ## Open questions
 
-- **Can Portizon's providers use runtime-owned values?** Recommend this as the first contract; arbitrary guest state remains refused. Require a representative translated provider before claiming the arbitrary-state request fulfilled. If translation requires live fields, commission the runtime design before claiming #999 implemented.
+- **Can a converter's providers use runtime-owned values?** Recommend this as the first contract; arbitrary guest state remains refused. Require a representative translated provider before claiming the arbitrary-state request fulfilled. If translation requires live fields, commission the runtime design before claiming #999 implemented.
 - **What exact ordering does NeoForge 26.3 promise?** Recommend obtaining public SnapshotJournal/TransactionContext documentation and encoding its release/root-notice trace as independent fixtures before code. Current proposed ordering is not certified equivalent.
 - **Which budgets are acceptable?** Recommend the mod-only limits above with explicit registration/runtime errors and no reduction of vanilla capacity; approve using real translated provider sizes.

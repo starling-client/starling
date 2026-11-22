@@ -1,6 +1,6 @@
 //! CloudRenderer face selection and mesh traversal, without a GPU.
-use sunrise_client::clouds;
 use std::{fmt::Write, fs};
+use sunrise_client::clouds;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = crate::args().collect();
     let mut output = String::new();

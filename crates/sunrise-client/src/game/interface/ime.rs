@@ -8,6 +8,36 @@ use sunrise_client::{
     preedit::{self, PreeditEvent},
 };
 
+/// The text of the key press that is still held, which the input method may
+/// commit again once a field has focus. GLFW's char callback of a key press
+/// reaches the screen open when the key was pressed, so the press that opens
+/// a text screen (T, or / for chat) never types into it; winit can hand the
+/// same character over as `Ime::Commit` after the field enabled the input
+/// method.
+#[derive(Default)]
+pub(super) struct HeldKeyText(Option<(winit::keyboard::KeyCode, String)>);
+
+impl HeldKeyText {
+    pub(super) fn pressed(&mut self, key: winit::keyboard::KeyCode, text: Option<&str>) {
+        self.0 = text.map(|t| (key, t.to_owned()));
+    }
+
+    pub(super) fn released(&mut self, key: winit::keyboard::KeyCode) {
+        if self.0.as_ref().is_some_and(|(k, _)| *k == key) {
+            self.0 = None;
+        }
+    }
+
+    /// Whether `committed` is the held key's own character: dropped once.
+    pub(super) fn swallows(&mut self, committed: &str) -> bool {
+        if self.0.as_ref().is_some_and(|(_, t)| t == committed) {
+            self.0 = None;
+            return true;
+        }
+        false
+    }
+}
+
 impl Game<'_> {
     /// Whether a text box has focus right now (the fields `ime_commit` can fill).
     pub(super) fn text_field_focused(&mut self) -> bool {
@@ -45,14 +75,18 @@ impl Game<'_> {
         focused || cfg!(target_os = "android") && self.widget_text_focused()
     }
 
-    /// Allow the input method only while a text box has focus.
+    /// Allow the input method while a text box has focus or a bound preset editor takes text.
     pub(super) fn sync_ime(&mut self) {
+<<<<<<< sync-sunrise-1
         // On Android asking for the input method shows the keyboard: there a tap on the field
         // decides (touch.rs), not its focus.
         if cfg!(target_os = "android") {
             return;
         }
         let want = self.text_field_focused();
+=======
+        let want = self.text_field_focused() || self.preset_editor_title().is_some();
+>>>>>>> sunrise/main
         if want != self.ime_allowed
             && let Some(window) = &self.window
         {
@@ -67,19 +101,27 @@ impl Game<'_> {
         }
     }
 
+    /// The input method consumes composing key presses even if the editor has no built-in caret.
+    pub(super) fn ime_suppresses_key(&mut self) -> bool {
+        (self.text_field_focused() || self.preset_editor_title().is_some())
+            && preedit::should_suppress_key()
+    }
+
     /// `WindowEvent::Ime(Preedit)`: `KeyboardHandler.textEditing`. The text
     /// still being composed is shown under the focused field's caret.
     pub(super) fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
         let taken = self.text_field_focused();
+        let bound_editor = self.preset_editor_title().is_some();
         let event = PreeditEvent::from_winit(text, cursor);
-        // ScreenEvent.Preedit.Pre, then the screen's handler (the focused
-        // field takes it), then Preedit.Post when no field did.
         let shown = event.clone().unwrap_or_default();
-        if self.dispatch_preedit_pre_hook(&shown) {
-            return;
+        let canceled = self.dispatch_preedit_pre_hook(&shown);
+        // The editor receives committed text, not an overlay. Remember the input method's
+        // composition even when Pre cancels delivery to the screen, as KeyboardHandler does.
+        if bound_editor || !canceled {
+            preedit::set_preedit(event.filter(|_| taken || bound_editor));
         }
-        preedit::set_preedit(event.filter(|_| taken));
-        if !taken {
+        // Tracking the composition does not mean a focused widget handled the event.
+        if !canceled && !taken {
             self.dispatch_preedit_post_hook(&shown);
         }
     }
@@ -151,11 +193,15 @@ impl Game<'_> {
     /// Text the input method committed (`WindowEvent::Ime(Commit)`).
     pub(super) fn ime_commit(&mut self, text: &str) {
         preedit::mark_committed();
-        if text.is_empty() {
+        if text.is_empty() || self.held_key_text.swallows(text) {
             return;
         }
         // Dialogs have their own fields; the other topmost prompts take no text.
         if self.prompt_open() && !self.dialog_open() {
+            return;
+        }
+        if self.preset_editor_title().is_some() {
+            self.screen_committed_chars(text);
             return;
         }
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -200,5 +246,26 @@ impl Game<'_> {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HeldKeyText;
+    use winit::keyboard::KeyCode;
+
+    #[test]
+    fn the_held_opening_key_is_not_typed_again_by_the_input_method() {
+        let mut held = HeldKeyText::default();
+        held.pressed(KeyCode::KeyT, Some("t"));
+        assert!(held.swallows("t"));
+        assert!(!held.swallows("t"), "only the one character of the press");
+        held.pressed(KeyCode::KeyT, Some("t"));
+        assert!(!held.swallows("h"), "another character is the person's");
+        held.released(KeyCode::KeyT);
+        assert!(!held.swallows("t"), "a commit after the release is typed");
+        held.pressed(KeyCode::Slash, Some("/"));
+        held.released(KeyCode::KeyT);
+        assert!(held.swallows("/"), "another key's release keeps it");
     }
 }

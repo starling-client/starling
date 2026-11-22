@@ -13,5 +13,11 @@ pub trait Hooks {
         version = 2,
         target = "sunrise_client_lib::mobs::enderman::native_ender_entity_teleport"
     )]
-    fn ender_entity_teleport();
+    fn ender_entity_teleport(
+        entity: u32,
+        kind: &str,
+        from: [f64; 3],
+        target: &mut [f64; 3],
+        cancel: &mut bool,
+    );
 }

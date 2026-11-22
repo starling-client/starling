@@ -5,12 +5,13 @@
 use crate::game::Game;
 use crate::game::execution_role::ExecutionRole;
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_role};
+use crate::game::remote::RemoteDimensionEntry;
+use mod_api::{ClientChunkLoadEvent, ClientChunkUnloadEvent, ClientHost, Hooks};
+use std::sync::Mutex;
 use sunrise_protocol::{
     chunk::{ChunkData, LightData, Paletted, Section, Strategy},
     packets::play::{LevelChunkWithLight, SpawnInfo},
 };
-use mod_api::{ClientChunkLoadEvent, ClientChunkUnloadEvent, ClientHost, Hooks};
-use std::sync::Mutex;
 
 /// What each event saw: its name, dimension, chunk and the block id at the chunk's corner
 /// `(16 x, 64, 16 z)`, read through the client host inside the listener.
@@ -69,7 +70,7 @@ fn with_loopback(f: impl FnOnce(&mut Game<'_>)) {
             game.connect_local(client, "ChunkProbe").unwrap();
             game.enter_remote_dimension(
                 &overworld(),
-                false,
+                RemoteDimensionEntry::Login,
                 sunrise_client::level_loading::Reason::Other,
             );
             game.remote.as_mut().unwrap().logged_in = true;
@@ -169,7 +170,7 @@ fn unloaded(chunk: [i32; 2]) -> Vec<(&'static str, String, [i32; 2])> {
 /// column; an unload for a forget with the block still readable, and none for a second forget
 /// of the same column; on a dimension change, an unload naming the old dimension.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_client_tells_a_chunk_packet_and_its_forget_once() {
     const NAME: &str = "game::native_hooks::client_chunk_hooks_tests::a_client_tells_a_chunk_packet_and_its_forget_once";
     if run_fresh_cases(NAME, "SUNRISE_CLIENT_CHUNK_PACKET", &["game"]) {
@@ -203,7 +204,7 @@ fn a_client_tells_a_chunk_packet_and_its_forget_once() {
                 dimension: "minecraft:the_nether".into(),
                 ..overworld()
             },
-            false,
+            RemoteDimensionEntry::Login,
             sunrise_client::level_loading::Reason::Other,
         );
         assert_eq!(take_calls(), [unload([3, 4], Some("minecraft:stone"))]);
@@ -213,7 +214,7 @@ fn a_client_tells_a_chunk_packet_and_its_forget_once() {
 /// The centre-move and radius drops tell one unload per dropped column and none for the
 /// kept ones; the client level going tells the rest.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn every_route_that_frees_a_column_tells_its_unload() {
     const NAME: &str = "game::native_hooks::client_chunk_hooks_tests::every_route_that_frees_a_column_tells_its_unload";
     if run_fresh_cases(NAME, "SUNRISE_CLIENT_CHUNK_ROUTES", &["game"]) {

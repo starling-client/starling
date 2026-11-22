@@ -1,0 +1,89 @@
+name: Install the verified Sunrise release tool
+description: Authenticate the rolling mod-tool and unpack the release scripts built into it.
+inputs:
+  triple:
+    description: Rust target triple of this SDK host
+    default: x86_64-unknown-linux-gnu
+  commit:
+    description: The signed tool.json commit selected in planning
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: '3.12'
+    - shell: bash
+      env:
+        TRIPLE: ${{ inputs.triple }}
+        EXPECTED_TOOL: ${{ inputs.commit }}
+      run: |
+        python -I - <<'PY'
+        import base64, hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile
+        from pathlib import Path
+
+        def require(ok, message):
+            if not ok:
+                raise SystemExit('mod-tool: ' + message)
+
+        triple = os.environ['TRIPLE']
+        require(re.fullmatch(r'[a-z0-9_]+(?:-[a-z0-9_]+)+', triple), 'invalid Rust triple')
+        expected = os.environ['EXPECTED_TOOL']
+        archive = f'tool-{triple}.tar.xz'
+        name = 'cargo-sunrise-mod.exe' if sys.platform == 'win32' else 'cargo-sunrise-mod'
+        work = Path(os.environ['RUNNER_TEMP']) / 'sunrise-release'
+        work.mkdir(exist_ok=True)
+        binary, scripts = work / 'bin' / name, work / 'scripts'
+        with tempfile.TemporaryDirectory(dir=work) as tmp:
+            folder = Path(tmp)
+            for asset in ('SHA256SUMS', 'SHA256SUMS.sig', 'tool.json', archive):
+                url = f'https://github.com/sunrise-org/sunrise/releases/download/mod-tool/{asset}'
+                subprocess.run(['curl', '--disable', '--proto', '=https', '--proto-redir', '=https',
+                                '-fsSL', '-o', folder / asset, url], check=True)
+            # The pinned Ed25519 key and tag-bound message documented in Install the mod tool.
+            sums = (folder / 'SHA256SUMS').read_bytes()
+            message, key, signature = (folder / path for path in ('message', 'key.der', 'signature'))
+            message.write_bytes(b'horizon release mod-tool\n' + sums)
+            key.write_bytes(bytes.fromhex('302a300506032b6570032100') +
+                            base64.b64decode('r53xb3cuafGxZSicLz06KC+xXp9NJdPH8snNmXo5pAc='))
+            openssl = 'openssl'
+            if sys.platform == 'win32':
+                openssl = Path(os.environ['ProgramFiles']) / 'Git/usr/bin/openssl.exe'
+            elif sys.platform == 'darwin':
+                prefix = subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()
+                openssl = Path(prefix) / 'bin/openssl'
+            for line in (folder / 'SHA256SUMS.sig').read_bytes().splitlines():
+                if not line:
+                    continue
+                signature.write_bytes(base64.b64decode(line, validate=True))
+                result = subprocess.run([openssl, 'pkeyutl', '-verify', '-rawin', '-pubin',
+                                         '-keyform', 'DER', '-inkey', key, '-in', message,
+                                         '-sigfile', signature], capture_output=True)
+                if result.returncode == 0:
+                    break
+            else:
+                raise SystemExit('mod-tool: SHA256SUMS is not signed by Sunrise')
+            for asset in ('tool.json', archive):
+                rows = re.findall(rf'^([0-9a-f]{{64}}) [ *]{re.escape(asset)}$', sums.decode(), re.M)
+                with (folder / asset).open('rb') as data:
+                    require(rows == [hashlib.file_digest(data, 'sha256').hexdigest()],
+                            f'{asset} does not match the signed SHA256SUMS')
+            info = json.loads((folder / 'tool.json').read_bytes())
+            commit = info['commit']
+            require(info['schema'] == 1 and info['tag'] == 'mod-tool' and re.fullmatch(r'[0-9a-f]{40}', commit),
+                    'unexpected signed tool.json')
+            require(not expected or commit == expected, 'the rolling commit changed; do not mix tools in one release')
+            with tarfile.open(folder / archive, 'r:xz') as tar:
+                matches = [entry for entry in tar if entry.name.removeprefix('./') == name]
+                require(len(matches) == 1 and matches[0].isfile(), f'expected one regular {name}')
+                binary.parent.mkdir()
+                with tar.extractfile(matches[0]) as data, binary.open('xb') as out:
+                    shutil.copyfileobj(data, out)
+            binary.chmod(0o755)
+            version = subprocess.check_output([binary, '--version'], cwd=folder, text=True).strip()
+            require(version == f'cargo-sunrise-mod commit {commit} native-contract {info["native_contract"]}',
+                    'the verified tool disagrees with its signed tool.json')
+            subprocess.run([binary, 'release', 'scripts', '--out', scripts], cwd=folder, check=True)
+        with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
+            print(f'SUNRISE_MOD_TOOL={binary}', f'SUNRISE_RELEASE_SCRIPTS={scripts}', sep='\n', file=f)
+        PY

@@ -1,0 +1,21 @@
+ids = [
+    "hook:register_particle_providers",
+    "type:ParticleType",
+    "type:ParticleMapCodec",
+    "type:ParticleStreamCodec",
+    "type:ParticleRegistryView",
+    "type:ParticleOptions",
+    "type:ParticleOptions.ty",
+    "type:SceneParticle",
+    "type:Scene",
+    "trait:ParticleProvider",
+    "handle:ParticleProviderRegistry::into_providers",
+    "method:ParticleProvider::create_particle",
+    "method:ParticleProviders::register",
+    "handle:ParticleProviders::register_sprite_set",
+    "handle:Registrar::register_particle_type",
+    "handle:ParticleType::options",
+    "handle:ParticleOptions::key",
+]
+why = "A common particle type owns its map and stream codecs. Client sprite-set registration takes the typed handle instead of a name, and the provider receives the decoded options before a particle joins the engine. ParticleOptions and scene requests no longer have a Wire form; only the type's declared stream value crosses the play connection."
+migrate = "Register with Registrar::register_particle_type, keep the returned handle, and call event.providers.register_sprite_set with that handle. This hook is SDK surface version 3; rebuild against the updated SDK. For a tick-only provider use ParticleMapCodec::unit(), ParticleStreamCodec::wire() and spawn with ty.options(()). Read an option's key with key() and construct vanilla or asset-only options with the existing constructors."

@@ -43,26 +43,27 @@ plan are in [server.md](server.md).
 Linux (x86-64) and macOS (Apple Silicon or Intel):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.sh | sh
 ```
 
 Windows (x64 or ARM64), in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
+irm https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.ps1 | iex
 ```
 
 The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
-the current Sunrise Nightly from GitHub (the only build Sunrise ships;
-`--version` picks another), checks it against the release's signature when OpenSSL 3 is installed (on Windows, Git
-for Windows includes it), else against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
+the current Sunrise Nightly from GitHub, or the release `--version <tag>` names (Windows: `-Version <tag>`): a stable
+release's tag, such as `26.3-0.1.0`, puts the server on that stable line, which its updates then follow. It checks it
+against the release's signature with a verifier the script pins (it refuses the install if anything doesn't match),
+and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/sunrise/releases/<version>` (Windows: `%LOCALAPPDATA%\Sunrise`), with
   `current` pointing at the one in use;
 - `sunrise-server` and `sunrise-prepare` in `~/.local/bin` (Windows: added to your PATH);
 - a `game-files` folder for the files you prepare, kept across updates.
 
-Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Other systems,
+Options: `--version <tag>`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version <tag>`, `-Dir FOLDER`). Other systems,
 such as Linux on ARM, build from source: `cargo build --release -p sunrise-game --bin sunrise-client -p
 sunrise-server` and keep both programs in one folder.
 
@@ -85,8 +86,19 @@ sunrise-prepare --prepare --server-jar /path/to/server.jar
 Add `--minecraft-dir PATH` if your launcher keeps the game elsewhere. The prepared files go to
 `game-files`, which updates keep.
 
-**On a headless machine** (a VPS, a home server), prepare on your own computer instead, with the launcher or
-`sunrise-prepare`, and copy the prepared `26.3` folder to the server with `sunrise-server import-resources DIR` (it checks the
+**On a headless machine** (a VPS, a home server) with no Minecraft install, the launcher's command line can
+download the game for your account and set the server up there:
+
+```sh
+sunrise-launcher install latest
+sunrise-launcher account sign-in        # shows a code: enter it at the address it prints, on any device
+sunrise-launcher prepare --download     # Mojang's files, for the signed-in account that owns Minecraft
+sunrise-launcher servers set-up
+sunrise-launcher servers create --name "My server" --accept-eula
+sunrise-launcher servers run "My server" -- start
+```
+
+Or prepare on your own computer instead, with the launcher or `sunrise-prepare`, and copy the prepared `26.3` folder to the server with `sunrise-server import-resources DIR` (it checks the
 folder and its version first), or by hand: into
 `~/.local/share/sunrise/game-files/sunrise-client/26.3`, or into `resources/` in the server folder, or anywhere
 `[engine] resources` in `server.toml` names. A folder copied this way needs release v2026.10.17.07 or
@@ -159,13 +171,11 @@ whitelist = true
 enforce_whitelist = false
 view_distance = 10
 simulation_distance = 10
-max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
 max_viewed_loaded_chunks = 2048             # see "Other levels a mod shows a player" below
 max_viewed_ticking_chunks = 441
 max_viewed_loaded_chunks_per_level = 16384
 max_viewed_ticking_chunks_per_level = 3528
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
-accept_older_clients = false # true: 26.2 clients join too (see below; work in progress)
 
 [world]
 name = "world"
@@ -186,10 +196,13 @@ resources = ""               # the prepared game files; empty: resources/ here, 
 restart_on_crash = true
 low_memory = false           # true: less memory, slightly slower ticks (see below)
 parallel_tick = false        # reserved: parallel phases are disabled in this fork (see below)
+droppable_clientbound = 262144  # bytes a second of droppable mod payloads sent to each player; 0 turns them off (see below)
+droppable_serverbound = 16384   # the same, accepted from each player
 
 [backups]
 every = "6h"                 # 30m, 6h, 1d...; "0" turns automatic backups off
-keep = 12                    # automatic backups kept; backups made by hand are never deleted
+keep = 12                    # 1–1000 automatic backups kept; backups made by hand are never deleted
+                             # Fix an invalid value directly here: config set must load this file first.
 
 [updates]
 keep = 1                     # other releases kept by updates, besides the one in use and the one rollback goes to
@@ -209,6 +222,10 @@ start instead of being ignored. When the game changes a setting itself (`/whitel
 back into `server.toml` when it stops, and your comments are kept. Changes to the file apply at the next
 restart: there is no live reload yet.
 
+One retired key is the exception: `max_view_distance` under `[server]`, the old far ring, is ignored with a note
+at each start, and can be removed. For more reach, raise `view_distance` (up to 32); unlike the far ring, that
+loads and, where the world hasn't been generated yet, generates the chunks it sends.
+
 ### Operators' commands: `admin_feedback_to_ops`
 
 On by default, as vanilla: when an operator runs a command that reports to admins (`/gamemode`, `/give`, `/tp`...),
@@ -216,34 +233,6 @@ the other operators read `[name: ...]` in gray, and the console logs it. Players
 either way. `false` keeps it to the console's log (`logs/latest.log`): nobody in game sees an operator's commands,
 while each operator still reads their own command's answer.
 
-### Older clients: `accept_older_clients`
-
-Off by default, a Sunrise setting with no vanilla equivalent: a vanilla server, and Sunrise's, turn away a client of
-any other release. With `accept_older_clients = true` a 26.2 client may join too. Sunrise renumbers its packets and
-the blocks, items, entities, particles and sounds in them both ways, with no proxy in between; what 26.3 added and
-26.2 lacks is shown as the nearest thing 26.2 has (a poplar log as a birch log, a wool slab as a stone slab), and
-what has no such thing (a cushion) isn't shown. The server list shows the server as joinable for 26.2.
-
-This is work in progress (#10404): the packets whose layout changed between 26.2 and 26.3 aren't translated yet,
-so for now a 26.2 player gets through the login and is then told that 26.2 can't be translated yet, before the
-server sends anything it would misread. 26.3 clients are served exactly as before, whatever the setting.
-
-### Seeing further: `max_view_distance`
-
-Off by default (0), a Sunrise setting with no vanilla equivalent. Past `view_distance`, up to
-`max_view_distance` (at most 32), each player is also sent the chunks the world has already saved, as far
-as their own render distance goes. Those chunks are only read and sent: the server never generates them,
-keeps them loaded or ticks them, so what lies out there stands still (no mobs, no growing crops, no
-redstone) until a player comes within `view_distance`. A chunk the world hasn't saved yet stays empty on
-the player's screen. To fill the ring, generate the world ahead of the players with `/pregen`
-(`sunrise-pregen = true` under `[properties]`, then `sunrise-server cmd pregen start 2500`,
-[pregeneration](pregeneration.md)).
-
-The far ring goes after everything else: its chunks wait behind the ones inside `view_distance`, are paced
-by how fast each player's game takes them, and aren't read while the world's saves are behind. When the
-average tick goes over 50 ms, the ring pulls in by two chunks a second, never inside `view_distance`; after
-30 s of ticks under 45 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
-minutes (96 MB at most), so a player walking back isn't sent the save again.
 
 ### Other levels a mod shows a player: `max_viewed_*`
 
@@ -258,7 +247,7 @@ The four caps limit what mods can ask for, counted per level:
 
 | Setting | Default | Range | What it counts |
 |---|---|---|---|
-| `max_viewed_loaded_chunks` | 2048 | 0 to 65536 | Chunks kept loaded for one player in one level, the loading ring around each area included. Fixed at 2048 for this protocol revision: a higher value is lowered to 2048 at startup, with a warning in the log |
+| `max_viewed_loaded_chunks` | 2048 | 0 to 65536 | Chunks kept loaded for one player in one level, the loading ring around each area included. A client keeps at most 4489 columns of a viewed level: a higher value is lowered to 4489 at startup, with a warning in the log. A client of an older Sunrise (before revision 4 of viewed levels) gets at most 2048 |
 | `max_viewed_ticking_chunks` | 441 | 0 to 65536 | Of them, the ticking ones: 441 is one player's simulation area at distance 10 |
 | `max_viewed_loaded_chunks_per_level` | 16384 | 0 to 1048576 | Loaded chunks of every player together in one level |
 | `max_viewed_ticking_chunks_per_level` | 3528 | 0 to 1048576 | Ticking chunks of every player together in one level |
@@ -277,7 +266,7 @@ with `CapReached`. Set another number under `[properties]` in `server.toml`:
 sunrise-max-runtime-levels = 128
 ```
 
-A level frees its place when its mod unloads or deletes it (a delete also removes its folder from `dimensions/`). After 300 ticks with nobody in it, it leaves memory, as any level does, but keeps its place: it opens again when someone enters it.
+A level frees its place when its mod unloads or deletes it (a delete also removes its folder from `dimensions/`). After 300 ticks with nobody in it, it leaves memory, as any custom level does, but keeps its place: it opens again when someone enters it.
 
 Already have a vanilla server? Run `sunrise-server init` in its folder, or `sunrise-server import
 server.properties` to write `server.toml` from it. The world, `ops.json`, `whitelist.json` and the ban lists
@@ -297,28 +286,6 @@ Use the absolute engine path printed by the build. Build on the same OS and arch
 export folder, set `engine.path` to it, restart, and keep the old folder for manual rollback. The supervisor does
 not auto-update or rebuild a pinned engine path, and there is no compatibility handshake yet (follow-up #6304).
 Native mods run unsandboxed: only build code you have read and trust.
-
-### Behind a Velocity proxy
-
-A network can put one Velocity proxy in front of several servers: the proxy signs the players in with their
-Microsoft accounts, and the servers behind it trust what it forwards. To run Sunrise as one of them:
-
-1. Set `online_mode = false` in `server.toml` and keep the server's port reachable only from the proxy (bind it
-   to `127.0.0.1` or put it on a private network).
-2. Put the proxy's forwarding secret, the one in Velocity's `forwarding.secret`, into a file `forwarding.secret`
-   in the server folder, and set `player-info-forwarding-mode = "modern"` in `velocity.toml`.
-3. Restart the server. The log says `Velocity player information forwarding is on`.
-
-Players then join with the UUID, name, skin and address the proxy forwards. Anyone who connects without going
-through the proxy is refused, and so is a login signed with another secret. With the file in place but
-`online_mode = true` the file is ignored (with a warning), and an empty file stops the start, because an empty
-secret could be signed by anyone. How the exchange works: [velocity-forwarding.md](velocity-forwarding.md).
-
-Bedrock players that join through Geyser and Floodgate arrive with a Floodgate UUID (`00000000-0000-0000-0009-` and
-the Xbox id), which is never on `whitelist.json`. With `white-list=true`, list that prefix in a file
-`whitelist-bypass.txt` beside server.properties (one UUID prefix per line, `#` comments, at least 8 characters) and
-everyone whose UUID starts with it passes the whitelist. Bans and the player limit still apply. The log says
-`whitelist-bypass.txt: 1 UUID prefix(es) skip the whitelist`.
 
 ## 5. Commands
 
@@ -363,22 +330,6 @@ on the running server, through its control API; `ban`, `pardon`, `ban-ip` and `p
 is running and edit the vanilla files directly while it is stopped. `players` reads the
 lists from the files when the server is stopped. Any console command works through
 `cmd`: `sunrise-server cmd ban Griefer`, `sunrise-server cmd say Restarting in 5 minutes`.
-#### Temporary bans
-
-`tempban PLAYER DURATION [REASON]` is a Sunrise extra for dedicated servers (vanilla has only `ban`, which is
-permanent). Operators of level 3 (`/ban`'s level) run it in game as `/tempban`; the console takes the same words
-without the slash, and `sunrise-server cmd tempban Griefer 12h griefing` runs it through the control API. The
-duration is a whole number and `s`, `m`, `h`, `d` or `w`: `30m`, `12h`, `7d`. It writes an entry with `expires` set
-to `banned-players.json`, the way vanilla writes a ban and the chat filter's automatic temporary ban does, so it
-survives a restart, `banlist` shows it, `pardon` lifts it and the entry goes away once it has ended. A player who
-is online is kicked with the reason and the time the ban ends, and the same message is what they read when they
-try to join. A player who is already banned (and whose ban has not ended) is left as they are: `pardon` first to
-change a ban. The player may be offline if the server has seen them. The console logs it as
-`[tempban] <operator> banned <player> for <duration>`, and the event stream (`GET /api/v1/events`) gets a `ban`
-event with `reason`, `by` and `until`. `tempbanlist` lists the bans that end by themselves, soonest first, with
-who banned, the time left, the end and the reason. Both are in operators' command tree (level 3 and above), so
-their clients complete them, as they do the [mute commands](chat-filter.md#muting-by-hand).
-
 To generate the world around spawn ahead of the players, Sunrise has its own `pregen` command, off until
 `server.toml` has `sunrise-pregen = true` under `[properties]`: `sunrise-server cmd pregen start 2500`
 ([pregeneration](pregeneration.md)).
@@ -445,6 +396,11 @@ A running server takes the difficulty, the default game mode, the whitelist, the
 player limit and the backup settings at once; the rest applies at its next start, and `config set` says which. `--json` prints that as `saved`, `applied`
 and `restart`.
 
+A crash save keeps the last saved files (`players/data/<uuid>.dat`, stats and advancements) of a player whose turn
+the panic interrupted, such as a mod's hook panicking while it handled that player's action: the half-done turn can
+hold an item taken but not yet placed. The log says so with a `player's turn` warning, and the panic still
+ends the server. Single player keeps the owner's file the same way.
+
 The server restarts the game by itself if it crashes: after 5 s, then waiting longer each time, up to 5
 minutes. It keeps the crash report and gives up after 5 crashes in 10 minutes, and `status` says why.
 
@@ -452,7 +408,9 @@ minutes. It keeps the crash report and gives up after 5 crashes in 10 minutes, a
 after it starts and every 6 hours after, and says so in its log, in `status` and in the panel; it never
 updates by itself. `sunrise-server update --check` (add `--json` for machine output) asks once. `sunrise-server update`:
 
-1. downloads the current Nightly and checks it against its signed SHA-256;
+1. downloads the newest build of the server's channel and checks it against its signed SHA-256: on a stable release
+   (`26.3-0.1.0`), the newest stable release of its line (the same Minecraft version and major, `26.3-0.x`),
+   never a Nightly or the next major; on any other build, the current Nightly;
 2. stops the game, backs up the world (`backups/<time>-before-<release>.zip`) and switches to the new
    release;
 3. starts the game on it and waits up to 5 minutes (`--timeout SECONDS`) for it to come up.
@@ -460,11 +418,25 @@ updates by itself. `sunrise-server update --check` (add `--json` for machine out
 If the new game crashes or doesn't come up in time, the server goes back to the release it was on by itself
 and puts the world back as it was just before the switch (the world the new game left is kept in
 `backups/`). `sunrise-server rollback` goes back to the release before by hand, keeping the world as it is
-(it backs it up first). `--version vX.Y.Z` installs a given release, and `--archive FILE --version NAME` an
+(it backs it up first). `--version <tag>` installs a given release (moving to another line or channel too), and `--archive FILE --version NAME` an
 archive you have, such as your own build. A server still on a release from before the last dated one doesn't know
 that 0.2 comes after the dated releases and says it is up to date: run `sunrise-server update --version v0.2.0`
 once ([versioning](versioning.md)). A stopped server is switched and starts on the new release next
 time. Set `SUNRISE_NO_UPDATE_CHECK=1` in the server's environment to turn the check off.
+
+Release checks and downloads, and the Discord webhook, use the first nonblank setting in this order:
+`HTTPS_PROXY`, `https_proxy`, `ALL_PROXY`, `all_proxy` for HTTPS, or `HTTP_PROXY`, `http_proxy`,
+`ALL_PROXY`, `all_proxy` for HTTP. A proxy address without a scheme means HTTP. Supported schemes are
+`http://`, `socks4://`, `socks4a://`, `socks5://`, `socks5h://` and `socks://` (an alias for SOCKS5).
+An `https://` proxy address is not supported, even for HTTPS downloads. HTTP proxy credentials are sent
+only on HTTPS CONNECT, not for plain HTTP requests.
+
+Local addresses bypass the proxy. `NO_PROXY` (or `no_proxy` if `NO_PROXY` is unset) is a comma-separated
+list: `*` bypasses all hosts; a host or domain (`example.org`, `.example.org`, `*.example.org`) matches
+that name and its subdomains. The list accepts IP literals, including bare or bracketed IPv6, but not CIDR.
+An entry with a port (`example.org:8443` or `[2001:db8::1]:8443`) matches only that destination port,
+including the URL scheme's default port when no port is written. Release checks and downloads
+select the route again at each redirect.
 
 ## 6. Web panel
 
@@ -493,14 +465,17 @@ make a login link, and no one else can. Never put it on the open internet.
 
 Everything the panel does goes through the control API ([api/server.md](api/server.md)), which a moderation bot
 (a Discord `!ban`), a monitoring tool or a script can call too. It listens on a free port of `127.0.0.1` and
-writes the address and a fresh token to `.sunrise/api.json` at every start. For a program that runs elsewhere
-or keeps its settings, fix both in `server.toml`:
+writes the address and a fresh token to `.sunrise/api.json` at every start. For a program that needs a fixed
+address, set `bind` in `server.toml`:
 
 ```toml
 [api]
 bind = "127.0.0.1:8131"      # or your tailnet address, 100.x.y.z:8131
-token = "a long random string only the bot knows"
+token = ""                   # empty: generate a fresh token at every start
 ```
+
+If the program needs a fixed token too, set `token` to a private random string of at least 16 printable ASCII
+characters without spaces.
 
 The same rules as the panel's hold: a tailnet or loopback address, unless `allow_public = true` (the token is then
 all that guards the server, and it warns at every start). The API can't change `[engine]`, `[panel]`, `[api]` or
@@ -520,7 +495,7 @@ enabled = true                                     # false pauses it and keeps t
 
 The lines of each 2 seconds are drawn as one picture of the in-game chat (transparent, shadowed letters, colours
 included), and a channel gets at most one post every 2 seconds (more when Discord asks for it: a burst beyond 20
-lines is counted, not drawn). Only `chat` is forwarded, never a message the server's chat filter held back. Posts
+lines is counted, not drawn). Only `chat` is forwarded. Posts
 never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. Every post comes
 from the webhook's own name and avatar (set them in Discord), never a player's; players' addresses are never sent,
 and a player is always named by their account's name (a nickname only next to it). The server only makes outgoing HTTPS calls to Discord;
@@ -662,19 +637,6 @@ folders must support hard links on the same filesystem. Unix flushes files and d
 flushes files and uses write-through renames. This does not replace a backup or promise recovery from
 filesystem corruption or storage hardware that ignores flushes.
 
-### 1.8 combat: `[combat]`
-
-Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage, Strength and
-Sharpness; the list is in [pvp.md](pvp.md#18-combat-in-worlds-you-host-combatrules-default-off)), add to
-`server.toml`, then restart:
-
-```toml
-[combat]
-legacy = true
-```
-
-Players join with any vanilla 26.3 client: only the server decides the damage.
-
 ### Mods' biome regions: `[biome_regions]`
 
 A world made with a mod that adds a [biome region](modding/src/how-to/content-mods/biome-regions.md) saves that region with the
@@ -755,7 +717,7 @@ No image is published: build one from the repository. The image holds none of Mi
 folder you prepared (step 2) read-only.
 
 ```sh
-git clone https://github.com/horizon-rust/horizon && cd sunrise
+git clone https://github.com/sunrise-org/sunrise && cd sunrise
 docker build -f packaging/server/Dockerfile -t sunrise-server .
 
 docker run -d --name sunrise -p 25565:25565 --stop-timeout 180 \
@@ -780,7 +742,7 @@ docker run -d --name sunrise -p 25565:25565 --stop-timeout 180 \
 ## 10. How fast is it
 
 The latest bot benchmark compares Sunrise with vanilla 26.3, Paper and Fabric + Lithium:
-[benchmarks/server-four-way-2026-10-19](https://github.com/horizon-rust/horizon/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
+[benchmarks/server-four-way-2026-10-19](https://github.com/sunrise-org/sunrise/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
 It ran release v2026.10.19 on a 4-thread laptop CPU (i7-7500U), with 1 to 50 players walking, exploring and
 standing around spawn, the bots on another machine. All four servers did the same work. Against
 Pumpkin: [performance/server-vs-pumpkin.md](performance/server-vs-pumpkin.md). In short:
@@ -822,7 +784,7 @@ effect from the environment variable `MIMALLOC_ALLOW_THP=0`. On macOS and Window
 **Fork limitation:** all opt-in parallel server phases are currently disabled, including when this
 setting is true or `SUNRISE_PARALLEL_TICK` is set. A request logs a warning and uses serial execution.
 The upstream behavior described below is retained for reference, not currently available on the fork.
-Typed hook-aware parallel execution is tracked in [#3491](https://github.com/arismoko/horizon/issues/3491).
+Typed hook-aware parallel execution is tracked in [#1532](https://github.com/sunrise-org/sunrise/issues/1532).
 
 Off by default. Under `[engine]`, `parallel_tick = true` starts the game with its parallel tick on: the
 phases of the server tick that give the same result in any order share their work among helper threads (at
@@ -831,43 +793,17 @@ environment variable `SUNRISE_PARALLEL_TICK=1`, for a host that gives you no way
 with a fixed startup command). With the setting off, a `SUNRISE_PARALLEL_TICK` already in the server's
 environment still applies.
 
-Natural mob spawning is one of those phases: the spawn attempts of the chunks around your players run on the helper
-threads, and the server thread then takes what they found, in order, if the mob caps still allow it. It has vanilla's odds
-and caps but not the random draws of one vanilla level, so a world does not spawn the same mobs with the setting on as off.
-It stays on one thread while a native mod listens to spawns, with fewer than 512 chunks to try (about two players' worth) and
-on a machine with one core ([how it works](parallel-natural-spawning.md)).
+### Droppable mod payloads: `droppable_clientbound` and `droppable_serverbound`
 
-One thing differs from the serial tick while it is on: the rolls a mob makes on the level's random (a fish
-leaving its school, a parrot imitating, a brain's durations) come from a random of the mob's own, so that mobs
-on different threads do not wait for each other. The odds are vanilla's; the values are not the ones the level's
-random would have given ([mob-islands.md](mob-islands.md#every-turn-draws-its-own-random)).
-
-### Mob AI far from players: `[entities] dab`
-
-Off by default, because it is not vanilla's behaviour: mobs far from every player react more slowly. It is
-Pufferfish's "dynamic activation of brain", with the same names and defaults. Add the section to `server.toml`:
-
-```toml
-[entities]
-dab = true                    # false (the default): every mob thinks every tick, as in vanilla
-dab_start_distance = 12       # blocks; a mob this close to the nearest player is never slowed
-dab_max_tick_freq = 20        # ticks; the longest wait between two AI ticks
-dab_activation_dist_mod = 8   # raise it to slow far mobs less, lower it to slow them more
-```
-
-A mob farther than `dab_start_distance` from the nearest player (squared distance `d²`) runs its AI on the ticks where
-`age % interval == 0`, with `interval = clamp(d² >> dab_activation_dist_mod, 1, dab_max_tick_freq)`: 14 ticks at
-60 blocks with the defaults, 20 from about 71 blocks. Only the decisions wait: goals and targets, the brains of villagers,
-piglins, axolotls and the like, and each species' `customServerAiStep`. A far mob still moves (its navigation, move,
-look and jump controls run), falls, floats, is pushed, takes damage and effects, and its despawn check runs.
-
-Never slowed: withers and wardens; a mob with a target or anger, or hurt in the last two seconds; raiders in a raid; a
-mob that is ridden, riding, carrying a passenger or on a lead; a tamed mob that is not sitting.
-
-Unlike Pufferfish, it applies to every mob (Pufferfish limits the brain part to villagers, axolotls, hoglins,
-zombified piglins and goats and has an entity blacklist), and a level with no player counts as far away. It applies at
-the next start, and is the same switch as the environment variables `SUNRISE_DAB=1`, `SUNRISE_DAB_START_DISTANCE`,
-`SUNRISE_DAB_MAX_TICK_FREQ` and `SUNRISE_DAB_ACTIVATION_DIST_MOD`.
+A mod can declare a payload channel as droppable (voice chat, live data): under congestion the game drops
+those sends, instead of letting them queue behind chunks and arrive late ([the modding
+book](modding/src/how-to/client/networking.md)). Under `[engine]`, `droppable_clientbound` is the bytes a
+second of them the server sends to each player (default 262144, 256 KiB) and `droppable_serverbound`
+the bytes a second it accepts from each player (default 16384, 16 KiB). For voice, tune these budgets
+for the traffic your mod's codec and relay produce; `0` turns droppable delivery off in that direction.
+A player over the limit loses those sends, which are counted, and is not kicked; nothing else on the
+connection is ever dropped. Vanilla's `rate-limit` (off by default) still counts droppable payloads as
+packets. Changes to the budgets apply at the next start.
 
 ## When something goes wrong
 
@@ -879,4 +815,4 @@ the next start, and is the same switch as the environment variables `SUNRISE_DAB
   open in your firewall. On a tailnet, use the server's tailnet address.
 - **It keeps restarting**: `sunrise-server status` shows the last crash and `sunrise-server logs -n 200` the log
   before it. Crash reports are in `crash-reports/`.
-- Report problems at <https://github.com/horizon-rust/horizon/issues>, with the end of the log.
+- Report problems at <https://github.com/sunrise-org/sunrise/issues>, with the end of the log.

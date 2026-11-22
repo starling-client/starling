@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::get_light_emission", "hook:light_emission"]
+why = "A mod can query a supplied state's source light through the same Part the engine asks when relighting."
+migrate = "Use event.state as the emitter. An explicit query can pass a candidate state that isn't at event.pos. Read the world only for the candidate's context."

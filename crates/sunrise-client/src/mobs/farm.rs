@@ -6,8 +6,8 @@ use super::{
         Breed, EatBlock, Float, FollowParent, LookAtPlayer, Panic, RandomLookAround, Stroll, Tempt,
     },
 };
-use sunrise_core::random::RandomSource;
 use std::sync::Arc;
+use sunrise_core::random::RandomSource;
 
 pub fn register(m: &mut Mob) {
     let food = m.kind.food.clone();
@@ -72,7 +72,7 @@ pub fn register(m: &mut Mob) {
 /// Chicken.aiStep: wing flapping, slowed falling and laying eggs.
 pub fn chicken_ai_step(m: &mut Mob, _w: &MobWorld, events: &mut Vec<MobEvent>) {
     chicken_flap(m);
-    if !m.on_ground && m.velocity.y < 0.0 {
+    if !m.ground.on_ground && m.velocity.y < 0.0 {
         m.velocity.y *= 0.6;
     }
     chicken_egg_step(m, events);
@@ -102,8 +102,9 @@ pub fn chicken_flap(m: &mut Mob) {
     let a = &mut m.anim;
     a.flap_o = a.flap;
     a.flap_speed_o = a.flap_speed;
-    a.flap_speed = (a.flap_speed + if m.on_ground { -1.0 } else { 4.0 } * 0.3).clamp(0.0, 1.0);
-    if !m.on_ground && a.flapping < 1.0 {
+    a.flap_speed =
+        (a.flap_speed + if m.ground.on_ground { -1.0 } else { 4.0 } * 0.3).clamp(0.0, 1.0);
+    if !m.ground.on_ground && a.flapping < 1.0 {
         a.flapping = 1.0;
     }
     a.flapping *= 0.9;
@@ -212,13 +213,13 @@ mod tests {
     #[test]
     fn a_falling_chicken_flaps_and_a_landed_one_folds_its_wings() {
         let mut m = chicken();
-        m.on_ground = true;
+        m.ground.on_ground = true;
         chicken_flap(&mut m);
         assert_eq!(m.anim.flap_speed, 0.0);
         assert_eq!(m.anim.flap, 0.0);
         // In the air flapSpeed rises by 1.2 (clamped to 1), flapping restarts
         // at 1 and decays by 0.9, and flap turns by twice flapping.
-        m.on_ground = false;
+        m.ground.on_ground = false;
         chicken_flap(&mut m);
         assert_eq!(m.anim.flap_speed, 1.0);
         assert_eq!(m.anim.flapping, 0.9);
@@ -228,7 +229,7 @@ mod tests {
         assert_eq!(m.anim.flap_speed_o, 1.0);
         assert_eq!(m.anim.flap, 3.6);
         // Landed, flapSpeed falls by 0.3 a tick and flapping decays.
-        m.on_ground = true;
+        m.ground.on_ground = true;
         chicken_flap(&mut m);
         assert!((m.anim.flap_speed - 0.7).abs() < 1.0e-6);
         assert!((m.anim.flapping - 0.81).abs() < 1.0e-6);

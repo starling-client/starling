@@ -1,4 +1,5 @@
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 use sunrise_client::{
     advancements::{Progress, Tree},
     hud::{GuiScale, HudBatch},
@@ -10,7 +11,6 @@ use sunrise_protocol::{
     item::{Component, WirePatch, component, custom},
     packets::play::UpdateAdvancements,
 };
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -109,7 +109,6 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
             sync.advancements = ServerAdvancements::load(
                 &fixture(),
                 &sunrise_world::loot::PackOverlay::NONE,
-                Default::default(),
                 Default::default(),
             );
             let mut visible = Vec::new();

@@ -4,10 +4,8 @@
 //! A cost outside `i16` changes sign there (`-65535` arrives as `+1`,
 //! `i32::MIN` as `0`). A Sunrise server still sends the short, then this
 //! payload, and a Sunrise client keeps the signed cost. Clientbound only.
-use crate::{
-    Error, Result,
-    buf::{Reader, Writer},
-};
+use crate::{Error, Result, buf::Reader};
+use sunrise_core::vanilla_bytes::Writer;
 
 /// The custom payload channel.
 pub const CHANNEL: &str = "sunrise:anvil_cost";

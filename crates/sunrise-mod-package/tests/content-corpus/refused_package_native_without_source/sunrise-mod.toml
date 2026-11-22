@@ -1,0 +1,7 @@
+id = "refused_package_native_without_source"
+name = "refused_package_native_without_source"
+version = "1.2.3"
+
+[native]
+game = "26.3"
+sunrise = "0123456789abcdef0123456789abcdef01234567"

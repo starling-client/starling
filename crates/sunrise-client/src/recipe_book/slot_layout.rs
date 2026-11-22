@@ -19,7 +19,6 @@ pub enum LayoutError {
     DuplicateSlot(u16),
     IncompatibleDisplay,
     InvalidDisplayGrid,
-    MissingGeometry(u16),
 }
 
 impl CheckedSlotLayout {
@@ -36,9 +35,9 @@ impl CheckedSlotLayout {
         self
     }
     /// Validate mod-controlled indices once before mapping any display.
-    /// The menu limit is the existing 256 container slots, not a display cap.
+    /// The slot count is bounded by vanilla's 16-bit signed slot index (`i16::MAX`).
     pub fn new(layout: SlotLayout, slot_count: u16) -> Result<Self, LayoutError> {
-        if slot_count == 0 || slot_count > 256 {
+        if slot_count == 0 || slot_count > i16::MAX as u16 {
             return Err(LayoutError::InvalidSlotCount);
         }
         if let SlotLayout::Crafting {
@@ -58,15 +57,14 @@ impl CheckedSlotLayout {
             }
         }
         let checked = Self(layout, None);
-        let mut seen = [false; 256];
+        let mut seen = std::collections::BTreeSet::new();
         for slot in checked.slots() {
             if slot >= slot_count {
                 return Err(LayoutError::OutOfRange(slot));
             }
-            if seen[usize::from(slot)] {
+            if !seen.insert(slot) {
                 return Err(LayoutError::DuplicateSlot(slot));
             }
-            seen[usize::from(slot)] = true;
         }
         Ok(checked)
     }
@@ -88,22 +86,8 @@ impl CheckedSlotLayout {
                 addition,
                 result,
             } => vec![*template, *base, *addition, *result],
+            SlotLayout::Mod => Vec::new(),
         }
-    }
-
-    /// All mapped slots must have finite typed screen geometry. Called when a
-    /// screen is bound, never per frame; omitted slots cannot receive ghosts.
-    pub fn validate_geometry(&self, geometry: &[Option<[f32; 2]>]) -> Result<(), LayoutError> {
-        for slot in self.slots() {
-            if !geometry
-                .get(usize::from(slot))
-                .and_then(|p| *p)
-                .is_some_and(|p| p.into_iter().all(f32::is_finite))
-            {
-                return Err(LayoutError::MissingGeometry(slot));
-            }
-        }
-        Ok(())
     }
 
     /// Map unresolved display alternatives without changing inventory. The

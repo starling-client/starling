@@ -4,9 +4,9 @@
 //! goals on the game's ticks; tools/ and vanilla 26.3 measured the same
 //! scene (no home and radius 12 retaliate, radius 3 does not).
 use crate::game::*;
+use std::sync::Arc;
 use sunrise_client::{chunk::Chunk, mobs::Who};
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 /// (pen, home NBT): pens 60 blocks apart, beyond a zombie's alert range.
 const CASES: [(&str, &str); 3] = [
@@ -77,7 +77,7 @@ fn step(game: &mut Game<'_>, ticks: u32) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_zombie_takes_revenge_only_on_a_cow_inside_its_home() {
     let mut resources = None;
     let mut game = game(&mut resources);

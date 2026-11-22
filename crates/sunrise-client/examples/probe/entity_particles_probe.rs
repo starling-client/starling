@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
 //! Runs tools/test_entity_particles_parity.py's entity events through
 //! `particles::entity_event_burst` and `particles::around_self`.
-use sunrise_client::{Result, particles};
-use sunrise_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_client::{Result, particles};
+use sunrise_core::random::{LegacyRandom, RandomSource};
 
 fn d(v: f64) -> String {
     format!("{:016x}", v.to_bits())

@@ -1,0 +1,3 @@
+ids = ["hook:fire_odds", "method:BlockPart::fire_odds"]
+why = "Fire placement and shape reads ask fire_odds on the client as well as the server."
+migrate = "Accept LevelSide in block Part listeners. Client answers control ignite eligibility only; burning remains server-only. Return None to keep the table."

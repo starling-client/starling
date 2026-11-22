@@ -294,25 +294,17 @@ pub fn draw_background(batch: &mut HudBatch, atlas: &HudAtlas, in_world: bool) {
     ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
     // `extractBackground`: the panel and the search icon.
     let mx = margin_x(w) + 3.0;
-    ui::blit_sprite(
+    ui::nine_slice(
         batch,
         atlas,
-        "gui/sprites/social_interactions/background",
+        "social_interactions/background",
         mx,
         64.0,
         236.0,
         window_height(h) + 16.0,
         WHITE,
     );
-    batch.sprite_scaled(
-        atlas,
-        "gui/sprites/icon/search",
-        mx + 10.0,
-        76.0,
-        12.0,
-        12.0,
-        WHITE,
-    );
+    batch.sprite_scaled(atlas, "icon/search", mx + 10.0, 76.0, 12.0, 12.0, WHITE);
 }
 
 /// Draw the widgets and return the delayed tooltip for the screen's overlay pass.
@@ -416,7 +408,7 @@ pub fn draw_contents(
             let (hide, report) = row_buttons(w, y);
             let sprite = |base: &str, hover: bool| {
                 format!(
-                    "gui/sprites/social_interactions/{base}{}",
+                    "social_interactions/{base}{}",
                     if hover { "_highlighted" } else { "" }
                 )
             };
@@ -448,7 +440,7 @@ pub fn draw_contents(
             );
             batch.sprite_scaled(
                 atlas,
-                "gui/sprites/social_interactions/report_button_disabled",
+                "social_interactions/report_button_disabled",
                 report[0],
                 report[1],
                 20.0,

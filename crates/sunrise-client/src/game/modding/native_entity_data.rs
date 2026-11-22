@@ -1,13 +1,13 @@
 //! An entity's saved data, tags and name for native server mods, through an
-//! `EntityRef` (docs/modding/src/how-to/native-mods.md, "Entity and level handles", #7387): what
+//! `EntityRef` (docs/modding/src/concepts/parts/entity-parts-and-mob-goals.md, #7387): what
 //! `/data` and `/tag` read and change, its custom name, its type's category
 //! and whether it is in its level. They return `None` (or `false`) for a
 //! stale handle or on a client, which the server sends no saved data or tags;
 //! only the name reads there.
 use super::{Game, commands::Target};
+use mod_api::{EntityRef, EntityTags, MobCategory};
 use sunrise_client::{entity_nbt::flag, scoreboard::json_to_tag, text::Text};
 use sunrise_core::nbt::{Compound, Tag};
-use mod_api::{EntityRef, MobCategory};
 
 /// The most tags an entity holds (`Entity.addTag`).
 const MAX_TAGS: usize = 1024;
@@ -52,13 +52,13 @@ impl Game<'_> {
         let merged = sunrise_client::data_cmd::merged(&old, &nbt);
         merged != old && self.apply_entity_nbt(t, merged).is_ok()
     }
-    /// The entity's tags (`Entity.getTags`), as `/tag <entity> list` shows
-    /// them. API 386.
-    pub(super) fn entity_tags(&self, entity: EntityRef) -> Option<Vec<String>> {
+    /// Borrow the entity's scoreboard tags (`Entity.entityTags()`) without the
+    /// lossy conversion used by `/tag <entity> list`.
+    pub(super) fn entity_tags(&self, entity: EntityRef) -> Option<EntityTags<'_>> {
         if self.remote.is_some() {
             return None;
         }
-        Some(self.tags_of(self.native_entity_target(entity)?))
+        Some(self.saved_entity_tags(self.native_entity_target(entity)?))
     }
     /// Adds tag `tag` (`Entity.addTag`): false when it has it already, holds
     /// 1024, its kind can't store tags yet, or the handle is stale. API 386.
@@ -74,8 +74,8 @@ impl Game<'_> {
             return false;
         }
         tags.push(tag.to_owned());
-        // False, not a silent no-op, for kinds whose tags aren't stored yet
-        // (ominous item spawners, falling blocks, rockets).
+        // False, not a silent no-op, for a kind with no saved compound to
+        // write tags to (a natural leash knot).
         self.set_entity_tags(t, &tags)
     }
     /// Removes tag `tag` (`Entity.removeTag`): false when it didn't have it.
@@ -270,10 +270,10 @@ fn named_id(t: Target) -> Option<u32> {
 mod tests {
     use super::super::api_values::TryIntoApi;
     use super::super::native_entity_refs::tests::with_game;
+    use mod_api::{EntityRef, MobCategory};
     use sunrise_client::{entities::ArmorStand, mobs::Mob, text::Text};
     use sunrise_core::geometry::Vec3;
-    use sunrise_core::nbt::Tag;
-    use mod_api::{EntityRef, MobCategory};
+    use sunrise_core::nbt::{JavaString, Tag};
 
     fn push_mob(game: &mut super::Game<'_>, id: u32, kind: &str) -> EntityRef {
         let kind = game.res.mob_types().get(kind).unwrap().clone();
@@ -283,7 +283,41 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
+    fn live_entity_tags_lend_exact_utf16_without_changing_command_text() {
+        with_game(|game| {
+            let mob = push_mob(game, 11, "minecraft:zombie");
+            assert!(mob.tags(game).unwrap().iter_utf16().next().is_none());
+
+            game.put_saved(
+                mob.id(),
+                "Tags",
+                Some(Tag::List(vec![
+                    Tag::String("tag".into()),
+                    Tag::String("\u{1f680}".into()),
+                    Tag::Byte(7),
+                    Tag::String(JavaString(vec![0xD800])),
+                ])),
+            );
+
+            let tags = mob.tags(game).unwrap();
+            let expected: [&[u16]; 3] = [&[0x0074, 0x0061, 0x0067], &[0xD83D, 0xDE80], &[0xD800]];
+            assert_eq!(tags.iter_utf16().collect::<Vec<_>>(), expected);
+            assert!(tags.contains("tag"));
+            assert!(tags.contains("\u{1f680}"));
+            assert!(!tags.contains("\u{fffd}"));
+
+            // `/tag ... list` still receives the same strings, in the same order.
+            let target = game.native_entity_target(mob).unwrap();
+            assert_eq!(game.tags_of(target), ["tag", "\u{1f680}", "\u{fffd}"]);
+
+            assert!(mob.discard(game));
+            assert!(mob.tags(game).is_none());
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn custom_name_and_visibility_are_saved_and_load_again() {
         with_game(|game| {
             let mob = push_mob(game, 12, "minecraft:zombie");
@@ -355,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn classification_is_the_types_category() {
         with_game(|game| {
             for (id, kind, category) in [
@@ -386,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn an_entity_is_in_its_level_from_its_join_until_its_removal() {
         use mod_api::{EntityJoinLevelEvent, Flow, Hooks, Host, ServerHost};
         use std::sync::{Arc, Mutex};

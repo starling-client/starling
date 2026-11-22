@@ -1,6 +1,8 @@
 //! Installing from a local test registry: a real content `.smod`, an index
 //! naming it, and the game folder the launcher shares.
 use super::*;
+use std::path::PathBuf;
+use sunrise_mod_package::index::browser_state::MANIFEST;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -74,7 +76,7 @@ fn the_browser_lists_only_content_mods_for_this_game() {
     let ids: Vec<&str> = listed.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(ids, ["ruby"], "no native mod, no mod for another version");
     assert_eq!(listed[0].version, "1.0");
-    assert_eq!(listed[0].page, "https://playsunrise.net/mods/ruby");
+    assert_eq!(listed[0].page, "/ruby");
     assert_eq!(listed[0].installed, None);
     fs::remove_dir_all(&home).unwrap();
 }
@@ -248,6 +250,132 @@ fn an_unrecognized_managed_entry_is_not_replaced() {
 }
 
 #[test]
+fn several_entries_of_the_project_are_refused_before_download() {
+    let bytes = ruby("1.1");
+    let index = registry("1.1", &bytes, "file:///ruby.smod");
+    let home = scratch("duplicate-entries");
+    fs::create_dir_all(home.join("sunrise-mods")).unwrap();
+    fs::write(home.join("sunrise-mods/ruby.smod"), ruby("1.0")).unwrap();
+    let row = |title: &str| {
+        serde_json::json!({ "source": "sunrise", "project": "ruby", "title": title,
+            "version": "1.0", "file": "sunrise-mods/ruby.smod" })
+    };
+    let manifest =
+        serde_json::json!({ "entries": [row("Ruby"), row("Ruby, renamed later")] }).to_string();
+    fs::write(home.join(MANIFEST), &manifest).unwrap();
+    assert!(
+        install(&index, &home, "ruby", &|_, _| {
+            panic!("an ambiguous manifest must be refused before download")
+        })
+        .is_err()
+    );
+    assert_eq!(fs::read_to_string(home.join(MANIFEST)).unwrap(), manifest);
+    assert_eq!(
+        fs::read(home.join("sunrise-mods/ruby.smod")).unwrap(),
+        ruby("1.0")
+    );
+    assert!(!home.join(".mod-browser.pending.json").try_exists().unwrap());
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn a_same_version_install_refuses_another_projects_aliased_claim() {
+    let bytes = ruby("1.0");
+    let index = registry("1.0", &bytes, "file:///ruby.smod");
+    let home = scratch("same-version-competing-claim");
+    let target = home.join("sunrise-mods/ruby.smod");
+    fs::create_dir_all(home.join("sunrise-mods")).unwrap();
+    fs::write(&target, &bytes).unwrap();
+    let manifest = serde_json::json!({ "entries": [
+        {"source": "sunrise", "project": "ruby", "version": "1.0", "file": "sunrise-mods/ruby.smod"},
+        {"source": "sunrise", "project": "gem", "title": "Gem", "file": "./sunrise-mods/ruby.smod"}
+    ] }).to_string();
+    fs::write(home.join(MANIFEST), &manifest).unwrap();
+
+    let error = install(&index, &home, "ruby", &|_, _| {
+        panic!("a competing file claim must be refused before download")
+    })
+    .unwrap_err();
+    assert!(error.contains("Gem"), "{error}");
+    assert_eq!(fs::read_to_string(home.join(MANIFEST)).unwrap(), manifest);
+    assert_eq!(fs::read(target).unwrap(), bytes);
+    assert!(!home.join(".mod-browser.pending.json").try_exists().unwrap());
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_install_refuses_a_claim_through_a_symlinked_directory_before_download() {
+    let old = ruby("1.0");
+    let newer = ruby("1.1");
+    let index = registry("1.1", &newer, "file:///ruby.smod");
+    let home = scratch("symlinked-claim");
+    let target = home.join("sunrise-mods/ruby.smod");
+    fs::create_dir(home.join("sunrise-mods")).unwrap();
+    fs::write(&target, &old).unwrap();
+    std::os::unix::fs::symlink("sunrise-mods", home.join("alias")).unwrap();
+    let manifest = serde_json::json!({ "entries": [
+        {"source": "sunrise", "project": "ruby", "version": "1.0", "file": "sunrise-mods/ruby.smod"},
+        {"source": "modrinth", "project": "gem", "title": "Gem", "file": "alias/ruby.smod"}
+    ] }).to_string();
+    fs::write(home.join(MANIFEST), &manifest).unwrap();
+
+    let error = install(&index, &home, "ruby", &|_, _| {
+        panic!("a claim through a directory symlink must be refused before download")
+    })
+    .unwrap_err();
+    assert!(error.contains("Gem"), "{error}");
+    assert_eq!(fs::read_to_string(home.join(MANIFEST)).unwrap(), manifest);
+    assert_eq!(fs::read(&target).unwrap(), old);
+    assert_eq!(fs::read(home.join("alias/ruby.smod")).unwrap(), old);
+    assert!(!home.join(".mod-browser.pending.json").try_exists().unwrap());
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_install_accepts_a_mods_directory_linked_outside_the_home() {
+    let bytes = ruby("1.0");
+    let index = registry("1.0", &bytes, "file:///ruby.smod");
+    let home = scratch("linked-mods-home");
+    let shared_mods = scratch("linked-mods-destination");
+    std::os::unix::fs::symlink(&shared_mods, home.join("sunrise-mods")).unwrap();
+
+    install(&index, &home, "ruby", &serve(bytes.clone())).unwrap();
+    assert_eq!(fs::read(shared_mods.join("ruby.smod")).unwrap(), bytes);
+    let list = Installed::load(&home).unwrap();
+    assert_eq!(list.entries[0]["file"], "sunrise-mods/ruby.smod");
+    assert!(!home.join(".mod-browser.pending.json").try_exists().unwrap());
+    fs::remove_dir_all(home).unwrap();
+    fs::remove_dir_all(shared_mods).unwrap();
+}
+
+#[test]
+fn an_install_ignores_a_missing_unicode_name_in_an_unrelated_folder() {
+    let bytes = ruby("1.0");
+    let index = registry("1.0", &bytes, "file:///ruby.smod");
+    let home = scratch("missing-pack-claim");
+    // Neither folder exists yet. Only the filename in the pack's future directory is uncertain.
+    let pack = serde_json::json!({"source": "modrinth", "project": "pack", "file": "resourcepacks/déjà.zip"});
+    Installed {
+        entries: vec![pack.clone()],
+    }
+    .save(&home)
+    .unwrap();
+
+    install(&index, &home, "ruby", &serve(bytes.clone())).unwrap();
+    assert_eq!(
+        fs::read(home.join("sunrise-mods/ruby.smod")).unwrap(),
+        bytes
+    );
+    let list = Installed::load(&home).unwrap();
+    assert_eq!(list.entries[0], pack);
+    assert_eq!(list.entries[1]["project"], "ruby");
+    assert!(!home.join("resourcepacks").try_exists().unwrap());
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
 fn an_unreadable_manifest_is_not_treated_as_an_empty_installation() {
     let bytes = ruby("1.0");
     let index = registry("1.0", &bytes, "file:///ruby.smod");
@@ -315,30 +443,29 @@ fn a_mod_the_player_put_there_is_never_replaced() {
     fs::remove_dir_all(&home).unwrap();
 }
 
-/// A wasm package can declare only registries too; the browser must inspect the package,
+/// A native package can declare only registries too; the browser must inspect the package,
 /// rather than treat that capability list as proof that it contains no code.
 #[test]
 fn code_packages_never_reach_the_content_browser_install_path() {
-    // The smallest shared group member: `dylink.0` memory info and the three guest exports.
-    let module = &[
-        b"\0asm\x01\0\0\0".as_slice(),
-        b"\0\x0f\x08dylink.0\x01\x04\0\0\0\0",
-        b"\x01\x04\x01\x60\0\0",
-        b"\x03\x04\x03\0\0\0",
-        b"\x07\x2e\x03\x0esunrise_layout\0\0\x0asunrise_in\0\x01\x0csunrise_hook\0\x02",
-        b"\x0a\x0a\x03\x02\0\x0b\x02\0\x0b\x02\0\x0b",
-    ]
-    .concat()[..];
     let manifest = format!(
-        "id = \"ruby\"\nname = \"Ruby\"\nversion = \"1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n[wasm]\nsha512 = \"{}\"\ntoolchain = \"1.99.1\"\nbuilt_with = \"test\"\n",
-        sunrise_mod_package::manifest::sha512_of(module)
+        "id = 'ruby'\nname = 'Ruby'\nversion = '1.0'\napi = '0.2'\nside = 'both'\ncapabilities = ['registries']\n[native]\ngame = '26.3'\nsunrise = '{}'\n",
+        "a".repeat(40),
     );
-    let bytes =
-        sunrise_mod_package::Package::write_files(&manifest, &[("mod.wasm", module)]).unwrap();
+    let bytes = sunrise_mod_package::Package::write_files(
+        &manifest,
+        &[
+            (
+                "Cargo.toml",
+                b"[package]\nname = 'ruby'\nversion = '1.0.0'\n",
+            ),
+            ("src/lib.rs", b"// No code needed for the fixture.\n"),
+        ],
+    )
+    .unwrap();
     let index = registry("1.0", &bytes, "file:///ruby.smod");
     let home = scratch("code");
     let error = install(&index, &home, "ruby", &serve(bytes.clone())).unwrap_err();
-    assert!(error.contains("code mods"), "{error}");
+    assert!(error.contains("it is a native-mod"), "{error}");
     assert!(!home.join("sunrise-mods/ruby.smod").exists());
     assert!(!home.join("mod-browser/downloads/ruby.smod.part").exists());
     assert!(!home.join(MANIFEST).exists());

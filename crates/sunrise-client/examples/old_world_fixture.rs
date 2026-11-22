@@ -6,8 +6,8 @@
 //!
 //! old_world_fixture <source world> <destination world> <x0,z0,x1,z1>
 extern crate sunrise_client_lib as sunrise_client;
-use sunrise_core::position::ChunkPos;
 use std::{fs, path::Path};
+use sunrise_core::position::ChunkPos;
 use {
     sunrise_core::nbt::{Limits, Tag},
     sunrise_world::region::{ChunkRecord, RegionFile},

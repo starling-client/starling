@@ -810,19 +810,19 @@ fn rows() -> Vec<Row> {
             "3f3e8ce: a dependency's macro given the struct's name",
             one("use mod_api::DimensionSettings;\nfn f() -> DimensionSettings { dep::make!(DimensionSettings, 0, 256) }"),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "3f3e8ce: a dependency's derive on a struct holding it",
             one("#[derive(dep::Make)]\nstruct Holder { d: mod_api::DimensionSettings }"),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "3f3e8ce: a dependency's attribute on a function returning it",
             one("#[dep::build]\nfn f() -> mod_api::DimensionSettings { todo!() }"),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "3f3e8ce: named only with standard macros and attributes",
@@ -837,7 +837,7 @@ fn rows() -> Vec<Row> {
                 ("src/world.rs", "use dep::make;\nfn f(_: DimensionSettings) { make!(DimensionSettings); }"),
             ]),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "3f3e8ce: the mod's own macro",
@@ -852,6 +852,12 @@ fn rows() -> Vec<Row> {
         row(
             "3f3e8ce: a path from the root",
             one("fn f() { let d = ::mod_api::world::DimensionSettings { min_y: 0, height: 256, logical_height: 256 }; }"),
+            DimsField,
+            Refused,
+        ),
+        row(
+            "an absolute path is not read through a name another module binds",
+            one("mod other { use mod_api::Pos as world; }\nfn f() { let d = ::mod_api::world::DimensionSettings { min_y: 0, height: 256, logical_height: 256 }; }"),
             DimsField,
             Refused,
         ),
@@ -974,13 +980,13 @@ fn rows() -> Vec<Row> {
             "a443e32 B3: `Self` in an impl a macro writes",
             one(format!("trait Make {{ fn make() -> Self; }}\nmacro_rules! make {{ () => {{ impl Make for mod_api::world::DimensionSettings where u8: Copy {{ fn make() -> Self {self_dims} }} }}; }}\nmake!();")),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "a443e32 B3: `Self` in an impl of a macro's type",
             one(format!("macro_rules! dims {{ () => {{ mod_api::world::DimensionSettings }}; }}\ntrait Make {{ fn make() -> Self; }}\nimpl Make for dims!() {{ fn make() -> Self {self_dims} }}")),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "a443e32 B4: an alias of a parenthesised type",
@@ -992,7 +998,7 @@ fn rows() -> Vec<Row> {
             "a443e32 B4: an alias of a macro's type",
             one(format!("macro_rules! dims_ty {{ () => {{ mod_api::world::DimensionSettings }}; }}\ntype Dims = dims_ty!();\npub fn d() -> Dims {{ {} }}", d.replace("DimensionSettings", "Dims"))),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "a443e32 B4: an alias of a macro's type defining the name",
@@ -1004,7 +1010,7 @@ fn rows() -> Vec<Row> {
             "a443e32 B4: an alias of a macro's type in a macro body",
             one(format!("macro_rules! dims_ty {{ () => {{ mod_api::world::DimensionSettings }}; }}\nmacro_rules! m {{ () => {{ type Dims = dims_ty!(); pub fn d() -> Dims {{ {} }} }}; }}\nm!();", d.replace("DimensionSettings", "Dims"))),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "a443e32 B4: an alias of a projection",
@@ -1113,7 +1119,7 @@ fn rows() -> Vec<Row> {
             "bc51218 B3: `Self` in a macro's impl inside another impl's method",
             one(format!("trait Make {{ fn make() -> Self; }}\nstruct Wrap;\nimpl Wrap {{ fn setup() {{ macro_rules! make {{ () => {{ impl Make for mod_api::world::DimensionSettings where u8: Copy {{ fn make() -> Self {self_dims} }} }}; }} make!(); }} }}")),
             DimsField,
-            Refused,
+            Fits,
         ),
         row(
             "bc51218 B5: a relative glob of the mod's own module",
@@ -1180,19 +1186,19 @@ fn rows() -> Vec<Row> {
             "6db10aa B2: a bare `Self` in an impl a macro writes",
             one("trait Make { fn make() -> Self; }\nmacro_rules! make { () => { impl Make for mod_api::Marker { fn make() -> Self { Self } } }; }\nmake!();"),
             MarkerSealed,
-            Refused,
+            Fits,
         ),
         row(
             "6db10aa B2: `Self` as a constructor in an impl a macro writes",
             one("trait Ctor { fn ctor() -> fn(i32, i32) -> Self; }\nmacro_rules! make { () => { impl Ctor for mod_api::Pos { fn ctor() -> fn(i32, i32) -> Self { Self } } }; }\nmake!();"),
             PosField,
-            Refused,
+            Fits,
         ),
         row(
             "6db10aa B2: `Self` passed as a constructor in an impl a macro writes",
             one("trait Make { fn make() -> mod_api::Pos; }\nfn build<T>(f: fn(i32, i32) -> T) -> T { f(1, 2) }\nmacro_rules! make { () => { impl Make for mod_api::Pos { fn make() -> mod_api::Pos { build(Self) } } }; }\nmake!();"),
             PosField,
-            Refused,
+            Fits,
         ),
         row(
             "6db10aa S1: a glob of the mod's own module trusts standard macros",
@@ -1238,7 +1244,7 @@ fn rows() -> Vec<Row> {
             "f4e12ec B1: `Self` passed by key to a macro in a parsed impl",
             one("use mod_api::Pos;\npub struct Maker { pub make: fn(i32, i32) -> Pos }\nmacro_rules! maker { (make: $e:expr) => { Maker { make: $e } }; }\ntrait Make { fn m() -> Maker; }\nimpl Make for mod_api::Pos { fn m() -> Maker { maker!(make: Self) } }"),
             PosField,
-            Refused,
+            Fits,
         ),
         row(
             "f4e12ec: a generic function's parameter type in a macro",
@@ -1272,6 +1278,7 @@ fn every_review_finding_answers_as_it_should() {
             Ok(uses) => match fits(uses.entries(), &surface(Some(change))) {
                 Fit::Fits => Fits,
                 Fit::DoesNotFit(_) => Refused,
+                Fit::Unversioned(hooks) => panic!("{finding}: no version of {hooks:?}"),
             },
         };
         assert_eq!(got, answer, "{finding}");

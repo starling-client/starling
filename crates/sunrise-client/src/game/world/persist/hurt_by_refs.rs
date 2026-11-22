@@ -8,8 +8,9 @@ use sunrise_core::nbt::{JavaString, Tag};
 impl Game<'_> {
     /// `LivingEntity.addAdditionalSaveData`'s `last_hurt_by_mob` and
     /// `ticks_since_last_hurt_by_mob`, a PARTIAL projection at save time: both
-    /// from `ai.last_hurt_by` while the attacker is a living mob in the level
-    /// with a registered UUID and at most 100 ticks have passed (`baseTick`
+    /// from `ai.last_hurt_by` while the attacker is a living mob with a
+    /// registered UUID, in the level or in another loaded one it travelled to
+    /// since, and at most 100 ticks have passed (`baseTick`
     /// drops the record after that, or once the attacker is dead). Otherwise
     /// both keys go, a copy read from loaded data included. A player attacker
     /// is not written. A reference read back that names nothing in the level
@@ -30,11 +31,7 @@ impl Game<'_> {
         }
         let since = (m.age as i32).wrapping_sub(m.ai.last_hurt_by_time);
         let reference = match m.ai.last_hurt_by {
-            Some(Who::Mob(attacker))
-                if since <= 100 && self.mobs.iter().any(|a| a.id == attacker && a.alive()) =>
-            {
-                self.persist.uuid_of(attacker)
-            }
+            Some(Who::Mob(attacker)) if since <= 100 => self.credited_mob_uuid(attacker),
             _ => None,
         };
         match reference {
@@ -48,23 +45,68 @@ impl Game<'_> {
             }
         }
     }
+    /// The UUID of the living mob a kill credit recorded as `attacker` names
+    /// now: that mob in the level, or in another loaded level, where the
+    /// dimension changes since took it (`Levels::travelled`).
+    fn credited_mob_uuid(&self, attacker: u32) -> Option<[i32; 4]> {
+        let mut id = attacker;
+        loop {
+            if self.mobs.iter().any(|a| a.id == id && a.alive()) {
+                return self.persist.uuid_of(id);
+            }
+            if let Some((_, mob)) = self.mob_in_other_level(id) {
+                if !mob.alive() {
+                    return None;
+                }
+                return self.resident_entities.table.borrow_mut().resident_uuid(id);
+            }
+            id = self.levels.travelled(id)?;
+        }
+    }
     /// `EntityReference.getEntity` for `last_hurt_by_mob` read back from a save:
     /// a mob whose reference names an entity now in the level (a mob, or the
-    /// player) takes it as `last_hurt_by`, and `baseTick` ends it as it does
-    /// any other. One naming nothing here stays a bare UUID, still saved. A
-    /// reference to the mob itself resolves like any other (`getEntity` looks
-    /// up the UUID and does not exclude the holder).
+    /// player), or a mob in another loaded level (`getEntityInAnyDimension`),
+    /// takes it as `last_hurt_by`, and `baseTick` ends it as it does any other.
+    /// One naming nothing loaded stays a bare UUID, still saved. A reference to
+    /// the mob itself resolves like any other (`getEntity` looks up the UUID
+    /// and does not exclude the holder).
     pub(in crate::game) fn resolve_last_hurt_by_refs(&mut self) {
         let resolved: Vec<(usize, Who)> = self
             .mobs
             .iter()
             .enumerate()
-            .filter_map(|(i, m)| Some((i, self.who_by_uuid(m.ai.last_hurt_by_ref?)?)))
+            .filter_map(|(i, m)| {
+                let uuid = m.ai.last_hurt_by_ref?;
+                let who = self
+                    .who_by_uuid(uuid)
+                    .or_else(|| self.mob_by_uuid_elsewhere(uuid).map(Who::Mob))?;
+                Some((i, who))
+            })
             .collect();
         for (i, who) in resolved {
             let ai = &mut self.mobs[i].ai;
             ai.last_hurt_by = Some(who);
             ai.last_hurt_by_ref = None;
         }
+    }
+    /// The mob resident under `uuid` in a loaded level other than the one in
+    /// place, through each level's UUID index.
+    fn mob_by_uuid_elsewhere(&self, uuid: [i32; 4]) -> Option<u32> {
+        for dim in self.levels.parked.keys() {
+            let mut after = None;
+            loop {
+                let next = self
+                    .resident_entities
+                    .table
+                    .borrow_mut()
+                    .level_uuid_candidate(dim.key(), uuid, after);
+                let Some(candidate) = next else { break };
+                if self.mob_in_other_level(candidate.get()).is_some() {
+                    return Some(candidate.get());
+                }
+                after = Some(candidate);
+            }
+        }
+        None
     }
 }

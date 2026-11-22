@@ -1,0 +1,10 @@
+ids = [
+    "type:BakedModelKey",
+    "type:BakedModelView",
+    "type:BakedQuad",
+    "handle:BakedQuad::new",
+    "method:RenderAssets::block_state_models",
+    "method:RenderAssets::baked_model",
+]
+why = "#861 part 1: the engine-owned baked model store gets scoped keys. RenderAssets::block_state_models lists the generation-scoped keys of every model a block state can select, RenderAssets::baked_model copies one model's quads and metadata, and a ModelRef converts to the key of the same baked model. Keys answer ModelError::StaleModel once a successful reload publishes a new store. New types only; no existing wire layout changes."
+migrate = "Nothing to change. Resolve keys in model_baking_completed and keep them until the next one."

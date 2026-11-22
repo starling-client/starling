@@ -2,10 +2,10 @@
 //! reads to play a block's step, fall, place or break sound, or a sniffer's dig.
 use crate::blocks::{BlockFacts, Sounds};
 use crate::mobs::{Mob, MobWorld};
-use sunrise_core::position::BlockPos;
-use sunrise_world::{native_load_context::LoopContext, registry::BlockStateId};
 use mod_api::{BlockSoundCause, BlockSoundType};
 use std::sync::Arc;
+use sunrise_core::position::BlockPos;
+use sunrise_world::{native_load_context::LoopContext, registry::BlockStateId};
 
 /// The sound type of a block state (`IBlockExtension.getSoundType`) is being read to play the
 /// sound `cause` names. `sound` starts as the state's own and the block's parts may change it; an

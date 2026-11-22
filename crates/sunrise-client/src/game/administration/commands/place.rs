@@ -2,9 +2,9 @@
 //! rotation, mirroring and integrity.
 use super::{Arg, Context, Game, R, err};
 use crate::game::structure_blocks::{load_settings, template_size};
+use std::sync::OnceLock;
 use sunrise_client::text::Text;
 use sunrise_core::position::BlockPos;
-use std::sync::OnceLock;
 use {
     sunrise_core::{
         nbt,
@@ -302,8 +302,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod source_tests {
     use super::*;
-    use sunrise_assets::resource_source::{Resource, ResourceSource};
     use std::{io::Write, path::PathBuf};
+    use sunrise_assets::resource_source::{Resource, ResourceSource};
 
     #[test]
     fn template_tags_read_archives_below_saved_world_structures() {
@@ -385,6 +385,7 @@ mod source_tests {
 mod live_dungeon_spawner_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use std::sync::Arc;
     use sunrise_client::{
         chunk::Chunk,
         containers::BlockEntity,
@@ -392,7 +393,6 @@ mod live_dungeon_spawner_tests {
         motion::PlayerMotion,
     };
     use sunrise_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
-    use std::sync::Arc;
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -456,7 +456,7 @@ mod live_dungeon_spawner_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_registered_live_dungeon_keeps_its_real_selected_spawner() {
         with_game(|game| {
             let clock = game.world.game_time;
@@ -535,7 +535,7 @@ mod live_dungeon_spawner_tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn creation_boundary_preserves_existing_entries_and_rejects_other_blocks() {
         with_game(|game| {
             use sunrise_world::level::LevelAccess;

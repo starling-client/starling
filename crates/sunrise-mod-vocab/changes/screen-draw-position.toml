@@ -1,0 +1,3 @@
+ids = ["hook:screen_draw"]
+why = "Version 2 supplies the open menu block position so screens can read their client level view."
+migrate = "Rebuild screen_draw listeners for version 2 and read the new event.pos: Option<[i32; 3]> field. None means the server supplied no block position; use existing both-sided level reads for the client view."

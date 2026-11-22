@@ -1,28 +1,80 @@
 # Typed server commands
 
-Register each server usage with `register_commands` and `Command`. The
-`run_mod_command` event carries a `CommandInvocation`,
-not a raw line to split. Match its `literals` to your command path, then read named
-values through `command.argument(name)` and `CommandArgumentValue`. An integer is
-already an `i32`; a player argument is a live `PlayerRef`, not selector text.
-Return `Flow::Cancel` when your listener handles the command.
+In `register_commands`, push each server usage as
+`Command::new(usage).executes(|host, source, command| { /* ... */ Some(1) })`.
+Use `Command::op(usage, level)` for a usage that requires operator permission.
+The executor receives a borrowed `CommandInvocation`, not a raw line to split
+or a command path to route. Read named values through `command.argument(name)`
+and `CommandArgumentValue`. An integer is already an `i32`; a player argument is
+a live `PlayerRef`, not selector text.
 
-The server parses and checks permissions before resolving arguments or calling a
-listener. Omitted optional arguments are absent, including an omitted optional
+Only the executor whose registration owns the parsed node runs, with its mod's
+identity. If the owner is disabled after registration, the command is refused.
+Return `Some(n)` for success with integer result `n` (zero is also success), or
+`None` for failure. Neither failure nor a disabled owner tries another executor.
+`execute store result` sees `n` on success; `execute store success` sees one.
+An executor can capture owned or shared state, such as an `Arc`, but it cannot
+borrow values from the registration call.
+
+A panic fails the command, is logged with the mod's name and queues an error toast
+on a local client. That mod's executor for the registered usage is disabled for the
+session, even if the tree is rebuilt. Other usages still run. If the caller already
+had a transaction, the panicking invocation's journaled writes are undone. A failed
+invocation also aborts any transactions the executor opened and left unfinished.
+The game does not implicitly open a transaction for an ordinary command, and
+unjournaled effects are not undone. Like a vanilla command throwing an unexpected
+exception, a panicking executor does not run the command's `execute store` callbacks.
+
+The server asks for commands when it builds the session command tree: at world open before
+functions compile, and again on every `/reload` and data pack change. No player or network hub
+needs to exist yet. Register the complete current set on each call. Plain function lines and
+substituted macro lines are checked against this session tree; commands no longer registered
+are refused when functions next load. Starting the hub reuses the session's accepted command
+grammar rather than asking again. Clients receive only display and completion data,
+never executors. A parsed invocation belongs to the server dispatcher that parsed it;
+if the tree is rebuilt, the server must parse the command again before it can run.
+
+When accepted usages execute at the same node, each later accepted registration
+overwrites that node's executor (matching Brigadier's `CommandNode.addChild`, which
+replaces `child.command`) together with Sunrise's paired execution permission level
+for that node. A usage with optional arguments also executes where those
+arguments begin, so `status` and `status [player:player]` overlap at `status`. By
+contrast, a public `status detail` allows traversal through `status`, but does not
+make an operator-only `status` executable. Use distinct paths to keep distinct
+executors. A root vanilla already owns is not registered.
+
+Literal words use lowercase letters, digits, `_` and `-`. Only the first word may
+additionally begin with one `/`: register `/set <x:word>` and type `//set stone` in chat.
+The command's literals retain `/set`. A slash alone, repeated leading slashes and
+slashes in later literal words are refused.
+
+The server parses and checks permissions before resolving arguments or calling the
+executor. Omitted optional arguments are absent, including an omitted optional
 player: they do not silently select the source player. `player` selects exactly one
 online player, `players` one or more online players, `entity` exactly one entity,
 and `entities` one or more entities. Missing or too-large selections produce
-vanilla feedback without calling the listener. Word and greedy text arguments
+vanilla feedback without calling the executor. Word and greedy text arguments
 are strings, numbers are finite doubles, booleans are typed, and item arguments
 are component-bearing stacks of one item. `mod_id` takes a loaded package id and
 delivers it as a string (NeoForge's `ModIdArgument`). `resource:<registry>`, such as
 `<kind:resource:minecraft:entity_type>`, takes an id that registry holds, static or
 from a data pack, and delivers `CommandArgumentValue::Id`; any other id is refused
-with vanilla's `argument.resource.not_found` before a listener runs. Clients see it
+with vanilla's `argument.resource.not_found` before the executor runs. Clients see it
 as vanilla's `minecraft:resource_key`, so unmodded clients complete it too. The registry
 must be a `namespace:path` resource location of at most 256 bytes, and the server takes at
 most 256 distinct registries; a usage past either is left out, with the reason in the log. Block positions are resolved and floored
 from the source's world, relative or local coordinates without loading chunks.
+
+`id` is a free identifier: vanilla's `minecraft:resource_location` argument, lowercase letters,
+digits and `_ - . : /`, canonicalised to `namespace:path` with `minecraft` when the namespace is
+left out, and checked against no registry. `Command::new("map fullrender <world:id>")` takes
+`minecraft:overworld`, `mymod:custom` and `overworld` (delivered as `minecraft:overworld`), and
+refuses an upper-case token or a second colon. The value arrives as a plain string. It offers no
+list of its own, so its node declares `minecraft:ask_server`: the client, modded or not, asks the
+server for the completions, as it does for a mod argument type. The identifiers are yours to
+supply in `tab_complete`, which receives the command, the replaced byte range and the suggestions
+the server computed, and may add to or filter them, matching its own command path and the
+argument's position.
 
 Positions, rotations, dimensions and compound tags have their own kinds, each sent to clients
 as vanilla's parser so `~`, `^` and the dimension list complete as in a vanilla command:
@@ -37,14 +89,14 @@ as vanilla's parser so `~`, `^` and the dimension list complete as in a vanilla 
 | `nbt` | `minecraft:nbt_compound_tag` | `Nbt(Compound)` |
 
 `~` and `^` resolve against the command source's position and rotation, as `block_pos` does. A
-`dimension` the world has not loaded is refused with `argument.dimension.invalid` before a
-listener runs. A `vec3` and a `vec3_uncentered` cannot share a position in one command's
+`dimension` the world has not loaded is refused with `argument.dimension.invalid` before the
+executor runs. A `vec3` and a `vec3_uncentered` cannot share a position in one command's
 usages, as they look the same to a client.
 A player's source is their position and rotation. The console has no source
-entity and uses the Overworld spawn's block corner with zero rotation, so `@s`
-cannot resolve there. Every source receives the same owned data, on native and wasm.
+entity and uses the world spawn's block corner, in the level the spawn is in, with zero rotation, so `@s`
+cannot resolve there. Every executor receives the same kind of typed input.
 
-`event.source` is a non-exhaustive `CommandSource`: `Player { player, .. }`,
+The executor's `source` is a non-exhaustive `CommandSource`: `Player { player, .. }`,
 `Console { .. }`, `CommandBlock { position, level, .. }`,
 `CommandBlockMinecart { entity, .. }` or `Function { id, .. }`.
 `source.permission()` returns the effective `PermissionLevel`: functions use
@@ -54,8 +106,15 @@ function permission; blocks and carts use game-master permission. `execute as`,
 `positioned`; the console executes in the Overworld at its spawn corner.
 
 Two reads work in a command and elsewhere on the server. `player.profile(host)` returns
-the player's `GameProfile`: UUID, name and login properties such as the signed `textures`
-skin (empty for an offline-mode player). `host.advancement(&id)` returns a loaded
+the player's `GameProfile<'_>`: UUID, borrowed name and login properties such as the signed
+`textures` skin. Iterate `profile.properties()` in login order; each row lends its `name`,
+`value` and `signature: Option<&str>`. For example, find the skin with
+`profile.properties().find(|p| p.name == "textures")`. An offline-mode player has an empty
+iterator; a stale player has no profile. Copy individual strings only to keep them after the
+host borrow. A [custom test host](../../concepts/testing.md) can lend a profile from
+`testing::GameProfileFixture`.
+
+`host.advancement(&id)` returns a loaded
 `AdvancementInfo`: its parent, display (title, description, icon stack with its components, frame and
 flags), criterion names and requirements, from the set the last `/reload` built. Feedback through
 `host.commands().feedback` honours the underlying source's silence and track-output.
@@ -74,13 +133,12 @@ plain text. The player still receives those lines in chat, and operator
 notifications follow the normal rules. Feedback silenced by the source or game
 rules is absent. Other entities use a silent source and return no lines; a stale,
 removed or unavailable entity returns `success: false` and no lines. Teleports to
-another level still happen at the next tick's start. Native and wasm mods use the
-same method and runner. `run_command(host, line, level)` keeps its bool return.
+another level still happen at the next tick's start. `run_command(host, line, level)` keeps its bool return.
 
 ## Entity and player selectors
 
-Side: server. Register `Command::new("heal <targets:players>")` to receive
-`CommandArgumentValue::Players(Vec<PlayerRef>)`: `/heal @a` calls the listener once
+Side: server. Bind an executor to `Command::new("heal <targets:players>")` to receive
+`CommandArgumentValue::Players(Vec<PlayerRef>)`: `/heal @a` calls it once
 with all selected online players, not once per player. The other selector kinds
 deliver `Player(PlayerRef)`, `Entity(EntityRef)` and `Entities(Vec<EntityRef>)`.
 For example, `<target:entity>` accepts
@@ -104,8 +162,7 @@ are delivered when resolvable. Dragon parts
 are not selector members in vanilla and are never delivered by these arguments.
 Temporarily held-out or removed entities cannot be delivered. An unbounded
 selector can reach other loaded dimensions; handle lookup uses the entity's own
-dimension. Lists are bounded only by the wire frame limits, on native and wasm;
-there is no extra count cap. A very large `@e` is the caller's cost.
+dimension. There is no extra count cap. A very large `@e` is the caller's cost.
 
 ## Custom argument types
 
@@ -114,8 +171,9 @@ argument's kind:
 
 ```rust,ignore
 use mod_api::{
-    Command, CommandArgumentError, CommandArgumentKind, CommandArgumentType, CommandSuggestion,
-    Hooks, RegisterCommandsEvent, Registrar, RegistrationContext, ServerHost, Text,
+    Command, CommandArgumentError, CommandArgumentKind, CommandArgumentType, CommandArgumentValue,
+    CommandSender, CommandSuggestion, Hooks, RegisterCommandsEvent, Registrar, RegistrationContext,
+    ServerHost, Text,
 };
 
 struct Machine;
@@ -135,7 +193,12 @@ impl CommandArgumentType for Machine {
         }
     }
 
-    fn suggest(&self, prefix: &str) -> Vec<CommandSuggestion> {
+    fn suggest(
+        &self,
+        sender: Option<&CommandSender>,
+        prefix: &str,
+    ) -> Vec<CommandSuggestion> {
+        let _ = sender;
         ["press", "furnace"]
             .into_iter()
             .filter(|machine| machine.starts_with(prefix))
@@ -151,29 +214,102 @@ impl Hooks for MyMod {
     }
 
     fn register_commands(&self, _: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
-        event
-            .commands
-            .push(Command::new("machine use <machine:mymod:machine>"));
+        event.commands.push(Command::new("machine use <machine:mymod:machine>").executes(
+            |host, _, command| {
+                let CommandArgumentValue::Custom { value, .. } = command.argument("machine")? else {
+                    return None;
+                };
+                host.commands().feedback(Text::literal(value.as_str())).ok()?;
+                Some(1)
+            },
+        ));
     }
 }
 ```
 
-The server parses the argument with `parse` before calling `run_mod_command`; a
-rejected value shows the returned `Text` and no listener runs. A valid value arrives
+The server parses the argument with `parse` before calling the executor; a
+rejected value shows the returned `Text` and the executor does not run. A valid value arrives
 as `CommandArgumentValue::Custom { kind, value }`, where `kind` is `mymod:machine`
 and `value` is the canonical text `parse` returned. `suggest` is asked for the
-completions while the player types.
+completions while the player types, with the sender: a provider that completes names
+from a mod's own registry returns only the entries that sender may use, keyed by its
+UUID and compared with `sender.permission()`. The game keeps the answer as it comes
+and does not filter it, so a provider that ignores the sender offers everything to
+everyone. `sender` is `None` when no player asks: the console, and a client
+completing its own client commands before its own profile is known.
 
 For a fixed set of words, register `ChoiceArgument` (NeoForge's `EnumArgument`)
 instead of writing a type: `r.register_command_argument("mode",
 ChoiceArgument::new(["low", "high"]))`. It refuses other words, listing the valid
 ones, and completes the choices that start with the typed text.
 
+### Suggestions from a provider declared on the argument
+
+`suggest` sees the typed prefix and the sender, and nothing of the arguments before it.
+A type whose completions also depend on those arguments declares a `SuggestionProvider`
+instead: `CommandArgumentType::suggestion_provider` returns it, and the engine asks
+it for that argument and no other. `suggest` is not called for those arguments, and a
+mod that declares a provider needs no `tab_complete` for it.
+
+```rust,ignore
+use mod_api::{
+    CommandSuggestion, SuggestionProvider, SuggestionReply, SuggestionRequest, TypedArgument,
+};
+
+struct Warps;
+
+impl SuggestionProvider for Warps {
+    fn suggest(&self, request: &SuggestionRequest) -> SuggestionReply {
+        // `request.sender` is `None` for the console.
+        let level = request.sender.as_ref().map_or(0, |sender| sender.permission().level());
+        let world = request
+            .arguments
+            .iter()
+            .find(|argument| argument.name == "world")
+            .map_or("", |argument: &TypedArgument| argument.text.as_str());
+        let mut suggestions = Vec::new();
+        for warp in warps_of(level, world) {
+            if warp.starts_with(&request.prefix) {
+                suggestions.push(CommandSuggestion::with_tooltip(warp, "a warp"));
+            }
+        }
+        SuggestionReply::new(suggestions)
+    }
+}
+
+impl CommandArgumentType for WarpName {
+    // ...
+    fn suggestion_provider(&self) -> Option<Arc<dyn SuggestionProvider>> {
+        Some(Arc::new(Warps))
+    }
+}
+```
+
+The provider runs on the server, in the player's own command source: it sees the
+text typed for its argument, the arguments parsed before it (each a name and the text
+the engine parsed for it), and the sender's UUID, name and command level. Every
+request is answered from scratch; nothing is kept between two requests. An error or a
+panic answers no suggestions and is logged against the argument type. The provider
+proposes and the engine orders: it keeps the candidates that match the typed text by
+the game's own rule (at the start, or after each `.`, `_` or `/`) and sorts what it
+keeps, so a provider that returns everything still completes the same way.
+
+The engine caps a reply at 1,000 kept candidates and each text at the protocol's 32,767
+UTF-16 code units (a tooltip at 65,535 bytes of Java modified UTF-8). The cap counts the
+candidates the reply keeps, after the engine's own matching and drops, so a long list of
+non-matches before a match does not hide it. A candidate past a bound is dropped and
+named in the diagnostics; the others are kept, and the player's chat is never
+disconnected over it. No completion listener may add to, replace or erase a provider's
+answer: `tab_complete` is asked for ordinary completions only. A client never runs the
+provider: the argument's node carries `minecraft:ask_server`, so the client asks the
+server, exactly as for a `suggest`-only type, and a client command that names a type
+declaring one is refused by name.
+
 `CommandArgumentKind::Word` takes one word of ASCII letters, digits and `_ - . +`; the
 word ends at the first other character, a space included, so a value with `:` or `/`
-needs `Greedy`, which takes the rest of the line and must be the usage's last argument.
-Players whose client does not know the type
-parse and complete the command: the server sends the argument as a Brigadier string
+needs `Greedy`, which takes the rest of the line. `suggest` receives that text as typed so
+far: one word, or the whole tail of the line up to the cursor. Players whose client does not know
+the type parse and complete the command: the server sends the argument as a Brigadier string
 of that shape with `minecraft:ask_server`, and their chat asks the server for the
 suggestions.
 
@@ -181,6 +317,36 @@ The namespaced id is in the registering mod's namespace; an id registered twice,
 name in another namespace or an empty name refuses the mods at startup, naming the
 mod. A client mod registers client command argument types the same way; they are
 available to `register_client_commands`.
+
+### Completing one token of a greedy text
+
+A `Greedy` argument holds free text, and the tokens in it are yours to split. A completion
+replaces all of that text by default, so `suggest` names the token it completes with
+`CommandSuggestion::replacing_from`, a byte offset into the prefix:
+
+```rust,ignore
+// `//replace 50%stone,50%dirt st` completes only the block being typed.
+fn suggest(&self, _: Option<&CommandSender>, prefix: &str) -> Vec<CommandSuggestion> {
+    let start = prefix.rfind(' ').map_or(0, |space| space + 1);
+    ["stone", "dirt"]
+        .into_iter()
+        .filter(|block| block.starts_with(&prefix[start..]))
+        .map(|block| CommandSuggestion::new(block).replacing_from(start))
+        .collect()
+}
+```
+
+The offset reaches the player's client as the suggestion's range, so vanilla clients replace
+the same token in place and keep the text in front of it. An offset past the prefix, or inside
+a character, refuses that suggestion: the reason is logged with the type's id, the other
+suggestions stay, and nothing panics.
+
+A greedy `text` argument is the last one: no word may follow it, and a usage that puts one
+after it is left out, with the reason in the log. Such a usage is written with the free text
+last and the mod splitting what it needs from that text: `//undo <text>` for
+`//undo 1 <player>`, `/music <text>` for `/music volume 20 30`, `/corecarol <text>` for
+`/corecarol skip now`. Vanilla has no reachable node after a greedy argument either, so a
+trailing word would never be matched there.
 
 `player_command` provides player-only pre-execution cancellation (NeoForge's `CommandEvent`), including vanilla commands.
 
@@ -190,6 +356,17 @@ server tick, every mod is asked to register again. The server rebuilds the typed
 command dispatcher and sends each player's tree after `player_commands_sent`
 filters it, as vanilla does after `/reload`. Repeated requests before that tick
 coalesce; without a world open to players, nothing is rebuilt.
+
+## Who sees a usage
+
+A usage's `level` gates its whole path, and the same test answers running, the tree
+and the completions: a player below the level neither receives that literal in their
+command tree nor is offered it, and typing the path is refused. A root with one
+public usage keeps only the children the player may run, so `/warp` stays visible
+while `/warp admin` is absent for a non-operator. An operator level change sends the
+trees again (`/op`, `/deop`) and the completions follow from then on; a provider
+whose answers depend on its own policy calls `host.commands().refresh_commands()`
+after it changes them.
 
 ## Custom selector tokens
 

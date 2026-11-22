@@ -2,11 +2,14 @@
 //! what each F3 line block and debug renderer is, whether it shows always,
 //! only in the overlay or never, the two built-in profiles, and
 //! `debug-profile.json` beside `options.txt`, which keeps them.
-use mod_api::{DebugEntry, DebugGroup, DebugRenderer, Identifier};
-use std::borrow::Cow;
-use std::collections::BTreeMap;
+use mod_api::{
+    __private::game::{CallbackOwner, debug_renderer_callback_type},
+    Answered, ClientHost, DebugEntry, DebugGroup, DebugRenderer, Identifier,
+};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::{any::TypeId, borrow::Cow};
 
 /// `DebugScreenEntryStatus`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +32,14 @@ impl Status {
         [Status::AlwaysOn, Status::InOverlay, Status::Never]
             .into_iter()
             .find(|s| s.name() == name)
+    }
+
+    fn shown(self, overlay: bool) -> bool {
+        match self {
+            Status::AlwaysOn => true,
+            Status::InOverlay => overlay,
+            Status::Never => false,
+        }
     }
 }
 
@@ -101,23 +112,23 @@ impl Category {
     }
 }
 
-/// One registered entry: its path in the `minecraft` namespace, its section,
+/// One registered entry: its vanilla path or full mod ID, its section,
 /// and whether it shows while debug info is reduced (`isAllowed(true)`).
 #[derive(Clone, Copy, Debug)]
-pub struct Entry {
-    pub path: &'static str,
+pub struct Entry<'a> {
+    pub path: &'a str,
     pub category: Category,
     pub reduced: bool,
 }
 
-const fn text(path: &'static str, reduced: bool) -> Entry {
+const fn text(path: &'static str, reduced: bool) -> Entry<'static> {
     Entry {
         path,
         category: Category::Text,
         reduced,
     }
 }
-const fn renderer(path: &'static str) -> Entry {
+const fn renderer(path: &'static str) -> Entry<'static> {
     Entry {
         path,
         category: Category::Renderer,
@@ -126,7 +137,7 @@ const fn renderer(path: &'static str) -> Entry {
 }
 
 /// `DebugScreenEntries`' registrations, in their order.
-pub const ENTRIES: [Entry; 46] = [
+pub const ENTRIES: [Entry<'static>; 46] = [
     text("game_version", true),
     text("fps", true),
     text("tps", true),
@@ -175,76 +186,136 @@ pub const ENTRIES: [Entry; 46] = [
     renderer("chunk_section_visibility"),
 ];
 
+/// A startup declaration with the native mod identity supplied by dispatch.
+pub struct RegisteredDebugEntry {
+    owner: CallbackOwner,
+    entry: DebugEntry,
+}
+
+/// A selected world renderer and the mod scope of its retained draw callback.
+pub struct ActiveDebugRenderer {
+    pub owner: CallbackOwner,
+    renderer: Option<DebugRenderer>,
+}
+
+impl ActiveDebugRenderer {
+    pub fn draw(
+        &self,
+        host: &dyn ClientHost,
+        view: &mod_api::WorldRenderView,
+        draw: &mut dyn mod_api::WorldDrawContext,
+    ) {
+        if self.owner.is_enabled() {
+            let _ = self
+                .owner
+                .call("debug renderer", "debug_renderer_draw", || {
+                    self.renderer
+                        .as_ref()
+                        .expect("active debug renderer")
+                        .draw(host, view, draw);
+                });
+        }
+    }
+}
+
+impl Drop for ActiveDebugRenderer {
+    fn drop(&mut self) {
+        self.owner.dispose(
+            "debug renderer",
+            "debug_renderer_drop",
+            self.renderer.take(),
+        );
+    }
+}
+
 /// The entries native mods registered (`register_debug_entries`), kept once at start.
-static REGISTERED: OnceLock<Vec<DebugEntry>> = OnceLock::new();
+static REGISTERED: OnceLock<Arc<[RegisteredDebugEntry]>> = OnceLock::new();
 
 /// Keeps the entries native mods registered, once at start. One whose id is not
-/// `<namespace>:<path>` in a namespace other than vanilla's, or that another entry has
-/// already, is logged and left out.
-pub fn register(entries: Vec<DebugEntry>) {
-    if REGISTERED.set(checked(entries)).is_err() {
+/// `<namespace>:<path>` or duplicates a built-in or earlier entry is logged and left out.
+pub fn register(entries: Vec<Answered<DebugEntry>>) {
+    if REGISTERED.set(collect_registrations(entries)).is_err() {
         log::warn!("debug entries were registered already; these are left out");
     }
 }
 
-/// The entries native mods registered, in registration order.
-pub fn registered() -> &'static [DebugEntry] {
-    match REGISTERED.get() {
-        Some(entries) => entries.as_slice(),
-        None => &[],
-    }
+/// Share the startup declarations with a newly constructed game.
+pub fn registered() -> Arc<[RegisteredDebugEntry]> {
+    REGISTERED.get().cloned().unwrap_or_default()
 }
 
-fn checked(entries: Vec<DebugEntry>) -> Vec<DebugEntry> {
-    let mut kept: Vec<DebugEntry> = Vec::new();
-    for entry in entries {
-        let own =
-            Identifier::parse_namespaced(&entry.id).is_some_and(|id| id.namespace() != "minecraft");
-        if !own {
+/// Apply the startup registration checks without publishing the resulting declarations.
+pub fn collect_registrations(entries: Vec<Answered<DebugEntry>>) -> Arc<[RegisteredDebugEntry]> {
+    checked(entries.into_iter().map(|answer| RegisteredDebugEntry {
+        owner: CallbackOwner::for_mod(answer.mod_id),
+        entry: answer.answer,
+    }))
+    .into()
+}
+
+fn checked(entries: impl IntoIterator<Item = RegisteredDebugEntry>) -> Vec<RegisteredDebugEntry> {
+    let mut kept: Vec<RegisteredDebugEntry> = Vec::new();
+    for registered in entries {
+        let id = registered.entry.id();
+        if Identifier::parse_namespaced(id).is_none() {
             log::warn!(
-                "debug entry {:?} is not <namespace>:<path> in a mod's namespace",
-                entry.id
+                "{}: debug entry {id:?} must be <namespace>:<path>",
+                registered.owner.id()
             );
-        } else if kept.iter().any(|k| k.id == entry.id) {
+        } else if ENTRIES
+            .iter()
+            .any(|entry| id.strip_prefix("minecraft:") == Some(entry.path))
+            || kept.iter().any(|k| k.entry.id() == id)
+        {
             log::warn!(
-                "debug entry {} is registered twice; the first is kept",
-                entry.id
+                "{}: debug entry {id} is registered twice; the first is kept",
+                registered.owner.id()
             );
         } else {
-            kept.push(entry);
+            kept.push(registered);
         }
     }
     kept
 }
 
-/// A native mod's entry as the list shows it: a text entry, or with `DebugGroup::Renderer` a
-/// renderer entry (`DebugEntryNoop`), hidden while debug info is reduced, as the vanilla entries
-/// that are not allowed then are.
-fn as_entry(entry: &'static DebugEntry) -> Entry {
+/// How a registered text entry or renderer toggle appears in the debug options.
+fn as_entry(registered: &RegisteredDebugEntry) -> Entry<'_> {
+    let entry = &registered.entry;
     Entry {
-        path: entry.id.as_str(),
-        category: match entry.group {
-            DebugGroup::Renderer => Category::Renderer,
-            _ => Category::Text,
+        path: entry.id(),
+        category: if entry.text_lines().is_some() {
+            Category::Text
+        } else {
+            Category::Renderer
         },
-        reduced: false,
+        reduced: entry.allowed_in_reduced_debug_info(),
     }
 }
 
-/// Every entry: vanilla's, then the native mods' (`registered`).
-pub fn all() -> impl Iterator<Item = Entry> {
-    ENTRIES.into_iter().chain(registered().iter().map(as_entry))
+/// Every entry: vanilla's, then the native mods' startup declarations.
+fn all<'a>(registered: &'a [RegisteredDebugEntry]) -> impl Iterator<Item = Entry<'a>> {
+    let vanilla: &[Entry<'a>] = &ENTRIES;
+    vanilla
+        .iter()
+        .copied()
+        .chain(registered.iter().map(as_entry))
 }
 
 /// `DebugScreenEntries.getEntry` by path.
-pub fn entry(path: &str) -> Option<Entry> {
-    all().find(|e| e.path == path)
+fn entry<'a>(registered: &'a [RegisteredDebugEntry], path: &str) -> Option<Entry<'a>> {
+    let bare = path.strip_prefix("minecraft:").unwrap_or(path);
+    all(registered).find(|e| {
+        let entry = e.path.strip_prefix("minecraft:").unwrap_or(e.path);
+        entry == bare
+    })
 }
 
 /// `DebugOptionsScreen.OptionList.updateSearch`: the entries whose path
 /// contains `search`, by category then identifier.
-pub fn search(search: &str) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = all().filter(|e| e.path.contains(search)).collect();
+pub fn search<'a>(registered: &'a [RegisteredDebugEntry], search: &str) -> Vec<Entry<'a>> {
+    let mut entries: Vec<_> = all(registered)
+        .filter(|e| e.path.contains(search))
+        .collect();
     entries.sort_by(|a, b| a.category.cmp(&b.category).then(a.path.cmp(b.path)));
     entries
 }
@@ -259,29 +330,42 @@ pub fn group_key(group: DebugGroup) -> &'static str {
         DebugGroup::LookingAtEntity => "looking_at_entity",
         DebugGroup::LookingAtFluid => "looking_at_fluid",
         DebugGroup::ChunkGeneration => "chunk_generation",
-        // Has no lines: `mod_lines` leaves it out.
-        DebugGroup::Renderer => "renderer",
     }
 }
 
-/// The lines of the enabled native-mod entries by group, in registration order. `lines` is
-/// asked only for the entries `enabled` names, so a disabled one costs nothing; an entry with
-/// no lines joins no group, and a renderer entry has none.
-pub fn mod_lines(
-    entries: &[DebugEntry],
-    enabled: impl Fn(&str) -> bool,
-    mut lines: impl FnMut(&str, &mut Vec<String>),
-) -> Vec<(DebugGroup, Vec<String>)> {
-    let mut groups = Vec::new();
-    let text = |e: &&DebugEntry| e.group != DebugGroup::Renderer;
-    for entry in entries.iter().filter(text).filter(|e| enabled(&e.id)) {
-        let mut text = Vec::new();
-        lines(&entry.id, &mut text);
-        if !text.is_empty() {
-            groups.push((entry.group, text));
+/// Drawn lines of visible native text entries, in registration order. Renderer toggles, hidden
+/// entries and callbacks that append nothing do not contribute a group.
+pub fn mod_lines<'a>(
+    entries: &'a [RegisteredDebugEntry],
+    host: &'a dyn ClientHost,
+    selection: &'a DebugEntries,
+    overlay: bool,
+    reduced: bool,
+) -> impl Iterator<Item = (DebugGroup, Vec<String>)> + 'a {
+    entries.iter().filter_map(move |registered| {
+        let entry = &registered.entry;
+        let (group, append_lines) = entry.text_lines()?;
+        // The startup registry already validated the full ID; no catalog lookup is needed.
+        if !entry.is_allowed(reduced)
+            || !selection
+                .statuses
+                .get(entry.id())
+                .is_some_and(|status| status.shown(overlay))
+        {
+            return None;
         }
-    }
-    groups
+        if !registered.owner.is_enabled() {
+            return None;
+        }
+        let mut lines = Vec::new();
+        registered
+            .owner
+            .call("debug entry", "debug_entry_lines", || {
+                append_lines(host, &mut lines);
+            })
+            .ok()?;
+        (!lines.is_empty()).then_some((group, lines))
+    })
 }
 
 /// `DebugScreenEntryList`: every entry's status (by full identifier, as the
@@ -294,6 +378,7 @@ pub struct DebugEntries {
     file: Option<PathBuf>,
     /// Monotonic `rebuildCurrentList` revision, including unchanged selections.
     version: u64,
+    renderer_owners: HashMap<(&'static str, TypeId, usize), CallbackOwner>,
 }
 
 impl Default for DebugEntries {
@@ -303,6 +388,7 @@ impl Default for DebugEntries {
             profile: None,
             file: None,
             version: 0,
+            renderer_owners: HashMap::new(),
         };
         entries.reset_to_profile(Profile::Default);
         entries
@@ -446,13 +532,15 @@ impl DebugEntries {
     }
     /// `isCurrentlyEnabled` (`rebuildCurrentList`): on always, or in the
     /// `overlay` while it is open, and allowed with the debug info `reduced`.
-    pub fn enabled(&self, path: &str, overlay: bool, reduced: bool) -> bool {
-        let shown = match self.status(path) {
-            Status::AlwaysOn => true,
-            Status::InOverlay => overlay,
-            Status::Never => false,
-        };
-        shown && entry(path).is_some_and(|e| e.reduced || !reduced)
+    pub fn enabled(
+        &self,
+        registered: &[RegisteredDebugEntry],
+        path: &str,
+        overlay: bool,
+        reduced: bool,
+    ) -> bool {
+        self.status(path).shown(overlay)
+            && entry(registered, path).is_some_and(|e| e.reduced || !reduced)
     }
     /// `DebugScreenEntryList.rebuildCurrentList`: invalidate even if the enabled set is unchanged.
     pub fn invalidate(&mut self) {
@@ -462,34 +550,42 @@ impl DebugEntries {
     pub fn enabled_version(&self) -> u64 {
         self.version
     }
-    /// `DebugRenderer.refreshRendererList`'s new list: the ids of the `renderers` mods pushed
-    /// whose renderer entry is on, in their order. An id with no entry a mod declared as a
-    /// renderer is logged and left out, and an id pushed twice counts once.
+    /// `DebugRenderer.refreshRendererList`: retain submitted callbacks in dispatch order.
+    /// A refresh does not re-enable a callback that already panicked in this session.
     pub fn active_renderers(
-        &self,
-        renderers: Vec<DebugRenderer>,
-        overlay: bool,
-        reduced: bool,
-    ) -> Vec<String> {
-        let mut active: Vec<String> = Vec::new();
-        for DebugRenderer { id } in renderers {
-            let declared =
-                id.contains(':') && entry(&id).is_some_and(|e| e.category == Category::Renderer);
-            if !declared {
-                log::warn!("debug renderer {id} has no renderer entry; it is left out");
-            } else if self.enabled(&id, overlay, reduced) && !active.contains(&id) {
-                active.push(id);
-            }
-        }
-        active
+        &mut self,
+        renderers: Vec<Answered<DebugRenderer>>,
+    ) -> Vec<ActiveDebugRenderer> {
+        let mut seen = HashMap::<(&'static str, TypeId), usize>::new();
+        renderers
+            .into_iter()
+            .map(|renderer| {
+                let kind = debug_renderer_callback_type(&renderer.answer);
+                let ordinal = seen.entry((renderer.mod_id, kind)).or_default();
+                let owner = self
+                    .renderer_owners
+                    .entry((renderer.mod_id, kind, *ordinal))
+                    .or_insert_with(|| CallbackOwner::for_mod(renderer.mod_id))
+                    .clone();
+                *ordinal += 1;
+                ActiveDebugRenderer {
+                    owner,
+                    renderer: Some(renderer.answer),
+                }
+            })
+            .collect()
     }
     /// `getCurrentlyEnabled().isEmpty()` negated: something to draw. Asked every frame, F3 closed
     /// or not, so it walks the few statuses kept rather than every entry.
-    pub fn any_enabled(&self, overlay: bool, reduced: bool) -> bool {
+    pub fn any_enabled(
+        &self,
+        registered: &[RegisteredDebugEntry],
+        overlay: bool,
+        reduced: bool,
+    ) -> bool {
         self.statuses
             .keys()
-            .map(|id| id.strip_prefix("minecraft:").unwrap_or(id))
-            .any(|path| self.enabled(path, overlay, reduced))
+            .any(|path| self.enabled(registered, path, overlay, reduced))
     }
 }
 
@@ -544,6 +640,7 @@ fn upgrade(json: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mod_api::{content::crash::current_native_mod, testing::FakeHost};
 
     #[test]
     fn toggling_follows_the_overlay() {
@@ -567,14 +664,14 @@ mod tests {
     #[test]
     fn enabled_needs_the_overlay_and_full_debug_info() {
         let mut e = DebugEntries::default();
-        assert!(!e.any_enabled(false, false));
-        assert!(e.enabled("player_position", true, false));
+        assert!(!e.any_enabled(&[], false, false));
+        assert!(e.enabled(&[], "player_position", true, false));
         // Reduced debug info hides the position, not the section.
-        assert!(!e.enabled("player_position", true, true));
-        assert!(e.enabled("player_section_position", true, true));
+        assert!(!e.enabled(&[], "player_position", true, true));
+        assert!(e.enabled(&[], "player_section_position", true, true));
         e.load_profile(Profile::Performance);
-        assert!(e.enabled("fps", false, false));
-        assert!(!e.enabled("memory", false, false));
+        assert!(e.enabled(&[], "fps", false, false));
+        assert!(!e.enabled(&[], "memory", false, false));
     }
 
     #[test]
@@ -630,7 +727,7 @@ mod tests {
 
     #[test]
     fn the_list_sorts_text_before_renderers() {
-        let all = search("");
+        let all = search(&[], "");
         assert_eq!(all.len(), 46);
         assert_eq!(all[0].path, "biome");
         let first_renderer = all
@@ -643,7 +740,7 @@ mod tests {
                 .iter()
                 .all(|e| e.category == Category::Renderer)
         );
-        assert_eq!(search("chunk_b").len(), 1);
+        assert_eq!(search(&[], "chunk_b").len(), 1);
     }
 
     #[test]
@@ -655,78 +752,220 @@ mod tests {
     }
 
     #[test]
-    fn a_native_mods_entries_need_their_own_namespace_and_a_free_id() {
-        let kept = checked(vec![
-            DebugEntry {
-                id: "mymod:tick_cost".into(),
-                group: DebugGroup::Memory,
+    fn a_native_mods_entries_allow_custom_minecraft_ids_and_reject_malformed_or_duplicates() {
+        let kept = checked([
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::text("mymod:tick_cost".into(), DebugGroup::Memory, |_, _| {}),
             },
-            DebugEntry {
-                id: "minecraft:fps".into(),
-                group: DebugGroup::Memory,
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::renderer("minecraft:fps".into()),
             },
-            DebugEntry {
-                id: "tick_cost".into(),
-                group: DebugGroup::Memory,
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::text(
+                    "minecraft:custom_stat".into(),
+                    DebugGroup::Memory,
+                    |_, _| {},
+                ),
             },
-            DebugEntry {
-                id: "mymod:tick_cost".into(),
-                group: DebugGroup::Light,
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("other"),
+                entry: DebugEntry::renderer("minecraft:custom_stat".into()),
             },
-            DebugEntry {
-                id: "other:queue".into(),
-                group: DebugGroup::Position,
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::renderer("tick_cost".into()),
+            },
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::renderer("mymod:Bad".into()),
+            },
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("other"),
+                entry: DebugEntry::renderer("mymod:tick_cost".into()),
+            },
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("other"),
+                entry: DebugEntry::renderer("other:queue".into()),
             },
         ]);
-        let ids: Vec<&str> = kept.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["mymod:tick_cost", "other:queue"]);
-        assert_eq!(kept[0].group, DebugGroup::Memory);
+        let ids: Vec<&str> = kept.iter().map(|e| e.entry.id()).collect();
+        assert_eq!(
+            ids,
+            ["mymod:tick_cost", "minecraft:custom_stat", "other:queue"]
+        );
+        assert_eq!(kept[0].owner.id(), "mymod");
+        assert_eq!(
+            kept[0].entry.text_lines().map(|(group, _)| group),
+            Some(DebugGroup::Memory)
+        );
+    }
+
+    #[test]
+    fn custom_minecraft_entries_and_reduced_debug_info_opt_in_resolve() {
+        let extra = [
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::text(
+                    "minecraft:custom_stat".into(),
+                    DebugGroup::Memory,
+                    |_, _| {},
+                )
+                .with_reduced_debug_info(true),
+            },
+            RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::renderer("mymod:hidden_when_reduced".into()),
+            },
+        ];
+
+        // Vanilla entries resolve by both bare path and full minecraft: ID.
+        assert_eq!(entry(&extra, "fps").map(|e| e.path), Some("fps"));
+        assert_eq!(entry(&extra, "minecraft:fps").map(|e| e.path), Some("fps"));
+        // Custom minecraft:* mod entry resolves by full ID and bare path, with reduced = true.
+        let custom = entry(&extra, "minecraft:custom_stat").unwrap();
+        assert_eq!(custom.path, "minecraft:custom_stat");
+        assert!(custom.reduced);
+        assert_eq!(
+            entry(&extra, "custom_stat").map(|e| e.path),
+            Some("minecraft:custom_stat")
+        );
+
+        let mut selection = DebugEntries::default();
+        selection.set_status("minecraft:custom_stat", Status::AlwaysOn);
+        selection.set_status("mymod:hidden_when_reduced", Status::AlwaysOn);
+
+        // Under reducedDebugInfo, the opted-in custom minecraft:* entry stays enabled while the
+        // default mod entry is hidden.
+        assert!(selection.enabled(&extra, "minecraft:custom_stat", false, true));
+        assert!(selection.enabled(&extra, "custom_stat", false, true));
+        assert!(selection.any_enabled(&extra, false, true));
+        assert!(selection.enabled(&extra, "mymod:hidden_when_reduced", false, false));
+        assert!(!selection.enabled(&extra, "mymod:hidden_when_reduced", false, true));
     }
 
     #[test]
     fn a_native_mods_lines_join_their_group_and_only_enabled_entries_are_asked() {
-        let entries = [
-            DebugEntry {
-                id: "mymod:tick_cost".into(),
-                group: DebugGroup::Memory,
-            },
-            DebugEntry {
-                id: "mymod:queue".into(),
-                group: DebugGroup::Position,
-            },
-        ];
-        let mut asked = Vec::new();
-        let groups = mod_lines(
-            &entries,
-            |id| id == "mymod:tick_cost",
-            |id, lines| {
-                asked.push(id.to_owned());
-                lines.push(format!("{id}: 3 ms"));
+        mod_platform::testing::with_mods(Vec::new().into(), || {
+            let cost = String::from("Tick cost: 3 ms");
+            let entries = [
+                RegisteredDebugEntry {
+                    owner: CallbackOwner::for_mod("inspect"),
+                    entry: DebugEntry::text(
+                        "metrics:tick_cost".into(),
+                        DebugGroup::Memory,
+                        move |_, lines| {
+                            assert_eq!(current_native_mod(), Some("inspect"));
+                            lines.push(cost.clone());
+                        },
+                    ),
+                },
+                RegisteredDebugEntry {
+                    owner: CallbackOwner::for_mod("metrics"),
+                    entry: DebugEntry::text(
+                        "metrics:queue".into(),
+                        DebugGroup::Position,
+                        |_, _| panic!("the disabled entry must not be called"),
+                    ),
+                },
+            ];
+            let host = FakeHost::new();
+            let mut selection = DebugEntries::default();
+            selection.set_status("metrics:tick_cost", Status::InOverlay);
+            assert!(
+                mod_lines(&entries, &host, &selection, false, false)
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                mod_lines(&entries, &host, &selection, true, true)
+                    .next()
+                    .is_none()
+            );
+
+            let groups: Vec<_> = mod_lines(&entries, &host, &selection, true, false).collect();
+            assert_eq!(
+                groups,
+                [(DebugGroup::Memory, vec!["Tick cost: 3 ms".to_owned()])]
+            );
+            assert_eq!(group_key(groups[0].0), "memory");
+            assert_eq!(current_native_mod(), None);
+        });
+    }
+
+    #[test]
+    fn a_panicking_debug_entry_is_skipped_and_the_next_mod_keeps_drawing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Empty;
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Empty {}
+        mod_platform::testing::with_mods(
+            vec![
+                mod_api::ModEntry::new("debug_panic", Box::new(Empty)),
+                mod_api::ModEntry::new("debug_healthy", Box::new(Empty)),
+            ]
+            .into(),
+            || {
+                let runs = std::sync::Arc::new(AtomicUsize::new(0));
+                let bad_runs = runs.clone();
+                let entries = [
+                    RegisteredDebugEntry {
+                        owner: CallbackOwner::new("debug_panic").unwrap(),
+                        entry: DebugEntry::text(
+                            "debug_panic:text".into(),
+                            DebugGroup::Memory,
+                            move |_, lines| {
+                                bad_runs.fetch_add(1, Ordering::Relaxed);
+                                lines.push("must not be shown".into());
+                                panic!("broken debug entry");
+                            },
+                        ),
+                    },
+                    RegisteredDebugEntry {
+                        owner: CallbackOwner::new("debug_healthy").unwrap(),
+                        entry: DebugEntry::text(
+                            "debug_healthy:text".into(),
+                            DebugGroup::Position,
+                            |_, lines| {
+                                lines.push(current_native_mod().unwrap_or("wrong scope").into());
+                            },
+                        ),
+                    },
+                ];
+                let mut selection = DebugEntries::default();
+                selection.set_status("debug_panic:text", Status::AlwaysOn);
+                selection.set_status("debug_healthy:text", Status::AlwaysOn);
+                let host = FakeHost::new();
+                for _ in 0..2 {
+                    assert_eq!(
+                        mod_lines(&entries, &host, &selection, true, false).collect::<Vec<_>>(),
+                        [(DebugGroup::Position, vec!["debug_healthy".to_owned()]),]
+                    );
+                }
+                assert_eq!(runs.load(Ordering::Relaxed), 1);
+                assert_eq!(current_native_mod(), None);
             },
         );
-        // The disabled entry's lines hook is never asked.
-        assert_eq!(asked, ["mymod:tick_cost"]);
-        assert_eq!(
-            groups,
-            [(DebugGroup::Memory, vec!["mymod:tick_cost: 3 ms".to_owned()])]
-        );
-        assert_eq!(group_key(groups[0].0), "memory");
     }
 
     #[test]
     fn a_native_mods_renderer_entry_is_listed_as_a_renderer_and_has_no_lines() {
-        let entry: &'static DebugEntry = Box::leak(Box::new(DebugEntry {
-            id: "mymod:pipes".into(),
-            group: DebugGroup::Renderer,
-        }));
-        assert_eq!(as_entry(entry).category, Category::Renderer);
-        assert!(!as_entry(entry).reduced);
-        let asked = mod_lines(
-            std::slice::from_ref(entry),
-            |_| true,
-            |_, _| panic!("a renderer entry has no lines"),
+        let entry = RegisteredDebugEntry {
+            owner: CallbackOwner::for_mod("mymod"),
+            entry: DebugEntry::renderer("mymod:pipes".into()),
+        };
+        assert_eq!(as_entry(&entry).category, Category::Renderer);
+        assert!(!as_entry(&entry).reduced);
+        let mut selection = DebugEntries::default();
+        selection.set_status("mymod:pipes", Status::AlwaysOn);
+        assert!(
+            mod_lines(&[entry], &FakeHost::new(), &selection, true, false)
+                .next()
+                .is_none()
         );
-        assert!(asked.is_empty());
     }
 
     #[test]
@@ -751,10 +990,18 @@ mod tests {
 
     #[test]
     fn an_entry_with_no_lines_joins_no_group() {
-        let entries = [DebugEntry {
-            id: "mymod:quiet".into(),
-            group: DebugGroup::Light,
-        }];
-        assert!(mod_lines(&entries, |_| true, |_, _| {}).is_empty());
+        mod_platform::testing::with_mods(Vec::new().into(), || {
+            let entries = [RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::text("mymod:quiet".into(), DebugGroup::Light, |_, _| {}),
+            }];
+            let mut selection = DebugEntries::default();
+            selection.set_status("mymod:quiet", Status::AlwaysOn);
+            assert!(
+                mod_lines(&entries, &FakeHost::new(), &selection, false, false)
+                    .next()
+                    .is_none()
+            );
+        });
     }
 }

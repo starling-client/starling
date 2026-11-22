@@ -1,8 +1,8 @@
 //! What a [`MobType`] takes from the attribute catalog: the spawn fields of
 //! its attribute row and the bounds its mobs' own attribute record clamps to.
 use super::{MobType, finalize::AttrBounds};
-use sunrise_world::attributes::entity::Catalog;
 use std::{collections::HashMap, sync::Arc};
+use sunrise_world::attributes::entity::Catalog;
 
 /// The fields of [`MobType`] its type's attribute row gives, built by
 /// [`MobType::attribute_fields`]: the one map from an attribute to the

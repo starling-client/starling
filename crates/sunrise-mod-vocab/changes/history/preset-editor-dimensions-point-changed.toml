@@ -1,0 +1,4 @@
+ids = ["point:sunrise_client::game::native_hooks::register_preset_editors::Game<'_>::preset_editor_dimensions"]
+landed = "6597e0855f562498319f093afcf2ed1ea8d717cb"
+why = "The function is unchanged, but its return type Compound changed in #1406 (Java HashMap traversal order, see compound-traversal.toml), which changes the point's signature hash."
+migrate = "Update the hash of an [[inject]] at preset_editor_dimensions. Don't rely on the returned Compound's key order; sort explicitly if an output needs sorted keys."

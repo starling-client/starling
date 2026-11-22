@@ -6,11 +6,13 @@ pub trait Hooks {
     /// duration. The player's state is not swapped in. Set `cancel` to skip starting the cooldown.
     /// Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_item_cooldown",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge has no such event; Paper's PlayerItemCooldownEvent)",
         cancellable = true
     )]
-    fn player_item_cooldown();
+    fn player_item_cooldown(player: u128, name: &str, item: &str, ticks: i32, cancel: &mut bool);
 }

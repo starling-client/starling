@@ -3,6 +3,8 @@ pub use content::attached_storage::{
     StackList, StackedResource,
 };
 pub use content::resource::{
-    ComponentId, EnchantmentEffect, ItemAttackRange, ItemBar, ItemDamageSource, ItemRarity,
-    ItemResource, Overanswered, PREVENT_ARMOR_CHANGE, ResourceHandler, move_resources,
+    ComponentId, EnchantmentEffect, HostItemResourceMetadata, ItemAttackRange, ItemBar,
+    ItemDamageSource, ItemRarity, ItemResource, ItemResourceMetadata, Overanswered,
+    PREVENT_ARMOR_CHANGE, ResourceHandler,
 };
+pub use content::resource_util;

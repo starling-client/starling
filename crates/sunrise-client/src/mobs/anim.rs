@@ -1,12 +1,14 @@
 //! Model animation: ports of each vanilla `EntityModel.setupAnim` family
 //! (quadrupeds, humanoids, creepers, spiders, chickens...) applied to a map of
 //! part poses before the model is drawn.
-use super::{Mob, Part, keyframes::AnimationState, living::wrap};
+use super::{Mob, Part, keyframes::AnimationState, living::wrap, render::BakedFrameModel};
 use crate::fast_hash::{FxHashMap, FxHashSet};
-use sunrise_core::geometry::trig::Mth;
-use sunrise_core::use_animation::UseAnimation;
+use mod_api::HumanoidPart;
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_6, PI};
+use std::sync::{Arc, LazyLock};
+use sunrise_core::geometry::trig::Mth;
+use sunrise_core::use_animation::UseAnimation;
 
 /// The setupAnim implementation a model uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,17 +117,50 @@ pub(crate) fn key(name: &str) -> u64 {
     h.write_usize(name.len());
     h.finish()
 }
+// Index by HumanoidPart, keying only the editable mid-animation inputs.
+static HUMANOID_POSE_KEYS: LazyLock<[Option<u64>; HumanoidPart::ALL.len()]> = LazyLock::new(|| {
+    HumanoidPart::ALL.map(|part| match part {
+        HumanoidPart::Head
+        | HumanoidPart::Hat
+        | HumanoidPart::Body
+        | HumanoidPart::RightArm
+        | HumanoidPart::LeftArm
+        | HumanoidPart::RightLeg
+        | HumanoidPart::LeftLeg => Some(key(part.model_name())),
+        _ => None,
+    })
+});
+
+#[derive(Clone, Copy)]
+struct PoseEntry {
+    pose: [f32; 9],
+    base_hidden: bool,
+}
+
+impl PoseEntry {
+    fn new(pose: [f32; 9]) -> Self {
+        Self {
+            pose,
+            base_hidden: false,
+        }
+    }
+}
+
 /// Part poses for one draw, keyed by part name.
 #[derive(Clone, Default)]
 pub struct Poses {
-    map: FxHashMap<u64, [f32; 9]>,
+    map: FxHashMap<u64, PoseEntry>,
     dummy: [f32; 9],
     /// Parts with `skipDraw` set: their own cubes are not drawn, children are.
     skipped: FxHashSet<u64>,
-    /// Parts with `visible` cleared: neither they nor their children draw.
-    hidden: FxHashSet<u64>,
-    /// Names this content: a fresh number at each change, kept by copies
-    /// ([`Poses::version`]).
+    /// Number of parts with `visible` cleared by animation.
+    base_hidden_count: usize,
+    /// Draw-local visibility indexed by the selected tree, independent of animation names.
+    frame_layout: Option<Arc<BakedFrameModel>>,
+    frame_hidden: Vec<bool>,
+    has_frame_edits: bool,
+    apply_frame_visibility: bool,
+    /// Names the draw state, kept by copies ([`Poses::version`]).
     version: u64,
 }
 /// The next [`Poses::version`].
@@ -176,10 +211,10 @@ impl Poses {
                 .unwrap_or_default(),
         )
     }
-    /// Names the content: two `Poses` with the same version pose every part
-    /// alike (one is a copy of the other, neither changed since). A draw of
-    /// the same model under the same matrix with the same version can reuse
-    /// the first's part matrices (`skin::Skin::draw`).
+    /// Names the draw state: two `Poses` with the same version pose every part
+    /// alike and have the same effective visibility. A draw of the same model
+    /// under the same matrix with the same version can reuse the first's part
+    /// matrices and jobs (`skin::Skin::draw`).
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -191,15 +226,28 @@ impl Poses {
         self.map.clone_from(&other.map);
         self.dummy = other.dummy;
         self.skipped.clone_from(&other.skipped);
-        self.hidden.clone_from(&other.hidden);
+        self.base_hidden_count = other.base_hidden_count;
+        self.frame_layout.clone_from(&other.frame_layout);
+        self.frame_hidden.clone_from(&other.frame_hidden);
+        self.has_frame_edits = other.has_frame_edits;
+        self.apply_frame_visibility = other.apply_frame_visibility;
         self.version = other.version;
     }
-    /// Refills this for another model, keeping the map and the sets' capacity:
+    /// Refills this for another model, keeping the map and set capacity:
     /// a mob draws its body and every equipment layer each frame.
     pub fn reset(&mut self, model: &Part) {
-        fn walk(p: &Part, map: &mut FxHashMap<u64, [f32; 9]>) {
+        self.frame_layout = None;
+        self.frame_hidden.clear();
+        self.has_frame_edits = false;
+        self.reset_animation(model);
+    }
+
+    /// Restore the selected model's bind pose and base visibility for another mirror, without
+    /// losing its shared Pre edits. The next setupAnim starts with the override inactive.
+    pub(super) fn reset_animation(&mut self, model: &Part) {
+        fn walk(p: &Part, map: &mut FxHashMap<u64, PoseEntry>) {
             // ModelPart.createPartLookup fills its map with putIfAbsent: the first part keeps a name.
-            map.entry(key(&p.name)).or_insert(p.pose);
+            map.entry(key(&p.name)).or_insert(PoseEntry::new(p.pose));
             for c in &p.children {
                 walk(c, map);
             }
@@ -207,23 +255,36 @@ impl Poses {
         self.map.clear();
         self.dummy = [0.0; 9];
         self.skipped.clear();
-        self.hidden.clear();
+        self.base_hidden_count = 0;
+        self.apply_frame_visibility = false;
         walk(model, &mut self.map);
         self.changed();
     }
     pub fn get(&mut self, name: &str) -> &mut [f32; 9] {
         self.changed();
         match self.map.get_mut(&key(name)) {
-            Some(p) => p,
+            Some(entry) => &mut entry.pose,
             None => &mut self.dummy,
         }
     }
     /// The pose of the part named `name`, when the model has one.
     pub fn pose_of(&self, name: &str) -> Option<[f32; 9]> {
-        self.map.get(&key(name)).copied()
+        self.pose_by_key(key(name)).copied()
+    }
+    pub(super) fn pose_by_key(&self, key: u64) -> Option<&[f32; 9]> {
+        self.map.get(&key).map(|entry| &entry.pose)
     }
     pub fn pose(&self, part: &Part) -> [f32; 9] {
-        self.map.get(&key(&part.name)).copied().unwrap_or(part.pose)
+        self.pose_of(&part.name).unwrap_or(part.pose)
+    }
+    fn set_humanoid_vector(&mut self, part: HumanoidPart, start: usize, values: [f32; 3]) -> bool {
+        let Some(entry) = HUMANOID_POSE_KEYS[part as usize].and_then(|key| self.map.get_mut(&key))
+        else {
+            return false;
+        };
+        entry.pose[start..start + 3].copy_from_slice(&values);
+        self.changed();
+        true
     }
     pub fn skip_draw(&mut self, name: &str) {
         if self.skipped.insert(key(name)) {
@@ -249,28 +310,117 @@ impl Poses {
     pub fn zrot(&mut self, n: &str, v: f32) {
         self.get(n)[5] = v;
     }
-    /// `ModelPart.visible = v`; a hidden part and its children do not draw.
-    pub fn visible(&mut self, n: &str, v: bool) {
-        let changed = if v {
-            self.hidden.remove(&key(n))
-        } else {
-            self.map.contains_key(&key(n)) && self.hidden.insert(key(n))
+    /// Set `ModelPart.visible`; animation changes the base visibility, not the frame override.
+    pub fn visible(&mut self, name: &str, visible: bool) {
+        let Some(entry) = self.map.get_mut(&key(name)) else {
+            return;
         };
-        if changed {
+        let hidden = !visible;
+        if entry.base_hidden == hidden {
+            return;
+        }
+        entry.base_hidden = hidden;
+        if hidden {
+            self.base_hidden_count += 1;
+        } else {
+            self.base_hidden_count -= 1;
+        }
+        self.changed();
+    }
+    /// Base visibility for animation, without the draw-local overlay.
+    pub fn is_hidden_named(&self, name: &str) -> bool {
+        self.base_hidden_count != 0
+            && self
+                .map
+                .get(&key(name))
+                .is_some_and(|entry| entry.base_hidden)
+    }
+    /// Refill pooled visibility storage before calling Pre, so edits never grow it.
+    pub(super) fn prepare_frame_visibility(&mut self, layout: Arc<BakedFrameModel>) {
+        self.frame_hidden.resize(layout.nodes().len(), false);
+        self.frame_layout = Some(layout);
+        self.apply_frame_visibility(true);
+    }
+
+    pub(super) fn hide_frame_part(&mut self, index: usize) -> bool {
+        let Some(hidden) = self.frame_hidden.get_mut(index) else {
+            return false;
+        };
+        if !*hidden {
+            *hidden = true;
+            self.has_frame_edits = true;
             self.changed();
         }
+        true
     }
+    /// Select whether the next draw sees the frame override or only the animated visibility.
+    pub(super) fn apply_frame_visibility(&mut self, apply: bool) {
+        if self.apply_frame_visibility != apply {
+            self.apply_frame_visibility = apply;
+            if self.has_frame_edits {
+                self.changed();
+            }
+        }
+    }
+    /// Effective visibility for drawing; an inactive overlay costs no part lookup.
     pub fn is_hidden(&self, part: &Part) -> bool {
         self.is_hidden_named(&part.name)
+            || self.frame_visibility_active()
+                && self
+                    .frame_layout
+                    .as_ref()
+                    .and_then(|layout| layout.index_of(part))
+                    .is_some_and(|index| self.frame_hidden[index])
     }
-    /// `is_hidden` by the part's name.
-    pub fn is_hidden_named(&self, name: &str) -> bool {
-        !self.hidden.is_empty() && self.hidden.contains(&key(name))
+    pub(super) fn has_hidden_parts(&self) -> bool {
+        self.base_hidden_count != 0 || self.frame_visibility_active()
+    }
+    pub(super) fn is_hidden_at(&self, index: usize, key: u64) -> bool {
+        (self.base_hidden_count != 0 && self.map.get(&key).is_some_and(|entry| entry.base_hidden))
+            || self.frame_visibility_active() && self.frame_hidden[index]
+    }
+    fn frame_visibility_active(&self) -> bool {
+        self.apply_frame_visibility && self.has_frame_edits
     }
 }
+
+impl mod_api::HumanoidPose for Poses {
+    fn get(&self, part: HumanoidPart) -> Option<[[f32; 3]; 2]> {
+        let key = HUMANOID_POSE_KEYS[part as usize]?;
+        let [x, y, z, x_rot, y_rot, z_rot, ..] = self.map.get(&key)?.pose;
+        Some([[x, y, z], [x_rot, y_rot, z_rot]])
+    }
+
+    fn set_position(&mut self, part: HumanoidPart, position: [f32; 3]) -> bool {
+        self.set_humanoid_vector(part, 0, position)
+    }
+
+    fn set_rotation(&mut self, part: HumanoidPart, rotation: [f32; 3]) -> bool {
+        self.set_humanoid_vector(part, 3, rotation)
+    }
+}
+
+/// Gameplay's callback at the humanoid mid-setupAnim seam.
+/// This library knows only animation inputs and poses, never Game or a Host.
+pub trait HumanoidSetup {
+    fn before_arm_pose(&self, mob: &Mob, state: &State<'_>, poses: &mut Poses);
+}
+
+#[derive(Clone, Copy)]
+pub struct Observation<'a> {
+    source: &'a Mob,
+    observer: &'a dyn HumanoidSetup,
+}
+
+impl std::fmt::Debug for Observation<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HumanoidSetup")
+    }
+}
+
 /// The LivingEntityRenderState values setupAnim reads.
 #[derive(Clone, Copy, Debug)]
-pub struct State {
+pub struct State<'a> {
     pub pos: f32,
     pub speed: f32,
     pub age: f32,
@@ -281,7 +431,24 @@ pub struct State {
     pub swing: f32,
     pub baby: bool,
     pub partial: f32,
+    /// Optional frame-local observer; absent without subscribers.
+    pub observer: Option<Observation<'a>>,
 }
+
+impl State<'static> {
+    /// Attach the gameplay observer for this particular animation invocation.
+    pub fn observed<'a>(
+        self,
+        source: &'a Mob,
+        observer: Option<&'a dyn HumanoidSetup>,
+    ) -> State<'a> {
+        State {
+            observer: observer.map(|observer| Observation { source, observer }),
+            ..self
+        }
+    }
+}
+
 /// `LivingEntityRenderer.isEntityUpsideDown`: named Dinnerbone or Grumm.
 pub fn upside_down(m: &Mob) -> bool {
     matches!(m.custom_name.as_deref(), Some("Dinnerbone" | "Grumm"))
@@ -302,7 +469,7 @@ pub fn body_rot(m: &Mob, alpha: f32) -> f32 {
         None => m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha,
     }
 }
-pub fn state(m: &Mob, alpha: f32) -> State {
+pub fn state(m: &Mob, alpha: f32) -> State<'static> {
     let body = body_rot(m, alpha);
     let head = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * alpha;
     let mut swing = m.anim.attack_anim - m.anim.attack_anim_o;
@@ -329,6 +496,7 @@ pub fn state(m: &Mob, alpha: f32) -> State {
         swing,
         baby: m.is_baby(),
         partial: alpha,
+        observer: None,
     }
 }
 fn head(p: &mut Poses, s: &State) {
@@ -657,6 +825,18 @@ fn pose_arm(p: &mut Poses, pose: ArmPose, right: bool, h: &Hum) {
 }
 /// `HumanoidModel.setupAnim` (and `ZombieModel.setupAttackAnimation`).
 pub(super) fn humanoid(p: &mut Poses, s: &State, h: &Hum) {
+    humanoid_with_setup(p, s, h, |p| {
+        if let Some(observation) = s.observer {
+            observation
+                .observer
+                .before_arm_pose(observation.source, s, p);
+        }
+    });
+}
+
+/// Run the shared humanoid animation, observing the prepared pose before arm
+/// posing. Specialized adapters can supply their own entity view at this seam.
+pub fn humanoid_with_setup(p: &mut Poses, s: &State, h: &Hum, setup: impl FnOnce(&mut Poses)) {
     head(p, s);
     if h.fall_flying {
         p.xrot("head", -std::f32::consts::FRAC_PI_4);
@@ -680,6 +860,7 @@ pub(super) fn humanoid(p: &mut Poses, s: &State, h: &Hum) {
         p.yrot("left_leg", -PI / 10.0);
         p.zrot("left_leg", -0.078_539_82);
     }
+    setup(p);
     // The main arm is the right one: the off-hand pose goes first unless it
     // needs both hands.
     for right in sunrise_core::arm_pose::application_order(h.right, h.left)
@@ -775,6 +956,12 @@ pub(super) fn humanoid(p: &mut Poses, s: &State, h: &Hum) {
 /// `Mth.rotLerpRad`.
 fn rot_lerp_rad(a: f32, from: f32, to: f32) -> f32 {
     let mut diff = to - from;
+    // A mod's `humanoid_setup_anim` answer may be any finite angle: past a few turns, bring it
+    // into one turn first, or the wrapping loops below never finish (adding 2π to a huge f32 rounds
+    // back to it). Ordinary angles skip this and wrap exactly as vanilla's loops do.
+    if diff.abs() > 64.0 * PI {
+        diff = diff.rem_euclid(PI * 2.0);
+    }
     while diff < -PI {
         diff += PI * 2.0;
     }
@@ -869,46 +1056,9 @@ fn swim(p: &mut Poses, pos: f32, h: &Hum) {
         lerp(amount, x, 0.3 * (pos * 0.333_333_34).mcos()),
     );
 }
-/// A pose laid over the player model's body after its vanilla animation, and the parts it poses:
-/// the hook's own types (`sunrise_hooks::players`), kept here under their old path.
-pub use sunrise_hooks::players::{BODY_PARTS, BodyPose};
-
-/// Apply the mob's model animation to `p` (at rest), then the pose laid over it, if any.
+/// Apply the mob's model animation to `p` (at rest).
+#[sunrise_mod_api_macros::replaceable]
 pub fn setup(
-    m: &Mob,
-    s: &State,
-    p: &mut Poses,
-    w_anims: &HashMap<String, super::keyframes::Animation>,
-) {
-    let Some(over) = &m.emote else {
-        return vanilla_setup(m, s, p, w_anims);
-    };
-    let rest = BODY_PARTS.map(|b| p.has(b).then(|| *p.get(b)));
-    vanilla_setup(m, s, p, w_anims);
-    body_pose(&**over, s.age, rest, p);
-}
-
-/// Poses the parts `rest` names (those the model has; at rest) as `over` has them at `age`.
-fn body_pose(over: &dyn BodyPose, age: f32, rest: [Option<[f32; 9]>; 6], p: &mut Poses) {
-    const IDENTITY: [f32; 9] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-    let at_rest = rest.map(|r| r.unwrap_or(IDENTITY));
-    // Read without `get`, which marks the poses changed: `over` may pose nothing.
-    let mut poses: [[f32; 9]; 6] = std::array::from_fn(|i| {
-        rest[i]
-            .and_then(|_| p.map.get(&key(BODY_PARTS[i])).copied())
-            .unwrap_or(IDENTITY)
-    });
-    if !over.pose(age, &at_rest, &mut poses) {
-        return;
-    }
-    for (i, pose) in poses.into_iter().enumerate() {
-        if rest[i].is_some() {
-            *p.get(BODY_PARTS[i]) = pose;
-        }
-    }
-}
-
-fn vanilla_setup(
     m: &Mob,
     s: &State,
     p: &mut Poses,
@@ -1151,69 +1301,86 @@ fn player_model_visibility(p: &mut Poses, hidden: u8, spectator: bool) {
     }
 }
 #[cfg(test)]
-mod body_pose_tests {
+mod humanoid_pose_tests {
     use super::*;
 
-    /// Lifts the right arm to a fixed angle, the left leg too, and keeps what it was given.
-    #[derive(Debug, Default)]
-    struct Raise(std::sync::Mutex<Option<([[f32; 9]; 6], [[f32; 9]; 6])>>);
-    impl BodyPose for Raise {
-        fn pose(&self, age: f32, at_rest: &[[f32; 9]; 6], poses: &mut [[f32; 9]; 6]) -> bool {
-            *self.0.lock().unwrap() = Some((*at_rest, *poses));
-            if age > 20.0 {
-                return false;
-            }
-            poses[2][5] = 1.5;
-            poses[5][5] = 1.5;
-            true
-        }
+    #[test]
+    fn live_humanoid_pose_writes_all_components_and_refuses_only_missing_or_uneditable_parts() {
+        let mut poses = Poses {
+            map: [
+                ("hat", [1.0, 2.0, 3.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0]),
+                ("jacket", [0.0, 1.0, 2.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]),
+            ]
+            .into_iter()
+            .map(|(name, pose)| (key(name), PoseEntry::new(pose)))
+            .collect(),
+            ..Default::default()
+        };
+        let before = poses.version();
+        let view = &mut poses as &mut dyn mod_api::HumanoidPose;
+        assert_eq!(
+            view.get(HumanoidPart::Hat),
+            Some([[1.0, 2.0, 3.0], [0.25, 0.5, 0.75]])
+        );
+        assert!(view.set_position(HumanoidPart::Hat, [f32::NAN, 4.0, f32::INFINITY]));
+        assert_ne!(poses.version(), before);
+
+        let before = poses.version();
+        let view = &mut poses as &mut dyn mod_api::HumanoidPose;
+        assert!(view.set_rotation(HumanoidPart::Hat, [f32::INFINITY, f32::NAN, -0.75]));
+        let [pos, rot] = view.get(HumanoidPart::Hat).unwrap();
+        assert!(pos[0].is_nan() && pos[1] == 4.0 && pos[2] == f32::INFINITY);
+        assert!(rot[0] == f32::INFINITY && rot[1].is_nan() && rot[2] == -0.75);
+        assert_ne!(poses.version(), before);
+        let hat = poses.pose_of("hat").unwrap();
+        assert!(hat[0].is_nan() && hat[1] == 4.0 && hat[2] == f32::INFINITY);
+        assert!(hat[3] == f32::INFINITY && hat[4].is_nan() && hat[5] == -0.75);
+        assert_eq!(hat[6..9], [1.0, 1.0, 1.0]);
+
+        let before = poses.version();
+        let view = &mut poses as &mut dyn mod_api::HumanoidPose;
+        assert_eq!(view.get(HumanoidPart::LeftArm), None);
+        assert_eq!(view.get(HumanoidPart::Jacket), None);
+        assert!(!view.set_position(HumanoidPart::LeftArm, [9.0; 3]));
+        assert!(!view.set_rotation(HumanoidPart::Jacket, [9.0; 3]));
+        assert_eq!(poses.pose_of("left_arm"), None);
+        assert_eq!(
+            poses.pose_of("jacket"),
+            Some([0.0, 1.0, 2.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0])
+        );
+        assert_eq!(poses.dummy, [0.0; 9]);
+        assert_eq!(poses.version(), before);
+
+        // Non-finite incoming poses do not suppress pose access or later writes.
+        poses.xrot("hat", f32::NAN);
+        let view = &mut poses as &mut dyn mod_api::HumanoidPose;
+        let [_, rot] = view.get(HumanoidPart::Hat).unwrap();
+        assert!(rot[0].is_nan());
+        assert!(view.set_rotation(HumanoidPart::Hat, [0.5, 0.25, -0.5]));
+        assert_eq!(view.get(HumanoidPart::Hat).unwrap()[1], [0.5, 0.25, -0.5]);
     }
+}
+
+#[cfg(test)]
+mod rot_lerp_tests {
+    use super::*;
 
     #[test]
-    fn a_body_pose_sees_the_rest_and_the_animation_and_writes_only_the_parts_the_model_has() {
-        let rest = |x: f32, y: f32| [x, y, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        let mut p = Poses {
-            map: [("head", rest(0.0, 0.0)), ("right_arm", rest(-5.0, 2.0))]
-                .into_iter()
-                .map(|(n, pose)| (key(n), pose))
-                .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
-        };
-        let at_rest = BODY_PARTS.map(|b| p.has(b).then(|| *p.get(b)));
-        // What the walk animation did: the head looks aside, the arm swings.
-        p.get("head")[4] = 0.4;
-        p.get("right_arm")[3] = 0.7;
-        let raise = Raise::default();
-        body_pose(&raise, 10.0, at_rest, &mut p);
-        let identity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        let (seen_rest, seen) = raise.0.lock().unwrap().unwrap();
-        assert_eq!(seen_rest[0], rest(0.0, 0.0));
-        assert_eq!(seen_rest[2], rest(-5.0, 2.0));
-        assert_eq!(seen_rest[5], identity);
-        assert_eq!(seen[0][4], 0.4);
-        assert_eq!(seen[2][3], 0.7);
-        assert_eq!(seen[5], identity);
-        let arm = *p.get("right_arm");
-        assert_eq!((arm[3], arm[5]), (0.7, 1.5));
-        assert_eq!(p.get("head")[4], 0.4);
-        // Nothing was added for the parts the model lacks.
-        assert_eq!(p.map.len(), 2);
-        // Posing nothing leaves the poses, their version too.
-        let version = p.version();
-        body_pose(&raise, 30.0, at_rest, &mut p);
-        assert_eq!(p.version(), version);
-        assert_eq!(p.get("right_arm")[5], 1.5);
+    fn a_huge_finite_angle_wraps_instead_of_looping() {
+        for from in [f32::MAX, -f32::MAX, 1.0e9, -1.0e9] {
+            let out = rot_lerp_rad(0.5, from, -std::f32::consts::FRAC_PI_4);
+            assert!(out.is_finite(), "from {from}");
+        }
+        // Ordinary angles are untouched: half way from 0 to 3π/2 goes the short way, to -π/4.
+        assert!((rot_lerp_rad(0.5, 0.0, 1.5 * PI) + 0.25 * PI).abs() < 1e-6);
     }
 }
 
 #[cfg(test)]
 mod flight_pose_tests {
     use super::*;
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     #[test]
     fn spectators_show_only_the_head_and_its_hat() {
@@ -1229,22 +1396,19 @@ mod flight_pose_tests {
                 "left_leg",
             ]
             .into_iter()
-            .map(|n| (key(n), [0.0; 9]))
+            .map(|n| (key(n), PoseEntry::new([0.0; 9])))
             .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         player_model_visibility(&mut p, 0, true);
         for part in ["body", "right_arm", "left_arm", "right_leg", "left_leg"] {
-            assert!(p.hidden.contains(&key(part)), "{part}");
+            assert!(p.is_hidden_named(part), "{part}");
         }
-        assert!(!p.hidden.contains(&key("head")) && !p.hidden.contains(&key("hat")));
+        assert!(!p.is_hidden_named("head") && !p.is_hidden_named("hat"));
         // Back in another mode they all show, but for the layers the player hid.
         player_model_visibility(&mut p, 1 << 6, false);
-        assert!(!p.hidden.contains(&key("body")) && !p.hidden.contains(&key("left_leg")));
-        assert!(p.hidden.contains(&key("hat")));
+        assert!(!p.is_hidden_named("body") && !p.is_hidden_named("left_leg"));
+        assert!(p.is_hidden_named("hat"));
     }
     #[test]
     fn blocking_arm_follows_the_head_with_limits_in_both_hands() {
@@ -1257,12 +1421,9 @@ mod flight_pose_tests {
                 let mut p = Poses {
                     map: ["head", "right_arm", "left_arm"]
                         .into_iter()
-                        .map(|n| (key(n), [0.0; 9]))
+                        .map(|n| (key(n), PoseEntry::new([0.0; 9])))
                         .collect(),
-                    dummy: [0.0; 9],
-                    skipped: Default::default(),
-                    hidden: Default::default(),
-                    version: 0,
+                    ..Default::default()
                 };
                 let arm = if right { "right_arm" } else { "left_arm" };
                 p.xrot("head", pitch);
@@ -1297,12 +1458,9 @@ mod flight_pose_tests {
                 let mut p = Poses {
                     map: ["head", "right_arm", "left_arm"]
                         .into_iter()
-                        .map(|n| (key(n), [0.0; 9]))
+                        .map(|n| (key(n), PoseEntry::new([0.0; 9])))
                         .collect(),
-                    dummy: [0.0; 9],
-                    skipped: Default::default(),
-                    hidden: Default::default(),
-                    version: 0,
+                    ..Default::default()
                 };
                 let arm = if right { "right_arm" } else { "left_arm" };
                 p.xrot("head", pitch);
@@ -1324,8 +1482,8 @@ mod flight_pose_tests {
     fn a_seated_enderman_keeps_the_riding_leg_twist() {
         use super::super::enderman;
         use super::super::{Mob, Species};
-        use sunrise_core::geometry::Vec3;
         use std::sync::Arc;
+        use sunrise_core::geometry::Vec3;
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = Species::Enderman;
         let mut seated = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
@@ -1339,6 +1497,7 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         };
         let mut poses = Poses {
             map: [
@@ -1351,12 +1510,9 @@ mod flight_pose_tests {
                 "left_leg",
             ]
             .into_iter()
-            .map(|n| (key(n), [0.0; 9]))
+            .map(|n| (key(n), PoseEntry::new([0.0; 9])))
             .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         enderman::anim(&seated, &state, &mut poses);
         let right = *poses.get("right_leg");
@@ -1396,6 +1552,7 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         };
         let make = || Poses {
             map: [
@@ -1407,12 +1564,9 @@ mod flight_pose_tests {
                 "body",
             ]
             .into_iter()
-            .map(|n| (key(n), [0.0; 9]))
+            .map(|n| (key(n), PoseEntry::new([0.0; 9])))
             .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         let mut ground = make();
         let mut flight = make();
@@ -1445,16 +1599,14 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm", "right_leg", "left_leg"]
                 .into_iter()
-                .map(|n| (key(n), [0.0; 9]))
+                .map(|n| (key(n), PoseEntry::new([0.0; 9])))
                 .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         let same_angle = |a: f32, b: f32| ((a - b + PI).rem_euclid(PI * 2.0) - PI).abs() < 1e-5;
         let mut h = Hum::new(ArmPose::Empty, ArmPose::Empty);
@@ -1552,16 +1704,14 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         };
         let mut p = Poses {
             map: ["head", "right_arm", "left_arm"]
                 .into_iter()
-                .map(|n| (key(n), [0.0; 9]))
+                .map(|n| (key(n), PoseEntry::new([0.0; 9])))
                 .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         let mut m = player();
         m.extra.set_slot_id(
@@ -1584,12 +1734,9 @@ mod flight_pose_tests {
         let mut p = Poses {
             map: ["head", "right_arm", "left_arm"]
                 .into_iter()
-                .map(|n| (key(n), [0.0; 9]))
+                .map(|n| (key(n), PoseEntry::new([0.0; 9])))
                 .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         setup(&m, &state, &mut p, &HashMap::new());
         assert!((p.get("right_arm")[3] + PI / 10.0).abs() < 1e-6);
@@ -1609,16 +1756,14 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm"]
                 .into_iter()
-                .map(|n| (key(n), [0.0; 9]))
+                .map(|n| (key(n), PoseEntry::new([0.0; 9])))
                 .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         let mut m = player();
         m.extra
@@ -1676,16 +1821,14 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm", "right_leg", "left_leg"]
                 .into_iter()
-                .map(|n| (key(n), [0.0; 9]))
+                .map(|n| (key(n), PoseEntry::new([0.0; 9])))
                 .collect(),
-            dummy: [0.0; 9],
-            skipped: Default::default(),
-            hidden: Default::default(),
-            version: 0,
+            ..Default::default()
         };
         let mut m = player();
         m.extra.set_slot_id(
@@ -1724,6 +1867,7 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         };
         for (anim, pose, expected) in [
             (Anim::Zombie, ArmPose::ThrowTrident, -PI),
@@ -1749,7 +1893,7 @@ mod flight_pose_tests {
                     "right_leg",
                     "left_leg",
                 ] {
-                    p.map.insert(key(part), [0.0; 9]);
+                    p.map.insert(key(part), PoseEntry::new([0.0; 9]));
                 }
                 setup(&m, &state, &mut p, &HashMap::new());
                 let arm = if left { "left_arm" } else { "right_arm" };
@@ -1761,6 +1905,125 @@ mod flight_pose_tests {
                 [ArmPose::Empty; 2]
             );
         }
+    }
+
+    #[test]
+    fn setup_observer_precedes_item_crouch_and_bob_for_each_invocation() {
+        use std::cell::Cell;
+        struct Observer(Cell<usize>);
+        impl HumanoidSetup for Observer {
+            fn before_arm_pose(&self, mob: &Mob, state: &State<'_>, poses: &mut Poses) {
+                self.0.set(self.0.get() + 1);
+                assert_eq!(state.partial, 0.5);
+                if mob.extra.using_item > 0 {
+                    let arm = if mob.main_arm_left() {
+                        "left_arm"
+                    } else {
+                        "right_arm"
+                    };
+                    // This is after walking, before ITEM halves the angle.
+                    assert_eq!(poses.get(arm)[3], 0.0);
+                    poses.xrot(arm, (-20.0_f32).to_radians());
+                }
+            }
+        }
+        let observer = Observer(Cell::new(0));
+        let make = || {
+            let mut poses = Poses::default();
+            for name in [
+                "head",
+                "hat",
+                "body",
+                "right_arm",
+                "left_arm",
+                "right_leg",
+                "left_leg",
+            ] {
+                poses.map.insert(
+                    key(name),
+                    PoseEntry::new([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+                );
+            }
+            poses
+        };
+        for left in [false, true] {
+            for using in [false, true] {
+                for crouching in [false, true] {
+                    let mut mob = player();
+                    mob.extra.set_main_hand(Some("minecraft:stick".into()));
+                    mob.extra.main_hand_left = left;
+                    mob.extra.using_item = i32::from(using);
+                    mob.extra.crouching = crouching;
+                    let state = state(&mob, 0.5);
+                    let observed = state.observed(&mob, Some(&observer));
+                    for _ in 0..2 {
+                        let before = observer.0.get();
+                        let mut poses = make();
+                        setup(&mob, &observed, &mut poses, &HashMap::new());
+                        assert_eq!(observer.0.get(), before + 1);
+                        let arm = if left { "left_arm" } else { "right_arm" };
+                        let input = if using { -20.0 * PI / 180.0 } else { 0.0 };
+                        let bob = (0.5_f32 * 0.067).sin() * 0.05 * if left { -1.0 } else { 1.0 };
+                        let expected =
+                            input * 0.5 - PI / 10.0 + if crouching { 0.4 } else { 0.0 } + bob;
+                        // The engine's Mth sine table quantizes bob; the
+                        // independent analytic sine differs by a few microradians.
+                        assert!(
+                            (poses.get(arm)[3] - expected).abs() < 1.0e-5,
+                            "left={left} using={using} crouching={crouching}: got {}, expected {expected}",
+                            poses.get(arm)[3]
+                        );
+                        if !using {
+                            let mut baseline = make();
+                            setup(&mob, &state, &mut baseline, &HashMap::new());
+                            assert_eq!(poses.map.len(), baseline.map.len());
+                            for (&part, entry) in &baseline.map {
+                                assert_eq!(poses.pose_by_key(part), Some(&entry.pose));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for animation in [
+            Anim::Zombie,
+            Anim::Humanoid { zombie_arms: true },
+            Anim::Enderman,
+            Anim::Piglin,
+        ] {
+            let mut mob = player();
+            Arc::make_mut(&mut mob.kind).anim = animation;
+            let state = state(&mob, 0.5).observed(&mob, Some(&observer));
+            let before = observer.0.get();
+            setup(&mob, &state, &mut make(), &HashMap::new());
+            assert_eq!(observer.0.get(), before + 1, "{animation:?}");
+        }
+    }
+
+    #[test]
+    fn swimming_setup_returns_after_a_listener_writes_the_largest_finite_head_angle() {
+        use std::cell::Cell;
+        struct Listener(Cell<bool>);
+        impl HumanoidSetup for Listener {
+            fn before_arm_pose(&self, _: &Mob, _: &State<'_>, poses: &mut Poses) {
+                self.0.set(true);
+                poses.xrot("head", f32::MAX);
+            }
+        }
+        let listener = Listener(Cell::new(false));
+        let mut mob = player();
+        mob.extra.swim.old = 1.0;
+        mob.extra.swim.amount = 1.0;
+        mob.extra.swim.visually = true;
+        let state = state(&mob, 0.5).observed(&mob, Some(&listener));
+        let mut poses = Poses::default();
+        poses.map.insert(
+            key("head"),
+            PoseEntry::new([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+        );
+        setup(&mob, &state, &mut poses, &HashMap::new());
+        assert!(listener.0.get());
+        assert!(poses.get("head")[3].is_finite());
     }
 
     #[test]
@@ -1788,7 +2051,7 @@ mod flight_pose_tests {
                 "right_leg",
                 "left_leg",
             ] {
-                p.map.insert(key(part), [0.0; 9]);
+                p.map.insert(key(part), PoseEntry::new([0.0; 9]));
             }
             let state = State {
                 pos: 0.0,
@@ -1799,6 +2062,7 @@ mod flight_pose_tests {
                 swing: 0.0,
                 baby: false,
                 partial: 0.0,
+                observer: None,
             };
             setup(&m, &state, &mut p, &HashMap::new());
             for arm in ["right_arm", "left_arm"] {

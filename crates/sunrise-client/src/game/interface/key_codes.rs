@@ -76,9 +76,10 @@ pub(super) fn glfw_modifiers(modifiers: winit::keyboard::ModifiersState) -> u32 
 /// The GLFW mouse button index `button` is, as the native mods' mouse hooks
 /// hand it over: 0 left, 1 right, 2 middle, 3 back, 4 forward. `Other(n)` is
 /// winit's n, the platform's own number (X11 or evdev on Linux), so a button
-/// past 4 is not GLFW's index everywhere. Buttons 0–4 are the numbering
-/// `keybinds::mouse_name` names (`key.mouse.<index + 1>`) and vanilla's
-/// `InputConstants` reads.
+/// past 4 is not GLFW's index everywhere. `keybinds::mouse_name` writes left,
+/// right and middle by name and numbers the rest (`key.mouse.<index + 1>`);
+/// vanilla's `InputConstants` numbers left 1, middle 2, right 3, so the index
+/// plus one is vanilla's number only from the back button on.
 pub(super) fn glfw_button(button: MouseButton) -> i32 {
     match button {
         MouseButton::Left => 0,
@@ -109,6 +110,7 @@ pub(super) fn gameplay_has_keyboard(screen: Screen, title: bool, screen_over: bo
 }
 
 /// A dialog drops held keys and mouse buttons it does not see (#4974).
+#[cfg(test)]
 pub(super) fn drop_held_behind_dialog(
     dialog: bool,
     keys: &mut sunrise_client::held::HeldKeys,

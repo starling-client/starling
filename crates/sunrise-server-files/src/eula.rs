@@ -1,8 +1,8 @@
 //! eula.txt (net.minecraft.server.Eula): the server runs only once the file
 //! says `eula=true`; a file that is missing or unreadable is replaced with
 //! the default one and counts as not agreed.
-use sunrise_java_properties::{Properties, date_string, now_millis};
 use std::path::Path;
+use sunrise_java_properties::{Properties, date_string, now_millis};
 
 /// CommonLinks.EULA.
 pub const EULA_LINK: &str = "https://aka.ms/MinecraftEULA";
@@ -33,8 +33,7 @@ pub fn agreed(path: &Path) -> Result<bool, String> {
     match read {
         Ok(p) => Ok(p
             .get("eula")
-            .unwrap_or("false")
-            .eq_ignore_ascii_case("true")),
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))),
         Err(_) => {
             let _ = std::fs::write(path, default_file(now_millis()));
             Err(format!("Failed to load {}", path.display()))

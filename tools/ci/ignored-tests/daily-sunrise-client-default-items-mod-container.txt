@@ -1,0 +1,2 @@
+# A declared mod container, native Part dispatch and a comparator in a prepared game.
+sunrise-client game::machines::contents_changed_tests::default_items_notifies_for_committed_mod_container_writes lib daily resources

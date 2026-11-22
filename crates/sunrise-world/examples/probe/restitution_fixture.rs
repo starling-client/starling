@@ -1,14 +1,14 @@
 use crate::support::common::f64_bits;
-use sunrise_core::{geometry::Vec3, position::BlockPos};
-use sunrise_world::{
-    movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
-    registry::BlockStateId,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::{geometry::Vec3, position::BlockPos};
+use sunrise_world::{
+    movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
+    registry::BlockStateId,
 };
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())
@@ -78,7 +78,7 @@ impl<W: Write> RestitutionWorld for World<'_, W> {
         self.query("block-suppresses")?;
         Ok(self.f["tag"].as_bool().unwrap())
     }
-    fn block_bounce_restitution(&mut self, _: BlockStateId) -> io::Result<f32> {
+    fn block_bounce_restitution(&mut self, _: BlockStateId, _: BlockPos) -> io::Result<f32> {
         self.query("block-bounce")?;
         Ok(single(&self.f["block"]))
     }
@@ -140,6 +140,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut world,
             RestitutionInput {
                 block: BlockStateId(1),
+                effect_position: BlockPos::new(17, -63, -33),
                 collided_x: f["x"].as_bool().unwrap(),
                 collided_z: f["z"].as_bool().unwrap(),
                 vertical_collision: f["vertical"].as_bool().unwrap(),

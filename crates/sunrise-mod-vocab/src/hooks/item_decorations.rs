@@ -10,11 +10,14 @@ pub trait Hooks {
     /// The NeoForge counterpart is `IItemDecorator.render`; registration through
     /// `RegisterItemDecorationsEvent` is a separate moment.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_item_decorations",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "IItemDecorator.render"
     )]
-    fn item_decorations();
+    fn item_decorations(stack: &ItemStack, x: f32, y: f32, draw: &mut dyn DrawContext);
 }

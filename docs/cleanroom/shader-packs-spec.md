@@ -549,7 +549,7 @@ component-wise on vectors. `[IR:custom_uniforms]`
 | `biome_precipitation` | int | 0 `PPT_NONE`, 1 `PPT_RAIN`, 2 `PPT_SNOW` | `[OF-SP]` |
 | `temperature` | float | biome temperature (`[OF-SP]`: 0..1; `[IR]`: vanilla range −0.7..2.0) | |
 | `rainfall` | float | biome downfall (humidity), 0..1 | |
-| `is_alive is_burning is_child is_glowing is_hurt is_in_lava is_in_water is_invisible is_on_ground is_ridden is_riding is_sneaking is_sprinting is_wet` | bool | state of the player (the camera entity) | `[OF-SP]`; `[IR]` also exposes six of them as uniforms |
+| `is_alive is_burning is_child is_glowing is_hurt is_in_lava is_in_water is_invisible is_on_ground is_ridden is_riding is_sneaking is_sprinting is_wet` | bool | state of the local player, also while the camera is on another entity | `[OF-SP]`; `[IR]` also exposes six of them as uniforms |
 
 - `[OF-SP]` documents the rain/snow rule: precipitation falls where `biome_precipitation != PPT_NONE`, rain if
   `temperature >= 0.15`, otherwise snow.

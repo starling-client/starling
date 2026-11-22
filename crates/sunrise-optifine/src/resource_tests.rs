@@ -1,6 +1,6 @@
 use crate::{blink::Blinks, cem::files, ctm, emissive::Emissive, random_textures::RandomTextures};
-use sunrise_assets::resource_source::ResourceSource;
 use std::{fs, io::Write};
+use sunrise_assets::resource_source::ResourceSource;
 
 #[test]
 fn folder_and_archive_feature_scans_load_the_same_resources_without_unpacking() {

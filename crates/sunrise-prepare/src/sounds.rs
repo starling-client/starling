@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 /// not know is still used, with a line in the log, since every object copied from it is
 /// checked against its own SHA-1.
 fn launcher_assets(
-    lock: &Lock,
     manifest: &Value,
     files: &artifacts::GameFiles,
     cached_index: &Path,
@@ -49,9 +48,9 @@ fn launcher_assets(
     }
     let bytes = fs::read(&index).map_err(|e| format!("{}: {e}", index.display()))?;
     let checksum = crate::hex(&<sha1::Sha1 as sha1::Digest>::digest(&bytes));
-    if checksum != sha1 && !lock.asset_index_accepted(&checksum) {
+    if checksum != sha1 {
         log(&format!(
-            "{} is an asset index Sunrise does not know yet (sha1 {checksum}); Mojang may have \
+            "{} is not the asset index the version file names (sha1 {checksum}); Mojang may have \
              republished it. Using it: every file is still checked against its own SHA-1.",
             index.display()
         ));
@@ -260,13 +259,8 @@ impl Assets {
         let files = artifacts::game_files(minecraft, &lock.version).with(inputs, &lock.version);
         let manifest = artifacts::import_manifest(&lock, &files)?;
         let target = crate::resources_dir(root, &lock.version, output);
-        let (store, index, bytes) = launcher_assets(
-            &lock,
-            &manifest,
-            &files,
-            &target.join("asset-index.json"),
-            log,
-        )?;
+        let (store, index, bytes) =
+            launcher_assets(&manifest, &files, &target.join("asset-index.json"), log)?;
         let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
         let objects = crate::pyjson::loads(text)?;
         let objects = objects
@@ -494,8 +488,10 @@ mod tests {
                 root.join("research-lock.json"),
                 format!(
                     "{{\"minecraft\": {{\"version\": \"9.9\", \"java_major\": 25, \
-                     \"client_sha1\": \"c\", \"server_sha1\": \"s\", \"manifest_sha1\": \"{}\"}}}}",
-                    sha1_hex(manifest.as_bytes())
+                     \"client_sha1\": \"c\", \"server_sha1\": \"s\", \"manifest_sha1\": \"{}\", \
+                     \"libraries_sha256\": \"{}\"}}}}",
+                    sha1_hex(manifest.as_bytes()),
+                    crate::artifacts::libraries_digest(&crate::pyjson::loads(&manifest).unwrap())
                 ),
             )
             .unwrap();
@@ -619,8 +615,8 @@ mod tests {
     }
 
     /// #1076: the launcher holds an index Mojang republished under the same id, so its SHA-1
-    /// is not the one in the version JSON. A known one is used quietly, an unknown one with a
-    /// line in the log; the sounds come through either way.
+    /// is not the one in the version JSON. It is used with a line in the log; the sounds come
+    /// through.
     #[test]
     fn republished_asset_indexes_still_give_sounds() {
         let f = Fixture::new("republished");
@@ -628,39 +624,25 @@ mod tests {
         let republished = format!("{}\n", fs::read_to_string(&index).unwrap());
         fs::write(&index, &republished).unwrap();
         let checksum = sha1_hex(republished.as_bytes());
-        let lock = f.root.join("research-lock.json");
-        let pinned = fs::read_to_string(&lock).unwrap();
         let sound = f
             .root
             .join(".local/sunrise-client/9.9/assets/minecraft/sounds/dig/stone1.ogg");
-        for known in [true, false] {
-            let accepted = if known { checksum.as_str() } else { "0" };
-            fs::write(
-                &lock,
-                pinned.replace(
-                    "\"manifest_sha1\"",
-                    &format!("\"accepted_asset_index_sha1\": [\"{accepted}\"], \"manifest_sha1\""),
-                ),
-            )
-            .unwrap();
-            let _ = fs::remove_file(&sound);
-            let lines = std::cell::RefCell::new(Vec::new());
-            sounds(&f.root, Some(&f.minecraft), &|l| {
-                lines.borrow_mut().push(l.to_string())
-            })
-            .unwrap();
-            assert_eq!(fs::read(&sound).unwrap(), b"OggS stone");
-            let lines = lines.into_inner();
-            assert_eq!(lines.last().unwrap(), "Sound assets ready: 3 files, 0.0 MB");
-            assert_eq!(lines.len(), if known { 1 } else { 2 }, "{lines:?}");
-            if !known {
-                assert!(
-                    lines[0].contains(&format!("does not know yet (sha1 {checksum})")),
-                    "{}",
-                    lines[0]
-                );
-            }
-        }
+        let lines = std::cell::RefCell::new(Vec::new());
+        sounds(&f.root, Some(&f.minecraft), &|l| {
+            lines.borrow_mut().push(l.to_string())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&sound).unwrap(), b"OggS stone");
+        let lines = lines.into_inner();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].contains(&format!(
+                "not the asset index the version file names (sha1 {checksum})"
+            )),
+            "{}",
+            lines[0]
+        );
+        assert_eq!(lines[1], "Sound assets ready: 3 files, 0.0 MB");
     }
 
     #[test]
@@ -842,6 +824,61 @@ mod tests {
         );
         assert!(!target.join("assets/minecraft/sounds.json").exists());
         assert!(!target.join("assets/minecraft/font").exists());
+    }
+
+    /// `extras`: each from the first folder that has it, the data cache dropped, `--only` honoured.
+    #[test]
+    fn extras_come_from_the_first_folder_that_has_them() {
+        let f = Fixture::with_extras(
+            "extras",
+            &PANORAMA,
+            &[("pack.mcmeta", b"{\"language\": {\"fr_fr\": {}}}")],
+        );
+        let target = f.root.join(".local/sunrise-client/9.9");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("sunrise-resources.json"), "{}").unwrap();
+        fs::write(target.join(crate::extras::DATA_FILE), "stale").unwrap();
+        let folders = [f.dir.join("no-store"), f.minecraft.clone()];
+        let inputs = Inputs::default();
+        let only = ["packs".to_owned(), "fonts".to_owned()];
+        let some =
+            crate::extras::add(&f.root, None, Some(&only), &folders, &inputs, &|_| {}).unwrap();
+        assert_eq!(some.added, ["packs", "fonts"]);
+        assert!(some.failed.is_empty());
+        let still: Vec<_> = some.missing.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(still, ["panorama", "languages", "sounds"]);
+        assert!(!target.join(crate::extras::DATA_FILE).exists());
+        let rest = crate::extras::add(&f.root, None, None, &folders, &inputs, &|_| {}).unwrap();
+        assert_eq!(rest.added, ["panorama", "languages", "sounds"]);
+        // The fixture's faces aren't PNGs, so the panorama check still finds them lacking.
+        let still: Vec<_> = rest.missing.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(still, ["panorama"]);
+        let only = ["sounds".to_owned()];
+        let none = crate::extras::add(&f.root, None, Some(&only), &folders[..1], &inputs, &|_| {});
+        assert_eq!(none.unwrap().added, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn extras_say_why_one_could_not_be_added() {
+        let f = Fixture::new("extras-failed");
+        let target = f.root.join(".local/sunrise-client/9.9");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("sunrise-resources.json"), "{}").unwrap();
+        let folders = [f.dir.join("no-store")];
+        let only = ["sounds".to_owned()];
+        let done = crate::extras::add(
+            &f.root,
+            None,
+            Some(&only),
+            &folders,
+            &Inputs::default(),
+            &|_| {},
+        )
+        .unwrap();
+        assert!(done.added.is_empty());
+        assert_eq!(done.failed.len(), 1);
+        assert_eq!(done.failed[0].0, "sounds");
+        assert!(!done.failed[0].1.is_empty());
     }
 
     #[test]

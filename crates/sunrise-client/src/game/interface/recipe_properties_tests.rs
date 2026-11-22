@@ -5,7 +5,7 @@ mod tests {
     use sunrise_protocol::{connection::Pipe, packets::recipes::UpdateRecipes};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn disconnect_discards_properties_before_reconnect() {
         with_game(|game| {
             game.options.execution_role = ExecutionRole::Client;

@@ -1,6 +1,6 @@
-//! The real control hand loop, with identical native and compiled-wasm listeners.
+//! A native listener rewriting the real client prediction hand loop.
 use super::*;
-#[path = "../../../../../sunrise-mod-wasm/tests/fixture/src/predicted_use.rs"]
+#[path = "predicted_use_tests/fixture.rs"]
 mod fixture;
 
 struct Native;
@@ -60,7 +60,7 @@ fn matrix(mods: mod_api::Mods) {
                         game.tick_hit.set(None);
                         game.tick_mob = None;
                         game.mobs.clear();
-                        game.keys.clear();
+                        game.clear_device_keys();
                         game.yaw = 0.0;
                         game.pitch = 0.0;
                         let player_z = if path >= 3 { 0.5 } else { 3.5 };
@@ -68,31 +68,11 @@ fn matrix(mods: mod_api::Mods) {
                             PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, player_z)).unwrap(),
                         );
                         if path >= 3 {
-                            let kind = game
-                                .res
-                                .mob_types()
-                                .get("minecraft:zombie")
-                                .unwrap()
-                                .clone();
-                            game.mobs.push(sunrise_client::mobs::Mob::new(
-                                42,
-                                kind,
-                                Vec3::new(0.5, 64.0, 2.5),
-                                0.0,
-                            ));
+                            game.spawn_entity(42, "minecraft:zombie", [0.5, 64.0, 2.5], [0.0; 3]);
                         }
+                        game.refresh_client_pick(1.0);
                         game.swing = Default::default();
-                        let mut control = mod_api::ModBlockEntity::new(
-                            "wasm_fixture:prediction_control".into(),
-                            Default::default(),
-                        );
-                        control.data = vec![path, answer, i32::from(server_only)];
-                        game.native_block_entity_tick(
-                            &mut mod_api::BlockEntityTickReply::Changed,
-                            [0, 64, 0],
-                            &mut control,
-                        );
-                        assert!(control.data.is_empty());
+                        fixture::begin(path, answer, server_only);
                         let swings = game.swings_started;
                         sunrise_client::interaction_input::use_on_target(
                             &mut super::super::RemoteUseWorld(
@@ -100,11 +80,6 @@ fn matrix(mods: mod_api::Mods) {
                                 mod_api::InteractionAttempt::Press,
                             ),
                             path >= 3,
-                        );
-                        game.native_block_entity_tick(
-                            &mut mod_api::BlockEntityTickReply::Changed,
-                            [0, 64, 0],
-                            &mut control,
                         );
                         let stops = !server_only && (consumes || (path == 1 && answer == 4));
                         let packets = match (path, stops) {
@@ -116,7 +91,8 @@ fn matrix(mods: mod_api::Mods) {
                             (_, false) => [0, 2, 2],
                         };
                         assert_eq!(
-                            control.data, packets,
+                            fixture::finish(),
+                            packets,
                             "path={path} answer={answer} server_only={server_only}"
                         );
                         let placed = path == 1 && !stops;
@@ -153,43 +129,14 @@ fn matrix(mods: mod_api::Mods) {
 fn native_client_prediction_owns_the_hand_loop() {
     crate::game::in_own_process(
         "game::remote::interaction_event_tests::predicted_use_tests::native_client_prediction_owns_the_hand_loop",
-        || matrix(vec![mod_api::ModEntry::new("wasm_fixture", Box::new(Native))].into()),
-    );
-}
-
-#[test]
-#[ignore = "daily"]
-fn wasm_client_prediction_owns_the_hand_loop() {
-    crate::game::in_own_process(
-        "game::remote::interaction_event_tests::predicted_use_tests::wasm_client_prediction_owns_the_hand_loop",
         || {
-            sunrise_guest_stack::run_on_guest_stack(|| {
-                sunrise_mod_wasm::copy_probe::with_load_budget(|| {
-                    use sunrise_mod_package::manifest::Package;
-                    use sunrise_mod_wasm::{WasmPackage, load};
-                    let path =
-                        std::path::PathBuf::from(std::env::var_os("SUNRISE_WASM_FIXTURE").unwrap());
-                    let manifest = Package::read(&path).unwrap().manifest;
-                    let info = mod_api::PackageInfo::new(
-                        manifest.id.clone(),
-                        manifest.version.clone(),
-                        mod_api::PackageKind::Code,
-                        mod_api::Side::Both,
-                        vec![manifest.id.clone()],
-                        vec![],
-                    );
-                    let loaded = load(
-                        &std::fs::read(std::env::var_os("SUNRISE_WASM_STD").unwrap()).unwrap(),
-                        vec![WasmPackage {
-                            manifest,
-                            module: Package::read_wasm(&path).unwrap(),
-                        }],
-                    );
-                    assert!(loaded.refused.is_empty(), "{:?}", loaded.refused);
-                    loaded.initialize(&[info]).unwrap();
-                    matrix(loaded.mods.into());
-                })
-            })
+            matrix(
+                vec![mod_api::ModEntry::new(
+                    "prediction_fixture",
+                    Box::new(Native),
+                )]
+                .into(),
+            )
         },
     );
 }

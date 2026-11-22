@@ -1,0 +1,5 @@
+id = "refused_manifest_bad_rule_url"
+name = "Refused manifest bad rule url"
+version = "1.2.3"
+[incompatible]
+other = { url = "http://example.test/other" }

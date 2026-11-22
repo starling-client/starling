@@ -1,8 +1,8 @@
 //! The real refresh path updates both the active world and worlds parked by dimension.
 use super::{Dim, native_entity_refs::tests::with_game};
+use std::sync::Arc;
 use sunrise_core::LevelKey;
 use sunrise_world::dimension_type::DimensionFacts;
-use std::sync::Arc;
 
 struct RestoreFacts(Vec<(LevelKey, DimensionFacts)>);
 impl Drop for RestoreFacts {
@@ -12,7 +12,7 @@ impl Drop for RestoreFacts {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn infiniburn_refresh_updates_active_and_parked_worlds() {
     with_game(|game| {
         let scratch = tempfile::tempdir().unwrap();

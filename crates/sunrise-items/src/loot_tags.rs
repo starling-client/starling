@@ -2,16 +2,14 @@
 use crate::items::Items;
 
 impl sunrise_world::loot::LootTags for Items {
-    fn members(&self, registry: &str, tag: &str) -> Vec<String> {
-        match registry {
-            "item" => &self.item_tag_order,
-            "block" => &self.block_tag_order,
-            "fluid" => &self.fluid_tag_order,
-            _ => return Vec::new(),
-        }
-        .get(tag)
-        .cloned()
-        .unwrap_or_default()
+    fn members(&self, registry: &str, tag: &str) -> Option<Vec<String>> {
+        let registry = match registry {
+            "item" => crate::items::TagRegistry::Item,
+            "block" => crate::items::TagRegistry::Block,
+            "fluid" => crate::items::TagRegistry::Fluid,
+            _ => return None,
+        };
+        self.tag_members(registry, tag).map(<[_]>::to_vec)
     }
     fn contains(&self, registry: &str, tag: &str, id: &str) -> bool {
         match registry {
@@ -29,8 +27,8 @@ impl sunrise_world::loot::LootTags for Items {
 mod tests {
     use super::*;
     use crate::items::TagRegistry;
-    use sunrise_world::loot::LootTags;
     use std::collections::HashMap;
+    use sunrise_world::loot::LootTags;
 
     #[test]
     fn loot_reads_use_current_registry_and_member_order() {
@@ -44,7 +42,7 @@ mod tests {
                 kind,
                 HashMap::from([("test:tag".into(), vec![member.into()])]),
             );
-            assert_eq!(items.members(registry, "test:tag"), [member]);
+            assert_eq!(items.members(registry, "test:tag").unwrap(), [member]);
             assert!(items.contains(registry, "test:tag", member));
             assert!(!items.contains(registry, "test:missing", member));
         }
@@ -56,11 +54,14 @@ mod tests {
             )]),
         );
         assert_eq!(
-            items.members("item", "test:tag"),
+            items.members("item", "test:tag").unwrap(),
             ["minecraft:potion", "minecraft:stick"]
         );
         items.set_tags(TagRegistry::Item, HashMap::new());
         assert!(!items.contains("item", "test:tag", "minecraft:stick"));
-        assert_eq!(items.members("block", "test:tag"), ["minecraft:stone"]);
+        assert_eq!(
+            items.members("block", "test:tag").unwrap(),
+            ["minecraft:stone"]
+        );
     }
 }

@@ -72,6 +72,7 @@ fn mesh(f: &Fixture, chunk: &Chunk, opaque_ice: bool) -> SectionMesh {
         translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
         hidden_states: &[],
+        part_tables: Default::default(),
     };
     mesher.mesh(&region, 0)
 }
@@ -79,7 +80,7 @@ fn mesh(f: &Fixture, chunk: &Chunk, opaque_ice: bool) -> SectionMesh {
 const BASE: i32 = MIN_Y + 4;
 
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn off_keeps_regular_ice_in_the_translucent_pass() {
     let f = fixture();
     let mut chunk = Chunk::empty(0, 0);
@@ -90,7 +91,7 @@ fn off_keeps_regular_ice_in_the_translucent_pass() {
 }
 
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn on_draws_regular_ice_opaque_in_the_solid_pass() {
     let f = fixture();
     let mut chunk = Chunk::empty(0, 0);
@@ -108,7 +109,7 @@ fn on_draws_regular_ice_opaque_in_the_solid_pass() {
 }
 
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn on_culls_the_face_between_two_ice_blocks() {
     let f = fixture();
     let ice = state(&f, "minecraft:ice");
@@ -122,7 +123,7 @@ fn on_culls_the_face_between_two_ice_blocks() {
 }
 
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn on_leaves_other_translucent_blocks_alone() {
     let f = fixture();
     let mut chunk = Chunk::empty(0, 0);
@@ -137,7 +138,7 @@ fn on_leaves_other_translucent_blocks_alone() {
 }
 
 #[test]
-#[ignore = "requires prepared 26.3 resources (SUNRISE_MESH_TEST_RESOURCES or .local/sunrise-client/26.3)"]
+#[ignore = "daily"]
 fn on_leaves_frosted_ice_translucent() {
     let f = fixture();
     let mut chunk = Chunk::empty(0, 0);

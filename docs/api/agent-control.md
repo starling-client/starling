@@ -23,7 +23,7 @@ serves the same commands as MCP tools. The launcher's MCP server offers them too
    `sunrise-ctl --socket $PWD/ctl.sock launch --world W --creative --wait --resources <prepared files>`.
 2. `sunrise-ctl --socket … state`, `keys`, `turn`, `command`, `screenshot`, `quit`.
 3. For an agent: `sunrise-ctl mcp`, or the launcher's `sunrise-launcher mcp` with `agent-config` to connect a client
-   ([launcher-commands.md](../launcher-commands.md)).
+   ([launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md)).
 
 ## Reference
 

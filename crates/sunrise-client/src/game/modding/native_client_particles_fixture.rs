@@ -1,5 +1,10 @@
 //! Headless proof of the generated Host bridge and the ordinary particle queue.
 use super::{Game, execution_role::ExecutionRole};
+use mod_api::ClientHost;
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 use sunrise_client::{
     Result,
     hud::Rect,
@@ -7,11 +12,6 @@ use sunrise_client::{
     particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleType},
 };
 use sunrise_core::geometry::Vec3;
-use mod_api::ClientHost;
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-};
 
 fn add(game: &mut Game<'_>, options: &ParticleOptions, at: [f64; 3], velocity: [f64; 3]) -> bool {
     use super::api_values::TryIntoApi;
@@ -35,6 +35,8 @@ impl Game<'_> {
     }
 
     pub(super) fn run_native_client_particles_fixture(&mut self, directory: &Path) -> Result<()> {
+        // The fixture stands in for a joined client level, where the mods' calls run in the
+        // World phase; the loading window it starts from is still in Setup.
         let at = [0.0, 100.0, 0.0];
         let smoke = ParticleOptions::simple(ParticleType::Smoke);
         self.particles.requested = Some(Vec::new());

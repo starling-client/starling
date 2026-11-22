@@ -4,12 +4,12 @@
 use crate::entities::ItemEntity;
 use crate::game::Game;
 use crate::items::ItemStack;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::Species;
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::nbt::Tag;
-use std::sync::Arc;
 
 /// The star the wither leaves starts at `age = -6000`, so it is still there at
 /// tick 11999 and discarded at 12000, while an ordinary drop beside it is
@@ -121,7 +121,7 @@ fn a_stars_negative_age_survives_item_nbt() {
         0.0,
     );
     star.age = -6000;
-    let tag = crate::entity_nbt::item_entity_to_nbt(&star, [1, 2, 3, 4], None);
+    let tag = crate::entity_nbt::item_entity_to_nbt(&star, [1, 2, 3, 4], None, &Default::default());
     assert_eq!(tag.get("Age"), Some(&Tag::Short(-6000)));
     let loaded = crate::entity_nbt::item_entity_from_nbt(&tag, 7, 0.0).unwrap();
     assert_eq!(loaded.age, -6000);
@@ -130,7 +130,7 @@ fn a_stars_negative_age_survives_item_nbt() {
 
 /// Stack-only loot edits must not inherit a custom item entity's initial age.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn loot_stack_edits_leave_custom_drop_age_attached() {
     use crate::game::api_values::TryIntoApi;
     use std::sync::Mutex;

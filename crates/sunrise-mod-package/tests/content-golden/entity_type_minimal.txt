@@ -1,0 +1,108 @@
+manifest:
+Manifest {
+    id: "entity_type_minimal",
+    name: "Entity type minimal",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/entity_type_minimal",
+    ),
+    files: [
+        "data/entity_type_minimal/sunrise/entity_type/chalk_pebble.json",
+        "data/entity_type_minimal/sunrise/entity_type/walker.json",
+        "data/entity_type_minimal/sunrise/item/chalk.json",
+    ],
+    blocks: [],
+    items: [
+        Item {
+            id: "entity_type_minimal:chalk",
+            template: "minecraft:stick",
+            max_stack_size: None,
+            rarity: None,
+            components: {},
+            crafting_remainder: None,
+            block: None,
+            arm_pose: None,
+        },
+    ],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [
+        EntityType {
+            id: "entity_type_minimal:chalk_pebble",
+            template: "minecraft:snowball",
+            allowed_in_peaceful: None,
+            shadow_radius: None,
+            shadow_strength: None,
+            item: Some(
+                "entity_type_minimal:chalk",
+            ),
+            damage: 0.0,
+            attributes: {},
+            passenger_attachments: [],
+            sounds: EntitySounds {
+                ambient: None,
+                hurt: None,
+                death: None,
+                step: None,
+            },
+        },
+        EntityType {
+            id: "entity_type_minimal:walker",
+            template: "minecraft:zombie",
+            allowed_in_peaceful: None,
+            shadow_radius: None,
+            shadow_strength: None,
+            item: None,
+            damage: 0.0,
+            attributes: {},
+            passenger_attachments: [],
+            sounds: EntitySounds {
+                ambient: None,
+                hurt: None,
+                death: None,
+                step: None,
+            },
+        },
+    ],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "entity_type_minimal",
+    ],
+}

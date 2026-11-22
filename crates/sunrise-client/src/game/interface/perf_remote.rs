@@ -2,16 +2,16 @@
 use super::Game;
 use super::integrated::capture::{Live, Target};
 use super::profile_capture::{reports_dir, shown};
-use sunrise_client::perf_net::{
-    CHANNEL, Held, OPERATOR_LEVEL, Outgoing, Refusal, Reply, Request, Verdict, Wanted, judge,
-};
-use sunrise_perf_format::v1::{StopReason, Trigger};
-use sunrise_protocol::packets::{configuration::CustomPayload, play};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+use sunrise_client::perf_net::{
+    CHANNEL, Held, OPERATOR_LEVEL, Outgoing, Refusal, Reply, Request, Verdict, Wanted, judge,
+};
+use sunrise_perf_format::v1::{StopReason, Trigger};
+use sunrise_protocol::packets::{configuration::CustomPayload, play};
 
 /// The guest whose capture runs on this server.
 pub(in crate::game) struct Requester {

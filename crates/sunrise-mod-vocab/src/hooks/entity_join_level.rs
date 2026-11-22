@@ -3,19 +3,37 @@
 
 pub trait Hooks {
     /// Before a player's tick on both logical sides (NeoForge 26.3
-    /// `PlayerTickEvent.Pre`). Non-cancellable, including death-screen ticks.
+    /// `PlayerTickEvent.Pre`). Non-cancellable. On the client, fires through death tick 20,
+    /// but not after the local player is removed.
     /// `player` identifies the ticked player; on the server their state is
     /// acting. Fires before sleep, cooldowns and body work. Players still tick
     /// under `/tick freeze`, but not while the level is paused.
-    #[hook(side = "both", contract = "listen", neoforge = "PlayerTickEvent.Pre")]
+    /// On the server, neither player tick hook fires for a spectator whose
+    /// bounds touch an unloaded chunk; that player's body tick is skipped.
+    #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_tick_pre",
+        dispatch = "api_carrier",
+        side = "both",
+        contract = "listen",
+        neoforge = "PlayerTickEvent.Pre"
+    )]
     fn player_tick_pre(player: PlayerRef);
     /// After a player's tick on both logical sides (NeoForge 26.3
-    /// `PlayerTickEvent.Post`). Non-cancellable, including death-screen ticks.
+    /// `PlayerTickEvent.Post`). Non-cancellable. On the client, fires through death tick 20,
+    /// but not after the local player is removed.
     /// `player` is the same identity as in `player_tick_pre`; on the server
     /// their state is acting. Runs after body work and server-side item,
     /// arrow and XP pickups, so reads see the completed tick. Client reads
     /// see only the state available to that client, not future server updates.
-    #[hook(side = "both", contract = "listen", neoforge = "PlayerTickEvent.Post")]
+    /// On the server, neither player tick hook fires for a spectator whose
+    /// bounds touch an unloaded chunk; that player's body tick is skipped.
+    #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_tick_post",
+        dispatch = "api_carrier",
+        side = "both",
+        contract = "listen",
+        neoforge = "PlayerTickEvent.Post"
+    )]
     fn player_tick_post(player: PlayerRef);
     /// An entity joins the server level `dimension` (NeoForge's
     /// `EntityJoinLevelEvent`): vanilla's `PersistentEntitySectionManager.addEntity`.
@@ -27,7 +45,8 @@ pub trait Hooks {
     /// back out as if never added, and a `/summon` of it fails. Tells every
     /// kind in the game's entity lists (items, orbs, mobs, boats, minecarts,
     /// armor stands, primed TNT, falling blocks, projectiles, rockets,
-    /// tridents, end crystals, the dragon, cushions, paintings, item frames),
+    /// tridents, end crystals, the dragon, cushions, paintings, item frames,
+    /// block/item/text displays, markers and interactions),
     /// once each, in the order they were created; check `kind`. A drop, an
     /// orb, a mob, a `/summon` and a chunk's entities are told at once, any
     /// other spawn between the tick's phases (it is checked after the blocks,
@@ -43,14 +62,27 @@ pub trait Hooks {
     /// is gone. A join cancelled at the commit leaves the spawn's handle
     /// stale. Joins at one commit come in the order the entities were added,
     /// before the removals the transaction asked for take effect.
-    /// Not told: the entities Sunrise keeps without
-    /// simulating (displays, markers, interactions). Server-side.
+    /// Live fallback-store entities also notify: displays, markers, interactions,
+    /// and summoned or chunk-restored eyes of ender and explicit leash knots.
+    /// Gameplay-thrown eyes and naturally tied leash knots live in separate lists
+    /// and do not notify yet. `loaded_from_disk` is set when a chunk restores an
+    /// entity. Saved data kept for a missing mod is not an entity in the level
+    /// and does not notify. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_entity_join_level",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
         neoforge = "EntityJoinLevelEvent",
-        version = 2
+        version = 3
     )]
-    fn entity_join_level();
+    fn entity_join_level(
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        pos: [f64; 3],
+        loaded_from_disk: bool,
+        canceled: &mut bool,
+    );
 }

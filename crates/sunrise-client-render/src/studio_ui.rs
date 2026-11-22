@@ -242,8 +242,8 @@ impl StudioUi {
         let panel_y = 42.0;
         let panel_h = (h - 76.0).max(100.0);
 
-        // Glass panel backdrop for recordings list
-        style::panel(batch, atlas, [panel_x, panel_y, panel_w, panel_h]);
+        // The recordings list's panel, in a world or over the title screen as the backdrop is
+        style::panel(batch, atlas, [panel_x, panel_y, panel_w, panel_h], in_world);
         [panel_x, panel_y, panel_w, panel_h]
     }
     pub(crate) fn draw_contents(
@@ -316,7 +316,7 @@ impl StudioUi {
                 } else if is_hovered {
                     style::fill(batch, atlas, rect, style::hover());
                 } else {
-                    style::well(batch, atlas, rect);
+                    style::well(batch, atlas, rect, false);
                 }
 
                 let border_color = if is_selected {
@@ -378,33 +378,27 @@ impl StudioUi {
         let btn_y = h - 28.0;
         let btn_h = 20.0;
 
+        let [f_btn, r_btn, e_btn, d_btn] = footer(panel_x, panel_w, btn_y, btn_h);
         // Button 1: Open Folder (Left)
-        let f_btn = [panel_x, btn_y, 130.0, btn_h];
         let f_hover = ui::hovered(cursor, f_btn[0], f_btn[1], f_btn[2], f_btn[3]);
         let label = Text::tr("sunrise.studio.open_folder", &[]);
         crate::widgets::record(&label.plain(), f_btn, true);
         style::button(batch, atlas, f_btn, &label, (f_hover, true, false));
 
         // Button 2: Refresh (Center-Left)
-        let r_btn = [panel_x + 136.0, btn_y, 65.0, btn_h];
         let r_hover = ui::hovered(cursor, r_btn[0], r_btn[1], r_btn[2], r_btn[3]);
         let label = Text::tr("sunrise.studio.refresh", &[]);
         crate::widgets::record(&label.plain(), r_btn, true);
         style::button(batch, atlas, r_btn, &label, (r_hover, true, false));
 
-        // Button 3: Open the selected recording for playback.
-        let e_btn = [panel_x + panel_w - 180.0, btn_y, 110.0, btn_h];
+        // Button 3: Open the selected recording for playback, while there is one.
+        let can_open = !self.recordings.is_empty();
         let e_hover = ui::hovered(cursor, e_btn[0], e_btn[1], e_btn[2], e_btn[3]);
-        style::button(
-            batch,
-            atlas,
-            e_btn,
-            &Text::tr("sunrise.studio.open_replay", &[]),
-            (e_hover, true, false),
-        );
+        let label = Text::tr("sunrise.studio.open_replay", &[]);
+        crate::widgets::record(&label.plain(), e_btn, can_open);
+        style::button(batch, atlas, e_btn, &label, (e_hover, can_open, false));
 
         // Button 3: Done / Back (Right)
-        let d_btn = [panel_x + panel_w - 64.0, btn_y, 64.0, btn_h];
         let d_hover = ui::hovered(cursor, d_btn[0], d_btn[1], d_btn[2], d_btn[3]);
         let label = Text::tr("gui.done", &[]);
         crate::widgets::record(&label.plain(), d_btn, true);
@@ -422,21 +416,19 @@ impl StudioUi {
         let btn_y = h - 28.0;
         let btn_h = 20.0;
 
+        let [f_btn, r_btn, e_btn, d_btn] = footer(panel_x, panel_w, btn_y, btn_h);
         // Button 1: Open Folder
-        let f_btn = [panel_x, btn_y, 130.0, btn_h];
         if ui::hovered(cursor, f_btn[0], f_btn[1], f_btn[2], f_btn[3]) {
             return StudioAction::OpenFolder;
         }
 
         // Button 2: Refresh
-        let r_btn = [panel_x + 136.0, btn_y, 65.0, btn_h];
         if ui::hovered(cursor, r_btn[0], r_btn[1], r_btn[2], r_btn[3]) {
             self.refresh();
             return StudioAction::Refresh;
         }
 
         // Button 3: Open Replay
-        let e_btn = [panel_x + panel_w - 180.0, btn_y, 110.0, btn_h];
         if ui::hovered(cursor, e_btn[0], e_btn[1], e_btn[2], e_btn[3]) {
             if let Some(idx) = self.selected
                 && let Some(item) = self.recordings.get(idx)
@@ -449,7 +441,6 @@ impl StudioUi {
         }
 
         // Button 4: Done
-        let d_btn = [panel_x + panel_w - 64.0, btn_y, 64.0, btn_h];
         if ui::hovered(cursor, d_btn[0], d_btn[1], d_btn[2], d_btn[3]) {
             return StudioAction::Back;
         }
@@ -483,6 +474,13 @@ impl StudioUi {
         // A notch is a row, as a focus step needs (`gamepad::list_step`).
         self.scroll = (self.scroll - amount * ROW_STEP).max(0.0);
     }
+}
+
+/// The footer's Open Folder, Refresh, Open Replay and Done: equal, side by side, never overlapping.
+fn footer(panel_x: f32, panel_w: f32, y: f32, h: f32) -> [[f32; 4]; 4] {
+    const GAP: f32 = 4.0;
+    let w = ((panel_w - 3.0 * GAP) / 4.0).floor();
+    std::array::from_fn(|i| [panel_x + i as f32 * (w + GAP), y, w, h])
 }
 
 #[cfg(test)]

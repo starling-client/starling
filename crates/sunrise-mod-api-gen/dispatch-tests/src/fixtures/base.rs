@@ -10,7 +10,7 @@ fn registration_context_reaches_collectors_in_order_without_a_game_host() {
             event: &mut ComponentTypesEvent<'_>,
         ) {
             assert_eq!(context.0, "bootstrap");
-            event.types.push(self.0.into());
+            event.register(self.0.into());
         }
     }
     install(
@@ -105,34 +105,6 @@ fn empty_dispatch_checks_before_event_construction() {
 }
 
 #[test]
-fn command_dispatch_forwards_typed_input_and_source() {
-    struct Observer(Arc<Mutex<Vec<i32>>>);
-    #[mod_api::__subscriptions]
-    impl Hooks for Observer {
-        fn run_mod_command(
-            &self,
-            _: &mut dyn ServerHost,
-            event: &mut RunModCommandEvent<'_>,
-        ) -> Flow {
-            self.0
-                .lock()
-                .unwrap()
-                .push(event.command.amount * event.source.sign);
-            Flow::Cancel
-        }
-    }
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    install(vec![ModEntry::new("commands", Box::new(Observer(calls.clone())))].into());
-    let command = CommandInvocation { amount: 37 };
-    for sign in [1, -1] {
-        let mut ran = false;
-        dispatch_run_mod_command(&mut TestHost, &CommandSource { sign }, &command, &mut ran);
-        assert!(ran);
-    }
-    assert_eq!(*calls.lock().unwrap(), vec![37, -37]);
-}
-
-#[test]
 fn advancement_progress_reports_grant_and_revoke_identity() {
     struct Observer(Arc<Mutex<Vec<ProgressType>>>);
     #[mod_api::__subscriptions]
@@ -186,20 +158,50 @@ fn advancement_progress_reports_grant_and_revoke_identity() {
 fn menu_button_mutates_entity_and_cursor_once() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     install_parts(Parts {
-        block_entities: vec![part(1, &calls)],
+        menus: vec![part(1, &calls)],
         ..Parts::default()
     });
     let context = generated::mod_api::item::menu::MenuButtonContext {
         player: 123,
         player_entity_id: 42,
-        pos: [1, 2, 3],
+        pos: Some([1, 2, 3]),
         id: 9,
     };
     let mut entity = ModBlockEntity::new("machine");
     let mut carried = None;
-    dispatch_menu_button(&mut TestHost, &context, &mut entity, &mut carried);
+    dispatch_menu_button(
+        "test:menu",
+        None,
+        &context,
+        generated::mod_api::BlockEntityScope(Some(&mut entity)),
+        &mut carried,
+    );
     assert_eq!(entity.id(), "machine");
     assert_eq!(entity.data, [9]);
+    assert_eq!(carried.unwrap().item.as_ref(), "bucket");
+}
+
+#[test]
+fn menu_button_reaches_a_blockless_menu() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    install_parts(Parts {
+        menus: vec![part(1, &calls)],
+        ..Parts::default()
+    });
+    let context = generated::mod_api::item::menu::MenuButtonContext {
+        player: 123,
+        player_entity_id: 42,
+        pos: None,
+        id: 9,
+    };
+    let mut carried = None;
+    dispatch_menu_button(
+        "test:menu",
+        None,
+        &context,
+        generated::mod_api::BlockEntityScope(None),
+        &mut carried,
+    );
     assert_eq!(carried.unwrap().item.as_ref(), "bucket");
 }
 
@@ -210,7 +212,10 @@ fn general_entity_tick_tells_each_part_of_the_row_in_order() {
         entities: vec![part(1, &calls), part(2, &calls)],
         ..Parts::default()
     });
-    dispatch_general_entity_tick(&mut TestHost, "mymod:robot", generated::mod_api::EntityRef);
+    dispatch_general_entity_tick(calls::GeneralEntityTickCall {
+        kind: "mymod:robot",
+        subject: generated::mod_api::EntityServerScope(std::marker::PhantomData),
+    });
     assert_eq!(*calls.lock().unwrap(), [1, 2]);
 }
 
@@ -218,7 +223,10 @@ fn general_entity_tick_tells_each_part_of_the_row_in_order() {
 fn general_entity_tick_without_parts_names_no_table() {
     let calls: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
     install_parts(Parts::default());
-    dispatch_general_entity_tick(&mut TestHost, "mymod:robot", generated::mod_api::EntityRef);
+    dispatch_general_entity_tick(calls::GeneralEntityTickCall {
+        kind: "mymod:robot",
+        subject: generated::mod_api::EntityServerScope(std::marker::PhantomData),
+    });
     assert!(calls.lock().unwrap().is_empty());
 }
 
@@ -257,7 +265,7 @@ fn slot_rules_mutate_and_item_tick_can_cancel() {
         menus: vec![part(1, &calls)],
         ..Parts::default()
     });
-    let (mut may_place, mut max_stack) = (true, 64);
+    let (mut may_place, mut may_pickup, mut max_stack) = (true, true, 64);
     dispatch_menu_slot_rules(
         &TestHost,
         calls::MenuSlotRulesCall {
@@ -265,16 +273,18 @@ fn slot_rules_mutate_and_item_tick_can_cancel() {
             slot: 0,
             container: MenuContainer::Grid,
             stack: &ItemStack::default(),
-            context: &MenuSlotContext {
-                player: Some(7),
-                pos: Some([1, 2, 3]),
-                slots: vec![vec![None], vec![None, Some(ItemStack::default())]],
-            },
+            context: &MenuSlotContext::new(Some(7), Some([1, 2, 3]), &|container, index| {
+                (container == MenuContainer::Grid && index == 1).then(|| ItemStack {
+                    item: "planks".into(),
+                    count: 4,
+                })
+            }),
             may_place: &mut may_place,
+            may_pickup: &mut may_pickup,
             max_stack: &mut max_stack,
         },
     );
-    assert_eq!((may_place, max_stack), (false, 1));
+    assert_eq!((may_place, may_pickup, max_stack), (false, true, 1));
     let (mut duration, mut canceled) = (10, false);
     dispatch_living_entity_use_item_tick(
         HostSide::Server(&mut TestHost),
@@ -360,7 +370,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
         }
         fn state_for_placement(
             &self,
-            _: &dyn LevelHost,
+            _: LevelSide<'_>,
             _: &mut StateForPlacementEvent<'_>,
         ) -> Option<Option<BlockState>> {
             self.0.lock().unwrap().push(self.1);
@@ -396,7 +406,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
         BlockState::new(BlockKey::Test, u16::MAX),
     ] {
         dispatch_state_for_placement(
-            &Level,
+            LevelSide::Server(&Level),
             LevelDimension,
             state,
             &PlacementContext,
@@ -412,7 +422,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
         assert!(calls.lock().unwrap().is_empty());
     }
     dispatch_state_for_placement(
-        &Level,
+        LevelSide::Server(&Level),
         LevelDimension,
         BlockState::new(BlockKey::Test, 0),
         &PlacementContext,
@@ -427,7 +437,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
     assert_eq!(answer, Some(None));
     assert_eq!(*calls.lock().unwrap(), vec![1]);
     dispatch_state_for_placement(
-        &Level,
+        LevelSide::Server(&Level),
         LevelDimension,
         BlockState::new(BlockKey::Test, 0),
         &PlacementContext,
@@ -449,10 +459,14 @@ fn incoming_damage_carries_the_attack_data() {
     impl Hooks for Backstab {
         fn living_incoming_damage(
             &self,
-            _: &mut dyn LevelRandomHost,
+            _: &mut dyn HitHost,
             event: &mut LivingIncomingDamageEvent<'_>,
         ) -> Flow {
             assert_eq!(event.source.damage_type, "minecraft:player_attack");
+            assert_eq!(event.causing_weapon.unwrap().item.as_ref(), "test:sword");
+            if let Some(weapon) = event.weapon {
+                assert_eq!(weapon.item.as_ref(), "test:crossbow");
+            }
             let (from, at, look) = (
                 event.source.position.unwrap(),
                 event.victim.position,
@@ -462,7 +476,7 @@ fn incoming_damage_carries_the_attack_data() {
                 .map(|axis| (from[axis] - at[axis]) * look[axis])
                 .sum::<f64>();
             if behind < 0.0 && event.weapon.is_some() {
-                event.container.0 *= 3.0;
+                *event.container.0 *= 3.0;
             }
             Flow::Continue
         }
@@ -470,7 +484,14 @@ fn incoming_damage_carries_the_attack_data() {
     let mods: Vec<ModEntry> = vec![ModEntry::new("backstab-9", Box::new(Backstab))];
     let mods: Arc<[ModEntry]> = mods.into();
     install(mods.clone());
-    let held = ItemStack::default();
+    let held = ItemStack {
+        item: "test:crossbow".into(),
+        count: 1,
+    };
+    let causing = ItemStack {
+        item: "test:sword".into(),
+        count: 1,
+    };
     for (source_z, weapon, expected) in [
         (-1.0, Some(&held), 12.0),
         (1.0, Some(&held), 4.0),
@@ -484,7 +505,7 @@ fn incoming_damage_carries_the_attack_data() {
             position: [0.0; 3],
             view: [0.0, 0.0, 1.0],
         };
-        let (mut container, mut canceled) = (DamageContainer(4.0), false);
+        let (mut amount, mut canceled) = (4.0, false);
         dispatch_living_incoming_damage(
             &mut TestLevel,
             calls::LivingIncomingDamageCall {
@@ -493,11 +514,12 @@ fn incoming_damage_carries_the_attack_data() {
                 source: &source,
                 victim: &victim,
                 weapon,
-                container: &mut container,
+                causing_weapon: Some(&causing),
+                container: DamageContainer(&mut amount),
                 canceled: &mut canceled,
             },
         );
-        assert_eq!((container.0, canceled), (expected, false));
+        assert_eq!((amount, canceled), (expected, false));
     }
 }
 
@@ -557,6 +579,8 @@ fn dispatch_contracts() {
             );
             assert_eq!(event.source.damage_type, "minecraft:player_attack");
             assert!(event.attacker_main.is_none() && event.attacker_off.is_none());
+            assert_eq!(event.kill_credit, 19);
+            assert!(event.kill_credit_main.is_none());
             assert_eq!(event.entry, KnockbackEntry::Full);
             assert_eq!(event.strength, 0.4);
             event.strength *= 2.0;
@@ -581,6 +605,8 @@ fn dispatch_contracts() {
             attacker: 7,
             attacker_main: None,
             attacker_off: None,
+            kill_credit: 19,
+            kill_credit_main: None,
             entry: KnockbackEntry::Full,
             strength: &mut strength,
             x: &mut x,
@@ -594,7 +620,7 @@ fn dispatch_contracts() {
     let mods: Vec<ModEntry> = (1..=2)
         .map(|id| {
             ModEntry::new(
-                "mod-11",
+                if id == 1 { "effect-owner" } else { "other-mod" },
                 Box::new(Mod {
                     id,
                     calls: calls.clone(),
@@ -626,13 +652,13 @@ fn dispatch_contracts() {
         ..Parts::default()
     });
     let mut lines = Vec::new();
-    dispatch_tooltip(&host, &ItemStack::default(), &mut lines);
+    dispatch_tooltip(
+        &host,
+        &ItemStack::default(),
+        &mod_api::mod_api::TooltipAppendContext,
+        &mut lines,
+    );
     assert_eq!(lines.iter().map(|line| line.1).collect::<Vec<_>>(), [1, 2]);
-    let mut apply = false;
-    calls.lock().unwrap().clear();
-    dispatch_should_apply_effect_tick_this_tick(&host, EffectKey(7), 19, 2, &mut apply);
-    assert!(!apply);
-    assert_eq!(*calls.lock().unwrap(), [1, 2]);
     let source = HurtSource {
         damage_type: "damage",
         position: None,
@@ -641,7 +667,7 @@ fn dispatch_contracts() {
         position: [0.0; 3],
         view: [0.0; 3],
     };
-    let mut container = DamageContainer(1.0);
+    let mut amount = 1.0;
     let mut canceled = false;
     dispatch_living_incoming_damage(
         &mut TestLevel,
@@ -651,12 +677,13 @@ fn dispatch_contracts() {
             source: &source,
             victim: &victim,
             weapon: None,
-            container: &mut container,
+            causing_weapon: None,
+            container: DamageContainer(&mut amount),
             canceled: &mut canceled,
         },
     );
     // Each mod sees the one before: (1 × 2 + 1) × 2 + 2, kept though mod 2 cancels.
-    assert_eq!(container.0, 8.0);
+    assert_eq!(amount, 8.0);
     assert!(canceled);
     let chained: Vec<ModEntry> = [1, 3]
         .map(|id| {
@@ -671,7 +698,7 @@ fn dispatch_contracts() {
         .into();
     let chained: Arc<[ModEntry]> = chained.into();
     install(chained.clone());
-    let mut container = DamageContainer(1.0);
+    let mut amount = 1.0;
     let mut canceled = false;
     dispatch_living_incoming_damage(
         &mut TestLevel,
@@ -681,11 +708,12 @@ fn dispatch_contracts() {
             source: &source,
             victim: &victim,
             weapon: None,
-            container: &mut container,
+            causing_weapon: None,
+            container: DamageContainer(&mut amount),
             canceled: &mut canceled,
         },
     );
-    assert_eq!(container.0, 9.0);
+    assert_eq!(amount, 9.0);
     assert!(!canceled);
     install(mods.clone());
     calls.lock().unwrap().clear();
@@ -754,9 +782,7 @@ mod stubs {
     pub(super) struct MusicLayer;
     pub(super) struct BlockRim;
     pub(super) struct ColoredLight;
-    pub(super) struct Minimap;
     pub(super) struct PanelEvent;
-    pub(super) struct Screen;
     pub(super) struct ModContainer;
     pub(super) struct MerchantOffer;
     pub(super) struct ModFluidTanks;
@@ -765,18 +791,12 @@ mod stubs {
     pub(super) struct MapDecoration;
     pub(super) struct MapInfo<'a>(pub &'a ());
     pub(super) struct PlayerRender<'a>(pub &'a ());
-    pub(super) struct PosedParts;
-    pub(super) struct HiddenParts;
+    pub(super) trait FrameModel {}
+    pub(super) trait FrameModelEdit: FrameModel {}
     pub(super) struct Command;
     pub(super) struct LifecycleContext;
     pub(super) struct Load(pub &'static str);
     pub(super) struct ServerPlayer;
-    pub(super) struct CommandSource {
-        pub(super) sign: i32,
-    }
-    pub(super) struct CommandInvocation {
-        pub(super) amount: i32,
-    }
     #[derive(Clone, Copy)]
     pub(super) struct ServerTickPhase;
     #[derive(Clone, Copy)]

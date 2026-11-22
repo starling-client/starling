@@ -30,7 +30,7 @@ exactly:
   brand (Sunrise's server says "sunrise", vanilla's "vanilla"), features,
   known packs, every registry, tags);
 - the play packets up to the first chunk batch, in order, with entity ids,
-  keep-alive ids and times and the anticheat's pings left out (the recipe property sets and
+  keep-alive ids and times left out (the recipe property sets and
   advancements, which vanilla keeps in hash maps, sorted); the command tree
   node by node; the chunks sent and their bytes; the replies to the chat
   message, /list and the failing commands, as text components;
@@ -96,6 +96,9 @@ PROPERTIES = {
     'motd': '\\u00a7aSunrise \\u00a7rparity \\u00e9t\\u00e9',
     'pause-when-empty-seconds': '-1',
 }
+# The client requests distance 2; ChunkTrackingView reaches three chunks from
+# the centre. Keep the existing five-chunk fixture radius for its fluid buffer.
+INITIAL_VIEW_RING = 80
 
 
 def icon_png():
@@ -125,12 +128,12 @@ def write_server_dir(directory, port, world=None):
 class Server:
     """A server process with its console on stdin and its log collected."""
 
-    def __init__(self, command, directory, log_name):
+    def __init__(self, command, directory, log_name, *, env=None):
         self.log_path = directory.parent / f'{log_name}.log'
         self.log = self.log_path.open('w', encoding='utf-8')
         self.lines = []
         self.scratch = tempfile.TemporaryDirectory(prefix='hz-server-')
-        env = game_environment(os.environ, self.scratch.name)
+        env = game_environment(os.environ if env is None else env, self.scratch.name)
         self.process = subprocess.Popen(list(map(str, command)), cwd=directory, env=env, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                         encoding='utf-8', errors='replace')
@@ -143,11 +146,11 @@ class Server:
             self.log.write(line)
             self.log.flush()
 
-    def wait_for(self, pattern, timeout=300):
+    def wait_for(self, pattern, timeout=300, *, after=0):
         deadline = time.time() + timeout
         regex = re.compile(pattern)
         while time.time() < deadline:
-            if any(regex.search(l) for l in self.lines):
+            if any(regex.search(l) for l in self.lines[after:]):
                 return
             if self.process.poll() is not None:
                 time.sleep(0.5)
@@ -177,7 +180,7 @@ def settle(server, ticks=600, timeout=600):
     """Waits until every force-loaded chunk is loaded, then for `ticks` game
     ticks, so their fluids have finished flowing however slow the machine."""
     deadline = time.time() + timeout
-    offsets = range(-80, 81, 16)
+    offsets = range(-INITIAL_VIEW_RING, INITIAL_VIEW_RING + 1, 16)
     for poll in range(1_000_000):
         start = len(server.lines)
         for dx in offsets:
@@ -240,7 +243,6 @@ def legacy_ping(port):
 
 
 CONSOLE_LINE = re.compile(r'^\[\d\d:\d\d:\d\d\] \[([^\]]+)\]: (.*)$')
-PLAY_PING = re.compile(r'play-\S* minecraft:ping\b')
 KEPT = re.compile(r'Tester|\[Server\]|\[Not Secure\]|There are|Stopping|Saving|ThreadedAnvilChunkStorage|All dimensions|Unknown or incomplete')
 
 
@@ -322,6 +324,14 @@ def forced_chunk_barrier(server, label):
     server.console('forceload remove 20000 20000')
 
 
+def force_initial_view(server):
+    # Keep one more ring at FULL so the initial-view edges have published light too.
+    radius = INITIAL_VIEW_RING
+    start = len(server.lines)
+    server.console(f'forceload add ~-{radius} ~-{radius} ~{radius} ~{radius}')
+    server.wait_for(r'chunks in the Overworld are now force loaded|forceloaded|force loaded', timeout=120, after=start)
+
+
 def run_side(label, command, directory, client):
     server = Server(command, directory, label)
     try:
@@ -337,6 +347,7 @@ def run_side(label, command, directory, client):
         # each run, vanilla sends a different set of them already flowed. Frozen until the client
         # has its chunks, both servers send the world as saved; blocks tick again from the chat on.
         server.console('tick freeze')
+        force_initial_view(server)
         port = int(PROPERTIES_PORTS[label])
         legacy = legacy_ping(port)
         # The client asks to be made an operator once it has traded, runs /kill and respawns.
@@ -373,9 +384,6 @@ def run_side(label, command, directory, client):
     finally:
         server.stop()
     transcript = (directory.parent / f'{label}-client.txt').read_text(encoding='utf-8').splitlines()
-    # Sunrise's anticheat, on by default, ends each server tick with a play ping for its movement
-    # prediction (docs/anticheat.md); vanilla's server sends none, and a client only answers them.
-    transcript = [l for l in transcript if not PLAY_PING.match(l)]
     return (['legacy-ping ' + legacy] + transcript + ['console ' + l for l in console_lines(server.lines)]
             + ['file ' + l for l in server_files(directory)])
 
@@ -471,8 +479,7 @@ def main():
         # send the world as it was saved.
         server.console('gamerule random_tick_speed 0')
         server.wait_for(r'random_tick_speed', timeout=30)
-        server.console('forceload add ~-80 ~-80 ~80 ~80')
-        server.wait_for(r'chunks in the Overworld are now force loaded|forceloaded|force loaded', timeout=60)
+        force_initial_view(server)
         settle(server)
         server.console('forceload remove all')
         server.console('save-all flush')
@@ -498,6 +505,10 @@ def main():
         write_server_dir(directory, PROPERTIES_PORTS[label], world)
         results[label] = run_side(label, command, directory, client)
         (build / f'{label}.txt').write_text('\n'.join(results[label]) + '\n', encoding='utf-8')
+    for label, lines in results.items():
+        errors = [line for line in lines if line.startswith('error')]
+        if errors:
+            raise AssertionError(f'{label} protocol client failed:\n' + '\n'.join(errors))
     client_checks = sunrise_client_joins(vanilla_server, binary, world, build, results['vanilla'])
     vanilla, sunrise = results['vanilla'], results['sunrise']
     # The one intended difference: MinecraftServer.getServerModName is "vanilla" there, and Sunrise's server names

@@ -1,12 +1,11 @@
-// game-module-visibility: pub(crate)
 //! The engine side of `rotate`: the callback every template placement turns its states through,
 //! asking the parts of each state's block on the worldgen workers and on the server thread. It
 //! reads what the server published (`native_worldgen_parts`), never a game thread's tables.
 use super::api_values::block_state::Index;
 use super::native_worldgen_parts;
+use mod_api::{BlockState, HookId, StructureRotation};
 use sunrise_world::registry::BlockStateId as EngineState;
 use sunrise_world::worldgen::structure::Rotation;
-use mod_api::{BlockState, HookId, StructureRotation};
 
 /// The engine's `rotate` callback: the state the parts of `state`'s block place at `pos` for
 /// `state` turned by `rotation`, starting from the game's `table`. Nothing is read or converted
@@ -72,12 +71,12 @@ fn turned(index: &Index, state: BlockState, answer: BlockState) -> Option<Engine
 mod tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
-    use sunrise_world::registry::BlockRegistry;
-    use sunrise_world::worldgen::structure::Mirror;
     use mod_api::{BlockPart, Hooks, ModEntry, Mods, RotateEvent, WorldgenHost};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex, PoisonError};
+    use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
+    use sunrise_world::registry::BlockRegistry;
+    use sunrise_world::worldgen::structure::Mirror;
 
     /// The states the furnace's part was asked with.
     static ASKED: Mutex<Vec<BlockState>> = Mutex::new(Vec::new());
@@ -137,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_part_turns_its_block_as_a_template_places_it() {
         let _publishing = native_worldgen_parts::PUBLISHING
             .lock()

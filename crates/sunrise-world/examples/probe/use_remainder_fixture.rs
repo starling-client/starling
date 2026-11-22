@@ -1,14 +1,14 @@
-use sunrise_world::{
-    component_patch::{Patch, Prototype},
-    item_stack_refs::{ItemStacks, StackRef},
-    item_stack_storage::ItemStackData,
-    item_template::{self, ItemTemplate, ValidationRules},
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_world::{
+    component_patch::{Patch, Prototype},
+    item_stack_refs::{ItemStacks, StackRef},
+    item_stack_storage::ItemStackData,
+    item_template::{self, ItemTemplate, ValidationRules},
 };
 type Stack = StackRef<u8, usize, i32>;
 type Template = ItemTemplate<u8, usize, i32>;

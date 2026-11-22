@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Menampilkan 'Playing Sunrise' di profil Discord Anda saat Discord berjalan: menu, pemain tunggal atau multiplayer, dimensi, dan durasi bermain. Tidak pernah menampilkan nama dunia atau alamat server."
+}

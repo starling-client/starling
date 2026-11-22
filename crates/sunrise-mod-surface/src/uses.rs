@@ -9,7 +9,15 @@
 //!   through the supertraits of called traits too ([`Surface::reach`]): a sub-host trait's method
 //!   called on `&mut dyn ServerHost` counts once `ServerHost` does;
 //! - a name written after `X::`, where `X` owns a member of that name, is that member only
-//!   (`TextHover::Item` is the variant, not a type `Item`).
+//!   (`TextHover::Item` is the variant, not a type `Item`);
+//! - a tuple struct's field (`X.0`) counts only where the parser ties the read to `X`: `X(..).0`,
+//!   `v.0` where `v` is bound by `let v: X`, `let v = X(..)` or a parameter `v: X` (through `&`
+//!   and `&mut`), `self.0` in a method of an impl for `X`, and each position a pattern
+//!   `X(a, b, ..)` lists before its `..`. A qualified `X` counts for no API field if it can be
+//!   proved to name a mod-local type or tuple constructor (`local::Pos`), or a tuple enum variant
+//!   (`Shape::Pos`). Paths the scan cannot place keep their API candidates. A position read anywhere else (on a
+//!   tuple, a closure's untyped argument, another field, a method's result, in a macro body)
+//!   counts for no struct; the compile against the target build judges it.
 //!
 //! For each struct the source names it also records how the mod builds it, read with a Rust
 //! parser ([`crate::syntax`]): [`Built::Full`] where a struct literal or call lists its fields
@@ -19,31 +27,33 @@
 //! `Marker`); [`Built::Base`] when every literal ends in a base (and for a union, whose literal
 //! names one field); [`Built::None`] otherwise. A pattern ending in `..` is a read. Which struct a
 //! name means is decided by two rules, with no module resolution:
-//! - a name written with a path (`a::b::Name`) is every API struct of that name;
+//! - a name written with a path (`a::b::Name`) is every API struct of that name, except after
+//!   a type: `Shape::Pos(..)` or `TextHover::Item { .. }`, where the segment before the name is
+//!   `Self`, a type the mod defines, a name the mod binds to an API type or an API type's name, is
+//!   a variant or associated item, never the struct. That segment is read through the mod's
+//!   `use` items first, so `use mod_api as Pos; Pos::Settings { .. }` still builds `Settings`;
+//!   a qualifier the scan cannot tell from a module is not taken for a type;
 //! - an unqualified name (or `Self` in an impl for one) is the mod's own type only in a file
 //!   that defines it at its top level under no `#[cfg]`, binds it with no `use`, has no glob, no
 //!   inline module, no `use` with a metavariable, and only standard or API macros and attributes
 //!   whose names nothing in the mod rebinds, in a mod with no `include!`. Otherwise it is every
 //!   API struct of that name.
 //!
-//! The parser does not expand macros, so what it cannot see is counted as doubt, never as
-//! fitting, because a refusal is safe and a wrong "fits" is not:
-//! - a macro body's tokens are read as they stand: an API struct name in one followed by `{` or
-//!   `(` is a build, in full unless it ends in `..`, and so is a tuple or unit struct's name
-//!   where a value starts (`.map(Pos)`); a literal of a name the scan cannot place there (a
-//!   metavariable's `$t { … }` or `$t(…)`, a struct of an unknown name) builds every buildable
-//!   API struct the mod names in full;
-//! - so does a `Self { … }` the scan cannot tie to an impl of a plain path, and a literal of a
-//!   `type` alias whose target is not a plain path;
-//! - a file holding a macro or attribute that is neither standard, the API's own nor the mod's
-//!   own `macro_rules!` (a dependency's macro, an unknown derive or attribute macro), or a `use`
-//!   with a metavariable, builds in full every buildable API struct it names, since that
-//!   expansion may build it.
+//! The parser does not expand macros. A macro body's tokens are read as they stand: an API
+//! struct name in one followed by `{` or `(` is a build, in full unless it ends in `..`, and so
+//! is a tuple or unit struct's name where a value starts (`.map(Pos)`). What the scan cannot
+//! place records nothing, because the compile against the target build is the final check and
+//! names the mod when it fails: a literal of a name that is no API struct's (a metavariable's
+//! `$t { … }`, another crate's type), a `Self { … }` the scan cannot tie to an impl of a plain
+//! path, and whatever a dependency's macro, derive or attribute expands to. Nor does a struct
+//! the mod's own build keeps closed to literals count as built: a mod that compiles holds no
+//! literal of it, so the name is another type's (`Source::Block(b)`, a variant of an enum the
+//! mod defines in another file).
 //!
 //! Names assembled inside a macro from outside the mod (`paste!`, `concat_idents!`) never appear
 //! in the source and are out of the scan's reach; the compile catches them. A file that does not
 //! parse, or nests deeper than [`syntax::MAX_NESTING`], cannot be judged ([`ScanError`]), and
-//! neither can any file where the parser cannot have a stack of its own (on wasm). Even a mod
+//! neither can any file where the parser cannot reserve its own stack. Even a mod
 //! judged to fit is compiled on the player's machine against the target build, and that compile
 //! stays the final check. The scan also records the public paths the mod writes each item by:
 //! imported, written out, under an API glob (`prelude::Biome` after `use mod_api::*`), or
@@ -53,10 +63,10 @@
 //! [`fits`] compares such a list with a target build's surface. The mod fits when every entry
 //! exists there with an equal hash and under every path the mod writes, every type keeps the
 //! trait impls it had, every struct the mod builds can still be built and keeps its field set
-//! when built in full, and every hook whose version the manifest names keeps that version. The
-//! per-member hashes make this exact about additions: a new `Host` method or sub-host trait, a
-//! new hook, a new hook argument, a new field on a struct the mod does not build in full, or a
-//! new trait impl changes nothing for the mod.
+//! when built in full, and every hook in the list keeps its version (a version changes when a
+//! listener sees a new meaning under the same signature, which no compile catches). The per-member hashes make this exact about additions: a new `Host` method or
+//! sub-host trait, a new hook, a new hook argument, a new field on a struct the mod does not
+//! build in full, or a new trait impl changes nothing for the mod.
 //!
 //! Whether a mod is exact by nature (a `[native.*]` table, internals) is the caller's to decide
 //! from its manifest before asking, and such a mod gets no table: this crate does not read
@@ -66,18 +76,18 @@
 //! entries. [`UsesTable::read`] refuses an unknown schema, malformed JSON, repeated ids and
 //! documents over [`MAX_USES_BYTES`] with a typed [`UsesError`].
 use crate::scan::{self, Token};
-use crate::syntax::{self, How, Syntax};
+use crate::syntax::{self, How, Namespace, Syntax};
 use crate::{MacroKind, Role, Surface, Type, TypeKind, leaf};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
+use std::path::Path;
 
 /// What a mod's manifest says that the list depends on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ManifestFacts {
     /// Capability keys and hooks it names.
     pub names: Vec<String>,
-    /// Hooks it names a version of, with that version.
-    pub hook_versions: BTreeMap<String, u64>,
 }
 
 /// Why an entry is in the list.
@@ -104,13 +114,27 @@ pub enum Built {
     Full,
 }
 
+/// The split fingerprint of a declared game function or loop.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameCode {
+    /// The loop's publication fields and slot trait hash, or none for a single function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_contract: Option<String>,
+    /// Digests by function path (both the entry and the generic function for a loop).
+    pub functions: BTreeMap<String, crate::build_data::FunctionDigests>,
+}
+
 /// One record a mod uses, as the table carries it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     pub id: String,
-    /// Its hash at the made-for build.
+    /// Its hash at the made-for build, also used if either game's function index lacks digests.
     pub hash: String,
+    /// For declared game functions or loops whose build data records separate digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_code: Option<GameCode>,
     /// A type's trait impls at the made-for build: the target must keep each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub impls: Vec<String>,
@@ -136,9 +160,29 @@ pub struct Entry {
     /// `&mut dyn ServerHost`), sorted. The target must still lead from each to the owner.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reached_from: Vec<String>,
-    /// For a hook whose version the manifest names: that version.
+    /// For a hook: its version in the build the list was made for. A list of the schema before
+    /// this one holds none until [`UsesTable::pin_hook_versions`] fills it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u64>,
+}
+
+impl Entry {
+    /// An entry that is only an id and its hash.
+    pub fn plain(id: String, hash: String) -> Self {
+        Self {
+            id,
+            hash,
+            game_code: None,
+            impls: Vec::new(),
+            built: None,
+            fields_hash: None,
+            fields: Vec::new(),
+            built_at: None,
+            paths: Vec::new(),
+            reached_from: Vec::new(),
+            version: None,
+        }
+    }
 }
 
 /// An entry and why it is there.
@@ -162,10 +206,15 @@ impl Uses {
         self.items.iter().map(|used| &used.entry)
     }
 
+    /// Checks the scanned records against the API of another build.
+    pub fn fits(&self, target: &Surface) -> Fit {
+        fit_report(None, self.entries(), target).verdict
+    }
+
     /// The table a package carries for a mod made for `made_for` (a build id).
     pub fn table(&self, made_for: impl Into<String>) -> UsesTable {
         UsesTable {
-            schema: USES_SCHEMA,
+            schema: PLAIN_SCHEMA,
             made_for: made_for.into(),
             entries: self.entries().cloned().collect(),
         }
@@ -291,37 +340,6 @@ fn brackets(tokens: &Tokens<'_>) -> (Vec<Option<usize>>, Vec<bool>, Vec<Option<u
     (closers, rests, enclosing)
 }
 
-/// Whether the brace at `open` holds what a struct literal or pattern holds: nothing, `..`, or a
-/// field name followed by `:`, `,` or `}`.
-fn looks_like_fields(tokens: &Tokens<'_>, open: usize) -> bool {
-    match tokens.get(open + 1).map(|(t, _)| *t) {
-        Some(Token::Punct(b'}')) => true,
-        Some(Token::Punct(b'.')) => punct(tokens, open + 2, b'.'),
-        Some(Token::Ident(_)) => {
-            punct(tokens, open + 2, b',')
-                || punct(tokens, open + 2, b'}')
-                || (punct(tokens, open + 2, b':') && !punct(tokens, open + 3, b':'))
-        }
-        _ => false,
-    }
-}
-
-/// Whether the name at `at` stands where a type does, not a value: after `->`, `impl`, `for`,
-/// `dyn`, `<`, a definition keyword or a keyword whose block follows it, path segments before it
-/// skipped.
-fn in_type_position(tokens: &Tokens<'_>, path_starts: &[usize], at: usize) -> bool {
-    let at = path_starts.get(at).copied().unwrap_or(at);
-    match at.checked_sub(1).map(|i| tokens[i].0) {
-        Some(Token::Ident(
-            "impl" | "for" | "dyn" | "struct" | "enum" | "union" | "trait" | "type" | "as" | "mod"
-            | "fn" | "where" | "if" | "match" | "while" | "in",
-        )) => true,
-        Some(Token::Punct(b'>')) => at >= 2 && punct(tokens, at - 2, b'-'),
-        Some(Token::Punct(b'<')) => true,
-        _ => false,
-    }
-}
-
 /// One `use` tree from `at`: each path it imports with the name it is imported as. Returns the
 /// index after the tree.
 fn use_tree<'t>(
@@ -398,6 +416,10 @@ struct FileFacts<'t> {
     impls: Vec<(usize, Option<usize>)>,
     /// The names some `use` in the file binds.
     imported: BTreeSet<&'t str>,
+    /// Per module: each name bound by `use` (`*` for globs). It identifies an import only
+    /// when the binding is unique and unconditional, directly in the module. Block imports
+    /// and conditional imports can prevent a proof but cannot establish one.
+    module_imported: Vec<BTreeMap<&'t str, Option<usize>>>,
     /// What the parser reads of the file.
     syntax: Syntax<'t>,
     /// Tokens inside a macro call's delimiters or a `macro_rules!` body, which the parser does
@@ -438,7 +460,7 @@ pub enum ScanError {
     /// The file nests brackets, generics or expressions deeper than the scan parses
     /// ([`syntax::MAX_NESTING`]), at this line.
     TooDeep { file: String, line: usize },
-    /// The parser's own stack could not be had (always so on wasm), so the file was not parsed.
+    /// The parser's own stack could not be reserved, so the file was not parsed.
     NoStack { file: String },
     /// The child process that parses first ([`crate::child`]) died, by a signal, an overflow or
     /// a limit on its memory or processor time, while parsing this file (none: before it
@@ -495,9 +517,14 @@ impl std::fmt::Display for ScanError {
 
 impl std::error::Error for ScanError {}
 
-/// The `use` statements a file's tokens hold: each import, whether each token is in one, and
-/// whether one holds a macro metavariable.
-type UseStatements<'t> = (Vec<(Vec<&'t str>, &'t str)>, Vec<bool>, bool);
+/// The `use` statements a file's tokens hold: each import, each statement's first token and
+/// range of imports, whether each token is in one, and whether one holds a macro metavariable.
+type UseStatements<'t> = (
+    Vec<(Vec<&'t str>, &'t str)>,
+    Vec<(usize, Range<usize>)>,
+    Vec<bool>,
+    bool,
+);
 
 /// A file's tokens, each with its line and its first byte, and its `use` statements; or why it
 /// cannot be judged before it is parsed.
@@ -523,7 +550,8 @@ fn checked_tokens<'t>(
 
 /// A file's facts, or why it cannot be judged.
 fn file_facts<'t>(file: &str, text: &'t str) -> Result<FileFacts<'t>, ScanError> {
-    let (tokens, starts, (imports, in_use, use_metavariable)) = checked_tokens(file, text)?;
+    let (tokens, starts, (imports, statements, in_use, use_metavariable)) =
+        checked_tokens(file, text)?;
     let syntax = syntax::read(text).map_err(|unread| match unread {
         syntax::Unread::Parse(line) => ScanError::Parse {
             file: file.to_owned(),
@@ -546,6 +574,18 @@ fn file_facts<'t>(file: &str, text: &'t str) -> Result<FileFacts<'t>, ScanError>
         .filter(|(_, local)| *local != "*")
         .map(|(_, local)| *local)
         .collect();
+    let mut module_imported = vec![BTreeMap::new(); syntax.scopes.len()];
+    for (at, range) in statements {
+        let byte = starts[at];
+        let bindings = &mut module_imported[syntax.module_at(byte)];
+        let direct = syntax.direct_uses.contains(&byte);
+        for i in range {
+            bindings
+                .entry(imports[i].1)
+                .and_modify(|import| *import = None)
+                .or_insert(direct.then_some(i));
+        }
+    }
     Ok(FileFacts {
         tokens,
         starts,
@@ -556,6 +596,7 @@ fn file_facts<'t>(file: &str, text: &'t str) -> Result<FileFacts<'t>, ScanError>
         enclosing,
         impls,
         imported,
+        module_imported,
         syntax,
         in_macro,
         imports,
@@ -575,6 +616,7 @@ fn file_facts<'t>(file: &str, text: &'t str) -> Result<FileFacts<'t>, ScanError>
 fn use_statements<'t>(file: &str, tokens: &Tokens<'t>) -> Result<UseStatements<'t>, ScanError> {
     let mut in_use = vec![false; tokens.len()];
     let mut imports = Vec::new();
+    let mut statements = Vec::new();
     let mut use_metavariable = false;
     let mut at = 0;
     while at < tokens.len() {
@@ -601,6 +643,7 @@ fn use_statements<'t>(file: &str, tokens: &Tokens<'t>) -> Result<UseStatements<'
                     });
                 }
             }
+            let first_import = imports.len();
             let mut start = at + 1;
             while start < end {
                 if punct(tokens, start, b':') {
@@ -609,7 +652,7 @@ fn use_statements<'t>(file: &str, tokens: &Tokens<'t>) -> Result<UseStatements<'
                 start = use_tree(tokens, start, end, &mut Vec::new(), &mut imports);
             }
             // `a::b::{self}` binds `b`, and `{self as x}` binds `x`, both to `a::b`.
-            for (path, local) in imports.iter_mut() {
+            for (path, local) in &mut imports[first_import..] {
                 if path.len() >= 2 && path.last() == Some(&"self") {
                     path.pop();
                     if *local == "self" {
@@ -617,11 +660,12 @@ fn use_statements<'t>(file: &str, tokens: &Tokens<'t>) -> Result<UseStatements<'
                     }
                 }
             }
+            statements.push((at, first_import..imports.len()));
             at = end;
         }
         at += 1;
     }
-    Ok((imports, in_use, use_metavariable))
+    Ok((imports, statements, in_use, use_metavariable))
 }
 
 /// Which tokens lie inside a macro body: one sweep over the bodies by where they start.
@@ -825,8 +869,8 @@ struct ModFacts<'t> {
     item_aliases: BTreeSet<&'t str>,
     /// Every other name the mod defines: traits, associated types.
     others: BTreeSet<&'t str>,
-    /// Names some `macro_rules!` or some `use` that does not start at an API root binds: a
-    /// standard or API macro or attribute of that name may be another.
+    /// Names a `macro_rules!`, an external dependency alias, or a `use` that does not start
+    /// at an API root binds: a standard or API macro or attribute of that name may be another.
     rebound: BTreeSet<&'t str>,
     /// Some glob outside the API and the mod (`use dep::*;`) or a `#[macro_use]` may bring in
     /// macros of any name.
@@ -877,6 +921,9 @@ fn mod_facts<'t>(files: &[FileFacts<'t>], api_prefixes: &BTreeSet<String>) -> Mo
     let mut imported = BTreeSet::new();
     for file in files {
         facts.rebound.extend(file.macro_rules.iter().copied());
+        facts
+            .rebound
+            .extend(file.syntax.extern_aliases.iter().copied());
         facts.rebound_all |= file
             .attributes
             .iter()
@@ -1102,7 +1149,7 @@ const STD_DERIVES: &[&str] = &[
 /// The macro, attribute and derive names a file may use and still be read as written: the
 /// standard ones and the API's own, less every name something in the mod may rebind.
 struct Trusted<'s> {
-    roots: &'s BTreeSet<&'s str>,
+    local_modules: &'s BTreeSet<&'s str>,
     /// By kind, the API's own macro names.
     api_macros: BTreeSet<&'s str>,
     api_attributes: BTreeSet<&'s str>,
@@ -1136,8 +1183,14 @@ impl Trusted<'_> {
                         || api.contains(name)
                         || (matches!(kind, Named::Macro) && *name == "macro_rules"))
             }
-            [root, .., name] if self.roots.contains(root) => api.contains(name),
-            [root, .., name] if matches!(*root, "std" | "core" | "alloc") => std.contains(name),
+            [root, .., _] if self.local_modules.contains(root) || self.rebound.contains(root) => {
+                false
+            }
+            // An API alias elsewhere in the mod does not resolve a macro in this scope.
+            ["mod_api", .., name] => !self.rebound_all && api.contains(name),
+            [root, .., name] if matches!(*root, "std" | "core" | "alloc") => {
+                !self.rebound_all && std.contains(name)
+            }
             [root, ..] => {
                 matches!(kind, Named::Attribute)
                     && matches!(*root, "rustfmt" | "clippy" | "diagnostic")
@@ -1348,7 +1401,7 @@ impl<'s> Index<'s> {
     {
         let macros = &self.surface.macros;
         Trusted {
-            roots: &module.roots,
+            local_modules: &module.modules,
             api_macros: macros
                 .iter()
                 .filter(|m| {
@@ -1388,6 +1441,70 @@ struct Resolved<'s> {
     aliased: bool,
 }
 
+type ModuleScope = (usize, usize);
+
+/// Ordinary `mod name;` links reachable from a conventional crate root. A path override,
+/// expansion or ambiguous link means the file names don't prove where the files are mounted.
+#[derive(Default)]
+struct FileModules<'t> {
+    roots: BTreeSet<usize>,
+    children: BTreeMap<(ModuleScope, &'t str), usize>,
+}
+
+impl<'t> FileModules<'t> {
+    fn new(files: &[FileFacts<'t>], sources: &[(&str, &str)], certain: &[bool]) -> Self {
+        if files.iter().zip(certain).any(|(file, certain)| {
+            !certain
+                || file.attributes.iter().any(|(open, close)| {
+                    (*open + 1..*close).any(|at| ident(&file.tokens, at) == Some("path"))
+                })
+        }) {
+            return Self::default();
+        }
+        let paths: BTreeMap<&Path, usize> = sources
+            .iter()
+            .enumerate()
+            .map(|(i, (path, _))| (Path::new(path), i))
+            .collect();
+        if paths.len() != sources.len() {
+            return Self::default();
+        }
+        let mut tree = Self::default();
+        let mut pending = Vec::new();
+        for (root, stem) in [("src/lib.rs", "lib"), ("src/main.rs", "main")] {
+            if let Some(&file) = paths.get(Path::new(root))
+                && !files.iter().any(|file| file.syntax.modules.contains(stem))
+            {
+                tree.roots.insert(file);
+                pending.push(((file, 0), Path::new("src").to_owned()));
+            }
+        }
+        let mut mounted = tree.roots.clone();
+        while let Some((scope @ (file, module), dir)) = pending.pop() {
+            for (&name, &inline) in &files[file].syntax.scopes[module].children {
+                let child_dir = dir.join(name);
+                if let Some(inline) = inline {
+                    pending.push(((file, inline), child_dir));
+                    continue;
+                }
+                let flat = paths.get(dir.join(format!("{name}.rs")).as_path());
+                let index = paths.get(child_dir.join("mod.rs").as_path());
+                if flat.is_some() && index.is_some() {
+                    continue;
+                }
+                if let Some(&child) = flat.or(index) {
+                    if !mounted.insert(child) {
+                        return Self::default();
+                    }
+                    tree.children.insert((scope, name), child);
+                    pending.push(((child, 0), child_dir));
+                }
+            }
+        }
+        tree
+    }
+}
+
 /// What names mean across the mod: the facts of every file, which files nothing the scan cannot
 /// follow may change, and each name's API ids, kept as they are worked out.
 struct Resolver<'a, 's, 't> {
@@ -1396,8 +1513,12 @@ struct Resolver<'a, 's, 't> {
     files: &'a [FileFacts<'t>],
     /// Per file: whether nothing the scan cannot follow may change what names mean there.
     certain: Vec<bool>,
-    /// Per file: whether it holds an expansion the scan cannot follow.
-    opaque: Vec<bool>,
+    /// Unlike unqualified names, a qualified path can be judged in an inline module, or in
+    /// the presence of globs that cannot take its name away from a concrete definition.
+    qualified_certain: Vec<bool>,
+    /// The literal `mod_api` root can name only the API crate; aliases are not proof.
+    api_root_certain: bool,
+    file_modules: FileModules<'t>,
     /// Per file: the `type` aliases of an API item, which define no type of the mod's own.
     api_aliases: Vec<BTreeSet<&'t str>>,
     /// The API modules some file imports with a glob, `mod_api::` left out.
@@ -1406,7 +1527,12 @@ struct Resolver<'a, 's, 't> {
 }
 
 impl<'a, 's, 't> Resolver<'a, 's, 't> {
-    fn new(index: &'a Index<'s>, module: &'a ModFacts<'t>, files: &'a [FileFacts<'t>]) -> Self {
+    fn new(
+        index: &'a Index<'s>,
+        module: &'a ModFacts<'t>,
+        files: &'a [FileFacts<'t>],
+        sources: &[(&str, &str)],
+    ) -> Self {
         let trusted = index.trusted(module);
         // A file brought in by `include!` (under any name: `use std::include as inc;`, which
         // the folder reader refuses) is part of its includer's scope: with one anywhere, no
@@ -1426,24 +1552,37 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
             .iter()
             .map(|file| file.use_metavariable || !trusted.followed(file))
             .collect();
-        let certain = files
+        let qualified_certain: Vec<bool> = files
             .iter()
             .zip(&opaque)
-            .map(|(file, opaque)| {
-                !included
-                    && !opaque
-                    && trusted.file(file)
+            .map(|(file, opaque)| !included && !opaque && trusted.file(file))
+            .collect();
+        let certain = files
+            .iter()
+            .zip(&qualified_certain)
+            .map(|(file, certain)| {
+                *certain
                     && !file.syntax.inline_modules
                     && !file.imports.iter().any(|(_, local)| *local == "*")
             })
             .collect();
+        let file_modules = FileModules::new(files, sources, &qualified_certain);
+        let api_root_certain = qualified_certain.iter().all(|&certain| certain)
+            && !module.modules.contains("mod_api")
+            && !module.rebound.contains("mod_api")
+            && !module.bound.contains_key("mod_api")
+            && !module.types.contains("mod_api")
+            && !module.item_aliases.contains("mod_api")
+            && !module.others.contains("mod_api");
         let mod_globs = files.iter().flat_map(|f| api_globs(f, module)).collect();
         let mut resolver = Resolver {
             index,
             module,
             files,
             certain,
-            opaque,
+            qualified_certain,
+            api_root_certain,
+            file_modules,
             api_aliases: Vec::new(),
             mod_globs,
             memo: BTreeMap::new(),
@@ -1488,14 +1627,145 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
             && !file.imported.contains(name)
     }
 
-    /// Whether a name the scan cannot place may be an API struct by another name.
-    fn unknown(&self, name: &str) -> bool {
-        name.starts_with(|c: char| c.is_ascii_uppercase())
-            && name.chars().any(|c| c.is_ascii_lowercase())
-            && name != "Self"
-            && !self.module.types.contains(name)
-            && !self.module.item_aliases.contains(name)
-            && !self.module.others.contains(name)
+    /// Whether a qualified path is demonstrably a local type or constructor in its namespace.
+    /// Follow only declared module edges; imports and aliases may lead back to the API.
+    fn qualified_own(
+        &self,
+        index: usize,
+        byte: usize,
+        path: &[&str],
+        namespace: Namespace,
+    ) -> bool {
+        let resolve = || {
+            if !self.qualified_certain[index] {
+                return None;
+            }
+            let (name, mut prefix) = path.split_last()?;
+            let file = &self.files[index];
+            let mut scope = (index, file.syntax.module_at(byte));
+            // Source paths alone don't tell us how Cargo mounted a non-root source file.
+            // Stay in its inline modules unless the walk starts at a known crate root.
+            let crate_root = self.file_modules.roots.contains(&index);
+            match prefix {
+                ["crate", rest @ ..] => {
+                    if !crate_root {
+                        return None;
+                    }
+                    scope.1 = 0;
+                    prefix = rest;
+                }
+                ["self", rest @ ..] => prefix = rest,
+                ["super", ..] => {
+                    while let ["super", rest @ ..] = prefix {
+                        if scope.1 == 0 {
+                            return None;
+                        }
+                        scope.1 = file.syntax.scopes[scope.1].parent;
+                        prefix = rest;
+                    }
+                }
+                [first, ..] => {
+                    let module = &file.syntax.scopes[scope.1];
+                    let imports = &file.module_imported[scope.1];
+                    if module.block_items
+                        || module.type_params.contains(first)
+                        || imports.contains_key(first)
+                        || imports.contains_key("*")
+                    {
+                        return None;
+                    }
+                }
+                [] => return None,
+            }
+            while let Some((first, rest)) = prefix.split_first() {
+                let (file, module) = scope;
+                let facts = &self.files[file];
+                let declared = &facts.syntax.scopes[module];
+                if namespace == Namespace::Value
+                    && rest.is_empty()
+                    && !facts.module_imported[module].contains_key(first)
+                    && declared
+                        .tuple_variants
+                        .get(first)
+                        .is_some_and(|v| v.contains(name))
+                {
+                    return Some(true);
+                }
+                scope = match declared.children.get(first)? {
+                    Some(inline) => (file, *inline),
+                    None if crate_root => (*self.file_modules.children.get(&(scope, first))?, 0),
+                    None => return None,
+                };
+                prefix = rest;
+            }
+            let (file, module) = scope;
+            let facts = &self.files[file];
+            let declared = &facts.syntax.scopes[module];
+            let names = match namespace {
+                Namespace::Type => &declared.types,
+                Namespace::Value => &declared.tuple_constructors,
+            };
+            Some(names.contains(name) && !facts.module_imported[module].contains_key(name))
+        };
+        resolve().unwrap_or(false)
+    }
+
+    /// Prove an API variant in the value namespace through `mod_api` or a direct, unshadowed
+    /// import in this module. A same-named enum or import elsewhere says nothing about this path.
+    fn api_variant(&self, index: usize, byte: usize, path: &[&str], rooted: bool) -> bool {
+        let [first, rest @ .., variant] = path else {
+            return false;
+        };
+        if !self.api_root_certain {
+            return false;
+        }
+        let file = &self.files[index];
+        let at = file.syntax.module_at(byte);
+        let declared = &file.syntax.scopes[at];
+        let imports = &file.module_imported[at];
+        if !rooted
+            && (declared.block_items
+                || declared.type_params.contains(first)
+                || declared.type_params.contains("mod_api")
+                || imports.contains_key("*")
+                || imports.contains_key("mod_api"))
+        {
+            return false;
+        }
+        let owner = if *first == "mod_api" {
+            rest.join("::")
+        } else if !rooted
+            && let Some(Some(import)) = imports.get(first)
+            && let ["mod_api", prefix @ ..] = &file.imports[*import].0[..]
+        {
+            prefix
+                .iter()
+                .chain(rest)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("::")
+        } else {
+            return false;
+        };
+        self.index
+            .by_name
+            .get(variant)
+            .into_iter()
+            .flatten()
+            .any(|id| {
+                let Some(ty) = self
+                    .index
+                    .owners
+                    .get(id)
+                    .and_then(|o| self.index.types.get(o.as_str()))
+                else {
+                    return false;
+                };
+                ty.contract.kind == TypeKind::Enum
+                    && (ty.id.strip_prefix("type:") == Some(owner.as_str())
+                        || ty.paths.contains(&owner))
+                    && ty.variants.iter().any(|v| v.id == *id && !v.contract.named)
+            })
     }
 
     /// Each API path (`mod_api::` left out) a path written in a file may be: through an API
@@ -1535,6 +1805,50 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
         out
     }
 
+    /// Whether the name a path ends in is a member of a type (`Source::Block(..)`, a variant of
+    /// the mod's own enum or of an API one) and so no struct of that name. The segment before it
+    /// is read through the mod's own `use` items first: an API root or module it is bound to
+    /// (`use mod_api as Pos;`, `use mod_api::content as c;`) makes the path a module path, so
+    /// the name may be a struct; only `Self`, a type the mod defines, a name bound to an API
+    /// type, or an API type's name written as it stands makes it a member.
+    fn is_member(&self, path: &[&str], rooted: bool) -> bool {
+        let [.., owner, _] = path else {
+            return false;
+        };
+        let names_type = |segments: &[&str]| {
+            let joined = segments.join("::");
+            self.index
+                .by_name
+                .get(segments.last().copied().unwrap_or_default())
+                .into_iter()
+                .flatten()
+                .filter(|id| id.starts_with("type:") && !id.contains('.'))
+                .any(|id| {
+                    id.split_once(':').map_or("", |(_, rest)| rest) == joined
+                        || self
+                            .index
+                            .public_paths
+                            .get(id)
+                            .is_some_and(|paths| paths.contains(&joined))
+                })
+        };
+        if *owner == "Self" {
+            return true;
+        }
+        if self.module.roots.contains(owner) {
+            return false;
+        }
+        // A path from the root (`::mod_api::world::X`) names nothing of the mod's: its `use`
+        // items and types, in whatever module, cannot change what its segments mean.
+        if rooted {
+            return names_type(&[owner]);
+        }
+        if let Some(bound) = self.module.bound.get(owner) {
+            return bound.iter().any(|segments| names_type(segments));
+        }
+        self.module.types.contains(owner) || names_type(&[owner])
+    }
+
     /// The innermost impl in file `index` whose body holds `byte`: its target, `None` inside
     /// it when the scan cannot read the target, `None` outside any.
     fn impl_at(&self, index: usize, byte: usize) -> Option<Option<&'a Vec<&'t str>>> {
@@ -1556,22 +1870,14 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
 
 /// What the walk over the mod's files finds: the records named directly, each with the first
 /// place that names it; how each named struct is built; the public paths the mod writes each
-/// by; and the first place of a literal the scan cannot place.
+/// by.
 struct Found<'s, 't> {
     direct: BTreeMap<&'s str, Place<'t>>,
     building: BTreeMap<&'s str, Building<'t>>,
     written: BTreeMap<&'s str, BTreeSet<String>>,
-    named_structs: BTreeSet<&'s str>,
-    unsure: Option<Place<'t>>,
 }
 
 impl<'s, 't> Found<'s, 't> {
-    fn mark_unsure(&mut self, here: Place<'t>) {
-        if self.unsure.is_none_or(|old| here < old) {
-            self.unsure = Some(here);
-        }
-    }
-
     fn name(&mut self, id: &'s str, here: Place<'t>) {
         self.direct
             .entry(id)
@@ -1612,19 +1918,17 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
             let Token::Ident(written_name) = token else {
                 continue;
             };
+            // A field's position (`v.0`) names no struct by itself: [`Walk::tuple_fields`]
+            // counts the reads the parser ties to one.
+            if written_name.starts_with(|c: char| c.is_ascii_digit()) {
+                continue;
+            }
             let place = (path, *line);
             let start = file.path_starts[at];
-            let open = at + 1;
-            let opens = punct(tokens, open, b'{') || punct(tokens, open, b'(');
             let (name, unqualified) = match *written_name {
                 // A `Self` in a macro body may belong to an impl the macro writes, which the
-                // parser does not read: `Self { … }` there builds a struct the scan cannot place.
-                "Self" if file.in_macro[at] => {
-                    if opens || bare_value(file, at) {
-                        found.mark_unsure(place);
-                    }
-                    continue;
-                }
+                // parser does not read: the compile judges what it builds.
+                "Self" if file.in_macro[at] => continue,
                 "Self" => match resolver.impl_at(index, file.starts[at]) {
                     Some(Some(target)) => (*target.last().unwrap_or(&"Self"), target.len() == 1),
                     // Outside any impl the parser placed, or in one of a type it cannot read,
@@ -1641,21 +1945,6 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
             let resolver: &Resolver<'_, 's, 't> = resolver;
             let resolved = &resolver.memo[name];
             if resolved.ids.is_empty() {
-                // In a macro body, which the parser does not read: a literal of a name the
-                // scan cannot place, or a metavariable's `$name { … }` or `$name(…)`, which
-                // may be a struct's name.
-                let metavariable = at >= 1 && punct(tokens, at - 1, b'$');
-                if file.in_macro[at]
-                    && ((punct(tokens, open, b'{')
-                        && !in_type_position(tokens, &file.path_starts, at)
-                        && resolver.unknown(name)
-                        && looks_like_fields(tokens, open))
-                        || (metavariable
-                            && opens
-                            && !in_type_position(tokens, &file.path_starts, at - 1)))
-                {
-                    found.mark_unsure(place);
-                }
                 continue;
             }
             let own = unqualified && !resolved.aliased && resolver.own_in(index, name);
@@ -1672,12 +1961,6 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
                 found.name(id, place);
                 if !api.struct_like(id) || own {
                     continue;
-                }
-                found.named_structs.insert(id);
-                if resolver.opaque[index] && api.buildable(id) {
-                    // An expansion the scan cannot follow may build any API struct the file
-                    // names.
-                    found.build(id, place, true, false);
                 }
                 if file.in_macro[at] {
                     macro_body(found, api, file, id, at, place);
@@ -1703,11 +1986,8 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
                 ["Self"] => match resolver.impl_at(index, build.byte) {
                     Some(Some(target)) => (*target.last().unwrap_or(&"Self"), target.len() == 1),
                     // Outside any impl the parser placed, or in one of a type it cannot read:
-                    // a struct the scan cannot place.
-                    _ => {
-                        found.mark_unsure(place);
-                        continue;
-                    }
+                    // a struct the scan cannot place, which the compile judges.
+                    _ => continue,
                 },
                 [.., last] => (*last, build.path.len() == 1 && !build.rooted),
                 [] => continue,
@@ -1716,18 +1996,15 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
             let resolver: &Resolver<'_, 's, 't> = resolver;
             let resolved = &resolver.memo[name];
             if resolved.ids.is_empty() {
-                // A literal of a name the scan cannot place may be an API struct by another
-                // name; one written from the standard library is not.
-                let standard = matches!(build.path.first(), Some(&("std" | "core" | "alloc")));
-                if build.brace && resolver.unknown(name) && !standard {
-                    found.mark_unsure(place);
-                }
                 continue;
             }
             let own = unqualified && !resolved.aliased && resolver.own_in(index, name);
             let api = resolver.index;
             for &id in &resolved.ids {
-                if !api.struct_like(id) || own {
+                if !api.struct_like(id)
+                    || own
+                    || (!resolved.aliased && resolver.is_member(&build.path, build.rooted))
+                {
                     continue;
                 }
                 let full = match build.how {
@@ -1744,6 +2021,72 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
                     }
                 };
                 found.build(id, place, full, build.brace);
+            }
+        }
+    }
+
+    /// Every tuple struct field the parser ties a read to ([`syntax::TupleField`]), with the
+    /// struct's name read through the impl's target for `Self`. Skip a name only when it is
+    /// known to name the mod's own type or constructor, or an enum variant.
+    fn tuple_fields(&mut self) {
+        let Walk {
+            resolver,
+            found,
+            index,
+            path,
+        } = self;
+        let (index, path) = (*index, *path);
+        let files = resolver.files;
+        let file = &files[index];
+        for field in &file.syntax.tuple_fields {
+            let place = (path, field.line);
+            // The struct's path as written, or the impl's target for `Self`; a leading empty name
+            // is a leading `::`.
+            let namespace = field.tie.namespace;
+            let (written, rooted): (&[&'t str], bool) = match &field.tie.path[..] {
+                ["Self"] => match resolver.impl_at(index, field.byte) {
+                    Some(Some(target)) => match &target[..] {
+                        ["", rest @ ..] => (rest, true),
+                        target => (target, false),
+                    },
+                    _ => continue,
+                },
+                path => (path, field.tie.rooted),
+            };
+            let Some(&name) = written.last() else {
+                continue;
+            };
+            let unqualified = written.len() == 1 && !rooted;
+            resolver.lookup(name);
+            let resolver: &Resolver<'_, 's, 't> = resolver;
+            let resolved = &resolver.memo[name];
+            let top = &file.syntax.scopes[0];
+            let owns_unqualified = unqualified
+                && !resolved.aliased
+                && resolver.own_in(index, name)
+                && (namespace == Namespace::Type
+                    || (!top.block_items
+                        && !top.block_values
+                        && top.tuple_constructors.contains(name)));
+            if resolved.ids.is_empty()
+                || owns_unqualified
+                || (!unqualified
+                    && !rooted
+                    && resolver.qualified_own(index, field.byte, written, namespace))
+                || (namespace == Namespace::Value
+                    && resolver.api_variant(index, field.byte, written, rooted))
+            {
+                continue;
+            }
+            let api = resolver.index;
+            for id in &resolved.ids {
+                if api.kind(id) != Some(TypeKind::TupleStruct) {
+                    continue;
+                }
+                let member = format!("{id}.{}", field.position);
+                if let Some((member, _)) = api.hashes.get_key_value(member.as_str()) {
+                    found.name(member, place);
+                }
             }
         }
     }
@@ -2034,13 +2377,11 @@ pub(crate) fn uses<'t>(
         .map(|(file, text)| file_facts(file, text))
         .collect::<Result<_, _>>()?;
     let module = mod_facts(&files, &index.api_prefixes);
-    let mut resolver = Resolver::new(&index, &module, &files);
+    let mut resolver = Resolver::new(&index, &module, &files, &sources);
     let mut found = Found {
         direct: BTreeMap::new(),
         building: BTreeMap::new(),
         written: BTreeMap::new(),
-        named_structs: BTreeSet::new(),
-        unsure: None,
     };
     for (file, (path, _)) in sources.iter().copied().enumerate() {
         let mut walk = Walk {
@@ -2051,22 +2392,17 @@ pub(crate) fn uses<'t>(
         };
         walk.names();
         walk.builds();
+        walk.tuple_fields();
         walk.paths();
     }
     let Found {
         direct,
         mut building,
         written,
-        named_structs,
-        unsure,
     } = found;
-    // A literal the scan cannot place, anywhere in the mod, may build any API struct the mod
-    // names, anywhere: each counts as built field by field.
-    if let Some(place) = unsure {
-        for id in named_structs.into_iter().filter(|id| index.buildable(id)) {
-            building.entry(id).or_default().record(place, true, false);
-        }
-    }
+    // A mod that compiles builds no struct its own build keeps closed: such a literal or pattern
+    // is of another type with the struct's name.
+    building.retain(|id, _| index.buildable(id));
     let mut direct: BTreeMap<&str, Origin> = direct
         .into_iter()
         .map(|(id, (file, line))| {
@@ -2081,14 +2417,13 @@ pub(crate) fn uses<'t>(
             }
         }
     }
-    Ok(list(&index, manifest, direct, &building, &written))
+    Ok(list(&index, direct, &building, &written))
 }
 
 /// The list of what counts, from the records named directly: each with how it is built, the
 /// paths written, and the hosts that lead to it.
 fn list(
     index: &Index<'_>,
-    manifest: &ManifestFacts,
     direct: BTreeMap<&str, Origin>,
     building: &BTreeMap<&str, Building>,
     written: &BTreeMap<&str, BTreeSet<String>>,
@@ -2168,7 +2503,11 @@ fn list(
         .collect();
 
     let at = |(file, line): &Place<'_>| format!("{file}:{line}");
-    let hook_versions = &manifest.hook_versions;
+    let hook_versions: BTreeMap<&str, u64> = surface
+        .hooks
+        .iter()
+        .map(|h| (h.id.as_str(), h.contract.version))
+        .collect();
     Uses {
         items: origins
             .into_iter()
@@ -2205,6 +2544,7 @@ fn list(
                     entry: Entry {
                         id: id.to_owned(),
                         hash: hashes[id].to_owned(),
+                        game_code: None,
                         impls: record.map(|t| t.impls.clone()).unwrap_or_default(),
                         fields_hash: (built == Some(Built::Full))
                             .then(|| record.and_then(|t| t.fields_hash.clone()))
@@ -2221,9 +2561,7 @@ fn list(
                             .get(id)
                             .map(|paths| paths.iter().cloned().collect())
                             .unwrap_or_default(),
-                        version: id
-                            .strip_prefix("hook:")
-                            .and_then(|name| hook_versions.get(name).copied()),
+                        version: hook_versions.get(id).copied(),
                         reached_from: reached_from
                             .get(id)
                             .into_iter()
@@ -2240,19 +2578,26 @@ fn list(
 }
 
 /// How a used item differs in the target build.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Change {
     /// The target has no record with its id.
     Removed,
+    /// The target is present but cannot be replaced in this build.
+    Refused { code: &'static str, why: String },
     /// The target's record has another hash.
     Changed,
+    /// A declared game function's declaration is unchanged but its body differs.
+    BodyChanged { function: String },
+    /// A declared game function's declaration differs, regardless of its body.
+    DeclarationChanged { function: String },
     /// The target's type no longer implements this trait.
     LostImpl(String),
     /// The struct's field set changed, and the mod builds it with a full literal at `at`: the
     /// target's fields the mod's list does not name (none when only order or a position
     /// changed).
     Fields { gained: Vec<String>, at: String },
-    /// The manifest names version `named` of the hook; the target's is `now`.
+    /// The mod was made for version `named` of the hook; the target's is `now`.
     Version { named: u64, now: u64 },
     /// The mod builds the struct with a literal or pattern at `at`, and the target's can no
     /// longer be (a private field, `#[non_exhaustive]`).
@@ -2264,7 +2609,7 @@ pub enum Change {
 }
 
 /// A used item that is not the same in the target build.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct Misfit {
     pub id: String,
     pub change: Change,
@@ -2276,7 +2621,14 @@ impl std::fmt::Display for Misfit {
         let item = describe(&self.id);
         match &self.change {
             Change::Removed => write!(f, "{item} (removed)"),
+            Change::Refused { code, why } => write!(f, "{item} (refused: {code}: {why})"),
             Change::Changed => write!(f, "{item} (changed)"),
+            Change::BodyChanged { function } => {
+                write!(f, "the game's function `{function}` (body changed)")
+            }
+            Change::DeclarationChanged { function } => {
+                write!(f, "the game's function `{function}` (declaration changed)")
+            }
             Change::LostImpl(name) => write!(f, "{item} no longer implements `{name}`"),
             Change::Fields { gained, at } => match &gained[..] {
                 [] => write!(
@@ -2299,7 +2651,7 @@ impl std::fmt::Display for Misfit {
             Change::Version { named, now } => {
                 write!(
                     f,
-                    "{item} is now version {now}; this mod names version {named}"
+                    "{item} is now version {now}; this mod was made for version {named}"
                 )
             }
             Change::NotBuildable { at } => write!(
@@ -2359,7 +2711,8 @@ impl ItemKind {
 }
 
 /// An id's kind and the name a mod writes for it (`hook:player_logged_in` is the hook
-/// `player_logged_in`); `None` for an id of no kind this crate writes. Programs that show items
+/// `player_logged_in`); `None` for an id of no kind a mod's code can use (a `behaviour:` is never
+/// used, so it never shows in a fit report). Programs that show items
 /// in other languages build their sentence from this; [`Misfit`]'s text is English.
 pub fn item(id: &str) -> Option<(ItemKind, String)> {
     let (kind, rest) = id.split_once(':')?;
@@ -2389,6 +2742,17 @@ pub fn item(id: &str) -> Option<(ItemKind, String)> {
 
 /// An item as people read it: its kind and the name a mod writes for it.
 fn describe(id: &str) -> String {
+    // The game's own code a mod declares (`game:<kind>:<path>`), which is no surface item.
+    if let Some((kind, path)) = id
+        .strip_prefix("game:")
+        .and_then(|rest| rest.split_once(':'))
+    {
+        let word = match kind {
+            "fn" | "method" => "function",
+            other => other,
+        };
+        return format!("the game's {word} `{path}`");
+    }
     match item(id) {
         Some((kind, name)) => format!("the {} `{name}`", kind.word()),
         None => format!("`{id}`"),
@@ -2401,12 +2765,34 @@ pub enum Fit {
     Fits,
     /// What is removed or changed in the target, sorted by id.
     DoesNotFit(Vec<Misfit>),
+    /// Nothing the list can judge changed, but it holds no version of these hooks (their ids,
+    /// sorted), so it cannot say that they still mean what the mod was written for. A list this
+    /// crate's scan writes never gives this; one an older tool wrote does, until
+    /// [`UsesTable::pin_hook_versions`] fills it.
+    Unversioned(Vec<String>),
+}
+
+/// A fit verdict and the note about entries the compile must judge, if any.
+pub struct FitReport {
+    pub verdict: Fit,
+    /// A single human-readable line, absent when nothing was deferred to the compile.
+    pub deferred: Option<String>,
 }
 
 /// Whether every entry exists in `target` with an equal hash and under every path the mod writes,
 /// every type keeps its impls, every struct the mod builds can still be built (and keeps its
-/// field set when built in full), and every named hook version is unchanged.
-pub fn fits<'a>(entries: impl IntoIterator<Item = &'a Entry>, target: &Surface) -> Fit {
+/// field set when built in full), and every hook keeps the version the entry names. A hook entry
+/// that names none is [`Fit::Unversioned`] when nothing else changed.
+#[cfg(test)]
+pub(crate) fn fits<'a>(entries: impl IntoIterator<Item = &'a Entry>, target: &Surface) -> Fit {
+    fit_report(None, entries, target).verdict
+}
+
+fn fit_report<'a>(
+    table: Option<&UsesTable>,
+    entries: impl IntoIterator<Item = &'a Entry>,
+    target: &Surface,
+) -> FitReport {
     let hashes: BTreeMap<&str, &str> = target.entries().collect();
     let types: BTreeMap<&str, &Type> = target.types.iter().map(|t| (t.id.as_str(), t)).collect();
     let versions: BTreeMap<&str, u64> = target
@@ -2428,11 +2814,13 @@ pub fn fits<'a>(entries: impl IntoIterator<Item = &'a Entry>, target: &Surface) 
         public_paths.insert(&m.id, &m.paths);
     }
     let entries: Vec<&Entry> = entries.into_iter().collect();
+    let mut legacy = crate::legacy_hash::LegacyFit::new(table, target, &entries);
     // What each trait a member is reached from leads to in the target, along references built
     // once: a table's `reached_from` strings are many and its own, the surface's size is not.
     let refs = target.refs(true);
     let mut leads: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     let mut misfits = Vec::new();
+    let mut unversioned = Vec::new();
     for entry in &entries {
         let id = entry.id.as_str();
         let mut misfit = |change| {
@@ -2442,10 +2830,12 @@ pub fn fits<'a>(entries: impl IntoIterator<Item = &'a Entry>, target: &Surface) 
             })
         };
         let Some(hash) = hashes.get(id) else {
-            misfit(Change::Removed);
+            if legacy.check_missing_record(id) {
+                misfit(Change::Removed);
+            }
             continue;
         };
-        if *hash != entry.hash {
+        if !legacy.matches(id, hash, &entry.hash) {
             misfit(Change::Changed);
         }
         for path in &entry.paths {
@@ -2458,7 +2848,7 @@ pub fn fits<'a>(entries: impl IntoIterator<Item = &'a Entry>, target: &Surface) 
         }
         if let Some(record) = types.get(id) {
             for name in &entry.impls {
-                if !record.impls.contains(name) {
+                if !record.impls.contains(name) && legacy.check_missing_impl(id, name) {
                     misfit(Change::LostImpl(name.clone()));
                 }
             }
@@ -2501,23 +2891,44 @@ pub fn fits<'a>(entries: impl IntoIterator<Item = &'a Entry>, target: &Surface) 
                 }
             }
         }
-        if let (Some(named), Some(now)) = (entry.version, versions.get(id))
-            && named != *now
-        {
-            misfit(Change::Version { named, now: *now });
+        match (entry.version, versions.get(id)) {
+            (Some(named), Some(now)) if named != *now => {
+                misfit(Change::Version { named, now: *now })
+            }
+            (None, Some(_)) => unversioned.push(entry.id.clone()),
+            _ => {}
         }
     }
     misfits.sort();
     misfits.dedup();
-    if misfits.is_empty() {
-        Fit::Fits
-    } else {
+    unversioned.sort();
+    let verdict = if !misfits.is_empty() {
         Fit::DoesNotFit(misfits)
+    } else if !unversioned.is_empty() {
+        Fit::Unversioned(unversioned)
+    } else {
+        Fit::Fits
+    };
+    FitReport {
+        verdict,
+        deferred: legacy.deferred_note(),
     }
 }
 
-/// The schema [`UsesTable`] writes and reads.
-pub const USES_SCHEMA: u32 = 1;
+/// The newest schema [`UsesTable::read`] takes, which adds split game-code fingerprints. Only a
+/// list that holds one is written with it.
+pub const USES_SCHEMA: u32 = 4;
+
+/// The schema of a list with no split fingerprint, so the tools of builds published before
+/// [`USES_SCHEMA`] still read it.
+pub const PLAIN_SCHEMA: u32 = 3;
+
+/// The first schema, which [`UsesTable::read`] still reads because published packages carry it.
+/// Its lists recorded a build wherever the scan was in doubt, with nothing to tell a doubt from a
+/// literal the scan had placed, so how they say a struct is built is not read and the compile
+/// judges it: a literal that no longer builds fails there, under the mod's name. They hold no
+/// hook versions either ([`Fit::Unversioned`]).
+const DOUBTING_SCHEMA: u32 = 1;
 
 /// The file a mod carries its [`UsesTable`] in, beside its `sunrise-mod.toml`.
 pub const USES_FILE: &str = "uses.json";
@@ -2559,7 +2970,7 @@ impl std::fmt::Display for UsesError {
             Self::Json(error) => write!(f, "the uses table is not valid: {error}"),
             Self::Schema(schema) => write!(
                 f,
-                "the uses table has schema {schema}; this tool reads schema {USES_SCHEMA}"
+                "the uses table has schema {schema}; this tool reads schemas {DOUBTING_SCHEMA}–{USES_SCHEMA}"
             ),
             Self::DuplicateId(id) => write!(f, "the uses table lists {id} twice"),
         }
@@ -2569,6 +2980,16 @@ impl std::fmt::Display for UsesError {
 impl std::error::Error for UsesError {}
 
 impl UsesTable {
+    /// Checks the entries covered by the typed API. The caller judges any native engine-code
+    /// entries separately against the target build's executable catalog.
+    pub fn fits<'a>(
+        &'a self,
+        api: impl IntoIterator<Item = &'a Entry>,
+        target: &Surface,
+    ) -> FitReport {
+        fit_report(Some(self), api, target)
+    }
+
     /// Reads a table: refuses an oversized document, an unknown schema, malformed JSON and
     /// repeated ids, and unknown fields: the table is this crate's own format, and a field a newer
     /// writer adds is a check this reader would silently skip. Entries come back sorted by id.
@@ -2582,11 +3003,21 @@ impl UsesTable {
         }
         let header: Header =
             serde_json::from_slice(bytes).map_err(|e| UsesError::Json(e.to_string()))?;
-        if header.schema != USES_SCHEMA {
+        if !(DOUBTING_SCHEMA..=USES_SCHEMA).contains(&header.schema) {
             return Err(UsesError::Schema(header.schema));
         }
         let mut table: Self =
             serde_json::from_slice(bytes).map_err(|e| UsesError::Json(e.to_string()))?;
+        if table.schema < USES_SCHEMA && table.entries.iter().any(|entry| entry.game_code.is_some())
+        {
+            return Err(UsesError::Json("game_code requires uses schema 4".into()));
+        }
+        if table.schema == DOUBTING_SCHEMA {
+            for entry in &mut table.entries {
+                entry.built = entry.built.map(|_| Built::None);
+                entry.built_at = None;
+            }
+        }
         table.entries.sort();
         if let Some(pair) = table
             .entries
@@ -2596,6 +3027,12 @@ impl UsesTable {
             return Err(UsesError::DuplicateId(pair[0].id.clone()));
         }
         Ok(table)
+    }
+
+    /// Pins missing hook versions in a legacy list from its made-for SDK's `surface.json`.
+    /// This projects only hook ids and versions, never the old surface contracts.
+    pub fn pin_hook_versions(&mut self, made_for: &[u8]) -> Result<(), crate::ReadError> {
+        crate::legacy_hash::pin_hook_versions(self, made_for)
     }
 
     /// The table as written: pretty JSON, entries sorted by id, ending in a newline.

@@ -48,14 +48,14 @@ CLIENT_OWN = re.compile(r"crates/sunrise-client/src/(game(\.rs|/)|entry\.rs|main
 
 # (strand, pattern on the edge's path "crate::a::b"); the first match wins. Owners correct strands here.
 RULES = [
-    ("loading", r"^(sunrise_mod_package|sunrise_mod_wasm|sunrise_mod_deps)\b"),
-    ("loading", r"^mod_api::(ModEntry|Mods|ModFields|__private::(install|mods|set_mod_enabled|ModPhase|PhaseOwner"
-                r"|current_phase|LoadAccess|check_access|with_test_packages|loaded_mods|LoadedMods"
+    ("loading", r"^(sunrise_mod_package|sunrise_mod_deps)\b"),
+    ("loading", r"^mod_api::(ModEntry|Mods|ModFields|__private::(install|mods|set_mod_enabled"
+                r"|RegistrationGuard|registration_open|with_test_packages|loaded_mods|LoadedMods"
                 r"|installed_code_ids|mod_index\w*|mark_game_thread|command_argument_types))\b"),
-    ("slots", r"^(mod_points|sunrise_mod_api_macros|sunrise_mod_api_gen|point_shape|sunrise_mod_point_emit)\b"),
+    ("slots", r"^(sunrise_mod_api_macros|sunrise_mod_api_gen)\b"),
     ("attachments", r"^sunrise_mod_runtime::(attachments|impl_attachment_lifetime)\b"),
     ("attachments", r"^mod_api::(Attachment\w*|attachment_queries|__private::attach\w*)\b"),
-    ("host", r"^mod_api::(\w*Host|HostSide|Backend\w*|__private::(backend\w*|game))\b"),
+    ("host", r"^mod_api::(\w*Host|HostSide|Backend\w*|ConfigContext|ReloadContext|ClientReloadListenerContext|ClientSetupContext|__private::(backend\w*|game))\b"),
     ("content_render", r"^mod_render\b|^sunrise_mod_runtime\b"),
     ("content_render", r"^mod_api::(content|client|sprite_source|RegistrationContext|Registr\w*|Config\w*"
                        r"|__private::(\w+_key(_id|_by_\w+)?|\w+_id|effect_index|resolve_\w+|block_definitions"
@@ -65,9 +65,8 @@ RULES = [
 RULES = [(strand, re.compile(pattern)) for strand, pattern in RULES]
 # Generated files an engine crate includes, by strand.
 GENERATED = {
-    "game_modules.rs": "slots", "lan_action_modules.rs": "slots", "native_hook_modules.rs": "hooks",
     "mod_api_fire_generated.rs": "hooks", "mod_api_goal_view_generated.rs": "hooks",
-    "game_host_modules.rs": "host",
+    "game_host_generated.rs": "host",
 }
 # File rules for the move set, before the edges' majority decides.
 FILE_RULES = [

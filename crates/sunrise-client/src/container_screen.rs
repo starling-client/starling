@@ -140,6 +140,8 @@ pub enum Release {
     Click(Input),
     /// `quickCraftToSlots` over the dragged slots.
     QuickCraft,
+    /// The container took the release without clicking a slot.
+    Swallowed,
     Nothing,
 }
 
@@ -219,11 +221,11 @@ impl Clicks {
         if self.quick_crafting.is_some_and(|b| b != button) {
             self.quick_crafting = None;
             self.skip_next_release = true;
-            return Release::Nothing;
+            return Release::Swallowed;
         }
         if self.skip_next_release {
             self.skip_next_release = false;
-            return Release::Nothing;
+            return Release::Swallowed;
         }
         let quick_crafting = self.quick_crafting.take().is_some();
         if quick_crafting && dragged {
@@ -325,7 +327,7 @@ mod tests {
         );
         assert_eq!(
             clicks.release(&out, Button::Right, true, false, true, false),
-            Release::Nothing
+            Release::Swallowed
         );
     }
 
@@ -351,7 +353,7 @@ mod tests {
                 false,
                 false,
             ),
-            Release::Nothing
+            Release::Swallowed
         );
     }
 
@@ -362,7 +364,7 @@ mod tests {
         clicks.skip_release();
         assert_eq!(
             clicks.release(&out, Button::Left, false, false, false, false),
-            Release::Nothing
+            Release::Swallowed
         );
     }
 
@@ -373,11 +375,11 @@ mod tests {
         clicks.press(&slot, Button::Left, false, false, false);
         assert_eq!(
             clicks.release(&slot, Button::Right, false, true, false, false),
-            Release::Nothing
+            Release::Swallowed
         );
         assert_eq!(
             clicks.release(&slot, Button::Left, false, true, false, false),
-            Release::Nothing
+            Release::Swallowed
         );
         assert_eq!(
             clicks.release(&slot, Button::Left, false, true, true, false),
@@ -454,7 +456,7 @@ mod tests {
         let mut clicks = Clicks::default();
         assert_eq!(
             clicks.release(&slot, Button::Left, false, false, false, false),
-            Release::Nothing
+            Release::Swallowed
         );
         // A press and release are a normal click again.
         assert_eq!(clicks.press(&slot, Button::Left, false, false, false), None);
@@ -477,7 +479,7 @@ mod tests {
         clicks.cancel_drag();
         assert_eq!(
             clicks.release(&slot, Button::Left, false, false, false, false),
-            Release::Nothing
+            Release::Swallowed
         );
     }
 

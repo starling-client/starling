@@ -132,6 +132,12 @@ pub(super) fn builtin_registries(root: &std::path::Path) -> Option<Arc<Builtin>>
 
 impl super::Game<'_> {
     pub(super) fn client_professions(&self) -> super::Result<Arc<ResolvedProfessions>> {
+        let table = self.prepare_client_professions()?;
+        self.install_client_professions(&table);
+        Ok(table)
+    }
+
+    pub(super) fn prepare_client_professions(&self) -> super::Result<Arc<ResolvedProfessions>> {
         use mod_api::__private::game::RegistrationContextNew;
         let declarations = self.mods.profession_declarations.get_or_init(|| {
             let mut registrar = mod_api::ProfessionDeclarations::default();
@@ -143,10 +149,14 @@ impl super::Game<'_> {
         });
         // The client consumes only identity slots. World-dependent POI/trade references
         // are validated by the authoritative server's complete world preparation.
-        let table = ResolvedProfessions::prepare(declarations.clone(), |_, _| true)
-            .map_err(|errors| format!("client villager professions refused: {errors:?}"))?;
+        ResolvedProfessions::prepare(declarations.clone(), |_, _| true)
+            .map(Arc::new)
+            .map_err(|errors| format!("client villager professions refused: {errors:?}").into())
+    }
+
+    pub(super) fn install_client_professions(&self, table: &ResolvedProfessions) {
         sunrise_client::mobs::render::villager_client::install(
-            &table,
+            table,
             &self
                 .res
                 .mob_data()
@@ -154,6 +164,5 @@ impl super::Game<'_> {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        Ok(Arc::new(table))
     }
 }

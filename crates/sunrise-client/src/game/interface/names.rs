@@ -6,12 +6,12 @@
 //! objective displayed below names. Other players' names (on a LAN host
 //! or a server) show whenever `LivingEntityRenderer.shouldShowName` allows,
 //! and the player's own in third person with the `ownNameTag` extra.
-use super::{Game, view_vector};
+use super::{Game, billboard_axes};
 use sunrise_client::{
     block_entity_render::vertex_light,
     hud::{HudAtlas, HudBatch, HudVertex},
     mesher::Vertex,
-    mobs::Mob,
+    mobs::{Mob, Who},
     save::uuid_text,
     scoreboard as sb,
     text::Text,
@@ -19,6 +19,11 @@ use sunrise_client::{
 
 /// The world size of one text pixel in a name tag: `Matrix4f.scale(0.025F, -0.025F, 0.025F)`.
 pub(super) const NAME_TAG_UNIT: f32 = 0.025;
+/// Options.getBackgroundOpacity(0.25) black, as ARGB.color.
+const BACKGROUND: u32 = 0x3F00_0000;
+/// The text alpha that goes with getBackgroundOpacity(0.25):
+/// max((0.25 + 0.75) / 2, 0.5), as ARGB.color (the floor of 255 times it).
+pub(super) const FADED: u32 = 0x7F;
 
 /// Local glyph quads only: camera transforms and lighting stay per frame.
 /// Slots follow submission order; comparing the whole styled text also handles entity reorder,
@@ -33,7 +38,7 @@ pub(super) struct NameTagLayouts {
 struct NameTagLine {
     text: Text,
     alpha: u32,
-    background: bool,
+    background: u32,
     y: f32,
     behind: usize,
     vertices: Vec<HudVertex>,
@@ -64,7 +69,7 @@ impl NameTagLayouts {
         text: &Text,
         y: f32,
         alpha: u32,
-        background: bool,
+        background: u32,
     ) -> usize {
         // At most 512 * 512 HUD vertices (~10 MiB), plus short text keys. Longer tags and
         // excess lines still render normally. Animated/random glyphs and live inline skins
@@ -88,13 +93,7 @@ impl NameTagLayouts {
             batch.vertices.extend_from_slice(&line.vertices);
             return line.behind;
         }
-        let behind = batch.name_tag(
-            atlas,
-            text,
-            y,
-            alpha << 24 | 0xFF_FFFF,
-            if background { 0x3F00_0000 } else { 0 },
-        );
+        let behind = batch.name_tag(atlas, text, y, alpha << 24 | 0xFF_FFFF, background);
         if slot < MAX_LINES {
             if self.lines.len() <= slot {
                 self.lines.resize_with(slot + 1, || None);
@@ -139,8 +138,14 @@ impl Game<'_> {
         m.custom_name = Some(name);
         m.custom_name_text = text;
         m.persistent = true;
-        // itemStack.shrink(1), in creative too.
+        let at = [m.position.x, m.position.y, m.position.z];
+        // itemStack.shrink(1); `Player.interactOn` puts a creative player's
+        // count back, which `consume_held` skips for them.
         self.consume_held();
+        // `Mob.interact`: the tag consumed the use, so
+        // `gameEvent(GameEvent.ENTITY_INTERACT, player)` at the mob.
+        let ctx = self.who_context(Some(Who::Player), None);
+        self.post_game_event("minecraft:entity_interact", at, ctx);
         self.swing_arm();
         if let (Some(player), Some(player_name)) =
             (self.lan_acting_uuid, self.lan_acting_name.clone())
@@ -289,11 +294,6 @@ impl Game<'_> {
             ) {
                 continue;
             }
-            let marks = self.hooks_name_marks(m, Some(m.id) == own_id);
-            let at = match marks.top {
-                Some(top) => p + glam::DVec3::Y * cosmetic_lift(top, m.model_scale()),
-                None => p,
-            };
             // A player's scores and team go by name, a mob's by UUID.
             let holder = if player {
                 Some(name.clone())
@@ -360,7 +360,6 @@ impl Game<'_> {
                         lines: vec![(text, 0.0)],
                         light: l,
                         discrete,
-                        marks: Marks::default(),
                     });
                 }
                 continue;
@@ -412,11 +411,10 @@ impl Game<'_> {
                 m.position.z.floor() as i32,
             );
             tags.push(NameTag {
-                at,
+                at: p,
                 lines,
                 light: l,
                 discrete,
-                marks,
             });
         }
         drop(player_ids);
@@ -463,17 +461,10 @@ impl Game<'_> {
                 continue;
             }
             let team = self.mob_team(a.id);
-            let invisible = sb::invisible_to(team, viewer, self.spectator(), false);
-            let view = sb::NameView {
-                discrete: false,
-                distance_sqr,
-                invisible_to_viewer: invisible,
-                hud_hidden: self.ui.hide_gui,
-                is_camera: false,
-                is_vehicle: false,
-            };
-            let name_shown =
-                a.custom_name.is_some() && a.name_visible && sb::name_shown(team, viewer, view);
+            // `ArmorStandRenderer.shouldShowName` overrides the living
+            // entity's rule with `isCustomNameVisible` alone: no team
+            // visibility, no F1, no invisibility.
+            let name_shown = a.custom_name.is_some() && a.name_visible;
             let mut visible = name_shown;
             let mut text = None;
             if hooks {
@@ -519,7 +510,6 @@ impl Game<'_> {
                 lines,
                 light: l,
                 discrete: false,
-                marks: Marks::default(),
             });
         }
         // ItemFrameRenderer.shouldShowName/getNameTag: only the targeted
@@ -582,7 +572,6 @@ impl Game<'_> {
                         center.z.floor() as i32,
                     ),
                     discrete: false,
-                    marks: Marks::default(),
                 });
             }
         }
@@ -640,9 +629,6 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
         see_through: &mut Vec<Vertex>,
     ) {
-        // The text alpha that goes with getBackgroundOpacity(0.25):
-        // max((0.25 + 0.75) / 2, 0.5), as ARGB.color (the floor of 255 times it).
-        const FADED: u32 = 0x7F;
         let mut patches = Vec::new();
         let mut layouts = std::mem::take(&mut self.name_tag_layouts);
         layouts.begin_frame(&self.gui.atlas);
@@ -662,12 +648,11 @@ impl Game<'_> {
                     o,
                     &tag.lines,
                     FADED,
-                    true,
+                    BACKGROUND,
                     0,
                     light,
                     NAME_TAG_UNIT,
                     out,
-                    tag.marks,
                     Some(&mut layouts),
                 ));
                 continue;
@@ -680,12 +665,11 @@ impl Game<'_> {
                 o,
                 &tag.lines,
                 0xFF,
-                false,
+                0,
                 0,
                 light,
                 NAME_TAG_UNIT,
                 out,
-                tag.marks,
                 Some(&mut layouts),
             ));
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
@@ -693,12 +677,11 @@ impl Game<'_> {
                 o,
                 &tag.lines,
                 FADED,
-                true,
+                BACKGROUND,
                 2,
                 0,
                 NAME_TAG_UNIT,
                 see_through,
-                tag.marks,
                 Some(&mut layouts),
             ));
         }
@@ -726,37 +709,42 @@ impl Game<'_> {
             o,
             lines,
             text_alpha,
-            background,
+            if background { BACKGROUND } else { 0 },
             text_layer,
             light,
             unit,
             out,
-            Marks::default(),
             None,
         )
     }
 
-    /// [`Self::name_tag_quads`], with Sunrise's marks on the last line (the name): the Sunrise
-    /// player's mark before the text, a name tag style's badge after it and its line under the
-    /// background.
+    /// [`Self::name_tag_quads`] on a `background` of its own (ARGB, none when its alpha is 0).
     #[allow(clippy::too_many_arguments)]
-    fn styled_name_tag_quads(
+    pub(super) fn styled_name_tag_quads(
         &self,
         o: glam::DVec3,
         lines: &[(Text, f64)],
         text_alpha: u32,
-        background: bool,
+        background: u32,
         text_layer: u32,
         light: u32,
         unit: f32,
         out: &mut Vec<Vertex>,
-        marks: Marks,
         mut layouts: Option<&mut NameTagLayouts>,
     ) -> Vec<sunrise_client::font::Patch> {
+<<<<<<< sync-sunrise-1
         // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
         const BACKGROUND: u32 = 0x3F00_0000;
         let axes = self.camera_text_axes();
         let away = axes.away;
+=======
+        // SubmitNodeCollection.submitNameTag turns the tag by the camera's orientation
+        // (Camera.rotation()), turned round in third-person front view, so the text reads the
+        // right way from where it is seen.
+        let orientation = self.camera_orientation();
+        let [right, up] = billboard_axes(orientation);
+        let away = orientation * glam::Vec3::NEG_Z * 0.002;
+>>>>>>> sunrise/main
         let mut batch = HudBatch::new(
             [1, 1],
             sunrise_client::hud::GuiScale {
@@ -764,8 +752,7 @@ impl Game<'_> {
                 unicode: false,
             },
         );
-        let last = lines.len().saturating_sub(1);
-        for (n, (text, lift)) in lines.iter().enumerate() {
+        for (text, lift) in lines {
             let o = (o + glam::DVec3::new(0.0, *lift, 0.0)).as_vec3();
             let (r, u) = (axes.right * unit, axes.up * unit);
             // Text space: x right, y down (scale 0.025, -0.025).
@@ -792,42 +779,9 @@ impl Game<'_> {
                     text,
                     y0,
                     text_alpha << 24 | 0xFF_FFFF,
-                    if background { BACKGROUND } else { 0 },
+                    background,
                 ),
             };
-            if let Some(mark) = marks.mark.filter(|_| n == last) {
-                let x = -self.gui.atlas.font.width_text(text) / 2.0 - 10.0;
-                // 8 text pixels square, a pixel left of the background.
-                for &(mx, my, w, h, argb) in mark {
-                    let a = text_alpha * (argb >> 24) / 255;
-                    batch.fill(
-                        &self.gui.atlas,
-                        x + f32::from(mx),
-                        y0 + f32::from(my),
-                        f32::from(w),
-                        f32::from(h),
-                        sunrise_client::hud_layout::abgr(a << 24 | argb & 0xFF_FFFF),
-                    );
-                }
-            }
-            if let Some(style) = marks.style.filter(|_| n == last) {
-                let width = self.gui.atlas.font.width_text(text);
-                let x = -width / 2.0;
-                let alpha = text_alpha << 24;
-                // The badge, 8 text pixels square, a pixel right of the background.
-                batch.rect_uv(x + width + 2.0, y0, 8.0, 8.0, style.mark, alpha | 0xFF_FFFF);
-                // The line, a pixel tall, under the background (which runs from -1 to 9).
-                batch.fill(
-                    &self.gui.atlas,
-                    x - 1.0,
-                    y0 + 9.0,
-                    width + 1.0,
-                    1.0,
-                    // The batch takes RGBA: the line as ARGB, swapped.
-                    sunrise_client::hud_layout::abgr(alpha | style.line),
-                );
-            }
-
             for (i, quad) in batch.vertices.as_chunks::<6>().0.iter().enumerate() {
                 let shift = if i * 6 < behind {
                     away
@@ -958,31 +912,18 @@ fn collect_vehicle_ids(
 fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }
-/// `EntityAttachment.NAME_TAG`: `(0, bbHeight, 0)` of the box of the entity's
-/// current pose, which the submitter lifts 0.5 more, between the last two tick
-/// positions. The player box is `Pose::dimensions(1.0)`.
+/// `EntityAttachment.NAME_TAG` of the entity's current pose
+/// (`Mob::name_tag_height`), which `SubmitNodeCollector.submitNameTag` lifts
+/// 0.5 more, between the last two tick positions. The player box is
+/// `Pose::dimensions(1.0)`.
 /// shortcut: the scale attribute is not in the tag height, add `model_scale`
 /// when tags on scaled players matter.
 pub(super) fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
-        m.previous.y + (m.position.y - m.previous.y) * alpha + f64::from(m.height()) + 0.5,
+        m.previous.y + (m.position.y - m.previous.y) * alpha + m.name_tag_height() + 0.5,
         m.previous.z + (m.position.z - m.previous.z) * alpha,
     )
-}
-
-/// Sunrise: how far a player's name tag goes up so that it clears the tallest cosmetic drawn on
-/// them, `top` pixels above the model's neck (`Item::top`) on a player of `scale`
-/// (`LivingEntity.getScale`); 0 when the item stays under vanilla's tag. Measured standing: the
-/// model's neck is 1.501 blocks up, times `AvatarRenderer.scale`'s 0.9375 and `scale`; the tag's
-/// lowest pixel (the style's line under the background, 10 text pixels under the anchor) is at
-/// 1.8 + 0.5 - 10 × 0.025 = 2.05 blocks, and the lift leaves one text pixel between them. Other
-/// poses keep the same lift: crouching lowers the model more (0.39 blocks) than the tag (0.3).
-pub(super) fn cosmetic_lift(top: f32, scale: f32) -> f64 {
-    let item = f64::from(scale) * 0.9375 * (1.501 + f64::from(top) / 16.0);
-    let unit = f64::from(NAME_TAG_UNIT);
-    let bottom = 1.8 + 0.5 - 10.0 * unit;
-    (item + unit - bottom).max(0.0)
 }
 
 /// A name tag: where it hangs, its lines (text, lift), the packed light at
@@ -992,27 +933,6 @@ struct NameTag {
     lines: Vec<(Text, f64)>,
     light: u8,
     discrete: bool,
-    marks: Marks,
-}
-
-/// What a hook draws by a player's name (`sunrise_hooks::players::NameDecoration`): a mark
-/// before it (Sunrise's: they play Sunrise) and a name tag style.
-#[derive(Clone, Copy, Default)]
-pub(super) struct Marks {
-    pub mark: Option<sunrise_hooks::players::Mark>,
-    pub style: Option<TagStyle>,
-    /// How high the cosmetics drawn on their body get above the neck, in model pixels: the tag
-    /// goes up over a tall one (`cosmetic_lift`).
-    pub top: Option<f32>,
-}
-
-/// A cosmetic name tag style: a badge after the name and a line under it.
-#[derive(Clone, Copy)]
-pub(super) struct TagStyle {
-    /// The mark's place in the GUI atlas.
-    pub mark: sunrise_client::hud::Rect,
-    /// The line's colour, `0xrrggbb`.
-    pub line: u32,
 }
 
 /// `Entity.DATA_CUSTOM_NAME` of a mob named `name`: its component with its style (a name
@@ -1025,12 +945,16 @@ pub(super) fn name_component(m: &Mob, name: &str) -> sunrise_core::nbt::Tag {
 }
 
 #[cfg(test)]
+#[path = "tests/name_tag_tests.rs"]
+mod name_tag_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use sunrise_client::mobs::{Anim, Brain, MobType, Part, Species};
     use sunrise_client::pose::Pose;
     use sunrise_core::geometry::Vec3;
-    use std::sync::Arc;
 
     #[test]
     fn a_mobs_name_is_sent_with_its_style() {
@@ -1099,7 +1023,8 @@ mod tests {
     ) -> Vec<u8> {
         cache.begin_frame(atlas);
         let mut batch = HudBatch::scratch([1, 1]);
-        let behind = cache.name_tag(&mut batch, atlas, text, 0.0, alpha, background);
+        let backdrop = if background { BACKGROUND } else { 0 };
+        let behind = cache.name_tag(&mut batch, atlas, text, 0.0, alpha, backdrop);
         cache.end_frame();
         let mut fresh = HudBatch::scratch([1, 1]);
         assert_eq!(
@@ -1155,7 +1080,7 @@ mod tests {
             cache.begin_frame(&atlas);
             atlas.font.reseed(seed);
             let mut batch = HudBatch::scratch([1, 1]);
-            cache.name_tag(&mut batch, &atlas, &text, 0.0, 255, false);
+            cache.name_tag(&mut batch, &atlas, &text, 0.0, 255, 0);
             cache.end_frame();
             let bytes = bytemuck::cast_slice::<_, u8>(&batch.vertices).to_vec();
             atlas.font.reseed(seed);

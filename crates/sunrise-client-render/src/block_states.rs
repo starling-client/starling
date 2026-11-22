@@ -5,11 +5,11 @@ use crate::{
     block_sprites::{BlockSprites, Lookup, SpriteRef},
     streaming::WorkerContext,
 };
+use std::{collections::HashMap, sync::Arc};
 use sunrise_items::blocks::{BlockFacts, MAP_COLORS, RenderShape};
 use sunrise_world::{
     block_collision::BlockCollisionRegistry, fluid::FluidState, registry::BlockStateId,
 };
-use std::{collections::HashMap, sync::Arc};
 
 /// What one block state is, as a renderer or a map reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -144,9 +144,9 @@ mod tests {
         assets::Assets, biome::Biomes, block_sprites::parse_state, light::LightTables,
         mesher::MeshTables,
     };
+    use std::{path::PathBuf, sync::OnceLock};
     use sunrise_assets::model::Direction;
     use sunrise_world::fluid::FluidKind;
-    use std::{path::PathBuf, sync::OnceLock};
 
     /// Far fewer layers to an array than a GPU takes, so most sprites lie past array 0.
     const SMALL_SPLIT: u32 = 64;
@@ -173,6 +173,7 @@ mod tests {
                 render,
                 biomes: Arc::new(Biomes::load(&source).unwrap()),
                 hidden_states: Arc::from([]),
+                part_tables: Default::default(),
             });
             BlockStates::new(&facts, &collision, context, SMALL_SPLIT)
         })
@@ -185,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_grass_block_is_a_whole_solid_grass_coloured_block() {
         let grass = facts("grass_block");
         assert_eq!(&*grass.name, "minecraft:grass_block");
@@ -198,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn air_and_light_are_not_drawn() {
         let air = facts("air");
         assert!(air.air && air.invisible && !air.collides);
@@ -210,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_slabs_outline_is_its_half() {
         assert_eq!(
             &*facts("stone_slab[type=bottom]").outline,
@@ -227,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_face_names_its_texture() {
         let states = states();
         let id = parse_state(states.context.assets.registry, "grass_block").unwrap();

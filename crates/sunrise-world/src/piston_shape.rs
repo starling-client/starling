@@ -4,8 +4,8 @@ use crate::{
     compression::invalid,
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::geometry::{Direction, ShapeError, ShapeOp, Vec3, VoxelShape};
 use std::{collections::BTreeMap, io};
+use sunrise_core::geometry::{Direction, ShapeError, ShapeOp, Vec3, VoxelShape};
 #[derive(Clone, Copy, Debug)]
 pub struct MovingPistonState {
     pub moved_state: BlockStateId,

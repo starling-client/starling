@@ -11,6 +11,13 @@ The gameplay library re-exports the reusable API, keeping existing mod targets u
 Gameplay tests run in its library test target, separately from the reusable library's tests.
 There is no copy of gameplay in the executable's test target. Tools and probes depend only
 on the reusable library, so gameplay edits do not invalidate their builds.
+Gameplay is moving out of it (#2210): `sunrise-gameplay` takes the server side (vanilla's logical side) and
+`sunrise-client-gameplay` the client-only side. Waves 1 and 2 moved the modules that need no `Game` (the mob families
+on the `MobLevel` trait, the cat spawner's clock and picks and the wandering trader's state, stats, the block-entity
+ticker helpers, item areas, the server halves of `lan/` and `dedicated/`; occlusion and particle culling on the client
+side), and `game/` keeps the `impl Game` glue. `LanHost`, the types `World`, `ChunkMap`, `Mob` and `ItemEntity`, the
+level events and their dispatchers, the custom spawners' dispatch (`G/mobs/custom_spawners.rs`), the village siege
+(`G/mobs/raids/mod.rs`) and the block-entity tick loop (`G/blocks/block_entity_ticks.rs`) have not moved.
 
 Paths: `L/` = `crates/sunrise-client/src/`, `G/` = `crates/sunrise-client/src/game/`, `W/` =
 `crates/sunrise-world/src/`, `K/` = `crates/sunrise-client-core/src/`, `C/` = `crates/sunrise-command/src/`,
@@ -25,18 +32,31 @@ Because the probe library does not compile gameplay, its dep-info does not inclu
 or `game/`. Exact harness counts still depend on refreshed records and reachability; use the
 command above to inspect the selection rather than relying on historical counts.
 
+Item component values live in `W/component_value.rs`; the protocol's
+`item/persistent.rs` reconstructs stream values, and `item/hash/ops.rs` hashes
+those values after saved-codec validation. Templates retain their own patches and
+dense container holes. The last entry for a component wins, and saved projections
+and nested template hashes omit transients. Values outside the saved codec's
+contract stay intact when projection refuses them. Clicks check typed values
+without projecting a new saved tree; a failed component hash refuses the click.
+Equality of directly constructed `Value::Map`s allocates nothing but is quadratic
+in the number of entries. Binary NBT read limits live in `sunrise-core`'s `nbt.rs`;
+they do not apply to materialized component trees.
+Check this seam with `cargo test -p sunrise-world --lib component_value::` and
+`cargo test -p sunrise-protocol --lib item::`.
+
 | # | Area (commits) | Files | Checks |
 |---|---|---|---|
-| 1 | Game loop, tick order, frame pacing (554) | `L/game.rs` (`fn tick`, `fn tick_world`, `fn render`), `G/runtime/window_handler.rs` (`about_to_wait`), `L/clock.rs`, `N/window.rs`, `R/spans.rs` | game_loop, frame_limiter, interaction_input, tick |
+| 1 | Game loop, tick order, frame pacing (554) | `L/game.rs` (`fn tick`, `fn render`), `G/world/level_tick.rs` (`fn tick_world`), `G/runtime/window_handler.rs` (`about_to_wait`), `L/clock.rs`, `N/window.rs`, `R/spans.rs` | game_loop, frame_limiter, interaction_input, tick |
 | 2 | Mobs in the game loop, spawning (166) | `G/creatures.rs`, `G/natural_spawning.rs`, `L/mobs/spawning.rs`, `L/mobs/spawn_rules.rs`, `L/mobs/spawn_selection.rs`, `L/mobs/finalize.rs`, `G/spawner.rs`, `G/trial_spawner.rs` | natural_spawn, spawn_rules, finalize_spawn, spawner, trial_spawner, mob_ai |
 | 3 | World save and load (163) | `L/save.rs`, `G/saving.rs`, `G/persist.rs` (entities), `L/entity_nbt.rs`, `K/block_entity_nbt.rs`, `W/region.rs`, `crates/sunrise-core/src/nbt.rs` | save_roundtrip, world_reopen, world, datafix |
 | 4 | World generation (153) | `W/worldgen.rs`, `W/worldgen/` (`generator*.rs`, `feature_graph.rs`, `structure/`, `placement/`), `L/vanillagen.rs` | chunk_generation, worldgen, server_world_gen, world_spawn, feature_graph, feature_placement, decoration and the other worldgen harnesses |
-| 5 | Multiplayer client, packets in (145) | `G/remote.rs` (`fn handle_packet`, `fn tick_remote`), `G/remote_*.rs`, `L/net.rs` | dedicated_server, server_entities, lan_e2e (all) |
+| 5 | Multiplayer client, packets in (145) | `G/network/remote/mod.rs` (`Game::apply_packet`), `G/network/remote/packets_*.rs` (packet handlers), `G/network/remote/tick.rs` (`Game::tick_remote`), `G/remote_*.rs`, `L/net.rs` | dedicated_server, server_entities, lan_e2e (all) |
 | 6 | Agent control, sunrise-ctl (145) | `L/control.rs`, `L/bin/sunrise-ctl/`, `G/control.rs`, `G/agent.rs`, `G/events.rs`, `G/ui_control.rs` | `python3 tools/agent_control_e2e.py`; `cargo test -p sunrise-client-lib --bin sunrise-ctl` |
-| 7 | CI and release (134) | `.github/workflows/` (`ci.yml`, `parity.yml`, `release.yml`, `launcher.yml`), `tools/ci/`, `tools/parity.py`, `tools/pr_ready.py` | `python3 -m unittest discover -s tests`; actionlint (`.github/actionlint.yaml`) |
+| 7 | CI and release (134) | `.github/workflows/` (`ci.yml`, `parity.yml`, `release.yml`), `tools/ci/`, `tools/parity.py`, `tools/pr_ready.py` | `python3 -m unittest discover -s tests`; actionlint (`.github/actionlint.yaml`) |
 | 8 | LAN host: connections, play state, tracking (133) | `L/lan/` (`conn.rs`, `hub.rs` + `hub/`, `chunks.rs`, `entity.rs`, `tracking.rs`, `guest.rs`, `playerdata.rs`), `G/lan.rs` | lan, lan_e2e (all), `cargo test -p sunrise-client --test lan_bot` |
 | 9 | Renderer core (132) | `R/gfx.rs` (`Renderer::new`, `Renderer::render`), `R/gfx/` (cull, occlusion, translucency, upload, timing, lod) | client_graphics, culling_rays, translucency; `sunrise-client --benchmark standard` |
-| 10 | Launcher (124) | `launcher/src/` (`main.rs`, `backend.rs`, `cli.rs`, `mcp.rs`, `servers_page.rs`) | `cd launcher && cargo test`; `python3 tools/launcher_mcp_e2e.py` |
+| 10 | Launcher (124) | [sunrise-org/sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher): `src/` (`main.rs`, `backend.rs`, `cli.rs`, `mcp.rs`, `servers_page.rs`) | `cargo test` in that repository |
 | 11 | Mob types and species (117) | `L/mobs.rs`, `L/mobs/species.rs`, `L/mobs/data.rs`, `L/mobs/living.rs`, `L/mobs/drops.rs`, `L/mobs/gear.rs` | mob_attributes, entity_attribute, entity_death_loot, mob_ai |
 | 12 | Guests' actions on a server (98) | `G/network/lan_actions/` (`turns.rs`: `fn as_guest`, `tick.rs`: `fn tick_guests`), `G/lan_{attributes,pvp,chat,crafting,stations,trading,mount_menu,waypoints}.rs` | server_player_combat, server_player_damage, server_player_targets, lan_e2e (all) |
 | 13 | Modpack porting, mod content (97) | `crates/sunrise-port-pack/`, `L/mod_content.rs`, `tools/port_*.py` | `cargo test -p sunrise-port-pack`; `python3 tools/mod_port_harness.py` |
@@ -47,7 +67,7 @@ command above to inspect the selection rather than relying on historical counts.
 | 18 | Command execution (88) | `G/commands.rs`, `G/commands/*.rs`, `L/scoreboard_cmd.rs`, `L/data_cmd.rs`, `K/scoreboard.rs`, `G/functions.rs` | command_exec (corpus `tools/command_exec_corpus.py`), scoreboard, server_ops_feedback, lan_e2e commands |
 | 19 | Chunk streaming, light, tickets (85) | `R/streaming.rs`, `R/world.rs`, `R/chunk.rs`, `R/chunk_map.rs`, `R/light.rs`, `L/ticket_levels.rs`, `L/tick_chunk_membership.rs`, `G/world_loading.rs`, `G/world_entry.rs` | light, chunk_status, random_tick_sections; `cargo test -p sunrise-client --test streaming_meshes` |
 | 20 | Mob models and animation (78) | `L/mobs/render.rs`, `L/mobs/anim.rs`, `L/mobs/body_anim.rs`, `L/mobs/keyframes.rs`, `R/entity.wgsl` | entity_model |
-| 21 | Block behaviour, server side (78) | `W/level/` (`mod.rs`, `tick.rs`, `hooks.rs`, `data.rs`, `redstone.rs`, `place.rs`), `G/block_entity_ticks.rs`, `G/moving_pistons.rs` | block_update, redstone, random_tick, simple_block, piston_movement, block_entity_tickers |
+| 21 | Block behaviour, server side (78) | `W/level/` (`mod.rs`, `tick.rs`, `hooks.rs`, `data.rs`, `redstone.rs`, `place.rs`), `G/block_entity_ticks.rs` (the ordered loop, mod dispatch, the ticking-state table; its eligibility and ticker-name helpers in `crates/sunrise-gameplay/src/block_entity_ticks.rs`), `G/moving_pistons.rs` | block_update, redstone, random_tick, simple_block, piston_movement, block_entity_tickers |
 | 22 | Player movement and collision (75) | `L/motion.rs` + `L/motion/`, `R/collisions.rs`, `W/entity_move.rs`, `W/player_travel.rs`, `W/collision.rs` | collision, entity_move, player_travel, living_motion, climbing, swimming; `python3 tools/test_native_scene_motion.py` |
 | 23 | Resource packs and models (65) | `R/packs.rs` + `R/packs/`, `R/pack_screen.rs`, `R/atlas_sources.rs`, `R/sprites.rs`, `R/model_library.rs`, `G/packs.rs`, `L/mobs/cem.rs`, `L/mobs/cem_anim.rs`, `R/block_entity_cem.rs`, `crates/sunrise-assets/`, `crates/sunrise-optifine/` | resource_pack, pack_selection, pack_screen, model_resolution, item_model, mipmap |
 | 24 | Container menus and inventory (61) | `L/menu.rs`, `L/container_screen.rs`, `R/containers.rs`, `L/creative.rs`; `G/menu_clicks.rs` (`fn menu_ops`, `fn click_inventory`), `G/inventory_input.rs`, `G/inventory_slots.rs` | menu_click, container_screen, creative, lan_e2e containers clicks |
@@ -55,7 +75,7 @@ command above to inspect the selection rather than relying on historical counts.
 | 26 | Crafting and the recipe book (59) | `L/crafting.rs`, `L/recipe_book.rs`, `L/recipe_book_screen.rs`, `G/recipe_book.rs`, `G/machines.rs`, `G/machines/crafter.rs` | recipe, recipe_book, recipe_book_view, place_recipe, ghost_recipe, crafter |
 | 27 | Vehicles and mounts (54) | `G/boats.rs`, `G/boat_passengers.rs`, `G/minecarts.rs`, `G/mounts.rs`, `G/mount_menu.rs`, `G/llamas.rs`, `G/passengers.rs` | server_entities, lan_e2e boats minecarts riding mounts |
 | 28 | Villagers, trading, raids (50) | `L/mobs/villager*.rs`, `L/merchant.rs`, `G/trading.rs`, `G/villagers.rs`, `L/raid.rs`, `G/raids.rs`, `L/gossip.rs` | trading, raid, mob_ai |
-| 29 | Title, worlds, startup (49) | `L/title.rs` + `L/title/`, `G/startup_menu.rs`, `R/title_edition.rs`, `G/loading_window.rs` (the first renderer, `start_game`), `G/resource_load.rs` (the startup resource load) | world_options; `cargo test -p sunrise-client --lib title` |
+| 29 | Title, worlds, startup (49) | `L/title.rs` + `L/title/`, `G/startup_menu.rs`, `G/loading_window.rs` (the first renderer, `start_game`), `G/resource_load.rs` (the startup resource load) | world_options; `cargo test -p sunrise-client --lib title` |
 | 30 | Dedicated server, sunrise-server (48) | `G/dedicated.rs`, `G/dedicated/status.rs`, `crates/sunrise-server/`, `crates/sunrise-server-files/` | dedicated_server, server_files, user_cache, online_mode, server_ops_feedback |
 | 31 | Particles and client effects (46) | `R/particles.rs`, `G/render_tick.rs`, `G/level_particles.rs`, `L/animate_tick.rs` | particle_providers, block_particles, entity_particles, emitter_particles, marker_particles |
 | 32 | Bosses and the End (45) | `G/dragon.rs`, `G/wither.rs`, `G/end.rs` | server_dragon, forced_end, end_podium, end_gateway |
@@ -67,6 +87,12 @@ command above to inspect the selection rather than relying on historical counts.
 | 38 | Command parsing (34) | `C/` (`args.rs`, `selector.rs`, `tree_*.rs`, `vanilla.rs`); `cargo test -p sunrise-command` | command_parse (corpus `tools/command_parse_corpus.py`) |
 | 39 | Benchmarks (34) | `L/benchmark.rs`, `tools/perf_bench.py`, `crates/sunrise-system/`, `crates/sunrise-bench/` | `python3 -m unittest tests.test_perf_bench`; [benchmark.md](benchmark.md) |
 | 40 | Explosions and TNT (31) | `G/entities/explosion.rs`, `G/entities/tnt.rs`, `G/blocks/nether_portal.rs`, `G/entities/vehicle_teleport.rs` | sulfur_portal_blast (calculator oracle; actual portal, `/tp` and mod cross-level arrivals, immediate item merges, transient TNT portal protection and disk reset); lan_e2e blast |
+
+NBT compounds (`crates/sunrise-core/src/nbt.rs` and `java_hash_map.rs`) retain Java map
+traversal, including collision and mutation history. Rust `Clone` preserves that history;
+use `nbt::copy_tag` for Java `CompoundTag.copy` semantics. Reads must not reconstruct maps.
+Block-entity writers construct superclass/subclass fields before adding metadata, rather
+than repairing a completed compound and changing its traversal.
 
 Portal arrival regressions run with `python3 tools/test_sulfur_portal_blast_parity.py`
 and prepared 26.3 resources in `SUNRISE_TEST_RESOURCES`. The harness supplies private
@@ -82,5 +108,5 @@ same live TNT do not clear the flag, as in 26.3.
 Construction/join callback regressions also cover nested spawns and logically
 removed incoming or neighbouring items, before the native removal sweep.
 
-Controller glyphs (`R/pad_glyph.rs`, drawn by the gameplay guide, notices, splitscreen prompts and declared
+Controller glyphs (`R/pad_glyph.rs`, drawn by the gameplay guide, notices and declared
 buttons) are part of the same kit: [ui-kit.md](ui-kit.md) says how to ask for one and how to test it.

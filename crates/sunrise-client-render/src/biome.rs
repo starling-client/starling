@@ -1,9 +1,6 @@
 //! Biome colours from the pinned biome definitions and colormaps
 //! (`Biome.getGrassColor`/`getFoliageColor`/..., `BlockTintSources`).
 use crate::Result;
-use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
-use sunrise_client_core::particle_type::ParticleType;
-use sunrise_core::{noise::SimplexNoise, position::BlockPos, random::LegacyRandom};
 pub use mod_api::world::biome::{BiomeColors, SpawnEntry};
 use serde_json::Value;
 use std::{
@@ -11,6 +8,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex, OnceLock},
 };
+use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
+use sunrise_client_core::particle_type::ParticleType;
+use sunrise_core::{noise::SimplexNoise, position::BlockPos, random::LegacyRandom};
 
 /// The missing saved biomes already warned about in the open world: each dimension's table
 /// keeps its own placeholders, but a name is reported once per world.
@@ -180,6 +180,7 @@ pub struct Biomes {
     exhausted: Arc<std::sync::atomic::AtomicBool>,
 }
 /// The grass, foliage and dry foliage colormaps.
+#[derive(Default)]
 struct Colormaps {
     grass: Vec<u32>,
     foliage: Vec<u32>,
@@ -202,13 +203,27 @@ fn colormap(root: &ResourceSource, name: &str) -> Result<Vec<u32>> {
     // A protected pack's wrong checksums, which Minecraft's STB never checks.
     decoder.ignore_checksums(true);
     let mut reader = decoder.read_info()?;
-    let mut bytes = vec![0; reader.output_buffer_size().ok_or("colormap too large")?];
+    crate::hud::check_pack_size(reader.info().width, reader.info().height)?;
+    use crate::hud::{MAX_IMAGE_BYTES, image_buffer};
+    let size = reader.output_buffer_size().unwrap_or(usize::MAX);
+    let mut bytes = image_buffer(&[size], MAX_IMAGE_BYTES)?;
+    bytes.resize(size, 0);
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
-    Ok(bytes[..info.buffer_size()]
-        .chunks_exact(channels)
-        .map(|p| u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]))
-        .collect())
+    let mut map = image_buffer(
+        &[info.width as usize, info.height as usize],
+        MAX_IMAGE_BYTES,
+    )?;
+    // A grey map (one channel, two with alpha) has its grey for red, green and blue.
+    map.extend(bytes[..info.buffer_size()].chunks_exact(channels).map(|p| {
+        let [r, g, b] = if channels < 3 {
+            [p[0]; 3]
+        } else {
+            [p[0], p[1], p[2]]
+        };
+        u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
+    }));
+    Ok(map)
 }
 /// `GrassColor.get`/`FoliageColor.get`: temperature and downfall index a 256x256 map.
 fn sample(map: &[u32], temperature: f32, downfall: f32, fallback: u32) -> u32 {
@@ -334,6 +349,17 @@ impl Biomes {
             foliage: colormap(root.source(), "foliage")?,
             dry: colormap(root.source(), "dry_foliage")?,
         };
+        Self::load_with_colormaps(root, maps)
+    }
+    /// Loads biome definitions for a logical server without opening the client
+    /// `textures/colormap/{grass,foliage,dry_foliage}.png` textures (`GrassColorReloadListener`,
+    /// `FoliageColorReloadListener`, `DryFoliageColorReloadListener` are client-only in vanilla).
+    /// Server-side biome JSON data (water colour, climate, spawns, features and attributes) is
+    /// loaded identically to [`Self::load`].
+    pub fn load_for_server(root: &ResourceRoot) -> Result<Self> {
+        Self::load_with_colormaps(root, Colormaps::default())
+    }
+    fn load_with_colormaps(root: &ResourceRoot, maps: Colormaps) -> Result<Self> {
         let mut list = Vec::new();
         let mut files_by_name = BTreeMap::new();
         // The folder's own files (not its subfolders'), by file name: through `json_folder`,
@@ -1027,6 +1053,62 @@ mod source_tests {
         assert_eq!(colormap(&source, "grass").unwrap(), [0x0c2238]);
         assert!(colormap(&source, "missing").is_err());
     }
+
+    /// A colormap is refused by the side its PNG header claims when no atlas
+    /// would take it, before the reader sizes a buffer from that header.
+    #[test]
+    fn a_colormap_claiming_a_side_no_atlas_takes_is_refused() {
+        use sunrise_assets::resource_source::Resource;
+        let colormap_of_width = |width: u32| {
+            let mut png = Vec::new();
+            let mut encoder = png::Encoder::new(&mut png, width, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&vec![0; width as usize * 3])
+                .unwrap();
+            writer.finish().unwrap();
+            let source = ResourceSource::indexed(std::collections::BTreeMap::from([(
+                "assets/minecraft/textures/colormap/grass.png".into(),
+                Resource::bytes(png),
+            )]));
+            colormap(&source, "grass").map(|map| map.len())
+        };
+        assert_eq!(colormap_of_width(32_768).unwrap(), 32_768);
+        let refused = colormap_of_width(40_000);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.is::<crate::hud::OverSizeLimit>()),
+            "{refused:?}"
+        );
+    }
+
+    /// A grey colormap has one channel (two with alpha): each pixel is its
+    /// grey in red, green and blue.
+    #[test]
+    fn a_grey_colormap_reads_its_grey_into_every_channel() {
+        use sunrise_assets::resource_source::Resource;
+        for (color, pixels) in [
+            (png::ColorType::Grayscale, vec![0x10, 0x20]),
+            (png::ColorType::GrayscaleAlpha, vec![0x10, 0xff, 0x20, 0xff]),
+        ] {
+            let mut png = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut png, 2, 1);
+                encoder.set_color(color);
+                encoder.set_depth(png::BitDepth::Eight);
+                let mut writer = encoder.write_header().unwrap();
+                writer.write_image_data(&pixels).unwrap();
+            }
+            let source = ResourceSource::indexed(std::collections::BTreeMap::from([(
+                "assets/minecraft/textures/colormap/grass.png".into(),
+                Resource::bytes(png),
+            )]));
+            assert_eq!(colormap(&source, "grass").unwrap(), [0x101010, 0x202020]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1260,5 +1342,56 @@ mod exhaustion_tests {
         assert_eq!(biomes.ensure_saveable(), Err(BiomeIdExhausted));
         assert!(BiomeIdExhausted.to_string().contains("65536"));
         assert_eq!(biomes.saved_name(65535), "missing:last");
+    }
+}
+
+#[cfg(test)]
+mod server_load_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn load_for_server_succeeds_without_colormaps_and_preserves_json_data() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sunrise-biomes-server-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let biome_dir = dir.join("data/minecraft/worldgen/biome");
+        std::fs::create_dir_all(&biome_dir).unwrap();
+        let _guard = TempDir(dir.clone());
+        std::fs::write(
+            biome_dir.join("plains.json"),
+            r#"{"temperature": 0.8, "downfall": 0.4, "has_precipitation": true, "effects": {"water_color": 4159204}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            biome_dir.join("swamp.json"),
+            r#"{"temperature": 0.8, "downfall": 0.9, "has_precipitation": true, "effects": {"water_color": 6388580, "foliage_color": 6975545}}"#,
+        )
+        .unwrap();
+
+        let root = ResourceRoot::directory(dir);
+        assert!(
+            Biomes::load(&root).is_err(),
+            "client biome load still requires colormap textures"
+        );
+        let server = Biomes::load_for_server(&root).unwrap();
+        assert_eq!(server.get(server.id("minecraft:plains")).water, 0x3F_76E4);
+        assert_eq!(server.get(server.id("minecraft:swamp")).water, 0x61_7B64);
+        assert_eq!(
+            server.get(server.id("minecraft:swamp")).foliage,
+            0x6A_7039,
+            "JSON foliage_color override is still read"
+        );
+        assert_eq!(server.effects("minecraft:plains").unwrap().water, 0x3F_76E4);
     }
 }

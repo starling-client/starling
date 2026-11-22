@@ -52,7 +52,7 @@ impl Game<'_> {
                         self.stack_in(self.selected).map(|s| &*s.item),
                         self.stack_in(shield::OFFHAND_SLOT).map(|s| &*s.item),
                     ],
-                    p.fire_ticks > 0,
+                    p.is_on_fire(),
                 );
                 (
                     Source {
@@ -70,7 +70,7 @@ impl Game<'_> {
                     let (level, item) = brighter(
                         lum,
                         [m.extra.main_hand_id(), m.extra.off_hand_id()],
-                        m.fire_ticks > 0,
+                        m.fire_ticks > 0 && !m.mod_fire_immune,
                     );
                     if level == 0 {
                         return None;

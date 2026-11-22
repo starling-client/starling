@@ -21,6 +21,7 @@ impl GameLevel<'_> {
             pos,
             state,
             moved_by_piston,
+            replacement: vanilla,
             answer: &mut answer,
         });
         match answer {

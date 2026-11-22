@@ -2,7 +2,8 @@
 """Run the vanilla differential harnesses (tools/test_*_parity.py) quickly.
 
     python3 tools/parity.py                 # harnesses whose inputs changed, or that never passed
-    python3 tools/parity.py --all           # every harness, from scratch (the audit)
+    python3 tools/parity.py --all           # every harness, ignoring earlier passes
+    python3 tools/parity.py --all --skip-named-only  # the daily’s automatic set
     python3 tools/parity.py --fresh ...     # don't reuse vanilla oracle results
     python3 tools/parity.py food light      # these harnesses (names without test_/_parity.py)
     python3 tools/parity.py --failed        # the ones that failed last time
@@ -11,8 +12,8 @@
     python3 tools/parity.py --list          # what would run, without running it
     python3 tools/parity.py --status        # last result of every harness
 
-Harnesses in parity_hosts.json's "named_only" run only when named or with --all
-(the nightly audit): no automatic selection picks them.
+Harnesses in parity_hosts.json's "named_only" run only when named or with
+--all without --skip-named-only. The daily leaves them out.
 
 Each harness runs unmodified, in parallel, under a tracer that records what it
 read: its Python modules, Java oracle sources, other repository files, and the
@@ -23,13 +24,14 @@ toolchains change; otherwise its last pass stands.
 Vanilla oracles are reused too: tools/parity_shim.py stands in for java and
 javac and replays an oracle run whose inputs are unchanged, so a Rust-only
 change costs only the Rust side. A harness that fails while reusing oracle
-results is rerun fresh, and stops reusing them if it then passes. --all and
---fresh never reuse them.
-
-A harness listed in parity_hosts.json's "known_flaky" (each with its reason)
-that fails runs once more from scratch instead, and a pass then counts. Every
-retry is printed as a RETRIED line in the summary and in the CI job's summary.
-Fix the cause, then take the harness off the list: nothing else gets this retry.
+results runs once more from scratch, and stops reusing them if that run passes;
+the harness still fails, and its first failure is its outcome. --fresh
+never reuses them, and --all reuses them only when PARITY_ORACLE_KEEP names a folder
+that outlives the checkout (the daily's CI keep): the shim keeps runs there
+and replays one only for the same command on byte-identical files, and a
+harness that passed only fresh is remembered there for FRESH_ONLY_DAYS.
+Such a rerun prints its outcome on its own line and in a RETRIED line; the daily
+keeps both runs' logs in its private runner log. No rerun turns a failure into a pass.
 
 Harness probes build into .local/parity-target with release optimisations but
 without LTO and with 16 codegen units (`PROFILE` below), which builds in
@@ -79,6 +81,9 @@ PROFILE = {
     "CARGO_PROFILE_DEV_OPT_LEVEL": "3",
 }
 SHIM = STATE_DIR / "shim"
+ORACLE_KEEP = Path(os.environ["PARITY_ORACLE_KEEP"]) if os.environ.get("PARITY_ORACLE_KEEP") else None
+# The CI keep holds 20 GiB and is emptied whole when over: kept oracle runs stay well under it.
+ORACLE_KEEP_BUDGET, ORACLE_KEEP_DAYS, FRESH_ONLY_DAYS = 12 << 30, 14, 30
 # Results shared by every worktree using the same vanilla data (.local/minecraft
 # links to a shared directory in parallel worktrees): passes keyed by content,
 # so a harness whose inputs match one that passed elsewhere doesn't run again.
@@ -1099,15 +1104,63 @@ def keep_first_log(label):
     return kept
 
 
-def run(selected, state, hasher, environment_digest, executors, reuse_oracles, rounds=None, known_flaky=None):
+def prune_oracle_keep(keep):
+    """Drop kept oracle runs unused for ORACLE_KEEP_DAYS and the folders a killed writer left, then the least
+    recently used runs until the keep fits ORACLE_KEEP_BUDGET (tools/parity_shim.py touches a run it replays)."""
+    now, kept = time.time(), []
+    for entry in keep.glob("??/*"):
+        try:
+            age = now - entry.stat().st_mtime
+        except FileNotFoundError:  # a run being kept by another harness, renamed meanwhile
+            continue
+        if age > ORACLE_KEEP_DAYS * 86400 or (entry.name.startswith(".") and age > 86400):
+            shutil.rmtree(entry, ignore_errors=True)
+        elif not entry.name.startswith("."):
+            kept.append((now - age, sum(file.stat().st_size for file in entry.rglob("*") if file.is_file()), entry))
+    total = sum(size for _, size, _ in kept)
+    for _, size, entry in sorted(kept):
+        if total <= ORACLE_KEEP_BUDGET:
+            break
+        shutil.rmtree(entry, ignore_errors=True)
+        total -= size
+
+
+def fresh_only(keep):
+    """{harness: date} of the harnesses that passed only without kept oracle runs, within FRESH_ONLY_DAYS."""
+    listing = keep / "fresh-only.json"
+    names = json.loads(listing.read_text(encoding="utf-8")) if listing.exists() else {}
+    if not isinstance(names, dict):
+        return {}
+    oldest = time.strftime("%Y-%m-%d", time.gmtime(time.time() - FRESH_ONLY_DAYS * 86400))
+    return {name: day for name, day in names.items() if isinstance(name, str) and isinstance(day, str) and day >= oldest}
+
+
+def remember_fresh_only(keep, results):
+    """Add the harnesses that failed with oracle reuse on and then passed fresh in this run. A reuse-enabled run that
+    failed may not have replayed anything: the list says what passed only fresh, not that a kept run was wrong.
+    The daily's shares on one host share the keep: each adds to the list as it is at its finish, under a lock, and a
+    share with nothing to add leaves it alone."""
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    added = {name: today for name, record in results.items()
+             if record.get("fresh_rerun") == "pass"}
+    if not added:
+        return
+    with open(keep / "fresh-only.lock", "w") as handle:
+        file_lock.lock(handle)
+        temporary = keep / f".fresh-only.{os.getpid()}.json"
+        temporary.write_text(json.dumps(dict(fresh_only(keep), **added), indent=1, sort_keys=True) + "\n",
+                             encoding="utf-8")
+        temporary.replace(keep / "fresh-only.json")
+
+
+def run(selected, state, hasher, environment_digest, executors, reuse_oracles, rounds=None, no_reuse=()):
     """Run the selected harnesses on the executors. rounds: how many times each must run (default once); its runs
-    must agree, and a harness that both passes and fails is reported as flaky and recorded as failing.
-    known_flaky ({name: reason}, tools/parity_hosts.json): a harness listed there that fails its single round runs
-    once more, from scratch; its record keeps `retried` (the first run's log is kept beside its own)."""
+    must agree, and a harness that both passes and fails is reported as flaky and recorded as failing. A first round
+    that fails with reused oracle results runs once more from scratch: that round stays a failure, the fresh run's
+    outcome is kept apart as `fresh_rerun`, and the failed run's log is kept beside the fresh one's.
+    no_reuse: harnesses that never reuse oracle results in this run."""
     records = state["harnesses"]
     rounds = rounds or {}
-    known_flaky = known_flaky or {}
-    second_chance = set()  # known flaky harnesses that already failed once in this run
     # Longest first, so the slow harnesses don't start last; a harness's later rounds after its first.
     queue = sorted((name if index == 1 else f"{name}~{index}" for name in selected for index in range(1, rounds.get(name, 1) + 1)),
                    key=lambda label: (-records.get(harness_of(label), {}).get("seconds", 1e9), label))
@@ -1132,7 +1185,7 @@ def run(selected, state, hasher, environment_digest, executors, reuse_oracles, r
                 name = harness_of(pick)
                 # A retry runs the oracle again too: it may be the side that failed (mob_ai's heap).
                 reuse = reuse_oracles and records.get(name, {}).get("oracle_reuse", True) and pick not in retried \
-                    and name not in second_chance
+                    and name not in no_reuse
                 if not executor.start(pick, selected[name], reuse, records.get(name, {}).get("peak_bytes", DEFAULT_MEMORY),
                                       SHARDS.get(name)):
                     break
@@ -1157,45 +1210,45 @@ def run(selected, state, hasher, environment_digest, executors, reuse_oracles, r
                 queue.insert(0, label)
                 continue
             passed = record["status"] == "pass"
-            flaky_retry = rounds.get(name, 1) == 1 and base_name(name) in known_flaky
-            if not passed and reused and label == name and records.get(name, {}).get("status") != "fail" \
-                    and not flaky_retry:
-                # A new failure might come from a reused oracle result: run it again from scratch. Later rounds reuse
-                # what the first just validated, so their failures count (a flaky harness). A known flaky harness
-                # gets its own retry below instead, which keeps reusing oracle results afterwards.
+            where = "" if executor is local else f" on {executor.name}"
+            if not passed and reused and label == name and records.get(name, {}).get("status") != "fail":
+                # A new failure might come from a reused oracle result: run it once more from scratch. This round's
+                # failure is its outcome whatever that run says. Later rounds reuse what the first just validated, so
+                # their failures count (a flaky harness).
                 retried.add(label)
+                first_log = keep_first_log(label)
                 queue.insert(0, label)
-                print(f"retry {label} without reused oracle results", flush=True)
+                print(f"FAIL {label} {record['seconds']:.0f}s{where}  ({first_log}); running it once more without "
+                      f"reused oracle results", flush=True)
                 continue
-            # A harness that only passes fresh no longer reuses oracle results.
-            record["oracle_reuse"] = records.get(name, {}).get("oracle_reuse", True) and not (passed and label in retried)
+            fresh_rerun = label in retried and not reused
             hashes = record.pop("hashes", None)
             if record["dependencies"]:
                 record["key"] = key_from(record, hashes, environment_digest) if hashes is not None else \
                     key(record, hasher, environment_digest)
-            where = "" if executor is local else f" on {executor.name}"
-            tail = "" if passed else f"  ({STATE_DIR / 'logs' / (label + '.log')})"
-            print(f"{'PASS' if passed else 'FAIL'} {label} {record['seconds']:.0f}s{where}{tail}", flush=True)
+            if fresh_rerun:
+                # Not a record line: the round's outcome is the failure printed above.
+                record["fresh_rerun"], record["status"] = record["status"], "fail"
+                print(f"fresh rerun of {label}: {record['fresh_rerun']} in {record['seconds']:.0f}s{where}", flush=True)
+            else:
+                tail = "" if passed else f"  ({STATE_DIR / 'logs' / (label + '.log')})"
+                print(f"{'PASS' if passed else 'FAIL'} {label} {record['seconds']:.0f}s{where}{tail}", flush=True)
             done.setdefault(name, []).append(record)
             if len(done[name]) < rounds.get(name, 1):
                 continue
             runs = done.pop(name)
-            if runs[0]["status"] != "pass" and flaky_retry and name not in second_chance:
-                second_chance.add(name)
-                first_log = keep_first_log(label)
-                print(f"RETRIED {name}: failed, and it is a known flaky harness ({known_flaky[base_name(name)]}): "
-                      f"running it once more (first run's log: {first_log})", flush=True)
-                queue.insert(0, label)
-                continue
-            record = dict(runs[0], status="pass" if all(run["status"] == "pass" for run in runs) else "fail",
+            statuses = [run["status"] for run in runs]
+            record = dict(runs[0], status="pass" if all(status == "pass" for status in statuses) else "fail",
                           rounds=len(runs))
-            if name in second_chance:
-                record["retried"] = "known flaky"
-            elif label in retried:
-                record["retried"] = "reused oracle results"
-            if len({run["status"] for run in runs}) > 1:
-                record["flaky"] = [run["status"] for run in runs]
-                print(f"FLAKY {name}: {', '.join(record['flaky'])} in {len(runs)} runs", flush=True)
+            record.pop("fresh_rerun", None)
+            fresh = next((run["fresh_rerun"] for run in runs if "fresh_rerun" in run), None)
+            # A harness that only passes fresh no longer reuses oracle results, whichever round finished first.
+            record["oracle_reuse"] = records.get(name, {}).get("oracle_reuse", True) and fresh != "pass"
+            if fresh:
+                record["retried"], record["fresh_rerun"] = "reused oracle results", fresh
+            if len(set(statuses)) > 1:
+                record["flaky"] = statuses
+                print(f"FLAKY {name}: {', '.join(record['flaky'])} in {len(statuses)} runs", flush=True)
             records[name] = record
             results[name] = record
             save_state(state)
@@ -1566,12 +1619,6 @@ def platform_skips(config, host=None):
     return skips
 
 
-def known_flaky(config):
-    """Harnesses tools/parity_hosts.json lists as failing now and then for a cause not fixed yet: one that fails runs
-    once more, and passing then counts, reported as RETRIED. {name: reason}"""
-    return dict(config.get("known_flaky", {}))
-
-
 def solo_harnesses(config):
     """Harnesses tools/parity_hosts.json's "solo" lists ({name: reason}: those driving game windows, whose frames
     are drawn on the CPU on Linux runners) run alone on a machine with SOLO_CPUS CPUs or fewer for this process
@@ -1589,21 +1636,35 @@ SOLO_CPUS = 4
 
 def named_only(config):
     """Harnesses tools/parity_hosts.json keeps out of every automatic selection (--changed, --failed, the default,
-    --flake-check): they run only when named or with --all, the nightly audit. {name: reason}"""
+    --flake-check): they run only when named or with --all without --skip-named-only. {name: reason}"""
     return dict(config.get("named_only", {}))
 
 
-def report_retries(results, flaky):
-    """Say loudly which harnesses needed their one retry (a known flaky one, or one that failed with reused oracle
-    results), here and in the CI job's summary: a pass on the retry counts, so this is where flakes stay visible."""
-    def why(name, record):
-        if record["retried"] == "known flaky":
-            return (f"known flaky: {flaky.get(base_name(name), '?')}; first run's log: "
-                    f"{STATE_DIR / 'logs' / (name + '.first-run.log')}")
-        return "its first run reused oracle results; it no longer reuses them" if record["status"] == "pass" else \
-            "its first run reused oracle results"
-    lines = [f"RETRIED {name}: failed, then {'passed' if record['status'] == 'pass' else 'failed again'} on its one "
-             f"retry ({why(name, record)})" for name, record in sorted(results.items()) if record.get("retried")]
+def share_of(path, found, parser):
+    """The harness names a share must run, from the JSON list the plan job wrote.
+
+    The plan job computes one selection for the whole run and splits it there, so every runner runs exactly
+    its share and the merge can prove the shares cover the selection. A name this tree does not have means the
+    plan and the tree disagree, which is refused rather than silently run as something else."""
+    try:
+        names = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        parser.error(f"--harness-file: {path}: {error}")
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        parser.error(f"--harness-file: {path} is not a JSON list of harness names")
+    unknown = [name for name in names if name not in found]
+    if unknown:
+        parser.error("--harness-file names harnesses this tree does not have: " + ", ".join(unknown))
+    return names
+
+
+def report_retries(results):
+    """Say which harnesses failed with oracle reuse enabled and ran again from scratch, with both outcomes, here and in
+    the CI job's summary. The harness fails either way; one whose fresh run passed no longer reuses oracle results."""
+    lines = [f"RETRIED {name}: failed with oracle reuse enabled, then "
+             f"{'passed' if record['fresh_rerun'] == 'pass' else 'failed again'} from scratch; it counts as failed "
+             f"(first run's log: {STATE_DIR / 'logs' / (name + '.first-run.log')})"
+             for name, record in sorted(results.items()) if record.get("retried")]
     for line in lines:
         print(line, flush=True)
     if lines and os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -1625,12 +1686,15 @@ def main():
         return worker_main(sys.argv[2])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("names", nargs="*", help="harness names, e.g. food or block_update")
-    parser.add_argument("--all", action="store_true", help="run every harness from scratch, ignoring earlier passes")
+    parser.add_argument("--all", action="store_true", help="run every harness, ignoring earlier passes; oracle runs are "
+                        "reused only when PARITY_ORACLE_KEEP is set")
+    parser.add_argument("--skip-named-only", action="store_true", help="omit named-only harnesses from --all (the daily set)")
     parser.add_argument("--exclude", action="append", default=[], help="exclude a harness and its shards")
     parser.add_argument("--fresh", action="store_true", help="run the vanilla oracles even if their inputs are unchanged")
     parser.add_argument("--failed", action="store_true", help="rerun the harnesses that failed last time")
     parser.add_argument("--list", action="store_true", help="print what would run, then stop")
     parser.add_argument("--status", action="store_true", help="print each harness's last result")
+    parser.add_argument("--selection-file", type=Path, help="write selected harness and shard names as JSON before running")
     parser.add_argument("-j", "--jobs", type=int,
                         help="harnesses at once on this machine (default: PARITY_LOCAL_JOBS, else 3 with other hosts or a "
                              "third of its threads, within $FLEET_LOAD_JOBS); runners here share PARITY_MACHINE_JOBS slots")
@@ -1638,6 +1702,9 @@ def main():
                         help="comma-separated machines from tools/parity_hosts.json to run harnesses on as well "
                              "(default: PARITY_HOSTS, else the file's default; '' for this machine only)")
     parser.add_argument("--timeout", type=int, default=3600, help="seconds per harness")
+    parser.add_argument("--harness-file", type=Path, metavar="FILE",
+                        help="run exactly the harness names in this JSON list: the daily plan's share of one selection, "
+                             "so several runners cover the whole set and no harness twice")
     parser.add_argument("--repeat", type=int, default=1, help="run each selected harness this many times; its runs "
                         "must agree (oracle results are reused after the first unless --fresh)")
     parser.add_argument("--flake-check", metavar="REF", help="harnesses new or changed since the merge base with REF "
@@ -1673,7 +1740,11 @@ def main():
             print(f"{name:<40} {status:<15} {seconds}")
         save_state(state)
         return 0
-    if args.names:
+    share = None if args.harness_file is None else share_of(args.harness_file, found, parser)
+    if share is not None:
+        chosen = list(share)
+        print(f"Share: {len(chosen)} harnesses from {args.harness_file}.", flush=True)
+    elif args.names:
         chosen = args.names
     elif args.all:
         chosen = list(found)
@@ -1700,17 +1771,18 @@ def main():
               f"depend on them, {len(chosen)} without a pass for their current inputs.", flush=True)
     else:
         chosen = [name for name in found if stale(name, state, hasher, environment)]
-    chosen = [name for name in chosen if base_name(name) not in args.exclude]
-    skips = platform_skips(host_config())
-    for name in [name for name in chosen if base_name(name) in skips and not args.names]:
-        print(f"skipped on {HOST} ({sys.platform}): {name}: {skips[base_name(name)]}", flush=True)
-        chosen.remove(name)
-    manual = {} if args.names or args.all else named_only(host_config())
-    for name in [name for name in chosen if base_name(name) in manual]:
-        print(f"not selected (runs when named, and nightly): {name}: {manual[base_name(name)]}", flush=True)
-        chosen.remove(name)
+    if share is None:
+        chosen = [name for name in chosen if base_name(name) not in args.exclude]
+        skips = platform_skips(host_config())
+        for name in [name for name in chosen if base_name(name) in skips and not args.names]:
+            print(f"skipped on {HOST} ({sys.platform}): {name}: {skips[base_name(name)]}", flush=True)
+            chosen.remove(name)
+        manual = {} if args.names or (args.all and not args.skip_named_only) else named_only(host_config())
+        for name in [name for name in chosen if base_name(name) in manual]:
+            print(f"not selected (named-only): {name}: {manual[base_name(name)]}", flush=True)
+            chosen.remove(name)
     rounds = {name: args.repeat for name in chosen} if args.repeat > 1 else {}
-    if args.flake_check:
+    if share is None and args.flake_check:
         changed = {name for name in changed_harnesses(found, records, args.flake_check)
                    if base_name(name) not in manual and base_name(name) not in args.exclude}
         for name in sorted(changed):
@@ -1722,12 +1794,14 @@ def main():
         if rounds:
             print(f"Flake check: {', '.join(sorted(rounds))} must pass {args.flake_rounds} times.", flush=True)
     selected = {name: found[name] for name in chosen}
+    if args.selection_file:
+        args.selection_file.write_text(json.dumps(list(selected)) + "\n", encoding="utf-8")
     if args.list or not selected:
         for name in selected:
             print(name)
         print(f"{len(selected)} of {len(found)} harnesses would run" if args.list else "Nothing to run: every harness passed with its current inputs.")
         save_state(state)
-        if not args.list:
+        if not args.list and share is None:
             finished_run([])
         return 0
 
@@ -1770,7 +1844,16 @@ def main():
             print(f"Probes built in {time.monotonic() - started:.0f}s.", flush=True)
         where = "".join(f", plus {host}" for host in hosts)
         print(f"Running {len(selected)} harnesses, {jobs} at a time here{where}...", flush=True)
-        reuse_oracles = not (args.fresh or args.all)
+        reuse_oracles = not args.fresh and (not args.all or ORACLE_KEEP is not None)
+        kept_fresh_only = {}
+        if reuse_oracles and ORACLE_KEEP:
+            # The keep only saves work: a keep that can't be read or tidied leaves this run without its list.
+            try:
+                ORACLE_KEEP.mkdir(parents=True, exist_ok=True)
+                prune_oracle_keep(ORACLE_KEEP)
+                kept_fresh_only = fresh_only(ORACLE_KEEP)
+            except (OSError, ValueError) as error:
+                print(f"oracle keep {ORACLE_KEEP}: {error}; running without its upkeep", flush=True)
         local = LocalExecutor(jobs, int(memory_available() * 0.75), args.timeout,
                               REMOTE_LOCAL_PEAK if remotes and args.jobs is None else None)
         local.solo = solo_harnesses(config)
@@ -1781,17 +1864,25 @@ def main():
             print(f"Alone on this machine ({SOLO_CPUS} CPUs or fewer), after the others: "
                   f"{', '.join(sorted(local.solo & {harness_of(name) for name in selected}))}", flush=True)
         results, elapsed = run(selected, state, hasher, environment_key(hasher), [*remotes, local], reuse_oracles,
-                               rounds, known_flaky(config))
+                               rounds, set(kept_fresh_only))
+        if reuse_oracles and ORACLE_KEEP:
+            try:
+                remember_fresh_only(ORACLE_KEEP, results)
+            except (OSError, ValueError) as error:
+                print(f"oracle keep {ORACLE_KEEP}: {error}; the harnesses that passed only fresh are not kept",
+                      flush=True)
     finally:
         for executor in [*remotes, *([local] if local else [])]:
             executor.stop()
     save_state(state)
     failed = sorted(name for name, record in results.items() if record["status"] != "pass")
-    finished_run(failed)
+    if share is None:  # a share is never the whole run: tools/gate.py judges last-run.json
+        finished_run(failed)
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed in {elapsed / 60:.1f} min.")
-    report_retries(results, known_flaky(config))
+    report_retries(results)
     for index, name in enumerate(failed):
-        log = STATE_DIR / 'logs' / (name + '.log')
+        # A rerun from scratch keeps the failed run's log apart: that one says why the harness failed.
+        log = STATE_DIR / 'logs' / (name + ('.first-run.log' if results[name].get("retried") else '.log'))
         print(f"  {name}: {log}")
         # The end of a harness's output says why it failed, and CI shows only this output.
         if index < FAILURE_TAILS:

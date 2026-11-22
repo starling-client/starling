@@ -1,6 +1,7 @@
 //! `LivingEntity.onClimbable` for mobs: the block a mob stands in, and the mods' say on whether it
 //! is a ladder (`native_is_ladder`) and on whether the block under an open trapdoor makes the
 //! trapdoor one (`native_makes_open_trapdoor_above_climbable`).
+use crate::items::BlockTagFlags;
 use crate::mobs::{Mob, MobWorld};
 use sunrise_core::position::BlockPos;
 
@@ -38,11 +39,11 @@ impl Mob {
         );
         let state = w.world.block(x, y, z);
         let facts = w.facts.get(state);
-        if self.extra.fall_flying && w.has_tag("minecraft:can_glide_through", &facts.name) {
+        if self.extra.fall_flying && w.state_flag(state, BlockTagFlags::CAN_GLIDE_THROUGH) {
             return false;
         }
         // `IBlockExtension.isLadder`: the block's parts answer after the tag.
-        let mut ladder = w.has_tag("minecraft:climbable", &facts.name);
+        let mut ladder = w.state_flag(state, BlockTagFlags::CLIMBABLE);
         crate::motion::native_is_ladder(
             w.loop_context,
             self.id,

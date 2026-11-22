@@ -6,10 +6,11 @@ pub trait Hooks {
     /// after the finalized new mob joined the level and before the old mob
     /// is removed, for the conversions `living_conversion_pre` tells.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "LivingConversionEvent.Post",
         cancellable = false
     )]
-    fn living_conversion_post();
+    fn living_conversion_post(entity: u32, kind: &str, converted: u32, converted_kind: &str);
 }

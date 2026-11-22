@@ -21,7 +21,7 @@ impl Game<'_> {
     /// The options `MouseHandler.turnPlayer` reads.
     pub(super) fn look_options(&self) -> LookOptions {
         LookOptions {
-            sensitivity: f64::from(self.settings.sensitivity),
+            sensitivity: self.settings.sensitivity,
             smooth_camera: self.smooth_camera,
             scoping: self.scoping(),
             invert_x: self.settings.invert_x,
@@ -91,7 +91,6 @@ impl Game<'_> {
     pub(super) fn pauses_game(&self) -> bool {
         self.has_singleplayer_server()
             && !self.is_published()
-            && !self.has_split_players()
             && self.title.is_none()
             && top_screen_pauses(
                 // A dialog (and its warning or waiting screen) is the
@@ -146,19 +145,26 @@ impl Game<'_> {
     /// toggles keeps its toggle state (`shouldSetOnIngameFocus`).
     pub(super) fn restore_held_keys(&mut self) {
         let held: Vec<KeyCode> = self.physical_keys.iter().copied().collect();
-        let toggles = [self.settings.toggle_crouch, self.settings.toggle_sprint];
+        let options = self.toggle_options();
         for key in held {
+            if let Some(name) = sunrise_client::keybinds::key_name(key) {
+                for slot in self.settings.keys.slots_for(name) {
+                    let option =
+                        sunrise_client::keymapping::toggle_index(slot).is_some_and(|i| options[i]);
+                    if self
+                        .vanilla_mappings
+                        .state(slot)
+                        .should_set_on_ingame_focus(option)
+                    {
+                        self.vanilla_mappings.set_down(slot, true, option);
+                    }
+                }
+            }
             for mapped in self.settings.keys.translate_all(key) {
                 match mapped {
-                    Ok(slot_key @ (KeyCode::ShiftLeft | KeyCode::ControlLeft)) => {
-                        let slot = usize::from(slot_key == KeyCode::ControlLeft);
-                        if !toggles[slot] {
-                            self.toggles.0[slot].set_down(true, false);
-                            self.sync_toggle(slot);
-                        }
-                    }
+                    Ok(KeyCode::ShiftLeft | KeyCode::ControlLeft) => {}
                     Ok(other) => {
-                        self.keys.insert(other);
+                        self.insert_device_key(other);
                     }
                     Err(_) => {}
                 }
@@ -180,9 +186,11 @@ impl Game<'_> {
         }
         // MouseHandler.grabMouse never captures an inactive window, and vanilla
         // grabs only on `setScreen(null)`: the pack prompt and server dialogs
-        // are screens over the world that keep the pointer.
+        // are screens over the world that keep the pointer, as does a screen a
+        // mod's `screen_opening` answer kept or opened in place of none.
         if capture
-            && ((!self.focused && !self.unclaimed_window && !self.scripted_run())
+            && ((self.screen_state.answered.get() && self.screen != Screen::Playing)
+                || (!self.focused && !self.unclaimed_window && !self.scripted_run())
                 || self.server_packs.prompt.is_some()
                 || self.dialog_open()
                 || self.command_prompt.is_some())
@@ -201,12 +209,6 @@ impl Game<'_> {
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
-        // Splitscreen: another player has the pointer; this one's menus leave it alone.
-        if !self.keyboard_mouse {
-            self.captured = false;
-            self.capture_mode = None;
-            return;
-        }
         if capture && !self.captured && !cfg!(target_os = "macos") {
             // MouseHandler.grabMouse: KeyMapping.setAll unless
             // InputQuirks.RESTORE_KEY_STATE_AFTER_MOUSE_GRAB is off (macOS).
@@ -217,6 +219,7 @@ impl Game<'_> {
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
+<<<<<<< sync-sunrise-1
         let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
         let was_grabbed = self.captured;
         // Android grabs the mouse as the activity's pointer capture, which comes a moment later
@@ -246,6 +249,14 @@ impl Game<'_> {
             let _ = window.set_cursor_position(centre);
         };
         #[cfg(not(target_os = "android"))]
+=======
+        let projection = self.pointer_projection(size);
+        let centre = projection.window.center();
+        let warp = |window: &Window| {
+            let _ = window.set_cursor_position(centre);
+        };
+        let was_grabbed = self.captured;
+>>>>>>> sunrise/main
         if self.internal_grab() {
             // Its grab is internal (an agent turns the view with `mouse-move`). A grab the
             // window already held when a scripted run began stays the system's until the
@@ -306,25 +317,52 @@ impl Game<'_> {
         // the window's centre whenever the pointer's grab state changes, so
         // a screen opened from gameplay starts with the cursor in the middle
         // and the game starts with it away from the screen's last spot.
-        if let Some(pos) = sunrise_client::mouse::mouse_position_after_grab_change(
-            capture,
-            was_grabbed,
-            size,
-            scale,
-        ) {
-            self.cursor = pos;
-        }
         if !self.internal_grab() {
             window.set_cursor_visible(!self.captured);
+        }
+        if let Some(pos) = projection
+            .window
+            .center_after_grab_change(capture, was_grabbed)
+        {
+            self.set_window_cursor(projection.window.physical_sample(pos), projection);
         }
     }
     /// The game's pointer grab leaves the system pointer where the person at the computer has
     /// it: a genuinely hidden `--offscreen` run, an agent's window no one has clicked yet, or a
     /// scripted run, which plays the game while the person may be using the computer.
     pub(super) fn internal_grab(&self) -> bool {
-        (self.options.offscreen && !self.split_window)
-            || self.unclaimed_window
-            || self.scripted_run()
+        self.options.offscreen || self.unclaimed_window || self.scripted_run()
+    }
+    /// A person pressed a mouse button inside the agent's window (`at_unclaimed`): from now on
+    /// it is a window like any other, and that press takes the pointer
+    /// (`MouseHandler.onPress`) instead of attacking. The focus changes it didn't hear while
+    /// unclaimed, or an agent's `pad focus`, may have left the game's idea of the focus apart
+    /// from the window's: it catches up first, as a `Focused` would have told it. So do the
+    /// modifiers the person holds (`held_modifiers`).
+    pub(super) fn claim_window(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.unclaimed_window = false;
+        self.captured = false;
+        // A regrab owed since an agent's `pad focus false` would take the pointer as the focus
+        // catches up, and the press would then attack.
+        self.regrab_on_refocus = false;
+        let Some(window) = &self.window else { return };
+        let (id, focused) = (window.id(), window.has_focus());
+        if focused != self.focused {
+            self.handle_window_event(
+                event_loop,
+                id,
+                WindowEvent::Focused(focused),
+                input_trace::InputOrigin::User,
+            );
+        }
+        if let Some(modifiers) = self.unclaimed_modifiers.take() {
+            self.handle_window_event(
+                event_loop,
+                id,
+                WindowEvent::ModifiersChanged(modifiers),
+                input_trace::InputOrigin::User,
+            );
+        }
     }
     /// Once a scripted run is over, the person's last click into the window or away from it
     /// applies (`held_focus`), and the system pointer follows the grab the run left inside the
@@ -399,7 +437,7 @@ impl Game<'_> {
         } else {
             Cursor::Arrow
         };
-        if effective == self.cursor_icon || !self.keyboard_mouse {
+        if effective == self.cursor_icon {
             return;
         }
         if let Some(window) = &self.window {
@@ -451,6 +489,54 @@ fn top_screen_pauses(dialog: Option<bool>, book: Option<bool>, screen: bool, win
 #[cfg(test)]
 mod tests {
     use super::{regrab_after_run, studio_suppresses_focus_pause, top_screen_pauses};
+
+    #[test]
+    #[ignore = "daily"]
+    fn movement_key_held_behind_a_screen_counts_after_pointer_grab() {
+        use super::*;
+        use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
+
+        let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&ResourceSource::directory(root)),
+            None,
+        )
+        .unwrap();
+
+        game.focused = true;
+        game.screen = Screen::Paused;
+        game.physical_keys.insert(KeyCode::KeyW);
+        assert!(!game.movement_key_held(KeyCode::KeyW));
+
+        game.screen = Screen::Playing;
+        game.capture(true);
+        assert_eq!(
+            game.movement_key_held(KeyCode::KeyW),
+            !cfg!(target_os = "macos")
+        );
+    }
 
     #[test]
     fn studio_replay_and_freecam_never_pause_on_focus_loss() {

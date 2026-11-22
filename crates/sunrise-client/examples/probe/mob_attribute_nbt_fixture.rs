@@ -3,6 +3,8 @@
 //! for, and the saved `attributes` list as exact double bits.
 //!
 //! usage: mob_attribute_nbt_fixture RESOURCES CASES OUTPUT
+use serde_json::Value;
+use std::{fmt::Write as _, fs, path::Path, sync::Arc};
 use sunrise_client::{
     entity_nbt,
     items::{ItemStack, Items},
@@ -10,8 +12,6 @@ use sunrise_client::{
     mobs::MobTypes,
 };
 use sunrise_items::equipment::{Equipment, SLOT_NAMES};
-use serde_json::Value;
-use std::{fmt::Write as _, fs, path::Path, sync::Arc};
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{attribute_map::ValueKind, attributes::entity::Catalog, loot::PackOverlay},
@@ -106,7 +106,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     .unwrap();
             }
         };
-        let (reads, saved_tag) = if entity == "minecraft:armor_stand" {
+        let (reads, health, saved_tag) = if entity == "minecraft:armor_stand" {
             let mut stand = entity_nbt::armor_stand_from_nbt(&tag, 1).ok_or("stand")?;
             let mut live = std::mem::take(&mut stand.live);
             run(&mut live, &mut stand.equipment, &Vec::new);
@@ -117,7 +117,25 @@ pub fn main() -> sunrise_client::Result<()> {
                 .flatten()
                 .map(|n| read(&stand.live, &catalog, entity, n, Vec::new()))
                 .collect();
-            (reads, entity_nbt::armor_stand_to_nbt(&stand, [0; 4], None))
+            let default_max = catalog
+                .id("minecraft:max_health")
+                .and_then(|id| catalog.default_base(entity, id))
+                .unwrap_or(20.0);
+            let max_health = stand
+                .live
+                .read(
+                    &catalog,
+                    entity,
+                    "minecraft:max_health",
+                    ValueKind::Computed,
+                    Vec::new,
+                )
+                .unwrap_or(default_max) as f32;
+            (
+                reads,
+                (stand.health, max_health, default_max),
+                entity_nbt::armor_stand_to_nbt(&stand, [0; 4], None, &Default::default()),
+            )
         } else {
             let mut mob = entity_nbt::mob_from_nbt(&tag, &mobs, 1, None).ok_or("mob")?;
             let mut live = std::mem::take(&mut mob.extra.live);
@@ -137,9 +155,16 @@ pub fn main() -> sunrise_client::Result<()> {
                 .flatten()
                 .map(|n| read(&mob.extra.live, &catalog, entity, n, seed(&mob)))
                 .collect();
+            let default_max = mob
+                .kind
+                .attributes
+                .get("minecraft:max_health")
+                .copied()
+                .unwrap_or_else(|| f64::from(mob.kind.max_health));
             (
                 reads,
-                entity_nbt::mob_to_nbt(&mob, [0; 4], None, None, |_| None),
+                (mob.health, mob.attrs.max_health, default_max),
+                entity_nbt::mob_to_nbt(&mob, [0; 4], None, None, |_| None, &Default::default()),
             )
         };
         for (n, r) in case["read"].as_array().into_iter().flatten().zip(reads) {
@@ -152,6 +177,21 @@ pub fn main() -> sunrise_client::Result<()> {
                     let _ = write!(row, "\tread {n} none");
                 }
             }
+        }
+        if case["health"].as_bool().unwrap_or(false) {
+            let (loaded_health, loaded_max, default_max) = health;
+            let saved_health = match saved_tag.get("Health") {
+                Some(Tag::Float(bits)) => *bits,
+                _ => f32::NAN.to_bits(),
+            };
+            let _ = write!(
+                row,
+                "\thealth {:08x} {:08x} {:08x} {:x}",
+                loaded_health.to_bits(),
+                loaded_max.to_bits(),
+                saved_health,
+                default_max.to_bits(),
+            );
         }
         row.push_str(&saved(&saved_tag));
         out.push_str(&row);

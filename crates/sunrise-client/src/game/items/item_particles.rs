@@ -1,6 +1,7 @@
 //! The sprites of item particles: `BreakingItemParticle.ItemParticleProvider.getSprite`
 //! resolves the stack's model for the ground and picks a layer's particle sprite.
 use super::Game;
+use serde_json::Value;
 use sunrise_assets::item_model::DisplayContext;
 use sunrise_client::{
     item_render::stack_view,
@@ -9,15 +10,20 @@ use sunrise_client::{
 };
 use sunrise_core::equipment_slot::EquipmentSlot;
 use sunrise_core::random::RandomSource;
-use serde_json::Value;
 
 impl Game<'_> {
     /// `ItemParticleOption(ITEM, stack)`: the layer particle sprites of the
     /// stack's model resolved for the ground, with seed 0.
     pub(super) fn item_particle(&self, stack: &ItemStack) -> ParticleOptions {
         let state = self.resolve_item(stack, DisplayContext::Ground, None, 0);
-        ParticleOptions::item(state.layers.iter().map(|l| l.particle.clone()).collect())
-            .with_source(&stack.item)
+        ParticleOptions::item(
+            state
+                .layers
+                .iter()
+                .map(|l| l.particle.to_string())
+                .collect(),
+        )
+        .with_source(&stack.item)
     }
     /// `LivingEntity.spawnItemParticles(stack, count)` for the local player,
     /// drawing from the world random as its eating sounds do.
@@ -62,6 +68,8 @@ impl Game<'_> {
                 self.break_sound_at(&stack, [p.x, p.y, p.z]);
             }
             self.eat_particles(&stack, 5);
+            // The packet only names the slot. Its local contents are enough
+            // for effects, not an authoritative pre-break stack for the hook.
             return;
         }
         let Some(m) = self.mobs.iter().find(|m| m.id == id as u32) else {

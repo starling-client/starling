@@ -19,7 +19,7 @@ struct Targets {
     groups: [wgpu::BindGroup; 4],
 }
 
-pub(super) struct EntityOutline {
+pub(crate) struct EntityOutline {
     silhouette: wgpu::RenderPipeline,
     /// Sobel, blur across, blur up (into `FORMAT`) and the blended blit (onto the frame).
     passes: [wgpu::RenderPipeline; 4],

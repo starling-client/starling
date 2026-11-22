@@ -1,0 +1,3 @@
+ids = ["type:Block", "type:Block.open_sound", "type:Block.close_sound", "type:GateSound"]
+why = "Block.open_sound and Block.close_sound now take Option<GateSound>: All overrides every site; Sites overrides use, explosion and redstone separately, retaining the template wood sound for missing sites."
+migrate = "A JSON string keeps overriding every site; object form keeps the template wood sound for each missing site. Rebuild native declarations against Option<GateSound>, using All for one sound everywhere or Sites for separate overrides."

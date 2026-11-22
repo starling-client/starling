@@ -1,16 +1,16 @@
 //! Original trace adapter for pinned vanilla scheduler comparisons.
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    io::{self, BufRead, Write},
+    str::{FromStr, SplitWhitespace},
+};
 use sunrise_core::{
     position::{BlockPos, ChunkPos},
     ticks::{
         ChunkTicks, LevelTicks, SavedTick, ScheduleResult, ScheduledTick, TickArea, TickPriority,
         TickTypeId,
     },
-};
-use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-    io::{self, BufRead, Write},
-    str::{FromStr, SplitWhitespace},
 };
 struct Input<'a>(SplitWhitespace<'a>);
 impl Input<'_> {

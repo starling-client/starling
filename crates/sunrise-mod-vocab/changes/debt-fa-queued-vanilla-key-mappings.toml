@@ -1,0 +1,19 @@
+ids = [
+    "type:MappingError",
+    "type:MappingError.NotGameplay",
+    "type:MappingError.ClickOnly",
+    "type:MappingError.NoWorld",
+    "handle:VanillaKeyMappingRef::is_down",
+    "handle:VanillaKeyMappingRef::set_down",
+    "handle:VanillaKeyMappingRef::click",
+]
+why = "Match vanilla 26.3 KeyMapping (isDown, setDown, click, consumeClick, releaseAll), ToggleKeyMapping, and Minecraft.handleKeybinds: store uniform per-slot KeyState for every VanillaMappingSlot, allow is_down, set_down, and click on any resolved VanillaKeyMappingRef under ClientSetup access without category/click-only/world gates, remove MappingError::{NotGameplay, ClickOnly, NoWorld}, and replace the fixed 64-per-tick / 1024-pending input queues with saturating click counters drained completely each tick (while preserving vanilla's one-click-per-tick per-slot hotbar selection)."
+migrate = '''
+Remove match arms for `MappingError::NotGameplay`, `MappingError::ClickOnly`, and `MappingError::NoWorld`. Only `Unknown`, `Stale`, `Unavailable`, and `Label` remain on `MappingError`.
+
+`VanillaKeyMappingRef::is_down`, `set_down`, and `click` now work on any resolved vanilla mapping (including non-gameplay mappings such as `key.chat`, `key.playerlist`, `key.screenshot`, `key.fullscreen`, debug keys, and `key.pickItem`) under `ClientSetup` access, whether or not a world is open.
+
+Attack, use, pick, inventory, swap-hands, and drop clicks no longer cap at 1024 pending entries or 64 entries per tick: every queued click drains on the client tick (`while (key.consumeClick())`). Hotbar number keys still consume one click per slot per selection drain (`if (keyHotbarSlots[i].consumeClick())`), without the 1024 cap. See also `debt-69-key-mappings.toml`.
+
+Read the live mapping rather than its physical binding to observe a forced release. A queued click does not open a screen immediately; the client tick consumes it. Opening a screen clears the released mappings and their unconsumed plain-key clicks.
+'''

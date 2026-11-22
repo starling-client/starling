@@ -73,7 +73,7 @@ impl Game<'_> {
                 Self::part(
                     batch,
                     atlas,
-                    "gui/sprites/container/brewing_stand/fuel_length",
+                    "container/brewing_stand/fuel_length",
                     (0.0, 0.0),
                     (fuel_len as f32, 4.0),
                     (ox + 60.0, oy + 44.0),
@@ -85,7 +85,7 @@ impl Game<'_> {
                     Self::part(
                         batch,
                         atlas,
-                        "gui/sprites/container/brewing_stand/brew_progress",
+                        "container/brewing_stand/brew_progress",
                         (0.0, 0.0),
                         (9.0, len as f32),
                         (ox + 97.0, oy + 16.0),
@@ -96,7 +96,7 @@ impl Game<'_> {
                     Self::part(
                         batch,
                         atlas,
-                        "gui/sprites/container/brewing_stand/bubbles",
+                        "container/brewing_stand/bubbles",
                         (0.0, 29.0 - bubble),
                         (12.0, bubble),
                         (ox + 63.0, oy + 14.0 + 29.0 - bubble),
@@ -133,7 +133,7 @@ impl Game<'_> {
                     let (sx, sy) = self.station_slot_position(i).unwrap_or_default();
                     batch.sprite(
                         &self.gui.atlas,
-                        &format!("gui/sprites/container/slot/{icon}"),
+                        &format!("container/slot/{icon}"),
                         ox + sx,
                         oy + sy,
                     );
@@ -182,12 +182,7 @@ impl Game<'_> {
                         flip,
                     );
                     if s.inputs[1].is_none() {
-                        batch.sprite(
-                            atlas,
-                            "gui/sprites/container/slot/lapis_lazuli",
-                            ox + 35.0,
-                            oy + 47.0,
-                        );
+                        batch.sprite(atlas, "container/slot/lapis_lazuli", ox + 35.0, oy + 47.0);
                     }
                     let mut names = LegacyRandom::new(i64::from(self.level.xp_seed));
                     let gold = s.inputs[1].as_ref().map_or(0, |l| l.count as i32);
@@ -199,7 +194,7 @@ impl Game<'_> {
                         if cost == 0 {
                             batch.sprite_scaled(
                                 atlas,
-                                "gui/sprites/container/enchanting_table/enchantment_slot_disabled",
+                                "container/enchanting_table/enchantment_slot_disabled",
                                 ox + bx,
                                 oy + by,
                                 bw,
@@ -222,7 +217,7 @@ impl Game<'_> {
                         let col: i32 = if disabled {
                             batch.sprite_scaled(
                                 atlas,
-                                "gui/sprites/container/enchanting_table/enchantment_slot_disabled",
+                                "container/enchanting_table/enchantment_slot_disabled",
                                 ox + bx,
                                 oy + by,
                                 bw,
@@ -231,10 +226,7 @@ impl Game<'_> {
                             );
                             batch.sprite(
                                 atlas,
-                                &format!(
-                                    "gui/sprites/container/enchanting_table/level_{}_disabled",
-                                    i + 1
-                                ),
+                                &format!("container/enchanting_table/level_{}_disabled", i + 1),
                                 ox + bx + 1.0,
                                 oy + by + 1.0,
                             );
@@ -258,7 +250,7 @@ impl Game<'_> {
                             };
                             batch.sprite_scaled(
                                 atlas,
-                                &format!("gui/sprites/container/enchanting_table/{sprite}"),
+                                &format!("container/enchanting_table/{sprite}"),
                                 ox + bx,
                                 oy + by,
                                 bw,
@@ -267,7 +259,7 @@ impl Game<'_> {
                             );
                             batch.sprite(
                                 atlas,
-                                &format!("gui/sprites/container/enchanting_table/level_{}", i + 1),
+                                &format!("container/enchanting_table/level_{}", i + 1),
                                 ox + bx + 1.0,
                                 oy + by + 1.0,
                             );
@@ -368,7 +360,7 @@ impl Game<'_> {
                     };
                     batch.sprite_scaled(
                         atlas,
-                        &format!("gui/sprites/container/anvil/{field}"),
+                        &format!("container/anvil/{field}"),
                         ox + 59.0,
                         oy + 20.0,
                         110.0,
@@ -376,12 +368,7 @@ impl Game<'_> {
                         u32::MAX,
                     );
                     if has_input && s.result.is_none() {
-                        batch.sprite(
-                            atlas,
-                            "gui/sprites/container/anvil/error",
-                            ox + 99.0,
-                            oy + 45.0,
-                        );
+                        batch.sprite(atlas, "container/anvil/error", ox + 99.0, oy + 45.0);
                     }
                     if s.inputs[0].is_some() {
                         // Drawn once this borrow of the station ends.
@@ -428,12 +415,7 @@ impl Game<'_> {
                 }
                 Kind::Grindstone => {
                     if has_input && s.result.is_none() {
-                        batch.sprite(
-                            atlas,
-                            "gui/sprites/container/grindstone/error",
-                            ox + 92.0,
-                            oy + 31.0,
-                        );
+                        batch.sprite(atlas, "container/grindstone/error", ox + 92.0, oy + 31.0);
                     }
                 }
                 Kind::Smithing => {
@@ -453,7 +435,7 @@ impl Game<'_> {
                         for (icon, alpha) in cycling.shown(partial) {
                             batch.sprite_scaled(
                                 atlas,
-                                &format!("gui/sprites/container/slot/{icon}"),
+                                &format!("container/slot/{icon}"),
                                 ox + sx,
                                 oy + sy,
                                 16.0,
@@ -464,12 +446,7 @@ impl Game<'_> {
                         }
                     }
                     if s.inputs.iter().all(Option::is_some) && s.result.is_none() {
-                        batch.sprite(
-                            atlas,
-                            "gui/sprites/container/smithing/error",
-                            ox + 65.0,
-                            oy + 46.0,
-                        );
+                        batch.sprite(atlas, "container/smithing/error", ox + 65.0, oy + 46.0);
                         if inside(local, 65.0, 46.0, 28.0, 21.0) {
                             onboarding = Some(self.translate_with_fallback(
                                 "container.upgrade.error_tooltip",
@@ -536,7 +513,7 @@ impl Game<'_> {
                     };
                     batch.sprite(
                         atlas,
-                        &format!("gui/sprites/container/stonecutter/{scroller}"),
+                        &format!("container/stonecutter/{scroller}"),
                         ox + 119.0,
                         oy + 15.0 + (41.0 * offs).floor(),
                     );
@@ -550,7 +527,7 @@ impl Game<'_> {
                                     i,
                                     ItemStack {
                                         count: 1,
-                                        ..self.stations().recipes.stonecutting[s.stone.recipes[i]]
+                                        ..self.station_recipes().stonecutting[s.stone.recipes[i]]
                                             .result
                                             .clone()
                                     },
@@ -573,7 +550,7 @@ impl Game<'_> {
                             };
                             batch.sprite_scaled(
                                 &self.gui.atlas,
-                                &format!("gui/sprites/container/stonecutter/{sprite}"),
+                                &format!("container/stonecutter/{sprite}"),
                                 ox + x,
                                 oy + y - 1.0,
                                 16.0,

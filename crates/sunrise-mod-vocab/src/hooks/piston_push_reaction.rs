@@ -11,6 +11,8 @@ pub trait Hooks {
     /// a live owned payload; raw-only or currently borrowed native payloads remain refused.
     /// Diverges from vanilla: push only never discards a block entity.
     #[hook(
+        receiver = "associated",
+        dispatch = "flat",
         side = "both",
         contract = "replace",
         out = "reaction",
@@ -18,5 +20,5 @@ pub trait Hooks {
         key = "state",
         neoforge = "IBlockExtension.getPistonPushReaction"
     )]
-    fn piston_push_reaction();
+    fn piston_push_reaction(state: BlockState, reaction: &mut Option<mod_api::PushReaction>);
 }

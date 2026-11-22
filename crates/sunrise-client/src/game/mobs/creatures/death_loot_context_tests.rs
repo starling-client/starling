@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 type Observation = (String, i32, i32, Option<u32>);
 struct Probe(Arc<Mutex<Vec<Observation>>>);
-// Cancel one invocation without leaving anything for the retry to inherit.
+// Veto the first death; the next victim must still reach the drop hook.
 struct CancelOnce(std::sync::atomic::AtomicBool);
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for CancelOnce {
@@ -31,10 +31,14 @@ impl mod_api::Hooks for Probe {
         let hand = host
             .entity(source.causing as u32)
             .and_then(|entity| host.living(entity))
-            .and_then(|living| living.hand_item(host, mod_api::Hand::Main));
+            .and_then(|living| {
+                living.with_hand_item(host, mod_api::Hand::Main, |stack| {
+                    (stack.damage(), stack.count())
+                })
+            });
         if source.causing == 12 {
             assert_eq!(
-                hand.as_ref().map(|s| s.damage()),
+                hand.map(|(damage, _)| damage),
                 Some(31),
                 "later listeners read the earlier loot listener's hand edit"
             );
@@ -43,16 +47,23 @@ impl mod_api::Hooks for Probe {
             source.damage_type.into(),
             source.causing,
             source.direct,
-            hand.as_ref().map(|s| s.count()),
+            hand.map(|(_, count)| count),
         ));
     }
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+#[ignore = "daily"]
 fn death_loot_uses_call_scoped_source_and_hand() {
-    use crate::game::native_entity_refs::tests::with_game;
+    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game};
     use sunrise_client::mobs::{Damage, DamageKind, Who};
+    if run_fresh_cases(
+        "game::creatures::death_loot_context_tests::death_loot_uses_call_scoped_source_and_hand",
+        "SUNRISE_DEATH_LOOT_CONTEXT_CHILD",
+        &["damage_sources"],
+    ) {
+        return;
+    }
     with_game(|game| {
         let loot = sunrise_world::loot::LootData::load(
             &game.options.resources,
@@ -92,7 +103,7 @@ fn death_loot_uses_call_scoped_source_and_hand() {
                     },
                     0,
                 ));
-                game.mob_died(&victim);
+                game.mob_die(&victim);
             }
             let mut killer = Mob::new(41, ty.clone(), Vec3::ZERO, 0.0);
             killer
@@ -108,7 +119,7 @@ fn death_loot_uses_call_scoped_source_and_hand() {
                 let mut damage = Damage::of(kind);
                 damage.attacker = attacker;
                 victim.last_damage = Some((damage, 0));
-                game.mob_died(&victim);
+                game.mob_die(&victim);
             }
             // Predicate attempts cannot become the source of a later unrelated death.
             for (id, refused) in [(76, false), (77, true)] {
@@ -127,17 +138,20 @@ fn death_loot_uses_call_scoped_source_and_hand() {
                 let victim = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
                 victim.invulnerable_flag = false;
                 victim.invulnerable = 0;
+                let before = seen.lock().unwrap().len();
                 assert!(game.mob_hits_mob(id, 1000.0, Damage::fall()));
-                let victim = game.mobs.iter().find(|m| m.id == id).unwrap().clone();
-                game.mob_died(&victim);
+                assert_eq!(
+                    seen.lock().unwrap()[before..],
+                    [("minecraft:fall".to_owned(), 0, 0, None)],
+                );
             }
             // IDs belong to the killing blow, not a lookup of a surviving mob.
             game.mobs.retain(|m| m.id != 41);
-            let mut victim = Mob::new(73, ty, Vec3::ZERO, 0.0);
+            let mut victim = Mob::new(73, ty.clone(), Vec3::ZERO, 0.0);
             let mut damage = Damage::of(DamageKind::Arrow);
             damage.attacker = Some(Who::Mob(41));
             victim.last_damage = Some((damage, 0));
-            game.mob_died(&victim);
+            game.mob_die(&victim);
             let mods = vec![
                 mod_api::ModEntry::new(
                     "cancel_once",
@@ -145,17 +159,18 @@ fn death_loot_uses_call_scoped_source_and_hand() {
                         as Box<dyn mod_api::Hooks>,
                 ),
                 mod_api::ModEntry::new(
-                    "retry_probe",
+                    "cancellation_probe",
                     Box::new(Probe(seen.clone())) as Box<dyn mod_api::Hooks>,
                 ),
             ]
             .into();
             mod_platform::testing::with_mods(mods, || {
                 let before = seen.lock().unwrap().len();
-                game.mob_died(&victim);
+                game.mobs.push(Mob::new(78, ty.clone(), Vec3::ZERO, 0.0));
+                assert!(game.mob_hits_mob(78, 1000.0, Damage::fall()));
                 assert_eq!(seen.lock().unwrap().len(), before);
-                victim.last_damage = Some((Damage::fall(), 1));
-                game.mob_died(&victim);
+                game.mobs.push(Mob::new(79, ty, Vec3::ZERO, 0.0));
+                assert!(game.mob_hits_mob(79, 1000.0, Damage::fall()));
                 assert_eq!(seen.lock().unwrap().len(), before + 1);
             });
         });
@@ -204,7 +219,9 @@ impl mod_api::Hooks for ChangeKillerHand {
             .unwrap();
         let living = host.living(entity).unwrap();
         assert_eq!(
-            living.hand_item(host, mod_api::Hand::Main),
+            living
+                .with_hand_item(host, mod_api::Hand::Main, |stack| stack.project())
+                .flatten(),
             Some(self.0.clone()),
             "loot sees the complete stack installed during living_death"
         );
@@ -225,7 +242,7 @@ impl mod_api::Hooks for ChangeKillerHand {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+#[ignore = "daily"]
 fn death_loot_killer_is_not_the_acting_guest() {
     use crate::game::native_guest_turn_tests::with_guests;
     use sunrise_client::mobs::Damage;
@@ -269,10 +286,10 @@ fn death_loot_killer_is_not_the_acting_guest() {
                 game.last_hurt_by_player
                     .insert(id, crate::game::combat::PlayerCredit(12));
                 if let Some(conn) = acting {
-                    game.as_guest(conn, |g| g.mob_died(&victim)).unwrap();
+                    game.as_guest(conn, |g| g.mob_die(&victim)).unwrap();
                 } else {
                     assert!(game.lan_acting.is_none());
-                    game.mob_died(&victim);
+                    game.mob_die(&victim);
                 }
             }
         });
@@ -306,7 +323,7 @@ impl mod_api::Hooks for Nested {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+#[ignore = "daily"]
 fn death_loot_nested_death_keeps_outer_context() {
     use crate::game::native_guest_turn_tests::with_guests as with_game;
     use sunrise_client::mobs::{Damage, DamageKind, Who};
@@ -346,7 +363,7 @@ fn death_loot_nested_death_keeps_outer_context() {
             mod_api::ModEntry::new("nested_probe", Box::new(Probe(seen.clone()))),
         ]
         .into();
-        mod_platform::testing::with_mods(mods, || game.mob_died(&victim));
+        mod_platform::testing::with_mods(mods, || game.mob_die(&victim));
         assert_eq!(
             *seen.lock().unwrap(),
             [
@@ -367,7 +384,7 @@ impl mod_api::Hooks for BlockTool {
     }
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn death_loot_change_preserves_block_tool() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         game.build_registries();

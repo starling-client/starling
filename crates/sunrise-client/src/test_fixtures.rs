@@ -6,19 +6,31 @@
 //! copy serves them all; each test still builds its own `World` over it.
 use crate::{
     assets::{Assets, RenderAssets},
+    blocks::BlockFacts,
     motion::MotionResources,
 };
-use sunrise_world::block_collision::BlockCollisionRegistry;
 use std::{
     path::{Path, PathBuf},
     sync::OnceLock,
 };
+use sunrise_world::block_collision::BlockCollisionRegistry;
 
 pub(crate) struct Vanilla {
+    /// The root everything below was read from: additional test data uses the same root.
+    pub root: PathBuf,
     pub assets: Assets,
     pub render: RenderAssets,
+    pub facts: BlockFacts,
     pub collision: BlockCollisionRegistry<'static>,
     pub motion: MotionResources,
+}
+
+impl Vanilla {
+    /// A collision binding of this test's own, for a test that marks part states: the marks live
+    /// in the binding, so tests that share `collision` would see each other's.
+    pub fn own_collision(&self) -> BlockCollisionRegistry<'static> {
+        crate::collisions::load(&self.root, self.assets.registry).unwrap()
+    }
 }
 
 /// The prepared vanilla data at `SUNRISE_TEST_RESOURCES`, or the checkout's
@@ -43,9 +55,12 @@ pub(crate) fn vanilla() -> Option<&'static Vanilla> {
                     root.clone(),
                 ))
                 .unwrap();
+            let facts = BlockFacts::load(&root, assets.registry).unwrap();
             let collision = crate::collisions::load(&root, assets.registry).unwrap();
             let motion = MotionResources::load(&root, &assets).unwrap();
             Some(Vanilla {
+                root,
+                facts,
                 assets,
                 render,
                 collision,
@@ -71,11 +86,27 @@ pub(crate) fn report_missing() {
     let name = thread.name().unwrap_or("<unnamed test>");
     let mut skipped = SKIPPED.lock().unwrap();
     if skipped.insert(name.to_owned()) {
-        writeln!(
-            std::io::stderr().lock(),
-            "skipped: no vanilla data; test={name}; skipped tests={}",
+        // One write, so concurrent tests never split the line that run_test_binaries.py reads.
+        let line = format!(
+            "skipped: no vanilla data; test={name}; skipped tests={}\n",
             skipped.len()
-        )
-        .expect("writing missing-data skip report");
+        );
+        std::io::stderr()
+            .lock()
+            .write_all(line.as_bytes())
+            .expect("writing missing-data skip report");
     }
+}
+
+/// A state table containing just air, for tests that don't need prepared resources.
+pub(crate) fn air_registry() -> &'static sunrise_world::registry::BlockRegistry {
+    use sunrise_world::registry::BlockRegistry;
+    static REGISTRY: std::sync::OnceLock<BlockRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        BlockRegistry::from_facts_json(
+            br#"{"defaults":{"minecraft:air":0},"states":[["air",true,false,"","minecraft:air"]]}"#
+                .as_slice(),
+        )
+        .unwrap()
+    })
 }

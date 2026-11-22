@@ -1,9 +1,5 @@
 //! Integrated registry/cursor differential transport using resident TerrainChunk storage.
 use crate::support::shapes::{emit, values};
-use sunrise_core::{
-    geometry::{Aabb, Axis, Vec3, VoxelShape},
-    position::{BlockPos, ChunkPos},
-};
 use serde_json::Value;
 use std::{
     cell::RefCell,
@@ -13,6 +9,10 @@ use std::{
     path::Path,
     rc::Rc,
     sync::Arc,
+};
+use sunrise_core::{
+    geometry::{Aabb, Axis, Vec3, VoxelShape},
+    position::{BlockPos, ChunkPos},
 };
 use {
     sunrise_core::{nbt, nbt::Limits},

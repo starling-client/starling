@@ -68,6 +68,31 @@ class MoveToDaily(unittest.TestCase):
         rows = [line for line in (self.policy / "daily-pkg.txt").read_text().splitlines() if not line.startswith("#")]
         self.assertEqual(rows, ["pkg tests::async_one lib daily game-boot", "pkg tests::slow_one lib daily slow"])
 
+    def test_apply_puts_gpu_rows_in_the_gpu_file_and_is_idempotent(self):
+        gpu = self.row("slow_one", reason="gpu")
+        rows = [gpu, self.row("async_one")]
+        moved, already, skipped = self.apply(rows)
+        self.assertCountEqual(moved, rows)
+        self.assertEqual((already, skipped), ([], []))
+        gpu_file = self.policy / "daily-pkg-gpu.txt"
+        daily_file = self.policy / "daily-pkg.txt"
+        self.assertIn("pkg tests::slow_one lib daily gpu", gpu_file.read_text().splitlines())
+        self.assertNotIn("pkg tests::slow_one lib daily gpu", daily_file.read_text().splitlines())
+        moved, already, skipped = self.apply(rows)
+        self.assertCountEqual(already, rows)
+        self.assertEqual((moved, skipped), ([], []))
+
+    def test_restore_removes_the_gpu_row_from_its_file(self):
+        gpu = self.row("slow_one", reason="gpu")
+        self.apply([gpu, self.row("async_one")])
+        daily_file = self.policy / "daily-pkg.txt"
+        daily = daily_file.read_text()
+        restored, skipped = move_to_daily.restore([gpu], root=self.root, folder=self.policy)
+        self.assertEqual((restored, skipped), ([gpu], []))
+        self.assertIn("    #[test]\n    fn slow_one() {", self.source.read_text())
+        self.assertNotIn("pkg tests::slow_one lib daily gpu", (self.policy / "daily-pkg-gpu.txt").read_text())
+        self.assertEqual(daily_file.read_text(), daily)
+
     def test_restore_undoes_apply(self):
         rows = [self.row("slow_one"), self.row("async_one")]
         self.apply(rows)

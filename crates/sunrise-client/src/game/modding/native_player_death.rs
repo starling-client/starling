@@ -11,8 +11,8 @@
 //! player (`native_as_player`), so it is refused inside `player_died`, where
 //! the read still works.
 use super::Game;
-use sunrise_core::position::BlockPos;
 use mod_api::{GlobalPos, Identifier, PlayerRef};
+use sunrise_core::position::BlockPos;
 
 impl Game<'_> {
     /// The dimension and block of the player's last death
@@ -52,8 +52,8 @@ pub(in crate::game) mod tests {
     use mod_api::__private::game::*;
 
     use super::super::Game;
-    use sunrise_core::position::BlockPos;
     use mod_api::{GlobalPos, Identifier, PlayerRef};
+    use sunrise_core::position::BlockPos;
 
     /// A block of the overworld.
     fn at([x, y, z]: [i32; 3]) -> GlobalPos {
@@ -65,9 +65,9 @@ pub(in crate::game) mod tests {
 
     /// A placed guest record.
     pub(in crate::game) fn new_guest(conn: u32, uuid: u128) -> sunrise_client::lan::guest::Guest {
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
         use sunrise_client::lan::{Joined, PlayerSender, guest::Guest};
         use sunrise_protocol::packets::configuration::ClientInformation;
-        use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
         let (tx, _rx) = mpsc::channel();
         let mut guest = Guest::new(
@@ -117,6 +117,7 @@ pub(in crate::game) mod tests {
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         };
         game.lan_host(settings, net, config).unwrap();
         let guest = new_guest(1, 123);
@@ -125,7 +126,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_players_last_death_location_reads_from_their_record() {
         with_game(|game| {
             let player = add_guest(game);
@@ -203,7 +204,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_acting_players_location_reads_and_writes_through_their_turn() {
         with_game(|game| {
             let player = add_guest(game);
@@ -233,7 +234,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_death_location_survives_a_playerdata_save_and_load() {
         use sunrise_client::lan::playerdata;
 
@@ -247,7 +248,11 @@ pub(in crate::game) mod tests {
                 std::time::SystemTime::now()
             ));
             std::fs::create_dir_all(&world).unwrap();
-            playerdata::save(&game.lan.as_ref().unwrap().hub.guests[0], &world);
+            playerdata::save(
+                &game.lan.as_ref().unwrap().hub.guests[0],
+                &world,
+                &Default::default(),
+            );
 
             // A fresh record of the same player never died until it loads.
             let mut fresh = new_guest(2, 123);
@@ -266,7 +271,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_death_records_the_floored_block_and_dimension() {
         with_game(|game| {
             let player = add_guest(game);

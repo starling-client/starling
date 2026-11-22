@@ -1,0 +1,21 @@
+ids = [
+    "trait:ItemStorage",
+    "method:ItemStorage::page",
+    "method:ItemStorage::visit_entries",
+    "type:StoragePage",
+    "handle:StoragePage::new",
+    "handle:StoragePage::limit",
+    "handle:StoragePage::room",
+    "handle:StoragePage::push",
+    "handle:StoragePage::entries",
+    "handle:StoragePage::clear",
+    "type:StorageError",
+    "type:StorageError.ZeroPage",
+]
+why = "Storage visits occupied entries directly so callers can stop at a match without filling a page. Matching transfers visit the source once in provider order to collect deduplicated matching kinds before running journaled transfers, matching NeoForge's single-pass ResourceHandlerUtil.move without rescanning after compaction."
+migrate = """
+Callers: remove StoragePage, StoragePage::new, MAX_STORAGE_PAGE, and the page(host, cursor, &mut page) loop. Move the body of your loop over page.entries() into storage.visit_entries(host, &mut |kind, amount| { ... })?, where kind is &ItemResource and amount is u64. Return std::ops::ControlFlow::Continue(()) to keep reading or ControlFlow::Break(()) to finish at the first match. Clone a kind to retain it, and wait for the visit to return Ok(()) before writing.
+Providers: replace ItemStorage::page with visit_entries(&self, host: &mut dyn ServerHost, visitor: &mut dyn FnMut(&ItemResource, u64) -> std::ops::ControlFlow<()>) -> Result<(), StorageError>. Drop cursor handling and the page's limit, room, and clear calls. Replace each page.push(kind, amount) with a call to visitor(&kind, amount); on Break, stop reading immediately and return Ok(()). Skip empty entries and keep sided provider order and repeated kinds. Return Ok(()) on exhaustion instead of a next cursor.
+Remove the StorageError::ZeroPage branch. Remove Wire encoding and decoding of StoragePage and StorageError; keep results local or define and map to your own payload types for serialized data.
+Behavior only (`fn:transfer_matching`): the call is unchanged. Keep the filter a predicate on the kind; do not rely on a transfer changing what a later filter call sees during the visit. With `max == 0` the source is not read; otherwise entries are visited once in provider order. After the read ends, matching kinds are transferred once each in first-seen order.
+"""

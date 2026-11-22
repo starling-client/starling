@@ -679,8 +679,9 @@ mod tests {
             let mut seen = Vec::new();
             for _ in 0..steps + 2 {
                 let at = entry.slider_position(0).unwrap();
-                let next = crate::settings_shell::slider_step(at, Some(steps), 100.0, forward);
-                entry.set_slider_position(0, next);
+                let next =
+                    crate::settings_shell::slider_step(f64::from(at), Some(steps), 100.0, forward);
+                entry.set_slider_position(0, next as f32);
                 seen.push(entry.values[0]);
             }
             seen

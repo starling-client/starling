@@ -9,11 +9,18 @@ pub trait Hooks {
     /// still reports success. `entity_teleport` and `player_teleported` hear it after.
     /// Server-side. Diverges from upstream: new hook.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "EntityTeleportEvent.TeleportCommand",
         cancellable = true
     )]
-    fn teleport_command();
+    fn teleport_command(
+        dimension: &str,
+        entity: u32,
+        from: [f64; 3],
+        to: &mut [f64; 3],
+        cancel: &mut bool,
+    );
 }

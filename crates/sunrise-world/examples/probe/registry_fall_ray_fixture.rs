@@ -1,5 +1,4 @@
 use crate::support::common::f64_bits;
-use sunrise_core::{geometry::Vec3, position::BlockPos};
 use serde_json::Value;
 use std::{
     collections::BTreeSet,
@@ -7,6 +6,7 @@ use std::{
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::{geometry::Vec3, position::BlockPos};
 use {
     sunrise_core::{
         nbt,

@@ -3,30 +3,39 @@ impl Game<'_> {
     /// The block states mods add to vanilla POI types, once the block registry is resolved.
     pub(in crate::game) fn native_extend_poi_types(
         context: &mod_api::RegistrationContext,
-        extensions: &mut dyn PoiTypeExtensions,
+        extensions: &mut mod_api::PoiTypeExtensionRegistry<'_>,
     ) {
-        Self::fire_extend_poi_types(context, extensions);
+        Self::fire_extend_poi_types(context, |listen| extensions.register_listener(listen));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use sunrise_world::{chunk::BlockState, poi::PoiExtension, registry::BlockRegistry};
     use mod_api::{
         ExtendPoiTypesEvent, Hooks, Identifier, ModEntry, RegistrationContext, StateConstraint,
         StatePredicate,
     };
     use mod_platform::testing::with_mods;
+    use sunrise_world::{chunk::BlockState, poi::PoiExtension, registry::BlockRegistry};
 
     struct Tags;
     impl mod_api::Tags for Tags {}
 
-    struct TestMod;
+    struct TestMod {
+        fails: bool,
+    }
     #[mod_api::__subscriptions]
     impl Hooks for TestMod {
         fn extend_poi_types(&self, _: &RegistrationContext, event: &mut ExtendPoiTypesEvent<'_>) {
             let key = |id: &str| mod_api::__private::block_key(id).unwrap();
             let metadata = event.extensions.metadata();
+            if self.fails {
+                let states = StatePredicate::block(metadata, key("minecraft:stone"), &[]).unwrap();
+                event
+                    .extensions
+                    .extend(Identifier::parse("minecraft:home").unwrap(), states);
+                panic!("extension failed after adding a valid predicate");
+            }
             let additions = [
                 (
                     "minecraft:home",
@@ -80,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mods_predicates_become_the_complete_states_it_adds() {
+    fn only_completed_poi_extensions_expand_into_their_full_states() {
         mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
         let facts = r#"{"defaults":{"minecraft:air":0,"minecraft:stone":1,"minecraft:hay_block":3,"minecraft:bell":5,"minecraft:red_bed":6},"states":[
             ["a",true,false,"","minecraft:air"],
@@ -95,7 +104,11 @@ mod tests {
         let registry = BlockRegistry::from_facts_json(facts.as_bytes()).unwrap();
         crate::game::api_values::resolve_block_definitions(&registry).unwrap();
         with_mods(
-            vec![ModEntry::new("poi_test", Box::new(TestMod))].into(),
+            vec![
+                ModEntry::new("failed_poi", Box::new(TestMod { fails: true })),
+                ModEntry::new("poi_test", Box::new(TestMod { fails: false })),
+            ]
+            .into(),
             || {
                 let (additions, refusals) = crate::game::mods::collect_poi_extensions(&registry);
                 let addition = |name: &str, properties: &[(&str, &str)], poi: &str| PoiExtension {
@@ -120,6 +133,13 @@ mod tests {
                         ),
                         addition("minecraft:stone", &[], "minecraft:nowhere"),
                     ]
+                );
+                assert_eq!(
+                    mod_api::__private::take_hook_panics(),
+                    [mod_api::__private::HookPanicReport {
+                        mod_id: "failed_poi",
+                        hook: "extend_poi_types",
+                    }]
                 );
                 // The tag predicate is the one refusal the engine makes before the table does.
                 assert_eq!(refusals.len(), 1, "{refusals:?}");

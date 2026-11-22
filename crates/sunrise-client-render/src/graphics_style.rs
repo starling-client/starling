@@ -1,21 +1,14 @@
-//! The look of Sunrise's graphics settings screen, in one place: sizes,
-//! colours and the controls it draws with. The screen (`graphics_ui`) only
-//! lays out rows and handles input; a menu theme replaces this module.
-//!
-//! Its colours come from `menu_style`, given at startup (in the official game the design
-//! system's Blocks palette, `docs/design-system.md`), in a lighter form: square panels of
-//! dark glass with a thin edge, so the world shows through, flat controls, and the face on
-//! the one main button, in vanilla's font.
-use crate::menu_style::{self, SettingsColours};
+//! The settings screens' look: vanilla's widget sprites and colours, and the shell's sizes.
+use crate::menu_style::{self, NEUTRAL, SettingsColours};
 use crate::{
     hud::{HudAtlas, HudBatch},
     text::Text,
     ui,
 };
 
-/// The settings pages' colours (`menu_style`, given at startup).
+/// Vanilla's greys and chat colours (`menu_style::NEUTRAL`).
 fn b() -> &'static SettingsColours {
-    &menu_style::get().settings
+    &NEUTRAL.settings
 }
 
 /// What a setting costs in frame time, shown with its description.
@@ -38,7 +31,7 @@ impl Cost {
             Cost::Saves => "Saves time",
         }
     }
-    /// `0xRRGGBB`: the palette's success, warn and danger.
+    /// `0xRRGGBB`: vanilla's green, yellow and red.
     pub fn rgb(self) -> u32 {
         match self {
             Cost::None => b().ink_soft,
@@ -50,19 +43,7 @@ impl Cost {
 }
 
 use menu_style::hud_colour as hex;
-/// The plate and the strip: the page's dark, see-through, so the world shows behind them.
-fn glass() -> u32 {
-    hex(b().page, 118)
-}
-/// Their 1 px edge.
-pub fn edge() -> u32 {
-    hex(b().ink, 26)
-}
-/// A group's panel, a little lighter than the plate it sits on.
-fn group_fill() -> u32 {
-    hex(b().ink, 11)
-}
-/// A hovered or focused row, lit on its group's panel.
+/// A hovered or focused row.
 pub fn hover() -> u32 {
     hex(b().ink, 18)
 }
@@ -76,37 +57,6 @@ pub fn head_rule() -> u32 {
 }
 pub fn row_rule() -> u32 {
     hex(b().ink, 15)
-}
-/// Fields, boxes and the value stepper: sunk, see-through.
-fn well_fill() -> u32 {
-    hex(b().outline, 102)
-}
-/// A button, a slider's track, the scroller's thumb.
-fn button_fill() -> u32 {
-    hex(b().ink, 20)
-}
-fn button_hover() -> u32 {
-    hex(b().ink, 41)
-}
-fn track_fill() -> u32 {
-    hex(b().ink, 64)
-}
-fn handle_fill() -> u32 {
-    hex(b().ink, 255)
-}
-/// The one main button.
-pub fn face() -> u32 {
-    hex(b().face, 255)
-}
-fn face_hover() -> u32 {
-    hex(b().face_hover, 255)
-}
-/// A tick box's edge when off.
-fn box_edge() -> u32 {
-    hex(b().ink_soft, 89)
-}
-fn outline() -> u32 {
-    hex(b().outline, 255)
 }
 pub fn accent() -> u32 {
     hex(b().accent, 255)
@@ -122,10 +72,6 @@ pub fn soft() -> u32 {
 }
 /// Vanilla's grey for a tooltip's lines under its first (`ChatFormatting.GRAY`).
 pub const GREY: u32 = hex(0xaaaaaa, 255);
-/// A light veil over the backdrop, under the panels.
-pub fn veil() -> u32 {
-    hex(b().page, 77)
-}
 
 /// Sizes in GUI pixels.
 /// Shorter screens than this (a 720p window at scale 3) keep a narrower margin on top.
@@ -160,65 +106,63 @@ pub fn ring(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4], colo
     batch.fill(atlas, x, y + 1.0, 1.0, h - 2.0, color);
     batch.fill(atlas, x + w - 1.0, y + 1.0, 1.0, h - 2.0, color);
 }
-/// The screen's plate, and the strip under it: dark glass with a thin edge.
-pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    fill(batch, atlas, rect, glass());
-    ring(batch, atlas, rect, edge());
+/// The plate and the strip under it: vanilla's list background, as options lists draw it.
+pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4], in_world: bool) {
+    let sprite = if in_world {
+        "gui/inworld_menu_list_background"
+    } else {
+        "gui/menu_list_background"
+    };
+    ui::tiled(batch, atlas, sprite, x, y, w, h, 32.0, WHITE);
 }
-/// A group's panel on the plate, its rows on it.
-pub fn group(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    fill(batch, atlas, rect, group_fill());
+/// The search field and other wells: vanilla's text field, highlighted while focused.
+pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4], focused: bool) {
+    let sprite = if focused {
+        "widget/text_field_highlighted"
+    } else {
+        "widget/text_field"
+    };
+    ui::nine_slice(batch, atlas, sprite, x, y, w, h, WHITE);
 }
-/// A sunk well: the search field, the value stepper.
-pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    fill(batch, atlas, rect, well_fill());
-}
-/// The scroller: a faint track and its thumb.
+/// Vanilla's scroller: its background on the track, the scroller on the thumb.
 pub fn scroller(batch: &mut HudBatch, atlas: &HudAtlas, track: [f32; 4], thumb: [f32; 4]) {
-    fill(batch, atlas, track, row_rule());
-    fill(batch, atlas, thumb, track_fill());
+    let [x, y, w, h] = track;
+    ui::nine_slice(
+        batch,
+        atlas,
+        "widget/scroller_background",
+        x,
+        y,
+        w,
+        h,
+        WHITE,
+    );
+    let [x, y, w, h] = thumb;
+    ui::nine_slice(batch, atlas, "widget/scroller", x, y, w, h, WHITE);
 }
 /// `text` cut to `width` with an ellipsis, as a long name gives way to its control: the HUD
 /// kit's `fit::ellipsize`.
 pub use crate::hud_kit::fit::ellipsize as fit;
-/// A 12 px tick box ending at `right`, centred in the row at `y`: its edge in the accent when on.
-pub fn checkbox(batch: &mut HudBatch, atlas: &HudAtlas, right: f32, y: f32, on: bool, live: bool) {
-    let rect = [right - 12.0, y + 4.0, 12.0, 12.0];
-    fill(batch, atlas, rect, well_fill());
-    let edge = match (on, live) {
-        (true, true) => accent(),
-        (true, false) => muted(),
-        (false, _) => box_edge(),
+/// Vanilla's 17 px check box ending at `right`, centred in the row at `y`; `lit` when pointed at or focused.
+pub fn checkbox(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    right: f32,
+    y: f32,
+    on: bool,
+    (lit, live): (bool, bool),
+) {
+    let sprite = match (on, lit && live) {
+        (true, true) => "widget/checkbox_selected_highlighted",
+        (true, false) => "widget/checkbox_selected",
+        (false, true) => "widget/checkbox_highlighted",
+        (false, false) => "widget/checkbox",
     };
-    ring(batch, atlas, rect, edge);
-    if on {
-        tick(batch, atlas, rect[0] + 1.0, rect[1] + 2.0, edge);
-    }
+    let tint = if live { WHITE } else { muted() };
+    let top = y + ((ROW - 17.0) / 2.0).floor();
+    ui::nine_slice(batch, atlas, sprite, right - 17.0, top, 17.0, 17.0, tint);
 }
-/// A pixel tick, 10 by 8, over its own shadow.
-fn tick(batch: &mut HudBatch, atlas: &HudAtlas, x: f32, y: f32, color: u32) {
-    const TICK: [&str; 8] = [
-        "         #",
-        "        ##",
-        "       ## ",
-        "#     ##  ",
-        "##   ##   ",
-        " ## ##    ",
-        "  ###     ",
-        "   #      ",
-    ];
-    for (j, row) in TICK.iter().enumerate() {
-        for (i, c) in row.chars().enumerate() {
-            if c == '#' {
-                let (px, py) = (x + i as f32, y + j as f32);
-                fill(batch, atlas, [px + 1.0, py + 1.0, 1.0, 1.0], outline());
-                fill(batch, atlas, [px, py, 1.0, 1.0], color);
-            }
-        }
-    }
-}
-/// A flat button with its label centred: Undo, Calibrate..., and Done in the
-/// violet (`primary`). Pointed at or focused, vanilla's white edge.
+/// Vanilla's button with its label centred; pointed at or focused, its highlighted sprite.
 pub fn button(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -235,40 +179,27 @@ pub fn button_with_room(
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
-    (hover, live, primary): (bool, bool, bool),
+    (hover, live, _): (bool, bool, bool),
     room: f32,
 ) {
     let [x, y, w, h] = rect;
-    let face = match (live, primary, hover) {
-        (false, _, _) => well_fill(),
-        (true, true, false) => face(),
-        (true, true, true) => face_hover(),
-        (true, false, false) => button_fill(),
-        (true, false, true) => button_hover(),
+    let sprite = match (live, hover) {
+        (false, _) => "widget/button_disabled",
+        (true, true) => "widget/button_highlighted",
+        (true, false) => "widget/button",
     };
-    fill(batch, atlas, rect, face);
-    if hover && live {
-        ring(batch, atlas, rect, WHITE);
-    }
+    ui::nine_slice(batch, atlas, sprite, x, y, w, h, WHITE);
     let color = if live { WHITE } else { muted() };
-    let ty = y + ((h - 8.0) / 2.0).floor();
     let left = x + 2.0 + room;
-    scrolling_label(
-        batch,
-        atlas,
-        label,
-        [left, ty, w - 4.0 - room],
-        (y, h),
-        color,
-    );
+    scrolling_label(batch, atlas, label, [left, w - 4.0 - room], (y, h), color);
 }
-/// A widget label of `[left, y, width]` inside the widget's `(top, height)`: centred when it fits,
+/// A widget label of `[left, width]` inside the widget's `(top, height)`: centred when it fits,
 /// else slid (vanilla `AbstractWidget.extractScrollingStringOverContents`) and clipped to the box.
 fn scrolling_label(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     text: &Text,
-    [left, y, width]: [f32; 3],
+    [left, width]: [f32; 2],
     (top, height): (f32, f32),
     color: u32,
 ) {
@@ -280,50 +211,41 @@ fn scrolling_label(
         left + width,
         top,
         top + height,
-        y,
         color,
     );
 }
-/// A slider: its value over a thin track filled in the accent up to the handle at `position`.
+/// What a slider's sprites follow, as `AbstractSliderButton.getSprite` and `getHandleSprite`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SliderState {
+    pub hover: bool,
+    pub focused: bool,
+    /// `canChangeValue`: the keyboard changes its value (Enter pressed on it).
+    pub editing: bool,
+    /// Dragged with the mouse.
+    pub held: bool,
+    pub live: bool,
+}
+/// Vanilla's slider: track and 8 px handle at `position` (0..1) lit as `AbstractSliderButton`'s, the value over them.
 pub fn slider(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     rect: [f32; 4],
     value: &Text,
     position: f32,
-    (hover, live): (bool, bool),
+    state: SliderState,
 ) {
     let [x, y, w, h] = rect;
+    let live = state.live;
+    let tint = if live { WHITE } else { muted() };
+    let (track, handle) =
+        ui::slider_sprites_ext(state.hover, live, state.focused, state.editing, state.held);
+    ui::nine_slice(batch, atlas, track, x, y, w, h, tint);
+    let at = x + (position.clamp(0.0, 1.0) * (w - 8.0)).floor();
+    ui::nine_slice(batch, atlas, handle, at, y, 8.0, h, tint);
     let color = if live { WHITE } else { muted() };
-    scrolling_label(
-        batch,
-        atlas,
-        value,
-        [x + 2.0, y + 1.0, w - 4.0],
-        (y, h),
-        color,
-    );
-    let line = y + h - 3.0;
-    let at = x + (position.clamp(0.0, 1.0) * (w - 4.0)).round();
-    fill(batch, atlas, [x, line, w, 2.0], track_fill());
-    fill(
-        batch,
-        atlas,
-        [x, line, at - x, 2.0],
-        if live { accent() } else { muted() },
-    );
-    let handle = [at, line - 3.0, 4.0, 8.0];
-    fill(
-        batch,
-        atlas,
-        handle,
-        if live { handle_fill() } else { muted() },
-    );
-    if hover && live {
-        ring(batch, atlas, [at - 1.0, line - 4.0, 6.0, 10.0], accent());
-    }
+    scrolling_label(batch, atlas, value, [x + 2.0, w - 4.0], (y, h), color);
 }
-/// A value that a press steps through: in a well, between the arrows that say so.
+/// A value that a press steps through: a button showing the value, as vanilla's `CycleButton`.
 pub fn cycler(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -331,23 +253,9 @@ pub fn cycler(
     value: &Text,
     (hover, live): (bool, bool),
 ) {
-    let [x, y, w, h] = rect;
-    well(batch, atlas, rect);
-    if hover && live {
-        ring(batch, atlas, rect, WHITE);
-    }
-    let ty = y + ((h - 8.0) / 2.0).floor();
-    let arrows = if hover && live { WHITE } else { muted() };
-    batch.text_styled(atlas, &Text::literal("<"), x + 3.0, ty, arrows, true);
-    batch.text_styled(atlas, &Text::literal(">"), x + w - 8.0, ty, arrows, true);
-    let color = match (live, hover) {
-        (false, _) => muted(),
-        (true, true) => WHITE,
-        (true, false) => soft(),
-    };
-    scrolling_label(batch, atlas, value, [x + 9.0, ty, w - 18.0], (y, h), color);
+    button_with_room(batch, atlas, rect, value, (hover, live, false), 0.0);
 }
-/// A screen's title, centred at the top (split-screen profiles).
+/// A screen's title, centred at the top.
 pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
     let w = batch.width;
     ui::centered_text(batch, atlas, text, 0.0, 12.0, w, u32::MAX);
@@ -357,9 +265,237 @@ pub fn cost_color(cost: Cost) -> u32 {
     hex(cost.rgb(), 255)
 }
 
+/// An atlas of the vanilla widget sprites and menu backgrounds the settings screens draw, as a pack lays them out.
+#[cfg(test)]
+pub(crate) fn widget_atlas() -> HudAtlas {
+    let root = tempfile::tempdir().unwrap();
+    write_widget_resources(root.path());
+    HudAtlas::build(&sunrise_assets::resource_source::ResourceSource::directory(
+        root.path().to_owned(),
+    ))
+    .unwrap()
+}
+
+/// Writes [`widget_atlas`]'s resources under `root`, as the game's own resources lay them out.
+#[cfg(test)]
+pub(crate) fn write_widget_resources(root: &std::path::Path) {
+    let assets = root.join("assets/minecraft");
+    std::fs::create_dir_all(assets.join("atlases")).unwrap();
+    std::fs::write(
+        assets.join("atlases/gui.json"),
+        r#"{"sources":[{"type":"minecraft:directory","prefix":"","source":"gui/sprites"}]}"#,
+    )
+    .unwrap();
+    let textures = assets.join("textures/gui");
+    for (name, w, h) in [
+        ("sprites/widget/checkbox", 17, 17),
+        ("sprites/widget/checkbox_highlighted", 17, 17),
+        ("sprites/widget/checkbox_selected", 17, 17),
+        ("sprites/widget/checkbox_selected_highlighted", 17, 17),
+        ("sprites/widget/button", 200, 20),
+        ("sprites/widget/button_highlighted", 200, 20),
+        ("sprites/widget/button_disabled", 200, 20),
+        ("sprites/widget/text_field", 200, 20),
+        ("sprites/widget/text_field_highlighted", 200, 20),
+        ("sprites/widget/scroller", 6, 32),
+        ("sprites/widget/scroller_background", 6, 32),
+        ("menu_background", 32, 32),
+        ("inworld_menu_background", 32, 32),
+        ("menu_list_background", 32, 32),
+        ("inworld_menu_list_background", 32, 32),
+    ] {
+        let path = textures.join(format!("{name}.png"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut encoder = png::Encoder::new(std::fs::File::create(path).unwrap(), w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let pixels = vec![255; (w * h * 4) as usize];
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels).unwrap();
+    }
+}
+
+/// Whether `batch` drew the whole of `r`'s texture, stretched over `at` when given.
+#[cfg(test)]
+pub(crate) fn drew_rect(batch: &HudBatch, r: &crate::hud::Rect, at: Option<[f32; 4]>) -> bool {
+    let corner = |pos: Option<[f32; 2]>, uv: [f32; 2]| {
+        batch
+            .vertices
+            .iter()
+            .any(|v| v.uv == uv && pos.is_none_or(|p| v.pos == p))
+    };
+    let (top_left, bottom_right) = match at {
+        Some([x, y, w, h]) => (Some([x, y]), Some([x + w, y + h])),
+        None => (None, None),
+    };
+    corner(top_left, [r.u0, r.v0]) && corner(bottom_right, [r.u1, r.v1])
+}
+
+/// Whether `batch` drew the whole of vanilla's GUI sprite `id` somewhere.
+#[cfg(test)]
+pub(crate) fn drew_sprite(batch: &HudBatch, atlas: &HudAtlas, id: &str) -> bool {
+    let r = atlas
+        .gui_rect(id)
+        .unwrap_or_else(|| panic!("{id} is in the atlas"));
+    drew_rect(batch, r, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hud::take_gui_sprite_misses;
+
+    /// Every painter draws the vanilla sprite its state names, so none comes out blank (#3715).
+    #[test]
+    fn each_widget_draws_vanilla_s_sprite_for_its_state() {
+        let atlas = widget_atlas();
+        take_gui_sprite_misses();
+        let rect = [10.0, 20.0, 100.0, 20.0];
+        let label = Text::empty();
+        let draws: [(&str, fn(&mut HudBatch, &HudAtlas)); 9] = [
+            ("widget/checkbox", |b, a| {
+                checkbox(b, a, 100.0, 0.0, false, (false, true))
+            }),
+            ("widget/checkbox_highlighted", |b, a| {
+                checkbox(b, a, 100.0, 0.0, false, (true, true))
+            }),
+            ("widget/checkbox_selected", |b, a| {
+                checkbox(b, a, 100.0, 0.0, true, (false, true))
+            }),
+            ("widget/checkbox_selected_highlighted", |b, a| {
+                checkbox(b, a, 100.0, 0.0, true, (true, true))
+            }),
+            ("widget/button", |b, a| {
+                button(
+                    b,
+                    a,
+                    [10.0, 20.0, 100.0, 20.0],
+                    &Text::empty(),
+                    (false, true, false),
+                )
+            }),
+            ("widget/button_highlighted", |b, a| {
+                button(
+                    b,
+                    a,
+                    [10.0, 20.0, 100.0, 20.0],
+                    &Text::empty(),
+                    (true, true, false),
+                )
+            }),
+            ("widget/button_disabled", |b, a| {
+                button(
+                    b,
+                    a,
+                    [10.0, 20.0, 100.0, 20.0],
+                    &Text::empty(),
+                    (false, false, false),
+                )
+            }),
+            ("widget/text_field", |b, a| {
+                well(b, a, [10.0, 20.0, 100.0, 20.0], false)
+            }),
+            ("widget/text_field_highlighted", |b, a| {
+                well(b, a, [10.0, 20.0, 100.0, 20.0], true)
+            }),
+        ];
+        for (id, draw) in draws {
+            let mut batch = HudBatch::scratch([640, 480]);
+            draw(&mut batch, &atlas);
+            assert!(drew_sprite(&batch, &atlas, id), "{id} drawn");
+        }
+        let mut batch = HudBatch::scratch([640, 480]);
+        cycler(&mut batch, &atlas, rect, &label, (false, true));
+        assert!(
+            drew_sprite(&batch, &atlas, "widget/button"),
+            "the cycler's button drawn"
+        );
+        // The track and the thumb each on its own rectangle, so swapped sprites fail.
+        let (track, thumb) = ([0.0, 0.0, 6.0, 200.0], [0.0, 40.0, 6.0, 40.0]);
+        let mut batch = HudBatch::scratch([640, 480]);
+        scroller(&mut batch, &atlas, track, thumb);
+        let at = |id: &str, rect| drew_rect(&batch, atlas.gui_rect(id).unwrap(), Some(rect));
+        assert!(
+            at("widget/scroller_background", track),
+            "the track's sprite on the track"
+        );
+        assert!(
+            at("widget/scroller", thumb),
+            "the scroller's sprite on the thumb"
+        );
+        assert_eq!(take_gui_sprite_misses(), Vec::<String>::new());
+    }
+
+    /// A wrong sprite name, as #2522's file paths were, draws the missing texture and is reported.
+    #[test]
+    fn a_wrong_sprite_name_draws_the_missing_texture_and_is_reported() {
+        let atlas = widget_atlas();
+        take_gui_sprite_misses();
+        let mut batch = HudBatch::scratch([640, 480]);
+        let id = "gui/sprites/widget/checkbox";
+        ui::nine_slice(&mut batch, &atlas, id, 0.0, 0.0, 17.0, 17.0, WHITE);
+        assert_eq!(take_gui_sprite_misses(), [id]);
+        let missing = &atlas.sprites[crate::hud::MISSING_SPRITE];
+        assert!(drew_rect(&batch, missing, Some([0.0, 0.0, 17.0, 17.0])));
+    }
+
+    /// The settings screens name only sprites the game's own 26.3 resources have.
+    #[test]
+    #[ignore = "daily"]
+    fn the_settings_screens_name_only_sprites_the_game_has() {
+        use crate::settings_shell::{Hosted, Shell};
+        let root = std::env::var_os("SUNRISE_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/sunrise-client/26.3")
+            });
+        let atlas = HudAtlas::build(&sunrise_assets::resource_source::ResourceSource::directory(
+            root,
+        ))
+        .unwrap();
+        let s = crate::settings::Settings::default();
+        take_gui_sprite_misses();
+        fn frame(
+            shell: &mut dyn Hosted,
+            s: &crate::settings::Settings,
+            atlas: &HudAtlas,
+            in_world: bool,
+        ) {
+            let mut batch = HudBatch::scratch([1708, 960]);
+            shell.draw_test_frame(
+                s,
+                &mut batch,
+                atlas,
+                (0.0, 0.0),
+                in_world,
+                None,
+                &mut |_, _| {},
+            );
+            crate::widgets::end_frame(1);
+        }
+        for in_world in [false, true] {
+            frame(
+                &mut Shell::<crate::extras_ui::ExtrasScreen>::default(),
+                &s,
+                &atlas,
+                in_world,
+            );
+            frame(
+                &mut Shell::<crate::graphics_ui::GraphicsScreen>::default(),
+                &s,
+                &atlas,
+                in_world,
+            );
+            frame(
+                &mut Shell::<crate::controller_ui::ControllerScreen>::default(),
+                &s,
+                &atlas,
+                in_world,
+            );
+        }
+        assert_eq!(take_gui_sprite_misses(), Vec::<String>::new());
+    }
 
     fn atlas() -> HudAtlas {
         HudAtlas::build(&sunrise_assets::resource_source::ResourceSource::directory(
@@ -395,7 +531,17 @@ mod tests {
                 button(b, a, r, t, (false, true, false))
             }),
             ("slider", |b, a, r, t| {
-                slider(b, a, r, t, 0.5, (false, true))
+                slider(
+                    b,
+                    a,
+                    r,
+                    t,
+                    0.5,
+                    SliderState {
+                        live: true,
+                        ..Default::default()
+                    },
+                )
             }),
             ("cycler", |b, a, r, t| cycler(b, a, r, t, (false, true))),
         ];

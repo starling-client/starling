@@ -2,12 +2,12 @@
 //! (`gameplay-facts.json`), indexed by registry state ID.
 mod decode;
 use crate::Result;
+use serde_json::Value;
+use std::{collections::HashMap, path::Path, sync::Arc};
 use sunrise_world::{
     level::{Behaviours, GameplayStateSource},
     registry::{BlockRegistry, BlockStateId},
 };
-use serde_json::Value;
-use std::{collections::HashMap, path::Path, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderShape {
@@ -57,6 +57,8 @@ pub struct StateFacts {
     pub random_ticks: bool,
     pub block_entity: bool,
     pub render_shape: RenderShape,
+    /// `BlockState.shouldSpawnTerrainParticles`: default hit and destroy debris.
+    pub spawn_terrain_particles: bool,
     /// Whether the breaking crack is drawn on the block (`false`: a content
     /// block declared `destroy_overlay: false`).
     pub destroy_overlay: bool,
@@ -75,6 +77,8 @@ pub struct StateFacts {
     pub waterlogged: bool,
     /// `hasOffsetFunction`: the model is jittered per column.
     pub random_offset: bool,
+    /// Explicit load-time offset limits; absent for vanilla rows with class-derived defaults.
+    pub offset_limits: Option<(f32, f32)>,
     /// Whether the outline, not just the model, follows BlockState.getOffset.
     pub outline_offset: bool,
     /// `BlockState.isSolid()` (legacy solidity; fluid surfaces read it).
@@ -138,43 +142,41 @@ impl StateFacts {
     pub fn has_class(&self, name: &str) -> bool {
         self.classes.iter().any(|c| &**c == name)
     }
+    /// A pane-shaped block: one of the `IronBarsBlock` class, which glass panes, stained glass
+    /// panes and iron bars share, and a mod block declared on that template belongs to. Whatever
+    /// reads connected textures treats them alike.
+    pub fn is_pane(&self) -> bool {
+        self.has_class("IronBarsBlock")
+    }
     /// `OffsetType.XZ`/`XYZ` with `getMaxHorizontalOffset` and
     /// `getMaxVerticalOffset`, as (max horizontal, max vertical): vertical 0
     /// for XZ. None without an offset function.
     pub fn max_offset(&self) -> Option<(f32, f32)> {
         self.random_offset.then(|| {
-            let horizontal = if self.has_class("SpeleothemBlock") {
-                0.125
-            } else {
-                0.25
-            };
-            let vertical = match self.name.strip_prefix("minecraft:").unwrap_or(&self.name) {
-                "small_dripleaf" => 0.1,
-                "short_grass" | "fern" | "short_dry_grass" | "tall_dry_grass" => 0.2,
-                _ => 0.0,
-            };
-            (horizontal, vertical)
+            self.offset_limits.unwrap_or_else(|| {
+                inherited_offset_limits(&self.name, self.has_class("SpeleothemBlock"))
+            })
         })
     }
     /// `BlockState.getOffset(pos)`: the column's jitter, zero without an
     /// offset function.
     pub fn offset_at(&self, x: i32, z: i32) -> [f64; 3] {
-        self.max_offset()
-            .map_or([0.0; 3], |max| column_offset(max, x, z))
+        self.max_offset().map_or([0.0; 3], |max| {
+            sunrise_core::random::column_offset(max, x, z)
+        })
     }
 }
-/// The `OffsetType.XZ`/`XYZ` jitter of column (x, z) from `Mth.getSeed(x, 0, z)`,
-/// for a block with `max` = (max horizontal, max vertical) offset.
-pub fn column_offset((horizontal, vertical): (f32, f32), x: i32, z: i32) -> [f64; 3] {
-    let seed = sunrise_core::random::position_seed(sunrise_core::position::BlockPos::new(x, 0, z));
-    let nibble = |shift: u32| ((seed >> shift) & 15) as f32 / 15.0;
-    let h = f64::from(horizontal);
-    [
-        ((f64::from(nibble(0)) - 0.5) * 0.5).clamp(-h, h),
-        (f64::from(nibble(4)) - 1.0) * f64::from(vertical),
-        ((f64::from(nibble(8)) - 0.5) * 0.5).clamp(-h, h),
-    ]
+/// The prepared vanilla rows predate explicit offset limits; preserve their class defaults.
+pub fn inherited_offset_limits(name: &str, speleothem: bool) -> (f32, f32) {
+    let horizontal = if speleothem { 0.125 } else { 0.25 };
+    let vertical = match name.strip_prefix("minecraft:").unwrap_or(name) {
+        "small_dripleaf" => 0.1,
+        "short_grass" | "fern" | "short_dry_grass" | "tall_dry_grass" => 0.2,
+        _ => 0.0,
+    };
+    (horizontal, vertical)
 }
+
 impl StateFacts {
     /// A `SignBlock`'s form, by class: a mod's sign has its template's,
     /// whatever its name.
@@ -187,7 +189,11 @@ impl StateFacts {
     }
 }
 /// Compact, owned behaviour inputs retained until the normal behaviour startup stage.
-/// No borrowed gameplay JSON or process-wide cache survives the fact loader.
+/// No borrowed gameplay JSON survives the fact loader. Test resource loads may
+/// memoize these owned tables; normal game builds retain no process-wide fact cache.
+/// That memo bypasses itself only for the one registration-dependent input today, mod
+/// fluids: a new input that depends on registrations must join its key or its bypass.
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameplayProjection {
     flags: u16,
     emission: u64,
@@ -295,6 +301,7 @@ impl GameplayStateSource for GameplayProjection {
     }
 }
 
+#[derive(Clone)]
 pub struct BlockFacts {
     pub states: Vec<StateFacts>,
     pub air: BlockStateId,
@@ -549,6 +556,7 @@ impl BlockFacts {
                     Some("ENTITYBLOCK_ANIMATED") => RenderShape::Animated,
                     _ => RenderShape::Model,
                 },
+                spawn_terrain_particles: entry.spawn_terrain_particles.unwrap_or(true),
                 destroy_overlay: !entry.no_destroy_overlay,
                 full_collision: entry.full_collision,
                 friction: entry.friction as f32,
@@ -575,6 +583,7 @@ impl BlockFacts {
                 fluid_falling,
                 waterlogged: prop("waterlogged") == Some("true"),
                 random_offset: entry.offset,
+                offset_limits: entry.offset_limits.as_ref().map(|limits| limits.0),
                 outline_offset: entry.outline_offset.unwrap_or(entry.offset),
                 legacy_solid: behaviour_states[index][1].as_u64().unwrap_or(0) & 1 != 0,
                 sturdy_full: (behaviour_states[index][0].as_u64().unwrap_or(0) & 63) as u8,
@@ -671,5 +680,80 @@ impl GameplayStateSource for decode::Entry<'_> {
             "fall" => self.sound.fall.id.as_deref().unwrap_or(""),
             _ => "",
         }
+    }
+}
+
+#[cfg(test)]
+mod pane_tests {
+    use super::*;
+
+    fn state(name: &str, classes: &[&str]) -> StateFacts {
+        let text = |s: &str| -> Arc<str> { s.into() };
+        StateFacts {
+            name: text(name),
+            emission: 0,
+            dynamic_light: false,
+            dampening: 0,
+            skylight_down: false,
+            shape_occlusion: false,
+            can_occlude: false,
+            solid_render: false,
+            hardness: 0.0,
+            requires_tool: false,
+            replaceable: false,
+            random_ticks: false,
+            block_entity: false,
+            render_shape: RenderShape::Model,
+            spawn_terrain_particles: true,
+            destroy_overlay: true,
+            full_collision: false,
+            friction: 0.6,
+            explosion_resistance: 0.0,
+            item: text("minecraft:air"),
+            pick_item: text("minecraft:air"),
+            sounds: Sounds {
+                volume: 1.0,
+                pitch: 1.0,
+                break_sound: text(""),
+                step: text(""),
+                place: text(""),
+                hit: text(""),
+                fall: text(""),
+            },
+            fluid: Fluid::None,
+            fluid_level: 0,
+            fluid_falling: false,
+            waterlogged: false,
+            random_offset: false,
+            offset_limits: None,
+            outline_offset: false,
+            legacy_solid: false,
+            sturdy_full: 0,
+            classes: classes.iter().map(|c| text(c)).collect(),
+            outline: Arc::from([]),
+            outline_edges: Arc::from([]),
+            map_color: 0,
+        }
+    }
+
+    #[test]
+    fn a_pane_is_a_block_of_the_iron_bars_class_whatever_its_name() {
+        let pane = ["IronBarsBlock", "Block"];
+        for name in [
+            "minecraft:glass_pane",
+            "minecraft:iron_bars",
+            "mymod:crystal_lattice",
+        ] {
+            assert!(state(name, &pane).is_pane(), "{name}");
+        }
+        // A stained pane's class chain starts at its own subclass.
+        assert!(
+            state(
+                "minecraft:red_stained_glass_pane",
+                &["StainedGlassPaneBlock", "IronBarsBlock"]
+            )
+            .is_pane()
+        );
+        assert!(!state("mymod:fake_glass_pane", &["Block"]).is_pane());
     }
 }

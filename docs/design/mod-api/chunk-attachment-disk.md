@@ -1,5 +1,9 @@
 # Design: chunk attachment disk hooks
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [saving chunk attachments](../../modding/src/how-to/chunk-data-save.md) for the current native API.
+> The old guest adapter, registration refusals and test plan are historical.
+
 Provisional proposal for [#857](https://github.com/arismoko/horizon/issues/857); no implementation or adopted guarantee. This answers the worker Host versus server-thread snapshot question: retain the existing server-thread capture seams, but execute mod load, save and persistence codec callbacks on a chunk worker with a restricted Host. Do not pass Game to a worker or silently relocate the requested callbacks to the server thread.
 
 ## Evidence and limits
@@ -36,7 +40,7 @@ Load dispatch runs after bounded disk decoding and before publication. Its succe
 
 The worker Host implements shared Host facilities only where safe: immutable registry/settings snapshots, handle construction and a local transaction over this job's attachment store. It exposes no world mutation, scheduling into live state, live chunk lookup, Parts, packets or Game access. Ordinary ChunkRef live operations refuse in this context; snapshot attachment methods validate the job capability and existing holder identity. No mutable borrow escapes a callback. Recursive edits to the same key refuse, and callback failure aborts the whole job's tentative edits.
 
-Native and wasm use the same catalog hooks, dependency order and generated adapter. Define API-owned Wire representations `ChunkDiskContextWire` (world scope, dimension, chunk position, full/proto kind and load/save phase), `AttachmentDiskEntryWire` (registered key, schema, bounded encoded value), and `ChunkDiskResultWire` (success or structured refusal). These are proposed names and fields, not existing types. Each declared typed value needs both its persistence codec and the shared Wire capability required by dispatch. Refuse registration before first callback if worker-safe execution, codec or Wire support is absent, naming the type and missing capability. No Rust Any, pointers or runtime handle serialization across wasm. A native module has the same validation obligations and must explicitly support concurrent worker invocation; unsupported modules refuse registration rather than gaining server-thread fallback.
+The historical guest route proposed separate transport records for the job identity, attachment entries and callback result. The current native API borrows the captured job metadata and checks the attachment store against disk NBT budgets; see the how-to above. The comparison to NeoForge's `ChunkDataEvent.getData` is about access to the disk record's data, not the callback's thread.
 
 ## Failure, trust and cost
 

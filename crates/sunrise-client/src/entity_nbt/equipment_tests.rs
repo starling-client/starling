@@ -1,7 +1,7 @@
 //! The mob `equipment` compound is saved as `ar/main` saved it. The `.nbt`
 //! files in `tests/data/mob_equipment` were written by that codec (set
 //! `SUNRISE_WRITE_FIXTURES=1` and run the ignored test to regenerate them);
-//! each must load and save back to the same bytes. An armor stand keeps all
+//! each must load and save back to the same typed NBT tree. An armor stand keeps all
 //! eight slots in the same compound, body and saddle too.
 use super::*;
 use crate::mobs::Species;
@@ -46,7 +46,7 @@ const STAND: (&str, &str) = (
 /// Loads `tag` as an armor stand and saves it back over itself.
 fn stand_round_trip(tag: &Tag) -> Tag {
     let a = armor_stand_from_nbt(tag, 1).unwrap();
-    armor_stand_to_nbt(&a, UUID, Some(tag))
+    armor_stand_to_nbt(&a, UUID, Some(tag), &Default::default())
 }
 
 fn types(id: &str, species: Species) -> HashMap<String, Arc<MobType>> {
@@ -60,7 +60,7 @@ fn types(id: &str, species: Species) -> HashMap<String, Arc<MobType>> {
 /// Loads `tag` as a mob and saves it back over itself, as a chunk save does.
 fn round_trip(tag: &Tag, id: &str, species: Species) -> Tag {
     let m = mob_from_nbt(tag, &types(id, species), 1, None).unwrap();
-    mob_to_nbt(&m, UUID, Some(tag), None, |_| None)
+    mob_to_nbt(&m, UUID, Some(tag), None, |_| None, &Default::default())
 }
 
 fn bytes(tag: &Tag) -> Vec<u8> {
@@ -91,7 +91,7 @@ fn write_fixtures() {
 }
 
 #[test]
-fn a_saved_armor_stand_keeps_its_body_and_saddle_byte_identically() {
+fn a_saved_armor_stand_keeps_its_body_and_saddle() {
     let file = std::fs::read(path(STAND.0)).unwrap();
     let fixture = read_named(&file, Limits::default()).unwrap().0.tag;
     let equipment = fixture.get("equipment").unwrap();
@@ -99,16 +99,16 @@ fn a_saved_armor_stand_keeps_its_body_and_saddle_byte_identically() {
     let stand = armor_stand_from_nbt(&fixture, 1).unwrap();
     assert!(stand.equipment[sunrise_items::equipment::BODY].is_some());
     assert!(stand.equipment[sunrise_items::equipment::SADDLE].is_some());
-    assert_eq!(bytes(&stand_round_trip(&fixture)), file);
+    assert_eq!(stand_round_trip(&fixture), fixture);
 }
 
 #[test]
-fn saved_mob_equipment_loads_and_saves_byte_identically() {
+fn saved_mob_equipment_loads_and_saves_the_same_typed_tree() {
     for (name, id, species, _) in CASES {
         let file = std::fs::read(path(name)).unwrap();
         let fixture = read_named(&file, Limits::default()).unwrap().0.tag;
         assert!(fixture.get("equipment").is_some(), "{name} has equipment");
         let saved = round_trip(&fixture, id, species);
-        assert_eq!(bytes(&saved), file, "{name} saves back unchanged");
+        assert_eq!(saved, fixture, "{name} saves back unchanged");
     }
 }

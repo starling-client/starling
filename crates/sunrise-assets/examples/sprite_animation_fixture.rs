@@ -1,9 +1,9 @@
-use sunrise_assets::animation::{AnimationMetadata, AnimationSample};
 use serde_json::{Value, json};
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_assets::animation::{AnimationMetadata, AnimationSample};
 fn probe(row: &Value) -> Result<Value, Box<dyn std::error::Error>> {
     let m = AnimationMetadata::from_json(row["json"].as_str().unwrap())?;
     let width = row["width"].as_i64().unwrap() as i32;

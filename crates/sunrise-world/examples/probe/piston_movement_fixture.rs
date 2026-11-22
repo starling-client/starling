@@ -1,12 +1,12 @@
 use crate::support::common::f64_bits;
-use sunrise_core::geometry::Vec3;
-use sunrise_world::piston_movement::PistonMovement;
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::geometry::Vec3;
+use sunrise_world::piston_movement::PistonMovement;
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())
 }

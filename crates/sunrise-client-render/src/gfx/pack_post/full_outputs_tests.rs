@@ -4,6 +4,7 @@
 use super::destination_tests::Fixture;
 use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 fn pack(outputs: u32) -> Post {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -70,6 +71,7 @@ fn pack(outputs: u32) -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_shadow_program_with_every_output_drops_the_boats_patches_not_its_water() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

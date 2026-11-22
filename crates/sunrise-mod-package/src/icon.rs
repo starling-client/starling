@@ -2,7 +2,8 @@
 
 /// Maximum encoded size, also used for registry icons.
 pub const MAX_ICON: usize = 256 << 10;
-const MAX_DIMENSION: u32 = 512;
+/// Maximum side length of a square icon embedded in a package.
+pub const MAX_DIMENSION: u32 = 512;
 
 /// Encoded PNG bytes validated at the package boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]

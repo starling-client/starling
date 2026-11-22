@@ -171,17 +171,31 @@ impl PlayerMotion {
         }
     }
     pub fn dimensions_for_pose(&mut self, pose: Pose) -> Result<Dimensions> {
-        Ok(pose.dimensions(self.attribute("minecraft:scale")? as f32))
+        let vanilla = pose.dimensions(self.attribute("minecraft:scale")? as f32);
+        Ok(self
+            .pose_size_answer(pose, vanilla.to_array())
+            .map_or(vanilla, |answer| Dimensions::from_array(answer.effective())))
+    }
+    fn pose_size_answer(&self, pose: Pose, vanilla: [f32; 3]) -> Option<SizeAnswer> {
+        self.size_answer
+            .filter(|answer| answer.asked(pose.into(), vanilla))
+            .or_else(|| {
+                let answer = match pose {
+                    Pose::Standing => self.pose_fit_sizes[0],
+                    Pose::Crouching => self.pose_fit_sizes[1],
+                    Pose::Swimming => self.pose_fit_sizes[2],
+                    _ => None,
+                };
+                answer.filter(|answer| answer.asked(pose.into(), vanilla))
+            })
     }
     pub fn refresh_dimensions(&mut self) -> Result<()> {
         self.scale = self.attribute("minecraft:scale")? as f32;
         self.dimensions = self.pose.dimensions(self.scale);
-        // `EntityEvent.Size`: an `entity_size` answer for this pose and size still holds.
-        if let Some(size) = self
-            .size_answer
-            .and_then(|answer| answer.holds(self.pose.into(), self.dimensions.to_array()))
-        {
-            self.dimensions = crate::pose::Dimensions::from_array(size);
+        // Apply the same pre-resolved answer used by the pose fit decision.
+        if let Some(answer) = self.pose_size_answer(self.pose, self.dimensions.to_array()) {
+            self.size_answer = Some(answer);
+            self.dimensions = Dimensions::from_array(answer.effective());
         }
         Ok(())
     }
@@ -285,16 +299,47 @@ impl MotionWorld<'_, '_, '_> {
     /// allows (the boat the game stores in the player's fluid state), so a boat
     /// afloat keeps the eyes dry.
     pub fn passenger_pose_tick(&mut self) -> Result<()> {
-        self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(crate::motion::WATER);
-        self.update_fluids()?;
+        self.passenger_base_tick()?;
+        self.passenger_sits_up()
+    }
+    /// `Entity.rideTick` for a rider this client moves (`LocalPlayer`): `Player.tick` takes it off
+    /// the ground and `Entity.baseTick` samples its fluids, as for any passenger; then
+    /// `LivingEntity.aiStep` travels it from where it sat (`rider_travel_tick`), and that move's
+    /// ground and collisions are what its look packet sends; `updatePlayerPose` sits it up.
+    pub fn rider_tick(&mut self, direction: [f32; 2]) -> Result<()> {
+        self.begin_fluid_tick()?;
+        self.finish_rider_base_tick(None);
+        self.finish_rider_tick(direction)
+    }
+    /// Apply the rider's swimming decision before `LocalPlayer.aiStep`.
+    pub fn finish_rider_base_tick(&mut self, answer: Option<(crate::motion::SwimEntry, bool)>) {
+        self.apply_swim_entry(answer);
+        self.clear_passenger_flags();
+    }
+    /// `LivingEntity.aiStep` travels the rider after its sprint decision.
+    pub fn finish_rider_tick(&mut self, direction: [f32; 2]) -> Result<()> {
+        self.rider_travel_tick(direction)?;
+        self.passenger_sits_up()
+    }
+    /// A passenger's tick before it could move: the fluids in the box its vehicle allows, off the
+    /// ground, and neither swimming nor gliding.
+    fn passenger_base_tick(&mut self) -> Result<()> {
+        self.begin_fluid_tick()?;
+        self.clear_passenger_flags();
+        Ok(())
+    }
+    fn clear_passenger_flags(&mut self) {
         // Player.tick: a passenger is never on the ground (setOnGround(false)
-        // clears the supporting block too), so its look packets say so.
+        // clears the supporting block too) until its own move says otherwise.
         self.player.ground.on_ground = false;
         self.player.ground.on_ground_no_blocks = false;
         self.player.ground.supporting_block = None;
         self.player.swimming = false;
         self.player.fall_flying = false;
         self.player.fall_fly_ticks = 0;
+    }
+    /// `Player.updatePlayerPose` for a passenger.
+    fn passenger_sits_up(&mut self) -> Result<()> {
         self.update_player_pose()?;
         // A cushion's seat puts the feet in the support block, so neither
         // standing nor crawling fits and `updatePlayerPose` keeps the old

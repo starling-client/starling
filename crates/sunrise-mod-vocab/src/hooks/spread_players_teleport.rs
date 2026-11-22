@@ -11,11 +11,19 @@ pub trait Hooks {
     /// the spread's other entities, its random draws and its feedback are
     /// unchanged.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "EntityTeleportEvent.SpreadPlayersCommand",
         cancellable = true
     )]
-    fn spread_players_teleport();
+    fn spread_players_teleport(
+        dimension: &str,
+        entity: u32,
+        player: Option<u128>,
+        from: [f64; 3],
+        target: &mut [f64; 3],
+        cancel: &mut bool,
+    );
 }

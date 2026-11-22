@@ -1,6 +1,6 @@
 //! A mob tick's switchable view of the players in its level.
 //!
-//! The views are immutable for the lifetime of a tick. Changing the selected
+//! The views are immutable while a goal can borrow them. Changing the selected
 //! index therefore never invalidates a reference already returned to a goal.
 //! Construct this only when a target-change listener needs player redirection;
 //! the ordinary one-player view and tick fast path need no allocation.
@@ -63,6 +63,27 @@ impl PlayerSelection {
     /// The player selected at the start of the tick.
     pub fn initial(&self) -> Option<&TickPlayer> {
         self.initial.map(|index| &self.players[index])
+    }
+
+    /// A full-host callback ended the prior view's borrow. Refresh the same
+    /// players and keep the selected identity, dropping anyone who left the level.
+    pub fn refresh_views(&mut self, mut live: impl FnMut(&TickPlayer) -> Option<PlayerView>) {
+        let initial = self.initial().map(|player| player.entity_id);
+        let selected = self.selected().map(|player| player.entity_id);
+        self.players.retain_mut(|player| {
+            let Some(view) = live(player).filter(|view| view.uuid == player.view.uuid) else {
+                return false;
+            };
+            player.view = view;
+            true
+        });
+        let index_of = |id| {
+            self.players
+                .iter()
+                .position(|player| Some(player.entity_id) == id)
+        };
+        self.initial = index_of(initial);
+        self.selected.set(index_of(selected));
     }
 
     /// Find a real player in this tick's level by entity ID.
@@ -131,6 +152,29 @@ mod tests {
         assert_eq!(players.initial().unwrap().entity_id, 1);
         assert_eq!(players.rider(77).unwrap().entity_id, 2);
         assert!(players.rider(88).is_none());
+    }
+
+    #[test]
+    fn refresh_preserves_the_player_but_not_a_reused_id() {
+        let mut players =
+            PlayerSelection::new(vec![player(1, None), player(2, Some(42))], Some(1)).unwrap();
+        assert!(players.select(2));
+        players.refresh_views(|before| {
+            let mut view = before.view.clone();
+            view.position.x += 10.0;
+            Some(view)
+        });
+        assert_eq!(players.selected().unwrap().view.position.x, 12.0);
+        assert!(players.has_switched());
+        players.refresh_views(|before| {
+            let mut view = before.view.clone();
+            if before.entity_id == 2 {
+                view.uuid[0] ^= 1;
+            }
+            Some(view)
+        });
+        assert!(players.selected().is_none());
+        assert_eq!(players.initial().unwrap().entity_id, 1);
     }
 
     #[test]

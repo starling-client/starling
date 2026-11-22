@@ -6,10 +6,22 @@ pub trait Hooks {
     /// `new_target` starts as that value; a listener can redirect or clear it.
     /// Set `cancel` to retain the mob's existing target. `is_brain` identifies
     /// a brain-driven target change; false identifies a goal or other mob target
-    /// setter. Handles refer to live entities and may be read through the host.
+    /// setter. Handles may be read through the host. During the lifted mob tick
+    /// pass, the scoped view reads the ticking mob directly and peers from the
+    /// tick snapshot: an already-ticked peer exposes post-turn state, and a
+    /// not-yet-ticked peer pre-turn state. A mob spawned during that pass does
+    /// not resolve in the scoped view until the next pass. Removed mobs do not
+    /// resolve; dead-but-present mobs are distinct from removed mobs. Outside
+    /// this scoped tick path, dispatch reads the entities available in the game
+    /// host rather than this snapshot.
     /// A stale or invalid replacement, including a fake player, is refused.
-    /// Authoritative server only.
+    /// Authoritative server only. When piglins turn on a player who took guarded
+    /// gold, the game reads the end of its mob list again at each step and finds each
+    /// piglin again by its entity id after the hook; a piglin that is removed is
+    /// skipped.
     #[hook(
+        receiver = "read",
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "cancel",

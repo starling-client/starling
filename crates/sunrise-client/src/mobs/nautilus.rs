@@ -7,15 +7,15 @@ use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
     control::{LookKind, MoveKind, Operation},
-    goals::{Breed, Cx, Goal, LOOK, LookAtPlayer, MOVE, Panic, Stroll, Tempt, goal_clone},
+    goals::{Breed, Cx, Goal, LOOK, MOVE, Panic, Stroll, Tempt, goal_clone},
     keyframes::Animation,
     nav::NavKind,
 };
 use crate::blocks::Fluid;
 use crate::health::DamageLevel;
-use sunrise_core::{geometry::Vec3, random::RandomSource};
-use sunrise_world::move_gate::MoveGate;
 use std::collections::HashMap;
+use std::ops::ControlFlow;
+use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 // Nautilus state: `tame`/`owner`, the saddle, `head` the body armour,
 // `variant` the zombie's variant (0 temperate, 1 warm), `anim_ticks` the
@@ -59,7 +59,6 @@ pub fn register(m: &mut Mob) {
         g.add(1, t);
         g.add(2, Charge::new(0.5));
         g.add(3, Stroll::swimming(1.0, 1));
-        g.add(3, LookAtPlayer::new(6.0));
     } else {
         g.add(0, Panic::new(1.6));
         g.add(1, Breed::new(0.4));
@@ -68,13 +67,12 @@ pub fn register(m: &mut Mob) {
         g.add(2, t);
         g.add(3, Charge::new(0.6));
         g.add(4, Stroll::swimming(1.0, 1));
-        g.add(4, LookAtPlayer::new(6.0));
     }
 }
 /// `finalizeSpawn`: `NautilusAi.initMemories` (2400 to 3600 ticks before it
 /// first looks for prey) and the zombie's variant by biome.
-pub fn finalize(m: &mut Mob, warm_ocean: bool) {
-    m.extra.counter = 2400 + m.random.next_int_bound(1201).unwrap_or(0);
+pub fn finalize(m: &mut Mob, warm_ocean: bool, r: &mut impl RandomSource) {
+    m.extra.counter = 2400 + r.next_int_bound(1201).unwrap_or(0);
     m.extra.nautilus_attack_cooldown_ttl = Some(i64::MAX);
     if zombie(m) {
         m.extra.variant = u8::from(warm_ocean);
@@ -169,21 +167,19 @@ fn sound(m: &Mob, name: &'static str, events: &mut Vec<MobEvent>) {
     events.push(MobEvent::Sound(name, m.center(), 1.0, 1.0));
 }
 /// `AbstractNautilus.travelInWater`: its own speed, no fluid drag but 0.9.
-pub fn travel(
+pub(super) fn travel(
     m: &mut Mob,
     w: &MobWorld,
     level: &mut DamageLevel<'_>,
     input: Vec3,
     events: &mut Vec<MobEvent>,
-) -> bool {
-    if !m.fluids.in_water {
-        return false;
-    }
+    pause: bool,
+) -> ControlFlow<super::living::TravelPause> {
     let speed = m.ai.speed;
     m.move_relative(speed, input);
-    m.do_move(w, level, events, &mut MoveGate::new());
-    m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
-    true
+    m.travel_move(w, level, events, pause, |m, _, _, _| {
+        m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
+    })
 }
 /// `tickRidden` and `getRiddenInput`: turn half way to the rider, swim along
 /// their look, faster in water (`getRiddenSpeed`), and dash on the jump.
@@ -659,7 +655,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, animations: &HashMap<String, Anim
 }
 /// `TamableAnimal.addAdditionalSaveData`: owner and ordered Sitting, plus
 /// the saddle, the zombie's variant and the brain's attack cooldown.
-pub fn to_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn to_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     use sunrise_core::nbt::Tag;
     if let Some(owner) = m.extra.owner {
         map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
@@ -743,22 +739,55 @@ mod tests {
                     assert_eq!(m.extra.owner, owner);
                     assert_eq!(m.extra.sitting, expected, "{id} {owner:?} {sitting:?}");
                     // No raw compound: this must come from the modeled flag.
-                    let saved =
-                        crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], None, None, |_| None);
+                    let saved = crate::entity_nbt::mob_to_nbt(
+                        &m,
+                        [5, 6, 7, 8],
+                        None,
+                        None,
+                        |_| None,
+                        &Default::default(),
+                    );
                     assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(expected))));
                     // A stale raw flag must not override a later model change.
                     m.extra.sitting = !expected;
-                    let saved =
-                        crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], Some(&raw), None, |_| None);
+                    let saved = crate::entity_nbt::mob_to_nbt(
+                        &m,
+                        [5, 6, 7, 8],
+                        Some(&raw),
+                        None,
+                        |_| None,
+                        &Default::default(),
+                    );
                     assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(!expected))));
                 }
             }
         }
     }
 
+    /// `NautilusAi` and `ZombieNautilusAi` have no `LookAtPlayerGoal`: the
+    /// idle activity's walk from a look target never runs (no sensor writes
+    /// `LOOK_TARGET`), so a nautilus never turns to stare at a player.
+    #[test]
+    fn neither_brain_looks_at_a_player() {
+        for (id, species) in [
+            ("minecraft:nautilus", Species::Nautilus),
+            ("minecraft:zombie_nautilus", Species::ZombieNautilus),
+        ] {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = id.into();
+            kind.species = species;
+            let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+            register(&mut m);
+            // The stroll is there, so the list is the brain's own.
+            assert!(m.ai.goals.has("RandomSwimming"), "{id} strolls");
+            assert!(!m.ai.goals.has("LookAtPlayer"), "{id} looks at players");
+        }
+    }
+
     /// `ChargeAttack.dealKnockBack` is `causeExtraKnockback`: `LivingEntity.knockback`
     /// on the target, away from (sin(yaw), -cos(yaw)), not a raw push of its motion.
     #[test]
+    #[ignore = "daily"]
     fn a_charge_knocks_its_target_back_along_its_facing() {
         let mut events = Vec::new();
         let ran = with_test_world(&[], |w, types| {
@@ -919,6 +948,7 @@ mod hostile_target_tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_nautilus_only_targets_a_pufferfish_it_sees() {
         let near = Vec3::new(6.5, 62.0, 0.5);
         // 16 out on x and 3 on z: inside the sensor's box, past range(16).
@@ -940,8 +970,8 @@ mod hostile_target_tests {
 #[cfg(test)]
 mod cooldown_memory_tests {
     use super::*;
-    use sunrise_core::nbt::Tag;
     use std::sync::Arc;
+    use sunrise_core::nbt::Tag;
 
     const MEMORY: &str = "minecraft:attack_target_cooldown";
     fn raw(id: &str, state: Option<(i32, Option<i64>)>, no_ai: bool) -> Tag {
@@ -987,7 +1017,14 @@ mod cooldown_memory_tests {
         })
     }
     fn saved(m: &Mob, stale: Option<&Tag>) -> Tag {
-        crate::entity_nbt::mob_to_nbt(m, [140, 1, 0, 7], stale, None, |_| None)
+        crate::entity_nbt::mob_to_nbt(
+            m,
+            [140, 1, 0, 7],
+            stale,
+            None,
+            |_| None,
+            &Default::default(),
+        )
     }
     #[test]
     fn decoded_cooldown_presence_ttl_and_model_mutation_save_without_raw() {
@@ -1048,7 +1085,7 @@ mod cooldown_memory_tests {
     }
 
     #[test]
-    #[ignore = "needs actual prepared mob data; must execute, not skip"]
+    #[ignore = "daily"]
     fn actual_mob_ticks_retain_noai_lifetime_and_apply_active_memory_boundaries() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("actual prepared resources"),

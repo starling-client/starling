@@ -5,9 +5,9 @@
 //! nothing and no item is given
 //! (tools/test_inline_loot_reference_parity.py measures the same on vanilla 26.3).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 const MISSING_MESSAGE: &str = "Failed to parse structure: Failed to parse either. First: Not a tag id; \
      Second: Failed to parse either. First: Not a list: \"parity:il_none\"; \
@@ -94,12 +94,11 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
         &[],
         &[],
     );
-    game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
-    let _ = sunrise_client::structure_blocks::load_thread_loot_data(
-        &game.options.resources,
-        &game.pack_files(),
-        game.res.item_defaults(),
-    );
+    game.world_tables = game
+        .stage_world_tables(&stack, false, &root)
+        .unwrap()
+        .tables;
+    game.load_server_loot();
     // As the world opens: its registries, with the packs' tables.
     game.build_registries();
     assert!(game.run_command("gamemode survival"));
@@ -141,7 +140,7 @@ fn give(game: &mut Game<'_>, table: &str) -> (bool, Option<String>, i32, i32, i3
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_inline_reference_to_a_missing_table_fails_the_parse() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -185,7 +184,7 @@ fn an_inline_reference_to_a_missing_table_fails_the_parse() {
 /// inline is refused while the pack loads, as `CommandFunction.parseCommand`.
 /// `[fail-before]` marks the assertions the pristine source fails.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn inline_references_follow_the_codec_and_the_reloaded_registry() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -243,4 +242,24 @@ fn inline_references_follow_the_codec_and_the_reloaded_registry() {
             .as_deref(),
         Some("Unknown function parity:il_bad")
     );
+}
+
+#[test]
+#[ignore = "daily"]
+fn pack_functions_admit_inline_references_on_first_open() {
+    let _publication = sunrise_client::datapack_net::isolate_server_publication();
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    let functions = game.world_root.join("datapacks/il/data/parity/function");
+    std::fs::create_dir_all(&functions).unwrap();
+    std::fs::write(
+        functions.join("il_good.mcfunction"),
+        format!("loot give @s loot {}\n", reference("\"parity:il_one\"")),
+    )
+    .unwrap();
+    game.world_tables = None;
+    game.open_world_datapacks(&[]).unwrap();
+    assert!(game.run_command("function parity:il_good"));
+    assert!(game.run_command("execute store result score d il run clear @s minecraft:diamond"));
+    assert_eq!(score(&game, "d"), 1);
 }

@@ -47,7 +47,7 @@ impl LevelAccess for StateChangeLevel {
     fn game_time(&self) -> i64 {
         self.inner.game_time()
     }
-    fn observe_block_changed(&self, _pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+    fn observe_block_changed(&self, _pos: BlockPos, old: BlockStateId, new: BlockStateId, _: i32) {
         let east = self.east();
         self.changed.borrow_mut().push((old, new, east));
     }
@@ -129,7 +129,7 @@ fn a_state_change_is_heard_after_the_neighbours_settled_and_only_when_the_write_
 }
 
 #[test]
-#[ignore = "requires prepared block behaviour resources"]
+#[ignore = "daily"]
 fn a_nested_write_is_heard_after_the_updates_it_queued() {
     let Some(f) = fixture() else {
         return;
@@ -168,7 +168,7 @@ fn a_nested_write_is_heard_after_the_updates_it_queued() {
 }
 
 #[test]
-#[ignore = "requires prepared block behaviour resources"]
+#[ignore = "daily"]
 fn nested_writes_are_heard_in_the_order_they_were_made() {
     let Some(f) = fixture() else {
         return;

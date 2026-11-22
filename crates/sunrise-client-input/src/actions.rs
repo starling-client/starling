@@ -95,7 +95,6 @@ actions! {
     DebugNetworkCharts, "key.debug.networkCharts", None;
     DebugLightmapTexture, "key.debug.lightmapTexture", None;
     DebugImprovedTransparency, "key.debug.improvedTransparency", None;
-    Emote, "key.emote", Some(KeyCode::KeyB);
     HotbarPrevious, "pad.hotbarPrevious", None;
     HotbarNext, "pad.hotbarNext", None;
     Radial, "pad.radial", None;
@@ -110,24 +109,21 @@ impl Action {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keybinds::{self, SUNRISE_MAPPINGS, KeyBinds, MAPPINGS, all_mappings};
+    use crate::keybinds::{self, KeyBinds, MAPPINGS};
 
     #[test]
     fn every_mapping_is_an_action_in_order() {
         let names: Vec<&str> = Action::ALL.iter().map(|a| a.name()).collect();
         let mappings: Vec<&str> = MAPPINGS.iter().map(|m| m.0).collect();
         assert_eq!(names[..mappings.len()], mappings[..]);
-        let sunrise: Vec<&str> = SUNRISE_MAPPINGS.iter().map(|m| m.0).collect();
-        let end = mappings.len() + sunrise.len();
-        assert_eq!(names[mappings.len()..end], sunrise[..]);
-        for action in &names[end..] {
+        for action in &names[mappings.len()..] {
             assert!(action.starts_with("pad."), "{action}");
         }
     }
 
     #[test]
     fn an_actions_key_is_its_mappings_default_key() {
-        for (name, _, category) in all_mappings() {
+        for (name, _, category) in MAPPINGS {
             let action = Action::parse(name).unwrap();
             let want = if *category == "debug" {
                 None

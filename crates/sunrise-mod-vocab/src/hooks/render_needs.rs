@@ -11,5 +11,5 @@ pub trait Hooks {
         target = "mod_render::render::render_needs",
         neoforge = "none (Sunrise-only; NeoForge has no counterpart)"
     )]
-    fn render_needs();
+    fn render_needs(needs: &mut RenderNeeds);
 }

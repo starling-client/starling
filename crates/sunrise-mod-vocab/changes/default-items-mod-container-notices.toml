@@ -1,0 +1,3 @@
+ids = ["hook:contents_changed"]
+why = "Default ITEMS and item STORAGE writes now notify for engine-managed mod slots, once per backing block at root commit, as for vanilla containers. Direct storage writes and aborted transactions still issue no implicit notice. A successful default ITEMS set_max_stack_size also queues this notice, even if no items moved."
+migrate = "Remove explicit set_changed calls used solely to compensate for a missing notice after a default capability write. Providers that write their own storage, including through set_item_slot, still issue their own notices."

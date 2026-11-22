@@ -95,6 +95,7 @@ impl PlayerMotion {
             resources,
             rules,
             invulnerable: self.invulnerable || self.spectator,
+            fire_immune: self.mod_fire_immune,
             client_loaded: self.client_loaded,
             attributes: &mut self.attributes,
             data: &mut h.data,
@@ -102,9 +103,11 @@ impl PlayerMotion {
             hurt: &mut h.hurt,
             hurt_animation_time: &mut h.hurt_animation_time,
             dead: &mut h.dead,
+            damage_completion: &mut h.damage_completion,
             sync_velocity: &mut h.sync_velocity,
             game_time: h.game_time,
             events: &mut self.events,
+            status: self.status.clone(),
             random: &mut self.random,
         };
         h.food.tick(&mut world)
@@ -118,6 +121,7 @@ struct TickWorld<'a> {
     resources: &'a HealthResources,
     rules: HealthRules,
     invulnerable: bool,
+    fire_immune: bool,
     client_loaded: bool,
     attributes: &'a mut Attributes,
     data: &'a mut SyncedFloats,
@@ -125,9 +129,14 @@ struct TickWorld<'a> {
     hurt: &'a mut State,
     hurt_animation_time: &'a mut i32,
     dead: &'a mut bool,
+    damage_completion: &'a mut Option<crate::health::DamageCompletion>,
     sync_velocity: &'a mut bool,
     game_time: i64,
     events: &'a mut Vec<MotionEvent>,
+    /// Resistance, fire resistance and armor protection (effects.rs): the
+    /// starvation hurt is a `LivingEntity.hurtServer` like any other, so its
+    /// `onMobHurt` (Infested) and magic absorb see them.
+    status: crate::effects::StatusFlags,
     random: &'a mut sunrise_core::random::EntityRandom,
 }
 impl FoodWorld for TickWorld<'_> {
@@ -191,6 +200,7 @@ impl FoodWorld for TickWorld<'_> {
             invulnerable: self.invulnerable,
             permanently_invulnerable: false,
             invulnerable_time: false,
+            fire_immune: self.fire_immune,
             creative_source: false,
             client_loaded: self.client_loaded,
             rules: self.rules,
@@ -204,9 +214,10 @@ impl FoodWorld for TickWorld<'_> {
             living_cause: false,
             events: self.events,
             dead: self.dead,
+            damage_completion: self.damage_completion,
             sync_velocity: self.sync_velocity,
             game_time: self.game_time,
-            status: Default::default(),
+            status: self.status.clone(),
             helmet: false,
             blocking: None,
             blocked: 0.0,

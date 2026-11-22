@@ -1,0 +1,4 @@
+# PACKAGE TEST TARGET daily REASON
+sunrise-client game::native_book_apply::tests::a_mod_layout_without_a_listening_part_refuses_and_changes_nothing lib daily resources
+sunrise-client game::native_book_apply::tests::place_recipe_in_grid_places_once_per_click lib daily resources
+sunrise-client game::native_book_apply::tests::a_listening_part_places_the_recipe_through_the_real_stage lib daily resources

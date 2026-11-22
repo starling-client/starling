@@ -1,8 +1,4 @@
 //! Vanilla tree, fallen-tree and ore features over a layered synthetic world.
-use sunrise_core::{
-    geometry::{Direction, VoxelShape},
-    random::{LegacyRandom, RandomSource, XoroshiroRandom},
-};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -10,6 +6,10 @@ use std::{
     io::{self, BufRead, Write},
     path::Path,
     sync::Arc,
+};
+use sunrise_core::{
+    geometry::{Direction, VoxelShape},
+    random::{LegacyRandom, RandomSource, XoroshiroRandom},
 };
 use {
     sunrise_core::{

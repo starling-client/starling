@@ -1,8 +1,8 @@
 use glam::{DVec3, Mat4};
+use std::sync::Mutex;
 use sunrise_client_render::render_slots::{
     self, Slots, WorldView, WorldViewDrawn, WorldViewRefusal, WorldViewRefusalReason, WorldViews,
 };
-use std::sync::Mutex;
 static DELIVERED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 static REFUSED: Mutex<Vec<Result<(), (u64, WorldViewRefusalReason)>>> = Mutex::new(Vec::new());
 

@@ -1,6 +1,8 @@
 //! Rust side of tools/test_enchant_durability_parity.py: `Enchantments` value
 //! effects for the `minecraft:item_damage` (Unbreaking) and
 //! `minecraft:repair_with_xp` (Mending) components on one stack per case.
+use serde_json::Value;
+use std::{fs, io::Write, path::Path};
 use sunrise_client::{
     enchant::{EffectContext, Enchantments},
     item_data::StackData,
@@ -8,8 +10,6 @@ use sunrise_client::{
 };
 use sunrise_core::random::LegacyRandom;
 use sunrise_world::loot::PackOverlay;
-use serde_json::Value;
-use std::{fs, io::Write, path::Path};
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = crate::args().collect();

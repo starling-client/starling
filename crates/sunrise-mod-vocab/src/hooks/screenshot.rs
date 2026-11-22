@@ -15,11 +15,17 @@ pub trait Hooks {
     /// failure; parent folders are created. HDR copies follow the final name
     /// with `-hdr.png`. Agent captures and world icons do not fire this hook.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "cancel",
         neoforge = "ScreenshotEvent",
         cancellable = true
     )]
-    fn screenshot();
+    fn screenshot(
+        image: &mut ScreenshotImage,
+        file_name: &mut String,
+        message: &mut Option<Text>,
+        cancel: &mut bool,
+    );
 }

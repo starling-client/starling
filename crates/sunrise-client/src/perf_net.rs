@@ -1,12 +1,10 @@
 //! `sunrise:perf`: a client asks a Sunrise server to capture its side (docs/perf-platform.md §4.2).
 use crate::client_perf::request::{HZ_RANGE, StartOptions, Threads};
 use crate::server_perf::MAX_WINDOW_S;
-use sunrise_perf_format::MAX_PART_BYTES;
-use sunrise_protocol::{
-    Error, Result,
-    buf::{Reader, Writer},
-};
 use std::time::{Duration, Instant};
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_perf_format::MAX_PART_BYTES;
+use sunrise_protocol::{Error, Result, buf::Reader};
 
 pub const CHANNEL: &str = "sunrise:perf";
 /// The server brand of every Sunrise server and LAN host.

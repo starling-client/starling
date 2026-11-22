@@ -3,12 +3,12 @@
 //! clients that hold each passage's chunk (`sunrise:passage_sync`, sent with the chunk
 //! through the hub's chunk watches), and the copy a client keeps until it forgets the chunk.
 use super::Game;
-use sunrise_client::fast_hash::FxHashMap;
-use sunrise_protocol::passage_sync::{Message, PassageForm};
 use mod_api::{
     DimensionKey, LevelRef, Passage, PassageId, PassageRegistrationError as Refused, PassageTurn,
     Vec3,
 };
+use sunrise_client::fast_hash::FxHashMap;
+use sunrise_protocol::passage_sync::{Message, PassageForm};
 
 /// Passages a level holds at most. A client holds every passage of the chunks it has, so
 /// this bounds its copy and what the server sends it whatever the view distance.
@@ -415,11 +415,11 @@ pub(in crate::game) mod tests {
     use crate::game::Dim;
     use crate::game::native_entity_refs::tests::{with_client_game, with_game};
     use crate::game::native_guest_turn_tests::with_guests;
+    use mod_api::{DimensionKey, LevelRef, Passage, PassageId, PassageTurn, Vec3, WorldEpoch};
+    use std::sync::{Arc, mpsc};
     use sunrise_client::chunk::Chunk;
     use sunrise_protocol::packets::play::Clientbound;
     use sunrise_protocol::passage_sync::encode;
-    use mod_api::{DimensionKey, LevelRef, Passage, PassageId, PassageTurn, Vec3, WorldEpoch};
-    use std::sync::{Arc, mpsc};
 
     /// A 2 by 3 doorway facing south at (0.5, 65.5, 8.5) in chunk (0, 0), coming out 100
     /// blocks east, turned a clockwise quarter.
@@ -554,7 +554,7 @@ pub(in crate::game) mod tests {
     /// is refused with nothing registered; a removal frees its place once. A stale handle
     /// and a client register nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_level_numbers_its_passages_and_refuses_past_its_caps() {
         with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -625,7 +625,7 @@ pub(in crate::game) mod tests {
     /// with no passage and its whole caps, and numbering goes on (1 is not given again).
     /// A failed open retires everything, the window's copy too.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn passages_go_with_their_level_and_world() {
         with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -728,7 +728,7 @@ pub(in crate::game) mod tests {
     /// chunk is told to nobody; the hub then sends the chunk and the passage follows it, to
     /// the Sunrise client only. A removal reaches it at the next tick's end.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_passage_follows_its_chunk_to_the_sunrise_clients() {
         with_guests(|game| {
             game.native_lifecycle.world_open_ready().unwrap();
@@ -793,7 +793,7 @@ pub(in crate::game) mod tests {
     /// trace, however often; the changes kept stay within the live passages and the told
     /// ones removed.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn churn_before_the_tick_end_keeps_and_sends_nothing() {
         with_guests(|game| {
             game.native_lifecycle.world_open_ready().unwrap();
@@ -841,7 +841,7 @@ pub(in crate::game) mod tests {
     /// it sends from its start, so a Sunrise guest that joins it is sent the passage with
     /// the chunk the first tick sends, before that tick's `flush_passages`.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_reopened_lan_records_chunks_for_the_live_passages() {
         use crate::game::lan::LanSettings;
         use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
@@ -876,6 +876,7 @@ pub(in crate::game) mod tests {
                 max_players: 2,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();
             assert!(game.lan.as_ref().unwrap().hub.chunk_watches.recording());
@@ -933,7 +934,7 @@ pub(in crate::game) mod tests {
     /// A Sunrise arrival held for a hand-over is sent its chunks, so it is told their
     /// passages too; a held vanilla client is not.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_held_arrival_is_told_its_chunks_passages() {
         with_guests(|game| {
             game.native_lifecycle.world_open_ready().unwrap();
@@ -977,7 +978,7 @@ pub(in crate::game) mod tests {
     /// rest. The removal still reaches 12, which ends with no passage, and 13 is told
     /// only the removal.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn a_passage_sent_with_its_chunk_and_removed_in_the_same_tick_leaves_no_ghost() {
         use sunrise_client::lan::chunk_watch::{
             ChunkWatch, ChunkWatchKind, ChunkWatchLog, LevelWatches,
@@ -1047,7 +1048,7 @@ pub(in crate::game) mod tests {
     /// server could not have registered, one for a chunk it does not hold, and a 257th,
     /// across packets; a number sent again replaces its passage.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_window_keeps_only_passages_it_can_hold() {
         with_client_game(|game| {
             game.world

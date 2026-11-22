@@ -7,7 +7,8 @@ pub trait Hooks {
     /// is in GUI pixels. `native_camera` is this frame's world camera (None on
     /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
     /// A mod decides whether its foreground indicator respects those flags.
-    /// Client only; the host is read-only. API @API:gui_render_post@.
+    /// Client only; the host is read-only. A panicking listener's drawing is discarded.
+    /// API @API:gui_render_post@.
     #[notes = r#"## Foreground GUI and client lifecycle
 
 `Hooks::gui_render_post` runs after the frame's GUI, including menus and the
@@ -27,10 +28,14 @@ receive `&dyn ClientHost`. They do not grant server writes.
 not for a dimension change. Initialization and final shutdown still use the
 existing `client_setup` and `client_stopping` hooks, with no parallel aliases."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
+        staged_surface = "batch",
+        version = 2,
         cancellable = false,
         neoforge = "RenderGuiEvent.Post"
     )]
-    fn gui_render_post();
+    fn gui_render_post(batch: &mut dyn DrawContext, gui_hidden: bool, focused: bool);
 }

@@ -12,8 +12,7 @@ place that names them. A shard is selected when a changed crate is its package o
 transitive dependency of it. Workspace-wide files, and any path no crate owns, select
 every shard; pushes to main always run everything (the `changes` job passes --all).
 crates/sunrise-client holds sunrise-client-lib's sources too (its [lib] path reaches
-into that tree), so that directory counts for both packages; the launcher is its own
-workspace (launcher/Cargo.lock) and selects nothing.
+into that tree), so that directory counts for both packages.
 """
 
 import json
@@ -38,12 +37,10 @@ SHARDS = ("sunrise-client", "sunrise-client-lib", "sunrise-client-render", "sunr
 # tests of every other package, and of the shard packages' targets their shard does not build (tools/ci/ignored_tests.py
 # daily_rows_groups). Coverage, not speed: without it those tests would run nowhere. Main's full matrix only.
 DAILY_ROWS = "daily-rows"
-# The leg that runs each workspace's daily rows. The launcher's get a leg of their own, on the same runner size: its
-# workspace builds GPUI and the launcher from nothing (25 minutes on 8 cores, measured cold), which does not fit beside
-# the other packages' groups in one 60-minute leg. Coverage, not spreading a slow job.
-DAILY_ROWS_LEGS = {".": DAILY_ROWS, "launcher": "daily-rows-launcher"}
+# The leg that runs each workspace's daily rows.
+DAILY_ROWS_LEGS = {".": DAILY_ROWS}
 # What a package's tests need built that `cargo test` does not build itself, by package: the one command, run
-# before its tests by `verify` (dyna-ci.yml), the launcher job and the daily run (tools/ci/ignored_tests.py), so they
+# before its tests by `verify` (dyna-ci.yml) and the daily run (tools/ci/ignored_tests.py), so they
 # cannot drift. sunrise-mod-package's holder tests start the `holder_actor` example from beside their test executable
 # (target/debug/examples, the test profile's folder).
 PREPARE = {
@@ -58,11 +55,8 @@ LEGS = {"sunrise-client": 2}
 ROOT_WIDE_FILES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml", "clippy.toml"}
 # The crates directory whose sources build more than one of the shard packages.
 SHARED_SOURCES = {"sunrise-client": ("sunrise-client", "sunrise-client-lib")}
-# Workspaces of their own: nothing under them builds the shard packages.
-SEPARATE_WORKSPACES = ("launcher/",)
-# Every Cargo workspace whose tests the daily rows may name, by folder: the game's, and the launcher's own (its own
-# Cargo.lock; the daily-rows leg runs a launcher row from launcher/).
-WORKSPACES = (".", "launcher")
+# Every Cargo workspace whose tests the daily rows may name, by folder: the game's.
+WORKSPACES = (".",)
 
 
 def expand(packages):
@@ -152,8 +146,6 @@ def select(paths, dependencies):
     owners = set()
     for path in paths:
         if not (path.startswith("docs/") or path.endswith(".md")):
-            if any(path.startswith(prefix) for prefix in SEPARATE_WORKSPACES):
-                continue
             if ("/" not in path and path in ROOT_WIDE_FILES) or path.startswith(".cargo/"):
                 return list(SHARDS)
             if path.startswith("crates/") and path.count("/") >= 2:

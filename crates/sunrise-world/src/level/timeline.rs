@@ -3,8 +3,8 @@
 //! dried ghast's hydration ticks.
 use super::{LevelAccess, LevelEvent, Sim, update::below};
 use crate::registry::BlockStateId;
-use sunrise_core::{position::BlockPos, random::RandomSource};
 use std::sync::Arc;
+use sunrise_core::{position::BlockPos, random::RandomSource};
 
 /// `BlockScanUtils.findBlocks` order: sections by x, z, y; blocks by y, z, x.
 pub(crate) fn box_scan_order(min: BlockPos, max: BlockPos) -> Vec<BlockPos> {
@@ -55,6 +55,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: Arc::from(sound),
+            source: None,
             volume,
             pitch,
         });

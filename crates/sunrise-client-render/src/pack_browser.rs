@@ -1,7 +1,7 @@
 //! Browsing Modrinth for resource packs from the Select Resource Packs
 //! screen, so a pack can be added without leaving the game.
 //!
-//! The launcher has its own browser (`launcher/src/browser/`), but the
+//! The launcher has its own browser (`https://github.com/sunrise-org/sunrise-launcher/tree/main/src/browser/`), but the
 //! launcher is a separate workspace: nothing there is reachable from the
 //! game, so this is the small client the screen needs. Search and download
 //! both run on a worker thread and report back over a channel; the screen

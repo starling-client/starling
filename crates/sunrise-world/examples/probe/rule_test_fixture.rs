@@ -1,12 +1,12 @@
 //! Differential transport for replacement rules over pinned block identities.
 use crate::support::common::tag;
-use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

@@ -92,8 +92,6 @@ fn intangible_projectile_recipe_decodes_maps_and_matches_borrowed_units() {
 #[test]
 fn intangible_projectile_invalid_payload_rejects_whole_recipe_with_component_error() {
     let items = Items::empty();
-    let root = tempfile::tempdir().unwrap();
-    let load = load();
     for value in [
         serde_json::json!(true),
         serde_json::json!(0),
@@ -117,23 +115,7 @@ fn intangible_projectile_invalid_payload_rejects_whole_recipe_with_component_err
             "components":patch
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
-            root.path(),
-            &items,
-            &sunrise_world::loot::PackOverlay::NONE,
-            vec![(
-                "fixture:invalid_intangible_projectile".into(),
-                serde_json::json!({
-                    "type":"minecraft:crafting_shapeless",
-                    "ingredients":[ingredient],
-                    "result":{"id":"minecraft:diamond"}
-                }),
-            )],
-            &load,
-        )
-        .unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
 }
 
@@ -205,32 +187,24 @@ fn rollup_boundary_and_absence_4100() {
         let ingredient = serde_json::json!({"type":"neoforge:components","items":"minecraft:arrow","components":{"minecraft:intangible_projectile":value}});
         let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
         assert!(error.contains("minecraft:intangible_projectile"), "{error}");
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            ingredient["components"].clone(),
+        );
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
         let recipes = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
-            vec![
-                (
-                    "fixture:invalid_intangible_projectile".into(),
-                    recipe(ingredient),
-                ),
-                (
-                    "fixture:valid".into(),
-                    recipe(serde_json::json!("minecraft:arrow")),
-                ),
-            ],
+            vec![(
+                "fixture:valid".into(),
+                recipe(serde_json::json!("minecraft:arrow")),
+            )],
             &load,
         )
         .unwrap();
         assert_eq!(recipes.crafting.len(), 1);
-        assert!(!recipes.recipe_matches(
-            &context,
-            "fixture:invalid_intangible_projectile",
-            &[Some(ItemStack::new("minecraft:arrow", 1))],
-            1
-        ));
         assert!(recipes.recipe_matches(
             &context,
             "fixture:valid",

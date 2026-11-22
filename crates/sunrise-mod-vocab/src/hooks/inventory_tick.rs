@@ -13,11 +13,13 @@ pub trait Hooks {
     /// `stack`'s item hear it. Server-side, for every living player of the world (the helpers
     /// read the acting one).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_inventory_tick",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "none (vanilla Item.inventoryTick; NeoForge adds no event or extension for it); PlayerTickEvent ticks the player, not each stack"
     )]
-    fn inventory_tick();
+    fn inventory_tick(stack: &ItemStack, slot: i32, selected: bool);
 }

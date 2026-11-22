@@ -1,15 +1,15 @@
 #![forbid(unsafe_code)]
 //! Runs tools/test_fire_starter_sound_parity.py's cases through the fire
 //! starter's use sound (`sunrise_client::items::fire_starter_pitch`).
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+};
 use sunrise_client::{
     Result,
     items::{fire_starter_pitch, fire_starter_sound},
 };
 use sunrise_core::random::{LegacyRandom, RandomSource};
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-};
 
 pub fn main() -> Result<()> {
     let args: Vec<String> = crate::args().collect();

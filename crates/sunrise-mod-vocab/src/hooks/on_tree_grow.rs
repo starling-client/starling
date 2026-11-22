@@ -12,7 +12,8 @@ pub trait Hooks {
     /// call order. Server-side, on the worldgen worker threads and on the server thread when a
     /// sapling grows, with the server's worldgen `context`: no `Host`, no writes. NeoForge's
     /// `feature` argument is left out: an inline tree feature has no key. Diverges from upstream:
-    /// new hook.
+    /// new hook. A disabled owner's subscribed Part keeps the soil unchanged; the rest of
+    /// the tree still grows.
     #[notes = r#"## Block Parts in worldgen
 
 - **Which Part methods.** A `BlockPart` method declared with the worldgen context runs while a feature generates:
@@ -28,8 +29,6 @@ pub trait Hooks {
   between the feature's, in call order, and the same seed gives the same world.
 - **Answers.** A state the game's registry does not have is refused: the game logs the mods whose parts answered and
   keeps the feature's own answer. A refusal never panics.
-- **Wasm.** A wasm part answers the same way. Its calls run one at a time for its mod's group, so a wasm part
-  serialises the workers that ask it.
 - **Cost.** With no part subscribed, a call costs one subscription check. A lookup reads this thread's handle on
   the published tables and takes no lock."#]
     #[hook(
@@ -38,9 +37,15 @@ pub trait Hooks {
         out = "soil",
         context = "worldgen",
         scope = "block",
+        inert = "*soil = Some(None);",
         key = "state",
         target = "mod_api::world::ground::native_on_tree_grow",
         neoforge = "IBlockExtension.onTreeGrow"
     )]
-    fn on_tree_grow();
+    fn on_tree_grow(
+        state: BlockState,
+        pos: [i32; 3],
+        random: &mut dyn RandomSource,
+        soil: &mut Option<Option<BlockState>>,
+    );
 }

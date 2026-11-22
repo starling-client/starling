@@ -16,11 +16,13 @@ pub trait Hooks {
     /// the proxy's forwarding) refuse earlier, on the connection, and this
     /// hook does not hear those players.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_login",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (Bukkit's PlayerLoginEvent; NeoForge's PlayerNegotiationEvent is not cancellable)",
         cancellable = true
     )]
-    fn player_login();
+    fn player_login(player: u128, name: &str, cancel: &mut bool, reason: &mut Option<Text>);
 }

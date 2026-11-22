@@ -12,7 +12,6 @@ fn method(id: &str, signature: &str, refs: &[&str]) -> Method {
         MethodContract {
             signature: signature.into(),
             required: false,
-            wasm: true,
             refs: strings(refs),
         },
     )
@@ -25,7 +24,6 @@ fn handle(id: &str, signature: &str, refs: &[&str]) -> Function {
         FunctionContract {
             signature: signature.into(),
             impl_generics: String::new(),
-            wasm: true,
             refs: strings(refs),
         },
     )
@@ -257,9 +255,9 @@ pub(crate) fn base() -> Pieces {
                 &["type:PlayerRef", "trait:ServerHost", "type:Text"],
             ),
             handle(
-                "handle:PlayerRef::inventory",
-                "fn inventory(self) -> Inventory",
-                &["type:PlayerRef", "type:Inventory"],
+                "handle:PlayerRef::with_inventory",
+                "fn with_inventory<R>(self, read: impl for<'a> FnOnce(InventoryView<'a>) -> R) -> Option<R>",
+                &["type:PlayerRef", "type:InventoryView"],
             ),
         ],
         types: vec![
@@ -277,7 +275,7 @@ pub(crate) fn base() -> Pieces {
                 false,
                 vec![field("type:Text.content", "String", &["type:Text"])],
             ),
-            api_type("type:Inventory", "", false, vec![]),
+            api_type("type:InventoryView", "", false, vec![]),
             api_type("type:Unrelated", "", false, vec![]),
         ],
         capabilities: vec![Capability::new(
@@ -356,7 +354,7 @@ impl Hooks for Mod {
     // block_broken is for later; Unrelated too.
     fn player_logged_in(&self, host: &mut dyn ServerHost, event: &mut PlayerLoggedInEvent) {
         let stack = ItemStack { count: 1 };
-        let _ = event.player.inventory();
+        let _ = event.player.with_inventory(host, |_| ());
         host.give_item(event.player, stack);
         let _ = "Particles and block_broken in a string";
     }
@@ -366,7 +364,6 @@ impl Hooks for Mod {
 pub(crate) fn manifest(names: &[&str]) -> ManifestFacts {
     ManifestFacts {
         names: names.iter().map(|n| n.to_string()).collect(),
-        hook_versions: Default::default(),
     }
 }
 
@@ -406,6 +403,7 @@ fn words(fit: Fit) -> Vec<String> {
     match fit {
         Fit::Fits => vec![],
         Fit::DoesNotFit(misfits) => misfits.iter().map(ToString::to_string).collect(),
+        Fit::Unversioned(hooks) => panic!("no version of {hooks:?}"),
     }
 }
 
@@ -416,14 +414,14 @@ fn the_list_is_what_the_source_and_manifest_name_and_what_their_signatures_reach
         ids(&uses),
         [
             "capability:registries",
-            "handle:PlayerRef::inventory",
+            "handle:PlayerRef::with_inventory",
             "hook:player_logged_in",
             "hook:player_logged_in.player",
             "method:Hooks::player_logged_in",
             "method:ServerHost::give_item",
             "trait:Hooks",
             "trait:ServerHost",
-            "type:Inventory",
+            "type:InventoryView",
             "type:ItemStack",
             "type:ItemStack.count",
             "type:PlayerLoggedInEvent",
@@ -449,8 +447,8 @@ fn the_list_is_what_the_source_and_manifest_name_and_what_their_signatures_reach
     assert_eq!(origin("hook:player_logged_in.player"), at(9));
     assert_eq!(origin("capability:registries"), Origin::Manifest);
     assert_eq!(
-        origin("type:Inventory"),
-        Origin::Via("handle:PlayerRef::inventory".into())
+        origin("type:InventoryView"),
+        Origin::Via("handle:PlayerRef::with_inventory".into())
     );
     let base = base().build();
     let hashes: std::collections::BTreeMap<&str, &str> = base.entries().collect();
@@ -479,8 +477,8 @@ fn the_list_is_what_the_source_and_manifest_name_and_what_their_signatures_reach
 #[test]
 fn the_first_place_is_the_first_file_then_line_whatever_the_order_given() {
     let sources = [
-        ("src/b.rs", "\n\nfn f(_: Inventory) {}"),
-        ("src/a.rs", "\nfn f(_: Inventory) {}"),
+        ("src/b.rs", "\n\nfn f(_: InventoryView) {}"),
+        ("src/a.rs", "\nfn f(_: InventoryView) {}"),
     ];
     let uses = uses(sources, &ManifestFacts::default(), &base().build()).unwrap();
     assert_eq!(
@@ -593,21 +591,59 @@ fn a_hook_fits_when_it_gains_an_argument_and_not_when_a_named_one_is_retyped() {
 }
 
 #[test]
-fn a_hook_version_counts_only_when_the_manifest_names_one() {
+fn a_used_hook_whose_version_changed_is_named() {
     let mut target = base();
     target.hooks[0].contract.version = 2;
     let version_two = target.build();
-    let source = [("src/lib.rs", MOD)];
-    let plain = uses(source, &manifest(&["registries"]), &base().build()).unwrap();
-    assert_eq!(fits(plain.entries(), &version_two), Fit::Fits);
-    let mut facts = manifest(&["registries"]);
-    facts.hook_versions.insert("player_logged_in".into(), 1);
-    let pinned = uses(source, &facts, &base().build()).unwrap();
-    assert_eq!(entry(&pinned, "hook:player_logged_in").version, Some(1));
-    assert_eq!(
-        words(fits(pinned.entries(), &version_two)),
-        ["the hook `player_logged_in` is now version 2; this mod names version 1"]
-    );
+    let made = uses(
+        [("src/lib.rs", MOD)],
+        &manifest(&["registries"]),
+        &base().build(),
+    )
+    .unwrap();
+    assert_eq!(entry(&made, "hook:player_logged_in").version, Some(1));
+    let bumped = Fit::DoesNotFit(vec![Misfit {
+        id: "hook:player_logged_in".into(),
+        change: Change::Version { named: 1, now: 2 },
+    }]);
+    assert_eq!(fits(made.entries(), &version_two), bumped);
+    // A hook the mod does not use may change its version.
+    let other = uses(
+        [("src/lib.rs", "fn f() {}")],
+        &manifest(&["registries"]),
+        &base().build(),
+    )
+    .unwrap();
+    assert_eq!(fits(other.entries(), &version_two), Fit::Fits);
+    // A list of the schema before this one holds no versions: the build it was made for gives
+    // them, and without it no target can show the hook unchanged, since the mod may have been
+    // made for any version of it.
+    let old = |pinned: bool| {
+        let mut table = UsesTable {
+            schema: 1,
+            made_for: "x".into(),
+            entries: made.entries().cloned().collect(),
+        };
+        for entry in &mut table.entries {
+            entry.version = None;
+        }
+        if pinned {
+            let mut surface = base().build();
+            surface.schema = 2;
+            let old_surface = surface.to_json();
+            assert!(matches!(
+                Surface::read(old_surface.as_bytes()),
+                Err(crate::ReadError::Schema(2))
+            ));
+            table.pin_hook_versions(old_surface.as_bytes()).unwrap();
+        }
+        table
+    };
+    assert_eq!(fits(&old(true).entries, &version_two), bumped);
+    assert_eq!(fits(&old(true).entries, &base().build()), Fit::Fits);
+    let unversioned = Fit::Unversioned(vec!["hook:player_logged_in".into()]);
+    assert_eq!(fits(&old(false).entries, &version_two), unversioned);
+    assert_eq!(fits(&old(false).entries, &base().build()), unversioned);
 }
 
 #[test]
@@ -736,6 +772,77 @@ fn how_a_struct_is_built_is_read_from_literals_and_patterns() {
 }
 
 #[test]
+fn a_variant_of_the_mods_own_enum_is_not_a_literal_of_an_api_struct_of_the_same_name() {
+    let built = |source: &str, id: &str| entry(&scan_on(wider(), source), id).built;
+    let own =
+        "use mod_api::{Pos, Settings};\nenum Shape { Pos(i32, i32), Settings { height: i32 } }\n";
+    // Constructed and matched, the variants are the enum's, though the API's types share their names.
+    assert_eq!(
+        built(
+            &format!(
+                "{own}fn t(s: Shape) {{ let a = Shape::Pos(1, 2); let b = Shape::Settings {{ height: 1 }}; match s {{ Shape::Pos(x, y) => {{}} Shape::Settings {{ height }} => {{}} }} }}"
+            ),
+            "type:Pos"
+        ),
+        Some(Built::None)
+    );
+    assert_eq!(
+        built(
+            &format!(
+                "{own}fn t(s: Shape) {{ let b = Shape::Settings {{ height: 1 }}; match s {{ Shape::Settings {{ height }} => {{}} _ => {{}} }} }}"
+            ),
+            "type:Settings"
+        ),
+        Some(Built::None)
+    );
+    // An API enum's variant likewise is not the struct of its name, as a pattern, a call or a unit value.
+    assert_eq!(
+        built(
+            "use mod_api::{Item, TextHover};\nfn t(h: TextHover) { match h { TextHover::Item { .. } => {} _ => {} } let a = TextHover::Item; }",
+            "type:Item"
+        ),
+        Some(Built::None)
+    );
+    assert_eq!(
+        built(
+            &format!("{own}fn t() {{ let a = Shape::Pos; }}"),
+            "type:Pos"
+        ),
+        Some(Built::None)
+    );
+    // A qualifier bound to the API's crate or a module of it is a path, not a type, whatever its name.
+    assert_eq!(
+        built(
+            "use mod_api as Pos;\nfn t() { let a = Pos::Settings { height: 1 }; }",
+            "type:Settings"
+        ),
+        Some(Built::Full)
+    );
+    assert_eq!(
+        built(
+            "use mod_api as Pos;\nstruct Pos;\nfn t() { let a = Pos::Settings { height: 1 }; }",
+            "type:Settings"
+        ),
+        Some(Built::Full)
+    );
+    // The API's own literals are still read, written out, imported, or through a module's path.
+    assert_eq!(
+        built(
+            "use mod_api::Pos;\nenum Shape { Pos(i32, i32) }\nfn t() { let a = Shape::Pos(1, 2); let b = Pos(3, 4); }",
+            "type:Pos"
+        ),
+        Some(Built::Full)
+    );
+    assert_eq!(
+        built(
+            "enum Shape { Settings { height: i32 } }\nfn t() { let a = mod_api::Settings { height: 1 }; }",
+            "type:Settings"
+        ),
+        Some(Built::Full)
+    );
+}
+
+#[test]
 fn a_type_that_gains_an_impl_fits_and_one_that_loses_one_is_named() {
     let uses = scan_on(wider(), "fn f(s: &Settings) {}");
     assert_eq!(entry(&uses, "type:Settings").impls, ["Clone", "Default"]);
@@ -770,10 +877,10 @@ fn a_name_after_a_path_to_its_owner_is_that_member_not_a_type_of_the_same_name()
 #[test]
 fn a_type_reached_only_through_a_used_signature_changing_is_named() {
     let mut target = base();
-    target.replace_type(api_type("type:Inventory", "<'a>", false, vec![]));
+    target.replace_type(api_type("type:InventoryView", "<'a>", false, vec![]));
     assert_eq!(
         verdict(target),
-        Fit::DoesNotFit(vec![misfit("type:Inventory", Change::Changed)])
+        Fit::DoesNotFit(vec![misfit("type:InventoryView", Change::Changed)])
     );
 }
 
@@ -781,7 +888,7 @@ fn a_type_reached_only_through_a_used_signature_changing_is_named() {
 fn several_misfits_come_sorted_and_worded() {
     let mut target = base();
     target.hooks[0] = hook("player_logged_in", "u128", &["type:PlayerLoggedInEvent"]);
-    target.types.retain(|t| t.id != "type:Inventory");
+    target.types.retain(|t| t.id != "type:InventoryView");
     target.replace_type(api_type(
         "type:PlayerLoggedInEvent",
         "",
@@ -796,7 +903,7 @@ fn several_misfits_come_sorted_and_worded() {
         words(verdict(target)),
         [
             "the argument `player_logged_in.player` (changed)",
-            "the type `Inventory` (removed)",
+            "the type `InventoryView` (removed)",
             "the field `PlayerLoggedInEvent.player` (changed)",
         ]
     );
@@ -893,13 +1000,13 @@ fn a_same_named_method_of_an_unrelated_trait_is_not_pulled_in() {
 
 #[test]
 fn a_member_counts_when_its_owner_is_reached_and_not_otherwise() {
-    // `inventory` is a method of `PlayerRef`, which the source never names: it is reached
+    // `with_inventory` is a method of `PlayerRef`, which the source never names: it is reached
     // through the hook method's event type's field.
     let uses = scan(MOD);
-    assert!(ids(&uses).contains(&"handle:PlayerRef::inventory"));
-    assert!(ids(&uses).contains(&"type:Inventory"));
+    assert!(ids(&uses).contains(&"handle:PlayerRef::with_inventory"));
+    assert!(ids(&uses).contains(&"type:InventoryView"));
     // A member whose owner nothing reaches is dropped.
-    let alone = scan("fn f(x: X) { x.inventory() }");
+    let alone = scan("fn f(x: X) { x.with_inventory(host, |_| ()) }");
     assert_eq!(ids(&alone), ["capability:registries"]);
 }
 
@@ -918,6 +1025,8 @@ fn the_list_does_not_depend_on_the_order_of_sources() {
 fn a_table_reads_back_and_judges_like_the_list() {
     let uses = scan(MOD);
     let table = UsesTable::read(uses.table("afe471c").to_json().as_bytes()).unwrap();
+    // No split game-code fingerprint: the schema published tools read.
+    assert_eq!(table.schema, 3);
     assert_eq!(table.made_for, "afe471c");
     assert_eq!(table.entries, uses.entries().cloned().collect::<Vec<_>>());
     let mut target = base();
@@ -933,7 +1042,7 @@ fn a_table_reads_back_and_judges_like_the_list() {
 
 #[test]
 fn a_table_refuses_unknown_fields_and_sorts_its_entries() {
-    let text = r#"{"schema":1,"made_for":"x","entries":[{"id":"b","hash":"2"},{"id":"a","hash":"1","built":"base"}]}"#;
+    let text = r#"{"schema":2,"made_for":"x","entries":[{"id":"b","hash":"2"},{"id":"a","hash":"1","built":"base"}]}"#;
     let table = UsesTable::read(text.as_bytes()).unwrap();
     let ids: Vec<&str> = table.entries.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(ids, ["a", "b"]);
@@ -950,11 +1059,36 @@ fn a_table_refuses_unknown_fields_and_sorts_its_entries() {
 }
 
 #[test]
+fn an_older_list_cannot_tell_a_literal_from_a_doubt_so_a_new_field_is_left_to_the_compile() {
+    let mut target = wider();
+    target.replace_type(settings(
+        &[("height", "i32"), ("depth", "i32")],
+        &["Clone", "Default"],
+    ));
+    let target = target.build();
+    let made = scan_on(wider(), "fn t() { let s = Settings { height: 1 }; }");
+    let table = |schema| {
+        let table = UsesTable {
+            schema,
+            made_for: "x".into(),
+            entries: made.entries().cloned().collect(),
+        };
+        UsesTable::read(table.to_json().as_bytes()).unwrap()
+    };
+    assert!(matches!(
+        fits(&table(USES_SCHEMA).entries, &target),
+        Fit::DoesNotFit(_)
+    ));
+    assert_eq!(fits(&table(1).entries, &target), Fit::Fits);
+}
+
+#[test]
 fn bad_tables_are_refused_by_kind() {
     let refused = |text: &[u8]| UsesTable::read(text).unwrap_err();
+    let future = USES_SCHEMA + 1;
     assert_eq!(
-        refused(br#"{"schema":2,"made_for":"x","entries":[]}"#),
-        UsesError::Schema(2)
+        refused(format!(r#"{{"schema":{future},"made_for":"x","entries":[]}}"#).as_bytes()),
+        UsesError::Schema(future)
     );
     assert!(matches!(refused(b"not json"), UsesError::Json(_)));
     assert!(matches!(
@@ -1113,6 +1247,284 @@ fn a_tuple_field_read_by_position_is_used_and_judged() {
 }
 
 #[test]
+fn a_position_read_on_a_value_not_tied_to_the_struct_names_no_field() {
+    // The mod names `Pos`, so its fields would count on any read of theirs.
+    let source = r#"
+use mod_api::Pos;
+pub fn origin(_: Pos) {}
+pub struct Mine(pub (i32, i32));
+impl Mine {
+    fn x(&self) -> i32 { self.0 .1 }
+}
+fn pairs(mut v: Vec<(i32, i32)>) -> i32 {
+    v.dedup_by(|a, b| a.0 == b.0);
+    let first = v[0];
+    let mine = Mine(first);
+    mine.x() + first.1 + v.iter().map(|p| p.0).sum::<i32>() + make().1
+}
+fn make() -> Pos { todo!() }
+"#;
+    let uses = scan_on(wider(), source);
+    let found = ids(&uses);
+    assert!(found.contains(&"type:Pos"));
+    assert!(!found.contains(&"type:Pos.0"));
+    assert!(!found.contains(&"type:Pos.1"));
+}
+
+#[test]
+fn a_position_read_tied_to_the_struct_names_its_field() {
+    let field = |source: &str, id: &str| ids(&scan_on(wider(), source)).contains(&id);
+    // A typed binding, through a reference.
+    assert!(field(
+        "fn f(p: &Pos) { let q: &mut Pos = todo!(); q.1 = p.1; }",
+        "type:Pos.1"
+    ));
+    assert!(field("fn f(p: (&Pos)) -> i32 { p.0 }", "type:Pos.0"));
+    // A `for` binding shadows the outer parameter only in the loop body.
+    assert!(field("fn f(p: Pos) { for p in 0..p.0 {} }", "type:Pos.0"));
+    assert!(!field(
+        "fn f(p: Pos) { for p in [(1, 2)] { let _ = p.0; } }",
+        "type:Pos.0"
+    ));
+    // A binding of a constructor, and a constructor's own field.
+    assert!(field(
+        "fn f() -> i32 { let p = Pos(1, 2); p.1 }",
+        "type:Pos.1"
+    ));
+    assert!(field("fn f() -> i32 { Pos(1, 2).1 }", "type:Pos.1"));
+    // `self` in a method of an impl for it.
+    assert!(field(
+        "trait Tr { fn f(&self) -> i32; } impl Tr for Pos { fn f(&self) -> i32 { self.1 } }",
+        "type:Pos.1"
+    ));
+    // A pattern's positions before its `..`.
+    assert!(field(
+        "fn f(p: Pos) { let Pos(_, y, ..) = p; }",
+        "type:Pos.1"
+    ));
+    // An untyped binding shadows a typed one.
+    assert!(!field(
+        "fn f(p: Pos) -> i32 { let p = (p, 1); p.1 }",
+        "type:Pos.1"
+    ));
+}
+
+#[test]
+fn a_qualified_struct_path_is_the_struct_it_leads_to() {
+    let scan = |source: &str| {
+        scan_on(
+            wider(),
+            &format!("use mod_api::Pos;\nmod local {{ pub struct Pos(pub i32); }}\n{source}"),
+        )
+    };
+    let field = |source| ids(&scan(source)).contains(&"type:Pos.0");
+    // The mod's own `local::Pos`, by a typed binding, a pattern and an impl's `self`.
+    assert!(!field("fn read(p: local::Pos) -> i32 { p.0 }"));
+    assert!(!field("fn read(p: local::Pos) { let local::Pos(x) = p; }"));
+    assert!(!field(
+        "trait Tr { fn f(&self) -> i32; } impl Tr for local::Pos { fn f(&self) -> i32 { self.0 } }"
+    ));
+    // The API's, written by its path or through a re-export of the mod's.
+    assert!(field("fn read(p: mod_api::Pos) -> i32 { p.0 }"));
+    assert!(field(
+        "trait Tr { fn f(&self) -> i32; } impl Tr for ::mod_api::Pos { fn f(&self) -> i32 { self.0 } }"
+    ));
+    let mixed = scan("fn read(l: local::Pos, p: crate::Pos) -> i32 { l.0 + p.1 }");
+    let found = ids(&mixed);
+    assert!(!found.contains(&"type:Pos.0"));
+    assert!(found.contains(&"type:Pos.1"));
+    assert!(!field(
+        "mod owned { pub struct Pos(pub i32); mod inner { fn read(p: super::Pos) -> i32 { p.0 } } }"
+    ));
+    assert!(field(
+        "mod nested { pub use mod_api::Pos; } fn read(p: nested::Pos) -> i32 { p.0 }"
+    ));
+    assert!(field(
+        "mod nested { pub use mod_api::Pos; mod inner { fn read(p: super::Pos) -> i32 { p.0 } } }"
+    ));
+}
+
+#[test]
+fn a_proven_api_variant_does_not_read_a_same_named_tuple_field() {
+    let pieces = |pos_type, named| {
+        let mut pieces = wider();
+        let mut shape = api_enum(
+            "type:Shape",
+            &[if named { "Pos { x: i32 }" } else { "Pos(i32)" }],
+        );
+        shape.variants = vec![Variant::new(
+            "type:Shape.Pos",
+            "",
+            VariantContract {
+                fields: vec![Argument {
+                    name: if named { "x" } else { "0" }.into(),
+                    ty: "i32".into(),
+                }],
+                named,
+                refs: vec!["type:Shape".into()],
+            },
+        )];
+        pieces.types.push(shape);
+        pieces.replace_type(api_tuple("type:Pos", &[pos_type, "i32"]));
+        pieces
+    };
+    let uses = scan_on(
+        pieces("i32", false),
+        r#"
+use mod_api::{Pos, Shape};
+use mod_api::Shape as S;
+fn read(_: Pos, s: Shape) {
+    if let Shape::Pos(x) = s {}
+    if let S::Pos(x) = s {}
+    if let ::mod_api::Shape::Pos(x) = s {}
+}
+mod local { pub enum Shape { Pos(i32) } }
+fn read_local(s: local::Shape) { let local::Shape::Pos(_) = s; }
+"#,
+    );
+    let found = ids(&uses);
+    assert!(found.contains(&"type:Shape.Pos"));
+    assert!(!found.contains(&"type:Pos.0"));
+    assert_eq!(
+        fits(uses.entries(), &pieces("i64", false).build()),
+        Fit::Fits
+    );
+
+    // An import in another scope, or one shadowed in a block, proves nothing about the call.
+    for source in [
+        "mod elsewhere { use mod_api::Shape; } use dep as Shape; fn f() { let _ = Shape::Pos().0; }",
+        "use mod_api::Shape; fn f() { use dep as Shape; let _ = Shape::Pos().0; }",
+    ] {
+        let uses = scan_on(pieces("i32", false), &format!("use mod_api::Pos; {source}"));
+        assert!(ids(&uses).contains(&"type:Pos.0"), "{source}");
+    }
+
+    // A braced variant cannot be called; this is a same-named associated function.
+    let uses = scan_on(
+        pieces("i32", true),
+        "use mod_api::{Pos, Shape}; fn read() -> i32 { Shape::Pos().0 }",
+    );
+    assert!(ids(&uses).contains(&"type:Pos.0"));
+}
+
+#[test]
+fn a_call_needs_a_local_tuple_constructor_not_a_same_named_type() {
+    let uses = scan_on(
+        wider(),
+        r#"
+mod local {
+    pub struct Pos { pub x: i32 }
+    pub fn Pos() -> ::mod_api::Pos { todo!() }
+}
+mod own { pub struct Pos(pub i32, pub i32); }
+fn read() -> i32 {
+    let p = local::Pos();
+    p.0 + own::Pos(0, 1).1
+}
+"#,
+    );
+    let found = ids(&uses);
+    assert!(found.contains(&"type:Pos.0"));
+    assert!(!found.contains(&"type:Pos.1"));
+
+    let uses = scan_on(
+        wider(),
+        r#"
+use mod_api::Pos;
+enum Shape { Pos { x: i32 } }
+impl Shape { fn Pos() -> Pos { todo!() } }
+fn read() -> i32 { Shape::Pos().0 }
+"#,
+    );
+    assert!(ids(&uses).contains(&"type:Pos.0"));
+}
+
+#[test]
+fn a_shadowed_macro_root_does_not_prove_a_local_type() {
+    for root in ["mod_api", "sunrise_mod", "std"] {
+        let attribute = if root == "std" {
+            "allow"
+        } else {
+            "sunrise_mod"
+        };
+        let uses = scan_on(
+            wider(),
+            &format!(
+                r#"
+use ::mod_api::Pos;
+mod elsewhere {{ use ::mod_api as sunrise_mod; }}
+mod {root} {{ pub use rewrites::replace as {attribute}; }}
+#[{root}::{attribute}]
+mod local {{ pub struct Pos(pub i32); }}
+fn read(p: local::Pos) -> i32 {{ p.0 }}
+"#
+            ),
+        );
+        assert!(ids(&uses).contains(&"type:Pos.0"), "{root}");
+    }
+}
+
+#[test]
+fn a_sibling_api_alias_does_not_make_an_outer_attribute_trusted() {
+    let uses = scan_on(
+        wider(),
+        r#"
+use mod_api::Pos;
+mod sibling { use mod_api as sunrise_mod; }
+#[sunrise_mod::sunrise_mod]
+mod local { pub struct Pos(pub i32); }
+fn read(p: local::Pos) -> i32 { p.0 }
+"#,
+    );
+    assert!(ids(&uses).contains(&"type:Pos.0"));
+}
+
+#[test]
+fn a_qualified_type_alias_keeps_the_api_field() {
+    let uses = scan_on(
+        wider(),
+        "type P = mod_api::Pos; fn read(p: crate::P) -> i32 { p.0 }",
+    );
+    assert!(ids(&uses).contains(&"type:Pos.0"));
+}
+
+#[test]
+fn an_opaque_qualifier_keeps_the_api_field() {
+    // `dep` re-exports the API type; a type named `dep` in another module isn't its owner.
+    let field = |source| ids(&scan_on(wider(), source)).contains(&"type:Pos.0");
+    assert!(field(
+        "mod decoy { pub struct dep; } fn read(p: dep::Pos) -> i32 { p.0 }"
+    ));
+    // The same is true when a block import shadows a real module.
+    assert!(field(
+        "mod local { pub struct Pos(pub i32); } fn read() { use dep as local; let p: local::Pos = todo!(); let _ = p.0; }"
+    ));
+}
+
+#[test]
+fn a_qualified_type_follows_file_module_declarations() {
+    let uses = uses(
+        [
+            (
+                "src/lib.rs",
+                "mod local; use mod_api::Pos; fn read(l: local::inner::Pos) -> i32 { l.0 }",
+            ),
+            ("src/local/mod.rs", "pub mod inner;"),
+            (
+                "src/local/inner.rs",
+                "pub struct Pos(pub i32); fn read(p: crate::Pos) -> i32 { p.1 }",
+            ),
+        ],
+        &ManifestFacts::default(),
+        &wider().build(),
+    )
+    .unwrap();
+    let found = ids(&uses);
+    assert!(!found.contains(&"type:Pos.0"));
+    assert!(found.contains(&"type:Pos.1"));
+}
+
+#[test]
 fn full_builds_by_another_name_are_full() {
     let built = |source: &str, id: &str| entry(&scan_on(wider(), source), id).built;
     let full = Some(Built::Full);
@@ -1147,20 +1559,21 @@ fn full_builds_by_another_name_are_full() {
         ),
         full
     );
-    // A macro's `$t { … }` and a literal of a name the scan cannot place.
+    // A macro's `$t { … }` names no struct: the compile judges it.
     assert_eq!(
         built(
             "macro_rules! make { ($t:ty) => { $t { height: 1 } } }\nfn f(s: Settings) {}",
             "type:Settings"
         ),
-        full
+        Some(Built::None)
     );
+    // A literal of a name the scan cannot place builds nothing the list records.
     assert_eq!(
         built(
             "fn f(s: Settings) { let w = Wrapper { a: 1 }; }",
             "type:Settings"
         ),
-        full
+        Some(Built::None)
     );
     // The mod's own struct, or its own enum's variant, is placed.
     assert_eq!(
@@ -1238,26 +1651,29 @@ fn a_union_literal_is_not_a_full_build() {
     assert_eq!(entry(&uses, "type:Bits").built, Some(Built::Base));
 }
 
+/// `wider` with `Settings` closed to literals.
+fn closed_settings() -> Pieces {
+    let mut target = wider();
+    let mut record = settings(&[("height", "i32")], &["Clone", "Default"]);
+    record = Type::new(
+        record.id.clone(),
+        "",
+        None,
+        TypeContract {
+            constructible: false,
+            ..record.contract.clone()
+        },
+        record.fields.clone(),
+        vec![],
+    );
+    record.impls = vec!["Clone".into(), "Default".into()];
+    target.replace_type(record);
+    target
+}
+
 #[test]
 fn a_struct_the_mod_builds_that_can_no_longer_be_built_is_named() {
-    let unbuildable = || {
-        let mut target = wider();
-        let mut record = settings(&[("height", "i32")], &["Clone", "Default"]);
-        record = Type::new(
-            record.id.clone(),
-            "",
-            None,
-            TypeContract {
-                constructible: false,
-                ..record.contract.clone()
-            },
-            record.fields.clone(),
-            vec![],
-        );
-        record.impls = vec!["Clone".into(), "Default".into()];
-        target.replace_type(record);
-        target.build()
-    };
+    let unbuildable = || closed_settings().build();
     let builds = scan_on(
         wider(),
         "\nfn t() { let s = Settings { height: 1, ..Default::default() }; }",
@@ -1268,6 +1684,22 @@ fn a_struct_the_mod_builds_that_can_no_longer_be_built_is_named() {
     );
     let reads = scan_on(wider(), "fn f(s: &Settings) -> i32 { s.height }");
     assert_eq!(fits(reads.entries(), &unbuildable()), Fit::Fits);
+}
+
+#[test]
+fn a_literal_of_a_struct_its_own_build_keeps_closed_is_another_type_of_that_name() {
+    // `Shape` comes from another file, so the scan cannot tell `Shape::Settings` from a path to the API's struct.
+    let source = "use crate::shapes::Shape;\nuse mod_api::Settings;\nfn t(s: Shape, k: &Settings) { if let Shape::Settings { height } = s {} }";
+    assert_eq!(
+        entry(&scan_on(wider(), source), "type:Settings").built,
+        Some(Built::Full)
+    );
+    let closed = scan_on(closed_settings(), source);
+    assert_eq!(entry(&closed, "type:Settings").built, Some(Built::None));
+    assert_eq!(
+        fits(closed.entries(), &closed_settings().build()),
+        Fit::Fits
+    );
 }
 
 #[test]
@@ -1340,8 +1772,9 @@ fn built_in(files: &[(&str, &str)], id: &str) -> Option<Built> {
 }
 
 #[test]
-fn a_macro_literal_in_another_file_builds_every_struct_the_mod_names() {
-    let full = Some(Built::Full);
+fn a_macro_literal_of_a_metavariable_is_left_to_the_compile() {
+    // The scan cannot place `$t { … }`: nothing is recorded, and the compile judges it.
+    let full = Some(Built::None);
     let macros = "macro_rules! make { ($t:ident, $h:expr) => { $t { height: $h } } }";
     let world = "fn f() -> Settings { make!(Settings, 1) }";
     assert_eq!(
@@ -1641,7 +2074,7 @@ fn a_table_naming_many_routes_the_target_lacks_is_judged_without_a_walk_each() {
                     .all(|m| matches!(m.change, Change::Route { .. }))
             );
         }
-        Fit::Fits => panic!("fits, though no named route exists"),
+        other => panic!("{other:?}, though no named route exists"),
     }
 }
 
@@ -1685,7 +2118,7 @@ fn refused_for_the_new_field(fit: Fit) {
                 && matches!(&m.change, Change::Fields { gained, .. } if gained == &["ultrawarm"])),
             "{misfits:?}"
         ),
-        Fit::Fits => panic!("fits, though the mod builds the API's struct field by field"),
+        other => panic!("{other:?}, though the mod builds the API's struct field by field"),
     }
 }
 
@@ -2009,14 +2442,14 @@ fn a_macro_body_is_read_as_tokens() {
         built_in(&[("src/lib.rs", &pos)], "type:Pos"),
         Some(Built::Full)
     );
-    // A metavariable followed by `(` may be a tuple struct's name.
+    // A metavariable followed by `(` names no struct.
     let maker = "macro_rules! make { ($t:ident) => { $t(1, 2) }; }";
     assert_eq!(
         built_in(
             &[("src/m.rs", maker), ("src/lib.rs", "fn f(_: Pos) {}")],
             "type:Pos"
         ),
-        Some(Built::Full)
+        Some(Built::None)
     );
     // A `..` inside a nested bracket is a value, not a rest.
     let nested = in_macro("mod_api::Pos((..), 2)");
@@ -2024,33 +2457,12 @@ fn a_macro_body_is_read_as_tokens() {
         built_in(&[("src/lib.rs", &nested)], "type:Pos"),
         Some(Built::Full)
     );
-    // A literal of a name the scan cannot place may build any API struct the mod names; a
-    // brace after an unknown name that holds no fields is no literal.
+    // A literal of a name the scan cannot place builds nothing the list records.
     let unplaced = in_macro("let _ = Done { a: 1 };");
     assert_eq!(
         built_in(
             &[
                 ("src/m.rs", &unplaced),
-                ("src/lib.rs", "fn f(_: Settings) {}")
-            ],
-            "type:Settings"
-        ),
-        Some(Built::Full)
-    );
-    let block = in_macro("let _ = Done { 1 };");
-    assert_eq!(
-        built_in(
-            &[("src/m.rs", &block), ("src/lib.rs", "fn f(_: Settings) {}")],
-            "type:Settings"
-        ),
-        Some(Built::None)
-    );
-    // Nor is a trait's name the mod defines.
-    let traits = format!("trait Wrapper {{}}\n{}", in_macro("Wrapper { a: 1 }"));
-    assert_eq!(
-        built_in(
-            &[
-                ("src/m.rs", &traits),
                 ("src/lib.rs", "fn f(_: Settings) {}")
             ],
             "type:Settings"
@@ -2206,6 +2618,28 @@ fn large_generated_files_scan_in_linear_time() {
     // Each would take quadratic time in some walk over the file: many macro bodies, many
     // `type` keywords in one body, a long path, and many `Self`s among many impls.
     let n = 20_000;
+    // CPU time, not wall time: on a loaded runner the waits for a CPU are not the scan's (one source took 1.06 s of
+    // wall time in verify on main 026c7217b; all four take about 0.3 s on an idle machine). A thread's own clock
+    // leaves out other threads, and the scan parses on a thread of its own (`syntax::read`), so the same parse is
+    // timed on a thread like it and added to this thread's time for the rest of the scan.
+    #[cfg(unix)]
+    let now = || {
+        let mut time = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: clock_gettime only writes the timespec it is given.
+        assert_eq!(
+            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
+            0
+        );
+        std::time::Duration::new(time.tv_sec as u64, time.tv_nsec as u32)
+    };
+    #[cfg(not(unix))]
+    let now = {
+        let start = std::time::Instant::now();
+        move || start.elapsed()
+    };
     for source in [
         format!("fn f(_: Settings) {{ {} }}", "a!(); ".repeat(n)),
         format!("m! {{ {} }}\nfn f(_: Settings) {{}}", "type ".repeat(n)),
@@ -2215,9 +2649,25 @@ fn large_generated_files_scan_in_linear_time() {
             "impl S { fn f() -> Self { Self } }\n".repeat(n / 2)
         ),
     ] {
-        let started = std::time::Instant::now();
+        // Off unix `now` is wall time, which already includes the scan's own parse thread.
+        #[cfg(unix)]
+        let parse = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(crate::syntax::PARSER_STACK)
+                .spawn_scoped(scope, || {
+                    let started = now();
+                    assert!(crate::syntax::parse(&source).is_ok());
+                    now() - started
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        #[cfg(not(unix))]
+        let parse = std::time::Duration::ZERO;
+        let started = now();
         assert!(ids(&scan_on(wider(), &source)).contains(&"type:Settings"));
-        let took = started.elapsed();
+        let took = now() - started + parse;
         assert!(
             took < std::time::Duration::from_millis(1000),
             "{took:?}: {}",
@@ -2232,4 +2682,187 @@ fn self_after_a_nested_impl_is_the_outer_impls() {
     let source = "struct Settings { mine: u8 }\nimpl Settings { fn f(_: Pos) -> Self { impl Clone for Q { fn clone(&self) -> Q { Q } } Self { mine: 1 } } }";
     let uses = scan_on(wider(), source);
     assert_eq!(entry(&uses, "type:Pos").built, Some(Built::None));
+}
+
+#[test]
+fn legacy_tables_match_either_hash_of_an_unchanged_method_and_function() {
+    const METHOD: &str = "method:Api::act";
+    const FUNCTION: &str = "fn:get";
+    let act = method(
+        METHOD,
+        "fn act(&self) -> Result<(), Error>",
+        &["trait:Api", "type:Error"],
+    );
+    let get = Function::new(
+        FUNCTION,
+        "",
+        FunctionContract {
+            signature: "fn get(&self) -> u8".into(),
+            impl_generics: "<T: Copy>".into(),
+            refs: strings(&["type:Value"]),
+        },
+    );
+    let assemble = |method, functions| {
+        Surface::new(
+            vec![],
+            vec![api_trait("trait:Api", Role::Call, &[], vec![method])],
+            vec![],
+            functions,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+    };
+    let intact = assemble(act.clone(), vec![get.clone()]);
+    let changed = assemble(method(METHOD, "fn act(&self)", &["trait:Api"]), vec![]);
+    let removed = Misfit {
+        id: FUNCTION.into(),
+        change: Change::Removed,
+    };
+    let signature = Misfit {
+        id: METHOD.into(),
+        change: Change::Changed,
+    };
+    // The first two rows use the published v1/v2 recipe with each former bit value.
+    // The last uses the v3 recipe. Values are independently hashed compact JSON.
+    for (old_method, old_function, schemas) in [
+        (
+            "76bd37f1903f2f7d28199f2318858078",
+            "d82dbe00d23869939148f2bcc5e91b90",
+            &[1, 2][..],
+        ),
+        (
+            "0f10da06557544acfc8f629cfe0471e2",
+            "18aab5558a8e65aa98cf0ce41b0bb9bd",
+            &[1, 2][..],
+        ),
+        (
+            "0c14af5c91006e195b452953b5dbfa1c",
+            "e61664d5cab614b0f96e88892f96bc66",
+            &[3][..],
+        ),
+    ] {
+        for schema in schemas {
+            let table = UsesTable {
+                schema: *schema,
+                made_for: "test".into(),
+                entries: vec![
+                    Entry::plain(METHOD.into(), old_method.into()),
+                    Entry::plain(FUNCTION.into(), old_function.into()),
+                ],
+            };
+            let table = UsesTable::read(&serde_json::to_vec(&table).unwrap()).unwrap();
+            let report = table.fits(&table.entries, &intact);
+            assert_eq!(report.verdict, Fit::Fits);
+            assert_eq!(report.deferred, None);
+            let missing = assemble(act.clone(), vec![]);
+            let report = table.fits(&table.entries, &missing);
+            if *schema == 3 {
+                assert_eq!(report.verdict, Fit::DoesNotFit(vec![removed.clone()]));
+                assert_eq!(report.deferred, None);
+            } else {
+                assert_eq!(report.verdict, Fit::Fits);
+                assert_eq!(
+                    report.deferred.as_deref(),
+                    Some(
+                        "not checked: `fn:get`; list written for test before schema 3; the compile decides"
+                    )
+                );
+            }
+            let expected = if *schema == 3 {
+                vec![removed.clone(), signature.clone()]
+            } else {
+                vec![signature.clone()]
+            };
+            assert_eq!(
+                table.fits(&table.entries, &changed).verdict,
+                Fit::DoesNotFit(expected)
+            );
+            assert_ne!(
+                UsesTable {
+                    schema: if *schema == 3 { 2 } else { 3 },
+                    ..table.clone()
+                }
+                .fits(&table.entries, &intact)
+                .verdict,
+                Fit::Fits
+            );
+        }
+    }
+}
+
+#[test]
+fn only_legacy_tables_defer_a_tuple_field_that_became_private() {
+    let mut uses = scan_on(wider(), "fn read(p: Pos) -> i32 { p.0 }").table("baseline");
+    let mut target = wider();
+    let mut private = api_tuple("type:Pos", &[]);
+    private.contract.constructible = false;
+    target.replace_type(private);
+    let target = target.build();
+
+    let current = uses.fits(&uses.entries, &target);
+    assert_eq!(words(current.verdict), ["the field `Pos.0` (removed)"]);
+    assert_eq!(current.deferred, None);
+
+    uses.schema = 2;
+    let legacy = uses.fits(&uses.entries, &target);
+    assert_eq!(legacy.verdict, Fit::Fits);
+    assert_eq!(
+        legacy.deferred.as_deref(),
+        Some(
+            "not checked: `type:Pos.0`; list written for baseline before schema 3; the compile decides"
+        )
+    );
+}
+
+#[test]
+fn only_legacy_tables_defer_lost_impls_with_vanished_api_types_to_the_compile() {
+    let owner = api_type("type:Handle", "", false, vec![]);
+    let still_here = api_type("type:widgets::Visible", "", false, vec![]);
+    let uses = UsesTable {
+        schema: 2,
+        made_for: "baseline".into(),
+        entries: vec![Entry {
+            impls: strings(&["From<widgets::Old>", "From<widgets::Visible>", "Clone"]),
+            ..Entry::plain(owner.id.clone(), owner.hash.clone())
+        }],
+    };
+    let target = Pieces {
+        types: vec![owner, still_here],
+        ..base()
+    }
+    .build();
+    let expected = |names: &[&str]| {
+        Fit::DoesNotFit(
+            names
+                .iter()
+                .map(|name| Misfit {
+                    id: "type:Handle".into(),
+                    change: Change::LostImpl((*name).into()),
+                })
+                .collect(),
+        )
+    };
+    let report = uses.fits(&uses.entries, &target);
+    assert_eq!(
+        report.verdict,
+        expected(&["Clone", "From<widgets::Visible>"])
+    );
+    assert_eq!(
+        report.deferred.as_deref(),
+        Some(
+            "not checked: `type:Handle`; list written for baseline before schema 3; the compile decides"
+        )
+    );
+    let uses = UsesTable {
+        schema: USES_SCHEMA,
+        ..uses
+    };
+    let report = uses.fits(&uses.entries, &target);
+    assert_eq!(
+        report.verdict,
+        expected(&["Clone", "From<widgets::Old>", "From<widgets::Visible>"])
+    );
+    assert_eq!(report.deferred, None);
 }

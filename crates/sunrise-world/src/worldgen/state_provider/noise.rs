@@ -3,11 +3,11 @@ use crate::registry::BlockStateId;
 use crate::worldgen::{
     DecodeError, Object, decode_noise, int_range, integer, number_text, required,
 };
+use serde_json::value::RawValue;
 use sunrise_core::{
     noise::{Noise, NoiseStack},
     random::{LegacyRandom, RandomSource, WorldgenRandom},
 };
-use serde_json::value::RawValue;
 #[derive(Clone, Debug)]
 pub(super) struct NoiseProvider {
     noise: NoiseStack,

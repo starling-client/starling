@@ -1,12 +1,12 @@
 use crate::support::common::f32_bits;
-use sunrise_world::blocking_rules::{
-    BlockingRules, DamageReduction, ItemDamageFunction, TypeMatchWorld,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_world::blocking_rules::{
+    BlockingRules, DamageReduction, ItemDamageFunction, TypeMatchWorld,
 };
 fn single(v: &Value) -> f32 {
     f32::from_bits(u32::from_str_radix(v.as_str().unwrap(), 16).unwrap())

@@ -1,9 +1,9 @@
 use super::*;
 use crate::mobs::{Damage, DamageKind, Mob, MobEvent, MobTypes, MobWorld};
-use sunrise_core::geometry::Vec3;
-use sunrise_mod_package::{Package, content::Content, enabled::EnabledMods};
 use mod_api::Side;
 use std::{path::PathBuf, sync::Arc};
+use sunrise_core::geometry::Vec3;
+use sunrise_mod_package::{Package, content::Content, enabled::EnabledMods};
 
 fn fixture(template: &str, sounds: serde_json::Value, run: impl FnOnce(&MobWorld, &MobTypes)) {
     let base = std::env::var_os("SUNRISE_TEST_RESOURCES")
@@ -67,8 +67,8 @@ fn mob(types: &MobTypes, id: &str) -> Mob {
         Vec3::new(0.5, 1.0, 0.5),
         0.0,
     );
-    mob.on_ground = true;
-    mob.supporting = Some([0, 0, 0]);
+    mob.ground.on_ground = true;
+    mob.ground.supporting_block = Some(sunrise_core::position::BlockPos::new(0, 0, 0));
     mob
 }
 // Use the production audio capture consumed by server packet delivery, then replay

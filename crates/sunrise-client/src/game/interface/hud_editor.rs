@@ -55,26 +55,26 @@ fn buttons((w, h): (f32, f32)) -> [(f32, f32); 6] {
 
 impl Game<'_> {
     /// Opens the editor over the game, from the page (`from_options`) or the key.
-    pub(super) fn open_hud_editor(&mut self, from_options: bool) {
+    pub(in crate::game) fn open_hud_editor(&mut self, from_options: bool) {
         if self.player.is_none() || self.title.is_some() {
             return;
         }
-        self.native_input.mappings.release_all();
-        self.keys.clear();
+        self.release_mappings_on_screen_open();
+        self.clear_device_keys();
         self.pvp.editor = Some(HudEditor {
             from_options,
             ..HudEditor::default()
         });
-        self.screen = Screen::HudEditor;
+        self.activate_screen(Screen::HudEditor);
         self.capture(false);
     }
-    pub(super) fn close_hud_editor(&mut self) {
+    pub(in crate::game) fn close_hud_editor(&mut self) {
         let from_options = self.pvp.editor.take().is_some_and(|e| e.from_options);
         self.settings.save(&Self::options_path());
         if from_options {
             self.open_options_at(false, sunrise_client::options_ui::Page::Pvp);
         } else {
-            self.screen = Screen::Playing;
+            self.activate_screen(Screen::Playing);
             self.capture(true);
         }
     }
@@ -158,7 +158,7 @@ impl Game<'_> {
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
     }
     /// A press: a button, else the widget under the cursor (right button: back to its corner).
-    pub(super) fn hud_editor_press(&mut self, right: bool) {
+    pub(super) fn hud_editor_press(&mut self, right: bool) -> bool {
         let size = self.gui_size();
         for (i, &(x, y)) in buttons(size).iter().enumerate() {
             if right || !ui::hovered(self.cursor, x, y, BUTTON_W, BUTTON_H) {
@@ -167,28 +167,31 @@ impl Game<'_> {
             let back = self.has_shift_down();
             let pvp = &mut self.settings.extras.pvp;
             match i {
-                3 if !pvp.hud.background => return,
+                3 if !pvp.hud.background => return false,
                 0..4 => STYLE[i].cycle(pvp, back),
                 4 => pvp.layout = Layout::default(),
                 _ => {
                     self.audio.play_button_click();
                     self.close_hud_editor();
-                    return;
+                    return true;
                 }
             }
             self.audio.play_button_click();
             self.settings.save(&Self::options_path());
-            return;
+            return true;
         }
         let Some((id, [x, y, _, _])) = self.widget_under_cursor() else {
-            return;
+            return false;
         };
         if right {
             *self.settings.extras.pvp.layout.get_mut(id) = Place::default();
             self.settings.save(&Self::options_path());
+            return true;
         } else if let Some(e) = &mut self.pvp.editor {
             e.drag = Some((id, self.cursor.0 - x, self.cursor.1 - y));
+            return true;
         }
+        false
     }
     /// The cursor moved: the held widget follows, snapping to edges near it.
     pub(super) fn hud_editor_drag(&mut self) {
@@ -210,13 +213,15 @@ impl Game<'_> {
             e.guides = (gx, gy);
         }
     }
-    pub(super) fn hud_editor_release(&mut self) {
+    pub(super) fn hud_editor_release(&mut self) -> bool {
         if let Some(e) = &mut self.pvp.editor
             && e.drag.take().is_some()
         {
             e.guides = (None, None);
             self.settings.save(&Self::options_path());
+            return true;
         }
+        false
     }
     /// The wheel over a widget resizes it by 10%.
     pub(super) fn hud_editor_scroll(&mut self, amount: f64) {

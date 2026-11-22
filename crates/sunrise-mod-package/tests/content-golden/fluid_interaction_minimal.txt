@@ -1,0 +1,72 @@
+manifest:
+Manifest {
+    id: "fluid_interaction_minimal",
+    name: "Fluid interaction minimal",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/fluid_interaction_minimal",
+    ),
+    files: [
+        "data/fluid_interaction_minimal/sunrise/fluid_interaction/frozen.json",
+    ],
+    blocks: [],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [
+        FluidInteraction {
+            source: "minecraft:water",
+            neighbour: BlockTag(
+                "minecraft:ice",
+            ),
+            below: None,
+            becomes: Becomes {
+                source: Some(
+                    "minecraft:ice",
+                ),
+                flowing: None,
+            },
+        },
+    ],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "fluid_interaction_minimal",
+    ],
+}

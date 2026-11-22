@@ -18,6 +18,16 @@
 extern crate sunrise_client_lib as sunrise_client;
 #[path = "../src/test_resources.rs"]
 mod test_resources;
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     assets::Assets,
     biome::Biomes,
@@ -35,16 +45,6 @@ use sunrise_client::{
 use sunrise_core::biome::{BiomeZoom, obfuscate_seed};
 use sunrise_world::native_load_context::DataLoadOrigin;
 use sunrise_world::registry::BlockStateId;
-use std::{
-    hash::{DefaultHasher, Hash, Hasher},
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    thread,
-    time::{Duration, Instant},
-};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -94,6 +94,7 @@ fn main() -> Result<(), Error> {
         assets: assets.clone(),
         render,
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     });
     let item_data = test_resources::item_data(&root, DataLoadOrigin::ServerDataLoad)?;
     let terrain = VanillaTerrain::new(
@@ -247,6 +248,7 @@ fn mesher<'a>(context: &'a WorkerContext, seed: i64) -> Mesher<'a> {
         translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
         hidden_states: &[],
+        part_tables: Default::default(),
         assets: &context.assets,
         render: &context.render,
         tables: &context.tables,

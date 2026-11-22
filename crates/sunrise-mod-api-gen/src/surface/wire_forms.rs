@@ -1,35 +1,13 @@
-//! How each API type crosses the WebAssembly boundary, read from the code that makes it cross:
+//! How each API type implements `Wire`, read from the code that defines the encoding:
 //! the `Wire` derive (with `#[wire(via = T)]`), a hand-written `impl Wire` (its
-//! `layout_fields!` list, or a `layout` that returns another type's), including the impls the
-//! API's own macros write once expanded.
+//! `layout_fields!` list, or a `layout_via!` naming its encoded form), including the impls the
+//! API's own macros write once expanded. A type's presence in the API does not give it a
+//! form. The exporter can inspect arbitrary checkout revisions without compiling or loading
+//! their vocabulary; `Wire::describe` computes a fingerprint for a compiled type instead.
 use crate::index::{Found, Index, ItemId};
+pub(super) use mod_source::layouts::WireForm;
 use std::collections::HashMap;
 use syn::{Item, Type};
-
-/// How one type crosses.
-#[derive(Clone)]
-pub(super) enum WireForm {
-    /// `#[derive(Wire)]`: its Rust fields.
-    Derive,
-    /// As another type, written in `module`.
-    Via(Type, usize),
-    /// A hand-written impl's declared fields, each type written in `module`.
-    Fields(Vec<(String, Type)>, usize),
-    /// A hand-written impl that declares no layout of its own.
-    Manual,
-}
-
-impl WireForm {
-    /// Its name in `wire_form`, `via:` followed by the normalised type.
-    pub(super) fn name(&self, via: impl FnOnce(&Type, usize) -> String) -> String {
-        match self {
-            Self::Derive => "derive".into(),
-            Self::Via(ty, module) => format!("via:{}", via(ty, *module)),
-            Self::Fields(..) => "fields".into(),
-            Self::Manual => "manual".into(),
-        }
-    }
-}
 
 /// `ty` without the invisible groups a macro's substitution leaves around it.
 pub(super) fn ungroup(ty: &Type) -> &Type {
@@ -70,31 +48,65 @@ fn layout_fields(tokens: proc_macro2::TokenStream) -> Option<Vec<(String, Type)>
             Ok(Self(name.value(), input.parse()?))
         }
     }
-    let pairs = syn::parse::Parser::parse2(
-        syn::punctuated::Punctuated::<Pair, syn::Token![,]>::parse_terminated,
-        tokens,
-    )
-    .ok()?;
+    let fields = |input: syn::parse::ParseStream| {
+        // A contract prefix affects admission or versioning, not the ordinary encoded fields.
+        if input.peek(syn::Ident) {
+            input.parse::<syn::Ident>()?;
+            input.parse::<syn::LitStr>()?;
+            input.parse::<syn::Token![;]>()?;
+        } else if input.peek(syn::LitStr) && input.peek2(syn::Token![;]) {
+            input.parse::<syn::LitStr>()?;
+            input.parse::<syn::Token![;]>()?;
+        }
+        syn::punctuated::Punctuated::<Pair, syn::Token![,]>::parse_terminated(input)
+    };
+    let pairs = syn::parse::Parser::parse2(fields, tokens).ok()?;
     Some(pairs.into_iter().map(|Pair(n, t)| (n, t)).collect())
 }
 
-/// What a hand-written impl's items declare.
+/// What a hand-written impl's items declare: `layout_fields!("a" => T, …)`, or `layout_via!(T)`
+/// when it crosses as `T`. A `layout_via!` decoder-contract label does not change that layout.
 fn impl_form(items: &[syn::ImplItem], module: usize) -> WireForm {
     for item in items {
-        if let syn::ImplItem::Macro(mac) = item
-            && mac
-                .mac
-                .path
-                .segments
-                .last()
-                .is_some_and(|s| s.ident == "layout_fields")
-        {
-            return match layout_fields(mac.mac.tokens.clone()) {
-                Some(fields) => WireForm::Fields(fields, module),
-                None => WireForm::Manual,
-            };
+        let syn::ImplItem::Macro(mac) = item else {
+            continue;
+        };
+        match mac.mac.path.segments.last() {
+            Some(name) if name.ident == "layout_fields" => {
+                return match layout_fields(mac.mac.tokens.clone()) {
+                    Some(fields) => WireForm::Fields(fields, module),
+                    None => WireForm::Manual,
+                };
+            }
+            Some(name) if name.ident == "layout_via" => {
+                let via = |input: syn::parse::ParseStream| -> syn::Result<Type> {
+                    let ty = input.parse()?;
+                    if !input.is_empty() {
+                        input.parse::<syn::Token![,]>()?;
+                        input.parse::<syn::LitStr>()?;
+                        if !input.is_empty() {
+                            input.parse::<syn::Token![,]>()?;
+                            input.parse::<syn::Ident>()?;
+                        }
+                    }
+                    Ok(ty)
+                };
+                return match syn::parse::Parser::parse2(via, mac.mac.tokens.clone()) {
+                    Ok(ty) => WireForm::Via(ty, module),
+                    Err(_) => WireForm::Manual,
+                };
+            }
+            _ => {}
         }
     }
+    legacy_forwarded_form(items, module)
+}
+
+/// A tree from before `layout_via!` declared a forwarding impl wrote a method (the removed
+/// layout hash of the trait) that returned the other type's: `<T>::layout(visiting)` or
+/// `<T as Wire>::layout(visiting)`. Reading that old declaration keeps a surface comparison
+/// across the change from reporting every such type as moved; nothing here runs or calls it.
+fn legacy_forwarded_form(items: &[syn::ImplItem], module: usize) -> WireForm {
     for item in items {
         let syn::ImplItem::Fn(function) = item else {
             continue;
@@ -102,7 +114,6 @@ fn impl_form(items: &[syn::ImplItem], module: usize) -> WireForm {
         if function.sig.ident != "layout" {
             continue;
         }
-        // `<T>::layout(visiting)` or `<T as Wire>::layout(visiting)`: it crosses as `T`.
         if let [syn::Stmt::Expr(syn::Expr::Call(call), None)] = &function.block.stmts[..]
             && let syn::Expr::Path(callee) = &*call.func
             && callee

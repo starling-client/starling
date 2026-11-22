@@ -3,9 +3,7 @@ use crate::{BlockKey, BlockMetadata, BlockState, BlockStateError, StateConstrain
 
 /// A block or tag filter, with unspecified properties left as wildcards.
 /// An unknown or missing property on a tag member never matches.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(sunrise_mod_api_macros::Wire, Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct StatePredicate {
     target: StatePredicateTarget,

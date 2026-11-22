@@ -38,7 +38,7 @@ fn oracle(k: &[Keyframe], seconds: f32, scale: f32) -> [f32; 3] {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn every_vanilla_animation_samples_as_before_the_move() {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES").expect("set SUNRISE_TEST_RESOURCES"),

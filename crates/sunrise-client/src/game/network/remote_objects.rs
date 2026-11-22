@@ -3,13 +3,13 @@
 //! `handleSetEquipment`): the server simulates them, the client places them
 //! where it says and interpolates their moves like a mob's.
 use super::Game;
+use std::sync::Arc;
 use sunrise_client::entities::{ArmorStand, Cushion, ItemFrame, Painting};
 use sunrise_client::mobs::leash::Holder;
 use sunrise_client::particles::{ParticleOptions, ParticleType};
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::RandomSource;
 use sunrise_protocol::entity_data::Value;
-use std::sync::Arc;
 
 /// `Mth.rotLerp(alpha, from, to)`: `from` turned `alpha` of the way to `to` by
 /// the shorter arc (`wrapDegrees` of the difference).
@@ -114,6 +114,7 @@ impl Game<'_> {
                 fixed: false,
                 invisible: false,
                 check_interval: 0,
+                ticks: 0,
                 custom_name: None,
                 random: sunrise_client::random_source::entity(),
             });
@@ -157,6 +158,7 @@ impl Game<'_> {
                 width,
                 height,
                 check_interval: 0,
+                ticks: 0,
             });
         } else {
             return false;
@@ -239,7 +241,12 @@ impl Game<'_> {
                 }
             } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                 match (index, value) {
-                    (0, Value::Byte(flags)) => a.invisible = flags & 0x20 != 0,
+                    // Entity.DATA_SHARED_FLAGS_ID: FLAG_ONFIRE (`Entity.isOnFire` on a client, which
+                    // draws the flames; the client never counts it down) and FLAG_INVISIBLE.
+                    (0, Value::Byte(flags)) => {
+                        a.fire_ticks = i32::from(flags & 1);
+                        a.invisible = flags & 0x20 != 0;
+                    }
                     // Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE.
                     (2, Value::OptText(name)) => {
                         a.custom_name = name.as_ref().map(sunrise_client::entity_nbt::name_text);
@@ -356,7 +363,7 @@ impl Game<'_> {
                 // the target of the three-tick lerp (`tick_remote_objects`), not
                 // the boat's yaw at once.
                 let _ = yaw;
-                b.on_ground = on_ground;
+                b.ground.on_ground = on_ground;
             });
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id)
             && let Some(yaw) = yaw
@@ -468,6 +475,14 @@ impl Game<'_> {
                 self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
             }
             stand += 1;
+        }
+        // `Entity.tickCount` on the client: a painting's and an item frame's lived ticks, which
+        // their renderers read as the age.
+        for painting in &mut self.paintings {
+            painting.ticks = painting.ticks.saturating_add(1);
+        }
+        for frame in &mut self.item_frames {
+            frame.ticks = frame.ticks.saturating_add(1);
         }
         self.tick_remote_boat_bubbles();
     }

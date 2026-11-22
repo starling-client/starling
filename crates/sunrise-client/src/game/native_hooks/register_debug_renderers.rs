@@ -1,14 +1,13 @@
 use super::*;
 
-/// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// The world-space debug renderers a mod has now (NeoForge's
-    /// `RegisterDebugRenderersEvent`): push a `DebugRenderer` per renderer. Asked at each
-    /// renderer list refresh (`Game::refresh_debug_renderers`), on the client.
+    /// Collect world-space debug renderers with their registering mods at each client
+    /// renderer-list refresh (NeoForge's `RegisterDebugRenderersEvent`).
     pub(in crate::game) fn native_register_debug_renderers(
         context: &mod_api::RegistrationContext,
-        renderers: &mut Vec<DebugRenderer>,
+        entries: &dyn mod_api::__private::DebugEntryStates,
+        renderers: &mut Vec<Answered<DebugRenderer>>,
     ) {
-        Self::fire_register_debug_renderers(context, renderers);
+        Self::fire_register_debug_renderers(context, entries, renderers);
     }
 }

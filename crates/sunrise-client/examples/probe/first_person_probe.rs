@@ -1,6 +1,12 @@
 //! Probe for test_first_person_parity.py: drives sunrise_client::first_person
 //! and attack_strength over the harness's scripted clicks, targets and use
 //! results, printing what VanillaFirstPersonOracle prints.
+use serde_json::Value;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+};
 use sunrise_client::{
     Result,
     attack_strength::{AttackStrength, HeldStack},
@@ -8,12 +14,6 @@ use sunrise_client::{
         Clicks, Hand, HandHeights, HandSway, HandWorld, Hit, SwingAnimation, SwingState, UseResult,
         swing_duration,
     },
-};
-use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
 };
 
 fn fb(v: f32) -> String {

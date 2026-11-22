@@ -1,18 +1,38 @@
-//! The players of a level and of a chunk through `LevelRef::online_players` and
-//! `ChunkRef::watchers` (docs/modding/src/how-to/native-mods.md, "Entity and level
-//! handles"). Both name players by the same UUID enumeration the spawn code
-//! reads, and resolve each through `Host::player`, so a guest's turn names its
-//! player once and a player whose handle cannot resolve is left out.
+//! Level player visits and chunk/entity tracking queries. The level visit
+//! resolves UUIDs from the spawn code's player enumeration so a guest's turn
+//! names its player once, excluding anyone who cannot resolve.
 use super::Game;
-use mod_api::{ChunkRef, LevelRef, PlayerRef};
+use core::ops::ControlFlow;
+use mod_api::{ChunkRef, EntityRef, LevelReadError, LevelRef, PlayerRef};
 
 impl Game<'_> {
     /// `ServerLevel.players`: the online players of an open server level, each once.
-    pub(super) fn level_online_players(&self, level: LevelRef) -> Option<Vec<PlayerRef>> {
-        self.native_level_world(level)?;
+    pub(super) fn level_visit_online_players(
+        &self,
+        level: LevelRef,
+        visit: &mut dyn FnMut(PlayerRef) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, LevelReadError> {
+        self.native_level_world_result(level)?;
+        Ok(self
+            .level_player_uuids(level.dimension_id())
+            .filter_map(|uuid| self.player(uuid))
+            .try_for_each(visit))
+    }
+
+    /// `ChunkMap.TrackedEntity.seenBy`: the players of the level in place whose tracker holds
+    /// the entity, other than the entity itself.
+    pub(super) fn entity_trackers(&self, entity: EntityRef) -> Option<Vec<PlayerRef>> {
+        let target = self.native_entity_target(entity)?;
+        if self.target_level(target).key() != self.dim.key() {
+            return None;
+        }
+        let id = entity.id() as i32;
         Some(
-            self.level_player_uuids(level.dimension_id())
-                .filter_map(|uuid| self.player(uuid))
+            self.lan
+                .iter()
+                .flat_map(|h| h.hub.guests.iter().map(move |g| (&h.hub, g)))
+                .filter(|(hub, g)| hub.here(g) && g.entity_id != id && g.tracker.is_tracking(id))
+                .filter_map(|(_, g)| self.player(g.uuid))
                 .collect(),
         )
     }
@@ -40,7 +60,8 @@ mod tests {
         Dim,
         native_guest_turn_tests::{place_host, with_guests},
     };
-    use mod_api::{ChunkRef, LevelRef, PlayerRef, WorldEpoch};
+    use super::{ControlFlow, Game};
+    use mod_api::{ChunkRef, LevelReadError, LevelRef, PlayerRef, WorldEpoch};
 
     /// Open the Nether and go back, so it is a parked level of the server.
     fn park_the_nether(game: &mut super::Game<'_>) {
@@ -52,32 +73,48 @@ mod tests {
         players.map(|players| players.into_iter().map(PlayerRef::uuid).collect())
     }
 
+    fn collect_online_players(game: &Game<'_>, level: LevelRef) -> Vec<(u128, u32)> {
+        let mut players = Vec::new();
+        assert_eq!(
+            level.visit_online_players(game, &mut |player| {
+                players.push((player.uuid(), player.entity().id()));
+                ControlFlow::Continue(())
+            }),
+            Ok(ControlFlow::Continue(()))
+        );
+        players
+    }
+
     /// The host and two guests, each named once with their own entity, in and
     /// out of guest turns; a guest in another level is that level's.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn level_players_name_host_and_guests_once_during_turns() {
         with_guests(|game| {
             park_the_nether(game);
             let _serving = super::super::integrated::tests::install_serving(game, false);
             place_host(game);
             let level = game.level(game.dim.id()).unwrap();
-            let players = level.online_players(game).unwrap();
             assert_eq!(
-                players
-                    .iter()
-                    .map(|p| (p.uuid(), p.entity().id()))
-                    .collect::<Vec<_>>(),
+                collect_online_players(game, level),
                 [(99, 99), (12, 12), (13, 13)]
             );
+            let mut first = Vec::new();
+            assert_eq!(
+                level.visit_online_players(game, &mut |player| {
+                    first.push(player.uuid());
+                    ControlFlow::Break(())
+                }),
+                Ok(ControlFlow::Break(()))
+            );
+            assert_eq!(first, [99]);
+
             game.as_guest(12, |game| {
-                assert_eq!(uuids(level.online_players(game)), Some(vec![12, 13]));
-                let acting = level.online_players(game).unwrap()[0];
-                assert_eq!(acting.entity().id(), 12, "the guest's own entity");
+                assert_eq!(collect_online_players(game, level), [(12, 12), (13, 13)]);
                 game.as_guest(13, |game| {
                     assert_eq!(
-                        uuids(level.online_players(game)),
-                        Some(vec![13]),
+                        collect_online_players(game, level),
+                        [(13, 13)],
                         "the outer guest is displaced and cannot resolve"
                     );
                 })
@@ -86,22 +123,34 @@ mod tests {
             .unwrap();
 
             let nether = game.level("minecraft:the_nether").unwrap();
-            assert_eq!(uuids(nether.online_players(game)), Some(vec![]));
+            let mut unexpected_visits = 0;
+            let mut count = |_| {
+                unexpected_visits += 1;
+                ControlFlow::Continue(())
+            };
+            assert_eq!(
+                nether.visit_online_players(game, &mut count),
+                Ok(ControlFlow::Continue(()))
+            );
             let host = game.lan.as_mut().unwrap();
             let moved = host.hub.guests.connection_index(13).unwrap();
             host.hub.guests.update(moved, |guest| {
                 guest.dimension = "minecraft:the_nether".to_owned();
             });
-            assert_eq!(uuids(level.online_players(game)), Some(vec![99, 12]));
-            assert_eq!(uuids(nether.online_players(game)), Some(vec![13]));
+            assert_eq!(collect_online_players(game, level), [(99, 99), (12, 12)]);
+            assert_eq!(collect_online_players(game, nether), [(13, 13)]);
 
             let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
-            assert_eq!(stale.online_players(game), None);
+            assert_eq!(
+                stale.visit_online_players(game, &mut count),
+                Err(LevelReadError::Stale)
+            );
+            assert_eq!(unexpected_visits, 0);
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn level_players_leave_out_fake_players() {
         with_guests(|game| {
             let _serving = super::super::integrated::tests::install_serving(game, false);
@@ -109,7 +158,10 @@ mod tests {
             game.next_entity = 100;
             let level = game.level(game.dim.id()).unwrap();
             let fake = game.fake_player(level, 1234, "machine").unwrap();
-            assert_eq!(uuids(level.online_players(game)), Some(vec![99, 12, 13]));
+            assert_eq!(
+                collect_online_players(game, level),
+                [(99, 99), (12, 12), (13, 13)]
+            );
             let conn = game
                 .lan
                 .as_ref()
@@ -121,16 +173,90 @@ mod tests {
                 .unwrap()
                 .conn;
             game.as_guest(conn, |game| {
-                assert_eq!(uuids(level.online_players(game)), Some(vec![12, 13]));
+                assert_eq!(collect_online_players(game, level), [(12, 12), (13, 13)]);
             })
             .unwrap();
+        });
+    }
+
+    /// The players whose tracker holds the entity, in server order: a guest far away, the entity's
+    /// own player and a fake player are left out, and a stale handle names nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn entity_trackers_are_the_guests_that_hold_the_entity() {
+        with_guests(|game| {
+            let _serving = super::super::integrated::tests::install_serving(game, false);
+            place_host(game);
+            game.next_entity = 100;
+            let level = game.level(game.dim.id()).unwrap();
+            let fake = game.fake_player(level, 1234, "machine").unwrap();
+            for cz in -1..=1 {
+                for cx in -1..=1 {
+                    let mut chunk = sunrise_client::chunk::Chunk::empty(cx, cz);
+                    chunk.lit = true;
+                    game.world
+                        .chunks
+                        .insert((cx, cz), std::sync::Arc::new(chunk));
+                }
+            }
+            let hub = &mut game.lan.as_mut().unwrap().hub;
+            hub.ticks = 10;
+            hub.guests.update_all(|g| g.max_unacknowledged = 64);
+            let id = game
+                .spawn_mob(
+                    "minecraft:pig",
+                    [2.5, 64.0, 2.5],
+                    true,
+                    super::super::creatures::SpawnSite::Finalizing(
+                        sunrise_client::mobs::spawn_rules::Reason::Command,
+                    ),
+                )
+                .unwrap();
+            let pig = game.entity(id).unwrap();
+            let own = game.player(12).unwrap().entity();
+            for _ in 0..10 {
+                game.tick_lan(false);
+            }
+            assert_eq!(uuids(game.entity_trackers(pig)), Some(vec![12, 13]));
+            assert_eq!(
+                uuids(game.entity_trackers(own)),
+                Some(vec![13]),
+                "not its own player"
+            );
+            assert!(
+                !uuids(game.entity_trackers(pig))
+                    .unwrap()
+                    .contains(&fake.uuid())
+            );
+
+            let host = game.lan.as_mut().unwrap();
+            let far = host.hub.guests.connection_index(13).unwrap();
+            host.hub
+                .guests
+                .update(far, |g| g.position = [900.0, 64.0, 0.0]);
+            for _ in 0..10 {
+                game.tick_lan(false);
+            }
+            assert_eq!(uuids(game.entity_trackers(pig)), Some(vec![12]));
+
+            let stale = mod_api::EntityRef::new(WorldEpoch::new(pig.epoch().get() + 1), pig.id());
+            assert_eq!(game.entity_trackers(stale), None);
+
+            // A live guest in a parked level is not in the level in place: no trackers.
+            let host = game.lan.as_mut().unwrap();
+            let moved = host.hub.guests.connection_index(13).unwrap();
+            host.hub.guests.update(moved, |g| {
+                g.dimension = "minecraft:the_nether".to_owned();
+            });
+            let parked = game.player(13).unwrap().entity();
+            assert_eq!(game.entity_trackers(parked), None);
         });
     }
 
     /// A guest watches a chunk once it is sent inside its view, and stops when
     /// it moves away or the chunk falls past its view distance.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn chunk_watchers_follow_sent_chunks_inside_the_view() {
         with_guests(|game| {
             park_the_nether(game);

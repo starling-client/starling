@@ -1,7 +1,4 @@
-//! A notice about a controller nobody has to answer: translated words, the controller's own glyph
-//! if it helps, how long it stays. A view holds one at a time (`NoticeSlot`), so they never stack:
-//! each player's game has its own slot, and what raises a notice (splitscreen's joins and
-//! reconnects, a solo game's controller coming and going) decides that for itself.
+//! Transient controller connection notices.
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::hud_kit::fit::{ellipsize, wrap};
 use crate::hud_kit::hint::{self, HintRow};
@@ -10,30 +7,7 @@ use crate::pad_glyph::{self, Glyph};
 use crate::toasts::Slide;
 use std::time::{Duration, Instant};
 
-/// What a notice is about: another with the same id takes its place at once, whatever its
-/// priority (a controller reconnecting replaces its disconnect) and without sliding in again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoticeId {
-    /// A controller connected or disconnected.
-    Connection,
-    /// A splitscreen player the server sent away.
-    PlayerLeft,
-    /// The stick stopped moving the player at its own angle on this server.
-    Movement,
-}
-
-/// Which of two notices about different things stays up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Priority {
-    /// Good to know; it doesn't replace something that needs the player.
-    Info,
-    /// The player may have to do something.
-    Attention,
-}
-
 pub struct Notice {
-    id: NoticeId,
-    priority: Priority,
     title: String,
     body: String,
     glyph: Option<Glyph>,
@@ -44,15 +18,8 @@ pub struct Notice {
 }
 
 impl Notice {
-    pub fn new(
-        id: NoticeId,
-        priority: Priority,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) -> Self {
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
-            id,
-            priority,
             title: title.into(),
             body: body.into(),
             glyph: None,
@@ -74,21 +41,12 @@ pub struct NoticeSlot {
 }
 
 impl NoticeSlot {
-    /// `notice` shows here: in place of one about the same thing, and of anything that doesn't
-    /// outrank it. Otherwise it's dropped, not queued: by the time the other goes it is old news.
+    /// Replace the last connection notice without restarting its slide.
     pub fn raise(&mut self, mut notice: Notice) {
-        match &mut self.current {
-            Some(old) if old.id == notice.id => {
-                // Already on screen: the words change and its time starts again.
-                notice.slide = std::mem::take(&mut old.slide);
-                *old = notice;
-            }
-            Some(old) if old.priority > notice.priority => {}
-            current => *current = Some(notice),
+        if let Some(old) = &mut self.current {
+            notice.slide = std::mem::take(&mut old.slide);
         }
-    }
-    pub fn clear(&mut self) {
-        self.current = None;
+        self.current = Some(notice);
     }
     /// What it shows now, for `pad status`.
     pub fn showing(&self) -> Option<(&str, &str)> {
@@ -166,43 +124,28 @@ impl NoticeSlot {
 mod tests {
     use super::*;
 
-    fn notice(id: NoticeId, priority: Priority, title: &str) -> Notice {
-        Notice::new(id, priority, title, "")
-    }
-
     #[test]
     fn a_view_holds_one_notice_however_many_are_raised() {
         let mut slot = NoticeSlot::default();
         for i in 0..50 {
             let title = i.to_string();
-            slot.raise(notice(NoticeId::Connection, Priority::Info, &title));
+            slot.raise(Notice::new(&title, ""));
         }
         assert_eq!(slot.showing().map(|s| s.0), Some("49"));
     }
 
     #[test]
-    fn a_reconnect_replaces_its_disconnect_though_it_ranks_lower() {
+    fn a_reconnect_replaces_its_disconnect() {
         let mut slot = NoticeSlot::default();
-        slot.raise(notice(NoticeId::Connection, Priority::Attention, "gone"));
-        slot.raise(notice(NoticeId::Connection, Priority::Info, "back"));
+        slot.raise(Notice::new("gone", ""));
+        slot.raise(Notice::new("back", ""));
         assert_eq!(slot.showing().map(|s| s.0), Some("back"));
-    }
-
-    #[test]
-    fn what_needs_the_player_stays_over_other_news() {
-        let mut slot = NoticeSlot::default();
-        slot.raise(notice(NoticeId::PlayerLeft, Priority::Attention, "left"));
-        slot.raise(notice(NoticeId::Connection, Priority::Info, "back"));
-        assert_eq!(slot.showing().map(|s| s.0), Some("left"));
-        // News of the same rank is newer.
-        slot.raise(notice(NoticeId::Connection, Priority::Attention, "gone"));
-        assert_eq!(slot.showing().map(|s| s.0), Some("gone"));
     }
 
     #[test]
     fn a_notice_raised_while_nothing_draws_is_gone_when_its_time_has_passed() {
         let mut slot = NoticeSlot::default();
-        slot.raise(notice(NoticeId::Connection, Priority::Info, "old"));
+        slot.raise(Notice::new("old", ""));
         std::thread::sleep(Duration::from_millis(2));
         assert!(!slot.update(Duration::ZERO));
         assert_eq!(slot.showing(), None);
@@ -211,7 +154,7 @@ mod tests {
     #[test]
     fn a_notice_on_screen_stays_for_its_time_then_slides_out() {
         let mut slot = NoticeSlot::default();
-        slot.raise(notice(NoticeId::Connection, Priority::Info, "new"));
+        slot.raise(Notice::new("new", ""));
         assert!(slot.update(Duration::from_secs(60)));
         std::thread::sleep(Duration::from_millis(2));
         // Past its time it slides out rather than vanishing.

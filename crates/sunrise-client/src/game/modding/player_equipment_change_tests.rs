@@ -3,8 +3,8 @@
 //! told while no mod sets `living_equipment_listened`.
 use std::sync::{Arc, Mutex};
 
-use sunrise_client::items::ItemStack;
 use mod_api::{self, Hooks, LivingEquipmentChangeEvent, LivingEquipmentListenedEvent, ServerHost};
+use sunrise_client::items::ItemStack;
 
 use super::api_values::TryIntoApi;
 use super::native_guest_turn_tests::with_guests;
@@ -78,7 +78,7 @@ fn player(slot: &str, from: Option<mod_api::ItemStack>, to: Option<mod_api::Item
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_players_hotbar_selection_pickup_and_helmet_are_each_one_change() {
     with_counter(true, |game, heard| {
         let sword = ItemStack::new("minecraft:iron_sword", 1);
@@ -120,7 +120,7 @@ fn a_players_hotbar_selection_pickup_and_helmet_are_each_one_change() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn players_are_not_told_without_the_listened_opt_in() {
     with_counter(false, |game, heard| {
         let guests = &mut game.lan.as_mut().unwrap().hub.guests;

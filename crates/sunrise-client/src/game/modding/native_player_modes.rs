@@ -6,8 +6,8 @@
 use super::Game;
 use super::native_entity_refs::block_face_direction;
 use super::native_server::PlayerRead;
-use sunrise_client::items::ItemStack;
 use mod_api::{BlockFace, GameMode, PlayerRef};
+use sunrise_client::items::ItemStack;
 
 impl Game<'_> {
     /// The player's permission level, 0 to 4 (`Player.permissions()`,
@@ -92,11 +92,11 @@ mod tests {
     use super::super::Game;
     use super::super::api_values::test_snapshot;
     use super::super::native_guest_turn_tests::with_guests;
-    use sunrise_client::{chunk::Chunk, items::ItemStack};
-    use sunrise_core::nbt::Tag;
     use mod_api::__private::game::*;
     use mod_api::BlockFace;
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, items::ItemStack};
+    use sunrise_core::nbt::Tag;
 
     fn set_mode(game: &mut Game<'_>, uuid: u128, mode: i32) {
         game.lan.as_mut().unwrap().hub.guests.update_all(|g| {
@@ -121,7 +121,7 @@ mod tests {
     /// players only where the stack's `can_place_on` matches the block
     /// clicked, which lies opposite the face from the placed position.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn item_use_follows_the_mode_the_stack_and_the_clicked_block() {
         with_guests(|game| {
             game.world
@@ -169,7 +169,7 @@ mod tests {
     /// `ServerPlayer.canHarmPlayer`: the `pvp` rule first, then the teams
     /// (allies hurt each other only with friendly fire on).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn one_player_may_harm_another_by_the_pvp_rule_and_their_teams() {
         use sunrise_client::gamerules::Value;
         with_guests(|game| {

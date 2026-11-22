@@ -5,7 +5,7 @@
 //! ```
 //! use mod_api::testing::FakeHost;
 //! use mod_api::prelude::ItemsHost;
-//! use mod_api::{HostTransaction, ITEMS, ItemResource, ItemStack, ServerHost, move_resources};
+//! use mod_api::{HostTransaction, ITEMS, ItemResource, ItemStack, ServerHost, resource_util::move_resources};
 //!
 //! let mut host = FakeHost::new();
 //! let level = host.level.level();
@@ -20,7 +20,7 @@
 //! let from = level.capability(server, &ITEMS, [0, 64, 0], None).unwrap();
 //! let into = level.capability(server, &ITEMS, [1, 64, 0], None).unwrap();
 //! let moved = server.transaction(|host, tx| {
-//!     move_resources(host, &from, &into, |_: &ItemResource| true, 3, tx)
+//!     move_resources(host, &from, &into, |_: &ItemResource| true, 3, Some(tx))
 //! });
 //! assert_eq!(moved.ok(), Some(3));
 //! let into = host.level.block_entity_at([1, 64, 0]).unwrap().items.as_ref().unwrap();
@@ -44,17 +44,19 @@ pub use level::{
     FakeBattery, FakeBlockEntity, FakeContainer, FakeEntity, FakeGameEvent, FakeLevel, FakeSound,
     FakeTank,
 };
-pub use players::{FakePlayer, FakePlayers};
+pub use players::{FakePlayer, FakePlayers, GameProfileFixture};
 pub use registries::FakeRegistries;
 pub use services::{FakeCommands, FakeMessages};
 
+use crate::item::item_stack::component_edits::edit_item_components;
 use crate::item::transaction::{Transaction, TransactionSeal};
 use crate::runtime::Installed;
 use crate::world::ticket_controller::{ControllerInfo, TEST_CONTROLLERS};
 use crate::{
     Backend, BackendMut, BackendMutRef, BackendRef, BlockEntityRef, BlockEntityTypeKey, BlockSide,
-    ClientHost, Commands, EntityRef, FluidStack, Host, ItemPlace, ItemStack, LevelRef, Messages,
-    Mods, PlayerRef, Players, ServerHost, TEST_MODS, Tag, Text, TicketController, WorldEpoch,
+    ClientHost, Commands, EntityRef, FluidStack, Host, InventoryView, ItemComponentEditor,
+    ItemPlace, ItemPlaceEditError, ItemStack, ItemStackView, LevelRef, Messages, Mods, PlayerRef,
+    Players, ServerHost, TEST_MODS, Tag, Text, TicketController, WorldEpoch,
 };
 
 /// The world epoch of every fake's handles.
@@ -78,6 +80,62 @@ pub fn with_dispatch<R>(mods: Mods, f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Lend new registration contexts on this thread a test startup screen, restoring the previous
+/// screen on exit or unwind.
+// hidden: only test fixtures supply a stand-in startup screen.
+#[doc(hidden)]
+pub fn with_startup_screen<R>(
+    screen: std::sync::Arc<dyn crate::StartupScreen>,
+    run: impl FnOnce() -> R,
+) -> R {
+    use crate::world::startup_progress::TEST_SCREEN;
+    struct Restore(Option<std::sync::Arc<dyn crate::StartupScreen>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_SCREEN.replace(self.0.take());
+        }
+    }
+    let _restore = Restore(TEST_SCREEN.replace(Some(screen)));
+    run()
+}
+
+struct RestoreParts {
+    previous: Option<&'static crate::parts::Installed>,
+    committed: bool,
+}
+
+impl RestoreParts {
+    fn fresh() -> Self {
+        Self {
+            previous: crate::parts::TEST_PARTS.replace(None),
+            committed: false,
+        }
+    }
+}
+
+impl Drop for RestoreParts {
+    fn drop(&mut self) {
+        if !self.committed {
+            crate::parts::TEST_PARTS.set(self.previous);
+        }
+    }
+}
+
+/// Probe registrations with no frozen test Parts, then run with the caller's lookup snapshot.
+/// Any Parts installed by the body stay local to this scope, even if it unwinds.
+// hidden: the API-owned `with_mods` uses this boundary; not API for mod authors.
+#[doc(hidden)]
+pub fn with_parts_registration_probe<T, R>(
+    mods: Mods,
+    probe: impl FnOnce(&[crate::ModEntry]) -> T,
+    run: impl FnOnce(Mods, T) -> R,
+) -> R {
+    let restore = RestoreParts::fresh();
+    let registered = probe(&mods);
+    crate::parts::TEST_PARTS.set(restore.previous);
+    run(mods, registered)
+}
+
 /// Rebuild a fixture's Parts snapshot from a fresh registration epoch on this thread.
 ///
 /// On success the replacement stays installed. An error or unwinding restores the previous snapshot.
@@ -86,21 +144,7 @@ pub fn with_dispatch<R>(mods: Mods, f: impl FnOnce() -> R) -> R {
 // hidden: only the shared game fixtures in sunrise-mod-api rebuild their Parts epoch; not API.
 #[doc(hidden)]
 pub fn rebuild_parts<R, E>(f: impl FnOnce() -> Result<R, E>) -> Result<R, E> {
-    struct Restore {
-        previous: Option<&'static crate::parts::Installed>,
-        committed: bool,
-    }
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if !self.committed {
-                crate::parts::TEST_PARTS.set(self.previous);
-            }
-        }
-    }
-    let mut restore = Restore {
-        previous: crate::parts::TEST_PARTS.replace(None),
-        committed: false,
-    };
+    let mut restore = RestoreParts::fresh();
     let result = f();
     restore.committed = result.is_ok();
     result
@@ -185,7 +229,8 @@ impl Drop for RestoreControllers {
 ///
 /// Set a test's world up through the fakes' fields, run the code under test with
 /// `&mut host` as its `&mut dyn ServerHost`, then read the fakes back. A host method no fake
-/// answers panics, naming the method, as a test double's would. The host has no client
+/// answers panics, naming the method, as a test double's would. The fake does not lend a
+/// level random stream, so [`LevelRef::with_random`] returns `None`. The host has no client
 /// backend, so client handle writes refuse.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
@@ -258,7 +303,7 @@ impl FakeHost {
                 Err(errors)
             };
         }
-        crate::content::registry_keys::resolve_entity_types(ids)
+        crate::content::registry_keys::resolve_entity_types(ids, |_| None)
     }
     /// Player `uuid` online as entity `entity` in the level, joined if missing.
     pub fn join(&mut self, uuid: u128, entity: u32) -> &mut FakePlayer {
@@ -371,6 +416,9 @@ impl crate::prelude::BlockStatesHost for FakeHost {
     }
 }
 impl crate::prelude::LevelsHost for FakeHost {
+    fn lit_block_name(&self, _: [i32; 3]) -> Option<crate::BlockKey> {
+        None
+    }
     fn is_loaded(&self, id: &str) -> bool {
         self.registries.is_loaded(id)
     }
@@ -449,19 +497,91 @@ impl ClientHost for FakeHost {}
 crate::impl_client_host_areas!(FakeHost);
 
 impl Backend for FakeHost {}
-impl crate::prelude::LevelsBackend for FakeHost {
-    fn level_in_place(&self, level: LevelRef) -> bool {
-        level == self.level.level()
+impl crate::LevelHost for FakeHost {
+    fn block_entity_data(&self, _: BlockEntityRef) -> Option<crate::Compound> {
+        None
     }
+    fn block_entity(&self, pos: [i32; 3]) -> Option<BlockEntityRef> {
+        crate::prelude::BlockEntitiesHost::block_entity(self, self.level.level(), pos)
+    }
+    fn block_state(&self, pos: [i32; 3]) -> Option<crate::BlockState> {
+        let name = self
+            .level
+            .block_at(self.level.level(), pos)
+            .unwrap_or("minecraft:air");
+        let block = crate::__private::block_key(name).or_else(|| {
+            crate::parts::requested_keys()
+                .blocks
+                .slots
+                .get(name)
+                .copied()
+                .map(crate::BlockKey)
+        });
+        // The stand-in can hold a container without a published block registry. That
+        // unnamed state never selects a block-keyed provider.
+        Some(crate::block::block_state::block_state_from_ordinal(
+            block.unwrap_or(crate::BlockKey(u32::MAX)),
+            0,
+        ))
+    }
+    fn has_item_capability(&self, pos: [i32; 3], side: Option<crate::Direction>) -> Option<bool> {
+        let at = BlockSide {
+            level: self.level.level(),
+            pos,
+            side,
+        };
+        let mut answer = None;
+        crate::prelude::LevelBlocksBackend::level_with_capability_site(
+            self,
+            at,
+            &mut |view, site| {
+                answer = Some(crate::__private::item_capability_present(view, site));
+            },
+        )
+        .ok()?;
+        answer
+    }
+}
+impl crate::prelude::LevelBlocksBackend for FakeHost {
     fn level_block(&self, level: LevelRef, pos: [i32; 3]) -> Option<crate::BlockKey> {
         self.level
             .block_at(level, pos)
             .and_then(crate::__private::block_key)
     }
+    fn level_with_capability_site(
+        &self,
+        at: BlockSide,
+        visit: &mut dyn FnMut(&dyn crate::LevelHost, crate::BlockCapabilitySite),
+    ) -> Result<(), crate::LevelReadError> {
+        if at.level != self.level.level() {
+            return Err(crate::LevelReadError::Unavailable);
+        }
+        let Some(state) = crate::LevelHost::block_state(self, at.pos) else {
+            return Err(crate::LevelReadError::Unavailable);
+        };
+        let resident =
+            crate::prelude::BlockEntitiesHost::block_entity(self, at.level, at.pos).map(|entity| {
+                (
+                    entity,
+                    crate::prelude::BlockEntitiesBackend::block_entity_kind(self, entity),
+                )
+            });
+        let builtin_items = crate::prelude::ItemsBackend::container_size(self, at).is_some();
+        visit(
+            self,
+            crate::BlockCapabilitySite::new(at, state, resident, builtin_items),
+        );
+        Ok(())
+    }
     /// The named block's first state: the fake keeps no properties.
     fn level_block_state(&self, level: LevelRef, pos: [i32; 3]) -> Option<crate::BlockState> {
-        let block = crate::prelude::LevelsBackend::level_block(self, level, pos)?;
-        Some(crate::BlockStateRecord::new(block, 0).into())
+        let block = crate::prelude::LevelBlocksBackend::level_block(self, level, pos)?;
+        Some(crate::__private::block_state_from_ordinal(block, 0))
+    }
+}
+impl crate::prelude::LevelTickingBackend for FakeHost {
+    fn level_in_place(&self, level: LevelRef) -> bool {
+        level == self.level.level()
     }
 }
 impl crate::prelude::BlockEntitiesBackend for FakeHost {
@@ -506,15 +626,24 @@ impl crate::prelude::ItemsBackend for FakeHost {
             total.checked_add(room as u64)
         })
     }
-    fn container_listing(
+    fn container_visit_entries(
         &self,
         at: BlockSide,
-        from: usize,
-        limit: usize,
-    ) -> Option<Vec<Option<ItemStack>>> {
-        let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
-        let limit = limit.min(crate::MAX_STORAGE_PAGE);
-        Some(items.slots.iter().skip(from).take(limit).cloned().collect())
+        visitor: &mut dyn FnMut(&crate::ItemResource, u64) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), crate::LevelReadError> {
+        let Some(items) = self
+            .level
+            .standing(at.level, at.pos)
+            .and_then(|s| s.items.as_ref())
+        else {
+            return Ok(());
+        };
+        for stack in items.slots.iter().flatten() {
+            if visitor(&crate::ItemResource::of(stack), u64::from(stack.count())).is_break() {
+                break;
+            }
+        }
+        Ok(())
     }
     fn container_size(&self, at: BlockSide) -> Option<usize> {
         let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
@@ -524,13 +653,18 @@ impl crate::prelude::ItemsBackend for FakeHost {
         let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
         items.slots.get(slot)?.clone()
     }
-    fn container_capacity(&self, at: BlockSide, slot: usize, stack: &ItemStack) -> u32 {
+    fn container_capacity(&self, at: BlockSide, slot: usize, stack: Option<&ItemStack>) -> u32 {
         let items = self
             .level
             .standing(at.level, at.pos)
             .and_then(|standing| standing.items.as_ref());
         items.map_or(0, |items| {
-            items.capacity(slot, self.max_stack(&crate::ItemResource::of(stack)))
+            items.capacity(
+                slot,
+                stack.map_or(u32::MAX, |stack| {
+                    self.max_stack(&crate::ItemResource::of(stack))
+                }),
+            )
         })
     }
     fn entity_container_size(&self, _: u32) -> Option<usize> {
@@ -558,7 +692,7 @@ impl crate::prelude::FluidsEnergyBackend for FakeHost {
         let standing = self.level.standing(at.level, at.pos)?;
         standing.tanks.get(tank)?.held.clone()
     }
-    fn fluid_tank_capacity(&self, at: BlockSide, tank: usize, _: &FluidStack) -> u32 {
+    fn fluid_tank_capacity(&self, at: BlockSide, tank: usize, _: Option<&FluidStack>) -> u32 {
         let standing = self.level.standing(at.level, at.pos);
         standing
             .and_then(|standing| standing.tanks.get(tank))
@@ -575,7 +709,7 @@ impl crate::prelude::FluidsEnergyBackend for FakeHost {
             .map_or(0, |energy| energy.capacity)
     }
 }
-impl crate::prelude::EntitiesBackend for FakeHost {
+impl crate::prelude::EntityIdentityBackend for FakeHost {
     fn entity_kind(&self, entity: EntityRef) -> Option<crate::EntityTypeKey> {
         let kind = if self.players.by_entity(entity.id()).is_some() {
             "minecraft:player"
@@ -592,24 +726,53 @@ impl crate::prelude::EntitiesBackend for FakeHost {
     }
 }
 impl crate::prelude::KeysBackend for FakeHost {
-    fn entity_type_key_id(&self, key: crate::EntityTypeKey) -> String {
+    fn entity_type_key_id(&self, key: crate::EntityTypeKey) -> Option<crate::RegistryName> {
         crate::content::registry_keys::entity_type_key_id(key)
-            .expect("fake entity type key belongs to its load")
     }
 
-    fn item_key_id(&self, key: crate::ItemKey) -> String {
+    fn item_key_id(&self, key: crate::ItemKey) -> Option<&str> {
         crate::content::registry_keys::item_id(key)
-            .expect("fake item key belongs to its load")
-            .to_owned()
     }
 }
-impl crate::prelude::PlayersBackend for FakeHost {
+impl crate::prelude::PlayerInventoryBackend for FakeHost {
     fn player_selected_slot(&self, player: PlayerRef) -> Option<usize> {
         Some(self.players.get(player.uuid())?.selected_slot)
     }
-    fn player_name(&self, player: PlayerRef) -> Option<String> {
-        Some(self.players.get(player.uuid())?.name.clone())
+    fn player_inventory_slots(
+        &self,
+        player: PlayerRef,
+        read: &mut dyn for<'a> FnMut(InventoryView<'a>),
+    ) -> Option<()> {
+        let slots = &self.players.get(player.uuid())?.slots;
+        let stack_at = |slot: u32| {
+            let index = match slot {
+                0..=35 => slot as i32,
+                36..=39 => slot as i32 + 64,
+                40 => -106,
+                // The fake stores ItemPlace slots only.
+                _ => return None,
+            };
+            slots.get(&index)
+        };
+        read(InventoryView::new(
+            0..43,
+            &|slot| Some(stack_at(slot)?.read_metadata()),
+            &|slot, _| stack_at(slot).cloned(),
+        ));
+        Some(())
     }
+}
+impl crate::prelude::PlayerModesBackend for FakeHost {
+    fn player_has_infinite_materials(&self, player: PlayerRef) -> Option<bool> {
+        Some(self.players.get(player.uuid())?.infinite_materials)
+    }
+}
+impl crate::prelude::PlayerSessionBackend for FakeHost {
+    fn player_name(&self, player: PlayerRef) -> Option<&str> {
+        Some(&self.players.get(player.uuid())?.name)
+    }
+}
+impl crate::prelude::PlayerWorldBackend for FakeHost {
     fn player_level(&self, player: PlayerRef) -> Option<LevelRef> {
         (self.players.handle(player.uuid())? == player).then_some(())?;
         Some(self.players.get(player.uuid())?.level)
@@ -618,28 +781,28 @@ impl crate::prelude::PlayersBackend for FakeHost {
         let level = self.player_level(player)?;
         crate::Identifier::parse(level.dimension_id()).ok()
     }
-    fn player_has_infinite_materials(&self, player: PlayerRef) -> Option<bool> {
-        Some(self.players.get(player.uuid())?.infinite_materials)
-    }
-    fn player_inventory(&self, player: PlayerRef) -> Option<Vec<ItemStack>> {
-        let slots = &self.players.get(player.uuid())?.slots;
-        Some(slots.range(0..36).map(|(_, stack)| stack.clone()).collect())
-    }
 }
 crate::impl_backend_areas!(
     FakeHost,
     except(
         block_entities,
-        entities,
+        entity_identity,
         fluids_energy,
         items,
         keys,
-        levels,
-        players
+        level_blocks,
+        level_ticking,
+        player_inventory,
+        player_modes,
+        player_session,
+        player_world
     )
 );
 
 impl BackendMut for FakeHost {}
+impl crate::prelude::LevelTickingBackendMut for FakeHost {
+    fn with_level_random(&mut self, _: LevelRef, _: crate::RandomDraw<'_>) {}
+}
 impl crate::prelude::ItemsBackendMut for FakeHost {
     fn container_insert(
         &mut self,
@@ -729,9 +892,44 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         }
         amount - left
     }
-    fn game_stack(&mut self, place: &ItemPlace) -> Option<ItemStack> {
+    fn game_stack(
+        &mut self,
+        place: &ItemPlace,
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) -> Option<()> {
         let (player, slot) = self.players.place(place)?;
-        player.slots.get(&slot).cloned()
+        read(ItemStackView::from_stack(player.slots.get(&slot)?));
+        Some(())
+    }
+    fn game_edit_stack(
+        &mut self,
+        place: &ItemPlace,
+        tx: &Transaction,
+        edit: &mut dyn for<'a> FnMut(&mut ItemComponentEditor<'a>),
+    ) -> Result<(), ItemPlaceEditError> {
+        if crate::prelude::ModStateServerHost::transaction_depth(self, tx).is_none() {
+            return Err(ItemPlaceEditError::Unavailable);
+        }
+        let (player, slot) = self
+            .players
+            .place(place)
+            .ok_or(ItemPlaceEditError::NotHeld)?;
+        let held = player
+            .slots
+            .get_mut(&slot)
+            .ok_or(ItemPlaceEditError::NotHeld)?;
+        let read_override = |id: &str| held.component_value(id).cloned();
+        let edits = edit_item_components(ItemStackView::from_stack(held), &read_override, edit);
+        edits.apply_to(held);
+        Ok(())
+    }
+    fn game_on_crafted_by(
+        &mut self,
+        _: &ItemPlace,
+        _: &Transaction,
+        _: i32,
+    ) -> Result<(), crate::CraftedByError> {
+        Err(crate::CraftedByError::Unavailable)
     }
     fn game_insert(
         &mut self,
@@ -850,7 +1048,7 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
         true
     }
 }
-impl crate::prelude::EntitiesBackendMut for FakeHost {
+impl crate::prelude::EntityIdentityBackendMut for FakeHost {
     fn entity_uuid(&mut self, entity: EntityRef) -> Option<u128> {
         if let Some((uuid, _)) = self.players.by_entity(entity.id()) {
             return Some(uuid);
@@ -858,7 +1056,7 @@ impl crate::prelude::EntitiesBackendMut for FakeHost {
         Some(self.level.entity_at(entity.id())?.uuid)
     }
 }
-impl crate::prelude::PlayersBackendMut for FakeHost {
+impl crate::prelude::PlayerMessagesBackendMut for FakeHost {
     fn player_action_bar(
         &mut self,
         player: PlayerRef,
@@ -872,7 +1070,7 @@ impl crate::prelude::PlayersBackendMut for FakeHost {
         Ok(true)
     }
 }
-impl crate::prelude::LevelsBackendMut for FakeHost {
+impl crate::prelude::LevelEffectsBackendMut for FakeHost {
     fn level_play_sound(
         &mut self,
         level: LevelRef,
@@ -881,8 +1079,11 @@ impl crate::prelude::LevelsBackendMut for FakeHost {
         source: crate::SoundSource,
         volume: f32,
         pitch: f32,
+        except: Option<PlayerRef>,
     ) -> bool {
-        if level != self.level.level() {
+        if level != self.level.level()
+            || except.is_some_and(|p| self.players.handle(p.uuid()) != Some(p))
+        {
             return false;
         }
         self.sounds.push(FakeSound {
@@ -914,10 +1115,15 @@ impl crate::prelude::LevelsBackendMut for FakeHost {
 }
 crate::impl_backend_mut_areas!(
     FakeHost,
-    except(entities, fluids_energy, items, levels, players)
+    except(
+        entity_identity,
+        fluids_energy,
+        items,
+        level_effects,
+        level_ticking,
+        player_messages
+    )
 );
-
-impl crate::prelude::PlayersClientBackend for FakeHost {}
 
 /// Scope the controller lookup rows prepared by the API-owned registration fixture.
 // hidden: API-owned test setup uses this vocabulary fixture, not mod authoring code.
@@ -941,24 +1147,35 @@ pub fn with_controller_tables<R>(
 // exhaustive: the platform or fixture constructs this process-local record as a complete unit.
 pub struct TestReader {
     pub registries: std::collections::BTreeMap<String, std::sync::Arc<[String]>>,
-    pub tags: std::sync::Arc<[(String, std::sync::Arc<[String]>)]>,
+    /// `None` models a load without a recipe overlay; `Some` models its tag table.
+    pub tags: Option<std::sync::Arc<[(String, std::sync::Arc<[String]>)]>>,
 }
 impl crate::LoadReader for TestReader {
-    fn registry(&self, name: &str) -> Option<std::sync::Arc<[String]>> {
-        self.registries.get(name).cloned()
+    fn registry(&self, name: &str) -> Option<&[String]> {
+        self.registries.get(name).map(AsRef::as_ref)
     }
-    fn fluid_tags(&self) -> std::sync::Arc<[(String, std::sync::Arc<[String]>)]> {
-        self.tags.clone()
+    fn fluid_tags(&self) -> Option<&[(String, std::sync::Arc<[String]>)]> {
+        self.tags.as_deref()
     }
-    fn setting(&self, _: &str, _: &str) -> Option<String> {
+    fn setting(&self, _: &str, _: &str) -> Option<&str> {
         None
     }
 }
 impl crate::LoopReader for TestReader {
-    fn registry(&self, name: &str) -> Option<std::sync::Arc<[String]>> {
-        self.registries.get(name).cloned()
+    fn registry(&self, name: &str) -> Option<&[String]> {
+        self.registries.get(name).map(AsRef::as_ref)
     }
-    fn setting(&self, _: &str, _: &str) -> Option<String> {
+    fn setting(&self, _: &str, _: &str) -> Option<&str> {
+        None
+    }
+}
+
+#[cfg(test)]
+impl crate::__private::WorldgenReader for TestReader {
+    fn registry(&self, name: &str) -> Option<&[String]> {
+        self.registries.get(name).map(AsRef::as_ref)
+    }
+    fn setting(&self, _: &str, _: &str) -> Option<&str> {
         None
     }
 }

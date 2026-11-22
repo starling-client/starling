@@ -1,0 +1,77 @@
+[
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/none",
+    "doc": "Additional secondary work blocks for the none villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/armorer",
+    "doc": "Additional secondary work blocks for the armorer villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/butcher",
+    "doc": "Additional secondary work blocks for the butcher villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/cartographer",
+    "doc": "Additional secondary work blocks for the cartographer villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/cleric",
+    "doc": "Additional secondary work blocks for the cleric villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/farmer",
+    "doc": "Additional secondary work blocks for the farmer villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/fisherman",
+    "doc": "Additional secondary work blocks for the fisherman villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/fletcher",
+    "doc": "Additional secondary work blocks for the fletcher villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/leatherworker",
+    "doc": "Additional secondary work blocks for the leatherworker villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/librarian",
+    "doc": "Additional secondary work blocks for the librarian villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/mason",
+    "doc": "Additional secondary work blocks for the mason villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/nitwit",
+    "doc": "Additional secondary work blocks for the nitwit villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/shepherd",
+    "doc": "Additional secondary work blocks for the shepherd villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/toolsmith",
+    "doc": "Additional secondary work blocks for the toolsmith villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  },
+  {
+    "registry": "block",
+    "id": "sunrise:villager_secondary_poi/weaponsmith",
+    "doc": "Additional secondary work blocks for the weaponsmith villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla."
+  }
+]

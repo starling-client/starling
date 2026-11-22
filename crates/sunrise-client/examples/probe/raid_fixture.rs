@@ -4,12 +4,19 @@
 //! oracle's order and format.
 //!
 //! usage: raid_fixture RESOURCES INPUT OUTPUT
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt::Write as _,
+    fs,
+    path::Path,
+};
 use sunrise_client::{
     assets::Assets,
     blocks::BlockFacts,
     items::Items,
     mobs::{
-        Species,
+        MobTypes, Species,
         data::MobData,
         spawn_rules::{self, SpawnLevel},
         spawn_selection::{self, Heightmap},
@@ -22,13 +29,6 @@ use sunrise_core::LevelKey;
 use sunrise_core::random::{LegacyRandom, RandomSource};
 use sunrise_world::dimension_type::DimensionFacts;
 use sunrise_world::loot::PackOverlay;
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
-    fmt::Write as _,
-    fs,
-    path::Path,
-};
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{chunk::BlockState, registry::BlockStateId},
@@ -487,6 +487,8 @@ pub fn main() -> sunrise_client::Result<()> {
     let defaults = sunrise_world::item_defaults::read(root)?;
     let items = Items::tags_only(root, &PackOverlay::NONE, &defaults)?;
     let attributes = GameplayAttributes::load(root);
+    let types = MobTypes::load(root)?;
+    let pillager = &types.types["minecraft:pillager"];
     let shared = Shared {
         facts: &facts,
         data: &data,
@@ -608,11 +610,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 next_tick: get("next", "0").parse()?,
             };
             let enemies = get("enemies", "1") != "0";
-            let mut spawn = |l: &World, m: Member, _: &mut LegacyRandom| -> bool {
-                // EntityType.create: no monsters in peaceful.
-                if l.difficulty == 0 {
-                    return false;
-                }
+            let mut spawn = |_: &World, m: Member, _: &mut LegacyRandom| -> bool {
                 let mut s = format!(
                     "spawn minecraft:pillager {} {} {}",
                     m.pos[0], m.pos[1], m.pos[2]
@@ -638,7 +636,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 true
             };
             for _ in 0..ticks {
-                spawner.tick(&world, enemies, &mut random, &mut spawn);
+                spawner.tick(&world, enemies, pillager, &mut random, &mut spawn);
             }
             log.push(format!(
                 "next {} {}",

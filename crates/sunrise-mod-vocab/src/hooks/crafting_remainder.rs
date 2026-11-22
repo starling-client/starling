@@ -20,12 +20,15 @@ The resolver checks the prepared item subscription table before converting or
 cloning stack components. Invalid returned stacks are refused at `ItemBoundary`,
 retaining the initial data remainder; native panics retain normal Part attribution."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         host = "read",
         contract = "listen",
         scope = "item",
         key = "stack",
-        neoforge = "IItemExtension.getCraftingRemainder(ItemStack)"
+        neoforge = "IItemExtension.getCraftingRemainder(ItemStack)",
+        version = 2
     )]
-    fn crafting_remainder();
+    fn crafting_remainder(stack: &ItemStack, remainder: &mut Option<ItemStack>);
 }

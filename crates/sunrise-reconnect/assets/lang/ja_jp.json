@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "自動再接続",
+  "sunrise.extras.auto_reconnect.tooltip": "キックや禁止の後ではなく、接続の喪失または再起動後にサーバーに再参加します。"
+}

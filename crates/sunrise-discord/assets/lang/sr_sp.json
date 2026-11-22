@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Приказује „Игра Sunrise“ на вашем Discord профилу док Discord ради: менији, један или више играча, димензија и време играња. Никада име света или адресу сервера."
+}

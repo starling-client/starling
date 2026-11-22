@@ -2,6 +2,15 @@
 //! scenes in real client chunks and writes the vertices `Mesher::mesh` emits in
 //! the oracle's canonical form (vanilla ARGB colours and packed light coords).
 #![forbid(unsafe_code)]
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     assets::{Assets, RenderAssets},
     biome::{BiomeInfo, Biomes, GrassModifier},
@@ -13,15 +22,6 @@ use sunrise_client::{
 };
 use sunrise_core::biome::BiomeZoom;
 use sunrise_world::registry::BlockStateId;
-use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn int(value: &Value) -> Result<i32> {
@@ -144,6 +144,7 @@ fn scene(
         translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
         hidden_states: &[],
+        part_tables: Default::default(),
     };
     let section_y = int(&row["section_y"])?;
     let started = Instant::now();

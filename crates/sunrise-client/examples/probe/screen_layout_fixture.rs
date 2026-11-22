@@ -3,12 +3,12 @@
 //! calls in the format of `VanillaLoomScreenOracle`.
 //!
 //! usage: screen_layout_fixture RESOURCES INPUT OUTPUT
+use serde_json::{Value, json};
+use std::{fs, path::Path, sync::Arc};
 use sunrise_client::{
     banner::{BannerLayer, Banners, banner_color},
     screen_layout::{self, CrafterView, LoomView, ScreenDraw},
 };
-use serde_json::{Value, json};
-use std::{fs, path::Path, sync::Arc};
 
 fn draw_json(d: &ScreenDraw) -> Value {
     let round = |v: f32| ((v * 1e6).round() / 1e6) as f64;

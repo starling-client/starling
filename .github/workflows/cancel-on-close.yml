@@ -7,25 +7,39 @@ on:
     types: [closed]
 permissions:
   actions: write
+# One sweep at a time, and at most one waiting. A sweep cancels the runs of every pull request that is no longer
+# open, not only the one that closed this run, so a waiting sweep that GitHub replaces with a newer one loses
+# nothing. A rollup merge closes a dozen pull requests in a second: one job each held a dozen of GitHub's runners.
+concurrency:
+  group: cancel-on-close
+  cancel-in-progress: false
 jobs:
   cancel:
     # One of our small runners (sunrise-light), out of GitHub's pool: no checkout, no code of the pull request
     # (docs/ci-runners.md). SELF_HOSTED_CI=off: GitHub's runners.
     runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "sunrise-light"]') || 'ubuntu-latest' }}
     steps:
-      - name: Cancel the pull request's unfinished runs
+      - name: Cancel the unfinished runs of pull requests that are no longer open
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ github.event.pull_request.head.ref }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
-          # Every head the pull request had, not only its last: a run-parity label added on an older head left that
-          # run queued after the merge (#3104, 2026-10-29). Its branch in its own repository names its runs (another
-          # fork can have a branch of the same name).
+          # A failed listing stops the job: an empty list of open pull requests would cancel every run.
+          set -euo pipefail
+          # A pull request's runs are named by its head branch in its own repository (another fork can have a branch
+          # of the same name). Every head it had counts, not only its last: a run started on an older head was left
+          # queued after the merge (#3104, 2026-10-29).
+          # The runs first, then the open pull requests: a run listed belongs to a pull request opened before the
+          # second listing, so one opened meanwhile is never taken for closed.
           for status in queued in_progress waiting pending requested; do
-            gh api -X GET "repos/$REPO/actions/runs" -f branch="$BRANCH" -f event=pull_request -f status="$status" \
-              -f per_page=100 --jq ".workflow_runs[] | select(.head_repository.full_name == \"$HEAD_REPO\") | .id"
-          done | sort -u | while read -r id; do
-            gh run cancel -R "$REPO" "$id" || true
-          done
+            gh api --paginate -X GET "repos/$REPO/actions/runs" -f event=pull_request -f status="$status" -f per_page=100 \
+              --jq '.workflow_runs[] | "\(.head_repository.full_name // "-")\t\(.head_branch)\t\(.id)"'
+          done | sort -u > "$RUNNER_TEMP/runs"
+          gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+            --jq '.[] | "\(.head.repo.full_name // "-")\t\(.head.ref)"' | sort -u > "$RUNNER_TEMP/open"
+          while IFS=$'\t' read -r head_repo branch id; do
+            if ! grep -qxF -e "$head_repo"$'\t'"$branch" "$RUNNER_TEMP/open"; then
+              echo "cancel run $id ($head_repo $branch)"
+              gh run cancel -R "$REPO" "$id" < /dev/null || true
+            fi
+          done < "$RUNNER_TEMP/runs"

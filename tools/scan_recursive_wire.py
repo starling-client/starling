@@ -1,11 +1,13 @@
 """Discover recursive public vocabulary types, including indirect cycles.
 
-Uses the Wire declaration guard's Rust lexer so comments, strings and test-only
+Uses the shared Rust lexer so comments, strings and test-only
 items cannot introduce phantom types. Run directly to print the inventory.
 """
 from pathlib import Path
 import re
-from check_mod_api_wire import ROOT, code_tokens
+from rust_tokens import code_tokens
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def recursive_types(root=ROOT / "crates/sunrise-mod-vocab/src", extra_paths=()):

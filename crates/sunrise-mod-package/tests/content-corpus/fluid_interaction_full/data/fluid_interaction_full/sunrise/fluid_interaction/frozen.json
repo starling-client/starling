@@ -1,0 +1,9 @@
+{
+  "source": "minecraft:water",
+  "neighbour": {
+    "block": "minecraft:blue_ice"
+  },
+  "becomes": {
+    "source": "minecraft:ice"
+  }
+}

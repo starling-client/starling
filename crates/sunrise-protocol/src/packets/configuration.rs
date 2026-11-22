@@ -3,13 +3,13 @@
 use crate::{
     Result,
     buf::{
-        Bool, Byte, Codec, Ident, Int, List, Long, Nbt, Opt, Reader, Str, StrN, UByte, Uuid,
-        VarInt, Writer,
+        Bool, Byte, Codec, Ident, Int, List, Long, Nbt, Opt, Reader, Str, StrN, UByte, Uuid, VarInt,
     },
     packet, packet_enum,
     packets::Empty,
 };
 use sunrise_core::nbt::Tag;
+use sunrise_core::vanilla_bytes::Writer;
 
 packet!(CookieRequest { key: String => Ident });
 pub use super::custom_payload::CustomPayload;

@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Показывает «Играет в Sunrise» в профиле Discord, пока Discord запущен: меню, одиночная или сетевая игра, измерение и время игры. Никогда название мира или адрес сервера."
+}

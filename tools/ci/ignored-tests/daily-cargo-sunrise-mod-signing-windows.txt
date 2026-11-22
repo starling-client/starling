@@ -1,0 +1,1 @@
+cargo-sunrise-mod windows_keygen_refuses_an_unencrypted_private_key_before_writing test:signing_windows daily windows

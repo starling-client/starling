@@ -1,0 +1,16 @@
+{
+  "template": "minecraft:stick",
+  "max_stack_size": 7,
+  "rarity": "epic",
+  "components": {
+    "!minecraft:custom_name": {},
+    "minecraft:enchantment_glint_override": true,
+    "minecraft:custom_data": {
+      "zinc": 4,
+      "copper": 2
+    }
+  },
+  "crafting_remainder": "item_full:receipt",
+  "block": "minecraft:torch",
+  "arm_pose": "throw_trident"
+}

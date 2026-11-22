@@ -1,6 +1,7 @@
 # The daily tests of sunrise-shader-api: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
 # where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
-sunrise-shader-api a_package_over_the_total_is_refused_while_it_is_read test:package_limits daily slow
-sunrise-shader-api every_template_makes_a_pack_that_passes test:sdk daily child-process
-sunrise-shader-api packs_and_checks_the_package test:sdk daily child-process
-sunrise-shader-api the_tool_checks_a_0_2_pack test:sdk daily child-process
+sunrise-shader-api mod_pipeline::tests::a_shader_over_the_expression_cap_is_refused_with_its_count lib daily slow
+sunrise-shader-api package_limits::a_package_over_the_total_is_refused_while_it_is_read test:it daily slow
+sunrise-shader-api sdk::every_template_makes_a_pack_that_passes test:it daily child-process
+sunrise-shader-api sdk::packs_and_checks_the_package test:it daily child-process
+sunrise-shader-api sdk::the_tool_checks_a_0_2_pack test:it daily child-process

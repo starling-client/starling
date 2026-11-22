@@ -4,8 +4,8 @@ use super::{
     commands::Target,
     minecarts::{CartKind, Minecart, display_offset},
 };
-use sunrise_world::registry::BlockStateId;
 use mod_api::{EntityRef, MinecartKind, MinecartRef};
+use sunrise_world::registry::BlockStateId;
 
 impl Game<'_> {
     fn native_minecart_index(&self, cart: MinecartRef) -> Option<usize> {
@@ -245,10 +245,10 @@ mod tests {
     use super::super::api_values::TryIntoApi;
     use super::super::native_entity_refs::tests::with_game;
     use super::*;
+    use mod_api::WorldEpoch;
     use sunrise_client::entities::ArmorStand;
     use sunrise_core::geometry::Vec3;
     use sunrise_core::nbt::Tag;
-    use mod_api::WorldEpoch;
 
     fn spawn(game: &mut Game<'_>, id: u32, kind: CartKind) -> MinecartRef {
         game.carts.push(Minecart::new(id, kind, Vec3::ZERO));
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_furnace_carts_push_is_read_and_set_through_its_handle() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_carts_display_block_and_offset_round_trip_through_its_handle() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -307,7 +307,7 @@ mod tests {
             assert_eq!(cart.display_offset(game), Some(3));
 
             // Saved and loaded back as the same state and offset.
-            let saved = game.carts[0].to_nbt([0; 4], None);
+            let saved = game.carts[0].to_nbt([0; 4], None, game.res.items());
             let mut loaded = Minecart::from_nbt(&saved, 61, CartKind::Chest).unwrap();
             super::super::minecarts::forget_unreadable_display(&mut loaded, |t| {
                 game.state_from_nbt(t).is_some()
@@ -318,14 +318,14 @@ mod tests {
             assert_eq!(loaded.display_offset(game), Some(3));
 
             // A state the registry doesn't know is refused; None clears.
-            let invalid = mod_api::BlockStateRecord::new(lit.block(), u16::MAX).into();
+            let invalid = mod_api::__private::block_state_from_ordinal(lit.block(), u16::MAX);
             assert!(!cart.set_custom_display_block(game, Some(invalid)));
             assert_eq!(cart.custom_display_block(game), Some(Some(lit)));
             assert!(cart.set_custom_display_block(game, None));
             assert_eq!(cart.custom_display_block(game), Some(None));
             assert!(
                 game.carts[0]
-                    .to_nbt([0; 4], None)
+                    .to_nbt([0; 4], None, game.res.items())
                     .get("DisplayState")
                     .is_none()
             );
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn minecart_handles_narrow_read_and_write_by_kind() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -388,7 +388,7 @@ mod tests {
                 (rideable.damage(game), rideable.hurt_time(game)),
                 (Some(12.5), Some(7))
             );
-            let saved = game.carts[0].to_nbt([0; 4], None);
+            let saved = game.carts[0].to_nbt([0; 4], None, game.res.items());
             assert_eq!(saved.get("FlippedRotation"), Some(&Tag::Byte(1)));
 
             // Furnace fuel, saved and synced as the lit flag.
@@ -397,13 +397,15 @@ mod tests {
             assert_eq!(furnace.fuel(game), Some(3600));
             assert!(!tnt.set_fuel(game, 5));
             assert_eq!(tnt.fuel(game), None);
-            let saved = game.carts[2].to_nbt([0; 4], None);
+            let saved = game.carts[2].to_nbt([0; 4], None, game.res.items());
             assert_eq!(saved.get("Fuel"), Some(&Tag::Short(3600)));
             // The field is an int; only the save casts to a short.
             assert!(furnace.set_fuel(game, 40_000));
             assert_eq!(furnace.fuel(game), Some(40_000));
             assert_eq!(
-                game.carts[2].to_nbt([0; 4], None).get("Fuel"),
+                game.carts[2]
+                    .to_nbt([0; 4], None, game.res.items())
+                    .get("Fuel"),
                 Some(&Tag::Short(40_000_i32 as i16))
             );
             assert!(furnace.set_fuel(game, i32::MIN));
@@ -423,7 +425,9 @@ mod tests {
             );
             game.audio.capture = None;
             assert_eq!(
-                game.carts[3].to_nbt([0; 4], None).get("fuse"),
+                game.carts[3]
+                    .to_nbt([0; 4], None, game.res.items())
+                    .get("fuse"),
                 Some(&Tag::Int(80))
             );
             assert!(!furnace.prime_fuse(game));
@@ -459,7 +463,9 @@ mod tests {
             assert_eq!(hopper.hopper_enabled(game), Some(true));
             assert!(hopper.set_hopper_enabled(game, false));
             assert_eq!(
-                game.carts[4].to_nbt([0; 4], None).get("Enabled"),
+                game.carts[4]
+                    .to_nbt([0; 4], None, game.res.items())
+                    .get("Enabled"),
                 Some(&Tag::Byte(0))
             );
             assert!(!rideable.set_hopper_enabled(game, false));

@@ -1,0 +1,3 @@
+ids = ["hook:client_block_changed", "type:ClientBlockChangedEvent"]
+why = "Adds the client hook client_block_changed (vanilla ClientLevel.setBlock): the block at a position of the client level changed state, told after the write on every route a client of a server writes a block by (the server's block update, each block of a section update, the client's own predictions and their reconciliation), so a client-only map can invalidate the changed chunk without a server-side mod. New hook: no existing hook version changes."
+migrate = "Additive. Listen on the client; keep the listener cheap, as a section update tells each of its blocks."

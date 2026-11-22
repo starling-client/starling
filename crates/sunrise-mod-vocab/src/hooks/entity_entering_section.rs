@@ -23,8 +23,10 @@ pub trait Hooks {
     /// moving or removing the entity until the write completes, because the write is still in
     /// progress while this hook runs.
     ///
-    /// Mob ticks dispatch synchronously in position-write order. During a borrowed mob pass,
-    /// the Host answers only this entity's position; other Host operations are refused.
+    /// During a borrowed mob pass, the Host answers only this entity's position. During a
+    /// borrowed player move, it also answers that player's ground flag and velocity before
+    /// the move updates them, and `local_player` on the client. Other Host operations are
+    /// refused while these views are borrowed.
     #[notes = r#"## Entering a section
 
 `Hooks::entity_entering_section` (NeoForge's `EntityEvent.EnteringSection`) tells a mod each time an entity's
@@ -58,13 +60,21 @@ The hook runs at the position write: at once for a teleport (`/tp`, `teleport_to
 an enderman's or a shulker's teleport when hurt), a piston or shulker push, a server player's sent move and, on a client,
 a packet that places an entity. Mob ticks dispatch synchronously inside each position write, in write order,
 not by replaying captured moves after the tick. During a borrowed mob pass the Host answers only the current
-entity's position; every other Host operation is refused. There is no automatic mutation deferral: listeners
-must not move or remove the entity while its write is in progress."#]
+entity's position. During a borrowed player move it also answers that player's ground flag and velocity before
+the move updates them, and `local_player` on the client. Other Host operations are refused while these views
+are borrowed. There is no automatic mutation deferral: listeners must not move or remove the entity while its
+write is in progress."#]
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         neoforge = "EntityEvent.EnteringSection",
         cancellable = false
     )]
-    fn entity_entering_section();
+    fn entity_entering_section(
+        entity: EntityRef,
+        old_section: [i32; 3],
+        new_section: [i32; 3],
+        chunk_changed: bool,
+    );
 }

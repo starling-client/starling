@@ -3,9 +3,10 @@
     "package": {
       "program": [
         "sunrise-ctl",
+        "sunrise-perf",
         "sunrise-prepare",
         "sunrise-server",
-        "sunrise-wasm-std.wasm"
+        "sunrise-port-pack"
       ],
       "checkout": [
         "exporters/manifest.json"
@@ -14,8 +15,7 @@
     "package-server": {
       "program": [
         "sunrise-prepare",
-        "sunrise-server",
-        "sunrise-wasm-std.wasm"
+        "sunrise-server"
       ],
       "checkout": [
         "exporters/manifest.json"
@@ -33,35 +33,38 @@
         "api",
         "engine"
       ]
+    },
+    "tool": {
+      "sdk": [
+        "tool"
+      ]
     }
   },
   "how": {
     "sunrise-ctl": "cargo build PROFILE -p sunrise-client-lib --bin sunrise-ctl",
+    "sunrise-perf": "cargo build PROFILE -p sunrise-perf --bin sunrise-perf",
     "sunrise-prepare": "cargo build PROFILE -p sunrise-prepare",
     "sunrise-server": "cargo build PROFILE -p sunrise-server",
-    "sunrise-wasm-std.wasm": "cargo run --locked -p cargo-sunrise-mod -- wasm-std PROGRAM_FOLDER/sunrise-wasm-std.wasm",
+    "sunrise-port-pack": "cargo build PROFILE -p sunrise-port-pack",
     "exporters/manifest.json": "sunrise-prepare compile-exporters --root CHECKOUT, then copy its server, client and manifest.json into CHECKOUT/exporters/",
     "runtime": "the SDK release of the game's exact commit",
     "api": "the SDK release of the game's exact commit",
-    "engine": "the SDK release of the game's exact commit"
+    "engine": "the SDK release of the game's exact commit",
+    "tool": "the SDK release of the game's exact commit"
   },
   "members": {
     "runtime": [
       "sunrise-prebuilt.json",
       "bin/@program:sunrise-client",
       "deps/@dylib:sunrise_mod_host",
-      "deps/@dylib:sunrise_mod_wasm",
       "deps/@dylib:mod_api",
-      "deps/@dylib:mod_vocab",
-      "deps/@dylib:mod_points"
+      "deps/@dylib:mod_vocab"
     ],
     "api": [
       "native_mod_entry.rs.template",
-      "points.json",
       "internals.json",
       "loops.json",
-      "deps/@rmeta:mod_api",
-      "deps/@rmeta:mod_points"
+      "deps/@rmeta:mod_api"
     ]
   }
 }

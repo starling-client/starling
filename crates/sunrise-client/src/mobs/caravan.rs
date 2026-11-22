@@ -279,13 +279,14 @@ mod defend_trader_tests {
     use super::*;
     use crate::mobs::world::{test_player, with_test_world};
     use crate::mobs::{Mob, Species, sensor_scan_tests::kind};
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     /// `TraderLlamaDefendWanderingTraderGoal` runs the trader's attacker
     /// through `TargetingConditions.DEFAULT`, which never accepts a
     /// spectator.
     #[test]
+    #[ignore = "daily"]
     fn a_trader_llama_does_not_defend_the_trader_from_a_spectator() {
         let mut outcomes = Vec::new();
         if !with_test_world(&[], |w, _| {
@@ -301,6 +302,7 @@ mod defend_trader_tests {
                 owner.ai.last_hurt_by_time = 5;
                 let seen = [owner.seen(None, &crate::items::Items::empty())];
                 let world = crate::mobs::MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     others: &seen,
                     ..world
                 };

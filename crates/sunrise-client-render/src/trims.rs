@@ -6,11 +6,11 @@
 //! unless the equipment asset's `trim_overrides` pick another texture or
 //! palette (iron armour with an iron trim uses `trim/iron_darker`).
 use crate::resource_source::ResourceSource;
-use sunrise_assets::palette::apply_palette;
 use serde_json::Value;
 use std::collections::HashMap;
 #[cfg(test)]
 use std::path::Path;
+use sunrise_assets::palette::apply_palette;
 
 /// Runtime trim slots and the completed ordered requests for their current atlas.
 /// A frame with more requests than slots keeps the same final residents as the

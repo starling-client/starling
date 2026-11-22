@@ -1,8 +1,141 @@
+diff --git a/crates/horizon-mixins-cli/src/main.rs b/crates/horizon-mixins-cli/src/main.rs
+index ac813ca..a446846 100644
+--- a/crates/horizon-mixins-cli/src/main.rs
++++ b/crates/horizon-mixins-cli/src/main.rs
+@@ -1,7 +1,9 @@
+ mod lockfile;
+ mod staging;
+ use clap::{Args, Parser, Subcommand};
+-use horizon_mixins_core::{Diagnostic, Result, build_plan, build_staged, diagnostic::io, native};
++use horizon_mixins_core::{
++    Diagnostic, Result, build_plan_with, build_staged_with, cfg::CfgSet, diagnostic::io, native,
++};
+ use serde_json::json;
+ use std::{
+     path::{Path, PathBuf},
+@@ -45,6 +47,26 @@ struct Common {
+     mods: PathBuf,
+     #[arg(long)]
+     out: PathBuf,
++    /// A cfg option of the build the workspace is compiled in, as rustc's `--cfg` spells it
++    /// (`unix`, `feature="x"`); repeat for each. Given any, the tool plans against what that
++    /// build compiles: items and statements under an inactive cfg are dropped. Only what the
++    /// build vouches for is decided: `feature` (in the `--features-of` package), `test` (off)
++    /// and the target facts (`target_os`, `unix`, ...); any other name is refused as
++    /// undecided, listed or not. Without it only `cfg(test)` items are dropped.
++    #[arg(long = "cfg")]
++    cfg: Vec<String>,
++    /// The workspace package the `feature="x"` options belong to (the game crate's features).
++    /// `feature` predicates are decided only in that package's files and stay refused in any
++    /// other, whose resolved features the options do not describe.
++    #[arg(long)]
++    features_of: Option<String>,
++}
++impl Common {
++    fn cfg_set(&self) -> Result<Option<CfgSet>> {
++        (!self.cfg.is_empty() || self.features_of.is_some())
++            .then(|| CfgSet::parse(&self.cfg, self.features_of.as_deref()))
++            .transpose()
++    }
+ }
+ fn main() -> ExitCode {
+     let cli = Cli::parse();
+@@ -68,7 +90,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
+             protect(&root, &out)?;
+             let mods = common.mods.canonicalize().map_err(io)?;
+             protect(&mods, &out)?;
+-            let plan = build_plan(&root, &mods)?;
++            let plan = build_plan_with(&root, &mods, common.cfg_set()?.as_ref())?;
+             let mut bytes = serde_json::to_vec_pretty(&plan)
+                 .map_err(|e| Diagnostic::new("E_JSON", e.to_string()))?;
+             bytes.push(b'\n');
+@@ -117,7 +139,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
+         protect(&out, target)?;
+     }
+     let _stage_lock = staging::lock(&out, "stage")?;
+-    let (plan, extras) = build_staged(&root, &mods)?;
++    let (plan, extras) = build_staged_with(&root, &mods, common.cfg_set()?.as_ref())?;
+     let mut files = horizon_mixins_transform::transform(&root, &plan)?;
+     native::stage(&plan, &mut files, extras)?;
+     lockfile::complete(&root, &out, &plan, &mut files)?;
+diff --git a/crates/horizon-mixins-cli/tests/cases/advanced.rs b/crates/horizon-mixins-cli/tests/cases/advanced.rs
+index 19f6d92..f84b264 100644
+--- a/crates/horizon-mixins-cli/tests/cases/advanced.rs
++++ b/crates/horizon-mixins-cli/tests/cases/advanced.rs
+@@ -330,7 +330,7 @@ fn competing_value_signatures_and_overwrites_fail_before_staging() {
+             .find(|i| i["id"].as_str() == Some(id))
+             .unwrap();
+         let target = injection["target"].as_str().unwrap();
+-        f.append("mods/alpha/horizon-mixin.toml", &format!("\n[[injection]]\nid=\"exclusive\"\ntarget=\"{target}\"\nkind=\"OVERWRITE\"\nhelper=\"exclusive.rs\"\n"));
++        f.append("mods/alpha/horizon-mixin.toml", &format!("\n[[injection]]\nid=\"exclusive\"\ntarget=\"{target}\"\nkind=\"OVERWRITE\"\nhelper=\"exclusive.rs\"\nfingerprint=\"{}\"\n", pin(&f.root, target)));
+         fs::write(
+             f.mods.join("alpha/exclusive.rs"),
+             "fn replacement() -> i32 { 0 }",
+@@ -591,3 +591,30 @@ fn call_selector_identifier_boundaries_cannot_alias_a_cast() {
+     f.append("mods/alpha/horizon-mixin.toml", "\n[[injection]]\nid=\"cast-selector\"\ntarget=\"advanced_game::cast_selector\"\nkind=\"BEFORE_CALL\"\nselector=\"numeric(valueasi64,log).number\"\nordinal=0\nrequire=1\nhelper=\"combined-before.rs\"\nbindings=[{name=\"log\",ty=\"&mut Vec<&'static str>\",value=\"&mut *log\"}]\n");
+     failure(&f, "E_MATCH_COUNT");
+ }
++
++#[test]
++fn an_overwrite_conflicts_with_another_mods_wrap_operation_inside_the_function() {
++    // `alpha` wraps `original_owned` inside `advanced_game::wrapping`; `gamma` overwrites it.
++    let f = fixture();
++    let target = "advanced_game::wrapping";
++    fs::create_dir_all(f.mods.join("gamma")).unwrap();
++    fs::write(
++        f.mods.join("gamma/horizon-mixin.toml"),
++        format!(
++            "[mod]\nid = \"gamma\"\nversion = \"0.1.0\"\n\n[[injection]]\nid = \"second\"\ntarget = \"{target}\"\nkind = \"OVERWRITE\"\nhelper = \"second.rs\"\nfingerprint = \"{}\"\n",
++            pin(&f.root, target)
++        ),
++    )
++    .unwrap();
++    fs::write(
++        f.mods.join("gamma/second.rs"),
++        "fn second() -> String { String::new() }",
++    )
++    .unwrap();
++    let e = build_plan(&f.root, &f.mods).unwrap_err();
++    assert_eq!(e.code, "E_OVERWRITE_CONFLICT", "{e}");
++    assert!(
++        e.message.contains("alpha/wrap-owned") && e.message.contains("gamma/second"),
++        "{e}"
++    );
++}
+diff --git a/crates/horizon-mixins-cli/tests/cases/effects.rs b/crates/horizon-mixins-cli/tests/cases/effects.rs
+index 0f943f6..08e51ec 100644
+--- a/crates/horizon-mixins-cli/tests/cases/effects.rs
++++ b/crates/horizon-mixins-cli/tests/cases/effects.rs
+@@ -471,6 +471,13 @@ helper="overwrite-new.rs"
+ bindings=[{name="health",ty="i32",value="health"}]
+ "#,
+     );
++    f.append(
++        "mods/alpha/horizon-mixin.toml",
++        &format!(
++            "fingerprint=\"{}\"\n",
++            pin(&f.root, "effects_game::state::Entity::new")
++        ),
++    );
+     fs::write(
+         f.mods.join("alpha/overwrite-new.rs"),
+         "fn replacement(health:i32)->Entity {Entity::new(health)}",
 diff --git a/crates/horizon-mixins-cli/tests/cases/local_scope.rs b/crates/horizon-mixins-cli/tests/cases/local_scope.rs
-index a2ac95a..acb9e6b 100644
+index a2ac95a..eac4dcc 100644
 --- a/crates/horizon-mixins-cli/tests/cases/local_scope.rs
 +++ b/crates/horizon-mixins-cli/tests/cases/local_scope.rs
-@@ -129,12 +129,14 @@ fn sites_in_closures_and_other_unsupported_scopes_stay_refused() {
+@@ -119,7 +119,9 @@ fn a_nested_receiver_call_is_still_refused_but_for_its_own_reason() {
+ fn sites_in_closures_and_other_unsupported_scopes_stay_refused() {
+     let body = "let f = || sink(1); let a = sink(2); f() + a";
+     let f = fixture(body, &before("before", "sink", 2, 0));
+-    reject(&f, "E_UNSUPPORTED_SITE");
++    let e = build_plan(&f.root, &f.mods).unwrap_err();
++    assert_eq!(e.code, "E_UNSUPPORTED_SITE", "{e}");
++    assert!(e.message.contains("select a site outside the closure"), "{e}");
+     // The second match is outside the closure and is selectable.
+     let f = fixture(body, &before("before", "sink", 2, 1));
+     build_plan(&f.root, &f.mods).unwrap();
+@@ -129,12 +131,14 @@ fn sites_in_closures_and_other_unsupported_scopes_stay_refused() {
          &bump("values.iter().map(|x| x + 1).count()"),
      );
      reject(&f, "E_UNSUPPORTED_SITE");
@@ -22,7 +155,7 @@ index a2ac95a..acb9e6b 100644
          let f = fixture(body, &before("before", "sink", 1, 0));
          reject(&f, "E_UNSUPPORTED_CONTROL_FLOW");
      }
-@@ -172,11 +174,11 @@ fn local_use_that_could_change_generated_code_is_refused() {
+@@ -172,11 +176,15 @@ fn local_use_that_could_change_generated_code_is_refused() {
          &before("before", "sink", 1, 0),
      );
      reject(&f, "E_UNSUPPORTED_MACRO");
@@ -32,24 +165,74 @@ index a2ac95a..acb9e6b 100644
          "use std::vec::Vec; sink(1)",
          "\n[[injection]]\nid=\"overwrite\"\ntarget=\"fixture_game::run\"\nkind=\"OVERWRITE\"\nhelper=\"over.rs\"\n",
      );
++    f.append(
++        "mods/alpha/horizon-mixin.toml",
++        &format!("fingerprint=\"{}\"\n", pin(&f.root, "fixture_game::run")),
++    );
      fs::write(f.mods.join("alpha/over.rs"), "fn over() -> i32 { 1 }").unwrap();
 -    reject(&f, "E_UNSUPPORTED_CONTROL_FLOW");
 +    build_plan(&f.root, &f.mods).unwrap();
  }
 diff --git a/crates/horizon-mixins-cli/tests/cases/returns.rs b/crates/horizon-mixins-cli/tests/cases/returns.rs
-index bca7938..2f2eb44 100644
+index bca7938..fc10e40 100644
 --- a/crates/horizon-mixins-cli/tests/cases/returns.rs
 +++ b/crates/horizon-mixins-cli/tests/cases/returns.rs
-@@ -104,7 +104,7 @@ fn return_hooks_still_refuse_references_to_calls_and_closures_in_the_values_they
+@@ -45,6 +45,41 @@ bindings=[{name="value",ty="i32",value="$value"}]
+     f
+ }
+
++#[test]
++fn return_hook_binds_self_as_the_impl_type() {
++    let f = fixture("0");
++    f.append(
++        "engine/src/lib.rs",
++        "pub struct Counter(pub i32); impl Counter { pub fn new() -> Self { Self(3) } }",
++    );
++    fs::write(
++        f.mods.join("alpha/horizon-mixin.toml"),
++        r#"
++[mod]
++id="alpha"
++version="1"
++[[injection]]
++id="return"
++target="fixture_game::Counter::new"
++kind="RETURN"
++helper="return.rs"
++bindings=[{name="value",ty="Counter",value="$value"}]
++"#,
++    )
++    .unwrap();
++    fs::write(
++        f.mods.join("alpha/return.rs"),
++        "fn modify(value: Counter) -> Counter { Counter(value.0 + 1) }",
++    )
++    .unwrap();
++    fs::write(
++        f.root.join("driver/src/lib.rs"),
++        "#[test] fn observes_modified_result() { assert_eq!(fixture_game::Counter::new().0, 4); }",
++    )
++    .unwrap();
++    f.run("check");
++}
++
+ #[test]
+ fn return_hooks_leave_references_to_calls_and_closures_outside_exit_values_alone() {
+     // As in Horizon's `picked_stack`: `decode(Some(&Tag::Compound(all)))` in a statement,
+@@ -103,8 +138,11 @@ fn return_hooks_still_refuse_references_to_calls_and_closures_in_the_values_they
+         let f = fixture(body);
          let e = build_plan(&f.root, &f.mods).unwrap_err();
          assert_eq!(e.code, "E_UNSUPPORTED_CONTROL_FLOW", "{body}: {e}");
++        if body.contains('?') {
++            assert!(e.message.contains("implicit exits through `?`") && e.message.contains("use HEAD"), "{body}: {e}");
++        }
      }
 -    // Hooks that rewrite inside the body keep the check for the whole body.
 +    // A hook that rewrites one site still refuses a site that borrows a call's result.
      let f = fixture(r#"let arg = sink(size(&Guard::new("argument", 2))); sink(arg)"#);
      f.append(
          "mods/alpha/horizon-mixin.toml",
-@@ -115,13 +115,14 @@ target="fixture_game::run"
+@@ -115,13 +153,14 @@ target="fixture_game::run"
  kind="BEFORE_CALL"
  selector="sink"
  require=2
@@ -63,9 +246,9 @@ index bca7938..2f2eb44 100644
      assert_eq!(e.code, "E_UNSUPPORTED_CONTROL_FLOW", "{e}");
 +    assert!(e.message.contains("beneath a reference"), "{e}");
  }
- 
+
  #[test]
-@@ -200,3 +201,204 @@ fn the_helper_sees_each_exit_value_once() {
+@@ -200,3 +239,208 @@ fn the_helper_sees_each_exit_value_once() {
      .unwrap();
      f.run("check");
  }
@@ -189,6 +372,10 @@ index bca7938..2f2eb44 100644
 +"#,
 +    )
 +    .unwrap();
++    f.append(
++        "mods/alpha/horizon-mixin.toml",
++        &format!("fingerprint=\"{}\"\n", pin(&f.root, "fixture_game::run")),
++    );
 +    fs::write(
 +        f.mods.join("alpha/overwrite.rs"),
 +        "fn run() -> Option<i32> { crate::mark(\"overwrite\"); Some(7) }",
@@ -270,10 +457,66 @@ index bca7938..2f2eb44 100644
 +    assert_eq!(e.code, "E_UNSUPPORTED_CONTROL_FLOW", "{e}");
 +    assert!(e.message.contains("selected site contains `?`"), "{e}");
 +}
+diff --git a/crates/horizon-mixins-cli/tests/cases/scoped.rs b/crates/horizon-mixins-cli/tests/cases/scoped.rs
+index 47f7416..e7d7101 100644
+--- a/crates/horizon-mixins-cli/tests/cases/scoped.rs
++++ b/crates/horizon-mixins-cli/tests/cases/scoped.rs
+@@ -410,7 +410,7 @@ fn tuple_contracts_and_cross_kind_conflicts_fail_before_staging() {
+     );
+     failure(&f, "E_UNSUPPORTED_SITE");
+     let f = fixture();
+-    f.append("mods/alpha/horizon-mixin.toml","\n[[injection]]\nid='overwrite-tuple'\nkind='OVERWRITE'\ntarget='scoped_game::jointly'\nhelper='overwrite.rs'\n");
++    f.append("mods/alpha/horizon-mixin.toml",&format!("\n[[injection]]\nid='overwrite-tuple'\nkind='OVERWRITE'\ntarget='scoped_game::jointly'\nhelper='overwrite.rs'\nfingerprint='{}'\n", pin(&f.root, "scoped_game::jointly")));
+     fs::write(
+         f.mods.join("alpha/overwrite.rs"),
+         "fn replacement()->String{String::new()}",
+diff --git a/crates/horizon-mixins-cli/tests/cases/standard_macros.rs b/crates/horizon-mixins-cli/tests/cases/standard_macros.rs
+index 531d0f9..da48f36 100644
+--- a/crates/horizon-mixins-cli/tests/cases/standard_macros.rs
++++ b/crates/horizon-mixins-cli/tests/cases/standard_macros.rs
+@@ -78,6 +78,18 @@ fn all_hook_families_compile_with_preserved_standard_macros() {
+             Add.visit_file_mut(&mut file);
+             fs::write(f.root.join(path), horizon_mixins_core::index::tokens(&file)).unwrap();
+         }
++        if workspace == "game" {
++            // The added statements change the overwritten function the row pins.
++            let old = pin(
++                &repo().join("fixtures/game"),
++                "fixture_game::overwrite::value",
++            );
++            f.replace(
++                "mods/alpha/horizon-mixin.toml",
++                &old,
++                &pin(&f.root, "fixture_game::overwrite::value"),
++            );
++        }
+         let before = source::files(&f.root).unwrap();
+         f.run("check");
+         let staged = source::files(&f.out).unwrap();
+@@ -254,7 +266,9 @@ fn macro_identity_checks_reject_shadowing_but_allow_absolute_standard_paths() {
+     ] {
+         let f = fixture("let _=vec![1]; sink(1)");
+         f.append("engine/src/lib.rs", declaration);
+-        reject(&f, "E_UNSUPPORTED_MACRO");
++        let e = build_plan(&f.root, &f.mods).unwrap_err();
++        assert_eq!(e.code, "E_UNSUPPORTED_MACRO", "{e}");
++        assert!(e.message.contains("`vec!`") && e.message.contains("use HEAD"), "{e}");
+     }
+     let f = fixture("let _=::std::vec![1]; sink(1)");
+     f.append(
 diff --git a/crates/horizon-mixins-cli/tests/integration.rs b/crates/horizon-mixins-cli/tests/integration.rs
-index fcf5a46..40c84a0 100644
+index fcf5a46..3a00618 100644
 --- a/crates/horizon-mixins-cli/tests/integration.rs
 +++ b/crates/horizon-mixins-cli/tests/integration.rs
+@@ -464,7 +464,7 @@ fn ambiguous_macro_generated_overwrite_and_fingerprint_failures() {
+         } else {
+             ("replace.rs", "input", "i32", "input")
+         };
+-        f.append("mods/alpha/horizon-mixin.toml", &format!("\n[[injection]]\nid = \"conflict\"\ntarget = \"{target}\"\nkind = \"OVERWRITE\"\nhelper = \"{helper}\"\nbindings = [{{ name = \"{name}\", ty = \"{ty}\", value = \"{value}\" }}]\n"));
++        f.append("mods/alpha/horizon-mixin.toml", &format!("\n[[injection]]\nid = \"conflict\"\ntarget = \"{target}\"\nkind = \"OVERWRITE\"\nhelper = \"{helper}\"\nfingerprint = \"{}\"\nbindings = [{{ name = \"{name}\", ty = \"{ty}\", value = \"{value}\" }}]\n", pin(&f.root, target)));
+         let error = build_plan(&f.root, &f.mods).unwrap_err();
+         assert_eq!(error.code, "E_OVERWRITE_CONFLICT");
+         assert!(error.message.contains("competing injections"));
 @@ -697,14 +697,14 @@ fn cfg_attributes_shared_module_sources_and_shadowing_fail_closed() {
          ),
          (
@@ -293,16 +536,1889 @@ index fcf5a46..40c84a0 100644
              "E_UNSUPPORTED_CONTROL_FLOW",
          ),
          (
+@@ -839,6 +839,107 @@ fn receiver_and_result_drop_order() {
+     );
+ }
+
++/// The fingerprint an OVERWRITE row pins for the function `target` of the workspace at `root`.
++fn pin(root: &std::path::Path, target: &str) -> String {
++    let index = Index::load(root).unwrap();
++    let f = index.resolve(target).unwrap();
++    source::fingerprint(format!(
++        "{}{}",
++        horizon_mixins_core::index::tokens(&f.signature),
++        horizon_mixins_core::index::tokens(&f.block)
++    ))
++}
++
++/// Adds a mod `gamma` with one injection `second` (`row`, with `helper_source` as its helper).
++fn add_mod(f: &Fixture, row: &str, helper_source: &str) {
++    fs::create_dir_all(f.mods.join("gamma")).unwrap();
++    fs::write(
++        f.mods.join("gamma/horizon-mixin.toml"),
++        format!("[mod]\nid = \"gamma\"\nversion = \"0.1.0\"\n\n[[injection]]\nid = \"second\"\n{row}\nhelper = \"second.rs\"\n"),
++    )
++    .unwrap();
++    fs::write(f.mods.join("gamma/second.rs"), helper_source).unwrap();
++}
++
++#[test]
++fn an_overwrite_must_pin_the_function_it_replaces() {
++    let target = "fixture_game::overwrite::value";
++    let current = pin(&Fixture::new().root, target);
++    // Without a fingerprint the row is refused and the refusal prints the current value.
++    let f = Fixture::new();
++    f.replace(
++        "mods/alpha/horizon-mixin.toml",
++        &format!("fingerprint = \"{current}\"\n"),
++        "",
++    );
++    let e = build_plan(&f.root, &f.mods).unwrap_err();
++    assert_eq!(e.code, "E_FINGERPRINT", "{e}");
++    assert_eq!(e.mod_id.as_deref(), Some("alpha"));
++    assert_eq!(e.injection_id.as_deref(), Some("replace"));
++    assert!(
++        e.message
++            .contains(&format!("expected <none>, got {current}")),
++        "{e}"
++    );
++    // A stale value is refused with the same code, naming the row; the right one plans.
++    let f = Fixture::new();
++    f.replace(
++        "mods/alpha/horizon-mixin.toml",
++        &current,
++        &"0".repeat(current.len()),
++    );
++    let e = build_plan(&f.root, &f.mods).unwrap_err();
++    assert_eq!(e.code, "E_FINGERPRINT", "{e}");
++    assert_eq!(e.injection_id.as_deref(), Some("replace"));
++    assert!(e.message.contains("original function changed"), "{e}");
++    assert!(e.message.contains(&format!("got {current}")), "{e}");
++    build_plan(&Fixture::new().root, &Fixture::new().mods).unwrap();
++    // The game adding a line to the function is the drift the pin catches.
++    let f = Fixture::new();
++    f.replace(
++        "engine/src/replacement.rs",
++        "input - 1",
++        "let input = input + 0; input - 1",
++    );
++    let e = build_plan(&f.root, &f.mods).unwrap_err();
++    assert_eq!(e.code, "E_FINGERPRINT", "{e}");
++    assert!(e.message.contains("original function changed"), "{e}");
++}
++
++#[test]
++fn an_overwrite_conflicts_with_every_other_mods_row_on_its_function() {
++    let value = "fixture_game::overwrite::value";
++    let current = pin(&Fixture::new().root, value);
++    for (what, row, helper) in [
++        (
++            "an overwrite",
++            format!(
++                "target = \"{value}\"\nkind = \"OVERWRITE\"\nfingerprint = \"{current}\"\nbindings = [{{ name = \"input\", ty = \"i32\", value = \"input\" }}]"
++            ),
++            "fn second(input: i32) -> i32 { input }",
++        ),
++        (
++            "a head",
++            format!(
++                "target = \"{value}\"\nkind = \"HEAD\"\nbindings = [{{ name = \"input\", ty = \"i32\", value = \"input\" }}]"
++            ),
++            "fn second(input: i32) { let _ = input; }",
++        ),
++    ] {
++        let f = Fixture::new();
++        add_mod(&f, &row, helper);
++        let e = build_plan(&f.root, &f.mods).unwrap_err();
++        assert_eq!(e.code, "E_OVERWRITE_CONFLICT", "{what}: {e}");
++        assert!(
++            e.message.contains("alpha/replace") && e.message.contains("gamma/second"),
++            "{what}: {e}"
++        );
++        let output = f.command("apply").output().unwrap();
++        assert!(!output.status.success(), "{what}");
++        assert!(!f.out.exists(), "{what}");
++    }
++}
++
+ #[path = "cases/advanced.rs"]
+ mod advanced;
+
+@@ -890,3 +991,828 @@ fn production_test_cfg_modules_are_indexed_and_applied() {
+     let error = build_plan(&f.root, &f.mods).unwrap_err();
+     assert!(format!("{error:?}").contains("E_TARGET_NOT_FOUND"));
+ }
++
++mod wrap_receiver {
++    use super::*;
++
++    /// An engine whose `run` calls `make(ok)?.go(arg(ok)?)`: a receiver and an argument that each
++    /// carry a `?`, and an error that `run`'s own error type converts. `body` replaces that call.
++    fn fixture(body: &str, injections: &str) -> Fixture {
++        let f = Fixture::new();
++        fs::remove_dir_all(&f.mods).unwrap();
++        fs::create_dir_all(f.mods.join("alpha")).unwrap();
++        fs::write(
++            f.root.join("engine/src/lib.rs"),
++            format!(
++                r#"
++    pub static LOG: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
++    pub fn mark(what: &'static str) {{ LOG.lock().unwrap().push(what); }}
++    #[derive(Debug, PartialEq)]
++    pub struct Failure(pub String);
++    impl From<usize> for Failure {{ fn from(n: usize) -> Self {{ Failure(format!("size {{n}}")) }} }}
++    impl From<&'static str> for Failure {{ fn from(s: &'static str) -> Self {{ Failure(format!("converted {{s}}")) }} }}
++    pub struct Engine(pub i32);
++    impl Engine {{ pub fn go(&self, x: i32) -> i32 {{ mark("go"); self.0 + x }} }}
++    pub fn make(ok: bool) -> Result<Engine, &'static str> {{ mark("make"); if ok {{ Ok(Engine(100)) }} else {{ Err("no engine") }} }}
++    pub fn arg(ok: bool) -> Result<i32, &'static str> {{ mark("arg"); if ok {{ Ok(5) }} else {{ Err("no argument") }} }}
++    pub fn sink(n: i32) -> i32 {{ n }}
++    pub struct Res(pub i32);
++    impl Drop for Res {{ fn drop(&mut self) {{ mark("drop"); }} }}
++    impl Res {{
++        pub fn read(&self) -> i32 {{ mark("read"); self.0 }}
++        pub fn update(&mut self) -> i32 {{ self.0 += 1; mark("update"); self.0 }}
++    }}
++    pub fn res(ok: bool) -> Result<Res, &'static str> {{ mark("res"); if ok {{ Ok(Res(7)) }} else {{ Err("no res") }} }}
++    pub struct Trap(pub i32);
++    impl Drop for Trap {{ fn drop(&mut self) {{ mark("drop"); }} }}
++    impl Trap {{ pub fn read(_: Trap) -> i32 {{ 0 }} }}
++    pub trait Reads {{ fn read(&self) -> i32; }}
++    impl Reads for Trap {{ fn read(&self) -> i32 {{ mark("read"); self.0 }} }}
++    pub fn trap(ok: bool) -> Result<Trap, &'static str> {{ mark("trap"); if ok {{ Ok(Trap(7)) }} else {{ Err("no trap") }} }}
++    pub trait Marker {{}}
++    pub type Erased = Box<dyn Marker>;
++    pub struct Item;
++    impl Marker for Item {{}}
++    impl Item {{ pub fn read(&self) -> i32 {{ mark("item"); 1 }} }}
++    pub fn boxed(ok: bool) -> Result<Box<Item>, &'static str> {{ mark("boxed"); if ok {{ Ok(Box::new(Item)) }} else {{ Err("no item") }} }}
++    pub struct Choice<T>(pub T);
++    impl Choice<i32> {{ pub fn read(self) -> i32 {{ 7 }} }}
++    pub trait Pick {{ fn read(self) -> i32; }}
++    impl<T> Pick for Choice<T> {{ fn read(self) -> i32 {{ 8 }} }}
++    pub fn choose<T>(x: T) -> Result<Choice<T>, &'static str> {{ Ok(Choice(x)) }}
++    pub struct EventLoop;
++    pub struct App(pub i32);
++    impl EventLoop {{
++        pub fn new() -> Result<EventLoop, &'static str> {{ mark("new"); Ok(EventLoop) }}
++        pub fn run_app(self, app: &mut App) -> Result<(), Failure> {{ app.0 += 1; mark("run_app"); Ok(()) }}
++    }}
++    pub fn observe(n: i32) -> i32 {{ mark("observe"); n }}
++    pub struct Inner;
++    impl Inner {{ pub fn read(&self) -> i32 {{ 11 }} }}
++    pub struct Outer(pub Inner);
++    impl std::ops::Deref for Outer {{ type Target = Inner; fn deref(&self) -> &Inner {{ &self.0 }} }}
++    impl Outer {{ pub fn read(&self) -> i32 {{ 22 }} }}
++    pub fn outer(ok: bool) -> Result<Outer, &'static str> {{ if ok {{ Ok(Outer(Inner)) }} else {{ Err("no outer") }} }}
++    pub fn scale<T: Into<f64>>(t: T) -> f64 {{ t.into() }}
++    pub fn default_value<T>(x: T) -> Result<T, &'static str> {{ Ok(x) }}
++    pub fn fail<T>() -> Result<T, usize> {{ Err(std::mem::size_of::<T>()) }}
++    pub fn width<T>(_t: T) -> usize {{ std::mem::size_of::<T>() }}
++    pub fn run_param(engine: &Engine, x: i32) -> i32 {{ engine.go(x) }}
++    pub fn run(ok: bool, bad_arg: bool) -> Result<i32, Failure> {{ {body} }}
++    "#
++            ),
++        )
++        .unwrap();
++        fs::write(f.root.join("driver/src/lib.rs"), "").unwrap();
++        fs::write(
++            f.mods.join("alpha/horizon-mixin.toml"),
++            format!("[mod]\nid=\"alpha\"\nversion=\"1\"\n{injections}"),
++        )
++        .unwrap();
++        fs::write(
++            f.mods.join("alpha/wrap.rs"),
++            "fn wrap(engine: &crate::Engine, x: i32, original: impl FnOnce(&crate::Engine, i32) -> i32) -> i32 { crate::mark(\"wrap\"); original(engine, x + 1) }",
++        )
++        .unwrap();
++        f
++    }
++    const CALL: &str = "Ok(make(ok)?.go(arg(!bad_arg)?))";
++    fn wrap(selector: &str, require: usize) -> String {
++        format!(
++            r#"
++    [[injection]]
++    id="wrap"
++    target="fixture_game::run"
++    kind="WRAP_OPERATION"
++    selector="{selector}"
++    require={require}
++    ordinal=0
++    helper="wrap.rs"
++    bindings=[{{name="engine",ty="&crate::Engine",value="$receiver"}},{{name="x",ty="i32",value="$arg0"}},{{name="original",ty="impl FnOnce(&crate::Engine, i32) -> i32",value="$operation"}}]
++    "#
++        )
++    }
++
++    #[test]
++    fn a_method_on_a_reference_parameter_is_wrapped_through_its_reference_type() {
++        // The named path: the receiver is the target function's own reference parameter, so its
++        // type is the parameter's. The arguments are plain expressions.
++        let f = fixture(CALL, "");
++        f.append(
++            "mods/alpha/horizon-mixin.toml",
++            r#"
++    [[injection]]
++    id="wrap"
++    target="fixture_game::run_param"
++    kind="WRAP_OPERATION"
++    selector="engine.go"
++    require=1
++    ordinal=0
++    helper="wrap.rs"
++    bindings=[{name="engine",ty="&Engine",value="$receiver"},{name="x",ty="i32",value="$arg0"},{name="original",ty="impl FnOnce(&Engine, i32) -> i32",value="$operation"}]
++    "#,
++        );
++        fs::write(
++            f.mods.join("alpha/wrap.rs"),
++            "fn wrap(engine: &Engine, x: i32, original: impl FnOnce(&Engine, i32) -> i32) -> i32 { crate::mark(\"wrap\"); original(engine, x + 1) }",
++        )
++        .unwrap();
++        fs::write(
++            f.root.join("driver/src/lib.rs"),
++            r#"
++    use fixture_game::{run_param, Engine, LOG};
++    #[test]
++    fn the_wrapper_runs_around_the_call() {
++        assert_eq!(run_param(&Engine(100), 5), 106);
++        assert_eq!(std::mem::take(&mut *LOG.lock().unwrap()), ["wrap", "go"]);
++    }
++    "#,
++        )
++        .unwrap();
++        f.run("check");
++    }
++
++    #[test]
++    fn a_bare_method_name_finds_no_method_call_and_the_error_names_the_receiver_to_write() {
++        // `go` selects a function named `go`; this function calls a method of that name.
++        let f = fixture(CALL, &wrap("go", 1));
++        let e = build_plan(&f.root, &f.mods).unwrap_err();
++        assert_eq!(e.code, "E_MATCH_COUNT", "{e}");
++        assert!(e.message.contains("found 0"), "{e}");
++        assert!(e.message.contains("use `make(ok)?.go`"), "{e}");
++        // Written with its receiver, it is the one match (and then the computed receiver is refused).
++        let f = fixture(CALL, &wrap("make(ok)?.go", 1));
++        assert_eq!(
++            build_plan(&f.root, &f.mods).unwrap_err().code,
++            "E_OPERATION_SIGNATURE"
++        );
++        // Another receiver is another selector.
++        let f = fixture(CALL, &wrap("make(false)?.go", 1));
++        let e = build_plan(&f.root, &f.mods).unwrap_err();
++        assert_eq!(e.code, "E_MATCH_COUNT", "{e}");
++        // A bare name that is no method gets no hint.
++        let f = fixture(CALL, &wrap("missing", 1));
++        let e = build_plan(&f.root, &f.mods).unwrap_err();
++        assert!(!e.message.contains("method"), "{e}");
++    }
++
++    /// A wrap of `selector` on a `Res` receiver whose binding is `ty`.
++    fn wrap_res(selector: &str, ty: &str) -> String {
++        format!(
++            r#"
++    [[injection]]
++    id="wrap"
++    target="fixture_game::run"
++    kind="WRAP_OPERATION"
++    selector="{selector}"
++    require=1
++    ordinal=0
++    helper="wrap_res.rs"
++    bindings=[{{name="res",ty="{ty}",value="$receiver"}},{{name="original",ty="impl FnOnce({ty}) -> i32",value="$operation"}}]
++    "#
++        )
++    }
++    fn res_fixture(body: &str, ty: &str, selector: &str) -> Fixture {
++        let f = fixture(body, &wrap_res(selector, ty));
++        fs::write(
++            f.mods.join("alpha/wrap_res.rs"),
++            format!("fn wrap_res(res: {ty}, original: impl FnOnce({ty}) -> i32) -> i32 {{ crate::mark(\"wrap\"); original(res) }}"),
++        )
++        .unwrap();
++        fs::write(
++            f.root.join("driver/src/lib.rs"),
++            r#"
++    use fixture_game::{run, LOG};
++    #[test]
++    fn the_receiver_keeps_its_mode_and_its_temporary_lifetime() {
++        assert_eq!(run(true, false), Ok(EXPECTED));
++        assert_eq!(std::mem::take(&mut *LOG.lock().unwrap()), LOGGED);
++    }
++    "#
++            .replace("EXPECTED", if body.contains("update") { "8" } else { "7" })
++            .replace(
++                "LOGGED",
++                if body.contains("update") {
++                    "[\"res\", \"wrap\", \"update\", \"drop\"]"
++                } else {
++                    "[\"res\", \"wrap\", \"read\", \"observe\", \"drop\"]"
++                },
++            ),
++        )
++        .unwrap();
++        f
++    }
++
++    /// The plan's refusal of `f`.
++    fn plan_error(f: &Fixture) -> horizon_mixins_core::Diagnostic {
++        build_plan(&f.root, &f.mods).unwrap_err()
++    }
++
++    #[test]
++    fn a_computed_receiver_is_refused_whatever_it_is_declared_as() {
++        // A declared type is an expected type for the receiver, by value or by reference:
++        // `choose(1)?.read()` declared `Choice<i64>` or `&Choice<i64>` is another `choose` and
++        // another `read`, and a guard's `outer()` declared as its `Deref` target is another
++        // `read`. Every such form is refused by name.
++        for (body, ty, selector) in [
++            (
++                "Ok(observe(res(ok)?.read()))",
++                "&crate::Res",
++                "res(ok)?.read",
++            ),
++            (
++                "Ok(res(ok)?.update())",
++                "&mut crate::Res",
++                "res(ok)?.update",
++            ),
++            (
++                "Ok(choose(1)?.read())",
++                "&crate::Choice<i64>",
++                "choose(1)?.read",
++            ),
++            ("Ok(outer(ok)?.read())", "&crate::Inner", "outer(ok)?.read"),
++            (
++                "Ok(observe(res(ok)?.read()))",
++                "crate::Res",
++                "res(ok)?.read",
++            ),
++            ("Ok(res(ok)?.update())", "crate::Res", "res(ok)?.update"),
++            (
++                "Ok(observe(trap(ok)?.read()))",
++                "crate::Trap",
++                "trap(ok)?.read",
++            ),
++            (
++                "Ok(boxed(ok)?.read())",
++                "Box<dyn crate::Marker>",
++                "boxed(ok)?.read",
++            ),
++            ("Ok(boxed(ok)?.read())", "crate::Erased", "boxed(ok)?.read"),
++            (
++                "Ok(choose(1)?.read())",
++                "crate::Choice<i64>",
++                "choose(1)?.read",
++            ),
++            (
++                "Ok(choose(1)?.read())",
++                "crate::Choice<i32>",
++                "choose(1)?.read",
++            ),
++        ] {
++            let f = res_fixture(body, ty, selector);
++            let e = plan_error(&f);
++            assert_eq!(e.code, "E_OPERATION_SIGNATURE", "{ty}: {e}");
++            assert!(e.message.contains("computed receiver") && e.message.contains("use AFTER_CALL"), "{ty}: {e}");
++        }
++        // The consuming `EventLoop::new()?.run_app(&mut app)` shape is refused the same way.
++        let f = fixture(
++            "let mut app = App(0); EventLoop::new()?.run_app(&mut app)?; Ok(app.0)",
++            r#"
++    [[injection]]
++    id="wrap"
++    target="fixture_game::run"
++    kind="WRAP_OPERATION"
++    selector="EventLoop::new()?.run_app"
++    require=1
++    ordinal=0
++    helper="wrap_loop.rs"
++    bindings=[{name="event_loop",ty="crate::EventLoop",value="$receiver"},{name="app",ty="&mut crate::App",value="$arg0"},{name="original",ty="impl FnOnce(crate::EventLoop, &mut crate::App) -> Result<(), crate::Failure>",value="$operation"}]
++    "#,
++        );
++        fs::write(f.mods.join("alpha/wrap_loop.rs"), "fn wrap_loop(event_loop: crate::EventLoop, app: &mut crate::App, original: impl FnOnce(crate::EventLoop, &mut crate::App) -> Result<(), crate::Failure>) -> Result<(), crate::Failure> { original(event_loop, app) }").unwrap();
++        let e = plan_error(&f);
++        assert_eq!(e.code, "E_OPERATION_SIGNATURE", "{e}");
++        assert!(e.message.contains("computed receiver"), "{e}");
++    }
++
++    #[test]
++    fn the_hint_names_only_a_bare_method_name_and_only_a_selector_that_matches() {
++        for selector in ["crate::go", "::go", "go::<u8>"] {
++            let f = fixture(CALL, &wrap(selector, 1));
++            let e = build_plan(&f.root, &f.mods).unwrap_err();
++            assert!(!e.message.contains("use `"), "{selector}: {e}");
++        }
++        // `make(ok as bool)?.go` would compact to `make(okasbool)?.go`, a different receiver.
++        let f = fixture("Ok(make(ok as bool)?.go(1))", &wrap("go", 1));
++        let e = build_plan(&f.root, &f.mods).unwrap_err();
++        assert_eq!(e.code, "E_MATCH_COUNT", "{e}");
++        assert!(!e.message.contains("use `"), "{e}");
++    }
++
++    /// A wrap of the function `callee`, whose argument is bound as `ty` and whose result is `out`.
++    fn scale_row(callee: &str, ty: &str, out: &str) -> String {
++        format!(
++            r#"
++    [[injection]]
++    id="wrap"
++    target="fixture_game::run"
++    kind="WRAP_OPERATION"
++    selector="{callee}"
++    require=1
++    ordinal=0
++    helper="wrap_scale.rs"
++    bindings=[{{name="x",ty="{ty}",value="$arg0"}},{{name="original",ty="impl FnOnce({ty}) -> {out}",value="$operation"}}]
++    "#
++        )
++    }
++    fn scale_fixture(body: &str, callee: &str, ty: &str, out: &str) -> Fixture {
++        let f = fixture(body, &scale_row(callee, ty, out));
++        fs::write(
++            f.mods.join("alpha/wrap_scale.rs"),
++            format!("fn wrap_scale(x: {ty}, original: impl FnOnce({ty}) -> {out}) -> {out} {{ original(x) }}"),
++        )
++        .unwrap();
++        f
++    }
++
++    #[test]
++    fn an_argument_carrying_a_try_or_a_block_is_refused() {
++        // The wrapper's declared type is an expected type for the argument: `f32` on
++        // `scale(default_value(0.1)?)` converts `0.1` through `f32` (0.1 becomes
++        // 0.10000000149011612), and the never-type fallback of `fail()?` in a 2024 diverging
++        // `if` changes with a declared `i64`. A `?` (or a block) in an argument is refused.
++        for (body, callee, ty, out) in [
++            (
++                "Ok(scale(default_value(0.1)?) as i32)",
++                "scale",
++                "f32",
++                "f64",
++            ),
++            (
++                "Ok(scale(default_value(0.1)?) as i32)",
++                "scale",
++                "f64",
++                "f64",
++            ),
++            (
++                "Ok(width(if ok { return Ok(7) } else { fail()? }) as i32)",
++                "width",
++                "i64",
++                "usize",
++            ),
++            ("Ok(scale(unsafe { 1i32 }) as i32)", "scale", "i32", "f64"),
++            ("Ok(scale(const { 1i32 }) as i32)", "scale", "i32", "f64"),
++            (
++                "Ok(scale(try { 1i32 }.unwrap()) as i32)",
++                "scale",
++                "i32",
++                "f64",
++            ),
++        ] {
++            let f = scale_fixture(body, callee, ty, out);
++            let e = plan_error(&f);
++            assert_eq!(e.code, "E_UNSUPPORTED_CONTROL_FLOW", "{body} {ty}: {e}");
++        }
++    }
++
++    #[test]
++    fn arguments_without_a_try_or_a_block_are_still_wrapped() {
++        // The forms the tool accepted before: any other expression, typed by the declaration.
++        let f = scale_fixture("Ok(scale(observe(2) as i32) as i32)", "scale", "i32", "f64");
++        f.run("plan");
++        let f = scale_fixture("Ok(scale(1.5f32) as i32)", "scale", "f32", "f64");
++        f.run("plan");
++    }
++
++    #[test]
++    fn a_wrap_still_refuses_a_callee_with_try_and_the_unsupported_contexts() {
++        // The callee of a function call moves into the generated closure, where `?` would leave the
++        // closure and not the function. The wrapper binds only `$arg0` here.
++        let f = fixture("Ok(pick()?(1))", "");
++        f.append(
++            "engine/src/lib.rs",
++            "pub fn pick() -> Result<fn(i32) -> i32, &'static str> { Ok(sink) }\n",
++        );
++        f.append(
++            "mods/alpha/horizon-mixin.toml",
++            r#"
++    [[injection]]
++    id="wrap"
++    target="fixture_game::run"
++    kind="WRAP_OPERATION"
++    selector="pick()?"
++    require=1
++    ordinal=0
++    helper="wrap_free.rs"
++    bindings=[{name="x",ty="i32",value="$arg0"},{name="original",ty="impl FnOnce(i32) -> i32",value="$operation"}]
++    "#,
++        );
++        fs::write(
++            f.mods.join("alpha/wrap_free.rs"),
++            "fn wrap_free(x: i32, original: impl FnOnce(i32) -> i32) -> i32 { original(x) }",
++        )
++        .unwrap();
++        let e = build_plan(&f.root, &f.mods).unwrap_err();
++        assert_eq!(e.code, "E_UNSUPPORTED_CONTROL_FLOW", "{e}");
++        // Async closures and nested items elsewhere in the function stay refused.
++        for body in [
++            "let f = async || 1; Ok(make(ok)?.go(1))",
++            "fn inner() {} Ok(make(ok)?.go(1))",
++        ] {
++            let f = fixture(body, &wrap("make(ok)?.go", 1));
++            let e = build_plan(&f.root, &f.mods).unwrap_err();
++            assert_eq!(e.code, "E_UNSUPPORTED_CONTROL_FLOW", "{body}: {e}");
++        }
++    }
++}
++
++mod cfg {
++    use super::*;
++
++    /// A fixture with `engine` as the engine library, `driver` as the driver's, and a mod with the `injections`.
++    fn fixture(engine: &str, driver: &str, injections: &str, helpers: &[(&str, &str)]) -> Fixture {
++        let f = Fixture::new();
++        fs::remove_dir_all(&f.mods).unwrap();
++        fs::create_dir_all(f.mods.join("alpha")).unwrap();
++        fs::write(f.root.join("engine/src/lib.rs"), engine).unwrap();
++        fs::write(f.root.join("driver/src/lib.rs"), driver).unwrap();
++        fs::write(
++            f.mods.join("alpha/horizon-mixin.toml"),
++            format!("[mod]\nid=\"alpha\"\nversion=\"1\"\n{injections}"),
++        )
++        .unwrap();
++        for (name, text) in helpers {
++            fs::write(f.mods.join("alpha").join(name), text).unwrap();
++        }
++        f
++    }
++
++    const LOG: &str = r#"
++pub static LOG: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
++pub fn mark(what: &'static str) { LOG.lock().unwrap().push(what); }
++"#;
++
++    const HEAD: &str = r#"
++[[injection]]
++id="head"
++target="fixture_game::run"
++kind="HEAD"
++helper="head.rs"
++"#;
++
++    fn cfg_fixture(body: &str) -> Fixture {
++        fixture(
++            &format!("{LOG}\npub fn run() -> i32 {{ {body} }}\n"),
++            r#"
++#[test]
++fn only_the_signed_builds_code_runs() {
++    use fixture_game::{run, LOG};
++    assert_eq!(run(), 7);
++    assert_eq!(*LOG.lock().unwrap(), ["head", "feature on", "body"]);
++}
++"#,
++            HEAD,
++            &[("head.rs", "fn head() { crate::mark(\"head\"); }")],
++        )
++    }
++
++    const TEST_ONLY_BODY: &str = r#"
++    #[cfg(test)]
++    fn helper() -> i32 { 1 }
++    #[cfg(test)]
++    mark("test only");
++    #[cfg(test)]
++    let _unused = helper();
++    #[cfg(feature = "x")]
++    mark("feature on");
++    #[cfg(not(feature = "x"))]
++    mark("feature off");
++    mark("body");
++    7
++"#;
++
++    /// `action` with the build's cfg options, whose features belong to the game crate.
++    fn with_cfg(f: &Fixture, action: &str, cfg: &[&str]) -> std::process::Output {
++        with_features_of(f, action, cfg, "fixture-game")
++    }
++
++    fn with_features_of(
++        f: &Fixture,
++        action: &str,
++        cfg: &[&str],
++        package: &str,
++    ) -> std::process::Output {
++        let mut command = f.command(action);
++        for option in cfg {
++            command.arg("--cfg").arg(option);
++        }
++        command.arg("--features-of").arg(package);
++        command.output().unwrap()
++    }
++
++    #[test]
++    fn a_cfg_set_plans_and_builds_a_function_with_test_only_code_and_feature_gates() {
++        // Cargo compiles the stage with `cfg(test)` on and no feature: only the tool's own cut of the
++        // body, made for the build `--cfg` describes, leaves "feature on" and drops "test only".
++        let f = cfg_fixture(TEST_ONLY_BODY);
++        let output = with_cfg(&f, "check", &["unix", "feature=\"x\""]);
++        let report = success(output);
++        assert!(
++            report["cargo_stdout"]
++                .as_str()
++                .unwrap()
++                .contains("1 passed"),
++            "{report}"
++        );
++        let staged = fs::read_to_string(f.out.join("engine/src/lib.rs")).unwrap();
++        assert!(!staged.contains("cfg"), "{staged}");
++        assert!(
++            staged.contains("\"feature on\"") && !staged.contains("feature off"),
++            "{staged}"
++        );
++        assert!(
++            !staged.contains("test only") && !staged.contains("helper"),
++            "{staged}"
++        );
++    }
++
++    #[test]
++    fn a_feature_outside_the_set_takes_the_other_body() {
++        let f = cfg_fixture(TEST_ONLY_BODY);
++        let output = with_cfg(&f, "apply", &["unix"]);
++        success(output);
++        let staged = fs::read_to_string(f.out.join("engine/src/lib.rs")).unwrap();
++        assert!(
++            staged.contains("\"feature off\"") && !staged.contains("feature on"),
++            "{staged}"
++        );
++        // The plan records the set it was made for, so `transform` cuts the same source.
++        let plan = ::horizon_mixins_core::build_plan_with(
++            &f.root,
++            &f.mods,
++            Some(
++                &::horizon_mixins_core::cfg::CfgSet::parse(&["unix".into()], Some("fixture-game"))
++                    .unwrap(),
++            ),
++        )
++        .unwrap();
++        let planned = plan.cfg.unwrap();
++        assert_eq!(planned.options, ["unix"]);
++        assert_eq!(planned.features_of.as_deref(), Some("fixture-game"));
++        assert_eq!(planned.feature_files, ["engine/src/lib.rs"]);
++    }
++
++    #[test]
++    fn without_a_set_a_cfg_in_the_body_is_still_refused() {
++        let f = cfg_fixture(TEST_ONLY_BODY);
++        assert_eq!(
++            build_plan(&f.root, &f.mods).unwrap_err().code,
++            "E_UNSUPPORTED_CFG"
++        );
++    }
++
++    #[test]
++    fn a_cfg_the_set_cannot_decide_is_refused() {
++        for predicate in [
++            "version(\"1.80\")",
++            "all(unix, version(\"1.80\"))",
++            "accessible(::std::mem::swap)",
++            "feature = 1",
++        ] {
++            let f = cfg_fixture(&format!(
++                "#[cfg({predicate})] mark(\"gated\"); mark(\"feature on\"); mark(\"body\"); 7"
++            ));
++            let output = with_cfg(&f, "apply", &["unix"]);
++            assert!(!output.status.success(), "{predicate}");
++            let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
++            assert_eq!(error["code"], "E_UNSUPPORTED_CFG", "{predicate}: {error}");
++            assert!(!f.out.exists(), "{predicate}");
++        }
++        // A decided predicate beside an undecided one is decided when the decided part settles it.
++        let f = cfg_fixture(
++            "#[cfg(all(windows, version(\"1.80\")))] mark(\"gated\"); mark(\"feature on\"); mark(\"body\"); 7",
++        );
++        with_cfg(&f, "check", &["unix"]);
++        assert!(
++            with_cfg(&f, "apply", &["unix"]).status.success(),
++            "an `all` with a false part is false"
++        );
++        // A cfg_attr turned on can bring an attribute macro in; a turned-off one is nothing.
++        let f = cfg_fixture(
++            "#[cfg_attr(feature = \"x\", instrument)] mark(\"feature on\"); mark(\"body\"); 7",
++        );
++        let output = with_cfg(&f, "apply", &["unix", "feature=\"x\""]);
++        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
++        assert_eq!(error["code"], "E_UNSUPPORTED_MACRO", "{error}");
++        let output = with_cfg(&f, "apply", &["unix"]);
++        assert!(
++            output.status.success(),
++            "{}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++    }
++
++    #[test]
++    fn a_feature_is_decided_only_in_the_package_it_belongs_to() {
++        // The set's features are the game crate's. In another package's files a `feature`
++        // predicate stays undecided and refused, while `unix` and `test` are global.
++        let f = cfg_fixture(TEST_ONLY_BODY);
++        let output = with_features_of(&f, "apply", &["unix", "feature=\"x\""], "fixture-driver");
++        assert!(!output.status.success());
++        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
++        assert_eq!(error["code"], "E_UNSUPPORTED_CFG", "{error}");
++        let f = cfg_fixture(
++            "#[cfg(test)] mark(\"test only\"); #[cfg(unix)] mark(\"feature on\"); mark(\"body\"); 7",
++        );
++        let output = with_features_of(&f, "apply", &["unix"], "fixture-driver");
++        assert!(
++            output.status.success(),
++            "{}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++        let staged = fs::read_to_string(f.out.join("engine/src/lib.rs")).unwrap();
++        assert!(
++            !staged.contains("test only") && !staged.contains("cfg"),
++            "{staged}"
++        );
++        // The same feature cfg in the game crate is decided.
++        let f = cfg_fixture(TEST_ONLY_BODY);
++        let output = with_cfg(&f, "apply", &["unix", "feature=\"x\""]);
++        assert!(
++            output.status.success(),
++            "{}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++        // A feature option with no package to belong to is malformed.
++        let mut command = f.command("apply");
++        let output = command.arg("--cfg").arg("feature=\"x\"").output().unwrap();
++        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
++        assert_eq!(error["code"], "E_CFG", "{error}");
++    }
++
++    #[test]
++    fn a_flag_dependent_or_custom_cfg_is_refused_whether_the_set_lists_it_or_not() {
++        // `debug_assertions` follows the profile the original build used, and `engine_special` may
++        // be a cfg of its build script: the set cannot vouch for either, in either direction.
++        // `test` and the target facts stay decided.
++        for name in [
++            "debug_assertions",
++            "overflow_checks",
++            "panic = \"abort\"",
++            "engine_special",
++        ] {
++            let f = cfg_fixture(&format!(
++                "#[cfg(test)] mark(\"test only\"); #[cfg({name})] mark(\"gated\"); mark(\"feature on\"); mark(\"body\"); 7"
++            ));
++            for set in [vec!["unix"], vec!["unix", name]] {
++                let output = with_cfg(&f, "apply", &set);
++                assert!(!output.status.success(), "{name} {set:?}");
++                let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
++                assert_eq!(
++                    error["code"], "E_UNSUPPORTED_CFG",
++                    "{name} {set:?}: {error}"
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn a_raw_identifier_cfg_is_the_plain_name() {
++        let body =
++            "#[cfg(r#feature = \"x\")] mark(\"feature on\"); mark(\"head\"); mark(\"body\"); 7";
++        let f = cfg_fixture(body);
++        let output = with_cfg(&f, "apply", &["feature=\"x\""]);
++        assert!(
++            output.status.success(),
++            "{}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++        let staged = fs::read_to_string(f.out.join("engine/src/lib.rs")).unwrap();
++        assert!(
++            staged.contains("feature on") && !staged.contains("cfg"),
++            "{staged}"
++        );
++        // In another package it is undecided, not deleted.
++        let output = with_features_of(&f, "apply", &["feature=\"x\""], "fixture-driver");
++        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
++        assert_eq!(error["code"], "E_UNSUPPORTED_CFG", "{error}");
++    }
++
++    #[test]
++    fn a_cfg_value_with_escapes_survives_the_plan() {
++        let f = cfg_fixture(TEST_ONLY_BODY);
++        let value = r#"label="a\"b\\c""#;
++        let mut f = f;
++        let stage = f.out.clone();
++        f.out = f._temp.path().join("plan.json");
++        let plan = with_cfg(&f, "plan", &["feature=\"x\"", value]);
++        assert!(
++            plan.status.success(),
++            "{}",
++            String::from_utf8_lossy(&plan.stderr)
++        );
++        f.out = stage;
++        let applied = with_cfg(&f, "apply", &["feature=\"x\"", value]);
++        assert!(
++            applied.status.success(),
++            "{}",
++            String::from_utf8_lossy(&applied.stderr)
++        );
++    }
++
++    #[test]
++    fn a_malformed_cfg_option_is_refused() {
++        let f = cfg_fixture(TEST_ONLY_BODY);
++        for option in ["feature", "all(unix)", "feature=1"] {
++            let option = if option == "feature" {
++                "feature="
++            } else {
++                option
++            };
++            let output = with_cfg(&f, "apply", &[option]);
++            let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
++            assert_eq!(error["code"], "E_CFG", "{option}: {error}");
++        }
++    }
++}
++
++mod unit_wrap {
++    use super::*;
++
++    /// A fixture with `engine` as the engine library, `driver` as the driver's, and a mod with the `injections`.
++    fn fixture(engine: &str, driver: &str, injections: &str, helpers: &[(&str, &str)]) -> Fixture {
++        let f = Fixture::new();
++        fs::remove_dir_all(&f.mods).unwrap();
++        fs::create_dir_all(f.mods.join("alpha")).unwrap();
++        fs::write(f.root.join("engine/src/lib.rs"), engine).unwrap();
++        fs::write(f.root.join("driver/src/lib.rs"), driver).unwrap();
++        fs::write(
++            f.mods.join("alpha/horizon-mixin.toml"),
++            format!("[mod]\nid=\"alpha\"\nversion=\"1\"\n{injections}"),
++        )
++        .unwrap();
++        for (name, text) in helpers {
++            fs::write(f.mods.join("alpha").join(name), text).unwrap();
++        }
++        f
++    }
++
++    const UNIT_ENGINE: &str = r#"
++pub static LOG: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
++pub fn mark(what: &'static str) { LOG.lock().unwrap().push(what); }
++pub struct Counter(pub i32);
++impl Counter { pub fn bump(&mut self) { self.0 += 1; mark("bump"); } }
++pub fn ping() { mark("ping"); }
++pub fn run_function() { mark("start"); ping(); mark("end"); }
++pub fn run_method(counter: &mut Counter) { mark("start"); counter.bump(); mark("end"); }
++"#;
++
++    #[test]
++    fn wrap_operation_treats_a_callee_without_a_return_type_as_unit() {
++        let f = fixture(
++            UNIT_ENGINE,
++            r#"
++#[test]
++fn wrapped_unit_calls_run_around_the_original() {
++    use fixture_game::{run_function, run_method, Counter, LOG};
++    run_function();
++    assert_eq!(*LOG.lock().unwrap(), ["start", "around", "ping", "around", "end"]);
++    LOG.lock().unwrap().clear();
++    let mut counter = Counter(0);
++    run_method(&mut counter);
++    assert_eq!(counter.0, 1);
++    assert_eq!(*LOG.lock().unwrap(), ["start", "around", "bump", "around", "end"]);
++}
++"#,
++            r#"
++[[injection]]
++id="function"
++target="fixture_game::run_function"
++kind="WRAP_OPERATION"
++selector="ping"
++require=1
++ordinal=0
++helper="function.rs"
++bindings=[{name="original",ty="impl FnOnce()",value="$operation"}]
++
++[[injection]]
++id="method"
++target="fixture_game::run_method"
++kind="WRAP_OPERATION"
++selector="counter.bump"
++require=1
++ordinal=0
++helper="method.rs"
++bindings=[{name="counter",ty="&mut Counter",value="$receiver"},{name="original",ty="impl FnOnce(&mut Counter) -> ()",value="$operation"}]
++"#,
++            &[
++                (
++                    "function.rs",
++                    "fn wrap(original: impl FnOnce()) { crate::mark(\"around\"); original(); crate::mark(\"around\"); }",
++                ),
++                (
++                    "method.rs",
++                    "fn wrap(counter: &mut Counter, original: impl FnOnce(&mut Counter) -> ()) { crate::mark(\"around\"); original(counter); crate::mark(\"around\"); }",
++                ),
++            ],
++        );
++        let report = f.run("check");
++        assert!(
++            report["cargo_stdout"]
++                .as_str()
++                .unwrap()
++                .contains("1 passed"),
++            "{report}"
++        );
++    }
++}
+diff --git a/crates/horizon-mixins-core/src/helpers.rs b/crates/horizon-mixins-core/src/helpers.rs
+index 55a9372..026772e 100644
+--- a/crates/horizon-mixins-core/src/helpers.rs
++++ b/crates/horizon-mixins-core/src/helpers.rs
+@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
+ use syn::{
+     Expr, FnArg, Item, ReturnType, Type,
+     visit::{self, Visit},
++    visit_mut::{self, VisitMut},
+ };
+
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+@@ -82,13 +83,98 @@ pub fn return_type(sig: &syn::Signature) -> Type {
+         ReturnType::Type(_, ty) => *ty.clone(),
+     }
+ }
++/// A type's comparable text: the same type written with or without a trailing comma in a list
++/// (`Vec<T,>`, `fn(A,)`, `(A, B,)`) compares equal, as the compiler treats it. A one-element
++/// tuple keeps its comma, which is what makes it a tuple.
+ pub fn normalize_type(ty: &Type) -> String {
+-    tokens(ty)
+-        .replace(' ', "")
+-        .replace("::core::ops::", "")
+-        .replace("::std::ops::", "")
+-        .replace("core::ops::", "")
+-        .replace("std::ops::", "")
++    struct TrailingCommas;
++    impl VisitMut for TrailingCommas {
++        fn visit_angle_bracketed_generic_arguments_mut(
++            &mut self,
++            args: &mut syn::AngleBracketedGenericArguments,
++        ) {
++            args.args.pop_punct();
++            visit_mut::visit_angle_bracketed_generic_arguments_mut(self, args);
++        }
++        fn visit_parenthesized_generic_arguments_mut(
++            &mut self,
++            args: &mut syn::ParenthesizedGenericArguments,
++        ) {
++            args.inputs.pop_punct();
++            visit_mut::visit_parenthesized_generic_arguments_mut(self, args);
++        }
++        fn visit_type_bare_fn_mut(&mut self, f: &mut syn::TypeBareFn) {
++            if f.variadic.is_none() {
++                f.inputs.pop_punct();
++            }
++            visit_mut::visit_type_bare_fn_mut(self, f);
++        }
++        fn visit_type_tuple_mut(&mut self, tuple: &mut syn::TypeTuple) {
++            if tuple.elems.len() > 1 {
++                tuple.elems.pop_punct();
++            }
++            visit_mut::visit_type_tuple_mut(self, tuple);
++        }
++        fn visit_type_impl_trait_mut(&mut self, ty: &mut syn::TypeImplTrait) {
++            ty.bounds.pop_punct();
++            visit_mut::visit_type_impl_trait_mut(self, ty);
++        }
++        fn visit_type_trait_object_mut(&mut self, ty: &mut syn::TypeTraitObject) {
++            ty.bounds.pop_punct();
++            visit_mut::visit_type_trait_object_mut(self, ty);
++        }
++    }
++    let mut ty = ty.clone();
++    TrailingCommas.visit_type_mut(&mut ty);
++    // The printed tokens keep their separators, so path segments, token boundaries and literal
++    // contents all take part in the comparison.
++    tokens(&ty)
++}
++/// Whether a helper's return type is the cancellation contract's `ControlFlow<Output>`, which may
++/// be written `ControlFlow`, `core::ops::ControlFlow`, `::core::ops::ControlFlow` or the same
++/// through `std`. Only the outermost path takes these spellings; its arguments compare as types.
++fn same_cancellation_type(helper: &Type, contract: &Type) -> bool {
++    fn control_flow(ty: &Type) -> Option<&syn::PathSegment> {
++        let Type::Path(path) = ty else { return None };
++        if path.qself.is_some() {
++            return None;
++        }
++        let names: Vec<_> = path
++            .path
++            .segments
++            .iter()
++            .map(|s| s.ident.to_string())
++            .collect();
++        let names: Vec<_> = names.iter().map(String::as_str).collect();
++        // Only the last segment takes arguments, and a bare name is relative: `::ControlFlow`
++        // names a crate.
++        let prefixes_plain = path
++            .path
++            .segments
++            .iter()
++            .rev()
++            .skip(1)
++            .all(|s| s.arguments.is_none());
++        match names.as_slice() {
++            ["ControlFlow"] if path.path.leading_colon.is_none() => path.path.segments.last(),
++            ["core" | "std", "ops", "ControlFlow"] if prefixes_plain => path.path.segments.last(),
++            _ => None,
++        }
++    }
++    match (control_flow(helper), control_flow(contract)) {
++        (Some(a), Some(b)) => {
++            normalize_type_arguments(&a.arguments) == normalize_type_arguments(&b.arguments)
++        }
++        _ => normalize_type(helper) == normalize_type(contract),
++    }
++}
++fn normalize_type_arguments(arguments: &syn::PathArguments) -> String {
++    let mut ty: Type = syn::parse_quote!(Probe);
++    let Type::Path(path) = &mut ty else {
++        unreachable!()
++    };
++    path.path.segments[0].arguments = arguments.clone();
++    normalize_type(&ty)
+ }
+ fn parse_type(text: &str) -> Result<Type> {
+     syn::parse_str(text).map_err(|e| Diagnostic::new("E_INVALID_BINDING", e.to_string()))
+@@ -161,6 +247,15 @@ pub fn contract(
+ ) -> Result<Contract> {
+     let helper = parse_helper(helper_source)?;
+     let result = return_type(&f.signature);
++    // A plain `Self` in an impl method names exactly its owner. Projections such as
++    // `Self::Output` still need type resolution and remain unsupported.
++    let result = if kind == Kind::Return
++        && matches!(&result, Type::Path(path) if path.qself.is_none() && path.path.is_ident("Self"))
++    {
++        f.self_type.clone().unwrap_or(result)
++    } else {
++        result
++    };
+     let value = if matches!(
+         kind,
+         Kind::Return
+@@ -385,9 +480,14 @@ pub fn validate_helper(
+         ));
+     }
+     // OVERWRITE retains the MVP's compiler-validated return compatibility.
++    let returned = return_type(&helper.sig);
++    let declared = parse_type(&contract.output)?;
+     if kind != Kind::Overwrite
+-        && normalize_type(&return_type(&helper.sig))
+-            != normalize_type(&parse_type(&contract.output)?)
++        && if cancellable {
++            !same_cancellation_type(&returned, &declared)
++        } else {
++            normalize_type(&returned) != normalize_type(&declared)
++        }
+     {
+         let why = if cancellable {
+             "cancellable hook helper must return core::ops::ControlFlow<TargetResult>"
+@@ -439,7 +539,15 @@ pub fn validate_helper(
+                     let output = parse_type(&op.output)?;
+                     let expected: Type =
+                         syn::parse2(quote!(impl FnOnce(#(#inputs),*) -> #output)).unwrap();
++                    // A call whose callee declares no return type returns `()`: the operation
++                    // may be written `impl FnOnce(A)` as well as `impl FnOnce(A) -> ()`.
++                    let unit: Type = syn::parse_quote!(());
++                    let shorthand: Option<Type> = (normalize_type(&output)
++                        == normalize_type(&unit))
++                    .then(|| syn::parse2(quote!(impl FnOnce(#(#inputs),*))).unwrap());
+                     normalize_type(&ty) == normalize_type(&expected)
++                        || shorthand
++                            .is_some_and(|short| normalize_type(&ty) == normalize_type(&short))
+                 } else {
+                     binding.value == "$receiver"
+                         || binding
+@@ -528,3 +636,78 @@ fn binding_expr(expr: &Expr, parameters: &std::collections::BTreeSet<String>) ->
+         _ => false,
+     }
+ }
++
++#[cfg(test)]
++mod normalize_tests {
++    use super::normalize_type;
++
++    fn same(a: &str, b: &str) -> bool {
++        normalize_type(&syn::parse_str(a).unwrap()) == normalize_type(&syn::parse_str(b).unwrap())
++    }
++
++    #[test]
++    fn a_trailing_comma_in_a_list_does_not_change_the_type() {
++        assert!(same("Vec<T,>", "Vec<T>"));
++        assert!(same("HashMap<K, Option<V,>,>", "HashMap<K, Option<V>>"));
++        assert!(same("Box<dyn Fn(i32,) -> u8>", "Box<dyn Fn(i32) -> u8>"));
++        assert!(same("fn(i32, u8,) -> i32", "fn(i32, u8) -> i32"));
++        assert!(same("(i32, u8,)", "(i32, u8)"));
++        assert!(same("&mut Vec<&'static str,>", "&mut Vec<&'static str>"));
++    }
++
++    #[test]
++    fn distinct_types_stay_apart_whatever_commas_they_carry() {
++        // `std::ops::Range` is not a local `Range`: the path segments take part in the comparison.
++        assert!(!same("std::ops::Range<u8,>", "Range<u8>"));
++        assert!(!same("core::ops::Range<u8>", "Range<u8>"));
++        assert!(!same(
++            "crate::foo::core::ops::Tag<u8,>",
++            "crate::fooTag<u8>"
++        ));
++        assert!(same("std::ops::Range<u8,>", "std::ops::Range<u8>"));
++        // Token boundaries and literal contents are kept.
++        assert!(!same("Tag<{ \"a b\".len() },>", "Tag<{ \"ab\".len() }>"));
++        assert!(!same(
++            "Option<[u8; b\"a b\".len()],>",
++            "Option<[u8; b\"ab\".len()]>"
++        ));
++        assert!(same("Tag<{ \"a b\".len() },>", "Tag<{ \"a b\".len() }>"));
++    }
++
++    #[test]
++    fn the_cancellation_type_accepts_each_spelling_of_control_flow_only_at_the_top() {
++        let ty = |s: &str| syn::parse_str::<syn::Type>(s).unwrap();
++        let cancels = |a: &str, b: &str| super::same_cancellation_type(&ty(a), &ty(b));
++        let contract = "::core::ops::ControlFlow<Result<i32, E>>";
++        for spelling in [
++            "ControlFlow<Result<i32, E>>",
++            "core::ops::ControlFlow<Result<i32, E,>,>",
++            "::std::ops::ControlFlow<Result<i32, E>>",
++        ] {
++            assert!(cancels(spelling, contract), "{spelling}");
++        }
++        assert!(!cancels("ControlFlow<Result<i32, E>, bool>", contract));
++        assert!(!cancels("other::ControlFlow<Result<i32, E>>", contract));
++        // Generic arguments on a prefix segment, and a leading `::` on the bare name, are other types.
++        for other in [
++            "core::<u8>::ops::ControlFlow<Result<i32, E>>",
++            "core::ops::<u8>::ControlFlow<Result<i32, E>>",
++            "::ControlFlow<Result<i32, E>>",
++        ] {
++            assert!(!cancels(other, contract), "{other}");
++        }
++        assert!(!cancels(
++            "ControlFlow<std::ops::Range<u8>>",
++            "ControlFlow<Range<u8>>"
++        ));
++        // Outside the cancellation check, `ControlFlow` is an ordinary path.
++        assert!(!same("std::ops::ControlFlow<u8>", "ControlFlow<u8>"));
++    }
++
++    #[test]
++    fn a_one_element_tuple_keeps_its_comma_and_other_types_stay_apart() {
++        assert!(!same("(i32,)", "(i32)"));
++        assert!(!same("Vec<T>", "Vec<U>"));
++        assert!(!same("Option<Vec<T>>", "Vec<Option<T>>"));
++    }
++}
+diff --git a/crates/horizon-mixins-core/src/index.rs b/crates/horizon-mixins-core/src/index.rs
+index 740c0dc..94df671 100644
+--- a/crates/horizon-mixins-core/src/index.rs
++++ b/crates/horizon-mixins-core/src/index.rs
+@@ -1,4 +1,4 @@
+-use crate::{Diagnostic, Result, diagnostic::io, source};
++use crate::{Diagnostic, Result, cfg::CfgSet, diagnostic::io, source};
+ use quote::ToTokens;
+ use std::{
+     collections::{BTreeMap, BTreeSet},
+@@ -27,6 +27,11 @@ pub struct Index {
+     /// its items are indexed under.
+     pub(crate) crate_aliases: BTreeMap<String, BTreeSet<String>>,
+     pub(crate) standard_macro_aliases: BTreeMap<String, BTreeSet<String>>,
++    cfg: Option<CfgSet>,
++    /// Whether the package being read is the one whose features the cfg set carries.
++    features_scope: bool,
++    /// The files read from that package: where `feature` predicates are decided.
++    pub feature_files: BTreeSet<String>,
+     pub functions: Vec<Function>,
+     pub types: Vec<TypeDefinition>,
+     pub blocked: BTreeSet<String>,
+@@ -147,6 +152,12 @@ pub fn macro_attributes(attrs: &[Attribute]) -> bool {
+
+ impl Index {
+     pub fn load(root: &Path) -> Result<Self> {
++        Self::load_with(root, None)
++    }
++    /// Loads the workspace as the build with `cfg` compiles it (see [`crate::cfg`]); with no set
++    /// only an item under exactly `cfg(test)` is dropped, and every other `cfg` is refused where
++    /// a target depends on it.
++    pub fn load_with(root: &Path, cfg: Option<&CfgSet>) -> Result<Self> {
+         // Cargo canonicalizes what it reports (`\\?\C:\…` on Windows, a resolved junction on
+         // macOS), so the root is compared and stripped in the same form.
+         let root = root.canonicalize().map_err(io)?;
+@@ -194,6 +205,9 @@ impl Index {
+             }
+         }
+         let mut index = Self {
++            cfg: cfg.cloned(),
++            features_scope: false,
++            feature_files: BTreeSet::new(),
+             crate_aliases: BTreeMap::new(),
+             standard_macro_aliases: BTreeMap::new(),
+             functions: Vec::new(),
+@@ -223,6 +237,8 @@ impl Index {
+                 .ok_or_else(|| Diagnostic::new("E_INVALID_PATH", "non UTF-8 manifest path"))?
+                 .replace('\\', "/");
+             index.packages.insert(package.name.to_string(), manifest);
++            index.features_scope =
++                cfg.is_some_and(|c| c.features_of() == Some(package.name.as_str()));
+             for target in &package.targets {
+                 if target.kind.contains(&cargo_metadata::TargetKind::Bin) {
+                     index.bins.insert(target.name.clone());
+@@ -289,8 +305,15 @@ impl Index {
+             .to_str()
+             .ok_or_else(|| Diagnostic::new("E_INVALID_PATH", "non UTF-8 module path"))?
+             .replace('\\', "/");
+-        let tree = syn::parse_file(&fs::read_to_string(&path).map_err(io)?)
+-            .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()).file(&path))?;
++        let text = fs::read_to_string(&path).map_err(io)?;
++        let tree = match &self.cfg {
++            Some(cfg) => cfg.parse_file(&text, self.features_scope),
++            None => syn::parse_file(&text),
++        }
++        .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()).file(&path))?;
++        if self.features_scope {
++            self.feature_files.insert(file.clone());
++        }
+         let file_cfg = cfg_status(&tree.attrs);
+         if file_cfg == CfgStatus::Inactive {
+             active.remove(&path);
+diff --git a/crates/horizon-mixins-core/src/lib.rs b/crates/horizon-mixins-core/src/lib.rs
+index 5bac667..f85ac3c 100644
+--- a/crates/horizon-mixins-core/src/lib.rs
++++ b/crates/horizon-mixins-core/src/lib.rs
+@@ -1,4 +1,462 @@
+ pub mod bridges;
++pub mod cfg {
++    //! The `cfg` set of the build a workspace is compiled in, and the pass that applies it.
++    //!
++    //! Given a set (`--cfg` on the command line, in rustc's own spelling: `unix`, `feature="x"`), a
++    //! parsed source file is reduced to what that build compiles: items, statements, fields, variants,
++    //! parameters and match arms under an inactive `cfg` are dropped, an active `cfg` attribute is
++    //! removed, and `cfg_attr` is expanded. Every layer after the parse (index, planner, transform)
++    //! then sees the same source. A predicate the set cannot decide (`version(..)`, a path, a literal
++    //! that is not a string) leaves its attribute in place, so the usual `E_UNSUPPORTED_CFG` refusal
++    //! still applies to it. With no set, nothing is reduced.
++
++    use crate::{Diagnostic, Result};
++    use std::collections::BTreeSet;
++    use syn::ext::IdentExt;
++    use syn::{
++        Attribute, Expr, Lit, Meta, Token,
++        punctuated::Punctuated,
++        visit_mut::{self, VisitMut},
++    };
++
++    /// The cfg options of one build: names (`unix`) and name/value pairs (`feature="x"`). The set
++    /// decides only what the signed build vouches for: `feature` in the `--features-of` package,
++    /// `test` (the patch library is not a test build) and the target facts, which follow from the
++    /// target (see [`TARGET_FACTS`]). Anything else is `Unknown` whether the set lists it or not,
++    /// since it depends on compiler flags or on the original build's build script.
++    #[derive(Debug, Clone, Default, PartialEq, Eq)]
++    pub struct CfgSet {
++        options: BTreeSet<String>,
++        /// The names the options carry, with any value.
++        names: BTreeSet<String>,
++        features_of: Option<String>,
++    }
++
++    #[derive(Clone, Copy, PartialEq, Eq)]
++    enum Truth {
++        Yes,
++        No,
++        Unknown,
++    }
++
++    impl CfgSet {
++        /// Parses options in rustc's `--cfg` spelling.
++        pub fn parse(options: &[String], features_of: Option<&str>) -> Result<Self> {
++            let mut set = BTreeSet::new();
++            for option in options {
++                let meta = syn::parse_str::<Meta>(option).map_err(|e| {
++                    Diagnostic::new(
++                        "E_CFG",
++                        format!("--cfg {option:?} is not a cfg option: {e}"),
++                    )
++                })?;
++                set.insert(match option_key(&meta) {
++                    Some(key) => key,
++                    None => {
++                        return Err(Diagnostic::new(
++                            "E_CFG",
++                            format!("--cfg {option:?} is not `name` or `name=\"value\"`"),
++                        ));
++                    }
++                });
++            }
++            if features_of.is_none() && set.iter().any(|option| option.starts_with("feature=")) {
++                return Err(Diagnostic::new(
++                    "E_CFG",
++                    "a `feature` option belongs to one package's features: name it with --features-of",
++                ));
++            }
++            Ok(Self {
++                names: set
++                    .iter()
++                    .map(|key| key.split('=').next().unwrap().to_owned())
++                    .collect(),
++                options: set,
++                features_of: features_of.map(str::to_owned),
++            })
++        }
++
++        /// The options in a form [`CfgSet::parse`] reads back, sorted.
++        pub fn options(&self) -> Vec<String> {
++            self.options.iter().cloned().collect()
++        }
++
++        /// The package whose own files decide `feature` predicates; in any other, they stay undecided.
++        pub fn features_of(&self) -> Option<&str> {
++            self.features_of.as_deref()
++        }
++
++        fn eval(&self, meta: &Meta, features: bool) -> Truth {
++            match meta {
++                Meta::Path(path) if path.is_ident("true") => Truth::Yes,
++                Meta::Path(path) if path.is_ident("false") => Truth::No,
++                Meta::Path(_) | Meta::NameValue(_) => match option_key(meta) {
++                    Some(key) if key.starts_with("feature=") && !features => Truth::Unknown,
++                    Some(key) => {
++                        let name = key.split('=').next().unwrap();
++                        let present = self.options.contains(&key);
++                        let decided = match name {
++                            "feature" => true,
++                            "test" => {
++                                return if key == "test" {
++                                    Truth::No
++                                } else {
++                                    Truth::Unknown
++                                };
++                            }
++                            // The printed target set is complete for these names: absent is off.
++                            _ if TARGET_FACTS.contains(&name) => {
++                                present
++                                    || self.names.contains(name)
++                                    || (matches!(name, "unix" | "windows")
++                                        && ["unix", "windows", "target_family"]
++                                            .iter()
++                                            .any(|n| self.names.contains(*n)))
++                            }
++                            _ => false,
++                        };
++                        match (decided, present) {
++                            (false, _) => Truth::Unknown,
++                            (true, true) => Truth::Yes,
++                            (true, false) => Truth::No,
++                        }
++                    }
++                    None => Truth::Unknown,
++                },
++                Meta::List(list) => {
++                    let Ok(inner) =
++                        list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
++                    else {
++                        return Truth::Unknown;
++                    };
++                    let fold = |decisive: Truth, otherwise: Truth| {
++                        let mut unknown = false;
++                        for meta in &inner {
++                            match self.eval(meta, features) {
++                                truth if truth == decisive => return decisive,
++                                Truth::Unknown => unknown = true,
++                                _ => {}
++                            }
++                        }
++                        if unknown { Truth::Unknown } else { otherwise }
++                    };
++                    if list.path.is_ident("all") {
++                        fold(Truth::No, Truth::Yes)
++                    } else if list.path.is_ident("any") {
++                        fold(Truth::Yes, Truth::No)
++                    } else if list.path.is_ident("not") && inner.len() == 1 {
++                        match self.eval(&inner[0], features) {
++                            Truth::Yes => Truth::No,
++                            Truth::No => Truth::Yes,
++                            Truth::Unknown => Truth::Unknown,
++                        }
++                    } else {
++                        Truth::Unknown
++                    }
++                }
++            }
++        }
++
++        /// Reads a source file under this set: see the module documentation.
++        pub fn parse_file(&self, source: &str, features: bool) -> syn::Result<syn::File> {
++            let mut file = syn::parse_file(source)?;
++            match self.apply_attrs(&mut file.attrs, features) {
++                // An inactive file compiles to nothing.
++                Truth::No => {
++                    file.items.clear();
++                    file.attrs.clear();
++                }
++                _ => Reduce(self, features).visit_file_mut(&mut file),
++            }
++            Ok(file)
++        }
++
++        /// Applies the `cfg` and `cfg_attr` attributes in `attrs`: whether the node they sit on is
++        /// compiled (`Yes`, with the attributes rewritten), is not (`No`), or cannot be told
++        /// (`Unknown`, the undecided attributes kept).
++        fn apply_attrs(&self, attrs: &mut Vec<Attribute>, features: bool) -> Truth {
++            let mut result = Truth::Yes;
++            let mut out = Vec::with_capacity(attrs.len());
++            let mut pending: Vec<Attribute> = std::mem::take(attrs);
++            pending.reverse();
++            while let Some(attr) = pending.pop() {
++                if attr.path().is_ident("cfg") {
++                    match attr.parse_args::<Meta>().map(|m| self.eval(&m, features)) {
++                        Ok(Truth::Yes) => {}
++                        Ok(Truth::No) => {
++                            result = Truth::No;
++                            out.push(attr);
++                        }
++                        _ => {
++                            if result == Truth::Yes {
++                                result = Truth::Unknown;
++                            }
++                            out.push(attr);
++                        }
++                    }
++                } else if attr.path().is_ident("cfg_attr") {
++                    let parsed = attr
++                        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
++                        .ok()
++                        .filter(|args| args.len() >= 2);
++                    let Some(args) = parsed else {
++                        if result == Truth::Yes {
++                            result = Truth::Unknown;
++                        }
++                        out.push(attr);
++                        continue;
++                    };
++                    match self.eval(&args[0], features) {
++                        Truth::No => {}
++                        Truth::Yes => {
++                            let style = attr.style;
++                            for meta in args.iter().skip(1).rev() {
++                                let mut expanded: Attribute = syn::parse_quote!(#[#meta]);
++                                expanded.style = style;
++                                pending.push(expanded);
++                            }
++                        }
++                        Truth::Unknown => {
++                            if result == Truth::Yes {
++                                result = Truth::Unknown;
++                            }
++                            out.push(attr);
++                        }
++                    }
++                } else {
++                    out.push(attr);
++                }
++            }
++            *attrs = out;
++            result
++        }
++
++        /// Whether a node with these attributes stays: it does unless a `cfg` turns it off. The
++        /// attributes are rewritten on the way.
++        fn keep(&self, attrs: &mut Vec<Attribute>, features: bool) -> bool {
++            self.apply_attrs(attrs, features) != Truth::No
++        }
++    }
++
++    /// The cfg names that follow from the validated target, taken from the printed set and
++    /// compared on their full values.
++    const TARGET_FACTS: [&str; 10] = [
++        "target_os",
++        "target_family",
++        "unix",
++        "windows",
++        "target_arch",
++        "target_pointer_width",
++        "target_endian",
++        "target_env",
++        "target_vendor",
++        "target_abi",
++    ];
++
++    /// `name` or `name="value"` as the one string the set holds; `None` for any other shape.
++    fn option_key(meta: &Meta) -> Option<String> {
++        match meta {
++            Meta::Path(path) => path.get_ident().map(|i| i.unraw().to_string()),
++            Meta::NameValue(nv) => {
++                let name = nv.path.get_ident()?.unraw();
++                match &nv.value {
++                    Expr::Lit(lit) => match &lit.lit {
++                        Lit::Str(value) => Some(format!("{name}={:?}", value.value())),
++                        _ => None,
++                    },
++                    _ => None,
++                }
++            }
++            Meta::List(_) => None,
++        }
++    }
++
++    struct Reduce<'a>(&'a CfgSet, bool);
++
++    impl VisitMut for Reduce<'_> {
++        fn visit_file_mut(&mut self, file: &mut syn::File) {
++            file.items
++                .retain_mut(|item| item_attrs(item).is_none_or(|attrs| self.keep(attrs)));
++            visit_mut::visit_file_mut(self, file);
++        }
++        fn visit_item_mod_mut(&mut self, module: &mut syn::ItemMod) {
++            if let Some((_, items)) = &mut module.content {
++                items.retain_mut(|item| item_attrs(item).is_none_or(|attrs| self.keep(attrs)));
++            }
++            visit_mut::visit_item_mod_mut(self, module);
++        }
++        fn visit_item_impl_mut(&mut self, item: &mut syn::ItemImpl) {
++            item.items.retain_mut(|member| {
++                self.keep(match member {
++                    syn::ImplItem::Const(i) => &mut i.attrs,
++                    syn::ImplItem::Fn(i) => &mut i.attrs,
++                    syn::ImplItem::Type(i) => &mut i.attrs,
++                    syn::ImplItem::Macro(i) => &mut i.attrs,
++                    _ => return true,
++                })
++            });
++            visit_mut::visit_item_impl_mut(self, item);
++        }
++        fn visit_item_trait_mut(&mut self, item: &mut syn::ItemTrait) {
++            item.items.retain_mut(|member| {
++                self.keep(match member {
++                    syn::TraitItem::Const(i) => &mut i.attrs,
++                    syn::TraitItem::Fn(i) => &mut i.attrs,
++                    syn::TraitItem::Type(i) => &mut i.attrs,
++                    syn::TraitItem::Macro(i) => &mut i.attrs,
++                    _ => return true,
++                })
++            });
++            visit_mut::visit_item_trait_mut(self, item);
++        }
++        fn visit_block_mut(&mut self, block: &mut syn::Block) {
++            block.stmts.retain_mut(|stmt| {
++                self.keep(match stmt {
++                    syn::Stmt::Local(s) => &mut s.attrs,
++                    syn::Stmt::Item(i) => match item_attrs(i) {
++                        Some(attrs) => attrs,
++                        None => return true,
++                    },
++                    syn::Stmt::Expr(e, _) => match expr_attrs(e) {
++                        Some(attrs) => attrs,
++                        None => return true,
++                    },
++                    syn::Stmt::Macro(m) => &mut m.attrs,
++                })
++            });
++            visit_mut::visit_block_mut(self, block);
++        }
++        fn visit_item_struct_mut(&mut self, item: &mut syn::ItemStruct) {
++            self.fields(&mut item.fields);
++            visit_mut::visit_item_struct_mut(self, item);
++        }
++        fn visit_item_enum_mut(&mut self, item: &mut syn::ItemEnum) {
++            let variants = std::mem::take(&mut item.variants);
++            item.variants = variants
++                .into_iter()
++                .filter_map(|mut v| self.keep(&mut v.attrs).then_some(v))
++                .collect();
++            for variant in &mut item.variants {
++                self.fields(&mut variant.fields);
++            }
++            visit_mut::visit_item_enum_mut(self, item);
++        }
++        fn visit_expr_match_mut(&mut self, expr: &mut syn::ExprMatch) {
++            expr.arms.retain_mut(|arm| self.keep(&mut arm.attrs));
++            visit_mut::visit_expr_match_mut(self, expr);
++        }
++        fn visit_expr_struct_mut(&mut self, expr: &mut syn::ExprStruct) {
++            let fields = std::mem::take(&mut expr.fields);
++            expr.fields = fields
++                .into_iter()
++                .filter_map(|mut f| self.keep(&mut f.attrs).then_some(f))
++                .collect();
++            visit_mut::visit_expr_struct_mut(self, expr);
++        }
++        fn visit_signature_mut(&mut self, sig: &mut syn::Signature) {
++            let inputs = std::mem::take(&mut sig.inputs);
++            sig.inputs = inputs
++                .into_iter()
++                .filter_map(|mut arg| {
++                    let attrs = match &mut arg {
++                        syn::FnArg::Receiver(r) => &mut r.attrs,
++                        syn::FnArg::Typed(t) => &mut t.attrs,
++                    };
++                    self.keep(attrs).then_some(arg)
++                })
++                .collect();
++            visit_mut::visit_signature_mut(self, sig);
++        }
++    }
++
++    impl Reduce<'_> {
++        fn keep(&self, attrs: &mut Vec<Attribute>) -> bool {
++            self.0.keep(attrs, self.1)
++        }
++        fn fields(&self, fields: &mut syn::Fields) {
++            let drop_inactive = |list: &mut Punctuated<syn::Field, Token![,]>| {
++                let old = std::mem::take(list);
++                *list = old
++                    .into_iter()
++                    .filter_map(|mut f| self.keep(&mut f.attrs).then_some(f))
++                    .collect();
++            };
++            match fields {
++                syn::Fields::Named(f) => drop_inactive(&mut f.named),
++                syn::Fields::Unnamed(f) => drop_inactive(&mut f.unnamed),
++                syn::Fields::Unit => {}
++            }
++        }
++    }
++
++    fn item_attrs(item: &mut syn::Item) -> Option<&mut Vec<Attribute>> {
++        use syn::Item::*;
++        Some(match item {
++            Const(i) => &mut i.attrs,
++            Enum(i) => &mut i.attrs,
++            ExternCrate(i) => &mut i.attrs,
++            Fn(i) => &mut i.attrs,
++            ForeignMod(i) => &mut i.attrs,
++            Impl(i) => &mut i.attrs,
++            Macro(i) => &mut i.attrs,
++            Mod(i) => &mut i.attrs,
++            Static(i) => &mut i.attrs,
++            Struct(i) => &mut i.attrs,
++            Trait(i) => &mut i.attrs,
++            TraitAlias(i) => &mut i.attrs,
++            Type(i) => &mut i.attrs,
++            Union(i) => &mut i.attrs,
++            Use(i) => &mut i.attrs,
++            _ => return None,
++        })
++    }
++
++    fn expr_attrs(expr: &mut Expr) -> Option<&mut Vec<Attribute>> {
++        use syn::Expr::*;
++        Some(match expr {
++            Array(e) => &mut e.attrs,
++            Assign(e) => &mut e.attrs,
++            Async(e) => &mut e.attrs,
++            Await(e) => &mut e.attrs,
++            Binary(e) => &mut e.attrs,
++            Block(e) => &mut e.attrs,
++            Break(e) => &mut e.attrs,
++            Call(e) => &mut e.attrs,
++            Cast(e) => &mut e.attrs,
++            Closure(e) => &mut e.attrs,
++            Const(e) => &mut e.attrs,
++            Continue(e) => &mut e.attrs,
++            Field(e) => &mut e.attrs,
++            ForLoop(e) => &mut e.attrs,
++            Group(e) => &mut e.attrs,
++            If(e) => &mut e.attrs,
++            Index(e) => &mut e.attrs,
++            Infer(e) => &mut e.attrs,
++            Let(e) => &mut e.attrs,
++            Lit(e) => &mut e.attrs,
++            Loop(e) => &mut e.attrs,
++            Macro(e) => &mut e.attrs,
++            Match(e) => &mut e.attrs,
++            MethodCall(e) => &mut e.attrs,
++            Paren(e) => &mut e.attrs,
++            Path(e) => &mut e.attrs,
++            Range(e) => &mut e.attrs,
++            RawAddr(e) => &mut e.attrs,
++            Reference(e) => &mut e.attrs,
++            Repeat(e) => &mut e.attrs,
++            Return(e) => &mut e.attrs,
++            Struct(e) => &mut e.attrs,
++            Try(e) => &mut e.attrs,
++            TryBlock(e) => &mut e.attrs,
++            Tuple(e) => &mut e.attrs,
++            Unary(e) => &mut e.attrs,
++            Unsafe(e) => &mut e.attrs,
++            While(e) => &mut e.attrs,
++            Yield(e) => &mut e.attrs,
++            _ => return None,
++        })
++    }
++}
+ pub mod diagnostic;
+ pub mod helpers;
+ pub mod index;
+@@ -10,7 +468,9 @@ pub mod sites;
+ pub mod slices;
+ pub mod source;
+ pub use diagnostic::{Diagnostic, Result};
+-pub use plan::{Plan, PlannedInjection, build_plan, build_staged};
++pub use plan::{
++    Plan, PlannedInjection, build_plan, build_plan_with, build_staged, build_staged_with,
++};
+
+ pub mod modules;
+
 diff --git a/crates/horizon-mixins-core/src/plan.rs b/crates/horizon-mixins-core/src/plan.rs
-index 848dcc0..153c68d 100644
+index 848dcc0..76967a5 100644
 --- a/crates/horizon-mixins-core/src/plan.rs
 +++ b/crates/horizon-mixins-core/src/plan.rs
-@@ -633,6 +633,32 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
+@@ -1,5 +1,6 @@
+ use crate::{
+     Diagnostic, Result, bridges,
++    cfg::CfgSet,
+     diagnostic::io,
+     helpers::{self, Contract},
+     index::{self, Function, Index, tokens},
+@@ -25,6 +26,9 @@ pub struct Plan {
+     pub schema: u32,
+     pub transformer: String,
+     pub rustc: String,
++    /// The cfg options of the build the plan was made for; absent when none was given.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub cfg: Option<PlannedCfg>,
+     pub inputs: BTreeMap<String, String>,
+     pub injections: Vec<PlannedInjection>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -42,6 +46,16 @@ pub struct Plan {
+ }
+ /// The current plan schema: 6 adds named hooks, bundle crates, data and post-build steps.
+ pub const SCHEMA: u32 = 6;
++/// The cfg set a plan was made for, and the files its `feature` options were decided in.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct PlannedCfg {
++    pub options: Vec<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub features_of: Option<String>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub feature_files: Vec<String>,
++}
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct PlannedModule {
+@@ -314,8 +328,20 @@ pub fn rustc(root: &Path) -> Result<String> {
+ pub fn build_plan(workspace: &Path, mods: &Path) -> Result<Plan> {
+     build_staged(workspace, mods).map(|(plan, _)| plan)
+ }
++/// [`build_plan`] against the build `cfg` describes.
++pub fn build_plan_with(workspace: &Path, mods: &Path, cfg: Option<&CfgSet>) -> Result<Plan> {
++    build_staged_with(workspace, mods, cfg).map(|(plan, _)| plan)
++}
+ /// The plan plus the bundle crate and data files it stages (see [`crate::native::stage`]).
+ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::native::Extras)> {
++    build_staged_with(workspace, mods, None)
++}
++/// [`build_staged`] against the build `cfg` describes.
++pub fn build_staged_with(
++    workspace: &Path,
++    mods: &Path,
++    cfg: Option<&CfgSet>,
++) -> Result<(Plan, crate::native::Extras)> {
+     let root = workspace.canonicalize().map_err(io)?;
+     let mut mods = manifest::load(mods)?;
+     let inputs: BTreeMap<String, String> = source::files(&root)?
+@@ -323,7 +349,7 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
+         .map(|(name, bytes)| (name, source::fingerprint(bytes)))
+         .collect();
+     crate::native::resolve_hooks(&root, &mut mods)?;
+-    let index = Index::load(&root)?;
++    let index = Index::load_with(&root, cfg)?;
+     let native = crate::native::plan(&root, &index.packages, &index.bins, &inputs, &mods)?;
+     let mut injections = Vec::new();
+     let mut planned_bridges = Vec::new();
+@@ -495,18 +521,25 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
+             }
+             let function_fingerprint =
+                 source::fingerprint(format!("{}{}", tokens(&f.signature), tokens(&f.block)));
+-            if injection
+-                .fingerprint
+-                .as_ref()
+-                .is_some_and(|expected| expected != &function_fingerprint)
+-            {
+-                return Err(context(Diagnostic::new(
+-                    "E_FINGERPRINT",
+-                    format!(
+-                        "original function changed; expected {}, got {function_fingerprint}",
+-                        injection.fingerprint.as_ref().unwrap()
+-                    ),
+-                )));
++            match injection.fingerprint.as_deref() {
++                Some(expected) if expected == function_fingerprint => {}
++                None if injection.kind != Kind::Overwrite => {}
++                expected => {
++                    // An OVERWRITE drops the whole body, so a line the game adds later would vanish
++                    // silently: it must pin the function it replaces.
++                    let message = if expected.is_none() {
++                        "OVERWRITE requires the `fingerprint` of the function it replaces"
++                    } else {
++                        "original function changed"
++                    };
++                    return Err(context(Diagnostic::new(
++                        "E_FINGERPRINT",
++                        format!(
++                            "{message}; expected {}, got {function_fingerprint}",
++                            expected.unwrap_or("<none>")
++                        ),
++                    )));
++                }
+             }
+             let mut context_function = f.clone();
+             if injection.kind == Kind::Head {
+@@ -604,7 +637,17 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
+                         .collect()
+                 };
+                 if matches.len() != injection.require.unwrap() {
+-                    return Err(context(Diagnostic::new("E_MATCH_COUNT", format!("selector '{selector}' requires {} syntactic matches, found {} in pristine {}", injection.require.unwrap(), matches.len(), f.id)).file(&f.file)));
++                    // A bare name is a function call; the method of that name is a different
++                    // selector, which writes its receiver.
++                    let hint = (matches.is_empty()
++                        && !matches!(
++                            injection.kind,
++                            Kind::ModifyConstant | Kind::ModifyExpressionValue
++                        ))
++                    .then(|| sites::method_hint(selector, &catalog.calls, &inside))
++                    .flatten()
++                    .unwrap_or_default();
++                    return Err(context(Diagnostic::new("E_MATCH_COUNT", format!("selector '{selector}' requires {} syntactic matches, found {} in pristine {}{hint}", injection.require.unwrap(), matches.len(), f.id)).file(&f.file)));
+                 }
+                 let ordinal = injection.ordinal.unwrap();
+                 let site = matches.get(ordinal).ok_or_else(|| {
+@@ -626,13 +669,51 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
+                 // inside one: the closure may run later, elsewhere or never, and a cancelling
+                 // `return` would leave only the closure.
+                 if site.in_closure {
+-                    return Err(context(Diagnostic::new("E_UNSUPPORTED_SITE", "the selected site is inside a closure; hooks run only outside closure bodies").file(&f.file)));
++                    return Err(context(Diagnostic::new("E_UNSUPPORTED_SITE", format!("selector `{selector}` lands inside a closure, which can run separately from the target function; select a site outside the closure instead")).file(&f.file)));
+                 }
+                 if !matches!(injection.kind, Kind::BeforeCall | Kind::AfterCall)
+                     && sites::contains_closure(&site.expr)
                  {
                      return Err(context(Diagnostic::new("E_UNSUPPORTED_SITE", "the selected site contains a closure, which this hook would move into generated code").file(&f.file)));
                  }
++                // A declared type is an expected type for the receiver it wraps: on a computed
++                // receiver it can retype the receiver or change the method the dot call picks.
++                if injection.kind == Kind::WrapOperation
++                    && let Expr::MethodCall(call) = &site.expr
++                    && !sites::is_place(&call.receiver)
++                {
++                    return Err(context(Diagnostic::new(
++                        "E_OPERATION_SIGNATURE",
++                        format!("WRAP_OPERATION at `{selector}` is refused because the declared type of a computed receiver can change which method is called; use AFTER_CALL to observe a call on a struct literal, or wrap a method on a target reference parameter"),
++                    ).file(&f.file)));
++                }
 +                // The site moves into generated code, where a `?` would leave a closure instead
-+                // of the function.
++                // of the function. A wrapped call's arguments are typed by the wrapper's
++                // declaration, so one that carries a `?` (or a block) is refused too.
 +                if sites::contains_exit_or_block(&site.expr) {
 +                    return Err(context(Diagnostic::new(CLOSURES_ETC.0, "the selected site contains `?`, an `unsafe` or a `const` block, which this hook would move into generated code").file(&f.file)));
 +                }
@@ -330,7 +2446,19 @@ index 848dcc0..153c68d 100644
                  if (injection.kind == Kind::BeforeCall
                      || (injection.kind == Kind::AfterCall && injection.cancellable))
                      && !site.whole_expression
-@@ -979,6 +1005,9 @@ pub(crate) fn validate_target_with(
+@@ -924,6 +1005,11 @@ pub fn build_staged(workspace: &Path, mods: &Path) -> Result<(Plan, crate::nativ
+         schema: SCHEMA,
+         transformer: env!("CARGO_PKG_VERSION").into(),
+         rustc: rustc(&root)?,
++        cfg: cfg.map(|cfg| PlannedCfg {
++            options: cfg.options(),
++            features_of: cfg.features_of().map(str::to_owned),
++            feature_files: index.feature_files.iter().cloned().collect(),
++        }),
+         inputs,
+         injections,
+         bridges: planned_bridges,
+@@ -979,8 +1065,12 @@ pub(crate) fn validate_target_with(
          // are checked in those values only ([`exit_value_error`]). MODIFY_VARIABLE likewise
          // replaces only the value it selects ([`modified_value_error`]).
          rewrites_body: !matches!(kind, Kind::Return | Kind::ModifyVariable),
@@ -339,8 +2467,11 @@ index 848dcc0..153c68d 100644
 +        site_only: kind.selects_site(),
          // A `?` is an exit RETURN would miss; MODIFY_VARIABLE leaves one outside its value alone.
          try_outside_value: kind == Kind::ModifyVariable,
++        return_hook: kind == Kind::Return,
          body_macros: false,
-@@ -1005,7 +1034,10 @@ pub(crate) fn validate_target_with(
+         relaxed,
+         local_uses: BTreeSet::new(),
+@@ -1005,7 +1095,10 @@ pub(crate) fn validate_target_with(
      // any exit or expression inside a macro, just like ordinary HEAD.
      safety.body_macros = safety.boundary;
      safety.in_body = true;
@@ -352,25 +2483,33 @@ index 848dcc0..153c68d 100644
      if safety.error.is_none() && kind == Kind::Return {
          safety.error = exit_value_error(&f.block);
      }
-@@ -1173,6 +1205,7 @@ struct Safety {
+@@ -1173,7 +1266,9 @@ struct Safety {
      error: Option<(&'static str, &'static str)>,
      boundary: bool,
      rewrites_body: bool,
 +    site_only: bool,
      try_outside_value: bool,
++    return_hook: bool,
      body_macros: bool,
      relaxed: bool,
-@@ -1237,6 +1270,9 @@ impl<'ast> Visit<'ast> for Safety {
+     local_uses: BTreeSet<String>,
+@@ -1237,6 +1332,15 @@ impl<'ast> Visit<'ast> for Safety {
              // RETURN never rewrites inside a closure; what is inside is still checked.
              Expr::Closure(c) if (!self.rewrites_body || self.relaxed) && c.asyncness.is_none() => {}
              Expr::Try(_) if self.try_outside_value => {}
++            Expr::Try(_) if self.return_hook => {
++                self.error = Some((
++                    CLOSURES_ETC.0,
++                    "RETURN cannot cover implicit exits through `?`; use HEAD on this function or hook its call site instead",
++                ));
++            }
 +            // A hook that rewrites only its site leaves a `?`, `unsafe` or `const` block
 +            // elsewhere as written; the site itself is checked where it is selected.
 +            Expr::Try(_) | Expr::Unsafe(_) | Expr::Const(_) if self.site_only => {}
              Expr::Closure(_)
              | Expr::Async(_)
              | Expr::Await(_)
-@@ -1247,7 +1283,10 @@ impl<'ast> Visit<'ast> for Safety {
+@@ -1247,7 +1351,10 @@ impl<'ast> Visit<'ast> for Safety {
              | Expr::Const(_) => self.error = Some(CLOSURES_ETC),
              // Calls under a reference can depend on temporary lifetime extension.
              Expr::Reference(r)
@@ -382,7 +2521,24 @@ index 848dcc0..153c68d 100644
              {
                  self.error = Some(REFERENCED_CALL)
              }
-@@ -1346,6 +1385,23 @@ impl<'ast> Visit<'ast> for Safety {
+@@ -1299,7 +1406,15 @@ impl<'ast> Visit<'ast> for Safety {
+                 self.macro_depth -= 1;
+                 self.hidden.extend(args.expressions);
+             }
+-            Err(error) => self.macro_error = Some(error),
++            Err(mut error) => {
++                error.message = format!(
++                    "the target body uses `{}!`, but {}; use HEAD on this function or hook its call site instead",
++                    tokens(&mac.path).replace(' ', ""),
++                    error.message
++                )
++                .into();
++                self.macro_error = Some(error);
++            }
+         }
+     }
+     fn visit_item(&mut self, item: &'ast Item) {
+@@ -1346,6 +1461,23 @@ impl<'ast> Visit<'ast> for Safety {
          }
      }
  }
@@ -407,33 +2563,86 @@ index 848dcc0..153c68d 100644
      struct Find(bool);
      impl<'ast> Visit<'ast> for Find {
 diff --git a/crates/horizon-mixins-core/src/sites.rs b/crates/horizon-mixins-core/src/sites.rs
-index 47fee7d..c79f8b0 100644
+index 47fee7d..7b18f8f 100644
 --- a/crates/horizon-mixins-core/src/sites.rs
 +++ b/crates/horizon-mixins-core/src/sites.rs
-@@ -17,6 +17,22 @@ pub fn contains_closure(expr: &Expr) -> bool {
+@@ -17,6 +17,35 @@ pub fn contains_closure(expr: &Expr) -> bool {
      find.visit_expr(expr);
      find.0
  }
 +/// Whether `expr` holds a `?`, a try block, or an `unsafe` or `const` block.
 +pub fn contains_exit_or_block(expr: &Expr) -> bool {
-+    struct Find(bool);
++    contains_block(expr, true)
++}
++/// Whether `expr` holds a try block, or an `unsafe` or `const` block, and a `?` too when
++/// `try_operator` is set.
++fn contains_block(expr: &Expr, try_operator: bool) -> bool {
++    struct Find(bool, bool);
 +    impl<'ast> Visit<'ast> for Find {
 +        fn visit_expr(&mut self, e: &'ast Expr) {
-+            self.0 |= matches!(
-+                e,
-+                Expr::Try(_) | Expr::TryBlock(_) | Expr::Unsafe(_) | Expr::Const(_)
-+            );
++            self.0 |= matches!(e, Expr::TryBlock(_) | Expr::Unsafe(_) | Expr::Const(_))
++                || (self.1 && matches!(e, Expr::Try(_)));
 +            visit::visit_expr(self, e);
 +        }
 +    }
-+    let mut find = Find(false);
++    let mut find = Find(false, try_operator);
 +    find.visit_expr(expr);
 +    find.0
++}
++/// A place expression: a receiver of this shape is borrowed, never moved, by a method call.
++pub fn is_place(expr: &Expr) -> bool {
++    match expr {
++        Expr::Path(_) | Expr::Field(_) | Expr::Index(_) => true,
++        Expr::Unary(u) => matches!(u.op, syn::UnOp::Deref(_)),
++        Expr::Paren(p) => is_place(&p.expr),
++        Expr::Group(g) => is_place(&g.expr),
++        _ => false,
++    }
 +}
  pub fn is_call(expr: &Expr) -> bool {
      matches!(expr, Expr::Call(_) | Expr::MethodCall(_))
  }
-@@ -114,6 +130,9 @@ pub struct Site {
+@@ -90,6 +119,39 @@ pub fn call_matches(expr: &Expr, selector: &Expr) -> bool {
+     let key = call_identity(expr);
+     key.is_some() && key == call_identity(selector)
+ }
++/// What to add to a count of zero for a bare-name selector (`run_app`) when the function calls a
++/// method of that name: a bare name matches function calls only, and a method selector writes its
++/// receiver as source text.
++pub fn method_hint(
++    selector: &str,
++    calls: &[Site],
++    inside: &dyn Fn(usize) -> bool,
++) -> Option<String> {
++    let expected = parse_call_selector(selector).ok()?;
++    let Expr::Call(call) = &expected else {
++        return None;
++    };
++    // Only an unqualified single name: `crate::go`, `::go` and `go::<T>` are not bare method names.
++    let Expr::Path(path) = &*call.func else {
++        return None;
++    };
++    let name = path.path.get_ident()?.to_string();
++    if path.qself.is_some() || path.path.leading_colon.is_some() {
++        return None;
++    }
++    // Suggest only a selector that parses and matches the receiver it came from.
++    let found = calls.iter().find_map(|s| match &s.expr {
++        Expr::MethodCall(m) if m.method == name && inside(s.expression) => {
++            let key = call_key(&s.expr)?;
++            let parsed = parse_call_selector(&key).ok()?;
++            call_matches(&s.expr, &parsed).then_some(key)
++        }
++        _ => None,
++    })?;
++    Some(format!(
++        "; `{name}` is called here as a method, and a method selector writes its receiver as source text: use `{found}`"
++    ))
++}
+ pub fn parse_call_selector(selector: &str) -> Result<Expr> {
+     let parsed = syn::parse_str::<Expr>(&format!("{selector}()"));
+     if parsed.as_ref().ok().and_then(call_key).as_deref() != Some(selector) {
+@@ -114,6 +176,9 @@ pub struct Site {
      pub const_context: bool,
      /// Inside a closure body: the closure may run later, elsewhere or never.
      pub in_closure: bool,
@@ -443,7 +2652,7 @@ index 47fee7d..c79f8b0 100644
  }
  #[derive(Default)]
  pub struct Sites {
-@@ -124,6 +143,7 @@ pub struct Sites {
+@@ -124,6 +189,7 @@ pub struct Sites {
      next_is_root: bool,
      const_context: bool,
      closures: usize,
@@ -451,7 +2660,7 @@ index 47fee7d..c79f8b0 100644
  }
  impl Sites {
      pub fn in_block(block: &syn::Block) -> Self {
-@@ -186,6 +206,7 @@ impl<'ast> Visit<'ast> for Sites {
+@@ -186,6 +252,7 @@ impl<'ast> Visit<'ast> for Sites {
              whole_expression: root,
              const_context: self.const_context,
              in_closure: self.closures > 0,
@@ -459,7 +2668,7 @@ index 47fee7d..c79f8b0 100644
          };
          self.values.push(site(expression));
          if is_call(expr) {
-@@ -198,7 +219,10 @@ impl<'ast> Visit<'ast> for Sites {
+@@ -198,7 +265,10 @@ impl<'ast> Visit<'ast> for Sites {
          if matches!(expr, Expr::Paren(_)) {
              self.next_is_root = root;
          }
@@ -469,4 +2678,130 @@ index 47fee7d..c79f8b0 100644
 +        self.references -= usize::from(reference);
      }
  }
- 
+
+diff --git a/crates/horizon-mixins-core/src/standard_macros.rs b/crates/horizon-mixins-core/src/standard_macros.rs
+index 4e9a7d8..8543b14 100644
+--- a/crates/horizon-mixins-core/src/standard_macros.rs
++++ b/crates/horizon-mixins-core/src/standard_macros.rs
+@@ -189,7 +189,7 @@ impl Policy {
+             }
+             _ => {
+                 return Err(fail(
+-                    "macro identity is ambiguous; use an unshadowed absolute standard path",
++                    "the macro is outside the validated set or its identity is ambiguous",
+                 ));
+             }
+         };
+diff --git a/crates/horizon-mixins-transform/src/lib.rs b/crates/horizon-mixins-transform/src/lib.rs
+index f4edd3d..d2a70cb 100644
+--- a/crates/horizon-mixins-transform/src/lib.rs
++++ b/crates/horizon-mixins-transform/src/lib.rs
+@@ -1,5 +1,6 @@
+ use horizon_mixins_core::{
+     Diagnostic, Plan, PlannedInjection, Result, bridges,
++    cfg::CfgSet,
+     index::{Function, tokens},
+     manifest::Kind,
+     plan, sites, source,
+@@ -37,6 +38,17 @@ pub fn transform(root: &Path, plan: &Plan) -> Result<BTreeMap<String, Vec<u8>>>
+             "workspace no longer matches planned inputs; regenerate plan",
+         ));
+     }
++    let cfg = plan
++        .cfg
++        .as_ref()
++        .map(|c| CfgSet::parse(&c.options, c.features_of.as_deref()))
++        .transpose()?;
++    let parse = |text: &str, file: &str| match (&cfg, &plan.cfg) {
++        (Some(cfg), Some(planned)) => {
++            cfg.parse_file(text, planned.feature_files.iter().any(|f| f == file))
++        }
++        _ => syn::parse_file(text),
++    };
+     let mut groups: BTreeMap<(&str, &[usize]), Vec<&PlannedInjection>> = BTreeMap::new();
+     for patch in &plan.injections {
+         groups
+@@ -59,7 +71,7 @@ pub fn transform(root: &Path, plan: &Plan) -> Result<BTreeMap<String, Vec<u8>>>
+                 .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()))?;
+             trees.insert(
+                 file.to_string(),
+-                syn::parse_file(text)
++                parse(text, file)
+                     .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()).file(file))?,
+             );
+         }
+@@ -71,7 +83,10 @@ pub fn transform(root: &Path, plan: &Plan) -> Result<BTreeMap<String, Vec<u8>>>
+                 .ok_or_else(|| Diagnostic::new("E_STALE_SOURCE", "bridge file is absent"))?;
+             let text = std::str::from_utf8(bytes)
+                 .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()))?;
+-            trees.insert(bridge.file.clone(), syn::parse_file(text).map_err(syntax)?);
++            trees.insert(
++                bridge.file.clone(),
++                parse(text, &bridge.file).map_err(syntax)?,
++            );
+         }
+         let original = bridges::item(&trees[&bridge.file].items, &bridge.node)?;
+         if source::fingerprint(tokens(original)) != bridge.fingerprint {
+@@ -88,9 +103,10 @@ pub fn transform(root: &Path, plan: &Plan) -> Result<BTreeMap<String, Vec<u8>>>
+                 .ok_or_else(|| Diagnostic::new("E_PLAN_SITE", "state file absent"))?;
+             trees.insert(
+                 s.file.clone(),
+-                syn::parse_file(
++                parse(
+                     std::str::from_utf8(bytes)
+                         .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()))?,
++                    &s.file,
+                 )
+                 .map_err(syntax)?,
+             );
+@@ -111,7 +127,10 @@ pub fn transform(root: &Path, plan: &Plan) -> Result<BTreeMap<String, Vec<u8>>>
+                 .ok_or_else(|| Diagnostic::new("E_STALE_SOURCE", "module destination absent"))?;
+             let text = std::str::from_utf8(bytes)
+                 .map_err(|e| Diagnostic::new("E_RUST_SYNTAX", e.to_string()))?;
+-            trees.insert(module.file.clone(), syn::parse_file(text).map_err(syntax)?);
++            trees.insert(
++                module.file.clone(),
++                parse(text, &module.file).map_err(syntax)?,
++            );
+         }
+         let tree = &trees[&module.file];
+         if source::fingerprint(tokens(tree)) != module.fingerprint {
+@@ -523,16 +542,18 @@ fn wrap_operation(call: &Expr, wrappers: &[&PlannedInjection]) -> Result<Expr> {
+         }
+         Expr::MethodCall(c) => {
+             let receiver = &c.receiver;
+-            let Type::Reference(reference) = &types[0] else {
+-                return Err(Diagnostic::new(
+-                    "E_OPERATION_SIGNATURE",
+-                    "method wrapper needs a reference receiver",
+-                ));
+-            };
+-            let receiver_arg = if reference.mutability.is_some() {
+-                syn::parse_quote!(&mut *(#receiver))
+-            } else {
+-                syn::parse_quote!(&*(#receiver))
++            // The receiver is a parameter, borrowed through its reference type.
++            let receiver_arg = match &types[0] {
++                Type::Reference(reference) if reference.mutability.is_some() => {
++                    syn::parse_quote!(&mut *(#receiver))
++                }
++                Type::Reference(_) => syn::parse_quote!(&*(#receiver)),
++                _ => {
++                    return Err(Diagnostic::new(
++                        "E_OPERATION_SIGNATURE",
++                        "method wrapper needs a reference receiver",
++                    ));
++                }
+             };
+             arguments = vec![receiver_arg];
+             arguments.extend(c.args.iter().cloned());
+diff --git a/fixtures/mods/alpha/horizon-mixin.toml b/fixtures/mods/alpha/horizon-mixin.toml
+index f2055db..1308416 100644
+--- a/fixtures/mods/alpha/horizon-mixin.toml
++++ b/fixtures/mods/alpha/horizon-mixin.toml
+@@ -49,4 +49,5 @@ id = "replace"
+ target = "fixture_game::overwrite::value"
+ kind = "OVERWRITE"
+ helper = "replace.rs"
++fingerprint = "1a21793757ea38555e338cc1d8d8a4228a229240c4245c21dfe3edba45e77e6b"
+ bindings = [{ name = "input", ty = "i32", value = "input" }]

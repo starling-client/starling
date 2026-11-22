@@ -1,14 +1,14 @@
 //! Transport for shared cave/canyon geometry and ordered output failures.
 use crate::support::common::f64_bits;
-use sunrise_core::{
-    carving::{CarverOutput, CarvingMask, can_reach, carve_ellipsoid},
-    position::ChunkPos,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::{
+    carving::{CarverOutput, CarvingMask, can_reach, carve_ellipsoid},
+    position::ChunkPos,
 };
 fn n(v: &Value) -> i32 {
     v.as_i64().unwrap() as i32

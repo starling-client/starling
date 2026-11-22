@@ -1,0 +1,5 @@
+manifest:
+refused: invalid Zip archive: Could not find EOCD
+
+icon:
+unavailable

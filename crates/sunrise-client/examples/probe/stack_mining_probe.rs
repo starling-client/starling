@@ -1,14 +1,14 @@
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::Path,
+};
 use sunrise_client::{
     Result, item_data,
     items::{ItemStack, Items},
 };
 use sunrise_items::item_nbt;
 use sunrise_world::loot::PackOverlay;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-};
 
 fn query(items: &Items, stack: &ItemStack, block: &str) -> String {
     format!(
@@ -44,7 +44,7 @@ pub fn main() -> Result<()> {
         let restored = if stack.count == 0 || id == "minecraft:air" {
             stack.clone()
         } else {
-            item_nbt::item_from_nbt(&item_nbt::item_to_nbt(&stack)).unwrap()
+            item_nbt::item_from_nbt(&item_nbt::item_to_nbt(&stack, &items)).unwrap()
         };
         writeln!(
             out,

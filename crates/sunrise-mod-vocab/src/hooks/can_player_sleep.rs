@@ -11,10 +11,11 @@ pub trait Hooks {
     /// as in vanilla, only when vanilla found no problem. After it,
     /// `player_bed_enter` still fires and may cancel. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "CanPlayerSleepEvent",
         cancellable = false
     )]
-    fn can_player_sleep();
+    fn can_player_sleep(player: u128, name: &str, pos: [i32; 3], problem: &mut Option<String>);
 }

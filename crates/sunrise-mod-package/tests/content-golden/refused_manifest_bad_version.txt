@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: version "release" is not a semver version (MAJOR.MINOR.PATCH, e.g. 3.6.30+refabricated) (line 3, column 11)
+
+icon:
+unavailable

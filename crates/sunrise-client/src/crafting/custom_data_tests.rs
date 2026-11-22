@@ -1,5 +1,6 @@
-use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
+use crate::crafting::ResolvedSources;
 use serde_json::{Value, json};
+use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
 
 fn assert_custom_tags(data: &sunrise_core::nbt::Compound) {
     use sunrise_core::nbt::Tag;
@@ -22,14 +23,26 @@ impl mod_api::Hooks for TypedIngredient {
         &self,
         _: &dyn mod_api::DataLoadContext,
         event: &mut mod_api::IngredientEvent<'_>,
-    ) {
-        assert_custom_tags(event.data);
-        event.items.push("minecraft:emerald".into());
+    ) -> Option<mod_api::IngredientDefinition> {
+        let kind = event.kind;
+        let data = event.data;
+        if kind != "typed:ingredient" {
+            return None;
+        }
+        assert!(!data.contains_key(&"sunrise:resolved_items".into()));
+        let data = data.clone();
+        Some(mod_api::IngredientDefinition::new(
+            vec!["minecraft:emerald".into()],
+            move |_, _| {
+                assert_custom_tags(&data);
+                true
+            },
+        ))
     }
 }
 
 #[test]
-fn custom_ingredient_tags_reach_hook_and_matching_record() {
+fn custom_ingredient_tags_reach_the_bound_predicate() {
     let items = super::Items::for_tests(Default::default());
     mod_platform::testing::with_mods(
         vec![mod_api::ModEntry::new("typed", Box::new(TypedIngredient))].into(),
@@ -41,17 +54,112 @@ fn custom_ingredient_tags_reach_hook_and_matching_record() {
             );
             let mut source = json!({"type": "typed:ingredient", "integer": 32768, "long": 2147483648i64,
             "list": [1, 128], "nested": {"enabled": true}});
-            super::Ingredient::resolve(&mut source, &context);
-            let parsed = super::Ingredient::parse(&source, &items).unwrap();
-            let (_, data) = parsed.custom.unwrap();
-            assert_custom_tags(&data);
-            assert!(!data.contains_key(&"sunrise:resolved_items".into()));
-
-            // Refusal leaves the kind unanswered just as an unknown kind does;
-            // no hook call should see the malformed metadata.
+            let load = |ingredient| {
+                ResolvedSources::resolve(
+                    vec![(
+                        "typed:test".into(),
+                        json!({
+                            "type": "minecraft:stonecutting", "ingredient": ingredient,
+                            "result": "minecraft:emerald"
+                        }),
+                    )],
+                    &items,
+                    &context,
+                )
+            };
+            let sources = load(source.clone()).unwrap();
+            let crate::crafting::DecodedRecipe::Station {
+                recipe: crate::stations::ParsedStationRecipe::Stonecutting(cut),
+                ..
+            } = sources.recipes[0].decoded()
+            else {
+                panic!("expected decoded stonecutting recipe");
+            };
+            let loop_context =
+                context.loop_context(sunrise_world::native_load_context::LoopSide::Server, []);
+            assert!(cut.input.test_in(
+                &loop_context,
+                &super::ItemStack::new("minecraft:emerald", 1)
+            ));
             source["nested"]["invalid"] = Value::Null;
-            super::Ingredient::resolve(&mut source, &context);
-            assert!(super::Ingredient::parse(&source, &items).is_none());
+            let error = load(source).err().unwrap().to_string();
+            assert!(error.contains("data/typed/recipe/test.json"), "{error}");
+            assert!(
+                error.contains("ingredient kind typed:ingredient"),
+                "{error}"
+            );
+            assert!(error.contains("nested null"), "{error}");
+        },
+    );
+}
+
+struct WidthIngredient;
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for WidthIngredient {
+    fn ingredient(
+        &self,
+        _: &dyn mod_api::DataLoadContext,
+        event: &mut mod_api::IngredientEvent<'_>,
+    ) -> Option<mod_api::IngredientDefinition> {
+        let kind = event.kind;
+        let data = event.data;
+        use sunrise_core::nbt::Tag;
+        if kind != "width:ingredient" {
+            return None;
+        }
+        let want = [
+            ("flag", Tag::Byte(1)),
+            ("one", Tag::Byte(1)),
+            ("small", Tag::Short(300)),
+            ("big", Tag::Int(100000)),
+            ("half", Tag::Float(0.5f32.to_bits())),
+            ("tenth", Tag::Double(0.1f64.to_bits())),
+            ("whole", Tag::Byte(1)),
+            ("exp", Tag::Short(1000)),
+        ];
+        for (key, tag) in want {
+            assert_eq!(data.get(&key.into()), Some(&tag), "{key}");
+        }
+        Some(mod_api::IngredientDefinition::new(
+            vec!["minecraft:emerald".into()],
+            |_, _| true,
+        ))
+    }
+}
+
+#[test]
+fn custom_ingredient_scalars_reach_hook_with_narrowest_width() {
+    let items = super::Items::for_tests(Default::default());
+    mod_platform::testing::with_mods(
+        vec![mod_api::ModEntry::new("width", Box::new(WidthIngredient))].into(),
+        || {
+            let context = LoadContext::new(
+                DataLoadOrigin::ServerDataLoad,
+                std::sync::Arc::new(LoadInputs::new(Default::default(), Default::default())),
+                [],
+            );
+            let source = json!({"type": "width:ingredient", "flag": true, "one": 1,
+            "small": 300, "big": 100000, "half": 0.5, "tenth": 0.1, "whole": 1.0, "exp": 1e3});
+            let sources = ResolvedSources::resolve(
+                vec![(
+                    "width:test".into(),
+                    json!({
+                        "type": "minecraft:stonecutting", "ingredient": source,
+                        "result": "minecraft:emerald"
+                    }),
+                )],
+                &items,
+                &context,
+            )
+            .unwrap();
+            let crate::crafting::DecodedRecipe::Station {
+                recipe: crate::stations::ParsedStationRecipe::Stonecutting(cut),
+                ..
+            } = sources.recipes[0].decoded()
+            else {
+                panic!("expected decoded stonecutting recipe");
+            };
+            assert_eq!(cut.input.order, ["minecraft:emerald"]);
         },
     );
 }
@@ -92,7 +200,7 @@ fn ingredient_depth_128_matches_clones_and_drops_on_two_mib_stack() {
 }
 
 #[test]
-#[ignore = "requires prepared vanilla recipe corpus"]
+#[ignore = "daily"]
 fn vanilla_recipe_corpus_preserves_ingredient_membership_and_order() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/sunrise-client/26.3/data/minecraft/recipe");

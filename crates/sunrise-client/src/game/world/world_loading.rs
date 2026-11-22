@@ -1,7 +1,6 @@
 //! Prepare local worlds without blocking the window's event loop.
 use super::*;
 use sunrise_client::vanillagen::TerrainResources;
-use sunrise_world::item_defaults::ItemData;
 
 pub(super) struct WorldRequest {
     pub save_root: PathBuf,
@@ -11,6 +10,8 @@ pub(super) struct WorldRequest {
     pub creative: bool,
     pub create: Option<sunrise_client::title::WorldOptions>,
     pub rule_registry: Arc<sunrise_client::gamerules::RuleRegistry>,
+    /// Where the server's region workers send their notices.
+    pub(super) chunk_reports: Arc<sunrise_client::chunk_io::Reports>,
     /// The account the world opens under, for an integrated server
     /// (`IntegratedServer.getSingleplayerProfile`): its name and UUID.
     owner: Option<(String, u128)>,
@@ -48,6 +49,62 @@ fn fall_back_to_level_dat_old_without_asking(
     }
 }
 
+/// Settle level.dat before applying any on-disk choice for the world's generator.
+fn prepare_level_data(
+    role: execution_role::ExecutionRole,
+    save_root: &std::path::Path,
+    folder: &str,
+    game_dir: &std::path::Path,
+) -> Result<()> {
+    // openWorldLoadLevelData: level data that does not read is RecoverWorldDataScreen's to
+    // handle (the title screen shows it); a world opened another way must not become a
+    // new one with a random seed under the same name.
+    fall_back_to_level_dat_old_without_asking(role, save_root, folder);
+    if let Some(issue) = sunrise_client::save::level_data_needs_recovery(save_root) {
+        let why = match issue {
+            sunrise_client::save::DatIssue::Missing => "level.dat is missing".to_owned(),
+            sunrise_client::save::DatIssue::Unreadable(why) => why,
+        };
+        return Err(format!(
+            "Failed to load world \"{folder}\": its level data does not read ({why}). \
+             Open it from the world list to try restoring level.dat_old."
+        )
+        .into());
+    }
+    // LevelSummary.isCompatible, which the dedicated server's `Main` checks before it fixes
+    // a world: a world from another series is refused, never upgraded in place.
+    if let Some(version) = sunrise_client::save::incompatible_version(save_root) {
+        let version = if version.is_empty() {
+            "unknown".to_owned()
+        } else {
+            version
+        };
+        return Err(format!(
+            "Failed to load world \"{folder}\": it was last played in version {version}, \
+             which cannot be opened in this version."
+        )
+        .into());
+    }
+    if role.is_dedicated_server() && save_root.join("level.dat").exists() {
+        super::dedicated::biome_regions::choose(save_root, &game_dir.join("server.toml"))?;
+    }
+    Ok(())
+}
+
+/// `MinecraftServer.getServerDirectory` and its integrated override.
+fn chunk_report_root<'a>(
+    role: execution_role::ExecutionRole,
+    game_dir: Option<&'a std::path::Path>,
+    working_dir: &'a std::path::Path,
+) -> &'a std::path::Path {
+    if role == execution_role::ExecutionRole::IntegratedServer {
+        // `Options::read` may already have made the configured game directory the cwd.
+        game_dir.unwrap_or(working_dir)
+    } else {
+        working_dir
+    }
+}
+
 impl WorldRequest {
     pub fn new(
         folder: &str,
@@ -65,6 +122,7 @@ impl WorldRequest {
             creative,
             create: create.cloned(),
             rule_registry,
+            chunk_reports: sunrise_client::chunk_io::PROCESS_REPORTS.clone(),
             owner: None,
         })
     }
@@ -86,43 +144,6 @@ impl WorldRequest {
         upgrade: &sunrise_world::datafix::progress::UpgradeProgress,
     ) -> Result<PreparedWorld> {
         let _prepare_step = startup::step("world.prepare");
-        // Prepare the shared loot snapshot before spawn chunks and server gameplay start.
-        // Container loading only installs pending tags; first inventory access uses this data.
-        // Every world opens here: on the server thread, on a dedicated server.
-        let loot = || {
-            sunrise_client::structure_blocks::loot_data(
-                &options.resources,
-                &sunrise_world::loot::PackOverlay::NONE,
-                res.item_defaults(),
-            );
-        };
-        // The live features (bone meal's and saplings') are installed by `prepare_world`, over
-        // the world's own data packs.
-        if res.threads() <= 1 {
-            loot();
-            return self.prepare_world(res, pack, options, settings, upgrade);
-        }
-        // The loot data does not need the world: it loads beside it (the generator's decoration
-        // keeps one core busy) and is done before it opens.
-        std::thread::scope(|scope| {
-            let loot = sunrise_guest_stack::builder()
-                .spawn_scoped(scope, loot)
-                .expect("loot loader thread");
-            let prepared = self.prepare_world(res, pack, options, settings, upgrade);
-            loot.join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            prepared
-        })
-    }
-
-    fn prepare_world(
-        self,
-        res: &Resources,
-        pack: &PackResources,
-        options: &Options,
-        settings: &Settings,
-        upgrade: &sunrise_world::datafix::progress::UpgradeProgress,
-    ) -> Result<PreparedWorld> {
         let Self {
             save_root,
             folder,
@@ -131,6 +152,7 @@ impl WorldRequest {
             creative,
             create,
             rule_registry,
+            chunk_reports,
             owner,
         } = self;
         let name = name.as_deref();
@@ -140,44 +162,20 @@ impl WorldRequest {
             create
         });
         let create = create.as_ref();
-        // openWorldLoadLevelData: level data that does not read is RecoverWorldDataScreen's to
-        // handle (the title screen shows it); a world opened another way must not become a
-        // new one with a random seed under the same name.
-        fall_back_to_level_dat_old_without_asking(options.execution_role, &save_root, &folder);
-        if let Some(issue) = sunrise_client::save::level_data_needs_recovery(&save_root) {
-            let why = match issue {
-                sunrise_client::save::DatIssue::Missing => "level.dat is missing".to_owned(),
-                sunrise_client::save::DatIssue::Unreadable(why) => why,
-            };
-            return Err(format!(
-                "Failed to load world \"{folder}\": its level data does not read ({why}). \
-                 Open it from the world list to try restoring level.dat_old."
-            )
-            .into());
-        }
-        // LevelSummary.isCompatible, which the dedicated server's `Main` checks before it fixes
-        // a world: a world from another series is refused, never upgraded in place.
-        if let Some(version) = sunrise_client::save::incompatible_version(&save_root) {
-            let version = if version.is_empty() {
-                "unknown".to_owned()
-            } else {
-                version
-            };
-            return Err(format!(
-                "Failed to load world \"{folder}\": it was last played in version {version}, \
-                 which cannot be opened in this version."
-            )
-            .into());
-        }
+        prepare_level_data(
+            options.execution_role,
+            &save_root,
+            &folder,
+            options
+                .game_dir
+                .as_deref()
+                .unwrap_or(std::path::Path::new(".")),
+        )?;
         sunrise_client::save::upgrade_older_world_with(&save_root, upgrade)?;
         sunrise_client::save::migrate_legacy(&save_root)?;
         let session_lock = sunrise_client::save::SessionLock::acquire(&save_root)?;
         // RandomSequences: the world's data/minecraft/random_sequences.dat.
-        let rand_sequences =
-            sunrise_client::save::read_dat(&save_root.join("data/minecraft/random_sequences.dat"))
-                .and_then(|t| t.get("data").cloned())
-                .map(|d| sunrise_client::random_sequences::RandomSequences::from_nbt(&d))
-                .unwrap_or_default();
+        let rand_sequences = super::trading::read_random_sequences(&save_root);
         let existing = Level::read_with_registry(&save_root, rule_registry.clone());
         let created = existing.is_none();
         let level = existing.unwrap_or_else(|| Level {
@@ -210,7 +208,11 @@ impl WorldRequest {
                     // tick: a world made under the account names it from its first level.dat.
                     level.player_uuid = Some(sunrise_client::lan::playerdata::uuid_ints(account));
                 } else if sunrise_client::lan::playerdata::migrate_owner(
-                    &save_root, &mut level, old, account,
+                    &save_root,
+                    &mut level,
+                    old,
+                    account,
+                    res.items(),
                 ) {
                     log::info!(
                         "Sunrise: \"{folder}\" was made under the offline profile; \
@@ -282,34 +284,32 @@ impl WorldRequest {
         }
         // Bone meal's and saplings' features, over the world's data packs like its generator:
         // a pack's tree is a feature here too. The same entries, so the bundle loads once.
-        growth::install_live_features(
-            res,
-            pack,
-            options,
-            &live_feature_overrides(
-                &save_root,
-                &options.resources,
-                res.biomes(),
-                &level.enabled_features,
-                &pack.additional_data,
-            ),
-        );
-        let shapes = level_shapes(
-            &save_root,
-            &options.resources,
-            res.biomes(),
-            &pack.additional_data,
-        );
-        Dim::set_extra(shapes.extra.iter().map(|level| level.id));
-        // The bounded registry-loader leaf slice: fail world preparation before streaming,
-        // rather than letting the flat-generator fallback swallow a selected pack's codec error.
-        let (overrides, _) = worldgen_overrides_of(
+        let overrides = live_feature_overrides(
             &save_root,
             &options.resources,
             res.biomes(),
             &level.enabled_features,
             &pack.additional_data,
         );
+        if created {
+            level.generator = sunrise_client::save::WorldGenerator::read_new(&save_root);
+        } else if options.execution_role.is_dedicated_server() {
+            level.recover_world_generator(&overrides, || {
+                sunrise_client::random_source::create().next_long()
+            })?;
+        }
+        growth::install_live_features(res, pack, options, &overrides);
+        let (mut overrides, _) = worldgen_overrides_of(
+            &save_root,
+            &options.resources,
+            res.biomes(),
+            &level.enabled_features,
+            &pack.additional_data,
+        );
+        let shapes = level_shapes(&mut overrides, &options.resources, &level);
+        Dim::set_extra(shapes.extra.iter().map(|level| level.id));
+        // The bounded registry-loader leaf slice: fail world preparation before streaming,
+        // rather than letting the flat-generator fallback swallow a selected pack's codec error.
         overrides.validate_fill_layers(pack.assets.registry)?;
         let dim = Dim::from_id(&level.dimension);
         let shape = shapes.get(dim.id());
@@ -322,6 +322,26 @@ impl WorldRequest {
             &level.enabled_features,
             &pack.additional_data,
         );
+        let integrated = options.execution_role == execution_role::ExecutionRole::IntegratedServer;
+        // Resolving the report path must not prevent the world from opening.
+        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let server_root = chunk_report_root(
+            options.execution_role,
+            options.game_dir.as_deref(),
+            &working_dir,
+        );
+        // The dedicated request carries the absolute storage path as `folder`, and
+        // its configured level id as `name`. Integrated requests carry the id as `folder`.
+        let level_id = if options.execution_role.is_dedicated_server() {
+            name.unwrap_or(&folder)
+        } else {
+            &folder
+        };
+        let save_reporter = Arc::new(sunrise_client::chunk_io::SaveFailureReporter::new(
+            integrated,
+            server_root,
+            level_id,
+        ));
         let (mut streaming, save, locator) = make_streaming(
             res,
             pack,
@@ -331,13 +351,15 @@ impl WorldRequest {
             dim,
             shape,
             level.seed,
-            &level.enabled_features,
+            &level,
             biomes.clone(),
             None,
+            chunk_reports,
+            save_reporter,
         )?;
         drop(streaming_step);
         streaming.radius = settings.render_distance;
-        let mut world = Game::world_for_mods(res.facts().air, level.seed);
+        let mut world = Game::authoritative_world_for_mods(res, level.seed);
         world.attachments = save.load_attachments();
         world.shape = shape;
         world.fast_lava = sunrise_world::dimension_type::DimensionFacts::of_level(
@@ -364,7 +386,7 @@ impl WorldRequest {
 
         // Persist new metadata on the worker too, before publishing the world.
         if !save_root.join("level.dat").exists() {
-            level.write(&save_root)?;
+            level.write(&save_root, res.items())?;
         }
         Ok(PreparedWorld {
             save_root,
@@ -399,7 +421,8 @@ impl WorldLoader {
         settings: Settings,
         upgrade: Arc<sunrise_world::datafix::progress::UpgradeProgress>,
     ) -> Result<Self> {
-        let handle = sunrise_guest_stack::builder()
+        let handle = std::thread::Builder::new()
+            .stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES)
             .name("World initialization".into())
             .spawn(move || {
                 request
@@ -436,10 +459,9 @@ enum Preload {
 
 static PRELOAD: std::sync::Mutex<Preload> = std::sync::Mutex::new(Preload::Idle);
 
-/// Each frame of the title: read what every world opening loads and keeps
-/// for the rest of the process (the worldgen bundle, the loot tables and the
-/// registries the server sends) on a helper thread while the player is on the
-/// world screens (`on_world_screens`: Singleplayer, Create World and their
+/// Each frame of the title: preload the shared worldgen bundle on a helper
+/// thread while the player is on the world screens
+/// (`on_world_screens`: Singleplayer, Create World and their
 /// dialogs), so it overlaps the time spent choosing a world. A world opened
 /// meanwhile waits for the part being read instead of reading it again. Not
 /// at the title screen itself: many players only go to Multiplayer, and
@@ -450,7 +472,6 @@ pub(super) fn preload_world_data(
     resources: &std::path::Path,
     data_source: &sunrise_assets::resource_source::ResourceSource,
     registry: &'static sunrise_world::registry::BlockRegistry,
-    item_data: &Arc<ItemData>,
 ) {
     let mut preload = PRELOAD.lock().unwrap_or_else(|e| e.into_inner());
     match &mut *preload {
@@ -458,8 +479,8 @@ pub(super) fn preload_world_data(
         Preload::Idle if on_world_screens => {
             let resources = resources.to_owned();
             let data_source = data_source.clone();
-            let item_data = Arc::clone(item_data);
-            let spawned = sunrise_guest_stack::builder()
+            let spawned = std::thread::Builder::new()
+                .stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES)
                 .name("World data preload".into())
                 .spawn(move || {
                     sunrise_threads::behind_server();
@@ -474,17 +495,6 @@ pub(super) fn preload_world_data(
                         // seed shares: about 140 ms off opening the world.
                         let _ = data.prepare_decoration("minecraft:normal", "minecraft:overworld");
                     }
-                    // The loot data's item tables and the server's data both
-                    // read the recipe folder: held here, it is read once.
-                    let _recipe_files =
-                        sunrise_client::json_folder::read(&resources.join("data/minecraft/recipe"));
-                    // The preload is the game's own data; the world's packs'
-                    // tables are built when it opens (finish_open_world).
-                    let _ = sunrise_client::structure_blocks::loot_data(
-                        &resources,
-                        &sunrise_world::loot::PackOverlay::NONE,
-                        item_data.defaults(),
-                    );
                 });
             match spawned {
                 Ok(thread) => *preload = Preload::Started { thread, left: None },
@@ -497,7 +507,6 @@ pub(super) fn preload_world_data(
             let left = *left.get_or_insert_with(std::time::Instant::now);
             if left.elapsed() >= PRELOAD_KEPT && thread.is_finished() {
                 sunrise_client::vanillagen::forget_shared_data();
-                sunrise_client::structure_blocks::forget_loot_data();
                 super::lan::sync::forget_sync_data();
                 super::lan::sync::forget_server_sources();
                 sunrise_threads::release_free_memory();
@@ -520,7 +529,6 @@ pub(super) fn preload_launch_world(
     data_source: &sunrise_assets::resource_source::ResourceSource,
     registry: &'static sunrise_world::registry::BlockRegistry,
     biomes: Arc<sunrise_client::biome::Biomes>,
-    item_data: Arc<ItemData>,
     additional: &[Arc<sunrise_client::datapack::DataPack>],
 ) {
     let mut preload = PRELOAD.lock().unwrap_or_else(|e| e.into_inner());
@@ -534,7 +542,8 @@ pub(super) fn preload_launch_world(
     let resources = resources.to_owned();
     let data_source = data_source.clone();
     let additional = additional.to_vec();
-    let spawned = sunrise_guest_stack::builder()
+    let spawned = std::thread::Builder::new()
+        .stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES)
         .name("World data preload".into())
         .spawn(move || {
             // Not behind the server: the world's opening waits for it.
@@ -542,14 +551,15 @@ pub(super) fn preload_launch_world(
             let started = std::time::Instant::now();
             // Errors are left for the world opening to report. The world's
             // flags from its level.dat: the feature packs a flag forces on.
-            let enabled_features = sunrise_client::save::Level::read(&world_root)
-                .map(|l| l.enabled_features)
-                .unwrap_or_default();
+            let level = Level::read(&world_root);
+            let enabled_features = level
+                .as_ref()
+                .map_or(&[][..], |l| l.enabled_features.as_ref());
             let (overrides, _) = worldgen_overrides_of(
                 &world_root,
                 &resources,
                 &biomes,
-                &enabled_features,
+                enabled_features,
                 &additional,
             );
             if let Ok(data) = sunrise_client::vanillagen::shared_data_from(
@@ -558,18 +568,13 @@ pub(super) fn preload_launch_world(
                 registry,
                 &data_source,
             ) {
-                let preset = sunrise_client::save::WorldGen::preset(&world_root);
+                let generator = level
+                    .as_ref()
+                    .and_then(|l| l.generator.as_ref())
+                    .map(|g| g.settings());
+                let preset = sunrise_client::save::WorldGen::noise_preset(generator);
                 let _ = data.prepare_decoration(preset, "minecraft:overworld");
             }
-            // As in `preload_world_data`: the loot data and the server's
-            // data share one read of the recipe folder.
-            let _recipe_files =
-                sunrise_client::json_folder::read(&resources.join("data/minecraft/recipe"));
-            let _ = sunrise_client::structure_blocks::loot_data(
-                &resources,
-                &sunrise_world::loot::PackOverlay::NONE,
-                item_data.defaults(),
-            );
             log::info!(
                 "Sunrise: world data preloaded for the launch's world in {} ms",
                 started.elapsed().as_millis()
@@ -584,32 +589,6 @@ pub(super) fn preload_launch_world(
 /// A world opens: what `preload_world_data` read is the world's from now on.
 pub(super) fn world_data_used() {
     *PRELOAD.lock().unwrap_or_else(|e| e.into_inner()) = Preload::Used;
-}
-
-/// A server's world opens: the loot tables its first placed block or broken
-/// container needs (`loot_data`) are read on a helper thread while the
-/// connection is made, so the game thread never waits on them (~0.6 s on a
-/// phone). Kept from then on, as a local world keeps them.
-pub(super) fn preload_server_loot(resources: &std::path::Path, item_data: &Arc<ItemData>) {
-    world_data_used();
-    if sunrise_client::structure_blocks::loaded_loot_data(item_data.defaults()).is_some() {
-        return;
-    }
-    let resources = resources.to_owned();
-    let item_data = Arc::clone(item_data);
-    let spawned = sunrise_guest_stack::builder()
-        .name("Loot preload".into())
-        .spawn(move || {
-            sunrise_threads::behind_server();
-            let _ = sunrise_client::structure_blocks::loot_data(
-                &resources,
-                &sunrise_world::loot::PackOverlay::NONE,
-                item_data.defaults(),
-            );
-        });
-    if let Err(e) = spawned {
-        log::warn!("Sunrise: loot preload: {e}");
-    }
 }
 
 /// The game's biomes with the world's enabled packs over them, from the same
@@ -720,28 +699,17 @@ fn worldgen_overrides_of(
 /// The shapes of the world's levels: their dimension types, the world's
 /// enabled packs' stems, then saved preset/editor stems, over vanilla's. A refused type keeps the
 /// vanilla shape, with a warning.
-pub(super) fn level_shapes(
-    world_root: &std::path::Path,
+fn level_shapes(
+    overrides: &mut sunrise_world::worldgen::overrides::WorldgenOverrides,
     resources: &std::path::Path,
-    biomes: &sunrise_client::biome::Biomes,
-    additional: &[Arc<sunrise_client::datapack::DataPack>],
+    level: &Level,
 ) -> sunrise_client::chunk::LevelShapes {
-    let packs = super::pack_finders::data_repository(world_root, resources, additional);
-    let enabled_features = sunrise_client::save::Level::read(world_root)
-        .map(|l| l.enabled_features)
-        .unwrap_or_default();
-    let enabled = sunrise_client::datapack::enabled_ids(world_root, &packs, &enabled_features);
-    let enabled: Vec<_> = enabled
-        .iter()
-        .filter_map(|id| packs.iter().find(|p| &p.id == id))
-        .collect();
-    // What the packs leave out is logged when the generator reads them.
-    let (mut overrides, _) =
-        sunrise_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
-    sunrise_client::save::merge_saved_world_gen_dimensions(world_root, &mut overrides);
-    let shapes = shapes_of(&overrides);
+    if let Some(generator) = &level.generator {
+        generator.merge_dimensions(overrides);
+    }
+    let shapes = shapes_of(overrides);
     set_level_sea_levels(
-        &overrides,
+        overrides,
         sunrise_world::worldgen::overrides::mod_dimensions(),
         resources,
     );
@@ -873,7 +841,6 @@ fn shapes_of(
                 id: level.to_owned().leak(),
                 dimension_type: dimension_type.to_owned().leak(),
                 shape: shape?,
-                seed: None,
             })
         })
         .collect();
@@ -948,6 +915,7 @@ fn mod_terrain(
     seed: i64,
     structures: bool,
     runtime_stem: Option<&serde_json::Value>,
+    saved_stem: Option<&sunrise_core::nbt::Tag>,
 ) -> Option<std::result::Result<ModLevel, String>> {
     use sunrise_world::worldgen::{
         mod_biome_sources::mod_biome_sources, mod_generators::mod_chunk_generators,
@@ -964,11 +932,7 @@ fn mod_terrain(
             .entries(DIMENSIONS)
             .find(|(level, _)| *level == dim.id())
             .and_then(|(_, stem)| serde_json::from_str(stem).ok())
-            .or_else(|| {
-                sunrise_client::save::world_gen_settings(world_root)
-                    .and_then(|s| s.get("dimensions")?.get(dim.id()).cloned())
-                    .map(|stem| sunrise_client::scoreboard::tag_to_json(&stem))
-            })
+            .or_else(|| saved_stem.map(sunrise_client::scoreboard::tag_to_json))
     })?;
     if let Some(generator) = stem["generator"]["type"]
         .as_str()
@@ -1039,15 +1003,28 @@ pub(super) fn make_streaming(
     dim: Dim,
     shape: sunrise_client::chunk::LevelShape,
     seed: i64,
-    enabled_features: &[String],
+    level: &Level,
     biomes: Arc<Biomes>,
     runtime: Option<&super::runtime_levels::Generate>,
+    chunk_reports: Arc<sunrise_client::chunk_io::Reports>,
+    save_reporter: Arc<sunrise_client::chunk_io::SaveFailureReporter>,
 ) -> Result<(Streaming, Arc<SaveDir>, Option<Arc<VanillaTerrain>>)> {
+    use sunrise_client::save::WorldGen;
+    let enabled_features = &level.enabled_features;
+    let generator = level.generator.as_ref().map(|g| g.settings());
+    let saved_stem = generator.and_then(|s| s.get("dimensions")?.get(dim.id()));
     let mut save = SaveDir::new(
         sunrise_client::save::dimension_dir(world_root, dim.id()),
         shape,
+        Some(res.shared_items()),
     );
     save.enable_trusted_fluid_load();
+    save.set_save_reporting(
+        world_root.to_path_buf(),
+        dim.id(),
+        save_reporter,
+        chunk_reports,
+    );
     let save = Arc::new(save);
     if dim == Dim::End {
         // Migrate before any chunk reader can cache the old block entities. A side file it
@@ -1065,38 +1042,30 @@ pub(super) fn make_streaming(
         item_data: &res.core.item_data,
     };
     let mut locator = None;
-    let flat = (dim == Dim::Overworld)
-        .then(|| sunrise_client::save::world_gen_settings(world_root))
-        .flatten()
-        .and_then(|s| {
-            sunrise_client::flatgen::FlatTerrain::from_settings(
-                &s,
-                pack.assets.registry,
-                res.biomes(),
-                shape,
-            )
-        });
+    let overworld_settings = generator.filter(|_| dim == Dim::Overworld);
+    let flat = overworld_settings.and_then(|s| {
+        sunrise_client::flatgen::FlatTerrain::from_settings(
+            s,
+            pack.assets.registry,
+            res.biomes(),
+            shape,
+        )
+    });
     // `DebugLevelSource`: the overworld of the Debug preset.
-    let debug = (dim == Dim::Overworld)
-        .then(|| sunrise_client::save::world_gen_settings(world_root))
-        .flatten()
-        .and_then(|s| {
-            sunrise_client::debugworld::DebugTerrain::from_settings(
-                &s,
-                pack.assets.registry,
-                res.biomes(),
-                shape,
-            )
-        });
+    let debug = overworld_settings.and_then(|s| {
+        sunrise_client::debugworld::DebugTerrain::from_settings(
+            s,
+            pack.assets.registry,
+            res.biomes(),
+            shape,
+        )
+    });
     // PlaceCommand.placeJigsaw/placeStructure generate directly, independently
     // of WorldOptions.generateStructures. Keep their flat locator available
     // even when automatic structure starts are disabled.
-    let automatic_structures =
-        sunrise_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
-    let flat_settings = (dim == Dim::Overworld)
-        .then(|| sunrise_client::save::world_gen_settings(world_root))
-        .flatten()
-        .and_then(|s| sunrise_client::flatgen::FlatTerrain::pipeline_settings(&s));
+    let automatic_structures = generator.is_none_or(|s| WorldGen::from_settings(s).structures);
+    let flat_settings =
+        overworld_settings.and_then(sunrise_client::flatgen::FlatTerrain::pipeline_settings);
     // `adjustGenerationSettings`: a superflat world with features or lakes is decorated
     // whether or not its structures generate.
     let flat_decorates = flat_settings
@@ -1235,6 +1204,7 @@ pub(super) fn make_streaming(
             Some(super::runtime_levels::Generate::Stem(stem)) => Some(stem),
             _ => None,
         },
+        saved_stem,
     )
     .transpose()?
     {
@@ -1273,9 +1243,8 @@ pub(super) fn make_streaming(
             return Err(format!("{}: no generator builds this runtime level", dim.id()).into());
         }
         // WorldOptions.generateStructures, from the world's settings.
-        let structures =
-            sunrise_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
-        let preset = sunrise_client::save::WorldGen::preset(world_root);
+        let structures = automatic_structures;
+        let preset = WorldGen::noise_preset(generator);
         let overrides = world_worldgen_overrides(
             world_root,
             &options.resources,
@@ -1283,9 +1252,7 @@ pub(super) fn make_streaming(
             enabled_features,
             &pack.additional_data,
         );
-        let saved_stem = sunrise_client::save::world_gen_settings(world_root)
-            .and_then(|s| s.get("dimensions")?.get(dim.id()).cloned())
-            .map(|stem| sunrise_client::scoreboard::tag_to_json(&stem));
+        let saved_stem = saved_stem.map(sunrise_client::scoreboard::tag_to_json);
         let regions = sunrise_client::save::biome_regions::layout(world_root, dim.id())
             .map_err(|e| format!("Failed to read the world's biome regions: {e}"))?;
         let mut inner = VanillaTerrain::for_world_with_settings(terrain_resources, &overrides, seed, preset, dim.id(), structures, saved_stem.as_ref(), regions).map_err(|e| {
@@ -1335,10 +1302,12 @@ pub(super) fn make_streaming(
             res.threads(),
         )
     };
-    streaming.load_forced(
-        save.load_forced_chunks(),
-        save.load_mod_tickets(|id| mod_api::TicketController::from_id(id).map(|c| c.slot())),
-    );
+    if options.execution_role.is_client() {
+        streaming.load_forced(
+            save.load_forced_chunks(),
+            save.load_mod_tickets(|id| mod_api::TicketController::from_id(id).map(|c| c.slot())),
+        );
+    }
     streaming.radius = settings.render_distance;
     streaming.biome_blend = settings.biome_blend;
     streaming.smooth_lighting = settings.smooth_lighting;
@@ -1364,6 +1333,167 @@ pub(super) fn make_streaming(
 mod tests {
     use super::*;
 
+    #[test]
+    fn report_root_follows_the_server_role() {
+        use execution_role::ExecutionRole::{DedicatedServer, IntegratedServer};
+        use std::path::Path;
+
+        let cwd = Path::new("server");
+        let game = Path::new("game");
+        assert_eq!(chunk_report_root(DedicatedServer, Some(game), cwd), cwd);
+        assert_eq!(chunk_report_root(IntegratedServer, Some(game), cwd), game);
+        assert_eq!(chunk_report_root(IntegratedServer, None, cwd), cwd);
+    }
+
+    #[test]
+    fn unreadable_level_backup_refuses_before_biome_adoption() {
+        use sunrise_client::save;
+        use sunrise_core::nbt::Tag;
+        use sunrise_world::worldgen::biome_source::regions::SelectorParams;
+
+        let game = tempfile::tempdir().unwrap();
+        let world = game.path().join("world");
+        let record = world.join("data/sunrise/biome_regions.dat");
+        let backup = world.join("level.dat_old");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&backup, b"unreadable backup").unwrap();
+        std::fs::write(
+            game.path().join("server.toml"),
+            "[biome_regions]\nadopt_installed = true\n",
+        )
+        .unwrap();
+        let selector = SelectorParams::current();
+        let layout = Tag::compound([
+            (
+                "selector",
+                Tag::compound([
+                    ("version", Tag::Int(selector.version as i32)),
+                    ("cell", Tag::Int(selector.cell as i32)),
+                    ("salt", Tag::String(selector.salt.as_str().into())),
+                    ("vanilla_weight", Tag::Int(selector.vanilla_weight as i32)),
+                ]),
+            ),
+            ("regions", Tag::List(Vec::new())),
+        ]);
+        save::write_dat(
+            &record,
+            Tag::compound([
+                ("version", Tag::Int(1)),
+                (
+                    "dimensions",
+                    Tag::compound([("minecraft:overworld", layout)]),
+                ),
+            ]),
+        )
+        .unwrap();
+        assert!(save::biome_regions::adoptable(&world));
+        let before = std::fs::read(&record).unwrap();
+        let role = execution_role::ExecutionRole::DedicatedServer;
+        assert!(prepare_level_data(role, &world, "world", game.path()).is_err());
+        assert!(!world.join("level.dat").exists());
+        assert_eq!(std::fs::read(&record).unwrap(), before);
+        assert_eq!(std::fs::read(&backup).unwrap(), b"unreadable backup");
+
+        // The explicit opt-in does change this layout when recovery can proceed.
+        save::write_dat(
+            &backup,
+            Tag::compound([("Data", Tag::Compound(Default::default()))]),
+        )
+        .unwrap();
+        prepare_level_data(role, &world, "world", game.path()).unwrap();
+        assert_ne!(std::fs::read(&record).unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn recovered_world_uses_the_pack_flat_generator_before_its_first_save() {
+        use execution_role::ExecutionRole::DedicatedServer;
+        use std::fs;
+        use sunrise_client::save;
+
+        let scratch = tempfile::tempdir().unwrap();
+        let world = scratch.path();
+        Level::default().write_without_player(world).unwrap();
+        fs::rename(world.join("level.dat"), world.join("level.dat_old")).unwrap();
+        let settings_path = world.join("data/minecraft/world_gen_settings.dat");
+        fs::write(&settings_path, b"unreadable generator settings").unwrap();
+        let pack = world.join("datapacks/recovery");
+        let dimensions = pack.join("data/minecraft/dimension");
+        fs::create_dir_all(&dimensions).unwrap();
+        fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"Recovery test","min_format":[121,0],"max_format":[121,0]}}"#,
+        )
+        .unwrap();
+        fs::write(
+            world.join("datapacks.json"),
+            r#"{"enabled":["vanilla","file/recovery"],"disabled":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dimensions.join("overworld.json"),
+            r#"{"type":"minecraft:overworld","generator":{"type":"minecraft:flat","settings":{
+                "biome":"minecraft:plains","features":false,"lakes":false,"structure_overrides":[],
+                "layers":[{"height":1,"block":"minecraft:bedrock"},{"height":2,"block":"minecraft:diamond_block"}]}}}"#,
+        ).unwrap();
+
+        let resources = std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap().into();
+        crate::game::native_entity_refs::tests::with_game_role(
+            resources,
+            DedicatedServer,
+            |game| {
+                let mut request = WorldRequest::new(
+                    "recovery",
+                    None,
+                    Some(54_321),
+                    false,
+                    None,
+                    Level::default().rule_registry,
+                )
+                .unwrap();
+                request.save_root = world.to_owned();
+                let mut prepared = game.prepare_world_and_rules(request).unwrap();
+                assert_eq!(
+                    fs::read(&settings_path).unwrap(),
+                    b"unreadable generator settings"
+                );
+                let y = prepared.world.shape.min_y + 1;
+                assert!(
+                    prepared
+                        .streaming
+                        .set_forced_loaded(&mut prepared.world, 32, 32, true)
+                );
+                let chunk = &prepared.world.chunks[&(32, 32)];
+                assert_eq!(
+                    Some(chunk.get(0, y, 0)),
+                    game.pack
+                        .assets
+                        .registry
+                        .default_state("minecraft:diamond_block")
+                        .map(|id| id.0)
+                );
+
+                // The spawn search sees the pack's flat layers before the first save.
+                game.level = prepared.level.clone();
+                game.level_shapes = prepared.shapes;
+                assert_eq!(
+                    game.spawn_origin().unwrap(),
+                    ((0, 0), prepared.world.shape.min_y + 3)
+                );
+
+                prepared.level.write_without_player(world).unwrap();
+                assert_eq!(
+                    save::world_gen_settings(world).as_ref(),
+                    prepared
+                        .level
+                        .generator
+                        .as_ref()
+                        .map(|generator| generator.settings()),
+                );
+            },
+        );
+    }
+
     /// A world whose level.dat does not read but whose level.dat_old does: only the
     /// dedicated server restores it unasked. Every role here carries the launch configuration
     /// (`options.dedicated`) a dedicated server and the integrated server thread both have, so
@@ -1385,7 +1515,7 @@ mod tests {
                 name: "Recovered".into(),
                 ..Level::default()
             }
-            .write(&dir)
+            .write(&dir, &Default::default())
             .unwrap();
             std::fs::copy(dir.join("level.dat"), dir.join("level.dat_old")).unwrap();
             std::fs::write(dir.join("level.dat"), b"not a level").unwrap();
@@ -1444,7 +1574,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn creation_rule_selection_reaches_the_saved_world() {
         use super::super::native_entity_refs::tests::with_game;
         use sunrise_client::gamerules::{GameRules, Rule, RuleRegistry, Value};
@@ -1456,7 +1586,7 @@ mod tests {
             max: 0,
         };
         let registry =
-            Arc::new(RuleRegistry::with_bool_rules(&["example:machines".into()], &[rule]).unwrap());
+            Arc::new(RuleRegistry::with_mod_rules(&["example:machines".into()], &[rule]).unwrap());
         let mut create = sunrise_client::title::WorldOptions {
             rules: GameRules::with_registry(registry.clone(), &[]),
             ..Default::default()
@@ -1470,6 +1600,7 @@ mod tests {
         with_game(|game| {
             let request = WorldRequest {
                 owner: None,
+                chunk_reports: sunrise_client::chunk_io::PROCESS_REPORTS.clone(),
                 save_root: dir.clone(),
                 folder: "test".into(),
                 name: Some("test".into()),
@@ -1517,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_loaded_missing_biome_survives_a_game_save_with_an_enabled_biome_pack() {
         use super::super::native_entity_refs::tests::with_game;
         let root = std::env::temp_dir().join(format!(
@@ -1541,13 +1672,17 @@ mod tests {
             data_packs: Some((vec!["vanilla".into(), "file/biomes".into()], vec![])),
             ..Level::default()
         }
-        .write(&root)
+        .write(&root, &Default::default())
         .unwrap();
         with_game(|game| {
             let before = game.res.biomes().with_packs([]);
             let mut chunk = sunrise_client::chunk::Chunk::empty(8, 8);
             chunk.set_biome_cell(1, 20, 2, before.saved_id("gone_mod:highland"));
-            let save = SaveDir::new(root.clone(), sunrise_client::chunk::LevelShape::OVERWORLD);
+            let save = SaveDir::new(
+                root.clone(),
+                sunrise_client::chunk::LevelShape::OVERWORLD,
+                Some(Default::default()),
+            );
             save.save(&[Arc::new(chunk)], game.pack.assets.registry, &before)
                 .unwrap();
             drop(save);
@@ -1589,7 +1724,7 @@ mod tests {
     /// save records the loaded list, so the reopened world fires nothing, as a
     /// world without the list doesn't.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_world_saved_with_other_mod_versions_fires_mod_mismatch() {
         use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
         // The warning is read back from the process's logger and its last 50 lines. In the shared
@@ -1602,12 +1737,12 @@ mod tests {
         ) {
             return;
         }
+        use mod_api::{Hooks, HostSide, ModEntry, ModMismatch, ModMismatchEvent};
+        use std::sync::{Arc, Mutex};
         use sunrise_client::save::{
             Level,
             level_mods::{ModRecord, set_loaded},
         };
-        use mod_api::{Hooks, HostSide, ModEntry, ModMismatch, ModMismatchEvent};
-        use std::sync::{Arc, Mutex};
 
         struct Migrating(Arc<Mutex<Vec<Vec<ModMismatch>>>>);
         #[mod_api::__subscriptions]
@@ -1683,7 +1818,7 @@ mod tests {
         // Before the loaded mods are known: a world without the list.
         let _restore = Restore(set_loaded(None));
         let plain = dir.join("plain");
-        level().write(&plain).unwrap();
+        level().write(&plain, &Default::default()).unwrap();
         assert_eq!(Level::read(&plain).unwrap().saved_mods, None);
         // Saved with version 1 of the mod, and with one since gone.
         let changed = dir.join("changed");
@@ -1691,7 +1826,7 @@ mod tests {
             record("mismatch_test", "1.0.0"),
             record("gone", "0.5.0"),
         ]));
-        level().write(&changed).unwrap();
+        level().write(&changed, &Default::default()).unwrap();
         set_loaded(Some(vec![record("mismatch_test", "2.0.0")]));
         mod_platform::testing::with_mods(
             vec![
@@ -1777,7 +1912,7 @@ mod tests {
     /// worldgen entries; the Overworld's noise stays the game's. Ignored as it
     /// installs the process-wide tables.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_stem_naming_a_mods_generator_opens_on_mod_terrain() {
         use sunrise_client::streaming::ChunkGenerator as _;
         use sunrise_world::worldgen::{
@@ -1849,6 +1984,7 @@ mod tests {
                 0,
                 true,
                 None,
+                None,
             )
         };
         let pocket = Dim::Extra(mod_api::__private::dimension_key("test:pocket"));
@@ -1865,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes"]
+    #[ignore = "daily"]
     fn both_server_roles_record_regions_before_world_generation() {
         mod_platform::__private::initialize().unwrap();
         use super::super::native_entity_refs::tests::with_game_role;
@@ -1909,6 +2045,7 @@ mod tests {
                     with_game_role(root.clone(), role, |game| {
                         let request = WorldRequest {
                             owner: None,
+                            chunk_reports: sunrise_client::chunk_io::PROCESS_REPORTS.clone(),
                             save_root: world.clone(),
                             folder: "world".into(),
                             name: Some("Region fixture".into()),
@@ -1957,7 +2094,7 @@ mod unused_feature_startup_tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn actual_world_prepare_rejects_unused_invalid_feature() {
         let resources = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -1995,7 +2132,7 @@ mod unused_feature_startup_tests {
                 data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
                 ..Level::default()
             };
-            level.write(&root).unwrap();
+            level.write(&root, &Default::default()).unwrap();
             sunrise_client::save::write_world_gen_settings(
                 &root,
                 259,
@@ -2034,6 +2171,7 @@ mod unused_feature_startup_tests {
                 creative: false,
                 create: None,
                 owner: None,
+                chunk_reports: sunrise_client::chunk_io::PROCESS_REPORTS.clone(),
                 rule_registry: Level::default().rule_registry,
             };
             let result = request.prepare(
@@ -2064,7 +2202,7 @@ mod unused_feature_preservation_tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn startup_leaf_preservation_other_id_and_unrelated_feature() {
         let resources = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2098,7 +2236,7 @@ mod unused_feature_preservation_tests {
             data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
             ..Level::default()
         };
-        level.write(&root).unwrap();
+        level.write(&root, &Default::default()).unwrap();
         sunrise_client::save::write_world_gen_settings(
             &root,
             259,
@@ -2149,6 +2287,7 @@ mod unused_feature_preservation_tests {
             creative: false,
             create: None,
             owner: None,
+            chunk_reports: sunrise_client::chunk_io::PROCESS_REPORTS.clone(),
             rule_registry: Level::default().rule_registry,
         };
         assert!(

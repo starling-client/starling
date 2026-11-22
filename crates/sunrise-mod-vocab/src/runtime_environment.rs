@@ -1,7 +1,8 @@
-//! Immutable physical-process information shared by native and wasm mods.
+//! Immutable physical-process information.
 
-/// The physical process, independent of a hook's logical side.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+/// The kind of process running this mod, independent of a hook's logical side.
+// no wire: describes the current process, not a property negotiated with a peer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Dist {
     /// A client process, including its integrated server.
@@ -11,8 +12,9 @@ pub enum Dist {
     DedicatedServer,
 }
 
-/// Process information captured by the engine before registration.
-#[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+/// Process information captured by the engine before registration and read locally.
+// no wire: this snapshot describes only the local process at startup.
+#[derive(Clone, Debug, PartialEq, Eq)]
 // exhaustive: fields are private; only the engine constructor supplies a snapshot.
 pub struct RuntimeEnvironment {
     dist: Dist,

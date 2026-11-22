@@ -27,7 +27,18 @@ python3 tools/port_ledger.py gaps --kind seam                         # see the 
 python3 tools/port_ledger.py report                                   # .local/port-ledger/report.{md,html}
 python3 tools/port_ledger.py diff old/ledger.json                     # against another build
 python3 tools/port_ledger.py todo --package world/entity/animal       # the next methods with no answer
+python3 tools/ci/check_port_map_paths.py                             # every row's Rust function is still there
 ```
+
+A `port` or `inline` row's third column is `path::owner::fn`, one target: its file must hold that function's
+declaration (`fn name`, with a body, whatever the visibility), which is what the ledger indexes. A file that
+only re-exports it (a `use`), calls it, or mentions it in a comment or a string is not where the ledger looks,
+so the row points at the module that declares `fn name`. `tools/ci/check_port_map_paths.py` holds every row to
+that, and CI and `pr_ready.py` run it, so a refactor repoints its rows in the same change. The rows that do not
+resolve yet are listed in `tools/ci/port_map_known_stale.txt`, which only shrinks: `--refresh` deletes the lines
+that no longer need one, and fixing a row means pointing it at the function's new file (or the `impl` it moved
+into). The growth check needs a base, because only a base tells a line this branch added from one main moved
+down the file: `pr_ready.py` passes the checkout's merge base and CI the pull request's base commit.
 
 `--json` on any query gives machine output for agents.
 

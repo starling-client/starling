@@ -5,6 +5,7 @@
 use super::*;
 use heck::ToUpperCamelCase;
 use std::fmt::Write as _;
+use syn::visit::Visit;
 
 /// Reads implemented by the scoped goal context over the active mob and its
 /// disjoint live mob loans. Players are read from the game's backend; other
@@ -15,6 +16,7 @@ pub(super) const GOAL_VIEW_READS: &[&str] = &[
     "entity_velocity",
     "entity_rotation",
     "entity_head_yaw",
+    "entity_body_yaw",
     "entity_bounding_box",
     "entity_eye_height",
     "entity_eye_position",
@@ -230,6 +232,10 @@ struct Area {
     stem: String,
     camel: String,
     tiers: BTreeMap<Tier, Vec<Entry>>,
+    /// The backend tiers the game answers from a borrowed view of its read-only tables, not
+    /// from `Game`, declared by `#[table_backend("path")]` on the trait: the view carries the
+    /// reads and implements the trait once, and `Game` forwards to it.
+    tables: BTreeMap<Tier, String>,
 }
 
 impl Area {
@@ -242,7 +248,7 @@ impl Area {
 }
 
 /// The traits of one area file by tier. Only `<Camel><Tier>` and the explicitly listed draw
-/// contexts and services are accepted: an unknown trait would reach neither a union nor the WIT.
+/// contexts and services are accepted: an unknown trait cannot be reached through the Host.
 /// Imports and file/item attributes are allowed, but modules, macros and other items are refused
 /// rather than hiding declarations from this scan.
 fn area_tiers(camel: &str, file: syn::File) -> Result<BTreeMap<Tier, Vec<Entry>>, String> {
@@ -311,6 +317,31 @@ fn area_tiers(camel: &str, file: syn::File) -> Result<BTreeMap<Tier, Vec<Entry>>
     Ok(tiers)
 }
 
+/// The `#[table_backend("path")]` declarations of an area file: only a `Backend` trait may carry
+/// one, since the game answers only its reads from a view.
+fn table_backends(camel: &str, file: &syn::File) -> Result<BTreeMap<Tier, String>, String> {
+    let mut tables = BTreeMap::new();
+    for item in &file.items {
+        let Item::Trait(item) = item else { continue };
+        for attr in &item.attrs {
+            if !attr.path().is_ident("table_backend") {
+                continue;
+            }
+            if item.ident != format!("{camel}Backend") {
+                return Err(format!(
+                    "`#[table_backend]` belongs on `{camel}Backend`, not `{}`",
+                    item.ident
+                ));
+            }
+            let path = attr
+                .parse_args::<syn::LitStr>()
+                .map_err(|e| format!("`#[table_backend]` takes a path string: {e}"))?;
+            tables.insert(Tier::Backend, path.value());
+        }
+    }
+    Ok(tables)
+}
+
 /// The area files, `base` first and then by name, as the catalog's are.
 fn load(root: &Path) -> Result<Vec<Area>, String> {
     let dir = root.join(DIRECTORY);
@@ -321,8 +352,15 @@ fn load(root: &Path) -> Result<Vec<Area>, String> {
         let source = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let file = syn::parse_file(&source).map_err(|e| format!("{}: {e}", path.display()))?;
         let camel = stem.to_upper_camel_case();
+        let tables =
+            table_backends(&camel, &file).map_err(|e| format!("{}: {e}", path.display()))?;
         let tiers = area_tiers(&camel, file).map_err(|e| format!("{}: {e}", path.display()))?;
-        areas.push(Area { stem, camel, tiers });
+        areas.push(Area {
+            stem,
+            camel,
+            tiers,
+            tables,
+        });
     }
     crate::rerun_if_changed(&dir.display());
     Ok(areas)
@@ -355,6 +393,65 @@ pub(super) fn areas_source(root: &Path) -> Result<String, String> {
             stem = area.stem
         ));
     }
+    // A partial read backend advertises the backend but can only answer some of it.
+    // Forward the named methods, and let the API's standard no-backend value handle
+    // the rest.
+    let mut choices = String::new();
+    let mut partial_impls = String::new();
+    let mut read_names = std::collections::BTreeSet::new();
+    for area in &areas {
+        for tier in [Tier::Backend, Tier::ClientBackend] {
+            let Some(entries) = area.tiers.get(&tier) else {
+                continue;
+            };
+            let trait_name = area.trait_name(tier);
+            writeln!(
+                partial_impls,
+                "#[deny(unconditional_recursion)] impl $crate::prelude::{trait_name} for $host {{"
+            )
+            .unwrap();
+            for entry in entries {
+                let name = entry.name.as_str();
+                if read_names.insert(name) {
+                    writeln!(choices, "(@known {name}) => {{}};\n([{name} $($tail:ident)*] {name} $forward:item {{$($refused:item)*}}) => {{ $forward }};").unwrap();
+                }
+                let sig = entry.sig.to_token_stream();
+                let args = signature_args(&entry.sig, name)?;
+                let call_args = if args.is_empty() {
+                    "self".to_owned()
+                } else {
+                    format!("self, {args}")
+                };
+                let value = refusal(&entry.sig, name)?;
+                let refused = if args.is_empty() {
+                    format!("{sig} {{ {value} }}")
+                } else {
+                    format!("{sig} {{ let _ = ({args},); {value} }}")
+                };
+                writeln!(partial_impls, "$crate::__partial_read!([$($provided)*] {name} {sig} {{ Self::{name}({call_args}) }} {{ {refused} }});").unwrap();
+            }
+            partial_impls.push_str("}\n");
+        }
+    }
+    writeln!(macros, r#"#[doc(hidden)] #[macro_export] macro_rules! __mod_api_partial_read {{
+        {choices}
+        (@known $name:ident) => {{ compile_error!(concat!("unknown backend read: ", stringify!($name))); }};
+        ([$other:ident $($tail:ident)*] $name:ident $forward:item {{$($refused:item)*}}) => {{
+            $crate::__partial_read!([$($tail)*] $name $forward {{$($refused)*}});
+        }};
+        ([] $name:ident $forward:item {{$($refused:item)*}}) => {{ $($refused)* }};
+    }}
+    #[doc(hidden)] pub use __mod_api_partial_read as __partial_read;"#).unwrap();
+    let partial = format!(
+        "($host:ty, partial($($provided:ident),* $(,)?)) => {{
+        const _: () = {{
+            use $crate::*;
+            use ::std::sync::Arc;
+            $($crate::__partial_read!(@known $provided);)*
+            {partial_impls}
+        }};
+    }};"
+    );
     for (name, tiers, union) in [
         ("impl_host_areas", &[Tier::Host][..], "Host"),
         (
@@ -395,8 +492,16 @@ pub(super) fn areas_source(root: &Path) -> Result<String, String> {
                 )
             })
             .collect();
+        let (partial, partial_doc) = if name == "impl_backend_areas" {
+            (
+                partial.as_str(),
+                "/// `partial(method, ...)` forwards the listed reads to inherent methods and answers\n/// the ordinary no-backend value for other reads that can refuse.\n",
+            )
+        } else {
+            ("", "")
+        };
         macros.push_str(&format!(
-            "/// Implements the area traits of `{union}` for `$host` with their defaults, except the areas listed in `except(...)`, which the caller implements itself. The union trait is left to the caller.\n#[doc(hidden)]\n#[macro_export]\nmacro_rules! __mod_api_{name} {{ ($host:ty $(, except($($skip:ident),*))?) => {{ {impls} }}; }}\n#[doc(hidden)]\npub use __mod_api_{name} as {name};\n"
+            "/// Implements the area traits of `{union}` for `$host` with their defaults, except the areas listed in `except(...)`, which the caller implements itself. The union trait is left to the caller.\n{partial_doc}#[doc(hidden)]\n#[macro_export]\nmacro_rules! __mod_api_{name} {{ ($host:ty $(, except($($skip:ident),*))?) => {{ {impls} }}; {partial} }}\n#[doc(hidden)]\npub use __mod_api_{name} as {name};\n"
         ));
     }
     Ok(format!(
@@ -408,172 +513,139 @@ pub(super) fn areas_source(root: &Path) -> Result<String, String> {
 /// refuse a missing inherent implementation instead of inheriting a trait default.
 pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
     let mut code = String::from(
-        "use crate::game::Game;\nuse crate::game::api_values::{call_stack_write, call_write, TryIntoApi, TryIntoEngine};\nuse mod_api::*;\n",
+        "use crate::game::Game;\nuse crate::game::api_values::{call_stack_write, call_state_write, call_write, TryIntoApi, TryIntoEngine};\nuse mod_api::*;\n",
     );
     for area in load(root)? {
         for (tier, entries) in &area.tiers {
-            code.push_str(&format!(
-                "#[deny(unconditional_recursion)]\nimpl mod_api::prelude::{} for Game<'_> {{\n",
+            let table = area.tables.get(tier).map(String::as_str);
+            // A table-backed area is implemented by its view, and by `Game`, which hands the
+            // view out: both forward the same reads, so neither keeps a copy of them.
+            let targets: &[&str] = match table {
+                Some(table) => &[table, "Game"],
+                None => &["Game"],
+            };
+            for &target in targets {
+                let via_game = table.is_some() && target == "Game";
+                code.push_str(&format!(
+                "#[deny(unconditional_recursion)]\nimpl mod_api::prelude::{} for {target}<'_> {{\n",
                 area.trait_name(*tier)
             ));
-            for entry in entries {
-                let name = &entry.name;
-                let attrs: Vec<_> = entry
-                    .attrs
-                    .iter()
-                    .filter(|a| a.path().is_ident("access"))
-                    .collect();
-                if attrs.len() != 1 {
-                    return Err(format!("{name}: expected exactly one access declaration"));
-                }
-                let level = attrs[0]
-                    .parse_args::<syn::Ident>()
-                    .map_err(|e| e.to_string())?;
-                if !matches!(
-                    level.to_string().as_str(),
-                    "WorldOnly" | "Metadata" | "ClientSetup" | "PublishedResources"
-                ) {
-                    return Err(format!("{name}: unknown access level {level}"));
-                }
-                let (setup, args, checked_write) = boundary_arguments(&entry.sig, name)?;
-                let static_call = entry.attrs.iter().any(|a| a.path().is_ident("static_call"));
-                let args = if static_call {
-                    args
-                } else if args.is_empty() {
-                    "self".into()
-                } else {
-                    format!("self, {args}")
-                };
-                let sig = entry.sig.to_token_stream();
-                let call = if entry.attrs.iter().any(|a| a.path().is_ident("service")) {
-                    "self".into()
-                } else {
-                    format!("Game::{name}({args})")
-                };
-                let crosses_output = match &entry.sig.output {
-                    syn::ReturnType::Type(_, ty) => boundary_value(ty),
-                    syn::ReturnType::Default => false,
-                };
-                let text_output = match &entry.sig.output {
-                    syn::ReturnType::Type(_, ty) => text_value(ty),
-                    syn::ReturnType::Default => false,
-                };
-                let text_result = result_error(&entry.sig.output)
-                    .is_some_and(|error| outer_type(error, "TextFormError"));
-                let call = if text_output {
-                    if text_result {
-                        format!("{call}.try_into_api().map_err(Into::into)")
-                    } else {
-                        format!("{call}.try_into_api().unwrap_or_else(|error| Err(error.into()))")
-                    }
-                } else if text_result {
-                    // Writes with converted Text arguments call an infallible engine
-                    // body. Read backends return Result so converting API-owned
-                    // aggregate fields can refuse without losing a boundary error.
-                    let text_input =
-                        entry.sig.inputs.iter().any(
-                            |arg| matches!(arg, syn::FnArg::Typed(arg) if text_value(&arg.ty)),
-                        );
-                    let read = entry
-                        .sig
-                        .receiver()
-                        .is_some_and(|receiver| receiver.mutability.is_none());
-                    if text_input && !read {
-                        format!("Ok({call})")
-                    } else {
-                        call
-                    }
-                } else if checked_write {
-                    if crosses_output {
-                        format!("call_stack_write(|| {call})")
-                    } else {
-                        format!("call_write(|| {call})")
-                    }
-                } else if crosses_output {
-                    match result_error(&entry.sig.output) {
-                        Some(error) if outer_type(error, "LevelReadError") => format!(
-                            "{call}.try_into_api().unwrap_or(Err(mod_api::LevelReadError::Unavailable))"
-                        ),
-                        Some(error) if outer_type(error, "GameRuleReadError") => format!(
-                            "{call}.try_into_api().expect(\"game rule values convert infallibly\")"
-                        ),
-                        Some(_) => format!(
-                            "{call}.try_into_api().unwrap_or_else(|error| Err(error.into_write_error().into()))"
-                        ),
-                        None => format!("{call}.try_into_api().unwrap_or_default()"),
-                    }
-                } else {
-                    call
-                };
-                let typed_access_error = result_error(&entry.sig.output).filter(|error| {
-                    outer_type(error, "LevelReadError") || outer_type(error, "LevelWriteError")
-                });
-                let access = if let Some(error) = typed_access_error {
-                    let error = error.to_token_stream();
-                    format!(
-                        "if !mod_api::__private::access_allowed({name:?}, mod_api::__private::LoadAccess::{level}) {{ return Err({error}::Unavailable); }}"
-                    )
-                } else {
-                    format!(
-                        "mod_api::__private::check_access({name:?}, mod_api::__private::LoadAccess::{level});"
-                    )
-                };
-                code.push_str(&format!("{sig} {{ {access} {setup} {call} }}\n"));
-            }
-            code.push_str("}\n");
-            if matches!(tier, Tier::Host | Tier::Backend | Tier::ClientBackend) {
-                let area_trait = area.trait_name(*tier);
-                writeln!(code,"#[deny(unconditional_recursion)] impl mod_api::prelude::{area_trait} for crate::game::equip_host::EquipHost<'_, '_> {{").unwrap();
                 for entry in entries {
                     let name = &entry.name;
-                    let sig = entry.sig.to_token_stream();
-                    if entry
-                        .sig
-                        .receiver()
-                        .is_some_and(|receiver| receiver.mutability.is_some())
+                    // A shared published read bypasses Game's conversions and uses the same
+                    // non-unwinding answer as the area trait default.
+                    if let Some(published) =
+                        entry.attrs.iter().find(|a| a.path().is_ident("published"))
                     {
-                        let unused = entry
-                            .sig
-                            .inputs
-                            .iter()
-                            .filter_map(|arg| match arg {
-                                FnArg::Typed(arg) => {
-                                    Some(format!("let _ = {};", arg.pat.to_token_stream()))
-                                }
-                                _ => None,
-                            })
-                            .collect::<String>();
-                        writeln!(code,"{sig} {{ {unused} panic!(\"mutable access through an observation-only equipment Host\") }}").unwrap();
+                        let read = published
+                            .parse_args::<syn::Path>()
+                            .map_err(|e| format!("{name}: {e}"))?;
+                        let sig = entry.sig.to_token_stream();
+                        let args = signature_args(&entry.sig, name)?;
+                        code.push_str(&format!(
+                            "{sig} {{ mod_api::__private::{}({args}) }}\n",
+                            read.to_token_stream()
+                        ));
                         continue;
                     }
-                    let args = signature_args(&entry.sig, name)?;
-                    let tail = if args.is_empty() {
-                        String::new()
+                    let keeps_api_inputs = entry
+                        .attrs
+                        .iter()
+                        .any(|a| a.path().is_ident("forward_api_inputs"));
+                    let (setup, args, checked_write) = if keeps_api_inputs {
+                        (String::new(), signature_args(&entry.sig, name)?, false)
                     } else {
-                        format!(",{args}")
+                        let read_stack =
+                            entry.attrs.iter().any(|a| a.path().is_ident("read_stack"));
+                        let serialize_text = entry
+                            .attrs
+                            .iter()
+                            .any(|a| a.path().is_ident("serialize_text"));
+                        boundary_arguments(&entry.sig, name, read_stack, serialize_text)?
                     };
-                    let call = format!(
-                        "<Game<'_> as mod_api::prelude::{area_trait}>::{name}(self.game{tail})"
-                    );
-                    let cached = match name.as_str() {
-                        "entity_kind" => Some(("entity", "self.row.kind")),
-                        "entity_position" => Some(("entity", "self.row.position")),
-                        "living" => Some((
-                            "entity",
-                            "self.row.living.then_some(LivingRef::new(entity))",
-                        )),
-                        "living_health" => Some(("living.entity()", "self.row.health")),
-                        "living_max_health" => Some(("living.entity()", "self.row.max_health")),
-                        "living_alive" => Some(("living.entity()", "self.row.alive")),
-                        "living_equipment" => Some(("living.entity()", "self.equipment(slot)")),
-                        "living_hand_item" => Some((
-                            "living.entity()",
-                            "self.equipment(match hand { Hand::Main => EquipmentSlot::MainHand, Hand::Off => EquipmentSlot::OffHand })",
-                        )),
+                    let static_call = entry.attrs.iter().any(|a| a.path().is_ident("static_call"));
+                    let view_args = args.clone();
+                    let args = if static_call {
+                        args
+                    } else if args.is_empty() {
+                        "self".into()
+                    } else {
+                        format!("self, {args}")
+                    };
+                    let sig = entry.sig.to_token_stream();
+                    let call = if entry.attrs.iter().any(|a| a.path().is_ident("service")) {
+                        "self".into()
+                    } else if via_game {
+                        let table = table.unwrap_or_default();
+                        format!("{table}::of(self).{name}({view_args})")
+                    } else {
+                        format!("{target}::{name}({args})")
+                    };
+                    let keeps_api_output = entry
+                        .attrs
+                        .iter()
+                        .any(|a| a.path().is_ident("forward_api_output"));
+                    let converted_output = match &entry.sig.output {
+                        syn::ReturnType::Type(_, ty) if !keeps_api_output => Some(ty.as_ref()),
                         _ => None,
                     };
-                    let cached=cached.map(|(entity,value)|format!("if {entity}==self.row.entity {{ mod_api::__private::check_access({name:?},mod_api::__private::LoadAccess::WorldOnly); return {value}; }}")).unwrap_or_default();
-                    writeln!(code, "{sig} {{ {cached} {call} }}").unwrap();
+                    let crosses_output = converted_output.is_some_and(boundary_value);
+                    let text_output = converted_output.is_some_and(text_value);
+                    let text_result = result_error(&entry.sig.output)
+                        .is_some_and(|error| outer_type(error, "TextFormError"));
+                    let call = if text_output {
+                        if text_result {
+                            format!("{call}.try_into_api().map_err(Into::into)")
+                        } else {
+                            format!(
+                                "{call}.try_into_api().unwrap_or_else(|error| Err(error.into()))"
+                            )
+                        }
+                    } else if text_result {
+                        // Writes with converted Text arguments call an infallible engine
+                        // body. Read backends return Result so converting API-owned
+                        // aggregate fields can refuse without losing a boundary error.
+                        let text_input = !keeps_api_inputs
+                            && entry.sig.inputs.iter().any(
+                                |arg| matches!(arg, syn::FnArg::Typed(arg) if text_value(&arg.ty)),
+                            );
+                        let read = entry
+                            .sig
+                            .receiver()
+                            .is_some_and(|receiver| receiver.mutability.is_none());
+                        if text_input && !read {
+                            format!("Ok({call})")
+                        } else {
+                            call
+                        }
+                    } else if checked_write {
+                        if crosses_output
+                            && result_error(&entry.sig.output)
+                                .is_some_and(|error| outer_type(error, "LevelWriteError"))
+                        {
+                            format!("call_state_write(|| {call})")
+                        } else if crosses_output {
+                            format!("call_stack_write(|| {call})")
+                        } else {
+                            format!("call_write(|| {call})")
+                        }
+                    } else if crosses_output {
+                        match result_error(&entry.sig.output) {
+                            Some(error) if outer_type(error, "LevelReadError") => format!(
+                                "{call}.try_into_api().unwrap_or(Err(mod_api::LevelReadError::Unavailable))"
+                            ),
+                            Some(error) if outer_type(error, "GameRuleReadError") => format!(
+                                "{call}.try_into_api().expect(\"game rule values convert infallibly\")"
+                            ),
+                            Some(_) => format!(
+                                "{call}.try_into_api().unwrap_or_else(|error| Err(error.into_write_error().into()))"
+                            ),
+                            None => format!("{call}.try_into_api().unwrap_or_default()"),
+                        }
+                    } else {
+                        call
+                    };
+                    code.push_str(&format!("{sig} {{ {setup} {call} }}\n"));
                 }
                 code.push_str("}\n");
             }
@@ -607,11 +679,6 @@ fn boundary_value(ty: &Type) -> bool {
             "RecipeTemplate",
             "RecipeTrimPattern",
             "FireworkShapeIngredient",
-            "AnvilResult",
-            "AnvilCraft",
-            "AnvilUpdate",
-            "GrindstonePlace",
-            "GrindstoneTake",
             "ParticleOptions",
         ],
     )
@@ -627,6 +694,16 @@ fn contains_value(ty: &Type, names: &[&str]) -> bool {
                 .last()
                 .is_some_and(|segment| self.1.contains(&segment.ident.to_string().as_str()));
             syn::visit::visit_type_path(self, path);
+        }
+
+        fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+            if matches!(&segment.arguments, syn::PathArguments::Parenthesized(_))
+                && (segment.ident == "Fn" || segment.ident == "FnMut" || segment.ident == "FnOnce")
+            {
+                // The callee converts values before invoking the unchanged callback.
+                return;
+            }
+            syn::visit::visit_path_segment(self, segment);
         }
     }
     let mut values = Values(false, names);
@@ -652,22 +729,19 @@ fn result_error(output: &syn::ReturnType) -> Option<&Type> {
     Some(error)
 }
 
-/// A borrowed `&ItemStack`: outside a checked write, the method only reads it.
-fn read_only_stack(ty: &Type) -> bool {
-    matches!(ty, Type::Reference(reference) if outer_type(&reference.elem, "ItemStack"))
-}
-
 fn outer_type(ty: &Type, expected: &str) -> bool {
     matches!(ty, Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == expected))
 }
 
 /// The conversion code for a host method's boundary arguments, the arguments to pass on, and
 /// whether it is a checked write (`&mut self`, a `Result`, a converted value). A checked write
-/// refuses an invalid value with its error; a read converts a borrowed stack without the write
-/// limits, and any other refused value makes the method return its default.
+/// refuses an invalid value with its error; a read or comparison converts a borrowed stack
+/// without write limits, and any other refused value makes the method return its default.
 fn boundary_arguments(
     sig: &syn::Signature,
     method: &str,
+    read_stack: bool,
+    serialize_text: bool,
 ) -> Result<(String, String, bool), String> {
     let mutable = sig
         .receiver()
@@ -697,12 +771,30 @@ fn boundary_arguments(
             args.push(name);
             continue;
         }
-        let conversion = if text {
+        let is_borrowed_stack = |ty: &Type| matches!(ty, Type::Reference(reference) if outer_type(&reference.elem, "ItemStack"));
+        let optional_read_stack = read_stack
+            && matches!(&*arg.ty, Type::Path(path)
+            if outer_type(&arg.ty, "Option") && path.path.segments.last().is_some_and(|segment|
+                matches!(&segment.arguments, syn::PathArguments::AngleBracketed(args)
+                    if matches!(args.args.first(), Some(syn::GenericArgument::Type(ty)) if is_borrowed_stack(ty)))));
+        let conversion = if text && serialize_text {
+            let reference = if matches!(&*arg.ty, Type::Reference(_)) {
+                ""
+            } else {
+                "&"
+            };
+            format!("sunrise_client_lib::api_text::to_serialized_engine({reference}{name})")
+        } else if text {
             format!("{name}.try_into_engine(&())")
-        } else if !checked_write && read_only_stack(&arg.ty) {
-            // Only a write imposes resident maxima: a stack vanilla stores (damage above its
-            // maximum, say) still answers a read.
+        } else if optional_read_stack {
+            format!("{name}.map(crate::game::api_values::stack_value).transpose()")
+        } else if (!checked_write || read_stack) && is_borrowed_stack(&arg.ty) {
+            // A detached stack used as input need not fit a resident slot.
             format!("crate::game::api_values::stack_value({name})")
+        } else if read_stack
+            && matches!(&*arg.ty, Type::Reference(reference) if outer_type(&reference.elem, "ItemResource"))
+        {
+            format!("crate::game::api_values::stack_value({name}.as_stack())")
         } else {
             format!("{name}.try_into_engine(self.items())")
         };
@@ -781,41 +873,39 @@ fn signature_args(sig: &syn::Signature, name: &str) -> Result<String, String> {
         .join(", "))
 }
 
-/// How a read answers where there is no backend to ask: its typed refusal, or `None` where only
-/// a `String` forwards.
-fn refusal(sig: &syn::Signature, name: &str) -> Result<Option<&'static str>, String> {
+/// A backend read's typed answer where there is no backend to ask.
+fn refusal(sig: &syn::Signature, name: &str) -> Result<&'static str, String> {
     let syn::ReturnType::Type(_, ty) = &sig.output else {
         return Err(format!("{name}: a backend read returns a value"));
     };
     let syn::Type::Path(path) = &**ty else {
-        return Err(format!(
-            "{name}: the goal view cannot refuse its return type"
-        ));
+        return Err(format!("{name}: cannot refuse its backend return type"));
     };
     let last = path.path.segments.last().map(|seg| seg.ident.to_string());
-    Ok(match last.as_deref() {
-        Some("Option") => Some("None"),
-        Some("bool") => Some("false"),
-        // A read that answers `Result`: its refusal is the error a host without a backend answers.
-        Some("Result") => Some("Err(mod_api::NoBackend::no_backend())"),
-        Some("u64" | "u32" | "i32" | "u16" | "u8" | "usize") => Some("0"),
-        // A registry key's metadata: a read the goal view only forwards.
-        Some("String") => None,
-        _ => {
-            return Err(format!(
-                "{name}: the goal view cannot refuse its return type"
-            ));
-        }
-    })
+    match last.as_deref() {
+        Some("Option") => Ok("None"),
+        Some("bool") => Ok("false"),
+        Some("Result") => Ok("Err(NoBackend::no_backend())"),
+        Some("u64" | "u32" | "i32" | "u16" | "u8" | "usize") => Ok("0"),
+        _ => Err(format!("{name}: cannot refuse its backend return type")),
+    }
 }
 
 /// `entity_position(entity)` on a backend is also `EntityRef::position(self, host)`: the handle
 /// a method is of, when its first argument is one and its name starts with the handle's.
+/// `#[manual_handle]` opts out only from this inherent wrapper, not backend routing.
 fn handle_method(
     entry: &Entry,
     tier: Tier,
     handles: &BTreeMap<String, String>,
 ) -> Result<Option<(String, String)>, String> {
+    if entry
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("manual_handle"))
+    {
+        return Ok(None);
+    }
     let name = entry.name.as_str();
     let mut inputs = entry.sig.inputs.iter();
     let mutable = matches!(inputs.next(), Some(FnArg::Receiver(r)) if r.mutability.is_some());
@@ -882,8 +972,6 @@ fn handle_method(
     let call = format!("{name}(self{args})");
     let body = if returns("Option") {
         format!("{backend}(host)?.{call}")
-    } else if handle.ends_with("Key") && returns("String") {
-        format!("{backend}(host).expect(\"registry key metadata requires a game host\").{call}")
     } else if returns("bool") {
         format!("{backend}(host).map(|backend| backend.{call}).unwrap_or(false)")
     } else if returns("CommandResult") {
@@ -904,8 +992,8 @@ fn handle_method(
     )))
 }
 
-/// The unions, the handles' methods and the hidden backends' side of the host, and the goal view.
-pub(super) fn generate(root: &Path) -> Result<(String, String), String> {
+/// The unions, the handles' methods and the hidden backends' side of the host.
+pub(super) fn generate(root: &Path) -> Result<String, String> {
     let areas = load(root)?;
     let api_source = fs::read_to_string(root.join("crates/sunrise-mod-vocab/src/lib.rs"))
         .map_err(|e| e.to_string())?;
@@ -939,8 +1027,6 @@ pub(super) fn generate(root: &Path) -> Result<(String, String), String> {
             .collect::<Vec<_>>()
             .join(" + ")
     };
-    let mut reads: Vec<(&Area, Tier, &Entry)> = Vec::new();
-    let mut host_methods: Vec<(&Area, &Entry)> = Vec::new();
     let mut methods = String::new();
     let mut by_handle = BTreeMap::<String, String>::new();
     for area in &areas {
@@ -951,11 +1037,6 @@ pub(super) fn generate(root: &Path) -> Result<(String, String), String> {
                 {
                     by_handle.entry(handle).or_default().push_str(&code);
                 }
-                if matches!(tier, Tier::Backend | Tier::ClientBackend) {
-                    reads.push((area, *tier, entry));
-                } else if *tier == Tier::Host && area.stem != "services" {
-                    host_methods.push((area, entry));
-                }
             }
         }
     }
@@ -965,17 +1046,22 @@ pub(super) fn generate(root: &Path) -> Result<(String, String), String> {
     let imports = standard_imports(&syn::parse_file(&methods).map_err(|e| e.to_string())?);
     let side_enum = |name: &str, server: &str, client: &str| {
         format!(
-            "/// The logical side of a hook's host.\n// no wire: borrows the active host; passed as call context.\npub enum {name}<'a> {{\n/// The hook fired on the server.\nServer({server}),\n/// The hook fired on the client.\nClient({client}) }}\n"
+            "/// The logical side of a hook's host.\n// exhaustive: a logical simulation runs on exactly one of these two sides.\n// no wire: borrows the active host; passed as call context.\npub enum {name}<'a> {{\n/// The hook fired on the server.\nServer({server}),\n/// The hook fired on the client.\nClient({client}) }}\n"
         )
     };
     let sides = format!(
-        "{}{}",
+        "{}{}{}",
         side_enum(
             "HostSide",
             "&'a mut dyn ServerHost",
             "&'a mut dyn ClientHost"
         ),
-        side_enum("LevelSide", "&'a dyn LevelHost", "&'a dyn LevelHost")
+        side_enum("LevelSide", "&'a dyn LevelHost", "&'a dyn LevelHost"),
+        side_enum(
+            "LevelRandomSide",
+            "&'a mut dyn LevelRandomHost",
+            "&'a dyn LevelHost"
+        )
     );
     let (host_supers, server_supers, client_supers) = (
         supertraits("Host"),
@@ -991,8 +1077,23 @@ pub(super) fn generate(root: &Path) -> Result<(String, String), String> {
         "// @generated by cargo run -p xtask -- mod-api; do not edit.\nuse super::*;\n{imports}/// Services supplied by the game to trait mods.\n/// Each method's default panics with its name, so a test double implements only what its test calls; the game implements every one.\n/// The backend accessors are the exception: they default to None, so a double without a backend answers every handle's typed refusal.\n/// Its methods are declared by area in `host/<area>.rs`; `use mod_api::prelude::*` names every area trait.\npub trait Host: {host_supers} {{\n#[doc(hidden)] fn backend(&self) -> Option<BackendRef<'_>> {{ None }}\n#[doc(hidden)] fn capability_providers(&self) -> &'static dyn CapabilityProviders {{ &InstalledProviders }}\n}}\n/// What only the server's hooks are given: writes to the world.\npub trait ServerHost: Host + {server_supers} {{\n#[doc(hidden)] fn backend_mut(&mut self) -> Option<BackendMutRef<'_>> {{ None }}\n}}\n/// What only the client's hooks are given: the client's own services.\npub trait ClientHost: Host + {client_supers} {{\n#[doc(hidden)] fn client_backend_mut(&mut self) -> Option<ClientBackendMutRef<'_>> {{ None }}\n}}\n{sides}#[doc(hidden)] pub trait Backend: {backend_supers} {{}}\n#[doc(hidden)] pub trait BackendMut: {backend_mut_supers} {{}}\n#[doc(hidden)] pub trait ClientBackendMut: {client_backend_mut_supers} {{}}\n{methods}"
     );
     syn::parse_file(&host).map_err(|e| format!("generated Host: {e}"))?;
-    let goal_view = goal_view(&areas, &reads, &host_methods)?;
-    Ok((host, goal_view))
+    Ok(host)
+}
+
+pub(super) fn generate_goal_view(root: &Path) -> Result<String, String> {
+    let areas = load(root)?;
+    let mut reads = Vec::new();
+    let mut host_methods = Vec::new();
+    for area in &areas {
+        for (tier, entries) in &area.tiers {
+            if matches!(tier, Tier::Backend | Tier::ClientBackend) {
+                reads.extend(entries.iter().map(|entry| (area, *tier, entry)));
+            } else if *tier == Tier::Host && area.stem != "services" {
+                host_methods.extend(entries.iter().map(|entry| (area, entry)));
+            }
+        }
+    }
+    goal_view(&areas, &reads, &host_methods)
 }
 
 /// The goal view's generated impls (#1077): the backend ones forward the snapshot-backed
@@ -1031,26 +1132,19 @@ fn goal_view(
                     && GOAL_VIEW_ENTITY_ARGS
                         .contains(&ty.path.segments[0].ident.to_string().as_str())
         );
-        // How a forwarded read answers a host without a backend: the typed refusal, or the empty
-        // string of a metadata read.
+        // How a forwarded read answers a host without a backend: its typed refusal.
         let forwarded = match refusal {
-            Some("None") => ".flatten()".to_string(),
+            "None" => ".flatten()".to_string(),
             // A `Result` read's no-backend answer is its error type's own `NoBackend` value,
             // wrapped back in the `Err`.
-            Some(refusal) if refusal.starts_with("Err(") => {
+            refusal if refusal.starts_with("Err(") => {
                 ".unwrap_or_else(|| Err(mod_api::NoBackend::no_backend()))".to_string()
             }
-            Some(refusal) => format!(".unwrap_or({refusal})"),
-            None => ".unwrap_or_default()".to_string(),
+            refusal => format!(".unwrap_or({refusal})"),
         };
         let body = if GOAL_VIEW_READS.contains(&name) {
             format!("self.r_{name}({args})")
         } else if entity_data {
-            let Some(refusal) = refusal else {
-                return Err(format!(
-                    "{name}: the goal view cannot refuse its return type"
-                ));
-            };
             if args.is_empty() {
                 refusal.to_string()
             } else if args.contains(',') {
@@ -1192,16 +1286,30 @@ mod tests {
         let method = entry(
             "fn read(&self, ingredient: &Ingredient) -> Result<Arc<[ItemKey]>, IngredientKeysError>;",
         );
-        let (setup, _, checked_write) = boundary_arguments(&method.sig, "read").unwrap();
+        let (setup, _, checked_write) =
+            boundary_arguments(&method.sig, "read", false, false).unwrap();
         assert!(!checked_write);
         assert!(setup.contains("return Err(mod_api::NoBackend::no_backend())"));
         assert!(!setup.contains("Default::default()"));
     }
 
     #[test]
+    fn native_read_callbacks_forward_without_boundary_conversion() {
+        let read = entry(
+            "fn visit(&self, at: BlockSide, visitor: &mut dyn FnMut(&ItemResource, u64) -> std::ops::ControlFlow<()>) -> Result<(), StorageReadError>;",
+        );
+        let (setup, args, checked_write) =
+            boundary_arguments(&read.sig, "visit", false, false).unwrap();
+        assert!(setup.is_empty());
+        assert_eq!(args, "at, visitor");
+        assert!(!checked_write);
+    }
+
+    #[test]
     fn borrowed_stacks_are_read_without_write_validation_outside_checked_writes() {
         let read = entry("fn item_resource_damageable(&self, stack: &ItemStack) -> bool;");
-        let (setup, args, checked_write) = boundary_arguments(&read.sig, "read").unwrap();
+        let (setup, args, checked_write) =
+            boundary_arguments(&read.sig, "read", false, false).unwrap();
         assert!(!checked_write);
         assert!(setup.contains("crate::game::api_values::stack_value(stack)"));
         assert!(!setup.contains("try_into_engine"));
@@ -1209,11 +1317,12 @@ mod tests {
         let write = entry(
             "fn living_apply_consume_effect(&mut self, stack: &ItemStack) -> Result<bool, StackWriteError>;",
         );
-        let (setup, _, checked_write) = boundary_arguments(&write.sig, "write").unwrap();
+        let (setup, _, checked_write) =
+            boundary_arguments(&write.sig, "write", false, false).unwrap();
         assert!(checked_write);
         assert!(setup.contains("stack.try_into_engine(self.items())?"));
         let owned = entry("fn drop_at(&mut self, stack: ItemStack) -> bool;");
-        let (setup, _, _) = boundary_arguments(&owned.sig, "owned").unwrap();
+        let (setup, _, _) = boundary_arguments(&owned.sig, "owned", false, false).unwrap();
         assert!(setup.contains("stack.try_into_engine(self.items())"));
     }
 
@@ -1267,13 +1376,33 @@ mod tests {
         assert!(code.contains(
             "backend_mut_of(host).map_or_else(|| Err(crate::NoBackend::no_backend()), |backend| backend.level_attempt(self))"
         ));
-        // A key's name is read with an owned answer.
-        let key = entry("fn block_key_id(&self, key: BlockKey) -> String;");
+        // The registry name borrows the host and is absent without a backend.
+        let key = entry("fn block_key_id(&self, key: BlockKey) -> Option<&str>;");
         let (handle, code) = handle_method(&key, Tier::Backend, &handles)
             .unwrap()
             .unwrap();
         assert_eq!(handle, "BlockKey");
-        assert!(code.contains("backend_of(host).expect("));
+        assert!(code.contains("pub fn id (self , host : & dyn Host) -> Option < & str >"));
+        assert!(code.contains("backend_of(host)?.block_key_id(self)"));
+    }
+
+    #[test]
+    fn registry_key_reads_cannot_generate_an_infallible_string() {
+        let method = entry("fn block_key_id(&self, key: BlockKey) -> String;");
+        let handles = handles("pub struct BlockKey;");
+        let error = handle_method(&method, Tier::Backend, &handles).unwrap_err();
+        assert!(error.starts_with("block_key_id:"));
+
+        let area = Area {
+            stem: "keys".into(),
+            camel: "Keys".into(),
+            tiers: BTreeMap::new(),
+            tables: BTreeMap::new(),
+        };
+        assert_eq!(
+            goal_view(&[], &[(&area, Tier::Backend, &method)], &[]),
+            Err("block_key_id: cannot refuse its backend return type".into())
+        );
     }
 
     #[test]
@@ -1356,14 +1485,16 @@ mod tests {
     #[test]
     fn text_arguments_refuse_before_even_checked_stack_writes() {
         let text = entry("fn set_text(&mut self, text: &Text) -> Result<(), TextFormError>;");
-        let (setup, args, checked) = boundary_arguments(&text.sig, "set_text").unwrap();
+        let (setup, args, checked) =
+            boundary_arguments(&text.sig, "set_text", false, false).unwrap();
         assert!(!checked);
         assert!(setup.contains("text.try_into_engine(&())?"));
         assert_eq!(args, "&text");
         let mixed = entry(
             "fn update(&mut self, stack: ItemStack, text: Option<&Text>) -> Result<Text, Refused>;",
         );
-        let (setup, args, checked) = boundary_arguments(&mixed.sig, "update").unwrap();
+        let (setup, args, checked) =
+            boundary_arguments(&mixed.sig, "update", false, false).unwrap();
         assert!(checked);
         assert!(setup.contains("stack.try_into_engine(self.items())?"));
         assert!(setup.contains("text.try_into_engine(&())?"));
@@ -1402,7 +1533,7 @@ mod tests {
                             .parse_args::<syn::Ident>()
                             .is_ok_and(|lint| lint == "unconditional_recursion")
                 }));
-                // The generator also emits a read-only EquipHost implementation.
+                // The generator also emits table-backed view implementations.
                 // This assertion covers Game's complete backend surface.
                 let syn::Type::Path(receiver) = &*item.self_ty else {
                     panic!("expected named host")

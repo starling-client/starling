@@ -1,4 +1,6 @@
 use crate::game::native_entity_refs::tests::with_client_game;
+use mod_api::{ArmPose, ClientHost, CustomArmPose, Hooks, ModEntry};
+use std::{collections::HashMap, sync::OnceLock};
 use sunrise_client::mobs::{
     Mob,
     anim::{self, Poses},
@@ -6,8 +8,6 @@ use sunrise_client::mobs::{
 use sunrise_client::{items::ItemStack, motion::PlayerMotion};
 use sunrise_core::geometry::Vec3;
 use sunrise_items::equipment::MAINHAND;
-use mod_api::{ArmPose, ClientHost, CustomArmPose, Hooks, ModEntry};
-use std::{collections::HashMap, sync::OnceLock};
 
 struct Skillet(OnceLock<CustomArmPose>);
 #[mod_api::__subscriptions]
@@ -45,7 +45,7 @@ fn arms(mob: &Mob) -> [[f32; 9]; 2] {
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn registered_angles_reach_local_remote_and_humanoid_before_species_animation() {
     with_client_game(|game| {
         game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
@@ -117,7 +117,7 @@ fn registered_angles_reach_local_remote_and_humanoid_before_species_animation() 
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn suppressed_custom_offhand_never_calls_its_transformer() {
     use std::sync::{Arc, Mutex};
     struct PosesMod {

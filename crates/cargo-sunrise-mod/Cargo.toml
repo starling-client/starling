@@ -4,13 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "cargo sunrise-mod new/build/run/check: make Sunrise content mods (docs/modding/src/how-to/content-mods.md)"
+description = "cargo sunrise-mod new/build/run/check/native-build: make Sunrise mods (docs/modding/src/how-to/content-mods.md)"
 
-# `cargo binstall --git https://github.com/horizon-rust/horizon cargo-sunrise-mod` (#2120) reads this: the archive
+# `cargo binstall --git https://github.com/sunrise-org/sunrise cargo-sunrise-mod` (#2120) reads this: the archive
 # `cargo-sunrise-mod`'s workflow attaches to the `cargo-sunrise-mod-v<version>` release for the runner's target,
 # holding the binary at its root. tools/sunrise_mod_binstall.py expands it for the workflow's targets.
 [package.metadata.binstall]
-pkg-url = "https://github.com/horizon-rust/horizon/releases/download/cargo-horizon-mod-v{ version }/{ name }-{ target }.tar.gz"
+pkg-url = "https://github.com/sunrise-org/sunrise/releases/download/cargo-sunrise-mod-v{ version }/{ name }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
@@ -19,31 +19,45 @@ sunrise-addresses = { path = "../sunrise-addresses" }
 sunrise-mod-source = { path = "../sunrise-mod-source" }
 # `canonicalize` that keeps plain Windows paths (no verbatim prefix), as `cargo metadata` prints them.
 dunce = "1.0.5"
-sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index", "prebuilt"] }
-sunrise-mod-point-emit = { path = "../sunrise-mod-point-emit" }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index", "prebuilt", "references"] }
+# `native-build`: the launcher's native mod build, run from a JSON plan.
+sunrise-native-build = { path = "../sunrise-native-build" }
 # The uses scan, the fit test, the surface search and its diff, over the fetched SDK's `surface.json`.
 sunrise-mod-surface = { path = "../sunrise-mod-surface" }
+sunrise-shader-api = { path = "../sunrise-shader-api" }
 sunrise-release-sign = { path = "../sunrise-release-sign" }
 sunrise-port-pack = { path = "../sunrise-port-pack" }
+sunrise-proxy = { path = "../sunrise-proxy" }
 rustc-demangle = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10"
+cap-std = "3.4.6"
+cap-fs-ext = "3.4.6"
+getrandom = "0.4"
+same-file = "1"
+zeroize = "1"
+minisign = "0.10"
+minisign-verify = "0.3"
+rpassword = "7.5.4"
+tar = { version = "0.4", default-features = false }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "encoder", "xz"] }
+tempfile = "3.27.0"
 toml = "1.1.6"
 toml_edit = "0.25"
 ureq = { version = "2", default-features = false, features = ["tls"] }
-wasm-encoder = { version = "0.261", features = ["wasmparser"] }
-wasmparser = "0.261"
+chrono = { version = "0.4.42", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
+sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }
 base64 = "0.22"
 ring = "0.17"
-tempfile = "3.27.0"
-sunrise-mod-wasm = { path = "../sunrise-mod-wasm" }
-wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 [lints]

@@ -30,7 +30,7 @@ impl Game<'_> {
         if cells.is_empty() && !pending {
             return;
         }
-        let dimension = self.dim.level();
+        let dimension = self.current_light_emission_dimension();
         let mut answers = FxHashMap::default();
         for (cell, [x, y, z], state) in cells {
             if let Some(emission) = self.ask_light_emission(dimension, x, y, z, state) {
@@ -60,7 +60,7 @@ impl Game<'_> {
         if self.world.light_edits.is_empty() || !self.pack.context.light.any_dynamic() {
             return;
         }
-        let dimension = self.dim.level();
+        let dimension = self.current_light_emission_dimension();
         for i in 0..self.world.light_edits.len() {
             let ((x, y, z), _, _) = self.world.light_edits[i];
             let state = self.world.block(x, y, z).0;
@@ -96,7 +96,7 @@ impl Game<'_> {
             .context
             .light
             .dynamic_cells(chunk, |s| sections.contains(&s));
-        let dimension = self.dim.level();
+        let dimension = self.current_light_emission_dimension();
         for (cell, [x, y, z], state) in cells {
             let emission = self.ask_light_emission(dimension, x, y, z, state);
             self.store_light_emission(key, cell, emission);
@@ -117,6 +117,12 @@ impl Game<'_> {
             None => answers.remove(&cell),
         };
     }
+    /// Use the dimension of the level in play, even for a client's custom dimension.
+    fn current_light_emission_dimension(&self) -> LevelDimension {
+        self.native_current_level()
+            .map_or_else(|| self.dim.level(), Self::light_emission_dimension)
+    }
+
     /// One cell's answer, clamped to a light level as `LightTables` clamps a state's.
     fn ask_light_emission(
         &self,
@@ -126,13 +132,8 @@ impl Game<'_> {
         z: i32,
         state: u32,
     ) -> Option<u8> {
-        let mut emission = None;
-        self.native_light_emission(
-            dimension,
-            BlockPos::new(x, y, z),
-            BlockStateId(state),
-            &mut emission,
-        );
-        emission.map(|level| level.min(15))
+        self.query_dynamic_light_emission(BlockPos::new(x, y, z), BlockStateId(state), || dimension)
+            .flatten()
+            .map(|emission| emission.min(15))
     }
 }

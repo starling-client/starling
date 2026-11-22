@@ -8,7 +8,7 @@ impl GameLevel<'_> {
     /// amount, or set `cancel` for no drops, no experience and no
     /// `spawnAfterBreak` effects. Server-side, authoritative levels only.
     #[inline(always)]
-    pub(in crate::game) fn native_block_drops(&self, call: super::fire::BlockDropsCall<'_>) {
+    pub(in crate::game) fn native_block_drops(&self, call: mod_api::__private::BlockDropsCall<'_>) {
         self.fire_block_drops(call);
     }
 }

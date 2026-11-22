@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use sunrise_perf_format::v1::Side;
 use serde::{Deserialize, Serialize};
+use sunrise_perf_format::v1::Side;
 
 use super::{ExportError, ExportOptions};
 use crate::error::side_name;

@@ -1,12 +1,12 @@
 #![cfg(test)]
 use super::Game;
 use super::item_abilities::ability;
+use mod_api::{CanPerformActionEvent, Hooks, Host, ItemPart, Registrar, RegistrationContext};
+use std::sync::Arc;
 use sunrise_client::items::ItemStack;
 use sunrise_client::mobs::Mob;
 use sunrise_core::geometry::{Direction, Vec3};
 use sunrise_core::use_animation::UseAnimation;
-use mod_api::{CanPerformActionEvent, Hooks, Host, ItemPart, Registrar, RegistrationContext};
-use std::sync::Arc;
 
 /// A part of `item` that grants the abilities in `grants` and denies the ones in `denies`.
 #[derive(Clone)]
@@ -90,7 +90,7 @@ const SHEARING: &[&str] = &[ability::SHEARS_HARVEST, ability::SHEARS_CARVE];
 /// Parts that grant a sword `shield_block`, a stick the shears' two abilities, and take
 /// both away from the shears and `shield_block` from the shield.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "daily"]
 fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item() {
     crate::game::in_own_process(
         "game::item_abilities_tests::parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item",
@@ -213,7 +213,7 @@ fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item_isolated() {
 /// With no part attached to any item, vanilla's answers stand: a shield blocks after its
 /// quarter second, shears carve, shear and are dispensed as shears, nothing else does.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn without_parts_the_vanilla_item_checks_stand() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         field(game);

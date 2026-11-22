@@ -6,10 +6,11 @@
 //! level, a stale handle or a client returns false. Reaching a parked level, as `play_sound` and the
 //! reads do through `native_level_world`, is a follow-up.
 use super::{Game, GameLevel};
-use sunrise_world::level::{BlockEventData, LevelEvent};
 use mod_api::{
     BlockKey, EntityRef, ExplodeError, ExplosionInteraction, ExplosionSettings, LevelRef,
 };
+use sunrise_world::level::{BlockEventData, LevelEvent};
+use sunrise_world::registry::BlockStateId;
 
 /// A position inside the world's horizontal and vertical bounds.
 fn in_bounds(at: [f64; 3]) -> bool {
@@ -21,7 +22,7 @@ fn in_bounds(at: [f64; 3]) -> bool {
 
 /// Whether level event `id` can play with `data`: the events that carry a
 /// block state (2001, 2014, 3008) need `data` to be one of the `states`.
-fn level_event_data_ok(id: i32, data: i32, states: usize) -> bool {
+pub(super) fn level_event_data_ok(id: i32, data: i32, states: usize) -> bool {
     !matches!(id, 2001 | 2014 | 3008) || usize::try_from(data).is_ok_and(|d| d < states)
 }
 
@@ -67,8 +68,23 @@ impl Game<'_> {
         if !level_event_data_ok(id, data, self.res.facts().states.len()) {
             return false;
         }
-        self.level_event_at(id, pos, data);
+        self.emit_level_effect(super::journal_level_write::PendingWrite::Event {
+            level: super::Dim::from_id(level.dimension_id()),
+            id,
+            pos,
+            data,
+        });
         true
+    }
+    /// Plays the break effect of `state` at `pos` (`Level.levelEvent(2001, pos,
+    /// Block.getId(state))`); the state's id is resolved here, never by the mod.
+    pub(super) fn level_block_break_effect(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        state: BlockStateId,
+    ) -> bool {
+        self.level_level_event(level, 2001, pos, state.0 as i32)
     }
     /// Plays level event `id` for every player on the server
     /// (`ServerLevel.globalLevelEvent`), or for the players near `pos` when the
@@ -86,7 +102,12 @@ impl Game<'_> {
         if !level_event_data_ok(id, data, self.res.facts().states.len()) {
             return false;
         }
-        self.global_level_event(id, pos, data);
+        self.emit_level_effect(super::journal_level_write::PendingWrite::GlobalEvent {
+            level: super::Dim::from_id(level.dimension_id()),
+            id,
+            pos,
+            data,
+        });
         true
     }
     /// Sends game event `event` (`minecraft:block_change`...) from `at`, as
@@ -201,8 +222,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use crate::game::LevelDimension;
-    use sunrise_world::level::LevelEvent;
     use mod_api::{self, BlockPart, Flow, Hooks, RandomTickEvent, Registrar};
+    use sunrise_world::level::LevelEvent;
 
     /// A stone part whose random tick plays level events through the write host.
     struct Events;
@@ -231,11 +252,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_queued_block_event_runs_the_blocks_trigger_once() {
-        use sunrise_core::position::BlockPos;
         use mod_api::{LevelRef, WorldEpoch};
         use mod_platform::__private::part_tests::block_key;
+        use sunrise_core::position::BlockPos;
         super::super::native_entity_refs::tests::with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
             let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
@@ -298,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn a_level_event_in_a_write_hook_joins_the_events_in_order() {
         let mods: mod_api::Mods =
             vec![mod_api::ModEntry::new("level-events", Box::new(EventsMod))].into();
@@ -374,10 +395,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_global_level_event_reaches_every_player_or_falls_back_to_a_plain_one() {
-        use sunrise_client::gamerules::Value;
         use mod_api::{LevelRef, WorldEpoch};
+        use sunrise_client::gamerules::Value;
         super::super::native_entity_refs::tests::with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
             let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
@@ -423,9 +444,13 @@ mod tests {
     /// `levelEvent(null, ...)`: a player within 64 blocks gets the plain packet
     /// at the event's position, and one further away gets nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn with_the_rule_off_a_global_level_event_reaches_a_player_in_range_as_a_plain_one() {
         use super::super::lan::LanSettings;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicI32, AtomicUsize},
+        };
         use sunrise_client::gamerules::Value;
         use sunrise_client::lan::{
             Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig,
@@ -433,10 +458,6 @@ mod tests {
         use sunrise_protocol::packets::{
             configuration::ClientInformation,
             play::{Clientbound, LevelEvent},
-        };
-        use std::sync::{
-            Arc,
-            atomic::{AtomicI32, AtomicUsize},
         };
         super::super::native_entity_refs::tests::with_game(|game| {
             let net = NetConfig {
@@ -458,6 +479,7 @@ mod tests {
                 max_players: 2,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             let settings = LanSettings {
                 port: 0,

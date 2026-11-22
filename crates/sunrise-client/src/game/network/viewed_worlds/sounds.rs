@@ -5,11 +5,11 @@
 //! level's own sound hooks.
 use super::routing::RouteError;
 use crate::game::{Game, level_sounds::LevelSound, native_hooks::level_sound_playable};
+use mod_api::{HookId, Identifier, LevelRef, SoundSource};
 use sunrise_protocol::{
     packets::play::{self, Clientbound as C},
     viewed_levels::ViewedLevelsError,
 };
-use mod_api::{HookId, Identifier, LevelRef, SoundSource};
 
 #[cfg(test)]
 thread_local! {

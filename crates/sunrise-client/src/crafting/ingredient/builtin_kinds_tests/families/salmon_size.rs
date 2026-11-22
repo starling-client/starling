@@ -167,8 +167,10 @@ fn salmon_size_recipe_defaults_removal_and_strictness_preserve_presence() {
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(omitted.craft(&context, &[Some(egg.clone())], 1).is_none());
     assert!(removal.craft(&context, &[Some(egg.clone())], 1).is_none());
-    egg.data_mut()
-        .set_other("minecraft:custom_data", Some(Tag::Int(3)));
+    egg.data_mut().set_other(
+        "minecraft:custom_data",
+        Some(Tag::compound([("extra", Tag::Int(3))])),
+    );
     assert!(loose.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_none());
     egg.data_mut().set_other("minecraft:custom_data", None);
@@ -217,7 +219,7 @@ fn salmon_size_recipe_defaults_removal_and_strictness_preserve_presence() {
 }
 
 #[test]
-fn salmon_size_invalid_codec_payloads_omit_whole_recipes() {
+fn salmon_size_invalid_codec_payloads_refuse_whole_load() {
     let items = Items::empty();
     for (payload, diagnostic) in [
         (serde_json::json!(0), "Not a string"),
@@ -250,19 +252,15 @@ fn salmon_size_invalid_codec_payloads_omit_whole_recipes() {
             "components": patch.clone()
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = salmon_size_recipes(&items, patch, false);
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.cooking.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
 }
 
 #[test]
-fn salmon_size_boundary_refusals_keep_a_valid_sibling() {
+fn salmon_size_boundary_refusals_refuse_whole_load() {
     const ID: &str = "minecraft:salmon/size";
     let items = Items::empty();
     let load = load();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [
         Tag::End,
         Tag::Byte(0),
@@ -316,19 +314,15 @@ fn salmon_size_boundary_refusals_keep_a_valid_sibling() {
         let ingredient = serde_json::json!({"type":"neoforge:components", "items":"minecraft:salmon_bucket", "components":{(ID):payload}});
         assert!(Ingredient::parse(&ingredient, &items).is_none());
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(root.path(), &items, &sunrise_world::loot::PackOverlay::NONE, vec![
+        let refused = crate::crafting::Recipes::from_sources(root.path(), &items, &sunrise_world::loot::PackOverlay::NONE, vec![
             ("fixture:bad".into(), serde_json::json!({"type":"minecraft:crafting_shapeless", "ingredients":[ingredient], "result":{"id":"minecraft:diamond"}})),
             ("fixture:good".into(), serde_json::json!({"type":"minecraft:crafting_shapeless", "ingredients":["minecraft:stick"], "result":{"id":"minecraft:emerald"}})),
-        ], &load).unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
-        assert_eq!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .unwrap()
-                .item
-                .as_ref(),
-            "minecraft:emerald"
+        ], &load).err().unwrap().to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/bad.json"),
+            "{refused}"
         );
+        assert!(refused.contains(ID), "{refused}");
     }
     let whole_null = serde_json::json!({"type":"neoforge:components", "items":"minecraft:salmon_bucket", "components":null});
     assert!(Ingredient::parse(&whole_null, &items).is_none());

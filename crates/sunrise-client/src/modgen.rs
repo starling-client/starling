@@ -7,6 +7,7 @@ use crate::{
     chunk::{Chunk, LevelShape},
     streaming::ChunkGenerator,
 };
+use std::sync::Arc;
 use sunrise_core::position::ChunkPos;
 use sunrise_world::{
     registry::{BlockRegistry, BlockStateId},
@@ -16,7 +17,6 @@ use sunrise_world::{
         structure::legacy::block_state,
     },
 };
-use std::sync::Arc;
 
 /// A mod's generator over one level.
 pub struct ModTerrain {
@@ -171,8 +171,8 @@ impl ChunkGenerator for ModTerrain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_world::worldgen::{mod_biome_sources::ModBiomeSource, overrides::ModDimension};
     use serde_json::json;
+    use sunrise_world::worldgen::{mod_biome_sources::ModBiomeSource, overrides::ModDimension};
 
     const STONE: BlockStateId = BlockStateId(1);
     const BEDROCK: BlockStateId = BlockStateId(2);
@@ -411,7 +411,7 @@ mod tests {
     /// A chunk saved and read back keeps the biomes the source placed: the
     /// region file stores them by name, through the world's biome table.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_registered_sources_biomes_survive_saving_and_loading() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -436,8 +436,14 @@ mod tests {
         .unwrap();
         let chunk = chunk(&terrain, 3, -2);
         let tables = crate::save::SaveTables::new(&assets);
-        let saved =
-            crate::save::encode_with(&chunk, assets.registry, &biomes, Some(&tables), shape);
+        let saved = crate::save::encode_with(
+            &chunk,
+            assets.registry,
+            &biomes,
+            Some(&tables),
+            shape,
+            &Default::default(),
+        );
         let back = crate::save::decode_with(
             &saved,
             assets.registry,

@@ -2,8 +2,8 @@
 //! and median of three values, for float, int and uint vectors (the extension's additions to
 //! GLSL 4.30 Section 8.3). An original probe; the expected values are worked out by hand.
 use super::destination_tests::Fixture;
-use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 const VERTEX: &str = "#version 120\nvarying vec2 uv;\nvoid main() { uv=gl_MultiTexCoord0.xy; gl_Position=ftransform(); }\n";
 
@@ -51,6 +51,7 @@ fn pack() -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn trinary_min_max_and_median_per_component() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

@@ -34,7 +34,6 @@ impl Game<'_> {
 mod tests {
     use super::super::super::native_entity_refs::tests::{run_fresh_cases, with_client_game};
     use super::super::particle_count_tests::frame_scene;
-    use sunrise_client::{clock::FixedStep, title::Title};
     use mod_api::{
         ClientHost, Hooks, ModEntry, RenderFramePostEvent, RenderFramePreEvent,
         RenderLevelStageEvent,
@@ -43,6 +42,7 @@ mod tests {
         sync::{Arc, Mutex},
         time::Duration,
     };
+    use sunrise_client::{clock::FixedStep, title::Title};
 
     #[derive(Default)]
     struct Heard {
@@ -76,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and a display"]
+    #[ignore = "daily"]
     fn frame_interpolation_matches_draw_and_holds_while_paused_or_frozen() {
         let name = "game::native_hooks::render_frame_pre::tests::frame_interpolation_matches_draw_and_holds_while_paused_or_frozen";
         if run_fresh_cases(name, "SUNRISE_FRAME_PARTIAL_CHILD", &["frames"]) {

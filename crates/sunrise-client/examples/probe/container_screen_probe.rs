@@ -1,15 +1,15 @@
 #![forbid(unsafe_code)]
 //! Runs tools/test_container_screen_parity.py's screens and mouse events
 //! through `sunrise_client::container_screen`.
-use sunrise_client::{
-    Result,
-    container_screen::{Book, Button, Clicks, Image, Release, Target, clicked_outside},
-    menu::Input,
-};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_client::{
+    Result,
+    container_screen::{Book, Button, Clicks, Image, Release, Target, clicked_outside},
+    menu::Input,
 };
 
 fn input_name(input: Input) -> &'static str {
@@ -70,7 +70,7 @@ pub fn main() -> Result<()> {
                     match clicks.release(&target, button, carried_empty, false, shift, pick) {
                         Release::Click(input) => Some(input),
                         Release::QuickCraft => panic!("no drags in these cases"),
-                        Release::Nothing => None,
+                        Release::Swallowed | Release::Nothing => None,
                     }
                 };
                 if let Some(input) = click {

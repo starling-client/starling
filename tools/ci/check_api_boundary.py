@@ -25,13 +25,14 @@ ENGINE = {
     "sunrise_assets", "sunrise_mod_package", "sunrise_mods", "sunrise_core",
 }
 # Shared Minecraft vocabulary: plain, engine-independent values, parity RNG,
-# and the JSON/NBT format converter. Never allow all of sunrise-core.
+# and the JSON/NBT format converter (JavaString is the key and string type of
+# nbt::Compound and nbt::Tag, a plain UTF-16 vector). Never allow all of sunrise-core.
 LEAVES = {
     "arm_pose::ArmPose", "game_mode::GameMode", "geometry::Direction",
     "position::BlockPos", "position::ChunkPos", "random::LegacyRandom",
     "random::RandomSource", "bounding_box::BoundingBox",
     "equipment_slot::EquipmentSlot", "identifier::Identifier", "nbt::Compound",
-    "nbt::Tag", "use_animation::UseAnimation", "connection_kind::ConnectionKind",
+    "nbt::JavaString", "nbt::Tag", "use_animation::UseAnimation", "connection_kind::ConnectionKind",
     "dimension::Dimension", "neighbour_update::NeighbourUpdate",
 }
 # Owner-approved JSON source-file parser exceptions, not arbitrary JSON carriers.
@@ -300,7 +301,16 @@ def generated_findings(target: Path):
     from generation. Checking only the catalog would miss those public types.
     Cargo must run first; callers may not silently skip missing build output.
     """
+<<<<<<< sync-sunrise-1
     candidates = [p for p in target.rglob("mod_api_generated.rs") if vocab_output(p)]
+=======
+    # Cargo's build folder: `build/sunrise-mod-vocab-<hash>/out`, or `build/sunrise-mod-vocab/<hash>/out` in the
+    # layout newer Cargo uses.
+    candidates = [p for p in target.rglob("mod_api_generated.rs")
+                  if re.fullmatch(r"sunrise-mod-vocab-[0-9a-f]+", p.parent.parent.name)
+                  or (p.parent.parent.parent.name == "sunrise-mod-vocab"
+                      and re.fullmatch(r"[0-9a-f]+", p.parent.parent.name))]
+>>>>>>> sunrise/main
     if not candidates:
         return [Finding(str(target), 1, "missing-generated", "build sunrise-mod-vocab before the full boundary audit")]
     newest = max(candidates, key=lambda p: p.stat().st_mtime_ns)

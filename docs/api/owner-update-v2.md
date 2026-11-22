@@ -46,7 +46,7 @@ owner-update-v2\n<id>\n<version>\n<sha256>\n<file>\n<submitter>\n<submitter_id>
    `owner_ids`, `key`, `kind`, `repo` and the page fields are identical (the service already only signs such updates;
    check again, since the pull request branch can be pushed to after it opened).
 6. **The file.** `staging` holds `<sha256>.<extension>` and its SHA-256 is `sha256`; the usual CI checks
-   (`cargo sunrise-mod registry check`, the trial run, a signature when the entry has a `key`) pass at the head
+   (`cargo sunrise-mod registry check`, a signature when the entry has a `key`) pass at the head
    that is merged.
 7. **The head merged is the head checked.** Merge with the head SHA the checks ran on (`gh pr merge --match-head-commit
    <sha>`), so a push between check and merge can't slip in.

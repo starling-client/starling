@@ -18,7 +18,7 @@
       "source": "https://github.com/horizon-rust/horizon",
       "icon": "https://horizon-rust.github.io/horizon-mods/icons/coords_hud.png?v=565b7c33f72f",
       "categories": ["utility"],
-      "key": "RWS/AoT50ekAULLFG7HiTPTE4eTQEONCCMbKsPE7JBxt3XJ37BY4w7bp",
+      "key": "RWTVDqAKF4nm3+eZIK4SeLU6R6sSdJyNgrG/8bdFuTPpXlGK0I8+7wmc",
       "versions": [
         {
           "version": "0.1.0",
@@ -32,9 +32,9 @@
           "file": {
             "name": "coords_hud-0.1.0.smod",
             "url": "https://github.com/horizon-rust/horizon-mods/releases/download/coords_hud-0.1.0/coords_hud-0.1.0.smod",
-            "size": 448,
-            "sha256": "f891bde88f4b841fd35c4f3305bc8904b671ebe9d5ad28d5aecc57e8b23fc3ce",
-            "signature": "untrusted comment: test fixture signature\nRUS/AoT50ekAUNGOFYYzLx14ztEwWHyuuRmX4RMAJRLQZtahDe1pdBarv034NUBDbKubCXPrNlaoGNgyBdLh+yImG01fkAuWdwQ=\ntrusted comment: coords_hud 0.1.0 content fixture\nNgKmC0TYjDjfZkDqfXKlEGOtkB0kq8WiiYU51042pbRhS7Xb9qNLLvqCgks5ehimk5f6AuXx1fcilPYbRf/lDw==\n"
+            "size": 447,
+            "sha256": "cb6e658445269b2a4d2eb104e83e4b993586bc2e56814fd56454244139f08364",
+            "signature": "untrusted comment: test fixture signature\nRUTVDqAKF4nm3wlb5rk/J+aVkHYWB89CbNN1J0/kP00Pu6mqxQCMROQhWQPHW90Yx1hvMFqzAzE3LYVITHnRtGKZ3OKC6VSHIws=\ntrusted comment: coords_hud 0.1.0 content fixture\noMt+4NMkeWeXKJW0SPKl5hXT7De8JZ27X+aoCQ4ng/l+hffy/AZa/sBeBB4feIibyYBUo4L1t6TbmF4xBnJHBA==\n"
           }
         }
       ]
@@ -64,14 +64,14 @@
             {
               "id": "coords_hud",
               "version": "0.1.0",
-              "sha256": "f891bde88f4b841fd35c4f3305bc8904b671ebe9d5ad28d5aecc57e8b23fc3ce"
+              "sha256": "cb6e658445269b2a4d2eb104e83e4b993586bc2e56814fd56454244139f08364"
             }
           ],
           "file": {
             "name": "cozy-1.0.0.spack",
             "url": "https://github.com/horizon-rust/horizon-mods/releases/download/cozy-1.0.0/cozy-1.0.0.spack",
-            "size": 471,
-            "sha256": "4ad64fdf094fe3d4a52d7b0d22ee8ea5889d0b76cc3f12c588db501a0ad0c4bd"
+            "size": 470,
+            "sha256": "ca9a0207d5a9df142962a2dd7563a639eea6774e7f144b6ef239eb6eaf753f58"
           }
         }
       ],
@@ -101,8 +101,8 @@
           "file": {
             "name": "glow-1.0.0.sshader",
             "url": "https://github.com/horizon-rust/horizon-mods/releases/download/glow-1.0.0/glow-1.0.0.sshader",
-            "size": 689,
-            "sha256": "331cfe29a666a0de804e9a9ff3d19d246eebcfbfa70b4f49bba8482d30ad9f02"
+            "size": 693,
+            "sha256": "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961"
           }
         }
       ],

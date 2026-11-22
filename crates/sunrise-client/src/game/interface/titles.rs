@@ -2,13 +2,7 @@
 //! live in `hud_overlays` (`Titles`, `ToolHighlight`); this feeds and draws them.
 use super::Game;
 pub(super) use sunrise_client::hud_overlays::Titles;
-use sunrise_client::{
-    hud::HudBatch,
-    hud_layout,
-    hud_overlays::HeldName,
-    item_tooltip,
-    text::{self, Text},
-};
+use sunrise_client::{hud::HudBatch, hud_layout, hud_overlays::HeldName, text::Text};
 
 impl Game<'_> {
     /// `ServerPlayer.sendOverlayMessage`: the steady player sees it on this
@@ -64,25 +58,29 @@ impl Game<'_> {
     fn held_name(&self) -> Option<HeldName> {
         let stack = self.inventory.get(self.selected)?.as_ref()?;
         let custom = stack.data().is_some_and(|data| data.custom_name.is_some());
-        let default_rarity = self.item_rarity(&stack.item);
-        let rarity = item_tooltip::rarity(stack, &default_rarity);
+        let previous = self
+            .tool_highlight
+            .last
+            .as_ref()
+            .map(|last| &last.hover_name);
         Some(HeldName {
             item: stack.item.to_string(),
-            hover_name: item_tooltip::styled_name(stack, || {
-                item_tooltip::name_line(stack, &|key| self.pack.names.display_get(key))
-            }),
-            rarity_color: match rarity {
-                "uncommon" => text::YELLOW,
-                "rare" => text::AQUA,
-                "epic" => text::LIGHT_PURPLE,
-                _ => text::WHITE,
-            },
+            hover_name: sunrise_client::stations::hover_name_in_reusing(
+                &self.loop_context,
+                &self.pack.names,
+                stack,
+                previous,
+            ),
+            rarity_color: self.stack_rarity_color(stack),
             custom_name: custom,
         })
     }
     /// The title, action bar and selected-item parts of `Hud.tick`.
     pub(super) fn tick_hud(&mut self) {
         self.titles.tick();
+        // Hud.tick: the vignette after the titles, before the held item's name. (A local world,
+        // which has no `Gui.tick` here, eases it in its level tick, `tick_particles`.)
+        self.tick_vignette();
         self.tick_in_bed_chat();
         // `MinecraftServer.isCurrentlySaving` of single player's server.
         let saving = self
@@ -92,7 +90,7 @@ impl Game<'_> {
         self.saving_indicator.tick(saving);
         let held = self.held_name();
         self.tool_highlight
-            .tick(held, f64::from(self.settings.notification_display_time));
+            .tick(held, self.settings.notification_display_time);
         self.tool_highlight.tip = self.highlight_tip();
     }
     /// `IItemExtension.getHighlightTip` of the selected stack, while its name

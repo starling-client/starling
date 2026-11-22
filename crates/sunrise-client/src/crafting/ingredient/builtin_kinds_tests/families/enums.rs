@@ -154,8 +154,10 @@ fn fox_variant_recipe_defaults_removal_and_strictness_preserve_presence() {
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(omitted.craft(&context, &[Some(egg.clone())], 1).is_none());
     assert!(removal.craft(&context, &[Some(egg.clone())], 1).is_none());
-    egg.data_mut()
-        .set_other("minecraft:custom_data", Some(Tag::Int(3)));
+    egg.data_mut().set_other(
+        "minecraft:custom_data",
+        Some(Tag::compound([("extra", Tag::Int(3))])),
+    );
     assert!(loose.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_none());
     egg.data_mut().set_other("minecraft:custom_data", None);
@@ -191,10 +193,9 @@ fn fox_variant_recipe_defaults_removal_and_strictness_preserve_presence() {
 }
 
 #[test]
-fn fox_variant_invalid_codec_payloads_omit_whole_recipes() {
+fn fox_variant_invalid_codec_payloads_refuse_whole_load() {
     let items = Items::empty();
     let load = load();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [Tag::End, Tag::Byte(0), Tag::List(vec![])] {
         let rule = IngredientRule::Components {
             patch: sunrise_core::nbt::Compound::from([("minecraft:fox/variant".into(), value)]),
@@ -230,7 +231,7 @@ fn fox_variant_invalid_codec_payloads_omit_whole_recipes() {
             assert!(error.contains(diagnostic), "{error}");
         }
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
-        let reload = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             &std::env::temp_dir(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -243,26 +244,45 @@ fn fox_variant_invalid_codec_payloads_omit_whole_recipes() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(reload.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            reload
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
-        assert!(
-            reload
-                .craft(
-                    &context,
-                    &[Some(ItemStack::new("minecraft:fox_spawn_egg", 1))],
-                    1
-                )
-                .is_none()
-        );
+        assert!(refused.contains(&error), "{refused}");
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = fox_variant_recipes(&items, patch, false);
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.cooking.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        for (name, kind, fields) in [
+            (
+                "shaped",
+                "minecraft:crafting_shaped",
+                serde_json::json!({"pattern":["A"],"key":{"A":ingredient.clone()}}),
+            ),
+            (
+                "cooking",
+                "minecraft:smelting",
+                serde_json::json!({"ingredient":ingredient}),
+            ),
+        ] {
+            let mut recipe = fields;
+            recipe["type"] = serde_json::json!(kind);
+            recipe["result"] = serde_json::json!({"id":"minecraft:diamond"});
+            let refused = crate::crafting::Recipes::from_sources(
+                &std::env::temp_dir(),
+                &items,
+                &sunrise_world::loot::PackOverlay::NONE,
+                vec![(format!("fixture:{name}"), recipe)],
+                &load,
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(
+                refused.contains(&format!("recipe/{name}.json")),
+                "{refused}"
+            );
+            assert!(refused.contains("minecraft:fox/variant"), "{refused}");
+        }
     }
 }

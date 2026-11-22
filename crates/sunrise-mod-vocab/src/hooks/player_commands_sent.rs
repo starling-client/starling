@@ -17,10 +17,12 @@ pub trait Hooks {
     /// and does not ask again; the integrated server's owner is not asked
     /// when the world's cheats are switched.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_commands_sent",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "names",
         neoforge = "none (NeoForge 26.3 has no such event)"
     )]
-    fn player_commands_sent();
+    fn player_commands_sent(player: u128, name: &str, names: &mut Vec<String>);
 }

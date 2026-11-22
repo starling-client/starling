@@ -1,0 +1,9 @@
+ids = [
+    "point:sunrise_client::game::native_hooks::finite",
+    "point:sunrise_client::game::native_hooks::finite_params",
+    "point:sunrise_client::game::native_hooks::level_sound_playable",
+    "point:sunrise_client::game::native_hooks::mod_sound_ok",
+    "point:sunrise_client::game::native_hooks::sound_id",
+]
+why = "The sound, shader parameter and zoom validators move into the sound_and_shader_helpers module without changing their rules."
+migrate = "For these injection targets, insert ::sound_and_shader_helpers after ::native_hooks in the target path and update the hash if pinned. Native function targets in this group, including local_sound_ok, move to the same module."

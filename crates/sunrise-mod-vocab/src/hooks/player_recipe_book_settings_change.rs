@@ -6,10 +6,18 @@ pub trait Hooks {
     /// typed RecipeBookIdentity, never a custom vanilla ordinal. Rejected and
     /// unchanged custom requests do not notify. The guest is not swapped in.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_recipe_book_settings_change",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event; Bukkit's PlayerRecipeBookSettingsChange)",
         paper = "PlayerRecipeBookSettingsChangeEvent"
     )]
-    fn player_recipe_book_settings_change();
+    fn player_recipe_book_settings_change(
+        player: u128,
+        name: &str,
+        book: mod_api::RecipeBookIdentity,
+        open: bool,
+        filtering: bool,
+    );
 }

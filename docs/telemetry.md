@@ -2,10 +2,9 @@
 
 Sunrise collects nothing unless the player says yes. The launcher asks once, with four separate switches that are all off until the player turns one on, and the same switches stay in Settings. The game and the launcher obey the same answer. The code is in `crates/sunrise-telemetry`.
 
-Two exceptions:
+One exception:
 
 - The anonymous ["I'm playing" ping](#the-im-playing-ping) behind the launcher's "N playing now": it holds nothing about the player, and the launcher says so next to the switches.
-- The cosmetics service's *Show me as Sunrise* (Extras › Cosmetics, on by default): a signed-in account tells the cosmetics service, at start and then every hour, that it plays Sunrise, so other Sunrise players see the Sunrise mark beside its name. The service reports it for 3 hours, and anyone can ask it whether an account played Sunrise in that window. Turning the setting off makes the service forget the account at once. It is not part of telemetry and the switches above don't cover it: see [cosmetics.md](cosmetics.md).
 
 ## Consent
 
@@ -103,9 +102,9 @@ Once a minute the server writes down only those totals (playing, LAN, per platfo
 
 `series` holds `[start, average, peak]` per point (5 minutes for 24h, an hour for 7d, 3 hours for 30d, a day for all; UTC Unix seconds), `peak` the range's highest minute, `all_time` the highest ever, `latest` the newest minute, `platforms` the range's average per platform.
 
-The server also asks the official server (`sunrise_telemetry::server_status::OFFICIAL_STATUS_ADDRESS`, its address with the port its SRV record gives, or `SUNRISE_TELEMETRY_OFFICIAL_SERVER`) for its player count every minute, with the server-list status ping every client sends to show a server in its Multiplayer list, and keeps it the same way (`series=official`, playing only; a minute it didn't answer stays empty). Its TPS and MSPT come later, once its admin API is reachable from outside the machine.
+When `SUNRISE_TELEMETRY_OFFICIAL_SERVER` names a server (its address with the port its SRV record gives; none by default), the server also asks it for its player count every minute, with the server-list status ping every client sends to show a server in its Multiplayer list, and keeps it the same way (`series=official`, playing only; a minute it didn't answer stays empty). Its TPS and MSPT come later, once its admin API is reachable from outside the machine.
 
-The launcher reads the count when it opens and every minute after, and shows "N playing now" on the Play page, exact, with thousands separators; clicking it opens playsunrise.net/stats. Beside it, "M on the official SMP" is the official server's own count, from the same status ping the launcher sends once a minute (3-second timeout, nothing shown when it doesn't answer); clicking it opens the Servers page. It shows nothing when the server can't be reached. `SUNRISE_TELEMETRY_URL=off` turns both off; `SUNRISE_NO_HEARTBEAT=1` keeps a single automated run out of the count.
+The launcher reads the count when it opens and every minute after, and shows "N playing now" on the Play page, exact, with thousands separators; clicking it opens playsunrise.net/stats. It shows nothing when the server can't be reached. `SUNRISE_TELEMETRY_URL=off` turns it off; `SUNRISE_NO_HEARTBEAT=1` keeps a single automated run out of the count.
 
 ## Bug reports from the game
 
@@ -152,7 +151,7 @@ notifications.
 - `GET /v1/benchmarks/summary`: players' benchmark uploads grouped by GPU, CPU, render distance and game for playsunrise.net/benchmarks. A group shows only with at least 3 different installs, and only its medians and counts: no install ID, day, OS version, driver, exact memory or screen. Uploads are never published one by one. Each group's `breakdowns` count its installs per hardware class.
 - `GET /v1/export/benchmarks` and `GET /v1/export/hardware`: for the maintainers' performance work only, behind a bearer token the public cannot use (404 while the server has none). The raw benchmark reports and the play sessions per machine description, including CPU threads and physical cores, with no minimum group size. Nothing identifying: no install ID, and only what a player already agreed to send (this page's lists).
 - `POST /v1/live` and `GET /v1/live`: the "I'm playing" ping and the live count.
-- `GET /v1/live/history?range=24h|7d|30d|all&series=players|official`: the live count, or the official server's, over time (above).
+- `GET /v1/live/history?range=24h|7d|30d|all&series=players|official`: the live count, or the configured server's, over time (above).
 - `POST /v1/report`: a bug report from the game, opened as a GitHub issue ([above](#bug-reports-from-the-game)).
 
 Public output never holds a raw hardware value, only these classes (`src/classes.rs`, the same in the website's `scripts/benchmarks.mjs`, horizon-rust/horizon-site), and a class is published only with at least 3 different installs:

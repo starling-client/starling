@@ -13,10 +13,12 @@ pub trait Hooks {
     /// sneaking factor, which vanilla reads through `isDiscrete`.
     /// Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         host = "read",
         neoforge = "LivingEvent.LivingVisibilityEvent"
     )]
-    fn living_visibility();
+    fn living_visibility(entity: LivingRef, looking: Option<EntityRef>, visibility: &mut f64);
 }

@@ -360,7 +360,10 @@ impl Game<'_> {
                     continue;
                 }
                 let item = &e.stack.item;
-                let wants = villager::food_points(world_items!(self), item) > 0
+                let wants = e
+                    .stack
+                    .villager_food(world_items!(self).get(item))
+                    .is_some()
                     || picks_up.as_ref().is_some_and(|t| t.contains(&**item))
                     || requested.iter().any(|key| key == &**item);
                 let fits =
@@ -434,7 +437,10 @@ impl Game<'_> {
                     continue;
                 }
                 let item = e.stack.item.clone();
-                let wants = villager::food_points(world_items!(self), &item) > 0
+                let wants = e
+                    .stack
+                    .villager_food(world_items!(self).get(&item))
+                    .is_some()
                     || picks_up.as_ref().is_some_and(|t| t.contains(&*item))
                     || requested.iter().any(|key| key == &*item);
                 if !wants {
@@ -685,7 +691,7 @@ mod entity_event_particle_tests {
 #[cfg(test)]
 mod nested_spawn_tests {
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn lifted_mob_callback_keeps_nested_spawns_until_the_next_pass() {
         crate::game::entity::taken_pass_tests::in_both_dimensions(|game, balance| {
             let kind = game
@@ -716,7 +722,7 @@ mod off_level_tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn retained_ancestor_does_not_consume_a_due_villager_sensor() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -763,7 +769,6 @@ mod witness_tests;
 #[cfg(test)]
 mod birth_tests {
     use super::*;
-    use sunrise_client::mobs::MobEvent;
     use mod_api::{
         BabyEntitySpawnEvent, EntityJoinLevelEvent, FinalizeSpawnEvent, Flow, Hooks, Host,
         ServerHost,
@@ -772,6 +777,7 @@ mod birth_tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use sunrise_client::mobs::MobEvent;
 
     const BED: [i32; 3] = [3, 64, 1];
 
@@ -863,7 +869,7 @@ mod birth_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn rejected_birth_leaves_bed_free_and_parents_resting() {
         let joins = Arc::new(AtomicUsize::new(0));
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -899,7 +905,7 @@ mod birth_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn untouched_birth_claims_one_bed_and_announces_one_baby() {
         mod_platform::testing::with_mods(Vec::<mod_api::ModEntry>::new().into(), || {
             crate::game::native_entity_refs::tests::with_game(|game| {
@@ -931,7 +937,7 @@ mod birth_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn villager_birth_is_raw_and_does_not_post_the_animal_hook() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new(

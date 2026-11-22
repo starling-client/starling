@@ -6,9 +6,9 @@
 //! line per piece in placement order (jigsaw pieces: the element's template
 //! location; other pieces: `-` for element, rotation and position).
 use crate::support::common::tag;
-use sunrise_core::position::ChunkPos;
 use serde_json::Value;
 use std::{fs, path::Path};
+use sunrise_core::position::ChunkPos;
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

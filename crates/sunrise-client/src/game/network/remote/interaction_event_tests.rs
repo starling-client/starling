@@ -1,6 +1,6 @@
 //! Behavioural proofs of the broadcast events around scoped interaction Parts.
-#[path = "interaction_event_wasm_tests.rs"]
-mod interaction_event_wasm_tests;
+#[path = "interaction_matrix_tests.rs"]
+mod interaction_matrix_tests;
 #[path = "item_fallthrough_tests.rs"]
 mod item_fallthrough_tests;
 #[path = "item_used_on_block_tests.rs"]
@@ -15,16 +15,6 @@ use super::super::{
     Game, Hit, execution_role::ExecutionRole, lan::LanSettings,
     native_entity_refs::tests::with_game,
 };
-use sunrise_client::{
-    chunk::Chunk,
-    first_person::Hand,
-    items::ItemStack,
-    lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
-    motion::PlayerMotion,
-};
-use sunrise_core::geometry::Vec3;
-use sunrise_core::nbt::Tag;
-use sunrise_protocol::{connection::Pipe, packets::configuration::ClientInformation};
 use mod_api::InteractionResult as Answer;
 use mod_api::{
     self, BlockPart, ENTITY_ITEMS, Flow, Hooks, HostSide, HostTransaction, ItemPart, ItemResource,
@@ -36,6 +26,22 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicI32, AtomicUsize},
 };
+use sunrise_client::{
+    chunk::Chunk,
+    first_person::Hand,
+    items::ItemStack,
+    lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
+    motion::PlayerMotion,
+};
+use sunrise_core::geometry::Vec3;
+use sunrise_core::nbt::Tag;
+use sunrise_protocol::{connection::Pipe, packets::configuration::ClientInformation};
+
+impl Game<'_> {
+    pub(in crate::game) fn set_sent_sneak_for_test(&mut self) {
+        self.remote.as_mut().unwrap().last_input |= super::SHIFT_INPUT;
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
@@ -59,7 +65,7 @@ struct Controls {
     air_answer: Option<Answer>,
     air_main_only: bool,
     consume_item: bool,
-    /// The block phase takes one item from the hand before its answer.
+    /// The block phase takes one item from the hand, before its answer if it gives one.
     take_in_block: bool,
     expected_hand: Option<Hand>,
     part_answer: Option<Answer>,
@@ -185,21 +191,21 @@ impl Hooks for Observer {
             UsePhase::ItemBeforeBlock => state.first_answer,
             _ => unreachable!("UsePhase: unhandled variant"),
         };
+        if ((state.consume_item && answer.is_some() && event.phase == UsePhase::ItemAfterBlock)
+            || (state.take_in_block && event.phase == UsePhase::Block))
+            && let HostSide::Server(host) = host
+        {
+            let player = host.player(event.click.player).unwrap();
+            let items = player.entity().capability(host, &ENTITY_ITEMS, ()).unwrap();
+            let slot = player.selected_slot(host).unwrap();
+            let resource = ItemResource::of(event.click.stack.unwrap());
+            host.transaction(|host, tx| {
+                assert_eq!(items.extract_at(host, tx, slot, &resource, 1), 1);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        }
         if let Some(answer) = answer {
-            if ((state.consume_item && event.phase == UsePhase::ItemAfterBlock)
-                || (state.take_in_block && event.phase == UsePhase::Block))
-                && let HostSide::Server(host) = host
-            {
-                let player = host.player(event.click.player).unwrap();
-                let items = player.entity().capability(host, &ENTITY_ITEMS, ()).unwrap();
-                let slot = player.selected_slot(host).unwrap();
-                let resource = ItemResource::of(event.click.stack.unwrap());
-                host.transaction(|host, tx| {
-                    assert_eq!(items.extract(host, tx, slot, &resource, 1), 1);
-                    Ok::<_, ()>(())
-                })
-                .unwrap();
-            }
             *event.cancellation_result = answer;
             Flow::Cancel
         } else {
@@ -293,6 +299,7 @@ fn with_interaction_game_at(
             game.options.execution_role = ExecutionRole::Client;
             let (client, server) = Pipe::pair();
             game.connect_local(client, "InteractionTest").unwrap();
+            game.remote.as_mut().unwrap().logged_in = true;
             Some(server)
         } else {
             game.options.dedicated = Some(Vec::new());
@@ -328,15 +335,15 @@ fn hit() -> Hit {
 
 fn use_block(game: &mut Game<'_>, client: bool) -> bool {
     if client {
-        game.remote_use_item_on(Hand::Main)
+        game.remote_use_item_on(Hand::Main, mod_api::InteractionAttempt::Press, None)
     } else {
-        game.guest_use = Some(super::super::GuestUse::OnBlock(Hand::Main));
+        game.guest_use = Some(super::super::GuestUse::on_block(Hand::Main));
         game.use_hand(Some(&hit())).unwrap()
     }
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn right_click_block_forced_item_use_reaches_empty_hand_on_both_sides() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -408,7 +415,7 @@ fn right_click_block_forced_item_use_reaches_empty_hand_on_both_sides() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn right_click_block_explicit_allow_overrides_sneak_skip_on_both_sides() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -430,7 +437,7 @@ fn right_click_block_explicit_allow_overrides_sneak_skip_on_both_sides() {
                     .unwrap();
                 game.world.set(0, 63, 0, stone).unwrap();
                 game.forced_hit = Some(hit());
-                game.keys.insert(winit::keyboard::KeyCode::ShiftLeft);
+                game.insert_device_key(winit::keyboard::KeyCode::ShiftLeft);
                 if let Some(remote) = game.remote.as_mut() {
                     remote.last_input |= super::SHIFT_INPUT;
                 }
@@ -475,7 +482,7 @@ fn right_click_block_explicit_allow_overrides_sneak_skip_on_both_sides() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -682,9 +689,9 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                     ..Controls::default()
                 };
                 let used = if client {
-                    game.remote_use_item_on(Hand::Off)
+                    game.remote_use_item_on(Hand::Off, mod_api::InteractionAttempt::Press, None)
                 } else {
-                    game.guest_use = Some(super::super::GuestUse::OnBlock(Hand::Off));
+                    game.guest_use = Some(super::super::GuestUse::on_block(Hand::Off));
                     game.with_hand(Hand::Off, |g| g.use_hand(Some(&hit())).unwrap())
                 };
                 assert!(used);
@@ -698,7 +705,7 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn canceled_item_results_keep_the_stack_wrappers_side_effects() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -810,7 +817,7 @@ fn canceled_item_results_keep_the_stack_wrappers_side_effects() {
 /// answers in place of the server's menu turn: SUCCESS swings and ends the click, FAIL ends it,
 /// PASS goes on to the other hand.
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn a_spectator_fires_right_click_block_on_the_client_and_its_cancel_answers() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -834,7 +841,7 @@ fn a_spectator_fires_right_click_block_on_the_client_and_its_cancel_answers() {
             // Nobody answers: the event fired, and the spectator's click ends there, no swing.
             *observer.0.lock().unwrap() = Controls::default();
             let swings = game.swings_started;
-            assert!(game.remote_use_item_on(Hand::Main));
+            assert!(game.remote_use_item_on(Hand::Main, mod_api::InteractionAttempt::Press, None));
             assert_eq!(observer.0.lock().unwrap().clicks, 1);
             assert_eq!(game.swings_started, swings);
             for (answer, ends, swings_by) in [
@@ -848,7 +855,11 @@ fn a_spectator_fires_right_click_block_on_the_client_and_its_cancel_answers() {
                     ..Controls::default()
                 };
                 let swings = game.swings_started;
-                assert_eq!(game.remote_use_item_on(Hand::Main), ends, "{answer:?}");
+                assert_eq!(
+                    game.remote_use_item_on(Hand::Main, mod_api::InteractionAttempt::Press, None),
+                    ends,
+                    "{answer:?}"
+                );
                 assert_eq!(game.swings_started - swings, swings_by, "{answer:?}");
                 assert_eq!(observer.0.lock().unwrap().clicks, 1, "{answer:?}");
             }
@@ -858,7 +869,7 @@ fn a_spectator_fires_right_click_block_on_the_client_and_its_cancel_answers() {
 
 /// A cancelled block PASS tries both hands, but neither may send or predict item use.
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn a_spectators_passing_block_click_skips_item_use_for_both_hands() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -888,8 +899,8 @@ fn a_spectators_passing_block_click_skips_item_use_for_both_hands() {
             };
             let swings = game.swings_started;
             // The real target turn precedes remote_use_hands' item/off-hand sequence.
-            assert!(!game.remote_use_item_on(Hand::Main));
-            game.remote_use_hands(mod_api::InteractionAttempt::Press);
+            assert!(!game.remote_use_item_on(Hand::Main, mod_api::InteractionAttempt::Press, None));
+            game.remote_use_hands(Hand::Main, mod_api::InteractionAttempt::Press, None);
             let state = observer.0.lock().unwrap();
             assert_eq!(state.clicks, 2);
             assert_eq!(state.click_hands, [Hand::Main, Hand::Off]);
@@ -925,7 +936,7 @@ fn a_spectators_passing_block_click_skips_item_use_for_both_hands() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn air_event_skips_the_item_and_consuming_results_end_the_click() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1035,12 +1046,19 @@ fn air_event_skips_the_item_and_consuming_results_end_the_click() {
                     .get("minecraft:zombie")
                     .unwrap()
                     .clone();
-                game.mobs.push(sunrise_client::mobs::Mob::new(
-                    42,
-                    kind,
-                    Vec3::new(0.5, 64.0, 5.5),
-                    0.0,
-                ));
+                if client {
+                    game.spawn_entity(42, &kind.id, [0.5, 64.0, 5.5], [0.0; 3]);
+                } else {
+                    game.mobs.push(sunrise_client::mobs::Mob::new(
+                        42,
+                        kind,
+                        Vec3::new(0.5, 64.0, 5.5),
+                        0.0,
+                    ));
+                }
+                if client {
+                    game.refresh_client_pick(1.0);
+                }
                 assert!(game.entity_targeted());
                 assert!(
                     game.right_click_item(Hand::Main, &ItemStack::new("minecraft:stick", 1))
@@ -1056,7 +1074,7 @@ fn air_event_skips_the_item_and_consuming_results_end_the_click() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn before_block_cancellation_pass_continues_but_fail_and_consuming_results_stop() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1145,7 +1163,7 @@ fn before_block_cancellation_pass_continues_but_fail_and_consuming_results_stop(
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn on_item_use_first_runs_before_the_block_and_ends_the_click() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1225,7 +1243,7 @@ fn on_item_use_first_runs_before_the_block_and_ends_the_click() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn an_item_used_from_the_off_hand_reaches_the_use_hooks_on_the_server() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1278,7 +1296,7 @@ fn an_item_used_from_the_off_hand_reaches_the_use_hooks_on_the_server() {
             game.world.set(0, 63, 0, stone).unwrap();
             game.world.set(0, 64, 0, stone).unwrap();
             game.forced_hit = Some(hit());
-            for guest in [None, Some(super::super::GuestUse::OnBlock(Hand::Off))] {
+            for guest in [None, Some(super::super::GuestUse::on_block(Hand::Off))] {
                 game.inventory[game.selected] = None;
                 *observer.0.lock().unwrap() = Controls {
                     hands: Some(Vec::new()),
@@ -1330,6 +1348,7 @@ fn setup_interaction_guest(
             max_players: 2,
             integrated: true,
             levels: game.level_shapes,
+            level_seeds: game.levels.runtime.seeds(),
         },
     )
     .unwrap();
@@ -1358,7 +1377,7 @@ fn setup_interaction_guest(
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn a_server_client_fires_use_item_finish_when_the_server_completes_the_use() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1536,7 +1555,7 @@ fn a_server_client_fires_use_item_finish_when_the_server_completes_the_use() {
 /// drops send their own packets; they are not this path.) So a hand a finish listener replaced
 /// in creative mode is not sent as `SetCreativeModeSlot` by either of this client's senders.
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn a_creative_hand_replaced_by_a_finish_listener_is_not_sent_as_a_creative_slot() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1606,7 +1625,7 @@ mod interaction_key_tests;
 mod mapping_press_tests;
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn item_use_overlap_matrix_on_the_server() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1645,9 +1664,11 @@ fn item_use_overlap_matrix_on_the_server() {
                                         }
                                     }
                                     if sneak {
-                                        game.keys.insert(winit::keyboard::KeyCode::ShiftLeft);
+                                        game.insert_device_key(winit::keyboard::KeyCode::ShiftLeft);
                                     } else {
-                                        game.keys.remove(&winit::keyboard::KeyCode::ShiftLeft);
+                                        game.remove_device_key(
+                                            &winit::keyboard::KeyCode::ShiftLeft,
+                                        );
                                     }
                                     *observer.0.lock().unwrap() = Controls {
                                         expected_hand: Some(hand),
@@ -1673,7 +1694,7 @@ fn item_use_overlap_matrix_on_the_server() {
                                                 Answer::Success | Answer::Fail | Answer::Consume
                                             )
                                     };
-                                    game.guest_use = Some(super::super::GuestUse::OnBlock(hand));
+                                    game.guest_use = Some(super::super::GuestUse::on_block(hand));
                                     game.adv.progress = Default::default();
                                     let swings = game.swings_started;
                                     let used =
@@ -1720,7 +1741,7 @@ fn item_use_overlap_matrix_on_the_server() {
 /// MultiPlayerGameMode.performUseItemOn returns it without a swing. An unknown
 /// item must keep that inert fallback even when RightClickBlock forces use.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn resource_gated_unknown_held_item_forced_use_predicts_pass_without_a_swing() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1782,7 +1803,7 @@ fn resource_gated_unknown_held_item_forced_use_predicts_pass_without_a_swing() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn a_server_client_keeps_a_bundle_use_until_the_server_completes_it() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1815,5 +1836,36 @@ fn a_server_client_keeps_a_bundle_use_until_the_server_completes_it() {
                 )]
             );
         });
+    });
+}
+
+/// `SolidBucketItem.useOn`: a powder snow bucket placed on a block leaves an empty bucket in the
+/// hand that placed it, on the server and in the client's own prediction, so the client's next
+/// click in the same tick uses the bucket (`use_item`) as vanilla's does.
+#[test]
+#[ignore = "daily"]
+fn a_placed_powder_snow_bucket_leaves_a_bucket_in_hand_on_both_sides() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        for client in [false, true] {
+            with_interaction_game(client, |game| {
+                game.set_mode_id(0);
+                let stone = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:stone")
+                    .unwrap();
+                game.world.set(0, 64, 0, stone).unwrap();
+                game.forced_hit = Some(hit());
+                game.inventory[game.selected] =
+                    Some(ItemStack::new("minecraft:powder_snow_bucket", 1));
+                use_block(game, client);
+                assert_eq!(
+                    game.inventory[game.selected].as_ref().map(|s| &*s.item),
+                    Some("minecraft:bucket"),
+                    "client={client}"
+                );
+            });
+        }
     });
 }

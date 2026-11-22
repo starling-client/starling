@@ -94,9 +94,10 @@ pub(super) fn tick_until_consumption(
     w: &super::MobWorld,
     level: &mut super::DamageLevel<'_>,
     events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
 ) -> super::ai::TickProgress {
     before_tick(m, w.game_time);
-    let progress = super::ai::tick_until_consumption(m, w, level, events);
+    let progress = super::ai::tick_until_consumption(m, w, level, events, movement);
     if matches!(progress, super::ai::TickProgress::Complete(_)) {
         after_tick(m, w.game_time);
     }
@@ -121,8 +122,8 @@ pub(super) fn after_tick(m: &mut Mob, game_time: i64) {
 mod tests {
     use super::*;
     use crate::mobs::sensor_scan_tests;
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     /// A `NeutralMob` of `species`; no resources are needed, only the species
     /// decides how its anger is kept.

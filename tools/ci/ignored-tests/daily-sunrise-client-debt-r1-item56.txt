@@ -1,0 +1,1 @@
+sunrise-client game::gui_layer_tests::health_extraction_runs_only_in_the_vanilla_layer_body lib daily child-process

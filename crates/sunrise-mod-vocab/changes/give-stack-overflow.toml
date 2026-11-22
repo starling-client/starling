@@ -1,0 +1,3 @@
+ids = ["behaviour:give_stack_overflow"]
+why = "PlayerRef::give_stack now throws overflow in the receiving player's level rather than returning it just because the hook runs in a different level. This matches /give."
+migrate = "Remove any separate drop scheduled to work around cross-level overflow. Only Ok(Some(rest)) leaves any overflow for the caller to handle; Ok(None) means every item was accepted. The ordinary entity-join hook can still cancel the overflow drop."

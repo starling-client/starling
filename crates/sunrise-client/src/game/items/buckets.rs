@@ -27,7 +27,7 @@ impl Game<'_> {
         let distance = |p: [f64; 3]| {
             (p[0] - origin[0]).powi(2) + (p[1] - origin[1]).powi(2) + (p[2] - origin[2]).powi(2)
         };
-        match (self.pick(), self.pick_fluid()) {
+        match (self.item_pick(), self.pick_fluid()) {
             (Some(block), Some(fluid)) => Some(if distance(block.point) <= distance(fluid.point) {
                 block
             } else {
@@ -37,30 +37,36 @@ impl Game<'_> {
         }
     }
 
-    /// `BucketItem.use`'s place position: a water bucket fills the clicked
-    /// block itself when that block can hold it (`canBlockContainFluid`: a
-    /// waterloggable stair, slab, fence, ..., but not a double slab, kelp or
-    /// seagrass); every other bucket empties into the block the clicked face
-    /// leads to. `SolidBucketItem` places like a block item, into a
-    /// replaceable clicked block.
-    pub(super) fn bucket_target(&self, content: BucketContent, hit: &Hit) -> [i32; 3] {
-        let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        let behaviours = self.res.behaviours();
+    /// `BucketItem.use` fills the clicked block if it can contain the bucket's
+    /// fluid, or the block beside the clicked face otherwise. Without a part's
+    /// answer only water fills a vanilla container. `SolidBucketItem` instead
+    /// places like a block item, into a replaceable clicked block.
+    pub(super) fn bucket_target(&mut self, content: BucketContent, hit: &Hit) -> [i32; 3] {
+        let [x, y, z] = hit.pos;
+        let clicked = self.world.block(x, y, z);
         if content == BucketContent::Powder {
             if self.res.facts().get(clicked).replaceable {
                 return hit.pos;
             }
-        } else if content.is_water()
-            && behaviours.is_liquid_container(clicked)
-            && behaviours.can_place_liquid(
-                clicked,
-                sunrise_world::fluid::FluidKind::Water,
-                self.creative,
-            )
-        {
-            return hit.pos;
+        } else if let Some(fluid) = content.fluid() {
+            let user = self.bucket_liquid_user();
+            if self.with_level(|b, level, _| {
+                b.bucket_can_fill(level, BlockPos::new(x, y, z), clicked, fluid, user)
+            }) {
+                return hit.pos;
+            }
         }
         hit.beside()
+    }
+
+    pub(in crate::game) fn bucket_liquid_user(&self) -> sunrise_world::level::LiquidUser {
+        sunrise_world::level::LiquidUser {
+            entity_id: self.lan_acting_entity.or_else(|| {
+                (self.remote.is_some() || self.player.is_some())
+                    .then(|| self.own_entity_id() as u32)
+            }),
+            creative: self.creative,
+        }
     }
 
     /// `BucketItem.use`'s guard before it touches the world: `level.mayInteract`,

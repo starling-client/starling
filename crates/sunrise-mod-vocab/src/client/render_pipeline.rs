@@ -10,7 +10,8 @@ use crate::{Identifier, WorldDepth};
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct RenderPipeline {
     owner: String,
-    /// The pipeline's own name (`mymod:glow`), in a namespace the mod owns.
+    /// The pipeline's own name (`mymod:glow`). Unique among all mod pipelines,
+    /// regardless of whether they are required or optional.
     pub id: Identifier,
     /// The fragment shader (`mymod:glow` is `assets/mymod/shaders/pipeline/glow.wgsl`), as the
     /// mod's assets or a resource pack supply it.
@@ -27,6 +28,9 @@ pub struct RenderPipeline {
     /// fails and keeps the previous resources. An optional one is logged once by id and resolves
     /// to [`RenderPipelineError::Invalid`] while the other pipelines draw.
     pub optional: bool,
+    /// What the shader samples with `pipeline_texture(uv)`, if anything ([`Self::textured`]).
+    /// `None`, the default, binds no texture: the shader reads only its input and `frame`.
+    pub texture: Option<PipelineTexture>,
 }
 impl RenderPipeline {
     /// Describe a required pipeline that draws [`PipelineVertexFormat::PositionTexColor`]
@@ -45,6 +49,7 @@ impl RenderPipeline {
             blend,
             depth,
             optional: false,
+            texture: None,
         }
     }
     /// The owning mod, assigned by the host after registration.
@@ -58,7 +63,69 @@ impl RenderPipeline {
         self.optional = true;
         self
     }
+
+    /// Let the shader sample `texture` with `pipeline_texture(uv)` (vanilla's `Sampler0`, as
+    /// `RenderPipeline.withSampler` declares it). A texture the load refuses
+    /// ([`PipelineTextureError`]) refuses the pipeline as a missing shader does: a required one
+    /// fails the load, an optional one is logged with the named cause and resolves to
+    /// [`RenderPipelineError::Invalid`].
+    pub fn textured(mut self, texture: PipelineTexture) -> Self {
+        self.texture = Some(texture);
+        self
+    }
 }
+
+/// A texture a pipeline's shader samples ([`RenderPipeline::textured`]): always a rectangle of
+/// the atlas the host binds, never a texture of its own. `pipeline_texture(uv)` maps `fract(uv)`
+/// into that rectangle and loads one texel by integer coordinates at mip level 0 (nearest, no
+/// filtering, so no neighbouring sprite's texel enters): `uv` 0 to 1 spans it once and beyond
+/// that it repeats. It returns linear light (the mod render colour rule) with the texel's alpha.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum PipelineTexture {
+    /// A sprite of the game's block or item atlas, by its texture id: `powah:block/energy_charge`
+    /// is `assets/powah/textures/block/energy_charge.png` as the `minecraft:blocks` atlas holds
+    /// it, `minecraft:item/diamond` an item sprite. An animated sprite animates. A sprite in
+    /// neither atlas refuses the pipeline ([`PipelineTextureError::NoSuchSprite`]). A texture
+    /// file of the mod's own, packed into the runtime atlas's slot pool (#4438) and drawn the
+    /// same way, follows once that pool exists.
+    Sprite(Identifier),
+}
+
+/// Why a pipeline's texture was refused: the named cause its refusal is logged with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum PipelineTextureError {
+    /// No sprite of that id in the block or item atlas.
+    NoSuchSprite,
+    /// No texture file of that id in the mod's assets or a resource pack.
+    NoSuchTextureFile,
+    /// The id names a file (a `textures/` path or a `.png` name), not a sprite key.
+    NotASpriteKey,
+    /// A texture file over the pool's cap of 1024 x 1024 pixels.
+    OverCap,
+    /// A texture file that isn't an image the game can decode.
+    Undecodable,
+    /// No free atlas slot, or over the mod's image budget.
+    NoSlot,
+}
+
+impl std::fmt::Display for PipelineTextureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoSuchSprite => "no such sprite in the block or item atlas",
+            Self::NoSuchTextureFile => "no such texture file",
+            Self::NotASpriteKey => "the id names a file, not a sprite key",
+            Self::OverCap => "the texture file is over 1024 x 1024 pixels",
+            Self::Undecodable => "the texture file cannot be decoded",
+            Self::NoSlot => "no free atlas slot, or over the mod's image budget",
+        })
+    }
+}
+
+impl std::error::Error for PipelineTextureError {}
 
 /// The vertex data a pipeline's draws carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,44 +221,16 @@ pub enum PipelineDrawError {
     CapacityExceeded,
 }
 
-/// What `owner` added to `pipelines` in `register_render_pipelines`, checked as it returns: a
-/// pipeline outside the mod's namespaces or whose id an earlier registration took is logged
-/// with the mod and dropped.
+/// Stamp the owning mod onto every pipeline `owner` added in `register_render_pipelines`.
+/// Duplicate IDs are rejected when the engine freezes the collected registrations at startup.
 pub(crate) fn validate_render_pipelines(
     owner: &str,
     previous: &[RenderPipeline],
-    pipelines: &mut Vec<RenderPipeline>,
+    pipelines: &mut [RenderPipeline],
 ) {
-    validate_in(owner, previous, pipelines, &|namespace| {
-        crate::parts::owns_namespace(owner, namespace)
-    });
-}
-
-fn validate_in(
-    owner: &str,
-    previous: &[RenderPipeline],
-    pipelines: &mut Vec<RenderPipeline>,
-    owns: &dyn Fn(&str) -> bool,
-) {
-    let added = pipelines.split_off(previous.len().min(pipelines.len()));
-    for mut pipeline in added {
-        let refusal = if !owns(pipeline.id.namespace()) {
-            Some("its id is outside the mod's namespaces")
-        } else if pipelines.iter().any(|kept| kept.id == pipeline.id) {
-            Some("an earlier registration has that id")
-        } else {
-            None
-        };
-        match refusal {
-            Some(reason) => log::warn!(
-                "register_render_pipelines: mod {owner}: pipeline {} refused: {reason}",
-                pipeline.id
-            ),
-            None => {
-                pipeline.owner = owner.to_owned();
-                pipelines.push(pipeline);
-            }
-        }
+    let start = previous.len().min(pipelines.len());
+    for pipeline in &mut pipelines[start..] {
+        pipeline.owner = owner.to_owned();
     }
 }
 
@@ -213,41 +252,43 @@ mod tests {
     }
 
     #[test]
-    fn a_mod_keeps_only_new_pipelines_in_its_own_namespace() {
-        let previous = vec![pipeline("other:glow")];
+    fn stamps_owner_on_new_pipelines_across_namespaces_and_preserves_duplicates_for_freeze() {
+        let mut previous = vec![pipeline("other:glow")];
+        validate_render_pipelines("first_mod", &[], &mut previous);
         let mut pipelines = previous.clone();
         pipelines.extend([
-            pipeline("mine:glow"),
+            pipeline("minecraft:glow"),
             pipeline("other:beam"),
-            pipeline("mine:glow"),
+            pipeline("other:glow"),
             pipeline("mine:beam"),
         ]);
-        validate_in("owning_mod", &previous, &mut pipelines, &|namespace| {
-            namespace == "mine"
-        });
-        assert_eq!(ids(&pipelines), ["other:glow", "mine:glow", "mine:beam"]);
-        assert_eq!(pipelines[1].owner(), "owning_mod");
-    }
-
-    #[test]
-    fn a_mod_cannot_take_an_id_registered_before_it() {
-        let previous = vec![pipeline("shared:glow")];
-        let mut pipelines = previous.clone();
-        pipelines.push(pipeline("shared:glow"));
-        validate_in("late", &previous, &mut pipelines, &|_| true);
-        assert_eq!(pipelines, previous);
+        validate_render_pipelines("owning_mod", &previous, &mut pipelines);
+        assert_eq!(
+            ids(&pipelines),
+            [
+                "other:glow",
+                "minecraft:glow",
+                "other:beam",
+                "other:glow",
+                "mine:beam",
+            ]
+        );
+        assert_eq!(pipelines[0].owner(), "first_mod");
+        for added in &pipelines[1..] {
+            assert_eq!(added.owner(), "owning_mod");
+        }
     }
 
     #[test]
     fn a_mod_can_register_more_than_vanillas_pipeline_count() {
         let mut pipelines: Vec<_> = (0..131).map(|i| pipeline(&format!("mine:p{i}"))).collect();
-        validate_in("mine", &[], &mut pipelines, &|_| true);
+        validate_render_pipelines("mine", &[], &mut pipelines);
         assert_eq!(pipelines.len(), 131);
         assert_eq!(pipelines.last().unwrap().id.to_string(), "mine:p130");
 
         let previous = pipelines.clone();
         pipelines.push(pipeline("next:glow"));
-        validate_in("next", &previous, &mut pipelines, &|_| true);
+        validate_render_pipelines("next", &previous, &mut pipelines);
         assert_eq!(pipelines.len(), 132);
     }
 }

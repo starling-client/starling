@@ -4,6 +4,13 @@
 //! block events, moving pistons), printing what `VanillaRedstoneCatalogOracle`
 //! prints. Comparator levels of containers and lecterns come from the oracle
 //! (`analog`): nothing here moves items.
+use serde_json::Value;
+use std::{
+    collections::HashMap,
+    fmt::Write as _,
+    io::{BufRead, Write},
+    path::Path,
+};
 use sunrise_core::{
     geometry::{BlockHit, Direction, Vec3},
     position::{BlockPos, ChunkPos},
@@ -12,13 +19,6 @@ use sunrise_core::{
 use sunrise_world::{
     level::{Behaviours, LevelAccess, PlayerContext, Ticks, data::load_registry},
     registry::BlockStateId,
-};
-use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fmt::Write as _,
-    io::{BufRead, Write},
-    path::Path,
 };
 
 struct Cells {

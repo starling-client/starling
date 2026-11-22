@@ -103,7 +103,7 @@ const HIDDEN: [&str; 13] = [
 
 /// Names Iris 1.11.7's custom uniforms see (our probe of #8995) that the game doesn't give yet:
 /// such a name alone reads 0, and the expression keeps the rest.
-const NOT_GIVEN_YET: [&str; 2] = ["currentRenderedItemId", "lightningBoltPosition"];
+const NOT_GIVEN_YET: [&str; 1] = ["currentRenderedItemId"];
 
 /// The `int` built-ins of Iris 1.11.7's custom uniforms (an int vector for `eyeBrightness`,
 /// `eyeBrightnessSmooth` and the `...PositionInt`s). Our probe packs of #9126 wrote each name
@@ -132,9 +132,12 @@ const INT_NAMES: [&str; 21] = [
     "worldTime",
 ];
 
-/// The `bool` built-ins (the same probes: Iris kept these only in `bool`). Every other built-in
-/// is a float there, kept only in `float`.
-const BOOL_NAMES: [&str; 16] = [
+/// The `bool` built-ins (the same probes: Iris kept these only in `bool`), with the player
+/// booleans only custom uniforms read (spec 3.4: `is_alive`, `is_child`, `is_glowing`,
+/// `is_in_lava`, `is_in_water`, `is_ridden`, `is_riding`, `is_wet`). Those eight were not
+/// probed: they are bool like the six that were, by inference (decision D-2,
+/// `docs/cleanroom/decisions.md`). Every other built-in is a float there, kept only in `float`.
+const BOOL_NAMES: [&str; 24] = [
     "feetInWater",
     "firstPersonCamera",
     "hasCeiling",
@@ -145,12 +148,20 @@ const BOOL_NAMES: [&str; 16] = [
     "isRiding",
     "isRightHanded",
     "isSpectator",
+    "is_alive",
     "is_burning",
+    "is_child",
+    "is_glowing",
     "is_hurt",
+    "is_in_lava",
+    "is_in_water",
     "is_invisible",
     "is_on_ground",
+    "is_ridden",
+    "is_riding",
     "is_sneaking",
     "is_sprinting",
+    "is_wet",
 ];
 
 /// The functions of Iris 1.11.7's custom uniforms that give a float whatever numbers they take
@@ -389,8 +400,6 @@ impl Custom {
             match builtin(n) {
                 _ if n == "pi" => Ty::Float,
                 _ if self.constants.contains_key(n) || n.starts_with("BIOME_") => Ty::Int,
-                // The game doesn't give `lightningBoltPosition` yet: its size is unknown.
-                None if n == "lightningBoltPosition" => Ty::Any,
                 None | Some(Val { n: 1, .. }) if int => Ty::Int,
                 None | Some(Val { n: 1, .. }) if BOOL_NAMES.contains(&n) => Ty::Bool,
                 None | Some(Val { n: 1, .. }) => Ty::Float,
@@ -804,7 +813,7 @@ fn smooth_arguments(args: &[Expr]) -> Result<(), String> {
 /// - A matrix counts only through a component (`m.0.1`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Ty {
-    /// A name whose type we don't know (`lightningBoltPosition`): it fits anything.
+    /// No type yet: what a list of no values gives (`same`, `numbers`); it fits anything.
     Any,
     Int,
     Float,
@@ -1387,21 +1396,28 @@ mod tests {
              uniform.float.u8 = v1 + 1.0\n\
              uniform.float.u9 = frameTime * 0.0 + 2.0\n\
              uniform.vec3.w = vec3(skyColor.r, entityColor.a, blockEntityId) * 0.0 + 2.0\n\
-             uniform.float.r = currentRenderedItemId * 0.0 + lightningBoltPosition.x + 2.0\n",
+             uniform.float.r = currentRenderedItemId * 0.0 + lightningBoltPosition.x + 2.0\n\
+             uniform.vec4.bolt = lightningBoltPosition\n\
+             uniform.vec3.bolt3 = lightningBoltPosition\n",
         );
-        // The game gives every name here but `notAName`, `currentRenderedItemId` and
-        // `lightningBoltPosition`, as Sunrise's frame uniforms do.
+        // The game gives every name here but `notAName` and `currentRenderedItemId`, as
+        // Sunrise's frame uniforms do; `lightningBoltPosition` is a vec4, so `bolt3` reads 0.
         let builtin = |n: &str| match n {
-            "notAName" | "currentRenderedItemId" | "lightningBoltPosition" => None,
+            "notAName" | "currentRenderedItemId" => None,
             "fogColor" | "skyColor" => Some(Val::vector(&[0.5, 0.6, 0.7])),
             "entityColor" => Some(Val::vector(&[0.0; 4])),
+            "lightningBoltPosition" => Some(Val::vector(&[3.5, -1.0, 4.0, 1.0])),
             _ => Some(Val::scalar(1.0)),
         };
-        let x: Vec<f64> = c.eval(0.016, &builtin).iter().map(|v| v.v[0]).collect();
+        let values = c.eval(0.016, &builtin);
+        assert_eq!(values[12].v[..4], [3.5, -1.0, 4.0, 1.0]);
+        let x: Vec<f64> = values.iter().map(|v| v.v[0]).collect();
         // `w` reads 0 as well: `vec3 * 0.0` joins a vector and a scalar (#9086).
         assert_eq!(
             x,
-            [2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 6.0, 2.0, 0.0, 2.0]
+            [
+                2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 6.0, 2.0, 0.0, 5.5, 3.5, 0.0
+            ]
         );
         assert_eq!(c.notes.len(), 10, "{:?}", c.notes);
         // The same on later frames, with no new notes.

@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: id "minecraft" is a reserved namespace, not a mod's to claim
+
+icon:
+unavailable

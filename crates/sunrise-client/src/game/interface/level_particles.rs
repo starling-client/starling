@@ -338,6 +338,24 @@ impl Game<'_> {
             self.lan_global_events.push((self.dim.id(), id, pos, data));
         }
     }
+    /// Deliver one committed global level event immediately without touching unrelated
+    /// `lan_global_events` or `lan_events`, preserving packet order across effect kinds.
+    pub(super) fn deliver_global_level_event(&mut self, id: i32, pos: [i32; 3], data: i32) {
+        if !self
+            .ui
+            .rules
+            .bool_at(sunrise_client::gamerules::vanilla::GLOBAL_SOUND_EVENTS)
+        {
+            self.deliver_level_event(id, pos, data);
+            return;
+        }
+        self.global_level_event_sound(id, pos);
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.global_level_event(self.dim.id(), id, pos, data);
+        } else if self.audio.capture.is_some() {
+            self.lan_global_events.push((self.dim.id(), id, pos, data));
+        }
+    }
     /// `LevelEventHandler.globalLevelEvent`: the sound two blocks from the
     /// camera towards the event, so it is heard from anywhere.
     pub(super) fn global_level_event_sound(&mut self, id: i32, pos: [i32; 3]) {
@@ -444,6 +462,33 @@ impl Game<'_> {
     /// Queue and play level event `id` at `pos` (`Level.levelEvent`).
     pub(super) fn level_event_at(&mut self, id: i32, pos: [i32; 3], data: i32) {
         self.level_event_from(None, id, pos, data);
+    }
+
+    /// Deliver one committed level event immediately without draining unrelated `level_events` or
+    /// `lan_events`, sending its packet directly when a LAN host is active so packet order matches
+    /// commit order across effect kinds.
+    pub(super) fn deliver_level_event(&mut self, id: i32, pos: [i32; 3], data: i32) {
+        let saved_level_events = std::mem::take(&mut self.level_events);
+        let saved_lan_events = std::mem::take(&mut self.lan_events);
+        self.level_events.push(LevelEvent::LevelEvent {
+            id,
+            pos: BlockPos::new(pos[0], pos[1], pos[2]),
+            data,
+            source: None,
+        });
+        let _ = self.process_level_events();
+        let recorded = std::mem::replace(&mut self.lan_events, saved_lan_events);
+        let extra_level_events = std::mem::replace(&mut self.level_events, saved_level_events);
+        self.level_events.extend(extra_level_events);
+        if let Some(host) = self.lan.as_mut() {
+            if id == 2001 {
+                host.broken
+                    .push([f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])]);
+            }
+            host.hub.level_event(id, pos, data, None);
+        } else {
+            self.lan_events.extend(recorded);
+        }
     }
 
     pub(super) fn level_event_from(

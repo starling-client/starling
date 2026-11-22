@@ -1,7 +1,7 @@
 //! Resource reads for native mods through the game's selected pack stacks.
 use super::Game;
-use sunrise_assets::resource_source::read_winning_resource;
 use mod_api::{Identifier, PackType};
+use sunrise_assets::resource_source::read_winning_resource;
 
 impl Game<'_> {
     /// The winning bytes of `identifier` in `pack_type`'s stack. Client
@@ -47,7 +47,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn server_resource_uses_the_higher_of_two_selected_world_packs() {
         super::super::native_entity_refs::tests::with_game(|game| {
             let scratch = tempfile::tempdir().unwrap();
@@ -85,7 +85,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn server_data_reads_vanilla_files_and_refuses_missing_ones() {
         super::super::native_entity_refs::tests::with_game(|game| {
             let bytes = game
@@ -114,10 +114,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn server_data_reads_mod_content_and_lets_it_override_the_game() {
-        use sunrise_assets::resource_source::{Resource, ResourceSource};
         use std::collections::BTreeMap;
+        use sunrise_assets::resource_source::{Resource, ResourceSource};
         super::super::native_entity_refs::tests::with_game(|game| {
             let vanilla = game
                 .resource(
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn client_assets_read_the_winning_pack_file() {
         super::super::native_entity_refs::tests::with_client_game(|game| {
             let bytes = game

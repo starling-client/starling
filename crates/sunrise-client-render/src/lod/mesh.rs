@@ -5,10 +5,10 @@ use crate::{
     mesher::{OPAQUE_LAYER, SectionMesh, TerrainVertex, fluid_face},
     streaming::WorkerContext,
 };
+use std::collections::BTreeMap;
 use sunrise_assets::model::Direction;
 use sunrise_core::position::BlockPos;
 use sunrise_world::registry::BlockStateId;
-use std::collections::BTreeMap;
 
 const CELLS: usize = 16;
 
@@ -436,7 +436,7 @@ fn mesh_columns_with_edges(
                 step = step.min(other.size());
             }
         }
-        // The cells of the coarsest tiles are thousands of blocks wide: a
+        // The cells of the coarsest tiles are 1,024 blocks wide: a
         // few steps each keep the work bounded, the cut around finer terrain
         // coarse for as long as such a tile stands in for its children.
         step.max(stride / MAX_STEPS)
@@ -1136,9 +1136,9 @@ fn merge(rects: &mut Vec<Rect>) {
 /// corner, must stay within `TerrainVertex::tiled`'s range.
 const MAX_FACE: f32 = 1024.0;
 /// A face that would be more than this many `MAX_FACE` pieces is one quad
-/// whose UVs are scaled to fit: a cell of the coarsest tiles is thousands to
-/// millions of blocks wide, and the texture repeats within it are far below a
-/// pixel.
+/// whose UVs are scaled to fit: a merged face can span a whole 16,384-block
+/// tile of the coarsest level, and the texture repeats within it are far below
+/// a pixel.
 const MAX_PIECES: f32 = 4.0;
 /// Steps along a cell of a tile cut around finer terrain, at most.
 const MAX_STEPS: i32 = 32;
@@ -1343,7 +1343,7 @@ mod tests {
         assert!(height * 3 < voxel * 2, "{height} quads against {voxel}");
     }
     #[test]
-    fn world_sized_faces_are_one_quad_with_uvs_that_fit() {
+    fn tile_sized_faces_are_one_quad_with_uvs_that_fit() {
         let mut mesh = SectionMesh::default();
         let key = FaceKey {
             direction: Direction::Up,
@@ -1354,7 +1354,8 @@ mod tests {
             color: 0,
             translucent: false,
         };
-        let size = 4_194_304.0;
+        // The coarsest tile's width (`lod::MAX_LEVEL`).
+        let size = 16_384.0;
         emit(
             &mut mesh,
             key,

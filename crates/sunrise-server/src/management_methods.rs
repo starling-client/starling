@@ -9,10 +9,10 @@ use crate::{
     engine,
     management::{self, Failure, INTERNAL_ERROR, invalid_params},
 };
-use sunrise_platform::server_files::properties::{ServerProperties, SystemEntropy};
-use sunrise_server_launch::config;
 use serde_json::{Value, json};
 use std::path::Path;
+use sunrise_platform::server_files::properties::{ServerProperties, SystemEntropy};
+use sunrise_server_launch::config;
 
 /// A method's result (`short`: its name without `minecraft:`).
 pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Result<Value, Failure> {
@@ -422,14 +422,15 @@ fn operator(value: &Value) -> Result<Value, Failure> {
 fn component(message: &Value) -> Option<Value> {
     if let Some(key) = message["translatable"].as_str() {
         let mut c = json!({ "translate": key });
-        // Vanilla's Message takes its parameters as strings: plain text here too, never a
-        // selector, score or nbt component that tellraw would resolve with the console's rights.
-        if let Some(with) = message["translatableParams"].as_array() {
-            c["with"] = Value::Array(
-                with.iter()
-                    .map(|p| json!({ "text": p.as_str().unwrap_or_default() }))
-                    .collect(),
-            );
+        // Vanilla drops malformed parameter lists. Keep valid strings as literal text
+        // so tellraw cannot resolve them as selector, score or nbt components.
+        if let Some(params) = message["translatableParams"].as_array()
+            && let Some(with) = params
+                .iter()
+                .map(|param| param.as_str().map(|text| json!({ "text": text })))
+                .collect::<Option<Vec<_>>>()
+        {
+            c["with"] = Value::Array(with);
         }
         return Some(c);
     }
@@ -1241,13 +1242,31 @@ mod tests {
     fn translatable_parameters_are_plain_text() {
         let message = json!({
             "translatable": "chat.type.announcement",
-            "translatableParams": ["Server", {"selector": "@e"}, 3],
+            "translatableParams": ["Server", "@e"],
         });
         assert_eq!(
             component(&message).unwrap(),
             json!({"translate": "chat.type.announcement",
-                "with": [{"text": "Server"}, {"text": ""}, {"text": ""}]})
+                "with": [{"text": "Server"}, {"text": "@e"}]})
         );
+    }
+
+    #[test]
+    fn malformed_translatable_parameters_are_omitted() {
+        for params in [
+            json!(["Server", {"selector": "@e"}]),
+            json!(["Server", 3]),
+            json!("Server"),
+        ] {
+            let message = json!({
+                "translatable": "chat.type.announcement",
+                "translatableParams": params,
+            });
+            assert_eq!(
+                component(&message).unwrap(),
+                json!({"translate": "chat.type.announcement"})
+            );
+        }
     }
 
     fn shared() -> std::sync::Arc<Shared> {

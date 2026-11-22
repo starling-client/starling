@@ -118,15 +118,6 @@ impl HudBatch {
         self.triangle_shaded(white(atlas), corners, [color; 3]);
     }
 
-    /// A fan in one colour: a triangle from `centre` to each two neighbouring points of `rim`
-    /// (GUI px). Repeat the first point at the end to close it.
-    pub fn fill_fan(&mut self, atlas: &HudAtlas, centre: [f32; 2], rim: &[[f32; 2]], color: u32) {
-        let uv = white(atlas);
-        for pair in rim.windows(2) {
-            self.triangle_shaded(uv, [centre, pair[0], pair[1]], [color; 3]);
-        }
-    }
-
     /// An annular sector in one colour: between radii `r0` and `r1` (GUI px, snapped to whole
     /// px) from `angles[0]` to `angles[1]` (radians from up, clockwise), cut into
     /// [`arc_segments`]. With `r0` 0 it is a pie slice; a span of `TAU` is a whole ring.
@@ -442,6 +433,45 @@ mod tests {
                 v.pos
             );
         }
+    }
+
+    #[test]
+    fn a_clipped_rectangle_gradient_keeps_its_colour_ramp() {
+        let atlas = atlas();
+        let top = rgba(255, 0, 0, 255);
+        let bottom = rgba(0, 0, 255, 255);
+        let mut contained = batch();
+        contained.fill_gradient(&atlas, (10.0, 10.0, 20.0, 8.0), top, bottom);
+        let original: Vec<_> = contained.vertices.iter().map(|v| v.color).collect();
+        contained.clip_since(0, 0.0, 0.0, 100.0, 100.0);
+        assert_eq!(
+            contained
+                .vertices
+                .iter()
+                .map(|v| v.color)
+                .collect::<Vec<_>>(),
+            original
+        );
+
+        let mut cut = batch();
+        cut.fill_gradient(&atlas, (10.0, 10.0, 20.0, 8.0), top, bottom);
+        cut.clip_since(0, 0.0, 12.0, 100.0, 16.0);
+        let top_cut = rgba(191, 0, 64, 255);
+        let bottom_cut = rgba(64, 0, 191, 255);
+        assert!(
+            cut.vertices
+                .iter()
+                .all(|v| v.pos[1] == 12.0 || v.pos[1] == 16.0)
+        );
+        let top_vertices: Vec<_> = cut.vertices.iter().filter(|v| v.pos[1] == 12.0).collect();
+        let bottom_vertices: Vec<_> = cut.vertices.iter().filter(|v| v.pos[1] == 16.0).collect();
+        assert!(!top_vertices.is_empty(), "clip has no top edge vertices");
+        assert!(
+            !bottom_vertices.is_empty(),
+            "clip has no bottom edge vertices"
+        );
+        assert!(top_vertices.iter().all(|v| v.color == top_cut));
+        assert!(bottom_vertices.iter().all(|v| v.color == bottom_cut));
     }
 
     #[test]

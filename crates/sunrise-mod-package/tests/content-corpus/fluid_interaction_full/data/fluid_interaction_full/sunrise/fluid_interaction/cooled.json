@@ -1,0 +1,12 @@
+{
+  "source": "minecraft:lava",
+  "neighbour": {
+    "fluid_tag": "minecraft:water"
+  },
+  "below": {
+    "block": "minecraft:blue_ice"
+  },
+  "becomes": {
+    "flowing": "minecraft:basalt"
+  }
+}

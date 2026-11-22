@@ -1,10 +1,10 @@
 //! Powder snow collision over entity metadata and lazily queried walkability.
 use crate::{collision_context::CollisionContext, entity_obstruction::EntityIdentity};
+use std::sync::OnceLock;
 use sunrise_core::{
     geometry::{Aabb, Vec3, VoxelShape},
     position::BlockPos,
 };
-use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PowderSnowEntity {

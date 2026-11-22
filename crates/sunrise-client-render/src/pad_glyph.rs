@@ -125,16 +125,6 @@ impl Glyphs {
             letters: shown == GlyphStyle::Nintendo && settings.by_letter(family),
         }
     }
-    /// The glyphs for a pad of `family` by the buttons' places, whatever the letter setting. Only
-    /// for a question a controller nobody holds yet answers (splitscreen's join and
-    /// lost-controller prompts): it isn't playing, so its letters aren't read yet
-    /// (docs/controllers.md, Nintendo pads).
-    pub fn unheld(settings: &PadSettings, family: GlyphStyle) -> Self {
-        Self {
-            family: settings.glyphs.resolve(family),
-            letters: false,
-        }
-    }
     /// The family the art comes from, for naming it ("Glyphs in use").
     pub fn family(self) -> GlyphStyle {
         self.family
@@ -607,9 +597,6 @@ mod tests {
         // A player who chose Xbox glyphs sees them, though the Nintendo pad is read by letters.
         let chosen = PadSettings::parse("glyphs:xbox\nnintendoLetters:true\n");
         assert_eq!(label(&chosen, GlyphStyle::Nintendo), "A");
-        // A controller nobody holds yet is asked by places.
-        let unheld = Glyphs::unheld(&settings(true), GlyphStyle::Nintendo);
-        assert_eq!(Glyph::menu(MenuJob::Confirm, unheld).label(), "B");
     }
 
     #[test]

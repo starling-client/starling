@@ -3,11 +3,21 @@
 //! like a player (walk, look, break, place, use, click buttons). Actions that
 //! take time run as a task advanced every frame and reply when they finish or
 //! time out, so `sunrise-ctl break 10 64 3` returns what the block dropped.
-#[path = "agent_navigation.rs"]
-mod navigation;
+#[cfg(test)]
+#[path = "face_pick_tests.rs"]
+mod face_pick_tests;
+use sunrise_client_gameplay::agent_navigation as navigation;
 
 use super::event_loop::EventLoopCtl;
+use super::owner_link::{ControlRequest, OwnerRequest};
 use super::{Game, Screen};
+use navigation::{Cell, Node, Plan, Progress};
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::mpsc::Sender,
+    time::{Duration, Instant},
+};
 use sunrise_client::actions::Action;
 use sunrise_client::held::Source;
 use sunrise_client::{
@@ -19,13 +29,6 @@ use sunrise_client::{
 };
 use sunrise_core::geometry::Vec3;
 use sunrise_world::registry::BlockStateId;
-use navigation::{Cell, Node, Plan, Progress};
-use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::mpsc::Sender,
-    time::{Duration, Instant},
-};
 use winit::{
     event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
     keyboard::KeyCode,
@@ -202,6 +205,16 @@ pub(super) fn yaw_pitch(eye: [f64; 3], at: [f64; 3]) -> (f32, f32) {
     )
 }
 
+/// The reply of `command` in a world you host or run alone: `ok` (the request
+/// was delivered), its feedback lines and, from the command's result callbacks
+/// (`recording_command_outcome`), `success` (any fork succeeded) and `result`
+/// (the last fork's). None when no callback ran (a syntax error, an unknown
+/// command, nothing served, a line refused before it ran): `success` is false
+/// and `result` null.
+fn command_reply(chat: Vec<String>, outcome: Option<(bool, i32)>) -> Value {
+    let (success, result) = outcome.map_or((false, None), |(s, r)| (s, Some(r)));
+    json!({ "ok": true, "chat": chat, "success": success, "result": result })
+}
 fn counts(items: impl Iterator<Item = ItemStack>) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
     for s in items {
@@ -252,7 +265,25 @@ enum TaskKind {
         id: Option<u32>,
         health: Option<f32>,
         report_tick: u64,
+        /// Where `attack ID`'s click is; `None` for `attack` with no ID.
+        aimed: Option<AttackAim>,
     },
+}
+/// `attack ID`'s click, from the turn to the tick that takes it. Each tick picks before its
+/// input (client_pick.rs), so the click queued after one tick's pick is taken with the next
+/// tick's pick, which can hold another entity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AttackAim {
+    /// Turned to the entity at this tick: the reach check waits for the next tick's pick.
+    Turned(u64),
+    /// Clicked: the command's click waits in the attack click queue behind `ahead` others,
+    /// a player's queued before it.
+    Clicked { ahead: u32 },
+    /// The click was discarded: keybinds were skipped, or an item in use drained it.
+    Dropped,
+    /// The entity the pick held when the tick's input took the click (and dropped it unless
+    /// that is the ID).
+    Taken(Option<u32>),
 }
 impl TaskKind {
     /// Whether the keys and buttons are released when the task ends. A wait
@@ -311,6 +342,9 @@ struct Glide {
     fed: (f64, f64),
     started: Instant,
     over: Duration,
+    /// The pick count (client_pick.rs) at the start: a glide with no motion replies after the
+    /// next pick, a tick's or a frame's.
+    picks: u64,
     /// The frame count when motion was last fed: the reply waits for the
     /// frame that turns the view with it.
     fed_frame: u64,
@@ -399,7 +433,7 @@ impl Game<'_> {
             v["max_damage"] = json!(max);
             v["durability_left"] = json!((i64::from(max) - i64::from(s.damage)).max(0));
         }
-        if let Some(c) = sunrise_client::item_data::encode_components(s) {
+        if let Some(c) = sunrise_client::item_data::component_snapshot(s) {
             v["components"] = json!(sunrise_client::snbt::to_snbt(&c));
         }
         v
@@ -474,8 +508,6 @@ impl Game<'_> {
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
             Screen::HudEditor => "hud-editor",
-            Screen::Studio => "studio",
-            Screen::EmoteWheel => "emote-wheel",
         }
     }
     pub(super) fn inventory_counts(&self) -> BTreeMap<String, i64> {
@@ -528,7 +560,7 @@ impl Game<'_> {
                 "on_ground": p.ground.on_ground,
                 "flying": p.flying,
                 "fall_flying": p.fall_flying,
-                "sneaking": self.keys.held(Action::Sneak),
+                "sneaking": self.held_mapping(Action::Sneak),
                 "sprinting": p.sprinting,
                 "fov_modifier": self.view.fov_modifier,
                 "health": p.health.health(),
@@ -553,9 +585,13 @@ impl Game<'_> {
         let mut state = json!({
             "dialog": self.dialog_status(),
             "screen": self.screen_label(),
+<<<<<<< sync-sunrise-1
             // The sign editor's block and side.
             "sign": self.sign_edit.as_ref().map(|s| json!({ "pos": [s.pos.0, s.pos.1, s.pos.2], "front": s.front })),
             "menu": (self.title.is_some() || self.split_profiles_open() || self.split_setup_open()).then(|| self.title_value()),
+=======
+            "menu": self.title.is_some().then(|| self.title_value()),
+>>>>>>> sunrise/main
             "world": (self.title.is_none()).then(|| match &self.integrated {
                 Some(server) => server.world_name.clone(),
                 None => self.level.name.clone(),
@@ -591,23 +627,8 @@ impl Game<'_> {
         state
     }
 
-    /// Splitscreen's profile page, a joining player's (`split_profiles`).
-    fn split_profiles_open(&self) -> bool {
-        self.screen == Screen::Options
-            && self.ui.options.page() == sunrise_client::options_ui::Page::SplitProfiles
-    }
-    fn split_setup_open(&self) -> bool {
-        self.screen == Screen::Options
-            && self.ui.options.page() == sunrise_client::options_ui::Page::SplitSetup
-    }
     fn title_value(&self) -> Value {
         use sunrise_client::title::Mode;
-        if self.split_profiles_open() {
-            return self.ui.options.split_profiles.state();
-        }
-        if self.split_setup_open() {
-            return json!({ "mode": "splitscreen-setup", "status": self.ui.options.split_setup.status() });
-        }
         let Some(title) = &self.title else {
             return Value::Null;
         };
@@ -671,8 +692,8 @@ impl Game<'_> {
                 "biome": buffet.biome(),
                 "query": buffet.query(),
             }),
-            Mode::CreatePreset { editor, .. } => json!({
-                "mode": "world-preset-editor", "preset": editor.preset, "editor": editor.screen,
+            Mode::CreatePreset { session, .. } => json!({
+                "mode": "world-preset-editor", "preset": session.preset,
             }),
             Mode::Edit {
                 world,
@@ -728,7 +749,7 @@ impl Game<'_> {
             Mode::Multiplayer(sunrise_client::multiplayer::Screen::Disconnected {
                 reason, ..
             }) => {
-                json!({ "mode": "multiplayer", "disconnected": reason })
+                json!({ "mode": "multiplayer", "disconnected": reason.plain() })
             }
             Mode::Multiplayer(_) => json!({ "mode": "multiplayer" }),
             Mode::Realms(_) => json!({ "mode": "realms" }),
@@ -838,7 +859,7 @@ impl Game<'_> {
             v["chat_input"] = json!(chat.input.value);
             v["chat_suggestions"] = json!(chat.suggestions_visible());
         }
-        if self.title.is_some() || self.split_profiles_open() || self.split_setup_open() {
+        if self.title.is_some() {
             v["menu"] = self.title_value();
         }
         if self.screen == Screen::Inventory && self.title.is_none() {
@@ -997,7 +1018,7 @@ impl Game<'_> {
         if !a.has("sneak") {
             return None;
         }
-        self.keys.press(KeyCode::ShiftLeft, Source::Agent);
+        self.press_device_key(KeyCode::ShiftLeft, Source::Agent);
         Some(SneakClick {
             click_tick: Some(self.ticks + 2),
             aim,
@@ -1024,12 +1045,12 @@ impl Game<'_> {
     }
     fn release_agent_keys(&mut self) {
         for k in MOVE_KEYS {
-            self.keys.release(&k, Source::Agent);
+            self.release_device_key(&k, Source::Agent);
         }
-        if self.left {
+        if self.mapped_key_down("key.attack") {
             let _ = self.agent_mouse(MouseButton::Left, false);
         }
-        if self.right {
+        if self.mapped_key_down("key.use") {
             let _ = self.agent_mouse(MouseButton::Right, false);
         }
     }
@@ -1053,20 +1074,17 @@ impl Game<'_> {
         button: MouseButton,
     ) -> Result<()> {
         let id = self.window.as_ref().ok_or("no window yet")?.id();
-        let scale = self
-            .renderer
-            .as_ref()
-            .map(|r| {
-                sunrise_client::hud::HudBatch::new(
-                    [r.config.width, r.config.height],
-                    self.settings.gui_scale_inputs(),
-                )
-                .scale
-            })
+        let projection = self
+            .renderer_pointer_projection()
             .ok_or("no renderer yet")?;
         let device_id = DeviceId::dummy();
+<<<<<<< sync-sunrise-1
         for (i, &(x, y)) in points.iter().enumerate() {
             let position = self.interface_window_point((x, y), scale);
+=======
+        for (i, &point) in points.iter().enumerate() {
+            let position = projection.window_pointer(point);
+>>>>>>> sunrise/main
             self.handle_window_event(
                 event_loop,
                 id,
@@ -1270,7 +1288,7 @@ impl Game<'_> {
                     keys.push(KeyCode::Space);
                 }
                 for &k in &keys {
-                    self.keys.press(k, Source::Agent);
+                    self.press_device_key(k, Source::Agent);
                 }
                 let from = self.player.as_ref().map_or(Vec3::ZERO, |p| p.position);
                 let until = Instant::now() + Duration::from_secs_f64(seconds);
@@ -1283,7 +1301,7 @@ impl Game<'_> {
             }
             "jump" => {
                 self.require_playing_screen()?;
-                self.keys.press(KeyCode::Space, Source::Agent);
+                self.press_device_key(KeyCode::Space, Source::Agent);
                 let from_y = self.player.as_ref().map_or(0.0, |p| p.position.y);
                 let release_tick = self.ticks + 3;
                 self.start_task(
@@ -1352,7 +1370,8 @@ impl Game<'_> {
             "look-at" => {
                 self.need_world()?;
                 let over = a.has("over").then(|| a.num("over", 0.0)).transpose()?;
-                if over.is_some() {
+                // An entity's target is reported once a frame has picked along the new view.
+                if over.is_some() || a.pos.first() == Some(&"entity") {
                     self.turning()?;
                 }
                 let before = (self.yaw, self.pitch);
@@ -1375,10 +1394,15 @@ impl Game<'_> {
                             .ok_or_else(|| format!("no entity {id}"))?;
                         let c = m.center();
                         self.face_point(c)?;
-                        (
-                            "entity",
-                            json!({ "ok": true, "yaw": self.yaw, "pitch": self.pitch, "target": self.looking_at() }),
-                        )
+                        // The crosshair target is picked once per tick and per frame
+                        // (client_pick.rs): with no motion to feed, the reply waits for the
+                        // next pick along the new view, a tick's or a frame's, so a game with
+                        // no renderer replies too.
+                        if over.is_none() {
+                            return self.start_glide((0.0, 0.0), 0.0, Some("entity"), reply);
+                        }
+                        // Only the turn below replies.
+                        ("entity", Value::Null)
                     }
                     _ => {
                         let at = [a.f64(0, "X")?, a.f64(1, "Y")?, a.f64(2, "Z")?];
@@ -1412,13 +1436,22 @@ impl Game<'_> {
                         .ok_or_else(|| format!("no entity {id}"))?;
                     let c = m.center();
                     self.face_point(c)?;
+                    // The stored pick is still the old view's until the next tick picks.
+                    return self.start_task(
+                        "attack",
+                        TaskKind::Attack {
+                            id: Some(id),
+                            health: None,
+                            report_tick: 0,
+                            aimed: Some(AttackAim::Turned(self.ticks)),
+                        },
+                        reply,
+                        5.0,
+                    );
                 }
                 let target = self
                     .mob_hit()
                     .map(|(i, _, _)| (self.mobs[i].id, self.mobs[i].health));
-                if id.is_some() && target.map(|t| t.0) != id {
-                    return Err("that entity is out of reach or hidden; get closer".into());
-                }
                 self.agent_mouse(MouseButton::Left, true)?;
                 self.agent_mouse(MouseButton::Left, false)?;
                 let report_tick = self.ticks + 4;
@@ -1428,6 +1461,7 @@ impl Game<'_> {
                         id: target.map(|t| t.0),
                         health: target.map(|t| t.1),
                         report_tick,
+                        aimed: None,
                     },
                     reply,
                     5.0,
@@ -1595,7 +1629,7 @@ impl Game<'_> {
                         self.remote_drop(all);
                     }
                 } else {
-                    self.drop_held(all);
+                    self.drop_held_item(all);
                 }
                 ok(
                     json!({ "ok": true, "dropped_from": before, "held": self.held().map(|s| self.stack_value(s)) }),
@@ -1603,7 +1637,7 @@ impl Game<'_> {
             }
             "open-inventory" => {
                 self.require_playing_screen()?;
-                self.key_pressed(KeyCode::KeyE, KeyCode::KeyE)?;
+                self.open_inventory();
                 ok(json!({ "ok": true, "screen": self.screen_label() }))
             }
             "click-button" => {
@@ -1653,19 +1687,15 @@ impl Game<'_> {
                 let (x, y) = (a.f64(0, "X")? as f32, a.f64(1, "Y")? as f32);
                 let steps = a.f64(2, "STEPS")? as f32;
                 let id = self.window.as_ref().ok_or("no window yet")?.id();
-                let scale = self
-                    .renderer
-                    .as_ref()
-                    .map(|r| {
-                        sunrise_client::hud::HudBatch::new(
-                            [r.config.width, r.config.height],
-                            self.settings.gui_scale_inputs(),
-                        )
-                        .scale
-                    })
+                let projection = self
+                    .renderer_pointer_projection()
                     .ok_or("no renderer yet")?;
                 let device_id = DeviceId::dummy();
+<<<<<<< sync-sunrise-1
                 let position = self.interface_window_point((x, y), scale);
+=======
+                let position = projection.window_pointer((x, y));
+>>>>>>> sunrise/main
                 self.handle_window_event(
                     event_loop,
                     id,
@@ -1699,22 +1729,6 @@ impl Game<'_> {
                 self.synth_click(event_loop, x, y, button)?;
                 ok(json!({ "ok": true, "screen": self.screen_label() }))
             }
-            // Splitscreen's profile page, over a joining player's title screen.
-            "type" if self.split_profiles_open() => {
-                let text = line
-                    .trim_start()
-                    .strip_prefix("type")
-                    .unwrap_or("")
-                    .strip_prefix(' ')
-                    .unwrap_or("");
-                let page = &mut self.ui.options.split_profiles;
-                if text == "\\b" {
-                    page.key(winit::keyboard::KeyCode::Backspace, None);
-                } else {
-                    page.type_text(text);
-                }
-                ok(json!({ "ok": true, "menu": self.title_value() }))
-            }
             "type" if self.title.is_some() => {
                 // type [--field name|seed] [--replace] TEXT on the title screens.
                 let mut text = line
@@ -1738,6 +1752,7 @@ impl Game<'_> {
                         break;
                     }
                 }
+                let editing_preset = self.preset_editor_title().is_some();
                 let title = self.title.as_mut().ok_or("no title screen")?;
                 if let Some(field) = &field {
                     match &mut title.mode {
@@ -1770,6 +1785,12 @@ impl Game<'_> {
                         }
                     }
                 }
+                if editing_preset {
+                    if text != "\\b" {
+                        self.screen_chars_typed(Some(text));
+                    }
+                    return ok(json!({ "ok": true, "menu": self.title_value() }));
+                }
                 if replace {
                     for _ in 0..64 {
                         title.backspace();
@@ -1788,8 +1809,8 @@ impl Game<'_> {
                     .trim_start()
                     .strip_prefix("command")
                     .unwrap_or("")
-                    .trim()
-                    .trim_start_matches('/');
+                    .trim();
+                let text = text.strip_prefix('/').unwrap_or(text);
                 if text.is_empty() {
                     return Err("command TEXT".into());
                 }
@@ -1801,17 +1822,22 @@ impl Game<'_> {
                 let command = format!("/{text}");
                 // Single player's console is its server thread's.
                 if let Some(server) = &self.integrated {
-                    let chat = server
-                        .call(move |g| g.owner_console_command(&command))
+                    let (chat, outcome) = server
+                        .ask(|reply| {
+                            OwnerRequest::Control(ControlRequest::ConsoleCommand { command, reply })
+                        })
                         .ok_or(super::integrated::NO_ANSWER)?;
-                    return ok(json!({ "ok": true, "chat": chat }));
+                    return ok(command_reply(chat, outcome));
                 }
+                // A server we joined answers in the chat, not to this reply:
+                // no `success`, no `result`.
                 if self.remote.is_some() {
                     self.send_signed_chat_input(&command);
                     return ok(json!({ "ok": true }));
                 }
-                self.as_console(|g| g.handle_chat_input(&command));
-                ok(json!({ "ok": true, "chat": self.ui.chat.recent_lines(5) }))
+                let ((), outcome) = self
+                    .recording_command_outcome(|g| g.as_console(|g| g.handle_chat_input(&command)));
+                ok(command_reply(self.ui.chat.recent_lines(5), outcome))
             }
             "respawn" if self.remote.is_none() => {
                 if self.screen != Screen::Dead {
@@ -1852,6 +1878,8 @@ impl Game<'_> {
                 self.start_task("wait", TaskKind::Wait { until_tick }, reply, timeout)
             }
             "stop" => {
+                // A cancelled `attack ID` must not leave its queued click to fire later.
+                self.finish_agent_attack_input(false);
                 let cancelled = self.agent.task.take().map(|t| {
                     let _ = t.reply.send(
                         json!({ "error": "cancelled by stop", "cancelled": true }).to_string(),
@@ -1919,6 +1947,7 @@ impl Game<'_> {
             fed: (0.0, 0.0),
             started: now,
             over,
+            picks: self.client_picks(),
             fed_frame: self.frames,
             deadline: now + over + Duration::from_secs(10),
             reply: reply.clone(),
@@ -1929,7 +1958,8 @@ impl Game<'_> {
     }
 
     /// Feed the motion due by now (eased over the glide's time); reply once
-    /// all of it has been turned by a frame.
+    /// all of it has been turned by a frame, or with no motion once a pick
+    /// (a tick's or a frame's) has been taken since the start.
     fn advance_glide(&mut self) {
         let Some(mut g) = self.agent.glide.take() else {
             return;
@@ -1968,7 +1998,12 @@ impl Game<'_> {
             g.fed = due;
             g.fed_frame = self.frames;
         }
-        if t >= 1.0 && self.frames > g.fed_frame {
+        let turned = if g.total == (0.0, 0.0) {
+            self.client_picks() > g.picks
+        } else {
+            self.frames > g.fed_frame
+        };
+        if t >= 1.0 && turned {
             let extra = match g.aim {
                 Some("block") | Some("entity") => json!({ "target": self.looking_at() }),
                 _ => json!({}),
@@ -1986,13 +2021,73 @@ impl Game<'_> {
         self.agent.glide = Some(g);
     }
 
+    /// The tick's input is taking an attack click (`Minecraft.startAttack`): an `attack ID`
+    /// that clicked keeps the entity this tick's pick holds, the pick the click is taken with.
+    /// Whether the click is the command's and the pick is not the ID: it is then dropped. The
+    /// clicks queued before the command's, and any with no `attack ID` waiting, go on.
+    pub(in crate::game) fn agent_attack_click_refused(&mut self) -> bool {
+        let Some(Task {
+            kind:
+                TaskKind::Attack {
+                    aimed: Some(AttackAim::Clicked { ahead }),
+                    ..
+                },
+            ..
+        }) = self.agent.task.as_mut()
+        else {
+            return false;
+        };
+        if *ahead > 0 {
+            *ahead -= 1;
+            return false;
+        }
+        let picked = self.mob_hit().map(|(i, _, _)| self.mobs[i].id);
+        let Some(Task {
+            kind: TaskKind::Attack { id, aimed, .. },
+            ..
+        }) = self.agent.task.as_mut()
+        else {
+            return false;
+        };
+        *aimed = Some(AttackAim::Taken(picked));
+        picked != *id
+    }
+
+    /// Resolve a queued `attack ID` click that keybinds didn't take or whose task is ending.
+    /// If keybinds ran, an empty mapping means the click was drained (while using an item).
+    pub(in crate::game) fn finish_agent_attack_input(&mut self, keybinds_ran: bool) {
+        if keybinds_ran && self.remote_attack_clicks_queued() != 0 {
+            return;
+        }
+        if let Some(Task {
+            kind: TaskKind::Attack { aimed, .. },
+            ..
+        }) = self.agent.task.as_mut()
+            && matches!(aimed, Some(AttackAim::Clicked { .. }))
+        {
+            *aimed = Some(AttackAim::Dropped);
+            if !keybinds_ran {
+                // ToggleKeyMapping.release keeps pending clicks. Retire just the command's
+                // click, not the player's, before it can act without its target check.
+                self.consume_mapping_click("key.attack");
+            }
+        }
+    }
+
     /// Advance the running agent task; reply when it ends.
     pub(super) fn advance_agent(&mut self) {
         self.advance_glide();
+        let timed_out = self
+            .agent
+            .task
+            .as_ref()
+            .is_some_and(|task| Instant::now() >= task.deadline);
+        if timed_out {
+            self.finish_agent_attack_input(false);
+        }
         let Some(mut task) = self.agent.task.take() else {
             return;
         };
-        let timed_out = Instant::now() >= task.deadline;
         let result = self.step_task(&mut task.kind, timed_out);
         match result {
             Some(value) => {
@@ -2027,7 +2122,7 @@ impl Game<'_> {
                     return Some(json!({ "error": why, "position": self.position() }));
                 }
                 for &k in keys.iter() {
-                    self.keys.press(k, Source::Agent);
+                    self.press_device_key(k, Source::Agent);
                 }
                 if Instant::now() < *until && !timed_out {
                     return None;
@@ -2054,7 +2149,7 @@ impl Game<'_> {
                 from_y,
             } => {
                 if self.ticks >= *release_tick || timed_out {
-                    self.keys.release(&KeyCode::Space, Source::Agent);
+                    self.release_device_key(&KeyCode::Space, Source::Agent);
                     let on_ground = self.player.as_ref().is_some_and(|p| p.ground.on_ground);
                     if on_ground || timed_out {
                         return Some(
@@ -2146,7 +2241,7 @@ impl Game<'_> {
                     return None;
                 }
                 if sneak.is_some() {
-                    self.keys.release(&KeyCode::ShiftLeft, Source::Agent);
+                    self.release_device_key(&KeyCode::ShiftLeft, Source::Agent);
                 }
                 let after = pos.map(|p| self.block_json(p));
                 let used = delta(inventory, &self.inventory_counts());
@@ -2184,9 +2279,55 @@ impl Game<'_> {
                 id,
                 health,
                 report_tick,
+                aimed,
             } => {
+                if let Some(AttackAim::Turned(at)) = *aimed {
+                    if self.ticks <= at && !timed_out && interrupted.is_none() {
+                        return None;
+                    }
+                    if let Some(why) = interrupted {
+                        return Some(json!({ "error": why }));
+                    }
+                    if timed_out {
+                        return Some(json!({ "error": "game ticks are not advancing (paused?)" }));
+                    }
+                    let ahead = self.remote_attack_clicks_queued();
+                    *aimed = Some(AttackAim::Clicked { ahead });
+                    let target = self.mob_hit().map(|(i, _, _)| &self.mobs[i]);
+                    if target.map(|m| m.id) != *id {
+                        return Some(
+                            json!({ "error": "that entity is out of reach or hidden; get closer" }),
+                        );
+                    }
+                    *health = target.map(|m| m.health);
+                    if let Err(e) = self
+                        .require_playing_screen()
+                        .and_then(|()| self.agent_mouse(MouseButton::Left, true))
+                        .and_then(|()| self.agent_mouse(MouseButton::Left, false))
+                    {
+                        return Some(json!({ "error": e.to_string() }));
+                    }
+                    if self.remote_attack_clicks_queued() == ahead {
+                        return Some(json!({ "error": "the attack click queue is full" }));
+                    }
+                    *report_tick = self.ticks + 4;
+                    return None;
+                }
+                // The check above read an earlier pick: the one the click was taken with
+                // decides, and on another target the click was dropped.
+                if let Some(AttackAim::Taken(picked)) = *aimed
+                    && picked != *id
+                {
+                    return Some(json!({
+                        "error": "another target was under the crosshair when the click was taken; nothing was clicked",
+                        "picked": picked,
+                    }));
+                }
                 if self.ticks < *report_tick && !timed_out {
                     return None;
+                }
+                if matches!(*aimed, Some(AttackAim::Clicked { .. } | AttackAim::Dropped)) {
+                    return Some(json!({ "error": "the attack click was not taken" }));
                 }
                 let now = id.and_then(|id| self.mobs.iter().find(|m| m.id == id));
                 Some(json!({
@@ -2276,9 +2417,9 @@ impl Game<'_> {
         if d[0].abs() + d[1].abs() > 1e-3 {
             self.yaw = (-d[0]).atan2(d[1]).to_degrees() as f32;
         }
-        self.keys.press(KeyCode::KeyW, Source::Agent);
+        self.press_device_key(KeyCode::KeyW, Source::Agent);
         if g.sprint {
-            self.keys.press(KeyCode::ControlLeft, Source::Agent);
+            self.press_device_key(KeyCode::ControlLeft, Source::Agent);
         }
         // Step up onto the next block, or out of water.
         let in_water = {
@@ -2293,9 +2434,9 @@ impl Game<'_> {
             g.jump_until = self.ticks + 4;
         }
         if self.ticks < g.jump_until || in_water {
-            self.keys.press(KeyCode::Space, Source::Agent);
+            self.press_device_key(KeyCode::Space, Source::Agent);
         } else {
-            self.keys.release(&KeyCode::Space, Source::Agent);
+            self.release_device_key(&KeyCode::Space, Source::Agent);
         }
         None
     }
@@ -2350,7 +2491,7 @@ impl Game<'_> {
                     let _ = self.agent_mouse(MouseButton::Left, false);
                     return Some(json!({ "error": e.to_string(), "pos": b.pos }));
                 }
-                if !self.left {
+                if !self.mapped_key_down("key.attack") {
                     let _ = self.agent_mouse(MouseButton::Left, true);
                 }
                 return None;
@@ -2397,7 +2538,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes"]
+    #[ignore = "daily"]
     fn region_adoption_agent_state_reports_the_actual_title_mode() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             use sunrise_client::title::{Mode, Title, list_worlds};
@@ -2407,7 +2548,7 @@ mod tests {
                 name: "Moor".into(),
                 ..Default::default()
             }
-            .write(&saves.join("Moor"))
+            .write(&saves.join("Moor"), &Default::default())
             .unwrap();
             let world = list_worlds(&saves).remove(0);
             let mut title = Title::new(saves, scratch.path(), "");
@@ -2484,6 +2625,26 @@ mod tests {
             assert_eq!(face_name(dir), name);
         }
         assert!(face_dir("sideways").is_err());
+    }
+
+    #[test]
+    fn command_reply_carries_the_commands_own_outcome() {
+        let chat = || vec!["Gave 4 Oak Log".to_owned()];
+        // `/give @s oak_log 4` returns the number of targets, 1.
+        assert_eq!(
+            command_reply(chat(), Some((true, 1))),
+            json!({"ok": true, "chat": ["Gave 4 Oak Log"], "success": true, "result": 1})
+        );
+        // `/clear` of nothing: the command ran and failed, with result 0.
+        assert_eq!(
+            command_reply(vec![], Some((false, 0))),
+            json!({"ok": true, "chat": [], "success": false, "result": 0})
+        );
+        // Never reached its callback: delivered, not successful, no result.
+        assert_eq!(
+            command_reply(vec![], None),
+            json!({"ok": true, "chat": [], "success": false, "result": null})
+        );
     }
 
     #[test]

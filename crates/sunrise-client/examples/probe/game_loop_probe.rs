@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 //! Runs the JSON-lines scenarios of tools/test_game_loop_parity.py through the
 //! Rust timer, tick-rate manager, window, mouse and key-mapping code.
+use serde_json::Value;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+};
 use sunrise_client::{
     Result,
     clock::{ServerTickRateManager, Timer},
@@ -8,11 +13,6 @@ use sunrise_client::{
     mouse::{LookOptions, MouseLook, Rotation},
     options_file::{OptionsFile, V},
     window::{self, FrameContext, InactivityFpsLimit},
-};
-use serde_json::Value;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
 };
 
 fn fl(v: &Value) -> f32 {

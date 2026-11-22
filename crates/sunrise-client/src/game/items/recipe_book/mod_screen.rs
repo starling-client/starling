@@ -99,6 +99,49 @@ fn tab_arrows(
     .filter_map(|(show, next, rect, sprite, key)| show.then_some((next, rect, sprite, key)))
 }
 
+fn draw_registered_book(
+    layout: &Layout<'_>,
+    ui: &ModRecipeUi,
+    (xo, yo): (f32, f32),
+    cursor: (f32, f32),
+) -> (Vec<Drawn>, usize) {
+    let mut calls = screen::draw(layout);
+    // The tab sprites, and the category arrows painted beside them (none under an overlay).
+    let first_category_arrow = calls.len();
+    if ui.overlay.is_none() {
+        for (_, [x, y, w, h], name, key) in tab_arrows(ui, xo, yo) {
+            let hover = inside(cursor, x, y, w, h);
+            let id = format!(
+                "recipe_book/{name}{}",
+                if hover { "_highlighted" } else { "" }
+            );
+            calls.push(Drawn {
+                call: Call::Sprite {
+                    id,
+                    x: x as i32,
+                    y: y as i32,
+                    w: w as i32,
+                    h: h as i32,
+                },
+                pose: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            });
+            if hover {
+                calls.push(Drawn {
+                    call: Call::Tooltip(vec![vec![screen::Run::plain((layout.translate)(key))]]),
+                    pose: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                });
+            }
+        }
+    }
+    (calls, first_category_arrow)
+}
+
+fn registered_book_tab_bounds(calls: &[Drawn], first_category_arrow: usize) -> Option<[f32; 4]> {
+    screen::sprite_bounds(calls, |index, id| {
+        index >= first_category_arrow || screen::is_tab_sprite(id)
+    })
+}
+
 impl Game<'_> {
     fn mod_book_panel(&self) -> Option<sunrise_client::recipe_book::ModBookPanel<'_>> {
         let key = self.native_screen_book()?;
@@ -260,7 +303,9 @@ impl Game<'_> {
     }
     fn mod_book_button(&self, batch: &HudBatch) -> (f32, f32) {
         self.mod_book_layout(batch.width, self.mod_book_open())
-            .map_or((0.0, 0.0), |layout| layout.toggle)
+            .map_or((0.0, 0.0), |layout| {
+                layout.shifted_toggle(self.screen_room_shift(batch))
+            })
     }
     pub(super) fn draw_mod_book(&mut self, batch: &mut HudBatch) -> Option<Vec<(Text, u32)>> {
         self.refresh_mod_book();
@@ -318,12 +363,11 @@ impl Game<'_> {
         let text_width = |s: &str| HudBatch::text_width(&self.gui.atlas, s) as i32;
         let layout = Layout {
             book: BookType::Crafting,
-            width: batch.width as i32,
-            height: batch.height as i32,
-            narrow: self.mod_book_overlay(batch.width),
+            origin: (xo as i32, yo as i32),
             mouse: (self.cursor.0 as i32, self.cursor.1 as i32),
             index: self.swap_index(),
             filtering,
+            filter_look: mod_api::RecipeBookFilterLook::registered(self.native_screen_book()?),
             search: &search,
             tabs: &tabs,
             buttons: &buttons,
@@ -334,31 +378,13 @@ impl Game<'_> {
             translate: &translate,
             text_width: &text_width,
         };
-        let mut calls = screen::draw(&layout);
-        if ui.overlay.is_none() {
-            for (_, [x, y, w, h], name, key) in tab_arrows(ui, xo, yo) {
-                let hover = inside(self.cursor, x, y, w, h);
-                let id = format!(
-                    "recipe_book/{name}{}",
-                    if hover { "_highlighted" } else { "" }
-                );
-                calls.push(Drawn {
-                    call: Call::Sprite {
-                        id,
-                        x: x as i32,
-                        y: y as i32,
-                        w: w as i32,
-                        h: h as i32,
-                    },
-                    pose: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                });
-                if hover {
-                    calls.push(Drawn {
-                        call: Call::Tooltip(vec![vec![screen::Run::plain(translate(key))]]),
-                        pose: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                    });
-                }
-            }
+        let (calls, first_category_arrow) =
+            draw_registered_book(&layout, ui, (xo, yo), self.cursor);
+        // The tabs and arrows as painted are the region `ScreenView::regions` reports.
+        if self.screen_view_listened() {
+            self.screen_state
+                .drawn_book_tabs
+                .set(registered_book_tab_bounds(&calls, first_category_arrow));
         }
         self.paint_book(batch, &calls)
     }
@@ -609,6 +635,52 @@ mod tests {
         assert_eq!(ui.visible_tabs(), vec![0, 13]);
         assert!(ui.turn_categories(false));
         assert_eq!(ui.visible_tabs(), vec![0, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn the_registered_book_region_excludes_recipe_page_arrows() {
+        let tab = TabView {
+            icons: ("minecraft:compass".into(), None),
+            selected: true,
+            anim: 0.0,
+        };
+        let layout = Layout {
+            book: BookType::Crafting,
+            origin: (54, 37),
+            mouse: (0, 0),
+            index: 0,
+            filtering: false,
+            filter_look: None,
+            search: &Search::default(),
+            tabs: &[tab],
+            buttons: &[],
+            page: 0,
+            pages: 2,
+            overlay: None,
+            ghost: None,
+            translate: &str::to_owned,
+            text_width: &|s| s.len() as i32,
+        };
+        // Search plus five categories gives two category pages. Both forward
+        // arrows then use the same sprite, but only the category arrow is a tab region.
+        let ui = ModRecipeUi {
+            presentation: Some(ModPresentation {
+                tabs: vec![layout.tabs[0].clone(); 6],
+                tab_ids: (0..6).map(|i| format!("test:tab{i}")).collect(),
+                recipes: Vec::new(),
+            }),
+            ..ModRecipeUi::default()
+        };
+        let (calls, first_category_arrow) =
+            draw_registered_book(&layout, &ui, (54.0, 37.0), (0.0, 0.0));
+        assert!(calls.iter().any(|drawn| {
+            matches!(&drawn.call, Call::Sprite { id, x: 147, .. }
+                if id == "recipe_book/page_forward")
+        }));
+        assert_eq!(
+            registered_book_tab_bounds(&calls, first_category_arrow),
+            Some([22.0, 40.0, 35.0, 157.0])
+        );
     }
 
     #[test]

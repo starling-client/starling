@@ -1,15 +1,14 @@
 //! Sunrise Studio, the replay editor: its free camera, camera path, timeline and top bar, and the
-//! `/studio freecam|keyframe|path` and `sunrise-ctl studio screen` commands. It builds on the
+//! `/studio freecam|keyframe|path` commands. It builds on the
 //! platform's replay recording and playback (`replay.rs`).
 
 use super::{Game, Screen, packs};
+use std::{path::PathBuf, time::Duration};
 use sunrise_client::{
-    Result,
+    packet_source::PacketSource,
     studio::{ReplayDriver, TimelineAction},
     text::Text,
 };
-use serde_json::{Value, json};
-use std::{path::PathBuf, time::Duration};
 
 /// Studio's state in a `Game`: the replay editor's free camera, timeline and top bar. Studio is a
 /// Sunrise extra (docs/layers.md: the replay editor) on top of the platform's replay
@@ -49,71 +48,12 @@ pub const HELP: &[&str] = &[
     "studio freecam <on|off>        enable or disable the Studio free camera",
     "studio keyframe <add|remove INDEX|clear> edit the replay camera path",
     "studio path <lock|unlock>      play or stop the camera path",
-    "studio screen open             open the Studio script screen (Screen::Studio)",
-    "studio screen close            close the Studio script screen back to Playing",
-    "studio screen status           report whether Screen::Studio is open",
 ];
-
-/// What `Game::open_studio_screen` does over `screen` (`blocked`: an overlay,
-/// the title screen, no window or no player, the world loading): `None` opens
-/// it, `Some` answers without changing anything (true: already open).
-pub(super) fn studio_screen_opens(screen: Screen, blocked: bool) -> Option<bool> {
-    if screen == Screen::Studio {
-        return Some(true);
-    }
-    if screen != Screen::Playing || blocked {
-        return Some(false);
-    }
-    None
-}
 
 impl Game<'_> {
     /// Studio is up (its bars, its camera path, its mouse): a replay plays or the free camera flies.
     pub(super) fn studio_up(&self) -> bool {
         self.replay.playing() || self.studio.flying()
-    }
-
-    /// Opens the Studio script screen (`Screen::Studio`) over the world.
-    ///
-    /// Sunrise Studio script windows (`ui.open`) use this slot instead of the
-    /// chat slot: the mouse is freed, the world keeps running (as with
-    /// `Screen::Chat`), but `draw_chat_screen` is not invoked for
-    /// `Screen::Studio` (see the draw match in `game.rs`), so chat history
-    /// and the empty chat input never draw behind the window. Escape closes
-    /// it back to `Screen::Playing` (see `play_keys.rs`), as does
-    /// `close_studio_screen`. True when open: false while another screen is,
-    /// over the title screen, a book, a sign editor, a dialog or a prompt,
-    /// while the world loads, and anywhere but the window's own client.
-    pub(super) fn open_studio_screen(&mut self) -> bool {
-        // What `native_mod_screen_open` refuses over the world: the Studio
-        // screen would be up with no hook to draw or click it.
-        let blocked = self.title.is_some()
-            || self.renderer.is_none()
-            || self.lan_acting.is_some()
-            || self.player.is_none()
-            || self.screen_over_playing()
-            || self.remote_loading();
-        if let Some(open) = studio_screen_opens(self.screen, blocked) {
-            return open;
-        }
-        self.screen = Screen::Studio;
-        self.keys.clear();
-        self.left = false;
-        self.right = false;
-        self.mining = None;
-        self.capture(false);
-        true
-    }
-    /// Closes the Studio script screen, if open, returning to `Screen::Playing`.
-    pub(super) fn close_studio_screen(&mut self) {
-        if self.screen == Screen::Studio {
-            self.screen = Screen::Playing;
-            self.capture(true);
-        }
-    }
-    /// Whether the Studio script screen is currently open.
-    pub(super) fn studio_screen_open(&self) -> bool {
-        self.screen == Screen::Studio
     }
 
     /// Studio's editor words of `/studio` (`freecam`, `keyframe`, `path`).
@@ -238,8 +178,9 @@ impl Game<'_> {
             TopBarAction::None => {}
             TopBarAction::OpenPauseMenu => {
                 self.pause_focus = None;
-                self.screen = Screen::Paused;
+                self.activate_screen(Screen::Paused);
                 self.pause_menu = true;
+                self.release_mappings_on_screen_open();
                 self.capture(false);
             }
             TopBarAction::ExitStudio => {
@@ -333,11 +274,12 @@ impl Game<'_> {
                 let time_ms = if self.replay.standalone {
                     time_ms
                 } else {
-                    let current =
-                        self.replay
-                            .driver
-                            .as_ref()
-                            .map_or(0, ReplayDriver::position_ms) as u64;
+                    let current = self
+                        .replay
+                        .driver
+                        .as_ref()
+                        .map_or(0, |driver| driver.position_ms())
+                        as u64;
                     time_ms.max(current)
                 };
                 self.studio.timeline.current_time_ms = time_ms;
@@ -414,7 +356,12 @@ impl Game<'_> {
 
     /// Add a bookmark at the replay playhead and save it in the `.mcpr` archive.
     pub(super) fn add_studio_marker(&mut self) {
-        let Some(replay) = self.replay.driver.as_mut() else {
+        let Some(replay) = self
+            .replay
+            .driver
+            .as_mut()
+            .and_then(|driver| driver.as_any_mut().downcast_mut::<ReplayDriver>())
+        else {
             return;
         };
         let label = Text::translate(
@@ -428,33 +375,14 @@ impl Game<'_> {
         }
     }
 
-    /// `sunrise-ctl studio screen <open|close|status>`.
-    pub(super) fn studio_screen_control(&mut self, words: &[&str]) -> Result<Option<Value>> {
-        match words.get(2).copied() {
-            Some("open") => {
-                let open = self.open_studio_screen();
-                Ok(Some(
-                    json!({ "ok": true, "open": open, "screen": if self.studio_screen_open() { "studio" } else { "playing" } }),
-                ))
-            }
-            Some("close") => {
-                let was_open = self.studio_screen_open();
-                self.close_studio_screen();
-                Ok(Some(
-                    json!({ "ok": true, "was_open": was_open, "screen": if self.studio_screen_open() { "studio" } else { "playing" } }),
-                ))
-            }
-            Some("status") => Ok(Some(
-                json!({ "ok": true, "open": self.studio_screen_open(), "screen": if self.studio_screen_open() { "studio" } else { "playing" } }),
-            )),
-            _ => Ok(Some(json!({ "error": "unknown studio screen subcommand" }))),
-        }
-    }
-
     /// Saves the free camera's path into the replay playing, when it changed.
     pub(super) fn save_studio_camera_track(&mut self) -> std::io::Result<()> {
         if self.studio.camera_track_dirty
-            && let Some(driver) = self.replay.driver.as_mut()
+            && let Some(driver) = self
+                .replay
+                .driver
+                .as_mut()
+                .and_then(|driver| driver.as_any_mut().downcast_mut::<ReplayDriver>())
         {
             driver.save_camera_track(&self.studio.freecam.track)?;
             self.studio.camera_track_dirty = false;
@@ -486,11 +414,15 @@ impl Game<'_> {
         }
         if let Some((position, duration, paused, markers)) =
             self.replay.driver.as_ref().map(|replay| {
+                let markers = replay
+                    .as_any()
+                    .downcast_ref::<ReplayDriver>()
+                    .map_or_else(Vec::new, |driver| driver.markers().to_vec());
                 (
                     replay.position_ms(),
                     replay.duration_ms(),
                     replay.is_paused(),
-                    replay.markers().to_vec(),
+                    markers,
                 )
             })
         {
@@ -692,8 +624,9 @@ impl Game<'_> {
             }
             KeyCode::KeyP => {
                 self.pause_focus = None;
-                self.screen = Screen::Paused;
+                self.activate_screen(Screen::Paused);
                 self.pause_menu = true;
+                self.release_mappings_on_screen_open();
                 self.capture(false);
             }
             // The rest are the editor's.

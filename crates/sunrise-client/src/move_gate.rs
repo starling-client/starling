@@ -9,6 +9,9 @@
 //! when a listener subscribes (one branch otherwise: no snapshot, no
 //! allocation, no mod scan).
 use crate::collisions::{EntityCollisions, SceneCollisions};
+use mod_api::MoveCause;
+use std::borrow::Cow;
+use std::io;
 use sunrise_core::geometry::{Aabb, Vec3, border::BorderGeometry};
 use sunrise_world::block_collision_scan::BlockCollisionWorld;
 use sunrise_world::collision_context::CollisionContext;
@@ -16,15 +19,10 @@ use sunrise_world::entity_move::MoverType;
 use sunrise_world::move_gate::MoveGate;
 use sunrise_world::native_load_context::{LoopContext, LoopSide};
 use sunrise_world::world_movement::EntityMovementWorld;
-use mod_api::MoveCause;
-use std::borrow::Cow;
-use std::io;
 
 /// The `entity_move` hook's target (#2414): the generated dispatch the
 /// catalog's generator requires of a target, with the loop's own reader as
-/// the context. Its declaration carries `isolate`, so the same generated
-/// walk is the one the move gate dispatches through — no alias, no second
-/// route.
+/// the context. The move gate uses the same generated dispatch.
 pub fn native_entity_move(
     context: &LoopContext,
     entity: u32,
@@ -46,6 +44,20 @@ fn cause_of(cause: MoverType) -> MoveCause {
         MoverType::Piston => MoveCause::Piston,
         MoverType::ShulkerBox => MoveCause::ShulkerBox,
         MoverType::Shulker => MoveCause::Shulker,
+        MoverType::Carried => MoveCause::Carried,
+    }
+}
+
+/// The `MoverType` a mod asks for by its cause (`MoveCause`): `cause_of`'s inverse. None for a
+/// cause this build does not know (`MoveCause` may grow).
+pub fn mover_of(cause: MoveCause) -> Option<MoverType> {
+    match cause {
+        MoveCause::SelfMovement => Some(MoverType::SelfMovement),
+        MoveCause::Player => Some(MoverType::Player),
+        MoveCause::Piston => Some(MoverType::Piston),
+        MoveCause::ShulkerBox => Some(MoverType::ShulkerBox),
+        MoveCause::Shulker => Some(MoverType::Shulker),
+        _ => None,
     }
 }
 
@@ -54,12 +66,11 @@ fn cause_of(cause: MoverType) -> MoveCause {
 /// here — in this one function — on the authoritative side, and only when a
 /// listener subscribes; with none, or on a client's own prediction, the
 /// movement is recorded unchanged and the tick cost is the subscriber branch.
-/// A listener that cancels skips the invocation; a replacement outside ±64
-/// blocks per axis, or not a finite number, is refused whole — the movement
-/// stands as the requested delta would. A listener that unwinds keeps the
-/// **requested** delta — the generated isolated dispatch rolls its writes
-/// back, skips it from this hook's next dispatch for the session and leaves
-/// its other hooks and Parts alone — and the move carries on.
+/// A listener that cancels skips the invocation; a non-finite replacement is
+/// refused whole — the movement keeps the preceding accepted delta. If a
+/// listener unwinds, dispatch
+/// drops only its edits and disables that callback for this hook. Earlier
+/// results stand and later eligible listeners still get the move.
 ///
 /// `kind` names the entity's type (`minecraft:zombie`) only when called: a
 /// listener needs it, a move nobody listens to must not pay for it. It runs
@@ -77,7 +88,7 @@ pub fn arm_with<'k>(
     // The requested delta is the floor every listener result falls back to:
     // armed first, the decision replaced only by a result that passes
     // validation — the request stays what `overridden` measures against.
-    gate.arm(cause, delta);
+    gate.arm(entity, cause, delta);
     if context.side() != LoopSide::Server {
         return;
     }
@@ -98,13 +109,26 @@ pub fn arm_with<'k>(
     );
     if canceled {
         gate.skip();
-        return;
-    }
-    // Design #2308: replacement components lie in ±64 blocks and are finite;
-    // a malformed result is rejected whole — like the requested delta would
-    // be — never clamped.
-    if replaced.iter().all(|v| v.is_finite() && v.abs() <= 64.0) {
+    } else {
         gate.decide(Vec3::new(replaced[0], replaced[1], replaced[2]));
+    }
+}
+
+/// The pre-existing finite, per-axis range on direct `move_by` requests from mods.
+/// It is not a limit on `Entity.move` or `entity_move` listener proposals.
+pub fn valid_mod_move_delta(delta: [f64; 3]) -> bool {
+    delta.iter().all(|v| v.is_finite() && v.abs() <= 64.0)
+}
+
+#[test]
+fn mod_move_deltas_use_an_inclusive_finite_bound_on_every_axis() {
+    assert!(valid_mod_move_delta([-64.0, 0.0, 64.0]));
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -64.5, 64.5] {
+        for axis in 0..3 {
+            let mut delta = [0.0; 3];
+            delta[axis] = invalid;
+            assert!(!valid_mod_move_delta(delta));
+        }
     }
 }
 
@@ -154,6 +178,7 @@ pub fn armed(
 #[allow(clippy::disallowed_methods)]
 mod collide {
     use super::*;
+    use sunrise_client_render::moving_colliders;
     /// `SceneCollisions::resolve` through the gate: the armed move's
     /// collision, stopped by the blocks (and powder snow by the scene's
     /// `subject`).
@@ -165,8 +190,9 @@ mod collide {
         max_step: f32,
         on_ground: bool,
     ) -> crate::Result<Vec3> {
-        let _ = gate;
-        scene.resolve(bounds, movement, max_step, on_ground)
+        moving_colliders::as_mover(gate.mover(), || {
+            scene.resolve(bounds, movement, max_step, on_ground)
+        })
     }
     /// `SceneCollisions::resolve_with_context` through the gate.
     pub fn scene_with_context(
@@ -178,8 +204,9 @@ mod collide {
         on_ground: bool,
         context: CollisionContext<'_>,
     ) -> crate::Result<Vec3> {
-        let _ = gate;
-        scene.resolve_with_context(bounds, movement, max_step, on_ground, context)
+        moving_colliders::as_mover(gate.mover(), || {
+            scene.resolve_with_context(bounds, movement, max_step, on_ground, context)
+        })
     }
     /// `SceneCollisions::resolve_in_border_with` through the gate: also
     /// stopped by the world border's walls and the selected `entities` boxes.
@@ -194,8 +221,9 @@ mod collide {
         border: Option<(&BorderGeometry, [f64; 2])>,
         entities: &[Aabb],
     ) -> crate::Result<Vec3> {
-        let _ = gate;
-        scene.resolve_in_border_with(bounds, movement, max_step, on_ground, border, entities)
+        moving_colliders::as_mover(gate.mover(), || {
+            scene.resolve_in_border_with(bounds, movement, max_step, on_ground, border, entities)
+        })
     }
     /// `EntityCollisions::resolve` through the gate.
     pub fn entities<W>(
@@ -209,8 +237,9 @@ mod collide {
     where
         W: BlockCollisionWorld<Error = io::Error> + EntityMovementWorld<Error = io::Error>,
     {
-        let _ = gate;
-        collisions.resolve(bounds, movement, max_step, on_ground)
+        moving_colliders::as_mover(gate.mover(), || {
+            collisions.resolve(bounds, movement, max_step, on_ground)
+        })
     }
     /// `EntityCollisions::resolve_with_context` through the gate.
     pub fn entities_with_context<W>(
@@ -225,8 +254,9 @@ mod collide {
     where
         W: BlockCollisionWorld<Error = io::Error> + EntityMovementWorld<Error = io::Error>,
     {
-        let _ = gate;
-        collisions.resolve_with_context(bounds, movement, max_step, on_ground, context)
+        moving_colliders::as_mover(gate.mover(), || {
+            collisions.resolve_with_context(bounds, movement, max_step, on_ground, context)
+        })
     }
 }
 pub use collide::{

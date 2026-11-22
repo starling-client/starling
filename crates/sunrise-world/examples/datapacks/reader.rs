@@ -1,13 +1,13 @@
 //! Data packs (`pack.mcmeta` + `data/`), folders and zips, into the worldgen
 //! entries their files give (`WorldgenOverrides`, lowest pack first). Shared by
 //! `chunkgen_bench --datapack` and the chunk_dump probe's `SUNRISE_DATAPACKS`.
-use sunrise_world::worldgen::overrides::{PackFile, WorldgenOverrides, template_id};
 use std::{
     collections::BTreeMap,
     fs,
     io::Read as _,
     path::{Path, PathBuf},
 };
+use sunrise_world::worldgen::overrides::{PackFile, WorldgenOverrides, template_id};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 

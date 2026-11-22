@@ -1,6 +1,6 @@
 //! Woodland mansions (WoodlandMansionStructure, WoodlandMansionPieces).
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use std::sync::Arc;
+use sunrise_core::{geometry::Direction, random::RandomSource};
 use {
     super::{
         Mirror, Rotation, StructureResources,

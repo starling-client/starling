@@ -10,6 +10,7 @@
 //! fix of the server data is ported ([`OLDEST_SUPPORTED`]). The fixes of client
 //! files (options, debug profiles) are not ported either (creative toolbars in
 //! `hotbar.nbt` are ported via [`update_hotbar`]).
+mod advancement_criteria;
 mod block_state_data;
 mod chunk_flatten;
 mod chunk_leaves;
@@ -33,9 +34,9 @@ mod text;
 pub mod world_upgrader;
 
 use dynamic::{as_str, string};
-use sunrise_core::nbt::Tag;
 use schema::{Key, Ty, key, walk};
 pub use single::{MAX_DEPTH, UpgradeError, upgrade_block_entity, upgrade_entity};
+use sunrise_core::nbt::Tag;
 pub use tables::{available as tables_available, set_resources};
 
 /// The DataVersion of the game.
@@ -126,7 +127,7 @@ pub fn mark_read(e: &mut Tag) {
     if let Tag::Compound(_) = e {
         let mut raw = e.clone();
         strip_last_read(&mut raw);
-        dynamic::set(e, LAST_READ, raw);
+        dynamic::put(e, LAST_READ, raw);
     }
 }
 
@@ -150,9 +151,9 @@ pub fn reread_as(ty: Ty, k: Key, v: &mut Tag) {
 /// it (its value in the map the entity was last read from, if any).
 pub fn drop_typed(e: &mut Tag, field: &str) {
     match e.get(LAST_READ).and_then(|raw| raw.get(field)).cloned() {
-        Some(raw) => dynamic::set(e, field, raw),
+        Some(raw) => dynamic::put(e, field, raw),
         None => {
-            dynamic::remove(e, field);
+            dynamic::take(e, field);
         }
     }
 }
@@ -162,9 +163,9 @@ fn strip_last_read(v: &mut Tag) {
         Tag::Compound(c) => {
             c.remove(&dynamic::key(LAST_READ));
             c.remove(&dynamic::key(schema::flat::UNTYPED));
-            for value in c.values_mut() {
+            c.for_each_mut(|_, value| {
                 strip_last_read(value);
-            }
+            });
         }
         Tag::List(items) => items.iter_mut().for_each(strip_last_read),
         _ => {}
@@ -302,12 +303,12 @@ pub fn update_chunk_to(tag: &mut Tag, dimension: &str, generator: Option<&str>, 
     }
     let mut context = Tag::compound([("dimension", string(dimension))]);
     if let Some(g) = generator {
-        dynamic::set(&mut context, "generator", string(g));
+        dynamic::put(&mut context, "generator", string(g));
     }
-    dynamic::set(tag, "__context", context);
+    dynamic::put(tag, "__context", context);
     update(Ty::Chunk, tag, version, to);
-    dynamic::remove(tag, "__context");
-    dynamic::set(tag, "DataVersion", Tag::Int(to));
+    dynamic::take(tag, "__context");
+    dynamic::put(tag, "DataVersion", Tag::Int(to));
 }
 
 /// The DataVersion of 1.13, the flattening: block states written before it carry 1.12 names and properties.
@@ -349,7 +350,7 @@ pub fn update_region_tag_to(root: Ty, tag: &mut Tag, to: i32) {
         return;
     }
     update(root, tag, version, to);
-    dynamic::set(tag, "DataVersion", Tag::Int(to));
+    dynamic::put(tag, "DataVersion", Tag::Int(to));
 }
 
 /// `PlayerDataStorage.load`: the DataVersion field stays as loaded.
@@ -362,7 +363,7 @@ pub fn update_player(tag: &mut Tag) {
 pub fn update_player_to(tag: &mut Tag, to: i32) {
     let version = dynamic::as_int(tag.get("DataVersion"), -1);
     update(Ty::Player, tag, version, to);
-    dynamic::set(tag, "DataVersion", Tag::Int(to));
+    dynamic::put(tag, "DataVersion", Tag::Int(to));
 }
 
 /// `HotbarManager.load`: a creative toolbar file (`hotbar.nbt`, its DataVersion

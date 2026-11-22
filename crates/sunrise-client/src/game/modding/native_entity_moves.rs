@@ -1,6 +1,6 @@
 //! Moving and turning an entity for native server mods, through an
 //! `EntityRef` (docs/modding/src/how-to/native-mods.md, "Entity and level handles", #7387):
-//! teleport, rotation, head yaw, facing, size and pushes. Writes move the
+//! teleport, collided moves, rotation, head and body yaw, facing, size and pushes. Writes move the
 //! entity as `/tp` and `/rotate` do, so clients see it as they see those.
 //! Reads return `None`, writes false, for a stale handle or on a client.
 use super::entity::{Entity as _, EntityHandle, with_entity_mut};
@@ -9,8 +9,10 @@ use super::{
     commands::{Target, entity_pitch},
     vehicle_teleport::TeleportMotion,
 };
+use crate::game::{collision_source::Mover, move_gate::MoveWho};
+use mod_api::{EntityRef, MoveCause};
 use sunrise_core::geometry::Vec3;
-use mod_api::EntityRef;
+use sunrise_world::entity_move::MoverType;
 
 /// `Level.isInSpawnableBounds` and `/tp`'s limits: 30,000,000 blocks out,
 /// 20,000,000 up or down.
@@ -109,13 +111,48 @@ impl Game<'_> {
                 !r.iter().all(|v| v.is_finite())
                     || !matches!(
                         t,
-                        Target::Player | Target::Guest(_) | Target::Mob(_) | Target::Other(_)
+                        Target::Player
+                            | Target::Guest(_)
+                            | Target::Mob(_)
+                            | Target::Other(_)
+                            | Target::General(_)
                     )
             })
         {
             return None;
         }
         Some(t)
+    }
+    /// Moves the entity by `delta` as `Entity.move(cause, delta)` does: collided, stepping,
+    /// through the `entity_move` hook. How far it moved; None for a stale handle, on a client,
+    /// for an entity outside the entity walk, and for an unknown cause and for a delta that is
+    /// not finite or beyond 64 blocks on an axis. A player is moved by `move_player_by`.
+    pub(super) fn entity_move_by(
+        &mut self,
+        entity: EntityRef,
+        delta: [f64; 3],
+        cause: MoveCause,
+    ) -> Option<[f64; 3]> {
+        if self.remote.is_some() || !sunrise_client::move_gate::valid_mod_move_delta(delta) {
+            return None;
+        }
+        let mover = sunrise_client::move_gate::mover_of(cause)?;
+        let t = self.native_entity_target(entity)?;
+        if matches!(t, Target::Player | Target::Guest(_)) {
+            let conn = match t {
+                Target::Player => self.lan_acting?,
+                Target::Guest(conn) => conn,
+                _ => return None,
+            };
+            // A teleport is made in the player's level, with that level's moving colliders.
+            return self.in_target_level(t, |game| {
+                game.in_this_levels_colliders(|game| game.move_player_by(t, conn, mover, delta))
+            })?;
+        }
+        let handle = self.native_walk_entity(entity.id())?;
+        let [x, y, z] = delta;
+        let moved = self.move_listed_entity(handle, mover, Vec3::new(x, y, z));
+        Some(moved.components())
     }
     /// Turns the entity to `yaw` and `pitch` in degrees (`Entity.setYRot`,
     /// `setXRot`): the pitch wraps and is clamped to -90..90. False for kinds
@@ -159,6 +196,13 @@ impl Game<'_> {
                 });
                 true
             }
+            Target::General(id) => {
+                let Some(row) = self.resident_entities.general.row_mut(id) else {
+                    return false;
+                };
+                row.rotation = [yaw, pitch];
+                true
+            }
             _ => false,
         }
     }
@@ -174,12 +218,25 @@ impl Game<'_> {
         }
         Some(0.0)
     }
+<<<<<<< sync-sunrise-1
     /// A mob's body yaw (`LivingEntity.yBodyRot`); None for any other kind.
     pub(super) fn entity_body_yaw(&self, entity: EntityRef) -> Option<f32> {
         let Target::Mob(id) = self.native_entity_target(entity)? else {
             return None;
         };
         Some(self.mobs.iter().find(|m| m.id == id)?.body_yaw)
+=======
+    /// The yaw of the entity's body (`LivingEntity.yBodyRot`) in degrees as
+    /// vanilla keeps it, not normalized: mobs only, None for players and every
+    /// other kind, and for a stale handle.
+    pub(super) fn entity_body_yaw(&self, entity: EntityRef) -> Option<f32> {
+        match self.native_entity_target(entity)? {
+            Target::Mob(id) => Some(self.mobs.iter().find(|m| m.id == id)?.body_yaw),
+            // The dragon's flight yaw also drives its body and part poses.
+            Target::Dragon(_) => Some(self.native_dragon(entity)?.yaw),
+            _ => None,
+        }
+>>>>>>> sunrise/main
     }
     /// Turns a mob's head to `yaw` (`Entity.setYHeadRot`); its body follows
     /// as its AI turns it. Players' heads can turn too; false for other kinds
@@ -287,12 +344,84 @@ impl Game<'_> {
         }
         true
     }
+    /// Moves a player by `delta` through the level (`Entity.move`) after the `entity_move` hook
+    /// has heard it, and tells its client with a relative teleport (`Hub::displace`). The
+    /// displacement made, or `None` (see the host trait for what is refused).
+    fn move_player_by(
+        &mut self,
+        t: Target,
+        conn: u32,
+        mover: MoverType,
+        delta: [f64; 3],
+    ) -> Option<[f64; 3]> {
+        let acting = t == Target::Player;
+        {
+            let guest = self.lan.as_ref()?.hub.guest(conn)?;
+            if guest.vehicle.is_some() || guest.sleeping {
+                return None;
+            }
+        }
+        // The hook hears the move once, as `Entity.move` begins; a cancel is a move of nothing.
+        let who = if acting {
+            MoveWho::Player
+        } else {
+            MoveWho::Guest(conn)
+        };
+        let gate = self.entity_move(who, mover, Vec3::new(delta[0], delta[1], delta[2]));
+        if gate.skipped() {
+            return Some([0.0; 3]);
+        }
+        let delta = gate.delta().components();
+        let host = self.lan.as_ref()?;
+        let guest = host.hub.guest(conn)?;
+        let body = if acting {
+            self.player.as_ref()
+        } else {
+            guest.motion.as_deref()
+        }?;
+        let from = [body.position.x, body.position.y, body.position.z];
+        let to = [from[0] + delta[0], from[1] + delta[1], from[2] + delta[2]];
+        if !in_bounds(to) {
+            return None;
+        }
+        // A spectator goes through everything, as its moves are not checked.
+        let reached = if guest.spectator() {
+            to
+        } else {
+            // The solid entities (boats, shulkers, a still happy ghast) the player may meet.
+            let entities = self.entity_collisions(Mover::PlayerAt { feet_y: from[1] });
+            self.lan.as_ref()?.hub.settle_conn(
+                conn,
+                from,
+                to,
+                &self.world,
+                self.collision,
+                &entities,
+            )?
+        };
+        let target = Vec3::new(reached[0], reached[1], reached[2]);
+        if acting {
+            self.player.as_mut()?.position = target;
+        } else {
+            let host = self.lan.as_mut()?;
+            host.hub.update_guest(conn, |g| {
+                g.motion.as_deref_mut().map(|m| m.position = target)
+            })??;
+        }
+        let by = [
+            reached[0] - from[0],
+            reached[1] - from[1],
+            reached[2] - from[2],
+        ];
+        self.lan.as_mut()?.hub.displace(conn, reached, by);
+        Some(by)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn moves_and_pushes_a_live_mob() {
         use super::super::native_entity_refs::tests::with_game;
         use sunrise_client::mobs::Mob;
@@ -378,6 +507,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 check_interval: 0,
+                ticks: 0,
             });
             let painting = game.entity(15).unwrap();
             assert!(!painting.teleport_to(game, [1.0, 64.0, 0.0], None));

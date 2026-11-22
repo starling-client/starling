@@ -78,6 +78,24 @@ impl Game<'_> {
             clipboard::ALTGR_IS_CTRL_ALT,
         )
     }
+    /// A text field has keyboard focus: chat, a sign, a book being written,
+    /// a search box, the anvil's name, the title screens' and the options'
+    /// fields, the LAN port, a dialog's input, the command box and the edit
+    /// screens of the jigsaw, structure and test blocks.
+    pub(super) fn text_input_focused(&self) -> bool {
+        (self.screen == Screen::Chat && self.title.is_none())
+            || self.sign_edit.is_some()
+            || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
+            || (self.screen == Screen::Creative && self.creative_screen.tab().search)
+            || self.recipe_search_focused()
+            || self.station_typing()
+            || self.dialog_typing()
+            || self.mod_browser_typing()
+            || matches!(
+                self.screen,
+                Screen::CommandBlock | Screen::BlockEditor | Screen::Social | Screen::DebugOptions
+            )
+    }
     /// A shortcut in an append-only field limited to `max_chars` characters
     /// (an `EditBox` with `setMaxLength`). True when the value changed.
     pub(super) fn append_shortcut(
@@ -211,7 +229,7 @@ mod tests {
     /// A tick and a frame reach no clipboard, read or write; a click from the window does,
     /// and its copy is what the clipboard holds after.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_reaches_the_clipboard_only_while_input_is_handled() {
         let reads = Reads::default();
         let mods: mod_api::Mods = vec![ModEntry::new("paste", Box::new(Mod(reads.clone())))].into();

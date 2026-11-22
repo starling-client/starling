@@ -74,10 +74,10 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::native_entity_refs::tests::{bind_local_player, with_game};
+    use std::sync::Arc;
     use sunrise_client::mobs::Mob;
     use sunrise_client::motion::PlayerMotion;
     use sunrise_core::geometry::Vec3;
-    use std::sync::Arc;
 
     /// A zombie whose `minecraft:max_absorption` is 4.
     fn absorbing_zombie(game: &super::Game<'_>) -> Mob {
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_players_absorption_is_cut_to_zero_and_max_absorption_and_synced() {
         with_game(|game| {
             let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mobs_absorption_takes_a_hit_before_its_health() {
         with_game(|game| {
             let zombie = absorbing_zombie(game);
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mobs_set_absorption_survives_a_save_and_reload() {
         with_game(|game| {
             let zombie = absorbing_zombie(game);
@@ -170,6 +170,7 @@ mod tests {
                 None,
                 None,
                 |_| None,
+                &Default::default(),
             );
             let loaded =
                 sunrise_client::entity_nbt::mob_from_nbt(&saved, game.res.mob_types(), 13, None)
@@ -179,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_aborted_transaction_restores_the_absorption_of_a_player_and_a_mob() {
         with_game(|game| {
             let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();

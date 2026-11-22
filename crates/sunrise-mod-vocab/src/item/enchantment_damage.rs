@@ -42,31 +42,86 @@ pub trait EnchantmentDamageEffects {
     ) -> Result<(), String>;
 }
 
+type DamageEffectEntry = (Identifier, Arc<dyn EnchantmentDamageEffect>);
+
 // no wire: process-local listener or callback storage; trait objects are invoked through host dispatch, not serialized.
 /// Engine-owned storage behind the startup registrar.
 #[derive(Default)]
 #[non_exhaustive]
 pub struct EnchantmentDamageRegistry {
-    entries: Vec<(Identifier, Arc<dyn EnchantmentDamageEffect>)>,
+    entries: Vec<DamageEffectEntry>,
 }
-impl EnchantmentDamageEffects for EnchantmentDamageRegistry {
+
+struct DamageEffectEdits<'a> {
+    accepted: &'a [DamageEffectEntry],
+    tail: &'a mut Vec<DamageEffectEntry>,
+}
+
+impl EnchantmentDamageEffects for DamageEffectEdits<'_> {
     fn register(
         &mut self,
         id: Identifier,
         effect: Arc<dyn EnchantmentDamageEffect>,
     ) -> Result<(), String> {
         if id.to_string().starts_with("minecraft:")
-            || self.entries.iter().any(|(key, _)| key == &id)
+            || self
+                .accepted
+                .iter()
+                .chain(self.tail.iter())
+                .any(|(key, _)| key == &id)
         {
             return Err(format!(
                 "invalid or duplicate enchantment damage effect {id}"
             ));
         }
-        self.entries.push((id, effect));
+        self.tail.push((id, effect));
         Ok(())
     }
 }
+
+impl EnchantmentDamageEffects for EnchantmentDamageRegistry {
+    fn register(
+        &mut self,
+        id: Identifier,
+        effect: Arc<dyn EnchantmentDamageEffect>,
+    ) -> Result<(), String> {
+        DamageEffectEdits {
+            accepted: &[],
+            tail: &mut self.entries,
+        }
+        .register(id, effect)
+    }
+}
+
 impl EnchantmentDamageRegistry {
+    /// Append this listener's effects only if its registration succeeds.
+    // hidden: the engine stages one listener at a time; mods receive only the registrar trait.
+    #[doc(hidden)]
+    pub fn register_listener(
+        &mut self,
+        listen: &mut dyn FnMut(&mut dyn EnchantmentDamageEffects) -> bool,
+    ) {
+        let mut tail = Vec::new();
+        if listen(&mut DamageEffectEdits {
+            accepted: &self.entries,
+            tail: &mut tail,
+        }) {
+            self.entries.append(&mut tail);
+        } else {
+            let owner = crate::content::crash::current_native_mod();
+            for (_, effect) in tail {
+                crate::runtime::discard_registration(
+                    (
+                        crate::generated::HookId::RegisterEnchantmentDamageEffects,
+                        "register_enchantment_damage_effects",
+                    ),
+                    owner,
+                    effect,
+                );
+            }
+        }
+    }
+
     /// Engine-owned registration entries, in slot order.
     // hidden: the engine consumes registrations after startup; not part of the mod API
     #[doc(hidden)]

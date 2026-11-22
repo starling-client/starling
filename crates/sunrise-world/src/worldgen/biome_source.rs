@@ -6,8 +6,8 @@ mod region_selector_tests;
 pub mod regions;
 mod runtime;
 pub use codec::{BiomeSet, BiomeSourceCatalog, BiomeSourceDefinition};
-use sunrise_core::density::{DensitySampler, SampleError, SamplerContext};
 pub use runtime::{BiomeSourceError, BiomeSourceResolver, ResolvedBiomeSource};
+use sunrise_core::density::{DensitySampler, SampleError, SamplerContext};
 
 #[derive(Clone, Debug)]
 pub struct FixedBiomeSource<T> {

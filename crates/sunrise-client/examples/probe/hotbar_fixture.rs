@@ -4,12 +4,12 @@
 //! rows after `sunrise_client::hotbar::from_tag`.
 //!
 //! usage: hotbar_fixture RESOURCES CASES OUTPUT
-use sunrise_client::{hotbar, item_data::canon_stack, items::Items};
-use sunrise_core::nbt::{Tag, parse_snbt};
-use sunrise_world::loot::PackOverlay;
 use serde_json::Value;
 use std::path::Path;
 use std::{fmt::Write as _, fs};
+use sunrise_client::{hotbar, item_data::canon_stack, items::Items};
+use sunrise_core::nbt::{Tag, parse_snbt};
+use sunrise_world::loot::PackOverlay;
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
@@ -34,7 +34,7 @@ pub fn main() -> sunrise_client::Result<()> {
         for (i, row) in rows.iter().enumerate() {
             let _ = write!(out, "{i}:");
             for stack in row {
-                let _ = write!(out, " {}", canon_stack(stack.as_ref()));
+                let _ = write!(out, " {}", canon_stack(stack.as_ref(), &Default::default()));
             }
             out.push_str(" | ");
         }

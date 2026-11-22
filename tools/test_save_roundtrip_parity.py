@@ -8,15 +8,17 @@
    entity section (`save-all`) and quits; this is world H.
 3. The NBT of V0 and H is compared: chunks (block states and biomes decoded, so palette
    order does not matter), block entities, entities, heightmaps, light, ticks, structure
-   data, level.dat, data/*.dat, players/data/*.dat. Differences must be explained by
-   IGNORED below (vanilla-irrelevant: elapsed time, ordering, derived data) or the test
-   fails.
+   data, level.dat, data/*.dat, players/data/*.dat. The warm Overworld lower sky pad's
+   two encodings of zero compare equal only when the first chunk packets from reopening
+   both saves yield dark pads in vanilla's client light storage. A separate
+   cold generation on both servers pins the spawn and compares both pads exactly.
+   Other differences must be explained by IGNORED.
 4. The vanilla server loads H: its log must show no errors, upgrades or DataFixer
    activity, and `data get` of every block entity and entity must print the same
    data as the server that loaded V0 (so vanilla reads Sunrise's files as it reads its own).
 
-  test_save_roundtrip_parity.py [--keep] [--skip-sunrise] [--bin-dir DIR] [--stage gen|resave|compare|all]
-                                [--world DIR] (compare an existing V0/H pair: --vanilla DIR --sunrise DIR)
+  test_save_roundtrip_parity.py [--keep] [--bin-dir DIR] [--gen-only] [--skip-vanilla-load]
+                                [--vanilla DIR] [--sunrise DIR] (compare supplied saves with exact light)
 
 Run files stay under .local/save-roundtrip/run. On Linux the Sunrise client runs on the
 virtual screen (`vscreen`), never on a real monitor, with a null ALSA device; on macOS it
@@ -42,9 +44,10 @@ import anvil_dump  # noqa: E402
 import save_roundtrip_scene as scene  # noqa: E402
 
 try:
-    from . import lab
+    from . import lab, vanilla_world_check
 except ImportError:
     import lab
+    import vanilla_world_check
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCAL = ROOT / '.local'
@@ -104,15 +107,18 @@ KNOWN_GAPS = {
 SUSPICIOUS = re.compile(
     r"(/ERROR\]|/WARN\]|login failed|Exception|Couldn't load|Failed to|Skipping|Invalid|Unknown|corrupt|"
     r'Recreating|upgrad|DataFix|out of bounds|missing|Mismatch|Discarding)', re.IGNORECASE)
+# The machine's, not the save's: a container without a network interface makes either server warn that it found no
+# hardware address, at random, so one side logs it and the other may not.
 BENIGN = re.compile(r'(Unpacking |OFFLINE/INSECURE|online-mode|authenticate usernames|hackers|'
                     r'Failed to load properties|Failed to load eula|Unknown or incomplete command|'
-                    r'Can.t keep up|Ignoring unknown|^WARNING: |No key layers|has the following|udev library)')
+                    r'Can.t keep up|Ignoring unknown|^WARNING: |No key layers|has the following|udev library|'
+                    r'usable hardware address)')
 
 
 # ---------------------------------------------------------------- vanilla server
 
 class Vanilla:
-    def __init__(self, directory, port=None, world='world', extra=None):
+    def __init__(self, directory, port=None, world='world', extra=None, *, sunrise_binary=None):
         port = port or lab.free_port()
         directory.mkdir(parents=True, exist_ok=True)
         (directory / 'eula.txt').write_text('eula=true\n')
@@ -127,9 +133,11 @@ class Vanilla:
         props.update(extra or {})
         (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
         self.port = port
-        self.process = subprocess.Popen(
-            ['java', '-Xmx2G', '-jar', str(SERVER), '--nogui'], cwd=directory, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        command = ([str(sunrise_binary), '--resources', str(RESOURCES), '--dedicated', '--nogui']
+                   if sunrise_binary else ['java', '-Xmx2G', '-jar', str(SERVER), '--nogui'])
+        self.process = subprocess.Popen(command, cwd=directory, stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                        env=lab.game_env() if sunrise_binary else None)
         self.lines = []
         self.queue = queue.Queue()
         self.counter = 0
@@ -175,7 +183,7 @@ class Vanilla:
             self.process.kill()
 
     def problems(self):
-        return [l for l in self.lines if SUSPICIOUS.search(l) and not BENIGN.search(l)]
+        return vanilla_world_check.log_problems(self.lines, suspicious=SUSPICIOUS, benign=BENIGN)
 
 
 def command_failed(lines):
@@ -262,12 +270,18 @@ def normalize_scoreboard(data):
     return data
 
 
-def build_world(directory):
-    """Fill a fresh vanilla world; returns the failed scene commands."""
-    server = Vanilla(directory)
+def build_world(directory, *, fixed_spawn=False, sunrise_binary=None):
+    """Fill a fresh world; return failed scene commands and suspicious log lines."""
+    server = Vanilla(directory, sunrise_binary=sunrise_binary)
     failed = []
-    # A bot joins first so the player file exists and the chunks around spawn are loaded.
+    # A bot joins so the player file exists and the chunks around spawn are loaded.
     server.run('forceload add 0 0 63 63')
+    if fixed_spawn:
+        # Do not let each server's randomly scattered initial join select a different FULL ring.
+        for command in ('gamerule respawn_radius 0', 'setworldspawn 8 -60 8'):
+            out = server.run(command)
+            if command_failed(out):
+                failed.append((command, out))
     for rule in ('spawn_mobs', 'spawn_monsters', 'spawn_wandering_traders', 'spawn_patrols', 'spawn_phantoms',
                  'spawn_wardens', 'raids'):
         server.run(f'gamerule {rule} false')
@@ -306,16 +320,53 @@ def build_world(directory):
     server.run('give RoundTrip minecraft:apple 7')
     server.run('xp set RoundTrip 5 levels')
     time.sleep(20)
-    server.run('save-all flush')
+    save = server.run('save-all flush', timeout=120)
+    if fixed_spawn and (command_failed(save) or 'Saved the game' not in save):
+        failed.append(('save-all flush', save))
     time.sleep(2)
     server.stop()
     return failed, server.problems()
 
 
-def view_of_world(directory):
-    """Run vanilla on a world; return ({label: data text}, problem log lines)."""
-    server = Vanilla(directory)
+def lower_sky_observer():
+    """Compile a vanilla protocol client that records the first explicit sky pad layers."""
+    try:
+        from . import oracle_harness, test_model_baking_parity as baking, test_rust_parity as parity
+    except ImportError:
+        import oracle_harness, test_model_baking_parity as baking, test_rust_parity as parity
+
+    build = RUN / 'pad-observer'
+    build.mkdir(exist_ok=True)
+    lock, jars, _ = parity.verify_artifacts()
+    classes, dependencies, _ = oracle_harness.compile_oracle(
+        build, 'VanillaProtocolClient', jars, baking.client_libraries(), lock['minecraft']['java_major'])
+
+    def observe(port, label):
+        transcript = build / f'{label}.txt'
+        transcript.unlink(missing_ok=True)
+        oracle_harness.java_run(build, classes, dependencies, 'VanillaProtocolClient',
+                                ['127.0.0.1', port, 'RoundTrip', transcript, 'lower-sky-pads'], label)
+        states = {}
+        for line in transcript.read_text().splitlines():
+            if line.startswith('error '):
+                raise AssertionError(f'{label}: lower sky observer failed')
+            if line.startswith('lower-sky-pad '):
+                _, coords, layer = line.split()
+                x, z = map(int, coords.split(','))
+                states[(f'r.{x // 32}.{z // 32}.mca', x % 32, z % 32)] = layer
+        if not states:
+            raise AssertionError(f'{label}: no initial sky pad observations')
+        return states
+
+    return observe
+
+
+def view_of_world(directory, observe=None):
+    """Run vanilla on a world; return entity/block views, log problems, and first sky pad observations."""
+    # The observer requests a wider view than the scene bot, to see the original FULL ring.
+    server = Vanilla(directory, extra={'view-distance': '10'} if observe else None)
     views = {}
+    pads = {}
     try:
         server.run('forceload add 0 0 63 63')
         time.sleep(3)
@@ -326,9 +377,11 @@ def view_of_world(directory):
         for i, (kind, _) in enumerate(scene.ENTITIES):
             out = server.run(f'data get entity {entity_uuid_text(i)}')
             views[f'entity {i} {kind}'] = ' '.join(out)
+        if observe is not None:
+            pads = observe(server.port, directory.name)
     finally:
         server.stop()
-    return views, server.problems()
+    return views, server.problems(), pads
 
 
 def entity_uuid_text(i):
@@ -467,7 +520,7 @@ def normalize_chunk(root):
     sections = {}
     for s in root.get('sections', []):
         y = s['Y'][1] if isinstance(s['Y'], tuple) else s['Y']
-        blocks = decode_container(s['block_states'], 4096, 4, 'minecraft:air')
+        blocks = decode_container(s['block_states'], 4096, 4, 'minecraft:air') if 'block_states' in s else None
         biomes = decode_container(s['biomes'], 64, 1, 'minecraft:plains') if 'biomes' in s else None
         sections[y] = {'blocks': blocks, 'biomes': biomes, 'BlockLight': s.get('BlockLight'),
                        'SkyLight': s.get('SkyLight')}
@@ -483,9 +536,16 @@ BLANK_STATUSES = {'minecraft:empty', 'minecraft:structure_starts', 'minecraft:st
                   'minecraft:biomes'}
 # ChunkStatus LIGHT and later: the chunk's light is saved.
 LIT_STATUSES = {'minecraft:light', 'minecraft:spawn', 'minecraft:full'}
+# Overworld block sections -4 through 19, plus two light-only pads.
+LOWER_PAD, UPPER_PAD = -5, 20
+PACKED_ZERO = ('B', [0] * 2048)
+AIR_BLOCKS = ['minecraft:air'] * 4096
+EMPTY_SECTION = dict.fromkeys(('blocks', 'biomes', 'BlockLight', 'SkyLight'))
+DARK_PAD = {'empty', 'packed-zero'}
 
 
-def compare_chunks(vanilla, sunrise, report):
+def compare_chunks(vanilla, sunrise, report, *, lower_sky_observations=None):
+    vanilla_pads, sunrise_pads = lower_sky_observations or ({}, {})
     for key in sorted(set(vanilla) | set(sunrise)):
         if key not in sunrise:
             report.append((f'chunk {key}', 'present', 'missing from Sunrise'))
@@ -497,24 +557,50 @@ def compare_chunks(vanilla, sunrise, report):
         ha, hs = normalize_chunk(sunrise[key])
         out = []
         diff(va, ha, 'chunk', out)
-        promoted = va.get('Status') != 'minecraft:full' and ha.get('Status') == 'minecraft:full'
+        vanilla_full = va.get('Status') == 'minecraft:full'
+        sunrise_full = ha.get('Status') == 'minecraft:full'
+        promoted = not vanilla_full and sunrise_full
         if promoted:
             rule = re.compile(r'^chunk\.(Status|Heightmaps\.\w+_WG|entities)$')
             out = [(path.replace('chunk.', 'chunk.promoted.', 1) if rule.match(path) else path, p, q)
                    for path, p, q in out]
-        for y in sorted(set(vs) | set(hs)):
-            empty = {'blocks': ['minecraft:air'] * 4096, 'biomes': None, 'BlockLight': None, 'SkyLight': None}
-            a, b = vs.get(y, empty), hs.get(y, empty)
-            blocks = [(i, p, q) for i, (p, q) in enumerate(zip(a['blocks'], b['blocks'])) if p != q]
-            if blocks:
-                i, p, q = blocks[0]
-                out.append((f'chunk.sections.blocks[{y}]', f'{len(blocks)} differ, first #{i} {p}', q))
-            if a['biomes'] is not None and b['biomes'] is not None and a['biomes'] != b['biomes']:
-                out.append((f'chunk.sections.biomes[{y}]', 'differ', ''))
+        ys = set(vs) | set(hs)
+        if vanilla_full or sunrise_full:
+            ys.update(range(LOWER_PAD + 1, UPPER_PAD))
+        for y in sorted(ys):
+            a, b = vs.get(y, EMPTY_SECTION), hs.get(y, EMPTY_SECTION)
+            is_pad = y in (LOWER_PAD, UPPER_PAD)
+            in_range = LOWER_PAD < y < UPPER_PAD
+            for tag, field in (('block_states', 'blocks'), ('biomes', 'biomes')):
+                present = [section[field] is not None for section in (a, b)]
+                required = [(in_range and full) or (tag == 'block_states' and y in sections)
+                            for full, sections in ((vanilla_full, vs), (sunrise_full, hs))]
+                if (is_pad and any(present)) or (not is_pad and any(r and not p for p, r in zip(present, required))):
+                    # Terrain layout errors remain errors even on a promoted chunk.
+                    report.append((f'chunk.sections.{tag}[{y}] @{key}',
+                                   *('present' if p else 'missing' for p in present)))
+            if not is_pad:
+                ab = a['blocks'] if y in vs else AIR_BLOCKS
+                bb = b['blocks'] if y in hs else AIR_BLOCKS
+                if ab is not None and bb is not None:
+                    blocks = [(i, p, q) for i, (p, q) in enumerate(zip(ab, bb)) if p != q]
+                    if blocks:
+                        i, p, q = blocks[0]
+                        out.append((f'chunk.sections.blocks[{y}]', f'{len(blocks)} differ, first #{i} {p}', q))
+                if a['biomes'] is not None and b['biomes'] is not None and a['biomes'] != b['biomes']:
+                    out.append((f'chunk.sections.biomes[{y}]', 'differ', ''))
             for light in ('BlockLight', 'SkyLight'):
-                if a[light] != b[light]:
-                    out.append((f'chunk.sections.{light}[{y}]', None if a[light] is None else 'present',
-                                None if b[light] is None else 'present'))
+                p, q = a[light], b[light]
+                if p == q:
+                    continue
+                # A queued array in the save need not be visible to light reads. Only
+                # a dark layer actually received from each reopened save proves equivalence.
+                if (y == LOWER_PAD and light == 'SkyLight' and vanilla_full and sunrise_full
+                        and ((p is None and q == PACKED_ZERO) or (q is None and p == PACKED_ZERO))
+                        and vanilla_pads.get(key) in DARK_PAD and sunrise_pads.get(key) in DARK_PAD):
+                    continue
+                out.append((f'chunk.sections.{light}[{y}]', None if p is None else 'present',
+                            None if q is None else 'present'))
         # Before its terrain a chunk has no blocks, light or heightmaps yet.
         if promoted and va.get('Status') in BLANK_STATUSES:
             blank = re.compile(r'^chunk\.(Heightmaps|sections)\.')
@@ -589,11 +675,38 @@ def dimension(world):
     return d if d.is_dir() else world
 
 
-def compare_worlds(vanilla, sunrise):
+def compare_cold_pads(vanilla, sunrise):
+    def full_pads(world):
+        pads = {}
+        for key, raw in load_regions(dimension(world) / 'region').items():
+            chunk = unwrap(raw)
+            if chunk.get('Status') == 'minecraft:full':
+                pads[key] = {section['Y'][1]: (section.get('SkyLight'), section.get('BlockLight'))
+                             for section in chunk.get('sections', [])
+                             if section['Y'][1] in (LOWER_PAD, UPPER_PAD)}
+        return pads
+
+    a, b = full_pads(vanilla), full_pads(sunrise)
+    if not a or a.keys() != b.keys():
+        print('cold generation: FULL columns differ or are missing', sorted(a.keys() - b.keys()),
+              sorted(b.keys() - a.keys()))
+        return 1
+    failures = 0
+    for key in sorted(a):
+        for y in (LOWER_PAD, UPPER_PAD):
+            if a[key].get(y, (None, None)) != b[key].get(y, (None, None)):
+                print(f'cold generation: pad light[{y}] differs @{key}')
+                failures += 1
+    print(f'cold sky pads: {len(a)} FULL columns, {failures} differences')
+    return failures
+
+
+def compare_worlds(vanilla, sunrise, *, lower_sky_observations=None):
     report = []
     va, ha = dimension(vanilla), dimension(sunrise)
-    compare_chunks(load_regions(va / 'region'), load_regions(ha / 'region'), report)
-    chunks = {(k[1], k[2]) for k in load_regions(va / 'region')}
+    vanilla_chunks = load_regions(va / 'region')
+    compare_chunks(vanilla_chunks, load_regions(ha / 'region'), report, lower_sky_observations=lower_sky_observations)
+    chunks = {(k[1], k[2]) for k in vanilla_chunks}
     compare_entities(load_regions(va / 'entities'), load_regions(ha / 'entities'), report, chunks)
     for rel in ['level.dat'] + sorted(
             p.relative_to(vanilla).as_posix() for pattern in ('data/**/*.dat', 'players/**/*.dat')
@@ -647,7 +760,8 @@ def main():
     parser.add_argument('--gen-only', action='store_true', help='stop after building the vanilla world')
     args = parser.parse_args()
     RUN.mkdir(parents=True, exist_ok=True)
-    failures = 0
+    # Each failure counted by what it is, so the verdict line names them (CI keeps only this log).
+    failures = collections.Counter()
     if args.vanilla:
         v0 = Path(args.vanilla)
     else:
@@ -668,22 +782,35 @@ def main():
             subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib', '--bins'], cwd=ROOT, check=True)
             bin_dir = ROOT / os.environ.get('CARGO_TARGET_DIR', 'target') / 'fast'
         h = sunrise_resave(v0, RUN / 'h', bin_dir)
-    print('comparing', v0, 'with', h)
-    report = compare_worlds(v0, h)
-    failures += summarize(report)
+        if not args.vanilla:
+            cold_vanilla, cold_sunrise = RUN / 'cold-vanilla', RUN / 'cold-sunrise'
+            for directory, binary in ((cold_vanilla, None), (cold_sunrise, bin_dir / 'sunrise-client')):
+                shutil.rmtree(directory, ignore_errors=True)
+                failed, problems = build_world(directory, fixed_spawn=True, sunrise_binary=binary)
+                failures['cold scene commands'] += len(failed)
+                failures['cold server log lines'] += len(problems)
+                for command, out in failed:
+                    print('cold scene command failed:', command[:100], out[:2])
+                for line in problems:
+                    print('cold server log:', line)
+            failures['cold sky pad differences'] += compare_cold_pads(cold_vanilla / 'world', cold_sunrise / 'world')
+    observations = None
     if not args.skip_vanilla_load:
+        observe = lower_sky_observer() if not args.sunrise else None
         shutil.rmtree(RUN / 'v1', ignore_errors=True)
         shutil.copytree(h, RUN / 'v1' / 'world')
-        views1, problems1 = view_of_world(RUN / 'v1')
+        views1, problems1, pads1 = view_of_world(RUN / 'v1', observe)
         shutil.rmtree(RUN / 'v0view', ignore_errors=True)
         shutil.copytree(v0, RUN / 'v0view' / 'world')
-        views0, problems0 = view_of_world(RUN / 'v0view')
+        views0, problems0, pads0 = view_of_world(RUN / 'v0view', observe)
+        if observe is not None:
+            observations = (pads0, pads1)
         untimed = re.compile(r'^\[[0-9:]+\] ')
         seen0 = {untimed.sub('', line) for line in problems0}
         for line in problems1:
             if untimed.sub('', line) not in seen0:
                 print('vanilla log (Sunrise save):', line)
-                failures += 1
+                failures['vanilla log lines on the Sunrise save'] += 1
         volatile = re.compile(r'(cooking_time_spent|lit_time_remaining|ticks_since_song_started|Age|BrewTime|'
                               r'ticks_in_hive|triggered|state_updating_resumes_at|LastExecution|last_vibration_frequency|warning_level): -?[0-9]+[a-zA-Z]?')
         # A lit campfire keeps cooking while each server runs before `data get`: its
@@ -699,15 +826,19 @@ def main():
                     continue  # lands in Sunrise (known gap above)
                 if 'No entity was found' in views1.get(label, '') and 'No entity was found' not in views0[label]:
                     print(f'VANILLA cannot find {label} in the Sunrise save')
-                    failures += 1
+                    failures['entities vanilla cannot find'] += 1
                 continue
             def stable(text):
                 text = volatile2.sub('', volatile.sub('', text))
                 return volatile_items.sub('', text) if label == 'block 10 furnace' else text
             if stable(views0[label]) != stable(views1.get(label, '')):
                 print(f'VANILLA VIEW differs: {label}\n   V0 {views0[label][:900]}\n   H  {str(views1.get(label))[:900]}')
-                failures += 1
-    print('save round-trip parity', 'FAILED' if failures else 'ok', f'({failures} unexplained differences)')
+                failures['vanilla view differences'] += 1
+    print('comparing', v0, 'with', h)
+    failures['unexplained world differences'] += summarize(compare_worlds(v0, h, lower_sky_observations=observations))
+    failures = +failures
+    print('save round-trip parity', 'FAILED (' + ', '.join(f'{n} {kind}' for kind, n in failures.items()) + ')'
+          if failures else 'ok')
     if not args.keep and not failures:
         shutil.rmtree(RUN, ignore_errors=True)
     sys.exit(1 if failures else 0)

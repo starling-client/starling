@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Reconectar automaticamente",
+  "sunrise.extras.auto_reconnect.tooltip": "Volta a um servidor após uma perda de conexão ou reinicialização, nunca após um kick ou ban."
+}

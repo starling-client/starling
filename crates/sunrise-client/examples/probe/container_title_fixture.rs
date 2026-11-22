@@ -7,13 +7,13 @@
 //! `containers::double_chest_name`.
 //!
 //! usage: container_title_fixture INPUT OUTPUT
+use serde_json::Value;
+use std::fs;
 use sunrise_client::block_entity_item::place;
 use sunrise_client::block_entity_nbt::canonical;
 use sunrise_client::containers::{default_name_key, display_name, double_chest_name};
 use sunrise_client::save::text;
 use sunrise_core::nbt::{Tag, parse_snbt};
-use serde_json::Value;
-use std::fs;
 
 /// ParityData.canon of a text component: sorted keys.
 fn canon(tag: &Tag, out: &mut String) {

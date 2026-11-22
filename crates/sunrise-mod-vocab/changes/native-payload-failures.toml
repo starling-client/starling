@@ -1,0 +1,3 @@
+ids = ["handle:PayloadBusy::new", "type:PayloadBusy", "type:PayloadHandleError", "type:PayloadHandleError.Busy"]
+why = "Native payload handlers either run or fail. Remove the guest-only Busy result, holder snapshot and automatic retry. Queued main work, ordered delivery, byte budgets and connection cancellation are unchanged. The Wire tag and bytes for Failed are unchanged; the old Busy tag is refused."
+migrate = "Remove Busy match arms and PayloadBusy imports, constructors and field accesses. Native handlers still return Ok(()) or PayloadHandleError::Failed(reason); use IPayloadContext::enqueue_work to move network-handler work to the main thread, not to retry a callback."

@@ -7,9 +7,9 @@ use crate::{
     items::{ItemStack, Items},
     providers::Providers,
 };
-use sunrise_world::loot::PackOverlay;
 use serde_json::Value;
 use std::{collections::HashSet, path::Path};
+use sunrise_world::loot::PackOverlay;
 
 pub use sunrise_client_core::potions::{
     BASE_POTION_COLOR, Category, EFFECTS, EffectDef, POTIONS, PotionDef, all_effects,
@@ -213,6 +213,17 @@ pub struct PotionIngredient {
     pub potions: Option<HashSet<String>>,
 }
 impl PotionIngredient {
+    pub fn parse_potions(v: &Value) -> Option<HashSet<String>> {
+        match &v["potion_contents"]["potions"] {
+            Value::String(s) => Some([s.clone()].into_iter().collect()),
+            Value::Array(a) => Some(
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
     fn parse(v: &Value, items: &Items) -> Self {
         let mut set = HashSet::new();
         let add = |s: &str, set: &mut HashSet<String>| match s.strip_prefix('#') {
@@ -229,18 +240,9 @@ impl PotionIngredient {
                 .for_each(|s| add(s, &mut set)),
             _ => {}
         }
-        let potions = match &v["potion_contents"]["potions"] {
-            Value::String(s) => Some([s.clone()].into_iter().collect()),
-            Value::Array(a) => Some(
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_owned))
-                    .collect(),
-            ),
-            _ => None,
-        };
         Self {
             items: set,
-            potions,
+            potions: Self::parse_potions(v),
         }
     }
     pub fn test(&self, stack: &ItemStack) -> bool {
@@ -258,6 +260,45 @@ pub struct BrewingRecipe {
     pub reagent: PotionIngredient,
     pub output: ItemStack,
 }
+impl BrewingRecipe {
+    /// Validate the fields the brewing table reads before a recipe generation
+    /// is published. One malformed known recipe refuses the whole load.
+    pub fn validate(value: &Value) -> Result<(), &'static str> {
+        let names = |value: &Value| {
+            value.is_string()
+                || value
+                    .as_array()
+                    .is_some_and(|values| values.iter().all(Value::is_string))
+        };
+        for key in ["input", "reagent"] {
+            let ingredient = &value[key];
+            if !names(&ingredient["item"]) {
+                return Err(match key {
+                    "input" => "input.item must be an item id or list of item ids",
+                    _ => "reagent.item must be an item id or list of item ids",
+                });
+            }
+            if let Some(contents) = ingredient.get("potion_contents")
+                && (!contents.is_object()
+                    || contents.get("potions").is_some_and(|value| !names(value)))
+            {
+                return Err("potion_contents.potions must be a potion id or list of potion ids");
+            }
+        }
+        let output = &value["output"];
+        if !output["id"].is_string() {
+            return Err("output.id must be an item id");
+        }
+        if output.get("count").is_some_and(|value| {
+            !value
+                .as_u64()
+                .is_some_and(|count| (1..=99).contains(&count))
+        }) {
+            return Err("output.count must be an integer in 1..=99");
+        }
+        Ok(())
+    }
+}
 pub struct Brewing {
     pub recipes: Vec<BrewingRecipe>,
     /// `RecipePropertySet.BREWING_REAGENTS`.
@@ -266,42 +307,8 @@ pub struct Brewing {
     pub inputs: HashSet<String>,
 }
 impl Brewing {
-    pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
-        let mut sources =
-            sunrise_items::recipe_sources::sources(root, overlay).unwrap_or_else(|e| {
-                log::warn!("Sunrise: brewing recipes not loaded: {e}");
-                Vec::new()
-            });
-        sources.retain(|(id, _)| {
-            let path = id.split_once(':').map_or(id.as_str(), |(_, path)| path);
-            path.strip_prefix("brewing/")
-                .is_some_and(|name| !name.contains('/'))
-        });
-        for (id, _) in &mut sources {
-            *id = sunrise_items::recipe_sources::qualified(id);
-        }
-        sources.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut recipes = Vec::new();
-        for (id, v) in sources {
-            if v["type"] != "minecraft:brewing" {
-                continue;
-            }
-            let mut output = ItemStack::new(
-                v["output"]["id"].as_str().unwrap_or("minecraft:potion"),
-                v["output"]["count"].as_u64().unwrap_or(1) as u32,
-            );
-            if let Some(potion) =
-                v["output"]["components"]["minecraft:potion_contents"]["potion"].as_str()
-            {
-                output = output.with_potion(potion);
-            }
-            recipes.push(BrewingRecipe {
-                id,
-                input: PotionIngredient::parse(&v["input"], items),
-                reagent: PotionIngredient::parse(&v["reagent"], items),
-                output,
-            });
-        }
+    /// Build live brewing tables from already-decoded `minecraft:brewing` recipes.
+    pub fn from_recipes(recipes: Vec<BrewingRecipe>) -> Self {
         let reagents = recipes
             .iter()
             .flat_map(|r| r.reagent.items.iter().cloned())
@@ -316,6 +323,45 @@ impl Brewing {
             reagents,
             inputs,
         }
+    }
+    pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        let mut sources =
+            sunrise_items::recipe_sources::sources(root, overlay).unwrap_or_else(|e| {
+                log::warn!("Sunrise: brewing recipes not loaded: {e}");
+                Vec::new()
+            });
+        for (id, _) in &mut sources {
+            *id = sunrise_items::recipe_sources::qualified(id);
+        }
+        sources.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut recipes = Vec::new();
+        for (id, v) in sources {
+            if v["type"] != "minecraft:brewing" {
+                continue;
+            }
+            if let Err(error) = BrewingRecipe::validate(&v) {
+                log::warn!("Sunrise: brewing recipe {id} refused: {error}");
+                continue;
+            }
+            let mut output = ItemStack::new(
+                v["output"]["id"]
+                    .as_str()
+                    .expect("validated brewing output"),
+                v["output"]["count"].as_u64().unwrap_or(1) as u32,
+            );
+            if let Some(potion) =
+                v["output"]["components"]["minecraft:potion_contents"]["potion"].as_str()
+            {
+                output = output.with_potion(potion);
+            }
+            recipes.push(BrewingRecipe {
+                id,
+                input: PotionIngredient::parse(&v["input"], items),
+                reagent: PotionIngredient::parse(&v["reagent"], items),
+                output,
+            });
+        }
+        Self::from_recipes(recipes)
     }
     pub fn find(&self, input: &ItemStack, reagent: &ItemStack) -> Option<&BrewingRecipe> {
         self.recipes
@@ -603,7 +649,7 @@ mod tests {
         std::fs::create_dir_all(root.join("data/minecraft/recipe/brewing")).unwrap();
         std::fs::write(
             root.join("data/minecraft/recipe/brewing/test.json"),
-            br#"{"type":"minecraft:brewing","output":{"id":"minecraft:emerald"}}"#,
+            br#"{"type":"minecraft:brewing","input":{"item":"minecraft:potion"},"reagent":{"item":"minecraft:nether_wart"},"output":{"id":"minecraft:emerald"}}"#,
         )
         .unwrap();
         let items = Items::for_tests(Default::default());
@@ -615,10 +661,26 @@ mod tests {
     }
 
     #[test]
+    fn a_brewing_recipe_without_a_namespace_in_its_type_is_loaded() {
+        let root = content_brewing_root("bare", "");
+        std::fs::write(
+            root.join("data/example/recipe/brewing/test.json"),
+            br#"{"type":"brewing","input":{"item":"minecraft:potion"},"reagent":{"item":"minecraft:nether_wart"},"output":{"id":"minecraft:diamond"}}"#,
+        )
+        .unwrap();
+        let items = Items::for_tests(Default::default());
+        let recipes = Brewing::load(&root, &items, &PackOverlay::NONE);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(recipes.recipes.len(), 1);
+        assert_eq!(recipes.recipes[0].id, "example:brewing/test");
+        assert!(recipes.reagents.contains("minecraft:nether_wart"));
+    }
+
+    #[test]
     fn content_brewing_recipe_condition_is_applied() {
         let root = content_brewing_root(
             "condition",
-            r#", "neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:true"}}]"#,
+            r#", "neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:always"}}]"#,
         );
         let items = Items::for_tests(Default::default());
         let recipes = Brewing::load(&root, &items, &PackOverlay::NONE);

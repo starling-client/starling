@@ -8,6 +8,8 @@ pub trait Hooks {
     /// angry, to freeze while looked at and to teleport away up close. Set
     /// `cancel` and that stare doesn't count. Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -15,5 +17,5 @@ pub trait Hooks {
         neoforge = "EndermanAngerEvent",
         cancellable = true
     )]
-    fn enderman_anger();
+    fn enderman_anger(enderman: EntityRef, player: PlayerRef, cancel: &mut bool);
 }

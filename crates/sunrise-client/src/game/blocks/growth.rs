@@ -2,10 +2,10 @@
 //! registry, routes `BoneMealItem.useOn` through the behaviour library, and
 //! crops a growing plant's head with shears (`ShearsItem.useOn`).
 use super::{Game, native_hooks::BonemealAsk};
+use std::sync::Arc;
 use sunrise_client::{Result, items::ItemStack, vanillagen};
 use sunrise_core::{geometry::Direction, position::BlockPos};
 use sunrise_world::{level::classes::Class, worldgen::live::LiveFeatures};
-use std::sync::Arc;
 
 impl Game<'_> {
     /// Load the configured/placed feature registry used by saplings, fungi
@@ -213,10 +213,10 @@ pub(super) fn install_live_features(
 #[cfg(test)]
 mod tests {
     use super::{Arc, Game, build_live_features, install_live_features};
-    use sunrise_client::items::ItemStack;
-    use sunrise_core::{geometry::Direction, position::BlockPos};
     use mod_api::{self, BonemealEvent, BonemealSource, Flow, Hooks, HostSide};
     use std::sync::{Mutex, MutexGuard, PoisonError};
+    use sunrise_client::items::ItemStack;
+    use sunrise_core::{geometry::Direction, position::BlockPos};
 
     /// What each `bonemeal` listener heard: the player, the target check
     /// and the source. The test that reads it runs in a process of its own,
@@ -291,7 +291,7 @@ mod tests {
     /// one fails; an untouched use grows the stack the mod edited. One test,
     /// run in order in a fresh process, since every case reads `HEARD`.
     #[test]
-    #[ignore = "needs prepared resources and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn a_dispensers_bonemeal_follows_the_cancel_and_the_edited_stack() {
         if super::super::native_entity_refs::tests::run_fresh_cases(
             "game::growth::tests::a_dispensers_bonemeal_follows_the_cancel_and_the_edited_stack",
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn the_hand_keeps_the_mods_stack_and_a_creative_count() {
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
             "meal",
@@ -372,7 +372,7 @@ mod tests {
     /// registry when the world's worldgen entries are given, and a vanilla one
     /// stays; without them the pack's feature is unknown and its growth dropped.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_data_packs_feature_is_in_the_live_registry() {
         use sunrise_world::worldgen::overrides::WorldgenOverrides;
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
@@ -405,7 +405,7 @@ mod tests {
     /// keep the first world's registry for the whole process), and re-opening
     /// the same packs reuses the registry built for them.
     #[test]
-    #[ignore = "needs prepared resources and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn the_live_features_follow_the_world_being_opened() {
         // Other feature fixtures can evict the process-wide last-built cache.
         if super::super::native_entity_refs::tests::run_fresh_cases(

@@ -1,5 +1,5 @@
-//! A mod's recipes shown in its item panel's place (`native_panel_recipes`,
-//! or `browser.set-recipes` of a WebAssembly mod, docs/modding/src/how-to/content-mods.md), laid out by the game with its own slots, arrows and
+//! A mod's recipes shown in its item panel's place (`native_panel_recipes`),
+//! laid out by the game with its own slots, arrows and
 //! buttons, paged to the panel's height, under a title and a back button.
 //! The mod hears clicks on their slots, their action buttons, the back
 //! button and page turns.
@@ -9,14 +9,14 @@ use super::{
         NativeRecipeLayout as BrowserLayout, NativeRecipeResult as BrowserResult,
         NativeRecipeView as BrowserRecipe, PanelEvent as BrowserEvent,
     },
-    native_panel::{Layout, Owner, browser_stack, inside},
+    native_panel::{Layout, Owner, browser_stack, inside, wheel_turn},
 };
+use mod_api::Stack as BrowserStack;
+use std::time::Instant;
 use sunrise_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
 };
-use mod_api::Stack as BrowserStack;
-use std::time::Instant;
 
 const SLOT: f32 = 18.0;
 /// The title row's height, and the gap under each recipe.
@@ -469,9 +469,9 @@ impl Game<'_> {
         let hover = inside(cursor, back);
         sunrise_client::widgets::declare_action(sunrise_client::widgets::Action::Back, back, true);
         let sprite = if hover {
-            "gui/sprites/widget/button_highlighted"
+            "widget/button_highlighted"
         } else {
-            "gui/sprites/widget/button"
+            "widget/button"
         };
         sunrise_client::ui::nine_slice(
             batch,
@@ -524,12 +524,7 @@ impl Game<'_> {
                 } else {
                     ""
                 };
-                batch.sprite(
-                    atlas,
-                    &format!("gui/sprites/recipe_book/{name}{suffix}"),
-                    x,
-                    y,
-                );
+                batch.sprite(atlas, &format!("recipe_book/{name}{suffix}"), x, y);
                 sunrise_client::widgets::record(label, [x, y, 12.0, 17.0], true);
             }
             let text = format!("{}/{pages_n}", page + 1);
@@ -549,19 +544,19 @@ impl Game<'_> {
             let (wells_in, wells_out, wells_h) = r.fluid_places(layout.width());
             let atlas = &self.gui.atlas;
             for &(sx, sy) in at.iter().filter(|p| p.0.is_finite()) {
-                batch.sprite(atlas, "gui/sprites/container/slot", x + sx, y + sy);
+                batch.sprite(atlas, "container/slot", x + sx, y + sy);
             }
             if cooking {
                 batch.sprite(
                     atlas,
-                    "gui/sprites/container/furnace/lit_progress",
+                    "container/furnace/lit_progress",
                     x + 2.0,
                     y + SLOT + 2.0,
                 );
             }
             batch.sprite(
                 atlas,
-                "gui/sprites/container/furnace/burn_progress",
+                "container/furnace/burn_progress",
                 x + arrow.0,
                 y + arrow.1,
             );
@@ -570,9 +565,9 @@ impl Game<'_> {
             {
                 let rect = [x + action.0, y + action.1, 12.0, 12.0];
                 let sprite = match (enabled, inside(cursor, rect)) {
-                    (false, _) => "gui/sprites/widget/button_disabled",
-                    (true, true) => "gui/sprites/widget/button_highlighted",
-                    (true, false) => "gui/sprites/widget/button",
+                    (false, _) => "widget/button_disabled",
+                    (true, true) => "widget/button_highlighted",
+                    (true, false) => "widget/button",
                 };
                 sunrise_client::ui::nine_slice(
                     batch,
@@ -668,7 +663,7 @@ impl Game<'_> {
     /// its amount under it.
     fn draw_fluid_well(&self, batch: &mut HudBatch, well: &Well, x: f32, y: f32) {
         let atlas = &self.gui.atlas;
-        batch.sprite(atlas, "gui/sprites/container/slot", x, y);
+        batch.sprite(atlas, "container/slot", x, y);
         let dst = [x + 1.0, y + 1.0, 16.0, 16.0];
         let sprite = well
             .sprite
@@ -715,7 +710,7 @@ impl Game<'_> {
         let selected = pages.tab;
         for (i, (&(x, y), stack)) in places.iter().zip(tabs).enumerate() {
             let atlas = &self.gui.atlas;
-            batch.sprite(atlas, "gui/sprites/container/slot", x, y);
+            batch.sprite(atlas, "container/slot", x, y);
             let Some(stack) = stack else {
                 continue;
             };
@@ -746,6 +741,27 @@ impl Game<'_> {
             // The kind reaches the bumpers only as a target (`key_focus::drawn_targets`).
             sunrise_client::widgets::target_as(rect, kind);
         }
+    }
+
+    /// A wheel notch `d` over the recipe pages: turns them as the arrows
+    /// do (`wheel_turn`, telling the mod of a turn); false off the panel.
+    pub(super) fn browser_recipes_wheel(&mut self, layout: &Layout, owner: &Owner, d: f32) -> bool {
+        let Some(pages) = &self.panel.recipes else {
+            return false;
+        };
+        let starts = Self::recipe_pages(pages, layout);
+        let page = pages.page.min(starts.len() - 1);
+        let Some(to) = wheel_turn(self.cursor, layout.area, page, starts.len(), d) else {
+            return false;
+        };
+        // A stale stored page takes the clamp too, so a later longer list can't revive it.
+        if let Some(p) = self.panel.recipes.as_mut() {
+            p.page = to;
+        }
+        if to != page {
+            self.panel_event(owner, BrowserEvent::Page(starts[to] as u32));
+        }
+        true
     }
 
     /// A press on the recipes: true when it hit one of their parts.

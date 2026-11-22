@@ -1,13 +1,5 @@
 //! Original transport for complete surface-stage chunk comparison.
 use crate::support::common::tag;
-use sunrise_core::{
-    biome::{BiomeZoom, obfuscate_seed},
-    carving::CarvingMask,
-    density::{ConstantSampler, SamplerContext},
-    noise::{DensityVolume, Noise},
-    position::{BlockPos, ChunkPos},
-    random::{LegacyRandom, PositionalRandom, RandomSource, XoroshiroRandom},
-};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,6 +7,14 @@ use std::{
     io::{self, Write},
     path::Path,
     sync::{Arc, Mutex},
+};
+use sunrise_core::{
+    biome::{BiomeZoom, obfuscate_seed},
+    carving::CarvingMask,
+    density::{ConstantSampler, SamplerContext},
+    noise::{DensityVolume, Noise},
+    position::{BlockPos, ChunkPos},
+    random::{LegacyRandom, PositionalRandom, RandomSource, XoroshiroRandom},
 };
 use {
     sunrise_core::nbt::Tag,

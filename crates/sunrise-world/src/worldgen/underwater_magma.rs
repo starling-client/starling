@@ -5,8 +5,8 @@ use super::{
     required,
 };
 use crate::{block_properties::BoundOcclusionFaces, registry::BlockStateId};
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::{geometry::Direction, random::RandomSource};
 #[derive(Clone, Debug)]
 pub struct UnderwaterMagmaFeature {
     search: i32,

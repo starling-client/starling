@@ -10,12 +10,12 @@ Describe the map once with `DataMap`: its id, the registry its entries are in (`
 `BlockEntityTypeKey` or `ProfessionKey`), and how a value decodes. Values arrive as the NBT form of the JSON a
 file held: a whole number is an `Int`, or a `Long` past `i32`, a fraction a `Double`, a boolean a
 `Byte`, an object a `Compound` and an array a `List`. Integer tokens must fit signed
-64-bit NBT `Long`; larger unsigned integers return `DataMapError::Undecodable`,
-never a rounded `Double`. Fractional/exponent tokens use the JSON parser's `f64`
-value (including an integral value written as `1.0`). A JSON `null` anywhere in a
-value also refuses the entire read as `Undecodable`; it is not an empty string.
+64-bit NBT `Long`; larger unsigned integers are never rounded to `Double`.
+Fractional/exponent tokens use the JSON parser's `f64`
+value (including an integral value written as `1.0`). A file containing an
+out-of-range integer or a JSON `null` anywhere in a value cannot be converted to
+NBT and is skipped atomically at load time with an error log, preserving earlier layers.
 Empty and heterogeneous arrays preserve their elements as in-memory `List` values.
-These rules are identical for native and wasm readers.
 
 ```rust,ignore
 use mod_api::{DataMap, DataMapTypesEvent, ItemKey, ServerHost, Tag};
@@ -46,8 +46,12 @@ fn data_map_types(&self, _: &mut dyn ServerHost, event: &mut DataMapTypesEvent<'
 Its values are `data/mymod/data_maps/item/emc.json` in any data pack, and files the mod pushes
 through `data_pack_files` under `data_maps/mymod:item/emc`. The folder is the registry's path for
 a `minecraft` registry (`entity_type`, `worldgen/biome`) and `<namespace>/<path>` for another.
-An id the registry doesn't hold is skipped, with one warning per file. A value may carry its own
-load conditions (`WithConditions`): it counts only when they hold.
+An id the registry doesn't hold is skipped, with one warning per file. A layer must have a
+`values` object. If present, `replace` must be a boolean and `remove` a list of removal keys.
+A malformed layer is logged and skipped without changing earlier layers. A value may carry
+its own load conditions (`WithConditions`), including on an unwrapped object: it counts only
+when they hold, and the condition metadata isn't part of the value. A top-level
+`neoforge:conditions` key on the data-map file is ignored.
 
 ```json
 { "values": {
@@ -60,20 +64,29 @@ load conditions (`WithConditions`): it counts only when they hold.
 } }
 ```
 
-Read an entry with its key's `data` (`item.data(host, &Emc)`, `entity_type.data(host, &map)`),
-from any hook with a host. A registry without a typed key is read by name:
-`data_map_value(host, "minecraft:worldgen/biome", "minecraft:plains", "mymod:heat")` gives the
-raw `Tag`, and `data_map_entries(host, registry, map)` the whole map, every entry with a value in
-id order (`IRegistryExtension.getDataMap`). The answers are:
+Read an entry with its key's `data` (`item.data(host, &Emc)`, `entity_type.data(host, &map)`).
+A typed read returns an owned decoded value. To read raw NBT by name, use
+`data_map_value(host, "minecraft:worldgen/biome", "minecraft:plains", "mymod:heat")?`
+for an `Option<&Tag>`, or `data_map_entries(host, registry, map)?` for a
+`&[(String, Tag)]` with every entry/value pair sorted by entry ID (`IRegistryExtension.getDataMap`).
+A bare entry ID such as `plains` uses the `minecraft` namespace.
+
+The raw values borrow from the host's published data, not the lookup strings. Iterate over
+bulk results by reference. Keep IDs or keys and read again with the next host, or make an owned
+copy only when needed: `data_map_value(host, registry, entry, map)?.cloned()` for a tag, or
+`data_map_entries(host, registry, map)?.to_vec()` for all the rows. A point read answers:
 
 - `Ok(Some(value))`: the merged value. The newest file wins, a `#tag` gives every entry in it the
   value, `replace` drops what earlier files set and `remove` takes entries away.
 - `Ok(None)`: the map gives this entry no value.
 - `Err(DataMapError::UnknownType)`: neither the engine nor a mod registered the map for that registry in this load.
-- `Err(DataMapError::Undecodable)`: the value is not one `decode` takes.
+- `Err(DataMapError::Undecodable)`: a typed read's `decode` refused the entry's NBT value.
 - `Err(DataMapError::Unavailable)`: no maps are loaded here. Data maps live on the server (the
   single player server thread included) and are not synced to clients, so a client returns
   this error, as does a server before its world's data first loads.
+
+A known empty map yields an empty slice. As with a point read, an unknown map type or an
+unavailable publication is an error.
 
 The server merges every map when its data loads: a world's first open and every `/reload`. A
 read sees the last load whole, never part of one, and a value a reload drops is gone at once.
@@ -81,7 +94,6 @@ read sees the last load whole, never part of one, and a value a reload drops is 
 values. Reads also work in world hooks. A lookup reads the loaded map: it parses nothing and
 touches no file.
 
-Wasm mods read data maps the same way, with the same answers.
 
 ## NeoForge's built-in mob and item maps
 
@@ -99,10 +111,10 @@ Their files are `data/neoforge/data_maps/<registry path>/<name>.json`:
 
 Every name has the `neoforge:` namespace. Values may be a scalar, a record with the codec
 field above, or the usual conditional `{"value": ..., "replace": false}` wrapper.
-File and entry conditions run before merging. Every value is decoded before applying the
-file's replacement, values or removals: one invalid value refuses that whole file, even
-when its target is unknown. Valid unknown targets and unknown removals are skipped. Tags
-use the target registry, including profession and game-event tags.
+Entry conditions run before decoding their values; top-level conditions are ignored.
+The whole file is decoded before applying its replacement, values or removals: an invalid
+value, even for an unknown target, refuses the whole file. Valid unknown targets and unknown
+removals are skipped. Tags use the target registry, including profession and game-event tags.
 
 Distances parse the original decimal directly to `f32`, including negative values,
 signed zero and overflow to infinity (`1e500`). Frequencies truncate the exact decimal,
@@ -113,9 +125,9 @@ loot tables are resource identifiers. Compostability is boolean.
 
 Builtin reads return canonical NBT compounds with the field above, rather than the
 input's shorthand: distances are `Float`, frequencies `Int`, compostability `Byte`, and
-identifiers `String`. Infinity remains an NBT Float, never JSON null. The existing query surface from main is unchanged; this carry adds no key families.
-Remaining query coverage is deferred to #4199. Registering these stores
-and firing `data_maps_updated` does not sync them to clients.
+identifiers `String`. Infinity remains an NBT Float, never JSON null. Biome values
+are queryable through `BiomeKey`; typed game-event coverage remains in #4199.
+Registering these stores and firing `data_maps_updated` does not sync them to clients.
 
 The gameplay readers and structure generation use immutable world-owned snapshots.
 Villager types apply to finalizeSpawn only; bred villagers retain the existing biome-facts
@@ -156,5 +168,31 @@ blocks, and those blocks get no scraping step; the lightning walk also stops whe
 back to a block it already passed. Lightning's waxed check, the carved pumpkin and the copper chest
 keep vanilla's own lists. A block the maps don't name keeps vanilla's behaviour.
 
-`generate_block_transform`, `neoforge:transformables` and `block_transform_appenders` are not read
-yet ([#3359](https://github.com/arismoko/horizon/issues/3359)).
+Oxidation and waxing targets must be registered blocks. If `generate_block_transform` is present,
+it must be a boolean. An invalid target or flag skips the whole file layer, even with `replace`.
+Sunrise still derives its axe steps from the inverse maps, not from `generate_block_transform`.
+`neoforge:transformables` and `block_transform_appenders` are not read.
+
+`host.biome_key("minecraft:plains")` resolves a `BiomeKey` in the installed
+server world registry. Its `id(host)` borrows the canonical name from the installed snapshot
+(`Result<&str, BiomeKeyError>`): use `key.id(host)?` directly, or copy the result only to retain
+it beyond the host borrow. The borrow does not affect the result of `data(host, &map)`: it still
+returns an owned value from maps whose `DataMap::Entry` is `BiomeKey`, including
+`neoforge:villager_types` in `minecraft:worldgen/biome`. Missing entries return
+`Ok(None)`. Lookup returns `None` on clients and before world data is installed;
+data maps there return `DataMapError::Unavailable`. Reacquire biome keys after
+reload: tokens from earlier generations or another world return
+`BiomeKeyError::WrongGeneration` from `id`, or `DataMapError::InvalidKey` from
+`data`. An unavailable host returns `BiomeKeyError::Unavailable` from `id`.
+Validation uses the receiving host’s installed snapshot, so a mod retaining a
+key across reload receives an error without panicking the server.
+
+Game events use `GameEventKey`, resolved with `host.game_event_key("minecraft:step")`
+after startup registry completion. The key is load-owned and survives world data
+reloads. `key.id(host)` returns a pinned [`RegistryName`](../../concepts/registry-keys.md#pinned-registry-names)
+or `GameEventKeyError`; unknown slots return `InvalidKey` rather than panicking. Use
+`let name = key.id(host)?;` and `name.as_str()` instead of copying it. A `DataMap` whose
+`Entry` is `GameEventKey` reads `minecraft:game_event`, including
+`neoforge:vibration_frequencies` (canonical NBT compound with an `Int` `frequency` field). Missing values return
+`Ok(None)`; clients and reads before data installation return
+`DataMapError::Unavailable`. Invalid keys return `DataMapError::InvalidKey`.

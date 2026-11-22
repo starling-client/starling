@@ -1,20 +1,7 @@
 //! Derive hook subscriptions from a trait implementation.
-mod payload;
-mod point;
 mod wire;
 
-/// Derive a typed payload's value codec from its fields.
-///
-/// `#[payload(crate = ::mod_vocab)]` selects the contract crate for
-/// lower-layer crates. The default is `::mod_api`.
-#[proc_macro_derive(PayloadCodec, attributes(payload))]
-pub fn derive_payload_codec(input: TokenStream) -> TokenStream {
-    payload::expand(syn::parse_macro_input!(input as syn::DeriveInput))
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Derive the shared native/wasm owned-value encoding.
+/// Derive the canonical owned-value encoding.
 ///
 /// `#[wire(crate = ::mod_vocab::wire)]` selects the contract module for
 /// lower-layer crates. The default is `::mod_api::wire`.
@@ -128,6 +115,7 @@ fn expand(mut implementation: ItemImpl, export: bool) -> TokenStream {
         "BlockEntityPart" => Some("block_entity_subscribed"),
         "ItemPart" => Some("item_subscribed"),
         "MenuPart" => Some("menu_subscribed"),
+        "MobEffectPart" => Some("effect_subscribed"),
         "FluidPart" => Some("fluid_subscribed"),
         "EntityPart" => Some("entity_subscribed"),
         _ => {
@@ -213,8 +201,6 @@ fn expand(mut implementation: ItemImpl, export: bool) -> TokenStream {
                 &[#(#(#hooked_cfgs)* mod_api::#ids::#hooked),*]
             }
         });
-        // A part impl carries no `#[listener]` (refused above) and no guest
-        // export (Hooks only), so the shared tail has nothing left to add.
         return quote!(#implementation).into();
     }
     let subscribed = {
@@ -246,42 +232,29 @@ fn expand(mut implementation: ItemImpl, export: bool) -> TokenStream {
     }
     let export = if export && part.is_none() {
         let ty = &implementation.self_ty;
-        let registrations: proc_macro2::TokenStream =
-            match std::env::var("SUNRISE_GUEST_REGISTRATIONS") {
-                Ok(source) => match source.parse::<proc_macro2::TokenStream>() {
-                    Ok(tokens) => tokens,
-                    Err(error) => {
-                        return syn::Error::new_spanned(
-                            &implementation,
-                            format!("guest registrations: {error}"),
-                        )
-                        .to_compile_error()
-                        .into();
-                    }
-                },
-                Err(_) => quote!(),
-            };
-        quote! {
-            pub fn hooks() -> Box<dyn mod_api::Hooks> { Box::new(<#ty as Default>::default()) }
-            /// The mod's hooks for the guest runtime in `mod_api::wire::guest`, when built to wasm.
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            fn __sunrise_mod_hooks() -> Box<dyn mod_api::Hooks> {
-                #registrations
-                hooks()
-            }
-        }
+        quote! { pub fn hooks() -> Box<dyn mod_api::Hooks> { Box::new(<#ty as Default>::default()) } }
     } else {
         quote!()
     };
     quote!(#implementation #export).into()
 }
 
-/// Generate the panicking defaults of a host area from each method's access declaration.
+/// Generate the defaults of a host area trait. An optional callback method marked
+/// `#[decline_unavailable]` returns without calling it; others panic if unimplemented.
 /// The same declarations drive game forwarders in the build-time API generator.
+/// A backend trait may carry `#[table_backend("path")]`: the game answers its reads from the
+/// borrowed view at `path`, which implements the trait, and `Game` forwards to it. Methods can
+/// opt out of generated conversion in either direction with `#[forward_api_inputs]` or
+/// `#[forward_api_output]` when the implementation accepts or returns the API types directly.
+/// `#[serialize_text]` validates Text arguments at a forwarding boundary that writes a packet
+/// or a saved component; unmarked text arguments are converted only for in-process use.
+/// Use `#[manual_handle]` for an inherent handle wrapper written by hand.
 #[proc_macro_attribute]
 pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
     let mut area = parse_macro_input!(input as syn::ItemTrait);
+    // `#[table_backend("path")]` is read by the build-time generator alone.
+    area.attrs
+        .retain(|attr| !attr.path().is_ident("table_backend"));
     let name = area.ident.to_string();
     let union = [
         "ClientBackendMut",
@@ -304,28 +277,55 @@ pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
         let syn::TraitItem::Fn(method) = member else {
             continue;
         };
-        let Some(index) = method
+        let decline = method
             .attrs
             .iter()
-            .position(|attr| attr.path().is_ident("access"))
-        else {
-            return syn::Error::new_spanned(&method.sig, "host method needs #[access(Level)]")
+            .any(|attr| attr.path().is_ident("decline_unavailable"));
+        method.attrs.retain(|attr| {
+            !attr.path().is_ident("static_call")
+                && !attr.path().is_ident("service")
+                && !attr.path().is_ident("read_stack")
+                && !attr.path().is_ident("forward_api_inputs")
+                && !attr.path().is_ident("forward_api_output")
+                && !attr.path().is_ident("serialize_text")
+                && !attr.path().is_ident("decline_unavailable")
+                && !attr.path().is_ident("manual_handle")
+        });
+        // A shared published read answers from the installed table, without a live Game.
+        let published = match method
+            .attrs
+            .iter()
+            .position(|attr| attr.path().is_ident("published"))
+            .map(|index| method.attrs.remove(index).parse_args::<syn::Path>())
+        {
+            None => None,
+            Some(Ok(path)) => Some(path),
+            Some(Err(error)) => return error.to_compile_error().into(),
+        };
+        if let Some(path) = published {
+            let args = method.sig.inputs.iter().filter_map(|arg| match arg {
+                syn::FnArg::Typed(arg) => Some(arg.pat.clone()),
+                syn::FnArg::Receiver(_) => None,
+            });
+            method.default = Some(syn::parse_quote!({ crate::__private::#path(#(#args),*) }));
+            method.semi_token = None;
+            continue;
+        }
+        method.default = Some(if decline {
+            if !matches!(method.sig.output, syn::ReturnType::Default) {
+                return syn::Error::new_spanned(
+                    &method.sig.output,
+                    "#[decline_unavailable] requires an optional callback method with no return value",
+                )
                 .to_compile_error()
                 .into();
-        };
-        let attr = method.attrs.remove(index);
-        let level = match attr.parse_args::<syn::Ident>() {
-            Ok(level) => level,
-            Err(error) => return error.to_compile_error().into(),
-        };
-        method.attrs.retain(|attr| {
-            !attr.path().is_ident("static_call") && !attr.path().is_ident("service")
+            }
+            syn::parse_quote!({})
+        } else {
+            let operation = method.sig.ident.to_string();
+            let label = format!("{union}::{operation}");
+            syn::parse_quote!({ unimplemented!("{}", #label) })
         });
-        let operation = method.sig.ident.to_string();
-        let label = format!("{union}::{operation}");
-        method.default = Some(syn::parse_quote!({
-            crate::world::phase::unprovided(#label, #operation, crate::world::phase::LoadAccess::#level)
-        }));
         method.semi_token = None;
     }
     quote!(#area).into()
@@ -360,23 +360,6 @@ pub fn sunrise_part(_attribute: TokenStream, input: TokenStream) -> TokenStream 
     expand(parse_macro_input!(input as ItemImpl), false)
 }
 
-/// `#[point(side = "server" | "client" | "both", name = "…", slot = N, free, api(…), mirror(…))]`
-/// on a function: an injection point (#589), where mods listen through the API. The staging pass
-/// that builds the prebuilt game puts it on each replaceable function with an API record, with
-/// the function's replacement cell (`slot`); a function without a record is refused by this
-/// attribute, naming it. The source tree carries none. The function's head is its cell's one load
-/// and a branch, the same check a mixin build's copy is installed through: while a mod listens
-/// at the head or the return, the cell holds the point's dispatcher, which runs the head
-/// listeners, the body (or the installed copy) and the return listeners. An API listener, native
-/// or wasm, gets the side's host (on a `Game` method) and a record holding a copy of every
-/// parameter as an API value (an engine type `mirror(…)` names as its `mod_api` mirror): the
-/// function runs with the record's by-value and `&T` values, and a `&mut T` parameter's place
-/// gets the record's value back.
-#[proc_macro_attribute]
-pub fn point(attribute: TokenStream, input: TokenStream) -> TokenStream {
-    point::expand(attribute.into(), parse_macro_input!(input as ImplItemFn)).into()
-}
-
 /// `#[sunrise_loop(name = "…", side = "server" | "client")]` on a published loop's entry function
 /// (`[[native.loop]]`): a marker the staging pass lists in the prebuilt game's `loops.json`,
 /// generating no code. The entry's body is one call of its generic loop function with the empty
@@ -409,6 +392,30 @@ pub fn sunrise_loop(attribute: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
 
+/// Marks a provided trait method computed from the trait's other methods.
+/// A method without a default body is refused.
+#[proc_macro_attribute]
+pub fn computed_in_mod(attribute: TokenStream, input: TokenStream) -> TokenStream {
+    let method = parse_macro_input!(input as syn::TraitItemFn);
+    if !attribute.is_empty() {
+        return syn::Error::new_spanned(
+            proc_macro2::TokenStream::from(attribute),
+            "write #[computed_in_mod] with no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if method.default.is_none() {
+        return syn::Error::new_spanned(
+            &method.sig,
+            "#[computed_in_mod] needs a default body: the mod computes this method itself",
+        )
+        .to_compile_error()
+        .into();
+    }
+    quote!(#method).into()
+}
+
 /// Derive subscriptions for internal test fixtures that construct their own mods.
 #[doc(hidden)]
 #[proc_macro_attribute]
@@ -418,8 +425,7 @@ pub fn __subscriptions(_attribute: TokenStream, input: TokenStream) -> TokenStre
 
 /// `if_installed!(host, other_mod, { other_mod::call(); })`: runs the block only where the optional
 /// dependency `other_mod` is installed. A native mod is built with the Cargo feature `other_mod`
-/// only when it is; a wasm mod is built with it and asks the game at the call, since an absent
-/// library's functions trap. One guard for both builds.
+/// only when that dependency is installed.
 #[proc_macro]
 pub fn if_installed(input: TokenStream) -> TokenStream {
     let IfInstalled { host, id, block } = parse_macro_input!(input as IfInstalled);

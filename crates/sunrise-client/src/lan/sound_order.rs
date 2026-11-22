@@ -94,13 +94,22 @@ impl Hub {
     }
 
     /// Entity tracking already builds packet bodies. Split its removal batch
-    /// without decoding or changing any of its pairing/movement packets.
-    pub(super) fn hold_sound_removals(&self, conn: u32, packets: &mut Vec<super::Body>) {
+    /// without decoding or changing any of its pairing/movement packets. Gives
+    /// back the ids whose removal now waits for `finish_captured_sounds`.
+    pub(super) fn hold_sound_removals(
+        &self,
+        conn: u32,
+        packets: &mut Vec<super::Body>,
+    ) -> Vec<i32> {
         let mut order = self.sound_order.lock().unwrap();
+        let mut waiting = Vec::new();
         if order.protected.is_empty() {
-            return;
+            return waiting;
         }
         packets.retain_mut(|body| {
+            if body.is_prepared() {
+                return true;
+            }
             let mut reader = Reader::new(body);
             if reader.varint().unwrap() != ids::REMOVE_ENTITIES {
                 return true;
@@ -123,6 +132,7 @@ impl Hub {
             if held.is_empty() {
                 return true;
             }
+            waiting.extend_from_slice(&held);
             order.removed.push((conn, held));
             if packet.ids.is_empty() {
                 return false;
@@ -131,6 +141,7 @@ impl Hub {
             *body = C::RemoveEntities(packet).encode().into();
             true
         });
+        waiting
     }
 
     /// Called after the rest of the captured sounds, before the level changes.

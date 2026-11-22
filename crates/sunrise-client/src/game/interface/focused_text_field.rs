@@ -3,12 +3,12 @@
 //! The boxes with validators of their own (Options, World Options, the game rules, the block
 //! editor) are not offered.
 use super::{Game, Screen, control};
+use mod_api::client::widgets::TextEdit;
 use sunrise_client::{
     chat::Commands,
     screen_draw::{Measure, TextField},
     ui::EditBox,
 };
-use mod_api::client::widgets::TextEdit;
 
 /// `edited`'s text and caret into `field`: the text as if typed over all of it, so the box's
 /// filter and limit apply, and the positions kept within what it took.
@@ -136,10 +136,10 @@ mod tests {
     use super::super::native_entity_refs::tests::with_client_game;
     use super::super::native_hooks::particle_count_tests::frame_scene;
     use super::*;
-    use sunrise_client::chat::{ChatAbilities, ChatScreen, ChatVisibility};
-    use sunrise_client::{multiplayer, title};
     use mod_api::{ClientHost, Flow, Hooks, ModEntry, ScreenCharTypedPreEvent};
     use std::sync::{Arc, Mutex};
+    use sunrise_client::chat::{ChatAbilities, ChatScreen, ChatVisibility};
+    use sunrise_client::{multiplayer, title};
     use winit::keyboard::KeyCode;
 
     /// Writes down each character and the box it saw, and edits the box on a few of them.
@@ -197,7 +197,7 @@ mod tests {
     /// each character sees what the one before it left, a cancelled one is not typed and
     /// its edit stays, and the box's filter, limit and responders hold.
     #[test]
-    #[ignore = "needs prepared resources and a display"]
+    #[ignore = "daily"]
     fn a_mod_edits_the_focused_box_before_each_character() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let taken = || std::mem::take(&mut *seen.lock().unwrap());

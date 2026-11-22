@@ -1,14 +1,11 @@
 //! A level's custom spawners (`CustomSpawner`): the list `ModifyCustomSpawnersEvent` edits.
 //!
-//! NeoForge's list holds `CustomSpawner` objects. A guest-implemented object cannot cross to a
-//! wasm mod, so a mod's spawner is a [`SpawnerKey`] it owns, and the game asks the mods to tick
-//! it through the `custom_spawner_tick` hook, once per tick, in list order.
+//! NeoForge's list holds `CustomSpawner` objects. Here a mod's spawner is a [`SpawnerKey`] it owns.
+//! The game asks mods to tick their spawners through `custom_spawner_tick` once per tick, in list order.
 use std::{fmt, sync::Arc};
 
 /// A spawner vanilla runs for every level (`MinecraftServer`'s custom spawners).
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SpawnerKind {
     /// `PhantomSpawner`: phantoms for players who have not slept.
@@ -56,9 +53,7 @@ impl TryFrom<String> for SpawnerKey {
 }
 
 /// One entry of a level's custom spawner list.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(sunrise_mod_api_macros::Wire, Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SpawnerEntry {
     /// One of vanilla's spawners.

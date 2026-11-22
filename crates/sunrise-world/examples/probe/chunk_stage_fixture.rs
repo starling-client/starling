@@ -1,6 +1,5 @@
 //! Test transport for pre-light ProtoChunk writes and stage heightmap transitions.
 use crate::support::common::tag;
-use sunrise_core::position::ChunkPos;
 use serde_json::Value;
 use std::{
     collections::BTreeSet,
@@ -8,6 +7,7 @@ use std::{
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::position::ChunkPos;
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

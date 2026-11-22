@@ -8,9 +8,6 @@ description = "Shared server configuration, installation layout and dedicated-en
 
 [dependencies]
 sunrise-platform = { path = "../sunrise-platform", features = ["server-files"] }
-sunrise-server-files = { path = "../sunrise-server-files" }
-sunrise-anticheat = { path = "../sunrise-anticheat" }
-sunrise-chat-filter = { path = "../sunrise-chat-filter" }
 sunrise-core = { path = "../sunrise-core" }
 dunce = "1.0.5"
 serde = { version = "1", features = ["derive"] }

@@ -32,8 +32,12 @@ impl Game<'_> {
                 &mut cancel,
             );
         });
-        if let Some(host) = self.lan.as_mut() {
-            host.hub.resolve_move(conn, !cancel);
+        if let Some(movement) = self
+            .lan
+            .as_mut()
+            .and_then(|host| host.hub.resolve_move(conn, !cancel))
+        {
+            self.guest_accepted_move(conn, movement);
         }
     }
 }

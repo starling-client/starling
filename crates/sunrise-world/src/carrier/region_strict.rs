@@ -10,13 +10,13 @@
 //! here ever invents content.
 
 use crate::compression::Compression;
-use sunrise_core::nbt::{self, Limits, NamedTag};
-use sunrise_core::position::ChunkPos;
 use std::{
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
+use sunrise_core::nbt::{self, Limits, NamedTag};
+use sunrise_core::position::ChunkPos;
 
 /// A region sector, in bytes.
 const SECTOR: u64 = 4096;
@@ -48,13 +48,6 @@ pub enum Strict {
     Undecodable(String),
     /// Plain I/O.
     Io(String),
-}
-impl Strict {
-    /// Whether this refusal means damage rather than a well-formed
-    /// absence. Damage refuses the world's load.
-    pub fn is_damage(&self) -> bool {
-        !matches!(self, Self::NoRegion | Self::Missing)
-    }
 }
 impl fmt::Display for Strict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

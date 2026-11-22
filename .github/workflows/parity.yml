@@ -1,0 +1,351 @@
+name: vanilla parity
+# Called only by the daily on the main head it started on. Harness output and vanilla data stay on the runner.
+#
+# One selection, several runners: `plan` computes the selection once from the tested tree and splits it into
+# shares, every `vanilla-parity` job runs exactly its share (tools/parity.py --harness-file), and `verdict`
+# merges their verdicts into the one file the daily summary reads, refusing a run whose shares do not cover
+# the plan. A single job could not finish the set inside a Dyna runner's 6 hours (5h 30m of the 2026-11-18
+# run were spent before its cap cancelled it), so the shares buy the wall clock back.
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit to test
+        type: string
+        required: true
+defaults:
+  run:
+    shell: bash
+permissions:
+  contents: read
+env:
+  SUNRISE_TELEMETRY_URL: "off"
+jobs:
+  # The whole run's selection, computed once and split here, so no two runners can disagree about what the
+  # selection is. tools/ci/parity_shards.py names the count.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      of: ${{ steps.plan.outputs.of }}
+      sharded: ${{ steps.plan.outputs.sharded }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: Plan the shares
+        id: plan
+        run: |
+          dir="$RUNNER_TEMP/plan"
+          mkdir -p "$dir"
+          # A commit of main from before the shares has neither the planner nor --harness-file/--merge in the
+          # tools below it, so it runs as one job, exactly as it did then: parity is not skipped and the commit
+          # under test is the one checked out, not this workflow's.
+          if [ -f tools/ci/parity_shards.py ]; then
+            python3 tools/parity.py --all --skip-named-only --list \
+              --selection-file "$dir/selection.json" > "$dir/selection.txt"
+            python3 tools/ci/parity_shards.py --split "$dir/selection.json" "$dir" >> "$GITHUB_OUTPUT"
+            echo "sharded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"bucket": [0]}' >> "$GITHUB_OUTPUT"
+            echo "of=1" >> "$GITHUB_OUTPUT"
+            echo "sharded=false" >> "$GITHUB_OUTPUT"
+            # The verdict job always downloads this artifact; a tree that cannot be planned says so instead of
+            # leaving the download to fail.
+            printf 'unsharded\n' > "$dir/unsharded"
+          fi
+      - name: Upload the plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+          if-no-files-found: error
+          retention-days: 7
+  vanilla-parity:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: dyna-large
+    # Run four harnesses at a time in each share; a Dyna runner ends at 6 h.
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    env:
+      BUCKET: ${{ matrix.bucket }}
+      BUCKETS: ${{ needs.plan.outputs.of }}
+      SHARDED: ${{ needs.plan.outputs.sharded }}
+    steps:
+      - name: Start a fresh private log directory for this attempt
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          root="${DYNA_CI_BUILD:?}/parity-keep"
+          mkdir -p "$root"
+          # A share of one attempt keeps its own directory: shares can land on the same slot in turn, and a
+          # later one must never report an earlier one's harnesses.
+          dir="$root/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-bucket-${BUCKET:-0}"
+          rm -rf -- "$dir"
+          mkdir "$dir"
+          printf '%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$COMMIT" > "$dir/scope"
+          echo "PARITY_LOG_DIR=$dir" >> "$GITHUB_ENV"
+          find "$root" -mindepth 1 -maxdepth 1 -type d -mmin +4320 -exec rm -rf {} +
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Check Dyna dependencies (install fallback without root)
+        run: bash tools/ci/dyna_ci_deps.sh
+      - name: Install Rust toolchain
+        run: |
+          if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+          fi
+          bash tools/ci/rustup_install.sh --profile minimal
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      # Every job that builds in this runner's persistent target keeps its source snapshot true: a
+      # build of another tree without it left artifacts that a later job judged fresh (stale generated
+      # sources, 2026-11-13). Only byte-identical Git objects regain their previous timestamps.
+      - name: Restore unchanged source timestamps
+        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
+      # Every build and test in this job runs at the runner's size, not the host's (tools/ci/cargo_jobs.py).
+      - name: Cap build parallelism to the runner
+        run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
+      - name: Set up disk-backed parity scratch and prepared vanilla data
+        run: |
+          rm -rf "$DYNA_CI_BUILD/parity-out" "$DYNA_CI_BUILD/parity-tmp"
+          mkdir -p "$DYNA_CI_BUILD/parity-out" "$DYNA_CI_BUILD/parity-tmp"
+          ln -s "$DYNA_CI_BUILD/parity-out" .local
+          # The probes' build folder (tools/parity.py's .local/parity-target) lives under the slot's persistent target,
+          # so a run rebuilds only what changed instead of the whole game from cold (a harness's own 900 s build limit
+          # ran out on that, 2026-11-16). The source snapshot step above keeps it true across trees.
+          mkdir -p "$CARGO_TARGET_DIR/parity"
+          ln -s "$CARGO_TARGET_DIR/parity" .local/parity-target
+          echo "TMPDIR=$DYNA_CI_BUILD/parity-tmp" >> "$GITHUB_ENV"
+          # tools/parity.py keeps pass records beside .local/minecraft, which is the read-only cache and holds
+          # other trees' passes: this run's records start empty, on the slot.
+          echo "PARITY_SHARED=$DYNA_CI_BUILD/parity-out/shared" >> "$GITHUB_ENV"
+          # The checkout's .local symlink escapes the default datafix root check. Name the job's own private root.
+          echo "SUNRISE_DATAFIX_ROOT=$DYNA_CI_BUILD/parity-out/datafix" >> "$GITHUB_ENV"
+          SUNRISE_DYNA_CACHE=true SUNRISE_PREPARED_CACHE="$DYNA_CI_BUILD/vanilla" SUNRISE_SHARED_SOURCE=/cache/sunrise-local \
+            bash tools/ci/vanilla-data.sh > "$PARITY_LOG_DIR/setup.log" 2>&1
+      # The game opens a window even with --offscreen, and the runner has no display: a virtual X display for every
+      # harness, started from this workflow and left running for the job.
+      - name: Virtual display
+        run: |
+          Xvfb -displayfd 3 -screen 0 1280x1024x24 -nolisten tcp 3> "$RUNNER_TEMP/xvfb-display" > /dev/null 2>&1 &
+          for _ in $(seq 60); do [ -s "$RUNNER_TEMP/xvfb-display" ] && break; sleep 0.5; done
+          [ -s "$RUNNER_TEMP/xvfb-display" ] || { echo "::error::Xvfb did not report a display within 30 seconds"; exit 1; }
+          echo "DISPLAY=:$(tr -d '[:space:]' < "$RUNNER_TEMP/xvfb-display")" | tee -a "$GITHUB_ENV"
+          echo "WAYLAND_DISPLAY=" >> "$GITHUB_ENV"
+      # Prebuild the probes under their time limits and compile the largest test binaries separately to fit memory.
+      - name: Build the daily harnesses' game probes
+        id: game-probes
+        env:
+          CARGO_PROFILE_RELEASE_LTO: 'false'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+          CARGO_PROFILE_RELEASE_INCREMENTAL: 'true'
+          CARGO_PROFILE_DEV_OPT_LEVEL: '3'
+        run: |
+          export CARGO_TARGET_DIR="$PWD/.local/parity-target"
+          exec > "$PARITY_LOG_DIR/game-probes.log" 2>&1
+          scripts=(tools/test_*_parity.py)
+          if grep -q "'--example', 'client_probe'" "${scripts[@]}"; then
+            cargo build --profile fast -p sunrise-client-lib --example client_probe
+          fi
+          if grep -q "'sunrise-game', '-p', 'sunrise-client-lib', '--bins'" "${scripts[@]}"; then
+            cargo build --locked --profile fast -p sunrise-game -p sunrise-client-lib --bins
+          fi
+          if grep -Eq "[\"']sunrise-game[\"'], [\"']--bin[\"'], [\"']sunrise-client[\"']" "${scripts[@]}"; then
+            cargo build --profile fast -p sunrise-game --bin sunrise-client
+          fi
+          # Every package's lib tests a harness runs as `cargo test -p <package> --lib` (default features, the dev
+          # profile as parity.py sets it), one at a time and before any oracle starts; a harness's own feature set
+          # or profile still compiles in its run. One rustc of up to 12 GiB each, which a 16 GiB runner killed
+          # beside the harnesses (signal 9: mount_control and damage_catalog on main, 2026-11-16). A package left
+          # to the harness compiles inside the harness's own time limit (dragon_contacts gives cargo 240 s, and
+          # its tests moved to sunrise-gameplay in 7127d19eae).
+          packages=$({ grep -ohE "[\"']test[\"'], ([\"']--locked[\"'], )?[\"']-p[\"'], [\"'][a-z0-9_-]+[\"'], [\"']--lib[\"']" "${scripts[@]}" || true; } |
+            sed -E "s/.*[\"']-p[\"'], [\"']([a-z0-9_-]+)[\"'].*/\1/" | sort -u)
+          for package in $packages; do
+            cargo test --locked --no-run -p "$package" --lib
+          done
+      - name: Build parity probes
+        id: probes
+        run: |
+          exec > "$PARITY_LOG_DIR/probes.log" 2>&1
+          cargo build --release --bin sunrise-parity
+          cargo build --release --bin sunrise-tick-parity
+          cargo build --release --bin sunrise-geometry-parity
+          cargo build --release --bin sunrise-noise-parity
+          cargo build --release --bin sunrise-density-parity
+          cargo build --release --bin sunrise-worldgen-parity
+          cargo build --release --bin sunrise-float-log-parity
+          cargo build --release -p sunrise-core --example generation_tick_fixture
+          cargo build --release -p sunrise-core --example biome_zoom_fixture
+          cargo build --release -p sunrise-world --bin sunrise-world --example world_probe
+          cargo build --release -p sunrise-world --example world_probe
+      # The build logs stay private, beside the prepared vanilla data. A failed build shows only what a daily test
+      # build shows (tools/ci/ignored_tests.py compile_diagnostics): fixed error headings and tracked locations.
+      - name: Show a failed probe build's compiler errors
+        if: failure() && (steps.game-probes.outcome == 'failure' || steps.probes.outcome == 'failure')
+        env:
+          FAILED: ${{ steps.game-probes.outcome == 'failure' && 'game-probes' || 'probes' }}
+        run: |
+          echo "$FAILED failed:"
+          python3 -c 'import sys; from tools.ci.ignored_tests import compile_diagnostics; compile_diagnostics(open(sys.argv[1], errors="replace").read())' \
+            "$PARITY_LOG_DIR/$FAILED.log"
+      # Keep complete legacy datafix seed inputs in $DYNA_CI_KEEP/datafix-seeds/<key> so each share
+      # copies immutable inputs instead of regenerating every legacy server inside the harness timeout.
+      # Failure is passed via steps.datafix-seeds.outcome so other harnesses in this share still run
+      # and report, while datafix fails immediately without retrying generation.
+      - name: Prepare datafix seed worlds from keep
+        id: datafix-seeds
+        continue-on-error: true
+        run: |
+          [ -n "${DYNA_CI_KEEP:-}" ] || exit 0
+          plan="$RUNNER_TEMP/plan/bucket-${BUCKET:-0}.json"
+          if [ -f "$plan" ] && ! grep -Eq '"datafix(#|")' "$plan"; then
+            exit 0
+          fi
+          export SUNRISE_DATAFIX_SEED_KEEP="$DYNA_CI_KEEP/datafix-seeds"
+          python3 tools/datafix_seeds.py > "$PARITY_LOG_DIR/datafix-seeds.log" 2>&1
+      - name: Run every automatic harness
+        env:
+          PARITY_HOSTS: ''
+          SUNRISE_DATAFIX_SEEDS_OUTCOME: ${{ steps.datafix-seeds.outcome }}
+        run: |
+          # The runner writes retry reasons to the step summary as well as stdout; keep both private.
+          export GITHUB_STEP_SUMMARY="$RUNNER_TEMP/parity-private-summary"
+          log="$PARITY_LOG_DIR/parity.log"
+          args=(--all --skip-named-only -j 4 --timeout 2400)
+          # This share's own list, from the one plan: a tree from before the shares has no list and runs the
+          # whole set, which is what it did then.
+          if [ -f "$RUNNER_TEMP/plan/bucket-${BUCKET:-0}.json" ]; then
+            args+=(--harness-file "$RUNNER_TEMP/plan/bucket-${BUCKET:-0}.json")
+          fi
+          # The repository's keep on this CI host outlives the slot: oracle runs on byte-identical inputs replay
+          # from it (tools/parity_shim.py). Without it every oracle runs, as before.
+          if [ -n "${DYNA_CI_KEEP:-}" ]; then
+            export PARITY_ORACLE_KEEP="$DYNA_CI_KEEP/oracles"
+            export SUNRISE_DATAFIX_SEED_KEEP="$DYNA_CI_KEEP/datafix-seeds"
+          fi
+          status=0
+          python3 tools/parity.py "${args[@]}" --selection-file "$PARITY_LOG_DIR/selection.json" \
+            > "$log" 2>&1 || status=$?
+          printf '%s\n' "$status" > "$PARITY_LOG_DIR/exit"
+          echo "Parity exited $status"
+          exit "$status"
+      # Only names and outcomes go to the daily summary. Keep setup and harness logs on the runner slot.
+      - name: Write the harnesses' verdict
+        if: always()
+        run: |
+          [ -n "${PARITY_LOG_DIR:-}" ] || exit 0  # setup did not initialise this attempt
+          if [ "${SHARDED:-false}" = true ]; then
+            python3 tools/ci/parity_verdict.py "$PARITY_LOG_DIR" "$RUNNER_TEMP/parity.json" \
+              --bucket "${BUCKET:-0}/${BUCKETS:-1}"
+          else
+            python3 tools/ci/parity_verdict.py "$PARITY_LOG_DIR" "$RUNNER_TEMP/parity.json"
+          fi
+      - name: Upload the harnesses' verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-parity-${{ github.run_attempt }}-${{ matrix.bucket }}
+          path: ${{ runner.temp }}/parity.json
+          if-no-files-found: ignore
+          retention-days: 7
+      # A slot's build folder is emptied when the slot switches repositories or outgrows its cap, which took a red
+      # share's only logs (45006443466 bucket 3). A failed share's logs are copied into this host's keep too; every
+      # share prunes them below, with the three-day retention of parity-keep above.
+      - name: Keep a failed share's logs beyond this slot
+        if: failure()
+        run: |
+          [ -n "${PARITY_LOG_DIR:-}" ] && [ -n "${DYNA_CI_KEEP:-}" ] || exit 0
+          root="$DYNA_CI_KEEP/parity-failed-logs"
+          name=$(basename "$PARITY_LOG_DIR")
+          mkdir -p "$root"
+          staging=$(mktemp -d "$root/.staging.XXXXXX")
+          cp -a "$PARITY_LOG_DIR/." "$staging/"
+          rm -rf -- "${root:?}/$name"
+          mv "$staging" "$root/$name"
+          echo "this share's logs are kept in the host's keep: parity-failed-logs/$name"
+      # The slot's build folder outlives the job and is readable outside it: the vanilla-derived scratch (oracle
+      # outputs, harness worlds, the job's copy of the prepared data) goes when the job ends, not when the next
+      # parity job on this slot starts. The kept logs under parity-keep stay for triage; the probes' target and the
+      # prepared cache other workflows read stay too. Every share clears its own, since a slot takes shares in turn.
+      - name: Delete this job's vanilla-derived scratch
+        if: always()
+        run: |
+          if [ -n "${DYNA_CI_BUILD:-}" ]; then
+            rm -rf -- "$DYNA_CI_BUILD/parity-out" "$DYNA_CI_BUILD/parity-tmp" "$DYNA_CI_BUILD/vanilla/job"
+          fi
+          if [ -n "${DYNA_CI_KEEP:-}" ] && [ -d "$DYNA_CI_KEEP/parity-failed-logs" ]; then
+            find "$DYNA_CI_KEEP/parity-failed-logs" -mindepth 1 -maxdepth 1 -type d -mmin +4320 -exec rm -rf {} +
+          fi
+  # The one verdict the daily summary reads: the shares' verdicts merged, complete only when they cover the
+  # plan. It is the job that fails for a harness failure, so a share that finished clean still marks the run
+  # red through this one file.
+  verdict:
+    needs: [plan, vanilla-parity]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: daily-report-parity-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/shares
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Merge the shares' verdicts
+        env:
+          SHARDED: ${{ needs.plan.outputs.sharded }}
+          BUCKETS: ${{ needs.plan.outputs.of }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          files=("$RUNNER_TEMP"/shares/*/parity.json)
+          if [ "${SHARDED:-false}" = true ]; then
+            python3 tools/ci/parity_verdict.py --merge "$RUNNER_TEMP/parity.json" "${files[@]}" \
+              --expect "${BUCKETS:-1}" --plan "$RUNNER_TEMP/plan/selection.json"
+          else
+            # One share, from a tree that predates the merge: its verdict is the whole run.
+            cp "${files[0]}" "$RUNNER_TEMP/parity.json"
+          fi
+      - name: Upload the run's verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-parity-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/parity.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Fail unless every share reported and no harness failed
+        run: |
+          python3 - "$RUNNER_TEMP/parity.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          shares = report.get("shares") or {"reported": 1, "expected": 1}
+          print(f"parity: {len(report['passed'])} passed, {len(report['failed'])} failed, "
+                f"{shares['reported']}/{shares['expected']} shares reported")
+          sys.exit(0 if report["complete"] and not report["failed"] else 1)
+          PY

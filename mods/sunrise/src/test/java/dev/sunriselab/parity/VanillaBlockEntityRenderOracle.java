@@ -232,7 +232,16 @@ public final class VanillaBlockEntityRenderOracle {
         @Override public int getMinY() { return minY; }
         @Override public int getHeight() { return height; }
         @Override public long getGameTime() { return gameTime; }
-        @Override public int getBrightness(net.minecraft.world.level.LightLayer layer, BlockPos p) { return layer == net.minecraft.world.level.LightLayer.SKY ? sky : block; }
+        /**
+         * The case's light inside the build height. Above it no section holds light data:
+         * SkyLightSectionStorage.getLightValue answers 15 above the top section and
+         * BlockLightSectionStorage.getLightValue 0 without a data layer.
+         */
+        @Override public int getBrightness(net.minecraft.world.level.LightLayer layer, BlockPos p) {
+            boolean sky = layer == net.minecraft.world.level.LightLayer.SKY;
+            if (p.getY() >= minY + height) return sky ? 15 : 0;
+            return sky ? this.sky : block;
+        }
         @Override public net.minecraft.world.clock.ClockManager clockManager() { throw new UnsupportedOperationException(); }
         @Override public void destroyBlockProgress(int p0, BlockPos p1, int p2) { throw new UnsupportedOperationException(); }
         @Override public java.util.Collection dragonParts() { throw new UnsupportedOperationException(); }

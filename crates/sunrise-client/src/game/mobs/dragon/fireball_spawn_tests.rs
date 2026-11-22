@@ -1,7 +1,7 @@
 use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::geometry::Vec3;
-use std::sync::Arc;
 
 fn end_game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
@@ -47,13 +47,17 @@ fn end_game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>
         Some(crate::game::Dim::Overworld)
     );
     assert!(game.dimension_type().has_ender_dragon_fight, "the End");
+    let layout = game.world.layout();
     for x in -1..2 {
         for z in -1..2 {
             game.world
                 .chunks
-                .insert((x, z), Arc::new(Chunk::empty(x, z)));
+                .insert((x, z), Arc::new(Chunk::with_layout(x, z, layout)));
         }
     }
+    // Direct insertion bypasses the streamer's light queue. /forceload waits
+    // for the center column to be lit; the surrounding eight are already resident.
+    game.world.dirty_light.insert((0, 0));
     assert!(game.run_command("forceload add 0 0"));
     game
 }
@@ -79,7 +83,7 @@ fn hurting_motion(v: Vec3) -> Vec3 {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_dragons_fireball_starts_at_its_start_with_a_tenth_of_its_direction() {
     let mut resources = None;
     let mut game = end_game(&mut resources);
@@ -97,7 +101,7 @@ fn the_dragons_fireball_starts_at_its_start_with_a_tenth_of_its_direction() {
 /// The old engine's first End world tick (recorded, then compared with
 /// `AbstractHurtingProjectile.tick`'s).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_dragons_fireball_first_world_tick() {
     let mut resources = None;
     let mut game = end_game(&mut resources);
@@ -138,7 +142,7 @@ fn the_dragons_fireball_first_world_tick() {
 /// `assignDirectionalMovement`): for (1, 0, -1) one normalization gives
 /// 0.07071067811865475 and two give 0.07071067811865477.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_dragons_fireball_direction_is_normalized_twice() {
     let mut resources = None;
     let mut game = end_game(&mut resources);

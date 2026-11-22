@@ -317,12 +317,13 @@ fn unpi(i: usize) -> (i32, i32, i32) {
 mod tests {
     use super::*;
     use crate::{blocks::RenderShape, graphics::LeafCullingMode};
+    use std::time::Instant;
     use sunrise_core::geometry::Direction;
     use sunrise_world::fluid::FluidState;
-    use std::time::Instant;
 
     fn info(leaves: bool, opaque: bool) -> Info {
         Info {
+            air: false,
             solid: opaque,
             full: opaque,
             permeable: false,
@@ -354,7 +355,10 @@ mod tests {
     /// State 0 is air, 1 leaves, 2 a full opaque cube, 3 a partial model.
     fn states() -> Vec<Info> {
         vec![
-            info(false, false),
+            Info {
+                air: true,
+                ..info(false, false)
+            },
             info(true, false),
             info(false, true),
             info(false, false),

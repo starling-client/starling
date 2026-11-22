@@ -1,10 +1,12 @@
 //! Reads from the actual mob loaned to the active goal, or a disjoint live mob.
-use super::super::api_values::TryIntoApi;
+use super::super::native_living_refs::{hand_slot, lend_equipment};
 use super::{GoalCx, Resolved};
 use crate::mobs::Mob;
-use sunrise_client::mobs::villager;
-use mod_api::ItemStack;
-use mod_api::{ActiveEffect, EffectKey, EquipmentSlot, Hand, LivingRef, Pose};
+use mod_api::{ActiveEffect, EffectKey, EquipmentSlot, Hand, ItemStackView, LivingRef, Pose};
+use sunrise_client::{
+    items::EntityTypeTags,
+    mobs::{finalize, villager},
+};
 
 impl GoalCx<'_, '_> {
     fn live_living_mob(&self, living: LivingRef) -> Option<&Mob> {
@@ -81,19 +83,21 @@ impl GoalCx<'_, '_> {
         &self,
         living: LivingRef,
         slot: EquipmentSlot,
-    ) -> Option<ItemStack> {
-        self.live_living_mob(living)?.equipment_stacks()[slot as usize]
-            .as_ref()?
-            .try_into_api()
-            .ok()
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) -> Option<()> {
+        lend_equipment(
+            finalize::equipment_slot(self.live_living_mob(living)?, slot)?,
+            read,
+        )
     }
 
-    pub(super) fn r_living_hand_item(&self, living: LivingRef, hand: Hand) -> Option<ItemStack> {
-        let slot = match hand {
-            Hand::Main => EquipmentSlot::MainHand,
-            Hand::Off => EquipmentSlot::OffHand,
-        };
-        self.r_living_equipment(living, slot)
+    pub(super) fn r_living_hand_item(
+        &self,
+        living: LivingRef,
+        hand: Hand,
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) -> Option<()> {
+        self.r_living_equipment(living, hand_slot(hand), read)
     }
 
     pub(super) fn r_living_is_tamed(&self, living: LivingRef) -> Option<bool> {
@@ -130,7 +134,11 @@ impl GoalCx<'_, '_> {
     }
 
     pub(super) fn r_living_can_breathe_underwater(&self, living: LivingRef) -> Option<bool> {
-        Some(self.live_living_mob(living)?.kind.flags.breathes_water)
+        let mob = self.live_living_mob(living)?;
+        Some(
+            self.w
+                .entity_tag_bit(&mob.kind, EntityTypeTags::CAN_BREATHE_UNDER_WATER),
+        )
     }
     pub(super) fn r_living_has_line_of_sight(
         &self,
@@ -295,12 +303,12 @@ impl GoalCx<'_, '_> {
 
     pub(super) fn r_living_last_attacker(&self, living: LivingRef) -> Option<mod_api::EntityRef> {
         let mob = self.live_living_mob(living)?;
-        let who = mob
-            .ai
-            .last_hurt_by
-            .filter(|_| mob.age as i32 - mob.ai.last_hurt_by_time <= 100)?;
-        let id = match who {
-            crate::mobs::Who::Mob(id) => id,
+        let id = match mob.recent_hurt_by()? {
+            crate::mobs::Who::Mob(id) => {
+                return self
+                    .lookup_entity(id)
+                    .or_else(|| self.w.goal_host?.mob_attacker_elsewhere(id));
+            }
             crate::mobs::Who::Player => self.w.goal_host?.mob_player_credit(mob)??,
         };
         self.lookup_entity(id)

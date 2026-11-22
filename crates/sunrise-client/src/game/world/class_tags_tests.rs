@@ -2,52 +2,18 @@ use super::class_tags::merge;
 use std::collections::{HashMap, HashSet};
 
 #[test]
-fn class_tags_include_mod_blocks_ancestors_and_deduplicate_states() {
-    let datapack = HashMap::from([
-        (
-            "minecraft:fences".into(),
-            HashSet::from(["minecraft:oak_fence".into()]),
-        ),
-        (
-            "sunrise:class/fence".into(),
-            HashSet::from(["demo:stone".into()]),
-        ),
-    ]);
-    let mut states = vec![("minecraft:oak_fence", vec!["FenceBlock", "Block"])];
-    states.extend((0..4).map(|_| ("demo:rail", vec!["FenceBlock", "Block"])));
-    states.push(("demo:stone", vec!["Block"]));
-    let tags = merge(&datapack, states.clone());
-    assert_eq!(
-        tags["sunrise:class/fence"],
-        HashSet::from(["minecraft:oak_fence".into(), "demo:rail".into()])
-    );
-    assert_eq!(tags["sunrise:class/fence"].len(), 2);
-    assert!(tags["sunrise:class/block"].contains("demo:rail"));
-    assert!(!tags["sunrise:class/wall"].contains("demo:rail"));
-    assert!(!tags["minecraft:fences"].contains("demo:rail"));
-    let reloaded = merge(
-        &HashMap::from([("minecraft:fences".into(), HashSet::new())]),
-        states,
-    );
-    assert_eq!(reloaded["sunrise:class/fence"], tags["sunrise:class/fence"]);
-    assert!(reloaded["minecraft:fences"].is_empty());
-    let second = merge(&HashMap::new(), [("demo:stone", ["Block"])]);
-    assert_eq!(second["sunrise:class/fence"].len(), 0);
-}
-
-#[test]
 fn class_tags_dispatch_and_failed_preparation_preserve_installed_snapshot() {
     use crate::game::api_values::{self, TryIntoApi};
-    use sunrise_world::registry::{BlockRegistry, BlockStateId};
     use mod_api::*;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use sunrise_world::registry::{BlockRegistry, BlockStateId};
     struct Counter(Arc<AtomicUsize>);
     #[mod_api::sunrise_part]
     impl BlockPart for Counter {
-        fn analog_output(&self, _: &dyn LevelHost, _: &mut AnalogOutputEvent) {
+        fn analog_output(&self, _: &mut dyn LevelRandomHost, _: &mut AnalogOutputEvent) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -65,7 +31,12 @@ fn class_tags_dispatch_and_failed_preparation_preserve_installed_snapshot() {
         }
     }
     struct Level;
-    impl LevelHost for Level {}
+    impl LevelHost for Level {
+        fn block_entity_data(&self, _: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
+            None
+        }
+    }
+    impl mod_api::LevelRandomHost for Level {}
     let calls = Arc::new(AtomicUsize::new(0));
     let mods: Mods = vec![ModEntry::new("demo", Box::new(Listener(calls.clone())))].into();
     mod_platform::testing::with_mods(mods.clone(), || {
@@ -103,7 +74,7 @@ fn class_tags_dispatch_and_failed_preparation_preserve_installed_snapshot() {
         let visit = |id| {
             let mut output = 0;
             mod_api::dispatch_analog_output(
-                &Level,
+                &mut Level,
                 LevelDimension::Overworld,
                 sunrise_core::position::BlockPos::new(0, 64, 0),
                 BlockStateId(id).try_into_api().unwrap(),

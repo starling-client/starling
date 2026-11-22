@@ -7,8 +7,8 @@ use crate::{
     profiles::valid_player_name,
     user_lists::{NameAndId, format_date, parse_date, read_utf8},
 };
-use sunrise_java_properties::{civil_from_days, days_from_civil, now_millis};
 use std::{collections::HashMap, path::PathBuf};
+use sunrise_java_properties::{civil_from_days, days_from_civil, now_millis};
 
 const MRU_LIMIT: usize = 1000;
 

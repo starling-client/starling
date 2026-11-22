@@ -1,6 +1,6 @@
 //! The API vocabulary re-exported by `sunrise-mod-api`.
 #![deny(missing_docs)]
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![deny(ambiguous_glob_reexports)]
 extern crate self as mod_api;
 
@@ -22,4 +22,3 @@ mod generated {
 }
 
 include!(concat!(env!("OUT_DIR"), "/mod_api_exports_root.rs"));
-include!(concat!(env!("OUT_DIR"), "/wire_generated.rs"));

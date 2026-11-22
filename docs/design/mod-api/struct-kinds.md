@@ -7,7 +7,7 @@ and its vocabulary crate that forms the mod-authoring surface is exactly one of 
    literal with `..Default::default()` at the end, so a field added later never breaks the mod:
 
    ```rust,ignore
-   let screen = Screen { width: 176.0, height: 166.0, ..Screen::default() };
+   let screen = MenuScreenLayout { width: 176.0, height: 166.0, ..MenuScreenLayout::default() };
    ```
 
    Where a field has no neutral value (an identity, such as a registry id), the type has a constructor that takes

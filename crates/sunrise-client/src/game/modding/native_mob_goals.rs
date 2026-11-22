@@ -1,6 +1,7 @@
 //! AI goals of native mod mob handles.
 use super::native_namespaced_id::namespaced;
 use super::{Game, commands::Target};
+use mod_api::{GoalSpec, MobFilter, MobGoalEntry, MobRef};
 use sunrise_client::mobs::{
     self, Species,
     goals::{
@@ -10,7 +11,6 @@ use sunrise_client::mobs::{
     },
     nav::NavKind,
 };
-use mod_api::{GoalSpec, MobFilter, MobGoalEntry, MobRef};
 
 /// The goal's kind id ([`GoalSpec::id`]) of a registered goal, by its
 /// internal name: the plain vanilla kinds map to their snake_case id, and a
@@ -219,7 +219,7 @@ impl Game<'_> {
             } else {
                 mobs[index].ai.goals = selector;
             }
-            mobs::apply_brain_events(&mut mobs, &mut level, &mut events, 0);
+            mobs::apply_brain_events(&mut mobs, &mut level, &mut events, 0, &w.teams);
             removed
         };
         drop(w);
@@ -408,7 +408,7 @@ impl Game<'_> {
                 Some(Box::new(FleeSun::new(*speed)))
             }
             GoalSpec::EatBlock => Some(Box::new(EatBlock::default())),
-            GoalSpec::BreathAir => Some(Box::new(BreathAir)),
+            GoalSpec::BreathAir => Some(Box::new(BreathAir::default())),
             GoalSpec::TryFindWater => Some(Box::new(TryFindWater::default())),
             GoalSpec::NearestTarget {
                 prey,
@@ -456,17 +456,17 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
-    use sunrise_client::{chunk::Chunk, mobs::Mob};
-    use sunrise_core::geometry::Vec3;
     use mod_api::{EntityRef, GoalSpec, MobFilter, MobRef, WorldEpoch};
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, mobs::Mob};
+    use sunrise_core::geometry::Vec3;
 
     /// A mob of `kind` in the game's list, its species goals registered by
     /// `Mob::new`, as a handle.
     fn mob_in_game(game: &mut super::super::Game<'_>, kind: &str, id: u32) -> MobRef {
         let t = game.res.mob_types().get(kind).unwrap().clone();
         let mut m = Mob::new(id, t, Vec3::new(3.5, 65.0, 3.5), 0.0);
-        m.on_ground = true;
+        m.ground.on_ground = true;
         game.mobs.push(m);
         let entity = game.entity(id).unwrap();
         game.mob(entity).unwrap()
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn goal_constructors_follow_vanilla_classes() {
         use sunrise_client::mobs::Species;
         with_game(|game| {
@@ -564,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn follow_mob_uses_the_mobs_actual_navigation() {
         with_game(|game| {
             let mob = mob_in_game(game, "minecraft:cow", 501);
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn removing_running_goal_supplies_snapshot_and_persists_level_random() {
         use sunrise_client::mobs::goals::{Cx, Goal};
         use sunrise_core::random::RandomSource;
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn removing_hold_ground_notifies_nearby_raiders() {
         use sunrise_client::mobs::{
             Who,
@@ -697,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn removing_school_goal_updates_the_leader() {
         use sunrise_client::mobs::{aquatic::FollowFlockLeader, goals::Cx};
         with_game(|game| {
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn goals_read_add_remove_and_refuse_what_the_mob_does_not_hold() {
         crate::game::entity::taken_pass_tests::in_both_dimensions(|game, balance| {
             game.world

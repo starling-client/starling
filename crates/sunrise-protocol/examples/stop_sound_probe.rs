@@ -1,8 +1,9 @@
+use std::{error::Error, io::Write};
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, Reader},
     packets::play::StopSound,
 };
-use std::{error::Error, io::Write};
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().collect();
     let mut out = std::fs::File::create(&args[2])?;

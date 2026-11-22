@@ -4,14 +4,15 @@
 //! on the game that has the window, following a server, never on
 //! a server: nothing of them goes over the network.
 use super::Game;
+use mod_api::EntityRef;
 use sunrise_client::blocks::RenderShape;
 use sunrise_client::effects::effect_particle;
-use sunrise_client::mobs::{MobEvent, ambient};
+use sunrise_client::mobs::MobEvent;
 use sunrise_client::motion::{LAVA, WATER};
 use sunrise_client::particles::{ParticleEngine, ParticleOptions, ParticleType};
 use sunrise_client::pose::Pose;
+use sunrise_client_gameplay::mob_ambient as ambient;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
-use mod_api::EntityRef;
 
 impl Game<'_> {
     pub(super) fn tick_client_ambient(&mut self) {
@@ -174,7 +175,8 @@ impl Game<'_> {
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
-                .and_then(|m| m.supporting),
+                .and_then(|m| m.ground.supporting_block)
+                .map(|p| [p.x, p.y, p.z]),
             _ => None,
         };
         let mob = match target {
@@ -259,6 +261,11 @@ impl Game<'_> {
     /// list the server sent, and the mobs and guests of a game in the frame
     /// theirs.
     fn effect_swirls(&mut self) {
+        // `ITEM_SLIME` and `ITEM_COBWEB` crumbs draw the item's model, which
+        // `BreakingItemParticle`'s providers resolve as they spawn: the sprites
+        // are kept per type here, and this resolves them once (it returns at
+        // once after).
+        self.ensure_item_particle_sprites();
         if let Some(p) = self.player.as_ref() {
             let effects = &self.potions.effects.list;
             let list: Vec<_> = effects
@@ -274,6 +281,7 @@ impl Game<'_> {
             );
             swirl(
                 &mut self.particles,
+                &self.world,
                 p.position,
                 size,
                 &list,
@@ -301,6 +309,7 @@ impl Game<'_> {
                     .collect();
                 swirl(
                     &mut self.particles,
+                    &self.world,
                     m.position,
                     size,
                     &list,
@@ -312,6 +321,7 @@ impl Game<'_> {
                 let ambient = m.extra.effect_ambient;
                 swirl(
                     &mut self.particles,
+                    &self.world,
                     m.position,
                     size,
                     list,
@@ -328,6 +338,7 @@ impl Game<'_> {
 /// effects are ambient) of one of the particles at a random spot of the box.
 fn swirl(
     particles: &mut ParticleEngine,
+    world: &sunrise_client::world::World,
     feet: Vec3,
     size: (f64, f64),
     list: &[ParticleOptions],
@@ -347,19 +358,19 @@ fn swirl(
     let x = feet.x + size.0 * (2.0 * r.next_double() - 1.0) * 0.5;
     let y = feet.y + size.1 * r.next_double();
     let z = feet.z + size.0 * (2.0 * r.next_double() - 1.0) * 0.5;
-    particles.add(&list[pick], [x, y, z], [1.0; 3]);
+    particles.add_with_world(Some(world), &list[pick], [x, y, z], [1.0; 3], false, false);
 }
 
 #[cfg(test)]
 mod sprint_handle_tests {
+    use mod_api::{ClientHost, EntityRef, WorldEpoch};
+    use std::sync::Arc;
     use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
     use sunrise_core::geometry::Vec3;
     use sunrise_protocol::connection::Pipe;
-    use mod_api::{ClientHost, EntityRef, WorldEpoch};
-    use std::sync::Arc;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn client_entity_sprint_particles_use_the_local_block_and_reject_stale_handles() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.options.execution_role = super::super::execution_role::ExecutionRole::Client;
@@ -417,3 +428,7 @@ mod sprint_handle_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "tests/effect_particle_tests.rs"]
+mod effect_particle_tests;

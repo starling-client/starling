@@ -86,11 +86,6 @@ impl Default for TickStats {
     }
 }
 
-/// Lower bound of bucket `i` in nanoseconds.
-pub fn bucket_floor_ns(i: usize) -> f64 {
-    10_000.0 * 2f64.powf(i as f64 / 4.0)
-}
-
 impl TickStats {
     fn add(&mut self, tick: u64, ns: u64) {
         let i = ((ns.max(1) as f64 / 10_000.0).log2() * 4.0)
@@ -105,19 +100,6 @@ impl TickStats {
             self.worst.sort_by_key(|&(_, ns)| std::cmp::Reverse(ns));
             self.worst.truncate(WORST);
         }
-    }
-
-    /// The `q` quantile (0..1) as the upper edge of its bucket, in nanoseconds.
-    pub fn quantile_ns(&self, q: f64) -> f64 {
-        let want = (self.count as f64 * q).ceil().max(1.0) as u64;
-        let mut seen = 0;
-        for (i, &n) in self.buckets.iter().enumerate() {
-            seen += u64::from(n);
-            if seen >= want {
-                return bucket_floor_ns(i + 1).min(self.max_ns as f64);
-            }
-        }
-        self.max_ns as f64
     }
 }
 

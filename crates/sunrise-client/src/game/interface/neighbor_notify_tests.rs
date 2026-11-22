@@ -1,7 +1,7 @@
 //! `neighbor_notify` reaches mods from the server's neighbour updates.
-use sunrise_core::{geometry::Direction, position::BlockPos};
 use mod_api::{Flow, Hooks, LevelHost, NeighborNotifyEvent, Registrar};
 use std::sync::Mutex;
+use sunrise_core::{geometry::Direction, position::BlockPos};
 
 static HEARD: Mutex<Vec<(i32, i32, i32, Option<Direction>)>> = Mutex::new(Vec::new());
 
@@ -18,7 +18,7 @@ impl Hooks for Hush {
 }
 
 #[test]
-#[ignore = "needs prepared resources and an isolated process for native mods"]
+#[ignore = "daily"]
 fn a_cancelled_update_leaves_the_lamp_unlit() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("hush", Box::new(Hush))].into();
     mod_platform::testing::with_mods(mods, || {

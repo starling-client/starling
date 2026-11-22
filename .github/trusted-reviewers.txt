@@ -6,10 +6,7 @@
 # for people reading this file and for messages. A login is a name anyone can claim once its owner renames or deletes
 # the account; an ID is never reused. Get it with `gh api users/<login> --jq .id`, or run
 # `python3 tools/ci/resolve_reviewer_ids.py` to fill in the IDs and `--check` to catch renames.
-# A line in any other form (a bare login included) grants nothing. Ludovic is always allowed (OWNER_ID in
-# tools/ci/nightly_set.py) and isn't listed. Removing a line revokes that account at once. A line with only `paused`
-# stops all three for every reviewer (Ludovic's still work).
-54669067 kacpherek       # added by Ludovic, 2026-10-27
-87152661 rdbtCVS         # added by Ludovic, 2026-10-27
-84875247 Online5277      # added by Ludovic, 2026-10-27 (his top three by merged pull requests)
-86072227 levzzz5154      # added by Ludovic, 2026-10-28 (Sunrise Team; author of horizon-mixins)
+# A line in any other form (a bare login included) grants nothing. The owner (OWNER_ID in tools/ci/nightly_set.py) and
+# the council (.github/council.txt) hold these powers without a line here. Removing a line revokes that account at
+# once. A line with only `paused` stops all three for every reviewer (the owner's and the council's still work).
+# Sunrise lists no reviewers yet.

@@ -7,12 +7,12 @@
 //! and plays what it reports.
 use super::{Mob, MobEvent, MobType, MobWorld, creaking};
 use crate::{collisions::SceneCollisions, containers::CreakingHeart};
+use std::sync::Arc;
 use sunrise_core::{
     geometry::{Aabb, Vec3},
     random::{LegacyRandom, RandomSource},
 };
 use sunrise_world::registry::BlockStateId;
-use std::sync::Arc;
 
 /// `Creaking.CREAKING_ORANGE` and `CREAKING_GRAY`.
 pub const ORANGE: u32 = 16_545_810;

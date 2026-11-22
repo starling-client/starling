@@ -23,7 +23,7 @@ impl Game<'_> {
     pub(super) fn apply_clone_payload(&mut self, pos: [i32; 3], payload: CloneBlockPayload) {
         let key = (pos[0], pos[1], pos[2]);
         if let Some(entity) = payload.entity {
-            self.world.block_entities.insert(key, entity);
+            self.world.replace_block_entity(key, entity);
             match payload.name {
                 Some(name) => self.world.block_names.insert(key, name),
                 None => self.world.block_names.remove(&key),
@@ -34,6 +34,7 @@ impl Game<'_> {
                     .pending_loot
                     .extend(payload.pending.map(|pending| (key, pending)));
             });
+            self.notify_block_entity_load_additional(key);
         }
     }
 }

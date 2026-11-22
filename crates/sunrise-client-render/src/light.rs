@@ -17,16 +17,17 @@
 use crate::fast_hash::FxHashMap;
 use crate::{
     blocks::BlockFacts,
-    chunk::{Chunk, ColumnLayout, Light, Section, index},
+    chunk::{Chunk, ColumnLayout, LevelShape, Light, Section, StoredLight, index},
+    section_mask::SectionMask,
 };
-use sunrise_core::geometry::{Direction, ShapeOp, VoxelShape};
-use sunrise_world::registry::{BlockRegistry, BlockStateId};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     path::Path,
     sync::Arc,
 };
+use sunrise_core::geometry::{Direction, ShapeOp, VoxelShape};
+use sunrise_world::registry::{BlockRegistry, BlockStateId};
 
 const W: usize = 48;
 /// Face ID 0: empty occlusion face; 1: the full square.
@@ -54,6 +55,8 @@ pub struct LightTables {
     faces: usize,
     /// Number of distinct `(shaped, faces)` configurations.
     types: usize,
+    /// `BlockState.isAir`, for published section status, not the occlusion rule.
+    air_states: Vec<bool>,
     /// Per state: `emission << 16 | type << 4 | dampening`, and [`DYNAMIC`]. The low 16 bits are
     /// what `light_chunk` stores per cell, so a cell costs 2 bytes and the
     /// flood fill never reads the (large) `cells` table.
@@ -65,6 +68,12 @@ pub struct LightTables {
     /// Any state is [`Cell::dynamic`]: without one, no chunk waits to be asked.
     dynamic: bool,
 }
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SectionStatus {
+    pub occupied: SectionMask,
+    pub fully_lit_from: Option<usize>,
+}
+
 impl LightTables {
     /// Dampening and emission only: every occlusion face is empty.
     pub fn new(facts: &BlockFacts) -> Self {
@@ -80,6 +89,9 @@ impl LightTables {
                     faces: [EMPTY; 6],
                 })
                 .collect(),
+            air_states: (0..facts.states.len())
+                .map(|id| facts.is_air(BlockStateId(id as u32)))
+                .collect(),
             occludes: vec![false, true, true, true],
             faces: 2,
             types: 1,
@@ -91,6 +103,57 @@ impl LightTables {
         tables.rebuild_cache();
         tables
     }
+    /// Publish the storage supported by non-air sections and gather the inputs
+    /// for initializing omitted layers in a light-correct saved chunk.
+    pub(crate) fn publish_section_status(
+        &self,
+        chunk: &mut Chunk,
+        shape: LevelShape,
+    ) -> SectionStatus {
+        let first = chunk.min_y() >> 4;
+        let mut status = SectionStatus::default();
+        chunk.light_support = SectionMask::EMPTY;
+        chunk.light_sky = shape.sky_light;
+        for s in 0..chunk.sections.len() {
+            if shape.has_section(first + s as i32)
+                && chunk.sections[s]
+                    .blocks
+                    .has(|id| !self.air_states.get(id as usize).copied().unwrap_or(true))
+            {
+                chunk.add_light_support(s);
+                status.occupied.insert(s);
+            }
+        }
+        if shape.sky_light
+            && chunk.light_layers.is_some_and(|m| m.saved_arrays.is_some())
+            && let Some(upper) = status.occupied.iter().last()
+        {
+            // `ChunkSkyLightSources.getHighestLowestSourceY` bounds the sections
+            // filled by `setLightEnabled`. With no occlusion the Java sentinel
+            // wraps on subtraction, so no already allocated layer is filled.
+            let mut above = [0; 256];
+            let lower = (shape.min_section() - first) as usize;
+            'sections: for s in (lower..=upper).rev() {
+                if !status.occupied.contains(s) {
+                    above.fill(0);
+                    continue;
+                }
+                let section = &chunk.sections[s];
+                for y in (0..16).rev() {
+                    for (xz, top) in above.iter_mut().enumerate() {
+                        let bottom = section.get(y * 256 + xz) as usize;
+                        if self.edge_occluded(*top, bottom) {
+                            status.fully_lit_from = Some(s + 2);
+                            break 'sections;
+                        }
+                        *top = bottom;
+                    }
+                }
+            }
+        }
+        status
+    }
+
     /// Build the packed per-cell info and the per-configuration blocking masks
     /// used by `light_chunk`'s flood fill.
     fn rebuild_cache(&mut self) {
@@ -226,6 +289,7 @@ impl LightTables {
     #[cfg(test)]
     fn from_parts(cells: Vec<Cell>, occludes: Vec<bool>, faces: usize) -> Self {
         let mut tables = Self {
+            air_states: (0..cells.len()).map(|id| id == 0).collect(),
             cells,
             occludes,
             faces,
@@ -845,14 +909,14 @@ fn pack_lighting(
 /// Move a worker's light into current sections, preserving later block/biome
 /// edits and immutable snapshots retained by other workers.
 pub fn apply_lighting(chunk: &mut Chunk, lights: Vec<Light>) {
-    for (section, light) in chunk.sections.iter_mut().zip(lights) {
+    for (s, light) in lights.into_iter().take(chunk.sections.len()).enumerate() {
         // A shared section already lit so stays as it is.
-        if let (Light::Uniform(a), Light::Uniform(b)) = (&section.light, &light)
+        if let (Light::Uniform(a), Light::Uniform(b)) = (&chunk.sections[s].light, &light)
             && a == b
         {
             continue;
         }
-        Arc::make_mut(section).light = light;
+        write_computed_light(chunk, s, light, None);
     }
     crate::chunk::share_uniform(&mut chunk.sections);
 }
@@ -861,8 +925,8 @@ pub fn apply_lighting(chunk: &mut Chunk, lights: Vec<Light>) {
 /// light changed and adds the cells that changed to `changed`.
 pub fn apply_relighting(chunk: &mut Chunk, lights: Vec<Light>, changed: &mut LightChanges) {
     changed.keyed(chunk.layout());
-    for (sy, (section, light)) in chunk.sections.iter_mut().zip(lights).enumerate() {
-        let old = &section.light;
+    for (sy, light) in lights.into_iter().take(chunk.sections.len()).enumerate() {
+        let old = &chunk.sections[sy].light;
         let classes = match (old, &light) {
             (Light::Uniform(a), Light::Uniform(b)) if a == b => continue,
             // (most sections of a chunk relit for a neighbour's edit keep their light: one comparison of the whole)
@@ -880,7 +944,82 @@ pub fn apply_relighting(chunk: &mut Chunk, lights: Vec<Light>, changed: &mut Lig
         };
         if classes != 0 {
             changed.add((chunk.x, sy as i32, chunk.z), classes);
-            Arc::make_mut(section).light = light;
+            write_computed_light(chunk, sy, light, Some(changed));
+        }
+    }
+}
+
+/// Publish computed sections bottom-up. Updating an inheriting section below `s` can then
+/// never affect the comparison between a later computed section and its pre-relight cache.
+fn write_computed_light(
+    chunk: &mut Chunk,
+    s: usize,
+    light: Light,
+    changed: Option<&mut LightChanges>,
+) {
+    let section = &mut chunk.sections[s];
+    let mut refresh = None;
+    if let Some(StoredLight {
+        masks: [sky, block],
+        ..
+    }) = &mut chunk.light_layers
+    {
+        // A relight can overwrite an inherited sky or absent block layer. Once computed,
+        // the changed layer is data to save and send in its own right.
+        let old = &section.light;
+        for (mask, bits, enabled) in [(&mut *sky, 0xF0, chunk.light_sky), (block, 0x0F, true)] {
+            if enabled
+                && !mask.contains(s + 1)
+                && (0..4096).any(|i| (old.get(i) ^ light.get(i)) & bits != 0)
+            {
+                mask.insert(s + 1);
+            }
+        }
+        if sky.contains(s + 1)
+            && !sky.contains(s)
+            && (s != 0 || chunk.pad_below.is_some())
+            && (0..256).any(|i| (old.get(i) ^ light.get(i)) & 0xF0 != 0)
+        {
+            refresh = Some((*sky, std::array::from_fn(|i| light.get(i) & 0xF0)));
+        }
+    }
+    Arc::make_mut(section).light = light;
+    if let Some((sky, row)) = refresh {
+        refresh_inherited_sky(chunk, s, sky, &row, changed);
+    }
+}
+
+/// Refresh the render cache down to the next stored sky layer without storing a new one.
+fn refresh_inherited_sky(
+    chunk: &mut Chunk,
+    s: usize,
+    sky: SectionMask,
+    row: &[u8; 256],
+    mut changed: Option<&mut LightChanges>,
+) {
+    for b in (0..=s).rev().take_while(|&b| !sky.contains(b)) {
+        let section = if b == 0 {
+            let Some(pad) = &mut chunk.pad_below else {
+                break;
+            };
+            pad
+        } else {
+            &mut chunk.sections[b - 1]
+        };
+        let old = &section.light;
+        let mut classes = 0;
+        for (i, &sky) in row.iter().enumerate() {
+            if old.get(i) & 0xF0 != sky {
+                // The same x/z cell changes on all 16 rows: low, middle and high Y.
+                classes |= 0b001_001_001 << LightChanges::class(i as i32 & 15, 0, (i >> 4) as i32);
+            }
+        }
+        if classes != 0 {
+            let data = Box::new(std::array::from_fn(|i| row[i & 255] | (old.get(i) & 15)));
+            Arc::make_mut(section).light = Light::packed(data);
+            if let Some(changed) = changed.as_deref_mut() {
+                changed.add((chunk.x, b as i32 - 1, chunk.z), classes);
+            }
         }
     }
 }
@@ -891,84 +1030,316 @@ fn nibble(layer: &[u8], i: usize) -> u8 {
     (layer[i >> 1] >> ((i & 1) * 4)) & 15
 }
 
-/// A column's light as vanilla stores it, two DataLayers per section (sky,
-/// block; `layers[i]` for section `i`, `None` where no layer is stored), into
-/// the sections' packed light, which then needs no light job. A missing sky
-/// layer repeats the bottom layer of the nearest stored one above it, and
-/// `above` (per `z << 4 | x`) above the highest
-/// (`SkyLightSectionStorage.getLightValue`); a missing block layer is dark.
+/// The packed render cache of two independently stored DataLayers. Missing sky repeats `above`.
+fn layers_light(sky: Option<&[u8]>, block: Option<&[u8]>, above: &[u8; 256]) -> Light {
+    // A DataLayer is already the resident `Light::Sky`/`Light::Block`
+    // layer: byte `i` holds block `2i` in its low nibble and `2i + 1` in its
+    // high one. Both nibbles of each byte must match for a layer to be
+    // uniform; only then is the whole section one value.
+    let uniform_layer = |layer: &[u8]| {
+        let first = layer[0];
+        (first & 15 == first >> 4 && layer.iter().all(|&v| v == first)).then_some(first & 15)
+    };
+    let copy_layer = |layer: &[u8]| {
+        let mut out = Box::new([0u8; 2048]);
+        out.copy_from_slice(layer);
+        out
+    };
+    let sky_uniform = sky.and_then(uniform_layer);
+    let sky_varies = match sky {
+        Some(_) => sky_uniform.is_none(),
+        None => above.iter().any(|&v| v != above[0]),
+    };
+    let block_uniform = block.and_then(uniform_layer);
+    let block_varies = block.is_some() && block_uniform.is_none();
+    let sky_first = sky.map_or(above[0], |layer| layer[0] & 15);
+    let block_first = block.map_or(0, |layer| layer[0] & 15);
+    // The stored layer decides the resident variant directly: expand
+    // only when both nibbles vary (which keeps `Light::Full`).
+    match (sky_varies, block_varies) {
+        (false, false) => Light::Uniform(sky_first << 4 | block_first),
+        (false, true) => Light::Block(copy_layer(block.expect("block layer")), sky_first),
+        (true, false) => {
+            let layer = match sky {
+                Some(layer) => copy_layer(layer),
+                // No stored sky: the same 256-byte bottom row over and
+                // over, packed two nibbles per byte.
+                None => {
+                    let mut layer = Box::new([0u8; 2048]);
+                    for row in layer.as_chunks_mut::<128>().0 {
+                        for (out, v) in row.iter_mut().zip(above.as_chunks::<2>().0.iter().cycle())
+                        {
+                            *out = v[0] | v[1] << 4;
+                        }
+                    }
+                    layer
+                }
+            };
+            Light::Sky(layer, block_first)
+        }
+        (true, true) => {
+            let mut data = Box::new([0u8; 4096]);
+            match (sky, block) {
+                (Some(sky), Some(block)) => {
+                    for ((pair, &s), &b) in
+                        data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
+                    {
+                        pair[0] = s << 4 | (b & 15);
+                        pair[1] = (s & 0xf0) | (b >> 4);
+                    }
+                }
+                (None, Some(block)) => {
+                    for (i, (pair, &b)) in data
+                        .as_chunks_mut::<2>()
+                        .0
+                        .iter_mut()
+                        .zip(block)
+                        .enumerate()
+                    {
+                        pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
+                        pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
+                    }
+                }
+                _ => unreachable!("both light kinds vary"),
+            }
+            Light::Full(data)
+        }
+    }
+}
+
+/// Unpack the bottom sky row used to fill sections with no named sky layer.
+fn bottom_sky(layer: &[u8], row: &mut [u8; 256]) {
+    for (pair, &s) in row.as_chunks_mut::<2>().0.iter_mut().zip(layer) {
+        *pair = [s & 15, s >> 4];
+    }
+}
+
+/// A column's two independently stored DataLayers (sky, block). `layers[b]` is the column's
+/// section `b - 1`, including the two pads (`LevelLightEngine.getMinLightSection`). `None`
+/// means absent; an explicitly empty layer is still stored. The dense render cache repeats
+/// the bottom sky row of the nearest stored layer above, or open sky above all stored layers
+/// (`SkyLightSectionStorage.getLightValue`). Missing block light is dark.
 pub fn light_from_layers<L: AsRef<[u8]>>(
     chunk: &mut Chunk,
     layers: &[(Option<L>, Option<L>)],
-    mut above: [u8; 256],
     sky_light: bool,
 ) {
+    hydrate_light(chunk, layers, sky_light, false);
+}
+
+/// Hydrate saved byte arrays. Unlike a packet, NBT does not list empty layers.
+pub fn light_from_saved_layers<L: AsRef<[u8]>>(
+    chunk: &mut Chunk,
+    layers: &[(Option<L>, Option<L>)],
+    sky_light: bool,
+) {
+    hydrate_light(chunk, layers, sky_light, true);
+}
+
+fn hydrate_light<L: AsRef<[u8]>>(
+    chunk: &mut Chunk,
+    layers: &[(Option<L>, Option<L>)],
+    sky_light: bool,
+    from_save: bool,
+) {
     let sections = chunk.sections.len();
-    for (si, (sky, block)) in layers.iter().enumerate().take(sections).rev() {
-        let sky = sky.as_ref().filter(|_| sky_light);
-        let section = Arc::make_mut(&mut chunk.sections[si]);
-        if sky.is_none() && block.is_none() && above.iter().all(|&v| v == above[0]) {
-            section.light = Light::Uniform(above[0] << 4);
+    let mut above = [15 * u8::from(sky_light); 256];
+    let mut stored = [SectionMask::EMPTY; 2];
+    for b in (0..sections + 2).rev() {
+        let (sky, block) = layers.get(b).map_or((None, None), |(sky, block)| {
+            (
+                sky.as_ref().filter(|_| sky_light).map(AsRef::as_ref),
+                block.as_ref().map(AsRef::as_ref),
+            )
+        });
+        if let Some(sky) = sky {
+            stored[0].insert(b);
+            bottom_sky(sky, &mut above);
+        }
+        if block.is_some() {
+            stored[1].insert(b);
+        }
+        if b == 0 || b == sections + 1 {
+            let slot = if b == 0 {
+                &mut chunk.pad_below
+            } else {
+                &mut chunk.pad_above
+            };
+            *slot = (sky.is_some() || block.is_some()).then(|| {
+                Arc::new(Section {
+                    light: layers_light(sky, block, &above),
+                    ..Section::default()
+                })
+            });
+        } else {
+            let section = Arc::make_mut(&mut chunk.sections[b - 1]);
+            section.light = layers_light(sky, block, &above);
             section.compact();
-            continue;
         }
-        let mut data = Box::new([0u8; 4096]);
-        for (i, packed) in data.iter_mut().enumerate() {
-            let s = sky.map_or(above[i & 255], |a| nibble(a.as_ref(), i));
-            let b = block.as_ref().map_or(0, |a| nibble(a.as_ref(), i));
-            *packed = s << 4 | b;
-        }
-        for (i, a) in above.iter_mut().enumerate() {
-            *a = data[i] >> 4;
-        }
-        section.light = Light::Full(data);
-        section.compact();
     }
+    chunk.light_layers = Some(StoredLight {
+        masks: stored,
+        saved_arrays: from_save.then_some(stored),
+    });
+    chunk.light_sky = sky_light;
     crate::chunk::share_uniform(&mut chunk.sections);
     chunk.lit = true;
     chunk.light_loaded = true;
 }
 
-/// A light update's layers (`LevelLightEngine.queueSectionData`): each one
-/// given replaces that kind of light in its section, the other kind stays.
-/// Returns the sections whose light changed.
+/// `LevelLightEngine.queueSectionData`: replace only the named layers. Rebuild the render cache
+/// below a changed sky layer until the next stored sky layer supplies its own bottom row.
+/// Returns the column sections whose light changed (the first or last for a changed pad).
 pub fn update_light_layers<L: AsRef<[u8]>>(
     chunk: &mut Chunk,
     layers: &[(Option<L>, Option<L>)],
     sky_light: bool,
 ) -> Vec<usize> {
-    let mut changed = Vec::new();
+    edit_light_layers(chunk, layers, SectionMask::EMPTY, sky_light)
+}
+
+/// `markNewInconsistencies`: drop layers whose last section-status support went away.
+pub(crate) fn remove_light_layers(chunk: &mut Chunk, removed: SectionMask) -> Vec<usize> {
+    edit_light_layers::<&[u8]>(chunk, &[], removed, chunk.light_sky)
+}
+
+fn edit_light_layers<L: AsRef<[u8]>>(
+    chunk: &mut Chunk,
+    layers: &[(Option<L>, Option<L>)],
+    removed: SectionMask,
+    sky_light: bool,
+) -> Vec<usize> {
     let sections = chunk.sections.len();
-    for (si, (sky, block)) in layers.iter().enumerate().take(sections) {
-        let sky = sky.as_ref().filter(|_| sky_light);
-        if sky.is_none() && block.is_none() {
+    let mut above = [15 * u8::from(sky_light); 256];
+    let mut stored = chunk
+        .light_layers
+        .map(|light| light.masks)
+        .unwrap_or_else(|| {
+            let dense = SectionMask::below(sections + 1).from(1);
+            [if sky_light { dense } else { SectionMask::EMPTY }, dense]
+        });
+    let mut changed = SectionMask::EMPTY;
+    let mut unchanged_source = None;
+    let mut refresh = false;
+    for b in (0..sections + 2).rev() {
+        let drop = removed.contains(b);
+        if drop {
+            refresh |= stored[0].contains(b);
+            stored[0].remove(b);
+            stored[1].remove(b);
+            if b == 0 || b == sections + 1 {
+                let (pad, adjacent) = if b == 0 {
+                    (&mut chunk.pad_below, 0)
+                } else {
+                    (&mut chunk.pad_above, sections - 1)
+                };
+                *pad = None;
+                changed.insert(adjacent);
+                continue;
+            }
+        }
+        let (sky, block) = layers.get(b).map_or((None, None), |(sky, block)| {
+            (
+                sky.as_ref().filter(|_| sky_light).map(AsRef::as_ref),
+                block.as_ref().map(AsRef::as_ref),
+            )
+        });
+        let old = chunk.light_section(b).map(|s| &s.light);
+        let has_sky = stored[0].contains(b);
+        if let Some(sky) = sky {
+            stored[0].insert(b);
+            bottom_sky(sky, &mut above);
+            unchanged_source = None;
+            refresh = old.is_none_or(|light| {
+                above
+                    .iter()
+                    .enumerate()
+                    .any(|(i, &a)| light.get(i) >> 4 != a)
+            });
+        } else if has_sky {
+            unchanged_source = Some(b);
+            refresh = false;
+        }
+        if block.is_some() {
+            stored[1].insert(b);
+        }
+        let inherited = !has_sky && (refresh || old.is_none());
+        if !drop && sky.is_none() && block.is_none() && (!inherited || old.is_none()) {
             continue;
         }
-        let old = &chunk.sections[si].light;
-        let mut data = Box::new([0u8; 4096]);
+        // An unchanged stored source need not be sampled for every section: gaps already
+        // cache its row, except for a pad we're materializing for the first time.
+        if inherited && let Some(from) = unchanged_source {
+            let source = &chunk
+                .light_section(from)
+                .expect("stored sky has a section")
+                .light;
+            for (i, a) in above.iter_mut().enumerate() {
+                *a = source.get(i) >> 4;
+            }
+        }
+        let mut data = Box::new([0; 4096]);
         for (i, packed) in data.iter_mut().enumerate() {
-            let was = old.get(i);
-            let s = sky.map_or(was >> 4, |a| nibble(a.as_ref(), i));
-            let b = block.as_ref().map_or(was & 15, |a| nibble(a.as_ref(), i));
-            *packed = s << 4 | b;
+            let previous = old.map_or(0, |light| light.get(i));
+            let sky = match sky {
+                Some(layer) => nibble(layer, i),
+                None if !sky_light => 0,
+                None if inherited => above[i & 255],
+                None => previous >> 4,
+            };
+            let block = block.map_or(if drop { 0 } else { previous & 15 }, |layer| {
+                nibble(layer, i)
+            });
+            *packed = sky << 4 | block;
         }
-        if (0..4096).all(|i| old.get(i) == data[i]) {
+        let light = Light::packed(data);
+        if old.is_some_and(|old| old.same_as(&light)) {
             continue;
         }
-        let section = Arc::make_mut(&mut chunk.sections[si]);
-        section.light = Light::Full(data);
-        section.compact();
-        changed.push(si);
+        match b {
+            _ if b == 0 || b == sections + 1 => {
+                let slot = if b == 0 {
+                    &mut chunk.pad_below
+                } else {
+                    &mut chunk.pad_above
+                };
+                *slot = Some(Arc::new(Section {
+                    light,
+                    ..Section::default()
+                }));
+                changed.insert(if b == 0 { 0 } else { sections - 1 });
+            }
+            _ => {
+                Arc::make_mut(&mut chunk.sections[b - 1]).light = light;
+                changed.insert(b - 1);
+            }
+        }
     }
-    changed
+    chunk.light_layers = Some(StoredLight {
+        masks: stored,
+        saved_arrays: chunk
+            .light_layers
+            .and_then(|light| light.saved_arrays)
+            .map(|arrays| arrays.map(|mask| mask & !removed)),
+    });
+    chunk.light_sky = sky_light;
+    changed.iter().collect()
 }
 
 /// Resident chunks the incremental relighter reads and writes.
 pub trait LightWorld {
     /// Section `s` of chunk (cx, cz), None unless the chunk is loaded and lit.
     fn section(&self, cx: i32, s: usize, cz: i32) -> Option<&Arc<Section>>;
-    /// Replace the light of a section `section` returned.
-    fn set_section_light(&mut self, cx: i32, s: usize, cz: i32, light: Light);
+    /// Replace the computed light of a section `section` returned, reporting inherited
+    /// sky changes below it. Writes within a column must go bottom-up.
+    fn set_section_light(
+        &mut self,
+        cx: i32,
+        s: usize,
+        cz: i32,
+        light: Light,
+        changed: &mut LightChanges,
+    );
     /// The column the world's chunks hold (its level's).
     fn layout(&self) -> ColumnLayout;
     /// What a part answered for the `dynamic_light` cell at (x, y, z), if its chunk holds an
@@ -993,9 +1364,16 @@ impl<S: std::hash::BuildHasher> LightWorld for HashMap<(i32, i32), Arc<Chunk>, S
             .filter(|c| c.lit)
             .map(|c| &c.sections[s])
     }
-    fn set_section_light(&mut self, cx: i32, s: usize, cz: i32, light: Light) {
+    fn set_section_light(
+        &mut self,
+        cx: i32,
+        s: usize,
+        cz: i32,
+        light: Light,
+        changed: &mut LightChanges,
+    ) {
         if let Some(chunk) = self.get_mut(&(cx, cz)) {
-            Arc::make_mut(&mut Arc::make_mut(chunk).sections[s]).light = light;
+            write_computed_light(Arc::make_mut(chunk), s, light, Some(changed));
         }
     }
 }
@@ -1112,19 +1490,22 @@ impl<'w> Region<'w> {
         light[i] = f(light[i]);
     }
     /// Store back the light of every section whose values changed.
-    fn finish(self) {
-        for slot in self.slots {
-            let Some(light) = slot.light else {
-                continue;
-            };
-            if (0..4096).all(|i| slot.section.light(i) == light[i]) {
-                continue;
-            }
-            // Drop the clone first so the world's section isn't copied.
-            drop(slot.section);
-            let (cx, s, cz) = slot.key;
+    fn finish(self, changed: &mut LightChanges) {
+        // Drop the snapshot section references before writing, so publishing doesn't copy them.
+        let mut writes: Vec<_> = self
+            .slots
+            .into_iter()
+            .filter_map(|slot| {
+                let light = slot.light?;
+                (0..4096)
+                    .any(|i| slot.section.light(i) != light[i])
+                    .then_some((slot.key, light))
+            })
+            .collect();
+        writes.sort_unstable_by_key(|(key, _)| key.1);
+        for ((cx, s, cz), light) in writes {
             self.world
-                .set_section_light(cx, s as usize, cz, Light::packed(light));
+                .set_section_light(cx, s as usize, cz, Light::packed(light), changed);
         }
     }
 }
@@ -1190,9 +1571,14 @@ impl LightChanges {
     pub fn is_empty(&self) -> bool {
         self.sections.is_empty()
     }
-    /// The sections (x, section index, z) holding changed cells.
+    /// The in-column sections (x, section index, z) holding changed cells.
+    /// Padding changes only affect mesh invalidation, not stored light updates.
     pub fn sections(&self) -> impl Iterator<Item = Pos> + '_ {
-        self.sections.keys().copied()
+        let range = 0..self.layout.sections() as i32;
+        self.sections
+            .keys()
+            .copied()
+            .filter(move |&(_, s, _)| range.contains(&s))
     }
     /// Every section (x, section index, z) whose cells lie within one block
     /// of a changed cell, section indexes outside the column left out (a
@@ -1314,7 +1700,7 @@ pub fn relight(
             scratch,
             changed,
         );
-        region.finish();
+        region.finish(changed);
         scratch.clear();
     });
 }
@@ -2220,11 +2606,11 @@ pub(crate) mod tests {
         // layers anywhere else; a block layer of 5 in section 2.
         let mut sky = vec![0x33u8; 2048];
         sky[..128].fill(0x77);
-        let mut layers: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)> = vec![(None, None); SECTIONS];
-        layers[10].0 = Some(sky);
-        layers[2].1 = Some(vec![0x55; 2048]);
+        let mut layers: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)> = vec![(None, None); SECTIONS + 2];
+        layers[11].0 = Some(sky);
+        layers[3].1 = Some(vec![0x55; 2048]);
         let mut chunk = Chunk::empty(0, 0);
-        light_from_layers(&mut chunk, &layers, [15; 256], true);
+        light_from_layers(&mut chunk, &layers, true);
         let at = |c: &Chunk, si: usize, i: usize| c.sections[si].light(i);
         assert!(chunk.lit && chunk.light_loaded);
         assert!(
@@ -2238,18 +2624,143 @@ pub(crate) mod tests {
         assert!(matches!(chunk.sections[0].light, Light::Uniform(0x70)));
 
         // A light update replaces one kind of light in the sections it names.
-        let mut update: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)> = vec![(None, None); SECTIONS];
-        update[2].1 = Some(vec![0; 2048]);
-        update[3].0 = Some(vec![0x77; 2048]);
+        let mut update: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)> = vec![(None, None); SECTIONS + 2];
+        update[3].1 = Some(vec![0; 2048]);
+        update[4].0 = Some(vec![0x77; 2048]);
         let changed = update_light_layers(&mut chunk, &update, true);
         assert_eq!(changed, vec![2]);
         assert!(matches!(chunk.sections[2].light, Light::Uniform(0x70)));
-        update[3].0 = Some(vec![0xFF; 2048]);
+
+        // The padding sections one past the column keep the layers they were sent, and a light
+        // update names them too (it reports the column section they touch when they change).
+        let mut layers: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)> = vec![(None, None); SECTIONS + 2];
+        layers[SECTIONS + 1].0 = Some(vec![0x44; 2048]);
+        layers[0].1 = Some(vec![0x22; 2048]);
+        let mut chunk = Chunk::empty(0, 0);
+        light_from_layers(&mut chunk, &layers, true);
+        assert_eq!(chunk.light(0, MIN_Y + SECTIONS as i32 * 16, 0), 0x40);
+        assert_eq!(chunk.light(0, MIN_Y - 1, 0), 0x42);
+        layers[0].1 = Some(vec![0x66; 2048]);
+        assert_eq!(update_light_layers(&mut chunk, &layers, true), vec![0]);
+        assert_eq!(chunk.light(0, MIN_Y - 1, 0), 0x46);
+    }
+
+    #[test]
+    fn changing_a_bottom_sky_row_refreshes_the_layers_that_inherit_it() {
+        let mut chunk = Chunk::empty(0, 0);
+        let mut layers = vec![(None, None); SECTIONS + 2];
+        layers[2].0 = Some(vec![0x22; 2048]);
+        layers[4].1 = Some(vec![0x99; 2048]);
+        layers[6].0 = Some(vec![0x33; 2048]);
+        light_from_layers(&mut chunk, &layers, true);
+        assert_eq!(chunk.light(0, MIN_Y + 3 * 16, 0), 0x39);
+
+        let mut sky = vec![0x33; 2048];
+        sky[..128].fill(0x74);
+        let mut update = vec![(None, None); SECTIONS + 2];
+        update[6].0 = Some(sky);
+        assert_eq!(update_light_layers(&mut chunk, &update, true), [2, 3, 4, 5]);
+        assert_eq!(chunk.light(0, MIN_Y + 3 * 16 + 15, 0), 0x49);
+        assert_eq!(chunk.light(1, MIN_Y + 3 * 16 + 15, 0), 0x79);
+        assert_eq!(chunk.light(0, MIN_Y, 0), 0x20);
+        assert_eq!(chunk.stored_light_layers(4), Some([false, true]));
+    }
+
+    #[test]
+    fn block_only_upper_pad_has_no_sky_in_a_no_sky_level() {
+        let mut chunk = Chunk::empty(0, 0);
+        let mut layers = vec![(None, None); SECTIONS + 2];
+        light_from_layers::<Vec<u8>>(&mut chunk, &layers, false);
+        layers[SECTIONS + 1].1 = Some(vec![0x66; 2048]);
         assert_eq!(
-            update_light_layers(&mut chunk, &update, false),
-            Vec::<usize>::new(),
-            "no sky storage"
+            update_light_layers(&mut chunk, &layers, false),
+            [SECTIONS - 1]
         );
+        assert_eq!(chunk.light(0, chunk.max_y(), 0), 6);
+        assert_eq!(chunk.light(0, chunk.max_y() + 16, 0), 0);
+        assert_eq!(chunk.stored_light_layers(SECTIONS + 1), Some([false, true]));
+    }
+
+    #[test]
+    fn a_computed_block_layer_replaces_an_omitted_one_without_storing_inherited_sky() {
+        let mut chunk = Chunk::empty(0, 0);
+        light_from_layers::<&[u8]>(&mut chunk, &[], true);
+        let mut lights = vec![Light::Uniform(0xF0); SECTIONS];
+        lights[0] = Light::Uniform(0xF4);
+        apply_relighting(&mut chunk, lights, &mut LightChanges::default());
+        assert_eq!(chunk.stored_light_layers(1), Some([false, true]));
+        assert_eq!(chunk.light(0, MIN_Y, 0), 0xF4);
+    }
+
+    #[test]
+    fn computed_sky_refreshes_inherited_light_without_storing_it() {
+        for incremental in [false, true] {
+            let mut chunk = Chunk::empty(0, 0);
+            let mut layers = vec![(None, None); SECTIONS + 2];
+            layers[3].0 = Some(vec![0x33; 2048]);
+            layers[0].1 = Some(vec![0x55; 2048]);
+            light_from_layers(&mut chunk, &layers, true);
+            assert_eq!(chunk.light(15, MIN_Y - 1, 0), 0x35);
+
+            let mut changed = LightChanges::default();
+            changed.keyed(chunk.layout());
+            if incremental {
+                let mut columns = crate::chunk_map::ChunkMap::default();
+                columns.insert((0, 0), Arc::new(chunk));
+                let mut region = Region::new(&mut columns);
+                region.update_light(15, MIN_Y + 32, 0, |_| 0x70);
+                // Visit the lower section later, with a block-only change based on the
+                // pre-relight sky. Publishing it must not turn that old sky into storage.
+                region.update_light(4, MIN_Y, 4, |_| 0x36);
+                region.finish(&mut changed);
+                chunk = Arc::unwrap_or_clone(columns.remove(&(0, 0)).unwrap());
+            } else {
+                let mut lights: Vec<_> = chunk.sections.iter().map(|s| s.light.clone()).collect();
+                let mut upper = lights[2].to_array();
+                upper[index(15, MIN_Y + 32, 0)] = 0x70;
+                lights[2] = Light::packed(upper);
+                let mut lower = lights[0].to_array();
+                lower[index(4, MIN_Y, 4)] = 0x36;
+                lights[0] = Light::packed(lower);
+                apply_relighting(&mut chunk, lights, &mut changed);
+            }
+
+            assert_eq!(chunk.light(15, MIN_Y - 1, 0), 0x75);
+            assert_eq!(chunk.light(14, MIN_Y - 1, 0), 0x35);
+            assert_eq!(chunk.light(15, MIN_Y - 17, 0), 0x70);
+            assert_eq!(chunk.light(15, MIN_Y, 0), 0x70);
+            assert_eq!(chunk.light(4, MIN_Y, 4), 0x36);
+            assert_eq!(chunk.stored_light_layers(0), Some([false, true]));
+            assert_eq!(chunk.stored_light_layers(1), Some([false, true]));
+            let mut dirtied_boundary_neighbour = false;
+            changed.dirty_sections(|section| dirtied_boundary_neighbour |= section == (1, 0, 0));
+            assert!(dirtied_boundary_neighbour);
+        }
+    }
+
+    #[test]
+    fn a_mixed_air_section_does_not_create_a_dark_border() {
+        use crate::world::World;
+        let mut tables = tables();
+        tables.air_states = vec![true, true, true, false];
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.set(0, 0, 0, 1); // cave air
+        chunk.set(1, 0, 0, 2); // void air, alongside ordinary air
+        let mut world = World::new(BlockStateId(0), 0);
+        tables.publish_section_status(&mut chunk, world.shape);
+        world.install_light_column(chunk);
+        assert_eq!(world.light(16, 0, 0), 0xF0);
+
+        Arc::make_mut(world.chunks.get_mut(&(0, 0)).unwrap()).set(0, 0, 0, 3);
+        assert_eq!(
+            world.light(16, 0, 0),
+            0xF0,
+            "unpublished blocks do not change light"
+        );
+        let mut chunk = (*world.chunks[&(0, 0)]).clone();
+        tables.publish_section_status(&mut chunk, world.shape);
+        world.install_light_column(chunk);
+        assert_eq!(world.light(16, 0, 0), 0);
     }
 
     #[test]

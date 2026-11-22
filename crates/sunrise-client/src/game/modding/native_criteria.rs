@@ -3,13 +3,13 @@
 //! pack names a trigger of the mod's (`mymod:pipe_connected`); the tree keeps
 //! it as it keeps vanilla's, and the mod fires it where its event happens.
 use super::{Game, advancements::item_view};
-use sunrise_client::advancements::{self as adv, EntityView};
 use mod_api::{
     CriterionContext, CriterionTest, CriterionTestError, Identifier, PlayerRef,
     TriggerCriterionError,
 };
 use serde_json::Value;
 use std::{cell::Cell, sync::Arc};
+use sunrise_client::advancements::{self as adv, EntityView};
 
 /// One open criterion of a mod's trigger, as the mod's test sees it.
 struct NativeCriterion<'a> {
@@ -54,8 +54,6 @@ impl Game<'_> {
     ///
     /// `test` is lent to this call only. A failed test stops further testing
     /// and reports `Test`; earlier matching criteria may already be granted.
-    /// Wasm's generated resource route exists, but a callback into the group
-    /// currently firing the trigger is refused by the runtime's reentry guard.
     pub(super) fn player_trigger_criterion(
         &mut self,
         player: PlayerRef,
@@ -105,6 +103,23 @@ impl Game<'_> {
         self.with_block_use_player(player, pos, |g| {
             g.trigger_block("minecraft:item_used_on_block", pos, original);
         })
+    }
+
+    /// The same consume_item criterion path food and potions use, in the player's level.
+    pub(super) fn player_trigger_consume_item(
+        &mut self,
+        player: PlayerRef,
+        stack: &sunrise_client::items::ItemStack,
+    ) -> Result<(), TriggerCriterionError> {
+        if !self.is_logical_server() {
+            return Err(TriggerCriterionError::NotServer);
+        }
+        let target = self
+            .player_handle_read(player)
+            .and_then(|_| self.native_entity_target(player.entity()))
+            .ok_or(TriggerCriterionError::PlayerUnavailable)?;
+        self.for_player(target, |g| g.trigger_item("minecraft:consume_item", stack))
+            .ok_or(TriggerCriterionError::PlayerUnavailable)
     }
 
     /// Resolve the player as `player_trigger_criterion` does, refuse an unloaded chunk, then
@@ -172,6 +187,8 @@ fn passes(
         origin: me.position,
         tool: None,
         block_pos: None,
+        target: None,
+        interacting: None,
     };
     Ok(test.test(&NativeCriterion { conditions, world })?
         && adv::conditions(&conditions["player"], &player, world))

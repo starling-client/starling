@@ -1,0 +1,24 @@
+ids = [
+    "method:prelude::AudioClientHost::open_audio_stream",
+    "trait:AudioStream",
+    "method:AudioStream::read",
+    "type:AudioRefusal.WorkerUnavailable",
+]
+why = "The mixer now pulls native PCM on demand through a single `AudioStream` interface (matching NeoForge's `SoundInstance.getStream`) instead of owning a separate push ring mode. All streams share the separate mod stream pool with the existing controls and spatial playback."
+migrate = """
+Move your generator, decoder or nonblocking buffer reader and its owned state into an implementation of \
+`AudioStream::read(&mut self, pcm: &mut [i16]) -> usize`. Replace `host.open_audio_stream(&spec)` and \
+its pushes with `host.open_audio_stream(&spec, Box::new(source))`. On the pull worker, `pcm` is zeroed \
+before each call; write up to `pcm.len() / channels` whole interleaved frames and return the frame count \
+(not the sample count). Return `0` to signal EOF so already-queued frames drain before the stream stops; \
+to emit temporary silence without ending the stream, return `n > 0` frames without writing to the zeroed \
+`pcm` slice. Returning more than `pcm.len() / channels` stops the stream immediately. Do bounded, \
+nonblocking work with no host or world borrow or calls back into the game. For an async or network \
+producer (such as proximity voice chat), own a bounded nonblocking buffer beside your `AudioStream` \
+implementation, push decoded frames into it from your producer thread, and drain frames from it in \
+`AudioStream::read`. Treat `AudioRefusal::WorkerUnavailable` like any other opening failure. If you \
+implement `AudioClientHost` in tests, update `open_audio_stream` to take the `Box<dyn AudioStream>` \
+argument.
+
+Returning zero drains already-queued PCM only after normal source retirement. An out-of-range read count stops the stream. A panic during read or source disposal is reported for that owner and stops the stream without draining its queued PCM; other owners still play.
+"""

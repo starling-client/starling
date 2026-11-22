@@ -1,8 +1,9 @@
-//! `player_inventory_slots` and `player_set_inventory_slot` against real LAN guests, through the
-//! public player handle.
+//! Reading and writing inventory slots against real LAN guests through the public player handle.
 
 use super::native_guest_turn_tests::with_guests;
-use mod_api::{Host, HostTransaction, ItemStack, PlayerDataRefusal, StackWriteError, prelude::*};
+use mod_api::{
+    Host, HostTransaction, InventoryView, ItemStack, PlayerDataRefusal, StackWriteError, prelude::*,
+};
 
 fn api_item(game: &super::Game<'_>, snbt: &str) -> Option<ItemStack> {
     let host: &dyn Host = game;
@@ -15,6 +16,13 @@ fn stack(game: &super::Game<'_>, snbt: &str) -> ItemStack {
 
 fn guest<'a>(game: &'a super::Game<'_>, conn: u32) -> &'a sunrise_client::lan::guest::Guest {
     game.lan.as_ref().unwrap().hub.guest(conn).unwrap()
+}
+
+// Rollback checks need an owned copy across the intervening write.
+fn snapshot(view: InventoryView<'_>) -> Vec<(u32, ItemStack)> {
+    view.iter()
+        .map(|(slot, stack)| (slot, stack.project().unwrap()))
+        .collect()
 }
 
 const BLADE: &str = r#"{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5,"minecraft:custom_name":"Blade","minecraft:custom_data":{husksync:1b}}}"#;
@@ -33,7 +41,12 @@ fn inventory_slots_are_read_and_written_by_vanillas_numbers() {
         let blade = stack(game, BLADE);
         let boots = stack(game, r#"{id:"minecraft:iron_boots",count:1}"#);
         let shield = stack(game, r#"{id:"minecraft:shield",count:1}"#);
-        assert_eq!(b.inventory_slots(game), Some(Vec::new()));
+        let body = stack(game, r#"{id:"minecraft:iron_horse_armor",count:1}"#);
+        let saddle = stack(game, r#"{id:"minecraft:saddle",count:1}"#);
+        assert_eq!(
+            b.with_inventory(game, |view| view.iter().next().is_none()),
+            Some(true)
+        );
         assert_eq!(b.set_inventory_slot(game, 8, Some(blade.clone())), Ok(()));
         assert_eq!(b.set_inventory_slot(game, 36, Some(boots.clone())), Ok(()));
         assert_eq!(b.set_inventory_slot(game, 40, Some(shield.clone())), Ok(()));
@@ -55,25 +68,71 @@ fn inventory_slots_are_read_and_written_by_vanillas_numbers() {
         for menu in [44, 8, 45] {
             assert_ne!(g.menu_slot(menu), g.menu_sent[menu], "menu slot {menu}");
         }
-        assert_eq!(
-            b.inventory_slots(game),
-            Some(vec![(8, blade.clone()), (36, boots), (40, shield)])
-        );
-        assert_eq!(
-            api_item(game, BLADE).as_ref(),
-            Some(&blade),
-            "damage, name and custom data survive the round trip"
-        );
-        // In another player's turn the first one is displaced, and still reached.
+        // Seed extra slots directly, independently of the API's numbered setter.
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .update_guest(13, |g| {
+                use sunrise_client::items::ItemStack as EngineStack;
+                use sunrise_items::equipment::{BODY, SADDLE};
+
+                g.inventory[35] = Some(EngineStack::new("minecraft:stone", 12));
+                g.equipment.set(
+                    BODY,
+                    Some(EngineStack::new("minecraft:iron_horse_armor", 1)),
+                );
+                g.equipment
+                    .set(SADDLE, Some(EngineStack::new("minecraft:saddle", 1)));
+            })
+            .unwrap();
+
+        b.with_inventory(game, |view| {
+            assert_eq!(
+                view.iter().map(|(slot, _)| slot).collect::<Vec<_>>(),
+                [8, 35, 36, 40, 41, 42],
+            );
+            for slot in [0, 7, 9, 37, 38, 39, 43, u32::MAX] {
+                assert!(view.get(slot).is_none(), "slot {slot}");
+            }
+            let named_blade = view.get(8).unwrap();
+            assert_eq!(
+                (
+                    named_blade.item(),
+                    named_blade.count(),
+                    named_blade.damage_component()
+                ),
+                (blade.item(), 1, Some(5))
+            );
+            assert_eq!(
+                named_blade.project().as_ref(),
+                Some(&blade),
+                "damage, name and custom data survive the round trip"
+            );
+            let main = view.get(35).unwrap();
+            assert_eq!(
+                (main.item(), main.count()),
+                (mod_api::__private::item_key("minecraft:stone").unwrap(), 12)
+            );
+            for (slot, expected) in [(36, &boots), (40, &shield), (41, &body), (42, &saddle)] {
+                assert_eq!(view.get(slot).unwrap().item(), expected.item());
+            }
+        })
+        .unwrap();
+
+        // A swapped-in acting guest and a parked guest are both reachable.
         game.as_guest(12, |game| {
             assert_eq!(a.set_inventory_slot(game, 39, Some(blade.clone())), Ok(()));
-            assert_eq!(a.inventory_slots(game), Some(vec![(39, blade.clone())]));
+            assert_eq!(
+                a.with_inventory(game, snapshot),
+                Some(vec![(39, blade.clone())])
+            );
             assert_eq!(b.set_inventory_slot(game, 8, None), Ok(()));
         })
         .unwrap();
         assert_eq!(guest(game, 13).inventory[8], None);
         assert_eq!(
-            a.inventory_slots(game),
+            a.with_inventory(game, snapshot),
             Some(vec![(39, blade)]),
             "39 is the head"
         );
@@ -107,7 +166,10 @@ fn each_inventory_refusal_has_its_own_name_and_writes_nothing() {
                 maximum: 64
             }))
         );
-        assert_eq!(b.inventory_slots(game), Some(Vec::new()));
+        assert_eq!(
+            b.with_inventory(game, |view| view.iter().next().is_none()),
+            Some(true)
+        );
         game.lan
             .as_mut()
             .unwrap()
@@ -119,8 +181,8 @@ fn each_inventory_refusal_has_its_own_name_and_writes_nothing() {
             Err(PlayerDataRefusal::Dead)
         );
         assert_eq!(
-            b.inventory_slots(game),
-            Some(Vec::new()),
+            b.with_inventory(game, |view| view.iter().next().is_none()),
+            Some(true),
             "a dead player is read, not written"
         );
         game.lan
@@ -142,7 +204,7 @@ fn each_inventory_refusal_has_its_own_name_and_writes_nothing() {
             b.set_inventory_slot(game, 0, Some(rock)),
             Err(PlayerDataRefusal::Stale)
         );
-        assert_eq!(b.inventory_slots(game), None);
+        assert_eq!(b.with_inventory(game, |_| ()), None);
     });
 }
 
@@ -193,12 +255,12 @@ fn inventory_write_aborts() {
         let new = stack(game, r#"{id:"minecraft:iron_boots",count:1}"#);
         let old = stack(game, r#"{id:"minecraft:stone",count:64}"#);
         player.set_inventory_slot(game, 36, Some(old)).unwrap();
-        let before = player.inventory_slots(game);
+        let before = player.with_inventory(game, snapshot).unwrap();
         let _: Result<(), ()> = game.transaction(|host, _| {
             player.set_inventory_slot(host, 36, Some(new)).unwrap();
             Err(())
         });
-        assert_eq!(player.inventory_slots(game), before);
+        assert_eq!(player.with_inventory(game, snapshot), Some(before));
     });
 }
 
@@ -210,12 +272,12 @@ fn ender_write_aborts() {
         let new = stack(game, r#"{id:"minecraft:iron_boots",count:1}"#);
         let old = stack(game, r#"{id:"minecraft:stone",count:64}"#);
         player.set_ender_chest_slot(game, 0, Some(old)).unwrap();
-        let before = player.ender_chest(game);
+        let before = player.with_ender_chest(game, snapshot).unwrap();
         let _: Result<(), ()> = game.transaction(|host, _| {
             player.set_ender_chest_slot(host, 0, Some(new)).unwrap();
             Err(())
         });
-        assert_eq!(player.ender_chest(game), before);
+        assert_eq!(player.with_ender_chest(game, snapshot), Some(before));
     });
 }
 
@@ -223,18 +285,28 @@ fn ender_write_aborts() {
 #[ignore = "daily"]
 fn data_write_aborts() {
     with_guests(|game| {
-        let player = game.players().server_players()[1];
-        let mut data = sunrise_core::nbt::Compound::new();
-        data.insert("old".into(), sunrise_core::nbt::Tag::Int(7));
-        player.set_persistent_data(game, data).unwrap();
-        let before = player.persistent_data(game);
+        use mod_api::{Compound, JavaString, Tag};
+        let players = game.players().server_players();
+        let (missing, player) = (players[0], players[1]);
+        let key = JavaString::from("old");
+        let old = Tag::Int(7);
+        player
+            .set_persistent_data_key(game, &key, Some(&old))
+            .unwrap();
         let _: Result<(), ()> = game.transaction(|host, _| {
-            player
-                .set_persistent_data(host, Default::default())
+            player.set_persistent_data_key(host, &key, None).unwrap();
+            missing
+                .set_persistent_data_key(host, &key, Some(&old))
                 .unwrap();
+            assert_eq!(player.persistent_data(host), Some(&Compound::new()));
+            assert_eq!(missing.persistent_data(host).unwrap().get(&key), Some(&old));
             Err(())
         });
-        assert_eq!(player.persistent_data(game), before);
+        assert_eq!(
+            player.persistent_data(game),
+            Some(&Compound::from([(key, old)]))
+        );
+        assert_eq!(missing.persistent_data(game), None);
     });
 }
 
@@ -247,27 +319,36 @@ fn give_write_aborts() {
         let old = stack(game, r#"{id:"minecraft:stone",count:64}"#);
         // An empty destination exercises rollback of a successful insertion, not only
         // suppression of the overflow drop from a completely full inventory.
-        assert_eq!(player.inventory_slots(game), Some(Vec::new()));
+        assert_eq!(
+            player.with_inventory(game, |view| view.iter().next().is_none()),
+            Some(true)
+        );
         let drops = game.dropped.len();
         let _: Result<(), ()> = game.transaction(|host, _| {
             player.give_stack(host, new.clone()).unwrap();
-            assert_eq!(player.inventory_slots(host), Some(vec![(0, new.clone())]));
+            assert_eq!(
+                player.with_inventory(host, snapshot),
+                Some(vec![(0, new.clone())])
+            );
             Err(())
         });
-        assert_eq!(player.inventory_slots(game), Some(Vec::new()));
+        assert_eq!(
+            player.with_inventory(game, |view| view.iter().next().is_none()),
+            Some(true)
+        );
         assert_eq!(game.dropped.len(), drops);
         for slot in 0..36 {
             player
                 .set_inventory_slot(game, slot, Some(old.clone()))
                 .unwrap();
         }
-        let before = player.inventory_slots(game);
+        let before = player.with_inventory(game, snapshot).unwrap();
         let drops = game.dropped.len();
         let _: Result<(), ()> = game.transaction(|host, _| {
             player.give_stack(host, new).unwrap();
             Err(())
         });
-        assert_eq!(player.inventory_slots(game), before);
+        assert_eq!(player.with_inventory(game, snapshot), Some(before));
         assert_eq!(game.dropped.len(), drops);
     });
 }
@@ -294,16 +375,16 @@ fn equipment_effects_wait_for_root() {
             player
                 .set_inventory_slot(host, 36, Some(new.clone()))
                 .unwrap();
-            let outer = player.inventory_slots(host);
+            let outer = player.with_inventory(host, snapshot).unwrap();
             let aborted: Result<(), ()> = host.transaction(|host, _| {
                 player.set_inventory_slot(host, 39, Some(inner)).unwrap();
                 Err(())
             });
             assert_eq!(aborted, Err(()));
-            assert_eq!(player.inventory_slots(host), outer);
+            assert_eq!(player.with_inventory(host, snapshot), Some(outer));
             Ok(())
         });
-        assert_eq!(player.inventory_slots(game), Some(vec![(36, new)]));
+        assert_eq!(player.with_inventory(game, snapshot), Some(vec![(36, new)]));
         assert_eq!(game.audio.capture.as_ref().unwrap().len(), 1);
     });
 }

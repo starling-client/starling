@@ -8,11 +8,14 @@ pub trait Hooks {
     /// canceled impact flies on from, so a game without such a mod pays
     /// nothing. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_hears_projectile_impacts",
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "hears",
         host = "read",
         neoforge = "none (Sunrise-only; NeoForge has no counterpart); an opt-in gate for a hook"
     )]
-    fn hears_projectile_impacts();
+    fn hears_projectile_impacts(hears: &mut bool);
 }

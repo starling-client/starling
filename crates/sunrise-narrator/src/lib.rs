@@ -103,9 +103,6 @@ impl GameNarrator {
             ..Self::new()
         }
     }
-    pub fn set_sink(&mut self, sink: Box<dyn Sink>) {
-        self.sink = Some(sink);
-    }
     pub fn set_status(&mut self, status: Status) {
         self.status = status;
     }
@@ -269,6 +266,11 @@ pub fn clear() {
 /// The last messages the narrator was asked to say, oldest first.
 pub fn recent() -> Vec<String> {
     narrator().recent()
+}
+/// Runs `f` on the game's narrator under one lock: a mod's line is checked
+/// against the option and the speech and said without another caller between.
+pub fn with_narrator<R>(f: impl FnOnce(&mut GameNarrator) -> R) -> R {
+    f(&mut narrator())
 }
 
 #[cfg(test)]

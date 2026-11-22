@@ -1,0 +1,3 @@
+ids = ["hook:client_attack_target"]
+why = "Version 2 preserves the committed client_pick target and hit point when it remains in the attack batch. Its client occlusion replacement is no longer undone by subscribing a no-op attack listener. Additional batch targets retain independent lifetime, attackability, reach, item-range and occlusion checks."
+migrate = "A no-op attack listener preserves the selected tick pick. Remove the selected entry to suppress it, or add other targets for separately validated attacks. Server validation is unchanged."

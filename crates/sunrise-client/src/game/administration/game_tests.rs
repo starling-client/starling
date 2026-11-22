@@ -1,4 +1,3 @@
-// game-module-cfg: always
 //! The game-test runner: `GameTestInfo`, `GameTestRunner`, `GameTestTicker`,
 //! `MultipleTestTracker`, `ReportGameListener`, `TestCommand.trackAndStartRunner`
 //! and the two test instance types (`BlockBasedTestInstance` and
@@ -11,6 +10,8 @@
 //! Not ported: test sequences (`GameTestSequence`: the built-in tests, only
 //! `always_pass`, do not use them), test environments other than the empty
 //! `all_of`, and removing the entities of a finished test.
+#[cfg(test)]
+use super::test_instances::TestDefSample;
 use super::{
     Dim, Game,
     commands::{Target, execute::Source},
@@ -19,6 +20,7 @@ use super::{
     test_environments::Activation,
     test_instances::TestDef,
 };
+use std::time::Instant;
 use sunrise_client::{
     containers::BlockEntity,
     lan::data::component_nbt,
@@ -27,115 +29,13 @@ use sunrise_client::{
     text::{self, Text},
 };
 use sunrise_core::bounding_box::BoundingBox;
+pub(super) use sunrise_gameplay::game_tests::{Retry, TestError, number};
 use sunrise_world::{
     level::flags,
     worldgen::structure::{Mirror, Rotation, StructureTemplate},
 };
-use std::time::Instant;
 
 type Pos = (i32, i32, i32);
-
-/// `GameTestAssertException`, `GameTestAssertPosException`,
-/// `GameTestTimeoutException` and `UnknownGameTestException`.
-#[derive(Clone, Debug)]
-pub(super) enum TestError {
-    Assert {
-        message: Text,
-        tick: i32,
-    },
-    AssertPos {
-        message: Text,
-        absolute: Pos,
-        relative: Pos,
-        tick: i32,
-    },
-    Timeout(Text),
-    Unknown(String),
-}
-
-fn number(v: i32) -> Text {
-    Text::literal(v.to_string())
-}
-
-impl TestError {
-    /// `getDescription`.
-    pub(super) fn description(&self) -> Text {
-        match self {
-            Self::Assert { message, tick } => {
-                Text::translate("test.error.tick", &[message.clone(), number(*tick)])
-            }
-            Self::AssertPos {
-                message,
-                absolute,
-                relative,
-                tick,
-            } => Text::translate(
-                "test.error.position",
-                &[
-                    message.clone(),
-                    number(absolute.0),
-                    number(absolute.1),
-                    number(absolute.2),
-                    number(relative.0),
-                    number(relative.1),
-                    number(relative.2),
-                    number(*tick),
-                ],
-            ),
-            Self::Timeout(message) => message.clone(),
-            Self::Unknown(reason) => {
-                Text::translate("test.error.unknown", &[Text::literal(reason.clone())])
-            }
-        }
-    }
-
-    /// `getMessage`: the description's characters (a timeout's own message,
-    /// an unknown error's reason).
-    fn message(&self) -> String {
-        match self {
-            Self::Unknown(reason) => reason.clone(),
-            other => other.description().plain(),
-        }
-    }
-}
-
-/// `RetryOptions`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Retry {
-    number_of_tries: i32,
-    halt_on_failure: bool,
-}
-
-impl Retry {
-    pub(super) fn new(number_of_tries: i32, halt_on_failure: bool) -> Self {
-        Self {
-            number_of_tries,
-            halt_on_failure,
-        }
-    }
-
-    /// `noRetries`.
-    pub(super) fn none() -> Self {
-        Self::new(1, true)
-    }
-
-    /// `unlimitedTries`.
-    fn unlimited(&self) -> bool {
-        self.number_of_tries < 1
-    }
-
-    /// `hasTriesLeft`.
-    fn has_tries_left(&self, attempts: i32, successes: i32) -> bool {
-        let has_failures = attempts != successes;
-        let has_more_attempts = self.unlimited() || attempts < self.number_of_tries;
-        has_more_attempts && (!has_failures || !self.halt_on_failure)
-    }
-
-    /// `hasRetries`.
-    fn has_retries(&self) -> bool {
-        self.number_of_tries != 1
-    }
-}
 
 /// What `runAtTickTime` runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,6 +179,7 @@ impl Info {
 pub(super) struct Batch {
     pub(super) index: i32,
     pub(super) environment: String,
+    dimension: String,
     pub(super) infos: Vec<Info>,
 }
 
@@ -331,33 +232,25 @@ struct Tracked {
     failed: bool,
 }
 
-/// `GameTestBatchFactory.fromGameTestInfo(size)`: one batch per environment
-/// (and dimension), `size` to a batch.
+/// `GameTestBatchFactory.fromGameTestInfo(size)`: partition each environment
+/// and definition dimension into batches of up to `size`.
 fn batch_infos(infos: Vec<Info>, size: usize) -> Vec<Batch> {
     let mut batches: Vec<Batch> = Vec::new();
-    let mut counts: Vec<(String, i32)> = Vec::new();
     for info in infos {
-        let env = info.def.environment.clone();
-        let open = batches
-            .iter_mut()
-            .find(|b| b.environment == env && b.infos.len() < size);
-        if let Some(batch) = open {
-            batch.infos.push(info);
-            continue;
-        }
-        let index = match counts.iter_mut().find(|(e, _)| *e == env) {
-            Some((_, n)) => {
-                *n += 1;
-                *n
+        let index = match batches.iter_mut().rev().find(|batch| {
+            batch.environment == info.def.environment && batch.dimension == info.def.dimension
+        }) {
+            Some(batch) if batch.infos.len() < size => {
+                batch.infos.push(info);
+                continue;
             }
-            None => {
-                counts.push((env.clone(), 0));
-                0
-            }
+            Some(full) => full.index + 1,
+            None => 0,
         };
         batches.push(Batch {
             index,
-            environment: env,
+            environment: info.def.environment.clone(),
+            dimension: info.def.dimension.clone(),
             infos: vec![info],
         });
     }
@@ -388,6 +281,7 @@ pub(super) fn verify_batches(infos: &[Info], mut next_id: impl FnMut() -> u32) -
             batches.push(Batch {
                 index: ordinal as i32,
                 environment: info.def.environment.clone(),
+                dimension: info.def.dimension.clone(),
                 infos: copies,
             });
         }
@@ -1450,11 +1344,12 @@ impl Game<'_> {
         if !passed && counted {
             self.game_tests.failed.push(info.key.clone());
         }
-        // The runner's batch listener.
+        // GameTestRunner's batch listener clears forces in testInfo.getLevel(),
+        // the level tick_test runs with in place.
         if passed {
             self.remove_test_barriers(info.pos);
         } else if halt {
-            self.release_forced_chunks();
+            self.streaming.clear_forced();
             self.clear_game_tests();
             return;
         }
@@ -1464,7 +1359,7 @@ impl Game<'_> {
         runner.batch_pending = runner.batch_pending.saturating_sub(1);
         if runner.batch_pending == 0 {
             let next = runner.current + 1;
-            self.release_forced_chunks();
+            self.streaming.clear_forced();
             self.run_batch(next);
         }
     }
@@ -1765,25 +1660,55 @@ pub(in crate::game) mod tests {
     pub(in crate::game) fn server_game<'a>(
         resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
     ) -> Game<'a> {
+        build_server_game(resources, false)
+    }
+
+    /// Puts the process-wide block namespaces back as it found them.
+    pub(in crate::game) struct Published(Option<Vec<String>>);
+    impl Drop for Published {
+        fn drop(&mut self) {
+            sunrise_client::save::level_mods::set_block_namespaces(self.0.take());
+        }
+    }
+
+    /// [`server_game`] over the loading screen's path, which leaves the
+    /// process-wide language and UI metadata alone (its rest tables load on a
+    /// worker joined here), with the block namespaces it publishes put back
+    /// when the returned guard drops. Bind the guard before the game.
+    pub(in crate::game) fn isolated_server_game<'a>(
+        resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    ) -> (Published, Game<'a>) {
+        let published = Published(sunrise_client::save::level_mods::block_namespaces());
+        (published, build_server_game(resources, true))
+    }
+
+    fn build_server_game<'a>(
+        resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+        menu: bool,
+    ) -> Game<'a> {
         use crate::game::*;
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES")
                 .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
         );
         let settings = Settings::default();
-        let loaded = load_resources(
+        let mut gui = None;
+        let mut loaded = load_resources(
             sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
             Vec::new(),
             None,
             &root,
             &settings,
             std::time::Instant::now(),
-            false,
+            menu,
             execution_role::ExecutionRole::IntegratedServer,
             &Progress::new(),
-            &mut |_, _| unreachable!(),
+            &mut |ui, _| gui = Some(ui),
         )
         .unwrap();
+        if let Some(rest) = loaded.rest_loader.take() {
+            rest.finish().unwrap();
+        }
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
         options.execution_role = execution_role::ExecutionRole::IntegratedServer;
@@ -1791,7 +1716,7 @@ pub(in crate::game) mod tests {
         let mut game = Game::new(
             res,
             loaded.pack,
-            loaded.gui.unwrap(),
+            gui.or(loaded.gui).unwrap(),
             options,
             settings,
             Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
@@ -1800,6 +1725,9 @@ pub(in crate::game) mod tests {
             None,
         )
         .unwrap();
+        game.reset_entity_residency();
+        game.native_lifecycle
+            .begin_open(mod_api::Authority::IntegratedServer);
         // Match the server fixture this replaces: commands can force this
         // resident column without starting terrain generation.
         game.world.chunks.insert(
@@ -1897,30 +1825,6 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    fn unknown_errors_report_their_reason() {
-        let error = TestError::Unknown("no such function".into());
-        assert_eq!(error.message(), "no such function");
-    }
-
-    #[test]
-    fn retry_options_decide_whether_a_test_runs_again() {
-        // noRetries: one try, no rerun.
-        assert!(!Retry::none().has_retries());
-        assert!(!Retry::none().has_tries_left(1, 1));
-        // 3 times, not until failed: runs on through failures.
-        let three = Retry::new(3, false);
-        assert!(three.has_retries());
-        assert!(three.has_tries_left(1, 0));
-        assert!(three.has_tries_left(2, 2));
-        assert!(!three.has_tries_left(3, 3));
-        // Until failed: stops at the first failure, and 0 means unlimited.
-        let until = Retry::new(0, true);
-        assert!(until.unlimited());
-        assert!(until.has_tries_left(50, 50));
-        assert!(!until.has_tries_left(50, 49));
-    }
-
-    #[test]
     fn a_retry_line_counts_runs_and_pads_to_53() {
         let info = info(true, 10, 0);
         let line = retry_line(&info, Retry::new(5, false), 2, 1, false);
@@ -1948,12 +1852,12 @@ pub(in crate::game) mod tests {
 #[cfg(test)]
 mod completed_test_coordinate_feedback_tests {
     use super::*;
+    use std::sync::Arc;
     use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
     use sunrise_core::geometry::Vec3;
-    use std::sync::Arc;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn actual_completed_test_retains_player_source_for_coordinate_feedback() {
         let mut resources = None;
         let mut game = tests::server_game(&mut resources);
@@ -2122,7 +2026,7 @@ mod registered_game_test_tests {
         }
     }
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn registered_game_tests_report_pass_failure_and_unknown_in_real_level() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.options.dedicated = Some(Vec::new());

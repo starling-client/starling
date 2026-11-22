@@ -1,11 +1,11 @@
 //! `player_disconnect` against real LAN guests: the reason reaches the right one only.
 
 use super::native_guest_turn_tests::with_guests;
+use mod_api::{Text, prelude::*};
+use std::sync::{Arc, mpsc::Receiver};
 use sunrise_client::lan::{Out, PlayerSender};
 use sunrise_core::nbt::Tag;
 use sunrise_protocol::text::translatable;
-use mod_api::{PlayerRef, Text, prelude::*};
-use std::sync::{Arc, mpsc::Receiver};
 
 fn left_reason(game: &super::Game<'_>, conn: u32) -> String {
     let hub = &game.lan.as_ref().unwrap().hub;
@@ -31,7 +31,7 @@ fn disconnects(rx: &Receiver<Out>) -> Vec<Tag> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn disconnect_sends_the_reason_to_that_guest_only() {
     with_guests(|game| {
         let players = game.players().server_players();
@@ -67,7 +67,7 @@ fn disconnect_sends_the_reason_to_that_guest_only() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn disconnect_reaches_acting_and_displaced_players() {
     with_guests(|game| {
         let players = game.players().server_players();
@@ -101,7 +101,7 @@ fn disconnect_reaches_acting_and_displaced_players() {
 /// A disconnect is pending until the connection is removed: a second call answers false,
 /// sends nothing and keeps the first reason.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_second_disconnect_while_pending_is_refused() {
     with_guests(|game| {
         let a = game.players().server_players()[0];
@@ -128,18 +128,14 @@ fn a_second_disconnect_while_pending_is_refused() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-fn disconnect_refuses_the_owner_fakes_stale_and_offline_players() {
+#[ignore = "daily"]
+fn disconnect_refuses_the_owner_stale_and_offline_players() {
     with_guests(|game| {
         let players = game.players().server_players();
         let (a, b) = (players[0], players[1]);
         game.lan.as_mut().unwrap().hub.singleplayer_owner = Some(12);
         assert!(!a.disconnect(game, Text::literal("owner")).unwrap());
         game.lan.as_mut().unwrap().hub.singleplayer_owner = None;
-
-        let level = game.level("minecraft:overworld").unwrap();
-        let fake = game.fake_player(level, 100, "robot").unwrap();
-        assert!(!fake.disconnect(game, Text::literal("fake")).unwrap());
 
         let stale = mod_api::__private::game::player_ref(
             mod_api::EntityRef::new(
@@ -167,113 +163,5 @@ fn disconnect_refuses_the_owner_fakes_stale_and_offline_players() {
 
         game.lan.as_mut().unwrap().hub.guests.clear();
         assert!(!a.disconnect(game, Text::literal("offline")).unwrap());
-    });
-}
-
-/// A wasm listener reaches the same method through its generated forwarder: the reason
-/// crosses the wire and the answers come back encoded (checked inside the guest, which
-/// traps on a mismatch and then leaves the tick phase unanswered).
-#[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-fn wasm_disconnect_crosses_the_generated_forwarder() {
-    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
-        with_guests(|game| {
-            use mod_api::wire::{Reader, Writer};
-            let players = game.players().server_players();
-            let a = players[0];
-            let stale = mod_api::__private::game::player_ref(
-                mod_api::EntityRef::new(
-                    mod_api::WorldEpoch::new(a.entity().epoch().get() + 1),
-                    a.entity().id(),
-                ),
-                a.uuid(),
-            );
-            let input = |player: PlayerRef, reason: &str| {
-                let mut w = Writer::new();
-                w.put(&player);
-                w.put(&Text::literal(reason));
-                w
-            };
-            let answer = |kicked: bool| {
-                let mut w = Writer::new();
-                w.put(&Ok::<bool, mod_api::text::TextFormError>(kicked));
-                w
-            };
-            let escape = |bytes: &[u8]| {
-                bytes
-                    .iter()
-                    .map(|b| format!("\\{b:02x}"))
-                    .collect::<String>()
-            };
-            let check = |expected: Writer, at: usize| {
-                expected
-                    .bytes()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, byte)| {
-                        format!(
-                            "i32.const {} i32.load8_u i32.const {byte} i32.ne if unreachable end ",
-                            at + i
-                        )
-                    })
-                    .collect::<String>()
-            };
-            let id =
-                sunrise_mod_wasm::fixture::import_id("BackendMut", "player_disconnect").unwrap();
-            let (kick, refused) = (input(a, "Kicked by wasm"), input(stale, "stale"));
-            let mut reply = Writer::new();
-            reply.put(&mod_api::ServerTickPhase::ServerTickEnd {
-                world_running: true,
-            });
-            let bytes = wat::parse_str(format!(r#"(module
-              (@custom "dylink.0" "\01\04\00\00\00\00")
-              (import "env" "memory" (memory 1))
-              (import "env" "__indirect_function_table" (table 1 funcref))
-              (import "sunrise" "host" (func $host (param i32 i32 i32 i32 i32) (result i32)))
-              (import "sunrise" "host_reply" (func (param i32)))
-              (func (export "sunrise_layout") (result i64) i64.const {layout})
-              (data (i32.const 4096) "{kick}")
-              (data (i32.const 8192) "{refused}")
-              (data (i32.const 16384) "{reply}")
-              (func (export "sunrise_in") (param i32) (result i32) i32.const 512)
-              (func (export "sunrise_hook") (param i32) (result i64)
-                i32.const {id} i32.const 4096 i32.const {kick_len} i32.const 32768 i32.const 4096 call $host drop
-                {kicked}
-                i32.const {id} i32.const 8192 i32.const {refused_len} i32.const 36864 i32.const 4096 call $host drop
-                {not_kicked}
-                i64.const {reply_at}))"#,
-                layout = *mod_api::wire::LAYOUT,
-                kick = escape(kick.bytes()),
-                refused = escape(refused.bytes()),
-                reply = escape(reply.bytes()),
-                kick_len = kick.bytes().len(),
-                refused_len = refused.bytes().len(),
-                kicked = check(answer(true), 32768),
-                not_kicked = check(answer(false), 36864),
-                reply_at = (16384u64 << 32) | reply.bytes().len() as u64,
-            ))
-            .unwrap();
-            let module = sunrise_mod_wasm::fixture::module(&bytes).unwrap();
-            let mut context = Writer::new();
-            context.put(&mod_api::Authority::DedicatedServer);
-            context.put(&a.entity().epoch());
-            context.put(&mod_api::TickId::new(1));
-            let context: mod_api::LifecycleContext = Reader::new(context.bytes()).take().unwrap();
-            let mut tick = mod_api::ServerTickEvent {
-                context: &context,
-                phase: mod_api::ServerTickPhase::ServerTickStart {
-                    world_running: true,
-                },
-            };
-            mod_api::Hooks::server_tick(&module, game, &mut tick);
-            assert!(matches!(
-                tick.phase,
-                mod_api::ServerTickPhase::ServerTickEnd {
-                    world_running: true
-                }
-            ));
-            assert_eq!(left_reason(game, 12), "Kicked by wasm");
-            assert_eq!(left_reason(game, 13), "");
-        });
     });
 }

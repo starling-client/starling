@@ -13,11 +13,12 @@ pub trait Hooks {
     /// state a part listens to is recorded; with no such part, one table lookup per falling
     /// block per tick. Diverges from upstream: new hook.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "block",
         key = "state",
         neoforge = "IFallableExtension.fallingTick"
     )]
-    fn falling_tick();
+    fn falling_tick(state: BlockState, pos: BlockPos, entity: EntityRef);
 }

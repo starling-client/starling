@@ -11,11 +11,16 @@ pub trait Hooks {
     /// the anvil, the grindstone, the enchanting table, saves and the network
     /// keep the stack's own component. Asked on every such read, often many
     /// times a tick, on the server and on a client (its tooltip modifiers).
+    /// A client without this mod keeps its vanilla tooltip; server gameplay uses the modded levels.
     #[hook(
         side = "both",
         contract = "listen",
         neoforge = "GetEnchantmentLevelEvent",
         target = "mod_api::item::enchantments::native_get_enchantment_level"
     )]
-    fn get_enchantment_level();
+    fn get_enchantment_level(
+        stack: &ItemStack,
+        target: Option<&Identifier>,
+        enchantments: &mut ItemEnchantments,
+    );
 }

@@ -1,0 +1,18 @@
+# The daily GPU tests of sunrise-render-shaderpack (README.md).
+# Rows: PACKAGE TEST TARGET daily gpu, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-render-shaderpack pack_atlas::tests::animated_stitched_material_updates_only_its_rectangle lib daily gpu
+sunrise-render-shaderpack pack_atlas::tests::layers_land_in_their_cells lib daily gpu
+sunrise-render-shaderpack pack_atlas::tests::stitched_material_maps_share_colour_rectangles lib daily gpu
+sunrise-render-shaderpack pack_atlas::tests::stitched_sprites_keep_their_own_size_and_padding lib daily gpu
+sunrise-render-shaderpack pack_atlas::tests::terrain_inputs_respects_separate_ao lib daily gpu
+sunrise-render-shaderpack pack_center_depth::tests::the_centre_depth_comes_back lib daily gpu
+sunrise-render-shaderpack pack_entities::gpu_span_tests::a_boats_water_patch_draws_depth_only lib daily gpu
+sunrise-render-shaderpack pack_entities::gpu_span_tests::end_portal_faces_reach_the_shadow_pass_with_their_block_entity lib daily gpu
+sunrise-render-shaderpack pack_entities::gpu_span_tests::posed_and_cpu_draws_keep_offsets_uniforms_and_special_fallbacks lib daily gpu
+sunrise-render-shaderpack pack_post::tests::a_composite_program_blends_onto_its_buffer lib daily gpu
+sunrise-render-shaderpack pack_post::tests::a_custom_texture_over_a_buffer_ends_when_its_stage_flips_it lib daily gpu
+sunrise-render-shaderpack pack_post::tests::a_png_under_a_name_of_its_own_is_not_bound lib daily gpu
+sunrise-render-shaderpack pack_post::tests::a_shader_compiler_panic_skips_the_pass lib daily gpu
+sunrise-render-shaderpack pack_post::tests::an_image_without_an_entry_reads_zero lib daily gpu
+sunrise-render-shaderpack pack_post::tests::pipelines_compile_together_and_a_refused_one_is_named lib daily gpu
+sunrise-render-shaderpack pack_timing::tests::counters_see_the_overdraw_that_draw_order_makes lib daily gpu

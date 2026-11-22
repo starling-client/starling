@@ -1,0 +1,17 @@
+id = "fnr_shared_tip"
+name = "Function replacement check: a mod depending on two mods that use the same crates.io crate"
+version = "0.1.0"
+description = "fn-replace: links itoa once although both of its dependencies use it too (sunrise-org/sunrise#1379)"
+authors = []
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+
+[dependencies]
+fnr_shared_left = "^0.1"
+fnr_shared_right = "^0.1"
+
+[native]
+game = "26.3"
+sunrise = "HEAD"
+mixins = "MIXINS"

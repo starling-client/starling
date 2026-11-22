@@ -5,11 +5,11 @@ use super::{
     json::{self, Json},
     properties::parse_uuid,
 };
+use std::{cmp::Ordering, path::PathBuf};
 use sunrise_core::java_hash_map::{JavaHashMap, JavaKey};
 use sunrise_core::random::java_string_hash;
 use sunrise_java_properties::{civil_from_days, days_from_civil, now_millis};
 use sunrise_protocol::crypto::uuid_string;
-use std::{cmp::Ordering, path::PathBuf};
 
 /// A map key: a Java String.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -505,6 +505,27 @@ pub(crate) fn read_utf8(file: &std::path::Path) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whitelist_accepts_java_uuid_digits_and_skips_overflowing_rows() {
+        let mut whitelist = WhiteList::new("/nonexistent/whitelist.json");
+        whitelist
+            .load_str(
+                r#"[
+                    {"uuid":"d2Acd4F-０ａ-adB1-ED8-fB5","name":"Unicode"},
+                    {"uuid":"ffffffffffffffff-0-0-0-0","name":"Overflow"}
+                ]"#,
+            )
+            .unwrap();
+        let entries = whitelist.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].user.name, "Unicode");
+        assert_eq!(
+            entries[0].user.id,
+            0x0d2a_cd4f_000a_adb1_0ed8_0000_0000_0fb5
+        );
+    }
+
     #[test]
     fn saves_like_gson() {
         let mut ops = OpList::new("/nonexistent/ops.json");

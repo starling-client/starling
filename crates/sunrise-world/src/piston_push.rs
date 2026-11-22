@@ -209,16 +209,6 @@ pub fn fix_within_piston_base(
     }
 }
 
-/// `PistonMovingBlockEntity.getCollisionRelatedBlockState` uses the moved state
-/// unless a source piston is retracting, where it shows a piston head instead.
-/// The state itself comes from [`PistonBlockBindings::collision_related_state`].
-///
-/// [`PistonBlockBindings::collision_related_state`]:
-///     crate::piston_shape::PistonBlockBindings::collision_related_state
-pub fn uses_moved_state(piston: MovingPistonState) -> bool {
-    piston.extending || !piston.source
-}
-
 /// `moveCollidedEntities`' slime bounce: a slime block sets the velocity along
 /// the movement axis to that direction's step, leaving the other axes.
 pub fn bounce_velocity(movement: Direction, velocity: Vec3) -> Vec3 {
@@ -232,17 +222,6 @@ pub fn bounce_velocity(movement: Direction, velocity: Vec3) -> Vec3 {
         Direction::North => velocity.z = -1.0,
     }
     velocity
-}
-
-/// `Entity.getPistonPushReaction() == PushReaction.IGNORE_ENTITY`.
-///
-/// `Marker`, `Interaction`, `Display`, `AreaEffectCloud` and
-/// `OminousItemSpawner` return `IGNORE_ENTITY`, and an armor stand does when it
-/// is a marker. Sunrise gives those kinds no pushed body, so a caller that has
-/// no box to push never reaches the maths above; this names the predicate for
-/// the kinds that do have one.
-pub fn ignores_push(marker: bool) -> bool {
-    marker
 }
 
 #[cfg(test)]

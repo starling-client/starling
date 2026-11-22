@@ -2,7 +2,7 @@
 name = "sunrise-telemetry-server"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "PolyForm-Shield-1.0.0"
 rust-version = "1.90"
 publish = false
 description = "Receives opt-in data collection batches, keeps them compactly in SQLite and serves anonymous totals"
@@ -12,6 +12,7 @@ description = "Receives opt-in data collection batches, keeps them compactly in 
 
 [dependencies]
 sunrise-telemetry = { path = "../sunrise-telemetry", default-features = false }
+sunrise-addresses = { path = "../sunrise-addresses" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 # SQLite built in: one file on a small volume is the whole database.

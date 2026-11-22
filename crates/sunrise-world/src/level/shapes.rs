@@ -51,6 +51,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         {
             return new;
         }
+        if self.b.data(state).declared_waterlogged {
+            self.waterlogged_tick(state, pos);
+        }
+        if self.b.data(state).declared_vegetation && !self.can_survive(state, pos) {
+            return self.b.air();
+        }
         self.update_shape_at(0, state, pos, direction, neighbour_pos, neighbour)
     }
 
@@ -502,7 +508,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     sup!()
                 } else {
                     let other = self.rel_state(pos, dir.opposite());
-                    let in_wall = b.in_set(nstate, &t.walls) || b.in_set(other, &t.walls);
+                    let in_wall = self.fence_gate_in_wall(nstate) || self.fence_gate_in_wall(other);
                     table.set_bool(state, p.in_wall, in_wall)
                 }
             }
@@ -575,7 +581,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
             Class::HangingMoss => {
                 let above_state = self.above_state(pos);
-                if !(b.multiface_can_attach(above_state, Direction::Up)
+                if !(self.multiface_can_attach_at(above(pos), Direction::Up)
                     || b.is_block(above_state, block))
                 {
                     self.schedule_tick(pos, block, 1);
@@ -645,7 +651,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 {
                     air
                 } else if self.multiface_has_face(state, dir)
-                    && !b.multiface_can_attach(nstate, dir)
+                    && !self.multiface_can_attach_at(rel(pos, dir), dir)
                 {
                     let removed = table.set_bool(state, self.direction_prop(dir), false);
                     if Direction::ALL
@@ -702,7 +708,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             Class::Repeater => {
                 if dir == Direction::Down && !self.can_support_rigid_block_on(npos, nstate) {
                     air
-                } else if axis_of(dir) != axis_of(b.facing(state)) {
+                } else if !self.level.is_client_side() && axis_of(dir) != axis_of(b.facing(state)) {
                     let locked = self.diode_is_locked(pos, state);
                     table.set_bool(state, p.locked, locked)
                 } else {
@@ -979,6 +985,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             vanilla,
         )
     }
+    /// The neighbour decides only the gate's wall height, not wall connections.
+    pub(crate) fn fence_gate_in_wall(&self, state: BlockStateId) -> bool {
+        self.level
+            .fence_gate_in_wall(state)
+            .unwrap_or_else(|| self.b.in_set(state, &self.b.tags.walls))
+    }
+
     /// `WallBlock.connectsTo` for the wall `wall` at `pos`, then the hook.
     pub(crate) fn wall_connects_to(
         &self,
@@ -1349,7 +1362,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             Direction::West,
         ] {
             let key = self.direction_prop(direction);
-            let supported = b.multiface_can_attach(self.rel_state(pos, direction), direction);
+            let supported = self.multiface_can_attach_at(rel(pos, direction), direction);
             let mut side = if supported {
                 if create_sides {
                     "low"

@@ -3,11 +3,11 @@ use crate::{
     net::{PreparedPayload, queued_writer::QueuedWriter},
     raw_payloads::{Incoming, Transport},
 };
+use mod_api::{PayloadId, PayloadSendError};
+use std::sync::Arc;
 use sunrise_protocol::{
     connection::Connection, packets::configuration as cfg, payload_negotiation::Phase,
 };
-use mod_api::{PayloadId, PayloadSendError};
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ConfigSender {
@@ -38,6 +38,14 @@ impl ConfigSender {
         self.transport.close();
         self.writer
             .disconnect(cfg::Clientbound::Disconnect(cfg::Disconnect { reason }).encode());
+    }
+    #[cfg(test)]
+    pub(crate) fn test_sender(transport: Arc<Transport>) -> (Self, Connection) {
+        let (peer, server) = sunrise_protocol::connection::Pipe::pair();
+        let mut server = Connection::local(server);
+        let peer = Connection::local(peer);
+        let writer = QueuedWriter::new(server.writer.take()).unwrap();
+        (Self { writer, transport }, peer)
     }
 }
 
@@ -86,6 +94,7 @@ pub(super) struct ConfigIo<'a> {
     events: crate::net::ingress::Producer<super::NetEvent>,
     handed_off: bool,
     pub channels: EngineChannels,
+    configuration_session: Option<std::sync::Weak<super::configuration_tasks::Session>>,
 }
 impl<'a> ConfigIo<'a> {
     pub fn new(
@@ -107,13 +116,36 @@ impl<'a> ConfigIo<'a> {
             events,
             handed_off: false,
             channels: EngineChannels::default(),
+            configuration_session: None,
         })
+    }
+    pub(super) fn set_configuration_session(
+        &mut self,
+        session: std::sync::Weak<super::configuration_tasks::Session>,
+    ) {
+        self.configuration_session = Some(session);
+    }
+    pub(super) fn clear_configuration_session(&mut self) {
+        self.configuration_session = None;
     }
     pub fn send(&mut self, body: &[u8]) -> sunrise_protocol::Result<()> {
         match &self.sender {
             Some(sender) => sender.writer.send(body),
             None => self.connection.send(body),
         }
+    }
+    /// Give configuration tasks the same writer used by application payload replies.
+    pub(super) fn task_sender(
+        &mut self,
+        transport: Arc<Transport>,
+    ) -> sunrise_protocol::Result<ConfigSender> {
+        if self.sender.is_none() {
+            self.sender = Some(ConfigSender {
+                writer: QueuedWriter::new(self.connection.writer.take())?,
+                transport,
+            });
+        }
+        Ok(self.sender.as_ref().unwrap().clone())
     }
     /// Asks a Sunrise-branded client how many levels besides its own it can view.
     pub fn ask_viewed_levels(&mut self) -> sunrise_protocol::Result<()> {
@@ -144,10 +176,14 @@ impl<'a> ConfigIo<'a> {
             .map_err(|error| error.to_string())?
         {
             crate::raw_payloads::Classified::Other(payload) => Ok(Some(payload)),
-            // Raw channels are play-only: configuration never classifies one.
-            crate::raw_payloads::Classified::Raw(_) => Ok(None),
+            crate::raw_payloads::Classified::Skipped | crate::raw_payloads::Classified::Raw(_) => {
+                Ok(None)
+            }
             crate::raw_payloads::Classified::Application(incoming) => {
-                let endpoint = crate::raw_payloads::Endpoint::configuration(sender.clone());
+                let endpoint = crate::raw_payloads::Endpoint::configuration(
+                    sender.clone(),
+                    self.configuration_session.clone(),
+                );
                 crate::raw_payloads::dispatch(
                     incoming,
                     endpoint.clone(),

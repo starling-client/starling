@@ -13,8 +13,8 @@ use crate::{
     settings_shell::{self as shell, Group, Output, Row, Sheet, Value},
     text::Text,
 };
-use sunrise_shader_api::{OptionKind, PageItem};
 use std::collections::BTreeMap;
+use sunrise_shader_api::{OptionKind, PageItem};
 
 /// A page of the screen: the pack list, or screen `.0` of the picked pack (`screens`, 0 its
 /// main one).
@@ -438,7 +438,7 @@ fn row(item: Item, s: &Settings, screens: &[PackScreen]) -> Row<Item> {
     let value = match (item, switch(item, s), slider(item, s), text) {
         (_, Some(on), ..) => Value::Switch(on),
         (_, None, Some(position), Some(text)) => Value::Slider {
-            position,
+            position: f64::from(position),
             steps: slider_steps(item, s),
             text,
         },
@@ -622,10 +622,11 @@ impl shell::Screen for ShaderScreen {
                 let Some(p) = s.shader_packs.get(usize::from(i)) else {
                     return Vec::new();
                 };
-                s.sunrise.shader_pack = if s.sunrise.shader_pack == p.key {
-                    String::new()
+                let key = p.key.clone();
+                if s.sunrise.shader_pack == key {
+                    s.set_shader_pick("");
                 } else {
-                    p.key.clone()
+                    s.set_shader_pick(&key);
                 };
                 // A pack starts on Auto (the empty profile) and lists its own profiles.
                 s.sunrise.shader_profile.clear();
@@ -726,12 +727,12 @@ impl shell::Screen for ShaderScreen {
         }
     }
     /// A slider moves an option to the value nearest it.
-    fn slide(&mut self, s: &mut Settings, item: Item, position: f32) {
+    fn slide(&mut self, s: &mut Settings, item: Item, position: f64) {
         let Item::Option(i) = item else {
             return;
         };
         if let Some((p, _)) = native(s) {
-            if s.shader_packs[p].set_slider_position(usize::from(i), position) {
+            if s.shader_packs[p].set_slider_position(usize::from(i), position as f32) {
                 self.drag_changed = Some(p);
             }
             return;
@@ -740,7 +741,7 @@ impl shell::Screen for ShaderScreen {
         if let Some(o) = s.shader_options.as_mut().filter(|o| o.pack == pack)
             && let Some(name) = option_name(o, i).map(str::to_owned)
         {
-            o.set_position(&name, position);
+            o.set_position(&name, position as f32);
         }
     }
     /// A Sunrise pack's options are saved, and the pack rebuilt, once a drag.
@@ -768,9 +769,10 @@ impl shell::Screen for ShaderScreen {
     fn undoes(&self) -> bool {
         true
     }
-    /// The pick, the Shadow Cache, the Sunrise packs' options (saved again) and the options of the
-    /// `shaders/` pack picked when the screen opened (saved when it closes, or Apply), as the
-    /// screen opened with them. Another `shaders/` pack keeps what was saved for it.
+    /// The pick, the remembered pick, the Shadow Cache, the Sunrise packs' options (saved
+    /// again) and the options of the `shaders/` pack picked when the screen opened (saved when
+    /// it closes, or Apply), as the screen opened with them. Another `shaders/` pack keeps
+    /// what was saved for it.
     fn undo(&mut self, s: &mut Settings, before: &Settings) -> Vec<Output> {
         let mut outputs = Vec::new();
         s.sunrise.shadow_cache = before.sunrise.shadow_cache;
@@ -800,10 +802,16 @@ impl shell::Screen for ShaderScreen {
         {
             o.restore(was.chosen.clone());
         }
+        if s.extras.last_shader_pack != before.extras.last_shader_pack {
+            // The toggle key (or a removed pack) changed the remembered pick while the screen
+            // was open: it goes back too. Rendering needs no event for what isn't picked.
+            s.extras.last_shader_pack = before.extras.last_shader_pack.clone();
+        }
         outputs
     }
-    /// Undo shows exactly while the pick, the Shadow Cache or a pack's options differ from what
-    /// the screen opened with: an option stepped back to its value isn't a change.
+    /// Undo shows exactly while the pick, the remembered pick, the Shadow Cache or a pack's
+    /// options differ from what the screen opened with: an option stepped back to its value
+    /// isn't a change.
     fn differs(&self, s: &Settings, before: &Settings) -> Option<bool> {
         let native = s.shader_packs.iter().any(|pack| {
             let was = before.shader_packs.iter().find(|p| p.key == pack.key);
@@ -815,7 +823,8 @@ impl shell::Screen for ShaderScreen {
         };
         let h = (&s.sunrise, &before.sunrise);
         let pick = h.0.shader_pack != h.1.shader_pack;
-        Some(pick || h.0.shadow_cache != h.1.shadow_cache || native || options)
+        let remembered = s.extras.last_shader_pack != before.extras.last_shader_pack;
+        Some(pick || remembered || h.0.shadow_cache != h.1.shadow_cache || native || options)
     }
     /// A `shaders/` pack's options wait for Apply until the pack loads again with them.
     fn pending(&self, s: &Settings) -> bool {
@@ -1046,12 +1055,35 @@ mod tests {
             ];
             assert_eq!(press(&mut shell, &mut s, Item::Pack(1)), picks);
             assert_eq!(s.sunrise.shader_pack, key);
+            assert_eq!(s.extras.last_shader_pack, key);
             assert_eq!(picked(&s), Some((1, kind)));
             assert_eq!(switch(Item::Pack(1), &s), Some(true));
             press(&mut shell, &mut s, Item::Pack(1));
             assert_eq!(s.sunrise.shader_pack, "");
+            assert_eq!(s.extras.last_shader_pack, key);
             assert_eq!(switch(Item::Pack(0), &s), Some(false));
         }
+    }
+
+    #[test]
+    fn undo_puts_back_the_remembered_pick_alone() {
+        let mut s = settings();
+        s.set_shader_pick("A.zip");
+        s.set_shader_pick("");
+        let before = s.clone();
+        // The key cleared the memory for a removed pack while the screen was open: the pick
+        // stays empty, and Undo still offers the remembered pick back, without a reload.
+        s.extras.last_shader_pack.clear();
+        let mut screen = ShaderScreen::default();
+        assert_eq!(screen.differs(&s, &before), Some(true));
+        assert!(screen.undo(&mut s, &before).is_empty());
+        assert_eq!(
+            (
+                s.sunrise.shader_pack.as_str(),
+                s.extras.last_shader_pack.as_str()
+            ),
+            ("", "A.zip")
+        );
     }
 
     #[test]

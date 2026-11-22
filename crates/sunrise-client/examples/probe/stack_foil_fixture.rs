@@ -1,11 +1,11 @@
 //! Actual stack decoding -> render view -> item-model foil selection, without a GPU.
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, fs};
 use sunrise_assets::item_model::{
     ClientItem, Context, DisplayContext, FoilType, ItemModels, LayerContent, NoEnv,
 };
 use sunrise_client::{item_data::decode_components, item_render::stack_view, items::ItemStack};
 use sunrise_core::nbt::Tag;
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs};
 
 fn model_flags(input: &Value) -> sunrise_client::Result<Value> {
     let text = input["nbt"].as_str().ok_or("missing NBT text")?;

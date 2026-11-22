@@ -25,7 +25,8 @@ fn profession_mod_missing_refused_before_pairing() {
     assert!(mod_list::set_local(vec![Entry {
         id: "test".into(),
         version: "1.0".into(),
-        side: Side::Both
+        side: Side::Both,
+        runtime: None,
     }]));
     let config = crate::lan::NetConfig {
         announce: false,
@@ -40,7 +41,7 @@ fn profession_mod_missing_refused_before_pairing() {
     login_profile(&mut c, "Owner");
     c.send(&login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode())
         .unwrap();
-    let mut brand = sunrise_protocol::buf::Writer::new();
+    let mut brand = ::sunrise_core::vanilla_bytes::Writer::new();
     brand.string("sunrise");
     for (channel, data) in [
         ("minecraft:brand", brand.data),

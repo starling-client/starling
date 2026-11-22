@@ -1,12 +1,12 @@
 //! Preliminary surface density sampling scoped to one material context.
 use super::{MaterialRuleError, MaterialSurfaceQueries};
 use crate::{registry::BlockStateId, worldgen::DecodeError};
+use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::{
     density::{DensitySampler, SamplerContext},
     noise::{DensityVolume, Noise},
     position::BlockPos,
 };
-use std::{collections::BTreeSet, sync::Arc};
 
 /// A lazy unit-spaced XZ plane and scalar fallback for preliminary heights.
 /// Construct a fresh provider for each material context, with that world's
@@ -348,8 +348,8 @@ fn block_index(volume: DensityVolume, position: [i32; 3]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::density::SampleError;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use sunrise_core::density::SampleError;
 
     struct Surface;
     impl MaterialSurfaceQueries for Surface {

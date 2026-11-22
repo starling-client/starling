@@ -1,4 +1,3 @@
-// game-module-visibility: pub(crate)
 //! The executable's side of `makes_open_trapdoor_above_climbable`, which the client library asks
 //! through its callbacks (`native_client_hooks`): the parts of the block under an open trapdoor
 //! decide whether the trapdoor climbs like a ladder.

@@ -1,0 +1,4 @@
+id = "refused_manifest_unknown_capability"
+name = "Refused manifest unknown capability"
+version = "1.2.3"
+capabilities = ["recipes_only"]

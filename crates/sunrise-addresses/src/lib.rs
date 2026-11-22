@@ -5,31 +5,15 @@
 //! This is a Sunrise-layer crate: the engine and the platform never depend on it. Platform code
 //! that talks to a service gets the address passed in from a Sunrise crate.
 
-/// Sunrise's official survival server (SMP), offered once at the top of the server list by the
-/// game and the launcher (`launcher/links.json` may name another). Its SRV record leads to the
-/// port.
-pub const OFFICIAL_SERVER: &str = "play.playsunrise.net";
-
-/// The official server's earlier addresses: the game and the launcher move a server list's
-/// entries for them to [`OFFICIAL_SERVER`], once. A move appends the old address here (and to
-/// `official_server_previous` in `launcher/links.json`).
-pub const OFFICIAL_SERVER_PREVIOUS: &[&str] = &["sunrise.bunchy7s.dev"];
-
-/// Afri-Network, a partner server the game added once below the official server (#9299) until
-/// the partnership ended: kept so the game can take back out the entry it added.
-pub const WITHDRAWN_PARTNER_SERVER: &str = "afri-network.co.za";
-
-/// [`OFFICIAL_SERVER`] with the port its SRV record gives, for askers that don't look SRV up
-/// (the telemetry server's status checks).
-pub const OFFICIAL_SERVER_STATUS: &str = "play.playsunrise.net:24454";
-
 /// Sunrise's website, where the launcher is downloaded: the game started without its prepared
 /// files sends the player there.
 pub const WEBSITE: &str = "https://playsunrise.net";
 
-/// The cosmetics service: cosmetics, emotes, "Show me as a Sunrise player"
-/// (`SUNRISE_COSMETICS_API` overrides it).
-pub const COSMETICS_API: &str = "https://cosmetics.playsunrise.net";
+/// The repository's licence file, linked from the Mods screen's Sunrise row.
+pub const LICENSE: &str = "https://github.com/sunrise-org/sunrise/blob/main/LICENSE";
+
+/// The repository's issue tracker, linked from the Mods screen's Sunrise row.
+pub const ISSUES: &str = "https://github.com/sunrise-org/sunrise/issues";
 
 /// The telemetry ingest server (`crates/sunrise-telemetry-server`): opt-in telemetry, the
 /// "I'm playing" ping, benchmark uploads (`SUNRISE_TELEMETRY_URL` overrides it).
@@ -47,22 +31,7 @@ pub const STUN_SERVERS: &[&str] = &["stun.cloudflare.com:3478", "stun.l.google.c
 
 /// Play with Friends' troubleshooting page, shown to hosts nobody can reach.
 pub const FRIENDS_HELP: &str =
-    "https://github.com/horizon-rust/horizon/blob/main/docs/play-with-friends.md#troubleshooting";
-
-/// Sunrise community invite used by launcher defaults.
-pub const COMMUNITY_DISCORD: &str = "https://discord.gg/playsunrise";
-
-/// The sponsoring hosting provider’s referral page.
-pub const HOSTING_PARTNER: &str = "https://my.sculkhosting.com/ref/sunrise";
-
-/// The official cosmetics shop.
-pub const SHOP: &str = "https://playsunrise.net/shop";
-
-/// The official launcher installer's product home.
-pub const LAUNCHER_ABOUT: &str = "https://playsunrise.net";
-
-/// The separately branded arismoko fork launcher installer's product home.
-pub const FORK_LAUNCHER_ABOUT: &str = "https://github.com/arismoko/horizon";
+    "https://github.com/sunrise-org/sunrise/blob/main/docs/play-with-friends.md#troubleshooting";
 
 /// Cargo's canonical source identity for the crates.io registry.
 pub const CARGO_CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
@@ -72,13 +41,25 @@ pub const HORIZON_MIXINS_SOURCE: &str =
     "https://codeload.github.com/horizon-rust/horizon-mixins/tar.gz";
 
 /// Where the fork releases the prebuilt horizon-mixins tool; a release's tag and file follow.
-pub const MIXINS_TOOL_RELEASES: &str = "https://github.com/arismoko/horizon/releases/download";
+pub const MIXINS_TOOL_RELEASES: &str = "https://github.com/sunrise-org/sunrise/releases/download";
 
 /// Where the fork publishes each game build's mod SDK (`sdk-<build id>`) and the game releases
 /// whose `sdk.json` names their build; a release's tag and file follow. `SUNRISE_SDK_BASE`
 /// overrides it.
-pub const SDK_RELEASES: &str = "https://github.com/arismoko/horizon/releases/download";
+pub const SDK_RELEASES: &str = "https://github.com/sunrise-org/sunrise/releases/download";
+
+/// A file of the game's source at one commit; the commit and the file's path follow. `native-lock`
+/// reads the pinned build's `Cargo.lock` from it.
+pub const GAME_SOURCE_FILES: &str = "https://raw.githubusercontent.com/sunrise-org/sunrise";
 
 /// The fork's newest releases, which `cargo sunrise-mod` reads to find the one SDK a short sha names.
 pub const SDK_RELEASE_LIST: &str =
-    "https://api.github.com/repos/arismoko/horizon/releases?per_page=100";
+    "https://api.github.com/repos/sunrise-org/sunrise/releases?per_page=100";
+
+/// The game repository's Git object API, used to resolve stable release tags to their commits.
+pub const GAME_GIT_API: &str = "https://api.github.com/repos/sunrise-org/sunrise/git";
+
+/// The official Horizon Minecraft server's host, as a player types it to join (its SRV record
+/// leads to port 24454). Reached by name, never by IP address, which can shift. The Sunrise layer
+/// presents the client identity the server requires (`sunrise-official`).
+pub const HORIZON_SERVER: &str = "play.playhorizon.dev";

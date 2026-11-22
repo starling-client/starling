@@ -1,0 +1,3 @@
+ids = ["hook:menu_quick_move", "hook:menu_quick_move.stack", "type:MenuQuickMoveEvent.stack"]
+why = "Hook version 3 allows a fully moved stack to leave an empty clicked slot."
+migrate = "The remainder is Option<ItemStack>: set *event.stack to None when everything moved."

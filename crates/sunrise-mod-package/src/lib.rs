@@ -3,8 +3,13 @@
 //! native (docs/modding/src/how-to/native-mods.md).
 pub mod content;
 pub mod dependencies;
+pub mod durable;
 pub mod enabled;
+<<<<<<< sync-sunrise-1
 pub mod fetch;
+=======
+pub mod extension_tags;
+>>>>>>> sunrise/main
 pub mod game_identity;
 #[cfg(all(
     feature = "runtime-process",
@@ -16,7 +21,6 @@ pub mod icon;
 pub mod index;
 pub mod install_lock;
 pub mod internals;
-pub mod layouts;
 #[cfg(all(
     feature = "runtime-process",
     any(target_os = "linux", target_os = "macos", windows)
@@ -27,8 +31,8 @@ pub mod locks;
 pub mod manifest;
 pub mod mixins_tool;
 pub mod mod_list;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod modpack;
+pub mod native_route;
 #[cfg(feature = "runtime-process")]
 pub mod output;
 pub mod packages;
@@ -45,4 +49,4 @@ pub use manifest::{Capability, Manifest, Package, find};
 #[cfg(feature = "prebuilt")]
 pub use mod_surface;
 /// The SDK's build-pinned data files and their common header.
-pub use point_shape::build_data;
+pub use mod_surface::build_data;

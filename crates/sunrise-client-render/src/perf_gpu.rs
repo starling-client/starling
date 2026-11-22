@@ -1,10 +1,10 @@
 //! The GPU pass timers' readings as the capture's `gpu` messages (docs/perf-platform.md §3.5); apart from `perf_capture`, which only Linux has.
+use std::time::Instant;
 use sunrise_perf_format::Interner;
 use sunrise_perf_format::v1::{
     GpuBackend, GpuCounter, GpuCounts, GpuDevice, GpuFragmentUnit, GpuFrame, GpuFrames, GpuPart,
     GpuPartCounts, GpuPartsMode, GpuPass, GpuPassSplit, GpuPasses, GpuSource, Side,
 };
-use std::time::Instant;
 
 use crate::gfx::pack_timing::{
     Counters, FragmentUnit, GpuReadout, PartsMode, PassCounters, Readings, TimedFrame, TimedFrames,

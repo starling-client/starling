@@ -36,6 +36,14 @@ def corpus():
         yield row(state(collider=full,outline=shapes[2],visual=shapes[3],interaction=shapes[4],fluid_shape=full,source=bool(mask&1),empty=bool(mask&2),water=bool(mask&4)),fluid_mode=mode,**{'from':list(map(bits,ray[0])),'to':list(map(bits,ray[1]))})
     for mode,fluid_mode,fail in itertools.product(range(4),range(4),range(-1,42)):
         yield row(state(collider=full,outline=full,visual=full,interaction=full,fluid_shape=full,nether=True,source=True,empty=False,water=True),block_mode=mode,fluid_mode=fluid_mode,fail=fail,entity=True,player=True,server=True,delay=0)
+    # Real 26.3 shapes by mode: fence (outline 16 px, collision 24 px), powder snow (no visual shape,
+    # falling-entity collision), four snow layers (outline one layer above collision).
+    fence=state(collider=shape([[.375,0,.375,.625,1.5,.625]]),outline=shape([[.375,0,.375,.625,1,.625]]),visual=shape([[.375,0,.375,.625,1,.625]]),empty=False)
+    powder=state(collider=shape([[0,0,0,1,.8999999761581421,1]]),outline=full,visual=[],empty=False)
+    snow4=state(collider=shape([[0,0,0,1,.375,1]]),outline=shape([[0,0,0,1,.5,1]]),visual=shape([[0,0,0,1,.5,1]]),empty=False)
+    for s,rays in((fence,[([.5,2,.5],[.5,1.2,.5]),([.5,2,.5],[.5,.5,.5]),([.2,2,.5],[.5,1.2,.5]),([.5,1.9,.5],[.5,.9,.5]),([-1,1.2,.5],[2,1.2,.5])]),(powder,[([.5,2,.5],[.5,.5,.5]),([.5,1.5,.5],[.5,.95,.5]),([-1,.5,.5],[2,.5,.5])]),(snow4,[([.5,1,.5],[.5,.45,.5]),([.5,1,.5],[.5,.3,.5]),([.5,1,.5],[.5,.6,.5]),([-1,.4,.5],[2,.4,.5])])):
+        for (a,b),mode in itertools.product(rays,range(3)):
+            yield row(s,block_mode=mode,**{'from':list(map(bits,a)),'to':list(map(bits,b))})
     rng=random.Random(0x524159434c4950)
     for _ in range(7000):
         sh=[rng.choice(shapes) for _ in range(5)];p=[rng.choice([-2,-1,-0.,0.,.25,.5,1.,2.,3.]) for _ in range(3)];q=[rng.choice([-2,-1,-0.,0.,.25,.5,1.,2.,3.]) for _ in range(3)]

@@ -1,0 +1,197 @@
+name: book quickstart
+# The modding book's start pages, run as a reader would with the mod tool alone (tools/book_quickstart.py): every
+# ```sh block of docs/modding/src/start/ in a fresh home on a runner with no launcher, first with the tool the install
+# page downloads from the published release, then with the tool built from this commit for the mod pages. It downloads
+# the published tool and a Rust toolchain, so it runs by dispatch and by call only, never on a push or pull request.
+# Nothing is published.
+# The mod pages take their SDK from the published Nightly, unless the caller asks for its own (`own_sdk`, the daily
+# run): then they read this run's SDK, laid out as a release folder (tools/ci/assemble_sdk_folder.sh) with a
+# `nightly/sdk.json` pointing at it, through SUNRISE_SDK_BASE, and signed with a throwaway key that only a tool built
+# with debug_assertions trusts (SUNRISE_SDK_TRUSTED_KEY; the debug build below is that tool). A commit whose
+# sdk-<commit> is already released (the daily run's sdk job then built nothing) reads that release, which needs no key.
+# So a red quickstart never waits on the Nightly it would block.
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit whose book and tool are checked
+        type: string
+        default: ''
+      self_hosted:
+        description: The caller's pool routing (true or false), decided when its run started; empty routes here
+        type: string
+        default: ''
+      own_sdk:
+        description: Run the mod pages against the calling run's SDK (its sdk-leg-* artifacts), not the published Nightly's
+        type: boolean
+        default: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: book-quickstart-${{ inputs.commit && github.run_id || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # the attempt's creation or start time (tools/ci/dyna_ci_route.sh)
+    outputs:
+      self_hosted: ${{ steps.runner.outputs.self_hosted }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # As fn-replace-check.yml: the daily run routes at its start, and this job starts after the SDK's Linux legs.
+      - id: runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VARS_ENABLED: ${{ vars.DYNA_CI_SELF_HOSTED }}
+          VARS_LEASE: ${{ vars.DYNA_CI_POOL_UNTIL }}
+          # Only dispatches (the daily run's included) run this workflow, from this repository.
+          SAME_REPO: true
+          EVENT: ${{ github.event_name }}
+          GIVEN: ${{ inputs.self_hosted }}
+        run: |
+          case "$GIVEN" in
+            true | false) echo "self_hosted=$GIVEN" >> "$GITHUB_OUTPUT" ;;
+            '') bash tools/ci/dyna_ci_route.sh >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::self_hosted is true, false or empty, not '$GIVEN'"; exit 1 ;;
+          esac
+  quickstart:
+    needs: route
+    # A Dyna runner (medium: the tool's debug build and small mods, no game build) while the pool serves this
+    # repository, else GitHub's: both are clean machines with no launcher, which is what the pages assume.
+    runs-on: ${{ needs.route.outputs.self_hosted == 'true' && 'dyna-medium' || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      # cargo-sunrise-mod is built with the Rust it was built for: tools/ci/rust-version, read at compile time.
+      # It becomes the default toolchain and RUSTUP_TOOLCHAIN stays unset: the tool picks its own for a mod.
+      - name: The pinned Rust (tools/ci/rust-version)
+        id: rust
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        if: runner.environment == 'github-hosted'
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+      # A Dyna runner has no Rust: rustup goes in the runner's Cargo home, as fn-replace-check.yml.
+      - name: The pinned Rust (Dyna runner)
+        if: runner.environment == 'self-hosted'
+        run: |
+          if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          fi
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          rustup toolchain install "${{ steps.rust.outputs.version }}" --profile minimal
+          rustup default "${{ steps.rust.outputs.version }}"
+      # A Dyna runner keeps its target between jobs: the source snapshot stays true, and the build runs at the runner's
+      # size, not the host's (tools/ci/source_mtimes.py, tools/ci/cargo_jobs.py).
+      - name: Restore unchanged source timestamps
+        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
+      - name: Cap build parallelism to the runner
+        run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
+      # The tool names the commit it was built from (`--version`, a release plan's `tool_commit`), as a release
+      # tool does. Set for every later step, so the test builds below don't rebuild it as `dev`.
+      - name: The tool's commit
+        run: |
+          tool_commit=$(git rev-parse --verify HEAD)
+          printf 'SUNRISE_TOOL_COMMIT=%s\n' "$tool_commit" >> "$GITHUB_ENV"
+      # debug_assertions on (the dev profile): the build that honours SUNRISE_SDK_TRUSTED_KEY.
+      - name: Build this commit's tool
+        run: cargo build --locked -p cargo-sunrise-mod
+      # On a Dyna runner RUNNER_TEMP is a small tmpfs: the run's SDK goes in a private folder on the build volume.
+      - name: Allocate private scratch
+        if: inputs.own_sdk
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            umask 077
+            mkdir -p "${CARGO_TARGET_DIR:?}"
+            scratch=$(mktemp -d "$CARGO_TARGET_DIR/book-quickstart.XXXXXX")
+          else
+            scratch="$RUNNER_TEMP/book-quickstart"
+            mkdir -p "$scratch"
+          fi
+          echo "QS_SCRATCH=$scratch" >> "$GITHUB_ENV"
+      - name: Where the SDK comes from
+        if: inputs.own_sdk
+        id: sdk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # `published`: sdk-<commit> is released (the daily run's sdk job built nothing). `legs`: the run's own sdk-leg-*.
+          if gh release view "sdk-$(git rev-parse HEAD)" > /dev/null 2>&1; then source=published; else source=legs; fi
+          echo "source=$source" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        if: inputs.own_sdk && steps.sdk.outputs.source == 'legs'
+        with:
+          pattern: sdk-leg-linux*
+          path: ${{ env.QS_SCRATCH }}/legs
+      # The daily run starts this check when its sdk job failed too: a missing Linux leg fails it by name.
+      - name: The Linux legs are here
+        if: inputs.own_sdk && steps.sdk.outputs.source == 'legs'
+        run: |
+          for leg in sdk-leg-linux sdk-leg-linux-server; do
+            [ -d "$QS_SCRATCH/legs/$leg" ] || { echo "::error::the daily run's sdk job left no $leg artifact"; exit 1; }
+          done
+      - name: Assemble the SDK release folder
+        if: inputs.own_sdk && steps.sdk.outputs.source == 'legs'
+        run: tools/ci/assemble_sdk_folder.sh "$QS_SCRATCH/legs" "$QS_SCRATCH/sdk-base" "$(git rev-parse HEAD)"
+      # Already released and signed with the release key, which every tool trusts: no key needed.
+      - name: The published SDK release
+        if: inputs.own_sdk && steps.sdk.outputs.source == 'published'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          gh release download "sdk-$commit" --dir "$QS_SCRATCH/sdk-base/sdk-$commit" \
+            --pattern 'SHA256SUMS*' --pattern 'sdk.json' --pattern 'surface.json' \
+            --pattern 'api-source.tar.xz' --pattern 'build-data.tar.xz' \
+            --pattern '*-x86_64-unknown-linux-gnu*.tar.xz'
+      # What `cargo sunrise-mod new` reads when it names no build: nightly/sdk.json, only a pointer (the build it
+      # names is verified when fetched). The mod pages run `new` with no --sunrise.
+      - name: This run's SDK is the Nightly of the SDK folder
+        if: inputs.own_sdk
+        run: |
+          commit=$(git rev-parse HEAD)
+          mkdir -p "$QS_SCRATCH/sdk-base/nightly"
+          cp "$QS_SCRATCH/sdk-base/sdk-$commit/sdk.json" "$QS_SCRATCH/sdk-base/nightly/sdk.json"
+          echo "SUNRISE_SDK_BASE=$QS_SCRATCH/sdk-base" >> "$GITHUB_ENV"
+      # Build-error tests that build a starter mod: against this run's SDK, the one this commit's tool reads.
+      - name: The tool's build-error tests on this run's SDK
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test build_errors --
+          --ignored --exact a_failed_native_build_names_the_authors_file_and_not_the_cache_copy
+          a_failed_registry_build_names_the_authors_file_and_a_good_one_still_builds
+      - name: Native registration reaches the game log
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test run --
+          --ignored --exact run_writes_native_registration_logs_to_latest_log
+      - name: The start pages run with the mod tool alone
+        run: python3 tools/book_quickstart.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
+      - name: Generated native release on this run's Linux SDK
+        if: inputs.own_sdk
+        run: >-
+          python3 tools/ci/mod_release_smoke.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
+          --scratch "$QS_SCRATCH" --commit "$(git rev-parse HEAD)"
+      - name: Clean private scratch
+        if: always() && inputs.own_sdk
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ] && [ -n "${QS_SCRATCH:-}" ]; then
+            rm -rf "$QS_SCRATCH"
+          fi

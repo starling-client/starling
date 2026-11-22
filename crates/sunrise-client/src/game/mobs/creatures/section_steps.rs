@@ -23,15 +23,17 @@ pub(super) fn record(
 ) -> bool {
     if let Some(p) = projectile
         && p.position != from
-        && steps.enabled
         && keep
     {
-        steps.seen.push(p.id);
-        return game.entity_section_step_visible(
-            p.id,
+        let (from, to) = (
             [from.x, from.y, from.z],
             [p.position.x, p.position.y, p.position.z],
         );
+        if steps.enabled {
+            steps.seen.push(p.id);
+            return game.entity_section_step_visible(p.id, from, to);
+        }
+        game.entity_section_entered(p.id, from, to);
     }
     true
 }

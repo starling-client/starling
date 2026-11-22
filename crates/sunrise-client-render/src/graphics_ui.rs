@@ -9,7 +9,7 @@ use crate::{
     gfx::EffectiveOutput,
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
-        HdrSetup as Setup, LeafCullingMode, Overlay, Pacing, ParallelTickMode, ParticleCullingMode,
+        HdrSetup as Setup, LeafCullingMode, Pacing, ParallelTickMode, ParticleCullingMode,
         PresentMode, Preset, Upscaling,
     },
     graphics_style::Cost,
@@ -66,7 +66,7 @@ impl Page {
             Page::Quality => "The sky and weather, lighting, textures and the image.",
             Page::Performance => "Chunk loading, culling and power use.",
             Page::Shaders => "Shader packs, Sunrise's and shaders/ folder ones, and their options.",
-            Page::Advanced => "How frames reach the screen, and the performance overlay.",
+            Page::Advanced => "How frames reach the screen.",
             Page::Hdr => "Brighter-than-white output on an HDR display.",
         }
     }
@@ -78,7 +78,6 @@ pub enum H {
     Preset,
     LodDistance,
     FarDetail,
-    BlueMapAutoDetect,
     BlueMapRadius,
     CaveCulling,
     GpuCulling,
@@ -105,7 +104,6 @@ pub enum H {
     Pacing,
     Workers,
     ParallelTick,
-    Overlay,
     ResolutionScale,
     DynamicResolution,
     TargetFps,
@@ -220,11 +218,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.",
                         ),
                         h(H::FarDetail, Medium, far),
-                        h(
-                            H::BlueMapAutoDetect,
-                            None,
-                            "On servers, finds their BlueMap web map for far terrain. Next join.",
-                        ),
                         h(
                             H::BlueMapRadius,
                             None,
@@ -567,6 +560,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
         ),
         (
             Page::Advanced,
+<<<<<<< sync-sunrise-1
             vec![
                 (
                     "Frames",
@@ -607,11 +601,33 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                     "Overlay",
                     vec![h(
                         H::Overlay,
+=======
+            vec![(
+                "Frames",
+                vec![
+                    h(
+                        H::PresentMode,
+>>>>>>> sunrise/main
                         None,
-                        "Frame rate and frame times over the game, with a graph.",
-                    )],
-                ),
-            ],
+                        "How frames reach the screen while VSync is off.",
+                    ),
+                    h(
+                        H::Pacing,
+                        None,
+                        "Efficient sleeps until the next frame; Precise spins, like vanilla.",
+                    ),
+                    h(
+                        H::GraphicsApi,
+                        None,
+                        "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
+                    ),
+                    h(
+                        H::TranslucentBatching,
+                        Saves,
+                        "Water and glass in one buffer: fewer draw calls, a bit more VRAM. Next start.",
+                    ),
+                ],
+            )],
         ),
         (
             Page::Hdr,
@@ -622,7 +638,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::Hdr,
                             None,
-                            "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
+                            "Lava, fire and the sun shine brighter than white. Needs an HDR display.",
                         ),
                         h(
                             H::HdrSmoothGradients,
@@ -662,7 +678,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::HdrLighting,
                             None,
-                            "Light sources, the sun and sunlight shine past white. Off: just as SDR.",
+                            "Light sources and the sun shine past white. Off: just as SDR.",
                         ),
                     ],
                 ),
@@ -759,9 +775,9 @@ const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
 /// What the LOD Distance slider stops at, in chunks: off, fine steps up to 256
 /// for a short ring of far terrain past a small render distance (a phone or an
-/// integrated GPU at 8 chunks wants LOD to 12 or 16, not 64), then each doubling
-/// up to the whole world.
-const LOD_STEPS: [u32; 24] = [
+/// integrated GPU at 8 chunks wants LOD to 12 or 16, not 64), then 512 and the
+/// farthest far terrain plans.
+const LOD_STEPS: [u32; 12] = [
     0,
     16,
     24,
@@ -773,18 +789,6 @@ const LOD_STEPS: [u32; 24] = [
     192,
     256,
     512,
-    1024,
-    2048,
-    4096,
-    8192,
-    16384,
-    32768,
-    65536,
-    131072,
-    262144,
-    524288,
-    1048576,
-    2097152,
     crate::lod::MAX_CHUNKS,
 ];
 
@@ -923,6 +927,7 @@ impl H {
     }
     pub fn slider_steps(self) -> Option<u32> {
         match self {
+            H::LodDistance => Some((LOD_STEPS.len() - 1) as u32),
             H::ChunkUpdates => Some(64),
             H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
@@ -936,8 +941,8 @@ impl H {
             _ => None,
         }
     }
-    /// "Paper White: Auto (203)" or "Paper White: 160": a setting in nits, 0 for Auto, which
-    /// shows the nits Auto gives.
+    /// "Paper White: Auto (203 nits)" or "Paper White: 160 nits": a setting in nits, 0 for Auto,
+    /// which shows the nits Auto gives.
     fn nits_label(self, s: &Settings, out: &EffectiveOutput) -> Text {
         let (g, r) = (&s.sunrise, out.reported);
         let (caption, set, auto) = match self {
@@ -946,8 +951,8 @@ impl H {
             _ => ("UI Brightness", g.hdr_ui_nits, g.ui_nits(r)),
         };
         match set {
-            0 => labelled(caption, lang::tr("Auto (%s)", &[&auto])),
-            n => labelled(caption, n),
+            0 => labelled(caption, lang::tr("Auto (%s nits)", &[&auto])),
+            n => labelled(caption, lang::tr("%s nits", &[&n])),
         }
     }
     fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
@@ -959,7 +964,6 @@ impl H {
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
-            H::BlueMapAutoDetect => labelled("Find BlueMap", on_off(g.blue_map.auto_detect)),
             H::BlueMapRadius => labelled(
                 "BlueMap Radius",
                 lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
@@ -1057,7 +1061,10 @@ impl H {
             H::GpuDrivers => Text::literal(lang::get("GPU Drivers...")),
             H::PerfCalibrateNote => Text::literal(lang::get(CALIBRATE_NOTE)),
             H::HdrPaperWhite | H::HdrPeak | H::HdrUiBrightness => self.nits_label(s, out),
-            H::HdrBlackLevel => labelled("Black Level", format!("{:.2}", g.black_level_nits())),
+            H::HdrBlackLevel => labelled(
+                "Black Level",
+                lang::tr("%s nits", &[&format!("{:.2}", g.black_level_nits())]),
+            ),
             H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
@@ -1078,6 +1085,7 @@ impl H {
                 "Smooth Gradients",
                 on_off(g.hdr_smooth_gradients && out.wide_frame_supported),
             ),
+<<<<<<< sync-sunrise-1
             H::Overlay => labelled(
                 "Performance Overlay",
                 match g.overlay {
@@ -1087,6 +1095,8 @@ impl H {
                     Overlay::Stats => "Full Stats",
                 },
             ),
+=======
+>>>>>>> sunrise/main
         }
     }
     fn set_slider(self, s: &mut Settings, v: f32) {
@@ -1138,7 +1148,6 @@ impl H {
                     back,
                 )
             }
-            H::BlueMapAutoDetect => g.blue_map.auto_detect = !g.blue_map.auto_detect,
             H::BlueMapRadius => {
                 g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
             }
@@ -1220,6 +1229,7 @@ impl H {
                     Pacing::Precise => Pacing::Efficient,
                 }
             }
+<<<<<<< sync-sunrise-1
             H::Overlay => {
                 g.overlay = step(
                     &[Overlay::Off, Overlay::Fps, Overlay::Graph, Overlay::Stats],
@@ -1227,6 +1237,8 @@ impl H {
                     back,
                 )
             }
+=======
+>>>>>>> sunrise/main
             _ => {}
         }
     }
@@ -1320,7 +1332,6 @@ impl Item {
     pub fn switch(self, s: &Settings, out: &EffectiveOutput) -> Option<bool> {
         let g = &s.sunrise;
         Some(match self {
-            Item::Sunrise(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Sunrise(H::CaveCulling) => g.cave_culling,
             Item::Sunrise(H::OpaqueIce) => g.opaque_ice,
             Item::Sunrise(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
@@ -1359,14 +1370,18 @@ impl Item {
             _ => return None,
         })
     }
-    pub fn slider(self, s: &Settings) -> Option<f32> {
+    pub fn slider(self, s: &Settings) -> Option<f64> {
         match self {
             Item::Vanilla(o) => o.slider_position(s),
+<<<<<<< sync-sunrise-1
             Item::Sunrise(h) => h.slider(s),
             Item::Display(option) if option.margin_preview().is_some() => {
                 Some(option.value(s) as f32 / option.max() as f32)
             }
             Item::Display(_) => None,
+=======
+            Item::Sunrise(h) => h.slider(s).map(f64::from),
+>>>>>>> sunrise/main
             Item::Extra(_) => None,
         }
     }
@@ -1395,18 +1410,22 @@ impl Item {
             ),
         }
     }
-    pub fn set_slider(self, s: &mut Settings, v: f32, out: &EffectiveOutput) {
+    pub fn set_slider(self, s: &mut Settings, v: f64, out: &EffectiveOutput) {
         if !self.available() || self.blocked(s, out).is_some() {
             return;
         }
         match self {
             // Options.applyGraphicsPreset, as Video Settings' slider does it.
             Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
+<<<<<<< sync-sunrise-1
             Item::Sunrise(h) => h.set_slider(s, v),
             Item::Display(option) if option.margin_preview().is_some() => {
                 option.set(s, (v * option.max() as f32).round() as i32);
             }
             Item::Display(_) => {}
+=======
+            Item::Sunrise(h) => h.set_slider(s, v as f32),
+>>>>>>> sunrise/main
             Item::Extra(_) => {}
         }
         self.touched(s);
@@ -1434,9 +1453,7 @@ impl Item {
                 | Item::Display(_)
                 | Item::Sunrise(
                     H::Preset
-                        | H::BlueMapAutoDetect
                         | H::BlueMapRadius
-                        | H::Overlay
                         | H::ScreenshotQuality
                         | H::Pacing
                         | H::PresentMode
@@ -1505,6 +1522,31 @@ fn parts(item: Item, s: &Settings, out: &EffectiveOutput) -> (String, Option<Str
     shell::name_and_value(&item.label(s, out).plain())
 }
 
+/// Render distances up to this one get no memory hint; vanilla's slider stops at 32.
+const MEMORY_HINT_ABOVE: i32 = 48;
+/// Section mesh bytes per loaded column, from one world (#3299's capture: 13.4 GiB for 52,653 columns at 128).
+const MESH_BYTES_PER_COLUMN: f64 = 256.0 * 1024.0;
+
+/// About how many GB (10^9 bytes) of section meshes a render distance keeps; none up to `MEMORY_HINT_ABOVE`.
+fn render_distance_mesh_gb(distance: i32) -> Option<f64> {
+    if distance <= MEMORY_HINT_ABOVE {
+        return None;
+    }
+    // Vanilla's ChunkTrackingView keeps the columns within distance + 1 of the centre's.
+    let columns = std::f64::consts::PI * f64::from(distance + 1).powi(2);
+    Some(columns * MESH_BYTES_PER_COLUMN / 1e9)
+}
+
+/// What a render distance past `MEMORY_HINT_ABOVE` can cost in memory, and what to use instead.
+fn render_distance_memory(distance: i32) -> Option<Text> {
+    render_distance_mesh_gb(distance).map(|gb| {
+        Text::tr(
+            "sunrise.options.renderDistance.memory",
+            &[&format!("{gb:.1}")],
+        )
+    })
+}
+
 /// A setting's row: its control, what it does (and what its chosen value does), what it costs,
 /// and why it can't be used now.
 fn row(setting: Setting, s: &Settings, out: &EffectiveOutput) -> Row<Item> {
@@ -1522,9 +1564,14 @@ fn row(setting: Setting, s: &Settings, out: &EffectiveOutput) -> Row<Item> {
         _ => value.map_or(Value::Press, Value::Choice),
     };
     let about = lang::get(setting.text);
-    let chosen = lang::get(description(item, s, out, setting.text));
+    let chosen = match item {
+        Item::Vanilla(Opt::RenderDistance) => {
+            render_distance_memory(s.render_distance).map(|t| t.plain())
+        }
+        _ => Some(lang::get(description(item, s, out, setting.text))).filter(|c| *c != about),
+    };
     Row {
-        chosen: (chosen != about).then_some(chosen),
+        chosen,
         ..Row::new(item, name, value)
             .about(about)
             .cost(setting.cost)
@@ -1673,7 +1720,7 @@ impl Screen for GraphicsScreen {
             }
         }
     }
-    fn slide(&mut self, s: &mut Settings, item: Item, position: f32) {
+    fn slide(&mut self, s: &mut Settings, item: Item, position: f64) {
         item.set_slider(s, position, &self.output);
     }
     /// With the "Scroll wheel changes settings" extra, the wheel steps a value between `<` `>`
@@ -1759,6 +1806,33 @@ mod tests {
     pub(super) const DRAGGED: Output = Output::Event(Event::SliderDrag);
     /// A renderer whose destination offers nothing and whose display reports nothing.
     pub(super) const NONE: EffectiveOutput = EffectiveOutput::NONE;
+
+    #[test]
+    fn render_distance_row_gives_its_memory_past_48_only() {
+        let setting = v(
+            Opt::RenderDistance,
+            Cost::High,
+            "Full-detail terrain range.",
+        );
+        let mut s = Settings {
+            render_distance: 32,
+            ..Settings::default()
+        };
+        assert_eq!(super::row(setting, &s, &NONE).chosen, None);
+        s.render_distance = 128;
+        let (shown, _) = lang::scoped(lang::Language::load(&[], "en_us"), || {
+            super::row(setting, &s, &NONE).chosen.unwrap()
+        });
+        assert!(shown.contains("about 13.7 GB"), "{shown}");
+    }
+
+    #[test]
+    fn render_distance_memory_estimate_matches_a_measured_world() {
+        assert_eq!(render_distance_mesh_gb(48), None);
+        // #3299's capture at distance 128: the section buffer arena held 13.4 GiB, 14.4 GB.
+        let at_128 = render_distance_mesh_gb(128).unwrap();
+        assert!((13.0..15.5).contains(&at_128), "{at_128}");
+    }
 
     pub(super) type Ui = Shell<GraphicsScreen>;
     pub(super) fn ui() -> Ui {
@@ -2314,12 +2388,12 @@ mod tests {
         // Every stop is reachable and reads back as the same position.
         for (i, &distance) in LOD_STEPS.iter().enumerate() {
             let at = i as f32 / (LOD_STEPS.len() - 1) as f32;
-            item.set_slider(&mut s, at, &NONE);
+            item.set_slider(&mut s, f64::from(at), &NONE);
             assert_eq!(s.sunrise.lod_distance, distance);
-            assert_eq!(item.slider(&s), Some(at));
+            assert_eq!(item.slider(&s), Some(f64::from(at)));
             assert_eq!(s.render_distance, near);
         }
-        // The ends are off and the whole world, which the far terrain plans.
+        // The ends are off and the farthest far terrain plans.
         item.set_slider(&mut s, 0.0, &NONE);
         assert_eq!(s.sunrise.lod_distance, 0);
         item.set_slider(&mut s, 1.0, &NONE);
@@ -2328,21 +2402,18 @@ mod tests {
             item.label(&s, &NONE).plain(),
             format!("LOD Distance: {} chunks", crate::lod::MAX_CHUNKS)
         );
-        item.set_slider(&mut s, 11.0 / 23.0, &NONE);
-        assert_eq!(s.sunrise.lod_distance, 1024);
-        assert_eq!(item.label(&s, &NONE).plain(), "LOD Distance: 1024 chunks");
         // The fine stops: a ring of far terrain just past a small render
         // distance, which the doubling steps skipped (#9694).
-        item.set_slider(&mut s, 1.0 / 23.0, &NONE);
+        item.set_slider(&mut s, 1.0 / 11.0, &NONE);
         assert_eq!(s.sunrise.lod_distance, 16);
         assert_eq!(item.label(&s, &NONE).plain(), "LOD Distance: 16 chunks");
-        item.set_slider(&mut s, 2.0 / 23.0, &NONE);
+        item.set_slider(&mut s, 2.0 / 11.0, &NONE);
         assert_eq!(s.sunrise.lod_distance, 24);
         // A distance between stops (from the file) sits on the next one.
-        s.sunrise.lod_distance = 3000;
-        assert_eq!(item.slider(&s), Some(13.0 / 23.0));
+        s.sunrise.lod_distance = 300;
+        assert_eq!(item.slider(&s), Some(f64::from(10.0_f32 / 11.0)));
         s.sunrise.lod_distance = 12;
-        assert_eq!(item.slider(&s), Some(1.0 / 23.0));
+        assert_eq!(item.slider(&s), Some(f64::from(1.0_f32 / 11.0)));
     }
 
     /// With far terrain on, Render Distance reads "Full Detail Distance" but keeps vanilla's
@@ -2378,7 +2449,6 @@ mod tests {
     #[test]
     fn blue_map_settings_sit_with_far_terrain() {
         let mut s = Settings::default();
-        let find = Item::Sunrise(H::BlueMapAutoDetect);
         let radius = Item::Sunrise(H::BlueMapRadius);
         let distance: Vec<Item> = rows()
             .into_iter()
@@ -2389,12 +2459,9 @@ mod tests {
             .iter()
             .map(|r| r.item)
             .collect();
-        assert!(distance.contains(&find) && distance.contains(&radius));
+        assert!(distance.contains(&radius));
         assert!(distance.contains(&Item::Sunrise(H::FarDetail)));
-        assert_eq!(find.switch(&s, &NONE), Some(false), "off by default");
         assert_eq!(radius.label(&s, &NONE).plain(), "BlueMap Radius: 64 chunks");
-        find.cycle(&mut s, false, FB, &NONE);
-        assert!(s.sunrise.blue_map.auto_detect);
         radius.cycle(&mut s, false, FB, &NONE);
         assert_eq!(s.sunrise.blue_map.radius, 128);
         radius.cycle(&mut s, true, FB, &NONE);
@@ -2898,6 +2965,7 @@ mod tests {
         // HDR's sliders step only where the display offers HDR.
         let out = offering(true, None);
         let options = [
+            H::LodDistance,
             H::ChunkUpdates,
             H::UploadBudget,
             H::Workers,
@@ -3014,14 +3082,6 @@ mod tests {
             reach(H::HdrBlackLevel, &mut s),
             (0..=100).collect::<Vec<u32>>()
         );
-    }
-    #[test]
-    fn black_level_reads_as_its_lift() {
-        let mut s = Settings::default();
-        let label = |s: &Settings| Item::Sunrise(H::HdrBlackLevel).label(s, &NONE).plain();
-        assert_eq!(label(&s), "Black Level: 0.00");
-        s.sunrise.hdr_black_level = 5;
-        assert_eq!(label(&s), "Black Level: 0.05");
     }
     /// Sunrise's graphics captions are English sentences that the language table keys by
     /// themselves, so a caption, description or value that is not in `en_us.json` shows in

@@ -218,7 +218,7 @@ A content mod (`.smod`) carries `assets/` and `data/` and no code:
 
 ```
 ruby.smod
-├── sunrise-mod.toml          id = "ruby", api = "0.2", side = "both", capabilities = ["registries"]
+├── sunrise-mod.toml          id = "ruby", side = "both" (the build adds api and capabilities)
 ├── data/ruby/sunrise/block/ruby_block.json
 ├── data/ruby/sunrise/item/ruby.json
 ├── data/ruby/recipe/ruby_block.json            (26.3 data-pack formats)
@@ -255,7 +255,7 @@ shape. It selects a list of boxes by one template state property:
 ```
 
 Each box is `[min_x, min_y, min_z, max_x, max_y, max_z]` in block units.
-Each value of the template property needs an entry. Up to 16 boxes form a union;
+Each value of the template property needs an entry. Any number of boxes form a union;
 an empty list is an empty shape. Invalid bounds or values reject the content root.
 Without `shapes`, both shapes remain the template's. Other properties such as
 occlusion, light, and support still come from the template.
@@ -402,7 +402,8 @@ inspected:
 │   ├── port/                 the agent's Rust crate (tiers logic and up)
 │   ├── harness/              per-mod harness results and logs
 │   └── <id>.smod
-└── coverage.json, coverage.md
+├── coverage.json, coverage.md
+└── launcher-status.json      the launcher's copy of the porter's last status reply (docs/api/port-pack.md)
 ```
 
 **Status.** `import`, `inventory`, `fetch`, `carry` and `report` run today, and `port` runs
@@ -419,7 +420,20 @@ cargo run -p sunrise-port-pack -- carry ~/.sunrise/ports/pack         # content 
 cargo run -p sunrise-port-pack -- report ~/.sunrise/ports/pack        # coverage.json and coverage.md
 cargo run -p sunrise-port-pack -- events ~/.sunrise/ports/pack/jars   # NeoForge events the mods listen to, and their hooks
 cargo run -p sunrise-port-pack -- port ~/Downloads/pack.zip ~/.sunrise/ports/pack [--from <folder>] [--resources <root>]
+cargo run -p sunrise-port-pack -- port-work ~/.sunrise/ports/pack      # the port step alone, on an imported folder
+cargo run -p sunrise-port-pack -- status ~/.sunrise/ports/pack         # what the folder holds, as the launcher shows it
+cargo run -p sunrise-port-pack -- profile ~/.sunrise/ports/pack        # the staged resource packs into the profile's home
 ```
+
+### Versions of carried mods
+
+A manifest's `version` must be semver, and a Java jar's version often isn't. The carry drops a leading
+`<Minecraft version>-` when it equals the pack's own (`26.3-3.6.30+refabricated` becomes
+`3.6.30+refabricated`) and pads an omitted minor or patch. A version that is still not semver is written
+as `0.0.0+unresolved.<the jar's version, with characters outside [0-9A-Za-z-.] replaced by '-'>`. The jar's original
+string stays in the manifest's header comment. Dependency resolution never lets a
+`0.0.0+unresolved.…` version satisfy a requirement, `*` and `=0.0.0` included: the port report says that the mod's version couldn't be read, and it
+must be set by hand in the carried `sunrise-mod.toml` before anything can depend on the mod.
 
 ### Data packs in mod jars
 
@@ -454,7 +468,8 @@ conflicting and unsupported entries; they also appear in `coverage.json` and `co
 reported as partial, not as a rendering-verified port. Shader packs are reported as pending conversion.
 Old import folders without this report still open.
 
-The launcher copies staged packs into `<work>/home/resourcepacks/` on import, port and launch. It preserves any
+`sunrise-port-pack profile <work>` copies staged packs into `<work>/home/resourcepacks/`; the launcher runs it on
+import, port and launch. It preserves any
 existing profile pack as a whole, including edits inside a directory pack, and lists name/content conflicts.
 `<work>/profile-resourcepacks.json` records those results. A profile with resource packs and no carried mods can
 play. Enable packs in the game's Resource Packs screen; importing never changes the enabled-pack list.
@@ -485,7 +500,7 @@ events a mod listens to and the capabilities it uses. A listener is an `@Subscri
 parameter, or a method reference or lambda that takes one event
 (`NeoForge.EVENT_BUS.addListener(this::onTick)`). It looks each name up in the hook catalog's
 `neoforge` names, generated at build time from the Rust hook declarations (see the
-[hook notes](https://arismoko.github.io/sunrise/reference/hook-notes.html)). An optional JSON
+[hook notes](https://playsunrise.net/docs/modding/reference/hook-notes)). An optional JSON
 file with `hooks` entries containing `name` and `neoforge` can replace those labels for a report.
 Over a folder of jars it ranks the names by how many mods use them. Each name gets one of eight answers:
 
@@ -502,7 +517,7 @@ Over a folder of jars it ranks the names by how many mods use them. Each name ge
 - none.
 
 The load-phase events follow the modding book's
-[load phases](https://arismoko.github.io/sunrise/concepts/load-phases.html).
+[load phases](https://playsunrise.net/docs/modding/concepts/load-phases).
 `FMLCommonSetupEvent`'s work goes in `Hooks::register`, then the first server reload.
 `FMLLoadCompleteEvent`'s goes after the initial config and before `server_about_to_start`.
 `FMLDedicatedServerSetupEvent`'s goes in `server_about_to_start`, when its `dedicated` flag is set.
@@ -1059,9 +1074,9 @@ for libraries, performance mods, pack tooling and what Sunrise has built in. Unc
 not read) is carried with its data files moved to 1.21's folder names (`recipe/`, `loot_table/`,
 `tags/block/`..., counted as `folders_renamed`); a file the jar also holds under the new name
 keeps that copy. Their JSON stays 1.20's: a recipe result naming its item as `item` (before
-1.20.5), which 26.3 skips, is kept as it is and counted as `recipes_old_result`, and NBT in loot
+1.20.5), which 26.3 can't decode (one such recipe fails the whole data load), is moved to `outside/` as it is and counted as `recipes_old_result`, and NBT in loot
 functions, ingredients and predicates is not upgraded yet (#10262). In the game each such file
-fails alone and the rest load: those recipes are skipped, `set_nbt` and `copy_nbt` drop their item
+fails alone and the rest load: `set_nbt` and `copy_nbt` drop their item
 without the NBT, an advancement's NBT predicate matches any item, a template's block renamed since
 1.20 is air, and a 1.20 command in a function fails. Such a mod is partial whatever its harness
 says, with that in its reason. `check` still says it doesn't run.

@@ -40,21 +40,14 @@ impl Commands for FakeCommands {
 }
 
 // no wire: in-process testing harness state, not a mod boundary payload.
-/// The server's message service: the lines broadcast, in order, and the texts the chat filter
-/// blocks.
+/// The server's message service: the lines broadcast, in order.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct FakeMessages {
-    blocked: HashSet<String>,
     broadcast: RefCell<Vec<Text>>,
 }
 
 impl FakeMessages {
-    /// Makes the chat filter block text `text`.
-    pub fn blocked(&mut self, text: &str) -> &mut Self {
-        self.blocked.insert(text.to_owned());
-        self
-    }
     /// Each line broadcast, in order.
     pub fn broadcast_lines(&self) -> Vec<Text> {
         self.broadcast.borrow().clone()
@@ -66,8 +59,5 @@ impl Messages for FakeMessages {
         line.validate_depth()?;
         self.broadcast.borrow_mut().push(line);
         Ok(())
-    }
-    fn text_allowed(&self, text: &str) -> Option<bool> {
-        Some(!self.blocked.contains(text))
     }
 }

@@ -1,11 +1,11 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
+use mod_api::HostTransaction;
 use sunrise_client::{chunk::Chunk, containers::BlockEntity};
 use sunrise_core::nbt::Tag;
 use sunrise_mod_runtime::attachments::{
     AttachmentCodec, AttachmentError, AttachmentType, Attachments,
 };
-use mod_api::HostTransaction;
 
 static VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "be_test",
@@ -28,7 +28,7 @@ fn saved(value: i32) -> Attachments {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn block_entity_rows_follow_load_restore_replacement_and_chunk_unload_in_their_dimension() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());

@@ -7,6 +7,7 @@ use sunrise_client::{
     Result,
     containers::BlockEntity,
     environment::Environment,
+    gfx::CelestialBody,
     items::ItemStack,
     mesher::Vertex,
     mobs::Who,
@@ -81,10 +82,16 @@ impl GatewayJob {
         match configured {
             Some((exit, exact)) => Self::Known { exit, exact },
             // Worldgen return gateways (end_gateway_return) lead exactly to the End spawn.
-            None if f64::from(gateway[0]).hypot(f64::from(gateway[2])) > 512.0 => Self::Known {
-                exit: END_SPAWN,
-                exact: true,
-            },
+            None if sunrise_core::geometry::length(
+                f64::from(gateway[0]),
+                f64::from(gateway[2]),
+            ) > 512.0 =>
+            {
+                Self::Known {
+                    exit: END_SPAWN,
+                    exact: true,
+                }
+            }
             None => Self::Find {
                 gateway,
                 exact: exact_teleport(entity),
@@ -185,6 +192,45 @@ fn flash_pose(x_angle: f32, y_angle: f32) -> glam::Mat4 {
     glam::Mat4::from_rotation_y((180.0 - y_angle).to_radians())
         * glam::Mat4::from_rotation_x((-90.0 - x_angle).to_radians())
 }
+
+/// SkyRenderer.renderEndFlash's quad: the end_flash `sprite` at height 100, scale 60, turned by
+/// `pose`, at `intensity`; none when the flash is out or has no sprite. Each quad comes with what
+/// it is (`Frame::celestial_bodies`).
+fn end_flash_quad(
+    sprite: Option<sunrise_client::hud::Rect>,
+    intensity: f32,
+    pose: glam::Mat4,
+) -> (Vec<Vertex>, Vec<CelestialBody>) {
+    let mut out = Vec::new();
+    if intensity > 1e-5
+        && let Some(r) = sprite
+    {
+        let level = (intensity.clamp(0.0, 1.0) * 255.0) as u32;
+        let color = level << 24 | level << 16 | level << 8 | level;
+        let corners = [
+            (-1.0, -1.0, [r.u0, r.v0]),
+            (1.0, -1.0, [r.u1, r.v0]),
+            (1.0, 1.0, [r.u1, r.v1]),
+            (-1.0, 1.0, [r.u0, r.v1]),
+        ];
+        for (x, z, uv) in corners {
+            let p = pose.transform_point3(glam::Vec3::new(x * 60.0, 100.0, z * 60.0));
+            out.push(Vertex {
+                normal: [0; 4],
+                pos: p.to_array(),
+                uv,
+                layer: 2,
+                color,
+                light: 0,
+
+                glint_uv: [0.0, 0.0],
+            });
+        }
+    }
+    let bodies = vec![CelestialBody::EndFlash; out.len() / 4];
+    (out, bodies)
+}
+
 impl EndState {
     pub(super) fn locator(&self) -> Option<Arc<VanillaTerrain>> {
         self.locator.lock().unwrap().clone()
@@ -349,7 +395,7 @@ impl EyeOfEnder {
     fn update_delta(old: glam::DVec3, position: glam::DVec3, target: glam::DVec3) -> glam::DVec3 {
         let horizontal = glam::DVec3::new(target.x - position.x, 0.0, target.z - position.z);
         let length = horizontal.length();
-        let old_horizontal = old.x.hypot(old.z);
+        let old_horizontal = sunrise_core::geometry::length(old.x, old.z);
         let mut wanted_speed = old_horizontal + 0.0025 * (length - old_horizontal);
         let mut y = old.y;
         if length < 1.0 {
@@ -366,10 +412,25 @@ impl EyeOfEnder {
     }
 }
 
+pub(super) struct CrystalDrawFrame<'a> {
+    model: &'a sunrise_client::mobs::Part,
+    uv: [f32; 4],
+    partial: f32,
+}
+
 impl Game<'_> {
     /// The environment attributes the frame draws: the packs' Polytone layers over the
-    /// current dimension's, when a pack has some. Gameplay keeps `dim_environment`.
+    /// current dimension's, when a pack has some. Gameplay keeps `dim_environment`. A client of a
+    /// server draws the type its server sent, with the packs' layers over it where they have a
+    /// stack of that type.
     pub(super) fn view_environment(&self) -> &Environment {
+        if let Some(own) = self.remote.as_ref().and_then(|r| {
+            r.level_pack_environment
+                .as_deref()
+                .or(r.level_environment.as_deref())
+        }) {
+            return own;
+        }
         match (&self.pack.environments, self.dim) {
             (Some(e), Dim::Overworld) => &e[0],
             (Some(e), Dim::Nether) => &e[1],
@@ -380,58 +441,31 @@ impl Game<'_> {
 
     /// The environment attributes of the current dimension.
     pub(super) fn dim_environment(&self) -> &Environment {
-        // A client of a server draws a level of a mod or a pack with the type the server sent.
+        // A client of a server takes the type the server sent, built-in levels included.
         if let Some(own) = self
             .remote
             .as_ref()
-            .and_then(|r| r.level_environment.as_ref())
+            .and_then(|r| r.level_environment.as_deref())
         {
             return own;
         }
         self.res.environment_of(&self.dimension_type().id)
     }
 
-    /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh.
-    pub(super) fn end_flash_geometry(&self) -> Vec<Vertex> {
-        let mut out = Vec::new();
+    /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh: its quad, if
+    /// any, with what it is.
+    pub(super) fn end_flash_geometry(&self) -> (Vec<Vertex>, Vec<CelestialBody>) {
         // The old combined sky/flash draw also skipped the flash without a sky sprite.
         if !self.gui.atlas.sprites.contains_key("environment/end_sky") {
-            return out;
+            return (Vec::new(), Vec::new());
         }
-        // SkyRenderer.renderEndFlash: the end_flash sprite at height 100, scale 60.
         let intensity = self.end.flash.intensity(self.clock.fraction() as f32);
-        if intensity > 1e-5
-            && let Some(r) = self
-                .gui
-                .atlas
-                .sprites
-                .get("environment/celestial/end_flash")
-                .copied()
-        {
-            let pose = self.end.flash.pose();
-            let level = (intensity.clamp(0.0, 1.0) * 255.0) as u32;
-            let color = level << 24 | level << 16 | level << 8 | level;
-            let corners = [
-                (-1.0, -1.0, [r.u0, r.v0]),
-                (1.0, -1.0, [r.u1, r.v0]),
-                (1.0, 1.0, [r.u1, r.v1]),
-                (-1.0, 1.0, [r.u0, r.v1]),
-            ];
-            for (x, z, uv) in corners {
-                let p = pose.transform_point3(glam::Vec3::new(x * 60.0, 100.0, z * 60.0));
-                out.push(Vertex {
-                    normal: [0; 4],
-                    pos: p.to_array(),
-                    uv,
-                    layer: 2,
-                    color,
-                    light: 0,
-
-                    glint_uv: [0.0, 0.0],
-                });
-            }
-        }
-        out
+        let sprite = self
+            .gui
+            .atlas
+            .sprites
+            .get("environment/celestial/end_flash");
+        end_flash_quad(sprite.copied(), intensity, self.end.flash.pose())
     }
 
     /// Iris's `endFlashIntensity` and the flash's direction (camera-relative, length 100: the
@@ -493,7 +527,7 @@ impl Game<'_> {
         });
         let Some((hit, state)) = target else {
             // EnderEyeItem.useOn passes off a frame: a guest's UseItem throws it.
-            if matches!(self.guest_use, Some(super::GuestUse::OnBlock(_))) {
+            if matches!(self.guest_use, Some(super::GuestUse::OnBlock { .. })) {
                 return Ok(false);
             }
             // EnderEyeItem.use: startUsingItem (getUseDuration 0, so the use
@@ -677,12 +711,14 @@ impl Game<'_> {
         (portal, gateway)
     }
 
-    /// EndPortalBlock.getPortalDestination for the pending enter_dimension.
-    pub(super) fn end_destination(&self, target: Dim) -> Option<Vec3> {
+    /// EndPortalBlock.getPortalDestination for the pending enter_dimension: into
+    /// the End when `entering`, else out of it to `target`, the respawn point's
+    /// level or the world spawn's (which may be the End itself).
+    pub(super) fn end_destination(&self, entering: bool, target: Dim) -> Option<Vec3> {
         if !self.end_portal_travel {
             return None;
         }
-        if target == Dim::End {
+        if entering {
             // Vec3.atBottomCenterOf(END_SPAWN_POINT), one block lower for players.
             return Some(Vec3::new(
                 f64::from(END_SPAWN[0]) + 0.5,
@@ -703,16 +739,19 @@ impl Game<'_> {
     }
 
     /// Where an End portal's traveller lands once `target` has loaded, and
-    /// the yaw it faces there: the platform below the End's spawn point,
-    /// facing west, or the top of the Overworld's spawn column.
+    /// the yaw and pitch it faces there (None keeps its own): entering, the
+    /// platform below the End's spawn point, facing west; leaving, the bed or
+    /// anchor facing it, else the world spawn's column in its level, facing
+    /// the world spawn's angle (`TeleportTransition.createDefault`).
     /// None while a candidate of the world spawn's search loads (`finder`
     /// keeps it, see `search_spawn`).
     pub(super) fn end_arrival(
         &mut self,
+        entering: bool,
         target: Vec3,
         finder: &mut Option<PlayerSpawnFinder>,
-    ) -> Result<Option<(Vec3, Option<f32>)>> {
-        if self.dim == Dim::End {
+    ) -> Result<Option<(Vec3, [Option<f32>; 2])>> {
+        if entering {
             // EndPlatformFeature.createEndPlatform below the spawn point.
             let origin = [END_SPAWN[0], END_SPAWN[1] - 1, END_SPAWN[2]];
             for dz in -2..=2 {
@@ -740,33 +779,49 @@ impl Game<'_> {
                 }
             }
             self.native_portal_create("minecraft:the_end", origin);
-            // Direction.WEST.toYRot().
-            return Ok(Some((target, Some(90.0))));
+            // Direction.WEST.toYRot(); the pitch is relative (Relative.X_ROT).
+            return Ok(Some((target, [Some(90.0), None])));
         }
         // ServerPlayer.findRespawnPositionAndUseSpawnBlock: where the bed or
         // anchor puts the player, facing it; else onto the spawn column.
         let mut target = target;
         if let Some(c) = self.respawn_config.filter(|c| c.dim == self.dim) {
-            // This existing owner transition adapter carries yaw only; its pitch path remains open.
-            if let Some((at, yaw, _pitch)) = self.find_respawn_and_use(c, false)? {
-                return Ok(Some((at, Some(yaw))));
+            if let Some((at, yaw, pitch)) = self.find_respawn_and_use(c, false)? {
+                return Ok(Some((at, [Some(yaw), Some(pitch)])));
             }
             target = fallback_spawn(self.spawn, self.level.world_spawn);
         }
+        // TeleportTransition.createDefault: the world spawn's yaw and pitch; a bed of
+        // the player's own (`spawn`) keeps the way it faced.
+        let [yaw, pitch] = self.level.world_spawn_angle;
+        let facing = if self.spawn.is_some() {
+            [None, None]
+        } else {
+            [Some(yaw), Some(pitch)]
+        };
+        Ok(match self.end_exit_landing(target, finder) {
+            Ok(at) => Some((at, facing)),
+            Err(chunk) => {
+                self.spawn_wait.push(chunk);
+                None
+            }
+        })
+    }
+
+    /// `TeleportTransition.findAdjustedSharedSpawnPos` on the shared spawn column;
+    /// elsewhere, use the personal column's surface or its saved height if it has none.
+    /// Returns the next chunk to load if the shared spawn search is still pending.
+    pub(super) fn end_exit_landing(
+        &self,
+        target: Vec3,
+        finder: &mut Option<PlayerSpawnFinder>,
+    ) -> std::result::Result<Vec3, (i32, i32)> {
         let (x, z) = (target.x.floor() as i32, target.z.floor() as i32);
-        // TeleportTransition.missingRespawnBlock: PlayerSpawnFinder around
-        // the world spawn.
         if let Some(world) = self.level.world_spawn.filter(|w| w[0] == x && w[2] == z) {
-            return Ok(match self.search_spawn(world, finder) {
-                Ok(at) => Some((at, None)),
-                Err(chunk) => {
-                    self.spawn_wait.push(chunk);
-                    None
-                }
-            });
+            return self.search_spawn(world, finder);
         }
         let y = self.land_column(x, z).map_or(target.y, f64::from);
-        Ok(Some((Vec3::new(target.x, y, target.z), None)))
+        Ok(Vec3::new(target.x, y, target.z))
     }
 
     /// EnderDragonFight without a dragon: once the centre of the main island
@@ -1041,6 +1096,16 @@ impl Game<'_> {
 
     /// TheEndGatewayBlockEntity.findTallestBlock.
     fn tallest_block(&self, around: [i32; 3], dist: i32, allow_bedrock: bool) -> [i32; 3] {
+        self.tallest_block_in(&self.world, around, dist, allow_bedrock)
+    }
+    /// [`Self::tallest_block`] in the loaded level `world`.
+    pub(in crate::game) fn tallest_block_in(
+        &self,
+        world: &sunrise_client::world::World,
+        around: [i32; 3],
+        dist: i32,
+        allow_bedrock: bool,
+    ) -> [i32; 3] {
         let mut tallest: Option<[i32; 3]> = None;
         for xd in -dist..=dist {
             for zd in -dist..=dist {
@@ -1051,7 +1116,7 @@ impl Game<'_> {
                 let mut y = 255;
                 while y > floor {
                     let p = [around[0] + xd, y, around[2] + zd];
-                    let f = self.res.facts().get(self.world.block(p[0], p[1], p[2]));
+                    let f = self.res.facts().get(world.block(p[0], p[1], p[2]));
                     if f.full_collision && (allow_bedrock || &*f.name != "minecraft:bedrock") {
                         tallest = Some(p);
                         break;
@@ -1185,74 +1250,78 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// End crystals (on the spikes, or placed in any dimension) and thrown
-    /// eyes of ender, as camera-relative entity geometry (End portals and
-    /// gateways are block entities).
-    pub(super) fn end_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
-        self.end_crystal_geometry(camera, out);
-        self.eye_geometry(camera, out);
+    pub(super) fn begin_crystal_geometry(&self) -> Option<CrystalDrawFrame<'_>> {
+        if self.crystals.is_empty() {
+            return None;
+        }
+        let model = self.crystal_model.as_ref()?;
+        let r = self
+            .gui
+            .atlas
+            .sprites
+            .get("entity/end_crystal/end_crystal")?;
+        Some(CrystalDrawFrame {
+            model,
+            uv: [r.u0, r.v0, r.u1, r.v1],
+            partial: self.clock.fraction() as f32,
+        })
     }
 
-    /// EndCrystalRenderer and EndCrystalModel for the end crystals, and the
-    /// beam to a crystal's target (the spikes being summoned back).
-    fn end_crystal_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
-        let (Some(model), Some(r)) = (
-            self.crystal_model.as_ref(),
-            self.gui
-                .atlas
-                .sprites
-                .get("entity/end_crystal/end_crystal")
-                .copied(),
-        ) else {
+    /// `EndCrystalRenderer.submit`: the crystal and its beam to the respawn target.
+    pub(super) fn end_crystal_geometry(
+        &self,
+        crystal: &super::dragon::Crystal,
+        frame: &CrystalDrawFrame<'_>,
+        camera: glam::DVec3,
+        out: &mut Vec<Vertex>,
+    ) {
+        let feet = glam::DVec3::new(crystal.position.x, crystal.position.y, crystal.position.z);
+        let rel = feet - camera;
+        if rel.length_squared() > 256.0 * 256.0 {
             return;
-        };
-        let uv = [r.u0, r.v0, r.u1, r.v1];
-        let partial = self.clock.fraction() as f32;
-        for crystal in &self.crystals {
-            let feet = glam::DVec3::new(crystal.position.x, crystal.position.y, crystal.position.z);
-            let rel = feet - camera;
-            if rel.length_squared() > 256.0 * 256.0 {
-                continue;
-            }
-            let age = crystal.time as f32 + partial;
-            let light = self.world.light(
-                feet.x.floor() as i32,
-                feet.y.floor() as i32,
-                feet.z.floor() as i32,
+        }
+        let age = crystal.time as f32 + frame.partial;
+        let light = self.world.light(
+            feet.x.floor() as i32,
+            feet.y.floor() as i32,
+            feet.z.floor() as i32,
+        );
+        let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+        let poses = sunrise_client::end_crystal::poses(frame.model, age, crystal.show_bottom);
+        // poseStack.scale(2) then translate(0, -0.5, 0), not flipped.
+        let base = glam::Mat4::from_translation(rel.as_vec3())
+            * glam::Mat4::from_scale(glam::Vec3::splat(2.0))
+            * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.5, 0.0));
+        let start = out.len();
+        self.mark_entity(start, "minecraft:end_crystal");
+        self.mark_motion(start, 0);
+        sunrise_client::mobs::render::draw(
+            frame.model,
+            base,
+            &poses,
+            frame.uv,
+            0xFFFF_FFFF,
+            packed,
+            0,
+            out,
+        );
+        // HDR output: the crystal shines; its tier's window leaves the dark base alone
+        // (entity.wgsl fs_hdr_mark).
+        for v in &mut out[start..] {
+            v.layer |= u32::from(sunrise_client::mesher::BRIGHT) << 16;
+        }
+        #[cfg(test)]
+        super::native_render_pair_tests::witness_body(crystal.id, start, out.len());
+        if let Some(target) = crystal.beam {
+            // The beam from the target's centre up to the bobbing crystal.
+            let from = glam::DVec3::new(
+                f64::from(target[0]) + 0.5,
+                f64::from(target[1]) + 0.5,
+                f64::from(target[2]) + 0.5,
             );
-            let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            let poses = sunrise_client::end_crystal::poses(model, age, crystal.show_bottom);
-            // poseStack.scale(2) then translate(0, -0.5, 0), not flipped.
-            let base = glam::Mat4::from_translation(rel.as_vec3())
-                * glam::Mat4::from_scale(glam::Vec3::splat(2.0))
-                * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.5, 0.0));
-            let start = out.len();
-            sunrise_client::mobs::render::draw(
-                model,
-                base,
-                &poses,
-                uv,
-                0xFFFF_FFFF,
-                packed,
-                0,
-                out,
-            );
-            // HDR output: the crystal shines; its tier's window leaves the dark base alone
-            // (entity.wgsl fs_hdr_mark).
-            for v in &mut out[start..] {
-                v.layer |= u32::from(sunrise_client::mesher::BRIGHT) << 16;
-            }
-            if let Some(target) = crystal.beam {
-                // The beam from the target's centre up to the bobbing crystal.
-                let from = glam::DVec3::new(
-                    f64::from(target[0]) + 0.5,
-                    f64::from(target[1]) + 0.5,
-                    f64::from(target[2]) + 0.5,
-                );
-                let delta = feet - from
-                    + glam::DVec3::new(0.0, f64::from(sunrise_client::end_crystal::y(age)), 0.0);
-                self.crystal_beam(from, delta, age, camera, out);
-            }
+            let delta = feet - from
+                + glam::DVec3::new(0.0, f64::from(sunrise_client::end_crystal::y(age)), 0.0);
+            self.crystal_beam(from, delta, age, camera, out);
         }
     }
 
@@ -1295,7 +1364,7 @@ impl Game<'_> {
         );
         // EyeOfEnder.signalTo.
         let delta = target - start;
-        let horizontal = delta.x.hypot(delta.z);
+        let horizontal = sunrise_core::geometry::length(delta.x, delta.z);
         let target = if horizontal > 12.0 {
             start
                 + glam::DVec3::new(
@@ -1439,7 +1508,7 @@ impl Game<'_> {
         }
     }
     /// ThrownItemRenderer: the ender eye item facing the camera.
-    fn eye_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+    pub(super) fn eye_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         let Some(r) = self.gui.atlas.sprites.get("item/ender_eye").copied() else {
             return;
         };
@@ -1866,8 +1935,40 @@ mod tests {
         );
     }
 
+    /// `EndPortalBlock.getPortalDestination` out of the End when the world spawn is set in
+    /// the End itself: an exit, not an entry, so no platform is built and the player faces the
+    /// world spawn's angle (`TeleportTransition.createDefault`); the way in builds it and
+    /// turns the player west.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn leaving_the_end_for_a_world_spawn_there_builds_no_platform() {
+        use super::super::native_entity_refs::tests::with_game;
+        use std::sync::Arc;
+
+        with_game(|game| {
+            game.enter_level(Dim::End).unwrap();
+            let platform = [END_SPAWN[0], END_SPAWN[1] - 2, END_SPAWN[2]];
+            let chunk = (platform[0] >> 4, platform[2] >> 4);
+            game.world.chunks.insert(
+                chunk,
+                Arc::new(sunrise_client::chunk::Chunk::empty(chunk.0, chunk.1)),
+            );
+            game.respawn_config = None;
+            game.spawn = None;
+            game.level.world_spawn = None;
+            game.level.world_spawn_angle = [45.0, -10.0];
+            let target = Vec3::new(9.5, 70.0, -3.5);
+            let exit = game.end_arrival(false, target, &mut None).unwrap();
+            assert_eq!(exit, Some((target, [Some(45.0), Some(-10.0)])));
+            assert_eq!(&*game.block_name(platform), "minecraft:air");
+            let entry = game.end_arrival(true, target, &mut None).unwrap();
+            assert_eq!(entry, Some((target, [Some(90.0), None])));
+            assert_eq!(&*game.block_name(platform), "minecraft:obsidian");
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn a_pearl_reads_its_end_gateway_cooldown_and_refuses_the_write() {
         use super::super::native_entity_refs::tests::with_game;
 
@@ -1993,6 +2094,26 @@ mod tests {
         let corners = quad.map(|v| glam::Vec3::from_array(v.pos));
         let centre = corners.iter().copied().sum::<glam::Vec3>() / 4.0;
         assert!((centre - at).abs_diff_eq(up_dir * 0.125, 1e-5), "{centre}");
+    }
+
+    /// The End's flash quad says it is the End's flash, and there is no entry without the quad.
+    #[test]
+    fn the_end_flash_quad_is_the_end_flash() {
+        let sprite = sunrise_client::hud::Rect {
+            u0: 0.25,
+            v0: 0.0,
+            u1: 0.375,
+            v1: 0.125,
+            w: 16,
+            h: 16,
+        };
+        let pose = flash_pose(-60.0, 30.0);
+        let (quad, bodies) = end_flash_quad(Some(sprite), 1.0, pose);
+        assert_eq!((quad.len(), bodies), (4, vec![CelestialBody::EndFlash]));
+        for (sprite, intensity) in [(Some(sprite), 0.0), (None, 1.0)] {
+            let (quad, bodies) = end_flash_quad(sprite, intensity, pose);
+            assert!(quad.is_empty() && bodies.is_empty());
+        }
     }
 
     /// `endFlashPosition`'s direction: the flash sprite's centre, 100 blocks away.

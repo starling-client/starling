@@ -1,11 +1,11 @@
 mod support;
-use sunrise_assets::{model::*, resolve::ModelLibrary};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_assets::{model::*, resolve::ModelLibrary};
 
 fn material(value: &Material) -> Value {
     json!({"sprite":value.sprite,"translucent":value.force_translucent})

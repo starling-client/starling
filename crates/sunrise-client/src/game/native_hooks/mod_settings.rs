@@ -10,7 +10,6 @@ static READ: LazyLock<Mutex<HashMap<(PathBuf, String), mod_api::SettingValue>>> 
 /// The typed reads of the settings a mod registered (`Registrar::register_setting`), for the
 /// mod whose hook or part is running (`crash::current_native_mod`): a mod reads only its own.
 // Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// The calling mod's setting `key` as kept in its data folder, or its default.
     fn own_setting(&self, key: &str) -> Option<mod_api::SettingValue> {

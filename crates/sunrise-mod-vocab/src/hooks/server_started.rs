@@ -9,10 +9,12 @@ pub trait Hooks {
     /// open that succeeds (a failed open fires `WorldOpenFailed` instead).
     /// `dedicated` tells a dedicated server from the single player one.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_server_started",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "ServerStartedEvent",
         cancellable = false
     )]
-    fn server_started();
+    fn server_started(dedicated: bool);
 }

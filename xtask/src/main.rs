@@ -1,8 +1,8 @@
 //! Repository tasks, run with `cargo run -p xtask -- TASK`.
 //!
-//! `package BINARY OUTDIR`: a playable Sunrise folder with the game binary, sunrise-ctl,
-//! sunrise-prepare and sunrise-server (built beside it: cargo build --release -p sunrise-game -p sunrise-client-lib
-//! --bins -p sunrise-prepare -p sunrise-server), the exporters sunrise-prepare compiles, its sources (the launcher compares
+//! `package BINARY OUTDIR`: a playable Sunrise folder with the game binary, sunrise-ctl, sunrise-perf,
+//! sunrise-prepare, sunrise-server and sunrise-port-pack (built beside it: cargo build --release -p sunrise-game -p sunrise-client-lib
+//! --bins -p sunrise-perf --bin sunrise-perf -p sunrise-prepare -p sunrise-server -p sunrise-port-pack), the exporters sunrise-prepare compiles, its sources (the launcher compares
 //! them to its own), and PLAY.txt. It holds none of Minecraft's files: players prepare those
 //! from their own copy. .github/workflows/release.yml makes the release folders with it.
 //!
@@ -38,21 +38,19 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | mod-api [notes|coverage] | tokens | icons | perf-wasm | mixins-tool release | mixins-tool patch SOURCE | mixins-tool identity TARGET | sdk-index DIST COMMIT DATE [--nightly NAME] [--previous BUILD DIFF]";
+const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | mod-api [notes|counterparts] | tokens | icons | perf-wasm | mixins-tool release | mixins-tool patch SOURCE | mixins-tool identity TARGET | sdk-index DIST COMMIT DATE [--nightly NAME] [--previous BUILD DIFF]";
 
 /// What the release folder takes from the repository at HEAD, as `git archive` writes it.
-const ARCHIVED: [&str; 5] = [
+const ARCHIVED: [&str; 6] = [
     "tools",
     "mods/sunrise/src/test/java",
     "crates/sunrise-prepare",
     "research-lock.json",
     "LICENSE",
+    "LICENSES/MIT-Horizon.txt",
 ];
 
-// The programs that sit beside the client (sunrise-ctl, the command line and MCP server that play
-// the game; sunrise-prepare, which prepares the resources from the player's own Minecraft;
-// sunrise-server, which hosts a server with the client as its engine, docs/server.md) and the
-// wasm runtime are listed, with the checkout's exporters, in the SDK's required inputs
+// The release's companion programs and exporters come from the SDK's required inputs
 // (`sunrise_mod_package::sdk::inputs`): routes `package` and `package-server`.
 
 fn main() -> ExitCode {
@@ -64,7 +62,9 @@ fn main() -> ExitCode {
         }
         [task] if task == "mod-api" => mod_api::run(),
         [task, notes] if task == "mod-api" && notes == "notes" => mod_api::notes(),
-        [task, coverage] if task == "mod-api" && coverage == "coverage" => mod_api::coverage(),
+        [task, counterparts] if task == "mod-api" && counterparts == "counterparts" => {
+            mod_api::counterparts()
+        }
         [task, dist, commit, date, options @ ..] if task == "sdk-index" => {
             sdk_index(Path::new(dist), commit, date, options)
         }
@@ -138,9 +138,15 @@ fn perf_wasm() -> Result<(), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let status = Command::new(&cargo)
         .current_dir(repo)
+        // The cdylib is asked for here, not in sunrise-perf's manifest: a cdylib's file name carries no hash, so every
+        // native build of the crate would write the same file and rebuild it, and all above it, whenever two builds
+        // in one target folder resolve it differently. LTO stays off, as it was while the manifest also asked for an
+        // rlib (Cargo skips LTO for such a crate): the page's wasm keeps its size.
         .args([
-            "build",
+            "rustc",
             "--release",
+            "--config",
+            "profile.release.lto=false",
             "--lib",
             "-p",
             "sunrise-perf",
@@ -148,9 +154,11 @@ fn perf_wasm() -> Result<(), String> {
             "wasm",
             "--target",
             "wasm32-unknown-unknown",
+            "--crate-type",
+            "cdylib",
         ])
         .status()
-        .map_err(|e| format!("{cargo} build: {e}"))?;
+        .map_err(|e| format!("{cargo} rustc: {e}"))?;
     if !status.success() {
         return Err(
             "the wasm build failed; `rustup target add wasm32-unknown-unknown` installs the target"
@@ -431,8 +439,7 @@ fn program_name(program: &Path, name: &str) -> String {
     }
 }
 
-/// Copies the files `route` needs beside `program` (its companion programs and the wasm
-/// runtime) into `out`.
+/// Copies the files `route` needs beside `program` (its companion programs) into `out`.
 fn copy_runtime(route: &str, program: &Path, out: &Path) -> Result<(), String> {
     let inputs = sunrise_mod_package::sdk::inputs();
     let route = inputs.route(route).map_err(|e| e.to_string())?;
@@ -678,8 +685,9 @@ mod tests {
         for name in [
             "sunrise-client",
             "sunrise-ctl",
-            "sunrise-prepare",
+            "sunrise-perf",
             "sunrise-server",
+            "sunrise-port-pack",
         ] {
             fs::write(bin.join(name), b"").unwrap();
         }
@@ -687,7 +695,7 @@ mod tests {
         fs::create_dir_all(&out).unwrap();
         fs::write(out.join("kept"), b"").unwrap();
         let error = package(&bin.join("sunrise-client"), &out).unwrap_err();
-        assert!(error.contains("sunrise-wasm-std.wasm"), "{error}");
+        assert!(error.contains("sunrise-prepare"), "{error}");
         assert!(!error.contains("sunrise-ctl,"), "{error}");
         assert!(
             out.join("kept").is_file(),

@@ -1,0 +1,15 @@
+ids = [
+    "type:BlockStateId",
+    "type:BlockStateId.0",
+    "type:SectionCell.State",
+    "hook:section_visibility",
+    "hook:alter_ground",
+    "trait:GroundStateProvider",
+    "method:GroundStateProvider::state_at",
+    "method:GroundLevel::block_state",
+    "method:GroundLevel::decorator_state",
+    "handle:GroundProvider::state_at",
+    "handle:FluidStates::legacy_block",
+]
+why = "Tree ground providers, fluid legacy-block queries and section-visibility cell snapshots used to expose numbers tied to the running game's state table. They now use the same canonical BlockState as other placement and level APIs. No mod API call needs the old BlockStateId type. The visibility hook reads the canonical state like vanilla's SectionCompiler.compile; no NeoForge counterpart is verified. Ground retries, invalid-state refusal and random draws are unchanged."
+migrate = "Rebuild for section_visibility v2 and alter_ground v2. Import BlockState instead of BlockStateId. In GroundStateProvider::state_at implementations and GroundProvider::state_at or GroundLevel::decorator_state callers, replace Option<BlockStateId> with Option<BlockState>; GroundLevel::block_state returns BlockState directly. In section_visibility listeners, match SectionCell::State(state) against BlockState rather than BlockStateId. Replace Some(BlockStateId(number)) with Some(state), where state is read from the level, returned by the wrapped provider, or resolved in setup with host.block_state_id(\"namespace:block[property=value]\"); keep None to try the next position. Compare states directly, or compare state.block() for block identity, instead of reading .0. FluidStates::legacy_block(fluid_state) now returns Option<BlockState>: pass the value directly to block-state APIs instead of unpacking a number."

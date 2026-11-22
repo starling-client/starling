@@ -3,12 +3,12 @@
 //! and writes it), loads again (reads it) and compares the sprite arrays.
 //! cargo run --profile fast -p sunrise-client --example sprite_cache_parity -- ROOT
 extern crate sunrise_client_lib as sunrise_client;
-use sunrise_client::assets::{Assets, RenderAssets};
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     path::Path,
     time::Instant,
 };
+use sunrise_client::assets::{Assets, RenderAssets};
 
 fn digest(render: &RenderAssets) -> u64 {
     let mut h = DefaultHasher::new();

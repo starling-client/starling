@@ -1,8 +1,8 @@
 //! End cities: EndCityStructure piece assembly (EndCityPieces section
 //! generators) and EndCityPiece data markers.
+use std::sync::Arc;
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_core::{geometry::Direction, random::RandomSource};
-use std::sync::Arc;
 use {
     super::{
         Mirror, Rotation, StructureResources, StructureTemplate,

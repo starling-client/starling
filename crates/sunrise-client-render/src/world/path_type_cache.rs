@@ -1,8 +1,8 @@
 //! One direct-mapped static path cache per logical server level, shared by its workers.
 use super::World;
-use sunrise_core::position::BlockPos;
 use mod_api::PathType;
 use std::sync::Mutex;
+use sunrise_core::position::BlockPos;
 
 const SLOTS: usize = 4096;
 #[derive(Default)]
@@ -83,8 +83,8 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_world::registry::BlockStateId;
     use std::cell::Cell;
+    use sunrise_world::registry::BlockStateId;
 
     #[test]
     fn slot_matches_long_mix_vectors() {

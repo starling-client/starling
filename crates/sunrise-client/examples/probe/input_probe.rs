@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
-use sunrise_client::{Result, input};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_client::{Result, input};
 fn number(v: &Value) -> f32 {
     f32::from_bits(u32::from_str_radix(v.as_str().unwrap(), 16).unwrap())
 }

@@ -1,26 +1,19 @@
 //! Client-only standalone model registration.
 use super::{ExecutionRole, Game, RegistrationContext};
-use mod_api::__private::game::RegistrationContextNew;
+use mod_api::{
+    __private::game::{RegistrationContextNew, StandaloneModelRegistration},
+    Answered,
+};
 
 pub(super) fn collect_standalone_models(
     role: ExecutionRole,
-) -> Option<sunrise_client::models::StandaloneModels> {
+) -> Option<Vec<Answered<StandaloneModelRegistration>>> {
     if !role.is_client() {
         return None;
     }
-    let mut names = Vec::new();
-    let mut forms = Vec::new();
-    Game::native_standalone_models(&RegistrationContext::new(), &mut names, &mut forms);
-    Some(sunrise_client::models::StandaloneModels {
-        names,
-        forms: forms
-            .into_iter()
-            .map(|entry| sunrise_client::models::StandaloneFormRegistration {
-                owner: entry.mod_id,
-                form: entry.answer,
-            })
-            .collect(),
-    })
+    let mut registrations = Vec::new();
+    Game::native_standalone_models(&RegistrationContext::new(), &mut registrations);
+    Some(registrations)
 }
 
 #[cfg(test)]
@@ -49,12 +42,10 @@ mod tests {
                     ["registration_test"]
                 );
                 self.0.fetch_add(1, Ordering::Relaxed);
-                event.models.push("registration_test:block/shaft".into());
-                event.forms.push(mod_api::StandaloneModelForm::Rotated {
-                    id: "other_namespace:shaft_east".into(),
-                    model: "registration_test:block/shaft".into(),
-                    turns: [0, 1, 0],
-                    uvlock: true,
+                let shaft = "registration_test:block/shaft";
+                event.register_model(shaft);
+                event.register("other_namespace:shaft_east", [shaft], move |bake| {
+                    bake.append_dependency(shaft, [0, 1, 0], true)
                 });
             }
         }
@@ -67,21 +58,24 @@ mod tests {
             .into(),
             || {
                 mod_platform::__private::with_test_packages(&["registration_test"], || {
-                    assert_eq!(
-                        collect_standalone_models(ExecutionRole::IntegratedServer),
-                        None
-                    );
-                    assert_eq!(
-                        collect_standalone_models(ExecutionRole::DedicatedServer),
-                        None
-                    );
+                    assert!(collect_standalone_models(ExecutionRole::IntegratedServer).is_none());
+                    assert!(collect_standalone_models(ExecutionRole::DedicatedServer).is_none());
                     assert_eq!(calls.load(Ordering::Relaxed), 0);
-                    let models = collect_standalone_models(ExecutionRole::Client).unwrap();
+                    let registrations = collect_standalone_models(ExecutionRole::Client).unwrap();
                     assert_eq!(calls.load(Ordering::Relaxed), 1);
-                    assert_eq!(models.names, ["registration_test:block/shaft"]);
-                    assert_eq!(models.forms.len(), 1);
-                    assert_eq!(models.forms[0].owner, "registration_test");
-                    assert_eq!(models.forms[0].form.id(), "other_namespace:shaft_east");
+                    let [plain, transformed] = &registrations[..] else {
+                        panic!("expected a file followed by a baker");
+                    };
+                    assert!(matches!(
+                        &plain.answer,
+                        StandaloneModelRegistration::File(id) if id == "registration_test:block/shaft"
+                    ));
+                    let StandaloneModelRegistration::Baker(baker) = &transformed.answer else {
+                        panic!("expected a baker");
+                    };
+                    assert_eq!(transformed.mod_id, "registration_test");
+                    assert_eq!(baker.id, "other_namespace:shaft_east");
+                    assert_eq!(baker.dependencies, ["registration_test:block/shaft"]);
                 })
             },
         );

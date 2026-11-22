@@ -1,8 +1,8 @@
 use super::super::super::{Game, execution_role::ExecutionRole, game_tests::tests::server_game};
 use super::super::{Kind, Station};
+use std::sync::Arc;
 use sunrise_client::items::ItemStack;
 use sunrise_protocol::connection::Pipe;
-use std::sync::Arc;
 
 /// A client on a server whose data pack adds `fixture:drill`, which the
 /// game's own table doesn't have: the registry sync sent its definition.
@@ -33,7 +33,7 @@ fn client_on_a_server_with_a_custom_enchantment<'a>(
 /// book of a data pack's enchantment on a pickaxe shows its result, as the
 /// server computes it, instead of the red cross (#8688).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_servers_custom_enchantment_book_gives_an_anvil_result() {
     let mut resources = None;
     let mut game = client_on_a_server_with_a_custom_enchantment(&mut resources);

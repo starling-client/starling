@@ -319,8 +319,10 @@ impl RulesScreen {
         }
     }
     /// The button came up: the scrollbar lets go.
-    pub fn release(&mut self) {
+    pub fn release(&mut self) -> bool {
+        let handled = self.scroll.held();
         self.scroll.release();
+        handled
     }
     fn focused(&mut self) -> Option<(Option<String>, &mut EditBox)> {
         if self.search.focused {
@@ -380,34 +382,35 @@ impl RulesScreen {
         Some((i + 1, &self.numbers[i].1))
     }
 
-    /// A left click; Some when the screen closes.
+    /// A left click: the exit, if any, and whether the screen took the press.
     pub fn click(
         &mut self,
         atlas: &HudAtlas,
         cursor: (f32, f32),
         size: (f32, f32),
-    ) -> Option<Exit> {
+    ) -> (Option<Exit>, bool) {
         let (w, h) = size;
         let on = |x: f32, y: f32, bw: f32, bh: f32| ui::hovered(cursor, x, y, bw, bh);
         if self.confirm {
-            match confirm(&atlas.font, size).answer_at(cursor) {
-                Some(true) => return Some(Exit::Discard),
+            let answer = confirm(&atlas.font, size).answer_at(cursor);
+            match answer {
+                Some(true) => return (Some(Exit::Discard), true),
                 Some(false) => self.confirm = false,
                 None => {}
             }
-            return None;
+            return (None, answer.is_some());
         }
         let [(dx, dy), (cx, cy)] = footer(w, h);
         if on(dx, dy, 150.0, 20.0) && !self.invalid() {
-            return Some(Exit::Apply(self.changes()));
+            return (Some(Exit::Apply(self.changes())), true);
         }
         if on(cx, cy, 150.0, 20.0) {
-            return self.close();
+            return (self.close(), true);
         }
         // A press on the scrollbar holds it and clicks nothing else.
         if self.press_scrollbar(cursor, size) {
             self.unfocus();
-            return None;
+            return (None, true);
         }
         // A click moves the focus to the widget under it.
         let (sx, sy) = search_at(w);
@@ -416,20 +419,22 @@ impl RulesScreen {
             self.search.focused = true;
             self.search.reset_blink();
             self.search.click(atlas, cursor.0, false, false);
-            return None;
+            return (None, true);
         }
         // On a phone a tap elsewhere lets go of the box, which closes the keyboard.
         if cfg!(target_os = "android") {
             self.unfocus();
         }
         let rows = self.rows();
-        let i = self.hovered(rows.len(), cursor, size)?;
+        let Some(i) = self.hovered(rows.len(), cursor, size) else {
+            return (None, false);
+        };
         let Row::Rule(ref name) = rows[i] else {
-            return None;
+            return (None, false);
         };
         let r = self.values.rule(name).expect("row rule exists").clone();
         if !on(control_x(w), self.row_top(i) + 2.0, 44.0, 20.0) {
-            return None;
+            return (None, false);
         }
         self.unfocus();
         match r.default {
@@ -445,7 +450,7 @@ impl RulesScreen {
                 }
             }
         }
-        None
+        (None, true)
     }
     fn unfocus(&mut self) {
         self.search.focused = false;
@@ -583,13 +588,11 @@ impl RulesScreen {
                             ui::button_as(
                                 batch,
                                 atlas,
-                                x,
-                                cy,
-                                44.0,
-                                20.0,
+                                [x, cy, 44.0, 20.0],
                                 &label,
                                 true,
                                 hover,
+                                None,
                                 |rect| {
                                     bool_narration(&r, value, rect)
                                         .key(crate::widgets::key_of(&("game_rules", r.name)))
@@ -820,7 +823,7 @@ mod tests {
             max: 0,
         };
         let registry = std::sync::Arc::new(
-            crate::gamerules::RuleRegistry::with_bool_rules(&["example:machines".into()], &[rule])
+            crate::gamerules::RuleRegistry::with_mod_rules(&["example:machines".into()], &[rule])
                 .unwrap(),
         );
         let mut screen = RulesScreen::new(&GameRules::with_registry(registry, &[]));

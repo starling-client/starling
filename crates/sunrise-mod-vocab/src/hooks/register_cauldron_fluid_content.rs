@@ -11,6 +11,7 @@ pub trait Hooks {
     /// a fluid that already has a cauldron, an unknown block or fluid, a level property the
     /// block lacks or that isn't an integer, and a total of 0 or one that doesn't divide
     /// evenly by the levels; the rest of a mod's contents still apply.
+    /// If this listener panics or a phase call is refused, none of its registrations take effect.
     #[notes = r#"## Cauldron fluid content
 
 `register_cauldron_fluid_content` runs once the block registry is resolved, before any world
@@ -35,11 +36,14 @@ or that isn't an integer property, and a total of 0 or one that doesn't divide e
 number of levels. The rest of a mod's contents still apply. What a cauldron does when an item
 is used on it is not part of this hook."#]
     #[hook(
+        receiver = "associated",
+        dispatch = "flat",
         side = "server",
-        contract = "collect",
-        out = "contents",
+        version = 2,
+        contract = "listen",
+        staged_surface = "contents",
         context = "registration",
         neoforge = "RegisterCauldronFluidContentEvent"
     )]
-    fn register_cauldron_fluid_content();
+    fn register_cauldron_fluid_content(contents: &mut dyn CauldronFluidContents);
 }

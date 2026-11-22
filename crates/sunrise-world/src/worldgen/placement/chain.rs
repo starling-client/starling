@@ -2,14 +2,24 @@
 use super::{PlacementContext, PlacementError, PlacementModifier, PlacementQueryError};
 use crate::worldgen::anchor::WorldGenerationContext;
 use crate::{heightmap::HeightmapType, worldgen::feature_sort::FeatureIdentity};
-use sunrise_core::random::{InvalidBound, RandomSource};
 use std::cell::Cell;
+use sunrise_core::random::{InvalidBound, RandomSource};
 
 struct Queries<'a, C> {
     world: &'a mut C,
     top: Option<FeatureIdentity>,
 }
 impl<C: PlacementContext> PlacementContext for Queries<'_, C> {
+    fn block_registry(&self) -> Option<&'static crate::registry::BlockRegistry> {
+        self.world.block_registry()
+    }
+    fn state_matches_tag(
+        &mut self,
+        state: crate::registry::BlockStateId,
+        tag: &str,
+    ) -> Result<bool, PlacementQueryError> {
+        self.world.state_matches_tag(state, tag)
+    }
     fn block_survives(
         &mut self,
         state: crate::registry::BlockStateId,

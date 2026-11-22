@@ -10,11 +10,12 @@ pub trait Hooks {
     /// as struck for Channeling's advancement. Not asked for a visual-only
     /// bolt, which hits nothing. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "EntityStruckByLightningEvent",
         cancellable = true
     )]
-    fn entity_struck_by_lightning();
+    fn entity_struck_by_lightning(entity: EntityRef, bolt: EntityRef, cancel: &mut bool);
 }

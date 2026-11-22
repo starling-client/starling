@@ -1,5 +1,5 @@
 # The game workspace's sources: everything a `cargo build` at the root reads, without the folders it never
-# does (the launcher is its own workspace), so editing those rebuilds nothing.
+# does, so editing those rebuilds nothing.
 { lib }:
 let
   root = ../.;
@@ -9,7 +9,6 @@ let
     ".claude"
     ".local"
     "benchmarks"
-    "launcher"
     "nix"
     "target"
     "flake.nix"

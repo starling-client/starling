@@ -77,8 +77,8 @@ fn picture(
             hand: false,
         },
         sunrise_shaders::GameInputs {
-            sky: Some(super::super::pack_sky::inputs()),
-            celestial: Some(super::super::pack_sky::celestial_inputs()),
+            sky: Some(crate::gfx::pack_sky::inputs()),
+            celestial: Some(crate::gfx::pack_sky::celestial_inputs()),
             ..Default::default()
         },
     );
@@ -88,6 +88,12 @@ fn picture(
     frame.title = false;
     frame.skybox = true;
     frame.celestial = celestial;
+    // The sun's quad, then the moon's.
+    let bodies = [
+        crate::gfx::CelestialBody::Sun,
+        crate::gfx::CelestialBody::Moon,
+    ];
+    frame.celestial_bodies = &bodies[..celestial.len() / 4];
     let format = post.formats[1];
     let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |_, _, _, _| {});
     (pixels, format)
@@ -126,6 +132,7 @@ fn decode(p: [u8; 4]) -> f64 {
 /// so a pixel `row` rows below the top of the 16-pixel picture sees it along the view axis at
 /// 16 / tan(elevation) = 16 / (1 - (row + 0.5) / 8) blocks.
 #[test]
+#[ignore = "daily"]
 fn the_sky_disc_reads_its_own_depth() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else { return };
@@ -146,6 +153,7 @@ fn the_sky_disc_reads_its_own_depth() {
 /// The sun's quad (and the moon's behind the camera), 100 blocks away across the view axis:
 /// one depth everywhere.
 #[test]
+#[ignore = "daily"]
 fn the_sun_reads_its_own_depth() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else { return };
@@ -181,6 +189,7 @@ fn the_sun_reads_its_own_depth() {
 /// Where the world left a depth nearer than the far plane, even one farther away than the sky
 /// disc, the world shows (the fixture's grey), not the sky's red.
 #[test]
+#[ignore = "daily"]
 fn the_sky_shows_only_where_the_world_left_the_far_plane() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else { return };

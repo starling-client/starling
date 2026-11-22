@@ -3,13 +3,13 @@
 //! `TreeNodePosition`, dragged or scrolled inside the 252x140 window, with
 //! the progress tooltip of the hovered advancement.
 use super::{Game, Screen, advancements::text_of};
+use std::{sync::Arc, time::Instant};
 use sunrise_client::{
     advancements::{Frame, Tree},
     hud::HudBatch,
     text::{Style, Text},
     ui,
 };
-use std::{sync::Arc, time::Instant};
 
 const INSIDE_W: i32 = 234;
 const INSIDE_H: i32 = 113;
@@ -70,7 +70,7 @@ fn tab_sprite((side, ..): (Side, f32, f32, usize), i: usize, max: usize, selecte
         middle
     };
     let sel = if selected { "_selected" } else { "" };
-    format!("gui/sprites/advancements/tab_{part}{sel}")
+    format!("advancements/tab_{part}{sel}")
 }
 fn icon_offset(side: Side) -> (f32, f32) {
     match side {
@@ -82,19 +82,19 @@ fn icon_offset(side: Side) -> (f32, f32) {
 }
 fn frame_sprite(frame: Frame, obtained: bool) -> &'static str {
     match (frame, obtained) {
-        (Frame::Task, true) => "gui/sprites/advancements/task_frame_obtained",
-        (Frame::Task, false) => "gui/sprites/advancements/task_frame_unobtained",
-        (Frame::Goal, true) => "gui/sprites/advancements/goal_frame_obtained",
-        (Frame::Goal, false) => "gui/sprites/advancements/goal_frame_unobtained",
-        (Frame::Challenge, true) => "gui/sprites/advancements/challenge_frame_obtained",
-        (Frame::Challenge, false) => "gui/sprites/advancements/challenge_frame_unobtained",
+        (Frame::Task, true) => "advancements/task_frame_obtained",
+        (Frame::Task, false) => "advancements/task_frame_unobtained",
+        (Frame::Goal, true) => "advancements/goal_frame_obtained",
+        (Frame::Goal, false) => "advancements/goal_frame_unobtained",
+        (Frame::Challenge, true) => "advancements/challenge_frame_obtained",
+        (Frame::Challenge, false) => "advancements/challenge_frame_unobtained",
     }
 }
 fn box_sprite(obtained: bool) -> &'static str {
     if obtained {
-        "gui/sprites/advancements/box_obtained"
+        "advancements/box_obtained"
     } else {
-        "gui/sprites/advancements/box_unobtained"
+        "advancements/box_unobtained"
     }
 }
 /// The layout of the loaded tree, cached per tree.
@@ -687,7 +687,7 @@ impl Game<'_> {
             ui::nine_slice(
                 batch,
                 atlas,
-                "gui/sprites/advancements/title_box",
+                "advancements/title_box",
                 ix + f(title_left),
                 iy + f(by),
                 f(width),
@@ -776,11 +776,10 @@ impl Game<'_> {
         self.draw_item(batch, &d.icon, ix + f(x + 8), iy + f(y + 5));
     }
     /// A left button press or release.
-    pub(super) fn advancements_mouse(&mut self, pressed: bool, size: [u32; 2]) {
+    pub(super) fn advancements_mouse(&mut self, pressed: bool, size: [u32; 2]) -> bool {
         if !pressed {
-            self.adv_ui.drag = None;
-            self.adv_ui.scrolling = false;
-            return;
+            let dragging = self.adv_ui.drag.take().is_some();
+            return std::mem::take(&mut self.adv_ui.scrolling) || dragging;
         }
         let b = self.interface_batch(size);
         let (w, h) = (b.width, b.height);
@@ -794,7 +793,7 @@ impl Game<'_> {
             self.audio
                 .play("minecraft:ui.button.click", None, 0.25, 1.0);
             self.close_advancements();
-            return;
+            return true;
         }
         let view = self.adv_view();
         let (left, top) = window(w, h);
@@ -815,10 +814,11 @@ impl Game<'_> {
                     self.adv_ui.tab = Some(t);
                     self.adv_ui.scroll = None;
                 }
-                return;
+                return true;
             }
         }
         self.adv_ui.drag = Some(self.cursor);
+        true
     }
     /// `mouseDragged` with the left button: the first step starts
     /// scrolling, later ones move the tree.
@@ -844,7 +844,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod seen_advancement_tests {
     use super::*;
-    use sunrise_protocol::buf::{Codec, Reader, Writer};
+    use sunrise_core::vanilla_bytes::Writer;
+    use sunrise_protocol::buf::{Codec, Reader};
     use sunrise_protocol::packets::play::SeenAdvancements;
 
     /// `ServerboundSeenAdvancementsPacket.openedTab` and `closedScreen`: an

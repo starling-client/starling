@@ -150,7 +150,7 @@ fn registered_kind_remainder_merges_or_enters_inventory_or_drops() {
 }
 
 #[test]
-fn registered_kind_stale_result_takes_nothing_after_grid_change() {
+fn registered_kind_result_is_cleared_after_grid_change() {
     crate::crafting::mod_kinds::tests::with_recipe(0, |recipes, calls| {
         bare_env(|base| {
             let env = Env {
@@ -161,7 +161,8 @@ fn registered_kind_stale_result_takes_nothing_after_grid_change() {
                 let mut menu = Menu::new(kind);
                 menu.set_slot(&env, 1, Some(ItemStack::new("test:input", 2)));
                 assert_eq!(menu.slot(0), Some(&ItemStack::new("test:output", 3)));
-                menu.containers[GRID][0] = Some(ItemStack::new("test:rest", 2));
+                menu.set_slot(&env, 1, Some(ItemStack::new("test:rest", 2)));
+                assert!(menu.slot(0).is_none());
                 menu.click(&env, 0, 0, Input::Pickup).unwrap();
                 assert_eq!(
                     menu.containers[GRID][0],
@@ -175,7 +176,7 @@ fn registered_kind_stale_result_takes_nothing_after_grid_change() {
 }
 
 #[test]
-fn registered_kind_reload_removing_last_recipe_rejects_cached_result() {
+fn registered_kind_recomputes_to_no_result_when_reload_removes_last_recipe() {
     crate::crafting::mod_kinds::tests::with_recipe(0, |recipes, calls| {
         bare_env(|base| {
             let old = Env {
@@ -201,6 +202,8 @@ fn registered_kind_reload_removing_last_recipe_rejects_cached_result() {
                     recipes: &reloaded,
                     ..*base
                 };
+                menu.recompute(&current);
+                assert!(menu.slot(0).is_none());
                 menu.click(&current, 0, 0, Input::Pickup).unwrap();
                 assert!(menu.carried.is_none());
                 assert_eq!(menu.slot(1), Some(&ItemStack::new("test:input", 2)));
@@ -231,8 +234,12 @@ fn registered_kind_pickup_uses_opened_menu_shape_not_occupied_bounds() {
                 ] {
                     let mut menu = Menu::new(kind);
                     menu.set_slot(&env, 1, Some(ItemStack::new("test:input", 2)));
-                    // Also exercise a cached result from a differently shaped lookup.
-                    menu.containers[RESULT][0] = Some(ItemStack::new("test:output", 3));
+                    assert_eq!(
+                        menu.slot(0),
+                        (shape == (size, size))
+                            .then(|| ItemStack::new("test:output", 3))
+                            .as_ref()
+                    );
                     calls.lock().unwrap().clear();
                     menu.click(&env, 0, 0, Input::Pickup).unwrap();
                     if shape == (size, size) {

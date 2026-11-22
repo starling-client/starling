@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Differential scenario fuzzer: generated command scripts run in vanilla and Sunrise, compared exactly (#12498).
+"""Differential scenario fuzzer: generated command scripts run in vanilla and Sunrise, compared exactly.
 
 Each scenario comes from a seed: an area far from the player, forceloaded; a setup and an actor (summon with NBT,
 a block entity with NBT, a dispenser, a drop, an explosion, a piston); time steps; optionally an unload and reload of
@@ -31,12 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 AREA_X, AREA_Z, FLOOR_Y = 4096, 4096, 300
 RELOAD_TICKS = 60  # enough for both engines to save and drop a chunk whose forced ticket went (a guard checks it)
 
-# Differences that are not parity bugs, by field path (a regular expression on the normalised path).
-ALLOWED = [
-    # CopperGolem.nextWeatheringTick is an absolute game time, and the two engines' worlds start the script at
-    # different game times (they settle in a different number of ticks).
-    (r'next_weather_age', 'absolute game time'),
-]
+# The first target leaves time for the common fixture to settle. Later targets leave room for each script's ticks.
+START_TIME = 1024
 
 
 def area(slot):
@@ -123,20 +119,28 @@ def normalise(path):
     return re.sub(r'\[\d+\]', '[]', path)
 
 
-def allowed(path):
-    return any(re.fullmatch(pattern, normalise(path)) for pattern, _ in ALLOWED)
+def item_set(record):
+    """One saved item record per selector match, sorted by content, preserving multiplicity."""
+    items = []
+    for message in record['messages']:
+        data = read_data({'messages': [message]})
+        if data is None:
+            raise ValueError('item read produced a message other than saved entity data')
+        items.append({'name': data[0], 'data': data[1]})
+    return sorted(items, key=lambda row: json.dumps(row, sort_keys=True))
 
 
-def compare(vanilla, rust):
-    """The differences between two records of one read, as [(field, vanilla, sunrise)], allowlisted ones left out."""
+def compare(vanilla, rust, *, items=False):
+    """The exact differences between two recorded observations, as [(field, vanilla, sunrise)]."""
+    if items:
+        return diff(item_set(vanilla), item_set(rust), 'items')
     if vanilla['cmd'].startswith('/data get '):
         left, right = read_data(vanilla), read_data(rust)
         if left is None or right is None:
             if (left is None) != (right is None) or harness.compare(vanilla, rust):
                 return [('<result>', harness.render(vanilla)[:300], harness.render(rust)[:300])]
             return []
-        found = ([('<name>', left[0], right[0])] if left[0] != right[0] else []) + diff(left[1], right[1])
-        return [d for d in found if not allowed(d[0])]
+        return ([('<name>', left[0], right[0])] if left[0] != right[0] else []) + diff(left[1], right[1])
     kind = harness.compare(vanilla, rust)
     return [(f'<{kind}>', harness.render(vanilla)[:300], harness.render(rust)[:300])] if kind else []
 
@@ -161,7 +165,7 @@ def uuid_text(words):
                      f'{words[2] >> 16:04x}', f'{words[2] & 0xffff:04x}{words[3]:08x}'])
 
 
-def render(scenario, slot):
+def render(scenario, slot, game_time=START_TIME):
     """The scenario's harness operations in this slot, each command op tagged with its step index."""
     x0, y0, z0 = area(slot)
 
@@ -174,10 +178,11 @@ def render(scenario, slot):
             op['record'] = False
         return op
 
-    chunk = [[x0 >> 4, z0 >> 4]]
+    wait = {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]], 'tick_level': False}
     seed = scenario['seed']
-    ops = [cmd(f'/forceload add {x0} {z0}', -1, False), {'op': 'wait_chunks', 'chunks': chunk},
+    ops = [cmd(f'/forceload add {x0} {z0}', -1, False), wait,
            cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} minecraft:stone', -1, False),
+           {'op': 'align_game_time', 'target': game_time},
            # Entity ids: unique in a batch, the same modulo 4 in every slot (an item's resting tick depends on it).
            {'op': 'sync_randoms', 'uniquifier': seed, 'entity_id': 10_000_000 + 10_000 * slot,
             'level_seed': seed}]
@@ -195,9 +200,10 @@ def render(scenario, slot):
         elif kind == 'dispense':
             ops.append({'op': 'crafter_tick', 'pos': [x0 + step['at'][0], y0 + step['at'][1], z0 + step['at'][2]]})
         elif kind == 'reload':
-            ops += [cmd(f'/forceload remove {x0} {z0}', i, False), {'op': 'tick', 'n': RELOAD_TICKS},
-                    {**cmd(f'/execute unless loaded {x0} {y0} {z0}', i), 'guard': True},
-                    cmd(f'/forceload add {x0} {z0}', i, False), {'op': 'wait_chunks', 'chunks': chunk}]
+            ops += [cmd(f'/forceload remove {x0} {z0}', i, False),
+                    {'op': 'tick', 'n': RELOAD_TICKS, 'allow_chunk_io': True},
+                    {**cmd(f'/execute unless loaded {x0} {y0} {z0}', i), 'released_chunk': wait['chunks'][0]},
+                    cmd(f'/forceload add {x0} {z0}', i, False), wait]
         elif kind == 'read_entity':
             ops.append({**cmd(f'/data get entity {uuid_text(uuid_words(slot, step["n"]))}', i), 'read': True})
         elif kind == 'read_near':
@@ -206,6 +212,9 @@ def render(scenario, slot):
                               f'sort=nearest,limit=1]', i), 'read': True})
             ops.append({**cmd(f'/execute if entity @e[type={step["type"]},x={ox}.5,y={oy},z={oz}.5,distance=..12]', i),
                         'read': True})
+        elif kind == 'read_items':
+            ops.append({**cmd(f'/execute as @e[type=item,x={x0},y={y0 - 8},z={z0},dx=15,dy=48,dz=15] '
+                              'run data get entity @s', i), 'read': True})
         elif kind == 'read_block':
             ops.append({**cmd(f'/data get block {at(step["at"])}', i), 'read': True})
         else:
@@ -222,6 +231,8 @@ def subject(scenario, step):
         return next((s['type'] for s in scenario['steps'] if s['k'] == 'summon' and s['n'] == step['n']), '?')
     if step['k'] == 'read_near':
         return step['type']
+    if step['k'] == 'read_items':
+        return 'item'
     if step['k'] == 'read_block':
         placed = [s['block'] for s in scenario['steps'] if s['k'] == 'block' and s['at'] == step['at']]
         return re.sub(r'[\[{].*', '', placed[-1]) if placed else '?'
@@ -233,58 +244,80 @@ def subject(scenario, step):
 
 class Runner:
     def __init__(self, work, binary, size):
-        self.work, self.binary, self.size, self.batches = work, binary, size, 0
+        self.work, self.binary, self.size = work, binary, size
+        self.batches = self.references = 0
 
-    def run(self, scenarios):
+    def run(self, scenarios, *, repeat_vanilla=True):
         """Per scenario: {'failures': [(signature, read, differences)], 'invalid': reason} or {'crash': log}."""
         if len(scenarios) > self.size:
-            return [r for start in range(0, len(scenarios), self.size) for r in self.run(scenarios[start:start + self.size])]
+            return [r for start in range(0, len(scenarios), self.size)
+                    for r in self.run(scenarios[start:start + self.size], repeat_vanilla=repeat_vanilla)]
         if not scenarios:
             return []
         self.batches += 1
         batch = self.work / f'batch-{self.batches:03d}'
         batch.mkdir(parents=True, exist_ok=True)
-        rendered = [render(s, slot) for slot, s in enumerate(scenarios)]
-        groups = [[f'fuzz {s["family"]} {s["seed"]}', [{k: v for k, v in op.items() if k not in ('step', 'read', 'guard')}
+        rendered = []
+        game_time = START_TIME
+        for slot, scenario in enumerate(scenarios):
+            ops = render(scenario, slot, game_time)
+            rendered.append(ops)
+            game_time += 1 + sum(op['n'] for op in ops if op['op'] == 'tick')
+        groups = [[f'fuzz {s["family"]} {s["seed"]}', [{k: v for k, v in op.items() if k not in ('step', 'read')}
                                                        for op in ops]] for s, ops in zip(scenarios, rendered)]
         (batch / 'groups.json').write_text(json.dumps(groups), encoding='utf-8')
         print(f'batch {self.batches}: {len(scenarios)} scenarios', flush=True)
         command = [sys.executable, str(ROOT / 'tools/test_command_exec_parity.py'), '--allow-gaps',
-                   '--groups-file', str(batch / 'groups.json'), '--work-dir', str(batch / 'run')]
+                   '--groups-file', str(batch / 'groups.json')]
         if self.binary:  # otherwise the harness builds the game (the first batch; later ones find it built)
             command += ['--binary', str(self.binary)]
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, encoding='utf-8', errors='replace',
-                                # The game's script deadline (600 s by default) is for the fixed corpus.
-                                env={**os.environ, 'SUNRISE_HARNESS_TIMEOUT': str(30 * len(scenarios) + 600)})
-        (batch / 'harness.log').write_text(result.stdout + result.stderr, encoding='utf-8')
-        if result.returncode:
-            if len(scenarios) == 1:
-                return [{'crash': (result.stdout + result.stderr)[-2000:]}]
-            half = len(scenarios) // 2  # find the scenario that stops the run
-            return self.run(scenarios[:half]) + self.run(scenarios[half:])
-        records = [[json.loads(line) for line in (batch / 'run' / f'{side}.jsonl').open(encoding='utf-8')]
-                   for side in ('vanilla', 'rust')]
-        for world in ('vanilla', 'rust', 'classes'):  # tens of MB a batch; the records and logs stay
-            shutil.rmtree(batch / 'run' / world, ignore_errors=True)
+        passes = [('run', ('vanilla', 'rust'), [])]
+        if repeat_vanilla:
+            passes.append(('reference', ('vanilla',), ['--reference-only']))
+        records = []
+        for label, sides, extra in passes:
+            work = batch / label
+            if extra:
+                self.references += 1
+            result = subprocess.run([*command, '--work-dir', str(work), *extra],
+                                    cwd=ROOT, capture_output=True, encoding='utf-8', errors='replace',
+                                    # The game's default script deadline is for the fixed corpus.
+                                    env={**os.environ, 'SUNRISE_HARNESS_TIMEOUT': str(30 * len(scenarios) + 600)})
+            (batch / f'{label}.log').write_text(result.stdout + result.stderr, encoding='utf-8')
+            if result.returncode:
+                if len(scenarios) == 1:
+                    return [{'crash': (result.stdout + result.stderr)[-2000:]}]
+                half = len(scenarios) // 2  # find the scenario that stops the run
+                return (self.run(scenarios[:half], repeat_vanilla=repeat_vanilla)
+                        + self.run(scenarios[half:], repeat_vanilla=repeat_vanilla))
+            records.extend([json.loads(line) for line in (work / f'{side}.jsonl').read_text(encoding='utf-8').splitlines()]
+                           for side in sides)
+            for world in (*sides, 'classes'):  # the records and logs stay
+                shutil.rmtree(work / world, ignore_errors=True)
         out, position = [], 0
         for scenario, ops in zip(scenarios, rendered):
-            entry = {'failures': [], 'invalid': None, 'reads': []}
+            entry = {'failures': [], 'invalid': None, 'reads': [], 'vanilla-unstable': []}
             for op in ops:
                 if op['op'] != 'cmd' or op.get('record') is False:
                     continue
-                vanilla, rust = records[0][position], records[1][position]
+                vanilla, rust, *reference = (rows[position] for rows in records)
                 position += 1
                 step = scenario['steps'][op['step']]
-                if op.get('guard'):
-                    if vanilla['results'] != [[True, 1]]:
-                        entry['invalid'] = f'vanilla kept the chunk loaded: {vanilla["results"]}'
+                items = step['k'] == 'read_items'
+                if 'released_chunk' in op:
+                    if any(row['results'] != [[True, 1]] or not row['unload_complete']
+                           for row in (vanilla, *reference)):
+                        entry['invalid'] = 'vanilla did not finish unloading the chunk'
                     if rust['results'] != vanilla['results']:
                         entry['failures'].append((f'{scenario["family"]}|chunk|<unload>', op['cmd'],
                                                   [('<unload>', vanilla['results'], rust['results'])]))
                     continue
                 if op.get('read'):
+                    if reference and compare(vanilla, reference[0], items=items):
+                        entry['vanilla-unstable'].append(op['cmd'])
+                        continue
                     entry['reads'].append((op['cmd'], vanilla, rust))
-                differences = compare(vanilla, rust)
+                differences = compare(vanilla, rust, items=items)
                 if differences:
                     what = subject(scenario, step) if op.get('read') else op['cmd'].split()[0]
                     reloaded = any(s['k'] == 'reload' for s in scenario['steps'][:op['step']])
@@ -292,7 +325,7 @@ class Runner:
                     entry['failures'].append((f'{scenario["family"]}|{what}|{"reloaded" if reloaded else "live"}|{first}',
                                               op['cmd'], differences))
             out.append(entry)
-        assert position == len(records[0]) == len(records[1]), (position, len(records[0]), len(records[1]))
+        assert all(position == len(rows) for rows in records), (position, [len(rows) for rows in records])
         return out
 
 
@@ -366,11 +399,14 @@ def shrink(runner, failing, rounds):
 # ---------------------------------------------------------------------------------------------------------------
 # Command line
 
-# Fixed scenarios that match today: a chest with items and a bare armor stand, read after an unload and reload.
+# The clock and saved state agree across I/O. Lava must not fire an overdue tick just because it reloaded.
 SMOKE = [{'family': 'smoke', 'seed': 1, 'steps': [
     {'k': 'block', 'block': 'chest', 'at': [7, 0, 7], 'nbt': {'Items': '[{Slot:0b,id:"minecraft:stone",count:3}]'}},
     {'k': 'summon', 'type': 'armor_stand', 'at': [3.5, 0, 3.5], 'n': 0, 'nbt': {}},
-    {'k': 'reload'}, {'k': 'read_block', 'at': [7, 0, 7]}, {'k': 'read_entity', 'n': 0}]}]
+    {'k': 'block', 'block': 'lava', 'at': [11, 0, 12]},
+    {'k': 'cmd', 'cmd': '/time query gametime'}, {'k': 'reload'}, {'k': 'cmd', 'cmd': '/time query gametime'},
+    {'k': 'read_block', 'at': [7, 0, 7]}, {'k': 'read_entity', 'n': 0}, {'k': 'tick', 'n': 1},
+    {'k': 'cmd', 'cmd': '/execute if block {0} minecraft:lava', 'at': [[12, 0, 12]]}]}]
 
 
 def main():
@@ -396,18 +432,21 @@ def main():
     if args.smoke or args.replay:
         scenarios = SMOKE if args.smoke else json.loads(args.replay.read_text(encoding='utf-8'))
     else:
-        families.discover(runner, work)
+        if args.family == 'persist':
+            families.discover(runner, work)
         scenarios = [families.FAMILIES[args.family](random.Random(seed), seed)
                      for seed in range(args.seed, args.seed + args.count)]
     results = runner.run(scenarios)
     failing = [(s, r) for s, r in zip(scenarios, results) if signatures(r)]
     invalid = [(s['seed'], r['invalid']) for s, r in zip(scenarios, results) if r.get('invalid')]
-    print(f'{len(scenarios)} scenarios: {len(failing)} diverge, {len(invalid)} invalid', flush=True)
+    unstable = sum(len(r.get('vanilla-unstable', [])) for r in results)
+    print(f'{len(scenarios)} scenarios: {len(failing)} diverge, {len(invalid)} invalid, {unstable} vanilla-unstable reads',
+          flush=True)
     if args.smoke:
         empty = [cmd for r in results for cmd, vanilla, _ in r.get('reads', []) if vanilla['results'][:1] != [[True, 1]]]
-        if failing or invalid or empty:
+        if failing or invalid or empty or unstable:
             sys.exit(f'smoke scenarios diverge: {[s["seed"] for s, _ in failing]} invalid: {invalid} '
-                     f'empty reads: {empty}; see {work}')
+                     f'empty reads: {empty} unstable reads: {unstable}; see {work}')
         return
     groups = {}
     for scenario, result in failing:
@@ -416,7 +455,8 @@ def main():
     # One bug, one shrink: each group's smallest scenario stands for it.
     shrunk = shrink(runner, {sig: min(members, key=lambda m: len(json.dumps(m[0]))) for sig, members in groups.items()},
                     args.shrink_rounds)
-    report = {'scenarios': len(scenarios), 'invalid': invalid, 'diverging': len(failing), 'groups': []}
+    report = {'scenarios': len(scenarios), 'invalid': invalid, 'diverging': len(failing),
+              'vanilla-unstable': unstable, 'groups': []}
     for sig, members in sorted(groups.items(), key=lambda g: -len(g[1])):
         scenario, result = shrunk[sig]
         report['groups'].append({
@@ -425,7 +465,8 @@ def main():
                          for op in render(scenario, 0)],
             'differences': result.get('crash') or [[cmd, d[:8]] for s, cmd, d in result['failures'] if s == sig][:3]})
     lab.write_json(work / 'report.json', report)
-    print(f'{len(failing)} diverging scenarios in {len(groups)} groups ({runner.batches} harness runs):')
+    print(f'{len(failing)} diverging scenarios in {len(groups)} groups '
+          f'({runner.batches} differential and {runner.references} reference-only harness runs):')
     for group in report['groups']:
         print(f'  {len(group["seeds"]):3d}  {group["signature"]}')
     print(f'report: {work / "report.json"}')

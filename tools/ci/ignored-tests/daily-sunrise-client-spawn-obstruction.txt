@@ -1,0 +1,1 @@
+sunrise-client game::natural_spawning::spawn_obstruction_fixture::spawn_entity_obstruction lib daily child-process

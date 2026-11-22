@@ -1,0 +1,10 @@
+sunrise-client-render mesher::visibility_plan::mesh_tests::a_face_mask_removes_faces_and_hidden_cells_open_their_neighbours lib daily resources
+sunrise-client-render mesher::visibility_plan::mesh_tests::a_masked_opening_connects_both_sides_of_an_opaque_wall lib daily resources
+sunrise-client-render mesher::visibility_plan::mesh_tests::fully_hidden_neighbours_do_not_change_fluid_surface_geometry lib daily resources
+sunrise-client-render mesher::visibility_plan::mesh_tests::hide_terrain_composes_with_state_visibility_and_section_geometry lib daily resources
+sunrise-client-render mesher::visibility_plan::mesh_tests::masked_translucent_faces_sort_far_to_near lib daily resources
+sunrise-client-render mesher::visibility_plan::mesh_tests::without_a_plan_meshes_are_byte_identical lib daily resources
+sunrise-client-render streaming::section_visibility::tests::a_neighbours_interior_edit_stops_a_mesh_using_its_old_border_answer lib daily resources
+sunrise-client-render streaming::section_visibility::tests::an_accepted_mesh_cannot_publish_after_policy_resource_or_column_changes lib daily resources
+sunrise-client-render streaming::section_visibility::tests::remote_column_arrival_and_unload_remesh_the_actual_halo lib daily resources
+sunrise-client-render streaming::viewed_meshing::tests::the_players_visibility_answer_does_not_hide_terrain_in_a_viewed_level lib daily resources

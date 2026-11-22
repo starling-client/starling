@@ -1,11 +1,9 @@
 //! Packet framing (Varint21FrameDecoder / Varint21LengthFieldPrepender) and
 //! zlib compression above a threshold (CompressionEncoder / CompressionDecoder).
-use crate::{
-    Error, Result,
-    buf::{Reader, write_varint},
-};
+use crate::{Error, Result, buf::Reader};
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 use std::cell::RefCell;
+use sunrise_core::vanilla_bytes::write_varint;
 
 /// Frames are at most three VarInt bytes long (21 bits).
 pub const MAX_FRAME: usize = (1 << 21) - 1;

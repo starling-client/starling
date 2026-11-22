@@ -35,6 +35,8 @@ def main():
     sources = [lab.ROOT / path for path in (
         'tools/test_inline_object_parity.py',
         'crates/sunrise-client-render/src/hud.rs',
+        'crates/sunrise-client-render/src/hud/batch.rs',
+        'crates/sunrise-client-render/src/hud/batch_text.rs',
         'crates/sunrise-client/examples/probe/inline_object_fixture.rs',
         'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaInlineObjectOracle.java')]
     tested = base.source_hashes(sources)

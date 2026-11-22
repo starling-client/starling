@@ -1,96 +1,170 @@
 # Drawing an item with a special model renderer
 
-You can draw an item from several resource models chosen from its stack: a skillet with what it
-cooks, a tool with moving parts. This is the counterpart of NeoForge 26.3's
-`RegisterSpecialModelRendererEvent`: the mod registers one renderer per special model type at start,
-before resources load, and every `minecraft:special` item model of that type is drawn by it. Native
-and wasm mods register and draw the same way.
+Use `register_special_model_renderer` (NeoForge's `RegisterSpecialModelRendererEvent`) when an
+ordinary item model cannot describe the drawing. Register a factory for a `minecraft:special`
+type. For each node of that type, the factory decodes its configuration and bakes a renderer
+at client resource load. The renderer implements vanilla's `SpecialModelRenderer` split: extract
+an argument from the item being drawn, then submit geometry. The last published registration
+for a type wins. A [failed registration callback](../../concepts/load-phases.md#registration-and-setup)
+changes neither the winning factory nor the replacement reports.
 
-The geometry stays in the packs. The renderer doesn't make quads: it answers which model files to
-draw, each with a transform and tints, and the game draws them as it draws any item model.
+## Decode, bake, then draw
 
-## Write the renderer
-
-A renderer implements `SpecialModelRenderer`. Its `extract` gets a `ClientHost`, the stack and the
-special model's `model` object (`config`, its JSON converted to NBT once at load), and answers the
-parts:
+This native mod's skillet always draws the pan. It adds food one model pixel above the pan when
+the stack contains more than one item. Keep your `mod_api` dependency and add serde with its
+`derive` feature.
 
 ```rust,ignore
-use mod_api::*;
-use std::sync::Arc;
+use mod_api::{
+    ClientHost, Hooks, Identifier, RegisterSpecialModelRendererEvent, RegistrationContext,
+    SpecialModelCollector, SpecialModelContext, SpecialModelFactory, SpecialModelGeometry,
+    SpecialModelRenderer, SpecialModelStack, SpecialModelTints,
+};
 
-struct Skillet;
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkilletConfig {
+    pan: String,
+    food: String,
+    food_height_pixels: i32,
+}
+
+struct Skillet {
+    pan: SpecialModelGeometry,
+    food: SpecialModelGeometry,
+    food_height: f32,
+}
+
 impl SpecialModelRenderer for Skillet {
-    fn extract(
+    type Argument = bool;
+
+    fn extract_argument(&self, _host: &dyn ClientHost, stack: &SpecialModelStack<'_>) -> bool {
+        stack.count() > 1
+    }
+
+    fn submit(
         &self,
-        _host: &dyn ClientHost,
-        stack: &ItemStack,
-        _config: &Tag,
-    ) -> Result<Vec<SpecialModelPart>, String> {
-        let mut parts = vec![SpecialModelPart::new("example:item/skillet_pan")];
-        if stack.count() > 1 {
-            // The food sits one pixel above the pan.
-            parts.push(
-                SpecialModelPart::new("example:item/skillet_food").translated([0.0, 0.0625, 0.0]),
-            );
+        show_food: &bool,
+        _context: &SpecialModelContext,
+        collector: &mut SpecialModelCollector<'_>,
+    ) -> Result<(), String> {
+        collector.submit_geometry(&self.pan, SpecialModelTints::Untinted)?;
+        if *show_food {
+            let pose = [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, self.food_height,
+                0.0, 0.0, 1.0, 0.0,
+            ];
+            collector.with_pose(pose, |child| {
+                child.submit_geometry(&self.food, SpecialModelTints::Untinted)
+            })?;
         }
-        Ok(parts)
+        Ok(())
     }
 }
 
+pub struct SkilletMod;
+
 #[mod_api::sunrise_mod]
-impl Hooks for MyMod {
+impl Hooks for SkilletMod {
     fn register_special_model_renderer(
         &self,
         _context: &RegistrationContext,
         event: &mut RegisterSpecialModelRendererEvent<'_>,
     ) {
-        event.renderers.register("example:skillet".into(), Arc::new(Skillet));
+        event.renderers.register(
+            Identifier::parse("example:skillet").unwrap(),
+            SpecialModelFactory::new(
+                |fields| fields.decode::<SkilletConfig>(),
+                |config, bake| {
+                    Ok(Skillet {
+                        pan: bake.bake_model(&config.pan)?,
+                        food: bake.bake_model(&config.food)?,
+                        food_height: config.food_height_pixels as f32 / 16.0,
+                    })
+                },
+            ),
+        );
     }
 }
 ```
 
-The item definition names the type in a `minecraft:special` model, with a `base` model:
+Put the definition in `assets/example/items/skillet.json` and the referenced models in
+`assets/example/models/item/`. The decoder receives the fields of the inline `model` object
+other than `type`. Here the three fields are required; the `base` is not part of the config.
 
 ```json
-{"model": {"type": "minecraft:special", "base": "example:item/skillet",
-  "model": {"type": "example:skillet"}}}
+{
+  "model": {
+    "type": "minecraft:special",
+    "base": "example:item/skillet",
+    "model": {
+      "type": "example:skillet",
+      "pan": "example:item/skillet_pan",
+      "food": "example:item/skillet_food",
+      "food_height_pixels": 1
+    }
+  }
+}
 ```
 
-## What the parts are
+Use `bake_model` for geometry from the selected packs or `bake_geometry` for your own
+`SpecialModelQuad`s referencing item or block atlas sprites. Matching vanilla's `FaceBakery` and
+`MaterialBaker`, `bake_geometry` defaults degenerate quads to `Up`, accepts any finite UV, and
+substitutes the missing texture sprite when a sprite is absent while preserving
+`force_translucent`. Non-finite coordinates or UVs, invalid sprite identifiers, out-of-range
+tint indices and light emissions over 15 still fail the bake. Keep the resulting geometry leases
+on the renderer. Do not look up or rebake models during `submit`.
 
-- `model` is a model file of the packs (`example:item/skillet_pan`), with `elements` and textures as
-  any item model has.
-- `transform` is a row-major 3×4 affine transform in the special model's space: blocks, with the
-  origin at the model's corner, so an element's coordinates over 16. `translated` moves a part after
-  its transform; `with_transform` sets the whole of it.
-- `tints` are ARGB colours per tint index, as an item model's `tints`. A face with a tint index past
-  them, or none, draws white.
+`extract_argument` runs for each draw, even for an unchanged stack. It gets a `ClientHost` and a
+borrowed `SpecialModelStack`: `item()`, `count()` and `get(&descriptor)` read only what you need.
+Component reads include item defaults unless the stack overrides or removes them. If a bundle
+selects the item, this is the selected stack, not the bundle. `submit` receives the argument and
+the actual `SpecialModelContext`, with the display context, optional level game time and partial
+tick. The game does not cache the renderer's draw output.
 
-The renderer never sees the `base` model: the game draws all the parts with its display transforms
-(`display` for a hand, the GUI, the ground, a frame, the head), its particle and its GUI light, as
-vanilla's special models do. The node's own `transformation` applies to every part.
+## Submit geometry and nested stacks
 
-## When it is asked
+- `submit_geometry(&lease, tints)` submits baked geometry under the current pose. Use
+  `SpecialModelTints::Untinted`, `Uniform(argb)` for every quad, or `Indexed(palette)` with a
+  shared `Arc<[u32]>` indexed by quad tint index. Colors are packed ARGB. With an indexed
+  palette, an unindexed quad or a missing entry draws white before lighting.
+- `with_pose(transform, |child| ...)` lends a collector at a child pose. The transform is a
+  row-major 3×4 affine; the current pose multiplies it on the left, and the composed pose must
+  be finite. Model space is in blocks from the model's corner (element coordinates divided by
+  16). When the callback returns, subsequent submissions on the parent use the unchanged
+  parent pose. Submit directly on the parent when no local transform is needed.
+- `submit_stack(&stack, ItemDisplayContext::Fixed)` resolves an item stack with its own models,
+  display transform, tints and foil in the specified context. The current pose places its
+  centre. There is no nested stack count cap. A repeated `(stack, display)` pair or insufficient
+  native stack space to resolve the next child refuses the enclosing layer. Delegating the
+  same stack in a different `ItemDisplayContext` is not a cycle.
 
-The renderer is asked on the client's main thread when an item of such a model is drawn with a
-stack that model didn't draw in the last frame. An unchanged stack is asked once, however many
-frames draw it in a row and however many stacks share the model, and every display context (a hand,
-a screen, the ground, a frame, a head, another player's hand) draws that answer. A stack that leaves
-the screen, or changes, is asked again when it is next drawn; a resource reload drops every answer.
+The special node's `base` supplies its display transforms, particle and GUI light; any node
+`transformation` also applies. Geometry submitted directly uses the outer item's foil. The
+engine carries packed light, overlay and outline through the ordinary item draw path, so the
+mod does not pass those values to the collector.
 
-## Registrations and refusals
+## Reloads and failures
 
-- A later registration of a type replaces the earlier one, whichever mod made it and vanilla's types
-  included, as in NeoForge; the log names both mods. An id that is not `<namespace>:<path>` is logged
-  and left out.
-- A special model of a type no mod registered and vanilla doesn't have is an error naming the type and
-  the item: that item draws the missing model, and the rest of the resources load.
-- A renderer that returns an `Err`, panics, answers more than `MAX_SPECIAL_MODEL_PARTS` (256) parts
-  or a transform that isn't finite, or (in a wasm mod) has its call refused or trapped, is logged once
-  with its type and asked no more until resources reload. Its special models draw the missing model
-  until then; nothing it answered is drawn in part.
-- A part naming a model no pack has makes that answer draw the missing model, logged once for the
-  model.
+Registration runs once at client startup, not on reload. Pass a validated `Identifier` (bare
+paths default to `minecraft:`, matching vanilla and NeoForge). The last registration of a type
+wins, including replacements for vanilla types. Each resource load decodes the winning
+definitions and bakes new renderer instances and leases for enabled factories. Submit only
+leases from the current load. Item states already resolved before a reload retain their baked
+geometry and can finish drawing it.
 
-Renderer answers depend only on stack and configuration. Host-state changes do not invalidate a continuously drawn unchanged stack. Answers drop after all views stop drawing the stack or resources reload.
+An unknown type, a disabled winning factory, or an error or panic in decode or bake refuses the
+enclosing item definition. That item draws the missing model. Other definitions still load; the
+game does not try the built-in decoder for an overridden type or a lower pack's definition.
+
+The factory, argument extraction and submission run as the mod that registered the type.
+A failed draw rolls back the entire special layer, including earlier and nested submissions.
+The game logs each ordinary refusal without disabling the callback: a subsequent valid draw
+can still succeed. Ignoring a collector error does not make the layer commit; propagate it with `?`.
+
+If argument extraction or submission panics, the game logs an error and shows an error toast
+naming the mod. It disables the draw callback for that registered type, including all of its baked
+nodes and any rebuilt on reload, for the rest of the session. The factory and other registrations
+are not disabled by that draw panic, even if the panic came from a nested submission. The outermost
+refused layer draws the missing model; unrelated item layers still draw normally.

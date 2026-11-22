@@ -1,6 +1,6 @@
 AbstractCommandBlockEditScreen.getUsageNarration	skip:ui		narration text of the command suggestions
 AbstractCommandBlockEditScreen.resize	skip:ui		re-init on window resize; Sunrise redraws the screen every frame and keeps the text
-AbstractCommandBlockEditScreen.updatePreviousOutput	port	crates/sunrise-client/src/game/administration/command_blocks.rs::CommandBlockScreen::show_previous
+AbstractCommandBlockEditScreen.updatePreviousOutput	port	crates/sunrise-client-gameplay/src/command_block_screen.rs::CommandBlockScreen::show_previous
 AbstractCommandBlockEditScreen.onDone	port	crates/sunrise-client/src/game/administration/command_blocks.rs::Game::set_command_block	sends the packet and clears last output when not tracking; close is close_command_block
 AbstractCommandBlockEditScreen.mouseScrolled	port	crates/sunrise-client/src/game/administration/command_blocks.rs::Game::command_block_scroll	the wheel over the command suggestions list scrolls it, as CommandSuggestions.mouseScrolled does
 AbstractCommandBlockEditScreen.mouseClicked	port	crates/sunrise-client/src/game/administration/command_blocks.rs::Game::command_block_click	buttons only; clicking inside the command box does not move the cursor and there are no suggestions to click
@@ -104,7 +104,7 @@ BrewingStandScreen.init	inline	crates/sunrise-client/src/game/blocks/stations/dr
 BrewingStandScreen.extractBackground	inline	crates/sunrise-client/src/game/blocks/stations/draw.rs::Game::draw_station	fuel bar, progress arrow and bubbles
 CartographyTableScreen.extractResultingMap	port	crates/sunrise-client/src/game/blocks/cartography.rs::Game::draw_cartography
 CartographyTableScreen.extractMap	inline	crates/sunrise-client/src/game/blocks/cartography.rs::Game::draw_cartography	preview drawn from the map texture
-CommandBlockEditScreen.addExtraControls	port	crates/sunrise-client/src/game/administration/command_blocks.rs::CommandBlockScreen::buttons	mode, conditional and auto buttons
+CommandBlockEditScreen.addExtraControls	port	crates/sunrise-client-gameplay/src/command_block_screen.rs::CommandBlockScreen::buttons	mode, conditional and auto buttons
 CommandBlockEditScreen.enableControls	skip:other		Sunrise opens the screen with the block data in hand, so the controls are never disabled while waiting for the server
 CommandBlockEditScreen.updateGui	inline	crates/sunrise-client/src/game/administration/command_blocks.rs::Game::open_command_block	fills the box and buttons from the block entity
 CommandBlockEditScreen.populateAndSendPacket	port	crates/sunrise-client/src/game/administration/command_blocks.rs::Game::set_command_block	SetCommandBlock on a server, applied here otherwise

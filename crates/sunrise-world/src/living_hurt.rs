@@ -124,30 +124,16 @@ pub trait HurtWorld {
     fn damage_post(
         &mut self,
         _s: &mut HurtState<Self::Source>,
-        _container: &DamageContainer,
+        _container: DamageContainer,
     ) -> Result<(), Self::Error> {
         Ok(())
-    }
-}
-/// What `LivingDamageEvent.Pre` changed, back in the cooldown: `lastHurt` takes the damage
-/// Pre left (vanilla's `lastHurt` plus what Pre added) and the cooldown takes what Pre set,
-/// which was `cooldown`. A hit Pre left alone writes nothing more, so a
-/// write `actuallyHurt` made itself stands as in vanilla.
-fn after_pre<S>(s: &mut HurtState<S>, container: &DamageContainer, cooldown: i32) {
-    let change = container.pre_change();
-    if change != 0.0 {
-        s.last_hurt += change;
-    }
-    let ticks = container.post_attack_invulnerability_ticks();
-    if ticks != cooldown {
-        s.cooldown = ticks;
     }
 }
 /// A hit stopped where `hurtServer` calls `hurtHelmet`: what its guards, the incoming damage
 /// and the block left. It owns no borrow, so a caller can wear the helmet on a world
 /// [`hurt_until_helmet`] could not reach, then resume with [`hurt_after_helmet`], which runs
 /// none of that again.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PendingHurt<U> {
     pub(crate) container: DamageContainer,
     damage: f32,
@@ -160,6 +146,11 @@ impl<U> PendingHurt<U> {
     /// What `hurtHelmet` is given, if the source damages a helmet and one is worn.
     pub fn helmet_damage(&self) -> Option<f32> {
         self.helmet.then_some(self.damage)
+    }
+    /// The damage sequence: the durability the raised blocking item lost.
+    #[doc(hidden)]
+    pub fn record_shield_damage(&mut self, durability: f32) {
+        self.container.record_shield_damage(durability);
     }
 }
 pub fn hurt_server<W: HurtWorld>(
@@ -209,13 +200,16 @@ pub fn hurt_until_helmet<W: HurtWorld>(
     if damage < 0.0 {
         damage = 0.0;
     }
+    container.record_new_damage(damage);
     let original = damage;
     let item = w.use_item(s)?;
     let blocked_amount = w.apply_blocking(s, damage)?;
     damage -= blocked_amount;
     container.record_block(blocked_amount);
+    container.record_new_damage(damage);
     if w.tag(s, HurtTag::Freezing)? && w.freeze_hurts_extra(s)? {
         damage *= 5.0;
+        container.record_new_damage(damage);
     }
     let helmet = w.tag(s, HurtTag::DamagesHelmet)? && !w.helmet_empty(s)?;
     Ok(Some(PendingHurt {
@@ -254,9 +248,11 @@ pub fn select_equipment_hurt<W: HurtWorld>(
 ) -> Result<Option<SelectedHurt<W::UseItem>>, W::Error> {
     if hit.helmet {
         hit.damage *= 0.75;
+        hit.container.record_new_damage(hit.damage);
     }
     if !hit.damage.is_finite() {
         hit.damage = f32::MAX;
+        hit.container.record_new_damage(hit.damage);
     }
     let fresh = !(s.cooldown as f32 > 10.0 && !w.tag(s, HurtTag::BypassesCooldown)?);
     hit.container.record_should_cause_side_effects(fresh);
@@ -269,16 +265,15 @@ pub fn select_equipment_hurt<W: HurtWorld>(
         if hit.damage <= s.last_hurt {
             return Ok(None);
         }
+        let cooldown = s.cooldown;
+        hit.container
+            .record_post_attack_invulnerability_ticks(cooldown);
         let dealt = hit.container.reduce(
             Reduction::Invulnerability,
             hit.damage,
             s.last_hurt,
             hit.damage - s.last_hurt,
-            true,
         );
-        let cooldown = s.cooldown;
-        hit.container
-            .set_post_attack_invulnerability_ticks(cooldown);
         (dealt, cooldown)
     };
     Ok(Some(SelectedHurt {
@@ -311,7 +306,10 @@ pub fn finish_equipment_hurt<W: HurtWorld>(
     if !fresh {
         s.last_hurt = damage;
     }
-    after_pre(s, &container, cooldown);
+    let ticks = container.post_attack_invulnerability_ticks();
+    if ticks != cooldown {
+        s.cooldown = ticks;
+    }
     if fresh {
         s.hurt_duration = 10;
         s.hurt_time = s.hurt_duration;
@@ -359,6 +357,6 @@ pub fn finish_equipment_hurt<W: HurtWorld>(
         }
     }
     w.attacker_criterion(s, original, damage, blocked)?;
-    w.damage_post(s, &container)?;
+    w.damage_post(s, container)?;
     Ok(accepted)
 }

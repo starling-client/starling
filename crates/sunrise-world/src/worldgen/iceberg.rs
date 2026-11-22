@@ -10,8 +10,8 @@ use super::{
     tree_blocks::{self as tb, TreeBlocks},
 };
 use crate::registry::BlockStateId;
-use sunrise_core::random::RandomSource;
 use std::sync::Arc;
+use sunrise_core::random::RandomSource;
 
 #[derive(Clone, Debug)]
 pub struct IcebergFeature {

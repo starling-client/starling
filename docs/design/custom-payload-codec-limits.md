@@ -47,7 +47,7 @@ Existing codec constraints remain with their owners:
 | `sunrise:recipe_book_settings` (configuration) | exact private capability version byte `[1]` |
 | `sunrise:mod_list` | `mod_list`, 128 entries, 64-character id and version fields on decode |
 | `sunrise:attachment_sync` | `attachment_sync`, 1,048,576 body bytes |
-| `sunrise:menu_extra` | `menu_extra`, 32,768 extra-data bytes plus window/position/framing |
+| `sunrise:menu_extra` | `menu_extra`, up to 1,048,555 extra-data bytes plus up to 21 bytes of window/position/length framing (1,048,576 bytes total, matching `ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`) |
 | `sunrise:anvil_cost` | `anvil_cost`, one VarInt window and one fixed i32 cost, no trailing bytes |
 | `sunrise:lod` | `lod_net`, fixed offer/request fields; replies at most 524,288 bytes |
 | `sunrise:block_registry` | `content_identity`, an empty digest query or exactly 32 digest bytes |

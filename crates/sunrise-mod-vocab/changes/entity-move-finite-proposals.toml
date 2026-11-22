@@ -1,0 +1,3 @@
+ids = ["hook:entity_move"]
+why = "Vanilla 26.3 Entity.move has no general per-axis magnitude limit. Piston displacement is still handled by Entity.limitPistonMovement, and the separate direct move_by request validation is unchanged."
+migrate = "Rebuild against the SDK for version 4 of entity_move. No callback signature changes. Finite replacements beyond 64 blocks on an axis now reach the ordinary move rules. Non-finite replacements still discard only that callback's proposed delta and veto."

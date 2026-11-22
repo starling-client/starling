@@ -91,9 +91,9 @@ PictureInPictureRenderState.getBounds	skip:ui		GUI draw bounds
 LevelRenderState.reset	skip:java		per-frame state clear
 ParticlesRenderState.submit	inline	crates/sunrise-client-render/src/particles.rs::ParticleEngine::render	submits particle groups; draws in render
 PlayerRenderState.reset	skip:java		per-frame state clear
-QuadParticleRenderState.add	port	crates/sunrise-client-render/src/particles.rs::ParticleEngine::add	quad particle queued per layer
+QuadParticleRenderState.add	port	crates/sunrise-client-render/src/particles.rs::ProviderQuadSink::add	append a provider quad to the existing particle stream with its draw layer
 QuadParticleRenderState.buildLayer	port	crates/sunrise-client-render/src/particles.rs::ParticleEngine::render	per-layer quad build and draw
-QuadParticleRenderState.renderVertex	inline	crates/sunrise-client-render/src/particles.rs::ParticleEngine::render	vertex math inside the render rotated quad
+QuadParticleRenderState.renderVertex	port	crates/sunrise-client-render/src/particles.rs::write_particle_quad	quad corner rotation, scale and translation
 QuadParticleRenderState.Storage.add	port	crates/sunrise-client-render/src/particles.rs::ParticleEngine::push	store one quad particle
 QuadParticleRenderState.Storage.forEachParticle	inline	crates/sunrise-client-render/src/particles.rs::ParticleEngine::render	iterates stored particles in render
 QuadParticleRenderState.Storage.grow	skip:java		array capacity growth

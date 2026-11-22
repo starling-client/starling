@@ -1,9 +1,4 @@
 //! Tool-written internal declarations and the old/new pin's signature diff.
-use sunrise_mod_package::{
-    Manifest,
-    internals::{self, ListedInternal},
-    manifest::MANIFEST,
-};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -11,7 +6,15 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
+use sunrise_mod_package::{
+    Manifest,
+    internals::{self, ListedInternal},
+    manifest::{MANIFEST, Native},
+};
+use sunrise_native_build::{Bundle, api};
 use toml_edit::{DocumentMut, Item, Value};
+
+use crate::native_build;
 
 const USAGE: &str = "usage: cargo sunrise-mod internals sync | add <path>… [--kind <kind>]";
 const CATALOG: &str = "internals.json";
@@ -24,7 +27,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if !args.is_empty() {
             return Err(USAGE.into());
         }
-        return sync(Path::new("."));
+        return sync(Path::new("."), native_build::project_internals);
     }
     let mut paths = Vec::new();
     let mut kind = None;
@@ -46,10 +49,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if command != "add" || paths.is_empty() {
         return Err(USAGE.into());
     }
-    add(Path::new("."), &paths, kind)
+    add(Path::new("."), &paths, kind, native_build::project_catalog)
 }
 
-fn add(dir: &Path, paths: &[&str], kind: Option<&str>) -> Result<(), String> {
+fn add(
+    dir: &Path,
+    paths: &[&str],
+    kind: Option<&str>,
+    discover: CatalogDiscovery,
+) -> Result<(), String> {
     let path = dir.join(MANIFEST);
     let text = crate::bounded::read(&path, crate::bounded::MAX_MANIFEST)?;
     let manifest = Manifest::parse(&text)?;
@@ -57,11 +65,7 @@ fn add(dir: &Path, paths: &[&str], kind: Option<&str>) -> Result<(), String> {
         .native
         .as_ref()
         .ok_or("internals add needs a [native] mod")?;
-    let catalog = if native.module.is_empty() {
-        load(dir, &native.sunrise)?
-    } else {
-        internals::read(&catalog_directory(dir, &manifest)?.join(CATALOG))?
-    };
+    let catalog = read_catalog(&catalog_directory(dir, native, discover)?)?;
     // Resolve every request before editing: any unavailable or ambiguous path leaves the file alone.
     let entries = paths
         .iter()
@@ -76,7 +80,7 @@ fn add(dir: &Path, paths: &[&str], kind: Option<&str>) -> Result<(), String> {
     for entry in entries {
         println!("Added internal {}", entry.path);
     }
-    fs::write(&path, doc.to_string()).map_err(|e| format!("{}: {e}", path.display()))
+    atomic_write_manifest(&path, doc.to_string())
 }
 
 /// Adds or refreshes `entries` in `internals`.
@@ -130,49 +134,25 @@ fn upsert(
     Ok(())
 }
 
-/// Module discovery uses the launcher's source and toolchain management.
-pub(crate) fn catalog_directory(dir: &Path, manifest: &Manifest) -> Result<PathBuf, String> {
-    let native = manifest
-        .native
-        .as_ref()
-        .ok_or("catalog needs a native mod")?;
+pub(crate) type CatalogDiscovery = fn(&Path, &Native) -> Result<PathBuf, String>;
+
+/// The mod's own discovery snapshot if it adds modules; otherwise the signed SDK's build data.
+pub(crate) fn catalog_directory(
+    dir: &Path,
+    native: &Native,
+    discover: CatalogDiscovery,
+) -> Result<PathBuf, String> {
     if native.module.is_empty() {
-        return crate::sdk_fetch::build_data(dir, &native.sunrise);
+        crate::sdk_fetch::build_data(dir, &native.sunrise)
+    } else {
+        discover(dir, native)
     }
-    let launcher =
-        std::env::var_os("SUNRISE_LAUNCHER").unwrap_or_else(|| "sunrise-launcher".into());
-    let snapshots = dir.join("target/sunrise-mod/catalog-snapshots");
-    fs::create_dir_all(&snapshots).map_err(|e| e.to_string())?;
-    let destination = snapshots
-        .canonicalize()
-        .map_err(|e| e.to_string())?
-        .join(format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_nanos()
-        ));
-    let output = std::process::Command::new(launcher)
-        .args(["native-build", "--catalog", "--trust-native-code", "--catalog-output"])
-        .arg(&destination)
-        .arg(dir.canonicalize().map_err(|e| e.to_string())?)
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .map_err(|e| format!("Could not run sunrise-launcher: {e}. Install it on PATH or set SUNRISE_LAUNCHER to its executable."))?;
-    if !output.status.success() {
-        return Err("Module catalog discovery failed".into());
-    }
-    Ok(PathBuf::from(
-        String::from_utf8(output.stdout)
-            .map_err(|e| e.to_string())?
-            .trim(),
-    ))
 }
 
-/// The launcher owns source staging and compiler diagnostics; this tool owns manifest edits.
-fn sync(dir: &Path) -> Result<(), String> {
+fn sync(
+    dir: &Path,
+    discover: impl FnOnce(&Path, &Native) -> Result<Vec<ListedInternal>, String>,
+) -> Result<(), String> {
     let path = dir.join(MANIFEST);
     let original = crate::bounded::read(&path, crate::bounded::MAX_MANIFEST)?;
     let manifest = Manifest::parse(&original)?;
@@ -180,19 +160,28 @@ fn sync(dir: &Path) -> Result<(), String> {
         .native
         .as_ref()
         .ok_or("internals sync needs a [native] mod")?;
-    let launcher =
-        std::env::var_os("SUNRISE_LAUNCHER").unwrap_or_else(|| "sunrise-launcher".into());
-    let output = std::process::Command::new(launcher)
-        .args(["native-build", "--sync-internals", "--trust-native-code"])
-        .arg(dir.canonicalize().map_err(|e| e.to_string())?)
-        .stderr(std::process::Stdio::inherit())
-        .output().map_err(|e| format!("Could not run sunrise-launcher: {e}. Install it on PATH or set SUNRISE_LAUNCHER to its executable."))?;
-    if !output.status.success() {
-        return Err("Internals discovery failed; the manifest was not changed.".into());
+    let bundle = Bundle {
+        manifest,
+        dir: dir.to_owned(),
+    };
+    let cargo_path = dir.join("Cargo.toml");
+    let cargo = crate::bounded::read(&cargo_path, crate::bounded::MAX_MANIFEST)
+        .map_err(|e| format!("{e}; provide a readable Cargo.toml for this native mod"))?;
+    let project = api::Project::parse(&bundle, &cargo).map_err(|e| {
+        format!(
+            "{e}\nFix {} before running internals sync.",
+            cargo_path.display()
+        )
+    })?;
+    // A mod without a facade dependency or declarations has nothing to discover.
+    if bundle.manifest.internals.is_empty() && !project.uses_internals() {
+        println!(
+            "Nothing to sync: Cargo.toml does not depend on sunrise-internals and {MANIFEST} declares no internals, so this mod names no game internals. Add that dependency to use them."
+        );
+        return Ok(());
     }
-    let entries: Vec<ListedInternal> = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("Invalid internals discovery result: {e}"))?;
-    let (candidate, report) = replace(&original, &entries)?;
+    let entries = discover(dir, bundle.native())?;
+    let (candidate, report) = replace(&original, &bundle.manifest, &entries)?;
     // The explicit check may take time. Do not overwrite edits made while it was running.
     if crate::bounded::read(&path, crate::bounded::MAX_MANIFEST)? != original {
         return Err("sunrise-mod.toml changed during discovery; run cargo sunrise-mod internals sync again.".into());
@@ -208,6 +197,19 @@ pub(crate) fn atomic_write_manifest(path: &Path, contents: String) -> Result<(),
     atomic_write(&referent, contents)
 }
 
+/// An output component may be missing, but an existing one must be a real directory.
+pub(crate) fn check_output_dir(dir: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(format!(
+            "{} is not a real directory: replace it with one",
+            dir.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", dir.display())),
+    }
+}
+
 /// Attempts at an unused temporary name before `atomic_write` gives up.
 const TEMPORARY_ATTEMPTS: u64 = 16;
 
@@ -215,11 +217,11 @@ const TEMPORARY_ATTEMPTS: u64 = 16;
 ///
 /// The temporary file is created with `create_new`, so a file or symlink planted at its name
 /// makes that name be skipped instead of followed. The rename replaces `path` itself, even
-/// when `path` is a symlink, and the existing file's permissions carry over.
-pub(crate) fn atomic_write(path: &Path, contents: String) -> Result<(), String> {
+/// when `path` is a symlink. Only a regular destination file's permissions carry over.
+pub(crate) fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), String> {
     static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
-    let permissions = match fs::metadata(path) {
-        Ok(metadata) => Some(metadata.permissions()),
+    let permissions = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.is_file().then(|| metadata.permissions()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
@@ -227,7 +229,7 @@ pub(crate) fn atomic_write(path: &Path, contents: String) -> Result<(), String> 
     let (temporary, mut file) =
         create_temporary(path, first).map_err(|e| format!("{}: {e}", path.display()))?;
     let written = file
-        .write_all(contents.as_bytes())
+        .write_all(contents.as_ref())
         .and_then(|()| match permissions {
             Some(permissions) => file.set_permissions(permissions),
             None => Ok(()),
@@ -266,12 +268,11 @@ fn create_temporary(path: &Path, first: u64) -> std::io::Result<(PathBuf, fs::Fi
     ))
 }
 
-fn replace(text: &str, entries: &[ListedInternal]) -> Result<(String, String), String> {
-    let manifest = Manifest::parse(text)?;
-    manifest
-        .native
-        .as_ref()
-        .ok_or("internals sync needs a [native] mod")?;
+fn replace(
+    text: &str,
+    manifest: &Manifest,
+    entries: &[ListedInternal],
+) -> Result<(String, String), String> {
     let mut doc: DocumentMut = text.parse().map_err(|e| format!("{MANIFEST}: {e}"))?;
     // Each used access keeps at most one old row: an exact typed row first, then an untyped
     // row for its path. Every other row is dropped, so no stale duplicate survives the sync.
@@ -429,27 +430,37 @@ pub fn set_string(value: &mut Value, text: &str) {
 
 /// The internals of the game build `revision`, from its signed SDK's build data.
 pub fn load(dir: &Path, revision: &str) -> Result<Vec<ListedInternal>, String> {
-    let path = crate::sdk_fetch::build_data(dir, revision)?.join(CATALOG);
+    read_catalog(&crate::sdk_fetch::build_data(dir, revision)?)
+}
+
+pub(crate) fn read_catalog(directory: &Path) -> Result<Vec<ListedInternal>, String> {
+    let path = directory.join(CATALOG);
     let text = crate::bounded::read(&path, crate::bounded::MAX_CATALOG)?;
     internals::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
+#[path = "internals_module_discovery_tests.rs"]
+mod module_discovery_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A fresh directory under the system temp dir, removed on drop (also when a test panics).
-    struct Scratch(PathBuf);
+    /// A fresh test directory, removed on drop, including when a test panics.
+    pub(super) struct Scratch(PathBuf);
 
     impl Scratch {
-        fn new(name: &str) -> Self {
+        pub(super) fn new(name: &str) -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let unique = format!(
                 "sunrise-mod-atomic-{name}-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             );
-            let dir = std::env::temp_dir().join(unique);
+            let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+            fs::create_dir_all(&target).unwrap();
+            let dir = target.join(unique);
             // `create_dir` fails on an existing path, a symlink included.
             fs::create_dir(&dir).unwrap();
             Self(dir)
@@ -474,8 +485,8 @@ mod tests {
     fn atomic_write_replaces_contents_and_leaves_no_temporary_file() {
         let dir = Scratch::new("replace");
         let path = dir.join("sunrise-mod.toml");
-        atomic_write(&path, "first".into()).unwrap();
-        atomic_write(&path, "second".into()).unwrap();
+        atomic_write(&path, "first").unwrap();
+        atomic_write(&path, b"second").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
         assert_eq!(fs::read_dir(&*dir).unwrap().count(), 1);
     }
@@ -486,7 +497,7 @@ mod tests {
         let path = dir.join("sunrise-mod.toml");
         let planted = dir.join("sunrise-mod.toml.sync");
         fs::write(&planted, "planted").unwrap();
-        atomic_write(&path, "written".into()).unwrap();
+        atomic_write(&path, "written").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "written");
         assert_eq!(fs::read_to_string(&planted).unwrap(), "planted");
     }
@@ -523,7 +534,7 @@ mod tests {
         // A non-empty directory at `path` cannot be replaced by a file.
         fs::create_dir(&path).unwrap();
         fs::write(path.join("keep"), "keep").unwrap();
-        assert!(atomic_write(&path, "x".into()).is_err());
+        assert!(atomic_write(&path, "x").is_err());
         assert!(fs::read_dir(&*dir).unwrap().all(|entry| {
             !entry
                 .unwrap()
@@ -549,10 +560,161 @@ mod tests {
         let (temporary, file) = create_temporary(&path, 3).unwrap();
         drop(file);
         assert_eq!(temporary, temporary_path(&path, 5));
-        atomic_write(&path, "written".into()).unwrap();
+        atomic_write(&path, "written").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "written");
         assert_eq!(fs::read_to_string(&referent).unwrap(), "keep");
         assert!(!dangling.exists());
+    }
+
+    const NATIVE_MOD: &str = "id='example'
+name='Example'
+version='0.1.0'
+[native]
+game='26.3'
+sunrise='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+";
+    const API_ONLY_CARGO: &str = "[package]
+name='example'
+version='0.1.0'
+[dependencies]
+sunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}
+";
+    const ALIASED_INTERNALS: &str = "[target.'cfg(unix)'.dependencies]
+facade={package='sunrise-internals',path='.sunrise/sdk/api/crates/sunrise-internals'}
+";
+
+    #[test]
+    fn sync_stops_before_discovery_when_the_mod_names_no_internals() {
+        let project = Scratch::new("sync-nothing");
+        let path = project.join(MANIFEST);
+        fs::write(&path, NATIVE_MOD).unwrap();
+        fs::write(
+            project.join("Cargo.toml"),
+            format!("{API_ONLY_CARGO}# sunrise-internals isn't needed for this mod\n"),
+        )
+        .unwrap();
+        sync(&project, |_, _| panic!("started discovery")).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), NATIVE_MOD);
+    }
+
+    #[test]
+    fn sync_refuses_missing_or_invalid_cargo_without_discovery() {
+        let project = Scratch::new("sync-invalid-cargo");
+        let path = project.join(MANIFEST);
+        let cargo = project.join("Cargo.toml");
+        fs::write(&path, NATIVE_MOD).unwrap();
+        let invalid_dependency = format!("{API_ONLY_CARGO}broken = 123\n");
+        for fixture in [
+            None,
+            Some("[package"),
+            Some("[package]\nname='example'"),
+            Some(invalid_dependency.as_str()),
+        ] {
+            if let Some(text) = fixture {
+                fs::write(&cargo, text).unwrap();
+            }
+            let error = sync(&project, |_, _| panic!("started discovery")).unwrap_err();
+            assert!(error.contains("Cargo.toml"), "{error}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), NATIVE_MOD);
+        }
+    }
+
+    #[test]
+    fn sync_uses_discovered_entries_and_leaves_the_manifest_alone_on_failure() {
+        let project = Scratch::new("sync-discovery");
+        let path = project.join(MANIFEST);
+        let original = format!("internals=[{{path='Unused',hash='old'}}]\n{NATIVE_MOD}");
+        fs::write(&path, &original).unwrap();
+        // Stale declarations must still be refreshed when there is no facade dependency.
+        fs::write(project.join("Cargo.toml"), API_ONLY_CARGO).unwrap();
+        let result = sync(&project, |_, _| Err("discovery sentinel".into()));
+        assert_eq!(result.unwrap_err(), "discovery sentinel");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        sync(&project, |dir, native| {
+            assert_eq!(dir, &*project);
+            assert_eq!(native.sunrise, "a".repeat(40));
+            Ok(serde_json::from_str(
+                r#"[{"path":"Used","kind":"struct","signature":"struct Used","hash":"compiler"}]"#,
+            )
+            .unwrap())
+        })
+        .unwrap();
+        let manifest = Manifest::parse(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(manifest.internals.len(), 1);
+        assert_eq!(manifest.internals[0].path, "Used");
+        assert_eq!(manifest.internals[0].hash.as_deref(), Some("compiler"));
+    }
+
+    #[test]
+    fn bounded_discovery_reread() {
+        let project = Scratch::new("sync-reread");
+        let path = project.join(MANIFEST);
+        fs::write(&path, NATIVE_MOD).unwrap();
+        // The alias in a target-specific dependency table still starts discovery.
+        fs::write(
+            project.join("Cargo.toml"),
+            format!("{API_ONLY_CARGO}{ALIASED_INTERNALS}"),
+        )
+        .unwrap();
+        let limit = crate::bounded::MAX_MANIFEST;
+        let error = sync(&project, |_, _| {
+            fs::File::create(&path).unwrap().set_len(limit + 1).unwrap();
+            Ok(Vec::new())
+        })
+        .unwrap_err();
+        assert!(
+            error.contains(MANIFEST) && error.contains(&limit.to_string()),
+            "{error}"
+        );
+        assert_eq!(fs::metadata(path).unwrap().len(), limit + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "daily"]
+    fn add_replaces_a_symlinked_manifest_at_its_real_path_and_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let project = Scratch::new("add-project");
+        let shared = Scratch::new("add-shared");
+        let build = "0123456789abcdef0123456789abcdef01234567";
+        let cache = project.join(".sunrise/cache").join(build);
+        fs::create_dir_all(cache.join("build-data")).unwrap();
+        crate::sdk_fetch::CacheStamp::new(build, &crate::sdk_fetch::keys())
+            .write(&cache)
+            .unwrap();
+        fs::write(cache.join("build-data/internals.json"), format!(r#"{{"schema":1,"build":{{"commit":"{build}"}},"internals":[{{"path":"Used","kind":"struct","signature":"struct Used","hash":"1111"}}]}}"#)).unwrap();
+        let before = format!(
+            "id = 'example'\nname = 'Example'\nversion = '0.1.0'\napi = '0.2'\ncapabilities = ['registries']\n[native]\ngame = '26.3'\nsunrise = '{build}'\nmixins = '{}'\n",
+            "a".repeat(40)
+        );
+        let real = shared.join(MANIFEST);
+        fs::write(&real, &before).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o640)).unwrap();
+        // A second name for the old file: a replacement leaves it as it was.
+        fs::hard_link(&real, shared.join("previous")).unwrap();
+        std::os::unix::fs::symlink(&real, project.join(MANIFEST)).unwrap();
+        add(&project, &["Used"], None, |_, _| {
+            panic!("started discovery")
+        })
+        .unwrap();
+        assert!(
+            fs::symlink_metadata(project.join(MANIFEST))
+                .unwrap()
+                .is_symlink()
+        );
+        let manifest = Manifest::parse(&fs::read_to_string(&real).unwrap()).unwrap();
+        assert_eq!(manifest.internals[0].hash.as_deref(), Some("1111"));
+        assert_eq!(
+            fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(fs::read_to_string(shared.join("previous")).unwrap(), before);
+        let mut names: Vec<_> = fs::read_dir(&*shared)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["previous", "sunrise-mod.toml"]);
     }
 
     #[test]
@@ -564,6 +726,9 @@ mod tests {
         );
         let (metadata, pins) = header.split_once("[native]").unwrap();
         let entries: Vec<ListedInternal> = serde_json::from_str(r#"[{"path":"Used","kind":"struct","signature":"struct Used","hash":"new"},{"path":"New","kind":"fn","signature":"fn new()","hash":"added"}]"#).unwrap();
+        let replace = |text: &str, entries: &[ListedInternal]| {
+            super::replace(text, &Manifest::parse(text)?, entries)
+        };
         for body in [
             "internals = [\n  { path = 'Used', hash = 'old' }, # keep\n  { path = 'Unused', hash = 'gone' },\n]\n",
             "[[internals]] # keep\npath = 'Used'\nhash = 'old' # hash\n[[internals]]\npath = 'Unused'\nhash = 'gone'\n",
@@ -598,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_and_launcher_share_the_freshness_check() {
+    fn declared_hashes_use_the_catalog_freshness_check() {
         let entries: Vec<ListedInternal> = sunrise_mod_package::internals::parse(include_str!(
             "../tests/fixtures/internals-new.json"
         ))

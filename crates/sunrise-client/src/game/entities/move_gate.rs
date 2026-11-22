@@ -5,10 +5,10 @@
 //! door calls, with a revision recheck before the kind's physics runs.
 use super::Game;
 use super::entity::{Entity, EntityHandle, with_entity};
+use std::borrow::Cow;
 use sunrise_core::geometry::Vec3;
 use sunrise_world::entity_move::MoverType;
 use sunrise_world::move_gate::MoveGate;
-use std::borrow::Cow;
 
 /// Which body a move is for: the local player window, a LAN guest, or a listed
 /// entity. The piston and shulker-box pushes and the family ticks name their
@@ -56,7 +56,7 @@ impl Game<'_> {
     }
 
     /// The kind name (`minecraft:zombie`) a move is for, built on demand.
-    fn move_who_kind(&self, who: MoveWho) -> Cow<'static, str> {
+    fn move_who_kind(&self, who: MoveWho) -> Cow<'_, str> {
         match who {
             MoveWho::Player | MoveWho::Guest(_) => Cow::Borrowed("minecraft:player"),
             MoveWho::Entity(handle) => with_entity!(self, handle, entity => entity.native_type()),

@@ -3,11 +3,11 @@
 //! `ambient_fixture ROOT INPUT OUTPUT`.
 use crate::audio_common as common;
 use common::{Fake, d, f, flush};
+use std::io::Write;
 use sunrise_client::ambience::{Ambience, AmbientContext, AmbientSounds, Mood, bubble_column_in};
 use sunrise_client::sound_engine::{Bound, SoundEngine, TickContext, Ticking};
 use sunrise_client::sound_events::{SoundRegistry, normalize};
 use sunrise_core::random::RandomSource;
-use std::io::Write;
 
 /// The oracle's scripted brightness.
 fn light(mode: i32, x: i32, y: i32, z: i32) -> (u8, u8) {

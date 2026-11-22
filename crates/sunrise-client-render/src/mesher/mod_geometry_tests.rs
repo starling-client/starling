@@ -5,10 +5,10 @@ use super::mod_geometry::{
 };
 use super::mod_tint_tests::{resources, tint_values};
 use super::*;
-use sunrise_assets::resource_source::ResourceRoot;
 use mod_api::{LightLayer, SectionGeometry, SectionGeometryContext, SectionQuad};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use sunrise_assets::resource_source::ResourceRoot;
 
 const GOLD: &str = "minecraft:block/gold_block";
 
@@ -132,8 +132,15 @@ fn the_section_budget_is_shared_by_its_blocks_and_every_renderer() {
         solid: vec![vertex; (MAX_QUADS - 5) * 4],
         ..SectionMesh::default()
     };
-    let mut budget = Budget::left_after(&out);
+    let mut budget = Budget::left_after(&out, 0);
     assert_eq!(budget.quads, 5);
+    let visibility_bytes = budget.bytes - 2 * QUAD_BYTES;
+    let mut combined = Budget::left_after(&out, visibility_bytes);
+    let mut with_visibility = Batch::new(&sprites, &mut combined, &shared);
+    assert_eq!(with_visibility.remaining(), 2);
+    assert!((0..2).all(|_| with_visibility.add(GOLD, quad(false))));
+    assert!(!with_visibility.add(GOLD, quad(false)));
+    drop(with_visibility);
     let mut first = Batch::new(&sprites, &mut budget, &shared);
     assert!((0..3).all(|_| first.add(GOLD, quad(false))));
     drop(first);
@@ -197,16 +204,17 @@ fn an_invalid_quad_refuses_the_batch_and_its_earlier_quads() {
     assert_eq!(budget, full_budget());
 }
 
-struct World {
-    assets: Assets,
-    render: RenderAssets,
+/// Prepared resources and the mesher over them.
+pub(super) struct World {
+    pub(super) assets: Assets,
+    pub(super) render: RenderAssets,
     facts: BlockFacts,
     biomes: Biomes,
-    root: std::path::PathBuf,
+    pub(super) root: std::path::PathBuf,
 }
 
 impl World {
-    fn load() -> Option<Self> {
+    pub(super) fn load() -> Option<Self> {
         let root = resources()?;
         let assets = Assets::load(&root).unwrap();
         let facts = BlockFacts::load(&root, assets.registry).unwrap();
@@ -228,7 +236,7 @@ impl World {
     }
 
     /// Mesh tables whose section geometry is `renderers`.
-    fn tables(&self, renderers: Vec<Arc<dyn SectionGeometry>>) -> MeshTables {
+    pub(super) fn tables(&self, renderers: Vec<Arc<dyn SectionGeometry>>) -> MeshTables {
         let mut tables = MeshTables::new(
             &self.assets,
             &self.render,
@@ -238,11 +246,13 @@ impl World {
         )
         .unwrap();
         tables.section_geometry = renderers.into_iter().map(Renderer::new).collect();
-        tables.mod_tints.values = Some(tint_values(self.assets.registry));
+        if !tables.section_geometry.is_empty() {
+            tables.mod_tints.values = Some(tint_values(self.assets.registry));
+        }
         tables
     }
 
-    fn mesher<'a>(&'a self, tables: &'a MeshTables) -> Mesher<'a> {
+    pub(super) fn mesher<'a>(&'a self, tables: &'a MeshTables) -> Mesher<'a> {
         Mesher {
             nether_shading: false,
             shader_pack_lighting: false,
@@ -261,11 +271,12 @@ impl World {
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
             hidden_states: &[],
+            part_tables: Default::default(),
         }
     }
 
     /// A chunk with one stone block in section 0 and section 1 empty.
-    fn cube(&self) -> Chunk {
+    pub(super) fn cube(&self) -> Chunk {
         let stone = self
             .assets
             .registry
@@ -277,7 +288,7 @@ impl World {
     }
 }
 
-fn quads(vertices: &[TerrainVertex]) -> usize {
+pub(super) fn quads(vertices: &[TerrainVertex]) -> usize {
     vertices.len() / 4
 }
 

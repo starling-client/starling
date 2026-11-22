@@ -96,7 +96,7 @@ fn near_plane_on(view_proj: Mat4, plane: Vec4, k: f32) -> Mat4 {
 /// the front faces, since its flipped picture turns every winding round, so the faces it drops
 /// are the ones the view unmirrored drops (gfx.rs builds the per-section ones, `flat::Flat` the
 /// flat ones).
-pub(super) struct Flipped {
+pub(crate) struct Flipped {
     pub solid: SolidPipeline,
     pub translucent: wgpu::RenderPipeline,
 }
@@ -112,7 +112,7 @@ pub(super) struct Target {
 
 /// The views' targets by id, the pipelines mirrored views draw with, the entities' one clipped
 /// views draw with (`ENTITY_MARGIN`), and this frame's views and their sections.
-pub(super) struct Kept {
+pub(crate) struct Kept {
     targets: HashMap<u64, Target>,
     flipped: Flipped,
     clipped_entities: wgpu::RenderPipeline,

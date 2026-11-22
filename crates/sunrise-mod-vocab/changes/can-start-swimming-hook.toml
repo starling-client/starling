@@ -1,0 +1,3 @@
+ids = ["hook:can_start_swimming", "type:CanStartSwimmingEvent", "type:SwimmingCheck", "type:HookId"]
+why = "Adds the both-sides can_start_swimming hook, version 1: NeoForge's IEntityExtension.canStartSwimming for the simulated player, asked at sprint swim entry (SwimmingCheck::Entry) and in local shallow-water sprint eligibility (SwimmingCheck::ShallowWater). The first Some answer wins; with none, vanilla's checks apply. HookId gains its variant."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the CanStartSwimming arm; one with a wildcard arm compiles unchanged."

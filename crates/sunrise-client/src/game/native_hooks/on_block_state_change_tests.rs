@@ -3,13 +3,14 @@
 //! neighbours' shapes settled, where `block_changed` hears the write before them, and on a
 //! client for each block the server sends and each write of a piston's replay.
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_core::{geometry::Direction, position::BlockPos};
-use sunrise_world::level::LevelAccess;
+use crate::game::remote::RemoteDimensionEntry;
 use mod_api::{
-    BlockChangedEvent, BlockPart, BlockState, Hooks, LevelHost, LevelSide, OnBlockStateChangeEvent,
-    Registrar,
+    BlockChangedEvent, BlockPart, BlockState, BlockUpdateFlags, Hooks, LevelHost, LevelSide,
+    OnBlockStateChangeEvent, Registrar,
 };
 use std::sync::{Arc, Mutex};
+use sunrise_core::{geometry::Direction, position::BlockPos};
+use sunrise_world::level::{LevelAccess, flags};
 
 /// One notice: the side, the position, the state asked, old, new, and whether the fence west
 /// of the position showed an east side then.
@@ -51,8 +52,8 @@ impl BlockPart for Listener {
 
 struct Mod {
     listener: Listener,
-    /// What `block_changed` saw of the fence beside each change.
-    changed: Arc<Mutex<Vec<bool>>>,
+    /// The fence beside each change, and the flags applied to that write.
+    changed: Arc<Mutex<Vec<(bool, BlockUpdateFlags)>>>,
 }
 #[mod_api::__subscriptions]
 impl Hooks for Mod {
@@ -64,27 +65,51 @@ impl Hooks for Mod {
     }
     fn block_changed(&self, level: &dyn LevelHost, event: &mut BlockChangedEvent) {
         let pos = [event.pos.x, event.pos.y, event.pos.z];
-        self.changed.lock().unwrap().push(fence_east(level, pos));
+        self.changed
+            .lock()
+            .unwrap()
+            .push((fence_east(level, pos), event.flags));
     }
 }
 
-fn mods(listener: &Listener, changed: &Arc<Mutex<Vec<bool>>>) -> mod_api::Mods {
-    vec![mod_api::ModEntry::new(
+struct OverwriteFlags(Arc<Mutex<Vec<BlockUpdateFlags>>>);
+
+#[mod_api::__subscriptions]
+impl Hooks for OverwriteFlags {
+    #[listener(priority = 10)]
+    fn block_changed(&self, _: &dyn LevelHost, event: &mut BlockChangedEvent) {
+        self.0.lock().unwrap().push(event.flags);
+        event.flags = BlockUpdateFlags::NONE;
+    }
+}
+
+fn state_change_mod(
+    listener: &Listener,
+    changed: &Arc<Mutex<Vec<(bool, BlockUpdateFlags)>>>,
+) -> mod_api::ModEntry {
+    mod_api::ModEntry::new(
         "state_change",
         Box::new(Mod {
             listener: listener.clone(),
             changed: changed.clone(),
         }),
-    )]
-    .into()
+    )
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_part_hears_a_state_change_after_the_neighbours_shapes_settled() {
     let listener = Listener::default();
     let changed = Arc::new(Mutex::new(Vec::new()));
-    let mods = mods(&listener, &changed);
+    let overwritten = Arc::new(Mutex::new(Vec::new()));
+    let mods: mod_api::Mods = vec![
+        state_change_mod(&listener, &changed),
+        mod_api::ModEntry::new(
+            "overwrite_flags",
+            Box::new(OverwriteFlags(overwritten.clone())),
+        ),
+    ]
+    .into();
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
@@ -93,27 +118,43 @@ fn a_part_hears_a_state_change_after_the_neighbours_shapes_settled() {
                 .chunks
                 .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
             let registry = game.pack.assets.registry;
-            let [fence, stone, dirt] = ["minecraft:oak_fence", "minecraft:stone", "minecraft:dirt"]
+            let [fence, stone, air] = ["minecraft:oak_fence", "minecraft:stone", "minecraft:air"]
                 .map(|name| registry.default_state(name).unwrap());
             game.world.set(1, 64, 0, fence).unwrap();
-            game.with_level(|b, level, ticks| {
-                b.set_block(level, ticks, BlockPos::new(2, 64, 0), stone, 3);
-            });
+            let at = BlockPos::new(2, 64, 0);
+            assert!(game.with_level(|b, level, ticks| {
+                b.set_block(level, ticks, at, stone, flags::UPDATE_ALL)
+            }));
             // `block_changed` saw the stone beside an unconnected fence (then the fence's own
             // change); the part hears the stone beside the connected fence.
-            assert_eq!(changed.lock().unwrap().first(), Some(&false));
+            let ordinary = BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS;
+            assert_eq!(changed.lock().unwrap().first(), Some(&(false, ordinary)));
             let heard = listener.0.lock().unwrap().clone();
             assert_eq!(heard.len(), 1);
             let (client, pos, asked, _, new, east) = heard[0];
             assert_eq!((client, pos, east), (false, [2, 64, 0], true));
             assert_eq!((asked, new), (api(stone), api(stone)));
-            // Stone to dirt: stone's part hears it, dirt has none.
+            // Removing the stone with KNOWN_SHAPE still fires once, but the fence stays connected.
+            changed.lock().unwrap().clear();
+            overwritten.lock().unwrap().clear();
+            let skip_shapes = flags::UPDATE_CLIENTS | flags::UPDATE_KNOWN_SHAPE;
             game.with_level(|b, level, ticks| {
-                b.set_block(level, ticks, BlockPos::new(2, 64, 0), dirt, 3);
+                assert!(b.set_block(level, ticks, at, air, skip_shapes));
+                assert!(!b.set_block(level, ticks, at, air, skip_shapes));
             });
+            let applied = BlockUpdateFlags::CLIENTS | BlockUpdateFlags::KNOWN_SHAPE;
+            assert_eq!(*overwritten.lock().unwrap(), [applied]);
+            let changed = changed.lock().unwrap();
+            // The higher-priority listener reassigned its copy, but the next still gets the applied flags.
+            assert_eq!(*changed, [(true, applied)]);
+            assert!(changed[0].1.contains(BlockUpdateFlags::KNOWN_SHAPE));
+            assert!(!changed[0].1.contains(ordinary));
             let heard = listener.0.lock().unwrap().clone();
             assert_eq!(heard.len(), 2);
-            assert_eq!((heard[1].2, heard[1].4), (api(stone), api(dirt)));
+            assert_eq!(
+                (heard[1].2, heard[1].4, heard[1].5),
+                (api(stone), api(air), true)
+            );
         })
     });
 }
@@ -125,7 +166,7 @@ fn api(state: sunrise_world::registry::BlockStateId) -> BlockState {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_client_hears_each_block_the_server_sends_and_each_write_of_a_piston_replay() {
     use super::super::execution_role::ExecutionRole;
     use sunrise_client::level_loading::Reason;
@@ -135,7 +176,7 @@ fn a_client_hears_each_block_the_server_sends_and_each_write_of_a_piston_replay(
     };
     let listener = Listener::default();
     let changed = Arc::new(Mutex::new(Vec::new()));
-    let mods = mods(&listener, &changed);
+    let mods: mod_api::Mods = vec![state_change_mod(&listener, &changed)].into();
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
@@ -154,7 +195,7 @@ fn a_client_hears_each_block_the_server_sends_and_each_write_of_a_piston_replay(
                 portal_cooldown: 0,
                 sea_level: 63,
             };
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
+            game.enter_remote_dimension(&spawn, RemoteDimensionEntry::Login, Reason::Other);
             game.remote.as_mut().unwrap().logged_in = true;
             game.world
                 .chunks

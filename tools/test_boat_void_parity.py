@@ -67,8 +67,21 @@ def main():
         parent = Path(tempfile.mkdtemp(prefix='boat-void-', dir=driver.lab.LOCAL))
         sys.argv += ['--work-dir', str(parent / 'run')]
     work = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()
-    driver.corpus_module.groups = lambda: [('Boat load and void removal', program())]
-    sys.argv.append('--allow-gaps')
+    # The loaded fixture gives both sides view and simulation distance 2 with a real player's tickets.
+    # At the driver's default distances Sunrise ticks terrain the oracle never loads, and its kelp breaking
+    # into items showed up as differences no boat caused (#1647). The fixture runs its own groups, so the
+    # program takes their place, and it checks that two paced waits (40 and 120 ticks) ran at game speed:
+    # they come after every boat assertion.
+    driver.corpus_module.groups = lambda: []
+    driver.corpus_module.group_setup = lambda: []
+    driver.corpus_module.loaded_ticket_removal = lambda _diagnostic: [
+        *program(),
+        dict(op='cmd', cmd='/tick unfreeze'),
+        dict(op='tick', n=40, pace_ms=50),
+        dict(op='tick', n=120, pace_ms=50),
+        dict(op='cmd', cmd='/tick freeze'),
+    ]
+    sys.argv += ['--loaded-fixture', '--allow-gaps']
     driver.main()
     if '--reference-only' in sys.argv:
         return

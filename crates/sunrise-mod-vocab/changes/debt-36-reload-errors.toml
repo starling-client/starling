@@ -1,0 +1,41 @@
+ids = [
+  "type:ClientReloadContext",
+  "type:FileToIdConverter",
+  "type:FileToIdConverterError",
+  "type:ReloadOrderError",
+  "type:ReloadResourceError",
+  "handle:ReloadResourceError::resource",
+  "type:ServerReloadContext",
+  "type:VanillaClientListeners",
+  "type:VanillaServerListeners",
+]
+why = """
+Reload preparation runs in-process. Vanilla's `SimpleJsonResourceReloadListener.prepare` uses
+`FileToIdConverter` to select local resources and handles parsing errors there. NeoForge uses
+`VanillaClientListeners` and `VanillaServerListeners` to name listeners for
+`SortedReloadListenerEvent.addDependency`. These helpers, prepare contexts and errors have no
+reload wire format. Encoding a file error as an ID and message also discarded its original cause;
+`ReloadResourceError`'s `Display` now walks the full `Error::source()` chain so logs and `/reload`
+replies preserve nested causes.
+"""
+migrate = """
+Replace `ReloadResourceError::from((id, message))` with `ReloadResourceError::new(id, cause)`.
+Pass the original error when you have one; for validation, define a typed validation error
+implementing `std::error::Error + Send + Sync + 'static`, or wrap a standalone message with
+`std::io::Error::other(message)`. Instead of converting `&error` to `(Identifier, String)`, use
+`error.resource()` for the ID, `std::error::Error::source(&error)` for the cause, and `Display`
+for logging (its formatted output now walks the full `Error::source()` chain automatically). Return
+the error directly from `prepare`; applying still waits for all prepares to succeed.
+
+Remove `Wire` encoding and decoding of reload errors and prepare contexts. Borrow IDs and bytes
+from the context passed into `prepare` with `list()` and `read(&id)`. Match `ReloadOrderError`
+and `FileToIdConverterError` variants directly.
+
+Replace `FileToIdConverter::try_from((directory, extension))` with
+`FileToIdConverter::new(&directory, &extension)`, or use `FileToIdConverter::json(&directory)`
+for JSON. If you converted `&converter` into `(String, String)`, keep the original
+directory and extension where you need them instead. Build the converter when you register a
+listener instead of decoding it. For dependencies, use the `Identifier` returned by an anchor
+method such as `VanillaClientListeners::model_manager()` or `VanillaServerListeners::functions()`
+directly in `add_dependency`; neither namespace type is a `Wire` payload.
+"""

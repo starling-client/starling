@@ -1,0 +1,3 @@
+ids = ["hook:humanoid_setup_anim", "type:HumanoidParts", "type:HumanoidRenderState.is_using_item"]
+why = "Expose the intermediate humanoid setupAnim pose before arm priority and posing, once per actual invocation. Finite local position and rotation edits feed later vanilla animation. Armor stands do not fire it; they pose from their saved rotations. HumanoidRenderState now explicitly exposes is_using_item."
+migrate = "Use humanoid_setup_anim for intermediate vanilla pose edits. Keep get_arm_pose for choosing poses and arm_pose_transform for selected registered pose transformers."

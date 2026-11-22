@@ -7,8 +7,10 @@ ticks are pending (due 2, 4, 6, 8 and 5 ticks on). Then either
 
 - `restart`: the server stops and starts again. `MinecraftServer.prepareLevels` waits for the
   restored forced chunk (`ChunkLoadCounter`), and the first tick unpacks its saved ticks at the saved
-  game time (`ServerLevel.startTickingChunk`); or
-- `frozen`: the chunk is unloaded and loaded back while the world stays frozen, then it runs.
+  game time (`ServerLevel.startTickingChunk`);
+- `frozen`: the chunk is unloaded and loaded back while the world stays frozen, then it runs; or
+- `restart-end`: a saved forced chunk in the End is readable by the first tick function, without
+  any player connecting. A block check samples chunk data, not the asynchronous entity load.
 
 A datapack's tick function records the first game time it runs and the game time each repeater is
 first seen powered and the water first seen flowing; the harness compares those times relative to the
@@ -50,11 +52,12 @@ KEYS = [name for name, *_ in REPEATERS] + [WATER[0]]
 # `burnt`: how much the furnace burnt in the first tick.
 TIMES = {'r1': 2, 'r2': 4, 'r3': 6, 'r4': 8, 'w': 5}
 EXPECTED = {'restart': {**{k: TIMES[k] for k in ('r2', 'r3', 'r4', 'w')}, 'burnt': 0},
-            'frozen': {**TIMES, 'burnt': 1}}
+            'frozen': {**TIMES, 'burnt': 1},
+            'restart-end': {'first_end_block': 1}}
 MESSAGE = re.compile(r'\[Server thread/INFO\]: (?:System chat: )?(.*)$')
 
 
-def install_recorder(world, jar):
+def install_recorder(world, jar, case):
     with zipfile.ZipFile(jar) as archive:
         version = json.loads(archive.read('version.json'))['pack_version']
     fmt = [version['data_major'], version['data_minor']]
@@ -65,9 +68,19 @@ def install_recorder(world, jar):
         'description': 'Saved tick recorder', 'pack_format': fmt[0], 'min_format': fmt, 'max_format': fmt}}))
     (pack / 'data/minecraft/tags/function/tick.json').write_text(json.dumps({'values': ['saved_ticks:tick']}))
     unset = 'execute unless score {} st matches -2147483648..'
+    tick = pack / 'data/saved_ticks/function/tick.mcfunction'
+    armed = 'execute unless score armed st matches 1 run return 0'
+    if case == 'restart-end':
+        # Latch on the first run, even on a miss: later chunk loads cannot change the result.
+        lines = [armed, 'execute if score first_end_block st matches 0..1 run return 0',
+                 f'execute in minecraft:the_end if block {X0} {Y} {Z0} gold_block'
+                 ' run scoreboard players set first_end_block st 1',
+                 unset.format('first_end_block') + ' run scoreboard players set first_end_block st 0']
+        tick.write_text('\n'.join(lines) + '\n')
+        return
     fx, fz = FURNACE
     lit = f'data get block {fx} {Y} {fz} lit_time_remaining'
-    lines = ['execute unless score armed st matches 1 run return 0',
+    lines = [armed,
              unset.format('start') + ' store result score start st run time query gametime',
              'scoreboard players add runs st 1',
              f'execute if score runs st matches 1 store result score f0 st run {lit}',
@@ -79,7 +92,7 @@ def install_recorder(world, jar):
     for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         lines.append(unset.format(name) + f' if block {x + dx} {Y} {z + dz} water'
                      f' store result score {name} st run time query gametime')
-    (pack / 'data/saved_ticks/function/tick.mcfunction').write_text('\n'.join(lines) + '\n')
+    tick.write_text('\n'.join(lines) + '\n')
 
 
 def run_case(command, out, label, case, jar):
@@ -94,7 +107,7 @@ def run_case(command, out, label, case, jar):
     (directory / 'server.properties').write_text(
         ''.join(f'{k}={escape(v)}\n' for k, v in props.items()), encoding='iso-8859-1')
     (directory / 'eula.txt').write_text('eula=true\n')
-    install_recorder(directory / 'world', jar)
+    install_recorder(directory / 'world', jar, case)
 
     def start(session):
         server = Server(command, directory, f'{label}-{case}-{session}')
@@ -125,14 +138,17 @@ def run_case(command, out, label, case, jar):
         return server, reply, until
 
     def recorded(reply):
-        """The recorder's times, once every one is in."""
+        """The recorder's scores, once every observation is in."""
+        keys = ['first_end_block'] if case == 'restart-end' else ['start', 'f0', 'f1'] + KEYS
         deadline = time.monotonic() + 120
         while True:
             scores = {}
-            for key in ['start', 'f0', 'f1'] + KEYS:
+            for key in keys:
                 found = [re.search(r'has (-?\d+)', line) for line in reply(f'scoreboard players get {key} st')]
                 scores[key] = next((int(m.group(1)) for m in found if m), None)
             if all(v is not None for v in scores.values()) or time.monotonic() > deadline:
+                if case == 'restart-end':
+                    return scores
                 times = {k: None if scores[k] is None or scores['start'] is None else scores[k] - scores['start']
                          for k in KEYS}
                 burnt = None if scores['f0'] is None or scores['f1'] is None else scores['f0'] - scores['f1']
@@ -143,25 +159,32 @@ def run_case(command, out, label, case, jar):
     try:
         reply('tick freeze')
         reply('scoreboard objectives add st dummy')
-        reply(f'forceload add {X0} {Z0}')
-        until(f'if loaded {X0} {Y} {Z0}', 'the chunk did not load')
-        # One running tick: the chunk's tick queues are registered before the commands below schedule.
-        before = game_time(server)
-        reply('tick step 1')
-        deadline = time.monotonic() + 60
-        while game_time(server) < before + 1:
-            assert time.monotonic() < deadline, f'{label} {case}: tick step stalled'
-        assert any('filled' in m for m in reply(f'fill {X0} {Y - 1} {Z0} {X0 + 15} {Y - 1} {Z0 + 15} stone'))
-        reply(f'fill {X0} {Y} {Z0} {X0 + 15} {Y + 2} {Z0 + 15} air')
-        for _, x, z, d in REPEATERS:
-            reply(f'setblock {x} {Y} {z} repeater[facing=east,delay={d}]')
-        reply(f'setblock {FURNACE[0]} {Y} {FURNACE[1]} furnace[lit=true]{{lit_time_remaining:200,lit_total_time:200}}')
-        saved_at = game_time(server)
-        for _, x, z, _ in REPEATERS:
-            reply(f'setblock {x + 1} {Y} {z} redstone_block')
-        reply(f'setblock {WATER[1]} {Y} {WATER[2]} water')
-        for name, x, z, _ in REPEATERS:
-            assert any('Test passed' in m for m in reply(f'execute if block {x} {Y} {z} repeater[powered=false]')), name
+        if case == 'restart-end':
+            reply(f'execute in minecraft:the_end run forceload add {X0} {Z0}')
+            until(f'in minecraft:the_end if loaded {X0} {Y} {Z0}', 'the End chunk did not load')
+            saved_at = game_time(server)
+            reply(f'execute in minecraft:the_end run setblock {X0} {Y} {Z0} gold_block')
+            until(f'in minecraft:the_end if block {X0} {Y} {Z0} gold_block', 'the marker was not placed')
+        else:
+            reply(f'forceload add {X0} {Z0}')
+            until(f'if loaded {X0} {Y} {Z0}', 'the chunk did not load')
+            # One running tick: the chunk's tick queues are registered before the commands below schedule.
+            before = game_time(server)
+            reply('tick step 1')
+            deadline = time.monotonic() + 60
+            while game_time(server) < before + 1:
+                assert time.monotonic() < deadline, f'{label} {case}: tick step stalled'
+            assert any('filled' in m for m in reply(f'fill {X0} {Y - 1} {Z0} {X0 + 15} {Y - 1} {Z0 + 15} stone'))
+            reply(f'fill {X0} {Y} {Z0} {X0 + 15} {Y + 2} {Z0 + 15} air')
+            for _, x, z, d in REPEATERS:
+                reply(f'setblock {x} {Y} {z} repeater[facing=east,delay={d}]')
+            reply(f'setblock {FURNACE[0]} {Y} {FURNACE[1]} furnace[lit=true]{{lit_time_remaining:200,lit_total_time:200}}')
+            saved_at = game_time(server)
+            for _, x, z, _ in REPEATERS:
+                reply(f'setblock {x + 1} {Y} {z} redstone_block')
+            reply(f'setblock {WATER[1]} {Y} {WATER[2]} water')
+            for name, x, z, _ in REPEATERS:
+                assert any('Test passed' in m for m in reply(f'execute if block {x} {Y} {z} repeater[powered=false]')), name
         if case == 'frozen':
             reply(f'forceload remove {X0} {Z0}')
             until(f'unless loaded {X0} {Y} {Z0}', 'the chunk did not unload')

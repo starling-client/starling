@@ -8,9 +8,11 @@ pub trait Hooks {
     /// use Sunrise's same-level target path; it does not change vanilla's
     /// movement.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_entity_teleport",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn entity_teleport();
+    fn entity_teleport(dimension: &str, entity: u32, from: [f64; 3], to: [f64; 3]);
 }

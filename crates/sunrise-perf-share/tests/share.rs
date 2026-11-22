@@ -1,6 +1,6 @@
-use sunrise_perf_share::share_saved;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use sunrise_perf_share::share_saved;
 
 #[test]
 #[ignore = "daily"]

@@ -3,7 +3,7 @@ pub(crate) struct Gauge;
 #[mod_api::sunrise_part]
 impl BlockPart for Gauge {
     #[cfg_attr(test, inline)]
-    fn analog_output(&self, _: &dyn LevelHost, event: &mut AnalogOutputEvent) {
+    fn analog_output(&self, _: &mut dyn LevelRandomHost, event: &mut AnalogOutputEvent) {
         event.output += 5;
     }
     #[cfg_attr(test, cfg(any()))]

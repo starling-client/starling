@@ -1,0 +1,3 @@
+ids = ["type:Compound"]
+why = "Compound is a concrete type with Java HashMap traversal, not a sorted map. Traversal order depends on construction and mutation history; equality and hashing still compare entries independently of order. The Wire layout is unchanged (length and key/value pairs), but the sequence of those pairs can change."
+migrate = "Use Compound::new() or collect key/value pairs into a Compound. If an output needs sorted keys, sort that output explicitly instead of relying on traversal order."

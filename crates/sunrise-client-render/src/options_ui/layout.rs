@@ -74,6 +74,7 @@ impl OptionsUi {
         w: f32,
         h: f32,
     ) -> std::sync::Arc<OptionsLayout> {
+        self.refresh_added_rows();
         // The scroll is an input too: a drag, the wheel or a focus move can
         // change it without a revision bump, and the rows move with it.
         let key = (w, h, self.rev, self.scroll.to_bits());
@@ -157,15 +158,9 @@ impl OptionsUi {
                     // video option, as Sodium's replaces vanilla's.
                     ("options.video", Some(Page::Graphics)),
                     ("options.controls", Some(Page::Controls)),
-                    (
-                        "options.language",
-                        (!self.split_guest).then_some(Page::Language),
-                    ),
+                    ("options.language", Some(Page::Language)),
                     ("options.chat", Some(Page::Chat)),
-                    (
-                        "options.resourcepack",
-                        (!self.split_guest).then_some(Page::Packs),
-                    ),
+                    ("options.resourcepack", Some(Page::Packs)),
                     ("options.accessibility", Some(Page::Accessibility)),
                     // Vanilla's Telemetry Data and Credits slots: Sunrise's
                     // settings and its mods, as a mod adds its button here.

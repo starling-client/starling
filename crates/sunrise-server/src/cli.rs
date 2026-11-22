@@ -2,13 +2,13 @@
 //! `restart`, `status`, `cmd`, `report` and `logs`. They talk to the running supervisor through the control API.
 
 use crate::{api::Client, backup, signals, supervisor};
-use sunrise_server_launch::config;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use sunrise_server_launch::config;
 
 /// How long `start` waits for the game's `Done`, and `stop` for the server to end.
 const START_TIMEOUT: Duration = Duration::from_secs(300);

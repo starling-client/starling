@@ -1,8 +1,4 @@
 //! Registry-aware codec transport for biome-source definitions.
-use sunrise_core::density::{ConstantSampler, SamplerContext};
-use sunrise_world::worldgen::{
-    biome_source::BiomeSourceCatalog, climate::ClimateSampler, tags::TagDefinitions,
-};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -10,6 +6,10 @@ use std::{
     io::{self, Write},
     path::Path,
     sync::Arc,
+};
+use sunrise_core::density::{ConstantSampler, SamplerContext};
+use sunrise_world::worldgen::{
+    biome_source::BiomeSourceCatalog, climate::ClimateSampler, tags::TagDefinitions,
 };
 fn normalized(value: Value) -> Value {
     match value {

@@ -4,10 +4,12 @@ pub trait Hooks {
     /// A screen was observed opening or changing rectangle, at most once per frame
     /// (`ScreenEvent.Init.Post`).
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ScreenEvent.Init.Post",
         cancellable = false
     )]
-    fn screen_init_post();
+    fn screen_init_post(screen: &ScreenView<'_>);
 }

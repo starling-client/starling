@@ -8,10 +8,6 @@ impl Game<'_> {
         registry: &str,
         cause: mod_api::DataMapsUpdateCause,
     ) {
-        let phase = self.mod_phase.clone();
-        let _reload = phase
-            .reloading()
-            .expect("data maps notice on its owning thread");
-        self.fire_data_maps_updated(registry, cause);
+        Self::fire_data_maps_updated(self, registry, cause);
     }
 }

@@ -4,9 +4,11 @@
 pub trait Hooks {
     /// A brewing stand at `pos` began brewing `ingredient`, after fuel and the timer were set. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_brewing_start",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn brewing_start();
+    fn brewing_start(pos: [i32; 3], ingredient: &str);
 }

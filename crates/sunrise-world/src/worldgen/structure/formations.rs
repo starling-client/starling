@@ -12,9 +12,9 @@ use crate::{
     heightmap::HeightmapType,
     worldgen::{DecodeError, block_feature::FeatureBlockBindings},
 };
+use serde_json::Value;
 use sunrise_core::position::ChunkPos;
 use sunrise_core::random::RandomSource;
-use serde_json::Value;
 use {
     super::{
         Rotation, StructureResources,

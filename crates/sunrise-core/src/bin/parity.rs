@@ -1,4 +1,5 @@
 //! Line-based differential probe. Not a game client or server.
+use std::io::{self, BufRead, BufWriter, Write};
 use sunrise_core::{
     position::{BlockPos, ChunkPos, SectionPos},
     random::{
@@ -8,7 +9,6 @@ use sunrise_core::{
     },
     storage::PackedStorage,
 };
-use std::io::{self, BufRead, BufWriter, Write};
 
 fn random_probe<R: RandomSource>(out: &mut impl Write, mut rng: R, count: usize) -> io::Result<()> {
     let bounds = [1, 2, 3, 16, 31, 256, 65_537, 1_073_741_825, i32::MAX, 0, -1];

@@ -3,10 +3,12 @@
 pub trait Hooks {
     /// The `screen` that was open is being replaced (`ScreenEvent.Closing`), after `screen_opening` let it.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ScreenEvent.Closing",
         cancellable = false
     )]
-    fn screen_closing();
+    fn screen_closing(screen: &ScreenView<'_>);
 }

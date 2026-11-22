@@ -4,10 +4,10 @@
 //! `replace` and `subtitle` fields, files that do not exist being dropped, and
 //! `WeighedSoundEvents.getSound` drawing `nextInt(totalWeight)` from the sound
 //! instance's random.
-use sunrise_assets::resource_source::ResourceSource;
-use sunrise_core::random::RandomSource;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use sunrise_assets::resource_source::ResourceSource;
+use sunrise_core::random::RandomSource;
 
 /// `SoundManager.EMPTY_SOUND_LOCATION`.
 pub const EMPTY: &str = "minecraft:empty";
@@ -405,8 +405,8 @@ impl SoundRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::random::LegacyRandom;
     use std::fs;
+    use sunrise_core::random::LegacyRandom;
 
     #[test]
     fn resolved_sounds_validate_cross_namespace_files_without_directories() {

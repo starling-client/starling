@@ -711,6 +711,10 @@ impl Stage<'_> {
                 // Before the compatibility inputs, of which `gl_Vertex` is a prefix.
                 // GLSL IDs are signed, while naga's index inputs are unsigned. Convert the
                 // builtin itself so arithmetic and overload resolution keep GLSL's type.
+                // A gbuffers program's vertex stage runs for vertex `hz_vertex_index`, which the
+                // game may set to another vertex to run it again (`GbuffersInputs::after`).
+                "gl_VertexID" if self.gbuffers && !fragment => Some("int(hz_vertex_index)".into()),
+                "gl_VertexIndex" if self.gbuffers && !fragment => Some("hz_vertex_index".into()),
                 "gl_VertexID" => Some("int(gl_VertexIndex)".into()),
                 "gl_InstanceID" => Some("int(gl_InstanceIndex)".into()),
                 "gl_VertexIndex" | "gl_InstanceIndex" => None,
@@ -720,7 +724,7 @@ impl Stage<'_> {
                 _ if !fragment && VERTEX_INPUTS.iter().any(|b| t.starts_with(b)) => {
                     Some(format!("hz_{}", &t[3..]))
                 }
-                _ if old && LATER_KEYWORDS.contains(&t) => Some(format!("hz_kw_{t}")),
+                _ if old => self.later_keyword(t),
                 _ => None,
             };
             out.push_str(replaced.as_deref().unwrap_or(t));
@@ -730,6 +734,34 @@ impl Stage<'_> {
 }
 
 impl Stage<'_> {
+    /// A global's `name` as the rewrite writes it: a word that became a keyword after GLSL 1.x,
+    /// which old packs use as a name, renamed (from `#version 400` on, it can't be a name).
+    pub(super) fn written_name(&self, name: &str) -> String {
+        self.later_keyword(name).unwrap_or_else(|| name.to_owned())
+    }
+
+    /// A type or an array size (`filter[input]`) as the rewrite writes it: each word through
+    /// `written_name`.
+    pub(super) fn written_words(&self, text: &str) -> String {
+        let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find(word) {
+            out.push_str(&rest[..start]);
+            let end = rest[start..]
+                .find(|c| !word(c))
+                .map_or(rest.len(), |e| start + e);
+            out.push_str(&self.written_name(&rest[start..end]));
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn later_keyword(&self, t: &str) -> Option<String> {
+        LATER_KEYWORDS.contains(&t).then(|| format!("hz_kw_{t}"))
+    }
+
     /// The length of a lowered global array is still a constant expression. Naga attempts a
     /// runtime load before resolving `.length()`, so retain the declared size explicitly.
     fn runtime_array_length(&self, i: usize) -> Option<(&str, usize)> {

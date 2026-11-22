@@ -87,19 +87,21 @@ fn note_block_sound_component_recipe_literals_validate_and_match() {
             error.contains("component minecraft:note_block_sound:"),
             "{error}"
         );
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
             vec![("fixture:invalid_note_block_sound".into(), value)],
             &load,
         )
-        .unwrap();
-        assert!(recipes.crafting.is_empty(), "{source}");
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes.by_type.values().all(|recipes| recipes.is_empty()),
-            "{source}"
+            refused.contains("data/fixture/recipe/invalid_note_block_sound.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 
@@ -247,7 +249,7 @@ fn rollup_rejection_and_absence_matrix_4112() {
         assert!(error.contains("minecraft:note_block_sound"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -260,12 +262,13 @@ fn rollup_rejection_and_absence_matrix_4112() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }

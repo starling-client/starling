@@ -12,6 +12,8 @@ pub trait Hooks {
     /// blocks rather than the retraction to replay. Diverges from upstream: `piston_move` is renamed to
     /// `piston_pre`, and `piston_post` is new.
     #[hook(
+        receiver = "read",
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "canceled",
@@ -35,10 +37,19 @@ pub trait Hooks {
     /// Server-side. Diverges from upstream: `piston_move` is split into
     /// `piston_pre` and `piston_post`.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PistonEvent.Post",
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_piston_post"
     )]
-    fn piston_post();
+    fn piston_post(
+        dimension: LevelDimension,
+        piston: BlockPos,
+        direction: [i32; 3],
+        extending: bool,
+        push: &[BlockPos],
+        destroy: &[BlockPos],
+    );
 }

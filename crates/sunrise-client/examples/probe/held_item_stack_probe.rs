@@ -1,13 +1,13 @@
 //! The stacks passed to item models for an entity's two arms.
-use sunrise_client::{
-    Result,
-    items::ItemStack,
-    mobs::{Extra, render},
-};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_client::{
+    Result,
+    items::ItemStack,
+    mobs::{Extra, render},
 };
 
 pub fn main() -> Result<()> {

@@ -7,6 +7,8 @@ trait Hooks {
     /// survive property changes within the same block.
     #[notes = r#"`stateful_block_entity` declares static factory ownership; pure `native_block_entity_from_state` receives the borrowed actual block/property map. An empty result creates no new entity and never falls through to API15. LevelChunk mutation creates inline after onPlace; existing same-block entities survive state property changes. Bundles need "hooks": @API:state_block_entity_factory@."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         host = "read",
@@ -14,5 +16,5 @@ trait Hooks {
         key = "block",
         neoforge = "none (static factory ownership for vanilla EntityBlock.newBlockEntity)"
     )]
-    fn stateful_block_entity();
+    fn stateful_block_entity(block: &str, stateful: &mut bool);
 }

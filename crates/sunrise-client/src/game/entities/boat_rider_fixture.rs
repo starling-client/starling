@@ -1,11 +1,11 @@
 //! Headless passenger-order regression through the real remote client paths.
 use super::{Game, Keys, boats::Boat};
-use sunrise_client::{Result, held::Source, motion::PlayerMotion};
-use sunrise_core::geometry::Vec3;
-use sunrise_protocol::{connection::Pipe, packets::play::Serverbound};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::Path;
+use sunrise_client::{Result, held::Source, motion::PlayerMotion};
+use sunrise_core::geometry::Vec3;
+use sunrise_protocol::{connection::Pipe, packets::play::Serverbound};
 use winit::keyboard::KeyCode;
 
 #[derive(Deserialize)]
@@ -25,6 +25,8 @@ impl Game<'_> {
         self.connect_local(client, "BoatSeatFixture")?;
         self.remote.as_mut().unwrap().entity_id = 1;
         self.player = Some(PlayerMotion::new(self.motion, Vec3::new(0.0, 100.0, 0.0))?);
+        self.spawn_entity(2, "minecraft:marker", [0.0, 100.0, 0.0], [0.0; 3]);
+        self.spawn_entity(3, "minecraft:oak_boat", [0.0, 100.0, 0.0], [0.0; 3]);
 
         let mut output = Vec::new();
         for case in cases {
@@ -33,19 +35,21 @@ impl Game<'_> {
             let [x, y, z] = case.velocity;
             b.velocity = Vec3::new(x, y, z);
             b.delta_rotation = case.spin;
-            self.keys.release_source(Source::Agent);
+            for key in self.keys.release_source(Source::Agent) {
+                self.release_device_key(&key, Source::Agent);
+            }
             for (key, held) in [KeyCode::KeyA, KeyCode::KeyD, KeyCode::KeyW, KeyCode::KeyS]
                 .into_iter()
                 .zip(case.keys)
             {
                 if held {
-                    self.keys.press(key, Source::Agent);
+                    self.press_device_key(key, Source::Agent);
                 }
             }
             self.boats.push(b);
             let mut steps = Vec::new();
             for first in case.first {
-                self.remote_set_passengers(3, if first { &[1, 2] } else { &[2, 1] });
+                self.remote_set_passengers(3, if first { vec![1, 2] } else { vec![2, 1] });
                 let mut accepts_server_moves = false;
                 self.tick_remote_objects(
                     |_, p| {
@@ -55,16 +59,13 @@ impl Game<'_> {
                     |_, yaw| yaw,
                     |_| false,
                 );
-                self.remote_ride(
-                    Keys {
-                        left: case.keys[0],
-                        right: case.keys[1],
-                        forward: case.keys[2],
-                        backward: case.keys[3],
-                        ..Keys::default()
-                    },
-                    7,
-                )?;
+                self.remote_ride(Keys {
+                    left: case.keys[0],
+                    right: case.keys[1],
+                    forward: case.keys[2],
+                    backward: case.keys[3],
+                    ..Keys::default()
+                });
                 let packets = self.remote_vehicle_packets();
                 if case.event != 0 {
                     self.remote_boat_event(3, case.event);

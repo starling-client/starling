@@ -1,12 +1,12 @@
 use crate::Result;
+use serde_json::Value;
+use std::{collections::BTreeSet, io, path::Path, sync::Arc};
 use sunrise_world::{
     DATA_VERSION,
     heightmap::HeightmapState,
     registry::{BlockRegistry, BlockStateId},
     worldgen::{tags::TagDefinitions, terrain::TerrainBlockStates},
 };
-use serde_json::Value;
-use std::{collections::BTreeSet, io, path::Path, sync::Arc};
 
 pub const MATERIALS: [&str; 6] = ["bedrock", "dirt", "stone", "sand", "oak_planks", "bricks"];
 #[derive(Clone, Copy)]
@@ -81,6 +81,7 @@ pub struct RenderAssets {
     /// The block sprites' RGBA, layer by layer: as built until a renderer has
     /// them, then kept compressed ([`SpritePixels`]).
     pub pixels: SpritePixels,
+    /// How many array layers the block sprites take, whatever maps name them.
     pub texture_layers: u32,
     pub model_catalog: crate::models::StateModels,
     /// Shared parsed resources; item-only validation errors surface at item preparation.
@@ -89,6 +90,10 @@ pub struct RenderAssets {
     pub model_gallery: Vec<Value>,
     pub animations: Vec<crate::sprites::SpriteAnimation>,
     pub sprite_layers: std::collections::BTreeMap<String, u32>,
+    /// The first block sprite name at each layer, in `sprite_layers`' name order.
+    pub(crate) sprite_names: Vec<Option<String>>,
+    /// The layers of the texture files read on their own (emissive overlays), by raw name.
+    pub file_layers: std::collections::BTreeMap<String, u32>,
     /// OptiFine's emissive block overlays: base sprite and overlay sprite names.
     pub emissive: Vec<(String, String)>,
     pub translucent_layers: Vec<bool>,
@@ -112,6 +117,35 @@ pub struct RenderAssets {
     pub generation: u64,
 }
 impl RenderAssets {
+    /// The empty render generation before the first reload's apply.
+    pub fn unpublished() -> Self {
+        Self {
+            sprite_size: 1,
+            sprite_minimum_size: 1,
+            pixels: SpritePixels::new(Vec::new()),
+            texture_layers: 0,
+            model_catalog: Default::default(),
+            model_library: Err("models have not been published".into()),
+            model_placements: Vec::new(),
+            model_gallery: Vec::new(),
+            animations: Vec::new(),
+            sprite_layers: Default::default(),
+            sprite_names: Vec::new(),
+            file_layers: Default::default(),
+            emissive: Vec::new(),
+            translucent_layers: Vec::new(),
+            sprite_mips: Vec::new(),
+            pbr_normals: Vec::new(),
+            pbr_specular: Vec::new(),
+            pbr_size: 0,
+            connected: Default::default(),
+            fusion: Default::default(),
+            mod_animations: Default::default(),
+            mod_pipelines: Default::default(),
+            generation: 0,
+        }
+    }
+
     /// Resolve a registered standalone model in this published store.
     pub fn model(
         &self,
@@ -135,6 +169,22 @@ impl RenderAssets {
         id: &mod_api::Identifier,
     ) -> std::result::Result<mod_api::RenderPipelineRef, mod_api::RenderPipelineError> {
         self.mod_pipelines.resolve(id)
+    }
+
+    /// Validate a handle for an API that only accepts registered standalone models.
+    pub fn validate_standalone_model(
+        &self,
+        model: mod_api::ModelRef,
+    ) -> std::result::Result<(), mod_api::ModelError> {
+        use mod_api::__private::game::Fields;
+        let fields = model.fields();
+        if fields.generation != self.generation {
+            return Err(mod_api::ModelError::StaleModel);
+        }
+        if !self.model_catalog.is_standalone_slot(fields.slot) {
+            return Err(mod_api::ModelError::UnknownModel);
+        }
+        Ok(())
     }
 
     /// Validate a handle once at consumption, before appending any geometry.
@@ -360,14 +410,13 @@ impl RenderAssets {
         parsed: Option<crate::model_library::ParsedModels>,
     ) -> Result<Self> {
         let registry = assets.registry;
-        let mut sprites = crate::sprites::Sprites::with_disk_cache(root);
+        let mut sprites = if draws {
+            crate::sprites::Sprites::with_disk_cache(root)
+        } else {
+            crate::sprites::Sprites::for_server(root.source().clone())
+        };
         for name in MATERIALS {
             sprites.insert(&format!("minecraft:block/{name}"))?;
-        }
-        if draws {
-            for id in root.runtime_block_sprites() {
-                sprites.insert(id)?;
-            }
         }
         // A server draws no block and no item: its block models (about 24 MB
         // baked) and item model library (7 MB) stay empty.
@@ -382,13 +431,18 @@ impl RenderAssets {
         // Connected-texture rules find their faces by sprite layer: what they match by name keeps a
         // layer of its own, decided before the models insert their textures.
         let ctm_rules = if draws {
-            sunrise_optifine::ctm::load(root.source())
+            crate::connected::read_rules(root.source())
         } else {
             Vec::new()
         };
         sprites.keep_apart(crate::connected::ConnectedTextures::matched_sprites(
             &ctm_rules,
         ));
+        if draws {
+            // After the rules' names are kept apart, so a sprite a source made keeps its own layer
+            // where a rule matches it.
+            sprites.insert_mod_sprites()?;
+        }
         let mut models = if draws {
             let _step = crate::spans::startup::step("core.models_bake");
             crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
@@ -408,7 +462,7 @@ impl RenderAssets {
             "lava_still",
             "lava_flow",
         ] {
-            sprites.insert(&format!("minecraft:block/{name}"))?;
+            sprites.insert_in_blocks(&format!("minecraft:block/{name}"))?;
         }
         for model in crate::fluid_models::resolved() {
             for name in [
@@ -419,8 +473,11 @@ impl RenderAssets {
             .into_iter()
             .flatten()
             {
-                sprites.insert(name)?;
+                sprites.insert_in_blocks(name)?;
             }
+        }
+        if crate::fluid_models::any_flat_look() {
+            sprites.insert_flat(crate::fluid_models::FLAT_SPRITE)?;
         }
         for stage in 0..10 {
             sprites.insert(&format!("minecraft:block/destroy_stage_{stage}"))?;
@@ -438,11 +495,17 @@ impl RenderAssets {
             Default::default()
         };
         let mut emissive = Vec::new();
-        let connected = if draws {
+        let mut connected = if draws {
             crate::native_emissive::load(root.source(), &mut sprites);
             // A side's sprite, for rules that connect by tile: the first quad facing it.
             let catalog = &models.catalog;
             let mut found = Vec::new();
+            // Which states are panes, read only when a rule can draw on a pane by its sprite.
+            let panes = if ctm_rules.iter().any(|rule| rule.match_blocks.is_empty()) {
+                Some(crate::blocks::BlockFacts::load(root.prepared(), registry)?)
+            } else {
+                None
+            };
             crate::connected::ConnectedTextures::load(
                 root.source(),
                 ctm_rules,
@@ -463,10 +526,24 @@ impl RenderAssets {
                         .find(|f| f.quad.facing == side)
                         .map(|f| f.layer)
                 },
+                |state| {
+                    panes
+                        .as_ref()
+                        .and_then(|facts| facts.states.get(state.0 as usize))
+                        .is_some_and(|facts| facts.is_pane())
+                },
             )
         } else {
             Default::default()
         };
+        // Rules that join by height read one number per block state: the highest point of its
+        // collision shape. Nothing is read when no rule does.
+        if connected.joins_by_height() {
+            connected.set_heights(crate::connected::collision_heights(
+                root.prepared(),
+                registry,
+            )?);
+        }
         // After the connected tiles: a tile identical to a block shares its layer, and the
         // overlays skip shared layers.
         if draws {
@@ -480,6 +557,12 @@ impl RenderAssets {
         }
         // `finish` grows the buffer by doubling: keep only the bytes in use.
         sprites.pixels.shrink_to_fit();
+        // Multiple block sprites can share one layer. Keep the same first name that looking up
+        // the layer in the name-sorted map would give.
+        let mut sprite_names = vec![None; sprites.count()];
+        for (name, &layer) in &sprites.layers {
+            sprite_names[layer as usize].get_or_insert_with(|| name.clone());
+        }
         let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         Ok(Self {
             sprite_size: sprites.size,
@@ -492,6 +575,8 @@ impl RenderAssets {
             model_gallery: models.states,
             animations: sprites.animations,
             sprite_layers: sprites.layers,
+            sprite_names,
+            file_layers: sprites.files,
             emissive,
             translucent_layers: sprites.translucent,
             sprite_mips: sprites.mips,
@@ -518,7 +603,7 @@ mod tests {
     use sunrise_world::loot::PackOverlay;
 
     #[test]
-    #[ignore = "requires SUNRISE_TEST_RESOURCES pointing to prepared vanilla resources"]
+    #[ignore = "daily"]
     fn archive_world_override_loads_over_real_prepared_tables_without_unpacking()
     -> crate::Result<()> {
         use crate::{
@@ -635,7 +720,13 @@ mod tests {
         assert_eq!((drink.ticks(), drink.animation), (32, UseAnimation::Drink));
         assert_eq!(drink.sound, "minecraft:entity.generic.drink");
         assert!(!drink.particles);
-        assert_eq!(milk.use_remainder.as_deref(), Some("minecraft:bucket"));
+        let remainder = |info: &sunrise_items::items::ItemInfo| {
+            info.component_prototype
+                .data()?
+                .template_stack("minecraft:use_remainder")
+                .map(|stack| stack.item)
+        };
+        assert_eq!(remainder(milk).as_deref(), Some("minecraft:bucket"));
         let honey = items.get("minecraft:honey_bottle").expect("honey bottle");
         let sip = honey.consumable.as_ref().unwrap();
         assert_eq!(sip.ticks(), 40);
@@ -646,15 +737,12 @@ mod tests {
                 "minecraft:poison".into()
             ])]
         );
-        assert_eq!(
-            honey.use_remainder.as_deref(),
-            Some("minecraft:glass_bottle")
-        );
+        assert_eq!(remainder(honey).as_deref(), Some("minecraft:glass_bottle"));
         let kelp = items.get("minecraft:dried_kelp").unwrap();
         let bite = kelp.consumable.as_ref().unwrap();
         assert_eq!((bite.ticks(), bite.animation), (16, UseAnimation::Eat));
         assert_eq!(bite.sound, "minecraft:entity.generic.eat");
-        assert!(bite.particles && kelp.use_remainder.is_none());
+        assert!(bite.particles && remainder(kelp).is_none());
         let chorus = items.get("minecraft:chorus_fruit").unwrap();
         assert_eq!(
             chorus.consumable.as_ref().unwrap().effects,

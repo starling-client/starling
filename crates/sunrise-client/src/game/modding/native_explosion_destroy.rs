@@ -2,9 +2,9 @@
 //! explosion's hooks and its block step, without its rays, its entity damage, its packet or its
 //! sound. A mod that casts its own rays breaks what they found with it, spread over ticks.
 use super::Game;
-use sunrise_client::mobs::DamageKind;
 use mod_api::{EntityRef, ExplosionDestroyError, ExplosionInteraction, LevelRef};
 use std::collections::HashSet;
+use sunrise_client::mobs::DamageKind;
 
 /// Below this radius the reference tells no detonate listener (`ServerExplosion.explode`).
 const DETONATE_RADIUS: f32 = 1.0e-5;

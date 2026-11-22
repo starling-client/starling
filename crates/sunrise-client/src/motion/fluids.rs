@@ -2,6 +2,7 @@
 //! (water, waterlogged blocks, bubble columns and lava, with their currents), the
 //! water-entry splash and the fall resets that hinge on touching water.
 use super::*;
+use std::sync::Mutex;
 use sunrise_world::{
     entity_fluid::{
         CurrentTarget, EntityFluidInteraction, FluidInteractionWorld, FluidMembership,
@@ -13,7 +14,6 @@ use sunrise_world::{
     fluid_shape::FluidShapeCache,
     water_splash::{self, SplashParticle, WaterSplashWorld},
 };
-use std::sync::Mutex;
 
 /// `FluidTags.WATER` and `FluidTags.LAVA`, the fluids with a current.
 pub const WATER: FluidTagId = FluidTagId(0);
@@ -278,6 +278,16 @@ impl FluidMembership for FluidTags {
         is_tagged(kind, tag)
     }
 }
+/// A pending `Entity.updateSwimming` entry. Its answer belongs only to this actor and sample.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwimEntry {
+    entity: i32,
+    position: Vec3,
+    passenger: bool,
+    under_water: bool,
+    feet_fluid: FluidKind,
+}
+
 impl MotionWorld<'_, '_, '_> {
     pub(super) fn fluid_at(&self, p: BlockPos) -> FluidState {
         self.resources.fluids.fluid(self.block(p))
@@ -285,32 +295,76 @@ impl MotionWorld<'_, '_, '_> {
     /// `Entity.baseTick`'s fluid phase: `wasEyeInWater`, `updateFluidInteraction`,
     /// swimming and remaining fire, lava's fall halving, then the first-tick clear.
     pub fn fluid_base_tick(&mut self) -> Result<()> {
+        self.begin_fluid_tick()?;
+        self.finish_fluid_tick(None)
+    }
+    pub fn begin_fluid_tick(&mut self) -> Result<()> {
         self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(WATER);
         self.update_fluids()?;
-        // `Player.updateSwimming`'s flying guard over `Entity.updateSwimming`,
-        // whose both branches need `!isPassenger()`: a rider keeps no swim, so
-        // the server's copy of a guest who boards a boat while swimming is not
-        // left in the swimming box (eye 0.4) in the seat, at the waterline,
-        // where the boat drowned and suffocated them (#4427).
-        self.player.swimming = !self.player.flying
-            && !self.player.is_passenger
-            && self.player.sprinting
-            && if self.player.swimming {
-                self.player.fluids.was_touching_water
-            } else {
-                self.player.is_under_water()
-                    && is_tagged(
-                        self.fluid_at(BlockPos::containing(self.player.position))
-                            .kind(),
-                        WATER,
-                    )
-            };
-        self.tick_remaining_fire()?;
+        Ok(())
+    }
+    /// `Player.updateSwimming` bypasses the entire check in flight. The entry
+    /// predicate is asked before excluding a passenger; continuation never asks it.
+    pub fn swim_entry(&self) -> Option<SwimEntry> {
+        let p = &self.player;
+        (!p.flying && !p.swimming && p.sprinting).then(|| SwimEntry {
+            entity: p.entity_id,
+            position: p.position,
+            passenger: p.is_passenger,
+            under_water: self.swim_entry_underwater(),
+            feet_fluid: self.fluid_at(BlockPos::containing(p.position)).kind(),
+        })
+    }
+    fn swim_entry_underwater(&self) -> bool {
+        self.player.is_under_water()
+            && (self.player.client_side || self.player.fluids.was_touching_water)
+    }
+    pub fn apply_swim_entry(&mut self, answer: Option<(SwimEntry, bool)>) {
+        if let Some((entry, answer)) = answer {
+            if self.swim_entry() == Some(entry) {
+                self.player.swimming = answer && !entry.passenger;
+            }
+        } else {
+            let p = &self.player;
+            self.player.swimming = !p.flying
+                && !p.is_passenger
+                && p.sprinting
+                && if p.swimming {
+                    p.fluids.was_touching_water
+                } else {
+                    self.swim_entry_underwater()
+                        && is_tagged(
+                            self.fluid_at(BlockPos::containing(p.position)).kind(),
+                            WATER,
+                        )
+                };
+        }
+    }
+    /// Finish the fluid phase where no owning server hit needs to settle in between.
+    pub fn finish_fluid_tick(&mut self, answer: Option<(SwimEntry, bool)>) -> Result<()> {
+        self.swim_and_burn_tick(answer)?;
+        self.finish_fluid_base_tick();
+        Ok(())
+    }
+
+    /// Apply the swim-entry answer, then run the burning hit before decrementing fire.
+    pub fn swim_and_burn_tick(&mut self, answer: Option<(SwimEntry, bool)>) -> Result<()> {
+        self.apply_swim_entry(answer);
+        self.hurt_from_remaining_fire()
+    }
+
+    /// Entity.baseTick after the burning hit returned to its owner.
+    pub fn finish_fluid_base_tick(&mut self) {
+        if self.player.fire_ticks > 0 {
+            self.player.fire_ticks -= 1;
+        }
+        if self.player.fluids.was_touching_water {
+            self.player.fire_ticks = self.player.fire_ticks.min(0);
+        }
         if self.player.is_in_lava() {
             self.player.fall_distance *= 0.5;
         }
         self.player.fluids.first_tick = false;
-        Ok(())
     }
     /// `Entity.updateFluidInteraction`: immersion heights, then touching water
     /// resets the fall and splashes on entry, then the currents push.
@@ -423,7 +477,7 @@ impl EntityFluidTickWorld for MotionWorld<'_, '_, '_> {
         Ok(!self.player.flying)
     }
     fn reset_fall_distance(&mut self) -> Result<()> {
-        self.player.fall_distance = 0.0;
+        self.player.reset_fall_distance();
         Ok(())
     }
     fn was_touching_water(&self) -> bool {

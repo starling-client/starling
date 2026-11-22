@@ -11,7 +11,7 @@ use std::{
     ops::Deref,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -22,6 +22,46 @@ use sunrise_mod_runtime::attachments::{
 
 type Key = (i32, i32);
 type Columns = FxHashMap<Key, Arc<Chunk>>;
+
+/// The logical group cells in a client's resident columns, shared by its active and viewed
+/// worlds. A worker's `Arc<Chunk>` snapshot is not another resident column.
+#[derive(Clone, Default)]
+pub struct ConnectionGroupCount(Arc<AtomicUsize>);
+
+impl ConnectionGroupCount {
+    pub fn allows_replacement(&self, old: usize, new: usize, limit: usize) -> bool {
+        new <= old
+            || self
+                .0
+                .load(Ordering::Relaxed)
+                .checked_add(new - old)
+                .is_some_and(|n| n <= limit)
+    }
+}
+
+struct GroupResidency {
+    count: ConnectionGroupCount,
+    occupied: usize,
+}
+
+impl GroupResidency {
+    fn replace(&mut self, old: usize, new: usize) {
+        if new > old {
+            self.count.0.fetch_add(new - old, Ordering::Relaxed);
+            self.occupied += new - old;
+        } else if old > new {
+            self.count.0.fetch_sub(old - new, Ordering::Relaxed);
+            self.occupied -= old - new;
+        }
+    }
+}
+
+impl Drop for GroupResidency {
+    fn drop(&mut self) {
+        self.replace(self.occupied, 0);
+    }
+}
+
 static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
 fn next_revision() -> u64 {
     NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
@@ -58,6 +98,7 @@ pub struct ChunkMap {
     /// The resident chunks generation has not placed its animals in yet.
     fresh: FxHashSet<Key>,
     attachment_observer: Option<Arc<dyn AttachmentObserver>>,
+    group_residency: Option<GroupResidency>,
     /// For each column, how many of the 3×3 columns around it (itself
     /// included) are resident; absent when none is. `surrounded` asks one
     /// map instead of nine every tick, for every ticking chunk.
@@ -73,6 +114,7 @@ impl Default for ChunkMap {
             recent_deltas: VecDeque::new(),
             fresh: FxHashSet::default(),
             attachment_observer: None,
+            group_residency: None,
             near: FxHashMap::default(),
         }
     }
@@ -103,6 +145,38 @@ impl Drop for ChunkMap {
 }
 
 impl ChunkMap {
+    /// Add this map to a connection's resident count. Changes run on the client thread.
+    pub fn track_connection_groups(&mut self, count: ConnectionGroupCount) {
+        self.untrack_connection_groups();
+        let mut residency = GroupResidency { count, occupied: 0 };
+        residency.replace(
+            0,
+            self.columns
+                .values()
+                .map(|c| c.connection_groups.len())
+                .sum(),
+        );
+        self.group_residency = Some(residency);
+    }
+
+    /// Stop counting this map's group cells as resident without visiting its columns.
+    pub fn untrack_connection_groups(&mut self) {
+        drop(self.group_residency.take());
+    }
+
+    /// Check the net change before publishing a replacement or an ordered group patch.
+    pub fn allows_connection_groups(&self, old: usize, new: usize, limit: usize) -> bool {
+        self.group_residency
+            .as_ref()
+            .is_none_or(|residency| residency.count.allows_replacement(old, new, limit))
+    }
+
+    pub(crate) fn connection_group_changed(&mut self, old: bool, new: bool) {
+        if let Some(residency) = &mut self.group_residency {
+            residency.replace(usize::from(old), usize::from(new));
+        }
+    }
+
     /// Install the authoritative dimension's observer, including already loaded
     /// saved entries before their first read. Client/worker maps have no observer.
     pub fn observe_attachments(&mut self, observer: Arc<dyn AttachmentObserver>) {
@@ -218,7 +292,14 @@ impl ChunkMap {
         } else {
             self.fresh.remove(&key);
         }
+        let groups = chunk.connection_groups.len();
         let previous = self.columns.insert(key, chunk);
+        if let Some(residency) = &mut self.group_residency {
+            residency.replace(
+                previous.as_ref().map_or(0, |c| c.connection_groups.len()),
+                groups,
+            );
+        }
         if previous.is_none() {
             for z in key.1 - 1..=key.1 + 1 {
                 for x in key.0 - 1..=key.0 + 1 {
@@ -233,7 +314,10 @@ impl ChunkMap {
     pub fn remove(&mut self, key: &Key) -> Option<Arc<Chunk>> {
         self.fresh.remove(key);
         let previous = self.columns.remove(key);
-        if previous.is_some() {
+        if let Some(chunk) = &previous {
+            if let Some(residency) = &mut self.group_residency {
+                residency.replace(chunk.connection_groups.len(), 0);
+            }
             if let Some(observer) = &self.attachment_observer {
                 observer.unload(Holder::Chunk([key.0, key.1]));
             }
@@ -256,6 +340,9 @@ impl ChunkMap {
         if !self.columns.is_empty() {
             self.unload_attachments();
             self.columns.clear();
+            if let Some(residency) = &mut self.group_residency {
+                residency.replace(residency.occupied, 0);
+            }
             self.fresh.clear();
             self.near.clear();
             self.revision = next_revision();
@@ -266,9 +353,18 @@ impl ChunkMap {
         }
     }
     /// Whether the column at `key` and its eight neighbours are all resident.
+    #[inline]
     pub fn surrounded(&self, key: Key) -> bool {
         self.near.get(&key) == Some(&9)
     }
+
+    /// Whether the centre is lit and its 3×3 is resident, the column readiness
+    /// required by `ChunkMap.prepareTickingChunk`.
+    #[inline]
+    pub fn is_ticking_ready(&self, key: Key) -> bool {
+        self.columns.get(&key).is_some_and(|chunk| chunk.lit) && self.surrounded(key)
+    }
+
     pub fn has_fresh(&self) -> bool {
         !self.fresh.is_empty()
     }
@@ -314,8 +410,15 @@ impl crate::light::LightWorld for ChunkMap {
     fn section(&self, cx: i32, s: usize, cz: i32) -> Option<&Arc<crate::chunk::Section>> {
         self.columns.section(cx, s, cz)
     }
-    fn set_section_light(&mut self, cx: i32, s: usize, cz: i32, light: crate::chunk::Light) {
-        self.columns.set_section_light(cx, s, cz, light);
+    fn set_section_light(
+        &mut self,
+        cx: i32,
+        s: usize,
+        cz: i32,
+        light: crate::chunk::Light,
+        changed: &mut crate::light::LightChanges,
+    ) {
+        self.columns.set_section_light(cx, s, cz, light, changed);
     }
     fn layout(&self) -> crate::chunk::ColumnLayout {
         self.columns.layout()
@@ -328,13 +431,41 @@ impl crate::light::LightWorld for ChunkMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mod_api::{AttachmentHolder, ChunkRef, DimensionKey, LevelRef, WorldEpoch};
+    use std::sync::{Mutex, Weak, atomic::AtomicUsize};
     use sunrise_core::nbt::Tag;
     use sunrise_mod_runtime::attachments::{
         AttachmentCodec, AttachmentType, index::AttachmentIndex,
         observer::IndexedAttachmentObserver,
     };
-    use mod_api::{AttachmentHolder, ChunkRef, DimensionKey, LevelRef, WorldEpoch};
-    use std::sync::{Mutex, Weak, atomic::AtomicUsize};
+
+    #[test]
+    fn active_and_viewed_residence_share_credit_until_replaced_or_unloaded() {
+        let count = ConnectionGroupCount::default();
+        let mut active = crate::world::World::new(sunrise_world::registry::BlockStateId(0), 1);
+        let mut viewed = ChunkMap::default();
+        active.chunks.track_connection_groups(count.clone());
+        viewed.track_connection_groups(count.clone());
+        let mut column = Chunk::empty(0, 0);
+        column.set_connection_group(0, 0, 0, Some(9));
+        viewed.insert((0, 0), Arc::new(column));
+        active.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        assert!(active.set_connection_group(0, 0, 0, Some(8), false));
+        assert!(!count.allows_replacement(0, 1, 2));
+        assert!(count.allows_replacement(1, 1, 2));
+        assert!(count.allows_replacement(2, 1, 1));
+
+        // Mesh workers can keep the old Arc; it is no longer resident.
+        let old = viewed.insert((0, 0), Arc::new(Chunk::empty(0, 0))).unwrap();
+        assert_eq!(old.connection_group(0, 0, 0), Some(9));
+        assert!(count.allows_replacement(0, 1, 2));
+        viewed.insert((0, 0), old);
+        assert!(!count.allows_replacement(0, 1, 2));
+        active.unload_chunk((0, 0)).unwrap();
+        assert!(count.allows_replacement(0, 1, 2));
+        drop(viewed);
+        assert!(count.allows_replacement(0, 2, 2));
+    }
 
     type Index = Arc<Mutex<AttachmentIndex<AttachmentHolder>>>;
     static VALUE: AttachmentType<i32> = AttachmentType {
@@ -407,6 +538,7 @@ mod tests {
             0,
             5,
             crate::chunk::Light::Uniform(0),
+            &mut crate::light::LightChanges::default(),
         );
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert!(Arc::ptr_eq(&old, &index.lock().unwrap().snapshot(&key())));
@@ -583,6 +715,7 @@ mod tests {
             0,
             0,
             crate::chunk::Light::Uniform(0),
+            &mut crate::light::LightChanges::default(),
         );
         assert_eq!(inserted, map.membership_revision());
         map.remove(&(0, 0));

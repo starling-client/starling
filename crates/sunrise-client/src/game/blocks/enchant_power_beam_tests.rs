@@ -1,10 +1,231 @@
 //! Block parts answer the enchanting power an enchanting table counts (`enchant_power_bonus`)
 //! and the colour a beacon beam takes (`beacon_color_multiplier`).
-use crate::game::{Game, native_entity_refs::tests::with_game};
-use sunrise_client::chunk::Chunk;
+use crate::game::{
+    Dim, Game,
+    execution_role::ExecutionRole,
+    native_entity_refs::tests::{fixture_root, run_fresh_cases, with_game, with_game_role},
+};
+use mod_api::{
+    BlockPart, EnchantPowerBonusEvent, Hooks, Host, LevelReadError, ModEntry, Mods, Registrar,
+    RegistrationContext,
+};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use sunrise_client::chunk::Chunk;
+use sunrise_core::position::BlockPos;
 
 const TABLE: [i32; 3] = [8, 64, 8];
+const PROVIDER: [i32; 3] = [12, 64, 8];
+const UNRELATED_TABLE: [i32; 3] = [9, 64, 8];
+const POWER_NAN: f32 = f32::from_bits(0x7fc0_1234);
+
+#[derive(Clone, Default)]
+struct QueryProbe {
+    calls: Arc<AtomicUsize>,
+    cycles: bool,
+}
+
+#[mod_api::sunrise_part]
+impl BlockPart for QueryProbe {
+    fn enchant_power_bonus(&self, host: &dyn Host, event: &mut EnchantPowerBonusEvent) {
+        let Some(level) = event.level else { return };
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let pos = [event.pos.x, event.pos.y, event.pos.z];
+        let table = [event.table_pos.x, event.table_pos.y, event.table_pos.z];
+        let bookshelf = host.block_state_id("minecraft:bookshelf").unwrap();
+        if event.state == bookshelf {
+            assert_eq!(event.power, 1.0);
+            event.power = if table == TABLE {
+                f32::INFINITY
+            } else {
+                POWER_NAN
+            };
+            return;
+        }
+        let stone = host.block_state_id("minecraft:stone").unwrap();
+        let contextual_power = if level.block_state(host, pos) == Some(stone) {
+            -0.5
+        } else {
+            1.25
+        };
+        let material = host.block_state_id("minecraft:gold_block").unwrap();
+        if event.state == material {
+            event.power = contextual_power;
+            return;
+        }
+        assert_eq!(pos, PROVIDER);
+        assert_eq!(table, UNRELATED_TABLE);
+        assert_eq!(event.state, host.block_state_id("minecraft:glass").unwrap());
+        assert_eq!(event.power, 0.0);
+        event.power = if self.cycles {
+            assert_eq!(
+                level.get_enchant_power_bonus(
+                    host,
+                    [pos[0] + 1, pos[1], pos[2]],
+                    event.state,
+                    TABLE
+                ),
+                Err(LevelReadError::Unavailable)
+            );
+            level
+                .get_enchant_power_bonus(host, pos, material, table)
+                .unwrap()
+        } else {
+            contextual_power
+        };
+    }
+}
+
+#[mod_api::__subscriptions]
+impl Hooks for QueryProbe {
+    fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+        for name in ["minecraft:glass", "minecraft:gold_block"] {
+            let key = r.block_key(name);
+            r.block_part(key, self.clone());
+        }
+        if self.cycles {
+            let bookshelf = r.block_key("minecraft:bookshelf");
+            r.block_part(bookshelf, self.clone());
+        }
+    }
+}
+
+fn with_query_probe(
+    name: &str,
+    role: ExecutionRole,
+    cycles: bool,
+    test: impl FnOnce(&mut Game<'_>, &AtomicUsize),
+) {
+    if run_fresh_cases(name, "SUNRISE_ENCHANT_QUERY_CHILD", &["query"]) {
+        return;
+    }
+    let probe = QueryProbe {
+        cycles,
+        ..Default::default()
+    };
+    let calls = probe.calls.clone();
+    let mods: Mods = vec![ModEntry::new("power_query", Box::new(probe))].into();
+    mod_platform::testing::with_mods(mods.clone(), || {
+        crate::game::api_values::install_parts(&mods).unwrap();
+        with_game_role(fixture_root(), role, |game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            test(game, &calls);
+        });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn enchant_power_query_uses_the_supplied_states_tag_default() {
+    with_query_probe(
+        "game::enchant_power_beam_tests::enchant_power_query_uses_the_supplied_states_tag_default",
+        ExecutionRole::IntegratedServer,
+        false,
+        |game, calls| {
+            place(game, [4, 0, 0], "minecraft:gold_block");
+            let level = game.level("minecraft:overworld").unwrap();
+            let host: &dyn Host = game;
+            for (name, expected) in [("minecraft:bookshelf", 1.0), ("minecraft:stone", 0.0)] {
+                let candidate = host.block_state_id(name).unwrap();
+                assert_eq!(
+                    level.get_enchant_power_bonus(host, PROVIDER, candidate, TABLE),
+                    Ok(expected)
+                );
+            }
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+        },
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn enchant_power_query_reads_the_named_server_level_and_refuses_cycles() {
+    with_query_probe(
+        "game::enchant_power_beam_tests::enchant_power_query_reads_the_named_server_level_and_refuses_cycles",
+        ExecutionRole::IntegratedServer,
+        true,
+        |game, calls| {
+            place(game, [4, 0, 0], "minecraft:stone");
+            place(game, [2, 0, 0], "minecraft:stone");
+            let overworld = game.level("minecraft:overworld").unwrap();
+            assert_eq!(game.enter_command_level(Dim::Nether), Some(Dim::Overworld));
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            place(game, [4, 0, 0], "minecraft:gold_block");
+            let nether = game.level("minecraft:the_nether").unwrap();
+            let host: &dyn Host = game;
+            let glass = host.block_state_id("minecraft:glass").unwrap();
+            assert_eq!(
+                overworld.get_enchant_power_bonus(host, PROVIDER, glass, UNRELATED_TABLE),
+                Ok(-0.5)
+            );
+            assert_eq!(
+                nether.get_enchant_power_bonus(host, PROVIDER, glass, UNRELATED_TABLE),
+                Ok(1.25)
+            );
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                4,
+                "each glass provider delegated to the material exactly once"
+            );
+            let bookshelf = host.block_state_id("minecraft:bookshelf").unwrap();
+            assert_eq!(
+                nether
+                    .get_enchant_power_bonus(host, PROVIDER, bookshelf, UNRELATED_TABLE)
+                    .unwrap()
+                    .to_bits(),
+                POWER_NAN.to_bits()
+            );
+            assert_eq!(
+                nether.get_enchant_power_bonus(host, PROVIDER, bookshelf, TABLE),
+                Ok(f32::INFINITY)
+            );
+            place(game, [2, 0, 0], "minecraft:bookshelf");
+            assert_eq!(
+                game.count_bookshelves(TABLE),
+                1,
+                "offers keep the tag default"
+            );
+            game.native_lifecycle
+                .begin_open(mod_api::Authority::IntegratedServer);
+            assert_eq!(
+                nether.get_enchant_power_bonus(game, PROVIDER, glass, UNRELATED_TABLE),
+                Err(LevelReadError::Stale)
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 7);
+        },
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn enchant_power_query_reads_the_logged_in_client_level() {
+    with_query_probe(
+        "game::enchant_power_beam_tests::enchant_power_query_reads_the_logged_in_client_level",
+        ExecutionRole::Client,
+        false,
+        |game, calls| {
+            let _server = crate::game::native_client_session::tests::logged_client(game);
+            game.native_lifecycle
+                .begin_open(mod_api::Authority::RemoteClient);
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            place(game, [4, 0, 0], "minecraft:stone");
+            let level = game.level("minecraft:overworld").unwrap();
+            let host: &dyn Host = game;
+            let glass = host.block_state_id("minecraft:glass").unwrap();
+            assert_eq!(
+                level.get_enchant_power_bonus(host, PROVIDER, glass, UNRELATED_TABLE),
+                Ok(-0.5)
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+        },
+    );
+}
 
 pub(in crate::game) fn place(game: &mut Game<'_>, offset: [i32; 3], block: &str) {
     let state = game.pack.assets.registry.default_state(block).unwrap();
@@ -13,8 +234,15 @@ pub(in crate::game) fn place(game: &mut Game<'_>, offset: [i32; 3], block: &str)
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn block_parts_answer_the_enchanting_power_and_the_beam_colour() {
+    if run_fresh_cases(
+        "game::enchant_power_beam_tests::block_parts_answer_the_enchanting_power_and_the_beam_colour",
+        "SUNRISE_ENCHANT_OFFER_CHILD",
+        &["offers"],
+    ) {
+        return;
+    }
     // The fixture's parts: glass is worth two bookshelves and tints a beam red, and a
     // bookshelf is worth nothing.
     mod_platform::__private::part_tests::enchant_power_and_beam_game_thread();
@@ -76,6 +304,7 @@ pub(in crate::game) fn enchant_particles(game: &Game<'_>) -> usize {
         gateway_particles: &|_, _| 0,
         thundering: false,
         ultrawarm: false,
+        block_parts: None,
     };
     for _ in 0..4096 {
         animate_tick(game.res.animate(), &mut engine, &ctx, TABLE);
@@ -90,11 +319,10 @@ pub(in crate::game) fn enchant_particles(game: &Game<'_>) -> usize {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn enchant_particles_share_native_power_and_rebuild_only_on_parts_reload() {
-    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_role};
-    use mod_api::{BlockPart, Hooks, ModEntry, Mods, Registrar};
-    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+    use crate::game::native_client_session::tests::logged_client;
+    use std::sync::atomic::AtomicU32;
 
     const CHILD: &str = "SUNRISE_ENCHANT_PARTICLES_CHILD";
     if run_fresh_cases(
@@ -110,11 +338,17 @@ fn enchant_particles_share_native_power_and_rebuild_only_on_parts_reload() {
     struct Provider;
     #[mod_api::sunrise_part]
     impl BlockPart for Provider {
-        fn enchant_power_bonus(
-            &self,
-            _: &dyn mod_api::Host,
-            event: &mut mod_api::EnchantPowerBonusEvent,
-        ) {
+        fn enchant_power_bonus(&self, _: &dyn Host, event: &mut EnchantPowerBonusEvent) {
+            if event.pos == BlockPos::new(0, 0, 0) {
+                assert_eq!(event.table_pos, BlockPos::new(0, 0, 0));
+                assert_eq!(event.level, None);
+            } else {
+                assert_eq!(
+                    event.level.unwrap().dimension(),
+                    mod_api::DimensionKey::OVERWORLD
+                );
+                assert_eq!(event.table_pos, BlockPos::new(TABLE[0], TABLE[1], TABLE[2]));
+            }
             CALLS.fetch_add(1, Ordering::Relaxed);
             event.power = f32::from_bits(POWER.load(Ordering::Relaxed));
         }
@@ -141,8 +375,8 @@ fn enchant_particles_share_native_power_and_rebuild_only_on_parts_reload() {
         }
         fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut mod_api::BlocksEvent<'_>) {
             event
-                .blocks
-                .push(mod_api::Block::new(CUSTOM, "minecraft:glass"));
+                .register(mod_api::Block::new(CUSTOM, "minecraft:glass"))
+                .unwrap();
         }
     }
     let parts = std::env::var(CHILD).unwrap() == "parts";
@@ -163,6 +397,7 @@ fn enchant_particles_share_native_power_and_rebuild_only_on_parts_reload() {
         root,
         crate::game::execution_role::ExecutionRole::Client,
         |game| {
+            let _server = logged_client(game);
             game.native_lifecycle
                 .begin_open(mod_api::Authority::RemoteClient);
             game.resolve_parts().unwrap();

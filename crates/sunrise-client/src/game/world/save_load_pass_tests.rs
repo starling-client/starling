@@ -1,11 +1,11 @@
 //! Reentrant saves during a loaded entity queue's per-row join notifications.
 use super::*;
-use sunrise_core::nbt::Tag;
 use mod_api::{EntityJoinLevelEvent, Flow, Hooks, ServerHost};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use sunrise_core::nbt::Tag;
 
 #[derive(Default)]
 struct SaveOnLoadedJoin {
@@ -31,7 +31,7 @@ impl Hooks for SaveOnLoadedJoin {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated homes"]
+#[ignore = "daily"]
 fn loaded_queue_join_save_refuses_without_losing_remaining_rows() {
     let root = PathBuf::from(std::env::var_os("SUNRISE_HOME").unwrap()).join("save-load-pass");
     std::fs::create_dir_all(&root).unwrap();
@@ -44,10 +44,10 @@ fn loaded_queue_join_save_refuses_without_losing_remaining_rows() {
                     ("id", Tag::String("minecraft:item".into())),
                     (
                         "Item",
-                        sunrise_client::save::item_to_nbt(&ItemStack::new(
-                            "minecraft:diamond",
-                            i as u32,
-                        )),
+                        sunrise_client::save::item_to_nbt(
+                            &ItemStack::new("minecraft:diamond", i as u32),
+                            &Default::default(),
+                        ),
                     ),
                     ("UUID", Tag::IntArray(vec![i, 2, 3, 4])),
                     (
@@ -81,7 +81,7 @@ fn loaded_queue_join_save_refuses_without_losing_remaining_rows() {
         );
         assert_eq!(game.dropped.len(), 2, "both rows remain live");
         game.save.flush().unwrap();
-        let disk = game.save.load_entities(0, 0);
+        let disk = game.save.load_entities(0, 0).unwrap();
         assert!(
             succeeded.load(Ordering::SeqCst) == 0 && disk.is_empty(),
             "nested save result {}; disk contains {} rows while both rows remain live",
@@ -90,7 +90,7 @@ fn loaded_queue_join_save_refuses_without_losing_remaining_rows() {
         );
         game.save_game().unwrap();
         assert_eq!(
-            game.save.load_entities(0, 0).len(),
+            game.save.load_entities(0, 0).unwrap().len(),
             2,
             "settled save must keep both rows"
         );

@@ -18,17 +18,6 @@ fn chapter(name: &str) -> String {
 
 #[test]
 #[ignore = "daily"]
-fn the_coverage_chapter_is_the_page_alone() {
-    let page = chapter("coverage");
-    assert_eq!(page.lines().next(), Some("# Wire boundary coverage"));
-    assert!(
-        !page.contains("cargo:"),
-        "no build-script line in the chapter"
-    );
-}
-
-#[test]
-#[ignore = "daily"]
 fn the_hook_notes_chapter_is_the_page_alone() {
     let page = chapter("notes");
     assert!(page.starts_with('#'), "{}", &page[..page.len().min(200)]);

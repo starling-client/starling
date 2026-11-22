@@ -216,8 +216,6 @@ pub struct MethodContract {
     pub signature: String,
     /// It has no default body.
     pub required: bool,
-    /// A WebAssembly mod can call or implement it.
-    pub wasm: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
 }
@@ -229,9 +227,6 @@ pub struct Method {
     pub hash: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc: String,
-    /// Why it is not on wasm, when it is not; documentation, outside the hash.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wasm_reason: Option<String>,
     #[serde(flatten)]
     pub contract: MethodContract,
 }
@@ -244,8 +239,6 @@ pub struct FunctionContract {
     /// An inherent item's `impl` generics and where clause (`<T: Clone> where T: Send`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub impl_generics: String,
-    /// A WebAssembly mod can call it.
-    pub wasm: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
 }
@@ -258,8 +251,6 @@ pub struct Function {
     pub hash: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wasm_reason: Option<String>,
     /// A free function's public paths; outside the hash.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
@@ -324,10 +315,9 @@ pub struct TypeContract {
     pub kind: TypeKind,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub generics: String,
-    /// It crosses the WebAssembly boundary: it derives `Wire` or has a `Wire` impl. Outside the
-    /// hash, with `wire_form`: a native mod cannot observe how a type crosses.
+    /// It derives `Wire` or has a `Wire` impl. The encoding is outside the Rust contract hash.
     pub wire: bool,
-    /// How it crosses: `derive` (its Rust fields), `fields` (a hand-written impl's declared
+    /// Its encoding: `derive` (its Rust fields), `fields` (a hand-written impl's declared
     /// `layout_fields!`), `via:<type>` (as another type), or `manual` (a hand-written impl that
     /// declares no layout).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -365,7 +355,7 @@ pub struct Type {
     /// The traits it implements, derived or written in the API's crates alike (`Clone`,
     /// `From<String>`, `Default`), by normalised trait path, sorted; `Wire` is `wire`'s. A set
     /// outside the hash: gaining one is additive, and the fit test checks the set itself
-    /// ([`crate::uses::fits`]).
+    /// ([`crate::uses::UsesTable::fits`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub impls: Vec<String>,
     /// For a struct, tuple struct or union: [`crate::fields_hash`] of its public fields, outside
@@ -436,7 +426,8 @@ pub struct Part {
     pub hash: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc: String,
-    /// The scoped hooks that call this kind's Parts: records of their own, outside the hash.
+    /// Hooks that call this kind's Parts, whether scoped to the kind or linked explicitly.
+    /// These hooks have records of their own and are outside the Part hash.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<String>,
     #[serde(flatten)]
@@ -483,4 +474,78 @@ pub struct Capability {
     pub doc: String,
     #[serde(flatten)]
     pub contract: CapabilityContract,
+}
+
+/// A point, loop or internal from the SDK's source catalogs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineItem {
+    pub id: String,
+    pub hash: String,
+    #[serde(flatten)]
+    pub contract: EngineContract,
+}
+
+impl EngineItem {
+    /// Seal a catalog row's contract independently of its identity.
+    pub fn new(id: String, contract: EngineContract) -> Self {
+        Self {
+            id,
+            hash: crate::contract_hash(&contract),
+            contract,
+        }
+    }
+}
+
+/// What can change on a catalog row without changing its identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EngineContract {
+    Loop {
+        entry: String,
+        generic: String,
+        slot: String,
+        side: String,
+    },
+    Internal {
+        signature: String,
+        signature_hash: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        shape_only: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opaque_reason: Option<String>,
+    },
+}
+
+/// An engine-owned tag that a package may extend. Documentation is outside the contract hash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionTag {
+    /// Tag registry directory (for example `block`).
+    pub registry: String,
+    /// Namespaced tag identifier.
+    pub id: String,
+    /// The engine reader's contract.
+    pub doc: String,
+}
+
+/// A behaviour's contract: only its `version`, which is compared on its own and stays out of the
+/// hash, as a hook's does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BehaviourContract {
+    pub version: u32,
+}
+
+/// `behaviour:<name>`: a promise a mod relies on that is no type or signature, written by hand in
+/// `crates/sunrise-mod-vocab/behaviours/<name>.toml`. Its `doc` and the `tests` that pin it are
+/// outside the hash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Behaviour {
+    pub id: String,
+    pub hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    /// The tests that pin it, each `<file path>::<fn name>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<String>,
+    #[serde(flatten)]
+    pub contract: BehaviourContract,
 }

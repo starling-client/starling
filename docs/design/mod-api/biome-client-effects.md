@@ -83,7 +83,7 @@ Expected values are proposals, not results.
 | `ambient_sounds` loop `minecraft:ambient.warped_forest.loop`, additions chance 0.0111, mood tick delay 6000, search extent 8, offset 2.0 on the new biome | `AmbientTables::at` returns the same values |
 | `sunrise:modify_biome` changes a vanilla biome's `grass_color`; remote Sunrise client without the mod | after the fix, tint equals the server's; today it equals the client's own file |
 | Two mods both declare biome `a:x` | startup refusal naming both mods (as dimensions) |
-| Reconfiguration to a server with fewer biomes | a stale column plays plains and never indexes past the table (existing test `a_reconfiguring_client_plays_menu_music_and_never_indexes_past_the_biomes`, `remote/mod.rs:16003`) |
+| Reconfiguration to a server with fewer biomes | a stale column plays plains and never indexes past the table (existing test `a_reconfiguring_client_plays_menu_music_and_never_indexes_past_the_biomes`, `remote/client_level_lifecycle_tests.rs`) |
 
 ## Open questions
 

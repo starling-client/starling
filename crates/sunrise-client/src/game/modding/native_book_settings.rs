@@ -49,7 +49,9 @@ impl Game<'_> {
         };
         if changed {
             self.sync_server_book_write(player, book, flags);
-            if let Some(name) = self.player_name(player) {
+            if mod_api::__private::listened(mod_api::HookId::PlayerRecipeBookSettingsChange)
+                && let Some(name) = self.player_name(player).map(str::to_owned)
+            {
                 self.native_player_recipe_book_settings_change(
                     player.uuid(),
                     &name,

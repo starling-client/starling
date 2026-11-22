@@ -503,8 +503,8 @@ impl Game<'_> {
                 lines,
             });
             game.sign_load();
-            game.keys.clear();
-            game.right = false;
+            game.clear_device_keys();
+            game.set_mapping_held("key.use", false);
             game.capture(false);
         });
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
@@ -555,10 +555,8 @@ impl Game<'_> {
     /// the block, then the editor, on its client, and the guest may write on it.
     pub(super) fn lan_open_sign_editor(&mut self, conn: u32, edit: SignEditor) {
         let pos = [edit.pos.0, edit.pos.1, edit.pos.2];
-        let state = self.world.block(pos[0], pos[1], pos[2]).0 as i32;
         if let Some(host) = self.lan.as_mut() {
-            host.hub
-                .send_to(conn, &C::BlockUpdate(play::BlockUpdate { pos, state }));
+            host.hub.send_authoritative_block(conn, &self.world, pos);
             host.hub.send_to(
                 conn,
                 &C::OpenSignEditor(play::OpenSignEditor {
@@ -581,18 +579,6 @@ impl Game<'_> {
         };
         let (uuid, name) = (g.uuid, g.name.clone());
         let key = (p.pos[0], p.pos[1], p.pos[2]);
-        let lines = p.lines.join(" ");
-        if !self.chat_filter_text(
-            conn,
-            &[&lines],
-            sunrise_client::lan::hub::chat_filter::Place::Sign,
-        ) {
-            // The sign stays as it was: the editor closes, as after a sign the server refused.
-            self.world.block_entities.set_sign_editor(key, None);
-            // The player's client shows the text it sent: the sign as it is, again.
-            self.mark_block_entity_updated(key);
-            return;
-        }
         let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&key) else {
             return;
         };
@@ -847,17 +833,22 @@ impl Game<'_> {
     }
     /// Done button (`this.width / 2 - 100, this.height / 4 + 144`, 200x20),
     /// or a click on a line (`EditBox.onClick`).
+<<<<<<< sync-sunrise-1
     pub(super) fn sign_edit_click(&mut self, size: [u32; 2]) {
         let b = self.interface_batch(size);
+=======
+    pub(super) fn sign_edit_click(&mut self, size: [u32; 2]) -> bool {
+        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+>>>>>>> sunrise/main
         let (x, y) = done_button(b.width, b.height);
         let (mx, my) = self.cursor;
         if mx >= x && mx < x + 200.0 && my >= y && my < y + 20.0 {
             self.audio.play_button_click();
             self.close_sign_editor();
-            return;
+            return true;
         }
         let Some((cx, top, line_height, max_width, lines)) = self.sign_lines(b.width) else {
-            return;
+            return false;
         };
         let shift = self.has_shift_down();
         for i in 0..lines.len() {
@@ -884,8 +875,9 @@ impl Game<'_> {
                 edit.edit.click(&self.gui.atlas, mx, shift, false);
             }
             self.sign_write();
-            return;
+            return true;
         }
+        false
     }
     /// Centre x, the first line's y, the line height, the width limit and the four lines.
     fn sign_lines(&self, width: f32) -> Option<(f32, f32, f32, f32, Vec<String>)> {
@@ -1017,15 +1009,7 @@ impl Game<'_> {
         sunrise_client::widgets::narratable(|| {
             sunrise_client::widgets::Narratable::button(done_label(), [bx, by, 200.0, 20.0], true)
         });
-        batch.sprite_scaled(
-            atlas,
-            "gui/sprites/widget/button",
-            bx,
-            by,
-            200.0,
-            20.0,
-            u32::MAX,
-        );
+        batch.sprite_scaled(atlas, "widget/button", bx, by, 200.0, 20.0, u32::MAX);
         let done = done_label();
         let tw = HudBatch::text_width(atlas, &done);
         batch.text(

@@ -1,0 +1,4 @@
+id = "refused_manifest_bad_license_url"
+name = "Refused manifest bad license url"
+version = "1.2.3"
+license_url = "file:///LICENSE"

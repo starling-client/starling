@@ -15,5 +15,11 @@ pub trait Hooks {
         target = "sunrise_client_lib::block_sounds::native_sound_type",
         neoforge = "IBlockExtension.getSoundType"
     )]
-    fn sound_type();
+    fn sound_type(
+        pos: BlockPos,
+        state: BlockState,
+        entity: Option<(u32, &str)>,
+        cause: BlockSoundCause,
+        sound: &mut BlockSoundType,
+    );
 }

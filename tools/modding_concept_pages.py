@@ -8,6 +8,9 @@ no edit to SUMMARY.md, and check every page's links.
 - A page directly in one of FOLDERS that SUMMARY.md doesn't list joins the end of its part, by title.
 - Every relative link, reference destination and `{{#include}}` must reach a file (or a generated
   chapter) and, for a page, an existing heading anchor; root-relative links are refused.
+- An absolute URL naming the game's repository or the mod registry names `sunrise-org`, and one naming the
+  book names `playsunrise.net/docs/modding`, where it is published; the old Pages addresses are refused.
+  Horizon's own projects (the machine sample, the mixins tool) keep their links.
 - A page the book doesn't render, or one titled as a design, a plan or a work list, fails the build.
 """
 import argparse
@@ -25,6 +28,15 @@ SRC = ROOT / "docs/modding/src"
 LINK = re.compile(r"(\!?\[[^\n]*?\]\()([^\s)]+)(\))")
 REFERENCE = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*<?)([^\s>]+)(>?)", re.MULTILINE)
 INCLUDE = re.compile(r"(\{\{#(?:rustdoc_)?include )([^ }]+)(\s*\}\})")
+# The game repository and the mod registry are sunrise-org's, and the book is published at
+# playsunrise.net/docs/modding, not on a Pages site (`sunrise-org.github.io/sunrise-mods` is the registry's
+# index, and keeps its link). A sub-project under another owner (`horizon-machine-sample`, `horizon-mixins`)
+# keeps its link too.
+STALE_URL = re.compile(
+    r"https?://(?:github\.com/(?:arismoko|horizon-rust)/horizon(?:-mods)?(?![\w.-])"
+    r"|(?:arismoko|horizon-rust)\.github\.io/horizon-mods(?![\w.-])"
+    r"|(?:arismoko|horizon-rust|sunrise-org)\.github\.io/sunrise(?![\w.-]))"
+)
 # Each page directly in one of these folders is a chapter of the part: the pages SUMMARY.md lists keep
 # their place, the rest follow in title order.
 FOLDERS = {"Concepts": "concepts", "How-to": "how-to"}
@@ -69,11 +81,17 @@ def prose(text):
     return "\n".join(out)
 
 
+def check_url(link, where):
+    """Refuse an absolute link that sends readers to the game's old repository or the old book site."""
+    assert not STALE_URL.match(link), f"{where}: stale URL {link} (use sunrise-org's repository, or playsunrise.net/docs/modding for the book)"
+
+
 def validate(text, path, src, contents):
     body = prose(text)
     for match in chain(LINK.finditer(body), REFERENCE.finditer(body)):
         url = urlsplit(match[2])
         if url.scheme or url.netloc:
+            check_url(match[2], path)
             continue
         assert not unquote(url.path).startswith("/"), f"{path}: root-relative link {match[2]}"
         target = (src / path).parent / unquote(url.path) if url.path else src / path
@@ -211,6 +229,7 @@ def check_html(directory, src=SRC):
         for link in html.links:
             url = urlsplit(link)
             if url.scheme or url.netloc:
+                check_url(link, page)
                 continue
             assert not unquote(url.path).startswith("/"), f"{page}: root-relative link {link}"
             target = (path.parent / unquote(url.path)).resolve() if url.path else path

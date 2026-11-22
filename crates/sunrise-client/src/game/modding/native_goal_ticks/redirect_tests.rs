@@ -1,12 +1,12 @@
 //! A target listener can choose a different real guest within a mob tick.
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
+use std::sync::{Arc, Mutex};
 use sunrise_client::mobs::{
     MobEvent, TargetChange,
     player_selection::{PlayerSelection, TickPlayer},
 };
 use sunrise_core::geometry::Vec3;
-use std::sync::{Arc, Mutex};
 
 struct Redirect(Arc<Mutex<Option<LivingRef>>>);
 
@@ -23,7 +23,7 @@ impl mod_api::Hooks for Redirect {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn redirect_to_another_guest_switches_view_and_tags_subsequent_events() {
     let redirect = Arc::new(Mutex::new(None));
     let mods = vec![mod_api::ModEntry::new(

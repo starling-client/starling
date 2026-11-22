@@ -1,12 +1,13 @@
 //! A level's shape, chunk format and facts, from the dimension type its server synced: what the
 //! player's level takes on entering it (`enter_remote_dimension`), and a viewed level's world on
-//! its `open` (`viewed_worlds`).
+//! its `open` (`viewed_worlds`). Only the player's level also takes the type's environment
+//! attributes (`build_level_environments`).
 use super::Remote;
 use crate::game::{Dim, remote_chunks::ChunkFormat};
+use std::sync::{Arc, Weak};
 use sunrise_client::{chunk::LevelShape, environment::Environment};
 use sunrise_protocol::{packets::play, registry::DimensionType};
 use sunrise_world::dimension_type::DimensionFacts;
-use std::sync::Arc;
 
 /// What a level of the server is, from its synced dimension type.
 pub(in crate::game) struct LevelFormat {
@@ -17,17 +18,19 @@ pub(in crate::game) struct LevelFormat {
     /// Its facts (what it does to fluids, mobs, beds and time); `None` when the server sent no
     /// type the game takes.
     pub(in crate::game) facts: Option<Arc<DimensionFacts>>,
-    /// The sky, fog and cloud attributes of a level of a mod or a pack; `None` for a built-in
-    /// level, or when the type is refused.
-    pub(in crate::game) environment: Option<Environment>,
+    /// The synchronized dimension type's name and JSON, which the level's environment attributes
+    /// start from (`Game::build_level_environments`); `None` only when neither the server nor the
+    /// client's own resources have data for it (`fill_known_entries` fills a known pack's entries
+    /// from the client's files).
+    pub(in crate::game) synced_type: Option<(String, serde_json::Value)>,
 }
 
 impl crate::game::Game<'_> {
     /// The client's table of the server's levels on entering `entered`: a level past vanilla's
     /// three that the process does not know yet is added, so that [`Dim::from_id`] finds it, and
-    /// the level left is dropped when the server opened it after Login (a runtime level). Such a
-    /// level is not in Login's `levels`, so it is never a viewed world, and a long session through
-    /// many of them keeps none. Only a level this connection added leaves the table: in single
+    /// the level left is dropped when the server opened it after Login (a runtime level), so that a
+    /// long session through many of them keeps none. A viewed world of such a level needs no
+    /// entry: it keeps its own name. Only a level this connection added leaves the table: in single
     /// player the integrated server shares the table, and a runtime level it opened is its own
     /// until it closes it (`runtime_levels.rs`).
     pub(in crate::game) fn track_remote_levels(&mut self, entered: &str) {
@@ -49,16 +52,106 @@ impl crate::game::Game<'_> {
             r.added_levels.insert(entered.to_owned());
         }
     }
+
+    /// The environment attributes of the level the player is in, from its synchronized dimension
+    /// type, as `EnvironmentAttributeSystem.addDimensionLayer` takes `level.dimensionType()`'s
+    /// attributes (and `addDynamicLayers` its timelines): the type's attributes and timelines over
+    /// the client's own environment of that type, for gameplay, and over the packs' Polytone stack
+    /// of that type, whose modifiers then apply over them, for the frame. A built-in level is
+    /// included, so a data pack's Overworld reaches the frame; the base is the client's
+    /// environment of the same type, so the Nether and the End keep their own file's layers (no
+    /// weather) instead of the Overworld's. Only the three vanilla type IDs have a pack stack: a
+    /// mod's type is drawn without the packs' layers. Run again when the packs change.
+    ///
+    /// Building one reads every biome file, so both are kept by type name with the JSON and the
+    /// packs' stacks they were built from (`LevelEnvironments`): entering a level of an unchanged
+    /// type again (a respawn, a travel back) reuses them as kept, without cloning the JSON, and a
+    /// pack reload, which makes new stacks, builds only the frame's again, in the same entry.
+    pub(in crate::game) fn build_level_environments(&mut self) {
+        let stacks = self.pack.environments.as_ref();
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        let Some((name, json)) = &r.synced_type else {
+            r.level_environment = None;
+            r.level_pack_environment = None;
+            return;
+        };
+        if let Some(e) = r
+            .level_environments
+            .get_mut(name)
+            .filter(|e| e.json == *json)
+        {
+            if !same_stacks(e.stacks.as_ref(), stacks) {
+                e.pack = pack_environment(name, json, stacks);
+                e.stacks = stacks.map(Arc::downgrade);
+            }
+            r.level_environment = e.own.clone();
+            r.level_pack_environment = e.pack.clone();
+            return;
+        }
+        let own = Environment::with_type(self.res.environment_of(name), json).map(Arc::new);
+        let pack = pack_environment(name, json, stacks);
+        r.level_environments.insert(
+            name.clone(),
+            LevelEnvironments {
+                json: json.clone(),
+                own: own.clone(),
+                stacks: stacks.map(Arc::downgrade),
+                pack: pack.clone(),
+            },
+        );
+        r.level_environment = own;
+        r.level_pack_environment = pack;
+    }
+}
+
+/// The environments `Game::build_level_environments` built from one synchronized dimension type,
+/// and what they were built from.
+pub(super) struct LevelEnvironments {
+    /// The type's JSON both were built from.
+    json: serde_json::Value,
+    /// Over the client's own environment of the type: gameplay's.
+    own: Option<Arc<Environment>>,
+    /// The packs' stacks `pack` was built over (`None` without pack modifiers). A weak handle:
+    /// a reload makes new stacks, and the old ones' address is not reused while it lives.
+    stacks: Option<Weak<[Environment; 3]>>,
+    /// Over the packs' stack of the type: the frame's.
+    pack: Option<Arc<Environment>>,
+}
+
+/// The frame's environment of the synchronized type `name` with `json`: the type over the packs'
+/// stack of that type, or `None` without pack modifiers or for a type with no pack stack.
+fn pack_environment(
+    name: &str,
+    json: &serde_json::Value,
+    stacks: Option<&Arc<[Environment; 3]>>,
+) -> Option<Arc<Environment>> {
+    let base = match name {
+        "minecraft:overworld" => &stacks?[0],
+        "minecraft:the_nether" => &stacks?[1],
+        "minecraft:the_end" => &stacks?[2],
+        _ => return None,
+    };
+    Environment::with_type(base, json).map(Arc::new)
+}
+
+/// Whether `built` are the packs' current stacks `now`.
+fn same_stacks(
+    built: Option<&Weak<[Environment; 3]>>,
+    now: Option<&Arc<[Environment; 3]>>,
+) -> bool {
+    match (built, now) {
+        (None, None) => true,
+        (Some(built), Some(now)) => std::ptr::eq(built.as_ptr(), Arc::as_ptr(now)),
+        _ => false,
+    }
 }
 
 impl Remote {
-    /// The format and facts of the level `spawn` names, from the server's dimension type; `base`
-    /// is the game's own environment. The facts are cached by level and named type.
-    pub(in crate::game) fn level_format(
-        &mut self,
-        spawn: &play::SpawnInfo,
-        base: &Environment,
-    ) -> LevelFormat {
+    /// The format and facts of the level `spawn` names, from the server's dimension type. The
+    /// facts are cached by level and named type.
+    pub(in crate::game) fn level_format(&mut self, spawn: &play::SpawnInfo) -> LevelFormat {
         let dimension = self.registries.dimension(spawn.dimension_type);
         // The server's dimension type gives the level's shape, and its
         // chunks the shape's column.
@@ -79,21 +172,15 @@ impl Remote {
         // beds and time), not only its shape: a level of a mod the server runs is no
         // longer taken for the Overworld.
         let mut facts = None;
-        let mut environment = None;
-        if let Some((name, json)) = self.registries.dimension_json(spawn.dimension_type) {
-            if !matches!(
-                spawn.dimension.as_str(),
-                "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
-            ) {
-                environment = Environment::with_type(base, &json);
-            }
+        let synced_type = self.registries.dimension_json(spawn.dimension_type);
+        if let Some((name, json)) = &synced_type {
             let cached = self
                 .facts_cache
                 .get(&spawn.dimension)
-                .filter(|(old_name, old, _)| *old_name == name && *old == json)
+                .filter(|(old_name, old, _)| old_name == name && old == json)
                 .map(|(_, _, facts)| facts.clone());
             facts = cached.or_else(|| {
-                let base = DimensionFacts::base_for_type(&name);
+                let base = DimensionFacts::base_for_type(name);
                 let facts = (|| {
                     for field in ["coordinate_scale", "ambient_light"] {
                         if json.get(field).is_some()
@@ -107,7 +194,7 @@ impl Remote {
                     {
                         return Err("invalid monster_spawn_block_light_limit".into());
                     }
-                    DimensionFacts::patched(base, &name, &json)
+                    DimensionFacts::patched(base, name, json)
                 })()
                 .map_err(|why| log::warn!("the server's dimension type {name} is refused ({why})"))
                 .unwrap_or_else(|_| base.clone());
@@ -130,7 +217,7 @@ impl Remote {
             shape,
             chunk_format,
             facts,
-            environment,
+            synced_type,
         }
     }
 }

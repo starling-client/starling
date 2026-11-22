@@ -57,6 +57,9 @@ Usage: sunrise-server [--dir DIR] <command>
               a running server takes the difficulty, default game mode and whitelist at once, the rest
               at its next start
   import FILE Write server.toml from a vanilla server.properties
+  engine-command [--json]
+              The game command `run` would start here (program, arguments, folder, environment and
+              the prepared game files), without starting it; exit 3 when those files are missing
   import-resources DIR
               Copy game files prepared elsewhere (by the launcher or sunrise-prepare) into place, after
               checking they are complete and for this Minecraft version; the old copy stays on failure
@@ -90,13 +93,11 @@ Sunrise server settings (docs/server.md). The server writes them into server.pro
 | `enforce_whitelist` | `false` | `enforce-whitelist` | kick online players taken off the whitelist |
 | `view_distance` | `10` | `view-distance` | chunks sent around each player |
 | `simulation_distance` | `10` | `simulation-distance` | chunks around each player where mobs, crops and redstone tick |
-| `max_view_distance` | `0` | `sunrise-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
-| `max_viewed_loaded_chunks` | `2048` | `sunrise-max-viewed-loaded-chunks` | chunks a mod may keep loaded for one player in another level (0: none; at most 2048 for now) |
+| `max_viewed_loaded_chunks` | `2048` | `sunrise-max-viewed-loaded-chunks` | chunks a mod may keep loaded for one player in another level (0: none; at most 4489, higher values lowered with a warning; an older Sunrise client gets at most 2048) |
 | `max_viewed_ticking_chunks` | `441` | `sunrise-max-viewed-ticking-chunks` | of them, ticking (one player's simulation area at distance 10) |
 | `max_viewed_loaded_chunks_per_level` | `16384` | `sunrise-max-viewed-loaded-chunks-per-level` | the same for all players together, per level |
 | `max_viewed_ticking_chunks_per_level` | `3528` | `sunrise-max-viewed-ticking-chunks-per-level` | ticking, all players together, per level |
 | `admin_feedback_to_ops` | `true` | `sunrise-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
-| `accept_older_clients` | `false` | `sunrise-accept-older-clients` | true: 26.2 clients join too, their packets translated (docs/hosting.md) |
 
 ### `[world]`
 
@@ -121,6 +122,8 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `restart_on_crash` | `true` |  | start the game again when it crashes |
 | `low_memory` | `false` |  | true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time |
 | `parallel_tick` | `false` |  | reserved: parallel phases are currently disabled in this fork |
+| `droppable_clientbound` | `262144` |  | bytes a second of droppable mod payloads (voice) sent to each player; 0 turns them off |
+| `droppable_serverbound` | `16384` |  | the same, accepted from each player |
 
 ### `[backups]`
 
@@ -156,7 +159,7 @@ A proxy handing players over between servers (docs/server.md). Not vanilla's acc
 
 | Key | Default | In `server.properties` | What it does |
 | --- | --- | --- | --- |
-| `enabled` | `false` |  | true: take a proxy's player-* requests; needs Velocity forwarding (forwarding.secret) |
+| `enabled` | `false` |  | true: take a proxy's player-* requests; refused at start since Velocity forwarding was removed |
 | `expect_seconds` | `10` |  | how long a player the proxy announced is waited for, when it names no time |
 | `max_expect_seconds` | `60` |  | the longest the proxy may ask for |
 | `max_expected` | `64` |  | players waited for at once |
@@ -183,7 +186,7 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | `GET` | `/api/v1/status` | nothing | `phase`, `version`, `pid`, `uptime_seconds`, `engine_pid`, `engine_uptime_seconds`, `crashes`, `last_crash`, `sample` (TPS, MSPT, players, RAM, CPU), `update` | How the server does |
 | `GET` | `/api/v1/metrics` | `?since=T` (seconds since 1970) | `{"samples": [...]}`: one a second, the last 10 minutes | The samples taken after T, for graphs |
 | `GET` | `/api/v1/logs` | `?since=N` | `{"next": N, "lines": [...]}` | The log lines after the Nth (the last 2000 are kept) |
-| `GET` | `/api/v1/events` | `?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,chat_filtered,death,log,phase` (all by default) | with `Accept: text/event-stream`, server-sent events as they happen (`id`, `event`: the type, `data`: JSON); otherwise `{"next": N, "events": [...]}` | Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat, messages the chat filter refused (`chat_filtered`, without their text) and deaths (the last 2000 kept) |
+| `GET` | `/api/v1/events` | `?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,death,log,phase` (all by default) | with `Accept: text/event-stream`, server-sent events as they happen (`id`, `event`: the type, `data`: JSON); otherwise `{"next": N, "events": [...]}` | Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat and deaths (the last 2000 kept) |
 | `POST` | `/api/v1/command` | `{"line": "<one command>"}` | the lines the command logged | Run a console command on the running game |
 | `POST` | `/api/v1/stop` | nothing | `{"ok": true}` | Stop the game and the supervisor |
 | `POST` | `/api/v1/start` | nothing | `{"ok": true}` | Start the game while keeping the supervisor and API running |

@@ -3,6 +3,61 @@
 use super::*;
 use crate::*;
 
+#[test]
+fn engine_catalogs_share_the_diff_and_note_gate() {
+    let old = functions(vec![]).with_engine_items(vec![EngineItem::new(
+        "loop:entities.tick".into(),
+        EngineContract::Loop {
+            entry: "Game::tick_entities".into(),
+            generic: "tick_entities_with".into(),
+            slot: "Slot".into(),
+            side: "server".into(),
+        },
+    )]);
+    let new = functions(vec![]).with_engine_items(vec![EngineItem::new(
+        "internal:fn:game::step".into(),
+        EngineContract::Internal {
+            signature: "fn step()".into(),
+            signature_hash: "step".into(),
+            shape_only: false,
+            opaque_reason: None,
+        },
+    )]);
+    let mut report = diff(&old, &new);
+    assert_eq!(
+        report
+            .changes
+            .iter()
+            .map(|c| (c.id.as_str(), c.kind, c.class))
+            .collect::<Vec<_>>(),
+        [
+            ("loop:entities.tick", ChangeKind::Removed, Class::Breaking),
+            ("internal:fn:game::step", ChangeKind::Added, Class::Advisory),
+        ]
+    );
+    assert_eq!(report.undeclared().count(), 1);
+    assert!(
+        report
+            .attach(
+                &Note {
+                    file: "tick.toml".into(),
+                    why: "Tick moved.".into(),
+                    migrate: None
+                },
+                &["loop:entities.tick".into()],
+            )
+            .is_empty()
+    );
+    assert_eq!(report.undeclared().count(), 0);
+
+    let only_internal = functions(vec![]).with_engine_items(vec![new.engine_items[0].clone()]);
+    let report = diff(&only_internal, &functions(vec![]));
+    assert_eq!(report.verdict, Verdict::Advisory);
+    assert_eq!(report.undeclared().count(), 0);
+    assert_eq!(report.changes[0].kind, ChangeKind::Removed);
+    assert_eq!(report.changes[0].class, Class::Advisory);
+}
+
 fn hook(name: &str, side: Side, arguments: &[(&str, &str)]) -> Hook {
     Hook::new(
         format!("hook:{name}"),
@@ -32,14 +87,13 @@ fn hook(name: &str, side: Side, arguments: &[(&str, &str)]) -> Hook {
     )
 }
 
-fn function(path: &str, signature: &str, wasm: bool) -> Function {
+fn function(path: &str, signature: &str) -> Function {
     Function::new(
         format!("fn:{path}"),
         "",
         FunctionContract {
             signature: signature.into(),
             impl_generics: String::new(),
-            wasm,
             refs: vec![],
         },
     )
@@ -52,7 +106,6 @@ fn method(owner: &str, name: &str, required: bool) -> Method {
         MethodContract {
             signature: format!("fn {name}(&self)"),
             required,
-            wasm: true,
             refs: vec![],
         },
     )
@@ -194,6 +247,22 @@ fn traits(traits: Vec<Trait>) -> Surface {
     })
 }
 
+fn behaviours(version: &[(&str, u32)]) -> Surface {
+    functions(vec![]).with_behaviours(
+        version
+            .iter()
+            .map(|(name, version)| {
+                Behaviour::new(
+                    format!("behaviour:{name}"),
+                    "",
+                    vec!["a.rs::t".into()],
+                    BehaviourContract { version: *version },
+                )
+            })
+            .collect(),
+    )
+}
+
 /// The one change, as (id, kind, class, lines, members).
 fn only(diff: &Diff) -> (&str, ChangeKind, Class, Vec<&str>, Vec<&str>) {
     assert_eq!(diff.changes.len(), 1, "{}", diff.to_text());
@@ -221,7 +290,7 @@ fn identical_surfaces_have_no_changes() {
 
 #[test]
 fn a_removed_record_is_breaking() {
-    let old = functions(vec![function("spawn", "fn spawn()", true)]);
+    let old = functions(vec![function("spawn", "fn spawn()")]);
     let d = diff(&old, &functions(vec![]));
     assert_eq!(d.verdict, Verdict::Breaking);
     assert_eq!(
@@ -238,7 +307,7 @@ fn a_removed_record_is_breaking() {
 
 #[test]
 fn a_new_record_is_additive() {
-    let new = functions(vec![function("spawn", "fn spawn()", true)]);
+    let new = functions(vec![function("spawn", "fn spawn()")]);
     let d = diff(&functions(vec![]), &new);
     assert_eq!(d.verdict, Verdict::Additive);
     assert_eq!(
@@ -255,8 +324,8 @@ fn a_new_record_is_additive() {
 
 #[test]
 fn a_rename_is_a_removal_and_an_addition() {
-    let old = functions(vec![function("spawn", "fn spawn()", true)]);
-    let new = functions(vec![function("summon", "fn summon()", true)]);
+    let old = functions(vec![function("spawn", "fn spawn()")]);
+    let new = functions(vec![function("summon", "fn summon()")]);
     let d = diff(&old, &new);
     let seen: Vec<_> = d.changes.iter().map(|c| (c.id.as_str(), c.kind)).collect();
     assert_eq!(
@@ -348,6 +417,71 @@ fn a_hook_version_is_conditional() {
 }
 
 #[test]
+fn a_new_behaviour_is_additive() {
+    let old = behaviours(&[]);
+    let new = behaviours(&[("pool_merging", 1)]);
+    assert_eq!(
+        only(&diff(&old, &new)),
+        (
+            "behaviour:pool_merging",
+            ChangeKind::Added,
+            Class::Additive,
+            vec!["added"],
+            vec![]
+        )
+    );
+}
+
+#[test]
+fn a_removed_behaviour_breaks() {
+    let old = behaviours(&[("pool_merging", 1), ("kept", 1)]);
+    let new = behaviours(&[("kept", 1)]);
+    assert_eq!(
+        only(&diff(&old, &new)),
+        (
+            "behaviour:pool_merging",
+            ChangeKind::Removed,
+            Class::Breaking,
+            vec!["removed"],
+            vec![]
+        )
+    );
+}
+
+#[test]
+fn a_behaviour_version_is_conditional() {
+    let old = behaviours(&[("pool_merging", 1)]);
+    let new = behaviours(&[("pool_merging", 2)]);
+    assert_eq!(new.behaviours[0].hash, old.behaviours[0].hash);
+    assert_eq!(
+        only(&diff(&old, &new)),
+        (
+            "behaviour:pool_merging",
+            ChangeKind::Changed,
+            Class::Conditional,
+            vec!["version 1 → 2: affects only a mod that relies on this behaviour"],
+            vec![]
+        )
+    );
+}
+
+#[test]
+fn a_removed_behaviour_needs_a_change_note() {
+    let mut d = diff(&behaviours(&[("pool_merging", 1)]), &behaviours(&[]));
+    assert_eq!(d.undeclared().count(), 1);
+    let note = Note {
+        file: "pool-merging.toml".into(),
+        why: "Additions are no longer merged.".into(),
+        migrate: None,
+    };
+    assert!(
+        d.attach(&note, &["behaviour:pool_merging".into()])
+            .is_empty()
+    );
+    assert_eq!(d.undeclared().count(), 0);
+}
+
+#[test]
 fn a_hook_that_gains_an_output_breaks_and_carries_it() {
     let old = hooks(vec![hook("damage", Side::Server, &[])]);
     let mut contract = old.hooks[0].contract.clone();
@@ -387,21 +521,9 @@ fn a_hook_side_change_is_breaking() {
 }
 
 #[test]
-fn leaving_wasm_breaks_and_joining_it_adds() {
-    let on = functions(vec![function("ground", "fn ground()", true)]);
-    let off = functions(vec![function("ground", "fn ground()", false)]);
-    let d = diff(&on, &off);
-    let (_, _, class, what, _) = only(&d);
-    assert_eq!((class, what), (Class::Breaking, vec!["no longer on wasm"]));
-    let d = diff(&off, &on);
-    let (_, _, class, what, _) = only(&d);
-    assert_eq!((class, what), (Class::Additive, vec!["now on wasm"]));
-}
-
-#[test]
 fn a_changed_signature_is_breaking_and_shown() {
-    let old = functions(vec![function("name", "fn name(x: &'a str)", true)]);
-    let new = functions(vec![function("name", "fn name(x: &'b str)", true)]);
+    let old = functions(vec![function("name", "fn name(x: &'a str)")]);
+    let new = functions(vec![function("name", "fn name(x: &'b str)")]);
     let d = diff(&old, &new);
     let (_, _, class, what, _) = only(&d);
     assert_eq!(
@@ -636,11 +758,11 @@ fn an_impl_gained_is_additive_and_one_lost_breaks_by_name() {
     );
 }
 
-fn wired(wire: bool, form: Option<&str>) -> Surface {
+fn wired(wire: bool, form: Option<&str>, shape: Option<&str>) -> Surface {
     types(vec![Type::new(
         "type:Id",
         "",
-        None,
+        shape.map(str::to_owned),
         TypeContract {
             wire,
             wire_form: form.map(str::to_owned),
@@ -653,9 +775,9 @@ fn wired(wire: bool, form: Option<&str>) -> Surface {
 
 #[test]
 fn a_wire_change_adds_when_a_type_starts_crossing_and_is_conditional_otherwise() {
-    let none = wired(false, None);
-    let derive = wired(true, Some("derive"));
-    let via = wired(true, Some("via:u32"));
+    let none = wired(false, None, None);
+    let derive = wired(true, Some("derive"), Some("aaaa"));
+    let via = wired(true, Some("via:u32"), Some("aaaa"));
     let class_and_lines = |a: &Surface, b: &Surface| {
         let d = diff(a, b);
         let (_, _, class, what, _) = only(&d);
@@ -666,31 +788,28 @@ fn a_wire_change_adds_when_a_type_starts_crossing_and_is_conditional_otherwise()
     };
     assert_eq!(
         class_and_lines(&none, &derive),
-        (
-            Class::Additive,
-            vec!["now crosses the wasm boundary".into()]
-        )
+        (Class::Additive, vec!["now implements `Wire`".into()])
     );
     assert_eq!(
         class_and_lines(&derive, &none),
         (
             Class::Conditional,
-            vec!["no longer crosses the wasm boundary: affects wasm mods only".into()]
+            vec!["no longer implements `Wire`: affects users of this encoding".into()]
         )
     );
     assert_eq!(
         class_and_lines(&derive, &via),
         (
             Class::Conditional,
-            vec!["wire form: `derive` → `via:u32`: affects wasm mods only".into()]
+            vec!["wire form: `derive` → `via:u32`: affects users of this encoding".into()]
         )
     );
 }
 
 #[test]
 fn breaking_changes_come_first_and_notes_declare_them() {
-    let old = functions(vec![function("a", "fn a()", true)]);
-    let new = functions(vec![function("b", "fn b()", true)]);
+    let old = functions(vec![function("a", "fn a()")]);
+    let new = functions(vec![function("b", "fn b()")]);
     let mut d = diff(&old, &new);
     assert_eq!(d.undeclared().count(), 1);
     let note = Note {
@@ -728,6 +847,41 @@ fn a_note_may_name_a_folded_member() {
     };
     assert!(d.attach(&note, &["type:Hand.Off".into()]).is_empty());
     assert_eq!(d.changes[0].notes, [note]);
+}
+
+#[test]
+fn stable_sdk_surfaces_produce_release_verdicts_even_with_change_notes() {
+    let read_sdk_surface = |behaviours| {
+        let sdk_json =
+            serde_json::json!({"schema": 3, "hash": "surface", "behaviours": behaviours});
+        Surface::read(&sdk_json.to_string().into_bytes()).unwrap()
+    };
+    let id = "behaviour:example";
+    let example = serde_json::json!({"id": id, "hash": "declaration", "version": 1});
+    let added = serde_json::json!({"id": "behaviour:new", "hash": "declaration", "version": 1});
+    let bumped = serde_json::json!({"id": id, "hash": "declaration", "version": 2});
+    let old = read_sdk_surface(vec![example.clone()]);
+    let cases = [
+        (vec![example.clone()], "identical"),
+        (vec![example, added], "additive"),
+        (vec![bumped], "conditional"),
+        (vec![], "breaking"),
+    ];
+    let note = Note {
+        file: "example.toml".into(),
+        why: "The old contract no longer applies.".into(),
+        migrate: Some("Use the new contract.".into()),
+    };
+    for (records, expected) in cases {
+        let new = read_sdk_surface(records);
+        let mut report = diff(&old, &new);
+        assert_eq!(serde_json::to_value(&report).unwrap()["verdict"], expected);
+        if matches!(expected, "breaking" | "conditional") {
+            assert!(report.attach(&note, &[id.into()]).is_empty());
+            assert_eq!(report.undeclared().count(), 0);
+            assert_eq!(serde_json::to_value(&report).unwrap()["verdict"], expected);
+        }
+    }
 }
 
 #[test]
@@ -1018,19 +1172,15 @@ fn a_struct_gaining_non_exhaustive_is_conditional_whatever_else_changed() {
 }
 
 #[test]
-fn a_wire_layout_change_affects_wasm_mods_only() {
-    let at = |shape: &str| {
-        let mut s = types(vec![structure("Pos", false, &[("x", "i32")])]);
-        s.types[0].shape = Some(shape.into());
-        s
-    };
+fn a_wire_layout_change_is_conditional() {
+    let at = |shape: &str| wired(true, Some("derive"), Some(shape));
     assert_eq!(
         only(&diff(&at("aaaa"), &at("bbbb"))),
         (
-            "type:Pos",
+            "type:Id",
             ChangeKind::Changed,
             Class::Conditional,
-            vec!["wire layout: `aaaa` → `bbbb`: affects wasm mods only"],
+            vec!["wire layout: `aaaa` → `bbbb`: affects users of this encoding"],
             vec![]
         )
     );
@@ -1038,7 +1188,7 @@ fn a_wire_layout_change_affects_wasm_mods_only() {
 
 #[test]
 fn a_hash_change_no_field_explains_is_breaking() {
-    let old = functions(vec![function("now", "fn now() -> u64", true)]);
+    let old = functions(vec![function("now", "fn now() -> u64")]);
     let mut new = old.clone();
     new.functions[0].hash = "a newer writer's hash".into();
     assert_eq!(
@@ -1143,7 +1293,6 @@ fn a_called_trait_gaining_a_supertrait_that_breaks_dyn_breaks() {
         MethodContract {
             signature: "fn find<T: Wire>(&self) -> T".into(),
             required: true,
-            wasm: true,
             refs: vec![],
         },
     );
@@ -1192,4 +1341,56 @@ fn a_called_trait_gaining_a_supertrait_that_breaks_dyn_breaks() {
         let (id, _, c, what, _) = only(&d);
         assert_eq!((id, c, what), ("trait:Host", class, vec![line]), "{bound}");
     }
+}
+
+#[test]
+fn removing_an_extension_tag_is_breaking_and_old_readers_ignore_the_collection() {
+    let empty = functions(vec![]);
+    let old = empty.clone().with_extension_tags(vec![ExtensionTag {
+        registry: "block".into(),
+        id: "sunrise:villager_secondary_poi/farmer".into(),
+        doc: "Additional secondary work blocks.".into(),
+    }]);
+    let removed = diff(&old, &empty);
+    assert_eq!(removed.verdict, Verdict::Breaking);
+    assert_eq!(
+        removed.changes[0].id,
+        "extension_tag:block/sunrise:villager_secondary_poi/farmer"
+    );
+    assert_eq!(removed.changes[0].kind, ChangeKind::Removed);
+    assert_ne!(old.hash, empty.hash);
+    let mut redocumented = old.clone();
+    redocumented.extension_tags[0].doc = "Clarified words.".into();
+    assert_eq!(diff(&old, &redocumented).verdict, Verdict::Identical);
+    assert_eq!(old.document_hash(), redocumented.document_hash());
+    // The pre-extension reader's document fields, with serde's normal unknown-field policy.
+    #[derive(serde::Deserialize)]
+    struct OldReader {
+        schema: u32,
+        hash: String,
+        hooks: Vec<Hook>,
+        traits: Vec<Trait>,
+        handles: Vec<Function>,
+        functions: Vec<Function>,
+        macros: Vec<Macro>,
+        types: Vec<Type>,
+        parts: Vec<Part>,
+        capabilities: Vec<Capability>,
+        behaviours: Vec<Behaviour>,
+    }
+    let text = serde_json::to_string(&old).unwrap();
+    let read: OldReader = serde_json::from_str(&text).unwrap();
+    assert_eq!(read.schema, SCHEMA);
+    assert_eq!(read.hash, old.hash);
+    assert!(
+        read.hooks.is_empty()
+            && read.traits.is_empty()
+            && read.handles.is_empty()
+            && read.functions.is_empty()
+            && read.macros.is_empty()
+            && read.types.is_empty()
+            && read.parts.is_empty()
+            && read.capabilities.is_empty()
+            && read.behaviours.is_empty()
+    );
 }

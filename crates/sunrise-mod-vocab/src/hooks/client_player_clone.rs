@@ -4,10 +4,17 @@ pub trait Hooks {
     /// After the client replaces its player on respawn or dimension change
     /// (NeoForge's `ClientPlayerNetworkEvent.Clone`). Client-side.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ClientPlayerNetworkEvent.Clone",
         cancellable = false
     )]
-    fn client_player_clone();
+    fn client_player_clone(
+        old_id: i32,
+        new_id: i32,
+        uuid: u128,
+        died: bool,
+        dimension_changed: bool,
+    );
 }

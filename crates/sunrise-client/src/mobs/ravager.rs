@@ -7,9 +7,9 @@ use super::{
     goals::{Float, HurtByTarget, LookAtPlayer, MeleeAttack, NearestTarget, Stroll},
     path::PathType,
 };
+use std::f32::consts::PI;
 use sunrise_core::geometry::trig::Mth;
 use sunrise_core::random::RandomSource;
-use std::f32::consts::PI;
 
 // Ravager state: `counter` attackTick, `counter2` stunnedTick,
 // `anim_ticks` roarTick.
@@ -48,6 +48,10 @@ pub fn register(m: &mut Mob) {
 /// `Ravager.isImmobile`: biting, stunned or roaring.
 pub fn immobile(m: &Mob) -> bool {
     m.extra.counter > 0 || m.extra.counter2 > 0 || m.extra.anim_ticks > 0
+}
+/// `Ravager.hasLineOfSight`: false while stunned or roaring (not while biting, unlike [`immobile`]).
+pub fn blind(m: &Mob) -> bool {
+    m.species() == Species::Ravager && (m.extra.counter2 > 0 || m.extra.anim_ticks > 0)
 }
 /// `Ravager.doHurtTarget`: the bite animation (entity event 4 for clients).
 pub fn on_attack(m: &mut Mob, events: &mut Vec<MobEvent>) {
@@ -105,7 +109,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         base + (max - base) * 0.1
     };
     super::finalize::set_base(m, super::finalize::Attr::MovementSpeed, speed);
-    if m.horizontal_collision && w.can_grief(m.id) {
+    if m.ground.horizontal_collision && w.can_grief(m.id) {
         let b = m
             .bounds()
             .inflate(sunrise_core::geometry::Vec3::new(0.2, 0.2, 0.2));
@@ -127,7 +131,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 }
             }
         }
-        if m.on_ground {
+        if m.ground.on_ground {
             if !destroyed {
                 m.ai.jumping = true;
             } else if w.asks_living_destroy_block {
@@ -352,11 +356,11 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn modded_collision_without_leaves_jumps_without_if_broke() {
         assert!(super::super::world::with_test_world(&[], |world, types| {
             let mut world = world.clone();
@@ -367,8 +371,8 @@ mod tests {
                 Vec3::new(0.5, 64.0, 0.5),
                 0.0,
             );
-            mob.horizontal_collision = true;
-            mob.on_ground = true;
+            mob.ground.horizontal_collision = true;
+            mob.ground.on_ground = true;
             let mut events = Vec::new();
             ai_step(&mut mob, &world, &mut events);
             assert!(mob.ai.jumping);
@@ -380,7 +384,7 @@ mod tests {
     /// `destroyBlock(pos, true, ravager)` names the ravager for the loot, and
     /// `LivingDestroyBlockEvent` doesn't hear of it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_trampled_crop_names_the_ravager() {
         for crop in ["minecraft:wheat", "minecraft:pitcher_crop"] {
             let build =
@@ -423,7 +427,7 @@ mod tests {
     /// A mod that lets the ravager grief against the rule (`canEntityGrief`)
     /// has it trample a crop and a pitcher crop with `mobGriefing` off.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_lets_the_ravager_trample_crops_with_the_rule_off() {
         struct Allow;
         impl crate::mobs::MobHooks for Allow {
@@ -487,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn modded_collision_with_leaves_defers_jump() {
         let build = |world: &mut crate::world::World,
                      registry: &sunrise_world::registry::BlockRegistry| {
@@ -515,8 +519,8 @@ mod tests {
                     Vec3::new(0.5, 64.0, 0.5),
                     0.0,
                 );
-                mob.horizontal_collision = true;
-                mob.on_ground = true;
+                mob.ground.horizontal_collision = true;
+                mob.ground.on_ground = true;
                 let mut events = Vec::new();
                 ai_step(&mut mob, &world, &mut events);
                 assert!(!mob.ai.jumping);
@@ -533,8 +537,8 @@ mod tests {
                     Vec3::new(0.5, 64.0, 0.5),
                     0.0,
                 );
-                mob.horizontal_collision = true;
-                mob.on_ground = true;
+                mob.ground.horizontal_collision = true;
+                mob.ground.on_ground = true;
                 let mut events = Vec::new();
                 ai_step(&mut mob, &world, &mut events);
                 assert!(
@@ -545,5 +549,74 @@ mod tests {
                 assert!(!mob.ai.jumping);
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod sight_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_built_test_world};
+    use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
+
+    /// `Ravager.hasLineOfSight` (`Sensing.hasLineOfSight` calls it): a stunned or roaring ravager sees nobody,
+    /// a biting one still sees. The player stands ten blocks away on a flat floor with nothing between.
+    #[test]
+    #[ignore = "daily"]
+    fn a_stunned_or_roaring_ravager_does_not_see_the_player() {
+        let build = |world: &mut crate::world::World,
+                     registry: &sunrise_world::registry::BlockRegistry| {
+            for cx in -1..1 {
+                for cz in -1..1 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in -4..5 {
+                for z in -4..15 {
+                    world.set(x, 64, z, stone).unwrap();
+                }
+            }
+        };
+        let ran = with_built_test_world(&[], build, |w, types| {
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 65.0, 10.5)));
+            // (the mob's state, whether it sees the player), each on a new mob: sight is cached per tick.
+            let sees = |stunned: i32, roar: i32, bite: i32| {
+                let mut m = Mob::new(
+                    1,
+                    Arc::new(types.types["minecraft:ravager"].clone()),
+                    Vec3::new(0.5, 65.0, 0.5),
+                    0.0,
+                );
+                (m.extra.counter2, m.extra.anim_ticks, m.extra.counter) = (stunned, roar, bite);
+                m.sees(&world, Who::Player)
+            };
+            assert!(sees(0, 0, 0), "a plain ravager sees a player in the open");
+            assert!(
+                sees(0, 0, 10),
+                "a biting ravager still sees (attackTick is not in hasLineOfSight)"
+            );
+            assert!(!sees(40, 0, 0), "a stunned ravager sees nobody");
+            assert!(!sees(0, 20, 0), "a roaring ravager sees nobody");
+            assert!(
+                !blind_of_other_species(&world, types),
+                "only a ravager is blind"
+            );
+        });
+        assert!(ran, "vanilla data is missing");
+    }
+
+    fn blind_of_other_species(world: &MobWorld, types: &crate::mobs::MobTypes) -> bool {
+        let mut m = Mob::new(
+            2,
+            Arc::new(types.types["minecraft:pillager"].clone()),
+            Vec3::new(0.5, 65.0, 0.5),
+            0.0,
+        );
+        (m.extra.counter2, m.extra.anim_ticks) = (40, 20);
+        !m.sees(world, Who::Player)
     }
 }

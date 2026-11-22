@@ -10,27 +10,19 @@ use crate::{
     Result,
     bidi::visual,
     block_entity_anim::{self, EnchantingBook},
+    block_entity_reach::Reach,
     breaking::entity_geometry,
     fast_hash::FxHashMap,
-    font::{Font, Glyph},
+    font::{Font, Glyph, INLINE_OBJECT_SIZE},
     gfx::mark_oit,
     hud::Rect,
     mesher::{CULL_BACK, Vertex, cull_back},
     models::load_visibility,
     signs::{self, SignData, SignText},
-    text::{Style, Text},
+    text::{InlineObject, Style, Text},
     world::World,
 };
 use glam::{DVec3, Mat4, Quat, Vec3};
-use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
-use sunrise_core::geometry::{
-    Direction,
-    trig::{self, Mth},
-};
-use sunrise_world::{
-    block_render::FaceVisibility,
-    registry::{BlockRegistry, BlockStateId},
-};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -39,6 +31,15 @@ use std::{
         Arc, Mutex, PoisonError, RwLock,
         atomic::{AtomicBool, Ordering},
     },
+};
+use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
+use sunrise_core::geometry::{
+    Direction,
+    trig::{self, Mth},
+};
+use sunrise_world::{
+    block_render::FaceVisibility,
+    registry::{BlockRegistry, BlockStateId},
 };
 
 /// One baked `ModelPart`: initial pose, textured polygons (pixel units,
@@ -681,18 +682,26 @@ fn sign_text_calls(
     } else {
         (dark, 0, vertex_light(packed), 0)
     };
-    let advance = |c: char, style: &Style| {
-        let g = scene
-            .font
-            .map_or_else(|| (scene.glyph)(c), |f| f.glyph_styled(c, style));
-        g.advance + if style.is_bold() { g.offset } else { 0.0 }
-    };
     let mut calls: Vec<TextCall> = Vec::with_capacity(text.lines.len());
     for i in 0..text.lines.len() {
         // The line that fits, in the order it is drawn (getVisualOrder).
         let line = text.line_text(i);
+        let substituted = scene
+            .inline_images
+            .as_ref()
+            .and_then(|images| (images.substitute)(&line));
+        let line = substituted.as_ref().unwrap_or(&line);
+        let advance = |c: char, style: &Style| {
+            if substituted.is_some() && c == '\u{fffc}' && style.inline_object.is_some() {
+                return INLINE_OBJECT_SIZE;
+            }
+            let g = scene
+                .font
+                .map_or_else(|| (scene.glyph)(c), |f| f.glyph_styled(c, style));
+            g.advance + if style.is_bold() { g.offset } else { 0.0 }
+        };
         let shown = if let Some(font) = scene.font {
-            font.split_formatted(&line, data.max_line_width())
+            font.split_formatted(line, data.max_line_width())
                 .into_iter()
                 .next()
                 .unwrap_or_default()
@@ -712,15 +721,30 @@ fn sign_text_calls(
         let first = calls.len();
         let mut pen = 0.0;
         for span in shown.spans.iter().filter(|s| !s.text.is_empty()) {
+            let inline_sprite = scene.inline_images.as_ref().and_then(|images| {
+                substituted.as_ref()?;
+                match &span.style.inline_object {
+                    Some(InlineObject::Atlas { atlas, sprite, .. }) => {
+                        (images.sprite)(atlas, sprite)
+                    }
+                    _ => None,
+                }
+            });
+            let base_color = if inline_sprite.is_some() {
+                0xFFFF_FFFF
+            } else {
+                color
+            };
             let run = span
                 .style
                 .color
-                .map_or(color, |rgb| 0xFF00_0000 | (rgb & 0xFF_FFFF));
+                .map_or(base_color, |rgb| 0xFF00_0000 | (rgb & 0xFF_FFFF));
             calls.push(TextCall {
                 matrix: m,
                 x: x + pen,
                 y,
                 text: span.text.clone(),
+                inline_sprite,
                 style: span.style.clone(),
                 color: run,
                 outline,
@@ -740,6 +764,7 @@ fn sign_text_calls(
                 x,
                 y,
                 text: String::new(),
+                inline_sprite: None,
                 style: Style::default(),
                 color,
                 outline,
@@ -821,6 +846,27 @@ pub fn push_text(
         }
     };
     let mut emit = |dx: f32, dy: f32, z: f32, argb: u32, outline: bool| {
+        if let Some(sprite) = call.inline_sprite {
+            // The outline is the text's: an image draws once.
+            if outline {
+                return;
+            }
+            let mut x = call.x + dx;
+            let y = call.y + dy - 1.0;
+            let bottom = y + INLINE_OBJECT_SIZE;
+            // Visual ordering can coalesce neighbouring objects of the same style.
+            for _ in call.text.chars() {
+                let right = x + INLINE_OBJECT_SIZE;
+                quad(
+                    [(x, bottom), (right, bottom), (right, y), (x, y)],
+                    sprite,
+                    z,
+                    argb,
+                );
+                x = right;
+            }
+            return;
+        }
         let mut pen = call.x;
         for (i, ch) in call.text.chars().enumerate() {
             let g = glyph(ch);
@@ -932,6 +978,8 @@ pub struct TextCall {
     pub x: f32,
     pub y: f32,
     pub text: String,
+    /// When set, this call is one inline image instead of a font glyph run.
+    pub inline_sprite: Option<Rect>,
     pub style: Style,
     /// ARGB.
     pub color: u32,
@@ -951,6 +999,7 @@ impl TextCall {
             x: self.x,
             y: self.y,
             text: &self.text,
+            inline_sprite: self.inline_sprite,
             style: &self.style,
             color: self.color,
             outline: self.outline,
@@ -968,6 +1017,8 @@ pub struct TextRun<'a> {
     pub x: f32,
     pub y: f32,
     pub text: &'a str,
+    /// Inline atlas glyph in place of the text, with the same tint as the run.
+    pub inline_sprite: Option<Rect>,
     pub style: &'a Style,
     /// ARGB.
     pub color: u32,
@@ -977,6 +1028,15 @@ pub struct TextRun<'a> {
     pub light: u32,
     /// HDR glyph emission tier, 0 for none.
     pub tier: u8,
+}
+
+/// Optional presentation for sign lines, with the resource, sprite and listener revisions
+/// that invalidate cached text vertices.
+pub struct SignInlineImages<'a> {
+    pub revision: [u64; 3],
+    pub substitute: &'a dyn Fn(&Text) -> Option<Text>,
+    /// The sprite of an inline atlas object (`atlas`, `sprite`), as the HUD atlas resolves it for chat.
+    pub sprite: &'a dyn Fn(&str, &str) -> Option<Rect>,
 }
 
 /// Inputs from the game for one frame of block-entity rendering.
@@ -1007,6 +1067,7 @@ pub struct Scene<'a> {
     pub lid: &'a dyn Fn([i32; 3]) -> f32,
     /// Sign block-entity data at a position.
     pub sign: &'a dyn Fn([i32; 3]) -> Option<&'a SignData>,
+    pub inline_images: Option<SignInlineImages<'a>>,
     /// Banner layers at a position: pattern texture and RGB tint, bottom first.
     pub banner: &'a dyn Fn([i32; 3]) -> Vec<(String, u32)>,
     /// The skin sprite a `player_head` shows at a position (`SkullBlockRenderer`
@@ -1175,6 +1236,7 @@ struct SignTextEntry {
     /// Within the glowing text outline's distance (only kept for glowing text).
     near: bool,
     glyphs: u64,
+    inline_images: Option<[u64; 3]>,
     /// Game time it was last drawn.
     used: i64,
     vertices: Vec<Vertex>,
@@ -1479,8 +1541,6 @@ const MODELS: [(&str, &str); 27] = [
     ),
     ("copper_golem_star", "minecraft:copper_golem_star#main"),
 ];
-/// `BlockEntityRenderer.getViewDistance` default.
-const VIEW_DISTANCE: f64 = 64.0;
 
 impl BlockEntityRenderer {
     pub fn load(
@@ -2057,18 +2117,13 @@ impl BlockEntityRenderer {
                 if cache_only && !static_candidate(kind, options) {
                     break 'draw;
                 }
-                let center = DVec3::new(
-                    f64::from(pos[0]) + 0.5,
-                    f64::from(pos[1]) + 0.5,
-                    f64::from(pos[2]) + 0.5,
-                );
-                // BlockEntityRenderer.getViewDistance: 256 for End gateways.
-                let distance = if matches!(kind, Kind::EndGateway { .. }) {
-                    256.0
+                // Neither reach drawn here depends on the render distance.
+                let reach = if matches!(kind, Kind::EndGateway { .. }) {
+                    Reach::EndGateway
                 } else {
-                    VIEW_DISTANCE
+                    Reach::Default
                 };
-                if center.distance_squared(scene.camera) > distance * distance {
+                if !reach.should_render(pos, scene.camera, 0) {
                     break 'draw;
                 }
                 let local = static_local_index(pos, section_min_y);
@@ -2499,6 +2554,7 @@ impl BlockEntityRenderer {
                 .retain(|_, e| (now - SIGN_TEXT_KEEP..=now).contains(&e.used));
         }
         let glyphs = scene.glyphs;
+        let inline_images = scene.inline_images.as_ref().map(|images| images.revision);
         let signs = &mut cache.signs;
         let entry = match signs.entry(pos) {
             std::collections::hash_map::Entry::Occupied(mut occupied) => {
@@ -2506,6 +2562,7 @@ impl BlockEntityRenderer {
                 let changed = entry.data != *data;
                 if (entry.state, entry.packed, entry.near, entry.glyphs)
                     != (state, packed, near, glyphs)
+                    || entry.inline_images != inline_images
                     || changed
                     || entry.animated
                 {
@@ -2529,6 +2586,7 @@ impl BlockEntityRenderer {
                     entry.packed = packed;
                     entry.near = near;
                     entry.glyphs = glyphs;
+                    entry.inline_images = inline_images;
                 }
                 occupied.into_mut()
             }
@@ -2552,6 +2610,7 @@ impl BlockEntityRenderer {
                     packed,
                     near,
                     glyphs,
+                    inline_images,
                     used: now,
                     vertices,
                 })
@@ -3675,7 +3734,7 @@ mod tests {
     use crate::assets::Assets;
     use sunrise_core::nbt::Tag;
     #[test]
-    #[ignore = "requires prepared models/textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn entity_block_particles_and_breaking_use_exported_models() -> Result<()> {
         use crate::{models::catalog::StateModels, sprites::Sprites};
         use {
@@ -3796,6 +3855,7 @@ mod tests {
             glyph: &|_| Glyph::default(),
             glyphs: 0,
             font: None,
+            inline_images: None,
             dynamic_visible: None,
         };
         // Compare the cached world path with the original model renderer,
@@ -4191,6 +4251,7 @@ mod tests {
             glyph: &glyph,
             glyphs: 0,
             font: None,
+            inline_images: None,
             dynamic_visible: None,
         };
         let mut call = TextCall {
@@ -4198,6 +4259,7 @@ mod tests {
             x: 0.0,
             y: 0.0,
             text: "Hi".into(),
+            inline_sprite: None,
             style: Style::default(),
             color: 0xFFFF_FF00,
             outline: 0xFF33_3300,
@@ -4267,6 +4329,7 @@ mod tests {
             glyph: &glyph,
             glyphs: 0,
             font: None,
+            inline_images: None,
             dynamic_visible: None,
         };
         let call = TextCall {
@@ -4274,6 +4337,7 @@ mod tests {
             x: 10.0,
             y: 2.0,
             text: "ab".into(),
+            inline_sprite: None,
             style: Style::default(),
             color: 0xFF00_0000,
             outline: 0,
@@ -4322,6 +4386,7 @@ mod tests {
             x: 0.0,
             y: 0.0,
             text: "A ".into(),
+            inline_sprite: None,
             color: 0xff123456,
             outline: 0,
             light: 240,
@@ -4404,6 +4469,7 @@ mod tests {
             glyph: &glyph,
             glyphs: 0,
             font: None,
+            inline_images: None,
             dynamic_visible: None,
         };
         sign_text_calls(&scene, data, &data.front, Mat4::IDENTITY, 0, near)
@@ -4455,6 +4521,51 @@ mod tests {
                 (String::new(), 0.0, 10.0, 0xFF00_0000, 0),
             ]
         );
+    }
+
+    /// A glowing sign's outline belongs to its text: an image span is one quad, as on a plain
+    /// sign, while a glyph run still gets the outline's eight passes under its own.
+    #[test]
+    fn a_glowing_sign_draws_an_inline_image_once() {
+        let cell = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 8,
+            h: 8,
+        };
+        let call = |text: &str, inline_sprite, outline| TextCall {
+            matrix: Mat4::IDENTITY,
+            x: 0.0,
+            y: 0.0,
+            text: text.into(),
+            inline_sprite,
+            style: Style::default(),
+            color: 0xFFFF_FFFF,
+            outline,
+            light: 0,
+            tier: 0,
+        };
+        let glyph = |_| Glyph {
+            rect: Some(cell),
+            right: 8.0,
+            bottom: 8.0,
+            advance: 6.0,
+            ..Glyph::default()
+        };
+        let quads = |call: &TextCall| {
+            let mut out = Vec::new();
+            push_text(&glyph, None, &call.run(), &mut out);
+            out.len() / 4
+        };
+        let outline = 0xFF00_0000;
+        let image = |outline| call("\u{fffc}", Some(cell), outline);
+        assert_eq!(quads(&image(0)), 1);
+        assert_eq!(quads(&image(outline)), quads(&image(0)));
+        let letter = |outline| call("a", None, outline);
+        assert_eq!(quads(&letter(0)), 1);
+        assert_eq!(quads(&letter(outline)), 9);
     }
 
     /// A glowing sign's own colour still wins over its dye, and the outline
@@ -4523,7 +4634,15 @@ mod tests {
             sign_cache_enabled: AtomicBool::new(false),
         };
         let world = World::new(BlockStateId(0), 1);
-        let sprites = HashMap::new();
+        let icon = Rect {
+            u0: 0.125,
+            v0: 0.5,
+            u1: 0.25,
+            v1: 0.625,
+            w: 16,
+            h: 16,
+        };
+        let sprites = HashMap::from([("demo:icon".into(), icon)]);
         let text = |line: &str, glowing| SignText {
             lines: [line.into(), "two".into(), String::new(), "four".into()],
             color: 3,
@@ -4589,6 +4708,7 @@ mod tests {
             glyph: &glyph,
             glyphs: 0,
             font: None,
+            inline_images: None,
             dynamic_visible: None,
         };
         let check = |scene: &Scene, pos: [i32; 3], state: u32| {
@@ -4648,6 +4768,60 @@ mod tests {
         let reads = glyph_reads.get();
         renderer.render(&scene, [(pos, 0)].iter(), &mut vertices);
         assert!(glyph_reads.get() > reads);
+        // Both faces of either sign kind submit the image through their usual text transforms.
+        let two_faces = SignData {
+            front: text(":icon:", false),
+            back: text(":icon:", false),
+            ..Default::default()
+        };
+        let two_faces_at = |_| Some(&two_faces);
+        let image_reads = std::cell::Cell::new(0);
+        let substitute = |line: &Text| {
+            if line.plain() != ":icon:" {
+                return None;
+            }
+            image_reads.set(image_reads.get() + 1);
+            let mut span = line.spans[0].with_text("\u{fffc}");
+            span.style.inline_object = Some(InlineObject::Atlas {
+                atlas: "minecraft:gui".into(),
+                sprite: "demo:icon".into(),
+                fallback: ":icon:".into(),
+            });
+            Some(Text::from_spans(vec![span]))
+        };
+        scene.sign = &two_faces_at;
+        let icon_sprite = |_: &str, _: &str| Some(icon);
+        for state in 0..2 {
+            scene.inline_images = Some(SignInlineImages {
+                revision: [1, 1, 0],
+                substitute: &substitute,
+                sprite: &icon_sprite,
+            });
+            let reads = image_reads.get();
+            for _ in 0..2 {
+                vertices.clear();
+                renderer.render(&scene, [(pos, state)].iter(), &mut vertices);
+                let images: Vec<_> = vertices
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|q| q[0].uv == [icon.u0, icon.v1])
+                    .collect();
+                assert_eq!(images.len(), 2);
+                assert_ne!(images[0][0].pos, images[1][0].pos);
+                assert!(images.into_iter().flatten().all(|v| v.color == u32::MAX));
+                assert_eq!(image_reads.get(), reads + 2);
+            }
+            scene.inline_images = Some(SignInlineImages {
+                revision: [1, 2, 0],
+                substitute: &|_| None,
+                sprite: &icon_sprite,
+            });
+            vertices.clear();
+            renderer.render(&scene, [(pos, state)].iter(), &mut vertices);
+            assert!(!vertices.iter().any(|v| v.uv[1] == icon.v1));
+        }
+        scene.inline_images = None;
         scene.sign = &first_sign;
         // Signs out of view for a while are dropped.
         scene.game_time = 2 * SIGN_TEXT_KEEP;
@@ -4783,6 +4957,7 @@ mod tests {
             glyph: &|_| Glyph::default(),
             glyphs: 0,
             font: None,
+            inline_images: None,
             dynamic_visible: None,
         };
         let mut verts = Vec::new();
@@ -4880,6 +5055,7 @@ mod tests {
             glyph: &|_| Glyph::default(),
             glyphs: 0,
             font: None,
+            inline_images: None,
             dynamic_visible: None,
         };
         // A closed single chest of `block` drawn by `renderer`: positions and UVs.

@@ -5,6 +5,7 @@
 //! of one batch apart. Exact NBT equality is always validated. No GPU,
 //! compression or disk I/O timed.
 extern crate sunrise_client_lib as sunrise_client;
+use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 use sunrise_client::{
     biome::Biomes,
     chunk::{Chunk, block_strategy},
@@ -13,7 +14,6 @@ use sunrise_client::{
     save::{self, ChunkExtras},
 };
 use sunrise_core::paletted::PalettedContainer;
-use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 use {
     sunrise_core::{
         nbt,
@@ -107,7 +107,12 @@ fn fixture(per_chunk: usize) -> (Vec<Arc<Chunk>>, Entities, Names) {
             }
             // Exercise the existing NBT overlay and saved list order as well.
             if j % 8 == 2 {
-                let mut raw = save::block_entity_encode::encode(p, &e, BLOCKS[block as usize]);
+                let mut raw = save::block_entity_encode::encode(
+                    p,
+                    &e,
+                    BLOCKS[block as usize],
+                    &Default::default(),
+                );
                 if let Tag::Compound(map) = &mut raw {
                     map.insert(
                         "LootTable".into(),
@@ -177,7 +182,13 @@ fn encoding_fixture() -> sunrise_client::Result<(BlockRegistry, Biomes)> {
 fn serialize(chunks: &[Chunk], registry: &BlockRegistry, biomes: &Biomes) -> Vec<Vec<u8>> {
     chunks
         .iter()
-        .map(|c| nbt::write_named(&save::encode(c, registry, biomes), Limits::default()).unwrap())
+        .map(|c| {
+            nbt::write_named(
+                &save::encode(c, registry, biomes, &Default::default()),
+                Limits::default(),
+            )
+            .unwrap()
+        })
         .collect()
 }
 
@@ -240,10 +251,14 @@ fn main() -> sunrise_client::Result<()> {
             .unwrap_or(48);
         let (chunks, entities, names) = fixture(density);
         let snapshots = save::chunks_with_block_entities(&chunks, &entities, &names);
-        let encode = best_us(&snapshots, |c| save::encode(c, &registry, &biomes), 15);
+        let encode = best_us(
+            &snapshots,
+            |c| save::encode(c, &registry, &biomes, &Default::default()),
+            15,
+        );
         let encoded: Vec<_> = snapshots
             .iter()
-            .map(|c| save::encode(c, &registry, &biomes))
+            .map(|c| save::encode(c, &registry, &biomes, &Default::default()))
             .collect();
         let write = best_us(
             &encoded,

@@ -1,25 +1,6 @@
 //! The read-only metadata resource behind block value operations.
-use crate::{BlockKey, StateConstraint};
-
-/// Transport form for a process-local state. Mods use the BlockState facade, not this record.
-/// Receiving metadata and write boundaries validate the ordinal against the block definition.
-// hidden: generated native/wasm transport for the private-field BlockState facade.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct BlockStateRecord {
-    /// Process-local block key, not a saved block name.
-    pub block: BlockKey,
-    /// State ordinal within the block's definition.
-    pub state: u16,
-}
-impl BlockStateRecord {
-    /// Construct transport data; registry-dependent bounds belong to the receiving boundary.
-    pub const fn new(block: BlockKey, state: u16) -> Self {
-        Self { block, state }
-    }
-}
+use super::block_state::block_state_from_ordinal;
+use crate::{BlockKey, BlockState, StateConstraint};
 
 /// A refused metadata read or state operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,33 +40,30 @@ impl From<sunrise_mod_runtime::block_definitions::StateError> for BlockStateErro
     }
 }
 
-/// Read-only metadata, lent by a host's block-states service or a tint worker.
-/// This is the low-level resource contract; mods call the BlockState facade instead.
-/// Native and generated WebAssembly forwards invoke the same immutable table implementation.
+/// Read-only metadata, lent by a host's block-states service or a tint worker. This contract takes
+/// and returns [`BlockState`] directly; mods normally use the methods on `BlockState`.
 // hidden: low-level shared resource contract; BlockState methods are the mod-facing operations.
 #[doc(hidden)]
 pub trait BlockMetadata {
     /// Borrow the canonical block name from this context's retained registry.
     fn name(&self, block: BlockKey) -> Result<&str, BlockStateError>;
-    /// Borrow a property's serialized value; a missing property returns None.
-    fn property(
-        &self,
-        state: BlockStateRecord,
-        name: &str,
-    ) -> Result<Option<&str>, BlockStateError>;
-    /// Change one property while retaining the others.
+    /// Borrow the serialized value of `name` on `state` from this resource, or `Ok(None)` if the
+    /// property is absent from a known state.
+    fn property(&self, state: BlockState, name: &str) -> Result<Option<&str>, BlockStateError>;
+    /// Return a `BlockState` with one property changed and all others retained. This does not
+    /// mutate `state` or write to the world.
     fn with(
         &self,
-        state: BlockStateRecord,
+        state: BlockState,
         name: &str,
         value: &str,
-    ) -> Result<BlockStateRecord, BlockStateError>;
-    /// Apply partial constraints to the block's default state.
+    ) -> Result<BlockState, BlockStateError>;
+    /// Return a `BlockState` by applying partial constraints to the block's default state.
     fn of(
         &self,
         block: BlockKey,
         properties: &[StateConstraint],
-    ) -> Result<BlockStateRecord, BlockStateError>;
+    ) -> Result<BlockState, BlockStateError>;
 }
 
 impl BlockMetadata for sunrise_mod_runtime::block_definitions::Blocks {
@@ -96,35 +74,32 @@ impl BlockMetadata for sunrise_mod_runtime::block_definitions::Blocks {
             .map(|entry| entry.id.as_str())
             .ok_or(BlockStateError::UnknownBlock)
     }
-    fn property(
-        &self,
-        state: BlockStateRecord,
-        name: &str,
-    ) -> Result<Option<&str>, BlockStateError> {
+    fn property(&self, state: BlockState, name: &str) -> Result<Option<&str>, BlockStateError> {
         self.definitions
-            .get(state.block.0 as usize)
+            .get(state.block().0 as usize)
             .ok_or(BlockStateError::UnknownBlock)?
-            .property(state.state, name)
+            .property(state.ordinal(), name)
             .map_err(Into::into)
     }
     fn with(
         &self,
-        state: BlockStateRecord,
+        state: BlockState,
         name: &str,
         value: &str,
-    ) -> Result<BlockStateRecord, BlockStateError> {
+    ) -> Result<BlockState, BlockStateError> {
+        let block = state.block();
         let ordinal = self
             .definitions
-            .get(state.block.0 as usize)
+            .get(block.0 as usize)
             .ok_or(BlockStateError::UnknownBlock)?
-            .with(state.state, name, value)?;
-        Ok(BlockStateRecord::new(state.block, ordinal))
+            .with(state.ordinal(), name, value)?;
+        Ok(block_state_from_ordinal(block, ordinal))
     }
     fn of(
         &self,
         block: BlockKey,
         properties: &[StateConstraint],
-    ) -> Result<BlockStateRecord, BlockStateError> {
+    ) -> Result<BlockState, BlockStateError> {
         let definition = self
             .definitions
             .get(block.0 as usize)
@@ -134,6 +109,6 @@ impl BlockMetadata for sunrise_mod_runtime::block_definitions::Blocks {
             .map(|p| (p.name.as_str(), p.value.as_str()))
             .collect();
         let ordinal = definition.of(&constraints)?;
-        Ok(BlockStateRecord::new(block, ordinal))
+        Ok(block_state_from_ordinal(block, ordinal))
     }
 }

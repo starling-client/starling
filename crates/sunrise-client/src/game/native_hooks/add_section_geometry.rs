@@ -7,8 +7,8 @@ impl Game<'_> {
     /// client, before resources load.
     pub(in crate::game) fn native_add_section_geometry(
         context: &mod_api::RegistrationContext,
-        renderers: &mut dyn mod_api::SectionGeometryRenderers,
+        renderers: &mut mod_api::SectionGeometryRegistry,
     ) {
-        Self::fire_add_section_geometry(context, renderers);
+        Self::fire_add_section_geometry(context, |listen| renderers.register_listener(listen));
     }
 }

@@ -1,15 +1,15 @@
 use crate::support::common::f64_bits;
 use crate::support::shapes::bounds;
-use sunrise_core::{
-    geometry::{Aabb, Vec3, VoxelShape},
-    position::BlockPos,
-};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::{
+    geometry::{Aabb, Vec3, VoxelShape},
+    position::BlockPos,
 };
 use {
     sunrise_core::{

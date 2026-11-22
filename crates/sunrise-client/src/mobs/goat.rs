@@ -9,8 +9,8 @@ use super::{
     Damage, DamageKind, Mob, MobEvent, MobWorld, Who,
     goals::{Cx, Goal, LOOK, MOVE, goal_clone},
 };
-use sunrise_core::{geometry::Vec3, random::RandomSource};
 use mod_api::SoundSource;
+use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 /// `GoatAi.TIME_BETWEEN_RAMS` and `TIME_BETWEEN_RAMS_SCREAMER`.
 const RAMS: (i32, i32) = (600, 6000);
@@ -575,7 +575,7 @@ fn finish_ram(m: &mut Mob, events: &mut Vec<MobEvent>) {
 /// `Goat.addAdditionalSaveData` and the `GoatAi` brain memory Sunrise writes
 /// with it: the screaming flag, the missing horns and the long jump cooldown
 /// (`LONG_JUMP_COOLDOWN_TICKS`, an integer memory in the brain).
-pub fn write_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn write_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     use sunrise_core::nbt::Tag;
     map.insert(
         "IsScreamingGoat".into(),
@@ -631,8 +631,8 @@ pub fn read_nbt(m: &mut Mob, tag: &sunrise_core::nbt::Tag) {
 mod long_jump_save_tests {
     use super::*;
     use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
-    use sunrise_core::nbt::Tag;
     use std::sync::Arc;
+    use sunrise_core::nbt::Tag;
 
     fn goat() -> Mob {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
@@ -652,7 +652,7 @@ mod long_jump_save_tests {
         let mut m = goat();
         assert_eq!(crate::mobs::frog::jump_cooldown(&m), None);
         crate::mobs::frog::set_jump_cooldown(&mut m, Some(57));
-        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
         assert_eq!(
             saved
                 .get("Brain")
@@ -669,7 +669,14 @@ mod long_jump_save_tests {
             "the reloaded cooldown"
         );
         // No cooldown writes no memory, even over a compound that names one.
-        let saved = mob_to_nbt(&goat(), [1, 2, 3, 4], Some(&saved), None, |_| None);
+        let saved = mob_to_nbt(
+            &goat(),
+            [1, 2, 3, 4],
+            Some(&saved),
+            None,
+            |_| None,
+            &Default::default(),
+        );
         assert_eq!(
             saved
                 .get("Brain")
@@ -736,6 +743,7 @@ mod ram_tests {
     /// absent, and `GoatAi.updateActivity` picks RAM before IDLE: a goat being
     /// fed or bred only follows.
     #[test]
+    #[ignore = "daily"]
     fn a_fed_or_bred_goat_starts_no_ram() {
         let kind = fake_goat();
         let mut partner = Mob::new(9, kind.clone(), Vec3::new(2.5, 64.0, 0.5), 0.0);
@@ -773,12 +781,13 @@ mod ram_tests {
             stone.player = Some(p);
             assert!(due(&mut goat, &stone));
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     /// `RamTarget.tick` posts the hit (`noAggroMobAttack`) and then its push,
     /// which names the damage the victim's `applyItemBlocking` runs again on.
     #[test]
+    #[ignore = "daily"]
     fn a_ram_posts_the_hits_damage_with_its_push() {
         let kind = fake_goat();
         let ran = with_test_world(&[], |w, _| {
@@ -824,7 +833,7 @@ mod ram_tests {
             // victim's second `applyItemBlocking`.
             assert_eq!(push, (7.5, 0.0, 1.0, Some(2.0)));
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }
 

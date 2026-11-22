@@ -1,13 +1,13 @@
 //! Stateful 26.3 underground fluid and pressure selection.
 use super::{AquiferField, AquiferSamplers, FluidPicker, FluidStatus};
 use crate::registry::{BlockRegistry, BlockStateId};
+use std::collections::HashMap;
 use sunrise_core::{
     density::{SampleError, SamplerContext},
     noise::{DensityError, DensityVolume},
     position::{BlockPos, ChunkPos},
     random::{PositionalRandom, RandomSource},
 };
-use std::collections::HashMap;
 
 const WAY_BELOW_MIN_Y: i32 = -32512;
 const FLOWING_UPDATE_SIMILARITY: f64 = 1.0 - 44.0 / 25.0;
@@ -154,6 +154,8 @@ pub struct NoiseBasedAquifer<P, F, B> {
     column: [i32; 2],
     cells: Cells,
     skip_above_y: i32,
+    /// The volume's block columns, `[x, z]` from its minimum to its maximum.
+    columns: [[i32; 2]; 2],
     schedule: bool,
 }
 impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquifer<P, F, B> {
@@ -229,6 +231,7 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
                 horizontal: [0; 12],
             },
             skip_above_y: 0,
+            columns: [[low[0], low[2]], [high[0], high[2]]],
             schedule: false,
         };
         let max_surface = result
@@ -267,15 +270,15 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
     pub fn note_skipped(&mut self) {
         self.schedule = false;
     }
-    /// The y above which a non-positive density is the global fluid's air. The
-    /// vanilla fluid rules depend only on y; a picker that varies with x/z keeps
-    /// the per-block call by answering `None`.
+    /// The y above which a non-positive density is the global fluid's air: above
+    /// the skip height, `compute_substance` answers the picker's fluid below its
+    /// level and air at or above it, so the picker's bound over this volume's
+    /// columns decides it. `None` when the picker can't bound its level there.
     pub fn air_above_y(&self) -> Option<i32> {
-        let center = self.picker.compute([0, i32::MAX, 0]);
-        let east = self.picker.compute([i32::MAX, i32::MAX, i32::MAX]);
-        let west = self.picker.compute([i32::MIN, i32::MAX, i32::MIN]);
-        (center.level == east.level && center.level == west.level)
-            .then(|| self.skip_above_y.max(center.level))
+        let [min, max] = self.columns;
+        self.picker
+            .level_bound(min, max)
+            .map(|level| self.skip_above_y.max(level))
     }
     fn sample(
         &self,
@@ -754,9 +757,9 @@ fn similarity(a: i32, b: i32) -> f64 {
 mod tests {
     use super::*;
     use crate::worldgen::aquifer::GlobalFluidPicker;
+    use std::sync::Arc;
     use sunrise_core::nbt::Tag;
     use sunrise_core::{density::DensitySampler, random::LegacyPositionalRandom};
-    use std::sync::Arc;
 
     /// States as `(name, level)`; each name's first state is its default.
     fn registry(states: &[(&str, &str)]) -> BlockRegistry {
@@ -1135,5 +1138,126 @@ mod tests {
             want.sort();
             assert_eq!(surfaces, want);
         }
+    }
+    /// A picker whose fluid stands higher for x in 100..200, as a mod's replacement of
+    /// `GlobalFluidPicker` can make it, and that states that level as its bound there.
+    #[derive(Debug)]
+    struct ColumnLake {
+        sea: GlobalFluidPicker,
+        level: i32,
+    }
+    impl FluidPicker for ColumnLake {
+        fn compute(&self, position: [i32; 3]) -> FluidStatus {
+            let sea = self.sea.compute(position);
+            if (100..200).contains(&position[0]) && position[1] >= -54 {
+                FluidStatus {
+                    level: self.level,
+                    state: sea.state,
+                }
+            } else {
+                sea
+            }
+        }
+        fn level_bound(&self, min: [i32; 2], max: [i32; 2]) -> Option<i32> {
+            let sea = self.sea.level_bound(min, max)?;
+            Some(if min[0] < 200 && max[0] >= 100 {
+                sea.max(self.level)
+            } else {
+                sea
+            })
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct Kind {
+        air: bool,
+        fluid: bool,
+    }
+    impl crate::heightmap::HeightmapState for Kind {
+        fn is_air(self) -> bool {
+            self.air
+        }
+        fn is_air_block(self) -> bool {
+            self.air
+        }
+        fn has_fluid(self) -> bool {
+            self.fluid
+        }
+        fn blocks_motion_in_heightmap(self) -> bool {
+            !self.air && !self.fluid
+        }
+        fn blocks_motion_in_heightmap_no_leaves(self) -> bool {
+            !self.air && !self.fluid
+        }
+    }
+    struct Kinds {
+        air: BlockStateId,
+        water: BlockStateId,
+    }
+    impl crate::worldgen::terrain::TerrainBlockStates for Kinds {
+        type State = Kind;
+        fn heightmap_state(&self, id: BlockStateId) -> Kind {
+            Kind {
+                air: id == self.air,
+                fluid: id == self.water,
+            }
+        }
+    }
+
+    /// The noise fill writes a picker's higher fluid in the columns it raises, above the
+    /// skip height too, where it no longer asks the aquifer block by block. Columns the
+    /// picker leaves at sea level stay air there.
+    #[test]
+    fn the_fill_keeps_a_picker_s_higher_fluid_in_the_columns_it_raises() {
+        use crate::worldgen::terrain::{TerrainChunk, fill_noise};
+        let registry = registry(&STATES);
+        let air = registry.default_state("minecraft:air").unwrap();
+        let water = registry.default_state("minecraft:water").unwrap();
+        let lava = registry.default_state("minecraft:lava").unwrap();
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let level = 250;
+        let picker = ColumnLake {
+            sea: GlobalFluidPicker::new(63, water, lava, air),
+            level,
+        };
+        let volume = DensityVolume::new([16, 384, 16], [96, -64, 0], [1; 3]).unwrap();
+        let mut context = SamplerContext::cached();
+        let mut aquifer = NoiseBasedAquifer::new(
+            samplers(),
+            picker,
+            LegacyPositionalRandom::new(7),
+            RegistryAquiferBlockStates::new(&registry).unwrap(),
+            volume,
+            &mut context,
+        )
+        .unwrap();
+        let skip = aquifer.skip_sampling_above_y();
+        assert!(
+            skip < level - 1,
+            "the case needs fluid above the skip height"
+        );
+        let mut chunk = TerrainChunk::new(
+            ChunkPos::new(6, 0),
+            -64,
+            384,
+            &registry,
+            Kinds { air, water },
+        )
+        .unwrap();
+        fill_noise(
+            &mut chunk,
+            volume,
+            &sunrise_core::density::ConstantSampler(-1.0),
+            &mut context,
+            &mut aquifer,
+            stone,
+        )
+        .unwrap();
+        // Local x 8 is world x 104, in the raised columns; local x 0 is world x 96.
+        for y in skip + 1..level {
+            assert_eq!(chunk.block(8, y, 5), water, "raised column at y {y}");
+            assert_eq!(chunk.block(0, y, 5), air, "sea-level column at y {y}");
+        }
+        assert_eq!(chunk.block(8, level, 5), air);
     }
 }

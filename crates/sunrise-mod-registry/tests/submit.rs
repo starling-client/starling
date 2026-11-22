@@ -9,8 +9,6 @@ use axum::{
     routing::{get, patch, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use sunrise_mod_package::index::registry::Entry;
-use sunrise_mod_registry::{App, Config, github, router};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::{
@@ -18,10 +16,12 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+use sunrise_mod_package::index::registry::Entry;
+use sunrise_mod_registry::{App, Config, github, router};
 use tower::ServiceExt;
 
 const PUBLIC: &str = "https://playsunrise.test";
-const SMOD_SHA: &str = "f891bde88f4b841fd35c4f3305bc8904b671ebe9d5ad28d5aecc57e8b23fc3ce";
+const SMOD_SHA: &str = "cb6e658445269b2a4d2eb104e83e4b993586bc2e56814fd56454244139f08364";
 
 #[derive(Default)]
 struct Mock {

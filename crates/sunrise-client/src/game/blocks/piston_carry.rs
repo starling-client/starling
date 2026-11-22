@@ -183,6 +183,7 @@ impl Game<'_> {
                 (pos.x, pos.y, pos.z),
                 entity,
                 block,
+                self.res.items(),
             );
             if let Tag::Compound(fields) = &mut carried {
                 fields.insert(
@@ -271,11 +272,11 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_client::{chunk::Chunk, containers::BlockEntity, items::ItemStack};
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, containers::BlockEntity, items::ItemStack};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_save_mid_move_keeps_the_carried_block_entity_and_a_bad_key_is_left_out() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let registry = game.pack.assets.registry;

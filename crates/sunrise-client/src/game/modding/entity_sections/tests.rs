@@ -7,6 +7,40 @@ use mod_api::{EntityEnteringSectionEvent, Hooks, HostSide};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn section_read_backend_refuses_reads_outside_its_snapshot() {
+    let host = LiveSectionHost(None);
+    let entity = EntityRef::new(mod_api::WorldEpoch::new(1), 1);
+    assert_eq!(
+        entity.piston_push_reaction(&host),
+        Err(mod_api::LevelReadError::Unavailable)
+    );
+    assert_eq!(
+        entity.is_hanging(&host),
+        Err(mod_api::LevelReadError::Unavailable)
+    );
+    let player = mod_api::__private::game::player_ref(entity, 1);
+    assert_eq!(
+        player.collision_flags(&host),
+        Err(mod_api::LevelReadError::Unavailable)
+    );
+    let menu = mod_api::__private::game::menu_ref(player, 1, 1);
+
+    assert_eq!(entity.bounding_box(&host), None);
+    assert_eq!(
+        player.supporting_block(&host),
+        Err(mod_api::LevelReadError::Unavailable)
+    );
+    assert_eq!(
+        player.on_block(&host),
+        Err(mod_api::LevelReadError::Unavailable)
+    );
+    assert!(matches!(
+        menu.merchant_offers(&host),
+        Err(mod_api::LevelReadError::Unavailable)
+    ));
+}
+
 /// What each told crossing carried: client side, entity id, old, new, chunk changed.
 type Calls = Arc<Mutex<Vec<(bool, u32, [i32; 3], [i32; 3], bool)>>>;
 
@@ -112,12 +146,12 @@ fn a_section_is_the_floored_block_shifted_by_four() {
     assert_eq!(section_of([0.0, 15.999, 15.0]), [0, 0, 0]);
     assert_eq!(section_of([16.0, 64.0, 31.5]), [1, 4, 1]);
     assert_eq!(section_of([-0.001, -16.0, -16.001]), [-1, -1, -2]);
-    // Java's cast saturates and NaN is 0; `Mth.floor` then wraps `MIN - 1` to `MAX`.
+    // `Mth.floor` is `(int) Math.floor(v)`: Java's cast saturates and NaN is 0.
     assert_eq!(section_coord(f64::NAN), 0);
     assert_eq!(section_coord(1e300), i32::MAX >> 4);
     assert_eq!(section_coord(f64::from(i32::MIN)), -134_217_728);
-    assert_eq!(section_coord(f64::from(i32::MIN) - 0.5), 134_217_727);
-    assert_eq!(section_coord(f64::NEG_INFINITY), 134_217_727);
+    assert_eq!(section_coord(f64::from(i32::MIN) - 0.5), -134_217_728);
+    assert_eq!(section_coord(f64::NEG_INFINITY), -134_217_728);
 }
 
 #[test]
@@ -231,7 +265,7 @@ fn what_a_listener_moves_waits_for_the_next_telling() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn no_listener_files_no_entity() {
     with_game(|game| {
         let id = game
@@ -247,7 +281,7 @@ fn no_listener_files_no_entity() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_server_mob_moved_twice_in_one_tick_is_told_each_move() {
     observe(|calls| {
         with_game(|game| {
@@ -316,11 +350,15 @@ impl sunrise_client::mobs::goals::Goal for Teleports {
     fn start(
         &mut self,
         m: &mut sunrise_client::mobs::Mob,
-        _: &mut sunrise_client::mobs::goals::Cx<'_, '_, '_>,
+        cx: &mut sunrise_client::mobs::goals::Cx<'_, '_, '_>,
     ) {
         for [x, y, z] in self.0.drain(..) {
             let at = sunrise_core::geometry::Vec3::new(x, y, z);
-            sunrise_client::mobs::living::teleports::snap_to(m, at);
+            sunrise_client::mobs::living::teleports::snap_to_with(
+                m,
+                at,
+                cx.w.section_writer.clone(),
+            );
         }
     }
     fn box_clone(&self) -> Box<dyn sunrise_client::mobs::goals::Goal> {
@@ -354,7 +392,7 @@ fn teleport_then_walk(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mobs_teleport_and_its_walk_in_one_tick_are_two_crossings() {
     observe(|calls| {
         with_game(|game| {
@@ -375,7 +413,7 @@ fn a_mobs_teleport_and_its_walk_in_one_tick_are_two_crossings() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_real_mob_tick_exposes_each_intermediate_position_to_the_listener() {
     observe_positions(|positions| {
         with_game(|game| {
@@ -463,7 +501,14 @@ fn a_real_mob_tick_tells_inside_each_position_write() {
                     },
                 )
             });
-            game.tick_creature_entities().unwrap();
+            // Mob.serverAiStep only scans for new goals on alternating ticks.
+            // The first tick after installing this goal may tick running goals only.
+            for _ in 0..2 {
+                game.tick_creature_entities().unwrap();
+                if callbacks.load(Ordering::SeqCst) != 0 {
+                    break;
+                }
+            }
             assert!(!failed.load(Ordering::SeqCst));
             assert_eq!(callbacks.load(Ordering::SeqCst), 2);
         })
@@ -471,7 +516,7 @@ fn a_real_mob_tick_tells_inside_each_position_write() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mobs_teleport_out_and_its_walk_back_in_one_tick_are_two_crossings() {
     observe(|calls| {
         with_game(|game| {
@@ -492,7 +537,7 @@ fn a_mobs_teleport_out_and_its_walk_back_in_one_tick_are_two_crossings() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mob_that_teleports_twice_in_its_tick_then_walks_is_three_crossings() {
     observe(|calls| {
         with_game(|game| {
@@ -547,7 +592,7 @@ impl sunrise_client::mobs::goals::Goal for Grows {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_size_change_nudge_in_a_mobs_tick_then_its_walk_are_two_crossings() {
     observe(|calls| {
         with_game(|game| {
@@ -581,7 +626,7 @@ fn a_size_change_nudge_in_a_mobs_tick_then_its_walk_are_two_crossings() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mods_random_teleport_of_a_mob_is_told_at_once() {
     observe(|calls| {
         with_game(|game| {
@@ -601,7 +646,7 @@ fn a_mods_random_teleport_of_a_mob_is_told_at_once() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_server_entity_that_leaves_is_forgotten() {
     observe(|_| {
         with_game(|game| {
@@ -627,7 +672,7 @@ fn a_server_entity_that_leaves_is_forgotten() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_server_mobs_own_move_is_not_reconstructed_after_its_post() {
     use sunrise_core::geometry::Vec3;
     observe(|calls| {
@@ -642,11 +687,9 @@ fn a_server_mobs_own_move_is_not_reconstructed_after_its_post() {
             let kind = game.mobs.iter().find(|m| m.id == id).unwrap().kind.clone();
             // The mobs' round: Pre, the tick (its own move over z = 16), then the Post.
             let mut round = game.native_tick_round();
-            assert!(game.native_tick_pre_batch(
-                &mut round,
-                id,
-                crate::game::native_ticks::TickKind::Mob(kind)
-            ));
+            round.add(id, crate::game::native_ticks::TickKind::Mob(kind));
+            game.native_tick_pre_batch(&mut round);
+            assert_eq!(round.let_through(0), Some(id));
             let i = game.mobs.iter().position(|m| m.id == id).unwrap();
             game.mobs
                 .update(i, |m| m.position = Vec3::new(1.0, 70.0, 17.0));
@@ -660,7 +703,7 @@ fn a_server_mobs_own_move_is_not_reconstructed_after_its_post() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_client_is_told_each_teleport_and_where_its_entities_really_are() {
     use sunrise_core::geometry::Vec3;
     use sunrise_protocol::packets::play::{self, Clientbound as C};
@@ -755,7 +798,7 @@ fn a_client_is_told_each_teleport_and_where_its_entities_really_are() {
 /// recreated entity is filed in the new level untold (its join), this call tells nothing of its
 /// own, and its next move there over a section edge is told once.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_entity_moved_into_another_level_is_told_once_at_its_next_crossing() {
     observe(|calls| {
         with_game(|game| {
@@ -786,5 +829,124 @@ fn an_entity_moved_into_another_level_is_told_once_at_its_next_crossing() {
                 &[(false, moved, [0, 5, 0], [1, 5, 0], true)]
             );
         })
+    });
+}
+
+/// #3944: the entity-type default read is metadata every host answers from the published
+/// suppliers. The section host, which has no game behind it, answers (None for an unknown type)
+/// and never unwinds, whether or not a catalog has been published.
+#[test]
+fn section_host_reads_entity_type_defaults_without_unwinding() {
+    let host = LiveSectionHost(None);
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        (
+            mod_api::prelude::ItemsHost::entity_type_default_attribute(
+                &host,
+                "minecraft:zombie",
+                "minecraft:max_health",
+            ),
+            mod_api::prelude::ItemsHost::entity_type_default_attribute(
+                &host,
+                "ruby:no_such_type",
+                "minecraft:max_health",
+            ),
+        )
+    }));
+    assert!(
+        matches!(read, Ok((None | Some(_), None))),
+        "the section host unwound: {read:?}"
+    );
+}
+
+/// #3944 on a running game: the section host, game host and reload context answer from the
+/// same published suppliers. Vanilla's Zombie has 20 health, 3 attack damage and 2 armor.
+/// A mod-owned type with a 5000 health base answers 1024, while its spawn base stays 5000.
+/// An attribute a mod adds to a type (a Skeleton's luck) answers too. No read answers for
+/// `minecraft:item` (no supplier) or a type no one registered.
+#[test]
+#[ignore = "daily"]
+fn section_host_and_game_read_the_same_entity_type_defaults() {
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::entity_sections::tests::section_host_and_game_read_the_same_entity_type_defaults",
+        "SUNRISE_ENTITY_TYPE_DEFAULTS_CHILD",
+        &["host"],
+    ) {
+        return;
+    }
+    with_game(|game| {
+        let host = LiveSectionHost(None);
+        let read = |game: &crate::game::Game<'_>, entity_type: &str, attribute: &str| {
+            let scoped = mod_api::prelude::ItemsHost::entity_type_default_attribute(
+                &host,
+                entity_type,
+                attribute,
+            );
+            let live = mod_api::prelude::ItemsHost::entity_type_default_attribute(
+                game,
+                entity_type,
+                attribute,
+            );
+            let reload =
+                mod_api::ReloadContext::entity_type_default_attribute(game, entity_type, attribute);
+            assert_eq!(live, scoped, "{entity_type} {attribute}");
+            assert_eq!(reload, scoped, "{entity_type} {attribute}");
+            scoped
+        };
+        for (entity_type, attribute, expected) in [
+            ("minecraft:zombie", "minecraft:max_health", Some(20.0)),
+            ("zombie", "attack_damage", Some(3.0)),
+            (":zombie", ":armor", Some(2.0)),
+            ("minecraft:item", "minecraft:max_health", None),
+            ("ruby:no_such_type", "minecraft:max_health", None),
+            ("minecraft:zombie", "minecraft:no_such", None),
+        ] {
+            assert_eq!(
+                read(&*game, entity_type, attribute),
+                expected,
+                "{entity_type} {attribute}"
+            );
+        }
+        // A new installation resolves its own keys and sees no old suppliers before publication.
+        crate::game::api_values::install_parts(&[]).unwrap();
+        mod_api::__private::resolve_entity_types(
+            [
+                "minecraft:zombie",
+                "minecraft:skeleton",
+                "minecraft:item",
+                "ruby:titan",
+            ],
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(read(&*game, "minecraft:zombie", "max_health"), None);
+        let modded = std::sync::Arc::new(
+            game.motion
+                .attributes
+                .with_entity_row(
+                    "ruby:titan",
+                    "minecraft:zombie",
+                    &[("minecraft:max_health".into(), 5000.0)],
+                )
+                .unwrap()
+                .with_entity_additions(
+                    "minecraft:skeleton",
+                    &[("minecraft:luck".into(), Some(1.5))],
+                )
+                .unwrap(),
+        );
+        crate::game::resource_load::publish_entity_type_defaults(&modded);
+        assert_eq!(read(&*game, "ruby:titan", "max_health"), Some(1024.0));
+        let health = modded.id("minecraft:max_health").unwrap();
+        assert_eq!(
+            modded
+                .create("ruby:titan")
+                .unwrap()
+                .base_value(health)
+                .unwrap(),
+            5000.0,
+            "the spawn base stays the declared one"
+        );
+        assert_eq!(read(&*game, "minecraft:skeleton", "luck"), Some(1.5));
+        assert_eq!(read(&*game, "minecraft:zombie", "max_health"), Some(20.0));
     });
 }

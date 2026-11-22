@@ -29,14 +29,23 @@ fn item_model_property(
 including for nested bundle items: `item()`, `count()` and explicit `components()` (not merged
 defaults). `bundle_selected` carries the runtime selection separately; -1 means none. Listeners run in mod order; later answers win.
 Use `"property": "example:charged"` with both `on_true` and `on_false` in the item's
-`minecraft:condition` node. A `minecraft:special` item model of a mod's own type is drawn by the renderer the
-mod registers in `register_special_model_renderer`; one of a type no mod registered is an error naming it, and
-its item draws the missing model."#]
+`minecraft:condition` node. This hook chooses the branch; it does not build a special renderer.
+Register custom `minecraft:special` types with `register_special_model_renderer`. Their factories
+decode and bake nodes at resource load, and the baked renderer reads a borrowed
+`SpecialModelStack` and submits geometry when the node is drawn. An unknown special type is a
+load error for the enclosing item definition."#]
     /// `bundle_selected` is the runtime bundle selection index; -1 means none.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "RegisterConditionalItemModelPropertyEvent"
     )]
-    fn item_model_property();
+    fn item_model_property(
+        property: &str,
+        stack: &mod_api::ItemStack,
+        bundle_selected: i32,
+        value: &mut bool,
+    );
 }

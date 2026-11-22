@@ -1,5 +1,5 @@
 //! LivingEntity's fluid refresh and landing effects around base fall handling.
-use crate::fall_damage::{FallDamageWorld, check_fall_damage};
+use crate::fall_damage::{FallDamageWorld, check_fall_damage_until, finish_ground_hit};
 use sunrise_core::{geometry::Vec3, position::BlockPos};
 
 pub trait LivingLandingWorld: FallDamageWorld {
@@ -30,6 +30,30 @@ pub fn check_living_fall_damage<W: LivingLandingWorld>(
     state: W::State,
     landing: BlockPos,
 ) -> Result<(), W::Error> {
+    check_living_fall_damage_until(
+        world,
+        dy,
+        on_ground,
+        state,
+        landing,
+        |world, state, pos, distance| {
+            world.fall_on(state, pos, distance)?;
+            Ok(None::<()>)
+        },
+    )?;
+    Ok(())
+}
+
+/// Check the fall up to a block reaction that must pause to acquire its owner.
+/// `Some` leaves `HIT_GROUND`, the fall-distance reset and the climbable reset to the caller.
+pub fn check_living_fall_damage_until<W: LivingLandingWorld, T>(
+    world: &mut W,
+    dy: f64,
+    on_ground: bool,
+    state: W::State,
+    landing: BlockPos,
+    fall_on: impl FnOnce(&mut W, W::State, BlockPos, f64) -> Result<Option<T>, W::Error>,
+) -> Result<Option<T>, W::Error> {
     if !world.is_in_water()? {
         world.update_fluid_interaction()?;
     }
@@ -61,9 +85,19 @@ pub fn check_living_fall_damage<W: LivingLandingWorld>(
             )?;
         }
     }
-    check_fall_damage(world, dy, on_ground, state, landing)?;
-    if on_ground {
+    let pause = check_fall_damage_until(world, dy, on_ground, state, landing, fall_on)?;
+    if on_ground && pause.is_none() {
         world.clear_last_climbable_position();
     }
+    Ok(pause)
+}
+
+/// Finish the ground-hit effects after a paused `fall_on` returns.
+pub fn finish_living_landing<W: LivingLandingWorld>(
+    world: &mut W,
+    state: W::State,
+) -> Result<(), W::Error> {
+    finish_ground_hit(world, state)?;
+    world.clear_last_climbable_position();
     Ok(())
 }

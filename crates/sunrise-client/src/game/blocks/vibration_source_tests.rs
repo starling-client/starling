@@ -4,9 +4,9 @@
 //! sensor's saved listener names its source, even one that is not loaded
 //! (tools/test_vibration_source_parity.py measures the same on vanilla 26.3).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_> {
     let root = std::path::PathBuf::from(
@@ -71,7 +71,7 @@ fn read(game: &mut Game<'_>, path: &str) -> Option<String> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_saved_vibration_names_its_source() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);

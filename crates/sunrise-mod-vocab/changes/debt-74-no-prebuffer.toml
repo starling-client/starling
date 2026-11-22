@@ -1,0 +1,17 @@
+ids = [
+    "type:StreamSpec.prebuffer_ms",
+    "handle:StreamSpec::with_prebuffer_ms",
+    "type:SpecFault.Prebuffer",
+    "type:AudioStreamState.Buffering",
+    "trait:AudioStreamSource",
+    "method:AudioStreamSource::buffered_ms",
+    "handle:AudioStreamRef::buffered_ms",
+]
+why = "A stream plays the first available frame without waiting for a watermark. Underruns play silence without ending the stream or entering a separate buffering state. Playing means open and playing, not necessarily audible."
+migrate = """
+Remove `spec.prebuffer_ms` settings, `.with_prebuffer_ms(ms)`, imports of `AUDIO_STREAM_PREBUFFER_MIN_MS` \
+and `AUDIO_STREAM_PREBUFFER_MAX_MS`, and `SpecFault::Prebuffer` match arms. Delete \
+`AudioStreamRef::buffered_ms()` polling and remove `buffered_ms` from any `AudioStreamSource` implementation. \
+Remove the `AudioStreamState::Buffering` branch; `Playing` now includes a muted or dry stream that is open. \
+If a network producer needs a jitter buffer, keep it in the mod-owned buffer read by `AudioStream::read`. \
+Do not reuse encoded bytes written with the old `StreamSpec`, `SpecFault` or `AudioStreamState` layout."""

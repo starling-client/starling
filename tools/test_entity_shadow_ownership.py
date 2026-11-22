@@ -25,8 +25,9 @@ def method(source, name):
 
 
 def program(root):
-    gfx = (root / "crates/sunrise-client-render/src/gfx.rs").read_text()
-    post = (root / "crates/sunrise-client-render/src/gfx/pack_post.rs").read_text()
+    gfx = (root / "crates/sunrise-client-render/src/gfx/culling_control.rs").read_text()
+    # The shader pack pipeline lives in its own crate: `shadow_casters` runs the frame.
+    post = (root / "crates/sunrise-render-shaderpack/src/pack_post/execution.rs").read_text()
     game = (root / "crates/sunrise-client/src/game.rs").read_text()
     geometry = game.index("fn entity_geometry(")
     start = game.index("let pack_shadows =", geometry)

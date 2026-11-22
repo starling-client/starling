@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: unclosed table, expected `]` (line 4, column 12)
+
+icon:
+unavailable

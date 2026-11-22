@@ -5,6 +5,7 @@
 //! players a change shuts out are disconnected. The supervisor answers with the lists, from their files.
 use super::{GAME_MODES, ServerState, auto_save, log, set_auto_save};
 use crate::game::Game;
+use serde_json::{Value, json};
 use sunrise_client::{
     command::vanilla::DIFFICULTIES,
     gamerules::{self, Value as GameRuleValue},
@@ -15,7 +16,6 @@ use sunrise_client::{
     text::Text,
 };
 use sunrise_protocol::text::translatable;
-use serde_json::{Value, json};
 
 /// A `UserBan`: the player, the reason, the source, the end.
 type Ban = BanEntry<NameAndId>;
@@ -814,7 +814,7 @@ impl Game<'_> {
                 (None, Some(name)) => g.name.eq_ignore_ascii_case(name),
                 (None, None) => false,
             })?;
-        Some((guest.uuid, guest.address.ip().to_string()))
+        Some((guest.uuid, guest.ip_address().to_owned()))
     }
 
     /// `UserBanDto.toUserBan`: the player found, the source "Management server" unless one is given; the ban
@@ -866,7 +866,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn management_online_skips_fake_players_by_name_and_id() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             let level = game.level("minecraft:overworld").unwrap();

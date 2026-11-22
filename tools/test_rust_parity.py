@@ -74,8 +74,8 @@ def verify_artifacts():
     """Authenticate against the lock and the bundled checksums, not generated reports."""
     lock, directory = lab.config()
     manifest_path = directory / "manifest.json"
-    if not lab.manifest_accepted(lock, lab.digest(manifest_path, "sha1")):
-        raise ValueError("Manifest checksum changed; run tools/lab.py prepare")
+    if not lab.manifest_trusted(lock["minecraft"], manifest_path):
+        raise ValueError("The prepared version file is not the pinned one; run tools/lab.py prepare")
     manifest = json.loads(manifest_path.read_text())
     if manifest["id"] != lock["minecraft"]["version"]:
         raise ValueError("Manifest version differs from the lock")

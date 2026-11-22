@@ -13,8 +13,9 @@
 use crate::connected::{Overlay, Pick, TileLayer};
 use crate::models::StateModels;
 use crate::sprites::Sprites;
+use std::{collections::HashMap, num::NonZeroU16};
+use sunrise_connected::{self as connect, Axes, Face};
 use sunrise_optifine::cem::json::Json;
-use sunrise_optifine::ctm::connect::{self, Axes, Face};
 use sunrise_optifine::fusion::{
     Connection, Layout, Tiles,
     model::{Connections, ModelType},
@@ -23,7 +24,6 @@ use sunrise_optifine::fusion::{
 };
 use sunrise_world::block_state_properties::BlockProperties;
 use sunrise_world::registry::{BlockRegistry, BlockStateId};
-use std::{collections::HashMap, num::NonZeroU16};
 
 /// A connecting texture as drawn: its layout and its tiles, `None` for an empty one.
 struct Sheet {
@@ -240,7 +240,7 @@ impl FusionTextures {
         // The layers models show the sheets as: only their models are read.
         let shown: std::collections::HashSet<u32> = textures
             .keys()
-            .filter_map(|name| sprites.layers.get(name).copied())
+            .filter_map(|name| sprites.model_layer(name))
             .collect();
         let mut models: HashMap<String, Vec<ModelFace>> = HashMap::new();
         let mut sheets: Vec<(Sheet, Connection)> = Vec::new();
@@ -256,7 +256,8 @@ impl FusionTextures {
             for face in &mut model.faces {
                 let sprite = &face.quad.material.sprite;
                 // The model's face on the side this one turned to, else any with its sprite.
-                let side = Face::ALL[face.quad.facing as usize];
+                let side = Face::from_direction_index(face.quad.facing as u8)
+                    .expect("a model quad faces one of the six directions");
                 let mut drawing = found.iter().filter(|(s, _, _)| s == sprite);
                 let Some((_, _, connection)) = drawing
                     .clone()

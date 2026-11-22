@@ -10,11 +10,11 @@ impl Game<'_> {
         let weather = self.can_have_weather();
         let player = self.player_view();
         MobWorld {
+            side: self,
             mob_maps: self.mob_maps(),
             section_writer: None,
             professions: self.stations().professions.as_ref(),
             loop_context: &self.loop_context,
-            foreign: None,
             world: &self.world,
             registry: self.pack.assets.registry,
             facts: self.res.facts(),
@@ -22,7 +22,7 @@ impl Game<'_> {
             attributes: &self.motion.attributes,
             movement: &self.motion.blocks,
             collision: self.collision,
-            suffocation: self.mob_suffocation(),
+            suffocation: self.level_suffocation(),
             data: self.res.mob_data(),
             controlling_player_movement: None,
             nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
@@ -32,6 +32,7 @@ impl Game<'_> {
             others,
             live_mobs: None,
             dragon: self.dragon_target(),
+            armor_stands: &self.armor_stands,
             leash_boats: &self.leash_boats,
             others_grid: None,
             others_index: None,
@@ -48,6 +49,7 @@ impl Game<'_> {
             thundering: weather && thunder > 0.9,
             level: self.level_key(),
             block_tags: &self.items().block_tags,
+            block_tag_flags: self.items().block_tag_flags.bits(),
             landing: &self.motion.landing,
             biomes: world_biomes!(self),
             mob_griefing: self

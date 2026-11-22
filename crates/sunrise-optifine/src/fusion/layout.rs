@@ -1,12 +1,12 @@
 //! A connecting texture's image is a grid of tiles; its layout says which tiles a face draws
-//! for the neighbours that join it (a [`crate::ctm::connect`] mask). Tiles are numbered row by
+//! for the neighbours that join it (a `sunrise_connected` mask). Tiles are numbered row by
 //! row from the top left of the grid.
 //!
 //! The tiles are FusionExamples' `templates/template <layout>.png`: each marks its joined sides
 //! (and, where both sides beside a corner join, that corner) in green. `compact`'s template
 //! names its 5 tiles, not their masks; which one a face takes is the wiki's GIF of the layout.
 
-use crate::ctm::connect::{D, DL, DR, L, R, U, UL, UR, reduce};
+use sunrise_connected::{D, DL, DR, L, R, U, UL, UR, reduce};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
@@ -183,7 +183,7 @@ impl Layout {
         match self {
             // The 5 tiles are `ctm_compact`'s: alone, joined all round, up and down, left and
             // right, all but the corner.
-            Self::Pieced => Tiles::Quarters(crate::ctm::connect::compact_quarters(mask)),
+            Self::Pieced => Tiles::Quarters(sunrise_connected::compact_quarters(mask)),
             Self::Simple => Tiles::One(SIMPLE_INDEX[sides as usize]),
             Self::Full => Tiles::One(FULL_INDEX[reduce(mask) as usize]),
             // Alone, then the end that joins `b` (a column's top, a row's left end), the

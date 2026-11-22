@@ -33,6 +33,44 @@ SUSPICIOUS = re.compile(
 # Benign lines the server prints on every start.
 BENIGN = re.compile(r'(Unpacking |OFFLINE/INSECURE|online-mode|authenticate usernames|hackers|'
                     r'Failed to load properties|Failed to load eula)')
+LOG_TIME = re.compile(r'^\[\d{2}:\d{2}:\d{2}\] ')
+DISCOVERY_WARNINGS = {
+    '[Minecraft Services Discovery/WARN]: Failed to connect',
+    '[Minecraft Services Discovery/WARN]: Services are unavailable, unable to fetch uri for AUTHENTICATION/getPublicKeys',
+}
+DISCOVERY_HOST = 'discovery.minecraftservices.com'
+PUBLIC_KEY_FAILURE = 'Failed to request Minecraft Services public key'
+DISCOVERY_EXCEPTION = 'com.mojang.authlib.exceptions.MinecraftClientException: '
+DISCOVERY_DETAILS = {
+    DISCOVERY_EXCEPTION + f'Failed to read from https://{DISCOVERY_HOST}/minecraft/client due to {DISCOVERY_HOST}',
+    DISCOVERY_EXCEPTION + 'Services are unavailable',
+    f'Caused by: java.net.UnknownHostException: {DISCOVERY_HOST}',
+}
+JAVA_STACK_LINE = re.compile(r'[ \t]+(?:at .+|\.\.\. \d+ more)')
+RANDOM_HARDWARE_ADDRESS = re.compile(
+    r'\[Server thread/WARN\]: Failed to find a usable hardware address from the network interfaces; '
+    r'using random bytes: (?:[0-9a-f]{2}:){7}[0-9a-f]{2}')
+
+
+def log_problems(lines, *, suspicious=SUSPICIOUS, benign=BENIGN):
+    """Find problems in an offline fixture's console output."""
+    problems = []
+    discovery = False
+    for line in lines:
+        if timestamp := LOG_TIME.match(line):
+            message = line[timestamp.end():]
+            discovery = message in DISCOVERY_WARNINGS
+            # Auth discovery is optional in offline mode. Netty's random address
+            # only identifies its channels; it cannot change the saved world.
+            if discovery or RANDOM_HARDWARE_ADDRESS.fullmatch(message):
+                continue
+        elif discovery:
+            if line in DISCOVERY_DETAILS or JAVA_STACK_LINE.fullmatch(line):
+                continue
+            discovery = False
+        if line != PUBLIC_KEY_FAILURE and suspicious.search(line) and not benign.search(line):
+            problems.append(line)
+    return problems
 
 
 def main():
@@ -106,7 +144,7 @@ def main():
     except subprocess.TimeoutExpired:
         proc.kill()
     time.sleep(0.2)
-    problems = [l for l in lines if SUSPICIOUS.search(l) and not BENIGN.search(l)]
+    problems = log_problems(lines)
     with open(os.path.join(args.dir, 'check.log'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
     for l in problems:

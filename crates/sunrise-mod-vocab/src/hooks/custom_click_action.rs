@@ -7,11 +7,19 @@ pub trait Hooks {
     /// clicks are reported: one sent during configuration (no player yet) is not. The
     /// player is not swapped in. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "CustomClickActionEvent",
         cancellable = true
     )]
-    fn custom_click_action();
+    fn custom_click_action(
+        player: u128,
+        player_entity_id: i32,
+        name: &str,
+        id: &str,
+        payload: Option<&Tag>,
+        cancel: &mut bool,
+    );
 }

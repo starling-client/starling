@@ -1,0 +1,6 @@
+{
+  "template": "minecraft:oak_hanging_sign",
+  "wood_type": "cherry",
+  "wall_block": "block_full:wall_hanging_sign",
+  "open_sound": null
+}

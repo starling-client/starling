@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Samodejna ponovna povezava",
+  "sunrise.extras.auto_reconnect.tooltip": "Ponovno se pridruži strežniku po izgubi povezave ali ponovnem zagonu, nikoli po udarcu ali prepovedi."
+}

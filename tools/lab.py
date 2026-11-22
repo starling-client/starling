@@ -267,10 +267,46 @@ def import_copy(source, destination, checksum, algorithm="sha1", hint=""):
     return destination
 
 
-def manifest_accepted(lock, checksum):
-    """Mojang republishes a version JSON for asset-index changes; every known one is accepted."""
-    game = lock["minecraft"]
-    return checksum == game["manifest_sha1"] or checksum in game.get("accepted_manifest_sha1", [])
+def pinned_versions(lock):
+    """The game versions research-lock.json pins, each its own entry: id, version JSON, jars, Java major, libraries.
+    The lock pins one today, under `minecraft`."""
+    return [lock["minecraft"]]
+
+
+def libraries_digest(manifest):
+    """The sha256 of a version JSON's library downloads: each artifact's and classifier's `path sha1`, sorted, one
+    per line. research-lock.json pins it as `libraries_sha256`."""
+    lines = set()
+    for library in manifest.get("libraries", []):
+        downloads = library.get("downloads", {})
+        for item in [downloads.get("artifact"), *downloads.get("classifiers", {}).values()]:
+            if item and "path" in item and "sha1" in item:
+                lines.add(f"{item['path']} {item['sha1']}")
+    return hashlib.sha256("".join(f"{line}\n" for line in sorted(lines)).encode()).hexdigest()
+
+
+def pinned_content_differs(game, manifest):
+    """What in a version JSON differs from a pinned version's lock entry (`game`): its id, client and server jars,
+    Java major and libraries, by the entry's names. Empty when they all match: Mojang re-issues a version JSON when
+    only its asset index changes, and every asset object is checked against its own sha1, so such a file is the
+    pinned one whatever its own sha1."""
+    downloads = manifest.get("downloads", {})
+    found = {
+        "version": manifest.get("id"),
+        "client_sha1": downloads.get("client", {}).get("sha1"),
+        "server_sha1": downloads.get("server", {}).get("sha1"),
+        "java_major": manifest.get("javaVersion", {}).get("majorVersion"),
+        "libraries_sha256": libraries_digest(manifest),
+    }
+    return sorted(key for key, value in found.items() if value != game.get(key))
+
+
+def manifest_trusted(game, path):
+    """A version JSON file with the pinned content of `game`, a pinned version's lock entry."""
+    try:
+        return not pinned_content_differs(game, json.loads(Path(path).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return False
 
 
 def import_manifest(lock, directory, minecraft=None):
@@ -290,13 +326,14 @@ def import_manifest(lock, directory, minecraft=None):
                 or downloads.get("server", {}).get("sha1") != game["server_sha1"]):
             raise ValueError(f"{source} does not describe the pinned {version} release")
         checksum = digest(source, "sha1")
-        if not manifest_accepted(lock, checksum):
-            raise ValueError(f"{source} is a {version} version file Sunrise does not know yet (sha1 {checksum}); "
-                             f"Mojang may have republished it. Update Sunrise, or report it if this is the latest release.")
+        if pinned_content_differs(game, manifest):
+            raise ValueError(f"{source} is a {version} version file whose libraries or Java version differ from the "
+                             f"pinned ones (sha1 {checksum}). Update Sunrise, or report it if this is the latest "
+                             f"release.")
         if not (destination.exists() and digest(destination, "sha1") == checksum):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
-    elif not (destination.exists() and manifest_accepted(lock, digest(destination, "sha1"))):
+    elif not (destination.exists() and manifest_trusted(game, destination)):
         raise FileNotFoundError(f"Missing {source}. {LAUNCHER_HINT.format(version=version)}")
     manifest = json.loads(destination.read_text(encoding="utf-8"))
     if manifest["javaVersion"]["majorVersion"] != game["java_major"]:
@@ -411,10 +448,10 @@ def launcher_assets(manifest, minecraft=None):
     if not index.is_file():
         raise FileNotFoundError(f"Missing {index}. {LAUNCHER_HINT.format(version=manifest['id'])}")
     checksum = digest(index, "sha1")
-    known = json.loads(LOCK.read_text(encoding="utf-8"))["minecraft"].get("accepted_asset_index_sha1", [])
-    if checksum != info["sha1"] and checksum not in known:
-        # Mojang republishes an index under the same id (#1076); each object is still verified.
-        print(f"{index} is an asset index Sunrise does not know yet (sha1 {checksum}); "
+    if checksum != info["sha1"]:
+        # Mojang republishes an index under the same id (#1076), and a launcher keeps the last one it downloaded;
+        # each object is still verified.
+        print(f"{index} is not the asset index this version file names (sha1 {checksum}); "
               "using it, every file is still checked against its own SHA-1", file=sys.stderr)
     return assets, index
 

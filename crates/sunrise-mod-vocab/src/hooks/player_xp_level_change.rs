@@ -8,11 +8,12 @@ pub trait Hooks {
     /// player's state is swapped in, so `host.players().acting_player()`, `PlayerRef::tell`
     /// and the item helpers reach them. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "PlayerXpEvent.LevelChange",
         cancellable = true
     )]
-    fn player_xp_level_change();
+    fn player_xp_level_change(player: u128, name: &str, levels: &mut i32, cancel: &mut bool);
 }

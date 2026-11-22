@@ -4,10 +4,10 @@
 //! entities' models.
 
 use super::model::{EntityModel, MAX_BYTES, parse_jem};
-use sunrise_assets::resource_source::ResourceSource;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::fs;
+use sunrise_assets::resource_source::ResourceSource;
 
 /// Every `.jem` of the CEM folders by model name, sorted, each name's files best first:
 /// `emf/cem` before `optifine/cem` whichever form either uses, and within one folder the flat

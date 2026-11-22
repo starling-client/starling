@@ -250,7 +250,7 @@ mod tests {
     /// The material rule runs over the mod's stone after its terrain: plains grass and dirt on
     /// top, deepslate below y 8 and the bedrock floor.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_surface_covers_the_mods_terrain() {
         let level = level(VanillaStages {
             surface: true,
@@ -274,7 +274,7 @@ mod tests {
     /// A carver cuts the mod's stone at seed 12345, the aquifer of the Overworld's noise filling
     /// it below sea level; the top stays the mod's stone without the surface.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_carvers_cut_the_mods_terrain() {
         let level = level(VanillaStages {
             carvers: true,
@@ -289,7 +289,7 @@ mod tests {
     /// FEATURES (not without the structures), and the plains' grass grows on the surface in
     /// chunk 0 0.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn structures_and_features_place_after_the_terrain() {
         let all = VanillaStages {
             surface: true,
@@ -338,10 +338,184 @@ mod tests {
         }
     }
 
+    /// A mod feature that puts a chest and its block entity at its origin.
+    struct ChestFeature;
+    impl crate::worldgen::mod_features::ModFeatureType for ChestFeature {
+        fn prepare_config(
+            &self,
+            _: &Value,
+        ) -> Result<crate::worldgen::mod_features::ModFeatureConfig, String> {
+            Ok(Arc::new(()))
+        }
+        fn place(
+            &self,
+            target: &mut dyn crate::worldgen::mod_features::ModFeatureTarget,
+            _: &mut dyn crate::worldgen::mod_features::ModFeatureRandom,
+            origin: [i32; 3],
+            _: &(dyn std::any::Any + Send + Sync),
+        ) -> Result<bool, String> {
+            let chest = target
+                .registry()
+                .and_then(|registry| registry.default_state("minecraft:chest"))
+                .ok_or("no chest")?;
+            let nbt = sunrise_core::nbt::Compound::from([(
+                "id".into(),
+                sunrise_core::nbt::Tag::String("minecraft:chest".into()),
+            )]);
+            let placed = target.set_block(origin, chest, 3);
+            target.set_block_entity(origin, nbt);
+            Ok(placed)
+        }
+    }
+
+    /// Links `to` to `from` where the platform can, and copies it (a folder whole) elsewhere.
+    #[cfg(unix)]
+    fn link(from: &std::path::Path, to: &std::path::Path) {
+        std::os::unix::fs::symlink(from, to).unwrap();
+    }
+    #[cfg(not(unix))]
+    fn link(from: &std::path::Path, to: &std::path::Path) {
+        if from.is_dir() {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                link(&entry.path(), &to.join(entry.file_name()));
+            }
+        } else {
+            std::fs::copy(from, to).unwrap();
+        }
+    }
+
+    /// The prepared worldgen data with a mod feature type `test:chest` placed in every plains
+    /// chunk at the surface of its first column (a copy of the folder whose three data files
+    /// carry it, the rest linked).
+    fn data_with_chests() -> Arc<GeneratorData> {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("SUNRISE_TEST_RESOURCES").expect("resources"),
+        );
+        let from = root.join("worldgen");
+        // The loader also reads files beside the folder: the copy's root links the rest.
+        let to_root =
+            std::env::temp_dir().join(format!("sunrise-mod-chest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&to_root);
+        let to = to_root.join("worldgen");
+        std::fs::create_dir_all(&to).unwrap();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() != "worldgen" {
+                link(&entry.path(), &to_root.join(entry.file_name()));
+            }
+        }
+        for entry in std::fs::read_dir(&from).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            if ["biomes.json", "features.json", "placed_features.json"]
+                .iter()
+                .all(|edited| name != *edited)
+            {
+                link(&entry.path(), &to.join(&name));
+            }
+        }
+        let edit = |file: &str, with: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+            let mut map: serde_json::Map<String, Value> =
+                serde_json::from_slice(&std::fs::read(from.join(file)).unwrap()).unwrap();
+            with(&mut map);
+            std::fs::write(to.join(file), serde_json::to_vec(&map).unwrap()).unwrap();
+        };
+        edit("features.json", &|features| {
+            features.insert("test:chest".into(), Value::from(r#"{"type":"test:chest"}"#));
+        });
+        edit("placed_features.json", &|placed| {
+            placed.insert(
+                "test:chest".into(),
+                Value::from(
+                    r#"{"feature":"test:chest","placement":[
+                        {"type":"minecraft:in_square"},
+                        {"type":"minecraft:heightmap","heightmap":"WORLD_SURFACE_WG"}]}"#,
+                ),
+            );
+        });
+        edit("biomes.json", &|biomes| {
+            let plains = biomes["minecraft:plains"].as_str().unwrap();
+            let mut plains: Value = serde_json::from_str(plains).unwrap();
+            plains["features"][9]
+                .as_array_mut()
+                .unwrap()
+                .push(Value::from("test:chest"));
+            biomes["minecraft:plains"] = Value::from(plains.to_string());
+        });
+        let registry = Box::leak(Box::new(crate::level::data::load_registry(&root).unwrap()));
+        let data = GeneratorData::load(&to, registry).unwrap();
+        let _ = std::fs::remove_dir_all(&to_root);
+        data
+    }
+
+    /// A mod feature's block entity is taken only where its block was placed: in an ordinary
+    /// region a chest feature queues its block entity, and in a region whose chunks are all
+    /// full (block writes there change nothing) it queues none and leaves one already there
+    /// as it was.
+    #[test]
+    #[ignore = "daily"]
+    fn a_full_chunk_takes_no_block_entity_from_a_mod_feature() {
+        use sunrise_core::nbt::{Compound, Tag};
+        let types: crate::worldgen::mod_features::ModFeatureTypes = [(
+            "test:chest".to_owned(),
+            Arc::new(ChestFeature) as Arc<dyn crate::worldgen::mod_features::ModFeatureType>,
+        )]
+        .into();
+        crate::worldgen::mod_features::with_test_feature_types(&types, || {
+            let data = data_with_chests();
+            let stem = stem(Value::from("minecraft:overworld"));
+            let all = VanillaStages {
+                surface: true,
+                features: true,
+                ..Default::default()
+            };
+            // The block entities queued over a region of chunks around 0 0, `existing` first.
+            let queued = |full: bool, existing: Option<([i32; 3], Compound)>| {
+                let level = OverworldGenerator::for_mod(
+                    data.clone(),
+                    12345,
+                    "minecraft:overworld",
+                    &stem,
+                    Arc::new(Slab(all)),
+                    true,
+                )
+                .unwrap();
+                let mut worker = level.worker();
+                let mut region: [ProtoChunk; 9] = std::array::from_fn(|i| {
+                    let i = i as i32;
+                    worker
+                        .generate_proto(ChunkPos::new(i % 3 - 1, i / 3 - 1))
+                        .unwrap()
+                });
+                if full {
+                    region.iter_mut().for_each(ProtoChunk::set_full);
+                }
+                region[4].block_entities.extend(existing);
+                worker.decorate(&mut region).unwrap();
+                region
+                    .into_iter()
+                    .flat_map(|chunk| chunk.block_entities)
+                    .collect::<Vec<_>>()
+            };
+            let ordinary = queued(false, None);
+            assert!(
+                !ordinary.is_empty(),
+                "an ordinary region queues the chest's"
+            );
+            let sentinel = Compound::from([("id".into(), Tag::String("test:existing".into()))]);
+            assert_eq!(
+                queued(true, Some((ordinary[0].0, sentinel.clone()))),
+                [(ordinary[0].0, sentinel)]
+            );
+        });
+    }
+
     /// A level whose stem names no noise settings, or ones the world lacks, is refused naming
     /// the generator and the settings.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_level_without_its_noise_settings_is_refused_by_name() {
         let refusal = |settings| {
             let slab = Arc::new(Slab(VanillaStages {
@@ -376,7 +550,7 @@ mod tests {
     /// (y -64 to 319) over the Nether's noise settings (y 0 to 127) gets the mod's stone there
     /// and nowhere else.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_mods_terrain_fills_the_noise_range_not_the_levels() {
         struct Column;
         impl ModChunkGenerator for Column {
@@ -419,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn staged_mod_terrain_receives_its_level_id() {
         struct Pocket;
         impl ModChunkGenerator for Pocket {
@@ -448,7 +622,7 @@ mod tests {
     /// surface and the carvers opens, and its FEATURES status places nothing; one that asks for
     /// features or structures is refused, naming the generator and what is missing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn without_placed_features_only_the_terrain_stages_open() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("resources"),
@@ -635,7 +809,7 @@ mod tests {
     /// structure reference, a cave crossing a chunk border and features written into a
     /// neighbour chunk.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn complete_chunks_do_not_depend_on_order_or_workers() {
         let mut stem = stem(Value::from("minecraft:overworld"));
         stem["generator"]["biome_source"] =

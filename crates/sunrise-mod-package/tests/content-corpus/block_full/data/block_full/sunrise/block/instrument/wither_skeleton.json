@@ -1,0 +1,6 @@
+{
+  "template": "minecraft:stone",
+  "properties": {
+    "instrument": "WITHER_SKELETON"
+  }
+}

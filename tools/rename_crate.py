@@ -17,17 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OLD, NEW = "sunrise-mods", "sunrise-mod-package"
 OLD_PATH, NEW_PATH = "crates/" + OLD, "crates/" + NEW
 OWN_FILES = {"tools/rename_crate.py", "tests/test_rename_crate.py"}
-LOCKS = {"Cargo.lock", "launcher/Cargo.lock", "crates/sunrise-mod-registry/Cargo.lock"}
+LOCKS = {"Cargo.lock", "crates/sunrise-mod-registry/Cargo.lock"}
 PACKAGE_TOOLS = {"tools/pr_ready.py", "tests/test_pr_ready.py"}
-STAGING_CHECK = b'''        assert_eq!(
-            game["dependencies"]["sunrise-mod-package"]["path"].as_str(),
-            Some("../sunrise-mod-package")
-        );
-        assert!(!game["dependencies"]
-            .as_table()
-            .unwrap()
-            .contains_key("sunrise-mods"));
-'''
 
 
 def run(*args, data=None):
@@ -52,8 +43,6 @@ def rewrite(path, source):
         source = source.replace("dependencies.sunrise-mods]", "dependencies.sunrise-mod-package]")
     if path in {"crates/cargo-sunrise-mod/src/check.rs", "crates/sunrise-mod-registry/tests/submit.rs"}:
         source = source.replace("../sunrise-mods/tests/", "../sunrise-mod-package/tests/")
-    if path == "launcher/src/native_mods/api.rs":
-        source = re.sub(r'(?m)^(\s*)"sunrise-mods",$', rf'\1"{NEW}",', source)
     if path in LOCKS:
         source = source.replace('"sunrise-mods"', '"sunrise-mod-package"')
     if path in PACKAGE_TOOLS:
@@ -67,8 +56,7 @@ def normalized(path, data):
     # Git's -I boundary selects text before decoding; binary moved files stay byte-identical.
     source = rewrite(path, data.decode())
     if path.endswith(".rs"):
-        edition = "2021" if path.startswith("launcher/") else "2024"
-        return run("rustfmt", "--edition", edition, "--config", "skip_children=true",
+        return run("rustfmt", "--edition", "2024", "--config", "skip_children=true",
                    "--emit", "stdout", data=source.encode())
     return source.encode()
 
@@ -103,9 +91,6 @@ def verify(base):
         expected = normalized(path, original) if path in text else original
         if not changed_file and expected == original:
             continue
-        if path == "launcher/src/native_mods/api.rs" and STAGING_CHECK not in original:
-            assert actual.count(STAGING_CHECK) == 1, "missing or duplicated staging regression"
-            actual = actual.replace(STAGING_CHECK, b"")
         if path in LOCKS:
             assert Counter(expected.splitlines()) == Counter(actual.splitlines()), f"lockfile changed dependencies: {path}"
         else:
@@ -145,7 +130,7 @@ def main():
                 (ROOT / path).write_bytes(updated)
         if move:
             run("git", "mv", OLD_PATH, NEW_PATH)
-        for manifest in ["Cargo.toml", "launcher/Cargo.toml", "crates/sunrise-mod-registry/Cargo.toml"]:
+        for manifest in ["Cargo.toml", "crates/sunrise-mod-registry/Cargo.toml"]:
             run("cargo", "metadata", "--offline", "--format-version", "1", "--manifest-path", manifest)
     else:
         verify(args.verify)

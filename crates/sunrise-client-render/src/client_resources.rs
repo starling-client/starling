@@ -1,7 +1,7 @@
 //! The files of the resources the game loaded, resource packs' over vanilla's, for a client mod reading textures and
 //! other resources on any thread (`native_client_resources`; docs/native-mods.md).
-use sunrise_core::prepared_files;
 use std::path::PathBuf;
+use sunrise_core::prepared_files;
 
 /// A texture's pixels: `width` by `height` RGBA, rows top first, as its PNG stores them (gamma-encoded, alpha not
 /// premultiplied). An animated texture is its frames one under another, as in its file.

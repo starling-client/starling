@@ -50,8 +50,9 @@ impl Game<'_> {
         }
         let at = [pos.x, pos.y, pos.z];
         let registry = self.pack.assets.registry;
+        let judged = self.world.block(at[0], at[1], at[2]);
         let Some(old) = registry
-            .state(self.world.block(at[0], at[1], at[2]))
+            .state(judged)
             .filter(|s| {
                 matches!(
                     s.name.as_str(),
@@ -87,6 +88,11 @@ impl Game<'_> {
             level(&new_state),
             "extinguishing",
         ) {
+            return;
+        }
+        // The listener may have changed the block it heard about: the same
+        // block id and properties as judged, or nothing changes.
+        if self.world.block(at[0], at[1], at[2]) != judged {
             return;
         }
         if self.level_set(at, new).is_ok() {

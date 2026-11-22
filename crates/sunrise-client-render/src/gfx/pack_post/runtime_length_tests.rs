@@ -7,6 +7,7 @@ use crate::hud::HudBatch;
 use wgpu::TextureFormat as T;
 
 #[test]
+#[ignore = "daily"]
 fn a_runtime_arrays_length_is_the_buffers() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else { return };

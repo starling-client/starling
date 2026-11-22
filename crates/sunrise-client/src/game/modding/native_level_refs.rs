@@ -3,6 +3,11 @@
 //! reach any loaded level; both-side reads also reach the client's current level.
 //! A handle of an earlier open or an unloaded block reads `None` (or `false`).
 use super::Game;
+use mod_api::world::mod_chunk_tickets::ModTicket;
+use mod_api::{
+    BlockHit, BlockTransformPreview, ChunkRef, ChunkStatus, ClipBlock, ClipFluid, GlobalPos, Hand,
+    Identifier, LevelRef, LightLayer, MapState, PlayerRef, RespawnData, TicketController, Vec3,
+};
 use sunrise_client::{streaming::Streaming, world::World};
 use sunrise_core::{
     geometry::Direction,
@@ -10,11 +15,6 @@ use sunrise_core::{
 };
 use sunrise_items::items::ItemStack;
 use sunrise_world::registry::BlockStateId;
-use mod_api::world::mod_chunk_tickets::ModTicket;
-use mod_api::{
-    BlockHit, BlockTransformPreview, ChunkRef, ChunkStatus, ClipBlock, ClipFluid, DimensionKey,
-    Hand, LevelRef, LightLayer, MapState, PlayerRef, RespawnData, TicketController, Vec3,
-};
 
 fn block_pos([x, y, z]: [i32; 3]) -> BlockPos {
     BlockPos::new(x, y, z)
@@ -395,12 +395,12 @@ impl Game<'_> {
     /// without a player. This is the world's own `/forceload` state, not a
     /// ticket the mod owns: the chunk stays forced across restarts, and after
     /// the mod is unloaded or removed, until `set_forced(false)` or
-    /// `/forceload remove` clears it. Adding a newly forced chunk loads it
-    /// before returning, as vanilla does.
-    /// False for a stale handle, on a client, and for a level the server
-    /// has not opened.
+    /// `/forceload remove` clears it. A newly forced chunk loads before
+    /// returning, or when streaming starts if it is still paused.
+    /// False for a stale handle, on a client, outside the world, or when
+    /// adding after generation has stopped.
     pub(super) fn chunk_set_forced(&mut self, chunk: ChunkRef, forced: bool) -> bool {
-        if self.native_level_streaming(chunk.level()).is_none() {
+        if self.native_level_streaming(chunk.level()).is_none() || !chunk_in_world(chunk.pos()) {
             return false;
         }
         let [x, z] = chunk.pos();
@@ -413,6 +413,14 @@ impl Game<'_> {
                 .unwrap_or(false)
         }
     }
+    fn mod_ticket_streaming_mut(&mut self, dim: super::Dim) -> Option<&mut Streaming> {
+        if dim == self.dim {
+            Some(&mut self.streaming)
+        } else {
+            self.levels.parked_streaming_of_mut(dim.id())
+        }
+    }
+
     /// The mods validate the chunk tickets `dim`'s level loaded from its save,
     /// controller by controller (`LoadingValidationCallback.validateTickets`),
     /// and the survivors take hold. Tickets a mod added since the load (in
@@ -420,7 +428,10 @@ impl Game<'_> {
     /// without a validator keeps all of its tickets. Nothing is built while no
     /// mod listens.
     pub(super) fn validate_mod_chunk_tickets(&mut self, dim: super::Dim) {
-        let mut loaded = self.streaming.take_loaded_tickets();
+        let Some(streaming) = self.mod_ticket_streaming_mut(dim) else {
+            return;
+        };
+        let mut loaded = streaming.take_loaded_tickets();
         if !loaded.is_empty() && mod_api::__private::listened(mod_api::HookId::ValidateTickets) {
             let mut controllers: Vec<u32> = loaded.iter().map(|t| t.controller).collect();
             controllers.sort_unstable();
@@ -435,15 +446,16 @@ impl Game<'_> {
                 let (own, rest): (Vec<_>, Vec<_>) =
                     loaded.into_iter().partition(|t| t.controller == slot);
                 let mut validation =
-                    mod_api::world::mod_chunk_tickets::ControllerTickets::new(owner, own.clone());
+                    mod_api::world::mod_chunk_tickets::ControllerTickets::new(owner, own);
                 self.native_validate_tickets(dim.id(), controller, &mut validation);
-                let removed = validation.into_removed();
                 loaded = rest;
-                loaded.extend(own.into_iter().filter(|t| !removed.contains(t)));
+                loaded.extend(validation.into_loaded());
             }
         }
-        for ticket in loaded {
-            self.streaming.set_mod_forced(ticket, true);
+        if let Some(streaming) = self.mod_ticket_streaming_mut(dim) {
+            for ticket in loaded {
+                streaming.set_mod_forced(ticket, true);
+            }
         }
     }
     /// The chunk ticket of `controller` for `owner` on `chunk`
@@ -525,6 +537,26 @@ impl Game<'_> {
         forced.sort_unstable_by_key(|&(x, z)| ChunkPos::new(x, z).pack());
         Some(forced.into_iter().map(|(x, z)| [x, z]).collect())
     }
+    /// Borrow the resident site without lending any writable host to discovery.
+    pub(super) fn level_with_capability_site(
+        &self,
+        at: mod_api::BlockSide,
+        visit: &mut dyn FnMut(&dyn mod_api::LevelHost, mod_api::BlockCapabilitySite),
+    ) -> Result<(), mod_api::LevelReadError> {
+        if !self.level_in_place(at.level) {
+            return Err(mod_api::LevelReadError::Unavailable);
+        }
+        let view = super::native_level_signals::ReadLevel {
+            game: self,
+            level: at.level,
+        };
+        let Some(site) = view.capability_site(at) else {
+            return Err(mod_api::LevelReadError::Unavailable);
+        };
+        visit(&view, site);
+        Ok(())
+    }
+
     /// The block state ID at `pos` (`Level.getBlockState`), without formatting a string.
     /// None for a chunk that isn't loaded or a `y` outside the world. On a client, the state
     /// the server sent for a column the client holds, of its own level or a viewed one.
@@ -532,6 +564,16 @@ impl Game<'_> {
         let world = self.native_level_view_world(level)?;
         let [x, y, z] = pos;
         world.is_loaded_at(x, y, z).then(|| world.block(x, y, z))
+    }
+    /// `BlockState.isRedstoneConductor(level, pos)` of the block at `pos`. None for a stale
+    /// handle, a client or an unloaded `pos`.
+    pub(super) fn level_is_redstone_conductor(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+    ) -> Option<bool> {
+        let state = self.level_block_state(level, pos)?;
+        Some(self.res.behaviours().is_redstone_conductor(state))
     }
     /// Preview a held tool's transformation without changing the block or stack. The existing
     /// block-tool hook fires with `simulated` true; listeners must not mutate the level in a
@@ -559,9 +601,10 @@ impl Game<'_> {
             return None;
         }
         let (offhand, sneaking) = match self.player_handle_read(player)? {
-            PlayerRead::Acting { .. } if self.dim.key() == level.dimension() => {
-                (self.offhand.as_ref(), self.keys.held(super::Mapping::Sneak))
-            }
+            PlayerRead::Acting { .. } if self.dim.key() == level.dimension() => (
+                self.offhand.as_ref(),
+                self.held_mapping(super::Mapping::Sneak),
+            ),
             PlayerRead::Guest(guest) if guest.dimension == level.dimension_id() => {
                 (guest.offhand.as_ref(), guest.sneaking)
             }
@@ -633,6 +676,42 @@ impl Game<'_> {
             .properties
             .get(key)
             .cloned()
+    }
+    pub(super) fn level_get_enchant_power_bonus(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        state: BlockStateId,
+        table_pos: [i32; 3],
+    ) -> Result<f32, mod_api::LevelReadError> {
+        use mod_api::LevelReadError;
+        if self.native_level_view_world(level).is_none() {
+            return Err(if self.level_handle_current(level) {
+                LevelReadError::Unavailable
+            } else {
+                LevelReadError::Stale
+            });
+        }
+        self.enchant_power(Some(level), state, block_pos(pos), block_pos(table_pos))
+            .ok_or(LevelReadError::Unavailable)
+    }
+
+    /// Read the mod-published connection group at `pos`, or `Ok(None)` when unset, unloaded, or
+    /// out of height. Works on both server (including parked levels) and client (including viewed
+    /// levels).
+    pub(super) fn level_connection_group(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+    ) -> Result<Option<u64>, mod_api::LevelReadError> {
+        let world = self.native_level_view_world(level).ok_or_else(|| {
+            if self.level_handle_current(level) {
+                mod_api::LevelReadError::Unavailable
+            } else {
+                mod_api::LevelReadError::Stale
+            }
+        })?;
+        Ok(world.connection_group(pos[0], pos[1], pos[2]))
     }
     /// Whether this is the level in place: the one the server ticks now, whose block entities
     /// the game's own capabilities read and write and whose capabilities
@@ -709,23 +788,53 @@ impl Game<'_> {
         self.native_level_read_world(level)
             .is_some_and(|w| w.is_loaded_at(pos[0], pos[1], pos[2]))
     }
-    /// The stored light of one layer at `pos` (`BlockAndLightGetter.getBrightness`), 0 to 15.
-    /// None as for `block_state`: a position that isn't loaded has no light to read.
+    pub(super) fn level_get_light_emission(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        state: BlockStateId,
+    ) -> Result<u8, mod_api::LevelReadError> {
+        use mod_api::LevelReadError;
+        if self.native_level_read_world(level).is_none() {
+            return Err(if self.level_handle_current(level) {
+                LevelReadError::Unavailable
+            } else {
+                LevelReadError::Stale
+            });
+        }
+        let light = &self.pack.context.light;
+        if light.is_dynamic(state.0)
+            && let Some(answer) = self
+                .query_dynamic_light_emission(block_pos(pos), state, || {
+                    Self::light_emission_dimension(level)
+                })
+                .ok_or(LevelReadError::Unavailable)?
+        {
+            return Ok(answer);
+        }
+        Ok(light.emission(state.0))
+    }
+
+    /// The stored light of one layer at `pos` (`BlockAndLightGetter.getBrightness`), 0 to 15,
+    /// of the server's level or the one a client shows. None as for `block_state`: a position
+    /// that isn't loaded has no light to read.
     pub(super) fn level_brightness(
         &self,
         level: LevelRef,
         layer: LightLayer,
         pos: [i32; 3],
     ) -> Option<i32> {
-        let world = self.native_level_world(level)?;
+        let world = self.native_level_read_world(level)?;
         world
             .is_loaded_at(pos[0], pos[1], pos[2])
             .then(|| world_brightness(world, layer, pos))
     }
-    /// `BlockAndTintGetter.canSeeSky`: the sky light at `pos` is full. None as for
-    /// `level_brightness`.
+    /// `BlockAndLightGetter.canSeeSky`: whether the local sky light at `pos` is full.
     pub(super) fn level_can_see_sky(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool> {
-        Some(self.level_brightness(level, LightLayer::Sky, pos)? >= 15)
+        Some(super::native_world_read::can_see_sky(
+            self.native_level_read_world(level)?,
+            pos,
+        ))
     }
     /// `LevelLightEngine.checkBlock` at `pos`, queued with the level's light edits: the next
     /// update asks a `dynamic_light` block's parts again (`ask_edited_light_emission`) and
@@ -800,15 +909,20 @@ impl Game<'_> {
             return None;
         }
         let [yaw, pitch] = self.level.world_spawn_angle;
+        let [x, y, z] = self.level.world_spawn?;
+        let dimension = self
+            .level
+            .world_spawn_dimension
+            .as_deref()
+            .unwrap_or("minecraft:overworld");
         Some(RespawnData {
-            pos: self.level.world_spawn?,
+            position: GlobalPos::new(Identifier::parse(dimension).ok()?, BlockPos::new(x, y, z)),
             yaw,
             pitch,
         })
     }
-    /// `/setworldspawn`'s write (`set_world_spawn`), for the Overworld's handle. False for
-    /// another level, a stale handle, a client, a non-finite angle and a position outside the
-    /// spawnable bounds.
+    /// `/setworldspawn`'s write (`set_world_spawn`) in the handle's level. False for a stale
+    /// handle, a client, a non-finite angle and a position outside the spawnable bounds.
     pub(super) fn level_set_respawn_data(
         &mut self,
         level: LevelRef,
@@ -817,13 +931,12 @@ impl Game<'_> {
         pitch: f32,
     ) -> bool {
         if !self.native_world_data_allowed(level)
-            || level.dimension() != DimensionKey::OVERWORLD
             || !(yaw.is_finite() && pitch.is_finite())
             || self.level_in_spawnable_bounds(level, pos) != Some(true)
         {
             return false;
         }
-        self.set_world_spawn(pos, [yaw, pitch]);
+        self.set_world_spawn(super::Dim::from_id(level.dimension_id()), pos, [yaw, pitch]);
         true
     }
     /// Map `id`'s saved data as it stands (`with_map`). None on a client, for a stale handle
@@ -985,12 +1098,15 @@ fn horizontal_in_bounds(pos: [i32; 3]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::api_values::TryIntoApi;
-    use super::super::{Dim, native_entity_refs::tests::with_game};
-    use sunrise_core::position::BlockPos;
+    use super::super::{
+        Dim,
+        native_entity_refs::tests::{run_fresh_cases, with_game},
+    };
     use mod_api::{ChunkRef, LevelRef, LightLayer, WorldEpoch};
+    use sunrise_core::position::BlockPos;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn review_climate_literals() {
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -1024,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_level_with_its_own_clock_counts_apart_from_the_overworlds() {
         with_game(|game| {
             game.world.day_time = 100;
@@ -1085,12 +1201,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_transform_preview_preserves_state_and_marks_simulation() {
         use super::super::native_guest_turn_tests::with_guests;
-        use sunrise_client::{chunk::Chunk, items::ItemStack};
         use mod_api::{BlockHit, BlockToolModificationEvent, Flow, Hand, Hooks, Host};
         use std::sync::{Arc, Mutex};
+        use sunrise_client::{chunk::Chunk, items::ItemStack};
 
         struct Observer(Arc<Mutex<Vec<bool>>>);
         #[mod_api::__subscriptions]
@@ -1195,12 +1311,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn shared_level_signal_dispatches_and_clamps_part_output() {
-        use sunrise_client::chunk::Chunk;
-        use sunrise_core::geometry::Direction;
         use mod_api::Host;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
+        use sunrise_core::geometry::Direction;
 
         mod_platform::__private::part_tests::signal_game_thread();
         with_game(|game| {
@@ -1226,12 +1342,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn shared_level_signal_reads_live_comparator_and_refuses_other_levels() {
-        use sunrise_client::chunk::Chunk;
-        use sunrise_core::geometry::Direction;
         use mod_api::Host;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
+        use sunrise_core::geometry::Direction;
 
         with_game(|game| {
             game.world
@@ -1270,10 +1386,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn respawn_data_maps_and_ticks_write_through_the_handle_and_refuse_others() {
-        use sunrise_client::chunk::Chunk;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
 
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -1283,25 +1399,44 @@ mod tests {
             // RespawnData.of: the yaw wraps to -180..180 and the pitch clamps to -90..90.
             assert!(level.set_respawn_data(game, [10, 70, -4], 270.0, 120.0));
             let data = level.respawn_data(game).unwrap();
-            assert_eq!(data.pos, [10, 70, -4]);
+            assert_eq!(data.position.dimension().to_string(), "minecraft:overworld");
+            assert_eq!(data.position.pos(), BlockPos::new(10, 70, -4));
             assert_eq!((data.yaw, data.pitch), (-90.0, 90.0));
             assert_eq!(
                 game.level.world_spawn,
                 Some([10, 70, -4]),
                 "level.dat's spawn"
             );
-            assert!(
-                !nether.set_respawn_data(game, [0, 64, 0], 0.0, 0.0),
-                "Overworld only"
-            );
             assert!(!level.set_respawn_data(game, [0, 64, 0], f32::NAN, 0.0));
             assert!(!level.set_respawn_data(game, [30_000_001, 64, 0], 0.0, 0.0));
             assert!(!stale.set_respawn_data(game, [0, 64, 0], 0.0, 0.0));
             assert_eq!(stale.respawn_data(game), None);
             assert_eq!(
-                level.respawn_data(game).unwrap().pos,
-                [10, 70, -4],
+                level.respawn_data(game).unwrap().position.pos(),
+                BlockPos::new(10, 70, -4),
                 "refusals change nothing"
+            );
+            assert!(
+                !nether.set_respawn_data(game, [3, 40, 9], 0.0, 0.0),
+                "a level not open yet"
+            );
+            // SetWorldSpawnCommand in another level: the world spawn moves there, and every
+            // level's handle reads it with that level.
+            game.enter_level(crate::game::Dim::Nether).unwrap();
+            game.enter_level(crate::game::Dim::Overworld).unwrap();
+            assert!(nether.set_respawn_data(game, [3, 40, 9], 0.0, 0.0));
+            for handle in [level, nether] {
+                let data = handle.respawn_data(game).unwrap();
+                assert_eq!(
+                    data.position.dimension().to_string(),
+                    "minecraft:the_nether"
+                );
+                assert_eq!(data.position.pos(), BlockPos::new(3, 40, 9));
+            }
+            assert_eq!(
+                game.level.world_spawn_dimension.as_deref(),
+                Some("minecraft:the_nether"),
+                "level.dat's spawn.dimension"
             );
 
             // A map repainted through the handle reads back and is marked to save and redraw.
@@ -1353,10 +1488,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn loaded_chunks_lists_the_level_in_order_without_loading() {
-        use sunrise_client::chunk::Chunk;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
 
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -1380,7 +1515,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn bounds_reads_follow_the_level_without_loading_chunks() {
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -1411,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn world_border_reads_refuse_stale_and_unopened_levels() {
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -1429,12 +1564,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn height_reads_server_levels_and_the_joined_client_level() {
         use super::super::execution_role::ExecutionRole;
+        use mod_api::Host;
         use sunrise_client::chunk::LevelShape;
         use sunrise_protocol::connection::Pipe;
-        use mod_api::Host;
 
         with_game(|game| {
             let overworld = game.level("minecraft:overworld").unwrap();
@@ -1471,10 +1606,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_state_reads_stored_ids_and_refuses_unloaded_positions() {
-        use sunrise_client::chunk::Chunk;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
 
         with_game(|game| {
             game.world
@@ -1508,11 +1643,11 @@ mod tests {
     /// source, normalized; so does the source, toward it; a source with only air on stone
     /// around it, and air, have none.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fluid_flow_reads_the_current_that_pushes_entities() {
-        use sunrise_client::chunk::Chunk;
         use mod_api::Vec3;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
 
         with_game(|game| {
             game.world
@@ -1547,8 +1682,8 @@ mod tests {
     /// `fluids` placed `dy` blocks above it: each a block id and its `level` property (0 is a
     /// source).
     fn pool(game: &mut super::super::Game<'_>, fluids: &[([i32; 3], &str, &str)]) -> i32 {
-        use sunrise_client::chunk::Chunk;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
 
         game.world
             .chunks
@@ -1579,7 +1714,7 @@ mod tests {
     /// under air and a full block under water, flowing water of level 5 a third high, the
     /// camera's full block under a sturdy ceiling, and what water and lava replace.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fluid_queries_answer_vanilla_values_at_a_position() {
         use mod_api::{Direction, Host};
 
@@ -1678,7 +1813,7 @@ mod tests {
 
     /// Lava flows fast in the Nether: the delay follows the level's own dimension.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn lava_ticks_every_ten_in_a_fast_lava_level() {
         use mod_api::Host;
 
@@ -1698,7 +1833,7 @@ mod tests {
     /// neighbours with flowing water of level 1 (amount 7), once; an empty cell, an unloaded
     /// column, a position below the world, a stale handle and a level not in place do nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_explicit_fluid_tick_spreads_a_source_and_refuses_other_positions() {
         with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -1733,7 +1868,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn forced_chunks_set_clear_and_query_like_forceload() {
         with_chunk_streaming(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -1748,7 +1883,12 @@ mod tests {
             game.world.modified.insert((-40, 40));
             assert!(!game.chunk_loaded(far));
             assert!(game.chunk_set_forced(far, true));
-            assert!(game.chunk_loaded(far), "loaded before returning");
+            for x in 39..=41 {
+                for z in -8..=-6 {
+                    assert!(game.world.chunks.contains_key(&(x, z)), "missing {x},{z}");
+                }
+            }
+            assert!(game.world.chunks[&(40, -7)].lit);
             assert!(std::sync::Arc::ptr_eq(&old, &game.world.chunks[&(-40, 40)]));
             assert!(game.world.modified.contains(&(-40, 40)));
             assert!(!game.chunk_set_forced(far, true), "already forced");
@@ -1763,7 +1903,6 @@ mod tests {
             assert!(!game.chunk_set_forced(far, false), "already clear");
             assert_eq!(game.level_forced_chunks(level), Some(vec![[-3, 2]]));
             assert!(!game.streaming.forced.contains(&(40, -7)));
-            // Outside the world.
             // Unchanged adds and removals do not load a missing column.
             let pending = game.level_chunk_ref(level, [200, 200]).unwrap();
             assert!(game.streaming.set_forced(200, 200, true));
@@ -1774,11 +1913,80 @@ mod tests {
             assert!(!game.chunk_loaded(pending));
             assert!(game.level_chunk_ref(level, [1_875_000, 0]).is_none());
             assert!(game.level_chunk_ref(level, [0, -1_875_001]).is_none());
+            assert!(!game.chunk_set_forced(ChunkRef::new(level, [i32::MAX, 0]), true));
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn paused_forced_loads_are_queued_and_stopped_generation_refuses_adds() {
+        if run_fresh_cases(
+            concat!(
+                "game::native_level_refs::tests::",
+                "paused_forced_loads_are_queued_and_stopped_generation_refuses_adds"
+            ),
+            "SUNRISE_FORCED_STREAMING_CHILD",
+            &["forced_streaming"],
+        ) {
+            return;
+        }
+
+        with_game(|game| {
+            use std::sync::Arc;
+            use sunrise_client::{chunk::Chunk, world::World};
+
+            game.options.headless = true;
+            game.streaming.mesh = false;
+            game.streaming.radius = 0;
+
+            // A remote streamer can use a column from a packet; it cannot
+            // generate a missing column or wait for its lighting and neighbours.
+            let mut remote_world = World::new(game.world.air, 0);
+            let streamer = &mut game.streaming;
+            streamer.remote = true;
+            assert!(!streamer.set_forced_loaded(&mut remote_world, 4, 4, true));
+            assert!(!streamer.commanded().contains(&(4, 4)));
+            assert!(!streamer.forced.contains(&(4, 4)));
+            remote_world
+                .chunks
+                .insert((4, 4), Arc::new(Chunk::empty(4, 4)));
+            streamer.paused = false;
+            assert!(streamer.set_forced_loaded(&mut remote_world, 4, 4, true));
+            assert!(streamer.commanded().contains(&(4, 4)));
+            assert!(streamer.forced.contains(&(4, 4)));
+            assert!(streamer.set_forced(4, 4, false));
+            streamer.remote = false;
+            streamer.paused = true;
+
+            let level = game.level(game.dim.id()).unwrap();
+            let queued = game.level_chunk_ref(level, [40, -7]).unwrap();
+            assert!(!game.chunk_loaded(queued));
+            assert!(game.chunk_set_forced(queued, true));
+            assert!(!game.chunk_set_forced(queued, true));
+            assert_eq!(game.level_forced_chunks(level), Some(vec![[40, -7]]));
+            assert!(!game.chunk_loaded(queued), "paused streaming does no work");
+
+            game.streaming.paused = false;
+            game.prepare_levels().unwrap();
+            assert!(game.world.chunks[&(40, -7)].lit);
+            for x in 39..=41 {
+                for z in -8..=-6 {
+                    assert!(game.world.chunks.contains_key(&(x, z)), "missing {x},{z}");
+                }
+            }
+
+            game.streaming.abort_generation();
+            let missing = game.level_chunk_ref(level, [60, -7]).unwrap();
+            assert!(!game.chunk_set_forced(missing, true));
+            assert_eq!(game.level_forced_chunks(level), Some(vec![[40, -7]]));
+            assert!(game.chunk_set_forced(queued, false));
+            assert!(!game.chunk_set_forced(queued, true));
+            assert_eq!(game.level_forced_chunks(level), Some(vec![]));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn forced_chunk_changes_the_ticket_sources_and_the_saved_set() {
         with_chunk_streaming(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -1794,7 +2002,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn forced_chunks_of_a_parked_level_and_stale_handles() {
         with_chunk_streaming(|game| {
             let stale_epoch = WorldEpoch::new(game.native_lifecycle.epoch().unwrap().get() + 1);
@@ -1836,10 +2044,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_level_ref_draws_from_its_levels_own_stream() {
-        use sunrise_core::random::RandomSource;
         use mod_api::{LevelRef, ServerHost};
+        use sunrise_core::random::RandomSource;
 
         with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -1861,7 +2069,12 @@ mod tests {
             };
             let parked = LevelRef::new(level.epoch(), other.key());
             let host: &mut dyn ServerHost = game;
-            assert!(parked.random(&*host).is_none(), "not open yet");
+            assert!(
+                parked
+                    .with_random::<()>(host, |_| panic!("unopened level lent its random stream"))
+                    .is_none(),
+                "not open yet"
+            );
             let back = game.dim;
             game.enter_level(other).unwrap();
             game.enter_level(back).unwrap();
@@ -1892,6 +2105,119 @@ mod tests {
         });
     }
 
+    fn level_random_state(random: &sunrise_core::random::LegacyRandom) -> (u64, Option<u64>) {
+        let (seed, gaussian) = <(u64, Option<f64>)>::from(random);
+        (seed, gaussian.map(f64::to_bits))
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_level_rng_draws_survive_transaction_abort_on_active_and_parked_levels() {
+        use crate::game::journal_level_write::JournalLevelWrite;
+        use mod_api::ObjectiveRenderType;
+        use sunrise_client::text::Text;
+        use sunrise_core::random::{LegacyRandom, LevelRandom, RandomSource};
+
+        with_game(|game| {
+            let here = game.dim;
+            let other = if here == Dim::Nether {
+                Dim::End
+            } else {
+                Dim::Nether
+            };
+            game.enter_level(other).unwrap();
+            let parked = game.level(other.id()).unwrap();
+            game.enter_level(here).unwrap();
+            let active = game.level(here.id()).unwrap();
+
+            let mut expected_active = LegacyRandom::new(31);
+            let mut expected_parked = LegacyRandom::new(47);
+            expected_active.next_gaussian();
+            expected_parked.next_gaussian();
+            game.world.random = LevelRandom::for_level(expected_active.clone());
+            game.levels.parked_world_mut_of(other.id()).unwrap().random =
+                LevelRandom::for_level(expected_parked.clone());
+            let states = |game: &super::Game<'_>| {
+                [
+                    level_random_state(&game.world.random),
+                    level_random_state(&game.levels.parked_world_of(other.id()).unwrap().random),
+                ]
+            };
+            let draw = |rng: &mut dyn mod_api::RandomSource| {
+                (rng.next_gaussian().to_bits(), rng.next_long())
+            };
+
+            let outer = game.transaction_open();
+            game.add_objective(
+                "outer_discarded",
+                "dummy",
+                Text::literal("Outer"),
+                ObjectiveRenderType::Integer,
+            )
+            .unwrap();
+            {
+                let mut writer = JournalLevelWrite::new(game, active).unwrap();
+                let host: &mut dyn mod_api::LevelWriteHost = &mut writer;
+                assert_eq!(
+                    host.with_random(draw),
+                    Some((
+                        expected_active.next_gaussian().to_bits(),
+                        expected_active.next_long()
+                    )),
+                );
+            }
+
+            let child = game.transaction_open();
+            game.add_objective(
+                "child_discarded",
+                "dummy",
+                Text::literal("Child"),
+                ObjectiveRenderType::Integer,
+            )
+            .unwrap();
+            for (level, expected) in [
+                (active, &mut expected_active),
+                (parked, &mut expected_parked),
+            ] {
+                assert_eq!(
+                    level.with_random(game, draw),
+                    Some((expected.next_gaussian().to_bits(), expected.next_long())),
+                );
+            }
+            let advanced = [
+                level_random_state(&expected_active),
+                level_random_state(&expected_parked),
+            ];
+            assert_eq!(states(game), advanced);
+
+            game.transaction_close(&child, false);
+            assert!(game.objective("child_discarded").is_none());
+            assert!(game.objective("outer_discarded").is_some());
+            assert_eq!(
+                states(game),
+                advanced,
+                "child abort rolls back journaled state without rewinding active or parked RNG"
+            );
+
+            game.transaction_close(&outer, false);
+            assert!(game.objective("outer_discarded").is_none());
+            assert_eq!(
+                states(game),
+                advanced,
+                "outer abort rolls back journaled state without rewinding active or parked RNG"
+            );
+            for (level, expected) in [
+                (active, &mut expected_active),
+                (parked, &mut expected_parked),
+            ] {
+                assert_eq!(
+                    level.with_random(game, draw),
+                    Some((expected.next_gaussian().to_bits(), expected.next_long())),
+                );
+            }
+        });
+    }
+
     fn in_mod(id: &'static str) -> mod_api::content::crash::ModGuard {
         mod_platform::content::crash::enter_native_mod(mod_api::content::crash::ModCall {
             id,
@@ -1900,11 +2226,11 @@ mod tests {
         })
     }
 
-    use sunrise_client::mod_chunk_tickets::{ModTicket, TicketOwner};
     use mod_api::{
         self, Hooks, ModEntry, Registrar, ServerHost, TicketController, ValidateTicketsEvent,
         testing,
     };
+    use sunrise_client::mod_chunk_tickets::{ModTicket, TicketOwner};
 
     /// Registers three controllers: `quarry` and `drill` validate, `plain` doesn't. `quarry`'s
     /// validation prunes the block at [1, 64, 1]; each validation tells what it was shown.
@@ -1982,10 +2308,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn water_tickets_hydrate_real_farmland_and_preserve_vanilla_water_and_rain() {
-        use sunrise_client::chunk::Chunk;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
 
         with_machines(|game| {
             game.install_live_features();
@@ -2070,7 +2396,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn water_ticket_handles_isolate_dimensions_owners_and_unload_lifetimes() {
         with_machines(|game| {
             let overworld = game.level(game.dim.id()).unwrap();
@@ -2162,10 +2488,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn water_tickets_are_not_restored_with_saved_farmland() {
-        use sunrise_client::{chunk::Chunk, save::SaveDir, world::World};
         use std::sync::Arc;
+        use sunrise_client::{chunk::Chunk, save::SaveDir, world::World};
 
         with_machines(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -2199,7 +2525,7 @@ mod tests {
             let root = game.save.root.clone();
             let shape = game.world.shape;
             game.native_levels_closing();
-            let save = SaveDir::new(root, shape);
+            let save = SaveDir::new(root, shape, Some(Default::default()));
             let chunk = save.load(0, 0, registry, game.res.biomes()).unwrap();
             game.world = World::new(registry.default_state("minecraft:air").unwrap(), 0);
             game.world.chunks.insert((0, 0), Arc::new(chunk));
@@ -2228,7 +2554,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mod_tickets_are_scoped_by_owner_and_share_the_forceload_store() {
         use mod_api::TicketOwner::{Block, Entity};
         with_machines(|game| {
@@ -2300,9 +2626,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mod_tickets_save_apart_from_vanillas_tickets_and_release_with_the_world() {
         use mod_api::TicketOwner::{Block, Entity};
+        use std::sync::Arc;
+        use sunrise_client::{streaming::Streaming, testgen::TestTerrain};
         with_machines(|game| {
             let level = game.level(game.dim.id()).unwrap();
             let chunk = game.level_chunk_ref(level, [-9, 4]).unwrap();
@@ -2315,8 +2643,13 @@ mod tests {
             game.save_chunk_tickets().unwrap();
             let vanilla = game.save.load_forced_chunks();
             assert!(vanilla.is_empty(), "vanilla's file has no mod ticket");
-            // The world closes: its streaming goes, the next opening reads the file.
+            // A new level starts with no live tickets; only the saved tickets carry over.
             let reopen = |game: &mut super::super::Game<'_>, slot_of: fn(&str) -> Option<u32>| {
+                let terrain =
+                    TestTerrain::new(game.pack.assets.registry, game.res.biomes()).unwrap();
+                game.streaming = Streaming::new(Arc::new(terrain), game.worker_context(), 1);
+                game.streaming.mesh = false;
+                game.streaming.radius = 0;
                 game.streaming.load_forced(
                     game.save.load_forced_chunks(),
                     game.save.load_mod_tickets(slot_of),
@@ -2353,7 +2686,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_ticket_keeps_a_parked_level_active() {
         with_machines(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -2387,7 +2720,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn forceload_add_returns_with_each_new_column_loaded() {
         with_chunk_streaming(|game| {
             game.ui.registries.permission = 4;
@@ -2410,7 +2743,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn forceload_query_lists_only_command_tickets() {
         with_machines(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -2433,7 +2766,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn natural_spawning_tickets_and_plain_ones_save_and_load_apart() {
         use mod_api::TicketOwner::Block;
         with_machines(|game| {
@@ -2480,15 +2813,15 @@ mod tests {
     /// attempt); the local mob cap still wants a non-spectator within 128
     /// blocks of its centre.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_natural_spawning_ticket_far_from_every_player_runs_the_attempt_but_the_local_cap_refuses()
     {
+        use mod_api::TicketOwner::Block;
+        use std::sync::Arc;
         use sunrise_client::chunk::Chunk;
         use sunrise_client::mobs::spawn_selection::{Category, SpawnPlayer, SpawnState};
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
-        use mod_api::TicketOwner::Block;
-        use std::sync::Arc;
         with_machines(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             for cx in 6..=10 {
@@ -2544,7 +2877,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn validation_drops_a_removed_ticket_and_leaves_the_rest() {
         with_machines(|game| {
             // `quarry` and `vault` validate; `plain` doesn't. All of them hold the pruned block.
@@ -2597,7 +2930,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn validation_runs_when_a_parked_level_opens_and_not_without_a_listener() {
         mod_platform::testing::with_mods(mods(), || {
             with_game(|game| {
@@ -2610,7 +2943,11 @@ mod tests {
                     std::env::temp_dir().join(format!("sunrise-validate-{}", std::process::id()));
                 game.world_root = world.clone();
                 let root = sunrise_client::save::dimension_dir(&world, other.id());
-                let save = sunrise_client::save::SaveDir::new(root, other.shape());
+                let save = sunrise_client::save::SaveDir::new(
+                    root,
+                    other.shape(),
+                    Some(Default::default()),
+                );
                 let mut tickets = sunrise_client::mod_chunk_tickets::ModTickets::default();
                 tickets.insert(saved("machines:quarry", [1, 64, 1], (7, 7)));
                 tickets.insert(saved("machines:quarry", [9, 64, 9], (8, 8)));
@@ -2648,31 +2985,37 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn validation_sees_the_saved_tickets_not_ones_added_after_the_load() {
         with_machines(|game| {
             let level = game.level(game.dim.id()).unwrap();
+            let owner = mod_api::TicketOwner::Block([1, 64, 1]);
+            let live = game.level_chunk_ref(level, [5, 5]).unwrap();
+            {
+                let _guard = in_mod("machines");
+                assert!(game.chunk_set_mod_forced(live, quarry(), owner, true, false));
+            }
             let tickets = vec![saved("machines:quarry", [1, 64, 1], (7, 7))];
             game.streaming.load_forced(Default::default(), tickets);
             // `level_load` runs after the load: its hold is the same owner's.
             let fresh = game.level_chunk_ref(level, [6, 6]).unwrap();
             {
                 let _guard = in_mod("machines");
-                let owner = mod_api::TicketOwner::Block([1, 64, 1]);
                 assert!(game.chunk_set_mod_forced(fresh, quarry(), owner, true, false));
             }
             game.validate_mod_chunk_tickets(game.dim);
             assert!(!game.streaming.forced.contains(&(7, 7)), "saved one pruned");
+            assert!(game.streaming.forced.contains(&(5, 5)), "live one kept");
             assert!(game.streaming.forced.contains(&(6, 6)), "fresh one kept");
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn light_and_loaded_reads_match_the_games_query_and_load_nothing() {
-        use sunrise_client::chunk::{Chunk, Light};
         use mod_api::LevelHost;
         use std::sync::Arc;
+        use sunrise_client::chunk::{Chunk, Light};
 
         with_game(|game| {
             let mut chunk = Chunk::empty(0, 0);
@@ -2725,10 +3068,10 @@ mod tests {
     /// where the next update asks a `dynamic_light` block again and relights it; a stale
     /// handle and a position that isn't loaded queue nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn check_light_queues_the_cell_with_the_light_edits() {
-        use sunrise_client::chunk::Chunk;
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
 
         with_game(|game| {
             game.world
@@ -2754,9 +3097,9 @@ mod tests {
 #[cfg(test)]
 mod environment_read_tests {
     use crate::game::{Dim, native_entity_refs::tests::with_game};
-    use sunrise_client::chunk::Chunk;
     use mod_api::{BiomeSearch, LevelRef, WorldEpoch};
     use std::sync::Arc;
+    use sunrise_client::chunk::Chunk;
 
     fn paint_biome(game: &mut crate::game::Game<'_>, name: &str) {
         let biome = world_biomes!(game).id(name);
@@ -2772,7 +3115,7 @@ mod environment_read_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn biome_reads_follow_live_cells_parked_levels_and_client_login_without_loading() {
         use crate::game::execution_role::ExecutionRole;
         use sunrise_protocol::connection::Pipe;
@@ -2836,7 +3179,7 @@ mod environment_read_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn floor_reads_real_collision_shapes_and_refuses_unloaded_positions() {
         with_game(|game| {
             game.world
@@ -2879,7 +3222,7 @@ mod environment_read_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn sky_and_logical_height_read_the_named_dimension_and_client_state() {
         use crate::game::execution_role::ExecutionRole;
         use sunrise_client::chunk::LevelShape;
@@ -2958,7 +3301,7 @@ mod environment_read_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn closest_biome_uses_the_named_generator_without_loading_resident_chunks() {
         use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
 
@@ -3067,10 +3410,10 @@ mod environment_read_tests {
     /// (`ConcentricRingsStructurePlacement` with distance 32), each then moved
     /// to a biome it may start in within 112 blocks.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn nearest_structure_uses_the_named_generator_without_loading_resident_chunks() {
-        use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
         use mod_api::StructureSearch;
+        use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
 
         with_game(|game| {
             let directory = game.options.resources.join("worldgen");
@@ -3164,11 +3507,11 @@ mod environment_read_tests {
 
     /// API results over original fixture worlds, compared with independently recorded vanilla calls.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn level_environment_reads_match_vanilla_vectors() {
-        use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
         use serde_json::{Value, json};
         use std::collections::HashMap;
+        use sunrise_client::vanillagen::{TerrainResources, VanillaTerrain};
 
         let fixture = |name: &str, variable: &str| {
             let path = std::env::var_os(variable)

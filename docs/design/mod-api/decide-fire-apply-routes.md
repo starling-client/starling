@@ -53,13 +53,12 @@ Two consequences a reviewer should keep in mind:
 | `item_stacked_on_other` | `hooks/item_stacked_on_other.rs:15` | `menu.rs:388` | both, cancel | cancel + slot/cursor write-back | typed decision |
 | `menu_slot_rules` | `hooks/menu_slot_rules.rs:23` | `menu.rs:615` | both, listen, menu Part | query + write-back (`may_place`, `max_stack`) | typed decision |
 | `living_heal` | `hooks/living_heal.rs:16` | `hunger.rs:23` | both, cancel | value transform + cancel | typed decision |
-| `living_breathe` | `hooks/living_breathe.rs:27` | `breathing.rs:34` | server, listen | query + write-back (3 out-params) | typed decision |
+| `living_breathe` | `hooks/living_breathe.rs` | `breathing.rs` `AirStep` | server, listen | decided air step, hook fired with the owning host, answer applied to the decided air | typed decision |
 | `living_drown` | `hooks/living_drown.rs:25` | `breathing.rs:71` | server, cancel | query + write-back + cancel | typed decision |
 | `living_fall` | `hooks/living_fall.rs:16` | `landing.rs:45` | both, cancel | value transform + cancel | typed decision |
-| `farmland_trample` | `hooks/farmland_trample.rs:15` | `landing.rs:31` | server, cancel | cancel notice | typed decision |
+| `farmland_trample` | `hooks/farmland_trample.rs` | `block_landing.rs` `begin_fall_on` | server, cancel | pause for an actual trample; fire with the owning host, re-check, lift and write, then run the superclass fall damage selected before the write | typed decision |
 | `ender_entity_teleport` | `hooks/ender_entity_teleport.rs:16` | `mobs/enderman.rs:79` | server, cancel | target write-back + cancel | typed decision |
-| `ingredient` | `hooks/ingredient.rs:32` | `crafting/native_hooks.rs:14` | both, collect, data load | collect (`Vec<String>`) | read-only fire |
-| `ingredient_test` | `hooks/ingredient_test.rs:18` | `crafting/native_hooks.rs:56` | both, listen | pure boolean query at craft time | read-only fire |
+| `ingredient` | `hooks/ingredient.rs` | `crafting/native_hooks.rs` | both, replace, data load | first attributed `IngredientDefinition` | read-only fire |
 | `recipe_property_sets` | `hooks/recipe_property_sets.rs:27` | `crafting/native_hooks.rs:40` | both, collect, data load | collect (additions) | read-only fire |
 | `player_name_format` | `hooks/player_name_format.rs:16` | `lan/hub.rs:462` | both, collect | collect (`Text`) | read-only fire |
 | `player_tab_list_name_format` | `hooks/player_tab_list_name_format.rs:17` | `lan/hub.rs:518` | server, collect | collect (`Option<Text>`) | read-only fire |
@@ -91,8 +90,8 @@ Paths are relative to the repository root. `hooks/` is `crates/sunrise-mod-vocab
 | recipe-book placement | `client/game/network/lan_crafting.rs:637` `lan_place_recipe`, `:866` `lan_check_recipe`, `:919` `lan_apply_recipe`; fires `hooks/player_recipe_book_click.rs:13` at `:671` | `ServerPlaceRecipe.placeRecipe` (the menu overload, which returns `RecipeBookMenu.PostPlaceAction`) | recipe id resolved from the display index, its placement, guest craft grid, every source slot, `use_max`, creative, known recipes | unknown or impossible recipe and unknown placement drop the packet (`:662`); a ghost plan is answered explicitly (`:677`), the existing counterpart of `PostPlaceAction.GHOST` → refused/no-change |
 | mod crafting placement | `client/game/network/lan_crafting.rs:1104` `lan_mod_craft_apply`, `:989` `lan_crafting_click` | `ServerPlaceRecipe.placeRecipe` over a mod menu | mod menu registry id, linked container slots, recipe placement, input slots | `None` when the menu is gone → refused; the click itself still returns handled |
 | recipe transfer | `client/game/network/lan_crafting.rs:759` `guest_recipe_transfer`, `:802` `guest_recipe_check` | `ServerPlaceRecipe.placeRecipe` (client-initiated placement) | recipe id, all source slots, destinations, `all` | `TransferError::Unavailable` and the other transfer results are encoded in the reply (`:785`) → refused/no-change |
-| anvil prepare and take | `client/menu.rs:1389` `anvil_created`, `:1395` `anvil_update`, `:1407` `anvil_updated`, `:2066` `anvil_undo`, `:2080` `anvil_cancel`, `:2091` `anvil_take`; ordered sequence `client/game/network/lan_stations.rs:172`–`:254`; hooks `hooks/anvil_craft_pre.rs:13`, `hooks/anvil_craft_post.rs:11`, `hooks/anvil_update.rs:21` | `AnvilMenu.createResult`, `AnvilMenu.onTake` | slot 0, slot 1, rename text, cost data slot, `only_renaming`, `repair_count`, result slot, player levels and inventory, cursor, the anvil block state | Pre cancel → `anvil_cancel(undo)` restores result, inputs, cost, inventory and cursor (`lan_stations.rs:190`) while `click` returns `Ok(())` = **Canceled**; Post is a notice; the update answer replaces output and cost, or cancels to no result |
-| grindstone prepare and take | `client/menu.rs:1418` `grindstone_place`, `:1431` `grindstone_placed`, `:1446` `grindstone_taken`; ordered sequence `client/game/network/lan_stations.rs:205`–`:254`; hooks `hooks/grindstone_place.rs:18`, `hooks/grindstone_take.rs:19` | `GrindstoneMenu.createResult`; the take hook mirrors the result slot's take handling in that class | slot 0, slot 1, result slot, enchantments (experience), cursor | place cancel → result slot emptied (**Canceled**); take cancel → result taken with no experience, sound or input reset (`menu.rs:1452`) |
+| anvil prepare and take | `Menu::{anvil_update, anvil_updated, anvil_take}`; `Game::{lan_station_op_clicked, lan_station_combined}`; hooks `anvil_update`, `anvil_craft_pre`, `anvil_craft_post` | `AnvilMenu.createResult`, `AnvilMenu.onTake`, `AnvilMenu.setCost`, `AnvilMenu.setItemName` (`AnvilMenu.java.patch`) | slot 0, slot 1, rename text, costs, `only_renaming`, result slot, player levels and inventory, cursor, the anvil block state | Update fires live after `createResult` (no answer cache), lends the inputs and vanilla result, and applies output and cost edits (clamping negative `xp_cost` to 0 per `AnvilMenu.setCost`). Cancellation clears the result and both costs; an invalid replacement output is logged and ignored (keeping vanilla's output while applying cost edits). Pre and Post borrow the same pre-take snapshot. Pre cancel returns early before charging levels, consuming inputs, applying anvil wear and firing Post without undoing the click's item move (matching NeoForge `AnvilMenu.onTake`); Post is a notice after those effects. |
+| grindstone prepare and take | `Menu::grindstone_place`, `Menu::grindstone_placed`, `Menu::grindstone_take_inputs`; inline dispatch in `Game::lan_station_op_clicked`; hooks `grindstone_place` and `grindstone_take` | `GrindstoneMenu.createResult`; the take hook mirrors NeoForge `CommonHooks.onGrindstoneTake` in `GrindstoneMenu.java.patch` | slot 0, slot 1, result slot, enchantments (experience), cursor | Runs inline without decided-action or stale-rollback. Place cancel empties the result before converting edits; negative XP falls through to vanilla XP and an invalid output is logged and ignored (keeping vanilla's result). Take pre-resolves XP (`>= 0`) before dispatch; cancel skips XP, level event 1042 and input replacement without rolling back the click or listener writes; non-positive XP spawns 0 orbs while still firing 1042 and setting remainders; invalid remainders are logged and ignored as empty slots. |
 | menu close and merchant settlement | `client/menu.rs:3865` `merchant_close` (`MerchantMenu.removed`); ordinary container notice `client/game/modding/native_menus.rs:257,269`, `hooks/player_container_close.rs:21`; separate mod-menu notice `native_menus.rs:307`, `hooks/menu_closed.rs:12` | `AbstractContainerMenu.removed`, `MerchantMenu.removed` | cursor stack, payment slots 0 and 1, player inventory | no result shape: `player_container_close` follows ordinary container close; `menu_closed` is specifically for a mod-opened menu. `merchant_close` settles cursor and payments through `place_back`; see vanilla evidence below for the living/connected versus dead/disconnected distinction |
 | merchant state | `client/menu.rs:3723` `merchant_update`, `:3766` `merchant_take`, `:3794` `merchant_select`, `:3831` `merchant_fill`; fires `client/game/items/trading.rs:543`, `client/game/network/lan_trading.rs:458`; hooks `hooks/trade_select.rs:11`, `hooks/trade_with_villager.rs:28` | `MerchantContainer.updateSellItem`, `MerchantResultSlot.onTake`, `MerchantMenu.tryMoveItems` | offers, selection hint, payment slots, player inventory 3..39, result slot, future experience | listen and collect only, so no cancel surface; the collect answer is written back and stands |
 
@@ -183,20 +182,43 @@ output were checked in the supplied 26.3 `data/minecraft/recipe/stone_pressure_p
 The issue names no NeoForge counterpart. The web reader could not access the
 [26.3 menu Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/minecraft/world/inventory/AbstractContainerMenu.html)
 or [stacking event Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/neoforged/neoforge/event/ItemStackedOnOtherEvent.html)
-during this review. Other listed counterparts were not independently verified. No assertion that
-all paths or versions return a particular HTTP status is made. No NeoForge source or patches
-were read. Every counterpart contract below remains **unverified**; no equivalence is claimed.
+during the original review. The station checks below use the pinned source instead; the other
+listed contracts remain unverified.
 
 | Hook or route | Public counterpart named in the catalog | Public page | Status |
 | --- | --- | --- | --- |
 | `item_stacked_on_other` | `ItemStackedOnOtherEvent` | 26.3 Javadoc path | unverified |
-| `anvil_craft_pre`, `anvil_craft_post` | `AnvilCraftEvent.Pre`, `.Post` | 26.3 Javadoc path | unverified |
-| `grindstone_place`, `grindstone_take` | `GrindstoneEvent.OnPlaceItem`, `.OnTakeItem` | 26.3 Javadoc path | unverified |
+| `anvil_craft_pre`, `anvil_craft_post` | `AnvilCraftEvent.Pre`, `.Post` | 26.3 Javadoc path | [side and timing checked](#anvil-prepost-side-and-timing) |
+| `grindstone_place`, `grindstone_take` | `GrindstoneEvent.OnPlaceItem`, `.OnTakeItem` | 26.3 Javadoc path | [timing and XP checked](#grindstone-place-timing-and-take-xp) |
 | `menu_closed`, `player_container_close` | `PlayerContainerEvent.Close` | 26.3 Javadoc path | unverified |
 | `trade_with_villager` | `TradeWithVillagerEvent` | 26.3 Javadoc path | unverified |
 | `is_ladder` | `IBlockExtension.isLadder` | 26.3 Javadoc path | unverified |
 | `menu_clicked`, `menu_quick_move`, `menu_slot_rules`, `trade_select` | none (vanilla method overrides) | 26.3 Javadoc path | unverified |
 | Menu click, cancellation and transaction contract | `AbstractContainerMenu` | 26.3 Javadoc path | unverified |
+
+### Grindstone Place timing and Take XP
+
+In [pinned NeoForge 26.3](https://github.com/neoforged/NeoForge/tree/bfed31772c6bc92db201d36421b1a90e428227af),
+`GrindstoneMenu.createResult` dispatches `CommonHooks.onGrindstoneChange` before computing the
+vanilla result; it computes that result only when the listener neither cancels nor supplies an
+override. `CommonHooks.onGrindstoneTake` resolves the XP before posting `GrindstoneEvent.OnTakeItem`,
+so a listener receives the resolved amount and the default award is computed even if the listener
+then cancels. Sunrise runs both hooks inline (no decided-action or stale rollback), lends the
+already computed vanilla result to Place, and pre-resolves XP (`>= 0`) before posting Take to
+match `CommonHooks.onGrindstoneTake`. Take cancellation leaves the result taken and preserves
+listener writes while skipping XP, level event 1042 and input replacement.
+
+### Anvil Pre/Post side and timing
+
+At the same pin, `AnvilCraftEvent` documents both logical sides. The `AnvilMenu.onTake` patch
+posts Pre at entry, after the result is picked up but before charging levels, using the inputs
+or wearing the anvil. It takes the input snapshot after an uncancelled Pre and posts Post at
+the end of `onTake`. Cancel short-circuits that processing, not the pickup itself.
+Sunrise delivers both hooks only on the authoritative server, with one snapshot captured
+before Pre. Pre precedes the deferred take effects and Post follows them. The predicted
+client take fires neither. Track the logical-side and dispatch differences separately; keep
+Sunrise's whole-take veto, which restores the click and skips Post, rather than adopting a
+cancel that merely skips the take effects.
 
 ## Review coverage
 
@@ -237,5 +259,5 @@ design note resolve relative to their containing Markdown files.
 7. **`is_ladder`.** It is a ninth motion-module client-lib target but not one of the design's eight
    excluded value transforms. It is a per-block boolean query, so this inventory recommends a
    read-only fire, not a token; the design must say whether it joins the motion exclusion.
-8. **NeoForge.** Until a public 26.3 page is reachable, no counterpart contract (cancel semantics,
-   transaction boundary, thread) can be assigned to the menu or station hooks.
+8. **NeoForge.** The station timing, side and XP differences above are follow-up work, not changes
+   to gameplay in the borrowed-input migration. The other menu counterparts still need evidence.

@@ -1,8 +1,8 @@
-//! A soil's `canSustainPlant` answer against the plant's own rule, over an in-memory level. Needs
-//! the prepared client resources (skipped when absent), as `tests` does.
+//! Soil and plant support rules over an in-memory level.
 use super::tests::{TestLevel, fixture};
 use super::*;
 
+/// Uses prepared client resources, as `tests` does.
 #[test]
 fn a_soils_answer_comes_before_the_plants_may_place_on() {
     use std::cell::RefCell;
@@ -41,11 +41,13 @@ fn a_soils_answer_comes_before_the_plants_may_place_on() {
         }
         fn before_can_sustain_plant(
             &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             ground: BlockStateId,
             ground_pos: BlockPos,
             sustains: &mut Option<bool>,
-        ) {
+        ) -> bool {
             self.asked
                 .borrow_mut()
                 .push((self.b.block(state), self.b.block(ground), ground_pos));
@@ -54,19 +56,23 @@ fn a_soils_answer_comes_before_the_plants_may_place_on() {
             {
                 *sustains = Some(answer);
             }
+            false
         }
         fn before_may_place_on(
             &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
             state: BlockStateId,
             ground: BlockStateId,
             _ground_pos: BlockPos,
             may: &mut Option<bool>,
-        ) {
+        ) -> bool {
             if let Some((plant, on)) = self.plant
                 && self.b.block(state) == plant
             {
                 *may = Some(self.b.block(ground) == on);
             }
+            false
         }
     }
     let Some(f) = fixture() else { return };
@@ -164,4 +170,95 @@ fn a_soils_answer_comes_before_the_plants_may_place_on() {
     assert!(b.can_survive(&mut level, &mut ticks, pos, dandelion));
     level.set_raw(ground, grass);
     assert!(!b.can_survive(&mut level, &mut ticks, pos, dandelion));
+}
+
+#[test]
+fn piston_settlement_keeps_a_plant_with_an_inert_support_part() {
+    struct InertSupport {
+        level: TestLevel,
+        plant: BlockStateId,
+        soil: BlockStateId,
+        on_soil: bool,
+    }
+    impl BlockEntityNeighbors for InertSupport {}
+    impl LevelAccess for InertSupport {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.level.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.level.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.level.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.level.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.level.game_time()
+        }
+        fn before_can_sustain_plant(
+            &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
+            state: BlockStateId,
+            ground: BlockStateId,
+            _: BlockPos,
+            _: &mut Option<bool>,
+        ) -> bool {
+            self.on_soil && state == self.plant && ground == self.soil
+        }
+        fn before_may_place_on(
+            &self,
+            _: &Ticks,
+            _: Option<&PreviewBlocks>,
+            state: BlockStateId,
+            _: BlockStateId,
+            _: BlockPos,
+            _: &mut Option<bool>,
+        ) -> bool {
+            !self.on_soil && state == self.plant
+        }
+    }
+
+    let b = data::inert_support_fixture();
+    let state = |name| b.default_of(b.table.block_by_name(name).unwrap());
+    let plant = state("test:plant");
+    let soil = state("test:soil");
+    let moving = state("minecraft:moving_piston");
+    let pos = BlockPos::new(1, 2, 1);
+    for on_soil in [true, false] {
+        let mut level = InertSupport {
+            level: TestLevel::new(&b),
+            plant,
+            soil,
+            on_soil,
+        };
+        let mut ticks = Ticks::new(0);
+        ticks.add_empty_chunk(pos.chunk()).unwrap();
+        level.set_raw(pos.offset(0, -1, 0), soil);
+        assert!(!b.can_survive(&mut level, &mut ticks, pos, plant));
+
+        level.set_raw(pos, moving);
+        ticks.load_moving_piston(
+            pos,
+            MovingPiston {
+                moved_state: plant,
+                direction: Direction::East,
+                extending: true,
+                source: false,
+                progress: 1.0,
+                progress_o: 0.5,
+                last_ticked: 0,
+                death_ticks: 0,
+                id: 0,
+            },
+        );
+        b.tick_block_entities(&mut level, &mut ticks);
+        assert_eq!(
+            level.block_state(pos),
+            plant,
+            "inert Part on soil: {on_soil}"
+        );
+    }
 }

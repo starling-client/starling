@@ -1,0 +1,171 @@
+//! The records the writer thread takes: a tag, or a chunk still to encode on that thread.
+use super::*;
+
+/// A record waiting for the writer thread.
+#[derive(Clone)]
+pub(super) enum Record {
+    Disk(Arc<chunk_disk::DiskRecord>),
+    EditedChunk(Arc<EditedChunk>),
+    Tag(Arc<NamedTag>),
+    /// A chunk to encode on the writer thread.
+    /// The old chunk's calculated blending data is taken when the save is
+    /// requested ([`SaveDir::calculated_blending`]): a snapshot of that save.
+    Chunk(Arc<Chunk>, Arc<Encoding>, Option<Arc<BlendingData>>),
+    Proto(Arc<SavedProto>, Arc<Encoding>),
+    /// A chunk's points of interest, made on the writer thread against the
+    /// saved ones (`resolve_poi`).
+    Poi(
+        Arc<Chunk>,
+        Arc<SaveTables>,
+        Option<Arc<crate::mobs::villager::ResolvedProfessions>>,
+    ),
+    Delete,
+    #[cfg(test)]
+    TestEncode(Arc<dyn Fn(bool) -> Option<Arc<NamedTag>> + Send + Sync>),
+}
+/// The pending reader only waits for this record's final payload selection.
+pub(super) struct EditedChunk {
+    original: Record,
+    admitted: OnceLock<bool>,
+}
+
+/// What encoding a chunk needs, captured when it is queued.
+pub(super) struct Encoding {
+    pub(super) items: Arc<crate::items::Items>,
+    pub(super) registry: &'static BlockRegistry,
+    pub(super) biomes: Arc<Biomes>,
+    pub(super) tables: Option<Arc<SaveTables>>,
+    pub(super) shape: LevelShape,
+}
+impl Record {
+    pub(super) fn track_block_entity_edits(self) -> Self {
+        if self.has_block_entity_edits() {
+            Self::EditedChunk(Arc::new(EditedChunk {
+                original: self,
+                admitted: OnceLock::new(),
+            }))
+        } else {
+            self
+        }
+    }
+
+    fn has_block_entity_edits(&self) -> bool {
+        match self {
+            Self::Chunk(chunk, ..) => chunk
+                .saved
+                .as_ref()
+                .is_some_and(|x| x.block_entity_save_edits.is_some()),
+            Self::Disk(record) => record.original.has_block_entity_edits(),
+            Self::EditedChunk(_) => true,
+            _ => false,
+        }
+    }
+
+    pub(super) fn accept_block_entity_edits(&self) {
+        self.resolve_block_entity_edits(true);
+    }
+
+    pub(super) fn resolve_block_entity_edits(&self, admitted: bool) {
+        if let Self::EditedChunk(record) = self {
+            let _ = record.admitted.set(admitted);
+        }
+    }
+
+    pub(super) fn source(&self) -> &Self {
+        match self {
+            Self::EditedChunk(record) => &record.original,
+            _ => self,
+        }
+    }
+
+    pub(super) fn disk_job(&self) -> Option<&chunk_disk::DiskRecord> {
+        match self.source() {
+            Self::Disk(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    /// Re-encode only the stored block-entity payloads from this same save snapshot.
+    pub(super) fn without_block_entity_edits(&self) -> Option<Arc<NamedTag>> {
+        match self {
+            Self::EditedChunk(record) => record.original.without_block_entity_edits(),
+            Self::Disk(record) => record.without_block_entity_edits(),
+            Self::Chunk(chunk, e, blending) => {
+                chunk.saved.as_ref()?.block_entity_save_edits.as_ref()?;
+                Some(Self::chunk_tag(chunk, e, blending.as_deref(), false))
+            }
+            #[cfg(test)]
+            Self::TestEncode(encode) => encode(false),
+            _ => None,
+        }
+    }
+
+    pub(super) fn tag(&self) -> Option<Arc<NamedTag>> {
+        if let Self::EditedChunk(record) = self {
+            return if *record.admitted.wait() {
+                record.original.tag_for_write()
+            } else {
+                record.original.without_block_entity_edits()
+            };
+        }
+        self.encode_tag(false)
+    }
+
+    /// Metadata and far terrain do not consume a block entity's saved payload.
+    pub(super) fn tag_for_metadata(&self) -> Option<Arc<NamedTag>> {
+        if let Self::EditedChunk(record) = self {
+            return record.original.without_block_entity_edits();
+        }
+        self.tag()
+    }
+
+    pub(super) fn tag_for_write(&self) -> Option<Arc<NamedTag>> {
+        self.encode_tag(true)
+    }
+
+    fn encode_tag(&self, edits: bool) -> Option<Arc<NamedTag>> {
+        match self {
+            Record::EditedChunk(record) => record.original.encode_tag(edits),
+            Record::Disk(record) => record.read(),
+            Record::Tag(t) => Some(t.clone()),
+            Record::Chunk(c, e, blending) => {
+                Some(Self::chunk_tag(c, e, blending.as_deref(), edits))
+            }
+            Record::Proto(p, e) => Some(Arc::new(encode_proto(
+                p,
+                e.registry,
+                &e.biomes,
+                e.tables.as_deref(),
+                e.shape,
+                &e.items,
+            ))),
+            Record::Poi(c, t, professions) => {
+                encode_poi(c, t, professions.as_deref()).map(Arc::new)
+            }
+            Record::Delete => None,
+            #[cfg(test)]
+            Record::TestEncode(encode) => encode(edits),
+        }
+    }
+
+    fn chunk_tag(
+        c: &Chunk,
+        e: &Encoding,
+        blending: Option<&BlendingData>,
+        edits: bool,
+    ) -> Arc<NamedTag> {
+        let mut tag = encode_full(
+            c,
+            e.registry,
+            &e.biomes,
+            e.tables.as_deref(),
+            e.shape,
+            &e.items,
+            edits,
+        );
+        if let Some(data) = blending {
+            put_calculated_blending(&mut tag, data);
+        }
+        Arc::new(tag)
+    }
+}

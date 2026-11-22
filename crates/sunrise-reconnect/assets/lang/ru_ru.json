@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Автоподключение",
+  "sunrise.extras.auto_reconnect.tooltip": "Подключается к серверу заново после потери связи или перезапуска, но никогда после кика или бана."
+}

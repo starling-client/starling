@@ -1,19 +1,22 @@
-//! Stored player health and empty-equipment server damage for the resident scene.
+//! Stored player health and server damage for the resident scene.
 //! World/audio/network consumers are queued explicitly; full death and tick
 //! lifecycles (drops, respawn, effects) remain separate work.
 use crate::{
     Result,
+    items::ItemStack,
     motion::{MotionEvent, PlayerMotion},
 };
+pub use mod_api::entity::health::{HurtSource, ShieldBlock, Victim};
+use std::{fs, io, path::Path};
 use sunrise_world::{
     attributes::live::LiveAttributes,
     block_landing::LandingDamage,
     combat_rules::ArmorWorld,
-    damage_immunity::{self, DamageRule, ImmunityTag, ImmunityWorld},
+    damage_immunity::{self, DamageRule, EntityImmunityWorld, ImmunityTag, ImmunityWorld},
     damage_reduction::Bypass,
     damage_source::{Catalog, DamageSource, DamageTypeId, Scaling},
     food::{Difficulty, FoodData},
-    living_damage::DamageStat,
+    living_damage::{DamageStat, DamageState},
     living_hurt::{HurtState, HurtTag, HurtWorld, PendingHurt},
     player_health::{PlayerAttributeHealth, PlayerFloatIds},
     player_hurt::{CausingEntity, PlayerHurtWorld, ServerPlayerHurtWorld},
@@ -21,14 +24,15 @@ use sunrise_world::{
     server_player_damage::ServerDamageEnvironment,
     synced_floats::{FloatValue, Observer, SyncedFloats},
 };
-pub use mod_api::entity::health::{HurtSource, ShieldBlock, Victim};
-use std::{fs, io, path::Path};
 pub(crate) type Attributes = LiveAttributes<Box<dyn sunrise_world::attributes::live::Identities>>;
 pub(crate) type State = HurtState<DamageTypeId>;
 
 pub use crate::world::HealthRules;
 mod accepted_hit;
 mod attack;
+mod kill_credit;
+use kill_credit::Credit;
+pub use kill_credit::{KnockbackCredit, PlayerMemory, PlayerResolver};
 mod hit_attempt;
 pub use accepted_hit::AcceptedHit;
 pub use attack::{damage_type, melee, mob_source, source_damage_type};
@@ -66,6 +70,9 @@ pub struct DamageHooks {
     /// check and the cooldown, with the health damage it took, 0 included
     /// (`LivingDamageEvent.Post`).
     pub post: Option<fn(DamageLevel<'_>, Hurting<'_>, &DamageContainer)>,
+    /// Present when the caller has a game owner to finish death or player protection.
+    /// The predicate says whether that continuation also needs the hit values for Post.
+    pub owner_post_listened: Option<fn() -> bool>,
     /// `native_living_knockback`: `LivingEntity.knockback`, at its start
     /// (`LivingKnockBackEvent`), on the raw strength and before the knockback resistance and
     /// the motion change. It may change the [`Knock`]; true cancels it.
@@ -88,6 +95,7 @@ impl DamageHooks {
         incoming: None,
         pre: None,
         post: None,
+        owner_post_listened: None,
         knockback: None,
         totem: None,
         shield: None,
@@ -102,6 +110,211 @@ impl DamageHooks {
         }
     }
 }
+/// A sound a hit's listener queued, with the seed drawn at the call.
+pub struct HitSound<'s> {
+    pub dimension: &'static str,
+    pub sound: &'s str,
+    pub at: [f64; 3],
+    pub source: i32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub seed: i64,
+    /// The entity the sound follows (`Level.playSound(null, entity, ...)`), if any.
+    pub emitter: Option<i32>,
+}
+/// Where a hit's sounds are queued until the host is free: the game's own level sound queue.
+pub trait SoundQueue {
+    fn queue(&mut self, sound: HitSound<'_>);
+}
+impl<S: for<'s> From<HitSound<'s>>> SoundQueue for Vec<S> {
+    fn queue(&mut self, sound: HitSound<'_>) {
+        self.push(sound.into());
+    }
+}
+/// The entity a hit's site lends its listeners: the live borrow of its id, position and own
+/// random. The site names who (the attacker it holds a `&mut` to); nothing is looked up.
+pub struct HitLend<'a> {
+    id: i32,
+    position: [f64; 3],
+    random: &'a mut sunrise_core::random::LegacyRandom,
+}
+/// Whether any native mod listens to a hook whose host is a `HitHost`. A site looks up its
+/// attacker only then; without one nothing is looked up, borrowed or drawn.
+pub fn hit_host_listened() -> bool {
+    use mod_api::{__private::listened, HookId};
+    [
+        HookId::LivingIncomingDamage,
+        HookId::LivingDamagePre,
+        HookId::LivingDamagePost,
+        HookId::LivingShieldBlock,
+        HookId::LivingUseTotem,
+    ]
+    .into_iter()
+    .any(listened)
+}
+impl<'a> HitLend<'a> {
+    pub fn mob(mob: &'a mut crate::mobs::Mob) -> Option<Self> {
+        Some(Self {
+            id: mob.id as i32,
+            position: [mob.position.x, mob.position.y, mob.position.z],
+            random: &mut mob.random,
+        })
+    }
+    /// `player`, if it is the attacker `attacker` (an entity id).
+    pub fn attacking_player(player: Option<&'a mut PlayerMotion>, attacker: i32) -> Option<Self> {
+        let player = player.filter(|p| p.entity_id == attacker && hit_host_listened())?;
+        Some(Self {
+            id: player.entity_id,
+            position: [player.position.x, player.position.y, player.position.z],
+            random: &mut player.random,
+        })
+    }
+    /// The mob among `mobs` with id `attacker`, if it is there to borrow.
+    pub fn attacking_mob(
+        mut mobs: impl Iterator<Item = &'a mut crate::mobs::Mob>,
+        attacker: i32,
+    ) -> Option<Self> {
+        hit_host_listened().then_some(())?;
+        Self::mob(mobs.find(|m| m.id as i32 == attacker)?)
+    }
+    fn reborrow(&mut self) -> HitLend<'_> {
+        HitLend {
+            id: self.id,
+            position: self.position,
+            random: &mut *self.random,
+        }
+    }
+}
+/// What a hit lends its listeners beyond the level's blocks and random: the level sound queue
+/// and sound-seed stream, and the own random of the entity its site lends ([`HitLend`]). The
+/// site builds it from borrows it already holds ([`DamageLevel::with_effects`]); a level built
+/// without one refuses every request.
+pub struct HitEffects<'a> {
+    sounds: &'a mut (dyn SoundQueue + 'a),
+    /// The seed stream of `Level.playSound`; no host, no sound can be sent.
+    hub: Option<&'a crate::lan::hub::Hub>,
+    dimension: &'static str,
+    /// The open of the world the lent entity belongs to, to refuse a stale handle.
+    epoch: Option<mod_api::WorldEpoch>,
+    lent: Option<HitLend<'a>>,
+}
+impl<'a> HitEffects<'a> {
+    pub fn new(
+        sounds: &'a mut (dyn SoundQueue + 'a),
+        hub: Option<&'a crate::lan::hub::Hub>,
+        dimension: &'static str,
+        epoch: Option<mod_api::WorldEpoch>,
+        lent: Option<HitLend<'a>>,
+    ) -> Self {
+        Self {
+            sounds,
+            hub,
+            dimension,
+            epoch,
+            lent,
+        }
+    }
+    fn reborrow(&mut self) -> HitEffects<'_> {
+        HitEffects {
+            sounds: &mut *self.sounds,
+            hub: self.hub,
+            dimension: self.dimension,
+            epoch: self.epoch,
+            lent: self.lent.as_mut().map(HitLend::reborrow),
+        }
+    }
+    /// Queue `sound` (already validated) at `at`, drawing its seed from the level's sound-seed
+    /// stream now (`Level.soundSeedGenerator.nextLong`), never from the level's random. False
+    /// where no host can send it.
+    pub fn play(
+        &mut self,
+        sound: &str,
+        at: [f64; 3],
+        source: mod_api::SoundSource,
+        volume: f32,
+        pitch: f32,
+        emitter: Option<i32>,
+    ) -> bool {
+        let Some(hub) = self.hub else {
+            return false;
+        };
+        self.sounds.queue(HitSound {
+            dimension: self.dimension,
+            sound,
+            at,
+            source: source.index() as i32,
+            volume,
+            pitch,
+            seed: hub.next_sound_seed(),
+            emitter,
+        });
+        true
+    }
+    /// The lent entity `entity` names: its id, position and own random. None for a stale
+    /// handle or an entity the hit does not lend.
+    pub fn entity(
+        &mut self,
+        entity: mod_api::EntityRef,
+    ) -> Option<(i32, [f64; 3], &mut sunrise_core::random::LegacyRandom)> {
+        if self.epoch != Some(entity.epoch()) {
+            return None;
+        }
+        let lent = self.lent.as_mut()?;
+        (i32::try_from(entity.id()).ok()? == lent.id).then_some((
+            lent.id,
+            lent.position,
+            &mut *lent.random,
+        ))
+    }
+}
+/// Inputs to `Entity.isInvulnerableToBase` for a mob or a nonliving body.
+pub struct BodyImmunity<T> {
+    pub removed: bool,
+    pub invulnerable: bool,
+    pub creative_source: bool,
+    pub fire_immune: bool,
+    pub fall_immune: bool,
+    pub source_has_tag: T,
+}
+
+impl<T: FnMut(ImmunityTag) -> bool> BodyImmunity<T> {
+    pub fn vanilla(mut self) -> bool {
+        match damage_immunity::vanilla_base_immunity(&mut self) {
+            Ok(answer) => answer,
+            Err(never) => match never {},
+        }
+    }
+}
+
+impl<T: FnMut(ImmunityTag) -> bool> EntityImmunityWorld for BodyImmunity<T> {
+    type Error = std::convert::Infallible;
+
+    fn removed(&self) -> bool {
+        self.removed
+    }
+    fn permanently_invulnerable(&mut self) -> std::result::Result<bool, Self::Error> {
+        Ok(self.invulnerable)
+    }
+    fn temporarily_invulnerable(&mut self) -> std::result::Result<bool, Self::Error> {
+        Ok(false)
+    }
+    fn tag(&mut self, tag: ImmunityTag) -> std::result::Result<bool, Self::Error> {
+        Ok((self.source_has_tag)(tag))
+    }
+    fn creative_source(&mut self) -> std::result::Result<bool, Self::Error> {
+        Ok(self.creative_source)
+    }
+    fn fire_immune(&mut self) -> std::result::Result<bool, Self::Error> {
+        Ok(self.fire_immune)
+    }
+    fn fall_immune(&mut self) -> std::result::Result<bool, Self::Error> {
+        Ok(self.fall_immune)
+    }
+}
+
+/// The acting player's stacks borrowed in vanilla equipment slot order.
+pub type PlayerEquipment<'a> = [Option<&'a ItemStack>; sunrise_items::equipment::SLOT_NAMES.len()];
+
 /// The level a hit lands in, as damage code sees it: its blocks, its random
 /// (`Level.random`) and its own attachments, lent to the damage hooks as their level host.
 /// Built from the level's world, or, in the mob tick, which reads the world while mobs
@@ -126,6 +339,15 @@ pub struct DamageLevel<'a> {
     /// Which entry of `LivingEntity.knockback` a push in progress came through, for
     /// `living_knockback` ([`Self::through_short_knockback`]).
     knock_entry: mod_api::KnockbackEntry,
+    /// Who a push credits: the site's per-victim loan, or [`KnockbackCredit`]'s memory
+    /// resolution where the level was built without one.
+    credit: Credit<'a>,
+    /// Resolves a mob's remembered player where no loan does ([`Self::resolve_player_responsible`]).
+    players: Option<(PlayerResolver<'a>, &'a mut dyn PlayerMemory)>,
+    /// What the hit's listeners may queue and draw ([`HitEffects`]); none for a level built
+    /// outside a game's hit.
+    effects: Option<HitEffects<'a>>,
+    player_equipment: PlayerEquipment<'a>,
 }
 impl<'a> DamageLevel<'a> {
     /// The level of `world`, whose blocks `registry` names.
@@ -159,6 +381,10 @@ impl<'a> DamageLevel<'a> {
             attack: &NO_ATTACK,
             client_side: false,
             knock_entry: mod_api::KnockbackEntry::Full,
+            credit: Credit::Memory,
+            players: None,
+            effects: None,
+            player_equipment: [None; 8],
         }
     }
     /// The level of `world`, with the random and attachments `lent` took out of it.
@@ -184,6 +410,10 @@ impl<'a> DamageLevel<'a> {
             attack: &NO_ATTACK,
             client_side: false,
             knock_entry: mod_api::KnockbackEntry::Full,
+            credit: Credit::Memory,
+            players: None,
+            effects: None,
+            player_equipment: [None; 8],
         }
     }
     /// The same level, for a shorter borrow.
@@ -202,29 +432,110 @@ impl<'a> DamageLevel<'a> {
             attack: self.attack,
             client_side: self.client_side,
             knock_entry: self.knock_entry,
+            credit: self.credit.reborrow(),
+            players: self
+                .players
+                .as_mut()
+                .map(|(resolver, memory)| (*resolver, &mut **memory as &mut dyn PlayerMemory)),
+            effects: self.effects.as_mut().map(HitEffects::reborrow),
+            player_equipment: self.player_equipment,
         }
     }
-    /// The same level with a task-local random, retaining its typed hook and attachment context.
-    pub fn reborrow_with_random<'b>(
-        &'b mut self,
-        random: &'b mut sunrise_core::random::LegacyRandom,
-    ) -> DamageLevel<'b> {
-        DamageLevel {
-            shape: self.shape,
-            chunks: self.chunks,
-            air: self.air,
-            registry: self.registry,
-            tags: self.tags,
-            block_registries: self.block_registries,
-            random,
-            attachments: self.attachments,
-            attachment_syncs: self.attachment_syncs,
-            hooks: self.hooks,
-            attack: self.attack,
-            client_side: self.client_side,
-            knock_entry: self.knock_entry,
+    /// Lend the stacks worn by this hit's player victim for enchantment immunity.
+    pub fn with_player_equipment(self, player_equipment: PlayerEquipment<'a>) -> Self {
+        Self {
+            player_equipment,
+            ..self
         }
     }
+    /// The same level whose hit lends `effects`.
+    pub fn with_effects(self, effects: HitEffects<'a>) -> Self {
+        Self {
+            effects: Some(effects),
+            ..self
+        }
+    }
+    /// What this hit lends its listeners: level sounds and an entity's random.
+    pub fn hit_effects(&mut self) -> Option<&mut HitEffects<'a>> {
+        self.effects.as_mut()
+    }
+    /// Lend the narrow credit context at a site that can make a living push.
+    pub fn with_knockback_credit(mut self, credit: &'a mut dyn KnockbackCredit) -> Self {
+        self.credit = Credit::Loan(credit);
+        self
+    }
+    /// Name a site that never makes a living push (a damage type tagged `no_knockback`, or a
+    /// check that pushes nothing).
+    pub fn no_push(mut self) -> Self {
+        self.credit = Credit::NoPush;
+        self
+    }
+    /// Lend the borrowed tick's remembered player references and their live resolver.
+    pub fn with_player_resolver(
+        mut self,
+        players: PlayerResolver<'a>,
+        memory: &'a mut dyn PlayerMemory,
+    ) -> Self {
+        self.players = Some((players, memory));
+        self
+    }
+    /// `LivingEntity.baseTick`: the last tick with a positive clock still keeps the
+    /// reference. Clear it at this point only if the clock was already zero.
+    pub(crate) fn tick_player_memory(&mut self, mob: &mut crate::mobs::Mob) {
+        if mob.ai.last_hurt_by_player > 0 {
+            mob.ai.last_hurt_by_player -= 1;
+        } else if let Some((_, memory)) = &mut self.players {
+            memory.forget(mob.id);
+        }
+    }
+    /// Commit this accepted hit's responsibility at vanilla's pre-push memory point.
+    pub fn accepted_mob_hit(&mut self, mob: &mut crate::mobs::Mob) {
+        if let Credit::Loan(credit) = &mut self.credit {
+            credit.accepted_mob_hit(mob);
+        }
+    }
+    /// `LivingEntity.resolvePlayerResponsibleForDamage` for a mob: a player's
+    /// hit refreshes the 100-tick timer, a tame wolf's refreshes or clears it
+    /// through the credit loan, and any other source keeps the remembered player,
+    /// whose reference must still resolve.
+    pub fn resolve_player_responsible(
+        &mut self,
+        mob: &mut crate::mobs::Mob,
+        source: &crate::mobs::Damage,
+    ) -> bool {
+        let by_player = source.attacker == Some(crate::mobs::Who::Player);
+        if by_player {
+            mob.ai.last_hurt_by_player = 100;
+        }
+        match &mut self.credit {
+            Credit::Loan(credit) => credit.resolve_player_responsible(mob),
+            Credit::Memory | Credit::NoPush => {
+                by_player
+                    || self.players.as_ref().is_some_and(|(resolver, memory)| {
+                        memory
+                            .remembered(mob.id)
+                            .is_some_and(|uuid| resolver.resolve(uuid).is_some())
+                    })
+            }
+        }
+    }
+    /// Only the game bridge calls this after checking for a knockback subscriber. Without a
+    /// site's loan the credit comes from the pushed entity's own hurt memories and this hit's
+    /// attack ([`kill_credit::from_memory`]).
+    pub fn knockback_credit(
+        &self,
+        pushed: &Hurting<'_>,
+    ) -> (i32, Option<&crate::items::ItemStack>) {
+        match &self.credit {
+            Credit::Loan(credit) => credit.snapshot(pushed, self.attack),
+            Credit::Memory => kill_credit::from_memory(pushed, self.attack),
+            Credit::NoPush => {
+                debug_assert!(false, "living_knockback push from a no_push damage site");
+                kill_credit::from_memory(pushed, self.attack)
+            }
+        }
+    }
+
     /// Runs `push` as the short entry of `LivingEntity.knockback` (power and direction), which
     /// delegates to the full entry: the knockback hook, fired once inside the full entry, tells
     /// its listener the push came in as [`mod_api::KnockbackEntry::Short`]. A direct call of the
@@ -260,7 +571,7 @@ impl<'a> DamageLevel<'a> {
         self.attack
     }
     /// The authoritative world's merged tag tables, if available.
-    pub fn tags(&self) -> Option<&crate::items::Items> {
+    pub fn tags(&self) -> Option<&'a crate::items::Items> {
         self.tags
     }
     /// The cached block parser context, if available.
@@ -332,7 +643,75 @@ impl<'a> DamageLevel<'a> {
             hook(self.reborrow(), hurting, container);
         }
     }
+
+    /// Close an accepted hit, or suspend it just long enough for the caller to give the
+    /// owning game back its level and body for death or player protection.
+    pub fn finish_damage(
+        &mut self,
+        hurting: Hurting<'_>,
+        container: DamageContainer,
+        needs_owner: bool,
+    ) -> Option<DamageCompletion> {
+        if needs_owner && let Some(listened) = self.hooks.owner_post_listened {
+            let post = listened().then(|| {
+                let source = match hurting {
+                    Hurting::Mob(_, source) => mob_source(source, self.attack),
+                    Hurting::Player(_, source)
+                    | Hurting::Dragon(_, source)
+                    | Hurting::ArmorStand(_, source)
+                    | Hurting::Entity(_, _, source) => source,
+                };
+                std::sync::Arc::new(DamagePost {
+                    damage_type: source.damage_type.to_owned(),
+                    causing: source.causing,
+                    direct: source.direct,
+                    position: source.position,
+                    lent_entity: self
+                        .effects
+                        .as_ref()
+                        .and_then(|effects| effects.lent.as_ref())
+                        .map(|lent| lent.id),
+                    state: container.into_state(),
+                })
+            });
+            return Some(DamageCompletion { post });
+        }
+        self.damage_post(hurting, &container);
+        None
+    }
 }
+
+/// The in-flight handoff for a single hurt, taken from the live body by its caller before
+/// continuing. Death and protection need this even if nobody listens to Post.
+#[derive(Clone, Debug)]
+pub struct DamageCompletion {
+    pub post: Option<std::sync::Arc<DamagePost>>,
+}
+
+/// The exact accepted hit values, only retained across the handoff for a Post listener.
+#[derive(Debug)]
+pub struct DamagePost {
+    damage_type: String,
+    causing: i32,
+    direct: i32,
+    position: Option<[f64; 3]>,
+    lent_entity: Option<i32>,
+    state: DamageState,
+}
+
+impl DamagePost {
+    /// Lend the hit's original source, final values and attacker identity to Post.
+    pub fn view(&self) -> (HurtSource<'_>, &DamageState, Option<i32>) {
+        let source = HurtSource {
+            damage_type: &self.damage_type,
+            causing: self.causing,
+            direct: self.direct,
+            position: self.position,
+        };
+        (source, &self.state, self.lent_entity)
+    }
+}
+
 /// A level's random and attachments, taken out of its world while the world is read
 /// elsewhere (the mob tick), and put back after.
 pub struct LentLevel {
@@ -495,6 +874,36 @@ pub fn no_block(damage: f32) -> ShieldBlock {
 /// What an attacker holds: the main hand and the off hand.
 pub type Held = [Option<crate::items::ItemStack>; 2];
 
+/// The vanilla class family of a hit's direct entity (`DamageSource.getDirectEntity`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DirectEntity {
+    /// No direct entity, or an entity that is neither `LivingEntity` nor `Projectile`
+    /// (such as primed TNT, an area-effect cloud, evoker fangs, or a vehicle).
+    #[default]
+    Other,
+    /// `LivingEntity` (players, mobs, armor stands, the ender dragon).
+    Living,
+    /// `Projectile` other than `AbstractArrow` or `LargeFireball`.
+    Projectile,
+    /// `AbstractArrow` (arrows and thrown tridents; also a `Projectile`).
+    Arrow,
+    /// `LargeFireball` (ghast fireballs; also a `Projectile`).
+    LargeFireball,
+}
+impl DirectEntity {
+    pub fn is_living(self) -> bool {
+        self == Self::Living
+    }
+    pub fn is_projectile(self) -> bool {
+        matches!(self, Self::Projectile | Self::Arrow | Self::LargeFireball)
+    }
+    pub fn is_arrow(self) -> bool {
+        self == Self::Arrow
+    }
+    pub fn is_large_fireball(self) -> bool {
+        self == Self::LargeFireball
+    }
+}
 /// Who attacks in a hit and what they hold, as `living_knockback` and the weapon of
 /// `living_incoming_damage` name them. The site that starts the attack builds it (the game's
 /// `attack_of`) and lends it with the level the hit lands in ([`DamageLevel::attacked_by`]), so
@@ -505,11 +914,14 @@ pub struct Attack {
     pub attacker: i32,
     /// The projectile delivering this hit, if any (`DamageSource.getDirectEntity`).
     pub projectile: Option<i32>,
-    /// Whether that actual projectile extends `AbstractArrow` (including thrown tridents).
-    pub projectile_is_arrow: bool,
+    /// The class family of [`Self::projectile`] (`AbstractArrow`, `LargeFireball`, or another `Projectile`).
+    pub projectile_kind: DirectEntity,
     /// An explicitly supplied direct entity, including 0 for no direct entity.
     /// None uses the normal melee/projectile factory rules.
     pub direct: Option<i32>,
+    /// The class family of an explicitly supplied [`Self::direct`] entity (`Some(id)` with `id != 0`).
+    /// Ignored when [`Self::direct`] is `None` or `Some(0)`.
+    pub direct_kind: Option<DirectEntity>,
     /// `DamageSource.getSourcePosition`, as supplied by the hit's factory.
     pub position: Option<[f64; 3]>,
     /// An arrow's fired-from weapon or a thrown trident's complete stack.
@@ -524,8 +936,9 @@ pub struct Attack {
 pub static NO_ATTACK: Attack = Attack {
     attacker: 0,
     projectile: None,
-    projectile_is_arrow: false,
+    projectile_kind: DirectEntity::Other,
     direct: None,
+    direct_kind: None,
     position: None,
     projectile_weapon: None,
     player_uuid: None,
@@ -535,7 +948,10 @@ pub static NO_ATTACK: Attack = Attack {
 /// `DamageSource.getDirectEntity` (`arrow`, `trident`, `thrown`, `spit`,
 /// `fireball`, `unattributed_fireball`, `wither_skull`, `wind_charge`,
 /// `fireworks`, `mob_projectile`, `indirect_magic`). `magic()` does not, and
-/// neither does a blast: those stay entity-free even during a projectile's impact.
+/// blast damage types (`explosion`, `player_explosion`, `bad_respawn_point`) do
+/// not imply a projectile either, though a blast can still supply a projectile
+/// explicitly via [`Attack::direct`] / [`Attack::direct_kind`] (for example, a
+/// `LargeFireball` or `WitherSkull` explosion).
 pub fn names_its_projectile(damage_type: &str) -> bool {
     matches!(
         damage_type,
@@ -601,7 +1017,7 @@ impl HealthResources {
             root,
             &sunrise_world::loot::PackOverlay {
                 conditions,
-                ..sunrise_world::loot::PackOverlay::NONE
+                ..sunrise_world::loot::PackOverlay::default()
             },
         )?;
         for name in ["minecraft:fall", "minecraft:stalagmite", "minecraft:starve"] {
@@ -679,6 +1095,12 @@ pub enum HealthEvent {
         source: DamageTypeId,
         amount: f32,
     },
+    /// `LivingEntity.hurtServer`'s `for (MobEffectInstance effect :
+    /// getActiveEffects()) effect.onMobHurt(level, this, source, damage)`: an
+    /// accepted hit's effects answer it, with the damage before armor and
+    /// absorption, so a hit they take whole still reaches them. The game runs
+    /// them (`InfestedMobEffect`).
+    MobHurt,
     Phase(&'static str),
     /// `Player.hurtArmor`: a hit that doesn't bypass armor wears the worn
     /// pieces (`LivingEntity.getDamageAfterArmorAbsorb`); the game applies it.
@@ -718,6 +1140,7 @@ impl HealthEvent {
             Self::RecordedDamage { amount, .. } => {
                 format!("record-damage {:08x}", amount.to_bits())
             }
+            Self::MobHurt => "mob-hurt".into(),
             Self::Phase(name) => name.into(),
             Self::ArmorHurt { amount, .. } => format!("hurt-armor {:08x}", amount.to_bits()),
             Self::DamageBroadcast { .. } => "broadcast-damage".into(),
@@ -762,12 +1185,14 @@ pub struct PlayerHealth {
     /// of yet (`indicateDamage`).
     pub indicated_dir: Option<f32>,
     pub dead: bool,
+    /// A lethal or protected hit suspended for its acting body's synchronous game continuation.
+    pub damage_completion: Option<DamageCompletion>,
     pub sync_velocity: bool,
     pub game_time: i64,
     pub tick_count: i32,
     /// A death-protection item (totem) is in either hand.
     pub totem_ready: bool,
-    /// The totem saved the player this tick; the game applies its effects.
+    /// The current hit used death protection; its game continuation applies the effects.
     pub totem_used: bool,
     /// The totem that would save the player is in the off hand.
     pub totem_off_hand: bool,
@@ -819,6 +1244,7 @@ impl PlayerHealth {
             hurt_dir: 0.0,
             indicated_dir: None,
             dead: false,
+            damage_completion: None,
             sync_velocity: false,
             game_time: 0,
             tick_count: 0,
@@ -844,19 +1270,28 @@ impl PlayerHealth {
     pub fn dead_or_dying(&self) -> bool {
         self.health() <= 0.0 || self.dead
     }
-    /// The damage-clock phases of ServerPlayer.tick and LivingEntity.baseTick.
-    /// The complete enclosing ticks, including death removal, are not yet bound.
+    /// Advance all three clock phases for callers without separate level and body ticks.
     pub fn advance_clock(&mut self) {
+        self.advance_entity_clock();
+        self.advance_damage_cooldown();
+        self.advance_body_clock();
+    }
+    /// `Entity.commonTick`: the entity-level immunity window, not the damage cooldown.
+    pub fn advance_entity_clock(&mut self) {
         self.game_time = self.game_time.wrapping_add(1);
         self.tick_count = self.tick_count.wrapping_add(1);
-        if self.hurt.cooldown > 0 {
-            self.hurt.cooldown -= 1;
-        }
-        // Entity.baseTick: the entity-level window counts down too, its own
-        // timer (#916), never the damage cooldown above.
         if self.invulnerable_time > 0 {
             self.invulnerable_time -= 1;
         }
+    }
+    /// `damageCooldownTime` runs in `ServerPlayer.tick`, not in its `LivingEntity.baseTick`.
+    pub fn advance_damage_cooldown(&mut self) {
+        if self.hurt.cooldown > 0 {
+            self.hurt.cooldown -= 1;
+        }
+    }
+    /// `LivingEntity.baseTick`'s hurt timers.
+    pub fn advance_body_clock(&mut self) {
         if self.hurt.hurt_time > 0 {
             self.hurt.hurt_time -= 1;
         }
@@ -932,23 +1367,6 @@ impl PlayerMotion {
     ) -> Result<BlockOutcome> {
         self.hurt_caused_by(
             level, resources, rules, source, amount, blocking, false, 0, false,
-        )
-    }
-    /// [`hurt_blocking`](Self::hurt_blocking) from a source whose hit was a
-    /// creative player's (`DamageSource.isCreativePlayer`): it passes the
-    /// invulnerability the victim has (`Entity.isInvulnerableToBase`'s one
-    /// exception, #916).
-    pub fn hurt_blocking_creative(
-        &mut self,
-        level: &mut DamageLevel<'_>,
-        resources: &HealthResources,
-        rules: HealthRules,
-        source: DamageTypeId,
-        amount: f32,
-        blocking: Option<Blocking>,
-    ) -> Result<BlockOutcome> {
-        self.hurt_caused_by(
-            level, resources, rules, source, amount, blocking, false, 0, true,
         )
     }
     /// `hurt_blocking` from a source whose causing entity is a living
@@ -1048,6 +1466,9 @@ impl PlayerMotion {
         hit.pending = self.in_combat(level, resources, rules, &mut hit, |combat, state| {
             Ok(combat.hurt_until_helmet(state, amount)?)
         })?;
+        if let Some(pending) = &mut hit.pending {
+            pending.record_shield_damage(hit.shield_damage as f32);
+        }
         Ok(hit)
     }
     /// Select the inner hit before synchronous ordinary equipment wear.
@@ -1201,6 +1622,7 @@ impl PlayerMotion {
             invulnerable: hit.invulnerable,
             permanently_invulnerable: hit.permanently_invulnerable,
             invulnerable_time: hit.invulnerable_time,
+            fire_immune: self.mod_fire_immune,
             creative_source: hit.creative_source,
             client_loaded: self.client_loaded,
             rules,
@@ -1210,6 +1632,7 @@ impl PlayerMotion {
             living_cause: hit.living_cause,
             events: &mut self.events,
             dead: &mut h.dead,
+            damage_completion: &mut h.damage_completion,
             sync_velocity: &mut h.sync_velocity,
             game_time: h.game_time,
             status: self.status.clone(),
@@ -1285,6 +1708,7 @@ pub(crate) struct Environment<'a> {
     pub(crate) permanently_invulnerable: bool,
     /// `Entity.invulnerableTime > 0` (#916): the entity-level window.
     pub(crate) invulnerable_time: bool,
+    pub(crate) fire_immune: bool,
     /// The hit is a creative player's (`DamageSource.isCreativePlayer`,
     /// #916): it passes the invulnerability below.
     pub(crate) creative_source: bool,
@@ -1305,6 +1729,7 @@ pub(crate) struct Environment<'a> {
     pub(crate) living_cause: bool,
     pub(crate) events: &'a mut Vec<MotionEvent>,
     pub(crate) dead: &'a mut bool,
+    pub(crate) damage_completion: &'a mut Option<DamageCompletion>,
     pub(crate) sync_velocity: &'a mut bool,
     pub(crate) game_time: i64,
     /// Resistance, fire resistance and armor protection (effects.rs).
@@ -1611,7 +2036,6 @@ impl ServerDamageEnvironment<Attributes> for Environment<'_> {
         self.phase("entity-damage")
     }
     fn damage_pre(&mut self, container: &mut DamageContainer) -> io::Result<()> {
-        container.record_shield_damage(self.shield_damage as f32);
         let source = self
             .level
             .attack()
@@ -1626,7 +2050,7 @@ impl CombatEnvironment<Attributes> for Environment<'_> {
         *self.dead
     }
 }
-impl ImmunityWorld for Environment<'_> {
+impl EntityImmunityWorld for Environment<'_> {
     type Error = io::Error;
     fn removed(&self) -> bool {
         false
@@ -1644,13 +2068,46 @@ impl ImmunityWorld for Environment<'_> {
         Ok(self.creative_source)
     }
     fn fire_immune(&mut self) -> io::Result<bool> {
-        Ok(false)
+        Ok(self.fire_immune)
     }
     fn fall_immune(&mut self) -> io::Result<bool> {
-        Ok(false)
+        Ok(self.level.tags().is_some_and(|items| {
+            items
+                .enchantments
+                .entity_in_tag("minecraft:player", "minecraft:fall_damage_immune")
+        }))
     }
+    fn invulnerability_check(&mut self, vanilla: bool) -> io::Result<bool> {
+        Ok(self.observe_hit_invulnerability(vanilla))
+    }
+}
+impl ImmunityWorld for Environment<'_> {
     fn enchantment_immunity(&mut self) -> io::Result<bool> {
-        Ok(false)
+        let Some(items) = self.level.tags() else {
+            return Ok(false);
+        };
+        let equipment = self
+            .level
+            .player_equipment
+            .into_iter()
+            .map(|stack| stack.map_or(&[][..], ItemStack::enchantments))
+            .zip(sunrise_items::equipment::SLOT_NAMES);
+        let source = self
+            .level
+            .attack()
+            .player_source(&self.source.definition().name, self.causing);
+        let context = crate::enchant::EffectContext {
+            items: Some(items),
+            damage_type: Some(source.damage_type),
+            is_direct: source.causing == source.direct,
+            this: Some("minecraft:player"),
+            ..Default::default()
+        };
+        Ok(items.enchantments.is_damage_immune(
+            items.enchantments.damage_immunities(equipment),
+            &context,
+            self.level.random(),
+        ))
     }
     fn damage_rule(&mut self, rule: DamageRule) -> io::Result<bool> {
         Ok(match rule {
@@ -1668,9 +2125,6 @@ impl ImmunityWorld for Environment<'_> {
     }
     fn client_loaded(&mut self) -> io::Result<bool> {
         Ok(self.client_loaded)
-    }
-    fn invulnerability_check(&mut self, vanilla: bool) -> io::Result<bool> {
-        Ok(self.observe_hit_invulnerability(vanilla))
     }
 }
 impl HurtWorld for Environment<'_> {
@@ -1751,10 +2205,19 @@ impl HurtWorld for Environment<'_> {
             .level
             .attack()
             .player_source(&self.source.definition().name, self.causing);
+        // `applyItemBlocking` calls `hurtBlockingItem` with what the item stopped,
+        // nothing included (a hit from behind): the item is used all the same.
+        // Only a block a mod's hook turned off leaves it unused.
+        let reached =
+            vanilla <= 0.0 && matches!(&self.blocking, Some(b) if !b.bypassed && !b.pierce);
         let Some(block) =
             self.level
                 .shield_block(Hurting::Player(self.entity, source), damage, block)
         else {
+            if reached {
+                self.blocking_item_used = true;
+                self.shield_damage = shield_damage;
+            }
             return Ok(0.0);
         };
         self.blocking_item_used = true;
@@ -1864,6 +2327,12 @@ impl HurtWorld for Environment<'_> {
         Ok(self.game_time)
     }
     fn effects_on_hurt(&mut self, _: &mut State, _: f32) -> io::Result<()> {
+        // `for (MobEffectInstance effect : getActiveEffects()) effect.onMobHurt(..)`:
+        // Infested is the only effect that answers a hit, and its roll draws
+        // from the level's random, so the game runs it.
+        if self.status.infested {
+            self.event(HealthEvent::MobHurt);
+        }
         Ok(())
     }
     fn player_hurt_criterion(
@@ -1888,18 +2357,16 @@ impl HurtWorld for Environment<'_> {
     fn attacker_criterion(&mut self, _: &mut State, _: f32, _: f32, _: bool) -> io::Result<()> {
         Ok(())
     }
-    fn damage_post(&mut self, _: &mut State, container: &DamageContainer) -> io::Result<()> {
-        let source = HurtSource {
-            damage_type: &self.source.definition().name,
-            causing: self.causing,
-            direct: self
-                .level
-                .attack()
-                .projectile_direct(&self.source.definition().name),
-            position: None,
-        };
-        self.level
-            .damage_post(Hurting::Player(self.entity, source), container);
+    fn damage_post(&mut self, _: &mut State, container: DamageContainer) -> io::Result<()> {
+        let source = self
+            .level
+            .attack()
+            .player_source(&self.source.definition().name, self.causing);
+        *self.damage_completion = self.level.finish_damage(
+            Hurting::Player(self.entity, source),
+            container,
+            *self.dead || self.totem_fired,
+        );
         Ok(())
     }
 }
@@ -2089,22 +2556,24 @@ mod tests {
 
     #[test]
     fn player_post_records_fresh_hit_decision() {
-        use sunrise_world::living_damage::DamageValues;
-        static SEEN: std::sync::Mutex<Vec<super::DamageContainer>> =
-            std::sync::Mutex::new(Vec::new());
+        struct Observed {
+            should_cause_side_effects: bool,
+            health_damage: f32,
+            post_attack_invulnerability_ticks: i32,
+            invulnerability_reduction: f32,
+        }
+        static SEEN: std::sync::Mutex<Vec<Observed>> = std::sync::Mutex::new(Vec::new());
         fn post(
             _: super::DamageLevel<'_>,
             _: super::Hurting<'_>,
             container: &super::DamageContainer,
         ) {
-            // The plain values used by wasm must preserve the decision in both directions.
-            let values = DamageValues::from(container);
-            assert_eq!(
-                values.should_cause_side_effects,
-                container.should_cause_side_effects()
-            );
-            assert_eq!(super::DamageContainer::from(values), *container);
-            SEEN.lock().unwrap().push(container.clone());
+            SEEN.lock().unwrap().push(Observed {
+                should_cause_side_effects: container.should_cause_side_effects(),
+                health_damage: container.health_damage(),
+                post_attack_invulnerability_ticks: container.post_attack_invulnerability_ticks(),
+                invulnerability_reduction: container.reduction(super::Reduction::Invulnerability),
+            });
         }
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
@@ -2142,13 +2611,18 @@ mod tests {
         assert_eq!(seen.len(), 2, "the refused hit must not fire Post");
         let flags: Vec<_> = seen
             .iter()
-            .map(|hit| hit.should_cause_side_effects())
+            .map(|hit| hit.should_cause_side_effects)
             .collect();
         assert_eq!(flags, [true, false]);
+        let invuln: Vec<_> = seen
+            .iter()
+            .map(|hit| hit.invulnerability_reduction)
+            .collect();
+        assert_eq!(invuln, [0.0, 2.0]);
         // Both first hits deal 2 and leave 20 ticks: neither value determines freshness.
         for hit in &seen[..2] {
-            assert_eq!(hit.health_damage(), 2.0);
-            assert_eq!(hit.post_attack_invulnerability_ticks(), 20);
+            assert_eq!(hit.health_damage, 2.0);
+            assert_eq!(hit.post_attack_invulnerability_ticks, 20);
         }
     }
 
@@ -2281,8 +2755,7 @@ mod tests {
     static SEEN: std::sync::Mutex<Vec<(i32, String, f32)>> = std::sync::Mutex::new(Vec::new());
     /// Sets the native damage hook of these tests (global: it stays set for
     /// the process): for entities 9001 to 9004 and 9011 to 9013 it records the
-    /// hit, cancels x1's, doubles x2's, makes 9003's -5 and 9004's NaN, and gives 9005's hit an
-    /// armor and an absorption reduction modifier.
+    /// hit, cancels x1's, doubles x2's, and gives 9005's hit armor and absorption modifiers.
     fn set_hook() -> (super::DamageHooks, fn(i32) -> Vec<(String, f32)>) {
         use super::{DamageContainer, DamageLevel, Hurting, Victim};
         fn hook(
@@ -2304,15 +2777,21 @@ mod tests {
             let amount = container.new_damage();
             SEEN.lock().unwrap().push((entity, seen, amount));
             match entity {
-                9002 | 9012 => container.set_new_damage(amount * 2.0),
-                9003 => container.set_new_damage(-5.0),
-                9004 => container.set_new_damage(f32::NAN),
+                9002 | 9012 => container.record_new_damage(amount * 2.0),
                 9005 => {
-                    use sunrise_world::living_damage::{Reduction, ReductionChange};
-                    container.add_reduction_modifier(Reduction::Armor, ReductionChange::Add(1.0));
-                    container.add_reduction_modifier(Reduction::Armor, ReductionChange::Scale(2.0));
-                    container
-                        .add_reduction_modifier(Reduction::Absorption, ReductionChange::Scale(0.5));
+                    use sunrise_world::living_damage::Reduction;
+                    container.add_reduction_modifier(
+                        Reduction::Armor,
+                        Box::new(|_: &DamageContainer, v: f32| v + 1.0),
+                    );
+                    container.add_reduction_modifier(
+                        Reduction::Armor,
+                        Box::new(|_: &DamageContainer, v: f32| v * 2.0),
+                    );
+                    container.add_reduction_modifier(
+                        Reduction::Absorption,
+                        Box::new(|_: &DamageContainer, v: f32| v * 0.5),
+                    );
                 }
                 _ => {}
             }
@@ -2361,11 +2840,6 @@ mod tests {
         let mut doubled = mob(9002);
         assert!(doubled.damage(level, 2.0, hit));
         assert_eq!(doubled.health, 6.0);
-        // LivingEntity.hurtServer: a negative amount hurts by 0, a NaN by
-        // Float.MAX_VALUE.
-        let (mut negative, mut nan) = (mob(9003), mob(9004));
-        assert!(negative.damage(level, 2.0, hit) && nan.damage(level, 2.0, hit));
-        assert!(negative.health == 10.0 && nan.health <= 0.0);
         // 8 damage on a mob with 1.5 absorption hearts. Armor took none: +1 then x2 is 2, so 6
         // goes on. The hearts would take their 1.5; half of it is 0.75, so 5.25 reaches the
         // health (10 - 5.25) and 0.75 hearts are left.
@@ -2481,7 +2955,7 @@ mod tests {
                 Default::default(),
                 0.0,
             );
-            m.on_ground = true;
+            m.ground.on_ground = true;
             m.attrs.knockback_resistance = own;
             m.gear_knockback_resistance = gear;
             m.knockback(level, 0.4, 3.0, 0.0, &hit, 0.0);
@@ -2513,7 +2987,7 @@ mod tests {
                 Default::default(),
                 0.0,
             );
-            m.on_ground = true;
+            m.ground.on_ground = true;
             m.attrs.knockback_resistance = resistance;
             m
         };

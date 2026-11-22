@@ -1,13 +1,13 @@
-use sunrise_assets::blockstate::{
-    BlockStateDefinition, Selector, Variant, VariantSet, bind::SelectedModels,
-    choice::CompiledChoices,
-};
-use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
 use serde_json::{Value, json};
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_assets::blockstate::{
+    BlockStateDefinition, Selector, Variant, VariantSet, bind::SelectedModels,
+    choice::CompiledChoices,
+};
+use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
 fn choice(value: &Value, index: usize) -> VariantSet {
     let variant = |suffix| Variant {
         model: format!("sunrise:part{index}_{suffix}"),

@@ -2,12 +2,21 @@
 //! with their own sorted translucent material (`FLUID_OVERLAY`).
 use super::{Game, native_block_entity_draw::BlockEntityDraw};
 use glam::Vec3;
+use mod_api::{FluidBoxError, FluidBoxOptions, FluidStack};
 use sunrise_client::{
     fluid_render::{NativeFluidRenderOptions, fluid_box, fluid_light},
     gfx::FLUID_OVERLAY,
     mesher::Vertex,
 };
-use mod_api::{FluidBoxError, FluidBoxOptions, FluidStack};
+
+/// What a fluid draws as in a `fluid_box`: its sprite's layer, its `0xAARRGGBB` tint and its
+/// block light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FluidBoxLook {
+    layer: u32,
+    tint: u32,
+    luminosity: u8,
+}
 
 impl Game<'_> {
     /// Draws `stack` as a still fluid filling `bounds` under `draw`'s pose, sampling the fluid's
@@ -19,47 +28,81 @@ impl Game<'_> {
         bounds: [f32; 6],
         options: FluidBoxOptions,
     ) -> Result<(), FluidBoxError> {
+        let key = stack.key().ok_or(FluidBoxError::UnsupportedFluid)?;
+        let look = self.standalone_geometry.fluid_look(
+            mod_api::__private::parts_installation::fluid_key_slot(key),
+            || self.resolve_fluid_look(key),
+        )?;
+        draw_fluid_box(draw, look, stack, bounds, options)
+    }
+
+    /// The look of `key`, once per resource generation: water and lava keep their own sprite,
+    /// tint and light, any other fluid reads its look (`data/<mod>/sunrise/fluid/`).
+    fn resolve_fluid_look(&self, key: mod_api::FluidKey) -> Result<FluidBoxLook, FluidBoxError> {
         let layers = &self.pack.render.sprite_layers;
-        draw_fluid_box(
-            draw,
+        let id = mod_api::__private::fluid_id(key).ok_or(FluidBoxError::UnsupportedFluid)?;
+        let luminosity = super::native_block_tables::BlockTables::new(&self.res, &self.pack)
+            .fluid_type_properties(key)
+            .map_or(0, |properties| properties.light_level);
+        fluid_box_look(
+            id,
+            sunrise_client::mod_content::fluid_look(id).as_ref(),
+            luminosity,
             |sprite| {
                 layers
                     .get(sprite)
                     .or_else(|| layers.get(sprite.strip_prefix("minecraft:")?))
                     .copied()
             },
-            stack,
-            bounds,
-            options,
         )
     }
 }
 
-/// The still sprite, `0xAARRGGBB` stack tint and luminosity of a fluid the engine draws.
-/// Components and other fluids are refused rather than guessed.
-fn fluid_visual(stack: &FluidStack) -> Option<(&'static str, u32, u8)> {
-    if stack.has_components() {
-        return None;
-    }
-    match mod_api::__private::fluid_id(stack.key()?)? {
-        "minecraft:water" => Some(("minecraft:block/water_still", 0xFF3F_76E4, 0)),
-        "minecraft:lava" => Some(("minecraft:block/lava_still", 0xFFFF_FFFF, 15)),
-        _ => None,
-    }
+/// The look of fluid `id`, whose declared look is `look` and whose block light is `luminosity`:
+/// vanilla's water and lava by their own sprites and tints, any other fluid by its look (a look
+/// with no sprite draws its tint flat). `UnsupportedFluid` for the empty fluid, `MissingSprite`
+/// for a fluid with no look or a sprite the loaded resources lack.
+fn fluid_box_look(
+    id: &str,
+    look: Option<&sunrise_mod_package::content::FluidLook>,
+    luminosity: u8,
+    sprite_layer: impl Fn(&str) -> Option<u32>,
+) -> Result<FluidBoxLook, FluidBoxError> {
+    let (sprite, tint) = match id {
+        "minecraft:empty" => return Err(FluidBoxError::UnsupportedFluid),
+        "minecraft:water" => ("minecraft:block/water_still", 0xFF3F_76E4),
+        "minecraft:lava" => ("minecraft:block/lava_still", 0xFFFF_FFFF),
+        _ => {
+            let look = look.ok_or(FluidBoxError::MissingSprite)?;
+            (
+                look.sprite
+                    .as_deref()
+                    .unwrap_or(sunrise_client::fluid_models::FLAT_SPRITE),
+                super::native_panel_recipes::fluid_tint(id, look.tint),
+            )
+        }
+    };
+    Ok(FluidBoxLook {
+        layer: sprite_layer(sprite).ok_or(FluidBoxError::MissingSprite)?,
+        tint,
+        luminosity,
+    })
 }
 
 fn draw_fluid_box(
     draw: &mut BlockEntityDraw,
-    sprite_layer: impl FnOnce(&str) -> Option<u32>,
+    FluidBoxLook {
+        layer,
+        tint,
+        luminosity,
+    }: FluidBoxLook,
     stack: &FluidStack,
     bounds: [f32; 6],
     options: FluidBoxOptions,
 ) -> Result<(), FluidBoxError> {
-    let (sprite, tint, luminosity) = fluid_visual(stack).ok_or(FluidBoxError::UnsupportedFluid)?;
     if stack.amount == 0 {
         return Ok(());
     }
-    let layer = sprite_layer(sprite).ok_or(FluidBoxError::MissingSprite)?;
     let pose = draw.pose();
     let light = fluid_light(draw.light(), luminosity);
     let argb = options.argb.unwrap_or(tint);
@@ -116,8 +159,29 @@ mod tests {
         options: FluidBoxOptions,
     ) -> (Result<(), FluidBoxError>, Vec<Vertex>) {
         let mut draw = frame();
-        let result = draw_fluid_box(&mut draw, |_| Some(7), stack, bounds, options);
+        let result = look(stack, None, |_| Some(7))
+            .and_then(|look| draw_fluid_box(&mut draw, look, stack, bounds, options));
         (result, draw.into_vertices())
+    }
+
+    /// The look of `stack`'s fluid, lava's block light 15 and the others' 0.
+    fn look(
+        stack: &FluidStack,
+        declared: Option<&sunrise_mod_package::content::FluidLook>,
+        sprite_layer: impl Fn(&str) -> Option<u32>,
+    ) -> Result<FluidBoxLook, FluidBoxError> {
+        let id = mod_api::__private::fluid_id(stack.key().unwrap()).unwrap();
+        let light = if id == "minecraft:lava" { 15 } else { 0 };
+        fluid_box_look(id, declared, light, sprite_layer)
+    }
+
+    fn honey() -> sunrise_mod_package::content::FluidLook {
+        sunrise_mod_package::content::FluidLook {
+            id: "test:honey".into(),
+            sprite: Some("test:block/honey".into()),
+            tint: Some(0xC0FF_AA00),
+            world: None,
+        }
     }
 
     #[test]
@@ -161,30 +225,13 @@ mod tests {
     fn refusals_and_empty_stacks_append_nothing() {
         let unit = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let options = FluidBoxOptions::new(true, 0.0);
-        let with_components = {
-            use sunrise_core::nbt::{Compound, Tag};
-            let mut components = Compound::new();
-            components.insert(
-                "minecraft:custom_data".into(),
-                Tag::Compound(Compound::new()),
-            );
-            FluidStack {
-                components: Some(Box::new(components.into())),
-                ..stack("minecraft:water", 1000)
-            }
-        };
         let cases = [
+            // A registered fluid with no look has no sprite.
             (
                 stack("test:potion", 1000),
                 unit,
                 options,
-                Err(FluidBoxError::UnsupportedFluid),
-            ),
-            (
-                with_components,
-                unit,
-                options,
-                Err(FluidBoxError::UnsupportedFluid),
+                Err(FluidBoxError::MissingSprite),
             ),
             (
                 stack("minecraft:water", 1000),
@@ -218,17 +265,90 @@ mod tests {
             assert_eq!(result, expected, "{bounds:?} {options:?}");
             assert!(vertices.is_empty(), "{bounds:?} {options:?}");
         }
-        let mut draw = frame();
+        // A sprite the loaded resources lack.
         assert_eq!(
-            draw_fluid_box(
-                &mut draw,
-                |_| None,
-                &stack("minecraft:lava", 1000),
-                unit,
-                options
-            ),
+            look(&stack("minecraft:lava", 1000), None, |_| None),
             Err(FluidBoxError::MissingSprite)
         );
-        assert!(draw.into_vertices().is_empty());
+        assert_eq!(
+            fluid_box_look("minecraft:empty", None, 0, |_| Some(7)),
+            Err(FluidBoxError::UnsupportedFluid)
+        );
+    }
+
+    #[test]
+    fn a_mod_fluid_draws_its_look_and_a_stack_with_components_draws_the_same() {
+        let layers = |sprite: &str| (sprite == "test:block/honey").then_some(9);
+        let honey = honey();
+        let plain = stack("test:potion", 1000);
+        let with_components = {
+            use sunrise_core::nbt::{Compound, Tag};
+            let mut components = Compound::new();
+            components.insert(
+                "minecraft:custom_data".into(),
+                Tag::Compound(Compound::new()),
+            );
+            FluidStack {
+                components: Some(Box::new(components.into())),
+                ..stack("test:potion", 1000)
+            }
+        };
+        let drawn_with = |stack: &FluidStack, options| {
+            let mut draw = frame();
+            let look = fluid_box_look("test:potion", Some(&honey), 15, layers).unwrap();
+            let result = draw_fluid_box(
+                &mut draw,
+                look,
+                stack,
+                [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                options,
+            );
+            (result, draw.into_vertices())
+        };
+        let options = FluidBoxOptions::new(true, 0.0);
+        let (result, vertices) = drawn_with(&plain, options);
+        assert_eq!(result, Ok(()));
+        assert_eq!(vertices.len(), 6 * 4);
+        // The look's sprite layer and its 0xAARRGGBB tint as ABGR; block light raised from the
+        // draw's to the look's own light level 15.
+        let lit = fluid_light(0x30C0, 15);
+        assert_ne!(lit, 0x30C0);
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.glint_uv == [9.0, 0.0] && v.color == 0xC000_AAFF && v.light == lit)
+        );
+        // Components change nothing, and `argb` still replaces the look's tint.
+        let (result, same) = drawn_with(&with_components, options);
+        assert_eq!(result, Ok(()));
+        assert_eq!(same.len(), vertices.len());
+        assert!(same.iter().zip(&vertices).all(|(a, b)| {
+            (a.pos, a.color, a.light, a.glint_uv) == (b.pos, b.color, b.light, b.glint_uv)
+        }));
+        let (_, argb) = drawn_with(&plain, options.with_argb(0x8011_2233));
+        assert!(argb.iter().all(|v| v.color == 0x8033_2211));
+    }
+
+    #[test]
+    fn a_look_with_no_sprite_draws_its_tint_flat() {
+        let flat = sunrise_mod_package::content::FluidLook {
+            sprite: None,
+            ..honey()
+        };
+        let layers = |sprite: &str| (sprite == "sunrise:flat_color").then_some(4);
+        assert_eq!(
+            fluid_box_look("test:honey", Some(&flat), 0, layers),
+            Ok(FluidBoxLook {
+                layer: 4,
+                tint: 0xC0FF_AA00,
+                luminosity: 0
+            })
+        );
+        // No tint is the colour `DrawContext::fluid` draws: an opaque mid grey.
+        let plain = sunrise_mod_package::content::FluidLook { tint: None, ..flat };
+        assert_eq!(
+            fluid_box_look("test:honey", Some(&plain), 0, layers).map(|look| look.tint),
+            Ok(0xFF9A_9A9A)
+        );
     }
 }

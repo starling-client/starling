@@ -1,0 +1,13 @@
+id = "keys_manifest_forms"
+name = "Rule forms"
+version = "1.0.0"
+side = "client"
+served_by = "rule_host"
+
+[incompatible]
+client_overlay = { side = "client" }
+common_overlay = { side = "both" }
+
+[discouraged]
+server_overlay = { version = "<4", side = "server" }
+shared_overlay = { side = "both" }

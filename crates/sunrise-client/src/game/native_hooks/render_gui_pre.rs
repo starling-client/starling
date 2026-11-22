@@ -2,8 +2,8 @@ use super::*;
 
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// Before the in-world HUD (`RenderGuiEvent.Pre`): `canceled` hides it as
-    /// F1 does.
+    /// Before the in-world HUD, including under F1 (`RenderGuiEvent.Pre`). A veto skips
+    /// the HUD and ordinary toasts, but not mandatory diagnostics.
     pub(in crate::game) fn native_render_gui_pre(&self, canceled: &mut bool) {
         self.fire_render_gui_pre(canceled);
     }
@@ -29,7 +29,7 @@ mod local_sound_tests {
     /// A sound a screen hook plays through its read-only host is held, then played by the
     /// next audio update, before its tick.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_screen_hooks_sound_reaches_audio_at_the_next_update() {
         let mods: mod_api::Mods = vec![ModEntry::new("click", Box::new(Mod))].into();
         with_mods(mods, || {

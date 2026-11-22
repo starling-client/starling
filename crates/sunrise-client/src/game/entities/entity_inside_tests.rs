@@ -4,13 +4,13 @@
 
 use super::Game;
 use super::native_entity_refs::tests::with_game;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::Mob;
 use sunrise_core::geometry::Vec3;
-use std::sync::Arc;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mob_presses_a_plate_only_inside_the_simulation_distance() {
     with_game(|game| {
         game.world

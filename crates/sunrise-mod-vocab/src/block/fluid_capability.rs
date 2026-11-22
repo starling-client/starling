@@ -1,6 +1,7 @@
 //! The fluid capability (arismoko/horizon#41 §7): [`FLUIDS`], as NeoForge 26.3's
 //! `Capabilities.Fluid.BLOCK`, a [`ResourceHandler`] of [`FluidResource`]s as
 //! [`ITEMS`](crate::ITEMS) is of items. Amounts are millibuckets: a bucket is 1000.
+use super::item_place::ItemCapabilityDefault;
 use crate::__private::ingredient_parser::WalkedIngredient;
 use crate::Components;
 use crate::{
@@ -62,7 +63,15 @@ impl FluidStack {
 
 /// A fluid and its components, without an amount, as NeoForge's `FluidResource`: what a tank
 /// holds. An empty tank holds none.
-// no wire: decoding calls FluidResource::of to normalize the incoming fluid amount to one; a structural derive would preserve a non-unit wire amount.
+///
+/// This is a process-local fluid transfer identity: convert to [`FluidStack`] for `Wire`
+/// schemas.
+///
+/// ```compile_fail,E0277
+/// fn requires_wire<T: mod_api::wire::Wire>() {}
+/// requires_wire::<mod_api::FluidResource>();
+/// ```
+// no wire: process-local fluid transfer identity; convert to FluidStack at Wire boundaries.
 #[derive(Clone)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct FluidResource(pub(crate) FluidStack);
@@ -100,9 +109,17 @@ impl fmt::Debug for FluidResource {
 }
 
 /// Why a fluid ingredient could not be parsed.
+///
+/// This is a local JSON parse refusal returned by [`FluidIngredient::from_json`], not a `Wire`
+/// type.
+///
+/// ```compile_fail,E0277
+/// fn requires_wire<T: mod_api::wire::Wire>() {}
+/// requires_wire::<mod_api::FluidIngredientError>();
+/// ```
+// no wire: local JSON parse refusal returned by FluidIngredient::from_json.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum FluidIngredientError {
     /// Invalid or unsupported ingredient shape.
     Invalid,
@@ -126,7 +143,8 @@ pub struct FluidIngredient {
 
 impl FluidIngredient {
     /// Parse a fluid, tag, list or standard shape against this load's fluid registry.
-    /// Invalid shapes or unknown names return a typed error.
+    /// Invalid shapes or unknown names return a typed error; a list holding an entry
+    /// that isn't a fluid name or `#tag` is `Invalid`, never shortened.
     pub fn from_json(
         v: &serde_json::Value,
         context: &dyn DataLoadContext,
@@ -142,8 +160,13 @@ impl FluidIngredient {
         // the file, as a kind outside these does.
         let keys = std::cell::RefCell::new(std::collections::HashMap::new());
         let unknown = std::cell::RefCell::new(None);
-        let source =
-            WalkedIngredient::walk_resolved(v, &tags, &|_| None, &|_| None, &|_| None, &|id| {
+        let source = WalkedIngredient::<()>::walk_resolved(
+            v,
+            &tags,
+            &|_| None,
+            &|_, _| None,
+            &|_| None,
+            &|id| {
                 let Some(key) = context.fluid_key(id) else {
                     *unknown.borrow_mut() = Some(id.to_owned());
                     return None;
@@ -155,8 +178,9 @@ impl FluidIngredient {
                 };
                 keys.borrow_mut().insert(canonical.clone(), key);
                 Some(canonical)
-            });
-        fn nonempty_tree(source: &WalkedIngredient) -> bool {
+            },
+        );
+        fn nonempty_tree(source: &WalkedIngredient<()>) -> bool {
             !source.order.is_empty()
                 && source
                     .children
@@ -235,11 +259,11 @@ impl SizedFluidIngredient {
 /// cauldron has no content and no answer.
 pub const FLUIDS: CapabilityKey<dyn ResourceHandler<FluidResource>> = CapabilityKey {
     name: "sunrise:fluids",
-    default: Some(|host, at| {
+    default: Some(crate::BlockCapabilityDefault::Server(|host, at| {
         crate::backend_of(host)
             .and_then(|backend| backend.fluid_tank_count(at))
             .map(|_| Box::new(GameFluids(at)) as Box<dyn ResourceHandler<FluidResource>>)
-    }),
+    })),
     handler: PhantomData,
 };
 
@@ -260,12 +284,17 @@ impl ResourceHandler<FluidResource> for GameFluids {
             .and_then(|backend| backend.fluid_tank(self.0, index))
             .map_or(0, |held| held.amount)
     }
-    fn capacity(&self, host: &mut dyn ServerHost, index: usize, resource: &FluidResource) -> u32 {
+    fn capacity(
+        &self,
+        host: &mut dyn ServerHost,
+        index: usize,
+        resource: Option<&FluidResource>,
+    ) -> u32 {
         crate::backend_of(host).map_or(0, |backend| {
-            backend.fluid_tank_capacity(self.0, index, &resource.to_stack(1))
+            backend.fluid_tank_capacity(self.0, index, resource.map(|r| r.to_stack(1)).as_ref())
         })
     }
-    fn insert(
+    fn insert_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -279,7 +308,7 @@ impl ResourceHandler<FluidResource> for GameFluids {
         let rest = backend.fluid_tank_insert(self.0, index, resource.to_stack(amount), tx);
         amount - rest.map_or(0, |rest| rest.amount.min(amount))
     }
-    fn extract(
+    fn extract_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -304,13 +333,13 @@ impl ResourceHandler<FluidResource> for GameFluids {
 /// whole, an empty bucket taking plain water or lava.
 pub const ITEM_FLUIDS: ItemCapabilityKey<dyn ResourceHandler<FluidResource>> = ItemCapabilityKey {
     name: "sunrise:item_fluids",
-    default: Some(|host, place, stack| {
+    default: Some(ItemCapabilityDefault::Item(|host, place, item| {
         let buckets = [
             host.item_key(&BUCKET_IDS[0])?,
             host.item_key(&BUCKET_IDS[1])?,
             host.item_key(&BUCKET_IDS[2])?,
         ];
-        if !buckets.contains(&stack.item()) {
+        if !buckets.contains(&item) {
             return None;
         }
         Some(Box::new(GameBucket {
@@ -318,8 +347,8 @@ pub const ITEM_FLUIDS: ItemCapabilityKey<dyn ResourceHandler<FluidResource>> = I
             water: host.fluid_key("minecraft:water")?,
             lava: host.fluid_key("minecraft:lava")?,
             buckets,
-        }) as Box<dyn ResourceHandler<FluidResource>>)
-    }),
+        }))
+    })),
     handler: PhantomData,
 };
 
@@ -351,10 +380,10 @@ struct GameBucket {
 impl GameBucket {
     /// What the bucket here holds: none for an empty one, or where no bucket is now.
     fn held(&self, host: &mut dyn ServerHost) -> Option<FluidKey> {
-        let stack = self.place.stack(host)?;
-        if stack.item() == self.buckets[1] {
+        let item = self.place.with_stack(host, |stack| stack.item())?;
+        if item == self.buckets[1] {
             Some(self.water)
-        } else if stack.item() == self.buckets[2] {
+        } else if item == self.buckets[2] {
             Some(self.lava)
         } else {
             None
@@ -397,13 +426,19 @@ impl ResourceHandler<FluidResource> for GameBucket {
             None => 0,
         }
     }
-    fn capacity(&self, _: &mut dyn ServerHost, index: usize, resource: &FluidResource) -> u32 {
-        match self.bucket_of(resource) {
-            Some(_) if index == 0 => BUCKET,
-            _ => 0,
+    fn capacity(
+        &self,
+        _: &mut dyn ServerHost,
+        index: usize,
+        resource: Option<&FluidResource>,
+    ) -> u32 {
+        if index == 0 && resource.is_none_or(|fluid| self.bucket_of(fluid).is_some()) {
+            BUCKET
+        } else {
+            0
         }
     }
-    fn insert(
+    fn insert_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -411,16 +446,13 @@ impl ResourceHandler<FluidResource> for GameBucket {
         resource: &FluidResource,
         amount: u32,
     ) -> u32 {
-        let empty = self
-            .place
-            .stack(host)
-            .is_some_and(|stack| stack.item() == self.buckets[0]);
+        let empty = self.place.with_stack(host, |stack| stack.item()) == Some(self.buckets[0]);
         match self.bucket_of(resource) {
             Some(full) if index == 0 && empty && amount >= BUCKET => self.exchange(host, tx, full),
             _ => 0,
         }
     }
-    fn extract(
+    fn extract_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,

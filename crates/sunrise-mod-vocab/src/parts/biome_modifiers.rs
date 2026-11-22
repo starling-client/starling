@@ -39,7 +39,8 @@ pub trait BiomeModifiersRegistrar {
     /// A modifier naming a biome, feature or entity type the world lacks (another mod's, a
     /// convention tag) is skipped with a line in the log, as a data file is.
     ///
-    /// An id outside the mod's namespace, a repeated id, an empty list, a name that is not
+    /// An id outside the mod's owned namespaces (its manifest namespaces or a content package it
+    /// serves via `served_by`), a repeated id, an empty list, a name that is not
     /// namespaced, an unknown generation step, a spawner of weight 0 or with its smallest group
     /// above its largest, a spawn cost that is not finite, and a climate number that is not finite, a colour above
     /// 0xFFFFFF or a temperature modifier other than `none` or `frozen` refuse the mods, naming the mod.

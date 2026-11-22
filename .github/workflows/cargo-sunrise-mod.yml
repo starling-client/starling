@@ -1,0 +1,57 @@
+name: cargo-sunrise-mod
+# `cargo binstall --git https://github.com/sunrise-org/sunrise cargo-sunrise-mod` (#2120): binstall reads
+# [package.metadata.binstall] from crates/cargo-sunrise-mod/Cargo.toml and downloads the archive this workflow
+# attaches to the tag `cargo-sunrise-mod-v<version>`, whose version must be the manifest's. The archives are built by
+# cargo-sunrise-mod-build.yml, which the daily run also calls: a pull request builds only the x86_64 Linux archive, a
+# dispatch and a tag every archive. Only the push of a version tag publishes, the archives of that tag's own commit.
+on:
+  push:
+    tags: ['cargo-sunrise-mod-v*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/cargo-sunrise-mod/**'
+      - 'tools/sunrise_mod_binstall.py'
+      - '.github/workflows/cargo-sunrise-mod.yml'
+      - '.github/workflows/cargo-sunrise-mod-build.yml'
+permissions:
+  contents: read
+concurrency:
+  group: cargo-sunrise-mod-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  build:
+    uses: ./.github/workflows/cargo-sunrise-mod-build.yml
+  publish:
+    needs: build
+    # A version tag's push only: never a dispatch, which may name a tag too.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/cargo-sunrise-mod-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cargo-sunrise-mod-*
+          path: dist
+          merge-multiple: true
+      - name: The tag and the manifest name the same release and archives
+        run: python3 tools/sunrise_mod_binstall.py dist "$GITHUB_REF_NAME"
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          for file in *.tar.gz; do sha256sum "$file" | cut -d' ' -f1 > "$file.sha256"; done
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="\`cargo binstall --git https://github.com/sunrise-org/sunrise cargo-sunrise-mod\`"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --latest=false --title "cargo-sunrise-mod ${GITHUB_REF_NAME#cargo-sunrise-mod-v}" --notes "$notes"
+          fi

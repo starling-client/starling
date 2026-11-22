@@ -3,12 +3,12 @@
 //! or a server's `WIN_GAME` event), and the credits from Credits &
 //! Attribution.
 use super::{Game, Screen};
+use std::time::Instant;
 use sunrise_client::{
     Result,
     hud::{EndPortalFill, HudBatch},
     win_screen::{Key, WinScreen},
 };
-use std::time::Instant;
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -43,7 +43,7 @@ impl Game<'_> {
             finish,
             frame: Instant::now(),
         });
-        self.keys.clear();
+        self.clear_device_keys();
         self.set_screen(Screen::Win);
         self.capture(false);
     }

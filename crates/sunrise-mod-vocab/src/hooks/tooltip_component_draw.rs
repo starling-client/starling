@@ -9,11 +9,19 @@ pub trait Hooks {
     /// tooltip with multiple components). Origin is this component's running
     /// top and the box's left edge. All text is drawn before any images.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_tooltip_component_draw",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "RegisterClientTooltipComponentFactoriesEvent"
     )]
-    fn tooltip_component_draw();
+    fn tooltip_component_draw(
+        stack: &ItemStack,
+        draw: &mut dyn DrawContext,
+        origin: [f32; 2],
+        size: [f32; 2],
+    );
 }

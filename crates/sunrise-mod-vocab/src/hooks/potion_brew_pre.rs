@@ -9,11 +9,13 @@ pub trait Hooks {
     /// fires with those slots; `brewing_complete` doesn't, as nothing was
     /// brewed. Uncancelled, changes to `stacks` are dropped. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "PotionBrewEvent.Pre",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
-    fn potion_brew_pre();
+    fn potion_brew_pre(pos: [i32; 3], stacks: &mut [Option<ItemStack>; 5], cancel: &mut bool);
 }

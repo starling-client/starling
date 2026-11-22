@@ -4,8 +4,8 @@ mod benches {
         Record,
         compression_pool::{CompressionPool, compress_records_with_pool},
     };
-    use sunrise_core::nbt::{NamedTag, Tag};
     use std::{sync::Arc, time::Instant};
+    use sunrise_core::nbt::{NamedTag, Tag};
 
     fn sample_chunk_tag(x: i32, z: i32) -> NamedTag {
         let payload: Vec<i64> = (0..2000)

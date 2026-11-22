@@ -1,0 +1,3 @@
+ids = ["hook:should_cause_block_break_reset"]
+why = "should_cause_block_break_reset version 2 compares damage: a held stack whose damage differs from the stack the break began with starts reset as true, so the break aborts and starts again. Count is still left out. Version 1 started reset as false for a change of damage alone."
+migrate = "Rebuild against this SDK. A listener that relied on a damage change keeping the break going returns false for that case."

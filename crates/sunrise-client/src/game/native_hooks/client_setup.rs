@@ -6,6 +6,6 @@ impl Game<'_> {
     /// after the first client load has applied and before the title screen's first frame;
     /// never again on a reload (`client_resources_reloaded`) or a new world.
     pub(in crate::game) fn native_client_setup(&mut self) {
-        self.fire_client_setup();
+        Self::fire_client_setup(self);
     }
 }

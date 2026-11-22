@@ -1,0 +1,3 @@
+ids = ["type:Tag.String", "type:Compound", "handle:Tag::compound"]
+why = "JavaString is now part of the mod API, so Tag::String, a Compound's keys and Tag::compound name it where they named an engine type a mod could not."
+migrate = "Build a JavaString with JavaString::from(\"text\") or .into(), and read one with to_string_lossy()."

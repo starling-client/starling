@@ -6,9 +6,9 @@ use crate::{
     block_properties::{BlockProperty, BoundBlockProperty},
     registry::BlockStateId,
 };
-use sunrise_core::geometry::Direction;
 use serde_json::value::RawValue;
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::geometry::Direction;
 
 /// `predicate_property` for resolvers that hold the bound physical properties
 /// (`block_feature` and `state_provider`), in `BlockProperty` order.

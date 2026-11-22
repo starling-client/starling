@@ -9,24 +9,41 @@ pub trait Hooks {
     /// `screen_preedit_post` does not fire. Fires on the window while a
     /// screen is open, even when no text field is focused.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "ScreenEvent.Preedit.Pre",
         cancellable = true
     )]
-    fn screen_preedit_pre();
+    fn screen_preedit_pre(
+        screen: &ScreenView<'_>,
+        full_text: &str,
+        caret_position: usize,
+        blocks: &[String],
+        focused_block: usize,
+        canceled: &mut bool,
+    );
     /// After a screen's preedit handler (`ScreenEvent.Preedit.Post`) and only
     /// when no text field took the composition (the handler returned false:
     /// vanilla's focused field takes it, so this is a preedit no field
     /// wanted) and `screen_preedit_pre` did not cancel. Same arguments.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ScreenEvent.Preedit.Post",
         cancellable = false
     )]
-    fn screen_preedit_post();
+    fn screen_preedit_post(
+        screen: &ScreenView<'_>,
+        full_text: &str,
+        caret_position: usize,
+        blocks: &[String],
+        focused_block: usize,
+    );
     /// Ahead of the effect panels beside the survival and creative
     /// inventories (`ScreenEvent.RenderInventoryMobEffects`, vanilla's
     /// `EffectsInInventory.extractRenderState`): `available_space` is the
@@ -40,11 +57,19 @@ pub trait Hooks {
     /// recipe book opening between two layout builds), it is asked again for
     /// the new space. The exclusion areas follow this choice in the same frame.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "ScreenEvent.RenderInventoryMobEffects",
         cancellable = true
     )]
-    fn screen_render_inventory_mob_effects();
+    fn screen_render_inventory_mob_effects(
+        screen: &ScreenView<'_>,
+        available_space: i32,
+        compact: &mut bool,
+        horizontal_offset: &mut i32,
+        canceled: &mut bool,
+    );
 }

@@ -2,22 +2,26 @@
 //! (docs/modding/src/how-to/native-mods.md, "Entity and level handles", #7387): the equipment
 //! of mobs, players and armor stands, throwing a stack, and whether a mob
 //! is tamed. Reads return `None`, writes false, for a stale handle or on a
-//! client; the exception is the reads marked side `both` (`living`, `equipment`,
-//! `hand_item`, `health`, `max_health`, `attribute_value`, `attribute_base`,
+//! client; the exception is the reads marked side `both` (`living`, `with_equipment`,
+//! `with_hand_item`, `health`, `max_health`, `attribute_value`, `attribute_base`,
 //! `attributes` and `attribute_modifiers`), which on a client answer for the
 //! local player from the client's own copy; and `effect`/`effects`.
 use super::Game;
+use super::api_values::{StackReadMetadata, project_stack, stack_read_metadata};
 use super::commands::{Target, items::Owner};
 use super::living_attributes::AttributeWrite;
 use crate::mobs::Who;
-use sunrise_client::items::ItemStack;
-use sunrise_client::mobs::Mob;
-use sunrise_world::attributes::{Modifier, Operation};
 use mod_api::client::first_person::Hand;
 use mod_api::{
     AttributeModifier, AttributeOperation, Direction, EntityRef, EquipmentSlot, Identifier,
-    LivingRef, ModifierLifetime,
+    ItemStackView, LivingRef, ModifierLifetime,
 };
+use sunrise_client::items::{EntityTypeTags, ItemStack};
+use sunrise_client::mobs::{
+    Mob,
+    finalize::{self, EquipmentRead},
+};
+use sunrise_world::attributes::{Modifier, Operation};
 
 /// A player's armour slots (`armor`, head first) by equipment slot.
 fn armor_index(slot: EquipmentSlot) -> Option<usize> {
@@ -31,24 +35,44 @@ fn armor_index(slot: EquipmentSlot) -> Option<usize> {
 }
 
 /// A player's stack in `slot`, from its inventory, armour and off hand.
-fn player_slot(
-    inventory: &[Option<ItemStack>],
+fn player_slot<'a>(
+    inventory: &'a [Option<ItemStack>],
     selected: usize,
-    armor: &[Option<ItemStack>; 4],
-    offhand: &Option<ItemStack>,
-    equipment: &sunrise_items::equipment::Equipment,
+    armor: &'a [Option<ItemStack>; 4],
+    offhand: &'a Option<ItemStack>,
+    equipment: &'a sunrise_items::equipment::Equipment,
     slot: EquipmentSlot,
-) -> Option<ItemStack> {
+) -> Option<&'a ItemStack> {
     match slot {
-        EquipmentSlot::MainHand => inventory.get(selected).cloned().flatten(),
-        EquipmentSlot::OffHand => offhand.clone(),
-        EquipmentSlot::Body | EquipmentSlot::Saddle => equipment.get(slot as usize).cloned(),
-        _ => armor[armor_index(slot)?].clone(),
+        EquipmentSlot::MainHand => inventory.get(selected)?.as_ref(),
+        EquipmentSlot::OffHand => offhand.as_ref(),
+        EquipmentSlot::Body | EquipmentSlot::Saddle => equipment.get(slot as usize),
+        _ => armor[armor_index(slot)?].as_ref(),
     }
 }
 
+/// Lend one equipment slot to the API, applying overlays and encoding components only on demand.
+pub(super) fn lend_equipment(
+    stack: EquipmentRead<'_>,
+    read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+) -> Option<()> {
+    let metadata = stack_read_metadata(stack.base()).ok()?;
+    with_equipment_view(&stack, metadata, read);
+    Some(())
+}
+
+/// Use checked slot metadata to lend the same lazy view to readers and component editors.
+pub(super) fn with_equipment_view<R>(
+    stack: &EquipmentRead<'_>,
+    metadata: StackReadMetadata,
+    read: impl for<'a> FnOnce(ItemStackView<'a>) -> R,
+) -> R {
+    let project = |metadata| project_stack(&stack.project(), metadata).ok();
+    read(ItemStackView::resident(metadata, &project))
+}
+
 /// The equipment slot of a hand (`LivingEntity.getItemInHand`/`setItemInHand`).
-fn hand_slot(hand: Hand) -> EquipmentSlot {
+pub(super) fn hand_slot(hand: Hand) -> EquipmentSlot {
     match hand {
         Hand::Main => EquipmentSlot::MainHand,
         Hand::Off => EquipmentSlot::OffHand,
@@ -492,24 +516,18 @@ impl Game<'_> {
         }
     }
 
-    /// `LivingEntity.canBreatheUnderwater`: the species' own breath — a
-    /// fish's, an axolotl's, a construct's (`breathes_water`, the
-    /// `#can_breathe_under_water` tag); a player answers false (no player
-    /// kind is in the tag). The tag read only, not the whole drown
-    /// decision: the air tick itself also keeps the air up behind Water
-    /// Breathing, the conduit's power and a player's invulnerability,
-    /// which this read does not carry. None for a stale handle, an armor
-    /// stand or the dragon.
+    /// Membership in the live `#can_breathe_under_water` tag for a mob.
+    /// The tag read only, not the whole drown decision. None for a stale handle,
+    /// an armor stand or the dragon.
     pub(super) fn living_can_breathe_underwater(&self, living: LivingRef) -> Option<bool> {
         match self.native_living_read_target(living)? {
-            Target::Mob(id) => Some(
-                self.mobs
-                    .iter()
-                    .find(|m| m.id == id && !m.removed)?
-                    .kind
-                    .flags
-                    .breathes_water,
-            ),
+            Target::Mob(id) => {
+                let mob = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+                Some(self.items().entity_type_tags.has_bit(
+                    mob.kind.flags.entity_tag_slot,
+                    EntityTypeTags::CAN_BREATHE_UNDER_WATER,
+                ))
+            }
             Target::Player | Target::Guest(_) => Some(false),
             _ => None,
         }
@@ -679,8 +697,8 @@ impl Game<'_> {
     }
 
     /// `LivingEntity.getKillCredit`: the remembered player takes precedence,
-    /// even if the player cannot be resolved; otherwise the last hurting mob.
-    /// Unlike vanilla, a mob that changed dimension cannot be resolved.
+    /// even if the player cannot be resolved; otherwise the last hurting mob,
+    /// in whichever loaded level it is now (`credited_entity`).
     pub(super) fn living_kill_credit(&self, living: LivingRef) -> Option<EntityRef> {
         let credit = match self.native_living_target(living)? {
             Target::Player => self.combat.player_credit(self.world.game_time),
@@ -710,19 +728,19 @@ impl Game<'_> {
             Target::Player => self
                 .combat
                 .kill_credit(self.world.game_time)
-                .and_then(|id| self.entity(id)),
+                .and_then(|id| self.credited_entity(id)),
             Target::Guest(conn) => self
                 .guest_combat
                 .get(&conn)?
                 .kill_credit(self.world.game_time)
-                .and_then(|id| self.entity(id)),
+                .and_then(|id| self.credited_entity(id)),
             Target::Mob(id) => {
                 let m = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
-                let who =
-                    m.ai.last_hurt_by
-                        .filter(|_| m.age as i32 - m.ai.last_hurt_by_time <= 100)?;
+                let who = m.recent_hurt_by()?;
                 let attacker = match who {
-                    Who::Mob(id) => Some(id),
+                    Who::Mob(attacker) => {
+                        return self.credited_entity(attacker);
+                    }
                     // A player's hurt carries no id in `Who`: the hit's
                     // record names the player (`last_hurt_by_player`), the
                     // hub the guest's entity. The acting guest is resolved
@@ -756,19 +774,47 @@ impl Game<'_> {
         }
     }
 
-    /// The stack in `slot` (`LivingEntity.getItemBySlot`). Players, guests,
-    /// mobs, armor stands and the dragon store all eight slots. An armor
-    /// stand's body and saddle are storage only: vanilla's `canUseSlot`
-    /// refuses them for interaction. None means empty, unsupported or stale.
-    /// The stack in equipment slot `slot` (`LivingEntity.getItemBySlot`):
-    /// None when it is empty, the entity has no such slot (a player has no
-    /// body or saddle slot), or the handle is stale. API 382.
-    pub(super) fn living_equipment(
+    /// `EntityReference.getEntity` for a kill credit, which looks through
+    /// every level (`getEntityInAnyDimension`): the entity `id` in the level
+    /// in place, else [`Self::credited_elsewhere`].
+    pub(super) fn credited_entity(&self, id: u32) -> Option<EntityRef> {
+        self.entity(id).or_else(|| self.credited_elsewhere(id))
+    }
+
+    /// A credited mob that is not in the level in place under `id`: the same
+    /// id in another loaded level (a vehicle keeps it), or the id the
+    /// dimension changes since gave that same mob (`Levels::travelled`), in
+    /// whichever loaded level it is now. Never another entity holding its UUID.
+    pub(in crate::game) fn credited_elsewhere(&self, id: u32) -> Option<EntityRef> {
+        let epoch = self.native_lifecycle.epoch()?;
+        let mut id = id;
+        loop {
+            if self.mob_in_other_level(id).is_some() {
+                return Some(EntityRef::new(epoch, id));
+            }
+            id = self.levels.travelled(id)?;
+            if let Some(found) = self.entity(id) {
+                return Some(found);
+            }
+        }
+    }
+
+    /// Resolve one live equipment slot without taking a copy or reading any other slot.
+    pub(super) fn living_equipment_stack(
         &self,
         living: LivingRef,
         slot: EquipmentSlot,
-    ) -> Option<ItemStack> {
-        match self.native_living_read_target(living)? {
+    ) -> Option<EquipmentRead<'_>> {
+        self.equipment_stack_for(self.native_living_read_target(living)?, slot)
+    }
+
+    /// Read one equipment slot of an already resolved target.
+    pub(super) fn equipment_stack_for(
+        &self,
+        target: Target,
+        slot: EquipmentSlot,
+    ) -> Option<EquipmentRead<'_>> {
+        let stack = match target {
             Target::Player => player_slot(
                 &self.inventory,
                 self.selected,
@@ -789,25 +835,36 @@ impl Game<'_> {
                 )
             }
             Target::Mob(id) => {
-                self.mobs.iter().find(|m| m.id == id)?.equipment_stacks()[slot as usize].clone()
+                let mob = self.mobs.iter().find(|m| m.id == id)?;
+                return finalize::equipment_slot(mob, slot);
             }
             Target::Stand(id) => self
                 .armor_stands
                 .iter()
                 .find(|a| a.id == id)?
                 .equipment
-                .get(slot as usize)
-                .cloned(),
+                .get(slot as usize),
             Target::Dragon(id) => self
                 .dragon
                 .as_ref()
                 .filter(|d| d.id == id)?
                 .equipment
-                .get(slot as usize)
-                .cloned(),
+                .get(slot as usize),
             _ => None,
-        }
+        }?;
+        Some(EquipmentRead::resident(stack))
     }
+
+    /// Lend the stack in `slot` (`LivingEntity.getItemBySlot`).
+    pub(super) fn living_equipment(
+        &self,
+        living: LivingRef,
+        slot: EquipmentSlot,
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) -> Option<()> {
+        lend_equipment(self.living_equipment_stack(living, slot)?, read)
+    }
+
     /// Damage an equipped stack without an equip/unequip notification.
     pub(super) fn living_hurt_and_break(
         &mut self,
@@ -821,13 +878,21 @@ impl Game<'_> {
                 .for_player(target, |game| game.damage_player_equipment(slot, amount))
                 .flatten();
         }
-        let stack = self.living_equipment(living, slot)?;
+        let stack = self
+            .equipment_stack_for(target, slot)?
+            .project()
+            .into_owned();
         let wearer = super::durability::Wearer::Living(living.id());
         let (updated, broken) = self.damage_stack_worn(&stack, amount, wearer);
         if updated.as_ref() == Some(&stack) {
             return None;
         }
-        if self.living_equipment(living, slot).as_ref() != Some(&stack) {
+        if self
+            .living_equipment_stack(living, slot)?
+            .project()
+            .as_ref()
+            != &stack
+        {
             return None;
         }
         match target {
@@ -856,7 +921,9 @@ impl Game<'_> {
         if broken.is_some() {
             let event =
                 sunrise_client::mobs::item_break::equipment_break_event(world_equipment_slot(slot));
-            self.entity_broadcast_event(living.entity(), event as u8);
+            // Non-player equipment writes above are unjournaled and take effect immediately; keep
+            // the coupled break event on the same immediate side of the rollback boundary.
+            self.broadcast_entity_event_immediate(living.entity(), event as u8);
         }
         broken
     }
@@ -873,7 +940,8 @@ impl Game<'_> {
             &self.offhand,
             &self.equipment,
             slot,
-        )?;
+        )?
+        .clone();
         let (updated, broken) = self.damage_stack(&stack, amount, true);
         if updated.as_ref() == Some(&stack) {
             return None;
@@ -889,6 +957,7 @@ impl Game<'_> {
                 if let Some(ref broken) = broken {
                     self.award_stat("broken", &broken.item, 1);
                     self.player_equipment_broke(world_equipment_slot(slot), broken);
+                    self.player_item_destroyed(&stack, None);
                 }
                 return broken;
             }
@@ -901,6 +970,12 @@ impl Game<'_> {
         if let Some(ref broken) = broken {
             self.award_stat("broken", &broken.item, 1);
             self.player_equipment_broke(world_equipment_slot(slot), broken);
+            let hand = match slot {
+                EquipmentSlot::MainHand => Some(Hand::Main),
+                EquipmentSlot::OffHand => Some(Hand::Off),
+                _ => None,
+            };
+            self.player_item_destroyed(&stack, hand);
             if armor_index(slot).is_some() {
                 self.apply_equipment();
             }
@@ -908,9 +983,14 @@ impl Game<'_> {
         broken
     }
 
-    /// The stack in hand `hand` (`LivingEntity.getItemInHand`). API 382.
-    pub(super) fn living_hand_item(&self, living: LivingRef, hand: Hand) -> Option<ItemStack> {
-        self.living_equipment(living, hand_slot(hand))
+    /// Lend the stack in `hand` (`LivingEntity.getItemInHand`).
+    pub(super) fn living_hand_item(
+        &self,
+        living: LivingRef,
+        hand: Hand,
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) -> Option<()> {
+        self.living_equipment(living, hand_slot(hand), read)
     }
     /// Puts `stack` in hand `hand` (`LivingEntity.setItemInHand`): the main
     /// hand's slot or the off hand's, written as `set_equipment`
@@ -966,15 +1046,19 @@ impl Game<'_> {
             let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id) else {
                 return false;
             };
-            let old = if (slot as usize) <= 5 {
-                sunrise_client::mobs::finalize::item_stack(mob, slot as usize)
-            } else {
-                mob.equipment_stacks()[slot as usize].clone()
-            };
-            let changed = match (&old, &stack) {
-                (None, None) => false,
-                (Some(a), Some(b)) => !a.same_item_same_components(b),
-                _ => true,
+            let changed = {
+                let old = if (slot as usize) <= finalize::HEAD {
+                    finalize::item_stack(mob, slot as usize).map(std::borrow::Cow::Owned)
+                } else {
+                    mob.extra
+                        .slot_stack(slot as usize)
+                        .map(std::borrow::Cow::Borrowed)
+                };
+                match (old.as_deref(), &stack) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => !a.same_item_same_components(b),
+                    _ => true,
+                }
             };
             if !mob.set_equipment_stack(slot as usize, stack) {
                 return false;
@@ -1002,30 +1086,36 @@ impl Game<'_> {
             }
             // The stack's attribute modifiers go on the live map at once, so
             // the next read — a hit's armor, a `LivingRef`'s — sees them (#941).
-            self.collect_mob_equipment_attributes(id);
+            let before = if defer {
+                self.snapshot_mob_modifiers(id)
+            } else {
+                None
+            };
+            self.collect_mob_equipment_attributes(id, before);
             return true;
         }
         // `LivingEntity.onEquipItem` for the entities that keep no equip state
         // of their own: the stand and the dragon (not silent, never spectators).
-        let (old, at, first_tick) = match t {
-            Target::Stand(id) => self.armor_stands.iter().find(|a| a.id == id).map(|a| {
-                (
-                    a.equipment.get(slot as usize).cloned(),
-                    a.position,
-                    a.first_tick,
-                )
-            }),
-            Target::Dragon(id) => self.dragon.as_ref().filter(|d| d.id == id).map(|d| {
-                (
-                    d.equipment.get(slot as usize).cloned(),
-                    d.position,
-                    d.first_tick(),
-                )
-            }),
+        let equip_event_at = match t {
+            Target::Stand(id) => self
+                .armor_stands
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| (a.equipment.get(slot as usize), a.position, a.first_tick)),
+            Target::Dragon(id) => self
+                .dragon
+                .as_ref()
+                .filter(|d| d.id == id)
+                .map(|d| (d.equipment.get(slot as usize), d.position, d.first_tick())),
             _ => None,
         }
-        .map_or((None, None, true), |(old, at, first)| {
-            (old, Some(at), first)
+        .and_then(|(old, at, first_tick)| {
+            let same = match (old, stack.as_ref()) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.same_item_same_components(b),
+                _ => false,
+            };
+            (!first_tick && !same).then_some(at)
         });
         let written = match self
             .slots_named(&Owner::Entity(t), slot_name(slot))
@@ -1033,34 +1123,27 @@ impl Game<'_> {
         {
             // This path owns onEquipItem below, including immediate writes.
             // The generic stand slot writer must not emit it a second time.
-            [s] => self.slot_set_with_effects(s, stack.clone(), false),
+            [s] => self.slot_set_with_effects(s, stack, false),
             _ => false,
         };
-        if let (true, Some(at), false) = (written, at, first_tick) {
-            let same = match (&old, &stack) {
-                (None, None) => true,
-                (Some(a), Some(b)) => a.same_item_same_components(b),
-                _ => false,
+        if let (true, Some(at)) = (written, equip_event_at) {
+            let sound = equippable.as_ref().and_then(|(equip_slot, sound)| {
+                (*equip_slot as usize == slot as usize).then(|| sound.clone())
+            });
+            let (Target::Stand(id) | Target::Dragon(id)) = t else {
+                unreachable!("only a stand or the dragon gets here")
             };
-            if !same {
-                let sound = equippable.as_ref().and_then(|(equip_slot, sound)| {
-                    (*equip_slot as usize == slot as usize).then(|| sound.clone())
+            if defer {
+                self.after_commit(super::transactions::After::Equip {
+                    at: [at.x, at.y, at.z],
+                    sound,
+                    equips: equippable.is_some(),
+                    who: id,
                 });
-                let (Target::Stand(id) | Target::Dragon(id)) = t else {
-                    unreachable!("only a stand or the dragon gets here")
-                };
-                if defer {
-                    self.after_commit(super::transactions::After::Equip {
-                        at: [at.x, at.y, at.z],
-                        sound,
-                        equips: equippable.is_some(),
-                        who: id,
-                    });
-                } else {
-                    let ctx_who = Some(sunrise_client::mobs::Who::Mob(id));
-                    let ctx = self.who_context(ctx_who, None);
-                    self.equip_item_effects([at.x, at.y, at.z], sound, equippable.is_some(), ctx);
-                }
+            } else {
+                let ctx_who = Some(sunrise_client::mobs::Who::Mob(id));
+                let ctx = self.who_context(ctx_who, None);
+                self.equip_item_effects([at.x, at.y, at.z], sound, equippable.is_some(), ctx);
             }
         }
         written
@@ -1215,17 +1298,17 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::super::api_values::TryIntoApi;
     use super::*;
     use sunrise_core::geometry::Vec3;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn durability_handle_and_held_path_share_rng_and_damage() {
+        use mod_api::ServerHost;
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::random::RandomSource;
-        use mod_api::ServerHost;
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
@@ -1316,12 +1399,15 @@ mod tests {
                 .hurt_and_break(game, EquipmentSlot::MainHand, 1)
                 .unwrap();
             assert_eq!(broken.damage(), max);
-            assert!(mob.equipment(game, EquipmentSlot::MainHand).is_none());
+            assert!(
+                mob.with_equipment(game, EquipmentSlot::MainHand, |_| ())
+                    .is_none()
+            );
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn armor_hit_matches_old_draws_and_break_order() {
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::random::RandomSource;
@@ -1425,12 +1511,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn immutable_host_attribute_read_refreshes_live_cache() {
+        use mod_api::Host;
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
         use sunrise_world::attributes::{Modifier, Operation};
-        use mod_api::Host;
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
@@ -1484,14 +1570,14 @@ mod tests {
     /// attribute ids, and one attribute's modifiers through the handle's own
     /// add, replace and remove writes.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_handle_lists_its_attributes_and_reads_its_modifiers() {
+        use mod_api::{AttributeOperation, AttributeOperation::*, Identifier, ModifierLifetime::*};
         use sunrise_client::entities::ArmorStand;
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
         use sunrise_items::equipment::HEAD;
-        use mod_api::{AttributeOperation, AttributeOperation::*, Identifier, ModifierLifetime::*};
         let modifier = |id: &str, amount: f64, operation: AttributeOperation| {
             AttributeModifier::new(Identifier::parse(id).unwrap(), amount, operation)
         };
@@ -1606,7 +1692,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn living_reads_answer_the_vanilla_defaults_and_a_gone_entity_reads_none() {
         use sunrise_client::entities::ArmorStand;
         use sunrise_client::mobs::Mob;
@@ -1663,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn kill_credit_prefers_the_player_reference_and_never_falls_back_when_unresolved() {
         use sunrise_client::mobs::{Damage, Mob};
         use sunrise_core::geometry::Vec3;
@@ -1721,8 +1807,206 @@ mod tests {
         });
     }
 
+    /// The UUID the transfer tests give their attacker, as `summon` takes it.
+    pub(in crate::game) const ZOMBIE_UUID: [i32; 4] = [7, 8, 9, 10];
+    const ZOMBIE_NBT: &str = "{NoAI:1b,UUID:[I;7,8,9,10]}";
+
+    pub(in crate::game) fn summon_mob(game: &mut super::Game<'_>, kind: &str, nbt: &str) -> u32 {
+        match game
+            .summon_with_nbt(kind, [0.5, 70.0, 0.5], nbt)
+            .unwrap()
+            .unwrap()
+        {
+            Target::Mob(id) => id,
+            other => panic!("{kind} summoned as {other:?}"),
+        }
+    }
+
+    /// A pig hurt by a zombie of [`ZOMBIE_UUID`] in the Overworld, with the
+    /// Nether's spawn chunk forced loaded so it stays parked beside it.
+    pub(in crate::game) fn hurt_pig(game: &mut super::Game<'_>) -> (u32, u32) {
+        use crate::game::Dim;
+        use std::sync::Arc;
+        game.world_root = game.save.root.clone();
+        game.enter_level(Dim::Nether).unwrap();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(sunrise_core::position::ChunkPos::new(0, 0))
+            .unwrap();
+        game.build_registries();
+        assert!(game.as_console(|game| game.run_command("forceload add 0 0")));
+        game.enter_level(Dim::Overworld).unwrap();
+        let pig = summon_mob(game, "minecraft:pig", "{NoAI:1b}");
+        let zombie = summon_mob(game, "minecraft:zombie", ZOMBIE_NBT);
+        let hit = sunrise_client::mobs::Damage::mob(zombie, [0.5, 70.0, 0.5]);
+        assert!(game.mob_hits_mob(pig, 1.0, hit));
+        let living = game.living(game.entity(pig).unwrap()).unwrap();
+        assert_eq!(living.kill_credit(game).map(|e| e.id()), Some(zombie));
+        (pig, zombie)
+    }
+
+    pub(in crate::game) fn send_to_the_nether(game: &mut super::Game<'_>, mob: u32) {
+        use crate::game::{Dim, vehicle_teleport::TeleportMotion};
+        assert!(
+            game.teleport_vehicle_across(
+                Target::Mob(mob),
+                Dim::Nether,
+                [0.5, 70.0, 0.5],
+                None,
+                false,
+                TeleportMotion::Stop,
+            )
+            .unwrap()
+        );
+        assert_eq!(game.dim, Dim::Overworld);
+    }
+
+    /// `EntityReference.getEntity` looks through every level: the zombie that
+    /// hurt the pig keeps the credit after it crossed into the Nether under a
+    /// new id, even with another mob holding its UUID in the pig's level.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn kill_credit_follows_a_mob_that_changed_dimension() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let (pig, zombie) = hurt_pig(game);
+            send_to_the_nether(game, zombie);
+            let living = game.living(game.entity(pig).unwrap()).unwrap();
+            let bystander = summon_mob(game, "minecraft:zombie", ZOMBIE_NBT);
+            // What a mod reads from the pig's level, the Nether still parked.
+            let credit = living.kill_credit(game).expect("credit kept");
+            assert!(![zombie, bystander, pig].contains(&credit.id()));
+            assert_eq!(living.last_attacker(game), Some(credit));
+            assert_eq!(
+                credit.kind(game),
+                mod_api::__private::resolved_entity_type_key("minecraft:zombie")
+            );
+            assert_eq!(
+                credit.uuid(game),
+                Some(sunrise_client::lan::playerdata::ints_uuid(ZOMBIE_UUID))
+            );
+            let nether = game.level("minecraft:the_nether");
+            assert_eq!(credit.level(game), nether);
+            // The same reads from a mod goal of the pig's own tick.
+            let mut actor = game.mobs.iter().find(|m| m.id == pig).unwrap().clone();
+            game.in_goal_view(&mut actor, |view| {
+                assert_eq!(living.kill_credit(view), Some(credit));
+                assert_eq!(
+                    credit.kind(view),
+                    mod_api::__private::resolved_entity_type_key("minecraft:zombie")
+                );
+                // `uuid` takes a `ServerHost`, which a goal view is not.
+                assert_eq!(credit.level(view), nether);
+            });
+        });
+    }
+
+    /// A Nether mob already holds the zombie's UUID, so the zombie's copy is
+    /// refused residency there: the credit names no one, not that other mob.
+    #[test]
+    #[ignore = "daily"]
+    fn a_refused_arrival_hands_the_credit_to_no_other_mob() {
+        use crate::game::Dim;
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let (pig, zombie) = hurt_pig(game);
+            game.enter_level(Dim::Nether).unwrap();
+            summon_mob(game, "minecraft:zombie", ZOMBIE_NBT);
+            game.enter_level(Dim::Overworld).unwrap();
+            send_to_the_nether(game, zombie);
+            let living = game.living(game.entity(pig).unwrap()).unwrap();
+            assert_eq!(living.kill_credit(game), None);
+            assert_eq!(living.last_attacker(game), None);
+        });
+    }
+
+    /// `last_hurt_by_mob` keeps naming a credited mob that is in another
+    /// loaded level: saved through the hundredth tick, not the next, and read
+    /// back to the mob there.
+    #[test]
+    #[ignore = "daily"]
+    fn a_saved_credit_names_a_mob_in_another_level_for_a_hundred_ticks() {
+        use sunrise_core::nbt::Tag;
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let (pig, zombie) = hurt_pig(game);
+            send_to_the_nether(game, zombie);
+            let i = game.mobs.iter().position(|m| m.id == pig).unwrap();
+            let mut saved = |since: i32| {
+                let m = &mut game.mobs[i];
+                m.age = (m.ai.last_hurt_by_time + since) as u32;
+                let mut tag = Tag::Compound(Default::default());
+                game.put_last_hurt_by_mob(&game.mobs[i], &mut tag);
+                tag
+            };
+            let last = saved(100);
+            assert_eq!(
+                last.get("last_hurt_by_mob"),
+                Some(&Tag::IntArray(ZOMBIE_UUID.to_vec()))
+            );
+            assert_eq!(
+                last.get("ticks_since_last_hurt_by_mob"),
+                Some(&Tag::Int(100))
+            );
+            assert_eq!(saved(101).get("last_hurt_by_mob"), None);
+            let nether = game.level("minecraft:the_nether");
+            for (since, credited) in [(100, true), (101, false)] {
+                let nbt = format!(
+                    "{{NoAI:1b,last_hurt_by_mob:[I;7,8,9,10],ticks_since_last_hurt_by_mob:{since}}}"
+                );
+                let read_back = summon_mob(game, "minecraft:pig", &nbt);
+                game.resolve_last_hurt_by_refs();
+                let living = game.living(game.entity(read_back).unwrap()).unwrap();
+                let credit = living.kill_credit(game);
+                assert_eq!(credit.is_some(), credited, "{since} ticks after the hurt");
+                if let Some(credit) = credit {
+                    assert_eq!(credit.level(game), nether);
+                    assert_ne!(credit.id(), zombie);
+                }
+            }
+        });
+    }
+
+    /// `living_knockback`'s kill credit for a push that leaves the pig's credit
+    /// as it was: the zombie now in the Nether, and the sword it holds there.
+    #[test]
+    #[ignore = "daily"]
+    fn a_push_names_the_credited_mob_in_another_level_and_its_main_hand() {
+        use sunrise_client::health::NO_ATTACK;
+        use sunrise_client::items::ItemStack;
+        use sunrise_client::mobs::{Damage, DamageKind};
+        let mut credited = 0;
+        let heard = super::super::native_knockback_tests::heard(|game, _| {
+            let (pig, zombie) = hurt_pig(game);
+            game.mobs
+                .iter_mut()
+                .find(|m| m.id == zombie)
+                .unwrap()
+                .extra
+                .set_main_hand_stack(Some(ItemStack::new("minecraft:iron_sword", 1)));
+            send_to_the_nether(game, zombie);
+            let living = game.living(game.entity(pig).unwrap()).unwrap();
+            credited = living.kill_credit(game).unwrap().id() as i32;
+            let plan = game.prepare_knockback_credit(pig as i32, None, game.combat.attack());
+            let mut credit = plan.lend(&mut game.last_hurt_by_player);
+            let i = game.mobs.iter().position(|m| m.id == pig).unwrap();
+            let mob = &mut game.mobs[i];
+            mob.knockback(
+                crate::game::entity::damage_level_of!(game, &NO_ATTACK, &mut credit, None),
+                0.4,
+                1.0,
+                0.0,
+                &Damage::of(DamageKind::Generic),
+                0.0,
+            );
+        });
+        assert_eq!(
+            heard.credits.last(),
+            Some(&(credited, Some("minecraft:iron_sword".to_owned())))
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn a_mobs_last_attacker_names_a_mob_the_host_and_none_when_displaced() {
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
@@ -1760,7 +2044,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn set_health_can_store_zero() {
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::Vec3;
@@ -1781,7 +2065,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn set_health_journal_restores_nested_player_and_mob_writes() {
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
@@ -1847,7 +2131,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn set_health_journal_restores_zero_health_guest_outside_its_turn() {
         super::super::native_guest_turn_tests::with_guests(|game| {
             let guest = game.player(12).unwrap();
@@ -1869,7 +2153,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn heal_uses_the_vanilla_signed_sum() {
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::Vec3;
@@ -1891,7 +2175,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn absorbed_player_hit_still_remembers_the_living_attacker() {
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
@@ -1930,7 +2214,12 @@ mod tests {
                 crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
                 game.note_attacker("minecraft:mob_attack", 15);
                 let rules = game.world.health_rules;
-                let level = super::super::entity::damage_level_of!(game);
+                let level = super::super::entity::damage_level_of!(
+                    game,
+                    &sunrise_client::health::NO_ATTACK,
+                    no_push,
+                    None
+                );
                 let player = game.player.as_mut().unwrap();
                 assert!(
                     player
@@ -1965,7 +2254,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn raw_health_write_can_change_a_dead_entity_but_heal_cannot() {
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
@@ -2001,11 +2290,11 @@ mod tests {
     /// `setItemInHand` does: a player's selected slot or off hand, a mob's
     /// main or off hand; a stale handle writes nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn set_hand_item_writes_the_hands_slot() {
+        use mod_api::ServerHost;
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
-        use mod_api::ServerHost;
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
@@ -2027,12 +2316,18 @@ mod tests {
             assert_eq!(game.inventory[3], Some(sword.clone()));
             assert_eq!(game.offhand, Some(shield.clone()));
             assert_eq!(
-                player.hand_item(game, Hand::Main),
-                Some(sword.try_into_api().unwrap())
+                player.with_hand_item(game, Hand::Main, |stack| (
+                    stack.item().id(game),
+                    stack.count()
+                )),
+                Some((Some("minecraft:iron_sword"), 1))
             );
             assert_eq!(
-                player.hand_item(game, Hand::Off),
-                Some(shield.try_into_api().unwrap())
+                player.with_hand_item(game, Hand::Off, |stack| (
+                    stack.item().id(game),
+                    stack.count()
+                )),
+                Some((Some("minecraft:shield"), 1))
             );
             assert!(player.set_hand_item(game, Hand::Off, None).unwrap());
             assert_eq!(game.offhand, None);
@@ -2051,9 +2346,13 @@ mod tests {
                     .set_hand_item(game, Hand::Off, Some(sword.try_into_api().unwrap()))
                     .unwrap()
             );
-            let stacks = game.mobs[0].equipment_stacks();
-            assert_eq!(stacks[EquipmentSlot::OffHand as usize], Some(sword.clone()));
-            assert_eq!(stacks[EquipmentSlot::MainHand as usize], None);
+            assert_eq!(
+                zombie
+                    .with_hand_item(game, Hand::Off, |stack| stack.project())
+                    .flatten(),
+                Some(sword.try_into_api().unwrap())
+            );
+            assert!(zombie.with_hand_item(game, Hand::Main, |_| ()).is_none());
 
             game.mobs.clear();
             assert!(
@@ -2065,7 +2364,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_equipment_writes_emit_vanilla_equip_events() {
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::Vec3;
@@ -2123,7 +2422,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn stand_and_dragon_equipment_writes_run_on_equip_item() {
         use sunrise_core::geometry::Vec3;
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -2176,11 +2475,20 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_equipment_writes_keep_full_stacks() {
-        use sunrise_client::mobs::Mob;
+        use sunrise_client::mobs::gear;
         use sunrise_core::geometry::Vec3;
         super::super::native_entity_refs::tests::with_game(|game| {
+            let expect_slot = |game: &Game<'_>, living, slot, expected: Option<&ItemStack>| {
+                assert_eq!(
+                    game.living_equipment_stack(living, slot)
+                        .map(|stack| stack.project())
+                        .as_deref(),
+                    expected,
+                    "{slot:?}"
+                );
+            };
             for (id, kind) in [
                 (12, "minecraft:zombie"),
                 (13, "minecraft:horse"),
@@ -2204,15 +2512,28 @@ mod tests {
                 Err(mod_api::StackWriteError::CountExceeded { maximum: 1 })
             );
             assert!(game.living_set_equipment(zombie, EquipmentSlot::Head, Some(helmet.clone())));
+            let trim: gear::Trim = ("minecraft:gold".into(), "minecraft:coast".into());
+            gear::set(
+                &mut game.mobs[0],
+                gear::HEAD,
+                vec![("minecraft:protection".into(), 4)],
+            );
+            gear::set_trim(&mut game.mobs[0], gear::HEAD, Some(trim.clone()));
+            let mut expected = helmet.clone();
+            expected.data_mut().enchantments = vec![("minecraft:protection".into(), 4)];
+            expected.data_mut().trim = Some(trim);
             assert_eq!(
-                zombie.equipment(game, EquipmentSlot::Head),
-                Some(helmet.try_into_api().unwrap())
+                zombie.with_equipment(game, EquipmentSlot::Head, |stack| {
+                    (stack.count(), stack.damage(), stack.project())
+                }),
+                Some((2, 7, Some(expected.try_into_api().unwrap())))
             );
             assert_eq!(
                 game.mobs[0]
                     .extra
                     .slot_stack(sunrise_items::equipment::HEAD),
-                Some(&helmet)
+                Some(&helmet),
+                "reading overlays must not write into the resident slot"
             );
             let mut shield = ItemStack::new("minecraft:shield", 2);
             shield.damage = 11;
@@ -2221,23 +2542,14 @@ mod tests {
                 EquipmentSlot::OffHand,
                 Some(shield.clone())
             ));
-            assert_eq!(
-                game.living_equipment(zombie, EquipmentSlot::OffHand),
-                Some(shield)
-            );
+            expect_slot(game, zombie, EquipmentSlot::OffHand, Some(&shield));
             assert!(game.living_set_equipment(horse, EquipmentSlot::Head, Some(helmet.clone())));
             let mut body = ItemStack::new("minecraft:diamond_horse_armor", 3);
             body.damage = 9;
             body.data_mut().custom_name = Some(sunrise_core::nbt::Tag::String("armor".into()));
             assert!(game.living_set_equipment(horse, EquipmentSlot::Body, Some(body.clone())));
-            assert_eq!(
-                game.living_equipment(horse, EquipmentSlot::Head),
-                Some(helmet.clone())
-            );
-            assert_eq!(
-                game.living_equipment(horse, EquipmentSlot::Body),
-                Some(body)
-            );
+            expect_slot(game, horse, EquipmentSlot::Head, Some(&helmet));
+            expect_slot(game, horse, EquipmentSlot::Body, Some(&body));
             for slot in [
                 EquipmentSlot::MainHand,
                 EquipmentSlot::Chest,
@@ -2246,36 +2558,30 @@ mod tests {
             ] {
                 let stack = ItemStack::new("minecraft:stone", 4);
                 assert!(game.living_set_equipment(zombie, slot, Some(stack.clone())));
-                assert_eq!(game.living_equipment(zombie, slot), Some(stack));
+                expect_slot(game, zombie, slot, Some(&stack));
                 assert!(game.living_set_equipment(
                     zombie,
                     slot,
                     Some(ItemStack::new("minecraft:stone", 0))
                 ));
-                assert_eq!(game.living_equipment(zombie, slot), None);
+                expect_slot(game, zombie, slot, None);
             }
             let mut saddle = ItemStack::new("minecraft:saddle", 3);
             saddle.data_mut().custom_name = Some(sunrise_core::nbt::Tag::String("saddle".into()));
             assert!(game.living_set_equipment(horse, EquipmentSlot::Saddle, Some(saddle.clone())));
-            assert_eq!(
-                game.living_equipment(horse, EquipmentSlot::Saddle),
-                Some(saddle)
-            );
+            expect_slot(game, horse, EquipmentSlot::Saddle, Some(&saddle));
             sunrise_client::mobs::raider::set_patrol_leader(&mut game.mobs[2], true);
             sunrise_client::mobs::raider::wear_banner(&mut game.mobs[2]);
             assert!(sunrise_client::mobs::raider::is_captain(&game.mobs[2]));
             assert!(game.living_set_equipment(captain, EquipmentSlot::Head, Some(helmet.clone())));
-            assert_eq!(
-                game.living_equipment(captain, EquipmentSlot::Head),
-                Some(helmet)
-            );
+            expect_slot(game, captain, EquipmentSlot::Head, Some(&helmet));
             assert!(!sunrise_client::mobs::raider::is_captain(&game.mobs[2]));
             assert!(game.living_set_equipment(
                 horse,
                 EquipmentSlot::Body,
                 Some(ItemStack::new("minecraft:air", 1))
             ));
-            assert_eq!(game.living_equipment(horse, EquipmentSlot::Body), None);
+            expect_slot(game, horse, EquipmentSlot::Body, None);
             let mut dragon = super::super::dragon::Dragon::new(Vec3::ZERO, 0.0, 0);
             // Reserve the dragon's eight consecutive part IDs away from the stand.
             dragon.id = 40;
@@ -2294,31 +2600,44 @@ mod tests {
                     stack.data_mut().custom_name =
                         Some(sunrise_core::nbt::Tag::String(slot_name(slot).into()));
                     assert!(game.living_set_equipment(living, slot, Some(stack.clone())));
-                    assert_eq!(game.living_equipment(living, slot), Some(stack));
+                    expect_slot(game, living, slot, Some(&stack));
                 }
             }
-            let saved = game.dragon.as_ref().unwrap().to_nbt([0; 4], None);
+            let saved = game
+                .dragon
+                .as_ref()
+                .unwrap()
+                .to_nbt([0; 4], None, &Default::default());
             let loaded = super::super::dragon::Dragon::from_nbt(&saved, 0).unwrap();
             assert_eq!(loaded.equipment, game.dragon.as_ref().unwrap().equipment);
             let stored = game.armor_stands.last().unwrap();
-            let saved = sunrise_client::entity_nbt::armor_stand_to_nbt(stored, [0; 4], None);
+            let saved = sunrise_client::entity_nbt::armor_stand_to_nbt(
+                stored,
+                [0; 4],
+                None,
+                &Default::default(),
+            );
             let loaded = sunrise_client::entity_nbt::armor_stand_from_nbt(&saved, 16).unwrap();
             assert_eq!(loaded.equipment, stored.equipment);
             for living in [dragon, stand] {
                 assert!(game.living_set_equipment(living, EquipmentSlot::Saddle, None));
-                assert_eq!(game.living_equipment(living, EquipmentSlot::Saddle), None);
+                expect_slot(game, living, EquipmentSlot::Saddle, None);
             }
             // An empty dragon saves no `equipment` key, a stale one included.
             for slot in EquipmentSlot::ALL {
                 assert!(game.living_set_equipment(dragon, slot, None));
             }
-            let stale = game.dragon.as_ref().unwrap().to_nbt([0; 4], Some(&saved));
+            let stale =
+                game.dragon
+                    .as_ref()
+                    .unwrap()
+                    .to_nbt([0; 4], Some(&saved), &Default::default());
             assert!(stale.get("equipment").is_none());
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_host_players_body_and_saddle_are_slots_and_saved_in_equipment() {
         super::super::native_entity_refs::tests::with_game(|game| {
             let owner = Owner::Entity(Target::Player);
@@ -2346,7 +2665,7 @@ mod tests {
             // onEquipItem: each item in its own slot plays its equip sound.
             assert_eq!(game.audio.capture.as_ref().unwrap().len(), 2);
             game.sync_level();
-            let tag = game.level.player_tag();
+            let tag = game.level.player_tag(&Default::default());
             let equipment = tag.get("equipment").unwrap();
             assert!(equipment.get("body").is_some() && equipment.get("saddle").is_some());
             let mut read = sunrise_client::save::Level::default();
@@ -2371,7 +2690,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn armor_stand_first_tick_equipment_change_fires_after_base_tick() {
         use mod_api::{self, Hooks, LivingEquipmentChangeEvent, ModEntry, ServerHost};
         struct Reequip;
@@ -2454,133 +2773,91 @@ mod tests {
         let offhand = stack("minecraft:shield");
         let mut equipment = sunrise_items::equipment::Equipment::default();
         equipment.set(sunrise_items::equipment::SADDLE, stack("minecraft:saddle"));
-        let at =
-            |slot| player_slot(&inventory, 1, &armor, &offhand, &equipment, slot).map(|s| s.item);
-        assert_eq!(
-            at(EquipmentSlot::MainHand).as_deref(),
-            Some("minecraft:dirt")
-        );
-        assert_eq!(
-            at(EquipmentSlot::OffHand).as_deref(),
-            Some("minecraft:shield")
-        );
-        assert_eq!(
-            at(EquipmentSlot::Head).as_deref(),
-            Some("minecraft:iron_helmet")
-        );
-        assert_eq!(
-            at(EquipmentSlot::Feet).as_deref(),
-            Some("minecraft:iron_boots")
-        );
-        assert_eq!(at(EquipmentSlot::Chest), None);
-        assert_eq!(at(EquipmentSlot::Body), None);
-        assert_eq!(
-            at(EquipmentSlot::Saddle).as_deref(),
-            Some("minecraft:saddle")
-        );
+        let at = |slot| player_slot(&inventory, 1, &armor, &offhand, &equipment, slot);
+        let id = |slot| at(slot).map(|s| s.item.as_ref());
+        assert!(std::ptr::eq(
+            at(EquipmentSlot::MainHand).unwrap(),
+            inventory[1].as_ref().unwrap()
+        ));
+        assert_eq!(id(EquipmentSlot::MainHand), Some("minecraft:dirt"));
+        assert_eq!(id(EquipmentSlot::OffHand), Some("minecraft:shield"));
+        assert_eq!(id(EquipmentSlot::Head), Some("minecraft:iron_helmet"));
+        assert_eq!(id(EquipmentSlot::Feet), Some("minecraft:iron_boots"));
+        assert_eq!(id(EquipmentSlot::Chest), None);
+        assert_eq!(id(EquipmentSlot::Body), None);
+        assert_eq!(id(EquipmentSlot::Saddle), Some("minecraft:saddle"));
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_wolf_throws_and_reads_tamed_and_owner() {
-        use super::super::{
-            Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
-        };
         use sunrise_client::{chunk::Chunk, entities::ArmorStand};
         use sunrise_core::geometry::Vec3;
-        use mod_api::Authority;
 
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            ExecutionRole::IntegratedServer,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.to_path_buf(),
-            )),
-            None,
-        )
-        .unwrap();
-        let chunk = std::sync::Arc::new(Chunk::empty(0, 0));
-        game.world.chunks.insert((0, 0), chunk);
-        game.native_lifecycle
-            .begin_open(Authority::IntegratedServer);
-        let id = game
-            .spawn_mob(
-                "minecraft:wolf",
-                [2.5, 64.0, 2.5],
-                true,
-                super::super::creatures::SpawnSite::Finalizing(
-                    sunrise_client::mobs::spawn_rules::Reason::Command,
-                ),
-            )
-            .unwrap();
-        let wolf = game.living(game.entity(id).unwrap()).unwrap();
-        assert_eq!(game.living_is_tamed(wolf), Some(false));
-        assert_eq!(game.living_owner(wolf), None);
-        let m = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
-        (m.extra.tame, m.extra.owner) = (true, Some([1, 2, 3, 4]));
-        assert_eq!(game.living_is_tamed(wolf), Some(true));
-        assert_eq!(
-            game.living_owner(wolf),
-            Some(0x1_0000_0002_0000_0003_0000_0004)
-        );
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
+            let id = game
+                .spawn_mob(
+                    "minecraft:wolf",
+                    [2.5, 64.0, 2.5],
+                    true,
+                    super::super::creatures::SpawnSite::Finalizing(
+                        sunrise_client::mobs::spawn_rules::Reason::Command,
+                    ),
+                )
+                .unwrap();
+            let wolf = game.living(game.entity(id).unwrap()).unwrap();
+            assert_eq!(game.living_is_tamed(wolf), Some(false));
+            assert_eq!(game.living_owner(wolf), None);
+            let m = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
+            (m.extra.tame, m.extra.owner) = (true, Some([1, 2, 3, 4]));
+            assert_eq!(game.living_is_tamed(wolf), Some(true));
+            assert_eq!(
+                game.living_owner(wolf),
+                Some(0x1_0000_0002_0000_0003_0000_0004)
+            );
 
-        let bone = ItemStack::new("minecraft:bone", 1);
-        assert!(
-            game.living_drop(wolf, ItemStack::new("minecraft:air", 1), false, true)
-                .is_none()
-        );
-        let item = game.living_drop(wolf, bone.clone(), false, true).unwrap();
-        assert_eq!(
-            game.entity_kind(item).map(|kind| kind.id(&game)).as_deref(),
-            Some("minecraft:item")
-        );
-        let wolf_uuid = game.uuid_for(id);
-        let thrown = game.dropped.last().unwrap();
-        let eye = game.mobs.iter().find(|m| m.id == id).unwrap().eye_y();
-        assert_eq!(thrown.position.y, eye - f64::from(0.3f32));
-        assert_eq!((thrown.pickup_delay, thrown.thrower), (40, Some(wolf_uuid)));
-        // The drop swung: one tick on, that swing goes on.
-        let m = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
-        assert!(m.ai.swinging);
-        m.ai.swing_time = 1;
-        assert!(!game.living_swing(wolf, Hand::Main, true));
-        let scattered = game.living_drop(wolf, bone, true, false).unwrap();
-        assert_ne!(scattered, item);
-        assert_eq!(game.dropped.last().unwrap().velocity.y, f64::from(0.2f32));
-        assert_eq!(game.dropped.last().unwrap().thrower, None);
+            let bone = ItemStack::new("minecraft:bone", 1);
+            assert!(
+                game.living_drop(wolf, ItemStack::new("minecraft:air", 1), false, true)
+                    .is_none()
+            );
+            let item = game.living_drop(wolf, bone.clone(), false, true).unwrap();
+            assert_eq!(
+                game.entity_kind(item)
+                    .and_then(|kind| kind.id(game))
+                    .as_deref(),
+                Some("minecraft:item")
+            );
+            let wolf_uuid = game.uuid_for(id);
+            let thrown = game.dropped.last().unwrap();
+            let eye = game.mobs.iter().find(|m| m.id == id).unwrap().eye_y();
+            assert_eq!(thrown.position.y, eye - f64::from(0.3f32));
+            assert_eq!((thrown.pickup_delay, thrown.thrower), (40, Some(wolf_uuid)));
+            // The drop swung: one tick on, that swing goes on.
+            let m = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
+            assert!(m.ai.swinging);
+            m.ai.swing_time = 1;
+            assert!(!game.living_swing(wolf, Hand::Main, true));
+            let scattered = game.living_drop(wolf, bone, true, false).unwrap();
+            assert_ne!(scattered, item);
+            assert_eq!(game.dropped.last().unwrap().velocity.y, f64::from(0.2f32));
+            assert_eq!(game.dropped.last().unwrap().thrower, None);
 
-        game.armor_stands
-            .push(ArmorStand::new(90, Vec3::new(0.5, 64.0, 0.5), 0.0));
-        let stand = game.living(game.entity(90).unwrap()).unwrap();
-        assert_eq!(game.living_is_tamed(stand), None);
-        let apple = ItemStack::new("minecraft:apple", 1);
-        assert!(game.living_drop(stand, apple, false, false).is_none());
+            game.armor_stands
+                .push(ArmorStand::new(90, Vec3::new(0.5, 64.0, 0.5), 0.0));
+            let stand = game.living(game.entity(90).unwrap()).unwrap();
+            assert_eq!(game.living_is_tamed(stand), None);
+            let apple = ItemStack::new("minecraft:apple", 1);
+            assert!(game.living_drop(stand, apple, false, false).is_none());
+        });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn player_mod_drop_matches_drop_key_motion() {
+    #[ignore = "daily"]
+    fn player_mod_drop_and_drop_key_have_equivalent_motion() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(
                 sunrise_client::motion::PlayerMotion::new(
@@ -2598,12 +2875,21 @@ mod tests {
             *game.world.random = sunrise_core::random::LegacyRandom::new(12345);
             let item = ItemStack::new("minecraft:apple", 1);
             game.inventory[game.selected] = Some(item.clone());
-            game.drop_held(true);
+            let player_random = game.player.as_ref().unwrap().random.clone();
+            let (_, seeds) =
+                sunrise_client::random_source::record_seeds(|| game.drop_held_item(true));
             let key_velocity = game.dropped.last().unwrap().velocity;
             *game.world.random = sunrise_core::random::LegacyRandom::new(12345);
             crate::game::native_entity_refs::tests::bind_local_player(game, 42, 123);
             let player = game.living(game.entity(42).unwrap()).unwrap();
-            let id = game.living_drop(player, item, false, true).unwrap().id();
+            game.player.as_mut().unwrap().random = player_random;
+            let id = sunrise_client::random_source::replay_seeds(seeds.clone(), || {
+                game.living_drop(player, item, false, true).unwrap().id()
+            });
+            assert!(
+                seeds.complete(),
+                "both drop routes allocate the same random streams"
+            );
             let mod_velocity = game
                 .dropped
                 .iter()
@@ -2615,7 +2901,86 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn player_drop_spread_uses_the_players_random_even_when_cancelled() {
+        use mod_api::{Flow, Hooks, ItemTossEvent, ModEntry, ServerHost};
+        use sunrise_core::{
+            geometry::trig::{cos, sin},
+            random::RandomSource,
+        };
+        struct Veto;
+        #[mod_api::__subscriptions]
+        impl Hooks for Veto {
+            fn item_toss(&self, _: &mut dyn ServerHost, _: &mut ItemTossEvent) -> Flow {
+                Flow::Cancel
+            }
+        }
+        for (randomly, cancelled) in [(false, false), (true, false), (false, true)] {
+            let mods: mod_api::Mods = if cancelled {
+                vec![ModEntry::new("veto", Box::new(Veto))].into()
+            } else {
+                Vec::<ModEntry>::new().into()
+            };
+            mod_platform::testing::with_mods(mods, || {
+                super::super::native_entity_refs::tests::with_game(|game| {
+                    game.player = Some(
+                        sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap(),
+                    );
+                    super::super::native_entity_refs::tests::bind_local_player(game, 42, 123);
+                    game.yaw = 0.0;
+                    game.pitch = 0.0;
+                    game.player.as_mut().unwrap().random.set_seed(12345);
+                    let mut expected = game.player.as_ref().unwrap().random.clone();
+                    // Independent vanilla oracle at yaw=pitch=0. The item's
+                    // constructor owns a separate stream, not these floats.
+                    let velocity = if randomly {
+                        let strength = expected.next_float() * 0.5;
+                        let direction = f64::from(expected.next_float() * std::f32::consts::TAU);
+                        [
+                            f64::from(-sin(direction) * strength),
+                            f64::from(0.2f32),
+                            f64::from(cos(direction) * strength),
+                        ]
+                    } else {
+                        let direction = f64::from(expected.next_float() * std::f32::consts::TAU);
+                        let strength = f64::from(expected.next_float() * 0.02);
+                        let jitter = (expected.next_float() - expected.next_float()) * 0.1;
+                        [
+                            sunrise_core::jmath::cos(direction) * strength,
+                            f64::from(0.1 + jitter),
+                            f64::from(0.3f32) + sunrise_core::jmath::sin(direction) * strength,
+                        ]
+                    };
+                    let level = game.world.random.state();
+                    let before = game.dropped.len();
+                    let id = game.native_player_drop(
+                        ItemStack::new("minecraft:apple", 1),
+                        randomly,
+                        true,
+                    );
+                    assert_eq!(
+                        game.player.as_ref().unwrap().random.state(),
+                        expected.state(),
+                        "randomly={randomly} cancelled={cancelled}"
+                    );
+                    assert_eq!(game.world.random.state(), level, "no level random draws");
+                    if cancelled {
+                        assert!(id.is_none());
+                        assert_eq!(game.dropped.len(), before);
+                    } else {
+                        let drop = game.dropped.iter().find(|d| Some(d.id) == id).unwrap();
+                        assert_eq!(
+                            [drop.velocity.x, drop.velocity.y, drop.velocity.z],
+                            velocity
+                        );
+                    }
+                });
+            });
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn armor_stand_drop_does_not_swing() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.armor_stands
@@ -2644,12 +3009,12 @@ mod tests {
     }
     /// The living reads of #943 answer the engine's own decisions.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_engines_own_portal_melee_freeze_and_air_answers() {
+        use mod_api::Host;
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
-        use mod_api::Host;
         super::super::native_entity_refs::tests::with_game(|game| {
             // Two zombies an arm's length apart, and one a stride away.
             let zombie = game
@@ -2704,17 +3069,13 @@ mod tests {
 
             // The melee goal's own reach: beside it, yes; a stride away, no.
             // The freeze tick's decision, and a freeze-immune wearable on it.
-            // The air tick's gate: a zombie drowns.
+            // A zombie's type is in the vanilla water-breathing tag.
             {
                 let host: &dyn Host = game;
                 assert_eq!(near.in_melee_range(host, beside), Some(true));
                 assert_eq!(near.in_melee_range(host, far), Some(false));
                 assert_eq!(near.can_freeze(host), Some(true));
-                // The air tick's gate: whatever the species table holds for it.
-                assert_eq!(
-                    near.can_breathe_underwater(host),
-                    Some(game.mobs[0].kind.flags.breathes_water)
-                );
+                assert_eq!(near.can_breathe_underwater(host), Some(true));
             }
             game.mobs[0].extra.equipment.set(
                 sunrise_items::equipment::FEET,
@@ -2784,11 +3145,11 @@ mod tests {
     /// A sleeper's bed orientation is the bed block's own facing (#943):
     /// the block at the sleeping position, where it is one of `#minecraft:beds`.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_sleepers_bed_orientation() {
+        use mod_api::{Direction, Host};
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::Vec3;
-        use mod_api::{Direction, Host};
         super::super::native_entity_refs::tests::with_game(|game| {
             // A floor with a red bed on it, facing north.
             for (x, z) in (-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z))) {
@@ -2870,7 +3231,7 @@ mod tests {
     /// #943, review: a guest answers the same one portal rule over their
     /// body and vehicle (`can_use_portal_of`), not a hand-rolled copy.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_guest_answers_the_one_portal_rule() {
         use mod_api::Host;
         super::super::native_guest_turn_tests::with_guests(|game| {

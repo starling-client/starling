@@ -29,6 +29,7 @@ public final class VanillaMobAttributeNbtOracle {
     }
 
     static String bits(double v) { return Long.toHexString(Double.doubleToRawLongBits(v)); }
+    static String fbits(float v) { return String.format("%08x", Float.floatToRawIntBits(v)); }
 
     public static void main(String[] args) throws Exception {
         net.minecraft.SharedConstants.tryDetectVersion();
@@ -100,7 +101,21 @@ public final class VanillaMobAttributeNbtOracle {
                     }
                     var output = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, level.registryAccess());
                     e.saveWithoutId(output);
-                    var list = output.buildResult().getListOrEmpty("attributes");
+                    var saved = output.buildResult();
+                    if (c.has("health") && c.get("health").getAsBoolean()) {
+                        @SuppressWarnings("unchecked")
+                        double defaultMax = DefaultAttributes.getSupplier((EntityType<? extends LivingEntity>) type).getBaseValue(Attributes.MAX_HEALTH);
+                        float savedHealth = saved.getFloat("Health").orElse(Float.NaN);
+                        sb.append("\thealth ")
+                            .append(fbits(living.getHealth()))
+                            .append(' ')
+                            .append(fbits(living.getMaxHealth()))
+                            .append(' ')
+                            .append(fbits(savedHealth))
+                            .append(' ')
+                            .append(bits(defaultMax));
+                    }
+                    var list = saved.getListOrEmpty("attributes");
                     var rows = new java.util.TreeMap<String, String>();
                     for (int i = 0; i < list.size(); i++) {
                         var a = list.getCompoundOrEmpty(i);

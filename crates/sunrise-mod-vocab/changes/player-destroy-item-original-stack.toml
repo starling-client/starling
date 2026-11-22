@@ -1,0 +1,12 @@
+ids = [
+    "hook:player_destroy_item",
+    "hook:player_destroy_item.item",
+    "hook:player_destroy_item.name",
+    "hook:player_destroy_item.slot",
+    "method:Hooks::player_destroy_item",
+    "type:PlayerDestroyItemEvent.item",
+    "type:PlayerDestroyItemEvent.name",
+    "type:PlayerDestroyItemEvent.slot",
+]
+why = "player_destroy_item version 2 reports the complete original stack (count, damage and components as they were before the use or the wear) and the hand it was in, or none for worn armour and inventory ammunition, and fires on both logical sides for the acting player. Version 1 was server only and named an equipment slot (mainhand through saddle). The notice also covers an item used up by use, consumed on an entity, finished eating or drinking, and ammunition taken from the inventory, besides a durability break, and is sent before a remainder such as an empty bottle replaces the used-up stack."
+migrate = "Update listeners to accept HostSide instead of &mut dyn ServerHost, and select the server side before calling server-only methods. Read the item and its data from the original stack instead of the removed item and name fields. Read the hand instead of the equipment slot, treating no hand as worn equipment or inventory ammunition. If your manifest pins this hook, request hook_version = 2."

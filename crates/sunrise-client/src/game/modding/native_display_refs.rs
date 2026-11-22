@@ -6,6 +6,10 @@
 //! and a write changes the compound: the next tracking pass sends the changed
 //! entries as `SetEntityData`, and the save holds them.
 use super::{Game, commands::Target};
+use mod_api::{
+    Billboard, DisplayKind, DisplayRef, EntityRef, ItemDisplayContext, TextAlignment,
+    Transformation,
+};
 use sunrise_client::{
     items::ItemStack,
     save::item_from_nbt,
@@ -14,10 +18,6 @@ use sunrise_client::{
     text_display::{display_data, text_display_data},
 };
 use sunrise_protocol::entity_data::Value;
-use mod_api::{
-    Billboard, DisplayKind, DisplayRef, EntityRef, ItemDisplayContext, TextAlignment,
-    Transformation,
-};
 use {
     sunrise_core::nbt::{Compound, Tag},
     sunrise_world::registry::BlockStateId,
@@ -530,9 +530,13 @@ impl Game<'_> {
         stack: Option<ItemStack>,
     ) -> bool {
         let stack = stack.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
+        let items = self.res.shared_items();
         self.display_edit(display, Some(DisplayKind::Item), |c| match stack {
             Some(stack) => {
-                c.insert("item".into(), sunrise_client::save::item_to_nbt(&stack));
+                c.insert(
+                    "item".into(),
+                    sunrise_client::save::item_to_nbt(&stack, &items),
+                );
             }
             None => {
                 c.remove(&"item".into());
@@ -566,8 +570,8 @@ mod tests {
     use super::super::api_values::TryIntoApi;
     use super::super::{commands::OtherEntity, native_entity_refs::tests::with_game};
     use super::*;
-    use sunrise_core::geometry::Vec3;
     use mod_api::WorldEpoch;
+    use sunrise_core::geometry::Vec3;
 
     fn push(game: &mut Game<'_>, id: u32, kind: &str) -> DisplayRef {
         game.options.dedicated = Some(Vec::new());
@@ -589,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn displays_narrow_by_kind_and_share_the_display_state() {
         with_game(|game| {
             let text = push(game, 21, "minecraft:text_display");
@@ -674,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn display_kinds_keep_their_own_state_and_refuse_the_others() {
         with_game(|game| {
             let text = push(game, 21, "minecraft:text_display");
@@ -745,7 +749,7 @@ mod tests {
             assert_eq!(block.block_state(game), Some(stone));
             assert!(block.set_block_state(game, stairs));
             assert_eq!(block.block_state(game), Some(stairs));
-            let invalid = mod_api::BlockStateRecord::new(stairs.block(), u16::MAX).into();
+            let invalid = mod_api::__private::block_state_from_ordinal(stairs.block(), u16::MAX);
             assert!(!block.set_block_state(game, invalid));
             assert_eq!(block.block_state(game), Some(stairs));
 
@@ -777,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn display_writes_reach_entity_data_and_the_saved_entity() {
         with_game(|game| {
             let text = push(game, 21, "minecraft:text_display");
@@ -809,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn each_start_delay_write_forces_a_send_even_when_equal() {
         with_game(|game| {
             let text = push(game, 21, "minecraft:text_display");
@@ -832,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn stale_removed_and_client_displays_do_nothing() {
         with_game(|game| {
             let text = push(game, 21, "minecraft:text_display");

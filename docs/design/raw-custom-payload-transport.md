@@ -1,5 +1,9 @@
 # Registered raw custom payload transport
 
+> The native transport below still applies. Former WebAssembly guest dispatch
+> and its busy retries are historical.
+> See [registered payloads](../modding/src/how-to/client/networking.md) for the current native API.
+
 This is the raw transport below the typed payload work in #813, implementing
 #2882. The codec prerequisite is #2951. Names and contracts are based on
 NeoForge 26.3's public payload API and the room's written clean-room specification;
@@ -11,7 +15,8 @@ Replace the legacy envelope transport, its broadcast hooks, old send methods, br
 30,000-byte envelope bound and 32-message counters outright. Application packets
 use their declared namespaced custom-payload channel and exact opaque body bytes.
 There is no Sunrise application envelope and no second path for typed payloads.
-Existing attachment synchronization is outside this raw transport migration.
+Attachment synchronization rides this transport as an engine declaration (#813 step 4a;
+see the typed-payload design note).
 
 Registration runs in dependency order during mod loading. `PayloadRegistrar`
 provides play, configuration and common registrations, each ToClient, ToServer or
@@ -21,9 +26,9 @@ ownership, nonblank versions, duplicate protocol/id registrations and receiving
 handlers once, then freeze. A common registration occupies both protocols.
 Dispatch selects the one registered owner, not every loaded mod.
 
-Native and wasm expose the same declarations, handlers and results. API aggregates
+Native handlers use these declarations and results. API aggregates
 explicitly derive Wire; registration-only trait-object storage is not an API data
-value. The raw body crosses Wire as a length followed by contiguous bytes.
+value. The Wire representation of the raw body is a length followed by contiguous bytes.
 
 ## Connection admission and identity
 
@@ -36,13 +41,18 @@ incompatible matching declaration is ignored. A vanilla
 peer is admitted when all local requirements are optional; sending an absent
 optional payload returns UnsupportedPeer without a packet. There is no per-tick mod
 work for empty registries. Configuration still exchanges a constant-size protocol
-mark (and an empty Offer) for Sunrise-branded peers, even with empty or all-optional
-registries. On `sunrise:payloads`, Query is bytes `[0, 1]`; Offer begins `[1, 1]`
+mark (and an Offer, which carries the engine's optional declarations even with no mods) for
+Sunrise-branded peers, even with empty or all-optional mod registries. On `sunrise:payloads`, Query is bytes `[0, 1]`; Offer begins `[1, 1]`
 then the manifest record count. The second byte is raw transport revision 1,
 independent of application versions. A wrong revision or an absent marked response
 from a Sunrise-branded peer refuses admission with a named raw-protocol cause.
-Servers send the Query before known packs so a compatible empty peer's Offer cannot
-be overtaken by that barrier. Non-Sunrise vanilla peers remain eligible for optional
+A server whose mods declare payloads sends the Query before known packs; otherwise it
+sends the Query only once the peer names itself Sunrise, so a vanilla client is sent
+nothing on `sunrise:payloads`. That Query, or the server's Offer to a client's own Query,
+follows the known-packs request, so if a Sunrise peer's Offer has not arrived by its
+known-packs reply, the server pings it there and reads on until the Offer or the pong: a
+pong with no Offer before it is the missing marked response. A vanilla peer is never
+pinged. Non-Sunrise vanilla peers remain eligible for optional
 admission; a brand is capability negotiation, not authentication of a build.
 
 A connection owns its negotiated table, protocol and incarnation epoch. Application
@@ -84,8 +94,26 @@ Preserve order with ordinary gameplay ingress. Default handlers run on the logic
 receiving main thread. IPayloadContext supplies player, reply, disconnect and
 enqueueWork. Root transaction commit publishes sends; abort publishes none. Replies
 cannot execute inline across the connection and are received on a subsequent turn.
-Single-player and split-screen use their real connect_local sessions, not direct
+Single-player uses its real connect_local session, not direct
 callback shortcuts.
+
+`IPayloadHandler::handle` returns `Result<(), PayloadHandleError>`, with explicit
+`Failed(String)` for application and execution failures. Native panics and disabled
+owners remain failures. `PayloadWork::run` retains its `Result<(), String>` contract.
+
+Physical ingress reservations follow payloads and work as they move to the main
+thread. A connection-owned receiving turn spans main-thread root publication or
+rollback. Pooled server receivers advance queued payloads on their existing tick;
+dedicated client and configuration receivers wait for the active root to finish.
+Disconnect and phase replacement cancel pending work from the old epoch and wake
+those receivers even if the root is still held.
+
+### Historical WebAssembly retries
+
+The former guest runtime used `Busy { payload, holder }` when contention prevented
+a callback from starting. That result retained the body and a holder snapshot.
+The transport retried at the head of the receive queue under the original ingress
+reservation and 60-second deadline; nested cross-group calls refused immediately.
 
 ## Acceptance and the amendment to #813
 
@@ -95,20 +123,17 @@ Backpressure, bounded flood memory and progress for more than 32 legal messages.
 Its registered-body limit wording must distinguish discard limits from the actual
 connection framing bounds above.
 
-Exercise integrated single-player, split-screen, two remote players, LAN and
+Exercise integrated single-player, two remote players, LAN and
 dedicated paths. Check sender attribution, ordering, next-turn replies, rollback,
 epoch invalidation, optional vanilla admission, required mismatch, duplicate load
-refusal, generic-send bypass and named decode failures. Native and wasm must both
-exercise the real transport. Measure allocations for a 1 MiB wasm transfer; do not
-claim zero-copy across Wire. The author supplies prepared-data self-check evidence;
-review is static. The lane lead separately orders independent network test commands.
+refusal, generic-send bypass and named decode failures. Exercise the real native
+transport. The author supplies prepared-data self-check evidence; review is static.
+The lane lead separately orders independent network test commands.
 
-The `wasm-mods` fixture job runs
-`game::payload_transport::wasm_config_tests::compiled_guest_runs_on_configuration_connection_thread`
-by exact name and requires one passing test. It loads this run's compiled fixture,
-negotiates payloads over TCP with the actual LAN connection, and holds known packs
-and the serving Game thread while requiring two transformed, guest-counted replies.
-This keeps dispatch in CONFIGURATION on `sunrise-lan-conn`, before the Play I/O pool:
-the existing guest-entry `check_current()` rejects a default-stack connection thread
-instead of producing the expected replies. Its isolated child uses fresh game and
-launcher homes and a scratch game directory/current working directory.
+### Historical guest acceptance
+
+The removed `wasm-mods` job used a compiled guest fixture on the CONFIGURATION
+connection thread, before the Play I/O pool, to test the guest-entry thread
+restriction. It held known packs and the serving Game thread while expecting two
+transformed replies. Allocation measurements for a 1 MiB guest transfer were a
+separate check, not a zero-copy guarantee. Neither is a current fixture requirement.

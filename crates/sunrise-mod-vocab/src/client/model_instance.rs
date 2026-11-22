@@ -1,6 +1,7 @@
 //! Instanced copies of one resolved model, for a single world view.
 //!
-//! `ModelInstance::tint` is `0xAARRGGBB`, the same packed colour as [`crate::WorldQuad::color`].
+//! `ModelInstance::tint` is `0xAARRGGBB`, the same packed colour as [`crate::WorldQuad::color`];
+//! `ModelInstance::color` is the same packing, applied to every face.
 //! [`LightCoords`] is block and sky light, each `0..=15`. The engine converts tint and light
 //! to the frame format. Mods never assume that format.
 
@@ -66,8 +67,20 @@ pub struct ModelInstance {
     pub tint: u32,
     /// Block and sky light in vanilla's `0..=15` convention.
     pub light: LightCoords,
-    /// Hurt tint and white flash, in vanilla's overlay convention.
+    /// Hurt tint and white flash, in vanilla's overlay convention. Copies with draw alpha below
+    /// `0xFF`, copies of models with translucent faces, and block state model copies ignore
+    /// overlays on every face, including opaque faces.
     pub overlay: Overlay,
+    /// The draw colour: `0xAARRGGBB`, white (`0xFFFFFFFF`) by default. Its red, green and blue
+    /// multiply every face's vertex colour, tinted or not, after the model's own baked colour and,
+    /// on a face with a tint index, after `tint`; its alpha multiplies every face's alpha. White
+    /// changes nothing. An alpha below `0xFF` draws the copy translucent.
+    pub color: u32,
+    /// Faces left out of this copy, one bit per direction in the order of [`crate::Direction`]:
+    /// down, up, north, south, west, east, bits 0 to 5. A face whose `cull` side is set is not
+    /// drawn; a face with no `cull` side always is. A structure drawn from many copies names the
+    /// sides a neighbour hides, as the mesher's face cull does.
+    pub hidden_faces: u8,
 }
 
 impl ModelInstance {
@@ -86,6 +99,24 @@ impl ModelInstance {
             tint,
             light,
             overlay,
+            color: u32::MAX,
+            hidden_faces: 0,
+        }
+    }
+
+    /// The same copy drawn in the `0xAARRGGBB` draw `color` ([`ModelInstance::color`]).
+    #[inline]
+    pub fn with_color(self, color: u32) -> Self {
+        Self { color, ..self }
+    }
+
+    /// The same copy without the faces whose `cull` side is set in `hidden_faces`
+    /// ([`ModelInstance::hidden_faces`]).
+    #[inline]
+    pub fn with_hidden_faces(self, hidden_faces: u8) -> Self {
+        Self {
+            hidden_faces,
+            ..self
         }
     }
 
@@ -115,14 +146,11 @@ pub enum InstanceError {
     InvalidLight,
     /// The batch would exceed this view's 16,384 instance budget.
     CapacityExceeded,
-    /// The model has a translucent face and is not drawn as solid.
-    Translucent,
 }
 
 /// Persistent copies of one resolved model, retired on reload, world close, mod disable or destroy.
 /// Only the creating mod may access or submit the group; others receive [`GroupError::Stale`].
 /// Retired handles never become valid again, even when their storage slot is reused.
-/// Native and wasm mods use the same storage, ownership and drawing rules.
 /// Static groups cache CPU conversion; all visible GPU-routed copies still upload every frame.
 /// Frequent group pose changes rebuild the live cache and can cost more than transient copies.
 // no wire: decoding from_parts rejects generation zero (an unpublished instance group handle).
@@ -196,8 +224,6 @@ pub enum GroupError {
     OutOfRange,
     /// The mod's reserved capacity or the view budget would be exceeded.
     CapacityExceeded,
-    /// Translucent models cannot use this route.
-    Translucent,
 }
 
 impl From<InstanceError> for GroupError {
@@ -207,7 +233,6 @@ impl From<InstanceError> for GroupError {
             InstanceError::NonFinite => Self::NonFinite,
             InstanceError::InvalidLight => Self::InvalidLight,
             InstanceError::CapacityExceeded => Self::CapacityExceeded,
-            InstanceError::Translucent => Self::Translucent,
         }
     }
 }

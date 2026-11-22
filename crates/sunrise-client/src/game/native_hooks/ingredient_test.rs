@@ -2,7 +2,6 @@ use super::*;
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Enumerate once at publication using the engine predicate, never a second matcher.
     pub(in crate::game) fn recipe_ingredient_item_keys(
@@ -54,7 +53,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod enumeration_tests {
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn ingredient_keys_are_exact_for_tags_shapes_and_refuse_component_predicates() {
         mod_platform::testing::with_mods(Vec::new().into(), || {
             crate::game::native_entity_refs::tests::with_game(|game| {

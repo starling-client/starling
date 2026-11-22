@@ -33,7 +33,7 @@ impl CollisionItem<'_> {
 /// Classification supplied by the caller that owns the actual entity, never inferred
 /// from its runtime ID. Living means a non-player living entity. None preserves
 /// defaults for entity-less queries and callers which have not captured a class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EntityContextKind {
     Item,
     Player,
@@ -112,6 +112,12 @@ impl<'a> CollisionContext<'a> {
         self
     }
 
+    /// Reuse the entity facts captured for collision at its post-move height.
+    pub const fn at_entity_height(mut self, y: f64) -> Self {
+        self.height = Height::Bottom(y);
+        self
+    }
+
     /// Ordinary EntityCollisionContext. The native factory overload taking an
     /// explicit fluid flag also uses this path for experimental minecarts.
     pub fn for_entity(entity: CollisionEntity<'a>, always_fluid: bool) -> Self {
@@ -168,6 +174,25 @@ impl<'a> CollisionContext<'a> {
     }
     pub fn always_collide_with_fluid(&self) -> bool {
         self.always_fluid
+    }
+    /// The entity's `Entity.getY()` the context captured, none for a context without one.
+    pub fn bottom(&self) -> Option<f64> {
+        match self.height {
+            Height::Default => None,
+            Height::Bottom(bottom) => Some(bottom),
+        }
+    }
+    /// The item id in a living entity's main hand (`minecraft:air` when empty); none for a
+    /// context that holds nothing for `is_holding_item` to ask.
+    pub fn held_item(&self) -> Option<&str> {
+        if !self.living || self.position_only {
+            return None;
+        }
+        Some(if self.held.count <= 0 {
+            "minecraft:air"
+        } else {
+            self.held.item
+        })
     }
     pub fn is_holding_item(&self, item: &str) -> bool {
         !self.position_only && self.held.is_item(item)

@@ -8,11 +8,13 @@ pub trait Hooks {
     /// (`EmiExclusionArea`, JEI's `IGuiContainerHandler.getGuiExtraAreas`).
     /// Client-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "areas",
         cancellable = false,
         neoforge = "none (NeoForge has no counterpart in the game; recipe viewers define their own API)"
     )]
-    fn screen_exclusion_areas();
+    fn screen_exclusion_areas(screen: &ScreenView<'_>, areas: &mut Vec<[f32; 4]>);
 }

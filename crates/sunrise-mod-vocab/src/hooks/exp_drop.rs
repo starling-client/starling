@@ -2,15 +2,18 @@
 pub trait Hooks {
     /// Experience before enchantments (`IBlockExtension.getExpDrop`). First answer
     /// replaces vanilla sampling; the global break_block event may override it.
-    /// Answers are clamped to 0..=32767. A panic unwinds before the answer is applied.
+    /// Negative answers are clamped to 0; positive values are awarded as given.
+    /// A panic unwinds before the answer is applied.
     #[hook(
+        receiver = "read",
         side = "server",
         contract = "replace",
         out = "experience",
         scope = "block",
         key = "state",
         target = "sunrise_client::game::native_hooks::exp_drop::GameLevel<'_>::native_exp_drop",
-        neoforge = "IBlockExtension.getExpDrop"
+        neoforge = "IBlockExtension.getExpDrop",
+        version = 2
     )]
     fn exp_drop(
         dimension: LevelDimension,

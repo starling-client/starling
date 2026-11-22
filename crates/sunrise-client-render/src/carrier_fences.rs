@@ -25,6 +25,11 @@ pub struct Fences {
     pub capacity_override: Option<usize>,
 }
 impl Fences {
+    /// Whether any world cell is currently locked against edits.
+    pub fn has_locked_cells(&self) -> bool {
+        !self.cells.is_empty()
+    }
+
     /// Whether a world cell is locked against edits, interactions,
     /// pistons and container opening.
     pub fn locks_cell(&self, pos: &[i32; 3]) -> bool {

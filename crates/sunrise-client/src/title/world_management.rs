@@ -1,12 +1,12 @@
 //! World-list operations. Metadata edits preserve every other NBT field;
 //! backups use vanilla's ZIP layout and never include the session lock.
 use crate::save::{read_dat, write_dat};
-use sunrise_core::nbt::Tag;
 use std::{
     fs,
     io::{self, Seek, Write},
     path::{Path, PathBuf},
 };
+use sunrise_core::nbt::Tag;
 
 fn world_path(saves: &Path, folder: &str) -> crate::Result<PathBuf> {
     if Path::new(folder).components().count() != 1

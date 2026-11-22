@@ -4,8 +4,10 @@
 //! launcher and the registry all use it, so a pack is judged the same way
 //! everywhere.
 pub mod check;
+pub mod guard;
 pub mod inputs;
 pub mod manifest;
+pub mod mod_pipeline;
 pub mod package;
 pub mod reference;
 pub mod stages;
@@ -13,8 +15,13 @@ pub mod stages;
 pub use check::{Problem, Report, check};
 pub use inputs::Frame;
 pub use manifest::{
+<<<<<<< sync-sunrise-1
     API, Api, Blend, LightColor, MANIFEST, Manifest, Material, OptionKind, OptionPage, PackOption,
     PackTexture, PageItem, Primaries, RayTracing, SCHEMA, SpriteTag, Stage,
+=======
+    API, Api, Blend, Coverage, LightColor, MANIFEST, Manifest, Material, OptionKind, OptionPage,
+    PackOption, PackTexture, PageItem, Primaries, SCHEMA, SpriteTag, Stage,
+>>>>>>> sunrise/main
 };
 pub use package::{EXTENSION, Pack};
 pub use stages::{Composed, StageKind, compose};

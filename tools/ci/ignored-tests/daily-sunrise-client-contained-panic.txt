@@ -1,0 +1,9 @@
+sunrise-client game::creatures::breeding_tests::empty_mod_never_defers_breeding_xp lib daily child-process
+sunrise-client game::creatures::mob_dispatch_panic_tests::mob_despawn_listener_panic_preserves_owned_rows_and_lent_random lib daily child-process
+sunrise-client game::creatures::pending_birth_tests::a_birth_panic_does_not_undo_or_misroute_a_biome_write_in_another_level lib daily child-process
+sunrise-client game::creatures::pending_birth_tests::a_deferred_join_can_remove_a_parent_only_after_the_baby_is_applied lib daily child-process
+sunrise-client game::creatures::pending_birth_tests::a_panicking_baby_listener_leaves_no_reserved_state_behind lib daily child-process
+sunrise-client game::creatures::pending_birth_tests::a_panicking_listener_spawns_nothing_and_leaves_the_arena_usable lib daily child-process
+sunrise-client game::creatures::pending_birth_tests::a_parent_changed_during_dispatch_refuses_the_baby_and_nothing_is_rebuilt lib daily child-process
+sunrise-client game::creatures::pending_birth_tests::discarding_a_parent_in_the_birth_listener_refuses_the_baby lib daily child-process
+sunrise-client game::load_conditions::tests::load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes lib daily child-process

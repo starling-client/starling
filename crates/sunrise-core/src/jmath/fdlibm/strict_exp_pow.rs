@@ -31,7 +31,7 @@ const TWO_M1000: f64 = f64::from_bits(0x0170_0000_0000_0000);
 const OVERFLOW_THRESHOLD: f64 = f64::from_bits(0x4086_2e42_fefa_39ef);
 const UNDERFLOW_THRESHOLD: f64 = f64::from_bits(0xc087_4910_d52d_3051);
 
-/// StrictMath-exact exponential, linked into native and wasm guests without host calls.
+/// StrictMath-exact exponential, without host calls.
 pub fn exp(x: f64) -> f64 {
     let mut x = x;
     let hx = high_word(x) as u32;
@@ -108,7 +108,7 @@ const INV_LN2_H: f64 = f64::from_bits(0x3ff7_1547_6000_0000);
 const INV_LN2_L: f64 = f64::from_bits(0x3e54_ae0b_f85d_df44);
 const ONE_THIRD: f64 = f64::from_bits(0x3fd5_5555_5555_5555);
 
-/// StrictMath-exact power, linked into native and wasm guests without host calls.
+/// StrictMath-exact power, without host calls.
 pub fn pow(x: f64, y: f64) -> f64 {
     let hx = high_word(x);
     let lx = low_word(x);

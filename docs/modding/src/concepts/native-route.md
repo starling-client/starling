@@ -2,21 +2,16 @@
 
 The native route lets a native mod change the game's own code: a function's body, a value or call inside
 it, or a hot loop. You declare it with `[[native.*]]` tables written after `[native]` in `sunrise-mod.toml`,
-and the launcher applies them to the prebuilt game without rebuilding the game.
+and the build applies them to the prebuilt game without rebuilding the game.
 
 ## When to use it
 
-Try these first. They work on native and wasm:
+Use a [hook](hooks-and-the-host.md) or a [Part method](parts.md) when it exposes what you need. If the
+API is missing a hook, describe the game action, its side, the values you need, and whether the hook needs
+to observe, change or cancel the action in a [hook request](https://github.com/sunrise-org/sunrise/issues/new).
 
-1. a **hook**, a method of `mod_api::Hooks` that the game calls at one moment, or a **Part** method
-   ([Your first native mod](../start/first-mod.md));
-2. an **`[[inject]]` listener**: your function, run at the start or end of a game function with `mod_api`
-   values ([Injections](injections.md)).
-
-Take the native route when neither can do it: you need the game's real types or private fields, a change in
-the middle of a function, a whole function replaced, or a change inside a hot loop. It is not for a wasm mod,
-which cannot declare `[native]` tables. Data kept on one entity or block is an
-[attachment](attachments.md), not this route.
+Take the native route when you need to change a game function or hot loop or reach private game types or
+fields that the API doesn't expose. To store data on an entity or block, use an [attachment](attachments.md).
 
 ## The tables
 
@@ -28,7 +23,7 @@ which cannot declare `[native]` tables. Data kept on one entity or block is an
 | `[[native.module]]` | add a module of your own code inside a game source file, for your mixin code to share | [Support modules](native-route/5-support-modules.md) |
 | `[[native.state]]` | add a field to a game type: refused, use an attachment | [Native state](native-route/6-native-state.md) |
 
-Every row of these tables has an `id`. No two rows of one mod share an `id`, counting `[[inject]]` rows too.
+Every row of these tables has an `id`. No two rows of one mod share an `id`.
 
 ## It is tied to one game build
 
@@ -38,7 +33,7 @@ the game's own types, such as `Game` and its fields, and these change between bu
 - To move to a new build, change `sunrise` and rebuild. A target that was renamed or moved fails the build
   with an error naming your mod.
 - A change elsewhere in a target's body is not reported. Reread the functions you target on each new build.
-- Read the game's source at your `sunrise` commit on [GitHub](https://github.com/arismoko/horizon). Every
+- Read the game's source at your `sunrise` commit on [GitHub](https://github.com/sunrise-org/sunrise). Every
   target path, field and type on these pages comes from it.
 - This code runs with the player's rights. It is not sandboxed.
 
@@ -55,16 +50,17 @@ the game's own types, such as `Game` and its fields, and these change between bu
 
 ## Building
 
-Build as for any native mod: the launcher's **Build**, or
-`sunrise-launcher native-build path/to/mod --trust-native-code`. The flag says you trust the mod's code to
-run with your rights.
+Build as for any native mod, with `cargo sunrise-mod build`
+([Your first native mod](../start/first-mod.md#5-build-against-the-prebuilt-game)). A player's launcher builds it
+the same way from the package ([What the launcher does](../how-to/native-mods/04-what-the-launcher-does.md)).
 
 A build with a `[[native.mixin]]` row obtains the horizon-mixins tool for your `mixins` commit.
 
 The prebuilt tool is checked against its release's `SHA256SUMS` and against the commit, patch and platform the
-launcher pins. Where no prebuilt exists for your platform or pin, the launcher builds the tool from source.
+build pins. Where no prebuilt exists for your platform or pin, the build compiles the tool from source.
 
-Read the launcher's [build log](../how-to/native-mods/05-build-log.md) (`native/build.log`,
-also available through **Build log**) for the number of patched functions and mixin rows.
+Read the build log, whose path `cargo sunrise-mod build` prints, for the number of patched functions and
+mixin rows. A player reads the same log through the launcher's **Build log**
+([build log](../how-to/native-mods/05-build-log.md)).
 
-What the launcher does under the hood is on [How the native route works](native-route/7-how-it-works.md).
+How the build works is on [How the native route works](native-route/7-how-it-works.md).

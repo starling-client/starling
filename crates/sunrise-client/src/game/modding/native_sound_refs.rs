@@ -9,14 +9,16 @@
 use super::{
     Game,
     commands::Target,
+    journal_level_write::PendingWrite,
     native_hooks::{mod_sound_ok, sound_id},
+    transactions::After,
 };
-use sunrise_core::random::RandomSource;
 use mod_api::{EntityRef, PlayerRef, SoundSource};
+use sunrise_core::random::RandomSource;
 
 impl Game<'_> {
     /// Where `player` is reached now: the window's own player or a guest.
-    fn native_player_sound_target(&self, player: PlayerRef) -> Option<Target> {
+    pub(super) fn native_player_sound_target(&self, player: PlayerRef) -> Option<Target> {
         if self.player(player.uuid()) != Some(player) {
             return None;
         }
@@ -37,7 +39,7 @@ impl Game<'_> {
     }
     /// `StopSoundCommand` for one player: their client stops the playing
     /// sounds that match `sound` (an event id) and `source`; `None` matches
-    /// any. True means sent.
+    /// any. True means accepted, not delivered.
     pub(super) fn player_stop_sound(
         &mut self,
         player: PlayerRef,
@@ -50,13 +52,23 @@ impl Game<'_> {
         if sound.is_some_and(|s| !sound_id(s)) {
             return false;
         }
-        self.stop_sound_for(&[target], sound, source.map(SoundSource::index));
+        let source = source.map(SoundSource::index);
+        if !self.has_level_transaction() {
+            self.stop_sound_for(&[target], sound, source);
+        } else {
+            self.after_commit(After::LevelWrite(Box::new(PendingWrite::PlayerStopSound {
+                level: self.dim,
+                player,
+                sound: sound.map(str::to_owned),
+                source,
+            })));
+        }
         true
     }
     /// `PlaySoundCommand` for one player: plays sound event `sound` at the
     /// player, for them only, under `source`'s volume slider. The seed is the
-    /// level random's `nextLong`, drawn once per call. True means sent, not
-    /// heard.
+    /// level random's `nextLong`, drawn when the sound publishes. True means
+    /// accepted, not delivered.
     pub(super) fn player_play_sound(
         &mut self,
         player: PlayerRef,
@@ -76,8 +88,20 @@ impl Game<'_> {
         {
             return false;
         }
-        let seed = self.world.random.next_long();
-        self.play_sound_to(target, sound, at, volume, pitch, source.index(), seed);
+        if !self.has_level_transaction() {
+            let seed = self.world.random.next_long();
+            self.play_sound_to(target, sound, at, volume, pitch, source.index(), seed);
+        } else {
+            self.after_commit(After::LevelWrite(Box::new(PendingWrite::PlayerSound {
+                level: self.dim,
+                player,
+                sound: sound.to_owned(),
+                at,
+                source: source.index(),
+                volume,
+                pitch,
+            })));
+        }
         true
     }
     /// `Level.playSound(null, entity, sound, source, volume, pitch)`: plays
@@ -103,9 +127,16 @@ impl Game<'_> {
         ) else {
             return false;
         };
-        self.native_queue_sound(level, sound, at, source, volume, pitch, None)
-            .map(|queued| queued.entity = Some(id))
-            .is_some()
+        self.native_queue_sound(super::native_level_effects::NativeSoundRequest {
+            level,
+            sound,
+            at,
+            source,
+            volume,
+            pitch,
+            except: None,
+            entity: Some(id),
+        })
     }
 }
 
@@ -113,10 +144,6 @@ impl Game<'_> {
 pub(super) mod tests {
     use super::super::lan::LanSettings;
     use super::super::native_entity_refs::tests::with_game;
-    use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
-    use sunrise_client::mobs::Mob;
-    use sunrise_core::geometry::Vec3;
-    use sunrise_protocol::packets::{configuration::ClientInformation, play::Clientbound};
     use mod_api::__private::game::*;
     use mod_api::{SoundSource, WorldEpoch};
     use std::sync::{
@@ -124,6 +151,10 @@ pub(super) mod tests {
         atomic::{AtomicI32, AtomicUsize},
         mpsc::Receiver,
     };
+    use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
+    use sunrise_client::mobs::Mob;
+    use sunrise_core::geometry::Vec3;
+    use sunrise_protocol::packets::{configuration::ClientInformation, play::Clientbound};
 
     pub(in crate::game) fn guest(conn: u32, uuid: u128, at: [f64; 3]) -> (Guest, Receiver<Out>) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -161,7 +192,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn sounds_reach_the_right_connections() {
         with_game(|game| {
             let net = NetConfig {
@@ -183,6 +214,7 @@ pub(super) mod tests {
                 max_players: 3,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             let settings = LanSettings {
                 port: 0,
@@ -273,7 +305,7 @@ pub(super) mod tests {
     /// random; and a player exactly at the range edge is outside
     /// `PlayerList.broadcast`.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn queued_sounds_draw_sound_seeds_at_play_and_cut_at_the_range_edge() {
         use sunrise_core::random::RandomSource;
 
@@ -297,6 +329,7 @@ pub(super) mod tests {
                 max_players: 3,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             let settings = LanSettings {
                 port: 0,
@@ -315,18 +348,18 @@ pub(super) mod tests {
             let before = game.lan.as_ref().unwrap().hub.next_sound_seed();
             let mut level_random = game.world.random.clone();
             for _ in 0..2 {
-                assert!(
-                    game.native_queue_sound(
+                assert!(game.native_queue_sound(
+                    super::super::native_level_effects::NativeSoundRequest {
                         level,
                         sound,
-                        [0.5, 64.0, 0.0],
-                        SoundSource::Neutral,
-                        1.0,
-                        1.0,
-                        None,
-                    )
-                    .is_some()
-                );
+                        at: [0.5, 64.0, 0.0],
+                        source: SoundSource::Neutral,
+                        volume: 1.0,
+                        pitch: 1.0,
+                        except: None,
+                        entity: None,
+                    },
+                ));
             }
             // The gameplay random is exactly where it was: a mod's sound
             // moves no level draw.

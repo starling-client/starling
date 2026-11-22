@@ -18,11 +18,11 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod customize_chat_overlay_tests {
-    use sunrise_client::hud::HudBatch;
-    use sunrise_client::text::Text;
     use mod_api::{ClientHost, CustomizeChatOverlayEvent, Hooks, ModEntry};
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
+    use sunrise_client::hud::HudBatch;
+    use sunrise_client::text::Text;
 
     type Seen = Arc<Mutex<Vec<(i32, i32, bool, i32, i32)>>>;
 
@@ -56,7 +56,7 @@ mod customize_chat_overlay_tests {
     /// GUI size, focused or not, and the chat is drawn where it moved it. With the chat hidden
     /// (F1, chat closed) nothing is asked.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_mod_moves_the_chat() {
         let message = Text::literal("hello from the chat test");
         let mut plain = None;

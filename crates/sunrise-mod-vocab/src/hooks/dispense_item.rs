@@ -14,12 +14,21 @@ pub trait Hooks {
     /// nothing at all (`DispenseItemBehavior.NOOP`). To drop one normally,
     /// answer `(native_dispense_default(..), 1000)`.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_dispense_item",
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "answer",
         scope = "item",
         key = "stack",
-        neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)"
+        neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)",
+        version = 2
     )]
-    fn dispense_item();
+    fn dispense_item(
+        dimension: &str,
+        pos: [i32; 3],
+        facing: Direction,
+        stack: &ItemStack,
+        answer: &mut Option<mod_api::Dispensed>,
+    );
 }

@@ -1,14 +1,14 @@
 //! Original transport for fixed, checkerboard and End biome-source queries.
-use sunrise_core::density::{DensitySampler, SampleError, SamplerContext};
-use sunrise_world::worldgen::biome_source::{
-    CheckerboardBiomeSource, EndBiomeSource, FixedBiomeSource,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
     sync::{Arc, Mutex},
+};
+use sunrise_core::density::{DensitySampler, SampleError, SamplerContext};
+use sunrise_world::worldgen::biome_source::{
+    CheckerboardBiomeSource, EndBiomeSource, FixedBiomeSource,
 };
 fn n(v: &Value) -> i32 {
     v.as_i64().unwrap() as i32

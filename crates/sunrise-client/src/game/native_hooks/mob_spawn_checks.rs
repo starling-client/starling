@@ -2,11 +2,11 @@ use super::*;
 
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// `MobSpawnEvent.SpawnPlacementCheck`: the entity type `kind` may spawn
-    /// at `pos` in `level` for `reason` (light, ground, biome:
-    /// `SpawnPlacements.checkSpawnRules`). `default_result` is what vanilla's
-    /// predicate answered; `spawner` is the block that asked, if one did;
-    /// `result` starts as `Default` (vanilla's answer stands). Server-side.
+    /// `MobSpawnEvent.SpawnPlacementCheck`: after `SpawnPlacements.checkSpawnRules`,
+    /// `default_result` is the effective predicate result, including native registrations
+    /// even for vanilla types. `spawner` is the block that asked, if any. `random` is the
+    /// same live stream the predicate used, lent only for the call. `Default` keeps the
+    /// predicate result; `Succeed` and `Fail` override it without undoing draws. Server-side.
     pub(in crate::game) fn native_mob_spawn_placement_check(
         &self,
         call: mod_api::__private::MobSpawnPlacementCheckCall<'_>,

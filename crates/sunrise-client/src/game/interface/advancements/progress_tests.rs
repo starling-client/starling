@@ -100,7 +100,7 @@ fn assert_progress(progress: &AdvancementProgress, obtained: [bool; 3], groups: 
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn progress_events_capture_each_players_full_mutation_state() {
     if run_fresh_cases(
         "game::advancements::progress_tests::progress_events_capture_each_players_full_mutation_state",
@@ -377,11 +377,7 @@ fn progress_events_capture_each_players_full_mutation_state() {
                 &scratch,
                 &sunrise_world::loot::PackOverlay::NONE,
                 // Rewards must name a recipe registered in the server's index.
-                std::collections::BTreeMap::from([(
-                    "testmod:reward".into(),
-                    r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stone"],"result":{"id":"minecraft:diamond","count":1}}"#.into(),
-                )]),
-                Default::default(),
+                sunrise_client::lan::recipes::BookProjections::single_shapeless("testmod:reward"),
             );
             let reload = case == "reload";
             let host = game.lan.as_mut().unwrap();
@@ -396,7 +392,8 @@ fn progress_events_capture_each_players_full_mutation_state() {
             if reload {
                 game.run_native_advancement_grants();
             } else {
-                game.tick_lan(false);
+                game.world_root = game.options.game_dir.clone().unwrap();
+                game.tick_server(false).unwrap();
             }
             let events = observed.lock().unwrap();
             assert_eq!(

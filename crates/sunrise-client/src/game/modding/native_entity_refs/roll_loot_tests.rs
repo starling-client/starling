@@ -5,6 +5,8 @@
 use crate::game::{
     Audio, Game, Options, Progress, Settings, execution_role, functions, load_resources,
 };
+use mod_api::{Authority, LevelRef};
+use std::sync::Arc;
 use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
 use sunrise_core::{
     geometry::Vec3,
@@ -12,8 +14,6 @@ use sunrise_core::{
     random::{LegacyRandom, RandomSource as _},
 };
 use sunrise_items::items::ItemStack;
-use mod_api::{Authority, LevelRef};
-use std::sync::Arc;
 
 /// A weighted pool rolled 1 to 3 times (flint 6, iron nuggets 3 with a binomial
 /// count that may be 0, a gold nugget 1); a pool behind a 30% chance whose
@@ -136,7 +136,10 @@ fn game<'a>(
         &[],
         &[],
     );
-    game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
+    game.world_tables = game
+        .stage_world_tables(&stack, false, &root)
+        .unwrap()
+        .tables;
     // The command's table argument knows the pack's tables, as after a world opens.
     game.sync_loot_table_ids();
     let level = game.level("minecraft:overworld").unwrap();
@@ -185,7 +188,7 @@ fn count_of(stacks: &[ItemStack], item: &str) -> Vec<u32> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_roll_is_the_engines_own_roll_for_the_same_seed_and_tool() {
     let mut resources = None;
     let (mut game, level) = game(&mut resources, "same");
@@ -207,22 +210,17 @@ fn a_roll_is_the_engines_own_roll_for_the_same_seed_and_tool() {
                 after,
                 "seed {seed}: the same draws"
             );
-            // The command fills a slot per stack and merges nothing; the pearls
-            // are one stack of 40 there, split to stack size by the roll.
-            let mut rolled = lines(&rolled);
-            if let Some(i) = rolled
-                .iter()
-                .position(|l| l.starts_with("minecraft:ender_pearl"))
-            {
-                rolled.splice(i..i + 3, ["minecraft:ender_pearl x40 ".to_owned()]);
-            }
-            assert_eq!(rolled, by_command, "seed {seed}, tool {command_tool}");
+            assert_eq!(
+                lines(&rolled),
+                by_command,
+                "seed {seed}, tool {command_tool}"
+            );
         }
     }
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn weighted_pools_conditions_and_functions_roll_as_the_table_says() {
     let mut resources = None;
     let (mut game, level) = game(&mut resources, "table");
@@ -279,7 +277,7 @@ fn weighted_pools_conditions_and_functions_roll_as_the_table_says() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_table_with_a_random_sequence_draws_from_it_not_the_level() {
     let mut resources = None;
     let (mut game, level) = game(&mut resources, "sequence");
@@ -304,7 +302,7 @@ fn a_table_with_a_random_sequence_draws_from_it_not_the_level() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_missing_table_and_a_stale_handle_are_none() {
     let mut resources = None;
     let (mut game, level) = game(&mut resources, "none");
@@ -327,7 +325,7 @@ fn a_missing_table_and_a_stale_handle_are_none() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn component_stack_capacity_is_preserved_on_every_split() {
     let mut resources = None;
     let (mut game, level) = game(&mut resources, "component-split");

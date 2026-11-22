@@ -4,11 +4,11 @@
 //! client's copy, and only on the level in place.
 use super::Game;
 use super::cauldron_contents::{self, CauldronContent, CauldronContents, EMPTY_CAULDRON};
+use mod_api::{BlockSide, FluidStack, Transaction};
+use std::sync::Arc;
 use sunrise_client::containers::{BlockEntity, ModFluidTanks};
 use sunrise_core::geometry::Direction;
 use sunrise_core::nbt::{Compound, JavaString, Tag};
-use mod_api::{BlockSide, FluidStack, Transaction};
-use std::sync::Arc;
 
 /// What holds fluids at a position: a mod block's tanks, or a cauldron
 /// (`CauldronFluids`). An empty cauldron is fillable; a cauldron block with no
@@ -177,10 +177,8 @@ fn write_tanks(nbt: &mut Compound, tanks: &[Tank]) {
 }
 
 // Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
 impl Game<'_> {
-    /// What holds fluids at `pos` in the level in place: a mod block's tanks (its block
-    /// entity's, and not the placeholder standing in while it ticks), or a cauldron.
+    /// What holds fluids at `pos` in the level in place: a mod block's tanks, or a cauldron.
     fn native_fluid_at(&self, pos: [i32; 3]) -> Option<FluidAt> {
         if !self.native_simulates() {
             return None;
@@ -188,10 +186,9 @@ impl Game<'_> {
         let key = (pos[0], pos[1], pos[2]);
         let state = self.world.block(pos[0], pos[1], pos[2]);
         if let Some(tanks) = self.world.block_entities.mod_fluids(state.0) {
-            // The block entity is out of the world while it ticks.
             return matches!(
                 self.world.block_entities.get(&key),
-                Some(sunrise_client::containers::BlockEntity::Mod(m)) if !m.id().is_empty()
+                Some(sunrise_client::containers::BlockEntity::Mod(_))
             )
             .then(|| FluidAt::Mod(Arc::clone(tanks)));
         }
@@ -326,19 +323,21 @@ impl Game<'_> {
         &self,
         at: BlockSide,
         tank: usize,
-        fluid: &FluidStack,
+        fluid: Option<&FluidStack>,
     ) -> u32 {
         match self.capability_tanks(at) {
-            Some(at) if !game_holds(fluid, &at) => 0,
+            Some(at) if fluid.is_some_and(|fluid| !game_holds(fluid, &at)) => 0,
             Some(FluidAt::Mod(tanks)) => side_tanks(&tanks, at.side)
                 .nth(tank)
                 .filter(|real| tanks.inputs.contains(real))
                 .map_or(0, |real| tanks.tanks[real].max(0).unsigned_abs()),
-            Some(FluidAt::Cauldron(cauldron)) if tank == 0 => fluid
-                .key()
-                .and_then(mod_api::__private::fluid_id)
-                .and_then(|id| cauldron.contents.of_fluid(id))
-                .map_or(0, |(_, content)| content.total),
+            Some(FluidAt::Cauldron(cauldron)) if tank == 0 => fluid.map_or(u32::MAX, |fluid| {
+                fluid
+                    .key()
+                    .and_then(mod_api::__private::fluid_id)
+                    .and_then(|id| cauldron.contents.of_fluid(id))
+                    .map_or(0, |(_, content)| content.total)
+            }),
             _ => 0,
         }
     }
@@ -541,11 +540,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_cauldron_move_the_target_takes_part_of_gives_the_whole_levels_that_fit() {
         use super::super::super::native_entity_refs::tests::with_game;
+        use mod_api::{BlockUpdateFlags, FLUIDS, resource_util::move_resources};
         use sunrise_client::chunk::Chunk;
-        use mod_api::{BlockUpdateFlags, FLUIDS, move_resources};
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             game.world
@@ -564,21 +563,40 @@ mod tests {
             let flags = BlockUpdateFlags::NEIGHBORS;
             assert_eq!(game.level_set_block(level, from, full, flags), Ok(true));
             assert_eq!(game.level_set_block(level, to, one, flags), Ok(true));
-            // The target has room for two levels: the bucket the source first gives doesn't
-            // fit, so the move is undone and tried again with what fit, two levels' worth.
+            // The source probes a bucket; the target accepts two levels, which the source
+            // can extract exactly.
             let host: &mut dyn ServerHost = game;
             let source = level.capability(host, &FLUIDS, from, None).unwrap();
             let target = level.capability(host, &FLUIDS, to, None).unwrap();
-            let moved = host
-                .transaction(|host, tx| move_resources(host, &source, &target, |_| true, 1000, tx));
+            let moved = host.transaction(|host, tx| {
+                move_resources(host, &source, &target, |_| true, 1000, Some(tx))
+            });
             assert_eq!(moved, Ok(667));
             assert_eq!(game.world.block(from[0], from[1], from[2]), one);
             assert_eq!(game.world.block(to[0], to[1], to[2]), full);
+
+            // Into empty, one level costs 333 mB, but the full source gives its top
+            // level only for 334 mB. A mismatch must restore both cauldrons.
+            let empty = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:cauldron")
+                .unwrap();
+            assert_eq!(game.level_set_block(level, from, full, flags), Ok(true));
+            assert_eq!(game.level_set_block(level, to, empty, flags), Ok(true));
+            let host: &mut dyn ServerHost = game;
+            let moved = host.transaction(|host, tx| {
+                move_resources(host, &source, &target, |_| true, 500, Some(tx))
+            });
+            assert_eq!(moved, Ok(0));
+            assert_eq!(game.world.block(from[0], from[1], from[2]), full);
+            assert_eq!(game.world.block(to[0], to[1], to[2]), empty);
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mods_cauldron_fills_and_drains_by_its_levels_and_a_refusal_names_both_sides() {
         use super::super::super::native_entity_refs::tests::{
             record_key, run_fresh_cases, with_game_at,
@@ -590,11 +608,11 @@ mod tests {
         ) {
             return;
         }
-        use sunrise_client::chunk::Chunk;
         use mod_api::{
             BlockKey, BlockUpdateFlags, FLUIDS, FluidKey, FluidResource, Hooks, ModEntry, Mods,
             RegisterCauldronFluidContentEvent, Registrar, RegistrationContext,
         };
+        use sunrise_client::chunk::Chunk;
 
         /// The keys the mod's `register` requested, as a real mod keeps them for its hooks.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -750,19 +768,19 @@ mod tests {
                     assert_eq!(handler.size(game), 1);
                     assert_eq!(handler.resource(game, 0), Some(syrup.clone()));
                     assert_eq!(handler.amount(game, 0), held);
-                    assert_eq!(handler.capacity(game, 0, &syrup), 3000);
-                    assert_eq!(handler.capacity(game, 0, &water), 1000);
+                    assert_eq!(handler.capacity(game, 0, Some(&syrup)), 3000);
+                    assert_eq!(handler.capacity(game, 0, Some(&water)), 1000);
                 }
                 let handler = handler.unwrap();
                 let extract = |game: &mut Game<'_>, resource: &FluidResource, amount| {
                     game.transaction(|host, tx| {
-                        Ok::<_, ()>(handler.extract(host, tx, 0, resource, amount))
+                        Ok::<_, ()>(handler.extract_at(host, tx, 0, resource, amount))
                     })
                     .unwrap()
                 };
                 let insert = |game: &mut Game<'_>, resource: &FluidResource, amount| {
                     game.transaction(|host, tx| {
-                        Ok::<_, ()>(handler.insert(host, tx, 0, resource, amount))
+                        Ok::<_, ()>(handler.insert_at(host, tx, 0, resource, amount))
                     })
                     .unwrap()
                 };
@@ -820,7 +838,7 @@ mod tests {
                 assert_eq!(at(game), block(game, "minecraft:lava_cauldron", None));
                 assert_eq!(handler.resource(game, 0), Some(lava.clone()));
                 assert_eq!(handler.amount(game, 0), 1000);
-                assert_eq!(handler.capacity(game, 0, &lava), 1000);
+                assert_eq!(handler.capacity(game, 0, Some(&lava)), 1000);
                 assert_eq!(insert(game, &syrup, 1000), 0);
                 assert_eq!(extract(game, &lava, 999), 0);
                 assert_eq!(extract(game, &lava, 1000), 1000);
@@ -921,7 +939,7 @@ mod tests {
             &self,
             _: &mut dyn ServerHost,
             index: usize,
-            _: &mod_api::FluidResource,
+            _: Option<&mod_api::FluidResource>,
         ) -> u32 {
             if index < self.reached.len() { 4000 } else { 0 }
         }
@@ -938,7 +956,7 @@ mod tests {
                         1,
                     ))
         }
-        fn insert(
+        fn insert_at(
             &self,
             host: &mut dyn ServerHost,
             _: &Transaction,
@@ -962,7 +980,7 @@ mod tests {
             entry.1 += took as i32;
             if self.write(host, &state) { took } else { 0 }
         }
-        fn extract(
+        fn extract_at(
             &self,
             host: &mut dyn ServerHost,
             _: &Transaction,
@@ -991,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_scoped_tank_can_refuse_a_fluid() {
         use super::super::super::native_entity_refs::tests::{run_fresh_cases, with_game_at};
         if run_fresh_cases(
@@ -1001,14 +1019,14 @@ mod tests {
         ) {
             return;
         }
+        use mod_api::{
+            BlockUpdateFlags, FLUIDS, FluidResource, Hooks, ModEntry, Mods, Registrar,
+            resource_util::move_resources,
+        };
         use sunrise_client::{
             chunk::Chunk,
             containers::{ModBlockEntity, ModBlockEntityFields},
             fast_hash::FxHashMap,
-        };
-        use mod_api::{
-            BlockUpdateFlags, FLUIDS, FluidResource, Hooks, ModEntry, Mods, Registrar,
-            move_resources,
         };
 
         struct WaterTanks;
@@ -1020,19 +1038,20 @@ mod tests {
                     .block_entity_type("water_tank")
                     .blocks(&["fluid_filter_test:water_tank"])
                     .build();
-                r.block_entity_capability_before_game(&FLUIDS, &kind, |host, at| {
+                r.block_entity_capability_before_game(&FLUIDS, &kind, |_, at, _, entity, offer| {
                     // The same block entity type elsewhere keeps the game's default handler.
-                    (at.pos == [2, 64, 0]).then(|| {
-                        Box::new(WaterTank {
-                            entity: host.block_entity(at.level, at.pos).unwrap(),
-                            reached: if at.side == Some(Direction::Down) {
-                                vec![1, 0]
-                            } else {
-                                vec![0, 1]
-                            },
-                        })
-                            as Box<dyn mod_api::ResourceHandler<FluidResource>>
-                    })
+                    if at.pos == [2, 64, 0] {
+                        offer.offer(|| {
+                            Box::new(WaterTank {
+                                entity,
+                                reached: if at.side == Some(Direction::Down) {
+                                    vec![1, 0]
+                                } else {
+                                    vec![0, 1]
+                                },
+                            })
+                        });
+                    }
                 });
             }
             fn blocks(
@@ -1040,10 +1059,12 @@ mod tests {
                 _: &mod_api::RegistrationContext,
                 event: &mut mod_api::BlocksEvent<'_>,
             ) {
-                event.blocks.push(mod_api::Block::new(
-                    "fluid_filter_test:water_tank",
-                    "minecraft:stone",
-                ));
+                event
+                    .register(mod_api::Block::new(
+                        "fluid_filter_test:water_tank",
+                        "minecraft:stone",
+                    ))
+                    .unwrap();
             }
         }
         let mods: Mods = vec![ModEntry::new("fluid_filter_test", Box::new(WaterTanks))].into();
@@ -1104,10 +1125,10 @@ mod tests {
                     mod_api::__private::fluid_key("minecraft:empty").unwrap(),
                     1000,
                 ));
-                assert_eq!(source.capacity(game, 0, &empty), 0);
+                assert_eq!(source.capacity(game, 0, Some(&empty)), 0);
                 assert_eq!(
                     game.transaction(|host, tx| Ok::<_, ()>(
-                        source.insert(host, tx, 0, &empty, 1000)
+                        source.insert_at(host, tx, 0, &empty, 1000)
                     )),
                     Ok(0)
                 );
@@ -1142,7 +1163,7 @@ mod tests {
                         &target,
                         |_| true,
                         300,
-                        tx
+                        Some(tx)
                     )),
                     Ok(300)
                 );
@@ -1160,6 +1181,7 @@ mod tests {
                     std::env::temp_dir()
                         .join(format!("sunrise-fluid-roundtrip-{}", std::process::id())),
                     sunrise_client::save::LevelShape::OVERWORLD,
+                    Some(Default::default()),
                 );
                 disk.enable_trusted_fluid_load();
                 disk.save(
@@ -1185,7 +1207,7 @@ mod tests {
                 );
                 assert_eq!(source.amount(game, 0), 700);
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(source.extract(
+                    game.transaction(|host, tx| Ok::<_, ()>(source.extract_at(
                         host,
                         tx,
                         0,
@@ -1203,7 +1225,7 @@ mod tests {
                 assert_eq!(source.amount(game, 0), 1000);
                 assert_eq!(
                     game.transaction(|host, tx| Ok::<_, ()>(
-                        source.extract(host, tx, 0, &water, 1000)
+                        source.extract_at(host, tx, 0, &water, 1000)
                     )),
                     Ok(1000)
                 );
@@ -1211,7 +1233,7 @@ mod tests {
                 assert!(source.is_valid(game, 0, &chocolate));
                 assert_eq!(
                     game.transaction(|host, tx| Ok::<_, ()>(
-                        source.insert(host, tx, 0, &chocolate, 1000)
+                        source.insert_at(host, tx, 0, &chocolate, 1000)
                     )),
                     Ok(1000)
                 );
@@ -1226,11 +1248,11 @@ mod tests {
                 let target = level.capability(game, &FLUIDS, to, None).unwrap();
                 assert_eq!(target.owner(), "fluid_filter_test");
                 for index in 0..2 {
-                    assert_eq!(target.capacity(game, index, &chocolate), 4000);
+                    assert_eq!(target.capacity(game, index, Some(&chocolate)), 4000);
                     assert!(!target.is_valid(game, index, &chocolate));
                     assert_eq!(
                         game.transaction(|host, tx| Ok::<_, ()>(
-                            target.insert(host, tx, index, &chocolate, 500)
+                            target.insert_at(host, tx, index, &chocolate, 500)
                         )),
                         Ok(0)
                     );
@@ -1246,7 +1268,7 @@ mod tests {
                         &target,
                         |_| true,
                         500,
-                        tx
+                        Some(tx)
                     )),
                     Ok(0)
                 );
@@ -1258,14 +1280,14 @@ mod tests {
                 assert!(target.is_valid(game, 0, &water));
                 assert_eq!(
                     game.transaction(|host, tx| Ok::<_, ()>(
-                        target.insert(host, tx, 0, &water, 500)
+                        target.insert_at(host, tx, 0, &water, 500)
                     )),
                     Ok(0)
                 );
                 assert!(target.is_valid(game, 1, &water));
                 assert_eq!(
                     game.transaction(|host, tx| Ok::<_, ()>(
-                        target.insert(host, tx, 1, &water, 500)
+                        target.insert_at(host, tx, 1, &water, 500)
                     )),
                     Ok(500)
                 );
@@ -1279,14 +1301,14 @@ mod tests {
                 // A drain does not consult acceptance, so an old refused fluid is recoverable.
                 assert_eq!(
                     game.transaction(|host, tx| Ok::<_, ()>(
-                        target.extract(host, tx, 0, &chocolate, 100)
+                        target.extract_at(host, tx, 0, &chocolate, 100)
                     )),
                     Ok(100)
                 );
                 assert_eq!(target.amount(game, 0), 900);
                 assert_eq!(
                     game.transaction(|host, tx| Ok::<_, ()>(
-                        source.insert(host, tx, 1, &water, 1000)
+                        source.insert_at(host, tx, 1, &water, 1000)
                     )),
                     Ok(1000)
                 );
@@ -1297,14 +1319,14 @@ mod tests {
                         &target,
                         |resource| resource == &water,
                         200,
-                        tx
+                        Some(tx)
                     )),
                     Ok(200)
                 );
                 assert_eq!(source.amount(game, 1), 800);
                 assert_eq!(target.amount(game, 1), 700);
                 let abort: Result<(), ()> = game.transaction(|host, tx| {
-                    assert_eq!(target.insert(host, tx, 1, &water, 200), 200);
+                    assert_eq!(target.insert_at(host, tx, 1, &water, 200), 200);
                     Err(())
                 });
                 assert!(abort.is_err());

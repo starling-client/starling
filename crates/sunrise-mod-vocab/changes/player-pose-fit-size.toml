@@ -1,0 +1,3 @@
+ids = ["hook:entity_size"]
+why = "Version 2 resolves player standing, crouching and swimming candidate sizes before motion and uses the answers for both pose fit tests and pose application. Current-pose answers are reused; other candidates may now be observed each player tick. A changed vanilla-size key falls back to vanilla until the next prefill."
+migrate = "Answer candidate poses from the event pose, not the entity current pose; keep the listener cheap and read-only."

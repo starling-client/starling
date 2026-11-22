@@ -3,6 +3,7 @@
 //! `VanillaEntityDeathLootOracle` and prints what `mobs::drops::die` drops.
 //!
 //! usage: entity_death_loot_fixture RESOURCES INPUT OUTPUT
+use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path, sync::Arc};
 use sunrise_client::{
     assets::Assets,
     blocks::BlockFacts,
@@ -18,7 +19,6 @@ use sunrise_core::{
     random::{LegacyRandom, RandomSource},
 };
 use sunrise_world::loot::{LootDamage, LootData, LootEntity, LootStack, PackOverlay};
-use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path, sync::Arc};
 
 /// `id[;enchantment:level...]`.
 fn stack(spec: &str) -> LootStack {
@@ -288,6 +288,7 @@ pub fn main() -> sunrise_client::Result<()> {
             };
             let death = drops::Death {
                 loot: &loot,
+                this_nbt: None,
                 damage: Some(source),
                 player: player.filter(|_| pkill),
                 player_killed: pkill,

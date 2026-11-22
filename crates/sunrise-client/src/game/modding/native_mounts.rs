@@ -20,6 +20,34 @@ impl Game<'_> {
         }
     }
 
+    /// Run effects before `Entity.setRemoved`. Keep the entity accessible to
+    /// callbacks, but refuse another removal of it while the effects run.
+    pub(super) fn with_removal_preparation(
+        &mut self,
+        target: Target,
+        effects: impl FnOnce(&mut Self),
+    ) -> Option<()> {
+        if self.target_removed(&target) || !self.persist.preparing_vehicle_removals.insert(target) {
+            return None;
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| effects(self)));
+        self.persist.preparing_vehicle_removals.remove(&target);
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+        Some(())
+    }
+
+    pub(super) fn with_vehicle_removal_effects<R>(
+        &mut self,
+        target: Target,
+        effects: impl FnOnce(&mut Self),
+        remove: impl FnOnce(&mut Self) -> R,
+    ) -> Option<R> {
+        self.with_removal_preparation(target, effects)?;
+        self.with_destroying_vehicle(target, remove)
+    }
+
     /// `Entity.setRemoved` makes a vehicle invisible before notifying riders.
     /// The owning list is kept stable while callbacks run.
     pub(super) fn with_destroying_vehicle<R>(
@@ -27,11 +55,20 @@ impl Game<'_> {
         target: Target,
         action: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
-        if !self.persist.destroying_vehicles.insert(target) {
+        let id = self.network_entity_id(target)? as u32;
+        let y = self.target_position(target)?[1];
+        if self.persist.preparing_vehicle_removals.contains(&target)
+            || !self.persist.destroying_vehicles.insert(target)
+        {
             return None;
         }
         self.retire_vehicle_registration(target);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(self)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !self.persist.notified_vehicle_removals.remove(&id) {
+                self.dismount_removed_passengers(id, y);
+            }
+            action(self)
+        }));
         self.persist.destroying_vehicles.remove(&target);
         match result {
             Ok(value) => Some(value),
@@ -69,10 +106,18 @@ impl Game<'_> {
             "minecraft:cushion".into()
         } else if let Some(m) = self.mob_object(id) {
             mob_kind(m)
+        } else if self.tnts.iter().any(|t| t.id == id) {
+            "minecraft:tnt".into()
         } else if self.armor_stands.iter().any(|a| a.id == id) {
             self.target_type(Target::Stand(id))
         } else if self.others.iter().any(|o| o.id == id) {
             self.target_type(Target::Other(id))
+        } else if let Some(row) = self.general_object(id) {
+            super::general::general_type_catalog()
+                .key(row.type_slot)
+                .to_owned()
+        } else if self.player_vehicle(id).is_some() {
+            "minecraft:player".into()
         } else {
             String::new()
         }
@@ -94,7 +139,16 @@ impl Game<'_> {
             return false;
         }
         let kind = match rider {
-            Some(id) => self.mob_object(id).map_or_else(String::new, mob_kind),
+            Some(id) => self.mob_object(id).map_or_else(
+                || {
+                    self.general_object(id).map_or_else(String::new, |row| {
+                        super::general::general_type_catalog()
+                            .key(row.type_slot)
+                            .to_owned()
+                    })
+                },
+                mob_kind,
+            ),
             None => "minecraft:player".into(),
         };
         let vehicle_kind = self.native_vehicle_kind(vehicle);
@@ -126,7 +180,7 @@ impl Game<'_> {
         self.native_mount_allowed(None, vehicle, false)
     }
 
-    /// The mob `rider` is about to board (`mounting`) or leave `vehicle`: false when a mod
+    /// The non-player `rider` is about to board (`mounting`) or leave `vehicle`: false when a mod
     /// canceled it.
     pub(super) fn native_mob_may_ride(&mut self, rider: u32, vehicle: u32, mounting: bool) -> bool {
         self.native_mount_allowed(Some(rider), vehicle, mounting)

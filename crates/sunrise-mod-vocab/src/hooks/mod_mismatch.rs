@@ -2,7 +2,8 @@
 
 pub trait Hooks {
     /// A saved mod list (code and content mods) was read while opening a world. Fires
-    /// even when the list is empty or unchanged, never when absent, once per open.
+    /// when a nonempty list exists, changed or unchanged, never when the lists are absent
+    /// or empty (an empty saved list counts as absent), once per open.
     /// Versions use the loader's comparison; minecraft is excluded. Newly added mods
     /// are not differences. Push a mod id converted with `.into()` into `resolved`.
     /// Dispatch assigns the first resolving listener and preserves earlier markers.
@@ -18,11 +19,12 @@ compound per loaded mod, in load order, rewritten on every save of the world.
 Its content mods go in the same form under `sunrise.ContentModList`, beside the
 namespaces of the mod block states registered when it was saved
 (`sunrise.BlockNamespaces`). The version is the mod's `sunrise-mod.toml` `version`,
-or `""` when the game doesn't know it. A world without either list (vanilla, or saved
-before Sunrise wrote one) is no mismatch: it fires nothing and gets the lists on its
-next save.
+or `""` when the game doesn't know it. Saves record only nonempty lists, and an empty
+saved list counts as absent. A world without either list (vanilla, saved with no mods, or
+saved before Sunrise wrote one) is no mismatch: it fires nothing and gets the lists on its
+next save when mods are loaded.
 
-`Hooks::mod_mismatch` runs whenever a saved list exists, even if empty or unchanged,
+`Hooks::mod_mismatch` runs whenever a nonempty saved list exists, changed or unchanged,
 once per open. A saved mod that is no longer loaded (or a saved block namespace nothing
 registers now) would lose its blocks, and what they hold, for good, so the world asks
 before it opens: a blocking question on the client (Don't Open by default, Back Up and
@@ -42,11 +44,16 @@ resolved at debug (self or other resolver), unresolved at warn. Only a missing m
 holds the open back; a changed version never does.
 "##]
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "collect",
         out = "resolved",
         collect_validator = "crate::game::mismatch_resolution::attribute",
+        version = 2,
         neoforge = "ModMismatchEvent"
     )]
-    fn mod_mismatch();
+    fn mod_mismatch(
+        mismatches: &[mod_api::ModMismatch],
+        resolved: &mut Vec<mod_api::ModMismatchResolution>,
+    );
 }

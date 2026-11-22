@@ -1,15 +1,15 @@
 //! Template pools, pool elements and JigsawPlacement.
-use sunrise_core::{
-    geometry::Direction,
-    position::BlockPos,
-    random::{LegacyRandom, RandomSource, position_seed},
-};
 use serde_json::Value;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     rc::Rc,
     sync::{Arc, Mutex, OnceLock, RwLock},
+};
+use sunrise_core::{
+    geometry::Direction,
+    position::BlockPos,
+    random::{LegacyRandom, RandomSource, position_seed},
 };
 use {
     super::{

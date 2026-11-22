@@ -5,7 +5,7 @@ CloudRenderer.isEastEmpty	inline	crates/sunrise-client-render/src/clouds.rs::Mes
 CloudRenderer.isSouthEmpty	inline	crates/sunrise-client-render/src/clouds.rs::Mesh::prepare	neighbour-empty flags passed to face_mask in N,E,S,W order
 CloudRenderer.isWestEmpty	inline	crates/sunrise-client-render/src/clouds.rs::Mesh::prepare	neighbour-empty flags passed to face_mask in N,E,S,W order
 CloudRenderer.render	port	crates/sunrise-client-render/src/gfx.rs::Renderer::draw_frame	gap: minor: one cloud pipeline; fancy vs flat is chosen by the mesh fast flag, not by pipeline
-CloudRenderer.renderOit	port	crates/sunrise-client-render/src/gfx/oit.rs::Oit::render_clouds	the clouds draw through the OIT pipeline there, with their own depth beside the world's
+CloudRenderer.renderOit	port	crates/sunrise-client-render/src/gfx/oit.rs::Oit::render_clouds	the clouds draw through the OIT pipeline there, with their own depth beside the world's; a pack's core/clouds draws there with its OIT_CLOUDS programs (gfx/core_clouds.rs::CoreClouds::draw_oit)
 CloudRenderer.buildMesh	port	crates/sunrise-client-render/src/clouds.rs::Mesh::prepare	cell ring walk via cells(radius), nearest first
 CloudRenderer.tryBuildCell	inline	crates/sunrise-client-render/src/clouds.rs::Mesh::prepare	skip empty cells, then build the cell's faces
 CloudRenderer.encodeFace	inline	crates/sunrise-client-render/src/clouds.rs::Mesh::prepare	3-byte face records replaced by vertex quads
@@ -15,10 +15,10 @@ DebugCrosshairRenderer.<init>	skip:debug		F3 3D axis gizmo at the view; Sunrise 
 DynamicGpuData.reset	skip:other		GPU per-frame ring reset; wgpu staging in Sunrise's Uploads belt
 DynamicGpuData.close	skip:other		GPU buffer release; Rust drops the wgpu buffers
 DynamicGpuData.writeTransform	skip:other		per-draw uniform staging; Sunrise writes its uniforms directly with queue writes
-DynamicGpuData.writeChunkSections	port	crates/sunrise-client-render/src/gfx/section_fade.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; Sunrise writes a fixed fourth value
-DynamicGpuData.writeChunkSectionsInstanced	port	crates/sunrise-client-render/src/gfx/section_fade.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; same instance record as writeChunkSections
+DynamicGpuData.writeChunkSections	port	crates/sunrise-render-core/src/terrain.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; Sunrise writes a fixed fourth value
+DynamicGpuData.writeChunkSectionsInstanced	port	crates/sunrise-render-core/src/terrain.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; same instance record as writeChunkSections
 DynamicGpuData.writeChunkSectionCommands	port	crates/sunrise-client-render/src/gfx.rs::Renderer::draw_frame	IndexedDraw records built and uploaded into the indirect buffer
-DynamicGpuData.ChunkSectionInfo.write	port	crates/sunrise-client-render/src/gfx/section_fade.rs::section_instance	gap: player: packs origin only; the fade-in visibility float (default 0.75 s) is not in the record
+DynamicGpuData.ChunkSectionInfo.write	port	crates/sunrise-render-core/src/terrain.rs::section_instance	gap: player: packs origin only; the fade-in visibility float (default 0.75 s) is not in the record
 DynamicGpuData.IndexedDraw.write	skip:other		indirect draw args; Sunrise keeps them as [u32;5] words uploaded in one copy
 DynamicGpuData.TerrainTransform.write	skip:other		terrain UBO layout; Sunrise's terrain pass uses its own uniforms
 DynamicGpuData.Transform.write	skip:other		std140 layout of the transform UBO; wgpu bindings in Sunrise

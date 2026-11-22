@@ -9,13 +9,15 @@ pub trait Hooks {
     /// Told for the keys and mouse buttons the window takes (agent control's included), after the
     /// window's own shortcuts (fullscreen, screenshot, debug keys), and only with no screen open;
     /// not for a controller, whose presses go straight to the mappings, nor for a mod's
-    /// `set_mapping_down` and `click_mapping`, which are no physical input. No NeoForge counterpart.
+    /// [`crate::VanillaKeyMappingRef::set_down`] or [`crate::VanillaKeyMappingRef::click`], which do not
+    /// change physical input. No NeoForge counterpart.
     /// Client-side.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "InputEvent.InteractionKeyMappingTriggered, InputEvent.Key"
     )]
-    fn key_mapping_pre();
+    fn key_mapping_pre(mapping: &str, pressed: bool, canceled: &mut bool);
 }

@@ -1,10 +1,10 @@
-use sunrise_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, VoxelShape};
 use {
     sunrise_core::{
         nbt,

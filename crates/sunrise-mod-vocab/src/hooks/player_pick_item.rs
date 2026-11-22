@@ -6,11 +6,20 @@ pub trait Hooks {
     /// zero for an entity; `entity_id` is zero for a block. The player's state is swapped in. Set
     /// `cancel` to leave the inventory and client unchanged.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_pick_item",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge has no such event; Paper's PlayerPickItemEvent)",
         cancellable = true
     )]
-    fn player_pick_item();
+    fn player_pick_item(
+        player: u128,
+        name: &str,
+        from_entity: bool,
+        pos: [i32; 3],
+        entity_id: i32,
+        cancel: &mut bool,
+    );
 }

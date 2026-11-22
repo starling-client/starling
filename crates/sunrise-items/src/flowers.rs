@@ -27,15 +27,6 @@ pub const FLOWER_STEW_EFFECTS: [(&str, &str, i32); 17] = [
     ("minecraft:closed_eyeblossom", "minecraft:nausea", 140),
 ];
 
-/// `SuspiciousEffectHolder.tryGet(item)` for a flower's item: its one entry,
-/// as (effect id, ticks).
-pub fn stew_effect(item: &str) -> Option<(&'static str, i32)> {
-    FLOWER_STEW_EFFECTS
-        .iter()
-        .find(|(flower, _, _)| *flower == item)
-        .map(|&(_, effect, ticks)| (effect, ticks))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,14 +56,5 @@ mod tests {
             ("minecraft:closed_eyeblossom", "minecraft:nausea", 140),
         ];
         assert_eq!(FLOWER_STEW_EFFECTS, expected);
-        assert_eq!(FLOWER_STEW_EFFECTS.len(), 17);
-        for (flower, effect, ticks) in expected {
-            assert_eq!(stew_effect(flower), Some((effect, ticks)), "{flower}");
-        }
-        let mut seen = std::collections::HashSet::new();
-        for (flower, _, _) in FLOWER_STEW_EFFECTS {
-            assert!(seen.insert(flower), "duplicate flower {flower}");
-        }
-        assert_eq!(stew_effect("minecraft:mushroom_stew"), None);
     }
 }

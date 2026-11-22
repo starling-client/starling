@@ -24,7 +24,6 @@ fn start_velocity(velocity: [f64; 3]) -> Option<Vec3> {
     })
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// Throws a falling block of `state` from `pos` (its bottom centre) at
     /// `velocity` (blocks a tick) in the level in place, `dimension`: it
@@ -81,13 +80,16 @@ impl Game<'_> {
             join: Default::default(),
             id: self.next_entity,
             state,
+            blocks_building: true,
             start_pos: cell,
             position: at,
             previous: at,
             velocity,
             age: 0,
             no_gravity: false,
-            on_ground: false,
+            ground: Default::default(),
+            fire_ticks: 0,
+            sync_velocity: false,
             drop_item: falling.drop_item,
             fall_distance: 0.0,
             stuck: Vec3::ZERO,
@@ -103,10 +105,10 @@ impl Game<'_> {
 mod tests {
     use super::*;
 
+    use std::sync::{Arc, Mutex};
     use sunrise_mod_runtime::attachments::{
         AttachmentType, Attachments, HasAttachmentLifetime, Holder, index::AttachmentIndex,
     };
-    use std::sync::{Arc, Mutex};
 
     static VALUE: AttachmentType<i32> = AttachmentType {
         namespace: "test",
@@ -118,7 +120,7 @@ mod tests {
     };
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn falling_tick_preserves_its_owner_on_success_and_collision_error() {
         bound_falling_case(false, |game, _| {
             assert!(game.spawn_remote_projectile(
@@ -173,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn falling_client_tick_commits_state_without_detaching_its_owner() {
         bound_falling_case(true, |game, _| {
             game.remote_projectile_data(
@@ -197,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn falling_parked_swap_preserves_state_and_owner_until_discard() {
         bound_falling_case(false, |game, index| {
             let home = game.dim;
@@ -222,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn falling_lifecycle_commands_unload_park_and_remote() {
         use super::super::{
             commands::Target,
@@ -289,12 +291,15 @@ mod tests {
                 .unwrap();
             let at = Vec3::new(0.5, 70.0, 0.5);
             game.falling.push(FallingBlock {
-                on_ground: false,
+                ground: Default::default(),
+                fire_ticks: 0,
+                sync_velocity: false,
                 attachment_lifetime: Default::default(),
                 rotation: [0.0; 2],
                 join: Default::default(),
                 id: 71,
                 state,
+                blocks_building: true,
                 start_pos: BlockPos::new(0, 70, 0),
                 position: at,
                 previous: at,

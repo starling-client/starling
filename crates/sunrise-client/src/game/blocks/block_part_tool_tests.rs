@@ -1,9 +1,9 @@
 //! A block's parts decide what a tool makes of it (`tool_modified_state`); whether a player
 //! breaking it destroyed it (`on_destroyed_by_player`) is in `player_destroy_tests.rs`.
 use crate::game::{Game, Hit, native_guest_turn_tests};
-use sunrise_client::{chunk::Chunk, items::ItemStack};
 use mod_api::{BlockHit, Hand};
 use std::sync::Arc;
+use sunrise_client::{chunk::Chunk, items::ItemStack};
 
 fn hit_on(pos: [i32; 3]) -> Hit {
     Hit {
@@ -15,7 +15,7 @@ fn hit_on(pos: [i32; 3]) -> Hit {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_block_part_allows_replaces_or_denies_a_tool_action_and_a_preview_changes_nothing() {
     use crate::game::api_values::TryIntoApi;
 
@@ -105,7 +105,7 @@ fn a_block_part_allows_replaces_or_denies_a_tool_action_and_a_preview_changes_no
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_block_part_can_deny_a_shovel_putting_out_a_campfire() {
     // The fixture's parts: a campfire is left alone by every tool.
     mod_platform::__private::part_tests::tool_modified_state_game_thread();

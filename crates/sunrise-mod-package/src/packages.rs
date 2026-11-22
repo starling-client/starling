@@ -12,6 +12,9 @@ pub struct AdjacentManifest {
     pub manifest: Manifest,
     /// Whether the package carries an `icon.png`.
     pub has_icon: bool,
+    /// The package's runtime files, each checked against its `[runtime]` hash as the package was
+    /// opened; `None` for a package with no `[runtime]`.
+    pub runtime: Option<crate::manifest::RuntimeData>,
 }
 
 #[derive(Debug)]
@@ -54,10 +57,18 @@ pub fn read_native(path: &Path) -> Result<AdjacentManifest, ReadError> {
             id: package.manifest.id,
         });
     }
+    // The one place a native package's files are hashed: a hand-edited folder is refused here.
+    let runtime = package
+        .read_runtime(path)
+        .map_err(|reason| ReadError::Package {
+            path: path.to_owned(),
+            reason,
+        })?;
     Ok(AdjacentManifest {
         path: path.to_owned(),
         manifest: package.manifest,
         has_icon: package.icon.is_some(),
+        runtime,
     })
 }
 
@@ -113,13 +124,38 @@ mod tests {
         assert_eq!(
             candidates
                 .iter()
-                .map(|p| (p.manifest.id.as_str(), p.manifest.version.as_str()))
+                .map(|p| (p.manifest.id.as_str(), p.manifest.version.to_string()))
                 .collect::<Vec<_>>(),
-            [("first", "1.2.3"), ("not_in_the_record", "1.2.3")]
+            [
+                ("first", "1.2.3".to_owned()),
+                ("not_in_the_record", "1.2.3".to_owned())
+            ]
         );
         assert_eq!(candidates[0].path, first);
         fs::write(home.0.join("native-mods.json"), "not JSON").unwrap();
         assert_eq!(adjacent_manifests(&program).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_native_package_opens_with_its_runtime_files_checked_once() {
+        let home = Scratch::new();
+        let dir = home.package("baked");
+        let hash = crate::manifest::sha512_of(b"tables");
+        let manifest = fs::read_to_string(dir.join("sunrise-mod.toml")).unwrap();
+        fs::write(
+            dir.join("sunrise-mod.toml"),
+            format!("{manifest}[runtime]\n\"nav.bin\"='{hash}'\n"),
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("runtime")).unwrap();
+        fs::write(dir.join("runtime/nav.bin"), b"tables").unwrap();
+        let package = read_native(&dir).unwrap();
+        let runtime = package.runtime.unwrap();
+        assert_eq!(runtime.file("nav.bin").unwrap().0, b"tables");
+        // A folder edited by hand is refused at open, naming the file.
+        fs::write(dir.join("runtime/nav.bin"), b"edited").unwrap();
+        let error = read_native(&dir).unwrap_err().to_string();
+        assert!(error.contains("runtime/nav.bin"), "{error}");
     }
 
     #[test]

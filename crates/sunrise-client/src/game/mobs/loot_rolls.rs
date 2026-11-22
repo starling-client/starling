@@ -3,12 +3,12 @@
 use super::Game;
 use super::commands::Target;
 use super::creatures::death_hurt_source;
+use mod_api::entity::health::HurtSource;
+use mod_api::{EntityRef, LivingRef};
 use sunrise_client::items::{ItemStack, Items};
 use sunrise_client::mobs::drops::{DeathRolls, roll_asked};
 use sunrise_client::random_sequences::RandomSequences;
 use sunrise_core::random::LegacyRandom;
-use mod_api::entity::health::HurtSource;
-use mod_api::{EntityRef, LivingRef};
 
 /// A table's rolls with a mod listening to `enchanted_entity_loot`: the
 /// randoms stay in the game, where the listener's host reaches them.
@@ -112,17 +112,11 @@ impl Game<'_> {
             Target::Mob(id) => self
                 .mobs
                 .iter()
-                .find(|mob| mob.id == id)
-                .map(|mob| sunrise_client::mobs::drops::loot_entity(mob, None)),
+                .any(|mob| mob.id == id)
+                .then(|| self.target_loot_entity(target)),
             _ => None,
         };
-        let loot = live_target.as_ref().and_then(|_| {
-            sunrise_client::structure_blocks::loot_data(
-                &self.options.resources,
-                &self.pack_files(),
-                self.res.item_defaults(),
-            )
-        });
+        let loot = live_target.as_ref().and_then(|_| self.server_loot.get());
         let matcher = |predicate: &serde_json::Value, entity: &sunrise_world::loot::LootEntity| {
             loot.as_ref()
                 .is_some_and(|data| data.entity_matches(predicate, Some(entity)))
@@ -211,5 +205,102 @@ impl Game<'_> {
                 },
             ),
         }
+    }
+}
+
+/// The parameters a caller supplies around a roll besides its entity: the
+/// ORIGIN and level a mod's conditions read, and the TOOL.
+pub(in crate::game) struct CallerLoot {
+    place: sunrise_world::loot::LootPlace,
+    query: std::rc::Rc<sunrise_world::loot::query::LootQuery>,
+}
+
+impl CallerLoot {
+    /// Runs `roll` with these parameters in scope for every table it rolls.
+    pub(in crate::game) fn with<T>(self, roll: impl FnOnce() -> T) -> T {
+        sunrise_world::loot::query::with_query(self.query, || {
+            sunrise_world::loot::with_native_loot_place(self.place, roll)
+        })
+    }
+}
+
+impl Game<'_> {
+    /// A roll's `origin` (None when its parameter set has none) and `tool`,
+    /// taken before the roll borrows the game.
+    pub(in crate::game) fn caller_loot(
+        &self,
+        origin: Option<[f64; 3]>,
+        tool: Option<sunrise_world::loot::LootStack>,
+    ) -> CallerLoot {
+        CallerLoot {
+            place: sunrise_world::loot::LootPlace {
+                origin,
+                ..self.loot_place_at([0.0; 3], None)
+            },
+            query: std::rc::Rc::new(sunrise_world::loot::query::LootQuery::new(None, tool)),
+        }
+    }
+
+    /// What a loot table reads of `target` as `THIS_ENTITY`: a mob's facts, a
+    /// player's worn and held items, and the entity's type for the rest.
+    pub(in crate::game) fn target_loot_entity(
+        &mut self,
+        target: Target,
+    ) -> sunrise_world::loot::LootEntity {
+        let mut entity = match target {
+            Target::Mob(id) => self
+                .mobs
+                .iter()
+                .find(|mob| mob.id == id)
+                .map(|mob| sunrise_client::mobs::drops::loot_entity(mob, None))
+                .unwrap_or_else(|| sunrise_world::loot::LootEntity::new(&self.target_type(target))),
+            Target::Player => self.killer_loot_entity(None),
+            Target::Guest(conn) => self.killer_loot_entity(Some(conn)),
+            _ => sunrise_world::loot::LootEntity::new(&self.target_type(target)),
+        };
+        if entity.nbt.is_none()
+            && self
+                .server_loot
+                .get()
+                .is_some_and(|data| data.copies_entity_nbt())
+        {
+            entity.nbt = self.command_target_nbt(target).map(std::sync::Arc::new);
+        }
+        entity
+    }
+
+    /// One roll of `table` (`LootTable.getRandomItems`) with `origin` as ORIGIN (a
+    /// parameter set without one passes None), with `held` as
+    /// TOOL and `this` as THIS_ENTITY when given, from the table's random
+    /// sequence, else the level random. The stacks come split to their stack
+    /// sizes; None for a missing table.
+    pub(in crate::game) fn roll_table_at(
+        &mut self,
+        table: &str,
+        origin: Option<[f64; 3]>,
+        held: Option<&ItemStack>,
+        this: Option<&sunrise_world::loot::LootEntity>,
+    ) -> Option<Vec<ItemStack>> {
+        let loot = self.server_loot.get();
+        let matcher = |predicate: &serde_json::Value, entity: &sunrise_world::loot::LootEntity| {
+            loot.as_ref()
+                .is_some_and(|data| data.entity_matches(predicate, Some(entity)))
+        };
+        let this = this.map(|entity| {
+            (
+                entity,
+                &matcher as &dyn Fn(&serde_json::Value, &sunrise_world::loot::LootEntity) -> bool,
+            )
+        });
+        self.caller_loot(origin, None).with(|| {
+            let items = world_items!(self);
+            match items.loot_sequence(table) {
+                Some(sequence) => {
+                    let random = self.rand_sequences.get(&sequence, self.level.seed);
+                    items.roll_loot_table(table, held, this, random)
+                }
+                None => items.roll_loot_table(table, held, this, &mut self.world.random),
+            }
+        })
     }
 }

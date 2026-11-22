@@ -1,0 +1,56 @@
+manifest:
+Manifest {
+    id: "manifest_minimal",
+    name: "Manifest minimal",
+    version: Version {
+        major: 2,
+        minor: 0,
+        patch: 0,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/manifest_minimal",
+    ),
+    files: [],
+    blocks: [],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "manifest_minimal",
+    ],
+}

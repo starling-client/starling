@@ -5,9 +5,11 @@ pub trait Hooks {
     /// A server player released a drawn bow with `arrow` selected, by the use-item
     /// key or a mod's `LivingRef::release_using_item`. The player's state is swapped in.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_ready_arrow",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event; Bukkit's PlayerReadyArrow)"
     )]
-    fn player_ready_arrow();
+    fn player_ready_arrow(player: u128, name: &str, arrow: &str);
 }

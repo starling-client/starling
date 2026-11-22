@@ -1,0 +1,3 @@
+ids = ["hook:should_apply_effect_tick_this_tick", "hook:should_apply_effect_tick_this_tick.mod_id", "method:Hooks::should_apply_effect_tick_this_tick", "type:ShouldApplyEffectTickThisTickEvent", "type:ShouldApplyEffectTickThisTickEvent.mod_id"]
+why = "Version 3 moves the cadence decision from the declaring package's global Hooks listener to each attached MobEffectPart independently. The effect key selects the Part list; mod_id is no longer an event input."
+migrate = "Implement should_apply_effect_tick_this_tick on a MobEffectPart annotated with sunrise_part and attach it with Registrar::mob_effect_part. Remove the event lifetime and mod_id reads."

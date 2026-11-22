@@ -4,6 +4,7 @@
 //! vehicle's interaction checks. Mobs keep theirs in `extra.boarding_cooldown`
 //! (`boat_passengers::BOARDING_COOLDOWN`).
 use super::Game;
+use sunrise_client::mobs::Mob;
 
 /// `Entity.getIndirectPassengersStream` for `vehicle`: the vehicle and every
 /// vehicle riding it, directly or through another rider. `mounts` holds
@@ -29,49 +30,124 @@ impl Game<'_> {
     /// vehicle carries.
     pub(super) fn start_riding(&mut self, vehicle: u32) {
         self.riding = Some(vehicle);
-        self.seat_acting_player(vehicle);
+        self.seat_player(vehicle);
         self.note_started_riding(vehicle);
+    }
+
+    /// The player riding through `riding` and its place: the acting guest (its kept place, if
+    /// any, comes from the hub's list) or, outside a guest turn, this game's own player.
+    pub(in crate::game) fn riding_player(&self) -> Option<(u32, i64)> {
+        match (self.lan_acting_entity, self.lan_acting) {
+            (Some(id), _) if self.lan_acting_uuid.is_some() => Some((id, i64::MIN)),
+            (_, None) => self
+                .player
+                .as_ref()
+                .map(|p| (p.entity_id as u32, self.riding_order)),
+            _ => None,
+        }
     }
 
     /// `Entity.passengers` of `vehicle`, first passenger first: each one's place, id and whether
     /// it is a player. Places tie only for those that never boarded through `addPassenger` (a
     /// load keeps its list order), players ahead.
     pub(in crate::game) fn seated_passengers(&self, vehicle: u32) -> Vec<(i64, u32, bool)> {
+        let mut seats = Vec::new();
+        self.any_passenger_seat(vehicle, &[], |seat| {
+            seats.push(seat);
+            false
+        });
+        seats.sort_by_key(|&(place, ..)| place);
+        seats
+    }
+
+    /// The first seat, preserving enumeration order on a tie without sorting or allocating.
+    pub(super) fn first_seated_passenger(&self, vehicle: u32) -> Option<(i64, u32, bool)> {
+        let mut first: Option<(i64, u32, bool)> = None;
+        self.any_passenger_seat(vehicle, &[], |seat| {
+            if first.is_none_or(|old| seat.0 < old.0) {
+                first = Some(seat);
+            }
+            false
+        });
+        first
+    }
+
+    /// `Entity.isVehicle`: any kind of rider makes this a vehicle.
+    pub(in crate::game) fn has_seated_passengers(&self, vehicle: u32) -> bool {
+        self.has_seated_passengers_with_lent_mobs(vehicle, &[])
+    }
+
+    /// The same check while the mob tick holds the resident list out of `Game`.
+    pub(in crate::game) fn has_seated_passengers_with_lent_mobs(
+        &self,
+        vehicle: u32,
+        lent_mobs: &[Mob],
+    ) -> bool {
+        self.any_passenger_seat(vehicle, lent_mobs, |_| true)
+    }
+
+    /// `getPassengers().size()` without allocating or sorting the seats.
+    pub(in crate::game) fn seated_passenger_count(&self, vehicle: u32) -> usize {
+        let mut count = 0;
+        self.any_passenger_seat(vehicle, &[], |_| {
+            count += 1;
+            false
+        });
+        count
+    }
+
+    /// Shared seat enumeration; visit only until `matches` returns true. The
+    /// enumeration order breaks ties for passengers with the same seat order.
+    fn any_passenger_seat(
+        &self,
+        vehicle: u32,
+        lent_mobs: &[Mob],
+        mut matches: impl FnMut((i64, u32, bool)) -> bool,
+    ) -> bool {
         let acting = self.lan_acting.filter(|_| self.player.is_some());
         let mut acting_listed = false;
-        let mut seats: Vec<(i64, u32, bool)> = self
+        for g in self
             .lan
             .iter()
             .flat_map(|h| h.hub.guests.iter())
             .filter(|g| g.placed && g.dimension == self.dim.id())
-            .filter(|g| {
-                let rides = if acting == Some(g.conn) {
-                    acting_listed = true;
-                    self.riding
-                } else {
-                    g.vehicle
-                };
-                rides == Some(vehicle)
-            })
-            .map(|g| (g.vehicle_order, g.entity_id as u32, true))
-            .collect();
-        // An acting player absent from the placed list has no place kept: it still rides
-        // through `riding`, at the front.
-        if let Some(me) = self.lan_acting_entity
-            && self.lan_acting_uuid.is_some()
+        {
+            let rides = if acting == Some(g.conn) {
+                acting_listed = true;
+                self.riding
+            } else {
+                g.vehicle
+            };
+            if rides == Some(vehicle) && matches((g.vehicle_order, g.entity_id as u32, true)) {
+                return true;
+            }
+        }
+        // An unlisted acting guest goes first. This game's own player keeps its seat order.
+        if let Some((me, place)) = self.riding_player()
             && !acting_listed
             && self.player.is_some()
             && self.riding == Some(vehicle)
+            && matches((place, me, true))
         {
-            seats.push((i64::MIN, me, true));
+            return true;
         }
-        seats.extend(
-            self.mob_objects()
-                .filter(|m| m.extra.mount == Some(vehicle) && !m.removed)
-                .map(|m| (m.extra.vehicle_order, m.id, false)),
-        );
-        seats.sort_by_key(|&(place, ..)| place);
-        seats
+        let other_mobs = lent_mobs
+            .iter()
+            .chain(
+                self.persist
+                    .off_level
+                    .values()
+                    .filter_map(super::persist::OffLevel::as_mob),
+            )
+            .filter(|m| m.extra.mount == Some(vehicle));
+        self.resident_mob_riders(vehicle)
+            .map(|(_, m)| m)
+            .chain(other_mobs)
+            .filter(|m| !m.removed)
+            .any(|m| matches((m.extra.vehicle_order, m.id, false)))
+            || self
+                .general_passengers(vehicle)
+                .any(|row| matches((row.vehicle_order, row.id, false)))
     }
     /// `Entity.addPassenger`: the place of `rider` getting on `vehicle`. On a server a player
     /// goes ahead of a first passenger that is no player; everything else goes last.
@@ -95,14 +171,22 @@ impl Game<'_> {
             m.extra.vehicle_order = order;
         }
     }
-    /// `addPassenger` for the acting guest, now in `vehicle`.
-    pub(in crate::game) fn seat_acting_player(&mut self, vehicle: u32) {
-        let (Some(conn), Some(me)) = (self.lan_acting, self.lan_acting_entity) else {
-            return;
-        };
-        let order = self.boarding_order(vehicle, me, true);
-        if let Some(host) = self.lan.as_mut() {
-            host.hub.update_guest(conn, |g| g.vehicle_order = order);
+    /// `addPassenger` for the player riding through `riding`, now in `vehicle`: the acting
+    /// guest's place goes to the hub, this game's own player's to `riding_order`.
+    pub(in crate::game) fn seat_player(&mut self, vehicle: u32) {
+        match (self.lan_acting, self.lan_acting_entity) {
+            (Some(conn), Some(me)) => {
+                let order = self.boarding_order(vehicle, me, true);
+                if let Some(host) = self.lan.as_mut() {
+                    host.hub.update_guest(conn, |g| g.vehicle_order = order);
+                }
+            }
+            (None, _) => {
+                if let Some((me, _)) = self.riding_player() {
+                    self.riding_order = self.boarding_order(vehicle, me, true);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -129,11 +213,16 @@ impl Game<'_> {
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn retained_passengers_occupy_seats_in_boarding_order() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             use sunrise_client::mobs::Mob;
             use sunrise_core::geometry::Vec3;
+            game.build_registries();
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5))
+                    .unwrap(),
+            );
             let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
             for (id, order) in [(74, 2), (72, 0)] {
                 let mut m = Mob::new(id, pig.clone(), Vec3::ZERO, 0.0);
@@ -155,6 +244,100 @@ mod tests {
             assert_eq!(game.boarding_order(71, 75, true), -1);
             game.seat_mob(72);
             assert_eq!(game.mob_object(72).unwrap().extra.vehicle_order, 3);
+        });
+    }
+
+    /// `Entity.addPassenger` appends a player when the first passenger is already one: this
+    /// game's own player boarding after a guest and a pig sits third, not first.
+    #[test]
+    #[ignore = "daily"]
+    fn the_own_player_boards_behind_a_guest_and_a_pig() {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            use sunrise_client::mobs::Mob;
+            use sunrise_core::geometry::Vec3;
+            game.build_registries();
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5))
+                    .unwrap(),
+            );
+            let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+            let (vehicle, rider) = (90, 91);
+            game.mobs
+                .push(Mob::new(vehicle, pig.clone(), Vec3::ZERO, 0.0));
+            let order = game.boarding_order(vehicle, 12, true);
+            let dimension = game.dim.id().to_owned();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(12, |g| {
+                    g.dimension = dimension;
+                    g.vehicle = Some(vehicle);
+                    g.vehicle_order = order;
+                })
+                .unwrap();
+            let mut pig = Mob::new(rider, pig, Vec3::ZERO, 0.0);
+            pig.extra.mount = Some(vehicle);
+            game.mobs.push(pig);
+            game.seat_mob(rider);
+            game.start_riding(vehicle);
+            let own = game.player.as_ref().unwrap().entity_id as u32;
+            let aboard: Vec<u32> = game
+                .seated_passengers(vehicle)
+                .into_iter()
+                .map(|(_, id, _)| id)
+                .collect();
+            assert_eq!(aboard, vec![12, rider, own]);
+        });
+    }
+
+    /// `Entity.positionRider` picks the attachment by the passenger's index in `getPassengers`: the
+    /// own player behind a guest and a pig sits in the third seat of a happy ghast, 1.7 south of it.
+    #[test]
+    #[ignore = "daily"]
+    fn the_own_player_in_the_third_seat_of_a_happy_ghast_sits_there() {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            use sunrise_client::mobs::Mob;
+            use sunrise_core::geometry::Vec3;
+            game.build_registries();
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5))
+                    .unwrap(),
+            );
+            let ghast = game
+                .res
+                .mob_types()
+                .get("minecraft:happy_ghast")
+                .unwrap()
+                .clone();
+            let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+            let (vehicle, rider) = (90, 91);
+            game.mobs
+                .push(Mob::new(vehicle, ghast, Vec3::new(8.5, 64.0, 8.5), 0.0));
+            let order = game.boarding_order(vehicle, 12, true);
+            let dimension = game.dim.id().to_owned();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(12, |g| {
+                    g.dimension = dimension;
+                    g.vehicle = Some(vehicle);
+                    g.vehicle_order = order;
+                })
+                .unwrap();
+            let mut pig = Mob::new(rider, pig, Vec3::ZERO, 0.0);
+            pig.extra.mount = Some(vehicle);
+            game.mobs.push(pig);
+            game.seat_mob(rider);
+            game.start_riding(vehicle);
+            game.position_rider();
+            let at = game.player.as_ref().unwrap().position;
+            assert_eq!(
+                (at.x, at.z),
+                (8.5, 8.5 - 1.7),
+                "the third seat, not the first"
+            );
         });
     }
 

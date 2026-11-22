@@ -37,14 +37,18 @@ class SdkTablesTests(unittest.TestCase):
     def test_surface_records_are_counted_by_kind_with_members_apart(self):
         others = [{"id": record} for record in ("trait:Host", "method:Host::level", "assoc:Host::Side",
                                                 "handle:Pos::new", "fn:log", "macro:hook", "part:items",
-                                                "capability:net")]
+                                                "capability:net", "behaviour:pool_merging")]
         document = {"schema": 2, "hooks": [{"id": "hook:tick", "fields": [{"id": "hook:tick.phase"}]}],
                     "types": [{"id": "type:world::Pos", "fields": [{"id": "type:world::Pos.x"},
                                                                    {"id": "type:world::Pos.y"}]}],
-                    "others": others}
+                    "others": others,
+                    "extension_tags": [{"registry": "block", "id": "sunrise:villager_secondary_poi/farmer", "doc": "Extra work blocks."}]}
         text = tables.surface(document)
         self.assertIn("| Public field or variant of a type | `type:<path>.<field or variant>` | 2 |", text)
         self.assertIn("| Hook: a moment the game tells mods about | `hook:<name>` | 1 |", text)
+        self.assertIn("| Tag extension point (registry/id in `extension_tags`) | `extension_tag:<registry>/<namespace>:<path>` | 1 |", text)
+        # A surface from before the additive collection is still readable.
+        self.assertIn("| `extension_tag:<registry>/<namespace>:<path>` | 0 |", tables.surface({key: value for key, value in document.items() if key != "extension_tags"}))
         with self.assertRaises(ValueError):
             tables.surface({**document, "hooks": [{"id": "event:tick"}]})
 

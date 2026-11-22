@@ -32,20 +32,20 @@ fn studio_freecam_movement_key(key: KeyCode) -> bool {
 }
 
 impl Game<'_> {
-    /// Keep the held-key state of toggled sneak and sprint in step with their mapping.
-    /// `KeyMapping.resetToggleKeys`: every toggle mapping up, and the latched sneak and sprint
-    /// keys with it.
-    pub(super) fn reset_toggle_keys(&mut self) {
-        for key in &mut self.toggles.0 {
-            key.reset();
-        }
-        self.sync_toggle(0);
-        self.sync_toggle(1);
-        self.left = false;
-        self.right = false;
+    pub(super) fn toggle_options(&self) -> [bool; 4] {
+        [
+            self.settings.toggle_crouch,
+            self.settings.toggle_sprint,
+            self.settings.toggle_attack,
+            self.settings.toggle_use,
+        ]
     }
-    /// key.smoothCamera from any device toggles the cinematic camera in play.
+    pub(super) fn reset_toggle_keys(&mut self) {
+        self.vanilla_mappings.reset_toggle_keys();
+    }
+
     pub(super) fn smooth_camera_action(&mut self) {
+<<<<<<< sync-sunrise-1
         if self.screen == Screen::Playing {
             self.smooth_camera = !self.smooth_camera;
         }
@@ -57,26 +57,71 @@ impl Game<'_> {
             self.keys.insert(key);
         } else {
             self.keys.remove(&key);
+=======
+        self.smooth_camera = !self.smooth_camera;
+    }
+
+    pub(super) fn held_mapping(&self, action: sunrise_client::actions::Action) -> bool {
+        self.mapped_key_down(action.name())
+    }
+
+    pub(super) fn press_device_key(&mut self, key: KeyCode, source: Source) -> bool {
+        let edge = self.keys.press(key, source);
+        self.sync_device_key(key, true);
+        edge
+    }
+
+    pub(super) fn release_device_key(&mut self, key: &KeyCode, source: Source) -> bool {
+        let up = self.keys.release(key, source);
+        self.sync_device_key(*key, !up);
+        up
+    }
+
+    pub(super) fn insert_device_key(&mut self, key: KeyCode) -> bool {
+        let edge = self.keys.insert(key);
+        self.sync_device_key(key, true);
+        edge
+    }
+
+    pub(super) fn remove_device_key(&mut self, key: &KeyCode) -> bool {
+        let held = self.keys.remove(key);
+        self.sync_device_key(*key, false);
+        held
+    }
+
+    pub(super) fn clear_device_keys(&mut self) {
+        self.keys.clear();
+        self.vanilla_mappings.set_keyboard_movement_up();
+    }
+
+    fn sync_device_key(&mut self, key: KeyCode, down: bool) {
+        if let Some(slot) = sunrise_client::keybinds::VanillaMappingSlot::by_default_key(key) {
+            self.vanilla_mappings.state_mut(slot).is_down = down;
+>>>>>>> sunrise/main
         }
     }
+
     pub(super) fn update_modifiers(&mut self, state: winit::keyboard::ModifiersState) {
         self.modifiers = state;
         if let Some(title) = &mut self.title {
             title.set_alt_down(state.alt_key());
         }
-        sunrise_client_input::modifiers::reconcile(
+        let released = sunrise_client_input::modifiers::reconcile(
             self.modifiers,
             &mut self.physical_keys,
             &self.settings.keys,
-            &mut self.toggles,
+            &mut self.vanilla_mappings,
             [self.settings.toggle_crouch, self.settings.toggle_sprint],
             [
                 self.pad.holds_action("key.sneak"),
                 self.pad.holds_action("key.sprint"),
             ],
         );
-        self.sync_toggle(SNEAK);
-        self.sync_toggle(SPRINT);
+        for (slot, key) in [(SNEAK, KeyCode::ShiftLeft), (SPRINT, KeyCode::ControlLeft)] {
+            if released[slot] {
+                self.keys.resume_device_input(&key);
+            }
+        }
     }
     /// Let a held sneak, sprint or modifier key go when the keyboard reports
     /// its modifier up. A release does not always reach the mapping: a screen
@@ -99,49 +144,7 @@ impl Game<'_> {
     /// says nothing about which side is down, so one being up means both
     /// Shifts, or both Controls, are.
     pub(super) fn heal_hold_latches(&mut self) {
-        let (shift, control) = (self.modifiers.shift_key(), self.modifiers.control_key());
-        if !shift {
-            for key in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
-                self.physical_keys.remove(&key);
-            }
-        }
-        if !control {
-            for key in [KeyCode::ControlLeft, KeyCode::ControlRight] {
-                self.physical_keys.remove(&key);
-            }
-        }
-        if !self.modifiers.alt_key() {
-            for key in [KeyCode::AltLeft, KeyCode::AltRight] {
-                self.physical_keys.remove(&key);
-            }
-        }
-        if !self.modifiers.super_key() {
-            for key in [KeyCode::SuperLeft, KeyCode::SuperRight] {
-                self.physical_keys.remove(&key);
-            }
-        }
-        for (slot, mapping, needs_toggle) in [
-            (0, "key.sneak", self.settings.toggle_crouch),
-            (1, "key.sprint", self.settings.toggle_sprint),
-        ] {
-            let held = match sunrise_client::keybinds::key_code(self.settings.keys.get(mapping)) {
-                Some(KeyCode::ShiftLeft | KeyCode::ShiftRight) => shift,
-                Some(KeyCode::ControlLeft | KeyCode::ControlRight) => control,
-                _ => continue,
-            };
-            // A controller's stick click acts as the key without setting the modifier: it is held
-            // while the pad holds it (or its release waits for a tick), not when the keyboard says.
-            // Nor does the modifier say anything of a mod's hold (`set_mapping_down`).
-            let pad = self.input_holds(mapping)
-                || self.keys.held_by(
-                    &[KeyCode::ShiftLeft, KeyCode::ControlLeft][slot],
-                    Source::Mod,
-                );
-            if !held && !pad {
-                self.toggles.0[slot].set_down(false, needs_toggle);
-                self.sync_toggle(slot);
-            }
-        }
+        self.update_modifiers(self.modifiers);
     }
     /// Whether the other device still holds the sneak or sprint mapping `source` released.
     pub(super) fn toggle_held_elsewhere(&self, slot: usize, key: KeyCode, source: Source) -> bool {
@@ -157,7 +160,7 @@ impl Game<'_> {
                     .translate_all(*physical)
                     .contains(&Ok(key))
             }),
-            Source::Agent | Source::Mod => false,
+            Source::Agent => false,
         }
     }
     /// Apply a physical key to every mapping bound to it.
@@ -167,17 +170,22 @@ impl Game<'_> {
         pressed: bool,
         repeat: bool,
     ) -> Result<()> {
+        let action = match (pressed, repeat) {
+            (false, _) => KeyAction::Release,
+            (_, false) => KeyAction::Press,
+            (_, true) => KeyAction::Repeat,
+        };
+        if let Some(name) = sunrise_client::keybinds::key_name(key) {
+            let screen_open = self.mod_mappings_screen_open() || self.replay.playing();
+            self.vanilla_mappings
+                .key_event(&self.settings.keys, name, action, screen_open);
+        }
         for mapped in self.settings.keys.translate_all(key) {
             match mapped {
                 Ok(k) => {
                     self.mapped_key(k, pressed, repeat, key, Source::Keyboard)?;
                 }
                 Err(button) => {
-                    let action = match (pressed, repeat) {
-                        (false, _) => KeyAction::Release,
-                        (_, false) => KeyAction::Press,
-                        (_, true) => KeyAction::Repeat,
-                    };
                     if let Some(pressed) = keyboard_button(
                         gameplay_has_keyboard(
                             self.screen,
@@ -186,14 +194,32 @@ impl Game<'_> {
                         ),
                         action,
                     ) {
-                        if self.shared_default_acts(button, sunrise_client::keybinds::key_name(key))
-                        {
+                        if button != MouseButton::Middle {
                             self.mouse_mapping(button, pressed, Source::Keyboard)?;
                         }
                     } else if container_key_clones(button, action) {
                         self.inventory_pick_key();
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+    /// Apply a physical mouse button to every mapping bound to it.
+    pub(super) fn mapped_mouse_event(
+        &mut self,
+        button: MouseButton,
+        input: &str,
+        pressed: bool,
+    ) -> Result<()> {
+        let screen_open = self.mod_mappings_screen_open();
+        self.vanilla_mappings
+            .mouse_event(&self.settings.keys, input, pressed, screen_open);
+        for mapped in self.settings.keys.translate_mouse_all(button) {
+            match mapped {
+                Err(MouseButton::Middle) => {}
+                Err(b) => self.mouse_mapping(b, pressed, Source::Keyboard)?,
+                Ok(k) => self.mapped_key(k, pressed, false, k, Source::Keyboard)?,
             }
         }
         Ok(())
@@ -218,7 +244,7 @@ impl Game<'_> {
         }
         if self.screen == Screen::Playing && self.replay.playing() {
             if !pressed {
-                self.keys.release(&key, source);
+                self.release_device_key(&key, source);
                 return Ok(());
             }
             if studio_replay_shortcut(key) {
@@ -245,6 +271,7 @@ impl Game<'_> {
                 (_, false) => KeyAction::Press,
                 (_, true) => KeyAction::Repeat,
             };
+            self.keys.resume_device_input(&key);
             // One device letting go doesn't let go for the other still holding it.
             if !pressed && self.toggle_held_elsewhere(slot, key, source) {
                 return Ok(());
@@ -254,57 +281,56 @@ impl Game<'_> {
                 self.title.is_some(),
                 self.screen_over_playing(),
             );
-            self.toggles.key(slot, action, screen_open, option);
-            self.sync_toggle(slot);
+            self.vanilla_mappings
+                .toggle_state_mut(slot)
+                .key(action, screen_open, option);
             if !pressed {
                 return Ok(());
             }
-            if self.keys.raw(&key) {
-                self.keys.press(key, source);
-            }
         } else if !pressed {
-            self.keys.release(&key, source);
+            self.release_device_key(&key, source);
             return Ok(());
+        } else if !self.mod_mappings_screen_open() || self.replay.playing() {
+            self.press_device_key(key, source);
+            if let Some(slot) = sunrise_client::keybinds::VanillaMappingSlot::by_default_key(key)
+                && slot.definition().2 == "movement"
+            {
+                self.vanilla_mappings.click(slot);
+            }
+        }
+        // The window events already queued their mapping clicks by resolved slot. Screen
+        // keys still see the immediately delivered input; controller/socket edges queue here.
+        if source == Source::Keyboard {
+            self.immediate_key_pressed(key, raw)
+        } else if !repeat || key == KeyCode::KeyQ {
+            self.key_pressed(key, raw)
         } else {
-            self.keys.press(key, source);
+            Ok(())
         }
-        // KeyboardHandler.keyPress: a repeat (InputConstants.REPEAT) reaches
-        // Screen.keyPressed and KeyMapping.click like a press, so holding
-        // key.drop keeps throwing, in game and over a menu slot.
-        if repeat && key != KeyCode::KeyQ {
-            return Ok(());
-        }
-        self.key_pressed(key, raw)
     }
     /// `KeyMapping.releaseAll` when a screen opens and
     /// `restoreToggleStatesOnScreenClosed` when it closes.
     pub(super) fn track_toggle_screens(&mut self) {
-        let dialog = self.dialog_open();
-        drop_held_behind_dialog(dialog, &mut self.keys, &mut self.left, &mut self.right);
-        let playing = gameplay_has_keyboard(
-            self.screen,
-            self.title.is_some(),
-            self.screen_over_playing(),
-        );
+        let playing = !self.mod_mappings_screen_open();
         if playing == self.was_playing {
             return;
         }
         self.was_playing = playing;
-        let options = [
-            self.settings.toggle_crouch,
-            self.settings.toggle_sprint,
-            self.settings.toggle_attack,
-            self.settings.toggle_use,
-        ];
         if playing {
-            self.toggles.screen_closed(options);
+            let options = self.toggle_options();
+            self.vanilla_mappings
+                .restore_toggles_on_screen_closed(options);
         } else {
-            self.toggles.screen_opened(options);
+            self.release_screen_mappings();
         }
-        self.sync_toggle(0);
-        self.sync_toggle(1);
-        self.left = self.toggles.is_down(2);
-        self.right = self.toggles.is_down(3);
+    }
+    /// Immediately release gameplay mappings when a screen opens, even if it closes
+    /// again before the redraw's screen tracking.
+    pub(super) fn release_screen_mappings(&mut self) {
+        self.was_playing = false;
+        self.keys.clear();
+        let options = self.toggle_options();
+        self.vanilla_mappings.release_all(options);
     }
     /// `MouseHandler.onScroll`: the hotbar (or the spectator menu) takes the wheel only when no
     /// screen is open; a book, lectern, sign or prompt drawn over gameplay is one.
@@ -370,7 +396,27 @@ impl Game<'_> {
         pressed: bool,
         source: Source,
     ) -> Result<()> {
+        if self.mod_mappings_screen_open() {
+            return Ok(());
+        }
         if !pressed && self.mouse_mapping_held_elsewhere(button, source) {
+            // The other device's hold takes over again, even after a direct setDown(false).
+            // In toggle mode a release does not change the mapping.
+            let toggled = match button {
+                MouseButton::Left => self.settings.toggle_attack,
+                MouseButton::Right => self.settings.toggle_use,
+                _ => return Ok(()),
+            };
+            if !toggled {
+                self.set_mapping_held(
+                    if button == MouseButton::Left {
+                        "key.attack"
+                    } else {
+                        "key.use"
+                    },
+                    true,
+                );
+            }
             return Ok(());
         }
         self.play_mouse(button, pressed)
@@ -386,7 +432,7 @@ impl Game<'_> {
             _ => return false,
         };
         match source {
-            Source::Keyboard | Source::Agent | Source::Mod => self.input_holds(mapping),
+            Source::Keyboard | Source::Agent => self.input_holds(mapping),
             Source::Pad => {
                 let keys = &self.settings.keys;
                 self.physical_buttons
@@ -417,19 +463,20 @@ impl Game<'_> {
         if self.sleeping.is_some() {
             return Ok(());
         }
-        // key.spectatorHotbar (the middle button) opens the spectator menu
-        // and uses its selected item.
-        if button == MouseButton::Middle && self.spectator() {
-            if pressed {
-                self.spectator_action_key();
-            }
-            return Ok(());
-        }
-        // MouseHandler.onButton: `KeyMapping.set`, then `KeyMapping.click` for a press.
-        self.mouse_mapping_set_down(button, pressed);
-        if pressed {
-            self.mouse_mapping_click(button);
-        }
+        let name = match button {
+            MouseButton::Left => "key.attack",
+            MouseButton::Right => "key.use",
+            MouseButton::Middle if self.spectator() => "key.spectatorHotbar",
+            MouseButton::Middle => "key.pickItem",
+            _ => return Ok(()),
+        };
+        let slot =
+            sunrise_client::keybinds::VanillaMappingSlot::by_name(name).expect("known mapping");
+        let enabled = sunrise_client::keymapping::toggle_index(slot)
+            .is_some_and(|i| self.toggle_options()[i]);
+        self.vanilla_mappings
+            .state_mut(slot)
+            .button(pressed, false, enabled);
         Ok(())
     }
 }
@@ -478,13 +525,61 @@ impl Game<'_> {
     }
 }
 
-/// The input source (docs/layers.md, "Controllers, splitscreen, replays and UI pages"): what
+/// The input source (docs/layers.md, "Controllers, replays and UI pages"): what
 /// gameplay asks of a device beyond the keyboard and mouse, and tells it. Gameplay calls these,
 /// never the controller modules; today `pad` answers.
 impl Game<'_> {
-    /// The analog move vector (`[left, forward]`, -1..1) while a device moves the player.
+    /// The analog move vector (`[left, forward]`), after direct mapping writes.
     pub(super) fn input_move(&self) -> Option<[f32; 2]> {
         self.pad_move()
+            .map(|stick| self.apply_movement_writes(stick))
+    }
+
+    fn apply_movement_writes(&self, [left, forward]: [f32; 2]) -> [f32; 2] {
+        let axis = |value: f32, positive, negative| {
+            let component = |key, value| match self.keys.override_for(&key) {
+                Some(true) => 1.0,
+                Some(false) => 0.0,
+                None => value,
+            };
+            component(positive, value.max(0.0)) - component(negative, (-value).max(0.0))
+        };
+        [
+            axis(left, KeyCode::KeyA, KeyCode::KeyD),
+            axis(forward, KeyCode::KeyW, KeyCode::KeyS),
+        ]
+    }
+
+    /// KeyboardInput.tick: classify the original stick first; a direct write changes only
+    /// its own flag and analog component, never a different direction's classification.
+    pub(super) fn sample_movement_keys(
+        &self,
+        stick: Option<[f32; 2]>,
+    ) -> sunrise_client::sprint::Keys {
+        use sunrise_client::sprint::Keys;
+        let mut keys = Keys {
+            forward: self.mapped_key_down("key.forward"),
+            backward: self.mapped_key_down("key.back"),
+            left: self.mapped_key_down("key.left"),
+            right: self.mapped_key_down("key.right"),
+            jump: self.mapped_key_down("key.jump"),
+            shift: self.mapped_key_down("key.sneak"),
+            sprint: self.mapped_key_down("key.sprint"),
+            ..Keys::default()
+        }
+        .with_stick(stick);
+        for (down, key) in [
+            (&mut keys.forward, KeyCode::KeyW),
+            (&mut keys.backward, KeyCode::KeyS),
+            (&mut keys.left, KeyCode::KeyA),
+            (&mut keys.right, KeyCode::KeyD),
+        ] {
+            if let Some(value) = self.keys.override_for(&key) {
+                *down = value;
+            }
+        }
+        keys.analog = stick.map(|stick| self.apply_movement_writes(stick));
+        keys
     }
 
     /// Whether a device holds the key mapping named `mapping` (`key.use`).
@@ -534,10 +629,15 @@ impl Game<'_> {
     /// (`eight_direction_keys`), whatever moves the player. For readers of the keys that aren't
     /// the movement itself.
     pub(super) fn movement_key_held(&self, key: KeyCode) -> bool {
-        if self.keys.raw(&key) {
+        if let Some(down) = self.keys.override_for(&key) {
+            return down;
+        }
+        if sunrise_client::keybinds::VanillaMappingSlot::by_default_key(key)
+            .is_some_and(|slot| self.vanilla_mappings.is_down(slot))
+        {
             return true;
         }
-        let Some(stick) = self.input_move() else {
+        let Some(stick) = self.pad_move() else {
             return false;
         };
         let [forward, backward, left, right] = sunrise_client::gamepad::eight_direction_keys(stick);

@@ -4,6 +4,8 @@ Ability names are plain, case-sensitive strings with no namespace. They are not 
 
 An item's Part can change the answer to an ability question. The hook receives a read-only Host. Keep answers pure functions of the stack and ability so the client and server agree.
 
+A client without this mod predicts vanilla here; the server corrects it.
+
 ```rust,ignore
 #[sunrise_part]
 impl ItemPart for CarvingTool {

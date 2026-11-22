@@ -5,6 +5,8 @@
 //! real BrewingStandBlockEntity.serverTick oracle prints.
 //!
 //! The first input line is `#resources RESOURCES`; usage: brewing_fixture INPUT OUTPUT
+use std::sync::Arc;
+use std::{fmt::Write as _, fs};
 use sunrise_client::{
     brewing::{Brewing, BrewingStand, brewing_fuel},
     item_data::{canon_stack, parse_stack},
@@ -12,8 +14,6 @@ use sunrise_client::{
 };
 use sunrise_client_render::providers::Providers;
 use sunrise_world::loot::PackOverlay;
-use std::sync::Arc;
-use std::{fmt::Write as _, fs};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
@@ -66,11 +66,11 @@ pub fn main() -> sunrise_client::Result<()> {
             writeln!(
                 out,
                 "{n} s0={} s1={} s2={} s3={} s4={} time={} fuel={} total={} totalfuel={} speed={:.3} bits={bits} ing={} brews={brews}",
-                canon_stack(stand.items[0].as_ref()),
-                canon_stack(stand.items[1].as_ref()),
-                canon_stack(stand.items[2].as_ref()),
-                canon_stack(stand.items[3].as_ref()),
-                canon_stack(stand.items[4].as_ref()),
+                canon_stack(stand.items[0].as_ref(), &items),
+                canon_stack(stand.items[1].as_ref(), &items),
+                canon_stack(stand.items[2].as_ref(), &items),
+                canon_stack(stand.items[3].as_ref(), &items),
+                canon_stack(stand.items[4].as_ref(), &items),
                 stand.brew_time,
                 stand.fuel,
                 stand.total_brew_time,
@@ -92,7 +92,7 @@ pub fn main() -> sunrise_client::Result<()> {
             (Some(input), Some(reagent)) => brewing.find(input, reagent),
             _ => None,
         };
-        let result = found.map_or_else(|| "-".to_owned(), |r| canon_stack(Some(&r.output)));
+        let result = found.map_or_else(|| "-".to_owned(), |r| canon_stack(Some(&r.output), &items));
         let id = found.map_or_else(|| "-".to_owned(), |r| r.id.clone());
         writeln!(
             out,

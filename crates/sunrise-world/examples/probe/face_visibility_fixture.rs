@@ -1,4 +1,3 @@
-use sunrise_core::geometry::Direction;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -6,6 +5,7 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
 };
+use sunrise_core::geometry::Direction;
 use {
     sunrise_core::{
         nbt,

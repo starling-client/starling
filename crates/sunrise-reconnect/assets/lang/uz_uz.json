@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Avtomatik qayta ulanish",
+  "sunrise.extras.auto_reconnect.tooltip": "Yo'qolgan ulanish yoki qayta ishga tushirilgandan so'ng serverga qayta qo'shiladi, hech qachon zarba yoki taqiqdan keyin."
+}

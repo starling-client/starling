@@ -15,8 +15,8 @@ use super::{
     value_provider::IntProvider,
 };
 use crate::registry::BlockStateId;
-use sunrise_core::random::RandomSource;
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::random::RandomSource;
 
 fn query<E>(error: PlacementQueryError) -> FeatureExecutionError<E> {
     FeatureExecutionError::Query(error)

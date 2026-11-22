@@ -4,7 +4,7 @@
 A PR's own diff is `diff(merge-base(main, head), head)`, read from the fetched `refs/pull/<n>/head`. The open PR
 numbers come from stdin (one per line; the first number on each line counts, so `gh pr list` output works), or from
 `gh pr list` with --from-gh. A path matches a changed file when it is the file, a folder above it, or a glob
-(`launcher/lang/*.json`). Prints `<number>\t<file>` for every match; exits 2 when a PR's head is not fetched.
+(`docs/*.md`). Prints `<number>\t<file>` for every match; exits 2 when a PR's head is not fetched.
 
     git fetch origin '+refs/pull/*/head:refs/pull/*/head'
     python3 tools/hotspots/open_prs.py --from-gh crates/sunrise-mod-vocab/src/exports/part_table.rs

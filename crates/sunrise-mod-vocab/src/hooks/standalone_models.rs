@@ -4,12 +4,12 @@
 pub trait Hooks {
     /// A player finished editing a sign: `ServerGamePacketListenerImpl.updateSignText`
     /// has taken their update packet and every check has passed (they were
-    /// editing that sign, within reach, the sign is not waxed, the chat filter
-    /// let the text through), right before the lines go on the sign. `pos` in
+    /// editing that sign, within reach, the sign is not waxed),
+    /// right before the lines go on the sign. `pos` in
     /// `dimension`, the `front` or back side, and the four `lines` as written,
     /// plain text with the formatting codes still in (vanilla strips them
     /// afterwards). Rewrite `lines` (made four lines again) and that is what
-    /// the sign gets, without a second look from the chat filter, or set
+    /// the sign gets, or set
     /// `cancel` and the sign keeps its old text. With the player's state
     /// swapped in, so `PlayerRef::tell` and the helpers that act on the player
     /// reach them. Once for each update a player sends on a server. Not told:
@@ -18,11 +18,14 @@ pub trait Hooks {
     /// that are no edit of the text (dyeing, glow ink, waxing, `/data`,
     /// `/setblock`, mods' `native_with_mod_block_entity`).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_sign_changed",
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge has no sign-editing event)",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn sign_changed(
         player: u128,
@@ -34,19 +37,23 @@ pub trait Hooks {
         cancel: &mut bool,
     );
     /// Models no blockstate names, registered once on the client before resources load.
-    /// `models` collects plain namespaced file ids, baked unturned. `forms` collects
-    /// rotated/UV-locked or combined dependencies under a namespaced result id.
-    /// Every resource load rebakes both from the active pack files. A missing dependency
-    /// drops the entire form and logs its registering mod. Resolve the results through
-    /// `RenderAssets::model` after `model_baking_completed`, just like plain ids.
+    /// Use [`StandaloneModelsEvent::register_model`] for plain files or
+    /// [`StandaloneModelsEvent::register`] to bind a baker and its file dependencies.
+    /// Every resource load rebakes both from the active pack files. Failed bakes publish
+    /// no model and log the registering mod. Look up results through `RenderAssets::model`
+    /// in or after `model_baking_completed`.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_standalone_models",
+        receiver = "associated",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
-        out = "forms",
+        out = "registrations",
         answered_by = "mod",
-        version = 2,
+        registration_append = "custom",
+        version = 3,
         context = "registration",
         neoforge = "ModelEvent.RegisterStandalone"
     )]
-    fn standalone_models();
+    fn standalone_models(registrations: &mut Vec<Answered<StandaloneModelRegistration>>);
 }

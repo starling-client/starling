@@ -79,10 +79,7 @@ impl Game<'_> {
         if !self.res.facts().is_air(in_block) {
             return (feet, in_block);
         }
-        let on_ground = m
-            .on_ground
-            .then(|| self.supporting_block(m.position, m.bounds()));
-        let at = on_ground.flatten().map_or(
+        let at = m.ground.supporting_block.map_or(
             [
                 feet[0],
                 (m.position.y - f64::from(1.0e-5_f32)).floor() as i32,
@@ -97,17 +94,20 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use crate::game::{Audio, Options, Progress, Settings, entity::Entity, load_resources};
+    use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
     use sunrise_client::mobs::Mob;
     use sunrise_core::geometry::Vec3;
     use sunrise_core::random::LegacyRandom;
-    use std::sync::Arc;
 
     /// A game on the prepared resources with an empty chunk at (0, 0), the
     /// window's player (the camera the dust needs) and one breeze standing
     /// with its feet at `feet`.
-    fn game_with_breeze(feet: Vec3) -> Game<'static> {
+    fn game_with_breeze<'a>(
+        resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+        feet: Vec3,
+    ) -> Game<'a> {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES")
                 .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -129,7 +129,7 @@ mod tests {
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
         options.execution_role = crate::game::execution_role::ExecutionRole::Client;
-        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let res = &*resources.insert(loaded.resources);
         let mut game = Game::new(
             res,
             loaded.pack,
@@ -162,15 +162,22 @@ mod tests {
     /// made by the particle's own generator (`Particle.random`), so the
     /// client level's random is where it was before the tick.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_dust_of_a_breeze_on_a_fence_keeps_the_client_level_random() {
-        let mut game = game_with_breeze(Vec3::new(8.5, 65.5, 8.5));
+        let mut resources = None;
+        let mut game = game_with_breeze(&mut resources, Vec3::new(8.5, 65.5, 8.5));
         let registry = &game.pack.assets.registry;
         let stone = registry.default_state("minecraft:stone").unwrap();
         let fence = registry.default_state("minecraft:oak_fence").unwrap();
         game.world.set(8, 63, 8, stone).unwrap();
         game.world.set(8, 64, 8, fence).unwrap();
-        game.mobs[0].on_ground = true;
+        let _ = game.mobs[0].update_retained_ground(
+            &game.world,
+            game.collision,
+            &world_items!(game).entity_type_tags,
+            true,
+            None,
+        );
         assert_eq!(
             game.breeze_ground(&game.mobs[0]),
             ([8, 64, 8], fence),
@@ -196,9 +203,10 @@ mod tests {
     /// The control: a breeze standing on a full block's top also crumbles it,
     /// and its constructor's draws still leave the client level's random alone.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_dust_of_a_breeze_on_a_full_block_keeps_the_client_level_random() {
-        let mut game = game_with_breeze(Vec3::new(8.5, 64.0, 8.5));
+        let mut resources = None;
+        let mut game = game_with_breeze(&mut resources, Vec3::new(8.5, 64.0, 8.5));
         let stone = game
             .pack
             .assets
@@ -206,7 +214,13 @@ mod tests {
             .default_state("minecraft:stone")
             .unwrap();
         game.world.set(8, 63, 8, stone).unwrap();
-        game.mobs[0].on_ground = true;
+        let _ = game.mobs[0].update_retained_ground(
+            &game.world,
+            game.collision,
+            &world_items!(game).entity_type_tags,
+            true,
+            None,
+        );
         game.world.random = sunrise_core::random::LevelRandom::for_level(LegacyRandom::new(1234));
         let level = game.world.random.state();
 
@@ -225,13 +239,13 @@ mod tests {
     /// it is the block below the feet. Reading 0.2 below the feet, as the dust
     /// used to, lands in air on all three.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_ground_of_a_breeze_is_the_fence_wall_or_gate_it_stands_on() {
-        let mut game = game_with_breeze(Vec3::new(8.5, 65.5, 8.5));
+        let mut resources = None;
+        let mut game = game_with_breeze(&mut resources, Vec3::new(8.5, 65.5, 8.5));
         let registry = &game.pack.assets.registry;
         let stone = registry.default_state("minecraft:stone").unwrap();
         game.world.set(8, 63, 8, stone).unwrap();
-        game.mobs[0].on_ground = true;
         for name in [
             "minecraft:oak_fence",
             "minecraft:cobblestone_wall",
@@ -239,15 +253,31 @@ mod tests {
         ] {
             let state = registry.default_state(name).unwrap();
             game.world.set(8, 64, 8, state).unwrap();
+            let _ = game.mobs[0].update_retained_ground(
+                &game.world,
+                game.collision,
+                &world_items!(game).entity_type_tags,
+                true,
+                None,
+            );
             assert_eq!(
                 game.breeze_ground(&game.mobs[0]),
                 ([8, 64, 8], state),
                 "{name}"
             );
         }
-        // The same breeze on the full block's top reads that block.
+        // Replacing the shape between moves doesn't select a new support.
         game.world.set(8, 64, 8, stone).unwrap();
+        assert_eq!(game.breeze_ground(&game.mobs[0]), ([8, 64, 8], stone));
+        // The same breeze on the full block's top reads that block.
         game.mobs[0].position = Vec3::new(8.5, 65.0, 8.5);
+        let _ = game.mobs[0].update_retained_ground(
+            &game.world,
+            game.collision,
+            &world_items!(game).entity_type_tags,
+            true,
+            None,
+        );
         assert_eq!(game.breeze_ground(&game.mobs[0]), ([8, 64, 8], stone));
     }
 }

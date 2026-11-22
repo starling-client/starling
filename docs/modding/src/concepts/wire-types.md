@@ -1,9 +1,37 @@
 # Wire types
 
-Native and wasm mods share `mod_api::wire::{Wire, Reader, Writer, WireError}`.
-Derive `mod_api::Wire` explicitly on a type whose values cross a target boundary.
-The build never adds a derive. Types used only inside one target do not need it.
-Every field of a derived type must also implement `Wire`.
+`mod_api::wire::{Wire, Reader, Writer, WireError}` defines the codec used by
+[typed payload tokens and bodies](../how-to/client/networking.md#typed-payloads)
+and Sunrise's recipe placement and recipe-book sync. A typed body is one bounded
+Wire value with no extra envelope; raw channels carry caller-supplied bytes.
+Derive `mod_api::Wire` explicitly on a type that needs this encoding. The build
+never adds the derive. Every field of a derived type must also implement `Wire`.
+
+[Native recipe serializers](../crafting-recipe-kinds.md) do not use Wire for their
+values. Both `CraftingRecipeKind` and `RecipeSerializer` decode and write JSON;
+the loader retains each typed value with its owner for the resource generation.
+Recipe content still syncs as bounded JSON, and raw recipe JSON keeps its size
+limit. Recipe placement, book sync and vanilla display packets are unaffected.
+
+`Wire` decodes owned strings (`String`,
+`Cow<'static, str>`, `Box<str>`, `Arc<str>`), never `&'static str`; `#[derive(Wire)]` rejects borrowed
+fields including `&'static str`, and `ItemPlace` and `MobGoalEntry` stay process-local and do not
+implement `Wire`.
+
+Hook events are native callback records, not binary messages. If you need to send data from
+an event, copy the fields you intend to send into your own `Wire` payload type. The same applies to
+[loader metadata](load-phases.md) such as `PackageInfo`, `DataLoadOrigin` and `LoopSide`: read it locally,
+then select the facts you need for your protocol. Keep issued packet-hold and chunk-ticket controller
+handles in the process that issued them; use a ticket controller's namespaced `id()` when you need to
+record its name.
+Likewise, keep [attachment queries and write tokens](attachments/querying.md) in process; an
+attachment's own codec handles saving and syncing its value.
+
+Local Part, capability, item-place, resource-identity, and Part-state values and
+errors (`BlockSide`, `ItemPlace`, `ItemResource`, `FluidResource`, `PartStateError`,
+`BlockEntityPartError`, and their sibling registration and refusal types) also stay in process;
+convert to `ItemStack` or `FluidStack`, or copy the fields you need into your own
+`#[derive(mod_api::Wire)]` schema when sending across a boundary.
 
 ```rust,ignore
 #[derive(mod_api::Wire)]
@@ -20,18 +48,24 @@ invalid UTF-8 or an unsupported length.
 
 ## Nesting and stacks
 
-Structural decoding and encoding allow **32** nested records, payload-carrying
+Ordinary Wire decoding and encoding allow **32** nested records, payload-carrying
 variants and `Box`/`Arc` values (`MAX_DEPTH`). Collection iteration, `Option`
 and tuples do not consume a level. The reader returns `WireError::Depth` before
 entering level 33; the writer records the same error. Always check `Writer::error`
 before sending its bytes. This is a transport budget for unbounded mod-defined
-trees, including ingredients, item places, loot vehicles and recipe slot displays.
+trees, including ingredients, loot vehicles and recipe slot displays.
 
-Vanilla trees are not restricted by that structural budget: NBT `Tag` uses an
-explicit work stack with **512** nested containers; `Text` crosses as the existing
-validated flat `TextForm` table, preserving its **512** component-depth contract.
-These encodings are identical on native and wasm. Text's layout identity is the
-flat table's identity.
+Typed payloads use the same encoding with their own limits. They count lists, present
+options, boxes, shared pointers, NBT containers and explicit recursion, not derived record
+frames, against `PAYLOAD_MAX_DEPTH`. String and list lengths are bounded by
+`PAYLOAD_MAX_STRING_BYTES` and `PAYLOAD_MAX_LIST_ENTRIES`. The reader and writer both
+charge `PAYLOAD_DECODE_BUDGET` for decoded storage, separately from the 8 MiB body cap.
+A failed encode is never queued.
+
+Ordinary Wire keeps the NBT `Tag` limit of **512** containers and the `Text` limit of
+**512** nested components. Both use stack-independent iterative codecs directly over
+their fields and are admitted to typed payloads, where they share `PAYLOAD_MAX_DEPTH`
+and `PAYLOAD_DECODE_BUDGET`.
 
 JSON-backed `serde_json::Value`, JSON maps and `ModelPart` also refuse beyond
 32 JSON containers. Their encoders preflight the in-memory tree iteratively
@@ -39,58 +73,44 @@ before serde recursion; their decoders scan the JSON's nesting outside quoted
 strings before parsing. A model part's JSON includes object, children-list and
 named-child-tuple containers, so one part can consume several JSON levels.
 
-The wasm linker reserves a **256 KiB** guest shadow stack. Wasmtime's wasm
-call-stack limit is **128 MiB**. These are separate budgets. Hand-written recursive
-`Wire` implementations must enforce their own stack contract; the reader cannot
-police code outside its codec.
+Hand-written recursive `Wire` implementations must enforce their own stack contract; the
+reader cannot police code outside its codec.
 
-Wire does not own a borrowed value's destructor. Constructing an arbitrarily deep
-Rust tree and then dropping it can overflow a thread independently of Wire.
-Use explicit work stacks when disposing of hostile trees (`discard_tag` for NBT),
-and do not transfer arbitrarily deep owned Rust trees to an encoder.
+Encoding borrows the input (`writer.put(&value)`); the caller still owns it.
+`Text` drops iteratively, so dropping a deep component tree does not overflow the
+stack. For deeply nested raw NBT `Tag` trees, pop tags from an explicit work stack:
+push the children of each `Tag::List` and the values from `Compound::into_values()`
+for each `Tag::Compound`, dropping leaf tags as you go.
 
 ## Checked representations
 
 Use `#[wire(via = String)]` (or another `Wire` type) when a checked constructor owns
 validation. Implement `From<&YourType> for String` and `TryFrom<String> for YourType`.
 The derive writes the representation and maps a failed conversion to
-`WireError::Invalid`. Its layout is the representation's layout.
+`WireError::Invalid`. Its layout is the representation's layout. The conversion can
+allocate outside Wire's budget, so this form is available only to ordinary Wire. For a
+checked typed payload, implement `Wire` explicitly, bound any storage the codec itself
+allocates, and give a different validation contract its own versioned identity.
 
 ## Layout identity
 
-`Wire::layout` computes an encoding identity recursively, including field names,
-case names and child layouts. It is a runtime method, not a constant, because
-recursive types need a visited-type stack. Container layout follows encoding:
-`Vec<T>` and `VecDeque<T>` agree, as do `String` and `Box<str>`; `Box<T>` is
-transparent. Changing a crossing field requires rebuilding dependents; the wire
-format has no compatibility versions or default fields.
-
-`cargo sunrise-mod build` writes `layouts.json` at the package root, mapping mod IDs
-to public type paths and their 16-digit hexadecimal layout identities. It includes
-the mod dependencies it compiled against. A cached host probe under
-`target/sunrise-mod/` computes these values, for both native and wasm builds. When
-there are no concrete crossing types, no probe is built and no file is written.
-If `layouts.json` already exists, the build refuses to discard its recorded types.
-Review the removal of the final public crossing type, then remove the file explicitly.
-Private types without a public path and uninstantiated generic declarations are
-not listed; a public re-export can give a private module's type a public path.
-
-A mixed-target dependent with a different layout is refused naming the library
-and differing type. Matching layouts do not enable dependencies between native
-and wasm mods: the loader refuses those edges explicitly.
+A type's layout describes the fields, enum cases and child types that Wire reads and writes.
+The derive declares the layout from the Rust fields. Layouts do not include Rust type paths.
+The SDK inventories layouts from source declarations. `Wire::describe` fingerprints a compiled
+type for typed-payload negotiation. `payload_schema::<T>()` computes that fingerprint; it is not
+written into the payload body. A different byte format or validation contract needs a
+different negotiated fingerprint, even if the two formats have some bytes in common.
 
 ## Hand-written implementations
 
-The trait is unsealed. A hand-written implementation must supply `put`, `take`,
-`MIN`, and `LAYOUT_SEED`; compound encodings must override the hidden `layout`
-method to incorporate their children and handle recursive visits. Never use a
-constant leaf seed for a compound encoding: field changes must change its identity.
-The derive handles this bookkeeping automatically and is preferred.
+The derive handles this automatically and is preferred. A hand-written implementation must
+supply `put`, `take`, `MIN` and `describe`. For a new encoding, use a versioned `WireSchema::leaf`
+and combine it with the fingerprints of its parts using `WireSchema::mix`. Use
+`WireSchema::named::<Self>` when describing recursive fields so the walk can recognize a
+reference to an ancestor. An implementation that delegates both encoding and validation
+can delegate `describe` to that type too.
 
-A hand decoder owns tag validation and must use `Reader::nested` for recursive
-values. `Reader` checks byte bounds and UTF-8, but cannot enforce invariants that
-an implementation neglects. Keep validation at the checked constructor boundary.
-
-Public declarations used in layout discovery must be unconditional. The layout probe refuses
-`#[cfg]` and `#[cfg_attr]` on public types, modules, and re-exports, naming the declaration.
-Keep target-specific implementation details private; publish an unconditional Wire representation.
+A hand decoder owns tag validation and bounds for any storage it allocates itself. Decode
+indirections through their `Wire` types so they count against the typed-payload limits. Use
+`Reader::nested` and `Writer::nested` around explicit recursion in a handwritten codec.
+Keep validation at the checked constructor boundary.

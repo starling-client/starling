@@ -17,6 +17,7 @@ use sunrise_client::{
     test_instance_block::{Data, Status, TestInstanceBlock},
     text::{self, Text},
 };
+use sunrise_client_render::block_entity_reach::Reach;
 use sunrise_core::{position::BlockPos, ticks::TickArea};
 use sunrise_protocol::packets::play::{self, Clientbound as C};
 use {
@@ -40,36 +41,17 @@ const SAVE: i32 = 4;
 const EXPORT: i32 = 5;
 const RUN: i32 = 6;
 
-/// The `GameTestInstance` a registry entry describes: `TestData` and what
-/// `describe()` prints.
-#[derive(Clone)]
-pub(super) struct TestDef {
-    pub(super) structure: String,
-    pub(super) rotation: Rotation,
-    pub(super) padding: i32,
-    pub(super) required: bool,
-    pub(super) sky_access: bool,
-    /// `BlockBasedTestInstance` (else a `FunctionGameTestInstance`).
-    pub(super) block_based: bool,
-    /// The function a function test runs.
-    pub(super) function: Option<String>,
-    pub(super) callback: Option<std::sync::Arc<dyn mod_api::GameTestFunction>>,
-    /// The test environment's id (`batch()`).
-    pub(super) environment: String,
-    pub(super) max_ticks: i32,
-    pub(super) setup_ticks: i32,
-    /// `TestData.maxAttempts` and `requiredSuccesses`.
-    pub(super) max_attempts: i32,
-    pub(super) required_successes: i32,
-    /// The dimension the test runs in (`TestData.dimension`).
-    pub(super) dimension: String,
-    description: Text,
+pub(super) use sunrise_gameplay::test_instances::{TestDef, parse_test_def};
+
+#[cfg(test)]
+pub(super) trait TestDefSample {
+    fn sample(block_based: bool, max_ticks: i32, setup_ticks: i32) -> Self;
 }
 
 #[cfg(test)]
-impl TestDef {
+impl TestDefSample for TestDef {
     /// A test with the timing and type a runner test needs.
-    pub(super) fn sample(block_based: bool, max_ticks: i32, setup_ticks: i32) -> Self {
+    fn sample(block_based: bool, max_ticks: i32, setup_ticks: i32) -> Self {
         Self {
             structure: "minecraft:empty".into(),
             rotation: Rotation::None,
@@ -88,92 +70,6 @@ impl TestDef {
             description: Text::literal(""),
         }
     }
-}
-
-/// `GameTestInstance`'s codec, as the game reads a `test_instance` file.
-fn parse_test_def(json: &serde_json::Value) -> Option<TestDef> {
-    let string = |key: &str| json.get(key).and_then(|v| v.as_str());
-    let structure = string("structure")?.to_owned();
-    let environment = string("environment")?.to_owned();
-    let dimension = string("dimension").unwrap_or("minecraft:overworld");
-    let function = string("function");
-    // `ExtraCodecs.POSITIVE_INT`, 1 when absent.
-    let positive = |key: &str| {
-        json.get(key)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1)
-            .clamp(1, i64::from(i32::MAX)) as i32
-    };
-    // GameTestInstance.describe: the type, the function (function tests
-    // only), then the structure, batch and dimension.
-    let block_based = string("type") == Some("minecraft:block_based");
-    let mut description = Text::translate(
-        "test_instance.description.type",
-        &[Text::translate(
-            if block_based {
-                "test_instance.type.block_based"
-            } else {
-                "test_instance.type.function"
-            },
-            &[],
-        )
-        .with_color(0x5555FF)],
-    )
-    .append(Text::literal("\n"));
-    if !block_based && let Some(function) = function {
-        description = description.append(row("test_instance.description.function", function));
-    }
-    description = description
-        .append(row("test_instance.description.structure", &structure))
-        .append(row("test_instance.description.batch", &environment))
-        .append(row("test_instance.description.dimension", dimension));
-    Some(TestDef {
-        structure,
-        rotation: string("rotation")
-            .and_then(Rotation::from_name)
-            .unwrap_or(Rotation::None),
-        padding: json
-            .get("padding")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0)
-            .clamp(0, 128) as i32,
-        required: json
-            .get("required")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true),
-        sky_access: json
-            .get("sky_access")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        block_based,
-        function: function.map(|id| {
-            if id.contains(':') {
-                id.to_owned()
-            } else {
-                format!("minecraft:{id}")
-            }
-        }),
-        callback: None,
-        environment: environment.clone(),
-        dimension: dimension.to_owned(),
-        max_ticks: json
-            .get("max_ticks")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1)
-            .clamp(1, i64::from(i32::MAX)) as i32,
-        setup_ticks: json
-            .get("setup_ticks")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0)
-            .clamp(0, i64::from(i32::MAX)) as i32,
-        max_attempts: positive("max_attempts"),
-        required_successes: positive("required_successes"),
-        description,
-    })
-}
-/// `GameTestInstance.descriptionRow`: the row's value in blue, then a line break.
-fn row(key: &str, value: &str) -> Text {
-    Text::translate(key, &[Text::literal(value).with_color(0x5555FF)]).append(Text::literal("\n"))
 }
 
 fn red(key: &str, args: &[Text]) -> Text {
@@ -327,14 +223,13 @@ impl Game<'_> {
             .iter()
             .map(|(&pos, (text, _))| ([pos.0, pos.1, pos.2], text.clone(), HIGHLIGHT_FILL))
             .collect();
-        for (pos, entity) in &self.world.block_entities {
+        let render_distance = self.effective_render_distance();
+        // Test instance blocks show a box: `boxes` lists them without a scan of every block entity.
+        for (pos, entity) in self.world.block_entities.boxes() {
             let BlockEntity::TestInstanceBlock(b) = entity else {
                 continue;
             };
-            // BeaconRenderer.getViewDistance: 256, by the horizontal distance.
-            let dx = f64::from(pos.0) + 0.5 - camera.x;
-            let dz = f64::from(pos.2) + 0.5 - camera.z;
-            if dx * dx + dz * dz >= 256.0 * 256.0 {
+            if !Reach::TestInstance.should_render([pos.0, pos.1, pos.2], camera, render_distance) {
                 continue;
             }
             for marker in &b.error_markers {
@@ -601,6 +496,7 @@ impl Game<'_> {
         let settings = TemplateSettings {
             mirror: Mirror::None,
             rotation,
+            pivot: [0; 3],
             ignore_entities: block.data.ignore_entities,
             known_shape: true,
             integrity: 1.0,
@@ -728,16 +624,5 @@ impl Game<'_> {
         let id = self.game_tests.next_id();
         let info = Info::new(id, key, def, Some(pos), self.dim, rotation);
         self.track_and_start_runner(vec![info], false, None, false);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rows_print_the_value_in_blue_then_a_line_break() {
-        let text = row("test_instance.description.structure", "minecraft:empty");
-        assert!(text.plain().ends_with('\n'));
     }
 }

@@ -8,10 +8,12 @@ pub trait Hooks {
     /// first-person hand and which chunks load stay the player's. Values that aren't finite keep
     /// vanilla's. Not called on the title screen's panorama.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ViewportEvent.ComputeCameraAngles",
         cancellable = false
     )]
-    fn camera_pose();
+    fn camera_pose(partial: f32, position: &mut [f64; 3], yaw: &mut f32, pitch: &mut f32);
 }

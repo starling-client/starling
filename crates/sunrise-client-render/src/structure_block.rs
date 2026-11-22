@@ -204,6 +204,12 @@ impl StructureBlock {
     /// `StructureBlockEntity.saveAdditional`.
     pub fn save(&self) -> Vec<(&'static str, Tag)> {
         let byte = |b: bool| Tag::Byte(i8::from(b));
+        // FloatTag.valueOf uses the shared +0.0 tag for either zero sign.
+        let integrity = if self.integrity == 0.0 {
+            0
+        } else {
+            self.integrity.to_bits()
+        };
         vec![
             ("name", string(self.structure_name())),
             ("author", string(&self.author)),
@@ -222,7 +228,7 @@ impl StructureBlock {
             ("powered", byte(self.powered)),
             ("showair", byte(self.show_air)),
             ("showboundingbox", byte(self.show_bounding_box)),
-            ("integrity", Tag::Float(self.integrity.to_bits())),
+            ("integrity", Tag::Float(integrity)),
             ("seed", Tag::Long(self.seed)),
         ]
     }
@@ -264,7 +270,8 @@ impl StructureBlock {
         block.powered = flag("powered", false);
         block.show_air = flag("showair", false);
         block.show_bounding_box = flag("showboundingbox", true);
-        block.integrity = float(tag.get("integrity")).map_or(1.0, |f| f as f32);
+        block.integrity =
+            float(tag.get("integrity")).map_or(1.0, |f| if f == 0.0 { 0.0 } else { f as f32 });
         block.seed = number(tag.get("seed")).unwrap_or(0);
         block
     }
@@ -403,6 +410,16 @@ mod tests {
         assert_eq!(text(tag.get("mode")).as_deref(), Some("SAVE"));
         assert_eq!(text(tag.get("rotation")).as_deref(), Some("CLOCKWISE_90"));
         assert_eq!(StructureBlock::load(&tag), block.clone());
+    }
+
+    #[test]
+    fn integrity_tag_canonicalizes_signed_zero() {
+        let mut block = StructureBlock::new(StructureMode::Load);
+        block.integrity = -0.0;
+        let tag = Tag::compound(block.save());
+        assert_eq!(tag.get("integrity"), Some(&Tag::Float(0)));
+        let tag = Tag::compound(vec![("integrity", Tag::Float((-0.0_f32).to_bits()))]);
+        assert_eq!(StructureBlock::load(&tag).integrity.to_bits(), 0);
     }
 
     #[test]

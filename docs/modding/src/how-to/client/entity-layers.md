@@ -4,13 +4,14 @@ A client mod can draw over a living entity without replacing its model: a mod's 
 backpack, something held or worn. This is the counterpart of NeoForge 26.3's
 `EntityRenderersEvent.AddLayers` and `RenderLayer`: the mod adds a layer to a living entity type or to
 a player model, and the game draws it over every entity of that target in view, after its model and
-the layers before it. Native and wasm mods add and draw layers the same way.
+the layers before it.
 
 ## 1. Write the layer
 
-A layer implements `EntityRenderLayer`. Its `submit` gets the entity's frame, a humanoid model's posed
-parts and a draw context, the one a mob or block entity submit hook draws with (`quad`, `cube`,
-`block`, `item`, `model_part`, `push`, `pop`, `translate`, `rotate_about`, `scale`):
+A layer implements `EntityRenderLayer`. Its `submit` gets the entity's render state, the borrowed
+final model if the body was posed, and a draw context. This is the context a mob or block entity
+submit hook draws with (`quad`, `cube`, `block`, `item`, `model_part`, `push`, `pop`, `translate`,
+`rotate_about`, `scale`):
 
 ```rust,ignore
 use mod_api::*;
@@ -21,9 +22,14 @@ impl EntityRenderLayer for Halo {
     fn submit(
         &self,
         _entity: &EntityRenderState,
-        _parts: Option<&PosedParts>,
+        model: Option<&dyn FrameModel>,
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String> {
+        // Follow the head's visibility when there is one. Still draw on a replacement
+        // renderer or a body without a part named "head".
+        if model.and_then(|body| body.part("head")).is_some_and(|head| !head.visible) {
+            return Ok(());
+        }
         // In the entity's frame: at its feet, turned with its body. Any atlas sprite will do:
         // a vanilla one, as here, or one of the mod's own assets.
         let face = Some(CubeFace::new("block/gold_block"));
@@ -35,11 +41,13 @@ impl EntityRenderLayer for Halo {
 
 The pose stack starts in the entity's frame: at its feet, turned with its body, +z the way it faces,
 +x its left, +y up, in blocks, as `render_living_pre` draws. `entity.yaw` is the body's turn and
-`entity.pitch` the head's; `parts` has a humanoid model's parts as vanilla posed them this frame, to
-attach to an arm or the head (None for a model that isn't humanoid). `draw` also has the partial tick,
-the game time and the entity's light. Every entity of a target shares the one layer, so keep
-per-entity values out of it. A layer has no `Host`; one that needs the world reads it in a hook and
-keeps what it read.
+`entity.pitch` the head's. If `model` is `Some(body)`, look up `body.part(name)` to
+[read a part's final local pose](model-drawing.md#read-the-final-body-model). To attach geometry,
+compose its parents' poses and use `visible` if the attachment should disappear with the body part.
+Independent layers can draw without a body part. The model is borrowed only for `submit`. `draw`
+also has the partial tick, game time and entity light. Every entity of a target shares the one
+layer, so keep per-entity values out of it. A layer has no `Host`; one that needs the world reads
+it in a hook and keeps what it read.
 
 ## 2. Add it
 
@@ -76,27 +84,28 @@ carry over, so add them each time. The event also tells what renderers this load
   `minecraft:player`, whose layers go to a player model, and a living type that draws through a route
   of its own which doesn't run layers yet (the armour stand, the ender dragon): the `Err` names the
   target, and the game logs it too.
-- Several mods may add to one target: the layers draw in the order they were added, after the
-  entity's model and its vanilla layers. On a type a mod registered a renderer for
+- Several mods may add to one target: the layers draw in successful registration order, after the
+  entity's model and its vanilla layers. A [failed registration callback](../../concepts/load-phases.md#registration-and-setup)
+  adds no layers; other callbacks can still register theirs. On a type a mod registered a renderer for
   ([entity renderers](entity-renderers.md)), they draw after that renderer, which replaces the model
-  and the vanilla layers, and `parts` is none: the renderer's model has no vanilla parts.
+  and the vanilla layers. They receive `model: None` when the replacement renderer succeeds.
 - An entity whose `render_living_pre` or `render_player_pre` a mod canceled draws none of its layers,
   as NeoForge's canceled `RenderLivingEvent.Pre` skips them.
-- `submit` returns `Ok(())` to keep what it drew. A layer that returns an `Err`, panics, or (in a wasm
-  mod) has its call refused or trapped is logged once and asked no more until the next resource load
+- `submit` returns `Ok(())` to keep what it drew. A layer that returns an `Err` or panics is logged once and asked no more until the next resource load
   adds it again; what it drew that frame is dropped.
 
 ## Where layers draw
 
 The game resolves each target's layers when they are added, so a frame finds an entity's layers with
 no lookup by name and no scan over the mods; with no layer at all, it checks one flag per entity and
-builds nothing. A humanoid model's posed parts are kept from its draw only for a type or player model
-that has a layer (or while a mod listens to the render hook pair), so a layer on one type costs the
-other mobs nothing. The layers draw on the mobs (vanilla's and the content mods' living types) and on the players,
-this window's own in third person included. The armour stand and the ender dragon have draws of their
-own that don't run layers, so `add` refuses them.
+builds nothing. The draw retains its existing body poses only when the target has a layer to draw
+or a Post listener can read them. A layer on one type does not request captures for other types.
+The layers draw on the mobs (vanilla's and the content mods' living types) and on the players,
+including this window's own in third person when it holds the camera. In the ordered body pass, layers
+submit in level join order, interleaved with general entity renderer submissions. The armour stand
+and the ender dragon have draws of their own that don't run layers, so `add` refuses them.
 
-`render_living_post` and `render_player_post` are a different moment: they are asked for every mob
-and player in view each frame, after their layers (NeoForge's `RenderLivingEvent.Post` and
-`RenderPlayerEvent.Post`), for a mod that draws over every entity rather than over one type's renderer
-([model drawing](model-drawing.md)).
+Use `render_living_post` and `render_player_post` to draw after the layers without registering for
+one specific type (NeoForge's `RenderLivingEvent.Post` and `RenderPlayerEvent.Post`). They borrow the
+same final model when the draw produced one, subject to
+[Pre cancellation](model-drawing.md#before-and-after-a-living-entity-draws).

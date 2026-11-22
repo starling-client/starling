@@ -268,7 +268,7 @@ def main():
     servers = {
         'vanilla': ['java', '-Xmx2g', '-Duser.timezone=UTC', f'-Dminecraft.api.discovery.host={discovery}',
                     '-cp', dependencies, 'net.minecraft.server.Main', 'nogui'],
-        'sunrise': [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui'],
+        'sunrise': [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui'],
     }
 
     def client(port, scenario, out):

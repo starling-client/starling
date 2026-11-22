@@ -1,0 +1,730 @@
+[
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::attachment_instruction_bench::attachment_instruction_count",
+    "path": "crates/sunrise-client/src/game/modding/attachment_instruction_bench.rs",
+    "reason": "callgrind fixture; needs SUNRISE_TEST_RESOURCES",
+    "rationale": "Opt-in instruction-count measurement, not a daily correctness check: returns without measuring unless ATTACHMENT_PASSES parses as usize. Run by hand with SUNRISE_TEST_RESOURCES and ATTACHMENT_PASSES, exact-selecting this full test path with --ignored --exact --nocapture under the intended measurement tooling. No automated runner currently supplies ATTACHMENT_PASSES; the source diagnostic naming a parity harness does not establish such a runner. All assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::end::cooldown_tests::gateway_counters_match_actual_vanilla_methods",
+    "path": "crates/sunrise-client/src/game/world/end/gateway_cooldown_tests.rs",
+    "reason": "needs explicit SUNRISE_TEST_RESOURCES and SUNRISE_PORTAL_REFERENCE",
+    "rationale": "Existing separately supplied input SUNRISE_PORTAL_REFERENCE in tools/ci/ignored-tests/harness-inputs.txt; its dedicated workflow/harness must supply this input, which ordinary prepared resources do not contain. needs explicit SUNRISE_TEST_RESOURCES and SUNRISE_PORTAL_REFERENCE"
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::entity_model_loading_tests::entity_model_document_benchmark",
+    "path": "crates/sunrise-client/src/game/interface/entity_model_loading_tests.rs",
+    "reason": "opt-in benchmark; requires ENTITY_MODEL_BENCH_DOCUMENT",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; ENTITY_MODEL_BENCH_DOCUMENT supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::explosion::tests::explosion_items_parity_fixture",
+    "path": "crates/sunrise-client/src/game/entities/explosion.rs",
+    "reason": "requires prepared resources; tools/test_explosion_items_parity.py",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/issue-2177.txt; #2177 supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::fishing::tests::breeze_hook_parity_fixture",
+    "path": "crates/sunrise-client/src/game/items/fishing.rs",
+    "reason": "run by tools/test_breeze_hook_parity.py",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_breeze_hook_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::fishing::tests::fishing_retrieve_reference",
+    "path": "crates/sunrise-client/src/game/items/fishing.rs",
+    "reason": "requires prepared resources and the vanilla fishing reference",
+    "rationale": "tools/test_fishing_rng_parity.py:120-125 supplies SUNRISE_FISHING_RESOURCES and the independent SUNRISE_FISHING_REFERENCE JSON and exact-selects this test; the ordinary prepared-resource daily leg has neither oracle input."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::functions::typed_state_range_read_tests::loaded_pack_direction_ranges_keep_full_and_filtered_domains",
+    "path": "crates/sunrise-client/src/game/administration/functions/typed_state_range_tests.rs",
+    "reason": "needs prepared resources, actual pack and scratch homes/cwd",
+    "rationale": "Existing separately supplied input SUNRISE_TYPED_RANGE_PACK in tools/ci/ignored-tests/harness-inputs.txt; its dedicated workflow/harness must supply this input, which ordinary prepared resources do not contain. needs prepared resources, actual pack and scratch homes/cwd"
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::functions::typed_state_range_read_tests::loaded_pack_state_ranges_match_typed_controls",
+    "path": "crates/sunrise-client/src/game/administration/functions/typed_state_range_tests.rs",
+    "reason": "needs prepared resources, actual pack and scratch homes/cwd",
+    "rationale": "Existing separately supplied input SUNRISE_TYPED_RANGE_PACK in tools/ci/ignored-tests/harness-inputs.txt; its dedicated workflow/harness must supply this input, which ordinary prepared resources do not contain. needs prepared resources, actual pack and scratch homes/cwd"
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::levels::tests::an_old_chunk_saves_the_heights_its_new_neighbour_calculated",
+    "path": "crates/sunrise-client/src/game/world/levels.rs",
+    "reason": "needs SUNRISE_TEST_RESOURCES, a scratch SUNRISE_HOME and the constructed H077_OLD_WORLD",
+    "rationale": "No harness exists. Plain known failure in tools/ci/ignored-tests/old-world.txt (#1028): the daily sunrise-client shard runs it with --include-ignored, and it fails at the absent H077_OLD_WORLD. Remove the row when a reproducible 1.20.4 generation recipe or the exact private CI fixture is provisioned."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::levels::tests::features_write_a_full_neighbour_only_through_its_sections",
+    "path": "crates/sunrise-client/src/game/world/levels.rs",
+    "reason": "needs SUNRISE_TEST_RESOURCES, a scratch SUNRISE_HOME and the constructed H077_OLD_WORLD",
+    "rationale": "No harness exists. Plain known failure in tools/ci/ignored-tests/old-world.txt (#1028): the daily sunrise-client shard runs it with --include-ignored, and it fails at the absent H077_OLD_WORLD. Remove the row when a reproducible 1.20.4 generation recipe or the exact private CI fixture is provisioned."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::levels::tests::the_overworld_cache_holds_the_edge_chunks_calculated_heights",
+    "path": "crates/sunrise-client/src/game/world/levels.rs",
+    "reason": "needs SUNRISE_TEST_RESOURCES, a scratch SUNRISE_HOME and the constructed H077_OLD_WORLD",
+    "rationale": "No harness exists. Plain known failure in tools/ci/ignored-tests/old-world.txt (#1028): the daily sunrise-client shard runs it with --include-ignored, and it fails at the absent H077_OLD_WORLD. Remove the row when a reproducible 1.20.4 generation recipe or the exact private CI fixture is provisioned."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::maps::save_tests::saved_map_codec_fixture",
+    "path": "crates/sunrise-client/src/game/blocks/maps/save_tests.rs",
+    "reason": "run through tools/test_map_saved_data_parity.py",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_map_saved_data_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::block_entity_reach_draw_tests::block_entity_draws_match_the_vanilla_cases",
+    "path": "crates/sunrise-client/src/game/blocks/block_entity_reach_draw_tests.rs",
+    "reason": "run through tools/test_block_entity_reach_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_block_entity_reach_parity.py writes the cases and the vanilla oracle's answers and passes them in SUNRISE_REACH_DRAW_CASES and SUNRISE_REACH_DRAW_OUT. Run bare as a daily test it has no cases and panics."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::minecarts::cart_cost_bench::tick_carts_with_many_parked_carts",
+    "path": "crates/sunrise-client/src/game/entities/minecarts.rs",
+    "reason": "a timing, needs prepared resources in SUNRISE_TEST_RESOURCES",
+    "rationale": "Manual wall-clock measurement, not a daily correctness check: prints tick_carts time without behavioral assertions. Run by hand on an idle machine with SUNRISE_TEST_RESOURCES, exact-selecting the full test path with --ignored --exact --nocapture. CARTS_PARKED, CARTS_MOVING, MOBS and TICKS optionally control the workload; defaults include 600 parked carts, 100 moving carts and 3000 mobs. Test body remains unchanged."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::mod_api_host::attachment_membership_tests::attachment_entity_read_bench",
+    "path": "crates/sunrise-client/src/game/modding/mod_api_host.rs",
+    "reason": "manual attachment scaling benchmark; needs SUNRISE_TEST_RESOURCES",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: manual attachment scaling benchmark; needs SUNRISE_TEST_RESOURCES. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::native_block_entity_item_tests::timing_container_moves_beside_saved_data",
+    "path": "crates/sunrise-client/src/game/modding/native_block_entity_item_tests.rs",
+    "reason": "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process",
+    "rationale": "Opt-in wall-clock measurement, not a daily correctness check: returns without measuring unless SUNRISE_JOURNAL_TIMING is set. Run by hand with SUNRISE_JOURNAL_TIMING=1 and SUNRISE_TEST_RESOURCES, using --ignored --exact --nocapture on its full test path; with_mod_parts runs the measurement in an isolated child process. All assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::native_block_entity_item_tests::timing_storage_against_items_across_barrel_cells",
+    "path": "crates/sunrise-client/src/game/modding/native_block_entity_item_tests.rs",
+    "reason": "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process",
+    "rationale": "Opt-in wall-clock measurement, not a daily correctness check: returns without measuring unless SUNRISE_STORAGE_TIMING is set. Run by hand with SUNRISE_STORAGE_TIMING=1 and SUNRISE_TEST_RESOURCES, using --ignored --exact --nocapture on its full test path; with_mod_parts runs the measurement in an isolated child process. All assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::native_goal_ticks::tests::mod_goal_tick_cost",
+    "path": "crates/sunrise-client/src/game/modding/native_goal_ticks/native_goal_ticks_tests.rs",
+    "reason": "cost probe",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: cost probe. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::native_live_holder_tests::thousand_live_block_entity_ticks",
+    "path": "crates/sunrise-client/src/game/modding/native_live_holder_tests.rs",
+    "reason": "measurement; needs SUNRISE_TEST_RESOURCES and SUNRISE_LIVE_BENCH=none|trivial|write",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/issue-2177.txt; #2177 supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::native_recipes::tests::craft_cost",
+    "path": "crates/sunrise-client/src/game/modding/native_recipes.rs",
+    "reason": "a benchmark: run it in release with SUNRISE_TEST_RESOURCES",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: a benchmark: run it in release with SUNRISE_TEST_RESOURCES. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::native_server::fake_action_tests::fakes_acting_each_tick_cost",
+    "path": "crates/sunrise-client/src/game/modding/native_server.rs",
+    "reason": "timing",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: timing. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::nether_portal::cooldown_tests::portal_contact_and_waiting_handoff_match_vanilla_counters",
+    "path": "crates/sunrise-client/src/game/blocks/tests/portal_cooldown_tests.rs",
+    "reason": "needs explicit SUNRISE_TEST_RESOURCES and SUNRISE_PORTAL_REFERENCE",
+    "rationale": "Existing separately supplied input SUNRISE_PORTAL_REFERENCE in tools/ci/ignored-tests/harness-inputs.txt; its dedicated workflow/harness must supply this input, which ordinary prepared resources do not contain. needs explicit SUNRISE_TEST_RESOURCES and SUNRISE_PORTAL_REFERENCE"
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::potions::arrow_contents::actual_arrow_contents_match_pinned_methods",
+    "path": "crates/sunrise-client/src/game/items/potions.rs",
+    "reason": "explicit SUNRISE_TEST_RESOURCES and isolated potion oracle input/output",
+    "rationale": "Existing separately supplied input SUNRISE_POTION_INPUT in tools/ci/ignored-tests/harness-inputs.txt; its dedicated workflow/harness must supply this input, which ordinary prepared resources do not contain. explicit SUNRISE_TEST_RESOURCES and isolated potion oracle input/output"
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::remote_mob_data::tests::mob_air_parity_fixture",
+    "path": "crates/sunrise-client/src/game/network/remote_mob_data.rs",
+    "reason": "run by tools/test_mob_air_parity.py",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_mob_air_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::remote_mob_data::tests::raider_celebration_parity_fixture",
+    "path": "crates/sunrise-client/src/game/network/remote_mob_data.rs",
+    "reason": "run by tools/test_raider_celebration_parity.py",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_raider_celebration_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::remote_vehicles::tests::steering_mount_control_matches_vanilla",
+    "path": "crates/sunrise-client/src/game/network/remote_vehicles.rs",
+    "reason": "requires prepared resources and the vanilla mount-control reference",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/issue-2177.txt; #2177 supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::special_attack_fixture::tests::special_attack_cases_without_world_startup",
+    "path": "crates/sunrise-client/src/game/items/special_attack_fixture.rs",
+    "reason": "needs prepared resources and SUNRISE_SPECIAL_ATTACK_CASES=INPUT,OUTPUT",
+    "rationale": "Existing separately supplied input SUNRISE_SPECIAL_ATTACK_CASES in tools/ci/ignored-tests/harness-inputs.txt; its dedicated workflow/harness must supply this input, which ordinary prepared resources do not contain. needs prepared resources and SUNRISE_SPECIAL_ATTACK_CASES=INPUT,OUTPUT"
+  },
+  {
+    "package": "sunrise-client-core",
+    "target": "lib",
+    "test": "lang::tests::every_lang_file_of_a_pack_reads",
+    "path": "crates/sunrise-client-core/src/lang.rs",
+    "reason": "needs a downloaded pack in SUNRISE_LANG_PACK_DIR",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client-core.txt: needs a downloaded pack in SUNRISE_LANG_PACK_DIR. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "arrows::client_tests::client_arrow_parity_fixture",
+    "path": "crates/sunrise-client/src/arrows_client_tests.rs",
+    "reason": "run by client-arrow differential harness",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_client_arrow_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "entities::entity_collision_tests::obstacle_grid_beats_scanning_every_box_for_a_big_farm",
+    "path": "crates/sunrise-client/src/entities.rs",
+    "reason": "timing",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: timing. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "entity_nbt::equipment_tests::write_fixtures",
+    "path": "crates/sunrise-client/src/entity_nbt/equipment_tests.rs",
+    "reason": "writes the fixtures; run with SUNRISE_WRITE_FIXTURES=1 on the codec to record",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; SUNRISE_WRITE_FIXTURES supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "item_render::glint_tests::external_item_atlas_oracle",
+    "path": "crates/sunrise-client/src/item_render/glint_tests.rs",
+    "reason": "requires an independently generated pinned vanilla atlas JSON and matching resources",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; SUNRISE_GLINT_ROOT supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "lan::entity::send_bench::tracker_send_benchmark",
+    "path": "crates/sunrise-client/src/lan/entity/send_bench.rs",
+    "reason": "performance measurement; requires SUNRISE_SEND_BENCH=1 on an idle machine",
+    "rationale": "Existing separately supplied input SUNRISE_SEND_BENCH in tools/ci/ignored-tests/sync-38-resources.txt; its dedicated workflow/harness must supply this input, which ordinary prepared resources do not contain. performance measurement; requires SUNRISE_SEND_BENCH=1 on an idle machine"
+  },
+  {
+    "package": "sunrise-gameplay",
+    "target": "lib",
+    "test": "dragon_contacts::parity::contact_transcript",
+    "path": "crates/sunrise-gameplay/src/dragon_contacts.rs",
+    "reason": "writes the vanilla parity transcript",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_dragon_contacts_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "mobs::leash::tests::happy_ghast_leash_dispatch_matches_vanilla",
+    "path": "crates/sunrise-client/src/mobs/leash.rs",
+    "reason": "requires SUNRISE_TEST_RESOURCES and the vanilla Happy Ghast leash reference",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_happy_ghast_leash_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "mobs::render::scroll_tests::benchmark_mob_farm_geometry",
+    "path": "crates/sunrise-client/src/mobs/render.rs",
+    "reason": "manual benchmark; needs the prepared resources",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: manual benchmark; needs the prepared resources. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "mobs::shulker::space_tests::shulker_space_parity_fixture",
+    "path": "crates/sunrise-client/src/mobs/shulker_space_tests.rs",
+    "reason": "run by tools/test_shulker_space_parity.py",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_shulker_space_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "mobs::villager_brain::farming_tests::vanilla_farming_classification_matches_the_oracle",
+    "path": "crates/sunrise-client/src/mobs/villager_farming_tests.rs",
+    "reason": "tools/test_villager_farming_parity.py supplies the vanilla oracle",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_villager_farming_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "mobs::villager_brain::poi_classification_tests::vanilla_bed_poi_states",
+    "path": "crates/sunrise-client/src/mobs/villager_brain.rs",
+    "reason": "requires the vanilla bed POI oracle output",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_bed_poi_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "mobs::villager_brain::reputation_witness_tests::witnesses_use_sensor_candidates_radius_invisibility_and_cached_results",
+    "path": "crates/sunrise-client/src/mobs/villager_brain/reputation_witness_tests.rs",
+    "reason": "requires explicit prepared resources and vanilla oracle output",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_villager_witness_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "save::compression_bench::benches::bench_chunk_compression_speedup",
+    "path": "crates/sunrise-client/src/save/compression_bench.rs",
+    "reason": "a measurement, not a check",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: a measurement, not a check. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "save::far_census::far_floating_cells_per_level",
+    "path": "crates/sunrise-client/src/save.rs",
+    "reason": "requires prepared data and a save (see the module docs)",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; SUNRISE_FAR_SAVE supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "save::loot_tests::opened_loot_parity_fixture",
+    "path": "crates/sunrise-client/src/save/loot_tests.rs",
+    "reason": "run by tools/test_opened_loot_parity.py",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_opened_loot_parity.py supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "gfx::crumbling_tests::crack_samples_stay_aligned_between_stages",
+    "path": "crates/sunrise-client-render/src/gfx/crumbling_tests.rs",
+    "reason": "requires a Vulkan/Metal/DX12 adapter",
+    "rationale": "Existing adapter-gated GPU lane in tools/ci/ignored-tests/gpu.txt; a real available adapter is required and the runner handles adapter availability separately from prepared-resource daily selection."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "gfx::entity_batch::tests::benchmark_entity_batch",
+    "path": "crates/sunrise-client-render/src/gfx/entity_batch.rs",
+    "reason": "manual production-helper microbenchmark",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: manual production-helper microbenchmark. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-render-shaderpack",
+    "target": "lib",
+    "test": "pack_uniforms::initial_history_tests::core_matrix_inputs_render_provider_values",
+    "path": "crates/sunrise-render-shaderpack/src/pack_uniforms.rs",
+    "reason": "requires a host GPU; run with --ignored --nocapture",
+    "rationale": "Existing adapter-gated GPU lane in tools/ci/ignored-tests/gpu.txt; a real available adapter is required and the runner handles adapter availability separately from prepared-resource daily selection."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "gfx::resident::tests::column_walk_speed",
+    "path": "crates/sunrise-client-render/src/gfx/resident.rs",
+    "reason": "timing, not a check",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: timing, not a check. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "gfx::resident::tests::tight_bounds_benchmark",
+    "path": "crates/sunrise-client-render/src/gfx/resident.rs",
+    "reason": "benchmark",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: benchmark. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "gfx::weather::tests::weather_shader_uvs_match_legacy_bits",
+    "path": "crates/sunrise-client-render/src/gfx/weather.rs",
+    "reason": "requires a Vulkan/Metal/DX12 adapter",
+    "rationale": "Existing adapter-gated GPU lane in tools/ci/ignored-tests/gpu.txt; a real available adapter is required and the runner handles adapter availability separately from prepared-resource daily selection."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "light::tests::benchmark_light_chunk",
+    "path": "crates/sunrise-client-render/src/light.rs",
+    "reason": "benchmark",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: benchmark. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "light::tests::benchmark_worker_light_results",
+    "path": "crates/sunrise-client-render/src/light.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: microbenchmark; run with --ignored --nocapture. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "mesher::leaf_culling::tests::mask_build_benchmark",
+    "path": "crates/sunrise-client-render/src/mesher/leaf_culling.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: microbenchmark; run with --ignored --nocapture. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "mesher::reuse_tests::benchmark_padded_reuse",
+    "path": "crates/sunrise-client-render/src/mesher/reuse_tests.rs",
+    "reason": "opt-in scratch microbenchmark; run with --nocapture --test-threads=1",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: opt-in scratch microbenchmark; run with --nocapture --test-threads=1. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "mesher::tint_tests::colormap_tint_cost",
+    "path": "crates/sunrise-client-render/src/mesher/tint_tests.rs",
+    "reason": "timing, not a check",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: timing, not a check. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "mesher::visibility_tests::visibility_benchmark",
+    "path": "crates/sunrise-client-render/src/mesher/visibility_tests.rs",
+    "reason": "opt-in microbenchmark: cargo test --profile fast ... visibility_benchmark -- --ignored --exact --nocapture",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: opt-in microbenchmark: cargo test --profile fast ... visibility_benchmark -- --ignored --exact --nocapture. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "packs::cache::tests::benchmark_real_resource_root",
+    "path": "crates/sunrise-client-render/src/packs/cache.rs",
+    "reason": "requires prepared resources and real pack paths in environment",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/parity-harness.txt; SUNRISE_OVERLAY_BENCH_VANILLA supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "particles::tick_bench::particle_tick_cost",
+    "path": "crates/sunrise-client-render/src/particles/tick_bench.rs",
+    "reason": "a measurement, not a check",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: a measurement, not a check. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "streaming::forced_cover::tests::forced_cover_cost",
+    "path": "crates/sunrise-client-render/src/streaming/forced_cover.rs",
+    "reason": "timings; run with --release --ignored --nocapture",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: timings; run with --release --ignored --nocapture. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "lib",
+    "test": "streaming::tests::generation_scan_benchmark",
+    "path": "crates/sunrise-client-render/src/streaming.rs",
+    "reason": "reproducible actual generation scheduler benchmark; run with --ignored --nocapture",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: reproducible actual generation scheduler benchmark; run with --ignored --nocapture. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "test:it",
+    "test": "atomic_member_values::reads_of_atomic_members_see_the_atomic_updates",
+    "path": "crates/sunrise-client-render/tests/it/atomic_member_values.rs",
+    "reason": "requires a host GPU; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client-render.txt: requires a host GPU; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "test:it",
+    "test": "fragment_output_components::component_qualified_outputs_write_their_own_channels",
+    "path": "crates/sunrise-client-render/tests/it/fragment_output_components.rs",
+    "reason": "requires a host GPU; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client-render.txt: requires a host GPU; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "test:it",
+    "test": "sunrise_shader::sunrise_sectors_match_reference_on_real_gpu",
+    "path": "crates/sunrise-client-render/tests/it/sunrise_shader.rs",
+    "reason": "requires a host GPU; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client-render.txt: requires a host GPU; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "test:it",
+    "test": "texture_matrix::texture_matrix_is_the_identity_in_the_vertex_stage_and_zero_in_the_fragment_stage",
+    "path": "crates/sunrise-client-render/tests/it/texture_matrix.rs",
+    "reason": "requires a host GPU; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client-render.txt: requires a host GPU; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "test:it",
+    "test": "uniform_initial_render::authored_defaults_render_and_runtime_values_override_including_zero",
+    "path": "crates/sunrise-client-render/tests/it/uniform_initial_render.rs",
+    "reason": "requires a host GPU; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client-render.txt: requires a host GPU; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client-render",
+    "target": "test:world_view_slots",
+    "test": "world_view_slot_delivers_only_drawable_requests",
+    "path": "crates/sunrise-client-render/tests/world_view_slots.rs",
+    "reason": "requires a Vulkan/Metal/DX12 adapter",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client-render.txt: requires a Vulkan/Metal/DX12 adapter; cargo test -p sunrise-client-render --test world_view_slots -- --ignored. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-core",
+    "target": "lib",
+    "test": "paletted::tests::benchmark_pack",
+    "path": "crates/sunrise-core/src/paletted.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-core.txt: microbenchmark; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-core",
+    "target": "lib",
+    "test": "paletted::tests::benchmark_palette_ids",
+    "path": "crates/sunrise-core/src/paletted.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-core.txt: microbenchmark; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-core",
+    "target": "lib",
+    "test": "paletted::tests::benchmark_unpack",
+    "path": "crates/sunrise-core/src/paletted.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-core.txt: microbenchmark; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-core",
+    "target": "lib",
+    "test": "random::positional::tests::benchmark_legacy_positional_at",
+    "path": "crates/sunrise-core/src/random/positional.rs",
+    "reason": "benchmark",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-core.txt: benchmark. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-items",
+    "target": "lib",
+    "test": "item_data::tests::benchmark_decode_components",
+    "path": "crates/sunrise-items/src/item_data.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: microbenchmark; run with --ignored --nocapture. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-native-build",
+    "target": "lib",
+    "test": "api::tests::wrapper_owns_holder_marker",
+    "path": "crates/sunrise-native-build/src/api.rs",
+    "reason": "daily: starts rustc",
+    "rationale": "Existing parity-harness step in tools/ci/ignored-tests/native-wrapper.txt; #4065 supplies its independent oracle/private fixture and drives it separately, not as a prepared-resource daily test."
+  },
+  {
+    "package": "sunrise-native-build",
+    "target": "lib",
+    "test": "registry_compile::tests::real_sdk_registry_compile",
+    "path": "crates/sunrise-native-build/src/registry_compile.rs",
+    "reason": "requires an explicitly prepared private SDK, mod and launcher executable",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-native-build.txt: requires an explicitly prepared private SDK, mod and launcher executable. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-mod-api-gen",
+    "target": "lib",
+    "test": "patch::census::refusal_census",
+    "path": "crates/sunrise-mod-api-gen/src/patch.rs",
+    "reason": "measurement: prints the census",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-mod-api-gen.txt: measurement: prints the census. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-mod-api-gen",
+    "target": "lib",
+    "test": "patch::spike::write_patch_crate",
+    "path": "crates/sunrise-mod-api-gen/src/patch.rs",
+    "reason": "manual: writes a patch crate",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-mod-api-gen.txt: manual: writes a patch crate. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-mod-package",
+    "target": "lib",
+    "test": "holder::game_entry::tests::write_missing_registration_actor",
+    "path": "crates/sunrise-mod-package/src/holder/game_entry.rs",
+    "reason": "fixture writer subprocess only",
+    "rationale": "Existing explicit manual runner subprocess in tools/ci/ignored-tests/manual-sunrise-mod-package.txt: fixture writer subprocess only. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-mod-vocab",
+    "target": "lib",
+    "test": "hooks_tests::subscriber_tick_benchmark",
+    "path": "crates/sunrise-mod-vocab/src/hooks_tests.rs",
+    "reason": "optimized hot-hook microbenchmark",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-mod-vocab.txt: optimized hot-hook microbenchmark. Optimized microbenchmark, not selected by daily shards."
+  },
+  {
+    "package": "sunrise-perf",
+    "target": "test:it",
+    "test": "pacing_fixture::write_the_pacing_fixture",
+    "path": "crates/sunrise-perf/tests/it/pacing_fixture.rs",
+    "reason": "rewrites tests/fixtures/pacing_slow_frames.hzperf",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-perf.txt: rewrites tests/fixtures/pacing_slow_frames.hzperf. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-protocol",
+    "target": "lib",
+    "test": "connection::tests::packet_decoder_in_memory_microbenchmark",
+    "path": "crates/sunrise-protocol/src/connection.rs",
+    "reason": "manual release-mode microbenchmark",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-protocol.txt: manual release-mode microbenchmark. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-server",
+    "target": "lib",
+    "test": "service::tests::windows_task_installs_without_elevation",
+    "path": "crates/sunrise-server/src/service.rs",
+    "reason": "creates a scheduled task on this computer",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-server.txt: creates a scheduled task on this computer (Windows only). Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-shaders",
+    "target": "test:it",
+    "test": "real_packs::real_packs_read",
+    "path": "crates/sunrise-shaders/tests/it/real_packs.rs",
+    "reason": "needs SUNRISE_TEST_SHADER_PACKS",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-shaders.txt: needs SUNRISE_TEST_SHADER_PACKS. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-threads",
+    "target": "lib",
+    "test": "sampler::tests::handler_cost_per_sample",
+    "path": "crates/sunrise-threads/src/sampler/tests.rs",
+    "reason": "measurement: cargo test -p sunrise-threads --release handler_cost -- --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-threads.txt: measurement: cargo test -p sunrise-threads --release handler_cost -- --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-threads",
+    "target": "lib",
+    "test": "sampler::tests::unwind_cost_per_sample",
+    "path": "crates/sunrise-threads/src/sampler/tests.rs",
+    "reason": "measurement: cargo test -p sunrise-threads --release unwind_cost -- --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-threads.txt: measurement: cargo test -p sunrise-threads --release unwind_cost -- --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-threads",
+    "target": "lib",
+    "test": "work::tests::store_cost",
+    "path": "crates/sunrise-threads/src/work/tests.rs",
+    "reason": "measurement: cargo test -p sunrise-threads --release store_cost -- --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-threads.txt: measurement: cargo test -p sunrise-threads --release store_cost -- --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-world",
+    "target": "lib",
+    "test": "chunk::tests::benchmark_section_get_set",
+    "path": "crates/sunrise-world/src/chunk.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: microbenchmark; run with --ignored --nocapture. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-world",
+    "target": "lib",
+    "test": "worldgen::terrain::tests::benchmark_fill_noise",
+    "path": "crates/sunrise-world/src/worldgen/terrain.rs",
+    "reason": "benchmark",
+    "rationale": "Opt-in measurement, not an ordinary daily correctness check: benchmark. Run by hand on an idle machine with the optimized profile and its explicitly requested inputs; all assertions remain in the test."
+  },
+  {
+    "package": "sunrise-world",
+    "target": "test:it",
+    "test": "world_io::benchmark_saving_into_a_full_region",
+    "path": "crates/sunrise-world/tests/it/world_io.rs",
+    "reason": "microbenchmark; run with --ignored --nocapture",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-world.txt: microbenchmark; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::native_special_renderers::cost_tests::special_item_draw_cost",
+    "path": "crates/sunrise-client/src/game/modding/native_special_renderers/cost_tests.rs",
+    "reason": "measurement; needs SUNRISE_TEST_RESOURCES",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-sunrise-client.txt: the per-draw cost table in docs/performance/special-item-renderers.md, run by hand with SUNRISE_TEST_RESOURCES, --profile fast --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "sunrise-client",
+    "target": "lib",
+    "test": "game::campfire::block_entity_items_tests::block_entity_items_match_the_vanilla_cases",
+    "path": "crates/sunrise-client/src/game/blocks/tests/block_entity_items_tests.rs",
+    "reason": "run through tools/test_block_entity_item_geometry_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_block_entity_item_geometry_parity.py writes the cases and the vanilla oracle's answers and sets SUNRISE_BLOCK_ENTITY_ITEM_CASES/_OUT, without which the test panics, so it cannot run as a prepared-resource daily test."
+  },
+  {
+    "package": "cargo-sunrise-mod",
+    "target": "test:build_errors",
+    "test": "a_failed_native_build_names_the_authors_file_and_not_the_cache_copy",
+    "path": "crates/cargo-sunrise-mod/tests/build_errors.rs",
+    "reason": "book-quickstart.yml: the run's own SDK",
+    "rationale": "Builds a starter native mod that `cargo sunrise-mod new` pins to the Nightly, so it needs the daily run's own SDK as that Nightly (SUNRISE_SDK_BASE, with SUNRISE_SDK_TRUSTED_KEY): against the published one it would test that SDK and fail whenever main's tool reads a newer SDK format. book-quickstart.yml assembles that SDK and runs it there by exact name with --ignored; its manual row is in tools/ci/ignored-tests/manual-cargo-sunrise-mod.txt."
+  },
+  {
+    "package": "cargo-sunrise-mod",
+    "target": "test:build_errors",
+    "test": "a_failed_registry_build_names_the_authors_file_and_a_good_one_still_builds",
+    "path": "crates/cargo-sunrise-mod/tests/build_errors.rs",
+    "reason": "book-quickstart.yml: the run's own SDK",
+    "rationale": "Builds a starter native mod that `cargo sunrise-mod new` pins to the Nightly, so it needs the daily run's own SDK as that Nightly (SUNRISE_SDK_BASE, with SUNRISE_SDK_TRUSTED_KEY): against the published one it would test that SDK and fail whenever main's tool reads a newer SDK format. book-quickstart.yml assembles that SDK and runs it there by exact name with --ignored; its manual row is in tools/ci/ignored-tests/manual-cargo-sunrise-mod.txt."
+  },
+  {
+    "package": "sunrise-client-lib",
+    "target": "lib",
+    "test": "mobs::finalize::load_tests::a_loaded_health_is_clamped_to_the_loaded_max_health",
+    "path": "crates/sunrise-client/src/mobs/finalize_load_tests.rs",
+    "reason": "run by tools/test_mob_attribute_nbt_parity.py",
+    "rationale": "Parity-harness step in tools/ci/ignored-tests/parity-harness.txt; tools/test_mob_attribute_nbt_parity.py records the vanilla 26.3 loaded-health witness into .local and runs this test against it through SUNRISE_MOB_LOADED_HEALTH_WITNESS, so no recorded vanilla data is committed."
+  }
+]

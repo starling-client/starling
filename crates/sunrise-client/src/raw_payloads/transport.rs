@@ -3,9 +3,9 @@ use super::{
     Local, Side,
     connection::{Connection, Epoch, IngressLease},
 };
-use sunrise_protocol::payload_negotiation::Entry;
 use mod_api::{PayloadSendError, PlayerRef};
 use std::sync::{Arc, OnceLock};
+use sunrise_protocol::payload_negotiation::Entry;
 
 pub struct Transport {
     pub local: Arc<Local>,
@@ -80,18 +80,40 @@ impl Transport {
         }
         Ok(())
     }
-    pub fn finish_configuration_with(
+    /// Wait on the physical reader while main finishes configuration payload
+    /// work. The ordered finish action takes the resulting non-waiting commit.
+    pub(crate) fn prepare_play(&self) -> Result<PlayTransition, String> {
+        let Some(connection) = &self.connection else {
+            return Ok(PlayTransition(None));
+        };
+        let epoch = connection.wait_for_configuration()?;
+        Ok(PlayTransition(Some((connection.clone(), epoch))))
+    }
+    /// If configuration had no Offer, there is no old payload work to wait
+    /// for. Install its declarations and commit before resuming the reader.
+    pub(crate) fn accept_empty_and_play(
         &self,
         publish: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         match &self.connection {
-            Some(connection) => connection.finish_configuration_with(publish),
+            Some(connection) => connection.commit_play(connection.accept(&[])?, publish),
             None => publish(),
         }
     }
     pub fn close(&self) {
         if let Some(connection) = &self.connection {
             connection.close();
+        }
+    }
+}
+
+pub(crate) struct PlayTransition(Option<(Arc<Connection>, Arc<Epoch>)>);
+
+impl PlayTransition {
+    pub(crate) fn commit(self, publish: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        match self.0 {
+            Some((connection, epoch)) => connection.commit_play(epoch, publish),
+            None => publish(),
         }
     }
 }

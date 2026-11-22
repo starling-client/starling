@@ -3,6 +3,7 @@
 //! and the player-thrown tridents and firework rockets, which Sunrise keeps
 //! in lists of their own.
 use super::{Game, commands::Target};
+use mod_api::{ArrowPickup, Deflection, EntityRef, PierceLevelError, ProjectileRef};
 use sunrise_client::{
     arrows::Pickup,
     lan::playerdata::{ints_uuid, uuid_ints},
@@ -10,7 +11,6 @@ use sunrise_client::{
     projectiles::{OwnerFields, Projectile, ProjectileKind, Turn},
 };
 use sunrise_core::geometry::Vec3;
-use mod_api::{ArrowPickup, Deflection, EntityRef, PierceLevelError, ProjectileRef};
 
 /// Where a projectile handle's entity lives.
 #[derive(Clone, Copy)]
@@ -75,7 +75,23 @@ impl Game<'_> {
     /// `Projectile.getOwner`: the owner as a resolved entity. None for no
     /// owner, one that is gone or in another level, or a stale handle.
     pub(super) fn projectile_owner(&self, projectile: ProjectileRef) -> Option<EntityRef> {
-        let target = match self.native_projectile_backing(projectile)? {
+        self.native_projectile_backing(projectile)?;
+        self.entity_owner(projectile.entity())
+    }
+
+    /// `TraceableEntity.getOwner`: a projectile's owner (`Projectile.getOwner`)
+    /// or a general row's, as a resolved entity. None for no owner or a kind
+    /// with none, one that is gone or in another level, or a stale handle.
+    pub(super) fn entity_owner(&self, entity: EntityRef) -> Option<EntityRef> {
+        let Some(backing) = self.native_projectile_backing(ProjectileRef::new(entity)) else {
+            let Target::General(id) = self.native_entity_target(entity)? else {
+                return None;
+            };
+            let rows = &self.resident_entities.general.rows;
+            let owner = rows.iter().find(|row| row.id == id)?.owner?;
+            return self.native_owner_entity(self.target_by_uuid(ints_uuid(owner))?);
+        };
+        let target = match backing {
             Backing::List(i) => {
                 let uuid = self.creatures.projectiles[i].owner_uuid?;
                 self.target_by_uuid(ints_uuid(uuid))?
@@ -384,12 +400,12 @@ mod tests {
         fireworks::Rocket, native_entity_refs::tests::with_game, trident::ThrownTrident,
     };
     use super::*;
+    use mod_api::WorldEpoch;
     use sunrise_client::{mobs::Mob, motion::PlayerMotion};
     use sunrise_core::random::RandomSource;
-    use mod_api::WorldEpoch;
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_boat_owned_snowball_excludes_its_owner_until_it_leaves() {
         use sunrise_client::projectiles::{Hit, ProjectileWorld};
         use sunrise_core::geometry::Aabb;
@@ -452,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_vehicle_owned_trident_does_not_scale_damage_as_a_living_attacker() {
         use sunrise_client::projectiles::Hit;
         with_game(|game| {
@@ -501,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn projectile_handles_read_and_write_owner_deflection_and_arrow_state() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -663,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn trident_and_rocket_handles_narrow_and_turn_with_their_own_random() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -760,7 +776,7 @@ mod tests {
             assert_eq!(rocket.owner(game), Some(boat));
             assert_eq!(game.rockets[0].owner, None);
             let saved = game.uuid_for(boat_id);
-            let tag = game.rockets[0].to_nbt([9; 4], None, None);
+            let tag = game.rockets[0].to_nbt([9; 4], None, None, game.res.items());
             let back = Rocket::from_nbt(
                 sunrise_client::entity_nbt::firework_rocket_from_nbt(&tag, None).unwrap(),
             );
@@ -769,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn deflection_follows_vanilla_for_wind_charges_owners_random_and_known_speed() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -859,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn momentum_follows_a_boats_displacement_and_a_refused_blow_still_attacks() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());

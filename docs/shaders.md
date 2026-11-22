@@ -54,6 +54,13 @@ fails, with its problems in the chat. While it runs, the game looks at the pack 
 and the pack is checked and rebuilt in place ("Shader pack ... reloaded"); if the new version fails, the chat says
 where and the last good version keeps drawing. All three stages run.
 
+The Extras page has a Shader pack key for the same pick: press it and the picked pack turns off, press it again
+and the same pack runs again. It is bound on the Extras page (click the row, then press a key; Escape unbinds it),
+`K` out of the box, and it is not a vanilla key binding, so rebinding it never turns into another mapping's key
+(Replay Studio keeps physical `K` for its camera keyframe). Turning off remembers the pick in the Extras settings,
+so the pack stays off across restarts until the key is pressed again; the menu's second click on the picked pack
+does the same. A pack whose owning mod is off can't run: the key says so instead of claiming it turned on.
+
 A picked pack's options are pages of the same screen, under the pack's name in its page list: its screens, with the
 names the pack gives them, its profiles, and Reset. The main screen and those it links to are in the list (when
 there are more than it has room for, they collapse into one `‹ Name ›` row that the arrows and a controller's
@@ -65,6 +72,17 @@ option on any screen. Undo puts back the pick, the Shadow Cache, the Sunrise pac
 away from it saves its changes, as Apply does). A `shaders/` pack's
 options are saved to `shaderpacks/<pack>.txt` (`NAME=value` lines), and the pack loads again with them, with Apply
 (shown while they differ from the saved ones) or on leaving the screen; a Sunrise pack's apply at once.
+
+The **Shadow Cache** (off by default; `shadowCache` in `sunrise-graphics.txt`) skips the shadow pass and keeps the
+shadow map and shadowcolor buffers of the frame before while nothing that draws them has changed (the world, the
+time, the snapped shadow camera, the shadow settings, and the uniforms the shadow programs and their compute stages
+read). It keeps them only while the pass would draw the same again: the shadow pass still runs every frame while an
+entity casts a shadow, while the pack has `image.*` images, while a shadow program draws into, flips or stores into a
+shadowcolor buffer that isn't cleared every frame (`shadowcolorNClear=false`: the program builds on the frame
+before), while a shadow program or a compute stage attached to one binds the pack's `bufferObject.*` storage buffers
+(they keep their contents between frames, so it may read or write something new each frame), and while a program
+outside the shadow pass binds `shadowcolorimg0` or `shadowcolorimg1`, since its stores would otherwise pile up in the
+kept buffers.
 
 ## Testing a pack frame by frame
 

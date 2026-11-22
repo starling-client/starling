@@ -3,9 +3,9 @@
 //! `acceleration_power` every tick, as a summoned `fireball` does
 //! (tools/test_dragon_fireball_motion_parity.py measures the same on vanilla 26.3).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
@@ -66,7 +66,7 @@ const DRAGON: &str = "0000d127-0000-0000-0000-000000000001";
 const FIREBALL: &str = "0000d127-0000-0000-0000-000000000002";
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_summoned_dragon_fireball_moves_like_a_fireball() {
     let mut resources = None;
     let mut game = game(&mut resources);

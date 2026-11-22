@@ -31,10 +31,7 @@ LONG_LISTS = {
     # The Parts runtime and lookups of parts/shared.rs that the game reaches through `__private`.
     "parts_shared.rs": (15, "one parts file's game-side names"),
     "payload.rs": (17, "no planned PR removes it"),
-    "payload_codec.rs": (13, "no planned PR removes it"),
-    "phase.rs": (15, "no planned PR removes it"),
     "registry_keys.rs": (15, "rename list"),
-    "structure_type.rs": (14, "no planned PR removes it"),
 }
 
 # Files a switch removed (file under EXPORTS: where its content lives now). One at the old path fails.

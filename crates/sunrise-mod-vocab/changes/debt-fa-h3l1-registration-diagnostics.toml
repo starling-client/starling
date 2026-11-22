@@ -1,0 +1,10 @@
+ids = [
+    "handle:RegistrationContext::refuse",
+    "handle:RegistrationContext::warn",
+    "trait:DiagnosticsRegistrar",
+    "method:DiagnosticsRegistrar::refuse",
+    "method:DiagnosticsRegistrar::warn",
+    "trait:Registrar",
+]
+why = "Follows NeoForge's ModLoadingIssue and ModLoader.addLoadingIssue (net.neoforged.fml.ModLoadingIssue / ModLoader): registration warnings and refusal reasons are collected verbatim without the 16-warning cap, 4096-byte truncation, or first-reason-wins drop. Moving refuse and warn from RegistrationContext onto DiagnosticsRegistrar (a supertrait of Registrar) restricts them at compile time to Hooks::register instead of silently doing nothing in other registration hooks."
+migrate = "In Hooks::register(&self, r: &mut dyn Registrar, cx: &RegistrationContext), replace cx.refuse(reason) with r.refuse(reason) and cx.warn(key, args) with r.warn(key, args). Every refusal reason and every warning is now kept verbatim in call order; remove any expectation that later refusals are ignored, warnings past 16 are dropped, or long strings are truncated to 4096 bytes."

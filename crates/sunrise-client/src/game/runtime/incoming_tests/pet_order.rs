@@ -2,10 +2,10 @@
 //! `#wolf_collar_dyes` only ever dyes the collar, so one of the colour the collar
 //! already has does nothing, while another item still makes it sit or stand.
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::Mob;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 const WOLF: u32 = 50;
 
@@ -61,7 +61,7 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
     let mut wolf = Mob::new(WOLF, kind, Vec3::new(0.5, 64.0, 2.0), 0.0);
     sunrise_client::mobs::tame::set_tame(&mut wolf, true);
     wolf.extra.owner = Some(game.acting_player_uuid());
-    wolf.on_ground = true;
+    wolf.ground.on_ground = true;
     game.mobs.push(wolf);
     game
 }
@@ -79,7 +79,7 @@ fn use_on_wolf(game: &mut Game<'_>, item: &str) -> (bool, u8, u32) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_collars_own_dye_leaves_a_wolf_as_it_was() {
     let mut resources = None;
     let mut game = game(&mut resources);

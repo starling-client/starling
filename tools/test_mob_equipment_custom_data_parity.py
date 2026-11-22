@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sys
 try:
     from . import test_command_exec_parity as driver
@@ -126,8 +127,10 @@ def main():
     parser.add_argument('--reference-dir',type=Path)
     options,rest=parser.parse_known_args()
     sys.argv=[sys.argv[0],*rest]
-    if '--work-dir' not in sys.argv:
-        parser.error('--work-dir must name a fresh capture directory')
+    if '--work-dir' not in sys.argv:  # tools/parity.py passes none: a fresh folder of its own each run
+        default = driver.lab.LOCAL / 'mob-equipment-custom-data-parity'
+        shutil.rmtree(default, ignore_errors=True)
+        sys.argv += ['--work-dir', str(default)]
     folder=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve()
     assert not folder.exists(),'preserve previous attempts'
     driver.corpus_module.groups=lambda:[('Named mob equipment custom_data',program())]

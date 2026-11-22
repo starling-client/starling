@@ -6,6 +6,7 @@ use glam::{DVec3, Mat4};
 use mod_api::LevelRef;
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
+    include!(concat!(env!("OUT_DIR"), "/native_render_fire_generated.rs"));
 }
 pub use generated::{
     HandDrawnEvent, RenderNeedsEvent, WorldDrawnEvent, WorldViewDrawnEvent, WorldViewsEvent,
@@ -157,7 +158,7 @@ pub fn render_needs(needs: &mut RenderNeeds) {
 /// What the mods need this frame ([`render_needs`]).
 pub fn needs() -> RenderNeeds {
     let mut needs = RenderNeeds::default();
-    render_needs(&mut needs);
+    generated::fire_render_needs(&mut needs);
     needs
 }
 
@@ -374,7 +375,7 @@ pub fn install() {
     use sunrise_client_render::render_slots as engine;
     engine::install(engine::Slots {
         world_drawn: |v| {
-            world_drawn(&mut WorldDrawn {
+            generated::fire_world_drawn(&mut WorldDrawn {
                 device: v.device,
                 queue: v.queue,
                 encoder: &mut *v.encoder,
@@ -402,7 +403,7 @@ pub fn install() {
             })
         },
         hand_drawn: |v| {
-            hand_drawn(&mut HandDrawn {
+            generated::fire_hand_drawn(&mut HandDrawn {
                 device: v.device,
                 queue: v.queue,
                 encoder: &mut *v.encoder,
@@ -422,14 +423,14 @@ pub fn install() {
                 entity_spans: v.entity_spans,
                 world_depth: v.world_depth,
             };
-            render_needs(&mut needs);
+            generated::fire_render_needs(&mut needs);
             v.entity_spans = needs.entity_spans;
             v.world_depth = needs.world_depth;
         },
-        world_views: |views| world_views(&mut WorldViews { views }),
+        world_views: |views| generated::fire_world_views(&mut WorldViews { views }),
         world_views_hooked,
         world_view_drawn: |v| {
-            world_view_drawn(&mut WorldViewDrawn {
+            generated::fire_world_view_drawn(&mut WorldViewDrawn {
                 id: v.id,
                 parent: v.parent,
                 nesting_depth: v.nesting_depth,

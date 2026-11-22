@@ -2,8 +2,8 @@
 //! `NeoForgeSplashHooks.loadSplashes`. Built from the resource stack on each
 //! resource reload; the title picks from it (`title::choose_splash`).
 
-use sunrise_assets::resource_source::ResourceSource;
 use std::path::Path;
+use sunrise_assets::resource_source::ResourceSource;
 
 const VANILLA: &str = "assets/minecraft/texts/splashes.txt";
 
@@ -55,8 +55,8 @@ fn from_vanilla(stack: &ResourceSource, vanilla: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_assets::resource_source::Resource;
     use std::collections::BTreeMap;
+    use sunrise_assets::resource_source::Resource;
 
     /// The game's own resources with one splash line, and a stack whose
     /// `minecraft` file is `minecraft` (vanilla's when `None`) plus `others`.

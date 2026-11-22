@@ -10,13 +10,13 @@
 //! `global_varb.*` every entity shares, and `render.*`, which nothing reads back yet.
 
 use super::{Mob, Part, anim::Poses, anim::State};
-use sunrise_core::use_animation::UseAnimation;
-use sunrise_optifine::cem::expr::{Expr, compile};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     sync::{Mutex, MutexGuard, PoisonError},
 };
+use sunrise_core::use_animation::UseAnimation;
+use sunrise_optifine::cem::expr::{Expr, compile};
 
 /// The model variables of a part, in slot order.
 const PART_VARS: [&str; 11] = [
@@ -664,7 +664,7 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
             // The synced `Mob.isAggressive`, which a client's mobs have too.
             Aggressive => flag(m.ai.aggressive),
             Alive => flag(m.alive()),
-            Burning => flag(m.fire_ticks > 0),
+            Burning => flag(m.fire_ticks > 0 && !m.mod_fire_immune),
             Child => flag(s.baby),
             Glowing => flag(m.glowing),
             Hurt => flag(m.hurt_time > 0),
@@ -674,12 +674,12 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
             // weather and the sky above it, which the draw doesn't have.
             Wet => flag(m.fluids.in_water),
             Invisible => flag(m.invisible),
-            OnGround => flag(m.on_ground),
+            OnGround => flag(m.ground.on_ground),
             Riding => flag(m.extra.passenger),
             // `Entity.isVehicle`: SetPassengers names its first rider.
             Ridden => flag(m.extra.rider.is_some() || m.rider.is_some()),
             Climbing => flag(m.climbing),
-            Jumping => flag(!m.on_ground && m.velocity.y > 0.0),
+            Jumping => flag(!m.ground.on_ground && m.velocity.y > 0.0),
             Paused => flag(frame.paused),
             InGui => flag(IN_GUI.get()),
             FirstPerson => flag(frame.first_person),
@@ -932,7 +932,7 @@ mod tests {
         );
         m.hurt_time = 5;
         m.fire_ticks = 3;
-        m.on_ground = false;
+        m.ground.on_ground = false;
         m.velocity = sunrise_core::geometry::Vec3::new(0.0, 0.1, 0.0);
         let s = State {
             pos: 1.5,
@@ -943,6 +943,7 @@ mod tests {
             swing: 0.0,
             baby: true,
             partial: 0.25,
+            observer: None,
         };
         let model = bone("root", vec![]);
         let animation = animate(
@@ -981,7 +982,7 @@ mod tests {
     }
 
     /// A state with every value at rest.
-    fn still() -> State {
+    fn still() -> State<'static> {
         State {
             pos: 0.0,
             speed: 0.0,
@@ -991,6 +992,7 @@ mod tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            observer: None,
         }
     }
 

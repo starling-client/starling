@@ -1,13 +1,13 @@
 //! `Stopwatches`: the named wall-clock timers of `/stopwatch`, saved in
 //! `data/minecraft/stopwatches.dat` as the elapsed milliseconds of each.
 use crate::save;
-use sunrise_core::nbt::{Compound, JavaString, Tag};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::OnceLock,
     time::Instant,
 };
+use sunrise_core::nbt::{Compound, JavaString, Tag};
 
 /// `Util.getMillis`, measured from the first call.
 pub fn current_time() -> i64 {

@@ -7,7 +7,7 @@
 #   bash tools/ci/checks-runners.sh uninstall < token  # stop and unregister (a remove-token)
 #
 # The token is made on a machine whose gh has admin on the repository, never printed or stored here:
-#   gh api -X POST repos/horizon-rust/horizon/actions/runners/registration-token --jq .token |
+#   gh api -X POST repos/sunrise-org/sunrise/actions/runners/registration-token --jq .token |
 #     ssh ludovic@playsunrise 'bash ~/sunrise-install/checks-runners.sh install'   # git-slim.sh beside it
 #
 # Two kinds of runner, each a systemd user service in ~/.actions-runners/<name>:
@@ -25,7 +25,7 @@
 # empties a cargo target folder grown past MAX_TARGET_GB and drops a checkout's .git grown past MAX_GIT_GB (every
 # fetch adds a pack and nothing repacks them: 6822 packs, 50 GB, in each light runner's checkout on 2026-11-03).
 set -euo pipefail
-repo=horizon-rust/horizon
+repo=sunrise-org/sunrise
 base=$HOME/.actions-runners
 shared=$base/ci-shared
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user

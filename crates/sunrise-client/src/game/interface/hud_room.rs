@@ -1,10 +1,14 @@
 //! The HUD's `Room` this frame (`docs/ui-kit.md`): what vanilla's HUD shows that Sunrise's own
 //! overlays keep clear of. `hud` empties it each frame and `hud_layers` fills it in before the
-//! world's HUD draws, into `ui.room`; the controller notice, splitscreen's join strip and the
-//! radial menu read it. With it, the frame's `motion::Clock` (`hud_clock`), and whether an
+//! world's HUD draws, into `ui.room`; the controller notice and radial menu read it. With it, the frame's `motion::Clock` (`hud_clock`), and whether an
 //! overlay holds the view (`overlay_holds_view`), which what vanilla draws there gives way to.
+<<<<<<< sync-sunrise-1
 use super::{CREATIVE_SHIFT, Game, Screen};
 use sunrise_client::hud::HudBatch;
+=======
+use super::Game;
+use sunrise_client::hud::{HudBatch, HudVertex};
+>>>>>>> sunrise/main
 use sunrise_client::hud_kit::motion::Clock;
 use sunrise_client::hud_kit::room::{Keep, Room};
 use sunrise_client::{boss_overlay, hud_layout, hud_overlays};
@@ -353,19 +357,19 @@ impl Game<'_> {
         room
     }
 
-    /// The status rows above the hotbar in a `w` x `h` GUI px view, from what they draw this
-    /// frame (`draws`): a keep-out from their highest row's top down, as wide as the hotbar. Called
-    /// as they are laid out, after `hud_room`, so the overlays drawn over the HUD see them.
-    pub(super) fn keep_status_rows(&mut self, draws: &[hud_layout::GuiDraw], w: i32, h: i32) {
-        if let Some(top) = hud_layout::draws_top(draws).filter(|top| *top < h) {
+    /// Reserve the highest painted status row, vanilla or replaced, down to the bottom
+    /// of the view. Measure only the installed body's paint, not the surrounding hook draws.
+    pub(super) fn keep_status_rows(&mut self, vertices: &[HudVertex], w: f32, h: f32) {
+        let top = vertices.iter().map(|v| v.pos[1]).fold(h, f32::min);
+        if top < self.ui.room.bottom() {
             let half = hud_overlays::HOTBAR_HALF_WIDTH;
             self.ui.room.add(
                 Keep::StatusRows,
                 [
-                    (w / 2 - half) as f32,
-                    top as f32,
+                    ((w as i32) / 2 - half) as f32,
+                    top,
                     (2 * half) as f32,
-                    (h - top) as f32,
+                    h - top,
                 ],
             );
         }
@@ -378,14 +382,20 @@ impl Game<'_> {
         self.pad_radial_shown()
     }
 
-    /// ToastManager.extractRenderState: F1 hides the toasts (`hidden`), and so does an overlay
-    /// holding the view, as the radial menu's page tabs run across the top where the toasts are.
-    /// They go on timing out meanwhile, as under F1.
-    pub(super) fn draw_every_toast(&mut self, batch: &mut HudBatch, hidden: bool) {
-        let hidden = hidden || self.overlay_holds_view();
+    /// ToastManager.extractRenderState: F1 and overlays hide ordinary toasts without pausing them.
+    /// A mod's HUD veto hides ordinary toasts, not mandatory diagnostics.
+    pub(super) fn draw_every_toast(
+        &mut self,
+        batch: &mut HudBatch,
+        replay_playing: bool,
+        gui_canceled: bool,
+    ) {
+        let overlay_or_replay = replay_playing || self.overlay_holds_view();
+        let diagnostic_hidden = overlay_or_replay;
+        let hidden = overlay_or_replay || self.ui.hide_gui || gui_canceled;
         self.draw_toasts(batch, hidden);
         self.draw_tutorial_toasts(batch, hidden);
-        self.draw_pack_toasts(batch, hidden);
+        self.draw_pack_toasts(batch, hidden, diagnostic_hidden);
         self.draw_music_toast(batch, hidden);
     }
 

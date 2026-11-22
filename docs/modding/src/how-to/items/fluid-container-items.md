@@ -13,7 +13,7 @@ impl ItemPart for WaterContainer {
 }
 ```
 
-This example reports water for every stack; read `event.stack` to distinguish empty and filled containers. The callback receives an API-owned `ItemStack` snapshot and a read-only `ClientHost`. It runs on both native and wasm clients.
+This example reports water for every stack; read `event.stack` to distinguish empty and filled containers. The callback receives an API-owned `ItemStack` snapshot and a read-only `ClientHost`.
 
 ## Rendering rules
 

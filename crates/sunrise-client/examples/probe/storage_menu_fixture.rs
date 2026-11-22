@@ -6,8 +6,8 @@
 //! `lan::containers`).
 //!
 //! usage: storage_menu_fixture INPUT OUTPUT
-use sunrise_client::containers::block_menu_type;
 use std::fs;
+use sunrise_client::containers::block_menu_type;
 
 fn case(block: &str) -> Option<String> {
     let menu = block_menu_type(block.trim())?;

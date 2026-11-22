@@ -1,0 +1,5 @@
+id = "refused_manifest_empty_internal"
+name = "Refused manifest empty internal"
+version = "1.2.3"
+[[internals]]
+path = ""

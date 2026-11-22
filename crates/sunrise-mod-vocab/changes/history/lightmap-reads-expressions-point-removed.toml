@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::render_tick::Game<'_>::lightmap_reads_expressions"]
+why = "Pack expression evaluation now covers the installed sky, stars and block outline shaders as well as the lightmap. The former lightmap-only predicate was removed."
+migrate = "Remove the [[inject]] row targeting lightmap_reads_expressions. The new reads_pack_expressions predicate uses a mutable receiver and answers for all installed pack pipelines, not just the lightmap. Only retarget a listener if it accepts that broader meaning."

@@ -39,7 +39,8 @@ Under a shader pack its post passes take step 2's place. A 0.2 pack's `[tonemap]
 
 A pass on the world's light belongs in steps 2 and 3, before the tone curve, and never sees the HUD. After the tone
 curve the frame is what the display will show, so no pass there treats it as light. Frame generation interpolates
-the world without the hand and the HUD, and is off with HDR output until #12989 makes the two work together.
+the world's light without the hand and the HUD, on the float frame only, and its made frame goes through the tone
+curve, the HUD's layer and the last pass as the real one does.
 
 ## Rules
 
@@ -76,7 +77,7 @@ the world without the hand and the HUD, and is off with HDR output until #12989 
 ## Checking a pass
 
 - **HDR off stays byte-identical** unless the pass means to change it:
-  `python3 tools/test_frame_identity_parity.py --base origin/main`, and the `frame-identity` label
+  `python3 tools/test_frame_identity_parity.py --base origin/main`, run by name
   ([release-flow.md](release-flow.md)). It also draws the float frame with HDR on, and holds it to SDR.
 - **Its sessions run with anti-aliasing and frame generation off,** as by default: TAA and frame generation build
   on earlier frames, which `SUNRISE_STILL` doesn't repeat. Check a temporal pass by hand: offscreen with HDR on

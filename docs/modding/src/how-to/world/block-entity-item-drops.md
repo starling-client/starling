@@ -1,13 +1,24 @@
 # Dropped items during block-entity ticks
 
-During a mod's `BlockEntityPart::block_entity_tick`, existing dropped-item stack writes and removals are proposals. Use `ItemEntityRef::set_stack` to replace a complete nonempty stack and `EntityRef::discard` or `EntityRef::remove` to remove it. Item-place writes join the same scope. Native and wasm mods use the same calls; there is no separate batch method or transaction seal to finish the tick.
+Use the tick scope's Host to read or write other objects. A dropped item's
+`ItemEntityRef::set_stack` replaces its complete nonempty stack;
+`EntityRef::discard` or `EntityRef::remove` removes the item. A removed item
+stops resolving immediately. A numeric entity ID never retargets a
+replacement or an item in another level.
 
-Later Parts see earlier proposed stacks in registration order. A proposed removal hides the item from handle resolution, item narrowing, entity selectors and item-place reads. Explicit nested host transactions can abort their own proposals; committing one waits for final tick acceptance.
+Use `item.with_stack(host, |stack| stack.count())` to inspect a dropped item's stack without
+copying it. For components or an owned snapshot, use
+`item.with_stack(host, |stack| stack.project()).flatten()`.
 
-The engine validates the final block-entity snapshot and every item's original stack and residency incarnation before publishing either side. Rejected revisions, invalid stack conversions, malformed guest responses, stale item preconditions, and removal or replacement of the ticking block entity discard the proposals. A successful host setter means the proposal was accepted into the scope, not that final writeback has already committed. A numeric entity ID never retargets a replacement or another level. Removal notifications run after publication and after detaching the completed overlay.
+If both the item and the ticking block entity must change or neither may
+change, make both edits in `event.subject.transaction`. Take the Host for the
+item write, then re-take the subject view. Return `Err` if the item operation
+fails or the subject is unavailable; do not continue on a replacement. Item
+stack writes and removals use the ordinary journal, and abort restores them
+along with the subject's storage. Commit delivers the dropped item's removal
+notice. With no transaction, these writes are immediate; there is no tick
+batch or final write-back.
 
-## Operations outside the transaction
-
-This scope is not a whole-world transaction. Pickup delay and target changes, spawning, block changes, motion and teleportation, non-item removals, players, attachments, neighboring block entities, weather and world effects are immediate. They are not undone when the snapshot is rejected. An immediate operation that destroys a staged item's precondition can reject the pending proposal while retaining its own effects.
-
-Outside a mod block-entity tick scope, these item writes and removals take effect immediately. Vanilla block-entity ticks also apply item changes immediately.
+Pickup delay and target changes, spawning, motion and non-item removals are
+not covered by the dropped-item journal. The transaction is not a whole-world
+snapshot.

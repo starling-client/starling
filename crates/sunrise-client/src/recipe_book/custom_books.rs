@@ -1,13 +1,14 @@
 //! The open and filter flags of mods' own recipe books (#2415), beside the four vanilla
 //! `RecipeBookType` pairs of [`Settings`](super::Settings): one map from a book's namespaced id
 //! to its two flags. A book missing from it reads `(false, false)`. The map is saved in the
-//! player's `recipeBook` compound under [`EXTENSION`]. Its entries are kept while their mod is
-//! absent, so reinstalling the mod finds them again.
-use sunrise_core::nbt::{self, JavaString, Limits, NamedTag, Tag};
+//! player's `recipeBook` compound under [`EXTENSION`] unless explicit flat fields were
+//! declared. Extension entries are kept while their mod is absent, so reinstalling the mod
+//! finds them again.
 use std::collections::BTreeMap;
+use sunrise_core::nbt::{self, JavaString, Limits, NamedTag, Tag};
 
 /// The key of the map inside `recipeBook`.
-pub const EXTENSION: &str = "sunrise:book_settings";
+pub use mod_api::item::recipe_book::saved_fields::EXTENSION;
 /// At most this many books, saved or registered.
 pub const MAX_BOOKS: usize = 1024;
 /// At most this many UTF-8 bytes in a book's id.
@@ -132,18 +133,44 @@ impl CustomBooks {
         }
         Self { books }
     }
-    /// The [`EXTENSION`] compound to save, both flags of every book written (zero too), in id
-    /// order. None when no book has flags, as a missing extension reads empty.
+    /// Read explicitly declared flat fields instead of extension entries for those books.
+    pub(super) fn read_fields(&mut self, tag: Option<&Tag>, fields: &[(String, (String, String))]) {
+        for (id, _) in fields {
+            self.books.remove(id);
+        }
+        for (id, (open, filtering)) in fields {
+            let flag =
+                |name: &str| matches!(tag.and_then(|t| t.get(name)), Some(Tag::Byte(b)) if *b != 0);
+            let flags = BookFlags {
+                open: flag(open),
+                filtering: flag(filtering),
+            };
+            if flags != BookFlags::default() && self.books.len() < MAX_BOOKS {
+                self.books.insert(id.clone(), flags);
+            }
+        }
+    }
+
+    /// The [`EXTENSION`] NBT compound to save, with both flags of each book
+    /// written (including zero). Returns `None` when no book has flags.
     pub fn write(&self) -> Option<Tag> {
-        (!self.books.is_empty()).then(|| {
-            Tag::compound(self.books.iter().map(|(id, flags)| {
+        self.write_excluding(&[])
+    }
+
+    pub(super) fn write_excluding(&self, fields: &[(String, (String, String))]) -> Option<Tag> {
+        let entries: Vec<_> = self
+            .books
+            .iter()
+            .filter(|(id, _)| !fields.iter().any(|(named, _)| named == *id))
+            .map(|(id, flags)| {
                 let entry = Tag::compound([
                     ("open", Tag::Byte(i8::from(flags.open))),
                     ("filtering", Tag::Byte(i8::from(flags.filtering))),
                 ]);
                 (id.as_str(), entry)
-            }))
-        })
+            })
+            .collect();
+        (!entries.is_empty()).then(|| Tag::compound(entries))
     }
 }
 

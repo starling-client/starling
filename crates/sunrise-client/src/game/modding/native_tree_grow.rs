@@ -1,12 +1,11 @@
-// game-module-visibility: pub(crate)
 //! The engine side of `on_tree_grow`: the trunk placer's callback, asking the parts of the block
 //! under a growing trunk on the worldgen workers, and on the server thread when a sapling grows.
 //! It reads what the server published (`native_worldgen_parts`), never a game thread's tables.
 use super::api_values::block_state::Index;
 use super::native_worldgen_parts;
+use mod_api::{BlockState, HookId, RandomSource};
 use sunrise_world::native_worldgen_hooks::TreeGrowAccess;
 use sunrise_world::registry::BlockStateId as EngineState;
-use mod_api::{BlockState, HookId, StructureRandom};
 
 /// The engine's `on_tree_grow` callback: the block the parts of the block at `pos` place there,
 /// `Some(None)` for none, or None to leave it to the tree's own provider. Nothing is read or
@@ -61,7 +60,7 @@ fn placed(
 
 /// The tree's own random, as a part draws from it.
 struct Random<'a>(&'a mut dyn TreeGrowAccess);
-impl StructureRandom for Random<'_> {
+impl RandomSource for Random<'_> {
     fn next_int_bound(&mut self, bound: i32) -> i32 {
         self.0.next_int_bound(bound)
     }
@@ -77,20 +76,24 @@ impl StructureRandom for Random<'_> {
     fn next_boolean(&mut self) -> bool {
         self.0.next_boolean()
     }
+    fn next_int(&mut self) -> i32 {
+        self.0.next_int()
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        self.0.next_gaussian()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::game::api_values::{block_state, resolve_block_definitions};
+    use mod_api::{BlockKey, BlockPart, Hooks, ModEntry, Mods, OnTreeGrowEvent, WorldgenHost};
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::{Arc, Mutex, PoisonError};
     use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
     use sunrise_world::native_worldgen_hooks::WorldgenRandom;
     use sunrise_world::registry::BlockRegistry;
-    use mod_api::{
-        BlockKey, BlockPart, BlockStateRecord, Hooks, ModEntry, Mods, OnTreeGrowEvent, WorldgenHost,
-    };
-    use std::collections::{BTreeMap, HashMap};
-    use std::sync::{Arc, Mutex, PoisonError};
 
     use native_worldgen_parts::PUBLISHING;
 
@@ -129,6 +132,14 @@ mod tests {
             self.draws += 1;
             false
         }
+        fn next_int(&mut self) -> i32 {
+            self.draws += 1;
+            0
+        }
+        fn next_gaussian(&mut self) -> f64 {
+            self.draws += 1;
+            0.0
+        }
     }
 
     /// Coarse dirt under the trunk, after one draw from the tree's random.
@@ -141,7 +152,9 @@ mod tests {
             event: &mut OnTreeGrowEvent<'_>,
         ) -> Option<Option<BlockState>> {
             event.random.next_int_bound(4);
-            Some(Some(BlockStateRecord::new(self.0, 0).into()))
+            Some(Some(mod_api::__private::block_state_from_ordinal(
+                self.0, 0,
+            )))
         }
     }
     struct Soil;
@@ -285,7 +298,7 @@ mod tests {
         let index = block_state::current().unwrap();
         let grass = index.to_api(GRASS).unwrap();
         let coarse = index.to_api(COARSE_DIRT).unwrap();
-        let missing = BlockStateRecord::new(coarse.block(), u16::MAX).into();
+        let missing = mod_api::__private::block_state_from_ordinal(coarse.block(), u16::MAX);
         assert_eq!(placed(&index, grass, Some(missing)), None);
         assert_eq!(placed(&index, grass, None), Some(None));
         assert_eq!(placed(&index, grass, Some(coarse)), Some(Some(COARSE_DIRT)));

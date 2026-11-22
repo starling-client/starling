@@ -1,8 +1,8 @@
 //! Model-batch equivalence tests and an opt-in benchmark of the actual loaders.
 use super::{armor_stands::ArmorStandAssets, boats::BoatModels, minecarts::CartModels};
-use sunrise_client::mobs::{EntityModelDocument, Part, load_model};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, hint::black_box, path::Path, time::Instant};
+use sunrise_client::mobs::{EntityModelDocument, Part, load_model};
 
 const WOODS: [&str; 11] = [
     "oak",
@@ -219,7 +219,8 @@ fn armor_equipment_loads_without_an_entity_model_document() {
         equipment.join("leather.json"),
         serde_json::to_vec(&json!({"layers": {"humanoid": [
             {"texture": "minecraft:leather", "dyeable": {"color_when_undyed": 0x123456}},
-            {"texture": "minecraft:leather_overlay"}
+            {"texture": "minecraft:leather_overlay"},
+            {"texture": "minecraft:dyed_only", "dyeable": {}}
         ]}}))
         .unwrap(),
     )
@@ -232,10 +233,26 @@ fn armor_equipment_loads_without_an_entity_model_document() {
     assert!(assets.main.is_none());
     assert!(assets.layers.is_empty());
     assert_eq!(
+<<<<<<< sync-sunrise-1
         assets.equipment_layers["minecraft:leather"]["humanoid"],
+=======
+        assets.equipment["minecraft:leather"]["humanoid"]
+            .iter()
+            .map(|l| (l.texture.clone(), l.dyeable, l.color_when_undyed))
+            .collect::<Vec<_>>(),
+>>>>>>> sunrise/main
         vec![
-            ("entity/equipment/humanoid/leather".into(), Some(0x123456)),
-            ("entity/equipment/humanoid/leather_overlay".into(), None),
+            (
+                "entity/equipment/humanoid/leather".into(),
+                true,
+                Some(0x123456)
+            ),
+            (
+                "entity/equipment/humanoid/leather_overlay".into(),
+                false,
+                None
+            ),
+            ("entity/equipment/humanoid/dyed_only".into(), true, None),
         ]
     );
     assert!(!assets.equipment_layers.contains_key("minecraft:invalid"));
@@ -243,8 +260,8 @@ fn armor_equipment_loads_without_an_entity_model_document() {
 
 #[test]
 fn equipment_assets_load_from_resource_namespaces_without_a_content_marker() {
-    use sunrise_assets::resource_source::ResourceSource;
     use std::io::Write;
+    use sunrise_assets::resource_source::ResourceSource;
     let root = FixtureRoot::new();
     let equipment = root.0.join("assets/gems/equipment");
     fs::create_dir_all(&equipment).unwrap();
@@ -277,7 +294,14 @@ fn equipment_assets_load_from_resource_namespaces_without_a_content_marker() {
     ] {
         let assets = ArmorStandAssets::load(&source, None);
         assert_eq!(
+<<<<<<< sync-sunrise-1
             assets.equipment_layers["gems:ruby"]["humanoid_leggings"],
+=======
+            assets.equipment["gems:ruby"]["humanoid_leggings"]
+                .iter()
+                .map(|l| (l.texture.clone(), l.color_when_undyed))
+                .collect::<Vec<_>>(),
+>>>>>>> sunrise/main
             vec![("gems:entity/equipment/humanoid_leggings/ruby".into(), None)]
         );
     }
@@ -346,7 +370,11 @@ fn equipment_layers_read_resolved_resources_and_retain_the_source() {
     assets.apply_resources(ArmorStandAssets::load(&source, None));
     assert!(!assets.equipment.contains_key("example:old"));
     assert_eq!(
+<<<<<<< sync-sunrise-1
         assets.equipment_layers["example:nested/cloth"]["humanoid"][0].0,
+=======
+        assets.equipment["example:nested/cloth"]["humanoid"][0].texture,
+>>>>>>> sunrise/main
         "example:entity/equipment/humanoid/cloth"
     );
     assert!(assets.root.same_generation(&source));

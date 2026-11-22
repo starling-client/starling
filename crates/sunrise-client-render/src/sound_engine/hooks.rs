@@ -86,6 +86,7 @@ fn valid_playback_edit(original: &SoundPlay, edited: &SoundPlay) -> bool {
         || edited.volume.is_finite() && edited.volume >= 0.0)
         && (edited.pitch.to_bits() == original.pitch.to_bits()
             || edited.pitch.is_finite() && edited.pitch > 0.0)
+        && (edited.effects == original.effects || edited.effects.valid())
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +122,7 @@ impl SoundInstance {
             Attenuation::Linear => SoundAttenuation::Linear,
         };
         sound.relative = self.relative;
+        sound.effects = self.effects;
     }
 
     /// A sound a mod asks for (`ClientHost::play_local_sound`), through the same mapping
@@ -161,6 +163,7 @@ impl SoundInstance {
             _ => self.attenuation,
         };
         self.relative = edited.relative;
+        self.effects = edited.effects;
     }
 }
 
@@ -211,16 +214,19 @@ impl SoundEngine {
         }
     }
 
-    /// Live volume/pitch refresh, through the single play_sound contract. Other
+    /// Live volume, pitch and effects refresh, through the single play_sound contract. Other
     /// settings cannot be changed on an already allocated channel.
-    pub(super) fn playback_update_parameters(&self, id: super::InstanceId) -> Option<(f32, f32)> {
+    pub(super) fn playback_update_parameters(
+        &self,
+        id: super::InstanceId,
+    ) -> Option<(f32, f32, mod_api::SoundEffects)> {
         let instance = self.instances.get(&id)?;
         let Some(source) = self
             .loop_context
             .as_ref()
             .filter(|_| mod_api::__private::listened(HookId::PlaySound))
         else {
-            return Some((instance.volume, instance.pitch));
+            return Some((instance.volume, instance.pitch, instance.effects));
         };
         let mut cache = instance.live_play_settings().borrow_mut();
         let LiveSettings { original, edited } = &mut *cache;
@@ -231,7 +237,7 @@ impl SoundEngine {
         if !valid_playback_edit(original, edited) {
             return None;
         }
-        Some((edited.volume, edited.pitch))
+        Some((edited.volume, edited.pitch, edited.effects))
     }
 
     /// `play_sound_source` or `play_streaming_source`, for a sound that just started.
@@ -280,10 +286,10 @@ mod tests {
     use super::*;
     use crate::sound_engine::test_backend::Null;
     use crate::sound_events::SoundRegistry;
-    use sunrise_core::random::LegacyRandom;
-    use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs, LoopSide};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+    use sunrise_core::random::LegacyRandom;
+    use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs, LoopSide};
 
     /// What the mod heard, in order.
     type Log = Arc<Mutex<Vec<String>>>;
@@ -472,6 +478,125 @@ mod tests {
                 "a replay resets a cancelled live edit"
             );
         });
+    }
+    #[test]
+    fn a_mods_effects_reach_the_channel_and_out_of_range_ones_play_nothing() {
+        struct Shaper;
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Shaper {
+            fn play_sound(
+                &self,
+                _: &dyn mod_api::LoopContext,
+                event: &mut mod_api::PlaySoundEvent<'_>,
+            ) {
+                let sound = event.sound.as_mut().unwrap();
+                match event.original.identifier.as_str() {
+                    "minecraft:block.quiet" => {
+                        sound.effects.lowpass = 600.0;
+                        sound.effects.cavern = 0.5;
+                    }
+                    "minecraft:block.mute" => sound.effects.lowpass = 5.0,
+                    _ => {}
+                }
+            }
+        }
+        /// Sets one refused value at the start of a sound.
+        struct Refused(fn(&mut mod_api::SoundEffects));
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Refused {
+            fn play_sound(
+                &self,
+                _: &dyn mod_api::LoopContext,
+                event: &mut mod_api::PlaySoundEvent<'_>,
+            ) {
+                (self.0)(&mut event.sound.as_mut().unwrap().effects);
+            }
+        }
+        let refused: [fn(&mut mod_api::SoundEffects); 8] = [
+            |e| e.gain = f32::NAN,
+            |e| e.direct = 1.5,
+            |e| e.lowpass = f32::INFINITY,
+            |e| e.highpass = -1.0,
+            |e| e.room = f32::NEG_INFINITY,
+            |e| e.hall = -f32::NAN,
+            |e| e.cavern = 1.0001,
+            |e| e.reverb_lowpass = 20_001.0,
+        ];
+        for edit in refused {
+            let mods = vec![mod_api::ModEntry::new("refused", Box::new(Refused(edit)))];
+            mod_platform::testing::with_mods(mods.into(), || {
+                let (mut engine, mut backend) = (engine(), Null::default());
+                assert_eq!(
+                    play(&mut engine, &mut backend, "minecraft:block.plain"),
+                    crate::sound_engine::PlayResult::NotStarted
+                );
+                assert!(backend.effects.is_empty() && backend.volume.is_empty());
+            });
+        }
+        let mods = vec![mod_api::ModEntry::new("shaper", Box::new(Shaper))];
+        mod_platform::testing::with_mods(mods.into(), || {
+            let (mut engine, mut backend) = (engine(), Null::default());
+            assert_eq!(
+                play(&mut engine, &mut backend, "minecraft:block.quiet"),
+                crate::sound_engine::PlayResult::Started
+            );
+            let effects = backend.effects.values().copied().collect::<Vec<_>>();
+            assert_eq!(effects.len(), 1);
+            assert_eq!((effects[0].lowpass, effects[0].cavern), (600.0, 0.5));
+            play(&mut engine, &mut backend, "minecraft:block.plain");
+            assert!(
+                backend
+                    .effects
+                    .values()
+                    .any(|e| *e == mod_api::SoundEffects::NONE)
+            );
+            assert_eq!(
+                play(&mut engine, &mut backend, "minecraft:block.mute"),
+                crate::sound_engine::PlayResult::NotStarted
+            );
+        });
+    }
+    #[test]
+    fn a_ticking_sounds_live_refresh_moves_its_effects_and_a_refused_value_stops_it() {
+        /// On each live refresh, sets the low-pass the test asks for next.
+        struct Follower(Arc<Mutex<f32>>);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Follower {
+            fn play_sound(
+                &self,
+                _: &dyn mod_api::LoopContext,
+                event: &mut mod_api::PlaySoundEvent<'_>,
+            ) {
+                if !event.starting {
+                    event.sound.as_mut().unwrap().effects.lowpass = *self.0.lock().unwrap();
+                }
+            }
+        }
+        for refused in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 10.0, 30_000.0] {
+            let next = Arc::new(Mutex::new(900.0));
+            let mods = vec![mod_api::ModEntry::new(
+                "follower",
+                Box::new(Follower(next.clone())),
+            )];
+            mod_platform::testing::with_mods(mods.into(), || {
+                let (mut engine, mut backend) = (engine(), Null::default());
+                let mut instance =
+                    SoundInstance::for_ui("minecraft:block.plain", 1.0, 1.0, LegacyRandom::new(1));
+                instance.ticking = crate::sound_engine::Ticking::Native;
+                let (id, result) = engine.play_new(instance, true, &mut backend);
+                assert_eq!(result, crate::sound_engine::PlayResult::Started);
+                let channel = engine.channel(id).unwrap();
+                assert_eq!(backend.effects[&channel], mod_api::SoundEffects::NONE);
+                let ctx = crate::sound_engine::TickContext::default();
+                engine.tick(false, &ctx, &mut backend);
+                assert_eq!(backend.effects[&channel].lowpass, 900.0);
+                *next.lock().unwrap() = refused;
+                engine.tick(false, &ctx, &mut backend);
+                // Refused, not clamped: the channel keeps what it had and stops.
+                assert_eq!(backend.effects[&channel].lowpass, 900.0);
+                assert!(engine.instance(id).unwrap().stopped);
+            });
+        }
     }
     #[test]
     fn invalid_play_sound_edits_refuse_starts_and_stop_live_channels() {

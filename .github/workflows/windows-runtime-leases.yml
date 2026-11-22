@@ -1,0 +1,85 @@
+name: windows-runtime-leases
+# The game's Windows-only tests that start child processes, in the daily run (daily.yml calls this workflow with a
+# commit) and by dispatch: sunrise-mod-package's runtime leases and the `windows` daily rows. Nothing is published.
+# Windows needs GitHub's runners, and the gate never waits on them (root, 2026-11-16), so no push, pull request,
+# rollup or sync starts it; a Windows red becomes a daily issue like any other leg's.
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit to check (the daily run's)
+        type: string
+        default: ''
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A daily run's call is grouped by that run.
+  group: windows-runtime-leases-${{ inputs.commit && github.run_id || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  runtime-leases:
+    # The daily run's call (scheduled or dispatched; it passes a commit) and a hand dispatch: it starts child
+    # processes, so it is a daily test.
+    if: inputs.commit != '' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - name: The pinned Rust (tools/ci/rust-version)
+        id: rust
+        shell: bash
+        run: echo "version=$(cat "$GITHUB_WORKSPACE/tools/ci/rust-version")" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: .
+          shared-key: runtime-leases-windows-check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --release --locked -p sunrise-mod-package --features runtime-process --example holder_actor
+        working-directory: .
+        shell: bash
+      - run: "cargo test --no-fail-fast --release --locked -p sunrise-mod-package --features runtime-process --lib -- --skip durable::"
+        working-directory: .
+        shell: bash
+      # sunrise-mod-package's durable writes use MoveFileExW on Windows; Linux cannot exercise that path.
+      - run: "cargo test --no-fail-fast --release --locked -p sunrise-mod-package --features runtime-process --lib durable::"
+        working-directory: .
+        shell: bash
+      # The package's daily tests (its rows in tools/ci/ignored-tests/, the ones that start processes among them) run
+      # here on Windows too, by name: no other ignored test (a manual one, a fixture writer) runs.
+      - name: The package's daily tests
+        working-directory: .
+        shell: bash
+        # bash -eo pipefail: a failure of the policy reader fails the step, never an empty selection.
+        run: |
+          listed=$(python tools/ci/ignored_tests.py --daily-tests sunrise-mod-package lib | tr -d '\r')
+          if [ -z "$listed" ]; then
+            echo "sunrise-mod-package's library has no daily rows: nothing to run"
+            exit 0
+          fi
+          mapfile -t tests <<< "$listed"
+          cargo test --no-fail-fast --release --locked -p sunrise-mod-package --features runtime-process --lib \
+            -- --ignored --exact "${tests[@]}"
+      # The `windows` daily rows (tools/ci/ignored-tests/README.md): tests whose target compiles only on Windows, so no
+      # Linux leg runs or expects them. Each runs by name, and a row that runs no test fails the step.
+      - name: The Windows-only daily rows
+        working-directory: .
+        shell: bash
+        run: python tools/ci/ignored_tests.py --windows-rows --run --report "$RUNNER_TEMP/daily-report.json"
+      - name: Upload the Windows-only daily rows' report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daily-report-windows-rows
+          path: ${{ runner.temp }}/daily-report.json
+          if-no-files-found: ignore
+          retention-days: 7

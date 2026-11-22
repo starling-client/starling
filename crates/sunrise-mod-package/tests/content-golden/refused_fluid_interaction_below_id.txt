@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_fluid_interaction_below_id",
+    name: "Refused fluid interaction below id",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: data/refused_fluid_interaction_below_id/sunrise/fluid_interaction/sample.json: below "blue_ice" is an id (namespace:path)

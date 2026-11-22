@@ -8,8 +8,8 @@ use super::{
     required,
 };
 use crate::{heightmap::HeightmapType, registry::BlockStateId};
-use sunrise_core::random::{InvalidBound, RandomSource};
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::random::{InvalidBound, RandomSource};
 #[derive(Clone, Debug)]
 pub struct BambooFeature {
     probability: f32,

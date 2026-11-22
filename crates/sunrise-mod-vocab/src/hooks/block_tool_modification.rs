@@ -5,6 +5,8 @@ pub trait Hooks {
     /// `None` suppresses the transformation. The block's own `tool_modified_state` part answers
     /// first, and a block whose part cancelled the action never reaches this hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "cancel",
         out = "cancel",
@@ -12,5 +14,10 @@ pub trait Hooks {
         neoforge = "BlockEvent.BlockToolModificationEvent",
         cancellable = true
     )]
-    fn block_tool_modification();
+    fn block_tool_modification(
+        stack: &ItemStack,
+        tool: &ToolUse,
+        final_state: &mut Option<BlockState>,
+        cancel: &mut bool,
+    );
 }

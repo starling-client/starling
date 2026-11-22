@@ -1,121 +1,110 @@
-//! Concrete authoring extracted verbatim from the vocabulary layer.
+//! Collect native spawn predicates in registration order.
 use super::*;
+use mod_vocab::__private::parts_installation::entity_type_key_slot;
+use mod_vocab::{
+    EntityTypeKey, Heightmap, SpawnPlacementError, SpawnPlacementOperation,
+    SpawnPlacementPredicate, SpawnPlacementType,
+};
 
-/// Fixtures that tests of other crates use to install Parts.
-#[cfg(any(test, feature = "testing"))]
-pub mod tests {
-    #[cfg(test)]
-    use crate::*;
-
-    #[cfg(test)]
-    fn rule() -> SpawnPlacementRule {
-        SpawnPlacementRule {
-            placement: SpawnPlacementType::OnGround,
-            heightmap: Heightmap::MotionBlockingNoLeaves,
-            spawnable_on: Some("minecraft:animals_spawnable_on".to_string()),
-            light: SpawnLight::Bright,
-            biome_tag: Some("minecraft:is_forest".to_string()),
-        }
-    }
-
-    /// A mod's registration reaches the table the game resolves once at load.
-    #[test]
-    pub(crate) fn a_registered_rule_is_installed_for_the_game_to_resolve() {
-        struct Ghoul;
-        #[mod_api::__subscriptions]
-        impl Hooks for Ghoul {
-            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
-                r.declare_spawn_placement("ghoul", rule()).unwrap();
-            }
-        }
-        crate::parts::tests::install_parts_fixture(&[ModEntry::new("ruby", Box::new(Ghoul))])
-            .unwrap();
-        let declared = crate::__private::spawn_placement_declarations();
-        assert_eq!(declared.len(), 1);
-        assert_eq!(declared[0].id, "ruby:ghoul");
-        assert_eq!(declared[0].rule, rule());
-    }
-
-    #[test]
-    pub(crate) fn spawn_placement_declarations_validate_and_refuse_duplicates() {
-        let mut registrar = super::PartRegistrar::new("ruby");
-        registrar.declare_spawn_placement("ghoul", rule()).unwrap();
-        // The same type twice is a duplicate, spelled bare or with the namespace.
-        assert_eq!(
-            registrar.declare_spawn_placement("ruby:ghoul", rule()),
-            Err(SpawnPlacementError::Duplicate)
-        );
-        // The path stays in the declaring mod's namespace.
-        assert_eq!(
-            registrar.declare_spawn_placement("foreign:ghoul", rule()),
-            Err(SpawnPlacementError::InvalidId)
-        );
-        // A tag is namespaced and written without `#`.
-        for tag in ["#minecraft:is_forest", "forest"] {
-            let bad = SpawnPlacementRule {
-                biome_tag: Some(tag.to_string()),
-                ..rule()
-            };
-            assert_eq!(
-                registrar.declare_spawn_placement("wraith", bad),
-                Err(SpawnPlacementError::InvalidTag),
-                "{tag}"
-            );
-        }
-        let bad = SpawnPlacementRule {
-            spawnable_on: Some("#minecraft:animals_spawnable_on".to_string()),
-            ..rule()
+impl SpawnPlacementsRegistrar for PartRegistrar {
+    fn register_spawn_placement(
+        &mut self,
+        kind: EntityTypeKey,
+        placement: Option<SpawnPlacementType>,
+        heightmap: Option<Heightmap>,
+        predicate: Arc<dyn SpawnPlacementPredicate>,
+        operation: SpawnPlacementOperation,
+    ) -> Result<(), SpawnPlacementError> {
+        let keys = self.registry_keys.borrow();
+        let slot = entity_type_key_slot(kind);
+        let Some(id) = keys.entity_types.id(slot) else {
+            self.refused.push(format!(
+                "mod {} spawn placement: entity type key slot {slot} is unavailable",
+                self.mod_id
+            ));
+            return Err(SpawnPlacementError::InvalidEntityType);
         };
-        assert_eq!(
-            registrar.declare_spawn_placement("wraith", bad),
-            Err(SpawnPlacementError::InvalidTag)
-        );
-        // The refusals name the mod; the good declaration stands.
-        assert_eq!(registrar.spawn_placements.len(), 1);
-        assert_eq!(registrar.spawn_placements[0].id, "ruby:ghoul");
-        assert_eq!(registrar.spawn_placements[0].rule, rule());
-        assert_eq!(registrar.refused.len(), 5);
-        assert!(
-            registrar
-                .refused
-                .iter()
-                .all(|refusal| refusal.contains("mod ruby"))
-        );
+        self.spawn_placements.push(SpawnPlacementDeclaration {
+            id: id.to_owned(),
+            kind,
+            mod_id: self.mod_id,
+            placement,
+            heightmap,
+            predicate,
+            operation,
+        });
+        Ok(())
     }
 }
 
-impl SpawnPlacementsRegistrar for PartRegistrar {
-    fn declare_spawn_placement(
-        &mut self,
-        path: &str,
-        rule: crate::SpawnPlacementRule,
-    ) -> Result<(), crate::SpawnPlacementError> {
-        let id = match self.owned_declaration_id(path) {
-            Ok(id) => id,
-            Err(reason) => {
-                self.refused.push(reason);
-                return Err(crate::SpawnPlacementError::InvalidId);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BlockPos, Hooks, ModEntry, RegistrationContext, SpawnPlacementContext, SpawnReason,
+    };
+
+    #[test]
+    fn spawn_predicates_for_one_key_are_published_in_registration_order() {
+        struct SpawnRules(SpawnPlacementOperation);
+        #[mod_api::__subscriptions]
+        impl Hooks for SpawnRules {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                let kind = r.entity_type_key("minecraft:zombie");
+                r.register_spawn_placement(
+                    kind,
+                    None,
+                    None,
+                    Arc::new(
+                        |_: EntityTypeKey,
+                         _: &mut dyn SpawnPlacementContext,
+                         _: SpawnReason,
+                         _: BlockPos| true,
+                    ),
+                    self.0,
+                )
+                .unwrap();
             }
-        };
-        let result = (|| {
-            if self.spawn_placements.iter().any(|d| d.id == id) {
-                return Err(crate::SpawnPlacementError::Duplicate);
-            }
-            for tag in [&rule.spawnable_on, &rule.biome_tag].into_iter().flatten() {
-                if tag.starts_with('#') || !namespaced(tag) {
-                    return Err(crate::SpawnPlacementError::InvalidTag);
-                }
-            }
-            self.spawn_placements
-                .push(SpawnPlacementDeclaration { id, rule });
-            Ok(())
-        })();
-        if let Err(error) = &result {
-            self.refused.push(format!(
-                "mod {} spawn placement {path:?}: {error:?}",
-                self.mod_id
-            ));
         }
-        result
+        crate::parts::tests::install_parts_fixture(&[
+            ModEntry::new("ruby", Box::new(SpawnRules(SpawnPlacementOperation::Or))),
+            ModEntry::new("quartz", Box::new(SpawnRules(SpawnPlacementOperation::And))),
+        ])
+        .unwrap();
+        let declared = crate::__private::spawn_placement_declarations();
+        assert_eq!(declared.len(), 2);
+        assert_eq!(declared[0].id, "minecraft:zombie");
+        assert_eq!(declared[1].id, "minecraft:zombie");
+        assert_eq!(declared[0].kind, declared[1].kind);
+        assert_eq!(declared[0].mod_id, "ruby");
+        assert_eq!(declared[1].mod_id, "quartz");
+        assert_eq!(declared[0].operation, SpawnPlacementOperation::Or);
+        assert_eq!(declared[1].operation, SpawnPlacementOperation::And);
+    }
+
+    #[test]
+    fn an_unavailable_spawn_placement_key_refuses_the_registering_mod() {
+        let mut registrar = PartRegistrar::new("ruby");
+        let kind = mod_vocab::__private::parts_installation::entity_type_key(42);
+        assert_eq!(
+            registrar.register_spawn_placement(
+                kind,
+                None,
+                None,
+                Arc::new(
+                    |_: EntityTypeKey,
+                     _: &mut dyn SpawnPlacementContext,
+                     _: SpawnReason,
+                     _: BlockPos| true
+                ),
+                SpawnPlacementOperation::Replace,
+            ),
+            Err(SpawnPlacementError::InvalidEntityType)
+        );
+        assert!(registrar.spawn_placements.is_empty());
+        assert_eq!(
+            registrar.refused,
+            ["mod ruby spawn placement: entity type key slot 42 is unavailable"]
+        );
     }
 }

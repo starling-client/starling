@@ -1,8 +1,8 @@
 //! The Rust side of tools/test_stepped_interpolation_parity.py: replays the
 //! harness's events (VanillaSteppedInterpolationOracle's input format) on
 //! `SteppedInterpolation` and writes the entity after each one.
-use sunrise_world::stepped_interpolation::{Path, PosRot, Start, SteppedInterpolation};
 use std::fmt::Write as _;
+use sunrise_world::stepped_interpolation::{Path, PosRot, Start, SteppedInterpolation};
 
 /// `Entity.setRot`: yaw and pitch wrapped, pitch clamped (`setXRot`).
 fn set_rot(entity: &mut PosRot, yaw: f32, pitch: f32) {

@@ -1,4 +1,4 @@
-//! Sunrise's mark (`docs/media/brand/mark-dark.svg`) on the text grid, for an inline text sprite.
+//! Sunrise's mark (`docs/media/brand/icon.svg`) on the text grid, for an inline text sprite.
 
 /// The mark's name in the HUD atlas.
 pub const SPRITE: &str = "sunrise:gui/mark";

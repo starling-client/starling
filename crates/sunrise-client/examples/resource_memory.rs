@@ -12,6 +12,11 @@
 extern crate sunrise_client_lib as sunrise_client;
 #[path = "../src/test_resources.rs"]
 mod test_resources;
+use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
+};
+use std::{path::PathBuf, process::Command};
 use sunrise_client::{
     assets::Assets, biome::Biomes, blocks::BlockFacts, collisions, crafting::Recipes, items::Items,
     light::LightTables, mesher::MeshTables, models, motion::MotionResources,
@@ -19,11 +24,6 @@ use sunrise_client::{
 };
 use sunrise_world::loot::PackOverlay;
 use sunrise_world::native_load_context::DataLoadOrigin;
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
-};
-use std::{path::PathBuf, process::Command};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct Counting;

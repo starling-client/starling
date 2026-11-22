@@ -16,8 +16,9 @@ pub(crate) struct ControllerInfo {
 /// [`Registrar::register_ticket_controller`](crate::TicketsRegistrar::register_ticket_controller): the
 /// handle `chunk.set_mod_forced` and `level.mod_forced_chunks` take. Only the registrar makes
 /// one, resolved once there, and it is `Copy`: keep it from `register`, for example in a
-/// `OnceLock`. Another mod's controller does not work.
-// no wire: decoding from_slot requires membership in the installed ticket-controller table.
+/// `OnceLock`. Another mod's controller does not work. Use its namespaced `id()` when
+/// you need to store a controller name; its slot is local to this game's registry.
+// no wire: the handle resolves only in the registry that issued it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct TicketController {

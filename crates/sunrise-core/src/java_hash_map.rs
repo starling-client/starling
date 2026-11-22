@@ -4,13 +4,14 @@
 //! operations. Tree bins preserve native linked iteration order.
 //! This is the storage/iterator subset needed by simulation callback lifecycles.
 //!
-//! Layout: entries live in a slab of nodes addressed by `u32` index. A bucket holds the first
-//! node of its bin's list (nodes chain through `next`, in iteration order) and, for a tree bin,
-//! the root of a red-black tree over the same nodes. Tree links live in a side table that the
-//! map only allocates with its first tree bin.
+//! Layout: one slab block holds parallel hash/next, key and value arrays addressed by `u32` slot; slot 0 is a sentinel.
 use std::{
+    alloc::{self, Layout},
+    borrow::Borrow,
     cmp::Ordering,
+    marker::PhantomData,
     mem,
+    ptr::{self, NonNull},
     sync::atomic::{self, AtomicU64},
 };
 
@@ -26,8 +27,36 @@ pub trait JavaKey: Eq {
     fn tie_break(&self, other: &Self) -> Ordering;
 }
 
-/// No node: the end of a list, an absent child or parent, an empty bucket.
+impl JavaKey for str {
+    fn java_hash(&self) -> i32 {
+        crate::random::java_string_hash(self.encode_utf16())
+    }
+    fn comparable_compare(&self, other: &Self) -> Option<Ordering> {
+        Some(self.encode_utf16().cmp(other.encode_utf16()))
+    }
+    fn tie_break(&self, _other: &Self) -> Ordering {
+        unreachable!("unequal strings are Comparable")
+    }
+}
+
+impl JavaKey for String {
+    fn java_hash(&self) -> i32 {
+        self.as_str().java_hash()
+    }
+    fn comparable_compare(&self, other: &Self) -> Option<Ordering> {
+        self.as_str().comparable_compare(other.as_str())
+    }
+    fn tie_break(&self, other: &Self) -> Ordering {
+        self.as_str().tie_break(other.as_str())
+    }
+}
+
+/// No tree link: an absent child or parent.
 const NIL: u32 = u32::MAX;
+/// Slot 0: the end of a list and an empty bucket; its hash/next record is always readable.
+const END: u32 = 0;
+/// Set in a free slot's `next`; live links stay below it.
+const FREE: u32 = 1 << 31;
 /// The table the first insertion allocates, unless `copied` sized it.
 const DEFAULT_CAPACITY: usize = 16;
 /// The largest table; it never grows past this.
@@ -38,15 +67,19 @@ const TREEIFY_LEN: usize = 8;
 const MIN_TREE_CAPACITY: usize = 64;
 /// When a tree bin splits, a half with at most this many nodes becomes a plain bin.
 const UNTREEIFY_LEN: usize = 6;
+/// The first slab holds the default table's 12 entries; tripling once, then doubling, keeps the 33-entry peak low.
+const FIRST_SLAB: u32 = 12;
 
-struct Node<K, V> {
-    key: K,
-    value: V,
-    /// The spread hash: `h ^ (h >>> 16)` of the key's hash code.
+/// A slot's spread hash and the next slot of its bin's list.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Meta {
     hash: i32,
-    /// The next node of the bin's list.
     next: u32,
 }
+
+static SENTINEL: Meta = Meta { hash: 0, next: END };
+static NO_TABLE: u32 = END;
 
 /// A tree bin node's red-black links.
 #[derive(Clone, Copy)]
@@ -55,6 +88,7 @@ struct Links {
     left: u32,
     right: u32,
     red: bool,
+    in_tree: bool,
 }
 
 impl Links {
@@ -63,48 +97,175 @@ impl Links {
         left: NIL,
         right: NIL,
         red: false,
+        in_tree: false,
     };
-}
-
-#[derive(Clone, Copy)]
-struct Bucket {
-    /// The first node of the bin's list.
-    head: u32,
-    /// The root of the bin's red-black tree; NIL for a plain bin.
-    root: u32,
-}
-
-impl Bucket {
-    const EMPTY: Self = Self {
-        head: NIL,
-        root: NIL,
+    /// A plain bin's head whose bin a rehash will turn into a tree; never set on a tree node.
+    const PENDING: Self = Self {
+        red: true,
+        ..Self::UNUSED
     };
+    fn is_pending(&self) -> bool {
+        self.red && !self.in_tree
+    }
 }
 
 pub struct JavaHashMap<K, V> {
+    /// `mask + 1` bucket heads; the shared one-bucket `NO_TABLE` until the first insertion.
+    table: NonNull<u32>,
+    mask: usize,
+    /// `cap + 1` records, or the shared `SENTINEL` while `cap` is 0.
+    meta: NonNull<Meta>,
+    /// Slot i's key lives at index i - 1, its value at index i (index 0 is never written).
+    keys: NonNull<K>,
+    values: NonNull<V>,
+    cap: u32,
+    /// Slots 1..=used have been handed out since the slab was last emptied.
+    used: u32,
+    /// The first free slot, END when none.
+    free: u32,
+    len: u32,
+    /// The table grows when a new key takes the size past this.
+    threshold: u32,
+    /// Structural generation. At u64::MAX it is exhausted and no cursor may access a slot.
+    mod_count: u64,
+    /// The capacity the first insertion allocates.
+    initial_capacity: u32,
     /// Tells this map's cursors from other maps' cursors.
     id: u64,
-    nodes: Vec<Option<Node<K, V>>>,
-    /// Empty slots of `nodes`.
-    free: Vec<u32>,
-    /// Tree links by node index: empty until the map makes a tree bin, then as long as `nodes`.
+    /// Tree links by slot: empty until the map makes a tree bin, then `cap + 1` long.
     links: Vec<Links>,
-    /// The table; empty until the first insertion.
-    buckets: Vec<Bucket>,
-    /// The capacity the first insertion allocates.
-    initial_capacity: usize,
-    /// The table grows when a new key takes the size past this.
-    threshold: usize,
-    len: usize,
-    /// Structural modifications; a cursor fails once it differs from the one it recorded.
-    mod_count: u64,
+    _owns: PhantomData<(K, V)>,
+}
+
+// SAFETY: the map owns its keys and values; the raw pointers are unique or point at immutable statics,
+// so moving the map to another thread moves everything it can reach.
+unsafe impl<K: Send, V: Send> Send for JavaHashMap<K, V> {}
+// SAFETY: as for `Send`; a shared reference reads the keys and values and the statics, and nothing else.
+unsafe impl<K: Sync, V: Sync> Sync for JavaHashMap<K, V> {}
+
+/// Borrowed Java bucket/list traversal, without a cursor or allocation.
+pub struct Iter<'a, K, V> {
+    map: &'a JavaHashMap<K, V>,
+    bucket: usize,
+    next: u32,
+    remaining: usize,
+}
+
+impl<'a, K: JavaKey, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let table = self.map.table();
+        while self.next == END {
+            self.next = table[self.bucket];
+            self.bucket += 1;
+        }
+        let i = self.next;
+        self.next = self.map.meta(i).next;
+        self.remaining -= 1;
+        Some((self.map.key(i), self.map.value(i)))
+    }
+    #[inline]
+    fn fold<B, F: FnMut(B, Self::Item) -> B>(self, mut acc: B, mut f: F) -> B {
+        let map = self.map;
+        let mut i = self.next;
+        while i != END {
+            acc = f(acc, (map.key(i), map.value(i)));
+            i = map.meta(i).next;
+        }
+        for &head in &map.table()[self.bucket..] {
+            let mut i = head;
+            while i != END {
+                acc = f(acc, (map.key(i), map.value(i)));
+                i = map.meta(i).next;
+            }
+        }
+        acc
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+impl<K: JavaKey, V> ExactSizeIterator for Iter<'_, K, V> {}
+impl<K: JavaKey, V> std::iter::FusedIterator for Iter<'_, K, V> {}
+
+/// Consuming traversal moves keys and values out of the existing slab.
+pub struct IntoIter<K, V> {
+    map: JavaHashMap<K, V>,
+    bucket: usize,
+}
+impl<K: JavaKey, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.map.len == 0 {
+            return None;
+        }
+        let mut i = self.map.table()[self.bucket];
+        while i == END {
+            self.bucket += 1;
+            i = self.map.table()[self.bucket];
+        }
+        let next = self.map.meta(i).next;
+        self.map.set_head(self.bucket, next);
+        self.map.len -= 1;
+        Some(self.map.take(i))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.map.len as usize;
+        (len, Some(len))
+    }
+}
+impl<K: JavaKey, V> ExactSizeIterator for IntoIter<K, V> {}
+impl<K: JavaKey, V> std::iter::FusedIterator for IntoIter<K, V> {}
+
+pub struct Entry<'a, K, V> {
+    map: &'a mut JavaHashMap<K, V>,
+    key: K,
+    hash: i32,
+    index: Option<u32>,
+}
+impl<'a, K: JavaKey, V> Entry<'a, K, V> {
+    pub fn or_insert(self, value: V) -> &'a mut V {
+        self.or_insert_with(|| value)
+    }
+    pub fn or_insert_with(self, make: impl FnOnce() -> V) -> &'a mut V {
+        let index = self.index.unwrap_or_else(|| {
+            let index = if self.map.free != END {
+                self.map.free
+            } else {
+                self.map.used + 1
+            };
+            self.map.put_hashed(self.key, make(), self.hash);
+            index
+        });
+        // The predicted slot must now be live: checked, because `value_mut` reads it unchecked.
+        assert!(index != END && index <= self.map.used && self.map.meta(index).next & FREE == 0);
+        self.map.value_mut(index)
+    }
+}
+
+impl<K: JavaKey, V> IntoIterator for JavaHashMap<K, V> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            map: self,
+            bucket: 0,
+        }
+    }
 }
 
 pub struct Cursor {
     map: u64,
     expected_mod_count: u64,
     next: u32,
+    next_bucket: u32,
     current: u32,
+    // Removal still uses the visited bucket when next has already crossed into a new bin.
+    current_bucket: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,25 +277,110 @@ pub enum CursorError {
 
 impl Cursor {
     pub fn has_next(&self) -> bool {
-        self.next != NIL
+        self.next != END
     }
 }
 
-impl<K: JavaKey, V> Default for JavaHashMap<K, V> {
+impl<K, V> Default for JavaHashMap<K, V> {
     fn default() -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         Self {
-            id: NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed),
-            nodes: Vec::new(),
-            free: Vec::new(),
-            links: Vec::new(),
-            buckets: Vec::new(),
-            initial_capacity: DEFAULT_CAPACITY,
-            threshold: 0,
+            table: NonNull::from(&NO_TABLE),
+            mask: 0,
+            meta: NonNull::from(&SENTINEL),
+            keys: NonNull::dangling(),
+            values: NonNull::dangling(),
+            cap: 0,
+            used: 0,
+            free: END,
             len: 0,
+            threshold: 0,
             mod_count: 0,
+            initial_capacity: DEFAULT_CAPACITY as u32,
+            id: next_id(),
+            links: Vec::new(),
+            _owns: PhantomData,
         }
     }
+}
+
+impl<K: JavaKey + Clone, V: Clone> Clone for JavaHashMap<K, V> {
+    /// A Rust clone preserves the Java table state, unlike [`Self::copied`].
+    fn clone(&self) -> Self {
+        self.clone_with(Clone::clone)
+    }
+}
+
+impl<K, V> Drop for JavaHashMap<K, V> {
+    fn drop(&mut self) {
+        if mem::needs_drop::<K>() || mem::needs_drop::<V>() {
+            for i in 1..=self.used {
+                if self.meta(i).next & FREE == 0 {
+                    // SAFETY: a live slot holds an initialized key and value, dropped once here.
+                    unsafe {
+                        ptr::drop_in_place(self.key_ptr(i));
+                        ptr::drop_in_place(self.value_ptr(i));
+                    }
+                }
+            }
+        }
+        // SAFETY: both blocks were allocated with these layouts and nothing refers to them now.
+        unsafe {
+            if self.cap != 0 {
+                alloc::dealloc(self.meta.as_ptr().cast(), Self::slab_layout(self.cap).0);
+            }
+            if self.mask != 0 {
+                alloc::dealloc(self.table.as_ptr().cast(), table_layout(self.mask + 1));
+            }
+        }
+    }
+}
+
+/// Each thread hands out map ids from its own block of 2^ID_BLOCK_BITS.
+const ID_BLOCK_BITS: u32 = 20;
+/// Blocks ever issued: the last block is never handed out, so ids never repeat and `id + block` never overflows.
+const ID_BLOCKS: u64 = (1 << (64 - ID_BLOCK_BITS)) - 1;
+
+/// The first id of a fresh block, or None (with `blocks` left unchanged) once the namespace is used up.
+fn reserve_id_block(blocks: &AtomicU64) -> Option<u64> {
+    let mut next = blocks.load(atomic::Ordering::Relaxed);
+    loop {
+        if next >= ID_BLOCKS {
+            return None;
+        }
+        match blocks.compare_exchange_weak(
+            next,
+            next + 1,
+            atomic::Ordering::Relaxed,
+            atomic::Ordering::Relaxed,
+        ) {
+            Ok(_) => return Some(next << ID_BLOCK_BITS),
+            Err(seen) => next = seen,
+        }
+    }
+}
+
+/// Abort rather than panic: a caught panic must not let a later map reuse an id.
+#[cold]
+#[inline(never)]
+fn id_blocks_exhausted() -> ! {
+    std::process::abort()
+}
+
+/// A map id unique across threads for the life of the process.
+fn next_id() -> u64 {
+    static BLOCKS: AtomicU64 = AtomicU64::new(0);
+    thread_local! {
+        static NEXT: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+    }
+    NEXT.with(|next| {
+        let (mut id, mut end) = next.get();
+        if id == end {
+            id = reserve_id_block(&BLOCKS).unwrap_or_else(|| id_blocks_exhausted());
+            end = id + (1 << ID_BLOCK_BITS);
+        }
+        next.set((id + 1, end));
+        id
+    })
 }
 
 /// `h ^ (h >>> 16)`: the hash the map places a key by.
@@ -143,20 +389,307 @@ fn spread(hash: i32) -> i32 {
 }
 
 /// Three quarters of the capacity; the largest table never grows.
-fn threshold_for(capacity: usize) -> usize {
+fn threshold_for(capacity: usize) -> u32 {
     if capacity >= MAX_CAPACITY {
-        usize::MAX
+        u32::MAX
     } else {
-        capacity * 3 / 4
+        (capacity * 3 / 4) as u32
+    }
+}
+
+fn table_layout(buckets: usize) -> Layout {
+    Layout::array::<u32>(buckets).expect("table size")
+}
+
+fn new_table(buckets: usize) -> NonNull<u32> {
+    let layout = table_layout(buckets);
+    // Small tables fit the per-thread malloc cache on allocators where calloc bypasses it.
+    // Large tables keep alloc_zeroed so an allocator can take advantage of demand-zero pages.
+    let explicit_zero = buckets <= 128;
+    // SAFETY: a table of at least two buckets has a non-zero size.
+    let block = unsafe {
+        if explicit_zero {
+            alloc::alloc(layout)
+        } else {
+            alloc::alloc_zeroed(layout)
+        }
+    };
+    let table =
+        NonNull::new(block.cast::<u32>()).unwrap_or_else(|| alloc::handle_alloc_error(layout));
+    if explicit_zero {
+        // SAFETY: the allocation is exactly `buckets` u32 words.
+        unsafe { table.as_ptr().write_bytes(0, buckets) };
+    }
+    table
+}
+
+impl<K, V> JavaHashMap<K, V> {
+    #[inline(always)]
+    fn table(&self) -> &[u32] {
+        // SAFETY: `table` always holds `mask + 1` initialized heads.
+        unsafe { std::slice::from_raw_parts(self.table.as_ptr(), self.mask + 1) }
+    }
+    #[inline(always)]
+    fn head(&self, b: usize) -> u32 {
+        debug_assert!(b <= self.mask);
+        // SAFETY: callers pass a bucket index at most `mask`.
+        unsafe { *self.table.as_ptr().add(b) }
+    }
+    #[inline(always)]
+    fn set_head(&mut self, b: usize, i: u32) {
+        assert!(self.mask != 0 && b <= self.mask);
+        // SAFETY: an allocated table, never the shared NO_TABLE, and an in-bounds bucket.
+        unsafe { *self.table.as_ptr().add(b) = i }
+    }
+    #[inline(always)]
+    fn meta(&self, i: u32) -> Meta {
+        debug_assert!(i <= self.cap);
+        // SAFETY: list links, heads and the sentinel name records 0..=cap.
+        unsafe { *self.meta.as_ptr().add(i as usize) }
+    }
+    /// Relinks list node `i`, which must be a live slot taken from a bin list (unchecked in release).
+    #[inline(always)]
+    fn set_next(&mut self, i: u32, next: u32) {
+        debug_assert!(i != END && i <= self.used && self.meta(i).next & FREE == 0);
+        // SAFETY: callers pass slots from a bin list, which are live slots of the map's own block.
+        unsafe { (*self.meta.as_ptr().add(i as usize)).next = next };
+    }
+    #[inline(always)]
+    fn meta_mut(&mut self, i: u32) -> &mut Meta {
+        assert!(i != END && i <= self.used);
+        // SAFETY: a handed-out slot of the map's own block.
+        unsafe { &mut *self.meta.as_ptr().add(i as usize) }
+    }
+    #[inline(always)]
+    fn key_ptr(&self, i: u32) -> *mut K {
+        debug_assert!(i != END && i <= self.used);
+        // SAFETY: slots 1..=cap map to array indices 0..cap.
+        unsafe { self.keys.as_ptr().add(i as usize - 1) }
+    }
+    #[inline(always)]
+    fn value_ptr(&self, i: u32) -> *mut V {
+        debug_assert!(i != END && i <= self.used);
+        // SAFETY: slots 1..=cap index the value array directly, which keeps the pointer provably non-null.
+        unsafe { self.values.as_ptr().add(i as usize) }
+    }
+    #[inline(always)]
+    fn key(&self, i: u32) -> &K {
+        // SAFETY: only live slots reach here: those in a list, a cursor or a tree.
+        unsafe { &*self.key_ptr(i) }
+    }
+    #[inline(always)]
+    fn value(&self, i: u32) -> &V {
+        // SAFETY: as for `key`.
+        unsafe { &*self.value_ptr(i) }
+    }
+    #[inline(always)]
+    fn value_mut(&mut self, i: u32) -> &mut V {
+        // SAFETY: as for `key`, with the map borrowed exclusively.
+        unsafe { &mut *self.value_ptr(i) }
+    }
+    #[inline(always)]
+    fn key_value_mut(&mut self, i: u32) -> (&K, &mut V) {
+        // SAFETY: as for `value_mut`; the key and value arrays do not overlap.
+        unsafe { (&*self.key_ptr(i), &mut *self.value_ptr(i)) }
+    }
+    /// Moves a live slot's key and value out and frees the slot; unlink it first.
+    fn take(&mut self, i: u32) -> (K, V) {
+        assert!(self.meta(i).next & FREE == 0);
+        // SAFETY: a live slot, marked free right after so nothing drops or reads it again.
+        let entry = unsafe { (ptr::read(self.key_ptr(i)), ptr::read(self.value_ptr(i))) };
+        let free = self.free;
+        self.meta_mut(i).next = FREE | free;
+        self.free = i;
+        entry
+    }
+
+    /// The slab block layout for `cap` slots, and its key and value array offsets.
+    fn slab_layout(cap: u32) -> (Layout, usize, usize) {
+        Self::try_slab_layout(cap).expect("slab size")
+    }
+    fn try_slab_layout(cap: u32) -> Option<(Layout, usize, usize)> {
+        let cap = cap as usize;
+        let (layout, keys) = Layout::array::<Meta>(cap.checked_add(1)?)
+            .and_then(|meta| meta.extend(Layout::array::<K>(cap)?))
+            .ok()?;
+        let (layout, values) = layout
+            .extend(Layout::array::<V>(cap.checked_add(1)?).ok()?)
+            .ok()?;
+        Some((layout.pad_to_align(), keys, values))
+    }
+    /// Moves the slab into a block of `cap` slots; false if the allocator refused it.
+    fn resize_slab(&mut self, cap: u32) -> bool {
+        debug_assert!(cap > self.cap && cap < FREE);
+        let Some((layout, keys, values)) = Self::try_slab_layout(cap) else {
+            return false;
+        };
+        // SAFETY: the meta array alone makes the layout non-empty.
+        let block = unsafe { alloc::alloc(layout) };
+        if block.is_null() {
+            return false;
+        }
+        // SAFETY: the new block has room for every handed-out slot; free slots copy uninitialized bytes.
+        unsafe {
+            let meta = block.cast::<Meta>();
+            let (key_array, value_array) =
+                (block.add(keys).cast::<K>(), block.add(values).cast::<V>());
+            meta.write(Meta { hash: 0, next: END });
+            if self.cap != 0 {
+                let used = self.used as usize;
+                ptr::copy_nonoverlapping(self.meta.as_ptr().add(1), meta.add(1), used);
+                ptr::copy_nonoverlapping(self.keys.as_ptr(), key_array, used);
+                ptr::copy_nonoverlapping(self.values.as_ptr().add(1), value_array.add(1), used);
+                alloc::dealloc(self.meta.as_ptr().cast(), Self::slab_layout(self.cap).0);
+            }
+            self.meta = NonNull::new_unchecked(meta);
+            self.keys = NonNull::new_unchecked(key_array);
+            self.values = NonNull::new_unchecked(value_array);
+        }
+        self.cap = cap;
+        if !self.links.is_empty() {
+            self.links.resize(cap as usize + 1, Links::UNUSED);
+        }
+        true
+    }
+    #[cold]
+    #[inline(never)]
+    fn grow_slab(&mut self) {
+        let cap = match self.cap {
+            0 => FIRST_SLAB,
+            FIRST_SLAB => 3 * FIRST_SLAB,
+            cap => cap.saturating_mul(2).min(FREE - 1),
+        };
+        assert!(cap > self.cap, "JavaHashMap slab overflow");
+        if !self.resize_slab(cap) {
+            alloc::handle_alloc_error(Self::slab_layout(cap).0);
+        }
+    }
+    #[inline]
+    fn new_slot(&mut self, key: K, value: V, hash: i32) -> u32 {
+        let i = if self.free != END {
+            let i = self.free;
+            self.free = self.meta(i).next & !FREE;
+            i
+        } else {
+            if self.used == self.cap {
+                self.grow_slab();
+            }
+            self.used += 1;
+            self.used
+        };
+        // SAFETY: slot i is in the block and free; writing makes it live.
+        unsafe {
+            self.meta
+                .as_ptr()
+                .add(i as usize)
+                .write(Meta { hash, next: END });
+            self.key_ptr(i).write(key);
+            self.value_ptr(i).write(value);
+        }
+        i
+    }
+
+    /// Clears the tree links of every node in the list from `head`, leaving a plain bin; no user code.
+    fn untreeify(&mut self, mut head: u32) {
+        while head != END {
+            self.links[head as usize] = Links::UNUSED;
+            head = self.meta(head).next;
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    /// Requested heap storage, excluding the keys' and values' own allocations.
+    pub fn storage_bytes(&self) -> usize {
+        let slab = if self.cap == 0 {
+            0
+        } else {
+            Self::slab_layout(self.cap).0.size()
+        };
+        let table = if self.mask == 0 {
+            0
+        } else {
+            (self.mask + 1) * size_of::<u32>()
+        };
+        slab.saturating_add(table)
+            .saturating_add(self.links.capacity().saturating_mul(size_of::<Links>()))
+    }
+    pub(crate) fn values_in_storage_order(&self) -> impl Iterator<Item = &V> {
+        (1..=self.used)
+            .filter(|&i| self.meta(i).next & FREE == 0)
+            .map(|i| self.value(i))
     }
 }
 
 impl<K: JavaKey, V> JavaHashMap<K, V> {
-    pub fn len(&self) -> usize {
-        self.len
+    /// `HashMap.newHashMap(expected)`: pre-size the table for this many entries,
+    /// without allocating it until the first put.
+    pub fn with_expected_entries(expected: usize) -> Self {
+        let wanted = expected.saturating_mul(4).div_ceil(3);
+        let mut map = Self::default();
+        // Java sizes `newHashMap(0)` to one bucket and doubles it to two on the first put; start at
+        // two, since a one-bucket table has mask 0, which here means "no table yet".
+        map.initial_capacity = wanted.clamp(2, MAX_CAPACITY).next_power_of_two() as u32;
+        map
     }
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
+    /// Reserve physical entry storage without changing the Java table's initial capacity,
+    /// growth thresholds or traversal order. An excessive size hint is ignored.
+    pub fn with_reserved_nodes(entries: usize) -> Self {
+        let mut map = Self::default();
+        if entries > 0 && entries < FREE as usize {
+            map.resize_slab(entries as u32);
+        }
+        map
+    }
+    /// Preserve map state while cloning values in slab order. Only structural
+    /// ownership cloning uses this order; observable traversal uses `entries`.
+    pub(crate) fn clone_with(&self, mut clone_value: impl FnMut(&V) -> V) -> Self
+    where
+        K: Clone,
+    {
+        let mut copy = Self::default();
+        if self.cap != 0 && !copy.resize_slab(self.cap) {
+            alloc::handle_alloc_error(Self::slab_layout(self.cap).0);
+        }
+        for i in 1..=self.used {
+            let meta = self.meta(i);
+            if meta.next & FREE == 0 {
+                let (key, value) = (self.key(i).clone(), clone_value(self.value(i)));
+                // SAFETY: slot i of the copy's block is unused until `used` covers it.
+                unsafe {
+                    copy.key_ptr_unchecked(i).write(key);
+                    copy.value_ptr_unchecked(i).write(value);
+                }
+            }
+            // SAFETY: as above; the record makes slot i live or free in the copy.
+            unsafe { copy.meta.as_ptr().add(i as usize).write(meta) };
+            copy.used = i;
+        }
+        copy.free = self.free;
+        copy.links = self.links.clone();
+        if self.mask != 0 {
+            copy.table = new_table(self.mask + 1);
+            copy.mask = self.mask;
+            // SAFETY: both tables hold `mask + 1` heads.
+            unsafe {
+                ptr::copy_nonoverlapping(self.table.as_ptr(), copy.table.as_ptr(), self.mask + 1)
+            };
+        }
+        copy.initial_capacity = self.initial_capacity;
+        copy.threshold = self.threshold;
+        copy.len = self.len;
+        copy
+    }
+    fn key_ptr_unchecked(&self, i: u32) -> *mut K {
+        // SAFETY: callers pass 1..=cap.
+        unsafe { self.keys.as_ptr().add(i as usize - 1) }
+    }
+    fn value_ptr_unchecked(&self, i: u32) -> *mut V {
+        // SAFETY: callers pass 1..=cap.
+        unsafe { self.values.as_ptr().add(i as usize) }
     }
     /// Native new HashMap(source), including sizing before entry insertion.
     /// Values are cloned according to their storage semantics (shared handles
@@ -166,193 +699,428 @@ impl<K: JavaKey, V> JavaHashMap<K, V> {
         K: Clone,
         V: Clone,
     {
-        let mut copy = Self::default();
-        if self.len > 0 {
-            // The smallest power of two at least len / 0.75.
-            let wanted = self.len.saturating_mul(4).div_ceil(3);
-            copy.initial_capacity = wanted.min(MAX_CAPACITY).next_power_of_two();
-            copy.nodes.reserve(self.len);
-            for (key, value) in self.entries() {
-                copy.put(key.clone(), value.clone());
-            }
+        Self::from_copy_entries(
+            self.len(),
+            self.entries().map(|(k, v)| (k.clone(), v.clone())),
+        )
+    }
+    /// Rebuild at the Java copy-constructor capacity, moving the owned entries.
+    pub(crate) fn into_copy(self) -> Self {
+        Self::from_copy_entries(self.len(), self)
+    }
+    fn from_copy_entries(size: usize, entries: impl IntoIterator<Item = (K, V)>) -> Self {
+        if size == 0 {
+            return Self::default();
+        }
+        let mut copy = Self::with_expected_entries(size);
+        let slots = u32::try_from(size)
+            .ok()
+            .filter(|&n| n < FREE)
+            .expect("JavaHashMap slab overflow");
+        if !copy.resize_slab(slots) {
+            alloc::handle_alloc_error(Self::slab_layout(slots).0);
+        }
+        for (key, value) in entries {
+            copy.put(key, value);
         }
         copy
     }
-    pub fn get(&self, key: &K) -> Option<&V> {
-        let (_, i) = self.find(key)?;
-        Some(&self.node(i).value)
+    pub(crate) fn cleared(&self) -> Self {
+        let mut map = Self::default();
+        map.initial_capacity = if self.mask == 0 {
+            self.initial_capacity
+        } else {
+            (self.mask + 1) as u32
+        };
+        map
     }
-    pub fn entries(&self) -> impl Iterator<Item = (&K, &V)> {
-        let mut next = self.first_node_from(0);
-        std::iter::from_fn(move || {
-            if next == NIL {
-                return None;
-            }
-            let node = self.node(next);
-            next = self.successor(next);
-            Some((&node.key, &node.value))
-        })
+    #[inline]
+    pub fn get<Q: JavaKey + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        let i = self.find_slot(key, spread(key.java_hash()))?;
+        Some(self.value(i))
     }
-    pub fn put(&mut self, key: K, value: V) -> Option<V> {
+    pub fn entries(&self) -> Iter<'_, K, V> {
+        Iter {
+            map: self,
+            bucket: 0,
+            next: END,
+            remaining: self.len(),
+        }
+    }
+    pub fn get_mut<Q: JavaKey + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+    {
+        let i = self.find_slot(key, spread(key.java_hash()))?;
+        Some(self.value_mut(i))
+    }
+    pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
         let hash = spread(key.java_hash());
-        if self.buckets.is_empty() {
+        let index = self.find_slot(&key, hash);
+        Entry {
+            map: self,
+            key,
+            hash,
+            index,
+        }
+    }
+    /// Mutate values in Java traversal order without allocating or cloning keys.
+    /// The callback cannot structurally change the map or retain a mutable value.
+    pub fn for_each_mut(&mut self, mut visit: impl FnMut(&K, &mut V)) {
+        let mut next = if self.len == 0 {
+            END
+        } else {
+            self.first_node_from(0)
+        };
+        while next != END {
+            let index = next;
+            next = self.successor(index);
+            let (key, value) = self.key_value_mut(index);
+            visit(key, value);
+        }
+    }
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
+        let mut cursor = self.cursor();
+        while cursor.has_next() {
+            self.next_entry(&mut cursor)
+                .expect("exclusive traversal")
+                .expect("entry");
+            let (key, value) = self.key_value_mut(cursor.current);
+            if !keep(key, value) {
+                self.remove_current(&mut cursor)
+                    .expect("exclusive traversal");
+            }
+        }
+    }
+    /// Java HashMap.computeIfAbsent for a non-null result. Unlike `put`, this
+    /// grows before the lookup and inserts at the head of a plain bin.
+    pub fn compute_if_absent(&mut self, key: K, make: impl FnOnce() -> V) -> &mut V {
+        if self.mask == 0 || self.len > self.threshold {
             self.grow();
         }
-        let b = self.bucket_index(hash);
-        let Bucket { head, root } = self.buckets[b];
-        if head == NIL {
-            self.buckets[b].head = self.alloc(key, value, hash);
-        } else if root != NIL {
-            let found = self.tree_find(root, hash, &key);
-            if found != NIL {
-                return Some(mem::replace(&mut self.node_mut(found).value, value));
-            }
-            self.tree_put(b, key, value, hash);
+        let hash = spread(key.java_hash());
+        if let Some(index) = self.find_slot(&key, hash) {
+            return self.value_mut(index);
+        }
+        let b = hash as u32 as usize & self.mask;
+        let head = self.head(b);
+        let value = make();
+        if let Some(root) = self.root(head) {
+            let index = self.tree_put(b, root, key, value, hash);
+            self.mod_count = self.mod_count.saturating_add(1);
+            self.len += 1;
+            self.value_mut(index)
         } else {
-            let mut len = 0;
-            let mut last = head;
-            let mut i = head;
-            while i != NIL {
-                if self.is_key(i, hash, &key) {
-                    return Some(mem::replace(&mut self.node_mut(i).value, value));
-                }
-                len += 1;
-                last = i;
-                i = self.node(i).next;
+            let mut count = 0;
+            let mut node = head;
+            while node != END {
+                count += 1;
+                node = self.meta(node).next;
             }
-            let new = self.alloc(key, value, hash);
-            self.node_mut(last).next = new;
-            if len >= TREEIFY_LEN {
-                if self.buckets.len() < MIN_TREE_CAPACITY {
+            let index = self.new_slot(key, value, hash);
+            self.meta_mut(index).next = head;
+            self.set_head(b, index);
+            self.mod_count = self.mod_count.saturating_add(1);
+            self.len += 1;
+            if count >= TREEIFY_LEN - 1 {
+                if self.mask + 1 < MIN_TREE_CAPACITY {
                     self.grow();
                 } else {
                     self.treeify(b);
                 }
             }
+            self.value_mut(index)
         }
-        self.mod_count += 1;
+    }
+    #[inline(always)]
+    pub fn put(&mut self, key: K, value: V) -> Option<V> {
+        let hash = spread(key.java_hash());
+        self.put_hashed(key, value, hash)
+    }
+    #[inline(always)]
+    fn put_hashed(&mut self, key: K, value: V, hash: i32) -> Option<V> {
+        if self.mask == 0 {
+            self.grow();
+        }
+        let b = hash as u32 as usize & self.mask;
+        let head = self.head(b);
+        let i = if head == END {
+            self.new_slot(key, value, hash)
+        } else {
+            let first = self.meta(head);
+            if first.next != END || first.hash == hash || !self.links.is_empty() {
+                return self.put_in_bin(b, head, key, value, hash);
+            }
+            let i = self.new_slot(key, value, hash);
+            self.meta_mut(head).next = i;
+            i
+        };
+        if head == END {
+            // SAFETY: `b` was masked with this allocated table's `mask` above, and nothing since resized it.
+            unsafe { *self.table.as_ptr().add(b) = i };
+        }
+        self.added_slot();
+        None
+    }
+    #[inline(always)]
+    fn added_slot(&mut self) {
+        self.mod_count = self.mod_count.saturating_add(1);
+        self.len += 1;
+        if self.len > self.threshold {
+            self.grow();
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn put_in_bin(&mut self, b: usize, head: u32, key: K, value: V, hash: i32) -> Option<V> {
+        if !self.links.is_empty() && self.root(head).is_some() {
+            return self.tree_put_or_replace(b, head, key, value, hash);
+        }
+        let mut len = 1;
+        let mut last = head;
+        loop {
+            let meta = self.meta(last);
+            if meta.hash == hash && *self.key(last) == key {
+                return Some(mem::replace(self.value_mut(last), value));
+            }
+            if meta.next == END {
+                break;
+            }
+            last = meta.next;
+            len += 1;
+        }
+        let new = self.new_slot(key, value, hash);
+        self.meta_mut(last).next = new;
+        // Count the node before treeify runs user comparisons, so an unwind leaves `len` and cursors exact.
+        self.mod_count = self.mod_count.saturating_add(1);
+        self.len += 1;
+        if len >= TREEIFY_LEN {
+            if self.mask + 1 < MIN_TREE_CAPACITY {
+                self.grow();
+            } else {
+                self.treeify(b);
+            }
+        }
+        if self.len > self.threshold {
+            self.grow();
+        }
+        None
+    }
+    #[inline(never)]
+    fn tree_put_or_replace(
+        &mut self,
+        b: usize,
+        head: u32,
+        key: K,
+        value: V,
+        hash: i32,
+    ) -> Option<V> {
+        let root = self.root(head).expect("tree bin");
+        let found = self.tree_find(root, hash, &key);
+        if found != NIL {
+            return Some(mem::replace(self.value_mut(found), value));
+        }
+        self.tree_put(b, root, key, value, hash);
+        self.mod_count = self.mod_count.saturating_add(1);
         self.len += 1;
         if self.len > self.threshold {
             self.grow();
         }
         None
     }
-    pub fn remove(&mut self, key: &K) -> Option<V> {
-        let (b, i) = self.find(key)?;
-        Some(self.remove_node(b, i, true))
+    pub fn remove<Q: JavaKey + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        let hash = spread(key.java_hash());
+        let i = self.find_slot(key, hash)?;
+        Some(self.remove_node(hash as u32 as usize & self.mask, i, true))
     }
     pub fn clear(&mut self) {
-        self.mod_count += 1;
+        self.mod_count = self.mod_count.saturating_add(1);
         if self.len > 0 {
-            self.buckets.fill(Bucket::EMPTY);
             self.len = 0;
+            // SAFETY: a non-empty map has its own table of `mask + 1` heads.
+            unsafe { ptr::write_bytes(self.table.as_ptr(), 0, self.mask + 1) };
         }
-        self.nodes.clear();
-        self.free.clear();
         self.links.clear();
+        let used = mem::replace(&mut self.used, 0);
+        self.free = END;
+        for i in 1..=used {
+            // SAFETY: slots 1..=used are in the block; `used` is already 0, so a panicking drop only leaks.
+            unsafe {
+                let meta = &mut *self.meta.as_ptr().add(i as usize);
+                if meta.next & FREE == 0 {
+                    meta.next = FREE;
+                    ptr::drop_in_place(self.key_ptr_unchecked(i));
+                    ptr::drop_in_place(self.value_ptr_unchecked(i));
+                }
+            }
+        }
     }
     pub fn cursor(&self) -> Cursor {
+        let (next_bucket, next) = self.cursor_head_from(0);
         Cursor {
             map: self.id,
             expected_mod_count: self.mod_count,
-            next: self.first_node_from(0),
-            current: NIL,
+            next,
+            next_bucket,
+            current: END,
+            current_bucket: 0,
         }
     }
     /// Call while has_next is true. The returned values reflect replacements made
     /// after iterator creation; structural changes are rejected before access.
+    #[inline]
     pub fn next_entry(&self, c: &mut Cursor) -> Result<Option<(&K, &V)>, CursorError> {
         if c.map != self.id {
             return Err(CursorError::WrongMap);
         }
-        if c.expected_mod_count != self.mod_count {
+        if c.expected_mod_count != self.mod_count || self.mod_count == u64::MAX {
             return Err(CursorError::ConcurrentModification);
         }
-        if c.next == NIL {
+        if c.next == END {
             return Ok(None);
         }
         let i = c.next;
         c.current = i;
-        c.next = self.successor(i);
-        let node = self.node(i);
-        Ok(Some((&node.key, &node.value)))
+        c.current_bucket = c.next_bucket;
+        let next = self.meta(i).next;
+        if next != END {
+            c.next = next;
+        } else {
+            (c.next_bucket, c.next) = self.cursor_head_from(c.next_bucket as usize + 1);
+        }
+        Ok(Some((self.key(i), self.value(i))))
     }
+    #[inline(always)]
     pub fn remove_current(&mut self, c: &mut Cursor) -> Result<(), CursorError> {
         if c.map != self.id {
             return Err(CursorError::WrongMap);
         }
-        if c.current == NIL {
+        if c.current == END {
             return Err(CursorError::NoCurrentEntry);
         }
-        if c.expected_mod_count != self.mod_count {
+        if c.expected_mod_count != self.mod_count || self.mod_count == u64::MAX {
             return Err(CursorError::ConcurrentModification);
         }
-        let i = mem::replace(&mut c.current, NIL);
-        let b = self.bucket_index(self.node(i).hash);
-        self.remove_node(b, i, false);
+        let i = mem::replace(&mut c.current, END);
+        let b = c.current_bucket as usize;
+        // Inline only the common case: the visited node heads a plain bin.
+        if self.links.is_empty() && self.head(b) == i {
+            let next = self.meta(i).next;
+            self.set_head(b, next);
+            self.mod_count = self.mod_count.saturating_add(1);
+            self.len -= 1;
+            drop(self.take(i));
+        } else {
+            self.remove_node_outlined(b, i);
+        }
         c.expected_mod_count = self.mod_count;
         Ok(())
     }
+    #[inline(never)]
+    fn remove_node_outlined(&mut self, b: usize, i: u32) {
+        self.remove_node(b, i, false);
+    }
 
-    fn node(&self, i: u32) -> &Node<K, V> {
-        self.nodes[i as usize].as_ref().expect("live node")
-    }
-    fn node_mut(&mut self, i: u32) -> &mut Node<K, V> {
-        self.nodes[i as usize].as_mut().expect("live node")
-    }
-    fn alloc(&mut self, key: K, value: V, hash: i32) -> u32 {
-        let node = Some(Node {
-            key,
-            value,
-            hash,
-            next: NIL,
-        });
-        if let Some(i) = self.free.pop() {
-            self.nodes[i as usize] = node;
-            return i;
-        }
-        self.nodes.push(node);
-        if !self.links.is_empty() {
-            self.links.push(Links::UNUSED);
-        }
-        (self.nodes.len() - 1) as u32
-    }
-    fn bucket_index(&self, hash: i32) -> usize {
-        hash as u32 as usize & (self.buckets.len() - 1)
-    }
-    fn is_key(&self, i: u32, hash: i32, key: &K) -> bool {
-        let node = self.node(i);
-        node.hash == hash && node.key == *key
-    }
-    /// The bucket and node holding the key equal to `key`.
-    fn find(&self, key: &K) -> Option<(usize, u32)> {
-        if self.buckets.is_empty() {
+    /// The live slot whose key equals `key`.
+    #[inline(always)]
+    fn find_slot<Q: JavaKey + ?Sized>(&self, key: &Q, hash: i32) -> Option<u32>
+    where
+        K: Borrow<Q>,
+    {
+        let head = self.head(hash as u32 as usize & self.mask);
+        if head == END {
             return None;
         }
+        // After any `eq` call the search continues out of line, so `hash` is never live across one.
+        let first = self.meta(head);
+        if first.hash == hash {
+            return if self.key(head).borrow() == key {
+                Some(head)
+            } else {
+                self.find_after(head, self.meta(head).next, key)
+            };
+        }
+        if first.next == END {
+            return None;
+        }
+        if !self.links.is_empty() {
+            return self.find_after(head, first.next, key);
+        }
+        let second = self.meta(first.next);
+        if second.hash == hash {
+            return if self.key(first.next).borrow() == key {
+                Some(first.next)
+            } else {
+                self.find_after(head, self.meta(first.next).next, key)
+            };
+        }
+        if second.next == END {
+            return None;
+        }
+        self.find_after(head, second.next, key)
+    }
+    /// The rest of the search: the tree of `head`'s bin, or its list from slot `i` (END: none left).
+    #[inline(never)]
+    fn find_after<Q: JavaKey + ?Sized>(&self, head: u32, mut i: u32, key: &Q) -> Option<u32>
+    where
+        K: Borrow<Q>,
+    {
         let hash = spread(key.java_hash());
-        let b = self.bucket_index(hash);
-        let Bucket { head, root } = self.buckets[b];
-        let found = if root != NIL {
-            self.tree_find(root, hash, key)
-        } else {
-            let mut i = head;
-            while i != NIL && !self.is_key(i, hash, key) {
-                i = self.node(i).next;
+        if let Some(root) = self.tree_root(head) {
+            let index = self.tree_find(root, hash, key);
+            return (index != NIL).then_some(index);
+        }
+        while i != END {
+            let meta = self.meta(i);
+            if meta.hash == hash && self.key(i).borrow() == key {
+                return Some(i);
             }
-            i
-        };
-        (found != NIL).then_some((b, found))
+            i = meta.next;
+        }
+        None
+    }
+    #[inline(always)]
+    fn tree_root(&self, head: u32) -> Option<u32> {
+        if self.links.is_empty() {
+            None
+        } else {
+            self.root(head)
+        }
+    }
+    /// The actual tree root, even if a cursor removed nodes without moving it to the front.
+    fn root(&self, head: u32) -> Option<u32> {
+        let links = self.links.get(head as usize)?;
+        if !links.in_tree {
+            return None;
+        }
+        let mut i = head;
+        let mut parent = links.parent;
+        while parent != NIL {
+            i = parent;
+            parent = self.links[i as usize].parent;
+        }
+        Some(i)
     }
     /// The node of the key equal to `key` in the subtree at `p`. Trees are ordered by hash
     /// first, so a different hash rules out one side; nodes with the same hash can be on both.
-    fn tree_find(&self, mut p: u32, hash: i32, key: &K) -> u32 {
+    fn tree_find<Q: JavaKey + ?Sized>(&self, mut p: u32, hash: i32, key: &Q) -> u32
+    where
+        K: Borrow<Q>,
+    {
         while p != NIL {
-            let node = self.node(p);
+            let node_hash = self.meta(self.tree_node(p)).hash;
+            let node_key = self.key(p);
             let links = self.links[p as usize];
-            p = match node.hash.cmp(&hash) {
+            p = match node_hash.cmp(&hash) {
                 Ordering::Greater => links.left,
                 Ordering::Less => links.right,
-                Ordering::Equal if node.key == *key => return p,
+                Ordering::Equal if node_key.borrow() == key => return p,
                 Ordering::Equal => {
                     let found = self.tree_find(links.right, hash, key);
                     if found != NIL {
@@ -366,34 +1134,53 @@ impl<K: JavaKey, V> JavaHashMap<K, V> {
     }
     /// Whether `key`, with spread hash `hash`, goes left of tree node `p`: by hash, then by
     /// `comparable_compare`, then by `tie_break` when that is absent or equal.
+    /// Checks that tree link `p` names a live slot before its key is read: a broken invariant panics instead.
+    fn tree_node(&self, p: u32) -> u32 {
+        assert!(
+            p != END && p <= self.used && self.meta(p).next & FREE == 0,
+            "tree link to a dead slot"
+        );
+        p
+    }
     fn goes_left(&self, key: &K, hash: i32, p: u32) -> bool {
-        let node = self.node(p);
-        match node.hash.cmp(&hash) {
+        match self.meta(self.tree_node(p)).hash.cmp(&hash) {
             Ordering::Greater => true,
             Ordering::Less => false,
-            Ordering::Equal => match key.comparable_compare(&node.key) {
-                Some(Ordering::Less) => true,
-                Some(Ordering::Greater) => false,
-                _ => key.tie_break(&node.key) != Ordering::Greater,
-            },
+            Ordering::Equal => {
+                let node_key = self.key(p);
+                match key.comparable_compare(node_key) {
+                    Some(Ordering::Less) => true,
+                    Some(Ordering::Greater) => false,
+                    _ => key.tie_break(node_key) != Ordering::Greater,
+                }
+            }
         }
     }
     /// RB-INSERT of node `i` into the tree at `root` (NIL for an empty tree), descending by
     /// `goes_left`, then RB-INSERT-FIXUP. Returns the new root and the node `i` hangs from.
     fn attach(&mut self, root: u32, i: u32) -> (u32, u32) {
+        let (parent, to_left) = self.attach_point(root, self.key(i), self.meta(i).hash);
+        self.link_into_tree(root, i, parent, to_left)
+    }
+    /// Where RB-INSERT hangs a node with `key` and `hash`: its parent (NIL for an empty tree) and side.
+    fn attach_point(&self, root: u32, key: &K, hash: i32) -> (u32, bool) {
         let mut parent = NIL;
         let mut to_left = false;
-        let node = self.node(i);
         let mut p = root;
         while p != NIL {
             parent = p;
-            to_left = self.goes_left(&node.key, node.hash, p);
+            to_left = self.goes_left(key, hash, p);
             let links = self.links[p as usize];
             p = if to_left { links.left } else { links.right };
         }
+        (parent, to_left)
+    }
+    /// Links node `i` under `parent` and runs RB-INSERT-FIXUP; no user code. Returns the new root and `parent`.
+    fn link_into_tree(&mut self, root: u32, i: u32, parent: u32, to_left: bool) -> (u32, u32) {
         self.links[i as usize] = Links {
             parent,
             red: true,
+            in_tree: true,
             ..Links::UNUSED
         };
         let mut tree = Tree {
@@ -414,170 +1201,285 @@ impl<K: JavaKey, V> JavaHashMap<K, V> {
     /// Turns bucket `b`'s plain bin into a tree bin: its nodes go into a new tree one by one in
     /// list order, then the root moves to the front. The list order is otherwise unchanged.
     fn treeify(&mut self, b: usize) {
-        if self.links.len() < self.nodes.len() {
-            self.links.resize(self.nodes.len(), Links::UNUSED);
+        if self.links.len() <= self.cap as usize {
+            self.links.resize(self.cap as usize + 1, Links::UNUSED);
         }
+        // If a user comparison unwinds, the whole bin goes back to a plain list with no tree links.
+        struct PlainOnUnwind<'m, K, V> {
+            map: &'m mut JavaHashMap<K, V>,
+            b: usize,
+            armed: bool,
+        }
+        impl<K, V> Drop for PlainOnUnwind<'_, K, V> {
+            fn drop(&mut self) {
+                if self.armed {
+                    let head = self.map.head(self.b);
+                    self.map.untreeify(head);
+                }
+            }
+        }
+        let mut guard = PlainOnUnwind {
+            map: self,
+            b,
+            armed: true,
+        };
+        let map = &mut *guard.map;
         let mut root = NIL;
-        let mut i = self.buckets[b].head;
-        while i != NIL {
-            root = self.attach(root, i).0;
-            i = self.node(i).next;
+        let mut i = map.head(b);
+        while i != END {
+            root = map.attach(root, i).0;
+            i = map.meta(i).next;
         }
-        self.buckets[b].root = root;
-        self.move_root_to_front(b);
+        map.move_root_to_front(b, root);
+        guard.armed = false;
     }
     /// A new key into the tree bin of bucket `b`: it joins the tree, and the list right after
     /// its tree parent.
-    fn tree_put(&mut self, b: usize, key: K, value: V, hash: i32) {
-        let new = self.alloc(key, value, hash);
-        let (root, parent) = self.attach(self.buckets[b].root, new);
-        self.buckets[b].root = root;
-        let after = self.node(parent).next;
-        self.node_mut(new).next = after;
-        self.node_mut(parent).next = new;
-        self.move_root_to_front(b);
+    fn tree_put(&mut self, b: usize, root: u32, key: K, value: V, hash: i32) -> u32 {
+        // All user comparisons happen before the slot exists, so an unwind leaves the map untouched.
+        let (parent, to_left) = self.attach_point(root, &key, hash);
+        let new = self.new_slot(key, value, hash);
+        let (root, parent) = self.link_into_tree(root, new, parent, to_left);
+        let after = self.meta(parent).next;
+        self.meta_mut(new).next = after;
+        self.meta_mut(parent).next = new;
+        self.move_root_to_front(b, root);
+        new
     }
     /// Puts the tree's root first in the bin's list, the other nodes keeping their order.
-    fn move_root_to_front(&mut self, b: usize) {
-        let Bucket { head, root } = self.buckets[b];
+    fn move_root_to_front(&mut self, b: usize, root: u32) {
+        let root = self.tree_node(root);
+        let head = self.head(b);
         if root != head {
             self.unlink(b, root);
-            self.node_mut(root).next = head;
-            self.buckets[b].head = root;
+            self.meta_mut(root).next = head;
+            self.set_head(b, root);
         }
     }
     /// Takes node `i` out of bucket `b`'s list; the others keep their order.
+    #[inline]
     fn unlink(&mut self, b: usize, i: u32) {
-        let next = self.node(i).next;
-        let head = self.buckets[b].head;
+        let next = self.meta(i).next;
+        let head = self.head(b);
         if head == i {
-            self.buckets[b].head = next;
+            self.set_head(b, next);
             return;
         }
         let mut p = head;
-        while self.node(p).next != i {
-            p = self.node(p).next;
+        while self.meta(p).next != i {
+            p = self.meta(p).next;
         }
-        self.node_mut(p).next = next;
+        self.meta_mut(p).next = next;
     }
     /// Removes node `i` from bucket `b`. In a tree bin, a movable removal (`remove`) turns a
     /// small tree back into a plain bin, judged on the tree before the removal, and otherwise
     /// moves the new root to the front; a cursor's removal does neither.
+    #[inline]
     fn remove_node(&mut self, b: usize, i: u32, movable: bool) -> V {
-        let root = self.buckets[b].root;
+        let root = self.tree_root(self.head(b));
         self.unlink(b, i);
-        if self.buckets[b].head == NIL {
-            self.buckets[b].root = NIL;
-        } else if root != NIL {
+        if let Some(root) = root {
+            self.remove_tree_node(b, i, root, movable);
+        }
+        self.mod_count = self.mod_count.saturating_add(1);
+        self.len -= 1;
+        let (key, value) = self.take(i);
+        drop(key);
+        value
+    }
+    #[cold]
+    fn remove_tree_node(&mut self, b: usize, i: u32, root: u32, movable: bool) {
+        let head = self.head(b);
+        if head != END {
             let small = movable && {
                 let top = self.links[root as usize];
                 top.right == NIL || top.left == NIL || self.links[top.left as usize].left == NIL
             };
             if small {
-                self.buckets[b].root = NIL;
+                self.untreeify(head);
             } else {
+                assert!(
+                    self.links[i as usize].in_tree,
+                    "tree bin holds a node outside its tree"
+                );
                 let mut tree = Tree {
                     links: &mut self.links,
                     root,
                     nil_parent: NIL,
                 };
                 tree.delete(i);
-                self.buckets[b].root = tree.root;
+                let root = tree.root;
                 if movable {
-                    self.move_root_to_front(b);
+                    self.move_root_to_front(b, root);
                 }
             }
         }
-        self.mod_count += 1;
-        self.len -= 1;
-        let node = self.nodes[i as usize].take().expect("live node");
-        self.free.push(i);
-        node.value
+        self.links[i as usize] = Links::UNUSED;
     }
     /// The node after `i` in iteration order.
     fn successor(&self, i: u32) -> u32 {
-        let node = self.node(i);
-        if node.next != NIL {
-            node.next
+        let meta = self.meta(i);
+        if meta.next != END {
+            meta.next
         } else {
-            self.first_node_from(self.bucket_index(node.hash) + 1)
+            self.first_node_from((meta.hash as u32 as usize & self.mask) + 1)
         }
+    }
+    fn cursor_head_from(&self, b: usize) -> (u32, u32) {
+        self.table()[b..]
+            .iter()
+            .position(|&head| head != END)
+            .map_or((0, END), |offset| {
+                ((offset + b) as u32, self.head(offset + b))
+            })
     }
     /// The first node of the first non-empty bucket from `b` on.
     fn first_node_from(&self, b: usize) -> u32 {
-        self.buckets[b..]
+        self.table()[b..]
             .iter()
-            .find(|bucket| bucket.head != NIL)
-            .map_or(NIL, |bucket| bucket.head)
+            .copied()
+            .find(|&head| head != END)
+            .unwrap_or(END)
     }
     /// Allocates the first table, or doubles it. Old bucket `j` splits into `j` and `j + old`
     /// by the hash bit `old`, each half in its old order; a single node keeps its bin kind.
+    #[cold]
+    #[inline(never)]
     fn grow(&mut self) {
-        let old = self.buckets.len();
-        if old == 0 {
-            self.buckets = vec![Bucket::EMPTY; self.initial_capacity];
-            self.threshold = threshold_for(self.initial_capacity);
+        if self.mask == 0 {
+            let capacity = self.initial_capacity as usize;
+            self.table = new_table(capacity);
+            self.mask = capacity - 1;
+            self.threshold = threshold_for(capacity);
             return;
         }
+        let old = self.mask + 1;
         if old >= MAX_CAPACITY {
-            self.threshold = usize::MAX;
+            self.threshold = u32::MAX;
             return;
         }
-        let old_buckets = mem::replace(&mut self.buckets, vec![Bucket::EMPTY; old * 2]);
-        for (j, bucket) in old_buckets.into_iter().enumerate() {
-            if bucket.head == NIL {
+        let old_table = mem::replace(&mut self.table, new_table(old * 2));
+        self.mask = old * 2 - 1;
+        // Phase 1 runs no user code: every bin is split, and halves due for a tree are left plain and marked.
+        let mut pending = false;
+        for j in 0..old {
+            // SAFETY: the old table still holds `old` heads; it is freed after this loop.
+            let head = unsafe { *old_table.as_ptr().add(j) };
+            if head == END {
                 continue;
             }
-            let first = self.node(bucket.head);
-            if first.next == NIL {
-                let to = self.bucket_index(first.hash);
-                self.buckets[to] = bucket;
+            let first = self.meta(head);
+            if first.next == END {
+                self.set_head(first.hash as u32 as usize & self.mask, head);
                 continue;
             }
-            let halves = self.split_list(bucket.head, old);
-            for (half, &(head, len)) in halves.iter().enumerate() {
-                if head == NIL {
-                    continue;
-                }
-                let to = j + half * old;
-                if bucket.root == NIL || len <= UNTREEIFY_LEN {
-                    self.buckets[to] = Bucket { head, root: NIL };
-                } else if halves[1 - half].0 != NIL {
-                    self.buckets[to].head = head;
-                    self.treeify(to);
-                } else {
-                    // Every node landed here: same tree, same list, same first node.
-                    self.buckets[to] = bucket;
+            if self
+                .links
+                .get(head as usize)
+                .is_some_and(|link| link.in_tree)
+            {
+                pending |= self.split_tree_bin(j, head, old);
+                continue;
+            }
+            let [(lo, _), (hi, _)] = self.split_list(head, old);
+            if lo != END {
+                self.set_head(j, lo);
+            }
+            if hi != END {
+                self.set_head(j + old, hi);
+            }
+        }
+        // SAFETY: allocated by `new_table(old)`; nothing refers to it now.
+        unsafe { alloc::dealloc(old_table.as_ptr().cast(), table_layout(old)) };
+        self.threshold = threshold_for(old * 2);
+        // Phase 2: the map is consistent; each treeify that unwinds leaves its own bin plain.
+        if pending {
+            self.treeify_pending();
+        }
+    }
+    /// Splits tree bin `j` of an `old`-bucket table during phase 1, with no user code; true if a half awaits treeify.
+    #[cold]
+    #[inline(never)]
+    fn split_tree_bin(&mut self, j: usize, head: u32, old: usize) -> bool {
+        let halves = self.split_list(head, old);
+        let mut pending = false;
+        for (half, &(head, len)) in halves.iter().enumerate() {
+            if head == END {
+                continue;
+            }
+            self.set_head(j + half * old, head);
+            if len <= UNTREEIFY_LEN {
+                self.untreeify(head);
+            } else if halves[1 - half].0 != END {
+                self.untreeify(head);
+                self.links[head as usize] = Links::PENDING;
+                pending = true;
+            }
+            // If the whole tree landed here, its links and head stay unchanged.
+        }
+        pending
+    }
+    #[cold]
+    #[inline(never)]
+    fn treeify_pending(&mut self) {
+        // On unwind the remaining marks are cleared too, so no PENDING link outlives `grow`.
+        struct ClearMarks<'m, K, V>(&'m mut JavaHashMap<K, V>);
+        impl<K, V> Drop for ClearMarks<'_, K, V> {
+            fn drop(&mut self) {
+                for b in 0..=self.0.mask {
+                    let head = self.0.head(b);
+                    if head != END && self.0.links[head as usize].is_pending() {
+                        self.0.links[head as usize] = Links::UNUSED;
+                    }
                 }
             }
         }
-        self.threshold = threshold_for(old * 2);
+        let guard = ClearMarks(self);
+        for b in 0..=guard.0.mask {
+            let head = guard.0.head(b);
+            if head != END && guard.0.links[head as usize].is_pending() {
+                guard.0.links[head as usize] = Links::UNUSED;
+                guard.0.treeify(b);
+            }
+        }
     }
     /// Splits the list at `head` into the nodes whose hash has `bit` clear and those with it
     /// set, each in its old order. Returns each half's first node and length.
+    #[inline]
     fn split_list(&mut self, head: u32, bit: usize) -> [(u32, usize); 2] {
-        let mut halves = [(NIL, 0); 2];
-        let mut tails = [NIL; 2];
+        // Scalars rather than two-element arrays keep both halves in registers.
+        let (mut lo_head, mut lo_tail, mut lo_len) = (END, END, 0);
+        let (mut hi_head, mut hi_tail, mut hi_len) = (END, END, 0);
         let mut i = head;
-        while i != NIL {
-            let node = self.node(i);
-            let next = node.next;
-            let half = usize::from(node.hash as u32 as usize & bit != 0);
-            if tails[half] == NIL {
-                halves[half].0 = i;
+        while i != END {
+            let meta = self.meta(i);
+            let hi = meta.hash as u32 as usize & bit != 0;
+            let tail = if hi { hi_tail } else { lo_tail };
+            if tail == END {
+                if hi {
+                    hi_head = i;
+                } else {
+                    lo_head = i;
+                }
             } else {
-                self.node_mut(tails[half]).next = i;
+                self.set_next(tail, i);
             }
-            tails[half] = i;
-            halves[half].1 += 1;
-            i = next;
-        }
-        for tail in tails {
-            if tail != NIL {
-                self.node_mut(tail).next = NIL;
+            if hi {
+                hi_tail = i;
+                hi_len += 1;
+            } else {
+                lo_tail = i;
+                lo_len += 1;
             }
+            i = meta.next;
         }
-        halves
+        if lo_tail != END {
+            self.set_next(lo_tail, END);
+        }
+        if hi_tail != END {
+            self.set_next(hi_tail, END);
+        }
+        [(lo_head, lo_len), (hi_head, hi_len)]
     }
 }
 
@@ -858,6 +1760,34 @@ mod tests {
         map.next_entry(cursor)
             .map(|entry| entry.map(|(k, v)| (k.id, *v)))
     }
+    #[test]
+    fn compute_if_absent_prepends_before_treeification() {
+        let mut map = JavaHashMap::default();
+        for id in 0..14 {
+            assert_eq!(*map.compute_if_absent(key(id, id as i32 * 64), || id), id);
+            match id {
+                3 => assert_eq!(order(&map), [3, 2, 1, 0]),
+                9 => assert_eq!(order(&map), [6, 9, 8, 7, 5, 4, 3, 2, 1, 0]),
+                _ => {}
+            }
+        }
+        assert_eq!(order(&map), [6, 9, 10, 11, 12, 13, 8, 7, 5, 4, 3, 2, 1, 0]);
+        assert_eq!(*map.compute_if_absent(key(9, 9 * 64), || unreachable!()), 9);
+    }
+
+    /// Java: `HashMap.newHashMap(0)`, put ids 5, 3, 1 with hashes 5, 3, 1: the table grows 1, 2, 4 buckets, so
+    /// 5 and 1 share bucket 1 and 3 sits in bucket 3.
+    #[test]
+    fn a_zero_hint_map_grows_like_java() {
+        let mut map = JavaHashMap::with_expected_entries(0);
+        for id in [5, 3, 1] {
+            assert_eq!(map.put(key(id, id as i32), id), None);
+        }
+        assert_eq!(order(&map), [5, 1, 3]);
+        assert_eq!(map.get(&key(3, 3)), Some(&3));
+        assert_eq!(map.len(), 3);
+    }
+
     /// Java: `new HashMap<>()`, put ids 0, 1, 2 with hashes 17, 2, 33, then ids 3..=13 (colliders).
     fn colliders() -> JavaHashMap<Key, u32> {
         let mut map = JavaHashMap::default();
@@ -884,6 +1814,20 @@ mod tests {
         assert_eq!(order(&map), [4, 0, 2, 6, 8, 10, 9, 11, 5, 1, 3, 7, 12]);
     }
 
+    #[test]
+    fn fold_resumes_inside_a_collision_bin() {
+        let map = colliders();
+        let mut iter = map.entries();
+        assert_eq!(iter.next().map(|(k, _)| k.id), Some(6));
+        assert_eq!(iter.next().map(|(k, _)| k.id), Some(3));
+        assert_eq!(iter.len(), 12);
+        let rest = iter.fold(Vec::new(), |mut ids, (key, _)| {
+            ids.push(key.id);
+            ids
+        });
+        assert_eq!(rest, [4, 5, 7, 8, 9, 10, 11, 12, 13, 1, 0, 2]);
+    }
+
     /// Java: the steps of `colliders`, printing the order after each put of ids 10..=13.
     #[test]
     fn crowded_bin_grows_a_small_table_and_becomes_a_tree_at_64() {
@@ -905,6 +1849,44 @@ mod tests {
         // The eleventh makes a tree bin; its root, 6, moves to the front of the list.
         map.put(collider(13), 13);
         assert_eq!(order(&map), [6, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 1, 0, 2]);
+    }
+
+    #[test]
+    fn compute_if_absent_preserves_java_order_across_treeification_and_split() {
+        let mut map = JavaHashMap::default();
+        for (id, hash) in [(0, 17), (1, 2), (2, 33)] {
+            map.compute_if_absent(key(id, hash), || id);
+        }
+        for id in 3..=9 {
+            map.compute_if_absent(collider(id), || id);
+        }
+        assert_eq!(order(&map), [9, 8, 7, 6, 5, 4, 3, 2, 0, 1]);
+        for id in 10..=14 {
+            map.compute_if_absent(collider(id), || id);
+        }
+        // The crowded bucket grew twice and treeified. The root moved first;
+        // the remaining nodes are still in the bucket's linked-list order.
+        let before_split = [9, 12, 13, 14, 11, 10, 8, 7, 6, 5, 4, 3, 1, 0, 2];
+        assert_eq!(order(&map), before_split);
+        for id in 15..=48 {
+            map.compute_if_absent(key(id, 4000 + id as i32), || id);
+        }
+        let fixture_keys = |map: &JavaHashMap<_, _>| {
+            order(map)
+                .into_iter()
+                .filter(|&id| id < 15)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fixture_keys(&map), before_split);
+        // At 49 entries, even an existing lookup resizes before the lookup.
+        assert_eq!(
+            map.compute_if_absent(key(0, 17), || panic!("existing key")),
+            &0
+        );
+        assert_eq!(
+            fixture_keys(&map),
+            [9, 13, 11, 7, 5, 3, 1, 0, 2, 14, 12, 10, 8, 6, 4]
+        );
     }
 
     /// Java: `colliders`, then put id 14 with hash 320, the hash of id 8.
@@ -944,6 +1926,24 @@ mod tests {
         assert_eq!(order(&map), [10, 9, 11, 12, 13, 15, 16, 1, 0, 2]);
     }
 
+    #[test]
+    fn cursor_removes_the_visited_entry_after_advancing_to_another_bin() {
+        let mut map = JavaHashMap::default();
+        let first = key(1, 0);
+        let last_in_bin = key(2, 0);
+        let other_bin = key(3, 2);
+        for key in [first, last_in_bin, other_bin] {
+            map.put(key, key.id);
+        }
+        let mut cursor = map.cursor();
+        assert_eq!(next(&map, &mut cursor), Ok(Some((1, 1))));
+        assert_eq!(next(&map, &mut cursor), Ok(Some((2, 2))));
+        assert_eq!(map.remove_current(&mut cursor), Ok(()));
+        assert_eq!(map.get(&last_in_bin), None);
+        assert_eq!(next(&map, &mut cursor), Ok(Some((3, 3))));
+        assert_eq!(order(&map), [1, 3]);
+    }
+
     /// Java: `colliders`; its entry set's iterator: next() (id 6) and remove(); put id 15 with
     /// hash 704. Then a new `colliders` whose iterator removes the first eight entries; put id 18
     /// with hash 512, the hash of id 11.
@@ -954,6 +1954,9 @@ mod tests {
         assert_eq!(next(&map, &mut cursor), Ok(Some((6, 6))));
         assert_eq!(map.remove_current(&mut cursor), Ok(()));
         assert_eq!(order(&map), [3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 1, 0, 2]);
+        assert_eq!(map.get(&collider(6)), None);
+        assert_eq!(map.get(&collider(7)), Some(&7));
+        assert_eq!(map.get(&collider(13)), Some(&13));
         // The next tree insertion moves the root left by the removal, 7, to the front.
         map.put(key(15, 704), 15);
         assert_eq!(order(&map), [7, 3, 4, 5, 8, 9, 10, 11, 12, 13, 15, 1, 0, 2]);
@@ -968,6 +1971,40 @@ mod tests {
         // Three nodes, still a tree bin: 18 goes after its tree parent 11, then root 12 moves first.
         map.put(key(18, 512), 18);
         assert_eq!(order(&map), [12, 11, 18, 13, 1, 0, 2]);
+    }
+
+    #[test]
+    fn physical_reservation_does_not_change_small_table_growth_or_tree_order() {
+        let mut regular = JavaHashMap::default();
+        let mut reserved = JavaHashMap::with_reserved_nodes(64);
+        for (key, id) in [(key(0, 17), 0), (key(1, 2), 1), (key(2, 33), 2)]
+            .into_iter()
+            .chain((3..=13).map(|id| (collider(id), id)))
+        {
+            assert_eq!(regular.put(key, id), reserved.put(key, id));
+            assert_eq!(order(&regular), order(&reserved));
+        }
+    }
+
+    #[test]
+    fn cursor_leaves_a_singleton_tree_that_survives_table_growth() {
+        let mut map = colliders();
+        let mut cursor = map.cursor();
+        while let Some((id, _)) = next(&map, &mut cursor).unwrap() {
+            if id != 6 {
+                map.remove_current(&mut cursor).unwrap();
+            }
+        }
+        // 49 live entries double this 64-bucket table, leaving the tree in bucket 64.
+        for hash in 1..=48 {
+            let id = 100 + hash as u32;
+            map.put(key(id, hash), id);
+        }
+        assert_eq!(map.get(&collider(6)), Some(&6));
+        map.put(key(20, 192), 20);
+        map.put(key(21, 192), 21);
+        // Observed on the JVM: the third put moves the root first. A plain bin would append.
+        assert_eq!(order(&map)[48..], [20, 6, 21]);
     }
 
     /// Java: the 13 puts of the doubling test, remove id 9, `new HashMap<>(map)`, then put id 9
@@ -985,10 +2022,11 @@ mod tests {
         map.remove(&key(9, 3));
         assert_eq!(order(&map), [4, 0, 2, 6, 8, 10, 11, 5, 1, 3, 7, 12]);
         // 12 entries fit 16 buckets, where the source has 32.
-        let mut copy = map.copied();
-        assert_eq!(order(&copy), [4, 5, 0, 2, 1, 3, 6, 8, 7, 10, 11, 12]);
-        copy.put(key(9, 3), 9);
-        assert_eq!(order(&copy), [4, 0, 2, 6, 8, 10, 9, 11, 5, 1, 3, 7, 12]);
+        for mut copy in [map.copied(), map.into_copy()] {
+            assert_eq!(order(&copy), [4, 5, 0, 2, 1, 3, 6, 8, 7, 10, 11, 12]);
+            copy.put(key(9, 3), 9);
+            assert_eq!(order(&copy), [4, 0, 2, 6, 8, 10, 9, 11, 5, 1, 3, 7, 12]);
+        }
 
         let mut one = JavaHashMap::default();
         one.put(key(0, 1), 0);
@@ -1046,5 +2084,383 @@ mod tests {
         // Not a Java case: a cursor handed to another map.
         assert_eq!(next(&map, &mut d), Err(WrongMap));
         assert_eq!(map.remove_current(&mut d), Err(WrongMap));
+    }
+}
+
+#[cfg(test)]
+mod slab_tests {
+    use super::*;
+    use std::rc::Rc;
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct Owned(Rc<(u32, i32)>);
+    impl JavaKey for Owned {
+        fn java_hash(&self) -> i32 {
+            self.0.1
+        }
+        fn comparable_compare(&self, other: &Self) -> Option<Ordering> {
+            Some(self.0.0.cmp(&other.0.0))
+        }
+        fn tie_break(&self, other: &Self) -> Ordering {
+            self.0.0.cmp(&other.0.0)
+        }
+    }
+    fn owned(id: u32, hash: i32) -> Owned {
+        Owned(Rc::new((id, hash)))
+    }
+    fn ids(map: &JavaHashMap<Owned, Rc<u32>>) -> Vec<u32> {
+        map.entries().map(|(k, _)| k.0.0).collect()
+    }
+
+    /// Keys and values that own heap data are dropped exactly once on remove, clear, replace and drop.
+    #[test]
+    fn owned_entries_drop_once_through_every_path() {
+        let keys: Vec<Owned> = (0..200).map(|id| owned(id, (id as i32 % 7) * 64)).collect();
+        let values: Vec<Rc<u32>> = (0..200).map(Rc::new).collect();
+        {
+            let mut map = JavaHashMap::default();
+            for (k, v) in keys.iter().zip(&values) {
+                assert!(map.put(k.clone(), v.clone()).is_none());
+            }
+            assert_eq!(
+                map.put(keys[3].clone(), values[4].clone()),
+                Some(values[3].clone())
+            );
+            for k in keys.iter().step_by(3) {
+                assert!(map.remove(k).is_some());
+            }
+            let copy = map.copied();
+            let clone = map.clone_with(Rc::clone);
+            assert_eq!(ids(&copy).len(), map.len());
+            assert_eq!(ids(&clone), ids(&map));
+            assert_eq!(
+                clone
+                    .values_in_storage_order()
+                    .map(|v| **v)
+                    .collect::<Vec<_>>(),
+                map.values_in_storage_order()
+                    .map(|v| **v)
+                    .collect::<Vec<_>>()
+            );
+            map.clear();
+            assert!(map.is_empty() && map.entries().next().is_none());
+            for (k, v) in keys.iter().zip(&values).take(20) {
+                map.put(k.clone(), v.clone());
+            }
+            let moved: Vec<u32> = clone.into_iter().map(|(k, _)| k.0.0).collect();
+            assert_eq!(moved.len(), 200 - 67);
+            let mut partial = copy.into_iter();
+            partial.next();
+            drop(partial);
+        }
+        assert!(keys.iter().all(|k| Rc::strong_count(&k.0) == 1));
+        assert!(values.iter().all(|v| Rc::strong_count(v) == 1));
+    }
+
+    /// Entry, for_each_mut and retain agree with put/get/remove on a map with tree bins.
+    #[test]
+    fn entry_retain_and_mutation_follow_traversal() {
+        let mut map = JavaHashMap::<Owned, Rc<u32>>::default();
+        for id in 0..80u32 {
+            *map.entry(owned(id, (id as i32 % 3) * 128))
+                .or_insert(Rc::new(0)) = Rc::new(id);
+        }
+        *map.entry(owned(5, 2 * 128)).or_insert_with(|| Rc::new(0)) = Rc::new(500);
+        assert_eq!(map.get(&owned(5, 2 * 128)).map(|v| **v), Some(500));
+        let mut seen = Vec::new();
+        map.for_each_mut(|k, v| {
+            seen.push(k.0.0);
+            *v = Rc::new(k.0.0 * 2);
+        });
+        assert_eq!(seen, ids(&map));
+        map.retain(|k, _| k.0.0 % 2 == 0);
+        assert_eq!(map.len(), 40);
+        assert!(ids(&map).iter().all(|id| id % 2 == 0));
+        for id in (0..80u32).step_by(2) {
+            assert_eq!(
+                map.get_mut(&owned(id, (id as i32 % 3) * 128)).map(|v| **v),
+                Some(id * 2)
+            );
+        }
+    }
+
+    #[test]
+    fn exhausted_generation_never_revalidates_a_cursor() {
+        let mut map = JavaHashMap::default();
+        map.put(owned(1, 1), Rc::new(1));
+        map.mod_count = u64::MAX - 1;
+        let mut pending = map.cursor();
+        let mut current = map.cursor();
+        assert!(map.next_entry(&mut current).unwrap().is_some());
+        map.clear();
+        map.clear();
+        map.put(owned(2, 2), Rc::new(2));
+
+        assert_eq!(
+            map.next_entry(&mut pending).err(),
+            Some(CursorError::ConcurrentModification)
+        );
+        assert_eq!(
+            map.remove_current(&mut current),
+            Err(CursorError::ConcurrentModification)
+        );
+        let mut exhausted = map.cursor();
+        assert_eq!(
+            map.next_entry(&mut exhausted).err(),
+            Some(CursorError::ConcurrentModification)
+        );
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn map_id_blocks_run_out_instead_of_repeating() {
+        let blocks = AtomicU64::new(ID_BLOCKS - 2);
+        let first = reserve_id_block(&blocks).expect("second-to-last block");
+        let last = reserve_id_block(&blocks).expect("last block");
+        assert_eq!(last - first, 1 << ID_BLOCK_BITS);
+        assert!(
+            last.checked_add(1 << ID_BLOCK_BITS).is_some(),
+            "the last block's end fits in u64"
+        );
+        for _ in 0..3 {
+            assert_eq!(reserve_id_block(&blocks), None);
+        }
+        assert_eq!(
+            blocks.load(atomic::Ordering::Relaxed),
+            ID_BLOCKS,
+            "refusals leave the counter where it was"
+        );
+        let fresh = AtomicU64::new(0);
+        assert_eq!(reserve_id_block(&fresh), Some(0));
+        assert_eq!(reserve_id_block(&fresh), Some(1 << ID_BLOCK_BITS));
+    }
+
+    #[test]
+    fn reserved_and_empty_maps_answer_without_a_table() {
+        let map = JavaHashMap::<Owned, Rc<u32>>::with_reserved_nodes(64);
+        assert_eq!(map.get(&owned(1, 0)), None);
+        assert!(!map.cursor().has_next());
+        assert_eq!(map.entries().len(), 0);
+        let huge = JavaHashMap::<Owned, Rc<u32>>::with_reserved_nodes(usize::MAX);
+        assert_eq!(huge.storage_bytes(), 0);
+    }
+}
+
+#[cfg(test)]
+mod unwind_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::rc::Rc;
+
+    thread_local! {
+        static COMPARES_LEFT: Cell<i64> = const { Cell::new(-1) };
+    }
+    fn arm(compares: i64) {
+        COMPARES_LEFT.with(|c| c.set(compares));
+    }
+    fn disarm() {
+        COMPARES_LEFT.with(|c| c.set(-1));
+    }
+
+    /// Equal-hash keys force `comparable_compare`, which panics once its budget runs out.
+    #[derive(Clone, PartialEq, Eq)]
+    struct Touchy(Rc<(u32, i32)>);
+    impl JavaKey for Touchy {
+        fn java_hash(&self) -> i32 {
+            self.0.1
+        }
+        fn comparable_compare(&self, other: &Self) -> Option<Ordering> {
+            COMPARES_LEFT.with(|c| {
+                let left = c.get();
+                if left == 0 {
+                    panic!("comparator panic for the unwind test");
+                }
+                if left > 0 {
+                    c.set(left - 1);
+                }
+            });
+            Some(self.0.0.cmp(&other.0.0))
+        }
+        fn tie_break(&self, other: &Self) -> Ordering {
+            self.0.0.cmp(&other.0.0)
+        }
+    }
+    fn touchy(id: u32, hash: i32) -> Touchy {
+        Touchy(Rc::new((id, hash)))
+    }
+
+    /// Everything safe code can observe must stay consistent: lookups, traversal, cursors, growth, drops.
+    fn check_consistent(map: &mut JavaHashMap<Touchy, Rc<u32>>, keys: &[Touchy]) {
+        disarm();
+        assert!(
+            map.links.iter().all(|l| !l.is_pending()),
+            "no rehash mark outlives grow"
+        );
+        let live: Vec<&Touchy> = keys.iter().filter(|k| map.get(k).is_some()).collect();
+        assert_eq!(
+            live.len(),
+            map.len(),
+            "every counted entry is reachable by lookup"
+        );
+        assert_eq!(map.entries().count(), map.len());
+        let mut cursor = map.cursor();
+        let mut seen = 0;
+        while cursor.has_next() {
+            map.next_entry(&mut cursor).unwrap().unwrap();
+            seen += 1;
+        }
+        assert_eq!(seen, map.len());
+        for id in 0..40u32 {
+            map.put(touchy(10_000 + id, 0), Rc::new(id));
+        }
+        assert_eq!(map.entries().count(), map.len());
+        let mut cursor = map.cursor();
+        while cursor.has_next() {
+            map.next_entry(&mut cursor).unwrap().unwrap();
+            map.remove_current(&mut cursor).unwrap();
+        }
+        assert!(map.is_empty() && map.entries().next().is_none());
+    }
+
+    fn sweep(
+        build: impl Fn() -> (JavaHashMap<Touchy, Rc<u32>>, Vec<Touchy>),
+        trigger: impl Fn(&mut JavaHashMap<Touchy, Rc<u32>>, &mut Vec<Touchy>),
+    ) {
+        let mut panicked_once = false;
+        for budget in 0.. {
+            let (mut map, mut keys) = build();
+            let value = Rc::new(7);
+            arm(budget);
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                trigger(&mut map, &mut keys);
+                map.put(touchy(99_999, 0), value.clone());
+            }));
+            disarm();
+            if outcome.is_ok() {
+                assert!(panicked_once, "the trigger never reached a comparison");
+                break;
+            }
+            panicked_once = true;
+            keys.push(touchy(99_999, 0));
+            check_consistent(&mut map, &keys);
+            drop(map);
+            assert!(
+                keys.iter().all(|k| Rc::strong_count(&k.0) == 1),
+                "no key leaked or dropped twice"
+            );
+            assert_eq!(
+                Rc::strong_count(&value),
+                1,
+                "no value leaked or dropped twice"
+            );
+        }
+    }
+
+    /// 16 equal-hash keys in bucket 0 of a 64-bucket table split 8/8 at 128 buckets and both halves re-treeify.
+    fn split_tree() -> (JavaHashMap<Touchy, Rc<u32>>, Vec<Touchy>) {
+        let built = tree_map(32);
+        assert_eq!(built.0.len(), 48);
+        built
+    }
+    /// The 16 equal-hash keys of `split_tree` as one tree bin of a 64-bucket table, plus `fillers` singleton keys.
+    fn tree_map(fillers: u32) -> (JavaHashMap<Touchy, Rc<u32>>, Vec<Touchy>) {
+        disarm();
+        let mut map = JavaHashMap::default();
+        let mut keys = Vec::new();
+        for id in 0..16u32 {
+            let key = touchy(id, if id % 2 == 0 { 0 } else { 64 });
+            map.put(key.clone(), Rc::new(id));
+            keys.push(key);
+        }
+        for id in 0..fillers {
+            let key = touchy(100 + id, 1 + id as i32);
+            map.put(key.clone(), Rc::new(id));
+            keys.push(key);
+        }
+        (map, keys)
+    }
+
+    #[test]
+    fn comparator_panic_during_rehash_treeify_leaves_a_sound_map() {
+        sweep(split_tree, |map, keys| {
+            let key = touchy(200, 33);
+            keys.push(key.clone());
+            map.put(key, Rc::new(200));
+        });
+    }
+
+    #[test]
+    fn comparator_panic_during_put_treeify_leaves_a_sound_map() {
+        let build = || {
+            disarm();
+            let mut map = JavaHashMap::with_reserved_nodes(4);
+            let mut keys = Vec::new();
+            for id in 0..48u32 {
+                let key = touchy(id, if id < 8 { 0 } else { id as i32 });
+                map.put(key.clone(), Rc::new(id));
+                keys.push(key);
+            }
+            (map, keys)
+        };
+        sweep(build, |map, keys| {
+            let key = touchy(500, 0);
+            keys.push(key.clone());
+            map.put(key, Rc::new(500));
+        });
+    }
+
+    /// Comparisons a call makes, counted with an unreachable budget.
+    fn compares_used(call: impl FnOnce()) -> i64 {
+        const BUDGET: i64 = 1 << 40;
+        arm(BUDGET);
+        call();
+        let left = COMPARES_LEFT.with(|c| c.get());
+        disarm();
+        BUDGET - left
+    }
+
+    /// Every comparison of a tree insert may panic, including those after the bin search, where the old code had
+    /// already moved the key and value into a fresh slot: the map must be left exactly as it was.
+    #[test]
+    fn comparator_panic_during_tree_insert_leaves_the_map_unchanged() {
+        // 36 entries stay below the 64-bucket threshold of 48, so the insert never rehashes.
+        let search = {
+            let (map, _) = tree_map(20);
+            compares_used(|| assert!(map.get(&touchy(300, 0)).is_none()))
+        };
+        let insert = {
+            let (mut map, _) = tree_map(20);
+            compares_used(|| assert!(map.put(touchy(300, 0), Rc::new(9)).is_none()))
+        };
+        assert!(
+            insert > search + 1,
+            "the insert compares after its search ({search} vs {insert})"
+        );
+        for budget in 0..insert {
+            let (mut map, keys) = tree_map(20);
+            let before: Vec<u32> = map.entries().map(|(k, _)| k.0.0).collect();
+            let value = Rc::new(9);
+            let key = touchy(300, 0);
+            arm(budget);
+            let outcome = catch_unwind(AssertUnwindSafe(|| map.put(key.clone(), value.clone())));
+            disarm();
+            assert!(outcome.is_err(), "budget {budget} of {insert} panics");
+            assert_eq!(
+                map.entries().map(|(k, _)| k.0.0).collect::<Vec<_>>(),
+                before
+            );
+            assert_eq!(
+                map.values_in_storage_order().count(),
+                map.len(),
+                "budget {budget}: no stray live slot"
+            );
+            assert_eq!(
+                (Rc::strong_count(&key.0), Rc::strong_count(&value)),
+                (1, 1),
+                "budget {budget}: the map holds no copy of the failed key or value"
+            );
+            check_consistent(&mut map, &keys);
+        }
     }
 }

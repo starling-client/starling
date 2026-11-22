@@ -264,50 +264,11 @@ pub struct RecipeSnapshot {
     pub rule: Option<RecipeRule>,
     /// The recipe's file, as the data pack wrote it.
     pub json: Arc<Value>,
+    /// Book display metadata derived once from the decoded recipe when it has
+    /// placement candidates (`None` when omitted from recipe-book numbering).
+    pub(crate) book: Option<crate::recipe_book::KnownEntry>,
 }
 impl RecipeSnapshot {
-    /// Required inputs must have enumerable candidates before consumer publication.
-    /// The recipe and its stack predicates remain in the effective recipe map.
-    pub(crate) fn has_placement_candidates(&self) -> bool {
-        let nonempty = |ingredient: &Ingredient| !ingredient.items.is_empty();
-        if matches!(
-            self.json["type"].as_str().unwrap_or_default(),
-            "minecraft:crafting_shaped" | "minecraft:crafting_shapeless"
-        ) && self.ingredients.is_empty()
-        {
-            return false;
-        }
-        self.ingredients.iter().all(nonempty)
-            && self.rule.as_ref().is_none_or(|rule| match rule {
-                RecipeRule::Stonecutting { input, .. } => nonempty(input),
-                RecipeRule::SmithingTransform {
-                    template,
-                    base,
-                    addition,
-                    ..
-                } => template
-                    .iter()
-                    .chain(std::iter::once(base))
-                    .chain(addition.iter())
-                    .all(nonempty),
-                RecipeRule::SmithingTrim {
-                    template,
-                    base,
-                    addition,
-                    ..
-                } => [template, base, addition].into_iter().all(nonempty),
-                RecipeRule::Transmute {
-                    input, material, ..
-                } => [input, material].into_iter().all(nonempty),
-                RecipeRule::Dye { target, dye, .. } => [target, dye].into_iter().all(nonempty),
-                RecipeRule::Imbue {
-                    source, material, ..
-                } => [source, material].into_iter().all(nonempty),
-                // Vanilla's other special rules have no learnable book display.
-                _ => true,
-            })
-    }
-
     /// The recipe `id` of type `kind` with its file `json`, the typed parts empty.
     pub fn new(id: impl Into<String>, kind: impl Into<String>, json: Arc<Value>) -> Self {
         Self {
@@ -320,6 +281,7 @@ impl RecipeSnapshot {
             experience: None,
             rule: None,
             json,
+            book: None,
         }
     }
 }

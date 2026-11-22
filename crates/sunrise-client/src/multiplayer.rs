@@ -6,7 +6,6 @@ use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::lan::discovery::Scanner;
 use crate::text::{DARK_GRAY, GRAY, Text, format_translation};
 use crate::title::confirm_top;
-use sunrise_protocol::servers::{self, ServerEntry};
 pub use page::Form;
 use std::{
     collections::HashMap,
@@ -14,6 +13,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use sunrise_protocol::servers::{self, ServerEntry};
 
 const SERVER_NAME: crate::clipboard::FieldId = ("server.name", 0);
 const SERVER_ADDRESS: crate::clipboard::FieldId = ("server.address", 0);
@@ -142,9 +142,11 @@ pub enum Screen {
     /// A page a crate registered at the title screen's Friends icon, as a form.
     Page(Form),
     Disconnected {
-        reason: String,
-        /// Auto-reconnect's next attempt, until it is cancelled.
-        retry: Option<crate::reconnect::Retry>,
+        /// The server's or a mod's reason, rendered in the player's language when drawn.
+        reason: Text,
+        /// What the screen says about connecting again, while something asks to
+        /// (`sunrise_hooks::Hooks::retry`) and the player hasn't cancelled.
+        retry: Option<String>,
         /// Wrapped reason lines, set by the last draw; the buttons sit below them.
         lines: std::cell::Cell<usize>,
     },
@@ -158,10 +160,6 @@ pub fn title_entry() -> Option<Screen> {
         Some(page) => Some(Screen::Page(Form::open(page))),
         None => crate::net::joins_friends().then(|| Screen::friend(true)),
     }
-}
-/// Whether the title screen's Friends icon opens something ([`title_entry`]).
-pub fn has_title_entry() -> bool {
-    page::title_page().is_some() || crate::net::joins_friends()
 }
 
 /// What a click asks the title screen to do.
@@ -316,15 +314,7 @@ fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) 
                             }
                         }
                         // OnlineServerEntry: SUCCESSFUL only for this game's protocol.
-                        let joinable = protocol == i64::from(sunrise_protocol::PROTOCOL_VERSION)
-                            || (crate::net::older_servers_enabled()
-                                && i32::try_from(protocol)
-                                    .ok()
-                                    .and_then(
-                                        sunrise_protocol::adapter::ServerVersion::from_protocol,
-                                    )
-                                    .is_some());
-                        if joinable {
+                        if protocol == i64::from(sunrise_protocol::PROTOCOL_VERSION) {
                             Ping::Ok {
                                 motd,
                                 players,
@@ -908,7 +898,10 @@ impl Screen {
             // DisconnectedScreen: its title and the reason.
             Self::Disconnected { reason, .. } => ScreenInfo::new(
                 "multiplayer/disconnected",
-                join(&[&get("disconnect.lost", "Connection Lost"), reason]),
+                join(&[
+                    &get("disconnect.lost", "Connection Lost"),
+                    &reason_plain(reason),
+                ]),
             ),
         }
     }
@@ -1129,7 +1122,7 @@ impl Screen {
                                     motd.resolve_legacy(),
                                     Ping::player_count(*players),
                                     format!(
-                                        "gui/sprites/server_list/ping_{}",
+                                        "server_list/ping_{}",
                                         match ms {
                                             0..150 => 5,
                                             150..300 => 4,
@@ -1142,13 +1135,13 @@ impl Screen {
                                 Some(Ping::Incompatible { motd, version, .. }) => (
                                     motd.resolve_legacy(),
                                     version.clone().with_color(crate::text::RED),
-                                    "gui/sprites/server_list/incompatible".to_owned(),
+                                    "server_list/incompatible".to_owned(),
                                 ),
                                 Some(Ping::Failed(_)) => (
                                     Text::translate("multiplayer.status.cannot_connect", &[])
                                         .with_color(0xFF0000),
                                     Text::empty(),
-                                    "gui/sprites/server_list/unreachable".to_owned(),
+                                    "server_list/unreachable".to_owned(),
                                 ),
                                 _ => {
                                     // The pinging bars bounce, offset by the row.
@@ -1157,7 +1150,7 @@ impl Screen {
                                     (
                                         Text::translate("multiplayer.status.pinging", &[]),
                                         Text::empty(),
-                                        format!("gui/sprites/server_list/pinging_{}", frame + 1),
+                                        format!("server_list/pinging_{}", frame + 1),
                                     )
                                 }
                             };
@@ -1203,7 +1196,7 @@ impl Screen {
                                         let lit = if over { "_highlighted" } else { "" };
                                         batch.sprite_scaled(
                                             atlas,
-                                            &format!("gui/sprites/server_list/{sprite}{lit}"),
+                                            &format!("server_list/{sprite}{lit}"),
                                             cx,
                                             cy,
                                             32.0,
@@ -1399,8 +1392,10 @@ impl Screen {
                 retry,
                 lines,
             } => {
-                // DisconnectedScreen: the reason wraps to width - 50.
-                let wrapped = wrap(reason, (w.ceil() - 50.0).max(1.0), atlas);
+                // DisconnectedScreen: the reason wraps to width - 50, rendered in the language
+                // the player has now, not the one it was resolved in.
+                let reason = reason_plain(reason);
+                let wrapped = wrap(&reason, (w.ceil() - 50.0).max(1.0), atlas);
                 lines.set(wrapped.len());
                 let l = disconnected_layout(h, wrapped.len(), retry.is_some());
                 centered(
@@ -1412,9 +1407,8 @@ impl Screen {
                 for (i, line) in wrapped.iter().enumerate() {
                     centered(batch, line, l.message + i as f32 * 9.0, u32::MAX);
                 }
-                if let Some(r) = retry {
-                    let text = r.text(std::time::Instant::now());
-                    centered(batch, &text, l.retry, rgba(170, 170, 170, 255));
+                if let Some(line) = retry {
+                    centered(batch, line, l.retry, rgba(170, 170, 170, 255));
                 }
             }
         }
@@ -1493,21 +1487,9 @@ impl Screen {
                     return Outcome::Connect { address, lan };
                 }
             }
-            (Self::List { .. }, Some(41)) => {
-                return Outcome::Open(Box::new(Self::Direct {
-                    address: String::new(),
-                }));
-            }
+            (Self::List { .. }, Some(41)) => return Outcome::Open(Box::new(Self::direct())),
             (Self::List { .. }, Some(47)) => return Outcome::Open(Box::new(Self::friend(false))),
-            (Self::List { .. }, Some(42)) => {
-                return Outcome::Open(Box::new(Self::Edit {
-                    index: None,
-                    name: crate::lang::get_or("selectServer.defaultName", "Minecraft Server"),
-                    address: String::new(),
-                    focus: 1,
-                    packs: None,
-                }));
-            }
+            (Self::List { .. }, Some(42)) => return Outcome::Open(Box::new(Self::add_server())),
             (
                 Self::List {
                     servers, selected, ..
@@ -1836,7 +1818,7 @@ impl Screen {
     }
     /// The button was released: a server that was dragged somewhere else is
     /// saved there.
-    pub fn release(&mut self, saves: &Path) {
+    pub fn release(&mut self, saves: &Path) -> bool {
         if let Self::List {
             servers,
             scroll,
@@ -1844,11 +1826,15 @@ impl Screen {
             ..
         } = self
         {
+            let scrolled = scroll.held();
             scroll.release();
-            if held.take().is_some_and(|h| h.moved) {
+            let row = held.take();
+            if row.as_ref().is_some_and(|h| h.moved) {
                 save_servers(&servers_file(saves), servers);
             }
+            return scrolled || row.is_some();
         }
+        false
     }
     /// The focused box, in GUI pixels: name at 66, address at 106
     /// (`ManageServerScreen`), direct address at 116, friend fields at 64 and 105.
@@ -1897,6 +1883,22 @@ impl Screen {
             Self::Edit { .. } | Self::Friend { .. } | Self::Page(_)
         )
     }
+    /// Add Server (`EditServerScreen` for a new `ServerData`), empty.
+    pub fn add_server() -> Self {
+        Self::Edit {
+            index: None,
+            name: crate::lang::get_or("selectServer.defaultName", "Minecraft Server"),
+            address: String::new(),
+            focus: 1,
+            packs: None,
+        }
+    }
+    /// Direct Connection (`DirectJoinServerScreen`), empty.
+    pub fn direct() -> Self {
+        Self::Direct {
+            address: String::new(),
+        }
+    }
     /// Join a friend, with the relay the player set before.
     pub fn friend(from_title: bool) -> Self {
         Self::Friend {
@@ -1905,16 +1907,6 @@ impl Screen {
             relay: crate::net::friends_relay_setting().unwrap_or_default(),
             focus: 0,
         }
-    }
-    /// Auto-reconnect's attempt, once its countdown is over.
-    pub fn due_retry(&mut self) -> Option<crate::reconnect::Retry> {
-        let Self::Disconnected { retry, .. } = self else {
-            return None;
-        };
-        if !retry.as_ref()?.due(std::time::Instant::now()) {
-            return None;
-        }
-        retry.take()
     }
     /// `ServerSelectionList.updateNetworkServers`' narration: for each LAN
     /// world found since the last call whose row is in the list's view,
@@ -2073,6 +2065,22 @@ fn disconnected_layout(h: f32, lines: usize, retry: bool) -> DisconnectedLayout 
         message: top + 39.0,
         retry: top + 29.0 + message_h + 2.0,
         buttons: top + 29.0 + message_h + retry_h + 2.0,
+    }
+}
+
+/// `Component.getString` of a disconnect reason, in the language active now.
+///
+/// A `Text` caches the spans of the language it was built under, so resolving it once — when the
+/// server turned the player away — and drawing those spans later would keep reading in that
+/// language. The screen keeps the component itself (`Screen::Disconnected::reason`), so it is
+/// decoded again here, at the moment it draws and narrates, as `DisconnectedScreen` renders its
+/// own component every frame.
+pub fn reason_plain(reason: &Text) -> String {
+    match reason.source_component() {
+        // The resolver `Text::from(Value)` uses: a selector reads as its own text.
+        Some(source) => crate::component::to_text(source, &mut |s| Text::literal(s)).plain(),
+        // Span-only text keeps no component to resolve again: nothing in it to translate.
+        None => reason.plain(),
     }
 }
 
@@ -2339,7 +2347,7 @@ mod tests {
         };
         assert_eq!(at(&friend, 427.0, 253.0), [(113.0, 177.0), (113.0, 201.0)]);
         let lost = Screen::Disconnected {
-            reason: String::new(),
+            reason: Text::empty(),
             retry: None,
             lines: std::cell::Cell::new(1),
         };
@@ -2850,5 +2858,78 @@ mod tests {
         click(&mut screen, Some(42), 0.0, 0.0, size, &saves);
         assert_eq!(cycle(&screen).unwrap().3, "Server Resource Packs: Prompt");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DisconnectedScreen.getNarrationMessage: the reason reads as the player's language
+    /// renders it, and a plain-text reason is unchanged.
+    #[test]
+    fn disconnect_screen_narrates_a_translated_reason() {
+        let language = crate::lang::Language::of(
+            "fr_fr",
+            [
+                ("disconnect.lost".into(), "Connexion perdue".into()),
+                ("mymod.kicked".into(), "Expulsé par le mod".into()),
+            ],
+        );
+        let ((), _missed) = crate::lang::scoped(language, || {
+            let translated = Screen::Disconnected {
+                reason: Text::translate("mymod.kicked", &[]),
+                retry: None,
+                lines: std::cell::Cell::new(1),
+            };
+            assert_eq!(
+                translated.narration().title,
+                "Connexion perdue. Expulsé par le mod"
+            );
+            let plain = Screen::Disconnected {
+                reason: Text::literal("You were kicked"),
+                retry: None,
+                lines: std::cell::Cell::new(1),
+            };
+            assert_eq!(plain.narration().title, "Connexion perdue. You were kicked");
+        });
+    }
+
+    /// The reason is rendered where the screen draws and narrates, not where it was built: a
+    /// `Text` caches the spans of the language it was resolved in, so a reason built under one
+    /// language must read in the one active when it is drawn or narrated.
+    #[test]
+    fn a_reason_built_in_one_language_is_narrated_in_another() {
+        let french = crate::lang::Language::of(
+            "fr_fr",
+            [
+                ("disconnect.lost".into(), "Connexion perdue".into()),
+                ("mymod.kicked".into(), "Expulsé par le mod".into()),
+            ],
+        );
+        let english = crate::lang::Language::of(
+            "en_us",
+            [
+                ("disconnect.lost".into(), "Connection Lost".into()),
+                ("mymod.kicked".into(), "Kicked by the mod".into()),
+            ],
+        );
+        // Built while the game speaks French, as a server turning a French player away does.
+        let (screen, _missed) = crate::lang::scoped(french, || {
+            let reason = Text::translate("mymod.kicked", &[]);
+            assert_eq!(reason.plain(), "Expulsé par le mod");
+            Screen::Disconnected {
+                reason,
+                retry: None,
+                lines: std::cell::Cell::new(1),
+            }
+        });
+        let ((), _missed) = crate::lang::scoped(english, || {
+            let Screen::Disconnected { reason, .. } = &screen else {
+                unreachable!("a disconnected screen was just built")
+            };
+            // The player switches language while the screen is up: what it draws and
+            // narrates follows the language now, not the one the reason was resolved in.
+            assert_eq!(reason_plain(reason), "Kicked by the mod");
+            assert_eq!(
+                screen.narration().title,
+                "Connection Lost. Kicked by the mod"
+            );
+        });
     }
 }

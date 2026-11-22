@@ -8,7 +8,10 @@ use super::Game;
 use mod_api::__private::game::*;
 use mod_api::*;
 
-include!(concat!(env!("OUT_DIR"), "/game_host_modules.rs"));
+pub(crate) mod draw;
+mod phase_contexts;
+pub(crate) mod services;
+include!(concat!(env!("OUT_DIR"), "/game_host_generated.rs"));
 
 impl Host for Game<'_> {
     fn backend(&self) -> Option<BackendRef<'_>> {

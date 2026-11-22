@@ -5,7 +5,7 @@ asks your mod's type what to do. You fill the slot with a `[[native.loop]]` row;
 `block_entities.tick`.
 
 Use a slot to change how individual block entities tick, at tick speed. To run code once around the whole
-block entity tick, an [`[[inject]]` listener](../injections.md) or a `HEAD` mixin on the loop is enough.
+block entity pass, use a [`HEAD` or `RETURN` mixin](2-mixins.md) on the loop entry.
 
 ## Example
 
@@ -82,8 +82,12 @@ The slot trait `BlockEntityTickSlot` has two methods, and both do nothing by def
   ticks;
 - `fn after(&mut self, tick: &mut BlockEntityTick<'_, '_>)` runs just after it ticked.
 
-`before` sees only the block entities vanilla would tick: in a block-ticking chunk, inside the world border,
-live and not asleep. The cursor `tick` has:
+`before` sees only the block entities vanilla would tick: live, awake ticker entries in a block-ticking chunk,
+inside the world border. A sleeping hopper is one that had nothing to do; it still advances its transfer
+bookkeeping (cooldown and last-ticked time) as vanilla's does, but its transfer does not run and neither
+`before` nor `after` is called for it. Your slot sees it again once its inventory, the block above it or a
+reaching item or vehicle wakes it. Whether a mod block entity supports the block it is standing on is checked
+after `before`, just before invoking its ticker. The cursor `tick` has:
 
 | Member | What it is |
 | --- | --- |
@@ -94,7 +98,7 @@ live and not asleep. The cursor `tick` has:
 
 | `before` returns | Effect |
 | --- | --- |
-| `LoopFlow::Continue` | The entity ticks, once every other mod's slot also continues. |
+| `LoopFlow::Continue` | The entity can tick once every other mod's slot also continues and the entry still has a valid ticker. |
 | `LoopFlow::Skip` | The entity does not tick this tick, and no `after` runs for it. |
 | `LoopFlow::Stop` | No further entity ticks this tick. The work after the loop runs, such as shulker box lids. |
 
@@ -155,8 +159,10 @@ Its saved data is `entity.nbt`, its item slots `entity.items` and its menu data 
   rechecks and skips the replaced entity, so it doesn't tick as the old one).
 - Your slot value is made with `Default` on the loop's first run and kept. There is one per `Game`, the
   game state of one running server, which ticks every dimension in turn: read `tick.game.dim` to tell them apart.
-- A slot may add, remove or replace block entities. If it removes the visited one, or replaces it with another
-  `kind` or a mod block entity of another type, that one does not tick. One removed later in the list is passed over. One added ticks from the next pass.
+- A slot may add, remove or replace block entities. If it removes the visited one, replaces it with another
+  `kind` or a mod block entity of another type, or leaves a mod block entity on an incompatible block,
+  its tick and all `after` calls for that visit are skipped. One removed later in the list is passed over.
+  One added ticks from the next pass.
 - Calling `tick.game.tick_block_entities()` from inside a slot runs the game's own loop, without any slots,
   as a whole pass.
 - A panic in a slot is reported naming your mod and the loop: `in native mod <id>, hook loop
@@ -165,7 +171,7 @@ Its saved data is `entity.nbt`, its item slots `entity.items` and its menu data 
 ## Mixins on the loop
 
 The loop's entry is `sunrise_client::game::block_entity_ticks::Game<'_>::tick_block_entities`. A `HEAD` or
-`RETURN` mixin and an `[[inject]]` listener on it run around the loop. To change a place inside the loop,
+`RETURN` mixin on it runs around the loop. To change a place inside the loop,
 target the loop's body, `…::tick_block_entities_with`. Such a mixin does not apply when the loop runs
 without slots, from inside a slot or after a panic.
 
@@ -173,7 +179,6 @@ without slots, from inside a slot or after a panic.
 
 | Code | Message | Fix |
 | --- | --- | --- |
-| `E_LOOP_WASM` | `<mod>:<row>: <loop>: [[native.loop]] compiles game code; only native mods can fill a loop` | Build the mod native. |
 | `E_LOOP_INVALID` | `<mod>:<row>: invalid loop; name a published loop of the game, such as block_entities.tick` | Name the loop. |
 | | `… invalid helper; name a Rust file under src/ in this package` | Put the helper under `src/`, ending in `.rs`. |
 | | `… invalid with; name the slot type the helper defines` | Write the type's name, a plain identifier. |

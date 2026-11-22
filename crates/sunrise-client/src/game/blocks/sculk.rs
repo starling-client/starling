@@ -4,13 +4,15 @@
 //! (`SculkShriekerBlockEntity`, `SpawnUtil`), catalysts feeding the sculk
 //! spreader from deaths, and the darkness wardens and shriekers cast.
 use super::{Game, Result};
+use mod_api::client::particles::PositionSource;
+use std::collections::HashSet;
 use sunrise_client::actions::Action;
 use sunrise_client::join_seq::ListStamp;
 use sunrise_client::{
     containers::BlockEntity,
     effects::{EffectInstance, PlayerEffects},
     fast_hash::{FxHashMap, FxHashSet},
-    mobs::{Mob, Species, Who, allay, warden},
+    mobs::{Mob, MovementEmission as Steps, Species, Who, allay, warden},
     particles::{ParticleOptions, ParticleType},
     sculk::{self, Context, Info, SculkEntity, SculkKind, WardenSpawnTracker},
 };
@@ -21,8 +23,6 @@ use sunrise_core::{
     random::RandomSource,
 };
 use sunrise_world::registry::BlockStateId;
-use mod_api::client::particles::PositionSource;
-use std::collections::HashSet;
 
 pub const HELP: &[&str] = &[
     "sculk                          sculk listeners, the warning level and the darkness blend",
@@ -66,15 +66,6 @@ pub(super) fn sensor_signal(
         _ => None,
     }
 }
-/// `Entity.moveDist` / `nextStep` and the last state, per entity.
-#[derive(Clone, Copy, Debug)]
-struct Steps {
-    move_dist: f32,
-    next_step: f32,
-    last: [f64; 3],
-    on_ground: bool,
-    in_water: bool,
-}
 #[derive(Default)]
 pub(super) struct PlayerEvents {
     steps: Option<Steps>,
@@ -92,8 +83,8 @@ pub(super) struct SculkState {
     pub known: HashSet<(i32, i32)>,
     /// The chunk map's membership revision `known` was taken at.
     pub known_revision: Option<u64>,
-    // Keyed by mob ids the server gives out: the fast hasher is safe.
-    steps: FxHashMap<Who, Steps>,
+    /// The active player's movement-emission state (mobs keep their own).
+    steps: Option<Steps>,
     /// Items that have fallen since last touching the ground or water.
     falling_items: HashSet<u32>,
     /// The vehicle each rider had last tick and where it stood.
@@ -137,11 +128,7 @@ struct MobSlots {
 
 impl SculkState {
     pub(super) fn swap_player(&mut self, other: &mut PlayerEvents) {
-        let steps = self.steps.remove(&Who::Player);
-        if let Some(guest) = other.steps.take() {
-            self.steps.insert(Who::Player, guest);
-        }
-        other.steps = steps;
+        std::mem::swap(&mut self.steps, &mut other.steps);
         let mount = self.mounts.remove(&Who::Player);
         if let Some(guest) = other.mount.take() {
             self.mounts.insert(Who::Player, guest);
@@ -363,6 +350,19 @@ impl Game<'_> {
         {
             self.sculk.tracker = WardenSpawnTracker::from_nbt(tag);
         }
+    }
+    /// Whether a mod canceled the `ServerPlayer.tick` of the world's owner, whose warden spawn
+    /// tracker this is: looked up only when a Pre canceled a player.
+    fn owner_tick_canceled(&self) -> bool {
+        !self.creatures.canceled_players.is_empty()
+            && self
+                .lan
+                .as_ref()
+                .and_then(|host| {
+                    let uuid = host.owner.as_ref()?.uuid;
+                    host.hub.guests.iter().find(|g| g.uuid == uuid)
+                })
+                .is_some_and(|g| self.player_tick_canceled(g.conn))
     }
     /// The tracker as saved, once it has been loaded.
     pub(super) fn warden_tracker_tag(&self) -> Option<sunrise_core::nbt::Tag> {
@@ -600,7 +600,7 @@ impl Game<'_> {
             owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: self.spectator(),
-            stepping_carefully: self.keys.held(Action::Sneak),
+            stepping_carefully: self.held_mapping(Action::Sneak),
             dampens: false,
             targetable: !dead && !creative && !self.spectator(),
             living: true,
@@ -674,6 +674,7 @@ impl Game<'_> {
             });
         Context {
             source: Some(EventSource::Entity(id)),
+            source_uuid: self.persist.uuid_of(id),
             affected_state: state,
             dampening_state: self.state_dampens(state),
             dampens,
@@ -716,6 +717,17 @@ impl Game<'_> {
         TEST_POSTED_EVENTS.with(|events| {
             if let Some(events) = events.borrow_mut().as_mut() {
                 events.push((event, pos, ctx.source.and_then(|source| source.actor())));
+            }
+        });
+        #[cfg(test)]
+        TEST_POSTED_EVENT_ORDER.with(|order| {
+            if let Some(order) = order.borrow_mut().as_mut() {
+                order.push((
+                    event,
+                    ctx.source.and_then(|source| source.actor()),
+                    self.lan_entity_events.len(),
+                    self.audio.capture.as_ref().map_or(0, Vec::len),
+                ));
             }
         });
         #[cfg(test)]
@@ -843,7 +855,10 @@ impl Game<'_> {
     /// event is heard. Only what the context already names is filled.
     fn with_vibration_uuids(&self, mut ctx: Context) -> Context {
         if ctx.source_uuid.is_none() {
-            ctx.source_uuid = self.vibration_uuid(ctx.source.and_then(|source| source.actor()));
+            ctx.source_uuid = match ctx.source {
+                Some(EventSource::Entity(id)) => self.persist.uuid_of(id),
+                source => self.vibration_uuid(source.and_then(EventSource::actor)),
+            };
         }
         if ctx.owner_uuid.is_none() {
             ctx.owner_uuid = self.vibration_uuid(ctx.owner);
@@ -1094,7 +1109,11 @@ impl Game<'_> {
         self.sculk_prepare();
         laps.lap("sculk_prepare");
         self.load_warden_tracker();
-        self.sculk.tracker.tick();
+        // ServerPlayer.tick's wardenSpawnTracker: the owner's, which a mod's Pre that canceled
+        // the owner's tick stops this tick (game/network/lan_actions/tick.rs).
+        if !self.owner_tick_canceled() {
+            self.sculk.tracker.tick();
+        }
         self.tick_darkness_blend();
         laps.lap("sculk_wardens");
         self.sculk_step_on();
@@ -1304,7 +1323,7 @@ impl Game<'_> {
         self.sculk_step_on_player();
         let mut standing: Vec<(Who, [f64; 3])> = Vec::new();
         for m in &self.mobs {
-            if m.alive() && m.on_ground {
+            if m.alive() && m.ground.on_ground {
                 standing.push((Who::Mob(m.id), [m.position.x, m.position.y, m.position.z]));
             }
         }
@@ -1658,7 +1677,7 @@ impl Game<'_> {
         let effect =
             sunrise_client::effects::EffectInstance::new("darkness", warden::DARKNESS_DURATION, 0)
                 .with_flags(false, false);
-        self.potions.effects.add(effect);
+        self.apply_player_effect(effect);
     }
 
     // ---- catalysts ----
@@ -2033,7 +2052,8 @@ impl Game<'_> {
             .dropped
             .iter()
             .filter(|i| {
-                i.on_ground && ticking(i.position.x.floor() as i32, i.position.z.floor() as i32)
+                i.ground.on_ground
+                    && ticking(i.position.x.floor() as i32, i.position.z.floor() as i32)
             })
             .map(|i| [i.position.x, i.position.y, i.position.z])
             .collect();
@@ -2102,7 +2122,7 @@ impl Game<'_> {
             )
         });
         if let Some((at, on_ground, health, flying)) = player {
-            let crouch = self.keys.held(Action::Sneak);
+            let crouch = self.held_mapping(Action::Sneak);
             if on_ground && !self.spectator() {
                 self.step_on_redstone_ore(at, crouch, true);
             }
@@ -2246,7 +2266,7 @@ impl Game<'_> {
                 (
                     m.id,
                     [m.position.x, m.position.y, m.position.z],
-                    m.on_ground,
+                    m.ground.on_ground,
                     m.fluids.in_water,
                     m.species(),
                     m.last_damage.map(|(_, t)| t),
@@ -2287,22 +2307,26 @@ impl Game<'_> {
                 self.step_on_redstone_ore(at, false, false);
             }
             // A mob first seen already riding raised its event when it spawned.
-            let seen = self.sculk.steps.contains_key(&Who::Mob(id));
+            let seen = self
+                .mob_slot(id)
+                .is_some_and(|i| self.mobs[i].movement_emission.is_some());
             self.mount_events(Who::Mob(id), vehicle, seen);
             let emits = !matches!(species, Species::Shulker);
             if emits && !ticked {
                 // Where it is now, without a move: a mob put elsewhere while
                 // it did not tick (a command) walked nowhere.
-                let entry = self.sculk.steps.entry(Who::Mob(id)).or_insert(Steps {
-                    move_dist: 0.0,
-                    next_step: 1.0,
-                    last: at,
-                    on_ground,
-                    in_water,
-                });
-                entry.last = at;
-                entry.on_ground = on_ground;
-                entry.in_water = in_water;
+                if let Some(slot) = self.motion_steps_mut(Who::Mob(id)) {
+                    let entry = slot.get_or_insert(Steps {
+                        move_dist: 0.0,
+                        next_step: 1.0,
+                        last: at,
+                        on_ground,
+                        in_water,
+                    });
+                    entry.last = at;
+                    entry.on_ground = on_ground;
+                    entry.in_water = in_water;
+                }
             } else if emits {
                 let warden = species == Species::Warden;
                 self.entity_motion_events(
@@ -2338,10 +2362,6 @@ impl Game<'_> {
         self.sculk.mob_slots = None;
         let alive: FxHashSet<u32> = self.mobs.iter().map(|m| m.id).collect();
         self.sculk.damaged.retain(|id, _| alive.contains(id));
-        self.sculk.steps.retain(|who, _| match who {
-            Who::Player => true,
-            Who::Mob(id) => alive.contains(id),
-        });
         self.sculk.mounts.retain(|who, _| match who {
             Who::Player => true,
             Who::Mob(id) => alive.contains(id),
@@ -2434,11 +2454,20 @@ impl Game<'_> {
             Who::Player => self.player.as_ref()?.ground.supporting_block,
             Who::Mob(id) => {
                 let slot = self.mob_slot(id)?;
-                let mob = &self.mobs[slot];
-                self.supporting_block(mob.position, mob.bounds())
+                self.mobs[slot].ground.supporting_block
             }
         }
     }
+    fn motion_steps_mut(&mut self, who: Who) -> Option<&mut Option<Steps>> {
+        match who {
+            Who::Player => Some(&mut self.sculk.steps),
+            Who::Mob(id) => {
+                let slot = self.mob_slot(id)?;
+                Some(&mut self.mobs[slot].movement_emission)
+            }
+        }
+    }
+
     /// `Entity.move`'s emission: footsteps, swimming, landing and splashes.
     fn entity_motion_events(
         &mut self,
@@ -2453,7 +2482,10 @@ impl Game<'_> {
         self.sculk_prepare();
         // Standing as it stood with no step due (a mob outside the simulation
         // distance, or one at rest): nothing below would change or be heard.
-        if let Some(e) = self.sculk.steps.get(&who)
+        let Some(slot) = self.motion_steps_mut(who) else {
+            return;
+        };
+        if let Some(e) = slot.as_ref()
             && e.last == at
             && e.on_ground == on_ground
             && e.in_water == in_water
@@ -2461,7 +2493,7 @@ impl Game<'_> {
         {
             return;
         }
-        let entry = self.sculk.steps.entry(who).or_insert(Steps {
+        let entry = slot.get_or_insert(Steps {
             move_dist: 0.0,
             next_step: 1.0,
             last: at,
@@ -2514,7 +2546,7 @@ impl Game<'_> {
         } else {
             horizontal
         };
-        let Some(entry) = self.sculk.steps.get_mut(&who) else {
+        let Some(entry) = self.motion_steps_mut(who).and_then(Option::as_mut) else {
             return;
         };
         entry.move_dist += travelled;
@@ -2529,7 +2561,7 @@ impl Game<'_> {
             None => unsupported,
         };
         let air = self.res.facts().is_air(state);
-        let Some(entry) = self.sculk.steps.get_mut(&who) else {
+        let Some(entry) = self.motion_steps_mut(who).and_then(Option::as_mut) else {
             return;
         };
         if !air {
@@ -2564,8 +2596,8 @@ impl Game<'_> {
     /// `ArmorStand.kill`, `VehicleEntity.destroy`): removed, then
     /// `gameEvent(ENTITY_DIE, attributedTo != null ? attributedTo : this)` at
     /// the entity's position. `by_player`: the player's hit killed it, so the
-    /// player is the source. Nonliving self sources have no Who handle;
-    /// their listener facts are represented by the default context.
+    /// player is the source. Nonliving self sources retain their entity id
+    /// even though they have no Who handle.
     pub(super) fn entity_killed_event(&mut self, at: [f64; 3], by_player: bool) {
         self.entity_killed_event_by(at, by_player.then_some(super::commands::Target::Player));
     }
@@ -2602,12 +2634,15 @@ impl Game<'_> {
                 return;
             }
         }
-        let who = match source {
-            Some(Target::Player) => Some(Who::Player),
-            Some(Target::Mob(id)) => Some(Who::Mob(id)),
-            _ => None,
+        let mut ctx = match source {
+            Some(Target::Player) => self.player_context(None),
+            Some(Target::Mob(id)) => self.mob_context(id, None),
+            Some(target) => self
+                .network_entity_id(target)
+                .map(|id| self.entity_event_context(id as u32, None))
+                .unwrap_or_default(),
+            None => Context::default(),
         };
-        let mut ctx = self.who_context(who, None);
         // A stand is living, but Warden.canTargetEntity explicitly excludes it.
         ctx.living |= matches!(source, Some(Target::Stand(_)));
         self.post_game_event(event, at, ctx);
@@ -2687,11 +2722,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn dropped_wool_dampens_its_own_vibrations() {
         use crate::game::native_entity_refs::tests::with_game;
-        use sunrise_client::{chunk::Chunk, items::ItemStack};
         use std::sync::Arc;
+        use sunrise_client::{chunk::Chunk, items::ItemStack};
 
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -2755,7 +2790,7 @@ mod tests {
     /// `vanilla_game_event` hears `GameEvent.Context.affectedState`: the state a context
     /// was made with reaches the listener, and a context made with none reads as None.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn vanilla_game_event_carries_the_affected_state() {
         use crate::game::native_entity_refs::tests::with_game;
         use mod_api::{Hooks, ModEntry, VanillaGameEventEvent};
@@ -2798,7 +2833,7 @@ mod tests {
     /// The wardens that hear an event are those in the list when it is
     /// posted, however the list changed since the last one.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn wardens_hear_events_however_the_list_changed_between_them() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.sculk_prepare();
@@ -2949,15 +2984,17 @@ mod tests {
 #[cfg(test)]
 thread_local! {
     pub(super) static TEST_POSTED_EVENTS: std::cell::RefCell<Option<Vec<(&'static str, [f64; 3], Option<Who>)>>> = const { std::cell::RefCell::new(None) };
+    // Observe how many entity flashes and sounds have been delivered when the game event posts.
+    pub(super) static TEST_POSTED_EVENT_ORDER: std::cell::RefCell<Option<Vec<(&'static str, Option<Who>, usize, usize)>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 mod command_damage_listener_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
     use sunrise_core::position::ChunkPos;
-    use std::sync::Arc;
 
     fn selected(game: &Game<'_>, key: (i32, i32, i32)) -> Option<(Info, i64)> {
         let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get(&key) else {
@@ -2967,7 +3004,7 @@ mod command_damage_listener_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn command_damage_posts_before_teleport_and_deduplicates_the_scan() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
@@ -3039,6 +3076,9 @@ mod command_damage_listener_tests {
             assert!(game.run_command("setblock 39 200 4 sculk_sensor strict"));
             game.sculk_prepare();
             game.sculk_sync_index();
+            // Establish the movement-emission snapshot before the teleport,
+            // as the real server does on the mob's preceding tick.
+            game.tick_mob_sculk_events();
             assert!(selected(&game, origin).is_none());
             assert!(selected(&game, destination).is_none());
             let before = game.world.game_time;
@@ -3095,13 +3135,13 @@ mod command_damage_listener_tests {
 mod shriek_capture_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
     use sunrise_core::{position::ChunkPos, random::LegacyRandom};
     use sunrise_world::level::LevelEvent;
-    use std::sync::Arc;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn level_event_shriek_keeps_local_play_and_random_but_not_shared_capture() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),

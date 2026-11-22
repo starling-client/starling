@@ -8,11 +8,19 @@ pub trait Hooks {
     /// sculk catalyst that takes the experience does not call this.
     /// Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "LivingExperienceDropEvent",
         cancellable = true
     )]
-    fn living_experience_drop();
+    fn living_experience_drop(
+        entity: u32,
+        kind: &str,
+        attacking_player: Option<u128>,
+        original: i32,
+        amount: &mut i32,
+        cancel: &mut bool,
+    );
 }

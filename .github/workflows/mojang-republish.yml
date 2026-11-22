@@ -1,11 +1,12 @@
 name: mojang republish
-# Hourly: does Mojang's version manifest list a pinned-version JSON that research-lock.json does not know?
-# If so, one issue "Mojang republished <version>: <sha8>" with the hashes and a lock snippet
-# (tools/ci/mojang_republish.py). Reads only Mojang's public manifest.
+# Hourly, per pinned version: does Mojang's version manifest list a version JSON whose content (jars, Java major,
+# libraries) differs from research-lock.json's? If so, one issue "Mojang changed <version>: <sha8>" naming what differs
+# (tools/ci/mojang_republish.py). A re-issue with the pinned content gets an issue only for the launcher's list of
+# accepted sha1s (research-lock.json accepted_manifest_sha1). Reads only Mojang's public manifest.
 #   gh workflow run "mojang republish" -f dry_run=true
 on:
   schedule:
-    - cron: '23 * * * *'  # hourly: a republished JSON breaks sunrise-prepare for every new player until accepted
+    - cron: '23 * * * *'  # hourly: a changed JSON is refused by sunrise-prepare until the lock pins it
   workflow_dispatch:
     inputs:
       dry_run:

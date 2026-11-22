@@ -1,0 +1,3 @@
+ids = ["type:EntityWrite", "type:EntityLookup", "type:HurtSourceError"]
+why = "Contact hurt requests already deal generic damage without a causing or direct entity. The source field was ignored, and the API lookup and error types were never used."
+migrate = "Pass EntityWrite::Hurt { amount }. Remove the source field and imports of EntityLookup and HurtSourceError. The engine's internal entity table is unchanged."

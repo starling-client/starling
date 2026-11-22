@@ -1,0 +1,3 @@
+ids = ["hook:console_line"]
+why = "The console tap now keeps the oldest queued lines and reports later drops once with the batch. The hook is version 2 and exposes the count as ConsoleLineEvent::dropped."
+migrate = "Keep the same listener. If it mirrors the log, read event.dropped to learn how many lines were omitted."

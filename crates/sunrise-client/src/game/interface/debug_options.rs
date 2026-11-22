@@ -5,7 +5,7 @@
 //! https://mcsrc.dev/2/26.3/net/minecraft/client/gui/screens/debug/DebugOptionsScreen
 use super::{Game, Screen};
 use sunrise_client::{
-    debug_entries::{Category, Entry, Profile, Status, search},
+    debug_entries::{Category, Entry, Profile, RegisteredDebugEntry, Status, search},
     hud::HudBatch,
     options_file::V,
     text::Text,
@@ -45,16 +45,16 @@ impl DebugOptionsUi {
 }
 
 /// One list row (`AbstractOptionEntry`).
-enum Row {
+pub(super) enum Row<'a> {
     Category(Category),
-    Option(Entry),
+    Option(Entry<'a>),
 }
 
 /// `OptionList.updateSearch`: a category row before each category's entries.
-fn rows(value: &str) -> Vec<Row> {
+pub(super) fn rows<'a>(registered: &'a [RegisteredDebugEntry], value: &str) -> Vec<Row<'a>> {
     let mut rows = Vec::new();
     let mut current = None;
-    for entry in search(value) {
+    for entry in search(registered, value) {
         if current != Some(entry.category) {
             rows.push(Row::Category(entry.category));
             current = Some(entry.category);
@@ -136,7 +136,7 @@ impl Game<'_> {
             Screen::Creative => {
                 self.pad_clear_focus();
                 self.carried = None;
-                self.set_screen(Screen::Playing);
+                self.set_screen_with(Screen::Playing, |g| g.close_creative_menu());
                 self.capture(true);
             }
             Screen::Mod => self.close_mod_screen(),
@@ -216,7 +216,7 @@ impl Game<'_> {
         let in_world = self.player.is_some();
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
         let reduced = self.reduced_debug_info();
-        let rows = rows(&s.search.value);
+        let rows = rows(&self.registered_debug_entries, &s.search.value);
         let (top, bottom) = (HEADER, h - FOOTER);
         let content = content_height(rows.len());
         self.debug_options
@@ -354,13 +354,13 @@ impl Game<'_> {
         }
     }
     /// A left click: a status button, the search box, a footer button.
-    pub(super) fn debug_options_click(&mut self) {
+    pub(super) fn debug_options_click(&mut self) -> bool {
         let Some(mut s) = self.debug_options.take() else {
-            return;
+            return false;
         };
         let (w, h) = self.gui_size();
         let (top, bottom) = (HEADER, h - FOOTER);
-        let rows = rows(&s.search.value);
+        let rows = rows(&self.registered_debug_entries, &s.search.value);
         let left = row_left(w);
         // A press on the scrollbar holds it and clicks nothing else.
         if s.scroll.press(
@@ -371,7 +371,7 @@ impl Game<'_> {
             content_height(rows.len()),
         ) {
             self.debug_options = Some(s);
-            return;
+            return true;
         }
         let shift = self.has_shift_down();
         s.search.focused = ui::hovered(
@@ -398,18 +398,19 @@ impl Game<'_> {
                 }
             }
         }
+        let search = s.search.focused;
         self.debug_options = Some(s);
         if let Some((path, status)) = clicked {
             // OptionEntry.setValue.
             self.audio.play_button_click();
             self.debug_entries.set_status(path, status);
-            return;
+            return true;
         }
         let (xs, fy) = footer(w, h);
         let Some(i) =
             (0..4).find(|&i| ui::hovered(self.cursor, xs[i], fy, FOOTER_BUTTONS[i], 20.0))
         else {
-            return;
+            return search;
         };
         match i {
             0 | 1 => {
@@ -419,7 +420,7 @@ impl Game<'_> {
                     Profile::Performance
                 };
                 if self.debug_entries.is_using_profile(profile) {
-                    return;
+                    return search;
                 }
                 self.audio.play_button_click();
                 self.debug_entries.load_profile(profile);
@@ -433,12 +434,14 @@ impl Game<'_> {
                 self.close_debug_options();
             }
         }
+        true
     }
     /// The mouse wheel over the list (`scrollRate`: half a row).
     pub(super) fn debug_options_scroll(&mut self, delta: f32) {
         let (_, h) = self.gui_size();
         if let Some(s) = &mut self.debug_options {
-            let content = content_height(rows(&s.search.value).len());
+            let content =
+                content_height(rows(&self.registered_debug_entries, &s.search.value).len());
             s.scroll
                 .wheel(delta, ITEM / 2.0, HEADER, h - FOOTER, content);
         }
@@ -450,15 +453,18 @@ impl Game<'_> {
         if let Some(s) = &mut self.debug_options
             && s.scroll.held()
         {
-            let content = content_height(rows(&s.search.value).len());
+            let content =
+                content_height(rows(&self.registered_debug_entries, &s.search.value).len());
             s.scroll.drag(y, HEADER, h - FOOTER, content);
         }
     }
     /// The button came up: the scrollbar lets go.
-    pub(super) fn debug_options_release(&mut self) {
-        if let Some(s) = &mut self.debug_options {
+    pub(super) fn debug_options_release(&mut self) -> bool {
+        self.debug_options.as_mut().is_some_and(|s| {
+            let handled = s.scroll.held();
             s.scroll.release();
-        }
+            handled
+        })
     }
     /// A key the debug keys left: Escape closes, the rest edits the search.
     pub(super) fn debug_options_key(&mut self, event: &KeyEvent) {
@@ -545,9 +551,7 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
         | Screen::Dead
         | Screen::Win
         | Screen::DebugOptions
-        | Screen::HudEditor
-        | Screen::Studio
-        | Screen::EmoteWheel => false,
+        | Screen::HudEditor => false,
     }
 }
 
@@ -557,10 +561,8 @@ mod tests {
 
     #[test]
     fn rows_put_a_category_before_each_section() {
-        let all = rows("");
-        // The renderers `debug_renderer_tests` registers stay for the whole test process.
-        let native = |r: &&Row| matches!(r, Row::Option(e) if e.path.contains(':'));
-        assert_eq!(all.iter().filter(|r| !native(r)).count(), 48);
+        let all = rows(&[], "");
+        assert_eq!(all.len(), 48);
         assert!(matches!(all[0], Row::Category(Category::Text)));
         let renderer = all
             .iter()
@@ -568,7 +570,7 @@ mod tests {
             .unwrap();
         assert!(matches!(all[renderer + 1], Row::Option(e) if e.path == "3d_crosshair"));
         // A search inside one section shows only its heading.
-        let hitboxes = rows("hitbox");
+        let hitboxes = rows(&[], "hitbox");
         assert_eq!(hitboxes.len(), 2);
         assert!(matches!(hitboxes[0], Row::Category(Category::Renderer)));
     }
@@ -667,8 +669,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn title_debug_overlay_draws_without_a_level() {
+        use mod_api::prelude::ScreensClientHost;
         use sunrise_client::debug_keys::KeyAction;
         let mut resources = None;
         let mut game = title_game(&mut resources);
@@ -679,6 +682,7 @@ mod tests {
             game.debug,
             "the ordinary F3 toggle already reaches the title"
         );
+        assert!(ScreensClientHost::debug_overlay_visible(&game));
         let mut overlay = HudBatch::new([1280, 720], game.settings.gui_scale_inputs());
         game.draw_debug_overlay_under(&mut overlay, [1280, 720]);
         assert!(
@@ -694,10 +698,19 @@ mod tests {
         game.debug_key(KeyCode::F3, KeyAction::Press);
         game.debug_key(KeyCode::F3, KeyAction::Release);
         assert!(!game.debug);
+        game.debug_entries.set_status("fps", Status::AlwaysOn);
+        assert!(ScreensClientHost::debug_overlay_visible(&game));
+
+        // With no screen open, the hidden HUD suppresses even an always-on entry.
+        game.title = None;
+        game.screen = Screen::Playing;
+        assert!(!ScreensClientHost::debug_overlay_visible(&game));
+        game.ui.hide_gui = false;
+        assert!(ScreensClientHost::debug_overlay_visible(&game));
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn title_debug_options_open_draw_and_return_without_a_level() {
         use sunrise_client::debug_keys::KeyAction;
         let mut resources = None;

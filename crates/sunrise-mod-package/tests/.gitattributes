@@ -1,0 +1,4 @@
+# Keep line endings in the declaration inputs and byte-exact dumps stable on checkout.
+content-corpus/**/*.json text eol=lf
+content-corpus/**/*.toml text eol=lf
+content-golden/*.txt text eol=lf

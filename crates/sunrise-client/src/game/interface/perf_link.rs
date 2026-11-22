@@ -2,17 +2,17 @@
 use super::Game;
 use super::profile_capture::{reply_text, reports_dir, shown};
 use crate::Result;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::mpsc::Sender;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sunrise_client::client_perf::request::{
     Failed, GpuSwitch, ProfileSide, StartOptions, Started, Stopped,
 };
 use sunrise_client::perf_net::{CHANNEL, Outcome, Refusal, Reply, Request, Unsent, Wanted};
 use sunrise_perf_format::{FieldSender, PartMerger, RawSend, files, v1::WarningCode};
 use sunrise_protocol::packets::{configuration::CustomPayload, play::Serverbound as S};
-use std::fs::File;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::mpsc::Sender;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const MARK_SERVER_STARTED: &str = "server_started";
 

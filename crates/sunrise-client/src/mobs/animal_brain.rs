@@ -2079,7 +2079,7 @@ fn can_sniff(m: &Mob) -> bool {
         && !is_panicking(m)
         && !m.fluids.in_water
         && m.extra.in_love <= 0
-        && m.on_ground
+        && m.ground.on_ground
         && !m.extra.passenger
         && m.extra.leash.is_none()
 }
@@ -2097,7 +2097,7 @@ fn can_dig(m: &mut Mob, w: &MobWorld) -> bool {
         || is_tempted(m)
         || m.is_baby()
         || m.fluids.in_water
-        || !m.on_ground
+        || !m.ground.on_ground
         || m.extra.passenger
     {
         return false;
@@ -2438,12 +2438,11 @@ fn sense_axolotl_attackables(m: &mut Mob, w: &MobWorld) {
     let target = find_closest(m, w, |m, who| {
         let Who::Mob(id) = who else { return false };
         let Some(s) = w.seen(id) else { return false };
-        let id = format!("minecraft:{}", super::species::def(s.species).name);
         super::axolotl::prey_eligible(
             m.distance_sqr(s.position),
             s.in_water,
-            w.data.entity_has("minecraft:axolotl_always_hostiles", &id),
-            w.data.entity_has("minecraft:axolotl_hunt_targets", &id),
+            w.entity_has("minecraft:axolotl_always_hostiles", &s.kind.id),
+            w.entity_has("minecraft:axolotl_hunt_targets", &s.kind.id),
             cooldown,
             s.alive && !s.playing_dead,
         )
@@ -2731,7 +2730,7 @@ fn axolotl_action(m: &mut Mob, cx: &mut Bx, action: AxolotlAction, until: &mut i
             true
         }
         StayWater => m.fluids.in_water,
-        StayGround => m.on_ground,
+        StayGround => m.ground.on_ground,
     }
 }
 /// `TadpoleAi`: the core activity (panic 2.0, the look and move sinks, the temptation
@@ -3084,6 +3083,54 @@ mod axolotl_parity_tests {
             activity: Act::Idle,
             list: Vec::new(),
         }
+    }
+    #[test]
+    #[ignore = "daily"]
+    fn axolotl_senses_content_prey_tagged_by_registry_id() {
+        use crate::items::{EntityTypeTags, Items};
+        use std::sync::Arc;
+
+        let mut items = Items::empty();
+        items.set_entity_type_tags(EntityTypeTags::from_ordered(
+            [(
+                "minecraft:axolotl_hunt_targets".into(),
+                vec!["test:custom_prey".into()],
+            )]
+            .into(),
+            vec!["test:custom_prey".into()].into(),
+        ));
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "test:custom_prey".into();
+        kind.species = Species::Cod;
+        let mut prey = Mob::new(2, Arc::new(kind), Vec3::new(2.0, 80.0, 0.0), 0.0);
+        prey.fluids.in_water = true;
+        let others = [prey.seen(None, &items)];
+        assert!(crate::mobs::world::with_test_world(
+            &others,
+            |world, types| {
+                let w = MobWorld {
+                    items: Some(&items),
+                    ..world.clone()
+                };
+                let mut axolotl = Mob::new(
+                    1,
+                    Arc::new(types.types["minecraft:axolotl"].clone()),
+                    Vec3::new(0.0, 80.0, 0.0),
+                    0.0,
+                );
+                let mut brain = empty_brain();
+                brain.mem.visible_mobs.set(Visible {
+                    list: vec![Who::Mob(prey.id)],
+                    cache: vec![(Who::Mob(prey.id), true)],
+                });
+                axolotl.extra.animal_brain = Some(Box::new(brain));
+                sense_axolotl_attackables(&mut axolotl, &w);
+                assert_eq!(
+                    mem(&mut axolotl).nearest_attackable.value(),
+                    Some(Who::Mob(prey.id))
+                );
+            }
+        ));
     }
     #[test]
     fn fight_exit_sets_hunting_cooldown_and_play_dead_has_priority() {

@@ -3,16 +3,17 @@
 //! renders it (which starts or stops the listening as the "Show Subtitles"
 //! option says).
 use super::Game;
+use std::cell::{Cell, RefCell};
 use sunrise_client::{
     hud::HudBatch,
     hud_layout,
     hud_overlays::{SubtitleFrame, SubtitleOverlay, now_ms},
 };
-use std::cell::RefCell;
 
 #[derive(Default)]
 pub(super) struct SubtitleState {
     overlay: RefCell<SubtitleOverlay>,
+    pub(super) deferred: Cell<bool>,
 }
 impl Game<'_> {
     /// Feed the sounds the engine reported since the last tick
@@ -31,18 +32,21 @@ impl Game<'_> {
             overlay.on_play(Some(&h.subtitle), at, h.range, h.looping, now);
         }
     }
-    pub(super) fn draw_subtitles(&self, batch: &mut HudBatch) {
-        // Hud.extractRenderState: hidden with the rest of the HUD (F1).
-        if self.ui.hide_gui {
-            return;
+    /// Consume a paint scheduled by the original subtitle layer, without dispatching it again.
+    pub(super) fn draw_deferred_subtitles(&self, batch: &mut HudBatch) {
+        if self.subtitles.deferred.take() {
+            self.draw_subtitles(batch);
         }
+    }
+
+    pub(super) fn draw_subtitles(&self, batch: &mut HudBatch) {
         let v = &self.view;
         let frame = SubtitleFrame {
             show: self.settings.show_subtitles,
             position: v.position,
             forward: v.forwards.map(f64::from),
             up: v.up.map(f64::from),
-            multiplier: f64::from(self.settings.notification_display_time),
+            multiplier: self.settings.notification_display_time,
             background: self.settings.text_background(0.8),
             width: batch.width as i32,
             height: batch.height as i32,

@@ -5,13 +5,13 @@
 //! sends eight (tools/test_recipe_book_variants_parity.py measures the same on
 //! vanilla 26.3 with a real client).
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
     motion::PlayerMotion,
 };
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 const GUEST: &str = "RecipeGuest";
 
@@ -86,6 +86,7 @@ fn game<'a>(
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -169,7 +170,7 @@ fn grant(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_recipe_with_eight_displays_sends_eight_entries() {
     let mut resources = None;
     let (mut game, rx) = game(&mut resources);
@@ -219,7 +220,7 @@ fn ghosts(rx: &mpsc::Receiver<sunrise_client::lan::Out>) -> usize {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn control_a_multi_display_recipe_still_has_no_ghost() {
     let mut resources = None;
     let (mut game, rx) = game(&mut resources);

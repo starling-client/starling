@@ -1,21 +1,25 @@
-//! `block_screen_effect_draw` in a real game: what a frame's screen quads hold for each thing a
-//! mod can do with an overlay, and where the quads land in a drawn frame.
-use super::Game;
-use super::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+//! Selected block overlay renderers in a real game: what they submit and where those quads land.
+use super::native_entity_refs::tests::{fixture_root, run_fresh_cases, with_client_game};
+use super::{Game, PackResources, Screen};
 use BlockScreenEffect::{Block, Fire, Water};
+use mod_api::{
+    BlockScreenEffect, BlockScreenEffectRender, BlockScreenEffectRenderer, CameraSubmersionEvent,
+    ClientHost, ExtractBlockScreenEffectEvent, Flow, GuiRenderPostEvent, Hooks, ModEntry, Mods,
+};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use sunrise_client::{
-    camera::hand_projection,
+    camera::{CameraType, hand_projection},
     chunk::Chunk,
+    clock::FixedStep,
+    fog::FogType,
     gfx::ScreenshotRequest,
-    motion::PlayerMotion,
+    motion::{MotionWorld, PlayerMotion, WATER},
     screen_effects::{Blend, ScreenQuad},
 };
 use sunrise_core::{geometry::Vec3, position::BlockPos};
-use mod_api::{
-    BlockScreenEffect, BlockScreenEffectDrawEvent, ClientHost, ExtractBlockScreenEffectEvent, Flow,
-    GuiRenderPostEvent, Hooks, ModEntry, Mods,
-};
-use std::sync::{Arc, Mutex};
 
 const RED: u32 = 0xFFFF0000;
 /// Half-transparent blue: it shows what is under it.
@@ -40,7 +44,7 @@ const LEAVE: Plan = Plan {
     cancel: &[],
     replace: &[],
 };
-/// One ask of the draw hook.
+/// One submission of a selected renderer.
 #[derive(Debug, PartialEq)]
 struct Asked {
     effect: BlockScreenEffect,
@@ -68,34 +72,36 @@ impl Hooks for Planned {
     fn extract_block_screen_effect(
         &self,
         _: &dyn ClientHost,
-        event: &mut ExtractBlockScreenEffectEvent,
+        event: &mut ExtractBlockScreenEffectEvent<'_>,
     ) -> Flow {
         let plan = *PLAN.lock().unwrap();
         EXTRACTED
             .lock()
             .unwrap()
             .push((event.effect, event.partial_tick));
-        event.custom_draw = plan.custom.contains(&event.effect);
+        if plan.custom.contains(&event.effect) {
+            event.set_custom_renderer(&PlannedRenderer);
+        }
         if plan.cancel.contains(&event.effect) {
             Flow::Cancel
         } else {
             Flow::Continue
         }
     }
-    fn block_screen_effect_draw(
-        &self,
-        _: &dyn ClientHost,
-        event: &mut BlockScreenEffectDrawEvent<'_>,
-    ) {
+}
+
+struct PlannedRenderer;
+impl BlockScreenEffectRenderer for PlannedRenderer {
+    fn submit(&self, _: &dyn ClientHost, render: BlockScreenEffectRender<'_>) -> bool {
         ASKED.lock().unwrap().push(Asked {
-            effect: event.effect,
-            state: event.state,
-            pos: event.pos,
-            partial_tick: event.partial_tick,
-            hide_gui: event.hide_gui,
+            effect: render.effect,
+            state: render.state,
+            pos: render.pos,
+            partial_tick: render.partial_tick,
+            hide_gui: render.hide_gui,
         });
-        assert!(event.draw.quad(QUAD, marker(event.effect)));
-        event.replace_vanilla = PLAN.lock().unwrap().replace.contains(&event.effect);
+        assert!(render.draw.quad(QUAD, marker(render.effect)));
+        PLAN.lock().unwrap().replace.contains(&render.effect)
     }
 }
 
@@ -110,6 +116,36 @@ fn burning_player(game: &mut Game<'_>) {
     player.fire_ticks = 100;
     game.player = Some(player);
 }
+/// Sample the player's fluid state as a tick would, without advancing their fire timer.
+fn sample_eye_in_water(game: &mut Game<'_>) -> bool {
+    // The fluid scan requires the chunks around the interaction box to be loaded too.
+    let layout = game.world.layout();
+    for (x, z) in [(-1, -1), (-1, 0), (0, -1)] {
+        if !game.world.chunks.contains_key(&(x, z)) {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(Chunk::with_layout(x, z, layout)));
+        }
+    }
+    let side = game_side!(game);
+    let mut motion = MotionWorld {
+        side: &side,
+        entities: &[],
+        player: game.player.as_mut().unwrap(),
+        scene: &mut game.world,
+        assets: &game.pack.assets,
+        collision_binding: game.collision,
+        resources: game.motion,
+        health: &game.health_resources,
+        loop_context: &game.loop_context,
+        damage_hooks: &game.damage_hooks,
+        tag_items: None,
+        block_registries: None,
+    };
+    motion.update_fluids().unwrap();
+    motion.player.is_eye_in_fluid(WATER)
+}
+
 /// The frame's quads at 2:1 with the hand's usual 70 degrees.
 fn quads(game: &Game<'_>) -> Vec<ScreenQuad> {
     let projection = hand_projection(70.0, 1000.0, 500.0, 1000.0);
@@ -117,19 +153,18 @@ fn quads(game: &Game<'_>) -> Vec<ScreenQuad> {
 }
 /// Names the block overlays' quads in draw order, the HUD's camera overlays left out.
 fn names(quads: &[ScreenQuad]) -> Vec<&'static str> {
-    let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
     quads
         .iter()
         .filter(|quad| quad.blend == Blend::Alpha)
         .filter_map(|quad| {
             let [r, g, b, a] = quad.vertices[0].color;
             Some(match (r, g, b, a) {
-                _ if close(r, 1.0 / 255.0) && g == 0.0 => "mod block",
-                _ if close(r, 2.0 / 255.0) && g == 0.0 => "mod water",
-                _ if close(r, 3.0 / 255.0) && g == 0.0 => "mod fire",
-                _ if close(r, 25.0 / 255.0) && close(a, 1.0) => "block",
-                _ if close(a, 0.1) => "water",
-                _ if close(a, 229.0 / 255.0) => "fire",
+                (_, 0.0, 0.0, 1.0) if r == 1.0 / 255.0 => "mod block",
+                (_, 0.0, 0.0, 1.0) if r == 2.0 / 255.0 => "mod water",
+                (_, 0.0, 0.0, 1.0) if r == 3.0 / 255.0 => "mod fire",
+                (_, _, _, 1.0) if r == 25.0 / 255.0 && r == g && g == b => "block",
+                (_, _, _, 0.1) => "water",
+                (1.0, 1.0, 1.0, _) if a == 229.0 / 255.0 => "fire",
                 _ => return None,
             })
         })
@@ -149,7 +184,7 @@ fn close_to(actual: [f32; 4], expected: [f32; 4]) {
 /// player, then with water at the eye. The expected names are `ScreenEffectRenderer.submit`'s
 /// order, each mod's quads right before the overlay they belong to.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mod_draws_prepends_replaces_and_cancels_overlays() {
     with_client_game(|game| {
         burning_player(game);
@@ -226,7 +261,7 @@ fn a_mod_draws_prepends_replaces_and_cancels_overlays() {
             assert_eq!(names(&replaced), ["mod block", "fire", "fire"]);
             assert_eq!(draws, [Block]);
 
-            // Canceled with custom_draw: the hook is still asked, vanilla's overlay is gone.
+            // Cancellation does not clear the renderer, only the vanilla overlay.
             let (canceled, draws) = frame(
                 game,
                 Plan {
@@ -267,8 +302,30 @@ fn a_mod_draws_prepends_replaces_and_cancels_overlays() {
                 }]
             );
 
+            // Fire cancellation only suppresses vanilla drawing if no renderer was selected.
+            let (canceled_fire, draws) = frame(
+                game,
+                Plan {
+                    custom: &[Fire],
+                    cancel: &[Fire],
+                    ..LEAVE
+                },
+            );
+            assert_eq!(names(&canceled_fire), ["block", "mod fire", "fire", "fire"]);
+            assert_eq!(draws, [Fire]);
+            let (no_op_fire, draws) = frame(
+                game,
+                Plan {
+                    cancel: &[Fire],
+                    ..LEAVE
+                },
+            );
+            assert_eq!(names(&no_op_fire), ["block"]);
+            assert_eq!(draws, []);
+
             // Under water: every overlay claimed, in vanilla's order.
             game.world.set(0, 65, 0, water).unwrap();
+            assert!(sample_eye_in_water(game));
             let (under, draws) = frame(
                 game,
                 Plan {
@@ -280,6 +337,573 @@ fn a_mod_draws_prepends_replaces_and_cancels_overlays() {
             assert_eq!(names(&under), ["mod water", "mod fire", "fire", "fire"]);
             assert_eq!(draws, [Water, Fire]);
         });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_panicking_extractor_preserves_the_previous_selection_and_other_listeners() {
+    use mod_api::__private::{HookPanicReport, take_hook_panics};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Panics(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Panics {
+        #[listener(priority = -5)]
+        fn extract_block_screen_effect(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut ExtractBlockScreenEffectEvent<'_>,
+        ) -> Flow {
+            if event.effect == Water {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                event.set_custom_renderer(&Choice(RED));
+                event.cancelled = true;
+                panic!("extractor failed after replacing the selection");
+            }
+            Flow::Continue
+        }
+    }
+
+    struct After(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for After {
+        #[listener(priority = -10)]
+        fn extract_block_screen_effect(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut ExtractBlockScreenEffectEvent<'_>,
+        ) -> Flow {
+            if event.effect == Water {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            Flow::Continue
+        }
+    }
+
+    with_client_game(|game| {
+        burning_player(game);
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        game.world.set(0, 65, 0, water).unwrap();
+        assert!(sample_eye_in_water(game));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let later_calls = Arc::new(AtomicUsize::new(0));
+        let mods = vec![
+            ModEntry::new("first", Box::new(ObserveOverlay(Water, Arc::default()))),
+            ModEntry::new("broken-extractor", Box::new(Panics(attempts.clone()))),
+            ModEntry::new("after", Box::new(After(later_calls.clone()))),
+        ];
+        mod_platform::testing::with_mods(mods.into(), || {
+            for frame in 1..=2 {
+                assert_eq!(names(&quads(game)), ["mod water", "water", "fire", "fire"]);
+                assert_eq!(attempts.load(Ordering::Relaxed), 1);
+                assert_eq!(later_calls.load(Ordering::Relaxed), frame);
+                let reports = take_hook_panics();
+                if frame == 1 {
+                    assert_eq!(
+                        reports,
+                        [HookPanicReport {
+                            mod_id: "broken-extractor",
+                            hook: "extract_block_screen_effect",
+                        }]
+                    );
+                } else {
+                    assert!(reports.is_empty());
+                }
+            }
+        });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_panicking_renderer_discards_its_quads_and_is_skipped_on_later_frames() {
+    use mod_api::__private::{HookPanicReport, take_hook_panics};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SUBMISSIONS: AtomicUsize = AtomicUsize::new(0);
+    struct BrokenFire;
+    impl BlockScreenEffectRenderer for BrokenFire {
+        fn submit(&self, _: &dyn ClientHost, render: BlockScreenEffectRender<'_>) -> bool {
+            assert!(render.draw.quad(QUAD, marker(Fire)));
+            SUBMISSIONS.fetch_add(1, Ordering::Relaxed);
+            panic!("fire renderer failed after drawing");
+        }
+    }
+
+    struct Select(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Select {
+        fn extract_block_screen_effect(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut ExtractBlockScreenEffectEvent<'_>,
+        ) -> Flow {
+            match event.effect {
+                Fire => {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                    event.set_custom_renderer(&BrokenFire);
+                }
+                Water => event.set_custom_renderer(&Choice(0xFF020000)),
+                Block => {}
+            }
+            Flow::Continue
+        }
+    }
+
+    with_client_game(|game| {
+        burning_player(game);
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        game.world.set(0, 65, 0, water).unwrap();
+        assert!(sample_eye_in_water(game));
+        let extractions = Arc::new(AtomicUsize::new(0));
+        let mods = vec![ModEntry::new(
+            "broken-fire",
+            Box::new(Select(extractions.clone())),
+        )];
+        mod_platform::testing::with_mods(mods.into(), || {
+            for frame in 1..=2 {
+                // Water from the same mod still submits, and vanilla fire remains visible.
+                assert_eq!(names(&quads(game)), ["mod water", "water", "fire", "fire"]);
+                assert_eq!(SUBMISSIONS.load(Ordering::Relaxed), 1);
+                assert_eq!(extractions.load(Ordering::Relaxed), frame);
+                let reports = take_hook_panics();
+                if frame == 1 {
+                    assert_eq!(
+                        reports,
+                        [HookPanicReport {
+                            mod_id: "broken-fire",
+                            hook: "block_screen_effect_renderer::submit",
+                        }]
+                    );
+                } else {
+                    assert!(reports.is_empty());
+                }
+            }
+        });
+    });
+}
+
+struct Choice(u32);
+impl BlockScreenEffectRenderer for Choice {
+    fn submit(&self, _: &dyn ClientHost, render: BlockScreenEffectRender<'_>) -> bool {
+        assert!(render.draw.quad(QUAD, self.0));
+        false
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct OverlayInput {
+    state: mod_api::BlockState,
+    pos: BlockPos,
+    partial_tick: f32,
+    player_partial_tick: f32,
+}
+
+struct ObserveOverlay(BlockScreenEffect, Arc<Mutex<Option<OverlayInput>>>);
+#[mod_api::__subscriptions]
+impl Hooks for ObserveOverlay {
+    fn extract_block_screen_effect(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut ExtractBlockScreenEffectEvent<'_>,
+    ) -> Flow {
+        if event.effect == self.0 {
+            *self.1.lock().unwrap() = Some(OverlayInput {
+                state: event.state,
+                pos: event.pos,
+                partial_tick: event.partial_tick,
+                player_partial_tick: event.player_partial_tick,
+            });
+            if event.effect == Water {
+                event.set_custom_renderer(&Choice(0xFF020000));
+            }
+        }
+        Flow::Continue
+    }
+}
+
+fn observe_overlay(effect: BlockScreenEffect, run: impl FnOnce()) -> Option<OverlayInput> {
+    let seen = Arc::new(Mutex::new(None));
+    let mods = vec![ModEntry::new(
+        "observe-overlay",
+        Box::new(ObserveOverlay(effect, seen.clone())),
+    )];
+    mod_platform::testing::with_mods(mods.into(), run);
+    seen.lock().unwrap().take()
+}
+
+#[test]
+#[ignore = "daily"]
+fn underwater_third_person_neither_extracts_nor_draws_the_overlay() {
+    with_client_game(|game| {
+        burning_player(game);
+        game.camera_type = CameraType::ThirdPersonBack;
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        game.world.set(0, 65, 0, water).unwrap();
+        assert!(sample_eye_in_water(game));
+        let seen = observe_overlay(Water, || {
+            let overlays = names(&quads(game));
+            assert!(!overlays.contains(&"mod water") && !overlays.contains(&"water"));
+        });
+        assert_eq!(seen, None);
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn waterlogged_eye_reports_default_water_at_the_eye_block() {
+    with_client_game(|game| {
+        burning_player(game);
+        let slab = game
+            .block_state_id("minecraft:oak_slab[type=bottom,waterlogged=true]")
+            .unwrap();
+        game.world.set(0, 65, 0, slab).unwrap();
+        assert!(sample_eye_in_water(game));
+        let seen = observe_overlay(Water, || {
+            assert!(
+                names(&quads(game))
+                    .windows(2)
+                    .any(|pair| pair == ["mod water", "water"])
+            );
+        })
+        .unwrap();
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        assert_eq!(
+            seen.state,
+            crate::game::api_values::TryIntoApi::try_into_api(&water).unwrap()
+        );
+        assert_eq!(seen.pos, BlockPos::new(0, 65, 0));
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn water_extraction_follows_the_tick_sample_at_the_surface() {
+    with_client_game(|game| {
+        burning_player(game);
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        game.world.set(0, 65, 0, water).unwrap();
+        // A source with no water or solid ceiling above it is 8/9 of a block high.
+        // EntityFluidInteraction includes the equality case; Camera.getFluidInCamera does not.
+        let surface = 65.0 + f64::from(8.0_f32 / 9.0);
+        let player = game.player.as_mut().unwrap();
+        player.position.y = surface - f64::from(player.dimensions.eye_height);
+        assert!(sample_eye_in_water(game));
+        assert_eq!(
+            game.camera_fog_type([0.5, surface, 0.5]),
+            FogType::Atmospheric
+        );
+        assert!(names(&quads(game)).contains(&"water"));
+        assert!(
+            observe_overlay(Water, || {
+                assert!(names(&quads(game)).contains(&"mod water"));
+            })
+            .is_some()
+        );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_dead_players_water_overlay_uses_the_last_sample_after_removal() {
+    with_client_game(|game| {
+        let (client, server) = sunrise_protocol::connection::Pipe::pair();
+        game.connect_local(client, "water-overlay").unwrap();
+        let remote = game.remote.as_mut().unwrap();
+        remote.logged_in = true;
+        remote.loaded_sent = true;
+        remote.joined = true;
+        remote.entity_id = 42;
+        remote.level_load.finish();
+        game.screen = Screen::Playing;
+        game.camera_type = CameraType::FirstPerson;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5)).unwrap());
+        let chunk = Chunk::with_layout(0, 0, game.world.layout());
+        game.streaming.insert_remote(&mut game.world, chunk);
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        let air = game.world.block(8, 65, 8);
+        game.world.set(8, 65, 8, water).unwrap();
+        game.tick_remote().unwrap();
+
+        game.screen = Screen::Dead;
+        use sunrise_protocol::packets::play::{Clientbound, SetHealth};
+        game.apply_packet(Clientbound::SetHealth(SetHealth {
+            health: 0.0,
+            food: 20,
+            saturation: 5.0,
+        }))
+        .unwrap();
+        let wet = observe_overlay(Water, || {
+            assert!(
+                names(&quads(game))
+                    .windows(2)
+                    .any(|pair| pair == ["mod water", "water"])
+            );
+        });
+        assert_eq!(wet.unwrap().pos, BlockPos::new(8, 65, 8));
+
+        game.world.set(8, 65, 8, air).unwrap();
+        // Rendering still reads the old sample until the player ticks.
+        assert!(names(&quads(game)).contains(&"water"));
+        game.tick_remote().unwrap();
+        let dry = observe_overlay(Water, || {
+            let overlays = names(&quads(game));
+            assert!(!overlays.contains(&"water") && !overlays.contains(&"mod water"));
+        });
+        assert_eq!(dry, None);
+        assert_eq!(game.ui.death_time, 1);
+
+        // Tick 20 still samples before the local player is removed from the level.
+        for _ in 1..19 {
+            game.tick_remote().unwrap();
+        }
+        assert_eq!(game.ui.death_time, 19);
+        game.world.set(8, 65, 8, water).unwrap();
+        game.tick_remote().unwrap();
+        assert_eq!(game.ui.death_time, 20);
+        assert!(names(&quads(game)).contains(&"water"));
+
+        // Extraction still reads that last sample after removal, even as the world ticks.
+        game.world.set(8, 65, 8, air).unwrap();
+        game.tick_remote().unwrap();
+        let still_wet = observe_overlay(Water, || {
+            assert!(
+                names(&quads(game))
+                    .windows(2)
+                    .any(|pair| pair == ["mod water", "water"])
+            );
+        });
+        assert_eq!(still_wet.unwrap().pos, BlockPos::new(8, 65, 8));
+        assert_eq!(game.ui.death_time, 20);
+        server.shutdown();
+    });
+}
+
+struct InvertWater;
+#[mod_api::__subscriptions]
+impl Hooks for InvertWater {
+    fn camera_submersion(&self, _: &dyn ClientHost, event: &mut CameraSubmersionEvent<'_>) {
+        *event.fog_type = if *event.fog_type == FogType::Water {
+            FogType::Atmospheric
+        } else {
+            FogType::Water
+        };
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn camera_submersion_can_force_or_clear_the_first_person_water_overlay() {
+    with_client_game(|game| {
+        burning_player(game);
+        let water = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:water")
+            .unwrap();
+        let dry = game.world.block(0, 65, 0);
+        let mods: Mods = vec![ModEntry::new("invert-water", Box::new(InvertWater))].into();
+        for wet in [false, true] {
+            if wet {
+                game.world.set(0, 65, 0, water).unwrap();
+            }
+            assert_eq!(sample_eye_in_water(game), wet);
+            // The world can change after the sample. The override still sees the tick's answer.
+            game.world.set(0, 65, 0, dry).unwrap();
+            mod_platform::testing::with_mods(mods.clone(), || {
+                assert_eq!(names(&quads(game)).contains(&"water"), !wet);
+            });
+        }
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn pack_assembly_reports_a_missing_water_default() {
+    with_client_game(|game| {
+        let root = sunrise_assets::resource_source::ResourceRoot::directory(fixture_root());
+        let pack = &game.pack;
+        let registry = sunrise_world::registry::BlockRegistry::from_facts_json(
+            br#"{"states":[["minecraft:air",true,false,"","minecraft:air"]],"defaults":{"minecraft:air":0}}"#
+                .as_slice(),
+        )
+        .unwrap();
+        let assets = sunrise_client::assets::Assets {
+            registry: Box::leak(Box::new(registry)),
+            properties: sunrise_client::assets::Properties::for_tests(&[(
+                true, false, false, false,
+            )]),
+            material_states: [sunrise_world::registry::BlockStateId(0); 6],
+            blocks_fluid_flow: Default::default(),
+        };
+        let items = sunrise_client::item_render::ItemRenderer::load_for_server(
+            &root,
+            pack.render.model_library.clone(),
+            &game.res.core.item_data,
+        )
+        .unwrap();
+        let Err(error) = PackResources::assemble(
+            &root,
+            Arc::new(assets),
+            pack.render.clone(),
+            pack.context.tables.clone(),
+            items,
+            pack.context.biomes.clone(),
+            pack.context.light.clone(),
+        ) else {
+            panic!("a registry without water cannot supply the overlay");
+        };
+        assert_eq!(
+            error.to_string(),
+            "block registry is missing the default minecraft:water state"
+        );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn extraction_keeps_player_interpolation_when_world_interpolation_is_frozen() {
+    with_client_game(|game| {
+        burning_player(game);
+        game.clock = FixedStep::client();
+        game.clock.set_frozen(true);
+        assert!(!game.clock.world_runs());
+        game.clock.end_frame(false);
+        game.clock.advance(Duration::from_millis(25), 50.0);
+        let seen = observe_overlay(Fire, || {
+            let projection = hand_projection(70.0, 1000.0, 500.0, 1000.0);
+            game.screen_quads(
+                game.frame_world_partial_tick() as f32,
+                [1000, 500],
+                1.0,
+                projection,
+            );
+        })
+        .unwrap();
+        assert_eq!((seen.partial_tick, seen.player_partial_tick), (1.0, 0.5));
+    });
+}
+
+struct FirstChoice(bool);
+#[mod_api::__subscriptions]
+impl Hooks for FirstChoice {
+    #[listener(priority = 10)]
+    fn extract_block_screen_effect(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut ExtractBlockScreenEffectEvent<'_>,
+    ) -> Flow {
+        if event.effect == Block {
+            event.set_custom_renderer(&Choice(RED));
+            if self.0 {
+                return Flow::Cancel;
+            }
+        }
+        Flow::Continue
+    }
+}
+
+struct ReceiveCancelled;
+#[mod_api::__subscriptions]
+impl Hooks for ReceiveCancelled {
+    #[listener(receive_cancelled)]
+    fn extract_block_screen_effect(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut ExtractBlockScreenEffectEvent<'_>,
+    ) -> Flow {
+        if event.effect == Block && event.cancelled {
+            event.set_custom_renderer(&Choice(0xFF0000FF));
+        }
+        Flow::Continue
+    }
+}
+
+struct LastChoice;
+#[mod_api::__subscriptions]
+impl Hooks for LastChoice {
+    #[listener(priority = -10)]
+    fn extract_block_screen_effect(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut ExtractBlockScreenEffectEvent<'_>,
+    ) -> Flow {
+        if event.effect == Block {
+            event.set_custom_renderer(&Choice(0xFF00FF00));
+        }
+        Flow::Continue
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn only_the_last_eligible_renderer_submits() {
+    with_client_game(|game| {
+        burning_player(game);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(0, 65, 0, stone).unwrap();
+        let frame = |cancel| {
+            // Supply entries out of listener-priority order.
+            let mods: Mods = vec![
+                ModEntry::new("last", Box::new(LastChoice)),
+                ModEntry::new("receive", Box::new(ReceiveCancelled)),
+                ModEntry::new("first", Box::new(FirstChoice(cancel))),
+            ]
+            .into();
+            mod_platform::testing::with_mods(mods, || quads(game))
+        };
+        for (cancel, chosen) in [(false, [0.0, 1.0, 0.0, 1.0]), (true, [0.0, 0.0, 1.0, 1.0])] {
+            let frame = frame(cancel);
+            assert_eq!(frame[0].vertices[0].color, chosen);
+            let choices = [
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ];
+            let custom_colors: Vec<_> = frame
+                .iter()
+                .map(|quad| quad.vertices[0].color)
+                .filter(|color| choices.contains(color))
+                .collect();
+            assert_eq!(custom_colors, [chosen]);
+        }
     });
 }
 
@@ -307,32 +931,12 @@ impl Hooks for Painter {
     fn extract_block_screen_effect(
         &self,
         _: &dyn ClientHost,
-        event: &mut ExtractBlockScreenEffectEvent,
+        event: &mut ExtractBlockScreenEffectEvent<'_>,
     ) -> Flow {
-        event.custom_draw = event.effect == Fire;
+        if event.effect == Fire {
+            event.set_custom_renderer(&Painter);
+        }
         Flow::Continue
-    }
-    fn block_screen_effect_draw(
-        &self,
-        _: &dyn ClientHost,
-        event: &mut BlockScreenEffectDrawEvent<'_>,
-    ) {
-        // Leaning away to the right: the right edge is twice as deep, so half as far out.
-        let leaning = [
-            [-0.25, -0.25, -0.5],
-            [0.25, -0.25, -1.0],
-            [0.25, 0.25, -1.0],
-            [-0.25, 0.25, -0.5],
-        ];
-        assert!(event.draw.quad(leaning, RED));
-        let clear = [
-            [0.33, -0.1, -0.5],
-            [0.44, -0.1, -0.5],
-            [0.44, 0.1, -0.5],
-            [0.33, 0.1, -0.5],
-        ];
-        assert!(event.draw.quad(clear, CLEAR_BLUE));
-        event.replace_vanilla = true;
     }
     fn gui_render_post(&self, _: &dyn ClientHost, event: &mut GuiRenderPostEvent<'_>) {
         if DRAWING.load(std::sync::atomic::Ordering::Relaxed) {
@@ -344,12 +948,33 @@ impl Hooks for Painter {
     }
 }
 
+impl BlockScreenEffectRenderer for Painter {
+    fn submit(&self, _: &dyn ClientHost, render: BlockScreenEffectRender<'_>) -> bool {
+        // Leaning away to the right: the right edge is twice as deep, so half as far out.
+        let leaning = [
+            [-0.25, -0.25, -0.5],
+            [0.25, -0.25, -1.0],
+            [0.25, 0.25, -1.0],
+            [-0.25, 0.25, -0.5],
+        ];
+        assert!(render.draw.quad(leaning, RED));
+        let clear = [
+            [0.33, -0.1, -0.5],
+            [0.44, -0.1, -0.5],
+            [0.44, 0.1, -0.5],
+            [0.33, 0.1, -0.5],
+        ];
+        assert!(render.draw.quad(clear, CLEAR_BLUE));
+        true
+    }
+}
+
 /// On a real renderer: the quads go over the level, perspective included, and the GUI goes over
 /// them. At 320x240 the hand's 70 degrees put a corner `(x, y, z)` at pixel
 /// `160 + 160 * x * 1.07111 / -z`, `120 - 120 * y * 1.42815 / -z`, so the leaning quad's left edge
 /// is at x 74 and its right edge at x 203, and the clear quad covers x 273 to 311.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and a display"]
+#[ignore = "daily"]
 fn screen_effect_quads_draw_over_the_level_and_under_the_gui() {
     let name = "game::block_screen_effect_draw_tests::screen_effect_quads_draw_over_the_level_and_under_the_gui";
     if run_fresh_cases(name, "SUNRISE_SCREEN_EFFECT_PASS_CHILD", &["pixels"]) {

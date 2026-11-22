@@ -147,10 +147,12 @@ impl Game<'_> {
             if silent { None } else { Some(Vec::new()) },
         );
         let outer_exec = std::mem::take(&mut self.exec);
+        let outer_results = self.cmds.results.take();
         let level = std::mem::replace(&mut self.ui.registries.permission, permission);
         let ok = self.run_command(line);
         self.ui.registries.permission = level;
         self.exec = outer_exec;
+        self.cmds.results = outer_results;
         let lines = std::mem::replace(&mut self.chat_capture, capture).unwrap_or_default();
         self.console_broadcast = console;
         self.native_command_filter = filter;
@@ -163,8 +165,8 @@ impl Game<'_> {
 mod tests {
     use super::*;
     use crate::game::native_guest_turn_tests::with_guests;
-    use sunrise_protocol::packets::play::Clientbound as C;
     use mod_api::{GameMode, PermissionLevel};
+    use sunrise_protocol::packets::play::Clientbound as C;
 
     #[test]
     #[ignore = "daily"]

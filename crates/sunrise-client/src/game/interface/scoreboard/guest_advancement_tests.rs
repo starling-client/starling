@@ -3,14 +3,14 @@ use crate::game::Dim;
 use sunrise_core::geometry::Vec3;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn selector_reads_independent_host_and_guest_progress() {
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::{
         lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
         motion::PlayerMotion,
     };
     use sunrise_protocol::packets::configuration::ClientInformation;
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     crate::game::native_entity_refs::tests::with_game(|game| {
         let scratch = std::env::temp_dir().join(format!(
             "sunrise-guest-selector-{}-{}",
@@ -47,6 +47,7 @@ fn selector_reads_independent_host_and_guest_progress() {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();

@@ -8,10 +8,12 @@ pub trait Hooks {
     /// longer, zero or less lets it expire. Extensions are capped at 32766
     /// ticks.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_item_expire",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "ItemExpireEvent",
         cancellable = false
     )]
-    fn item_expire();
+    fn item_expire(entity: u32, stack: &ItemStack, extra_life: &mut i32);
 }

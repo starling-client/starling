@@ -3,12 +3,12 @@
 //! picked item's component patch, a tab, then the placed block entity.
 //!
 //! usage: pick_block_data_fixture INPUT OUTPUT
+use serde_json::Value;
+use std::fs;
 use sunrise_client::block_entity_item::{pick, place};
 use sunrise_client::block_entity_nbt::canonical;
 use sunrise_core::java_number::{double_to_string, float_to_string};
 use sunrise_core::nbt::{Tag, parse_snbt};
-use serde_json::Value;
-use std::fs;
 
 /// ParityData.canon: sorted keys, typed numbers, Java's float text.
 fn canon(tag: &Tag, out: &mut String) {

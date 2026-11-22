@@ -6,10 +6,18 @@ pub trait Hooks {
     /// added to or filtered from `suggestions`. `range` is the replaced byte range.
     /// The game snapshots completions only when a listener subscribes.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_tab_complete",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "suggestions",
         neoforge = "none (NeoForge has no generic tab completion event)"
     )]
-    fn tab_complete();
+    fn tab_complete(
+        player: u128,
+        name: &str,
+        command: &str,
+        range: [usize; 2],
+        suggestions: &mut Vec<Suggestion>,
+    );
 }

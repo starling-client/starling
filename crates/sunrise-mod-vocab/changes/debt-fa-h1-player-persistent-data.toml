@@ -1,0 +1,5 @@
+ids = [
+    "type:PlayerPersistentDataError",
+]
+why = "Removed the dead-player refusal from PlayerRef::set_persistent_data_key and PlayerPersistentDataError::Dead so online dead players on the server accept persistent data edits (and roll back on transaction abort), matching NeoForge net.minecraft.world.entity.Entity#getPersistentData and net.minecraft.server.level.ServerPlayer#restoreFrom."
+migrate = "Remove match arms on `PlayerPersistentDataError::Dead`; `PlayerRef::set_persistent_data_key` now succeeds on dead online players on the server and carries `PlayerPersisted` across respawn."

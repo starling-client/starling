@@ -16,9 +16,9 @@ AbstractBoat.isUnderwater	inline	crates/sunrise-client/src/game/entities/boats/m
 AbstractBoat.floatBoat	inline	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::tick_boat	buoyancy, friction and the first-water-touch snap are in tick_boat
 AbstractBoat.controlBoat	inline	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::tick_boat	steering, acceleration and paddle flags in the controlled branch of tick_boat
 AbstractBoat.getDismountLocationForPassenger	port	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::boat_dismount_target	gap: minor: no dismount pose check; the floor and water tests are there
-AbstractBoat.clampRotation	inline	crates/sunrise-client/src/game/network/remote_vehicles.rs::Game::remote_ride	the rider's yaw is clamped to 105 degrees off the boat; mobs get the head clamp in boat_passengers.rs seat_boat_mobs
+AbstractBoat.clampRotation	port	crates/sunrise-client-render/src/camera.rs::clamp_boat_rotation	the rider's yaw is clamped to 105 degrees off the boat; mobs get the head clamp in boat_passengers.rs seat_boat_mobs
 AbstractBoat.calculatePassengerBodyYRot	inline	crates/sunrise-client/src/game/entities/boat_passengers.rs::Game::seat_boat_mobs	animal turned 90 or 270 degrees when the boat is full
-AbstractBoat.onPassengerTurned	inline	crates/sunrise-client/src/game/network/remote_vehicles.rs::Game::remote_ride	the rider's turn is clamped each tick
+AbstractBoat.onPassengerTurned	inline	crates/sunrise-client/src/game/interface/perspective.rs::Game::turn_player	the rider's view is clamped at the end of each turn
 AbstractBoat.remove	inline	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::hurt_boat	destroyed boats eject mobs and drop the boat; gap: minor: no leash drop, since boats cannot be leashed here
 AbstractBoat.checkFallDamage	missing		minor: boats keep no fall distance; boats take no fall damage either way
 AbstractBoat.getPaddleState	port	crates/sunrise-client/src/game/entities/boats/mod.rs::Boat::rowing_time	paddle flag, set only while a rider drives
@@ -82,19 +82,19 @@ AbstractContainerMenu.addDataSlot	skip:java		registers a DataSlot object; progre
 AbstractContainerMenu.addDataSlots	skip:java		registers DataSlot objects for a ContainerData; progress values are set directly by Menu::set_data
 AbstractContainerMenu.addSlotListener	skip:java		listener list for local screens; a viewer reads the menu state directly
 AbstractContainerMenu.setSynchronizer	inline	crates/sunrise-client/src/lan/containers.rs::Hub::open_container	the synchroniser is the guest's connection; opening sends the full content at once
-AbstractContainerMenu.sendAllDataToRemote	port	crates/sunrise-client/src/lan/containers.rs::Hub::send_menu_content	all slots, the carried stack and the menu state in one packet
+AbstractContainerMenu.sendAllDataToRemote	port	crates/sunrise-client/src/lan/containers.rs::Hub::send_menu_snapshot	all slots, the carried stack and the menu state in one packet; remembers the cursor sent
 AbstractContainerMenu.getItems	inline	crates/sunrise-client/src/lan/containers.rs::Hub::send_menu_content	the item list for the content packet is built there
 AbstractContainerMenu.broadcastFullState	port	crates/sunrise-client/src/lan/containers.rs::Hub::send_menu_content	a full resend of the contents; gap: minor: no separate local listener pass
 AbstractContainerMenu.updateDataSlotListeners	skip:java		local listener dispatch for data changes; the wire side is ContainerSetData in sync_container_data
 AbstractContainerMenu.triggerSlotListeners	skip:java		local listener dispatch for slot changes; the wire side is the slot diff in sync_containers
 AbstractContainerMenu.synchronizeSlotToRemote	port	crates/sunrise-client/src/lan/containers.rs::Hub::sync_containers	sends each changed slot with a new state id
 AbstractContainerMenu.synchronizeDataSlotToRemote	port	crates/sunrise-client/src/lan/containers.rs::Hub::sync_container_data	sends each changed furnace, brewing or crafter value
-AbstractContainerMenu.synchronizeCarriedToRemote	inline	crates/sunrise-client/src/lan/containers.rs::Hub::answer_click	the cursor item is sent after a click when it differs; gap: minor: no sync on other carried changes
-AbstractContainerMenu.setRemoteSlotUnsafe	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::set_menu_slot	the server's slot update is applied; gap: minor: no hashed copy of the remote slot is kept
+AbstractContainerMenu.synchronizeCarriedToRemote	port	crates/sunrise-client/src/lan/containers.rs::Hub::sync_carried	sends a changed carried stack after a click or on the next broadcast
+AbstractContainerMenu.setRemoteSlotUnsafe	port	crates/sunrise-client/src/game/network/remote/inventory.rs::Game::set_menu_slot	the server's slot update is applied; gap: minor: no hashed copy of the remote slot is kept
 AbstractContainerMenu.doClick	inline	crates/sunrise-client/src/menu.rs::Menu::click	the click dispatch for the player's own and a host's station menus; its QUICK_MOVE arm repeats quickMoveStack while the slot keeps the item, and the guest copy in lan/menu.rs::click does it in one pass whose move_to fills every empty slot
 AbstractContainerMenu.getClickAction	inline	crates/sunrise-client/src/menu.rs::Menu::click	button 0 is the primary action, 1 the secondary
 AbstractContainerMenu.tryItemClickBehaviourOverride	port	crates/sunrise-client/src/menu/bundle.rs::Menu::bundle_click	a bundle takes or puts items on a click on another stack; the NeoForge event is not modelled
-AbstractContainerMenu.initializeContents	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::set_menu_slot	the server's full content is applied to the open menu
+AbstractContainerMenu.initializeContents	port	crates/sunrise-client/src/game/network/remote/inventory.rs::Game::set_menu_slot	the server's full content is applied to the open menu
 AbstractContainerMenu.isContainerClickButton	inline	crates/sunrise-client/src/lan/menu.rs::click	a pickup or a quick move on any button but 0 and 1 changes nothing; THROW takes one item for button 0 and the whole stack otherwise
 AbstractContainerMenu.isValidQuickcraftType	inline	crates/sunrise-client/src/menu.rs::Menu::click	drag types 0 and 1 always, type 2 only in creative
 AbstractContainerMenu.canItemQuickReplace	port	crates/sunrise-client/src/menu.rs::Menu::quick_replace	a slot takes the stack when empty or the same item with room

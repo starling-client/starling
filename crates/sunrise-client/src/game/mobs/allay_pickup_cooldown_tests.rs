@@ -3,11 +3,11 @@
 //! it throws an item (tools/test_allay_pickup_cooldown_parity.py measures the
 //! same on vanilla 26.3).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::allay;
 use sunrise_core::nbt::Tag;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 const SUPPLIED: &str = "00006096-0000-0000-0000-000000000001";
 
@@ -84,7 +84,7 @@ fn saved(game: &mut Game<'_>, i: usize) -> Option<Tag> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_allay_keeps_its_item_pickup_cooldown_memory() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -119,7 +119,7 @@ fn an_allay_keeps_its_item_pickup_cooldown_memory() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn pickup_cooldown_saves_the_full_integer_value() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -168,7 +168,7 @@ fn step(game: &mut Game<'_>, ticks: u32) {
 /// or a raw one the model has since ended), the value a throw sets, the same
 /// value after a save and load, and a NoAI allay keeps its value (no Brain tick).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_saved_pickup_cooldown_follows_the_model() {
     let mut resources = None;
     let mut game = game(&mut resources);

@@ -30,6 +30,8 @@ fn holder(t: &Tag, reg: &Registries) -> Result<(), String> {
     }
     decode(t, reg)
 }
+/// `RegistryCodecs.holderSet` (HolderSetCodec, forceList false): a `#tag`, or
+/// `ExtraCodecs.compactListCodec` of holders, a single one or a list.
 fn holder_set(t: &Tag, reg: &Registries) -> Result<(), String> {
     if as_string(t).is_some_and(|s| s.starts_with('#')) {
         return tag(t, reg);
@@ -40,7 +42,25 @@ fn holder_set(t: &Tag, reg: &Registries) -> Result<(), String> {
         }
         return Ok(());
     }
-    typed(t, reg)
+    holder(t, reg)
+}
+/// `ExtraCodecs.POSITIVE_INT`: `Codec.INT` takes any numeric tag's
+/// `Number.intValue()`, then `intRangeWithMessage(1, MAX_VALUE, ...)`.
+fn positive_int(t: &Tag) -> Result<(), String> {
+    let value = match *t {
+        Tag::Byte(v) => i32::from(v),
+        Tag::Short(v) => i32::from(v),
+        Tag::Int(v) => v,
+        Tag::Long(v) => v as i32,
+        // Java's (int) cast saturates, and NaN becomes 0, as `as` does.
+        Tag::Float(bits) => f32::from_bits(bits) as i32,
+        Tag::Double(bits) => f64::from_bits(bits) as i32,
+        _ => return Err("Not a number".into()),
+    };
+    if value < 1 {
+        return Err(format!("Value must be positive: {value}"));
+    }
+    Ok(())
 }
 fn typed(t: &Tag, reg: &Registries) -> Result<(), String> {
     dispatch(t, reg, "minecraft:slot_source_type", &|id, map, t| {
@@ -96,12 +116,16 @@ fn typed(t: &Tag, reg: &Registries) -> Result<(), String> {
             }
             "minecraft:limit_slots" => {
                 require(map, t, &["limit"])?;
+                positive_int(get(map, "limit").unwrap())?;
             }
             "minecraft:filtered" => {
                 require(map, t, &["item_filter"])?;
                 if !matches!(get(map, "item_filter"), Some(Tag::Compound(_))) {
                     return Err("Not an item predicate map".into());
                 }
+                sunrise_world::item_defaults::validate_item_predicate_tag(
+                    get(map, "item_filter").expect("required item filter"),
+                )?;
             }
             _ => {}
         }
@@ -116,8 +140,14 @@ fn typed(t: &Tag, reg: &Registries) -> Result<(), String> {
     })
 }
 pub(super) fn decode(t: &Tag, reg: &Registries) -> Result<(), String> {
-    if as_string(t).is_some_and(|s| s.starts_with('#')) {
-        return tag(t, reg);
+    // SlotSources.CODEC is `RegistryCodecs.holder`: a quoted id is a
+    // registry reference, as an unquoted one is (`resource_or_id`).
+    if let Some(name) = as_string(t) {
+        return if name.starts_with('#') {
+            tag(t, reg)
+        } else {
+            holder(t, reg)
+        };
     }
     if let Tag::List(values) = t {
         for value in values {
@@ -147,6 +177,12 @@ mod tests {
             r#"{type:"limit_slots",limit:1L,slot_source:"complete:one"}"#,
             r##"{type:"group",terms:"#complete:selection"}"##,
             r#"{type:"slot_range",source:"this",slots:"weapon.mainhand"}"#,
+            // A quoted single holder, at the top and as a group's terms.
+            r#""complete:one""#,
+            r#"{type:"group",terms:"complete:one"}"#,
+            // Codec.INT reads any numeric tag's intValue.
+            r#"{type:"limit_slots",limit:1b,slot_source:"complete:one"}"#,
+            r#"{type:"limit_slots",limit:2.5d,slot_source:"complete:one"}"#,
         ] {
             let (tag, _) = sunrise_core::nbt::parse_snbt(input).unwrap();
             assert!(decode(&tag, &reg).is_ok(), "{input}");
@@ -155,9 +191,69 @@ mod tests {
             r#"["complete:missing"]"#,
             r##""#complete:missing""##,
             r#"{type:"slot_range",source:"not_a_context",slots:"container.*"}"#,
+            r#"{type:"group",terms:"complete:missing"}"#,
+            r#""complete:missing""#,
         ] {
             let (tag, _) = sunrise_core::nbt::parse_snbt(input).unwrap();
             assert!(decode(&tag, &reg).is_err(), "{input}");
         }
+        // NbtOps.getNumberValue's and ExtraCodecs.POSITIVE_INT's errors (26.3 bytecode).
+        for (input, error) in [
+            (
+                r#"{type:"limit_slots",limit:"x",slot_source:"complete:one"}"#,
+                "Not a number",
+            ),
+            (
+                r#"{type:"limit_slots",limit:0,slot_source:"complete:one"}"#,
+                "Value must be positive: 0",
+            ),
+            (
+                r#"{type:"limit_slots",limit:-3,slot_source:"complete:one"}"#,
+                "Value must be positive: -3",
+            ),
+            (
+                r#"{type:"limit_slots",limit:0.5d,slot_source:"complete:one"}"#,
+                "Value must be positive: 0",
+            ),
+        ] {
+            // The top level wraps them in element_or_list's either error; only
+            // the inner message is checked against the bytecode.
+            let (tag, _) = sunrise_core::nbt::parse_snbt(input).unwrap();
+            let actual = decode(&tag, &reg).unwrap_err();
+            assert!(actual.contains(error), "{input}: {actual}");
+        }
+    }
+
+    #[test]
+    fn filtered_sources_reject_transient_exact_values_and_removals() {
+        let reg = Registries::default();
+        for input in [
+            r#"{type:"minecraft:filtered",item_filter:{components:{"minecraft:creative_slot_lock":{}}},slot_source:{type:"minecraft:slot_range",slots:"container.0"}}"#,
+            r#"{type:"minecraft:filtered",item_filter:{components:{"!minecraft:creative_slot_lock":{}}},slot_source:{type:"minecraft:slot_range",slots:"container.0"}}"#,
+        ] {
+            let mut reader = Reader::new(input);
+            let error = resource_or_id(&mut reader, &reg, "minecraft:slot_source").unwrap_err();
+            assert_eq!(error.key, "argument.resource_or_id.failed_to_parse");
+            assert_eq!(error.input.as_deref(), Some(input));
+            assert!(
+                error.message.source_component().unwrap()["with"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("'minecraft:creative_slot_lock' is not a persistent component")
+            );
+        }
+    }
+
+    #[test]
+    fn filtered_sources_accept_type_only_transient_predicates() {
+        let mut reg = Registries::default();
+        reg.by_registry
+            .entry("minecraft:data_component_type".into())
+            .or_default()
+            .ids = vec!["minecraft:creative_slot_lock".into()];
+        let input = r#"{type:"minecraft:filtered",item_filter:{predicates:{"minecraft:creative_slot_lock":{}}},slot_source:{type:"minecraft:slot_range",slots:"container.0"}}"#;
+        let mut reader = Reader::new(input);
+        resource_or_id(&mut reader, &reg, "minecraft:slot_source").unwrap();
+        assert_eq!(reader.cursor, input.len());
     }
 }

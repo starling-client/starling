@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Mostra A jogar Sunrise no teu perfil do Discord enquanto o Discord está a correr: menus, jogador singular ou multijogador, a dimensão e o tempo jogado. Nunca o nome de um mundo ou o endereço de um servidor."
+}

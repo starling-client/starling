@@ -1,0 +1,3 @@
+ids = ["hook:level_load", "hook:level_unload"]
+why = "Like vanilla, the built-in levels (Overworld, Nether, End) now stay open until server shutdown and only unload unticketed chunks while idle. level_unload no longer fires on idle for the Nether or End, and level_load no longer fires a second time when a player visits them later."
+migrate = "Rebuild against the updated SDK. Expect one level_load at startup and one level_unload at server shutdown for each built-in level; use chunk_unload for chunk eviction while a built-in level stays open."

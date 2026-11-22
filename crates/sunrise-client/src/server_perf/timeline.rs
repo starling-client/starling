@@ -1,8 +1,8 @@
 //! The spans of every thread as the capture's `timeline` chunks, within the caps of docs/perf-platform.md §3.7.
 use crate::spans::timeline::{self, ThreadEvents};
+use std::time::Instant;
 use sunrise_perf_format::v1::{Side, TimelineChunk, Warning, WarningCode};
 use sunrise_perf_format::{Interner, ProtoMessage};
-use std::time::Instant;
 
 /// Seconds between two drains: one chunk per thread each.
 pub const CHUNK_S: f64 = 1.0;

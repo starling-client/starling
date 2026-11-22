@@ -5,12 +5,15 @@ pub fn register_game_keys(
     schema: &mod_vocab::__private::RuleSchema<'_>,
     dimension_shape: fn(&crate::DimensionSettings) -> bool,
 ) {
+    let ids: std::collections::BTreeSet<String> = ids.into_iter().collect();
     mod_vocab::testing::rebuild_parts(|| {
         let mut registrar = super::register_all(crate::__private::mods(), dimension_shape);
         registrar.mod_id = "sunrise";
         registrar.declare_fluid("definition_test");
-        for id in ids {
-            registrar.block_key(&id);
+        // Request in one order: callers hand over a `HashSet`, whose iteration order differs
+        // per game, and a registry whose slots differ by order cannot share its payloads.
+        for id in &ids {
+            registrar.block_key(id);
         }
         super::install_registrar(registrar, schema)?;
         mod_vocab::__private::resolve_fluids(

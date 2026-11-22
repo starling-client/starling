@@ -1,7 +1,7 @@
 //! `create_fluid_source` reaches mods from the server's fluid ticks.
-use sunrise_core::position::BlockPos;
 use mod_api::{CreateFluidSourceEvent, Hooks, LevelHost, Registrar};
 use std::sync::Mutex;
+use sunrise_core::position::BlockPos;
 
 static HEARD: Mutex<Vec<(i32, i32, i32, bool)>> = Mutex::new(Vec::new());
 
@@ -20,7 +20,7 @@ impl Hooks for Dry {
 }
 
 #[test]
-#[ignore = "needs prepared resources and an isolated process for native mods"]
+#[ignore = "daily"]
 fn a_mod_keeps_one_source_from_counting() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("dry", Box::new(Dry))].into();
     mod_platform::testing::with_mods(mods, || {

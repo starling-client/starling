@@ -9,5 +9,7 @@ static GAME_IDENTITY: [u8; sunrise_mod_package::game_identity::MARK.len()] =
 fn main() {
     std::hint::black_box(&HOLDER_CAPABILITY);
     std::hint::black_box(&GAME_IDENTITY);
+    #[cfg(feature = "official")]
+    sunrise_official::register();
     sunrise_mod_host::main();
 }

@@ -9,7 +9,7 @@ use crate::world::ticket_controller::ControllerInfo;
 use crate::{
     BlockEntityPart, BlockPart, BlockSide, Capability, CapabilityKey, EntityCapabilityKey,
     EntityPart, EntityRef, FluidPart, HOOK_COUNT, HookId, Host, ItemCapabilityKey, ItemPart,
-    ItemPlace, MenuPart, ModEntry, PlaceProvider, ServerHost, TicketController,
+    ItemPlace, MenuPart, MobEffectPart, ModEntry, PlaceProvider, ServerHost, TicketController,
 };
 use std::{
     any::{Any, type_name},

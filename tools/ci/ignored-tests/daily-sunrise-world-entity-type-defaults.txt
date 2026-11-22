@@ -1,0 +1,2 @@
+# #3944: a type's default attributes read against the prepared attribute catalog (attributes.json).
+sunrise-world attributes::entity::row_tests::a_types_default_is_a_fresh_entitys_base lib daily resources

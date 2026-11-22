@@ -122,8 +122,6 @@ def run(bins, folder, out):
     props = dict(PROPERTIES, **{'server-port': str(port)})
     (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
     (folder / 'eula.txt').write_text('eula=true\n')
-    # Vanilla's rules only: Sunrise's anticheat would drop the attacks the boats take without a swing.
-    (folder / 'server.toml').write_text('[anticheat]\nenabled = false\n')
     command = [bins / f'sunrise-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     server = Server(command, folder, out / 'server.log')
     try:

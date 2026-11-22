@@ -1,86 +1,147 @@
 use super::*;
 
 impl Game<'_> {
-    /// The container slots (of `size`) that the mod's screen for the block at
-    /// `pos` does not show: the server's menu does not have them either, so a
-    /// shift-click never moves an item where the player cannot see it.
-    pub(in crate::game) fn native_hidden_slots(&self, pos: Pos, size: usize) -> Vec<usize> {
-        let Some(menu) = self.mod_menu_at(pos) else {
-            return Vec::new();
-        };
-        let block = self
+    /// The mod block at `pos` when its container opens menu type `menu`, the
+    /// `block` its screen factory is told. Only when this is the menu that
+    /// block opens: a position outlives the use that set it, so another menu
+    /// opened later (a command's, another mod's) is not the last clicked
+    /// machine's. Read the declaration directly, as a client's world has no
+    /// server-side mod container table.
+    pub(in crate::game) fn menu_opener_block(&self, pos: Pos, menu: &str) -> Option<&str> {
+        let block = &self
             .res
             .facts()
             .get(self.world.block(pos.0, pos.1, pos.2))
-            .name
-            .to_string();
-        let mut screen = mod_api::RecipeBookLayout::registered_screen(menu);
-        if screen.is_none() {
-            self.native_screen(&block, &mut screen);
+            .name;
+        if block.starts_with("minecraft:") {
+            return None;
         }
-        let Some(screen) = screen else {
-            return Vec::new();
-        };
-        (0..size)
-            .filter(|&i| screen.slots.get(i).is_none_or(Option::is_none))
-            .collect()
+        let container = mod_api::__private::parts_installation::block_container(block)?;
+        let (opens, _) = mod_menu(container.menu.as_deref()?)?;
+        (opens == menu).then_some(block.as_ref())
     }
-    /// A menu opened on this client with its slots under `key`, on block
-    /// `target`: a book-enabled menu uses its startup-validated registered screen;
-    /// other mod menus obtain their screen through `native_screen`.
-    /// `extra` is what the server sent for this window first.
+    /// Stage the current remote opening's screen for the window. Its slots
+    /// are stored under `key`; `extra` was already matched to this opening.
+    /// The packet handler checked for required factories before changing menus.
+    /// False refuses the opening; an ordinary stock menu needs no mod screen.
     pub(in crate::game) fn open_native_screen(
         &mut self,
         key: Pos,
         target: Option<Pos>,
-        window: i32,
-        menu: &str,
+        backing_slots: usize,
         extra: Option<sunrise_protocol::menu_extra::Message>,
-    ) {
-        self.clear_mod_book_placement_screen();
-        self.mod_screen = None;
-        let Some(t) = target else {
-            return;
+    ) -> bool {
+        if self.is_logical_server() || self.lan_acting.is_some() {
+            return false;
+        }
+        let Some(remote) = self.remote.as_ref() else {
+            return false;
         };
-        let block = self
-            .res
-            .facts()
-            .get(self.world.block(t.0, t.1, t.2))
-            .name
-            .to_string();
-        if block.starts_with("minecraft:") {
-            return;
+        let Some((window, name)) = remote.menu.as_ref() else {
+            return false;
+        };
+        let mod_type = sunrise_client::containers::mod_menu_type(name);
+        let block = target.and_then(|pos| self.menu_opener_block(pos, name));
+        let binding = mod_api::RecipeBookLayout::registered(name);
+        let of = block.unwrap_or(name);
+        // A matching payload supplies the position, including an explicit absence.
+        // Otherwise only a verified clicked opener supplies one, never the slot storage key.
+        let pos = extra.as_ref().map_or_else(
+            || {
+                target
+                    .filter(|_| block.is_some())
+                    .map(|(x, y, z)| [x, y, z])
+            },
+            |extra| extra.pos,
+        );
+        let open = mod_api::MenuScreenOpen {
+            window: *window,
+            menu: name,
+            block,
+            pos,
+            title: remote.menu_title_snapshot(),
+            backing_slots,
+            player_slots: mod_type
+                .map_or(36, sunrise_client::containers::ModMenuType::player_slots),
+            data_slots: mod_type.map_or(0, |kind| kind.data_slots),
+            extra: extra.as_ref().map_or(&[], |extra| extra.data.as_slice()),
+        };
+        let created = mod_api::__private::create_menu_screen(self, open);
+        // Opening bytes are construction-only; the result owns its presentation.
+        drop(extra);
+        let Some((owner, created)) = created else {
+            return true;
+        };
+        let mut instance = match created {
+            Ok(Some(instance)) => instance,
+            Ok(None) => {
+                log::warn!("mod {owner} declined to create a screen for {of}");
+                return false;
+            }
+            Err(reason) => {
+                log::error!("mod {owner} screen for {of}: {reason}");
+                return false;
+            }
+        };
+        let screen = instance.layout_mut();
+        if let Some((book, _, _)) = &binding
+            && screen.recipe_book.as_ref() != Some(book)
+        {
+            log::error!("screen for {of}: expected the menu's bound recipe book {book:?}");
+            return false;
         }
-        // Only when this is the menu the clicked block opens: `target` outlives the
-        // use that set it, so another menu opened later (a command's, another
-        // mod's) would otherwise get the last clicked machine's screen. Asked
-        // here, as the window's world has no mod containers.
-        let mut container = None;
-        self.native_block_entity_container(&block, &mut container);
-        let opens = container.and_then(|c| mod_menu(c.menu.as_deref()?).map(|(m, _)| m));
-        if opens != Some(menu) {
-            return;
+        if ![screen.width, screen.height]
+            .into_iter()
+            .all(|size| size.is_finite() && size > 0.0)
+            || ![screen.inventory_x, screen.inventory_y]
+                .into_iter()
+                .chain(screen.title_label.into_iter().flatten())
+                .chain(screen.inventory_label.into_iter().flatten())
+                .chain(
+                    screen
+                        .recipe_book_toggle
+                        .into_iter()
+                        .flat_map(|toggle| [toggle.x, toggle.y]),
+                )
+                .all(f32::is_finite)
+        {
+            log::error!("screen for {of}: invalid dimensions or coordinates");
+            return false;
         }
-        let mut screen = mod_api::RecipeBookLayout::registered_screen(menu);
-        if screen.is_none() {
-            self.native_screen(&block, &mut screen);
+        if screen.slots.len() > backing_slots {
+            log::error!("screen for {of}: layout is longer than its {backing_slots} backing slots");
+            return false;
         }
-        if let Some(screen) = screen {
-            self.mod_screen = Some(OpenNativeScreen {
-                layout_revision: {
-                    static NEXT: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(1);
-                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                },
+        // Every slot uses its backing index; `None` (including omitted trailing
+        // entries) marks an initially inactive slot (`Slot.isActive()`).
+        for (index, slot) in screen.slots.iter().enumerate() {
+            if let Some(slot) = slot
+                && !slot.position.into_iter().all(f32::is_finite)
+            {
+                log::error!("screen for {of}: nonfinite slot {index} coordinates");
+                return false;
+            }
+        }
+        screen.slots.resize_with(backing_slots, || None);
+        self.mod_screen = Some(OpenNativeScreen {
+            menu: OpenNativeMenu {
                 key,
-                window,
-                block,
-                screen,
+                window: *window,
+                generation: remote.menu.generation,
+                name: name.clone(),
+                block: block.map(str::to_owned),
+                pos,
+                mod_type,
                 data: Vec::new(),
-                extra,
-            });
-            self.begin_mod_book_placement();
-            self.ensure_mod_book_catalog();
-        }
+            },
+            slot_moves: Default::default(),
+            layout_revision: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
+            screen: instance,
+            shown: false,
+        });
+        true
     }
 }

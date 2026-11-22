@@ -218,3 +218,104 @@ fn resolutions_and_kept_answers_belong_to_their_mod_and_world() {
     assert_eq!(take_answer(&here), Some((Vec::new(), resolved)));
     assert_eq!(take_answer(&here), None);
 }
+
+/// A world saved with no code mods, no content mods and no mod block namespaces writes
+/// neither `fml` nor `sunrise`, even when the file already had empty lists or this build
+/// knows its commit. An empty list on load is the same as a missing tag. Other keys of
+/// `fml` or `sunrise` stay, without the empty lists.
+#[test]
+fn a_world_with_no_mods_writes_no_empty_tags() {
+    let empty_lists = Tag::compound([
+        (
+            "Data",
+            Tag::compound([("LevelName", Tag::String("Test".into()))]),
+        ),
+        (
+            "fml",
+            Tag::compound([("LoadingModList", Tag::List(vec![]))]),
+        ),
+        (
+            COMPOUND,
+            Tag::compound([
+                (CONTENT_MODS, Tag::List(vec![])),
+                (BLOCK_NAMESPACES, Tag::List(vec![])),
+            ]),
+        ),
+    ]);
+    assert_eq!(saved(&empty_lists), None);
+    assert_eq!(sunrise_records(&empty_lists), SunriseRecords::default());
+    assert!(missing(&empty_lists, &Loaded::default()).is_empty());
+
+    let vanilla = Tag::compound([(
+        "Data",
+        Tag::compound([("LevelName", Tag::String("Vanilla".into()))]),
+    )]);
+    assert_eq!(saved(&vanilla), saved(&empty_lists));
+    assert_eq!(sunrise_records(&vanilla), sunrise_records(&empty_lists));
+
+    let mut data = empty_lists.clone();
+    write_list(&mut data, &[]);
+    write_with(&mut data, Some(&[]), Some(&[]), Some("0123abcd"));
+    assert!(data.get("fml").is_none(), "{data:?}");
+    assert!(data.get(COMPOUND).is_none(), "{data:?}");
+    assert_eq!(saved(&data), None);
+    assert_eq!(sunrise_records(&data), SunriseRecords::default());
+
+    // Other keys stay; the empty lists and a commit-only compound do not.
+    let mut kept = Tag::compound([
+        (
+            "fml",
+            Tag::compound([
+                ("Other", Tag::Int(7)),
+                ("LoadingModList", Tag::List(vec![])),
+            ]),
+        ),
+        (
+            COMPOUND,
+            Tag::compound([
+                ("Other", Tag::Int(3)),
+                (CONTENT_MODS, Tag::List(vec![])),
+                (BLOCK_NAMESPACES, Tag::List(vec![])),
+                (BUILD_COMMIT, Tag::String("old".into())),
+            ]),
+        ),
+    ]);
+    write_list(&mut kept, &[]);
+    write_with(&mut kept, Some(&[]), Some(&[]), Some("0123abcd"));
+    let fml = kept.get("fml").expect("other fml keys stay");
+    assert_eq!(fml.get("Other"), Some(&Tag::Int(7)));
+    assert!(fml.get("LoadingModList").is_none());
+    let sunrise = kept.get(COMPOUND).expect("other sunrise keys stay");
+    assert_eq!(sunrise.get("Other"), Some(&Tag::Int(3)));
+    assert!(sunrise.get(CONTENT_MODS).is_none());
+    assert!(sunrise.get(BLOCK_NAMESPACES).is_none());
+    assert_eq!(
+        sunrise.get(BUILD_COMMIT),
+        Some(&Tag::String("0123abcd".into()))
+    );
+
+    // A content mod or a block namespace still writes the sunrise compound.
+    let mut with_content = Tag::compound([(
+        "Data",
+        Tag::compound([("LevelName", Tag::String("Test".into()))]),
+    )]);
+    write_with(
+        &mut with_content,
+        Some(&[record("decor", "1.0.0")]),
+        Some(&[]),
+        Some("0123abcd"),
+    );
+    assert_eq!(
+        sunrise_records(&with_content),
+        SunriseRecords {
+            content_mods: Some(vec![record("decor", "1.0.0")]),
+            block_namespaces: None,
+            build_commit: Some("0123abcd".into()),
+        }
+    );
+    write_list(&mut with_content, &[record("machines", "2.0.0")]);
+    assert_eq!(
+        saved(&with_content),
+        Some(vec![record("machines", "2.0.0"), record("decor", "1.0.0")])
+    );
+}

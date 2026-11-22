@@ -1,7 +1,7 @@
 //! Captured level sounds through the production packet builder and protocol codec.
+use std::io::Write;
 use sunrise_client::{audio::CapturedSound, lan::containers::captured_sound_packet};
 use sunrise_protocol::{buf::Reader, packets::play::Clientbound as C};
-use std::io::Write;
 
 pub fn main() {
     let args: Vec<String> = crate::args().collect();
@@ -24,6 +24,8 @@ pub fn main() {
                 .unwrap()
                 .then(|| c["entity"].as_i64().unwrap() as u32),
             except_entity: None,
+            seed: 0,
+            particles_before: 0,
         };
         let (packet, range) = captured_sound_packet(
             &sound,

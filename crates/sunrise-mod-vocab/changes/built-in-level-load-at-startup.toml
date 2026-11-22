@@ -1,0 +1,3 @@
+ids = ["hook:level_load"]
+why = "Like vanilla, the server opens every built-in level at startup before server_started, so saved tickets take effect without a player visiting the level. level_load now fires at that point in Overworld, Nether, End order."
+migrate = "Rebuild against the updated SDK. In level_load, use the event's dimension and do not assume server_started has already run for the Nether or the End."

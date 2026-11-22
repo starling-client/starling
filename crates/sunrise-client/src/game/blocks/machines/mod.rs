@@ -4,12 +4,16 @@
 //! comparator signals (`AbstractContainerMenu.getRedstoneSignalFromContainer`).
 mod loot_access;
 use super::{Game, composter::is_composter, spill, storage::is_shulker_box};
-use sunrise_core::nbt::Tag;
 use mod_api::__private::game::*;
+use sunrise_core::nbt::Tag;
 
+#[cfg(test)]
+mod can_place_item_tests;
 pub(in crate::game) mod cauldron_contents;
 #[cfg(test)]
 mod contents_changed_tests;
+#[cfg(test)]
+mod contents_watch_tests;
 mod crafter;
 pub(in crate::game) mod native_energy;
 pub(in crate::game) mod native_fluids;
@@ -17,29 +21,30 @@ pub(in crate::game) mod native_items;
 mod screen;
 #[cfg(test)]
 mod tank_reopen_tests;
+use mod_api::{
+    self, BlockSide, Capability, ENTITY_AUTOMATION, EntityRef, ItemResource, ResourceHandler,
+};
+use std::{borrow::Cow, ops::ControlFlow, sync::Arc};
 use sunrise_client::{
     Result,
     containers::{BlockEntity, HOPPER_SLOTS, ModContainer},
+    item_data::cooking_fuel,
     items::{ItemStack, Items},
     mobs::Mob,
     save,
     world::World,
 };
-use sunrise_core::{
-    geometry::{Aabb, Direction, Vec3},
-    position::BlockPos,
-    random::RandomSource,
-};
+use sunrise_core::{geometry::Direction, position::BlockPos, random::RandomSource};
 use sunrise_world::{
     level::{Behaviours, LevelAccess},
     registry::BlockStateId,
 };
-use mod_api::{
-    self, BlockSide, Capability, ENTITY_AUTOMATION, EntityRef, ItemResource, ResourceHandler,
-};
-use std::{borrow::Cow, ops::ControlFlow, sync::Arc};
 
-type Pos = (i32, i32, i32);
+pub(super) use sunrise_gameplay::hoppers::{
+    HopperState, ItemColumns, StampedItemColumns, cat_sitting_above, dir_from_name, offset, room,
+    shelf_signal,
+};
+pub(in crate::game) use sunrise_gameplay::hoppers::{Pos, hopper_cooldown_in};
 
 /// What item automation reaches among the entities at its target (`ENTITY_AUTOMATION`).
 enum AutomationEntity {
@@ -55,55 +60,24 @@ enum ContainerTarget<'a> {
     Part(Capability<dyn ResourceHandler<ItemResource>>),
 }
 
-/// `HopperBlockEntity` transient state (`TransferCooldown`, `tickedGameTime`).
-#[derive(Clone, Copy, Debug)]
-pub(super) struct HopperState {
-    pub(super) cooldown: i32,
-    ticked: i64,
-}
-impl Default for HopperState {
-    fn default() -> Self {
-        Self {
-            cooldown: -1,
-            ticked: 0,
+/// Wakes the sleeping hoppers whose suck area (`Hopper.SUCK_AABB`) `b` reaches.
+fn wake_hoppers_reaching(
+    entities: &mut sunrise_client::block_entities::BlockEntities,
+    b: sunrise_core::geometry::Aabb,
+) {
+    let (lo, hi) = (b.min_position(), b.max_position());
+    for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+        for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+            for y in (lo.y.floor() as i32).saturating_sub(1)..=hi.y.floor() as i32 {
+                entities.wake_hopper(&(x, y, z));
+            }
         }
-    }
-}
-
-impl HopperState {
-    /// A transferred holder keeps its cooldown and starts with a fresh ticker timestamp.
-    pub(super) fn with_cooldown(cooldown: i32) -> Self {
-        Self {
-            cooldown,
-            ticked: 0,
-        }
-    }
-
-    /// `HopperBlockEntity.loadAdditional`: only the cooldown is saved; the
-    /// last tick time starts at zero for the new block entity.
-    pub(super) fn load(tag: &sunrise_core::nbt::Tag) -> Self {
-        let canonical = sunrise_client::block_entity_nbt::canonical(tag);
-        let cooldown = match canonical.as_ref().and_then(|t| t.get("TransferCooldown")) {
-            Some(sunrise_core::nbt::Tag::Int(value)) => *value,
-            _ => -1,
-        };
-        Self::with_cooldown(cooldown)
     }
 }
 
 impl Game<'_> {
     pub(super) fn hopper_cooldown(&self, pos: Pos) -> i32 {
-        self.hoppers.get(&pos).map_or_else(
-            || {
-                self.world
-                    .chunks
-                    .get(&(pos.0 >> 4, pos.2 >> 4))
-                    .and_then(|c| c.saved.as_deref())
-                    .and_then(|s| s.block_entity_sources.iter().find(|(p, _)| *p == pos))
-                    .map_or(-1, |(_, tag)| HopperState::load(tag).cooldown)
-            },
-            |s| s.cooldown,
-        )
+        hopper_cooldown_in(&self.hoppers, &self.world, pos)
     }
 }
 
@@ -229,31 +203,6 @@ impl Iterator for Slots<'_> {
 }
 impl ExactSizeIterator for Slots<'_> {}
 
-pub(super) fn dir_from_name(name: &str) -> Option<Direction> {
-    Some(match name {
-        "down" => Direction::Down,
-        "up" => Direction::Up,
-        "north" => Direction::North,
-        "south" => Direction::South,
-        "west" => Direction::West,
-        "east" => Direction::East,
-        _ => return None,
-    })
-}
-fn step(d: Direction) -> [i32; 3] {
-    match d {
-        Direction::Down => [0, -1, 0],
-        Direction::Up => [0, 1, 0],
-        Direction::North => [0, 0, -1],
-        Direction::South => [0, 0, 1],
-        Direction::West => [-1, 0, 0],
-        Direction::East => [1, 0, 0],
-    }
-}
-fn offset(p: Pos, d: Direction) -> Pos {
-    let s = step(d);
-    (p.0 + s[0], p.1 + s[1], p.2 + s[2])
-}
 /// State-level container queries shared by the game and comparator signals.
 pub(super) struct Containers<'a> {
     world: &'a World,
@@ -265,6 +214,141 @@ pub(super) struct Containers<'a> {
     /// The level's mobs, for the cat half of `ChestBlock.isChestBlockedAt`.
     mobs: &'a [Mob],
 }
+/// The API snapshots for one offered stack. The offered count may shrink, and an
+/// accepted write (or its notification) may change what the next slot sees.
+#[derive(Default)]
+struct PlacementAttempt {
+    stack: Option<Option<mod_api::ItemStack>>,
+    entity: Option<PlacementEntity>,
+}
+
+enum PlacementQuery<'a> {
+    Offer(&'a mut PlacementAttempt),
+    Planning,
+}
+
+struct PlacementEntity {
+    pos: Pos,
+    revision: sunrise_client::chunk::block_entity::ModRevision,
+    snapshot: PlacementSnapshot,
+}
+
+enum PlacementSnapshot {
+    Unsubscribed,
+    Unrepresentable,
+    Ready(mod_api::ModBlockEntity),
+}
+
+#[derive(Clone, Copy)]
+enum Insertion {
+    Automation(Option<Pos>),
+    /// The pull transaction keeps just the receiving hopper's slot.
+    Pull,
+    /// A capability write may need to keep the whole entity.
+    Capability,
+}
+
+#[derive(PartialEq, Eq)]
+enum MoveIn {
+    /// The offer was refused or had no room; a pull can try the next slot.
+    Skipped,
+    /// A fitting slot failed to take the stack; a pull must abort.
+    Blocked,
+    Moved,
+}
+
+impl PlacementAttempt {
+    fn ask(
+        &mut self,
+        world: &World,
+        pos: Pos,
+        entity: &sunrise_client::containers::ModBlockEntity,
+        slot: usize,
+        stack: &ItemStack,
+    ) -> Option<bool> {
+        use super::api_values::TryIntoApi;
+
+        if stack.count == 0 || !mod_api::__private::has_part_hook(mod_api::HookId::CanPlaceItem) {
+            return None;
+        }
+        let revision = entity.revision();
+        if self
+            .entity
+            .as_ref()
+            .is_none_or(|seen| seen.pos != pos || seen.revision != revision)
+        {
+            let snapshot = if mod_api::__private::block_entity_type_listens(
+                mod_api::HookId::CanPlaceItem,
+                entity.id(),
+            ) {
+                match entity.try_into_api() {
+                    Ok(snapshot) => PlacementSnapshot::Ready(snapshot),
+                    Err(error) => {
+                        log::debug!(
+                            "Sunrise: can_place_item could not read {} at {pos:?}: {error:?}",
+                            entity.id()
+                        );
+                        PlacementSnapshot::Unrepresentable
+                    }
+                }
+            } else {
+                PlacementSnapshot::Unsubscribed
+            };
+            self.entity = Some(PlacementEntity {
+                pos,
+                revision,
+                snapshot,
+            });
+        }
+        let snapshot = match &self.entity.as_ref()?.snapshot {
+            PlacementSnapshot::Unsubscribed => return None,
+            PlacementSnapshot::Unrepresentable => return Some(false),
+            PlacementSnapshot::Ready(snapshot) => snapshot,
+        };
+        let Some(offered) = self.stack.get_or_insert_with(|| {
+            stack
+                .try_into_api()
+                .inspect_err(|error| {
+                    log::debug!(
+                        "Sunrise: can_place_item could not read the offered {}: {error:?}",
+                        stack.item
+                    );
+                })
+                .ok()
+        }) else {
+            return Some(false);
+        };
+        if offered.count() != stack.count && offered.set_count(stack.count).is_err() {
+            return Some(false);
+        }
+        let (x, y, z) = pos;
+        let state = world.block(x, y, z);
+        let state = match state.try_into_api() {
+            Ok(state) => state,
+            Err(error) => {
+                log::debug!(
+                    "Sunrise: can_place_item could not read block state at {pos:?}: {error:?}"
+                );
+                return Some(false);
+            }
+        };
+        let mut allowed = None;
+        Game::native_can_place_item(
+            snapshot,
+            mod_api::BlockPos::new(x, y, z),
+            state,
+            slot,
+            offered,
+            &mut allowed,
+        );
+        allowed
+    }
+
+    fn wrote_entity(&mut self) {
+        self.entity = None;
+    }
+}
+
 impl Containers<'_> {
     fn prop(&self, state: BlockStateId, key: &str) -> Option<&str> {
         self.registry
@@ -318,32 +402,22 @@ impl Containers<'_> {
             });
         }
         let entity = self.world.block_entities.get(&pos)?;
-        // A beehive keeps bees, not items, a campfire cooks its own and
-        // suspicious sand or gravel hides its loot: none is a `Container`
-        // (HopperBlockEntity.getContainerAt), so a dropper drops in front of
-        // them and a hopper leaves them alone.
-        if matches!(
-            entity,
-            BlockEntity::Beehive(_)
-                | BlockEntity::Campfire(_)
-                | BlockEntity::Brushable(_)
-                | BlockEntity::EndPortal
-        ) {
-            return None;
-        }
-        // A mod's block entity is a container when its block says so. The one
-        // ticking now is out of the world (an empty id marks its place): what
-        // went into its place would be lost when it comes back.
-        if let BlockEntity::Mod(m) = entity {
-            if m.id().is_empty() {
-                return None;
-            }
+        // A mod's block entity is a container when its block says so.
+        if matches!(entity, BlockEntity::Mod(_)) {
             let container = Arc::clone(self.world.block_entities.mod_container(state.0)?);
             return Some(View {
                 parts: vec![(pos, container.slots)],
                 kind: Kind::Mod,
                 container: Some(container),
             });
+        }
+        // Non-container block entities (signs, banners, beacons, skulls, etc.,
+        // or beehives/campfires/brushables) are not `Container`s
+        // (HopperBlockEntity.getContainerAt), so a dropper drops in front of
+        // them and a hopper leaves them alone.
+        let size = entity.slots().len();
+        if size == 0 {
+            return None;
         }
         let kind = match (entity, name) {
             (BlockEntity::Furnace(_), _) => Kind::Furnace,
@@ -355,7 +429,6 @@ impl Containers<'_> {
             (_, n) if is_shulker_box(n) => Kind::Shulker,
             _ => Kind::Generic,
         };
-        let size = entity.slots().len();
         if sunrise_client::containers::is_chest_block(name) {
             let is_blocked = |p: Pos| {
                 let above = self.world.block(p.0, p.1 + 1, p.2);
@@ -512,10 +585,7 @@ impl Containers<'_> {
                 2 => false,
                 1 => {
                     &*stack.item == "minecraft:bucket"
-                        || self
-                            .items
-                            .get(&stack.item)
-                            .is_some_and(|i| i.fuel.is_some())
+                        || cooking_fuel::for_stack(self.items, stack).is_some()
                 }
                 _ => true,
             },
@@ -525,18 +595,58 @@ impl Containers<'_> {
     /// `Container.canPlaceItem` (+ `canPlaceItemThroughFace` for furnaces): `accepts`, and what
     /// the slot holds now. The slots of one item (a jukebox's, a chiseled bookshelf's, a brewing
     /// stand's bottles) take one only when empty, a furnace's fuel slot no bucket onto a
-    /// bucket, and a crafter fills its smallest stack first.
-    fn can_place(&self, view: &View, slot: usize, stack: &ItemStack) -> bool {
+    /// bucket, and a crafter fills its smallest stack first. Planning has no offered amount,
+    /// so it must not veto a slot that a subscribed part could admit.
+    fn can_place(
+        &self,
+        view: &View,
+        slot: usize,
+        stack: &ItemStack,
+        query: PlacementQuery<'_>,
+    ) -> bool {
         if !self.accepts(view, slot, stack) {
             return false;
+        }
+        if let Some(container) = &view.container {
+            let Some((pos, index)) = view.locate(slot) else {
+                return false;
+            };
+            let Some(BlockEntity::Mod(entity)) = self.world.block_entities.get(&pos) else {
+                return false;
+            };
+            let answer = match query {
+                PlacementQuery::Offer(attempt) => {
+                    attempt.ask(self.world, pos, entity, index, stack)
+                }
+                PlacementQuery::Planning => mod_api::__private::block_entity_type_listens(
+                    mod_api::HookId::CanPlaceItem,
+                    entity.id(),
+                )
+                .then_some(true),
+            };
+            return answer.unwrap_or_else(|| {
+                sunrise_client::containers::mod_container_insert_allowed(
+                    container
+                        .insert_rules
+                        .get(slot)
+                        .copied()
+                        .unwrap_or_default(),
+                    self.get(view, slot),
+                    stack,
+                )
+            });
         }
         let held = self.get(view, slot);
         let is_bucket = |s: &ItemStack| &*s.item == "minecraft:bucket";
         match view.kind {
-            _ if view.container.is_some() => true,
             Kind::Jukebox | Kind::Bookshelf => held.is_none(),
             Kind::Brewing => slot >= 3 || held.is_none(),
-            Kind::Furnace => slot != 1 || !is_bucket(stack) || !held.is_some_and(is_bucket),
+            Kind::Furnace => {
+                slot != 1
+                    || !is_bucket(stack)
+                    || !held.is_some_and(is_bucket)
+                    || cooking_fuel::for_stack(self.items, stack).is_some()
+            }
             Kind::Crafter => match self.world.block_entities.get(&view.parts[0].0) {
                 Some(BlockEntity::Crafter(c)) => {
                     // The slot's own stack sets the limit (`slotStack.getMaxStackSize`).
@@ -555,19 +665,26 @@ impl Containers<'_> {
         if !self.accepts(view, slot, stack) {
             return 0;
         }
-        let capacity = view.slot_limit().min(self.max_stack(stack));
+        self.slot_stack_limit(view, slot, Some(stack))
+    }
+    fn slot_stack_limit(&self, view: &View, slot: usize, stack: Option<&ItemStack>) -> u32 {
+        let capacity = stack.map_or(view.slot_limit(), |s| {
+            view.slot_limit().min(self.max_stack(s))
+        });
         view.locate(slot)
             .and_then(|(pos, _)| self.world.container_stack_limit(pos))
             .map_or(capacity, |limit| capacity.min(limit))
     }
-    /// How many of `stack` slot `slot` takes now: none where `can_place` refuses it, else
-    /// `capacity` less what it holds.
-    fn fits(&self, view: &View, slot: usize, stack: &ItemStack) -> u32 {
-        if !self.can_place(view, slot, stack) {
+    /// For planning, physical room subject to rules a part cannot override.
+    fn planning_room(&self, view: &View, slot: usize, stack: &ItemStack) -> u32 {
+        if !self.can_place(view, slot, stack, PlacementQuery::Planning) {
             return 0;
         }
+        self.insertion_room(view, slot, stack)
+    }
+    fn insertion_room(&self, view: &View, slot: usize, stack: &ItemStack) -> u32 {
         room(
-            self.capacity(view, slot, stack),
+            self.slot_stack_limit(view, slot, Some(stack)),
             self.get(view, slot),
             stack,
         )
@@ -612,7 +729,16 @@ impl Containers<'_> {
             || slot != 1
             || matches!(&*stack.item, "minecraft:water_bucket" | "minecraft:bucket")
     }
-    /// `HopperBlockEntity.isFullContainer`.
+    fn comparator_view(&self, pos: Pos) -> Option<View> {
+        self.view(pos, true)
+            .filter(|v| !matches!(v.kind, Kind::Composter(_)))
+            .or_else(|| self.saved_pot_view(pos))
+    }
+    /// Comparator signal of stored slots, without materializing deferred loot.
+    pub(in crate::game) fn stored_container_signal(&self, pos: Pos) -> i32 {
+        self.comparator_view(pos)
+            .map_or(0, |view| self.signal(&view))
+    }
     /// `AbstractContainerMenu.getRedstoneSignalFromContainer`.
     fn signal(&self, view: &View) -> i32 {
         if view.kind == Kind::Crafter {
@@ -636,98 +762,6 @@ impl Containers<'_> {
     }
 }
 
-/// How many of `stack` go into a slot holding `current`, up to `limit`: into an empty slot, or
-/// onto the same item and components (`HopperBlockEntity.canMergeItems`).
-fn room(limit: u32, current: Option<&ItemStack>, stack: &ItemStack) -> u32 {
-    match current {
-        None => stack.count.min(limit),
-        Some(current) if current.same_item_same_components(stack) => {
-            stack.count.min(limit.saturating_sub(current.count))
-        }
-        Some(_) => 0,
-    }
-}
-
-/// The block columns any item entity's box reaches, so that a hopper with
-/// no item over it skips the scan of every item. Kept for one block-entity
-/// pass, in which items do not move: removing one leaves a superset, still
-/// right, and adding one (always pushed at the end, under a new id) or
-/// removing the last rebuilds the columns.
-#[derive(Default)]
-pub(super) struct ItemColumns {
-    /// The item count and last item id when last asked, if built.
-    seen: Option<(usize, Option<u32>)>,
-    cells: sunrise_client::fast_hash::FxHashSet<(i32, i32)>,
-}
-impl ItemColumns {
-    /// Whether an item's box may reach into column (x, z).
-    fn may_reach(
-        &mut self,
-        items: &[sunrise_client::entities::ItemEntity],
-        x: i32,
-        z: i32,
-    ) -> bool {
-        if items.is_empty() {
-            return false;
-        }
-        let (len, last) = (items.len(), items.last().map(|i| i.id));
-        let stale = self
-            .seen
-            .is_none_or(|(seen_len, seen_last)| len > seen_len || last != seen_last);
-        self.seen = Some((len, last));
-        if stale {
-            self.cells.clear();
-            for item in items {
-                let b = item.bounds();
-                let (lo, hi) = (b.min_position(), b.max_position());
-                for cx in lo.x.floor() as i32..=hi.x.floor() as i32 {
-                    for cz in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                        self.cells.insert((cx, cz));
-                    }
-                }
-            }
-        }
-        self.cells.contains(&(x, z))
-    }
-    /// Whether an item's box may reach into any column of x0..=x1, z0..=z1.
-    pub(super) fn may_reach_area(
-        &mut self,
-        items: &[sunrise_client::entities::ItemEntity],
-        (x0, x1): (i32, i32),
-        (z0, z1): (i32, i32),
-    ) -> bool {
-        (x0..=x1).any(|x| (z0..=z1).any(|z| self.may_reach(items, x, z)))
-    }
-}
-
-/// [`ItemColumns`] for a pass in which items can move (a command, an
-/// explosion's push), kept with the item list's
-/// [`ListStamp`](sunrise_client::join_seq::ListStamp): after any write the
-/// first question scans as before (`true`), and the second with nothing
-/// written in between builds the columns. A pass that writes the items
-/// between questions costs no more than the scans did.
-#[derive(Default)]
-pub(super) struct StampedItemColumns {
-    stamp: Option<sunrise_client::join_seq::ListStamp>,
-    columns: ItemColumns,
-}
-impl StampedItemColumns {
-    /// [`ItemColumns::may_reach_area`] for the items as they are now.
-    pub(super) fn may_reach_area(
-        &mut self,
-        items: &sunrise_client::join_seq::JoinList<sunrise_client::entities::ItemEntity>,
-        xs: (i32, i32),
-        zs: (i32, i32),
-    ) -> bool {
-        if self.stamp != Some(items.stamp()) {
-            self.stamp = Some(items.stamp());
-            self.columns = ItemColumns::default();
-            return true;
-        }
-        self.columns.may_reach_area(items, xs, zs)
-    }
-}
-
 fn bone_meal_stack() -> &'static ItemStack {
     static STACK: std::sync::LazyLock<ItemStack> = std::sync::LazyLock::new(|| ItemStack {
         item: "minecraft:bone_meal".into(),
@@ -738,96 +772,31 @@ fn bone_meal_stack() -> &'static ItemStack {
     &STACK
 }
 
-/// `ChestBlock.isCatSittingOnChest`: a sitting cat whose box meets the block
-/// above `key` (the box of the block above, not the chest's own).
-pub(super) fn cat_sitting_above(mobs: &[Mob], key: Pos) -> bool {
-    let area = Aabb::new(
-        Vec3::new(f64::from(key.0), f64::from(key.1 + 1), f64::from(key.2)),
-        Vec3::new(
-            f64::from(key.0 + 1),
-            f64::from(key.1 + 2),
-            f64::from(key.2 + 1),
-        ),
-    );
-    mobs.iter().any(|m| {
-        m.species() == sunrise_client::mobs::Species::Cat
-            && m.alive()
-            && sunrise_client::mobs::tame::cat_sitting(m)
-            && m.bounds().intersects(area)
-    })
-}
-
 /// Comparator input from a container block entity (0 when there is none):
 /// `ChestBlock.getContainer(.., false)`, whose blocked check sees the level's
 /// cats (`isCatSittingOnChest`).
 pub(super) fn container_signal(level: &mut super::GameLevel<'_>, pos: BlockPos) -> i32 {
-    let c = Containers {
-        world: &*level.world,
-        behaviours: level.behaviours,
-        items: level.items,
-        registry: level.registry,
-        brewing: None,
-        mobs: level.entities().mobs,
-    };
-    let view = c
-        .view((pos.x, pos.y, pos.z), true)
-        .filter(|v| !matches!(v.kind, Kind::Composter(_)))
-        .or_else(|| c.saved_pot_view((pos.x, pos.y, pos.z)));
+    let view = level.containers().comparator_view((pos.x, pos.y, pos.z));
     if let Some(view) = &view {
         for &(key, _) in &view.parts {
             level.unpack_loot(super::container_loot::LootTarget::Block(key), None);
         }
     }
-    let c = Containers {
-        world: &*level.world,
-        behaviours: level.behaviours,
-        items: level.items,
-        registry: level.registry,
-        brewing: None,
-        mobs: level.entities().mobs,
-    };
+    let c = level.containers();
     view.map_or(0, |v| c.signal(&v))
 }
 
-/// `ChiseledBookShelfBlock.getAnalogOutputSignal` and
-/// `ShelfBlock.getAnalogOutputSignal`, from the block entity Sunrise keeps as
-/// it was loaded; `None` for any other block. `direction` points from the
-/// block to the comparator.
-pub(super) fn shelf_signal(
-    world: &World,
-    registry: &'static sunrise_world::registry::BlockRegistry,
-    state: BlockStateId,
-    pos: BlockPos,
-    direction: Direction,
-) -> Option<i32> {
-    let info = registry.state(state)?;
-    let chiseled = info.name == "minecraft:chiseled_bookshelf";
-    if !chiseled && !info.name.ends_with("_shelf") {
-        return None;
+impl super::GameLevel<'_> {
+    pub(in crate::game) fn containers(&self) -> Containers<'_> {
+        Containers {
+            world: self.world,
+            behaviours: self.behaviours,
+            items: self.items,
+            registry: self.registry,
+            brewing: None,
+            mobs: self.entities().mobs,
+        }
     }
-    if chiseled {
-        // The last slot touched, plus one (`lastInteractedSlot` starts at -1).
-        return Some(match world.block_entities.get(&(pos.x, pos.y, pos.z)) {
-            Some(BlockEntity::ChiseledBookshelf(b)) => b.last_slot + 1,
-            _ => 0,
-        });
-    }
-    // Only read from the back: a bit for each of the three slots in use.
-    let facing = info.properties.get("facing").and_then(|f| dir_from_name(f));
-    if facing.map(Direction::opposite) != Some(direction) {
-        return Some(0);
-    }
-    let Some(BlockEntity::Shelf(shelf)) = world.block_entities.get(&(pos.x, pos.y, pos.z)) else {
-        return Some(0);
-    };
-    Some(
-        shelf
-            .items
-            .iter()
-            .enumerate()
-            .map(|(slot, item)| i32::from(item.is_some()) << slot)
-            .sum(),
-    )
 }
 
 impl Game<'_> {
@@ -841,12 +810,26 @@ impl Game<'_> {
             mobs: &self.mobs,
         }
     }
+    pub(super) fn stored_container_signal(&self, pos: Pos) -> i32 {
+        // Match a GameLevel view; the level's block entities own the slots.
+        Containers {
+            brewing: None,
+            ..self.containers()
+        }
+        .stored_container_signal(pos)
+    }
     pub(super) fn block_can_place(&self, pos: [i32; 3], slot: usize, stack: &ItemStack) -> bool {
         let containers = self.containers();
         let Some(view) = containers.view((pos[0], pos[1], pos[2]), false) else {
             return false;
         };
-        view.kind == Kind::Shulker || containers.can_place(&view, slot, stack)
+        view.kind == Kind::Shulker
+            || containers.can_place(
+                &view,
+                slot,
+                stack,
+                PlacementQuery::Offer(&mut PlacementAttempt::default()),
+            )
     }
     fn slot_mut_at(&mut self, view: &View, slot: usize) -> Option<&mut Option<ItemStack>> {
         let (pos, i) = view.locate(slot)?;
@@ -857,7 +840,7 @@ impl Game<'_> {
         {
             m.items.resize(view.len(), None);
         }
-        entity.slots_mut().get_mut(i)
+        entity.slot_mut(i)
     }
     /// `BlockEntity.setChanged` for every block entity of a container.
     fn view_changed(&mut self, view: &View) {
@@ -892,7 +875,15 @@ impl Game<'_> {
             && let Some(level) = self.native_level_here()
         {
             let at = BlockPos::new(pos.0, pos.1, pos.2);
-            self.native_contents_changed(level, at, self.world.block(pos.0, pos.1, pos.2));
+            self.native_contents_changed(level, at, self.world.block(pos.0, pos.1, pos.2), None);
+        }
+        self.container_changed_without_hook(pos);
+    }
+
+    /// `BlockEntity.setChanged` updates without dispatching `contents_changed` again.
+    pub(super) fn container_changed_without_hook(&mut self, pos: Pos) {
+        if pos.1 == super::minecarts::CART_KEY_Y {
+            return;
         }
         self.chiseled_bookshelf_synced(pos);
         if matches!(
@@ -902,10 +893,10 @@ impl Game<'_> {
             self.mark_block_entity_updated(pos);
         }
         // A double chest's other half changes with it.
-        let halves: Vec<Pos> = std::iter::once(pos)
-            .chain(self.chest_other_half(pos))
-            .collect();
-        for pos in halves {
+        let other = self.chest_other_half(pos);
+        for pos in std::iter::once(pos).chain(other) {
+            // A hopper under this container reads it: a change here is one for it.
+            self.world.block_entities.wake_below(&pos);
             self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
             self.with_level(|b, level, ticks| {
                 b.container_changed(level, ticks, BlockPos::new(pos.0, pos.1, pos.2))
@@ -915,13 +906,14 @@ impl Game<'_> {
     /// `HopperBlockEntity.tryMoveInItem`.
     fn try_move_in_item(
         &mut self,
-        from_hopper: Option<Pos>,
+        insertion: Insertion,
         view: &View,
         stack: ItemStack,
         slot: usize,
-    ) -> Option<ItemStack> {
-        let (rest, moved) = self.move_in_item(from_hopper, view, stack, slot);
-        if moved {
+        attempt: &mut PlacementAttempt,
+    ) -> (Option<ItemStack>, MoveIn) {
+        let (rest, result) = self.move_in_item(insertion, view, stack, slot, attempt);
+        if result == MoveIn::Moved {
             self.view_changed(view);
             // JukeboxBlockEntity.setTheItem through a hopper's or a dropper's
             // transfer: the disc it lands on starts playing.
@@ -930,21 +922,57 @@ impl Game<'_> {
                 self.jukebox_inserted([x, y, z]);
             }
         }
-        rest
+        (rest, result)
     }
-    /// `tryMoveInItem` before its `setChanged`: the remainder, and whether
-    /// anything moved.
+    /// `tryMoveInItem` before `setChanged`: ask about the full offer, then keep and
+    /// write the admitted slot. A skipped slot is never journaled.
     fn move_in_item(
         &mut self,
-        from_hopper: Option<Pos>,
+        insertion: Insertion,
         view: &View,
         mut stack: ItemStack,
         slot: usize,
-    ) -> (Option<ItemStack>, bool) {
+        attempt: &mut PlacementAttempt,
+    ) -> (Option<ItemStack>, MoveIn) {
         let c = self.containers();
-        if !c.can_place(view, slot, &stack) {
-            return (Some(stack), false);
+        if !c.can_place(view, slot, &stack, PlacementQuery::Offer(attempt)) {
+            return (Some(stack), MoveIn::Skipped);
         }
+        // Capability operations use the same saved slot as hoppers, but may first
+        // access a pot that still has loot. Discovery never reaches this write path.
+        if view.kind == Kind::Pot && matches!(insertion, Insertion::Capability) {
+            let pos = view.parts[0].0;
+            let at = [pos.0, pos.1, pos.2];
+            if spill::saved_entity(&self.world, at)
+                .is_some_and(|tag| tag.get("LootTable").is_some())
+            {
+                self.journal_saved_pot(pos);
+                self.journal_block_loot_random();
+                if let Some(tag) = self.pot_tag(at) {
+                    spill::put_saved_entity(&mut self.world, at, tag);
+                    self.after_commit(super::transactions::After::Changed(pos));
+                }
+            }
+        }
+        let c = self.containers();
+        let (from_hopper, count) = match insertion {
+            Insertion::Automation(from_hopper) => (from_hopper, stack.count),
+            Insertion::Pull | Insertion::Capability => {
+                let count = c.insertion_room(view, slot, &stack).min(stack.count);
+                if count == 0 {
+                    return (Some(stack), MoveIn::Skipped);
+                }
+                if matches!(insertion, Insertion::Pull) {
+                    let Some((pos, index)) = view.locate(slot) else {
+                        return (Some(stack), MoveIn::Blocked);
+                    };
+                    self.journal_block_entity_slot(pos, index);
+                } else {
+                    self.journal_view_slot(view, slot);
+                }
+                (None, count)
+            }
+        };
         self.unpack_inventory_slot(view, slot);
         let was_empty = self.inventory_is_empty(view);
         let c = self.containers();
@@ -955,7 +983,7 @@ impl Game<'_> {
         let restricted = override_limit.is_some_and(|limit| limit < vanilla_max);
         let max = override_limit.map_or(vanilla_max, |limit| vanilla_max.min(limit));
         if restricted && max == 0 {
-            return (Some(stack), false);
+            return (Some(stack), MoveIn::Blocked);
         }
 
         let mut success = false;
@@ -965,7 +993,7 @@ impl Game<'_> {
             let Some(tag) = spill::saved_entity(&self.world, [pos.0, pos.1, pos.2])
                 .or_else(|| self.pot_data([pos.0, pos.1, pos.2]))
             else {
-                return (Some(stack), false);
+                return (Some(stack), MoveIn::Blocked);
             };
             let item = tag.get("item").and_then(save::item_from_nbt);
             Some((tag, item))
@@ -976,10 +1004,12 @@ impl Game<'_> {
             item
         } else {
             let Some(target) = self.slot_mut_at(view, slot) else {
-                return (Some(stack), false);
+                return (Some(stack), MoveIn::Blocked);
             };
             target
         };
+        let beyond_slot = stack.count - count;
+        stack.count = count;
         // An empty stack a mod left in its slot: the slot is free (`isEmpty`).
         if target.as_ref().is_some_and(|s| s.count == 0) {
             *target = None;
@@ -1010,15 +1040,11 @@ impl Game<'_> {
         }
         if success && let Some((mut tag, item)) = pot {
             let pos = view.parts[0].0;
-            if let Tag::Compound(map) = &mut tag {
-                if let Some(item) = item {
-                    map.insert("item".into(), save::item_to_nbt(&item));
-                } else {
-                    map.remove(&"item".into());
-                }
-            }
+            Self::set_pot_slot(self.res.items(), &mut tag, item);
             spill::put_saved_entity(&mut self.world, [pos.0, pos.1, pos.2], tag);
-            self.mark_block_entity_updated(pos);
+            if !matches!(insertion, Insertion::Capability) {
+                self.mark_block_entity_updated(pos);
+            }
         }
         // tryMoveInItem's setItem on an empty slot: AbstractFurnaceBlockEntity.setItem restarts
         // the cooking for a new input (a merge only grows the stack, and keeps it).
@@ -1040,7 +1066,14 @@ impl Game<'_> {
                 state.cooldown = 8 - skip;
             }
         }
-        ((stack.count > 0).then_some(stack), success)
+        let result = if success {
+            attempt.wrote_entity();
+            MoveIn::Moved
+        } else {
+            MoveIn::Blocked
+        };
+        stack.count += beyond_slot;
+        ((stack.count > 0).then_some(stack), result)
     }
     /// `HopperBlockEntity.addItem(from, container, stack, direction)`; the remainder.
     fn add_item(
@@ -1054,10 +1087,19 @@ impl Game<'_> {
             let (x, y, z) = view.parts[0].0;
             return self.composter_container_insert([x, y, z], stack, face == Some(Direction::Up));
         }
+        let mut attempt = PlacementAttempt::default();
         let mut rest = Some(stack);
         for slot in view.slots_to_add_iter(face) {
             let Some(stack) = rest.take() else { break };
-            rest = self.try_move_in_item(from_hopper, view, stack, slot);
+            rest = self
+                .try_move_in_item(
+                    Insertion::Automation(from_hopper),
+                    view,
+                    stack,
+                    slot,
+                    &mut attempt,
+                )
+                .0;
         }
         rest
     }
@@ -1164,8 +1206,9 @@ impl Game<'_> {
         if view.kind == Kind::Pot {
             return self.pot_take_one(view.parts[0].0);
         }
+        self.containers().get(view, slot)?;
         let target = self.slot_mut_at(view, slot)?;
-        let current = target.as_mut().filter(|s| s.count > 0)?;
+        let current = target.as_mut()?;
         let one = ItemStack {
             count: 1,
             ..current.clone()
@@ -1207,18 +1250,21 @@ impl Game<'_> {
     }
     /// Write a pot's saved item slot, keeping the tag's other metadata.
     fn pot_store(&mut self, pos: Pos, tag: &mut Tag, item: Option<ItemStack>) {
+        Self::set_pot_slot(self.res.items(), tag, item);
+        spill::put_saved_entity(&mut self.world, [pos.0, pos.1, pos.2], tag.clone());
+        self.mark_block_entity_updated(pos);
+    }
+    fn set_pot_slot(items: &sunrise_client::items::Items, tag: &mut Tag, item: Option<ItemStack>) {
         if let Tag::Compound(map) = tag {
             match item {
                 Some(item) => {
-                    map.insert("item".into(), save::item_to_nbt(&item));
+                    map.insert("item".into(), save::item_to_nbt(&item, items));
                 }
                 None => {
                     map.remove(&"item".into());
                 }
             }
         }
-        spill::put_saved_entity(&mut self.world, [pos.0, pos.1, pos.2], tag.clone());
-        self.mark_block_entity_updated(pos);
     }
     /// Undo `take_one` after a failed move.
     fn put_back(&mut self, view: &View, slot: usize, one: ItemStack) {
@@ -1261,7 +1307,28 @@ impl Game<'_> {
             return;
         }
         let state = self.world.block(pos.0, pos.1, pos.2);
-        self.hopper_try_move_items_with_state(pos, state);
+        // A hopper a redstone signal turned off has nothing to try until the
+        // signal changes, which wakes it through `state_changed`.
+        if self.containers().prop(state, "enabled") == Some("false") {
+            self.world.block_entities.sleep_hopper(pos);
+            return;
+        }
+        let moved = self.hopper_try_move_items_with_state(pos, state);
+        // An empty hopper with no source above has nothing to take or push:
+        // its inventory, the block above and the items or vehicles reaching
+        // it are what wake it.
+        if !moved && self.hopper_has_no_source(pos) {
+            self.world.block_entities.sleep_hopper(pos);
+        }
+    }
+    /// Keeps a sleeping hopper's transfer state current without its transfer
+    /// attempt: vanilla decrements the cooldown and stamps `tickedGameTime` on
+    /// every tick, and a feeder that runs later in the same tick reads the
+    /// stamp to choose 7 ticks over 8.
+    pub(super) fn tick_sleeping_hopper(&mut self, pos: Pos) {
+        let state = self.hoppers.entry(pos).or_default();
+        state.cooldown = state.cooldown.wrapping_sub(1).max(0);
+        state.ticked = self.world.game_time;
     }
     /// Drops the cooldowns of hoppers whose block entity is gone.
     pub(super) fn forget_gone_hoppers(&mut self) {
@@ -1275,14 +1342,15 @@ impl Game<'_> {
         let state = self.world.block(pos.0, pos.1, pos.2);
         self.hopper_try_move_items_with_state(pos, state);
     }
-    fn hopper_try_move_items_with_state(&mut self, pos: Pos, state: BlockStateId) {
+    /// Whether the hopper moved an item this tick.
+    fn hopper_try_move_items_with_state(&mut self, pos: Pos, state: BlockStateId) -> bool {
         let c = self.containers();
         let enabled = c.prop(state, "enabled") != Some("false");
         let Some(view) = c.view(pos, false) else {
-            return;
+            return false;
         };
         if self.hoppers.get(&pos).is_some_and(|h| h.cooldown > 0) || !enabled {
-            return;
+            return false;
         }
         self.native_prepare_hopper_transfer([pos.0, pos.1, pos.2]);
         self.unpack_loot(super::container_loot::LootTarget::Block(pos), None);
@@ -1291,15 +1359,103 @@ impl Game<'_> {
         if !c.is_empty(&view) {
             changed = self.hopper_eject(pos, &view);
         }
-        let c = self.containers();
-        let full =
-            (0..view.len()).all(|i| c.get(&view, i).is_some_and(|s| s.count == c.max_stack(s)));
-        if !full {
+        if !self.hopper_is_stacked(&view) {
             changed |= self.hopper_suck(pos, &view);
         }
         if changed {
             self.hoppers.entry(pos).or_default().cooldown = 8;
             self.container_changed(pos);
+        }
+        changed
+    }
+    /// Whether an empty hopper has no source to take from: no container above
+    /// it (block, container entity or mod container) and nothing in its slots.
+    /// Dropped items and container vehicles are left to the wake scans, which
+    /// run before the hoppers tick.
+    fn hopper_has_no_source(&self, pos: Pos) -> bool {
+        // A mod's transfer listener and a mod entity's item handler keep their
+        // every-eligible-tick contract: an idle hopper that would call them
+        // stays awake.
+        if mod_api::__private::listened(mod_api::HookId::PrepareHopperTransfer)
+            || mod_api::has_entity_providers(&ENTITY_AUTOMATION)
+        {
+            return false;
+        }
+        let empty = matches!(
+            self.world.block_entities.get(&pos),
+            Some(BlockEntity::Chest(items)) if items.iter().all(Option::is_none)
+        );
+        if !empty {
+            return false;
+        }
+        let above = (pos.0, pos.1 + 1, pos.2);
+        if self.containers().hopper_insertion_view(above).is_some()
+            || matches!(
+                self.world.block_entities.get(&above),
+                Some(BlockEntity::Mod(_))
+            )
+        {
+            return false;
+        }
+        // A mod block without a container block entity can still answer with an
+        // item handler: only its own provider table says, so a provider that
+        // later offers an item is never slept over.
+        let Some(level) = self.native_level_here() else {
+            return false;
+        };
+        let provider_at = |pos: Pos| mod_api::BlockSide {
+            level,
+            pos: [pos.0, pos.1, pos.2],
+            side: Some(Direction::Down),
+        };
+        if mod_api::block_providers(&mod_api::ITEMS, self, provider_at(above)).is_some()
+            || mod_api::block_providers(&mod_api::ITEMS, self, provider_at(pos)).is_some()
+        {
+            return false;
+        }
+        let at = [
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 1.5,
+            f64::from(pos.2) + 0.5,
+        ];
+        self.container_entities_at(at).is_empty()
+    }
+    /// Wakes the sleeping hoppers whose suck area (`Hopper.SUCK_AABB`) a dropped
+    /// item's box reaches, once a tick before the hoppers tick.
+    pub(super) fn wake_hoppers_near_items(&mut self) {
+        if !self.world.block_entities.any_hopper_asleep() {
+            return;
+        }
+        let entities = &mut self.world.block_entities;
+        for item in &self.dropped {
+            wake_hoppers_reaching(entities, item.bounds());
+        }
+    }
+    /// Wakes the sleeping hoppers an item dropped now reaches. A drop made
+    /// during the block entity pass (a loop slot's, another block entity's)
+    /// comes after the pass's scan, so a later hopper of the same pass would
+    /// otherwise stay asleep and miss it.
+    pub(in crate::game) fn wake_hoppers_near_dropped_item(&mut self, id: u32) {
+        if !self.world.block_entities.any_hopper_asleep() {
+            return;
+        }
+        // `push_item_entity` just pushed it; a join listener runs later.
+        let Some(item) = self.dropped.last().filter(|item| item.id == id) else {
+            return;
+        };
+        wake_hoppers_reaching(&mut self.world.block_entities, item.bounds());
+    }
+    /// Wakes the sleeping hoppers a minecart or boat could be taken from.
+    pub(super) fn wake_hoppers_near_vehicles(&mut self) {
+        if !self.world.block_entities.any_hopper_asleep() {
+            return;
+        }
+        let entities = &mut self.world.block_entities;
+        for cart in &self.carts {
+            wake_hoppers_reaching(entities, cart.bounds());
+        }
+        for boat in &self.boats {
+            wake_hoppers_reaching(entities, boat.bounds());
         }
     }
     /// `HopperBlockEntity.entityInside` for the item entities that moved this
@@ -1376,11 +1532,8 @@ impl Game<'_> {
         if !c.is_empty(&view) {
             changed = self.hopper_eject(pos, &view);
         }
-        let c = self.containers();
-        let full =
-            (0..view.len()).all(|n| c.get(&view, n).is_some_and(|s| s.count == c.max_stack(s)));
         let mut taken = false;
-        if !full {
+        if !self.hopper_is_stacked(&view) {
             let stack = self.dropped[i].stack.clone();
             let allowed = self.with_level(|_, level, _| {
                 level.allow_hopper_pickup_item(
@@ -1408,9 +1561,8 @@ impl Game<'_> {
         }
         taken
     }
-    /// The item handler a mod's provider gives for the mod block entity at `pos` through
-    /// `side`, where it comes before the game's own slots or the game has none there. With no
-    /// item provider registered, one table check.
+    /// A mod's item handler through `side`. Vanilla containers and container providers keep
+    /// their direct automation path even when a capability overrides their public storage.
     pub(super) fn item_part_at(
         &mut self,
         pos: Pos,
@@ -1422,6 +1574,9 @@ impl Game<'_> {
             side: Some(side),
         };
         let providers = mod_api::block_providers(&mod_api::ITEMS, self, at)?;
+        if self.vanilla_automation_container(pos) {
+            return None;
+        }
         let game = self.container_size(at).is_some();
         providers.ask(self, game)
     }
@@ -1432,7 +1587,6 @@ impl Game<'_> {
     pub(super) fn put_into_part(
         &mut self,
         part: &Capability<dyn ResourceHandler<ItemResource>>,
-        at: [i32; 3],
         stack: &ItemStack,
         take: impl FnOnce(&mut Self, u32) -> Option<()>,
     ) -> u32 {
@@ -1443,20 +1597,15 @@ impl Game<'_> {
         let resource = ItemResource::of(&snapshot);
         mod_api::run_transaction(self, |game, tx| {
             let host: &mut dyn mod_api::ServerHost = game;
-            let went = part.insert_any(host, tx, &resource, stack.count);
-            match part.checked(went, stack.count, &at) {
-                Some(0) | None => Err(()),
-                Some(went) => take(game, went).map(|()| went).ok_or(()),
+            let went = part
+                .insert(host, tx, &resource, stack.count)
+                .map_err(|_| ())?;
+            if went == 0 {
+                return Err(());
             }
+            take(game, went).map(|()| went).ok_or(())
         })
         .unwrap_or(0)
-    }
-    /// Takes one item from `slot` of `view`, as it is now, journaled for the transaction.
-    fn take_one_journaled(&mut self, view: &View, slot: usize) -> Option<()> {
-        for &(pos, _) in &view.parts {
-            self.journal_block_entity(pos);
-        }
-        self.take_one(view, slot).map(drop)
     }
     /// `InventoryMoveItemEvent` for `item` going from `source` to `destination`, where one end
     /// is a capability part: whether a mod canceled the move.
@@ -1465,41 +1614,60 @@ impl Game<'_> {
         self.native_inventory_move_item(source, destination, item, &mut cancel);
         cancel
     }
-    /// `ejectItems` into a capability part, looked up through the side it faces: the first hopper item
-    /// one of its slots takes, one item, as a hopper moves, in a transaction. A part taking
-    /// more than the one is a mod bug, and the move is undone.
+    /// `HopperBlockEntity.ejectItems`: one root attempt across source slots, restoring each
+    /// refused slot directly. Only the caller's final cooldown mark changes the hopper.
     fn eject_into_part(
         &mut self,
         hopper: &View,
         part: &Capability<dyn ResourceHandler<ItemResource>>,
         at: [i32; 3],
     ) -> bool {
-        let from = self.container_world_pos(hopper);
-        for slot in 0..hopper.len() {
-            let Some(stack) = self.containers().get(hopper, slot).cloned() else {
-                continue;
-            };
-            if self.part_move_canceled(from, at, &stack.item) {
-                continue;
-            }
-            let one = ItemStack { count: 1, ..stack };
-            if self.put_into_part(part, at, &one, |game, _| {
-                game.take_one_journaled(hopper, slot)
-            }) == 1
-            {
-                return true;
-            }
+        if mod_api::resource_util::is_full(self, part) {
+            return false;
         }
-        false
+        let from = self.container_world_pos(hopper);
+        mod_api::run_transaction(self, |game, tx| {
+            use super::api_values::TryIntoApi;
+            for slot in 0..hopper.len() {
+                let Some(snapshot) = game
+                    .containers()
+                    .get(hopper, slot)
+                    .and_then(|stack| stack.try_into_api().ok())
+                else {
+                    continue;
+                };
+                let resource = ItemResource::of(&snapshot);
+                let item = mod_api::__private::item_key_id(snapshot.item()).unwrap();
+                if game.part_move_canceled(from, at, item) {
+                    continue;
+                }
+                let (source, index) = hopper.locate(slot).ok_or(())?;
+                game.journal_block_entity_slot(source, index);
+                let Some(mut one) = game.take_one(hopper, slot) else {
+                    continue;
+                };
+                let went = part.insert(game, tx, &resource, 1).map_err(|_| ())?;
+                if went == 1 {
+                    return Ok(());
+                }
+                one.count = snapshot.count();
+                *game.slot_mut_at(hopper, slot).ok_or(())? = Some(one);
+            }
+            Err(())
+        })
+        .is_ok()
     }
-    /// `suckInItems` from a capability part through its bottom: one item from the first of its
-    /// slots that gives one the hopper has room for, in a transaction, as `eject_into_part`.
+    /// `HopperBlockEntity.suckInItems`: extract before choosing the first receptive hopper
+    /// slot. Each nonempty storage index gets its own commit or abort.
     fn suck_from_part(
         &mut self,
         part: &Capability<dyn ResourceHandler<ItemResource>>,
         at: [i32; 3],
         hopper: &View,
     ) -> bool {
+        if self.hopper_is_stacked(hopper) {
+            return false;
+        }
         let into = self.container_world_pos(hopper);
         for slot in 0..part.size(self) {
             let Some(resource) = part.resource(self, slot) else {
@@ -1509,23 +1677,26 @@ impl Game<'_> {
             let Ok(one) = resource.as_stack().try_into_engine(self.items()) else {
                 continue;
             };
-            let c = self.containers();
-            if !(0..hopper.len()).any(|s| c.fits(hopper, s, &one) > 0)
-                || self.part_move_canceled(at, into, &one.item)
-            {
+            if part.amount(self, slot) == 0 || self.part_move_canceled(at, into, &one.item) {
                 continue;
             }
             let moved = mod_api::run_transaction(self, |game, tx| {
                 let host: &mut dyn mod_api::ServerHost = game;
-                let came = part.extract(host, tx, slot, &resource, 1);
+                let came = part.extract_at(host, tx, slot, &resource, 1);
                 if part.checked(came, 1, &at) != Some(1) {
                     return Err(());
                 }
-                for &(pos, _) in &hopper.parts {
-                    game.journal_block_entity(pos);
+                let mut attempt = PlacementAttempt::default();
+                let mut rest = one;
+                for target in 0..hopper.len() {
+                    match game.try_move_in_item(Insertion::Pull, hopper, rest, target, &mut attempt)
+                    {
+                        (Some(remainder), MoveIn::Skipped) => rest = remainder,
+                        (None, MoveIn::Moved) => return Ok(()),
+                        _ => return Err(()),
+                    }
                 }
-                game.add_item(None, hopper, one, None)
-                    .map_or(Ok(()), |_| Err(()))
+                Err(())
             });
             if moved.is_ok() {
                 return true;
@@ -1777,8 +1948,8 @@ impl Game<'_> {
     /// (`getSourceContainerOrHandler`). `None` when there is no container. A capability part
     /// above takes the container's place.
     fn suck_from_container(&mut self, above: Pos, at: [f64; 3], hopper: &View) -> Option<bool> {
+        let (x, y, z) = hopper.parts[0].0;
         if let Some(part) = self.item_part_at(above, Direction::Down) {
-            let (x, y, z) = hopper.parts[0].0;
             let above = [above.0, above.1, above.2];
             self.native_hopper_inventory_search([x, y, z], Some(above), None);
             return Some(self.suck_from_part(&part, above, hopper));
@@ -1786,7 +1957,6 @@ impl Game<'_> {
         let c = self.containers();
         let Some(source) = c.hopper_insertion_view(above) else {
             let found = self.automation_entity_at(at, Direction::Down)?;
-            let (x, y, z) = hopper.parts[0].0;
             return match found {
                 AutomationEntity::Container(id) => {
                     self.native_hopper_inventory_search([x, y, z], None, Some(id));
@@ -1800,15 +1970,7 @@ impl Game<'_> {
                 }
             };
         };
-        self.native_hopper_inventory_search(
-            [
-                hopper.parts[0].0.0,
-                hopper.parts[0].0.1,
-                hopper.parts[0].0.2,
-            ],
-            Some([above.0, above.1, above.2]),
-            None,
-        );
+        self.native_hopper_inventory_search([x, y, z], Some([above.0, above.1, above.2]), None);
         if let Kind::Composter(level) = source.kind {
             if level != 8 {
                 return Some(false);
@@ -1927,9 +2089,7 @@ impl Game<'_> {
     /// The entity item automation reaches around `at` from `side`, through `ENTITY_AUTOMATION`: one of
     /// the container entities the game has there, and, once a mod registered a provider for it,
     /// the entities whose mod provider answers it, picked at random as `getEntityContainer` picks, the one draw.
-    /// A game container entity a mod provider answers ahead of the game is reached through
-    /// that answer. With no mod providing `ENTITY_AUTOMATION`, only vanilla containers are
-    /// considered: nothing more is looked up.
+    /// Vanilla container entities always keep their direct path, even with a provider.
     fn automation_entity_at(&mut self, at: [f64; 3], side: Direction) -> Option<AutomationEntity> {
         let vanilla = self.container_entities_at(at);
         if !mod_api::has_entity_providers(&ENTITY_AUTOMATION) {
@@ -1942,13 +2102,7 @@ impl Game<'_> {
             let providers = mod_api::entity_providers(&ENTITY_AUTOMATION, &*game, entity, context)?;
             providers.ask(game, has_game_answer)
         };
-        for &id in &vanilla {
-            let entity = self.entity(id);
-            match entity.and_then(|entity| Some((entity, ask(self, entity, true)?))) {
-                Some((entity, part)) => found.push(AutomationEntity::Part(entity, part)),
-                None => found.push(AutomationEntity::Container(id)),
-            }
-        }
+        found.extend(vanilla.iter().copied().map(AutomationEntity::Container));
         if let Some(level) = self.native_level_here() {
             let min = [at[0] - 0.5, at[1] - 0.5, at[2] - 0.5];
             let max = [at[0] + 0.5, at[1] + 0.5, at[2] + 0.5];
@@ -1974,7 +2128,7 @@ impl Game<'_> {
         if let Some(part) = self.item_part_at(pos, side) {
             return Some(f(self, ContainerTarget::Part(part)));
         }
-        if let Some(view) = self.containers().view(pos, false) {
+        if let Some(view) = self.containers().hopper_insertion_view(pos) {
             return Some(f(self, ContainerTarget::View(&view)));
         }
         let centre = [
@@ -2215,7 +2369,7 @@ impl Game<'_> {
         else {
             return Ok(());
         };
-        let Some(mut stack) = self.containers().get(&view, slot).cloned() else {
+        let Some(stack) = self.containers().get(&view, slot).cloned() else {
             return Ok(());
         };
         let target = offset(key, facing);
@@ -2234,12 +2388,7 @@ impl Game<'_> {
                     ControlFlow::Continue(inserted)
                 }
                 ContainerTarget::Part(part) => {
-                    // `dropperInsertHook`: the handler's writes and taking one from the
-                    // live source slot share a transaction, including feedback into it.
-                    stack.count = 1;
-                    game.put_into_part(&part, [target.0, target.1, target.2], &stack, |game, _| {
-                        game.take_one_journaled(&view, slot)
-                    });
+                    game.dropper_into_part(&part, &stack, &view, slot);
                     ControlFlow::Break(())
                 }
             });
@@ -2355,8 +2504,8 @@ impl Game<'_> {
 mod brewing_fuel_transfer_tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_client::brewing::BrewingStand;
     use mod_api::HostTransaction;
+    use sunrise_client::brewing::BrewingStand;
 
     struct PrepareProbe {
         calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -2383,7 +2532,7 @@ mod brewing_fuel_transfer_tests {
                 .unwrap();
                 let resource = mod_api::ItemResource::of(&stack);
                 host.transaction(|host, tx| {
-                    assert_eq!(items.insert(host, tx, 0, &resource, 1), 1);
+                    assert_eq!(items.insert_at(host, tx, 0, &resource, 1), 1);
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -2449,19 +2598,19 @@ mod brewing_fuel_transfer_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn empty_hopper_dispatches_prepare_transfer() {
         check_prepare_transfer(false);
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn prepare_transfer_inventory_write_is_ejected() {
         check_prepare_transfer(true);
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn hopper_brewing_fuel_transfer_respects_stack_components() {
         with_game(|game| {
             game.world.chunks.insert(
@@ -2510,7 +2659,15 @@ mod brewing_fuel_transfer_tests {
                 let hopper = containers.view(hopper_pos, false).unwrap();
                 let stand = containers.view(stand_pos, false).unwrap();
                 let fuel = containers.get(&hopper, 0).unwrap();
-                assert_eq!(containers.can_place(&stand, 4, fuel), accepted);
+                assert_eq!(
+                    containers.can_place(
+                        &stand,
+                        4,
+                        fuel,
+                        super::PlacementQuery::Offer(&mut super::PlacementAttempt::default()),
+                    ),
+                    accepted
+                );
                 assert_eq!(
                     game.eject_into(hopper_pos, &hopper, &stand, Direction::West),
                     accepted
@@ -2526,6 +2683,118 @@ mod brewing_fuel_transfer_tests {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod furnace_fuel_transfer_tests {
+    use super::*;
+    use crate::game::{game_tests::tests::server_game, native_entity_refs::tests::run_fresh_cases};
+    use sunrise_client::containers::{Furnace, FurnaceKind};
+    use sunrise_client::item_data::parse_stack;
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_side_hopper_respects_the_furnace_fuel_patch_and_bucket_rule() {
+        if run_fresh_cases(
+            "game::machines::furnace_fuel_transfer_tests::a_side_hopper_respects_the_furnace_fuel_patch_and_bucket_rule",
+            "SUNRISE_FURNACE_HOPPER_CASE",
+            &["side"],
+        ) {
+            return;
+        }
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        let hopper = (8, 64, 8);
+        let furnace = (9, 64, 8);
+        let registry = &game.pack.assets.registry;
+        let mut hopper_state = registry
+            .state(registry.default_state("minecraft:hopper").unwrap())
+            .unwrap()
+            .clone();
+        hopper_state
+            .properties
+            .insert("facing".into(), "east".into());
+        game.world
+            .set(
+                hopper.0,
+                hopper.1,
+                hopper.2,
+                registry.resolve(&hopper_state).unwrap(),
+            )
+            .unwrap();
+        game.world
+            .set(
+                furnace.0,
+                furnace.1,
+                furnace.2,
+                registry.default_state("minecraft:furnace").unwrap(),
+            )
+            .unwrap();
+        for line in include_str!("furnace_hopper.tsv")
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+        {
+            let [case, offered, held, moves] = line.split('\t').collect::<Vec<_>>()[..] else {
+                panic!("invalid furnace hopper case: {line}");
+            };
+            let stack = parse_stack(offered).unwrap().unwrap();
+            let held = parse_stack(held).unwrap();
+            let moves: bool = moves.parse().unwrap();
+            let mut hopper_slots = vec![None; HOPPER_SLOTS];
+            hopper_slots[0] = Some(stack.clone());
+            game.world
+                .block_entities
+                .insert(hopper, BlockEntity::Chest(hopper_slots));
+            game.world.block_entities.insert(
+                furnace,
+                BlockEntity::Furnace(Furnace {
+                    kind: FurnaceKind::Furnace,
+                    items: [None, held.clone(), None],
+                    lit_remaining: 0,
+                    lit_total: 0,
+                    cooking_timer: 0,
+                    cooking_total: 200,
+                    speed: 1.0,
+                    recipes_used: Default::default(),
+                }),
+            );
+            game.hoppers.remove(&hopper);
+
+            game.hopper_try_move_items(hopper);
+
+            let containers = game.containers();
+            let source = containers.view(hopper, false).unwrap();
+            let destination = containers.view(furnace, false).unwrap();
+            let mut source_left = stack.clone();
+            source_left.count -= u32::from(moves);
+            assert_eq!(
+                containers.get(&source, 0),
+                Some(&source_left),
+                "{case}: hopper"
+            );
+            let target = if moves {
+                let mut after = held.unwrap_or_else(|| {
+                    let mut stack = stack.clone();
+                    stack.count = 0;
+                    stack
+                });
+                after.count += 1;
+                Some(after)
+            } else {
+                held
+            };
+            assert_eq!(
+                containers.get(&destination, 1),
+                target.as_ref(),
+                "{case}: fuel slot"
+            );
+            assert!(
+                containers.get(&destination, 0).is_none()
+                    && containers.get(&destination, 2).is_none(),
+                "{case}: side did not touch the other slots"
+            );
+        }
     }
 }
 
@@ -2553,9 +2822,8 @@ mod item_column_tests {
             position: at,
             previous: at,
             velocity: Vec3::ZERO,
-            on_ground: true,
+            ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
             vertical_collision: false,
-            horizontal_collision: false,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -2699,9 +2967,9 @@ mod item_column_tests {
 #[cfg(test)]
 mod mod_container_tests {
     use super::{Kind, ModContainer, View, room};
+    use std::sync::Arc;
     use sunrise_client::items::ItemStack;
     use sunrise_core::geometry::Direction;
-    use std::sync::Arc;
 
     /// A mod's container reaches the slots its block names for each face;
     /// without a face, every slot.
@@ -2720,6 +2988,7 @@ mod mod_container_tests {
                 inputs: vec![0, 1],
                 outputs: vec![2],
                 menu: None,
+                insert_rules: Vec::new(),
             })),
         };
         assert_eq!(
@@ -2776,8 +3045,8 @@ mod mod_container_tests {
 #[cfg(test)]
 mod capacity_tests {
     use super::{Containers, Kind, View};
-    use sunrise_client::{brewing::Brewing, containers::BlockEntity, items::ItemStack};
     use std::collections::HashSet;
+    use sunrise_client::{brewing::Brewing, containers::BlockEntity, items::ItemStack};
 
     /// A one-item slot answers its capacity as if empty (NeoForge's `getCapacityAsLong`), so a
     /// write may swap what it holds, while it takes nothing more now: a jukebox's disc, a
@@ -2849,7 +3118,7 @@ mod capacity_tests {
             };
             let offered = ItemStack::new(offered, 1);
             assert_eq!(c.capacity(&view, 0, &offered), 1, "{block}");
-            assert_eq!(c.fits(&view, 0, &offered), 0, "{block}");
+            assert_eq!(c.planning_room(&view, 0, &offered), 0, "{block}");
             assert_eq!(
                 c.capacity(&view, 0, &ItemStack::new("minecraft:stick", 1)),
                 0,
@@ -2862,12 +3131,12 @@ mod capacity_tests {
 #[cfg(test)]
 mod part_front_tests {
     use super::super::native_entity_refs::tests::{declared_part_root, with_game_at};
+    use mod_api::BlockUpdateFlags;
+    use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
     use sunrise_client::containers::BlockEntity;
     use sunrise_client::items::ItemStack;
     use sunrise_core::position::BlockPos;
-    use mod_api::BlockUpdateFlags;
-    use std::sync::Arc;
 
     fn stack(item: &str, count: u32) -> ItemStack {
         ItemStack {
@@ -2881,7 +3150,7 @@ mod part_front_tests {
     /// A crafter facing west into a pipe that hands on east, back into the crafter: the four
     /// sticks land in its grid, and using up the planks takes none of them.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_part_handing_a_crafters_output_back_into_its_grid_loses_none() {
         let Some(root) = declared_part_root(
             "game::machines::part_front_tests::a_part_handing_a_crafters_output_back_into_its_grid_loses_none",
@@ -2942,7 +3211,7 @@ mod part_front_tests {
     /// A dropper facing west into a pipe that hands on east, back into the dropper: the item
     /// goes round, and taking it from its slot as it is then keeps both.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_part_handing_a_droppers_item_back_into_it_loses_none() {
         let Some(root) = declared_part_root(
             "game::machines::part_front_tests::a_part_handing_a_droppers_item_back_into_it_loses_none",
@@ -3000,7 +3269,7 @@ mod part_front_tests {
     /// they put out in a container's place; a part answering more than it was offered has its
     /// move undone, so the dropper keeps its item and the crafter's result is dispensed.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_dropper_and_a_crafter_put_into_a_mod_part_in_front_of_them() {
         let Some(root) = declared_part_root(
             "game::machines::part_front_tests::a_dropper_and_a_crafter_put_into_a_mod_part_in_front_of_them",
@@ -3117,11 +3386,11 @@ mod hopper_cart_transfer_tests {
     use sunrise_core::nbt::Tag;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn chest_boat_automation_does_not_award_player_loot() {
+        use std::sync::Arc;
         use sunrise_client::advancements::Tree;
         use sunrise_world::loot::PackOverlay;
-        use std::sync::Arc;
 
         crate::game::native_guest_turn_tests::with_guests(|game| {
             game.options.dedicated = None;
@@ -3133,7 +3402,7 @@ mod hopper_cart_transfer_tests {
                 &game.options.resources.join("data"),
                 &PackOverlay {
                     files: &files,
-                    ..PackOverlay::NONE
+                    ..PackOverlay::default()
                 },
             ));
             game.adv.loaded = true;
@@ -3167,7 +3436,7 @@ mod hopper_cart_transfer_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn chest_boat_with_items_drops_pending_table_without_rolling() {
         with_game(|game| {
             let sentinel = Some(ItemStack::new("minecraft:diamond", 17));
@@ -3260,7 +3529,7 @@ mod hopper_cart_transfer_tests {
     /// tick (the old behaviour) or a block hopper's eight-tick cooldown both
     /// fail this.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn hopper_cart_takes_one_item_a_tick() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -3347,7 +3616,7 @@ mod pot_hopper_insertion_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn actual_hopper_ticks_insert_into_the_saved_pot_slot() {
         let mut resources = None;
         let mut game = server_game(&mut resources);
@@ -3431,7 +3700,7 @@ mod pot_hopper_insertion_tests {
         );
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn actual_hopper_pulls_from_the_saved_pot_slot() {
         let mut resources = None;
         let mut game = server_game(&mut resources);
@@ -3478,7 +3747,7 @@ mod tests {
     /// `ShelfBlockEntity.setChanged` (no arguments) posts `BLOCK_ACTIVATE`:
     /// a container writing a shelf's slot is a block activation.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_container_writing_a_shelf_posts_block_activate() {
         let mut resources = None;
         let mut game = server_game(&mut resources);
@@ -3513,6 +3782,129 @@ mod tests {
             );
         });
     }
+
+    fn hopper_facing(game: &Game<'_>, facing: &str, enabled: bool) -> BlockStateId {
+        let registry = &game.pack.assets.registry;
+        let mut state = registry
+            .state(registry.default_state("minecraft:hopper").unwrap())
+            .unwrap()
+            .clone();
+        state.properties.insert("facing".into(), facing.into());
+        state
+            .properties
+            .insert("enabled".into(), enabled.to_string());
+        registry.resolve(&state).unwrap()
+    }
+    fn place_hopper(
+        game: &mut Game<'_>,
+        pos: Pos,
+        facing: &str,
+        enabled: bool,
+        item: Option<ItemStack>,
+    ) {
+        let state = hopper_facing(game, facing, enabled);
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        let mut slots = vec![None; HOPPER_SLOTS];
+        slots[0] = item;
+        game.world
+            .block_entities
+            .insert(pos, BlockEntity::Chest(slots));
+    }
+    fn hopper_count(game: &Game<'_>, pos: Pos) -> u32 {
+        match game.world.block_entities.get(&pos) {
+            Some(BlockEntity::Chest(items)) => items.iter().flatten().map(|s| s.count).sum(),
+            other => panic!("no hopper at {pos:?}: {other:?}"),
+        }
+    }
+    fn tick_block_entities(game: &mut Game<'_>, time: i64) {
+        game.world.game_time = time;
+        game.tick_block_entities().unwrap();
+    }
+
+    /// An empty hopper with nothing above sleeps after its tick, and one a
+    /// redstone signal turned off sleeps too. The real scheduler still advances
+    /// a sleeping hopper's transfer state, so a feeder that runs after its slot
+    /// sets the vanilla 7-tick cooldown, in both ticker orders.
+    #[test]
+    #[ignore = "daily"]
+    fn an_idle_hopper_sleeps_and_wakes_for_what_it_could_take() {
+        crate::game::in_own_process(
+            "game::machines::tests::an_idle_hopper_sleeps_and_wakes_for_what_it_could_take",
+            || {
+                let mut resources = None;
+                let mut game = server_game(&mut resources);
+                game.build_registries();
+                game.player = Some(
+                    sunrise_client::motion::PlayerMotion::new(
+                        game.motion,
+                        sunrise_core::geometry::Vec3::new(8.5, 65.0, 8.5),
+                    )
+                    .unwrap(),
+                );
+                game.update_chunk_tickets();
+                assert!(game.block_ticking_area()(1, 1));
+                let start = game.world.game_time;
+                let stone = || Some(ItemStack::new("minecraft:stone", 1));
+
+                // The receiver ticks first and goes idle; the side feeder is
+                // placed later, so it runs after the receiver's slot.
+                let side_receiver = (1, 64, 1);
+                let side_feeder = (2, 64, 1);
+                place_hopper(&mut game, side_receiver, "down", true, None);
+                tick_block_entities(&mut game, start + 1);
+                assert!(
+                    game.world.block_entities.is_hopper_asleep(&side_receiver),
+                    "an empty hopper with no source above sleeps"
+                );
+                place_hopper(&mut game, side_feeder, "west", true, stone());
+                tick_block_entities(&mut game, start + 2);
+                assert_eq!(
+                    hopper_count(&game, side_receiver),
+                    1,
+                    "the side feeder fills the woken receiver"
+                );
+                assert_eq!(
+                    game.hopper_cooldown(side_receiver),
+                    7,
+                    "the receiver ticked before the feeder in this tick"
+                );
+
+                // Feeder first, receiver second: the receiver's own tick
+                // decrements the 8 the feeder set, and still ends at 7.
+                let early_feeder = (6, 64, 1);
+                let later_receiver = (5, 64, 1);
+                place_hopper(&mut game, early_feeder, "west", true, stone());
+                place_hopper(&mut game, later_receiver, "down", true, None);
+                tick_block_entities(&mut game, start + 3);
+                assert_eq!(hopper_count(&game, later_receiver), 1);
+                assert_eq!(
+                    game.hopper_cooldown(later_receiver),
+                    7,
+                    "the receiver ticked after the feeder in this tick"
+                );
+
+                // A powered receiver fed from above: it sleeps until the
+                // feeder's insert wakes it, after its own slot.
+                let powered = (8, 64, 1);
+                let above_feeder = (8, 65, 1);
+                place_hopper(&mut game, powered, "down", false, None);
+                tick_block_entities(&mut game, start + 4);
+                assert!(
+                    game.world.block_entities.is_hopper_asleep(&powered),
+                    "a powered hopper sleeps"
+                );
+                place_hopper(&mut game, above_feeder, "down", true, stone());
+                tick_block_entities(&mut game, start + 5);
+                assert_eq!(hopper_count(&game, powered), 1);
+                assert_eq!(
+                    game.hopper_cooldown(powered),
+                    7,
+                    "a powered receiver fed above keeps the 7-tick cooldown"
+                );
+                assert!(!game.world.block_entities.is_asleep(&powered));
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3528,7 +3920,7 @@ mod can_take_tests {
     /// `ChiseledBookShelfBlockEntity.canTakeItem`: a hopper takes a book only
     /// when it has a free slot or a matching stack with room.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_full_hopper_cannot_take_a_book_from_a_chiseled_shelf() {
         let mut resources = None;
         let mut game = server_game(&mut resources);
@@ -3578,6 +3970,60 @@ mod can_take_tests {
             game.containers()
                 .can_take_into(&shelf_view, 0, &book, Direction::Down, &empty_hopper),
             "an empty hopper takes the book"
+        );
+    }
+
+    /// A non-container block entity above a hopper (such as a sign holding lava)
+    /// has no slots, so `view` returns `None`. The hopper does not treat it as a
+    /// container, allowing item entities resting on the rim to be picked up.
+    #[test]
+    #[ignore = "daily"]
+    fn non_container_block_entity_above_hopper_does_not_block_item_suction() {
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        let hopper_pos = (2, 4, 3);
+        let sign_pos = (2, 5, 3);
+        let hopper_state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:hopper")
+            .unwrap();
+        let sign_state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:oak_sign")
+            .unwrap();
+        game.world
+            .set(hopper_pos.0, hopper_pos.1, hopper_pos.2, hopper_state)
+            .unwrap();
+        game.world
+            .set(sign_pos.0, sign_pos.1, sign_pos.2, sign_state)
+            .unwrap();
+        game.world
+            .block_entities
+            .insert(hopper_pos, BlockEntity::Chest(vec![None; 5]));
+        game.world
+            .block_entities
+            .insert(sign_pos, BlockEntity::Sign(Default::default()));
+
+        assert!(
+            game.containers().view(sign_pos, false).is_none(),
+            "a sign is not a container"
+        );
+        assert!(
+            game.containers().hopper_insertion_view(sign_pos).is_none(),
+            "a sign has no hopper insertion view"
+        );
+        let hopper_view = game
+            .containers()
+            .view(hopper_pos, false)
+            .expect("hopper view");
+        assert!(
+            game.suck_from_container(sign_pos, [2.5, 5.5, 3.5], &hopper_view)
+                .is_none(),
+            "suck_from_container returns None so hopper falls through to suck_item_entities"
         );
     }
 }

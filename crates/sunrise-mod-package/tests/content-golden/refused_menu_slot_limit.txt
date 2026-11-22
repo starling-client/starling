@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_menu_slot_limit",
+    name: "Refused menu slot limit",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: data/refused_menu_slot_limit/sunrise/menu/sample.json (refused_menu_slot_limit:sample): total menu slots (32769) exceed 32768

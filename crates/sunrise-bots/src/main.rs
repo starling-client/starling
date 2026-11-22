@@ -25,9 +25,20 @@
 //! The report also has wire bytes in and out (`bytes_in`, `bytes_out`, per bot and in total, after
 //! compression) and join-time percentiles (`join_time`: p50, p99 and max in milliseconds).
 
+use serde_json::json;
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::{
+        Arc, LazyLock, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
     PROTOCOL_VERSION,
-    buf::{Reader, Writer},
+    buf::Reader,
     connection::{ConnWriter, Connection, Counters},
     crypto::offline_uuid,
     entity_data, ids,
@@ -38,16 +49,6 @@ use sunrise_protocol::{
         login::{self, ServerHello},
         play, recipes,
     },
-};
-use serde_json::json;
-use std::{
-    collections::{BTreeMap, HashSet},
-    sync::{
-        Arc, LazyLock, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    thread,
-    time::{Duration, Instant},
 };
 
 const HELP: &str = "\
@@ -75,13 +76,13 @@ sunrise-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
   --flood N              packets a tick for the flood behaviours; default 100
   --attack NAME          attack the player NAME twice a second, from wherever the bot is (a reach test),
                          swinging after each attack as vanilla's client does. NAME,NAME...: each of them
-                         in the same tick (a multi-target kill aura, for the anticheat's tests);
+                         in the same tick (a multi-target kill aura, to test an anticheat);
                          the report gives each bot's last health. A UUID instead of a NAME: the
                          entity with that UUID (a boat summoned with it, say)
   --attack-after S       start attacking S seconds after joining; default 5
   --attack-rounds N      stop after N rounds of attacks (each hits every target seen so far once);
                          default no limit
-  --no-swing             attack without swinging (a kill aura hiding its swing, for the anticheat's tests)
+  --no-swing             attack without swinging (a kill aura hiding its swing, to test an anticheat)
   --no-loaded            never say the level is loaded (ServerboundPlayerLoadedPacket): a vanilla server
                          ignores the player's moves and actions for its first 3 seconds
   --no-read              stop reading from the server once spawned (a client that lets the
@@ -97,7 +98,8 @@ sunrise-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
                          other swing, landing it while falling: a critical hit, then a sweep from the
                          ground (give them swords); for PvP benches (crit and sweep particles)
   --name PREFIX          bot names: PREFIX0, PREFIX1...; default Bot
-  --brand B              the client brand sent in configuration (minecraft:brand); default none
+  --brand B              the client brand sent in configuration (minecraft:brand); default none; with
+                         sunrise, the bot also echoes a Sunrise server's mod list and content digest
   --height H             blocks above spawn the bots fly at (walk, explore, idle); default 24
   --ground               claim the ground in every move (with --height 0 on a flat world: walking
                          on it; higher, or over water: a no-fall or jesus cheat, to test an anticheat)
@@ -107,7 +109,6 @@ sunrise-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
                          click SLOT of its window (ServerboundContainerClickPacket), to test what a server takes
   --raw TICK:ID:HEX,...  raw serverbound play packets (id, body in hex) sent TICK ticks after joining,
                          to test what a server takes
-  --timer F              cheat, to test an anticheat: tick F times as fast as vanilla's client (1.5: 30 Hz)
   --report FILE          a JSON summary at the end (- prints it after the per-second lines)
   --capture FILE         record the first bot's play packets (milliseconds since it joined, id, body)
                          for crates/sunrise-protocol/examples/net_replay.rs
@@ -195,8 +196,6 @@ struct Options {
     report: Option<String>,
     /// --capture: where the first bot's play packets go.
     capture: Option<String>,
-    /// How many times as fast as vanilla's 20 Hz the bots tick (a timer cheat above 1).
-    timer: f64,
 }
 
 fn options() -> Result<Options, String> {
@@ -230,7 +229,6 @@ fn options() -> Result<Options, String> {
         report: None,
         capture: None,
         brand: None,
-        timer: 1.0,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -345,12 +343,6 @@ fn options() -> Result<Options, String> {
                 }
             }
             "--height" => o.height = value.parse().map_err(|_| number("blocks"))?,
-            "--timer" => {
-                o.timer = value.parse().map_err(|_| number("a speed, like 1.5"))?;
-                if !(o.timer >= 0.1 && o.timer <= 20.0) {
-                    return Err(format!("--timer {value}: use 0.1 to 20"));
-                }
-            }
             _ => return Err(format!("unknown option {arg}; --help lists them")),
         }
     }
@@ -834,16 +826,25 @@ fn join(o: &Options, name: &str) -> Result<Connection, String> {
             login::Clientbound::Unknown(..) => {}
         }
     }
+    configure(c, o.view_distance, o.brand.as_deref())
+}
+
+/// The configuration phase as a client: brand, known packs and the Sunrise mod and content checks.
+fn configure(
+    mut c: Connection,
+    view_distance: i8,
+    brand: Option<&str>,
+) -> Result<Connection, String> {
     use ids::configuration::clientbound as cb;
     c.send(
         &configuration::Serverbound::ClientInformation(configuration::ClientInformation::new(
-            o.view_distance,
+            view_distance,
         ))
         .encode(),
     )
     .map_err(err)?;
     // ClientBrandRetriever: vanilla's client says "vanilla", Sunrise's "sunrise".
-    if let Some(brand) = &o.brand {
+    if let Some(brand) = brand {
         let mut w = Writer::new();
         w.string(brand);
         c.send(
@@ -855,6 +856,11 @@ fn join(o: &Options, name: &str) -> Result<Connection, String> {
         )
         .map_err(err)?;
     }
+    // A Sunrise server sends its mod list after our brand, takes our known-packs answer and compares the lists
+    // then, so the list must be echoed first: the bot holds that answer until it has.
+    let mut server_is_sunrise = false;
+    let mut mods_declared = false;
+    let mut held_packs = None;
     loop {
         let (id, body) = c.recv().map_err(err)?;
         let reply = match id {
@@ -868,10 +874,29 @@ fn join(o: &Options, name: &str) -> Result<Connection, String> {
             | cb::FINISH_CONFIGURATION => {
                 match configuration::Clientbound::decode(id, &body).map_err(err)? {
                     configuration::Clientbound::CustomPayload(p) => {
-                        let Some(answer) = raw_protocol_answer(o.brand.as_deref(), &p)? else {
+                        server_is_sunrise |= is_sunrise_brand(&p);
+                        let Some(answer) = raw_protocol_answer(brand, &p)? else {
                             continue;
                         };
-                        configuration::Serverbound::CustomPayload(answer)
+                        let declares_mods = answer.channel == sunrise_protocol::mod_list::CHANNEL;
+                        c.send(&configuration::Serverbound::CustomPayload(answer).encode())
+                            .map_err(err)?;
+                        if declares_mods {
+                            mods_declared = true;
+                            if let Some(packs) = held_packs.take() {
+                                c.send(
+                                    &configuration::Serverbound::SelectKnownPacks(packs).encode(),
+                                )
+                                .map_err(err)?;
+                            }
+                        }
+                        continue;
+                    }
+                    configuration::Clientbound::SelectKnownPacks(p)
+                        if brand == Some("sunrise") && server_is_sunrise && !mods_declared =>
+                    {
+                        held_packs = Some(p);
+                        continue;
                     }
                     configuration::Clientbound::SelectKnownPacks(p) => {
                         configuration::Serverbound::SelectKnownPacks(p)
@@ -907,13 +932,32 @@ fn join(o: &Options, name: &str) -> Result<Connection, String> {
     }
 }
 
-/// Only a bot claiming Sunrise support answers the fork's raw-protocol Query.
+/// `sunrise-client`'s `content_identity::CHANNEL`; this crate does not depend on the client.
+const BLOCK_REGISTRY: &str = "sunrise:block_registry";
+
+/// Whether a server's configuration payload is its `minecraft:brand` saying "sunrise".
+fn is_sunrise_brand(payload: &configuration::CustomPayload) -> bool {
+    payload.channel == "minecraft:brand"
+        && sunrise_protocol::buf::Reader::new(&payload.data)
+            .string(32767)
+            .is_ok_and(|brand| brand == "sunrise")
+}
+
+/// Only a bot claiming Sunrise support answers a Sunrise server's configuration payloads: the raw-protocol
+/// Query with an empty offer, and the mod list and the content-registry digest by echoing them, since the bot
+/// stands for a client that has exactly the server's mods and content.
 fn raw_protocol_answer(
     brand: Option<&str>,
     payload: &configuration::CustomPayload,
 ) -> Result<Option<configuration::CustomPayload>, String> {
     use sunrise_protocol::payload_negotiation::{CHANNEL, Control, Manifest};
-    if brand != Some("sunrise") || payload.channel != CHANNEL {
+    if brand != Some("sunrise") {
+        return Ok(None);
+    }
+    if payload.channel == sunrise_protocol::mod_list::CHANNEL || payload.channel == BLOCK_REGISTRY {
+        return Ok(Some(payload.clone()));
+    }
+    if payload.channel != CHANNEL {
         return Ok(None);
     }
     match Control::decode(&payload.data).map_err(err)? {
@@ -922,36 +966,6 @@ fn raw_protocol_answer(
             data: Control::Offer(Manifest::default()).encode().map_err(err)?,
         })),
         Control::Offer(_) => Ok(None),
-    }
-}
-
-/// ChunkBatchSizeCalculator: the chunks per tick a vanilla client asks for, from how long its batches take
-/// to arrive.
-struct BatchSize {
-    nanos_per_chunk: f64,
-    old_samples_weight: u32,
-    started: Instant,
-}
-
-impl BatchSize {
-    fn new() -> Self {
-        Self {
-            nanos_per_chunk: 2_000_000.0,
-            old_samples_weight: 1,
-            started: Instant::now(),
-        }
-    }
-    fn finished(&mut self, size: i32) {
-        if size > 0 {
-            let per_chunk = self.started.elapsed().as_nanos() as f64 / f64::from(size);
-            let clamped = per_chunk.clamp(self.nanos_per_chunk / 3.0, self.nanos_per_chunk * 3.0);
-            let weight = f64::from(self.old_samples_weight);
-            self.nanos_per_chunk = (self.nanos_per_chunk * weight + clamped) / (weight + 1.0);
-            self.old_samples_weight = (self.old_samples_weight + 1).min(49);
-        }
-    }
-    fn desired_chunks_per_tick(&self) -> f32 {
-        (7_000_000.0 / self.nanos_per_chunk) as f32
     }
 }
 
@@ -1008,7 +1022,7 @@ fn read(
     use ids::play::serverbound as sb;
     let send = |body: Vec<u8>| lock(&writer).send(&body);
     let mut seen = HashSet::new();
-    let mut batch = BatchSize::new();
+    let mut batch = sunrise_protocol::chunk_batch::ChunkBatchSize::default();
     let mut teleports = 0u64;
     loop {
         if bot.deaf.load(Ordering::Relaxed) {
@@ -1084,11 +1098,11 @@ fn read(
                 Ok(())
             }
             cb::CHUNK_BATCH_START => {
-                batch.started = Instant::now();
+                batch.on_batch_start();
                 Ok(())
             }
             cb::CHUNK_BATCH_FINISHED => {
-                batch.finished(r.varint().unwrap_or(0));
+                batch.on_batch_finished(r.varint().unwrap_or(0));
                 send(
                     play::Serverbound::ChunkBatchReceived(play::ChunkBatchReceived {
                         chunks_per_tick: ack_rate
@@ -1474,7 +1488,7 @@ fn run_bot(
             bot.online.store(false, Ordering::SeqCst);
             break;
         }
-        next += Duration::from_secs_f64(0.05 / o.timer);
+        next += Duration::from_millis(50);
         let now = Instant::now();
         if next > now {
             thread::sleep(next - now);
@@ -1694,6 +1708,152 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        for channel in [sunrise_protocol::mod_list::CHANNEL, BLOCK_REGISTRY] {
+            payload.channel = channel.into();
+            payload.data = vec![3, 1, 2];
+            assert_eq!(
+                raw_protocol_answer(Some("sunrise"), &payload).unwrap(),
+                Some(payload.clone())
+            );
+            for brand in [None, Some("vanilla")] {
+                assert!(raw_protocol_answer(brand, &payload).unwrap().is_none());
+            }
+        }
+    }
+
+    fn config_payload(channel: &str, data: Vec<u8>) -> Vec<u8> {
+        configuration::Clientbound::CustomPayload(configuration::CustomPayload {
+            channel: channel.into(),
+            data,
+        })
+        .encode()
+    }
+
+    fn brand_payload(brand: &str) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.string(brand);
+        config_payload("minecraft:brand", w.data)
+    }
+
+    /// Runs `configure` against a scripted server over a pipe: its brand, the payload Query and known packs
+    /// come first, as `lan/conn.rs` sends them, and the test reads what the bot sends back.
+    fn configuring(
+        bot_brand: Option<&'static str>,
+        server_brand: &str,
+    ) -> (Connection, thread::JoinHandle<Result<Connection, String>>) {
+        use sunrise_protocol::connection::Pipe;
+        let (client, server) = Pipe::pair();
+        let mut server = Connection::local(server);
+        server
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let handle = thread::spawn(move || configure(Connection::local(client), 10, bot_brand));
+        server.send(&brand_payload(server_brand)).unwrap();
+        server
+            .send(&config_payload(
+                sunrise_protocol::payload_negotiation::CHANNEL,
+                sunrise_protocol::payload_negotiation::Control::Query
+                    .encode()
+                    .unwrap(),
+            ))
+            .unwrap();
+        server
+            .send(
+                &configuration::Clientbound::SelectKnownPacks(configuration::SelectKnownPacks {
+                    packs: Vec::new(),
+                })
+                .encode(),
+            )
+            .unwrap();
+        (server, handle)
+    }
+
+    fn next(server: &mut Connection) -> configuration::Serverbound {
+        let (id, body) = server.recv().unwrap();
+        configuration::Serverbound::decode(id, &body).unwrap()
+    }
+
+    #[test]
+    fn sunrise_bot_echoes_the_mod_list_before_answering_known_packs() {
+        use sunrise_protocol::mod_list::{CHANNEL, Entry, Side, decode, encode};
+        let (mut server, handle) = configuring(Some("sunrise"), "sunrise");
+        assert!(matches!(
+            next(&mut server),
+            configuration::Serverbound::ClientInformation(_)
+        ));
+        assert!(
+            matches!(next(&mut server), configuration::Serverbound::CustomPayload(p) if p.channel == "minecraft:brand")
+        );
+        let configuration::Serverbound::CustomPayload(offer) = next(&mut server) else {
+            panic!("the payload Query is answered with an Offer");
+        };
+        assert_eq!(
+            offer.channel,
+            sunrise_protocol::payload_negotiation::CHANNEL
+        );
+        assert_eq!(offer.data, [1, 1, 0]);
+        let list = encode(&[Entry {
+            id: "ruby".into(),
+            version: "1.0".into(),
+            side: Side::Both,
+            runtime: None,
+        }]);
+        server.send(&config_payload(CHANNEL, list.clone())).unwrap();
+        let configuration::Serverbound::CustomPayload(echo) = next(&mut server) else {
+            panic!("the mod list comes before the known packs answer");
+        };
+        assert_eq!((echo.channel.as_str(), &echo.data), (CHANNEL, &list));
+        assert_eq!(decode(&echo.data).unwrap().len(), 1);
+        assert!(matches!(
+            next(&mut server),
+            configuration::Serverbound::SelectKnownPacks(_)
+        ));
+        let digest = vec![7; 32];
+        server
+            .send(&config_payload(BLOCK_REGISTRY, digest.clone()))
+            .unwrap();
+        let configuration::Serverbound::CustomPayload(echo) = next(&mut server) else {
+            panic!("the content digest is echoed");
+        };
+        assert_eq!(
+            (echo.channel.as_str(), &echo.data),
+            (BLOCK_REGISTRY, &digest)
+        );
+        server
+            .send(&configuration::Clientbound::FinishConfiguration(Empty).encode())
+            .unwrap();
+        assert!(matches!(
+            next(&mut server),
+            configuration::Serverbound::FinishConfiguration(_)
+        ));
+        handle.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn known_packs_are_not_held_unless_both_sides_are_sunrise() {
+        for (bot_brand, server_brand) in [
+            (Some("sunrise"), "vanilla"),
+            (Some("vanilla"), "sunrise"),
+            (None, "sunrise"),
+        ] {
+            let (mut server, handle) = configuring(bot_brand, server_brand);
+            let sent = loop {
+                match next(&mut server) {
+                    configuration::Serverbound::ClientInformation(_) => {}
+                    configuration::Serverbound::CustomPayload(p)
+                        if p.channel == "minecraft:brand"
+                            || p.channel == sunrise_protocol::payload_negotiation::CHANNEL => {}
+                    other => break other,
+                }
+            };
+            assert!(matches!(
+                sent,
+                configuration::Serverbound::SelectKnownPacks(_)
+            ));
+            server.writer.shutdown();
+            assert!(handle.join().unwrap().is_err());
+        }
     }
 
     /// Exercise the production reader over framed connections. Pings are barriers

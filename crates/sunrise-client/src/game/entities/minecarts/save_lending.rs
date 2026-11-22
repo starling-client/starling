@@ -4,7 +4,7 @@ use super::*;
 impl Game<'_> {
     /// `MinecartTNT.explode`: with explosions disabled, only a primed cart is
     /// discarded. An unprimed cart survives, including its current tick.
-    pub(super) fn explode_cart(&mut self, c: &mut Minecart, speed_sqr: f64) -> bool {
+    pub(in crate::game) fn explode_cart(&mut self, c: &mut Minecart, speed_sqr: f64) -> bool {
         let explodes = self
             .ui
             .rules
@@ -39,14 +39,6 @@ impl Game<'_> {
         let silent = explodes && self.entity_silent(c.id);
         if self
             .with_destroying_vehicle(target, |game| {
-                game.dismount_destroyed_vehicle_players(c.id);
-                if let Some(i) = game
-                    .carts
-                    .iter()
-                    .position(|x| x.id == c.id && x.join == c.join)
-                {
-                    game.eject_cart_mobs(i);
-                }
                 if game.carts.iter().any(|x| x.id == c.id && x.join == c.join) {
                     game.release_vehicle_container(c.id);
                 }
@@ -85,7 +77,11 @@ impl Game<'_> {
                 false,
                 super::super::explosion::ExplosionSource::default()
                     .with_silence(silent)
-                    .with_entity(c.id, "minecraft:tnt_minecart"),
+                    .with_entity(
+                        c.id,
+                        "minecraft:tnt_minecart",
+                        sunrise_client::health::DirectEntity::Other,
+                    ),
             )
         });
         self.combat.explosion_direct = None;
@@ -105,7 +101,9 @@ impl Game<'_> {
         let id = self.carts[i].id;
         let join = self.carts[i].join;
         let target = crate::game::commands::Target::Cart(id);
-        if self.persist.destroying_vehicles.contains(&target) {
+        if self.persist.destroying_vehicles.contains(&target)
+            || self.persist.preparing_vehicle_removals.contains(&target)
+        {
             return false;
         }
         let kind = self.carts[i].kind.id();
@@ -159,53 +157,24 @@ impl Game<'_> {
                 }) {
                     return true;
                 }
-                let _ = self.with_destroying_vehicle(target, |game| {
-                    game.dismount_destroyed_vehicle_players(id);
-                    let Some(i) = game.carts.iter().position(|c| {
-                        c.id == id && c.join == join && !game.persist.removals.contains(&target)
-                    }) else {
-                        return;
-                    };
-                    game.eject_cart_mobs(i);
-                    if !game.carts.iter().any(|c| {
-                        c.id == id && c.join == join && !game.persist.removals.contains(&target)
-                    }) {
-                        return;
-                    }
-                    game.release_vehicle_container(id);
-                    let Some(_i) = game.carts.iter().position(|c| {
-                        c.id == id && c.join == join && !game.persist.removals.contains(&target)
-                    }) else {
-                        return;
-                    };
-                    game.unpack_loot(super::super::container_loot::LootTarget::Cart(id), None);
-                    let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
-                    let Some(i) = game.carts.iter().position(|c| c.id == id && c.join == join)
-                    else {
-                        return;
-                    };
-                    let c = game.carts.remove(i);
-                    let at = c.position.components();
-                    // AbstractMinecartContainer.remove: contents drop even when
-                    // entity drops are disabled.
-                    game.drop_vehicle_contents(at, &c.items);
-                    if !creative {
-                        game.entity_killed_event(at, false);
-                    }
-                    if !creative
-                        && game
-                            .ui
-                            .rules
-                            .bool_at(sunrise_client::gamerules::vanilla::ENTITY_DROPS)
+                let Some(cart) = self.carts.iter().find(|c| c.id == id && c.join == join) else {
+                    return true;
+                };
+                let (kind, slots) = (cart.kind, cart.items.len());
+                let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
+                if self.kill_vehicle_object(target) && !creative {
+                    self.entity_killed_event(at, false);
+                    if self
+                        .ui
+                        .rules
+                        .bool_at(sunrise_client::gamerules::vanilla::ENTITY_DROPS)
                     {
-                        game.spawn_item_own(game.cart_drop(c.kind, c.id), at, 10);
-                        let empty = vec![None; c.items.len()];
-                        game.drop_vehicle_contents(at, &empty);
+                        self.spawn_item_own(self.cart_drop(kind, id), at, 10);
+                        self.drop_vehicle_contents(at, &vec![None; slots]);
                         // ...and angers the piglins that see the player who broke it.
-                        game.cart_destroy_angers(hit, c.kind);
+                        self.cart_destroy_angers(hit, kind);
                     }
-                    game.retain_removed_vehicle(id, super::super::persist::RemovedVehicle::Cart(c));
-                });
+                }
             }
         }
         true

@@ -1,0 +1,3 @@
+ids = ["type:MathProfile", "type:MathProfile.HotSpotX86_64"]
+why = "MathProfile now identifies the x86-64 trigonometric implementation separately. Adding the variant changes the Wire layout of the profile."
+migrate = "Let the non-exhaustive match handle the new variant, or match it explicitly when the mod needs to distinguish this rounding path."

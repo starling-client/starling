@@ -2,6 +2,7 @@
 //! directory the way VanillaServerFilesOracle does (server.properties,
 //! eula.txt, the four user lists and scripted list changes) and prints the
 //! same report. `server_files_probe CASES OUTPUT`.
+use std::{fmt::Write as _, path::Path};
 use sunrise_client::server::{
     eula,
     properties::{DIFFICULTIES, GAME_MODES, ServerProperties, SystemEntropy},
@@ -9,7 +10,6 @@ use sunrise_client::server::{
 };
 use sunrise_java_properties::now_millis;
 use sunrise_protocol::crypto::uuid_string;
-use std::{fmt::Write as _, path::Path};
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = crate::args().skip(1);

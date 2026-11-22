@@ -1,0 +1,264 @@
+manifest:
+Manifest {
+    id: "manifest_full",
+    name: "Manifest full",
+    version: Version {
+        major: 2,
+        minor: 4,
+        patch: 0,
+        pre: Prerelease("rc.1"),
+        build: BuildMetadata("demo"),
+    },
+    description: "A small display of declaration metadata.",
+    authors: [
+        "Fixture author",
+        "Fixture illustrator",
+    ],
+    license: "MIT",
+    license_url: Some(
+        "https://example.test/license",
+    ),
+    credits: "Thanks to the makers of the test fixtures.",
+    homepage: Some(
+        "https://example.test/manifest-full",
+    ),
+    issues: Some(
+        "http://example.test/manifest-full/issues",
+    ),
+    api: "0.2",
+    side: Both,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [
+        "mineral-lab",
+        "lab.notes",
+    ],
+    served_by: None,
+    dependencies: {
+        "base": Version(
+            VersionReq {
+                comparators: [
+                    Comparator {
+                        op: Caret,
+                        major: 1,
+                        minor: Some(
+                            2,
+                        ),
+                        patch: None,
+                        pre: Prerelease(""),
+                    },
+                ],
+            },
+        ),
+        "common_tools": Detailed(
+            DependencyDetails {
+                version: VersionReq {
+                    comparators: [],
+                },
+                optional: false,
+                side: Both,
+                reason: None,
+                url: None,
+                order: After,
+            },
+        ),
+        "extras": Detailed(
+            DependencyDetails {
+                version: VersionReq {
+                    comparators: [
+                        Comparator {
+                            op: Tilde,
+                            major: 2,
+                            minor: Some(
+                                3,
+                            ),
+                            patch: Some(
+                                4,
+                            ),
+                            pre: Prerelease(""),
+                        },
+                    ],
+                },
+                optional: true,
+                side: Client,
+                reason: Some(
+                    "Adds field notes",
+                ),
+                url: Some(
+                    "https://example.test/extras",
+                ),
+                order: Before,
+            },
+        ),
+        "server_tools": Detailed(
+            DependencyDetails {
+                version: VersionReq {
+                    comparators: [
+                        Comparator {
+                            op: GreaterEq,
+                            major: 1,
+                            minor: None,
+                            patch: None,
+                            pre: Prerelease(""),
+                        },
+                    ],
+                },
+                optional: false,
+                side: Server,
+                reason: None,
+                url: None,
+                order: None,
+            },
+        ),
+    },
+    incompatible: {
+        "experimental": Detailed(
+            RuleDetails {
+                version: VersionReq {
+                    comparators: [
+                        Comparator {
+                            op: Exact,
+                            major: 3,
+                            minor: Some(
+                                0,
+                            ),
+                            patch: Some(
+                                0,
+                            ),
+                            pre: Prerelease(""),
+                        },
+                    ],
+                },
+                reason: Some(
+                    "Claims the same atlas",
+                ),
+                url: Some(
+                    "https://example.test/experimental",
+                ),
+                side: Server,
+            },
+        ),
+        "legacy": Version(
+            VersionReq {
+                comparators: [
+                    Comparator {
+                        op: Less,
+                        major: 2,
+                        minor: None,
+                        patch: None,
+                        pre: Prerelease(""),
+                    },
+                ],
+            },
+        ),
+    },
+    discouraged: {
+        "older": Detailed(
+            RuleDetails {
+                version: VersionReq {
+                    comparators: [],
+                },
+                reason: Some(
+                    "Outdated HUD",
+                ),
+                url: Some(
+                    "https://example.test/older",
+                ),
+                side: Client,
+            },
+        ),
+        "unused": Version(
+            VersionReq {
+                comparators: [
+                    Comparator {
+                        op: Exact,
+                        major: 1,
+                        minor: Some(
+                            0,
+                        ),
+                        patch: Some(
+                            0,
+                        ),
+                        pre: Prerelease(""),
+                    },
+                ],
+            },
+        ),
+    },
+    load_before: [
+        "field_guide",
+    ],
+    jar: [
+        JarRef {
+            id: "sample-overlay",
+            version: "23-snapshot",
+            sha512: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        },
+        JarRef {
+            id: "base_overlay",
+            version: "2.1",
+            sha512: "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        },
+    ],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {
+        "levels": Integer(
+            3,
+        ),
+        "note": String(
+            "Sample display",
+        ),
+        "scale": Float(
+            1.5,
+        ),
+        "visible": Boolean(
+            true,
+        ),
+    },
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/manifest_full",
+    ),
+    files: [
+        "assets/lab.notes/lang/en_us.json",
+        "assets/minecraft/atlases/blocks.json",
+        "data/c/tags/item/specimens.json",
+        "data/mineral-lab/sunrise/item/specimen.json",
+        "data/neoforge/recipe_priorities.json",
+        "data/sunrise/tags/block/villager_secondary_poi/farmer.json",
+    ],
+    blocks: [],
+    items: [
+        Item {
+            id: "mineral-lab:specimen",
+            template: "minecraft:stick",
+            max_stack_size: None,
+            rarity: None,
+            components: {},
+            crafting_remainder: None,
+            block: None,
+            arm_pose: None,
+        },
+    ],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "manifest_full",
+        "mineral-lab",
+        "lab.notes",
+    ],
+}

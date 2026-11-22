@@ -5,15 +5,12 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+from rust_items import rust_fn
 
 
 @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
 class CushionParticlesTests(unittest.TestCase):
     def test_headless_server_records_break_effect_before_sprite_lookup(self):
-        source = (next(ROOT.glob('crates/sunrise-client/src/game/*/cushions.rs'))).read_text()
-        start = source.index("    fn cushion_break_particles(")
-        end = source.index("    /// `BlockAttachedEntity.tick`", start)
         fixture = r'''
 #![allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -77,7 +74,7 @@ fn main() {
         }
     }
 }
-'''.replace("METHOD", source[start:end])
+'''.replace("METHOD", rust_fn("cushion_break_particles"))
         with tempfile.TemporaryDirectory(prefix="cushion-particles-") as directory:
             path = Path(directory)
             (path / "main.rs").write_text(fixture)

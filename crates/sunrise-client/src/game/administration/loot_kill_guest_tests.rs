@@ -4,6 +4,7 @@
 //! the message goes to the issuer (tools/test_loot_kill_guest_parity.py
 //! measures the same on vanilla 26.3).
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     items::ItemStack,
@@ -11,7 +12,6 @@ use sunrise_client::{
     motion::PlayerMotion,
 };
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 const GUEST: &str = "H038Guest";
 const ELDER: &str = "00000038-0000-0000-0000-000000000001";
@@ -90,6 +90,7 @@ fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_> {
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -166,7 +167,7 @@ fn loot(game: &mut Game<'_>, command: &str) -> (Vec<String>, Vec<String>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn loot_kill_as_a_guest_is_killed_by_that_player() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);
@@ -208,7 +209,7 @@ fn loot_stacks(game: &mut Game<'_>, command: &str) -> Vec<(String, u32, bool)> {
 /// stack draws nothing from the loot's random sequence; a guest that is not
 /// there keeps the old rule; every player's state is back afterwards.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_empty_handed_guest_is_the_killer_and_a_missing_one_is_not() {
     let insert = format!("loot insert 8 100 8 kill {ELDER}");
     let mut looting = ItemStack::new("minecraft:diamond_sword", 1);

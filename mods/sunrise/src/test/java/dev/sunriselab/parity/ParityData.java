@@ -1,6 +1,7 @@
 package dev.sunriselab.parity;
 
 import java.lang.reflect.Field;
+import java.nio.file.Path;
 import java.util.*;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.*;
@@ -12,7 +13,11 @@ import net.minecraft.server.Bootstrap;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.ReloadableServerRegistries;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.packs.PackLocationInfo;
 import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.PathPackResources;
+import net.minecraft.server.packs.repository.PackSource;
 import net.minecraft.server.packs.repository.ServerPacksSource;
 import net.minecraft.server.packs.resources.MultiPackResourceManager;
 import net.minecraft.tags.TagLoader;
@@ -34,12 +39,21 @@ public final class ParityData {
     public static ReloadableServerRegistries.Holder loot;
 
     public static void init() throws Exception {
+        init(null);
+    }
+
+    public static void init(Path fixturePack) throws Exception {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
         var repo = ServerPacksSource.createVanillaTrustedRepository();
         repo.reload();
         repo.setSelected(List.of("vanilla"));
-        var resources = new MultiPackResourceManager(PackType.SERVER_DATA, repo.openAllSelected());
+        var packs = new ArrayList<>(repo.openAllSelected());
+        if (fixturePack != null) {
+            var location = new PackLocationInfo("fixture", Component.literal("fixture"), PackSource.DEFAULT, Optional.empty());
+            packs.add(new PathPackResources(location, fixturePack));
+        }
+        var resources = new MultiPackResourceManager(PackType.SERVER_DATA, packs);
         var layers = RegistryLayer.createRegistryAccess();
         var staticTags = TagLoader.loadTagsForExistingRegistries(resources, layers.getLayer(RegistryLayer.STATIC));
         var context = TagLoader.buildUpdatedLookups(layers.getAccessForLoading(RegistryLayer.WORLD), staticTags);

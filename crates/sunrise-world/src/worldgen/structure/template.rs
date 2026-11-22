@@ -489,10 +489,23 @@ impl StructureTemplate {
             Mirror::None => {}
         }
         let (px, pz) = (pivot[0], pivot[2]);
+        // Vanilla's int arithmetic wraps, and the pivot is a mod's.
         match rotation {
-            Rotation::Counterclockwise90 => [px - pz + z, y, px + pz - x],
-            Rotation::Clockwise90 => [px + pz - z, y, pz - px + x],
-            Rotation::Clockwise180 => [px + px - x, y, pz + pz - z],
+            Rotation::Counterclockwise90 => [
+                px.wrapping_sub(pz).wrapping_add(z),
+                y,
+                px.wrapping_add(pz).wrapping_sub(x),
+            ],
+            Rotation::Clockwise90 => [
+                px.wrapping_add(pz).wrapping_sub(z),
+                y,
+                pz.wrapping_sub(px).wrapping_add(x),
+            ],
+            Rotation::Clockwise180 => [
+                px.wrapping_add(px).wrapping_sub(x),
+                y,
+                pz.wrapping_add(pz).wrapping_sub(z),
+            ],
             Rotation::None => [x, y, z],
         }
     }
@@ -521,10 +534,14 @@ impl StructureTemplate {
         pivot: [i32; 3],
         mirror: Mirror,
     ) -> BoundingBox {
-        let delta = [self.size[0] - 1, self.size[1] - 1, self.size[2] - 1];
+        let delta = self.size.map(|s| s.wrapping_sub(1));
         let a = Self::transform([0; 3], mirror, rotation, pivot);
         let b = Self::transform(delta, mirror, rotation, pivot);
-        BoundingBox::from_corners(a, b).moved(position)
+        let corners = BoundingBox::from_corners(a, b);
+        BoundingBox::new(
+            std::array::from_fn(|i| corners.min[i].wrapping_add(position[i])),
+            std::array::from_fn(|i| corners.max[i].wrapping_add(position[i])),
+        )
     }
     /// The palette selected by StructurePlaceSettings.getRandomPalette.
     pub fn palette_index(&self, random: &mut impl sunrise_core::random::RandomSource) -> usize {
@@ -673,6 +690,45 @@ fn list_stream(
         elements.push(cursor.element(element_id, depth + 1)?);
     }
     Ok(Some(elements))
+}
+
+#[cfg(test)]
+mod wrapping_tests {
+    use super::*;
+
+    fn template(size: [i32; 3]) -> StructureTemplate {
+        StructureTemplate {
+            size,
+            ..StructureTemplate::empty()
+        }
+    }
+
+    #[test]
+    fn an_extreme_pivot_wraps_like_vanillas_int_arithmetic() {
+        let max = i32::MAX;
+        let at = |rotation, pivot| {
+            StructureTemplate::transform([1, 5, 1], Mirror::None, rotation, pivot)
+        };
+        // px + px - x = 2^32 - 2 - 1 wraps to -3.
+        assert_eq!(at(Rotation::Clockwise180, [max, 0, 0]), [-3, 5, -1]);
+        // px - pz + z = max - max + 1; px + pz - x = 2^32 - 2 - 1 wraps to -3.
+        assert_eq!(at(Rotation::Counterclockwise90, [max, 0, max]), [1, 5, -3]);
+        // px + pz - z wraps to -3; pz - px + x = 1.
+        assert_eq!(at(Rotation::Clockwise90, [max, 0, max]), [-3, 5, 1]);
+    }
+
+    #[test]
+    fn bounds_at_extreme_pivot_and_origin_wrap_instead_of_panicking() {
+        let bounds = template([2, 1, 1]).bounding_box(
+            [i32::MAX, 64, 0],
+            Rotation::Clockwise180,
+            [i32::MAX, 64, 0],
+            Mirror::None,
+        );
+        // The corners' x wrap to -2 and -3 (max + max - 0, max + max - 1), then move by max.
+        assert_eq!(bounds.min, [i32::MAX - 3, 64, 0]);
+        assert_eq!(bounds.max, [i32::MAX - 2, 64, 0]);
+    }
 }
 
 #[cfg(test)]

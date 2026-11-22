@@ -1,0 +1,8 @@
+{
+  "concepts/injections": "concepts/hooks-and-the-host",
+  "concepts/injections/typed-api": "concepts/hooks-and-the-host",
+  "concepts/native-route/wasmtime": "concepts/native-route",
+  "how-to/entities/named-hook-points": "how-to/entities/entity-hooks",
+  "how-to/wasm-mods": "how-to/native-mods",
+  "start/first-wasm-mod": "start/first-mod"
+}

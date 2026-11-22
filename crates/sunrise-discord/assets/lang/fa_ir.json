@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "در حالی که Discord اجرا می شود، Playing Sunrise را در نمایه Discord شما نشان می دهد: منوها، تک نفره یا چند نفره، ابعاد و زمان بازی. هرگز نام یک جهان یا آدرس سرور."
+}

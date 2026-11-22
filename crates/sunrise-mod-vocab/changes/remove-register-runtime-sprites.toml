@@ -1,0 +1,8 @@
+ids = [
+    "hook:register_runtime_sprites",
+    "method:Hooks::register_runtime_sprites",
+    "type:RuntimeSprite",
+    "type:RegisterRuntimeSpritesEvent",
+]
+why = "register_runtime_sprites and RuntimeSprite are removed: a second, Sunrise-only way to add sprites (a capped list of PNGs for the block and GUI atlases) beside the sprite sources every atlas definition runs. register_sprite_sources and sprite_source now also run in the GUI atlas (minecraft:gui; the version 2 of both hooks, with sprite-sources-game-atlases, covers it), so a mod adds a GUI sprite as the SpriteSourceOutput::Pixels, Texture or Remove of a registered source type with an entry in its assets/minecraft/atlases/gui.json. The GUI atlas publishes its sprites by GUI id (container/slot, a mod's mymod:panel): gui_sprite, DrawContext::sprite and the GUI's own draws find a sprite by it, a removed sprite draws the missing sprite, and an alias takes its source file's animation and nine-slice metadata."
+migrate = "Replace each RuntimeSprite push with a registered sprite source type: register it in register_sprite_sources, add an entry of that type to your assets/minecraft/atlases/blocks.json (block sprites) or gui.json (GUI sprites), and answer it in sprite_source with SpriteSourceOutput::Pixels for the sprite's id (a sprite id no longer carries the block/ or gui/ path prefix by rule, and there is no 128-sprite or 256-pixel cap). Look a GUI sprite up by that id: `mymod:panel`, or `container/slot` for the vanilla sprite, not `gui/sprites/container/slot`. Then rebuild against this SDK."

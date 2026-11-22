@@ -1,0 +1,3 @@
+ids = ["method:prelude::ItemsHost::hover_name", "method:prelude::ItemsClientHost::hover_name"]
+why = "ItemStack.getHoverName() is available on both sides as a component: ItemsHost::hover_name returns a Text (a translatable item name each viewer renders in their own language, a custom name as written), and the client-only ItemsClientHost::hover_name, which returned a String in the client's language, is removed."
+migrate = "Call hover_name on any Host and take its Text. For a string, call text_string on that Text, which renders it in the language of the side that calls it; a call written as ClientHost::hover_name(&stack) becomes host.text_string(&host.hover_name(&stack)?)?."

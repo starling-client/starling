@@ -96,9 +96,14 @@
   "Fades newly loaded chunks in.": "Fades newly loaded chunks in.",
   "Far Detail": "Far Detail",
   "Feedback": "Maklum Balas",
+<<<<<<< sync-sunrise-1
   "Fills the screen (borderless).": "Fills the screen (borderless).",
   "Find BlueMap": "Find BlueMap",
   "Fog": "Fog",
+=======
+  "Fills the screen (borderless).": "Mengisi skrin (tanpa sempadan).",
+  "Fog": "kabut",
+>>>>>>> sunrise/main
   "Follow the controller, or always show one family's buttons.": "Ikut pengawal, atau sentiasa tunjukkan butang satu keluarga.",
   "Frame Generation": "Frame Generation",
   "Frame Pacing": "Frame Pacing",
@@ -139,8 +144,12 @@
   "How fast the right stick scrolls a list.": "Betapa pantas kayu kanan menatal senarai.",
   "How fast the right stick turns the view.": "Betapa pantas kayu kanan memusing pandangan.",
   "How fast the stick moves the crosshair in inventories.": "Betapa pantas kayu menggerakkan silang dalam inventori.",
+<<<<<<< sync-sunrise-1
   "How frames reach the screen while VSync is off.": "How frames reach the screen while VSync is off.",
   "How frames reach the screen, and the performance overlay.": "How frames reach the screen, and the performance overlay.",
+=======
+  "How frames reach the screen while VSync is off.": "Cara bingkai mencapai skrin semasa VSync dimatikan.",
+>>>>>>> sunrise/main
   "How long a held direction takes between repeats.": "Berapa lama arah yang ditahan mengambil masa antara ulangan.",
   "How long a held direction waits before it repeats.": "Berapa lama arah yang ditahan menunggu sebelum ia berulang.",
   "How many particles effects spawn.": "How many particles effects spawn.",
@@ -153,6 +162,7 @@
   "Interface": "Interface",
   "Keeps fine plants in high-res packs from fading far away.": "Keeps fine plants in high-res packs from fading far away.",
   "LOD Distance": "Jarak LOD",
+<<<<<<< sync-sunrise-1
   "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
   "Leaf Culling": "Leaf Culling",
   "Leaves fully inside a canopy draw solid: fewer see-through layers.": "Leaves fully inside a canopy draw solid: fewer see-through layers.",
@@ -162,6 +172,15 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Menaikkan bayang ke hitam paling gelap paparan anda. 0: hitam sebenar, tiada naikan.",
   "Light sources, the sun and sunlight shine past white. Off: just as SDR.": "Sumber cahaya, matahari dan cahaya matahari bersinar melebihi putih. Mati: sama seperti SDR.",
   "Lighting and entities": "Lighting and entities",
+=======
+  "Leaf Culling": "Pemotongan Daun",
+  "Leaves fully inside a canopy draw solid: fewer see-through layers.": "Daun sepenuhnya di dalam kanopi menarik pepejal: lebih sedikit lapisan tembus pandang.",
+  "Leaves with one open side draw solid too: faster, chunkier edges.": "Daun dengan satu sisi terbuka juga menarik padat: lebih cepat, tepi lebih chunkier.",
+  "Leaves with see-through gaps. Off draws them solid.": "Daun dengan celah tembus pandang. Off menarik mereka kukuh.",
+  "Lets LT + A craft on servers other than your own worlds. Some servers count it as a macro.": "Membolehkan LT + A mengkraf pada pelayan selain dunia anda sendiri. Sesetengah pelayan mengiranya sebagai makro.",
+  "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Menaikkan bayang ke hitam paling gelap paparan anda. 0: hitam sebenar, tiada naikan.",
+  "Lighting and entities": "Pencahayaan dan entiti",
+>>>>>>> sunrise/main
   "Look": "Pandangan",
   "Low cost": "Kos rendah",
   "Lower it until the logo just disappears into the black.": "Lower it until the logo just disappears into the black.",
@@ -186,8 +205,12 @@
   "Occlusion checks run on a worker thread.": "Occlusion checks run on a worker thread.",
   "Off": "Off",
   "Off, the game ignores every controller for this player.": "Mati, permainan mengabaikan setiap pengawal untuk pemain ini.",
+<<<<<<< sync-sunrise-1
   "On": "On",
   "On servers, finds their BlueMap web map for far terrain. Next join.": "On servers, finds their BlueMap web map for far terrain. Next join.",
+=======
+  "On": "hidup",
+>>>>>>> sunrise/main
   "Only applies to asynchronous entity culling.": "Hanya terpakai pada pemotongan entiti tak segerak.",
   "Only with Anisotropic texture filtering.": "Hanya dengan penapisan tekstur Anisotropik.",
   "Opaque Ice": "Ais Legap",
@@ -387,6 +410,7 @@
   "sunrise.controller.guide.use": "Guna",
   "sunrise.controller.guide.zoom": "Zum",
   "sunrise.developer_offline.single_player": "Offline developer session: single-player only.",
+<<<<<<< sync-sunrise-1
   "sunrise.emote_wheel.empty": "Belum ada emote",
   "sunrise.emote_wheel.help": "Lepas atau klik untuk memainkan · 1–8 · Esc menutup",
   "sunrise.emote_wheel.title": "Emote",
@@ -441,10 +465,44 @@
   "sunrise.extras.no_ai.tooltip": "Hides and turns off every AI feature: agent control, sunrise-ctl and the MCP servers. The launcher's switch too.",
   "sunrise.extras.own_name_tag": "Own name tag",
   "sunrise.extras.own_name_tag.tooltip": "Shows your name above your head in third person, as other players see it. Hidden when the server hides your team's names or you're invisible.",
+=======
+  "sunrise.extras.agent_control": "Kawalan Agen",
+  "sunrise.extras.agent_control.tooltip": "Ejen AI anda sendiri boleh memainkan permainan ini melalui sunrise-ctl atau klien MCP, pada komputer ini sahaja.",
+  "sunrise.extras.chat_animation": "Sembang lancar",
+  "sunrise.extras.chat_animation.tooltip": "Baris sembang baharu meluncur masuk dari kiri semasa ia memudar, bukannya kelihatan keseluruhan.",
+  "sunrise.extras.chat_indicator": "Penunjuk mesej",
+  "sunrise.extras.chat_indicator.tooltip": "Bar berwarna di sebelah kiri baris sembang.",
+  "sunrise.extras.dynamic_lights": "Lampu dinamik",
+  "sunrise.extras.dynamic_lights.tooltip": "Obor dan sumber cahaya lain yang dipegang, dijatuhkan atau dibakar menyalakan blok di sekelilingnya.",
+  "sunrise.extras.fullbright": "Terang penuh",
+  "sunrise.extras.fullbright.tooltip": "Tunjukkan blok dan entiti pada cahaya penuh, walaupun di kawasan gelap.",
+  "sunrise.extras.header.chat": "Sembang",
+  "sunrise.extras.header.inventory": "Inventori",
+  "sunrise.extras.header.lighting": "Pencahayaan",
+  "sunrise.extras.header.menus": "Menu",
+  "sunrise.extras.header.multiplayer": "Berbilang pemain",
+  "sunrise.extras.header.particles": "Zarah",
+  "sunrise.extras.header.sound": "Bunyi",
+  "sunrise.extras.header.third_person": "Orang ketiga",
+  "sunrise.extras.header.world": "Dunia",
+  "sunrise.extras.hide_block_particles": "Sembunyikan zarah pecah blok",
+  "sunrise.extras.hide_block_particles.tooltip": "Menyembunyikan zarah serpihan yang pecah dari blok yang pecah dan hancur dari yang anda lombong. Zarah lain kekal.",
+  "sunrise.extras.mouse_tweaks": "Kawalan Mouse Tweaks",
+  "sunrise.extras.mouse_tweaks.tooltip": "Seret kanan meletakkan satu setiap slot, seret kiri mengumpulkan item yang dipegang, Shift + seret kiri menggerakkan setiap slot.",
+  "sunrise.extras.mouse_tweaks_wheel": "Roda tatal menggerakkan item",
+  "sunrise.extras.mouse_tweaks_wheel.tooltip": "Bawah menghantar satu item slot ke sisi lain, atas membawa satu kembali.",
+  "sunrise.extras.music_page": "Halaman muzik",
+  "sunrise.extras.music_page.tooltip": "Muzik & Bunyi mendapat halaman Muzik...: mainkan mana-mana trek terbina dalam sekarang atau matikan satu supaya permainan berhenti memilihnya. Tiada apa-apa perubahan sehingga anda mematikan trek.",
+  "sunrise.extras.no_ai": "Tiada AI",
+  "sunrise.extras.no_ai.tooltip": "Menyembunyikan dan mematikan setiap ciri AI: kawalan ejen, sunrise-ctl dan pelayan MCP. Suis pelancar juga.",
+  "sunrise.extras.own_name_tag": "Tanda nama sendiri",
+  "sunrise.extras.own_name_tag.tooltip": "Menunjukkan nama anda di atas kepala anda sebagai orang ketiga, seperti yang dilihat oleh pemain lain. Tersembunyi apabila pelayan menyembunyikan nama pasukan anda atau anda tidak kelihatan.",
+>>>>>>> sunrise/main
   "sunrise.extras.pack_browser": "Pelayar pek sumber",
   "sunrise.extras.pack_browser.tooltip": "Pilih Pek Sumber mendapat butang Tambah yang mencari Modrinth dan memasang pek ke dalam folder pek anda. Padam, permainan tidak pernah menghubungi Modrinth.",
   "sunrise.extras.pregen": "Prapenjanaan ketul",
   "sunrise.extras.pregen.tooltip": "Membolehkan /pregen dalam dunia pemain tunggal dan LAN anda. Dengan cheat dihidupkan, guna /pregen start untuk menjana kawasan sebelum menerokainya. Tidak menghidupkan arahan itu pada pelayan yang anda sertai.",
+<<<<<<< sync-sunrise-1
   "sunrise.extras.repro_keys": "Recording shortcuts",
   "sunrise.extras.repro_keys.tooltip": "F3+R starts or stops a repro recording and F3+E writes its bundle. Off by default: a recording copies the world.",
   "sunrise.extras.sort": "Sort buttons",
@@ -455,6 +513,16 @@
   "sunrise.extras.splitscreen.tooltip": "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play.",
   "sunrise.extras.ui_sound_reserve": "Keep channels for UI sounds",
   "sunrise.extras.ui_sound_reserve.tooltip": "Sounds in the world leave 16 of the 247 sound channels free, so a flood of them (a big explosion) can't silence menu clicks.",
+=======
+  "sunrise.extras.repro_keys": "Merakam pintasan",
+  "sunrise.extras.repro_keys.tooltip": "F3+R memulakan atau menghentikan rakaman repro dan F3+E menulis berkasnya. Mati secara lalai: rakaman menyalin dunia.",
+  "sunrise.extras.sort": "Isih butang",
+  "sunrise.extras.sort.tooltip": "Isih inventori, peti, tong, peti ender dan kotak shulker dalam susunan tab kreatif, menggabungkan tindanan.",
+  "sunrise.extras.sort_key": "Isih kunci",
+  "sunrise.extras.sort_key.tooltip": "Isih bahagian di bawah kursor. Klik, kemudian tekan kekunci; Melarikan diri melepaskannya.",
+  "sunrise.extras.ui_sound_reserve": "Simpan saluran untuk bunyi UI",
+  "sunrise.extras.ui_sound_reserve.tooltip": "Bunyi di dunia meninggalkan 16 daripada 247 saluran bunyi percuma, jadi banjir daripadanya (letupan besar) tidak dapat menyenyapkan klik menu.",
+>>>>>>> sunrise/main
   "sunrise.extras.wheel_cycles_list_settings.tooltip": "Roda tatal di atas butang dalam senarai tetapan menukar nilainya. Mati, seperti dalam vanila, roda menatal senarai.",
   "sunrise.extras.wheel_cycles_settings": "Scroll wheel changes settings",
   "sunrise.extras.zoom": "Zum",
@@ -476,28 +544,6 @@
   "sunrise.friends.title": "Main bersama kawan",
   "sunrise.friends.troubleshooting": "Troubleshooting...",
   "sunrise.friends.wrong_code": "Seseorang mencuba kod yang salah.",
-  "sunrise.moderation.chat_filter": "penapis sembang",
-  "sunrise.moderation.duration.day": "%s hari",
-  "sunrise.moderation.duration.days": "%s hari",
-  "sunrise.moderation.duration.hour": "%s jam",
-  "sunrise.moderation.duration.hours": "%s jam",
-  "sunrise.moderation.duration.minute": "%s minit",
-  "sunrise.moderation.duration.minutes": "%s minit",
-  "sunrise.moderation.for_duration": "selama %s",
-  "sunrise.moderation.invalid_duration": "%s bukan tempoh: 10m, 2h, 1d",
-  "sunrise.moderation.muted": "%1$s dibisukan %2$s",
-  "sunrise.moderation.mutelist.count": "Terdapat %s pembisuan:",
-  "sunrise.moderation.mutelist.empty": "Tiada pembisuan",
-  "sunrise.moderation.mutelist.entry": "%1$s dibisukan oleh %2$s %3$s",
-  "sunrise.moderation.not_muted": "%s tidak dibisukan",
-  "sunrise.moderation.reason": "%1$s: %2$s",
-  "sunrise.moderation.remaining": "selama %s lagi",
-  "sunrise.moderation.unmuted": "%s dibunyikan semula",
-  "sunrise.moderation.until_unmuted": "sehingga dibunyikan semula",
-  "sunrise.moderation.usage.mute": "/mute <player> [duration] [reason]",
-  "sunrise.moderation.usage.mutelist": "/mutelist",
-  "sunrise.moderation.usage.tempmute": "/tempmute <player> <duration> [reason]",
-  "sunrise.moderation.usage.unmute": "/unmute <player>",
   "sunrise.mods.browse": "Layari Mod...",
   "sunrise.mods.browse.by": "oleh %s",
   "sunrise.mods.browse.changelog": "Log Perubahan",
@@ -571,9 +617,14 @@
   "sunrise.options.repeat_delay": "Kelewatan Ulangan Navigasi",
   "sunrise.options.repeat_interval": "Selang Ulangan Navigasi",
   "sunrise.options.scroll_speed": "Kelajuan Tatal Menu",
+<<<<<<< sync-sunrise-1
   "sunrise.options.search": "Cari tetapan...",
   "sunrise.options.sneak_button": "Sneak Button",
   "sunrise.options.three_d_skin_layers": "Lapisan Kulit 3D",
+=======
+  "sunrise.options.search": "Tetapan carian...",
+  "sunrise.options.sneak_button": "Butang Menyelinap",
+>>>>>>> sunrise/main
   "sunrise.options.trigger_threshold": "Ambang Pencetus",
   "sunrise.options.unavailable": "Fitur ini belum lagi tersedia di Sunrise.",
   "sunrise.options.vibration": "Getaran",
@@ -650,7 +701,10 @@
   "sunrise.pages.open.music": "Musik...",
   "sunrise.pages.open.pvp": "PvP & HUD...",
   "sunrise.pages.open.shader_packs": "Pek Shader...",
+<<<<<<< sync-sunrise-1
   "sunrise.pages.open.split_setup": "Splitscreen...",
+=======
+>>>>>>> sunrise/main
   "sunrise.pages.open.studio": "Studio Main Semula...",
   "sunrise.pages.pvp": "PvP & HUD",
   "sunrise.pages.pvp.tooltip": "Tetapan silang, HUD dan PvP, semuanya mati secara lalai. Tiada apa-apa di sini menunjukkan apa yang vanila tidak tunjukkan.",
@@ -658,12 +712,16 @@
   "sunrise.pages.settings.tooltip": "Tetapan milik Sunrise sendiri: grafik, controller, mod dan ekstra.",
   "sunrise.pages.shader_options": "Tetapan Shader",
   "sunrise.pages.shader_packs": "Pek Shader",
+<<<<<<< sync-sunrise-1
   "sunrise.pages.shader_packs.tooltip": "Shader packs from the shaderpacks folder: Sunrise's own and those in the shaders/ format. One runs at a time.",
   "sunrise.pages.split_profiles": "Siapa yang bermain?",
   "sunrise.pages.split_profiles.tooltip": "Siapa bermain: profil disimpan di dalam folder game ini.",
   "sunrise.pages.split_settings": "Tetapan Splitscreen",
   "sunrise.pages.split_setup": "Splitscreen Setup",
   "sunrise.pages.split_setup.tooltip": "The windows and monitors, and who plays where.",
+=======
+  "sunrise.pages.shader_packs.tooltip": "Pek shader dari folder shaderpacks: milik Sunrise dan yang dalam format shader/. Satu berjalan pada satu masa.",
+>>>>>>> sunrise/main
   "sunrise.pages.studio": "Studio Main Semula",
   "sunrise.pages.studio.tooltip": "Layari rakaman yang disimpan dan metadatanya.",
   "sunrise.plain.official": "Sunrise rasmi dengan pelancar, mod dan kemas kini: playsunrise.net",
@@ -695,8 +753,6 @@
   "sunrise.pvp.combat_feel.tooltip": "Legacy melukis pertarungan seperti 1.8.9: item di tangan anda, hayunannya, makan, busur dan pedang yang diangkat semasa anda menahan guna, tanpa penurunan selepas setiap hentaman atau penunjuk serangan. Rupa sahaja: apa yang anda hantar ke pelayan kekal sama.",
   "sunrise.pvp.combat_indicator": "Penunjuk serangan dalam Legacy",
   "sunrise.pvp.combat_indicator.tooltip": "Mengekalkan penunjuk serangan di bawah Legacy, yang tidak ada pada 1.8.9.",
-  "sunrise.pvp.combat_rules": "Pertempuran 1.8 dalam dunia yang anda hoskan",
-  "sunrise.pvp.combat_rules.tooltip": "Pemain tunggal dan dunia yang anda buka ke LAN bertarung mengikut peraturan 1.8.9: tiada cooldown serangan atau sapuan, kerosakan senjata 1.8, Kekuatan, Ketajaman dan hentaman kritikal. Pelayan yang anda sertai mengekalkan peraturan mereka sendiri.",
   "sunrise.pvp.combat_sounds": "Bunyi hentaman 1.8",
   "sunrise.pvp.combat_sounds.tooltip": "Di bawah Legacy, meninggalkan bunyi serangan yang ditambah 1.9 (kuat, lemah, sapuan, kritikal...). Bunyi cedera kekal.",
   "sunrise.pvp.corner.bottom_left": "Kiri bawah",
@@ -870,6 +926,7 @@
   "sunrise.repro.started": "Recording started; F3+R stops it and writes the bundle.",
   "sunrise.repro.stopped": "Recording stopped: %s",
   "sunrise.shader_options.profile": "Profil",
+<<<<<<< sync-sunrise-1
   "sunrise.split.leave": "Tinggalkan",
   "sunrise.splitscreen.account_expired": "Log masuk Microsoft %s telah tamat tempoh. Log masuk semula dalam pelancar, kemudian mulakan semula permainan.",
   "sunrise.splitscreen.account_unavailable": "%s berada luar talian. Log masuk semula dalam pelancar, kemudian mulakan semula permainan.",
@@ -960,6 +1017,11 @@
   "sunrise.splitscreen.setup.window": "Tetingkap %s",
   "sunrise.splitscreen.setup.window_empty": "Tetingkap %s: empty",
   "sunrise.splitscreen.setup.window_place": "Tetingkap %s (%s dari %s)",
+=======
+  "sunrise.controller.notice.controller_connected": "Pengawal disambungkan",
+  "sunrise.controller.notice.controller_disconnected": "Pengawal terputus sambungan",
+  "sunrise.controller.notice.controller_disconnected.hint": "Sambung semula atau tekan butang pada butang lain",
+>>>>>>> sunrise/main
   "sunrise.studio.empty": "Tiada rakaman ditemui dalam folder rakaman.",
   "sunrise.studio.empty_hint": "Guna /studio record start <name> dalam dunia, atau letakkan fail .mcpr di situ.",
   "sunrise.studio.freecam.disabled": "Kamera bebas Studio dimatikan",
@@ -1038,6 +1100,7 @@
   "sunrise.studio.topbar.view": "Paparan",
   "sunrise.studio.topbar.view_short": "Paparan",
   "sunrise.studio.unknown_server": "Tidak Diketahui",
+<<<<<<< sync-sunrise-1
   "sunrise.tempban.dedicated_required": "Larangan sementara memerlukan pelayan khusus",
   "sunrise.tempban.invalid_duration": "%s bukan tempoh: 30m, 12h, 7d",
   "sunrise.tempban.list.count": "Terdapat %s larangan sementara:",
@@ -1205,4 +1268,7 @@
   "starling.mods.native.next_build": "Next start: with %s, compiled %s.",
   "sunrise.mods.not_built_tip": "Installed, not built into this game: build the game with it in the launcher (Settings > Native mods), then play the instance that build is in.",
   "starling.mods.native.not_built_tip": "Installed, not in this game yet: Compile builds the game with it on Starling's build server."
+=======
+  "sunrise.title.not_affiliated": "Tidak bergabung dengan Mojang atau Microsoft"
+>>>>>>> sunrise/main
 }

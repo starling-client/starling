@@ -26,9 +26,11 @@ files `config/<mod id>.<ext>` and `config/<mod id>-<rest>`.
    `config_unloading` drops it after `server_stopping`. `Client` and `Common` configs load once and stay until the
    game quits.
 
-These hooks run in the Config [load phase](../concepts/load-phases.md): settings reads and config files are
-available, world handles and transactions are not. A file outside `config/`, or one already registered, is
-skipped.
+`register_configs` and `config_loading` take `&dyn ConfigContext` for settings reads and config files, without
+world handles or transactions. `config_reloading` takes `HostSide<'_>` on the polling game, and
+`config_unloading` takes `&mut dyn ServerHost` on the stopping server. These hosts still expose config files
+and registered settings; world queries return `None` when no world is open. A file outside `config/`, or one
+already registered, is skipped. See [load callbacks](../concepts/load-phases.md).
 
 For files the hooks don't manage, `Host::config_files()` gives your mod its own files in `config/`. Paths retain
 the ownership spelling above, such as `<mod id>/extra.toml`. The service is bound to the mod whose hook or Part
@@ -44,14 +46,15 @@ Keep map tiles, waypoints, seeds and exports out of settings and config files:
   Its contents are copied, deleted and backed up with the save. Without a current world it refuses calls with
   `ConfigFileError::NoWorld`; a client has no world-folder service.
 
-Both use the same `ConfigFiles`, `ConfigPath`, `ConfigEntry` and `ConfigFileError` types as config files, on native
-and wasm. Bulk paths are relative to your implicit mod root: `tiles/overworld/0.bin`, not
+Both use the same `ConfigFiles`, `ConfigPath`, `ConfigEntry` and `ConfigFileError` types as config files. Bulk paths are relative to your implicit mod root: `tiles/overworld/0.bin`, not
 `<mod id>/tiles/overworld/0.bin`. The game never scans bulk data as settings or config.
 
 `read`, `write` and `stat` operate on checked `/`-separated paths; traversal (`..`), backslashes and symbolic links
 are refused. Writes replace the whole file atomically, never exposing partial contents. Sunrise's own per-file
 limits are `DATA_FILE_MAX` (64 MiB) for both bulk areas and `CONFIG_FILE_MAX` (4 MiB) for config files.
 Oversized files and unavailable operations return typed errors, rather than partially writing.
+`remove` deletes one file under the same confinement and returns whether it was there; it refuses a folder
+with `ConfigFileError::NotAFile` and never removes one.
 
 Walk a folder with `list(&folder, after, limit)`: start with `after = None`, then pass the last returned entry's
 name as the exclusive cursor. Names are lexicographically ordered; each page has at most `limit` entries.

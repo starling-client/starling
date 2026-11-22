@@ -27,7 +27,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod hotbar_slot_tests {
+pub(super) mod hotbar_slot_tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_client_game;
     use crate::game::remote::tests::connect_menu_test;
@@ -36,7 +36,7 @@ mod hotbar_slot_tests {
     use sunrise_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
 
     /// What the window sent since the last call, as play packets.
-    fn sent(reader: &mut ConnReader) -> Vec<S> {
+    pub(in crate::game) fn sent(reader: &mut ConnReader) -> Vec<S> {
         reader
             .set_read_timeout(Some(std::time::Duration::from_millis(200)))
             .unwrap();
@@ -47,11 +47,8 @@ mod hotbar_slot_tests {
         packets
     }
 
-    /// A window logged in to the overworld at (0.5, 65, 0.5), its player made by the server's
-    /// position packet, with everything the login sent already drained.
-    fn logged_in(game: &mut Game<'_>) -> ConnReader {
-        let (mut reader, _writer) = connect_menu_test(game);
-        game.handle_packet(C::Login(play::Login {
+    fn login_packet() -> play::Login {
+        play::Login {
             player_id: 7,
             hardcore: false,
             levels: vec!["minecraft:overworld".into()],
@@ -75,8 +72,14 @@ mod hotbar_slot_tests {
             },
             online_mode: false,
             enforces_secure_chat: false,
-        }))
-        .unwrap();
+        }
+    }
+
+    /// A window logged in to the overworld at (0.5, 65, 0.5), its player made by the server's
+    /// position packet, with everything the login sent already drained.
+    pub(in crate::game) fn logged_in(game: &mut Game<'_>) -> ConnReader {
+        let (mut reader, _writer) = connect_menu_test(game);
+        game.handle_packet(C::Login(login_packet())).unwrap();
         game.handle_packet(C::PlayerPosition(play::PlayerPosition {
             teleport: 1,
             position: [0.5, 65.0, 0.5],
@@ -175,6 +178,124 @@ mod hotbar_slot_tests {
                 carried(&sent(&mut reader)),
                 [2],
                 "only the earlier change goes out"
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn the_debug_requests_follow_the_carried_slot_in_the_ping_then_subscription_order() {
+        // The game fixture replaces process-wide registries: a child of its own.
+        const MODE: &str = "SUNRISE_HOTBAR_SLOT_THE_DEBUG_REQUESTS_FOLLOW_THE_CARRIED_SLOT_IN_THE_PING_THEN_SUBSCRIPTION_ORDER";
+        if std::env::var_os(MODE).is_none() {
+            crate::game::mods::tests::run_in_child(
+                "game::native_hotbar_slot::hotbar_slot_tests::the_debug_requests_follow_the_carried_slot_in_the_ping_then_subscription_order",
+                MODE,
+            );
+            return;
+        }
+        with_client_game(|game| {
+            let mut reader = logged_in(game);
+            game.debug = true;
+            game.debug_charts.fps = true;
+            game.debug_charts.network = true;
+            assert_eq!(game.select_hotbar_slot(4), Ok(()));
+            game.tick_remote_level().unwrap();
+            let names: Vec<_> = sent(&mut reader)
+                .iter()
+                .filter_map(|p| match p {
+                    S::SetCarriedItem(_) => Some("carried"),
+                    S::PingRequest(_) => Some("ping"),
+                    S::DebugSubscriptionRequest(r) if r.subscriptions == [0] => Some("subscribe"),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(names, ["carried", "ping", "subscribe"]);
+            // Unchanged, no second request; a new login asks again, the chart still on.
+            game.tick_remote_level().unwrap();
+            assert!(
+                !sent(&mut reader)
+                    .iter()
+                    .any(|p| matches!(p, S::DebugSubscriptionRequest(_)))
+            );
+            game.handle_packet(C::Login(login_packet())).unwrap();
+            game.tick_remote_level().unwrap();
+            assert!(
+                sent(&mut reader)
+                    .iter()
+                    .any(|p| matches!(p, S::DebugSubscriptionRequest(r) if r.subscriptions == [0]))
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_received_tick_sample_draws_the_full_and_method_bars() {
+        crate::game::in_own_process(
+            "game::native_hotbar_slot::hotbar_slot_tests::a_received_tick_sample_draws_the_full_and_method_bars",
+            || {
+                with_client_game(|game| {
+                    use sunrise_client::hud_layout::GuiDraw;
+
+                    let _reader = logged_in(game);
+                    game.debug = true;
+                    game.debug_charts.fps = true;
+                    game.clock.set_rate(20.0);
+                    game.handle_packet(C::DebugSample(play::DebugSample {
+                        sample: vec![25_000_000, 10_000_000, 0, 15_000_000],
+                        kind: play::DEBUG_SAMPLE_TICK_TIME,
+                    }))
+                    .unwrap();
+                    let draws = game.debug_charts.draw(
+                        &game.gui.atlas.font,
+                        484,
+                        100,
+                        0,
+                        &game.clock,
+                        true,
+                    );
+                    // At 50 mspt the 60-pixel chart gives 30 px to the full 25 ms and 12 px
+                    // to the 10 ms tick method. The first sample is just inside the right chart.
+                    let heights: Vec<_> = draws
+                        .iter()
+                        .filter_map(|draw| match draw {
+                            GuiDraw::Fill {
+                                x0: 243,
+                                x1: 244,
+                                y0,
+                                y1: 100,
+                                ..
+                            } if *y0 < 100 => Some(100 - y0),
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(heights, [30, 12]);
+                })
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn no_debug_request_goes_out_before_the_login() {
+        // The game fixture replaces process-wide registries: a child of its own.
+        const MODE: &str = "SUNRISE_HOTBAR_SLOT_NO_DEBUG_REQUEST_GOES_OUT_BEFORE_THE_LOGIN";
+        if std::env::var_os(MODE).is_none() {
+            crate::game::mods::tests::run_in_child(
+                "game::native_hotbar_slot::hotbar_slot_tests::no_debug_request_goes_out_before_the_login",
+                MODE,
+            );
+            return;
+        }
+        with_client_game(|game| {
+            let (mut reader, _writer) = connect_menu_test(game);
+            game.debug = true;
+            game.debug_charts.fps = true;
+            game.tick_remote_level().unwrap();
+            assert!(
+                !sent(&mut reader)
+                    .iter()
+                    .any(|p| matches!(p, S::DebugSubscriptionRequest(_)))
             );
         });
     }

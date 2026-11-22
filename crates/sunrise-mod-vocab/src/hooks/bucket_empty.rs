@@ -12,11 +12,13 @@ pub trait Hooks {
     /// the filling one) without the player and the fluid. Not heard: a
     /// dispenser, a cauldron, and a fluid a block places itself.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_bucket_empty",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (vanilla BucketItem.emptyContents; NeoForge has no matching event)",
         cancellable = true
     )]
-    fn bucket_empty();
+    fn bucket_empty(player: u128, name: &str, pos: [i32; 3], fluid: &str, cancel: &mut bool);
 }

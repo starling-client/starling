@@ -12,10 +12,6 @@ use sunrise_client::{
 impl Game<'_> {
     /// `Minecraft.tick` -> `MusicManager.tick`, once per client tick.
     pub(super) fn tick_music(&mut self) {
-        // Splitscreen: one music, P1's.
-        if self.options.split_guest {
-            return;
-        }
         let (mut music, mut volume) = self.situational_music();
         // A native mod's own choice of track and volume, then its layers.
         self.native_music(&mut music, &mut volume);
@@ -73,7 +69,7 @@ impl Game<'_> {
     }
     /// `Options.getFinalSoundSourceVolume(SoundSource.MUSIC)`.
     fn final_music_volume(&self) -> f32 {
-        self.settings.master_volume * self.settings.volumes[1]
+        (self.settings.master_volume * self.settings.volumes[1]) as f32
     }
     /// `ToastManager.setMusicToastDisplayState`: Pause and Pause and Toast make
     /// the toast (the second one shows it at once while music is audible),
@@ -98,7 +94,7 @@ impl Game<'_> {
         {
             toast.title = title;
             toast.description = description;
-            toast.show(f64::from(self.settings.notification_display_time));
+            toast.show(self.settings.notification_display_time);
         }
     }
 
@@ -224,7 +220,7 @@ impl Game<'_> {
     /// the level's music delay before the next one.
     pub(super) fn stop_sounds_for_new_level(&mut self) {
         self.ambience.clear(&mut self.audio);
-        self.audio.stop_all();
+        self.audio.leave_level();
         // Mod plays still queued for the next audio update go too.
         self.mod_sounds.clear();
     }

@@ -1,6 +1,6 @@
 use crate::gamerules::{GameRules as Rules, vanilla};
 use sunrise_perf_format::Gauges;
-use sunrise_perf_format::v1::{Build, GameRules, SunriseOptions, Machine, Settings};
+use sunrise_perf_format::v1::{Build, GameRules, Machine, Settings, SunriseOptions};
 
 use std::sync::OnceLock;
 
@@ -223,15 +223,10 @@ pub fn game_rules(rules: &Rules) -> GameRules {
 }
 
 /// The Sunrise switches a capture records: the typed allowlist, never the environment or `server.toml`.
-pub fn sunrise_options(
-    max_view_distance: u32,
-    lod_distance: u32,
-    anticheat: bool,
-) -> SunriseOptions {
+pub fn sunrise_options(lod_distance: u32) -> SunriseOptions {
     SunriseOptions {
-        max_view_distance: Some(max_view_distance),
+        max_view_distance: Some(0),
         lod_distance: Some(lod_distance),
-        anticheat: Some(anticheat),
     }
 }
 

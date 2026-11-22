@@ -65,8 +65,19 @@ fn code_types_join_package_and_code_blocks_before_planning() {
         template: "minecraft:stone".into(),
         ..Block::default()
     }];
-    let types = [kind("test:machine", &["test:b", "test:c"])];
-    let errors = accept_declared(&mut mods, &blocks, &[], &types, &BTreeSet::new());
+    let batches = BTreeMap::from([(
+        "test",
+        DeclaredContent {
+            blocks: blocks
+                .into_iter()
+                .map(|b| b.validate_local().unwrap())
+                .collect(),
+            types: vec![kind("test:machine", &["test:b", "test:c"])],
+            ..Default::default()
+        },
+    )]);
+    let mut errors = Vec::new();
+    accept_declared(&mut mods, &batches, &[], &BTreeSet::new(), &mut errors).unwrap();
     assert!(errors.is_empty(), "{errors:?}");
     let plan = Plan::new(&base, &mods).unwrap();
     assert_eq!(plan.block_entity_types.len(), 1);
@@ -81,16 +92,15 @@ fn code_types_join_package_and_code_blocks_before_planning() {
     assert!(!plan.block_entity_factories.contains_key("test:a"));
     drop(plan);
     // A type-only code namespace is not skipped by the content merge.
-    assert!(
-        accept_declared(
-            &mut mods,
-            &[],
-            &[],
-            &[kind("other:empty", &[])],
-            &BTreeSet::new()
-        )
-        .is_empty()
-    );
+    let type_only = BTreeMap::from([(
+        "other",
+        DeclaredContent {
+            types: vec![kind("other:empty", &[])],
+            ..Default::default()
+        },
+    )]);
+    accept_declared(&mut mods, &type_only, &[], &BTreeSet::new(), &mut errors).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(mods[1].content.block_entity_types[0].id, "other:empty");
     assert_eq!(Plan::new(&base, &mods).unwrap().block_entity_types.len(), 2);
     fs::remove_dir_all(base).unwrap();
@@ -237,13 +247,10 @@ fn code_declared_types_build_a_root_and_membership_changes_invalidate_its_cache(
 
 #[test]
 fn code_items_can_reference_both_owned_namespaces_in_one_batch() {
-    let mut content = Content::declared("porter");
-    content.namespaces.push("legacy".into());
-    let mut mods = vec![ContentMod {
-        id: "porter".into(),
-        content,
-        jars: vec![],
-    }];
+    let manifest = sunrise_mod_package::Manifest::parse(
+        "id='porter'\nname='Porter'\nversion='1'\napi='0.2'\ncapabilities=['registries']\nnamespaces=['legacy']"
+    ).unwrap();
+    let mut mods = Vec::new();
     let items = [
         ("legacy:wrench", "porter:spoon"),
         ("porter:spoon", "legacy:wrench"),
@@ -254,11 +261,52 @@ fn code_items_can_reference_both_owned_namespaces_in_one_batch() {
         crafting_remainder: Some(remainder.into()),
         ..sunrise_mod_package::content::Item::default()
     });
-    let errors = accept_declared(&mut mods, &[], &items, &[], &BTreeSet::new());
+    let mut batches = BTreeMap::from([(
+        "porter",
+        DeclaredContent {
+            items: items
+                .iter()
+                .cloned()
+                .map(|i| i.validate_local().unwrap())
+                .collect(),
+            ..Default::default()
+        },
+    )]);
+    let mut errors = Vec::new();
+    accept_declared(
+        &mut mods,
+        &batches,
+        &[&manifest],
+        &BTreeSet::new(),
+        &mut errors,
+    )
+    .unwrap();
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(mods.len(), 1);
     assert_eq!(mods[0].id, "porter");
+    assert_eq!(mods[0].content.namespaces, ["porter", "legacy"]);
     assert_eq!(mods[0].content.items, items);
+
+    // No file row to infer an owner from, and neither namespace installs on refusal.
+    let mut broken = items[0].clone();
+    broken
+        .components
+        .insert("legacy:unknown".into(), serde_json::json!(1));
+    batches.get_mut("porter").unwrap().items[0] = broken.validate_local().unwrap();
+    mods.clear();
+    accept_declared(
+        &mut mods,
+        &batches,
+        &[&manifest],
+        &BTreeSet::new(),
+        &mut errors,
+    )
+    .unwrap();
+    assert!(mods.is_empty());
+    assert!(matches!(errors.as_slice(), [refusal]
+        if refusal.mod_id == "porter" && refusal.kind == DeclarationKind::Item
+        && matches!(&refusal.error, DeclarationError::Rejected { id, reason }
+            if id == "legacy:wrench" && reason.contains("legacy:unknown"))));
 }
 
 #[test]
@@ -276,8 +324,19 @@ fn code_declarations_join_the_manifest_owner_of_a_secondary_namespace() {
         template: "minecraft:stone".into(),
         ..Block::default()
     }];
-    let types = [kind("legacy:pot_type", &["legacy:pot"])];
-    let errors = accept_declared(&mut mods, &blocks, &[], &types, &BTreeSet::new());
+    let batches = BTreeMap::from([(
+        "porter",
+        DeclaredContent {
+            blocks: blocks
+                .into_iter()
+                .map(|b| b.validate_local().unwrap())
+                .collect(),
+            types: vec![kind("legacy:pot_type", &["legacy:pot"])],
+            ..Default::default()
+        },
+    )]);
+    let mut errors = Vec::new();
+    accept_declared(&mut mods, &batches, &[], &BTreeSet::new(), &mut errors).unwrap();
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(
         mods.len(),
@@ -342,4 +401,98 @@ fn a_code_declared_half_slab_resolves_to_block_unit_bounds() {
         assert_eq!(bounds, vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]);
     }
     fs::remove_dir_all(base.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn shapes_from_block_entity_is_refused_by_name_without_a_block_entity_type() {
+    let base = base("published-shapes");
+    let mut mods = [declared_mod()];
+    mods[0]
+        .content
+        .blocks
+        .iter_mut()
+        .find(|block| block.id == "test:a")
+        .unwrap()
+        .shapes_from_block_entity = true;
+    assert_eq!(
+        Plan::new(&base, &mods).err().unwrap().to_string(),
+        "test:a: shapes_from_block_entity needs a block entity type that owns the block"
+    );
+    // A type that owns another block does not do.
+    mods[0].content.block_entity_types = vec![kind("test:machine", &["test:b"])];
+    assert!(Plan::new(&base, &mods).is_err());
+    mods[0].content.block_entity_types = vec![kind("test:machine", &["test:a"])];
+    let plan = Plan::new(&base, &mods).unwrap();
+    // Only the flagged block's states reach the collision and support tables' scan metadata.
+    let mut table = Tag::Compound(nbt::Compound::new());
+    plan.published_states(&mut table).unwrap();
+    let flagged = plan
+        .blocks
+        .iter()
+        .find(|block| block.decl.id == "test:a")
+        .unwrap();
+    let expected: Vec<i32> = (0..flagged.order.len())
+        .map(|offset| (flagged.rename.first as usize + offset) as i32)
+        .collect();
+    assert_eq!(
+        table.get("published_shapes"),
+        Some(&Tag::IntArray(expected))
+    );
+    drop(plan);
+    mods[0]
+        .content
+        .blocks
+        .iter_mut()
+        .for_each(|block| block.shapes_from_block_entity = false);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut table = Tag::Compound(nbt::Compound::new());
+    plan.published_states(&mut table).unwrap();
+    assert!(table.get("published_shapes").is_none());
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn scaffolding_context_collision_lists_its_states_and_needs_scaffolding_properties() {
+    let base = base("scaffolding-collision");
+    let mut mods = [declared_mod()];
+    fn declared(mods: &mut [ContentMod; 1]) -> &mut Block {
+        mods[0]
+            .content
+            .blocks
+            .iter_mut()
+            .find(|block| block.id == "test:a")
+            .unwrap()
+    }
+    declared(&mut mods).context_collision = Some(ContextCollision::Scaffolding);
+    // Stone's one state has neither of scaffolding's properties.
+    assert_eq!(
+        Plan::new(&base, &mods).err().unwrap().to_string(),
+        "test:a: context_collision scaffolding: invalid scaffold distance"
+    );
+    declared(&mut mods).state_properties = BTreeMap::from([
+        ("bottom".to_owned(), StateProperty::Boolean),
+        (
+            "distance".to_owned(),
+            StateProperty::Enum {
+                values: (0..8).map(|n| n.to_string()).collect(),
+            },
+        ),
+    ]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut table = Tag::Compound(nbt::Compound::new());
+    plan.scaffolding_states(&mut table).unwrap();
+    let block = plan
+        .blocks
+        .iter()
+        .find(|block| block.decl.id == "test:a")
+        .unwrap();
+    let expected: Vec<i32> = (0..16)
+        .map(|offset| block.rename.first as i32 + offset)
+        .collect();
+    assert_eq!(block.order.len(), 16);
+    assert_eq!(
+        table.get("scaffolding_collision"),
+        Some(&Tag::IntArray(expected))
+    );
+    fs::remove_dir_all(base).unwrap();
 }

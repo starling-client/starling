@@ -50,10 +50,6 @@ sunrise-client game::minecarts::hit::hit_tests::a_broken_cart_drops_its_item_und
 sunrise-client game::minecarts::hit::hit_tests::a_chest_cart_broken_by_a_player_angers_the_piglins_that_see_them lib daily resources
 sunrise-client game::minecarts::hit::hit_tests::a_hit_posts_one_entity_damage_from_its_causing_entity lib daily resources
 sunrise-client game::mounts::strider_lava_boarding_tests::a_strider_with_its_eyes_in_lava_refuses_a_rider lib daily resources
-sunrise-client game::player_kill_credit_tests::a_guest_killing_another_guest_credits_the_kill lib daily resources
-sunrise-client game::player_kill_credit_tests::a_player_killing_another_player_credits_the_kill lib daily resources
-sunrise-client game::player_kill_credit_tests::a_wither_killing_a_player_leaves_a_rose lib daily resources
-sunrise-client game::player_kill_credit_tests::a_wither_killing_a_player_without_mob_griefing_drops_the_rose lib daily resources
 sunrise-client game::potions::potion_contents_tests::a_lingering_potion_of_custom_effects_makes_its_cloud lib daily resources
 sunrise-client game::potions::potion_contents_tests::a_splash_potion_applies_its_custom_effects_and_duration_scale lib daily resources
 sunrise-client game::potions::potion_contents_tests::a_water_potion_refills_an_axolotl_once lib daily resources

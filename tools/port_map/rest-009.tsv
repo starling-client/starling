@@ -50,9 +50,9 @@ Language.parseTranslations	port	crates/sunrise-client-core/src/lang.rs::Language
 Language.loadFromJson	port	crates/sunrise-client-core/src/lang.rs::Language::load	gap: minor: component-valued entries (arrays or objects) are not kept; serde_json rejects the whole file, so its other entries are lost
 ByteArrayTag.copy	skip:java		Clone on Tag replaces copy()
 ByteArrayTag.equals	skip:java		PartialEq derive replaces equals()
-ByteArrayTag.setTag	port	crates/sunrise-client-core/src/nbt_path.rs::set_tag	gap: minor: writes through an NBT path node; returns a change count, not a boolean for non-numeric tags
-ByteArrayTag.addTag	port	crates/sunrise-client-core/src/nbt_path.rs::NbtPath::insert	gap: minor: inserts through the /data path, not a per-array add
-ByteArrayTag.remove	port	crates/sunrise-client-core/src/nbt_path.rs::remove_tag	gap: minor: removal through an index node; returns a count, not the removed tag
+ByteArrayTag.setTag	port	crates/sunrise-world/src/nbt_path.rs::set_tag	gap: minor: writes through an NBT path node; returns a change count, not a boolean for non-numeric tags
+ByteArrayTag.addTag	port	crates/sunrise-world/src/nbt_path.rs::NbtPath::insert	gap: minor: inserts through the /data path, not a per-array add
+ByteArrayTag.remove	port	crates/sunrise-world/src/nbt_path.rs::remove_tag	gap: minor: removal through an index node; returns a count, not the removed tag
 CompoundTag.write	port	crates/sunrise-core/src/nbt.rs::Writer::payload	the Compound arm writes each entry and the End byte
 CompoundTag.sizeInBytes	skip:other		memory-size estimate for vanilla's NbtAccounter quota; Sunrise's Limits count wire bytes and nodes
 CompoundTag.getByteOr	port	crates/sunrise-world/src/datafix/dynamic.rs::as_number	gap: minor: the default and the i8 narrowing (Number::byte_value) are left to the caller
@@ -77,9 +77,9 @@ CompoundTag.read	skip:java		codec-based load; Sunrise reads fields explicitly (b
 IntArrayTag.write	port	crates/sunrise-core/src/nbt.rs::Writer::payload	the IntArray arm writes the count, then the ints
 IntArrayTag.copy	skip:java		Clone on Tag replaces copy()
 IntArrayTag.equals	skip:java		PartialEq derive replaces equals()
-IntArrayTag.setTag	port	crates/sunrise-client-core/src/nbt_path.rs::set_tag	gap: minor: writes through an NBT path node; returns a change count
-IntArrayTag.addTag	port	crates/sunrise-client-core/src/nbt_path.rs::NbtPath::insert	gap: minor: inserts through the /data path, not a per-array add
-IntArrayTag.remove	port	crates/sunrise-client-core/src/nbt_path.rs::remove_tag	gap: minor: removal through an index node; returns a count, not the removed tag
+IntArrayTag.setTag	port	crates/sunrise-world/src/nbt_path.rs::set_tag	gap: minor: writes through an NBT path node; returns a change count
+IntArrayTag.addTag	port	crates/sunrise-world/src/nbt_path.rs::NbtPath::insert	gap: minor: inserts through the /data path, not a per-array add
+IntArrayTag.remove	port	crates/sunrise-world/src/nbt_path.rs::remove_tag	gap: minor: removal through an index node; returns a count, not the removed tag
 ListTag.tryUnwrap	inline	crates/sunrise-core/src/nbt.rs::Reader::payload	a list element that is a single "" compound is unwrapped while it is read
 ListTag.isWrapper	inline	crates/sunrise-core/src/nbt.rs::Reader::payload	same single-""-key test as the read-side unwrap; the write side tests it in Writer::payload
 ListTag.write	port	crates/sunrise-core/src/nbt.rs::Writer::payload	the List arm writes the element type, the count, then the elements, wrapping mixed-list compounds
@@ -103,9 +103,9 @@ ListTag.accept	port	crates/sunrise-client-core/src/snbt.rs::visit	gap: minor: th
 LongArrayTag.write	port	crates/sunrise-core/src/nbt.rs::Writer::payload	the LongArray arm writes the count, then the longs
 LongArrayTag.copy	skip:java		Clone on Tag replaces copy()
 LongArrayTag.equals	skip:java		PartialEq derive replaces equals()
-LongArrayTag.setTag	port	crates/sunrise-client-core/src/nbt_path.rs::set_tag	gap: minor: writes through an NBT path node; returns a change count
-LongArrayTag.addTag	port	crates/sunrise-client-core/src/nbt_path.rs::NbtPath::insert	gap: minor: inserts through the /data path, not a per-array add
-LongArrayTag.remove	port	crates/sunrise-client-core/src/nbt_path.rs::remove_tag	gap: minor: removal through an index node; returns a count, not the removed tag
+LongArrayTag.setTag	port	crates/sunrise-world/src/nbt_path.rs::set_tag	gap: minor: writes through an NBT path node; returns a change count
+LongArrayTag.addTag	port	crates/sunrise-world/src/nbt_path.rs::NbtPath::insert	gap: minor: inserts through the /data path, not a per-array add
+LongArrayTag.remove	port	crates/sunrise-world/src/nbt_path.rs::remove_tag	gap: minor: removal through an index node; returns a count, not the removed tag
 NbtAccounter.accountBytes	inline	crates/sunrise-core/src/nbt.rs::Reader::take	gap: minor: counts wire bytes against max_bytes; vanilla counts an in-memory size estimate, so the same limit trips at other sizes
 NbtAccounter.pushDepth	inline	crates/sunrise-core/src/nbt.rs::Reader::payload	the depth check for list and compound arms; depth is passed down as a parameter
 NbtAccounter.popDepth	inline	crates/sunrise-core/src/nbt.rs::Reader::payload	nothing to pop: depth is a parameter, not a counter

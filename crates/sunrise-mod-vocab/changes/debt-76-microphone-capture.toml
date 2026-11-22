@@ -1,0 +1,50 @@
+ids = [
+    "method:prelude::AudioClientHost::microphone_devices",
+    "method:prelude::AudioClientHost::open_microphone",
+    "type:MicDevice",
+    "type:MicDevice.id",
+    "type:MicDevice.label",
+    "type:MicSpec",
+    "type:MicSpec.device",
+    "type:MicSpec.channels",
+    "type:MicSpec.rate",
+    "type:MicTarget",
+    "type:MicTarget.DeviceId",
+    "type:MicTarget.Label",
+    "type:MicSpecFault",
+    "type:MicSpecFault.Channels",
+    "type:MicSpecFault.Rate",
+    "type:MicRefusal",
+    "type:MicRefusal.OnServer",
+    "type:MicRefusal.Unavailable",
+    "type:MicRefusal.BadSpec",
+    "type:MicRefusal.NoDevice",
+    "type:MicRefusal.AmbiguousDevice",
+    "type:MicRefusal.OsDenied",
+    "type:MicRefusal.Busy",
+    "type:MicRefusal.DeviceFailed",
+    "type:MicRef",
+    "trait:MicSource",
+    "method:MicSource::read",
+    "method:MicSource::channels",
+    "method:MicSource::rate",
+    "method:MicSource::dropped_frames",
+    "method:MicSource::is_open",
+    "method:MicSource::close",
+    "handle:MicSpec::new",
+    "handle:MicSpec::with_device",
+    "handle:MicSpec::with_label",
+    "handle:MicRef::read",
+    "handle:MicRef::channels",
+    "handle:MicRef::rate",
+    "handle:MicRef::dropped_frames",
+    "handle:MicRef::is_open",
+    "handle:MicRef::close",
+]
+why = "Vanilla 26.3's SoundEngine.play and NeoForge's PlaySoundSourceEvent are playback-only; neither offers microphone capture. Native mods get a local PCM reader without engine consent, codecs, or networking. Explicitly distinguish endpoint IDs from labels so a missing endpoint can never open another device. On macOS, use CoreAudio input-scope stream metadata to exclude output-only names before AVFoundation microphone authorization, then probe and start capture. On ALSA, match a saved ID or previously listed label to its card, distinguish refused card access from a missing device, and report errors from snd_ctl_pcm_next_device or capture discovery when the label's uniqueness cannot be established. Listing and independently identified IDs still work when another endpoint cannot be checked."
+migrate = "New in 1.0: from client setup onward, call `host.microphone_devices()` for `MicDevice { id, label }` descriptors and `host.open_microphone(&spec)` with `MicSpec::new(channels, rate)` (1 or 2 channels; `MIC_RATE_MIN` = 8000 to `MIC_RATE_MAX` = 48000 Hz), optionally adding `.with_device(&device.id)` to select one endpoint. Replace draft `.with_device(label)` calls with `.with_label(label)`; if assigning `spec.device` directly, use `Some(MicTarget::DeviceId(id))` for an ID or `Some(MicTarget::Label(label))` for a label. Handle `MicRefusal::OsDenied` separately from `MicRefusal::NoDevice`; listing still returns usable inputs when other endpoints are denied, and opening a missing ID never selects by label. Pass IDs from enumeration unchanged, not hand-built ALSA strings. An explicit ID or previously listed label can return `OsDenied` when the OS blocks access to its card. A macOS label matching only output devices returns `NoDevice` without a microphone permission prompt. Handle `DeviceFailed` when input discovery fails, not only when startup fails; use `.with_device(&device.id)` instead of `.with_label(&device.label)` when selecting a specific endpoint, rather than assuming a partial label match is unique. Read whole interleaved `i16` frames from any thread via `MicRef::read` off the bounded `MIC_RING_MAX_MS` (500 ms) drop-oldest ring, inspect stream format/health via `MicRef::{channels, rate, dropped_frames, is_open}`, and call `MicRef::close` or drop `MicRef` to stop capture and release the OS input device synchronously."
+
+# Testing: Fake backends cover a macOS output-only label with no permission request and a real
+# input's permission request before probing, ALSA ID/label reopen after denial or removal, and both
+# empty and partial PCM discovery failures. The author did not compile or run Rust tests; this Linux
+# worker lacks the Apple Silicon Rust target and macOS SDK. macOS hardware verification was not run.

@@ -100,35 +100,18 @@ class GameCoverageTests(unittest.TestCase):
         self.assertEqual([row["code"] for row in rows], ["en_us", "full", "half"])
 
 
-class LauncherCoverageTests(unittest.TestCase):
-    def test_english_leftovers_and_dropped_holes_are_reported(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            folder = Path(tmp)
-            write(folder, "xx.json", '{\n  "Back": "Atras",\n  "Proxy": "Proxy",\n'
-                                     '  "Open {file}": "Abrir",\n'
-                                     '  "Save {count} files": "Guardar {archivo} archivos"\n}\n')
-            rows = lang_coverage.launcher_rows(folder, set())
-        row = by_code(rows, "xx")
-        self.assertEqual(row["keys"], 4)
-        self.assertEqual(row["same"], ["Proxy"])
-        changed = {entry["key"]: entry for entry in row["holes"]}
-        self.assertEqual(changed["Open {file}"]["missing"], ["file"])
-        self.assertEqual(changed["Save {count} files"]["missing"], ["count"])
-        self.assertEqual(changed["Save {count} files"]["extra"], ["archivo"])
-
-
 class CommandLineTests(unittest.TestCase):
     def test_fail_under_and_an_unknown_language_set_the_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             write(folder, "en_us.json", '{\n  "a": "Apple",\n  "b": "Banana"\n}\n')
             write(folder, "xx.json", '{\n  "a": "Manzana"\n}\n')
-            code, _, err = run("--game-dir", tmp, "--game-only", "--fail-under", "90")
+            code, _, err = run("--game-dir", tmp, "--fail-under", "90")
             self.assertEqual(code, 1)
             self.assertIn("xx: 50.0% < 90%", err)
-            code, _, _ = run("--game-dir", tmp, "--game-only", "--fail-under", "10")
+            code, _, _ = run("--game-dir", tmp, "--fail-under", "10")
             self.assertEqual(code, 0)
-            code, _, err = run("--game-dir", tmp, "--game-only", "--lang", "nosuch")
+            code, _, err = run("--game-dir", tmp, "--lang", "nosuch")
             self.assertEqual(code, 2)
             self.assertIn("no lang file is named nosuch", err)
 
@@ -137,7 +120,7 @@ class CommandLineTests(unittest.TestCase):
             folder = Path(tmp)
             write(folder, "en_us.json", '{\n  "a": "Apple",\n  "b": "Banana"\n}\n')
             write(folder, "xx.json", '{\n  "a": "Manzana"\n}\n')
-            code, out, _ = run("--game-dir", tmp, "--game-only", "--json")
+            code, out, _ = run("--game-dir", tmp, "--json")
         self.assertEqual(code, 0)
         payload = json.loads(out)
         self.assertEqual(payload["game"]["reference"], "en_us")
@@ -148,14 +131,13 @@ class CommandLineTests(unittest.TestCase):
         code, out, _ = run("--lang", "es_es", "es", "--summary")
         self.assertEqual(code, 0, out)
         self.assertIn("GAME es_es ", out)
-        self.assertIn("LAUNCHER es ", out)
 
     def test_show_keys_is_not_dropped_when_a_mode_also_prints_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             write(folder, "en_us.json", '{\n  "a": "Apple",\n  "b": "Banana"\n}\n')
             write(folder, "xx.json", '{\n  "a": "Manzana",\n  "c": "Datil"\n}\n')
-            common = ("--game-dir", tmp, "--game-only")
+            common = ("--game-dir", tmp)
             code, summary, _ = run(*common, "--summary")
             code, with_keys, _ = run(*common, "--summary", "--show-keys")
             code, unreviewed, _ = run(*common, "--unreviewed")
@@ -197,21 +179,20 @@ class ReviewTests(unittest.TestCase):
 
     def test_mark_reviewed_records_present_text_in_file_order_and_drops_gone_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
-            game, launcher, review = Path(tmp) / "game", Path(tmp) / "launcher", Path(tmp) / "review"
+            game, review = Path(tmp) / "game", Path(tmp) / "review"
             game.mkdir()
-            launcher.mkdir()
             write(game, "en_us.json", '{\n  "a": "Apple",\n  "b": "Banana",\n  "c": "Cherry"\n}\n')
             write(game, "xx_yy.json", '{\n  "a": "Manzana",\n  "b": "Platano",\n  "c": "Cereza"\n}\n')
             (review / "game").mkdir(parents=True)
             write(review / "game", "xx_yy.json", '{\n  "gone": "Ido"\n}\n')
             keys = Path(tmp) / "keys.txt"
             keys.write_text("a\n\n", encoding="utf-8")
-            common = ("--game-dir", str(game), "--launcher-dir", str(launcher), "--review-dir", str(review))
+            common = ("--game-dir", str(game), "--review-dir", str(review))
             code, out, _ = run(*common, "--lang", "xx_yy", "--mark-reviewed", "c", "--keys-file", str(keys))
             self.assertEqual(code, 0, out)
             record = (review / "game" / "xx_yy.json").read_text(encoding="utf-8")
             self.assertEqual(record, '{\n  "a": "Manzana",\n  "c": "Cereza"\n}\n')
-            code, out, _ = run(*common, "--game-only", "--lang", "xx_yy", "--unreviewed")
+            code, out, _ = run(*common, "--lang", "xx_yy", "--unreviewed")
             self.assertEqual(code, 0)
             self.assertIn("xx_yy: 1 unreviewed", out)
             self.assertIn("en_us: Banana", out)
@@ -221,25 +202,18 @@ class ReviewTests(unittest.TestCase):
 
     def test_mark_reviewed_refuses_what_it_cannot_tell_apart(self):
         with tempfile.TemporaryDirectory() as tmp:
-            game, launcher = Path(tmp) / "game", Path(tmp) / "launcher"
+            game = Path(tmp) / "game"
             game.mkdir()
-            launcher.mkdir()
             write(game, "en_us.json", '{\n  "a": "Apple"\n}\n')
             write(game, "xx.json", '{\n  "a": "Manzana"\n}\n')
-            write(launcher, "xx.json", '{\n  "Apple": "Manzana"\n}\n')
-            common = ("--game-dir", str(game), "--launcher-dir", str(launcher),
-                      "--review-dir", str(Path(tmp) / "review"))
-            for extra, wanted in [(("--lang", "xx"), "--game-only or --launcher-only"),
-                                  (("--lang", "xx", "en_us"), "exactly one --lang"),
+            common = ("--game-dir", str(game), "--review-dir", str(Path(tmp) / "review"))
+            for extra, wanted in [(("--lang", "xx", "en_us"), "exactly one --lang"),
                                   (("--lang", "en_us"), "English reference"),
-                                  (("--lang", "xx", "--game-only"), "needs keys")]:
+                                  (("--lang", "xx"), "needs keys")]:
                 with self.subTest(extra=extra):
                     code, _, err = run(*common, *extra, "--mark-reviewed")
                     self.assertEqual(code, 2)
                     self.assertIn(wanted, err)
-            code, _, _ = run(*common, "--lang", "xx", "--launcher-only", "--mark-reviewed", "Apple")
-            self.assertEqual(code, 0)
-            self.assertTrue((Path(tmp) / "review" / "launcher" / "xx.json").exists())
 
     def test_a_crates_own_folder_is_reported_and_its_reviews_kept_apart(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,8 +226,7 @@ class ReviewTests(unittest.TestCase):
             write(game, "xx_yy.json", '{\n  "a": "Manzana"\n}\n')
             write(friends, "en_us.json", '{\n  "f.one": "One",\n  "f.two": "Two"\n}\n')
             write(friends, "xx_yy.json", '{\n  "f.one": "Uno"\n}\n')
-            common = ("--game-dir", str(game), "--crates-dir", str(crates), "--review-dir", str(review),
-                      "--game-only")
+            common = ("--game-dir", str(game), "--crates-dir", str(crates), "--review-dir", str(review))
             code, out, _ = run(*common, "--summary")
             self.assertEqual(code, 0)
             self.assertIn("GAME xx_yy 1/1 keys, missing 0", out)
@@ -277,12 +250,11 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("no key 'nosuch'", err)
             # A scratch --game-dir alone leaves the repository's crates out.
-            code, out, _ = run("--game-dir", str(game), "--review-dir", str(review), "--game-only", "--summary")
+            code, out, _ = run("--game-dir", str(game), "--review-dir", str(review), "--summary")
             self.assertNotIn("sunrise-friends", out)
 
     def test_every_repository_record_belongs_to_a_lang_file_and_reads(self):
-        folders = [("game", lang_coverage.GAME), ("launcher", lang_coverage.LAUNCHER),
-                   *lang_coverage.crate_dirs(lang_coverage.CRATES)]
+        folders = [("game", lang_coverage.GAME), *lang_coverage.crate_dirs(lang_coverage.CRATES)]
         for kind, folder in folders:
             for record in sorted((lang_coverage.REVIEW / kind).glob("*.json")):
                 with self.subTest(record=record.name, kind=kind):

@@ -7,8 +7,8 @@
 //! [`PER_TICK`] lines a player a tick, so a mod can't flood a server; each
 //! finished batch is one line in the server's log.
 use super::{Game, lan_actions::GuestCommand};
-use sunrise_protocol::quiet;
 use std::collections::{HashMap, VecDeque};
+use sunrise_protocol::quiet;
 
 /// Lines a player may have waiting at most; a batch past it loses the rest.
 pub(super) const PENDING: usize = 4096;
@@ -141,7 +141,7 @@ impl Game<'_> {
         else {
             return false;
         };
-        let command = line.trim_start_matches('/');
+        let command = line.strip_prefix('/').unwrap_or(line);
         if !self.signable_arguments(permission, command).is_empty() {
             return false;
         }

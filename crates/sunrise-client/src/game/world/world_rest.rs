@@ -1,8 +1,11 @@
 use super::*;
+use sunrise_client::mobs::spawner::SpawnerTypeFacts;
 
 pub(super) fn load_world_rest(
     resource_root: &sunrise_assets::resource_source::ResourceRoot,
+    conditions: &sunrise_world::conditions::LoadConditions,
     resources: &Resources,
+    spawner_types: HashMap<String, SpawnerTypeFacts>,
     assets: &Assets,
     behaviour_json: &serde_json::Value,
     gameplay_projection: &[sunrise_client::blocks::GameplayProjection],
@@ -24,15 +27,12 @@ pub(super) fn load_world_rest(
         "sunrise-content".into(),
         resource_root.data_changes().clone(),
     );
-    let files = sunrise_client::datapack::DataStore::load(&[&content])
-        .files
-        .into_iter()
-        .collect::<Vec<_>>();
-    let inventory = sunrise_mod_package::enabled::EnabledMods::read(root)?;
-    let conditions = sunrise_world::conditions::LoadConditions::new(inventory.server_ids());
+    let store = sunrise_client::datapack::DataStore::load(&[&content]);
+    let files = store.files.into_iter().collect::<Vec<_>>();
     let overlay = &sunrise_world::loot::PackOverlay {
-        conditions: &conditions,
+        conditions,
         files: &files,
+        priority_layers: &store.priority_layers,
     };
     progress.set(6);
     // Independent tables load together, within the worker budget the settings
@@ -49,12 +49,7 @@ pub(super) fn load_world_rest(
         // hold its files so it is read once.
         let _recipe_files = sunrise_client::json_folder::read(&root.join("data/minecraft/recipe"));
         let sources = startup::time("rest.recipe_sources", || {
-            lan::sync::load_sources(
-                root,
-                &resources.core.item_data,
-                resources.core.item_data.context().origin(),
-                overlay,
-            )
+            lan::sync::initial_sources(root, &resources.core.item_data, &items, overlay)
         })?;
         let recipes = startup::time("rest.recipes", || {
             Recipes::from_resolved(root, &items, overlay, &sources)
@@ -131,25 +126,27 @@ pub(super) fn load_world_rest(
             catalog,
             mod_api::__private::entity_attribute_modifications(),
         );
+        // The types mods name to `entity_tick_each` hear their ticks one entity at a time
+        // (game/modding/native_ticks.rs): marked once here, so a tick reads a flag.
+        let each = mod_api::__private::entity_tick_each();
         let mob_types: HashMap<_, _> = types
             .types
             .into_iter()
-            .map(|(k, v)| (k, Arc::new(v)))
+            .map(|(k, mut v)| {
+                v.flags.tick_alone = each.is_some_and(|each| each.names(&v.id));
+                (k, Arc::new(v))
+            })
             .collect();
         let mut mob_data = sunrise_client::mobs::MobData::load(resource_root, facts);
-        // #847: the mods' spawn rules (`RegisterSpawnPlacementsEvent`) take
-        // their types' placement, heightmap and predicate here, once, so a
-        // spawn check reads one table with no pass over the mods.
-        for declaration in mod_api::__private::spawn_placement_declarations() {
-            if !mob_types.contains_key(&declaration.id) {
-                return Err(format!(
-                    "mod spawn placement of {} names no loaded entity type",
-                    declaration.id
-                )
-                .into());
-            }
-            mob_data.register_mod_spawn(&declaration.id, &declaration.rule);
-        }
+        // NeoForge keys placements by EntityType, not by the subset backed by MobTypes.
+        // Use exactly the registry the spawners will consult, with facts already validated.
+        mob_data
+            .install_spawn_placements(mod_api::__private::spawn_placement_declarations(), |id| {
+                spawner_types.contains_key(id)
+            })?;
+        crate::game::entity_part_state::refuse_entity_part_state_kinds(|kind| {
+            mob_types.contains_key(kind)
+        })?;
         mob_data.cem = std::sync::RwLock::new(Arc::new(if draws {
             sunrise_client::mobs::cem::CemModels::load(resource_root.source(), &mob_types)
         } else {
@@ -280,10 +277,21 @@ pub(super) fn load_world_rest(
             }),
         )
     };
+    // World staging checks conditions after the selected packs have supplied their winners.
     let (items, recipes, stations) = items?;
     let (animate, fog) = animate?;
-    let (mob_types, mob_data) = mobs?;
+    let (mob_types, mut mob_data) = mobs?;
     let (transformers, (player_type, player_arm, player_arm_slim, spin_attack)) = transformers?;
+    if draws {
+        mob_data.frame_models = startup::time("rest.frame_models", || {
+            sunrise_client::mobs::render::BakedFrameModels::bake(
+                mob_types
+                    .values()
+                    .chain(player_type.iter())
+                    .map(Arc::as_ref),
+            )
+        });
+    }
     let nether_environment = nether_environment?;
     let end_environment = end_environment?;
     log::info!(
@@ -344,7 +352,7 @@ pub(super) fn load_world_rest(
         basin_recipes,
         create_recipes: kinetic_machines::Recipes::load(root, &items),
         stations,
-        items,
+        items: Arc::new(items),
         recipes,
         transformers,
         providers,
@@ -355,9 +363,10 @@ pub(super) fn load_world_rest(
         ambient,
         nether_environment,
         end_environment,
-        behaviours: behaviours?,
+        behaviours: Arc::new(behaviours?),
         mob_types,
         mob_data,
+        spawner_types,
         player_type,
         player_arm,
         player_arm_slim,

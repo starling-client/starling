@@ -24,7 +24,7 @@ same pieces, even when workers generate neighbouring chunks concurrently.
 | `GenerationContext` access | Purpose |
 |---|---|
 | `seed`, `chunk`, `sea_level`, `min_y`, `max_y` | World and chunk coordinates and bounds |
-| `random` | `StructureRandom` seeded with vanilla's `setLargeFeatureSeed` for the chunk |
+| `random` | `&mut dyn RandomSource` ([Randomness](../../concepts/randomness.md)) seeded with vanilla's `setLargeFeatureSeed` for the chunk |
 | `base_height`, `base_columns`, `noise_column` | Height and base-column queries |
 | `noise_biome`, `column_has_valid_biome` | Opaque biome identities and the structure's valid-biome test |
 | `metadata` | Borrowed immutable block metadata |
@@ -33,10 +33,8 @@ same pieces, even when workers generate neighbouring chunks concurrently.
 Config conversion runs when definitions load or reload, not per start. Nested JSON nulls are
 refused at load. The engine handles structure-set spacing, `biomes` and `terrain_adaptation`.
 
-Both contexts are traits. `StructureRandom` provides `next_int_bound`, `next_long`, `next_float`,
-`next_double` and `next_boolean`. These interfaces also support structures in `mod.wasm`.
-Wasm worker calls share the dependency group's store lock and use a per-call fuel or epoch
-budget; a trap stops the group with a typed refusal.
+Both contexts are traits, and `random` hands you a `&mut dyn RandomSource`: see
+[Randomness](../../concepts/randomness.md) for its draws.
 
 ## Placing pieces
 
@@ -57,7 +55,7 @@ The bounds are independent of the placement box; the ground is `bounds.min[1] + 
 The rules are `None`, `Bury`, `BeardThin`, `BeardBox` and `Encapsulate`. An answer with
 adjustment `None` disables only that piece. No answer inherits the structure's setting.
 An override works even when the structure's `terrain_adaptation` is `"none"`.
-Native and wasm pieces are queried once when generated or loaded, and the answer is cached
+Pieces are queried once when generated or loaded, and the answer is cached
 on the engine piece; terrain generation never calls the mod for it per chunk.
 
 Use `PieceContext` to work within the chunk:
@@ -68,7 +66,7 @@ Use `PieceContext` to work within the chunk:
 | `set_block` | Write a `BlockState`; silently skip positions outside the writable box. |
 | `block`, `height` | Read blocks and heightmap heights. |
 | `state`, `state_with` | Resolve a registered `BlockKey` to an API-owned `BlockState`. |
-| `random` | Draw from the piece's `StructureRandom`. |
+| `random` | Draw from the piece's `RandomSource`. |
 | `metadata` | Borrow block metadata; `metadata().name(state.block())` returns the canonical name. |
 | `solid_render` | Check whether a state renders as a solid block. |
 | `entity` | Queue saved entity NBT, including its `id`, `Pos` and other fields. |

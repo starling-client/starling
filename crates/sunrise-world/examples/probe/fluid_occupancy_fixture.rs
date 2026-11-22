@@ -1,10 +1,10 @@
-use sunrise_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::geometry::{Aabb, Vec3};
 use {
     sunrise_core::{nbt, nbt::Limits},
     sunrise_world::{

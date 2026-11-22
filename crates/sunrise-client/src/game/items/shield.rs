@@ -106,21 +106,15 @@ impl Game<'_> {
             None => spec == damage_type,
         };
         let p = self.player.as_ref()?;
+        // LivingEntity.applyItemBlocking: Math.acos of the flattened direction against
+        // calculateViewVector(0, yHeadRot), or (float)Math.PI with no source position.
         let angle = match from {
-            Some(src) => {
-                // calculateViewVector(0, yHeadRot) against the flattened direction.
-                let yaw = (-self.yaw).to_radians();
-                let view = [yaw.sin() as f64, yaw.cos() as f64];
-                let (dx, dz) = (src[0] - p.position.x, src[2] - p.position.z);
-                let len = (dx * dx + dz * dz).sqrt();
-                let to = if len < 1.0e-4 {
-                    [0.0, 0.0]
-                } else {
-                    [dx / len, dz / len]
-                };
-                (to[0] * view[0] + to[1] * view[1]).acos()
-            }
-            None => f64::from(std::f32::consts::PI),
+            Some(src) => sunrise_world::view_direction::blocking_angle(
+                sunrise_core::geometry::Vec3::new(src[0], src[1], src[2]),
+                p.position,
+                self.yaw,
+            ),
+            None => sunrise_world::view_direction::BLOCKING_FALLBACK_ANGLE,
         };
         let (threshold, base, factor) = component.item_damage;
         Some(Blocking {
@@ -181,11 +175,13 @@ impl Game<'_> {
         if !outcome.blocking_item_used {
             return;
         }
-        if self.remote.is_none() {
+        // `ItemStack.hurtAndBreak` does nothing for `hasInfiniteMaterials`, its
+        // `ITEM_USED` award included: a creative player's shield counts no use.
+        if self.remote.is_none() && !self.creative {
             self.award_stat("used", &stack.item, 1);
         }
-        // ItemDamageFunction.apply (or what a native mod set, kept only for a hit
-        // the event left blocked), then hurtAndBreak.
+        // Component wear can apply even when no damage was blocked. A mod's wear
+        // override applies only when the hook leaves the hit blocked.
         let item_damage = outcome.shield_damage;
         if item_damage > 0 && !self.creative {
             let (updated, broken) = self.damage_stack(&stack, item_damage, true);
@@ -200,6 +196,7 @@ impl Game<'_> {
                         sunrise_core::equipment_slot::EquipmentSlot::MainHand
                     };
                     self.player_equipment_broke(hand, &broken);
+                    self.player_item_destroyed(&stack, self.item_slot_hand(slot));
                     self.award_stat("broken", &broken.item, 1);
                     return;
                 }
@@ -351,7 +348,7 @@ mod durability_tests {
     use sunrise_core::geometry::Vec3;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn shield_break_clears_the_active_use() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
@@ -388,7 +385,7 @@ mod durability_tests {
     /// The wear a raised shield takes from a blocked hit (8 points here), through the part of the
     /// shield: halved to 4, canceled to none, and as vanilla (8) for the part-less item next to it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+    #[ignore = "daily"]
     fn a_damage_item_part_changes_the_wear_of_a_blocking_shield() {
         use crate::game::damage_item_tests::{Rule, with_wear_part};
         with_wear_part("minecraft:shield", Rule::Halve, |game, wear| {
@@ -437,7 +434,7 @@ mod blocked_hit_use_tests {
     /// `BlocksAttacks.hurtBlockingItem`: a hit taken while using a shield
     /// counts it as used, even when the shield blocks none of the damage.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn a_blocked_hit_counts_the_shield_as_used() {
         let mut game_resources = None;
         let mut game = server_game(&mut game_resources);

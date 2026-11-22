@@ -144,12 +144,38 @@ impl Game<'_> {
         let spared = |x: i32, z: i32| {
             guest.is_some_and(|g| g.collision_exclusions.spares(BlockPos::new(x, y, z)))
         };
-        xs.into_iter().any(|x| {
+        let in_block = xs.into_iter().any(|x| {
             zs.clone().any(|z| {
                 let f = self.res.facts().get(self.world.block(x, y, z));
                 f.full_collision && f.solid_render && !spared(x, z)
             })
-        })
+        });
+        // A collider box at the eyes is a wall as well: the crush a moving collider gives.
+        in_block
+            || guest.is_some_and(|g| {
+                let side = f64::from(body.width * 0.8_f32);
+                let eye = [at[0], at[1] + f64::from(body.eye_height), at[2]];
+                let eyes = || {
+                    sunrise_client_render::moving_colliders::overlaps(
+                        sunrise_world::entity_obstruction::EntityIdentity(g.entity_id as u64),
+                        sunrise_core::geometry::Aabb::new(
+                            sunrise_core::geometry::Vec3::new(
+                                eye[0] - side / 2.0,
+                                eye[1] - 5.0e-7,
+                                eye[2] - side / 2.0,
+                            ),
+                            sunrise_core::geometry::Vec3::new(
+                                eye[0] + side / 2.0,
+                                eye[1] + 5.0e-7,
+                                eye[2] + side / 2.0,
+                            ),
+                        ),
+                    )
+                };
+                // The crush is in the level as it stands now, where the guest's committed
+                // position is.
+                eyes()
+            })
     }
 }
 

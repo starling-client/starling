@@ -1,0 +1,38 @@
+# Vanilla 26.3 lightmap.fsh for core_lightmap_tests' two states, every texel: RGBA
+# bytes as hex, a line per sky level 0 to 15, a texel per block level 0 to 15. Made by
+# an independent float32 transcription of lightmap.fsh (numpy), rounded to the nearest
+# byte as a unorm target stores it; every channel is at least 0.005 of a byte from a tie.
+# state 0
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+a5baa5ff afc2adff bacab2ff c5d2b6ff d0d9b8ff dbe1b9ff e7e7baff efebb9ff f5eeb8ff faf0b8ff fdf1baff fff3beff fff4c6ff ffffe9ff ffffffff ffffffff
+# state 1
+2a2525ff 352e2dff 413532ff 4d3c35ff 594237ff 664738ff 744d39ff 83543aff 925c3eff a16644ff b1724eff c2825eff d49674ff e9b094ff ffd9c4ff ffffffff
+2f292aff 393232ff 443937ff 503f3aff 5d453bff 6a4a3cff 77503dff 85573eff 945e41ff a36847ff b37451ff c48361ff d69776ff eab296ff ffdbc6ff ffffffff
+332d30ff 3e3637ff 493d3cff 54433fff 604940ff 6d4e40ff 7a5341ff 885a42ff 966145ff a56a4bff b57655ff c58563ff d79979ff ebb398ff ffddc9ff ffffffff
+383236ff 433b3dff 4d4141ff 584744ff 644d45ff 715245ff 7d5746ff 8b5d47ff 99644aff a86d4fff b77958ff c78767ff d89b7cff edb59aff ffdfccff ffffffff
+3e383cff 484043ff 524648ff 5d4c4aff 69514bff 75564bff 815b4bff 8e614cff 9c674eff aa7053ff b97b5cff c98a6aff da9d7fff eeb79dff ffe2d0ff ffffffff
+443e44ff 4e454aff 584c4eff 625150ff 6d5651ff 795a51ff 855f51ff 926551ff 9f6b53ff ad7358ff bc7e60ff cb8c6eff dc9f82ff f0b9a0ff ffe5d4ff ffffffff
+4b444cff 544c52ff 5e5256ff 685758ff 735b58ff 7e6058ff 8a6457ff 966957ff a36f59ff b0775dff be8265ff cd8f72ff dea286ff f2bba3ff ffe9d8ff ffffffff
+524b54ff 5b525bff 65585eff 6e5d60ff 796160ff 83655fff 8f695eff 9a6e5eff a7745fff b47b63ff c1856bff d09377ff e1a58aff f5bea7ff ffedddff ffffffff
+5a535eff 635a64ff 6c6068ff 756469ff 7f6868ff 896b67ff 946f66ff 9f7366ff ab7967ff b8806aff c58971ff d3967dff e4a88fff f7c1acff fff2e4ff ffffffff
+635b69ff 6b626fff 746872ff 7d6c73ff 866f72ff 907271ff 9a766fff a57a6eff b07f6fff bc8571ff c98e78ff d79b83ff e7ac95ff fbc4b1ff fff8ebff ffffffff
+6d6575ff 756b7aff 7e717eff 86757eff 8f787dff 987a7bff a17d79ff ab8178ff b68578ff c18b7aff cd9480ff dba08bff ebb19cff ffc9b7ff fffff3ff ffffffff
+786f82ff 7f7587ff 887b8aff 907f8bff 98818aff a08387ff a98685ff b38983ff bc8d82ff c79284ff d39a89ff e0a693ff f0b6a4ff ffd1c2ff fffffeff ffffffff
+847b91ff 8b8095ff 938698ff 9c8a9aff a38c98ff aa8e95ff b29092ff bb9290ff c4958fff ce9a90ff d9a294ff e6ad9eff f6bdaeff ffdccfff ffffffff ffffffff
+9288a2ff 988da5ff 9f92a8ff a896aaff af99a8ff b69aa5ff bd9ba2ff c59d9fff cda09eff d7a49eff e1aba2ff eeb6abff fdc6baff ffeae0ff ffffffff ffffffff
+a197b5ff a79cb8ff ada0baff b5a4bbff bea7bcff c4a8b8ff caa9b5ff d1aab2ff d9adb0ff e2b1b0ff ecb7b3ff f8c2bbff ffd7d0ff fffcf7ff ffffffff ffffffff
+b3a9caff b8accdff beb0cfff c5b4d0ff cdb8d1ff d4bad0ff dabaccff e1bbc9ff e8bdc6ff f0c1c6ff fac7c9ff ffd7d6ff fff1efff ffffffff ffffffff ffffffff

@@ -3,12 +3,12 @@
 //! (docs/agent-control.md, Repeatable screenshots). The reply comes once the PNG is written.
 
 use super::{Game, Screen};
+use serde_json::{Value, json};
+use std::{path::PathBuf, sync::mpsc::Sender};
 use sunrise_client::{
     Result,
     gfx::{ScreenshotRequest, pack_uniforms::FrameTiming},
 };
-use serde_json::{Value, json};
-use std::{path::PathBuf, sync::mpsc::Sender};
 
 const MAX_FRAMES: u32 = 10_000;
 
@@ -65,7 +65,7 @@ impl Game<'_> {
             || self.player.is_none()
             || self.integrated_starting.is_some()
             || self.pending_entry.is_some()
-            || self.pack_reload.is_some()
+            || self.reload_overlay.is_some()
             || self.pending_save.is_some()
             || self
                 .remote

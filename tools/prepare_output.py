@@ -60,6 +60,10 @@ def canonical_json(value, key=''):
         items = [canonical_json(v, key) for v in value]
         if key == 'tags' and all(isinstance(x, list) and all(isinstance(t, str) for t in x) for x in items):
             items = [sorted(x) for x in items]
+        elif key == 'search_metadata':
+            for entry in items:
+                if isinstance(entry, dict) and 'tags' in entry:
+                    entry['tags'] = sorted(entry['tags'])
         return items
     if isinstance(value, str):
         return LAMBDA.sub('$$Lambda', value)

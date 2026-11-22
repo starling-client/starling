@@ -1,0 +1,36 @@
+[package]
+name = "sunrise-native-build"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Native mods compiled against a signed prebuilt SDK: the launcher's build and `cargo sunrise-mod native-build`"
+
+[dependencies]
+sunrise-addresses = { path = "../sunrise-addresses" }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index", "prebuilt"] }
+sunrise-platform = { path = "../sunrise-platform", features = ["mod-build"] }
+flate2 = "1"
+# Reads the object members out of the mods' rlibs for the API route's C link (`api_route.rs`).
+object = { version = "0.39", default-features = false, features = ["read_core", "archive", "pe", "std"] }
+# Match generated helpers to the compiler's byte spans, without depending on formatting.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+syn = { version = "2", features = ["full", "visit"] }
+tar = { version = "0.4", default-features = false }
+# A lock resolves in a scratch folder and replaces the mod's only when it is whole (`registry_generate.rs`).
+tempfile = "3"
+toml = "1.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+sunrise-mod-vocab = { path = "../sunrise-mod-vocab" }
+
+[lints]
+workspace = true

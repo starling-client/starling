@@ -1,9 +1,9 @@
 //! `ignited_by_lava` answered by a block Part with the asked block's face (#3185): the Part's
 //! answer replaces the state's `IGNITED_BY_LAVA` flag either way.
 use super::native_entity_refs::tests::with_game;
+use mod_api::{self, BlockPart, Hooks, IgnitedByLavaEvent, LevelHost, Registrar};
 use sunrise_core::{geometry::Direction, position::BlockPos};
 use sunrise_world::{level::LevelAccess, registry::BlockStateId};
-use mod_api::{self, BlockPart, Hooks, IgnitedByLavaEvent, LevelHost, Registrar};
 
 /// Stone that lava lights from its top only.
 struct TopIgnites;
@@ -26,7 +26,7 @@ impl Hooks for LavaMod {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_block_part_decides_whether_lava_lights_it() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("lava", Box::new(LavaMod))].into();
     crate::game::api_values::install_parts(&mods).unwrap();
@@ -56,6 +56,7 @@ fn a_block_part_decides_whether_lava_lights_it() {
                 "no Part: the flag answers"
             );
             // A client's copy of the level asks no Part.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             game.options.dedicated = None;
             assert_eq!(ignites(game, stone, Direction::Up), None);
         })

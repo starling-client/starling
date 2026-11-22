@@ -2,9 +2,10 @@
 
 pub trait Hooks {
     /// The client has finished shutting down, after `client_stopping`. Fires once
-    /// on the render thread for an orderly client exit, not for a dedicated server
-    /// or a splitscreen guest. NeoForge's `ClientStoppedEvent`.
+    /// on the render thread for an orderly client exit, not for a dedicated server.
+    /// NeoForge's `ClientStoppedEvent`.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ClientStoppedEvent",

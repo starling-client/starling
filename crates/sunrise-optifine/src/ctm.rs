@@ -1,200 +1,83 @@
 //! Connected textures (`optifine/ctm/**/*.properties`): the rules a pack defines, which block
 //! faces each one applies to, and its replacement tiles. Choosing a tile from the neighbours is
-//! [`connect`]'s.
+//! `sunrise_connected`'s.
 //!
 //! Written from OptiFine's `ctm.properties` documentation and template images, and Continuity's
 //! wiki (its "Continuity Connected Textures Specification" page) for what OptiFine does where the
 //! documentation is silent; no mod's source was read.
 
-pub mod connect;
-
 use crate::{BlockMatch, IdList, Name, Properties, RangeList};
 use sunrise_assets::resource_source::ResourceSource;
+use sunrise_connected::{
+    self as connected, BlockSel, Connect, Ids, Layer, Method, Orient, Ranges, Symmetry, Tile, faces,
+};
 
-/// In this order: the overlays last ([`Method::is_overlay`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Method {
-    /// The 47 tiles of the 8-way template.
-    Ctm,
-    /// 5 tiles, cut into quarters, and `ctm.N` replacements.
-    CtmCompact,
-    Horizontal,
-    Vertical,
-    HorizontalVertical,
-    VerticalHorizontal,
-    Top,
-    Random,
-    Repeat,
-    Fixed,
-    /// The 17 transition tiles drawn over a face beside the connecting blocks.
-    Overlay,
-    OverlayCtm,
-    OverlayRandom,
-    OverlayRepeat,
-    OverlayFixed,
-    /// Continuity's overlay forms of the 4-tile methods.
-    OverlayHorizontal,
-    OverlayVertical,
-    OverlayHorizontalVertical,
-    OverlayVerticalHorizontal,
+/// `value` as the method it names (OptiFine's and MCPatcher's names).
+fn parse_method(value: &str) -> Option<Method> {
+    use Method::*;
+    Some(match value {
+        // MCPatcher's names for the same methods.
+        "ctm" | "glass" => Ctm,
+        "ctm_compact" => CtmCompact,
+        "horizontal" | "bookshelf" => Horizontal,
+        "vertical" => Vertical,
+        "horizontal+vertical" | "h+v" => HorizontalVertical,
+        "vertical+horizontal" | "v+h" => VerticalHorizontal,
+        "top" | "sandstone" => Top,
+        "random" => Random,
+        "repeat" | "pattern" => Repeat,
+        "fixed" | "static" => Fixed,
+        "overlay" => Overlay,
+        "overlay_ctm" => OverlayCtm,
+        "overlay_random" => OverlayRandom,
+        "overlay_repeat" => OverlayRepeat,
+        "overlay_fixed" => OverlayFixed,
+        "overlay_horizontal" => OverlayHorizontal,
+        "overlay_vertical" => OverlayVertical,
+        "overlay_horizontal+vertical" | "overlay_h+v" => OverlayHorizontalVertical,
+        "overlay_vertical+horizontal" | "overlay_v+h" => OverlayVerticalHorizontal,
+        _ => return None,
+    })
 }
 
-impl Method {
-    fn parse(value: &str) -> Option<Self> {
-        use Method::*;
-        Some(match value {
-            // MCPatcher's names for the same methods.
-            "ctm" | "glass" => Ctm,
-            "ctm_compact" => CtmCompact,
-            "horizontal" | "bookshelf" => Horizontal,
-            "vertical" => Vertical,
-            "horizontal+vertical" | "h+v" => HorizontalVertical,
-            "vertical+horizontal" | "v+h" => VerticalHorizontal,
-            "top" | "sandstone" => Top,
-            "random" => Random,
-            "repeat" | "pattern" => Repeat,
-            "fixed" | "static" => Fixed,
-            "overlay" => Overlay,
-            "overlay_ctm" => OverlayCtm,
-            "overlay_random" => OverlayRandom,
-            "overlay_repeat" => OverlayRepeat,
-            "overlay_fixed" => OverlayFixed,
-            "overlay_horizontal" => OverlayHorizontal,
-            "overlay_vertical" => OverlayVertical,
-            "overlay_horizontal+vertical" | "overlay_h+v" => OverlayHorizontalVertical,
-            "overlay_vertical+horizontal" | "overlay_v+h" => OverlayVerticalHorizontal,
-            _ => return None,
-        })
-    }
-
-    /// Draws a second quad over the face instead of replacing its sprite.
-    pub fn is_overlay(self) -> bool {
-        self >= Method::Overlay
-    }
-
-    /// The fewest tiles the method takes, and the exact count when it needs one. `ctm_compact`
-    /// takes extra tiles for its `ctm.N` replacements; `repeat` needs `width * height`.
-    fn tiles_needed(self, width: u32, height: u32) -> (usize, Option<usize>) {
-        use Method::*;
-        let n = |n| (n, Some(n));
-        match self {
-            Ctm | OverlayCtm => n(47),
-            CtmCompact => (5, None),
-            Horizontal | Vertical | OverlayHorizontal | OverlayVertical => n(4),
-            HorizontalVertical
-            | VerticalHorizontal
-            | OverlayHorizontalVertical
-            | OverlayVerticalHorizontal => n(7),
-            Top | Fixed | OverlayFixed => n(1),
-            Random | OverlayRandom => (1, None),
-            // `checked_mul`'s `None` (a pattern no pack can fill) asks for 0 tiles: refused.
-            Repeat | OverlayRepeat => n(width.checked_mul(height).unwrap_or(0) as usize),
-            Overlay => n(17),
-        }
+/// The fewest tiles the method takes, and the exact count when it needs one. `ctm_compact`
+/// takes extra tiles for its `ctm.N` replacements; `repeat` needs `width * height`.
+fn tiles_needed(method: Method, width: u32, height: u32) -> (usize, Option<usize>) {
+    use Method::*;
+    let n = |n| (n, Some(n));
+    match method {
+        Ctm | OverlayCtm => n(47),
+        CtmCompact => (5, None),
+        Horizontal | Vertical | OverlayHorizontal | OverlayVertical => n(4),
+        HorizontalVertical
+        | VerticalHorizontal
+        | OverlayHorizontalVertical
+        | OverlayVerticalHorizontal => n(7),
+        Top | Fixed | OverlayFixed => n(1),
+        Random | OverlayRandom => (1, None),
+        // `checked_mul`'s `None` (a pattern no pack can fill) asks for 0 tiles: refused.
+        Repeat | OverlayRepeat => n(width.checked_mul(height).unwrap_or(0) as usize),
+        Overlay => n(17),
+        // No file names it: mods' tables are read elsewhere.
+        Table => n(0),
     }
 }
 
-/// When two neighbouring faces join.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Connect {
-    /// The same block.
-    Block,
-    /// The same sprite on that face.
-    Tile,
-    /// The same block state.
-    State,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Tile {
-    /// A texture's resource path (`assets/<ns>/....png`).
-    Texture(String),
-    /// Nothing from this rule: the next rule is tried (an overlay draws nothing).
-    Skip,
-    /// The face's own sprite.
-    Default,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Symmetry {
-    #[default]
-    None,
-    /// Opposite faces share a choice.
-    Opposite,
-    /// All six faces share a choice.
-    All,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Layer {
-    #[default]
-    Cutout,
-    Translucent,
-}
-
-/// How a face's left, right, up and down are found (Continuity's `orient`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Orient {
-    /// The face's directions on a vanilla cube.
-    None,
-    /// [`Orient::None`], turned with the block's `axis` as a cube column's model is.
-    StateAxis,
-    /// The quad's own texture directions.
-    Texture,
-}
-
-/// Bits of [`Rule::faces`], by `Direction` order: down, up, north, south, west, east.
-pub mod faces {
-    pub const DOWN: u8 = 1;
-    pub const UP: u8 = 2;
-    pub const NORTH: u8 = 4;
-    pub const SOUTH: u8 = 8;
-    pub const WEST: u8 = 16;
-    pub const EAST: u8 = 32;
-    pub const SIDES: u8 = NORTH | SOUTH | WEST | EAST;
-    pub const ALL: u8 = 63;
-}
-
+/// A rule as a pack's file says it: the engine's rule, and the custom name OptiFine's rules can
+/// also test, which the client meshing chunks has no way to ask ([`Rule::engine`]).
 #[derive(Clone, Debug)]
 pub struct Rule {
-    /// The properties file's resource path: rules are ordered by it.
-    pub path: String,
-    pub method: Method,
-    pub tiles: Vec<Tile>,
-    /// Sprites (as texture resource paths) whose faces the rule replaces.
-    pub match_tiles: Vec<String>,
-    pub match_blocks: Vec<BlockMatch>,
-    pub weight: i32,
-    /// [`faces`] bits.
-    pub faces: u8,
-    pub biomes: Option<IdList>,
-    pub heights: Option<RangeList>,
+    pub rule: connected::Rule,
     /// A nameable block entity's custom name.
     pub name: Option<Name>,
-    pub connect: Connect,
-    /// Overlays: join only to faces with these sprites (texture resource paths) ...
-    pub connect_tiles: Vec<String>,
-    /// ... or these blocks.
-    pub connect_blocks: Vec<BlockMatch>,
-    pub inner_seams: bool,
-    /// One per tile (`random`); empty when every tile counts the same.
-    pub weights: Vec<u32>,
-    pub random_loops: u32,
-    pub symmetry: Symmetry,
-    pub linked: bool,
-    /// `repeat`'s pattern size, in blocks.
-    pub width: u32,
-    pub height: u32,
-    /// `ctm_compact`'s `ctm.<case>=<tile index>`, by 47-tile case.
-    pub compact_overrides: Vec<(u8, usize)>,
-    /// Overlays: the tint index and the block whose tint it is (`None`: the face's block).
-    pub tint_index: i32,
-    pub tint_block: Option<String>,
-    pub layer: Layer,
-    pub orient: Orient,
-    /// Applied before every rule without it (Continuity's `prioritize`; OptiFine's "tile-based
-    /// entries are checked before block-based ones").
-    pub prioritize: bool,
+}
+
+impl std::ops::Deref for Rule {
+    type Target = connected::Rule;
+
+    fn deref(&self) -> &connected::Rule {
+        &self.rule
+    }
 }
 
 /// Every rule `root` holds, in the order they are tried: prioritized (tile) rules first, then by
@@ -222,7 +105,18 @@ pub fn load(root: &ResourceSource) -> Vec<Rule> {
 
 /// [`load`]'s order, for rules gathered elsewhere.
 pub fn sort(rules: &mut [Rule]) {
-    rules.sort_by(|a, b| (b.prioritize, b.weight, &a.path).cmp(&(a.prioritize, a.weight, &b.path)));
+    rules.sort_by(|a, b| a.order().cmp(&b.order()));
+}
+
+/// The rules of `root`'s packs ([`load`]) as the engine's, for the client's mesher. Rules that
+/// test a custom name are left out: the client meshing chunks never receives block entities'
+/// names, so they could never match.
+pub fn load_engine(root: &ResourceSource) -> Vec<connected::Rule> {
+    load(root)
+        .into_iter()
+        .filter(|r| r.name.is_none())
+        .map(|r| r.rule)
+        .collect()
 }
 
 impl Rule {
@@ -238,7 +132,7 @@ impl Rule {
             return Ok(None);
         }
         let method = get("method").ok_or("no method")?;
-        let method = Method::parse(method).ok_or(format!("unknown method {method}"))?;
+        let method = parse_method(method).ok_or(format!("unknown method {method}"))?;
 
         let stem = path.rsplit('/').next().unwrap_or(path);
         let stem = stem.strip_suffix(".properties").unwrap_or(stem);
@@ -246,12 +140,12 @@ impl Rule {
         match (get("matchTiles"), get("matchBlocks")) {
             (None, None) => match stem.strip_prefix("block_") {
                 // `block_<name>.properties` and `<name>.properties` name what they match.
-                Some(block) => match_blocks = BlockMatch::parse_list(block),
+                Some(block) => match_blocks = block_list(block),
                 None => match_tiles.extend(sprite_path(stem)),
             },
             (tiles, blocks) => {
                 match_tiles = tiles.map_or_else(Vec::new, |v| sprite_list(path, v));
-                match_blocks = blocks.map_or_else(Vec::new, BlockMatch::parse_list);
+                match_blocks = blocks.map_or_else(Vec::new, block_list);
             }
         }
         if match_tiles.is_empty() && match_blocks.is_empty() {
@@ -266,7 +160,7 @@ impl Rule {
             Some(v) => tile_list(path, v)?,
             None => Vec::new(),
         };
-        let (min, max) = method.tiles_needed(width, height);
+        let (min, max) = tiles_needed(method, width, height);
         if tiles.len() < min || max.is_some_and(|max| tiles.len() != max) || min == 0 {
             return Err(format!("{} tiles for {method:?}", tiles.len()));
         }
@@ -307,10 +201,7 @@ impl Rule {
                     Some(v) => v.parse().map_err(|_| format!("bad height {v}")),
                     None => Ok(d),
                 };
-                Some(RangeList(vec![(
-                    bound(lo, i32::MIN)?,
-                    bound(hi, i32::MAX)?,
-                )]))
+                Some(Ranges(vec![(bound(lo, i32::MIN)?, bound(hi, i32::MAX)?)]))
             }
         };
 
@@ -337,7 +228,7 @@ impl Rule {
             },
         };
 
-        Ok(Some(Self {
+        let rule = connected::Rule {
             path: path.to_owned(),
             method,
             prioritize: flag("prioritize").unwrap_or(!match_tiles.is_empty()),
@@ -345,15 +236,19 @@ impl Rule {
             match_blocks,
             weight: int("weight", 0),
             faces: get("faces").map_or(faces::ALL, face_bits),
-            biomes: get("biomes").map(IdList::parse),
+            biomes: get("biomes").map(|v| {
+                let ids = IdList::parse(v);
+                Ids {
+                    include: ids.include,
+                    exclude: ids.exclude,
+                }
+            }),
             heights,
-            name: match get("name") {
-                Some(n) => Some(Name::parse(n).ok_or(format!("bad name {n}"))?),
-                None => None,
-            },
             connect,
             connect_tiles: get("connectTiles").map_or_else(Vec::new, |v| sprite_list(path, v)),
-            connect_blocks: get("connectBlocks").map_or_else(Vec::new, BlockMatch::parse_list),
+            connect_blocks: get("connectBlocks").map_or_else(Vec::new, block_list),
+            connect_properties: Vec::new(),
+            connect_group: false,
             inner_seams: flag("innerSeams") == Some(true),
             weights,
             random_loops: int("randomLoops", 0).clamp(0, 9) as u32,
@@ -374,30 +269,35 @@ impl Rule {
             },
             orient,
             tiles,
-        }))
-    }
-
-    /// The rule names this block state (`state` answers its properties).
-    pub fn matches_block<'a>(&self, id: &str, state: impl Fn(&str) -> Option<&'a str>) -> bool {
-        self.match_blocks.iter().any(|m| m.matches(id, &state))
-    }
-
-    /// The rule names this sprite (a texture resource path, [`sprite_path`]).
-    pub fn matches_tile(&self, sprite: &str) -> bool {
-        self.match_tiles.iter().any(|t| t == sprite)
+            table: None,
+        };
+        let name = match get("name") {
+            Some(n) => Some(Name::parse(n).ok_or(format!("bad name {n}"))?),
+            None => None,
+        };
+        Ok(Some(Self { rule, name }))
     }
 
     /// The tests that depend on where the face is, not on what it is. `face` is a [`faces`] bit;
     /// `name` is the block entity's custom name, if it has one.
     pub fn applies_at(&self, face: u8, y: i32, biome: &str, name: Option<&str>) -> bool {
-        self.faces & face != 0
-            && self.heights.as_ref().is_none_or(|h| h.contains(y))
-            && self.biomes.as_ref().is_none_or(|b| b.matches(biome))
+        self.rule.applies_at(face, y, || Some(biome))
             && self
                 .name
                 .as_ref()
                 .is_none_or(|n| name.is_some_and(|name| n.matches(name)))
     }
+}
+
+/// A whitespace-separated list of block entries.
+fn block_list(value: &str) -> Vec<BlockSel> {
+    BlockMatch::parse_list(value)
+        .into_iter()
+        .map(|m| BlockSel {
+            id: m.id,
+            states: m.states,
+        })
+        .collect()
 }
 
 /// `matchTiles`/`connectTiles` entries of the file `props` as texture resource paths. `./x` is
@@ -521,7 +421,7 @@ fn face_bits(value: &str) -> u8 {
 }
 
 /// `heights`: OptiFine's ranges, or Continuity's `a..b`, `a..`, `..b` (either order).
-fn height_list(value: &str) -> Option<RangeList> {
+fn height_list(value: &str) -> Option<Ranges> {
     let mut out = Vec::new();
     for token in value.split([' ', ',']).filter(|t| !t.is_empty()) {
         match token.split_once("..") {
@@ -541,7 +441,7 @@ fn height_list(value: &str) -> Option<RangeList> {
             None => out.extend(RangeList::parse(token)?.0),
         }
     }
-    Some(RangeList(out))
+    Some(Ranges(out))
 }
 
 #[cfg(test)]
@@ -864,6 +764,7 @@ mod tests {
             )
             .unwrap()
             .unwrap()
+            .rule
             .heights
             .unwrap()
         };

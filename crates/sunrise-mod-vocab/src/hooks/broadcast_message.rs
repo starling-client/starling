@@ -5,6 +5,9 @@ pub trait Hooks {
     /// A server broadcast line is about to be logged and sent. Change `line`
     /// or set `cancel` to drop it.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_broadcast_message",
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -12,5 +15,5 @@ pub trait Hooks {
         neoforge = "none (NeoForge has no such event; Bukkit's BroadcastMessageEvent)",
         cancellable = true
     )]
-    fn broadcast_message();
+    fn broadcast_message(line: &mut Text, cancel: &mut bool);
 }

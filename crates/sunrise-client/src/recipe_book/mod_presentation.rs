@@ -45,6 +45,7 @@ fn result(display: &Display) -> &Slot {
     match display {
         Display::Shaped { result, .. }
         | Display::Shapeless { result, .. }
+        | Display::Custom { result, .. }
         | Display::Furnace { result, .. }
         | Display::Stonecutter { result, .. }
         | Display::Smithing { result, .. } => result,
@@ -74,7 +75,10 @@ fn cells(display: &Display, resolver: &dyn DisplayResolver) -> Vec<(i32, i32, Ve
                 );
             }
         }
-        Display::Shapeless { ingredients, .. } => {
+        Display::Shapeless { ingredients, .. }
+        | Display::Custom {
+            slots: ingredients, ..
+        } => {
             for (i, slot) in ingredients.iter().enumerate() {
                 push((i % 3) as i32, (i / 3) as i32, slot);
             }

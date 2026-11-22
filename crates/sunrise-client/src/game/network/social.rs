@@ -4,13 +4,13 @@
 //! `social_screen`. Blocking is Mojang's service (`UserApiService.isBlockedPlayer`), which
 //! Sunrise does not offer: nobody is blocked, as in vanilla's offline mode.
 use super::{Game, Screen};
+use std::collections::{HashMap, HashSet};
 use sunrise_client::{
     social_screen::{self, Action, Entry, Page, SocialView},
     tab_list::TabPlayer,
     text::Text,
     ui::EditBox,
 };
-use std::collections::{HashMap, HashSet};
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -181,12 +181,12 @@ impl Game<'_> {
             sunrise_client::ui::tooltip(batch, &self.gui.atlas, &[tooltip], self.cursor);
         }
     }
-    pub(super) fn social_click(&mut self) {
+    pub(super) fn social_click(&mut self) -> bool {
         let size = self.gui_size();
         let cursor = self.cursor;
         let view = self.social_view();
         let Some(kind) = social_screen::click_kind(size, cursor, &view) else {
-            return;
+            return false;
         };
         // The widget first: the search box's `onClick` puts the caret under the
         // pointer, before any list button is considered.
@@ -195,10 +195,10 @@ impl Game<'_> {
             self.social
                 .search
                 .click(&self.gui.atlas, cursor.0, shift, false);
-            return;
+            return true;
         }
         let social_screen::Click::Action(action) = kind else {
-            return;
+            return false;
         };
         self.audio.play_button_click();
         match action {
@@ -226,6 +226,7 @@ impl Game<'_> {
             }
             Action::Done => self.close_social(),
         }
+        true
     }
     /// `AbstractSelectionList.mouseScrolled`: a row's height and a bit a notch.
     pub(super) fn social_scroll(&mut self, delta: f32) {

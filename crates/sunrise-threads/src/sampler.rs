@@ -80,6 +80,7 @@ thread_local! {
 
 macro_rules! setter {
     ($name:ident, $field:ident, $t:ty) => {
+        #[inline]
         pub fn $name(v: $t) {
             CTX.with(|c| c.$field.store(v, Relaxed))
         }
@@ -91,6 +92,7 @@ setter!(set_entity_type, entity, u16);
 setter!(set_block, block, u16);
 setter!(set_dim, dim, u8);
 
+#[inline]
 pub fn set_chunk(x: i32, z: i32) {
     CTX.with(|c| (c.chunk.0.store(x, Relaxed), c.chunk.1.store(z, Relaxed)));
 }
@@ -101,8 +103,19 @@ pub(crate) fn sampled_name() -> Option<&'static str> {
     unsafe { LOCAL.with(Cell::get).as_ref() }.map(|s| s.name)
 }
 
+#[inline]
 pub fn span() -> u16 {
     CTX.with(|c| c.span.load(Relaxed))
+}
+
+/// Makes `v` the thread's span and returns the one it replaces, in one thread-local access.
+#[inline]
+pub fn replace_span(v: u16) -> u16 {
+    CTX.with(|c| {
+        let previous = c.span.load(Relaxed);
+        c.span.store(v, Relaxed);
+        previous
+    })
 }
 
 pub fn context() -> Context {

@@ -1,14 +1,19 @@
-//! Vehicles and passengers for native server mods, through an `EntityRef`
-//! (docs/modding/src/how-to/native-mods.md, "Entity and level handles", #7387): what an entity
-//! rides, who rides it, getting off, and who holds its lead. Players ride
-//! boats, minecarts and mounts; mobs ride mobs, boats and minecarts. Reads
-//! return `None` for a stale handle or on a client.
-use super::{Game, commands::Target, mounts::steering_item};
+//! Vehicles and passengers through an `EntityRef`: what an entity rides, who rides it,
+//! getting off, and who holds its lead. Basic topology reads also answer from the client's
+//! packet state; riding writes and the remaining reads are server-only.
+use super::{
+    Game, commands::Target, mounts::steering_item, remote::Remote, remote_vehicles::passenger_root,
+};
+use mod_api::{EntityRef, LeashHolder, LivingRef, StartRidingRefusal};
 use sunrise_client::{
     lan::playerdata::ints_uuid,
     mobs::{Mob, Species, equine, happy_ghast, leash::Holder, nautilus},
 };
-use mod_api::{EntityRef, LeashHolder, LivingRef};
+
+enum RidingRead<'a> {
+    Server(Target),
+    Client(&'a Remote),
+}
 
 impl Game<'_> {
     /// The dismount search with a vehicle or passenger lent out of `self.mobs`.
@@ -59,81 +64,116 @@ impl Game<'_> {
     }
 
     /// The id of the entity `t` rides, if it rides one.
-    fn native_vehicle_id(&self, t: Target) -> Option<u32> {
+    pub(super) fn native_vehicle_id(&self, t: Target) -> Option<u32> {
         match t {
             Target::Player => self.riding,
             Target::Guest(conn) => self.command_guest(conn)?.vehicle,
             Target::Mob(id) => self.mob_object(id).filter(|m| !m.removed)?.extra.mount,
-            // A general row rides the row its tree loaded with; a row queued
-            // for removal rides nothing, as a removed mob does not.
-            Target::General(id) => self
-                .resident_entities
-                .general
-                .rows
-                .iter()
-                .find(|row| row.id == id && !self.persist.removals.contains(&Target::General(id)))
-                .and_then(|row| row.mount),
+            Target::General(id) => self.general_row(id)?.mount,
             _ => None,
         }
     }
-    /// The entity's vehicle as a handle, if it rides one in this level.
-    fn native_vehicle(&self, entity: EntityRef) -> Option<Option<EntityRef>> {
-        let t = self.native_entity_target(entity)?;
-        Some(self.native_vehicle_id(t).and_then(|v| self.entity(v)))
+    /// The side's own copy of the entity for a read. On a client only tracked
+    /// entities and the local player have handles.
+    fn riding_read(&self, entity: EntityRef) -> Option<RidingRead<'_>> {
+        if self.is_logical_server() {
+            return self.native_entity_target(entity).map(RidingRead::Server);
+        }
+        (self.entity(entity.id())? == entity).then_some(RidingRead::Client(self.remote.as_ref()?))
     }
-    /// What the entity rides (`Entity.getVehicle`): `None` when it rides
-    /// nothing, its actual vehicle is off-level, or the input handle is stale.
+
+    /// What the entity rides (`Entity.getVehicle`), if its vehicle has a handle.
     pub(super) fn entity_vehicle(&self, entity: EntityRef) -> Option<EntityRef> {
-        self.native_vehicle(entity).flatten()
+        match self.riding_read(entity)? {
+            RidingRead::Server(target) => self.entity(self.native_vehicle_id(target)?),
+            RidingRead::Client(remote) => self.entity(remote.passenger_vehicle(entity.id())?),
+        }
     }
-    /// Whether the entity rides another object, including a retained off-level vehicle.
+    /// Whether the entity rides another object, even one without a handle.
     pub(super) fn entity_is_passenger(&self, entity: EntityRef) -> Option<bool> {
-        Some(
-            self.native_vehicle_id(self.native_entity_target(entity)?)
-                .is_some(),
-        )
+        let vehicle = match self.riding_read(entity)? {
+            RidingRead::Server(target) => self.native_vehicle_id(target),
+            RidingRead::Client(remote) => remote.passenger_vehicle(entity.id()),
+        };
+        Some(vehicle.is_some())
     }
     /// The lowest vehicle under the entity (`Entity.getRootVehicle`): the
     /// entity itself when it rides nothing. Off-level intermediaries are traversed;
     /// an off-level root or a cycle returns no handle, never a descendant substitute.
     pub(super) fn entity_root_vehicle(&self, entity: EntityRef) -> Option<EntityRef> {
-        let target = self.native_entity_target(entity)?;
-        self.entity(self.native_root_vehicle_id(entity.id(), target)?)
+        match self.riding_read(entity)? {
+            RidingRead::Server(target) => {
+                self.entity(self.native_root_vehicle_id(entity.id(), target)?)
+            }
+            RidingRead::Client(remote) => {
+                let root = passenger_root(&remote.passenger_vehicles, entity.id()).ok()?;
+                self.entity(root)
+            }
+        }
     }
 
-    /// Follow full object links, returning no root for a cycle. Only mobs can
-    /// be intermediate vehicles. Their object count plus the non-Mob endpoints
-    /// bounds the walk without truncating valid trees or allocating a visited set.
+    /// Follow full object links, returning no root for a cycle without allocating a visited set.
     pub(super) fn native_root_vehicle_id(&self, id: u32, target: Target) -> Option<u32> {
         let mut root = id;
         let mut next = self.native_vehicle_id(target);
-        for _ in 0..=self.mobs.len() + self.persist.off_level.len() + 1 {
+        for _ in 0..=self.riding_link_limit() {
             let Some(vehicle) = next else {
                 return Some(root);
             };
             root = vehicle;
-            next = self.native_vehicle_id(Target::Mob(vehicle));
+            next = self.vehicle_of_any(vehicle);
         }
         None
     }
+    /// The number of objects that could themselves have a mount, bounding a
+    /// walk of valid links. Only mobs, general rows and players can be riders.
+    pub(super) fn riding_link_limit(&self) -> usize {
+        self.mobs.len()
+            + self.persist.off_level.len()
+            + self.resident_entities.general.rows.len()
+            + self.lan.as_ref().map_or(0, |host| host.hub.guests.len())
+            + 1
+    }
+
     /// A live portal root carries a direct or indirect mount through complete objects.
     pub(super) fn vehicle_tree_contains_mount(&self, root: u32, mount: u32) -> bool {
+        // A retained mob has no handle: its own object is its target.
+        let target = self
+            .entity(mount)
+            .and_then(|entity| self.native_entity_target(entity))
+            .or_else(|| {
+                self.mob_object(mount)
+                    .filter(|mob| !mob.removed)
+                    .map(|_| Target::Mob(mount))
+            });
         self.entity(root).is_some()
-            && (self.mob_object(mount).is_some_and(|mob| !mob.removed)
-                || self.entity(mount).is_some())
-            && self.native_root_vehicle_id(mount, Target::Mob(mount)) == Some(root)
+            && target.is_some_and(|target| self.native_root_vehicle_id(mount, target) == Some(root))
     }
 
     /// The entities riding this one (`Entity.getPassengers`), in `addPassenger`'s order.
     pub(super) fn entity_passengers(&self, entity: EntityRef) -> Option<Vec<EntityRef>> {
-        self.native_entity_target(entity)?;
-        let seats = self.seated_passengers(entity.id()).into_iter();
-        Some(seats.filter_map(|(_, id, _)| self.entity(id)).collect())
+        Some(match self.riding_read(entity)? {
+            RidingRead::Server(_) => self
+                .seated_passengers(entity.id())
+                .into_iter()
+                .filter_map(|(_, id, _)| self.entity(id))
+                .collect(),
+            RidingRead::Client(remote) => {
+                let mut seats: Vec<_> = remote
+                    .passenger_seats(entity.id())
+                    .filter_map(|(id, index)| Some((index, self.entity(id)?)))
+                    .collect();
+                seats.sort_unstable_by_key(|seat| seat.0);
+                seats.into_iter().map(|(_, handle)| handle).collect()
+            }
+        })
     }
-    /// Whether any object rides the entity, including retained off-level passengers.
+    /// Whether any object rides the entity, even one without a handle.
     pub(super) fn entity_is_vehicle(&self, entity: EntityRef) -> Option<bool> {
-        self.native_entity_target(entity)?;
-        Some(!self.seated_passengers(entity.id()).is_empty())
+        Some(match self.riding_read(entity)? {
+            RidingRead::Server(_) => self.has_seated_passengers(entity.id()),
+            RidingRead::Client(remote) => remote.has_passengers(entity.id()),
+        })
     }
     /// Every entity riding this one, at any depth (`Entity.getIndirectPassengers`): each
     /// passenger in boarding order, followed by those riding it. Traverse off-level
@@ -213,7 +253,7 @@ impl Game<'_> {
     /// handle.
     pub(super) fn entity_controlling_passenger(&self, entity: EntityRef) -> Option<LivingRef> {
         let vehicle = self.native_entity_target(entity)?;
-        let first_id = self.seated_passengers(entity.id()).first()?.1;
+        let first_id = self.first_seated_passenger(entity.id())?.1;
         let first = self.entity(first_id)?;
         let rider = self.native_entity_target(first)?;
         let is_player = matches!(rider, Target::Player | Target::Guest(_));
@@ -228,9 +268,9 @@ impl Game<'_> {
                 }
                 let rider = self.mobs.iter().find(|m| m.id == first.id())?;
                 let tagged = self
-                    .res
-                    .mob_data()
-                    .entity_has("minecraft:non_controlling_rider", &rider.kind.id);
+                    .items()
+                    .entity_type_tags
+                    .contains("minecraft:non_controlling_rider", &rider.kind.id);
                 (!mob.no_ai && !tagged).then(|| LivingRef::new(first))
             }
             _ => None,
@@ -403,46 +443,62 @@ impl Game<'_> {
         vehicle: Target,
         force: bool,
     ) -> bool {
+        self.try_start_riding_target(rider, vehicle, force).is_ok()
+    }
+
+    /// `start_riding_target` with its refusal named (`StartRidingRefusal`).
+    pub(super) fn try_start_riding_target(
+        &mut self,
+        rider: Target,
+        vehicle: Target,
+        force: bool,
+    ) -> Result<(), StartRidingRefusal> {
+        self.try_start_riding_with(rider, vehicle, force, false)
+    }
+
+    /// `try_start_riding_target`, where `onto_player` admits a player vehicle for a mob rider:
+    /// only `entity_ride_player` passes true, so every other call keeps refusing one, as
+    /// vanilla's `startRiding` callers and `/ride` do.
+    pub(super) fn try_start_riding_with(
+        &mut self,
+        rider: Target,
+        vehicle: Target,
+        force: bool,
+        onto_player: bool,
+    ) -> Result<(), StartRidingRefusal> {
         if let Target::Guest(conn) = rider {
             if self
                 .command_guest(conn)
                 .is_none_or(|guest| guest.dimension != self.dim.id())
             {
-                return false;
+                return Err(StartRidingRefusal::NoEntity);
             }
             return self
                 .for_player(rider, |game| {
-                    game.start_riding_target(Target::Player, vehicle, force)
+                    game.try_start_riding_with(Target::Player, vehicle, force, onto_player)
                 })
-                .unwrap_or(false);
+                .unwrap_or(Err(StartRidingRefusal::NoEntity));
         }
-        let Some(vehicle_id) = self.native_riding_preconditions(rider, vehicle, force) else {
-            return false;
-        };
+        let vehicle_id = self.native_riding_preconditions(rider, vehicle, force, onto_player)?;
         let previous_vehicle = self.native_vehicle_id(rider);
         let allowed = match rider {
             Target::Player => self.native_may_board(vehicle_id),
-            Target::Mob(id) => self.native_mob_may_ride(id, vehicle_id, true),
+            Target::Mob(id) | Target::General(id) => self.native_mob_may_ride(id, vehicle_id, true),
             _ => false,
         };
-        if !allowed
-            || self.native_vehicle_id(rider) != previous_vehicle
-            || self
-                .native_riding_preconditions(rider, vehicle, force)
-                .is_none()
-        {
-            return false;
+        if !allowed || self.native_vehicle_id(rider) != previous_vehicle {
+            return Err(StartRidingRefusal::Canceled);
         }
-        if previous_vehicle.is_some() {
+        self.native_riding_preconditions(rider, vehicle, force, onto_player)?;
+        if let Some(previous) = previous_vehicle {
             match rider {
                 Target::Player => self.stop_riding(),
                 Target::Mob(id) => {
-                    if previous_vehicle.is_some_and(|v| {
-                        self.persist.mount_notifications.contains(&(id, v, false))
-                            && self.persist.removals.iter().any(|target| {
-                                matches!(*target, Target::Boat(n) | Target::Cart(n) if n == v)
-                            })
-                    }) {
+                    if self.persist.mount_notifications.contains(&(id, previous, false))
+                        && self.persist.removals.iter().any(|target| {
+                            matches!(*target, Target::Boat(n) | Target::Cart(n) if n == previous)
+                        })
+                    {
                         // This explicit callback mutation completes the in-flight edge,
                         // rather than recursively notifying it a second time.
                         self.dismount_mob_reentrant(id);
@@ -450,97 +506,137 @@ impl Game<'_> {
                         self.dismount_mob(id);
                     }
                 }
-                _ => return false,
+                Target::General(id) => self.dismount_general(id, previous),
+                _ => return Err(StartRidingRefusal::UnsupportedRider),
             }
             if self.native_vehicle_id(rider).is_some() {
-                return false;
+                return Err(StartRidingRefusal::Canceled);
             }
         }
         // Dismount dispatch can also discard, remount or fill the target vehicle.
-        if self
-            .native_riding_preconditions(rider, vehicle, force)
-            .is_none()
-        {
-            return false;
-        }
+        self.native_riding_preconditions(rider, vehicle, force, onto_player)?;
         match rider {
             Target::Player => {
                 match vehicle {
-                    Target::Boat(id) => {
-                        if let Some(boat) = self.boats.iter().find(|b| b.id == id) {
-                            self.yaw = boat.yaw;
-                        }
-                    }
+                    // `ServerPlayer.startRiding` teleports with `Relative.ROTATION`: the
+                    // rider keeps their view, whatever the vehicle's yaw.
+                    Target::Boat(_) => {}
                     Target::Mob(id) => {
                         if let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id) {
                             mob.extra.flag = false;
                             mob.extra.counter = 0;
-                            self.yaw = mob.yaw;
                         }
                         self.mount.jump_ticks = 0;
                         self.mount.jump_scale = 0.0;
                     }
-                    Target::Stand(id) | Target::Other(id) => {
+                    Target::Stand(id) | Target::Other(id) | Target::General(id) => {
                         let Some(seat) = self.seat(id) else {
-                            return false;
+                            return Err(StartRidingRefusal::UnsupportedVehicle);
                         };
                         self.board_seat(id, seat);
-                        return self.native_vehicle_id(rider) == Some(vehicle_id);
+                        return self.native_seated(rider, vehicle_id);
                     }
                     _ => {}
                 }
                 self.riding = Some(vehicle_id);
-                self.seat_acting_player(vehicle_id);
+                self.seat_player(vehicle_id);
                 self.trigger_player("minecraft:started_riding");
             }
             Target::Mob(id) => {
                 sunrise_client::mobs::riders::link(&mut self.mobs, id, vehicle_id);
                 self.seat_mob(id);
+                self.break_leash(id, true, false);
             }
-            _ => return false,
+            Target::General(id) => {
+                let order = self.boarding_order(vehicle_id, id, false);
+                if !self.set_general_mount(id, Some((vehicle_id, order))) {
+                    return Err(StartRidingRefusal::NoEntity);
+                }
+                self.note_started_riding(vehicle_id);
+            }
+            _ => return Err(StartRidingRefusal::UnsupportedRider),
         }
-        self.native_vehicle_id(rider) == Some(vehicle_id)
+        self.native_seated(rider, vehicle_id)
     }
 
-    /// Validate the captured relationship at each callback boundary.
+    /// The mount's last check: the rider sits on the vehicle, or a hook it
+    /// dispatched took it off again.
+    fn native_seated(&self, rider: Target, vehicle_id: u32) -> Result<(), StartRidingRefusal> {
+        if self.native_vehicle_id(rider) == Some(vehicle_id) {
+            Ok(())
+        } else {
+            Err(StartRidingRefusal::Canceled)
+        }
+    }
+
+    /// Validate the captured relationship at each callback boundary, naming
+    /// the first check that fails, in the order the checks have always run.
     fn native_riding_preconditions(
         &self,
         rider: Target,
         vehicle: Target,
         force: bool,
-    ) -> Option<u32> {
+        onto_player: bool,
+    ) -> Result<u32, StartRidingRefusal> {
+        use StartRidingRefusal as R;
         let vehicle_id = match vehicle {
             Target::Mob(id)
             | Target::Boat(id)
             | Target::Cart(id)
             | Target::Stand(id)
+            | Target::General(id)
             | Target::Other(id) => id,
-            _ => return None,
+            // Only `ride_player` seats a mob on a player (`native_ride_player.rs`), at each
+            // re-check too: the plain call refuses a player vehicle.
+            Target::Player | Target::Guest(_) if onto_player && matches!(rider, Target::Mob(_)) => {
+                self.player_vehicle_id(vehicle).ok_or(R::NoEntity)?
+            }
+            // `Entity.startRiding` refuses an unsaved vehicle type, the player's, before `force`.
+            Target::Player | Target::Guest(_) => return Err(R::PlayerVehicle),
+            _ => return Err(R::UnsupportedVehicle),
         };
         if self.entity(vehicle_id).is_none()
             || matches!(rider, Target::Mob(id) if self.mobs.iter().all(|m| m.id != id || m.removed))
-            || !matches!(rider, Target::Player | Target::Mob(_))
-            || rider == vehicle
-            || self.native_vehicle_id(rider) == Some(vehicle_id)
+            || matches!(rider, Target::General(id) if self.general_row(id).is_none())
         {
-            return None;
+            return Err(R::NoEntity);
+        }
+        if !matches!(rider, Target::Player | Target::Mob(_) | Target::General(_)) {
+            return Err(R::UnsupportedRider);
+        }
+        if rider == vehicle {
+            return Err(R::SameEntity);
+        }
+        if self.native_vehicle_id(rider) == Some(vehicle_id) {
+            return Err(R::AlreadyRiding);
+        }
+        if let Target::General(id) = vehicle {
+            let slot = self.general_row(id).ok_or(R::NoEntity)?.type_slot;
+            if super::general::general_type_catalog().save_policy(slot)
+                == mod_api::GeneralSavePolicy::NoSave
+            {
+                return Err(R::UnsupportedVehicle);
+            }
         }
         // Intermediate vehicles can be retained objects, not ordinary handles.
         let mut current = Some(vehicle_id);
-        for _ in 0..=self.mobs.len() + self.persist.off_level.len() + 1 {
+        for _ in 0..=self.riding_link_limit() {
             let Some(id) = current else { break };
-            if rider == Target::Mob(id) {
-                return None;
+            if rider == Target::Mob(id)
+                || rider == Target::General(id)
+                || (rider == Target::Player && self.player_vehicle_id(rider) == Some(id))
+            {
+                return Err(R::Cycle);
             }
-            current = self.native_vehicle_id(Target::Mob(id));
+            current = self.vehicle_of_any(id);
         }
         if current.is_some() {
-            return None;
+            return Err(R::Cycle);
         }
         if !force {
             match rider {
-                Target::Player if self.keys.held(sunrise_client::actions::Action::Sneak) => {
-                    return None;
+                Target::Player if self.held_mapping(sunrise_client::actions::Action::Sneak) => {
+                    return Err(R::CannotRide);
                 }
                 Target::Mob(id)
                     if self.mobs.iter().find(|m| m.id == id).is_none_or(|m| {
@@ -552,31 +648,48 @@ impl Game<'_> {
                             )
                     }) =>
                 {
-                    return None;
+                    return Err(R::CannotRide);
+                }
+                Target::General(id)
+                    if self
+                        .general_row(id)
+                        .is_some_and(|row| row.boarding_cooldown > 0) =>
+                {
+                    return Err(R::CannotRide);
                 }
                 _ => {}
             }
         }
         match vehicle {
             Target::Boat(id) => {
-                let index = self.boats.iter().position(|b| b.id == id)?;
-                if self.boat_passengers(id) >= self.boats[index].max_passengers()
-                    || (!force && !self.boat_has_room(index))
-                {
-                    return None;
+                let index = self
+                    .boats
+                    .iter()
+                    .position(|b| b.id == id)
+                    .ok_or(R::NoEntity)?;
+                let full = if force {
+                    self.seated_passenger_count(id) >= self.boats[index].max_passengers()
+                } else {
+                    !self.boat_has_room(index)
+                };
+                if full {
+                    return Err(R::Full);
                 }
             }
             Target::Cart(id) => {
-                if !self.carts.iter().any(|cart| cart.id == id)
-                    || self.riding == Some(id)
-                    || self.ridden_by_guest(id)
-                    || !self.seated_passengers(id).is_empty()
-                {
-                    return None;
+                if !self.carts.iter().any(|cart| cart.id == id) {
+                    return Err(R::NoEntity);
+                }
+                if self.has_seated_passengers(id) {
+                    return Err(R::Full);
                 }
             }
             Target::Mob(id) => {
-                let mob = self.mobs.iter().find(|m| m.id == id && m.alive())?;
+                let mob = self
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id && m.alive())
+                    .ok_or(R::NoEntity)?;
                 let seats = self.seated_passengers(id);
                 let players = seats
                     .iter()
@@ -585,42 +698,46 @@ impl Game<'_> {
                     .max(usize::from(mob.rider.is_some()));
                 let passengers = players + seats.iter().filter(|(_, _, player)| !*player).count();
                 if !force && !sunrise_client::mobs::riders::can_add_passenger(mob, passengers) {
-                    return None;
+                    return Err(R::Full);
                 }
             }
-            Target::Stand(id) | Target::Other(id) => {
-                if self.seat(id).is_none() || (!force && !self.seated_passengers(id).is_empty()) {
-                    return None;
+            Target::Stand(id) | Target::Other(id) | Target::General(id) => {
+                if self.seat(id).is_none() {
+                    return Err(R::UnsupportedVehicle);
+                }
+                if !force && !self.seated_passengers(id).is_empty() {
+                    return Err(R::Full);
                 }
             }
-            _ => return None,
+            // `Player` keeps `Entity.canAddPassenger`: one passenger unless forced.
+            Target::Player | Target::Guest(_) => {
+                if !force && !self.seated_passengers(vehicle_id).is_empty() {
+                    return Err(R::Full);
+                }
+            }
+            _ => return Err(R::UnsupportedVehicle),
         }
-        Some(vehicle_id)
+        Ok(vehicle_id)
     }
 
     /// Attempts to board a vehicle through the shared server mount path.
     ///
-    /// Players and mobs can ride a mob, boat, minecart or generic seat entity. Returns false for
-    /// unsupported entity pairs, stale or held-out handles, a full stored
-    /// vehicle, a cycle, or a canceled mount or dismount. Normal mob capacity
-    /// follows its species and is bypassed by force; minecarts store one passenger and boats store one
-    /// mob and up to two passengers in total. Generic seats admit one passenger unless forced.
-    /// `force` bypasses normal admission checks, not these storage limits.
-    /// Player boarding cooldown and the strider's
-    /// eye-in-lava admission check are not yet represented by the game.
+    /// General rows use the same admission and cancellable mount notifications
+    /// as players and mobs. Only the explicit `entity_ride_player` route lets a
+    /// mob ride a player; force does not make unsaved vehicles eligible.
     pub(super) fn entity_start_riding(
         &mut self,
         entity: EntityRef,
         vehicle: EntityRef,
         force: bool,
-    ) -> bool {
-        let Some(rider) = self.native_entity_target(entity) else {
-            return false;
-        };
-        let Some(vehicle) = self.native_entity_target(vehicle) else {
-            return false;
-        };
-        self.start_riding_target(rider, vehicle, force)
+    ) -> Result<(), StartRidingRefusal> {
+        let rider = self
+            .native_entity_target(entity)
+            .ok_or(StartRidingRefusal::NoEntity)?;
+        let vehicle = self
+            .native_entity_target(vehicle)
+            .ok_or(StartRidingRefusal::NoEntity)?;
+        self.try_start_riding_target(rider, vehicle, force)
     }
 
     /// Gets the entity off its vehicle (`Entity.stopRiding`), where the
@@ -638,24 +755,7 @@ impl Game<'_> {
             Target::Player | Target::Guest(_) => {
                 self.for_player(t, |g| g.stop_riding());
             }
-            // A general row gets off by its mount link: the row keeps its
-            // identity and place, and the level's next walk sees it as a
-            // root (`Entity.stopRiding` clears the mount and nothing else).
-            // The mount rewrite also retires the rows' rider index, which
-            // the list's own write stamp does not see.
-            Target::General(id) => {
-                let Some(row) = self
-                    .resident_entities
-                    .general
-                    .rows
-                    .iter_mut()
-                    .find(|row| row.id == id)
-                else {
-                    return false;
-                };
-                row.mount = None;
-                self.resident_entities.general.mount_writes += 1;
-            }
+            Target::General(id) => self.dismount_general(id, vehicle),
             _ => return false,
         }
         let stopped = self.native_vehicle_id(t).is_none();
@@ -664,6 +764,67 @@ impl Game<'_> {
         }
         stopped
     }
+    pub(super) fn dismount_general(&mut self, id: u32, vehicle: u32) {
+        if self.native_mob_may_ride(id, vehicle, false)
+            && self.native_vehicle_id(Target::General(id)) == Some(vehicle)
+        {
+            self.set_general_mount(id, None);
+            self.release_removed_vehicle(vehicle);
+        }
+    }
+
+    /// `Entity.setRemoved`: stop each direct passenger in list order, not
+    /// the reverse order of `ejectPassengers`. A callback can move a later
+    /// passenger, so check each edge again before asking it to stop riding.
+    pub(super) fn dismount_removed_passengers(&mut self, vehicle: u32, y: f64) {
+        let passengers = self.seated_passengers(vehicle);
+        let own = self
+            .player
+            .as_ref()
+            .filter(|_| self.lan_acting.is_none())
+            .map(|player| player.entity_id as u32);
+        // An own-player edge that has no seat entry still needs to dismount.
+        if let Some(own) = own
+            && self.riding == Some(vehicle)
+            && !passengers
+                .iter()
+                .any(|&(_, id, player)| player && id == own)
+        {
+            self.stop_riding_from_removed_vehicle(vehicle, y);
+        }
+        for (_, id, player) in passengers {
+            if player {
+                let target = if own == Some(id) {
+                    Some(Target::Player)
+                } else {
+                    self.player_vehicle(id)
+                };
+                if let Some(target) = target
+                    && self.native_vehicle_id(target) == Some(vehicle)
+                {
+                    self.for_player(target, |g| g.stop_riding_from_removed_vehicle(vehicle, y));
+                }
+            } else if self.native_vehicle_id(Target::Mob(id)) == Some(vehicle) {
+                self.dismount_mob_from_removed_vehicle(id, y);
+            } else if self.native_vehicle_id(Target::General(id)) == Some(vehicle) {
+                self.dismount_general(id, vehicle);
+            }
+        }
+    }
+
+    pub(super) fn dismount_general_passengers(&mut self, vehicle: u32) {
+        let mut passengers: Vec<_> = self
+            .general_passengers(vehicle)
+            .map(|row| (row.vehicle_order, row.id))
+            .collect();
+        passengers.sort_unstable();
+        for (_, rider) in passengers.into_iter().rev() {
+            if self.native_vehicle_id(Target::General(rider)) == Some(vehicle) {
+                self.dismount_general(rider, vehicle);
+            }
+        }
+    }
+
     /// Gets every passenger off the entity (`Entity.ejectPassengers`), last
     /// first as vanilla walks the list, so `mob_ride` hears them in its
     /// order. False when nothing rode it, or for a stale handle.
@@ -682,13 +843,14 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::{Game, commands::Target};
+    use mod_api::{
+        self, EntityMountEvent, EntityRef, EntityUnleashEvent, Flow, Hooks, LivingRef, ServerHost,
+        StartRidingRefusal,
+    };
+    use std::sync::{Arc, Mutex};
     use sunrise_client::chunk::Chunk;
     use sunrise_client::mobs::Mob;
     use sunrise_core::geometry::Vec3;
-    use mod_api::{
-        self, EntityMountEvent, EntityRef, EntityUnleashEvent, Flow, Hooks, LivingRef, ServerHost,
-    };
-    use std::sync::{Arc, Mutex};
 
     struct MountObserver(Arc<Mutex<Vec<bool>>>);
     #[mod_api::__subscriptions]
@@ -735,10 +897,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn generic_seat_mount_payloads_cancellation_and_capacity() {
-        use sunrise_client::entities::ArmorStand;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use sunrise_client::entities::ArmorStand;
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -793,10 +955,20 @@ mod tests {
                         mounting,
                     };
                     events.lock().unwrap().clear();
+                    if vehicle_kind == "minecraft:marker" {
+                        // Marker.couldAcceptPassenger refuses even a forced mount,
+                        // before the cancellable mount notification.
+                        assert!(game.entity_start_riding(rider, vehicle, false).is_err());
+                        assert!(game.entity_start_riding(rider, vehicle, true).is_err());
+                        assert_eq!(rider.vehicle(game), None);
+                        assert_eq!(vehicle.passengers(game), Some(vec![]));
+                        assert!(events.lock().unwrap().is_empty());
+                        continue;
+                    }
 
                     // A canceled handle write reports the type but changes neither side.
                     cancel.store(true, Ordering::SeqCst);
-                    assert!(!game.entity_start_riding(rider, vehicle, false));
+                    assert!(game.entity_start_riding(rider, vehicle, false).is_err());
                     assert_eq!(rider.vehicle(game), None);
                     assert_eq!(vehicle.passengers(game), Some(vec![]));
                     assert_eq!(
@@ -805,15 +977,15 @@ mod tests {
                     );
 
                     cancel.store(false, Ordering::SeqCst);
-                    assert!(game.entity_start_riding(rider, vehicle, false));
+                    assert!(game.entity_start_riding(rider, vehicle, false).is_ok());
                     assert_eq!(rider.vehicle(game), Some(vehicle));
                     // Default Entity.canAddPassenger requires an empty seat. No hook for refusal.
-                    assert!(!game.entity_start_riding(second, vehicle, false));
+                    assert!(game.entity_start_riding(second, vehicle, false).is_err());
                     assert_eq!(second.vehicle(game), None);
                     assert_eq!(vehicle.passengers(game), Some(vec![rider]));
                     assert_eq!(events.lock().unwrap().len(), 2);
                     // /ride uses the same forced path, which permits more generic passengers.
-                    assert!(game.entity_start_riding(second, vehicle, true));
+                    assert!(game.entity_start_riding(second, vehicle, true).is_ok());
                     assert_eq!(second.vehicle(game), Some(vehicle));
                     assert_eq!(vehicle.passengers(game), Some(vec![rider, second]));
 
@@ -852,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn canceled_dismount_keeps_old_mount_and_mount_hook_fires_once() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -876,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn full_vehicle_checks_distinguish_forced_mobs_from_storage_limits() {
         use super::super::boats::Boat;
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -911,17 +1083,30 @@ mod tests {
                 game.mobs[2].extra.mount = Some(41);
                 game.mobs[1].extra.rider = Some(42);
                 game.mobs[3].extra.mount = Some(44);
-                game.riding = Some(44);
+                super::super::native_player_death::tests::add_guest(game);
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .guests
+                    .update(0, |guest| guest.vehicle = Some(44));
                 events.lock().unwrap().clear();
                 let rider = game.entity(40).unwrap();
                 for id in [41, 44] {
                     let vehicle = game.entity(id).unwrap();
-                    assert!(!game.entity_start_riding(rider, vehicle, false));
+                    assert_eq!(
+                        game.entity_start_riding(rider, vehicle, false),
+                        Err(StartRidingRefusal::Full),
+                        "vehicle {id} is full"
+                    );
                 }
                 // Boats keep their storage limit even for commands and forced handles.
                 assert!(!game.run_command(boat));
                 let vehicle = game.entity(44).unwrap();
-                assert!(!game.entity_start_riding(rider, vehicle, true));
+                assert_eq!(
+                    game.entity_start_riding(rider, vehicle, true),
+                    Err(StartRidingRefusal::Full)
+                );
                 assert!(events.lock().unwrap().is_empty());
                 // /ride forces mob boarding: capacity alone must not suppress its hook.
                 assert!(game.run_command(pig));
@@ -933,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn camel_admits_multiple_mob_passengers_but_not_a_fourth() {
         super::super::native_entity_refs::tests::with_game(|game| {
             for (id, name) in [
@@ -1007,7 +1192,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn boat_and_cart_interactions_use_shared_mount_path() {
         use super::super::{
             InteractTarget,
@@ -1017,6 +1202,7 @@ mod tests {
         use sunrise_client::motion::PlayerMotion;
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            game.yaw = 10.0;
             game.boats
                 .push(Boat::new(60, "oak".into(), Vec3::ZERO, 45.0));
             assert!(game.interact_boat(Some(InteractTarget {
@@ -1024,7 +1210,7 @@ mod tests {
                 location: [0.0; 3]
             })));
             assert_eq!(game.riding, Some(60));
-            assert_eq!(game.yaw, 45.0);
+            assert_eq!(game.yaw, 10.0, "mounting keeps the rider's view");
             game.riding = None;
             game.carts
                 .push(Minecart::new(61, CartKind::Rideable, Vec3::ZERO));
@@ -1037,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn handles_reject_held_out_and_stale_entities() {
         super::super::native_entity_refs::tests::with_game(|game| {
             for id in [50, 51] {
@@ -1050,11 +1236,11 @@ mod tests {
                 mod_api::WorldEpoch::new(rider.epoch().get().wrapping_add(1)),
                 rider.id(),
             );
-            assert!(!game.entity_start_riding(stale, vehicle, true));
+            assert!(game.entity_start_riding(stale, vehicle, true).is_err());
             game.held_out.push(51);
-            assert!(!game.entity_start_riding(rider, vehicle, true));
+            assert!(game.entity_start_riding(rider, vehicle, true).is_err());
             game.held_out.pop();
-            assert!(game.entity_start_riding(rider, vehicle, true));
+            assert!(game.entity_start_riding(rider, vehicle, true).is_ok());
             assert_eq!(game.mobs[0].extra.mount, Some(51));
         });
     }
@@ -1091,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_nested_tree_lists_passengers_depth_first_and_shares_its_root() {
         super::super::native_entity_refs::tests::with_game(|game| {
             let camel = add_mob(game, 80, "minecraft:camel", Vec3::ZERO);
@@ -1213,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn passengers_keep_the_order_they_boarded_in_not_the_mob_list() {
         use sunrise_core::nbt::Tag;
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -1236,7 +1422,7 @@ mod tests {
             let next = add_mob(game, 87, "minecraft:skeleton", Vec3::ZERO);
             let last = add_mob(game, 88, "minecraft:husk", Vec3::ZERO);
             for rider in [last, next, driver] {
-                assert!(game.entity_start_riding(rider, vehicle, true));
+                assert!(game.entity_start_riding(rider, vehicle, true).is_ok());
             }
             assert_eq!(vehicle.passengers(game), Some(vec![last, next, driver]));
             // `Entity.saveWithoutId` writes `getPassengers`, so a reload keeps the order.
@@ -1269,7 +1455,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_player_boards_ahead_of_a_mob_and_behind_a_player_as_add_passenger_says() {
         use sunrise_client::motion::PlayerMotion;
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -1292,10 +1478,10 @@ mod tests {
             let pig = add_mob(game, 142, "minecraft:pig", at);
 
             // Ahead of a mob, behind the mobs once a player is first: `[one, cow, pig, two]`.
-            assert!(game.entity_start_riding(cow, ghast, true));
-            assert!(game.entity_start_riding(one, ghast, true));
+            assert!(game.entity_start_riding(cow, ghast, true).is_ok());
+            assert!(game.entity_start_riding(one, ghast, true).is_ok());
             assert_eq!(ghast.passengers(game), Some(vec![one, cow]));
-            assert!(game.entity_start_riding(pig, ghast, true));
+            assert!(game.entity_start_riding(pig, ghast, true).is_ok());
             assert_eq!(ghast.passengers(game), Some(vec![one, cow, pig]));
             // On its own turn too, before the turn's end writes the record back.
             game.as_guest(2, |game| {
@@ -1308,13 +1494,13 @@ mod tests {
             // The first player leaving leaves a mob first, and the next player goes ahead of it.
             assert!(game.entity_stop_riding(one));
             assert_eq!(ghast.passengers(game), Some(vec![cow, pig, two]));
-            assert!(game.entity_start_riding(one, ghast, true));
+            assert!(game.entity_start_riding(one, ghast, true).is_ok());
             assert_eq!(ghast.passengers(game), Some(vec![one, cow, pig, two]));
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_first_passenger_controls_only_what_it_can_steer() {
         use super::super::boats::Boat;
         use sunrise_client::items::ItemStack;
@@ -1421,7 +1607,100 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn mounting_a_leashed_mob_drops_one_lead_without_a_break_sound() {
+        let unleashed = Arc::new(Mutex::new(0));
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "mount_unleash_observer",
+            Box::new(UnleashObserver(unleashed.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_game(|game| {
+                let at = Vec3::new(0.5, 64.0, 0.5);
+                let cow = add_mob(game, 160, "minecraft:cow", at);
+                let vehicle = add_mob(game, 161, "minecraft:camel", at);
+                let holder = add_mob(game, 162, "minecraft:sheep", at);
+                assert!(cow.leash_to(game, holder));
+                game.audio.capture = Some(Vec::new());
+
+                // A refused mount must not consume the leash.
+                assert!(cow.start_riding(game, cow, true).is_err());
+                assert_eq!(
+                    cow.leash_holder(game),
+                    Some(mod_api::LeashHolder::Entity(holder))
+                );
+                assert!(game.dropped.is_empty());
+                assert_eq!(*unleashed.lock().unwrap(), 0);
+
+                assert_eq!(cow.start_riding(game, vehicle, true), Ok(()));
+                assert_eq!(cow.vehicle(game), Some(vehicle));
+                assert_eq!(
+                    cow.leash_holder(game),
+                    Some(mod_api::LeashHolder::Unleashed)
+                );
+                let seated = game.mob_object(160).unwrap().position;
+                take_one_lead(game, seated);
+                assert_eq!(*unleashed.lock().unwrap(), 1);
+                assert!(game.audio.capture.as_ref().unwrap().is_empty());
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn natural_boarding_drops_a_lead_only_after_a_successful_mount() {
+        use sunrise_client::mobs::MobEvent;
+
+        let unleashed = Arc::new(Mutex::new(0));
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "natural_mount_unleash_observer",
+            Box::new(UnleashObserver(unleashed.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_game(|game| {
+                let at = Vec3::new(0.5, 64.0, 0.5);
+                let cow = add_mob(game, 160, "minecraft:cow", at);
+                let vehicle = add_mob(game, 161, "minecraft:camel", at);
+                let holder = add_mob(game, 162, "minecraft:sheep", at);
+                assert!(cow.leash_to(game, holder));
+                game.audio.capture = Some(Vec::new());
+
+                game.mob_object_mut(160).unwrap().extra.boarding_cooldown = 1;
+                game.handle_mob_events(vec![MobEvent::StartRiding {
+                    rider: 160,
+                    vehicle: 161,
+                }])
+                .unwrap();
+                assert_eq!(cow.vehicle(game), None);
+                assert_eq!(
+                    cow.leash_holder(game),
+                    Some(mod_api::LeashHolder::Entity(holder))
+                );
+                assert!(game.dropped.is_empty());
+                assert_eq!(*unleashed.lock().unwrap(), 0);
+
+                game.mob_object_mut(160).unwrap().extra.boarding_cooldown = 0;
+                game.handle_mob_events(vec![MobEvent::StartRiding {
+                    rider: 160,
+                    vehicle: 161,
+                }])
+                .unwrap();
+                assert_eq!(cow.vehicle(game), Some(vehicle));
+                assert_eq!(
+                    cow.leash_holder(game),
+                    Some(mod_api::LeashHolder::Unleashed)
+                );
+                take_one_lead(game, at);
+                assert_eq!(*unleashed.lock().unwrap(), 1);
+                assert!(game.audio.capture.as_ref().unwrap().is_empty());
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn entity_drops_gates_a_dying_mobs_lead_in_the_tick_not_in_detach() {
         use sunrise_client::{
             gamerules::Value,
@@ -1481,7 +1760,7 @@ mod tests {
     fn get_off(game: &mut Game<'_>, rider: EntityRef, vehicle: EntityRef) -> [f64; 3] {
         let living = LivingRef::new(rider);
         let asked = vehicle.dismount_location(game, living).unwrap();
-        assert!(game.entity_start_riding(rider, vehicle, true));
+        assert!(game.entity_start_riding(rider, vehicle, true).is_ok());
         assert_eq!(vehicle.dismount_location(game, living), Some(asked));
         assert!(game.entity_stop_riding(rider));
         assert_eq!(game.entity_position(rider), Some(asked));
@@ -1502,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mob_gets_off_where_the_query_says() {
         use super::super::{
             boats::Boat,
@@ -1540,7 +1819,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_player_gets_off_where_the_query_says() {
         use super::super::{
             boats::Boat,
@@ -1556,16 +1835,16 @@ mod tests {
             hub.update_guest(1, |g| g.motion = Some(Box::new(motion)))
                 .unwrap();
 
-            // Beside a cow, 0.45 + 0.4 across its facing, and to the other side past a wall.
+            // Animal searches neighbouring block centres, then the other side past a wall.
             let cow = add_mob(game, 120, "minecraft:cow", at);
-            assert_near(get_off(game, player, cow), [-0.35, 64.0, 0.5]);
+            assert_near(get_off(game, player, cow), [-0.5, 64.0, 0.5]);
             let registry = game.pack.assets.registry;
             let stone = registry.default_state("minecraft:stone").unwrap();
             let air = registry.default_state("minecraft:air").unwrap();
             for y in [64, 65] {
                 game.world.set(-1, y, 0, stone).unwrap();
             }
-            assert_near(get_off(game, player, cow), [1.35, 64.0, 0.5]);
+            assert_near(get_off(game, player, cow), [1.5, 64.0, 0.5]);
             for y in [64, 65] {
                 game.world.set(-1, y, 0, air).unwrap();
             }
@@ -1578,15 +1857,15 @@ mod tests {
             game.boats.push(Boat::new(123, "oak".into(), at, 0.0));
             let boat = game.entity(123).unwrap();
             assert_near(get_off(game, player, boat), [0.5, 64.0, 1.77229]);
-            // Unlike a mob's, a player's search takes a cart's yaw as it is.
+            // As for a mob, a cart facing south lets it off to the north.
             game.carts.push(Minecart::new(124, CartKind::Rideable, at));
             let cart = game.entity(124).unwrap();
-            assert_near(get_off(game, player, cart), [-0.5, 64.0, 0.5]);
+            assert_near(get_off(game, player, cart), [0.5, 64.0, -0.5]);
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_player_gets_off_along_their_own_yaw_on_their_turn_or_not() {
         use super::super::boats::Boat;
         use sunrise_client::motion::PlayerMotion;
@@ -1626,7 +1905,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn dismount_location_answers_without_a_ride_or_a_live_handle() {
         super::super::native_entity_refs::tests::with_game(|game| {
             let at = Vec3::new(0.5, 64.0, 0.5);
@@ -1646,7 +1925,8 @@ mod tests {
             );
             // A player with no motion state has nothing to measure.
             assert_eq!(cow.dismount_location(game, LivingRef::new(player)), None);
-            // An entity Sunrise doesn't simulate keeps no box to stand on.
+            // A marker has a zero-sized box. Entity's default dismount answer is
+            // still its position with the box's top as Y, even without a current ride.
             game.others.push(super::super::commands::OtherEntity {
                 attachment_lifetime: Default::default(),
                 knot_check: None,
@@ -1661,16 +1941,19 @@ mod tests {
                 pitch: 0.0,
             });
             let marker = game.entity(132).unwrap();
-            assert_eq!(marker.dismount_location(game, living), None);
+            assert_eq!(
+                marker.dismount_location(game, living),
+                Some([0.5, 64.0, 0.5])
+            );
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn leash_writes_change_the_holder_and_tell_the_mods() {
         use super::super::boats::Boat;
-        use sunrise_client::{mobs::leash::Pending, motion::PlayerMotion};
         use mod_api::LeashHolder;
+        use sunrise_client::{mobs::leash::Pending, motion::PlayerMotion};
         let unleashed = Arc::new(Mutex::new(0));
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
             "unleash_observer",
@@ -1692,7 +1975,7 @@ mod tests {
                 let boat = game.entity(113).unwrap();
 
                 // A mob's lead goes to a mob, and the leashed mob gets off its vehicle.
-                assert!(game.entity_start_riding(cow, vehicle, true));
+                assert!(game.entity_start_riding(cow, vehicle, true).is_ok());
                 assert!(cow.leash_to(game, holder));
                 assert_eq!(cow.leash_holder(game), Some(LeashHolder::Entity(holder)));
                 assert_eq!(cow.vehicle(game), None);
@@ -1780,7 +2063,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mount_rejects_cycles_and_respects_cooldown_unless_forced() {
         super::super::native_entity_refs::tests::with_game(|game| {
             for id in [30, 31, 32] {

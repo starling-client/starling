@@ -1,39 +1,12 @@
 //! `set_local_rotation`: a client mod turns the local player's view; the look goes out in the
 //! tick's own player sync, one move packet with vanilla's clamp, never a packet of the call's own.
-use crate::game::native_client_session::tests::logged_client;
+use crate::game::native_client_session::tests::{finish_login, logged_client};
 use crate::game::native_entity_refs::tests::with_client_game;
+use mod_api::LocalRotationError;
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::geometry::Vec3;
 use sunrise_protocol::connection::Connection;
 use sunrise_protocol::packets::play::Serverbound as S;
-use mod_api::LocalRotationError;
-
-/// The server's side of the handshake up to play, as `client_targeting`'s test drives it.
-fn finish_login(server: &mut Connection) {
-    use sunrise_protocol::packets::{Empty, configuration as cfg, login};
-    server.recv().unwrap(); // Intention.
-    server.recv().unwrap(); // Hello.
-    server
-        .send(
-            &login::Clientbound::LoginFinished(login::LoginFinished {
-                profile: login::GameProfile {
-                    uuid: 42,
-                    name: "SessionReadTest".into(),
-                    properties: vec![],
-                },
-                session: 1,
-            })
-            .encode(),
-        )
-        .unwrap();
-    server.recv().unwrap(); // Login acknowledged.
-    server.recv().unwrap(); // Brand.
-    server.recv().unwrap(); // Client information.
-    server
-        .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
-        .unwrap();
-    server.recv().unwrap(); // Finish configuration.
-}
 
 /// The move packets the client sent before a fence, as (kind, yaw, pitch).
 fn sent_moves(
@@ -69,7 +42,7 @@ fn a_mod_set_look_is_clamped_and_sent_once_by_the_tick() {
                 .reader
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
-            finish_login(&mut server);
+            finish_login(game, &mut server);
             game.title = None;
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
             // The baseline: the first sync sends the position.
@@ -114,6 +87,60 @@ fn a_mod_set_look_is_clamped_and_sent_once_by_the_tick() {
                 game.set_local_rotation(0.0, 0.0),
                 Err(LocalRotationError::NoWorld)
             );
+        });
+    });
+}
+
+/// How many packets of any kind the client sent before a fence.
+fn sent_packets(game: &crate::game::Game<'_>, server: &mut Connection) -> usize {
+    game.send(S::Punch(sunrise_protocol::packets::Empty));
+    let mut count = 0;
+    loop {
+        let (id, payload) = server.recv().unwrap();
+        if matches!(S::decode(id, &payload).unwrap(), S::Punch(_)) {
+            return count;
+        }
+        count += 1;
+    }
+}
+
+/// `LocalPlayer.tickDeath` removes the player at deathTime 20: from then on nothing goes out, not
+/// a changed input or look, until the respawn's new player (deathTime back at 0).
+#[test]
+#[ignore = "daily"]
+fn a_player_dead_for_twenty_ticks_sends_nothing_until_it_respawns() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        with_client_game(|game| {
+            let mut server = Connection::local(logged_client(game));
+            server
+                .reader
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            finish_login(game, &mut server);
+            game.title = None;
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+            game.remote_send_state(0);
+            sent_packets(game, &mut server);
+
+            game.screen = crate::game::Screen::Dead;
+            game.ui.death_time = 19;
+            game.yaw = 10.0;
+            game.remote_send_state(1);
+            assert!(sent_packets(game, &mut server) > 0, "still sent at 19");
+
+            game.ui.death_time = 20;
+            for call in 0..25 {
+                game.yaw = 20.0 + call as f32;
+                game.remote_send_state(call as u8 & 1);
+                assert_eq!(sent_packets(game, &mut server), 0, "call {call}");
+            }
+
+            // The respawn's new player starts its death clock again.
+            game.screen = crate::game::Screen::Playing;
+            game.ui.death_time = 0;
+            game.yaw = 90.0;
+            game.remote_send_state(1);
+            assert!(sent_packets(game, &mut server) > 0, "sent after respawn");
         });
     });
 }

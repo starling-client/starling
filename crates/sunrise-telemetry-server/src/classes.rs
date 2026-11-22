@@ -4,8 +4,8 @@
 //!
 //! The raw values (the exact memory, the driver, the screen) stay in the database for the
 //! retention period and are never published.
-use sunrise_telemetry::payload::System;
 use serde_json::Value;
+use sunrise_telemetry::payload::System;
 
 /// The dimensions, in the order [`of_report`] and [`of_system`] return them.
 pub const DIMENSIONS: [&str; 5] = ["ram", "vram", "storage", "os", "gpu_kind"];

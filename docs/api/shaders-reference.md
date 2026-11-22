@@ -1,6 +1,6 @@
 # Shader API reference (0.1)
 
-Generated from `crates/sunrise-shader-api` (`SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-shader-api --test reference`
+Generated from `crates/sunrise-shader-api` (`SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-shader-api --test it reference::`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
 A stage is a function your WGSL defines, with the signature below; Sunrise puts the prelude (these structs, the

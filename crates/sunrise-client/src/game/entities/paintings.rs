@@ -3,126 +3,16 @@
 //! checks every 100 ticks, breaking by attack (`dropItem`), saving, and
 //! `PaintingRenderer` quads.
 use super::{Game, Hit, entity_culling::default_range};
-use sunrise_client::{
-    entities::{ItemFrame, Painting},
-    items::ItemStack,
-    mesher::Vertex,
-    random_source,
-};
+use std::sync::Arc;
+use sunrise_client::{entities::Painting, items::ItemStack, mesher::Vertex, random_source};
 use sunrise_core::{
     geometry::{Aabb, Vec3},
     random::RandomSource,
 };
-use std::sync::Arc;
 
-/// A `painting_variant` and whether `#placeable` lists it (in tag order).
-#[derive(Clone, Debug)]
-pub(super) struct Variant {
-    pub id: Arc<str>,
-    pub asset: String,
-    pub width: i32,
-    pub height: i32,
-    /// `PaintingVariant.title` and `author`: text components.
-    pub title: Option<serde_json::Value>,
-    pub author: Option<serde_json::Value>,
-}
-/// Variants by id plus the `#minecraft:placeable` list.
-#[derive(Default)]
-pub(super) struct PaintingVariants {
-    pub all: Vec<Variant>,
-    pub placeable: Vec<Arc<str>>,
-}
-impl PaintingVariants {
-    pub fn load(root: &std::path::Path) -> Self {
-        let data = root.join("data/minecraft");
-        let mut all = Vec::new();
-        if let Ok(folder) = sunrise_world::json_folder::read(&data.join("painting_variant")) {
-            for file in &folder.files {
-                let name = file.name.as_str();
-                let Ok(v) =
-                    serde_json::from_slice::<serde_json::Value>(file.bytes().unwrap_or_default())
-                else {
-                    continue;
-                };
-                all.push(Variant {
-                    id: Arc::from(format!("minecraft:{name}")),
-                    asset: v["asset_id"]
-                        .as_str()
-                        .unwrap_or(name)
-                        .trim_start_matches("minecraft:")
-                        .to_owned(),
-                    width: v["width"].as_i64().unwrap_or(1) as i32,
-                    height: v["height"].as_i64().unwrap_or(1) as i32,
-                    title: v.get("title").cloned(),
-                    author: v.get("author").cloned(),
-                });
-            }
-        }
-        let placeable =
-            sunrise_core::prepared_files::read(&data.join("tags/painting_variant/placeable.json"))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .and_then(|v| v["values"].as_array().cloned())
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|v| v.as_str().map(Arc::from))
-                .collect();
-        Self { all, placeable }
-    }
-    pub fn get(&self, id: &str) -> Option<&Variant> {
-        self.all.iter().find(|v| &*v.id == id)
-    }
-    /// The variant a stack's `painting/variant` component names.
-    pub fn of_stack(&self, stack: &ItemStack) -> Option<&Variant> {
-        let id = sunrise_client::save::text(stack.data()?.other("minecraft:painting/variant"))?;
-        self.get(&sunrise_world::datafix::dynamic::namespaced(&id))
-    }
-    /// `VariantUtils.readVariant` then `Painting.defineSynchedData`'s
-    /// `VariantUtils.getAny`: a saved id that does not resolve, or none at all,
-    /// leaves the registry's first variant in place. `Identifier.CODEC` reads a
-    /// bare id in the `minecraft` namespace.
-    pub fn saved_or_default(&self, id: Option<&str>) -> Option<Variant> {
-        id.map(sunrise_world::datafix::dynamic::namespaced)
-            .and_then(|id| self.get(&id))
-            .or_else(|| self.all.first())
-            .cloned()
-    }
-}
-fn overlaps(a: ([f64; 3], [f64; 3]), b: ([f64; 3], [f64; 3])) -> bool {
-    (0..3).all(|i| a.0[i] < b.1[i] && b.0[i] < a.1[i])
-}
-/// `HangingEntity.canCoexist(true)` for an item frame.
-pub(super) fn frame_coexists(f: &ItemFrame, frames: &[ItemFrame], paintings: &[Painting]) -> bool {
-    !frames
-        .iter()
-        .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds(), f.bounds()))
-        && !paintings
-            .iter()
-            .any(|o| o.step() == f.step() && overlaps(o.bounds(), f.bounds()))
-}
-/// `HangingEntity.canCoexist(false)` for a painting.
-fn painting_coexists(p: &Painting, paintings: &[Painting], frames: &[ItemFrame]) -> bool {
-    !paintings
-        .iter()
-        .any(|o| o.id != p.id && overlaps(o.bounds(), p.bounds()))
-        && !frames
-            .iter()
-            .any(|o| o.step() == p.step() && overlaps(o.bounds(), p.bounds()))
-}
-
-/// `HangingEntityItem.mayPlace` for a painting: not a floor or ceiling.
-/// Direction.get2DDataValue: south 0, west 1, north 2, east 3.
-fn painting_facing(face: [i32; 3]) -> Option<u8> {
-    if face[1] != 0 {
-        return None;
-    }
-    Some(match face {
-        [0, 0, 1] => 0,
-        [-1, 0, 0] => 1,
-        [0, 0, -1] => 2,
-        _ => 3,
-    })
-}
+pub(super) use sunrise_gameplay::painting_variants::{
+    PaintingVariants, Variant, frame_coexists, painting_coexists, painting_facing,
+};
 /// Whether the camera, at the origin of `corners`' space, is on the side of the quad
 /// that `normal` points to.
 fn faces_camera(corners: &[glam::DVec3; 4], normal: glam::DVec3) -> bool {
@@ -191,6 +81,7 @@ impl Game<'_> {
             width: 1,
             height: 1,
             check_interval: 0,
+            ticks: 0,
         };
         let mut any = false;
         for id in &self.painting_variants.placeable {
@@ -238,6 +129,7 @@ impl Game<'_> {
             width: 1,
             height: 1,
             check_interval: 0,
+            ticks: 0,
         };
         // Painting.create: the largest placeable variants that survive, one at random.
         let mut fitting: Vec<Variant> = Vec::new();
@@ -325,6 +217,18 @@ impl Game<'_> {
     }
     /// The painting under the crosshair within reach and its distance.
     pub(super) fn painting_hit(&self) -> Option<(usize, f64)> {
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.painting_hit_with_pick(&mut pick)
+    }
+    pub(super) fn painting_hit_with_pick(
+        &self,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<(usize, f64)> {
+        if let Some(hit) = self.cached_entity_pick() {
+            let (entity, distance, _) = hit?;
+            let index = self.paintings.iter().position(|f| f.id == entity.id())?;
+            return Some((index, distance));
+        }
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
@@ -344,7 +248,7 @@ impl Game<'_> {
                 t0 = t0.max(ta);
                 t1 = t1.min(tb);
             }
-            if hit && t0 <= t1 && best.is_none_or(|b| t0 < b.1) {
+            if hit && t0 <= t1 && pick.consider(self, p.id, t0) {
                 best = Some((i, t0));
             }
         }
@@ -386,10 +290,12 @@ impl Game<'_> {
     /// The removal `kill` and `discard` share: the mod hook, the entity, its
     /// chunk's save mark and the centre of its box.
     fn remove_painting(&mut self, index: usize, by_player: bool) -> Option<(Painting, [f64; 3])> {
-        let pos = self.paintings[index].pos;
+        let (id, pos) = (self.paintings[index].id, self.paintings[index].pos);
         if self.hanging_break_cancelled("minecraft:painting", pos, by_player) {
             return None;
         }
+        // Found again by id after the listener: gone, nothing is removed.
+        let index = self.paintings.iter().position(|p| p.id == id)?;
         let p = self.paintings.remove(index);
         let (lo, hi) = p.bounds();
         let at = [
@@ -440,6 +346,8 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
+            // `Entity.tickCount` is raised before the rest of the tick, and is not saved.
+            self.paintings[i].ticks = self.paintings[i].ticks.saturating_add(1);
             self.paintings[i].check_interval += 1;
             if self.paintings[i].check_interval >= 100 {
                 self.paintings[i].check_interval = 0;
@@ -453,11 +361,9 @@ impl Game<'_> {
     }
     /// PaintingRenderer: the variant on the front, the back texture behind and
     /// on the edges.
-    pub(super) fn painting_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+    pub(super) fn painting_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
         let sprites = &self.gui.atlas.sprites;
-        let Some(back) = sprites.get("painting/back").copied() else {
-            return;
-        };
+        let partial = alpha as f32;
         for p in &self.paintings {
             // EntityRenderer.shouldRender: the default range and its box,
             // measured from the box's centre (HangingEntity's position).
@@ -471,6 +377,59 @@ impl Game<'_> {
             if culling.hides_entity() {
                 continue;
             }
+            if let Some(resolved) = super::native_entity_renderers::painting_renderer() {
+                let entity_start = out.len();
+                self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(p.id));
+                let (lo, hi) = p.bounds();
+                let at = glam::DVec3::new(
+                    (lo[0] + hi[0]) / 2.0,
+                    (lo[1] + hi[1]) / 2.0,
+                    (lo[2] + hi[2]) / 2.0,
+                );
+                let facing = match p.facing & 3 {
+                    0 => mod_api::Direction::South,
+                    1 => mod_api::Direction::West,
+                    2 => mod_api::Direction::North,
+                    _ => mod_api::Direction::East,
+                };
+                let entity: mod_api::EntityRenderState =
+                    mod_api::__private::built::EntityRenderState {
+                        id: p.id,
+                        partial,
+                        age: p.ticks as f32 + partial,
+                        yaw: f32::from(p.facing & 3) * 90.0,
+                        pitch: 0.0,
+                        living: None,
+                        tnt_fuse: None,
+                        orb_value: None,
+                        painting: Some(mod_api::__private::built::PaintingRenderState {
+                            facing,
+                            width: p.width,
+                            height: p.height,
+                        }),
+                        item_frame: None,
+                        attachments: None,
+                    }
+                    .into();
+                let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
+                let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+                if self.mod_entity_renderer_geometry(
+                    &resolved,
+                    &entity,
+                    "minecraft:painting",
+                    at - camera,
+                    Some(at),
+                    p.pos,
+                    packed,
+                    out,
+                ) {
+                    self.finish_entity_occlusion(culling, p, out, entity_start);
+                    continue;
+                }
+            }
+            let Some(back) = sprites.get("painting/back").copied() else {
+                continue;
+            };
             let Some(v) = self.painting_variants.get(&p.variant) else {
                 continue;
             };
@@ -607,6 +566,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_client::entities::ItemFrame;
 
     #[test]
     fn hanging_entities_block_overlapping_other_types() {
@@ -620,6 +580,7 @@ mod tests {
             width: 1,
             height: 1,
             check_interval: 0,
+            ticks: 0,
         };
         let mut f = ItemFrame {
             attachment_lifetime: Default::default(),
@@ -634,6 +595,7 @@ mod tests {
             fixed: false,
             invisible: false,
             check_interval: 0,
+            ticks: 0,
             custom_name: None,
             random: sunrise_client::random_source::entity(),
         };

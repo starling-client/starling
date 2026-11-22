@@ -9,8 +9,8 @@ impl Game<'_> {
     /// change, reorder or remove lines. `player` and `player_entity_id` are
     /// the local player's, `display` the stack's `minecraft:tooltip_display`,
     /// `advanced` (F3+H) and `creative` (a creative tab's own slot) its
-    /// `TooltipFlag`. Asked each frame the tooltip shows, never for one the
-    /// stack hides or a crossbow's loaded projectile. Client-side.
+    /// `TooltipFlag`. Asked for display and mod line requests, never for a hidden
+    /// tooltip, a crossbow's loaded projectile or a reentrant request. Client-side.
     pub(in crate::game) fn native_item_tooltip(
         &self,
         call: mod_api::__private::ItemTooltipCall<'_>,

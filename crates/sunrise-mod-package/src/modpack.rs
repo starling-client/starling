@@ -155,58 +155,212 @@ impl Modpack {
     }
 
     /// Writes the overrides of the pack at `path` into the game folder
-    /// `home`, each checked again.
+    /// `home`, each checked again. All or nothing: every file is inflated and
+    /// counted in a staging folder inside `home` first, and only then moved into
+    /// place, with the file it replaces kept aside. If anything fails, the files
+    /// that were there are put back and what the import created is removed.
     pub fn extract_overrides(path: &Path, home: &Path) -> Result<Vec<PathBuf>, String> {
         let pack = Modpack::read(path)?;
+        if pack.overrides.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Every destination first: refusing one after an earlier override was written would lose
+        // the file that override replaced.
+        for name in &pack.overrides {
+            check_destination(home, name)?;
+        }
         let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let mut written = Vec::new();
-        let mut total = 0u64;
-        for name in &pack.overrides {
-            // A zip's declared sizes are the pack's own claim, so the limits
-            // are counted again on the bytes actually inflated.
-            let result = Self::extract_one(&mut zip, name, home, &mut total);
-            match result {
-                Ok(target) => written.push(target),
-                Err(e) => {
-                    for target in &written {
-                        let _ = std::fs::remove_file(target);
-                    }
-                    return Err(e);
-                }
+        let mut created = Vec::new();
+        let result = Self::import(&mut zip, &pack.overrides, home, &mut created);
+        if result.is_err() {
+            // Newest first; `remove_dir` leaves any folder that is not empty.
+            for dir in created.iter().rev() {
+                let _ = std::fs::remove_dir(dir);
             }
         }
-        Ok(written)
+        result
     }
 
-    fn extract_one(
+    fn import(
+        zip: &mut zip::ZipArchive<std::fs::File>,
+        names: &[String],
+        home: &Path,
+        created: &mut Vec<PathBuf>,
+    ) -> Result<Vec<PathBuf>, String> {
+        create_dirs(home, created)?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let stage = home.join(format!(".sunrise-spack-{}-{nanos}", std::process::id()));
+        std::fs::create_dir(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
+        // Each target with the original it replaced, so a failure can undo it.
+        let mut placed = Vec::new();
+        let result = Self::stage_and_commit(zip, names, home, &stage, created, &mut placed);
+        let Err(e) = result else {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Ok(placed.into_iter().map(|(target, _)| target).collect());
+        };
+        let (failed, kept) = undo(&placed);
+        // An original that could not be put back now lives only in its backup in the stage.
+        if !kept {
+            let _ = std::fs::remove_dir_all(&stage);
+        }
+        Err(format!("{e}{failed}"))
+    }
+
+    fn stage_and_commit(
+        zip: &mut zip::ZipArchive<std::fs::File>,
+        names: &[String],
+        home: &Path,
+        stage: &Path,
+        created: &mut Vec<PathBuf>,
+        placed: &mut Vec<(PathBuf, Option<PathBuf>)>,
+    ) -> Result<(), String> {
+        let mut total = 0u64;
+        for (i, name) in names.iter().enumerate() {
+            // A zip's declared sizes are the pack's own claim, so the limits
+            // are counted again on the bytes actually inflated.
+            Self::stage_one(zip, name, &stage.join(i.to_string()), &mut total)?;
+        }
+        let backups = stage.join("backup");
+        std::fs::create_dir(&backups).map_err(|e| format!("{}: {e}", backups.display()))?;
+        for (i, name) in names.iter().enumerate() {
+            Self::place_one(
+                home,
+                name,
+                &stage.join(i.to_string()),
+                &backups.join(i.to_string()),
+                created,
+                placed,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn stage_one(
         zip: &mut zip::ZipArchive<std::fs::File>,
         name: &str,
-        home: &Path,
+        staged: &Path,
         total: &mut u64,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<(), String> {
         let mut entry = zip
             .by_name(&format!("{OVERRIDES}{name}"))
             .map_err(|e| format!("{name}: {e}"))?;
+        let mut out =
+            std::fs::File::create(staged).map_err(|e| format!("{}: {e}", staged.display()))?;
+        // Reading to the end is what checks the entry's CRC.
+        let copied = std::io::copy(&mut (&mut entry).take(MAX_OVERRIDE + 1), &mut out)
+            .map_err(|e| format!("{name}: {e}"))?;
+        *total += copied;
+        if copied > MAX_OVERRIDE {
+            return Err(format!("{name} is over {} MiB", MAX_OVERRIDE >> 20));
+        }
+        if *total > MAX_OVERRIDES {
+            return Err(format!("overrides are over {} MiB", MAX_OVERRIDES >> 20));
+        }
+        Ok(())
+    }
+
+    fn place_one(
+        home: &Path,
+        name: &str,
+        staged: &Path,
+        backup: &Path,
+        created: &mut Vec<PathBuf>,
+        placed: &mut Vec<(PathBuf, Option<PathBuf>)>,
+    ) -> Result<(), String> {
         let target = home.join(name);
         if let Some(dir) = target.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            create_dirs(dir, created)?;
         }
-        let mut out =
-            std::fs::File::create(&target).map_err(|e| format!("{}: {e}", target.display()))?;
-        let copied = std::io::copy(&mut (&mut entry).take(MAX_OVERRIDE + 1), &mut out)
-            .map_err(|e| format!("{}: {e}", target.display()))?;
-        *total += copied;
-        if copied > MAX_OVERRIDE || *total > MAX_OVERRIDES {
-            let _ = std::fs::remove_file(&target);
-            return Err(if copied > MAX_OVERRIDE {
-                format!("{name} is over {} MiB", MAX_OVERRIDE >> 20)
-            } else {
-                format!("overrides are over {} MiB", MAX_OVERRIDES >> 20)
-            });
-        }
-        Ok(target)
+        let kept = match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.is_dir() => {
+                return Err(format!("{}: is a folder", target.display()));
+            }
+            // A link (or any other entry that is not a plain file) could not be put back as it was.
+            Ok(meta) if !meta.is_file() => {
+                return Err(format!("{}: is a link, not a plain file", target.display()));
+            }
+            Ok(_) => {
+                // Copy, not move: the original stays at `target` until the rename below replaces it
+                // in one step, so a crash in between never leaves the file missing.
+                std::fs::copy(&target, backup).map_err(|e| format!("{}: {e}", target.display()))?;
+                Some(backup.to_path_buf())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("{}: {e}", target.display())),
+        };
+        std::fs::rename(staged, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+        placed.push((target, kept));
+        Ok(())
     }
+}
+
+/// Puts back what `placed` replaced, newest first. Returns a note naming each step that failed, and
+/// whether an original was left in its backup.
+fn undo(placed: &[(PathBuf, Option<PathBuf>)]) -> (String, bool) {
+    let (mut failed, mut kept) = (String::new(), false);
+    for (target, backup) in placed.iter().rev() {
+        let step = match backup {
+            // The original is a copy: renaming it over the target puts it back in one step.
+            Some(backup) => std::fs::rename(backup, target),
+            None => std::fs::remove_file(target),
+        };
+        if let Err(e) = step {
+            failed += &format!("; could not undo {}: {e}", target.display());
+            if let Some(backup) = backup {
+                kept = true;
+                failed += &format!(" (the original is kept at {})", backup.display());
+            }
+        }
+    }
+    (failed, kept)
+}
+
+/// Creates `dir` and the missing folders above it, noting each one made.
+fn create_dirs(dir: &Path, created: &mut Vec<PathBuf>) -> Result<(), String> {
+    let mut missing = Vec::new();
+    let mut at = dir;
+    while !at.exists() {
+        missing.push(at);
+        match at.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => at = parent,
+            _ => break,
+        }
+    }
+    for d in missing.into_iter().rev() {
+        std::fs::create_dir(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        created.push(d.to_path_buf());
+    }
+    Ok(())
+}
+
+/// Refuses an override whose destination, or a folder on the way to it under
+/// `home`, is already a link (a symlink, or a junction on Windows): writing
+/// through it would leave the game folder. `home` itself may be anything.
+fn check_destination(home: &Path, name: &str) -> Result<(), String> {
+    let parts: Vec<&str> = name.split('/').collect();
+    let mut at = home.to_path_buf();
+    for (i, part) in parts.iter().enumerate() {
+        at.push(part);
+        let meta = match std::fs::symlink_metadata(&at) {
+            Ok(meta) => meta,
+            // Nothing here, so nothing below it exists either.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("{}: {e}", at.display())),
+        };
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "{}: is a link; an override is not written through links",
+                at.display()
+            ));
+        }
+        if i + 1 < parts.len() && !meta.is_dir() {
+            return Err(format!("{}: is not a folder", at.display()));
+        }
+    }
+    Ok(())
 }
 
 /// An override's path under `overrides/`: a settings file, a resource pack
@@ -325,5 +479,180 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
         let short = PACK.replace("0000000000000000", "00");
         assert!(Manifest::parse(&short).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failure_while_placing_restores_the_files_already_replaced() {
+        let dir = scratch("place");
+        let path = write_pack(
+            &dir,
+            PACK,
+            &[
+                ("overrides/options.txt", b"from the pack\n"),
+                ("overrides/resourcepacks/new.zip", b"new pack"),
+            ],
+        );
+        let home = dir.join("home");
+        // A folder where the second file belongs: placing it fails after options.txt was replaced.
+        std::fs::create_dir_all(home.join("resourcepacks/new.zip")).unwrap();
+        std::fs::write(home.join("options.txt"), b"mine\n").unwrap();
+        assert!(Modpack::extract_overrides(&path, &home).is_err());
+        assert_eq!(std::fs::read(home.join("options.txt")).unwrap(), b"mine\n");
+        assert!(home.join("resourcepacks/new.zip").is_dir());
+        let mut left: Vec<_> = std::fs::read_dir(&home)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["options.txt", "resourcepacks"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_original_that_cannot_be_put_back_is_kept_and_reported() {
+        let dir = scratch("undo");
+        let (target, backup) = (dir.join("options.txt"), dir.join("backup"));
+        std::fs::write(&backup, b"mine\n").unwrap();
+        // A folder that is not empty where the original goes back: no rename can replace it.
+        std::fs::create_dir_all(target.join("in the way")).unwrap();
+        let (note, kept) = undo(&[(target.clone(), Some(backup.clone()))]);
+        assert!(kept, "the backup was not kept");
+        assert!(note.contains(&target.display().to_string()), "{note}");
+        assert!(note.contains(&backup.display().to_string()), "{note}");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"mine\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_linked_destination_is_refused_and_left_a_link() {
+        let dir = scratch("linked");
+        let (home, outside) = (dir.join("home"), dir.join("outside.txt"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(&outside, b"shared\n").unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, home.join("options.txt"));
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, home.join("options.txt"));
+        if let Err(e) = linked {
+            eprintln!("skipped: cannot create a symlink here ({e})");
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let path = write_pack(&dir, PACK, &[("overrides/options.txt", b"from the pack\n")]);
+        assert!(Modpack::extract_overrides(&path, &home).is_err());
+        assert_eq!(
+            std::fs::read_link(home.join("options.txt")).unwrap(),
+            outside
+        );
+        assert_eq!(std::fs::read(&outside).unwrap(), b"shared\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_import_keeps_existing_files_and_removes_new_ones() {
+        let dir = scratch("rollback");
+        let path = dir.join("bad.spack");
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        zip.start_file(MANIFEST, options).unwrap();
+        zip.write_all(PACK.as_bytes()).unwrap();
+        // Name order is the import order: the entry that fails comes last.
+        for (name, bytes) in [
+            ("overrides/options.txt", &b"renderDistance:8\n"[..]),
+            ("overrides/resourcepacks/new.zip", b"new pack"),
+            ("overrides/sunrise-extras.txt", b"CORRUPT-ME-PAYLOAD"),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        // The entries are stored, so flipping a payload byte breaks its CRC.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes
+            .windows(18)
+            .position(|w| w == b"CORRUPT-ME-PAYLOAD")
+            .unwrap();
+        bytes[at] ^= 0xff;
+        std::fs::write(&path, bytes).unwrap();
+        assert!(Modpack::read(&path).is_ok());
+
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("options.txt"), b"mine\n").unwrap();
+        std::fs::write(home.join("sunrise-extras.txt"), b"my extras\n").unwrap();
+        assert!(Modpack::extract_overrides(&path, &home).is_err());
+
+        assert_eq!(std::fs::read(home.join("options.txt")).unwrap(), b"mine\n");
+        assert_eq!(
+            std::fs::read(home.join("sunrise-extras.txt")).unwrap(),
+            b"my extras\n"
+        );
+        let mut left: Vec<_> = std::fs::read_dir(&home)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["options.txt", "sunrise-extras.txt"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Links `home/resourcepacks` to a folder outside `home` with `link(outside, at)`, then checks
+    /// that an override for `resourcepacks/pack.zip` is refused and the folder outside is left alone,
+    /// and so is the player's `options.txt`, which the pack also overrides and imports first.
+    fn refuses_a_link(name: &str, link: impl FnOnce(&Path, &Path) -> std::io::Result<()>) {
+        let dir = scratch(name);
+        let outside = dir.join("outside");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(outside.join("pack.zip"), b"not the pack's").unwrap();
+        std::fs::write(home.join("options.txt"), b"mine\n").unwrap();
+        if let Err(e) = link(&outside, &home.join("resourcepacks")) {
+            eprintln!("skipped: cannot create a symlink here ({e})");
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let path = write_pack(
+            &dir,
+            PACK,
+            &[
+                ("overrides/options.txt", b"from the pack\n"),
+                ("overrides/resourcepacks/pack.zip", b"from the pack"),
+            ],
+        );
+        assert!(Modpack::extract_overrides(&path, &home).is_err());
+        assert_eq!(std::fs::read(home.join("options.txt")).unwrap(), b"mine\n");
+        assert_eq!(
+            std::fs::read(outside.join("pack.zip")).unwrap(),
+            b"not the pack's"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_override_is_not_written_through_a_linked_folder() {
+        refuses_a_link("link", |to, at| {
+            #[cfg(unix)]
+            return std::os::unix::fs::symlink(to, at);
+            #[cfg(windows)]
+            return std::os::windows::fs::symlink_dir(to, at);
+        });
+    }
+
+    /// A junction needs no privilege on Windows, so unlike the symlink above this test never skips.
+    #[cfg(windows)]
+    #[test]
+    fn an_override_is_not_written_through_a_junction() {
+        refuses_a_link("junction", |to, at| {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(at)
+                .arg(to)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "mklink /J failed: {made:?}");
+            Ok(())
+        });
     }
 }

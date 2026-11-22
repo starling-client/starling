@@ -149,6 +149,14 @@ particle_types! {
     BlockMarker = "block_marker",
 }
 impl ParticleType {
+    /// The breaking-item crumbs (`BreakingItemParticle`), which take their colour from the
+    /// spawn's `ParticleOptions::color`.
+    pub fn is_item_crumb(self) -> bool {
+        matches!(
+            self,
+            Self::Item | Self::ItemSlime | Self::ItemSnowball | Self::ItemCobweb
+        )
+    }
     /// `ParticleType.getOverrideLimiter` (`ParticleTypes.register(name, true)`):
     /// spawned regardless of distance.
     pub fn override_limiter(self) -> bool {

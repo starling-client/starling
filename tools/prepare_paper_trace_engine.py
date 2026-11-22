@@ -25,13 +25,13 @@ cargo += '[patch.crates-io]\n'
 for name, patch in tomllib.loads((ROOT / 'Cargo.toml').read_text())['patch']['crates-io'].items():
     cargo += f'{name}={{path={quote(ROOT / patch["path"])}}}\n'
 (project / 'Cargo.toml').write_text(cargo)
-# Match the game's Windows stack allowance for this executable, on GNU and MSVC.
+# This standalone trace executable constructs the dedicated Game on the main thread.
+# Reserve enough stack on Windows for that path, even when built outside the game packages.
 (project / 'build.rs').write_text('fn main() { if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {'
     'let arg = if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") '
     '{"/STACK:8388608"} else {"-Wl,--stack,8388608"}; println!("cargo:rustc-link-arg={arg}"); }}')
 main = (ROOT / 'crates/sunrise-client/src/native_main.rs.template').read_text()
 main = main.replace('/* MOD_ENTRIES */', f'{quote(manifest["id"])} => paper_trace_mod::hooks,')
-main = main.replace('/* MOD_SLOTS */', '')
 main = main.replace('/* BUILT_MODS */', 'mod_api::__private::native::BuiltMod {'
     f'id: {quote(manifest["id"])}, version: {quote(manifest["version"])}, '
     f'side: mod_api::Side::{manifest.get("side", "client").title()} }},')

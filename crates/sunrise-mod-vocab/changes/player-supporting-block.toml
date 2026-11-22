@@ -1,0 +1,2 @@
+ids = ["handle:PlayerRef::supporting_block", "handle:PlayerRef::on_block"]
+why = "A moving platform can read the player's recorded supporting block and getOnPos on the side driving movement, without repeating a collision query."

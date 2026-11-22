@@ -1,7 +1,7 @@
 //! Owned game rule values, independent of the engine's session registry.
 use serde::{Deserialize, Serialize};
 
-/// A registered game rule's typed value. Case order is part of the wasm link contract.
+/// A registered game rule's typed value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]

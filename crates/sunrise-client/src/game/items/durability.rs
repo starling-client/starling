@@ -1,9 +1,9 @@
 //! Shared equipment durability mutation.
 use super::Game;
+use std::convert::Infallible;
 use sunrise_client::items::ItemStack;
 use sunrise_core::nbt::Tag;
 use sunrise_world::item_durability::{self, DurabilityStack, DurabilityWorld};
-use std::convert::Infallible;
 
 /// Who wears or uses a stack as it takes wear: `ItemStack.hurtAndBreak`'s entity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

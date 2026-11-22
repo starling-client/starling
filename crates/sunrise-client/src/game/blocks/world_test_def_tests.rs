@@ -3,9 +3,9 @@
 //! game's own data: a definition only a world pack has is found and runs
 //! (tools/test_world_test_def_parity.py measures the same on vanilla 26.3).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::geometry::Vec3;
-use std::sync::Arc;
 
 /// A world folder with one data pack holding `h275:broken`.
 fn world_with_pack(tag: &str) -> std::path::PathBuf {
@@ -72,7 +72,7 @@ fn game<'a>(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_test_instance_from_an_enabled_world_pack_is_found_and_runs() {
     let world = world_with_pack("found");
     let mut resources = None;
@@ -155,7 +155,7 @@ const FAILING: &str = r#"{"type":"minecraft:block_based","structure":"minecraft:
 /// cached misses and selector ids included. A pack overrides a built-in id.
 /// A game with no world opened reads the game's own data as before.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_world_keeps_the_test_instances_it_opened_with() {
     let a = world_with(
         "a",

@@ -4,6 +4,11 @@
 use crate::game::Game;
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::{bind_local_player, with_game};
+use mod_api::{
+    Flow, HitHost, Hooks, HurtSource, LivingDeathEvent, LivingIncomingDamageEvent, ModEntry,
+    ServerHost,
+};
+use std::sync::{Arc, Mutex};
 use sunrise_client::{
     chunk::Chunk,
     items::ItemStack,
@@ -12,11 +17,6 @@ use sunrise_client::{
     projectiles::{Projectile, ProjectileKind},
 };
 use sunrise_core::{geometry::Vec3, nbt::Tag, position::ChunkPos};
-use mod_api::{
-    Flow, Hooks, HurtSource, LevelRandomHost, LivingDeathEvent, LivingIncomingDamageEvent,
-    ModEntry, ServerHost,
-};
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq)]
 struct Hit {
@@ -49,7 +49,7 @@ struct Probe(Arc<Mutex<Seen>>);
 impl Hooks for Probe {
     fn living_incoming_damage(
         &self,
-        _: &mut dyn LevelRandomHost,
+        _: &mut dyn HitHost,
         event: &mut LivingIncomingDamageEvent<'_>,
     ) -> Flow {
         self.0.lock().unwrap().incoming.push(Hit::new(
@@ -104,7 +104,7 @@ fn victim(game: &mut Game<'_>, name: &str) -> f32 {
     let mut mob = Mob::new(41, kind, Vec3::new(6.0, 80.0, 4.5), 0.0);
     mob.persistent = true;
     mob.no_ai = true;
-    mob.on_ground = true;
+    mob.ground.on_ground = true;
     mob.extra.counter = 0;
     if name == "minecraft:wither" {
         mob.health = mob.attrs.max_health / 2.0;
@@ -170,7 +170,7 @@ fn step(game: &mut Game<'_>, player: bool) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn player_thrown_trident_is_refused_by_powered_wither_and_closed_shulker() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::player_thrown_trident_is_refused_by_powered_wither_and_closed_shulker",
@@ -202,7 +202,7 @@ fn player_thrown_trident_is_refused_by_powered_wither_and_closed_shulker() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn mob_thrown_trident_is_refused_by_powered_wither_and_closed_shulker() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::mob_thrown_trident_is_refused_by_powered_wither_and_closed_shulker",
@@ -231,7 +231,7 @@ fn mob_thrown_trident_is_refused_by_powered_wither_and_closed_shulker() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn accepted_player_and_mob_tridents_keep_type_entities_position_and_full_weapon() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::accepted_player_and_mob_tridents_keep_type_entities_position_and_full_weapon",
@@ -268,7 +268,7 @@ fn accepted_player_and_mob_tridents_keep_type_entities_position_and_full_weapon(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn type_only_damage_trident_and_arrow_are_not_direct_abstract_arrows() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::type_only_damage_trident_and_arrow_are_not_direct_abstract_arrows",
@@ -299,7 +299,7 @@ fn type_only_damage_trident_and_arrow_are_not_direct_abstract_arrows() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn actual_arrows_still_bounce_off_powered_wither_and_closed_shulker() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::actual_arrows_still_bounce_off_powered_wither_and_closed_shulker",
@@ -330,7 +330,7 @@ fn actual_arrows_still_bounce_off_powered_wither_and_closed_shulker() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn unlistened_projectile_factory_keeps_family_without_copying_weapon() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::unlistened_projectile_factory_keeps_family_without_copying_weapon",
@@ -357,7 +357,7 @@ fn unlistened_projectile_factory_keeps_family_without_copying_weapon() {
                         }
                         let attack = game.projectile_attack(&shot);
                         assert_eq!(attack.projectile, Some(71));
-                        assert_eq!(attack.projectile_is_arrow, is_arrow);
+                        assert_eq!(attack.projectile_kind.is_arrow(), is_arrow);
                         assert!(attack.projectile_weapon.is_none());
                         assert!(attack.held.iter().all(Option::is_none));
                         assert_eq!(
@@ -374,7 +374,7 @@ fn unlistened_projectile_factory_keeps_family_without_copying_weapon() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn explicit_damage_by_actual_arrow_family_is_refused_even_with_generic_type() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::explicit_damage_by_actual_arrow_family_is_refused_even_with_generic_type",
@@ -406,7 +406,7 @@ fn explicit_damage_by_actual_arrow_family_is_refused_even_with_generic_type() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn explicit_damage_by_trident_retains_its_weapon_with_independent_causing_entity() {
     crate::game::in_own_process(
         "game::native_hooks::trident_family_tests::explicit_damage_by_trident_retains_its_weapon_with_independent_causing_entity",

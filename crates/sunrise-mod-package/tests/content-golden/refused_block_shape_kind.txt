@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_block_shape_kind",
+    name: "Refused block shape kind",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: data/refused_block_shape_kind/sunrise/block/sample.json: unknown variant `vehicle`, expected one of `item`, `player`, `living`, `other` at line 1 column 70

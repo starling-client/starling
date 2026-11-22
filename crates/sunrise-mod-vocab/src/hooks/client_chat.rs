@@ -5,11 +5,18 @@ pub trait Hooks {
     /// `original_message` is immutable; change `message` or set `cancel` to
     /// prevent sending.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "cancel",
         neoforge = "ClientChatEvent",
         cancellable = true
     )]
-    fn client_chat();
+    fn client_chat(
+        player_id: i32,
+        player_uuid: u128,
+        original_message: &str,
+        message: &mut String,
+        cancel: &mut bool,
+    );
 }

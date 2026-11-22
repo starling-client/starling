@@ -36,6 +36,7 @@ fn dig_cooldown(m: &mut Mob) -> i64 {
 /// "passenger or leashed"), so a `/summon`ed warden called Bob digs down and
 /// is gone.
 #[test]
+#[ignore = "daily"]
 fn only_a_persistent_or_leashed_warden_keeps_its_dig_cooldown() {
     let ran = with_test_world(&[], |w, types| {
         // What a warden holds a few ticks into its dig cooldown.
@@ -57,13 +58,14 @@ fn only_a_persistent_or_leashed_warden_keeps_its_dig_cooldown() {
             assert_eq!(dig_cooldown(&mut m), ttl, "{what} warden");
         }
     });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }
 
 /// `Warden.canTargetEntity`: `!isAlliedTo(entity) && !entity.isInvulnerable()`.
 /// A warden on a player's team leaves that player and its other allies alone,
 /// and it never hunts an invulnerable mob.
 #[test]
+#[ignore = "daily"]
 fn the_warden_leaves_its_allies_and_invulnerable_mobs_alone() {
     let mut board = Scoreboard::default();
     board.add_team("t");
@@ -112,12 +114,13 @@ fn the_warden_leaves_its_allies_and_invulnerable_mobs_alone() {
                 "an invulnerable mob"
             );
         });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }
 
 /// `Warden.VibrationUser.canReceiveVibration` through `isAlliedTo`: a team
 /// mate's vibration is not one the warden hears, so it never angers at it.
 #[test]
+#[ignore = "daily"]
 fn an_allied_vibration_is_not_heard() {
     let mut board = Scoreboard::default();
     board.add_team("t");
@@ -149,5 +152,27 @@ fn an_allied_vibration_is_not_heard() {
         let none = heard_by(ctx, &Teams::default(), m.id);
         assert!(can_receive_vibration(&m, 0, &none));
     });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
+}
+
+/// #486: `Warden.increaseAngerAt` keys a player suspect by that player's own
+/// UUID, the world's verified identity of the selected player; a view the
+/// world can't name records none, so a save writes no pair for it.
+#[test]
+#[ignore = "daily"]
+fn a_player_angers_the_warden_under_its_own_uuid() {
+    let observer = [1100571785, 643185331, -1474652091, 687307347];
+    let ran = with_test_world(&[], |w, types| {
+        for (identity, expected) in [(Some((observer, 9)), Some(observer)), (None, None)] {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(0.5, 64.0, 2.5)));
+            w.player_identity = identity;
+            let mut m = warden_mob(types, 1);
+            increase_anger(&mut m, &w, Some(Who::Player), 35, false, &mut Vec::new());
+            let anger = &m.extra.warden.as_ref().unwrap().anger;
+            assert_eq!(anger.anger_of(Who::Player), 35);
+            assert_eq!(anger.player_uuid(), expected);
+        }
+    });
+    assert!(ran, "vanilla data is missing");
 }

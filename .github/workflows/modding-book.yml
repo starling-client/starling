@@ -1,0 +1,142 @@
+name: modding-book
+on:
+  push:
+    branches: [main]
+    paths: ["docs/modding/**", "crates/sunrise-mod-api/**", "crates/sunrise-mod-api-gen/**", "crates/sunrise-stage/**", "xtask/**", "tools/*modding*", "tests/test_modding_*.py", "tools/ci/nightly.py", "crates/sunrise-mod-package/src/sdk/**", "crates/sunrise-mod-surface/**", "crates/sunrise-mod-call/**"]
+  # A PR gets the book itself (concept-pages preprocessor and mdBook build), not the API doc and example builds.
+  pull_request:
+    # The generator and xtask render the hook-notes and NeoForge counterparts chapters at build time, from the
+    # mod API's surface and catalog.
+    paths: ["docs/modding/**", "crates/sunrise-mod-api/**", "crates/sunrise-mod-api-gen/**", "crates/sunrise-stage/**", "xtask/**", "tools/*modding*", "tests/test_modding_*.py", "tools/ci/nightly.py", "crates/sunrise-mod-package/src/sdk/**", "crates/sunrise-mod-surface/**", "crates/sunrise-mod-call/**", ".github/workflows/modding-book.yml"]
+  workflow_dispatch:
+# A newer push to a pull request or to main replaces the older run: only the newest head's book matters.
+concurrency:
+  group: modding-book-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+# Every other Rust workflow builds non-incrementally: sccache can't cache an incremental unit, so the preprocessors'
+# xtask and sunrise-stage builds (opt-level 3 crates) were recompiled from source on every slot that hadn't built
+# this commit's versions, and the incremental artifacts here and the others' non-incremental ones replaced each other.
+env:
+  CARGO_INCREMENTAL: 0
+jobs:
+  book:
+    # A contributor's pull request (its head in a fork) skips what compiles; a reviewer dispatches it (tools/ci/pr_gate.py).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Main's (which also builds the API docs and tests the examples) on Dyna's medium runner while the repository's
+    # switch is on; a pull request's on GitHub's, as DCO: nothing gates on it, and Dyna's runners are counted and kept
+    # for the gates (dco.yml says what it measured).
+    runs-on: ${{ vars.DYNA_CI_SELF_HOSTED == 'true' && github.event_name != 'pull_request' && 'dyna-medium' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      # Inert until the modding book exists on the branch.
+      - id: book
+        run: test -f docs/modding/book.toml && echo present=true >> "$GITHUB_OUTPUT" || true
+      - name: The pinned Rust (tools/ci/rust-version)
+        if: steps.book.outputs.present == 'true'
+        env:
+          DYNA: ${{ runner.environment != 'github-hosted' }}
+        run: |
+          # Dyna's image has no rustup: the slot's CARGO_HOME keeps the one installed here, as dyna-checks' jobs do.
+          if [ "$DYNA" = true ]; then
+            if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+              curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+            fi
+            export PATH="$CARGO_HOME/bin:$PATH"
+            echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          fi
+          bash tools/ci/rustup_install.sh --profile minimal
+      # Dyna's runner builds in the slot's persistent CARGO_TARGET_DIR; `target` points there so the book, the API docs
+      # and the checks below find them where they look. Last run's pages go first: a page this tree no longer makes
+      # must not stay behind for the private-path check or the artifact.
+      - name: Use the slot's build folder
+        if: steps.book.outputs.present == 'true' && runner.environment != 'github-hosted'
+        run: |
+          mkdir -p "${CARGO_TARGET_DIR:?}"
+          if [ ! -e target ] && [ ! -L target ]; then
+            ln -s "$CARGO_TARGET_DIR" target
+          elif [ ! target -ef "$CARGO_TARGET_DIR" ]; then
+            echo '::error::Existing target path does not point to CARGO_TARGET_DIR; refusing to replace it.'
+            exit 1
+          fi
+          rm -rf target/modding-book target/doc
+      # The slot's build folder keeps other branches' artifacts: only byte-identical sources regain their timestamps.
+      - name: Restore unchanged source timestamps
+        if: steps.book.outputs.present == 'true'
+        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
+      # Every build in this job runs at the runner's size, not the host's (tools/ci/cargo_jobs.py).
+      - name: Cap build parallelism to the runner
+        if: steps.book.outputs.present == 'true'
+        run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
+      # mdBook's own release binary, checked against its pinned digest: `cargo install` compiled it on every new slot.
+      - name: Install mdBook
+        if: steps.book.outputs.present == 'true'
+        run: |
+          folder="$RUNNER_TEMP/mdbook"
+          mkdir -p "$folder"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$folder/mdbook.tar.gz" \
+            https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz
+          echo "c0b903f01dd8f4edc644372ad2b80b1fdddd12552d37b6a098657cbd8eddd768  $folder/mdbook.tar.gz" | sha256sum -c -
+          tar -xzf "$folder/mdbook.tar.gz" -C "$folder" mdbook
+          echo "$folder" >> "$GITHUB_PATH"
+      - if: steps.book.outputs.present == 'true'
+        run: python3 -m unittest tests.test_modding_concept_pages tests.test_modding_hook_notes tests.test_neoforge_counterparts tests.test_modding_book_guard tests.test_modding_book_links tests.test_modding_sdk_tables tests.test_modding_book_redirects
+      # A page the change removes or renames keeps its address through docs/modding/redirects.json (a dispatch has no base).
+      - name: Every address the book loses has a redirect
+        if: steps.book.outputs.present == 'true'
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
+            echo "::notice::no base commit for this event; only the redirects file itself is checked"
+            python3 tools/modding_book_redirects.py
+          else
+            git fetch --no-tags --depth=1 origin "$BASE"
+            python3 tools/modding_book_redirects.py --base "$BASE"
+          fi
+      # mdBook logs a link or include it can't resolve as an [ERROR] and still succeeds, leaving the page without it.
+      # `shell: bash` runs with pipefail, so mdBook's own failure still fails the step through tee.
+      - name: Build the book
+        if: steps.book.outputs.present == 'true'
+        shell: bash
+        run: |
+          mdbook build docs/modding 2>&1 | tee "$RUNNER_TEMP/mdbook.log"
+          status=0
+          grep -E '^[0-9-]+ [0-9:]+ \[ERROR\]' "$RUNNER_TEMP/mdbook.log" || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo '::error::mdBook reported the errors above: a page is missing an include or link.'
+            exit 1
+          fi
+          # grep's 1 is "no [ERROR] line"; anything else is a failure to read the log.
+          [ "$status" -eq 1 ]
+      - name: Compiler cache statistics
+        if: always() && steps.book.outputs.present == 'true' && runner.environment != 'github-hosted'
+        run: sccache --show-stats || echo 'compiler-cache statistics unavailable'
+      - if: steps.book.outputs.present == 'true'
+        run: python3 tools/modding_concept_pages.py --html target/modding-book
+      - if: steps.book.outputs.present == 'true' && github.event_name != 'pull_request'
+        run: RUSTDOCFLAGS="-D warnings" cargo doc -p sunrise-mod-api --no-deps
+      # The game's constructors live in the hidden `mod_api::__private`; no rustdoc page or link may name it.
+      - name: Reject private paths in published docs
+        if: steps.book.outputs.present == 'true'
+        env:
+          BOOK_EVENT: ${{ github.event_name }}
+        run: |
+          paths=(docs/modding/src target/modding-book)
+          if [[ "$BOOK_EVENT" != pull_request ]]; then
+            paths+=(target/doc/mod_api)
+          fi
+          for path in "${paths[@]}"; do
+            test -d "$path"
+          done
+          # Only grep's no-match status is success; missing/unreadable paths must fail.
+          status=0
+          grep -rl __private "${paths[@]}" || status=$?
+          test "$status" -eq 1
+      - if: steps.book.outputs.present == 'true' && github.event_name != 'pull_request'
+        run: cargo test -p sunrise-modding-examples
+      # book.toml sets build-dir = "../../target/modding-book", relative to docs/modding.
+      - if: steps.book.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: modding-book
+          path: target/modding-book

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercise the built artifact with private resources, never in a player's game folder.
 set -euo pipefail
+# Boot the integrated server at its shipped stack floor, not a runner's test override.
+unset RUST_MIN_STACK
 home=$(mktemp -d "$RUNNER_TEMP/sunrise-smoke.XXXXXX")
 version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' research-lock.json | head -1)
 client="$(cd "$BIN" && pwd)/sunrise-client"

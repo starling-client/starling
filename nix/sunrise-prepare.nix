@@ -14,6 +14,7 @@
   coreutils,
   jdk25_headless,
   version,
+  polyformShield,
 }:
 rustPlatform.buildRustPackage {
   pname = "sunrise-prepare";
@@ -50,7 +51,7 @@ rustPlatform.buildRustPackage {
   meta = {
     description = "Prepare Sunrise's game files from your own copy of Minecraft: Java Edition 26.3";
     homepage = "https://playsunrise.net";
-    license = lib.licenses.mit;
+    license = polyformShield; # flake.nix
     mainProgram = "sunrise-prepare";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };

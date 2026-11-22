@@ -5,8 +5,8 @@
 //! isn't online here; a resting guest reads its saved body.
 use super::Game;
 use super::native_server::PlayerRead;
-use sunrise_client::attack_strength::{BASE_ATTACK_SPEED, delay};
 use mod_api::PlayerRef;
+use sunrise_client::attack_strength::{BASE_ATTACK_SPEED, delay};
 
 impl Game<'_> {
     /// `Player.getAttackStrengthScale(partial)` for `player`.
@@ -20,10 +20,6 @@ impl Game<'_> {
             return None;
         }
         let read = self.player_handle_read(player)?;
-        // 1.8.9 had no attack cooldown.
-        if self.legacy_rules() {
-            return Some(1.0);
-        }
         Some(match read {
             PlayerRead::Acting { .. } => return self.attack_strength_scale_at(partial),
             PlayerRead::Guest(guest) => {

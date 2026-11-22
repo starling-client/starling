@@ -131,8 +131,8 @@ impl TeleportConsume {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::random::LegacyRandom;
     use std::convert::Infallible;
+    use sunrise_core::random::LegacyRandom;
 
     /// A user at the origin whose every landing fails unless `lands`; it
     /// records the targets tried and how the mods answer.

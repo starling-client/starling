@@ -8,7 +8,9 @@ use crate::testing::{FakeHost, FakeTank};
 mod tests {
     use super::*;
     use crate::prelude::ItemsHost;
-    use crate::{FLUIDS, FluidResource, Hand, HostTransaction, ItemResource, move_resources};
+    use crate::{
+        FLUIDS, FluidResource, Hand, HostTransaction, ItemResource, resource_util::move_resources,
+    };
 
     fn water(amount: u32) -> FluidStack {
         FluidStack::new(
@@ -47,16 +49,16 @@ mod tests {
         let (from, into, lava) = (tank(server, 0), tank(server, 1), tank(server, 2));
         let any = |_: &FluidResource| true;
         let aborted = server.transaction(|host, tx| {
-            let moved = move_resources(host, &from, &into, any, 1000, tx);
+            let moved = move_resources(host, &from, &into, any, 1000, Some(tx));
             Err::<(), _>(moved)
         });
         assert_eq!(aborted, Err(Ok(300)));
         // Lava takes no water; water fills only up to the target's room.
         let refused =
-            server.transaction(|host, tx| move_resources(host, &from, &lava, any, 1000, tx));
+            server.transaction(|host, tx| move_resources(host, &from, &lava, any, 1000, Some(tx)));
         assert_eq!(refused, Ok(0));
         let moved =
-            server.transaction(|host, tx| move_resources(host, &from, &into, any, 1000, tx));
+            server.transaction(|host, tx| move_resources(host, &from, &into, any, 1000, Some(tx)));
         assert_eq!(moved, Ok(300));
         let amount = |x| host.level.block_entity_at([x, 64, 0]).unwrap().tanks[0].amount();
         assert_eq!([amount(0), amount(1), amount(2)], [500, 1000, 100]);

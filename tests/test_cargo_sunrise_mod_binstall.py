@@ -1,6 +1,6 @@
 """`cargo binstall` finds every cargo-sunrise-mod archive the release ships (#2120).
 
-`[package.metadata.binstall]` and `.github/workflows/cargo-sunrise-mod.yml` are two halves of one contract: the
+`[package.metadata.binstall]` and `.github/workflows/cargo-sunrise-mod{,-build}.yml` are two halves of one contract: the
 manifest names a file per target, the workflow uploads it. These check the halves still fit, without a network.
 """
 

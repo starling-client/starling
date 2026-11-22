@@ -3,20 +3,19 @@
 //! check of the codecs against a real vanilla server:
 //!
 //!     cargo run -p sunrise-protocol --example protocol_probe -- 127.0.0.1:25565 [seconds] [registries.json]
-//!
-//! Append `--server-protocol 772` to exercise the experimental adapter against a vanilla 1.21.8 server.
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
     PROTOCOL_VERSION, State,
-    buf::{Reader, Writer},
+    buf::Reader,
     connection::Connection,
     ids,
     packets::{Empty, configuration as cfg, handshake, login, play},
     registry::{Builtin, Dynamic, ceil_log2},
     servers::parse_address,
-};
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,20 +27,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.remove(at);
             true
         });
-    let version = if let Some(at) = args.iter().position(|s| s == "--server-protocol") {
-        args.remove(at);
-        let protocol: i32 = args
-            .get(at)
-            .ok_or("--server-protocol needs a number")?
-            .parse()?;
-        args.remove(at);
-        Some(
-            sunrise_protocol::adapter::ServerVersion::from_protocol(protocol)
-                .ok_or("unsupported server protocol")?,
-        )
-    } else {
-        None
-    };
     let (host, port) =
         parse_address(args.get(1).map_or("127.0.0.1", String::as_str)).ok_or("bad address")?;
     let seconds: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
@@ -51,9 +36,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     let mut c = Connection::connect(&host, port, Duration::from_secs(5))?;
     c.reader.set_read_timeout(Some(Duration::from_secs(10)))?;
-    if let Some(version) = version {
-        c.adapt(version);
-    }
     c.send(
         &handshake::Serverbound::Intention(handshake::Intention {
             protocol: PROTOCOL_VERSION,

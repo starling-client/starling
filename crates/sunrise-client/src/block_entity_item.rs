@@ -68,39 +68,42 @@ fn egg_op_only(id: &str) -> bool {
     )
 }
 
-/// `SpawnEggItem.shouldPrintOpWarning` for a player with game master
-/// permission: a spawn egg carries data of an op-only entity type.
-pub fn spawn_egg_op_warning(stack: &crate::items::ItemStack) -> bool {
-    stack.item.ends_with("_spawn_egg")
-        && matches!(
-            stack
-                .data()
-                .and_then(|d| d.other("minecraft:entity_data"))
-                .and_then(|data| data.get("id")),
-            Some(Tag::String(id)) if egg_op_only(&id.to_string_lossy())
-        )
+/// A stack's resolved `TypedEntityData`, shared by egg use and tooltips.
+pub struct ItemEntityData<'a> {
+    pub kind: String,
+    pub compound: &'a Compound,
 }
 
-/// `SpawnEggItem.useOn` on a spawner: the type it sets (`getType`: the egg's
-/// entity data id, else the egg's own type) and, for an op
-/// (`PlayerList.isOp`), that entity data for `Spawner.setEntityData`; anyone
-/// else sets only the type (`setEntityId`).
-pub fn spawn_egg_on_spawner(
-    stack: &crate::items::ItemStack,
-    op: bool,
-) -> (String, Option<Compound>) {
-    let data = match stack.data().and_then(|d| d.other("minecraft:entity_data")) {
-        Some(Tag::Compound(c)) => Some(c),
-        _ => None,
+impl ItemEntityData<'_> {
+    pub fn op_only(&self) -> bool {
+        egg_op_only(&self.kind)
+    }
+}
+
+/// `SpawnEggItem.getType` and `TypedEntityData.addToTooltip`: a set component
+/// replaces the item's prototype, a removal hides it, and an unchanged stack
+/// inherits it. An egg with no effective component has no spawn type.
+pub fn item_entity_data<'a>(
+    stack: &'a crate::items::ItemStack,
+    items: &'a crate::items::Items,
+) -> Option<ItemEntityData<'a>> {
+    const ID: &str = "minecraft:entity_data";
+    let patch = stack.data();
+    let tag = match patch.and_then(|p| p.other(ID)) {
+        Some(tag) => tag,
+        None if patch.is_some_and(|p| p.other("!minecraft:entity_data").is_some()) => return None,
+        None => items
+            .component_defaults
+            .get(stack.item.as_ref())?
+            .get(&ID.into())?,
     };
-    let id = match data.and_then(|c| c.get(&JavaString::from("id"))) {
-        Some(Tag::String(id)) => id.to_string_lossy(),
-        _ => {
-            let kind = stack.item.trim_end_matches("_spawn_egg");
-            format!("minecraft:{}", kind.trim_start_matches("minecraft:"))
-        }
+    let Tag::Compound(compound) = tag else {
+        return None;
     };
-    (id, data.filter(|_| op).cloned())
+    Some(ItemEntityData {
+        kind: crate::entity_nbt::kind(tag)?,
+        compound,
+    })
 }
 
 /// `EntityType.updateCustomEntityTag`: the `minecraft:entity_data` a spawn egg
@@ -400,12 +403,22 @@ pub fn pick(saved: &Tag) -> Compound {
 /// item's data of the same type, op-only types only when `game_master`, the
 /// player can use game master blocks), then `applyComponentsFromItemStack`.
 pub fn place(saved: &Tag, components: &Compound, game_master: bool) -> Tag {
+    place_with_load_result(saved, components, game_master).0
+}
+
+/// Returns the placed tag and whether `TypedEntityData.loadInto` applied custom data.
+pub fn place_with_load_result(
+    saved: &Tag,
+    components: &Compound,
+    game_master: bool,
+) -> (Tag, bool) {
     let Some(id) = block_entity_nbt::id(saved) else {
-        return saved.clone();
+        return (saved.clone(), false);
     };
     let Tag::Compound(mut tag) = saved.clone() else {
-        return saved.clone();
+        return (saved.clone(), false);
     };
+    let mut custom_data_loaded = false;
     // TypedEntityData.loadInto: saveCustomOnly, merge, loadCustomOnly when changed.
     if let Some(Tag::Compound(data)) = components.get(&JavaString::from(BLOCK_ENTITY_DATA))
         && data
@@ -432,6 +445,7 @@ pub fn place(saved: &Tag, components: &Compound, game_master: bool) -> Tag {
                 canonical(&merged).or_else(|| (!id.starts_with("minecraft:")).then_some(merged));
             if let Some(Tag::Compound(loaded)) = loaded {
                 tag = loaded;
+                custom_data_loaded = true;
             }
         }
     }
@@ -505,7 +519,7 @@ pub fn place(saved: &Tag, components: &Compound, game_master: bool) -> Tag {
         .collect();
     tag.insert("components".into(), Tag::Compound(own));
     let tag = Tag::Compound(tag);
-    canonical(&tag).unwrap_or(tag)
+    (canonical(&tag).unwrap_or(tag), custom_data_loaded)
 }
 
 /// The slots of a `minecraft:container` component.
@@ -692,30 +706,34 @@ mod tests {
     }
 
     #[test]
-    fn a_spawn_egg_sets_its_data_type_and_an_ops_data() {
-        let egg = |entity_data: Option<&str>| {
-            let mut stack = crate::items::ItemStack::new("minecraft:zombie_spawn_egg", 1);
-            if let Some(text) = entity_data {
-                let components = snbt(&format!("{{\"minecraft:entity_data\":{text}}}"));
-                (stack.damage, stack.extra) =
-                    crate::item_data::decode_components(Some(&components));
-            }
-            stack
-        };
-        // A plain egg: its own type, no data, op or not.
-        assert_eq!(
-            spawn_egg_on_spawner(&egg(None), true),
-            ("minecraft:zombie".into(), None)
+    fn a_spawn_egg_reads_its_effective_entity_data() {
+        use crate::items::{ItemStack, Items};
+        let id = "minecraft:zombie_spawn_egg";
+        let mut items = Items::default();
+        std::sync::Arc::make_mut(&mut items.component_defaults).insert(
+            id.into(),
+            Compound::from([(
+                "minecraft:entity_data".into(),
+                snbt("{id:\"minecraft:zombie\"}"),
+            )]),
         );
-        // Entity data: its type for anyone (getType), its data only for an op.
-        let custom = egg(Some("{id:\"minecraft:skeleton\",CustomName:\"Guard\"}"));
-        let (id, data) = spawn_egg_on_spawner(&custom, false);
-        assert_eq!((id.as_str(), data), ("minecraft:skeleton", None));
-        let (id, data) = spawn_egg_on_spawner(&custom, true);
-        assert_eq!(id, "minecraft:skeleton");
-        let data = data.expect("an op's egg carries its data");
+        let mut stack = ItemStack::new(id, 1);
         assert_eq!(
-            data.get(&JavaString::from("CustomName")),
+            item_entity_data(&stack, &items).unwrap().kind,
+            "minecraft:zombie"
+        );
+
+        let removed = snbt("{\"!minecraft:entity_data\":{}}");
+        (stack.damage, stack.extra) = crate::item_data::decode_components(Some(&removed));
+        assert!(item_entity_data(&stack, &items).is_none());
+
+        let custom =
+            snbt("{\"minecraft:entity_data\":{id:\"minecraft:skeleton\",CustomName:\"Guard\"}}");
+        (stack.damage, stack.extra) = crate::item_data::decode_components(Some(&custom));
+        let data = item_entity_data(&stack, &items).unwrap();
+        assert_eq!(data.kind, "minecraft:skeleton");
+        assert_eq!(
+            data.compound.get(&JavaString::from("CustomName")),
             Some(&Tag::String("Guard".into()))
         );
     }

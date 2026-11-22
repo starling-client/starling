@@ -4,12 +4,12 @@
 //! vanilla 26.3). No server tracks the level here: the knot must exist for
 //! commands whether or not anyone observes it.
 use super::*;
+use std::sync::Arc;
 use sunrise_client::{
     chunk::Chunk,
     mobs::leash::{Holder, Pending, knot_state},
 };
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 const PIG: &str = "0000609a-0000-0000-0000-000000000001";
 const EXPLICIT: &str = "0000609a-0000-0000-0000-000000000002";
@@ -84,7 +84,7 @@ fn pig(game: &mut Game<'_>) -> usize {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn commands_see_the_knot_a_restored_fence_leash_ties() {
     let mut resources = None;
     let mut game = game(&mut resources);

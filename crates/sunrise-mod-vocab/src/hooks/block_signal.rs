@@ -13,6 +13,8 @@ pub trait Hooks {
     /// `level.update_neighbors(host, pos, state, NeighbourUpdate::Neighbours)`. Authoritative
     /// servers only.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "block",
@@ -20,5 +22,12 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_block_signal",
         neoforge = "none (vanilla BlockBehaviour.getSignal and getDirectSignal; NeoForge adds no event or extension for it)"
     )]
-    fn block_signal();
+    fn block_signal(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        face: Direction,
+        direct: bool,
+        signal: &mut i32,
+    );
 }

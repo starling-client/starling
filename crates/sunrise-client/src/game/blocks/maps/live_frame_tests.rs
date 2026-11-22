@@ -2,13 +2,13 @@ use super::*;
 use crate::game::{Audio, Game, Options, Progress, Settings, commands::Target, load_resources};
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn live_frame_item_adoption_detaches_only_a_changed_old_stack() {
     frame_adoption(false);
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn live_glow_frame_adoption_keeps_type_without_saved_id() {
     frame_adoption(true);
 }
@@ -70,10 +70,13 @@ fn frame_adoption(glow_first: bool) {
             ("ItemRotation", Tag::Byte(3)),
             (
                 "Item",
-                sunrise_client::save::item_to_nbt(&ItemStack {
-                    count: 2,
-                    ..stack.clone()
-                }),
+                sunrise_client::save::item_to_nbt(
+                    &ItemStack {
+                        count: 2,
+                        ..stack.clone()
+                    },
+                    &Default::default(),
+                ),
             ),
         ]);
         game.load_item_frame(tag, Some([317, 1, 0, n]));
@@ -115,6 +118,7 @@ fn frame_adoption(glow_first: bool) {
                 &frame,
                 *game.persist.uuids.get(&id).unwrap(),
                 None,
+                &Default::default(),
             );
             let Tag::Compound(fields) = &mut tag else {
                 unreachable!()
@@ -132,7 +136,10 @@ fn frame_adoption(glow_first: bool) {
                     } else {
                         next.damage = 1;
                     }
-                    fields.insert("Item".into(), sunrise_client::save::item_to_nbt(&next));
+                    fields.insert(
+                        "Item".into(),
+                        sunrise_client::save::item_to_nbt(&next, &Default::default()),
+                    );
                 }
                 "empty" => {
                     fields.remove(&"Item".into());

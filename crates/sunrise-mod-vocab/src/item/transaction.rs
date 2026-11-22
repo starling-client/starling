@@ -14,7 +14,6 @@ use crate::ServerHost;
 /// past its closure cannot write outside the journal.
 // exhaustive: its field is private, so mods cannot build or destructure it
 #[derive(Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 pub struct Transaction(pub(crate) u64);
 
 /// What ends a transaction:
@@ -38,7 +37,6 @@ pub struct Transaction(pub(crate) u64);
 /// ```
 // exhaustive: its fields are private, so mods cannot build or destructure it
 #[derive(Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 pub struct TransactionSeal {
     pub(crate) tx: Transaction,
     pub(crate) close: u64,
@@ -141,8 +139,10 @@ pub trait HostTransaction: ServerHost {
     /// guard ends the transaction.
     ///
     /// Covered: block entities (item slots, saved compound, custom name and attachments), cauldrons,
-    /// players' inventories and cursors, entities' inventories
+    /// players' inventories, cursors, ender chests and persistent data, entities' inventories
     /// ([`ItemPlace::EntitySlot`](crate::ItemPlace::EntitySlot)) and item entities' stacks.
+    /// Aborting restores a player's recorded storage even if the player dies, is in another
+    /// level, or is no longer the acting player when the transaction closes.
     fn transaction<T, E>(
         &mut self,
         f: impl FnOnce(&mut Self, &Transaction) -> Result<T, E>,
@@ -164,25 +164,35 @@ pub fn run_transaction<H: ServerHost + ?Sized, T, E>(
     host: &mut H,
     f: impl FnOnce(&mut H, &Transaction) -> Result<T, E>,
 ) -> Result<T, E> {
-    /// Closes its transaction when dropped: committed when `f` gave `Ok`, else aborted, as on
-    /// a panic unwinding past it.
-    struct Open<'a, H: ServerHost + ?Sized> {
-        host: &'a mut H,
+    run_transaction_on(host, H::transaction_open, H::transaction_close, f)
+}
+
+// A sequential loan uses the same guard as Host, but lends its own scope to f.
+pub(crate) fn run_transaction_on<S: ?Sized, T, E>(
+    scope: &mut S,
+    open: fn(&mut S) -> TransactionSeal,
+    close: fn(&mut S, &TransactionSeal, bool),
+    f: impl FnOnce(&mut S, &Transaction) -> Result<T, E>,
+) -> Result<T, E> {
+    struct Open<'a, S: ?Sized> {
+        scope: &'a mut S,
+        close: fn(&mut S, &TransactionSeal, bool),
         seal: TransactionSeal,
         commit: bool,
     }
-    impl<H: ServerHost + ?Sized> Drop for Open<'_, H> {
+    impl<S: ?Sized> Drop for Open<'_, S> {
         fn drop(&mut self) {
-            self.host.transaction_close(&self.seal, self.commit);
+            (self.close)(self.scope, &self.seal, self.commit);
         }
     }
-    let seal = host.transaction_open();
+    let seal = open(scope);
     let mut open = Open {
-        host,
+        scope,
+        close,
         seal,
         commit: false,
     };
-    let result = f(&mut *open.host, open.seal.transaction());
+    let result = f(&mut *open.scope, open.seal.transaction());
     open.commit = result.is_ok();
     result
 }

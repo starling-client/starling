@@ -47,6 +47,17 @@ pub(crate) fn with_peer<R>(run: impl FnOnce(Arc<Transport>) -> R) -> R {
         },
     )
 }
+/// A client's transport with the probe mod installed: a mod declaration, so a mod-bearing client.
+pub(crate) fn with_client<R>(run: impl FnOnce(Arc<Transport>) -> R) -> R {
+    mod_platform::testing::with_mods(
+        vec![ModEntry::new("raw_hub_probe", Box::new(Probe))].into(),
+        || {
+            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
+                .unwrap();
+            run(Transport::capture(Side::Client).unwrap())
+        },
+    )
+}
 pub(crate) fn delivery(
     conn: u32,
     sender: crate::lan::PlayerSender,

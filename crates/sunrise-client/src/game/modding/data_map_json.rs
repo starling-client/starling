@@ -1,7 +1,7 @@
 //! Lossless conversion at the data-map JSON boundary.
-use sunrise_core::nbt::Tag;
 use mod_api::DataMapError;
 use serde_json::Value;
+use sunrise_core::nbt::Tag;
 
 pub(super) fn to_tag(value: &Value) -> Result<Tag, DataMapError> {
     Ok(match value {

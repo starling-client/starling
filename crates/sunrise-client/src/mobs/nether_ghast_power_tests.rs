@@ -6,8 +6,8 @@ use super::*;
 use crate::health::TestLevel;
 use crate::mobs::MobWorld;
 use crate::projectiles::ProjectileKind;
-use sunrise_core::nbt::Tag;
 use std::sync::Arc;
+use sunrise_core::nbt::Tag;
 
 fn ghast_tag(power: Option<Tag>) -> Tag {
     let mut tag = Tag::compound([
@@ -55,6 +55,7 @@ fn shot_power(m: &mut Mob, goal: &mut GhastShoot, world: &MobWorld<'_>) -> i32 {
 /// the goal gives it to the `LargeFireball` it spawns, and
 /// `Ghast.addAdditionalSaveData` saves it back.
 #[test]
+#[ignore = "daily"]
 fn ghast_explosion_power_sizes_the_fireball_it_shoots() {
     let ran = with_built_test_world(
         &[],
@@ -93,7 +94,14 @@ fn ghast_explosion_power_sizes_the_fireball_it_shoots() {
                     expected,
                     "ExplosionPower={saved:?}"
                 );
-                let back = crate::entity_nbt::mob_to_nbt(&m, [0; 4], Some(&tag), None, |_| None);
+                let back = crate::entity_nbt::mob_to_nbt(
+                    &m,
+                    [0; 4],
+                    Some(&tag),
+                    None,
+                    |_| None,
+                    &Default::default(),
+                );
                 assert_eq!(
                     back.get("ExplosionPower"),
                     Some(&Tag::Byte(expected as i8)),
@@ -117,5 +125,5 @@ fn ghast_explosion_power_sizes_the_fireball_it_shoots() {
             );
         },
     );
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }

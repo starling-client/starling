@@ -2,7 +2,7 @@
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use std::{
     collections::BTreeMap,
-    ops::Deref,
+    ops::{Bound, Deref},
     time::{Duration, Instant},
 };
 
@@ -97,33 +97,49 @@ impl ModifiedChunks {
             .extend(keys.iter().map(|&key| (key, now + COOLDOWN)));
     }
     /// `ChunkMap.saveChunksEagerly` / `saveChunkIfNeeded`. `available` checks
-    /// both haveTime and activeChunkWrites before EACH candidate; `save` takes
-    /// an immutable snapshot and queues it. Failed submissions stay dirty.
+    /// both haveTime and activeChunkWrites before each candidate. `loaded` returns
+    /// `None` for an absent chunk, `Some(true)` for a lit chunk eligible to save.
+    /// Consume the mark before `save` captures the chunk; any new edit queues it again.
     pub fn save_eagerly(
         &mut self,
         now: Instant,
         mut available: impl FnMut() -> bool,
-        mut loaded: impl FnMut(Key) -> bool,
-        mut save: impl FnMut(Key) -> bool,
+        mut loaded: impl FnMut(Key) -> Option<bool>,
+        mut save: impl FnMut(Key, &mut Self) -> bool,
     ) {
         let mut saved = 0;
-        let mut remove = Vec::new();
-        for (&sequence, &key) in &self.order {
-            if saved == 20 || !available() {
-                break;
+        let mut after = Bound::Unbounded;
+        let last = self.sequence;
+        let mut stale = Vec::new();
+        while saved < 20 {
+            let mut ready = None;
+            for (&sequence, &key) in self.order.range((after, Bound::Included(last))) {
+                if !available() {
+                    break;
+                }
+                match loaded(key) {
+                    None => stale.push((sequence, key)),
+                    _ if !self.dirty.contains(&key) => stale.push((sequence, key)),
+                    Some(true) if self.next_save.get(&key).is_none_or(|&at| now >= at) => {
+                        ready = Some((sequence, key));
+                        break;
+                    }
+                    Some(_) => (),
+                }
             }
-            if !loaded(key) || !self.dirty.contains(&key) {
-                remove.push((sequence, key));
-            } else if self.next_save.get(&key).is_none_or(|&at| now >= at) && save(key) {
-                self.dirty.remove(&key);
-                self.next_save.insert(key, now + COOLDOWN);
-                remove.push((sequence, key));
-                saved += 1;
+            for (sequence, key) in stale.drain(..) {
+                self.order.remove(&sequence);
+                self.queued.remove(&key);
             }
-        }
-        for (sequence, key) in remove {
+            let Some((sequence, key)) = ready else { break };
+            after = Bound::Excluded(sequence);
             self.order.remove(&sequence);
             self.queued.remove(&key);
+            self.dirty.remove(&key);
+            if save(key, self) {
+                self.next_save.insert(key, now + COOLDOWN);
+                saved += 1;
+            }
         }
     }
 }
@@ -150,12 +166,46 @@ mod tests {
         modified.save_eagerly(
             Instant::now(),
             || true,
-            |_| true,
-            |key| {
+            |_| Some(true),
+            |key, _| {
                 saved.push(key);
                 true
             },
         );
         assert_eq!(saved, [(1, 1)]);
+    }
+
+    #[test]
+    fn an_edit_during_an_eager_save_stays_dirty() {
+        let mut modified = ModifiedChunks::default();
+        let key = (3, 4);
+        let now = Instant::now();
+        modified.insert(key);
+        modified.save_eagerly(
+            now,
+            || true,
+            |_| Some(true),
+            |saving, marks| {
+                assert_eq!(saving, key);
+                assert!(
+                    marks.insert(key),
+                    "the old mark was consumed before capture"
+                );
+                true
+            },
+        );
+        assert!(modified.contains(&key));
+        let mut resaved = Vec::new();
+        modified.save_eagerly(
+            now + COOLDOWN,
+            || true,
+            |_| Some(true),
+            |saving, _| {
+                resaved.push(saving);
+                true
+            },
+        );
+        assert_eq!(resaved, [key]);
+        assert!(!modified.contains(&key));
     }
 }

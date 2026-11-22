@@ -4,52 +4,47 @@
 
 `mod_api::strict_math` provides platform-independent StrictMath operations:
 `sin`, `cos`, `tan`, `exp`, `pow`, `log`, `log10`, `cbrt`, `hypot`, `atan`,
-`asin`, `acos` and `atan2`. These are pure functions with identical result bits
-on native and wasm (NaN payloads are unspecified). The five `sin`/`cos`/`tan`/
+`asin`, `acos` and `atan2`. These are pure functions; NaN payloads are unspecified. The five `sin`/`cos`/`tan`/
 `exp`/`pow` additions use fdlibm's ordered IEEE double algorithms, including
 full large-argument trigonometric reduction, signed zeros, subnormals and
 overflow/underflow. They use no FMA or platform/libm calls and allocate no heap
-memory. Guest code links them locally: there is no Host call per operation.
+memory. These operations do not call the Host.
 The AArch64 FMA variants are deliberately not part of this StrictMath set.
 
 The committed literal reference table and deterministic seeded generator
 (`tools/generate_strict_math_vectors.py`) use only public JDK `StrictMath`
-calls, not engine outputs. Native tests and the real compiled-wasm fixture
-compare exact bits, except that NaNs are compared by classification. The table
-was generated with OpenJDK `27.0.1.0.3` and contains 768 rows for each unary
-function and 1,309 power rows. Local architecture evidence
-must be reported separately: cross-platform claims require running these
-same vectors on x86_64, AArch64 and wasm32, not just compiling the other target.
+calls, not engine outputs. Tests compare exact bits, except that NaNs are compared by classification. Cross-platform claims require running these vectors on each platform, not just compiling.
 
 `mod_api::java_math` exposes the engine’s vanilla maths functions for native mods,
 including `round` and `round_f32`. These are the paths used for vanilla `Math`
 call sites; rounding can differ by machine, and universal HotSpot bit equality
-is not promised. Calling them on wasm fails to compile and points to `strict_math`.
+is not promised.
 
 ## The math profile
 
-`host.math_profile()` is a `Host` read, the same on native and wasm and constant for the
-process lifetime. Its non-exhaustive `MathProfile` describes the
+`host.math_profile()` is a `Host` read, constant for the process lifetime. Its non-exhaustive `MathProfile` describes the
 engine's selection for `sin`, `cos`, `tan`, `exp`, `log`, `log10` and `pow`, without
 returning machine/vendor/OS identification:
 
-- `LibmRounding`: platform libm for all seven.
-- `CorrectlyRounded`: only `sin`, `cos` and `log` use the correctly rounded path;
-  `tan`, `exp`, `log10` and `pow` still use platform libm. This is the
-  selection on Windows other than AArch64.
+- `HotSpotX86_64`: HotSpot's x86-64 stubs for `sin`, `cos` and `tan` (a
+  translation of Intel's libm) and for `exp`; correctly rounded `log` and
+  `log10`; platform libm for `pow`. This is the selection on every x86-64
+  target, Windows included.
 - `Aarch64Fma`: fdlibm with fused multiply-adds for `sin` and `cos`, fdlibm for
   `log` and `log10`, and the Rust `libm` crate for `tan`, `exp` and `pow`.
   Those last three are not advertised as StrictMath. This branch wins on all
   AArch64 targets, including Windows.
-- `StrictMath`: fdlibm throughout. No target selects it: every other target uses
-  `LibmRounding`.
+- `CorrectlyRounded`: correctly rounded `sin`, `cos`, `log` and `log10`;
+  HotSpot's x86-64 `exp` algorithm; platform libm for `tan` and `pow`. This is
+  the selection on Windows targets that are neither x86-64 nor AArch64.
+- `LibmRounding`: platform libm for `sin`, `cos`, `tan` and `pow`; HotSpot's
+  x86-64 `exp` algorithm; correctly rounded `log` and `log10`. This is the
+  selection on every remaining target.
+- `StrictMath`: fdlibm throughout. No target selects it.
 
-Every profile retains the engine's Java `pow` special cases. This is information,
-not guest math: `java_math` stays native-only. A guest must ship whatever libm,
-correctly rounded or FMA operations it needs, or explicitly report that it cannot
-reproduce the profile. The read does not extend `strict_math`'s supported operations
-or promise universal HotSpot equality. Native reads allocate nothing; wasm uses the
-ordinary generated four-byte enum response and import machinery.
+Every profile retains the engine's Java `pow` special cases. Reading the profile
+does not change `strict_math` or promise universal HotSpot equality. It allocates
+nothing.
 
 ## Network NBT
 

@@ -9,7 +9,10 @@ use crate::macros::{is_ident, is_ident_start};
 
 /// The value of a condition; `Err` says what is wrong with it.
 pub fn eval_condition(expr: &str, macros: &Macros) -> Result<i64, String> {
-    let (tokens, real) = tokens(&resolve_defined(expr, macros)?, macros)?;
+    let (tokens, real) = tokens(
+        &resolve_defined(expr, |name| macros.is_defined(name))?,
+        macros,
+    )?;
     let mut parser = Parser {
         tokens: &tokens,
         at: 0,
@@ -51,16 +54,16 @@ struct Branch {
 
 /// The state of nested conditional directives.
 #[derive(Default)]
-pub(crate) struct Conditionals(Vec<Branch>);
+pub struct Conditionals(Vec<Branch>);
 
 impl Conditionals {
     /// Lines here are read.
-    pub(crate) fn active(&self) -> bool {
+    pub fn active(&self) -> bool {
         self.0.last().is_none_or(|b| b.on)
     }
 
     /// An `#if` is still open.
-    pub(crate) fn open(&self) -> bool {
+    pub fn open(&self) -> bool {
         !self.0.is_empty()
     }
 
@@ -72,14 +75,20 @@ impl Conditionals {
         rest: &str,
         macros: &Macros,
     ) -> Result<bool, String> {
+        self.apply_with(word, |kind| test(kind, rest, macros))
+    }
+
+    /// Track the active arm using the caller's expression evaluator. Skipped arms never
+    /// evaluate their conditions.
+    pub fn apply_with(
+        &mut self,
+        word: &str,
+        mut evaluate: impl FnMut(&str) -> Result<bool, String>,
+    ) -> Result<bool, String> {
         let on = self.active();
         match word {
             "if" | "ifdef" | "ifndef" => {
-                let value = if on {
-                    test(word, rest, macros)
-                } else {
-                    Ok(false)
-                };
+                let value = if on { evaluate(word) } else { Ok(false) };
                 let v = *value.as_ref().unwrap_or(&false);
                 self.0.push(Branch {
                     on: v,
@@ -101,7 +110,7 @@ impl Conditionals {
                 let take = b.outer && !b.taken;
                 let value = match word {
                     "else" => Ok(take),
-                    _ if take => test("if", rest, macros),
+                    _ if take => evaluate("if"),
                     _ => Ok(false),
                 };
                 b.on = *value.as_ref().unwrap_or(&false);
@@ -130,7 +139,7 @@ fn test(word: &str, rest: &str, macros: &Macros) -> Result<bool, String> {
 }
 
 /// `defined X` and `defined(X)` become `1` or `0` before anything is expanded.
-fn resolve_defined(expr: &str, macros: &Macros) -> Result<String, String> {
+pub fn resolve_defined(expr: &str, is_defined: impl Fn(&str) -> bool) -> Result<String, String> {
     let mut out = String::with_capacity(expr.len());
     let mut rest = expr;
     while let Some(at) = find_word(rest, "defined") {
@@ -149,11 +158,7 @@ fn resolve_defined(expr: &str, macros: &Macros) -> Result<String, String> {
         if inner.is_empty() || !inner.starts_with(is_ident_start) || !inner.chars().all(is_ident) {
             return Err("`defined` needs a macro name".into());
         }
-        out.push_str(if macros.is_defined(inner) {
-            " 1 "
-        } else {
-            " 0 "
-        });
+        out.push_str(if is_defined(inner) { " 1 " } else { " 0 " });
         rest = tail;
     }
     out.push_str(rest);

@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "自动重连",
+  "sunrise.extras.auto_reconnect.tooltip": "连接中断或服务器重启后自动重新加入，被踢出或封禁后不会。"
+}

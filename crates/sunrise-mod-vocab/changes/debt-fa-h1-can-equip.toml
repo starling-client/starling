@@ -1,0 +1,3 @@
+ids = ["hook:can_equip"]
+why = "Removed pre-captured target snapshots, source-revision stamps and apply-time stale-decision refusals from ItemPart::can_equip so it reads live entity and world state through the read-only Host, matching NeoForge net.neoforged.neoforge.common.extensions.IItemExtension#canEquip and vanilla net.minecraft.world.entity.LivingEntity#isEquippableInSlot. Hook version bumped from 2 to 3 because live reads and removing stale-decision refusals change observable timing."
+migrate = "Rebuild against this SDK and set `hook_version = 3` for `can_equip` if your manifest pins it. Listeners receive live entity reads from the supplied read-only Host rather than a pre-captured target snapshot, and no source-revision or apply-time snapshot refusal runs."

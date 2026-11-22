@@ -22,5 +22,12 @@ pub trait Hooks {
         version = 3,
         target = "sunrise_client_lib::breathing::native_living_drown"
     )]
-    fn living_drown();
+    fn living_drown(
+        entity: u32,
+        kind: &str,
+        is_drowning: &mut bool,
+        damage_amount: &mut f32,
+        bubble_count: &mut i32,
+        cancel: &mut bool,
+    );
 }

@@ -1,9 +1,9 @@
 //! `CustomModelData.CODEC`: ordered lists with empty defaults and ignored unknown fields.
 use super::component_bool;
 use crate::properties::component_float;
+use std::borrow::Cow;
 use sunrise_core::color::rgb_color_from_tag;
 use sunrise_core::nbt::Tag;
-use std::borrow::Cow;
 
 #[derive(Clone, Copy)]
 struct List<'a>(Option<&'a Tag>);

@@ -3,11 +3,11 @@ use super::{
     feature_sort::{FeatureIdentity, FeatureSortError, StepFeatureData, build_features_per_step},
     placement::FeaturePlacer,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_core::{
     position::ChunkPos,
     random::{WorldgenRandom, XoroshiroRandom},
 };
-use std::collections::{BTreeMap, BTreeSet};
 
 pub use super::biome::BiomeId as DecorationBiome;
 
@@ -66,6 +66,7 @@ impl FeatureDecorationPlan {
     }
 
     /// The step and the step-local index vanilla mixes into `set_feature_seed`.
+    #[cfg(test)]
     pub(super) fn seed(&self, feature: FeatureIdentity) -> Option<(usize, usize)> {
         self.steps
             .iter()

@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn villager_food_codec_compiles_recipes_and_matches_borrowed_nutrition() {
-    use sunrise_command::item::decoded_component_value;
     use std::sync::Arc;
+    use sunrise_command::item::decoded_component_value;
 
     let mut items = Items::empty();
     items.component_defaults = Arc::new(std::collections::HashMap::from([(
@@ -81,7 +81,7 @@ fn villager_food_codec_compiles_recipes_and_matches_borrowed_nutrition() {
             "result":{"id":"minecraft:diamond"}
         })
     };
-    let mut sources = vec![
+    let sources = vec![
         (
             "fixture:villager_food".into(),
             recipe(ingredient(
@@ -97,29 +97,29 @@ fn villager_food_codec_compiles_recipes_and_matches_borrowed_nutrition() {
             )),
         ),
     ];
-    for (index, payload) in [
+    for payload in [
         serde_json::json!({}),
         serde_json::json!(3),
         serde_json::json!({"nutrition":0}),
         serde_json::json!({"nutrition":-1}),
         serde_json::json!({"nutrition":2_147_483_648_i64}),
         serde_json::json!({"nutrition":"3"}),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         let value = ingredient(payload, false);
-        let walked = WalkedIngredient::walk(
+        let walked = WalkedIngredient::<()>::walk(
             &value,
             &items.item_tag_order,
             &|_| None,
-            &resolved_items,
+            &|_, _| None,
             &|data| crate::json_nbt::json_to_compound(data).ok(),
         )
         .unwrap();
         let error = components::validate(walked.rule.as_ref().unwrap(), &items).unwrap_err();
         assert!(error.contains("minecraft:villager_food"), "{error}");
-        sources.push((format!("fixture:invalid_{index}"), recipe(value)));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            value["components"].clone(),
+        );
     }
     let load = load();
     let context = load.loop_context(LoopSide::Server, []);
@@ -160,9 +160,10 @@ fn villager_food_codec_compiles_recipes_and_matches_borrowed_nutrition() {
         assert!(predicate.test_in(&context, &carrot));
     });
     assert_eq!(allocations.calls, 0, "{allocations:?}");
-    carrot
-        .data_mut()
-        .set_loot_component("minecraft:custom_data", &Some(Tag::Int(1)));
+    carrot.data_mut().set_loot_component(
+        "minecraft:custom_data",
+        &Some(Tag::compound([("extra", Tag::Int(1))])),
+    );
     assert!(
         !matches(&carrot),
         "strict matching must reject extra components"
@@ -239,7 +240,7 @@ fn rollup_rejection_and_absence_matrix_4124() {
         assert!(error.contains("minecraft:villager_food"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -252,12 +253,13 @@ fn rollup_rejection_and_absence_matrix_4124() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }

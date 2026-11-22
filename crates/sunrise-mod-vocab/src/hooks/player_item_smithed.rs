@@ -9,10 +9,16 @@ pub trait Hooks {
     /// menu already holds the used inputs, but before the table sounds.
     /// Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PlayerEvent.ItemSmithedEvent",
         cancellable = false
     )]
-    fn player_item_smithed();
+    fn player_item_smithed(
+        player: u128,
+        player_entity_id: i32,
+        inputs: &[Option<ItemStack>; 3],
+        result: &ItemStack,
+    );
 }

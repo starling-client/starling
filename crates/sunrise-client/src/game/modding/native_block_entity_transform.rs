@@ -1,10 +1,10 @@
 //! The game owns mod callback dispatch; the world owns the placement seam.
+use std::{collections::HashMap, sync::Arc};
 use sunrise_core::nbt::{Compound, JavaString, Tag};
 use sunrise_world::{
     registry::BlockRegistry,
     worldgen::structure::{Mirror, Rotation},
 };
-use std::{collections::HashMap, sync::Arc};
 type Steps = HashMap<JavaString, Arc<dyn mod_api::BlockEntityTransform>>;
 struct Adapter(Steps);
 impl sunrise_world::worldgen::structure::block_entity_transform::BlockEntityTransform for Adapter {

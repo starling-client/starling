@@ -3,6 +3,9 @@
 //! `sunrise_client::living_attributes`.
 use super::Game;
 use super::commands::Target;
+use std::convert::Infallible;
+use std::sync::Arc;
+use sunrise_client::living_attributes::{ModifierChanges, ModifierSnapshot};
 use sunrise_client::mobs::{
     Mob,
     finalize::{self, Attr, Op},
@@ -12,8 +15,6 @@ use sunrise_world::attributes::{
     AttributeError, Instance, Modifier, Observer, Operation,
     entity::{AttributeId, Catalog},
 };
-use std::convert::Infallible;
-use std::sync::Arc;
 
 /// One mob's `collectEquipmentChanges`: each slot whose stack is not the one
 /// the map holds swaps the old stack's attribute modifiers for the new one's,
@@ -22,15 +23,42 @@ use std::sync::Arc;
 pub(in crate::game) fn collect_equipment(catalog: &Arc<Catalog>, items: &Items, m: &mut Mob) {
     sunrise_client::mobs::armor::prepare(m, catalog);
     let mut live = std::mem::take(&mut m.extra.live);
-    let seed = || {
-        sunrise_client::entity_nbt::attribute_entries(m)
-            .into_iter()
-            .map(|(_, entry)| entry)
-            .collect()
-    };
     let changed =
-        live.collect_equipment_changes(catalog, &m.kind.id, &m.extra.equipment, items, seed);
+        live.collect_equipment_changes(catalog, &m.kind.id, &m.extra.equipment, items, || {
+            equipment_seed(m)
+        });
     warn_failed(m.id, &m.kind.id, changed);
+    m.extra.live = live;
+}
+
+fn equipment_seed(m: &Mob) -> Vec<sunrise_core::nbt::Tag> {
+    sunrise_client::entity_nbt::attribute_entries(m)
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+pub(super) fn modifier_invalidation_undo(
+    catalog: &Arc<Catalog>,
+    mob: &Mob,
+) -> Option<ModifierChanges> {
+    match mob
+        .extra
+        .live
+        .modifier_invalidation_undo(catalog, &mob.kind.id, || equipment_seed(mob))
+    {
+        Ok(undo) => undo,
+        Err(error) => {
+            warn_failed(mob.id, &mob.kind.id, Err(error));
+            None
+        }
+    }
+}
+
+pub(super) fn undo_mob_modifiers(catalog: &Arc<Catalog>, m: &mut Mob, changes: ModifierChanges) {
+    let mut live = std::mem::take(&mut m.extra.live);
+    let result = live.undo_modifier_changes(catalog, &m.kind.id, changes, || equipment_seed(m));
+    warn_failed(m.id, &m.kind.id, result);
     m.extra.live = live;
 }
 
@@ -115,11 +143,23 @@ impl Game<'_> {
         }
     }
 
-    /// `collectEquipmentChanges` of the mob `id` right away: equipment a mod
-    /// wrote through a handle takes its attribute modifiers on the live map
-    /// at once — its armor and the reads of #940 — not at the tick's pass.
-    /// The tick's own pass remains the safety net for the other writers.
-    pub(super) fn collect_mob_equipment_attributes(&mut self, id: u32) {
+    /// Snapshot before any write that can refresh or invalidate the live map.
+    /// The non-transactional paths never read or allocate a modifier snapshot.
+    pub(super) fn snapshot_mob_modifiers(&self, id: u32) -> Option<ModifierSnapshot> {
+        if self.transactions.is_empty() {
+            return None;
+        }
+        let mob = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+        snapshot(&self.motion.attributes, mob)
+    }
+
+    /// Refresh equipment immediately, keeping the live diff if the caller took
+    /// a transaction snapshot. The ordinary tick remains the other writers' safety net.
+    pub(super) fn collect_mob_equipment_attributes(
+        &mut self,
+        id: u32,
+        before: Option<ModifierSnapshot>,
+    ) {
         if self.remote.is_some() || self.options.execution_role.is_client() {
             return;
         }
@@ -129,6 +169,27 @@ impl Game<'_> {
             return;
         };
         collect_equipment(&catalog, items, m);
+        if let Some(before) = before
+            && let Some(after) = snapshot(&catalog, m)
+            && let Some(changes) = before.diff(&after)
+        {
+            let dim = self.dim;
+            self.transactions.journal_modifier_changes(dim, id, changes);
+        }
+    }
+}
+
+fn snapshot(catalog: &Arc<Catalog>, mob: &Mob) -> Option<ModifierSnapshot> {
+    match mob
+        .extra
+        .live
+        .modifier_snapshot(catalog, &mob.kind.id, || equipment_seed(mob))
+    {
+        Ok(snapshot) => Some(snapshot),
+        Err(error) => {
+            warn_failed(mob.id, &mob.kind.id, Err(error));
+            None
+        }
     }
 }
 
@@ -296,10 +357,11 @@ impl Game<'_> {
     /// Applies `write` to the attribute `name` of `t` on the record that the
     /// entity's gameplay and its clients' attribute sync read:
     /// - a player's (or a guest's, in its turn) own attribute map;
-    /// - for a mob, `finalize`'s store for the nine attributes its behavior
-    ///   reads there (so it moves and hits by them at once); for its armor and
-    ///   toughness its armor map (`mobs/armor.rs`); for the rest, as for an
-    ///   armor stand, its generic map (`cmds.attributes`), which the sync sends.
+    /// - for a mob, `finalize`'s store for the attributes its behavior reads
+    ///   there (`finalize::Attr`, so it moves, hits and falls by them at once);
+    ///   for its armor and toughness its armor map (`mobs/armor.rs`); for the
+    ///   rest, as for an armor stand, its generic map (`cmds.attributes`),
+    ///   which the sync sends.
     ///
     /// A mob's and a stand's live map (`living_attributes`, which the mod
     /// API's reads and the save use) takes the same write and keeps it
@@ -315,13 +377,42 @@ impl Game<'_> {
         name: &str,
         write: AttributeWrite,
     ) -> Option<bool> {
+        let before = match t {
+            Target::Mob(id) => self.snapshot_mob_modifiers(id),
+            _ => None,
+        };
+        let explicit = if self.transactions.is_empty() || !matches!(t, Target::Mob(_)) {
+            None
+        } else {
+            write.transient_record().map(|(id, _)| id.to_owned())
+        };
         let done = self.apply_attribute_write(t, name, write)?;
         // A finalize write drops the mob's live map (its seed changed), which
         // takes the equipment's modifiers with it: collect them again at
         // once, so the next read — a hit's armor, the attribute sync — sees
         // them (#941).
         if let Target::Mob(id) = t {
-            self.collect_mob_equipment_attributes(id);
+            // Invalidation is part of the explicit-write step. Keep its
+            // collateral changes separate from what equipment collection does
+            // after it, even when both steps write the same modifier key.
+            let after_write = before
+                .as_ref()
+                .and_then(|_| self.snapshot_mob_modifiers(id));
+            if let (Some(before), Some(after)) = (before.as_ref(), after_write.as_ref())
+                && let Some(changes) = before.diff(after)
+            {
+                let dim = self.dim;
+                self.transactions.journal_modifier_changes(dim, id, changes);
+            }
+            if done && let Some(modifier) = explicit {
+                // The explicit write persists through abort. Earlier entries
+                // for that row must not undo it; the subsequent refresh,
+                // however, is journaled against the newly written value.
+                let dim = self.dim;
+                self.transactions
+                    .keep_explicit_modifier_write(dim, id, name, &modifier);
+            }
+            self.collect_mob_equipment_attributes(id, after_write);
         }
         Some(done)
     }
@@ -499,11 +590,11 @@ mod tests {
     /// A held stack with its own `attribute_modifiers` hits by them, not by
     /// its item type's defaults (#941).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_changed_held_stack_hits_by_its_own_modifiers() {
+        use mod_api::EquipmentSlot;
         use sunrise_client::mobs::gear;
         use sunrise_core::nbt::Tag;
-        use mod_api::EquipmentSlot;
         with_game(|game| {
             spawn(game);
             let zombie = living(game, 12);
@@ -546,10 +637,10 @@ mod tests {
     /// writes among them — with no modifier applied twice, and no instance
     /// for an attribute nothing created.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_mob_attribute_packet_is_the_live_maps_instances() {
-        use sunrise_core::nbt::Tag;
         use mod_api::EquipmentSlot;
+        use sunrise_core::nbt::Tag;
         with_game(|game| {
             spawn(game);
             let zombie = living(game, 12);
@@ -608,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_base_write_preserves_covered_for_damage_and_attribute_sync() {
         with_game(|game| {
             let kind = game
@@ -637,8 +728,14 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let saved =
-                sunrise_client::entity_nbt::mob_to_nbt(&game.mobs[0], [0; 4], None, None, |_| None);
+            let saved = sunrise_client::entity_nbt::mob_to_nbt(
+                &game.mobs[0],
+                [0; 4],
+                None,
+                None,
+                |_| None,
+                &Default::default(),
+            );
             let loaded_id = game.load_mob(saved.clone(), None).unwrap();
             let loaded = game.mobs.iter().find(|m| m.id == loaded_id).unwrap();
             assert_eq!(sunrise_client::mobs::armor::values(loaded), (20.0, 0.0));
@@ -681,13 +778,13 @@ mod tests {
     /// armors it by its stack's rows, and the save keeps a written base and
     /// modifier.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_hits_armor_follows_the_live_map_at_once() {
         use AttributeOperation::*;
         use ModifierLifetime::*;
+        use mod_api::EquipmentSlot;
         use sunrise_client::mobs::{Damage, DamageKind, armor};
         use sunrise_core::nbt::Tag;
-        use mod_api::EquipmentSlot;
         with_game(|game| {
             spawn(game);
             let values =
@@ -729,7 +826,12 @@ mod tests {
             ));
             assert!(game.living_set_equipment(zombie, EquipmentSlot::Chest, None));
             assert_eq!(values(game), (8.0, 0.0));
-            let level = crate::game::entity::damage_level_of!(game);
+            let level = crate::game::entity::damage_level_of!(
+                game,
+                &sunrise_client::health::NO_ATTACK,
+                no_push,
+                None
+            );
             let m = game.mobs.iter_mut().find(|m| m.id == 12).unwrap();
             m.health = 20.0;
             assert!(m.damage(level, 4.0, Damage::of(DamageKind::Cactus)));
@@ -765,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_zombie_reads_its_defaults() {
         with_game(|game| {
             spawn(game);
@@ -785,7 +887,7 @@ mod tests {
     /// A read of a mob that wears nothing builds its map once and keeps it,
     /// so the next reads allocate nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_read_builds_the_map_once() {
         with_game(|game| {
             spawn(game);
@@ -807,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_held_sword_raises_the_attack_damage_until_it_is_put_away() {
         with_game(|game| {
             spawn(game);
@@ -834,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_stand_and_the_dragon_wear_armor_modifiers() {
         with_game(|game| {
             spawn(game);
@@ -858,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_stale_handle_reads_none() {
         with_game(|game| {
             spawn(game);
@@ -874,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_saved_base_and_modifier_are_read_and_saved_again() {
         use sunrise_core::nbt::Tag;
         with_game(|game| {
@@ -905,7 +1007,7 @@ mod tests {
     /// The live map takes a held stack's own `attribute_modifiers`, and
     /// another stack of the same item with other components is a change.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_stacks_own_modifiers_replace_its_items() {
         use sunrise_core::nbt::Tag;
         with_game(|game| {
@@ -936,7 +1038,7 @@ mod tests {
     /// read while the same stacks are worn, and reads them again when one
     /// changes: here a chestplate with its own list.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn gear_knockback_is_read_again_only_when_the_gear_changes() {
         use sunrise_core::nbt::Tag;
         with_game(|game| {
@@ -999,7 +1101,7 @@ mod tests {
     /// A mob's movement speed is kept where its gameplay reads it: a mod's
     /// permanent modifier is saved, a transient one is not, both count at once.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mods_modifiers_on_a_mobs_speed_reach_its_gameplay() {
         use AttributeOperation::*;
         use ModifierLifetime::*;
@@ -1057,7 +1159,7 @@ mod tests {
     /// An attribute only the live map keeps keeps a mod's writes when the map
     /// is built again, and saves the permanent ones.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mods_writes_outlive_a_rebuilt_map() {
         use AttributeOperation::*;
         use ModifierLifetime::*;
@@ -1125,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_stand_the_dragon_and_a_player_take_writes() {
         use AttributeOperation::*;
         use ModifierLifetime::*;
@@ -1210,7 +1312,7 @@ mod tests {
     /// A mod's answer to `item_attribute_modifier` is what the zombie's
     /// gameplay reads: its knockback and its live map.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mods_item_modifiers_reach_the_wearer() {
         // The game's stack snapshots, which the hook needs, as its startup installs them;
         // without this the test passes only after another test in the process installed them.

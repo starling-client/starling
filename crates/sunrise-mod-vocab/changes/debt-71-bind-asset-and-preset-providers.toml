@@ -1,0 +1,302 @@
+ids = [
+    "type:HookId",
+
+    # Model loaders (Step 1)
+    "hook:register_model_loaders",
+    "hook:register_model_loaders.loaders",
+    "type:RegisterModelLoadersEvent.loaders",
+    "handle:RegisterModelLoadersEvent::register",
+    "hook:bake_model_loader",
+    "method:Hooks::bake_model_loader",
+    "type:BakeModelLoaderEvent",
+    "type:BakeModelLoaderEvent.loader",
+    "hook:bake_model_loader.loader",
+    "type:BakeModelLoaderEvent.model",
+    "hook:bake_model_loader.model",
+    "type:BakeModelLoaderEvent.config",
+    "hook:bake_model_loader.config",
+    "type:BakeModelLoaderEvent.quads",
+    "hook:bake_model_loader.quads",
+    "type:ModelLoaderQuad",
+    "type:ModelLoaderQuad.texture",
+    "type:ModelLoaderInput",
+    "type:ModelLoaderInput.model",
+    "type:ModelLoaderInput.textures",
+    "type:ModelLoaderInput.config",
+    "type:ModelLoaderFn",
+    "type:ModelLoaderSchema",
+    "type:ModelLoaderSchema.Custom",
+    "type:ModelLoaderSchema.ModelProperties",
+    "type:ModelLoaderSchema.Cuboids",
+    "type:ModelLoaderTexture",
+    "type:ModelLoaderTexture.Slot",
+    "type:ModelLoaderTexture.Sprite",
+
+    # Block-state models (Step 1)
+    "hook:register_block_state_models",
+    "hook:register_block_state_models.definitions",
+    "type:RegisterBlockStateModelsEvent.definitions",
+    "handle:RegisterBlockStateModelsEvent::register",
+    "hook:instantiate_block_state_definition",
+    "method:Hooks::instantiate_block_state_definition",
+    "type:InstantiateBlockStateDefinitionEvent",
+    "type:InstantiateBlockStateDefinitionEvent.definition_type",
+    "hook:instantiate_block_state_definition.definition_type",
+    "type:InstantiateBlockStateDefinitionEvent.block",
+    "hook:instantiate_block_state_definition.block",
+    "type:InstantiateBlockStateDefinitionEvent.config",
+    "hook:instantiate_block_state_definition.config",
+    "type:InstantiateBlockStateDefinitionEvent.states",
+    "hook:instantiate_block_state_definition.states",
+    "type:InstantiateBlockStateDefinitionEvent.models",
+    "hook:instantiate_block_state_definition.models",
+    "type:BlockStateModelPick",
+    "type:BlockStateDefinitionInput",
+    "type:BlockStateDefinitionFn",
+
+    # Sprite sources (Step 2)
+    "hook:register_sprite_sources",
+    "hook:register_sprite_sources.sources",
+    "type:RegisterSpriteSourcesEvent.sources",
+    "handle:RegisterSpriteSourcesEvent::register",
+    "hook:sprite_source",
+    "method:Hooks::sprite_source",
+    "type:SpriteSourceEvent",
+    "type:SpriteSourceEvent.source",
+    "hook:sprite_source.source",
+    "type:SpriteSourceEvent.atlas",
+    "hook:sprite_source.atlas",
+    "type:SpriteSourceEvent.config",
+    "hook:sprite_source.config",
+    "type:SpriteSourceEvent.resources",
+    "hook:sprite_source.resources",
+    "type:SpriteSourceEvent.output",
+    "hook:sprite_source.output",
+    "type:SpriteSourceOutput",
+    "type:SpriteSourceInput",
+    "type:SpriteSourceFn",
+
+    # JSON keyframe animation types (Step 3)
+    "hook:register_json_animation_types",
+    "hook:register_json_animation_types.types",
+    "type:RegisterJsonAnimationTypesEvent.types",
+    "handle:RegisterJsonAnimationTypesEvent::register_target",
+    "handle:RegisterJsonAnimationTypesEvent::register_interpolation",
+    "type:JsonAnimationType",
+    "type:JsonAnimationType.Target",
+    "type:JsonAnimationType.Interpolation",
+    "type:RegisteredAnimationType",
+    "type:RegisteredAnimationType.kind",
+    "type:RegisteredAnimationType.owner",
+    "handle:RegisteredAnimationType::id",
+    "trait:AnimationTypes",
+    "method:AnimationTypes::provides",
+    "method:AnimationTypes::convert_target",
+    "method:AnimationTypes::apply_target",
+    "method:AnimationTypes::interpolate",
+    "type:TypedKeyframeAnimation",
+    "handle:TypedKeyframeAnimation::apply",
+    "handle:TypedKeyframeAnimation::apply_scaled",
+    "handle:TypedKeyframeAnimation::apply_walk",
+    "handle:TypedKeyframeAnimation::apply_static",
+    "type:AnimationError",
+    "type:AnimationError.NeedsTypes",
+    "type:AnimationError.Unplayable",
+    "type:AnimationError.NoSuchType",
+    "type:AnimationTarget",
+    "type:AnimationTarget.Registered",
+    "type:AnimationTarget.Custom",
+    "handle:AnimationTarget::apply",
+    "type:Interpolation",
+    "type:Interpolation.Registered",
+    "type:Interpolation.Custom",
+    "type:Keyframe",
+    "type:AnimationHolder",
+    "type:AnimationHolder.types",
+    "handle:AnimationHolder::bake",
+    "handle:AnimationHolder::bake_with",
+    "type:BoundAnimationTarget",
+    "handle:BoundAnimationTarget::id",
+    "handle:BoundAnimationTarget::owner",
+    "type:BoundInterpolation",
+    "handle:BoundInterpolation::id",
+    "handle:BoundInterpolation::owner",
+    "type:AnimationTargetApply",
+    "type:AnimationTargetConvert",
+    "type:AnimationInterpolationFn",
+
+    # Item tint sources (Step 4)
+    "hook:register_item_tint_sources",
+    "hook:register_item_tint_sources.sources",
+    "type:RegisterItemTintSourcesEvent.sources",
+    "handle:RegisterItemTintSourcesEvent::register",
+    "hook:item_tint_source",
+    "method:Hooks::item_tint_source",
+    "type:ItemTintSourceEvent",
+    "type:ItemTintSourceEvent.source",
+    "hook:item_tint_source.source",
+    "type:ItemTintSourceEvent.config",
+    "hook:item_tint_source.config",
+    "type:ItemTintSourceEvent.stack",
+    "hook:item_tint_source.stack",
+    "type:ItemTintSourceEvent.bundle_selected",
+    "hook:item_tint_source.bundle_selected",
+    "type:ItemTintSourceEvent.color",
+    "hook:item_tint_source.color",
+    "type:ItemTintInput",
+    "type:ItemTintSourceFn",
+    "type:ItemTintSourceDecoder",
+
+    # Item models (Step 5)
+    "hook:register_item_models",
+    "hook:register_item_models.models",
+    "type:RegisterItemModelsEvent.models",
+    "handle:RegisterItemModelsEvent::register",
+    "hook:item_model_update",
+    "method:Hooks::item_model_update",
+    "type:ItemModelUpdateEvent",
+    "type:ItemModelUpdateEvent.kind",
+    "hook:item_model_update.kind",
+    "type:ItemModelUpdateEvent.config",
+    "hook:item_model_update.config",
+    "type:ItemModelUpdateEvent.stack",
+    "hook:item_model_update.stack",
+    "type:ItemModelUpdateEvent.bundle_selected",
+    "hook:item_model_update.bundle_selected",
+    "type:ItemModelUpdateEvent.display",
+    "hook:item_model_update.display",
+    "type:ItemModelUpdateEvent.owner",
+    "hook:item_model_update.owner",
+    "type:ItemModelUpdateEvent.level",
+    "hook:item_model_update.level",
+    "type:ItemModelUpdateEvent.seed",
+    "hook:item_model_update.seed",
+    "type:ItemModelUpdateEvent.layers",
+    "hook:item_model_update.layers",
+    "type:ItemModelContext",
+    "type:ItemModelUpdateInput",
+    "trait:ItemModelChildren",
+    "type:ItemModelFn",
+    "type:ItemModelDecoder",
+    "type:ItemModelConfig",
+    "handle:ItemModelConfig::field",
+    "handle:ItemModelConfig::decode",
+    "method:ItemModelChildren::add_field",
+    "method:ItemModelChildren::add_list",
+    "method:ItemModelChildren::add_object",
+    "method:ItemModelChildren::add_named_models",
+    "method:ItemModelChildren::add_model",
+    "method:ItemModelChildren::use_transformation",
+
+    # Range-select item model properties (Step 5)
+    "hook:register_range_select_item_model_property",
+    "hook:register_range_select_item_model_property.properties",
+    "type:RegisterRangeSelectItemModelPropertyEvent.properties",
+    "handle:RegisterRangeSelectItemModelPropertyEvent::register",
+    "hook:item_model_range_property",
+    "method:Hooks::item_model_range_property",
+    "type:ItemModelRangePropertyEvent",
+    "type:ItemModelRangePropertyEvent.property",
+    "hook:item_model_range_property.property",
+    "type:ItemModelRangePropertyEvent.stack",
+    "hook:item_model_range_property.stack",
+    "type:ItemModelRangePropertyEvent.bundle_selected",
+    "hook:item_model_range_property.bundle_selected",
+    "type:ItemModelRangePropertyEvent.value",
+    "hook:item_model_range_property.value",
+    "type:ItemModelPropertyInput",
+    "type:RangeSelectPropertyFn",
+    "type:RangeSelectPropertyDecoder",
+
+    # Select item model properties (Step 5)
+    "hook:register_select_item_model_property",
+    "hook:register_select_item_model_property.properties",
+    "type:RegisterSelectItemModelPropertyEvent.properties",
+    "handle:RegisterSelectItemModelPropertyEvent::register",
+    "hook:item_model_select_property",
+    "method:Hooks::item_model_select_property",
+    "type:ItemModelSelectPropertyEvent",
+    "type:ItemModelSelectPropertyEvent.property",
+    "hook:item_model_select_property.property",
+    "type:ItemModelSelectPropertyEvent.stack",
+    "hook:item_model_select_property.stack",
+    "type:ItemModelSelectPropertyEvent.bundle_selected",
+    "hook:item_model_select_property.bundle_selected",
+    "type:ItemModelSelectPropertyEvent.value",
+    "hook:item_model_select_property.value",
+    "type:SelectCaseKey",
+    "handle:SelectCaseKey::new",
+    "handle:SelectCaseKey::downcast_ref",
+    "type:SelectCaseDecoder",
+    "type:SelectPropertyFn",
+    "type:SelectPropertyDecoder",
+
+    # World-preset editors (Step 6)
+    "hook:register_preset_editors",
+    "hook:register_preset_editors.editors",
+    "type:RegisterPresetEditorsEvent.editors",
+    "handle:RegisterPresetEditorsEvent::register",
+    "type:PresetEditor",
+    "type:PresetEditor.preset",
+    "type:PresetEditor.screen",
+    "trait:PresetEditor",
+    "method:PresetEditor::title",
+    "method:PresetEditor::render",
+    "method:PresetEditor::mouse_clicked",
+    "method:PresetEditor::key_pressed",
+    "method:PresetEditor::char_typed",
+    "hook:screen_char_typed_post",
+    "hook:screen_key_pressed_post",
+    "type:PresetEditorContext",
+    "handle:PresetEditorContext::preset",
+    "handle:PresetEditorContext::dimensions",
+    "handle:PresetEditorContext::seed",
+    "type:PresetEditorDraft",
+    "handle:PresetEditorDraft::preset",
+    "handle:PresetEditorDraft::dimensions",
+    "handle:PresetEditorDraft::set_dimensions",
+    "type:PresetEditorFactoryFn",
+    "method:prelude::ScreensClientHost::preset_editor",
+]
+why = """Bind asset, item-model, animation, and world-preset providers directly at registration instead of registering bare identifier strings and dispatching second-pass runtime hooks across every subscribed mod.
+
+Matches NeoForge 26.3 and vanilla 26.3 registration contracts directly:
+- Model loaders (`ModelEvent.RegisterLoaders`) and block-state definitions (`RegisterBlockStateModels`) bind callbacks at startup and invoke only the registered provider once per matching asset during resource load/reload; `ModelLoaderQuad` and `BlockStateModelPick` are now process-local (`// no wire`).
+- Atlas sprite sources (`RegisterSpriteSourcesEvent`, `SpriteSources`) bind callbacks directly with borrowed `&dyn ResourceReader`, accept any canonical `<namespace>:<path>` including `minecraft:` with last-writer-wins replacement ahead of vanilla built-ins, and make `SpriteSourceOutput` process-local (`// no wire`).
+- JSON keyframe animation types (`RegisterJsonAnimationTypesEvent`, `EntityAnimationLoader`) bind target apply/convert closures and interpolation closures directly into parsed `AnimationHolder` channels (`AnimationTarget::Custom(BoundAnimationTarget)`, `Interpolation::Custom(BoundInterpolation)`), making `AnimationHolder::bake` infallible and removing `AnimationTypes`, `TypedKeyframeAnimation`, `JsonAnimationType`, `RegisteredAnimationType`, `AnimationError`, and `AnimationHolder`'s `Wire` encoding.
+- Item tint sources (`RegisterColorHandlersEvent.ItemTintSources`), item models (`RegisterItemModelsEvent`), range-select properties (`RegisterRangeSelectItemModelPropertyEvent`), and select properties (`RegisterSelectItemModelPropertyEvent`) bind decode-time factories evaluated once per JSON node at resource load/reload, returning per-stack closures evaluated directly with zero per-frame JSON reparsing and full `LateBoundIdMapper` override parity (including `minecraft:` built-in overrides). Item model decoders also receive `&mut dyn ItemModelChildren` to declare nested child item models from arbitrary JSON schemas (e.g. overriding `minecraft:composite`'s `"models": [...]` array), and select property decoders return both a per-case `when` value decoder (`&Tag -> Result<T, String>`) and the per-stack evaluator (`-> Option<T>`). Vanilla `ItemModels.CODEC` delegates to the selected decoder, which now reads lossless JSON and opts in to the standard transformation. Vanilla `SelectItemModel.SwitchCase.codec` tries lists before scalar values (including array-shaped keys); custom equality is contained in the owning callback during both validation and rendering, without allocating an erased key per stack.
+- World-preset editors (`RegisterPresetEditorsEvent`, vanilla `PresetEditor`) bind factory closures constructing live `Box<dyn PresetEditor>` instances driven directly by the `world_preset_editor` screen with borrowed `PresetEditorContext` and `PresetEditorDraft`, replacing the data-only `PresetEditor` struct and `ScreensClientHost::preset_editor`, and allowing `minecraft:` overrides (e.g. `minecraft:flat`, `minecraft:single_biome_surface`).
+- NeoForge `UnbakedModelParser.Deserializer` gives a present loader the model's original JSON and uses the cuboid decoder only when there is no loader, when an optional provider is absent, or when the loader delegates to it. An empty successful replacement adds no geometry; Fusion delegates geometry to the existing cuboid resolver. The result or refusal belongs to that model and its effective texture slots for this resource load, not its blockstate rotation; a reload invokes the provider again. Vanilla `ItemFrameRenderer.submit` uses the shared model resolver; startup and reload now bake frames from the same resource library as items. Vanilla `AtlasManager.prepareSharedState` and NeoForge `RegisterTextureAtlasesEvent` list only engine and registered atlases, not unused definitions. `KeyboardHandler.textEditing` tracks composition independently of caret rendering; the screen key and character Post hooks still fire only for input the screen did not take.
+- NeoForge `UnbakedModelParser.Deserializer` rejects the file when its required loader is absent. As in vanilla `ModelManager.loadBlockModels`, discovery uses the result of that load instead of reopening rejected files. `ModelDiscovery.discoverDependencies` and `ResolvedModel.findTopGeometry` put the missing model at the rejected parent's link without replacing a child's own geometry. NeoForge `ModelManager.discoverModelDependencies` includes standalone roots in the same discovery; Sunrise applies the same parent resolution to standalone files and to bakers' declared files.
+- Vanilla `KeyboardHandler.keyPress` routes a release independently of which screen saw the press, and `KeyboardHandler.textInput` delivers committed characters separately from key presses. The winit adapter keeps input-method-consumed keys out of NeoForge's `KeyboardHandler` Pre/screen/Post key dispatch, and committed text still goes through the character hooks. The control socket clears physical and modifier state before routing a release, even after the preset editor has returned to Create World.
+- All bound callbacks run through `CallbackOwner` panic containment: returning `Err(reason)` logs a warning/error without disabling the callback; panicking disables that callback for the session, logs an error, and surfaces an in-game error toast naming the mod.
+- Also aligns `create_skull_models` with NeoForge `EntityRenderersEvent.CreateSkullModels` (accepting any canonical `<namespace>:<path>` outside the seven built-in vanilla skull types), uses `Tag` for tint and property configuration, and removes the dead `has_sprite_source` flag from `sunrise-assets`."""
+migrate = """
+Rebuild native mods against this SDK and migrate each registration hook from bare string pushes + second-pass hooks to bound providers. The removed runtime hooks also remove `HookId::{BakeModelLoader, InstantiateBlockStateDefinition, SpriteSource, ItemTintSource, ItemModelUpdate, ItemModelRangeProperty, ItemModelSelectProperty}`. Remove matches or subscriptions for those variants and register the relevant provider instead:
+
+1. Model loaders (`Hooks::register_model_loaders`, version 2; `Hooks::bake_model_loader` removed):
+   Replace `event.loaders.push(id)` and `Hooks::bake_model_loader` with `event.register(Identifier::parse(id).expect("valid identifier"), ModelLoaderSchema::Cuboids, |input| Ok(quads))` to preserve combined cuboid and custom quads. Use `ModelLoaderSchema::ModelProperties` to keep standard parent, texture and display properties but replace geometry (including models that use `elements` for something else). Use `ModelLoaderSchema::Custom` to own the entire schema. Read `input.model`, deserialize `input.config` as JSON (`&str`, e.g. `serde_json::from_str(input.config)`), and read `input.textures` (`&BTreeMap<String, String>`) for resolved standard slots. Replace every `ModelLoaderQuad { texture: slot, .. }` with `texture: ModelLoaderTexture::Slot(slot)` or use `ModelLoaderTexture::Sprite(sprite_id)` for a direct `Identifier`. Return `Err(reason)` to report a load error without disabling the loader. `ModelLoaderQuad` is no longer `Wire`.
+
+2. Block-state models (`Hooks::register_block_state_models`, version 2; `Hooks::instantiate_block_state_definition` removed):
+   Replace `event.definitions.push(id)` and `Hooks::instantiate_block_state_definition` with `event.register(Identifier::parse(id).expect("valid identifier"), |input| Ok(picks))`. Read `input.block`, `input.config` (`&Tag`), and `input.states`. Return `Err(reason)` (or `BlockStateModelPick::Refuse { reason }`) to refuse a file. `BlockStateModelPick` is no longer `Wire`.
+
+3. Sprite sources (`Hooks::register_sprite_sources`, version 3; `Hooks::sprite_source` removed):
+   Replace `event.sources.push(id)` and `Hooks::sprite_source` with `event.register(Identifier::parse(id).expect("valid identifier"), |input| Ok(outputs))`. Read `input.atlas`, `input.config` (`&Tag`), and `input.resources` (`&dyn ResourceReader`). Return `Err(reason)` to report an error without disabling the provider. `SpriteSourceOutput` is no longer `Wire`.
+
+4. JSON keyframe animation types (`Hooks::register_json_animation_types`, version 2):
+   Replace `event.types.push(JsonAnimationType::Target(id))` / `Interpolation(id)` and `impl AnimationTypes` with `event.register_target(id, |part, value| ..., |raw| ...)` and `event.register_interpolation(id, |keyframes, alpha, current_idx, next_idx, scale| ...)`. Replace `holder.bake_with(&root, types)?` and `holder.bake(&root)?` with `holder.bake(&root)` (now infallible, returning `KeyframeAnimation`). Remove `AnimationTypes`, `TypedKeyframeAnimation`, `JsonAnimationType`, `RegisteredAnimationType`, `AnimationError`, and `AnimationHolder::types`. Match `AnimationTarget::Custom(bound)` and `Interpolation::Custom(bound)` by reference (`AnimationTarget`, `Interpolation`, and `Keyframe` are `Clone`, not `Copy`), and note `AnimationHolder` is no longer `Wire`. `AnimationChannel::sample` now returns `None` when a custom interpolation fails (is disabled, panics, or yields a non-finite vector) so only that channel is skipped.
+
+5. Item tint sources, item models, range-select properties, and select properties (all version 2; `Hooks::item_tint_source`, `Hooks::item_model_update`, `Hooks::item_model_range_property`, and `Hooks::item_model_select_property` removed):
+   - `Hooks::register_item_tint_sources`: replace `event.sources.push(id)` and `Hooks::item_tint_source` with `event.register(id, |config| Ok(move |host, input| argb))`, reading `input.stack` and `input.bundle_selected`.
+   - `Hooks::register_item_models`: replace `event.models.push(id)` and `Hooks::item_model_update` with `event.register(id, |config, children| { children.add_named_models()?; Ok(move |host, input, layers| { layers.push(...); }) })`, reading `input.stack`, `input.bundle_selected`, and `input.context` (`&ItemModelContext`). Use `children.add_field`, `add_list`, `add_object`, `add_named_models`, or `add_model` to register child item models from any JSON schema (including vanilla replacement schemas).
+   - `Hooks::register_range_select_item_model_property`: replace `event.properties.push(id)` and `Hooks::item_model_range_property` with `event.register(id, |config| Ok(move |host, input| value))`, reading `input.stack`, `input.bundle_selected`, and `input.context`.
+   - `Hooks::register_select_item_model_property`: replace `event.properties.push(id)` and `Hooks::item_model_select_property` with `event.register(id, |config| Ok((|when| ..., move |host, input| Some(case))))`, decoding each `when` into the same concrete key type once at load and returning `Option<T>` per stack.
+   For an item model node, replace `config.get("field")` on `&Tag` with `config.field::<T>("field")?` or `config.decode::<MyConfig>()?` using a Serde `Deserialize` type. Call `children.use_transformation()?` if the schema accepts the standard optional `transformation`; omit it for an absent or custom field. Tint and property node configuration still uses `&Tag`. Capture the parsed state in the returned closure.
+
+6. World-preset editors (`Hooks::register_preset_editors`, version 2; `ScreensClientHost::preset_editor` removed):
+   Replace `event.editors.push(PresetEditor { preset, screen })` and `host.preset_editor()` with `event.register(Identifier::parse(preset).expect("valid identifier"), |ctx| Ok(Box::new(MyEditor)))`. Implement the `PresetEditor` trait (`title`, `render`, `mouse_clicked`, `key_pressed`, `char_typed`), inspect `ctx.preset()`, `ctx.dimensions()`, and `ctx.seed()` on open, and mutate dimensions through `draft.set_dimensions(...)` (or `host.preset_editor_dimensions()` / `host.set_preset_editor_dimensions(...)` in screen hooks). Move branching on `host.preset_editor().screen` into the registered `PresetEditor` instance's own render and input methods. For generic screen hooks, replace the old editor-specific screen ID with `world_preset_editor`. A declined key or character can now reach `screen_key_pressed_post` or `screen_char_typed_post` (both version 2); handle it in the editor to consume it. Handle committed input-method text in `char_typed`, not `key_pressed`; composing keys do not reach the editor.
+
+7. Skull models (`create_skull_models`, version 3): no edit for existing valid registrations. `minecraft:` is now accepted for new kinds too; built-in vanilla skull kinds remain reserved and duplicate registrations are errors.
+
+8. Model JSON: use `"loader": {"id":"yourmod:loader","optional":true}` if the model should render cuboids when the provider is absent. A string ID is required by default; a missing required loader rejects that model file, not a child's own geometry. No registration changes are needed for standalone models: continue to pass the child's ID to `register_model`, or declare and append that child in a baker. A missing or rejected declared file itself still discards the baker's result. If the parent should supply inherited geometry or textures without its provider, make the parent's declaration optional. A present provider returning `Err(reason)` always yields the missing model for that bake.
+"""

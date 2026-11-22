@@ -6,18 +6,27 @@ license.workspace = true
 rust-version.workspace = true
 description = "The official game executable: the platform's game with Sunrise's own in-game parts plugged in (docs/layers.md)"
 
+# The binaries hold no tests (the library does): `cargo test` builds no empty test harness for them, each of which
+# linked the whole crate again. They still build for integration tests (CARGO_BIN_EXE_*) and clippy --all-targets.
 [[bin]]
 name = "sunrise-official"
 path = "src/main.rs"
+test = false
+
+[features]
+default = ["sunrise-extras"]
+sunrise-extras = ["dep:sunrise-reconnect", "dep:sunrise-perf-overlay", "sunrise-game/sunrise-extras"]
 
 [dependencies]
-sunrise-game = { path = "../sunrise-game" }
+sunrise-game = { path = "../sunrise-game", default-features = false, features = ["audio", "controllers"] }
 sunrise-platform = { path = "../sunrise-platform" }
 sunrise-heartbeat = { path = "../sunrise-heartbeat" }
 sunrise-friends = { path = "../sunrise-friends", features = ["game"] }
-sunrise-official-servers = { path = "../sunrise-official-servers" }
+sunrise-addresses = { path = "../sunrise-addresses" }
 sunrise-discord = { path = "../sunrise-discord" }
 sunrise-perf-share = { path = "../sunrise-perf-share" }
+sunrise-reconnect = { path = "../sunrise-reconnect", optional = true }
+sunrise-perf-overlay = { path = "../sunrise-perf-overlay", optional = true }
 log = "0.4"
 
 [build-dependencies]

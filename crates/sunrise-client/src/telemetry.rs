@@ -4,7 +4,6 @@
 //! game's only sending is the anonymous "I'm playing" ping, `heartbeat.rs`).
 //! Without the player's yes for that kind nothing is kept, and crash-reports/ stays local.
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -20,34 +19,12 @@ const MIN_SECONDS: f32 = 60.0;
 const CRASH_DETAILS: [&str; 3] = ["Sunrise Version", "Graphics Adapter", "Render Settings"];
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
-static CORE_READY_MS: AtomicU32 = AtomicU32::new(u32::MAX);
-static REST_READY_MS: AtomicU32 = AtomicU32::new(u32::MAX);
 /// The screen the window opened on.
 static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 
 /// When the game started, for the time to the title screen. Call first thing in `main`.
 pub fn mark_start() {
     STARTED.get_or_init(Instant::now);
-}
-
-pub fn mark_core_ready() {
-    mark_ready(&CORE_READY_MS);
-}
-
-pub fn mark_rest_ready() {
-    mark_ready(&REST_READY_MS);
-}
-
-fn mark_ready(mark: &AtomicU32) {
-    if let Some(started) = STARTED.get() {
-        let ms = started.elapsed().as_millis().min(u128::from(u32::MAX - 1)) as u32;
-        let _ = mark.compare_exchange(u32::MAX, ms, Ordering::Relaxed, Ordering::Relaxed);
-    }
-}
-
-fn readiness_ms(mark: &AtomicU32) -> Option<u32> {
-    let ms = mark.load(Ordering::Relaxed);
-    (ms != u32::MAX).then_some(ms)
 }
 
 /// The adapter's name, once the renderer has one.
@@ -252,8 +229,8 @@ impl Session {
             peak_ram_mb: peak_ram_mb(),
             to_title_ms: self.to_title_ms,
             to_world_ms: self.to_world_ms,
-            to_core_ms: self.to_title_ms.and_then(|_| readiness_ms(&CORE_READY_MS)),
-            to_rest_ms: self.to_title_ms.and_then(|_| readiness_ms(&REST_READY_MS)),
+            to_core_ms: None,
+            to_rest_ms: None,
             slow_frames: self.slow_frames.clone(),
         })
     }

@@ -1,13 +1,18 @@
 //! Core gameplay regression tests.
 use mod_api::ServerHost;
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn reload_resolves_parts_against_reloaded_tags() {
     use mod_api::{self, BlockPart, DataPackFilesEvent, Hooks, Registrar};
     struct TagPart;
     #[mod_api::sunrise_part]
     impl BlockPart for TagPart {
-        fn analog_output(&self, _: &dyn mod_api::LevelHost, _: &mut mod_api::AnalogOutputEvent) {}
+        fn analog_output(
+            &self,
+            _: &mut dyn mod_api::LevelRandomHost,
+            _: &mut mod_api::AnalogOutputEvent,
+        ) {
+        }
     }
     struct ReloadMod;
     #[mod_api::__subscriptions]
@@ -27,7 +32,7 @@ fn reload_resolves_parts_against_reloaded_tags() {
     mod_platform::__private::install(mods);
     super::native_entity_refs::tests::with_game(|game| {
         let stone_key = mod_platform::__private::part_tests::block_key("stone");
-        let name = stone_key.id(game);
+        let name = stone_key.id(game).expect("stone is registered").to_owned();
         let dir = std::env::temp_dir().join(format!("sunrise-key-tags-{}", std::process::id()));
         game.session_lock = Some(sunrise_client::save::SessionLock::acquire(&dir).unwrap());
         assert_eq!(game.block_in_tag(stone_key, "test:reload"), Some(false));
@@ -46,9 +51,8 @@ fn reload_resolves_parts_against_reloaded_tags() {
             &game.pack.additional_data,
         );
         let root = game.options.resources.clone();
-        let previous = std::sync::Arc::new(mod_api::DatapackRegistrySet::first(
+        let previous = std::sync::Arc::new(mod_api::DatapackRegistrySet::from_candidate(
             mod_api::DatapackCandidate::build(&[], &[]).unwrap(),
-            sunrise_client::datapack_net::next_session(),
         ));
         sunrise_client::datapack_net::serve(Some(previous.clone()));
         let prepared = game.prepare_world_reload(&stack, &root).unwrap();
@@ -61,7 +65,7 @@ fn reload_resolves_parts_against_reloaded_tags() {
         // A successful empty publication clears the previous world's served registries too.
         assert!(sunrise_client::datapack_net::served().is_none());
         game.run_native_advancement_grants();
-        assert_eq!(stone_key.id(game), name);
+        assert_eq!(stone_key.id(game), Some(name.as_str()));
         assert_eq!(
             stone_key,
             mod_platform::__private::part_tests::block_key("minecraft:stone")
@@ -82,7 +86,7 @@ fn reload_resolves_parts_against_reloaded_tags() {
     });
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn client_option_snapshots_follow_settings() {
     super::native_entity_refs::tests::with_client_game(|game| {
         game.settings.fov = 90.0;
@@ -117,7 +121,7 @@ fn client_option_snapshots_follow_settings() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn client_input_options_follow_settings() {
     super::native_entity_refs::tests::with_client_game(|game| {
         game.settings.sensitivity = 0.25;
@@ -174,7 +178,7 @@ use super::*;
 use sunrise_client::container_screen::{Button, Clicks, Release, Target};
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn client_modifier_snapshot_tracks_focus_loss() {
     use mod_api::ClientHost;
     use winit::{event_loop::ControlFlow, keyboard::ModifiersState};
@@ -190,10 +194,104 @@ fn client_modifier_snapshot_tracks_focus_loss() {
         assert!(snapshot.alt());
         assert!(!snapshot.control());
         assert!(!snapshot.super_key());
-        game.handle_window_event_inner(&TestLoop, WindowEvent::Focused(false));
+        game.handle_window_event_inner(&TestLoop, WindowEvent::Focused(false), None, None);
         assert_eq!((game as &dyn ClientHost).modifiers().bits, 0);
         assert_eq!(snapshot.bits, 5);
     });
+}
+
+#[test]
+#[ignore = "daily"]
+fn blank_inventory_presses_are_handled_and_feed_double_click_history() {
+    in_own_process(
+        "game::core_tests::blank_inventory_presses_are_handled_and_feed_double_click_history",
+        exercise_blank_inventory_presses,
+    );
+}
+
+fn exercise_blank_inventory_presses() {
+    use mod_api::{ClientHost, Hooks, ModEntry, ScreenMouseButtonPressedPostEvent};
+    use std::sync::Mutex;
+    use winit::{event::DeviceId, event_loop::ControlFlow};
+
+    struct TestLoop;
+    impl EventLoopCtl for TestLoop {
+        fn exit(&self) {}
+        fn set_control_flow(&self, _: ControlFlow) {}
+    }
+    type Post = (&'static str, bool, bool);
+    struct Observer(Arc<Mutex<Vec<Post>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observer {
+        fn screen_mouse_button_pressed_post(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut ScreenMouseButtonPressedPostEvent<'_>,
+        ) {
+            self.0.lock().unwrap().push((
+                event.screen.id,
+                event.was_click_handled,
+                event.double_click,
+            ));
+        }
+    }
+
+    let posts = Arc::new(Mutex::new(Vec::new()));
+    mod_platform::testing::with_mods(
+        vec![ModEntry::new(
+            "inventory_clicks",
+            Box::new(Observer(posts.clone())),
+        )]
+        .into(),
+        || {
+            super::native_entity_refs::tests::with_client_game(|game| {
+                let _window = super::native_hooks::particle_count_tests::frame_scene(game);
+                let mut millis = 0;
+                for (screen, id) in [
+                    (Screen::Inventory, "inventory"),
+                    (Screen::Creative, "creative"),
+                ] {
+                    game.set_screen(screen);
+                    let renderer = game.renderer.as_ref().unwrap();
+                    let batch = HudBatch::new(
+                        [renderer.config.width, renderer.config.height],
+                        game.settings.gui_scale_inputs(),
+                    );
+                    let (x, y) = game.inventory_origin(&batch);
+                    game.cursor = (x + 3.0, y + 3.0);
+                    assert_eq!(game.inventory_target(), (None, false));
+                    for button in [
+                        MouseButton::Left,
+                        MouseButton::Right,
+                        MouseButton::Middle,
+                        MouseButton::Other(300),
+                    ] {
+                        for state in [ElementState::Pressed, ElementState::Released].repeat(2) {
+                            let timestamp = (state == ElementState::Pressed).then(|| {
+                                millis += 100;
+                                millis
+                            });
+                            game.handle_window_event_inner(
+                                &TestLoop,
+                                WindowEvent::MouseInput {
+                                    device_id: DeviceId::dummy(),
+                                    state,
+                                    button,
+                                },
+                                None,
+                                timestamp,
+                            );
+                        }
+                        assert_eq!(
+                            std::mem::take(&mut *posts.lock().unwrap()),
+                            [(id, true, false), (id, true, true)],
+                            "{id} with {button:?}",
+                        );
+                    }
+                }
+            });
+        },
+    );
 }
 
 /// `ClipContext.Block.OUTLINE` for the SOURCE_ONLY ray (#8180): a ray
@@ -215,7 +313,7 @@ fn the_fluid_ray_passes_through_the_hollow_of_a_torch() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn right_click_block_controls_cauldron_use() {
     use mod_api::{self, BlockUpdateFlags, Flow, Hooks, RightClickBlockEvent, TriState};
     use std::sync::{
@@ -284,10 +382,10 @@ fn right_click_block_controls_cauldron_use() {
             Ok(true)
         );
         game.inventory[game.selected] = Some(ItemStack::new("minecraft:water_bucket", 1));
-        game.keys.insert(KeyCode::ShiftLeft);
+        game.insert_device_key(KeyCode::ShiftLeft);
         game.use_hand(Some(&hit)).unwrap();
         assert_ne!(game.world.block(0, 64, 0), empty);
-        game.keys.remove(&KeyCode::ShiftLeft);
+        game.remove_device_key(&KeyCode::ShiftLeft);
 
         let campfire = game
             .pack
@@ -330,7 +428,7 @@ fn right_click_block_controls_cauldron_use() {
         mob.extra.leash = Some(sunrise_client::mobs::leash::Holder::Player);
         game.mobs.push(mob);
         game.inventory[game.selected] = Some(ItemStack::new("minecraft:lead", 1));
-        game.guest_use = Some(GuestUse::OnBlock(Hand::Main));
+        game.guest_use = Some(GuestUse::on_block(Hand::Main));
         game.forced_hit = Some(hit);
         cancel.store(true, Ordering::SeqCst);
         let before = calls.load(Ordering::SeqCst);
@@ -343,7 +441,7 @@ fn right_click_block_controls_cauldron_use() {
 
         // A spectator's packet reaches the event, even when canceled.
         game.set_mode_id(3);
-        game.guest_use = Some(GuestUse::OnBlock(Hand::Main));
+        game.guest_use = Some(GuestUse::on_block(Hand::Main));
         game.forced_hit = Some(hit);
         cancel.store(true, Ordering::SeqCst);
         let before = calls.load(Ordering::SeqCst);
@@ -353,10 +451,10 @@ fn right_click_block_controls_cauldron_use() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn fence_ties_without_a_lead_only_on_main_hand() {
-    use sunrise_client::mobs::leash::Holder;
     use mod_api::BlockUpdateFlags;
+    use sunrise_client::mobs::leash::Holder;
     super::native_entity_refs::tests::with_game(|game| {
         game.options.dedicated = Some(Vec::new());
         game.world
@@ -389,7 +487,7 @@ fn fence_ties_without_a_lead_only_on_main_hand() {
         mob.extra.leash = Some(Holder::Player);
         game.mobs.push(mob);
         game.forced_hit = Some(hit);
-        game.guest_use = Some(GuestUse::OnBlock(Hand::Off));
+        game.guest_use = Some(GuestUse::on_block(Hand::Off));
         game.with_hand(Hand::Off, |game| game.use_hand(Some(&hit)))
             .unwrap();
         assert_eq!(game.mobs[0].extra.leash, Some(Holder::Player));
@@ -399,7 +497,7 @@ fn fence_ties_without_a_lead_only_on_main_hand() {
         assert_eq!(game.mobs[0].extra.leash, Some(Holder::Knot(hit.pos)));
         game.mobs[0].extra.leash = Some(Holder::Player);
         game.offhand = None;
-        game.guest_use = Some(GuestUse::OnBlock(Hand::Main));
+        game.guest_use = Some(GuestUse::on_block(Hand::Main));
         game.with_hand(Hand::Main, |game| game.use_hand(Some(&hit)))
             .unwrap();
         assert_eq!(game.mobs[0].extra.leash, Some(Holder::Knot(hit.pos)));
@@ -501,7 +599,6 @@ fn screen_ids_are_distinct_and_stable() {
         Screen::Win,
         Screen::Mod,
         Screen::HudEditor,
-        Screen::Studio,
         Screen::DebugOptions,
     ];
     let ids: Vec<&'static str> = all.iter().map(|screen| screen.id()).collect();
@@ -518,8 +615,6 @@ fn screen_ids_are_distinct_and_stable() {
     assert_eq!(Screen::Playing.id(), "playing");
     assert_eq!(Screen::Inventory.id(), "inventory");
     assert_eq!(Screen::Win.id(), "win");
-    assert_eq!(Screen::Studio.id(), "studio");
-    assert_ne!(Screen::Studio.id(), Screen::Chat.id());
 }
 
 /// The `modifiers` a native mod's input hooks hand over are GLFW's bits
@@ -552,9 +647,9 @@ fn glfw_modifier_bits_are_glfw_modifier_bits() {
 }
 
 /// The `button` a native mod's mouse hooks hand over is GLFW's index (0
-/// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number),
-/// the one `keybinds::mouse_name` names (`key.mouse.<index + 1>` from the
-/// back button on).
+/// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number).
+/// `keybinds::mouse_name` names left, right and middle by name and the rest
+/// `key.mouse.<index + 1>`, vanilla's number only from the back button on.
 #[test]
 fn glfw_button_indices_are_glfw_indices() {
     for (button, index, name) in [
@@ -692,12 +787,15 @@ fn a_mod_screen_on_a_machine_menu_takes_the_stock_layout_out() {
 fn a_falling_block_keeps_its_model_offset() {
     let at = Vec3::new(3.5, 70.25, -1.5);
     let falling = FallingBlock {
-        on_ground: false,
+        ground: Default::default(),
+        fire_ticks: 0,
+        sync_velocity: false,
         attachment_lifetime: Default::default(),
         rotation: [0.0, 0.0],
         join: Default::default(),
         id: 0,
         state: BlockStateId(7),
+        blocks_building: true,
         start_pos: BlockPos::new(3, 72, -2),
         position: at,
         previous: Vec3::new(3.5, 71.0, -1.5),
@@ -753,8 +851,7 @@ fn falling_block_does_not_descend_through_scaffolding() {
             .collect(),
         },
     )
-    .unwrap()
-    .expect("scaffolding collision rule");
+    .unwrap();
 
     // When a falling block is falling downward (wanted.y < 0) above the scaffolding top (y = 11.0):
     let falling_y = 11.0;
@@ -949,10 +1046,10 @@ fn shared_resources_can_cross_threads() {
 #[test]
 fn selecting_creative_tabs_does_not_drop_the_carried_stack_on_release() {
     let mut creative = Creative::from_json(&serde_json::json!({
-        "schema": 2,
+        "schema": 4, "item_features": {}, "potion_features": {},
         "tabs": [
-            {"type": "CATEGORY", "items": ["{count:1,id:\"minecraft:stone\"}"]},
-            {"type": "INVENTORY"}
+            {"id":"minecraft:building_blocks","title":"Building Blocks","type":"CATEGORY","build":[]},
+            {"id":"minecraft:inventory","title":"Survival Inventory","type":"INVENTORY","build":[]}
         ]
     }))
     .unwrap();
@@ -960,7 +1057,7 @@ fn selecting_creative_tabs_does_not_drop_the_carried_stack_on_release() {
         let mut clicks = Clicks::default();
         for tab in [1, 1, 0, 1] {
             select_creative_tab(&mut creative, &mut clicks, tab);
-            assert_eq!(creative.selected, tab);
+            assert_eq!(creative.selected_index(), tab);
             assert_eq!(creative.tab().inventory, tab == 1);
             assert_eq!(
                 clicks.release(
@@ -971,7 +1068,7 @@ fn selecting_creative_tabs_does_not_drop_the_carried_stack_on_release() {
                     false,
                     false
                 ),
-                Release::Nothing
+                Release::Swallowed
             );
         }
     }
@@ -1116,7 +1213,7 @@ fn integrated_server_save_persists_owner_player_data() {
         game_mode: 1,
         ..Level::default()
     };
-    level.write(&dir).unwrap();
+    level.write(&dir, &Default::default()).unwrap();
 
     // The integrated server stores the owner's state in `level` and saves the world.
     level.position = Some([128.5, 72.0, -64.25]);
@@ -1125,6 +1222,8 @@ fn integrated_server_save_persists_owner_player_data() {
         &mut level,
         &dir,
         execution_role::ExecutionRole::IntegratedServer,
+        &Default::default(),
+        false,
     )
     .unwrap();
 
@@ -1145,6 +1244,8 @@ fn integrated_server_save_persists_owner_player_data() {
         &mut dedicated,
         &dir,
         execution_role::ExecutionRole::DedicatedServer,
+        &Default::default(),
+        false,
     )
     .unwrap();
 
@@ -1159,32 +1260,10 @@ fn integrated_server_save_persists_owner_player_data() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `Screen::Studio` is the Studio script slot: it never draws the chat screen
-/// (`Screen::Studio => {}` in `game.rs`'s draw match, unlike
-/// `Screen::Chat => draw_chat_screen`), it never blurs the background, and
-/// while it is up gameplay does not own the keyboard (WASD cannot walk
-/// through it, and movement keys are cleared on open).
-#[test]
-fn studio_screen_stays_off_the_chat_slot() {
-    assert!(Screen::Studio != Screen::Chat);
-    assert_eq!(Screen::Studio.id(), "studio");
-    assert!(!Screen::Studio.blurs_background(false));
-    assert!(!Screen::Studio.blurs_background(true));
-    assert!(!gameplay_has_keyboard(Screen::Studio, false, false));
-    // The pure gate behind `Game::open_studio_screen`, as
-    // `native_mod_screen_open`'s `mod_screen_opens` is gated.
-    use super::studio::studio_screen_opens;
-    assert_eq!(studio_screen_opens(Screen::Playing, false), None);
-    assert_eq!(studio_screen_opens(Screen::Playing, true), Some(false));
-    assert_eq!(studio_screen_opens(Screen::Chat, false), Some(false));
-    assert_eq!(studio_screen_opens(Screen::Studio, false), Some(true));
-    assert_eq!(studio_screen_opens(Screen::Studio, true), Some(true));
-}
-
 #[test]
 fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
-    use sunrise_client::world::ModifiedChunks;
     use std::cell::Cell;
+    use sunrise_client::world::ModifiedChunks;
     let now = Instant::now();
     let mut dirty = ModifiedChunks::default();
     dirty.extend((0..27).map(|x| (x, 0)));
@@ -1195,8 +1274,8 @@ fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
     dirty.save_eagerly(
         now,
         || writes.get() < 128,
-        |k| k != (3, 0),
-        |k| {
+        |k| (k != (3, 0)).then_some(true),
+        |k, _| {
             chosen.push(k);
             writes.set(writes.get() + 1);
             true
@@ -1207,8 +1286,8 @@ fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
     dirty.save_eagerly(
         now,
         || true,
-        |_| true,
-        |k| {
+        |_| Some(true),
+        |k, _| {
             chosen.push(k);
             true
         },
@@ -1219,8 +1298,8 @@ fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
     dirty.save_eagerly(
         now + Duration::from_secs(10),
         || true,
-        |_| true,
-        |k| {
+        |_| Some(true),
+        |k, _| {
             chosen.push(k);
             true
         },
@@ -1230,8 +1309,8 @@ fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
     dirty.save_eagerly(
         now + Duration::from_secs(11),
         || false,
-        |_| true,
-        |_| panic!("no time"),
+        |_| Some(true),
+        |_, _| panic!("no time"),
     );
     assert!(dirty.contains(&(4, 0)));
     dirty.unloaded(&(4, 0)); // unloading removes the cooldown even if reloaded immediately
@@ -1239,8 +1318,8 @@ fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
     dirty.save_eagerly(
         now + Duration::from_secs(11),
         || true,
-        |_| true,
-        |k| {
+        |_| Some(true),
+        |k, _| {
             chosen.push(k);
             true
         },
@@ -1249,7 +1328,7 @@ fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn eager_saves_wait_for_an_open_world_and_for_light() {
     let mut resources = None;
     let mut game = crate::game::game_tests::tests::server_game(&mut resources);
@@ -1259,6 +1338,7 @@ fn eager_saves_wait_for_an_open_world_and_for_light() {
     game.save = Arc::new(sunrise_client::save::SaveDir::new(
         dir.clone(),
         sunrise_client::save::LevelShape::OVERWORLD,
+        Some(Default::default()),
     ));
     Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap()).lit = true;
     game.world
@@ -1285,4 +1365,155 @@ mod knot_command_view_tests;
 #[test]
 fn the_debug_crosshair_gives_way_to_the_radial_menu() {
     assert!(!debug_crosshair_drawn(true, true, false, false, true));
+}
+
+/// Wind charges: where they burst, and what their hit deals.
+mod wind_charge_burst_tests {
+    use super::*;
+    use crate::game::wind::above_the_top;
+    use std::sync::Arc;
+    use sunrise_client::{
+        chunk::{Chunk, LevelShape},
+        mobs::Who,
+        projectiles::{Hit, Projectile, ProjectileKind},
+    };
+    use sunrise_core::position::ChunkPos;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir =
+            Some(std::env::temp_dir().join(format!("sunrise-wind-charge-{}", std::process::id())));
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
+                root.to_path_buf(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("tick freeze"));
+        assert!(game.run_command("fill 0 198 0 15 199 15 stone"));
+        test(&mut game);
+    }
+
+    /// `AbstractWindCharge.tick`: `getBlockY() > level.getMaxY() + 30`, i.e. block
+    /// Y 350 in the Overworld and 286 in the Nether and the End.
+    #[test]
+    fn a_charge_bursts_thirty_blocks_above_its_dimensions_top() {
+        for (shape, top) in [
+            (LevelShape::OVERWORLD, 350.0),
+            (LevelShape::NETHER, 286.0),
+            (LevelShape::END, 286.0),
+        ] {
+            assert!(!above_the_top(shape, top - 1.0), "{shape:?} just below");
+            assert!(!above_the_top(shape, top - 0.5), "{shape:?} below");
+            assert!(above_the_top(shape, top), "{shape:?} at the top");
+            assert!(above_the_top(shape, top + 0.5), "{shape:?} above");
+        }
+    }
+
+    /// The same at play: a charge 44 blocks above the Nether's top, but below the
+    /// Overworld's, bursts where it is and is spent.
+    #[test]
+    #[ignore = "daily"]
+    fn a_nether_charge_bursts_above_the_nethers_top() {
+        with_game(|game| {
+            game.world.shape = LevelShape::NETHER;
+            game.audio.capture = Some(Vec::new());
+            let at = Vec3::new(2.5, 300.5, 2.5);
+            game.add_projectile(Projectile::new(
+                ProjectileKind::WindCharge,
+                at,
+                Some(Who::Player),
+            ));
+            game.ticked_entities_through = game.next_entity;
+            let id = game.creatures.projectiles.last().unwrap().id;
+            game.tick_projectiles().unwrap();
+            let bursts: Vec<_> = game
+                .audio
+                .capture
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.event == "minecraft:entity.wind_charge.wind_burst")
+                .collect();
+            assert_eq!(bursts.len(), 1, "the charge bursts once");
+            assert_eq!(bursts[0].position, [at.x, at.y, at.z]);
+            assert!(
+                !game.creatures.projectiles.iter().any(|p| p.id == id),
+                "the charge is spent"
+            );
+        });
+    }
+
+    /// `AbstractWindCharge.onHitEntity` hurts with `damageSources().windCharge`,
+    /// so a mob it kills records `minecraft:wind_charge` (message id `mob`), not
+    /// `minecraft:thrown`.
+    #[test]
+    #[ignore = "daily"]
+    fn a_wind_charge_kill_of_a_mob_deals_the_wind_charge_damage_type() {
+        with_game(|game| {
+            assert!(game.run_command(
+                "summon pig 2.5 200.5 2.5 {UUID:[I;116,0,0,97],NoAI:1b,NoGravity:1b,Health:1f}"
+            ));
+            let id = game.mobs.last().expect("the pig").id;
+            let at = Vec3::new(2.5, 200.5, 2.5);
+            let mut p = Projectile::new(ProjectileKind::WindCharge, at, Some(Who::Player));
+            p.previous = at;
+            game.wind_charge_hit(
+                &p,
+                Hit::Entity {
+                    who: Who::Mob(id),
+                    at,
+                },
+            )
+            .unwrap();
+            let pig = game.mobs.iter().find(|m| m.id == id).expect("the pig");
+            assert!(!pig.alive(), "a point of damage kills 1 health");
+            let hit = pig.combat.entries.last().expect("the hit").source;
+            assert_eq!(
+                crate::game::creatures::source_damage_type(hit),
+                "minecraft:wind_charge"
+            );
+            let def = game
+                .health_resources
+                .damage
+                .id("minecraft:wind_charge")
+                .and_then(|id| game.health_resources.damage.definition(id))
+                .expect("the wind charge damage type");
+            assert_eq!(def.message_id, "mob", "death.attack.mob");
+        });
+    }
 }

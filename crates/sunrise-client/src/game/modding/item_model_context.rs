@@ -1,11 +1,12 @@
-//! The item model's surroundings (`item_model::Context`) as the values `item_model_update` gives a
-//! mod: where the item is drawn, its owner and its level, as `ItemModel.update` reads them.
+//! The item model's surroundings (`item_model::Context`) passed to bound item model providers
+//! (`register_item_models`, `register_range_select_item_model_property`,
+//! `register_select_item_model_property`): where the item is drawn, its owner, and its level.
 use super::api_values::TryIntoApi;
-use sunrise_assets::item_model::{
-    DisplayContext, GlobalPos as EngineGlobalPos, LevelState, OwnerState,
-};
 use mod_api::{
     BlockPos, GlobalPos, Identifier, ItemDisplayContext, ItemModelLevel, ItemModelOwner,
+};
+use sunrise_assets::item_model::{
+    DisplayContext, GlobalPos as EngineGlobalPos, LevelState, OwnerState,
 };
 
 impl TryIntoApi for DisplayContext {

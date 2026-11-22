@@ -2,8 +2,8 @@
 //! alpha 0, or never written. The values come from probe pack p8106 run in Iris (the PR has
 //! them); the programs here are the probe's, cut down.
 use super::destination_tests::Fixture;
-use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 const VERTEX: &str = "#version 120\nvarying vec2 uv;\nvoid main() { uv=gl_MultiTexCoord0.xy; gl_Position=ftransform(); }\n";
 
@@ -67,6 +67,7 @@ fn pack() -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn three_channel_buffers_read_alpha_1() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

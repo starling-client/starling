@@ -7,10 +7,6 @@ impl Game<'_> {
         &mut self,
         cause: mod_api::TagsUpdateCause,
     ) {
-        let phase = self.mod_phase.clone();
-        let _reload = phase
-            .reloading()
-            .expect("default components notice on its owning thread");
-        self.fire_default_components_bound(cause);
+        Self::fire_default_components_bound(self, cause);
     }
 }

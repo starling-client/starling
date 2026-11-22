@@ -1,8 +1,10 @@
 //! The `register_debug_renderers` hooks: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// The world-space debug renderers a mod has now (NeoForge's `RegisterDebugRenderersEvent`): push a
-    /// `DebugRenderer` per renderer. Asked at each renderer list refresh, on the client.
+    /// Collect world-space debug renderers at each client renderer-list refresh (NeoForge's
+    /// `RegisterDebugRenderersEvent`). Push `DebugRenderer::new(draw)` for each renderer that
+    /// should run until the next refresh. Use `event.is_debug_entry_enabled(id)` to gate a
+    /// renderer on a vanilla or startup `DebugEntry` switch, or push unconditionally.
     #[notes = r#"## Debug renderers
 
 `Hooks::register_debug_renderers` is the client counterpart of NeoForge 26.3's
@@ -10,31 +12,37 @@ pub trait Hooks {
 `DebugRenderer.refreshRendererList`: once as the client starts, on each login, on the first view
 of a world since the start, and on the next view of a world after the debug selection changes.
 That is a status set in the debug options or by a key, a profile loaded, the F3 overlay opened or
-closed, or reduced debug info changed. It is not asked on other views, nor on title or connect
-screens. It receives a `RegistrationContext`, so it reads no world, and collects a `DebugRenderer`
-per renderer.
+closed, or reduced debug info rebuilt. Respawn also invalidates the list for the next view.
+Drawing the title or connect screen doesn't refresh anything. The hook receives a
+`RegistrationContext`, so it reads no world. Each mod receives an empty `event.renderers`
+batch and pushes `DebugRenderer::new(draw)` per active renderer.
 
-Each refresh replaces the active list, so a mod pushes every renderer it has, each time, and may
-rebuild its renderers' state here. Pushing an id does not list an option, since the option must
-exist before any refresh. As in vanilla, the option is an entry registered once at start:
-`Hooks::register_debug_entries` with `DebugGroup::Renderer` and the same id. It is listed in the debug options' renderer section, sorted by its id with
-vanilla's, and is switched like them (`alwaysOn`, `inOverlay`, `never`), saved in
-`debug-profile.json` under its full id. It starts off, and reduced debug info hides it, as it
-hides vanilla's. A renderer whose entry is off is left out of the active list, and one with no
-such entry is logged and left out.
+Each refresh replaces the active list, so push every renderer that should draw until the next
+refresh and capture its per-refresh state in the callback. To gate a renderer on a debug
+options switch (either a built-in vanilla entry such as `"minecraft:chunk_borders"` or a
+startup `DebugEntry::renderer(id)` from `Hooks::register_debug_entries`), check
+`event.is_debug_entry_enabled(id)` before pushing `DebugRenderer::new(draw)`. Unconditional
+renderers require no switch entry. Every submitted renderer from an enabled mod is kept in
+registration order, with no ID-based filtering or deduplication.
 
-While a renderer is active, `Hooks::debug_renderer_draw` is asked for each view of a world, after
-`submit_custom_geometry`, with the renderer's id, the same `WorldRenderView` and the same
-`WorldDrawContext`, so [its limits and rules](#custom-world-geometry) apply and are shared. Every
-mod is asked about every id, so a mod ignores ids it does not own. Output clears every view and
-title or connect screens ask no renderer, so nothing stays after leaving a world. A renderer that
-is not active is never asked, so with none active a view only compares the selection's version."#]
+For each world view, the client calls the installed callbacks in registration order,
+under their registering mods' identities, after `submit_custom_geometry`. It passes the current
+`ClientHost`, `WorldRenderView` and the same `WorldDrawContext`, so
+[its limits and rules](#custom-world-geometry) apply and are shared. Output clears every view,
+and callbacks don't run on the title or connect screens."#]
     #[hook(
+        receiver = "associated",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "renderers",
         context = "registration",
-        neoforge = "RegisterDebugRenderersEvent"
+        answered_by = "mod",
+        neoforge = "RegisterDebugRenderersEvent",
+        version = 3
     )]
-    fn register_debug_renderers();
+    fn register_debug_renderers(
+        entries: &dyn mod_api::__private::DebugEntryStates,
+        renderers: &mut Vec<Answered<DebugRenderer>>,
+    );
 }

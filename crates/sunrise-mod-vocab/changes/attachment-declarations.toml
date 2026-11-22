@@ -1,0 +1,15 @@
+ids = [
+    "method:prelude::ModStateHost::attachment_query",
+    "method:AttachmentStore::validate_attachment",
+    "trait:AttachmentTypesRegistrar",
+    "trait:Registrar",
+    "type:AttachmentError",
+    "type:AttachmentError.Undeclared",
+    "type:AttachmentRowError",
+    "type:PartStateError",
+    "type:PartStateRefusal",
+    "type:PartStateRefusal.UnownedNamespace",
+    "type:BlockEntityStateError",
+    "type:EntityPartStateError",
+]
+why = "Require load-time owner declarations for attachments, refuse undeclared use by package and attachment id, and refuse synced declarations in server packages. Owner declarations authorize cross-package use. Conflicts and undeclared uses precede owner-only server refusals; server users of another package's synced types load."

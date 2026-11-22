@@ -5,6 +5,8 @@
 //! `sunrise_client::recipe_book::ClientBook`.
 //!
 //! usage: recipe_book_view_fixture RESOURCES CASES OUTPUT
+use serde_json::Value;
+use std::{fmt::Write as _, fs, path::Path};
 use sunrise_client::{
     crafting::Recipes,
     item_data::parse_stack,
@@ -13,8 +15,6 @@ use sunrise_client::{
     recipe_book::{Book, BookType, ClientBook, Display, RecipeIndex, Tab},
 };
 use sunrise_world::loot::PackOverlay;
-use serde_json::Value;
-use std::{fmt::Write as _, fs, path::Path};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
@@ -42,7 +42,8 @@ pub fn main() -> sunrise_client::Result<()> {
             s,
             items.get(&s.item),
             &sunrise_client::item_tooltip::NoAttributeListener,
-            &items.enchantments,
+            sunrise_client::item_tooltip::TooltipHolders::Definitions(&items.enchantments),
+            false,
             &translate,
             &|_| None,
         )

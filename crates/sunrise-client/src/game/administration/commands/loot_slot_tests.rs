@@ -1,6 +1,75 @@
 use crate::game::commands::items::Slot;
 use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
 
+#[test]
+#[ignore = "daily"]
+fn loot_kill_matches_the_world_pack_entity_type_tag() {
+    let _publication = sunrise_client::datapack_net::isolate_server_publication();
+    with_game(|game| {
+        let world = tempfile::tempdir().unwrap();
+        let pack = world.path().join("datapacks/loot/data");
+        std::fs::create_dir_all(pack.join("snapshot/tags/entity_type")).unwrap();
+        std::fs::create_dir_all(pack.join("minecraft/loot_table/entities")).unwrap();
+        std::fs::write(
+            pack.parent().unwrap().join("pack.mcmeta"),
+            r#"{"pack":{"description":"loot snapshot fixture"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pack.join("snapshot/tags/entity_type/target.json"),
+            r#"{"values":["minecraft:sheep"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pack.join("minecraft/loot_table/entities/sheep.json"),
+            r##"{"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:diamond","condition":{"type":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:entity_type":"#snapshot:target"}}}]}]}"##,
+        ).unwrap();
+        std::fs::write(
+            world.path().join("datapacks.json"),
+            r#"{"enabled":["file/loot"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = world.path().to_path_buf();
+        game.reload_datapacks(true, &[]).unwrap();
+        assert!(game.run_command("setblock 4 200 4 chest"));
+        assert!(game.run_command("summon minecraft:sheep 8 200 8 {NoAI:1b}"));
+        assert!(game.run_command(
+            "loot replace block 4 200 4 container.0 1 kill @e[type=minecraft:sheep,limit=1]"
+        ));
+        assert_eq!(
+            game.slot_get(&Slot::Block([4, 200, 4], 0))
+                .map(|stack| (stack.item.to_string(), stack.count)),
+            Some(("minecraft:diamond".into(), 1)),
+        );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn server_loot_without_world_tables_owns_its_resource_root() {
+    with_game(|game| {
+        for count in [2, 3] {
+            let root = tempfile::tempdir().unwrap();
+            let tables = root.path().join("data/snapshot/loot_table");
+            std::fs::create_dir_all(&tables).unwrap();
+            std::fs::write(root.path().join("items.json"), "{}").unwrap();
+            std::fs::write(
+                tables.join("reward.json"),
+                format!(r#"{{"pools":[{{"rolls":{count},"entries":[{{"type":"minecraft:item","name":"minecraft:diamond"}}]}}]}}"#),
+            ).unwrap();
+            game.options.resources = root.path().to_path_buf();
+            game.load_server_loot();
+            let loot = game.server_loot.get().unwrap();
+            let drops = loot.roll_split(
+                "snapshot:reward",
+                &mut sunrise_core::random::LegacyRandom::new(0),
+            );
+            assert_eq!(drops.iter().map(|stack| stack.count).sum::<i32>(), count);
+            assert!(drops.iter().all(|stack| stack.item == "minecraft:diamond"));
+        }
+    });
+}
+
 fn with_game(check: impl FnOnce(&mut Game<'_>)) {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let scratch = tempfile::tempdir().unwrap();
@@ -49,7 +118,7 @@ fn with_game(check: impl FnOnce(&mut Game<'_>)) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn item_replace_jukebox_accepts_music_disc_cat() {
     with_game(|game| {
         assert!(game.run_command("setblock 4 200 4 jukebox"));
@@ -67,7 +136,7 @@ fn item_replace_jukebox_accepts_music_disc_cat() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn loot_empty_replace_jukebox_preserves_music_disc_13() {
     with_game(|game| {
         assert!(game.run_command("setblock 4 200 4 jukebox"));
@@ -91,7 +160,7 @@ fn loot_empty_replace_jukebox_preserves_music_disc_13() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn loot_replace_furnace_fuel_refuses_non_fuel() {
     with_game(|game| {
         assert!(game.run_command("setblock 4 200 4 furnace"));
@@ -106,7 +175,7 @@ fn loot_replace_furnace_fuel_refuses_non_fuel() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn item_commands_bypass_block_acceptance() {
     with_game(|game| {
         for slot in [1, 2] {
@@ -146,7 +215,7 @@ fn item_commands_bypass_block_acceptance() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn empty_loot_preserves_restricted_slots_but_clears_chest() {
     with_game(|game| {
         for (block, slot, item) in [
@@ -189,7 +258,7 @@ fn empty_loot_preserves_restricted_slots_but_clears_chest() {
 /// (`Container.canPlaceItem`): a furnace's fuel slot takes the coal an ore drops, refuses the
 /// raw iron another ore drops and keeps what it held, while the input slot takes the raw iron.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn loot_replace_mine_fills_an_accepting_slot_and_leaves_a_refusing_one() {
     with_game(|game| {
         let slot = |game: &mut Game<'_>, n| {
@@ -220,7 +289,7 @@ fn loot_replace_mine_fills_an_accepting_slot_and_leaves_a_refusing_one() {
 /// The same for a `kill` source: a sheared sheep's loot is mutton, which a furnace's input slot
 /// takes and its fuel slot refuses, leaving the coal there.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn loot_replace_kill_fills_an_accepting_slot_and_leaves_a_refusing_one() {
     with_game(|game| {
         let slot = |game: &mut Game<'_>, n| {

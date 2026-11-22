@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 import test_command_exec_parity as driver
-from allay_pickup_cooldown_corpus import allay_pickup_cooldown
+from allay_pickup_cooldown_corpus import DELIVERY_ORACLE, allay_pickup_cooldown
 
 if __name__ == '__main__':
     full = '--full-diagnostic' in sys.argv
@@ -24,12 +24,15 @@ if __name__ == '__main__':
     driver.corpus_module.groups = lambda: [('allay pickup cooldown', ops)]
     sys.argv.append('--allow-gaps')
     driver.main()
-    recorded = [op for op in ops if op['op'] == 'cmd' and op.get('record', True)]
+    recorded = [op for op in ops if (op['op'] == 'cmd' and op.get('record', True)) or op['op'] == 'player_loop']
     java = [json.loads(s) for s in (build / 'vanilla.jsonl').read_text().splitlines()]
     assert len(java) == len(recorded)
     for op, row in zip(recorded, java):
         if 'expect_results' in op:
             assert row['results'] == op['expect_results'], ('Java action/callback admission', op, row)
+        if op['label'] in DELIVERY_ORACLE[driver.lab.VERSION]:
+            text = [''.join(span[0] for span in message) for message in row['messages']]
+            assert (text, row['results']) == DELIVERY_ORACLE[driver.lab.VERSION][op['label']], ('pinned oracle', op, row)
     if '--reference-only' not in sys.argv:
         source = build / 'vanilla.jsonl' if full else (reference or build / 'vanilla.jsonl')
         if reference and not full:

@@ -1,14 +1,13 @@
 //! Honeycomb (the player's and the dispenser's, both through `honeycomb_waxed`) and the axe's
 //! scrape and wax-off (`axe_mapped`), with and without the world's NeoForge block maps.
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_world::level::BlockMaps;
-use sunrise_world::registry::BlockStateId;
 use mod_api::ToolAbility::{AxeScrape, AxeWaxOff};
-use serde_json::json;
 use std::sync::Arc;
+use sunrise_world::level::{BlockMapValue, BlockMaps};
+use sunrise_world::registry::BlockStateId;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn honeycomb_and_the_axe_read_the_block_maps_before_vanillas_tables() {
     with_game(|game| {
         let registry = game.pack.assets.registry;
@@ -47,8 +46,6 @@ fn honeycomb_and_the_axe_read_the_block_maps_before_vanillas_tables() {
         assert_eq!(game.honeycomb_waxed(stairs), None);
         assert!(game.axe_mapped("minecraft:axe", oxidized).is_none());
 
-        let to_oxidized = json!({"next_oxidation_stage": "minecraft:oxidized_cut_copper_slab"});
-        let to_mossy = json!({"waxed": "minecraft:mossy_stone_brick_stairs"});
         let table = &game.res.behaviours().table;
         let rank = |name: &str| {
             table
@@ -58,9 +55,16 @@ fn honeycomb_and_the_axe_read_the_block_maps_before_vanillas_tables() {
         game.res
             .behaviours()
             .set_block_maps(Some(Arc::new(BlockMaps::from_values(
-                [],
-                [("minecraft:exposed_cut_copper_slab", &to_oxidized)],
-                [("minecraft:stone_brick_stairs", &to_mossy)],
+                [
+                    (
+                        "minecraft:exposed_cut_copper_slab",
+                        BlockMapValue::Oxidizable("minecraft:oxidized_cut_copper_slab".into()),
+                    ),
+                    (
+                        "minecraft:stone_brick_stairs",
+                        BlockMapValue::Waxable("minecraft:mossy_stone_brick_stairs".into()),
+                    ),
+                ],
                 rank,
             ))));
         assert_eq!(game.honeycomb_waxed(stairs), Some(mossy));

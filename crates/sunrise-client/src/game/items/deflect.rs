@@ -3,7 +3,7 @@
 //! `ProjectileDeflection.AIM_DEFLECT` instead of hurting anything. It flies on
 //! along the player's view and is the player's now (`Projectile.deflect`
 //! sets the owner), so a ghast it meets dies of it (`Ghast.isReflectedFireball`).
-use super::{Game, ray_box, view_vector};
+use super::{Game, ray_box};
 use sunrise_client::{
     mobs::Who,
     projectiles::{Projectile, ProjectileKind, Turn},
@@ -76,6 +76,22 @@ impl Game<'_> {
     /// The redirectable projectile under the crosshair within the attack
     /// reach, and how far along the view it is.
     pub(super) fn redirectable_hit(&self) -> Option<(usize, f64)> {
+        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
+        self.redirectable_hit_with_pick(&mut pick)
+    }
+    pub(super) fn redirectable_hit_with_pick(
+        &self,
+        pick: &mut crate::game::pick_accumulator::PickAccumulator,
+    ) -> Option<(usize, f64)> {
+        if let Some(hit) = self.cached_entity_pick() {
+            let (entity, distance, _) = hit?;
+            let index = self
+                .creatures
+                .projectiles
+                .iter()
+                .position(|f| f.id == entity.id())?;
+            return Some((index, distance));
+        }
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
         self.creatures
@@ -83,8 +99,12 @@ impl Game<'_> {
             .iter()
             .enumerate()
             .filter(|(_, p)| attackable(p))
-            .filter_map(|(i, p)| ray_box(eye, dir, reach, pick_box(p)).map(|t| (i, t)))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .filter_map(|(i, p)| {
+                ray_box(eye, dir, reach, pick_box(p))
+                    .filter(|&t| pick.consider(self, p.id, t))
+                    .map(|t| (i, t))
+            })
+            .last()
     }
 
     /// `Player.attack` on a redirectable projectile nearer than any mob or
@@ -99,7 +119,9 @@ impl Game<'_> {
         if self.mob_hit().is_some_and(|(_, d, _)| d < t) {
             return false;
         }
-        if let (Some(hit), Some(eye)) = (self.pick_unfiltered(), self.eye_position()) {
+        if !self.uses_stored_pick()
+            && let (Some(hit), Some(eye)) = (self.pick_unfiltered(), self.eye_position())
+        {
             let d = (0..3)
                 .map(|a| (hit.point[a] - eye[a]).powi(2))
                 .sum::<f64>()
@@ -130,7 +152,15 @@ impl Game<'_> {
         );
         let sweep = self.sweep_before_hit("minecraft:shulker_bullet", false);
         let p = self.remove_projectile_at(i);
-        let at = [p.position.x, p.position.y, p.position.z];
+        self.shulker_bullet_hurt([p.position.x, p.position.y, p.position.z]);
+        self.vehicle_attack_sounds(p.aabb(), sweep, magic.then_some(p.id as i32));
+        self.reset_attack_strength();
+        self.swing_arm();
+    }
+
+    /// `ShulkerBullet.hurtServer`'s sound and fifteen crit particles
+    /// (`sendParticles`, spread 0.2) at the bullet, before it is destroyed.
+    pub(super) fn shulker_bullet_hurt(&mut self, at: [f64; 3]) {
         self.audio
             .play("minecraft:entity.shulker_bullet.hurt", Some(at), 1.0, 1.0);
         if let Some(ty) = sunrise_client::particles::ParticleType::from_name("crit") {
@@ -139,9 +169,6 @@ impl Game<'_> {
                 .send_particles(&options, at, [0.2, 0.2, 0.2], 0.0, 15);
             self.lan_level_particles(&options, at, [0.2, 0.2, 0.2], 0.0, 15, None);
         }
-        self.vehicle_attack_sounds(p.aabb(), sweep, magic.then_some(p.id as i32));
-        self.reset_attack_strength();
-        self.swing_arm();
     }
 
     /// `Player.canInteractWithEntity(box, 3.0)` as the server checks an
@@ -207,21 +234,34 @@ impl Game<'_> {
     /// The deflection itself: the view as the new movement, the player as
     /// owner. False, and nothing changes, when the projectile refuses.
     fn turn_projectile(&mut self, i: usize) -> bool {
-        let dir = view_vector(self.yaw, self.pitch);
+        let (pitch, yaw) = (self.pitch, self.yaw);
         let (guest, owner_uuid) = (self.lan_acting, Some(self.acting_player_uuid()));
-        self.creatures.projectiles.update(i, |p| {
-            let owner = (Some(Who::Player), owner_uuid, guest);
-            let look = Vec3::new(dir[0], dir[1], dir[2]);
-            if !p.deflect(Turn::Direction(Some(look)), [1.0; 3], owner, true) {
-                return false;
-            }
-            p.yaw = dir[0].atan2(dir[2]).to_degrees() as f32;
-            p.pitch = dir[1].atan2(dir[0].hypot(dir[2])).to_degrees() as f32;
-            // Not into the one who turned it on its way out.
-            p.left_owner = false;
-            true
-        })
+        self.creatures
+            .projectiles
+            .update(i, |p| attack_deflect(p, pitch, yaw, owner_uuid, guest))
     }
+}
+
+/// `Player.attack`'s `deflect(AIM_DEFLECT, player, player, true)`: [`aim_deflect`] along the
+/// player's look at `pitch` and `yaw` (`Entity.getLookAngle`, vanilla's sine table), with `p`
+/// turned to it. False, and nothing changes, when the projectile refuses.
+fn attack_deflect(
+    p: &mut Projectile,
+    pitch: f32,
+    yaw: f32,
+    owner_uuid: Option<[i32; 4]>,
+    guest: Option<u32>,
+) -> bool {
+    let look = sunrise_world::view_direction::view_vector(pitch, yaw);
+    if !aim_deflect(p, Some(look), Some(Who::Player), owner_uuid, guest) {
+        return false;
+    }
+    // As Projectile.updateRotation turns it: Mth.atan2 times the folded 180F / (float)PI.
+    p.yaw = sunrise_core::geometry::trig::atan2_degrees(look.x, look.z);
+    p.pitch = sunrise_core::geometry::trig::atan2_degrees(look.y, look.horizontal_distance());
+    // Not into the one who turned it on its way out.
+    p.left_owner = false;
+    true
 }
 
 #[cfg(test)]
@@ -299,6 +339,18 @@ mod tests {
             None
         ));
         assert_eq!(p.velocity, look);
+    }
+
+    /// A player's blow sends it along `Entity.calculateViewVector(0, 0.001)`, on HotSpot 25.0.4.1
+    /// (0.0, -0.0, 1.0) as double bits: `Mth.sin`'s table leaves no x at that yaw.
+    #[test]
+    fn a_blow_turns_it_along_vanillas_look() {
+        let mut p = wind_charge();
+        assert!(attack_deflect(&mut p, 0.0, 0.001, None, None));
+        assert_eq!(
+            [p.velocity.x, p.velocity.y, p.velocity.z].map(f64::to_bits),
+            [0, 0x8000_0000_0000_0000, 0x3ff0_0000_0000_0000]
+        );
     }
 
     #[test]

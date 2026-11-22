@@ -4,9 +4,9 @@
 //! `sunrise_client::scoreboard`, in VanillaTeamRulesOracle's JSON lines.
 //!
 //! usage: team_rules_fixture INPUTS OUTPUT
-use sunrise_client::scoreboard::{self as sb, CollisionRule, NameView, Scoreboard, Visibility};
 use serde_json::{Value, json};
 use std::{fs, io::Write};
+use sunrise_client::scoreboard::{self as sb, CollisionRule, NameView, Scoreboard, Visibility};
 
 pub fn main() {
     let args: Vec<String> = crate::args().collect();

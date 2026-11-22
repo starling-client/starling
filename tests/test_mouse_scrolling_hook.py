@@ -29,9 +29,15 @@ const MOBILE_PLATFORM: bool = false;
 mod sunrise_client { pub mod mouse { pub use crate::mouse::*; } }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)] enum MouseButton { Left, Middle, Right }
 #[derive(Clone, Copy, PartialEq)] enum Screen { Playing, Other }
+<<<<<<< sync-sunrise-1
 #[derive(Clone, Copy)] struct Point { x: f64, y: f64 }
 #[derive(Clone, Copy)] enum MouseScrollDelta { LineDelta(f32, f32), PixelDelta(Point) }
 struct Settings { discrete_scroll: bool, mouse_wheel_sensitivity: f32 }
+=======
+struct Point { x: f64, y: f64 }
+enum MouseScrollDelta { LineDelta(f32, f32), PixelDelta(Point) }
+struct Settings { discrete_scroll: bool, mouse_wheel_sensitivity: f64 }
+>>>>>>> sunrise/main
 struct Player { flying_speed: f32 }
 struct SpectatorGui { active: bool }
 impl SpectatorGui { fn is_menu_active(&self) -> bool { self.active } }

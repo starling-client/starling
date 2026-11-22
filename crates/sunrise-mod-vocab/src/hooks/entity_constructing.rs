@@ -19,9 +19,10 @@ pub trait Hooks {
     /// and is not told again, where vanilla constructs the copy it moves
     /// (`Entity.teleportCrossDimension`, then `restoreFrom`).
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         neoforge = "EntityEvent.EntityConstructing"
     )]
-    fn entity_constructing();
+    fn entity_constructing(holder: mod_api::Holder, kind: &str);
 }

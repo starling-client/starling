@@ -3,6 +3,13 @@
 //! `VanillaMobAiOracle`.
 //!
 //! usage: mob_ai_probe RESOURCES SCENARIOS OUTPUT
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Write as _,
+    fs,
+    path::Path,
+    sync::Arc,
+};
 use sunrise_client::{
     assets::Assets,
     beehive::{BeehiveExt, HiveHost},
@@ -30,13 +37,6 @@ use sunrise_core::{
 };
 use sunrise_world::loot::PackOverlay;
 use sunrise_world::{chunk::BlockState, registry::BlockRegistry, registry::BlockStateId};
-use std::{
-    collections::{BTreeMap, HashMap},
-    fmt::Write as _,
-    fs,
-    path::Path,
-    sync::Arc,
-};
 
 struct MobSpec {
     kind: String,
@@ -694,8 +694,8 @@ fn print(out: &mut String, t: i32, i: usize, m: &Mob, player_down: bool, now: i6
     let _ = write!(
         out,
         "\tg {}{}\thp {}",
-        u8::from(m.on_ground),
-        u8::from(m.horizontal_collision),
+        u8::from(m.ground.on_ground),
+        u8::from(m.ground.horizontal_collision),
         f(m.health)
     );
     let _ = write!(
@@ -1204,6 +1204,7 @@ pub fn main() -> sunrise_client::Result<()> {
             };
             ($snapshot:expr, $grid:expr) => {
                 MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     mob_maps: sunrise_client::neoforge_mob_maps::NeoForgeMobMaps::vanilla(),
                     goal_host: None,
                     teams: Default::default(),
@@ -1227,9 +1228,9 @@ pub fn main() -> sunrise_client::Result<()> {
                     others: $snapshot,
                     live_mobs: None,
                     dragon: None,
+                    armor_stands: &[],
                     leash_boats: &[],
                     who_lookup: None,
-                    foreign: None,
                     others_grid: $grid,
                     others_index: None,
                     passenger_objects: &[],
@@ -1243,6 +1244,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     thundering: s.thunder,
                     level: sunrise_core::LevelKey::OVERWORLD,
                     block_tags: &items.block_tags,
+                    block_tag_flags: items.block_tag_flags.bits(),
                     landing: &motion.landing,
                     biomes: &biomes,
                     mob_griefing: true,
@@ -1336,16 +1338,19 @@ pub fn main() -> sunrise_client::Result<()> {
                     .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]);
                 mobs[i].damage(&mut test_level.level(), 1.0, Damage::player(at));
                 // Creaking.hurtServer: the heart's reaction, then the sway.
-                if let Some((home, by_player)) = creaking::take_hurt(&mut mobs[i], &w) {
-                    if by_player && let Some((_, h)) = hearts.iter_mut().find(|(at, _)| *at == home)
-                    {
-                        let mut host = Host {
-                            mobs: &mut mobs,
-                            added: Vec::new(),
-                            types: &types,
-                            created: &mut created,
-                            spawning: s.spawning,
-                        };
+                if let Some((home, by_player)) = creaking::take_hurt(&mut mobs[i], &mut events)
+                    && let Some((_, h)) = hearts.iter_mut().find(|(at, _)| *at == home)
+                {
+                    let id = mobs[i].id;
+                    let mut host = Host {
+                        mobs: &mut mobs,
+                        added: Vec::new(),
+                        types: &types,
+                        created: &mut created,
+                        spawning: s.spawning,
+                    };
+                    let protects = creaking_heart::protector(h, &host) == Some(id);
+                    if protects && by_player {
                         creaking_heart::creaking_hurt(
                             h,
                             home,
@@ -1366,7 +1371,9 @@ pub fn main() -> sunrise_client::Result<()> {
                             _ => {}
                         }
                     }
-                    creaking::sway(&mut mobs[i], &mut events);
+                    if protects {
+                        creaking::sway(&mut mobs[i], &mut events);
+                    }
                 }
                 events.append(&mut mobs[i].outbox);
             }
@@ -1433,6 +1440,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     &mut test_level.level(),
                     &mut events,
                     from,
+                    &w.teams,
                 );
                 villager_events(
                     &mut mobs,
@@ -1559,6 +1567,7 @@ pub fn main() -> sunrise_client::Result<()> {
                         None,
                         None,
                         |_| None,
+                        &Default::default(),
                     );
                     let flower = sunrise_client::mobs::bee::get(&mobs[i]).and_then(|b| b.flower);
                     let mut honey = Vec::new();

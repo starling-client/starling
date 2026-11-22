@@ -2,31 +2,71 @@
 //! kinds, ticking as `AbstractFurnaceBlockEntity.serverTick` with fuel times
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
 
+pub use crate::chunk::block_entity::published_shapes::{CheckedShape, PublishedShapes, SHAPES_KEY};
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
     EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity,
-    ModBlockEntityFields, ModContainer, ModEnergyBuffer, ModFluidTanks, ModRevision, PotentSulfur,
-    Shelf, Skull, SkullSkin,
+    ModBlockEntityFields, ModContainer, ModContainerInsertRule, ModEnergyBuffer, ModFluidTanks,
+    ModRevision, PotentSulfur, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
 
-/// a content mod's menu type (`data/<id>/sunrise/menu/`, vanilla's
+/// Apply a mod container's typed insertion rule to the engine's item-stack representation.
+pub fn mod_container_insert_allowed(
+    rule: ModContainerInsertRule,
+    current: Option<&ItemStack>,
+    offered: &ItemStack,
+) -> bool {
+    match rule {
+        ModContainerInsertRule::Any => true,
+        ModContainerInsertRule::OnlyWhenEmpty => current.is_none(),
+        ModContainerInsertRule::SameKind => {
+            current.is_none_or(|held| held.same_item_same_components(offered))
+        }
+    }
+}
+
+/// A content mod's menu type (`data/<id>/sunrise/menu/`, vanilla's
 /// `MenuType`): its container slots, its data slots (`ContainerData`) and the
 /// slots players only take from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModMenuType {
     pub id: &'static str,
+    /// Package ID, which need not match the menu's namespace.
+    pub owner: &'static str,
     pub slots: usize,
+    /// Whether this menu appends the player's main inventory and hotbar.
+    pub player_inventory: bool,
     pub data_slots: usize,
+    /// Validated transient-slot maxima, used when this type opens without a block.
+    pub owned_slots: Option<Vec<u8>>,
     pub results: Vec<usize>,
+    /// Validated container indices marked as machine inputs in the client layout.
+    pub inputs: Vec<usize>,
     /// its crafting grid, if it has one (`crafting`).
     pub crafting: Option<ModCrafting>,
     /// its linked slots, if it has any (`links`).
     pub links: Option<ModLinks>,
 }
 
-/// a mod menu type's linked slots: `count` container slots from `from` on,
+impl ModMenuType {
+    pub fn player_slots(&self) -> usize {
+        if self.player_inventory { 36 } else { 0 }
+    }
+
+    pub fn slot_count(&self) -> usize {
+        self.slots + self.player_slots()
+    }
+
+    /// Whether this menu slot belongs to its own block or crafting result, not a linked
+    /// container or the player.
+    pub fn owns_slot(&self, slot: usize) -> bool {
+        slot < self.slots && self.links.is_none_or(|link| !link.slots().contains(&slot))
+    }
+}
+
+/// A mod menu type's linked slots: `count` container slots from `from` on,
 /// which show the slots of the containers a native mod links them to
 /// (`native_menu_links`) instead of the block entity's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,16 +101,53 @@ impl ModCrafting {
 
 static MOD_MENU_TYPES: std::sync::OnceLock<Vec<ModMenuType>> = std::sync::OnceLock::new();
 
-/// One menu type as [`register_mod_menu_types`] takes it: `(id, slots, data
-/// slots, results, crafting, links)`.
+/// One menu type as [`register_mod_menu_types`] takes it: `(id, owner, slots, data
+/// slots, results, inputs, crafting, links, player inventory, owned slot maxima)`.
 pub type ModMenuTypeEntry = (
+    String,
     String,
     usize,
     usize,
     Vec<usize>,
+    Vec<usize>,
     Option<ModCrafting>,
     Option<ModLinks>,
+    bool,
+    Option<Vec<u8>>,
 );
+
+fn menu_types(menus: impl IntoIterator<Item = ModMenuTypeEntry>) -> Vec<ModMenuType> {
+    menus
+        .into_iter()
+        .map(
+            |(
+                id,
+                owner,
+                slots,
+                data_slots,
+                results,
+                inputs,
+                crafting,
+                links,
+                player_inventory,
+                owned_slots,
+            )| {
+                ModMenuType {
+                    id: Box::leak(id.into_boxed_str()),
+                    owner: Box::leak(owner.into_boxed_str()),
+                    slots,
+                    player_inventory,
+                    data_slots,
+                    owned_slots,
+                    results,
+                    inputs,
+                    crafting,
+                    links,
+                }
+            },
+        )
+        .collect()
+}
 
 /// registers the content mods' menu types, a list set once per process
 /// (false when it already was).
@@ -78,22 +155,40 @@ pub fn register_mod_menu_types(menus: impl IntoIterator<Item = ModMenuTypeEntry>
     if MOD_MENU_TYPES.get().is_some() {
         return false;
     }
-    let menus =
-        menus.into_iter().map(
-            |(id, slots, data_slots, results, crafting, links)| ModMenuType {
-                id: Box::leak(id.into_boxed_str()),
-                slots,
-                data_slots,
-                results,
-                crafting,
-                links,
-            },
-        );
-    MOD_MENU_TYPES.set(menus.collect()).is_ok()
+    MOD_MENU_TYPES.set(menu_types(menus)).is_ok()
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static SCOPED_MOD_MENU_TYPES: std::cell::Cell<Option<&'static [ModMenuType]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Runs `test` with `menus` as this thread's menu types, whatever the process-wide table holds
+/// (and without touching it), so a test needs neither to register first nor a process of its
+/// own. Only the calling thread sees them, and only for the call.
+#[cfg(feature = "test-support")]
+pub fn with_mod_menu_types<R>(
+    menus: impl IntoIterator<Item = ModMenuTypeEntry>,
+    test: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<&'static [ModMenuType]>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCOPED_MOD_MENU_TYPES.with(|scoped| scoped.set(self.0));
+        }
+    }
+    let menus: &'static [ModMenuType] = Vec::leak(menu_types(menus));
+    let _restore = Restore(SCOPED_MOD_MENU_TYPES.with(|scoped| scoped.replace(Some(menus))));
+    test()
 }
 
 /// the content mods' menu types, in registry order.
 pub fn mod_menu_types() -> &'static [ModMenuType] {
+    #[cfg(feature = "test-support")]
+    if let Some(scoped) = SCOPED_MOD_MENU_TYPES.with(std::cell::Cell::get) {
+        return scoped;
+    }
     MOD_MENU_TYPES.get().map_or(&[], Vec::as_slice)
 }
 
@@ -318,8 +413,11 @@ impl SkullSkin {
         }
     }
 }
-/// The skull and head blocks (`SkullBlock`, `WallSkullBlock`): every
-/// `*_skull` and `*_head` but the piston's head.
+/// Stock factories interpret names only in vanilla's namespace. Call after resolving
+/// an explicitly registered mod block's stock factory, before suffix-based dispatch.
+fn vanilla_factory(name: &str) -> Option<&str> {
+    name.starts_with("minecraft:").then_some(name)
+}
 /// The item slots of the container `name`'s block carries, if any.
 fn container_size(name: &str) -> Option<usize> {
     match name {
@@ -334,6 +432,7 @@ fn container_size(name: &str) -> Option<usize> {
         _ => None,
     }
 }
+/// Vanilla's SkullBlock and WallSkullBlock names, excluding the PistonHeadBlock.
 fn is_skull(name: &str) -> bool {
     name.ends_with("_skull") || (name.ends_with("_head") && name != "minecraft:piston_head")
 }
@@ -455,7 +554,7 @@ impl BlockEntity {
     /// The item-bearing stock factory's entity identity, before the block-specific
     /// save identity overrides (a trapped chest, barrel, dropper or shulker box).
     pub fn builtin_item_container_type(name: &str) -> Option<&'static str> {
-        StockItemContainer::for_factory(name).map(|container| container.type_id())
+        StockItemContainer::for_factory(vanilla_factory(name)?).map(|container| container.type_id())
     }
 
     pub fn for_block(name: &str) -> Option<Self> {
@@ -467,6 +566,7 @@ impl BlockEntity {
     }
 
     fn for_factory(name: &str) -> Option<Self> {
+        let name = vanilla_factory(name)?;
         if let Some(hanging) = crate::signs::sign_kind(name) {
             return Some(Self::Sign(crate::signs::SignData {
                 hanging,
@@ -594,6 +694,9 @@ impl BlockEntity {
         if factory != name {
             return crate::block_entity_types::factory_valid(name) == Some(true)
                 && self.fits(factory);
+        }
+        if vanilla_factory(name).is_none() {
+            return false;
         }
         match self {
             Self::Chest(items) => container_size(name) == Some(items.len()),
@@ -753,6 +856,25 @@ impl BlockEntity {
             | Self::CommandBlock(_)
             // Not a Container (only Clearable): hoppers don't reach in.
             | Self::Campfire(_) => &[],
+        }
+    }
+    /// An individual slot write claims just that slot from a mod's saved payload.
+    pub fn slot_mut(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
+        match self {
+            Self::Mod(m) => m.item_slot_mut(slot),
+            other => other.slots_mut().get_mut(slot),
+        }
+    }
+    /// Write back an inventory projection, claiming a mod's opaque rows only at changed slots.
+    pub fn replace_slots(&mut self, slots: &[Option<ItemStack>]) {
+        if let Self::Mod(m) = self {
+            for (slot, stack) in slots.iter().enumerate() {
+                if m.items[slot] != *stack {
+                    *m.item_slot_mut(slot).unwrap() = stack.clone();
+                }
+            }
+        } else {
+            self.slots_mut().clone_from_slice(slots);
         }
     }
     pub fn slots_mut(&mut self) -> &mut [Option<ItemStack>] {
@@ -1026,6 +1148,56 @@ mod tests {
         let mut fifth = ItemStack::new("minecraft:potato", 1);
         assert!(!c.place_food(&mut fifth, 600));
         assert_eq!(fifth.count, 1);
+    }
+
+    #[test]
+    fn stock_block_entities_do_not_match_mod_name_suffixes() {
+        for path in [
+            "player_head",
+            "skeleton_skull",
+            "red_shulker_box",
+            "copper_chest",
+            "oak_shelf",
+            "red_banner",
+            "copper_golem_statue",
+            "oak_sign",
+        ] {
+            let name = format!("namespace_guard:{path}");
+            assert!(BlockEntity::for_block(&name).is_none(), "{name}");
+            assert!(
+                BlockEntity::builtin_item_container_type(&name).is_none(),
+                "{name}"
+            );
+        }
+        for path in [
+            "skeleton_skull",
+            "skeleton_wall_skull",
+            "wither_skeleton_skull",
+            "wither_skeleton_wall_skull",
+            "zombie_head",
+            "zombie_wall_head",
+            "player_head",
+            "player_wall_head",
+            "creeper_head",
+            "creeper_wall_head",
+            "dragon_head",
+            "dragon_wall_head",
+            "piglin_head",
+            "piglin_wall_head",
+        ] {
+            let name = format!("minecraft:{path}");
+            let entity = BlockEntity::for_block(&name).unwrap();
+            assert!(matches!(entity, BlockEntity::Skull(_)), "{name}");
+            assert!(entity.fits(&name), "{name}");
+            assert!(!entity.fits(&format!("namespace_guard:{path}")));
+        }
+        for name in ["minecraft:red_shulker_box", "minecraft:copper_chest"] {
+            let entity = BlockEntity::for_block(name).unwrap();
+            assert_eq!(entity.slots().len(), 27);
+            assert!(entity.fits(name));
+        }
+        // PistonHeadBlock is not a SkullBlock despite the suffix.
+        assert!(BlockEntity::for_block("minecraft:piston_head").is_none());
     }
 
     /// `JukeboxBlockEntity`'s single slot is a `Container` slot, so a hopper

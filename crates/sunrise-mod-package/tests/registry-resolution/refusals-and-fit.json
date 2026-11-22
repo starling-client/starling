@@ -1,0 +1,75 @@
+{
+  "index": {
+    "schema": 1,
+    "projects": [
+      {"id": "add_on", "kind": "mod", "name": "Add_On", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "add_on.smod", "url": "https://example.test/add_on/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "native_lib", "version": "^1", "side": "client"}]}
+      ]},
+      {"id": "native_lib", "kind": "native-mod", "name": "Native_Lib", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "native-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "file": {"name": "native_lib.smod", "url": "https://example.test/native_lib/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3"},
+        {"api": "native-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "file": {"name": "native_lib.smod", "url": "https://example.test/native_lib/1.1.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}, "version": "1.1.0", "game": "26.3"}
+      ]},
+      {"id": "needs_missing", "kind": "mod", "name": "Needs_Missing", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "needs_missing.smod", "url": "https://example.test/needs_missing/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "missing", "version": "^1"}]}
+      ]},
+      {"id": "needs_revoked", "kind": "mod", "name": "Needs_Revoked", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "needs_revoked.smod", "url": "https://example.test/needs_revoked/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "revoked", "version": "^1"}]}
+      ]},
+      {"id": "revoked", "kind": "mod", "name": "Revoked", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "revoked.smod", "url": "https://example.test/revoked/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3"}
+      ]},
+      {"id": "wrong_game", "kind": "mod", "name": "Wrong_Game", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "wrong_game.smod", "url": "https://example.test/wrong_game/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.4"}
+      ]},
+      {"id": "unknown_capability", "kind": "mod", "name": "Unknown_Capability", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "unknown_capability.smod", "url": "https://example.test/unknown_capability/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "capabilities": ["unknown-capability"]}
+      ]},
+      {"id": "loop_a", "kind": "mod", "name": "Loop_A", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "loop_a.smod", "url": "https://example.test/loop_a/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "loop_b", "version": "^1"}]}
+      ]},
+      {"id": "loop_b", "kind": "mod", "name": "Loop_B", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "loop_b.smod", "url": "https://example.test/loop_b/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "loop_a", "version": "^1"}]}
+      ]}
+    ],
+    "revoked": [{"id": "revoked", "sha256": "0000000000000000000000000000000000000000000000000000000000000001", "reason": "Test takedown."}]
+  },
+  "game": "26.3",
+  "cases": [
+    {
+      "name": "caller provides both native results: the newer one fails, the older one works",
+      "requests": [{"id": "add_on"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {"native_lib": {"1.0.0": true, "1.1.0": false}},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}, {"id": "native_lib", "version": "1.0.0"}], "required_by": {"native_lib": ["add_on"]}},
+      "refusals": {}
+    },
+    {
+      "name": "the same native dependency refuses on client and is inapplicable on dedicated server",
+      "requests": [{"id": "add_on"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {"native_lib": {"1.0.0": false, "1.1.0": false}},
+      "expected": {},
+      "refusals": {"add_on": ["native_lib", "add_on", "^1", "no matching native version", "fits this Sunrise build"]}
+    },
+    {
+      "name": "the dedicated server skips the client dependency",
+      "requests": [{"id": "add_on"}],
+      "installed": [],
+      "side": "server",
+      "native_fits": {"native_lib": {"1.0.0": false, "1.1.0": false}},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}]},
+      "refusals": {}
+    },
+    {
+      "name": "other refusal cases",
+      "requests": [{"id": "needs_missing"}, {"id": "needs_revoked"}, {"id": "unknown_capability"}, {"id": "wrong_game"}, {"id": "loop_a"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {"native_lib": {"1.0.0": false, "1.1.0": false}},
+      "expected": {},
+      "refusals": {"needs_missing": ["needs_missing", "missing", "^1", "not listed as a mod"], "needs_revoked": ["needs_revoked", "revoked", "^1", "taken down"], "unknown_capability": ["unknown_capability", "unknown-capability"], "wrong_game": ["wrong_game", "no matching version fits", "Minecraft 26.3"], "loop_a": ["cycle", "loop_a", "loop_b"]}
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 id = "fnr_lower"
 name = "Function replacement check: a function below the game crate"
 version = "0.1.0"
-description = "fn-replace: HEAD on listed functions below the game crate (sunrise-client-lib, sunrise-mod-render), each copied into its own patch crate"
+description = "fn-replace: rows on listed functions below the game crate (sunrise-client-lib, sunrise-mod-render), each copied into its own patch crate"
 authors = []
 api = "0.2"
 side = "both"
@@ -31,3 +31,45 @@ id = "render"
 target = "sunrise_mod_render::render::world_drawn"
 kind = "HEAD"
 helper = "src/mixins/render.rs"
+
+# A RETURN on a function whose module declares a `thread_local!` and whose body uses a bare
+# `matches!`, and an expression in a module that brings `Mth` into scope for its method calls
+# (sunrise-org/sunrise#3800). The dedicated server never draws a mob: the build is the check.
+[[native.mixin]]
+id = "pose"
+target = "sunrise_client_lib::mobs::anim::setup"
+kind = "RETURN"
+helper = "src/mixins/pose.rs"
+bindings = [
+    { name = "value", ty = "()", value = "$value" },
+    { name = "m", ty = "&Mob", value = "m" },
+    { name = "p", ty = "&mut Poses", value = "&mut *p" },
+]
+
+[[native.mixin]]
+id = "body_yaw"
+target = "sunrise_client_lib::mobs::render::base_transform_at"
+kind = "MODIFY_EXPRESSION_VALUE"
+selector = "anim::body_rot(m,alpha)"
+require = 1
+ordinal = 0
+helper = "src/mixins/body_yaw.rs"
+bindings = [
+    { name = "value", ty = "f32", value = "$value" },
+    { name = "m", ty = "&Mob", value = "m" },
+]
+
+# A RETURN that turns the hand `translate_to_hand` returns, about X at the elbow, before
+# `hand_base` applies vanilla's item rotations: the held item follows a bent forearm, as a
+# Java mixin on `ItemInHandLayer.submitArmWithItem` does (sunrise-org/sunrise#3970). The
+# build is the check.
+[[native.mixin]]
+id = "hand"
+target = "sunrise_client_lib::mobs::render::translate_to_hand"
+kind = "RETURN"
+helper = "src/mixins/hand.rs"
+bindings = [
+    { name = "value", ty = "Option<glam::Mat4>", value = "$value" },
+    { name = "m", ty = "&Mob", value = "m" },
+    { name = "left", ty = "bool", value = "left" },
+]

@@ -20,8 +20,8 @@ ServerScoreboard.load	port	crates/sunrise-client-core/src/scoreboard.rs::Scorebo
 ServerScoreboard.store	port	crates/sunrise-client-core/src/scoreboard.rs::Scoreboard::pack	ScoreboardSaveData.Packed's fields, those equal to their codec default left out
 ServerTickRateManager.updateJoiningPlayer	port	crates/sunrise-client/src/lan/hub.rs::Hub::send_level_info	sends ticking state and step to the joining guest
 ServerTickRateManager.updateStepTicks	inline	crates/sunrise-client/src/lan/hub.rs::Hub::sync_ticking	a step's revision change broadcasts TickingStep, and the same fn sends the ticking state when the rate or the freeze changed
-SuppressedExceptionCollector.addEntry	skip:server		feeds the system report's suppressed-exception section; no player-facing behaviour
-SuppressedExceptionCollector.dump	skip:server		system report section only
+SuppressedExceptionCollector.addEntry	port	crates/sunrise-client/src/chunk_io.rs::SaveFailureReporter::record	tracks messages and counts for chunk/save per server; gap: chunk/load and packet locations
+SuppressedExceptionCollector.dump	port	crates/sunrise-client/src/chunk_io.rs::SaveFailureReporter::suppressed_summary	latest entries and counts for the server report
 WorldLoader.PackConfig.createResourceManager	port	crates/sunrise-client/src/game/administration/functions.rs::Game::reload_datapacks	discovers packs and rebuilds the data store; no resource manager object
 AdvancementVisibilityEvaluator.evaluateVisibility	port	crates/sunrise-client/src/advancements.rs::Tree::visible	done, ancestors and near unhidden advancements in one walk
 AdvancementVisibilityEvaluator.evaluateVisibilityRule	inline	crates/sunrise-client/src/advancements.rs::Tree::visible	rule match inside the walk

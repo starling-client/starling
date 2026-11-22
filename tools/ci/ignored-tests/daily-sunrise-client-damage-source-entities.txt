@@ -1,0 +1,3 @@
+sunrise-client game::commands::world_cmds::registered_damage_tests::live_damage_and_blast_creaking_reactions_and_timed_player_credit lib daily resources
+sunrise-client game::commands::world_cmds::registered_damage_tests::live_damage_and_blast_ghast_reflected_fireball lib daily resources
+sunrise-client game::commands::world_cmds::registered_damage_tests::live_damage_and_blast_warden_reactions_follow_source_entities_and_cooldown lib daily resources

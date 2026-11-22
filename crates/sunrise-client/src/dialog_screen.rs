@@ -61,9 +61,9 @@ const BAR: f32 = 33.0;
 pub const BOX: f32 = 17.0;
 /// `DialogScreen.WARNING_BUTTON_SPRITES`: normal, disabled, highlighted.
 pub const WARNING_SPRITES: [&str; 3] = [
-    "gui/sprites/dialog/warning_button",
-    "gui/sprites/dialog/warning_button_disabled",
-    "gui/sprites/dialog/warning_button_highlighted",
+    "dialog/warning_button",
+    "dialog/warning_button_disabled",
+    "dialog/warning_button_highlighted",
 ];
 
 /// One drawn piece; `y` is from the top of the body (before it scrolls) for
@@ -211,9 +211,10 @@ fn item(
 pub fn text_height(multiline: Option<(Option<i32>, Option<i32>)>) -> f32 {
     match multiline {
         None => 20.0,
-        Some((max_lines, height)) => {
-            height.unwrap_or_else(|| (9 * max_lines.unwrap_or(4) + 8).min(512)) as f32
-        }
+        Some((max_lines, height)) => height.map_or_else(
+            || (9 * i64::from(max_lines.unwrap_or(4)) + 8).min(512) as f32,
+            |height| height as f32,
+        ),
     }
 }
 
@@ -290,32 +291,46 @@ fn input(font: &Font, i: usize, control: &Control) -> Element {
 /// `DialogScreen.packControlsIntoColumns`: full rows in a grid 2 apart, what
 /// is left in a centred row under them.
 fn columns(widths: &[f32], columns: usize, first: usize) -> Element {
-    let columns = columns.max(1);
     let full = widths.len() / columns * columns;
     let row_width = |ws: &[f32]| ws.iter().sum::<f32>() + 2.0 * (ws.len().max(1) - 1) as f32;
-    let mut col = vec![0.0f32; columns];
-    for (i, w) in widths[..full].iter().enumerate() {
-        col[i % columns] = col[i % columns].max(*w);
-    }
-    let last = &widths[full..];
-    if !last.is_empty() {
-        // GridLayout spreads a cell over every column it spans (Divisor).
-        let spread = row_width(last) - 2.0 * (columns - 1) as f32;
-        let (each, extra) = ((spread / columns as f32).floor(), spread % columns as f32);
-        for (c, w) in col.iter_mut().enumerate() {
-            *w = w.max(each + f32::from(u8::from((c as f32) < extra)));
-        }
-    }
-    let x_of = |c: usize| col[..c].iter().sum::<f32>() + 2.0 * c as f32;
     let mut parts = Vec::new();
-    for (i, w) in widths[..full].iter().enumerate() {
-        let (r, c) = (i / columns, i % columns);
-        parts.push(Part::Button {
-            index: first + i,
-            rect: [x_of(c) + centre(col[c], *w), 22.0 * r as f32, *w, 20.0],
-        });
-    }
-    let width = x_of(columns - 1) + col[columns - 1];
+    let last = &widths[full..];
+    let width = if full == 0 {
+        // No full row: only the actual buttons size and space the row.
+        row_width(last)
+    } else {
+        // GridLayout spreads the final row over every column it spans (Divisor).
+        let spread = row_width(last) - 2.0 * (columns - 1) as f32;
+        let (each, extra) = if last.is_empty() {
+            (0.0, 0.0)
+        } else {
+            ((spread / columns as f32).floor(), spread % columns as f32)
+        };
+        let mut col = vec![(0.0f32, 0.0); columns];
+        for (i, w) in widths[..full].iter().enumerate() {
+            let width = &mut col[i % columns].0;
+            *width = width.max(*w);
+        }
+        let mut start = 0.0;
+        for (c, (width, left)) in col.iter_mut().enumerate() {
+            *width = width.max(each + f32::from(u8::from((c as f32) < extra)));
+            *left = start + 2.0 * c as f32;
+            start += *width;
+        }
+        for (i, w) in widths[..full].iter().enumerate() {
+            let (width, left) = col[i % columns];
+            parts.push(Part::Button {
+                index: first + i,
+                rect: [
+                    left + centre(width, *w),
+                    22.0 * (i / columns) as f32,
+                    *w,
+                    20.0,
+                ],
+            });
+        }
+        start + 2.0 * (columns - 1) as f32
+    };
     if !last.is_empty() {
         let y = 22.0 * (full / columns) as f32;
         let mut x = centre(width, row_width(last));
@@ -381,7 +396,7 @@ impl Layout {
             } => {
                 let listed = buttons.len() - usize::from(exit.is_some());
                 let widths: Vec<f32> = buttons[..listed].iter().map(|b| b.width as f32).collect();
-                elements.push(columns(&widths, *n as usize, 0));
+                elements.push(columns(&widths, n.get(), 0));
                 // ButtonListDialogScreen: the exit button in the footer, else a 5 high one.
                 let footer = exit.as_ref().map(|_| listed).into_iter().collect();
                 (listed, footer, if exit.is_some() { BAR } else { 5.0 })
@@ -615,6 +630,59 @@ mod tests {
     }
 
     #[test]
+    fn network_dialog_columns_are_validated_and_large_sparse_grids_are_bounded() {
+        use sunrise_core::nbt::Tag;
+        let packet_dialog = |n| {
+            Tag::compound([
+                ("type", Tag::String("multi_action".into())),
+                ("title", Tag::String("Buttons".into())),
+                (
+                    "actions",
+                    Tag::List(vec![Tag::compound([("label", Tag::String("OK".into()))])]),
+                ),
+                ("columns", Tag::Int(n)),
+            ])
+        };
+        let parse = |n| {
+            Dialog::parse(&packet_dialog(n), &Default::default(), &|_| false, &|_| {
+                false
+            })
+        };
+        for invalid in [-1, 0] {
+            assert!(parse(invalid).is_none());
+        }
+        let dialog = parse(i32::MAX).unwrap();
+        let font = Font::load(
+            &sunrise_assets::resource_source::ResourceSource::default(),
+            &std::collections::HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            crate::hud::Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 1,
+                h: 1,
+            },
+        );
+        let layout = Layout::new(&dialog, &font, (320.0, 240.0));
+        let mut placed = layout.placed(0.0);
+        let Some((
+            Part::Button {
+                rect: [x, _, w, h], ..
+            },
+            true,
+        )) = placed.next()
+        else {
+            panic!("expected one body button")
+        };
+        assert_eq!([x, w, h], [85.0, 150.0, 20.0]);
+        assert!(placed.next().is_none());
+    }
+
+    #[test]
     fn a_multiline_input_is_as_tall_as_its_lines_or_its_height() {
         assert_eq!(text_height(None), 20.0);
         // No options: four lines and the padding.
@@ -622,7 +690,8 @@ mod tests {
         assert_eq!(text_height(Some((Some(10), None))), 98.0);
         // Never over 512; a height wins over the lines.
         assert_eq!(text_height(Some((Some(100), None))), 512.0);
-        assert_eq!(text_height(Some((Some(2), Some(70)))), 70.0);
+        assert_eq!(text_height(Some((Some(i32::MAX), None))), 512.0);
+        assert_eq!(text_height(Some((Some(i32::MAX), Some(70)))), 70.0);
     }
 
     #[test]

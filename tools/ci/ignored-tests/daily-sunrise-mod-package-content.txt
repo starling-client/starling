@@ -1,0 +1,4 @@
+# The content declaration corpus (docs/release-flow.md): the checks `verify` runs on every rollup and main push, run again
+# in the daily run so a stable release's green daily includes them. Rows: PACKAGE TEST TARGET daily REASON, sorted.
+sunrise-mod-package daily_content_golden test:content_golden daily stable-line
+sunrise-mod-package daily_content_keys test:content_keys daily stable-line

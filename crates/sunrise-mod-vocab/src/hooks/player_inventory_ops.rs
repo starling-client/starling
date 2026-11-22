@@ -18,10 +18,10 @@ the API-owned stack returns `StackWriteError` before any game operation. API sta
 the engine empty-stack refusal remains internal.
 
 `MenuRef::close_container(host)` closes a player's open menu on a server as
-`ServerPlayer.closeContainer`
-does, through the one path a disconnect and a `stillValid` failure use: the container's lid, a
-vehicle's or trade's stand-in, the crafting, station and mount menus, the carried stack back to
-the inventory, `player_container_close` once, and the client's window closed. The player's own
-inventory menu is never closed. A client closes its own screen with `MenuRef::close`."#]
+`ServerPlayer.closeContainer` does. A live handle close queues `ContainerClose` before tearing
+down the menu and returning the carried stack, and fires `player_container_close` once. It
+returns `false` when a disconnect is pending; if accepted during a click, the close runs only
+when that click commits. The player's own inventory menu is never closed. A client closes its
+own screen with `MenuRef::close`."#]
     fn player_inventory_ops_note0();
 }

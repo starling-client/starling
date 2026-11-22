@@ -7,9 +7,16 @@ pub trait Hooks {
     /// and nothing was hurt. Listen only. Once for each landing, after the fall's
     /// block reaction. The player's state is swapped in. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PlayerFlyableFallEvent"
     )]
-    fn player_flyable_fall();
+    fn player_flyable_fall(
+        player: u128,
+        player_entity_id: i32,
+        name: &str,
+        distance: f64,
+        multiplier: f32,
+    );
 }

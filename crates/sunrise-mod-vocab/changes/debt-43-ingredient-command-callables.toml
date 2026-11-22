@@ -1,0 +1,65 @@
+ids = [
+    "hook:ingredient",
+    "hook:ingredient.items",
+    "method:Hooks::ingredient",
+    "type:IngredientEvent.items",
+    "hook:ingredient_test",
+    "hook:ingredient_test.accept",
+    "hook:ingredient_test.data",
+    "hook:ingredient_test.kind",
+    "hook:ingredient_test.stack",
+    "method:Hooks::ingredient_test",
+    "type:IngredientTestEvent",
+    "type:IngredientTestEvent.accept",
+    "type:IngredientTestEvent.data",
+    "type:IngredientTestEvent.kind",
+    "type:IngredientTestEvent.stack",
+    "type:IngredientDefinition",
+    "handle:IngredientDefinition::new",
+    "type:IngredientPredicate",
+    "handle:IngredientPredicate::test",
+    "type:IngredientStack",
+    "handle:IngredientStack::item_id",
+    "handle:IngredientStack::item_key",
+    "handle:IngredientStack::count",
+    "handle:IngredientStack::damage",
+    "handle:IngredientStack::has_component",
+    "handle:IngredientStack::component_removed",
+    "handle:IngredientStack::stored_component",
+    "type:Ingredient",
+    "type:Ingredient.custom",
+    "type:Recipe",
+    "hook:datapack_sync",
+    "hook:recipes_received",
+    "type:PlacementInfo",
+    "type:RecipeRule",
+    "type:FireworkShapeIngredient",
+    "type:RecipeBookCategory",
+    "type:RecipeBookDisplayEntry",
+    "hook:register_commands",
+    "hook:register_commands.commands",
+    "type:RegisterCommandsEvent.commands",
+    "type:CommandRegistration",
+    "handle:Command::executes",
+    "hook:run_mod_command",
+    "hook:run_mod_command.cancelled",
+    "hook:run_mod_command.command",
+    "hook:run_mod_command.source",
+    "method:Hooks::run_mod_command",
+    "type:RunModCommandEvent",
+    "type:RunModCommandEvent.cancelled",
+    "type:RunModCommandEvent.command",
+    "type:RunModCommandEvent.source",
+]
+why = "Custom ingredients and server commands now register their behavior together with their data. Ingredient matching borrows the live stack and command execution uses the node from the current server dispatcher, where overlapping executable registrations overwrite the node's executor like Brigadier's `CommandNode.addChild` (`child.command = node.getCommand()`, as exposed by NeoForge's `RegisterCommandsEvent`) and pair that overwrite with updating Sunrise's execution permission level for the node (bumping `register_commands` to hook version 4). Both invoke only the owning mod; recipe JSON and synced display data contain no native code. Recipe JSON is decoded once at load time against the item and tag registries (matching vanilla `RegistryDataLoader` + `Recipe.DIRECT_CODEC` and NeoForge `IngredientCodecs.codec`), binding each custom ingredient predicate directly into the typed `Ingredient` shared by crafting, station tables and network sync without raw-pointer lookup tables. In-process `PlacementInfo` validation checks structure and resources without imposing Wire depth or throwaway Wire-encoding limits (those remain at the network boundary). Native placement ingredient walks don't consume call-stack space when validating, converting, matching or dropping a tree. Recipe-book placement sync matches vanilla `PlacementInfo` and NeoForge `Ingredient.getValuesForSync()` / `Ingredient.isEmpty()` by projecting non-empty custom ingredients (and composites containing custom descendants) to plain candidate item sets while collapsing only empty candidate sets to `PlacementInfo::NOT_PLACEABLE`. Full recipe content follows NeoForge's `RecipeContentPayload.create` and vanilla `Recipe.STREAM_CODEC`: select published recipes by their type; write vanilla serializers from those resolved recipes, with code-free ingredient holder sets as in `Ingredient.getValuesForSync`, and keep registered serializers in charge of their own recipe data. A join or reload decodes just the received recipes and keeps resolved local recipes of untouched types."
+migrate = """
+Implement `fn ingredient(&self, context: &dyn DataLoadContext, event: &mut IngredientEvent<'_>) -> Option<IngredientDefinition>`. Return `None` for an unhandled `event.kind`. For your kind, parse `event.data` once and replace writes to `event.items` with `Some(IngredientDefinition::new(items, move |context, stack| ...))`, where `items` is an ordered `Vec<String>` of candidate item IDs. Delete `Hooks::ingredient_test`. Move its test into that closure and capture the parsed data; return `false` where you used to set `event.accept = false` and `true` to accept. The first enabled mod to return `Some` claims the occurrence. `Some` with no candidates allows manual matching but not placement; `None` from every mod refuses the recipe. A disabled owner rejects stacks without another dispatch.
+
+Read the borrowed `IngredientStack` with `item_id()` or `item_key()` instead of the old stack's `item()`, `count()` for the count, and `damage()` for optional damage (including `Some(0)`). Replace reads of an owned component patch with `stored_component(id)` for borrowed stored NBT, `has_component(id)` for effective presence, or `component_removed(id)` for an explicit removal. Do not write candidate IDs into recipe JSON. `Ingredient.custom` is now an opaque bound predicate, not a `(kind, data)` tuple. To check the full resolved ingredient, call `Ingredient::test(host, stack)` as before; it applies candidate filtering before calling the predicate. Placement still rechecks live stacks on the server.
+
+Remove `Ingredient`, `Recipe`, `RecipeRule`, `FireworkShapeIngredient`, `PlacementInfo`, `RecipeBookCategory` and `RecipeBookDisplayEntry` from `Wire` payloads and from fields of `Wire` types. Keep those values in-process. For a remote viewer send a separate data-only record deriving `Wire` with the recipe ID, candidate item IDs or `RecipeBookDisplay` values it needs; do not use the display list as an authoritative match.
+
+The `datapack_sync` and `recipes_received` hooks are version 2 for the new synced recipe contract; their signatures are unchanged. In `recipes_received` and client-side `Host::recipes_of_type`, replace any code that reads a synced vanilla `Recipe.json` ingredient's source kind, tag, or custom payload with reads of the typed ingredient's candidate items. If you read the JSON directly, that slot is now a list of server-resolved item IDs. Call `Ingredient::test` with a server host for the authoritative predicate. A registered mod recipe's synced `Recipe.json` is still the object from its registered writer; keep that writer and decoder paired.
+
+In `Hooks::register_commands`, change `event.commands.push(Command::new(usage))` to `event.commands.push(Command::new(usage).executes(callback))`, or use `Command::op(usage, level).executes(callback)` to keep an operator level. Delete `Hooks::run_mod_command`; move each usage's branch into its own executor `|host, source, command| { ... }`. Use the borrowed `source` and `command` in place of `event.source` and `event.command`, and remove literal checks used only to route the old hook. Capture owned or shared state in a `move` closure. Return `Some(1)` in place of `Flow::Cancel` or `event.cancelled = true` for success (or `Some(n)` for a specific result, including zero). Return `None` in place of `Flow::Continue` for failure, not to pass control to another mod. Delete any `receive_cancelled` listener for this hook; an executor is not a broadcast event. If accepted usages execute at the same node, including at optional prefixes, each later accepted registration overwrites that node's executor (matching Brigadier's `CommandNode.addChild`) and updates Sunrise's paired execution permission level for that node (replacing the previous lowest-level-wins / first-on-tie rule; `register_commands` is now hook version 4). To avoid a changed winner, move independent executors to distinct paths (including distinct optional prefixes), or deliberately register the intended winner last. Failure or a disabled owner never tries another executor. Register the complete set on every `register_commands` call. Client command registration is unchanged.
+"""

@@ -1,6 +1,6 @@
 //! Content sound slots retain dynamic vanilla selection when inherited.
-use sunrise_mod_package::content::entity_sounds::{EntitySounds, SoundOverride};
 use std::borrow::Cow;
+use sunrise_mod_package::content::entity_sounds::{EntitySounds, SoundOverride};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum Selection {

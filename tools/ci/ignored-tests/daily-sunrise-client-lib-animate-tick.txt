@@ -1,0 +1,2 @@
+# animate_tick (#2645): the sampler tells the block parts its loaded picks, over the test resources.
+sunrise-client-lib animate_tick::parts_tests::each_loaded_pick_is_told_to_the_block_parts_after_its_vanilla_effects lib daily resources

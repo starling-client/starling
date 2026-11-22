@@ -1,0 +1,2 @@
+# A client mod's dynamic texture in the HUD atlas's pool, drawn on the real HUD pipeline (#1343).
+sunrise-client game::native_dynamic_textures_tests::a_mods_dynamic_texture_draws_under_its_id_until_it_is_freed lib daily resources # SUNRISE_TEST_RESOURCES and software Vulkan required.

@@ -8,8 +8,8 @@ impl Game<'_> {
     /// `register_block_tint_sources` and before resources load.
     pub(in crate::game) fn native_register_color_resolvers(
         context: &mod_api::RegistrationContext,
-        resolvers: &mut dyn ColorResolvers,
+        resolvers: &mut mod_api::ColorResolverRegistry,
     ) {
-        Self::fire_register_color_resolvers(context, resolvers);
+        Self::fire_register_color_resolvers(context, |listen| resolvers.register_listener(listen));
     }
 }

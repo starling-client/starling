@@ -3,7 +3,7 @@ Projection.setupOrtho	skip:ui		GUI draws in pixels through Sunrise's own HUD pip
 Projection.getMatrixVersion	skip:java		matrix version counter for the dirty-check cache
 ProjectionMatrixBuffer.getBuffer	skip:other		GPU buffer handle getter; Sunrise owns its uniform buffers in gfx.rs
 ProjectionMatrixBuffer.writeBuffer	port	crates/sunrise-client-render/src/gfx/upload.rs::Uploads::buffer	gap: minor: the caller decides which uniform receives the projection
-Rect2i.intersect	skip:ui		GUI clip rectangle math; Sunrise clips each draw in hud.rs (clip_since), no rectangle type
+Rect2i.intersect	skip:ui		GUI clip rectangle math; Sunrise clips each draw in hud/batch.rs (clip_since), no rectangle type
 Rect2i.contains	skip:ui		GUI hit test on a rectangle; Sunrise's widgets hit-test in their own UI code
 RenderPipelines.register	skip:data		pipeline registry; Sunrise creates its pipelines in gfx.rs
 RunningTrimmedMean.registerValueAndGetMean	skip:debug		frame-time smoothing helper; no vanilla caller in this source tree
@@ -52,21 +52,21 @@ ShaderManager.PostChainCache.getOrLoadPostChain	inline	crates/sunrise-client-ren
 ShaderManager.PostChainCache.loadPostChain	port	crates/sunrise-client-render/src/post_chain.rs::PostEffects::load	targets, passes and pipelines are built from the config; a pass whose GLSL does not translate falls back to `post_chain.wgsl`, and a chain that still fails is skipped
 ShaderManager.PostChainCache.close	skip:other		releases post chains; Sunrise has none
 Sheets.chooseSprite	port	crates/sunrise-client-render/src/block_entity_render.rs::classify	gap: minor: the Christmas chest texture is picked outside this fn (block_entity_render.rs extended_christmas)
-SkyRenderer.<init>	inline	crates/sunrise-client-render/src/gfx/pack_sky.rs::PackSky::new	gap: minor: builds the disc, sunset fan, stars and void up front; sun and moon quads are built per frame in game.rs celestial_geometry
+SkyRenderer.<init>	inline	crates/sunrise-render-shaderpack/src/pack_sky.rs::PackSky::new	gap: minor: builds the disc, sunset fan, stars and void up front; sun and moon quads are built per frame in game.rs celestial_geometry
 SkyRenderer.extractRenderState	port	crates/sunrise-client-render/src/environment.rs::Environment::sample	gap: minor: the End flash state is read in game/world/end.rs (end_flash_sky)
 SkyRenderer.render	port	crates/sunrise-client-render/src/gfx.rs::Renderer::draw_frame	sky pass; the frame's sky and dark-disc flags come from Game::render
-SkyRenderer.renderSkyDisc	port	crates/sunrise-client-render/src/gfx/pack_sky.rs::disc	top sky disc fan, sky colour from PackSky::prepare
+SkyRenderer.renderSkyDisc	port	crates/sunrise-render-shaderpack/src/pack_sky.rs::disc	top sky disc fan, sky colour from PackSky::prepare
 SkyRenderer.renderDarkDisc	inline	crates/sunrise-client-render/src/gfx.rs::Renderer::draw_frame	dark disc pipeline (fs_dark_disc) drawn when frame.dark_disc is set
 SkyRenderer.renderSun	port	crates/sunrise-client/src/game/frame_geometry.rs::Game::celestial_geometry	sun quad 100 blocks out, half-size 30, faded by rain
 SkyRenderer.renderMoon	port	crates/sunrise-client/src/game/frame_geometry.rs::Game::celestial_geometry	moon quad 100 blocks out, half-size 20, faded by rain
 SkyRenderer.applyCelestialBodyTransform	inline	crates/sunrise-client/src/game/frame_geometry.rs::Game::celestial_geometry	the body frame: rotate Y -90, then X by the body's angle
 SkyRenderer.drawCelestialBody	inline	crates/sunrise-client-render/src/gfx.rs::Renderer::draw_frame	draws the body quads with the celestial pipeline
-SkyRenderer.renderSunriseAndSunset	port	crates/sunrise-client-render/src/gfx/pack_sky.rs::PackSky::prepare	sunset fan turned to the sun's sunrise and its alpha uploaded as sunrise
+SkyRenderer.renderSunriseAndSunset	port	crates/sunrise-render-shaderpack/src/pack_sky.rs::PackSky::prepare	sunset fan turned to the sun's sunrise and its alpha uploaded as sunrise
 SkyRenderer.renderEndSky	port	crates/sunrise-client-render/src/gfx/end_sky.rs::EndSky::draw	End sky cube
-SkyRenderer.buildSunriseFan	port	crates/sunrise-client-render/src/gfx/pack_sky.rs::PackSky::new	gap: minor: a unit 16-segment fan; the 120 and -40 block shape is not built here
+SkyRenderer.buildSunriseFan	port	crates/sunrise-render-shaderpack/src/pack_sky.rs::PackSky::new	gap: minor: a unit 16-segment fan; the 120 and -40 block shape is not built here
 SkyRenderer.buildCelestialQuad	port	crates/sunrise-client/src/game/frame_geometry.rs::Game::celestial_geometry	sprite quad for the sun and moon (body closure)
 SkyRenderer.buildMoonPhases	port	crates/sunrise-client/src/game/frame_geometry.rs::Game::celestial_geometry	gap: minor: picks the phase from day time (day_time / 24000), not from the environment's moon phase value
-SkyRenderer.buildSkyDisc	port	crates/sunrise-client-render/src/gfx/pack_sky.rs::disc	16-block disc fan (top and bottom)
+SkyRenderer.buildSkyDisc	port	crates/sunrise-render-shaderpack/src/pack_sky.rs::disc	16-block disc fan (top and bottom)
 SkyRenderer.close	skip:other		releases sky buffers; Rust drops the wgpu buffers
 SpriteCoordinateExpander.addVertex	skip:other		no callers in this vanilla tree; UV wrapper for sprite quads
 SpriteCoordinateExpander.setColor	skip:other		no callers in this vanilla tree; see addVertex
@@ -130,8 +130,8 @@ WeatherEffectRenderer.render	port	crates/sunrise-client-render/src/gfx/weather.r
 WeatherEffectRenderer.createSnowColumnInstance	port	crates/sunrise-client-render/src/weather.rs::snow_column	snow drift and brightened light
 WeatherEffectRenderer.prepareInstances	port	crates/sunrise-client-render/src/weather.rs::column_quad	gap: minor: one column per call; the loop over columns is in the caller
 WorldBorderRenderer.renderOit	inline	crates/sunrise-client-render/src/gfx.rs::Renderer::draw_frame	border wall draw when frame.border is set
-WorldBorderRenderer.prepareRenderPass	inline	crates/sunrise-client-render/src/border_render.rs::BorderRenderer::transforms	the uniforms (colour, offset, texture scroll) for the wall
-WorldBorderRenderer.shouldRebuildWorldBorderBuffer	port	crates/sunrise-client-render/src/border_render.rs::BorderRenderer::prepare	rebuilds when the border moved or was invalidated
+WorldBorderRenderer.prepareRenderPass	inline	crates/sunrise-border/src/border_render.rs::BorderRenderer::transforms	the uniforms (colour, offset, texture scroll) for the wall
+WorldBorderRenderer.shouldRebuildWorldBorderBuffer	port	crates/sunrise-border/src/border_render.rs::BorderRenderer::prepare	rebuilds when the border moved or was invalidated
 FluidRenderer.getHeight	inline	crates/sunrise-client-render/src/mesher/fluid.rs::tesselate	corner heights from own_height and the neighbour average
 ChunkSectionLayer.byTransparency	inline	crates/sunrise-client-render/src/mesher.rs::Mesher::face	a face goes to the translucent list when it is translucent
 ChunkSectionsToRender.renderGroup	port	crates/sunrise-client-render/src/gfx.rs::Renderer::draw_sections	gap: minor: draws the given page runs; the terrain uniforms are bound by the caller

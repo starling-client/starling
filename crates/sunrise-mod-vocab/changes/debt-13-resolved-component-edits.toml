@@ -1,0 +1,28 @@
+ids = [
+    "handle:ItemPlace::edit",
+    "type:ItemPlaceEditError",
+    "type:ItemPlaceEditError.ItemChanged",
+    "type:ItemPlaceEditError.CountChanged",
+    "type:item::item_stack::ItemComponentEditor",
+    "handle:item::item_stack::ItemComponentEditor::item",
+    "handle:item::item_stack::ItemComponentEditor::count",
+    "handle:item::item_stack::ItemComponentEditor::damage",
+    "handle:item::item_stack::ItemComponentEditor::damage_component",
+    "handle:item::item_stack::ItemComponentEditor::original",
+    "handle:item::item_stack::ItemComponentEditor::get",
+    "handle:item::item_stack::ItemComponentEditor::set",
+    "handle:item::item_stack::ItemComponentEditor::remove",
+    "handle:item::item_stack::ItemComponentEditor::set_damage",
+    "handle:item::item_stack::ItemComponentEditor::clear_damage",
+    "handle:item::item_stack::ItemComponentEditor::apply_components",
+    "handle:item::item_stack::ItemComponentEditor::copy_component_from",
+]
+why = "ItemPlace::edit now lends a component-only editor at a resolved player slot, hand, open menu cursor (matching NeoForge ItemAccess.forPlayerCursor / CarriedSlotWrapper and vanilla AbstractContainerMenu.synchronizeCarriedToRemote) or equipment slot instead of copying the stack out and sending back a list of changed names. The game validates the edits together, preserves unrelated live data, rolls successful writes back on abort, and uses normal sync without replaying equip effects. Vanilla ServerPlayer.sendCarriedChange sends the stack's component patch using DataComponentPatch.STREAM_CODEC; cursor packets likewise send the stack's synchronized overrides, not just its identity and count. InstrumentComponent's stream codec handles inline instruments as well as registry references, and Consumable retains the ItemUseAnimation ID. AbstractContainerMenu advances the remote cursor snapshot once instead of retrying when a component could not be sent. The editor cannot change the item or count."
+migrate = '''
+- `place.edit(host, tx, |stack: &mut ItemStack| { ... })` -> `place.edit(host, tx, |stack: &mut ItemComponentEditor<'_>| { ... })`. Untyped callbacks using `set`, `remove`, `set_damage`, `clear_damage`, `apply_components` or `copy_component_from` keep those calls. The editor also retains `item()`, `count()`, `damage()` and `damage_component()`; `get(&descriptor)` reads the override, including changes staged earlier in this callback. Do any work needing this host before or after `edit`, not in its callback.
+- For an owned copy of the pre-edit stack use `stack.original().project()` instead of `stack.clone()`. Handle `None` if the original cannot be projected. To inspect the original patch, call `components()` on that projection; to read a pending value, use `get(&descriptor)` instead. `copy_component_from(&other, id)` still takes an owned `ItemStack` by reference.
+- Replace `stack.set_components(patch)` in the callback with `stack.remove(&descriptor)` for each old override or removal marker you intend to clear to inheritance, then `stack.apply_components(&patch)` for the new values and `!id` removals. `remove` means inherit, not explicit removal; `clear_damage()` still explicitly removes damage.
+- Drop any special `ItemPlaceEditError::UnsupportedPlace` branch or workaround for `ItemPlace::PlayerCursor` (`menu.cursor()`): call `menu.cursor().edit(host, tx, |stack| { ... })` directly to edit the open menu cursor in place. Synchronized component overrides such as an inline `minecraft:instrument` or `minecraft:consumable` with `animation: "bow"` travel through the normal cursor packet; no extra payload or slot replacement is needed. `UnsupportedPlace` is now returned only for `OneByOne` and `InfiniteMaterials`.
+- Replace assignment to `*stack` or `stack.set_count(...)` with the appropriate slot setter in the transaction, for example `player.set_inventory_slot(host, index, Some(replacement))` with the setter's inventory index. For a place addressed through transfers, use `place.exchange(host, tx, &ItemResource::of(&replacement), amount)` for replacement, or `place.insert` / `place.extract` for a count change; check the amount moved. Delete the unreachable `ItemPlaceEditError::ItemChanged` and `ItemPlaceEditError::CountChanged` match arms. The remaining refusals are `NotHeld`, `UnsupportedPlace`, `Unavailable` and `Stack(error)`.
+- A native mixin targeting the inherent engine `game_edit_stack(place, stack, changed, tx)` must match `game_edit_stack(place, tx, edit: &mut dyn for<'a> FnMut(&mut ItemComponentEditor<'a>))` instead; there is no detached-stack entry point. Keep the `Result<(), ItemPlaceEditError>` return and call the editor once after resolving a readable slot in an open transaction. API mods call `ItemPlace::edit`, not the backend.
+'''

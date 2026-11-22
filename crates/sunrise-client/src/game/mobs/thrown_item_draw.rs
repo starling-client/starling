@@ -32,13 +32,20 @@ impl Game<'_> {
                 yaw: a.previous_yaw + partial * (a.yaw - a.previous_yaw),
                 pitch: a.previous_pitch + partial * (a.pitch - a.previous_pitch),
                 living: None,
+                tnt_fuse: None,
+                orb_value: None,
+                painting: None,
+                item_frame: None,
+                attachments: None,
             }
             .into();
             let block = at.map(|x| x.floor() as i32);
             if self.mod_entity_renderer_geometry(
                 &resolved,
                 &entity,
+                t.id,
                 c.as_dvec3(),
+                Some(glam::DVec3::from_array(at)),
                 block,
                 packed,
                 out,

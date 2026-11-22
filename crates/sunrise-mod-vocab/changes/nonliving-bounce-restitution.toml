@@ -1,0 +1,3 @@
+ids = ["hook:bounce_restitution", "hook:bounce_on"]
+why = "Simulating nonliving bodies query restitution at Entity.move, using the captured block state and position and float-scaled coefficient. Successful authoritative bounces now reach bounce_on. A collided EntityRef::move_by can change velocity through restitution; EntityRef::on_block uses retained support for nonliving bodies that keep it."
+migrate = "Rebuild for hook version 2; the hook signatures are unchanged. A Part that wants to keep its earlier coverage should filter on event.kind. Otherwise answer for nonliving bodies too, on either side, without changing state or consuming random numbers in the restitution query. Do not assume move_by preserves velocity after a collision."

@@ -11,12 +11,12 @@
 //! stale handle, and for a kind Sunrise keeps no such state for (each doc
 //! says which).
 use super::{Game, commands::Target};
+use mod_api::LivingRef;
 use sunrise_client::mobs::villager;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::position::BlockPos;
 use sunrise_world::climbing::{self, ClimbingWorld};
 use sunrise_world::registry::BlockStateId;
-use mod_api::LivingRef;
 
 impl Game<'_> {
     /// Run a player sleep write in the authoritative body. An acting player's
@@ -188,7 +188,7 @@ impl Game<'_> {
                 let slept = mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
                     let slept = villager::start_sleeping(m, pos, &w, &mut events);
                     if slept {
-                        m.position = at;
+                        sunrise_client::mobs::living::teleports::set_pos(m, at);
                     }
                     slept
                 });
@@ -438,14 +438,14 @@ impl ClimbingWorld for FlagClimbing<'_> {
 pub(in crate::game) mod tests {
     use super::super::Game;
     use super::super::native_entity_refs::tests::{record_key, with_game};
-    use sunrise_client::mobs::{Mob, villager};
-    use sunrise_client::motion::{MotionWorld, PlayerMotion};
-    use sunrise_core::geometry::Vec3;
-    use sunrise_core::position::BlockPos;
     use mod_api::{
         BlockPart, EntityRef, Hooks, LivingRef, LoopContext, MakesOpenTrapdoorAboveClimbableEvent,
         Registrar, WorldEpoch,
     };
+    use sunrise_client::mobs::{Mob, villager};
+    use sunrise_client::motion::{MotionWorld, PlayerMotion};
+    use sunrise_core::geometry::Vec3;
+    use sunrise_core::position::BlockPos;
 
     /// A live cow `id` at `(5.5, 64, 5.5)`, with its handle.
     fn cow(game: &mut Game<'_>, id: u32) -> LivingRef {
@@ -456,7 +456,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_flags_write_the_stored_state_and_survive_the_save() {
         with_game(|game| {
             let mob = cow(game, 12);
@@ -499,6 +499,7 @@ pub(in crate::game) mod tests {
                 None,
                 Some(game.pack.assets.registry),
                 |_| None,
+                &Default::default(),
             );
             let restored = sunrise_client::entity_nbt::mob_from_nbt(
                 &tag,
@@ -528,6 +529,7 @@ pub(in crate::game) mod tests {
                 None,
                 Some(game.pack.assets.registry),
                 |_| None,
+                &Default::default(),
             );
             let restored = sunrise_client::entity_nbt::mob_from_nbt(
                 &tag,
@@ -552,7 +554,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_summons_join_write_survives_the_spawn() {
         use mod_api::{EntityJoinLevelEvent, Flow, Hooks, ModEntry, ServerHost};
         struct Joiner;
@@ -642,6 +644,7 @@ pub(in crate::game) mod tests {
             max_players: 2,
             integrated: !dedicated,
             levels: game.level_shapes,
+            level_seeds: game.levels.runtime.seeds(),
         };
         game.lan_host(settings, net, config).unwrap();
         game.lan.as_mut().unwrap().hub.singleplayer_owner = owner.then_some(12);
@@ -658,12 +661,12 @@ pub(in crate::game) mod tests {
         LivingRef,
         std::sync::mpsc::Receiver<sunrise_client::lan::Out>,
     ) {
-        use sunrise_client::lan::{Joined, PlayerSender, guest::Guest};
-        use sunrise_protocol::packets::configuration::ClientInformation;
         use std::sync::{
             Arc,
             atomic::{AtomicI32, AtomicUsize},
         };
+        use sunrise_client::lan::{Joined, PlayerSender, guest::Guest};
+        use sunrise_protocol::packets::configuration::ClientInformation;
         let (tx, rx) = std::sync::mpsc::channel();
         let mut g = Guest::new(
             Joined {
@@ -725,6 +728,7 @@ pub(in crate::game) mod tests {
             next_entity: &mut game.next_entity,
             spawn: [0.0, 64.0, 0.0],
             spawn_angle: [0.0; 2],
+            spawn_dimension: "minecraft:overworld",
             sea_level: 63,
             difficulty: 1,
             difficulty_locked: false,
@@ -736,7 +740,7 @@ pub(in crate::game) mod tests {
             border: &game.border,
             streaming: None,
         };
-        game.lan.as_mut().unwrap().hub.tick_level(&mut ctx);
+        game.lan.as_mut().unwrap().hub.tick_level(&mut ctx, None);
     }
 
     pub(in crate::game) fn packets(
@@ -769,7 +773,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn living_flags_normal_guest_sleep_writes_survive_turns_and_sync() {
         use sunrise_client::pose::Pose;
         use sunrise_protocol::packets::play::Clientbound as C;
@@ -836,7 +840,8 @@ pub(in crate::game) mod tests {
                 .unwrap();
                 let g = game.command_guest(12).unwrap();
                 assert!(!g.sleeping && g.bed.is_none());
-                assert_eq!(g.sleep_timer, 100);
+                // Generic LivingEntity.stopSleeping uses stopSleepInBed(true, true).
+                assert_eq!(g.sleep_timer, 0);
                 assert_eq!(g.pose(), Pose::Standing);
                 assert_ne!(g.position, [at.x, at.y, at.z]);
                 sync_guests(game);
@@ -914,7 +919,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn living_flags_foreign_level_guest_sleep_writes_refuse_without_mutation() {
         for sleeping in [false, true] {
             for acting in [false, true] {
@@ -1060,7 +1065,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn living_flags_guest_glide_stop_survives_own_turn_and_vines() {
         use sunrise_client::pose::Pose;
         with_game(|game| {
@@ -1135,7 +1140,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn living_flags_nested_guest_flags_restore_outer_and_refuse_fake_sleep() {
         use sunrise_client::{lan::guest::Guest, motion::PlayerMotion};
         with_game(|game| {
@@ -1205,7 +1210,7 @@ pub(in crate::game) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn living_flags_villager_sleep_rejects_invalid_beds_without_mutation() {
         crate::game::entity::taken_pass_tests::in_both_dimensions(|game, balance| {
             guest_server(game, true, false);
@@ -1234,6 +1239,7 @@ pub(in crate::game) mod tests {
                     None,
                     Some(game.pack.assets.registry),
                     |_| None,
+                    &Default::default(),
                 );
                 assert!(!game.living_start_sleeping(living, pos), "{pos:?}");
                 assert_eq!(
@@ -1242,7 +1248,8 @@ pub(in crate::game) mod tests {
                         [1, 2, 3, 4],
                         None,
                         Some(game.pack.assets.registry),
-                        |_| None
+                        |_| None,
+                        &Default::default()
                     ),
                     before
                 );
@@ -1293,7 +1300,7 @@ pub(in crate::game) mod tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_block_part_decides_what_a_living_entity_climbs() {
         // The fixture's parts: glass is a ladder to even entity ids, a vine to none.
         mod_platform::__private::part_tests::ladder_game_thread();
@@ -1371,7 +1378,9 @@ pub(in crate::game) mod tests {
     fn player_climbs(game: &mut Game<'_>, id: i32) -> (bool, Option<BlockPos>) {
         let mut player = PlayerMotion::new(game.motion, Vec3::new(5.5, 64.0, 5.5)).unwrap();
         player.entity_id = id;
+        let side = game_side!(game);
         let mut world = MotionWorld {
+            side: &side,
             entities: &[],
             player: &mut player,
             scene: &mut game.world,

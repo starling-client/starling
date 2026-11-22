@@ -16,15 +16,19 @@ pub mod bed_geometry;
 pub mod block_contact;
 pub mod block_sounds;
 pub mod item_damage;
+pub mod mod_packet_builders;
+pub mod packet_source;
 pub mod parallel;
 pub mod powder_snow;
 #[cfg(test)]
 mod test_log;
 #[cfg(test)]
 mod test_resources;
+pub use sunrise_client_render::moving_colliders;
 pub use sunrise_client_render::{
     assets, atlas_sources, audio, auth, autotune, ban_notice, bidi, biome, block_edit,
     block_entities, block_entity_anim, block_entity_render, block_sprites, block_states, bluemap,
+<<<<<<< sync-sunrise-1
     bluemap_detect, border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit,
     cit_armor, cit_assets, cit_glint, client_resources, clouds, collisions, command_block,
     containers, controller_ui, crash, custom_sky, datapack, dynamic_light, dynamic_resolution,
@@ -43,6 +47,24 @@ pub use sunrise_client_render::{
     streaming, structure_block, system_stats, tab_list, terrain_model, test_block,
     test_instance_block, testgen, title_edition, trims, ui, vault, weather, widgets, world,
     worldborder, zip,
+=======
+    border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit, cit_armor, cit_assets,
+    cit_glint, client_resources, clouds, collisions, columns, command_block, containers,
+    controller_ui, crash, custom_sky, datapack, dynamic_light, dynamic_resolution, effects,
+    environment, extras, fast_hash, fluid_models, fluid_render, fog, font, gfx, graphics,
+    graphics_style, graphics_ui, hdr_calibration, hud, hud_kit, hud_layout, hud_overlays,
+    inventory_effects, java_text, jigsaw_block, json_folder, level_loading, light, lod, logging,
+    mark_sprite, menu_blur, menu_style, mesher, mipmap, mod_browser, mod_chunk_tickets, mod_list,
+    mod_pipelines, model_library, models, mods_screen, monitor, multiline_edit, native_emissive,
+    options_file, options_fixes, options_ui, overlay, pack_browser, pack_formats, pack_hooks,
+    pack_palette, pack_screen, packs, pad_cursor, pad_glyph, par, particles, poi_sections,
+    polytone_creative_tabs, polytone_post, post_chain, potent_sulfur, preedit, providers, pvp,
+    pvp_hud, random_source, resource_source, screen_draw, screen_effects, sculk, section_mask,
+    server_terrain, settings, shader_options, shader_pack_list, signs, skins, social, sound_engine,
+    sound_events, sound_preview, spans, sprites, streaming, structure_block, tab_list,
+    terrain_model, test_block, test_instance_block, testgen, trims, ui, vault, weather, widgets,
+    world, worldborder, zip,
+>>>>>>> sunrise/main
 };
 pub mod attack_strength;
 pub mod attribute_updates;
@@ -66,6 +88,8 @@ pub mod cauldron;
 pub mod chunk_io;
 pub mod client_perf;
 pub mod clock;
+pub mod colliders;
+pub mod collision_parts;
 pub mod command_storage;
 pub mod confirm_screen;
 pub mod container_screen;
@@ -91,7 +115,11 @@ pub mod end_gateway;
 pub mod entities;
 pub mod entity_nbt;
 pub mod entity_rules;
+<<<<<<< sync-sunrise-1
 pub mod equipment;
+=======
+pub mod entity_solids;
+>>>>>>> sunrise/main
 pub mod extras_hud;
 pub mod falling_block;
 pub mod fire_render;
@@ -117,11 +145,12 @@ pub mod item_tooltip;
 pub mod join_seq;
 pub mod kinetics;
 pub mod move_gate;
+#[cfg(test)]
+mod test_game_dir;
 /// Game-owned JSON metadata conversion, shared by recipe and API adapters.
 pub use sunrise_core::json_nbt;
 pub mod lan;
 pub mod landing;
-pub mod legacy_combat;
 pub mod living_attributes;
 pub mod locator_bar;
 pub mod lod_net;
@@ -147,7 +176,6 @@ pub mod old_world;
 pub mod osk;
 pub mod patrol;
 pub mod perf_net;
-pub mod perf_overlay;
 pub mod pick_item;
 pub mod platform;
 pub mod player_sync;
@@ -162,7 +190,6 @@ pub mod raw_payloads;
 pub mod realms;
 pub mod recipe_book;
 pub mod recipe_book_screen;
-pub mod reconnect;
 pub mod save;
 // The carrier ownership store: an internal storage layer of this
 // library, used by the game crate's transfers (game/world/), like
@@ -201,11 +228,16 @@ pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 pub mod text_display;
+pub mod text_grammar;
 pub mod tick_chunk_membership;
 pub mod ticket_levels;
 pub mod title;
 pub mod toasts;
+<<<<<<< sync-sunrise-1
 pub mod touch;
+=======
+pub mod travel_gate;
+>>>>>>> sunrise/main
 pub mod ui_theme;
 pub mod vanillagen;
 pub mod viewed_levels_net;
@@ -234,8 +266,11 @@ pub use sunrise_client_input::gamepad;
 pub use sunrise_client_input::gameplay_guide;
 pub use sunrise_client_input::held;
 pub use sunrise_client_input::input;
+<<<<<<< sync-sunrise-1
 pub use sunrise_client_input::input_mode;
 pub use sunrise_client_input::input_queue;
+=======
+>>>>>>> sunrise/main
 pub use sunrise_client_input::input_source;
 pub use sunrise_client_input::interaction_input;
 pub use sunrise_client_input::key_names;

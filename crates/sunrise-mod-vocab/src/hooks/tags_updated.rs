@@ -21,9 +21,16 @@ pub trait Hooks {
     /// causes fire: `cause.should_update_static_data()` is then false here,
     /// so that data the two threads share is updated once, on the server.
     ///
-    /// Runs in Reloading: published asset/data queries can rebind caches,
-    /// including on first open; world handles and transactions remain
-    /// unavailable.
-    #[hook(side = "both", contract = "listen", neoforge = "TagsUpdatedEvent")]
-    fn tags_updated();
+    /// Receives a [`ReloadContext`] for published data queries; world handles and
+    /// transactions are not present on this context.
+    #[hook(
+        receiver = "associated",
+        context = "reload",
+        dispatch = "flat",
+        side = "both",
+        contract = "listen",
+        neoforge = "TagsUpdatedEvent",
+        version = 2
+    )]
+    fn tags_updated(cause: mod_api::TagsUpdateCause);
 }

@@ -8,15 +8,34 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::Path;
 
-/// Parse an installed mod version, padding omitted minor and patch components.
-/// This is also the comparison used for saved-world mod versions.
-pub fn parse_version(version: &str) -> Result<Version, semver::Error> {
-    let padded = match version.matches('.').count() {
-        0 => format!("{version}.0.0"),
-        1 => format!("{version}.0"),
-        _ => version.to_owned(),
-    };
-    Version::parse(&padded)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvalidServerReason {
+    NativeDeclaresServedBy,
+    MissingHost,
+    HostIsContentPackage,
+    HostDoesNotServeContent,
+    SideNotCovered { host: Side, content: Side },
+}
+
+impl fmt::Display for InvalidServerReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NativeDeclaresServedBy => f.write_str("a [native] mod cannot declare served_by"),
+            Self::MissingHost => f.write_str("serving native mod is not installed"),
+            Self::HostIsContentPackage => {
+                f.write_str("target is a content package, not a [native] mod")
+            }
+            Self::HostDoesNotServeContent => {
+                f.write_str("target does not declare [native] serves_content = true")
+            }
+            Self::SideNotCovered { host, content } => write!(
+                f,
+                "side {:?} is not covered by host side {:?}",
+                side_name(*content),
+                side_name(*host)
+            ),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -58,7 +77,14 @@ pub enum Error {
         /// The owner's reason and link on one logical line, or empty.
         note: String,
     },
+    InvalidServer {
+        owner: String,
+        target: String,
+        reason: InvalidServerReason,
+    },
 }
+
+impl std::error::Error for Error {}
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -107,6 +133,11 @@ impl fmt::Display for Error {
                 version,
                 note,
             } => write!(f, "{owner} is incompatible with {target} {version}{note}"),
+            Self::InvalidServer {
+                owner,
+                target,
+                reason,
+            } => write!(f, "{owner}: served_by {target}: {reason}"),
         }
     }
 }
@@ -176,33 +207,51 @@ fn parse(owner: &str, value: Option<&toml::Value>) -> Result<Vec<Dependency>, Er
 #[derive(Clone)]
 pub struct Mod<'a> {
     pub id: &'a str,
-    pub version: &'a str,
+    pub version: &'a Version,
     pub has_api: bool,
     /// Code declarations also participate in physical library linking.
     pub code: bool,
     pub dependencies: &'a [Dependency],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Resolution {
     /// Original bundle indices, in dispatch order.
     pub order: Vec<usize>,
     /// What the load rules let through: a discouraged pair, an override applied.
     pub warnings: Vec<Notice>,
+    /// Direct logical dependency rows remaining after side and override filtering.
+    pub effective: mod_vocab::__private::EffectiveDependencies,
+}
+
+/// The dependency rows a standalone build can wire to the projects it was given.
+/// Keep absent optional rows so native staging can still declare their empty
+/// feature. An absent required row is checked against the installation, not
+/// Cargo metadata; an actual reference still needs a compiled library.
+pub fn build_dependencies(
+    manifest: &crate::Manifest,
+    side: Side,
+    supplied: impl Fn(&str) -> bool,
+) -> Vec<Dependency> {
+    from_manifest(&manifest.dependencies, side)
+        .into_iter()
+        .filter(|dep| dep.optional || supplied(&dep.id))
+        .collect()
 }
 
 /// Validate and order a mixed set of code and content declarations.
 pub fn resolve(mods: &[Mod<'_>]) -> Result<Resolution, Error> {
-    resolve_all(mods, &[], &Overrides::default(), false)
+    resolve_all(mods, &[], &[], &Overrides::default(), false)
 }
 
 /// Physical library order, independent of manifest validation/dispatch overrides.
 ///
-/// Every active code dependency still needs its API package. Version ranges and
-/// dispatch order are logical rules; actual Cargo/wasm imports and ABI validation
-/// remain the compiler/linker's responsibility and never fall back silently.
+/// Only library requirements enter this projection. A supplied code dependency
+/// needs an API package; content targets (`code = false`) are skipped. Version
+/// ranges and dispatch order are logical rules; Cargo and the native linker
+/// still enforce actual imports and ABI requirements.
 pub fn resolve_links(mods: &[Mod<'_>]) -> Result<Resolution, Error> {
-    resolve_all(mods, &[], &Overrides::default(), true)
+    resolve_all(mods, &[], &[], &Overrides::default(), true)
 }
 
 /// Validate the applicable installed set with its instance overrides, then return
@@ -212,16 +261,105 @@ pub fn resolve_with_rules(
     rules: &[Vec<Rule>],
     overrides: &Overrides,
 ) -> Result<Resolution, Error> {
-    resolve_all(mods, rules, overrides, false)
+    resolve_all(mods, rules, &[], overrides, false)
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Client => "client",
+        Side::Both => "both",
+        Side::Server => "server",
+        _ => "unknown",
+    }
+}
+
+fn side_covers(host: Side, content: Side) -> bool {
+    match content {
+        Side::Both => host == Side::Both,
+        Side::Client => matches!(host, Side::Client | Side::Both),
+        Side::Server => matches!(host, Side::Server | Side::Both),
+        _ => false,
+    }
+}
+
+/// Validate every `served_by` declaration against the installed manifest set.
+///
+/// Each `served_by` target must be an installed `[native]` package with
+/// `serves_content = true`, and its declared `side` must cover the content package's `side`.
+pub fn validate_served_by(manifests: &[&crate::Manifest]) -> Result<(), Error> {
+    let mut by_id = HashMap::with_capacity(manifests.len());
+    for manifest in manifests {
+        if by_id.insert(manifest.id.as_str(), *manifest).is_some() {
+            return Err(Error::Duplicate(manifest.id.clone()));
+        }
+    }
+    for manifest in manifests {
+        let Some(target_id) = manifest.served_by.as_deref() else {
+            continue;
+        };
+        if manifest.native.is_some() {
+            return Err(Error::InvalidServer {
+                owner: manifest.id.clone(),
+                target: target_id.to_owned(),
+                reason: InvalidServerReason::NativeDeclaresServedBy,
+            });
+        }
+        let Some(host) = by_id.get(target_id).copied() else {
+            return Err(Error::InvalidServer {
+                owner: manifest.id.clone(),
+                target: target_id.to_owned(),
+                reason: InvalidServerReason::MissingHost,
+            });
+        };
+        let Some(native) = &host.native else {
+            return Err(Error::InvalidServer {
+                owner: manifest.id.clone(),
+                target: target_id.to_owned(),
+                reason: InvalidServerReason::HostIsContentPackage,
+            });
+        };
+        if !native.serves_content {
+            return Err(Error::InvalidServer {
+                owner: manifest.id.clone(),
+                target: target_id.to_owned(),
+                reason: InvalidServerReason::HostDoesNotServeContent,
+            });
+        }
+        if !side_covers(host.side, manifest.side) {
+            return Err(Error::InvalidServer {
+                owner: manifest.id.clone(),
+                target: target_id.to_owned(),
+                reason: InvalidServerReason::SideNotCovered {
+                    host: host.side,
+                    content: manifest.side,
+                },
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Resolve one applicable installed manifest snapshot with one shared policy for
-/// native, wasm and content packages. Indices in the result refer to `manifests`.
+/// native and content packages. Indices in the result refer to `manifests`.
 pub fn resolve_manifests(
     manifests: &[&crate::Manifest],
     running: Side,
     overrides: &Overrides,
 ) -> Result<Resolution, Error> {
+    validate_served_by(manifests)?;
+    let id_index: HashMap<&str, usize> = manifests
+        .iter()
+        .enumerate()
+        .map(|(index, manifest)| (manifest.id.as_str(), index))
+        .collect();
+    let served_edges: Vec<(usize, usize)> = manifests
+        .iter()
+        .enumerate()
+        .filter_map(|(index, manifest)| {
+            let host = manifest.served_by.as_deref()?;
+            Some((index, id_index[host]))
+        })
+        .collect();
     let declared: Vec<_> = manifests
         .iter()
         .map(|manifest| from_manifest(&manifest.dependencies, running))
@@ -230,7 +368,7 @@ pub fn resolve_manifests(
         .iter()
         .zip(&declared)
         .map(|(manifest, dependencies)| {
-            let code = manifest.native.is_some() || manifest.wasm.is_some();
+            let code = manifest.native.is_some();
             Mod {
                 id: &manifest.id,
                 version: &manifest.version,
@@ -244,7 +382,7 @@ pub fn resolve_manifests(
         .iter()
         .map(|manifest| rules(manifest, running))
         .collect();
-    resolve_with_rules(&inputs, &rules, overrides)
+    resolve_all(&inputs, &rules, &served_edges, overrides, false)
 }
 
 fn diagnostic_note(reason: Option<&str>, url: Option<&str>) -> String {
@@ -370,6 +508,7 @@ impl Overrides {
 fn resolve_all(
     mods: &[Mod<'_>],
     rules: &[Vec<Rule>],
+    mandatory_edges: &[(usize, usize)],
     overrides: &Overrides,
     links: bool,
 ) -> Result<Resolution, Error> {
@@ -381,9 +520,11 @@ fn resolve_all(
     }
     let mut edges = vec![Vec::new(); mods.len()];
     let mut warnings = Vec::new();
-    // A target's version is parsed only when a logical rule uses it, once per resolution.
-    let mut versions = HashMap::new();
+    let mut effective = mod_vocab::__private::EffectiveDependencies::default();
     for (index, item) in mods.iter().enumerate() {
+        if links && !item.code {
+            continue;
+        }
         for dep in item.dependencies {
             let target = ids.get(dep.id.as_str()).copied();
             let note = diagnostic_note(dep.reason.as_deref(), dep.url.as_deref());
@@ -391,7 +532,7 @@ fn resolve_all(
                 warnings.push(Notice {
                     owner: item.id.into(),
                     target: dep.id.clone(),
-                    version: target.map(|i| mods[i].version.to_owned()),
+                    version: target.map(|i| mods[i].version.to_string()),
                     reason: dep.reason.clone(),
                     url: dep.url.clone(),
                     kind: match action {
@@ -399,9 +540,12 @@ fn resolve_all(
                         Override::Discourage => NoticeKind::OverrideDiscouraged,
                     },
                 });
-                // These remove validation and dispatch edges only. The separate
-                // physical resolution still enforces actual library requirements.
+                // No validation, dispatch edge or Part permission remains. The
+                // physical resolution still enforces library requirements.
                 continue;
+            }
+            if !links {
+                effective.insert(item.id, &dep.id, dep.optional);
             }
             let Some(target) = target else {
                 if dep.optional {
@@ -414,31 +558,27 @@ fn resolve_all(
                 });
             };
             let other = &mods[target];
-            if item.code && (!item.has_api || !other.has_api) {
+            if links && !other.code {
+                continue;
+            }
+            if item.code && other.code && (!item.has_api || !other.has_api) {
                 return Err(Error::NoApi {
                     owner: item.id.into(),
                     target: dep.id.clone(),
                     note,
                 });
             }
-            if !links {
-                let version = versions
-                    .entry(target)
-                    .or_insert_with(|| parse_version(other.version));
-                let version = version.as_ref().map_err(|error| Error::Manifest {
+            if !links
+                && (crate::manifest::is_unresolved(other.version)
+                    || !dep.requirement.matches(other.version))
+            {
+                return Err(Error::Version {
                     owner: item.id.into(),
                     target: dep.id.clone(),
-                    reason: format!("invalid installed version {:?}: {error}", other.version),
-                })?;
-                if !dep.requirement.matches(version) {
-                    return Err(Error::Version {
-                        owner: item.id.into(),
-                        target: dep.id.clone(),
-                        version: other.version.into(),
-                        requirement: dep.requirement.to_string(),
-                        note,
-                    });
-                }
+                    version: other.version.to_string(),
+                    requirement: dep.requirement.to_string(),
+                    note,
+                });
             }
             use mod_vocab::DependencyOrder;
             if links || dep.order == DependencyOrder::After {
@@ -462,7 +602,7 @@ fn resolve_all(
                 warnings.push(Notice {
                     owner: item.id.into(),
                     target: rule.id.clone(),
-                    version: target.map(|i| mods[i].version.to_owned()),
+                    version: target.map(|i| mods[i].version.to_string()),
                     reason: rule.reason.clone(),
                     url: rule.url.clone(),
                     kind: match action {
@@ -483,33 +623,30 @@ fn resolve_all(
                 continue;
             }
             let other = &mods[target];
-            let version = versions
-                .entry(target)
-                .or_insert_with(|| parse_version(other.version));
-            let version = version.as_ref().map_err(|error| Error::Manifest {
-                owner: item.id.into(),
-                target: rule.id.clone(),
-                reason: format!("invalid installed version {:?}: {error}", other.version),
-            })?;
-            if !rule.requirement.matches(version) {
+            if !rule.requirement.matches(other.version) {
                 continue;
             }
             if kind == RuleKind::Incompatible {
                 return Err(Error::Incompatible {
                     owner: item.id.into(),
                     target: rule.id.clone(),
-                    version: other.version.into(),
+                    version: other.version.to_string(),
                     note: diagnostic_note(rule.reason.as_deref(), rule.url.as_deref()),
                 });
             }
             warnings.push(Notice {
                 owner: item.id.into(),
                 target: rule.id.clone(),
-                version: Some(other.version.into()),
+                version: Some(other.version.to_string()),
                 reason: rule.reason.clone(),
                 url: rule.url.clone(),
                 kind: NoticeKind::Discouraged,
             });
+        }
+    }
+    if !links {
+        for &(dependent, target) in mandatory_edges {
+            edges[dependent].push(target);
         }
     }
     let mut done = vec![false; mods.len()];
@@ -541,7 +678,11 @@ fn resolve_all(
         done[next] = true;
         order.push(next);
     }
-    Ok(Resolution { order, warnings })
+    Ok(Resolution {
+        order,
+        warnings,
+        effective,
+    })
 }
 
 /// A target's staged Cargo package, or none for an absent optional mod.
@@ -689,12 +830,30 @@ mod tests {
     fn item<'a>(id: &'a str, version: &'a str, dependencies: &'a [Dependency]) -> Mod<'a> {
         Mod {
             id,
-            version,
+            version: Box::leak(Box::new(crate::manifest::parse_version(version).unwrap())),
             has_api: true,
             code: true,
             dependencies,
         }
     }
+    #[test]
+    fn an_unresolved_version_satisfies_no_requirement_but_a_real_zero_version_does() {
+        for requirement in ["*", "=0.0.0", "<1", "^0.0.0"] {
+            let wanted = deps(&format!("[dependencies]\nbase={{version='{requirement}'}}"));
+            let user = item("user", "1", &wanted);
+            let placeholder = item("base", "0.0.0+unresolved.2-rc", &[]);
+            assert!(
+                matches!(
+                    resolve(&[user.clone(), placeholder]),
+                    Err(Error::Version { .. })
+                ),
+                "{requirement}"
+            );
+            let real = item("base", "0.0.0+nightly", &[]);
+            assert!(resolve(&[user, real]).is_ok(), "{requirement}");
+        }
+    }
+
     #[test]
     fn a_client_only_required_dependency_does_not_refuse_a_dedicated_installation() {
         let manifest = crate::Manifest::parse("id='server'\nname='Server'\nversion='1'\napi='0.2'\ncapabilities=['registries']\n[dependencies]\nclient={version='^1',side='client',order='none',reason='Client integration',url='https://example.test/client'}").unwrap();
@@ -731,37 +890,104 @@ mod tests {
     }
 
     #[test]
-    fn declaration_boundaries_apply_to_dependencies_and_pair_rules() {
+    fn long_policy_reasons_are_preserved_for_dependencies_and_pair_rules() {
+        let reason = "Some context. ".repeat(100);
+        let entry = format!("target={{version='^1',reason='{reason}'}}");
+        let source = manifest(
+            "owner",
+            &format!("[dependencies]\n{entry}\n[incompatible]\n{entry}\n[discouraged]\n{entry}"),
+        );
+        let dependency = from_manifest(&source.dependencies, Side::Client);
+        assert_eq!(dependency[0].reason.as_deref(), Some(reason.as_str()));
+        let pairs = rules(&source, Side::Client);
+        assert_eq!(pairs.len(), 2);
+        for rule in pairs {
+            assert_eq!(rule.reason.as_deref(), Some(reason.as_str()));
+        }
+    }
+
+    #[test]
+    fn policy_schema_errors_are_refused_when_the_manifest_is_parsed() {
+        let assert_location = |result: Result<crate::Manifest, String>, line, column| {
+            let error = result.unwrap_err();
+            assert!(
+                error.contains(&format!(" (line {line}, column {column})")),
+                "{error}"
+            );
+        };
         for table in ["dependencies", "incompatible", "discouraged"] {
             let manifest = |entry: &str| {
                 crate::Manifest::parse(&format!(
-                    "id='owner'\nname='Owner'\nversion='1'\napi='0.2'\ncapabilities=['registries']\n[{table}]\n{entry}"
+                    "id='owner'\nname='Owner'\nversion='1'\n[{table}]\n{entry}"
                 ))
             };
-            assert!(
-                manifest(&format!(
-                    "target={{version='^1',reason='{}',url='https://example.test'}}",
-                    "a".repeat(512)
-                ))
-                .is_ok()
+            assert_location(
+                manifest("target={version='^1',url='http://example.test'}"),
+                5,
+                26,
             );
-            let error = manifest(&format!(
-                "target={{version='^1',reason='{}'}}",
-                "a".repeat(513)
-            ))
-            .unwrap_err();
-            assert!(error.contains("target") && error.contains("reason over 512 bytes"));
-            assert!(
-                manifest("target={version='^1',url='http://example.test'}")
-                    .unwrap_err()
-                    .contains("url is not https://")
+            assert_location(
+                crate::Manifest::parse(&format!(
+                    "id='owner'\nname='Owner'\nversion='1'\n[{table}.target]\nversion='^1'\nreason='Why'\nurl='http://example.test'\n"
+                )),
+                7,
+                5,
             );
-            assert!(
-                manifest("'bad id'='^1'")
-                    .unwrap_err()
-                    .contains("invalid dependency id")
-            );
+            assert_location(manifest("target={version='^1',reason=42}"), 5, 29);
+            assert_location(manifest("'bad id'='^1'"), 5, 1);
             assert!(manifest("target='not a semver requirement'").is_err());
+        }
+        assert_location(
+            crate::Manifest::parse(
+                "id='owner'\nname='Owner'\nversion='1'\nload_before = ['first', 'bad id']\n",
+            ),
+            4,
+            25,
+        );
+        assert_location(
+            crate::Manifest::parse(
+                "id='owner'\nname='Owner'\nversion='1'\n\
+                 dependencies = { first = { version = '*', url = 'https://a.test' }, second = { version = '*', url = 'http://b.test' } }\n",
+            ),
+            4,
+            101,
+        );
+        assert_location(
+            crate::Manifest::parse(
+                "id='owner'\nname='Owner'\nversion='1'\n[dependencies]\ntarget={optional=true}\n",
+            ),
+            5,
+            8,
+        );
+        assert_location(
+            crate::Manifest::parse(
+                "id='owner'\nname='Owner'\nversion='1'\n[dependencies.target]\noptional=true\n",
+            ),
+            4,
+            1,
+        );
+    }
+
+    #[test]
+    fn positional_policy_arrays_are_refused() {
+        for (table, fields) in [
+            (
+                "dependencies",
+                "'^1', false, 'both', 'Context', 'https://example.test', 'after'",
+            ),
+            (
+                "incompatible",
+                "'<2', 'Conflicts', 'https://example.test/old', 'client'",
+            ),
+            (
+                "discouraged",
+                "'*', 'Slow', 'https://example.test/slow', 'server'",
+            ),
+        ] {
+            let parsed = crate::Manifest::parse(&format!(
+                "id='owner'\nname='Owner'\nversion='1'\n[{table}]\ntarget = [{fields}]"
+            ));
+            assert!(parsed.is_err(), "{table} accepted an array");
         }
     }
 
@@ -831,7 +1057,7 @@ mod tests {
         assert!(matches!(resolve(&mods[..1]), Err(Error::Missing { .. })));
         let incompatible = Mod {
             id: "base",
-            version: "2",
+            version: &Version::new(2, 0, 0),
             has_api: false,
             code: false,
             dependencies: &[],
@@ -849,7 +1075,7 @@ mod tests {
                 mods[0].clone(),
                 Mod {
                     id: "base",
-                    version: "1",
+                    version: &Version::new(1, 0, 0),
                     has_api: false,
                     code: false,
                     dependencies: &back
@@ -881,7 +1107,7 @@ mod tests {
         let refused = with(&[("broken", "1.5")], &server, &none).unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "user is incompatible with broken 1.5 (Corrupts saves https://example.com/why)"
+            "user is incompatible with broken 1.5.0 (Corrupts saves https://example.com/why)"
         );
         assert!(with(&[("broken", "2.0")], &server, &none).is_ok());
         // A client-only rule holds nothing on a dedicated server.
@@ -893,7 +1119,7 @@ mod tests {
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
-            ["user works badly with slow 3"]
+            ["user works badly with slow 3.0.0"]
         );
         // Before a present mod it doesn't depend on; an absent one is ignored.
         let mods = [item("late", "1", &[]), item("user", "1", &[])];
@@ -912,7 +1138,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "dependency override: user -> broken only discouraged",
-                "user works badly with broken 1.5 (Corrupts saves https://example.com/why)"
+                "user works badly with broken 1.5.0 (Corrupts saves https://example.com/why)"
             ]
         );
         let drop: Overrides = toml::from_str("[user]\nbroken = 'drop'\n").unwrap();
@@ -994,20 +1220,85 @@ mod tests {
                 .unwrap_err();
             assert_eq!(
                 error.to_string(),
-                "owner is incompatible with other 1 (Bad interaction https://example.test/why)"
+                "owner is incompatible with other 1.0.0 (Bad interaction https://example.test/why)"
             );
         }
-        let mut dependent = manifest("dependent", "[dependencies]\nother='^1'");
+        let dependent = manifest("dependent", "[dependencies]\nother='^1'");
         assert_eq!(
             resolve_manifests(&[&dependent, &code], Side::Client, &Overrides::default())
                 .unwrap()
                 .order,
             [1, 0]
         );
-        dependent.native = code.native.clone();
-        assert!(
-            matches!(resolve_manifests(&[&dependent, &plain], Side::Client, &Overrides::default()), Err(Error::NoApi { owner, target, .. }) if owner == "dependent" && target == "other")
+    }
+
+    #[test]
+    fn required_content_is_deferred_by_build_but_required_by_installation() {
+        let content = manifest("data", "");
+        let native = format!(
+            "[native]\ngame='26.3'\nsunrise='{}'\nmixins='{}'",
+            "a".repeat(40),
+            "b".repeat(40)
         );
+        let dependent = manifest("behaviour", &format!("[dependencies]\ndata='^1'\n{native}"));
+        let build = build_dependencies(&dependent, Side::Client, |_| false);
+        let code = Mod {
+            id: &dependent.id,
+            version: &dependent.version,
+            has_api: true,
+            code: true,
+            dependencies: &build,
+        };
+        assert_eq!(resolve_links(&[code]).unwrap().order, [0]);
+        assert_eq!(
+            resolve_manifests(&[&dependent], Side::Client, &Overrides::default())
+                .unwrap_err()
+                .to_string(),
+            "behaviour requires missing mod data"
+        );
+        let resolved =
+            resolve_manifests(&[&dependent, &content], Side::Client, &Overrides::default())
+                .unwrap();
+        assert_eq!(resolved.order, [1, 0]);
+        assert!(resolved.effective.permits("behaviour", "data"));
+    }
+
+    #[test]
+    fn permission_and_dispatch_use_the_same_filtered_rows() {
+        use mod_vocab::DependencyKind;
+        let dependent = manifest(
+            "addon",
+            "[dependencies]\nowner={version='^1',order='before'}\nabsent={version='*',optional=true}\nserver={version='^1',side='server'}\nnone={version='^1',order='none'}\n",
+        );
+        let owner = manifest("owner", "");
+        let server = manifest("server", "");
+        let none = manifest("none", "load_before=['addon']");
+        let inputs = [&owner, &server, &dependent, &none];
+        let resolution = resolve_manifests(&inputs, Side::Client, &Overrides::default()).unwrap();
+        assert_eq!(resolution.order, [1, 3, 2, 0]);
+        assert_eq!(
+            resolution.effective.kind("addon", "owner"),
+            Some(DependencyKind::Required)
+        );
+        assert_eq!(
+            resolution.effective.kind("addon", "none"),
+            Some(DependencyKind::Required)
+        );
+        assert_eq!(
+            resolution.effective.kind("addon", "absent"),
+            Some(DependencyKind::Optional)
+        );
+        assert!(!resolution.effective.permits("addon", "server"));
+        assert!(!resolution.effective.permits("owner", "addon"));
+        assert!(!resolution.effective.permits("none", "addon"));
+        for action in ["drop", "discourage"] {
+            let overrides =
+                toml::from_str(&format!("[addon]\nowner='{action}'\nabsent='{action}'")).unwrap();
+            let resolution = resolve_manifests(&inputs, Side::Client, &overrides).unwrap();
+            assert_eq!(resolution.order, [0, 1, 3, 2]);
+            assert!(!resolution.effective.permits("addon", "owner"));
+            assert_eq!(resolution.effective.kind("addon", "absent"), None);
+        }
     }
 
     #[test]
@@ -1159,8 +1450,128 @@ mod tests {
         let mut base = item("base", "1.0.0", &[]);
         base.has_api = false;
         assert!(matches!(
-            resolve(&[item("user", "1.0.0", &required), base]),
+            resolve_links(&[item("user", "1.0.0", &required), base]),
             Err(Error::NoApi { .. })
+        ));
+    }
+
+    #[test]
+    fn served_by_validation_orders_after_host_enforces_sides_and_ignores_overrides() {
+        let native = |id: &str, side: &str, serves: bool, extra: &str| {
+            manifest(
+                id,
+                &format!(
+                    "side='{side}'\n{extra}\n[native]\ngame='26.3'\nsunrise='{}'\nserves_content={serves}\n",
+                    "a".repeat(40),
+                ),
+            )
+        };
+        let content = |id: &str, side: &str, host: &str| {
+            manifest(id, &format!("side='{side}'\nserved_by='{host}'\n"))
+        };
+
+        let runes = content("runes", "both", "horizon_java");
+        let missing = validate_served_by(&[&runes]).unwrap_err();
+        assert!(
+            matches!(
+                &missing,
+                Error::InvalidServer {
+                    owner,
+                    target,
+                    reason: InvalidServerReason::MissingHost,
+                } if owner == "runes" && target == "horizon_java"
+            ),
+            "{missing}"
+        );
+        // dependency-overrides.toml cannot drop served_by validation.
+        let drop_override: Overrides = toml::from_str("[runes]\nhorizon_java='drop'\n").unwrap();
+        assert!(matches!(
+            resolve_manifests(&[&runes], Side::Client, &drop_override),
+            Err(Error::InvalidServer {
+                owner,
+                target,
+                reason: InvalidServerReason::MissingHost,
+            }) if owner == "runes" && target == "horizon_java"
+        ));
+
+        let content_target = manifest("horizon_java", "side='both'\n");
+        let err = validate_served_by(&[&runes, &content_target]).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::InvalidServer {
+                    owner,
+                    target,
+                    reason: InvalidServerReason::HostIsContentPackage,
+                } if owner == "runes" && target == "horizon_java"
+            ),
+            "{err}"
+        );
+
+        let unopted = native("horizon_java", "both", false, "");
+        let err = validate_served_by(&[&runes, &unopted]).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::InvalidServer {
+                    owner,
+                    target,
+                    reason: InvalidServerReason::HostDoesNotServeContent,
+                } if owner == "runes" && target == "horizon_java"
+            ),
+            "{err}"
+        );
+
+        for ((host_side, expected_host), (content_side, expected_content)) in [
+            (("client", Side::Client), ("both", Side::Both)),
+            (("server", Side::Server), ("both", Side::Both)),
+            (("server", Side::Server), ("client", Side::Client)),
+            (("client", Side::Client), ("server", Side::Server)),
+        ] {
+            let host = native("horizon_java", host_side, true, "");
+            let pkg = content("runes", content_side, "horizon_java");
+            let err = validate_served_by(&[&pkg, &host]).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    Error::InvalidServer {
+                        owner,
+                        target,
+                        reason: InvalidServerReason::SideNotCovered { host, content },
+                    } if owner == "runes"
+                        && target == "horizon_java"
+                        && *host == expected_host
+                        && *content == expected_content
+                ),
+                "host={host_side} content={content_side}: {err}"
+            );
+        }
+
+        for (host_side, content_side) in [
+            ("both", "both"),
+            ("both", "client"),
+            ("client", "client"),
+            ("both", "server"),
+            ("server", "server"),
+        ] {
+            let host = native("horizon_java", host_side, true, "");
+            let pkg = content("runes", content_side, "horizon_java");
+            assert!(
+                validate_served_by(&[&pkg, &host]).is_ok(),
+                "host={host_side} content={content_side}"
+            );
+        }
+
+        // Content is ordered after its host, even when dependency-overrides.toml tries to drop it.
+        let host = native("horizon_java", "both", true, "");
+        let resolved = resolve_manifests(&[&runes, &host], Side::Client, &drop_override).unwrap();
+        assert_eq!(resolved.order, [1, 0]);
+
+        // A host depending on its served content creates a cycle.
+        let cyclic_host = native("horizon_java", "both", true, "[dependencies]\nrunes='^1'");
+        assert!(matches!(
+            resolve_manifests(&[&runes, &cyclic_host], Side::Client, &Overrides::default()),
+            Err(Error::Cycle { .. })
         ));
     }
 }

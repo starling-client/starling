@@ -17,6 +17,14 @@ def read_rows(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def passed_resource_tests(text):
+    """Count passed tests, requiring the vanilla-vector test to have passed."""
+    result = re.search(r'^test result: ok\. ([1-9][0-9]*) passed; 0 failed;', text, re.MULTILINE)
+    assert result and re.search(
+        r'^test \S+::level_environment_reads_match_vanilla_vectors \.\.\. ok$', text, re.MULTILINE), text
+    return int(result.group(1))
+
+
 def main():
     """Compare both authenticated vanilla references and run the public Game regressions."""
     lock, jars, libraries = base.verify_artifacts()
@@ -78,24 +86,23 @@ def main():
                    SUNRISE_LEVEL_READ_EXPECTED=str(build / 'server-expected.jsonl'))
         with (build / 'rust.log').open('w') as output:
             subprocess.run([executable, 'environment_read_tests',
-                            '--ignored', '--test-threads=1', '--nocapture'],
+                            '--ignored', '--test-threads=1'],
                            cwd=scratch, env=env, stdout=output, stderr=subprocess.STDOUT,
                            check=True, timeout=900)
-        text = (build / 'rust.log').read_text()
-        assert re.search(r'^test result: ok\. 5 passed;', text, re.MULTILINE), text
+        resource_tests = passed_resource_tests((build / 'rust.log').read_text())
     base.ensure_sources_unchanged(source_paths, hashes)
     assert lab.digest(inputs, 'sha256') == input_hash, 'Inputs changed during validation'
     lab.write_json(report, dict(schema=1, minecraft=lock['minecraft']['version'],
         sources_sha256=hashes, input_sha256=input_hash, cases=len(rows),
-        fixed_cases=len(fixed), resource_tests=5,
+        fixed_cases=len(fixed), resource_tests=resource_tests,
         jars_sha256={side: lab.digest(jars[side], 'sha256') for side in ('server', 'client')},
         expected_sha256=lab.digest(build / 'server-expected.jsonl', 'sha256'),
         rust_test_executable_sha256=lab.digest(Path(executable), 'sha256'),
         scope='Six LevelRef reads through a resource-backed Game against real client/server '
               'biome zoom, closest-biome search, collision floors, dimension metadata and Level '
-              'sky update/get calls. Four further Game regressions cover edited cells, parked '
+              'sky update/get calls. Further Game regressions cover edited cells, parked '
               'levels, client login, stale handles and no resident chunk loading. '
-              'Does not run a server tick loop, draw a GUI, or exercise guest transport.'))
+              'Does not run a server tick loop, draw a GUI.'))
     print(f'{len(rows)} level environment cases match both vanilla jars: {report}', flush=True)
 
 

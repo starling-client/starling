@@ -5,9 +5,11 @@ pub trait Hooks {
     /// An anvil at `pos` took damage, changing its block from `from` to `to`.
     /// `to` is air when the anvil broke. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_anvil_damaged",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn anvil_damaged();
+    fn anvil_damaged(dimension: &str, pos: [i32; 3], from: &str, to: &str);
 }

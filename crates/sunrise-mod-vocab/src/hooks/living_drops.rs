@@ -26,11 +26,13 @@ pub trait Hooks {
     /// and starting `age` (`ItemDrop::UNLIMITED_LIFETIME` never despawns); a
     /// drop left as it was spawns as before. Server-side.
     #[hook(
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "LivingDropsEvent",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn living_drops(
         entity: u32,
@@ -56,6 +58,7 @@ pub trait Hooks {
     /// `source` and `recently_hit` are as in `native_living_drops`.
     /// Server-side.
     #[hook(
+        dispatch = "api_carrier",
         side = "server",
         contract = "listen",
         neoforge = "GetEquipmentDropChanceEvent",

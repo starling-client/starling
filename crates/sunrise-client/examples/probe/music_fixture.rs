@@ -2,10 +2,10 @@
 //! `MusicManager` over its `SoundEngine`: `music_fixture ROOT INPUT OUTPUT`.
 use crate::audio_common as common;
 use common::{Fake, describe, f, flush};
+use std::io::Write;
 use sunrise_client::music::{Music, MusicFrequency, MusicManager};
 use sunrise_client::sound_engine::{Bound, MUSIC, SoundEngine, TickContext};
 use sunrise_client::sound_events::SoundRegistry;
-use std::io::Write;
 
 fn music(spec: &str) -> Option<Music> {
     if spec == "-" {

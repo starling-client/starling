@@ -1,9 +1,8 @@
 //! The world's NeoForge block maps on fire, weathering, lightning, waxing and the axe, each
 //! against vanilla's answer with no map, and vanilla's answers again once a reload installs none.
 use super::*;
-use crate::level::BlockMaps;
 use crate::level::tests::{World, fixture};
-use serde_json::json;
+use crate::level::{BlockMapValue, BlockMaps};
 use std::sync::Arc;
 
 /// Takes the maps off the shared fixture's behaviours however the test ends.
@@ -79,9 +78,9 @@ fn the_block_maps_drive_fire_weathering_waxing_and_scraping_until_a_reload_remov
         let sim = b.sim(&mut w.level, &mut w.ticks);
         assert_eq!(sim.ignite_odds(end_stone, below, Direction::Up), 0);
         assert_eq!(sim.burn_odds(end_stone, below, Direction::Up), 0);
-        assert_eq!(sim.copper_next(exposed), Some(weathered));
-        assert_eq!(sim.copper_next(copper), Some(exposed_copper));
-        assert_eq!(sim.copper_stepped(oxidized, false), Some(weathered));
+        assert_eq!(b.weathering_next(exposed), Some(weathered));
+        assert_eq!(b.weathering_next(copper), Some(exposed_copper));
+        assert_eq!(b.weathering_previous(oxidized), Some(weathered));
         assert_eq!(b.mapped_waxed(stairs), None);
         assert_eq!(b.mapped_waxed(copper), None);
         assert_eq!(b.mapped_unwaxed(mossy), None);
@@ -93,18 +92,29 @@ fn the_block_maps_drive_fire_weathering_waxing_and_scraping_until_a_reload_remov
     };
     vanilla(&mut w);
 
-    let flammable = json!({"ignite_odds": 5, "burn_odds": 300});
-    let skips_a_stage = json!({"next_oxidation_stage": "minecraft:oxidized_cut_copper_slab"});
-    let mossy_wax = json!({"waxed": "minecraft:mossy_stone_brick_stairs"});
     let rank = |name: &str| {
         b.table
             .block_by_name(name)
             .map_or(u32::MAX, |id| u32::from(id.0))
     };
     b.set_block_maps(Some(Arc::new(BlockMaps::from_values(
-        [("minecraft:end_stone", &flammable)],
-        [("minecraft:exposed_cut_copper_slab", &skips_a_stage)],
-        [("minecraft:stone_brick_stairs", &mossy_wax)],
+        [
+            (
+                "minecraft:end_stone",
+                BlockMapValue::Flammable {
+                    ignite_odds: 5,
+                    burn_odds: 300,
+                },
+            ),
+            (
+                "minecraft:exposed_cut_copper_slab",
+                BlockMapValue::Oxidizable("minecraft:oxidized_cut_copper_slab".into()),
+            ),
+            (
+                "minecraft:stone_brick_stairs",
+                BlockMapValue::Waxable("minecraft:mossy_stone_brick_stairs".into()),
+            ),
+        ],
         rank,
     ))));
     {
@@ -112,10 +122,10 @@ fn the_block_maps_drive_fire_weathering_waxing_and_scraping_until_a_reload_remov
         assert_eq!(sim.ignite_odds(end_stone, below, Direction::Up), 5);
         assert_eq!(sim.burn_odds(end_stone, below, Direction::Up), 300);
         // The map's next stage, properties kept; an unmapped block keeps vanilla's.
-        assert_eq!(sim.copper_next(exposed), Some(oxidized));
-        assert_eq!(sim.copper_next(copper), Some(exposed_copper));
+        assert_eq!(b.weathering_next(exposed), Some(oxidized));
+        assert_eq!(b.weathering_next(copper), Some(exposed_copper));
         // One scrape back goes through the derived inverse.
-        assert_eq!(sim.copper_stepped(oxidized, false), Some(exposed));
+        assert_eq!(b.weathering_previous(oxidized), Some(exposed));
     }
     assert_eq!(fire(&mut w), (5, true));
     // The fire hook comes before the map.

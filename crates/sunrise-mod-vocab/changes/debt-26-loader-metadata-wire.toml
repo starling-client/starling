@@ -1,0 +1,17 @@
+ids = [
+  "type:DataLoadOrigin",
+  "type:DependencyKind",
+  "type:DependencyOrder",
+  "type:LoopSide",
+  "type:PackageDependency",
+  "type:PackageDetails",
+  "type:PackageInfo",
+  "type:PackageKind",
+  "type:PropertyValue",
+  "type:runtime_environment::Dist",
+  "type:runtime_environment::RuntimeEnvironment",
+]
+why = "Guest initialization used to encode loader state. Native mods read it directly, so inventory, phase and process metadata no longer implement Wire. The manifest's DependencyOrder still uses Serde; Side and the game's join and save formats keep their codecs."
+migrate = """
+Keep local reads unchanged: use context.mods().get(id) for package metadata, DataLoadContext::origin() for the load origin, LoopContext::side() for the loop owner, and dist() for the physical process. Handle Option returns from RegistrationContext::{instance_dir, registry, setting} locally instead. Replace writer.put(package) and Reader::decode::<PackageInfo>(bytes) with writer.put(&record) and Reader::decode::<YourRecord>(bytes), where YourRecord is your own #[derive(mod_api::Wire)] record. For example, give it id: String and version: String and fill them with package.id().to_owned() and package.version().to_owned(). For loader enums or properties, match the variants you need into your own Wire enum or primitive fields. Use only those boundary fields in payloads or persisted records; do not embed the local loader types. This is a new boundary format, not a decoder for the old loader bytes.
+"""

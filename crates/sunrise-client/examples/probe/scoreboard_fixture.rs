@@ -6,6 +6,8 @@
 //! case's vanilla NBT and packs it again (`vreload`).
 //!
 //! usage: scoreboard_fixture REGISTRIES.json INPUTS OUTPUT [VANILLA_OUTPUT]
+use serde_json::{Map, Value, json};
+use std::{collections::BTreeMap, fs, io::Write};
 use sunrise_client::{
     command::Registries,
     scoreboard::{
@@ -17,8 +19,6 @@ use sunrise_core::{
     nbt,
     nbt::{NamedTag, Tag},
 };
-use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, fs, io::Write};
 
 fn canon(tag: &Tag) -> Value {
     match tag {

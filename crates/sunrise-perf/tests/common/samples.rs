@@ -272,14 +272,14 @@ pub const TEAM: &str = "sunrise_client_lib::lan::waypoints::waypoint_team";
 pub const TRACK: &str = "sunrise_client_lib::lan::hub::Hub::track_entities";
 
 /// The ids of the functions above, hashed outside the code under test (FNV-1a 64, low 40 bits, base32).
-pub const LEVEL_ID: &str = "f:yg3ymj0d";
-pub const UPDATE_ID: &str = "f:57zvmm9s";
-pub const TEAM_ID: &str = "f:8m7tt1dc";
-pub const TRACK_ID: &str = "f:bvz9skmm";
-pub const SERVER_TICK_ID: &str = "f:y7z04p5v";
-pub const LAN_ID: &str = "f:ja26a1wk";
-pub const BLOCKS_ID: &str = "f:1wcp3vqp";
-pub const MAIN_ID: &str = "f:tmkfe9bp";
+pub const LEVEL_ID: &str = "f:rgmpykz9";
+pub const UPDATE_ID: &str = "f:qxhqgxxx";
+pub const TEAM_ID: &str = "f:0zvs0990";
+pub const TRACK_ID: &str = "f:a4axv99g";
+pub const SERVER_TICK_ID: &str = "f:z6cpxxq7";
+pub const LAN_ID: &str = "f:w4g7svmf";
+pub const BLOCKS_ID: &str = "f:terp8qra";
+pub const MAIN_ID: &str = "f:w0xfxf5a";
 
 /// A call tree of 120 samples of 10 ms times `scale`, over `ticks` ticks in two blocks.
 pub fn waypoints(scale: u64, ticks: u64) -> Builder {

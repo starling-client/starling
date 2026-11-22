@@ -4,6 +4,7 @@
 //! ITEM_USED_ON_BLOCK for the use it consumed.
 use crate::game::game_tests::tests::server_game;
 use crate::game::*;
+use std::sync::Arc;
 use sunrise_client::{
     advancements::{Advancement, Criterion, Rewards, Tree},
     held::Source,
@@ -12,7 +13,6 @@ use sunrise_client::{
 };
 use sunrise_core::geometry::Vec3;
 use sunrise_world::lazy_json::LazyJson;
-use std::sync::Arc;
 use winit::keyboard::KeyCode;
 
 /// A server game with a campfire at `pos` (its block entity too) and beef in
@@ -74,7 +74,7 @@ fn slots(game: &Game<'_>, pos: [i32; 3]) -> usize {
 /// the sneak the campfire takes the beef, and the use it consumed triggers
 /// ITEM_USED_ON_BLOCK with the stack before the use.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_sneak_keeps_the_food_and_placing_it_fires_item_used_on_block() {
     const POS: [i32; 3] = [2, 4, 3];
     let mut resources = None;
@@ -104,7 +104,7 @@ fn a_sneak_keeps_the_food_and_placing_it_fires_item_used_on_block() {
         .insert("minecraft:item_used_on_block".into(), vec![(0, 0)]);
     game.adv.tree = Arc::new(tree);
     let hit = game.forced_hit.unwrap();
-    game.keys.press(KeyCode::ShiftLeft, Source::Keyboard);
+    game.press_device_key(KeyCode::ShiftLeft, Source::Keyboard);
     assert!(game.use_hand(Some(&hit)).unwrap());
     assert_eq!(slots(&game, POS), 0, "the sneak put no beef on the fire");
     assert_eq!(game.held().unwrap().count, 4, "the beef stayed in hand");
@@ -115,7 +115,7 @@ fn a_sneak_keeps_the_food_and_placing_it_fires_item_used_on_block() {
     );
     // Stop eating, let go of the sneak: the same click now feeds the fire.
     game.using = None;
-    game.keys.release(&KeyCode::ShiftLeft, Source::Keyboard);
+    game.release_device_key(&KeyCode::ShiftLeft, Source::Keyboard);
     assert!(game.use_hand(Some(&hit)).unwrap());
     assert_eq!(slots(&game, POS), 1, "the beef went on the fire");
     assert_eq!(game.held().unwrap().count, 3, "one beef was used");

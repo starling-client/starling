@@ -9,18 +9,18 @@
 //! (another server's or a mod's) gets the type its parser and properties
 //! describe.
 use super::{ArgType, Dispatcher, Node, NodeKind, Suggests};
-use sunrise_protocol::packets::play::{ARGUMENT_TYPES, ArgumentProperties, Commands};
 use std::{
     collections::{HashSet, VecDeque},
     sync::{Mutex, OnceLock},
 };
+use sunrise_protocol::packets::play::{ARGUMENT_TYPES, ArgumentProperties, Commands};
 
 /// The command id of every executable node of a server's tree: the chat
 /// sends the command, the server runs it.
 pub const SERVER_COMMAND: &str = "server";
 
 /// The dispatcher for a server's tree. `local` is the client's own tree
-/// (vanilla's), whose matching nodes lend their types and providers.
+/// (vanilla's), whose matching nodes lend their types and providers, not executor bindings.
 pub fn from_packet(packet: &Commands, local: &Dispatcher) -> Dispatcher {
     let count = packet.nodes.len();
     let root = usize::try_from(packet.root)
@@ -320,8 +320,9 @@ mod tests {
             "kept names stay"
         );
     }
+    use sunrise_core::vanilla_bytes::Writer;
     use sunrise_protocol::{
-        buf::{Codec, Reader, Writer},
+        buf::{Codec, Reader},
         packets::play::CommandNode,
     };
 
@@ -416,6 +417,61 @@ mod tests {
         assert!(!tree.parse("nosuchcommand", &reg).is_valid());
         assert!(!tree.parse("say", &reg).is_valid());
         assert!(!tree.parse("list extra", &reg).is_valid());
+    }
+
+    #[test]
+    fn executor_keys_stay_with_authorized_nodes_in_their_dispatcher() {
+        use crate::Registries;
+
+        let mut server = Dispatcher::new();
+        let warp = server.literal(0, "warp");
+        let count = server.argument(warp, "count", ArgType::Integer { min: 1, max: 64 });
+        let preview = server.literal(count, "preview");
+        server.executes(warp, "native_mod_command");
+        server.requires_execution(warp, 2);
+        server.executes(count, "native_mod_command");
+        server.requires_execution(count, 4);
+        server.executes(preview, "preview");
+        server.replace_executor_bindings([(warp, 7), (count, 8)].into());
+
+        let mut registries = Registries {
+            permission: 2,
+            ..Default::default()
+        };
+        let parsed = server.parse("warp", &registries);
+        let key = parsed.executable().unwrap().0.executor.unwrap();
+        assert_eq!(key.slot(), 7, "omitting the optional count runs the prefix");
+        assert!(server.owns_executor(key));
+
+        let denied = server.parse("warp 7", &registries);
+        assert!(denied.executable().is_err());
+        assert_eq!(denied.context.executor, None);
+        registries.permission = 4;
+        let parsed = server.parse("warp 7", &registries);
+        assert_eq!(parsed.executable().unwrap().0.executor.unwrap().slot(), 8);
+        let parsed = server.parse("warp 7 preview", &registries);
+        let (context, command) = parsed.executable().unwrap();
+        assert_eq!(command, "preview");
+        assert_eq!(context.executor, None, "the previous node's key is cleared");
+
+        let mut display = packet();
+        display.nodes[1].executable = true; // The authorized display of the optional prefix.
+        let client = from_packet(&display, &server);
+        for input in ["warp", "warp 7"] {
+            let parsed = client.parse(input, &Registries::default());
+            let (context, command) = parsed.executable().unwrap();
+            assert_eq!(command, SERVER_COMMAND);
+            assert_eq!(context.executor, None, "packets carry display data only");
+        }
+        assert!(!client.owns_executor(key));
+
+        // A rebuild of the same grammar, with identical IDs, must still invalidate old keys.
+        server.replace_executor_bindings([(warp, 7), (count, 8)].into());
+        assert!(!server.owns_executor(key));
+        let parsed = server.parse("warp", &registries);
+        let new_key = parsed.executable().unwrap().0.executor.unwrap();
+        assert_eq!(new_key.slot(), 7);
+        assert!(server.owns_executor(new_key));
     }
 
     #[test]

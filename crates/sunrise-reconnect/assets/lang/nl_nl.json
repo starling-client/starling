@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automatisch opnieuw verbinden",
+  "sunrise.extras.auto_reconnect.tooltip": "Sluit zich opnieuw aan bij een server na een verbroken verbinding of een herstart, nooit na een kick of ban."
+}

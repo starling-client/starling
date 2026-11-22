@@ -1,14 +1,14 @@
-use sunrise_client::{
-    Result,
-    cushion::{self, World},
-};
-use sunrise_core::geometry::{Aabb, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
 use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_client::{
+    Result,
+    cushion::{self, World},
+};
+use sunrise_core::geometry::{Aabb, ShapeOp, Vec3, VoxelShape};
 
 struct Cell {
     outline: VoxelShape,

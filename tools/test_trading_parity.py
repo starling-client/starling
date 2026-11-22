@@ -183,6 +183,16 @@ def corpus(wants):
     cases.append('price b3 seed=5 v=fisherman:plains:1 gossip=major_positive:100 hero=4')
     cases.append('price b4 seed=5 v=shepherd:plains:1 gossip=major_positive:100 gossip=major_positive:100 '
                  'hero=1 uses=0:3 uses=1:3')
+    # Signed Java int extremes, both price limits, and finite floats whose product overflows.
+    lo, hi = -(2**31), 2**31 - 1
+    for i, (base, uses, cap, demand, multiplier, special, delta, xp, start) in enumerate([
+        (3, hi, lo, hi, 1, hi, 1, hi, 1),
+        (1, lo, hi, lo, -1, lo, -1, lo, -1),
+        (7, hi, hi, lo, 3.4028235e38, 100, lo, hi, hi),
+        (12, 5, 3, hi, 1, 0, -hi, lo, lo),
+    ]):
+        cases.append(f'offer_int i{i} base={base} uses={uses} max={cap} demand={demand} '
+                     f'multiplier={multiplier} special={special} delta={delta} xp={xp} start={start}')
     return cases
 
 

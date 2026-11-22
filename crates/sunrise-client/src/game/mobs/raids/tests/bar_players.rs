@@ -2,9 +2,9 @@
 //! `Raid.updatePlayers` refreshes on the 20-tick beats: walking out of the
 //! raid keeps the red bar until the next beat.
 use super::super::Game;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::{geometry::Vec3, position::ChunkPos};
-use std::sync::Arc;
 
 /// The red, ten-notched bars on this client's overlay: the raid's.
 fn raid_bars(game: &Game<'_>) -> usize {

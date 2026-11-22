@@ -6,6 +6,7 @@ use crate::hud::{GuiScale, HudBatch};
 use wgpu::{TextureFormat as T, util::DeviceExt};
 
 #[test]
+#[ignore = "daily"]
 fn translucent_draws_sample_the_color_written_by_deferred() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else { return };

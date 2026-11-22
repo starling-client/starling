@@ -1,7 +1,0 @@
-{
-  "name": "macos",
-  "mac": true,
-  "asset": "sunrise-fork-launcher-macos-arm64.zip",
-  "binary": "sunrise-fork-launcher",
-  "mac_arch": "arm64"
-}

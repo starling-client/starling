@@ -6,11 +6,11 @@
 //! list: nothing of this module runs, and the species' random streams stay
 //! exactly as they were.
 use super::{Mob, MobWorld, Species, brain::Timed, part_goals::BehaviorOp};
-use sunrise_core::random::LegacyRandom;
 use mod_api::{
     BehaviorRegistrarBackend, RegisteredBehavior,
     content::crash::{ModCall, enter_native_mod},
 };
+use sunrise_core::random::LegacyRandom;
 
 /// One mod behavior, wrapped for a brain's list: the mod and part a panic in
 /// it names, its entry condition, and `Behavior`'s own bookkeeping (running,

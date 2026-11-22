@@ -96,4 +96,24 @@ def cases(cmd, setup):
         # A summoned arrow without a UUID keeps the one its own random made.
         sync(16), *setup('/summon arrow 6.5 201 11.5 {NoGravity:1b}'), *get(near('arrow', 6, 11), 'UUID'),
         *setup('/kill @e[type=!player]'),
+        # Mob.finalizeSpawn and most overrides draw from the level's random. A spawn egg's chicken, finalized, still
+        # draws its next egg time from its own random right after its UUID and constructor draws.
+        *setup('/setblock 3 201 15 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:"minecraft:chicken_spawn_egg",'
+               'count:1,components:{"minecraft:entity_data":{id:"minecraft:chicken",NoAI:1b,EggLayTime:1}}}]}'),
+        sync(17), {'op': 'crafter_tick', 'pos': [3, 201, 15]}, {'op': 'tick'},
+        *get(near('chicken', 4, 15), 'EggLayTime'),
+        *setup('/kill @e[type=!player]', '/setblock 3 201 15 minecraft:air'),
+        # A mob summoned without NBT is finalized: a pig's variant pick, sound variant, follow range bonus and
+        # handedness, and a zombie's rolls after those, come from the level's random before the TNT's kick does.
+        *[c for case, kind in ((18, 'pig'), (19, 'zombie')) for c in (
+            *setup('/setblock 8 201 15 minecraft:redstone_block'), sync(case),
+            *setup(f'/summon {kind} 12.5 201 15.5', '/setblock 9 201 15 minecraft:tnt'),
+            *get(near('tnt', 9, 15), 'Motion'),
+            *setup('/kill @e[type=!player]', '/setblock 8 201 15 minecraft:air'),
+        )],
+        # A stand summoned with a UUID keeps it, yet its constructor still made a random and drew one: the next
+        # stand's UUID comes from the random after it.
+        sync(20), *setup('/summon armor_stand 6.5 201 3.5 {UUID:[I;1,2,3,4]}', '/summon armor_stand 10.5 201 3.5'),
+        *get(near('armor_stand', 6, 3), 'UUID'), *get(near('armor_stand', 10, 3), 'UUID'),
+        *setup('/kill @e[type=!player]'),
     ]

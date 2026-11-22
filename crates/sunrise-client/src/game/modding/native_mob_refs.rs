@@ -1,7 +1,16 @@
 //! Mob handles for native server mods.
 use super::{Game, commands::Target};
-use sunrise_client::mobs::{self, Mob, Species, Who, ai::brain_target};
 use mod_api::{EntityRef, LivingRef, MobRef};
+use sunrise_client::{
+    mobs::{self, Mob, MobWorld, Species, Who, ai::brain_target},
+    scoreboard::Team,
+};
+use sunrise_core::geometry::{Aabb, Axis};
+
+fn warden_mob_target_bounds(mob: &Mob) -> Option<Aabb> {
+    (!mob.removed && mob.alive() && !mob.is_invulnerable() && mob.species() != Species::Warden)
+        .then(|| mob.bounds())
+}
 
 /// What decides whether a player can be a mob's target.
 pub(super) struct PlayerFacts {
@@ -109,7 +118,7 @@ impl Game<'_> {
     /// [`Mob::valid_target`] (#1175) a goal tick's view shares.
     pub(super) fn native_mob_valid_target(&self, mob: &Mob, target: Target) -> bool {
         if mob.species() == Species::Warden {
-            return self.native_warden_valid_target(mob, target);
+            return self.warden_valid_target(self.mob_team_of(mob), target);
         }
         match target {
             Target::Mob(id) => {
@@ -158,18 +167,70 @@ impl Game<'_> {
             _ => false,
         }
     }
+    /// `Warden.getTarget` resolves the stored entity and validates the read;
+    /// the brain memory is not changed when that entity becomes invalid.
+    pub(super) fn warden_attack_target(
+        &self,
+        mob: &Mob,
+        scope: Option<(&Mob, &MobWorld<'_>)>,
+    ) -> Option<(u32, Target)> {
+        use sunrise_client::join_seq::residency::table::EntityLookup;
+        let id = mobs::warden::brain_target_id(mob)?;
+        let own_team = scope.map_or_else(
+            || self.mob_team_of(mob),
+            |(actor, world)| self.mob_team_scoped(mob, actor, world),
+        );
+        if let Some((actor, world)) = scope {
+            // The actor and disjoint mob loan are not in Game's resident list
+            // during a tick. Players and the dragon remain on the level.
+            let loaned = if id == actor.id {
+                Some(actor)
+            } else {
+                world.live_mobs.and_then(|mobs| mobs.find(id))
+            };
+            if let Some(other) = loaned {
+                let bounds = warden_mob_target_bounds(other)?;
+                let team = self.mob_team_scoped(other, actor, world);
+                return self
+                    .warden_target_in_bounds(bounds, own_team, team)
+                    .then_some((id, Target::Mob(id)));
+            }
+        }
+        match self.server_resident_entity(id) {
+            EntityLookup::Found { location, value }
+                if location.owner.dimension == self.dim.key()
+                    && self.warden_valid_target(own_team, value) =>
+            {
+                Some((id, value))
+            }
+            _ => None,
+        }
+    }
+
     /// `Warden.canTargetEntity`, which overrides the usual `Mob.canAttack`.
-    fn native_warden_valid_target(&self, mob: &Mob, target: Target) -> bool {
-        use sunrise_core::geometry::Axis;
+    fn warden_valid_target(&self, own_team: Option<&Team>, target: Target) -> bool {
         let (bounds, team) = match target {
             Target::Mob(id) => {
-                let Some(other) = self.mobs.iter().find(|m| m.id == id && !m.removed) else {
+                let Some(other) = self.mobs.iter().find(|m| m.id == id) else {
                     return false;
                 };
-                if !other.alive() || other.invulnerable_flag || other.species() == Species::Warden {
+                let Some(bounds) = warden_mob_target_bounds(other) else {
+                    return false;
+                };
+                (bounds, self.mob_team_of(other))
+            }
+            Target::Dragon(id) => {
+                let Some((_, target)) = self
+                    .dragon_target()
+                    .filter(|(target_id, _)| *target_id == id)
+                else {
+                    return false;
+                };
+                let (flag, window) = self.saved_invulnerability(id);
+                if flag || window > 0 {
                     return false;
                 }
-                (other.bounds(), self.mob_team(id))
+                (target.bounds, self.mob_team(id))
             }
             Target::Guest(conn) => {
                 let Some(g) = self.command_guest(conn) else {
@@ -179,7 +240,9 @@ impl Game<'_> {
                     || g.dead
                     || g.health <= 0.0
                     || matches!(g.game_mode, 1 | 3)
-                    || g.motion.as_ref().is_some_and(|p| p.invulnerable)
+                    || g.motion.as_ref().is_some_and(|p| {
+                        p.health.permanently_invulnerable || p.health.invulnerable_time > 0
+                    })
                 {
                     return false;
                 }
@@ -191,7 +254,8 @@ impl Game<'_> {
                 };
                 if matches!(self.mode_id(), 1 | 3)
                     || player.health.dead_or_dying()
-                    || player.invulnerable
+                    || player.health.permanently_invulnerable
+                    || player.health.invulnerable_time > 0
                 {
                     return false;
                 }
@@ -199,8 +263,17 @@ impl Game<'_> {
             }
             _ => return false,
         };
+        self.warden_target_in_bounds(bounds, own_team, team)
+    }
+
+    fn warden_target_in_bounds(
+        &self,
+        bounds: Aabb,
+        own: Option<&Team>,
+        other: Option<&Team>,
+    ) -> bool {
         let border = self.border.geometry();
-        !sunrise_client::scoreboard::teams_allied(self.mob_team(mob.id), team)
+        !sunrise_client::scoreboard::teams_allied(own, other)
             && border.is_within_bounds(bounds.min(Axis::X), bounds.min(Axis::Z), 0.0)
             && border.is_within_bounds(
                 bounds.max(Axis::X) - f64::from(1.0e-5_f32),
@@ -238,6 +311,13 @@ impl Game<'_> {
             return self.native_dragon_target(mob.entity());
         };
         let mob = self.mobs.iter().find(|m| m.id == id)?;
+        if mob.species() == Species::Warden {
+            let (id, _) = self.warden_attack_target(mob, None)?;
+            return Some(LivingRef::new(EntityRef::new(
+                self.native_lifecycle.epoch()?,
+                id,
+            )));
+        }
         let target = brain_target(mob).unwrap_or(mob.ai.target)?;
         let target_id = match target {
             Who::Mob(id) => id,
@@ -397,10 +477,9 @@ impl Game<'_> {
         let Some(who) = self.native_mob_bind_target(id, target) else {
             return false;
         };
-        self.mobs
-            .iter_mut()
-            .find(|m| m.id == id)
-            .is_some_and(|m| sunrise_client::mobs::ai::set_brain_target(m, who))
+        self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+            sunrise_client::mobs::ai::set_brain_target(m, who, target.map(|t| t.entity().id()))
+        })
     }
 
     /// The mob flag a handle names: a mob's, or the dragon's own.
@@ -760,9 +839,9 @@ impl Game<'_> {
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::*;
+    use mod_api::WorldEpoch;
     use sunrise_client::{entities::ArmorStand, mobs::Mob};
     use sunrise_core::geometry::Vec3;
-    use mod_api::WorldEpoch;
 
     fn add_mob(game: &mut Game<'_>, id: u32, name: &str) -> MobRef {
         let kind = game.res.mob_types().get(name).unwrap().clone();
@@ -771,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn redirected_fake_target_is_refused_with_the_original_target_intact() {
         use std::sync::{Arc, Mutex};
         struct Redirect(Arc<Mutex<Option<LivingRef>>>);
@@ -812,19 +891,19 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn leash_holder_reads_live_state() {
         use super::super::{boats::Boat, lan::LanSettings};
-        use sunrise_client::lan::{
-            Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig, playerdata::uuid_ints,
-        };
-        use sunrise_protocol::packets::configuration::ClientInformation;
         use mobs::leash::{Holder, Pending};
         use mod_api::LeashHolder;
         use std::sync::{
             Arc,
             atomic::{AtomicI32, AtomicUsize},
         };
+        use sunrise_client::lan::{
+            Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig, playerdata::uuid_ints,
+        };
+        use sunrise_protocol::packets::configuration::ClientInformation;
 
         with_game(|game| {
             let settings = LanSettings {
@@ -851,6 +930,7 @@ mod tests {
                 max_players: 2,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();
             let (tx, _rx) = std::sync::mpsc::channel();
@@ -922,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_portal_eligibility_matches_gameplay() {
         with_game(|game| {
             let cow = add_mob(game, 12, "minecraft:cow");
@@ -959,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_flags_custom_persistence_is_independent_of_stored_flags() {
         with_game(|game| {
             let mob = add_mob(game, 12, "minecraft:cow");
@@ -997,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_flags_baby_setter_uses_species_age_and_attribute_boundaries() {
         use mobs::finalize::{Attr, base_value};
 
@@ -1040,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_flags_baby_setter_runs_ghastling_setup_in_both_directions() {
         use mobs::{control::MoveKind, nav::NavKind};
 
@@ -1069,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_flags_baby_setter_refuses_no_baby_species_and_unavailable_mobs() {
         with_game(|game| {
             for (id, name) in [(12, "minecraft:skeleton"), (13, "minecraft:parrot")] {
@@ -1116,11 +1196,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn player_target_round_trips_through_the_mob_binding() {
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
         use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
         use sunrise_protocol::packets::configuration::ClientInformation;
-        use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
         with_game(|game| {
             let settings = super::super::lan::LanSettings {
@@ -1145,6 +1225,7 @@ mod tests {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             };
             game.lan_host(settings, net, config).unwrap();
             let (tx, _rx) = mpsc::channel();
@@ -1296,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fox_enderman_and_zombified_piglin_take_targets_with_their_side_effects() {
         use sunrise_core::random::{LegacyRandom, RandomSource};
         with_game(|game| {
@@ -1390,7 +1471,7 @@ mod tests {
     /// propagated to another piglin. Seed selection fixes the first sound at
     /// one tick; advancing the alert timer avoids waiting four seconds.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn piglin_target_write_drives_anger_sound_and_alert() {
         use sunrise_core::random::{LegacyRandom, RandomSource};
         with_game(|game| {
@@ -1435,7 +1516,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn brain_species_take_a_written_attack_target_memory() {
         with_game(|game| {
             for (id, name) in [
@@ -1514,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_handles_read_write_and_refuse_unavailable_entities() {
         with_game(|game| {
             let zombie = game
@@ -1559,16 +1640,7 @@ mod tests {
             assert_eq!(brain.target(game), Some(other));
             let warden = game.mob(game.entity(19).unwrap()).unwrap();
             let ghast = game.living(game.entity(21).unwrap()).unwrap();
-            let warden_mob = game.mobs.iter_mut().find(|m| m.id == 19).unwrap();
-            warden_mob
-                .extra
-                .warden
-                .as_mut()
-                .unwrap()
-                .brain
-                .mem
-                .attack_target
-                .set(Who::Mob(21));
+            assert!(warden.set_brain_target(game, Some(ghast)));
             assert_eq!(
                 warden.target(game),
                 Some(ghast),
@@ -1610,7 +1682,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn look_and_jump_go_through_the_mobs_own_controls() {
         with_game(|game| {
             let zombie = game
@@ -1657,7 +1729,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_restriction_round_trips_through_the_handle_and_saves() {
         use sunrise_core::nbt::Tag;
         with_game(|game| {
@@ -1691,8 +1763,14 @@ mod tests {
                 Some(false)
             );
             // The home area is saved with the mob.
-            let saved =
-                sunrise_client::entity_nbt::mob_to_nbt(&game.mobs[0], [0; 4], None, None, |_| None);
+            let saved = sunrise_client::entity_nbt::mob_to_nbt(
+                &game.mobs[0],
+                [0; 4],
+                None,
+                None,
+                |_| None,
+                &Default::default(),
+            );
             assert_eq!(
                 saved.get("home_pos"),
                 Some(&Tag::IntArray(vec![10, 64, -5]))
@@ -1705,8 +1783,14 @@ mod tests {
             assert_eq!(game.mob_restrict_center(mob), Some([10, 64, -5]));
             assert_eq!(game.mob_restrict_radius(mob), Some(-1));
             assert_eq!(game.mob_is_within_restriction(mob, [20, 64, 0]), Some(true));
-            let saved =
-                sunrise_client::entity_nbt::mob_to_nbt(&game.mobs[0], [0; 4], None, None, |_| None);
+            let saved = sunrise_client::entity_nbt::mob_to_nbt(
+                &game.mobs[0],
+                [0; 4],
+                None,
+                None,
+                |_| None,
+                &Default::default(),
+            );
             assert!(saved.get("home_pos").is_none());
             assert!(saved.get("home_radius").is_none());
             // restrictTo with radius -1 clears while keeping the new center.
@@ -1717,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_extreme_restriction_answers_as_vanilla() {
         with_game(|game| {
             let zombie = game
@@ -1759,7 +1843,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn hand_and_loot_flags_live_on_the_mob_handle() {
         use sunrise_core::nbt::Tag;
         with_game(|game| {
@@ -1783,8 +1867,14 @@ mod tests {
             assert!(game.mobs[0].extra.pick_up_loot);
             assert_eq!(game.mob_can_pick_up_loot(mob), Some(true));
             // Saved as LeftHanded / CanPickUpLoot.
-            let saved =
-                sunrise_client::entity_nbt::mob_to_nbt(&game.mobs[0], [0; 4], None, None, |_| None);
+            let saved = sunrise_client::entity_nbt::mob_to_nbt(
+                &game.mobs[0],
+                [0; 4],
+                None,
+                None,
+                |_| None,
+                &Default::default(),
+            );
             assert_eq!(saved.get("LeftHanded"), Some(&Tag::Byte(1)));
             assert_eq!(saved.get("CanPickUpLoot"), Some(&Tag::Byte(1)));
             assert!(game.mob_set_left_handed(mob, false));

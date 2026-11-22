@@ -1,0 +1,1 @@
+sunrise-client game::native_hooks::book_screen::lifecycle_tests::a_missing_recipe_book_factory_keeps_the_current_window lib daily resources

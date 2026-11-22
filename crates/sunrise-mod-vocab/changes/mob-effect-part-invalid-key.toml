@@ -1,0 +1,3 @@
+ids = ["type:MobEffectPartError"]
+why = "Attaching a MobEffectPart to an unresolved EffectKey now returns MobEffectPartError::InvalidKey instead of MobEffectPartError::Duplicate, keeping Duplicate for repeated attachments of the same concrete Part type."
+migrate = "Match MobEffectPartError::InvalidKey when handling unresolved effect keys separately from duplicate Part attachments."

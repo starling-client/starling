@@ -22,7 +22,6 @@ impl FluidIdentity {
 }
 
 impl UnresolvedFluid {
-    #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(crate) fn from_slot(slot: u64) -> Result<Self, &'static str> {
         let access = access().ok_or("unresolved fluid storage requires the platform runtime")?;
         (access.slot_is_live)(slot)

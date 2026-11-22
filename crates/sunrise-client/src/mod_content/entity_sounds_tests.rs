@@ -8,6 +8,7 @@ fn a_living_mod_types_row_is_its_templates_with_its_attributes() {
     let ghoul = |attributes: &[(&str, f64)], attachments: &[[f32; 3]]| EntityType {
         id: "ruby:ghoul".into(),
         template: "minecraft:zombie".into(),
+        allowed_in_peaceful: Some(true),
         shadow_radius: Some(0.2),
         shadow_strength: Some(0.6),
         item: None,
@@ -24,6 +25,7 @@ fn a_living_mod_types_row_is_its_templates_with_its_attributes() {
     expected["shadow_radius"] = serde_json::json!(0.2);
     expected["shadow_strength"] = serde_json::json!(0.6);
     expected["template"] = "minecraft:zombie".into();
+    expected["allowed_in_peaceful"] = true.into();
     expected["passenger_attachments"] = serde_json::json!([[0.0, 0.7, -0.1]]);
     assert_eq!(written, expected);
     // the untouched speed keeps the template's text, not a reparsed float.

@@ -1,10 +1,10 @@
 //! Quart-resolution biome storage and section-atomic noise-biome filling.
 use crate::heightmap::{Heightmap, HeightmapError, HeightmapType};
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_core::{
     biome::BiomeZoom,
     position::{BlockPos, ChunkPos},
 };
-use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 pub struct BiomeChunk<T> {

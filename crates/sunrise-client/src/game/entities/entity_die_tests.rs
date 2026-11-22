@@ -1,13 +1,14 @@
 //! Entity.kill, BlockAttachedEntity.kill, ArmorStand.kill and ItemEntity.dampensVibrations.
 use super::{Audio, Game, Options, Progress, Settings, load_resources};
 use crate::game::execution_role;
+use std::sync::Arc;
 use sunrise_client::{
     chunk::Chunk,
     containers::BlockEntity,
     mobs::{Mob, Who, warden},
 };
+use sunrise_client_core::who::EventSource;
 use sunrise_core::{geometry::Vec3, position::ChunkPos};
-use std::sync::Arc;
 
 fn deaths() -> Vec<(&'static str, [f64; 3], Option<Who>)> {
     super::sculk::TEST_POSTED_EVENTS.with(|events| {
@@ -76,7 +77,7 @@ fn with_game(f: impl FnOnce(&mut Game<'_>)) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+#[ignore = "daily"]
 fn entity_die_commands() {
     with_game(|game| {
         let at = [4.25, 200.0, 4.75];
@@ -111,6 +112,12 @@ fn entity_die_commands() {
             game.sculk_prepare();
             game.sculk_sync_index();
             warden::register(&mut game.mobs[0]);
+            // The killed entity is the event's source, except an end crystal, whose kill posts
+            // without one.
+            let source = (kind != "end_crystal")
+                .then(|| game.network_entity_id(target))
+                .flatten()
+                .map(|id| EventSource::Entity(id as u32));
             capture();
             game.run_command(&format!("kill @e[type=minecraft:{kind}]"));
             assert_eq!(game.target_position(target), None, "{kind} removed");
@@ -127,7 +134,7 @@ fn entity_die_commands() {
             if let Some((info, _)) = sensor.vibration.selector.current {
                 assert_eq!(info.event, "minecraft:entity_die");
                 assert_eq!(info.pos, at);
-                assert_eq!(info.source, None);
+                assert_eq!(info.source, source, "{kind} source");
             }
             let vibration = &game.mobs[0].extra.warden.as_ref().unwrap().vibration;
             assert_eq!(
@@ -152,7 +159,7 @@ fn entity_die_commands() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+#[ignore = "daily"]
 fn entity_die_explosions() {
     with_game(|game| {
         let at = [4.25, 200.0, 4.75];

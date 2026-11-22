@@ -7,7 +7,7 @@ use serde_json::{Map, Value as Json};
 use std::collections::BTreeMap;
 
 /// An expression field: a string, or a plain number or boolean written as one.
-fn program(v: &Json) -> Result<Program, String> {
+pub(crate) fn program(v: &Json) -> Result<Program, String> {
     match v {
         Json::String(s) => Program::compile(s),
         Json::Number(n) => Program::compile(&n.to_string()),

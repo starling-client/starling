@@ -1,0 +1,3 @@
+ids = ["hook:tick_block"]
+why = "When a subscribed block owner is switched off, a scheduled occurrence is held before any Part is called, including earlier enabled Parts on that block. The occurrence resumes once with its original deadline, priority and order when the owner is enabled again."
+migrate = "Rebuild against the updated SDK. Do not rely on tick_block callbacks for a subscribed owner's block while that owner is disabled."

@@ -1,5 +1,9 @@
 # Design: custom recipe-book settings
 
+> The native contract below still applies. The WebAssembly guest dispatch route was removed.
+> Host and guest player swaps still refer to LAN players.
+> See [recipe book types](../../modding/src/concepts/recipe-book-types.md) for the current native API.
+
 Design for [#1023](https://github.com/arismoko/horizon/issues/1023).
 Storage, registration, player settings handles and negotiated synchronization
 are implemented. This is a Sunrise design; vanilla 26.3 is the reference for the
@@ -15,7 +19,7 @@ write. It leaves every other book untouched, synchronizes changed flags and
 notifies the existing `player_recipe_book_settings_change` moment once.
 That notification now carries `RecipeBookIdentity`: one of the four vanilla
 identities or `Custom(RecipeBookTypeKey)`, never a fabricated vanilla ordinal.
-The values explicitly derive `Wire` and share the generated native/wasm boundary.
+The values explicitly derive `Wire`.
 
 A client mod reads `PlayerRef::synced_recipe_book_settings` and submits intent
 with `PlayerRef::request_recipe_book_settings` through a `ClientHost`. Engine
@@ -38,8 +42,7 @@ a winner. Freeze the registry when registration finishes, before loading player
 state or negotiating connections. Late registration returns an explicit frozen
 registry error. Resource reload does not reopen it.
 
-Declarations are shared content on server and client. Native and wasm use the
-same declaration, validation, limits and generated boundary contract. A client
+Declarations are shared content on server and client. A client
 must register a key to negotiate it; a server-only declaration can retain state
 but cannot make an unmodified client display a book. Reads belong on a player's
 recipe-book settings handle with `&dyn Host`; authoritative writes take
@@ -50,7 +53,7 @@ handle; it cannot directly mutate server state. Do not add player-id helpers to
 Book identities are separate from `RecipeBookCategory` in
 `crates/sunrise-mod-vocab/src/item/recipe_book.rs`. Categories group recipes and provide
 icons; a book owns two flags. A screen associates categories with a registered
-book explicitly through `Screen.recipe_book`. Neither category registration nor
+book explicitly through `MenuScreenLayout.recipe_book`. Neither category registration nor
 recipe-type registration implicitly registers a book. Recipe unlocking and
 placement remain separate from displaying the declared recipe layouts.
 
@@ -62,8 +65,15 @@ include the declaring mod, supplied ID and rule and refuse installation even
 if ignored. Keep the returned key (`mod_api::item::recipe_book::RecipeBookTypeKey`)
 for screen bindings. `as_str()` returns its stable identity and `is_registered()`
 checks membership in this process's installed registry. No public unchecked
-constructor exists. Native and wasm share the same registrar method through
-the generated Wire boundary; the key explicitly derives `Wire`.
+constructor exists. The key explicitly derives `Wire`.
+
+For Java-compatible flat persistence, call
+`r.recipe_book_type_with_fields(id, open_field, filtering_field)` instead. Both
+methods return the same key and enforce the same ID rules. The explicit field
+names are case-sensitive nonempty strings of at most 256 UTF-8 bytes, with no
+character-set restriction. Reject equal names and collisions with vanilla's eight
+flag fields, `recipes`, `toBeDisplayed`, `sunrise:book_settings`, or another book's
+fields. Invalid field declarations refuse installation even if ignored.
 
 This registration does not create a category, settings handle, UI or network
 payload. Successful installation freezes the registry; resource reload does
@@ -78,13 +88,20 @@ from validated key to a value `{ open: bool, filtering: bool }` alongside them i
 There is no fifth vanilla index. Use one shared map implementation for local,
 host and guest players, persistence and payload application.
 
-Persist the map inside `recipeBook` under `sunrise:book_settings`, a compound
+For books without explicit fields, persist the map inside `recipeBook` under `sunrise:book_settings`, a compound
 whose keys are book ids and whose values contain byte booleans `open` and
 `filtering`. Write both flags, including zero, and sort keys for stable output.
 Missing extension means an empty map. Preserve well-formed entries even when
 the owning mod is absent; registration is required for live access and sync,
 not for retention. Parse the extension independently of vanilla recipe-list
 validation so an invalid recipe list does not erase retained custom flags.
+
+Books declaring explicit fields instead read their flags directly from those
+fields in `recipeBook`. Save each true flag as Byte(1) and omit each false flag,
+as vanilla's `TypeSettings` codec does. Do not also write those books to the
+extension and do not fall back to extension entries for them. Like existing custom
+flags, read the flat fields independently of recipe-list validation. In-memory
+state and synchronization continue to use the book ID, not its saved field names.
 
 Bound the extension to 1024 entries, 256 bytes per key and 512 KiB encoded data.
 Check lengths before allocating or iterating nested values. Accept only a
@@ -223,27 +240,14 @@ and a category selected in another book cannot be reused as a tab here.
 
 ### Hosting the panel in a mod screen
 
-Construct `Screen` with the geometry your menu needs and use struct update syntax
-for fields you do not set. This keeps the literal compiling when optional fields
-are added; it does not make the default geometry suitable for your menu.
-
-```rust
-let screen = mod_api::Screen {
-    width: 176.0,
-    height: 166.0,
-    slots: vec![Some([44.0, 35.0]), Some([116.0, 35.0])],
-    inventory_x: 8.0,
-    inventory_y: 84.0,
-    ..mod_api::Screen::default()
-};
-```
-
-Set `Screen.recipe_book` to `Some(key.clone())` in the existing `native_screen`
-declaration. Leave it `None` for a screen without a recipe book. The key must
-belong to the categories' `target_menu`; a different menu cannot display that
-book. The green book button sits just outside the menu's right edge so it does
-not cover slots chosen by the mod. The open panel uses the normal narrow-window
-coverage and wide-window menu shift.
+Register a client factory for the menu. The window uses that factory to build a fresh
+`MenuScreen` with local `MenuScreenLayout` geometry; see the
+[recipe-bound example](../../modding/src/how-to/items/recipe-book-categories.md#binding-a-book-to-a-menu).
+Set `layout.recipe_book` to the registered key. A bound menu must name its bound key,
+and a different menu cannot display that book. Leave the field `None` for an unbound
+screen without a book. Use struct update syntax for optional layout fields; the defaults
+do not provide valid dimensions or populate slots. The open panel uses the normal
+narrow-window coverage and wide-window menu shift.
 
 The panel is disabled until the connection has an authoritative settings
 snapshot for the registered key. Opening and filtering submit requests through
@@ -289,10 +293,13 @@ amplification without leaving a lost resnapshot or pending UI intent unresolved.
 
 ## Toggle layout and large books
 
-`Screen.recipe_book_toggle` optionally reserves a 20 × 18 GUI-pixel toggle at
-an `[x, y]` offset from the menu origin. Like vanilla's screen-specific button
-positions, this is space the screen author must keep clear of slots and labels.
-Both native and wasm declarations carry the same optional value over Wire.
+`MenuScreenLayout.recipe_book_toggle` optionally reserves a 20 × 18 GUI-pixel toggle:
+`RecipeBookToggle { x, y, from }` puts it `x` pixels right of the menu's left edge and `y` below the
+menu's top edge (`from: Menu`) or below the window's centre (`from: ScreenCentre`, vanilla's
+`height / 2` with integer division, so `leftPos + 5, height / 2 - 49` is `x: 5.0, y: -49.0`).
+Like vanilla's screen-specific button positions, this is space the screen author must keep
+clear of slots and labels. The anchor and its coordinate origin are local to the window,
+not part of the transmitted recipe-book declaration.
 
 Without an anchor, the client tries an external right, left, then above-menu
 gutter, rejecting positions covered by the overlay panel. Menus wider than 176
@@ -300,7 +307,7 @@ GUI pixels, windows narrower than 379 GUI pixels, or windows narrower than the
 menu width plus 202 GUI pixels use overlay mode instead of shifting slots. If
 the toggle does not fit in the viewport in the closed layout or in the open
 layout, the book is refused with a diagnostic identifying the mod block and menu.
-The diagnostic requests `Screen.recipe_book_toggle` when absent, or reports an
+The diagnostic requests `MenuScreenLayout.recipe_book_toggle` when absent, or reports an
 anchored toggle outside the viewport when the declared anchor does not fit. The menu still opens unchanged; the
 engine never clamps a toggle onto mod slots or clips the menu to make room.
 
@@ -312,12 +319,11 @@ the entire declared book, not just the visible page.
 ## Menu-owned destination roles
 
 During shared registration,
-`r.menu_recipe_book(menu, &book, recipe_type, layout, screen)` binds a content
-menu to a registered book, a recipe type and its existing typed `Screen` value. The menu namespace
+`r.menu_recipe_book(menu, &book, recipe_type, layout)` binds a content menu
+to a registered book, a recipe type and its destination roles. The menu namespace
 must belong to the registering mod. Duplicate bindings and unknown books refuse
-installation even when the registration error is ignored. The declaration is
-frozen with the other registrations and explicitly derives `Wire`, for the
-same native and wasm transport.
+installation even when the registration error is ignored. The roles are frozen with
+the other registrations; `RecipeBookLayout` derives `Wire`.
 
 `RecipeBookLayout` declares one of four destination maps:
 
@@ -326,6 +332,8 @@ same native and wasm transport.
 - `Furnace { input, fuel, result }` supports cooking displays.
 - `Stonecutter { input, result }` supports stonecutting displays.
 - `Smithing { template, base, addition, result }` supports smithing displays.
+- `Mod` declares no roles: the menu's `MenuPart` answers a click with `recipe_book_place` and places with
+  `ServerHost::place_recipe_in_grid`, vanilla's `ServerPlaceRecipe.placeRecipe` with the mod's own grid.
 
 These are container slots, not the appended player inventory. Overlapping roles,
 invalid dimensions and indices outside the 256-slot menu bound refuse registration.
@@ -335,14 +343,14 @@ agree with the declaration. Without that backend, a crafting map describes real
 persistent input storage instead: for example, six cooking-pot inputs in a 3 by 2
 grid. Placement never fills its cooked output or fuel, and preserves those slots.
 An incompatible display or one that does not fit refuses the declaration
-generation rather than truncating ingredients. All mapped slots need finite
-coordinates in `Screen.slots`. Registration rejects missing or nonfinite
-coordinates, nonpositive/nonfinite panel sizes and a screen bound to another
-book. Startup also rejects geometry for slots beyond the actual content menu.
-The screen is frozen in this same declaration, not a second registry. For these
-book-enabled menus, both the client layout and server hidden-slot policy use
-that registered screen; `native_screen` is not consulted. Other mod menus still
-obtain their screens dynamically.
+generation rather than truncating ingredients. No permanent slot mask may exclude
+a mapped role. The client obtains geometry from the menu's registered screen factory at
+open, just as it does for other mod menus. A bound menu's layout must name the
+registered book and supply finite coordinates for all visible backing slots.
+A layout that disagrees with the mask or extends beyond the backing, supplies
+invalid dimensions or coordinates, or names an unknown empty-slot sprite is refused
+at open. Every excluded slot retains its backing index; the server's mask and
+recipe destinations are independent of any local screen move or hide.
 
 The shared mapper uses vanilla `PlaceRecipeHelper`: a 1 by 1 shaped recipe in
 a 3 by 3 grid is centered; a 2 by 2 recipe starts at the upper left and retains
@@ -363,8 +371,8 @@ refuses its declaration load rather than guessing ingredients from its icons.
 
 The shared Wire boundary allows 32 structural record levels, including the
 category, display-entry and placement-info envelope. Nested ingredient shapes
-must fit that complete envelope; the native validator and wasm boundary use the
-same codec and refuse excess depth with `WireError`. Opaque NBT has its separate,
+must fit that complete envelope; the codec refuses excess depth with `WireError`.
+Opaque NBT has its separate,
 iterative vanilla limit of 512 container levels; it does not spend one structural
 level per NBT container. Wide, shallow cooking grids do not consume extra depth.
 
@@ -382,7 +390,7 @@ It commits placement atomically, or refuses without publishing a partial plan.
 Persistent machines retain their real fuel and cooked output; placement does not
 craft their output. Only a current server missing-ingredients response installs
 ghost hints. Every new click, window change, disconnect or declaration reload
-revokes pending hints. Ghosts use the shared vanilla painter and the registered
+revokes pending hints. Ghosts use the shared vanilla painter and the active
 screen's native slot geometry, never built-in slot coordinates.
 
 Displays are pictures, not ingredient predicates; declaring a result ghost never

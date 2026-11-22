@@ -6,8 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 description = "java.util.Properties load and store, and the JDK's date text, with no dependency beyond the standard library"
 
-# No dependencies, and the test in src/lib.rs keeps it so: `sunrise-server-files` and `sunrise-mod-wasm` both read
-# Java-properties files, and the wasm runtime must not pull the engine's world, protocol or thread crates in for it.
+# The test in src/lib.rs keeps this Java-properties parser free of dependencies.
 [dependencies]
 
 [lints]

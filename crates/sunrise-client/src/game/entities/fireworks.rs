@@ -12,7 +12,7 @@ use sunrise_client::{
     mesher::Vertex,
     mobs::{Damage, Species, Who},
     particles::{FireworkExplosion, ParticleOptions, ParticleType},
-    projectiles::ProjectileWorld,
+    projectiles::{Hit as ProjectileHit, ProjectileWorld},
     random_source,
     text::Text,
 };
@@ -23,11 +23,8 @@ use sunrise_core::{
 
 pub(super) const FIREWORK_EXPLODE_EVENT: i8 = 17;
 
-/// What `ProjectileUtil.getHitResultOnMoveVector` found along a rocket's move.
-enum RocketHit {
-    Entity(Who),
-    Block,
-}
+#[path = "fireworks/impact.rs"]
+mod impact;
 
 pub(super) struct Rocket {
     /// Entity-owned registration metadata; content clones are detached.
@@ -69,7 +66,7 @@ pub(super) struct Rocket {
     pub(super) random: sunrise_core::random::LegacyRandom,
     /// `Entity.onGround`: whether its last move was stopped going down (or
     /// the one it was loaded with, until it moves).
-    pub(super) on_ground: bool,
+    pub(super) ground: sunrise_world::ground_support::GroundState,
     /// `Projectile.hasBeenShot`: its first tick posts `projectile_shoot`.
     pub(super) has_been_shot: bool,
     /// `Entity.isSilent`: no launch sound.
@@ -109,7 +106,7 @@ impl Rocket {
             angled: false,
             item,
             random: sunrise_client::projectiles::unique_random(position),
-            on_ground: false,
+            ground: Default::default(),
             // The server posts the shot.
             has_been_shot: true,
             silent: false,
@@ -136,6 +133,7 @@ impl Rocket {
         uuid: [i32; 4],
         player: Option<[i32; 4]>,
         raw: Option<&sunrise_core::nbt::Tag>,
+        items: &crate::items::Items,
     ) -> sunrise_core::nbt::Tag {
         sunrise_client::entity_nbt::firework_rocket_to_nbt(
             &sunrise_client::entity_nbt::RocketSave {
@@ -152,12 +150,13 @@ impl Rocket {
                     self.owner_uuid
                 },
                 left_owner: self.left_owner,
-                on_ground: self.on_ground,
+                on_ground: self.ground.on_ground,
                 has_been_shot: self.has_been_shot,
                 fall_distance: self.fall_distance,
             },
             uuid,
             raw,
+            items,
         )
     }
     /// A rocket loaded from its NBT (`/summon`, a saved chunk).
@@ -186,7 +185,7 @@ impl Rocket {
             angled: r.angled,
             item,
             random: sunrise_client::projectiles::unique_random(r.position),
-            on_ground: r.on_ground,
+            ground: sunrise_world::ground_support::GroundState::from_ground_flag(r.on_ground),
             has_been_shot: r.has_been_shot,
             silent: r.silent,
             fall_distance: r.fall_distance,
@@ -212,20 +211,42 @@ impl Rocket {
         self.item = loaded.item;
         self.angled = loaded.angled;
         self.left_owner = loaded.left_owner;
-        self.on_ground = loaded.on_ground;
+        self.ground = loaded.ground;
         self.fall_distance = loaded.fall_distance;
     }
     /// One tick of a server's client: the rocket flies on by itself between
     /// the server's updates (a rocket that follows an entity is placed by the
     /// caller).
-    pub(super) fn remote_step(
-        &mut self,
-        scene: &mut SceneCollisions,
-        context: &sunrise_world::native_load_context::LoopContext,
-    ) {
+    pub(super) fn remote_step(&mut self, motion: sunrise_client::motion::BodyMotion<'_>) {
         self.previous = self.position;
         if self.attached_to.is_none() {
-            let _ = self.free_flight(scene, context);
+            let mut scene = SceneCollisions {
+                world: motion.world,
+                binding: motion.collision,
+                subject: None,
+            };
+            if let Some((_, wanted, moved, restored)) = self.free_flight(&mut scene, motion.context)
+            {
+                let movement = self.flight_contact(motion, wanted, moved);
+                self.velocity = motion
+                    .restitute(
+                        (self.id, "minecraft:firework_rocket"),
+                        movement,
+                        0.0,
+                        0.98_f32,
+                        self.velocity,
+                        self.fall_distance,
+                    )
+                    .velocity;
+                motion.apply_block_speed(self.position, &mut self.velocity);
+                motion.step_on(
+                    (self.id, "minecraft:firework_rocket"),
+                    (self.position, Self::bounds_at(self.position)),
+                    &self.ground,
+                    &mut self.velocity,
+                );
+                self.velocity = restored;
+            }
         }
         self.life += 1;
     }
@@ -255,10 +276,15 @@ impl Rocket {
         if self.angled {
             self.velocity
         } else {
+            let acceleration = if self.ground.horizontal_collision {
+                1.0
+            } else {
+                1.15
+            };
             Vec3::new(
-                self.velocity.x * 1.15,
+                self.velocity.x * acceleration,
                 self.velocity.y + 0.04,
-                self.velocity.z * 1.15,
+                self.velocity.z * acceleration,
             )
         }
     }
@@ -282,10 +308,11 @@ impl Rocket {
         &mut self,
         scene: &mut SceneCollisions,
         context: &sunrise_world::native_load_context::LoopContext,
-    ) -> Option<(Vec3, Vec3, Vec3)> {
+    ) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
         let bounds = self.bounds();
         let motion = self.next_motion();
         let mut wanted = motion;
+        self.velocity = motion;
         if self.stuck.length_squared() > 1.0e-7 {
             wanted = Vec3::new(
                 wanted.x * self.stuck.x,
@@ -293,6 +320,7 @@ impl Rocket {
                 wanted.z * self.stuck.z,
             );
             self.stuck = Vec3::ZERO;
+            self.velocity = Vec3::ZERO;
         }
         let from = self.position;
         let mut gate = sunrise_client::move_gate::armed(
@@ -308,21 +336,38 @@ impl Rocket {
         else {
             return None;
         };
-        let horizontal = (moved.x - wanted.x).abs() > 1e-7 || (moved.z - wanted.z).abs() > 1e-7;
-        // Entity.move: on the ground when a move down was stopped.
-        self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
             self.position.z + moved.z,
         );
-        // setDeltaMovement(movement2): the motion before the move's scaling.
-        self.velocity = if horizontal {
-            Vec3::new(self.velocity.x, motion.y, self.velocity.z)
-        } else {
-            motion
-        };
-        Some((from, wanted, moved))
+        Some((from, wanted, moved, motion))
+    }
+
+    fn flight_contact(
+        &mut self,
+        motion: sunrise_client::motion::BodyMotion<'_>,
+        wanted: Vec3,
+        moved: Vec3,
+    ) -> sunrise_client::motion::BodyMove {
+        let authoritative =
+            motion.context.side() == sunrise_world::native_load_context::LoopSide::Server;
+        motion.record_move(
+            sunrise_client::motion::BodyCollision {
+                footprint: (self.position, self.bounds()),
+                movement: (wanted, moved),
+                authoritative,
+                context: sunrise_client::motion::BodyMotion::entity_context(self.id, self.position),
+                subject: None,
+            },
+            &mut self.ground,
+        );
+        let effect = motion.legacy_contact(self.position, &self.ground);
+        sunrise_client::motion::BodyMove {
+            wanted,
+            moved,
+            effect,
+        }
     }
     /// Position and motion (the dispenser parity fixture).
     pub(super) fn motion(&self) -> (Vec3, Vec3) {
@@ -392,14 +437,15 @@ impl Game<'_> {
     fn rocket_moved(
         &mut self,
         r: &mut Rocket,
-        (from, wanted, moved): (Vec3, Vec3, Vec3),
+        (from, wanted, moved, restored): (Vec3, Vec3, Vec3, Vec3),
         water: bool,
     ) {
+        let movement = r.flight_contact(self.body_motion(&game_side!(self)), wanted, moved);
         r.fall_distance = self.vehicle_fall_reset(r.fall_distance, from, moved);
         if !water && moved.y < 0.0 {
             r.fall_distance -= f64::from(moved.y as f32);
         }
-        if r.on_ground {
+        if r.ground.on_ground {
             if r.fall_distance > 0.0 {
                 // Block.fallOn (farmland's random draw, honey's slide) is not
                 // run for a rocket yet, nor for the other entities that are
@@ -417,6 +463,32 @@ impl Game<'_> {
             }
             r.fall_distance = 0.0;
         }
+        let entity = (r.id, "minecraft:firework_rocket");
+        let response = self.body_motion(&game_side!(self)).restitute(
+            entity,
+            movement,
+            0.0,
+            0.98_f32,
+            r.velocity,
+            r.fall_distance,
+        );
+        r.velocity = self.finish_body_restitution(entity, r.position, response);
+        let side = game_side!(self);
+        let motion = self.body_motion(&side);
+        motion.apply_block_speed(r.position, &mut r.velocity);
+        let writes = self.body_step_on(
+            entity,
+            (r.position, Rocket::bounds_at(r.position)),
+            &r.ground,
+            &mut r.velocity,
+        );
+        super::entity::apply_contact_writes(
+            writes,
+            &mut r.velocity,
+            Some(&mut r.fall_distance),
+            Some(&mut r.stuck),
+            None,
+        );
         let length = moved.length_squared();
         let recorded = length > 1.0e-7 || wanted.length_squared() - length < 1.0e-7;
         let (world, facts) = (&self.world, self.res.facts());
@@ -431,7 +503,7 @@ impl Game<'_> {
         };
         let stuck = sunrise_client::falling_block::apply_effects_from_blocks_of(
             effects,
-            &mut r.velocity.clone(),
+            &mut r.velocity,
             &mut r.fall_distance,
             &mut tops,
             |p| {
@@ -452,6 +524,8 @@ impl Game<'_> {
         for pos in tops {
             self.bubble_column_particles(pos);
         }
+        // FireworkRocketEntity.tick restores the pre-move delta after block effects.
+        r.velocity = restored;
     }
     /// A rocket built from `own`, the rocket's own random (`Entity.random`): the
     /// UUID, the motion and the lifetime draw from it in that order, and a rocket
@@ -491,7 +565,7 @@ impl Game<'_> {
             angled: false,
             item: stack.clone(),
             random: own.clone(),
-            on_ground: false,
+            ground: Default::default(),
             has_been_shot: false,
             silent: false,
             fall_distance: 0.0,
@@ -635,6 +709,7 @@ impl Game<'_> {
             self.rocket_targets()
         };
         let ticking = self.entity_ticking_area();
+        let hears_impacts = !self.rockets.is_empty() && self.native_hears_impacts();
         let mut i = 0;
         while i < self.rockets.len() {
             // ServerLevel.tick: only entities in entity-ticking chunks tick.
@@ -644,7 +719,8 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            let mut r = self.rockets.remove(i);
+            let join = self.rockets[i].join;
+            let mut r = self.rockets.extract(join).unwrap();
             r.previous = r.position;
             // Entity.baseTick's setOldRot: where updateRotation eases from.
             let old_rotation = r.rotation;
@@ -696,7 +772,7 @@ impl Game<'_> {
             }
             r.first_tick = false;
             let skip = owner.filter(|_| !r.left_owner);
-            let mut hit = None;
+            let mut hit = ProjectileHit::None;
             if r.attached
                 && let Some(conn) = r.guest
             {
@@ -734,18 +810,22 @@ impl Game<'_> {
             // (ProjectileDeflection.REVERSE), anything else sets it off.
             // onHitBlock: only a rocket with explosions (hasExplosion) goes
             // off on a block; a plain one flies on to its lifetime.
-            match hit {
-                Some(RocketHit::Entity(Who::Mob(id)))
-                    if self
-                        .mobs
-                        .iter()
-                        .any(|m| m.id == id && m.species() == Species::Breeze) =>
-                {
-                    r.velocity = r.velocity.scale(-0.5);
+            let deflected = matches!(hit, ProjectileHit::Entity { who: Who::Mob(id), .. }
+                if self.mobs.iter().any(|m| m.id == id && m.species() == Species::Breeze));
+            if deflected {
+                r.velocity = r.velocity.scale(-0.5);
+            } else {
+                let Some((rocket, canceled)) = self.rocket_impact(i, r, hit, hears_impacts) else {
+                    continue;
+                };
+                r = rocket;
+                match hit {
+                    ProjectileHit::Entity { .. } if !canceled => r.life = r.lifetime,
+                    ProjectileHit::Block { .. } if !canceled && !r.explosions.is_empty() => {
+                        r.life = r.lifetime;
+                    }
+                    _ => {}
                 }
-                Some(RocketHit::Entity(_)) => r.life = r.lifetime,
-                Some(RocketHit::Block) if !r.explosions.is_empty() => r.life = r.lifetime,
-                Some(RocketHit::Block) | None => {}
             }
             r.update_rotation(old_rotation);
             let at = [r.position.x, r.position.y, r.position.z];
@@ -761,10 +841,11 @@ impl Game<'_> {
             self.rocket_spark(&r);
             if r.life > r.lifetime {
                 self.explode_rocket(&r);
+                self.rockets.retire_extracted(r.id, r.join);
                 continue;
             }
             let (id, from, to) = (r.id, r.previous, r.position);
-            self.rockets.insert(i, r);
+            self.rockets.put_back(i, r);
             self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
             i = self
                 .rockets
@@ -839,7 +920,7 @@ impl Game<'_> {
             let owner = r.owner;
             if let Some(conn) = r.guest.filter(|_| owner.is_some()) {
                 let ran = self
-                    .as_guest(conn, |g| g.rocket_hurt_mobs(&hits, owner, at))
+                    .as_guest(conn, |g| g.rocket_hurt_mobs(&hits, r.id, owner, at))
                     .is_some();
                 if ran
                     && let Some(host) = self.lan.as_mut()
@@ -855,10 +936,10 @@ impl Game<'_> {
                     }
                 }
                 if !ran {
-                    self.rocket_hurt_mobs(&hits, owner, at);
+                    self.rocket_hurt_mobs(&hits, r.id, owner, at);
                 }
             } else {
-                self.rocket_hurt_mobs(&hits, owner, at);
+                self.rocket_hurt_mobs(&hits, r.id, owner, at);
             }
             // The dragon is a living entity of its own, not one of `mobs`.
             let reach = r.bounds().inflate(Vec3::new(5.0, 5.0, 5.0));
@@ -893,16 +974,22 @@ impl Game<'_> {
         let ctx = self.who_context(owner, None);
         self.post_game_event("minecraft:explode", at, ctx);
     }
-    fn rocket_hurt_mobs(&mut self, hits: &[(u32, f32)], attacker: Option<Who>, at: [f64; 3]) {
-        let attack = self.attack_of(if attacker == Some(Who::Player) {
-            self.player.as_ref().map_or(0, |p| p.entity_id)
-        } else {
-            0
-        });
+    fn rocket_hurt_mobs(
+        &mut self,
+        hits: &[(u32, f32)],
+        rocket_id: u32,
+        attacker: Option<Who>,
+        at: [f64; 3],
+    ) {
+        let mut attack = self.attack_of_who(attacker);
+        attack.projectile = Some(rocket_id as i32);
+        attack.projectile_kind = sunrise_client::health::DirectEntity::Projectile;
         for &(id, amount) in hits {
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                let hurt = m.damage(
-                    crate::game::entity::damage_level_of!(self, &attack),
+            let plan = self.prepare_knockback_credit(id as i32, attacker, &attack);
+            let mut credit = plan.lend(&mut self.last_hurt_by_player);
+            if let Some(index) = self.mob_index.find(&self.mobs, id) {
+                let hurt = self.mobs[index].damage(
+                    crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
                     amount,
                     Damage::fireworks(attacker, at),
                 );
@@ -912,7 +999,9 @@ impl Game<'_> {
                 if hurt && attacker == Some(Who::Player) {
                     self.remember_mob_player_credit(id);
                 }
+                self.finish_mob_damage_at(index);
             }
+            self.settle_mob_hurt(id);
         }
     }
     /// The owner as `rocket_targets` names it: a guest by their entity id.
@@ -963,7 +1052,7 @@ impl Game<'_> {
         r: &Rocket,
         motion: Vec3,
         skip: Option<Who>,
-    ) -> Option<RocketHit> {
+    ) -> ProjectileHit {
         let from = r.position;
         let mut to = from.add_vector(motion);
         let w = self.mob_world_base(&[]);
@@ -984,11 +1073,12 @@ impl Game<'_> {
                 let at = b
                     .inflate(Vec3::new(margin, margin, margin))
                     .clip(from, to)?;
-                Some((*who, from.distance_squared(at)))
+                Some((*who, at, from.distance_squared(at)))
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(who, _)| RocketHit::Entity(who))
-            .or(block.map(|_| RocketHit::Block))
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .map(|(who, at, _)| ProjectileHit::Entity { who, at })
+            .or(block.map(|(at, pos, face)| ProjectileHit::Block { pos, face, at }))
+            .unwrap_or(ProjectileHit::None)
     }
     /// FireworkRocketEntity.handleEntityEvent: use the synchronized item data.
     pub(super) fn remote_firework_explosion(&mut self, id: i32) {
@@ -1046,11 +1136,16 @@ impl Game<'_> {
     }
     /// `FireworkEntityRenderer.submit`: the item (GROUND) facing the camera,
     /// lit at the rocket's light probe.
-    pub(super) fn rocket_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+    pub(super) fn rocket_geometry(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<Vertex>,
+        run: std::ops::Range<usize>,
+    ) {
         let orientation = glam::Mat4::from_quat(self.camera_orientation());
         // shouldRender: not while attached to an entity (`isAttachedToEntity`).
-        for r in self
-            .rockets
+        for r in self.rockets[run]
             .iter()
             .filter(|r| !r.attached && r.attached_to.is_none())
         {
@@ -1153,7 +1248,7 @@ mod tests {
     /// upscaler's motion vectors (`Frame::entity_motion`), so the motion matched between
     /// two frames is its flight, not only the camera's.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_flying_rocket_opens_a_motion_run_of_its_own() {
         use crate::game::{Audio, Options, Progress, Settings, load_resources};
         use sunrise_core::geometry::Vec3;
@@ -1197,7 +1292,7 @@ mod tests {
         // a camera-only run (id 0) closes it so nothing drawn after takes its motion.
         game.entity_motion.borrow_mut().clear();
         let mut out = Vec::new();
-        game.rocket_geometry(camera, 1.0, &mut out);
+        game.rocket_geometry(camera, 1.0, &mut out, 0..game.rockets.len());
         let marks = game.entity_motion.borrow().clone();
         let at = marks
             .iter()
@@ -1222,7 +1317,7 @@ mod tests {
     /// acting player too. A lead outside that box, or held for another player,
     /// stays. Standing still does neither.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_gliding_firework_drops_leads_and_plays_lead_break() {
         use crate::game::{Audio, Options, Progress, Settings, load_resources};
         use sunrise_client::mobs::{Mob, leash::Holder};

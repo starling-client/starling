@@ -90,13 +90,15 @@ impl Game<'_> {
 
     /// `Player.tick`'s sleep counter, and `LivingEntity.tick`'s wake-up of a
     /// sleeper who died or whose bed is gone.
-    pub(crate) fn guest_sleep_tick(&mut self, gi: usize) {
+    pub(crate) fn guest_sleep_tick(&mut self, gi: usize, body: bool) {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
         let (identity, bed, gone, uuid) = host.hub.guests.update(gi, |g| {
             let was_deep = g.sleep_timer >= 100;
-            g.sleep_timer = crate::game::tick_sleep_timer(g.sleep_timer, g.bed.is_some());
+            if body {
+                g.sleep_timer = crate::game::tick_sleep_timer(g.sleep_timer, g.bed.is_some());
+            }
             let deep_sleep = !was_deep && g.sleep_timer >= 100 && g.bed.is_some();
             let identity = deep_sleep.then(|| (g.uuid, g.name.clone()));
             (identity, g.bed, g.dead || g.health <= 0.0, g.uuid)

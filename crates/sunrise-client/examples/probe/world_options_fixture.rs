@@ -1,6 +1,6 @@
 //! Packet payload oracle companion for tools/test_world_options_parity.py.
-use sunrise_protocol::{buf::Reader, packets::play::*};
 use std::{error::Error, fmt::Write};
+use sunrise_protocol::{buf::Reader, packets::play::*};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = crate::args().collect();

@@ -138,6 +138,19 @@ impl Behaviours {
         self.live_features()?.configured(name)?;
         Some(self.sim(level, ticks).place_configured_feature(name, pos))
     }
+    /// `PlacedFeature.place(level, generator, level.random, pos)` for `name`.
+    /// `None` when the feature is unknown or features are unavailable. A biome
+    /// filter reached without a top feature returns `MissingTopFeature`.
+    pub fn place_placed_feature<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        name: &str,
+        pos: BlockPos,
+    ) -> Option<Result<bool, crate::worldgen::placement::PlacementQueryError>> {
+        self.live_features()?.placed(name)?;
+        Some(self.sim(level, ticks).place_placed_feature(name, pos))
+    }
     /// `/place feature` with an inline feature value (`json`): decoded by the
     /// feature codec, then placed as `place_feature` places a named one.
     /// `None` when the value does not decode or features are unavailable.
@@ -152,12 +165,13 @@ impl Behaviours {
         Some(self.sim(level, ticks).place_inline_feature(&feature, pos))
     }
     /// `StructureBlockEntity.placeStructure`'s `StructureTemplate.placeInWorld`
-    /// on the live level: `pos` is both the position and the pivot, the
-    /// template rots at `integrity` below 1 (`BlockRotProcessor`) drawing from
-    /// `LegacyRandomSource(seed)`, the loot seeds from a second one, and
-    /// `flags` are the `setBlock` flags. Returns whether the template placed
-    /// and the entities it carried (their NBT, for the caller to spawn);
-    /// `None` when the level has no structure resources.
+    /// on the live level: `pos` is the position and the reference the
+    /// processors see, the template turns about `settings.pivot` in its own
+    /// coordinates ([`TemplateSettings`]), it rots at `integrity` below 1
+    /// (`BlockRotProcessor`) drawing from `LegacyRandomSource(seed)`, the loot
+    /// seeds from a second one, and `flags` are the `setBlock` flags. Returns
+    /// whether the template placed and the entities it carried (their NBT, for
+    /// the caller to spawn); `None` when the level has no structure resources.
     #[allow(clippy::too_many_arguments)]
     pub fn place_template<L: LevelAccess + ?Sized>(
         &self,
@@ -179,6 +193,7 @@ impl Behaviours {
         let mut loot_random = sunrise_core::random::LegacyRandom::new(settings.seed);
         let mut place = PlaceSettings::new(settings.rotation);
         place.mirror = settings.mirror;
+        place.pivot = settings.pivot;
         place.known_shape = settings.known_shape;
         place.ignore_entities = settings.ignore_entities;
         if settings.integrity < 1.0 {
@@ -1110,7 +1125,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             || (b.is_block(existing, b.named.water) && b.fluid(existing).is_source());
         replaceable
             && !(b.is_block(existing, block) && self.multiface_has_face(existing, face))
-            && b.multiface_can_attach(self.state(rel(at, face)), face)
+            && self.multiface_can_attach_at(rel(at, face), face)
     }
     /// `MultifaceSpreader.getSpreadFromFaceTowardDirection`.
     fn lichen_spread_target(
@@ -1305,7 +1320,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let feature = list[self.next_int(list.len() as i32) as usize].clone();
                 self.place_configured_feature(&feature, test);
             } else {
-                self.place_placed_feature("minecraft:grass_bonemeal", test);
+                let _ = self.place_placed_feature("minecraft:grass_bonemeal", test);
             }
         }
     }
@@ -1316,6 +1331,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 pub struct TemplateSettings {
     pub mirror: crate::worldgen::structure::Mirror,
     pub rotation: crate::worldgen::structure::Rotation,
+    /// The turn's and the mirror's pivot, in the template's own coordinates:
+    /// `[0; 3]` turns it about its origin, which is what `/place template` and
+    /// a structure block's load do.
+    pub pivot: [i32; 3],
     pub ignore_entities: bool,
     pub known_shape: bool,
     /// `BlockRotProcessor`'s integrity; 1 places everything.

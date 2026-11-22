@@ -206,12 +206,6 @@ pub fn ch<V>(c: char) -> Term<V> {
         accept: None,
     }
 }
-pub fn chs<V>(a: char, b: char) -> Term<V> {
-    Term::Chars {
-        values: vec![a, b],
-        accept: None,
-    }
-}
 pub fn look<V>(t: Term<V>) -> Term<V> {
     Term::Look(Box::new(t), true)
 }
@@ -270,11 +264,6 @@ impl<V: Value> Grammar<V> {
         let rule = self.id(name);
         Term::Named { rule, store: name }
     }
-    /// Dictionary.namedWithAlias.
-    pub fn named_as(&mut self, name: Atom, store: Atom) -> Term<V> {
-        let rule = self.id(name);
-        Term::Named { rule, store }
-    }
 
     /// Grammar.parseForCommands: parse at the reader's cursor; on failure
     /// the first error stored at the furthest position.
@@ -295,10 +284,6 @@ impl<V: Value> Grammar<V> {
             Some(v) => Ok(v),
             None => Err(state.first_error()),
         }
-    }
-    /// Grammar.parseForSuggestions.
-    pub fn parse_for_suggestions(&self, builder: &mut SuggestionsBuilder) {
-        self.parse_for_suggestions_with(builder, None)
     }
     pub fn parse_for_suggestions_with(
         &self,
@@ -384,9 +369,6 @@ impl<'g, V: Value> State<'g, V> {
         if cursor as isize == self.last_cursor {
             self.errors.push((sugg, reason));
         }
-    }
-    pub fn store_at_mark(&mut self, reason: Reason) {
-        self.store(self.cursor, Sugg::Empty, reason);
     }
     fn parse_top(&mut self) -> Option<V> {
         let r = self.parse(self.grammar.top);

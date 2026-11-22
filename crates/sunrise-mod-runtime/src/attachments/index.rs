@@ -49,17 +49,6 @@ impl<H> std::ops::Deref for AttachmentSnapshot<H> {
     }
 }
 impl<H: Copy + Eq + Hash> AttachmentSnapshot<H> {
-    /// Build a captured bucket from transferred rows, preserving their order.
-    ///
-    /// rows must have distinct holders.
-    pub fn from_rows(rows: Vec<AttachmentRow<H>>) -> Self {
-        let mut snapshot = Self::default();
-        for row in rows {
-            snapshot.push(row);
-        }
-        snapshot
-    }
-
     fn push(&mut self, row: AttachmentRow<H>) {
         let previous = self.slots.insert(row.holder, self.rows.len());
         debug_assert!(previous.is_none(), "duplicate attachment residency");
@@ -145,28 +134,6 @@ impl<T> AttachmentChange<T> {
             self.first = Some(entry);
         } else {
             self.overflow.push(entry);
-        }
-    }
-}
-
-impl<H> AttachmentOwner<H> {
-    /// Rebuild a transferred residency identity; the index still validates it.
-    #[doc(hidden)]
-    pub fn from_parts(holder: H, generation: u64) -> Self {
-        Self { holder, generation }
-    }
-    /// The fields needed to transfer this identity.
-    #[doc(hidden)]
-    pub fn parts(&self) -> (&H, u64) {
-        (&self.holder, self.generation)
-    }
-    /// Rebuild a snapshot row from a transferred identity and value.
-    #[doc(hidden)]
-    pub fn into_row(self, entry: Arc<AttachmentEntry>) -> AttachmentRow<H> {
-        AttachmentRow {
-            holder: self.holder,
-            generation: self.generation,
-            entry,
         }
     }
 }
@@ -501,37 +468,26 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "duplicate attachment residency")]
-    fn snapshot_from_rows_refuses_duplicate_residencies() {
-        let row = AttachmentOwner::from_parts(1u32, 7).into_row(entry(7));
-        AttachmentSnapshot::from_rows(vec![row.clone(), row]);
-    }
-
-    #[test]
     fn snapshot_probes_follow_mutations_and_retain_old_residencies() {
         let mut index = AttachmentIndex::default();
         let k = key("value");
         let a = index.register(1, [(k.clone(), entry(7))]).into_result();
         let b = index.register(2, [(k.clone(), entry(9))]).into_result();
         let c = index.register(3, [(k.clone(), entry(11))]).into_result();
+        let no_value = index.register(4, []).into_result();
         let old = index.snapshot(&k);
         assert_eq!(values(&old), [(1, 7), (2, 9), (3, 11)]);
         assert_eq!(
             [old.slot_of(&a), old.slot_of(&b), old.slot_of(&c)],
             [Some(0), Some(1), Some(2)]
         );
-        assert_eq!(old.slot_of(&AttachmentOwner::from_parts(4, 0)), None);
+        assert_eq!(old.slot_of(&no_value), None);
         assert!(index.remove(&b, &k).into_result());
         let live = index.snapshot(&k);
         assert_eq!(values(&live), [(1, 7), (3, 11)]);
         assert_eq!(live.slot_of(&c), Some(1));
         assert_eq!(live.slot_of(&b), None);
         assert_eq!(old.slot_of(&c), Some(2));
-        let transferred = AttachmentSnapshot::from_rows(old.iter().cloned().collect());
-        assert_eq!(values(&transferred), [(1, 7), (2, 9), (3, 11)]);
-        assert_eq!(transferred.slot_of(&b), Some(1));
-        assert_eq!(transferred.slot_of(&c), Some(2));
         assert_eq!(values(&old), [(1, 7), (2, 9), (3, 11)]);
         assert!(index.unregister(&c).into_result());
         let seven = index.snapshot(&k);

@@ -1,0 +1,5 @@
+id = "refused_manifest_unknown_dependency_key"
+name = "Refused manifest unknown dependency key"
+version = "1.2.3"
+[dependencies]
+other = { version = "*", optionl = true }

@@ -127,9 +127,9 @@ impl Walker<'_> {
     /// `DSL.compoundList(type)`: every value of a map.
     fn values(&mut self, ty: Ty, v: &mut Tag, name: &str) {
         if let Some(Tag::Compound(c)) = v.get_mut(name) {
-            for value in c.values_mut() {
+            c.for_each_mut(|_, value| {
                 self.walk(ty, value);
-            }
+            });
         }
     }
     /// A list of compounds, each with a typed field.
@@ -170,9 +170,9 @@ impl Walker<'_> {
                 if k < key(4771, 0)
                     && let Some(Tag::Compound(c)) = v.get_mut("CustomBossEvents")
                 {
-                    for e in c.values_mut() {
+                    c.for_each_mut(|_, e| {
                         self.field(Ty::TextComponent, e, "Name");
-                    }
+                    });
                 }
                 self.walk(Ty::LightweightLevel, v);
             }
@@ -249,9 +249,9 @@ impl Walker<'_> {
             }
             Ty::Hotbar => {
                 if let Tag::Compound(c) = v {
-                    for row in c.values_mut() {
+                    c.for_each_mut(|_, row| {
                         self.list_in(Ty::ItemStack, row);
-                    }
+                    });
                 }
             }
             Ty::Stats => {
@@ -271,8 +271,17 @@ impl Walker<'_> {
                     ("minecraft:adventure/kill_all_mobs", Ty::EntityName),
                     ("minecraft:husbandry/bred_all_animals", Ty::EntityName),
                 ] {
-                    if let Some(a) = v.get_mut(adv) {
-                        self.keys(kind, a, "criteria");
+                    if kind == self.target
+                        && let Some(criteria) = v.get_mut(adv).and_then(|a| a.get_mut("criteria"))
+                    {
+                        super::advancement_criteria::map_keys(criteria, |key| {
+                            let mut value = Tag::String(key.clone());
+                            (self.f)(&mut value);
+                            match value {
+                                Tag::String(s) => s,
+                                _ => key,
+                            }
+                        });
                     }
                 }
             }
@@ -304,9 +313,9 @@ impl Walker<'_> {
             }
             Ty::SavedCustomBossEvents => {
                 if let Some(Tag::Compound(c)) = v.get_mut("data") {
-                    for e in c.values_mut() {
+                    c.for_each_mut(|_, e| {
                         self.field(Ty::TextComponent, e, "Name");
-                    }
+                    });
                 }
             }
             Ty::SavedMapData => {
@@ -826,9 +835,9 @@ impl Walker<'_> {
         let Some(Tag::Compound(dims)) = v.get_mut("dimensions") else {
             return;
         };
-        for dim in dims.values_mut() {
+        dims.for_each_mut(|_, dim| {
             let Some(g) = dim.get_mut("generator") else {
-                continue;
+                return;
             };
             match as_str(g.get("type")).as_deref() {
                 Some("minecraft:flat") => {
@@ -854,7 +863,7 @@ impl Walker<'_> {
                 }
                 _ => {}
             }
-        }
+        });
     }
 }
 

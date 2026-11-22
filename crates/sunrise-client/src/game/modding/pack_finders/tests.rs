@@ -1,9 +1,9 @@
 use super::*;
-use sunrise_client::datapack::{DataStore, FunctionLine};
-use sunrise_client::text::Text;
 use mod_api::{AddPackFindersEvent, Hooks, Identifier, ModEntry};
 use mod_platform::testing::with_mods;
 use std::{fs, io::Write, path::PathBuf};
+use sunrise_client::datapack::{DataStore, FunctionLine};
+use sunrise_client::text::Text;
 
 const ASSET_PACK: &str = "assets/packmod/resourcepacks/optional";
 const DATA_PACK: &str = "data/packmod/datapacks/optional";
@@ -120,7 +120,11 @@ struct Finder {
 }
 #[mod_api::__subscriptions]
 impl Hooks for Finder {
-    fn add_pack_finders(&self, _host: HostSide<'_>, event: &mut AddPackFindersEvent<'_>) {
+    fn add_pack_finders(
+        &self,
+        _context: &mut dyn PackDiscoveryContext,
+        event: &mut AddPackFindersEvent<'_>,
+    ) {
         for (kind, path) in [
             (PackType::ClientResources, ASSET_PACK),
             (PackType::ServerData, DATA_PACK),
@@ -159,6 +163,119 @@ fn with_finder_hidden(feature: bool, required: bool, hidden: bool, test: impl Fn
         )]
         .into(),
         test,
+    );
+}
+
+#[test]
+fn both_startup_repositories_lend_only_available_text_services() {
+    use std::sync::{Arc, Mutex};
+
+    struct Observe(Arc<Mutex<Vec<PackType>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observe {
+        fn add_pack_finders(
+            &self,
+            context: &mut dyn PackDiscoveryContext,
+            event: &mut AddPackFindersEvent<'_>,
+        ) {
+            let component = mod_api::Text::literal("Startup");
+            let fallback = mod_api::Text::new(mod_api::text::TextContent::Translatable {
+                key: "test.discovery.missing".into(),
+                fallback: Some("Fallback %s".into()),
+                arguments: vec![mod_api::Text::literal("Pack")],
+            });
+            let mut deep = mod_api::Text::literal("Deep");
+            for _ in 0..mod_api::text::MAX_TEXT_DEPTH {
+                deep = mod_api::Text::literal("").append(deep);
+            }
+            assert_eq!(context.text_string(&component), "Startup");
+            assert_eq!(context.text_string(&fallback), "Fallback Pack");
+            assert_eq!(context.text_string(&deep), "Deep");
+            assert_eq!(
+                context.text_from_json(r#""Startup""#),
+                Err(mod_api::text::TextFormError::Unavailable)
+            );
+            assert!(context.client_text().is_none());
+            assert!(context.live_host().is_none());
+            self.0.lock().unwrap().push(event.packs.pack_type());
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    with_mods(
+        vec![ModEntry::new(
+            "discovery_text",
+            Box::new(Observe(seen.clone())),
+        )]
+        .into(),
+        || {
+            let sources = ModsState::default();
+            assert!(discover(PackType::ClientResources, &sources).is_empty());
+            assert!(data_packs(&sources).is_empty());
+        },
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [PackType::ClientResources, PackType::ServerData]
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn live_pack_rediscovery_can_read_a_registered_client_setting() {
+    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+    use mod_api::{HostSide, Registrar, RegistrationContext, SettingSpec};
+
+    if run_fresh_cases(
+        "game::pack_finders::tests::live_pack_rediscovery_can_read_a_registered_client_setting",
+        "SUNRISE_PACK_DISCOVERY_CHILD",
+        &["client"],
+    ) {
+        return;
+    }
+
+    struct SettingFinder;
+    #[mod_api::__subscriptions]
+    impl Hooks for SettingFinder {
+        fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+            registrar
+                .register_setting(SettingSpec::toggle("offer", "packmod.offer", false))
+                .unwrap();
+        }
+
+        fn add_pack_finders(
+            &self,
+            context: &mut dyn PackDiscoveryContext,
+            event: &mut AddPackFindersEvent<'_>,
+        ) {
+            if let Some(HostSide::Client(host)) = context.live_host()
+                && host.setting("packmod", "offer").as_deref() == Some("true")
+            {
+                event
+                    .packs
+                    .add_pack_finders(PackRegistration::new(
+                        Identifier::parse(&format!("packmod:{ASSET_PACK}")).unwrap(),
+                        PackType::ClientResources,
+                        mod_api::Text::literal("Setting-selected pack"),
+                    ))
+                    .unwrap();
+            }
+        }
+    }
+
+    let fixture = Fixture::new(false);
+    with_mods(
+        vec![ModEntry::new("packmod", Box::new(SettingFinder))].into(),
+        || {
+            with_client_game(|game| {
+                game.mods = fixture.sources();
+                let ty = PackType::ClientResources;
+                assert!(game.discover_mod_packs(ty).is_empty());
+                game.set_setting("packmod", "offer", "true");
+                let packs = game.discover_mod_packs(ty);
+                assert_eq!(packs.len(), 1);
+                assert_eq!(packs[0].id, fixture.asset_id());
+            });
+        },
     );
 }
 
@@ -283,17 +400,13 @@ fn refused_registrations_leave_the_repository_unchanged() {
         )
     };
     let valid = format!("packmod:{ASSET_PACK}");
-    registry.add_pack_finders(entry(&valid)).unwrap();
-    let mut refused = entry("packmod:missing");
-    let mut title = mod_api::Text::literal("leaf");
-    for _ in 1..513 {
-        title = mod_api::Text::literal("parent").append(title);
+    let mut titled = entry(&valid);
+    titled.title = mod_api::Text::literal("leaf");
+    for _ in 0..mod_api::text::MAX_TEXT_DEPTH {
+        titled.title = mod_api::Text::literal("").append(titled.title);
     }
-    refused.title = title;
-    assert_eq!(
-        registry.add_pack_finders(refused),
-        Err(PackFinderError::Text(mod_api::TextFormError::TooDeep))
-    );
+    registry.add_pack_finders(titled).unwrap();
+    assert_eq!(registry.packs[0].title.plain(), "leaf");
     assert_eq!(registry.packs.len(), 1);
     for (path, error) in [
         (valid.as_str(), PackFinderError::Duplicate),
@@ -343,9 +456,9 @@ fn required_packs_keep_their_priority_and_cannot_be_cleared() {
             )
             .unwrap(),
         );
-        assert!(!packs::able_to_clear_any_pack(&all, &[]));
         let empty = ResourceSource::directory(fixture.root.join("base"));
         let required = packs::enabled(&all, &[]);
+        assert!(!packs::has_optional_pack(&required));
         assert_eq!(
             packs::resources(empty.clone(), &required)
                 .unwrap()
@@ -353,10 +466,10 @@ fn required_packs_keep_their_priority_and_cannot_be_cleared() {
                 .unwrap(),
             br#"{"packmod.optional":"first"}"#
         );
-        let selected = ["file/override".to_owned()];
-        assert!(packs::able_to_clear_any_pack(&all, &selected));
+        let selected = packs::enabled(&all, &["file/override".to_owned()]);
+        assert!(packs::has_optional_pack(&selected));
         assert_eq!(
-            packs::resources(empty, &packs::enabled(&all, &selected))
+            packs::resources(empty, &selected)
                 .unwrap()
                 .read(ASSET)
                 .unwrap(),
@@ -365,6 +478,24 @@ fn required_packs_keep_their_priority_and_cannot_be_cleared() {
         let info = all[0].selection.as_ref().unwrap();
         let model = packs::SelectionModel::new(vec![info.selectable()], &[]);
         assert!(!model.can_unselect(true, 0));
+
+        let mut second_required = all[0].clone();
+        second_required.id = "mod/second".into();
+        second_required.selection.as_mut().unwrap().id = second_required.id.clone();
+        all.push(second_required);
+        let order = |ids: &[String]| {
+            packs::enabled(&all, ids)
+                .into_iter()
+                .map(|pack| pack.id)
+                .collect::<Vec<_>>()
+        };
+        let mut reordered = order(&[]);
+        assert_eq!(reordered.len(), 2);
+        reordered.reverse();
+        assert_eq!(order(&reordered), reordered);
+        assert!(!packs::has_optional_pack(&packs::enabled(&all, &reordered)));
+        reordered.push("file/override".into());
+        assert!(packs::has_optional_pack(&packs::enabled(&all, &reordered)));
 
         let data = data_packs(&sources);
         let mut options = sunrise_client::title::WorldOptions::default();
@@ -410,7 +541,7 @@ fn contributed_experiments_supply_the_chosen_world_flags() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn registered_data_commands_respect_flags_required_packs_and_default_priority() {
     let mut ran = 0;
     for (feature, required) in [(false, false), (false, true), (true, false)] {
@@ -478,7 +609,7 @@ fn registered_data_commands_respect_flags_required_packs_and_default_priority() 
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mods_pack_is_on_the_screen_and_applies_through_client_reload() {
     // Reload publishes a language just as the other game fixtures do. Keep this
     // fixture's publications visible locally, not at the mercy of their reloads.
@@ -496,7 +627,6 @@ fn a_mods_pack_is_on_the_screen_and_applies_through_client_reload() {
                 &[],
                 &game.mods,
                 game.register_client_reload_listeners(),
-                &[],
                 &[],
                 &game.pack.assets,
                 &game.res,
@@ -532,7 +662,6 @@ fn a_mods_pack_is_on_the_screen_and_applies_through_client_reload() {
                     &[],
                     &game.mods,
                     listeners,
-                    &[],
                     &[],
                     &game.pack.assets,
                     &game.res,
@@ -640,4 +769,163 @@ fn hidden_optional_data_pack_is_command_selectable_and_loads_its_function() {
             [FunctionLine::Command("say from-optional".into())]
         );
     });
+}
+
+#[test]
+fn a_panicking_pack_finder_does_not_reserve_its_pack_id() {
+    struct FailingFinder(Finder);
+    #[mod_api::__subscriptions]
+    impl Hooks for FailingFinder {
+        fn add_pack_finders(
+            &self,
+            context: &mut dyn PackDiscoveryContext,
+            event: &mut AddPackFindersEvent<'_>,
+        ) {
+            self.0.add_pack_finders(context, event);
+            panic!("finder failed after offering its pack");
+        }
+    }
+    let fixture = Fixture::new(false);
+    let sources = fixture.sources();
+    let finder = |required| Finder {
+        feature: false,
+        required,
+        position: PackPosition::Bottom,
+        hidden: false,
+    };
+    with_mods(
+        vec![
+            ModEntry::new("failing", Box::new(FailingFinder(finder(true)))),
+            ModEntry::new("healthy", Box::new(finder(false))),
+        ]
+        .into(),
+        || {
+            for _ in 0..2 {
+                let packs = discover(PackType::ClientResources, &sources);
+                assert_eq!(packs.len(), 1);
+                assert_eq!(packs[0].id, fixture.asset_id());
+                assert!(!packs[0].selection.as_ref().unwrap().required);
+            }
+            assert_eq!(
+                mod_api::__private::poisoned_listeners(HookId::AddPackFinders),
+                1
+            );
+            assert_eq!(
+                mod_api::__private::take_hook_panics(),
+                [mod_api::__private::HookPanicReport {
+                    mod_id: "failing",
+                    hook: "add_pack_finders",
+                }]
+            );
+        },
+    );
+}
+
+#[test]
+fn disabled_native_mods_skip_add_pack_finders_at_startup_and_after_toggle() {
+    use std::collections::BTreeSet;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Probe {
+        calls: Arc<AtomicUsize>,
+        register_packs: bool,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Probe {
+        fn add_pack_finders(
+            &self,
+            _context: &mut dyn PackDiscoveryContext,
+            event: &mut AddPackFindersEvent<'_>,
+        ) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if !self.register_packs {
+                return;
+            }
+            let path = match event.packs.pack_type() {
+                PackType::ClientResources => ASSET_PACK,
+                PackType::ServerData => DATA_PACK,
+                _ => return,
+            };
+            let pack = PackRegistration::new(
+                Identifier::parse(&format!("packmod:{path}")).unwrap(),
+                event.packs.pack_type(),
+                mod_api::Text::translate("packmod.optional.title", vec![]),
+            );
+            event.packs.add_pack_finders(pack).unwrap();
+        }
+    }
+
+    let fixture = Fixture::new(false);
+    let disabled_calls = Arc::new(AtomicUsize::new(0));
+    let enabled_calls = Arc::new(AtomicUsize::new(0));
+
+    with_mods(
+        vec![
+            ModEntry::new(
+                "discovery_probe",
+                Box::new(Probe {
+                    calls: disabled_calls.clone(),
+                    register_packs: false,
+                }),
+            ),
+            ModEntry::new(
+                "packmod",
+                Box::new(Probe {
+                    calls: enabled_calls.clone(),
+                    register_packs: true,
+                }),
+            ),
+        ]
+        .into(),
+        || {
+            // Startup before Game::start_mods applies saved switches to runtime dispatch:
+            // sunrise-mods.txt has disabled `discovery_probe`, while its runtime slot is still on.
+            let mut sources = fixture.sources();
+            let disabled = BTreeSet::from(["discovery_probe".to_owned()]);
+            sources.capture_code_switches(&disabled);
+            assert!(mod_api::__private::mod_index_on(
+                mod_api::__private::mod_index("discovery_probe").unwrap()
+            ));
+
+            let client_packs = discover(PackType::ClientResources, &sources);
+            let server_packs = data_packs(&sources);
+            assert_eq!(disabled_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(enabled_calls.load(Ordering::SeqCst), 2);
+            assert_eq!(client_packs.len(), 1);
+            assert_eq!(client_packs[0].id, fixture.asset_id());
+            assert_eq!(server_packs.len(), 1);
+            assert_eq!(server_packs[0].id, fixture.data_id());
+
+            // After Game::start_mods applies switches, both startup-style and direct dispatch skip it.
+            sources.apply_code_switches(&disabled);
+            assert!(!mod_api::__private::mod_index_on(
+                mod_api::__private::mod_index("discovery_probe").unwrap()
+            ));
+            let client_packs = discover(PackType::ClientResources, &sources);
+            let server_packs = data_packs(&sources);
+            assert_eq!(disabled_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(enabled_calls.load(Ordering::SeqCst), 4);
+            assert_eq!(client_packs.len(), 1);
+            assert_eq!(server_packs.len(), 1);
+
+            let mut registry = Registry::new(PackType::ClientResources, sources.clone());
+            mod_api::dispatch_add_pack_finders(&mut StartupDiscovery, |listen| {
+                registry.register_listener(listen)
+            });
+            assert_eq!(disabled_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(enabled_calls.load(Ordering::SeqCst), 5);
+            assert_eq!(registry.packs.len(), 1);
+
+            // Live toggles flip which listener runs without invoking the newly disabled mod.
+            assert!(mod_api::__private::set_mod_enabled("discovery_probe", true));
+            assert!(mod_api::__private::set_mod_enabled("packmod", false));
+            assert!(discover(PackType::ClientResources, &sources).is_empty());
+            assert!(data_packs(&sources).is_empty());
+            assert_eq!(disabled_calls.load(Ordering::SeqCst), 2);
+            assert_eq!(enabled_calls.load(Ordering::SeqCst), 5);
+        },
+    );
 }

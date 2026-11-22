@@ -32,7 +32,7 @@ impl Game<'_> {
     fn bundle_slot(&mut self, slot: usize) -> bool {
         slot < 36
             || slot == 504
-            || ((300..500).contains(&slot)
+            || (crate::game::inventory_slots::container_slot_index(slot).is_some()
                 && (self.remote.is_none() || self.remote_storage_open())
                 && self.slots().contains(&slot))
     }

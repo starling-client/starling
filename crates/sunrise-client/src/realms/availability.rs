@@ -40,8 +40,8 @@
 //! next [`get`] checks again. Vanilla's future would never complete there, and its screens
 //! would wait for good.
 use super::client::{CompatibleVersion, RealmsClient, RealmsError};
-use sunrise_client_render::auth::AuthSession;
 use std::sync::{Arc, Mutex, OnceLock};
+use sunrise_client_render::auth::AuthSession;
 
 /// `RealmsAvailability.Result`: its `Type`, the unexpected error carrying the service's
 /// exception.

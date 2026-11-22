@@ -5,9 +5,9 @@
 //! is complete, preserving every teleport before the ordinary movement write.
 
 use crate::join_seq::JoinSeq;
-use sunrise_core::geometry::Vec3;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use sunrise_core::geometry::Vec3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PositionWrite {

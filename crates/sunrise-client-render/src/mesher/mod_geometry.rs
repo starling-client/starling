@@ -71,9 +71,20 @@ pub(super) const MAX_IN_FLIGHT_BYTES: usize = 128 << 20;
 pub(super) const QUAD_BYTES: usize = 4 * size_of::<TerrainVertex>() + size_of::<u32>();
 
 /// The mesh bytes of added quads the meshing workers hold now, out of [`MAX_IN_FLIGHT_BYTES`].
-static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+pub(super) static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
-/// What is left of one section's budget, shared by its own blocks and every renderer.
+/// Takes `bytes` of `shared`, unless that would pass [`MAX_IN_FLIGHT_BYTES`]. The caller gives
+/// them back with `fetch_sub` when what they pay for is dropped.
+pub(super) fn reserve_in_flight(shared: &AtomicUsize, bytes: usize) -> bool {
+    shared
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+            held.checked_add(bytes)
+                .filter(|&after| after <= MAX_IN_FLIGHT_BYTES)
+        })
+        .is_ok()
+}
+
+/// What is left of one section's budget, shared by visibility, its own blocks and every renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Budget {
     pub(super) quads: usize,
@@ -81,8 +92,8 @@ pub(super) struct Budget {
 }
 
 impl Budget {
-    /// What a section whose mesh is `out` so far has left.
-    pub(super) fn left_after(out: &SectionMesh) -> Self {
+    /// What a section whose mesh is `out` and reserved visibility is `visibility_bytes` has left.
+    pub(super) fn left_after(out: &SectionMesh, visibility_bytes: usize) -> Self {
         let vertices = out.solid.len() + out.translucent.len();
         let sources = out.solid_sources.len() + out.translucent_sources.len();
         let bytes = vertices * size_of::<TerrainVertex>()
@@ -90,7 +101,9 @@ impl Budget {
             + sources * size_of::<TerrainSource>();
         Self {
             quads: MAX_QUADS.saturating_sub(vertices / 4),
-            bytes: MAX_SECTION_BYTES.saturating_sub(bytes),
+            bytes: MAX_SECTION_BYTES
+                .saturating_sub(bytes)
+                .saturating_sub(visibility_bytes),
         }
     }
 
@@ -172,16 +185,11 @@ impl<'a> Batch<'a> {
     /// Takes [`QUAD_BYTES`] of the shared in-flight bytes, unless that would pass
     /// [`MAX_IN_FLIGHT_BYTES`].
     fn reserve(&mut self) -> bool {
-        let taken = self
-            .shared
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
-                held.checked_add(QUAD_BYTES)
-                    .filter(|&after| after <= MAX_IN_FLIGHT_BYTES)
-            });
-        if taken.is_ok() {
+        let taken = reserve_in_flight(self.shared, QUAD_BYTES);
+        if taken {
             self.in_flight += QUAD_BYTES;
         }
-        taken.is_ok()
+        taken
     }
 
     /// Refuses the batch: drops every quad it held and gives their budget back.
@@ -261,7 +269,12 @@ impl Drop for Batch<'_> {
 
 /// Asks every renderer to add the quads of the section `tints` is set up for, and adds them to
 /// `out` after the section's own blocks. A renderer's quads are taken whole or refused whole.
-pub(super) fn add(mesher: &Mesher<'_>, tints: &mut Tints<'_>, out: &mut SectionMesh) {
+pub(super) fn add(
+    mesher: &Mesher<'_>,
+    tints: &mut Tints<'_>,
+    out: &mut SectionMesh,
+    visibility_bytes: usize,
+) {
     let [cx, cz, base_y] = tints.origin;
     let origin = [cx * 16, base_y, cz * 16];
     let region = Region {
@@ -269,7 +282,7 @@ pub(super) fn add(mesher: &Mesher<'_>, tints: &mut Tints<'_>, out: &mut SectionM
         tints: RefCell::new(tints),
         nether: mesher.nether_shading,
     };
-    let mut budget = Budget::left_after(out);
+    let mut budget = Budget::left_after(out, visibility_bytes);
     for renderer in mesher.tables.section_geometry.iter() {
         if renderer.failed.load(Ordering::Relaxed) {
             continue;

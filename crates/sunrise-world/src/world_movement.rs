@@ -8,8 +8,13 @@ use crate::{
     entity_obstruction::EntityIdentity,
 };
 use sunrise_core::geometry::{
+<<<<<<< sync-sunrise-1
     Aabb, Axis, Collider, ShapeOp, Vec3, VoxelShape, entity_collision_bounds,
     try_resolve_step_movement,
+=======
+    Aabb, Axis, ShapeOp, Vec3, VoxelShape, entity_collision_bounds, oriented::OrientedCollider,
+    try_resolve_step_movement_oriented,
+>>>>>>> sunrise/main
 };
 
 /// How far below the feet `Entity.getAvailableSpaceBelow` looks for ground.
@@ -31,6 +36,41 @@ pub trait EntityMovementWorld {
         entity: EntityIdentity,
         bounds: Aabb,
     ) -> Result<Option<VoxelShape>, Self::Error>;
+    /// The moving colliders meeting `bounds` that the entity collides with: boxes that are
+    /// oriented in the world (a mod entity's `set_collider`), which no `VoxelShape` holds.
+    /// Selected once with the entity shapes, and appended to `out`, which the caller owns and
+    /// reuses so a move allocates nothing. A world with none appends none.
+    fn moving_colliders(
+        &mut self,
+        _entity: EntityIdentity,
+        _bounds: Aabb,
+        _out: &mut Vec<OrientedCollider>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+thread_local! {
+    /// The colliders of the move in progress, kept between moves: a move that meets some
+    /// allocates nothing once the list has grown to fit.
+    static COLLIDERS: std::cell::RefCell<Vec<OrientedCollider>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A move's list of colliders, borrowed from the thread's reusable one and given back empty.
+struct Colliders(Vec<OrientedCollider>);
+
+impl Colliders {
+    fn take() -> Self {
+        Self(COLLIDERS.with(|list| std::mem::take(&mut *list.borrow_mut())))
+    }
+}
+
+impl Drop for Colliders {
+    fn drop(&mut self) {
+        self.0.clear();
+        COLLIDERS.with(|list| *list.borrow_mut() = std::mem::take(&mut self.0));
+    }
 }
 
 pub struct MovementRequest<'a> {
@@ -59,6 +99,14 @@ where
             entity_collision_bounds(request.movement, request.bounds, request.max_step),
         )
         .map_err(CollisionScanError::World)?;
+    let mut colliders = Colliders::take();
+    world
+        .moving_colliders(
+            request.entity,
+            entity_collision_bounds(request.movement, request.bounds, request.max_step),
+            &mut colliders.0,
+        )
+        .map_err(CollisionScanError::World)?;
     // Vanilla walks the whole box a movement expands to with no candidate
     // counter, so a movement big enough to pass the caller's budget is slow
     // there, never fatal (#6124: a legal movement_speed of 400 crossed more
@@ -72,11 +120,12 @@ where
     let candidate_budget = scan_cells(sweep).map_or(request.candidate_budget, |cells| {
         cells.max(request.candidate_budget)
     });
-    try_resolve_step_movement(
+    try_resolve_step_movement_oriented(
         request.movement,
         request.bounds,
         request.max_step,
         request.on_ground,
+        &colliders.0,
         |bounds| {
             // A box's blocks are a few dozen shapes at most: one allocation,
             // not the doubling a push-by-push list makes.
@@ -127,6 +176,17 @@ where
         .entity_collisions(request.entity, request.bounds)
         .map_err(CollisionScanError::World)?
         .is_empty()
+    {
+        return Ok(false);
+    }
+    let mut colliders = Colliders::take();
+    world
+        .moving_colliders(request.entity, request.bounds, &mut colliders.0)
+        .map_err(CollisionScanError::World)?;
+    if colliders
+        .0
+        .iter()
+        .any(|collider| collider.intersects(request.bounds))
     {
         return Ok(false);
     }

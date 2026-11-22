@@ -3,10 +3,11 @@
 //! These queries share the factories/catalogs used by the runtime defaults, not a
 //! second inventory of vanilla types. They never need a world, position or stack.
 use super::{
-    armor_stands, boats, composter::is_composter, machines::cauldron_contents, minecarts::CartKind,
+    armor_stands, boats, composter::is_composter, decorated_pot::DECORATED_POT,
+    machines::cauldron_contents, minecarts::CartKind,
 };
-use sunrise_client::{containers::BlockEntity, mobs::species};
 use mod_api::ProvidedBy;
+use sunrise_client::{containers::BlockEntity, mobs::species};
 
 /// Coverage of a built-in provider, independent of whether a particular runtime
 /// instance is loaded, simulated, chested or reachable from the requested side.
@@ -20,8 +21,11 @@ pub(super) fn builtin(by: ProvidedBy, capability: &str, kind: &str) -> bool {
                 return false;
             }
             if capability == mod_api::ITEMS.name {
-                // Composters expose state-backed ports rather than a block entity.
-                BlockEntity::has_builtin_item_container(kind) || is_composter(kind)
+                // Pots use a saved slot; composters have state-backed ports. Neither
+                // needs an item-bearing entity from the stock container factory.
+                BlockEntity::has_builtin_item_container(kind)
+                    || kind == DECORATED_POT
+                    || is_composter(kind)
             } else if capability == mod_api::FLUIDS.name {
                 cauldron_contents::vanilla_block_has_fluids(kind)
             } else {
@@ -123,6 +127,7 @@ mod tests {
                 "minecraft:chiseled_bookshelf",
                 "minecraft:oak_shelf",
                 "minecraft:composter",
+                "minecraft:decorated_pot",
             ] {
                 assert!(
                     builtin(ProvidedBy::Block, capability, kind),
@@ -132,7 +137,6 @@ mod tests {
             for kind in [
                 "minecraft:stone",
                 "minecraft:campfire",
-                "minecraft:decorated_pot",
                 "minecraft:lectern",
                 "minecraft:beehive",
                 "minecraft:suspicious_sand",

@@ -2,6 +2,14 @@
 //! Runs tools/test_particle_providers_parity.py's particles through
 //! `ParticleEngine`: built with the seeds the vanilla oracle recovered, then
 //! ticked over air or a stone floor at y 63, printing their state each tick.
+use serde_json::Value;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::Path,
+    sync::Arc,
+};
 use sunrise_client::{
     Result,
     assets::Assets,
@@ -10,14 +18,6 @@ use sunrise_client::{
     collisions,
     particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleSnapshot, ParticleType},
     world::World,
-};
-use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-    sync::Arc,
 };
 
 fn d(v: f64) -> String {

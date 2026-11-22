@@ -131,8 +131,10 @@ impl Goal for DrinkItem {
         m.extra.using_item = 1;
     }
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.extra.set_main_hand(None);
-        m.extra.using_item = 0;
+        if m.extra.using_item != 0 {
+            m.extra.set_main_hand(None);
+            m.extra.using_item = 0;
+        }
         let pitch = m.random.next_float() * 0.2 + 0.9;
         cx.events
             .push(MobEvent::Sound(self.finish_sound, m.center(), 1.0, pitch));
@@ -157,13 +159,16 @@ impl Goal for DrinkItem {
                     1.0,
                 ));
             } else {
-                m.retain_effects(|_| false);
+                // The milk's effective consumable list owns the clear-all entry.
                 cx.events.push(MobEvent::Sound(
                     "entity.wandering_trader.drink_milk",
                     m.center(),
                     1.0,
                     1.0,
                 ));
+            }
+            if let Some(stack) = m.extra.main_hand_stack().cloned() {
+                cx.events.push(MobEvent::DrinkFinished { mob: m.id, stack });
             }
             m.extra.using_item = 0;
         }
@@ -184,7 +189,7 @@ impl Goal for TradeWithPlayer {
             && m.alive()
             && m.hurt_time <= 0
             && !m.fluids.in_water
-            && m.on_ground
+            && m.ground.on_ground
             && cx
                 .w
                 .selected_player()
@@ -349,25 +354,29 @@ mod tests {
     /// `UseItemGoal` for the wandering trader: the End has a fixed time, so
     /// it is neither dark nor bright outside and the trader drinks nothing.
     #[test]
+    #[ignore = "daily"]
     fn a_trader_does_not_drink_in_the_end() {
         use crate::mobs::world::with_test_world;
-        use sunrise_core::geometry::Vec3;
         use std::sync::Arc;
-        let _ = with_test_world(&[], |w, types| {
-            let kind = Arc::new(types.types["minecraft:wandering_trader"].clone());
-            let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
-            let mut potion = DrinkItem {
-                item: "minecraft:potion",
-                finish_sound: "entity.wandering_trader.disappeared",
-                dark: true,
-            };
-            let mut milk = DrinkItem {
-                item: "minecraft:milk_bucket",
-                finish_sound: "entity.wandering_trader.reappeared",
-                dark: false,
-            };
-            let decide =
-                |world: &MobWorld, m: &mut Mob, potion: &mut DrinkItem, milk: &mut DrinkItem| {
+        use sunrise_core::geometry::Vec3;
+        assert!(
+            with_test_world(&[], |w, types| {
+                let kind = Arc::new(types.types["minecraft:wandering_trader"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
+                let mut potion = DrinkItem {
+                    item: "minecraft:potion",
+                    finish_sound: "entity.wandering_trader.disappeared",
+                    dark: true,
+                };
+                let mut milk = DrinkItem {
+                    item: "minecraft:milk_bucket",
+                    finish_sound: "entity.wandering_trader.reappeared",
+                    dark: false,
+                };
+                let decide = |world: &MobWorld,
+                              m: &mut Mob,
+                              potion: &mut DrinkItem,
+                              milk: &mut DrinkItem| {
                     let mut test_level = crate::health::TestLevel::new(1);
                     let mut events = Vec::new();
                     let mut cx = Cx {
@@ -379,33 +388,35 @@ mod tests {
                     let day = milk.can_use(m, &mut cx);
                     (dark, day)
                 };
-            let mut night = w.clone();
-            night.daylight = false;
-            night.dimension_type = DimensionFacts::overworld();
-            assert_eq!(
-                decide(&night, &mut m, &mut potion, &mut milk),
-                (true, false)
-            );
-            let mut end_dark = night.clone();
-            end_dark.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
-            assert_eq!(
-                decide(&end_dark, &mut m, &mut potion, &mut milk),
-                (false, false)
-            );
-            m.extra
-                .effects
-                .push(crate::mobs::StoredEffect::new(INVISIBILITY, 3600, 0));
-            let mut day = w.clone();
-            day.daylight = true;
-            day.dimension_type = DimensionFacts::overworld();
-            assert_eq!(decide(&day, &mut m, &mut potion, &mut milk), (false, true));
-            let mut end_bright = day.clone();
-            end_bright.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
-            assert_eq!(
-                decide(&end_bright, &mut m, &mut potion, &mut milk),
-                (false, false)
-            );
-        });
+                let mut night = w.clone();
+                night.daylight = false;
+                night.dimension_type = DimensionFacts::overworld();
+                assert_eq!(
+                    decide(&night, &mut m, &mut potion, &mut milk),
+                    (true, false)
+                );
+                let mut end_dark = night.clone();
+                end_dark.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
+                assert_eq!(
+                    decide(&end_dark, &mut m, &mut potion, &mut milk),
+                    (false, false)
+                );
+                m.extra
+                    .effects
+                    .push(crate::mobs::StoredEffect::new(INVISIBILITY, 3600, 0));
+                let mut day = w.clone();
+                day.daylight = true;
+                day.dimension_type = DimensionFacts::overworld();
+                assert_eq!(decide(&day, &mut m, &mut potion, &mut milk), (false, true));
+                let mut end_bright = day.clone();
+                end_bright.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
+                assert_eq!(
+                    decide(&end_bright, &mut m, &mut potion, &mut milk),
+                    (false, false)
+                );
+            }),
+            "vanilla data is missing"
+        );
     }
 }
 
@@ -413,13 +424,14 @@ mod tests {
 mod trade_start_tests {
     use super::*;
     use crate::mobs::world::{test_player, with_test_world};
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     /// `TradeWithPlayerGoal.canUse`: alive, dry, on the ground, not hurt
     /// recently and within four blocks of the trading player. A hurt trader,
     /// or one whose customer walked away, must not start the stand-still goal.
     #[test]
+    #[ignore = "daily"]
     fn a_trader_stops_trading_when_hurt_or_out_of_reach() {
         let mut outcomes = Vec::new();
         let ran = with_test_world(&[], |w, types| {
@@ -431,7 +443,7 @@ mod trade_start_tests {
             ] {
                 let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
                 m.extra.flag2 = true;
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m.hurt_time = hurt_time;
                 m.ai.goals.add(1, TradeWithPlayer);
                 let mut world = w.clone();
@@ -464,11 +476,11 @@ mod trade_start_tests {
 mod use_overflow_tests {
     use super::*;
     use crate::mobs::world::{test_player, with_test_world};
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     #[test]
-    #[ignore = "requires prepared entity resources in .local/sunrise-client"]
+    #[ignore = "daily"]
     fn trader_drink_completes_at_max_use_counter() {
         assert!(
             with_test_world(&[], |w, types| {

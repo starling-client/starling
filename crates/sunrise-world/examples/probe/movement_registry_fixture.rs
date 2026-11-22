@@ -1,6 +1,4 @@
 use crate::support::common::position;
-use sunrise_core::{geometry::Vec3, position::BlockPos};
-use sunrise_world::movement_support::{self as support, MovementLocation};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::{
@@ -8,6 +6,8 @@ use std::{
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::{geometry::Vec3, position::BlockPos};
+use sunrise_world::movement_support::{self as support, MovementLocation};
 use {
     sunrise_core::{
         nbt,

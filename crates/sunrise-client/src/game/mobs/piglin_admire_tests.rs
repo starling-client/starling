@@ -13,7 +13,7 @@ fn stack(sword: bool) -> ItemStack {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn piglin_admire_preserves_components_on_death_and_finish() {
     mod_platform::testing::with_mods(Vec::new().into(), || {
         with_game(|g| {
@@ -51,7 +51,7 @@ fn piglin_admire_preserves_components_on_death_and_finish() {
                 assert!(held.same_item_same_components(&expected));
                 assert_eq!(held.count, 1);
                 let corpse = g.mobs[0].clone();
-                g.mob_died(&corpse);
+                g.mob_die(&corpse);
                 assert!(g.dropped.iter().any(|d| d.stack.count == 1 && d.stack.same_item_same_components(&expected)));
                 if sword {
                     let id = g.mobs[0].id;
@@ -66,7 +66,7 @@ fn piglin_admire_preserves_components_on_death_and_finish() {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn piglin_admire_hit_keeps_baby_gold_and_cancels_adult_barter() {
     mod_platform::testing::with_mods(Vec::new().into(), || {
         with_game(|g| {

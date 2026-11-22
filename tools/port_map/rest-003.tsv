@@ -31,8 +31,8 @@ UsedTotemTrigger.TriggerInstance.usedTotem	skip:data		criterion factory
 UsedTotemTrigger.TriggerInstance.matches	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::trigger_item	fired from totem.rs
 UsingItemTrigger.TriggerInstance.lookingAt	skip:data		criterion factory
 UsingItemTrigger.TriggerInstance.matches	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::trigger_using_item	item and looking-at predicates
-Camera.createProjectionMatrixForCulling	port	crates/sunrise-client-render/src/gfx.rs::Renderer::camera_frustum	gap: minor: the max(FOV, option FOV) rule is not in this fn
-Camera.prepareCullFrustum	port	crates/sunrise-client-render/src/gfx.rs::Renderer::camera_frustum	gap: minor: no captured frustum (F3+U kill and capture)
+Camera.createProjectionMatrixForCulling	port	crates/sunrise-client-render/src/gfx/view.rs::Renderer::camera_frustum	gap: minor: the max(FOV, option FOV) rule is not in this fn
+Camera.prepareCullFrustum	port	crates/sunrise-client-render/src/gfx/view.rs::Renderer::camera_frustum	gap: minor: no captured frustum (F3+U kill and capture)
 Camera.setPosition	inline	crates/sunrise-client-render/src/camera.rs::Camera::align_with_entity	the position is stored there
 Camera.getViewRotationMatrix	port	crates/sunrise-client-render/src/camera.rs::view_matrix
 Camera.NearPlane.getPointOnPlane	inline	crates/sunrise-client/src/game/items/fishing.rs::Game::fishing_line	only the fishing line's anchor uses it
@@ -66,9 +66,10 @@ KeyboardHandler.charTyped	port	crates/sunrise-client/src/game/runtime/window_han
 KeyboardHandler.textInput	port	crates/sunrise-client/src/game/runtime/window_handler.rs::Game::window_event	typed text routed to the open screen
 KeyboardHandler.textEditing	port	crates/sunrise-client/src/game/interface/ime.rs::Game::ime_preedit	WindowEvent::Ime(Preedit) draws the composition in the focused field
 KeyboardHandler.submitPreeditEvent	inline	crates/sunrise-client-render/src/preedit.rs::set_preedit	the preedit reaches the screen's field directly, and Commit types the text
-Minecraft.<init>	inline	crates/sunrise-client/src/game.rs::run_loading	the last start's startedCleanly is read by unclean_start_recovery (fullscreen dropped when it is false), then this start is marked unfinished until the handoff
+Minecraft.<init>	inline	crates/sunrise-client/src/game/runtime/resource_loader.rs::run_loading	the last start's startedCleanly is read by unclean_start_recovery (fullscreen dropped when it is false), then this start is marked unfinished until the handoff
 Minecraft.onGameLoadFinished	inline	crates/sunrise-client/src/game/runtime/loading_screen.rs::Loading::finish	the handoff's last two steps: startedCleanly set true and the options saved; the initial screens come from the menu handoff and there is no load-time telemetry
-Minecraft.createTitle	missing		minor: the window title is always Sunrise (with_title in game.rs), no version or world type
+Minecraft.createTitle	port	crates/sunrise-client/src/game/runtime/window_title.rs::title	the * always: ModCheck's canary is Mojang's signed client jar, which Sunrise isn't
+Minecraft.updateTitle	port	crates/sunrise-client/src/game/runtime/window_title.rs::Game::update_window_title	once a frame when the session part or the language changed, not at vanilla's call sites; the string is the same
 Minecraft.createUserApiService	skip:service
 Minecraft.abortResourcePackRecovery	missing		minor: no automatic abort when a pack keeps failing; errors stay on the Packs page
 Minecraft.addResourcePackLoadFailToast	port	crates/sunrise-client/src/game/world/packs/mod.rs::Game::reload_packs	gap: minor: the failure is a Packs-page error, not a toast
@@ -90,9 +91,9 @@ Minecraft.archiveProfilingReport	skip:debug		profiling archive
 Minecraft.isLevelRunningNormally	port	crates/sunrise-client/src/clock.rs::TickRateManager::runs_normally
 Minecraft.isMultiplayerServer	skip:other		no single predicate; remote and LAN code test their own state
 Minecraft.getQuickActionsDialog	port	crates/sunrise-client/src/game/interface/quick_actions.rs::Game::open_quick_actions	key.quickActions opens the tag's dialog, or minecraft:quick_actions when it names several
-Minecraft.disconnectFromWorld	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::leave_server	gap: minor: only the remote exit; local worlds exit via close_world
+Minecraft.disconnectFromWorld	port	crates/sunrise-client/src/game/network/remote/session.rs::Game::leave_server	gap: minor: only the remote exit; local worlds exit via close_world
 Minecraft.disconnectWithProgressScreen	inline	crates/sunrise-client/src/game/world/world_session.rs::Game::close_world	the exit is folded into the world close
-Minecraft.clearClientLevel	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::leave_server	level teardown is part of leave_server
+Minecraft.clearClientLevel	inline	crates/sunrise-client/src/game/network/remote/session.rs::Game::leave_server	level teardown is part of leave_server
 Minecraft.setScreenAndShow	skip:other		Sunrise switches the screen field; no forced frame render needed
 Minecraft.updateLevelInEngines	skip:other		one world state in Sunrise; no engines to update
 Minecraft.telemetryOptInExtra	skip:service
@@ -139,5 +140,5 @@ OptionInstance.OptionInstanceSliderButton.updateMessage	skip:ui		label and toolt
 OptionInstance.OptionInstanceSliderButton.applyValue	port	crates/sunrise-client-render/src/options_ui.rs::delays_apply	gap: minor: values apply at once; the 600 ms delay only holds the handle
 OptionInstance.OptionInstanceSliderButton.applyUnsavedValue	port	crates/sunrise-client-render/src/options_ui.rs::set_slider
 OptionInstance.OptionInstanceSliderButton.resetValue	port	crates/sunrise-client-render/src/options_ui.rs::OptionsUi::slider_shown
-OptionInstance.OptionInstanceSliderButton.extractWidgetRenderState	port	crates/sunrise-client-render/src/options_ui.rs::slider_unsnapped	gap: minor: no deferred apply after 600 ms; only the handle display
+OptionInstance.OptionInstanceSliderButton.extractWidgetRenderState	port	crates/sunrise-client-render/src/options_ui_wheel.rs::slider_unsnapped	gap: minor: no deferred apply after 600 ms; only the handle display
 OptionInstance.OptionInstanceSliderButton.keyPressed	port	crates/sunrise-client/src/game/interface/key_focus.rs::slider_edit_on_focus	Tab focus on a slider starts its arrow-key editing

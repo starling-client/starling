@@ -94,7 +94,7 @@ MinecraftServer.configurePackRepository	port	crates/sunrise-client/src/game/admi
 MinecraftServer.configureRepositoryWithSelection	inline	crates/sunrise-client/src/game/administration/functions.rs::Game::reload_datapacks	gap: minor: sets the enabled list only; the forced feature packs come from datapack::enabled_ids
 MinecraftServer.enableForcedFeaturePacks	inline	crates/sunrise-client-render/src/datapack.rs::enabled_ids	the last loop forces on every feature pack whose flags the world enables, whatever the world's selection says; a pack's flags are its pack.mcmeta features.enabled
 MinecraftServer.getSelectedPacks	port	crates/sunrise-client/src/game/administration/functions.rs::Game::save_datapack_settings	gap: minor: writes the enabled and disabled lists; no feature check
-MinecraftServer.findRespawnDimension	inline	crates/sunrise-client/src/game/world/server_travel.rs::Game::world_spawn_trip	gap: minor: always the Overworld; /setworldspawn keeps no dimension
+MinecraftServer.findRespawnDimension	port	crates/sunrise-client/src/game/network/lan/mod.rs::Game::world_spawn_level	uses the saved world spawn's dimension
 MinecraftServer.setRespawnData	port	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_setworldspawn	gap: minor: the new spawn is not sent to guests here; they get it on join
 MinecraftServer.getCommandStorage	skip:java		getter for the command storage
 MinecraftServer.getStopwatches	skip:java		getter for the stopwatches
@@ -112,9 +112,9 @@ MinecraftServer.createGameModeForPlayer	missing		minor: demo mode is not impleme
 MinecraftServer.stopTimeProfiler	skip:debug		debug profiler stop
 MinecraftServer.setAutoSave	port	crates/sunrise-client/src/game/interface/dedicated/mod.rs::set_auto_save	changes the shared server-level save flag; the tick skips periodic saves while it is disabled
 MinecraftServer.isAutoSave	port	crates/sunrise-client/src/game/interface/dedicated/mod.rs::auto_save	reads the shared server-level save flag
-MinecraftServer.storeChunkIoError	skip:debug		writes a chunk IO crash report
+MinecraftServer.storeChunkIoError	port	crates/sunrise-client/src/chunk_io.rs::ChunkIoReport::write_to	writes the nonfatal chunk I/O report under the server's debug folder, off the region writer
 MinecraftServer.reportChunkLoadFailure	port	crates/sunrise-client/src/chunk_io.rs::report_load_failure	logs, warns on low disk space and records the failed chunk for the toast; gap: no suppressed-exception store and no debug crash report
-MinecraftServer.reportChunkSaveFailure	port	crates/sunrise-client/src/chunk_io.rs::report_save_failure	logs, warns on low disk space and records the failed chunk; gap: no suppressed-exception store and no debug crash report
+MinecraftServer.reportChunkSaveFailure	port	crates/sunrise-client/src/chunk_io.rs::report_save_failure	logs, records the suppressed exception and writes a chunk IO report before checking disk space
 PlayerAdvancements.reload	port	crates/sunrise-client/src/lan/advancements.rs::ServerAdvancements::reload	on /reload every guest loaded so far has its visible set cleared and its progress re-read against the new tree, then the tick advancements are granted and the reward recipes added; gap: the host's own progress is not reloaded
 PlayerAdvancements.registerListeners	skip:other		no per-criterion listener map; trigger() tests every criterion when an event fires
 PlayerAdvancements.checkForAutomaticTriggers	missing		minor: criteria-less advancements from data packs are not granted when a player loads

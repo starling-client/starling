@@ -1,7 +1,7 @@
 //! Registration views over the single load-owned registrar.
 use crate::{
-    HandlerThread, IPayloadHandler, PayloadDeclaration, PayloadDirection, PayloadId,
-    PayloadProtocol, Registrar,
+    HandlerThread, IPayloadHandler, PayloadDeclaration, PayloadDelivery, PayloadDirection,
+    PayloadId, PayloadProtocol, Registrar,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -11,10 +11,11 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct PayloadRegistrar<'a> {
-    registrar: Rc<RefCell<&'a mut dyn Registrar>>,
-    version: String,
-    optional: bool,
-    thread: HandlerThread,
+    pub(super) registrar: Rc<RefCell<&'a mut dyn Registrar>>,
+    pub(super) version: String,
+    pub(super) optional: bool,
+    pub(super) thread: HandlerThread,
+    pub(super) delivery: PayloadDelivery,
 }
 
 impl<'a> PayloadRegistrar<'a> {
@@ -24,6 +25,7 @@ impl<'a> PayloadRegistrar<'a> {
             version: version.into(),
             optional: false,
             thread: HandlerThread::Main,
+            delivery: PayloadDelivery::Reliable,
         }
     }
     /// Use another exact version without changing the original view.
@@ -47,6 +49,15 @@ impl<'a> PayloadRegistrar<'a> {
             ..self.clone()
         }
     }
+    /// Let queued sends of these payloads be dropped under congestion (see
+    /// [`PayloadDelivery::Droppable`]), without changing the original view. Play channels only:
+    /// a configuration or common declaration refuses load.
+    pub fn droppable(&self) -> Self {
+        Self {
+            delivery: PayloadDelivery::Droppable,
+            ..self.clone()
+        }
+    }
     fn register(
         &mut self,
         id: PayloadId,
@@ -63,6 +74,7 @@ impl<'a> PayloadRegistrar<'a> {
                 direction,
                 optional: self.optional,
                 thread: self.thread,
+                delivery: self.delivery,
             },
             server,
             client,
@@ -80,8 +92,10 @@ impl PayloadRegistrar<'_> {
     /// on it with `PlayerRef::send_payload` (vanilla's 1,048,576-byte limit)
     /// and `server`, when given, receives what a client sends on it (vanilla's
     /// 32,767-byte limit), on the main thread. Several mods may declare one raw
-    /// channel; each receives it once, in mod load order. `minecraft:` and
-    /// `sunrise:` ids, and an id a typed payload uses, refuse load.
+    /// channel; each receives it once, in mod load order. A handler that fails loses only its own delivery (logged, its
+    /// staged work rolled back): the player stays connected and the other mods'
+    /// copies still run. `minecraft:` and `sunrise:` ids, and an id a typed
+    /// payload uses, refuse load.
     pub fn play_raw(
         &mut self,
         id: PayloadId,
@@ -158,7 +172,7 @@ methods!(
 );
 
 // no wire: the load event borrows its registrar and has no invocation data representation.
-/// The load-time payload registration event, reached from the current Registrar.
+/// The load-time payload registration event, built by the game through the current [`Registrar`].
 #[non_exhaustive]
 pub struct RegisterPayloadHandlersEvent<'a> {
     registrar: &'a mut dyn Registrar,
@@ -172,6 +186,7 @@ impl RegisterPayloadHandlersEvent<'_> {
 
 // no wire: the load event borrows its registrar; handler callbacks cross separately.
 /// Assign client handlers to already declared clientbound payloads before freeze.
+/// The game builds this event through the current [`Registrar`].
 #[non_exhaustive]
 pub struct RegisterClientPayloadHandlersEvent<'a> {
     registrar: &'a mut dyn Registrar,

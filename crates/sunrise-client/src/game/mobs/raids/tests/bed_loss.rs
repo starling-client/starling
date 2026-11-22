@@ -1,11 +1,11 @@
 //! Real Game raid creation/wave dispatch with a loaded claimed-bed precondition.
 use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
+use std::sync::Arc;
 use sunrise_client::{chunk::Chunk, mobs::Mob, raid::Status};
 use sunrise_core::{geometry::Vec3, position::ChunkPos};
-use std::sync::Arc;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn admitted_raid_loses_removed_loaded_bed_without_erasing_memory() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();

@@ -6,8 +6,8 @@
 //! title's name key (`MenuProvider.getDisplayName` = `Entity.getDisplayName`).
 //!
 //! usage: vehicle_container_fixture INPUT OUTPUT
-use sunrise_client::containers::{vehicle_menu, vehicle_menu_name};
 use std::fs;
+use sunrise_client::containers::{vehicle_menu, vehicle_menu_name};
 
 fn case(entity_type: &str) -> Option<String> {
     let entity_type = entity_type.trim();

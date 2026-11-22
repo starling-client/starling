@@ -3,7 +3,17 @@
 `host.fake_player(level, uuid, name)` creates or retrieves a player with no connection in the level in place, as
 NeoForge's `FakePlayerFactory` does: a machine that acts as a player (a deployer, a block breaker). It does not participate as an
 online player: the tab list, player counts, sleeping, natural spawning, chunk tickets, statistics and saves leave
-it out. `player.is_fake(host)` tells one apart; `player.remove_fake(host)` removes it.
+it out. `player.is_fake(host)` tells one apart; `player.remove_fake(host)` removes it silently.
+
+`player.disconnect(host, reason)` instead kicks the fake with a `Text` reason, as `/kick` by name or selector does.
+The first reason stands; removal completes at the next hub poll, after any current action returns.
+The shared leave path broadcasts the leave line and fires `player_kicked` and `player_logged_out` (version 2),
+even though a fake has no preceding `player_logged_in`. It still writes no player-data save.
+Silent `remove_fake` sends no kick, leave line or logout notification.
+
+To check whether a fake player's current tool can harvest a block without breaking it, use
+[`player.has_correct_tool_for_drops`](../world/harvest-queries.md#what-the-game-uses-for-a-player).
+It reads that fake player's selected hotbar slot and runs the same harvest hooks as a connected player.
 
 ## Actions
 
@@ -56,9 +66,24 @@ secondary_use)`: the fake acts in survival with a fresh standing body (eye heigh
 hand, and no other inventory or equipment. Its supplied rotation is used for item rays. Secondary use holds
 semantic sneak without changing that standing eye height. No second player is created.
 
+A scoped fake starts with an empty attack charge, so an attack deals only part of the weapon's damage. Set
+`full_attack_charge` to start the action fully charged with the setup's stack in hand; the attack then runs as a
+player's charged blow (crits, sweep, knockback and enchantments included), and the fake's own charge comes back
+afterwards:
+
+```rust,ignore
+let mut setup = PlayerActionSetup::new(Some(sword), eye, yaw, pitch, false);
+setup.full_attack_charge = true;
+let result = player.perform_action_scoped(host, PlayerAction::Attack { target }, setup)?;
+```
+
 The `ScopedActionResult` contains `outcome` (the same `ActionOutcome`), `held` (the nonempty main-hand remainder)
 and `other` (other nonempty inventory stacks, then offhand, carried stack and armor). These stacks are returned
-to the caller, not kept by the fake. The fake's persistent body, inventory, game mode, look, secondary-use state
+to the caller, not kept by the fake. `unrepresentable` counts the stacks the action produced that the API can't
+represent, such as a saved item this game build doesn't have: they are never destroyed or replaced, but go back
+into the world where the fake stood, as item entities with the default pickup delay, and appear in neither
+`held` nor `other`. Such an item entity joins the level as any drop does: an `entity_join_level` listener that
+keeps it out discards it, and it is then not counted. The fake's persistent body, inventory, game mode, look, secondary-use state
 and action timers are restored even on refusal; world changes and the usual interaction/Parts hooks remain.
 The ordinary fake safety rules apply: no screens, sleep, rides, dimension travel, online participation,
 statistics, advancement credit or network connection. Neither action method can run inside another player turn
@@ -73,4 +98,6 @@ shift flag. On the server the existing entity flag is read, including a scoped f
 clients without a joined local player return `None`.
 
 What a machine does beyond a player's action stays in the mod: its own mining progress and catching world drops.
-Scoped actions retain player reach, protection and border checks; eye placement is supplied by the mod.
+Scoped actions retain player reach, protection and border checks. The acting fake's body can obstruct its own block
+placement, just like a connected player's. For scoped placement, choose an eye position that keeps the temporary
+standing body clear of the block's collision shape.

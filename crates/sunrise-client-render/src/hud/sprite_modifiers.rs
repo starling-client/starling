@@ -11,7 +11,8 @@ use sunrise_polytone::sprites::{SpriteChange, SpriteModifier, sprite_id};
 
 use super::{HudAtlas, Rect as SpriteRect};
 
-/// The packs' modifiers, by the atlas key of the sprite each one changes.
+/// The packs' modifiers, by the GUI id of the sprite each one changes (`hud/hotbar`, a mod's
+/// `mymod:panel`).
 #[derive(Debug, Default)]
 pub struct SpriteModifiers {
     by_sprite: HashMap<String, (SpriteChange, Vec<SpriteChange>)>,
@@ -25,32 +26,16 @@ pub(crate) struct SpriteDraw {
     pub color: u32,
 }
 
-/// `minecraft:hud/hotbar` as the atlas keys it (`gui/sprites/hud/hotbar`; another namespace's as
-/// `ns:gui/sprites/...`).
-fn atlas_key(id: &str) -> String {
-    match id.split_once(':') {
-        Some(("minecraft", path)) => format!("gui/sprites/{path}"),
-        Some((namespace, path)) => format!("{namespace}:gui/sprites/{path}"),
-        None => format!("gui/sprites/{id}"),
-    }
-}
-
-/// The sprite id of an atlas key, when it is a GUI sprite.
-fn sprite_of(key: &str) -> Option<String> {
-    if let Some(path) = key.strip_prefix("gui/sprites/") {
-        return Some(sprite_id(path));
-    }
-    let (namespace, rest) = key.split_once(':')?;
-    Some(format!(
-        "{namespace}:{}",
-        rest.strip_prefix("gui/sprites/")?
-    ))
+/// `minecraft:hud/hotbar` as the GUI atlas names it (`hud/hotbar`; another namespace's keeps its
+/// namespace).
+fn gui_id(id: &str) -> String {
+    id.strip_prefix("minecraft:").unwrap_or(id).to_owned()
 }
 
 impl SpriteModifiers {
-    /// The modifiers of the packs merged at `root` for the GUI sprites among `keys` (the atlas's):
-    /// for each sprite, the last file that targets it.
-    pub fn read<'a>(root: &ResourceSource, keys: impl Iterator<Item = &'a String>) -> Self {
+    /// The modifiers of the packs merged at `root` for the GUI sprites among `ids` (the GUI
+    /// atlas's): for each sprite, the last file that targets it.
+    pub fn read<'a>(root: &ResourceSource, ids: impl Iterator<Item = &'a String>) -> Self {
         let mut modifiers = Vec::new();
         for path in root
             .list("assets/")
@@ -69,27 +54,24 @@ impl SpriteModifiers {
                 Err(e) => log::warn!("{path}: {e}"),
             }
         }
-        Self::from_modifiers(modifiers, keys)
+        Self::from_modifiers(modifiers, ids)
     }
 
-    /// `modifiers` (in load order) for the GUI sprites among `keys`: for each sprite, the last that
+    /// `modifiers` (in load order) for the GUI sprites among `ids`: for each sprite, the last that
     /// targets it.
     fn from_modifiers<'a>(
         modifiers: Vec<SpriteModifier>,
-        keys: impl Iterator<Item = &'a String>,
+        ids: impl Iterator<Item = &'a String>,
     ) -> Self {
         let mut by_sprite = HashMap::new();
         if !modifiers.is_empty() {
-            for key in keys {
-                let Some(id) = sprite_of(key) else {
-                    continue;
-                };
+            for id in ids {
                 if let Some(m) = modifiers
                     .iter()
                     .rev()
-                    .find(|m| m.targets.matches(&id, |_| false))
+                    .find(|m| m.targets.matches(&sprite_id(id), |_| false))
                 {
-                    by_sprite.insert(key.clone(), (m.change.clone(), m.overlays.clone()));
+                    by_sprite.insert(id.clone(), (m.change.clone(), m.overlays.clone()));
                 }
             }
         }
@@ -104,7 +86,7 @@ impl SpriteModifiers {
 /// `change` on a sprite at `key` drawn over `at` in `color`: its other texture, atlas UVs,
 /// rectangle and colour.
 fn apply(
-    sprites: &HashMap<String, SpriteRect>,
+    atlas: &HudAtlas,
     key: &str,
     rect: Option<SpriteRect>,
     change: &SpriteChange,
@@ -115,8 +97,8 @@ fn apply(
     let (key, mut rect) = match (change.texture.as_deref(), rect) {
         (None, Some(rect)) => (key.to_owned(), rect),
         (texture, _) => {
-            let key = texture.map_or_else(|| key.to_owned(), atlas_key);
-            let rect = *sprites.get(&key)?;
+            let key = texture.map_or_else(|| key.to_owned(), gui_id);
+            let rect = *atlas.gui_rect(&key)?;
             (key, rect)
         }
     };
@@ -145,29 +127,28 @@ pub(crate) fn draws(
     at: [f32; 4],
     color: u32,
 ) -> Option<Vec<SpriteDraw>> {
-    atlas
-        .sprite_modifiers
-        .draws(&atlas.sprites, key, rect, at, color)
+    atlas.sprite_modifiers.draws(atlas, key, rect, at, color)
 }
 
 impl SpriteModifiers {
     fn draws(
         &self,
-        sprites: &HashMap<String, SpriteRect>,
+        atlas: &HudAtlas,
         key: &str,
         rect: SpriteRect,
         at: [f32; 4],
         color: u32,
     ) -> Option<Vec<SpriteDraw>> {
+        let key = key.strip_prefix("minecraft:").unwrap_or(key);
         let (change, overlays) = self.by_sprite.get(key)?;
-        let base = apply(sprites, key, Some(rect), change, at, color);
+        let base = apply(atlas, key, Some(rect), change, at, color);
         let base_at = base.as_ref().map_or(at, |b| b.at);
         let mut out: Vec<SpriteDraw> = base.into_iter().collect();
         for overlay in overlays {
             let Some(texture) = overlay.texture.as_deref() else {
                 continue;
             };
-            let key = atlas_key(texture);
+            let key = gui_id(texture);
             // The overlay's texture as its own modifier draws it, then the overlay's own changes.
             let own = self
                 .by_sprite
@@ -177,7 +158,7 @@ impl SpriteModifiers {
                     ..own.clone()
                 })
                 .unwrap_or_default();
-            let Some(mut d) = apply(sprites, &key, None, &own, base_at, color) else {
+            let Some(mut d) = apply(atlas, &key, None, &own, base_at, color) else {
                 continue;
             };
             let [dx, dy, dw, dh] = overlay.offset.map(|v| v as f32);
@@ -219,14 +200,15 @@ mod tests {
 
     #[test]
     fn a_modified_sprite_draws_moved_resized_recoloured_and_then_its_overlays() {
-        let sprites: HashMap<String, SpriteRect> = [
-            ("gui/sprites/hud/hotbar", rect(0.0)),
-            ("gui/sprites/hud/hotbar_selection", rect(0.2)),
-            ("gui/sprites/hud/heart/full", rect(0.4)),
-            ("gui/sprites/hud/food_full", rect(0.6)),
-        ]
-        .map(|(k, r)| (k.to_owned(), r))
-        .into();
+        let mut atlas = HudAtlas::fonts(&ResourceSource::indexed(Default::default())).unwrap();
+        for (id, rect) in [
+            ("hud/hotbar", rect(0.0)),
+            ("hud/hotbar_selection", rect(0.2)),
+            ("hud/heart/full", rect(0.4)),
+            ("hud/food_full", rect(0.6)),
+        ] {
+            atlas.sprites.insert(id.to_owned(), rect);
+        }
 
         let modifiers: Vec<SpriteModifier> = [
             serde_json::json!({"texture": "minecraft:hud/hotbar", "x_inc": -20, "width_inc": 40}),
@@ -237,13 +219,13 @@ mod tests {
         .iter()
         .map(|j| SpriteModifier::parse(j).unwrap())
         .collect();
-        let mods = SpriteModifiers::from_modifiers(modifiers, sprites.keys());
+        let mods = SpriteModifiers::from_modifiers(modifiers, atlas.sprites.keys());
         let white = 0xFFFF_FFFF;
         // Moved left 20 and 40 wider, the rest as it was.
         let hotbar = &mods
             .draws(
-                &sprites,
-                "gui/sprites/hud/hotbar",
+                &atlas,
+                "hud/hotbar",
                 rect(0.0),
                 [100.0, 200.0, 182.0, 22.0],
                 white,
@@ -251,15 +233,20 @@ mod tests {
             .unwrap()[0];
         assert_eq!(hotbar.at, [80.0, 200.0, 222.0, 22.0]);
         assert_eq!((hotbar.rect.u0, hotbar.color), (0.0, white));
-        // The heart's atlas UVs: u0 and u1 replaced, v kept.
-        let heart = &mods
+        // The namespaced spelling of the vanilla key is the same sprite.
+        let spelled = &mods
             .draws(
-                &sprites,
-                "gui/sprites/hud/heart/full",
-                rect(0.4),
-                [0.0; 4],
+                &atlas,
+                "minecraft:hud/hotbar",
+                rect(0.0),
+                [100.0, 200.0, 182.0, 22.0],
                 white,
             )
+            .unwrap()[0];
+        assert_eq!(spelled.at, hotbar.at);
+        // The heart's atlas UVs: u0 and u1 replaced, v kept.
+        let heart = &mods
+            .draws(&atlas, "hud/heart/full", rect(0.4), [0.0; 4], white)
             .unwrap()[0];
         assert_eq!(
             [heart.rect.u0, heart.rect.u1, heart.rect.v1],
@@ -267,24 +254,15 @@ mod tests {
         );
         // Food drawn with the heart's texture (its own rect, not the heart modifier's UVs), red.
         let food = &mods
-            .draws(
-                &sprites,
-                "gui/sprites/hud/food_full",
-                rect(0.6),
-                [0.0; 4],
-                white,
-            )
+            .draws(&atlas, "hud/food_full", rect(0.6), [0.0; 4], white)
             .unwrap()[0];
-        assert_eq!(
-            (food.key.as_str(), food.rect.u0),
-            ("gui/sprites/hud/heart/full", 0.4)
-        );
+        assert_eq!((food.key.as_str(), food.rect.u0), ("hud/heart/full", 0.4));
         assert_eq!(food.color, crate::hud_layout::abgr(0xFFFF_0000));
         // The selection, then the heart over it 30 higher, with the heart's own UVs.
         let selection = mods
             .draws(
-                &sprites,
-                "gui/sprites/hud/hotbar_selection",
+                &atlas,
+                "hud/hotbar_selection",
                 rect(0.2),
                 [10.0, 50.0, 24.0, 23.0],
                 white,
@@ -296,30 +274,15 @@ mod tests {
         assert_eq!((selection[1].rect.u0, selection[1].rect.u1), (0.0, 0.5));
         // A sprite no modifier aims at draws as it is.
         assert!(
-            mods.draws(
-                &sprites,
-                "gui/sprites/hud/crosshair",
-                rect(0.9),
-                [0.0; 4],
-                white
-            )
-            .is_none()
+            mods.draws(&atlas, "hud/crosshair", rect(0.9), [0.0; 4], white)
+                .is_none()
         );
     }
 
     #[test]
-    fn sprite_ids_and_atlas_keys_turn_into_each_other() {
-        assert_eq!(atlas_key("minecraft:hud/hotbar"), "gui/sprites/hud/hotbar");
-        assert_eq!(atlas_key("hud/hotbar"), "gui/sprites/hud/hotbar");
-        assert_eq!(atlas_key("mypack:hud/bar"), "mypack:gui/sprites/hud/bar");
-        assert_eq!(
-            sprite_of("gui/sprites/hud/hotbar").as_deref(),
-            Some("minecraft:hud/hotbar")
-        );
-        assert_eq!(
-            sprite_of("mypack:gui/sprites/hud/bar").as_deref(),
-            Some("mypack:hud/bar")
-        );
-        assert_eq!(sprite_of("block/stone"), None);
+    fn a_namespaced_texture_names_its_own_gui_id() {
+        assert_eq!(gui_id("minecraft:hud/hotbar"), "hud/hotbar");
+        assert_eq!(gui_id("hud/hotbar"), "hud/hotbar");
+        assert_eq!(gui_id("mypack:hud/bar"), "mypack:hud/bar");
     }
 }

@@ -2,6 +2,12 @@
 //! Runs tools/test_auto_jump_parity.py's cases through the local player's
 //! `MotionWorld::update_auto_jump` over the client's resident test scene
 //! (actual resources, collision registry and block-collision scan).
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::PathBuf,
+};
 use sunrise_client::{
     assets::Assets,
     collisions,
@@ -9,12 +15,6 @@ use sunrise_client::{
     world::World,
 };
 use sunrise_core::geometry::Vec3;
-use serde_json::Value;
-use std::{
-    fs,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::PathBuf,
-};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn fl(v: &Value) -> f32 {
@@ -115,6 +115,7 @@ pub fn main() -> Result<()> {
         );
         if ready {
             MotionWorld {
+                side: sunrise_client::motion::dry_side(),
                 entities: &[],
                 player: &mut player,
                 scene: &mut scene,

@@ -15,9 +15,9 @@
 //! another level inside the transaction is left where it arrived: travel is not journaled.
 use super::super::{Dim, Game, commands::Target};
 use super::Level;
-use sunrise_client::join_seq::{JoinSeq, Joined as _};
 use mod_api::EntityRef;
 use std::collections::{HashMap, HashSet};
+use sunrise_client::join_seq::{JoinSeq, Joined as _};
 
 /// A raw record of `persist.anon` (kind and position bits) as it was: what an aborted spawn
 /// puts back.
@@ -129,6 +129,10 @@ fn committing_in(commits: &mut [Committing], dimension: Dim) -> Option<&mut Comm
         .iter_mut()
         .rev()
         .find(|commit| commit.dimension == dimension)
+}
+
+pub(super) fn is_committing(commits: &[Committing], dimension: Dim) -> bool {
+    commits.iter().any(|commit| commit.dimension == dimension)
 }
 
 /// The innermost open transaction of `dimension`: it journals what happens in that level only,
@@ -338,9 +342,23 @@ impl Game<'_> {
         };
         Some((step, commit.removed.clone()))
     }
-    /// Tells the running commit's queue: every join first, as the queue grows with what the
-    /// listeners ask for, then each step in order, the joins already told skipped.
-    fn tell_commit(&mut self, frame: usize) {
+    /// Publish an item spawned by `preRemoveSideEffects` before returning to the block
+    /// write. At commit, tell the already-queued batches first, excluding pending removes.
+    pub(in crate::game) fn flush_removal_join(&mut self, watch: u32) -> bool {
+        let Some(frame) = self
+            .transactions
+            .committing
+            .iter()
+            .rposition(|commit| commit.dimension == self.dim)
+        else {
+            return self.native_joins_flush(false, watch);
+        };
+        self.tell_commit_joins(frame);
+        let removed = self.transactions.committing[frame].removed.clone();
+        self.flush_joins(false, watch, &removed, Some(JoinSeq::latest()))
+    }
+
+    fn tell_commit_joins(&mut self, frame: usize) -> usize {
         let mut next = 0;
         while let Some((step, removed)) = self.commit_step(frame, next, false) {
             next += 1;
@@ -352,7 +370,12 @@ impl Game<'_> {
                 self.flush_joins(loaded_from_disk, 0, &removed, Some(through));
             }
         }
-        let joined = next;
+        next
+    }
+
+    /// Tells every join first, as the queue grows, then the remaining steps in order.
+    fn tell_commit(&mut self, frame: usize) {
+        let joined = self.tell_commit_joins(frame);
         let mut next = 0;
         while let Some((step, removed)) = self.commit_step(frame, next, true) {
             match step {
@@ -388,6 +411,7 @@ impl Game<'_> {
                     if killed {
                         self.mob_removal_effects(id);
                     }
+                    self.finish_mob_removal(id);
                 }
                 Removal::Other(entity) => {
                     // The commit lists the entity as removed until now, so the handle resolves
@@ -477,6 +501,130 @@ impl Game<'_> {
         (self.native_lifecycle.pending_item_spawns).retain(|spawn| !gone.contains(&spawn.0));
         for id in gone.into_iter().filter(|&id| id != 0) {
             self.forget_entity(id);
+        }
+    }
+}
+
+/// Where an abort leaves the way back for a map whose entity was taken for a transfer and has
+/// not arrived yet: its arrival puts these contents in place of the map it carries. It lives
+/// with the transfer's own state, so it goes with it if the arrival never comes.
+pub(in crate::game) type ArrivalRollback =
+    std::sync::Arc<std::sync::Mutex<Option<sunrise_mod_runtime::attachments::Attachments>>>;
+
+/// The index registration of an entity that left this level inside a transaction, with its
+/// lifetime slot: both retire when the root closes, committed or not, since travel is not
+/// undone. Until then the source level's index keeps the rows it had at the take.
+pub(super) struct Departure {
+    lifetime: sunrise_mod_runtime::attachments::AttachmentLifetime,
+    registration: Option<sunrise_mod_runtime::attachments::AttachmentRegistration>,
+}
+
+impl Drop for Departure {
+    fn drop(&mut self) {
+        self.lifetime.retire();
+        if let Some(registration) = &self.registration {
+            registration.unregister();
+        }
+    }
+}
+
+fn remove_entity_attachment(
+    attachments: &mut HashMap<super::AttachmentKey, super::KeptAttachments>,
+    id: u32,
+) -> Option<super::KeptAttachments> {
+    let key = attachments
+        .keys()
+        .find(|key| {
+            matches!(
+                key,
+                super::AttachmentKey::Level(
+                    _,
+                    sunrise_mod_runtime::attachments::Holder::Entity(entity),
+                ) if *entity == id
+            )
+        })
+        .copied()?;
+    attachments.remove(&key)
+}
+
+impl Game<'_> {
+    /// Entity `id` is leaving this level with `map` inside a transaction: its index rows stay
+    /// until the root closes, so a snapshot inside the action sees no gap.
+    pub(in crate::game) fn defer_departure(
+        &mut self,
+        id: u32,
+        map: Option<&mut sunrise_mod_runtime::attachments::Attachments>,
+    ) {
+        use super::super::entity_residency::SlotAccess;
+        let lifetime = std::num::NonZeroU32::new(id)
+            .map(|id| self.with_resident_slot(&self.dim.key(), id, std::mem::take))
+            .and_then(|access| match access {
+                SlotAccess::Done(lifetime) => Some(lifetime),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let registration = map.and_then(|map| map.take_index_binding());
+        if let Some(level) = self.transactions.last_mut() {
+            level.departed.push(Departure {
+                lifetime,
+                registration,
+            });
+        }
+    }
+    /// Entity `id` is taken for a transfer inside a transaction, its map kept under `id`: the
+    /// slot its arrival reads an abort's way back from, if the abort comes first.
+    pub(in crate::game) fn journal_in_flight(&mut self, id: u32) -> ArrivalRollback {
+        let slot = ArrivalRollback::default();
+        if let Some(level) = self.transactions.last_mut() {
+            level.in_flight.insert(id, slot.clone());
+        }
+        slot
+    }
+    /// An abort of `level` before its in-flight entities arrived: each one's kept map goes to its
+    /// arrival's slot, not under an id that names no entity. An enclosing transaction takes the
+    /// slots on, so its own abort can put back what it kept, which is older.
+    pub(super) fn roll_back_in_flight(&mut self, level: &mut Level) {
+        for (id, slot) in std::mem::take(&mut level.in_flight) {
+            // 🤖 Agent: as in `journal_travel`, both are consumed and the travelled one, kept
+            // before the entity arrived under `id`, is the older and the one put back.
+            let travelled = level.travelled.remove(&id);
+            let kept = remove_entity_attachment(&mut level.attachments, id);
+            if let Some(kept) = travelled.or(kept) {
+                *slot.lock().unwrap_or_else(|error| error.into_inner()) = Some(kept.contents);
+            }
+            if let Some(outer) = self.transactions.last_mut() {
+                outer.in_flight.entry(id).or_insert(slot);
+            }
+        }
+    }
+    /// The map the transactions kept under `source` went with its entity, which arrived as
+    /// `arrived`: an abort puts the kept contents back there, never under the old id.
+    pub(in crate::game) fn journal_travel(&mut self, source: u32, arrived: u32) {
+        for level in self.transactions.iter_mut() {
+            level.in_flight.remove(&source);
+            // 🤖 Agent: both are consumed, so nothing stays behind under `source`. A map that
+            // travelled to `source` was kept before anything kept it under `source`, so its
+            // travelled entry is the older one, and the one an abort restores.
+            let travelled = level.travelled.remove(&source);
+            let kept = remove_entity_attachment(&mut level.attachments, source);
+            if let Some(kept) = travelled.or(kept) {
+                level.travelled.entry(arrived).or_insert(kept);
+            }
+        }
+    }
+    /// An abort's way back for the maps that travelled: their contents as the transaction first
+    /// reached them, wherever their entity is now.
+    pub(super) fn restore_travelled(&mut self, travelled: HashMap<u32, super::KeptAttachments>) {
+        for (id, kept) in travelled {
+            if let Some(map) = self.entity_attachments.get_mut(&id) {
+                map.replace_contents(kept.contents);
+            }
+        }
+    }
+    /// A closed transaction's departures go to the one around it, or retire at the root.
+    pub(super) fn close_departures(&mut self, departed: Vec<Departure>) {
+        if let Some(outer) = self.transactions.last_mut() {
+            outer.departed.extend(departed);
         }
     }
 }

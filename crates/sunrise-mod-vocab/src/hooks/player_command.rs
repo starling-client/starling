@@ -15,11 +15,19 @@ pub trait Hooks {
     /// server refuses before reading it (unsigned chat arguments, the chat
     /// rate limit) never reaches it.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_command",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
         neoforge = "CommandEvent",
         cancellable = true
     )]
-    fn player_command();
+    fn player_command(
+        player: u128,
+        name: &str,
+        command: &str,
+        canceled: &mut bool,
+        replies: &mut Vec<Text>,
+    );
 }

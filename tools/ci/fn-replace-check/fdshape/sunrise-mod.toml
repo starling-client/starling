@@ -15,11 +15,11 @@ mixins = "MIXINS"
 [[native.mixin]]
 id = "ported_block_entity_tick"
 kind = "HEAD"
-target = "sunrise_client::game::block_entity_tick_reply::Game<'_>::api_block_entity_tick"
+target = "sunrise_client::game::native_hooks::block_entity_tick::Game<'_>::tick_mod_block_entity_loaded"
 helper = "src/mixins/tick.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
-  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "pos", ty = "(i32, i32, i32)", value = "pos" },
 ]
 
 [[native.mixin]]

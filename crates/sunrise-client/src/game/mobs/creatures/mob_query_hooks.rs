@@ -13,9 +13,14 @@ impl sunrise_client::mobs::MobHooks for Game<'_> {
         {
             return None;
         }
+        let level_ref = self.level(self.dim.id())?;
+        let level = crate::game::native_level_signals::ReadLevel {
+            game: self,
+            level: level_ref,
+        };
         let mut answer = None;
         if let Err(error) = sunrise_client::crash::contain(|| {
-            self.native_block_path_type(
+            level.native_block_path_type(
                 sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
                 state,
                 &mut answer,

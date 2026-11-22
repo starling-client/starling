@@ -1,6 +1,5 @@
 //! Owned authoring and validation; lookup storage stays below the engine.
 mod_vocab::__mod_parts_authoring_imports!();
-use mod_vocab::__private::game::RegistrationContextNew;
 use mod_vocab::__private::*;
 use std::{
     cell::RefCell,

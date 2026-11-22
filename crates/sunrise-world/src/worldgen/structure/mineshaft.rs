@@ -1,12 +1,12 @@
 //! Mineshafts: MineshaftStructure and MineshaftPieces.
 use crate::datafix::dynamic::as_number;
 use crate::worldgen::biome::BiomeId;
-use sunrise_core::nbt::Tag;
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
 };
+use sunrise_core::nbt::Tag;
+use sunrise_core::{geometry::Direction, random::RandomSource};
 use {
     super::legacy::{LegacyPiece, PieceContext, PieceFrame, Result, solid_render},
     sunrise_core::bounding_box::BoundingBox,

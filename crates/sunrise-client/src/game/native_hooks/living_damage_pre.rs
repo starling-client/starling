@@ -14,11 +14,8 @@ impl HitLevel<'_> {
     /// attachments; the hurt entity is in the middle of its hit.
     pub(in crate::game) fn native_living_damage_pre(
         &mut self,
-        entity: i32,
-        kind: &str,
-        source: &HurtSource<'_>,
-        container: &mut mod_api::DamageContainer,
+        call: mod_api::__private::LivingDamagePreCall<'_>,
     ) {
-        self.fire_living_damage_pre(entity, kind, source, container);
+        self.fire_living_damage_pre(call);
     }
 }

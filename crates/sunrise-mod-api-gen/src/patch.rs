@@ -2,16 +2,20 @@
 //! against the prebuilt game instead of rebuilding it. Each target function is copied, unchanged,
 //! out of the pinned source into a module that mirrors its own (`patch::game::autosave` for
 //! `sunrise_client::game::autosave`), where every name the body uses resolves as it did in the
-//! game: the mirror re-exports its module's items from the prebuilt game, which makes them all
-//! public, and repeats the module's own `use` items, so `self`, `super::` and `crate::` mean what
-//! they meant. A method moves into a one-method trait implemented for its own type, so `self`,
+//! game: the mirror re-exports its module's items from the prebuilt game and repeats the module's
+//! own `use` items, so `self`, `super::` and `crate::` mean what they meant. Staging makes item
+//! declarations public, not imports: restricted re-exports in modules outside the mirror stay
+//! inaccessible. A method moves into a one-method trait implemented for its own type, so `self`,
 //! `Self` and the helpers' bindings stay as written. horizon-mixins then patches the copies, and
 //! the game installs each through its function's replacement slot (`__fnr_<name>`).
+use crate::source::unraw;
 use quote::{ToTokens, format_ident, quote};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use syn::visit::Visit;
 use syn::{ImplItem, Item};
+
+mod reexports;
 
 /// One target function, copied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +96,9 @@ pub struct Extras {
     /// The identifiers the rows' helpers and bindings use: a lower crate's mirror keeps a module's
     /// `use` only if a copied body or one of these names it.
     pub idents: BTreeSet<String>,
+    /// The crates the patch crates link (`--extern`) besides std: an import from one of them
+    /// resolves in a mirror as it did in the game.
+    pub linked: BTreeSet<String>,
 }
 
 /// Why a target can't be copied out: a named refusal, never a game rebuild.
@@ -157,6 +164,7 @@ struct Cache {
     traits: Option<BTreeSet<String>>,
     /// The macro names the modules on each path define.
     on_path: BTreeMap<String, BTreeSet<String>>,
+    scopes: reexports::Scopes,
 }
 
 impl Source {
@@ -317,16 +325,14 @@ impl Source {
                     .rsplit_once("::")
                     .ok_or_else(|| format!("no module {path}"))?;
                 let parent = self.module(parent)?;
-                parent
-                    .items
-                    .iter()
-                    .find_map(|item| match item {
-                        Item::Mod(module) if module.ident == name => {
-                            module.content.as_ref().map(|(_, items)| items.clone())
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| format!("no module {path}"))?
+                let mut declarations = crate::source::inline_module_items(&parent.items, name);
+                let items = declarations
+                    .next()
+                    .ok_or_else(|| format!("no module {path}"))?;
+                if declarations.next().is_some() {
+                    return Err(format!("multiple inline declarations for module {path}"));
+                }
+                items.to_vec()
             };
             self.parsed.insert(path.to_owned(), Module { items });
         }
@@ -692,66 +698,64 @@ pub(crate) fn replaceable(
         refusal: None,
     };
     check.visit_block(&found.function.block);
-    match check.refusal {
-        Some(why) => Err(why),
-        None => Ok(()),
+    if let Some(why) = check.refusal {
+        return Err(why);
     }
+    reexports::check_paths(source, found)
 }
 
-/// The names a module's own items define, for explicit re-export (an explicit name outranks the
-/// module's glob imports, as the item itself did).
-fn defined(items: &[Item]) -> Vec<(syn::Ident, Vec<syn::Attribute>)> {
-    let cfg = |attrs: &[syn::Attribute]| {
-        attrs
-            .iter()
-            .filter(|attr| attr.path().is_ident("cfg"))
-            .cloned()
-            .collect::<Vec<_>>()
+/// An item's own definition, before filtering for re-export.
+fn definition(item: &Item) -> Option<(&syn::Ident, &[syn::Attribute])> {
+    let (ident, attrs) = match item {
+        Item::Fn(item) => (&item.sig.ident, &item.attrs),
+        Item::Struct(item) => (&item.ident, &item.attrs),
+        Item::Enum(item) => (&item.ident, &item.attrs),
+        Item::Union(item) => (&item.ident, &item.attrs),
+        Item::Const(item) => (&item.ident, &item.attrs),
+        Item::Static(item) => (&item.ident, &item.attrs),
+        Item::Type(item) => (&item.ident, &item.attrs),
+        Item::Trait(item) => (&item.ident, &item.attrs),
+        Item::Mod(item) => (&item.ident, &item.attrs),
+        _ => return None,
     };
-    // Test-only items are not in the prebuilt game.
-    let test_only = |attrs: &[syn::Attribute]| {
-        attrs.iter().any(|attr| {
-            attr.path().is_ident("test")
-                || (attr.path().is_ident("cfg")
-                    && attr.to_token_stream().to_string().contains("test"))
-        })
+    Some((ident, attrs))
+}
+
+/// The condition an attribute puts on an item's existence. `cfg_attr(P, ...)` imposes
+/// its nested conditions only when P holds; other nested attributes need not apply to a use.
+fn cfg_predicate(meta: &syn::Meta) -> Option<proc_macro2::TokenStream> {
+    let syn::Meta::List(list) = meta else {
+        return None;
     };
-    items
-        .iter()
-        .filter(|item| {
-            let attrs = match item {
-                Item::Fn(item) => &item.attrs,
-                Item::Mod(item) => &item.attrs,
-                Item::Struct(item) => &item.attrs,
-                Item::Enum(item) => &item.attrs,
-                Item::Const(item) => &item.attrs,
-                Item::Static(item) => &item.attrs,
-                Item::Type(item) => &item.attrs,
-                Item::Trait(item) => &item.attrs,
-                Item::Union(item) => &item.attrs,
-                _ => return true,
-            };
-            !test_only(attrs)
+    let cfg = list.path.is_ident("cfg");
+    if !cfg && !list.path.is_ident("cfg_attr") {
+        return None;
+    }
+    let (when, conditions) = list
+        .parse_args_with(|input: syn::parse::ParseStream| {
+            // Keep Rust's cfg predicate tokens verbatim (including `true` and `false`,
+            // which aren't attribute metadata), but leave out the separating comma.
+            let mut when = proc_macro2::TokenStream::new();
+            while !input.is_empty() && !input.peek(syn::Token![,]) {
+                when.extend([input.parse::<proc_macro2::TokenTree>()?]);
+            }
+            input.parse::<Option<syn::Token![,]>>()?;
+            let attrs =
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
+            Ok((
+                when,
+                attrs.iter().filter_map(cfg_predicate).collect::<Vec<_>>(),
+            ))
         })
-        .filter_map(|item| match item {
-            Item::Fn(item) => Some((item.sig.ident.clone(), cfg(&item.attrs))),
-            Item::Struct(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            Item::Enum(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            Item::Union(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            Item::Const(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            Item::Static(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            Item::Type(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            Item::Trait(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            Item::Mod(item) => Some((item.ident.clone(), cfg(&item.attrs))),
-            _ => None,
-        })
-        .filter(|(ident, attrs)| {
-            ident != "tests"
-                && !attrs
-                    .iter()
-                    .any(|a| a.to_token_stream().to_string().contains("test"))
-        })
-        .collect()
+        .ok()?;
+    if cfg {
+        return Some(when);
+    }
+    (!conditions.is_empty()).then(|| quote!(any(not(#when), all(#(#conditions),*))))
+}
+
+fn cfg_predicates(attrs: &[syn::Attribute]) -> impl Iterator<Item = proc_macro2::TokenStream> {
+    attrs.iter().filter_map(|attr| cfg_predicate(&attr.meta))
 }
 
 /// A module's own `macro_rules!` items that it does not export.
@@ -1045,6 +1049,7 @@ pub fn generate(
         }
     }
     let mut bridge_traits = Vec::new();
+    let mut bridge_names: Vec<syn::Ident> = Vec::new();
     for bridge in &extras.bridges {
         match bridge_trait(&mut source, bridge) {
             Ok((path, trait_name, tokens)) => {
@@ -1058,6 +1063,7 @@ pub fn generate(
                     syn::parse_str(&path.replacen("sunrise_client", "crate", 1))
                         .expect("a module path");
                 bridge_traits.push(quote!(pub use #mirror::#trait_name;));
+                bridge_names.push(trait_name.clone());
             }
             Err((code, why)) => refusals.push(refuse(&bridge.id, code, why)),
         }
@@ -1073,13 +1079,21 @@ pub fn generate(
     }
     let mut libs = Vec::new();
     for (source_crate, tree) in &trees {
-        let bridges = source_crate == "sunrise_client" && !bridge_traits.is_empty();
+        let bridges = if source_crate == "sunrise_client" {
+            bridge_names.as_slice()
+        } else {
+            &[]
+        };
         let used = (source_crate != "sunrise_client").then(|| {
             let mut used = extras.idents.clone();
             idents_in(&tree_tokens(tree), &mut used);
             used
         });
-        let body = match mirror(&mut source, source_crate, tree, bridges, used.as_ref()) {
+        let narrowing = used.as_ref().map(|used| Narrowing {
+            used,
+            linked: &extras.linked,
+        });
+        let body = match mirror(&mut source, source_crate, tree, bridges, narrowing.as_ref()) {
             Ok(body) => body,
             Err(why) => {
                 return Err(targets
@@ -1088,7 +1102,7 @@ pub fn generate(
                     .collect());
             }
         };
-        let bridge_module = bridges.then(|| {
+        let bridge_module = (!bridges.is_empty()).then(|| {
             quote! {
                 /// The bridges' traits, which every mirror module imports.
                 #[doc(hidden)]
@@ -1428,13 +1442,69 @@ fn original_path(libraries: &BTreeMap<String, String>, path: &str) -> String {
     }
 }
 
+/// How a lower crate's mirror narrows its modules' imports: only the listed functions' modules
+/// are widened, so an import through the crate's other modules may not resolve from a mirror.
+struct Narrowing<'a> {
+    /// The names the copies and the rows' helpers use: the imports a mirror keeps.
+    used: &'a BTreeSet<String>,
+    /// The crates the patch crate links: in a module with copies, an import from one of them,
+    /// or from std, is kept whatever it names. A copy may call a trait's method without naming
+    /// the trait (`angle.mcos()` from `Mth`), and such an import resolves as it did in the game.
+    linked: &'a BTreeSet<String>,
+}
+
+/// The statics std's `thread_local!` declares in `mac`, with their attributes and visibility;
+/// `None` for any other macro, for one that may not be std's (a bare `thread_local!` unless
+/// `bare_is_std`, `std::thread_local!` unless `std_is_std`), or when the body doesn't read as
+/// statics.
+fn thread_local_statics(
+    mac: &syn::ItemMacro,
+    bare_is_std: bool,
+    std_is_std: bool,
+) -> Option<Vec<syn::ItemStatic>> {
+    let segments: Vec<String> = mac
+        .mac
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    let absolute = mac.mac.path.leading_colon.is_some();
+    let standard = match segments.as_slice() {
+        [name] => name == "thread_local" && !absolute && bare_is_std,
+        [std, name] => std == "std" && name == "thread_local" && (absolute || std_is_std),
+        _ => false,
+    };
+    if !standard {
+        return None;
+    }
+    syn::parse2::<syn::File>(mac.mac.tokens.clone())
+        .ok()?
+        .items
+        .into_iter()
+        .map(|item| match item {
+            Item::Static(item) => Some(item),
+            _ => None,
+        })
+        .collect()
+}
+
+impl Narrowing<'_> {
+    /// Whether a path starting at `root` resolves from a mirror as it did in the game: `std`
+    /// and `core`, which every crate has, or a crate the patch crate links. (`alloc` is not in
+    /// a crate's extern prelude, and the patch crate declares no `extern crate alloc`.)
+    fn resolves(&self, root: &syn::Ident) -> bool {
+        root == "std" || root == "core" || self.linked.contains(&root.to_string())
+    }
+}
+
 /// The mirror of module `path` and its children in `tree`.
 fn mirror(
     source: &mut Source,
     path: &str,
     tree: &Tree,
-    bridges: bool,
-    used: Option<&BTreeSet<String>>,
+    bridges: &[syn::Ident],
+    narrowing: Option<&Narrowing<'_>>,
 ) -> Result<proc_macro2::TokenStream, String> {
     let items = source.module(path)?.items.clone();
     let original: syn::Path =
@@ -1446,7 +1516,7 @@ fn mirror(
         .chain(tree.own.iter().cloned())
         .collect();
     // The crate root is not widened: only its public items are there to re-export.
-    let public: BTreeSet<String> = items
+    let mut public: BTreeSet<String> = items
         .iter()
         .filter_map(|item| match item {
             Item::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
@@ -1482,45 +1552,133 @@ fn mirror(
     let root = !path.contains("::");
     let only_public =
         root || (path.split("::").next() != Some("sunrise_client") && tree.copies.is_empty());
-    let explicit = defined(&items)
-        .into_iter()
+    // A `thread_local!` names the statics it declares. Only a public one can be re-exported:
+    // nothing widens a private one, which a glob would not have brought either. Any other
+    // macro invocation may define items syn can't see, which only a glob re-exports.
+    // Which `thread_local!` is std's: a bare one unless another macro of that name may be in
+    // scope, and `std::thread_local!` unless the module may bind `std` to something else.
+    // `::std::thread_local!` always is. Unresolved, the module keeps the glob.
+    let defined = items.iter().filter_map(definition);
+    let bare_is_std = !source.local_macros.contains("thread_local")
+        && !macro_may_be_in_scope(source, path, "thread_local")
+        && !uses(&items)
+            .iter()
+            .any(|item| may_import(&item.tree, None, "thread_local"));
+    let std_is_std = !uses(&items)
+        .iter()
+        .any(|item| may_import(&item.tree, None, "std"))
+        && !defined
+            .clone()
+            .any(|(ident, attrs)| unraw(ident) == "std" && !mod_source::modules::test_only(attrs))
+        && !items.iter().any(|item| {
+            matches!(item, Item::ExternCrate(krate)
+                if krate.rename.as_ref().is_some_and(|(_, name)| unraw(name) == "std"))
+        });
+    let mut glob = false;
+    let mut thread_locals = Vec::new();
+    for item in &items {
+        if let Item::Macro(mac) = item
+            && mac.ident.is_none()
+        {
+            match thread_local_statics(mac, bare_is_std, std_is_std) {
+                // Each static exists under the invocation's conditions and its own.
+                Some(statics) => thread_locals.extend(
+                    statics
+                        .into_iter()
+                        .filter(|item| matches!(item.vis, syn::Visibility::Public(_)))
+                        .map(|item| {
+                            let cfg: Vec<_> = cfg_predicates(&mac.attrs)
+                                .chain(cfg_predicates(&item.attrs))
+                                .collect();
+                            (item.ident, cfg)
+                        }),
+                ),
+                None => glob = true,
+            }
+        }
+    }
+    public.extend(thread_locals.iter().map(|(ident, _)| ident.to_string()));
+    // One `pub use` brings every namespace a name has: `pub mod render;` beside
+    // `pub fn render` is one re-export, under the cfg either item is compiled under.
+    let mut names: Vec<(syn::Ident, Vec<Vec<proc_macro2::TokenStream>>)> = Vec::new();
+    // Keep the prebuilt game's test-item filter on re-exports, not on binding detection.
+    let re_exported = defined
+        .filter(|(ident, attrs)| *ident != "tests" && !mod_source::modules::test_only(attrs))
+        .map(|(ident, attrs)| (ident.clone(), cfg_predicates(attrs).collect()));
+    // A lower crate is compiled with its own features, but the patch crate with the game's, so a
+    // condition on a feature can't be decided here: the glob brings such an item where it exists.
+    let lower = path.split("::").next() != Some("sunrise_client");
+    for (ident, cfg) in re_exported
+        .chain(thread_locals)
         .filter(|(ident, _)| !reserved.contains(&ident.to_string()))
         .filter(|(ident, _)| !only_public || public.contains(&ident.to_string()))
-        .map(|(ident, cfg)| quote!(#(#cfg)* pub use #original::#ident;));
-    let uses = uses(&items).into_iter().filter(|item| {
-        // A `use` naming a child mirror or a copy would collide with it.
-        let mut names = Vec::new();
-        collect_names(&item.tree, &mut names);
-        // In a lower crate only the listed functions' modules are widened, so an import of a
-        // private item elsewhere would not resolve: keep only what the copies and helpers name.
-        let wanted = used
-            .is_none_or(|used| names.is_empty() || names.iter().any(|name| used.contains(name)));
-        wanted && !names.iter().any(|name| reserved.contains(name))
+    {
+        if lower && cfg.iter().any(names_feature) {
+            glob = true;
+            continue;
+        }
+        match names.iter_mut().find(|(name, _)| *name == ident) {
+            Some((_, cfgs)) => cfgs.push(cfg),
+            None => names.push((ident, vec![cfg])),
+        }
+    }
+    let explicit = names.into_iter().map(|(ident, cfgs)| {
+        let cfg = match cfgs.as_slice() {
+            [cfg] => quote!(#(#[cfg(#cfg)])*),
+            _ if cfgs.iter().any(Vec::is_empty) => quote!(),
+            _ => {
+                let each = cfgs.iter().map(|cfg| quote!(all(#(#cfg),*)));
+                quote!(#[cfg(any(#(#each),*))])
+            }
+        };
+        quote!(#cfg pub use #original::#ident;)
+    });
+    let uses = uses(&items).into_iter().filter_map(|item| {
+        let mut item = item.clone();
+        item.tree = filter_use_tree(item.tree, None, None, &|name, root| {
+            // A `use` naming a child mirror or a copy would collide with it. In a lower
+            // crate, only the listed functions' modules are widened: other private imports
+            // wouldn't resolve, so keep only names the copies and helpers refer to, and in a
+            // copy's module every import from std and the linked crates ([`Narrowing`]).
+            !reserved.contains(name)
+                && narrowing.is_none_or(|narrowing| {
+                    narrowing.used.contains(name)
+                        || (!tree.copies.is_empty() && narrowing.resolves(root))
+                })
+        })?;
+        Some(item)
     });
     let mut children = Vec::new();
     for (name, child) in &tree.children {
         let ident = format_ident!("{name}");
-        let inner = mirror(source, &format!("{path}::{name}"), child, bridges, used)?;
+        let inner = mirror(
+            source,
+            &format!("{path}::{name}"),
+            child,
+            bridges,
+            narrowing,
+        )?;
         children.push(quote!(pub mod #ident { #inner }));
     }
     // Repeated before the children, which see them by textual scope as the game's did.
     let macros = source.scope_macros(path);
     let copies = &tree.copies;
-    let bridge_import = bridges.then(|| {
+    // Each trait by `as _`, never a glob: a glob would make horizon-mixins take `format!`/`vec!`/
+    // `matches!` in a function copied here as possibly shadowed, and an unnamed import cannot
+    // collide with the module's own names.
+    let bridge_import = bridges.iter().map(|name| {
         quote!(
-            use crate::__fnr_bridges::*;
+            use crate::__fnr_bridges::#name as _;
         )
     });
-    // The explicit re-exports name every item the module defines; the glob is there only for
-    // items a macro invocation defines, which syn can't see. A glob would also make
+    // The explicit re-exports name every item the module defines; the glob is there for items a
+    // macro invocation defines, which syn can't see, and for a lower crate's items gated on a
+    // Cargo feature, whose presence depends on that crate's features. A glob would also make
     // horizon-mixins take `format!`/`vec!`/`matches!` as possibly shadowed.
-    let glob = items
-        .iter()
-        .any(|item| matches!(item, Item::Macro(mac) if mac.ident.is_none()))
-        .then(|| quote!(pub use #original::*;));
+    let glob = glob.then(|| quote!(pub use #original::*;));
     Ok(quote! {
         #glob
-        #bridge_import
+        #(#bridge_import)*
         #(#macros)*
         #(#explicit)*
         #(#uses)*
@@ -1697,13 +1855,98 @@ fn bridge_trait(
     ))
 }
 
-fn collect_names(tree: &syn::UseTree, out: &mut Vec<String>) {
+/// Whether a `macro_rules!` named `name`, exported or not, may be in textual scope in module
+/// `path`: one a module on the path defines, or a `#[macro_use]` child of one, or one a
+/// `#[macro_use] extern crate` brings.
+fn macro_may_be_in_scope(source: &mut Source, path: &str, name: &str) -> bool {
+    fn within(source: &mut Source, module: &str, name: &str) -> bool {
+        let Ok(found) = source.module(module) else {
+            return false;
+        };
+        let items = found.items.clone();
+        items.iter().any(|item| match item {
+            Item::Macro(mac) => mac.ident.as_ref().is_some_and(|ident| ident == name),
+            Item::ExternCrate(krate) => krate.attrs.iter().any(|a| a.path().is_ident("macro_use")),
+            Item::Mod(child) if child.attrs.iter().any(|a| a.path().is_ident("macro_use")) => {
+                within(source, &format!("{module}::{}", child.ident), name)
+            }
+            _ => false,
+        })
+    }
+    let segments: Vec<&str> = path.split("::").collect();
+    (1..=segments.len()).any(|end| within(source, &segments[..end].join("::"), name))
+}
+
+/// Whether a cfg predicate reads a Cargo feature.
+fn names_feature(predicate: &proc_macro2::TokenStream) -> bool {
+    predicate.clone().into_iter().any(|tree| match tree {
+        proc_macro2::TokenTree::Ident(ident) => ident == "feature",
+        proc_macro2::TokenTree::Group(group) => names_feature(&group.stream()),
+        _ => false,
+    })
+}
+
+/// The binding of an unaliased import: `use x::name::{self}` binds `name`.
+fn use_binding<'a>(ident: &'a syn::Ident, prefix: Option<&'a syn::Ident>) -> &'a syn::Ident {
+    if ident == "self" {
+        prefix.unwrap_or(ident)
+    } else {
+        ident
+    }
+}
+
+/// Whether `tree` may bring `name` into scope: it binds it, or it has a glob.
+fn may_import(tree: &syn::UseTree, prefix: Option<&syn::Ident>, name: &str) -> bool {
     match tree {
-        syn::UseTree::Path(path) => collect_names(&path.tree, out),
-        syn::UseTree::Name(name) => out.push(name.ident.to_string()),
-        syn::UseTree::Rename(rename) => out.push(rename.rename.to_string()),
-        syn::UseTree::Glob(_) => {}
-        syn::UseTree::Group(group) => group.items.iter().for_each(|tree| collect_names(tree, out)),
+        syn::UseTree::Path(path) => may_import(&path.tree, Some(&path.ident), name),
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| may_import(item, prefix, name)),
+        syn::UseTree::Name(binding) => unraw(use_binding(&binding.ident, prefix)) == name,
+        syn::UseTree::Rename(rename) => unraw(&rename.rename) == name,
+        syn::UseTree::Glob(_) => true,
+    }
+}
+
+/// Filter individual bindings, preserving paths and unnameable imports that can affect resolution.
+/// `keep` is asked about each binding with the first segment of its path (`sunrise_core` for
+/// `sunrise_core::trig::Mth`, in a group or not): `root` is that segment once a branch has one.
+fn filter_use_tree(
+    tree: syn::UseTree,
+    prefix: Option<&syn::Ident>,
+    root: Option<&syn::Ident>,
+    keep: &impl Fn(&str, &syn::Ident) -> bool,
+) -> Option<syn::UseTree> {
+    use syn::UseTree::*;
+    match tree {
+        Path(mut path) => {
+            let root = root.unwrap_or(&path.ident).clone();
+            path.tree = Box::new(filter_use_tree(
+                *path.tree,
+                Some(&path.ident),
+                Some(&root),
+                keep,
+            )?);
+            Some(Path(path))
+        }
+        Group(mut group) => {
+            group.items = group
+                .items
+                .into_iter()
+                .filter_map(|item| filter_use_tree(item, prefix, root, keep))
+                .collect();
+            (!group.items.is_empty()).then_some(Group(group))
+        }
+        Name(ref name) => keep(
+            &use_binding(&name.ident, prefix).to_string(),
+            root.unwrap_or(&name.ident),
+        )
+        .then_some(tree),
+        Rename(ref rename) => (rename.rename == "_"
+            || keep(&rename.rename.to_string(), root.unwrap_or(&rename.ident)))
+        .then_some(tree),
+        Glob(_) => Some(tree),
     }
 }
 
@@ -1864,22 +2107,16 @@ mod tests {
             hashes: BTreeMap::new(),
             stale: None,
         };
-        let ancestor = mirror(
-            &mut source,
-            "lower::ancestor",
-            &Tree::default(),
-            false,
-            None,
-        )
-        .unwrap()
-        .to_string();
+        let ancestor = mirror(&mut source, "lower::ancestor", &Tree::default(), &[], None)
+            .unwrap()
+            .to_string();
         assert!(ancestor.contains("public_helper"));
         assert!(!ancestor.contains("private_helper"));
         let mut target = Tree::default();
         target.copies.push(quote!(
             pub fn copy() {}
         ));
-        let target = mirror(&mut source, "lower::ancestor", &target, false, None)
+        let target = mirror(&mut source, "lower::ancestor", &target, &[], None)
             .unwrap()
             .to_string();
         assert!(target.contains("private_helper"));
@@ -1894,7 +2131,7 @@ mod tests {
                 &mut source,
                 "sunrise_client::game",
                 &Tree::default(),
-                false,
+                &[],
                 None
             )
             .unwrap()
@@ -1905,16 +2142,18 @@ mod tests {
 
     #[test]
     fn a_lower_crate_mirror_keeps_only_the_imports_its_copies_and_helpers_name() {
-        let dir = std::env::temp_dir().join(format!("fnr-pruned-imports-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("lib.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
         std::fs::write(
             &file,
-            "use std::sync::Arc; use std::rc::Rc; use child::Private; use std::collections::*;",
+            "use glam::{Mat4, Vec3};
+             use child::{self, Private, Reserved, Visible as Alias, tools::{Lookup as _, Gone}, missing::{Private}};
+             use std::rc::Rc;
+             use std::collections::*;",
         )
         .unwrap();
         let mut source = Source {
-            root: dir.clone(),
+            root: dir.path().to_owned(),
             loaded: BTreeSet::new(),
             files: BTreeMap::from([("fixture".to_owned(), vec![file])]),
             parsed: BTreeMap::new(),
@@ -1925,15 +2164,30 @@ mod tests {
             hashes: BTreeMap::new(),
             stale: None,
         };
-        let used = BTreeSet::from(["Arc".to_owned()]);
-        let out = mirror(&mut source, "fixture", &Tree::default(), false, Some(&used)).unwrap();
+        let used = BTreeSet::from_iter(["Mat4", "child", "Alias", "Reserved"].map(str::to_owned));
+        let tree = Tree {
+            own: BTreeSet::from(["Reserved".to_owned()]),
+            ..Tree::default()
+        };
+        let linked = BTreeSet::new();
+        let narrowing = Narrowing {
+            used: &used,
+            linked: &linked,
+        };
+        let out = mirror(&mut source, "fixture", &tree, &[], Some(&narrowing)).unwrap();
         let parsed: syn::File = syn::parse2(out).unwrap();
         let imports: Vec<String> = uses(&parsed.items)
             .iter()
             .map(|item| item.tree.to_token_stream().to_string())
             .collect();
-        assert_eq!(imports, ["std :: sync :: Arc", "std :: collections :: *"]);
-        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(
+            imports,
+            [
+                "glam :: { Mat4 }",
+                "child :: { self , Visible as Alias , tools :: { Lookup as _ } }",
+                "std :: collections :: *",
+            ]
+        );
     }
 
     #[test]
@@ -1956,7 +2210,7 @@ mod tests {
             hashes: BTreeMap::new(),
             stale: None,
         };
-        let out = mirror(&mut source, "fixture", &Tree::default(), false, None).unwrap();
+        let out = mirror(&mut source, "fixture", &Tree::default(), &[], None).unwrap();
         let parsed: syn::File = syn::parse2(out).unwrap();
         let imports: Vec<String> = uses(&parsed.items)
             .iter()
@@ -1964,6 +2218,345 @@ mod tests {
             .collect();
         assert_eq!(imports, ["std :: sync :: Arc", "std :: rc :: Rc"]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_mirror_imports_the_bridge_traits_by_name_never_by_glob() {
+        let dir = std::env::temp_dir().join(format!("fnr-bridge-imports-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mod.rs");
+        std::fs::write(&file, "pub fn f() {}").unwrap();
+        let mut source = Source {
+            root: dir.clone(),
+            loaded: BTreeSet::new(),
+            files: BTreeMap::from([("fixture".to_owned(), vec![file])]),
+            parsed: BTreeMap::new(),
+            local_macros: BTreeSet::new(),
+            libraries: BTreeMap::new(),
+            owners: BTreeMap::new(),
+            cache: Cache::default(),
+            hashes: BTreeMap::new(),
+            stale: None,
+        };
+        let traits = [format_ident!("BridgeA"), format_ident!("BridgeB")];
+        let out = mirror(&mut source, "fixture", &Tree::default(), &traits, None).unwrap();
+        // A glob would make horizon-mixins refuse a bare `matches!` in a function copied here.
+        let text = out.to_string().replace(' ', "");
+        assert!(
+            text.contains("usecrate::__fnr_bridges::BridgeAas_;"),
+            "{text}"
+        );
+        assert!(
+            text.contains("usecrate::__fnr_bridges::BridgeBas_;"),
+            "{text}"
+        );
+        assert!(!text.contains("::*"), "{text}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A source whose module `path` is `text`, read from no file.
+    fn source_of(path: &str, text: &str) -> Source {
+        Source {
+            root: PathBuf::new(),
+            loaded: BTreeSet::new(),
+            files: BTreeMap::new(),
+            parsed: BTreeMap::from([(
+                path.to_owned(),
+                Module {
+                    items: syn::parse_file(text).unwrap().items,
+                },
+            )]),
+            local_macros: BTreeSet::new(),
+            libraries: BTreeMap::new(),
+            owners: BTreeMap::new(),
+            cache: Cache::default(),
+            hashes: BTreeMap::new(),
+            stale: None,
+        }
+    }
+
+    /// A mirror tree holding one copied function.
+    fn with_a_copy() -> Tree {
+        let mut tree = Tree::default();
+        tree.copies.push(quote!(
+            pub fn copy() {}
+        ));
+        tree
+    }
+
+    #[test]
+    fn a_thread_local_re_exports_its_public_statics_by_name_not_by_glob() {
+        let mut source = source_of(
+            "lower::anim",
+            "thread_local! {
+                 static POOL: Cell<u8> = const { Cell::new(0) };
+                 pub static SHARED: Cell<u8> = Cell::new(0);
+             }
+             pub fn setup() -> bool { matches!(1, 1) }",
+        );
+        let out = mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+            .unwrap()
+            .to_string()
+            .replace(' ', "");
+        // A glob would make horizon-mixins refuse the bare `matches!` in `setup`.
+        assert!(!out.contains("::*"), "{out}");
+        assert!(out.contains("pubuse::lower::anim::SHARED;"), "{out}");
+        assert!(!out.contains("POOL"), "{out}");
+        // A module above a copy re-exports only public names: the public static is one.
+        let out = mirror(&mut source, "lower::anim", &Tree::default(), &[], None)
+            .unwrap()
+            .to_string()
+            .replace(' ', "");
+        assert!(out.contains("pubuse::lower::anim::SHARED;"), "{out}");
+        // A macro whose items syn can't see still gets the glob.
+        let mut source = source_of("lower::anim", "declare_things! {}");
+        let out = mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+            .unwrap()
+            .to_string()
+            .replace(' ', "");
+        assert!(out.contains("pubuse::lower::anim::*;"), "{out}");
+    }
+
+    #[test]
+    fn a_thread_local_static_is_re_exported_under_its_invocations_conditions_and_its_own() {
+        let mut source = source_of(
+            "lower::anim",
+            "#[cfg(unix)]
+             thread_local! {
+                 pub static SHARED: Cell<u8> = Cell::new(0);
+                 #[cfg(not(test))]
+                 /// Documented.
+                 pub static RELEASED: Cell<u8> = Cell::new(0);
+             }",
+        );
+        let out = mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+            .unwrap()
+            .to_string()
+            .replace(' ', "");
+        assert!(
+            out.contains("#[cfg(unix)]pubuse::lower::anim::SHARED;"),
+            "{out}"
+        );
+        assert!(
+            out.contains("#[cfg(unix)]#[cfg(not(test))]pubuse::lower::anim::RELEASED;"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn re_exports_keep_conditions_added_by_cfg_attr() {
+        let mut source = source_of(
+            "lower::anim",
+            r#"
+            #[cfg_attr(true, cfg(unix,), cfg(target_pointer_width = "64"))]
+            thread_local! {
+                #[cfg_attr(windows, cfg_attr(target_env = "msvc", cfg(target_arch = "x86_64")))]
+                pub static SHARED: u8 = 0;
+            }
+            #[cfg_attr(windows, cfg(target_arch = "aarch64"), inline)]
+            pub fn ordinary() {}
+            #[cfg(unix)]
+            pub mod ordinary {}
+            "#,
+        );
+        let out = mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+            .unwrap()
+            .to_string()
+            .replace(' ', "");
+        assert!(!out.contains("pubuse::lower::anim::*;"), "{out}");
+        assert!(
+            out.contains(concat!(
+                r#"#[cfg(any(not(true),all(unix,target_pointer_width="64")))]"#,
+                r#"#[cfg(any(not(windows),all(any(not(target_env="msvc"),all(target_arch="x86_64")))))]"#,
+                "pubuse::lower::anim::SHARED;",
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains(concat!(
+                r#"#[cfg(any(all(any(not(windows),all(target_arch="aarch64"))),all(unix)))]"#,
+                "pubuse::lower::anim::ordinary;",
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_thread_local_under_a_gated_std_module_keeps_the_glob() {
+        let out = |text: &str| {
+            let mut source = source_of("lower::anim", text);
+            mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+                .unwrap()
+                .to_string()
+                .replace(' ', "")
+        };
+        let thread_local = "std::thread_local! { pub static SHARED: u8 = 0; }";
+        for gated in [
+            "#[cfg(not(test))] mod std {}",
+            "#[cfg(not(test))] mod r#std {}",
+        ] {
+            let out = out(&format!("{gated} {thread_local}"));
+            assert!(out.contains("pubuse::lower::anim::*;"), "{out}");
+            assert!(!out.contains("pubuse::lower::anim::SHARED;"), "{out}");
+        }
+        // A test-only `std` doesn't exist in the build, and a release item stays named.
+        let out = out(&format!(
+            "#[cfg(test)] mod std {{}} #[cfg(not(test))] pub fn release() {{}} {thread_local}"
+        ));
+        assert!(!out.contains("pubuse::lower::anim::*;"), "{out}");
+        assert!(out.contains("pubuse::lower::anim::SHARED;"), "{out}");
+        assert!(out.contains("pubuse::lower::anim::release;"), "{out}");
+    }
+
+    #[test]
+    fn a_lower_crate_item_gated_on_a_feature_comes_through_the_glob() {
+        let mut source = source_of(
+            "lower::anim",
+            r#"#[cfg_attr(feature = "default", cfg(any()))]
+            pub fn helper() {}
+            #[cfg(unix)]
+            pub fn plain() {}"#,
+        );
+        let out = mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+            .unwrap()
+            .to_string()
+            .replace(' ', "");
+        assert!(out.contains("pubuse::lower::anim::*;"), "{out}");
+        assert!(!out.contains("pubuse::lower::anim::helper;"), "{out}");
+        assert!(out.contains("pubuse::lower::anim::plain;"), "{out}");
+    }
+
+    #[test]
+    fn a_thread_local_with_a_grouped_std_self_import_keeps_the_glob() {
+        for import in ["use other::std::{self};", "use other::r#std::{self};"] {
+            let mut source = source_of(
+                "lower::anim",
+                &format!("{import} std::thread_local! {{ pub static SHARED: u8 = 0; }}"),
+            );
+            let out = mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+                .unwrap()
+                .to_string()
+                .replace(' ', "");
+            assert!(out.contains("pubuse::lower::anim::*;"), "{out}");
+            assert!(!out.contains("pubuse::lower::anim::SHARED;"), "{out}");
+        }
+    }
+
+    #[test]
+    fn a_thread_local_that_may_not_be_stds_keeps_the_glob() {
+        let glob = |text: &str| {
+            let mut source = source_of("lower::anim", text);
+            mirror(&mut source, "lower::anim", &with_a_copy(), &[], None)
+                .unwrap()
+                .to_string()
+                .replace(' ', "")
+                .contains("pubuse::lower::anim::*;")
+        };
+        let invocation = "thread_local! { pub static SHARED: u8 = 0; }";
+        assert!(!glob(invocation));
+        // A `macro_rules!` of that name may expand to anything.
+        assert!(glob(&format!(
+            "macro_rules! thread_local {{ ($($t:tt)*) => {{ pub fn made() {{}} }}; }} {invocation}"
+        )));
+        // So may an imported one, or one a glob import brings.
+        assert!(glob(&format!("use other::thread_local; {invocation}")));
+        assert!(glob(&format!("use other::*; {invocation}")));
+        // An exported one is in textual scope too.
+        assert!(glob(&format!(
+            "#[macro_export] macro_rules! thread_local {{ ($($t:tt)*) => {{}}; }} {invocation}"
+        )));
+        // Spelled through std, it is std's whatever else is in scope.
+        assert!(!glob(
+            "use other::thread_local; std::thread_local! { pub static SHARED: u8 = 0; }"
+        ));
+        // Unless `std` may be something else there; `::std` is always std.
+        assert!(glob(
+            "use other as std; std::thread_local! { pub static SHARED: u8 = 0; }"
+        ));
+        assert!(!glob(
+            "use other as std; ::std::thread_local! { pub static SHARED: u8 = 0; }"
+        ));
+    }
+
+    #[test]
+    fn a_name_in_two_namespaces_is_re_exported_once() {
+        let mut source = source_of(
+            "sunrise_client::mobs",
+            "pub mod render {}
+             pub fn render() {}
+             #[cfg(unix)] pub fn os() {}
+             #[cfg(windows)] pub mod os {}
+             #[cfg(unix)] pub fn local() {}
+             pub mod local {}",
+        );
+        let out = mirror(
+            &mut source,
+            "sunrise_client::mobs",
+            &Tree::default(),
+            &[],
+            None,
+        )
+        .unwrap()
+        .to_string()
+        .replace(' ', "");
+        assert_eq!(
+            out.matches("pubuse::sunrise_client::mobs::render;").count(),
+            1,
+            "{out}"
+        );
+        assert!(
+            out.contains("#[cfg(any(all(unix),all(windows)))]pubuse::sunrise_client::mobs::os;"),
+            "{out}"
+        );
+        // One of them is compiled always, so the name is.
+        assert!(
+            !out.contains("]pubuse::sunrise_client::mobs::local;"),
+            "{out}"
+        );
+        assert_eq!(
+            out.matches("pubuse::sunrise_client::mobs::local;").count(),
+            1,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_copys_module_keeps_its_imports_from_std_and_the_linked_crates() {
+        let text = "use sunrise_core::trig::Mth;
+                    use std::fmt::Write;
+                    use {sunrise_core::lerp::Lerp, super::Hidden};
+                    use alloc::vec::Vec;
+                    use unlinked::Thing;
+                    use super::Private;
+                    use crate::helpers::Helper;";
+        let used = BTreeSet::new();
+        let linked = BTreeSet::from(["sunrise_core".to_owned()]);
+        let narrowing = Narrowing {
+            used: &used,
+            linked: &linked,
+        };
+        let imports = |tree: &Tree| {
+            let mut source = source_of("lower::render", text);
+            let out = mirror(&mut source, "lower::render", tree, &[], Some(&narrowing)).unwrap();
+            let parsed: syn::File = syn::parse2(out).unwrap();
+            uses(&parsed.items)
+                .iter()
+                .map(|item| item.tree.to_token_stream().to_string())
+                .collect::<Vec<_>>()
+        };
+        // `angle.mcos()` in a copy needs `Mth` in scope without naming it.
+        // In a group too, without the group's imports through the crate's own modules. `alloc`
+        // is not a root the patch crate has.
+        assert_eq!(
+            imports(&with_a_copy()),
+            [
+                "sunrise_core :: trig :: Mth",
+                "std :: fmt :: Write",
+                "{ sunrise_core :: lerp :: Lerp }"
+            ]
+        );
+        // A module with no copy runs no method call: it keeps only what is named.
+        assert!(imports(&Tree::default()).is_empty());
     }
 
     #[test]
@@ -1985,6 +2578,7 @@ mod tests {
                 member: Some("ticks_until_autosave".into()),
             }],
             idents: BTreeSet::new(),
+            linked: BTreeSet::new(),
             loops: Vec::new(),
         };
         let crate_ = generate_here(
@@ -2007,7 +2601,8 @@ mod tests {
         assert!(lib.contains(
             "pubmod__fnr_bridges{pubusecrate::game::__Fnr_Bridge___horizon_mixins_m_ticks;}"
         ));
-        assert!(lib.contains("usecrate::__fnr_bridges::*;"));
+        assert!(lib.contains("usecrate::__fnr_bridges::__Fnr_Bridge___horizon_mixins_m_ticksas_;"));
+        assert!(!lib.contains("__fnr_bridges::*"));
         let error = generate_here(
             &[],
             &Extras {
@@ -2020,6 +2615,7 @@ mod tests {
                     ..extras.bridges[0].clone()
                 }],
                 idents: BTreeSet::new(),
+                linked: BTreeSet::new(),
                 loops: Vec::new(),
             },
         )

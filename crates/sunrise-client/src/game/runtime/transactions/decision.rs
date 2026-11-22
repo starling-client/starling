@@ -10,9 +10,9 @@
 #![allow(dead_code)]
 
 use super::After as Effect;
-use sunrise_client::items::ItemStack;
 use mod_api::{EntityRef, WorldEpoch};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use sunrise_client::items::ItemStack;
 
 #[path = "menu_owner.rs"]
 mod menu_owner;
@@ -21,7 +21,7 @@ mod storage;
 pub(in crate::game) use menu_owner::{MenuOwner, OwnerStamp};
 #[path = "decision_engine.rs"]
 pub(in crate::game) mod engine;
-pub(in crate::game) use storage::ActionHost;
+pub(in crate::game) use storage::{ActionHost, GameHost};
 pub(super) use storage::{ActiveAction, Journal};
 
 /// Fail closed on exhaustion: a generation must never wrap back to an old one.
@@ -133,13 +133,6 @@ impl Menu {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::game) enum ActionKind {
-    Placement,
-    QuickMove,
-    RecipePlacement,
-}
-
 #[derive(Clone, Debug)]
 pub(in crate::game) enum Mutation {
     Cursor(Option<ItemStack>),
@@ -156,13 +149,12 @@ pub(in crate::game) enum Step {
 }
 
 pub(in crate::game) struct Plan {
-    kind: ActionKind,
     steps: Vec<Step>,
 }
 
 impl Plan {
-    pub(in crate::game) fn new(kind: ActionKind, steps: Vec<Step>) -> Self {
-        Self { kind, steps }
+    pub(in crate::game) fn new(steps: Vec<Step>) -> Self {
+        Self { steps }
     }
 }
 
@@ -328,7 +320,6 @@ impl<T, R, P> Proposed<T, R, P> {
 /// Only a structurally validated plan can enter an opaque decision. Listener
 /// output cannot mutate it, so apply need only recheck the live preconditions.
 pub(in crate::game) struct FrozenPlan {
-    kind: ActionKind,
     steps: Vec<Step>,
 }
 
@@ -346,10 +337,7 @@ impl Plan {
                 validate_state(&preview)?;
             }
         }
-        Ok(FrozenPlan {
-            kind: self.kind,
-            steps: self.steps,
-        })
+        Ok(FrozenPlan { steps: self.steps })
     }
 }
 
@@ -447,8 +435,8 @@ impl<H: ActionHost> ActionTarget<H> for Menu {
 }
 
 /// No mutable borrow crosses decide or fire. The guard aborts on unwind in
-/// decide/apply as well as dispatch; native unwind and a recoverable wasm trap
-/// both become ListenerFailed. Process abort and failed rollback are not caught.
+/// decide/apply as well as dispatch. An unwind becomes ListenerFailed.
+/// Process abort and failed rollback are not caught.
 struct ActionGuard<'a, H: ActionHost> {
     host: &'a mut H,
     savepoint: u64,
@@ -521,7 +509,11 @@ pub(in crate::game) fn run<H: ActionHost, T: ActionTarget<H>>(
             return outcome;
         }
         guard.host.dispatched();
+        let failures = mod_api::runtime::isolated_failures();
         let reply = fire(guard.host);
+        if mod_api::runtime::isolated_failures() != failures {
+            return Outcome::ListenerFailed;
+        }
         apply(guard.host, token, reply)
     }))
     .unwrap_or(Outcome::ListenerFailed);

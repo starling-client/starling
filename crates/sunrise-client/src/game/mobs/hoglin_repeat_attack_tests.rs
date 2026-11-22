@@ -5,9 +5,9 @@
 //! (tools/test_hoglin_repeat_attack_parity.py measures the same on vanilla 26.3).
 use super::commands::Target;
 use super::*;
+use std::sync::Arc;
 use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 const NEAR_HOGLIN: &str = "00006093-0000-0000-0000-000000000003";
 const NEAR_PIG: &str = "00006093-0000-0000-0000-00000000000d";
@@ -107,7 +107,7 @@ fn step(game: &mut Game<'_>, ticks: u32) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_hoglin_keeps_attacking_its_attacker_beside_another_hit_hoglin() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -152,7 +152,7 @@ fn hurt_time(game: &mut Game<'_>, uuid: &str) -> i32 {
 /// in the next one, and again 41 ticks later. The pig ticks after the hoglin,
 /// so it reads `HurtTime` 9 on the tick of each hit.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_hoglin_hits_from_its_second_fighting_tick_every_41_ticks() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -169,7 +169,7 @@ fn a_hoglin_hits_from_its_second_fighting_tick_every_41_ticks() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn deferred_stronger_hits_do_not_count_hurt_timers_down_twice() {
     use sunrise_client::mobs::Damage;
     let mut resources = None;
@@ -208,7 +208,7 @@ fn mob_id(game: &mut Game<'_>, uuid: &str) -> u32 {
 /// the broadcast; a nearer current target stays; a nearer (or equally near)
 /// incoming one replaces a farther one; none current takes the new one.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_broadcast_target_replaces_only_a_farther_one() {
     use sunrise_client::mobs::{Who, piglin::receive_attack_target};
     use sunrise_core::geometry::Vec3;
@@ -267,7 +267,7 @@ fn a_broadcast_target_replaces_only_a_farther_one() {
 /// The broadcast's receivers are the sensed visible adult hoglins
 /// (`NEAREST_VISIBLE_ADULT_HOGLINS`): not a baby, not one behind stone.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_sensed_receivers_are_visible_adult_hoglins() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -338,7 +338,7 @@ impl mod_api::Hooks for BroadcastTargetListener {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn hoglin_broadcast_obeys_target_cancellation_and_redirection() {
     use crate::game::native_entity_refs::tests::with_game;
     use sunrise_client::mobs::{Mob, MobEvent, Who};
@@ -507,7 +507,7 @@ fn place_player(game: &mut Game<'_>, x: f64, z: f64) {
 /// A player on either side is placed and compared like a mob
 /// (`getTargetNearestMe` compares positions, whoever the targets are).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_broadcast_player_is_compared_by_distance() {
     use sunrise_client::mobs::Who;
     let mut resources = None;
@@ -574,6 +574,7 @@ fn host_with_guest(game: &mut Game<'_>, guest_at: [f64; 3]) {
         max_players: 2,
         integrated: false,
         levels: Default::default(),
+        level_seeds: Default::default(),
     };
     game.lan_host(settings, net, hub).unwrap();
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -605,7 +606,7 @@ fn host_with_guest(game: &mut Game<'_>, guest_at: [f64; 3]) {
 /// that a guest's attacker is broadcast to compares that guest, not the
 /// host, and once it takes the guest it is bound to them.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_guest_broadcast_is_placed_as_the_guest() {
     use sunrise_client::mobs::Who;
     let mut resources = None;

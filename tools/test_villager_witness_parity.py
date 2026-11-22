@@ -31,9 +31,9 @@ def main(argv=None):
                lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain.rs',
                lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/reputation.rs',
                lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/reputation_witness_tests.rs',
-               lab.ROOT / 'crates/sunrise-client/src/game/villagers.rs',
-               lab.ROOT / 'crates/sunrise-client/src/game/villager_witness_tests.rs',
-               lab.ROOT / 'crates/sunrise-client/src/game/kill_die_vibration_tests.rs']
+               lab.ROOT / 'crates/sunrise-client/src/game/mobs/villagers.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/mobs/tests/villager_witness_tests.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/entities/kill_die_vibration_tests.rs']
     hashes = base.source_hashes(sources)
     clean = dict(os.environ)
     for key in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):

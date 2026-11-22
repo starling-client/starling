@@ -33,7 +33,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn hud_mode_game_bridge_respects_client_and_guest_guards() {
         let mods: mod_api::Mods = vec![ModEntry::new("three-state", Box::new(ThreeState))].into();
         with_mods(mods, || {
@@ -59,9 +59,9 @@ mod tests {
                 assert_eq!(game.hud_mode(), HudMode::NoHud);
                 assert!(game.ui.hands_drawn(false, false, true, true, false));
                 game.toggle_hide_gui();
-                assert_eq!(game.hud_mode(), HudMode::AllVisible);
-                game.toggle_hide_gui();
                 assert_eq!(game.hud_mode(), HudMode::AllHidden);
+                game.toggle_hide_gui();
+                assert_eq!(game.hud_mode(), HudMode::AllVisible);
             });
         });
     }

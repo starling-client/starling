@@ -19,6 +19,22 @@ def workspace(*packages):
     return Workspace({"workspace_root": "/repo", "packages": list(packages)})
 
 
+def metadata_package(name, folder, dependencies=(), targets=None):
+    return {
+        "name": name,
+        "manifest_path": f"/repo/{folder}/Cargo.toml",
+        "targets": targets or [{"kind": ["lib"], "src_path": f"/repo/{folder}/src/lib.rs"}],
+        "dependencies": list(dependencies),
+    }
+
+
+def metadata_dependency(name, kind=None, target=None):
+    dependency = {"name": name, "kind": kind}
+    if target is not None:
+        dependency["target"] = target
+    return dependency
+
+
 class SelectionTests(unittest.TestCase):
     def setUp(self):
         self.graph = workspace(
@@ -72,6 +88,69 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(flags(set()), "packages=")
 
 
+class ModApiGenDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.graph = workspace(
+            metadata_package("sunrise-mod-api", "crates/sunrise-mod-api",
+                             [metadata_dependency("api-leaf")]),
+            metadata_package("sunrise-mod-vocab", "crates/sunrise-mod-vocab",
+                             [metadata_dependency("target-leaf", "normal", "cfg(unix)")]),
+            metadata_package("sunrise-core", "crates/sunrise-core", [
+                metadata_dependency("build-helper", "build"),
+                metadata_dependency("dev-helper", "dev"),
+            ], targets=[
+                {"kind": ["lib"], "src_path": "/repo/crates/sunrise-core/src/lib.rs"},
+                {"kind": ["bin"], "src_path": "/repo/crates/sunrise-core/tools/cli.rs"},
+            ]),
+            metadata_package("sunrise-mod-runtime", "crates/sunrise-mod-runtime",
+                             [metadata_dependency("runtime-leaf", "normal")]),
+            metadata_package("api-leaf", "crates/api-leaf",
+                             [metadata_dependency("api-transitive", "normal")]),
+            metadata_package("api-transitive", "crates/api-transitive"),
+            metadata_package("target-leaf", "crates/target-leaf"),
+            metadata_package("runtime-leaf", "crates/runtime-leaf"),
+            metadata_package("build-helper", "crates/build-helper",
+                             [metadata_dependency("build-transitive", "normal")]),
+            metadata_package("build-transitive", "crates/build-transitive"),
+            metadata_package("dev-helper", "crates/dev-helper"),
+            metadata_package("unrelated", "crates/unrelated"),
+            metadata_package("sunrise-mod-api-gen", "crates/sunrise-mod-api-gen"),
+        )
+
+    def test_a_changed_workspace_package_manifest_selects_the_generator(self):
+        chosen = self.graph.scope(["crates/unrelated/Cargo.toml"])
+        self.assertIn("sunrise-mod-api-gen", chosen)
+
+    def test_reachable_library_roots_follow_normal_and_target_specific_dependencies(self):
+        for path in [
+            "crates/sunrise-mod-api/src/lib.rs",
+            "crates/api-leaf/src/lib.rs",
+            "crates/api-transitive/src/lib.rs",
+            "crates/sunrise-mod-vocab/src/lib.rs",
+            "crates/target-leaf/src/lib.rs",
+            "crates/sunrise-core/src/lib.rs",
+            "crates/sunrise-mod-runtime/src/lib.rs",
+            "crates/runtime-leaf/src/lib.rs",
+        ]:
+            with self.subTest(path=path):
+                self.assertIn("sunrise-mod-api-gen", self.graph.scope([path]))
+
+    def test_unrelated_and_non_library_or_build_dev_inputs_do_not_select_the_generator(self):
+        for path in [
+            "crates/unrelated/src/lib.rs",
+            "crates/sunrise-core/build.rs",
+            "crates/sunrise-core/tests/dev_only.rs",
+            "crates/sunrise-core/tools/cli.rs",
+            "crates/build-helper/src/lib.rs",
+            "crates/build-transitive/src/lib.rs",
+            "crates/dev-helper/src/lib.rs",
+        ]:
+            with self.subTest(path=path):
+                chosen = self.graph.scope([path])
+                self.assertIsNotNone(chosen)
+                self.assertNotIn("sunrise-mod-api-gen", chosen)
+
+
 @unittest.skipUnless(shutil.which("cargo"), "needs cargo metadata")
 class RealWorkspaceTests(unittest.TestCase):
     @classmethod
@@ -96,18 +175,19 @@ class RealWorkspaceTests(unittest.TestCase):
         missing = []
         for name, found in reads(self.workspace).items():
             for path, where in sorted(found.items()):
-                listed = READERS.get(name, []) + SCANNED.get(name, [])
                 if path in NOT_READS.get(name, ()):
                     continue
-                if not (listed if path == "." else any(under(path, entry) for entry in listed)):
-                    missing.append(f"{name} reads {path} ({where})")
+                if name in self.workspace.readers(path) or name in self.workspace.readers(path, SCANNED):
+                    continue
+                if path == "." and (READERS.get(name) or SCANNED.get(name)):
+                    continue
+                missing.append(f"{name} reads {path} ({where})")
         self.assertEqual(missing, [], "add each to READERS in tools/ci/test_scope.py, or to NOT_READS if it is no read")
 
     def test_the_scan_finds_the_reads_the_table_was_built_from(self):
         found = reads(self.workspace)
         self.assertIn("crates/sunrise-client/assets/sunrise/lang", found["sunrise-client-core"])
         self.assertIn("docs/api/server-reference.md", found["sunrise-server"])
-        self.assertIn("crates/sunrise-core", found["sunrise-world"])
         self.assertIn("crates", found["sunrise-client-core"])
 
 

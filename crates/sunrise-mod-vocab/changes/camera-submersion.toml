@@ -1,0 +1,3 @@
+ids = ["hook:camera_submersion", "type:CameraSubmersionEvent"]
+why = "Adds the client hook camera_submersion (vanilla Camera.getFluidInCamera): the fog type at the camera's position, after state_at_viewpoint, which the listeners may replace. Every client reader of the camera's fluid reads the answer: the fluid field of view, the frame's fog, the sky pass and dark disc, the screen overlays, water and conduit vision, and a shader pack's isEyeInWater. New hook: no existing hook version changes."
+migrate = "Additive. Listen on the client and answer from the event alone, the same way for the same position within a frame: it is asked several times a frame."

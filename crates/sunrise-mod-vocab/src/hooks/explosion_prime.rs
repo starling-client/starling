@@ -6,9 +6,11 @@ pub trait Hooks {
     /// `ExplosionPrimeEvent`). This is listen-only: the explosion proceeds as
     /// usual. Server-side, including the single-player server.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_explosion_prime",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event; Bukkit's ExplosionPrimeEvent)"
     )]
-    fn explosion_prime();
+    fn explosion_prime(center: [f64; 3], radius: f32);
 }

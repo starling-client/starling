@@ -21,6 +21,8 @@ import os
 import signal
 import subprocess
 
+kernel32 = None
+
 if os.name == "nt":
     import ctypes
     from ctypes import wintypes
@@ -158,6 +160,8 @@ def kill(process):
         except (ProcessLookupError, PermissionError):
             pass  # the group is gone (a zombie leader alone can answer EPERM on macOS)
         return
+    if kernel32 is None:
+        return
     job = getattr(process, "job", None)
     if job:
         kernel32.TerminateJobObject(job, 1)
@@ -216,6 +220,8 @@ def start_build_server():
 
 
 def _release(process):
+    if kernel32 is None:
+        return
     job = getattr(process, "job", None)
     if job:
         process.job = None

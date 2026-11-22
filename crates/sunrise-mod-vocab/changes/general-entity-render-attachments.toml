@@ -1,0 +1,3 @@
+ids = ["type:EntityRenderState"]
+why = "General entity renderers receive a bounded snapshot of the row’s synced attachments in EntityRenderState. The snapshot is frozen before submission. The startup registration hook is unchanged."
+migrate = "Read entity.attachments in submit. Renderers that retain the state clone it instead of copying it."

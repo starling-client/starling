@@ -1,0 +1,54 @@
+{
+  "index": {
+    "schema": 1, "generated": "fixture", "projects": [
+      {"id": "add_on", "kind": "mod", "name": "Add-on", "summary": "A guarded batch fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "add_on.smod", "url": "https://example.test/add_on/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "alpha", "version": "^2", "optional": true}, {"id": "extra", "version": "^2", "optional": true}]},
+        {"api": "0.2", "file": {"name": "add_on.smod", "url": "https://example.test/add_on/2.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}, "version": "2.0.0", "game": "26.3", "dependencies": [{"id": "anchor", "version": "^2", "optional": true}]}
+      ]},
+      {"id": "alpha", "kind": "mod", "name": "Alpha", "summary": "A guarded batch fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "alpha.smod", "url": "https://example.test/alpha/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000007"}, "version": "1.0.0", "game": "26.3"},
+        {"api": "0.2", "file": {"name": "alpha.smod", "url": "https://example.test/alpha/2.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000008"}, "version": "2.0.0", "game": "26.3"}
+      ]},
+      {"id": "extra", "kind": "mod", "name": "Extra", "summary": "A guarded batch fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "extra.smod", "url": "https://example.test/extra/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}, "version": "1.0.0", "game": "26.3"},
+        {"api": "0.2", "file": {"name": "extra.smod", "url": "https://example.test/extra/2.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000004"}, "version": "2.0.0", "game": "26.3"}
+      ]},
+      {"id": "requires_extra", "kind": "mod", "name": "Requires Extra", "summary": "A guarded batch fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "requires_extra.smod", "url": "https://example.test/requires_extra/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000005"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "extra", "version": "^1"}, {"id": "anchor", "version": "^2", "optional": true}]}
+      ]},
+      {"id": "b", "kind": "mod", "name": "B", "summary": "A guarded batch fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "b.smod", "url": "https://example.test/b/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000006"}, "version": "1.0.0", "game": "26.3"}
+      ]}
+    ]
+  },
+  "game": "26.3",
+  "cases": [
+    {
+      "name": "a blocked peer cannot discard a compatible requested upgrade pair",
+      "requests": [{"id": "add_on", "version": "1.0.0"}, {"id": "extra", "version": "2.0.0"}, {"id": "requires_extra", "version": "1.0.0"}],
+      "installed": [{"id": "anchor", "version": "1.0.0"}, {"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}, "extra": {"status": "installable", "version": "2.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}], "update": [{"id": "extra", "from": "1.0.0", "to": "2.0.0"}], "optional": [{"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "alpha", "version": "^2", "optional": true}}, {"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "extra", "version": "^2", "optional": true}}]},
+      "refusals": {"requires_extra": ["requires_extra", "anchor"]}
+    },
+    {
+      "name": "an older candidate can use a different requested upgrade",
+      "requests": [{"id": "add_on"}, {"id": "extra", "version": "2.0.0"}, {"id": "b", "version": "9.0.0"}],
+      "installed": [{"id": "anchor", "version": "1.0.0"}, {"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}, "extra": {"status": "installable", "version": "2.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}], "update": [{"id": "extra", "from": "1.0.0", "to": "2.0.0"}], "optional": [{"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "alpha", "version": "^2", "optional": true}}, {"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "extra", "version": "^2", "optional": true}}]},
+      "refusals": {"b": ["b", "9.0.0"]}
+    },
+    {
+      "name": "an older candidate can use both requested optional upgrades",
+      "requests": [{"id": "add_on"}, {"id": "alpha", "version": "2.0.0"}, {"id": "extra", "version": "2.0.0"}, {"id": "b", "version": "9.0.0"}],
+      "installed": [{"id": "anchor", "version": "1.0.0"}, {"id": "alpha", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000007"}, {"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}, "alpha": {"status": "installable", "version": "2.0.0"}, "extra": {"status": "installable", "version": "2.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}], "update": [{"id": "alpha", "from": "1.0.0", "to": "2.0.0"}, {"id": "extra", "from": "1.0.0", "to": "2.0.0"}], "optional": [{"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "alpha", "version": "^2", "optional": true}}, {"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "extra", "version": "^2", "optional": true}}]},
+      "refusals": {"b": ["b", "9.0.0"]}
+    }
+  ]
+}

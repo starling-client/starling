@@ -44,4 +44,24 @@ mod tests {
             assert_eq!(registry_installation_identity(), replaced);
         });
     }
+
+    #[test]
+    fn equal_block_definitions_are_shared_between_installs_and_different_ones_are_not() {
+        let resolve = |ids: &[&str]| {
+            crate::__private::part_tests::install_parts_fixture(&[]).unwrap();
+            crate::__private::resolve_block_keys(ids.iter().copied(), |_| {
+                sunrise_mod_runtime::block_definitions::BlockDefinition::new(
+                    &[&Default::default()],
+                    0,
+                )
+                .map_err(|error| format!("{error:?}"))
+            })
+            .unwrap();
+            crate::__private::block_definitions().unwrap() as *const _
+        };
+        let first = resolve(&["test:a", "test:b"]);
+        assert_eq!(resolve(&["test:a", "test:b"]), first);
+        assert_ne!(resolve(&["test:a", "test:c"]), first);
+        assert_ne!(resolve(&["test:b", "test:a"]), first);
+    }
 }

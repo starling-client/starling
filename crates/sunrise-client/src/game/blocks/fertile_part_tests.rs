@@ -1,8 +1,8 @@
 //! A farmland part answers `is_fertile` and `can_be_hydrated` (`IBlockExtension.isFertile`,
 //! `canBeHydrated`) through the game's level, on an authoritative server only.
 use super::*;
-use sunrise_world::level::LevelAccess;
 use mod_api::{BlockPart, CanBeHydratedEvent, Hooks, IsFertileEvent, LevelHost, Registrar};
+use sunrise_world::level::LevelAccess;
 
 #[derive(Clone)]
 struct Farmland;
@@ -25,7 +25,7 @@ impl Hooks for Parts {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated native mod state"]
+#[ignore = "daily"]
 fn a_farmland_part_answers_fertility_and_hydration() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("farmland", Box::new(Parts))].into();
     mod_platform::testing::with_mods(mods.clone(), || {
@@ -62,11 +62,13 @@ fn a_farmland_part_answers_fertility_and_hydration() {
                     )
                 })
             };
-            // Not authoritative: no part is asked.
+            // A client's copy of the level: no part is asked.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             let (fertile_asked, farmland_asked, ..) = ask(game);
             assert!(!fertile_asked && !farmland_asked);
-            // A dedicated server: the farmland's part answers, stone has none.
-            game.options.dedicated = Some(Vec::new());
+            // A server: the farmland's part answers, stone has none.
+            game.options.execution_role =
+                crate::game::execution_role::ExecutionRole::IntegratedServer;
             assert_eq!(
                 ask(game),
                 (true, true, false, true, Some(true), Some(false))

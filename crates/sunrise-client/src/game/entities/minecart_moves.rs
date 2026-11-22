@@ -2,12 +2,77 @@
 //! the move gate (#2414) — in its own module so `minecarts.rs` keeps its size.
 use super::Game;
 use super::minecarts::{CartKind, Minecart};
-use sunrise_client::collisions::SceneCollisions;
-use sunrise_core::geometry::Vec3;
+use crate::game::collision_source::Mover;
+use sunrise_client::{collisions::SceneCollisions, motion::BodyContact};
+use sunrise_core::geometry::{Aabb, Vec3};
+
+pub(super) struct CartLanding {
+    id: u32,
+    kind: CartKind,
+    at: Vec3,
+    bounds: Aabb,
+    distance: f64,
+}
 impl Game<'_> {
+    /// `Entity.move` resets a ray-clipped fall, then `checkFallDamage` uses the
+    /// current position, supporting block and the body's last water contact.
+    pub(super) fn cart_move_fall(
+        &self,
+        c: &Minecart,
+        from: Vec3,
+        moved: Vec3,
+    ) -> (f64, Option<CartLanding>) {
+        let mut distance = self.vehicle_fall_reset(c.fall_distance, from, moved);
+        if moved.y < 0.0 && !c.in_water {
+            distance -= f64::from(moved.y as f32);
+        }
+        if !c.ground.on_ground {
+            return (distance, None);
+        }
+        (
+            0.0,
+            (distance > 0.0).then(|| CartLanding {
+                id: c.id,
+                kind: c.kind,
+                at: c.position,
+                bounds: c.bounds(),
+                distance,
+            }),
+        )
+    }
+
+    /// Run `Block.fallOn`, including `MinecartTNT.causeFallDamage`, before the
+    /// landing game event. A removed cart cannot resolve block restitution.
+    pub(super) fn finish_cart_landing(
+        &mut self,
+        landing: Option<CartLanding>,
+        effect: BodyContact,
+        explode: impl FnOnce(&mut Self, f64) -> bool,
+    ) -> bool {
+        let Some(CartLanding {
+            id,
+            kind,
+            at,
+            bounds,
+            distance,
+        }) = landing
+        else {
+            return true;
+        };
+        self.nonliving_fall_on(id, at, effect);
+        let removed = if kind == CartKind::Tnt && distance >= 3.0 {
+            let speed = distance / 10.0;
+            explode(self, speed * speed)
+        } else {
+            false
+        };
+        self.post_landing_event(at, bounds, false);
+        !removed
+    }
+
     /// Entity.move for a cart: collisions zero the blocked components, the world border's walls
     /// among them (`CollisionGetter.borderCollision`, asked for every entity).
-    pub(super) fn move_cart(&self, c: &mut Minecart, delta: Vec3) {
+    pub(super) fn move_cart(&mut self, c: &mut Minecart, delta: Vec3) -> bool {
         // The cart's own move is a self move (#2414: vanilla's
         // `AbstractMinecart.move` passes SELF for its own tick); PR 1a
         // records the movement unchanged.
@@ -36,7 +101,7 @@ impl Game<'_> {
         let entities = if delta.length_squared() == 0.0 {
             Vec::new()
         } else {
-            self.cart_entity_collisions(c)
+            self.entity_collisions(Mover::Cart(c))
         };
         let mut scene = sunrise_client::collisions::EntityCollisions {
             blocks: scene,
@@ -49,46 +114,79 @@ impl Game<'_> {
             c.bounds(),
             delta,
             0.0,
-            c.on_ground,
+            c.ground.on_ground,
         ) {
-            c.fall_distance = self.vehicle_fall_reset(c.fall_distance, c.position, moved);
+            let from = c.position;
             c.position = Vec3::new(
                 c.position.x + moved.x,
                 c.position.y + moved.y,
                 c.position.z + moved.z,
             );
-            c.on_ground = delta.y < 0.0 && moved.y > delta.y;
-            c.horizontal_collision =
-                (moved.x - delta.x).abs() > 1.0e-7 || (moved.z - delta.z).abs() > 1.0e-7;
-            if (moved.x - delta.x).abs() > 1.0e-7 {
-                c.velocity.x = 0.0;
+            let side = game_side!(self);
+            let motion = sunrise_client::motion::BodyMotion {
+                world: &self.world,
+                collision: self.collision,
+                facts: self.res.facts(),
+                blocks: Some(&self.motion.blocks),
+                context: &self.loop_context,
+                side: Some(&side),
+            };
+            if !gate.skipped() {
+                motion.record_move(
+                    sunrise_client::motion::BodyCollision {
+                        footprint: (c.position, c.bounds()),
+                        movement: (delta, moved),
+                        authoritative: true,
+                        context: sunrise_client::motion::BodyMotion::entity_context(
+                            c.id, c.position,
+                        ),
+                        subject: None,
+                    },
+                    &mut c.ground,
+                );
             }
-            if (moved.z - delta.z).abs() > 1.0e-7 {
-                c.velocity.z = 0.0;
-            }
-            if (moved.y - delta.y).abs() > 1.0e-7 {
-                c.velocity.y = 0.0;
-            }
-            // Entity.checkFallDamage: the move's drop counts (not in water, as of
-            // the tick before: `isInWater` is `wasTouchingWater`),
-            // and a landing hands the whole fall to causeFallDamage, which
-            // sets a TNT minecart off at (fall / 10) squared.
-            if moved.y < 0.0 && !c.in_water {
-                c.fall_distance -= f64::from(moved.y as f32);
-            }
-            // A move up or none leaves the fall as it is (a saved one too).
-            if c.on_ground {
-                if c.kind == CartKind::Tnt && c.fall_distance >= 3.0 {
-                    let power = c.fall_distance / 10.0;
-                    c.fall_blast = Some(power * power);
+            let effect = motion.legacy_contact(c.position, &c.ground);
+            let (fall_distance, landing) = self.cart_move_fall(c, from, moved);
+            c.fall_distance = fall_distance;
+            if landing.is_some() {
+                let id = c.id;
+                let join = c.join;
+                if !self
+                    .finish_cart_landing(landing, effect, |game, power| game.explode_cart(c, power))
+                    || !self
+                        .carts
+                        .iter()
+                        .any(|row| row.id == id && row.join == join)
+                    || self
+                        .persist
+                        .removals
+                        .contains(&super::commands::Target::Cart(id))
+                {
+                    return false;
                 }
-                c.fall_distance = 0.0;
             }
+            let entity = (c.id, c.kind.id());
+            let response = self.body_motion(&game_side!(self)).restitute(
+                entity,
+                sunrise_client::motion::BodyMove {
+                    wanted: delta,
+                    moved,
+                    effect,
+                },
+                sunrise_client::entity_rules::EntityRules::get_gravity(c),
+                0.95_f32,
+                c.velocity,
+                c.fall_distance,
+            );
+            c.velocity = self.finish_body_restitution(entity, c.position, response);
+            self.body_motion(&game_side!(self))
+                .apply_block_speed(c.position, &mut c.velocity);
         }
         // OldMinecartBehavior applies block effects here and at tick end.
         // NewMinecartBehavior applies them after recording each track step.
         if !self.minecart_improvements() {
             self.cart_block_effects(c);
         }
+        true
     }
 }

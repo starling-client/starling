@@ -150,7 +150,7 @@ fn providers_code(shapes: &[KeyShape]) -> String {
         };
         let _ = ctx;
         code.push_str(&format!(
-            "/// A {by} capability's provider, by its handler type.\n#[doc(hidden)]\n#[derive(Clone, sunrise_mod_api_macros::Wire)]\npub enum {by}ProviderOf {{\n{cases}/// A handler type of a mod's own.\nOwn(OwnProvider),\n}}\nimpl {by}ProviderOf {{\n/// `provider`, by its handler type.\npub(crate) fn of{params}(provider: Arc<dyn {provider}>) -> Self {{\nlet any: Box<dyn Any + Send + Sync> = Box::new(provider);\n{tries}Self::Own(OwnProvider {{ provider: Arc::from(any), handler: Arc::from(std::any::type_name::<T>()) }})\n}}\n/// Its handler type's name.\npub(crate) fn handler(&self) -> Arc<str> {{\nmatch self {{\n{names}Self::Own(own) => own.handler.clone(),\n}}\n}}\n/// The provider, if it answers with handler type `T`.\npub(crate) fn get{params}(&self) -> Option<&Arc<dyn {provider}>> {{\nmatch self {{\n{gets}Self::Own(own) if own.provider.is::<crate::wire::Unsupported>() => None,\nSelf::Own(own) => (*own.provider).downcast_ref(),\n}}\n}}\n}}\n"
+            "/// A {by} capability's provider, by its handler type.\n#[doc(hidden)]\n#[derive(Clone)]\npub enum {by}ProviderOf {{\n{cases}/// A handler type of a mod's own.\nOwn(OwnProvider),\n}}\nimpl {by}ProviderOf {{\n/// `provider`, by its handler type.\npub(crate) fn of{params}(provider: Arc<dyn {provider}>) -> Self {{\nlet any: Box<dyn Any + Send + Sync> = Box::new(provider);\n{tries}Self::Own(OwnProvider {{ provider: Arc::from(any), handler: Arc::from(std::any::type_name::<T>()) }})\n}}\n/// Its handler type's name.\npub(crate) fn handler(&self) -> Arc<str> {{\nmatch self {{\n{names}Self::Own(own) => own.handler.clone(),\n}}\n}}\n/// The provider, if it answers with handler type `T`.\npub(crate) fn get{params}(&self) -> Option<&Arc<dyn {provider}>> {{\nmatch self {{\n{gets}Self::Own(own) => (*own.provider).downcast_ref(),\n}}\n}}\n}}\n"
         ));
     }
     code
@@ -208,7 +208,7 @@ pub fn generate(
     root: &Path,
     included: &[(&str, &str)],
 ) -> Result<(String, Vec<std::path::PathBuf>), String> {
-    let index = &mut Index::new(root, included);
+    let index = &mut crate::index::game(root, included);
     let declarations = key_declarations(index)?;
     let mut shapes = Vec::new();
     for (_, shape) in &declarations {

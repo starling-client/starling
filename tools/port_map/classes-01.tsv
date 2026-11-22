@@ -33,7 +33,7 @@ Mannequin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::Ba
 Mannequin.applyImplicitComponent	missing		minor: the profile from a spawning item is not applied; Sunrise has no mannequin item, only summon with a profile tag
 Mannequin.defineSynchedData	inline	crates/sunrise-client/src/game/network/remote_mob_data.rs::apply	slots 17 to 19: the profile, DATA_IMMOVABLE and DATA_DESCRIPTION are all read now
 Mannequin.get	skip:other		data-component getter for the PROFILE component; the profile is Mob.profile, read directly
-Mannequin.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	profile, immovable and description load here; validated lowercase pose now feeds extra.avatar_pose for existing live dimensions and eye anchoring. Saved pose default/invalid getter normalization and the remaining schema are separate.
+Mannequin.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	profile, immovable and description load here; validated lowercase pose now feeds extra.avatar_pose for existing live dimensions and eye anchoring. Saved pose default/invalid getter normalization and the remaining schema are separate.
 Mannequin.updateDescription	port	crates/sunrise-client/src/mobs.rs::MannequinDescription::component	the description component: the default `entity.minecraft.mannequin.label`, none when hidden, or the server's own (the text drawn under the name tag)
 Giant.createAttributes	skip:data		attributes come from entity-types.json
 ShootWhenStuck.checkExtraStartConditions	inline	crates/sunrise-client/src/mobs/breeze.rs::register
@@ -187,7 +187,7 @@ CreativeModeTabs.generateInstrumentTypes	skip:data		creative contents come from 
 CreativeModeTabs.generateOminousBottles	skip:data		creative contents come from the data file
 CreativeModeTabs.generatePotionEffectTypes	skip:data		creative contents come from the data file
 CreativeModeTabs.generatePresetPaintings	skip:data		creative contents come from the data file
-CreativeModeTabs.generateSuspiciousStews	skip:data		creative contents come from the data file
+CreativeModeTabs.generateSuspiciousStews	port	crates/sunrise-items/src/creative_catalog.rs::Catalog::generate	generates distinct stew variants in item registry order
 CreativeModeTabs.registerColoredItems	skip:data		creative contents come from the data file
 CreativeModeTabs.tryRebuildTabContents	port	crates/sunrise-client/src/creative.rs::Creative::items	contents rebuilt on demand
 DebugStickItem	home	crates/sunrise-client/src/game/blocks/debug_stick.rs
@@ -227,4 +227,4 @@ LingeringPotionItem.use	inline	crates/sunrise-client/src/game/items/potions.rs::
 NameTagItem.interactLivingEntity	port	crates/sunrise-client/src/game/interface/names.rs::Game::name_mob	a tag with a custom name names the mob under the crosshair, makes it persistent and is used up, in creative too
 PlaceOnWaterBlockItem.use	inline	crates/sunrise-client/src/game/blocks/block_items.rs::Game::apply_placed_item	placed by generic block placement; the water rule is not checked here
 Pillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	modeled occupied Inventory list, including empty; inherited Raider fields separate
-Pillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	Inventory adoption into five-slot occupied-stack model; gap: aggregation and existing pickup-flag load remain separate
+Pillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Inventory adoption into five-slot occupied-stack model; gap: aggregation and existing pickup-flag load remain separate

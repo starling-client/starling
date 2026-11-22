@@ -1,5 +1,9 @@
 //! Private custom-book synchronization, admitted by its own configuration capability.
 use super::Game;
+use std::{
+    collections::BTreeSet,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use sunrise_client::recipe_book::{
     settings_codec,
     settings_sync::{CHANNEL, Message},
@@ -7,10 +11,6 @@ use sunrise_client::recipe_book::{
 use sunrise_protocol::packets::{
     configuration::CustomPayload,
     play::{Clientbound as C, Serverbound as S},
-};
-use std::{
-    collections::BTreeSet,
-    sync::atomic::{AtomicU64, Ordering},
 };
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 fn registered() -> BTreeSet<String> {

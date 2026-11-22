@@ -1,0 +1,8 @@
+id = "refused_manifest_unknown_jar_key"
+name = "Refused manifest unknown jar key"
+version = "1.2.3"
+[[jar]]
+id = "overlay"
+version = "2"
+sha512 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+loader = "fabric"

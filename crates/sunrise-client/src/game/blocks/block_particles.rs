@@ -1,6 +1,8 @@
 //! Block particles: the sprite and tint of a block's faces and particle material, honey slides,
 //! and the burst a destroyed block leaves (`ClientLevel.addDestroyBlockEffect`).
 use super::*;
+use sunrise_client::blocks::RenderShape;
+use sunrise_core::geometry::Direction;
 
 impl Game<'_> {
     /// `TerrainParticle` at `pos`: the model's particle sprite and tint source
@@ -62,26 +64,24 @@ impl Game<'_> {
         pack.layer_names.get(&layer).cloned()
     }
 
-    pub(super) fn particle_shape(&self, pos: [i32; 3], state: BlockStateId) -> Vec<[f64; 6]> {
-        let f = self.res.facts().get(state);
-        let offset = if f.outline_offset {
-            self.pack
-                .context
-                .tables
-                .offset(state, pos[0], pos[2])
-                .unwrap_or([0.0; 3])
-        } else {
-            [0.0; 3]
-        };
-        f.outline
-            .iter()
-            .map(|b| std::array::from_fn(|i| b[i] + offset[i % 3]))
-            .collect()
+    fn particle_shape(&self, pos: [i32; 3], state: BlockStateId) -> Vec<[f64; 6]> {
+        self.state_shape_boxes(
+            &self.world,
+            &self.be_anims,
+            state,
+            pos,
+            mod_api::BlockShapeKind::Outline,
+        )
     }
 
-    /// ClientLevel.addDestroyBlockEffect: a burst per outline box.
+    /// `ClientLevel.addDestroyBlockEffect`: decide using the destroyed state, not the block
+    /// that now occupies `pos`, then add the default burst per outline box unless handled.
     pub(super) fn destroy_particles(&mut self, pos: [i32; 3], state: BlockStateId) {
-        if self.settings.extras.hide_block_particles {
+        if self.settings.extras.hide_block_particles || self.res.facts().is_air(state) {
+            return;
+        }
+        let spawn = self.res.facts().get(state).spawn_terrain_particles;
+        if self.mod_add_destroy_effects(state, pos).unwrap_or(!spawn) {
             return;
         }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
@@ -93,27 +93,50 @@ impl Game<'_> {
             self.particles.push(particle);
         });
     }
-}
 
-impl Game<'_> {
-    /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
+    /// `ClientLevel.addBreakingBlockEffects`' particle step, called after the sound with a
+    /// non-air state and the hit face. Only visible blocks have hit particles.
     pub(super) fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
-        if self.settings.extras.hide_block_particles {
+        let facts = self.res.facts().get(state);
+        if self.settings.extras.hide_block_particles || facts.render_shape == RenderShape::Invisible
+        {
             return;
         }
-        let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
+        let Some(face) = Direction::ALL.into_iter().find(|d| d.normal() == face) else {
             return;
+        };
+        let spawn = facts.spawn_terrain_particles;
+        if !self.mod_add_hit_effects(state, pos, face).unwrap_or(!spawn) {
+            self.add_breaking_particle(pos, state, face);
+        }
+    }
+
+    /// Raw `ClientLevel.addBreakingParticles`: one crumb on the given face, with no sound or hook.
+    pub(super) fn add_breaking_particle(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        face: Direction,
+    ) -> bool {
+        let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
+            return false;
         };
         let boxes = self.particle_shape(pos, state);
-        // Keep client effects separate from the authoritative world RNG.
-        let r = self.particles.random();
-        let Some(p) = sunrise_client::particles::breaking_position(r, pos, face, &boxes) else {
-            return;
+        let Some(p) = self.with_lent_level_random(|game| {
+            sunrise_client::particles::breaking_position(
+                game.particles.level_random(),
+                pos,
+                face.normal(),
+                &boxes,
+            )
+        }) else {
+            return false;
         };
-        let mut particle = Particle::terrain(r, p, [0.0; 3], sprite, tint);
+        let mut particle = Particle::terrain(self.particles.random(), p, [0.0; 3], sprite, tint);
         particle.set_power(0.2);
         particle.scale(0.6);
         self.particles.push(particle);
+        true
     }
     pub(super) fn particle_sprite(
         &self,

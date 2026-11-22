@@ -7,8 +7,8 @@ use super::{
     anim::{Poses, State},
     keyframes::Animation,
 };
-use sunrise_core::random::RandomSource;
 use std::collections::HashMap;
+use sunrise_core::random::RandomSource;
 
 // Copper golem state: `variant` the weathering (0 unaffected .. 3 oxidized),
 // `variant3` the `CopperGolemState`, `main_hand` with `ints[1]` the carried

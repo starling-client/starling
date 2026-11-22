@@ -1,0 +1,2 @@
+ids = ["type:GlobalLootModifierManager"]
+why = "Activates ordered, per-file global loot modifiers on server roots, including neoforge:add_table, and retains each successful generation under neoforge:loot_modifiers. The manager exposes application order, lookup by file id and reverse resource identity. Failed preparation keeps the old generation; existing loot hooks retain their meanings."

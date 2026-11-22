@@ -1,15 +1,15 @@
 use crate::support::common::f64_hex;
-use sunrise_world::{
-    attribute_map::AttributeMap,
-    attributes::{AttributeError, Definition, Instance, Modifier, Observer, Operation},
-    effect_attribute_modifiers::{self as effects, Definitions, ModifierWorld, Template},
-    object_open_set::{CursorError, ObjectKey},
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_world::{
+    attribute_map::AttributeMap,
+    attributes::{AttributeError, Definition, Instance, Modifier, Observer, Operation},
+    effect_attribute_modifiers::{self as effects, Definitions, ModifierWorld, Template},
+    object_open_set::{CursorError, ObjectKey},
 };
 #[derive(Clone, PartialEq, Eq)]
 struct Key {

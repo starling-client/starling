@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automaatne taasühendamine",
+  "sunrise.extras.auto_reconnect.tooltip": "Liitub serveriga uuesti pärast ühenduse katkemist või taaskäivitamist, mitte kunagi pärast lööki või keelamist."
+}

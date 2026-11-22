@@ -4,13 +4,13 @@ use super::{
     regions::{LayoutRegion, RegionLayout, RegionPoint, SelectorParams},
 };
 use crate::worldgen::{biome::MultiNoiseBiomeSource, climate::ClimateSampler};
+use std::sync::Arc;
 use sunrise_core::{
     density::{ConstantSampler, DensitySampler, GradientSampler, SamplerContext, TilingMode},
     geometry::Axis,
     position::BlockPos,
     random::{PositionalRandom, RandomSource, XoroshiroPositionalRandom, XoroshiroRandom},
 };
-use std::sync::Arc;
 
 fn point(biome: &str, temperature: f32, humidity: f32) -> RegionPoint {
     let mut intervals = [(0., 0.); 6];

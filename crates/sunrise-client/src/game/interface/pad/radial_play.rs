@@ -2,14 +2,14 @@
 //! `radial_overlay.rs` draws it): what opens and closes it, what the pad's presses do while it is
 //! open, and what a commit runs.
 use super::{Game, Result, UI_CLICK_VOLUME};
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 use sunrise_client::gamepad::MenuJob;
 use sunrise_client::gamepad::{self, Button, RadialMode, RadialStick, Rumble};
 use sunrise_client::pad_glyph::Glyph;
 use sunrise_client::text::Text;
 use sunrise_client_input::radial::{self, RadialAction, Slot};
 use sunrise_client_render::radial_overlay::{self, Dial, Seen, Toggles, View};
-use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 
 /// The D-pad's buttons, which settle after the menu closes on a D-pad opener.
 const DPAD: [Button; 4] = [
@@ -124,7 +124,6 @@ impl Game<'_> {
             std::array::from_fn(|i| radial::stick_length(sticks[i]) < tilts[i].rest);
         let (index, stick, _, tilt) = self.pad_radial_selector();
         self.pad.radial.open(index, stick, tilt, Instant::now());
-        self.pad.radial_face = self.pad_radial_face();
         self.pad.radial_page_said = false;
         self.pad.radial_said.reset();
     }
@@ -144,9 +143,8 @@ impl Game<'_> {
     }
 
     /// Whether `action` would do anything now. Only what is known here, cheaply and for certain:
-    /// the emote wheel opens only with cosmetics on, Quick Actions only when the server gave a
-    /// dialog for it, and Social only on a server (`Gui.handleKeybinds`). Everything else on the
-    /// list always runs.
+    /// Quick Actions only when the server gave a dialog for it, and Social only on a server
+    /// (`Gui.handleKeybinds`). Everything else on the list always runs.
     fn pad_radial_runs(&self, action: RadialAction) -> bool {
         self.pad_radial_why(action).is_none()
     }
@@ -155,7 +153,6 @@ impl Game<'_> {
     /// when it runs.
     fn pad_radial_why(&self, action: RadialAction) -> Option<&'static str> {
         match action {
-            RadialAction::Emote if !super::super::cosmetics::enabled() => Some(WHY_COSMETICS),
             RadialAction::QuickActions if !self.has_quick_actions() => Some(WHY_QUICK_ACTIONS),
             RadialAction::SocialInteractions if !self.is_multiplayer_server() => Some(WHY_SOCIAL),
             _ => None,
@@ -499,10 +496,7 @@ impl Game<'_> {
             backing: (self.settings.text_background(radial_overlay::CHIP_BACKING) >> 24) as u8,
             room: &self.ui.room,
         };
-        let painter = super::super::item_draw::IconPainter {
-            game: self,
-            face: self.pad.radial_face.as_deref(),
-        };
+        let painter = super::super::item_draw::IconPainter { game: self };
         radial_overlay::draw_overlay(batch, &self.gui.atlas, &painter, &dial, look, clock);
     }
 
@@ -546,29 +540,9 @@ impl Game<'_> {
             _ => [Some(self.menu_glyph(back)), Some(self.menu_glyph(on))],
         }
     }
-
-    /// The player's own skin, for the Emote slot's face: their entry in the player list, which
-    /// single player has too (the window is its server thread's client). Before the entry or its
-    /// texture has come, the default skin their id gives, as the player list draws it.
-    fn pad_radial_face(&mut self) -> Option<String> {
-        let me = self.remote.as_ref().map(|r| r.profile());
-        let skin = match (me, self.remote_tab_players()) {
-            (Some(me), Some((players, _, _))) => players
-                .into_iter()
-                .find(|p| p.uuid == me)
-                .map(|p| (me, p.skin)),
-            _ => None,
-        };
-        let me = me?;
-        Some(match skin {
-            Some((me, skin)) => self.face_skin(me, &skin),
-            None => sunrise_client::tab_list::default_skin(me).to_owned(),
-        })
-    }
 }
 
 /// The hub's reasons a slot can't run (language keys).
-const WHY_COSMETICS: &str = "sunrise.radial.why.cosmetics";
 const WHY_QUICK_ACTIONS: &str = "sunrise.radial.why.quick_actions";
 const WHY_SOCIAL: &str = "sunrise.radial.why.social";
 

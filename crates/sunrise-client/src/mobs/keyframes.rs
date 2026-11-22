@@ -76,7 +76,7 @@ impl Animation {
                     continue;
                 };
                 let p = poses.get(bone);
-                match c.target {
+                match &c.target {
                     // ModelPart.offsetPos / offsetRotation / offsetScale.
                     AnimationTarget::Position => {
                         p[0] += v[0];
@@ -94,7 +94,7 @@ impl Animation {
                         p[8] += v[2];
                     }
                     // `parse` above builds only the three built-in targets.
-                    AnimationTarget::Registered(_) => {}
+                    AnimationTarget::Custom(_) => {}
                 }
             }
         }

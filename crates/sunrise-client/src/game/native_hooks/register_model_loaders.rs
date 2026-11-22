@@ -1,11 +1,11 @@
 use super::*;
 
 impl Game<'_> {
-    /// The model loaders a mod adds (NeoForge's `ModelEvent.RegisterLoaders`): push each id,
-    /// `<mod id>:<path>`. Asked once at start on the client, before resources load.
+    /// Gather attributed model loader callbacks at client startup, before resources load
+    /// (NeoForge's `ModelEvent.RegisterLoaders`).
     pub(in crate::game) fn native_register_model_loaders(
         context: &mod_api::RegistrationContext,
-        loaders: &mut Vec<String>,
+        loaders: &mut Vec<Answered<ModelLoaderRegistration>>,
     ) {
         Self::fire_register_model_loaders(context, loaders);
     }

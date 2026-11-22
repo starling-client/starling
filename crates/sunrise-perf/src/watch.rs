@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use sunrise_perf_format::Field;
 use sunrise_perf_format::v1::{HealthSample, Side, SlowEvent, Stop, StopReason, Warning};
-use serde::{Deserialize, Serialize};
 
 use crate::error::side_name;
 use crate::follow::Entry;

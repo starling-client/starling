@@ -31,6 +31,9 @@ pub struct Job {
     pub encoder: wgpu::CommandEncoder,
     pub surface: Option<wgpu::SurfaceTexture>,
     pub after: Option<AfterSubmit>,
+    /// The renderer's device-loss flag: once it is set after the submission, the frame's
+    /// `after` and present are dropped, not run on the lost device.
+    pub lost: Option<std::sync::Arc<AtomicBool>>,
 }
 
 struct Thread {
@@ -78,10 +81,21 @@ impl Queue {
                 for job in job_rx {
                     let commands = job.encoder.finish();
                     let submission = queue.submit([commands]);
-                    if let Some(after) = job.after {
+                    let lost = || {
+                        job.lost
+                            .as_ref()
+                            .is_some_and(|lost| lost.load(Ordering::Relaxed))
+                    };
+                    if !lost()
+                        && let Some(after) = job.after
+                    {
                         after();
                     }
-                    if let Some(surface) = job.surface {
+                    // A readback can find the loss too. Drop the unpresented texture before
+                    // telling the render thread this submission has landed.
+                    if let Some(surface) = job.surface
+                        && !lost()
+                    {
                         queue.present(surface);
                     }
                     if done_tx.send(submission).is_err() {
@@ -186,9 +200,8 @@ mod tests {
     use super::*;
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&Default::default())).ok()
+        let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;
+        Some((device, queue))
     }
 
     fn buffer(device: &wgpu::Device, usage: wgpu::BufferUsages) -> wgpu::Buffer {
@@ -201,6 +214,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn writes_after_a_frame_on_the_thread_land_after_it() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -221,6 +235,7 @@ mod tests {
                 encoder,
                 surface: None,
                 after: None,
+                lost: None,
             };
             assert!(queue.submit_later(job).is_ok());
             queue.write_buffer(&source, 0, &[frame + 10; 4]);

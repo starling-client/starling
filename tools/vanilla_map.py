@@ -148,7 +148,7 @@ def build(classes, root=ROOT, dependencies=None):
     dependencies: {harness: [repository paths]} recorded by tools/parity.py, when available."""
     names = Names(classes)
     tracked = subprocess.check_output(["git", "ls-files"], cwd=root, text=True).split()
-    rust = [f for f in tracked if f.endswith(".rs") and (f.startswith("crates/") or f.startswith("launcher/"))]
+    rust = [f for f in tracked if f.endswith(".rs") and (f.startswith("crates/"))]
     sources = set(rust)
     read = lambda f: (root / f).read_text(errors="replace")  # noqa: E731
     by_class = rust_references(rust, names, read)

@@ -5,8 +5,12 @@ impl Game<'_> {
     /// `DisplayInfo.fromNetwork`: convert the template once, not while drawing it.
     pub(super) fn remote_advancement_icon(&self, mut icon: Stack) -> ItemStack {
         let remote = self.remote.as_ref().expect("remote advancement");
-        if !sunrise_protocol::item::custom::permitted(&icon, remote.registries.custom_components)
-            .unwrap_or(false)
+        if !sunrise_protocol::item::custom::permitted_with_names(
+            &icon,
+            remote.registries.custom_components,
+            &*remote.registries,
+        )
+        .unwrap_or(false)
         {
             // Keep the advancement, item and count. Refusing an unnegotiated custom
             // component (including nested components), or a malformed nested template,

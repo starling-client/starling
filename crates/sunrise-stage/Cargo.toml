@@ -1,0 +1,21 @@
+[package]
+name = "sunrise-stage"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Stage prebuilt game sources, export the SDK surface and scan mod uses"
+
+[dependencies]
+sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false }
+sunrise-mod-source = { path = "../sunrise-mod-source" }
+sunrise-mod-surface = { path = "../sunrise-mod-surface" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

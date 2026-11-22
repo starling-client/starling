@@ -6,7 +6,7 @@ use sunrise_client::{
     scoreboard::{component_tag, tag_to_json},
 };
 use sunrise_core::nbt::Tag;
-use sunrise_items::item_nbt::{item_from_nbt, item_to_nbt_with_items};
+use sunrise_items::item_nbt::{item_from_nbt, item_to_nbt};
 
 impl Game<'_> {
     /// `Display.addAdditionalSaveData`: save the settings as the codecs read
@@ -117,7 +117,7 @@ impl Game<'_> {
                 };
                 fields.insert("item_display".into(), context);
                 if let Some(stack) = item {
-                    fields.insert("item".into(), item_to_nbt_with_items(&stack, self.items()));
+                    fields.insert("item".into(), item_to_nbt(&stack, self.items()));
                 } else {
                     fields.remove(&"item".into());
                 }

@@ -25,9 +25,9 @@ pub fn render(catalog: &Catalog) -> String {
     page
 }
 
-/// Reads the checkout's catalog and renders the page.
+/// Reads the checkout's hook declarations and renders the page.
 pub fn generate(root: &Path) -> Result<String, String> {
-    let catalog = Catalog::load(root).map_err(|error| error.to_string())?;
+    let catalog = Catalog::load(root)?;
     Ok(render(&catalog))
 }
 

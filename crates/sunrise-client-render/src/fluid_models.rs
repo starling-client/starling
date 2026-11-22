@@ -7,10 +7,10 @@
 //! gives a fluid's still sprite and item tint, and [`held_fluid`] the fluid a vanilla bucket holds.
 //! Items are drawn every frame, so their answers are resolved once per load, by the same two
 //! calls that store the looks and models ([`FluidData`]).
-use sunrise_assets::item_model::FluidAppearance;
-use sunrise_mod_package::content::{FluidLook, FluidModel, namespaced_id};
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
+use sunrise_assets::item_model::FluidAppearance;
+use sunrise_mod_package::content::{FluidLook, FluidModel, namespaced_id};
 
 static DATA: LazyLock<RwLock<FluidData>> = LazyLock::new(|| RwLock::new(FluidData::new()));
 
@@ -144,6 +144,19 @@ pub fn set_world_looks<'a>(looks: impl IntoIterator<Item = &'a FluidLook>) {
     DATA.write()
         .unwrap_or_else(|e| e.into_inner())
         .set_looks(looks);
+}
+
+/// The name of the flat white sprite [`insert_flat`](crate::sprites::Sprites::insert_flat) makes
+/// for fluids whose look names no sprite.
+pub const FLAT_SPRITE: &str = "sunrise:flat_color";
+
+/// Whether some fluid's look names no sprite, so a box of it draws its tint flat.
+pub fn any_flat_look() -> bool {
+    let data = data();
+    data.looks
+        .iter()
+        .chain(&data.tank_looks)
+        .any(|look| look.sprite.is_none())
 }
 
 /// Replaces the models recollected before each resource bake, including reloads.

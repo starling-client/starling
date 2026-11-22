@@ -7,8 +7,8 @@
 //! creating a flat world folder; the chunk streamed in under a `/forceload` ticket; the block
 //! placed with `/setblock`; `Game::save_game` (the autosave's and the pause menu's save) writing
 //! the region file; the game dropped; then a second game opening the same folder and streaming
-//! the chunk back from that file. Not covered: LAN guests, a dedicated server process, wasm
-//! mods, and `close_world`'s closing save, which finishes over event-loop stages a test can't
+//! the chunk back from that file. Not covered: LAN guests, a dedicated server process,
+//! and `close_world`'s closing save, which finishes over event-loop stages a test can't
 //! run.
 use super::{BlockEntity, Game};
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};
@@ -41,8 +41,8 @@ impl Hooks for Tanks {
     }
     fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
         event
-            .blocks
-            .push(mod_api::Block::new(TANK, "minecraft:stone"));
+            .register(mod_api::Block::new(TANK, "minecraft:stone"))
+            .unwrap();
     }
 }
 
@@ -105,7 +105,7 @@ fn contents(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_committed_mod_tank_survives_a_world_save_close_and_reopen() {
     if run_fresh_cases(
         "game::machines::tank_reopen_tests::a_committed_mod_tank_survives_a_world_save_close_and_reopen",
@@ -151,15 +151,15 @@ fn a_committed_mod_tank_survives_a_world_save_close_and_reopen() {
         let tanks = level.capability(game, &FLUIDS, pos, None).unwrap();
         assert_eq!(
             game.transaction(|host, tx| Ok::<_, ()>((
-                tanks.insert(host, tx, 0, &fluid(BRINE, 1), 1500),
-                tanks.insert(host, tx, 1, &fluid("minecraft:lava", 1), 1000),
+                tanks.insert_at(host, tx, 0, &fluid(BRINE, 1), 1500),
+                tanks.insert_at(host, tx, 1, &fluid("minecraft:lava", 1), 1000),
             ))),
             Ok((1500, 1000))
         );
         // An aborted transaction's insert is rolled back and must not be saved.
         assert_eq!(
             game.transaction(|host, tx| {
-                assert_eq!(tanks.insert(host, tx, 0, &fluid(BRINE, 1), 500), 500);
+                assert_eq!(tanks.insert_at(host, tx, 0, &fluid(BRINE, 1), 500), 500);
                 Err::<(), _>("abort")
             }),
             Err("abort")

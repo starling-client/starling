@@ -1,0 +1,8 @@
+ids = [
+    "handle:BakedModelKeys::len",
+    "handle:BakedModelKeys::is_empty",
+    "type:BakedModelKeyIter",
+    "handle:BakedModelView::quads",
+]
+why = "Vanilla's QuadCollection.getAll lends an indexed list with a known size, and NeoForge's ModelEvent.BakingCompleted#getBakingResult exposes the published model data read-only. The quad iterator now uses the backing list's length and index lookup, so it can report its remaining count, skip directly to an index or walk backwards without copying geometry. Baked model key lists expose their size and yield keys by value in bake order; equality includes the resource generation."
+migrate = "Replace keys.iter().len() with keys.len() and keys.iter().next().is_none() with keys.is_empty(); for key in keys yields keys by value, just like keys.iter(). Replace view.quads.len() with view.quads().len() and view.quads.iter().rev() with view.quads().rev(); forward loops still use view.quads()."

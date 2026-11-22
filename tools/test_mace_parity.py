@@ -31,7 +31,14 @@ velocity, the first target's worn pieces, the player's health, velocity,
 fall distance, impulse impact and grace time and its landing-particle flag,
 sounds, level and game events, the used and damage_taken statistics, the held
 stack and the level random afterwards. Thorns' damage comes from the player's
-own unseeded random, so only its range is compared (`own_random`).
+own unseeded random, so only its range is compared (`own_random`). The cases
+`exact_cases` adds after them (armored targets without Thorns, and certain
+Thorns attempts on a creative player, each beside a twin without the armor or
+the Thorns) are compared whole, in raw float bits, with none of those
+allowances: each event stream (sounds, level and game events, statistics) in
+the order it happened, the rest as state. Vanilla must show the equipment
+deciding the outcome: a lower health, or the Thorns piece worn by the attempt
+beyond its twin's wear.
 """
 import json
 import math
@@ -53,6 +60,11 @@ PIECES = [('feet', 'boots'), ('legs', 'leggings'), ('chest', 'chestplate'), ('he
 BASE_DURABILITY = {'feet': 13, 'legs': 15, 'chest': 16, 'head': 11}
 MULTIPLIER = {'iron': 15, 'diamond': 33, 'golden': 7, 'chainmail': 15, 'leather': 5}
 FALLS = [0.0, 0.5, 1.0, 1.5, 1.5000001, 2.0, 2.75, 3.0, 3.25, 5.0, 5.0001, 6.5, 8.0, 8.5, 12.0, 25.3, 60.0]
+# An exact record's event streams: what happened, each kind in the order it happened (sounds, level events, game
+# events, block events, statistics, dropped item ids). Every other line is state, compared as a sorted multiset.
+STREAMS = ('S ', 'L ', 'G ', 'B ', 'stat ', 'D ')
+# Thorns' `change_item_damage` on the piece that retaliated (Enchantments.THORNS, amount 2).
+THORNS_WEAR = 2
 
 
 def stack(item, enchantments=None, damage=0):
@@ -188,6 +200,107 @@ def cases(facts, count, seed):
         yield case
 
 
+def exact_cases(facts, seed):
+    """Cases whose every line is decided by the seeded level random, each with a twin, yielded as (case, twin, proof).
+
+    Both run `"exact": true`: the runs print raw float bits, vanilla's three runs must agree line for line (no merge)
+    and every line is compared, with no `--ignore` filter, range or tolerance. The cases are an armored target the
+    fixture's equipment modifiers protect (no Thorns, so the player's own random is never drawn; its twin wears
+    nothing), and a Thorns target a creative player hits (its twin's pieces have no Thorns). Thorns 7 makes the
+    attempt certain (`random_chance` 0.15 per level, 1.05 here) and its `change_item_damage` wears the piece by 2,
+    while the player's invulnerability refuses the hurt before its unseeded amount matters. `proof` is the line
+    prefix vanilla's case and twin must tell apart: `V 0 `, the target's health, which the armor lowers, or the
+    Thorns piece's `W` line with its durability, which the attempt wore by `THORNS_WEAR` more than its twin.
+    """
+    rng = random.Random(seed ^ 0x3003)
+    floor = d.States(facts).get('stone')
+    fits = [
+        {'feet': stack('iron_boots'), 'legs': stack('iron_leggings'),
+         'chest': stack('iron_chestplate', {'unbreaking': 2}), 'head': stack('iron_helmet')},
+        {'chest': stack('diamond_chestplate'), 'head': stack('diamond_helmet', None, 360)},
+        {'feet': stack('leather_boots', None, 64), 'chest': stack('leather_chestplate')},
+        {'legs': stack('golden_leggings', {'unbreaking': 3}), 'chest': stack('golden_chestplate', None, 109)},
+    ]
+    # (slot, piece, damage, other pieces): no Unbreaking on a Thorns piece, whose roll could skip the attempt's wear.
+    thorny = [
+        ('chest', 'iron_chestplate', 0, {}),
+        ('chest', 'diamond_chestplate', 0, {'feet': stack('diamond_boots')}),
+        ('head', 'leather_helmet', 40, {}),
+    ]
+    # No Breach: on a heavy smash its armor_effectiveness takes the armor fraction below zero, so the armor no
+    # longer decides the health (CombatRules.getDamageAfterAbsorb clamps it), which the sweep's cases cover.
+    hits = [(stack('mace'), 3.0), (stack('mace', {'density': 2}), 6.5),
+            (stack('diamond_sword'), 0.0), ('-', 0.0)]
+    setups = [(fit, {}, False, ('V 0 ', None)) for fit in fits]
+    setups += [({**rest, slot: stack(piece, {'thorns': 7}, damage)}, {**rest, slot: stack(piece, None, damage)}, True,
+                (f'W {slot} ', durability(slot, piece))) for slot, piece, damage, rest in thorny]
+    for equip, bare, creative, proof in setups:
+        for item, fall in hits:
+            case = {**h.environment(rng), 'pos': [0, 0, 0], 'exact': True}
+            case.pop('raining', None)
+            case.pop('thundering', None)
+            case['cells'] = [[x, -1, z, floor] for x in range(-6, 7) for z in range(-6, 7)]
+            case['entities'] = [{'type': 'minecraft:' + rng.choice(['zombie', 'husk', 'skeleton']), 'pos': [0.0, 0.0, 0.0],
+                                 'yaw': rng.uniform(-180, 180), 'health': 1000.0, 'ground': True, 'equip': equip}]
+            case['attack'] = {'item': item, 'creative': creative, 'player': [1.5, 0.0, 0.0], 'motion': [0.0, -0.5, 0.0],
+                              'fall': fall, 'fall_flying': False, 'flying': False, 'base': round(rng.uniform(1.2, 7.0), 3)}
+            case['items'] = []
+            case['mode'] = 'dispense'
+            twin = json.loads(json.dumps(case))
+            twin['entities'][0]['equip'] = bare
+            yield case, twin, proof
+
+
+def durability(slot, piece):
+    """`ArmorMaterial.durability` for `piece` in `slot`: the slot's base times the material's multiplier."""
+    return BASE_DURABILITY[slot] * MULTIPLIER[piece.split('_')[0]]
+
+
+def worn_damage(line):
+    """The `minecraft:damage` component of a `W` line's stack: 0 when the stack has none."""
+    found = re.search(r'minecraft:damage:(\d+)', line)
+    return int(found.group(1)) if found else 0
+
+
+def proven(case_lines, twin_lines, proof):
+    """Whether vanilla's case and twin differ where the equipment should decide. For `V 0 `, the health token of
+    exactly one target row per record. For a Thorns piece, its damage component: the twin's (the same hit's wear,
+    no Thorns) plus `THORNS_WEAR`, or no piece at all when that reaches its durability and the attempt broke it.
+    The rest of the stack (its enchantments) is not what tells them apart."""
+    prefix, max_damage = proof
+    case, twin = ([line for line in lines if line.startswith(prefix)] for lines in (case_lines, twin_lines))
+    if prefix == 'V 0 ':
+        return len(case) == len(twin) == 1 and case[0].split()[2] != twin[0].split()[2]
+    if len(twin) != 1:
+        return False
+    worn = worn_damage(twin[0]) + THORNS_WEAR
+    if worn >= max_damage:
+        return case == []
+    return len(case) == 1 and worn_damage(case[0]) == worn
+
+
+def records(text):
+    """Every case's record, framed the same way on both sides: a `case N` header, numbered 0, 1, ... in order, then
+    its lines up to the next header. A header out of sequence or a line before the first one is an error."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith('case '):
+            if line != f'case {len(out)}':
+                raise SystemExit(f'record header {line!r} where case {len(out)} was expected')
+            out.append([])
+        elif not out:
+            raise SystemExit(f'a line before the first record header: {line!r}')
+        else:
+            out[-1].append(line)
+    return out
+
+
+def exact_record(lines):
+    """An exact record as compared: each event stream (`STREAMS`) in its own order, and the state lines sorted."""
+    streams = {prefix: [line for line in lines if line.startswith(prefix)] for prefix in STREAMS}
+    return streams, sorted(line for line in lines if not line.startswith(STREAMS))
+
+
 def kind(case):
     item = case['attack']['item']
     name = item.split('"')[1].split(':')[1] if item != '-' else 'empty hand'
@@ -240,6 +353,12 @@ def main():
     work = lab.LOCAL / 'mace-parity'
     work.mkdir(parents=True, exist_ok=True)
     all_cases = list(cases(facts, args.count, args.seed))
+    # Past this index every case is exact (exact_cases): no range, filter or tolerance.
+    first_exact = len(all_cases)
+    proofs = []
+    for case, twin, proof in exact_cases(facts, args.seed):
+        proofs.append((len(all_cases), proof))
+        all_cases += [case, twin]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
@@ -254,15 +373,26 @@ def main():
     d.run([str(lab.cargo_target() / 'fast/sunrise-client'), '--resources', str(resources)], cwd=work,
           env=lab.game_env(SUNRISE_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
-    native = h.split_cases((work / 'native.txt').read_text(), ignore)
-    rust = h.split_cases((work / 'rust.txt').read_text(), ignore)
-    assert len(native) == len(rust) == len(all_cases), (len(native), len(rust), len(all_cases))
+    native_text, rust_text = (work / 'native.txt').read_text(), (work / 'rust.txt').read_text()
+    # The records whole: the exact cases keep every line (no `--ignore` prefix, no `D` line dropped).
+    native_whole, rust_whole = records(native_text), records(rust_text)
+    if not len(native_whole) == len(rust_whole) == len(all_cases):
+        raise SystemExit(f'{len(native_whole)} vanilla and {len(rust_whole)} Sunrise records for {len(all_cases)} cases')
     groups, errors = {}, {}
     smashed = burst = thorned = 0
-    for case, a, b in zip(all_cases, native, rust):
+    for index, (case, a, b) in enumerate(zip(all_cases, native_whole, rust_whole)):
         if a and a[0].startswith('error'):
             errors.setdefault(a[0], []).append(case)
             continue
+        if index >= first_exact:
+            if not a or not b:
+                groups.setdefault('exact case with an empty record: ' + kind(case), []).append((case, a, b))
+            elif 'nondeterministic' in a:
+                groups.setdefault('exact case vanilla did not repeat: ' + kind(case), []).append((case, a, b))
+            elif exact_record(a) != exact_record(b):
+                groups.setdefault('exact ' + kind(case), []).append((case, a, b))
+            continue
+        a, b = ([line for line in lines if not line.startswith(ignore)] for lines in (a, b))
         smashed += any('source=minecraft:mace_smash hurt=true' in line for line in a)
         burst += any(line.endswith('minecraft:entity.wind_charge.wind_burst') for line in a)
         thorned += any(line.endswith('minecraft:enchant.thorns.hit') for line in a)
@@ -271,14 +401,21 @@ def main():
         a, b = own_random(a), own_random(b)
         if not d.same(a, b):
             groups.setdefault(kind(case), []).append((case, a, b))
+    for index, proof in proofs:
+        if not proven(native_whole[index], native_whole[index + 1], proof):
+            what = 'the armor never lowered the health' if proof[0] == 'V 0 ' else 'no Thorns attempt wore the piece'
+            groups.setdefault(f'exact case where {what}: ' + kind(all_cases[index]), []).append(
+                (all_cases[index], native_whole[index], native_whole[index + 1]))
     for name, entries in sorted(errors.items(), key=lambda e: -len(e[1])):
         print(f'oracle error x{len(entries)}: {name}')
     for name, entries in sorted(groups.items(), key=lambda e: -len(e[1])):
         print(f'{name}: {len(entries)} differing')
+        # An exact record is shown in its order, which is part of what it compares.
+        shown = (lambda lines: lines) if name.startswith('exact') else sorted
         for case, a, b in entries[:args.show]:
             print('  case entities=' + json.dumps(case['entities']) + ' attack=' + json.dumps(case['attack']) + f' seed={case["seed"]}')
-            print('   native ' + ' | '.join(sorted(a)))
-            print('   rust   ' + ' | '.join(sorted(b)))
+            print('   native ' + ' | '.join(shown(a)))
+            print('   rust   ' + ' | '.join(shown(b)))
     total = sum(len(v) for v in groups.values())
     skipped = sum(len(v) for v in errors.values())
     print(f'{len(all_cases) - total - skipped}/{len(all_cases) - skipped} cases match ({skipped} oracle errors); '

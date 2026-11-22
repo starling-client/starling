@@ -1,0 +1,3 @@
+ids = ["hook:block_entity_save_additional"]
+why = "For a block entity type without a declared container, block_entity_save_additional now receives the persisted Items field, modelled stacks included, and its edit to Items is what is saved. Before, the listener saw the stored payload without the modelled stacks and the encoder wrote them over its edit. Declared containers are unchanged: their slots are engine-owned and serialized by the engine. The hook moves from version 2 to 3."
+migrate = "A slotless type that keeps items in Items: read and edit them in tag; remove the field to save none. Rebuild native mods against this SDK."

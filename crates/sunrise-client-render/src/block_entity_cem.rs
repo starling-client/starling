@@ -12,12 +12,12 @@
 //! block models here, so their files are not read; copper golem statues have no CEM name.
 
 use crate::block_entity_render::ModelPart;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_optifine::cem::{
     files::{atlas_name, jem_files, load_jem},
     model::{Bone, EntityModel},
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// One model the renderer draws, the CEM names that reshape it, best first, and OptiFine's
 /// names for its vanilla parts.

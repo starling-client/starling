@@ -75,7 +75,7 @@ JVM). Threads reading one jar share its parsed member list.
 A repeat run starts no JVM when nothing changed: each exporter is skipped by the hashes of its
 sources, its jar and its outputs. Most of those are in `sunrise-resources.json`; the block
 behaviour and structure-block exporters keep a `stamp.json` beside their working files in
-`.local/` (the exporter bundle's key, the server jar, this preparer's sources, and the
+`.local/` (the exporter bundle's key, the server jar, the preparer's `OUTPUT_VERSION`, and the
 outputs' sha256), so the prepared files stay the same.
 
 `tools/check_prepare_exporters.py` requires identical resource file sets and identical bytes

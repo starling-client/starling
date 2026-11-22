@@ -18,10 +18,12 @@ pub trait Hooks {
     /// preserves the old engine generation, but does not undo callback effects. Contributions
     /// share one list, so a failed file cannot be attributed to a particular mod.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_data_pack_files",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "files",
         neoforge = "AddPackFindersEvent"
     )]
-    fn data_pack_files();
+    fn data_pack_files(files: &mut Vec<(String, Vec<u8>)>);
 }

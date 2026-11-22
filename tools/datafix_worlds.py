@@ -13,6 +13,7 @@ so that player data exists. The saved world is kept in datafix/worlds/VERSION in
 import argparse
 import hashlib
 import json
+import os
 import queue
 import re
 import shutil
@@ -20,6 +21,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -66,29 +68,42 @@ BOT = 'Upgrader'
 UUID_BASE = 0x6000
 
 
+def fetch(path, url, sha1, what):
+    """Download `url` to `path`, checked against `sha1`. It is written beside `path` and renamed into place, so a
+    write cut short (a full disk) never leaves a file that looks complete."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = urllib.request.urlopen(url).read()
+    if hashlib.sha1(data).hexdigest() != sha1:
+        sys.exit(f'{what}: checksum mismatch')
+    partial = tempfile.NamedTemporaryFile(dir=path.parent, suffix='.part', delete=False)
+    try:
+        with partial:
+            partial.write(data)
+        os.replace(partial.name, path)
+    finally:
+        Path(partial.name).unlink(missing_ok=True)
+
+
 def version_meta(version):
     path = LOCAL / 'servers' / version / 'version.json'
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        manifest = json.load(urllib.request.urlopen(MANIFEST))
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        # Missing, or unreadable from an older run's cut-short write: fetched again.
+        manifest_path = os.environ.get('SUNRISE_DATAFIX_MANIFEST')
+        manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else json.load(urllib.request.urlopen(MANIFEST))
         entry = next(v for v in manifest['versions'] if v['id'] == version)
-        data = urllib.request.urlopen(entry['url']).read()
-        if hashlib.sha1(data).hexdigest() != entry['sha1']:
-            sys.exit(f'{version}: version metadata checksum mismatch')
-        path.write_bytes(data)
-    return json.loads(path.read_text())
+        fetch(path, entry['url'], entry['sha1'], f'{version}: version metadata')
+        return json.loads(path.read_text())
 
 
 def server_jar(version):
     """The server jar, its DataVersion (None before 1.9: no DataVersion) and protocol."""
     path = LOCAL / 'servers' / version / 'server.jar'
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        download = version_meta(version)['downloads']['server']
-        data = urllib.request.urlopen(download['url']).read()
-        if hashlib.sha1(data).hexdigest() != download['sha1']:
-            sys.exit(f'{version}: server.jar checksum mismatch')
-        path.write_bytes(data)
+    download = version_meta(version)['downloads']['server']
+    # A cached jar that fails its checksum (an empty or cut-short file from a failed run) is downloaded again.
+    if not path.exists() or hashlib.sha1(path.read_bytes()).hexdigest() != download['sha1']:
+        fetch(path, download['url'], download['sha1'], f'{version}: server.jar')
     jar = zipfile.ZipFile(path)
     if 'version.json' in jar.namelist():
         info = json.loads(jar.read('version.json'))

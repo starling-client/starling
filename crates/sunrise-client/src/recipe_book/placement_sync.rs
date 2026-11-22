@@ -1,9 +1,9 @@
 //! Connection/menu-instance scoped custom recipe placement, distinct from vanilla IDs.
+#[path = "placement_catalogue.rs"]
+mod catalogue;
 #[cfg(test)]
 #[path = "placement_sync_tests.rs"]
 mod tests;
-use mod_api::wire::Wire;
-use std::sync::OnceLock;
 
 pub const RESOURCE_ID_BYTES: usize = 32767;
 pub const CHUNK_BYTES: usize = super::settings_sync::MAX_BYTES / 2;
@@ -129,17 +129,66 @@ pub enum Frame {
     },
 }
 
-/// Includes the opaque catalogue body and fragmentation policy, not just frame fields.
+/// Bump when `Frame` or the code-free catalogue body changes on the wire. The
+/// fragmentation limits are part of `schema()` independently.
+const PROTOCOL: u64 = 2;
+
+/// Borrowed category view with concretized displays, avoiding deep copies of
+/// `PlacementInfo` trees before wire depth and size limits are enforced.
+pub struct BorrowedCategory<'a> {
+    pub category: &'a mod_api::RecipeBookCategory,
+    pub displays: Vec<BorrowedDisplayEntry<'a>>,
+}
+
+/// One borrowed entry inside a [`BorrowedCategory`].
+pub struct BorrowedDisplayEntry<'a> {
+    pub recipe: &'a str,
+    pub displays: Vec<mod_api::RecipeBookDisplay>,
+    pub placement: Option<&'a mod_api::PlacementInfo>,
+}
+
+/// Encode the remote display projection directly from borrowed declarations.
+pub fn encode_borrowed_catalogue(
+    declarations: &[BorrowedCategory<'_>],
+) -> Result<Vec<u8>, Refusal> {
+    let mut writer = mod_api::wire::Writer::new();
+    writer.limit(MAX_CATALOG_BYTES);
+    catalogue::write_borrowed_categories(&mut writer, declarations);
+    if writer.error().is_some() {
+        return Err(Refusal::TooLarge);
+    }
+    Ok(writer.into_bytes())
+}
+
+/// Encode the remote display projection of already validated native declarations.
+pub fn encode_catalogue(declarations: &[mod_api::RecipeBookCategory]) -> Result<Vec<u8>, Refusal> {
+    let mut writer = mod_api::wire::Writer::new();
+    writer.limit(MAX_CATALOG_BYTES);
+    catalogue::write_categories(&mut writer, declarations);
+    if writer.error().is_some() {
+        return Err(Refusal::TooLarge);
+    }
+    Ok(writer.into_bytes())
+}
+
+/// Decode display data. The caller validates it before publishing a book index.
+pub fn decode_catalogue(bytes: &[u8]) -> Result<Vec<mod_api::RecipeBookCategory>, Refusal> {
+    let categories: Vec<catalogue::Category> =
+        mod_api::wire::Reader::decode(bytes).map_err(|_| Refusal::Invalid)?;
+    Ok(categories.into_iter().map(Into::into).collect())
+}
+
+/// What the client and the server must agree on before either sends a frame.
 pub fn schema() -> u64 {
-    static VALUE: OnceLock<u64> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        let hash = mod_api::wire::layout_mix(
-            Frame::layout(&mut Vec::new()),
-            Vec::<mod_api::RecipeBookCategory>::layout(&mut Vec::new()),
-        );
-        let hash = mod_api::wire::layout_mix(hash, CHUNK_BYTES as u64);
-        let hash = mod_api::wire::layout_mix(hash, MAX_CATALOG_BYTES as u64);
-        mod_api::wire::layout_mix(hash, RESOURCE_ID_BYTES as u64)
+    [
+        PROTOCOL,
+        CHUNK_BYTES as u64,
+        MAX_CATALOG_BYTES as u64,
+        RESOURCE_ID_BYTES as u64,
+    ]
+    .into_iter()
+    .fold(0xcbf2_9ce4_8422_2325, |hash, word| {
+        (hash ^ word).wrapping_mul(0x0100_0000_01b3)
     })
 }
 

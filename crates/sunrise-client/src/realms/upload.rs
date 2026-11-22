@@ -42,11 +42,7 @@ impl UploadProgress {
     }
     /// `UploadStatus.getPercentage`.
     pub fn percentage(&self) -> f64 {
-        let total = self.total();
-        if total == 0 {
-            return 0.0;
-        }
-        (self.written() as f64 / total as f64).min(1.0)
+        super::transfer_percentage(self.written(), self.total())
     }
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);

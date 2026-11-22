@@ -6,17 +6,19 @@
 //! date at the entity type's update interval (`tracking`); each client's
 //! `Tracker` is the set of entities it has been paired with.
 use super::tracking;
+use std::sync::Arc;
 use sunrise_protocol::{
     buf::pack_degrees,
     entity_data::{Particle, Value, serializer},
+    general_entity,
     item::Stack,
+    packets::configuration::CustomPayload,
     packets::play::{
         self, AddEntity, AttributeSnapshot, EntityPositionSync, MoveEntity, MoveEntityPos,
         MoveEntityPosRot, MoveEntityRot, PositionPath, RotateHead, SetEntityData, SetEntityLink,
         SetEntityMotion, SetEquipment, SetPassengers, UpdateAttributes, VecDelta,
     },
 };
-use std::sync::Arc;
 
 /// The attribute instances of `now` that differ from what `sent` held (an
 /// instance is never removed: one that disappears is left as it was sent).
@@ -80,6 +82,9 @@ pub struct EntityState {
     /// `Entity.syncPosition`: a living entity bounced this tick; where it is
     /// becomes a step of the next move sent (`SteppedInterpolationTracker`).
     pub sync_position: bool,
+    /// `Entity.syncVelocity` (`markHurt`): its motion goes to every client
+    /// tracking it once its changes are sent, due or not.
+    pub sync_velocity: bool,
     /// `LivingEntity.createInterpolationHandler`: a `SteppedInterpolationTracker`
     /// on the server, so its moves are sent as stepped paths. Every other entity
     /// has a no-op tracker and sends a linear one.
@@ -103,6 +108,10 @@ pub struct EntityState {
     /// A player a native mod hid (`native_hide_player`): only clients whose
     /// player has at least this permission level track it.
     pub hidden: Option<u8>,
+    /// A native mod's live general row (`lan_general_states`): introduced on
+    /// `sunrise:general_entity` using the settings of its resolved type slot.
+    /// A quarantined record keeps its type's key but is not a general row.
+    pub general: Option<tracking::General>,
 }
 
 impl EntityState {
@@ -130,6 +139,7 @@ impl EntityState {
         self.horizontal_collision = false;
         self.needs_sync = false;
         self.sync_position = false;
+        self.sync_velocity = false;
         self.stepped = false;
         self.idle = false;
         self.bare = false;
@@ -137,6 +147,7 @@ impl EntityState {
         self.spectator = false;
         self.watching = false;
         self.hidden = None;
+        self.general = None;
     }
 }
 
@@ -216,6 +227,10 @@ pub struct Riding {
     pub passengers: crate::fast_hash::FxHashMap<i32, Vec<i32>>,
     /// Each passenger's vehicle.
     pub vehicle: crate::fast_hash::FxHashMap<i32, i32>,
+    /// The passengers each vehicle player's own client was last told it
+    /// carries (a mob a mod seated on it): no tracker tells a client of its
+    /// own entity. Kept across `clear`; empty in every vanilla game.
+    pub told_self: crate::fast_hash::FxHashMap<i32, Vec<i32>>,
 }
 
 impl Riding {
@@ -239,14 +254,31 @@ impl Riding {
     }
 }
 
+/// How pairing introduces an entity to a client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// `AddEntity` with the registry id of its type.
+    Type(i32),
+    /// A native mod's general row (#792), whose type no client registry holds: a
+    /// `sunrise:general_entity` spawn, to the clients that read it.
+    General,
+}
+
+impl Viewer<'_> {
+    /// Whether this client may be paired with an entity introduced as `kind`.
+    fn pairs_with(&self, kind: Kind) -> bool {
+        kind != Kind::General || self.general_entity
+    }
+}
+
 /// What a level's clients were last told about one entity (ServerEntity's
 /// fields), shared by every client that tracks it.
 struct ServerEntity {
     /// What the mods hear of it when a client starts or stops tracking it.
     tracked: Arc<Tracked>,
-    /// The registry id of its type (None: a type the clients don't know,
-    /// never paired).
-    kind: Option<i32>,
+    /// How pairing introduces it (None: a type the clients don't know, never
+    /// paired).
+    kind: Option<Kind>,
     /// The type's tracking range in chunks, update interval (0: never),
     /// whether velocity is tracked, whether it is an `AbstractArrow` and its
     /// `AbstractHurtingProjectile.accelerationPower`.
@@ -365,16 +397,35 @@ fn full_precision_required(e: &EntityState, delta: [i64; 3]) -> bool {
 }
 
 impl ServerEntity {
-    /// `new ServerEntity`: the entity as it is when it joins the level.
-    fn new(e: &EntityState, kind: Option<i32>, riding: &Riding) -> Self {
-        let (range, interval, track_deltas) = tracking::settings(&e.kind);
-        Self {
+    /// The tracker as the entity joins the level. A zero base range has no tracker.
+    fn new(
+        e: &EntityState,
+        kind: &mut impl FnMut(&str) -> Option<i32>,
+        riding: &Riding,
+    ) -> Option<Self> {
+        // A live general row takes its declaration's settings, which may reach past a
+        // vanilla type's byte; any other entity its type's, whatever its key.
+        let (range, interval, track_deltas) = if let Some(general) = e.general {
+            (general.range, general.interval, true)
+        } else {
+            let (range, interval, deltas) = tracking::settings(&e.kind);
+            (i32::from(range), interval, deltas)
+        };
+        if range == 0 {
+            return None;
+        }
+        let kind = if e.general.is_some() {
+            Some(Kind::General)
+        } else {
+            kind(&e.kind).map(Kind::Type)
+        };
+        Some(Self {
             tracked: Arc::new(Tracked {
                 uuid: e.uuid,
                 kind: Arc::from(e.kind.as_str()),
             }),
             kind,
-            range: i32::from(range),
+            range,
             interval,
             track_deltas,
             arrow: is_arrow(&e.kind),
@@ -402,29 +453,57 @@ impl ServerEntity {
             spectator: e.spectator,
             watching: e.watching,
             hidden: e.hidden,
-        }
+        })
     }
 
     /// ServerEntity.sendPairingData: the packets that introduce the entity
-    /// to a client that starts tracking it.
+    /// to a client that starts tracking it; false, with nothing written, when
+    /// it cannot be introduced, so no client is recorded as tracking it.
+    #[must_use]
     fn pairing(
         &self,
         e: &EntityState,
-        kind: i32,
+        kind: Kind,
         riding: &Riding,
         out: &mut Vec<play::Clientbound>,
-    ) {
-        out.push(play::Clientbound::AddEntity(AddEntity {
-            id: e.id,
-            uuid: e.uuid,
-            kind,
-            position: e.position,
-            velocity: e.velocity,
-            pitch: pack_degrees(e.pitch),
-            yaw: pack_degrees(e.yaw),
-            head_yaw: pack_degrees(e.head_yaw),
-            data: e.data,
-        }));
+    ) -> bool {
+        match kind {
+            Kind::Type(kind) => out.push(play::Clientbound::AddEntity(AddEntity {
+                id: e.id,
+                uuid: e.uuid,
+                kind,
+                position: e.position,
+                velocity: e.velocity,
+                pitch: pack_degrees(e.pitch),
+                yaw: pack_degrees(e.yaw),
+                head_yaw: pack_degrees(e.head_yaw),
+                data: e.data,
+            })),
+            Kind::General => {
+                // Where the clients that already track it were last told it is: the next
+                // move is a delta from there (VecDeltaCodec's base), for this client too.
+                let spawn = general_entity::Message::Spawn {
+                    id: e.id,
+                    uuid: e.uuid,
+                    type_key: e.kind.clone(),
+                    position: self.base,
+                    rotation: [e.yaw, e.pitch],
+                    velocity: e.velocity,
+                };
+                // Registration bounds the key as the codec does, and a row's values are
+                // finite; one that still breaks them is introduced to nobody.
+                match general_entity::encode(&spawn) {
+                    Ok(data) => out.push(play::Clientbound::CustomPayload(CustomPayload {
+                        channel: general_entity::CHANNEL.into(),
+                        data,
+                    })),
+                    Err(error) => {
+                        log::warn!("Sunrise: general entity {} not paired: {error}", e.id);
+                        return false;
+                    }
+                }
+            }
+        }
         if !self.meta.is_empty() {
             out.push(play::Clientbound::SetEntityData(SetEntityData {
                 id: e.id,
@@ -457,6 +536,7 @@ impl ServerEntity {
                 dest,
             }));
         }
+        true
     }
 
     /// `SteppedInterpolationTracker.addStep`: a step at `position` with the
@@ -471,8 +551,20 @@ impl ServerEntity {
     /// Changes since the last update (ServerEntity.sendChanges): movement and
     /// rotation every update interval (positions at least every 60 ticks, a
     /// full position sync every 400 or when the entity lands or leaves the
-    /// ground), velocity for types that track it, changed data at once.
+    /// ground), velocity for types that track it, changed data at once; then
+    /// the motion of an entity marked hurt (`Entity.syncVelocity`).
     fn send_changes(&mut self, e: &EntityState, riding: &Riding, out: &mut Vec<play::Clientbound>) {
+        self.send_update(e, riding, out);
+        if e.sync_velocity {
+            out.push(play::Clientbound::SetEntityMotion(SetEntityMotion {
+                id: e.id,
+                velocity: e.velocity,
+            }));
+        }
+    }
+
+    /// `ServerEntity.sendChanges` up to its `tickCount++`: see [`Self::send_changes`].
+    fn send_update(&mut self, e: &EntityState, riding: &Riding, out: &mut Vec<play::Clientbound>) {
         if let Some(steps) = &e.minecart_steps {
             self.minecart_steps.extend_from_slice(steps);
         } else {
@@ -825,6 +917,11 @@ pub struct TrackEvent {
     pub start: bool,
     pub entity: i32,
     pub tracked: Arc<Tracked>,
+    /// Where its packet ends in the client's output of the pass that made it (`Viewer::out`): the
+    /// spawn bundle of a start, the removal of a stop. A mod told of it sends what follows that
+    /// packet (`Hub::cut_tracking_out`). None for a stop without a packet of the pass: the caller
+    /// removes the entities itself (`Tracker::clear`, `Tracker::forget`).
+    pub at: Option<usize>,
 }
 
 /// The entities one client tracks (`TrackedEntity.seenBy`, from the
@@ -857,6 +954,7 @@ impl Tracker {
             start: false,
             entity,
             tracked,
+            at: None,
         }));
     }
     /// Stop tracking `id` without a packet: the caller removes it from the
@@ -869,6 +967,7 @@ impl Tracker {
             start: false,
             entity: id,
             tracked,
+            at: None,
         });
         true
     }
@@ -877,6 +976,11 @@ impl Tracker {
     }
     pub fn is_empty(&self) -> bool {
         self.seen.is_empty()
+    }
+    /// Whether a start or stop since the last call has a packet in the pass's output
+    /// (`TrackEvent::at`): the output can be cut there for the mods.
+    pub fn cut(&self) -> bool {
+        self.events.iter().any(|e| e.at.is_some())
     }
     /// The starts and stops since the last call, in order.
     pub fn take_events(&mut self) -> Vec<TrackEvent> {
@@ -896,6 +1000,15 @@ pub struct Viewer<'a> {
     /// Its client is Sunrise's (`Guest::is_sunrise`): it may be sent a native
     /// mod's particle.
     pub sunrise: bool,
+    /// Its client reads `sunrise:general_entity` (`Guest::negotiated_general_entity`): only
+    /// such a client is paired with a native mod's general row. Another never tracks one: no
+    /// spawn, no move and no removal names it.
+    pub general_entity: bool,
+    /// Connection sender when the viewer is placed in this level and negotiated
+    /// `sunrise:attachment_sync` (`Guest::negotiated_attachment_sync`): non-empty
+    /// initial synced attachments are prepared against this sender's current epoch
+    /// and included inside each entity's pairing bundle.
+    pub attachment_sender: Option<super::conn::PlayerSender>,
     /// It accepted a move since the last tick (ChunkMap.move): every pair
     /// of it is checked again.
     pub moved: bool,
@@ -909,8 +1022,6 @@ pub struct Viewer<'a> {
     pub tracker: &'a mut Tracker,
     /// What the tick sends it, in order.
     pub out: &'a mut Vec<super::Body>,
-    /// Where the entities it stops tracking were last sent, when asked (the prediction's replay).
-    pub gone: Option<&'a mut Vec<[f64; 3]>>,
 }
 
 /// One entity as this tick's range checks read it: where it is
@@ -924,9 +1035,22 @@ struct Probe {
     id: i32,
     range: i32,
     chunk: u32,
+    /// Index in the level's input, which also contains untracked entities.
+    input: u32,
     spectator: bool,
     watching: bool,
     hidden: Option<u8>,
+    /// A general row: seen only by a client that reads its spawn.
+    general: bool,
+}
+
+/// `MinecraftServer.getScaledTrackingDistance` of a range in chunks, in blocks:
+/// `entity-broadcast-range-percentage` (None: 100) applied in a wide integer, so
+/// a general type's declared range keeps its share however far it reaches.
+fn scaled_range(chunks: i32, percent: Option<i32>) -> i32 {
+    let blocks = i64::from(chunks) * 16;
+    let scaled = percent.map_or(blocks, |p| i64::from(p) * blocks / 100);
+    scaled.clamp(0, i64::from(i32::MAX)) as i32
 }
 
 /// `ServerPlayer.broadcastToPlayer` (`Entity`'s is `true`): to a spectator,
@@ -934,12 +1058,7 @@ struct Probe {
 /// spectator is hidden. A player a native mod hid is shown only to players
 /// of at least its level.
 fn broadcast_to_player(v: &Viewer, p: &Probe) -> bool {
-    let shown = if v.spectator {
-        !p.watching
-    } else {
-        !p.spectator
-    };
-    shown && p.hidden.is_none_or(|level| v.permission >= level)
+    super::player_shown::player_shown(v.spectator, v.permission, p.spectator, p.watching, p.hidden)
 }
 
 /// TrackedEntity.updatePlayer: within the type's range (capped by the view
@@ -950,6 +1069,12 @@ fn broadcast_to_player(v: &Viewer, p: &Probe) -> bool {
 /// each of the tick's chunks whether the client has it (0: not looked up
 /// yet, 1: no, 2: yes), so each chunk is looked up once per client.
 fn sees(v: &Viewer, p: &Probe, chunks: &[(i32, i32)], held: &mut [u8]) -> bool {
+    // A general row is introduced on `sunrise:general_entity` alone: a client
+    // that cannot read it never sees the row, so the row never takes one of a
+    // viewed level's starts or a pairing it could not use.
+    if p.general && !v.general_entity {
+        return false;
+    }
     let near = match v.sources {
         None => {
             let range = f64::from(p.range.min(v.view_distance * 16));
@@ -1031,8 +1156,10 @@ fn names_mod_particle(packet: &play::Clientbound) -> bool {
     let play::Clientbound::SetEntityData(data) = packet else {
         return false;
     };
-    (data.values.iter()).any(|(_, _, value)| {
-        matches!(value, Value::Particles(list) if list.iter().any(Particle::sunrise_only))
+    (data.values.iter()).any(|(_, _, value)| match value {
+        Value::Particles(list) => list.iter().any(Particle::sunrise_only),
+        Value::Particle(p) => p.sunrise_only(),
+        _ => false,
     })
 }
 
@@ -1044,6 +1171,7 @@ fn vanilla_body(packet: &play::Clientbound) -> Vec<u8> {
         return packet.encode();
     };
     let mut values = data.values.clone();
+    values.retain(|(_, _, value)| !matches!(value, Value::Particle(p) if p.sunrise_only()));
     for (_, _, value) in &mut values {
         if let Value::Particles(list) = value {
             list.retain(|p| !p.sunrise_only());
@@ -1091,6 +1219,146 @@ impl Bodies {
     }
 }
 
+/// The encoded `BundleDelimiter` packet, shared across every pairing bundle.
+fn bundle_delimiter() -> super::Body {
+    static DELIMITER: std::sync::OnceLock<super::Body> = std::sync::OnceLock::new();
+    DELIMITER
+        .get_or_init(|| {
+            super::Body::shared(
+                play::Clientbound::BundleDelimiter(sunrise_protocol::packets::Empty).encode(),
+            )
+        })
+        .clone()
+}
+
+/// Lazy source of initial synced attachments for an entity that is actually
+/// pairing with at least one attachment-capable viewer.
+/// Returns `(Holder::Player(uuid), &Attachments)` for tracked players and
+/// `(Holder::Entity(id), &Attachments)` for non-player entities, or `None`
+/// when the entity has no attachments map.
+pub type InitialAttachmentLookup<'a> = dyn Fn(
+        &EntityState,
+    ) -> Option<(
+        sunrise_mod_runtime::attachments::Holder,
+        &'a sunrise_mod_runtime::attachments::Attachments,
+    )> + Sync
+    + 'a;
+
+/// One entity's lazily encoded initial attachment sync payload, shared across
+/// all attachment-capable viewers of the same pairing pass.
+struct EncodedAttachmentSnapshot {
+    holder: sunrise_mod_runtime::attachments::Holder,
+    body: Result<Vec<u8>, String>,
+}
+
+fn encode_initial_attachment_snapshot(
+    entity: &EntityState,
+    attachments: Option<&InitialAttachmentLookup<'_>>,
+) -> Option<EncodedAttachmentSnapshot> {
+    let (holder, map) = attachments?(entity)?;
+    let changes = map.synced();
+    if changes.is_empty() {
+        return None;
+    }
+    let message = sunrise_protocol::attachment_sync::Message {
+        holder,
+        replace: true,
+        changes,
+    };
+    let body = sunrise_protocol::attachment_sync::encode(&message).map_err(|e| e.to_string());
+    Some(EncodedAttachmentSnapshot { holder, body })
+}
+
+fn prepare_pairing_attachment_sync(
+    sender: &super::conn::PlayerSender,
+    snapshot: &EncodedAttachmentSnapshot,
+) -> Option<super::Body> {
+    use mod_api::{PayloadBytes, PayloadId, PayloadSendError};
+    let epoch = sender.payload_transport().epoch()?;
+    let result = match &snapshot.body {
+        Ok(bytes) => {
+            let endpoint = crate::raw_payloads::Endpoint::server(sender.clone());
+            endpoint
+                .prepare(
+                    &epoch,
+                    &PayloadId(sunrise_protocol::attachment_sync::CHANNEL.into()),
+                    PayloadBytes(bytes.clone()),
+                )
+                .map(|prepared| {
+                    prepared
+                        .into_prepared_body(epoch.clone())
+                        .expect("server endpoint produces a prepared server body")
+                })
+        }
+        Err(reason) => Err(PayloadSendError::EncodeFailed(reason.clone())),
+    };
+    match result {
+        Ok(body) => Some(body),
+        Err(error) => {
+            let refused = !matches!(
+                error,
+                PayloadSendError::UnsupportedPeer(_)
+                    | PayloadSendError::NotNegotiated
+                    | PayloadSendError::WrongProtocol(_)
+                    | PayloadSendError::StaleEpoch
+                    | PayloadSendError::Disconnected
+            );
+            if refused {
+                log::warn!(
+                    "Sunrise: attachment sync for {:?} not sent: {error:?}",
+                    snapshot.holder
+                );
+            }
+            if matches!(error, PayloadSendError::Backpressure) {
+                sender.close();
+            }
+            None
+        }
+    }
+}
+
+/// One entity's pairing bundle (`ServerEntity.addPairing` + NeoForge's
+/// `AttachmentSync.syncInitialEntityAttachments`), encoded once for every client
+/// starting to track it. The attachment snapshot is collected and encoded lazily
+/// on the first attachment-capable viewer and shared across all eligible recipients
+/// of the same pairing pass.
+struct PairingBodies {
+    base: Bodies,
+    attachment_sync: std::sync::OnceLock<Option<EncodedAttachmentSnapshot>>,
+}
+
+impl PairingBodies {
+    fn of(packets: &[play::Clientbound]) -> Self {
+        Self {
+            base: Bodies::of(packets),
+            attachment_sync: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn write_to(
+        &self,
+        viewer: &mut Viewer,
+        entity: &EntityState,
+        attachments: Option<&InitialAttachmentLookup<'_>>,
+    ) {
+        let delimiter = bundle_delimiter();
+        let base = self.base.to(viewer);
+        let prepared_sync = viewer.attachment_sender.as_ref().and_then(|sender| {
+            let snapshot = self
+                .attachment_sync
+                .get_or_init(|| encode_initial_attachment_snapshot(entity, attachments))
+                .as_ref()?;
+            prepare_pairing_attachment_sync(sender, snapshot)
+        });
+        viewer.out.push(delimiter.clone());
+        viewer.out.extend(base.iter().cloned());
+        if let Some(sync) = prepared_sync {
+            viewer.out.push(sync);
+        }
+        viewer.out.push(delimiter);
+    }
+}
+
 impl Entities {
     /// `ChunkMap.addEntity` after this tick's tracking pass: pair now without
     /// running sendChanges or advancing either clock. The first sendChanges
@@ -1100,13 +1368,16 @@ impl Entities {
         entities: &[EntityState],
         riding: &Riding,
         viewers: &mut [Viewer],
+        attachments: Option<&InitialAttachmentLookup<'_>>,
         mut kind: impl FnMut(&str) -> Option<i32>,
     ) {
         for e in entities {
             if self.states.contains_key(&e.id) {
                 continue;
             }
-            let mut s = ServerEntity::new(e, kind(&e.kind), riding);
+            let Some(mut s) = ServerEntity::new(e, &mut kind, riding) else {
+                continue;
+            };
             s.seen = self.tick;
             // Pairing has already happened by the time the next pass runs.
             s.added = false;
@@ -1124,13 +1395,13 @@ impl Entities {
                 x: e.position[0],
                 z: e.position[2],
                 id: e.id,
-                range: self
-                    .range_percent
-                    .map_or(range * 16, |p| p * (range * 16) / 100),
+                range: scaled_range(range, self.range_percent),
                 chunk: 0,
+                input: 0,
                 spectator: e.spectator,
                 watching: e.watching,
                 hidden: e.hidden,
+                general: e.general.is_some(),
             };
             let chunks = [(
                 (e.position[0].floor() as i32) >> 4,
@@ -1144,20 +1415,24 @@ impl Entities {
                 {
                     continue;
                 }
-                let Some(kind) = s.kind else {
+                let Some(kind) = s.kind.filter(|&kind| v.pairs_with(kind)) else {
                     continue;
                 };
-                let bodies = bodies.get_or_insert_with(|| {
+                let built = bodies.get_or_insert_with(|| {
                     let mut packets = Vec::new();
-                    s.pairing(e, kind, riding, &mut packets);
-                    Bodies::of(&packets)
+                    s.pairing(e, kind, riding, &mut packets)
+                        .then(|| PairingBodies::of(&packets))
                 });
-                v.out.extend(bodies.to(v).iter().cloned());
+                let Some(bodies) = built else {
+                    continue;
+                };
+                bodies.write_to(v, e, attachments);
                 v.tracker.seen.insert(e.id, Arc::clone(&s.tracked));
                 v.tracker.events.push(TrackEvent {
                     start: true,
                     entity: e.id,
                     tracked: Arc::clone(&s.tracked),
+                    at: Some(v.out.len()),
                 });
             }
             self.states.insert(e.id, s);
@@ -1208,6 +1483,7 @@ impl Entities {
                 let e = now.get(&j.id)?;
                 j.minecart_steps.clone_from(&e.minecart_steps);
                 j.needs_sync = e.needs_sync;
+                j.sync_velocity = e.sync_velocity;
                 Some((j.id, j))
             })
             .collect()
@@ -1239,6 +1515,7 @@ impl Entities {
         entities: &[&EntityState],
         riding: &Riding,
         viewers: &mut [Viewer],
+        attachments: Option<&InitialAttachmentLookup<'_>>,
         mut kind: impl FnMut(&str) -> Option<i32>,
     ) {
         self.tick = self.tick.wrapping_add(1);
@@ -1251,13 +1528,12 @@ impl Entities {
         }
         self.moved.clear();
         self.is_moved.clear();
-        self.is_moved.resize(entities.len(), false);
         self.quiet.clear();
-        self.quiet.resize(entities.len(), false);
         // The states stamped this tick: when that is all of them, none left.
         let mut stamped = 0;
         self.states.begin();
-        for (index, e) in entities.iter().enumerate() {
+        for (input, e) in entities.iter().enumerate() {
+            let index = self.probes.len();
             let mut added = false;
             let s = match self.states.meet(e.id) {
                 Some((slot, by_id)) => {
@@ -1272,9 +1548,10 @@ impl Entities {
                 }
                 None => {
                     added = true;
-                    let slot = self
-                        .states
-                        .insert(e.id, ServerEntity::new(e, kind(&e.kind), riding));
+                    let Some(state) = ServerEntity::new(e, &mut kind, riding) else {
+                        continue;
+                    };
+                    let slot = self.states.insert(e.id, state);
                     self.states.met_new(e.id, slot);
                     self.states.at_mut(slot)
                 }
@@ -1289,21 +1566,21 @@ impl Entities {
             // catches at the player's next move, a second later at most):
             // updatePlayers.
             let section = section_of(e.position);
-            if added
+            let moved = added
                 || section != s.section
                 || e.spectator != s.spectator
                 || e.watching != s.watching
-                || e.hidden != s.hidden
-            {
+                || e.hidden != s.hidden;
+            if moved {
                 s.section = section;
                 s.spectator = e.spectator;
                 s.watching = e.watching;
                 s.hidden = e.hidden;
                 self.moved.push(index);
-                self.is_moved[index] = true;
             }
-            self.quiet[index] =
-                !self.is_moved[index] && !s.added && e.idle && !e.needs_sync && e.leash == s.leash;
+            self.is_moved.push(moved);
+            self.quiet
+                .push(!moved && !s.added && e.idle && !e.needs_sync && e.leash == s.leash);
             let at = (
                 (e.position[0].floor() as i32) >> 4,
                 (e.position[2].floor() as i32) >> 4,
@@ -1321,13 +1598,13 @@ impl Entities {
                 x: e.position[0],
                 z: e.position[2],
                 id: e.id,
-                range: self
-                    .range_percent
-                    .map_or(s.range * 16, |p| p * (s.range * 16) / 100),
+                range: scaled_range(s.range, self.range_percent),
                 chunk,
+                input: input as u32,
                 spectator: e.spectator,
                 watching: e.watching,
                 hidden: e.hidden,
+                general: e.general.is_some(),
             });
         }
         self.states.end();
@@ -1345,12 +1622,10 @@ impl Entities {
                 }
                 pending.extend_from_slice(riding.passengers(id));
             }
-            self.probes[index].range = self
-                .range_percent
-                .map_or(range * 16, |p| p * (range * 16) / 100);
+            self.probes[index].range = scaled_range(range, self.range_percent);
         }
         self.pairs.clear();
-        self.pairs.resize(entities.len(), false);
+        self.pairs.resize(self.probes.len(), false);
         // The per-player sweep runs shared out (#8158): every player's flags,
         // tracker and packets are its own, and the entities' state is only
         // read, so one player's sweep never depends on another's. What the
@@ -1472,21 +1747,21 @@ impl Entities {
                         let Tracker { seen, events, .. } = &mut *v.tracker;
                         seen.retain(|id, tracked| match states.get(id) {
                             Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
-                            other => {
-                                if let (Some(gone), Some(s)) = (v.gone.as_deref_mut(), other) {
-                                    gone.push(s.base);
-                                }
+                            _ => {
                                 removed.push(*id);
                                 events.push(TrackEvent {
                                     start: false,
                                     entity: *id,
                                     tracked: Arc::clone(tracked),
+                                    // Set once the removal below is in `out`.
+                                    at: None,
                                 });
                                 false
                             }
                         });
                     }
                     if !removed.is_empty() {
+                        let stops = removed.len();
                         v.out.push(
                             play::Clientbound::RemoveEntities(play::RemoveEntities {
                                 ids: removed,
@@ -1494,6 +1769,11 @@ impl Entities {
                             .encode()
                             .into(),
                         );
+                        // Every stop of the batch ends with its one removal packet.
+                        let at = v.out.len();
+                        for e in v.tracker.events.iter_mut().rev().take(stops) {
+                            e.at = Some(at);
+                        }
                     }
                     // A viewing client starts tracking no more than its viewed world holds.
                     if v.sources.is_some() {
@@ -1514,13 +1794,13 @@ impl Entities {
         }
         // The entities with something to send or someone to pair with: an unchanged leash
         // is all the pass below would do with the rest, which is nothing.
-        let active: Vec<usize> = (0..entities.len())
+        let active: Vec<usize> = (0..self.probes.len())
             .filter(|&index| !self.quiet[index] || self.pairs[index])
             .collect();
         if self.send_apart(viewers.len(), active.len()) {
-            self.send_on_threads(entities, riding, viewers, &active);
+            self.send_on_threads(entities, riding, viewers, &active, attachments);
         } else {
-            self.send_in_order(entities, riding, viewers, &active);
+            self.send_in_order(entities, riding, viewers, &active, attachments);
         }
         // ChunkMap.removeEntity for the ones no longer in the level.
         if self.states.len() > stamped {
@@ -1546,9 +1826,10 @@ impl Entities {
         riding: &Riding,
         viewers: &mut [Viewer],
         active: &[usize],
+        attachments: Option<&InitialAttachmentLookup<'_>>,
     ) {
         for &index in active {
-            let e = entities[index];
+            let e = entities[self.probes[index].input as usize];
             let s = self.states.at_mut(self.states.slot_of_index(index));
             self.packets.clear();
             // Paired as it joined, then its first changes go to everyone
@@ -1578,7 +1859,7 @@ impl Entities {
                 continue;
             }
             let mut encoded = false;
-            let mut pairing: Option<Bodies> = None;
+            let mut pairing: Option<Option<PairingBodies>> = None;
             for (v, flags) in viewers.iter_mut().zip(&self.flags) {
                 let f = flags[index];
                 if f & TRACKS != 0 {
@@ -1592,14 +1873,17 @@ impl Entities {
                     v.out.extend(self.bodies.to(v).iter().cloned());
                 } else if f & SEES != 0
                     && !e.bare
-                    && let Some(kind) = s.kind
-                {
-                    let bodies = pairing.get_or_insert_with(|| {
+                    && let Some(kind) = s.kind.filter(|&kind| v.pairs_with(kind))
+                    && let Some(bodies) = pairing.get_or_insert_with(|| {
                         let mut packets = Vec::new();
-                        s.pairing(e, kind, riding, &mut packets);
-                        Bodies::of(&packets)
-                    });
-                    v.out.extend(bodies.to(v).iter().cloned());
+                        s.pairing(e, kind, riding, &mut packets)
+                            .then(|| PairingBodies::of(&packets))
+                    })
+                {
+                    bodies.write_to(v, e, attachments);
+                    // The bundle ends here: its changes follow (sendChanges), after
+                    // what a mod sends for the pairing.
+                    let at = v.out.len();
                     if synced && !self.packets.is_empty() {
                         if !encoded {
                             self.bodies.encode(&self.packets);
@@ -1616,6 +1900,7 @@ impl Entities {
                             start: true,
                             entity: e.id,
                             tracked: Arc::clone(&s.tracked),
+                            at: Some(at),
                         });
                     }
                 }
@@ -1633,13 +1918,14 @@ impl Entities {
         riding: &Riding,
         viewers: &mut [Viewer],
         active: &[usize],
+        attachments: Option<&InitialAttachmentLookup<'_>>,
     ) {
         /// One entity's part of the tick: its changes and its pairing, encoded.
         struct Made<'s> {
             index: usize,
             state: &'s mut ServerEntity,
             changes: Bodies,
-            pairing: Option<Bodies>,
+            pairing: Option<PairingBodies>,
             synced: bool,
         }
         let Self {
@@ -1648,6 +1934,7 @@ impl Entities {
             is_moved,
             synced: synced_ranges,
             flags,
+            probes,
             ..
         } = self;
         let mut made: Vec<Made> = states
@@ -1666,7 +1953,7 @@ impl Entities {
         sunrise_threads::par_chunks_mut(&mut made, 64, |part| {
             let mut packets = Vec::new();
             for m in part {
-                let (s, e) = (&mut *m.state, entities[m.index]);
+                let (s, e) = (&mut *m.state, entities[probes[m.index].input as usize]);
                 packets.clear();
                 // As in `send_in_order`: paired as it joined, its first changes go out with
                 // the pairing; an idle one sends only its leash.
@@ -1690,8 +1977,9 @@ impl Entities {
                     && let Some(kind) = s.kind
                 {
                     packets.clear();
-                    s.pairing(e, kind, riding, &mut packets);
-                    m.pairing = Some(Bodies::of(&packets));
+                    m.pairing = s
+                        .pairing(e, kind, riding, &mut packets)
+                        .then(|| PairingBodies::of(&packets));
                 }
             }
         });
@@ -1707,12 +1995,15 @@ impl Entities {
                         v.out.extend(m.changes.to(v).iter().cloned());
                     } else if f & SEES != 0
                         && let Some(pairing) = &m.pairing
+                        && m.state.kind.is_some_and(|kind| v.pairs_with(kind))
                     {
-                        v.out.extend(pairing.to(v).iter().cloned());
+                        pairing.write_to(v, entities[m.index], attachments);
+                        // As `send_in_order`: the bundle ends before its changes.
+                        let at = v.out.len();
                         if m.synced {
                             v.out.extend(m.changes.to(v).iter().cloned());
                         }
-                        let id = entities[m.index].id;
+                        let id = probes[m.index].id;
                         if v.tracker
                             .seen
                             .insert(id, Arc::clone(&m.state.tracked))
@@ -1722,6 +2013,7 @@ impl Entities {
                                 start: true,
                                 entity: id,
                                 tracked: Arc::clone(&m.state.tracked),
+                                at: Some(at),
                             });
                         }
                     }
@@ -1731,6 +2023,8 @@ impl Entities {
     }
 }
 
+#[cfg(test)]
+mod general_pair_tests;
 #[cfg(test)]
 mod late_pair_tests;
 mod slab;
@@ -1772,6 +2066,7 @@ mod tests {
             horizontal_collision: false,
             needs_sync: false,
             sync_position: false,
+            sync_velocity: false,
             stepped: false,
             idle: false,
             bare: false,
@@ -1779,6 +2074,7 @@ mod tests {
             spectator: false,
             watching: false,
             hidden: None,
+            general: None,
         }
     }
 
@@ -1874,6 +2170,8 @@ mod tests {
                         .map(|(k, (tracker, out))| Viewer {
                             entity_id: 1 + k as i32,
                             sunrise: true,
+                            general_entity: true,
+                            attachment_sender: None,
                             sources: None,
                             spectator: false,
                             permission: 0,
@@ -1883,10 +2181,9 @@ mod tests {
                             chunks: &chunks,
                             tracker,
                             out,
-                            gone: None,
                         })
                         .collect();
-                    level_side.tick(&refs, &Riding::default(), &mut viewers, |_| Some(5));
+                    level_side.tick(&refs, &Riding::default(), &mut viewers, None, |_| Some(5));
                 }
                 let events = |trackers: &mut Vec<Tracker>| -> Vec<Vec<(bool, i32)>> {
                     trackers
@@ -1938,7 +2235,7 @@ mod tests {
 
     /// The entity as added this tick, then its updates (one a tick).
     fn added(e: &EntityState) -> ServerEntity {
-        ServerEntity::new(e, Some(100), &Riding::default())
+        ServerEntity::new(e, &mut |_| Some(100), &Riding::default()).unwrap()
     }
     fn changes(s: &mut ServerEntity, e: &EntityState) -> Vec<play::Clientbound> {
         let mut out = Vec::new();
@@ -1992,7 +2289,7 @@ mod tests {
     fn moves_go_out_every_update_interval() {
         let mut s = added(&state(0.0));
         let mut spawn = Vec::new();
-        s.pairing(&state(0.0), 100, &Riding::default(), &mut spawn);
+        assert!(s.pairing(&state(0.0), Kind::Type(100), &Riding::default(), &mut spawn));
         assert!(matches!(spawn[..], [play::Clientbound::AddEntity(_)]));
         // Tick 0 is due and a multiple of 60: the position goes out unchanged.
         assert!(matches!(
@@ -2042,6 +2339,26 @@ mod tests {
                 play::Clientbound::MoveEntityPos(_)
             ]
         ));
+    }
+
+    /// `Entity.markHurt` (lava's hurt of a snowball) sets `syncVelocity`:
+    /// `ServerEntity.sendChanges` sends the motion after its update, due or not.
+    #[test]
+    fn a_projectile_marked_hurt_sends_its_motion_after_its_update() {
+        let mut e = state(0.0);
+        e.kind = "minecraft:snowball".into();
+        let mut s = added(&e);
+        changes(&mut s, &e);
+        // Tick 1 of 10: nothing else is due.
+        e.velocity = [0.0, -0.03, 0.0];
+        e.sync_velocity = true;
+        let out = changes(&mut s, &e);
+        assert!(
+            matches!(&out[..], [play::Clientbound::SetEntityMotion(m)] if m.velocity == [0.0, -0.03, 0.0]),
+            "{out:?}"
+        );
+        e.sync_velocity = false;
+        assert!(changes(&mut s, &e).is_empty());
     }
 
     /// `ServerEntity.getRequiresPrecisePosition` is false for an item, so a
@@ -2187,7 +2504,7 @@ mod tests {
         e.attributes = vec![speed(0.23), armor];
         let mut s = added(&e);
         let mut spawn = Vec::new();
-        s.pairing(&e, 100, &Riding::default(), &mut spawn);
+        assert!(s.pairing(&e, Kind::Type(100), &Riding::default(), &mut spawn));
         let Some(play::Clientbound::UpdateAttributes(p)) = spawn.get(1) else {
             panic!("expected the attributes after the add");
         };
@@ -2443,8 +2760,7 @@ mod tests {
         moved: [bool; 2],
         spectators: [bool; 2],
         permissions: [u8; 2],
-        /// The first client's entities gone, where they were last sent.
-        gone: Vec<[f64; 3]>,
+        attachment_senders: [Option<super::super::conn::PlayerSender>; 2],
     }
 
     impl Clients {
@@ -2458,10 +2774,18 @@ mod tests {
                 moved: [false; 2],
                 spectators: [false; 2],
                 permissions: [0; 2],
-                gone: Vec::new(),
+                attachment_senders: [None, None],
             }
         }
         fn tick(&mut self, level: &mut Entities, entities: &[&EntityState]) {
+            self.tick_with_attachments(level, entities, None);
+        }
+        fn tick_with_attachments(
+            &mut self,
+            level: &mut Entities,
+            entities: &[&EntityState],
+            attachments: Option<&InitialAttachmentLookup<'_>>,
+        ) {
             for sent in &mut self.sent {
                 sent.clear();
             }
@@ -2473,6 +2797,8 @@ mod tests {
                     spectator: self.spectators[0],
                     permission: self.permissions[0],
                     sunrise: true,
+                    general_entity: true,
+                    attachment_sender: self.attachment_senders[0].clone(),
                     moved: self.moved[0],
                     position: self.positions[0],
                     view_distance: 10,
@@ -2480,13 +2806,14 @@ mod tests {
                     sources: None,
                     tracker: t0,
                     out: o0,
-                    gone: Some(&mut self.gone),
                 },
                 Viewer {
                     entity_id: 2,
                     spectator: self.spectators[1],
                     permission: self.permissions[1],
                     sunrise: true,
+                    general_entity: true,
+                    attachment_sender: self.attachment_senders[1].clone(),
                     moved: self.moved[1],
                     position: self.positions[1],
                     view_distance: 10,
@@ -2494,10 +2821,15 @@ mod tests {
                     sources: None,
                     tracker: t1,
                     out: o1,
-                    gone: None,
                 },
             ];
-            level.tick(entities, &Riding::default(), &mut viewers, |_| Some(100));
+            level.tick(
+                entities,
+                &Riding::default(),
+                &mut viewers,
+                attachments,
+                |_| Some(100),
+            );
             for (out, sent) in self.out.iter_mut().zip(&self.sent) {
                 *out = sent.iter().map(|b| b.to_vec()).collect();
             }
@@ -2506,6 +2838,101 @@ mod tests {
 
     fn body(p: play::Clientbound) -> Vec<u8> {
         p.encode()
+    }
+
+    #[test]
+    fn a_range_zero_entity_never_enters_the_tracker() {
+        let marker = EntityState {
+            id: 7,
+            kind: "minecraft:marker".into(),
+            ..state(0.0)
+        };
+        let declared = mod_api::__private::GeneralEntityTypeDeclaration {
+            id: "test:zero_range".into(),
+            tracking_chunks: 0,
+            ..Default::default()
+        };
+        let general = EntityState {
+            id: 9,
+            general: Some((&declared).into()),
+            kind: declared.id,
+            ..state(0.0)
+        };
+        let next = EntityState {
+            id: 8,
+            ..state(0.0)
+        };
+        let riding = Riding::default();
+        let chunks = [(0, 0)].into_iter().collect();
+        for (late, threaded) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut tracker = Tracker::default();
+            let mut out = Vec::new();
+            let mut viewer = [Viewer {
+                entity_id: 1,
+                spectator: false,
+                permission: 0,
+                sunrise: true,
+                general_entity: true,
+                moved: false,
+                position: marker.position,
+                view_distance: 10,
+                chunks: &chunks,
+                sources: None,
+                attachment_sender: None,
+                tracker: &mut tracker,
+                out: &mut out,
+            }];
+            let mut level = Entities {
+                send_apart_always: Some(threaded),
+                ..Default::default()
+            };
+            if late {
+                level.pair_after_tick(
+                    &[marker.clone(), general.clone(), next.clone()],
+                    &riding,
+                    &mut viewer,
+                    None,
+                    |_| Some(100),
+                );
+                assert!(!level.tracks(marker.id));
+                assert!(!level.tracks(general.id));
+                assert!(level.tracks(next.id));
+            }
+            let states = [&marker, &general, &next];
+            level.tick(&states, &riding, &mut viewer, None, |_| Some(100));
+            assert!(!level.tracks(marker.id));
+            assert!(!level.tracks(general.id));
+            assert!(level.tracks(next.id));
+            let tracker = &mut viewer[0].tracker;
+            assert!(!tracker.is_tracking(marker.id));
+            assert!(!tracker.is_tracking(general.id));
+            assert!(tracker.is_tracking(next.id));
+            let events = tracker.take_events();
+            assert_eq!(events.len(), 1);
+            assert!(events[0].start);
+            assert_eq!(events[0].entity, next.id);
+            level.tick(&states, &riding, &mut viewer, None, |_| Some(100));
+            assert!(viewer[0].tracker.take_events().is_empty());
+            let added: Vec<_> = viewer[0]
+                .out
+                .iter()
+                .filter_map(|body| {
+                    let mut reader = sunrise_protocol::buf::Reader::new(body);
+                    match play::Clientbound::decode(reader.varint().unwrap(), reader.rest())
+                        .unwrap()
+                    {
+                        play::Clientbound::AddEntity(packet) => Some(packet.id),
+                        play::Clientbound::CustomPayload(packet)
+                            if packet.channel == general_entity::CHANNEL =>
+                        {
+                            panic!("zero-range general row was sent to a client")
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
+            assert_eq!(added, [next.id]);
+        }
     }
 
     /// ChunkMap checks a pair again only when one side moves: a zombie
@@ -2561,7 +2988,7 @@ mod tests {
         c.tick(&mut level, &[&e]);
         assert!(c.trackers[1].is_tracking(7));
         assert!(c.out[0].is_empty());
-        assert_eq!(c.out[1].len(), 1);
+        assert_eq!(c.out[1].len(), 3);
         c.tick(&mut level, &[&e]);
         e.position[0] = 2.0;
         c.tick(&mut level, &[&e]);
@@ -2644,13 +3071,17 @@ mod tests {
         let mut level = Entities::default();
         let mut c = Clients::new();
         let mut e = state(15.5);
-        // Paired in the same pass: the bodies of ServerEntity.sendPairingData.
+        // Paired in the same pass: the bodies of ServerEntity.addPairing.
         c.tick(&mut level, &[&e]);
         let mut pairing = Vec::new();
-        added(&e).pairing(&e, 100, &Riding::default(), &mut pairing);
-        let pairing: Vec<_> = pairing.into_iter().map(body).collect();
-        assert!(!pairing.is_empty());
-        assert_eq!(c.out, [pairing.clone(), pairing]);
+        assert!(added(&e).pairing(&e, Kind::Type(100), &Riding::default(), &mut pairing));
+        let delimiter = body(play::Clientbound::BundleDelimiter(
+            sunrise_protocol::packets::Empty,
+        ));
+        let mut expected = vec![delimiter.clone()];
+        expected.extend(pairing.into_iter().map(body));
+        expected.push(delimiter);
+        assert_eq!(c.out, [expected.clone(), expected]);
         assert!(shared(&c));
         // Its first update (tick 0's position), then a data change, to both.
         c.tick(&mut level, &[&e]);
@@ -2725,7 +3156,10 @@ mod tests {
             head_yaw: 0,
             data: 0,
         }));
-        assert_eq!(c.out[0], [add]);
+        let delimiter = body(play::Clientbound::BundleDelimiter(
+            sunrise_protocol::packets::Empty,
+        ));
+        assert_eq!(c.out[0], [delimiter.clone(), add, delimiter]);
         let later = state(2.0);
         let entities = vec![&later];
         assert!(level.joined_states(&entities, vec![joined]).is_empty());
@@ -2769,7 +3203,7 @@ mod tests {
             };
             let mut c = Clients::new();
             c.tick(&mut level, &[&sand]);
-            let paired = c.out[0][1..].to_vec();
+            let paired = c.out[0][3..].to_vec();
             let mut fallen = sand.clone();
             fallen.position[1] -= 0.04;
             c.tick(&mut level, &[&fallen]);
@@ -2840,12 +3274,10 @@ mod tests {
         c.tick(&mut level, &[&me, &e]);
         assert!(!c.trackers[0].is_tracking(1) && c.trackers[1].is_tracking(1));
         assert!(c.trackers[0].is_tracking(7));
-        // Out of the zombie's 8 chunks: the client last had it where it started.
-        let start = e.position;
+        // Out of the zombie's 8 chunks.
         e.position[0] = 200.0;
         c.tick(&mut level, &[&me, &e]);
         assert!(!c.trackers[0].is_tracking(7));
-        assert_eq!(c.gone, [start]);
         let removed = body(play::Clientbound::RemoveEntities(play::RemoveEntities {
             ids: vec![7],
         }));
@@ -3052,12 +3484,277 @@ mod tests {
         assert!(!c.trackers[1].forget(1));
         c.tick(&mut level, &[&player]);
         assert!(c.trackers[1].is_tracking(1));
-        let paired = c.out[1]
-            .first()
-            .and_then(|p| play::Clientbound::decode(i32::from(p[0]), &p[1..]).ok());
+        let paired: Vec<_> = c.out[1]
+            .iter()
+            .map(|p| {
+                let mut reader = sunrise_protocol::buf::Reader::new(p);
+                let id = reader.varint().unwrap();
+                play::Clientbound::decode(id, reader.rest()).unwrap()
+            })
+            .collect();
         assert!(
-            matches!(paired, Some(play::Clientbound::AddEntity(ref a)) if a.id == 1),
+            matches!(
+                &paired[..],
+                [
+                    play::Clientbound::BundleDelimiter(_),
+                    play::Clientbound::AddEntity(a),
+                    play::Clientbound::BundleDelimiter(_),
+                ] if a.id == 1
+            ),
             "{paired:?}"
+        );
+    }
+
+    #[test]
+    fn pairing_prepares_attachment_sync_lazily_and_keeps_bundle_intact_on_tcp_oversize() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use sunrise_core::nbt::Tag;
+        use sunrise_mod_runtime::attachments::{AttachmentSync, Attachments, Holder};
+        use sunrise_protocol::{
+            attachment_sync,
+            connection::Framing,
+            payload_negotiation::{Control, Negotiation},
+        };
+
+        let negotiated_sender = |framing: Framing| {
+            let local =
+                crate::raw_payloads::Local::capture(crate::raw_payloads::Side::Server).unwrap();
+            let mut neg = Negotiation::new(local.manifest.clone());
+            neg.receive(Control::Offer(local.manifest.clone())).unwrap();
+            let accepted = neg.accepted().unwrap().to_vec();
+            let transport =
+                crate::raw_payloads::Transport::new(local, crate::raw_payloads::Side::Server);
+            transport.accept(&accepted).unwrap();
+            transport.finish_configuration().unwrap();
+            let (sender, _) =
+                super::super::conn::PlayerSender::payload_executor_test_sender(transport);
+            sender.with_framing(framing)
+        };
+        let decode_all = |bodies: &[Vec<u8>]| -> Vec<play::Clientbound> {
+            bodies
+                .iter()
+                .map(|p| {
+                    let mut reader = sunrise_protocol::buf::Reader::new(p);
+                    let id = reader.varint().unwrap();
+                    play::Clientbound::decode(id, reader.rest()).unwrap()
+                })
+                .collect()
+        };
+        let mut small_map = Attachments::default();
+        small_map.apply_sync(AttachmentSync {
+            namespace: "test".into(),
+            name: "fuel".into(),
+            value: Some([("n".into(), Tag::Int(42))].into()),
+        });
+        let expected_entity_payload = attachment_sync::encode(&attachment_sync::Message {
+            holder: Holder::Entity(7),
+            replace: true,
+            changes: small_map.synced(),
+        })
+        .unwrap();
+
+        // 1. Both serial (`apart = false`) and parallel (`apart = true`) passes prepare
+        //    attachments lazily, share one encode across eligible recipients, and do zero
+        //    lookups on subsequent ticks when nobody new pairs.
+        for apart in [false, true] {
+            let mut level = Entities {
+                send_apart_always: Some(apart),
+                ..Entities::default()
+            };
+            let mut c = Clients::new();
+            c.attachment_senders = [
+                Some(negotiated_sender(Framing::Memory)),
+                Some(negotiated_sender(Framing::Memory)),
+            ];
+            let entity = state(0.0);
+            let calls = AtomicUsize::new(0);
+            let lookup = |e: &EntityState| -> Option<(Holder, &Attachments)> {
+                calls.fetch_add(1, Ordering::Relaxed);
+                (e.id == 7).then_some((Holder::Entity(7), &small_map))
+            };
+            c.tick_with_attachments(&mut level, &[&entity], Some(&lookup));
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                1,
+                "apart={apart}: two eligible viewers must share one encode"
+            );
+            for viewer_idx in 0..2 {
+                assert!(
+                    c.sent[viewer_idx][2].is_prepared(),
+                    "apart={apart}: attachment sync must be a prepared body"
+                );
+                let synced = decode_all(&c.out[viewer_idx]);
+                assert!(
+                    matches!(
+                        &synced[..],
+                        [
+                            play::Clientbound::BundleDelimiter(_),
+                            play::Clientbound::AddEntity(a),
+                            play::Clientbound::CustomPayload(p),
+                            play::Clientbound::BundleDelimiter(_),
+                        ] if a.id == 7
+                            && p.channel == attachment_sync::CHANNEL
+                            && p.data == expected_entity_payload
+                    ),
+                    "apart={apart}: {synced:?}"
+                );
+                assert_eq!(c.trackers[viewer_idx].take_events()[0].at, Some(4));
+            }
+
+            // Next tick with the unchanged entity already tracked by everyone: 0 lookups.
+            calls.store(0, Ordering::Relaxed);
+            c.tick_with_attachments(&mut level, &[&entity], Some(&lookup));
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                0,
+                "apart={apart}: unchanged tracked entity must not clone or encode attachments"
+            );
+        }
+
+        // 2. Pairing only with a non-attachment viewer performs 0 lookups and omits CustomPayload.
+        {
+            let mut level = Entities::default();
+            let mut c = Clients::new();
+            c.attachment_senders = [None, None];
+            let entity = state(0.0);
+            let calls = AtomicUsize::new(0);
+            let lookup = |e: &EntityState| -> Option<(Holder, &Attachments)> {
+                calls.fetch_add(1, Ordering::Relaxed);
+                (e.id == 7).then_some((Holder::Entity(7), &small_map))
+            };
+            c.tick_with_attachments(&mut level, &[&entity], Some(&lookup));
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            let plain = decode_all(&c.out[0]);
+            assert!(
+                matches!(
+                    &plain[..],
+                    [
+                        play::Clientbound::BundleDelimiter(_),
+                        play::Clientbound::AddEntity(a),
+                        play::Clientbound::BundleDelimiter(_),
+                    ] if a.id == 7
+                ),
+                "{plain:?}"
+            );
+            assert_eq!(c.trackers[0].take_events()[0].at, Some(3));
+        }
+
+        // 3. `pair_after_tick` on a TCP-framed sender (`Framing::Network(None)`): a valid
+        //    snapshot is prepared inside the bundle, while an oversized (> 2 MiB) snapshot is
+        //    refused cleanly without closing the connection and leaves the spawn bundle intact.
+        let mut oversized_map = Attachments::default();
+        oversized_map.apply_sync(AttachmentSync {
+            namespace: "test".into(),
+            name: "blob".into(),
+            value: Some([("b".into(), Tag::ByteArray(vec![0x5Au8; 2_200_000]))].into()),
+        });
+        let tcp_sender = negotiated_sender(Framing::Network(None));
+        let mut level = Entities::default();
+        let chunks = [(0, 0)].into_iter().collect();
+        let mut t0 = Tracker::default();
+        let mut t1 = Tracker::default();
+        let mut o0 = Vec::new();
+        let mut o1 = Vec::new();
+        let mut viewers = [
+            Viewer {
+                entity_id: 1,
+                spectator: false,
+                permission: 0,
+                sunrise: true,
+                general_entity: true,
+                attachment_sender: Some(tcp_sender.clone()),
+                moved: false,
+                position: [0.0, 64.0, 0.0],
+                view_distance: 10,
+                chunks: &chunks,
+                sources: None,
+                tracker: &mut t0,
+                out: &mut o0,
+            },
+            Viewer {
+                entity_id: 2,
+                spectator: false,
+                permission: 0,
+                sunrise: true,
+                general_entity: true,
+                attachment_sender: None,
+                moved: false,
+                position: [0.0, 64.0, 0.0],
+                view_distance: 10,
+                chunks: &chunks,
+                sources: None,
+                tracker: &mut t1,
+                out: &mut o1,
+            },
+        ];
+        level.tick(&[], &Riding::default(), &mut viewers, None, |_| Some(100));
+        let e_small = state(0.0);
+        let mut e_oversized = state(0.0);
+        e_oversized.id = 8;
+        let lookup = |e: &EntityState| -> Option<(Holder, &Attachments)> {
+            match e.id {
+                7 => Some((Holder::Entity(7), &small_map)),
+                8 => Some((Holder::Entity(8), &oversized_map)),
+                _ => None,
+            }
+        };
+        level.pair_after_tick(
+            &[e_small, e_oversized],
+            &Riding::default(),
+            &mut viewers,
+            Some(&lookup),
+            |_| Some(100),
+        );
+        assert!(
+            !tcp_sender.payload_transport().closed(),
+            "oversized late-pair attachment snapshot must not disconnect the player"
+        );
+        assert!(viewers[0].out[2].is_prepared());
+        let raw0: Vec<Vec<u8>> = viewers[0].out.iter().map(|b| b.to_vec()).collect();
+        let raw1: Vec<Vec<u8>> = viewers[1].out.iter().map(|b| b.to_vec()).collect();
+        let decoded0 = decode_all(&raw0);
+        let decoded1 = decode_all(&raw1);
+        assert!(
+            matches!(
+                &decoded0[..],
+                [
+                    play::Clientbound::BundleDelimiter(_),
+                    play::Clientbound::AddEntity(a7),
+                    play::Clientbound::CustomPayload(p),
+                    play::Clientbound::BundleDelimiter(_),
+                    play::Clientbound::BundleDelimiter(_),
+                    play::Clientbound::AddEntity(a8),
+                    play::Clientbound::BundleDelimiter(_),
+                ] if a7.id == 7
+                    && p.channel == attachment_sync::CHANNEL
+                    && p.data == expected_entity_payload
+                    && a8.id == 8
+            ),
+            "{decoded0:?}"
+        );
+        assert!(
+            matches!(
+                &decoded1[..],
+                [
+                    play::Clientbound::BundleDelimiter(_),
+                    play::Clientbound::AddEntity(a7),
+                    play::Clientbound::BundleDelimiter(_),
+                    play::Clientbound::BundleDelimiter(_),
+                    play::Clientbound::AddEntity(a8),
+                    play::Clientbound::BundleDelimiter(_),
+                ] if a7.id == 7 && a8.id == 8
+            ),
+            "{decoded1:?}"
+        );
+        let events0 = viewers[0].tracker.take_events();
+        let events1 = viewers[1].tracker.take_events();
+        assert_eq!(
+            events0.iter().map(|e| e.at).collect::<Vec<_>>(),
+            [Some(4), Some(7)]
+        );
+        assert_eq!(
+            events1.iter().map(|e| e.at).collect::<Vec<_>>(),
+            [Some(3), Some(6)]
         );
     }
 }

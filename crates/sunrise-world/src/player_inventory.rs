@@ -2,8 +2,8 @@
 //! stack references preserve aliases across inventories and external callers.
 //! Pickup, ticking, menus and persistence are implemented separately.
 use crate::item_stack_refs::{ItemStacks, StackRef};
-use sunrise_core::equipment_slot::EquipmentSlot;
 use std::{cell::RefCell, rc::Rc};
+use sunrise_core::equipment_slot::EquipmentSlot;
 type EquipmentItems<I, K, V> = [Option<StackRef<I, K, V>>; 8];
 #[derive(Debug)]
 pub struct EntityEquipment<I, K, V> {

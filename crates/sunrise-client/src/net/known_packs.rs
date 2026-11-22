@@ -1,7 +1,7 @@
 //! The known packs of configuration: which of the server's packs the client names, and the
 //! registry entries it then fills from its own copy of them.
-use sunrise_protocol::packets::configuration as cfg;
 use std::path::Path;
+use sunrise_protocol::packets::configuration as cfg;
 
 /// `KnownPacksManager.trySelectingPacks`: the packs of the server's list the
 /// client has too. Sunrise carries vanilla's core pack (the prepared

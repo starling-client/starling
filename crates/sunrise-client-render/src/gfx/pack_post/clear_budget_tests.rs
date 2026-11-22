@@ -1,5 +1,8 @@
 //! Original regression guard: each HDR post draw fits, so its frame clears must also fit.
-use super::*;
+use super::depth_test::VERTEX;
+use super::destination_tests::Fixture;
+use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 fn hdr_pack(sized: bool, format: &str) -> Post {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -73,8 +76,7 @@ fn clear_fixture_loads_the_requested_formats_without_a_gpu() {
 }
 
 fn hdr_clear_case(sized: bool, attachment_limit: u32, byte_budget: u32, format: &str) {
-    let instance = crate::gfx::test_gpu::instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
         eprintln!("HDR clear-budget test skipped: no GPU adapter");
         return;
     };
@@ -114,32 +116,38 @@ fn hdr_clear_case(sized: bool, attachment_limit: u32, byte_budget: u32, format: 
 }
 
 #[test]
+#[ignore = "daily"]
 fn fullsize_hdr_clear_respects_byte_budget() {
     let _gpu = crate::gfx::test_gpu::lock();
     hdr_clear_case(false, 8, 32, "RGBA16F");
 }
 #[test]
+#[ignore = "daily"]
 fn sized_hdr_clear_respects_byte_budget() {
     let _gpu = crate::gfx::test_gpu::lock();
     hdr_clear_case(true, 8, 32, "RGBA16F");
 }
 #[test]
+#[ignore = "daily"]
 fn fullsize_hdr_clear_respects_attachment_count() {
     let _gpu = crate::gfx::test_gpu::lock();
     hdr_clear_case(false, 2, 64, "RGBA16F");
 }
 #[test]
+#[ignore = "daily"]
 fn sized_hdr_clear_respects_attachment_count() {
     let _gpu = crate::gfx::test_gpu::lock();
     hdr_clear_case(true, 2, 64, "RGBA16F");
 }
 
 #[test]
+#[ignore = "daily"]
 fn fullsize_unorm_clear_respects_byte_budget() {
     let _gpu = crate::gfx::test_gpu::lock();
     hdr_clear_case(false, 8, 32, "RGBA8");
 }
 #[test]
+#[ignore = "daily"]
 fn sized_unorm_clear_respects_byte_budget() {
     let _gpu = crate::gfx::test_gpu::lock();
     hdr_clear_case(true, 8, 32, "RGBA8");

@@ -11,6 +11,7 @@ use std::{
     fs,
     path::Path,
 };
+use sunrise_mod_package::manifest::UNRESOLVED_BUILD;
 
 /// What `check` and the report say of a jar made for 1.20 or older that is not carried.
 pub const OLD_LAYOUT: &str =
@@ -68,8 +69,13 @@ pub fn renamed_in_1_21(name: &str) -> Option<String> {
     })
 }
 
+/// A recipe type in the `minecraft` namespace: 26.3 assumes it for a type with no namespace.
+fn minecraft_type(kind: &str) -> bool {
+    kind.starts_with("minecraft:") || !kind.contains(':')
+}
+
 /// A recipe result naming its item as `item`, as before 1.20.5; 26.3 reads only `id`
-/// (or a bare id) and skips the recipe.
+/// (or a bare id), and a recipe it can't decode fails the whole data load.
 fn result_before_1_20_5(recipe: &Value) -> bool {
     let r = &recipe["result"];
     r.get("item").is_some() && r.get("id").is_none()
@@ -104,9 +110,12 @@ pub struct Report {
     pub loot_tables_added: usize,
     /// Worldgen and structure files (`data/<id>/worldgen/`, `structure/`).
     pub worldgen: usize,
-    /// Recipes left as they were: custom types, NeoForge conditions, results before 1.20.5.
-    pub recipes_kept: Vec<String>,
-    /// Of those, the recipes whose result names its item as `item` ([`result_before_1_20_5`]).
+    /// Recipes of a type that isn't a `minecraft:` serializer, moved to `outside/`: one
+    /// unregistered type fails 26.3's whole data load, so a code mod that registers the type
+    /// carries them back.
+    pub recipes_custom: Vec<String>,
+    /// Recipes whose result names its item as `item` ([`result_before_1_20_5`]), moved to
+    /// `outside/`: 26.3 can't decode them and one such recipe fails the whole data load.
     #[serde(skip_serializing_if = "is_zero")]
     pub recipes_old_result: usize,
     /// Recipes whose result is one of the mod's own items that isn't declared (its block was
@@ -137,6 +146,10 @@ pub struct Report {
     pub worldgen_types: crate::worldgen::Upgrade,
     /// The loader's convention biome tags the structures name, carried.
     pub convention_biome_tags: usize,
+    /// The jar's version when it couldn't be read as semver: the manifest holds `0.0.0+unresolved.…`,
+    /// which no dependency accepts, so it is set by hand before anything depends on the mod.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_unreadable: Option<String>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -149,6 +162,44 @@ pub struct Pack<'a> {
     pub loaded: &'a dyn Fn(&str) -> bool,
     /// Every mod of the pack by id, ported or not: their namespaces are theirs.
     pub mods: &'a dyn Fn(&str) -> bool,
+    /// The pack's Minecraft version; empty when the jar is carried on its own.
+    pub minecraft: &'a str,
+}
+
+/// A jar's version as the semver the manifest holds: a leading `<minecraft>-` dropped, an
+/// omitted minor and patch padded. One that is still not semver becomes `0.0.0+unresolved.<it>`
+/// with the characters outside `[0-9A-Za-z-.]` replaced by `-`, and the flag is false: dependency
+/// resolution refuses such a placeholder against every requirement (`manifest::is_unresolved`).
+fn manifest_version(jar: &str, minecraft: &str) -> (String, bool) {
+    let trimmed = jar
+        .strip_prefix(minecraft)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|_| !minecraft.is_empty())
+        .unwrap_or(jar);
+    if let Ok(version) = sunrise_mod_package::manifest::parse_version(trimmed) {
+        return (version.to_string(), true);
+    }
+    let build: Vec<String> = jar
+        .split('.')
+        .map(|part| {
+            let part = part.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-");
+            if part.is_empty() {
+                "-".to_owned()
+            } else {
+                part
+            }
+        })
+        .collect();
+    let fallback = format!("0.0.0+{UNRESOLVED_BUILD}.{}", build.join("."));
+    let readable = sunrise_mod_package::manifest::parse_version(&fallback).is_ok();
+    (
+        if readable {
+            fallback
+        } else {
+            format!("0.0.0+{UNRESOLVED_BUILD}")
+        },
+        false,
+    )
 }
 
 /// Vanilla blocks by their sorted property names.
@@ -316,7 +367,7 @@ pub fn ingredient(v: &Value) -> Option<Value> {
 /// a vanilla type or one of its ingredients has no 26.3 form.
 pub fn upgrade_recipe(recipe: &mut Value) -> bool {
     let kind = recipe["type"].as_str().unwrap_or("");
-    if !kind.starts_with("minecraft:") || recipe.get("neoforge:conditions").is_some() {
+    if !minecraft_type(kind) || recipe.get("neoforge:conditions").is_some() {
         return false;
     }
     let mut out = recipe.clone();
@@ -886,7 +937,9 @@ fn unreadable(name: &str, bytes: &mut Vec<u8>) -> Option<String> {
         Ok(v) => v,
         // Minecraft reads data files with Gson's lenient reader, which skips
         // comments: YUNG's pools have them. The carry is plain JSON.
-        Err(e) => match serde_json::from_slice::<Value>(&without_comments(bytes)) {
+        Err(e) => match serde_json::from_slice::<Value>(
+            &sunrise_mod_package::content::without_comments(bytes),
+        ) {
             Ok(v) => {
                 *bytes = serde_json::to_vec_pretty(&v).expect("a parsed value serializes");
                 v
@@ -905,53 +958,6 @@ fn unreadable(name: &str, bytes: &mut Vec<u8>) -> Option<String> {
         *bytes = serde_json::to_vec_pretty(&value).expect("a parsed value serializes");
     }
     None
-}
-
-/// JSON text without the comments Gson's lenient reader skips: `//` and
-/// `#` to the end of the line, and `/* ... */`, outside strings.
-fn without_comments(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    let mut string = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if string {
-            out.push(b);
-            if b == b'\\' {
-                out.extend(bytes.get(i + 1));
-                i += 1;
-            } else if b == b'"' {
-                string = false;
-            }
-            i += 1;
-            continue;
-        }
-        match (b, bytes.get(i + 1)) {
-            (b'"', _) => {
-                string = true;
-                out.push(b);
-                i += 1;
-            }
-            (b'/', Some(b'/')) | (b'#', _) => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            (b'/', Some(b'*')) => {
-                i += 2;
-                while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
-                    i += 1;
-                }
-                i += 2;
-                out.push(b' ');
-            }
-            _ => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 /// Item models another item's overrides reach: looks, not items; models that only reach each other stay items.
@@ -1064,7 +1070,17 @@ pub fn carry(
         if off {
             report.recipes_off.push(name.clone());
         }
-        let keep = keep && unreadable.is_none() && !off;
+        let broken = if keep && !off {
+            recipe_broken(&name, &bytes)
+        } else {
+            None
+        };
+        match broken {
+            Some(Broken::CustomType) => report.recipes_custom.push(name.clone()),
+            Some(Broken::OldResult) => report.recipes_old_result += 1,
+            None => {}
+        }
+        let keep = keep && unreadable.is_none() && !off && broken.is_none();
         if let Some(why) = unreadable {
             report.unreadable.insert(name.clone(), why);
         }
@@ -1096,31 +1112,27 @@ pub fn carry(
             {
                 bytes = serde_json::to_vec_pretty(&model).unwrap_or(bytes);
             }
-            if let Some(file) = rel
-                .strip_prefix("recipe/")
-                .filter(|_| name.starts_with("data/"))
-            {
+            if rel.starts_with("recipe/") && name.starts_with("data/") {
                 if let Ok(mut recipe) = serde_json::from_slice::<Value>(&bytes) {
                     tags_used(&recipe, &mut convention);
                     let renamed = renamed_ids(&mut recipe);
                     // Kept, so its conditions passed (`recipe_off`): 26.3 has no use for them.
-                    if recipe["type"]
-                        .as_str()
-                        .is_some_and(|t| t.starts_with("minecraft:"))
-                    {
+                    if recipe["type"].as_str().is_some_and(minecraft_type) {
                         recipe
                             .as_object_mut()
                             .map(|o| o.remove("neoforge:conditions"));
                     }
-                    let old_result = result_before_1_20_5(&recipe);
-                    let upgraded = !old_result && upgrade_recipe(&mut recipe);
-                    if upgraded {
-                        report.recipes_upgraded += 1;
-                    } else {
-                        report.recipes_old_result += usize::from(old_result);
-                        report.recipes_kept.push(file.to_owned());
-                    }
-                    if upgraded || renamed {
+                    // The game looks serializers up by their full id.
+                    let qualified = match recipe["type"].as_str() {
+                        Some(t) if !t.contains(':') => {
+                            recipe["type"] = Value::from(format!("minecraft:{t}"));
+                            true
+                        }
+                        _ => false,
+                    };
+                    let upgraded = upgrade_recipe(&mut recipe);
+                    report.recipes_upgraded += usize::from(upgraded);
+                    if upgraded || renamed || qualified {
                         bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
                     }
                 }
@@ -1500,17 +1512,22 @@ pub fn carry(
     unregistered_recipes(&inside, &outside, id, &owned, &mut report)?;
     let q = |s: &str| toml::Value::String(s.to_owned()).to_string();
     let name = if info.name.is_empty() { id } else { &info.name };
+    let (version, readable) = manifest_version(&info.version, pack.minecraft);
+    if !readable {
+        report.version_unreadable = Some(info.version.clone());
+    }
     let mut manifest = format!(
-        "# Carried over from {jar} by sunrise-port-pack, for local use only.\n# Licence: {license}\nid = {}\nname = {}\nversion = {}\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        "# Carried over from {jar} by sunrise-port-pack, for local use only.\n# Licence: {license}\n# Jar version: {jar_version}\nid = {}\nname = {}\nversion = {}\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
         q(id),
         q(name),
-        q(&info.version),
+        q(&version),
         // In a `#` comment: a line break from the jar would end it and write keys of its own.
         jar = jar
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .replace(|c: char| c.is_control(), " "),
+        jar_version = info.version.replace(|c: char| c.is_control(), " "),
         license = if info.license.is_empty() {
             "not stated".to_owned()
         } else {
@@ -1563,6 +1580,34 @@ fn recipe_off(
     match facts.filter(ran) {
         Some(f) => !f.recipes.contains_key(&format!("{prefix}{path}")),
         None => !crate::lithostitched::conditions_pass(&recipe, loaded),
+    }
+}
+
+/// Why 26.3 can't decode a recipe file ([`recipe_broken`]).
+#[derive(Clone, Copy)]
+enum Broken {
+    CustomType,
+    OldResult,
+}
+
+/// Whether `name` is a recipe file 26.3 can't decode: a `type` that isn't a `minecraft`
+/// serializer (or has none), or a result before 1.20.5. Run after [`recipe_off`], so a recipe
+/// whose own conditions fail is already out; one whose conditions pass is still broken. A
+/// recipe that doesn't parse isn't this: it is [`Report::unreadable`].
+fn recipe_broken(name: &str, bytes: &[u8]) -> Option<Broken> {
+    let Some(("data", _, rest)) = split(name) else {
+        return None;
+    };
+    if !rest.starts_with("recipe/") || !rest.ends_with(".json") {
+        return None;
+    }
+    let recipe = serde_json::from_slice::<Value>(bytes).ok()?;
+    if !recipe["type"].as_str().is_some_and(minecraft_type) {
+        Some(Broken::CustomType)
+    } else if result_before_1_20_5(&recipe) {
+        Some(Broken::OldResult)
+    } else {
+        None
     }
 }
 
@@ -1750,6 +1795,7 @@ mod tests {
         let verdict = out.join("harness/result.json");
         let info = crate::jar::JarInfo {
             mod_id: "example".into(),
+            version: "1.0.0".into(),
             ..Default::default()
         };
         let run = |source: &Path| {
@@ -1761,6 +1807,7 @@ mod tests {
                 &|_| true,
                 &Pack {
                     loaded: &|_| true,
+                    minecraft: "",
                     mods: &|_| false,
                 },
                 &BTreeMap::new(),
@@ -1946,9 +1993,80 @@ mod tests {
         };
         let pack = Pack {
             loaded: &|_| true,
+            minecraft: "",
             mods: &|_| false,
         };
         carry(jar, &info, out, None, &|_| true, &pack, &BTreeMap::new())
+    }
+
+    #[test]
+    fn a_jar_version_is_converted_to_semver() {
+        for (jar, minecraft, want) in [
+            ("26.3-3.6.30+refabricated", "26.3", "3.6.30+refabricated"),
+            ("1.2", "26.3", "1.2.0"),
+            ("2-rc1", "", "2.0.0-rc1"),
+            ("26.3-3.6.30", "", "26.3.0-3.6.30"),
+            ("v1 beta!", "26.3", "0.0.0+unresolved.v1-beta-"),
+        ] {
+            let (version, readable) = manifest_version(jar, minecraft);
+            assert_eq!(version, want, "{jar}");
+            assert_eq!(readable, !want.starts_with("0.0.0+unresolved"), "{jar}");
+        }
+    }
+
+    #[test]
+    fn a_version_that_cannot_be_read_is_kept_in_the_comment_and_reported_for_hand_editing() {
+        use crate::{
+            inventory::Record,
+            report::{self, Status},
+        };
+        let dir = temp_dir("version");
+        let jar = dir.join("example.jar");
+        write_jar(
+            &jar,
+            &[(
+                "assets/example/blockstates/stone.json",
+                br#"{"variants":{"":{"model":"example:block/stone"}}}"#,
+            )],
+        );
+        let work = dir.join("work");
+        let out = work.join("mods/example");
+        let info = crate::jar::JarInfo {
+            mod_id: "example".into(),
+            version: "build 7\nid = \"evil\"".into(),
+            ..Default::default()
+        };
+        let pack = Pack {
+            loaded: &|_| true,
+            minecraft: "26.3",
+            mods: &|_| false,
+        };
+        let report = carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            report.version_unreadable.as_deref(),
+            Some(info.version.as_str())
+        );
+        let manifest = fs::read_to_string(out.join("carry/sunrise-mod.toml")).unwrap();
+        let parsed = sunrise_mod_package::Manifest::parse(&manifest).unwrap();
+        assert_eq!(parsed.id, "example");
+        assert_eq!(
+            parsed.version.to_string(),
+            "0.0.0+unresolved.build-7-id----evil-"
+        );
+        assert!(manifest.contains("# Jar version: build 7 id = \"evil\"\n"));
+        let records = [Record {
+            key: "example".into(),
+            class: "content".into(),
+            tier: "data".into(),
+            ..Default::default()
+        }];
+        let row = report::build(&records, &work).pop().unwrap();
+        assert_eq!(row.status, Status::Partial);
+        assert!(
+            row.reason.contains("set the version by hand"),
+            "{}",
+            row.reason
+        );
     }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -2008,7 +2126,6 @@ mod tests {
         assert_eq!(report.folders_renamed, 5);
         let carried = out.join("carry/data");
         for moved in [
-            "example/recipe/stone.json",
             "example/recipe/cobble.json",
             "example/loot_table/blocks/stone.json",
             "example/structure/hut.nbt",
@@ -2029,14 +2146,14 @@ mod tests {
         };
         assert_eq!(pickaxe("block"), tag_1_21);
         assert_eq!(pickaxe("blocks"), tag_1_20);
-        // The 1.20 result is kept as it was, not counted as upgraded.
+        // The 1.20 result can't be decoded: moved out as it was, not counted as upgraded.
         assert_eq!(report.recipes_upgraded, 1);
-        assert_eq!(report.recipes_kept, ["stone.json"]);
         assert_eq!(report.recipes_old_result, 1);
-        let stone: Value =
-            serde_json::from_slice(&fs::read(carried.join("example/recipe/stone.json")).unwrap())
-                .unwrap();
-        assert_eq!(stone, serde_json::from_slice::<Value>(old_recipe).unwrap());
+        assert!(!carried.join("example/recipe/stone.json").exists());
+        assert_eq!(
+            fs::read(out.join("outside/data/example/recipe/stone.json")).unwrap(),
+            old_recipe
+        );
 
         let records = [Record {
             key: "example".into(),
@@ -2061,7 +2178,7 @@ mod tests {
         assert!(!row.reason.contains("  "), "{}", row.reason);
         assert!(
             row.reason
-                .contains("(1 recipe result names `item`, which 26.3 skips; NBT"),
+                .contains("(1 recipe result names `item`, moved to outside/; NBT"),
             "{}",
             row.reason
         );
@@ -2523,12 +2640,13 @@ mod tests {
             &|_| true,
             &Pack {
                 loaded: &|_| true,
+                minecraft: "",
                 mods: &|_| false,
             },
             &BTreeMap::new(),
         )
         .unwrap();
-        assert_eq!(report.copied, 16);
+        assert_eq!(report.copied, 15);
         let unreadable: Vec<&str> = report.unreadable.keys().map(String::as_str).collect();
         assert_eq!(
             unreadable,
@@ -2537,7 +2655,7 @@ mod tests {
                 "data/gem/tags/item/empty.json"
             ]
         );
-        assert_eq!(report.outside.len(), 2);
+        assert_eq!(report.outside.len(), 3);
         // A vanilla tag that replaces is kept as it is: the game honours it.
         let replacing: Value = serde_json::from_slice(
             &fs::read(out.join(
@@ -2553,7 +2671,10 @@ mod tests {
             fs::read(out.join("carry/assets/gem/lang/de_de.json")).unwrap()[0],
             b'{'
         );
-        assert_eq!((report.recipes_upgraded, report.recipes_kept.len()), (1, 1));
+        assert_eq!((report.recipes_upgraded, report.recipes_old_result), (1, 0));
+        assert_eq!(report.recipes_custom, ["data/gem/recipe/infuse.json"]);
+        assert!(out.join("outside/data/gem/recipe/infuse.json").exists());
+        assert!(!out.join("carry/data/gem/recipe/infuse.json").exists());
         assert_eq!(report.item_definitions_added, 2);
         assert_eq!(report.blocks["gem_door"], "minecraft:oak_door");
         assert_eq!(report.blocks["gem_block"], "minecraft:stone");
@@ -2707,6 +2828,7 @@ mod tests {
         let out = dir.join("work/mods/towers");
         let pack = Pack {
             loaded: &|_| true,
+            minecraft: "",
             mods: &|m| m == "cristel",
         };
         let report = carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
@@ -2784,6 +2906,7 @@ mod tests {
         let info = crate::jar::read(&jar).unwrap();
         let pack = Pack {
             loaded: &|_| true,
+            minecraft: "",
             mods: &|_| false,
         };
         let facts: Facts = serde_json::from_value(json!({"blocks": {}, "items": {
@@ -2864,6 +2987,7 @@ mod tests {
         let info = crate::jar::read(&jar).unwrap();
         let pack = Pack {
             loaded: &|m| m == "gem",
+            minecraft: "",
             mods: &|_| false,
         };
         let facts: Facts = serde_json::from_value(json!({"blocks": {}, "items": {},
@@ -2944,6 +3068,7 @@ mod tests {
         .unwrap();
         let pack = Pack {
             loaded: &|_| true,
+            minecraft: "",
             mods: &|_| false,
         };
         let out = dir.join("out");
@@ -2999,6 +3124,7 @@ mod tests {
         let out = dir.join("work/mods/evil");
         let pack = Pack {
             loaded: &|_| true,
+            minecraft: "",
             mods: &|_| false,
         };
         let report = carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
@@ -3039,6 +3165,7 @@ mod tests {
         let out = dir.join("work/mods/pulley");
         let pack = Pack {
             loaded: &|_| true,
+            minecraft: "",
             mods: &|_| false,
         };
         carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();

@@ -10,13 +10,13 @@ pub trait Hooks {
     /// No answer preserves vanilla placement. The engine takes ingredients and writes
     /// changed containers back, firing `container_changed`; this hook only names sources.
     /// Asked once per recipe-book placement/apply or server transfer check, not per tick.
-    /// Native and wasm listeners receive the same arguments and append to the same output.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "sources",
         neoforge = "none (Sunrise mod crafting menus lend ingredient containers)",
         cancellable = false
     )]
-    fn recipe_sources();
+    fn recipe_sources(player: u128, menu: &str, pos: [i32; 3], sources: &mut Vec<[i32; 3]>);
 }

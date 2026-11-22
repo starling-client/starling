@@ -1,0 +1,5 @@
+manifest:
+refused: [native] and Rust source must be declared together
+
+icon:
+unavailable

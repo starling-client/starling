@@ -1,7 +1,7 @@
 //! `on_tree_grow`: a worldgen Part method takes the worldgen context and reads the table the
 //! server published for its world generation, not this thread's.
 mod stubs {
-    pub(super) trait StructureRandom {}
+    pub(super) trait RandomSource {}
 }
 thread_local! {
     /// The table the fixture's server published for its world generation.
@@ -16,7 +16,7 @@ fn a_worldgen_part_method_reads_the_published_table() {
     struct Worldgen;
     impl WorldgenHost for Worldgen {}
     struct Draws;
-    impl StructureRandom for Draws {}
+    impl RandomSource for Draws {}
     struct Soil(Option<BlockState>);
     impl BlockPart for Soil {
         fn block_subscribed(&self) -> &'static [Option<HookId>] {

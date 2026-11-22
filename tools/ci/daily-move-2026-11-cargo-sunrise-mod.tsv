@@ -5,7 +5,6 @@ cargo-sunrise-mod	test:bounded_reads	bounded_special_manifests	crates/cargo-sunr
 cargo-sunrise-mod	test:bounded_reads	bounded_discovery_reread	crates/cargo-sunrise-mod/tests/bounded_reads.rs:137	child-process
 cargo-sunrise-mod	test:content_project	git_project_build_checks_only_the_files_it_packages	crates/cargo-sunrise-mod/tests/content_project.rs:4	child-process
 cargo-sunrise-mod	test:internals	internals_add_writes_pinned_hashes_and_preserves_the_rest_of_the_manifest	crates/cargo-sunrise-mod/tests/internals.rs:66	child-process
-cargo-sunrise-mod	test:internals	internals_commands_refuse_wasm_mods_without_edits	crates/cargo-sunrise-mod/tests/internals.rs:97	child-process
 cargo-sunrise-mod	test:internals	native_sync_refuses_repo	crates/cargo-sunrise-mod/tests/internals.rs:116	child-process
 cargo-sunrise-mod	test:internals	internals_add_refuses_missing_gated_and_shape_only_paths_without_partial_edits	crates/cargo-sunrise-mod/tests/internals.rs:124	child-process
 cargo-sunrise-mod	test:internals	update_diffs_signatures_refreshes_present_hashes_and_keeps_missing_declarations	crates/cargo-sunrise-mod/tests/internals.rs:174	child-process
@@ -18,4 +17,3 @@ cargo-sunrise-mod	test:module_discovery	inject_add_head_uses_launcher_module_cat
 cargo-sunrise-mod	test:module_discovery	module_free_add_commands_keep_prebuilt_output_and_never_run_launcher	crates/cargo-sunrise-mod/tests/module_discovery.rs:115	child-process
 cargo-sunrise-mod	test:run	run_refuses_code_mods_without_building	crates/cargo-sunrise-mod/tests/run.rs:4	child-process
 cargo-sunrise-mod	test:use_jar	use_jar_records_exact_metadata_hash_and_order_without_copying_the_jar	crates/cargo-sunrise-mod/tests/use_jar.rs:5	child-process
-cargo-sunrise-mod	test:wasm_rustc_status	compiler_wrapper_preserves_diagnostics_exit_code_and_signal	crates/cargo-sunrise-mod/tests/wasm_rustc_status.rs:6	child-process

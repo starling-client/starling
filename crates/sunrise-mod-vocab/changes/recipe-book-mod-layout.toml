@@ -1,0 +1,3 @@
+ids = ["type:RecipeBookLayout", "type:RecipeBookLayout.Mod"]
+why = "`RecipeBookLayout` gains `Mod`: a menu whose recipe clicks its own `MenuPart` answers through the new `recipe_book_place` hook, placing with `ServerHost::place_recipe_in_grid` (vanilla's `ServerPlaceRecipe.placeRecipe` with a grid the mod names). It declares no slot roles, and the game maps no display to a slot for it."
+migrate = "Add a `RecipeBookLayout::Mod` arm to any exhaustive `match` on `RecipeBookLayout`."

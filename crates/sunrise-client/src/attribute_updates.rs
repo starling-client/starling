@@ -6,6 +6,7 @@ use crate::{
     health::Updates,
     motion::{MotionEvent, PlayerMotion},
 };
+use std::io;
 use sunrise_world::{
     attribute_map::ValueKind,
     attribute_updates::{self, UpdateWorld, UpdatedAttribute},
@@ -14,7 +15,6 @@ use sunrise_world::{
     living_health::{self, HealthWorld},
     object_open_set::CursorError,
 };
-use std::io;
 
 impl PlayerMotion {
     /// LivingEntity.tick refreshes these callbacks after aiStep and before the

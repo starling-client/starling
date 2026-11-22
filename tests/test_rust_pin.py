@@ -1,21 +1,26 @@
-"""CI, the launcher's native-mod toolchain and the wasm mods' toolchain use one Rust: tools/ci/rust-version.
+"""CI and the launcher's native-mod toolchain use one Rust: tools/ci/rust-version.
 
 A workflow names no floating channel (`stable`, `beta`, `nightly`) and no release of its own. The allowed forms:
 - `bash tools/ci/rustup_install.sh [rustup toolchain install options]`: installs the pin and makes it the job's
   toolchain, so `cargo`, `rustc` and `rustfmt` run bare;
-- `dtolnay/rust-toolchain@master` with `toolchain: ${{ steps.<id>.outputs.version }}[-<target>]`, the output of a
-  step that reads the pin file;
+- `dtolnay/rust-toolchain@master` or the same action pinned to a full commit SHA, with
+  `toolchain: ${{ steps.<id>.outputs.version }}[-<target>]`, the output of a step that reads the pin file;
 - `"$(cat …tools/ci/rust-version)"` (or a shell variable holding it) wherever a command needs the release spelled out.
 """
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
 # Upstream's workflows, disabled on this fork and kept as upstream writes them for syncs: nothing runs them.
-DISABLED = {"ci.yml", "launcher.yml", "mod-registry.yml", "nightly.yml", "pack-bench.yml", "parity-main.yml"}
+DISABLED = {"ci.yml", "launcher.yml", "mod-registry.yml", "pack-bench.yml"}
 RELEASE = r"(?:stable|beta|nightly|\d+\.\d+(?:\.\d+)?)\b"
 FORBIDDEN = [
     (re.compile(rf"rustup_install\.sh\s+{RELEASE}"), "rustup_install.sh takes the pin itself"),
@@ -23,9 +28,9 @@ FORBIDDEN = [
     (re.compile(rf"rustup\s+(?:toolchain\s+install|default|run|which\s+--toolchain|\S+\s+--toolchain)\s+{RELEASE}"),
      "a toolchain spelled out"),
     (re.compile(r"^\s*RUSTUP_TOOLCHAIN\s*:"), "a step's RUSTUP_TOOLCHAIN overrides the job's pin"),
-    (re.compile(r"dtolnay/rust-toolchain@(?!master\b)"), "the action's channel ref"),
     (re.compile(rf"^\s*toolchain:\s*{RELEASE}"), "a toolchain spelled out"),
 ]
+RUST_TOOLCHAIN_ACTION = re.compile(r"dtolnay/rust-toolchain@([^\s'\"]*)")
 
 
 def violations(name: str, text: str) -> list[str]:
@@ -36,7 +41,10 @@ def violations(name: str, text: str) -> list[str]:
         for pattern, why in FORBIDDEN:
             if pattern.search(code):
                 found.append(f"{name}:{number}: {why}: {line.strip()}")
-        if "dtolnay/rust-toolchain@master" in code:
+        if action := RUST_TOOLCHAIN_ACTION.search(code):
+            if not re.fullmatch(r"master|[0-9a-f]{40}", action[1]):
+                found.append(f"{name}:{number}: the action must use master or a full commit SHA: {line.strip()}")
+                continue
             following = "\n".join(lines[number : number + 4])
             if not re.search(r"toolchain:\s*\$\{\{\s*steps\.\w+\.outputs\.version\s*\}\}", following):
                 found.append(f"{name}:{number}: the action takes the pin from a step's output")
@@ -46,12 +54,6 @@ def violations(name: str, text: str) -> list[str]:
 class RustPinTests(unittest.TestCase):
     def test_the_pin_is_one_exact_release(self):
         self.assertRegex((ROOT / "tools/ci/rust-version").read_text(), r"^\d+\.\d+\.\d+\n?$")
-
-    def test_the_launcher_and_wasm_toolchains_read_the_pin(self):
-        for path, include in (("launcher/src/rust_toolchain.rs", '"../../tools/ci/rust-version"'),
-                              ("crates/cargo-sunrise-mod/src/wasm.rs", '"../../../tools/ci/rust-version"')):
-            with self.subTest(path=path):
-                self.assertIn(f"include_str!({include}).trim_ascii()", (ROOT / path).read_text())
 
     def test_active_workflows_use_the_pin(self):
         found = []
@@ -73,6 +75,28 @@ class RustPinTests(unittest.TestCase):
                    '# cargo +stable in a comment\n')
         self.assertEqual(violations("x.yml", allowed), [])
 
+    def test_a_sha_pinned_action_still_requires_the_version_step(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        uses = f"- uses: dtolnay/rust-toolchain@{sha}"
+        with_pin = "\n  with:\n    toolchain: ${{ steps.rust.outputs.version }}\n"
+        self.assertEqual(violations("x.yml", uses + " # master" + with_pin), [])
+        self.assertTrue(violations("x.yml", uses))
+        self.assertTrue(violations("x.yml", uses[:-1] + with_pin))
+
+
+class RustupInstallTests(unittest.TestCase):
+    def test_a_missing_rustup_fails_at_once_without_retrying(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Only what the script needs besides rustup.
+            for tool in ("tr", "dirname", "sleep"):
+                os.symlink(shutil.which(tool), Path(directory, tool))
+            started = time.monotonic()
+            result = subprocess.run([shutil.which("bash"), str(ROOT / "tools/ci/rustup_install.sh"), "--profile", "minimal"],
+                                    env={"PATH": directory}, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 127)
+            self.assertIn("rustup is not installed on this runner", result.stderr)
+            self.assertNotIn("retrying", result.stderr)
+            self.assertLess(time.monotonic() - started, 5)
 
 if __name__ == "__main__":
     unittest.main()

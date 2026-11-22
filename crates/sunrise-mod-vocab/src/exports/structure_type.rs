@@ -1,7 +1,7 @@
+pub use world::structure_type::TerrainAdjustment;
 pub use world::structure_type::{
     BiomeId, ChunkPos, FoundStructure, GenerationContext, HeightmapType, NoiseBlock, NoiseColumn,
-    PieceBeardifier, PieceContext, StructureError, StructurePiece, StructureRandom, StructureType,
-    TerrainAdjustment,
+    PieceBeardifier, PieceContext, StructureError, StructurePiece, StructureType,
 };
 mod __private {
     /// The registered structure types, for the executable to hand to the engine's

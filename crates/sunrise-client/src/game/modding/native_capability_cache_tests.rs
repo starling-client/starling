@@ -2,17 +2,17 @@
 //! again for each way the answer can change, and a move through kept handlers that aborts
 //! loses nothing.
 use super::Dim;
-use sunrise_client::{
-    chunk::Chunk,
-    containers::{BlockEntity, ModBlockEntity},
-    items::ItemStack,
-};
 use mod_api::{
     BlockCapabilityCache, CapabilityKey, Hooks, HostTransaction, ITEMS, ItemResource, Registrar,
     ResourceHandler, ServerHost, Transaction,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use sunrise_client::{
+    chunk::Chunk,
+    containers::{BlockEntity, ModBlockEntity},
+    items::ItemStack,
+};
 
 /// A capability only the test mod answers, counting each time its provider is asked.
 const COUNTED: CapabilityKey<dyn ResourceHandler<ItemResource>> =
@@ -34,10 +34,10 @@ impl ResourceHandler<ItemResource> for Empty {
     fn amount(&self, _: &mut dyn ServerHost, _: usize) -> u32 {
         0
     }
-    fn capacity(&self, _: &mut dyn ServerHost, _: usize, _: &ItemResource) -> u32 {
+    fn capacity(&self, _: &mut dyn ServerHost, _: usize, _: Option<&ItemResource>) -> u32 {
         0
     }
-    fn insert(
+    fn insert_at(
         &self,
         _: &mut dyn ServerHost,
         _: &Transaction,
@@ -47,7 +47,7 @@ impl ResourceHandler<ItemResource> for Empty {
     ) -> u32 {
         0
     }
-    fn extract(
+    fn extract_at(
         &self,
         _: &mut dyn ServerHost,
         _: &Transaction,
@@ -64,17 +64,17 @@ struct CacheBench;
 impl Hooks for CacheBench {
     fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
         let kind = r.block_entity_type("holder").blocks(&[]).build();
-        r.block_entity_capability(&COUNTED, &kind, |_, _| {
+        r.block_entity_capability(&COUNTED, &kind, |_, _, _, _, offer| {
             ASKED.fetch_add(1, Ordering::Relaxed);
-            Some(Box::new(Empty(SLOTS.load(Ordering::Relaxed))))
+            offer.offer(|| Box::new(Empty(SLOTS.load(Ordering::Relaxed))));
         });
         // A block with no block entity, whose provider counts in the same way.
         let lodestone = r.block_key("minecraft:lodestone");
-        r.block_capability(&COUNTED, &lodestone, |_, _, _, entity| {
+        r.block_capability(&COUNTED, &lodestone, |_, _, _, entity, offer| {
             ASKED.fetch_add(1, Ordering::Relaxed);
-            entity
-                .is_none()
-                .then(|| Box::new(Empty(SLOTS.load(Ordering::Relaxed))) as _)
+            if entity.is_none() {
+                offer.offer(|| Box::new(Empty(SLOTS.load(Ordering::Relaxed))));
+            }
         });
     }
 }
@@ -144,7 +144,7 @@ fn slots(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_asks_once_while_nothing_changes_and_again_when_invalidated() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_asks_once_while_nothing_changes_and_again_when_invalidated",
@@ -170,7 +170,7 @@ fn a_cache_asks_once_while_nothing_changes_and_again_when_invalidated() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_lends_nothing_while_its_level_is_parked_and_asks_again_once_back() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_lends_nothing_while_its_level_is_parked_and_asks_again_once_back",
@@ -199,7 +199,7 @@ fn a_cache_lends_nothing_while_its_level_is_parked_and_asks_again_once_back() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_first_asked_while_its_level_is_parked_asks_again_once_in_place() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_first_asked_while_its_level_is_parked_asks_again_once_in_place",
@@ -223,7 +223,7 @@ fn a_cache_first_asked_while_its_level_is_parked_asks_again_once_in_place() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_asks_again_when_the_block_state_changes() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_asks_again_when_the_block_state_changes",
@@ -248,7 +248,7 @@ fn a_cache_asks_again_when_the_block_state_changes() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_follows_its_block_entity_removed_and_replaced() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_follows_its_block_entity_removed_and_replaced",
@@ -276,7 +276,7 @@ fn a_cache_follows_its_block_entity_removed_and_replaced() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_finds_nothing_while_its_chunk_is_unloaded() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_finds_nothing_while_its_chunk_is_unloaded",
@@ -306,7 +306,7 @@ fn a_cache_finds_nothing_while_its_chunk_is_unloaded() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_finds_nothing_once_its_level_closes() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_finds_nothing_once_its_level_closes",
@@ -324,7 +324,7 @@ fn a_cache_finds_nothing_once_its_level_closes() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_cache_asks_again_when_a_mod_is_switched_off_or_on() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_cache_asks_again_when_a_mod_is_switched_off_or_on",
@@ -350,7 +350,7 @@ fn a_cache_asks_again_when_a_mod_is_switched_off_or_on() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn moves_through_kept_handlers_conserve_every_item_when_some_abort() {
     with_cache_mod(
         "game::native_capability_cache_tests::moves_through_kept_handlers_conserve_every_item_when_some_abort",
@@ -404,8 +404,15 @@ fn moves_through_kept_handlers_conserve_every_item_when_some_abort() {
                 let sink = to.get(game).expect("the sink chest answers");
                 let abort = round.is_multiple_of(3);
                 let result = (game as &mut dyn ServerHost).transaction(|host, tx| {
-                    let n = mod_api::move_resources(host, source, sink, |_| true, 7, tx)
-                        .map_err(|_| 0u32)?;
+                    let n = mod_api::resource_util::move_resources(
+                        host,
+                        source,
+                        sink,
+                        |_| true,
+                        7,
+                        Some(tx),
+                    )
+                    .map_err(|_| 0u32)?;
                     if abort && n > 0 { Err(n) } else { Ok(n) }
                 });
                 match result {
@@ -431,7 +438,7 @@ fn moves_through_kept_handlers_conserve_every_item_when_some_abort() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_providers_invalidation_counts_once_after_its_commit_and_not_when_aborted() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_providers_invalidation_counts_once_after_its_commit_and_not_when_aborted",
@@ -484,7 +491,7 @@ fn a_providers_invalidation_counts_once_after_its_commit_and_not_when_aborted() 
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+#[ignore = "daily"]
 fn a_block_invalidated_before_its_chunk_unloads_is_asked_again_after_it_reloads() {
     with_cache_mod(
         "game::native_capability_cache_tests::a_block_invalidated_before_its_chunk_unloads_is_asked_again_after_it_reloads",

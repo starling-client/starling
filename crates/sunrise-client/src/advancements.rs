@@ -2,15 +2,17 @@
 //! progress (`PlayerAdvancements`) and the predicates criteria test
 //! (`EntityPredicate`, `ItemPredicate`, `LocationPredicate`, the loot
 //! conditions advancements use).
+mod data;
 mod state_ranges;
+use data::parse;
 
-use sunrise_world::lazy_json::LazyJson;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
 };
+use sunrise_world::lazy_json::LazyJson;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Frame {
@@ -140,6 +142,30 @@ pub fn facts_asked_in(v: &Value) -> FactsAsked {
         }
     }
     asked
+}
+/// Whether a predicate, a list of conditions or an item modifier may read an
+/// entity's scores: it holds an `entity_scores` leaf, or a `minecraft:reference`
+/// to a predicate file that may.
+pub fn asks_scores(v: &Value) -> bool {
+    let mut todo = vec![v];
+    while let Some(v) = todo.pop() {
+        match v {
+            Value::Array(list) => todo.extend(list),
+            Value::Object(o) => {
+                let kind = (o.get("condition").or_else(|| o.get("type")))
+                    .or_else(|| o.get("function"))
+                    .and_then(Value::as_str);
+                if kind.is_some_and(|k| {
+                    matches!(&*full(k), "minecraft:entity_scores" | "minecraft:reference")
+                }) {
+                    return true;
+                }
+                todo.extend(o.values());
+            }
+            _ => {}
+        }
+    }
+    false
 }
 fn frame(v: &Value) -> Frame {
     match v.as_str() {
@@ -433,67 +459,6 @@ impl InventoryIndex {
         out
     }
 }
-fn parse(id: &str, v: &Value) -> Option<Advancement> {
-    let criteria: Vec<Criterion> = v["criteria"]
-        .as_object()?
-        .iter()
-        .map(|(name, c)| Criterion {
-            name: name.clone(),
-            trigger: c["trigger"]
-                .as_str()
-                .map_or(String::new(), |t| full(t).into_owned()),
-            conditions: LazyJson::new(&c["conditions"]),
-        })
-        .collect();
-    let requirements = match v["requirements"].as_array() {
-        Some(r) => r
-            .iter()
-            .map(|group| {
-                group
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|s| s.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .collect(),
-        // AdvancementRequirements.allOf: every criterion.
-        None => criteria.iter().map(|c| vec![c.name.clone()]).collect(),
-    };
-    let d = &v["display"];
-    let display = d.is_object().then(|| Display {
-        icon: crate::crafting::recipe_result(&d["icon"])
-            .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:air", 1)),
-        title: d["title"].clone(),
-        description: d["description"].clone(),
-        frame: frame(&d["frame"]),
-        background: d["background"].as_str().map(str::to_owned),
-        show_toast: d["show_toast"].as_bool().unwrap_or(true),
-        announce: d["announce_to_chat"].as_bool().unwrap_or(true),
-        hidden: d["hidden"].as_bool().unwrap_or(false),
-    });
-    let r = &v["rewards"];
-    let strings = |v: &Value| -> Vec<String> {
-        v.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.as_str().map(str::to_owned))
-            .collect()
-    };
-    Some(Advancement {
-        id: id.to_owned(),
-        parent: v["parent"].as_str().map(|p| full(p).into_owned()),
-        display,
-        criteria,
-        requirements,
-        rewards: Rewards {
-            recipes: strings(&r["recipes"]),
-            experience: r["experience"].as_i64().unwrap_or(0) as i32,
-            loot: strings(&r["loot"]),
-            function: r["function"].as_str().map(|id| full(id).into_owned()),
-        },
-    })
-}
 
 /// `CriterionProgress`'s date as saved, "yyyy-MM-dd HH:mm:ss Z", in UTC.
 pub fn date_text(unix_secs: i64) -> String {
@@ -625,6 +590,10 @@ pub trait World {
     fn structures(&self, pos: [i32; 3]) -> Vec<String>;
     /// Block name and properties.
     fn block(&self, pos: [i32; 3]) -> (String, BTreeMap<String, String>);
+    /// The registered state, when the world can borrow it without a snapshot.
+    fn block_state(&self, _pos: [i32; 3]) -> Option<&sunrise_world::chunk::BlockState> {
+        None
+    }
     /// Legal values of the actual registered property, unavailable without registry access.
     fn block_property_values(&self, _block: &str, _property: &str) -> Option<Vec<String>> {
         None
@@ -913,20 +882,30 @@ pub fn block(v: &Value, pos: [i32; 3], w: &dyn World) -> bool {
     if v.is_null() {
         return true;
     }
-    let (name, props) = w.block(pos);
-    if !id_matches(&v["blocks"], "block", &name, w) {
+    let borrowed = w.block_state(pos);
+    let owned = borrowed.is_none().then(|| w.block(pos));
+    let name = borrowed
+        .map(|state| state.name.as_str())
+        .or_else(|| owned.as_ref().map(|(name, _)| name.as_str()))
+        .unwrap_or_default();
+    if !id_matches(&v["blocks"], "block", name, w) {
         return false;
     }
     if let Some(state) = v["state"].as_object() {
         for (k, want) in state {
-            let have = props.get(k).cloned().unwrap_or_default();
+            let have = match borrowed {
+                Some(s) => s.properties.get(k),
+                None => owned.as_ref().and_then(|(_, props)| props.get(k)),
+            }
+            .map(String::as_str)
+            .unwrap_or_default();
             let ok = match want {
-                Value::String(s) => have == *s,
-                Value::Bool(b) => have == b.to_string(),
+                Value::String(s) => have == s,
+                Value::Bool(b) => have == if *b { "true" } else { "false" },
                 Value::Number(n) => have == n.to_string(),
                 Value::Object(bounds) => w
-                    .block_property_values(&name, k)
-                    .is_some_and(|domain| state_ranges::matches(bounds, &have, &domain)),
+                    .block_property_values(name, k)
+                    .is_some_and(|domain| state_ranges::matches(bounds, have, &domain)),
                 _ => false,
             };
             if !ok {
@@ -945,6 +924,33 @@ pub fn block(v: &Value, pos: [i32; 3], w: &dyn World) -> bool {
         }
     }
     true
+}
+/// Where `LocationCheck.test` looks: the block centre of `block_pos` (else
+/// `origin`) plus the check's offsets.
+pub fn location_check_position(
+    v: &Value,
+    block_pos: Option<[i32; 3]>,
+    origin: [f64; 3],
+) -> [f64; 3] {
+    let base = block_pos.map_or(origin, |b| b.map(|c| f64::from(c) + 0.5));
+    [
+        base[0] + v["offsetX"].as_f64().unwrap_or(0.0),
+        base[1] + v["offsetY"].as_f64().unwrap_or(0.0),
+        base[2] + v["offsetZ"].as_f64().unwrap_or(0.0),
+    ]
+}
+/// `LocationCheck.test`: [`location`] at [`location_check_position`].
+pub fn location_check(
+    v: &Value,
+    block_pos: Option<[i32; 3]>,
+    origin: [f64; 3],
+    w: &dyn World,
+) -> bool {
+    location(
+        &v["predicate"],
+        location_check_position(v, block_pos, origin),
+        w,
+    )
 }
 /// `LocationPredicate`.
 pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
@@ -1306,6 +1312,8 @@ pub fn killed_by_arrow(
             origin: me.position,
             tool: None,
             block_pos: None,
+            target: None,
+            interacting: None,
         }
     }
     if !conditions(&c["player"], &ctx(me, me), w) {
@@ -1341,6 +1349,8 @@ pub fn killed(
         origin: me.position,
         tool: None,
         block_pos: None,
+        target: None,
+        interacting: None,
     };
     let ectx = Entities {
         this: Some(target),
@@ -1433,6 +1443,23 @@ pub struct Entities<'a> {
     pub origin: [f64; 3],
     pub tool: Option<&'a ItemView>,
     pub block_pos: Option<[i32; 3]>,
+    /// `LootContextParams.TARGET_ENTITY`.
+    pub target: Option<&'a EntityView>,
+    /// `LootContextParams.INTERACTING_ENTITY`.
+    pub interacting: Option<&'a EntityView>,
+}
+impl<'a> Entities<'a> {
+    /// A `LootContext.EntityTarget` of this context; the targets a context
+    /// does not carry (`attacker`, `direct_attacker`, `attacking_player`)
+    /// select nothing.
+    fn entity(&self, name: &str) -> Option<&'a EntityView> {
+        match name {
+            "this" => self.this,
+            "target_entity" => self.target,
+            "interacting_entity" => self.interacting,
+            _ => None,
+        }
+    }
 }
 /// Conditions shared by item/entity interactions and thrown-item pickups.
 pub fn item_entity(
@@ -1447,6 +1474,8 @@ pub fn item_entity(
         origin: player.position,
         tool: None,
         block_pos: None,
+        target: None,
+        interacting: None,
     };
     let ectx = Entities {
         this: Some(target),
@@ -1480,55 +1509,55 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
 }
 
 /// Every named predicate `v` reaches is loaded, and none reaches itself.
+/// `Validatable.validateHolder` checks every typed reference before boolean
+/// short-circuiting; this is evaluation, not registry/startup admission.
 pub fn references_valid(v: &Value, w: &dyn World) -> bool {
-    predicate_references(v, w, &mut BTreeSet::new()).is_ok()
-}
-
-enum InvalidReference {
-    Missing,
-    Cycle,
-}
-
-/// `Validatable.validateHolder`'s active-name rule, as a defensive check on
-/// this evaluation context. Check every typed reference before boolean
-/// short-circuiting; this does not implement registry/startup admission.
-fn predicate_references(
-    v: &Value,
-    w: &dyn World,
-    active: &mut BTreeSet<String>,
-) -> Result<(), InvalidReference> {
-    match v {
-        Value::String(id) => {
-            let id = full(id).into_owned();
-            if !active.insert(id.clone()) {
-                return Err(InvalidReference::Cycle);
-            }
-            let result = w
-                .predicate(&id)
-                .ok_or(InvalidReference::Missing)
-                .and_then(|v| predicate_references(v, w, active));
-            active.remove(&id);
-            result
-        }
-        Value::Array(list) => list
-            .iter()
-            .try_for_each(|v| predicate_references(v, w, active)),
-        Value::Object(o) => {
-            let kind = o
-                .get("condition")
-                .or_else(|| o.get("type"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            match &*full(kind) {
-                "minecraft:inverted" => predicate_references(&v["term"], w, active),
-                "minecraft:all_of" | "minecraft:any_of" => terms(v)
-                    .iter()
-                    .try_for_each(|v| predicate_references(v, w, active)),
-                _ => Ok(()),
-            }
-        }
-        _ => Ok(()),
+    enum Visit<'v> {
+        Condition(&'v Value),
+        Leave(std::borrow::Cow<'v, str>),
     }
+    let mut active = BTreeSet::new();
+    let mut pending = Vec::new();
+    let mut first = Some(Visit::Condition(v));
+    while let Some(visit) = first.take().or_else(|| pending.pop()) {
+        let v = match visit {
+            Visit::Condition(v) => v,
+            Visit::Leave(id) => {
+                active.remove(&id);
+                continue;
+            }
+        };
+        match v {
+            Value::String(id) => {
+                let id = full(id);
+                let Some(definition) = w.predicate(&id) else {
+                    return false;
+                };
+                if !active.insert(id.clone()) {
+                    return false;
+                }
+                pending.push(Visit::Leave(id));
+                pending.push(Visit::Condition(definition));
+            }
+            Value::Array(list) => pending.extend(list.iter().rev().map(Visit::Condition)),
+            Value::Object(o) => {
+                let kind = o
+                    .get("condition")
+                    .or_else(|| o.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                match &*full(kind) {
+                    "minecraft:inverted" => pending.push(Visit::Condition(&v["term"])),
+                    "minecraft:all_of" | "minecraft:any_of" => {
+                        pending.extend(terms(v).iter().rev().map(Visit::Condition));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 /// `terms` as `HolderSetCodec` reads it: a list, or one holder alone; a `#tag` is not expanded.
@@ -1584,7 +1613,7 @@ pub fn literal_random_chance(v: &Value, draw: &mut dyn FnMut() -> f32) -> Option
     Some(draw() < chance)
 }
 
-fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+pub(crate) fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
     match v {
         Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
             let ty = o
@@ -1595,8 +1624,10 @@ fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
             match &*full(ty) {
                 // EntityHasScoreCondition.test/hasScore: missing objective or
                 // score fails; this bounded path supports constant integer ranges.
-                "minecraft:entity_scores" if v["entity"].as_str() == Some("this") => {
-                    let scores = ctx.this.and_then(|e| e.scores.as_ref());
+                "minecraft:entity_scores" => {
+                    let scores = ctx
+                        .entity(v["entity"].as_str().unwrap_or("this"))
+                        .and_then(|e| e.scores.as_ref());
                     v["scores"].as_object().is_some_and(|tests| {
                         scores.is_some_and(|scores| {
                             tests.iter().all(|(objective, range)| {
@@ -1618,27 +1649,9 @@ fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     })
                 }
                 "minecraft:entity_properties" => ctx
-                    .this
+                    .entity(v["entity"].as_str().unwrap_or("this"))
                     .is_some_and(|e| entity(&v["predicate"], e, w, ctx.origin)),
-                "minecraft:location_check" => {
-                    let base = ctx.block_pos.map_or(ctx.origin, |b| {
-                        [
-                            f64::from(b[0]) + 0.5,
-                            f64::from(b[1]) + 0.5,
-                            f64::from(b[2]) + 0.5,
-                        ]
-                    });
-                    let off = [
-                        v["offsetX"].as_f64().unwrap_or(0.0),
-                        v["offsetY"].as_f64().unwrap_or(0.0),
-                        v["offsetZ"].as_f64().unwrap_or(0.0),
-                    ];
-                    location(
-                        &v["predicate"],
-                        [base[0] + off[0], base[1] + off[1], base[2] + off[2]],
-                        w,
-                    )
-                }
+                "minecraft:location_check" => location_check(v, ctx.block_pos, ctx.origin, w),
                 "minecraft:match_block" => ctx.block_pos.is_some_and(|b| block(v, b, w)),
                 "minecraft:block_state_property" => ctx.block_pos.is_some_and(|b| {
                     let mut pred = serde_json::Map::new();
@@ -1988,7 +2001,7 @@ mod tests {
         let off = Tree::shared(&data, &sunrise_world::loot::PackOverlay::NONE);
         let on_overlay = sunrise_world::loot::PackOverlay {
             conditions: &enabled,
-            ..sunrise_world::loot::PackOverlay::NONE
+            ..sunrise_world::loot::PackOverlay::default()
         };
         let on = Tree::shared(&data, &on_overlay);
         assert!(off.get("demo:entry").is_none());
@@ -2043,7 +2056,7 @@ mod tests {
     /// `cargo test -p sunrise-client --lib -- --ignored --nocapture index_on_vanilla_tree`
     /// with SUNRISE_TEST_RESOURCES set to the prepared resources.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn index_on_vanilla_tree() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("SUNRISE_TEST_RESOURCES"),
@@ -2213,6 +2226,8 @@ mod tests {
             origin: [0.0; 3],
             tool: None,
             block_pos: None,
+            target: None,
+            interacting: None,
         };
         for (mut predicate, expected) in [
             (serde_json::json!({}), true),
@@ -2727,6 +2742,8 @@ mod tests {
             origin: [0.0; 3],
             tool: None,
             block_pos: Some([0; 3]),
+            target: None,
+            interacting: None,
         };
         let stone = serde_json::json!({"type":"minecraft:match_block","blocks":"minecraft:stone"});
         let wheat = serde_json::json!({"type":"minecraft:match_block","blocks":"minecraft:wheat"});
@@ -2737,6 +2754,61 @@ mod tests {
             ..ctx
         };
         assert!(!conditions(&stone, &absent, &Flat));
+    }
+    /// `LootContext.EntityTarget`: `entity_properties` and `entity_scores`
+    /// select `target_entity` and `interacting_entity`, never `this` by default.
+    #[test]
+    fn entity_conditions_select_the_named_target() {
+        let view = |kind: &str, score: i32| EntityView {
+            kind: kind.into(),
+            scores: Some([("points".to_owned(), score)].into()),
+            ..Default::default()
+        };
+        let (source, target, actor) = (
+            view("minecraft:player", 1),
+            view("minecraft:cow", 2),
+            view("minecraft:zombie", 3),
+        );
+        let ctx = Entities {
+            this: Some(&source),
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+            target: Some(&target),
+            interacting: Some(&actor),
+        };
+        let props = |who: &str, kind: &str| {
+            serde_json::json!({"condition":"minecraft:entity_properties","entity":who,
+                "predicate":{"minecraft:entity_type":kind}})
+        };
+        assert!(conditions(
+            &props("target_entity", "minecraft:cow"),
+            &ctx,
+            &Flat
+        ));
+        assert!(!conditions(
+            &props("target_entity", "minecraft:player"),
+            &ctx,
+            &Flat
+        ));
+        assert!(conditions(
+            &props("interacting_entity", "minecraft:zombie"),
+            &ctx,
+            &Flat
+        ));
+        assert!(conditions(&props("this", "minecraft:player"), &ctx, &Flat));
+        assert!(!conditions(
+            &props("attacker", "minecraft:player"),
+            &ctx,
+            &Flat
+        ));
+        let score = |who: &str, n: i32| {
+            serde_json::json!({"condition":"minecraft:entity_scores","entity":who,
+                "scores":{"points":n}})
+        };
+        assert!(conditions(&score("target_entity", 2), &ctx, &Flat));
+        assert!(conditions(&score("interacting_entity", 3), &ctx, &Flat));
+        assert!(!conditions(&score("target_entity", 1), &ctx, &Flat));
     }
     /// Data pack ids, tags and registry keys written without a namespace are
     /// `minecraft:` ones (`Identifier.parse`), wherever a predicate reads one.
@@ -2759,6 +2831,8 @@ mod tests {
             origin: player.position,
             tool: None,
             block_pos: None,
+            target: None,
+            interacting: None,
         };
         let arrow = DamageView {
             kind: "minecraft:arrow".into(),
@@ -2936,6 +3010,8 @@ mod tests {
             origin: player.position,
             tool: None,
             block_pos: None,
+            target: None,
+            interacting: None,
         };
         assert!(conditions(&cond, &ctx, &w));
         let mut p = Progress::default();
@@ -3603,6 +3679,8 @@ mod tests {
             origin: [0.0; 3],
             tool: None,
             block_pos: None,
+            target: None,
+            interacting: None,
         };
         for line in include_str!("../../../docs/parity/random-chance-seeded.jsonl").lines() {
             let row: Value = serde_json::from_str(line).unwrap();
@@ -3629,6 +3707,8 @@ mod tests {
             origin: [0.0; 3],
             tool: None,
             block_pos: None,
+            target: None,
+            interacting: None,
         };
         let z = json!({"type":"minecraft:random_chance","chance":0});
         let o = json!({"type":"minecraft:random_chance","chance":1});
@@ -3666,6 +3746,8 @@ mod tests {
             origin: [0.0; 3],
             tool: None,
             block_pos: None,
+            target: None,
+            interacting: None,
         };
         let mut draws = 0;
         for v in [

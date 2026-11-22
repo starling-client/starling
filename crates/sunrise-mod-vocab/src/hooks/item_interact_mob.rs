@@ -9,7 +9,9 @@ pub trait Hooks {
     /// fall through. A server-only answer leaves client off-hand prediction
     /// unchanged. ClientHost permits reads and local effects, not authoritative
     /// writes. Armor stands, other players and dragon parts are not covered.
+    /// A client without this mod predicts vanilla here; the server corrects it.
     #[hook(
+        dispatch = "flat",
         side = "both",
         version = 2,
         contract = "replace",
@@ -18,5 +20,11 @@ pub trait Hooks {
         key = "stack",
         neoforge = "none (Item.interactLivingEntity)"
     )]
-    fn item_interact_mob();
+    fn item_interact_mob(
+        hand: Hand,
+        entity: i32,
+        kind: &str,
+        stack: &ItemStack,
+        result: &mut Option<mod_api::InteractionResult>,
+    );
 }

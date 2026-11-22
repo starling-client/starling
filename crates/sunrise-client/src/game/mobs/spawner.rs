@@ -5,7 +5,9 @@
 use super::{
     Game,
     creatures::{Finalized, SpawnReason},
+    persist::SpawnTree,
 };
+use std::collections::HashMap;
 use sunrise_client::{
     Result,
     containers::BlockEntity,
@@ -16,12 +18,12 @@ use sunrise_client::{
     },
     particles::{ParticleOptions, ParticleType},
 };
+use sunrise_client_render::block_entity_reach::Reach;
 use sunrise_core::nbt::Tag;
 use sunrise_core::{
     geometry::Vec3,
     random::{LegacyRandom, LevelRandom, RandomSource},
 };
-use std::collections::{HashMap, HashSet};
 
 type Pos = (i32, i32, i32);
 
@@ -32,14 +34,12 @@ pub(super) enum Planned {
     Finalized(Mob, Option<Tag>),
     /// A mob loaded from the spawn data (with its passengers) and its
     /// `equipment`; the provisional id its events carry.
-    Loaded(Tag, Option<Tag>, u32),
+    Loaded(SpawnTree, Option<Tag>, u32),
 }
 
 /// What the spawner code keeps between ticks.
 #[derive(Default)]
 pub(super) struct SpawnerState {
-    /// Every entity type id (`EntityType.byString`), read once.
-    entity_types: Option<HashSet<String>>,
     /// The mob shown in each spawner and the id it was made for
     /// (`getOrCreateDisplayEntity`).
     displays: HashMap<Pos, (String, Mob)>,
@@ -48,35 +48,14 @@ pub(super) struct SpawnerState {
 impl Game<'_> {
     /// `EntityType.byString`: the type is in the registry.
     pub(super) fn entity_type_exists(&self, id: &str) -> bool {
-        self.spawners
-            .entity_types
-            .as_ref()
-            .is_some_and(|t| t.contains(id))
+        self.res
+            .rest
+            .get()
+            .is_some_and(|rest| rest.spawner_types.contains_key(id))
     }
     /// Whether `entity_type_exists` has a registry to answer from.
     pub(super) fn entity_types_loaded(&self) -> bool {
-        self.spawners
-            .entity_types
-            .as_ref()
-            .is_some_and(|t| !t.is_empty())
-    }
-    pub(super) fn load_entity_types(&mut self) {
-        if self.spawners.entity_types.is_some() {
-            return;
-        }
-        let path = self.options.resources.join("entity-types.json");
-        let types = std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|v| {
-                v.as_object().map(|o| {
-                    o.keys()
-                        .map(|k| sunrise_client::command::args::normalize(k))
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-        self.spawners.entity_types = Some(types);
+        self.res.rest.get().is_some()
     }
     /// The server tick of the spawner at `key`. Its client tick comes after
     /// every block entity's (`client_tick_spawners`).
@@ -101,6 +80,10 @@ impl Game<'_> {
         for &key in keys {
             self.client_tick_spawner(key);
         }
+        self.forget_spawner_displays();
+    }
+    /// Drops the display mobs of spawners and trial spawners that are gone.
+    pub(super) fn forget_spawner_displays(&mut self) {
         let entities = &self.world.block_entities;
         self.spawners.displays.retain(|k, _| {
             matches!(
@@ -157,8 +140,8 @@ impl Game<'_> {
                 pos: mod_api::BlockPos::new(key.0, key.1, key.2),
             });
             let mut spawn = |l: &super::natural_spawning::GameLevel,
-                             r: &SpawnerSpawn,
-                             rng: &mut LevelRandom| {
+                             rng: &mut LevelRandom,
+                             r: &SpawnerSpawn| {
                 l.game.plan_spawner_mob(l, r, source, &mut planned, rng)
             };
             spawner.server_tick(&level, &mut random, pos, &mut spawn, &mut events);
@@ -184,14 +167,14 @@ impl Game<'_> {
         let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
         let mut finalized: Vec<Mob> = Vec::new();
         let mut gears: Vec<Option<Tag>> = Vec::new();
-        let mut loads: Vec<(Tag, Option<Tag>, u32)> = Vec::new();
+        let mut loads = Vec::new();
         for plan in planned {
             match plan {
                 Planned::Finalized(mob, equipment) => {
                     finalized.push(mob);
                     gears.push(equipment);
                 }
-                Planned::Loaded(tag, equipment, key) => loads.push((tag, equipment, key)),
+                Planned::Loaded(tree, equipment, key) => loads.push((tree, equipment, key)),
             }
         }
         // Real ids for finalizeSpawn's provisional mobs, in spawn order, the
@@ -213,19 +196,18 @@ impl Game<'_> {
             self.mobs.push(mob);
             self.native_mobs_joined(i, false);
         }
-        for (tag, equipment, key) in loads {
-            if let Some(id) = self.load_mob(tag, None) {
-                // `nextSpawnData.getEquipment().ifPresent(mob::equip)`.
-                if let Some(table) = equipment {
-                    self.equip_from_table(id, &table);
-                }
-                ids.insert(key, id);
+        for (tree, equipment, key) in loads {
+            let id = tree.install(self);
+            // `nextSpawnData.getEquipment().ifPresent(mob::equip)`.
+            if let Some(table) = equipment {
+                self.equip_from_table(id, &table);
             }
+            ids.insert(key, id);
         }
         ids
     }
     /// The spawner's `loadEntityRecursive` and `tryAddFreshEntityWithPassengers`:
-    /// the mob it will add (created after the tick) and its box.
+    /// make the accepted mobs visible to the next attempt before the tick inserts them.
     pub(super) fn plan_spawner_mob(
         &self,
         l: &super::natural_spawning::GameLevel,
@@ -237,7 +219,7 @@ impl Game<'_> {
         let kind = self.res.mob_types().get(r.id)?.clone();
         let [x, y, z] = r.position;
         let at = Vec3::new(x, y, z);
-        let (bounds, key) = if r.finalize {
+        let key = if r.finalize {
             // The mob a listened position check created, else a new one.
             let mut mob = l
                 .take_checked(r.id, r.position, r.yaw)
@@ -264,9 +246,7 @@ impl Game<'_> {
                         };
                         sunrise_client::mobs::finalize::finalize(&mut cx, &mut mob, reason, group);
                         for m in cx.created {
-                            let bounds = m.bounds();
-                            l.pending.borrow_mut().push(bounds);
-                            l.pending_ids.borrow_mut().push((m.kind.id.clone(), bounds));
+                            l.record_pending(&m);
                             l.spawned.borrow_mut().push(m);
                         }
                     }
@@ -281,18 +261,12 @@ impl Game<'_> {
                 mob.head_yaw = 0.0;
                 mob.previous_head_yaw = 0.0;
             }
-            let bounds = mob.bounds();
+            l.record_pending(&mob);
             let key = mob.id;
             planned.push(Planned::Finalized(mob, r.equipment.cloned()));
-            (bounds, key)
+            key
         } else {
-            // A UUID already in the level is refused.
             let mut tag = r.entity.clone();
-            if let Some(uuid) = sunrise_client::entity_nbt::uuid(&Tag::Compound(tag.clone()))
-                && self.persist.uuids.values().any(|u| *u == uuid)
-            {
-                return None;
-            }
             let double = |v: f64| Tag::Double(v.to_bits());
             tag.insert(
                 "Pos".into(),
@@ -312,24 +286,15 @@ impl Game<'_> {
             // EntityType.loadEntityRecursive applies the spawner's placement
             // callback to every passenger as well as the root.
             super::commands::place_summoned(&mut tag, r.position);
-            let mob = sunrise_client::entity_nbt::mob_from_nbt(
-                &tag,
-                self.res.mob_types(),
-                0,
-                Some(self.pack.assets.registry),
-            )?;
-            let bounds = mob.bounds();
+            let mut tree = SpawnTree::decode(self, tag)?;
+            if !l.admit_pending_tree(&mut tree) {
+                return None;
+            }
             let key = l.provisional_id();
-            planned.push(Planned::Loaded(tag, r.equipment.cloned(), key));
-            (bounds, key)
+            planned.push(Planned::Loaded(tree, r.equipment.cloned(), key));
+            key
         };
-        l.pending.borrow_mut().push(bounds);
-        l.pending_ids.borrow_mut().push((r.id.to_owned(), bounds));
-        Some(SpawnerAdded {
-            id: key,
-            bounds,
-            mob: true,
-        })
+        Some(SpawnerAdded { id: key, mob: true })
     }
     /// What a spawner's tick or a spawn egg did, shown and sent.
     fn apply_spawner_events(
@@ -429,7 +394,7 @@ impl Game<'_> {
         }
     }
     /// The client copy's tick: particles and the spin while a player is near.
-    fn client_tick_spawner(&mut self, key: Pos) {
+    pub(super) fn client_tick_spawner(&mut self, key: Pos) {
         let near = {
             let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get(&key) else {
                 return;
@@ -496,7 +461,7 @@ impl Game<'_> {
         self.res.mob_types().contains_key(&id).then_some(id)
     }
     /// `SpawnEggItem.useOn` on a spawner: the egg sets its mob, and an op's
-    /// egg its entity `data` too (`block_entity_item::spawn_egg_on_spawner`).
+    /// egg its effective entity `data` too.
     /// None when the clicked block has no spawner.
     pub(super) fn use_spawn_egg_on_spawner(
         &mut self,
@@ -591,28 +556,6 @@ impl Game<'_> {
         // The entity's own compound, its name and data merged in: it loads back.
         let _ = self.apply_entity_nbt(target, tag);
     }
-    /// Ticks spawners, trial spawners and vaults near the player on a remote
-    /// client (`tick_remote`).
-    pub(super) fn tick_remote_spawners(&mut self) {
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let center = [
-            p.position.x.floor() as i32,
-            p.position.y.floor() as i32,
-            p.position.z.floor() as i32,
-        ];
-        let (keys, trial_keys, vault_keys) =
-            nearby_remote_spawner_keys(&self.world.block_entities, center);
-        self.client_tick_spawners(&keys);
-        for key in trial_keys {
-            self.client_tick_trial_spawner(key);
-        }
-        // VaultBlock.getTicker on the client: VaultBlockEntity.Client.tick.
-        for key in vault_keys {
-            self.client_tick_vault(key);
-        }
-    }
     /// `SpawnerRenderer` and `TrialSpawnerRenderer`: the next mob of every
     /// spawner near the camera, small and turning.
     pub(super) fn spawner_geometry(
@@ -629,10 +572,10 @@ impl Game<'_> {
         let shadow_sections = self
             .renderer
             .as_ref()
-            .filter(|_| self.pack_ids.is_some() && self.pack_shadow_casters.0);
+            .filter(|_| self.pack_ids.is_some() && self.occlusion.shadow_casters.0);
         for (key, (_, mob)) in &self.spawners.displays {
             let at = glam::DVec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
-            if at.distance_squared(camera) >= 64.0 * 64.0 {
+            if !Reach::Default.should_render([key.0, key.1, key.2], camera, 0) {
                 continue;
             }
             if let Some(r) = shadow_sections
@@ -665,6 +608,7 @@ impl Game<'_> {
                 * glam::Mat4::from_scale(glam::Vec3::splat(scale));
             let light = self.world.light(key.0, key.1, key.2);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+            self.mark_entity(out.len(), &mob.kind.id);
             if mob.species() == sunrise_client::mobs::Species::SulfurCube {
                 self.sulfur_cube_body_geometry(
                     mob,
@@ -680,41 +624,11 @@ impl Game<'_> {
                 origin,
                 &lookup,
                 packed,
-                self.res.mob_data(),
+                self,
                 out,
             );
         }
     }
-}
-
-/// `SpawnerBlockEntity.clientTick` / `BaseSpawner.clientTick`: spawner, trial
-/// spawner and vault keys within 64 blocks (Chebyshev distance) of `center`
-/// among `entities`. Non-spawner block entities are ignored before distance
-/// calculation, and coordinate difference uses `abs_diff` to prevent overflow.
-pub(super) fn nearby_remote_spawner_keys<'a>(
-    entities: impl IntoIterator<Item = (&'a Pos, &'a BlockEntity)>,
-    center: [i32; 3],
-) -> (Vec<Pos>, Vec<Pos>, Vec<Pos>) {
-    let mut keys = Vec::new();
-    let mut trial_keys = Vec::new();
-    let mut vault_keys = Vec::new();
-    for (&pos, be) in entities {
-        let target = match be {
-            BlockEntity::Spawner(_) => &mut keys,
-            BlockEntity::TrialSpawner(_) => &mut trial_keys,
-            BlockEntity::Vault(_) => &mut vault_keys,
-            _ => continue,
-        };
-        let d = pos
-            .0
-            .abs_diff(center[0])
-            .max(pos.1.abs_diff(center[1]))
-            .max(pos.2.abs_diff(center[2]));
-        if d <= 64 {
-            target.push(pos);
-        }
-    }
-    (keys, trial_keys, vault_keys)
 }
 
 #[cfg(test)]
@@ -726,7 +640,7 @@ mod tests {
     /// adding no mob. At 0 the spawn runs: with nothing to spawn it calls
     /// `delay`, which draws the next delay in [MinSpawnDelay, MaxSpawnDelay).
     #[test]
-    #[ignore = "needs prepared resources (SUNRISE_TEST_RESOURCES)"]
+    #[ignore = "daily"]
     fn a_running_delay_counts_down_without_drawing() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -766,104 +680,5 @@ mod tests {
             assert!((200..800).contains(&delay(game)), "{}", delay(game));
             assert_ne!(game.world.random.next_long(), before.next_long());
         });
-    }
-
-    #[test]
-    fn dummy_container_at_min_coordinate_does_not_panic_or_tick() {
-        let mut entities = HashMap::new();
-        // Client dummy container menu placed at (i32::MIN, 0, 0) when remote
-        // container lacks target block position (remote.rs:9393).
-        entities.insert((i32::MIN, 0, 0), BlockEntity::Chest(Vec::new()));
-        entities.insert(
-            (i32::MIN, i32::MIN, i32::MIN),
-            BlockEntity::Chest(Vec::new()),
-        );
-        entities.insert(
-            (i32::MAX, i32::MAX, i32::MAX),
-            BlockEntity::Chest(Vec::new()),
-        );
-
-        // Player at x = 1024: (pos.0 - center[0]) would be i32::MIN - 1024.
-        let (keys, trial_keys, vault_keys) = nearby_remote_spawner_keys(&entities, [1024, 64, -50]);
-        assert!(keys.is_empty());
-        assert!(trial_keys.is_empty());
-        assert!(vault_keys.is_empty());
-
-        // Player at x = 0: (pos.0 - center[0]) would be i32::MIN - 0, and i32::MIN.abs() panics.
-        let (keys, trial_keys, vault_keys) = nearby_remote_spawner_keys(&entities, [0, 0, 0]);
-        assert!(keys.is_empty());
-        assert!(trial_keys.is_empty());
-        assert!(vault_keys.is_empty());
-    }
-
-    #[test]
-    fn spawner_outside_64_block_chebyshev_range_is_not_ticked() {
-        let mut entities = HashMap::new();
-        entities.insert((65, 0, 0), BlockEntity::Spawner(Box::default()));
-        entities.insert((0, -65, 0), BlockEntity::TrialSpawner(Box::default()));
-        entities.insert((0, 0, 65), BlockEntity::Vault(Box::default()));
-        entities.insert((-65, 65, -65), BlockEntity::Spawner(Box::default()));
-
-        let (keys, trial_keys, vault_keys) = nearby_remote_spawner_keys(&entities, [0, 0, 0]);
-        assert!(
-            keys.is_empty(),
-            "spawners outside 64 blocks must not be ticked"
-        );
-        assert!(
-            trial_keys.is_empty(),
-            "trial spawners outside 64 blocks must not be ticked"
-        );
-        assert!(
-            vault_keys.is_empty(),
-            "vaults outside 64 blocks must not be ticked"
-        );
-    }
-
-    #[test]
-    fn spawners_within_64_block_chebyshev_range_are_ticked() {
-        let mut entities = HashMap::new();
-        let spawner_at_boundary = (164, 64, -200);
-        let spawner_near_player = (110, 69, -202);
-        let trial_at_boundary = (36, 128, -264); // Chebyshev dx=64, dy=64, dz=64
-        let vault_at_center = (100, 64, -200);
-
-        entities.insert(spawner_at_boundary, BlockEntity::Spawner(Box::default()));
-        entities.insert(spawner_near_player, BlockEntity::Spawner(Box::default()));
-        entities.insert(trial_at_boundary, BlockEntity::TrialSpawner(Box::default()));
-        entities.insert(vault_at_center, BlockEntity::Vault(Box::default()));
-
-        let (mut keys, trial_keys, vault_keys) =
-            nearby_remote_spawner_keys(&entities, [100, 64, -200]);
-        keys.sort_unstable();
-        let mut expected_spawners = vec![spawner_at_boundary, spawner_near_player];
-        expected_spawners.sort_unstable();
-
-        assert_eq!(keys, expected_spawners);
-        assert_eq!(trial_keys, vec![trial_at_boundary]);
-        assert_eq!(vault_keys, vec![vault_at_center]);
-    }
-
-    #[test]
-    fn extreme_coordinate_boundary_does_not_overflow() {
-        let mut entities = HashMap::new();
-        let max_pos = (i32::MAX, i32::MAX, i32::MAX);
-        let min_pos = (i32::MIN, i32::MIN, i32::MIN);
-        let in_range_max = (i32::MAX, 10, -5);
-
-        entities.insert(max_pos, BlockEntity::Spawner(Box::default()));
-        entities.insert(min_pos, BlockEntity::Spawner(Box::default()));
-        entities.insert(in_range_max, BlockEntity::Spawner(Box::default()));
-
-        // Player at i32::MIN: distance to i32::MAX would overflow signed 32-bit arithmetic.
-        let (keys, _, _) = nearby_remote_spawner_keys(&entities, [i32::MIN, i32::MIN, i32::MIN]);
-        assert_eq!(keys, vec![min_pos]);
-
-        // Player at i32::MAX: distance to i32::MIN would overflow signed 32-bit arithmetic.
-        let (keys, _, _) = nearby_remote_spawner_keys(&entities, [i32::MAX, i32::MAX, i32::MAX]);
-        assert_eq!(keys, vec![max_pos]);
-
-        // Player at i32::MAX - 64: in_range_max should be included.
-        let (keys, _, _) = nearby_remote_spawner_keys(&entities, [i32::MAX - 64, 10, -5]);
-        assert!(keys.contains(&in_range_max));
     }
 }

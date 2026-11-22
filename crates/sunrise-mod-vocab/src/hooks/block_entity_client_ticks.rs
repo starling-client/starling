@@ -8,11 +8,14 @@ pub trait Hooks {
     /// the first time a client level ticks with a part that has a client tick.
     /// Set `ticks` to true to make it tick, and never clear a value an earlier mod or mixin set.
     #[hook(
+        target = "sunrise_client::game::native_hooks::block_entity_client_tick::Game<'_>::native_block_entity_client_ticks",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         scope = "block_entity",
         key = "block",
         neoforge = "none (vanilla EntityBlock.getTicker with the client level; NeoForge adds no event or extension for it)"
     )]
-    fn block_entity_client_ticks();
+    fn block_entity_client_ticks(block: &str, ticks: &mut bool);
 }

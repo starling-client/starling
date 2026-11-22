@@ -7,13 +7,13 @@
 //! these never copies or loses an item. Server menus are in `native_menus.rs`;
 //! maps a mod draws in `player_send_map` below.
 use super::{Game, commands::Target};
+use mod_api::{__private::game::Fields, PlayerRef};
+use std::path::Path;
 use sunrise_client::{
     items::ItemStack,
     lan::{guest::Guest, playerdata},
     save::{Level, read_dat, write_dat},
 };
-use mod_api::{__private::game::Fields, PlayerRef};
-use std::path::Path;
 
 /// Which of a player's inventories (`native_inventory`).
 #[allow(dead_code)]
@@ -24,16 +24,6 @@ pub(crate) enum NativeInventoryKind {
     Player,
     /// The ender chest's 27 slots.
     Ender,
-}
-
-#[allow(dead_code)]
-impl NativeInventoryKind {
-    pub(crate) fn size(self) -> usize {
-        match self {
-            Self::Player => 41,
-            Self::Ender => 27,
-        }
-    }
 }
 
 /// A player's inventory as `native_inventory` read it: its slots, and
@@ -266,8 +256,11 @@ impl Game<'_> {
             |side: Side, kind, slots: Vec<Option<ItemStack>>, uuid| -> Result<Side, String> {
                 if let Side::File(mut level) = side {
                     set_level_slots(&mut level, kind, slots);
-                    write_dat(&playerdata::path(&world, uuid), level.player_tag())
-                        .map_err(|e| format!("the player's file: {e}"))?;
+                    write_dat(
+                        &playerdata::path(&world, uuid),
+                        level.player_tag(self.res.items()),
+                    )
+                    .map_err(|e| format!("the player's file: {e}"))?;
                     return Ok(Side::File(level));
                 }
                 Ok(side)
@@ -393,7 +386,7 @@ mod tests {
         let mut s = vec![None; 41];
         s[4] = Some(stack("minecraft:bread", 12));
         set_level_slots(&mut level, NativeInventoryKind::Player, s);
-        write_dat(&file, level.player_tag()).unwrap();
+        write_dat(&file, level.player_tag(&Default::default())).unwrap();
         let mut back = read_level(&dir, uuid).unwrap();
         assert_eq!(back.health, 13.0);
         assert_eq!(back.xp_level, 7);
@@ -405,7 +398,7 @@ mod tests {
         assert_eq!(inv[4], Some(stack("minecraft:bread", 12)));
         inv[4] = None;
         set_level_slots(&mut back, NativeInventoryKind::Player, inv);
-        write_dat(&file, back.player_tag()).unwrap();
+        write_dat(&file, back.player_tag(&Default::default())).unwrap();
         let again = read_level(&dir, uuid).unwrap();
         assert!(
             level_slots(&again, NativeInventoryKind::Player)

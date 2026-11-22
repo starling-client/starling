@@ -109,26 +109,26 @@ impl Game<'_> {
     }
     /// The plain inventory mouse press: starts a quick craft drag when a
     /// stack is held, gathers on a double click, else the normal click.
-    pub(super) fn inventory_press(&mut self, right: bool) {
+    pub(super) fn inventory_press(&mut self, right: bool) -> bool {
         use sunrise_client::container_screen::Target;
         use sunrise_client::menu::Input;
         self.direct_craft_stop();
         if self.mod_browser_press(right) {
-            return;
+            return true;
         }
         if !right && self.sort_press() {
-            return;
+            return true;
         }
         // AbstractRecipeBookScreen lets the book handle its buttons before
         // AbstractContainerScreen starts a drag or chooses an outside slot.
         // Toggling it can move the inventory under the pointer before release.
         if self.recipe_book_click(right) {
             self.inv_clicks.skip_release();
-            return;
+            return true;
         }
         if self.native_screen_press(right) {
             self.inv_clicks.skip_release();
-            return;
+            return true;
         }
         let (slot, outside) = self.inventory_target();
         // mouseClicked: `lastClickSlot = slot` for every press that reaches
@@ -157,12 +157,12 @@ impl Game<'_> {
                 None if self.inv_clicks.quick_crafting().is_some() => {
                     self.inv_drag = Some((i32::from(right), Vec::new()));
                 }
-                None => {}
+                None => return false,
             }
-            return;
+            return true;
         }
         if self.tweak_press(slot, right, shift) {
-            return;
+            return true;
         }
         if let Some(slot) = slot
             && shift
@@ -182,7 +182,7 @@ impl Game<'_> {
                 {
                     // A screen the menu engine doesn't model: its own click.
                     self.click_inventory(right);
-                    return;
+                    return true;
                 }
                 if let Some(moved) = self.last_quick_moved.clone() {
                     // The creative screen clicks its own menu, on a server too.
@@ -199,7 +199,7 @@ impl Game<'_> {
                 }
                 self.last_inv_click = None;
                 self.inv_clicks.skip_release();
-                return;
+                return true;
             }
         }
         if let Some(slot) = slot
@@ -217,7 +217,7 @@ impl Game<'_> {
                 self.last_inv_click = None;
                 // The double click's own release (`mouseReleased`'s PICKUP_ALL).
                 self.inv_clicks.skip_release();
-                return;
+                return true;
             }
             if self.carried.is_some() {
                 let ty = i32::from(right);
@@ -231,7 +231,7 @@ impl Game<'_> {
                 } else {
                     self.inv_drag = Some((ty, Vec::new()));
                 }
-                return;
+                return true;
             }
         }
         if self.creative_tab_open() {
@@ -244,9 +244,9 @@ impl Game<'_> {
                 None if self.inv_clicks.quick_crafting().is_some() => {
                     self.inv_drag = Some((i32::from(right), Vec::new()));
                 }
-                None => {}
+                None => return false,
             }
-            return;
+            return true;
         }
         // mouseClicked: an empty hand's PICKUP is the menu's click at once
         // (a right click on a bundle takes its first stack out).
@@ -257,9 +257,9 @@ impl Game<'_> {
             if let Some(key) = self.container {
                 self.container_changed(key);
             }
-            return;
+            return true;
         }
-        self.click_inventory(right);
+        self.click_inventory(right)
     }
     /// Mouse movement while a quick craft drag is running.
     pub(super) fn inventory_drag_move(&mut self) {
@@ -300,11 +300,28 @@ impl Game<'_> {
         let Some(r) = self.renderer.as_ref() else {
             return (None, false);
         };
+<<<<<<< sync-sunrise-1
         let batch = self.interface_batch([r.config.width, r.config.height]);
         (
             self.slot_at(&batch, self.cursor.0, self.cursor.1),
             self.clicked_outside(&batch),
         )
+=======
+        let batch = HudBatch::new(
+            [r.config.width, r.config.height],
+            self.settings.gui_scale_inputs(),
+        );
+        self.target_at(&batch)
+    }
+    /// `inventory_target` for the frame `batch` describes.
+    pub(super) fn target_at(&self, batch: &HudBatch) -> (Option<usize>, bool) {
+        let slot = self.slot_at(batch, self.cursor.0, self.cursor.1);
+        // A mod screen may place a slot beyond its image: a click on one is
+        // not a click outside the window.
+        let outside =
+            self.clicked_outside(batch) && !(slot.is_some() && self.native_screen_shown());
+        (slot, outside)
+>>>>>>> sunrise/main
     }
     pub(super) fn screen_button(right: bool) -> sunrise_client::container_screen::Button {
         use sunrise_client::container_screen::Button;
@@ -449,12 +466,16 @@ impl Game<'_> {
     }
     /// Mouse release over an inventory screen: `mouseReleased` ends or
     /// cancels the drag, drops a stack released outside, or clicks.
-    pub(super) fn inventory_mouse_release(&mut self, right: bool) {
+    pub(super) fn inventory_mouse_release(&mut self, right: bool) -> bool {
         use sunrise_client::container_screen::{Release, Target};
+<<<<<<< sync-sunrise-1
         self.tweak_release();
         if self.creative_catalog_release(right) {
             return;
         }
+=======
+        let tweaked = self.tweak_release();
+>>>>>>> sunrise/main
         let (slot, outside) = self.inventory_target();
         let dragged = self.inv_drag.as_ref().is_some_and(|(_, s)| !s.is_empty());
         let release = self.inv_clicks.release(
@@ -481,8 +502,10 @@ impl Game<'_> {
                     self.container_changed(key);
                 }
             }
-            _ => self.inv_drag = None,
+            (Release::Swallowed, _) => self.inv_drag = None,
+            _ => return self.inv_drag.take().is_some() || tweaked,
         }
+        true
     }
     /// A press of the pick block button (`keyPickItem`, the middle button by
     /// default) over an inventory screen: `mouseClicked` with `cloning`
@@ -490,7 +513,7 @@ impl Game<'_> {
     /// full size (`CLONE`), a carried stack starts a quick craft drag of type
     /// 2 that fills every slot it crosses; without infinite materials the
     /// press does nothing.
-    pub(super) fn inventory_pick_press(&mut self) {
+    pub(super) fn inventory_pick_press(&mut self) -> bool {
         use sunrise_client::container_screen::{Button, Target};
         let (slot, outside) = self.inventory_target();
         let was_crafting = self.inv_clicks.quick_crafting().is_some();
@@ -513,13 +536,14 @@ impl Game<'_> {
                 });
                 self.inv_drag = Some((2, first.into_iter().collect()));
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
     /// The pick block button's release (`mouseReleased`): ends its quick
     /// craft drag, cancels another button's, or clones onto the slot under a
     /// carried stack (`CLONE`, which only an item tab's display slot takes).
-    pub(super) fn inventory_pick_release(&mut self) {
+    pub(super) fn inventory_pick_release(&mut self) -> bool {
         use sunrise_client::container_screen::{Button, Release, Target};
         let (slot, outside) = self.inventory_target();
         let dragged = self.inv_drag.as_ref().is_some_and(|(_, s)| !s.is_empty());
@@ -537,8 +561,10 @@ impl Game<'_> {
                 self.inv_drag = None;
                 self.click_open_inventory(Some(slot), 2, input);
             }
-            _ => self.inv_drag = None,
+            (Release::Swallowed, _) => self.inv_drag = None,
+            _ => return self.inv_drag.take().is_some(),
         }
+        true
     }
     /// Mouse release: finishes a quick craft drag (one slot is a plain click).
     pub(super) fn inventory_release(&mut self) {

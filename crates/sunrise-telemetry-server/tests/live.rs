@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use http_body_util::BodyExt;
 use sunrise_telemetry::live::{self, Count, Ping};
 use sunrise_telemetry_server::history::{Sample, Series};
 use sunrise_telemetry_server::store::Store;
 use sunrise_telemetry_server::{App, Config, router};
-use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 fn app(config: Config) -> Arc<App> {

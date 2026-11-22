@@ -10,9 +10,9 @@ use super::{
 };
 use crate::items::ItemStack;
 use crate::projectiles::{Projectile, ProjectileKind};
+use std::f32::consts::PI;
 use sunrise_core::geometry::trig::{DEG_TO_RAD, Mth};
 use sunrise_core::{geometry::Vec3, random::RandomSource};
-use std::f32::consts::PI;
 
 /// The target selector of `Pillager.registerGoals`,
 /// `Vindicator.registerGoals` and `Evoker.registerGoals`; the evoker's player
@@ -428,12 +428,13 @@ fn cast_fangs(m: &mut Mob, cx: &mut Cx) {
     }
 }
 /// `createSpellEntity`: the first block below `max_y` whose up face is
-/// sturdy, standing on the top of whatever collision shape is in the way.
+/// sturdy, standing on the top of whatever collision shape is in the way
+/// ([`super::MobWorld::collision_top`]: a published shape's, #1710).
 ///
 /// The floor test is `BlockState.isFaceSturdy(.., UP)`, not a full cube: a
 /// soul sand or mud block is 14/16 high and still supports a fang, where
 /// requiring a full collision shape drops the fang into the block.
-fn fang_floor(w: &super::MobWorld, x: f64, z: f64, min_y: f64, max_y: f64) -> Option<f64> {
+pub fn fang_floor(w: &super::MobWorld, x: f64, z: f64, min_y: f64, max_y: f64) -> Option<f64> {
     let (bx, bz) = (x.floor() as i32, z.floor() as i32);
     let mut y = max_y.floor() as i32;
     while y >= min_y.floor() as i32 - 1 {
@@ -443,7 +444,7 @@ fn fang_floor(w: &super::MobWorld, x: f64, z: f64, min_y: f64, max_y: f64) -> Op
             let top = if w.facts.is_air(here) {
                 0.0
             } else {
-                f64::from(w.data.state(here).top)
+                w.collision_top(bx, y, bz)
             };
             return Some(f64::from(y) + top);
         }
@@ -957,6 +958,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn spellcasters_remember_an_unseen_player() {
         use crate::mobs::world::{test_player, with_test_world};
         let ran = with_test_world(&[], |w, types| {
@@ -1002,7 +1004,7 @@ mod tests {
         });
         // Without the vanilla data under .local/sunrise-client the world
         // cannot be built: the test has nothing to check.
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     fn pillager() -> Mob {
@@ -1056,6 +1058,7 @@ mod tests {
     /// sturdy up face, not for a full cube. Soul sand is 14/16 high and still
     /// supports a fang, which a full-collision test drops into the block.
     #[test]
+    #[ignore = "daily"]
     fn a_fang_stands_on_a_soul_sand_floor() {
         let build = |world: &mut crate::world::World,
                      registry: &sunrise_world::registry::BlockRegistry| {
@@ -1081,7 +1084,7 @@ mod tests {
             // the first sturdy block and the fang sits at 65.
             assert_eq!(fang_floor(w, 0.5, 0.5, 64.0, 65.875), Some(65.0));
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     /// `Vindicator.setCustomName` latches `isJohnny` the first time the name is
@@ -1122,7 +1125,8 @@ mod tests {
         );
         // `Vindicator.addAdditionalSaveData` writes the flag, false or true.
         let types = [("minecraft:vindicator".into(), m.kind.clone())].into();
-        let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
+        let saved =
+            crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None, &Default::default());
         assert_eq!(saved.get("Johnny"), Some(&Tag::Byte(1)));
         let back = crate::entity_nbt::mob_from_nbt(&saved, &types, 2, None).unwrap();
         assert_eq!(i8::from(back.extra.johnny), 1, "the reloaded flag");
@@ -1147,13 +1151,21 @@ mod tests {
         if let Tag::Compound(c) = &mut silent {
             c.insert("Johnny".into(), Tag::Byte(0));
         }
-        let saved = crate::entity_nbt::mob_to_nbt(&loaded, [0; 4], Some(&silent), None, |_| None);
+        let saved = crate::entity_nbt::mob_to_nbt(
+            &loaded,
+            [0; 4],
+            Some(&silent),
+            None,
+            |_| None,
+            &Default::default(),
+        );
         assert_eq!(saved.get("Johnny"), None);
     }
     /// `EvokerWololoSpellGoal` finds blue sheep with
     /// `TargetingConditions.forNonCombat().range(16)`: an invisible sheep at
     /// five blocks is out of range, one at two blocks is not.
     #[test]
+    #[ignore = "daily"]
     fn an_invisible_blue_sheep_is_not_wololoed_from_five_blocks() {
         use crate::mobs::world::with_test_world;
         let mut outcomes = Vec::new();
@@ -1170,6 +1182,7 @@ mod tests {
                 }
                 let seen = [sheep.seen(None, &crate::items::Items::empty())];
                 let world = crate::mobs::MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     others: &seen,
                     ..world
                 };
@@ -1202,6 +1215,7 @@ mod tests {
     /// reads the flag, so a flagged sheep at fourteen blocks is out of range
     /// (0.07 of 16, floored to 2) while a visible one is picked.
     #[test]
+    #[ignore = "daily"]
     fn a_flagged_invisible_blue_sheep_is_not_wololoed_from_fourteen_blocks() {
         use crate::mobs::world::with_test_world;
         let mut outcomes = Vec::new();
@@ -1216,6 +1230,7 @@ mod tests {
                 sheep.invisible = invisible;
                 let seen = [sheep.seen(None, &crate::items::Items::empty())];
                 let world = crate::mobs::MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     others: &seen,
                     ..world
                 };

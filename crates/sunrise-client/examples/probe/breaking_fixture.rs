@@ -1,4 +1,10 @@
 //! Headless transport for real model-shaped breaking overlays.
+use serde_json::{Value, json};
+use std::{
+    fs,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::Path,
+};
 use sunrise_client::{
     assets::Assets,
     blocks::{BlockFacts, RenderShape},
@@ -8,12 +14,6 @@ use sunrise_client::{
 };
 use sunrise_core::position::BlockPos;
 use sunrise_world::registry::BlockStateId;
-use serde_json::{Value, json};
-use std::{
-    fs,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-};
 /// The stage sprite origin the cracks carry (the oracle compares the geometry and UVs only).
 const STAGE: [f32; 2] = [0.25, 0.5];
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -177,6 +177,32 @@ def avatar_cases(rng):
         yield dict(t='avatar', ops=ops)
 
 
+def boat_cases(rng):
+    """AbstractBoat.clampRotation: a rider's yaw against the boat's, near the 105-degree limit, around the wrap
+    at 180, at large turns and at float steps where adding and subtracting round differently."""
+    # The float immediately below +180 wraps to the opposite sign if 180 is added first.
+    # The second angle is in range but changes when vanilla adds the target before subtracting the delta.
+    yield dict(t='boat', views=[[lab.fbits(rider), lab.fbits(boat)]
+                                for rider, boat in [(179.99998, 0.0), (-179.99998, -75.12346)]])
+
+    def angle():
+        r = rng.random()
+        if r < 0.3:
+            return rng.uniform(-720, 720)
+        if r < 0.5:
+            return rng.choice([-1, 1]) * rng.uniform(1e3, 1e6)
+        if r < 0.8:
+            return rng.choice([-180.0, 180.0, -105.0, 105.0, 0.0, 360.0]) + rng.uniform(-1e-3, 1e-3)
+        return rng.choice([-180.0, 180.0, 105.0, -105.0, 75.0, 255.0, 285.0, 540.0])
+    for _ in range(40):
+        views = []
+        for _ in range(500):
+            boat = angle()
+            rider = boat + angle() if rng.random() < 0.6 else angle()
+            views.append([lab.fbits(rider), lab.fbits(boat)])
+        yield dict(t='boat', views=views)
+
+
 def make_cases(build):
     rng = random.Random(0x43414d45)
     path = build / 'cases.jsonl'
@@ -184,7 +210,7 @@ def make_cases(build):
     cases.mkdir(exist_ok=True)
     count = 0
     with path.open('w') as out:
-        for generator in (fov_cases, camera_cases, bob_cases, avatar_cases):
+        for generator in (fov_cases, camera_cases, bob_cases, avatar_cases, boat_cases):
             for case in generator(rng):
                 text = json.dumps(case, separators=(',', ':'))
                 out.write(text + '\n')
@@ -206,7 +232,7 @@ def main():
              'ClientAvatarState walk/bob history with AbstractClientPlayer.updateBob, and GameRenderer.bobHurt/bobView '
              'as the full JOML pose matrix with its property flags. The camera entity is a shell with controlled '
              'queries; getFluidInCamera is supplied (the fog harnesses cover fluid detection) and the new-minecart '
-             'interpolation branch is not exercised.')
+             'interpolation branch is not exercised. AbstractBoat.clampRotation runs on a boat shell for a player shell.')
     harness.differential(
         'rust-camera-parity', 'VanillaCameraOracle', 'camera_probe', make_cases, scope,
         sources=[lab.ROOT / 'crates/sunrise-client-render/src/camera.rs'])

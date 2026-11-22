@@ -1,9 +1,9 @@
 //! Dropped-item environmental damage, without a game or a server.
+use std::{fs, path::Path, sync::Arc};
 use sunrise_client::{
     assets::Assets, blocks::BlockFacts, chunk::Chunk, entities::ItemEntity, world::World,
 };
 use sunrise_core::geometry::Vec3;
-use std::{fs, path::Path, sync::Arc};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<_> = crate::args().collect();
@@ -72,7 +72,7 @@ pub fn main() -> sunrise_client::Result<()> {
             position,
             previous: position,
             velocity: Vec3::ZERO,
-            on_ground: false,
+            ground: Default::default(),
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -82,7 +82,6 @@ pub fn main() -> sunrise_client::Result<()> {
             was_touching_water: false,
             no_gravity: true,
             vertical_collision: false,
-            horizontal_collision: false,
         };
         output.push_str(f[0]);
         for _ in 0..2 {

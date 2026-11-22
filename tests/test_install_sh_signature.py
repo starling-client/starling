@@ -1,8 +1,10 @@
-"""Runs tests/install_sh_signature.sh: packaging/server/install.sh checks the release signature.
+"""Runs tests/install_sh_signature.sh: packaging/server/install.sh installs only a release sunrise-verify checked.
 
-PURPOSE: keep install.sh's Ed25519 check from regressing (docs/release-flow.md, "Signed checksums").
-REFS: tests/install_sh_signature.sh, tools/ci/sign_release.sh.
-Skips quietly on Windows and without bash or OpenSSL 3. Headless, no network.
+PURPOSE: keep install.sh's signature check and its refusals from regressing (docs/release-flow.md, "Signed checksums").
+REFS: tests/install_sh_signature.sh, tools/ci/sign_release.sh, tests/it/install.rs in sunrise-release-sign (the daily
+run builds sunrise-verify with its test-key feature and sets SUNRISE_VERIFY_TEST_BIN).
+Skips quietly on Windows, without bash or OpenSSL 3, and without SUNRISE_VERIFY_TEST_BIN: a by-hand run needs a built
+verifier. Headless, no network.
 """
 
 import os
@@ -19,6 +21,7 @@ class InstallShSignature(unittest.TestCase):
     # System32's WSL one (#5383), which can't see the host's paths.
     @unittest.skipIf(os.name == "nt", "install.sh is for Linux and macOS")
     @unittest.skipUnless(shutil.which("bash") and shutil.which("openssl"), "bash and openssl needed")
+    @unittest.skipUnless(os.environ.get("SUNRISE_VERIFY_TEST_BIN"), "SUNRISE_VERIFY_TEST_BIN (the daily run sets it) needed")
     def test_signature_cases(self):
         run = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, timeout=300)
         if run.returncode == 77:

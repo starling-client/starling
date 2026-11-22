@@ -11,8 +11,8 @@ impl Game<'_> {
     /// registrations again. An id no block has is logged and skipped.
     pub(in crate::game) fn native_register_block_tint_sources(
         context: &mod_api::RegistrationContext,
-        sources: &mut dyn BlockTintSources,
+        sources: &mut mod_api::BlockTintRegistry,
     ) {
-        Self::fire_register_block_tint_sources(context, sources);
+        Self::fire_register_block_tint_sources(context, |listen| sources.register_listener(listen));
     }
 }

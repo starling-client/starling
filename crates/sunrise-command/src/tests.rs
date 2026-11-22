@@ -428,6 +428,227 @@ fn vanilla_error_messages() {
     let e = run("setblock 1 2 3 oak_stairs[facing=up]").unwrap_err();
     assert_eq!(e.message.plain(), "argument.block.property.invalid");
 }
+
+fn component_command_reg(component: &str, persistent: bool) -> Registries {
+    let mut registry = reg();
+    registry.by_registry.insert(
+        "minecraft:data_component_type".into(),
+        RegistryIds {
+            ids: vec![component.into()],
+            tags: Vec::new(),
+        },
+    );
+    if persistent {
+        registry.persistent_components.push(component.into());
+    }
+    registry
+}
+
+fn assert_nonpersistent_command_error(error: &CommandError, id: &str, reason: &str) {
+    assert_eq!(error.key, "arguments.item.component.malformed");
+    let message = error.message.source_component().unwrap();
+    assert_eq!(message["with"][0]["text"].as_str(), Some(id));
+    assert_eq!(message["with"][1]["text"].as_str(), Some(reason));
+}
+
+fn transient_component_commands(id: &str, set: &str, remove: &str, reason: &str) {
+    let registry = component_command_reg(id, false);
+    let dispatcher = vanilla::dispatcher();
+    for prefix in ["give @s ", "item replace entity @s hotbar.0 with "] {
+        for stack in [set, remove] {
+            let input = format!("{prefix}{stack}");
+            let parse = dispatcher.parse(&input, &registry);
+            let error = parse.executable().unwrap_err();
+            assert_nonpersistent_command_error(&error, id, reason);
+            assert_eq!(error.input.as_deref(), Some(input.as_str()));
+        }
+    }
+    // Exact comparisons decode a value, including under predicate negation.
+    for stack in [set.to_owned(), set.replacen('[', "[!", 1)] {
+        let input = format!("clear @s {stack}");
+        let parse = dispatcher.parse(&input, &registry);
+        assert_nonpersistent_command_error(&parse.executable().unwrap_err(), id, reason);
+    }
+    // Presence, absence and any-value subpredicates only refer to a type.
+    for condition in [
+        id.to_owned(),
+        format!("!{id}"),
+        format!("{id}~{{}}"),
+        format!("!{id}~{{}}"),
+    ] {
+        let input = format!("clear @s stone[{condition}]");
+        let parse = dispatcher.parse(&input, &registry);
+        assert_eq!(parse.executable().unwrap().1, "clear", "{input}");
+    }
+    let value = sunrise_core::nbt::Tag::compound([] as [(&str, sunrise_core::nbt::Tag); 0]);
+    assert_eq!(
+        item::decode_component(id, &value, &registry).unwrap_err(),
+        reason
+    );
+    assert_eq!(
+        item::decoded_component_value(id, &value, &registry).unwrap_err(),
+        reason
+    );
+}
+
+#[test]
+fn creative_slot_lock_commands_require_a_persistent_component() {
+    transient_component_commands(
+        "minecraft:creative_slot_lock",
+        "stone[creative_slot_lock={}]",
+        "stone[!creative_slot_lock]",
+        "'minecraft:creative_slot_lock' is not a persistent component",
+    );
+}
+
+#[test]
+fn additional_trade_cost_commands_require_a_persistent_component() {
+    transient_component_commands(
+        "minecraft:additional_trade_cost",
+        "stone[minecraft:additional_trade_cost=1]",
+        "stone[!minecraft:additional_trade_cost]",
+        "'minecraft:additional_trade_cost' is not a persistent component",
+    );
+}
+
+#[test]
+fn map_post_processing_commands_require_a_persistent_component() {
+    transient_component_commands(
+        "minecraft:map_post_processing",
+        "stone[map_post_processing=\"scale\"]",
+        "stone[!map_post_processing]",
+        "'minecraft:map_post_processing' is not a persistent component",
+    );
+}
+
+#[test]
+fn transient_component_names_fail_before_reading_a_payload() {
+    let registry = component_command_reg("minecraft:map_post_processing", false);
+    let input = "give @s stone[map_post_processing={";
+    let parse = vanilla::dispatcher().parse(input, &registry);
+    let error = parse.executable().unwrap_err();
+    assert_nonpersistent_command_error(
+        &error,
+        "minecraft:map_post_processing",
+        "'minecraft:map_post_processing' is not a persistent component",
+    );
+    assert_eq!(error.cursor, input.find("map_post_processing").unwrap());
+}
+
+#[test]
+fn unknown_component_names_stay_unknown() {
+    let registry = component_command_reg("minecraft:creative_slot_lock", false);
+    let dispatcher = vanilla::dispatcher();
+    for input in [
+        "give @s stone[example:missing={}]",
+        "give @s stone[!example:missing]",
+        "item replace entity @s hotbar.0 with stone[example:missing={}]",
+        "item replace entity @s hotbar.0 with stone[!example:missing]",
+        "clear @s stone[example:missing={}]",
+        "clear @s stone[example:missing]",
+        "clear @s stone[!example:missing]",
+    ] {
+        let parse = dispatcher.parse(input, &registry);
+        let error = parse.executable().unwrap_err();
+        assert_eq!(error.key, "arguments.item.component.unknown", "{input}");
+        assert_eq!(
+            error.message.source_component().unwrap()["with"][0]["text"].as_str(),
+            Some("example:missing"),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn registered_persistent_components_keep_the_stored_value_fallback() {
+    let registry = component_command_reg("example:stored", true);
+    let dispatcher = vanilla::dispatcher();
+    for input in [
+        "give @s stone[example:stored={custom:[1,2,3]}]",
+        "give @s stone[!example:stored]",
+        "item replace entity @s hotbar.0 with stone[example:stored={custom:[1,2,3]}]",
+        "item replace entity @s hotbar.0 with stone[!example:stored]",
+        "clear @s stone[example:stored={custom:[1,2,3]}]",
+    ] {
+        assert!(
+            dispatcher.parse(input, &registry).executable().is_ok(),
+            "{input}"
+        );
+    }
+    let value = sunrise_core::nbt::parse_snbt("{custom:[1,2,3]}").unwrap().0;
+    assert_eq!(
+        item::decoded_component_value("example:stored", &value, &registry).unwrap(),
+        value
+    );
+}
+
+#[test]
+fn nested_stack_and_exact_predicate_components_require_persistence() {
+    let dispatcher = vanilla::dispatcher();
+    for (component, payload, reason) in [
+        (
+            "minecraft:container",
+            r#"[{slot:0,item:{id:"minecraft:stone",components:{"minecraft:creative_slot_lock":{}}}}]"#,
+            "'minecraft:creative_slot_lock' is not a persistent component",
+        ),
+        (
+            "minecraft:bundle_contents",
+            r#"[{id:"minecraft:stone",components:{"!minecraft:map_post_processing":{}}}]"#,
+            "'minecraft:map_post_processing' is not a persistent component",
+        ),
+        (
+            "minecraft:charged_projectiles",
+            r#"[{id:"minecraft:stone",components:{additional_trade_cost:1}}]"#,
+            "'minecraft:additional_trade_cost' is not a persistent component",
+        ),
+        (
+            "minecraft:use_remainder",
+            r#"{id:"minecraft:stone",components:{creative_slot_lock:{}}}"#,
+            "'minecraft:creative_slot_lock' is not a persistent component",
+        ),
+        (
+            "minecraft:can_break",
+            r#"[{blocks:"minecraft:stone",components:{map_post_processing:"scale"}}]"#,
+            "'minecraft:map_post_processing' is not a persistent component",
+        ),
+        (
+            "minecraft:can_place_on",
+            r#"[{blocks:"minecraft:stone",components:{additional_trade_cost:1}}]"#,
+            "'minecraft:additional_trade_cost' is not a persistent component",
+        ),
+    ] {
+        let registry = component_command_reg(component, true);
+        for prefix in [
+            "give @s ",
+            "item replace entity @s hotbar.0 with ",
+            "clear @s ",
+        ] {
+            let input = format!("{prefix}stone[{component}={payload}]");
+            let parse = dispatcher.parse(&input, &registry);
+            assert_nonpersistent_command_error(&parse.executable().unwrap_err(), component, reason);
+        }
+        let value = sunrise_core::nbt::parse_snbt(payload).unwrap().0;
+        assert_eq!(
+            item::decode_component(component, &value, &registry).unwrap_err(),
+            reason
+        );
+        assert_eq!(
+            item::decoded_component_value(component, &value, &registry).unwrap_err(),
+            reason
+        );
+    }
+}
+
+#[test]
+fn arbitrary_component_payload_data_is_not_a_component_map() {
+    let dispatcher = vanilla::dispatcher();
+    for component in ["minecraft:custom_data", "example:container"] {
+        let registry = component_command_reg(component, true);
+        let input =
+            format!("give @s stone[{component}={{components:{{creative_slot_lock:{{}}}}}}]");
+        assert!(dispatcher.parse(&input, &registry).executable().is_ok());
+    }
+}
 #[test]
 fn commands_need_allow_commands() {
     // IntegratedServer.getProfilePermissions: the owner of a world without
@@ -500,6 +721,26 @@ fn suggestions_like_vanilla() {
     );
     assert_eq!(suggestions("time set 5"), ["d", "s", "t"]);
     assert!(suggestions("time set ").contains(&"minecraft:day".to_owned()));
+}
+
+/// `CommandDispatcher.getCompletionSuggestions`: a merged empty list is
+/// `Suggestions.empty()`, `StringRange.at(0)` — not the token's range the
+/// chat merge keeps for `ask_server` replies.
+#[test]
+fn empty_suggestions_answer_at_zero() {
+    let reg = reg();
+    let d = vanilla::dispatcher();
+    for input in ["gamemode x", "time set  1", "tp nope "] {
+        let parse = d.parse(input, &reg);
+        let (range, list) = d.suggestions(&parse, input.len(), &reg);
+        assert!(list.is_empty(), "{input}");
+        assert_eq!(range, (0, 0), "{input}");
+        // The chat entries still answer a range ending at the cursor, so the
+        // merge pastes an `ask_server` reply over the token being typed.
+        let (range, list) = d.client_suggestions(&parse, input.len(), &reg);
+        assert!(list.is_empty(), "{input}");
+        assert_eq!(range.1, input.len(), "{input}");
+    }
 }
 /// ClientSuggestionProvider: block and column positions offer the targeted
 /// block (`getRelevantCoordinates`), `Vec3` and `Vec2` the exact hit point
@@ -1488,13 +1729,14 @@ fn a_custom_argument_parses_completes_and_keeps_its_id() {
                 Err(Text::literal(format!("unknown machine `{input}`")))
             }
         },
-        |prefix| {
+        |_, prefix| {
             ["press", "furnace"]
                 .into_iter()
                 .filter(|machine| machine.starts_with(prefix))
                 .map(|text| CustomSuggestion {
                     text: text.to_owned(),
                     tooltip: None,
+                    replace_start: None,
                 })
                 .collect()
         },
@@ -1542,7 +1784,7 @@ fn a_greedy_custom_argument_takes_the_rest_of_the_line() {
         "example:note",
         CustomArgumentKind::Greedy,
         |input| Ok(input.trim().to_owned()),
-        |_| Vec::new(),
+        |_, _| Vec::new(),
     ));
     let mut dispatcher = Dispatcher::new();
     let note = dispatcher.literal(0, "note");
@@ -1560,6 +1802,190 @@ fn a_greedy_custom_argument_takes_the_rest_of_the_line() {
             value: "hello there".into(),
         })
     );
+}
+
+#[test]
+fn an_ask_server_node_replies_with_the_token_range_when_it_has_no_suggestion_of_its_own() {
+    // The free `id` node: vanilla's identifier parser with `minecraft:ask_server`. It computes
+    // nothing locally, so the range the server sends must still be the token being typed: the
+    // completions a mod adds in `tab_complete` are applied there, not at the start of the line.
+    let mut dispatcher = Dispatcher::new();
+    let probe = dispatcher.literal(0, "probe");
+    let value = dispatcher.argument(probe, "value", ArgType::Identifier);
+    dispatcher.suggests(value, Suggests::AskServer);
+    let registries = reg();
+    let typed = "probe ston";
+    let parse = dispatcher.parse(typed, &registries);
+    let (range, list, ask) = dispatcher.client_suggestions_asking(&parse, typed.len(), &registries);
+    assert!(ask, "the client asks the server for this node");
+    assert!(list.is_empty(), "the identifier itself suggests nothing");
+    assert_eq!(range, (6, typed.len()), "the token, never (0, 0)");
+    // The server's dispatcher has no provider to ask, only its mods; an empty merge is
+    // `Suggestions.empty()`.
+    let (range, list) = dispatcher.suggestions(&parse, typed.len(), &registries);
+    assert!(list.is_empty());
+    assert_eq!(range, (0, 0), "Suggestions.empty()");
+}
+
+#[test]
+fn an_expanded_suggestion_past_the_packet_text_limit_is_left_out() {
+    // Two completions that each fit the packet's 32767 UTF-16 units on their own: one replaces
+    // the whole 32002-character text, the other only its last character. Padding the second with
+    // the prefix it starts after expands to 64768 characters, so the packet cannot carry it; it
+    // is left out and the first one stays.
+    let input = "a".repeat(32002);
+    let whole = || Suggestion {
+        range: (0, input.len()),
+        text: "short".into(),
+        tooltip: None,
+        int_value: None,
+    };
+    let from_last = |len: usize| Suggestion {
+        range: (input.len() - 1, input.len()),
+        text: "b".repeat(len),
+        tooltip: None,
+        int_value: None,
+    };
+    let (range, merged) = merge_suggestions(&input, vec![whole(), from_last(32767)]);
+    assert_eq!(range, (0, input.len()));
+    assert_eq!(
+        merged.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+        ["short"]
+    );
+    // The kept one applies to the whole text, so the chat can still offer it.
+    assert_eq!(merged[0].apply(&input), "short");
+    // The limit counts the expanded text: the 32001 characters in front of the last one plus
+    // its own 766 is exactly 32767 and stays, one character more does not.
+    let (_, merged) = merge_suggestions(&input, vec![whole(), from_last(766)]);
+    assert_eq!(merged.len(), 2);
+    assert!(
+        merged
+            .iter()
+            .any(|s| s.text.encode_utf16().count() == 32767),
+        "a completion expanded to exactly the limit stays"
+    );
+    let (_, merged) = merge_suggestions(&input, vec![whole(), from_last(767)]);
+    assert_eq!(merged.len(), 1, "32768 characters cannot cross the wire");
+}
+
+#[test]
+fn a_custom_suggestion_replaces_only_the_token_it_names() {
+    let argument = ArgType::Custom(CustomArgument::new(
+        "example:pattern",
+        CustomArgumentKind::Greedy,
+        |input| Ok(input.to_owned()),
+        |_, prefix| {
+            let start = prefix.rfind(' ').map_or(0, |space| space + 1);
+            let mut out: Vec<CustomSuggestion> = ["stone", "dirt"]
+                .into_iter()
+                .filter(|block| block.starts_with(&prefix[start..]))
+                .map(|block| CustomSuggestion {
+                    text: block.to_owned(),
+                    tooltip: None,
+                    replace_start: Some(start),
+                })
+                .collect();
+            // A suggestion past the typed text is left out, never applied.
+            out.push(CustomSuggestion {
+                text: "nowhere".to_owned(),
+                tooltip: None,
+                replace_start: Some(prefix.len() + 1),
+            });
+            out
+        },
+    ));
+    let mut dispatcher = Dispatcher::new();
+    let replace = dispatcher.literal(0, "replace");
+    let pattern = dispatcher.argument(replace, "pattern", argument);
+    dispatcher.executes(pattern, "test");
+
+    let registries = reg();
+    let typed = "replace stone st";
+    let parse = dispatcher.parse(typed, &registries);
+    let (range, suggestions) = dispatcher.suggestions(&parse, typed.len(), &registries);
+    assert_eq!(range, (14, typed.len()), "the range covers the typed token");
+    assert_eq!(
+        suggestions
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>(),
+        ["stone"]
+    );
+    assert_eq!(suggestions[0].apply(typed), "replace stone stone");
+}
+
+#[test]
+fn a_split_character_completion_does_not_displace_a_valid_neighbor() {
+    let argument = ArgType::Custom(CustomArgument::new(
+        "example:unicode",
+        CustomArgumentKind::Greedy,
+        |input| Ok(input.to_owned()),
+        |_, _| {
+            vec![
+                CustomSuggestion {
+                    text: "emerald".into(),
+                    tooltip: None,
+                    replace_start: Some(0),
+                },
+                CustomSuggestion {
+                    text: "broken".into(),
+                    tooltip: None,
+                    replace_start: Some(1),
+                },
+            ]
+        },
+    ));
+    let mut dispatcher = Dispatcher::new();
+    let probe = dispatcher.literal(0, "probe");
+    let value = dispatcher.argument(probe, "value", argument);
+    dispatcher.executes(value, "test");
+    let registries = reg();
+    let typed = "probe é";
+    let (range, suggestions) = dispatcher.suggestions(
+        &dispatcher.parse(typed, &registries),
+        typed.len(),
+        &registries,
+    );
+    assert_eq!(range, (6, 8));
+    assert_eq!(
+        suggestions
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>(),
+        ["emerald"]
+    );
+    assert_eq!(suggestions[0].apply(typed), "probe emerald");
+}
+
+#[test]
+fn a_free_identifier_keeps_vanillas_empty_paths_and_rejects_invalid_namespaces() {
+    let mut dispatcher = Dispatcher::new();
+    let probe = dispatcher.literal(0, "probe");
+    let value = dispatcher.argument(probe, "value", ArgType::Identifier);
+    dispatcher.executes(value, "test");
+    let registries = reg();
+    for (raw, expected) in [
+        ("//path", "minecraft://path"),
+        (":", "minecraft:"),
+        ("namespace:", "namespace:"),
+        ("namespace:lower/path", "namespace:lower/path"),
+    ] {
+        let typed = format!("probe {raw}");
+        let parsed = dispatcher.parse(&typed, &registries);
+        let (context, _) = parsed.executable().unwrap();
+        assert_eq!(
+            context.get("value"),
+            Some(&Arg::Str(expected.into())),
+            "{raw}"
+        );
+    }
+    for raw in ["name/space:path", "namespace:Upper"] {
+        let typed = format!("probe {raw}");
+        assert!(
+            dispatcher.parse(&typed, &registries).executable().is_err(),
+            "{raw}"
+        );
+    }
 }
 
 #[test]
@@ -1627,4 +2053,531 @@ fn a_servers_own_profiler_keeps_its_node_and_is_not_sunrises() {
         .collect();
     assert_eq!(offered, ["open"]);
     assert!(!vanilla::game_dispatcher().has_sunrise_profiler());
+}
+
+/// The provider a test argument type declares: it records every request and answers a fixed
+/// candidate list, so a test can see what the engine asked and which candidates it kept.
+type ProviderCalls =
+    std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<(String, String)>, Option<(u128, String)>)>>>;
+
+fn provider_argument(candidates: Vec<CustomSuggestion>, calls: ProviderCalls) -> ArgType {
+    let argument = CustomArgument::new(
+        "example:machine",
+        CustomArgumentKind::Word,
+        |input| Ok(input.to_owned()),
+        |_, _| panic!("the type's own suggest is not called once it declares a provider"),
+    )
+    .with_provider(move |reg, prefix, arguments| {
+        calls.lock().unwrap().push((
+            prefix.to_owned(),
+            arguments
+                .iter()
+                .map(|argument| (argument.name.clone(), argument.text.clone()))
+                .collect(),
+            reg.sender
+                .as_ref()
+                .map(|sender| (sender.uuid, sender.name.clone())),
+        ));
+        candidates.clone()
+    });
+    ArgType::Custom(argument)
+}
+
+/// `machine use <mode:example:mode> <machine:example:machine>`: a plain custom argument before
+/// the one the provider completes.
+fn provider_dispatcher(argument: ArgType) -> Dispatcher {
+    let plain = ArgType::Custom(CustomArgument::new(
+        "example:mode",
+        CustomArgumentKind::Word,
+        |input| Ok(input.to_owned()),
+        |_, _| Vec::new(),
+    ));
+    let mut dispatcher = Dispatcher::new();
+    let command = dispatcher.literal(0, "machine");
+    let use_node = dispatcher.literal(command, "use");
+    let mode = dispatcher.argument(use_node, "mode", plain);
+    let machine = dispatcher.argument(mode, "machine", argument);
+    dispatcher.executes(machine, "test");
+    dispatcher
+}
+
+#[test]
+fn a_declared_provider_is_asked_with_the_prefix_the_earlier_arguments_and_the_sender() {
+    let calls: ProviderCalls = Default::default();
+    let dispatcher = provider_dispatcher(provider_argument(
+        [
+            CustomSuggestion {
+                text: "press".into(),
+                tooltip: Some("a press".into()),
+                replace_start: None,
+            },
+            CustomSuggestion {
+                text: "furnace".into(),
+                tooltip: None,
+                replace_start: None,
+            },
+            CustomSuggestion {
+                text: "extra/press".into(),
+                tooltip: None,
+                replace_start: None,
+            },
+        ]
+        .to_vec(),
+        calls.clone(),
+    ));
+    let mut registries = reg();
+    registries.sender = Some(sunrise_client_core::registries::CommandSender {
+        uuid: 42,
+        name: "Simon".into(),
+    });
+    let typed = "machine use fast pr";
+    let (_, suggestions) = dispatcher.suggestions(
+        &dispatcher.parse(typed, &registries),
+        typed.len(),
+        &registries,
+    );
+    // SharedSuggestionProvider.suggest: the prefix at the start, or after a `.`, `_` or `/`; the
+    // merged list is sorted by text ignoring case.
+    assert_eq!(
+        suggestions
+            .iter()
+            .map(|s| (s.text.as_str(), s.tooltip.as_deref()))
+            .collect::<Vec<_>>(),
+        [("extra/press", None), ("press", Some("a press"))]
+    );
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        [(
+            "pr".to_owned(),
+            vec![("mode".to_owned(), "fast".to_owned())],
+            Some((42, "Simon".to_owned()))
+        )]
+    );
+}
+
+#[test]
+fn a_provider_answer_is_capped_after_matching_and_rejecting_candidates() {
+    let calls: ProviderCalls = Default::default();
+    let none = |text: String, tooltip: Option<String>| CustomSuggestion {
+        text,
+        tooltip,
+        replace_start: None,
+    };
+    // 1,000 candidates the typed text does not match, then the ones it does: the cap counts what
+    // the reply keeps, so the non-matches before a match cost it nothing.
+    let mut candidates: Vec<CustomSuggestion> = (0..MAX_PROVIDER_SUGGESTIONS)
+        .map(|i| none(format!("x{i}"), None))
+        .collect();
+    candidates.push(none(
+        // A match past STRING_UTF8's 32767 UTF-16 code units: dropped, and no budget spent.
+        format!("pr{}", "a".repeat(MAX_SUGGESTION_TEXT)),
+        None,
+    ));
+    candidates.push(none(
+        "prtip".into(),
+        // The NBT string limit for a tooltip is 65535 modified-UTF-8 bytes.
+        Some("b".repeat(MAX_SUGGESTION_TOOLTIP + 1)),
+    ));
+    candidates.push(none("press".into(), Some("a press".into())));
+    candidates.extend((0..MAX_PROVIDER_SUGGESTIONS).map(|i| none(format!("prm{i}"), None)));
+    let dispatcher = provider_dispatcher(provider_argument(candidates, calls.clone()));
+    let registries = reg();
+    let typed = "machine use fast pr";
+    let (_, suggestions) = dispatcher.suggestions(
+        &dispatcher.parse(typed, &registries),
+        typed.len(),
+        &registries,
+    );
+    assert_eq!(calls.lock().unwrap().len(), 1, "one request, one answer");
+    let texts: Vec<&str> = suggestions.iter().map(|s| s.text.as_str()).collect();
+    // The cap keeps 1,000 candidates, from the first one that matches: the matching candidate
+    // after 1,000 non-matches is offered.
+    assert_eq!(texts.len(), MAX_PROVIDER_SUGGESTIONS);
+    assert!(
+        texts.contains(&"press"),
+        "a match after 1,000 non-matches is still offered"
+    );
+    assert_eq!(
+        suggestions
+            .iter()
+            .find(|s| s.text == "press")
+            .and_then(|s| s.tooltip.as_deref()),
+        Some("a press"),
+        "its tooltip survives"
+    );
+    assert!(
+        !texts.iter().any(|text| text.starts_with("prt")),
+        "the candidate whose tooltip is past the NBT string limit is dropped, by name"
+    );
+    assert!(
+        texts.iter().all(|text| text.len() <= MAX_SUGGESTION_TEXT),
+        "the 32768-code-unit candidate is dropped, by name"
+    );
+    assert!(
+        texts.contains(&"prm998"),
+        "the 1,000th kept candidate stays"
+    );
+    assert!(
+        !texts.contains(&"prm999"),
+        "the count stops the reply at 1,000 kept candidates"
+    );
+}
+
+#[test]
+fn candidates_equal_to_the_input_or_repeated_spend_none_of_the_cap() {
+    let none = |text: &str, tooltip: Option<String>| CustomSuggestion {
+        text: text.into(),
+        tooltip,
+        replace_start: None,
+    };
+    let answer = |mut candidates: Vec<CustomSuggestion>| {
+        candidates.push(none("press", None));
+        let dispatcher = provider_dispatcher(provider_argument(candidates, Default::default()));
+        let registries = reg();
+        let typed = "machine use fast pr";
+        let (_, suggestions) = dispatcher.suggestions(
+            &dispatcher.parse(typed, &registries),
+            typed.len(),
+            &registries,
+        );
+        suggestions.into_iter().map(|s| s.text).collect::<Vec<_>>()
+    };
+    // 1,000 candidates identical to the typed text (each with its own tooltip, so none repeats
+    // another), then a useful one.
+    let texts = answer(
+        (0..MAX_PROVIDER_SUGGESTIONS)
+            .map(|i| none("pr", Some(format!("tip {i}"))))
+            .collect(),
+    );
+    assert_eq!(texts, ["press"]);
+    // 1,000 copies of one text and tooltip, then a useful one: the copy counts once.
+    let texts = answer(
+        (0..MAX_PROVIDER_SUGGESTIONS)
+            .map(|_| none("prdup", Some("same".into())))
+            .collect(),
+    );
+    assert_eq!(texts, ["prdup", "press"]);
+}
+
+#[test]
+fn only_the_argument_a_provider_owns_is_marked_as_owned() {
+    let calls: ProviderCalls = Default::default();
+    let dispatcher = provider_dispatcher(provider_argument(
+        vec![CustomSuggestion {
+            text: "press".into(),
+            tooltip: None,
+            replace_start: None,
+        }],
+        calls,
+    ));
+    let registries = reg();
+    // The provider's own argument: its answer is what the reply shows, untouched.
+    let typed = "machine use fast pr";
+    let (_, suggestions, owned) = dispatcher.client_suggestions_owned(
+        &dispatcher.parse(typed, &registries),
+        typed.len(),
+        &registries,
+    );
+    assert_eq!(suggestions.len(), 1);
+    assert!(owned, "the type declares a provider for this argument");
+    // One word earlier, a type that declares nothing keeps its completions open to a listener.
+    let typed = "machine use fa";
+    let (_, _, owned) = dispatcher.client_suggestions_owned(
+        &dispatcher.parse(typed, &registries),
+        typed.len(),
+        &registries,
+    );
+    assert!(!owned, "`suggest` alone leaves the completions open");
+}
+
+/// A syntax error at byte `cursor` of `input`.
+fn error_at(input: &str, cursor: usize) -> CommandError {
+    let mut reader = Reader::new(input);
+    reader.cursor = cursor;
+    CommandError::at(Text::literal("x"), &reader)
+}
+
+/// The window around the cursor counts UTF-16 units, not bytes, in `context` and in the
+/// parts the server's syntax-failure message is built from.
+#[test]
+fn context_window_counts_java_characters() {
+    // ASCII: the last ten characters, and the rest of the input.
+    let e = error_at("say hello world again", 15);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "ello world");
+    assert_eq!(w.after, " again");
+    assert_eq!(e.context().unwrap(), "...ello world<--[HERE]");
+    // Accented letters are two bytes, one unit: ten units, not five characters of bytes.
+    // 8 x 'é' (16 bytes) + "ab" + "cd": cursor after "ab" (byte 18, Java index 10).
+    let e = error_at("ééééééééabcd", 18);
+    let w = e.context_window().unwrap();
+    assert!(!w.ellipsis);
+    assert_eq!(w.before, "ééééééééab");
+    assert_eq!(w.after, "cd");
+    assert_eq!(e.context().unwrap(), "ééééééééab<--[HERE]");
+    // One more unit: Java index 11, so the window drops the first 'é' and gets "...".
+    let e = error_at("ééééééééabcd", 19);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "éééééééabc");
+    assert_eq!(w.after, "d");
+    // Astral characters are two units (four bytes): five emoji are ten units.
+    let e = error_at("😀😀😀😀😀x y", 20);
+    let w = e.context_window().unwrap();
+    assert!(!w.ellipsis);
+    assert_eq!(w.before, "😀😀😀😀😀");
+    assert_eq!(w.after, "x y");
+    // Six emoji are twelve units: "..." and the last five.
+    let e = error_at("😀😀😀😀😀😀z", 24);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "😀😀😀😀😀");
+    assert_eq!(w.after, "z");
+    // A window that cuts a pair in half shows the kept half as U+FFFD, as `context` does.
+    let e = error_at("😀😀😀😀😀a", 21);
+    let w = e.context_window().unwrap();
+    assert!(w.ellipsis);
+    assert_eq!(w.before, "\u{FFFD}😀😀😀😀a");
+    assert_eq!(e.context().unwrap(), "...\u{FFFD}😀😀😀😀a<--[HERE]");
+    // Ten units or fewer before the cursor: no "...".
+    let e = error_at("give @s x", 5);
+    let w = e.context_window().unwrap();
+    assert!(!w.ellipsis);
+    assert_eq!(w.before, "give ");
+    assert_eq!(w.after, "@s x");
+    // Cursor at the end: nothing after it. Past the end clamps.
+    for cursor in [9, 99] {
+        let e = error_at("give @s x", cursor);
+        let w = e.context_window().unwrap();
+        assert_eq!(w.before, "give @s x");
+        assert_eq!(w.after, "");
+    }
+    // No input, no window.
+    assert!(
+        CommandError::new(Text::literal("x"))
+            .context_window()
+            .is_none()
+    );
+}
+
+#[test]
+fn text_commands_refuse_nested_transient_hover_stacks() {
+    let dispatcher = vanilla::dispatcher();
+    let registry = reg();
+    for text in [
+        r#"{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}"#,
+        r#"{text:"root",extra:[{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}]}"#,
+        r#"{translate:"chat.type.text",with:[{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}]}"#,
+        r#"{selector:"@s",separator:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}"#,
+        r#"{text:"outer",hover_event:{action:"show_text",value:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}}"#,
+        r#"{text:"outer",hover_event:{action:"show_entity",id:"minecraft:pig",uuid:"00000000-0000-0000-0000-000000000001",name:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}}"#,
+        r#"{text:"dialog",click_event:{action:"show_dialog",dialog:{type:"minecraft:notice",title:"Item",body:{type:"minecraft:item",item:{id:"minecraft:stone",components:{creative_slot_lock:{}}}}}}}"#,
+    ] {
+        let input = format!("tellraw @s {text}");
+        let parse = dispatcher.parse(&input, &registry);
+        let error = parse.executable().unwrap_err();
+        assert_eq!(error.key, "argument.component.invalid", "{input}");
+        assert_eq!(
+            error.message.source_component().unwrap()["with"][0]["text"].as_str(),
+            Some("'minecraft:creative_slot_lock' is not a persistent component"),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn styled_number_formats_refuse_transient_hover_stacks() {
+    let dispatcher = vanilla::dispatcher();
+    let mut registry = reg();
+    registry.objectives.push("points".into());
+    let input = r#"scoreboard players display numberformat @s points styled {hover_event:{action:"show_item",id:"minecraft:stone",components:{"!minecraft:map_post_processing":{}}}}"#;
+    let parse = dispatcher.parse(input, &registry);
+    let error = parse.executable().unwrap_err();
+    assert_eq!(error.key, "argument.style.invalid");
+    assert_eq!(
+        error.message.source_component().unwrap()["with"][0]["text"].as_str(),
+        Some("'minecraft:map_post_processing' is not a persistent component")
+    );
+}
+
+#[test]
+fn text_bearing_item_components_refuse_transient_hover_stacks() {
+    let dispatcher = vanilla::dispatcher();
+    for (component, payload) in [
+        (
+            "minecraft:custom_name",
+            r#"{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}"#,
+        ),
+        (
+            "minecraft:item_name",
+            r#"{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}"#,
+        ),
+        (
+            "minecraft:lore",
+            r#"[{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}]"#,
+        ),
+        (
+            "minecraft:written_book_content",
+            r#"{title:"Book",author:"Author",pages:[{raw:"plain",filtered:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}]}"#,
+        ),
+        (
+            "minecraft:attribute_modifiers",
+            r#"[{type:"minecraft:max_health",id:"example:bonus",amount:1,operation:"add_value",display:{type:"override",value:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}}]"#,
+        ),
+    ] {
+        let registry = component_command_reg(component, true);
+        let input = format!("give @s stone[{component}={payload}]");
+        let parse = dispatcher.parse(&input, &registry);
+        assert_nonpersistent_command_error(
+            &parse.executable().unwrap_err(),
+            component,
+            "'minecraft:creative_slot_lock' is not a persistent component",
+        );
+    }
+}
+
+#[test]
+fn sulfur_cube_contents_refuse_transient_nested_components() {
+    let registry = component_command_reg("minecraft:sulfur_cube_content", true);
+    let input = r#"give @s stone[sulfur_cube_content={id:"minecraft:stone",components:{additional_trade_cost:1}}]"#;
+    let parse = vanilla::dispatcher().parse(input, &registry);
+    assert_nonpersistent_command_error(
+        &parse.executable().unwrap_err(),
+        "minecraft:sulfur_cube_content",
+        "'minecraft:additional_trade_cost' is not a persistent component",
+    );
+}
+
+#[test]
+fn text_literals_custom_data_and_tooltip_type_names_remain_opaque() {
+    let dispatcher = vanilla::dispatcher();
+    let registry = reg();
+    for input in [
+        r#"tellraw @s "{components:{creative_slot_lock:{}}}""#,
+        r#"tellraw @s {text:"literal",components:{creative_slot_lock:{}}}"#,
+        r#"tellraw @s {text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{custom_data:{components:{creative_slot_lock:{}}}}}}"#,
+    ] {
+        assert!(
+            dispatcher.parse(input, &registry).executable().is_ok(),
+            "{input}"
+        );
+    }
+    let mut registry = component_command_reg("minecraft:tooltip_display", true);
+    // A type-only field names the registered transient component without a payload.
+    registry
+        .by_registry
+        .get_mut("minecraft:data_component_type")
+        .unwrap()
+        .ids
+        .push("minecraft:creative_slot_lock".into());
+    let input =
+        r#"give @s stone[tooltip_display={hidden_components:["minecraft:creative_slot_lock"]}]"#;
+    assert!(dispatcher.parse(input, &registry).executable().is_ok());
+}
+
+#[test]
+fn partial_collection_predicates_refuse_nested_transient_exact_values() {
+    let dispatcher = vanilla::dispatcher();
+    for component in [
+        "minecraft:container",
+        "minecraft:bundle_contents",
+        "minecraft:charged_projectiles",
+    ] {
+        let mut registry = reg();
+        registry
+            .by_registry
+            .entry("minecraft:data_component_predicate_type".into())
+            .or_default()
+            .ids = vec![component.into()];
+        let payload = r#"{items:{contains:[{components:{creative_slot_lock:{}}}]}}"#;
+        let input = format!("clear @s stone[{component}~{payload}]");
+        let parse = dispatcher.parse(&input, &registry);
+        let error = parse.executable().unwrap_err();
+        assert_eq!(error.key, "arguments.item.predicate.malformed", "{input}");
+        assert_eq!(
+            error.message.source_component().unwrap()["with"][1]["text"].as_str(),
+            Some("'minecraft:creative_slot_lock' is not a persistent component"),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn lock_predicates_refuse_transient_exact_values_but_accept_type_only_tests() {
+    let dispatcher = vanilla::dispatcher();
+    let registry = component_command_reg("minecraft:lock", true);
+    let input = "give @s stone[lock={components:{creative_slot_lock:{}}}]";
+    let parse = dispatcher.parse(input, &registry);
+    assert_nonpersistent_command_error(
+        &parse.executable().unwrap_err(),
+        "minecraft:lock",
+        "'minecraft:creative_slot_lock' is not a persistent component",
+    );
+    let input = r#"give @s stone[lock={predicates:{"minecraft:creative_slot_lock":{}}}]"#;
+    assert!(dispatcher.parse(input, &registry).executable().is_ok());
+}
+
+#[test]
+fn inline_holder_and_sign_descriptions_refuse_transient_hover_stacks() {
+    let dispatcher = vanilla::dispatcher();
+    for (component, payload) in [
+        (
+            "minecraft:instrument",
+            r#"{sound_event:"minecraft:block.note_block.harp",use_duration:1,range:16,description:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}"#,
+        ),
+        (
+            "minecraft:provides_trim_material",
+            r#"{palette_id:"minecraft:quartz",description:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}"#,
+        ),
+        (
+            "minecraft:trim",
+            r#"{material:"minecraft:quartz",pattern:{asset_id:"minecraft:sentry",description:{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}}}"#,
+        ),
+        (
+            "minecraft:sign_text_front",
+            r#"{messages:[{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}},"","",""]}"#,
+        ),
+        (
+            "minecraft:sign_text_back",
+            r#"{messages:["","","",""],filtered_messages:["","","",{text:"item",hover_event:{action:"show_item",id:"minecraft:stone",components:{creative_slot_lock:{}}}}]}"#,
+        ),
+    ] {
+        let registry = component_command_reg(component, true);
+        let input = format!("give @s stone[{component}={payload}]");
+        let parse = dispatcher.parse(&input, &registry);
+        assert_nonpersistent_command_error(
+            &parse.executable().unwrap_err(),
+            component,
+            "'minecraft:creative_slot_lock' is not a persistent component",
+        );
+    }
+}
+
+#[test]
+fn item_particles_refuse_transient_nested_stack_patches() {
+    let dispatcher = vanilla::dispatcher();
+    let registry = reg();
+    for input in [
+        r#"particle item{item:{id:"minecraft:stone",components:{creative_slot_lock:{}}}}"#,
+        r#"particle item{item:{id:"minecraft:stone",components:{"!minecraft:creative_slot_lock":{}}}}"#,
+    ] {
+        let parse = dispatcher.parse(input, &registry);
+        let error = parse.executable().unwrap_err();
+        assert_eq!(error.key, "particle.invalidOptions", "{input}");
+        assert_eq!(
+            error.message.source_component().unwrap()["with"][0]["text"].as_str(),
+            Some("'minecraft:creative_slot_lock' is not a persistent component"),
+            "{input}"
+        );
+    }
+    for input in [
+        r#"particle item{item:{id:"minecraft:stone",components:{custom_data:{components:{creative_slot_lock:{}}}}}}"#,
+        r#"particle item{item:{id:"minecraft:stone",components:{tooltip_display:{hidden_components:["minecraft:creative_slot_lock"]}}}}"#,
+    ] {
+        assert!(
+            dispatcher.parse(input, &registry).executable().is_ok(),
+            "{input}"
+        );
+    }
 }

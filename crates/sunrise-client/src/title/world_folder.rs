@@ -28,7 +28,7 @@ pub(super) fn result_folder(name: &str, new_world: &str, taken: impl Fn(&str) ->
 }
 
 /// `FileUtil.sanitizeName`.
-fn sanitize_name(name: &str) -> String {
+pub(crate) fn sanitize_name(name: &str) -> String {
     name.chars()
         .map(|c| {
             if ILLEGAL_FILE_CHARACTERS.contains(&c) || matches!(c, '.' | '/' | '"') {

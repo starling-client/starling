@@ -58,9 +58,9 @@ impl HiveHost for GameHive<'_, '_> {
         let kind = sunrise_client::entity_nbt::kind(tag)?;
         if !self
             .game
-            .res
-            .mob_data()
-            .entity_has("minecraft:beehive_inhabitors", &kind)
+            .items()
+            .entity_type_tags
+            .contains("minecraft:beehive_inhabitors", &kind)
         {
             return None;
         }
@@ -108,6 +108,10 @@ impl Game<'_> {
             .find(|mob| mob.id == id)
             .is_some_and(|mob| sunrise_client::mobs::ai::brain_target(mob).is_some());
         let mut chosen = target;
+        let mut player_id = (target == Some(Who::Player))
+            .then(|| self.player_entity_id_by_connection(player))
+            .flatten()
+            .and_then(|id| u32::try_from(id).ok());
         let mut redirected = false;
         if self.native_authoritative()
             && mod_api::__private::listened(mod_api::HookId::LivingChangeTarget)
@@ -122,10 +126,7 @@ impl Game<'_> {
                     epoch, target,
                 ))),
                 Some(Who::Player) => {
-                    let Some(target) = self
-                        .player_entity_id_by_connection(player)
-                        .and_then(|id| u32::try_from(id).ok())
-                    else {
+                    let Some(target) = player_id else {
                         return false;
                     };
                     Some(mod_api::LivingRef::new(mod_api::EntityRef::new(
@@ -141,6 +142,7 @@ impl Game<'_> {
                     return false;
                 };
                 chosen = bound;
+                player_id = result.map(|t| t.entity().id());
                 redirected = true;
             }
         }
@@ -160,7 +162,7 @@ impl Game<'_> {
         let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return false;
         };
-        if !is_brain || !sunrise_client::mobs::ai::set_brain_target(mob, chosen) {
+        if !is_brain || !sunrise_client::mobs::ai::set_brain_target(mob, chosen, player_id) {
             mob.set_target(chosen);
         }
         true
@@ -228,24 +230,30 @@ impl Game<'_> {
     /// sent in: off its lead, its tag stored, the bee gone.
     pub(super) fn bee_enter_hive(&mut self, mob: u32, at: [i32; 3]) {
         let key = (at[0], at[1], at[2]);
-        let Some(i) = self
+        if !self
             .mobs
             .iter()
-            .position(|m| m.id == mob && m.alive() && !m.removed)
-        else {
+            .any(|m| m.id == mob && m.alive() && !m.removed)
+        {
             return;
         };
         if !matches!(self.world.block_entities.get(&key), Some(BlockEntity::Beehive(h)) if !h.full())
         {
             return;
         }
-        if self.mobs[i].extra.leash.is_some() {
-            self.break_leash(mob, true, false);
-            self.mobs[i].extra.leash = None;
+        // The hive stops the bee riding and ejects its passengers before
+        // storing one occupant. Any vetoed edge is asked again at discard.
+        self.dismount_mob(mob);
+        if let Some(entity) = self.entity(mob) {
+            self.entity_eject_passengers(entity);
         }
-        self.mobs[i].extra.mount = None;
-        let tag = self.mob_tree_nbt(i);
+        self.break_leash(mob, true, false);
+        let Some(i) = self.mobs.iter().position(|m| m.id == mob && !m.removed) else {
+            return;
+        };
+        let tag = self.mob_own_nbt(i);
         let flower = bee::get(&self.mobs[i]).and_then(|b| b.flower);
+        let kind = self.mobs[i].kind.id.clone();
         let Some((lease, BlockEntity::Beehive(mut hive))) = self.world.block_entities.take(&key)
         else {
             return;
@@ -262,16 +270,13 @@ impl Game<'_> {
                 Some(Who::Mob(mob)),
                 Some(state),
             );
-            let kind = self.mobs[i].kind.id.clone();
             let block = self
                 .res
                 .facts()
                 .get(self.world.block(at[0], at[1], at[2]))
                 .name
                 .clone();
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
-                m.removed = true;
-            }
+            self.remove_mob_now(mob, false);
             self.native_entity_enter_block(mob, &kind, at, &block);
         }
     }
@@ -373,14 +378,7 @@ impl Game<'_> {
             // shrink(1), then the honey bottle in the hand, the inventory or
             // on the ground.
             self.audio.play("minecraft:item.bottle.fill", at, 1.0, 1.0);
-            self.edit_block_use_stack(|cell| {
-                if let Some(s) = cell.as_mut() {
-                    s.count -= 1;
-                    if s.count == 0 {
-                        *cell = None;
-                    }
-                }
-            });
+            self.consume_player_slot(self.held_slot(), 1);
             let bottle = ItemStack::new("minecraft:honey_bottle", 1);
             if self.held().is_none() {
                 *self.held_mut() = Some(bottle);
@@ -496,7 +494,7 @@ mod honey_overflow_tests {
     /// `player.drop(stack, false, PREDICTED)`: from 0.3 below the eyes,
     /// thrown along the view, with no thrower (#11377).
     #[test]
-    #[ignore = "needs prepared resources (SUNRISE_TEST_RESOURCES)"]
+    #[ignore = "daily"]
     fn a_honey_bottle_that_does_not_fit_is_thrown_ahead() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.world.chunks.insert(
@@ -552,7 +550,7 @@ mod stay_tests {
     /// and lets it out by day. All of a hive's bees get the same answer in
     /// one turn, however many ask.
     #[test]
-    #[ignore = "needs prepared resources (SUNRISE_TEST_RESOURCES)"]
+    #[ignore = "daily"]
     fn every_ready_bee_of_a_hive_turn_gets_the_same_answer() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -626,7 +624,7 @@ mod changed_tests {
     /// when a bee leaves. The hive's saved `bees` list lost an entry, and
     /// nothing else in the tick changed a block state.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_released_bee_marks_the_chunk() {
         let mut game_resources = None;
         let mut game = server_game(&mut game_resources);
@@ -662,7 +660,7 @@ mod changed_tests {
     /// `BeehiveBlockEntity.addOccupant` ends with `setChanged`: the hive
     /// stored the bee and the mob is gone, which no block state shows.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_bee_going_in_marks_the_chunk() {
         let mut game_resources = None;
         let mut game = server_game(&mut game_resources);

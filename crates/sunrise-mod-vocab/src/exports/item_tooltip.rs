@@ -1,1 +1,1 @@
-pub use crate::item::item_tooltip::TooltipDisplay;
+pub use crate::item::item_tooltip::{TooltipDisplay, TooltipLines, TooltipLinesAccess};

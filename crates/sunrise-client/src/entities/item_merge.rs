@@ -60,7 +60,7 @@ impl ItemCells {
 /// mergeable item whose box meets this one's grown by 0.5 sideways takes this
 /// stack or gives it its own, the smaller into the larger
 /// (`ItemEntity.tryToMerge`), until this item is used up. An emptied item is
-/// marked in `removed`.
+/// marked in `removed`. Whether any two stacks merged.
 pub fn merge_with_neighbours<I>(
     items: &mut I,
     removed: &mut [bool],
@@ -68,7 +68,8 @@ pub fn merge_with_neighbours<I>(
     i: usize,
     age_is_ticked: bool,
     max_stack: &dyn Fn(&ItemStack) -> u32,
-) where
+) -> bool
+where
     I: AsRef<[ItemEntity]> + std::ops::IndexMut<usize, Output = ItemEntity> + ?Sized,
 {
     let age = |items: &[ItemEntity], j: usize| {
@@ -79,8 +80,9 @@ pub fn merge_with_neighbours<I>(
         }
     };
     if removed[i] || !items[i].mergeable(age(items.as_ref(), i), max_stack(&items[i].stack)) {
-        return;
+        return false;
     }
+    let mut merged = false;
     let area = items[i].bounds().inflate(Vec3::new(0.5, 0.0, 0.5));
     let mut near = Vec::new();
     cells.near(area, &mut near);
@@ -106,6 +108,7 @@ pub fn merge_with_neighbours<I>(
         } else {
             (j, i)
         };
+        merged = true;
         // ItemEntity.merge(toStack, fromStack, 64).
         // A component limit above 64 permits an overstacked target. Vanilla's
         // signed room then moves the excess back into the source stack.
@@ -130,7 +133,8 @@ pub fn merge_with_neighbours<I>(
             cells.remove(from, items[from].position);
         }
         if removed[i] {
-            return;
+            return true;
         }
     }
+    merged
 }

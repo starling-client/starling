@@ -44,7 +44,7 @@ impl fmt::Display for Problem {
     }
 }
 
-fn problem(file: &str, message: impl Into<String>) -> Problem {
+pub(crate) fn problem(file: &str, message: impl Into<String>) -> Problem {
     Problem {
         file: file.to_owned(),
         line: 0,
@@ -170,8 +170,11 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
         .chain(m.tonemap.iter().map(|s| (StageKind::Tonemap, s)))
         .chain(m.entity.iter().map(|s| (StageKind::Entity, s)));
     let (mut checked, mut problems) = (Vec::new(), Vec::new());
+    let mut post = 0;
     for (kind, stage) in stages {
-        match check_stage(pack, kind, &stage.file) {
+        let entry = if kind == StageKind::Post { post } else { 0 };
+        post += (kind == StageKind::Post) as usize;
+        match check_stage(pack, kind, &stage.file, entry) {
             Ok(mut c) => {
                 c.label = stage.name.clone().unwrap_or_else(|| stage.file.clone());
                 checked.push(c);
@@ -228,11 +231,30 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
     }
 }
 
-/// Builds and checks one stage of `pack` from its file.
-pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedStage, Vec<Problem>> {
+/// Builds and checks one stage of `pack` from its file, on a thread of its own with the stack
+/// and the bounds of [`crate::guard`]: a pack's file never crashes the checker.
+pub fn check_stage(
+    pack: &Pack,
+    kind: StageKind,
+    file: &str,
+    entry: usize,
+) -> Result<CheckedStage, Vec<Problem>> {
+    crate::guard::guarded(|| build_stage(pack, kind, file, entry))
+        .unwrap_or_else(|reason| Err(vec![problem(file, reason)]))
+}
+
+fn build_stage(
+    pack: &Pack,
+    kind: StageKind,
+    file: &str,
+    entry: usize,
+) -> Result<CheckedStage, Vec<Problem>> {
     // First without the entry points, so a missing or mistyped stage function
     // is reported as such rather than as a call that doesn't resolve.
-    let mut own = compose(pack, kind, file);
+    let mut own = compose(pack, kind, file, entry);
+    if let Some((at, message)) = crate::guard::refusal(&own.text) {
+        return Err(vec![located(&own, at, message)]);
+    }
     let entries = own.parts.pop().expect("entries are the last part");
     own.text.truncate(entries.1.start);
     // The material prelude's LabPBR functions call into the renderer: a stand-in here.
@@ -261,8 +283,9 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
     if !problems.is_empty() {
         return Err(problems);
     }
-    let composed = compose(pack, kind, file);
+    let composed = compose(pack, kind, file, entry);
     let module = parse(&composed)?;
+<<<<<<< sync-sunrise-1
     // Ray queries validate only with the capability; packs without `[ray_tracing]`
     // have no ray-query IR, so the default stays strict for them.
     let mut capabilities = Capabilities::default();
@@ -281,14 +304,23 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
             }
             vec![located(&composed, at.map(|r| r.start), message)]
         })?;
+=======
+    let info = validate(&composed, &module)?;
+>>>>>>> sunrise/main
     let (expressions, texture_reads) = cost(&module);
     let mut problems = Vec::new();
-    if expressions > MAX_EXPRESSIONS {
-        problems.push(problem(
-            file,
-            format!("{expressions} expressions; a stage may hold {MAX_EXPRESSIONS}"),
-        ));
+    let engine = kind == StageKind::Material && pack.manifest.coverage == crate::Coverage::Engine;
+    if engine && let Some(at) = reachable_discard(&module, kind.function()) {
+        problems.push(located(
+                &composed,
+                at.to_range().map(|r| r.start),
+                "`discard` reachable from `material`: under `[material] coverage = \"engine\"` (the \
+                 default) Sunrise's alpha test on the texture decides what is drawn; a pack that cuts \
+                 its own holes sets `coverage = \"pack\"`"
+                    .into(),
+            ));
     }
+<<<<<<< sync-sunrise-1
     if texture_reads > MAX_TEXTURE_READS {
         problems.push(problem(
             file,
@@ -301,6 +333,14 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
         &pack.manifest.options,
         file,
         pack.manifest.ray_tracing.is_some(),
+=======
+    problems.extend(cost_problems((expressions, texture_reads), file, "stage"));
+    problems.extend(translate(
+        &module,
+        &info,
+        Some(&pack.manifest.options),
+        file,
+>>>>>>> sunrise/main
     ));
     if !problems.is_empty() {
         return Err(problems);
@@ -317,7 +357,48 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
     })
 }
 
-fn located(composed: &Composed, offset: Option<usize>, message: String) -> Problem {
+/// Validates `module`, parsed from `composed`, locating a refusal in the file it came from.
+pub(crate) fn validate(
+    composed: &Composed,
+    module: &naga::Module,
+) -> Result<ModuleInfo, Vec<Problem>> {
+    Validator::new(ValidationFlags::all(), Capabilities::default())
+        .validate(module)
+        .map_err(|e| {
+            let at = e.spans().next().and_then(|(span, _)| span.to_range());
+            let mut message = e.as_inner().to_string();
+            let mut source = std::error::Error::source(e.as_inner());
+            while let Some(s) = source {
+                message += &format!(": {s}");
+                source = s.source();
+            }
+            vec![located(composed, at.map(|r| r.start), message)]
+        })
+}
+
+/// A refusal for each of `cost`'s counts over its cap; `what` names what holds them.
+pub(crate) fn cost_problems(
+    (expressions, texture_reads): (usize, usize),
+    file: &str,
+    what: &str,
+) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    if expressions > MAX_EXPRESSIONS {
+        problems.push(problem(
+            file,
+            format!("{expressions} expressions; a {what} may hold {MAX_EXPRESSIONS}"),
+        ));
+    }
+    if texture_reads > MAX_TEXTURE_READS {
+        problems.push(problem(
+            file,
+            format!("{texture_reads} texture reads; a {what} may write {MAX_TEXTURE_READS}"),
+        ));
+    }
+    problems
+}
+
+pub(crate) fn located(composed: &Composed, offset: Option<usize>, message: String) -> Problem {
     match offset {
         Some(at) => {
             let (file, line, column) = composed.locate(at);
@@ -541,6 +622,53 @@ fn constructions(module: &naga::Module, own: &Composed) -> Vec<Problem> {
     problems
 }
 
+/// Where a `discard` is that the function `name` can reach: in its own body, its nested blocks,
+/// or a function it calls, however deep.
+fn reachable_discard(module: &naga::Module, name: &str) -> Option<naga::Span> {
+    fn walk(
+        block: &naga::Block,
+        calls: &mut Vec<naga::Handle<naga::Function>>,
+    ) -> Option<naga::Span> {
+        for (statement, span) in block.span_iter() {
+            let found = match statement {
+                naga::Statement::Kill => return Some(*span),
+                naga::Statement::Block(b) => walk(b, calls),
+                naga::Statement::If { accept, reject, .. } => {
+                    walk(accept, calls).or_else(|| walk(reject, calls))
+                }
+                naga::Statement::Switch { cases, .. } => {
+                    cases.iter().find_map(|c| walk(&c.body, calls))
+                }
+                naga::Statement::Loop {
+                    body, continuing, ..
+                } => walk(body, calls).or_else(|| walk(continuing, calls)),
+                naga::Statement::Call { function, .. } => {
+                    calls.push(*function);
+                    None
+                }
+                _ => None,
+            };
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+    let (start, _) = module
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_deref() == Some(name))?;
+    let (mut calls, mut seen) = (vec![start], HashSet::new());
+    while let Some(f) = calls.pop() {
+        if seen.insert(f)
+            && let Some(span) = walk(&module.functions[f].body, &mut calls)
+        {
+            return Some(span);
+        }
+    }
+    None
+}
+
 /// Each `override` is an option of its type, or has a default of its own.
 fn options(module: &naga::Module, options: &[PackOption], file: &str) -> Vec<Problem> {
     let mut problems = Vec::new();
@@ -575,7 +703,7 @@ fn kind_name(kind: &OptionKind) -> &'static str {
     }
 }
 
-fn cost(module: &naga::Module) -> (usize, usize) {
+pub(crate) fn cost(module: &naga::Module) -> (usize, usize) {
     let functions = module
         .functions
         .iter()
@@ -630,11 +758,12 @@ fn option_sets(options: &[PackOption]) -> [(&'static str, Vec<(String, f64)>); 3
 }
 
 /// Translates every entry point for Vulkan (SPIR-V), Metal and DirectX 12
-/// (HLSL) with each option set, as wgpu does when it builds the pipelines.
-fn translate(
+/// (HLSL) with each option set, as wgpu does when it builds the pipelines. `None` for a
+/// shader with no options: translated once, and a refusal names only its backend.
+pub(crate) fn translate(
     module: &naga::Module,
     info: &ModuleInfo,
-    options: &[PackOption],
+    options: Option<&[PackOption]>,
     file: &str,
     ray_tracing: bool,
 ) -> Vec<Problem> {
@@ -644,7 +773,11 @@ fn translate(
         .filter_map(|(_, o)| o.name.as_deref())
         .collect();
     let mut problems = Vec::new();
-    for (set, values) in option_sets(options) {
+    let sets = match options {
+        Some(options) => Vec::from(option_sets(options)),
+        None => vec![("", Vec::new())],
+    };
+    for (set, values) in sets {
         let mut constants = naga::back::PipelineConstants::default();
         for (id, value) in values
             .into_iter()
@@ -656,7 +789,11 @@ fn translate(
             let fail = |backend: &str, err: String| {
                 problem(
                     file,
-                    format!("with the options at their {set}, {backend} refuses it: {err}"),
+                    if options.is_some() {
+                        format!("with the options at their {set}, {backend} refuses it: {err}")
+                    } else {
+                        format!("{backend} refuses it: {err}")
+                    },
                 )
             };
             let processed = naga::back::pipeline_constants::process_overrides(
@@ -672,6 +809,7 @@ fn translate(
                     return problems;
                 }
             };
+<<<<<<< sync-sunrise-1
             let spv = naga::back::spv::write_vec(
                 &m,
                 &i,
@@ -704,13 +842,47 @@ fn translate(
                 },
             )
             .write(&m, &i, None);
+=======
+            let spv = refusal(|| {
+                naga::back::spv::write_vec(
+                    &m,
+                    &i,
+                    &naga::back::spv::Options::default(),
+                    Some(&naga::back::spv::PipelineOptions {
+                        shader_stage: e.stage,
+                        entry_point: e.name.clone(),
+                    }),
+                )
+            });
+            let msl = refusal(|| {
+                naga::back::msl::write_string(
+                    &m,
+                    &i,
+                    &naga::back::msl::Options {
+                        lang_version: (2, 2),
+                        ..Default::default()
+                    },
+                    &naga::back::msl::PipelineOptions {
+                        entry_point: Some((e.stage, e.name.clone())),
+                        ..Default::default()
+                    },
+                )
+            });
+            let hlsl = refusal(|| {
+                naga::back::hlsl::Writer::new(
+                    &mut String::new(),
+                    &naga::back::hlsl::Options::default(),
+                    &naga::back::hlsl::PipelineOptions {
+                        entry_point: Some((e.stage, e.name.clone())),
+                    },
+                )
+                .write(&m, &i, None)
+            });
+>>>>>>> sunrise/main
             let errors = [
-                ("Vulkan (SPIR-V)", spv.err().map(|e| e.to_string())),
-                ("Metal", msl.err().map(|e| e.to_string())),
-                (
-                    "DirectX 12 (HLSL)",
-                    hlsl_result.err().map(|e| e.to_string()),
-                ),
+                ("Vulkan (SPIR-V)", spv),
+                ("Metal", msl),
+                ("DirectX 12 (HLSL)", hlsl),
             ];
             for (backend, err) in errors {
                 if let Some(err) = err {
@@ -723,4 +895,20 @@ fn translate(
         }
     }
     problems
+}
+
+/// Why a backend refused: its error, or the panic of a backend that cannot translate a
+/// shader it was given (a mod's shader must never take the game or the tool down).
+fn refusal<T, E: fmt::Display>(translate: impl FnOnce() -> Result<T, E>) -> Option<String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(translate)) {
+        Ok(result) => result.err().map(|e| e.to_string()),
+        Err(panic) => Some(format!(
+            "it panicked: {}",
+            panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or(panic.downcast_ref::<&str>().copied())
+                .unwrap_or("no reason given")
+        )),
+    }
 }

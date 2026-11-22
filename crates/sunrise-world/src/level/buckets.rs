@@ -11,8 +11,8 @@ use crate::{
     fluid::{FluidKind, FluidState},
     registry::BlockStateId,
 };
-use sunrise_core::{position::BlockPos, random::RandomSource};
 use std::sync::Arc;
+use sunrise_core::{position::BlockPos, random::RandomSource};
 
 /// What a filled bucket empties into the world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,11 +29,26 @@ pub enum BucketContent {
 
 impl BucketContent {
     /// `BucketItem.content == Fluids.WATER` (`MobBucketItem` holding water
-    /// counts too): the only content a bucket pours inside a liquid
+    /// counts too): the only content a vanilla bucket pours inside a liquid
     /// container, and the only one `canBeReplaced(Fluid)` sees as water.
     pub fn is_water(self) -> bool {
         matches!(self, Self::Fluid(FluidKind::Water) | Self::MobWater)
     }
+    pub fn fluid(self) -> Option<FluidKind> {
+        match self {
+            Self::Fluid(kind) => Some(kind),
+            Self::MobWater => Some(FluidKind::Water),
+            Self::Powder | Self::Nothing => None,
+        }
+    }
+}
+
+/// The liquid-container query's living user. Only buckets operated by a
+/// player lend an entity; dispensers and fluid flow use the default.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LiquidUser {
+    pub entity_id: Option<u32>,
+    pub creative: bool,
 }
 
 /// What `BucketPickup.pickupBlock` does to a block, decided against the level as it is.
@@ -74,7 +89,7 @@ pub struct PlacedLiquid {
 }
 
 /// What a world pickup or placement of fluid changes ([`Behaviours::plan_fluid_pickup`],
-/// [`Behaviours::plan_fluid_place`]).
+/// [`Behaviours::plan_bucket_pour`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FluidChange {
     /// `BucketPickup.pickupBlock`.
@@ -105,6 +120,10 @@ pub struct FluidWrite {
 }
 
 impl FluidWrite {
+    /// The source state a bucket passes to `LiquidBlockContainer.placeLiquid`.
+    pub fn source_fluid_state(&self) -> FluidState {
+        FluidState::new(self.fluid, 8, false)
+    }
     /// The block the level holds once it is done: `from` where it doesn't change.
     pub fn to(&self, b: &Behaviours) -> BlockStateId {
         match self.change {
@@ -214,7 +233,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         content: BucketContent,
         sound: &str,
         sneaking: bool,
-        creative: bool,
+        user: LiquidUser,
     ) -> Option<BlockPos> {
         let b = self.b;
         let fluid = match content {
@@ -238,22 +257,43 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             BucketContent::MobWater => FluidKind::Water,
             BucketContent::Fluid(fluid) => fluid,
         };
-        let mob = content == BucketContent::MobWater;
-        // `canPlaceFluidInsideBlock`: a block that merely holds the fluid takes it only when
-        // the player is not sneaking or there is no hit result (a dispenser, or the retry
-        // below).
-        let hit = sneaking && beside.is_some();
-        let write = match self.plan_pour(pos, fluid, hit, creative, false) {
-            // A refused click (a double slab, or Shift on a waterloggable block) pours into
-            // the block beside the clicked face instead, without a hit result.
-            Pour::Refused => {
-                return beside.and_then(|beside| {
-                    self.bucket_empty(beside, None, content, sound, sneaking, creative)
-                });
-            }
-            Pour::Failed => return None,
-            Pour::Planned(write) => write,
+        let mut write = self.plan_bucket_pour(pos, beside, fluid, sneaking, user)?;
+        if matches!(write.change, FluidChange::Fill(_))
+            && self
+                .level
+                .place_liquid(
+                    self.ticks,
+                    write.pos,
+                    write.from,
+                    write.source_fluid_state(),
+                )
+                .is_some()
+        {
+            // BucketItem ignores the container's boolean; the fluid utility does not.
+            write.change = FluidChange::Fill(None);
+        }
+        self.apply_bucket_pour(write, sound, content == BucketContent::MobWater)
+    }
+    fn plan_bucket_pour(
+        &mut self,
+        pos: BlockPos,
+        beside: Option<BlockPos>,
+        fluid: FluidKind,
+        sneaking: bool,
+        user: LiquidUser,
+    ) -> Option<FluidWrite> {
+        let plan = match self.plan_pour(pos, fluid, sneaking && beside.is_some(), user) {
+            // A refused click tries the block beside the hit, without a hit result.
+            Pour::Refused => self.plan_pour(beside?, fluid, false, user),
+            plan => plan,
         };
+        match plan {
+            Pour::Planned(write) => Some(write),
+            Pour::Refused | Pour::Failed => None,
+        }
+    }
+    fn apply_bucket_pour(&mut self, write: FluidWrite, sound: &str, mob: bool) -> Option<BlockPos> {
+        let pos = write.pos;
         match write.change {
             FluidChange::Hiss { pitch } => {
                 self.hiss(pos, pitch);
@@ -289,16 +329,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     /// What `BucketItem.emptyContents` of `fluid` at `pos` does, decided against the level as
     /// it is. `hit` is a sneaking player's click with a hit result, which a block that merely
-    /// holds the fluid refuses; `validate` refuses a container that `placeLiquid` refuses,
-    /// where the bucket still empties (NeoForge's `validatePlaced`).
-    fn plan_pour(
-        &mut self,
-        pos: BlockPos,
-        fluid: FluidKind,
-        hit: bool,
-        creative: bool,
-        validate: bool,
-    ) -> Pour {
+    /// holds the fluid refuses.
+    fn plan_pour(&mut self, pos: BlockPos, fluid: FluidKind, hit: bool, user: LiquidUser) -> Pour {
         let b = self.b;
         let state = self.state(pos);
         // canBeReplaced(fluid): replaceable or not solid (portals refuse).
@@ -306,7 +338,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             && !b.instance_of(state, Class::EndGateway)
             && (b.is_replaceable(state) || !b.is_solid(state));
         let liquid_container = self.is_liquid_container(state);
-        let container = liquid_container && self.can_place_liquid(state, fluid, creative);
+        let answer = self.level.can_place_liquid(pos, state, fluid, user);
+        let container = answer.unwrap_or_else(|| {
+            liquid_container && self.can_place_liquid(state, fluid, user.creative)
+        });
         // `canPlaceFluidInsideBlock`: air always takes the fluid.
         if !(b.is_air(state) || (may_replace || container) && !hit) {
             return Pour::Refused;
@@ -325,12 +360,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let pitch = 2.6 + (self.random().next_float() - self.random().next_float()) * 0.8;
             return planned(FluidChange::Hiss { pitch });
         }
-        if liquid_container && water {
-            let water = FluidState::new(FluidKind::Water, 8, false);
-            let placed = self.plan_place_liquid(pos, state, water, creative);
-            if validate && placed.is_none() {
-                return Pour::Failed;
-            }
+        if answer.unwrap_or(liquid_container && water) {
+            let source = FluidState::new(super::fluids::source_of(fluid), 8, false);
+            let placed = self.plan_place_liquid(pos, state, source, user.creative);
             return planned(FluidChange::Fill(placed));
         }
         if !self.is_in_valid_bounds(pos) || !self.level.is_loaded(pos) {
@@ -352,6 +384,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(super::LevelEvent::Sound {
             pos,
             sound: "minecraft:block.fire.extinguish".into(),
+            source: None,
             volume: 0.5,
             pitch,
         });
@@ -417,8 +450,78 @@ impl Behaviours {
         sneaking: bool,
         creative: bool,
     ) -> Option<BlockPos> {
+        self.bucket_empty_as(
+            level,
+            ticks,
+            pos,
+            beside,
+            content,
+            sound,
+            sneaking,
+            LiquidUser {
+                entity_id: None,
+                creative,
+            },
+        )
+    }
+    /// Empty a bucket while lending its living user to the read-only query.
+    pub fn bucket_empty_as<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        beside: Option<BlockPos>,
+        content: BucketContent,
+        sound: &str,
+        sneaking: bool,
+        user: LiquidUser,
+    ) -> Option<BlockPos> {
         self.sim(level, ticks)
-            .bucket_empty(pos, beside, content, sound, sneaking, creative)
+            .bucket_empty(pos, beside, content, sound, sneaking, user)
+    }
+    /// `BucketItem.use` chooses the clicked container only when it can take the fluid.
+    pub fn bucket_can_fill<L: LevelAccess + ?Sized>(
+        &self,
+        level: &L,
+        pos: BlockPos,
+        state: BlockStateId,
+        fluid: FluidKind,
+        user: LiquidUser,
+    ) -> bool {
+        level
+            .can_place_liquid(pos, state, fluid, user)
+            .unwrap_or_else(|| {
+                fluid == FluidKind::Water
+                    && self.is_liquid_container(state)
+                    && self.can_place_liquid(state, fluid, user.creative)
+            })
+    }
+    /// Decide a pour without handing a write host to the block part yet. The
+    /// caller chooses the direct or journalled host, then applies the remainder.
+    pub fn plan_bucket_pour<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        beside: Option<BlockPos>,
+        fluid: FluidKind,
+        sneaking: bool,
+        user: LiquidUser,
+    ) -> Option<FluidWrite> {
+        self.sim(level, ticks)
+            .plan_bucket_pour(pos, beside, fluid, sneaking, user)
+    }
+    /// Apply a bucket plan after an optional container override. A caller that
+    /// ran the override replaces the template write with `FluidChange::Fill(None)`.
+    pub fn apply_bucket_pour<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        write: FluidWrite,
+        sound: &str,
+        mob: bool,
+    ) -> Option<BlockPos> {
+        self.sim(level, ticks).apply_bucket_pour(write, sound, mob)
     }
     /// `BucketPickup.pickupBlock` for a mod's fluid container (NeoForge's
     /// `FluidUtil.tryPickupFluid`), decided against the level as it is and not done: the source
@@ -448,27 +551,6 @@ impl Behaviours {
             fluid,
             change: FluidChange::Drain(drain),
         })
-    }
-    /// `BucketItem.emptyContents` of a bucket of `fluid` without a hit result, for a mod's
-    /// fluid container (NeoForge's `FluidUtil.tryPlaceFluid`), decided against the level as it
-    /// is and not done. `validate` refuses a liquid container that `placeLiquid` refuses, where
-    /// a bucket empties all the same. None where nothing can be placed.
-    pub fn plan_fluid_place<L: LevelAccess + ?Sized>(
-        &self,
-        level: &mut L,
-        ticks: &mut Ticks,
-        pos: BlockPos,
-        fluid: FluidKind,
-        creative: bool,
-        validate: bool,
-    ) -> Option<FluidWrite> {
-        match self
-            .sim(level, ticks)
-            .plan_pour(pos, fluid, false, creative, validate)
-        {
-            Pour::Planned(write) => Some(write),
-            Pour::Refused | Pour::Failed => None,
-        }
     }
     /// What `write`, decided earlier, does once its block is set and before its drops: the fluid
     /// tick `placeLiquid` schedules.

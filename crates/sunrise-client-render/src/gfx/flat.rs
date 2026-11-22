@@ -738,6 +738,19 @@ impl Flat {
     pub fn submitted(&mut self) {
         self.quad_ranges_submitted = !self.quad_ranges.is_empty();
     }
+    /// Takes over `from`'s block tables and section ids, with the arenas they describe
+    /// (`Renderer::take_world`). Their bind groups name `from`'s origins: `bind_pages` makes
+    /// them again.
+    pub fn take_tables(&mut self, from: &mut Self) {
+        self.clear();
+        self.pages = std::mem::take(&mut from.pages);
+        for table in self.pages.iter_mut().flatten() {
+            (table.group, table.arena) = (None, None);
+        }
+        self.free_ids = std::mem::take(&mut from.free_ids);
+        self.next_id = from.next_id;
+        self.translucent_blocks_per_page = from.translucent_blocks_per_page;
+    }
     /// Forgets the tables of pages the arenas released (`live`, by page key).
     pub fn trim(&mut self, live: impl Fn(u32) -> bool) {
         for (i, page) in self.pages.iter_mut().enumerate() {
@@ -1536,14 +1549,15 @@ mod tests {
     /// plus the base vertex. With culling, phase 2's runs hold the indices
     /// of the draws the test saw, in order, and their calls count them.
     #[test]
+    #[ignore = "daily"]
     fn flatten_writes_the_indices_of_the_per_section_draws() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
-        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        let Some((device, queue)) =
+            crate::gfx::test_gpu::optional_device_with(&adapter, &Default::default())
         else {
             eprintln!("no GPU device: skipped");
             return;

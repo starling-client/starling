@@ -1,0 +1,57 @@
+login 4321
+add 91 minecraft:zombie
+position
+frame
+add 40 minecraft:tnt
+respawn
+add 3 minecraft:zombie
+position
+frame
+remove 91 40
+frame
+add 40 minecraft:tnt
+add 91 minecraft:zombie
+frame
+add 40 minecraft:tnt
+frame
+add 3 minecraft:zombie
+frame
+passengers 3 40
+frame
+passengers 3
+frame
+camera 3
+frame
+camera 4321
+frame
+add 7 minecraft:item
+add 8 minecraft:tnt
+add 9 minecraft:item
+item 9
+item 7
+frame
+add 7 minecraft:item
+item 7
+frame
+remove 91 40 3 8 9 7
+add 23 minecraft:end_crystal
+add 82 minecraft:zombie
+add 110 minecraft:ender_dragon
+add 20 minecraft:end_crystal
+frame
+passengers 82 23 110 20
+beams 20
+frame
+passengers 82
+add 23 minecraft:end_crystal
+frame
+remove 110 20
+add 110 minecraft:ender_dragon
+add 20 minecraft:end_crystal
+frame
+respawn minecraft:the_end
+position
+frame
+add 110 minecraft:ender_dragon
+add 23 minecraft:end_crystal
+frame

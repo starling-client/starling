@@ -161,10 +161,6 @@ impl NativeConfigs {
 impl Game<'_> {
     /// Asks the mods for their configs and loads those of `kinds`.
     fn native_configs_load(&mut self, kinds: &[mod_api::ConfigKind], world: Option<&Path>) {
-        let phase = self.mod_phase.clone();
-        let _config = phase
-            .config()
-            .expect("config load on its owning game thread");
         let config_dir = match Self::native_config_dir() {
             Ok(dir) => dir,
             Err(e) => {
@@ -186,11 +182,6 @@ impl Game<'_> {
     /// The window's `Client` and `Common` configs, once: after client setup
     /// and before its title, connection or ordinary runtime callbacks.
     pub(super) fn native_configs_client_start(&mut self) {
-        // Other local players share the process's client setup, not another
-        // Client/Common load or a second config watcher.
-        if self.options.split_guest {
-            return;
-        }
         if !self.native_configs.started {
             use mod_api::ConfigKind::{Client, Common};
             self.native_configs_load(&[Client, Common], None);
@@ -238,36 +229,156 @@ mod tests {
     use mod_api::ConfigKind::{Client, Common, Server};
 
     #[test]
-    fn engine_test_host_operation_reads_the_real_phase_provider() {
+    #[ignore = "daily"]
+    fn panicking_config_hooks_keep_live_writes_and_do_not_stop_later_listeners() {
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game};
         use mod_api::{
-            __private::{ModPhase, PhaseOwner},
-            Host,
-            prelude::EntitiesHost,
+            Hooks, HostSide, ModEntry, Registrar, RegistrationContext, ServerHost, SettingSpec,
         };
-        Game::initialize_mod_runtime_for_tests();
-        struct EmptyHost;
-        impl Host for EmptyHost {}
-        mod_api::impl_host_areas!(EmptyHost);
-        let _phase = PhaseOwner::scope(ModPhase::Setup);
-        assert_eq!(mod_api::__private::current_phase(), ModPhase::Setup);
-        let refused = std::panic::catch_unwind(|| EmptyHost.entity(1)).unwrap_err();
-        let message = refused.downcast_ref::<String>().unwrap();
-        assert!(message.contains("Setup"), "{message}");
+        use std::sync::{Arc, Mutex};
+
+        if run_fresh_cases(
+            "game::native_configs::tests::panicking_config_hooks_keep_live_writes_and_do_not_stop_later_listeners",
+            "SUNRISE_CONFIG_PANIC_CHILD",
+            &["server"],
+        ) {
+            return;
+        }
+
+        struct Broken;
+        #[mod_api::__subscriptions]
+        impl Hooks for Broken {
+            fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+                for (key, title) in [("reload", "fault.reload"), ("unload", "fault.unload")] {
+                    registrar
+                        .register_setting(SettingSpec::toggle(key, title, false))
+                        .unwrap();
+                }
+            }
+
+            fn config_reloading(
+                &self,
+                host: HostSide<'_>,
+                _: &mut mod_api::ConfigReloadingEvent<'_>,
+            ) {
+                let HostSide::Server(host) = host else {
+                    panic!("expected server polling")
+                };
+                host.set_setting("fault", "reload", "true");
+                panic!("broken reload listener");
+            }
+
+            fn config_unloading(
+                &self,
+                host: &mut dyn ServerHost,
+                _: &mut mod_api::ConfigUnloadingEvent<'_>,
+            ) {
+                host.set_setting("fault", "unload", "true");
+                panic!("broken unload listener");
+            }
+        }
+
+        struct Later(Arc<Mutex<Vec<&'static str>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Later {
+            fn config_reloading(&self, _: HostSide<'_>, _: &mut mod_api::ConfigReloadingEvent<'_>) {
+                self.0.lock().unwrap().push("reload");
+            }
+
+            fn config_unloading(
+                &self,
+                _: &mut dyn ServerHost,
+                _: &mut mod_api::ConfigUnloadingEvent<'_>,
+            ) {
+                self.0.lock().unwrap().push("unload");
+            }
+        }
+
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let mods = vec![
+            ModEntry::new("fault", Box::new(Broken)),
+            ModEntry::new("later", Box::new(Later(observed.clone()))),
+        ]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                let config = ConfigFile::from(mod_api::__private::built::ConfigFile {
+                    mod_id: "fault".into(),
+                    kind: Server,
+                    file: "fault-server.toml".into(),
+                    text: String::new(),
+                });
+                game.native_config_reloading(&config);
+                game.native_config_unloading(&config);
+                assert_eq!(game.setting("fault", "reload").as_deref(), Some("true"));
+                assert_eq!(game.setting("fault", "unload").as_deref(), Some("true"));
+                // These writes lack a journal. Reset them outside dispatch to make another
+                // invocation of either disabled callback observable.
+                game.set_setting("fault", "reload", "false");
+                game.set_setting("fault", "unload", "false");
+                game.native_config_reloading(&config);
+                game.native_config_unloading(&config);
+                assert_eq!(game.setting("fault", "reload").as_deref(), Some("false"));
+                assert_eq!(game.setting("fault", "unload").as_deref(), Some("false"));
+                assert_eq!(
+                    observed.lock().unwrap().as_slice(),
+                    ["reload", "unload", "reload", "unload"]
+                );
+                assert_eq!(
+                    mod_api::__private::take_hook_panics(),
+                    [
+                        mod_api::__private::HookPanicReport {
+                            mod_id: "fault",
+                            hook: "config_reloading"
+                        },
+                        mod_api::__private::HookPanicReport {
+                            mod_id: "fault",
+                            hook: "config_unloading"
+                        },
+                    ]
+                );
+            })
+        });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn config_permissions_and_once_per_side_survive_two_worlds() {
-        use mod_api::{Hooks, Host, HostSide, HostTransaction, ModEntry};
+        use crate::game::native_entity_refs::tests::{
+            run_fresh_cases, with_client_game, with_game,
+        };
+        use mod_api::{
+            ConfigContext, Hooks, ModEntry, Registrar, RegistrationContext, SettingSpec,
+        };
         use std::sync::{Arc, Mutex};
+
+        if run_fresh_cases(
+            "game::native_configs::tests::config_permissions_and_once_per_side_survive_two_worlds",
+            "SUNRISE_CONFIG_LIFECYCLE_CHILD",
+            &["lifecycle"],
+        ) {
+            return;
+        }
+
         struct Probe(Arc<Mutex<Vec<(bool, mod_api::ConfigKind)>>>);
         #[mod_api::__subscriptions]
         impl Hooks for Probe {
+            fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+                registrar
+                    .register_setting(SettingSpec::toggle(
+                        "unloaded",
+                        "phase_probe.unloaded",
+                        false,
+                    ))
+                    .unwrap();
+            }
+
             fn register_configs(
                 &self,
-                _: HostSide<'_>,
+                context: &dyn ConfigContext,
                 event: &mut mod_api::RegisterConfigsEvent<'_>,
             ) {
+                let _ = context.setting("phase_probe", "unused");
                 for kind in [Client, Common, Server] {
                     event
                         .configs
@@ -276,60 +387,42 @@ mod tests {
             }
             fn config_loading(
                 &self,
-                mut host: HostSide<'_>,
+                context: &dyn ConfigContext,
                 event: &mut mod_api::ConfigLoadingEvent<'_>,
             ) {
-                assert_eq!(
-                    mod_api::__private::current_phase(),
-                    mod_api::__private::ModPhase::Config
-                );
-                let read: &dyn Host = match &host {
-                    HostSide::Server(host) => &**host,
-                    HostSide::Client(host) => &**host,
-                };
-                let _ = read.setting("phase_probe", "unused");
-                let refused =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read.entity(1)))
-                        .unwrap_err();
-                assert!(refused.downcast_ref::<String>().unwrap().contains("Config"));
-                if let HostSide::Server(host) = &mut host {
-                    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let _: Result<(), ()> = host.transaction(|_, _| Ok(()));
-                    }))
-                    .unwrap_err();
-                    assert!(refused.downcast_ref::<String>().unwrap().contains("Config"));
-                }
+                let _ = context.setting("phase_probe", "unused");
+                let _ = context.config_files();
                 self.0.lock().unwrap().push((true, event.config.kind));
             }
             fn config_unloading(
                 &self,
-                _: &mut dyn mod_api::ServerHost,
+                context: &mut dyn mod_api::ServerHost,
                 event: &mut mod_api::ConfigUnloadingEvent<'_>,
             ) {
-                assert_eq!(
-                    mod_api::__private::current_phase(),
-                    mod_api::__private::ModPhase::World
-                );
+                let next = match context.setting("phase_probe", "unloaded").as_deref() {
+                    Some("true") => "false",
+                    _ => "true",
+                };
+                context.set_setting("phase_probe", "unloaded", next);
                 self.0.lock().unwrap().push((false, event.config.kind));
             }
         }
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mods = vec![ModEntry::new("phase_probe", Box::new(Probe(calls.clone())))].into();
         mod_platform::testing::with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_client_game(|game| {
-                game.mod_phase =
-                    mod_api::__private::PhaseOwner::new(mod_api::__private::ModPhase::Setup);
+            with_client_game(|game| {
                 game.native_configs_client_start();
                 game.native_configs_client_start();
-                game.options.split_guest = true;
-                game.native_configs = NativeConfigs::default();
-                game.native_configs_client_start();
-                game.options.split_guest = false;
-                game.options.execution_role =
-                    crate::game::execution_role::ExecutionRole::IntegratedServer;
-                for world in ["phase-world-one", "phase-world-two"] {
+            });
+            with_game(|game| {
+                for (world, expected) in [("phase-world-one", "true"), ("phase-world-two", "false")]
+                {
                     game.native_configs_server_start(Path::new(world), false);
                     game.native_configs_server_stop();
+                    assert_eq!(
+                        game.setting("phase_probe", "unloaded").as_deref(),
+                        Some(expected)
+                    );
                 }
             });
         });

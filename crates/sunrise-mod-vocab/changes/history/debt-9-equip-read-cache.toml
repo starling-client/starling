@@ -1,0 +1,20 @@
+# These were hidden exports, not records in the published API surface.
+ids = [
+    "type:EquipReadRow",
+    "handle:EquipReadRow::new",
+    "type:__private::EquipReadSet",
+    "handle:__private::EquipReadSet::new",
+    "handle:__private::EquipReadSet::row",
+    "type:__private::EquipReadGuard",
+    "fn:__private::enter_equip_reads",
+    "fn:__private::cached_equip_kind",
+    "fn:__private::cached_equip_position",
+    "fn:__private::cached_equip_living",
+    "fn:__private::cached_equip_health",
+    "fn:__private::cached_equip_max_health",
+    "fn:__private::cached_equip_alive",
+    "fn:__private::cached_equip_equipment",
+    "fn:__private::cached_equip_hand_item",
+]
+why = "The unused guest read cache and its Wire row are gone. The native host still lends the same target snapshot and checks it before applying the decision."
+migrate = "No change to ItemPart::can_equip or the hook version. Remove any use of the hidden EquipReadRow, EquipReadSet, EquipReadGuard and enter_equip_reads. Inside the part, use the supplied host with event.entity: cached_equip_kind becomes event.entity.entity().kind(host), cached_equip_position becomes event.entity.entity().position(host), and cached_equip_living becomes host.living(event.entity.entity()). Replace cached_equip_health, cached_equip_max_health and cached_equip_alive with event.entity.health(host), event.entity.max_health(host) and event.entity.alive(host), respectively. Replace cached_equip_equipment and cached_equip_hand_item with event.entity.with_equipment(host, slot, |stack| ...) and event.entity.with_hand_item(host, hand, |stack| ...). Read the borrowed stack inside the callback; a missing stack returns None without running it. There is no extra Option for a cache hit."

@@ -1,12 +1,12 @@
 use crate::support::shapes::emit;
-use sunrise_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
-use sunrise_world::block_support::SupportType;
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
+use sunrise_world::block_support::SupportType;
 fn numbers(v: &Value) -> Vec<f64> {
     v.as_array()
         .unwrap()

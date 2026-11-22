@@ -70,7 +70,7 @@ impl Game<'_> {
         }
         let (uuid, now) = (self.acting_uuid(), self.world.game_time);
         self.creatures.shoulder_time.insert(uuid, now);
-        self.mobs[i].removed = true;
+        self.remove_mob_now(self.mobs[i].id, false);
     }
 
     /// `ServerPlayer.handleShoulderEntities`: the parrots leave the shoulder
@@ -220,9 +220,9 @@ mod variant_tests {
 #[cfg(test)]
 mod mod_parrot_tests {
     use super::*;
+    use std::sync::Arc;
     use sunrise_client::mobs::Mob;
     use sunrise_client::motion::PlayerMotion;
-    use std::sync::Arc;
 
     /// A parrot lands on its owner's shoulder by its class, saved there as
     /// itself, so a content mod's parrot type (#4031) does too, under its own
@@ -232,7 +232,7 @@ mod mod_parrot_tests {
     /// shoulder variant, as `ServerPlayer.extractParrotVariant` reads only that
     /// id: a mod draws its own parrot there.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_parrot_type_rides_a_shoulder_as_itself() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let owner = [1, 2, 3, 4];

@@ -1,5 +1,13 @@
 //! Resolve item stacks into render layers for the differential harness
 //! `tools/test_item_model_parity.py`.
+use serde_json::{Value, json};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    fs::{self, File},
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::{Path, PathBuf},
+};
 use sunrise_assets::{
     animation::AnimationMetadata,
     item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model, bake_sprite_layer},
@@ -8,14 +16,6 @@ use sunrise_assets::{
     model::{CuboidModel, Direction},
     palette::{PalettedPermutations, apply_palette},
     resolve::{MISSING_MODEL, ModelLibrary},
-};
-use serde_json::{Value, json};
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::{Path, PathBuf},
 };
 
 fn bits(v: f32) -> u32 {
@@ -341,8 +341,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 LayerContent::Missing => {
                     ("model", bake(&mut baked_cache, MISSING_MODEL), json!({}))
                 }
-                LayerContent::Parts(_) => {
-                    unreachable!("the fixture's host answers no special model renderer")
+                LayerContent::RegisteredSpecial { .. } => {
+                    unreachable!("the fixture decodes without special model registrations")
                 }
                 LayerContent::Special {
                     base,
@@ -354,7 +354,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     json!({"special":model.to_json(),"argument":argument}),
                 ),
             };
-            let matrix: Mat4 = baked.layer_matrix(context, &layer.transform);
+            let matrix: Mat4 =
+                baked.layer_matrix(layer.display_transform, context, &layer.transform);
             let mut value = json!({
                 "kind":kind,
                 "tints":layer.tints,

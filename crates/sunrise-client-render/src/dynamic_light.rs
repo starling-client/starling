@@ -8,8 +8,8 @@
 //! off) when that is brighter. Off, the list is empty and the shaders skip the loop.
 use crate::blocks::BlockFacts;
 use glam::DVec3;
-use sunrise_world::registry::BlockRegistry;
 use std::collections::HashMap;
+use sunrise_world::registry::BlockRegistry;
 
 /// Lights the shaders read: `Globals.dynamic_lights` in gfx.rs, terrain.wgsl and entity.wgsl.
 pub const MAX: usize = 16;

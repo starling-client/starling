@@ -1,0 +1,79 @@
+ids = [
+    "handle:BiomeKey::id",
+    "handle:BlockEntityTypeKey::id",
+    "handle:BlockKey::id",
+    "handle:DimensionKey::id",
+    "handle:EffectKey::id",
+    "handle:FluidKey::id",
+    "handle:ItemKey::id",
+    "handle:EntityTypeKey::id",
+    "handle:MenuKey::id",
+    "handle:EnchantmentKey::id",
+    "handle:GameEventKey::id",
+    "type:RegistryName",
+    "handle:RegistryName::as_str",
+    "handle:BlockStates::definition",
+    "handle:FluidStates::definition",
+    "type:StateProperties",
+    "handle:StateProperties::iter",
+    "handle:StateProperties::len",
+    "handle:StateProperties::is_empty",
+    "type:StateProperty",
+    "type:StateProperty.name",
+    "type:StateProperty.values",
+    "handle:StateProperty::new",
+    "type:FluidDefinition",
+    "type:FluidDefinition.World",
+    "handle:PlayerRef::name",
+    "handle:PlayerRef::address",
+    "handle:PlayerRef::client_brand",
+    "handle:PlayerRef::announced_channels",
+    "handle:PlayerRef::nickname",
+    "handle:PlayerRef::profile",
+    "type:GameProfile",
+    "type:GameProfile.name",
+    "type:GameProfile.properties",
+    "handle:GameProfile::new",
+    "handle:GameProfile::properties",
+    "type:ProfileProperty",
+    "type:ProfileProperty.name",
+    "type:ProfileProperty.value",
+    "type:ProfileProperty.signature",
+    "handle:ProfileProperty::new",
+    "method:ClientSession::client_server",
+    "method:ClientSession::client_language",
+    "type:ClientServer",
+    "type:ClientServer.name",
+    "type:ClientServer.address",
+    "type:ClientServer.save_folder",
+    "handle:EntityRef::tags",
+    "type:EntityTags",
+    "handle:EntityTags::iter_utf16",
+    "handle:EntityTags::is_empty",
+    "handle:EntityTags::contains",
+]
+why = "Reading names, state properties, player and client session text, and entity tags no longer copies their contents. Registry names use the canonical text returned by vanilla Identifier.toString() (the identifier exposed by NeoForge DeferredHolder.getId()), while StateProperty copies only the view of vanilla StateDefinition.getProperties(). The custom host fixture lends its profile as vanilla Player.getGameProfile() does; NeoForge FakePlayer also takes a supplied GameProfile. Entity tag reads preserve the original UTF-16, distinct from the lossy UTF-8 display conversion. View equality follows the set returned by vanilla Entity.entityTags(); NeoForge's Entity patch leaves that set and the tag loading in Entity.load unchanged."
+migrate = """
+Registry names
+- For BlockKey, BlockEntityTypeKey, EffectKey, FluidKey and ItemKey, `key.id(host)` now returns `Option<&str>`. Replace `key.id(host) == "minecraft:stone"` with `key.id(host) == Some("minecraft:stone")`. `None` means no name is available. For DimensionKey, drop the old `.as_deref()` from `key.id(host).as_deref()`: it is already an `Option<&str>`. Copy with `key.id(host).map(str::to_owned)` only to retain the text beyond the host borrow.
+- For BiomeKey, `key.id(host)` now returns `Result<&str, BiomeKeyError>` with the same errors. Use `let name = key.id(host)?;` for an in-scope read, or `let name = key.id(host)?.to_owned();` to keep the text. Reacquire the biome key after a reload as before.
+- For EntityTypeKey, MenuKey and EnchantmentKey, `key.id(host)` now returns `Option<RegistryName>`; compare the option with `key.id(host).as_deref() == Some("minecraft:zombie")`. Use `entity.kind(host).and_then(|key| key.id(host))` instead of `.map(...)` to avoid nesting the options. For GameEventKey, `let name = key.id(host)?;` now yields a RegistryName with the same errors as before. Compare the unwrapped name directly (`name == "minecraft:step"`), use `format!("{name}")`, or pass `name.as_str()` where a `&str` is needed. A RegistryName keeps its text readable after the host borrow and across reloads without holding a lock; call `id` again for a fresh lookup. Cloning shares the text; equality, ordering and hashing use the full name, so a `HashMap<RegistryName, _>` or `BTreeMap<RegistryName, _>` also accepts `&str` lookups. Use `name.as_str().to_owned()` only when you need a String, such as for persistent storage.
+- For a data-map read with a key the host cannot name, handle `Err(DataMapError::InvalidKey)` separately from `Ok(None)`, which still means the map has no value for the entry.
+
+State definitions
+- `host.block_states().definition(key)` now returns `Option<StateProperties<'_>>`. `host.fluid_states().definition(key)` returns `Option<FluidDefinition<'_>>`; `World { default, properties }` still carries an owned default, but its properties are a StateProperties view. Unknown/unavailable definitions give `None`, known propertyless definitions give an empty view, and registered tank-only fluids still give `Some(FluidDefinition::TankOnly)`.
+- Replace iteration over the old vector with `properties.iter()` and indexing with `properties.iter().nth(i)`; `len()` and `is_empty()` still work. A `StateProperty<'_>` is `Copy` and lends `name: &str` and `values: &[String]` in definition order; copying the view does not copy either field's contents. Compare `p.name == "facing"` and `p.values.iter().any(|v| v == "north")`. Instead of `StateProperty::new(name, values)`, use a mod-owned `(String, Vec<String>)` for your own definitions or fixtures. To retain a loaded definition, collect `properties.iter().map(|p| (p.name.to_owned(), p.values.to_vec())).collect::<Vec<_>>()`. For a matching constraint, keep using `StateConstraint::new(name, value)`.
+
+Player and client session
+- Drop `.as_deref()` from `player.name(host)`, `player.address(host)` and `player.client_brand(host)` results: they now return `Option<&str>`. Empty address and brand still differ from an absent player. `player.nickname(host)` now returns `Result<Option<&str>, PlayerWorldRefusal>` with the same refusals: compare with `Ok(Some("nickname"))`. Use `.map(str::to_owned)` on an option (after `?` for nickname) only to retain the text past the host borrow or pass it to an owned field.
+- `player.announced_channels(host)` now returns `Option<Arc<[String]>>`. Use `channels.iter()` (or borrow `channels.as_ref()` as a slice), not iteration consuming the old Vec. The list is in announcement order, with unregistered channels removed. Keep the Arc to retain that immutable list; call again to observe new announcements. Use `channels.to_vec()` only for an owned, editable list. An available player with no announcements still has an empty list.
+- `player.profile(host)` returns `Option<GameProfile<'_>>`. The UUID is unchanged, and `profile.name` is `&str`. Replace `profile.properties.iter()` or `for p in profile.properties` with `profile.properties()`, indexing with `.nth(i)`, and a count with `.len()`. Each `ProfileProperty<'_>` lends its `name`, `value` and `signature: Option<&str>` in login order. Compare the signature directly instead of calling `.as_deref()`. For retained data, use mod-owned records; for example store the UUID, `profile.name.to_owned()`, and `profile.properties().map(|p| (p.name.to_owned(), p.value.to_owned(), p.signature.map(str::to_owned))).collect::<Vec<_>>()`.
+- In a custom test host that returned `GameProfile::new(uuid, name, properties)` from `PlayerSessionBackend::player_profile`, enable the `testing` feature and store `mod_api::testing::GameProfileFixture::new(uuid, name, properties)` in the host instead. Replace each old `ProfileProperty::new(name, value, signature)` argument with the tuple `(name, value, signature)` of type `(String, String, Option<String>)`; pass `[]` for no properties. Change the return type to `Option<GameProfile<'_>>` and return `Some(self.profile_fixture.profile())` for the player this fixture represents.
+- `host.client_session().client_server()` returns `Option<ClientServer<'_>>`; `name`, `address` and `save_folder` are each `Option<&str>`. Drop `.as_deref()` from those field reads and use `.map(str::to_owned)` only to keep a field past the host borrow. The address is still redacted and `integrated_local` is unchanged. A fixture literal can use `Some("name")` or `Some(name.as_str())` rather than `Some(String)`.
+- `host.client_session().client_language()` returns `Option<Arc<str>>`; use `.as_deref() == Some("en_us")` for comparison. Keep the Arc for a snapshot of the applied language, or use `.map(|code| code.to_string())` when a String is required.
+- StateProperty, FluidDefinition, GameProfile, ProfileProperty and ClientServer no longer implement Wire. For typed payloads, copy only the fields you need into your own owned `#[derive(Wire)]` type.
+
+Entity tags
+- `entity.tags(host)` returns `Option<EntityTags<'_>>`, not `Option<Vec<String>>`. Use `tags.contains(name)` for an exact comparison with a `&str`. To preserve the old replacement-character matching for unpaired UTF-16 surrogates, replace `tags.iter().any(|tag| tag == name)` with `tags.iter_utf16().any(|units| String::from_utf16_lossy(units) == name)`. Use `tags.iter_utf16()` instead of `tags.iter()` to read exact `&[u16]` strings in saved order. `tags.is_empty()` tests for no string tags; `a == b` compares exact UTF-16 membership and ignores order and duplicates. For ordered comparison of exact strings use `a.iter_utf16().eq(b.iter_utf16())`. To reproduce the old `Vec<String>` equality, including replacement characters for unpaired surrogates, replace `a == b` with `a.iter_utf16().map(String::from_utf16_lossy).eq(b.iter_utf16().map(String::from_utf16_lossy))` on the two views. A readable entity without tags still yields an empty view; a stale or unavailable one yields `None`.
+- To obtain UTF-8, choose `String::from_utf16(units)` and handle `FromUtf16Error` for an unpaired surrogate, or `String::from_utf16_lossy(units)` for replacement characters (the same display behavior as `/tag ... list`). For an owned list like before, use `tags.iter_utf16().map(String::from_utf16_lossy).collect::<Vec<_>>()`. To retain the exact code units, copy with `tags.iter_utf16().map(|units| units.to_vec()).collect::<Vec<_>>()` before the host borrow ends.
+"""

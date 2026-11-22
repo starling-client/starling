@@ -1,12 +1,12 @@
 //! Text transport for native BiomeManager comparisons.
-use sunrise_core::{
-    biome::{BiomeZoom, noise_quart_at_block, noise_quart_at_position, obfuscate_seed},
-    position::BlockPos,
-};
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::{
+    biome::{BiomeZoom, noise_quart_at_block, noise_quart_at_position, obfuscate_seed},
+    position::BlockPos,
 };
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arg = std::env::args().nth(1).expect("private fixture directory");

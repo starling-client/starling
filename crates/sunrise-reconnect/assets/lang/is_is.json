@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Sjálfvirk endurtenging",
+  "sunrise.extras.auto_reconnect.tooltip": "Gengur aftur inn á netþjón eftir að tengingin hefur rofnað eða endurræst, aldrei eftir spark eða bann."
+}

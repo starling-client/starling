@@ -2,9 +2,9 @@
 //! the command registries parse them with, and their types' filter over the candidates.
 use super::Game;
 use super::commands::Target;
+use mod_api::SelectorSort;
 use sunrise_client::command::args::Selector;
 use sunrise_client_core::registries::SelectorToken;
-use mod_api::SelectorSort;
 
 /// The frozen base selections validated when the installed mods registered their tokens.
 pub(super) fn selector_tokens() -> Vec<SelectorToken> {
@@ -64,8 +64,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::geometry::Vec3;
     use std::sync::{Arc, Mutex};
+    use sunrise_core::geometry::Vec3;
 
     struct Teammates(Arc<Mutex<Vec<(mod_api::CommandSource, u32)>>>);
     impl mod_api::EntitySelectorType for Teammates {

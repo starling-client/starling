@@ -179,4 +179,3 @@ containers, weather-driven blocks. The library code lives in
 - **Not implemented.** The sculk vibration system (sensors, shriekers,
   catalyst spread) and creaking hearts. Lightning (`tickThunder`).
   Particles for bone meal, explosions and TNT smoke.
-- **Not saved.** Primed TNT and hopper cooldowns (`TransferCooldown`).

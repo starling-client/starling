@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "إعادة الاتصال التلقائي",
+  "sunrise.extras.auto_reconnect.tooltip": "إعادة الانضمام إلى الخادم بعد انقطاع الاتصال أو إعادة التشغيل، وليس بعد ركلة أو حظر أبدًا."
+}

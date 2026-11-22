@@ -1,0 +1,5 @@
+id = "refused_manifest_bad_dependency_order"
+name = "Refused manifest bad dependency order"
+version = "1.2.3"
+[dependencies]
+other = { version = "*", order = "during" }

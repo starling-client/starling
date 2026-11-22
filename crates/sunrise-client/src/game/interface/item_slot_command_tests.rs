@@ -3,15 +3,15 @@
 //! an empty stack, or one `getEquipmentSlotForItem` puts in that slot. A stand's
 //! `canUseSlot` refuses body and saddle, so only clearing works there. A mod's
 //! `set_equipment` is not asked.
+use mod_api::EquipmentSlot;
 use sunrise_client::{entities::ArmorStand, items::ItemStack};
 use sunrise_core::geometry::Vec3;
 use sunrise_items::equipment::{BODY, CHEST, SADDLE};
-use mod_api::EquipmentSlot;
 
 use super::native_entity_refs::tests::with_game;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn item_replace_asks_the_slot_predicate_of_a_stand_and_the_dragon() {
     with_game(|game| {
         game.build_registries();

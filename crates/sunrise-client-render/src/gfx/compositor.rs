@@ -1,10 +1,6 @@
-//! Splitscreen: several players' renderers draw offscreen on one device, and the
-//! compositor copies each frame into its place on a window's surface. A window holds views but
-//! never owns them, so a view can later move to another window (another monitor, detached).
+//! Composes offscreen textures into rectangular regions of a window surface.
 use super::Renderer;
 use crate::Result;
-use std::sync::Arc;
-use winit::window::Window;
 
 pub struct Compositor {
     surface: wgpu::Surface<'static>,
@@ -16,40 +12,9 @@ pub struct Compositor {
 }
 
 impl Renderer {
-    /// A compositor for `window` on this renderer's device, presenting on the surface it gave up.
-    pub fn compositor(&self, window: Arc<Window>) -> Result<Compositor> {
-        // The surface this renderer set aside for its successor (`release_surface`), else a new
-        // one: a window can't keep two.
-        let spare = self
-            .spare_surface
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let surface = match spare {
-            Some(surface) => surface,
-            None => self.instance.create_surface(window.clone())?,
-        };
-        Compositor::new(
-            surface,
-            &self.adapter,
-            &self.device,
-            &self.queue,
-            window.inner_size().into(),
-        )
-    }
-
     /// The last offscreen frame (`--offscreen`), for the compositor.
     pub fn offscreen_frame(&self) -> Option<&wgpu::Texture> {
         self.offscreen.as_ref()
-    }
-
-    /// Splitscreen turned off: a compositor's surface, set aside for the renderer that draws on
-    /// the window again (it takes it, as after `release_surface`).
-    pub fn take_back(&self, compositor: Compositor) {
-        *self
-            .spare_surface
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(compositor.surface);
     }
 }
 
@@ -72,7 +37,7 @@ impl Compositor {
         let format = wgpu::TextureFormat::Bgra8Unorm;
         if !caps.formats.contains(&format) {
             return Err(format!(
-                "splitscreen needs a {format:?} surface; this one offers {:?}",
+                "the compositor needs a {format:?} surface; this one offers {:?}",
                 caps.formats
             )
             .into());
@@ -142,11 +107,11 @@ impl Compositor {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Splitscreen compositor"),
+                label: Some("View compositor"),
             });
         let target = frame.texture.create_view(&Default::default());
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Splitscreen compositor clear"),
+            label: Some("View compositor clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &target,
                 depth_slice: None,

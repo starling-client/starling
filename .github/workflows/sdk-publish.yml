@@ -1,0 +1,254 @@
+name: sdk publish
+# The mod SDK's one publish step (docs/release-flow.md "Mod SDK"; design: /box/shared/sdk-lead/design.md §3): the
+# release `sdk-<sha>` from the packing legs of prebuilt-game-build.yml in the caller's run (their `sdk-leg-*`
+# artifacts). Only `publish` may write; the jobs that read the legs' output have `contents: read`. Called by the daily run
+# after a green summary (daily.yml, sdk-publish) and by prebuilt-game.yml's hand dispatch.
+# - `index` (no secrets): gathers every leg's assets once, after checking that each copy of the build data and the
+#   surface is the same (tools/prebuilt_game.py gather), compares the surface with the SDK published before it on
+#   this commit's history (sunrise-stage surface-diff), writes the API source (tools/sdk_api_source.py), and writes
+#   sdk.json over every asset (prebuilt_game.py index).
+# - `sign` is the only job with the release key, and only on main or release/26.3 with `publish` set (the `release` environment):
+#   it checks out nothing but tools/ci/sign_release.sh, which hashes the assets and signs SHA256SUMS for the tag
+#   `sdk-<sha>`, so the signature never passes for a game release (sunrise-release-sign: sdk_digest), and refuses a
+#   commit that is not on its branch. Any other run signs with a throwaway key.
+# - `publish` checks the signature as the launcher does (tools/ci/nightly.py verify-sums) and that the release holds
+#   exactly the assets a Nightly needs (tools/ci/nightly.py sdk-assets), then creates `sdk-<sha>`: only on main or
+#   release/26.3 with `publish` set. Any other branch's run, or a dry run, publishes nothing.
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit whose SDK the caller's packing legs built
+        type: string
+        required: true
+      publish:
+        description: Sign with the release key and create sdk-<sha> (on main or release/26.3 only); otherwise a throwaway key, nothing published
+        type: boolean
+        default: false
+permissions:
+  contents: read
+# `shell: bash` runs each step with `-eo pipefail`: a failing command on a pipe's left side fails the step.
+defaults:
+  run:
+    shell: bash
+env:
+  TAG: sdk-${{ inputs.commit }}
+  COMMIT: ${{ inputs.commit }}
+jobs:
+  # Whether this run signs with the release key and publishes, decided exactly (release_train.py authorize).
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.authorize.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/release_train.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - id: authorize
+        env:
+          DRY_INPUT: ${{ !inputs.publish }}
+        run: python3 tools/release_train.py authorize --publish-kind sdk --dry-run "$DRY_INPUT"
+
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The history, to find the SDK published before this one on it: its commits and trees, without the older
+          # files' contents, which Git fetches if a step reads one (the change notes `git archive` takes).
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - name: The launcher's pinned Rust
+        id: rust
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+      # As the legs' caches: main's runs save it, every branch restores it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sdk-publish
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Each leg's assets in a folder of its own (sdk-leg-<leg>), so a file two legs both made is seen, not
+      # overwritten. Only the legs' artifacts: never this workflow's own from an earlier attempt.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sdk-leg-*
+          path: legs
+      # The Linux leg's sunrise-stage, compiled from this commit (prebuilt-game-build.yml).
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-stage-tool
+          path: ${{ runner.temp }}/stage-tool
+      - name: Gather the legs' assets, with one build data and surface
+        run: python3 tools/prebuilt_game.py gather legs dist
+      - name: The API source, with its generated code written out
+        run: |
+          python3 tools/sdk_api_source.py build "$RUNNER_TEMP/api-source"
+          python3 tools/sdk_api_source.py archive "$RUNNER_TEMP/api-source" dist/api-source.tar.xz
+      - name: Compare the surface with the SDK published before this one
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          previous=$(python3 tools/ci/nightly.py sdk-previous "$COMMIT" previous-surface.json)
+          if [ -z "$previous" ]; then
+            echo "### No SDK was published before $COMMIT on its history: sdk.json has no comparison" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Start the schema-3 SDK baseline once. There is no comparable previous SDK until
+          # one has been published with this schema; don't publish an empty or invented diff.
+          # Remove this branch and the reset audit after the first complete schema-3 SDK publishes.
+          if [ -f tools/ci/surface-schema-3-reset.json ] &&
+             jq -e '.schema == 2' previous-surface.json >/dev/null &&
+             jq -e '.schema == 3' dist/surface.json >/dev/null; then
+            echo "### SDK surface baseline reset (schema 2 → 3)" >> "$GITHUB_STEP_SUMMARY"
+            echo "The previous SDK ($previous) has schema 2. This SDK starts the new baseline without a previous diff. The transition comparison is in tools/ci/surface-schema-3-reset.json." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "build=$previous" >> "$GITHUB_OUTPUT"
+          # The change notes added since that build: those its tree did not have.
+          mkdir -p base
+          if git cat-file -e "$previous:crates/sunrise-mod-vocab/changes" 2> /dev/null; then
+            git archive "$previous" crates/sunrise-mod-vocab/changes | tar -x -C base
+          fi
+          # CI checks engine notes; the SDK's surfaces contain only API records.
+          # A stale API note warns here: the diff is written either way.
+          stage="$RUNNER_TEMP/stage-tool/sunrise-stage"
+          chmod +x "$stage"
+          "$stage" surface-diff \
+            previous-surface.json dist/surface.json --notes crates/sunrise-mod-vocab/changes \
+            --base-notes base/crates/sunrise-mod-vocab/changes --api-notes-only --json surface-diff.json | tee -a "$GITHUB_STEP_SUMMARY" \
+            || echo "::warning::a change note names an id that did not change since $previous"
+          test -s surface-diff.json
+      - name: Write sdk.json over every asset
+        env:
+          PREVIOUS: ${{ steps.previous.outputs.build }}
+        run: python3 tools/prebuilt_game.py index dist ${PREVIOUS:+--previous "$PREVIOUS" surface-diff.json}
+      # Overwritten by a rerun, so every later job reads this attempt's files.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-release
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  sign:
+    needs: [index, authorize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    # The key's only job, and only for a publishing run on main or release/26.3: sign_release.sh hashes the assets and signs with the
+    # runner's OpenSSL, never running what the legs built.
+    environment: ${{ needs.authorize.outputs.publish == 'true' && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/ci/sign_release.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          # The history without its files' contents: enough for the check below.
+          fetch-depth: 0
+          filter: blob:none
+      # Where the key is: whatever the caller says, the real key signs only a commit of the branch it runs on.
+      - name: The commit is on its branch
+        if: ${{ needs.authorize.outputs.publish == 'true' }}
+        run: |
+          git fetch -q --no-tags --filter=blob:none origin "+refs/heads/$GITHUB_REF_NAME:refs/remotes/origin/$GITHUB_REF_NAME"
+          git merge-base --is-ancestor "$COMMIT" "refs/remotes/origin/$GITHUB_REF_NAME" \
+            || { echo "::error::$COMMIT is not on $GITHUB_REF_NAME: its SDK is not signed"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-release
+          path: dist
+      - name: Sign SHA256SUMS for sdk-<sha>
+        env:
+          RELEASE_SIGNING_KEY: ${{ needs.authorize.outputs.publish == 'true' && secrets.RELEASE_SIGNING_KEY || '' }}
+          RELEASE_SIGNING_KEY_NEXT: ${{ needs.authorize.outputs.publish == 'true' && secrets.RELEASE_SIGNING_KEY_NEXT || '' }}
+          EPHEMERAL: ${{ !(needs.authorize.outputs.publish == 'true') && 'yes' || '' }}
+        run: bash tools/ci/sign_release.sh "$TAG" dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-signature
+          path: dist/SHA256SUMS*
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - uses: actions/upload-artifact@v4
+        if: ${{ !(needs.authorize.outputs.publish == 'true') }}
+        with:
+          name: sdk-ephemeral.pub
+          path: dist/ephemeral.pub
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: [index, sign, authorize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write  # the sdk-<sha> release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PUBLISH: ${{ needs.authorize.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-release
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-signature
+          path: dist
+      - uses: actions/download-artifact@v4
+        if: env.PUBLISH != 'true'
+        with:
+          name: sdk-ephemeral.pub
+          path: key
+      - name: The signature, checked as the launcher checks it
+        run: |
+          key=(); [[ "$PUBLISH" != true ]] && key=(--key "$(cat key/ephemeral.pub)")
+          # The workflow checkout's Python and the runner's OpenSSL against main's release keys: nothing is compiled, and
+          # no binary of the release runs.
+          python3 tools/ci/nightly.py verify-sums --tag "$TAG" --publishing "${key[@]}" dist
+      - name: Exactly the assets a Nightly needs
+        run: |
+          expected=$(python3 tools/ci/nightly.py sdk-assets | sort)
+          actual=$(ls dist | sort)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::not releasing $TAG: the assets are not exactly $(echo $expected) (found: $(echo $actual))"
+            exit 1
+          fi
+      - name: Release sdk-<sha>
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "### $TAG is already published" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release create "$TAG" dist/* --target "$COMMIT" --prerelease --latest=false \
+            --title "Mod SDK ${COMMIT::10}" \
+            --notes "The mod SDK of game build $COMMIT: sdk.json lists every asset; SHA256SUMS is signed for $TAG."
+      - name: Dry run, the SDK that would be published
+        if: env.PUBLISH != 'true'
+        run: |
+          echo "### Would publish $TAG (a branch or dry run: signed with a throwaway key)" >> "$GITHUB_STEP_SUMMARY"
+          ls -l dist | tee -a "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,5 @@
+manifest:
+refused: icon.png: unsupported file type in a content mod
+
+icon:
+unavailable

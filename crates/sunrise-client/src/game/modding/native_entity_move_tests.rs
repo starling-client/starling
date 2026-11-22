@@ -1,12 +1,12 @@
 //! The `entity_move` hook's contract at its one firing point,
 //! `move_gate::arm` (#2414, design #2308): what a listener may decide for one
 //! physical move, what is refused, and what a panic leaves behind.
+use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause};
+use std::sync::{Arc, Mutex};
 use sunrise_core::geometry::Vec3;
 use sunrise_world::entity_move::MoverType;
 use sunrise_world::move_gate::MoveGate;
 use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs, LoopSide};
-use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause};
-use std::sync::{Arc, Mutex};
 
 /// The server's loop context, the side the hook fires on: no resources, just
 /// the side and the origin a tick's own loop context carries.
@@ -109,23 +109,22 @@ fn cancel_skips_the_invocation() {
 
 /// A replacement delta is armed instead of the requested one, still through
 /// every ordinary restriction the kind's physics applies.
+/// Any finite replacement is armed, however large: `Entity.move` has no
+/// per-axis ceiling.
 #[test]
 fn a_replacement_delta_is_armed() {
-    let (gate, _) = armed_with(Answer::Replace([0.0, 0.0, 1.0]));
-    assert!(!gate.skipped());
-    assert_eq!(gate.delta(), Vec3::new(0.0, 0.0, 1.0));
+    for delta in [[0.0, 0.0, 1.0], [65.0, 0.0, 0.0]] {
+        let (gate, _) = armed_with(Answer::Replace(delta));
+        assert!(!gate.skipped());
+        assert_eq!(gate.delta(), Vec3::new(delta[0], delta[1], delta[2]));
+    }
 }
 
-/// A replacement outside the ±64-block budget, or one that is not a finite
-/// number, is refused whole: the movement stands as it was (design #2308:
-/// reject, never clamp).
+/// A replacement that is not a finite number is refused whole: the movement
+/// stands as it was (design #2308: reject, never clamp).
 #[test]
 fn a_malformed_replacement_is_refused_whole() {
-    for delta in [
-        [f64::NAN, 0.0, 0.0],
-        [0.0, f64::INFINITY, 0.0],
-        [65.0, 0.0, 0.0],
-    ] {
+    for delta in [[f64::NAN, 0.0, 0.0], [0.0, f64::INFINITY, 0.0]] {
         let (gate, _) = armed_with(Answer::Malformed(delta));
         assert!(!gate.skipped(), "a malformed move must not skip it");
         assert_eq!(
@@ -175,11 +174,9 @@ fn a_panicking_listener_keeps_the_requested_move_and_is_disabled() {
     );
 }
 
-/// The requested delta, not an earlier listener's replacement, is what a
-/// later panicking listener leaves behind (#2414 maintainer ruling: «A panic
-/// keeps the requested delta (not a replaced one)»).
+/// A later listener's panic cannot undo an accepted replacement.
 #[test]
-fn a_panic_after_a_replacement_keeps_the_requested_delta() {
+fn a_panic_after_a_replacement_keeps_the_accepted_delta() {
     let mods: mod_api::Mods = vec![
         mod_api::ModEntry::new(
             "replacer",
@@ -208,11 +205,7 @@ fn a_panic_after_a_replacement_keeps_the_requested_delta() {
             Vec3::new(1.0, 0.0, 0.0),
         );
         assert!(!gate.skipped());
-        assert_eq!(
-            gate.delta(),
-            Vec3::new(1.0, 0.0, 0.0),
-            "the requested delta, not the (0, 0, 9) replacement"
-        );
+        assert_eq!(gate.delta(), Vec3::new(0.0, 0.0, 9.0));
     });
 }
 
@@ -243,7 +236,7 @@ fn without_listeners_the_move_stands() {
 /// still hears the same entity on the same session.
 #[test]
 fn a_poisoned_move_listener_keeps_its_other_hooks() {
-    use mod_api::{EntityTickPreEvent, ServerHost};
+    use mod_api::{EntityTickPreEvent, HostSide, ServerHost};
     struct Both {
         moves: Arc<Mutex<Heard>>,
         ticks: Arc<Mutex<usize>>,
@@ -254,9 +247,8 @@ fn a_poisoned_move_listener_keeps_its_other_hooks() {
             self.moves.lock().unwrap().clear();
             panic!("the move listener unwinds")
         }
-        fn entity_tick_pre(&self, _: &mut dyn ServerHost, _: &mut EntityTickPreEvent<'_>) -> Flow {
+        fn entity_tick_pre(&self, _: HostSide<'_>, _: &mut EntityTickPreEvent<'_>) {
             *self.ticks.lock().unwrap() += 1;
-            Flow::Continue
         }
     }
     let ticks = Arc::new(Mutex::new(0usize));
@@ -287,26 +279,27 @@ fn a_poisoned_move_listener_keeps_its_other_hooks() {
         impl ServerHost for World {}
         mod_api::impl_server_host_areas!(World);
         let mut world = World;
-        let mut canceled = false;
         mod_api::dispatch_entity_tick_pre(
-            &mut world,
+            HostSide::Server(&mut world),
             "minecraft:overworld",
-            7,
-            "minecraft:zombie",
-            &mut canceled,
+            &[7],
+            &["minecraft:zombie"],
+            &mut Vec::new(),
         );
         assert_eq!(*ticks.lock().unwrap(), 1, "the other hook still runs");
     });
 }
 
-/// A panic outside `entity_move` — another hook of the same mod, unwound by
-/// its own caller, as Parts' panics are (#3685) — poisons nobody: the next
-/// move still reaches the mod's listener.
+/// A panic outside `entity_move` — another hook of the same mod — is contained
+/// by the dispatcher and disables only that `(hook, mod)` for the session: a
+/// second `entity_tick_pre` skips it, while `entity_move` still reaches the
+/// mod's listener.
 #[test]
 fn a_panic_elsewhere_does_not_poison_the_move_listener() {
-    use mod_api::{EntityTickPreEvent, ServerHost};
+    use mod_api::{EntityTickPreEvent, HostSide, ServerHost};
     struct Ticking {
         moves: Arc<Mutex<Heard>>,
+        ticks: Arc<Mutex<usize>>,
     }
     #[mod_api::__subscriptions]
     impl Hooks for Ticking {
@@ -317,39 +310,49 @@ fn a_panic_elsewhere_does_not_poison_the_move_listener() {
                 .push((event.entity, event.cause, *event.delta));
             Flow::Continue
         }
-        fn entity_tick_pre(&self, _: &mut dyn ServerHost, _: &mut EntityTickPreEvent<'_>) -> Flow {
+        fn entity_tick_pre(&self, _: HostSide<'_>, _: &mut EntityTickPreEvent<'_>) {
+            *self.ticks.lock().unwrap() += 1;
             panic!("a panic outside entity_move")
         }
     }
     let moves = Arc::new(Mutex::new(Vec::new()));
+    let ticks = Arc::new(Mutex::new(0usize));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
         "ticking",
         Box::new(Ticking {
             moves: moves.clone(),
+            ticks: ticks.clone(),
         }),
     )]
     .into();
     mod_platform::testing::with_mods(mods, || {
         let context = server_context();
-        // The other hook unwinds; its caller catches it, as the game catches
-        // a Part's panic (#3685).
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            struct World;
-            impl mod_api::Host for World {}
-            mod_api::impl_host_areas!(World);
-            impl ServerHost for World {}
-            mod_api::impl_server_host_areas!(World);
-            let mut world = World;
-            let mut canceled = false;
-            mod_api::dispatch_entity_tick_pre(
-                &mut world,
-                "minecraft:overworld",
-                7,
-                "minecraft:zombie",
-                &mut canceled,
-            );
-        }));
-        assert!(caught.is_err(), "the other hook unwound");
+        struct World;
+        impl mod_api::Host for World {}
+        mod_api::impl_host_areas!(World);
+        impl ServerHost for World {}
+        mod_api::impl_server_host_areas!(World);
+        let mut world = World;
+        mod_api::dispatch_entity_tick_pre(
+            HostSide::Server(&mut world),
+            "minecraft:overworld",
+            &[7],
+            &["minecraft:zombie"],
+            &mut Vec::new(),
+        );
+        assert_eq!(*ticks.lock().unwrap(), 1);
+        mod_api::dispatch_entity_tick_pre(
+            HostSide::Server(&mut world),
+            "minecraft:overworld",
+            &[7],
+            &["minecraft:zombie"],
+            &mut Vec::new(),
+        );
+        assert_eq!(
+            *ticks.lock().unwrap(),
+            1,
+            "the panicking hook is disabled for the rest of the session"
+        );
         // The move listener is not poisoned by that panic.
         let mut gate = MoveGate::new();
         sunrise_client::move_gate::arm(

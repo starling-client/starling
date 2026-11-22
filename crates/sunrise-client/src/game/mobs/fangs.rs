@@ -1,11 +1,11 @@
 //! Evoker fangs (`EvokerFangs`): rising out of the floor after a delay,
 //! biting what stands on them for 6 damage, sinking back after 22 ticks.
 use super::Game;
+use std::sync::Arc;
 use sunrise_client::mobs::{Part, Species, anim::Poses};
 use sunrise_client::particles::{ParticleOptions, ParticleType};
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::{LegacyRandom, RandomSource};
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub(super) struct Fangs {
@@ -251,32 +251,46 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        for index in 0..self.mobs.len() {
-            let m = &mut self.mobs[index];
-            let id = m.id;
-            if id != f.owner
-                && !allies.contains(&id)
-                && m.alive()
-                && m.bounds().intersects(b)
-                && m.damage(
-                    crate::game::entity::damage_level_of!(self),
-                    6.0,
-                    sunrise_client::mobs::Damage {
-                        kind: if owner.is_some() {
-                            sunrise_client::mobs::DamageKind::IndirectMagic
-                        } else {
-                            sunrise_client::mobs::DamageKind::Magic
-                        },
-                        attacker: owner.map(sunrise_client::mobs::Who::Mob),
-                        from: Some(f.pos),
-                        attacker_species: None,
+        let attacker = owner.map(sunrise_client::mobs::Who::Mob);
+        // A hurt can run server hooks that change the mob list. Keep the selected
+        // victims by identity, as `EvokerFangs.tick` does before `dealDamageTo`.
+        let victims: Vec<_> = self
+            .mobs
+            .iter()
+            .filter(|m| m.id != f.owner && !allies.contains(&m.id) && m.bounds().intersects(b))
+            .map(|m| m.id)
+            .collect();
+        for id in victims {
+            let Some(index) = self.mob_index.find(&self.mobs, id) else {
+                continue;
+            };
+            if !self.mobs[index].alive() {
+                continue;
+            }
+            // So `living_knockback` sees who the fangs' owner is and what they hold.
+            let attack = self.attack_of_who(attacker);
+            let plan = self.prepare_knockback_credit(id as i32, attacker, &attack);
+            let mut credit = plan.lend(&mut self.last_hurt_by_player);
+            let hurt = self.mobs[index].damage(
+                crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
+                6.0,
+                sunrise_client::mobs::Damage {
+                    kind: if owner.is_some() {
+                        sunrise_client::mobs::DamageKind::IndirectMagic
+                    } else {
+                        sunrise_client::mobs::DamageKind::Magic
                     },
-                )
-                && owner.is_some()
-            {
+                    attacker,
+                    from: Some(f.pos),
+                    attacker_species: None,
+                },
+            );
+            self.finish_mob_damage_at(index);
+            self.settle_mob_hurt(id);
+            if hurt && owner.is_some() {
                 self.mob_post_attack(
                     id,
-                    owner.map(sunrise_client::mobs::Who::Mob),
+                    attacker,
                     Some("minecraft:evoker_fangs"),
                     Some("minecraft:indirect_magic"),
                 );
@@ -392,7 +406,7 @@ mod tests {
     use sunrise_core::random::LegacyRandom;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn taken_fangs_tick_keeps_survivors_before_both_spawns() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.fangs.list.clear();

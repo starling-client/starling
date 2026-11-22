@@ -175,6 +175,14 @@ impl<W: EntityMovementWorld> EntityMovementWorld for Excluding<'_, W> {
     ) -> Result<Option<VoxelShape>, Self::Error> {
         self.world.movement_border(entity, bounds)
     }
+    fn moving_colliders(
+        &mut self,
+        entity: EntityIdentity,
+        bounds: Aabb,
+        out: &mut Vec<sunrise_core::geometry::oriented::OrientedCollider>,
+    ) -> Result<(), Self::Error> {
+        self.world.moving_colliders(entity, bounds, out)
+    }
 }
 
 /// `Entity.collide` ([`world_movement::resolve_world_movement`]) through `exclusions`. With none,

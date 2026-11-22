@@ -1,0 +1,56 @@
+ids = [
+    "hook:block_entity_tick",
+    "hook:block_entity_tick.subject",
+    "type:BlockEntityTickEvent.subject",
+    "type:BlockEntitySideScope.Server",
+    "type:BlockEntityTickScope",
+    "handle:BlockEntityTickScope::with_view",
+    "handle:BlockEntityTickScope::host",
+    "handle:BlockEntityTickScope::transaction",
+    "type:BlockEntityScope",
+    "handle:BlockEntityScope::with_view",
+    "handle:BlockEntityScope::host",
+    "handle:BlockEntityScope::transaction",
+    "hook:menu_button",
+    "hook:menu_button.entity",
+    "hook:menu_button.subject",
+    "method:MenuPart::menu_button",
+    "type:MenuButtonEvent.entity",
+    "type:MenuButtonEvent.subject",
+    "hook:menu_quick_move",
+    "hook:menu_quick_move.entity",
+    "hook:menu_quick_move.pos",
+    "hook:menu_quick_move.kind",
+    "hook:menu_quick_move.subject",
+    "method:BlockEntityPart::menu_quick_move",
+    "type:MenuQuickMoveEvent.entity",
+    "type:MenuQuickMoveEvent.pos",
+    "type:MenuQuickMoveEvent.kind",
+    "type:MenuQuickMoveEvent.subject",
+    "hook:menu_slot_take",
+    "hook:menu_slot_take.entity",
+    "hook:menu_slot_take.kind",
+    "hook:menu_slot_take.subject",
+    "method:BlockEntityPart::menu_slot_take",
+    "type:MenuSlotTakeEvent.entity",
+    "type:MenuSlotTakeEvent.kind",
+    "type:MenuSlotTakeEvent.subject",
+    "hook:pre_remove_side_effects",
+    "hook:contents_changed",
+    "type:ModBlockEntityView",
+    "handle:ModBlockEntityView::id",
+    "handle:ModBlockEntityView::set_client_update_fields",
+]
+why = "Vanilla 26.3 operates on live block entities in BlockEntityTicker.tick, BlockEntity.setChanged, AbstractContainerMenu.clickMenuButton, AbstractContainerMenu.quickMoveStack, and Slot.onTake; NeoForge's AbstractContainerMenu patch does not change the quick-move or button overrides. The three menu hooks now lend BlockEntityScope and BlockEntityView instead of detached snapshots. Accepted quick moves settle the clicked slot before implicit container notices for resident edits and committed ITEMS writes, following AbstractContainerMenu.moveItemStackTo and NeoForge's VanillaContainerWrapper.onRootCommit. Explicit set_changed calls are immediate. The quick-move journal commits the destination edits and clicked-source remainder together; it rolls back on refusal and before an unanswered move falls back. A quick-move callback panic discards that callback's journaled writes and proposal and disables it for the session; a panic contained in a nested hook does not turn an unanswered move into a refusal. When the menu button callback removes its backing block, it now runs pre_remove_side_effects like any other live removal (vanilla LevelChunk.setBlockState calls BlockEntity.preRemoveSideEffects, which NeoForge does not replace). A blockless menu or a removed or replaced block entity lends no view, but host() and transaction(...) remain usable."
+migrate = '''
+Update types and hook pins:
+- Update `block_entity_tick` pins to `hook_version = 5`. Replace the tick-specific `BlockEntityTickScope<'_>` type with `BlockEntityScope<'_>`; use `event.subject.with_view(...)`, `host()` and `transaction(...)` as before. Mods using the old detached `event.entity` and `event.reply` fields instead edit the resident entity through `event.subject.with_view(...)`.
+- `ModBlockEntityView` -> `BlockEntityView` obtained through `event.subject.with_view(|mut entity| ...)` (`ModBlockEntityView::id` -> `BlockEntityView::id`, `ModBlockEntityView::set_client_update_fields` -> `BlockEntityView::set_client_update_fields`).
+
+Update menu hook signatures and bodies:
+- `MenuPart::menu_button` (`hook_version = 2` -> `4`): `fn menu_button(&self, host: &mut dyn ServerHost, event: &mut MenuButtonEvent<'_>)` -> `fn menu_button(&self, event: &mut MenuButtonEvent<'_>)`. Replace `event.entity` reads/edits with `event.subject.with_view(|mut entity| ...)` (`None` on blockless menus or after removal/replacement), and replace `host` with `event.subject.host()` and `event.subject.transaction(...)`. Note that `*event.carried` is a local event output outside `event.subject.transaction(...)`: returning `Err(...)` from `event.subject.transaction(...)` rolls back resident block-entity and `Host` storage edits, not a write already made to `*event.carried`. When a cursor edit depends on a fallible transaction, compute the new cursor inside `event.subject.transaction(|scope, tx| -> Result<Option<ItemStack>, E> { ... })` and assign `*event.carried = next` only after `Ok(next)`.
+- `BlockEntityPart::menu_quick_move` (`hook_version = 3` -> `6`): `fn menu_quick_move(&self, host: &mut dyn ServerHost, event: &mut MenuQuickMoveEvent<'_>) -> Flow` -> `fn menu_quick_move(&self, event: &mut MenuQuickMoveEvent<'_>) -> Flow`. Replace `event.entity` and `event.pos` with `event.subject.with_view(|mut entity| ...)` (`entity.position()`, `entity.item_slot(...)`, `entity.set_item_slot(...)`, `entity.nbt()`, `entity.set_nbt(...)`, `entity.data_slots()`, `entity.set_data_slot(...)`). Use `event.subject.host()` for Host calls. Put the new remainder in `*event.stack` and return `Flow::Cancel` to commit the journaled move, including its destination writes. An invalid remainder or stale source rolls back the move; returning `Flow::Continue` without a later Part handling it rolls back before the original stack goes through ordinary routing. `event.kind` carries the `BlockEntityTypeKey`.
+- `BlockEntityPart::menu_slot_take` (`hook_version = 1` -> `2`): `fn menu_slot_take(&self, host: &mut dyn ServerHost, event: &mut MenuSlotTakeEvent<'_>)` -> `fn menu_slot_take(&self, event: &mut MenuSlotTakeEvent<'_>)`. Replace `event.entity` with `event.subject.with_view(|mut entity| ...)`, replace `host` with `event.subject.host()` and `event.subject.transaction(...)`, and note `event.kind: BlockEntityTypeKey`. Game-routed clicks still run `menu_slot_take` inside an enclosing click transaction; handled `menu_quick_move` calls settle the remainder and publish `BlockEntity.setChanged` first with no enclosing click transaction, so wrap multi-step writes in `event.subject.transaction(...)` when they need atomic rollback.
+- `pre_remove_side_effects`: change `hook_version = 2` to `hook_version = 4`; the signature is unchanged. Remove any manual drops or other removal compensation in the menu button callback: let `pre_remove_side_effects` supply those drops or keep the contents so the same items are not dropped twice.
+- `contents_changed`: change `hook_version = 3` to `hook_version = 5`; the signature is unchanged. For an implicit storage notice committed inside `menu_quick_move`, read the clicked slot as it stands after the move, not as it stood before the move. The callback is no longer inside that storage write's root commit. An explicit `BlockEntityRef::set_changed` call still notifies immediately.
+'''

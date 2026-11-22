@@ -69,8 +69,8 @@ where
 mod tests {
     use super::*;
     use crate::attachments::{AttachmentCodec, AttachmentError, AttachmentType};
-    use sunrise_core::nbt::Tag;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use sunrise_core::nbt::Tag;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     enum Handle {

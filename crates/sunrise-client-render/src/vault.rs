@@ -62,7 +62,7 @@ impl VaultConfig {
         (config.activation_range <= config.deactivation_range).then_some(config)
     }
     /// The fields that differ from their defaults.
-    fn encode(&self) -> Tag {
+    fn encode(&self, items: &sunrise_items::items::Items) -> Tag {
         let mut out = Compound::new();
         if self.loot_table != DEFAULT_LOOT_TABLE {
             out.insert(
@@ -83,7 +83,10 @@ impl VaultConfig {
             );
         }
         if let Some(key) = &self.key_item {
-            out.insert("key_item".into(), sunrise_items::item_nbt::item_to_nbt(key));
+            out.insert(
+                "key_item".into(),
+                sunrise_items::item_nbt::item_to_nbt(key, items),
+            );
         }
         if let Some(table) = &self.override_loot_table_to_display {
             out.insert(
@@ -292,7 +295,7 @@ impl Vault {
         v
     }
     /// `saveAdditional`: the config, shared data and server data.
-    pub fn save(&self) -> Vec<(&'static str, Tag)> {
+    pub fn save(&self, items: &sunrise_items::items::Items) -> Vec<(&'static str, Tag)> {
         let mut server = Compound::new();
         if !self.rewarded_players.is_empty() {
             server.insert(
@@ -310,7 +313,7 @@ impl Vault {
             let items = self
                 .items_to_eject
                 .iter()
-                .map(sunrise_items::item_nbt::item_to_nbt)
+                .map(|stack| sunrise_items::item_nbt::item_to_nbt(stack, items))
                 .collect();
             server.insert("items_to_eject".into(), Tag::List(items));
         }
@@ -321,18 +324,18 @@ impl Vault {
             );
         }
         vec![
-            ("config", self.config.encode()),
-            ("shared_data", self.update_shared()),
+            ("config", self.config.encode(items)),
+            ("shared_data", self.update_shared(items)),
             ("server_data", Tag::Compound(server)),
         ]
     }
     /// `VaultSharedData.CODEC`.
-    fn update_shared(&self) -> Tag {
+    fn update_shared(&self, items: &sunrise_items::items::Items) -> Tag {
         let mut out = Compound::new();
         if let Some(item) = &self.display_item {
             out.insert(
                 "display_item".into(),
-                sunrise_items::item_nbt::item_to_nbt(item),
+                sunrise_items::item_nbt::item_to_nbt(item, items),
             );
         }
         if !self.connected_players.is_empty() {
@@ -350,8 +353,8 @@ impl Vault {
         Tag::Compound(out)
     }
     /// `getUpdateTag`: the shared data the clients see.
-    pub fn update_tag(&self) -> Tag {
-        Tag::compound([("shared_data", self.update_shared())])
+    pub fn update_tag(&self, items: &sunrise_items::items::Items) -> Tag {
+        Tag::compound([("shared_data", self.update_shared(items))])
     }
     /// `VaultSharedData.setDisplayItem`.
     fn set_display_item(&mut self, item: Option<ItemStack>) {
@@ -741,7 +744,7 @@ mod tests {
         let v = Vault::load(&tag(
             r#"{server_data:{rewarded_players:[[I;0,0,0,1]],state_updating_resumes_at:40L,items_to_eject:[{id:"minecraft:emerald",count:3}]},shared_data:{display_item:{id:"minecraft:emerald",count:3}}}"#,
         ));
-        let saved = Tag::compound(v.save());
+        let saved = Tag::compound(v.save(&Default::default()));
         assert_eq!(Vault::load(&saved), v);
     }
 }

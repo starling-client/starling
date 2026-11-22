@@ -10,6 +10,10 @@ pub(super) struct PacketDrain {
 }
 
 impl Hub {
+    fn drains_in(&self, g: &Guest) -> bool {
+        self.watches(g) || (g.respawning && g.dimension == self.config.dimension)
+    }
+
     /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
     /// for each), before the level's scheduled block ticks so a place landed in
     /// the same tick as a falling block's schedule still sees the support
@@ -21,7 +25,7 @@ impl Hub {
             conns: self
                 .guests
                 .iter()
-                .filter(|g| self.here(g) || (g.held && self.watches(g)))
+                .filter(|g| self.drains_in(g))
                 .map(|g| g.conn)
                 .collect(),
             next: 0,
@@ -44,15 +48,14 @@ impl Hub {
                 pass.movement_held = false;
                 continue;
             }
-            if !self.here(&self.guests[i])
-                && !(self.guests[i].held && self.watches(&self.guests[i]))
-            {
+            if !self.drains_in(&self.guests[i]) {
                 pass.next += 1;
                 pass.started = false;
                 pass.movement_held = false;
                 continue;
             }
-            let frozen = self.guests[i].handover.is_some() || self.guests[i].held;
+            let g = &self.guests[i];
+            let frozen = g.handover.is_some() || g.held || g.respawning;
             if frozen {
                 self.keep_acknowledgements(i, &mut events);
             }

@@ -6,8 +6,8 @@
 //!     [--approximate]
 //!
 //! `--approximate` samples as Reduced far detail does.
-use sunrise_world::worldgen::generator::{GeneratorData, OverworldGenerator};
 use std::{path::PathBuf, time::Instant};
+use sunrise_world::worldgen::generator::{GeneratorData, OverworldGenerator};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 

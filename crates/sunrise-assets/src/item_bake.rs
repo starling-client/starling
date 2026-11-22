@@ -3,7 +3,7 @@
 //! and render properties a `CuboidItemModelWrapper` keeps.
 use crate::{
     bake::{ModelQuad, bake_block_model, bake_flat_face},
-    item_model::DisplayContext,
+    item_model::{DisplayContext, LayerTransform},
     json::Result,
     math::{Mat4, quaternion_xyz},
     model::{Direction, DisplayTransform, GuiLight, ItemTransform, Material, TextureSlot},
@@ -85,9 +85,19 @@ impl BakedItemModel {
         context_index(context).and_then(|i| self.transforms[i].as_ref())
     }
     /// `LayerRenderState.applyTransform`: the display transform followed by
-    /// the item model's own local transformation.
-    pub fn layer_matrix(&self, context: DisplayContext, local: &Mat4) -> Mat4 {
-        item_transform_matrix(self.transform(context), context.left_hand()).mul(local)
+    /// the item model's own local transformation. The layer says whose display transform it is
+    /// (`transform`): this model's, or none, which still centres.
+    pub fn layer_matrix(
+        &self,
+        transform: LayerTransform,
+        context: DisplayContext,
+        local: &Mat4,
+    ) -> Mat4 {
+        let display = match transform {
+            LayerTransform::Model => self.transform(context),
+            LayerTransform::None => None,
+        };
+        item_transform_matrix(display, context.left_hand()).mul(local)
     }
 }
 /// `ItemTransform.apply` on an identity pose.
@@ -474,6 +484,32 @@ mod tests {
     use super::*;
     use crate::model::{CuboidModel, TextureSlot};
     use std::collections::BTreeMap;
+
+    /// A layer that owns its display transform as `None` is still centred, and ignores the
+    /// model's transform for the context; the model's own transform scales the same layer.
+    #[test]
+    fn a_layer_without_a_display_transform_is_centred_not_scaled() {
+        let mut transforms: [Option<ItemTransform>; 9] = Default::default();
+        transforms[5] = Some(ItemTransform {
+            rotation: [0.0; 3],
+            translation: [0.0; 3],
+            scale: [2.0; 3],
+        });
+        let baked = BakedItemModel {
+            quads: Vec::new(),
+            uses_block_light: false,
+            particle: Material {
+                sprite: "minecraft:item/stick".into(),
+                force_translucent: false,
+            },
+            transforms,
+        };
+        let local = Mat4::translation([1.0, 0.0, 0.0]);
+        let x = |mode| baked.layer_matrix(mode, DisplayContext::Gui, &local).0[3][0];
+        // Centring (-0.5) then the local shift of 1; the model's scale of 2 doubles the sum.
+        assert_eq!(x(LayerTransform::None), 0.5);
+        assert_eq!(x(LayerTransform::Model), 1.0);
+    }
 
     /// The stick: 2x2 with one transparent pixel. `item/cit`: one opaque pixel, so a bake
     /// shows whose mask it extruded. A fluid sprite and its masks: one pixel, an L, a

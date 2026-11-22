@@ -13,7 +13,7 @@ MultilineTextField.selectWordAtCursor	port	crates/sunrise-client-render/src/ui.r
 MultilineTextField.keyPressed	port	crates/sunrise-client/src/game/interface/books.rs::Game::book_input	gap: player: Home and End go to the start and end of the whole page, not of the visual line (EditBox::key); Enter, arrows and Ctrl keys are handled
 MultilineTextField.getSelectedText	port	crates/sunrise-client-render/src/ui.rs::EditBox::selected_text
 MultilineTextField.getCursorLineView	inline	crates/sunrise-client/src/game/interface/books.rs::Game::book_move_line	gap: player: Home and End do not use the caret's line range (see keyPressed)
-MultilineTextField.getNextWord	port	crates/sunrise-client-render/src/ui.rs::multiline_word_position	start of the next word; Ctrl+Right and Ctrl+Delete reach it through EditBox::word_position
+MultilineTextField.getNextWord	port	crates/sunrise-mod-vocab/src/client/widgets_text_edit.rs::multiline_word_position	start of the next word; Ctrl+Right and Ctrl+Delete reach it through EditBox::word_position
 MultilineTextField.getWordEndPosition	inline	crates/sunrise-client-render/src/ui.rs::EditBox::select_word_at_cursor	the end of the word is found there; MultiLineEdit::word_end serves signs
 MultilineTextField.onValueChange	inline	crates/sunrise-client/src/game/interface/books.rs::Game::page_keep	the page text is stored there after the limit check; visual rows are computed on demand by page_rows
 MultilineTextField.reflowDisplayLines	port	crates/sunrise-client/src/game/interface/books.rs::Game::page_rows	same wrap breaks as font.split

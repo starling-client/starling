@@ -101,13 +101,13 @@ fn arrow_attackable(tags: &UpdateTags, type_id: Option<i32>) -> bool {
 mod tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::chunk::Chunk;
     use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
     use sunrise_core::position::ChunkPos;
     use sunrise_protocol::packets::configuration::{
         ClientInformation, RegistryTags, TagEntry, UpdateTags,
     };
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     fn tags(redirectable: &[i32]) -> UpdateTags {
         UpdateTags {
@@ -149,7 +149,7 @@ mod tests {
     /// attacked as before, and an item out of reach, or attacked with a spear in hand,
     /// ends the attack without a kick.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn attacking_an_item_an_orb_oneself_or_an_arrow_kicks_the_player() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -227,6 +227,7 @@ mod tests {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();

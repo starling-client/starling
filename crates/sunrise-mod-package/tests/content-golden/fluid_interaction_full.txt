@@ -1,0 +1,110 @@
+manifest:
+Manifest {
+    id: "fluid_interaction_full",
+    name: "Fluid interaction full",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/fluid_interaction_full",
+    ),
+    files: [
+        "data/fluid_interaction_full/sunrise/fluid_interaction/cooled.json",
+        "data/fluid_interaction_full/sunrise/fluid_interaction/frozen.json",
+        "data/fluid_interaction_full/sunrise/fluid_interaction/quenched.json",
+    ],
+    blocks: [],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [
+        FluidInteraction {
+            source: "minecraft:lava",
+            neighbour: FluidTag(
+                "minecraft:water",
+            ),
+            below: Some(
+                Block(
+                    "minecraft:blue_ice",
+                ),
+            ),
+            becomes: Becomes {
+                source: None,
+                flowing: Some(
+                    "minecraft:basalt",
+                ),
+            },
+        },
+        FluidInteraction {
+            source: "minecraft:water",
+            neighbour: Block(
+                "minecraft:blue_ice",
+            ),
+            below: None,
+            becomes: Becomes {
+                source: Some(
+                    "minecraft:ice",
+                ),
+                flowing: None,
+            },
+        },
+        FluidInteraction {
+            source: "minecraft:lava",
+            neighbour: Fluid(
+                "minecraft:water",
+            ),
+            below: Some(
+                BlockTag(
+                    "minecraft:logs",
+                ),
+            ),
+            becomes: Becomes {
+                source: Some(
+                    "minecraft:basalt[axis=y]",
+                ),
+                flowing: Some(
+                    "minecraft:stone",
+                ),
+            },
+        },
+    ],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "fluid_interaction_full",
+    ],
+}

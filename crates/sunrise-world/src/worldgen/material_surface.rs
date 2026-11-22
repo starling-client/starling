@@ -1,10 +1,10 @@
 //! Seeded terracotta bands and the material system's surface-noise queries.
 use crate::registry::{BlockRegistry, BlockStateId};
+use std::sync::Arc;
 use sunrise_core::{
     noise::Noise,
     random::{PositionalRandom, RandomSource},
 };
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ClayBandBlocks {

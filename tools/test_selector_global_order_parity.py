@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sys
 try:
     from . import test_command_exec_parity as driver
@@ -95,7 +96,10 @@ def main():
     parser.add_argument('--strict-all',action='store_true')
     options,remaining=parser.parse_known_args();sys.argv=[sys.argv[0]]+remaining
     if '--help' in sys.argv or '-h' in sys.argv:driver.main();return 0
-    if '--work-dir' not in sys.argv:parser.error('--work-dir must be a new capture directory')
+    if '--work-dir' not in sys.argv:  # tools/parity.py passes none: a fresh folder of its own each run
+        default = driver.lab.LOCAL / 'selector-global-order-parity'
+        shutil.rmtree(default, ignore_errors=True)
+        sys.argv += ['--work-dir', str(default)]
     folder=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve();assert not folder.exists(),'preserve raw attempts'
     driver.corpus_module.groups=lambda:[('Interleaved global selector order',program())]
     if '--allow-gaps' not in sys.argv:sys.argv.append('--allow-gaps')

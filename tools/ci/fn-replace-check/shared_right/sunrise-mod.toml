@@ -1,0 +1,13 @@
+id = "fnr_shared_right"
+name = "Function replacement check: one side of a diamond of mods sharing a crates.io crate"
+version = "0.1.0"
+description = "fn-replace: a mod whose library carries itoa, a dependency of fnr_shared_tip"
+authors = []
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+sunrise = "HEAD"
+mixins = "MIXINS"

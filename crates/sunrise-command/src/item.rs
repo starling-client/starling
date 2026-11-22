@@ -1,17 +1,19 @@
 //! ItemParser (item stacks with components, `stone[damage=5]`) and
 //! ItemPredicateArgument (ComponentPredicateParser's packrat grammar:
 //! `#logs[count~1..|!damage]`), with vanilla's errors and suggestions.
+//! Network-only components have no persistent payload: assignments and stack
+//! removals reject them, while predicate presence/absence tests only name a type.
 use super::args::{
     ItemInput, Registries, is_id_char, parse_identifier, read_identifier, suggest_resources,
 };
 use super::codec::{either, is_number, not_map, snbt};
 use super::packrat::{Grammar, Reason, State, Sugg, Term, Value, alt, ch, opt, seq};
 use super::{CmdResult, CommandError, Reader, SuggestionsBuilder};
+use std::rc::Rc;
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_items::item_data::component_values;
 use sunrise_items::properties::swing_animation::SwingAnimation;
 use sunrise_world::datafix::dynamic::as_number;
-use std::rc::Rc;
 
 fn int_of(t: &Tag) -> Option<i64> {
     Some(match t {
@@ -28,6 +30,7 @@ fn int_of(t: &Tag) -> Option<i64> {
 pub const DECODED_COMPONENTS: &[&str] = &[
     "minecraft:cat/sound_variant",
     "minecraft:cat/variant",
+    "minecraft:chicken/variant",
     "minecraft:wolf/sound_variant",
     "minecraft:wolf/variant",
     "minecraft:container_loot",
@@ -66,6 +69,7 @@ pub const DECODED_COMPONENTS: &[&str] = &[
     "minecraft:lodestone_tracker",
     "minecraft:damage_resistant",
     "minecraft:use_effects",
+    "minecraft:custom_data",
     "minecraft:block_entity_data",
     "minecraft:enchantable",
     "minecraft:ominous_bottle_amplifier",
@@ -93,8 +97,8 @@ pub const DECODED_COMPONENTS: &[&str] = &[
 ];
 
 /// Validate and decode a component into the value representation shared with stacks.
-/// Registered components without a shared decoder retain their exact stored value.
-/// Registration is checked by the caller; this helper only rejects failed decodes.
+/// Registered persistent components without a shared decoder retain their stored value.
+/// Registration is checked by the caller; transient components have no decoder.
 pub fn decoded_component_value(id: &str, value: &Tag, reg: &Registries) -> Result<Tag, String> {
     if id == "minecraft:tooltip_display" {
         return tooltip_display(value, reg);
@@ -107,6 +111,7 @@ pub fn decoded_component_value(id: &str, value: &Tag, reg: &Registries) -> Resul
             });
     }
     if !DECODED_COMPONENTS.contains(&id) {
+        sunrise_world::item_defaults::validate_component_tag(id, value)?;
         return Ok(value.clone());
     }
     if id == "minecraft:potion_duration_scale" {
@@ -189,6 +194,9 @@ pub fn decoded_component_value(id: &str, value: &Tag, reg: &Registries) -> Resul
     if id == "minecraft:note_block_sound" {
         return identifier_value(value);
     }
+    if id == "minecraft:custom_data" {
+        return sunrise_items::item_data::custom_data::decode(value.clone());
+    }
     decode_component(id, value, reg)?;
     if id == "minecraft:block_entity_data" {
         let Tag::Compound(_) = value else {
@@ -261,6 +269,10 @@ pub fn decoded_component_value(id: &str, value: &Tag, reg: &Registries) -> Resul
 
 /// The codecs of the item components commands commonly set.
 pub fn decode_component(id: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
+    if matches!(id, "minecraft:custom_name" | "minecraft:item_name") {
+        return super::component::decode(t);
+    }
+    sunrise_world::item_defaults::validate_component_tag(id, t)?;
     if let Some(registry) = sunrise_items::properties::pet_variants::registry(id) {
         return sunrise_items::properties::pet_variants::decode(registry, t, reg).map(|_| ());
     }
@@ -462,13 +474,13 @@ pub fn decode_component(id: &str, t: &Tag, reg: &Registries) -> Result<(), Strin
         "minecraft:enchantment_glint_override" => sunrise_items::item_data::component_bool(t)
             .map(|_| ())
             .ok_or_else(|| "Not a number".into()),
-        "minecraft:custom_name" | "minecraft:item_name" => super::component::decode(t),
         "minecraft:item_model" | "minecraft:tooltip_style" => identifier_value(t).map(|_| ()),
         "minecraft:damage_resistant" => component_values::damage_resistant(t, reg).map(|_| ()),
         "minecraft:use_effects" => sunrise_items::item_data::ingredient_components::use_effects(t)
             .map(|_| ())
             .map_err(str::to_owned),
         "minecraft:note_block_sound" => identifier_value(t).map(|_| ()),
+        "minecraft:custom_data" => sunrise_items::item_data::custom_data::validate(t),
         // TypedEntityData.codec: the type is the compound's id.
         "minecraft:block_entity_data" => match t {
             Tag::Compound(c) => match c.get(&"id".into()) {
@@ -649,6 +661,7 @@ fn int_bounds(t: &Tag) -> Result<(), String> {
 }
 /// DataComponentPredicate type codecs.
 pub fn decode_predicate(id: &str, t: &Tag) -> Result<(), String> {
+    sunrise_world::item_defaults::validate_partial_predicate_tag(id, t)?;
     match id {
         "minecraft:count" => int_bounds(t),
         "minecraft:damage" => match t {
@@ -715,6 +728,14 @@ impl ItemState<'_, '_> {
         }
         let cursor = self.reader.cursor;
         let id = read_identifier(self.reader)?;
+        if let Err(message) = sunrise_world::item_defaults::validate_component_name(&id) {
+            self.reader.cursor = cursor;
+            return Err(CommandError::tr_at(
+                "arguments.item.component.malformed",
+                &[&id, &message],
+                self.reader,
+            ));
+        }
         if self.reg.persistent_components.contains(&id) {
             return Ok(id);
         }
@@ -1106,7 +1127,10 @@ fn predicate_grammar() -> Grammar<IV> {
                 .ids("minecraft:data_component_type")
                 .iter()
                 .any(|c| c == id);
-            if known && r.persistent_components.iter().any(|c| c == id) {
+            if known
+                && (r.persistent_components.iter().any(|c| c == id)
+                    || sunrise_world::item_defaults::is_transient_component(id))
+            {
                 Ok(IV::Comp(id.to_owned()))
             } else {
                 Err(CommandError::tr_at(

@@ -19,7 +19,6 @@ impl Hooks for Protect {
     }
 }
 fn main() {
-    sunrise_mod_host::exit_if_compile_child();
     let startup = sunrise_client::entry::prepare();
     let mods: Vec<ModEntry> = if std::env::var_os("SUNRISE_WIND_NO_MOD").is_some() {
         Vec::new()
@@ -31,7 +30,7 @@ fn main() {
     std::thread::Builder::new()
         .name("wind-burst-fixture".into())
         .stack_size(64 * 1024 * 1024)
-        .spawn(move || sunrise_mod_host::main_with(mods, &[], &[], startup))
+        .spawn(move || sunrise_mod_host::main_with(mods, &[], startup))
         .expect("start wind fixture")
         .join()
         .expect("wind fixture panicked");

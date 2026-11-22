@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: unknown variant `integrated`, expected one of `client`, `both`, `server` (line 4, column 8)
+
+icon:
+unavailable

@@ -1,4 +1,11 @@
 use crate::support::common::f32_bits;
+use serde_json::Value;
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+    sync::Arc,
+};
 use sunrise_world::{
     attributes::{
         Modifier, Operation,
@@ -11,13 +18,6 @@ use sunrise_world::{
     player_health::PlayerFloatIds,
     server_player_damage::{ServerDamageEnvironment, ServerPlayerDamage},
     synced_floats::{FloatValue, Observer, SyncedFloats},
-};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{self, Write},
-    path::Path,
-    sync::Arc,
 };
 fn single(v: &Value) -> f32 {
     f32::from_bits(u32::from_str_radix(v.as_str().unwrap(), 16).unwrap())

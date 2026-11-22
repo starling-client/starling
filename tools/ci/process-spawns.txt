@@ -3,8 +3,6 @@
 check_starts                # sunrise-server: runs the game program to see that it starts
 engine::spawn               # sunrise-server: starts the game
 isolated_test               # sunrise-mod-package: reruns the test in a child process of its own
-load_with_child             # sunrise-mod-wasm: compiles a module in a child process
 load_with_child_command
 Hardware::detect            # sunrise-bench: asks the system (uname, sysctl) about the machine
 Report::new                 # sunrise-bench: a report describes this machine (Hardware::detect)
-fixture::cached_answer      # sunrise-mod-wasm: compiles a module in the given child executable

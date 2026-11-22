@@ -1,0 +1,3 @@
+ids = ["hook:entity_move"]
+why = "A translating collider now shoves bodies in its path through the ordinary collided move. The same Carried cause covers carrying and shoving. entity_move is version 5 because listeners can receive Carried without the body standing on the collider."
+migrate = "Rebuild against this SDK. Do not assume a Carried move means the body was standing on the collider."

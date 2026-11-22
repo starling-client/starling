@@ -1,3 +1,9 @@
+use serde_json::Value;
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+};
 use sunrise_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource, XoroshiroRandom},
@@ -5,12 +11,6 @@ use sunrise_core::{
 use sunrise_world::{
     food::FoodData,
     food_properties::{ConsumptionSound, FoodConsumptionWorld, FoodProperties, SoundCategory},
-};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{self, Write},
-    path::Path,
 };
 fn n(v: &Value, k: &str) -> i32 {
     v[k].as_i64().unwrap() as i32

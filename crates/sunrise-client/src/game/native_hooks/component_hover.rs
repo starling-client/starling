@@ -15,12 +15,12 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod component_hover_tests {
-    use sunrise_client::hud::HudBatch;
-    use sunrise_client::text::{Style, Text};
     use mod_api::text::{TextContent, TextHover};
     use mod_api::{ComponentHoverEvent, Hooks, ModEntry};
     use mod_platform::testing::with_mods;
     use std::sync::Mutex;
+    use sunrise_client::hud::HudBatch;
+    use sunrise_client::text::{Style, Text};
 
     /// Every hover the mod was asked about, in order.
     static SEEN: Mutex<Vec<TextHover>> = Mutex::new(Vec::new());
@@ -59,7 +59,7 @@ mod component_hover_tests {
     /// typed hover (text, item, and an entity whose UUID came as an int array), the default
     /// drawing is unchanged when it doesn't cancel, and a cancel draws only what the mod drew.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_sees_each_hover_and_may_draw_its_own() {
         let text = style(serde_json::json!({ "action": "show_text", "value": "hello" }));
         let secret = style(serde_json::json!({ "action": "show_text", "value": "secret" }));

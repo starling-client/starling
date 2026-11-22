@@ -1,0 +1,3 @@
+ids = ["hook:can_place_item"]
+why = "BlockEntityPart::can_place_item adds server-side per-slot admission for mod block containers at Container.canPlaceItem. It returns an optional override of the declared insertion rule without changing face rules, stack limits or menu admission."
+migrate = "No existing hook version changes. To filter by saved state, implement BlockEntityPart::can_place_item and seed the filter from the accepted write, not from the query."

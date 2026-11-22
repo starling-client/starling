@@ -14,11 +14,13 @@ pub trait Hooks {
     /// guests of a server; `/summon`, a dispenser and the game's own player
     /// are not heard, nor is a lead tied to a mob or a boat.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_hanging_place",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         cancellable = true,
         neoforge = "none (vanilla HangingEntityItem.useOn; NeoForge adds no event or extension for it); PlayerInteractEvent.RightClickBlock fires before it"
     )]
-    fn hanging_place();
+    fn hanging_place(player: u128, name: &str, kind: &str, pos: [i32; 3], cancel: &mut bool);
 }

@@ -1,12 +1,12 @@
 use super::{super::native_entity_refs::tests::with_game, SlotAccess};
-use sunrise_client::{items::ItemStack, join_seq::RestoreOrder};
-use sunrise_mod_runtime::attachments::{
-    AttachmentType, Attachments, HasAttachmentLifetime, Holder, index::AttachmentIndex,
-};
 use mod_api::DimensionKey;
 use std::{
     num::NonZeroU32,
     sync::{Arc, Mutex},
+};
+use sunrise_client::{items::ItemStack, join_seq::RestoreOrder};
+use sunrise_mod_runtime::attachments::{
+    AttachmentType, Attachments, HasAttachmentLifetime, Holder, index::AttachmentIndex,
 };
 
 static VALUE: AttachmentType<i32> = AttachmentType {
@@ -53,7 +53,7 @@ macro_rules! check_list {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn resident_new_family_lifetimes_bind_move_and_retire() {
     with_game(|game| {
         game.summon_with_nbt("minecraft:marker", [0.5, 70.0, 0.5], "{}")

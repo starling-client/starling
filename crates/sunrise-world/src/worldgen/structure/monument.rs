@@ -1512,9 +1512,9 @@ mod tests {
             },
         },
     };
+    use std::collections::{BTreeMap, BTreeSet};
     use sunrise_core::density::TerrainAdjustment;
     use sunrise_core::nbt::Tag;
-    use std::collections::{BTreeMap, BTreeSet};
 
     /// A hand-built save of one monument start, read back: only the top piece's box and
     /// orientation are kept, and its rooms are rebuilt from the seed exactly as the

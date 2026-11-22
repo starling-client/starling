@@ -1,15 +1,38 @@
 //! Parsed resource models for one startup or resource-pack reload.
-use crate::{Result, resource_source::ResourceSource};
+use crate::{
+    Result,
+    mod_model_loaders::{ModelLoaderTable, decode_model_with_loaders, installed_loaders},
+    resource_source::ResourceSource,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use sunrise_assets::{
     model::CuboidModel,
     resolve::{AssetReader, ModelLibrary},
 };
-use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Default)]
 pub struct ParsedModels {
     models: BTreeMap<String, Arc<CuboidModel>>,
-    source: ResourceSource,
+    /// Files whose load failure has already been reported for this generation.
+    rejected: BTreeSet<String>,
+    /// `None` is an unscanned source, used by callers that only read selected models.
+    source: Option<ResourceSource>,
+}
+
+fn read_model(
+    source: &ResourceSource,
+    path: &str,
+    loaders: Option<&ModelLoaderTable>,
+) -> std::result::Result<Arc<CuboidModel>, String> {
+    let text = source
+        .read_to_string(path)
+        .map_err(|error| error.to_string())?;
+    decode_model_with_loaders(&text, loaders)
+        .map(Arc::new)
+        .map_err(|error| error.to_string())
 }
 /// Asset files under a content root, for models that name a file (obj).
 struct RootAssets(ResourceSource);
@@ -35,6 +58,14 @@ impl AssetReader for RootAssets {
 impl ParsedModels {
     /// Every `models/**.json` of a namespace directory, by identifier.
     pub fn load(source: &ResourceSource) -> Self {
+        Self::load_with_loaders(source, installed_loaders())
+    }
+
+    /// Scan this source with exactly the supplied table, including on the parsing workers.
+    pub(crate) fn load_with_loaders(
+        source: &ResourceSource,
+        loaders: Option<&ModelLoaderTable>,
+    ) -> Self {
         let files: Vec<_> = source
             .list_under("assets", &["models"])
             .into_iter()
@@ -44,91 +75,95 @@ impl ParsedModels {
                 Some((format!("{namespace}:{path}"), name))
             })
             .collect();
-        let parsed = crate::par::par_map(&files, |(_, path)| {
-            let text = source.read_to_string(path).ok()?;
-            CuboidModel::from_json(&text).ok().map(Arc::new)
-        });
-        let models = files
-            .into_iter()
-            .zip(parsed)
-            .filter_map(|((id, _), model)| Some((id, model?)))
-            .collect();
+        let parsed = crate::par::par_map(&files, |(_, path)| read_model(source, path, loaders));
+        let mut models = BTreeMap::new();
+        let mut rejected = BTreeSet::new();
+        for ((id, _), result) in files.into_iter().zip(parsed) {
+            match result {
+                Ok(model) => {
+                    models.insert(id, model);
+                }
+                Err(reason) => {
+                    log::error!("Sunrise: failed to load model {id}: {reason}");
+                    rejected.insert(id);
+                }
+            }
+        }
         Self {
             models,
-            source: source.clone(),
+            rejected,
+            source: Some(source.clone()),
         }
     }
 
-    /// Blocks require every referenced resource, including parents. Items instead
-    /// skip broken resources and use the resolver's missing-model fallback.
+    /// Missing blockstate models and their parents use the resolver's missing model.
     pub fn block_library(
         &self,
         source: &ResourceSource,
         pending: Vec<String>,
     ) -> Result<ModelLibrary> {
-        self.block_models(source, pending, false)
+        self.reachable_library(source, pending, &[])
     }
-    /// [`Self::block_library`], but a model that does not read takes the
-    /// built-in missing model, logged, as vanilla's model discovery does
-    /// ("Missing block model"). Mods' content gets this; vanilla's resources
-    /// always read.
-    pub fn block_library_or_missing(
+
+    /// Standalone registrations must name existing files, but those files share the
+    /// normal model discovery rules for absent or rejected parents.
+    pub(crate) fn standalone_library(
         &self,
         source: &ResourceSource,
-        pending: Vec<String>,
+        roots: &[String],
     ) -> Result<ModelLibrary> {
-        self.block_models(source, pending, true)
+        self.reachable_library(source, roots.to_vec(), roots)
     }
-    fn block_models(
+
+    fn reachable_library(
         &self,
         source: &ResourceSource,
         mut pending: Vec<String>,
-        or_missing: bool,
+        required_roots: &[String],
     ) -> Result<ModelLibrary> {
         let mut models = BTreeMap::new();
-        let mut skipped = std::collections::BTreeSet::new();
+        let mut skipped = BTreeSet::new();
         while let Some(name) = pending.pop() {
             if models.contains_key(&name) || skipped.contains(&name) {
                 continue;
             }
             let model = match self.models.get(&name) {
-                Some(model) => Arc::clone(model),
-                None => {
-                    let read = || -> Result<CuboidModel> {
-                        let (namespace, path) =
-                            name.split_once(':').ok_or("invalid model identifier")?;
-                        let text = source
-                            .read_to_string(&format!("assets/{namespace}/models/{path}.json"))?;
-                        Ok(CuboidModel::from_json(&text)?)
-                    };
-                    match read() {
-                        Ok(model) => Arc::new(model),
-                        Err(e) if or_missing => {
-                            log::warn!("Sunrise: missing block model {name}: {e}");
-                            skipped.insert(name);
-                            continue;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
+                Some(model) => Ok(Arc::clone(model)),
+                None if self.source.is_some() => Err("missing from this model load".into()),
+                None => name
+                    .split_once(':')
+                    .ok_or_else(|| "invalid model identifier".to_owned())
+                    .and_then(|(namespace, path)| {
+                        read_model(
+                            source,
+                            &format!("assets/{namespace}/models/{path}.json"),
+                            installed_loaders(),
+                        )
+                    }),
             };
-            pending.extend(model.referenced_models());
-            models.insert(name, model);
+            match model {
+                Ok(model) => {
+                    pending.extend(model.referenced_models());
+                    models.insert(name, model);
+                }
+                Err(reason) => {
+                    if required_roots.contains(&name) {
+                        return Err(format!("standalone model file {name}: {reason}").into());
+                    }
+                    if !self.rejected.contains(&name) {
+                        log::warn!("Sunrise: missing model {name}: {reason}");
+                    }
+                    skipped.insert(name);
+                }
+            }
         }
-        Ok(ModelLibrary::from_shared(models)?
-            .with_assets(Arc::new(RootAssets(source.clone())))
-            .with_loaders(Arc::new(crate::mod_model_loaders::ModLoaders)))
+        Ok(ModelLibrary::from_shared(models)?.with_assets(Arc::new(RootAssets(source.clone()))))
     }
+
     pub fn into_item_library(self) -> std::result::Result<Arc<ModelLibrary>, String> {
-        let source = self.source;
+        let source = self.source.unwrap_or_default();
         ModelLibrary::with_shared_item_generator(self.models)
-            .map(|library| {
-                Arc::new(
-                    library
-                        .with_assets(Arc::new(RootAssets(source)))
-                        .with_loaders(Arc::new(crate::mod_model_loaders::ModLoaders)),
-                )
-            })
+            .map(|library| Arc::new(library.with_assets(Arc::new(RootAssets(source)))))
             .map_err(|e| format!("item models: {e:?}"))
     }
 }
@@ -136,8 +171,8 @@ impl ParsedModels {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_assets::resolve::{GENERATED_MODEL, MISSING_MODEL};
     use std::fs;
+    use sunrise_assets::resolve::{GENERATED_MODEL, MISSING_MODEL};
 
     #[test]
     fn archive_models_and_auxiliary_files_load_without_an_asset_directory() -> Result<()> {
@@ -196,6 +231,41 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_required_loader_replaces_only_its_model_in_the_parent_chain() -> Result<()> {
+        use sunrise_assets::bake::{BlockModelTransform, bake_block_model};
+
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("sunrise-rejected-model-{}", std::process::id())),
+        );
+        fixture.write("demo:block/rejected", r#"{"loader":"demo:unregistered"}"#);
+        fixture.write(
+            "demo:block/child",
+            r##"{"parent":"demo:block/rejected","textures":{"side":"demo:block/stone"},"elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"up":{"texture":"#side"}}}]}"##,
+        );
+        let source = ResourceSource::directory(fixture.0.clone());
+        let parsed = ParsedModels::load(&source);
+        let blocks = parsed.block_library(
+            &source,
+            vec!["demo:block/rejected".into(), "demo:block/child".into()],
+        )?;
+        let items = parsed.into_item_library()?;
+        for library in [&blocks, items.as_ref()] {
+            let transform = BlockModelTransform::new([0; 3], false);
+            let missing = bake_block_model(&library.resolve("demo:block/rejected")?, transform)?;
+            assert_eq!(missing.len(), 6);
+            assert!(
+                missing
+                    .iter()
+                    .all(|q| q.material.sprite == "minecraft:missingno")
+            );
+            let child = bake_block_model(&library.resolve("demo:block/child")?, transform)?;
+            assert_eq!(child.len(), 1);
+            assert_eq!(child[0].material.sprite, "demo:block/stone");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn shared_views_preserve_resolution_errors_builtins_and_reload() -> Result<()> {
         let fixture = Fixture(
             std::env::temp_dir().join(format!("sunrise-shared-models-{}", std::process::id())),
@@ -230,27 +300,15 @@ mod tests {
         }
         assert!(shared.resolve("sunrise:a").is_err());
         for name in ["sunrise:broken", "sunrise:absent", "sunrise:dangling"] {
-            let load = |models: &ParsedModels| {
-                models
-                    .block_library(
-                        &ResourceSource::directory(fixture.0.clone()),
-                        vec![name.into()],
-                    )
-                    .err()
-                    .unwrap()
-                    .to_string()
-            };
-            assert_eq!(load(&direct), load(&parsed));
-            // Mods' content: vanilla's missing model instead of an error.
-            let lenient = parsed.block_library_or_missing(
-                &ResourceSource::directory(fixture.0.clone()),
-                vec![name.into()],
-            )?;
-            assert_eq!(
-                format!("{:?}", lenient.resolve(name)?.elements()),
-                format!("{:?}", lenient.resolve(MISSING_MODEL)?.elements()),
-                "{name}"
-            );
+            let source = ResourceSource::directory(fixture.0.clone());
+            for models in [&direct, &parsed] {
+                let library = models.block_library(&source, vec![name.into()])?;
+                assert_eq!(
+                    format!("{:?}", library.resolve(name)?.elements()),
+                    format!("{:?}", library.resolve(MISSING_MODEL)?.elements()),
+                    "{name}"
+                );
+            }
         }
         let items = parsed.into_item_library()?;
         let block = shared.resolve("sunrise:nested/child")?;

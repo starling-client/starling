@@ -8,21 +8,32 @@
 //! - `atan2`, `atan`, `asin`, `acos` and `hypot` are `StrictMath`'s (fdlibm)
 //!   everywhere.
 //! - On x86-64, `sin`, `cos`, `tan`, `exp`, `log`, `log10` and `pow` are
-//!   Intel's libm stubs, which round like glibc for nearly every argument;
-//!   there they use the platform libm, as before. Windows' libm (Microsoft's)
-//!   rounds `sin` and `cos` differently for about 3% of arguments, and `log`
-//!   for about 0.15%, so there they are correctly rounded instead
-//!   ([`exact`]), as Intel's stubs are for all but about 0.1% of `sin` and
-//!   `cos` and about 0.002% of `log`.
+//!   Intel's libm stubs. `log`'s and `log10`'s are correctly rounded except
+//!   where the result lies within a hair of a rounding tie (`log`: about 6 in
+//!   100,000 arguments near 1 and 2 in 10 million over its usual range;
+//!   `log10`: about 10 in 100,000 near 1 and none of 10 million over its
+//!   usual range), so `log` and `log10` are [`exact`]'s, which glibc's miss
+//!   by far more. `exp` is the stub's own algorithm
+//!   ([`hotspot_exp`]), whose results are not always correctly rounded.
+//!   `sin`, `cos` and `tan` are the stubs' own algorithms (`intel_trig`),
+//!   whose results are not always correctly rounded either. `pow` uses the
+//!   platform libm, which rounds like the stub for nearly every argument.
 //! - On AArch64 only `sin` and `cos` are intrinsics, which compute fdlibm's
 //!   `sin` and `cos` with fused multiply-adds ([`aarch64`]). Everything else
 //!   is `StrictMath`, which the Java SE API defines as fdlibm 5.3's results
 //!   ([`fdlibm`]).
+//! - Other targets (wasm32, 32-bit x86) follow x86-64 except for `sin`, `cos`
+//!   and `tan`, which there are the platform libm's; Windows' libm
+//!   (Microsoft's) rounds `sin` and `cos` differently for about 3% of
+//!   arguments, so there they are correctly rounded instead ([`exact`]).
 //!
 //! So these functions return what vanilla returns on the same machine, on
 //! Linux and on an Apple silicon Mac alike.
 
 pub mod fdlibm;
+pub mod hotspot_exp;
+#[cfg(target_arch = "x86_64")]
+pub mod intel_trig;
 
 /// `Math.sin` and `Math.cos` as HotSpot computes them on AArch64: fdlibm's
 /// algorithm with fused multiply-adds, on every platform.
@@ -48,7 +59,8 @@ pub fn round_f32(a: f32) -> i32 {
 pub enum Platform {
     /// HotSpot on AArch64: fdlibm with fused multiply-adds for `sin`/`cos`.
     Aarch64,
-    /// Windows: correctly rounded `sin`, `cos` and `log`.
+    /// Windows: Microsoft's libm where jmath calls the platform's (`pow`,
+    /// `cbrt`), and off x86-64 correctly rounded `sin` and `cos`.
     Windows,
     /// The platform libm.
     Libm,
@@ -67,7 +79,11 @@ pub const PLATFORM: Platform = if cfg!(target_arch = "aarch64") {
 pub fn sin(x: f64) -> f64 {
     match PLATFORM {
         Platform::Aarch64 => aarch64::sin(x),
+        #[cfg(target_arch = "x86_64")]
+        Platform::Windows | Platform::Libm => intel_trig::sin(x),
+        #[cfg(not(target_arch = "x86_64"))]
         Platform::Windows => exact::sin(x),
+        #[cfg(not(target_arch = "x86_64"))]
         Platform::Libm => x.sin(),
     }
 }
@@ -76,7 +92,11 @@ pub fn sin(x: f64) -> f64 {
 pub fn cos(x: f64) -> f64 {
     match PLATFORM {
         Platform::Aarch64 => aarch64::cos(x),
+        #[cfg(target_arch = "x86_64")]
+        Platform::Windows | Platform::Libm => intel_trig::cos(x),
+        #[cfg(not(target_arch = "x86_64"))]
         Platform::Windows => exact::cos(x),
+        #[cfg(not(target_arch = "x86_64"))]
         Platform::Libm => x.cos(),
     }
 }
@@ -85,6 +105,9 @@ pub fn cos(x: f64) -> f64 {
 pub fn tan(x: f64) -> f64 {
     match PLATFORM {
         Platform::Aarch64 => libm::tan(x),
+        #[cfg(target_arch = "x86_64")]
+        Platform::Windows | Platform::Libm => intel_trig::tan(x),
+        #[cfg(not(target_arch = "x86_64"))]
         Platform::Windows | Platform::Libm => x.tan(),
     }
 }
@@ -93,7 +116,7 @@ pub fn tan(x: f64) -> f64 {
 pub fn exp(x: f64) -> f64 {
     match PLATFORM {
         Platform::Aarch64 => libm::exp(x),
-        Platform::Windows | Platform::Libm => x.exp(),
+        Platform::Windows | Platform::Libm => hotspot_exp::exp(x),
     }
 }
 
@@ -101,8 +124,7 @@ pub fn exp(x: f64) -> f64 {
 pub fn log(x: f64) -> f64 {
     match PLATFORM {
         Platform::Aarch64 => fdlibm::log(x),
-        Platform::Windows => exact::log(x),
-        Platform::Libm => x.ln(),
+        Platform::Windows | Platform::Libm => exact::log(x),
     }
 }
 
@@ -110,7 +132,7 @@ pub fn log(x: f64) -> f64 {
 pub fn log10(x: f64) -> f64 {
     match PLATFORM {
         Platform::Aarch64 => fdlibm::log10(x),
-        Platform::Windows | Platform::Libm => x.log10(),
+        Platform::Windows | Platform::Libm => exact::log10(x),
     }
 }
 
@@ -168,16 +190,18 @@ pub fn round(x: f64) -> i64 {
     (if x - f >= 0.5 { f + 1.0 } else { f }) as i64
 }
 
-/// `sin`, `cos` and `log` correctly rounded, for Windows, whose libm rounds
-/// them unlike Java's x86-64 intrinsics. Double-double arithmetic (two `f64`s
+/// `sin`, `cos`, `log` and `log10` correctly rounded, as Java's x86-64
+/// intrinsics nearly always are (`sin` and `cos` serve Windows off x86-64,
+/// whose libm rounds them otherwise). Double-double arithmetic (two `f64`s
 /// per value): `x` reduced by a four-part pi/2 (`log`: split into a power of
 /// two and a mantissa near 1), a short series checked against an error bound,
 /// and where the bound leaves the rounding open, the full series with its
 /// terms summed exactly. Checked against 400-bit results on 1.3 million
 /// arguments (`sin`, `cos`), small ones and ones next to multiples of pi/2
 /// among them, and `log` against 70-digit results on 374,000 arguments (none
-/// wrong; every power of two, subnormals and the arguments near 1 among them);
-/// not a proof. A result left open by the series' 2^-100 is rounded as the
+/// wrong; every power of two, subnormals and the arguments near 1 among them),
+/// `log10` against 60-digit results on 600,000 (none wrong; near 1, near 10
+/// and every exponent); not a proof. A result left open by the series' 2^-100 is rounded as the
 /// series gives it.
 pub mod exact {
     /// A value `hi + lo` with |lo| <= ulp(hi) / 2.
@@ -494,11 +518,13 @@ pub mod exact {
         k_ln2(k).add(Dd(2.0 * a.0, 2.0 * a.1))
     }
 
-    /// ln(x) correctly rounded where `log_fast` can't tell: every term of the series to 2^-110 as a
-    /// double-double, with `k ln 2`, summed exactly.
-    fn log_series(s: Dd, k: f64) -> f64 {
+    const LOG_PARTS: usize = 4 + 2 * LOG_TERMS as usize;
+
+    /// ln(x) as parts whose exact sum is within 2^-110 of it: `k ln 2` and every term of the series as
+    /// a double-double.
+    fn log_parts(s: Dd, k: f64) -> [f64; LOG_PARTS] {
         let s2 = s.mul(s);
-        let mut parts = [0.0f64; 4 + 2 * LOG_TERMS as usize];
+        let mut parts = [0.0f64; LOG_PARTS];
         let c = two_prod(k, L3);
         parts[..4].copy_from_slice(&[k * L1, k * L2, c.0, c.1]);
         let mut power = s;
@@ -507,6 +533,29 @@ pub mod exact {
             parts[4 + 2 * n as usize] = 2.0 * t.0;
             parts[5 + 2 * n as usize] = 2.0 * t.1;
             power = power.mul(s2);
+        }
+        parts
+    }
+
+    /// ln(x) correctly rounded where `log_fast` can't tell: the parts summed exactly.
+    fn log_series(s: Dd, k: f64) -> f64 {
+        exact_sum(&log_parts(s, k))
+    }
+
+    /// 1 / ln 10 as a double-double.
+    const INV_LN10: Dd = Dd(
+        f64::from_bits(0x3FDB_CB7B_1526_E50E),
+        f64::from_bits(0x3C69_5355_BAAA_FAD3),
+    );
+
+    /// log10(x) correctly rounded where the quick path can't tell: each part of ln(x) times 1 / ln 10
+    /// as a double-double (to 2^-104 of the part), summed exactly.
+    fn log10_series(s: Dd, k: f64) -> f64 {
+        let mut parts = [0.0f64; 2 * LOG_PARTS];
+        for (i, &p) in log_parts(s, k).iter().enumerate() {
+            let t = Dd(p, 0.0).mul(INV_LN10);
+            parts[2 * i] = t.0;
+            parts[2 * i + 1] = t.1;
         }
         exact_sum(&parts)
     }
@@ -545,10 +594,72 @@ pub mod exact {
         let s = atanh_arg(m);
         rounded(log_fast(s, k)).unwrap_or_else(|| log_series(s, k))
     }
+
+    /// `log10(x)` rounded to nearest, as Java's `Math.log10`: the special cases of `log`, and ln(x)
+    /// times 1 / ln 10. A power of ten rounds to its exponent.
+    pub fn log10(x: f64) -> f64 {
+        if x.is_nan() || x < 0.0 {
+            return f64::NAN;
+        }
+        if x == 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        if x == f64::INFINITY {
+            return x;
+        }
+        let (m, k) = split(x);
+        let s = if m == 1.0 { Dd(0.0, 0.0) } else { atanh_arg(m) };
+        let ln = if m == 1.0 { k_ln2(k) } else { log_fast(s, k) };
+        rounded(ln.mul(INV_LN10)).unwrap_or_else(|| log10_series(s, k))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    /// `Math.log` on HotSpot 25.0.4.1 (x86-64) where glibc's `log` rounds the other way: input and result bits.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn log_is_hotspots() {
+        for (x, expected) in [
+            (0x412a_badc_a4af_f660u64, 0x402b_5db1_12eb_912fu64),
+            (0x4026_dd35_597e_cafc, 0x4003_7dca_168f_0f95),
+            (0x4115_58ee_1c12_eeb4, 0x4029_87ac_babe_d7dd),
+            (0x412b_66ab_a16c_ea93, 0x402b_6a63_5b18_0af3),
+            (0x412b_415a_3059_0bbe, 0x402b_67a8_3094_a876),
+            (0x3fd1_7712_1504_076e, 0xbff4_c761_e7a0_5a8a),
+            (0x4014_e408_aa4e_067d, 0x3ffa_72bd_31f6_36cb),
+            (0x4126_ba36_cc00_cfe8, 0x402b_0aa3_87f6_c594),
+        ] {
+            assert_eq!(
+                super::log(f64::from_bits(x)).to_bits(),
+                expected,
+                "log({x:#x})"
+            );
+        }
+    }
+
+    /// `Math.log10` on HotSpot 25.0.4.1 (x86-64) where glibc's `log10` rounds the other way: input and result bits.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn log10_is_hotspots() {
+        for (x, expected) in [
+            (0x3fee_e752_7f2a_c7c4u64, 0xbf8f_022c_fb3d_7cbcu64),
+            (0x3ff1_0356_f516_9c9d, 0x3f9b_4d4e_270d_6d3d),
+            (0x4023_92dc_f200_0e2a, 0x3fef_b358_0e20_3857),
+            (0x4025_fb14_aaf6_7321, 0x3ff0_a7fd_7111_fff7),
+            (0x3fc1_4aaf_6732_10f0, 0xbfeb_d1e3_c269_eeb3),
+            (0x4008_0f3b_ea73_d415, 0x3fde_9ac6_8fe6_d92d),
+            (0x1111_0910_5e92_0576, 0xc06c_37d9_3465_037f),
+            (0x3ffb_9476_cd9a_809a, 0x3fce_44c1_d01a_b519),
+        ] {
+            assert_eq!(
+                super::log10(f64::from_bits(x)).to_bits(),
+                expected,
+                "log10({x:#x})"
+            );
+        }
+    }
+
     #[test]
     fn pow_matches_java_special_cases() {
         let inf = f64::INFINITY;

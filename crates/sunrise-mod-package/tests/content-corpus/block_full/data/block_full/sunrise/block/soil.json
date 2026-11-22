@@ -1,0 +1,10 @@
+{
+  "template": "minecraft:farmland",
+  "base_block": "minecraft:coarse_dirt",
+  "item": false,
+  "block_item": "minecraft:coarse_dirt",
+  "properties": {
+    "random_ticks": false,
+    "push_reaction": "PUSH_PULL"
+  }
+}

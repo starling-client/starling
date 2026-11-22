@@ -11,7 +11,7 @@ section has one page per surface, plus the rules every surface follows:
 | [Shaders](shaders.md) | shader authors | API 0.1 (sky, vertex, material, weather and post stages, coloured block light, options, hot reload) | experimental | [shaders-reference.md](shaders-reference.md) |
 | [Agent control](agent-control.md) | agents, scripts, tests | `sunrise-ctl`, its MCP server, the game's control socket | preview | [sunrise-ctl-commands.md](../sunrise-ctl-commands.md) (generated) |
 | [Servers](server.md) | hosts, panels, bots | `sunrise-server` commands, `server.toml`, control API `/api/v1` | stable | [server-reference.md](server-reference.md) (generated) |
-| [Launcher](launcher.md) | players' agents, pack makers | `sunrise-launcher` commands and its MCP server | preview | [launcher-commands.md](../launcher-commands.md) (generated) |
+| [Launcher](launcher.md) | players' agents, pack makers | `sunrise-launcher` commands and its MCP server | preview | [launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md) (generated) |
 | [Launch](launch.md) | other launchers | `sunrise-client`'s launch options, the session JSON, exit codes; `sunrise-prepare`'s output, `--check` and `--progress json` | experimental | [launch-reference.md](launch-reference.md) (generated) |
 | [Data formats](data-formats.md) | tools that read Sunrise's files | benchmark reports, settings files, signed checksums | stable or preview, per format | on that page |
 
@@ -41,7 +41,7 @@ A reference page is written by code from the source it describes, and a test fai
 | --- | --- | --- |
 | [server-reference.md](server-reference.md) | `sunrise-server`'s help, `config::TEMPLATE`, `api::ROUTES` | `SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-server reference` |
 | [sunrise-ctl-commands.md](../sunrise-ctl-commands.md) | the command table in `crates/sunrise-client/src/bin/sunrise-ctl/commands.rs` | `sunrise-ctl help --markdown > docs/sunrise-ctl-commands.md` |
-| [launcher-commands.md](../launcher-commands.md) | `launcher/src/cli.rs` | `SUNRISE_WRITE_DOCS=1 cargo test --manifest-path launcher/Cargo.toml the_launcher_reference` |
+| [launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md) | `src/cli.rs` in [sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher) | `SUNRISE_WRITE_DOCS=1 cargo test the_launcher_reference` there |
 | [launch-reference.md](launch-reference.md) | `crates/sunrise-client/src/game/runtime/launch_api.rs` | `SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-client --lib launch_api` |
 
 So a pull request that changes an API also changes its reference, and the reviewer sees the API's diff in the

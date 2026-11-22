@@ -5,6 +5,7 @@ pub trait Hooks {
     /// has stopped. Fires once on the process's game thread on an orderly exit,
     /// with the host for that side. NeoForge's `GameShuttingDownEvent`.
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         neoforge = "GameShuttingDownEvent",

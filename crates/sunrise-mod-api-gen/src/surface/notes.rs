@@ -5,7 +5,12 @@
 //! ids = ["hook:player_logged_in", "type:PlayerLoggedIn.player"]
 //! why = "The hook now fires on the server only."
 //! migrate = "Take `ServerPlayerRef` instead of `PlayerRef`."   # optional
+//! landed = "6597e0855f562498319f093afcf2ed1ea8d717cb"          # optional
 //! ```
+//!
+//! `landed` is the full sha of a merge that changed those ids without a note: the note is
+//! checked against that merge's first parent and the merge, not against the pull request that
+//! adds the note. Without it, the note is checked against the pull request's own diff.
 //!
 //! [`read`] refuses an unreadable file, bad TOML, an unknown key (by name), a missing or
 //! mistyped key and an empty `ids` with a typed [`NoteError`]. A note is *new* when the base
@@ -19,6 +24,8 @@ use std::path::Path;
 pub struct NoteFile {
     pub note: Note,
     pub ids: Vec<String>,
+    /// The merge the note is retroactive for, when it says so.
+    pub landed: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +55,7 @@ impl std::fmt::Display for NoteError {
             Self::Toml { file, error } => write!(f, "change note {file} is not TOML: {error}"),
             Self::UnknownKey { file, key } => write!(
                 f,
-                "change note {file} has the unknown key `{key}` (a note has `ids`, `why` and `migrate`)"
+                "change note {file} has the unknown key `{key}` (a note has `ids`, `why`, `migrate` and `landed`)"
             ),
             Self::Missing { file, key } => write!(f, "change note {file} has no `{key}`"),
             Self::WrongType {
@@ -71,7 +78,7 @@ pub fn parse(file: &str, text: &str) -> Result<NoteFile, NoteError> {
     })?;
     if let Some(key) = table
         .keys()
-        .find(|k| !["ids", "why", "migrate"].contains(&k.as_str()))
+        .find(|k| !["ids", "why", "migrate", "landed"].contains(&k.as_str()))
     {
         return Err(NoteError::UnknownKey {
             file: file.into(),
@@ -115,7 +122,18 @@ pub fn parse(file: &str, text: &str) -> Result<NoteFile, NoteError> {
                 .to_owned(),
         ),
     };
+    let landed = match table.get("landed") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+                .ok_or_else(|| wrong("landed", "a full 40-digit commit sha"))?
+                .to_ascii_lowercase(),
+        ),
+    };
     Ok(NoteFile {
+        landed,
         note: Note {
             file: file.into(),
             why,
@@ -125,7 +143,8 @@ pub fn parse(file: &str, text: &str) -> Result<NoteFile, NoteError> {
     })
 }
 
-/// The `*.toml` files of `dir` by name, with their bytes; none when the folder is absent.
+/// The top-level `*.toml` files of `dir` by name, with their bytes; none when the folder is
+/// absent. Historical notes in `changes/history/` are not part of a pull request's diff.
 fn files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, NoteError> {
     let error = |file: &Path, e: std::io::Error| NoteError::Read {
         file: file.display().to_string(),
@@ -187,6 +206,35 @@ mod tests {
         assert_eq!(note.note.migrate.as_deref(), Some("Nothing to do."));
         let bare = parse("b.toml", "ids = [\"hook:tick\"]\nwhy = \"Faster.\"\n").unwrap();
         assert_eq!(bare.note.migrate, None);
+    }
+
+    #[test]
+    fn landed_is_a_full_sha_or_refused() {
+        let sha = "6597E0855f562498319f093afcf2ed1ea8d717cb";
+        let text = |landed: &str| format!("ids = [\"x\"]\nwhy = \"y\"\nlanded = {landed}\n");
+        let note = parse("n.toml", &text(&format!("\"{sha}\""))).unwrap();
+        assert_eq!(note.landed.as_deref(), Some(sha.to_lowercase().as_str()));
+        assert_eq!(
+            parse("n.toml", "ids = [\"x\"]\nwhy = \"y\"\n")
+                .unwrap()
+                .landed,
+            None
+        );
+        for bad in [
+            "\"6597e08\"",
+            "\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"",
+            "3",
+        ] {
+            assert_eq!(
+                parse("n.toml", &text(bad)),
+                Err(NoteError::WrongType {
+                    file: "n.toml".into(),
+                    key: "landed",
+                    expected: "a full 40-digit commit sha"
+                }),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -272,6 +320,12 @@ mod tests {
         std::fs::write(head.join("renamed.toml"), note("e", "moved")).unwrap();
         std::fs::write(base.join("before-rename.toml"), note("e", "moved")).unwrap();
         std::fs::write(head.join("README.md"), "not a note").unwrap();
+        std::fs::create_dir(head.join("history")).unwrap();
+        std::fs::write(
+            head.join("history/earlier-change.toml"),
+            note("loop:game.old", "backfilled"),
+        )
+        .unwrap();
         let names = |found: Vec<NoteFile>| -> Vec<String> {
             found.into_iter().map(|n| n.note.file).collect()
         };

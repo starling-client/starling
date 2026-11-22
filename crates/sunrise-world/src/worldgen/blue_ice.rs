@@ -7,11 +7,11 @@ use super::{
     placement::{PlacementContext, PlacementQueryError},
 };
 use crate::registry::BlockStateId;
+use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::{
     geometry::Direction,
     random::{InvalidBound, RandomSource},
 };
-use std::{collections::BTreeSet, sync::Arc};
 #[derive(Clone, Debug)]
 pub struct BlueIceFeature {
     water: Arc<BTreeSet<BlockStateId>>,

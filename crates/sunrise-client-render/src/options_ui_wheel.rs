@@ -22,20 +22,20 @@ pub(crate) fn slider_unsnapped(opt: Opt, held: bool, moved: Instant) -> bool {
 }
 /// `Options.unlogMouse`: the stored sensitivity as its hundredth-log step,
 /// -200..=100, which the `IntRange(-200, 100)` slider runs over (0.01 to 10.0).
-pub(crate) fn step(value: f32) -> f32 {
-    (value.max(1.0e-6).log10() * 100.0)
+pub(crate) fn step(value: f64) -> f64 {
+    (sunrise_core::jmath::log10(value.max(1.0e-6)) * 100.0)
         .floor()
         .clamp(-200.0, 100.0)
 }
 /// `IntRange(-200, 100).toSliderValue`: the step over the slider's span.
-pub(crate) fn kind(value: f32) -> Kind {
+pub(crate) fn kind(value: f64) -> Kind {
     Kind::Slider(((step(value) + 200.0) / 300.0).clamp(0.0, 1.0))
 }
 /// `IntRange(-200, 100).fromSliderValue` then `Options.logMouse`:
 /// floor(map(v, 0, 1, -200, 101)), the last step clamped, as 10^(i/100).
-pub(crate) fn from_slider(v: f32) -> f32 {
+pub(crate) fn from_slider(v: f64) -> f64 {
     let i = (v.clamp(0.0, 1.0) * 301.0).floor() - 200.0;
-    10.0_f32.powf(i.clamp(-200.0, 100.0) / 100.0)
+    crate::options_file::log_mouse(i.clamp(-200.0, 100.0) as i32)
 }
 
 #[cfg(test)]
@@ -43,7 +43,7 @@ mod tests {
     use super::*;
 
     /// The slider position `Opt::WheelSensitivity`'s kind() gives a value.
-    fn wheel_pos(value: f32) -> f32 {
+    fn wheel_pos(value: f64) -> f64 {
         match kind(value) {
             Kind::Slider(p) => p,
             _ => panic!("the wheel sensitivity is a slider"),

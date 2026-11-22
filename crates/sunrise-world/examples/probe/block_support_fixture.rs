@@ -1,9 +1,9 @@
-use sunrise_core::geometry::Direction;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::geometry::Direction;
 use {
     sunrise_core::{
         nbt,

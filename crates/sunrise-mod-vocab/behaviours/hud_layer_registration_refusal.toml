@@ -1,0 +1,6 @@
+version = 1
+doc = "HUD layer edits publish in call order per successful listener; later calls in a listener can use anchors it just added. A panic during registration discards only that listener's pending HUD edits. A panic during disposal is attributed to the owning mod. Discarded bodies are cleaned up before the next listener runs. Earlier bodies retire after publication in first-replacement order, not HUD draw order; a retirement panic leaves the accepted replacement in place."
+tests = [
+    "crates/sunrise-client/src/gui_layers.rs::a_panicking_hud_registration_cannot_displace_vanilla_or_later_layers",
+    "crates/sunrise-client/src/gui_layers.rs::earlier_hud_bodies_retire_in_first_replacement_order",
+]

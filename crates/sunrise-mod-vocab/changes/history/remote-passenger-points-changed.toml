@@ -1,0 +1,7 @@
+ids = [
+  "point:sunrise_client::game::remote_vehicles::Game<'_>::remote_set_passengers",
+  "point:sunrise_client::game::native_colliders::stack_in_graph",
+]
+landed = "6597e0855f562498319f093afcf2ed1ea8d717cb"
+why = "#3297 applies a client's SetPassengers through the shared riding graph, with a seat index on each edge. remote_set_passengers now takes the passenger list by value and refuses a list for an unknown vehicle before applying it. stack_in_graph now reads that seat graph, whose edge type is internal to the game, so it is no longer an injection point."
+migrate = "An [[inject]] at remote_set_passengers updates its hash and takes passengers: Vec<i32>. To read a client's riding topology, use EntityRef::vehicle, passengers, root_vehicle, is_passenger and is_vehicle, which answer on a client since #3297. stack_in_graph has no injection point; read the vehicle stack through those handle methods."

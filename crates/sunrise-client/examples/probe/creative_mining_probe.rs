@@ -1,3 +1,9 @@
+use serde_json::Value;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::Path,
+};
 use sunrise_client::{
     Result,
     item_data::StackData,
@@ -5,16 +11,12 @@ use sunrise_client::{
 };
 use sunrise_core::nbt::Tag;
 use sunrise_world::loot::PackOverlay;
-use serde_json::Value;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-};
 
 pub fn main() -> Result<()> {
     let args: Vec<_> = crate::args().collect();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/sunrise-client/26.3");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/sunrise-client")
+        .join(sunrise_core::VANILLA_VERSION);
     let defaults = sunrise_world::item_defaults::read(&root)?;
     let items = Items::catalog(&root, &PackOverlay::NONE, &defaults)?;
     let mut out = BufWriter::new(File::create(&args[2])?);

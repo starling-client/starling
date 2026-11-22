@@ -21,13 +21,14 @@ players made of vanilla's protocol code, joins them both and runs one script on 
   velocity, before the server's next travel tick reduces it.
 
 The script waits on the server, not on the wall: `ticks N` is N ticks of its game clock (with a `sync` round trip
-before and after, so each client holds what the server sent), `tickstep` is one `/tick step` that has run, `frozen`
-a frozen game that has stopped, and `hit` a hit that has landed (a frozen server still ticks its players, so a hit
-lands in Alice's next tick). A server that stalls under load gets the same ticks as an idle one.
+before and after, so each client holds what the server sent), `tickstep [N]` runs one or N ticks while frozen,
+`frozen` waits for a frozen game to stop, and `hit` waits for a hit to land (a frozen server still ticks its
+players, so a hit lands in Alice's next tick). A server that stalls under load gets the same ticks as an idle one.
 
 Each case is compared on its own. KNOWN lists the cases Sunrise still gets wrong and why; one that matches
 again is reported, and should leave the list.
 """
+import json
 import os
 from pathlib import Path
 import platform
@@ -237,12 +238,6 @@ SETUP = ['cmd Alice gamerule spawn_mobs false', 'cmd Alice gamerule spawn_monste
          f'cmd Alice tp Alice {A[0]} {A[1]} {A[2]} -90 0', f'cmd Alice tp Bob {V[0]} {V[1]} {V[2]} 90 0', 'ticks 40']
 
 
-def age_of(text):
-    """The number in a `/data get ... Age` reply (`60`, `4500s`)."""
-    digits = ''.join(c for c in text.split(':')[-1] if c.isdigit())
-    return int(digits) if digits else 0
-
-
 def server_data(server, selector, path, timeout=120):
     """An entity's data, asked from the console (its reply stays in the server's log, out of the clients')."""
     deadline = time.time() + timeout
@@ -271,7 +266,7 @@ def server_dir(directory, world):
     return port
 
 
-def run_side(label, server_command, client_command, build, world):
+def run_side(label, server_command, client_command, build, world, cases=CASES, *, tracking=False):
     directory = build / label
     port = server_dir(directory, world)
     out = build / f'{label}.txt'
@@ -280,7 +275,8 @@ def run_side(label, server_command, client_command, build, world):
     try:
         server.wait_for(r'Done \(')
         with (build / f'{label}-client.log').open('w') as log:
-            client = subprocess.Popen([*map(str, client_command), '127.0.0.1', str(port), str(out)],
+            client = subprocess.Popen([*map(str, client_command), '127.0.0.1', str(port), str(out),
+                                       *(['tracking'] if tracking else [])],
                                       cwd=lab.ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.STDOUT, text=True)
 
@@ -305,6 +301,10 @@ def run_side(label, server_command, client_command, build, world):
                     sync()
                     wait_ticks(server, int(line.split()[1]))
                     sync()
+                elif word == 'present':
+                    sync()
+                    kind = line.split()[1]
+                    server_data(server, f'@e[type=minecraft:{kind},limit=1]', 'Pos')
                 elif word == 'frozen':
                     # The tick in flight when ticking was frozen has finished: the clock reads the same twice.
                     sync()
@@ -321,29 +321,20 @@ def run_side(label, server_command, client_command, build, world):
                     while server_data(server, mob, 'Motion') == before:
                         time.sleep(0.05)
                     sync()
-                elif word == 'waitage':
-                    # Hold until an entity's `Age` has reached N. A value that
-                    # decays with the entity's own ticks (a blast's push on an
-                    # item) then belongs to a known age on both servers, whose
-                    # game clocks need not advance together between commands.
-                    # The console's own round trip can be two ticks, so the wait
-                    # is `>=` and the age is carried beside the value it pins.
-                    sync()
-                    selector, age = line.split()[1], int(line.split()[2])
-                    deadline = time.time() + 120
-                    while age_of(server_data(server, selector, 'Age')) < age:
-                        if time.time() > deadline:
-                            raise AssertionError(f'{server.log_path.name}: {selector} never reached Age {age}')
-                        time.sleep(0.05)
-                    sync()
                 elif word == 'tickstep':
-                    # `/tick step 1` answers at once and the tick runs after: the clock says when it has.
+                    # The command replies before the steps run. Wait for all of them before sampling.
                     sync()
-                    before = game_time(server)
-                    client.stdin.write('cmd Alice tick step 1\n')
+                    count = int(line.partition(' ')[2] or '1')
+                    end = game_time(server) + count
+                    client.stdin.write(f'cmd Alice tick step {count}\n')
                     client.stdin.flush()
-                    while game_time(server) == before:
+                    deadline = time.monotonic() + 120
+                    while (now := game_time(server, max(1, deadline - time.monotonic()))) < end:
+                        if time.monotonic() >= deadline:
+                            raise AssertionError(f'{label}: game time did not reach {end} after tick step {count}')
                         time.sleep(0.05)
+                    if now != end:
+                        raise AssertionError(f'{label}: game time advanced past {end} after tick step {count}: {now}')
                     sync()
                 elif word == 'takeoff-hit':
                     sync()
@@ -370,7 +361,7 @@ def run_side(label, server_command, client_command, build, world):
                     wait_ticks(server, 40)
                 for line in SETUP:
                     send(line)
-                for case, lines in CASES.items():
+                for case, lines in cases.items():
                     send(f'step {case}')
                     for line in lines:
                         send(line)
@@ -410,12 +401,7 @@ def compared(lines):
     return cases
 
 
-def main():
-    lock, jars, libraries = base.verify_artifacts()
-    build = lab.LOCAL / NAME
-    build.mkdir(parents=True, exist_ok=True)
-    report = build / 'report.json'
-    report.unlink(missing_ok=True)
+def harness_commands(lock, jars, libraries, build, sunrise_binary=None):
     oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/KnockbackClient.java'
     classes = build / 'classes'
     shutil.rmtree(classes, ignore_errors=True)
@@ -424,16 +410,28 @@ def main():
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath',
                     lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                    cwd=lab.ROOT, check=True, capture_output=True)
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
-                   check=True, capture_output=True)
-    import json
-    metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
-                                                  cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
+    if sunrise_binary:
+        binary = sunrise_binary.resolve(strict=True)
+    else:
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'],
+                       cwd=lab.ROOT, check=True, capture_output=True)
+        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
+                                                       cwd=lab.ROOT, text=True))
+        binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    sunrise_server = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.KnockbackClient']
 
+    return vanilla_server, sunrise_server, client
+
+
+def main():
+    lock, jars, libraries = base.verify_artifacts()
+    build = lab.LOCAL / NAME
+    build.mkdir(parents=True, exist_ok=True)
+    report = build / 'report.json'
+    report.unlink(missing_ok=True)
+    vanilla_server, sunrise_server, client = harness_commands(lock, jars, libraries, build)
     world = generate_world(vanilla_server, build)
     vanilla = compared(run_side('vanilla', vanilla_server, client, build, world))
     takeoff = [line for line in vanilla.get('pvp-takeoff', []) if line.startswith('Alice motion self ')]

@@ -1,17 +1,20 @@
 //! The `register_item_tint_sources` hooks: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// The item tint sources a mod adds (NeoForge's `RegisterColorHandlersEvent.ItemTintSources`):
-    /// push each id, `<mod id>:<path>`. Asked once at start on the client, before resources load.
-    /// An entry in a `minecraft:model`'s `tints` whose `type` is a registered id colours its
-    /// `tintindex` with what `item_tint_source` answers per stack, also after a resource reload. An id
-    /// in vanilla's namespace, not of that form, or registered already is logged and left out; a
-    /// tint source nobody registers draws white.
+    /// Register the item tint sources a mod adds (NeoForge's
+    /// `RegisterColorHandlersEvent.ItemTintSources`). Asked once at start on the client, before
+    /// resources load. Use [`RegisterItemTintSourcesEvent::register`] to bind each tint source
+    /// identifier directly to its decode-time factory, which parses the tint entry's JSON object
+    /// once on each load/reload and returns the per-stack ARGB colour callback. Any valid
+    /// `<namespace>:<path>` identifier (including `minecraft:`) is accepted; a later registration
+    /// for the same id replaces the earlier one (last-writer-wins), and registering a built-in
+    /// vanilla tint source id overrides that built-in when decoding item definitions.
     #[notes = r#"## Item tint sources
 
 An item tint source (NeoForge's `RegisterColorHandlersEvent.ItemTintSources`) colours a greyscale item per
-stack, in two steps as well: `Hooks::register_item_tint_sources` pushes its id once at start, before resources
-load, and `Hooks::item_tint_source` answers the ARGB colour for each stack, in hand, in a screen or on the ground.
+stack. Register it once at client startup in `Hooks::register_item_tint_sources` via
+`event.register(id, decode)`: `decode` parses the tint entry's JSON object (as a `Tag`) once when an item
+definition is loaded or reloaded and returns the bound per-stack ARGB callback.
 
 ```rust,ignore
 fn register_item_tint_sources(
@@ -19,31 +22,38 @@ fn register_item_tint_sources(
     _context: &RegistrationContext,
     event: &mut RegisterItemTintSourcesEvent<'_>,
 ) {
-    event.sources.push("example:charge".into());
-}
-
-fn item_tint_source(&self, _host: &dyn ClientHost, event: &mut ItemTintSourceEvent<'_>) {
-    if event.source == "example:charge" {
-        let rgb = match event.config.get("default") {
+    event.register(Identifier::parse("example:charge").unwrap(), |config| {
+        let default = match config.get("default") {
             Some(Tag::Int(value)) => *value as u32,
             _ => 0xFFFFFF,
         };
-        let rgb = if event.stack.count() > 1 { 0x55FF55 } else { rgb };
-        event.color = 0xFF000000 | rgb;
-    }
+        Ok(move |_host, input| {
+            let rgb = if input.stack.count() > 1 { 0x55FF55 } else { default };
+            0xFF000000 | rgb
+        })
+    });
 }
 ```
 
-Use it as an entry of a `minecraft:model`'s `tints`, `{"type": "example:charge", "default": 65280}`: the entry's
-place in the list is the `tintindex` it colours, and its object reaches the hook as `event.config`. A resource
-reload keeps reading the mod's colour. Ids are checked as for numeric properties. A source no mod registers draws
-white, decided once at load, and so does an entry no mod answers; an item with no mod source never reaches the hook."#]
+Use it as an entry of a `minecraft:model`'s `tints`, `{"type": "example:charge", "default": 65280}`: the
+entry's place in the list is the `tintindex` it colours. Any valid `<namespace>:<path>` identifier (including
+`minecraft:`) is accepted; a later registration for the same id replaces the earlier one (last-writer-wins,
+matching NeoForge's `LateBoundIdMapper`), and registering a built-in vanilla tint source id overrides that
+built-in when decoding item definitions. Returning `Err(reason)` from the decoder rejects the enclosing item
+definition without falling back to a built-in; panicking in the decoder or per-stack callback disables that
+mod's callback for the session and surfaces an error toast. A foreign source no mod registers draws white,
+decided once at load."#]
     #[hook(
+        receiver = "associated",
+        dispatch = "flat",
         side = "client",
+        version = 2,
         contract = "collect",
         out = "sources",
         context = "registration",
+        answered_by = "mod",
+        registration_append = "custom",
         neoforge = "RegisterColorHandlersEvent.ItemTintSources"
     )]
-    fn register_item_tint_sources();
+    fn register_item_tint_sources(sources: &mut Vec<Answered<ItemTintSourceRegistration>>);
 }

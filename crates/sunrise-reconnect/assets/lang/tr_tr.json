@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Otomatik yeniden bağlan",
+  "sunrise.extras.auto_reconnect.tooltip": "Bağlantı koptuktan veya yeniden başlatmadan sonra sunucuya yeniden bağlanır; atılma veya yasaklamadan sonra asla."
+}

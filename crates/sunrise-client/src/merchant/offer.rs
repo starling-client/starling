@@ -39,9 +39,6 @@ pub struct MerchantOffer {
     pub xp: i32,
 }
 impl MerchantOffer {
-    fn max_stack(items: &Items, s: &ItemStack) -> u32 {
-        items.get(&s.item).map_or(64, |i| i.max_stack)
-    }
     /// `getModifiedCostCount` for cost A.
     pub fn cost_a_count(&self, items: &Items) -> u32 {
         sunrise_core::trading::modified_cost_count(
@@ -49,7 +46,7 @@ impl MerchantOffer {
             self.demand,
             self.price_multiplier,
             self.special_price_diff,
-            Self::max_stack(items, &self.base_cost_a.stack),
+            crate::menu::item_max_stack(items, &self.base_cost_a.stack),
         )
     }
     pub fn cost_a(&self, items: &Items) -> ItemStack {
@@ -64,9 +61,20 @@ impl MerchantOffer {
     pub fn out_of_stock(&self) -> bool {
         self.uses >= self.max_uses
     }
+    /// `MerchantOffer.resetUses` (on restock).
+    pub fn reset_uses(&mut self) {
+        self.uses = 0;
+    }
+    /// `MerchantOffer.addToSpecialPriceDiff` (Java int addition).
+    pub fn add_special_price_diff(&mut self, delta: i32) {
+        self.special_price_diff = self.special_price_diff.wrapping_add(delta);
+    }
     /// `MerchantOffer.updateDemand` (on restock).
     pub fn update_demand(&mut self) {
-        self.demand = self.demand + self.uses - (self.max_uses - self.uses);
+        self.demand = self
+            .demand
+            .wrapping_add(self.uses)
+            .wrapping_sub(self.max_uses.wrapping_sub(self.uses));
     }
     /// `satisfiedBy(buyA, buyB)`.
     pub fn satisfied_by(

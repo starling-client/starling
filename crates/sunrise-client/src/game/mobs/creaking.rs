@@ -2,6 +2,7 @@
 //! ticks each heart (spawning, letting go of and bleeding for its creaking)
 //! and this applies what it reports to the world, the mobs and the speakers.
 use super::{Game, creatures::seen, persist::EntityUuids};
+use std::sync::Arc;
 use sunrise_client::{
     Result,
     chunk_map::{ChunkMap, ChunkMembershipDelta},
@@ -18,7 +19,6 @@ use sunrise_core::{
     random::{LegacyRandom, RandomSource},
 };
 use sunrise_world::registry::BlockStateId;
-use std::sync::Arc;
 
 type Pos = (i32, i32, i32);
 
@@ -190,25 +190,53 @@ impl Game<'_> {
         let _ = key;
         Ok(())
     }
-    /// A creaking bound to the heart at `home` was hurt (`creakingHurt`).
-    pub(super) fn creaking_hurt(&mut self, home: [i32; 3], _id: u32, by_player: bool) {
-        if !by_player {
-            return;
-        }
-        let key = (home[0], home[1], home[2]);
-        let Some((lease, BlockEntity::CreakingHeart(mut heart))) =
-            self.world.block_entities.take(&key)
-        else {
+    /// After `Creaking.hurtServer` posts ENTITY_ACTION, check the live protector, let
+    /// a player-credited hit reach the heart, then play the mob's hurt sound.
+    pub(super) fn creaking_hurt(&mut self, home: [i32; 3], id: u32, by_player: bool) {
+        let Some(join) = self.mob_object(id).map(|m| m.join) else {
             return;
         };
-        let _ = self.with_heart(key, &mut heart, true, |h, w, lr, host, out| {
-            if let Some(w) = w {
+        let [x, y, z] = home;
+        let key = (x, y, z);
+        // Hearts can keep a row for their removal tick. The replaced block
+        // no longer supplies a protector to Creaking.hurtServer.
+        let live_heart = |game: &Self| {
+            &*game.res.facts().get(game.world.block(x, y, z)).name == "minecraft:creaking_heart"
+        };
+        if !live_heart(self) {
+            return;
+        }
+        let Some((lease, entity)) = self.world.block_entities.take(&key) else {
+            return;
+        };
+        let BlockEntity::CreakingHeart(mut heart) = entity else {
+            // ENTITY_ACTION may have replaced the heart with a different block entity.
+            self.world.block_entities.put(lease, entity);
+            return;
+        };
+        let mut protects = false;
+        let _ = self.with_heart(key, &mut heart, by_player, |h, w, lr, host, out| {
+            protects = creaking_heart::protector(h, host) == Some(id);
+            if protects && let Some(w) = w {
                 creaking_heart::creaking_hurt(h, home, w, lr, host, out);
             }
         });
-        self.world
+        let restored = self
+            .world
             .block_entities
             .put(lease, BlockEntity::CreakingHeart(heart));
+        if protects
+            && restored
+            && live_heart(self)
+            && let Some(mob) = self
+                .mobs
+                .iter_mut()
+                .find(|m| m.id == id && m.join == join && !m.removed)
+        {
+            let mut events = Vec::new();
+            sunrise_client::mobs::creaking::sway(mob, &mut events);
+            let _ = self.handle_mob_events(events);
+        }
     }
     /// `Creaking.tearDown`: the crumble particles.
     pub(super) fn creaking_tear_down(&mut self, center: [f64; 3], spread: [f64; 3]) {
@@ -496,8 +524,8 @@ mod creaking_heart_events_tests;
 #[cfg(test)]
 mod tests {
     use super::CreakingState;
-    use sunrise_client::{chunk::Chunk, chunk_map::ChunkMap};
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, chunk_map::ChunkMap};
 
     fn add(chunks: &mut ChunkMap, key: (i32, i32)) {
         chunks.insert(key, Arc::new(Chunk::empty(key.0, key.1)));
@@ -550,7 +578,7 @@ mod tests {
 mod nested_spawn_tests {
     use super::*;
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn lifted_heart_callback_keeps_nested_spawns_until_the_next_pass() {
         crate::game::entity::taken_pass_tests::in_both_dimensions(|game, balance| {
             let mut heart = CreakingHeart::default();

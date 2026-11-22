@@ -246,6 +246,13 @@ impl Game<'_> {
         let hand = hand_of(Some((slot, 0))).unwrap_or(self.hand);
         self.native_living_entity_use_item_finish(stack, None, hand, 0, &mut result);
         let before = self.creative_stacks();
+        if !self.creative && stack.count == 1 && self.consumable(stack).is_some() {
+            if self.stack_in(slot) != Some(stack) {
+                return;
+            }
+            *self.stack_in_mut(slot) = None;
+            self.player_item_destroyed(stack, Some(hand));
+        }
         *self.stack_in_mut(slot) = result.filter(|s| s.count > 0);
         self.remote_synced_since(&before);
     }
@@ -265,14 +272,12 @@ impl Game<'_> {
         if left.count > 0 {
             return Some(left);
         }
-        info.use_remainder
-            .as_deref()
-            .map(|remainder| ItemStack::new(remainder, 1))
+        sunrise_client::item_sync::use_remainder(stack, Some(info))
     }
     /// `LivingEntityUseItemEvent.Tick` for `stack` in use `ticks` so far, as
     /// `updatingUsingItem` starts: a mod may change the ticks left, which
-    /// moves the end. False when it ran the use out (`tick_ran_out`): the
-    /// item's tick and countdown are skipped.
+    /// moves the end. False when the remaining counter is nonpositive:
+    /// effects are skipped, but the countdown still decrements.
     pub(super) fn use_item_ticked(&mut self, stack: &ItemStack, ticks: u32) -> bool {
         let before = ticks_left(self.use_duration, ticks);
         let (mut remaining, mut canceled) = (before, false);
@@ -281,7 +286,7 @@ impl Game<'_> {
         let (left, set) = tick_left(before, remaining, canceled, self.use_start.ticks_set);
         self.use_start.ticks_set = set;
         self.use_duration = duration_leaving(ticks, left);
-        left > 0 || !set
+        left > 0
     }
     /// A mod's `Item.onUseTick` of `stack` used `ticks`, while ticks are left.
     /// False when that mod released the use, which then has nothing left to run.
@@ -497,16 +502,30 @@ impl Game<'_> {
                 .player
                 .as_ref()
                 .is_some_and(|p| p.health.food.food < 20);
+        if !mod_api::__private::enabled_listened(mod_api::HookId::CanEat) {
+            return vanilla;
+        }
+        // The shared resolver's guards: no fake actor, a placed online guest,
+        // the integrated player only on the serving side.
+        let player = self.local_player().or_else(|| {
+            let uuid = self.lan_acting_uuid.or_else(|| {
+                self.level
+                    .player_uuid
+                    .map(sunrise_client::lan::playerdata::ints_uuid)
+            })?;
+            self.player(uuid)
+        });
+        let Some(player) = player else { return vanilla };
         let mut answer = None;
-        self.native_can_eat(stack, vanilla, &mut answer);
+        self.native_can_eat(player, stack, vanilla, &mut answer);
         answer.unwrap_or(vanilla)
     }
 }
 
-/// The ticks left after a mod's `Tick`, a cancel leaving -1, and
-/// whether a mod ever set this use's: once one did, the use goes on only
-/// while some are left, else it ran out. A use no mod touched goes on as
-/// vanilla's own do (an eye of ender's has none from the start).
+/// The event's replacement counter (a cancel leaves -1), and whether a
+/// mod has changed this use's countdown. This flag preserves vanilla's
+/// initially zero-duration items; a mod-run-out use skips effects, but
+/// still decrements on both sides.
 fn tick_left(before: i32, remaining: i32, canceled: bool, set: bool) -> (i32, bool) {
     let left = if canceled { -1 } else { remaining };
     (left, set || canceled || remaining != before)
@@ -674,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn patched_bow_keeps_vanilla_animation_without_listener() {
         super::super::native_entity_refs::tests::with_client_game(|game| {
             use UseAnimation::*;
@@ -711,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn item_animation_dispatches_vanilla_parts_and_refuses_invalid_spears() {
         use mod_api::{ClientHost, Hooks, ItemPart, ModEntry, Mods, Registrar, UseAnimationEvent};
         use std::sync::{
@@ -890,7 +909,7 @@ mod tests {
     /// hand out. The pose the mod sets moves vanilla's hand, not what it
     /// drew. The empty off hand is asked too.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_mod_draws_in_a_hand_that_holds_an_item() {
         use mod_api::{ClientHost, Flow, Hand, Hooks, ModEntry, Mods, RenderHandEvent};
         use std::sync::{
@@ -1010,6 +1029,280 @@ mod tests {
         });
     }
 
+    fn stand_in_first_person(game: &mut crate::game::Game<'_>) {
+        game.player = Some(
+            sunrise_client::motion::PlayerMotion::new(
+                game.motion,
+                sunrise_core::geometry::Vec3::ZERO,
+            )
+            .unwrap(),
+        );
+        game.tick_player_model();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn render_hand_submits_both_skinned_arms_in_draw_order() {
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+        use glam::{Mat4, Quat, Vec3};
+        use mod_api::{
+            ClientHost, Flow, Hand, Hooks, MainHand, ModEntry, RenderArmEvent, RenderHandEvent,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU8, Ordering::Relaxed},
+        };
+        use sunrise_client::{hud::Rect, items::ItemStack};
+
+        if run_fresh_cases(
+            "game::item_use::tests::render_hand_submits_both_skinned_arms_in_draw_order",
+            "SUNRISE_HAND_ARM_CASE",
+            &["wide", "slim"],
+        ) {
+            return;
+        }
+        let slim = std::env::var("SUNRISE_HAND_ARM_CASE").unwrap() == "slim";
+        const MOVES: [[f32; 3]; 2] = [[0.75, -0.5, -1.0], [-0.25, 0.5, -2.0]];
+        const LIGHT: [u32; 2] = [0x30a0, 0x60b0];
+        const SCALE: [f32; 3] = [5e-7, 1e-8, 1e-8];
+        #[derive(Default)]
+        struct State {
+            mode: AtomicU8,
+            default_arms: AtomicU8,
+        }
+        struct Mod(Arc<State>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Mod {
+            fn render_arm(&self, _: &dyn ClientHost, _: &mut RenderArmEvent<'_>) -> Flow {
+                self.0.default_arms.fetch_add(1, Relaxed);
+                Flow::Continue
+            }
+            fn render_hand(&self, _: &dyn ClientHost, event: &mut RenderHandEvent<'_, '_>) -> Flow {
+                let mode = self.0.mode.load(Relaxed);
+                if event.render.hand != Hand::Main || mode == 0 {
+                    return Flow::Continue;
+                }
+                let original_light = event.draw.light();
+                for (i, arm) in [MainHand::Left, MainHand::Right].into_iter().enumerate() {
+                    event.draw.push();
+                    event.draw.translate(MOVES[i]);
+                    if mode == 3 && i == 0 {
+                        event.draw.scale(SCALE);
+                        event.draw.rotate_about([0.0, 0.0, 1.0], 90.0, [0.0; 3]);
+                    }
+                    event.draw.set_light(LIGHT[i]);
+                    event.draw.render_arm(arm);
+                    event.draw.pop();
+                }
+                event.draw.set_light(original_light);
+                if mode == 2 {
+                    Flow::Cancel
+                } else {
+                    Flow::Continue
+                }
+            }
+        }
+        let state = Arc::new(State::default());
+        mod_platform::testing::with_mods(
+            vec![ModEntry::new("arms", Box::new(Mod(state.clone())))].into(),
+            || {
+                with_client_game(|game| {
+                    stand_in_first_person(game);
+                    for (i, (slot, item)) in [
+                        (game.selected, "minecraft:iron_sword"),
+                        (super::OFFHAND_SLOT, "minecraft:stick"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let stack = ItemStack::new(item, 1);
+                        *game.stack_in_mut(slot) = Some(stack.clone());
+                        game.visible_hands[i] = (slot, Some(stack));
+                    }
+                    let atlas = Rect {
+                        u0: 0.25,
+                        v0: 0.125,
+                        u1: 0.75,
+                        v1: 0.375,
+                        w: 64,
+                        h: 64,
+                    };
+                    game.gui
+                        .atlas
+                        .sprites
+                        .insert("arms:fixture_skin".into(), atlas);
+                    let avatar = game.player_model.as_mut().unwrap();
+                    avatar.skin = Some("arms:fixture_skin".into());
+                    avatar.slim = slim;
+                    let (vanilla, runs) = game.hand_geometry(0.0);
+                    let [_, (offhand_at, offhand_id)] = runs[..] else {
+                        panic!("expected both item runs: {runs:?}")
+                    };
+                    assert!(offhand_at > 0 && (offhand_at as usize) < vanilla.len());
+                    state.mode.store(1, Relaxed);
+                    let (added, added_runs) = game.hand_geometry(0.0);
+                    state.mode.store(2, Relaxed);
+                    let (replaced, replaced_runs) = game.hand_geometry(0.0);
+                    assert_eq!(state.default_arms.load(Relaxed), 0);
+
+                    // Six quads for the arm and six for the sleeve. Check each layer's first
+                    // corner from PlayerModel's cube origins/texture offsets, including 3px arms.
+                    let width = if slim { 3.0 } else { 4.0 };
+                    let quads = 6 * 4;
+                    let arm_vertices = quads * 2;
+                    let submitted = arm_vertices * 2;
+                    let view = game.sway.to_world(0.0, &game.view);
+                    for (i, (shoulder, roll, x, base_u, sleeve_u, v)) in [
+                        (
+                            5.0,
+                            -0.1,
+                            width - 1.0,
+                            32.0 + 4.0 + width,
+                            48.0 + 4.0 + width,
+                            48.0,
+                        ),
+                        (-5.0, 0.1, 1.0, 40.0 + 4.0 + width, 40.0 + 4.0 + width, 16.0),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let world = view
+                            * Mat4::from_translation(Vec3::from_array(MOVES[i]))
+                            * Mat4::from_rotation_translation(
+                                Quat::from_rotation_z(roll),
+                                Vec3::new(shoulder / 16.0, 2.0 / 16.0, 0.0),
+                            );
+                        let arm = &added[i * arm_vertices..(i + 1) * arm_vertices];
+                        for (vertex, inflate, u, v) in [
+                            (arm[0], 0.0, base_u, v),
+                            (
+                                arm[quads],
+                                0.25,
+                                sleeve_u,
+                                if i == 0 { v } else { v + 16.0 },
+                            ),
+                        ] {
+                            let p = Vec3::new(x + inflate, -2.0 - inflate, 2.0 + inflate) / 16.0;
+                            assert_eq!(
+                                vertex.pos.map(f32::to_bits),
+                                world.transform_point3(p).to_array().map(f32::to_bits)
+                            );
+                            assert_eq!(vertex.uv, [0.25 + u / 128.0, 0.125 + v / 256.0]);
+                        }
+                        assert!(
+                            arm.iter()
+                                .all(|vertex| vertex.light == LIGHT[i] && vertex.layer == 0)
+                        );
+                    }
+                    assert_eq!(
+                        &added_runs[..],
+                        &[
+                            (0, 0),
+                            (submitted as u32, 0),
+                            (submitted as u32 + offhand_at, offhand_id)
+                        ]
+                    );
+                    assert_eq!(
+                        &replaced_runs[..],
+                        &[(0, 0), (submitted as u32, offhand_id)]
+                    );
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&added[submitted..]),
+                        bytemuck::cast_slice::<_, u8>(&vanilla)
+                    );
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&replaced[..submitted]),
+                        bytemuck::cast_slice::<_, u8>(&added[..submitted])
+                    );
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&replaced[submitted..]),
+                        bytemuck::cast_slice::<_, u8>(&vanilla[offhand_at as usize..])
+                    );
+
+                    state.mode.store(3, Relaxed);
+                    let (scaled, _) = game.hand_geometry(0.0);
+                    // ModelPart.Cube's first polygon faces DOWN. The left arm's
+                    // -0.1 roll followed by the listener's quarter turn sends -Y
+                    // toward +X and -Y. Scale normals by the reciprocal axes.
+                    let normal = view
+                        .transform_vector3(Vec3::new(
+                            sunrise_core::jmath::cos(0.1) as f32 / SCALE[0],
+                            -(sunrise_core::jmath::sin(0.1) as f32) / SCALE[1],
+                            0.0,
+                        ))
+                        .normalize();
+                    let packed = normal.to_array().map(|n| (n * 127.0) as i8);
+                    assert!(scaled[..4].iter().all(|v| v.normal[..3] == packed));
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&scaled[arm_vertices..submitted]),
+                        bytemuck::cast_slice::<_, u8>(&added[arm_vertices..submitted]),
+                        "pop restores the unscaled normal pose for the second arm"
+                    );
+
+                    game.gui.atlas.sprites.remove("arms:fixture_skin");
+                    for missing_avatar in [false, true] {
+                        if missing_avatar {
+                            game.player_model = None;
+                        }
+                        state.mode.store(0, Relaxed);
+                        let (items, item_runs) = game.hand_geometry(0.0);
+                        state.mode.store(1, Relaxed);
+                        let (drawn, drawn_runs) = game.hand_geometry(0.0);
+                        assert_eq!(drawn_runs, item_runs);
+                        assert_eq!(
+                            bytemuck::cast_slice::<_, u8>(&drawn),
+                            bytemuck::cast_slice::<_, u8>(&items),
+                            "no arm without the selected sprite or the avatar state"
+                        );
+                    }
+                });
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn default_first_person_arm_obeys_its_own_sleeve_option() {
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+        use sunrise_client::options_file::V;
+
+        if run_fresh_cases(
+            "game::item_use::tests::default_first_person_arm_obeys_its_own_sleeve_option",
+            "SUNRISE_HAND_SLEEVE_CASE",
+            &["left-hidden"],
+        ) {
+            return;
+        }
+        with_client_game(|game| {
+            stand_in_first_person(game);
+            game.settings.main_hand_left = true;
+            let left = game.hand_geometry(0.0).0;
+            game.settings.main_hand_left = false;
+            let right = game.hand_geometry(0.0).0;
+
+            game.settings
+                .file
+                .set("modelPart_left_sleeve", V::Bool(false));
+            game.tick_player_model();
+            let right_hidden_left = game.hand_geometry(0.0).0;
+            game.settings.main_hand_left = true;
+            let left_hidden_left = game.hand_geometry(0.0).0;
+
+            assert_eq!(
+                (left.len(), right.len(), left_hidden_left.len()),
+                (48, 48, 24)
+            );
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&left[..24]),
+                bytemuck::cast_slice::<_, u8>(&left_hidden_left)
+            );
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&right),
+                bytemuck::cast_slice::<_, u8>(&right_hidden_left)
+            );
+        });
+    }
+
     #[test]
     fn a_use_runs_out_on_its_last_tick() {
         // a 32 tick food: ticks 0 to 30 go on, the 32nd tick finishes it.
@@ -1083,7 +1376,7 @@ mod tests {
         assert_eq!(tick_left(20, 20, true, false), (-1, true));
         assert!(!goes_on(tick_left(20, 0, false, false)));
         assert!(!goes_on(tick_left(20, -1, false, false)));
-        // a use a mod ran out stays out on the next ticks (a crossbow frozen).
+        // A run-out use keeps skipping effects while its counter goes negative.
         assert!(!goes_on(tick_left(-1, -1, false, true)));
         // and goes on again if a mod gives it ticks back.
         assert!(goes_on(tick_left(-1, 10, false, true)));
@@ -1235,6 +1528,10 @@ pub(super) mod interact_vibration_tests {
             )
             .unwrap(),
         );
+        game.reset_entity_residency();
+        game.native_lifecycle
+            .begin_open(mod_api::Authority::IntegratedServer);
+        super::super::native_entity_refs::tests::bind_local_player(&mut game, 41, 123);
         *game.held_mut() = Some(ItemStack::new(held, 1));
         crate::game::dispense_fixture::start_recording();
         RECORDING.set(true);
@@ -1250,7 +1547,7 @@ pub(super) mod interact_vibration_tests {
     /// finish the same way, which Sunrise already did, so a use is a pair of
     /// vibrations and an item that turns them off is neither.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_use_start_is_an_item_interact_start_vibration() {
         let bow = || ItemStack::new("minecraft:bow", 1);
         let Some(lines) = with_game("minecraft:bow", |game| {
@@ -1278,7 +1575,7 @@ pub(super) mod interact_vibration_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn cake_context_uses_can_eat_instead_of_raw_hunger() {
         use mod_api::{CanEatEvent, Hooks};
         use std::sync::{
@@ -1293,11 +1590,25 @@ pub(super) mod interact_vibration_tests {
                 host: &dyn mod_api::Host,
                 event: &mut CanEatEvent<'_>,
             ) -> Option<bool> {
-                self.0.fetch_add(1, Ordering::Relaxed);
-                if let Some(stack) = event.stack {
-                    assert_eq!(stack.item().id(host), "minecraft:stick");
+                assert_eq!(event.player.entity().id(), 41);
+                assert_eq!(
+                    event.player.food(host).unwrap().level,
+                    if self.0.load(Ordering::Relaxed) < 4 {
+                        20
+                    } else {
+                        10
+                    }
+                );
+                let call = self.0.fetch_add(1, Ordering::Relaxed);
+                if event
+                    .stack
+                    .is_some_and(|stack| stack.item().id(host) == Some("minecraft:rotten_flesh"))
+                {
+                    return Some(false);
                 }
-                Some(!event.vanilla_can_eat)
+                assert!(event.stack.is_none(), "cake has no food stack");
+                // First exercise player-based overrides, then the stack-only refusal.
+                (call < 4).then_some(!event.vanilla_can_eat)
             }
         }
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1307,7 +1618,7 @@ pub(super) mod interact_vibration_tests {
         )]
         .into();
         mod_platform::testing::with_mods(mods, || {
-            with_game("minecraft:stick", |game| {
+            with_game("minecraft:rotten_flesh", |game| {
                 let use_block = |game: &mut Game<'_>, name: &str| {
                     let player = game.use_context();
                     game.with_block_use_level(|b, level, ticks| {
@@ -1334,7 +1645,6 @@ pub(super) mod interact_vibration_tests {
                     sunrise_world::level::InteractionResult::Pass
                 );
                 assert_eq!(calls.load(Ordering::Relaxed), 1);
-                *game.held_mut() = None;
                 assert_eq!(
                     use_block(game, "minecraft:candle_cake"),
                     sunrise_world::level::InteractionResult::Pass
@@ -1347,6 +1657,22 @@ pub(super) mod interact_vibration_tests {
                     sunrise_world::level::InteractionResult::Success
                 );
                 assert_eq!(calls.load(Ordering::Relaxed), 3);
+                assert_eq!(
+                    use_block(game, "minecraft:candle_cake"),
+                    sunrise_world::level::InteractionResult::Success,
+                    "a stack-based food refusal does not refuse a candle-cake bite"
+                );
+                assert_eq!(calls.load(Ordering::Relaxed), 4);
+                game.player.as_mut().unwrap().health.food.food = 10;
+                assert_eq!(
+                    use_block(game, "minecraft:cake"),
+                    sunrise_world::level::InteractionResult::Success,
+                    "holding refused food does not refuse a hungry player's cake bite"
+                );
+                assert_eq!(
+                    use_block(game, "minecraft:candle_cake"),
+                    sunrise_world::level::InteractionResult::Success
+                );
                 game.world
                     .chunks
                     .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
@@ -1369,13 +1695,91 @@ pub(super) mod interact_vibration_tests {
                     point: [0.5, 65.0, 0.5],
                     inside: false,
                 };
-                let (result, _) = game.remote_block_template(&hit, None, true);
+                let held = game.held().cloned();
+                let (result, (changes, _)) =
+                    game.remote_block_template(&hit, held.as_ref(), true, true);
                 assert_eq!(result, sunrise_world::level::InteractionResult::Success);
+                assert_eq!(changes.len(), 1, "the client predicts a bitten cake");
+                let bitten = game.with_level(|b, _, _| {
+                    let cake = b
+                        .table
+                        .default_state(b.table.block_by_name("minecraft:cake").unwrap());
+                    b.table.set_int(cake, b.props.bites, 1)
+                });
+                assert_eq!(changes[0].1, bitten);
                 assert_eq!(
                     calls.load(Ordering::Relaxed),
-                    4,
+                    7,
                     "client dry-level path asks the hook"
                 );
+            })
+            .expect("SUNRISE_TEST_RESOURCES must name prepared resources");
+        });
+        can_eat_player_on_client_and_without_eater();
+    }
+
+    /// The listener sees the logged-in remote player on a client, and a food
+    /// stack with no resolvable eater keeps vanilla's answer without asking it.
+    fn can_eat_player_on_client_and_without_eater() {
+        use mod_api::{CanEatEvent, Hooks};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use sunrise_client::motion::PlayerMotion;
+        use sunrise_core::geometry::Vec3;
+
+        const REMOTE: u128 = 0xC0FF_EE00_0000_0000_0000_0000_0000_002A;
+        struct Allow(Arc<AtomicUsize>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Allow {
+            fn can_eat(
+                &self,
+                host: &dyn mod_api::Host,
+                event: &mut CanEatEvent<'_>,
+            ) -> Option<bool> {
+                assert_eq!(event.player.entity().id(), 55);
+                assert_eq!(event.player.uuid(), REMOTE);
+                let food = event.player.food(host).expect("the client's own food data");
+                assert_eq!((food.level, food.saturation), (20, 2.5));
+                assert!(!event.vanilla_can_eat, "a full survival player cannot eat");
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Some(true)
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "allow-eating",
+            Box::new(Allow(calls.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game("minecraft:rotten_flesh", |game| {
+                let food = ItemStack::new("minecraft:rotten_flesh", 1);
+                game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+                let (client, _server) = sunrise_protocol::connection::Pipe::pair();
+                game.connect_local(client, "Eater").unwrap();
+                // Replace the server fixture's identity and the body removed on join.
+                game.lan_acting_uuid = None;
+                game.level.player_uuid = None;
+                let remote = game.remote.as_mut().unwrap();
+                remote.logged_in = true;
+                remote.profile = REMOTE;
+                remote.entity_id = 55;
+                let mut player = PlayerMotion::new(game.motion, Vec3::new(0.5, 65.0, 0.5)).unwrap();
+                player.entity_id = 55;
+                player.health.food.food = 20;
+                player.health.food.saturation = 2.5;
+                game.player = Some(player);
+                assert!(
+                    game.can_eat(Some(&food), false),
+                    "the listener lets a full player eat"
+                );
+                assert_eq!(calls.load(Ordering::Relaxed), 1);
+                // Keep the body and food state, but no logged-in identity resolves.
+                game.remote.as_mut().unwrap().logged_in = false;
+                assert!(!game.can_eat(Some(&food), false));
+                assert_eq!(calls.load(Ordering::Relaxed), 1, "no eater, no question");
             })
             .expect("SUNRISE_TEST_RESOURCES must name prepared resources");
         });
@@ -1413,7 +1817,7 @@ pub(super) mod interact_vibration_tests {
     /// casts, is drawn cast while its hook is out, and reels in. Another item
     /// is not a rod.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_content_mods_rod_casts_and_reels_in() {
         let Some(_) = with_game("minecraft:stick", |game| {
             // A world with a data pack has tables of its own, which take the mod's item.
@@ -1440,7 +1844,10 @@ pub(super) mod interact_vibration_tests {
             game.world_root = dir.clone();
             let stack = game.reload_datapacks(false, &[]).unwrap();
             let root = game.options.resources.clone();
-            game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
+            game.world_tables = game
+                .stage_world_tables(&stack, false, &root)
+                .unwrap()
+                .tables;
             let items =
                 &mut std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items).items;
             let mut info = items["minecraft:fishing_rod"].clone();
@@ -1458,6 +1865,8 @@ pub(super) mod interact_vibration_tests {
             stick_info.id = std::sync::Arc::from("ruby:stick");
             stick_info.template = Some(std::sync::Arc::from("minecraft:stick"));
             items.insert(stick_info.id.clone(), stick_info);
+            // Publish the edited tables as world open or reload would.
+            game.load_server_loot();
             let stick = ItemStack::new("ruby:stick", 1);
             assert!(!game.use_fishing_rod(&stick), "a content stick is no rod");
             assert!(game.hook.is_none());
@@ -1494,7 +1903,7 @@ pub(super) mod interact_vibration_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fishing_cast_and_reel_post_player_vibrations() {
         use sunrise_client::mobs::Who;
         let Some(_) = with_game("minecraft:fishing_rod", |game| {
@@ -1555,7 +1964,7 @@ pub(super) mod interact_vibration_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn thrown_eye_posts_projectile_shoot_at_eye_from_player() {
         use sunrise_client::mobs::Who;
         let Some(_) = with_game("minecraft:ender_eye", |game| {

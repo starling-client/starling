@@ -27,6 +27,7 @@ impl Game<'_> {
                 addition,
                 ..
             } => vec![*template, *base, *addition],
+            mod_api::RecipeBookLayout::Mod => Vec::new(),
         };
         let mut stacks: Vec<_> = self
             .inventory
@@ -35,8 +36,9 @@ impl Game<'_> {
             .filter(|stack| sunrise_client::menu::place::usable_for_crafting(stack))
             .cloned()
             .collect();
+        let base = self.native_screen_container_slot_base();
         for slot in slots {
-            if let Some(stack) = self.slot_mut(300 + usize::from(slot)).clone() {
+            if let Some(stack) = self.slot_mut(base + usize::from(slot)).clone() {
                 stacks.push(stack);
             }
         }

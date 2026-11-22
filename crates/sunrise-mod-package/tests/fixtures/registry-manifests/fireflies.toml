@@ -1,0 +1,21 @@
+id = "fireflies"
+name = "Fireflies"
+version = "0.1.1"
+description = "Fireflies that light up the night (in progress). Needs Sunrise Creatures."
+authors = ["EAnathos"]
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+license = "MIT"
+homepage = "https://github.com/EAnathos/sunrise-creatures/blob/main/mods/fireflies/README.md"
+issues = "https://github.com/EAnathos/sunrise-creatures/issues"
+
+# The whole series is pinned to the same Sunrise build (docs/SUNRISE-ISSUES.md, "Moving the pin").
+[native]
+game = "26.3"
+sunrise = "520fc4882de3abb8ecd8b98293f4d7263bc88181"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+# The series' library, reached as the `creature` crate (common/SPECS.md).
+[dependencies]
+creature = "^0.2"

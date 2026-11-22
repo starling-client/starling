@@ -6,8 +6,10 @@ use super::render_tick::player_tracking_body;
 use sunrise_assets::item_model::DisplayContext;
 use sunrise_client::{
     block_entity_render::vertex_light,
+    health::HealthEvent,
     items::ItemStack,
     mesher::Vertex,
+    motion::MotionEvent,
     particles::{ParticleOptions, ParticleType, TrackingBody, TrackingTarget},
 };
 
@@ -73,18 +75,14 @@ impl Game<'_> {
     }
     /// The server's half once a totem fired: use it up (main hand first),
     /// count it, set health to 1, then clear and apply its effects. Returns
-    /// the player's body, for entity event 35, which the caller broadcasts,
-    /// with the protector copy the activation animation shows.
-    pub(super) fn apply_totem(&mut self) -> Option<Body> {
-        if !self.player.as_ref()?.health.totem_used {
-            return None;
-        }
+    /// the player's body with the protector copy the activation animation shows.
+    /// A server guest's entity event is broadcast before the hit's Post.
+    fn apply_totem(&mut self, entity: i32) -> Option<Body> {
         // The mods hear a server player's totem before it is used up.
         if let (Some(uuid), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_totem(uuid, &name);
         }
-        let p = self.player.as_mut()?;
-        p.health.totem_used = false;
+        let p = self.player.as_mut().filter(|p| p.entity_id == entity)?;
         let _ = p.set_health(1.0, false);
         let body = Body {
             bounds: player_tracking_body(p),
@@ -104,12 +102,12 @@ impl Game<'_> {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| ItemStack::new(TOTEM, 1));
-        if let Some(s) = cell.as_mut() {
-            s.count -= 1;
-            if s.count == 0 {
-                *cell = None;
-            }
-        }
+        let slot = if main {
+            self.selected
+        } else {
+            super::shield::OFFHAND_SLOT
+        };
+        self.consume_player_slot(slot, 1);
         self.award_stat("used", &protector.item, 1);
         self.trigger_item("minecraft:used_totem", &protector);
         // ItemStack.causeUseVibration: the totem's use effects make one.
@@ -118,22 +116,91 @@ impl Game<'_> {
         // `DeathProtection.applyEffects`: the component's own `death_effects`,
         // read from the protector copy (the totem's clear-then-effects, or a
         // custom list; `death_protection={}` has none).
+        let user = self.consuming_player_entity();
         for effect in self.death_effects(&protector) {
-            self.apply_consume_effect(&protector, &effect, None);
+            self.apply_consume_effect(&protector, &effect, None, user);
+        }
+        self.update_totem_ready();
+        if self.lan_acting.is_some()
+            && let Some(host) = &self.lan
+        {
+            host.hub.entity_event(entity, TOTEM_EVENT);
         }
         Some(Body {
             protector: Some(protector),
             ..body
         })
     }
-    /// The window's player's totem: the server's half, then the event to
-    /// the guests and to this window's own client.
-    pub(super) fn tick_totem(&mut self) {
-        let Some(body) = self.apply_totem() else {
-            return;
-        };
-        self.totem_event(TrackingTarget::LocalPlayer, body);
+    /// Finish a hit before its caller can hurt the acting player again. Protection and
+    /// `ServerPlayer.die` both run on the current body, not its between-turn projection.
+    pub(in crate::game) fn finish_guest_damage(&mut self) {
+        let _ = self.finish_guest_damage_before_resume();
     }
+
+    /// Settle the hit, returning the remaining events instead of resuming if the acting body is gone.
+    pub(in crate::game) fn finish_guest_damage_before_resume(
+        &mut self,
+    ) -> Result<(), Vec<MotionEvent>> {
+        let (Some(conn), Some(player)) = (self.lan_acting, self.player.as_mut()) else {
+            return Err(Vec::new());
+        };
+        let Some(hit) = player.health.damage_completion.take() else {
+            return Ok(());
+        };
+        let entity = player.entity_id;
+        // Keep queued motion and packet effects with this body across the owning callbacks.
+        let mut events = std::mem::take(&mut player.events);
+        if std::mem::take(&mut player.health.totem_used) {
+            if let Some(body) = self.apply_totem(entity)
+                && self.serving.is_none()
+                && !self.is_dedicated_server()
+            {
+                self.totem_event(TrackingTarget::Entity(entity), body);
+            }
+        } else if let Some(index) = self.lan.as_ref().and_then(|host| {
+            host.hub
+                .guests
+                .connection_index(conn)
+                .filter(|&i| !host.hub.guests[i].dead)
+        }) {
+            // The killing blow and its weapon must reach the combat tracker before die reads it.
+            // Packet and motion events still belong to the normal turn drain.
+            let combat: Vec<_> = events
+                .extract_if(.., |event| {
+                    matches!(
+                        event,
+                        MotionEvent::Health(
+                            HealthEvent::ArmorHurt { .. }
+                                | HealthEvent::Criterion { .. }
+                                | HealthEvent::MobHurt
+                                | HealthEvent::RecordedDamage { .. }
+                                | HealthEvent::Statistic { .. }
+                        )
+                    )
+                })
+                .collect();
+            if !combat.is_empty() {
+                self.record_combat(&combat);
+                self.wear_armor(&combat);
+            }
+            self.guest_die(index, conn);
+        }
+        // The death or protection callback may change or remove the body. Post is still for
+        // this hit, not for whatever state the callback left in its place.
+        if let Some(post) = hit.post {
+            self.finish_damage_post(entity, "minecraft:player", post);
+        }
+        if self.lan_acting == Some(conn)
+            && let Some(player) = self.player.as_mut().filter(|p| p.entity_id == entity)
+        {
+            events.append(&mut player.events);
+            player.events = events;
+            Ok(())
+        } else {
+            Err(events)
+        }
+    }
+
     /// Entity event 35 from a server, for this client's own player or an
     /// entity it draws.
     pub(super) fn remote_totem(&mut self, id: i32) {
@@ -254,10 +321,10 @@ fn death_protection_of<'m>(
 #[cfg(test)]
 mod death_protection_tests {
     use super::death_protection_of;
+    use serde_json::json;
     use sunrise_assets::item_model::ItemModels;
     use sunrise_client::items::ItemStack;
     use sunrise_core::nbt::Tag;
-    use serde_json::json;
 
     /// The lookup gives what the stack's whole component map gives, for
     /// stacks that keep, set or remove the component.

@@ -1,5 +1,8 @@
-/// What the Create New World screen decided, for the temporary world
-/// `RealmsCreateWorldFlow.createTemporaryWorldFolder` writes before the upload.
+//! `RealmsCreateWorldFlow`'s target: what the Create New World screen decided, for the
+//! temporary world `createTemporaryWorldFolder` writes before the upload.
+
+use std::path::PathBuf;
+
 #[derive(Clone, Debug)]
 pub struct CreatedWorld {
     /// The world's level data, its name, game type, difficulty, game rules and features.

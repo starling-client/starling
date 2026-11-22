@@ -1,12 +1,12 @@
 //! Eroded-badlands pillars and frozen-ocean icebergs, before chunk integration.
 use super::biome_temperature::BiomeTemperature;
 use crate::registry::BlockStateId;
+use std::sync::Arc;
 use sunrise_core::{
     noise::Noise,
     position::BlockPos,
     random::{PositionalRandom, RandomSource},
 };
-use std::sync::Arc;
 
 /// Reads and writes retain provider order. The chunk adapter supplies vanilla
 /// out-of-height reads and generation-height write clipping.

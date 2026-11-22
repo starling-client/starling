@@ -8,7 +8,7 @@ hardness/tool rules, collect drops from the block loot tables, place blocks,
 craft in the 2x2 inventory grid or on a crafting table, and save and reload worlds
 in vanilla's Anvil format.
 
-**Status:** playable; players get it through [the launcher](../launcher/README.md). The [harness table](../README.md#project-status)
+**Status:** playable; players get it through [the launcher](https://github.com/sunrise-org/sunrise-launcher/blob/main/README.md). The [harness table](status.md#what-the-harnesses-compare)
 in the README scores each subsystem against vanilla and lists what is still
 missing; [Rust rewrite status](rust-parity.md) has the details.
 
@@ -21,9 +21,25 @@ The launcher does not create firewall rules or change network-profile settings.
 ## musl Linux: manual installation
 
 On x86-64 musl distributions, download `sunrise-linux-musl-x86_64.tar.gz` from the
-[Nightly release](https://github.com/horizon-rust/horizon/releases/tag/nightly), when available. This optional
-build is omitted if its build fails. The launcher does not install or update it. Its desktop gameplay and
-vanilla parity are still unverified; see the [musl build limitations](release-flow.md#builds).
+[Nightly release](https://github.com/sunrise-org/sunrise/releases/tag/nightly), once it appears. It is attached
+separately after publication, and the launcher does not install or update it. Its desktop gameplay and vanilla
+parity are still unverified; see the [musl build limitations](release-flow.md#builds).
+
+Before extracting, download `SHA256SUMS-musl` and `SHA256SUMS-musl.v2.sig` from the **same release** as the
+archive. Keep them in a folder of their own, not alongside the launcher's `SHA256SUMS`. Copy `SHA256SUMS-musl`
+to `SHA256SUMS` in that folder for the verifier. From a trusted Sunrise checkout, run the following with the date
+and commit from the release's title (`Nightly <date> · <commit>`), not from the moving `nightly` tag:
+
+```sh
+version='nightly-<date>-<commit>' # Replace <date> and <commit> with the values from the title.
+cp /path/to/musl-download/SHA256SUMS-musl /path/to/musl-download/SHA256SUMS
+cargo run --locked -p sunrise-release-sign -- verify --tag "$version" \
+  --signature SHA256SUMS-musl.v2.sig --only sunrise-linux-musl-x86_64.tar.gz /path/to/musl-download
+```
+
+For a Dev build, use `dev-<date>-<commit>` as the tag in the verification command. The verifier checks
+both the signature against Sunrise's release key and the archive's checksum. Do not extract the archive if
+verification fails.
 
 You need a working X11 or Wayland desktop, musl, libgcc, ALSA and libudev. For Vulkan, install both the loader
 (`libvulkan.so.1`) and your GPU's driver. On Alpine, the common runtime packages are:
@@ -54,7 +70,7 @@ The sounds command copies the sounds from your Minecraft installation's asset st
 incomplete, obtain the missing assets through your Minecraft launcher first. Preparation details and alternative
 layouts are described below.
 
-Updates are manual: download and extract the next musl archive, prepare its resources, and use that version's
+Updates are manual: download, verify and extract the next musl archive, prepare its resources, and use that version's
 programs. Keep your saves in a separate `SUNRISE_HOME` and point each version at it. Back up saves before
 updating. The bundled `sunrise-server` also refuses automatic updates because the server update archives use
 glibc. An absent musl archive is not a reason to install the glibc archive on a musl system.
@@ -65,7 +81,7 @@ Use current stable Rust (1.90+) and JDK 25 (Python 3.11+ only for the developmen
 harnesses). A checkout never
 downloads the game: resource preparation imports **your own copy** (the 26.3
 client from your official launcher install, and the 26.3 server jar you
-downloaded yourself; see [Build from source](../README.md#build-from-source)),
+downloaded yourself; see [Build from source](#run-from-a-checkout)),
 verifies it against the pinned checksums, runs vanilla's data generator and small
 exporters against those jars, and extracts the jar's assets and data into ignored
 `.local/sunrise-client/26.3/`. Sounds (about 380 MB) are copied from your
@@ -165,121 +181,6 @@ if your audio server underruns (e.g. PipeWire with `min-quantum` ≥ 1024), set
 `SUNRISE_AUDIO_BUFFER=2048` or `SUNRISE_AUDIO_BUFFER=default` to use the backend's
 default buffer size.
 
-### Experimental older servers
-
-The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10,
-1.21.7/1.21.8, 1.21.6, 1.21.5, 1.21.4, 1.21.2/1.21.3, 1.21/1.21.1,
-1.20.5/1.20.6, 1.20.3/1.20.4 and 1.20.2. It is off by default while compatibility is incomplete. Set
-`SUNRISE_OLDER_SERVERS=1` before starting the game; the server's status ping selects
-the adapter. The client still needs its prepared **26.3** resources.
-
-```sh
-SUNRISE_OLDER_SERVERS=1 cargo run --profile fast -p sunrise-game -- --server 127.0.0.1:25565
-```
-
-In PowerShell, set `$env:SUNRISE_OLDER_SERVERS = '1'`, then run the same Cargo
-command without the environment assignment at its start.
-
-This does not load Fabric JARs or emulate every older version's movement and
-combat. Older item components still have gaps; a recognized protocol is not a
-promise of complete compatibility. The 1.21.6 and 1.21.7/1.21.8 adapters use vanilla
-packet layouts shared by these releases, with separate item/sound mappings for
-1.21.6. The 1.21.5 adapter also removes vanilla's chunk-buffer padding and converts crouch/action commands,
-hanging-entity metadata and the pre-1.21.6 attribute-modifier/equippable layouts.
-The 1.21.4 bridge converts its older chunks, tooltip flags, nested stacks, chat,
-team rules and entity metadata. Old inventory clicks use the server's authoritative
-slot/cursor resynchronization. Smithing previews follow the server's synced trim
-registry; inline 1.21.4 trim holders and templates outside the known vanilla item
-set remain unsupported.
-The 1.21.2/1.21.3 bridge also handles particle flags and client-chosen trail lifetimes,
-vehicle movement, tab-list hats, integer custom-model data, old creaking-heart states
-and the transient creaking type. Custom-model data uses the first float when sent
-back; integers beyond exact float precision can lose precision. Server-delegated
-block/entity picking is not supported on 1.20.2 through 1.21.3, whose old pick packet
-requires a client inventory index instead of a world target.
-The 1.21/1.21.1 bridge converts older recipe declarations and book updates, food
-consumption data, potions, instruments, teleports, inventory windows and settings.
-Boat wood variants become their corresponding modern entity types, retaining
-movement, metadata and passengers when recreated. Old explosions preserve their
-radius, destroyed-block updates and knockback. Custom recipe serializers and
-consumable effects without an old representation remain unsupported.
-The 1.20.5/1.20.6 bridge also converts UUID-based attribute modifiers, food without
-a remainder field, horse inventory sizes, projectile acceleration and item-use
-packets without rotation. Static enchantment and painting names are supplied in
-their original wire-id order; their definitions use the client's prepared resources.
-Old modifier names become vanilla's canonical identifiers and cannot retain arbitrary
-original display names on write-back. New identifiers without a known old UUID
-receive a stable generated UUID, so their original identifier is lost on a round trip.
-The old three-component projectile acceleration is represented by its
-magnitude; a custom direction independent of velocity has no scalar representation.
-Wolf registry references on 1.21 through 1.21.4 are normalized past their older
-holder encoding; inline wolf definitions on those versions remain unsupported.
-The 1.20.3/1.20.4 bridge splits the whole-NBT registry sync and upgrades legacy
-NBT item stacks through Sunrise's datafixes. A connection-local cache retains original
-tags for unchanged stacks, bounded to 1,024 entries and 8 MiB of serialized values;
-ambiguous normalized keys, evicted entries and entries over 256 KiB use semantic
-reconstruction. Modified entity/block-entity data has no general reverse datafix,
-and newer components without an old field cannot be represented. Incoming block-entity
-updates and chunk entries use forward datafixes for banner patterns, skull profiles,
-text and nested inventory stacks, retaining opaque fields and the original tag identity.
-Independent vanilla fixtures cover these conversions; they do not establish full rendered parity. Static banners,
-enchantments, paintings, instruments and the original wolf coat use vanilla names.
-Old recipes, trades, horse equipment, attribute/effect metadata and particles are
-translated; legacy commands retain the chat tracker's acknowledgement even without
-signable arguments. Full older movement, combat and particle behavior parity remains
-unfinished. Authentication follows the login encryption request, and old secure-chat
-enforcement is applied when server data arrives; online-mode chat remains unvalidated.
-The 1.20.2 bridge converts JSON component fields to NBT while retaining real NBT
-and the login-disconnect JSON exception. It selects saved-item data version 3578,
-handles width-first shaped recipes and grass/short_grass names, splits old score
-removals, supplies absent objective/explosion fields from vanilla defaults and
-reads vibration source identifiers. Its single server resource-pack slot uses
-connection state across configuration and play; newer intermediate statuses have
-no old response. Pack replacement and asynchronous results retain native pack
-generation identity. Vanilla's global inactive-pack failure policy still applies,
-including a late failed download affecting newly pending packs. Advanced mutated
-entity NBT has no general reverse schema, including old projectile potion data.
-Structured hover-item and hover-entity rendering still has native gaps; verified
-wire-text conversion does not establish complete interactive hover behavior.
-Online-mode login and complete interactive playthroughs on these versions
-have not been validated. Earlier Java releases, Classic/Alpha/Beta,
-April Fools and Bedrock are outside the implemented adapter set.
-
-For a protocol-only development check, append `--server-protocol 772` to
-`cargo run -p sunrise-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
-The probe fails if it encounters packet or chunk decode errors.
-Use `--server-protocol 764` for 1.20.2, `765` for 1.20.3/1.20.4, `766` for 1.20.5/1.20.6,
-`767` for 1.21/1.21.1, `768` for 1.21.2/1.21.3, `769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
-1.21.7 and 1.21.8 both use `772`.
-
-The registry mappings and named pinned IDs are generated from official vanilla
-reports. `tools/regenerate_registry_id_adapters.py` records each release's exact
-rename, reassignment, state-alias, inheritance and static-name options. Each
-release listed in `RELEASES` needs `VERSION/jars/client.jar` and its matching
-official `VERSION/datagen/reports/{registries,blocks}.json`. For unobfuscated
-26.1+ releases, `tools/version_port.py prepare VERSION --download` supplies these.
-For older releases, use owned official client jars and reports exported by the
-matching vanilla server's data generator:
-
-```sh
-java -DbundlerMainClass=net.minecraft.data.Main -jar VERSION/jars/server.jar --reports --output VERSION/datagen
-```
-
-With those inputs prepared, run:
-
-```sh
-python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/versions
-python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/versions --check
-```
-
-The version store defaults to `SUNRISE_VERSIONS` (or `~/code/sunrise-parity/versions`).
-The pin uses the repository's imported `.local/` jar and reports; `--new DIR`
-selects a separately prepared pin. `--only VERSION...` selects releases while
-still checking pinned constants. `--check` writes no tracked files and fails if
-any output differs; regeneration itself downloads nothing. This checks
-report-derived IDs; gameplay still needs its parity harnesses. When bumping the
-pin, regenerate these files and review the mappings with its reports.
-
 ### Agent control (`sunrise-ctl` and MCP)
 
 AI agents and scripts play Sunrise through `sunrise-ctl`, a command line that
@@ -359,8 +260,16 @@ says whether it arrived, `break` what dropped and what was picked up, `place`
 the block placed. `stop` cancels the running action. Every reply is one JSON
 line; errors are `{"error": "..."}` objects, and the exit status is 0 on
 success, 1 when the game replied with an error, 2 for a usage error and 3 when
-the game cannot be reached or started. `sunrise-ctl script FILE` (or stdin)
-runs one command per line with shell-like quoting and stops at the first error
+the game cannot be reached or started. A command that failed is not a game
+error: `command` replies `ok` (delivered) with, in a world you host or run alone, `success` (any run of the command
+succeeded; an `execute` that forks counts once per fork) and `result`, the pair
+`execute store success|result` stores (the last fork's value). `success` is
+false and `result` `null` when the command never ran (a syntax error, an unknown
+command, an `execute` forking to no target, a line the game refuses, no world
+served or the owner not placed yet), still with `ok` true. A client mod's
+command gives only `ok` and `chat`, and a joined server's reply neither field,
+so a script tests `success`, not the exit status. `sunrise-ctl script FILE`
+(or stdin) runs one command per line with shell-like quoting and stops at the first error
 (`--keep-going` doesn't); `sleep S` waits. `sunrise-ctl -` is the older form
 that reads stdin and keeps going.
 
@@ -387,6 +296,11 @@ newest report (the `logs` MCP tool returns the same). F3 + C held for ten
 seconds crashes the game on purpose, as in vanilla (the world is saved first);
 development builds also crash with `SUNRISE_DEBUG_CRASH=SECONDS`, that long
 after the first frame.
+
+For development, set `SUNRISE_LOG_STDERR` to a comma-separated list of external log targets, such as
+`my_mod,other_mod`. The game also prints records for each target and its `::` submodules to
+stderr in the log file's format. This does not change the log level or file contents, and the
+extra output is off when the variable is unset.
 
 **MCP.** `sunrise-ctl mcp` serves the Model Context Protocol over stdin and
 stdout (JSON-RPC 2.0, one message per line), with one tool per command and a
@@ -426,7 +340,7 @@ While Discord runs on the same computer, the player's Discord profile shows
 ("In the Nether") and the time since they entered the world. It never shows a
 world's name or a server's address. The switch is on the Extras page, in its
 Multiplayer group (**Discord Rich Presence**, on by default; `discordPresence`
-in `sunrise-extras.txt`; in splitscreen only the first player has it), and
+in `sunrise-extras.txt`), and
 `SUNRISE_NO_DISCORD=1` turns it off for one run.
 
 The crate `sunrise-discord` (Sunrise layer) speaks Discord's local IPC itself

@@ -11,10 +11,13 @@ pub trait Hooks {
     /// fuller arrangement as a village grows). Their sound events should be
     /// `stream: true` in `sounds.json`.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_music_layers",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "layers",
         neoforge = "none (SelectMusicEvent swaps the one track; NeoForge has no layered music)"
     )]
-    fn music_layers();
+    fn music_layers(layers: &mut Vec<MusicLayer>);
 }

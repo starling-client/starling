@@ -10,8 +10,8 @@ use super::{
     states::BlockId,
     update::{above, rel},
 };
-use sunrise_core::{geometry::Direction, position::BlockPos, random::RandomSource};
 use std::cmp::Ordering;
+use sunrise_core::{geometry::Direction, position::BlockPos, random::RandomSource};
 use {
     crate::registry::BlockStateId,
     sunrise_core::java_hash_map::{JavaHashMap, JavaKey},
@@ -186,6 +186,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.level.remove_block_entity(pos, moved, side_effects);
         }
     }
+    /// Compute the landing state while the real cell still contains `moving_piston`.
+    fn pushed_block_landing_state(&mut self, pos: BlockPos, state: BlockStateId) -> BlockStateId {
+        self.while_landing(pos, state, |sim| {
+            sim.update_from_neighbour_shapes(state, pos)
+        })
+    }
+
     /// `PistonMovingBlockEntity.finalTick`.
     fn moving_piston_final_tick(&mut self, pos: BlockPos) {
         let Some(piston) = self.moving_piston(pos) else {
@@ -202,7 +209,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let new = if piston.source {
                 b.air()
             } else {
-                self.update_from_neighbour_shapes(piston.moved_state, pos)
+                self.pushed_block_landing_state(pos, piston.moved_state)
             };
             self.land_carried(pos, piston.moved_state, !b.is_air(new), true);
             self.set_block_and_update(pos, new);
@@ -233,7 +240,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
             self.remove_moving_piston(pos);
             if b.is_block(self.state(pos), b.named.moving_piston) {
-                let mut new = self.update_from_neighbour_shapes(piston.moved_state, pos);
+                let mut new = self.pushed_block_landing_state(pos, piston.moved_state);
                 // Before the block: one that `update_or_destroy` breaks takes
                 // its block entity with it, side effects and all.
                 self.land_carried(pos, piston.moved_state, true, true);
@@ -845,6 +852,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.emit(LevelEvent::Sound {
                 pos,
                 sound: "minecraft:block.piston.extend".into(),
+                source: None,
                 volume: 0.5,
                 pitch,
             });
@@ -914,6 +922,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.emit(LevelEvent::Sound {
                 pos,
                 sound: "minecraft:block.piston.contract".into(),
+                source: None,
                 volume: 0.5,
                 pitch,
             });

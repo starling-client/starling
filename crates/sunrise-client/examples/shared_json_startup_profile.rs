@@ -3,9 +3,9 @@
 //! The deferred mode evaluates both phases contiguously for fair loader comparison;
 //! actual client startup performs other initialization between these phases.
 extern crate sunrise_client_lib as sunrise_client;
+use std::{path::Path, time::Instant};
 use sunrise_client::{assets::Assets, blocks::BlockFacts};
 use sunrise_world::level::Behaviours;
-use std::{path::Path, time::Instant};
 
 fn resident_kib() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;

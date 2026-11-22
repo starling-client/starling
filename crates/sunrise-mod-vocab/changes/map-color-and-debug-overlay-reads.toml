@@ -1,0 +1,3 @@
+ids = ["handle:BlockStates::map_color_rgba", "method:prelude::ScreensClientHost::debug_overlay_visible"]
+why = "Mods can decode packed vanilla map pixels to RGBA and read whether the client draws the debug overlay when drawing HUD content."
+migrate = "No migration needed. Use BlockStates::map_color_rgba for shaded pixels and ClientHost::debug_overlay_visible for overlay visibility."

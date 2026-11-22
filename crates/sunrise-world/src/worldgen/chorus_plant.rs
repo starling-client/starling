@@ -1,8 +1,8 @@
 //! Bounded recursive chorus generation with native connection-state refreshes.
 use super::{DecodeError, block_feature::FeatureBlockBindings, feature::FeatureWorld};
 use crate::registry::BlockStateId;
-use sunrise_core::random::{InvalidBound, RandomSource};
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::random::{InvalidBound, RandomSource};
 const HORIZONTAL: [[i32; 3]; 4] = [[0, 0, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0]];
 const NEIGHBORS: [[i32; 3]; 6] = [
     [0, -1, 0],

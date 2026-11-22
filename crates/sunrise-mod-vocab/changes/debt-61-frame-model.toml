@@ -1,0 +1,133 @@
+ids = [
+    "hook:render_living_pre",
+    "hook:render_living_pre.hidden",
+    "hook:render_living_pre.model",
+    "type:RenderLivingPreEvent.hidden",
+    "type:RenderLivingPreEvent.model",
+    "hook:render_player_pre",
+    "hook:render_player_pre.hidden",
+    "hook:render_player_pre.model",
+    "type:RenderPlayerPreEvent.hidden",
+    "type:RenderPlayerPreEvent.model",
+    "hook:render_living_post",
+    "hook:render_living_post.parts",
+    "hook:render_living_post.model",
+    "type:RenderLivingPostEvent.parts",
+    "type:RenderLivingPostEvent.model",
+    "hook:render_player_post",
+    "hook:render_player_post.parts",
+    "hook:render_player_post.model",
+    "type:RenderPlayerPostEvent.parts",
+    "type:RenderPlayerPostEvent.model",
+    "hook:humanoid_setup_anim",
+    "hook:humanoid_setup_anim.parts",
+    "type:HumanoidSetupAnimEvent.parts",
+    "hook:register_entity_layers",
+    "method:EntityRenderLayer::submit",
+    # The surface generator has no records for ordinary free constants (MAX_HIDDEN_PARTS and
+    # MAX_PART_NAME); their removal is covered in the migration below.
+    "type:HiddenParts",
+    "handle:HiddenParts::hide",
+    "handle:HiddenParts::hide_named",
+    "handle:HiddenParts::contains",
+    "handle:HiddenParts::contains_named",
+    "handle:HiddenParts::is_empty",
+    "handle:HiddenParts::names",
+    "type:HideError",
+    "type:HideError.Full",
+    "type:HideError.BadName",
+    "type:PosedPart",
+    "type:PosedPart.part",
+    "type:PosedPart.pose",
+    "type:PosedPart.visible",
+    "type:PosedParts",
+    "type:PosedParts.parts",
+    "handle:PosedParts::new",
+    "handle:PosedParts::get",
+    "handle:PosedParts::iter",
+    "type:HumanoidParts",
+    "handle:HumanoidParts::PARTS",
+    "handle:HumanoidParts::new",
+    "handle:HumanoidParts::get",
+    "handle:HumanoidParts::set_position",
+    "handle:HumanoidParts::set_rotation",
+    "type:HumanoidPart",
+    "trait:FrameModel",
+    "method:FrameModel::root",
+    "method:FrameModel::part",
+    "method:FrameModel::part_at",
+    "trait:FrameModelEdit",
+    "method:FrameModelEdit::hide",
+    "type:FrameModelPart",
+    "type:FrameModelPart.index",
+    "type:FrameModelPart.name",
+    "type:FrameModelPart.parent",
+    "type:FrameModelPart.first_child",
+    "type:FrameModelPart.next_sibling",
+    "type:FrameModelPart.local_pose",
+    "type:FrameModelPart.visible",
+    "handle:FrameModelPart::pose",
+    "trait:HumanoidPose",
+    "method:HumanoidPose::get",
+    "method:HumanoidPose::set_position",
+    "method:HumanoidPose::set_rotation",
+]
+why = "Render callbacks borrow the selected model and its baked hierarchy instead of passing bounded lists of hidden names and copied humanoid snapshots. Pre listeners share draw-local hides, layers registered at NeoForge's EntityRenderersEvent.AddLayers and Post can read the final body pose, as vanilla's LivingEntityRenderer.submit does when it submits layers, and setup-animation listeners edit the live pose without snapshot writeback. Matching vanilla `HumanoidModel.setupAnim`, `humanoid_setup_anim` has no incoming-pose finiteness gate and `HumanoidPose::set_position`/`set_rotation` write all three components directly without per-component finiteness filtering."
+migrate = """
+Rebuild for render_living_pre v6, render_player_pre v5, render_living_post v5,
+render_player_post v5, humanoid_setup_anim v4 and register_entity_layers v4.
+
+In Player Pre and Living Pre, replace event.hidden with event.model. Change helpers taking
+&mut HiddenParts to take &mut dyn FrameModelEdit and pass &mut *event.model. Replace
+hidden.hide_named(name) with:
+```rust,ignore
+if let Some(index) = event.model.part(name).map(|part| part.index) {
+    event.model.hide(index);
+}
+```
+For hidden.hide(part), use part.model_name() as the name. A missing name returns None; an
+invalid index returns false from hide without editing anything. No missing name refuses the
+draw. Drop HiddenParts construction, HideError (including Full and BadName) and the
+MAX_HIDDEN_PARTS and MAX_PART_NAME limits. For contains_named(name), use
+event.model.part(name).is_some_and(|part| !part.visible); for contains(part), pass
+part.model_name(). To replace names() or is_empty(), walk from model.root(), following
+first_child and next_sibling via model.part_at(index), and inspect visibility in the subtree
+you care about. If you need the exact list of edits you made, track it yourself.
+
+Pre reads bind pose, before animation and Skin Customization. Player Pre's hides are visible
+in Living Pre. Hides affect this draw's body and layers on that model, including descendants,
+but not independent armour, held items, capes or mod layers' own geometry. Canceling Player
+Pre skips Living Pre and both Posts. Canceling only Living Pre still calls Player Post with
+model: None; no body or layers draw.
+
+In both Posts replace event.parts with event.model. In EntityRenderLayer::submit, replace
+parts: Option<&PosedParts> with model: Option<&dyn FrameModel> in the same parameter position.
+When Some(body), replace parts.get(p) with body.part(p.model_name()). Replace PosedParts.parts
+and parts.iter() with a walk from body.root() through first_child and next_sibling using
+body.part_at(index). To keep the old humanoid order, use
+HumanoidPart::ALL.into_iter().filter_map(|p| body.part(p.model_name())). Replace PosedPart.part
+with part.name or part.index and part.pose with part.pose(). To attach geometry to a nested
+part, use parent links and compose local poses from the root down. Check part.visible for
+effective visibility: false includes a hidden ancestor; true does not imply cubes were drawn.
+Read the supplied borrow instead of calling PosedParts::new.
+This is final pose, not bind pose, and is available for nonhumanoids too. Layers keep their
+registration order. None means no body pose was produced, e.g. when a replacement renderer
+succeeds. Do not keep model views or indices past the callback; copy the local pose or own
+the name if needed later.
+
+In humanoid_setup_anim, keep the event.parts.get(part), set_position(part, xyz) and
+set_rotation(part, angles) calls. Helpers that took &mut HumanoidParts now take
+&mut dyn HumanoidPose (pass &mut *event.parts), or &dyn HumanoidPose for reads
+(pass &*event.parts). Replace HumanoidParts::PARTS with the parts you need: Head, Hat, Body,
+RightArm, LeftArm, RightLeg and LeftLeg can be edited when present. Instead of
+HumanoidParts::new or assigning a whole snapshot, set the desired components on event.parts
+and copy just the coordinates you wish to keep. Edits are immediately visible to later
+listeners; the rest of animation still runs afterward. `set_position` and `set_rotation` write
+all three floats directly and return `false` only when the part is missing or noneditable
+(matching vanilla `HumanoidModel.setupAnim`, with no finiteness gate or skip).
+
+The borrowed model and pose views have no Wire form. HumanoidPart still selects the same
+parts in process but no longer implements Wire. Save or send part.model_name() in your own
+format. Use body.part(name) on the frame model, or for HumanoidPose resolve the selector
+with HumanoidPart::ALL.into_iter().find(|part| part.model_name() == name).
+"""

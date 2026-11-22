@@ -1,0 +1,22 @@
+{
+  "id": "release_probe",
+  "version": "1.0.0",
+  "build": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "rust": "1.99.1",
+  "archives": [
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "name": "release_probe-1.0.0+26.3-0.1.1-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 808,
+      "sha256": "2fed0f26a84cc7ced4e04c46fc15afd80bfff213f332905a5d5880d884cddc74",
+      "signature": "untrusted comment: test fixture signature\nRUSKMCcdxZ7y/D54ZKHGapZMzEKOCR6594czMoEsigbGvVL32oNTLmJthuHrrEMR9tXviwbHM8iyZj09oqkQ2i4/7SeOTdagjgQ=\ntrusted comment: synthetic Sunrise registry fixture\nNSP5pexfAi1/yGuh9/S3ySRv+tLq4DsqBWm7fWt17A9BoaP13c7OSBN5JYiqgx3/vr7vi/ZRXuIPsqW/VsE0CA==\n"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu-server",
+      "name": "release_probe-1.0.0+26.3-0.1.1-x86_64-unknown-linux-gnu-server.tar.xz",
+      "size": 780,
+      "sha256": "1b192c0a260107bbb7528953b07f70617d44c7f150fe7ebd6636e779585bb90d",
+      "signature": "untrusted comment: test fixture signature\nRUSKMCcdxZ7y/Ka7OgW/mEedpowC0eKWXMVmSz5bODRsubM24cuxQIF6gcyEQr0GLiTbQPWtiIlJDgcnr/ITljdFea276ekaFgE=\ntrusted comment: synthetic Sunrise registry fixture\nrXXSPOP6AYTdhDHDXUlmL2zxGd4g09jjLC52XqQ34W2dJ6+ixW0lqaBT3eAz9/H3rX3v24xXgciGWQ7VebigBw==\n"
+    }
+  ]
+}

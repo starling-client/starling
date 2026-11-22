@@ -1,0 +1,11 @@
+ids = [
+    "hook:placement_context",
+    "hook:placement_context.item",
+    "hook:placement_context.placer",
+    "hook:placement_context.stack",
+    "type:PlacementContextEvent.item",
+    "type:PlacementContextEvent.placer",
+    "type:PlacementContextEvent.stack",
+]
+why = "Version 2 gives placement parts the actual stack and placing player, and allows player placement to redirect an occupied original destination without bypassing replaceability at the destination. The placer's eye position is the click-time snapshot, as in vanilla's BlockPlaceContext."
+migrate = "Read event.stack instead of event.item. A part can read the player's eyes from event.placer. Return a context targeting a replaceable cell."

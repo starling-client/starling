@@ -107,21 +107,6 @@ fn malformed_layouts_are_refused_before_indexing() {
     ));
 }
 #[test]
-fn geometry_must_include_each_mapped_slot_and_be_finite() {
-    let mut geometry = vec![Some([0.0, 0.0]); 12];
-    assert_eq!(grid().validate_geometry(&geometry), Ok(()));
-    geometry[6] = None;
-    assert_eq!(
-        grid().validate_geometry(&geometry),
-        Err(LayoutError::MissingGeometry(6))
-    );
-    geometry[6] = Some([f32::NAN, 0.0]);
-    assert_eq!(
-        grid().validate_geometry(&geometry),
-        Err(LayoutError::MissingGeometry(6))
-    );
-}
-#[test]
 fn named_station_roles_and_fuel_occupancy_are_not_grid_guesses() {
     let furnace = CheckedSlotLayout::new(
         SlotLayout::Furnace {
@@ -240,15 +225,28 @@ fn storage_agreement_and_existing_menu_limit() {
     ));
     let layout = CheckedSlotLayout::new(
         SlotLayout::Crafting {
-            width: 255,
+            width: 260,
             height: 1,
-            slots: (0..255).collect(),
-            result: 255,
+            slots: (0..260).collect(),
+            result: 260,
         },
-        256,
+        261,
     )
     .unwrap();
     let display = shaped(1, 1, vec![item("oak")]);
     let mapped = layout.map(&display, false).unwrap();
-    assert_eq!(mapped, vec![(127, item("oak")), (255, item("stick"))]);
+    assert_eq!(mapped, vec![(129, item("oak")), (260, item("stick"))]);
+}
+
+#[test]
+fn built_in_layouts_map_no_custom_display() {
+    let custom = RecipeBookDisplay::Custom {
+        slots: vec![item("a")],
+        result: item("out"),
+        station: RecipeSlotDisplay::Empty,
+    };
+    assert_eq!(
+        grid().map(&custom, true),
+        Err(LayoutError::IncompatibleDisplay)
+    );
 }

@@ -346,7 +346,7 @@ impl Hooks for Probe {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; starts a real integrated server"]
+#[ignore = "daily"]
 fn integrated_memory_delivers_registered_raw_payload_and_reply() {
     super::tests::require_resources();
     if super::super::native_entity_refs::tests::run_fresh_cases(
@@ -413,9 +413,13 @@ fn integrated_memory_delivers_registered_raw_payload_and_reply() {
             .unwrap();
             let ready = drive_until(Instant::now() + WAIT_BUDGET, || {
                 game.poll_remote().unwrap();
-                game.remote
-                    .as_ref()
-                    .is_some_and(|remote| remote.logged_in && remote.joined)
+                game.remote.as_ref().is_some_and(|remote| {
+                    // The first position packet creates and binds the local player
+                    // after Login. A NETWORK reply can run before the next main poll.
+                    remote.logged_in
+                        && remote.joined
+                        && remote.session.payload_transport().player().is_some()
+                })
             });
             if !ready {
                 _report.print("before_teardown");

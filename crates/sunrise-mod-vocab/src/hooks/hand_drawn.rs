@@ -9,5 +9,5 @@ pub trait Hooks {
         target = "mod_render::render::hand_drawn",
         neoforge = "RenderHandEvent"
     )]
-    fn hand_drawn();
+    fn hand_drawn(hand: &mut HandDrawn<'_>);
 }

@@ -111,7 +111,7 @@ public final class KnockbackClient {
                 switch (w[0]) {
                     case "step" -> step = w[1];
                     case "join" -> {
-                        Player p = new Player(w[1]);
+                        Player p = new Player(w[1], args.length > 3 && args[3].equals("tracking"));
                         players.put(w[1], p);
                         NAMES.put(UUIDUtil.createOfflinePlayerUUID(w[1]), w[1]);
                         p.join(host, port);
@@ -175,6 +175,7 @@ public final class KnockbackClient {
 
     private static final class Player {
         final String name;
+        final boolean tracking;
         final List<String> lines = new ArrayList<>();
         private Socket socket;
         private DataInputStream in;
@@ -195,8 +196,9 @@ public final class KnockbackClient {
         private int pushes;
         private int marked;
 
-        Player(String name) {
+        Player(String name, boolean tracking) {
             this.name = name;
+            this.tracking = tracking;
         }
 
         void command(String command) throws Exception {
@@ -383,6 +385,7 @@ public final class KnockbackClient {
                         }
                         seen.put(a.getId(), who);
                         last.put(who, a.getId());
+                        if (tracking) record("spawn " + who);
                     } else if (p instanceof ClientboundSetEntityMotionPacket m) {
                         Vec3 v = m.movement();
                         record(String.format(java.util.Locale.ROOT, "motion %s %.5f %.5f %.5f",

@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Reconnexion auto",
+  "sunrise.extras.auto_reconnect.tooltip": "Rejoint de nouveau un serveur après une perte de connexion ou un redémarrage, jamais après une expulsion ou un bannissement."
+}

@@ -16,6 +16,7 @@ pub trait Hooks {
     /// one check, with nothing decoded or allocated. Client-side. Diverges from upstream: new
     /// hook, a Sunrise addition with no NeoForge counterpart.
     #[hook(
+        dispatch = "api_carrier",
         side = "client",
         contract = "listen",
         neoforge = "none (NeoForge has no viewed levels)"

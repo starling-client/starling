@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use sunrise_perf_format::v1::Side;
 use serde::{Deserialize, Serialize};
+use sunrise_perf_format::v1::Side;
 
 use crate::query::{Bound, DEFAULT_LIMIT, Filters, Query};
 use crate::wire::{ContextKey, GroupBy, HotBy, Op, SampleBy, Select, SideName};

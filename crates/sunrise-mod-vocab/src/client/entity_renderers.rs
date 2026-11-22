@@ -5,15 +5,15 @@
 //! keeps the registrations from start and resolves each type's renderer on every resource load, so
 //! a frame hands an entity to the renderer of its type's slot and to no other mod.
 use crate::BlockEntityDrawContext;
-use crate::wire::{Reader, Wire, WireError, Writer};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// One entity's frame, as `EntityRenderer.extractRenderState` fills an `EntityRenderState`:
 /// what a renderer reads to place and turn its model. Angles are in degrees, interpolated to the
-/// frame's partial tick. Plain numbers, so a frame allocates nothing, and one value for native and
-/// wasm mods alike.
+/// frame's partial tick, except for primed TNT and experience orbs, which supply their current
+/// rotation.
+// no wire: this frame is passed directly to native renderers.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EntityRenderState {
     /// The entity's network id, as mod messages name it.
     pub id: u32,
@@ -27,14 +27,29 @@ pub struct EntityRenderState {
     pub pitch: f32,
     /// A living entity's own frame (`LivingEntityRenderState`); none for any other entity.
     pub living: Option<LivingRenderState>,
+    /// The remaining primed-TNT fuse, in ticks, as vanilla draws it (`fuse - partial + 1`);
+    /// `Some` for `minecraft:tnt`, none for any other entity.
+    pub tnt_fuse: Option<f32>,
+    /// An experience orb's value (`ExperienceOrb.DATA_VALUE`); some for an orb, none for
+    /// every other family.
+    pub orb_value: Option<i32>,
+    /// A painting's own frame ([`PaintingRenderState`]); none for any other entity.
+    pub painting: Option<PaintingRenderState>,
+    /// An item frame or glow item frame's own frame ([`ItemFrameRenderState`]); none for any
+    /// other entity.
+    pub item_frame: Option<ItemFrameRenderState>,
+    /// A general entity's immutable synced fields, including changes and removals received
+    /// since pairing. The snapshot stays fixed for this frame. `None` for other families.
+    pub attachments: Option<crate::EntityRenderAttachments>,
 }
 
 /// What a living entity's frame adds to [`EntityRenderState`], as
 /// `LivingEntityRenderer.extractRenderState` fills a `LivingEntityRenderState`: what a model
 /// reads to pose and animate a body. Angles are in degrees, interpolated to the frame's partial
-/// tick. Plain values, so a frame allocates nothing, and one value for native and wasm mods alike.
+/// tick. Plain values, so a frame allocates nothing.
+// no wire: lives in the native entity render state.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LivingRenderState {
     /// `bodyRot`: the way the body faces (0 is south, 90 west).
     pub body_rot: f32,
@@ -70,32 +85,71 @@ pub struct LivingRenderState {
     pub bed_orientation: Option<crate::Direction>,
 }
 
+/// What a painting's frame adds to [`EntityRenderState`]: the way it faces out from the
+/// wall, and its size in blocks (`Painting.direction`, `PaintingVariant.width` /
+/// `height` as the entity already holds them). The variant id is not here: the state
+/// is only plain numbers, so a renderer that needs the variant reads it in a hook and
+/// keeps what it read.
+// no wire: lives in the native entity render state.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaintingRenderState {
+    /// The way the painting faces out from the wall (`Direction.get2DDataValue`: south,
+    /// west, north, east).
+    pub facing: crate::Direction,
+    /// Width in blocks.
+    pub width: i32,
+    /// Height in blocks.
+    pub height: i32,
+}
+
+/// What an item frame's frame adds to [`EntityRenderState`]: the way it faces, whether it is a
+/// glow frame, whether the frame model is hidden, its item rotation, and whether it holds an
+/// item or a filled map. The stack itself is not here: the state is only plain numbers, so a
+/// renderer that needs the item reads it in a hook and keeps what it read.
+// no wire: lives in the native entity render state.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemFrameRenderState {
+    /// The face it hangs on (`Direction.get3DDataValue`: down, up, north, south, west, east).
+    pub facing: crate::Direction,
+    /// A glow item frame (`minecraft:glow_item_frame`).
+    pub glow: bool,
+    /// The frame model is hidden (`Entity.isInvisible`); the item may still be drawn.
+    pub invisible: bool,
+    /// `ItemRotation`, in 45-degree steps (`-7..=7`).
+    pub rotation: i8,
+    /// Whether the frame holds an item.
+    pub has_item: bool,
+    /// Whether that item is a filled map (vanilla draws the map on the face).
+    pub has_map: bool,
+}
+
 /// A mod's entity renderer: NeoForge's `EntityRenderer`, held by the game for every entity of the
 /// type it is registered for. Entities of a type share one renderer, so what differs between them
 /// comes from [`EntityRenderState`].
 ///
-/// A frame has no `Host`: drawing reads nothing of the world but what the state and `draw` give.
-/// A renderer that needs more reads it in a hook and keeps what it read.
+/// [`submit`](Self::submit) has no `Host`: it draws from what the state and `draw` give. A
+/// renderer that needs more reads it in a hook and keeps what it read. A general entity type's
+/// renderer (`declare_general_entity`) reads its synced fields from the snapshot in
+/// [`EntityRenderState::attachments`].
 pub trait EntityRenderer: Send + Sync + 'static {
     /// `EntityRenderer.submit`: draw `entity` with `draw`'s helpers (`quad`, `cube`, `block`,
     /// `item`, `model_part`) under its pose stack, which starts at the entity's position, not
     /// turned: turn it by `entity.yaw` and `entity.pitch` as the model needs. `draw` also has
     /// the partial tick, the game time and the entity's light. Asked once a frame for each entity
-    /// of the type in view; what it draws replaces the type's own drawing. A frame is drawn
-    /// afresh: `draw.keep()` does nothing here. A native implementation returns `Ok(())` in the
-    /// normal case, and that keeps what it drew. Diverges: Sunrise's `submit` returns a `Result`
-    /// so a refused or trapped call is visible. An `Err`, a panic, and a wasm call that is
-    /// refused or traps all mean the same: what it drew this frame is dropped, the error is
-    /// logged once, and the renderer is asked no more until the next resource load resolves it
-    /// again; until then its type draws as it would without one.
+    /// of the type in view; a general entity is drawn only after its first synced attachment
+    /// generation is published. What this method draws replaces the type's own drawing. A frame
+    /// is drawn afresh: `draw.keep()` does nothing here. `Ok(())` keeps what it drew. On an `Err` or
+    /// panic, what it drew this frame is dropped, the error is logged once, and the renderer
+    /// is asked no more until the next resource load resolves it again. Until then its type
+    /// draws as it would without a registered renderer.
     fn submit(
         &self,
         entity: &EntityRenderState,
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String>;
 }
-
-crate::wire::wire_handlers::handler!(dyn EntityRenderer, "EntityRenderer");
 
 /// The entity renderer registry `register_entity_renderers` hands out: NeoForge's
 /// `EntityRenderersEvent.RegisterRenderers`.
@@ -112,19 +166,44 @@ pub trait EntityRenderers {
 #[derive(Default)]
 // exhaustive: its field is private; the game builds it
 pub struct EntityRendererRegistry {
-    renderers: BTreeMap<String, Arc<dyn EntityRenderer>>,
+    renderers: crate::runtime::RegistrationMap<Arc<dyn EntityRenderer>>,
+}
+
+const REGISTRATION: (crate::generated::HookId, &str) = (
+    crate::generated::HookId::RegisterEntityRenderers,
+    "register_entity_renderers",
+);
+
+#[derive(Default)]
+struct RendererEdits(crate::runtime::RegistrationEdits<Arc<dyn EntityRenderer>>);
+
+impl EntityRenderers for RendererEdits {
+    fn register(&mut self, entity_type: String, renderer: Arc<dyn EntityRenderer>) {
+        self.0.insert(entity_type, renderer);
+    }
 }
 
 impl EntityRenderers for EntityRendererRegistry {
     fn register(&mut self, entity_type: String, renderer: Arc<dyn EntityRenderer>) {
-        self.renderers.insert(entity_type, renderer);
+        self.renderers
+            .finish(REGISTRATION, true, [(entity_type, renderer)]);
     }
 }
 
 impl EntityRendererRegistry {
+    /// Apply the current listener's renderer edits only if its registration succeeds.
+    // hidden: the engine stages one listener at a time; mods receive only the registrar trait.
+    #[doc(hidden)]
+    pub fn register_listener(&mut self, listen: &mut dyn FnMut(&mut dyn EntityRenderers) -> bool) {
+        let mut edits = RendererEdits::default();
+        let publish = listen(&mut edits);
+        self.renderers
+            .finish(REGISTRATION, publish, edits.0.ordered());
+    }
+
     /// Each type's renderer, the last registration for a type winning.
     pub fn into_renderers(self) -> BTreeMap<String, Arc<dyn EntityRenderer>> {
-        self.renderers
+        self.renderers.into_values()
     }
 }
 
@@ -153,6 +232,95 @@ mod tests {
     }
 
     #[test]
+    fn panicking_renderer_registration_keeps_the_seeded_winner_and_next_listener() {
+        use crate::{Hooks, ModEntry, RegisterEntityRenderersEvent, RegistrationContext};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Failing(Arc<AtomicUsize>);
+        #[crate::__subscriptions]
+        impl Hooks for Failing {
+            fn register_entity_renderers(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterEntityRenderersEvent<'_>,
+            ) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                event
+                    .renderers
+                    .register("test:seed".into(), Arc::new(Marked(20)));
+                event
+                    .renderers
+                    .register("test:leaked".into(), Arc::new(Marked(21)));
+                panic!("renderer registration failed");
+            }
+        }
+
+        struct Healthy {
+            renderer: Arc<dyn EntityRenderer>,
+            calls: Arc<AtomicUsize>,
+        }
+        #[crate::__subscriptions]
+        impl Hooks for Healthy {
+            fn register_entity_renderers(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterEntityRenderersEvent<'_>,
+            ) {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                event
+                    .renderers
+                    .register("test:healthy".into(), Arc::new(Marked(30)));
+                event
+                    .renderers
+                    .register("test:healthy".into(), self.renderer.clone());
+            }
+        }
+
+        let seed: Arc<dyn EntityRenderer> = Arc::new(Marked(10));
+        let healthy: Arc<dyn EntityRenderer> = Arc::new(Marked(31));
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let healthy_calls = Arc::new(AtomicUsize::new(0));
+        crate::testing::with_dispatch(
+            vec![
+                ModEntry::new("failed_renderer", Box::new(Failing(failed_calls.clone()))),
+                ModEntry::new(
+                    "healthy_renderer",
+                    Box::new(Healthy {
+                        renderer: healthy.clone(),
+                        calls: healthy_calls.clone(),
+                    }),
+                ),
+            ]
+            .into(),
+            || {
+                let mut registry = EntityRendererRegistry::default();
+                registry.register("test:seed".into(), seed.clone());
+                let context = RegistrationContext::new();
+                crate::dispatch_register_entity_renderers(&context, |listen| {
+                    registry.register_listener(listen)
+                });
+                assert_eq!(
+                    crate::__private::take_hook_panics(),
+                    [crate::__private::HookPanicReport {
+                        mod_id: "failed_renderer",
+                        hook: "register_entity_renderers",
+                    }]
+                );
+                crate::dispatch_register_entity_renderers(&context, |listen| {
+                    registry.register_listener(listen)
+                });
+                assert_eq!(failed_calls.load(Ordering::Relaxed), 1);
+                assert_eq!(healthy_calls.load(Ordering::Relaxed), 2);
+                assert!(crate::__private::take_hook_panics().is_empty());
+                let renderers = registry.into_renderers();
+                assert_eq!(renderers.len(), 2);
+                assert!(Arc::ptr_eq(&renderers["test:seed"], &seed));
+                assert!(Arc::ptr_eq(&renderers["test:healthy"], &healthy));
+            },
+        );
+    }
+
+    #[test]
     fn a_later_registration_for_a_type_replaces_the_earlier_one() {
         let mut registry = EntityRendererRegistry::default();
         registry.register("mymod:bolt".into(), Arc::new(Marked(1)));
@@ -167,6 +335,11 @@ mod tests {
             yaw: 0.0,
             pitch: 0.0,
             living: None,
+            tnt_fuse: None,
+            orb_value: None,
+            painting: None,
+            item_frame: None,
+            attachments: None,
         };
         let (mut bolt, mut dart) = (Light::default(), Light::default());
         renderers["mymod:bolt"].submit(&state, &mut bolt).unwrap();

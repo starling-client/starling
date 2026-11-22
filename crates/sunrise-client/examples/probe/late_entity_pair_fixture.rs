@@ -1,4 +1,5 @@
 //! Late trident pairing and subsequent updates through the production tracker.
+use std::io::Write;
 use sunrise_client::{
     Result,
     lan::{
@@ -11,7 +12,6 @@ use sunrise_protocol::{
     entity_data::{Value, serializer},
     packets::play::Clientbound as C,
 };
-use std::io::Write;
 
 fn dump(out: &mut impl Write, index: usize, phase: &str, packets: &mut Vec<Body>) -> Result<()> {
     let mut encoded = Vec::new();
@@ -20,6 +20,7 @@ fn dump(out: &mut impl Write, index: usize, phase: &str, packets: &mut Vec<Body>
         let id = r.varint()?;
         let payload = r.rest();
         let name = match C::decode(id, payload)? {
+            C::BundleDelimiter(_) => continue,
             C::AddEntity(_) => "add",
             C::SetEntityMotion(_) => "motion",
             C::MoveEntityPosRot(_) => "posrot",
@@ -49,6 +50,8 @@ pub fn main() -> Result<()> {
                 let mut viewers = [Viewer {
                     entity_id: 1,
                     sunrise: true,
+                    general_entity: false,
+                    attachment_sender: None,
                     spectator: false,
                     permission: 0,
                     moved: false,
@@ -58,10 +61,9 @@ pub fn main() -> Result<()> {
                     sources: None,
                     tracker: &mut tracker,
                     out: &mut packets,
-                    gone: None,
                 }];
                 let riding = Riding::default();
-                level.tick(&[], &riding, &mut viewers, |_| Some(kind));
+                level.tick(&[], &riding, &mut viewers, None, |_| Some(kind));
                 let mut e = EntityState {
                     id: 37,
                     uuid: 37,
@@ -70,18 +72,22 @@ pub fn main() -> Result<()> {
                     velocity,
                     ..EntityState::default()
                 };
-                level.pair_after_tick(std::slice::from_ref(&e), &riding, &mut viewers, |_| {
-                    Some(kind)
-                });
+                level.pair_after_tick(
+                    std::slice::from_ref(&e),
+                    &riding,
+                    &mut viewers,
+                    None,
+                    |_| Some(kind),
+                );
                 dump(&mut out, index, "pair", viewers[0].out)?;
                 e.position[0] += 0.25;
                 e.velocity = [0.0; 3];
                 if landed {
                     e.meta.push((10, serializer::BOOLEAN, Value::Bool(true)));
                 }
-                level.tick(&[&e], &riding, &mut viewers, |_| Some(kind));
+                level.tick(&[&e], &riding, &mut viewers, None, |_| Some(kind));
                 dump(&mut out, index, "change", viewers[0].out)?;
-                level.tick(&[&e], &riding, &mut viewers, |_| Some(kind));
+                level.tick(&[&e], &riding, &mut viewers, None, |_| Some(kind));
                 dump(&mut out, index, "again", viewers[0].out)?;
                 index += 1;
             }

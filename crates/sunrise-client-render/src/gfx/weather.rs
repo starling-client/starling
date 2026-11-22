@@ -1,7 +1,7 @@
 //! Weather's unsplit quads, using the entity atlas/lightmap resources.
 use crate::weather::{Time, Vertex};
 
-pub(super) struct Weather {
+pub(crate) struct Weather {
     pipeline: wgpu::RenderPipeline,
     /// The layouts of groups 0 (the entities') and 1 (the fall clock), for a native pack's
     /// weather pipeline.
@@ -265,7 +265,7 @@ pub(super) fn native_pipeline(
     });
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(&stage.label),
+        label: Some(&super::dx12_compiler::module_label(&stage.label)),
         source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
     });
     let options = wgpu::PipelineCompilationOptions {
@@ -372,10 +372,7 @@ mod tests {
     #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
     fn weather_shader_uvs_match_legacy_bits() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .unwrap();
+        let adapter = crate::gfx::test_gpu::adapter().unwrap();
         eprintln!("weather parity adapter: {:?}", adapter.get_info());
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();

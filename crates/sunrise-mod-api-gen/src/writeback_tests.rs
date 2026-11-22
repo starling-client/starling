@@ -24,18 +24,22 @@ fn untouched_writeback_runtime_and_mutants() {
         "{} self.native_generated(&mut __api_stack, &mut __api_handled); {}",
         crossing.before, crossing.after
     );
-    let handwritten = include_str!("../../sunrise-client/src/game/modding/api_values.rs");
     let mut methods =
         format!("fn generated(&mut self, stack: &mut Stack, handled: &mut bool) {{ {generated} }}");
-    for name in [
-        "anvil_update",
-        "grindstone_place",
-        "grindstone_take",
-        "menu_button",
-        "menu_quick_move",
+    for (name, source, adapter) in [
+        (
+            "menu_button",
+            include_str!("../../sunrise-client/src/game/native_hooks/shared.rs"),
+            "fn apply_menu_button_cursor(",
+        ),
+        (
+            "menu_quick_move",
+            include_str!("../../sunrise-client/src/game/modding/native_quick_move.rs"),
+            "fn project_quick_move_remainder(",
+        ),
     ] {
-        let start = handwritten.find(&format!("fn api_{name}(")).unwrap();
-        let text = &handwritten[start..];
+        let start = source.find(adapter).unwrap();
+        let text = &source[start..];
         let begin = text.find("{").unwrap();
         let mut depth = 1;
         let end = text[begin + 1..]
@@ -50,19 +54,38 @@ fn untouched_writeback_runtime_and_mutants() {
             })
             .unwrap();
         let body = &text[begin + 1..end];
-        methods.push_str(&format!("fn {name}(&mut self, value: &mut Stack, entity: &mut Stack, carried: &mut Option<Stack>, stack: &mut Stack, cancel: &mut bool, handled: &mut bool) {{ let player = 0; let pos = [0; 3]; let context = &(); let container_slots = 1; let slot = 0; {body} }}"));
+        let body = if name == "menu_button" {
+            // Keep the adapter's early return inside its unit-returning block.
+            format!(
+                "let carried = stack; let original = carried.clone(); let mut cursor = original.clone();
+                 if self.change {{ cursor = Some(Stack(252)); }}
+                 let items = self.items(); let (cursor, original) = (&cursor, &original);
+                 (|| {{ {body} }})(); true"
+            )
+        } else {
+            format!(
+                "let original = stack.clone(); let mut held = original.clone();
+                 if self.change {{ held = Some(Stack(252)); }} let clicked = original.clone().unwrap();
+                 let project = |clicked: &Stack, held: &Option<Stack>, original: &Option<Stack>| {{ {body} }};
+                 if let Ok(remainder) = project(&clicked, &held, &original) {{
+                     *stack = remainder; *handled = true; true
+                 }} else {{ false }}"
+            )
+        };
+        methods.push_str(&format!("fn {name}(&mut self, stack: &mut Option<Stack>, handled: &mut bool) -> bool {{ {body} }}"));
     }
     let fixture = r#"
 #![allow(unused)]
 extern crate self as log;
 #[macro_export] macro_rules! warn { ($($arg:tt)*) => { eprintln!($($arg)*); } }
 #[derive(Clone, Debug, PartialEq)] struct Stack(u32);
+type EngineStack = Stack;
 struct Game { change: bool }
+enum QuickMoveOutcome { Rejected }
 static VALIDATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[derive(Debug)] enum BlockEntitySnapshotError { InvalidStack }
 mod mod_api {
     #[derive(Debug)] pub enum StackWriteError { Unavailable }
-    pub enum HookId { Proof, MenuButton, MenuQuickMove }
+    pub enum HookId { Proof, MenuButton }
     pub mod __private {
         pub fn listened(_: super::HookId) -> bool { true }
         pub fn has_part_hook(_: super::HookId) -> bool { true }
@@ -78,17 +101,10 @@ impl TryIntoApi for Stack { type Api = Stack; fn try_into_api(&self) -> Result<S
 impl TryIntoEngine for Stack { type Engine = Stack; fn try_into_engine(&self, _: &()) -> Result<Stack, mod_api::StackWriteError> { VALIDATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); if self.0 > 250 { Err(mod_api::StackWriteError::Unavailable) } else { Ok(self.clone()) } } }
 impl TryIntoApi for Option<Stack> { type Api = Self; fn try_into_api(&self) -> Result<Self, ()> { Ok(self.clone()) } }
 impl TryIntoEngine for Option<Stack> { type Engine = Self; fn try_into_engine(&self, items: &()) -> Result<Self, mod_api::StackWriteError> { self.as_ref().map(|s| s.try_into_engine(items)).transpose() } }
-impl Stack { fn revision(&self) -> u32 { 0 } }
-fn finish_block_entity_writeback<T>(_: &mut Stack, _: &Stack, _: u32, _: &(), _: &str, result: Result<T, BlockEntitySnapshotError>) -> Result<T, BlockEntitySnapshotError> { result }
 impl ItemBoundary for Game {}
 impl Game {
     fn items(&self) -> &() { &() }
     fn native_generated(&mut self, stack: &mut Stack, handled: &mut bool) { if self.change { stack.0 = 252; } *handled = true; }
-    fn native_anvil_update(&mut self, _: u128, _: &mut Stack, _: [i32; 3], stack: &mut Stack, _: &mut bool) { if self.change { stack.0 = 252; } }
-    fn native_grindstone_place(&mut self, a: u128, b: &mut Stack, c: [i32; 3], d: &mut Stack, e: &mut bool) { self.native_anvil_update(a,b,c,d,e); }
-    fn native_grindstone_take(&mut self, a: u128, b: &mut Stack, c: [i32; 3], d: &mut Stack, e: &mut bool) { self.native_anvil_update(a,b,c,d,e); }
-    fn native_menu_button(&mut self, _: &(), _: &mut Stack, stack: &mut Option<Stack>) { if self.change { *stack = Some(Stack(252)); } }
-    fn native_menu_quick_move(&mut self, _: [i32; 3], _: &mut Stack, _: usize, _: usize, stack: &mut Stack, handled: &mut bool) { self.native_generated(stack, handled); }
     METHODS
 }
 fn main() {
@@ -99,20 +115,23 @@ fn main() {
         game.generated(&mut stack, &mut handled);
         assert_eq!(stack, Stack(251));
         assert_eq!(handled, !change, "untouched argument must not refuse sibling output");
-        for (index, fire) in [Game::anvil_update, Game::grindstone_place, Game::grindstone_take, Game::menu_button, Game::menu_quick_move].into_iter().enumerate() {
-            let mut value = Stack(251); let mut entity = Stack(0);
-            let mut carried = Some(Stack(251)); let mut cancel = false;
+        type Adapter = fn(&mut Game, &mut Option<Stack>, &mut bool) -> bool;
+        let adapters: [(&str, Adapter); 2] = [
+            ("menu_button", Game::menu_button),
+            ("menu_quick_move", Game::menu_quick_move),
+        ];
+        for (name, fire) in adapters {
+            let mut stack = Some(Stack(251));
             let mut handled = false;
             VALIDATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
-            fire(&mut game, &mut value, &mut entity, &mut carried, &mut stack, &mut cancel, &mut handled);
-            assert_eq!(VALIDATIONS.load(std::sync::atomic::Ordering::Relaxed), usize::from(change));
-            assert_eq!(value, Stack(251)); assert_eq!(stack, Stack(251)); assert_eq!(carried, Some(Stack(251)));
-            if index < 3 { assert_eq!(cancel, change); }
-            if index == 4 { assert_eq!(handled, !change); }
+            let valid = fire(&mut game, &mut stack, &mut handled);
+            assert_eq!(VALIDATIONS.load(std::sync::atomic::Ordering::Relaxed), usize::from(change), "{name}");
+            assert_eq!(stack, Some(Stack(251)), "{name}");
+            if name == "menu_quick_move" {
+                assert_eq!(valid, !change, "{name}");
+                assert_eq!(handled, !change, "{name}");
+            }
         }
-        let mut cancel = false;
-        game.anvil_update(&mut Stack(251), &mut Stack(0), &mut None, &mut Stack(251), &mut cancel, &mut false);
-        assert_eq!(cancel, change);
     }
 }
 "#;
@@ -125,7 +144,6 @@ fn main() {
             "revalidate",
             methods
                 .replace("__api_stack != __original_stack", "true")
-                .replace("if api == original", "if false")
                 .replace("if cursor == original", "if false")
                 .replace("if held == original", "if false"),
             false,
@@ -137,9 +155,6 @@ fn main() {
         ),
     ];
     for (name, condition) in [
-        ("anvil_update", "api == original"),
-        ("grindstone_place", "api == original"),
-        ("grindstone_take", "api == original"),
         ("menu_button", "cursor == original"),
         ("menu_quick_move", "held == original"),
     ] {
@@ -165,17 +180,16 @@ fn main() {
             .unwrap();
         assert!(
             output.status.success(),
-            "{}",
+            "rustc could not compile the writeback fixture\n{}\nvariant: {name}",
             String::from_utf8_lossy(&output.stderr)
         );
         let output = std::process::Command::new(binary).output().unwrap();
         if name == "baseline" {
-            assert_eq!(
-                String::from_utf8_lossy(&output.stderr)
-                    .matches("mod proof write refused: Unavailable")
-                    .count(),
-                1
-            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for hook in ["proof", "menu_button", "menu_quick_move"] {
+                let expected = format!("mod {hook} write refused: Unavailable");
+                assert_eq!(stderr.matches(&expected).count(), 1, "{stderr}");
+            }
         }
         assert_eq!(
             output.status.success(),

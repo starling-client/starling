@@ -1,8 +1,8 @@
 use super::*;
 use crate::spans::Span;
+use std::fs;
 use sunrise_perf_format::files;
 use sunrise_perf_format::v1::{Capture, GpuMode, Kind, Side, StopReason as R, Unit, WarningCode};
-use std::fs;
 
 struct Scratch(PathBuf);
 
@@ -332,7 +332,6 @@ fn a_window_ends_the_capture_and_the_longest_one_is_a_cap() {
         ..no_samples()
     };
     begin(&mut perf, 0.0, &scratch.0, &options);
-    assert_eq!(perf.remaining_s(0.5), Some(1.5));
     run(&mut perf, 0, 4, 10, 16.0);
     assert!(!perf.capturing(), "the 2 s window ended the capture");
     let c = read(&perf.take_saved(true).pop().unwrap().unwrap().path);

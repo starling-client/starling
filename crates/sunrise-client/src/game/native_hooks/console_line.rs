@@ -1,15 +1,14 @@
 use super::*;
 
-/// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// A line the server logged: its `level`, the `thread` it names and the
-    /// `message` without time or thread. Server-side.
+    /// A line the server logged, with the overflow count on the first line of its batch.
     pub(in crate::game) fn native_console_line(
         &mut self,
         level: &str,
         thread: &str,
         message: &str,
+        dropped: u64,
     ) {
-        self.fire_console_line(level, thread, message);
+        self.fire_console_line(level, thread, message, dropped);
     }
 }

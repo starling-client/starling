@@ -8,16 +8,16 @@
 //! node's children; the tree keeps vanilla's registration order
 //! (`command_order`).
 use super::{command_order::ORDER, command_suggestions::SUGGESTIONS};
-use sunrise_protocol::{
-    buf::Writer,
-    packets::play::{CommandNode, Commands},
-    registry::Builtin,
-};
 use serde_json::Value;
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
     sync::OnceLock,
+};
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_protocol::{
+    packets::play::{CommandNode, Commands},
+    registry::Builtin,
 };
 
 /// Commands.CommandSelection: registered only on dedicated servers.

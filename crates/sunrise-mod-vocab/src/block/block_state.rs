@@ -1,10 +1,8 @@
 //! Process-local block values, independent of the game's numeric registry.
-use crate::{BlockKey, BlockMetadata, BlockStateError, BlockStateRecord, StateConstraint};
+use crate::{BlockKey, BlockMetadata, BlockStateError, StateConstraint};
 
-/// A block and its local state ordinal. Persist canonical names and properties, not this value.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// A copyable block key and local state ordinal. Persist canonical names and properties, not this value.
+#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct BlockState {
     block: BlockKey,
@@ -19,42 +17,41 @@ impl BlockState {
     pub const fn ordinal(self) -> u16 {
         self.state
     }
-    /// Borrow a property from the supplied immutable metadata; a missing property is `None`.
+    /// Borrow the serialized property value from the supplied immutable metadata. For a known
+    /// state with no such property, return `Ok(None)`.
     pub fn property<'a>(
         self,
         metadata: &'a dyn BlockMetadata,
         name: &str,
     ) -> Result<Option<&'a str>, BlockStateError> {
-        metadata.property((&self).into(), name)
+        metadata.property(self, name)
     }
-    /// Return a state with one property changed, without mutating metadata or the world.
+    /// Return a new state with one property changed and the other properties retained. This does
+    /// not change the original state, the metadata or any block in the world.
     pub fn with(
         self,
         metadata: &dyn BlockMetadata,
         name: &str,
         value: &str,
     ) -> Result<Self, BlockStateError> {
-        metadata.with((&self).into(), name, value).map(Into::into)
+        metadata.with(self, name, value)
     }
-    /// Start at the block's default and apply partial property constraints.
+    /// Construct a state by applying partial property constraints to the block's default from
+    /// `metadata`. Omitted properties keep their defaults; invalid constraints return an error.
     pub fn of(
         metadata: &dyn BlockMetadata,
         block: BlockKey,
         properties: &[StateConstraint],
     ) -> Result<Self, BlockStateError> {
-        metadata.of(block, properties).map(Into::into)
+        metadata.of(block, properties)
     }
 }
-impl From<BlockStateRecord> for BlockState {
-    fn from(value: BlockStateRecord) -> Self {
-        Self {
-            block: value.block,
-            state: value.state,
-        }
-    }
-}
-impl From<&BlockState> for BlockStateRecord {
-    fn from(value: &BlockState) -> Self {
-        Self::new(value.block, value.state)
+/// Construct a state without looking up the key or ordinal in block metadata.
+// hidden: the game has the validated ordinal; mods construct states through BlockMetadata.
+#[doc(hidden)]
+pub const fn block_state_from_ordinal(block: BlockKey, ordinal: u16) -> BlockState {
+    BlockState {
+        block,
+        state: ordinal,
     }
 }

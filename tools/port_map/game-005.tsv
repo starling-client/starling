@@ -1,7 +1,7 @@
 Entity.<init>	port	crates/sunrise-client/src/mobs.rs::Mob::new	mobs only; players and projectiles are built by their own structs and the synched defaults (flags, air, name, pose) are plain fields
 Entity.get	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::mob_entity	mob predicate projection: live custom_name Text and the existing type-variant component; gap: custom_data is not projected
 Entity.getMovementEmission	port	crates/sunrise-client/src/mobs/ai.rs::movement_sounds	EVENTS for silverfish, endermite, bats, squids, glow squids, guardians, elder guardians and breezes (game events, no sounds), NONE for a shulker (ai.rs::emits_movement), ALL for every other type
-Entity.isColliding	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::block_meets_player	the state's collision shape at the player's pose against the player's box; `end_predictions` asks it for a restored block and snaps the player to the position the prediction remembered (`snap_target`, guarded by `onTeleport`)
+Entity.isColliding	port	crates/sunrise-client/src/game/network/remote/interaction_actions.rs::Game::block_meets_player	the state's collision shape at the player's pose against the player's box; `end_predictions` asks it for a restored block and snaps the player to the position the prediction remembered (`snap_target`, guarded by `onTeleport`)
 Entity.canInteractWithLevel	inline	crates/sunrise-client/src/mobs/leash.rs::tick	the leashed mob's life, and its player holder's life and spectator state, are checked: a dead or spectating holder drops the lead
 Entity.unRide	inline	crates/sunrise-client/src/game/items/consume.rs::Game::stop_riding	gap: minor: the player's half (boat, minecart or mob mount); riders of a vehicle are let go by sync_riders and eject_boat_mobs
 Entity.addTag	port	crates/sunrise-client/src/game/administration/commands/data.rs::Game::cmd_tag	the tag.add branch, with the 1024 tag limit
@@ -93,7 +93,7 @@ Entity.getRopeHoldPosition	inline	crates/sunrise-client/src/game/entities/leads.
 Entity.setYRot	skip:other		plain setter; yaw is a struct field
 Entity.getClientPosition	port	crates/sunrise-world/src/stepped_interpolation.rs::SteppedInterpolation::heading	the interpolation target while it runs, else the entity's position
 Entity.shouldBeSaved	inline	crates/sunrise-client/src/game/world/persist.rs::Game::put_mob_passengers	riders are saved inside their vehicle's tag, not on their own
-Entity.lerpPositionAndRotationStep	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::tick_remote_entities	boats, minecarts, projectiles and orbs of a server step toward the packet's target by 1/steps each tick
+Entity.lerpPositionAndRotationStep	inline	crates/sunrise-client/src/game/network/remote/tick.rs::Game::tick_remote_entities	boats, minecarts, projectiles and orbs of a server step toward the packet's target by 1/steps each tick
 Entity.applyImplicitComponents	port	crates/sunrise-client/src/game/entities/armor_stands.rs::Game::armor_stand_spawn	ticked in #3514; `Entity.applyImplicitComponents` is cited at crates/sunrise-client/src/game/entities/armor_stands.rs:390 (in a comment, so `where` names the enclosing fn)
 Entity.applyImplicitComponent	inline	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	the stack's components (name, bucket data, variant, trim...) applied to the entity it spawns
 Entity.applyImplicitComponentIfPresent	inline	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	each component is applied only when the stack carries it
@@ -118,7 +118,7 @@ EntityReference.of	skip:java		references are plain UUID arrays (extra.owner), lo
 EntityReference.getEntity	port	crates/sunrise-client/src/game/world/persist.rs::Game::mob_by_uuid	gap: minor: mobs only; the player is matched by its own UUID where it is needed
 EntityReference.resolve	skip:java		class cast check
 EntityReference.store	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Owner is written as an int array UUID
-EntityReference.readWithOldOwnerConversion	inline	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: Owner is read as an int array UUID; an owner saved as a player name (worlds from before 1.7.6) is not converted
+EntityReference.readWithOldOwnerConversion	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	gap: minor: Owner is read as an int array UUID; an owner saved as a player name (worlds from before 1.7.6) is not converted
 EntityReference.equals	skip:java		UUIDs are compared directly
 world/entity/EntitySelector.withinDistance	port	crates/sunrise-client/src/game/mobs/dragon.rs::Game::fight_has_players	the 192 block range around (0, 128, 0) for the dragon fight's valid players
 EntityType.appendCustomEntityStackConfig	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::apply_spawn_egg_entity_data	a spawn egg stack with a minecraft:entity_data component merges it over the spawned mob's own compound, from a spawn egg or a dispenser, with EntityType.updateCustomEntityTag's id and op guards
@@ -127,7 +127,7 @@ EntityType.getDescription	inline	crates/sunrise-client/src/game/administration/c
 EntityType.toShortString	skip:debug		only a game test message uses it
 EntityType.loadPassengersRecursive	port	crates/sunrise-client/src/game/world/persist.rs::Game::load_mob	riders under Passengers are loaded after the vehicle; gap: minor: only mobs Sunrise simulates, the rest stay in the tag
 EntityType.loadEntitiesRecursive	inline	crates/sunrise-client/src/game/world/persist.rs::Game::load_mob	chunk entity lists, spawner and structure entities load each tag through load_mob
-EntityType.loadStaticEntity	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	a bad tag gives None instead of an exception
+EntityType.loadStaticEntity	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	a bad tag gives None instead of an exception
 EntityType.Builder.passengerAttachments	inline	crates/sunrise-client/src/mobs/riders.rs::passenger_attachment	per species heights for the vehicles that carry riders; others use the box top
 EntityType.Builder.attach	inline	crates/sunrise-client/src/mobs/riders.rs::passenger_attachment	only the PASSENGER point is a table; NAME_TAG and the rest use their defaults
 EntityType.Builder.build	skip:data		entity types are read from entity-types.json (MobType) instead of being built in code

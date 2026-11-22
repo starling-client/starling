@@ -8,12 +8,13 @@
 //! bytes back.
 //!
 //!     cargo run -p sunrise-protocol --example item_wire_probe -- vanilla.jsonl rust.jsonl
-use sunrise_protocol::{
-    buf::{Codec, Reader, Writer},
-    item::{Component, Slot},
-};
 use serde_json::{Value, json};
 use std::io::Write;
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_protocol::{
+    buf::{Codec, Reader},
+    item::{Component, Slot},
+};
 
 fn hex(s: &str) -> Option<Vec<u8>> {
     (0..s.len())

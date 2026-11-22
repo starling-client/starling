@@ -1,0 +1,13 @@
+{
+  "source": "minecraft:lava",
+  "neighbour": {
+    "fluid": "minecraft:water"
+  },
+  "below": {
+    "block_tag": "minecraft:logs"
+  },
+  "becomes": {
+    "source": "minecraft:basalt[axis=y]",
+    "flowing": "minecraft:stone"
+  }
+}

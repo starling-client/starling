@@ -9,10 +9,10 @@ use sunrise_core::geometry::trig::Mth;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 /// Phantom state in `Extra`: `flag` swooping, `home` the anchor,
-/// `vector` the move target, `attrs.speed` the move control's speed.
+/// `vector` the move target, `phantom_move_speed` the move control's speed.
 pub fn register(m: &mut Mob) {
     m.ai.mov.kind = MoveKind::Custom;
-    m.attrs.speed = 0.1;
+    m.extra.phantom_move_speed = 0.1;
     m.extra.home = Some([
         m.position.x.floor() as i32,
         m.position.y.floor() as i32 + 5,
@@ -39,12 +39,14 @@ pub fn register(m: &mut Mob) {
 /// drawn model grow by `1 + 0.15 * size` (the mob's dimensions, `PhantomRenderer.scale`).
 pub fn set_size(m: &mut Mob, size: i32) {
     use super::finalize::{Attr, set_base};
-    let size = size.clamp(0, 64);
+    let size = size.clamp(*SIZES.start(), *SIZES.end());
     if size != m.extra.size {
         m.extra.size = size;
         set_base(m, Attr::AttackDamage, f64::from(6 + size));
     }
 }
+/// `Phantom.setPhantomSize`'s accepted bounds.
+pub const SIZES: std::ops::RangeInclusive<i32> = 0..=64;
 fn can_attack(w: &MobWorld) -> bool {
     w.selected_player()
         .is_some_and(|p| p.alive && !p.creative && !p.spectator)
@@ -286,7 +288,7 @@ impl Goal for SweepAttack {
                     data: 0,
                 });
             }
-        } else if m.horizontal_collision || m.hurt_time > 0 {
+        } else if m.ground.horizontal_collision || m.hurt_time > 0 {
             m.extra.flag = false;
         }
     }
@@ -305,8 +307,8 @@ fn wrap(d: f32) -> f32 {
 /// `PhantomMoveControl`: bank toward the move target, faster on a straight
 /// line.
 pub fn move_control(m: &mut Mob) {
-    let mut speed = m.attrs.speed as f32;
-    if m.horizontal_collision {
+    let mut speed = m.extra.phantom_move_speed;
+    if m.ground.horizontal_collision {
         m.yaw += 180.0;
         speed = 0.1;
     }
@@ -349,7 +351,7 @@ pub fn move_control(m: &mut Mob) {
             v.z + (tz - v.z) * 0.2,
         );
     }
-    m.attrs.speed = f64::from(speed);
+    m.extra.phantom_move_speed = speed;
     // PhantomBodyRotationControl: the head follows the body.
     m.head_yaw = m.body_yaw;
 }
@@ -419,48 +421,52 @@ mod tests {
     /// passes over the wall, so the player stays a valid target — bites
     /// through the pane, exactly as vanilla 26.3 does.
     #[test]
+    #[ignore = "daily"]
     fn a_phantom_bites_a_player_pressed_behind_a_foot_high_pane_wall() {
-        with_built_test_world(&[], press_setup(65), |w, types| {
-            let mut w = w.clone();
-            w.player = Some(test_player(Vec3::new(2.8625, 64.0, 2.5)));
-            let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
-            let mut m = Mob::new(1, kind, Vec3::new(1.9875, 64.2, 2.5), 0.0);
-            register(&mut m);
-            // The eye-ray clears the wall, so targeting holds (#4929's
-            // rule is about roofs and full walls, not foot walls).
-            let mut target = AttackPlayerTarget { next_scan: 0 };
-            let mut events = Vec::new();
-            let mut test_level = crate::health::TestLevel::new(0);
-            let level = &mut test_level.level();
-            let mut cx = Cx {
-                w: &w,
-                level,
-                events: &mut events,
-            };
-            m.ai.seen_cache.clear();
-            assert!(target.can_use(&mut m, &mut cx));
-            // Swooping (`PhantomAttackStrategyGoal` set the phase), the
-            // sweep bites on the box overlap alone.
-            m.ai.target = Some(Who::Player);
-            m.extra.flag = true;
-            let mut sweep = SweepAttack {
-                scared: false,
-                cat_search: 0,
-            };
-            let mut events = Vec::new();
-            let mut cx = Cx {
-                w: &w,
-                level,
-                events: &mut events,
-            };
-            sweep.tick(&mut m, &mut cx);
-            assert!(
-                events
-                    .iter()
-                    .any(|e| matches!(e, MobEvent::AttackPlayer(_, _))),
-                "the swoop should bite through the pane: {events:?}"
-            );
-        });
+        assert!(
+            with_built_test_world(&[], press_setup(65), |w, types| {
+                let mut w = w.clone();
+                w.player = Some(test_player(Vec3::new(2.8625, 64.0, 2.5)));
+                let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(1.9875, 64.2, 2.5), 0.0);
+                register(&mut m);
+                // The eye-ray clears the wall, so targeting holds (#4929's
+                // rule is about roofs and full walls, not foot walls).
+                let mut target = AttackPlayerTarget { next_scan: 0 };
+                let mut events = Vec::new();
+                let mut test_level = crate::health::TestLevel::new(0);
+                let level = &mut test_level.level();
+                let mut cx = Cx {
+                    w: &w,
+                    level,
+                    events: &mut events,
+                };
+                m.ai.seen_cache.clear();
+                assert!(target.can_use(&mut m, &mut cx));
+                // Swooping (`PhantomAttackStrategyGoal` set the phase), the
+                // sweep bites on the box overlap alone.
+                m.ai.target = Some(Who::Player);
+                m.extra.flag = true;
+                let mut sweep = SweepAttack {
+                    scared: false,
+                    cat_search: 0,
+                };
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &w,
+                    level,
+                    events: &mut events,
+                };
+                sweep.tick(&mut m, &mut cx);
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::AttackPlayer(_, _))),
+                    "the swoop should bite through the pane: {events:?}"
+                );
+            }),
+            "vanilla data is missing"
+        );
     }
 
     /// A window-height (three-block) pane wall blocks the eye-ray, so
@@ -469,84 +475,92 @@ mod tests {
     /// the player, in Sunrise as in vanilla 26.3; the bite's box check alone
     /// would reach through the 0.125-thick pane.
     #[test]
+    #[ignore = "daily"]
     fn a_phantom_cannot_target_a_player_behind_a_window_of_panes() {
-        with_built_test_world(&[], press_setup(67), |w, types| {
-            let mut w = w.clone();
-            w.player = Some(test_player(Vec3::new(2.8625, 64.0, 2.5)));
-            let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
-            let mut m = Mob::new(1, kind, Vec3::new(1.9875, 64.2, 2.5), 0.0);
-            register(&mut m);
-            let mut target = AttackPlayerTarget { next_scan: 0 };
-            let mut events = Vec::new();
-            let mut test_level = crate::health::TestLevel::new(0);
-            let level = &mut test_level.level();
-            let mut cx = Cx {
-                w: &w,
-                level,
-                events: &mut events,
-            };
-            m.ai.seen_cache.clear();
-            assert!(!target.can_use(&mut m, &mut cx));
-            m.ai.target = Some(Who::Player);
-            m.ai.seen_cache.clear();
-            assert!(!target.can_continue(&mut m, &mut cx));
-        });
+        assert!(
+            with_built_test_world(&[], press_setup(67), |w, types| {
+                let mut w = w.clone();
+                w.player = Some(test_player(Vec3::new(2.8625, 64.0, 2.5)));
+                let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(1.9875, 64.2, 2.5), 0.0);
+                register(&mut m);
+                let mut target = AttackPlayerTarget { next_scan: 0 };
+                let mut events = Vec::new();
+                let mut test_level = crate::health::TestLevel::new(0);
+                let level = &mut test_level.level();
+                let mut cx = Cx {
+                    w: &w,
+                    level,
+                    events: &mut events,
+                };
+                m.ai.seen_cache.clear();
+                assert!(!target.can_use(&mut m, &mut cx));
+                m.ai.target = Some(Who::Player);
+                m.ai.seen_cache.clear();
+                assert!(!target.can_continue(&mut m, &mut cx));
+            }),
+            "vanilla data is missing"
+        );
     }
 
     /// `TargetingConditions.DEFAULT` checks line of sight (#4929): a phantom
     /// above takes a player in the open, not one boxed in stone or glass.
     #[test]
+    #[ignore = "daily"]
     fn a_phantom_cannot_target_a_player_it_cannot_see() {
         for roof in [None, Some("minecraft:stone"), Some("minecraft:glass")] {
-            with_built_test_world(
-                &[],
-                |world, registry| {
-                    for x in -1..=1 {
-                        for z in -1..=1 {
-                            world.chunks.insert(
-                                (x, z),
-                                std::sync::Arc::new(crate::chunk::Chunk::empty(x, z)),
-                            );
+            assert!(
+                with_built_test_world(
+                    &[],
+                    |world, registry| {
+                        for x in -1..=1 {
+                            for z in -1..=1 {
+                                world.chunks.insert(
+                                    (x, z),
+                                    std::sync::Arc::new(crate::chunk::Chunk::empty(x, z)),
+                                );
+                            }
                         }
-                    }
-                    let Some(block) = roof.and_then(|b| registry.default_state(b)) else {
-                        return;
-                    };
-                    // A hollow 5x5x5 box around the player at (0.5, 64, 0.5).
-                    for x in -2i32..=2 {
-                        for y in 63..=67 {
-                            for z in -2i32..=2 {
-                                let shell = x.abs() == 2 || z.abs() == 2 || y == 63 || y == 67;
-                                if shell {
-                                    world.set(x, y, z, block).unwrap();
+                        let Some(block) = roof.and_then(|b| registry.default_state(b)) else {
+                            return;
+                        };
+                        // A hollow 5x5x5 box around the player at (0.5, 64, 0.5).
+                        for x in -2i32..=2 {
+                            for y in 63..=67 {
+                                for z in -2i32..=2 {
+                                    let shell = x.abs() == 2 || z.abs() == 2 || y == 63 || y == 67;
+                                    if shell {
+                                        world.set(x, y, z, block).unwrap();
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-                |w, types| {
-                    let mut w = w.clone();
-                    w.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
-                    let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
-                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
-                    let mut target = AttackPlayerTarget { next_scan: 0 };
-                    let mut events = Vec::new();
-                    let mut test_level = crate::health::TestLevel::new(0);
-                    let level = &mut test_level.level();
-                    let mut cx = Cx {
-                        w: &w,
-                        level,
-                        events: &mut events,
-                    };
-                    assert_eq!(target.can_use(&mut m, &mut cx), roof.is_none(), "{roof:?}");
-                    m.ai.target = Some(Who::Player);
-                    m.ai.seen_cache.clear();
-                    assert_eq!(
-                        target.can_continue(&mut m, &mut cx),
-                        roof.is_none(),
-                        "{roof:?}"
-                    );
-                },
+                    },
+                    |w, types| {
+                        let mut w = w.clone();
+                        w.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+                        let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
+                        let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
+                        let mut target = AttackPlayerTarget { next_scan: 0 };
+                        let mut events = Vec::new();
+                        let mut test_level = crate::health::TestLevel::new(0);
+                        let level = &mut test_level.level();
+                        let mut cx = Cx {
+                            w: &w,
+                            level,
+                            events: &mut events,
+                        };
+                        assert_eq!(target.can_use(&mut m, &mut cx), roof.is_none(), "{roof:?}");
+                        m.ai.target = Some(Who::Player);
+                        m.ai.seen_cache.clear();
+                        assert_eq!(
+                            target.can_continue(&mut m, &mut cx),
+                            roof.is_none(),
+                            "{roof:?}"
+                        );
+                    },
+                ),
+                "vanilla data is missing"
             );
         }
     }
@@ -556,9 +570,9 @@ mod tests {
 mod anchor_save_tests {
     use super::*;
     use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
-    use sunrise_core::nbt::Tag;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use sunrise_core::nbt::Tag;
 
     /// A phantom at (0.5, 75, 0.5) with the vanilla size 2, and `anchor_pos`
     /// when it has one. `storeNullable` writes the key only for an anchor.
@@ -624,7 +638,14 @@ mod anchor_save_tests {
         // What the phantom circles now is what its chunk save keeps.
         m.extra.home = Some([9, 70, -3]);
         let source = saved_phantom(Some([100, 64, -40]));
-        let saved = mob_to_nbt(&m, [0; 4], Some(&source), None, |_| None);
+        let saved = mob_to_nbt(
+            &m,
+            [0; 4],
+            Some(&source),
+            None,
+            |_| None,
+            &Default::default(),
+        );
         assert_eq!(
             saved.get("anchor_pos"),
             Some(&Tag::IntArray(vec![9, 70, -3]))
@@ -635,7 +656,14 @@ mod anchor_save_tests {
         assert_eq!(loose.extra.home, None, "a save without anchor_pos");
         loose.extra.home = None;
         let stale = saved_phantom(Some([100, 64, -40]));
-        let saved = mob_to_nbt(&loose, [0; 4], Some(&stale), None, |_| None);
+        let saved = mob_to_nbt(
+            &loose,
+            [0; 4],
+            Some(&stale),
+            None,
+            |_| None,
+            &Default::default(),
+        );
         assert_eq!(saved.get("anchor_pos"), None, "no anchor, no key");
     }
 

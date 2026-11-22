@@ -1,7 +1,7 @@
 //! Phase vocabulary enters through the same game-local conversion boundary.
 use super::TryIntoApi;
-use sunrise_world::native_load_context::{DataLoadOrigin, LoopSide};
 use std::convert::Infallible;
+use sunrise_world::native_load_context::{DataLoadOrigin, LoopSide};
 
 impl TryIntoApi for DataLoadOrigin {
     type Api = mod_api::DataLoadOrigin;

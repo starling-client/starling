@@ -10,6 +10,8 @@ pub trait Hooks {
     /// answer changes, and once the wire is placed, update its neighbours
     /// (`level.update_neighbors`). Authoritative servers only.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "connected",
@@ -18,5 +20,11 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::should_redstone_wire_connect_to::GameLevel<'_>::native_should_redstone_wire_connect_to",
         neoforge = "none (vanilla BlockBehaviour.shouldRedstoneWireConnectTo; NeoForge adds no event or extension for it)"
     )]
-    fn should_redstone_wire_connect_to();
+    fn should_redstone_wire_connect_to(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        direction: Option<Direction>,
+        connected: &mut bool,
+    );
 }

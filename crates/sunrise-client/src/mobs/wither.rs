@@ -571,7 +571,7 @@ mod tests {
     /// The break sound waits for the game's verdict only when a listener can
     /// cancel the break: an installed mod that does not listen leaves it plain.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn break_sound_defers_only_for_a_destroy_listener() {
         use std::sync::Arc;
         let build = |world: &mut crate::world::World,
@@ -626,7 +626,7 @@ mod tests {
     /// its yes breaks bedrock (`#wither_immune`), an unanswered block keeps
     /// vanilla's rule, and with griefing off nothing breaks whatever it says.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn the_wither_breaks_what_block_parts_allow() {
         use std::sync::Arc;
         struct Parts;
@@ -708,6 +708,7 @@ mod upstream_sync_tests {
     /// only on Normal and Hard: on Easy a wither with nothing to aim at fired
     /// the random blue skulls all the same (#8840).
     #[test]
+    #[ignore = "daily"]
     fn idle_blue_skull_volleys_come_only_on_normal_and_hard() {
         use crate::mobs::spawning::LocalDifficulty;
         use std::sync::Arc;
@@ -802,7 +803,7 @@ mod upstream_sync_tests {
         let mut m = mob(Species::Wither, 150.0);
         let attack = crate::health::Attack {
             projectile: Some(2),
-            projectile_is_arrow: true,
+            projectile_kind: crate::health::DirectEntity::Arrow,
             ..Default::default()
         };
         assert!(!m.damage(
@@ -877,9 +878,9 @@ mod upstream_sync_tests {
     #[test]
     fn a_powered_wither_sheds_dim_effect_particles_one_tick_in_four() {
         use crate::mobs::sensor_scan_tests::kind;
+        use std::sync::Arc;
         use sunrise_core::geometry::trig::Mth;
         use sunrise_core::random::LegacyRandom;
-        use std::sync::Arc;
         let mut kind = kind();
         let k = Arc::make_mut(&mut kind);
         k.id = "minecraft:wither".into();
@@ -965,11 +966,12 @@ mod upstream_sync_tests {
     /// `TARGETING_CONDITIONS`, whose `TargetingConditions` checks line of
     /// sight. A cow behind a wall is not picked.
     #[test]
+    #[ignore = "daily"]
     fn a_withers_side_head_does_not_pick_through_a_wall() {
         use crate::mobs::world::with_built_test_world;
         use crate::mobs::{Mob, Species, sensor_scan_tests::kind};
-        use sunrise_core::geometry::Vec3;
         use std::sync::Arc;
+        use sunrise_core::geometry::Vec3;
         let run = |wall: bool| -> Option<bool> {
             let mut found = None;
             if !with_built_test_world(
@@ -1016,6 +1018,7 @@ mod upstream_sync_tests {
                     let cow = Mob::new(2, Arc::new(cow_kind), Vec3::new(5.5, 65.0, 0.5), 0.0);
                     let seen = [cow.seen(None, &crate::items::Items::empty())];
                     let world = crate::mobs::MobWorld {
+                        side: sunrise_client::motion::dry_side(),
                         others: &seen,
                         ..w.clone()
                     };

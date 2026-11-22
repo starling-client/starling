@@ -4,6 +4,8 @@
 //! `Menu::place_recipe` and prints the oracle's line.
 //!
 //! usage: place_recipe_fixture RESOURCES CASES ORDERS OUTPUT
+use serde_json::Value;
+use std::{fs, path::Path};
 use sunrise_client::{
     crafting::Recipes,
     item_data::{canon_stack, parse_stack},
@@ -11,19 +13,19 @@ use sunrise_client::{
     menu::{Env, Kind, Menu, place::PostPlace},
 };
 use sunrise_world::loot::PackOverlay;
-use serde_json::Value;
-use std::{fs, path::Path};
 
-fn state(menu: &Menu) -> String {
+fn state(menu: &Menu, catalog: &Items) -> String {
     let slots: Vec<String> = (0..menu.slot_count())
-        .map(|i| canon_stack(menu.slot(i)))
+        .map(|i| canon_stack(menu.slot(i), catalog))
         .collect();
     let data: String = menu.data.iter().map(|d| format!(" {d}")).collect();
-    let inv: Vec<String> = (0..41).map(|i| canon_stack(menu.player_item(i))).collect();
+    let inv: Vec<String> = (0..41)
+        .map(|i| canon_stack(menu.player_item(i), catalog))
+        .collect();
     format!(
         "{} | {} |{data} | {} | inv {}",
         slots.join(" "),
-        canon_stack(menu.carried.as_ref()),
+        canon_stack(menu.carried.as_ref(), catalog),
         menu.drops.join(";"),
         inv.join(" ")
     )
@@ -68,6 +70,7 @@ pub fn main() -> sunrise_client::Result<()> {
         can_equip: None,
         known_recipes: None,
         slot_rules: None,
+        stacked: None,
     };
     let mut out = String::new();
     for (line, order) in cases.lines().zip(orders.lines()) {
@@ -107,7 +110,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 PostPlace::Ghost => "PLACE_GHOST_RECIPE",
             }
         };
-        out += &format!("post {post} | {}\n", state(&menu));
+        out += &format!("post {post} | {}\n", state(&menu, &items));
     }
     fs::write(args.get(4).ok_or(usage)?, out)?;
     Ok(())

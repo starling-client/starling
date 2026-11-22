@@ -9,18 +9,17 @@ license.workspace = true
 rust-version.workspace = true
 description = "Reusable client systems, control tool and parity probes"
 
-[build-dependencies]
-sunrise-game-discovery = { path = "../sunrise-game-discovery" }
-
 [lib]
 path = "../sunrise-client/src/client_lib.rs"
 
 [dependencies]
+<<<<<<< sync-sunrise-1
 # The design system's palette and type scale (android_control_theme.rs).
 sunrise-theme = { path = "../sunrise-theme" }
 sunrise-guest-stack = { path = "../sunrise-guest-stack" }
+=======
+>>>>>>> sunrise/main
 sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
-sunrise-engine-slots = { path = "../sunrise-engine-slots" }
 sunrise-hooks = { path = "../sunrise-hooks" }
 sunrise-mod-runtime = { path = "../sunrise-mod-runtime" }
 mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
@@ -41,7 +40,6 @@ sunrise-perf-format = { path = "../sunrise-perf-format" }
 # One pool of helper threads for the server tick's parallel phases (`parallel.rs`): threads made
 # once, not for every phase of every tick.
 rayon = "1.10"
-sunrise-hdr = { path = "../sunrise-hdr" }
 sunrise-world = { path = "../sunrise-world" }
 sunrise-protocol = { path = "../sunrise-protocol" }
 # server.properties, eula.txt and the user lists, shared with sunrise-server.
@@ -50,15 +48,13 @@ sunrise-server-files = { path = "../sunrise-server-files" }
 sunrise-java-properties = { path = "../sunrise-java-properties" }
 # The control endpoint's token (control.rs), as sunrise-server's and the relay's.
 getrandom = "0.3"
-# The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
-sunrise-anticheat = { path = "../sunrise-anticheat" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 sunrise-shaders = { path = "../sunrise-shaders" }
 # Sunrise's own shader packs: the format, the stages and the check (docs/shaders.md).
 sunrise-shader-api = { path = "../sunrise-shader-api" }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 sunrise-narrator = { path = "../sunrise-narrator" }
-# Sunrise mods: sandboxed WebAssembly components, off unless installed and turned on (docs/modding/src/how-to/content-mods.md).
+# Sunrise mods: native code and content packages (docs/modding/src/how-to/content-mods.md).
 # Their runtime is the `mods` feature.
 sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
@@ -75,7 +71,6 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 # hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
 # not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
-miniz_oxide = "0.8"
 ab_glyph = "0.2.32"
 log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
@@ -87,11 +82,14 @@ xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 # Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md).
 sunrise-telemetry = { path = "../sunrise-telemetry", default-features = false }
 sunrise-bench = { path = "../sunrise-bench" }
+<<<<<<< sync-sunrise-1
 # Starling's Microsoft sign-in inside the game (`accounts.rs`): a phone has no launcher.
 starling-account = { path = "../starling-account" }
 # The game files prepared on a phone (`preparer.rs`), where no computer prepares them.
 sunrise-prepare = { path = "../sunrise-prepare" }
 crc32fast = "1"
+=======
+>>>>>>> sunrise/main
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
@@ -99,9 +97,10 @@ gilrs = { version = "0.11", optional = true }
 sunrise-dualsense = { path = "../sunrise-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
-unicode-bidi = "0.3.18"
 # `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+# Contain recursive native item renderers before a stack overflow can abort the process.
+stacker = "0.1.25"
 
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`SUNRISE_SPIKES`, spans.rs).
@@ -117,25 +116,22 @@ dunce = "1.0.5"
 # (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# Splitscreen: a window filling a monitor goes over its menu bar (game/runtime/split/windows.rs
-# `above_menu_bar`); all already in the tree through winit and wgpu.
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
-
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 # OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
 # DirectX 12 driver (`graphicsApi`, graphics.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
+# Thread-local menu callbacks for resource-backed game fixtures only.
+test-menu-validity = []
 # Scoped observations for compiled-guest executor tests only.
 test-payload-probe = []
 # Isolated server-publication slots for resource-backed game fixtures only.
 test-publication-scope = []
 # Non-consuming residency journal observation for game fixtures only.
 test-residency-observer = []
+# A level side with no weather, tags or block entities, for tests and probes that never read them.
+test-dry-side = []
 default = ["audio", "controllers"]
 # Dev-only: the ignored tracker-send benchmark uses the executable's allocator.
 tracker-send-bench = []
@@ -144,10 +140,10 @@ tracker-send-bench = []
 audio = ["sunrise-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `sunrise-ctl pad`'s virtual pad.
 controllers = ["dep:gilrs", "sunrise-client-input/controllers"]
+# The sensor_scan_tests mob-kind fixture for the gameplay crates' tests.
+test-mob-kind = []
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["sunrise-core/rng-trace"]
-# Compatibility with earlier experiment commands: main already uses mimalloc.
-windows-mimalloc = []
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.
 windows-segment-heap = []
 
@@ -155,13 +151,14 @@ windows-segment-heap = []
 workspace = true
 
 [dev-dependencies]
-sunrise-threads = { path = "../sunrise-threads", features = ["test-allocation-probe"] }
-sunrise-mod-wasm = { path = "../sunrise-mod-wasm", features = ["listener-fixture", "test-copy-probe"] }
+sunrise-client-lib = { path = ".", default-features = false, features = ["test-dry-side"] }
+sunrise-threads = { path = "../sunrise-threads", features = ["test-allocation-probe", "test-game-dir"] }
 tempfile = "3"
 mod_platform = { package = "sunrise-mod-api", path = "../sunrise-mod-api", features = ["testing"] }
 mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab", features = ["testing"] }
 sunrise-client-render = { path = "../sunrise-client-render", features = ["test-support"] }
 sunrise-items = { path = "../sunrise-items", features = ["test-support"] }
+sunrise-world = { path = "../sunrise-world", features = ["test-support"] }
 # Reads back the captures the server_perf tests write.
 sunrise-perf = { path = "../sunrise-perf" }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
@@ -274,6 +271,10 @@ path = "../sunrise-client/tests/tall_column.rs"
 [[test]]
 name = "wide_states"
 path = "../sunrise-client/tests/wide_states.rs"
+
+[[test]]
+name = "transient_component_data"
+path = "../sunrise-client/tests/transient_component_data.rs"
 
 [[example]]
 name = "chunk_encoding_bench"

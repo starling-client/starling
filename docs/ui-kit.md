@@ -1,7 +1,7 @@
 # The HUD kit
 
 Sunrise draws a few overlays of its own over the game, such as the controller notice and
-splitscreen's join strip. Vanilla has no screen for them, so nothing in vanilla tells them where
+the radial menu. Vanilla has no screen for them, so nothing in vanilla tells them where
 they may go. The HUD kit is the small set of pieces they share, so they fit around vanilla's HUD
 and look alike.
 
@@ -18,7 +18,7 @@ The kit grows a piece at a time, each with something on screen that needs it:
 | `hud_kit::plate` | `Plate`: the box behind a notice's text, or a guide row's backing |
 | `hud_kit::shapes` | triangles, fans, arcs, discs and radial gradients for `HudBatch`; `alpha_since`, `translate_since` |
 | `hud_kit::motion` | `Clock` and `Tween`: quiet motion as pure functions of the frame's time |
-| `hud_kit::icon` | `Icon`: a sprite, an item, a glyph or the player's face, through an `IconPainter` |
+| `hud_kit::icon` | `Icon`: a sprite, an item or a glyph, through an `IconPainter` |
 | `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page; `tab_strip`: a row of tabs that falls back to it |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
 | `hud_kit::fit` | `ellipsize`, `wrap`, `chord` and `fit_in_circle`: text cut or wrapped to the room it has |
@@ -46,11 +46,10 @@ overlay in the frame reads the same room and never a stale one.
 
 A centred overlay asks `room.below_top(wanted)`. It keeps `wanted` unless a keep-out reaches past
 it (`top() > wanted`, a real overlap; touching isn't one), and otherwise goes 2 px (`GAP`) below
-that keep-out. The controller notice and splitscreen's join strip want y 18:
+that keep-out. The controller notice wants y 18:
 
-- with no boss bars, or one (it ends at y 17), they stay at 18
-- with two they go to 38, with three to 57
-- a notice under the join strip follows it, 38 px lower
+- with no boss bars, or one (it ends at y 17), it stays at 18
+- with two it goes to 38, with three to 57
 
 `room.usable()` is the view below the top keep-outs, with the same gap.
 
@@ -61,7 +60,7 @@ let room = Room::new(320.0, 240.0).with(Keep::BossBars, [69.0, 0.0, 182.0, 36.0]
 assert_eq!(room.below_top(18.0), 38.0); // below two bars
 ```
 
-The other HUD boxes (the minimap, the PvP & HUD widgets, mods' corner panels) don't use the room
+The other HUD boxes (the PvP & HUD widgets, mods' corner panels) don't use the room
 yet. Chat, the hotbar, effect icons and subtitles aren't keep-outs yet either. #10125 asks for
 these push-aside points for mods.
 
@@ -89,7 +88,7 @@ its 1 px edge inside the area.
 
 | `Plate` | Look | Used by |
 |---|---|---|
-| `Notice` | dark fill (alpha 210), faint white edge | controller notices, splitscreen's prompts |
+| `Notice` | dark fill (alpha 210), faint white edge | controller notices |
 | `Backing { alpha }` | black at the player's Text Background Opacity, no edge | the gameplay guide's rows |
 
 It keeps the colours these overlays had before the kit, so moving them onto it changes nothing on
@@ -100,7 +99,6 @@ screen.
 - `hud_overlays` tests pin `boss_bars_bottom` to vanilla's numbers and to `boss_overlay`'s own
   sprites.
 - `hud_kit::room` tests cover an empty room and when an overlay moves.
-- `game/split/hud.rs` tests place the join strip and the notice with 0 to 3 bars.
 
 ## Shapes
 
@@ -110,7 +108,6 @@ screen.
 | Method | Draws |
 |---|---|
 | `fill_triangle(atlas, [a, b, c], colour)` | one triangle |
-| `fill_fan(atlas, centre, rim, colour)` | a triangle from the centre to each two neighbouring rim points |
 | `fill_arc(atlas, centre, [r0, r1], [a0, a1], colour)` | an annular sector; `r0 = 0` is a pie slice, a span of `TAU` a ring |
 | `fill_disc(atlas, centre, r, colour)` | a disc |
 | `fill_disc_gradient(atlas, centre, r, &[Stop(fraction, colour)...])` | a disc whose colour runs through the stops from the centre out |
@@ -172,10 +169,9 @@ sector is drawing.
 | `Sprite("statistics/item_dropped")` | the kit, from the atlas's `gui/sprites/`; proportions kept, centred |
 | `Item("minecraft:chest")` | the game's `IconPainter::item` (`game/item_draw.rs`): the item's model, scaled from 16 |
 | `Glyph(glyph)` | the kit, `pad_glyph::draw`, centred |
-| `PlayerFace` | the game's `IconPainter::face`: the player's skin face with its hat |
 
 `icon::draw(batch, atlas, painter, icon, area, alpha)` says whether anything was drawn. The render
-crate never reaches gameplay, so items and the face go through the painter the game passes in;
+crate never reaches gameplay, so items go through the painter the game passes in;
 tests and sprite-only screens pass `NoItems`. Every picture comes from the player's own resources,
 none is bundled, and a sprite the atlas lacks draws nothing.
 
@@ -290,11 +286,6 @@ let back = self.menu_glyph(MenuJob::Back);
 let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|job| Glyph::menu(job, glyphs));
 ```
 
-The one exception is `Glyphs::unheld(&settings, family)`, for splitscreen's join and lost-controller
-prompts. They are answered by a controller nobody holds yet, whose letters aren't read yet, so they show its
-family's buttons by their places ([controllers.md](controllers.md)). A join prompt uses the joining pad's
-family.
-
 ### Glyph tests
 
 - A glyph test builds the test atlas (`HudAtlas::build` on a missing folder gives Sunrise's own art),
@@ -345,7 +336,6 @@ A `Look` says how it reads, and the kit has one for each overlay that shows them
 |---|---|---|---|
 | `hint::GUIDE` | white, shadowed | 3 px (glyphs 1 px apart) | the gameplay guide's rows; the right column's take `Side::Trailing` |
 | `hint::NOTICE` | light grey | 5 px | the controller notice's line under its title |
-| `hint::PROMPT` | a lighter grey | 5 px | splitscreen's join and lost-controller answers |
 
 - `measure(atlas, look)` is the row's width: its glyphs, the gap, its caption.
 - `fitted(atlas, look, width)` cuts the caption with `ellipsize` to the room the glyphs leave. The
@@ -377,8 +367,6 @@ Each overlay's captions now fit their room:
   only if even that overlaps does it move down, as before. A row wider than the view is cut to it
   (`row_room`) instead of being dropped. The right column comes first, as before.
 - **The controller notice.** Its title and any word wider than the notice are cut to it.
-- **Splitscreen's prompts.** The title is cut to the view, and when the answers don't fit on one
-  line each caption is cut to an equal share.
 
 ### Tests
 
@@ -388,8 +376,7 @@ Each overlay's captions now fit their room:
   places and compare the vertices with `draw_hint` and `draw_plated`, so each migrated overlay draws
   what it drew before when its text fits.
 - `gameplay_guide` tests place a left row beside a right column it would overlap, keep a row whole
-  where nothing is beside it, and cut a row wider than the view; and
-  `game/split/hud.rs` tests fit a prompt's answers to a narrow view.
+  where nothing is beside it, and cut a row wider than the view.
 
 ## The settings shell
 

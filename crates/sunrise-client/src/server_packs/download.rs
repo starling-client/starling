@@ -170,7 +170,7 @@ fn append_log(path: &Path, entry: &[(&str, serde_json::Value)]) -> io::Result<()
         .write_all(line.as_bytes())
 }
 
-fn sha1_of(path: &Path) -> io::Result<String> {
+pub(crate) fn sha1_of(path: &Path) -> io::Result<String> {
     let mut hasher = Sha1::new();
     io::copy(&mut fs::File::open(path)?, &mut hasher)?;
     Ok(hex(&hasher.finalize()))

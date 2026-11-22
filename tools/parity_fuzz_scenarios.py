@@ -83,8 +83,11 @@ def discover(runner, work):
     for start in range(0, len(entities), 12):
         steps = []
         for i, kind in enumerate(entities[start:start + 12]):
+            nbt = {'NoAI': '1b', 'NoGravity': '1b'}
+            if kind == 'item':
+                nbt['Item'] = '{id:"minecraft:stone",count:1}'
             steps += [{'k': 'summon', 'type': kind, 'at': [1.5 + i, 0, 1.5 + (i % 3) * 5], 'n': i,
-                       'nbt': {'NoAI': '1b', 'NoGravity': '1b'}}, {'k': 'read_entity', 'n': i}]
+                       'nbt': nbt}, {'k': 'read_entity', 'n': i}]
         scenarios.append({'family': 'defaults', 'seed': start, 'steps': steps})
         subjects.append([('entity', kind) for kind in entities[start:start + 12]])
     for start in range(0, len(blocks), 12):
@@ -93,10 +96,12 @@ def discover(runner, work):
             steps += [{'k': 'block', 'block': block, 'at': [1 + i, 0, 8]}, {'k': 'read_block', 'at': [1 + i, 0, 8]}]
         scenarios.append({'family': 'defaults', 'seed': 1000 + start, 'steps': steps})
         subjects.append([('block', block) for block in blocks[start:start + 12]])
+    results = runner.run(scenarios, repeat_vanilla=False)
+    if any('crash' in result for result in results):
+        raise RuntimeError(f'discover: a harness batch crashed; defaults not written; see {work}')
     found = {'entity': {}, 'block': {}}
-    for kinds, result in zip(subjects, runner.run(scenarios)):
-        reads = result.get('reads', [])  # none when the scenario crashed the harness: its subjects stay unknown
-        for (kind, name), (_, vanilla, _) in zip(kinds, reads):
+    for kinds, result in zip(subjects, results, strict=True):
+        for (kind, name), (_, vanilla, _) in zip(kinds, result['reads'], strict=True):
             data = read_data(vanilla)
             if data:
                 found[kind][name] = data[1]
@@ -190,7 +195,7 @@ def spawn(rng, seed):
         if rng.random() < 0.6:
             nbt['Motion'] = rng.choice(POOLS['Motion'])
         steps.append({'k': 'summon', 'type': kind, 'at': [7.5, rng.choice([0, 0.5, 2]), 7.5], 'n': 0, 'nbt': nbt})
-    read = {'k': 'read_near', 'type': kind, 'at': c}
+    read = {'k': 'read_items'} if kind == 'item' else {'k': 'read_near', 'type': kind, 'at': c}
     steps.append(read)
     for _ in range(rng.choice([2, 3, 4])):
         steps += [{'k': 'tick', 'n': 1}, read]

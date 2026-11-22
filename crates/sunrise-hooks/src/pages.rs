@@ -11,7 +11,7 @@ use crate::registry::Registry;
 pub enum Place {
     /// A button on the Sunrise Settings page, after the engine's own pages.
     SunriseSettings,
-    /// A full-width button of the pause menu, above Options (under Splitscreen's settings). The
+    /// A full-width button of the pause menu, above Options. The
     /// pause menu has it only when a page registered there.
     Pause,
     /// A section of Sunrise Settings' Extras page, with no entry: its rows join the page's group
@@ -60,8 +60,13 @@ pub enum Row {
     Heading(&'static str),
     /// A line of grey text: a value such as a path, shown as it is.
     Note(String),
-    /// `<label>: ON` or `OFF`; a press flips it.
-    Toggle { label: &'static str, on: bool },
+    /// `<label>: ON` or `OFF`; a press flips it ([`Row::toggle`]); inactive is greyed.
+    #[non_exhaustive]
+    Toggle {
+        label: &'static str,
+        on: bool,
+        active: bool,
+    },
     /// `<label>: <value>`; a press steps forward, a shift-press back ([`Act::PressBack`]).
     Cycle { label: &'static str, value: Label },
     /// `<label>: <text>` on a slider at `value` (0 to 1); dragging or the arrow keys send
@@ -92,9 +97,13 @@ pub enum Row {
     },
     /// Empty space, in GUI pixels, on a page drawn as its own screen; nothing elsewhere.
     Space(u8),
-    /// A key binding, as Key Binds shows one: `key` is its key name (`key.keyboard.z`,
-    /// `key.mouse.left`). A press waits for the next key or mouse button ([`Act::Bind`]).
-    Key { label: &'static str, key: String },
+    /// A key binding as Key Binds shows one, `key` its key name; a press sends [`Act::Bind`].
+    #[non_exhaustive]
+    Key {
+        label: &'static str,
+        key: String,
+        active: bool,
+    },
     /// A text field ([`Row::field`]) on a page drawn as its own screen, as vanilla's `EditBox`:
     /// its label above it, focus by click or Tab, typing, the caret keys, selection, copy and
     /// paste, at most `max` characters. `text` is its value when the page opens; the engine then
@@ -115,6 +124,24 @@ impl Row {
             active: true,
             half: false,
             footer: false,
+        }
+    }
+
+    /// An active switch showing `on`.
+    pub fn toggle(label: &'static str, on: bool) -> Self {
+        Self::Toggle {
+            label,
+            on,
+            active: true,
+        }
+    }
+
+    /// An active key row showing `key`'s name.
+    pub fn key(label: &'static str, key: impl Into<String>) -> Self {
+        Self::Key {
+            label,
+            key: key.into(),
+            active: true,
         }
     }
 
@@ -144,9 +171,12 @@ impl Row {
         self
     }
 
-    /// A button greyed out (`false`): drawn, never pressed.
+    /// A button, switch or key row greyed out (`false`): drawn, never pressed.
     pub fn active(mut self, on: bool) -> Self {
-        if let Self::Button { active, .. } = &mut self {
+        if let Self::Button { active, .. }
+        | Self::Toggle { active, .. }
+        | Self::Key { active, .. } = &mut self
+        {
             *active = on;
         }
         self

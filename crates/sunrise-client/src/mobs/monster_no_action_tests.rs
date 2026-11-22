@@ -6,8 +6,8 @@ use super::*;
 use crate::health::TestLevel;
 use crate::mobs::ai::tick;
 use crate::mobs::world::with_test_world;
-use sunrise_core::geometry::Vec3;
 use std::sync::Arc;
+use sunrise_core::geometry::Vec3;
 
 /// A fully ticking mob of that type, hovering so the empty test world's floor
 /// (there is none) cannot matter.
@@ -40,17 +40,20 @@ fn no_action_times(types: &crate::mobs::MobTypes, w: &MobWorld<'_>, name: &str) 
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_blaze_and_a_vex_keep_their_extra_no_action_time_in_the_dark() {
     let mut out = None;
     if !with_test_world(&[], |w, types| {
         // Still dark at midnight, with the player 40 blocks off, past the
         // 32 blocks inside which `checkDespawn` resets the count.
         let dark = MobWorld {
+            side: sunrise_client::motion::dry_side(),
             daylight: false,
             nearest_player: Some(Vec3::new(40.5, 64.0, 0.5)),
             ..w.clone()
         };
         let lit = MobWorld {
+            side: sunrise_client::motion::dry_side(),
             daylight: true,
             ..dark.clone()
         };

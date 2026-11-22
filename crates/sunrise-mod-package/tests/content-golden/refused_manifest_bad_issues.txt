@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: issues is an http(s) link of at most 2048 characters
+
+icon:
+unavailable

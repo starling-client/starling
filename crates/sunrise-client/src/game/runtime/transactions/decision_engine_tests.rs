@@ -1,6 +1,6 @@
 //! Real menu storage and Game journal integration, before hook-route migration.
 //! These exercise Menu::click, not the synthetic MenuState planner. They do not
-//! assert public hook dispatch or native/wasm coverage.
+//! assert public hook dispatch.
 use super::*;
 use crate::game::{
     native_entity_refs::tests::run_fresh_cases, native_guest_turn_tests::with_guests,
@@ -21,7 +21,7 @@ fn fixture(game: &mut Game<'_>) -> (Target, Identity) {
         .inventory = Some(menu);
     let actor = game.player(12).unwrap().entity();
     (
-        Target::admit(game, 12, Owner::Inventory).unwrap(),
+        Target::admit(game, 12).unwrap(),
         Identity {
             side: Side::Server,
             world: actor.epoch(),
@@ -46,7 +46,7 @@ fn initial(target: Target, game: &Game<'_>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn actual_menu_frozen_click_and_outer_abort_use_the_game_journal() {
     if run_fresh_cases(
         "game::transactions::decision::engine::tests::actual_menu_frozen_click_and_outer_abort_use_the_game_journal",
@@ -73,7 +73,7 @@ fn actual_menu_frozen_click_and_outer_abort_use_the_game_journal() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn actual_menu_cursor_aba_is_stale_and_undoes_a_nested_commit() {
     if run_fresh_cases(
         "game::transactions::decision::engine::tests::actual_menu_cursor_aba_is_stale_and_undoes_a_nested_commit",
@@ -111,7 +111,7 @@ fn actual_menu_cursor_aba_is_stale_and_undoes_a_nested_commit() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn actual_owner_replacement_is_stale_and_same_owner_reentry_is_busy() {
     if run_fresh_cases(
         "game::transactions::decision::engine::tests::actual_owner_replacement_is_stale_and_same_owner_reentry_is_busy",
@@ -146,10 +146,7 @@ fn actual_owner_replacement_is_stale_and_same_owner_reentry_is_busy() {
                     .crafting
                     .inventory
                     .take();
-                assert!(matches!(
-                    Target::admit(host.game, 12, Owner::Inventory),
-                    Err(Admission::Busy)
-                ));
+                assert!(matches!(Target::admit(host.game, 12), Err(Admission::Busy)));
                 *host
                     .game
                     .lan
@@ -171,7 +168,7 @@ fn actual_owner_replacement_is_stale_and_same_owner_reentry_is_busy() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn actual_owner_nested_edit_and_panic_roll_back_before_the_next_click() {
     if run_fresh_cases(
         "game::transactions::decision::engine::tests::actual_owner_nested_edit_and_panic_roll_back_before_the_next_click",

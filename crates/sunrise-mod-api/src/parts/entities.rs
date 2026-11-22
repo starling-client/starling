@@ -7,6 +7,26 @@ pub mod tests {
     use crate::parts::tests::*;
     use crate::*;
 
+    /// The types mods name to `entity_tick_each` are told one at a time, every type once a mod
+    /// names them all, and a type that is not a namespaced id refuses the registration.
+    #[test]
+    fn entity_tick_each_names_the_declared_types() {
+        let mut registrar = crate::parts::PartRegistrar::new("first");
+        registrar.entity_tick_each("minecraft:zombie");
+        registrar.mod_id = "second";
+        registrar.entity_tick_each("mymod:golem");
+        registrar.entity_tick_each("minecraft:zombie");
+        registrar.entity_tick_each("Zombie");
+        assert_eq!(registrar.refused.len(), 1);
+        let each = mod_vocab::__private::EntityTickEach::of(&registrar.entity_tick_each);
+        assert!(each.names("minecraft:zombie") && each.names("mymod:golem"));
+        assert!(!each.names("minecraft:item") && !each.all());
+        registrar.entity_tick_each_entity();
+        let every = mod_vocab::__private::EntityTickEach::of(&registrar.entity_tick_each);
+        assert!(every.all() && every.names("minecraft:item"));
+        assert!(!mod_vocab::__private::EntityTickEach::of(&[]).any());
+    }
+
     #[test]
     pub(crate) fn entity_parts_refuse_unnamespaced_ids_and_doubles() {
         struct Once;
@@ -97,20 +117,27 @@ pub mod tests {
                 .unwrap()
                 .unwrap_or(0)
         }
-        fn capacity(&self, _: &mut dyn ServerHost, index: usize, resource: &FluidResource) -> u32 {
+        fn capacity(
+            &self,
+            _: &mut dyn ServerHost,
+            index: usize,
+            resource: Option<&FluidResource>,
+        ) -> u32 {
             if index == 0
-                && resource
-                    == &FluidResource::of(&FluidStack::new(
-                        mod_vocab::__private::fluid_key("minecraft:water").unwrap(),
-                        1,
-                    ))
+                && resource.is_none_or(|fluid| {
+                    *fluid
+                        == FluidResource::of(&FluidStack::new(
+                            mod_vocab::__private::fluid_key("minecraft:water").unwrap(),
+                            1,
+                        ))
+                })
             {
                 1000
             } else {
                 0
             }
         }
-        fn insert(
+        fn insert_at(
             &self,
             host: &mut dyn ServerHost,
             _: &Transaction,
@@ -119,13 +146,16 @@ pub mod tests {
             amount: u32,
         ) -> u32 {
             let held = self.amount(host, index);
-            let moved = amount.min(self.capacity(host, index, resource).saturating_sub(held));
+            let moved = amount.min(
+                self.capacity(host, index, Some(resource))
+                    .saturating_sub(held),
+            );
             ROBOT_FLUID
                 .set(host, Holder::Entity(self.0.id()), held + moved)
                 .unwrap();
             moved
         }
-        fn extract(
+        fn extract_at(
             &self,
             host: &mut dyn ServerHost,
             _: &Transaction,
@@ -134,7 +164,7 @@ pub mod tests {
             amount: u32,
         ) -> u32 {
             let held = self.amount(host, index);
-            let moved = if self.capacity(host, index, resource) > 0 {
+            let moved = if self.capacity(host, index, Some(resource)) > 0 {
                 amount.min(held)
             } else {
                 0
@@ -148,9 +178,37 @@ pub mod tests {
 }
 
 impl EntitiesRegistrar for PartRegistrar {
-    #[cfg(not(target_arch = "wasm32"))]
     fn attach_entity_part(&mut self, entity: &str, kind: &'static str, part: Arc<dyn EntityPart>) {
         self.attach(|p| &mut p.entities, kind, entity, part);
+    }
+
+    fn declare_entity_part_state(
+        &mut self,
+        entity: &str,
+        part: &'static str,
+        declaration: crate::PartStateDeclaration,
+    ) -> Result<(), crate::EntityPartStateError> {
+        // 🤖 Agent: one leaked id per declaration, once at startup, so a refusal can name the
+        // type in the `Copy` refusal it shares with block entities.
+        let kind: &'static str = Box::leak(entity.into());
+        match self.check_part_state(declaration) {
+            Ok(()) => {
+                self.entity_part_states.push(
+                    mod_vocab::__private::EntityPartStateDeclaration::new(
+                        self.mod_id.to_owned(),
+                        part,
+                        kind,
+                        declaration,
+                    ),
+                );
+                Ok(())
+            }
+            Err(reason) => {
+                let error = declaration.refused_on_entity(part, kind, reason);
+                self.refused.push(format!("{}: {error}", self.mod_id));
+                Err(error)
+            }
+        }
     }
 
     fn provide_entity_capability(
@@ -172,5 +230,21 @@ impl EntitiesRegistrar for PartRegistrar {
                 (provider, handler)
             },
         );
+    }
+
+    fn entity_tick_each(&mut self, entity: &str) {
+        if crate::Identifier::parse_namespaced(entity).is_none() {
+            let message = format!(
+                "mod {} entity_tick_each {entity:?}: lowercase resource-id namespace and path required",
+                self.mod_id
+            );
+            self.refused.push(message);
+            return;
+        }
+        self.entity_tick_each.push(Some(entity.to_owned()));
+    }
+
+    fn entity_tick_each_entity(&mut self) {
+        self.entity_tick_each.push(None);
     }
 }

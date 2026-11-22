@@ -17,10 +17,12 @@ pub trait Hooks {
     /// is not in that copy, and is dropped with the chunk.
     /// Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_chunk_load",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "ChunkEvent.Load",
         paper = "ChunkLoadEvent"
     )]
-    fn chunk_load();
+    fn chunk_load(dimension: &str, chunk: [i32; 2], new: bool);
 }

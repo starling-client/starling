@@ -9,9 +9,12 @@ pub trait Hooks {
     /// Sunrise scales the sum by Distortion Effects and bounds it
     /// (`native_shake_matrix`).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_camera_shake",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ViewportEvent.ComputeCameraAngles"
     )]
-    fn camera_shake();
+    fn camera_shake(partial: f32, shake: &mut Shake);
 }

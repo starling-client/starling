@@ -19,9 +19,9 @@ use crate::worldgen::{
     structure::processor::ProcessorRandom,
     tree_blocks::{self as tb, TreeBlocks},
 };
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use serde_json::value::RawValue;
 use std::collections::BTreeSet;
+use sunrise_core::{geometry::Direction, random::RandomSource};
 
 /// Catalog-injected configured feature for the pale-moss ground patch, which
 /// vanilla looks up by registry key during decoration.
@@ -291,6 +291,7 @@ impl TreeDecorator {
                     leaves: &lists.leaves,
                     roots: &lists.roots,
                     positions: &positions,
+                    registry: d.run.world.block_registry(),
                 });
                 let ground = Ground {
                     decorator: provider,
@@ -525,6 +526,12 @@ impl<W: FeatureWorld, R: RandomSource> WorldgenRandom for GroundRun<'_, '_, W, R
     fn next_boolean(&mut self) -> bool {
         self.run.random.next_boolean()
     }
+    fn next_int(&mut self) -> i32 {
+        self.run.random.next_int()
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        self.run.random.next_gaussian()
+    }
 }
 
 struct Decorate<'a, 'b, 'w, W, R> {
@@ -603,10 +610,7 @@ impl<W: FeatureWorld + PlacementContext, R: RandomSource> Decorate<'_, '_, '_, W
         if let Some(error) = access.error {
             return Err(error);
         }
-        match state {
-            Some(state) if !self.blocks.is_state(state) => Err(FeatureExecutionError::InvalidState),
-            state => Ok(state),
-        }
+        state.map_err(|_| FeatureExecutionError::InvalidState)
     }
     fn circle(&mut self, ground: &Ground<'_>, center: [i32; 3]) -> TreeResult<(), W::Error> {
         for xx in -2i32..=2 {
@@ -800,8 +804,8 @@ mod tests {
     use crate::registry::BlockRegistry;
     use crate::worldgen::state_provider::StateProviderBindings;
     use crate::worldgen::{anchor::WorldGenerationContext, placement::PlacementQueryError};
-    use sunrise_core::random::LegacyRandom;
     use std::collections::{BTreeMap, HashMap};
+    use sunrise_core::random::LegacyRandom;
 
     fn registry() -> &'static BlockRegistry {
         static REGISTRY: std::sync::OnceLock<BlockRegistry> = std::sync::OnceLock::new();
@@ -949,17 +953,25 @@ mod tests {
     /// Keeps the decorator's own provider, as a mod that wraps it and changes nothing.
     struct Kept;
     impl ModGroundProvider for Kept {
-        fn state_at(&self, access: &mut dyn GroundAccess, pos: [i32; 3]) -> Option<BlockStateId> {
-            access.decorator_state(pos)
+        fn state_at(
+            &self,
+            access: &mut dyn GroundAccess,
+            pos: [i32; 3],
+        ) -> Result<Option<BlockStateId>, native_worldgen_hooks::InvalidGroundState> {
+            Ok(access.decorator_state(pos))
         }
     }
 
     /// Turns grass to stone, drawing nothing.
     struct Stone;
     impl ModGroundProvider for Stone {
-        fn state_at(&self, access: &mut dyn GroundAccess, pos: [i32; 3]) -> Option<BlockStateId> {
+        fn state_at(
+            &self,
+            access: &mut dyn GroundAccess,
+            pos: [i32; 3],
+        ) -> Result<Option<BlockStateId>, native_worldgen_hooks::InvalidGroundState> {
             let grass = access.block_state(pos) == state("minecraft:grass_block");
-            grass.then(|| state("minecraft:stone"))
+            Ok(grass.then(|| state("minecraft:stone")))
         }
     }
 
@@ -1015,8 +1027,13 @@ mod tests {
     fn a_state_the_registry_lacks_is_refused() {
         struct Unknown;
         impl ModGroundProvider for Unknown {
-            fn state_at(&self, _: &mut dyn GroundAccess, _: [i32; 3]) -> Option<BlockStateId> {
-                Some(BlockStateId(u32::MAX))
+            fn state_at(
+                &self,
+                _: &mut dyn GroundAccess,
+                _: [i32; 3],
+            ) -> Result<Option<BlockStateId>, native_worldgen_hooks::InvalidGroundState>
+            {
+                Err(native_worldgen_hooks::InvalidGroundState)
             }
         }
         assert!(matches!(

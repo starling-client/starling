@@ -5,8 +5,17 @@ horizon-rust/horizon#12055 to group its cosmetics, emotes, presence, server-list
 promotions and settings pages. This fork deliberately differs: excluded features
 are removed, not compiled behind a switch.
 
-Cosmetics, wardrobe, emotes, partner ads, sponsor cards, telemetry and Discord
-presence are not part of this fork. No Cargo feature restores them. The Mods and
+Cosmetics, emotes, the Wardrobe and the Shop, partner ads, sponsor links and the
+official server are not part of this fork: Sunrise has no paid features, shop or
+ads. No Cargo feature restores them, and the engine has no hook to draw them: the
+player-model hooks cosmetics used (name decorations, the player-list mark, meshes
+and poses on player models, the camera pull) were removed with them. CI's public-tree check
+(`tools/check_public_tree.py`, run by `verify-static`) fails a branch that
+brings back `crates/sunrise-cosmetics`, the game's `cosmetics` module,
+`crates/sunrise-official-servers`, the
+launcher's `partner`, `shop`, `wardrobe` and `wardrobe_page` sources, or
+the launcher's `sculk-*` assets (in sunrise-launcher, which has its own check). It looks at the current tree, not at history, so the
+commits from before the removal stay allowed. The Mods and
 Sunrise Settings pages remain available independently of the client's default
 features; disabling audio or controllers does not hide mod management.
 
@@ -27,12 +36,14 @@ a telemetry placeholder or an official-build promotion in the options screen.
 
 | Extra | Where it lives | The gate |
 |---|---|---|
-| Cosmetics, emotes and the emote wheel, "Show me as a Sunrise player" | `game/cosmetics.rs` (+ `cosmetics/fx.rs`, `cosmetics/emotes.rs`, `cosmetics/emote_wheel.rs`), crate `sunrise-cosmetics` | `game::cosmetics::enabled()`: the service is never asked, nothing is drawn, B opens no wheel |
-| The official server added to the server list, the withdrawn partner server taken out; the "Start Sunrise from the launcher" screen of a game without its prepared files, with its Download button (`get_the_game` hook) | crate `sunrise-official-servers` | registered only by the official executable (`sunrise-official`); sunrise-client's own executable has none |
-| Sunrise Settings (Extras, PvP & HUD, Splitscreen, Studio, AI Agent) and Mods (with the registry browser) | `options_ui.rs` (`Page::Sunrise` and below), `extras_ui.rs`, `extras.rs`, `pvp.rs`, `game/extras.rs` and `game/extras/`, `extras_hud.rs` | the Options screen shows vanilla's greyed Telemetry Data instead (`options_ui::SUNRISE_EXTRAS`, set in `entry.rs`) |
+| The "Start Sunrise from the launcher" screen of a game without its prepared files, with its Download button (`get_the_game` hook) | crate `sunrise-official` | registered only by the official executable (`sunrise-official`); sunrise-client's own executable has none |
+| Sunrise Settings (Extras, PvP & HUD, Studio, AI Agent) and Mods (with the registry browser) | `options_ui.rs` (`Page::Sunrise` and below), `extras_ui.rs`, `extras.rs`, `pvp.rs`, `game/extras.rs` and `game/extras/`, `extras_hud.rs` | the Options screen shows vanilla's greyed Telemetry Data instead (`options_ui::SUNRISE_EXTRAS`, set in `entry.rs`) |
+| The Mods screen's Sunrise row (name, version, authors, licence, links) (`sunrise_platform::mod_rows`) | crate `sunrise-official` | registered only by the official executable (`sunrise-official`); sunrise-client's own executable lists Minecraft and the mods only |
+| Auto-reconnect ([extras.md](extras.md)) | crate `sunrise-reconnect` | registered only by the official executable (`sunrise-official`); sunrise-client's own executable has none |
 | Discord Rich Presence and its switch | crate `sunrise-discord` | registered only by the official executable (`sunrise-official`); sunrise-client's own executable has none |
 | Play with Friends | hosting: `game/friends.rs`, `game/friends/screen.rs`; joining: crate `sunrise-friends` (`game`) | hosting: the `friends` feature (`game/friends_off.rs` stands in); joining: only the official executable registers it ([layers.md](layers.md#how-a-sunrise-crate-plugs-in)) |
 | The anonymous "I'm playing" ping | crate `sunrise-heartbeat` | not in sunrise-client at all: only the official executable (`sunrise-official`) registers it ([layers.md](layers.md#how-a-sunrise-crate-plugs-in)) |
+| The performance overlay (frames per second, frame times and their graph) and its Performance Overlay row on the Extras page | crate `sunrise-perf-overlay` | not in sunrise-client at all: only the official executable (`sunrise-official`) registers it ([layers.md](layers.md#how-a-sunrise-crate-plugs-in)) |
 
 Credits & Attribution then says where the official build is (`sunrise.plain.official`).
 
@@ -43,8 +54,7 @@ gate guards.
 
 ## Not behind the feature
 
-- The launcher (`launcher/`) holds the Wardrobe, the Shop, the featured servers page, its themes,
-  the telemetry consent and updates. A build of the game alone has none of them; without the
+- The launcher (`https://github.com/sunrise-org/sunrise-launcher`) holds its themes, the telemetry consent and updates. A build of the game alone has none of them; without the
   launcher's consent the game keeps no crash or performance report (docs/telemetry.md).
 - The graphics screen's fullbright, dynamic lights and hiding block-break particles: renderer
   options, off by default (docs/extras.md). A `sunrise-extras.txt` left by an official install is
@@ -65,8 +75,8 @@ only. They do not pass to forks, ports or derived launchers, whatever their lice
 - Its builds must not ship, embed, download or otherwise fetch Sunrise's client ID, and must not tell
   players to set `SUNRISE_MSA_CLIENT_ID` to it. Sign-ins made with it would appear to Microsoft and
   Mojang as Sunrise's, which the project does not accept.
-- The MIT licence covers the code, not the app registration: copying the code gives no right to use
-  Sunrise's client ID.
+- Sunrise's licence ([LICENSING.md](../LICENSING.md)) covers the code, not the app registration: copying the code
+  gives no right to use Sunrise's client ID.
 - Sunrise may restrict, rotate or revoke its client ID at any time, which breaks every build that
   uses it, and reports misuse to Microsoft, Mojang and the hosting platform.
 

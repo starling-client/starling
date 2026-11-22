@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: expected a string, integer, float or boolean for [properties] (line 5, column 11)
+
+icon:
+unavailable

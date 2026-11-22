@@ -55,8 +55,8 @@ ShriekParticle.Provider.createParticle	inline	crates/sunrise-client-render/src/p
 SimpleAnimatedParticle.setFadeColor	inline	crates/sunrise-client-render/src/particles.rs::ParticleEngine::make	EndRod arm: fade colour 0xF2DEC9; applied by Behaviour::SimpleAnimated
 SimpleVerticalParticle.PauseMobGrowthProvider.createParticle	inline	crates/sunrise-client-render/src/particles.rs::ParticleEngine::make	PauseMobGrowth arm
 SimpleVerticalParticle.ResetMobGrowthProvider.createParticle	inline	crates/sunrise-client-render/src/particles.rs::ParticleEngine::make	ResetMobGrowth arm
-SingleQuadParticle.extract	port	crates/sunrise-client-render/src/particles.rs::ParticleEngine::render	roll lerp and camera-facing rotation per particle
-SingleQuadParticle.extractRotatedQuad	port	crates/sunrise-client-render/src/particles.rs::ParticleEngine::render	quad centre from the lerped position minus the camera
+SingleQuadParticle.extract	port	crates/sunrise-client-render/src/particles.rs::ParticleQuadFrame::draw_default	stock roll lerp and camera-facing rotation; providers may override extraction
+SingleQuadParticle.extractRotatedQuad	port	crates/sunrise-client-render/src/particles.rs::ParticleQuadFrame::draw_default	quad centre from the lerped position minus the camera
 SingleQuadParticle.toString	skip:debug
 SingleQuadParticle.Layer.bySprite	port	crates/sunrise-client-render/src/particles.rs::ParticleEngine::reload	gap: minor: one translucent flag per sprite from the atlas; vanilla also splits block and item atlases (TRANSLUCENT_TERRAIN, TRANSLUCENT_ITEMS)
 SmokeParticle.Provider.createParticle	inline	crates/sunrise-client-render/src/particles.rs::ParticleEngine::make	Smoke arm, Smoke branch (scale 1.0)
@@ -117,7 +117,7 @@ DryFoliageColorReloadListener.prepare	port	crates/sunrise-client-render/src/biom
 FoliageColorReloadListener.prepare	port	crates/sunrise-client-render/src/biome.rs::colormap	PNG decode of colormap/foliage
 GrassColorReloadListener.prepare	port	crates/sunrise-client-render/src/biome.rs::colormap	PNG decode of colormap/grass
 IndexedAssetSource.createIndexFs	skip:data		legacy objects/ asset index; Sunrise reads assets/ folders directly
-LegacyStuffWrapper.getPixels	port	crates/sunrise-client-render/src/hud.rs::decode	gap: minor: PNG decode to bytes; vanilla returns ARGB ints
+LegacyStuffWrapper.getPixels	port	crates/sunrise-client-render/src/hud/image.rs::decode	gap: minor: PNG decode to bytes; vanilla returns ARGB ints
 MapTextureManager.resetData	skip:other		frees GPU map textures on close; Sunrise keeps its map atlas slots in Game::maps, no gameplay effect
 MapTextureManager.getOrCreateMapInstance	port	crates/sunrise-client/src/game/blocks/maps/mod.rs::Game::map_texture	gives the map its atlas slot, allocated on first use
 MapTextureManager.MapInstance.replaceMapData	port	crates/sunrise-client/src/game/blocks/maps/mod.rs::MapData::update_color	gap: minor: vanilla also flags an upload when the saved-data object is swapped; Sunrise flags per changed colour
@@ -126,7 +126,7 @@ SkinManager.get	port	crates/sunrise-client-render/src/skins.rs::lookup	gap: mino
 SkinManager.registerTextures	port	crates/sunrise-client-render/src/skins.rs::lookup	gap: minor: returns the skin location only; cape and elytra are downloaded here but not returned
 SkinManager.TextureCache.getOrLoad	port	crates/sunrise-client-render/src/skins.rs::Downloader::state	one download per URL, then its state
 SkinManager.TextureCache.getTextureLocation	port	crates/sunrise-client-render/src/skins.rs::skin_location	gap: minor: only the skins/ location; capes and elytra have no location fn
-SplashManager.getSplash	port	crates/sunrise-client/src/title.rs::choose_splash	gap: player: no '<NAME> IS YOU' splash; vanilla sometimes shows the logged-in player's name instead of a splash on the title screen
+SplashManager.getSplash	port	crates/sunrise-client/src/title/splash.rs::choose_splash	gap: player: no '<NAME> IS YOU' splash; vanilla sometimes shows the logged-in player's name instead of a splash on the title screen
 WaypointStyle.validate	port	crates/sunrise-client/src/locator_bar.rs::WaypointStyle::parse	validation is folded into the parse
 WaypointStyleManager.apply	port	crates/sunrise-client/src/locator_bar.rs::WaypointStyles::load	gap: minor: loads the arrow and dot sprites from the assets folder into one map
 ClientLanguage.appendFrom	port	crates/sunrise-client-core/src/lang.rs::Language::load	layers the translation JSON from the sources

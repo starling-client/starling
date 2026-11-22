@@ -1,14 +1,90 @@
 //! Client loading-screen registrations and their presentation data.
 
-/// A screen registered by `Hooks::register_dimension_transition_screen`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-// exhaustive: mods construct registrations and the game reads both fields
-#[derive(sunrise_mod_api_macros::Wire)]
+use crate::{ClientHost, DrawContext};
+
+type TransitionFactory = dyn Fn(&dyn ClientHost, DimensionTransitionReason) -> Box<dyn DimensionTransitionPresentation>
+    + Send
+    + Sync
+    + 'static;
+
+// no wire: the registration owns a factory with process-local code and captures.
+/// A loading-screen factory registered once by `Hooks::register_dimension_transition_screen`.
+/// Only travel that opens a new loading screen can select it; login and death never select one.
+// exhaustive: private storage keeps the travel key and its per-load factory together.
 pub struct DimensionTransitionScreen {
-    /// Namespaced screen id, drawn by `Hooks::dimension_transition_screen_draw`.
-    pub screen: String,
-    /// Which travel selects this screen.
-    pub transition: DimensionTransition,
+    transition: DimensionTransition,
+    factory: Box<TransitionFactory>,
+}
+
+impl DimensionTransitionScreen {
+    /// Register a factory for `transition` (NeoForge's `RegisterDimensionTransitionScreenEvent`).
+    /// On a matching new load, the client calls the factory once as the registering mod and owns
+    /// the returned presentation until the loading screen closes, even if the tracker restarts
+    /// for another level. Capture per-load state in the returned presentation, not in the
+    /// registration itself.
+    pub fn new(
+        transition: DimensionTransition,
+        factory: impl Fn(
+            &dyn ClientHost,
+            DimensionTransitionReason,
+        ) -> Box<dyn DimensionTransitionPresentation>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            transition,
+            factory: Box::new(factory),
+        }
+    }
+
+    /// Which travel selects this factory.
+    pub fn transition(&self) -> &DimensionTransition {
+        &self.transition
+    }
+
+    /// Create the presentation for one new loading screen with its initial reason.
+    pub fn create(
+        &self,
+        host: &dyn ClientHost,
+        reason: DimensionTransitionReason,
+    ) -> Box<dyn DimensionTransitionPresentation> {
+        (self.factory)(host, reason)
+    }
+}
+
+// no wire: each presentation is a process-local callback or object retained by one load.
+/// The complete presentation of one loading screen, either an object or a draw closure.
+/// It controls what is painted, not when the client finishes loading.
+pub trait DimensionTransitionPresentation: Send + Sync + 'static {
+    /// Draw under the registering mod's identity using this frame's reason and optional
+    /// smoothed integrated-server progress. The tracker, not the presentation, decides when
+    /// the screen closes. The reason can change while the same presentation remains active.
+    fn draw(
+        &self,
+        host: &dyn ClientHost,
+        reason: DimensionTransitionReason,
+        progress: Option<f32>,
+        draw: &mut dyn DrawContext,
+    );
+}
+
+impl<F> DimensionTransitionPresentation for F
+where
+    F: Fn(&dyn ClientHost, DimensionTransitionReason, Option<f32>, &mut dyn DrawContext)
+        + Send
+        + Sync
+        + 'static,
+{
+    fn draw(
+        &self,
+        host: &dyn ClientHost,
+        reason: DimensionTransitionReason,
+        progress: Option<f32>,
+        draw: &mut dyn DrawContext,
+    ) {
+        self(host, reason, progress, draw);
+    }
 }
 
 /// NeoForge's incoming, outgoing and conditional registration variants.
@@ -71,57 +147,55 @@ mod dimension_transition_tests {
             _: &RegistrationContext,
             event: &mut RegisterDimensionTransitionScreenEvent<'_>,
         ) {
-            event.screens.push(DimensionTransitionScreen {
-                screen: "test:arrival".into(),
-                transition: DimensionTransition::Conditional {
+            event.screens.push(DimensionTransitionScreen::new(
+                DimensionTransition::Conditional {
                     to: "test:b".into(),
                     from: "test:a".into(),
                 },
-            });
-        }
-        fn dimension_transition_screen_draw(
-            &self,
-            _: &dyn ClientHost,
-            event: &mut DimensionTransitionScreenDrawEvent<'_>,
-        ) {
-            if event.screen != "test:arrival" {
-                return;
-            }
-            let [w, h] = event.draw.size();
-            event.draw.fill([0.0, 0.0, w, h], 0xFF102030);
-            if event.reason == DimensionTransitionReason::NetherPortal {
-                event.draw.fill(
-                    [0.0, 230.0, w * event.progress.unwrap_or(0.0), 10.0],
-                    0xFF00FF00,
-                );
-            }
+                |_, initial_reason| {
+                    Box::new(
+                        move |_: &dyn ClientHost, reason, progress, draw: &mut dyn DrawContext| {
+                            assert_eq!(initial_reason, DimensionTransitionReason::Other);
+                            assert_eq!(reason, DimensionTransitionReason::NetherPortal);
+                            let [w, h] = draw.size();
+                            draw.fill([0.0, 0.0, w, h], 0xFF102030);
+                            if let Some(progress) = progress {
+                                draw.fill([0.0, 230.0, w * progress, 10.0], 0xFF00FF00);
+                            }
+                        },
+                    )
+                },
+            ));
         }
     }
 
     #[test]
-    fn dimension_transition_registration_and_draw_carry_selection_reason_and_progress() {
+    fn dimension_transition_factory_keeps_the_registrant_and_draws_with_live_data() {
         testing::with_dispatch(
-            vec![ModEntry::new("test", Box::new(Arrival))].into(),
+            vec![ModEntry::new("test_registrant", Box::new(Arrival))].into(),
             || {
                 let mut screens = Vec::new();
                 dispatch_register_dimension_transition_screen(
                     &RegistrationContext::new(),
                     &mut screens,
                 );
+                let [screen] = screens.as_slice() else {
+                    panic!("expected one registration");
+                };
+                assert_eq!(screen.mod_id, "test_registrant");
                 assert_eq!(
-                    screens,
-                    [DimensionTransitionScreen {
-                        screen: "test:arrival".into(),
-                        transition: DimensionTransition::Conditional {
-                            to: "test:b".into(),
-                            from: "test:a".into()
-                        },
-                    }]
+                    screen.answer.transition(),
+                    &DimensionTransition::Conditional {
+                        to: "test:b".into(),
+                        from: "test:a".into()
+                    },
                 );
+                let presentation = screen
+                    .answer
+                    .create(&Client, DimensionTransitionReason::Other);
                 let mut canvas = Canvas::default();
-                dispatch_dimension_transition_screen_draw(
+                presentation.draw(
                     &Client,
-                    "test:arrival",
                     DimensionTransitionReason::NetherPortal,
                     Some(0.25),
                     &mut canvas,
@@ -133,21 +207,12 @@ mod dimension_transition_tests {
                         ([0.0, 230.0, 80.0, 10.0], 0xFF00FF00)
                     ]
                 );
-                let mut canvas = Canvas::default();
-                dispatch_dimension_transition_screen_draw(
-                    &Client,
-                    "test:other",
-                    DimensionTransitionReason::Other,
-                    None,
-                    &mut canvas,
-                );
-                assert!(canvas.0.is_empty());
             },
         );
     }
 
     #[test]
-    fn dimension_transition_without_listeners_collects_and_draws_nothing() {
+    fn dimension_transition_without_listeners_collects_nothing() {
         testing::with_dispatch(Vec::new().into(), || {
             let mut screens = Vec::new();
             dispatch_register_dimension_transition_screen(
@@ -155,15 +220,6 @@ mod dimension_transition_tests {
                 &mut screens,
             );
             assert!(screens.is_empty());
-            let mut canvas = Canvas::default();
-            dispatch_dimension_transition_screen_draw(
-                &Client,
-                "test:arrival",
-                DimensionTransitionReason::Other,
-                None,
-                &mut canvas,
-            );
-            assert!(canvas.0.is_empty());
         });
     }
 }

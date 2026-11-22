@@ -234,7 +234,7 @@ impl Game<'_> {
             volume,
             pitch,
         };
-        if !listened() {
+        if !listened() || self.creatures.asking_level_sound {
             return Some(asked);
         }
         // The mods see a namespaced id (`minecraft:entity.pig.ambient`).
@@ -248,8 +248,28 @@ impl Game<'_> {
         if emitter.is_some() && entity.is_none() && !self.is_logical_server() {
             return None;
         }
+        struct AskGuard<'g, 'a> {
+            game: &'g mut Game<'a>,
+            queued_before: usize,
+        }
+        impl Drop for AskGuard<'_, '_> {
+            fn drop(&mut self) {
+                self.game.creatures.asking_level_sound = false;
+                if let Some(added) = self.game.creatures.lan_sounds.get_mut(self.queued_before..) {
+                    for sound in added {
+                        sound.skip_hooks = true;
+                    }
+                }
+            }
+        }
+        let queued_before = self.creatures.lan_sounds.len();
+        self.creatures.asking_level_sound = true;
+        let guard = AskGuard {
+            game: self,
+            queued_before,
+        };
         match entity {
-            Some(entity) => self.native_play_level_sound_at_entity(
+            Some(entity) => guard.game.native_play_level_sound_at_entity(
                 mod_api::__private::PlayLevelSoundAtEntityCall {
                     entity,
                     sound: &mut id,
@@ -262,8 +282,8 @@ impl Game<'_> {
                 },
             ),
             None => {
-                let level = self.level(dimension)?;
-                self.native_play_level_sound_at_position(
+                let level = guard.game.level(dimension)?;
+                guard.game.native_play_level_sound_at_position(
                     mod_api::__private::PlayLevelSoundAtPositionCall {
                         level,
                         position: at,
@@ -278,6 +298,7 @@ impl Game<'_> {
                 );
             }
         }
+        drop(guard);
         if cancel || !level_sound_playable(at, volume_now, pitch_now) {
             return None;
         }
@@ -295,12 +316,12 @@ mod tests {
     use super::super::lan::LanSettings;
     use super::super::native_entity_refs::tests::with_game;
     use super::super::native_sound_refs::tests::{guest, packets};
+    use mod_api::{HostSide, SoundSource};
+    use std::sync::{Arc, Mutex};
     use sunrise_client::lan::{NetConfig, hub::HubConfig};
     use sunrise_client::mobs::{Mob, MobEvent};
     use sunrise_core::geometry::Vec3;
     use sunrise_protocol::packets::play::Clientbound;
-    use mod_api::{HostSide, SoundSource};
-    use std::sync::{Arc, Mutex};
 
     /// Quietens and moves the locked chest, cancels the pig, and turns a
     /// sound bound to an entity into a cow's; logs what it was asked.
@@ -363,6 +384,7 @@ mod tests {
             max_players: 3,
             integrated: true,
             levels: game.level_shapes,
+            level_seeds: game.levels.runtime.seeds(),
         };
         let settings = LanSettings {
             port: 0,
@@ -377,7 +399,7 @@ mod tests {
     /// tick, in vanilla's source: a goat's ram (the mobs' `BoundSound`) and
     /// a dispenser shearing a snow golem. Each reaches the players once.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn entity_bound_sites_ask_at_their_entity() {
         let heard = Arc::default();
         let mods = vec![mod_api::ModEntry::new(
@@ -456,7 +478,7 @@ mod tests {
     /// sound bound to an entity at that entity; the players get the mod's
     /// sound, and none for a cancelled one.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_changes_and_cancels_level_sounds() {
         let heard = Arc::default();
         let mods = vec![mod_api::ModEntry::new(
@@ -485,6 +507,7 @@ mod tests {
                     max_players: 3,
                     integrated: true,
                     levels: game.level_shapes,
+                    level_seeds: game.levels.runtime.seeds(),
                 };
                 let settings = LanSettings {
                     port: 0,
@@ -513,6 +536,8 @@ mod tests {
                         source: SoundSource::Blocks as usize,
                         entity: None,
                         except_entity: None,
+                        seed: 0,
+                        particles_before: 0,
                     })
                     .collect(),
                 );

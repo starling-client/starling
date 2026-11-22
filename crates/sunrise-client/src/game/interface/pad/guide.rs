@@ -3,6 +3,7 @@
 //! and its rows, drawn around whatever the HUD drew this frame. An inventory's rows (`resolve_menu`)
 //! are drawn the same way, from its bottom corners.
 use super::super::{Game, Screen};
+use serde_json::{Value, json};
 use sunrise_client::actions::Action;
 use sunrise_client::{
     first_person::Hand,
@@ -14,7 +15,6 @@ use sunrise_client::{
     items::ItemStack,
     mobs::{Species, equine, llama},
 };
-use serde_json::{Value, json};
 
 /// A row as last drawn, for `pad status`.
 pub(in crate::game) struct Shown {
@@ -67,9 +67,11 @@ impl Game<'_> {
             && !self.screen_over_playing()
             && self.sleeping.is_none()
             && self.player.is_some()
-            && !self
-                .debug_entries
-                .any_enabled(self.debug, self.reduced_debug_info())
+            && !self.debug_entries.any_enabled(
+                &self.registered_debug_entries,
+                self.debug,
+                self.reduced_debug_info(),
+            )
     }
 
     /// Draw the guide (F1's hidden HUD never gets here). `from` is the batch's first vertex of
@@ -295,7 +297,7 @@ impl Game<'_> {
 
     fn pad_guide_facts(&mut self) -> Facts {
         let spectator = self.spectator();
-        let sneaking = self.keys.held(Action::Sneak);
+        let sneaking = self.held_mapping(Action::Sneak);
         let glider = self.glider_worn();
         let hands_busy = self.hands_busy();
         let riding = self.riding.is_some();
@@ -307,9 +309,10 @@ impl Game<'_> {
         let off_hand_item = self.offhand.is_some();
         let (target, block, can_pick) = self.pad_guide_target(spectator);
         let held = self.held().cloned();
-        let swallowed = block
-            .as_ref()
-            .is_some_and(|hit| self.pad_guide_click_swallowed(hit, held.as_ref()));
+        let swallowed = !self.remote_secondary_use_skips_block()
+            && block
+                .as_ref()
+                .is_some_and(|hit| self.pad_guide_click_swallowed(hit, held.as_ref()));
         let mut item_use = None;
         if !spectator && !swallowed {
             for hand in Hand::BOTH {
@@ -400,21 +403,21 @@ impl Game<'_> {
         let opens = self.block_opens_menu(&hit);
         let takes = if spectator {
             opens.then_some(Verb::Open)
+        } else if self.remote_secondary_use_skips_block() {
+            None
         } else {
             let held = self.held().cloned();
-            let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
-            let secondary = self.keys.held(Action::Sneak) && hands_full;
             let ender_chest = &*self
                 .res
                 .facts()
                 .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
                 .name
                 == "minecraft:ender_chest";
-            if !secondary && opens {
+            if opens {
                 Some(Verb::Open)
             } else if self.pad_guide_click_swallowed(&hit, held.as_ref()) {
                 None
-            } else if !secondary && ender_chest && !self.pad_guide_block_covered(&hit) {
+            } else if ender_chest && !self.pad_guide_block_covered(&hit) {
                 // EnderChestBlock has no menu provider but opens one: nothing solid on top.
                 Some(Verb::Open)
             } else if self.block_takes_click(&hit, held.as_ref()) {
@@ -450,10 +453,6 @@ impl Game<'_> {
         hit: &super::super::Hit,
         held: Option<&ItemStack>,
     ) -> bool {
-        let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
-        if self.keys.held(Action::Sneak) && hands_full {
-            return false;
-        }
         let book = held.is_some_and(|s| {
             matches!(
                 &*s.item,
@@ -484,7 +483,7 @@ impl Game<'_> {
     /// What a boat, minecart or frame takes (`remote_use_entity`): a cart whose interact passes
     /// leaves the click to the item, and so does a painting.
     fn pad_guide_object(&self, id: i32, distance: f64) -> Option<Verb> {
-        let sneaking = self.keys.held(Action::Sneak);
+        let sneaking = self.held_mapping(Action::Sneak);
         if let Some(cart) = self.carts.iter().find(|c| c.id as i32 == id) {
             use super::super::minecarts::CartKind;
             let ridden = self.riding == Some(cart.id)
@@ -570,9 +569,9 @@ impl Game<'_> {
         let id = info.id.trim_start_matches("minecraft:").to_owned();
         let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
         if let Some(hit) = block {
-            if info.block.is_some() {
+            if info.block.is_some() && Self::can_hint_block_placement(&stack) {
                 let placeable = if self.may_build() {
-                    self.remote_can_place(hit, &stack).is_some()
+                    self.remote_would_place(hit, &stack)
                 } else {
                     self.can_place_on_in_adventure(hit.pos)
                 };

@@ -1,11 +1,11 @@
 //! Owner-created rotational throws, distinct from generic entity summoning.
 use super::{Game, commands::Target};
+use mod_api::{Identifier, LivingRef, ProjectileRef};
 use sunrise_client::{
     items::ItemStack,
     projectiles::{Projectile, ProjectileKind},
 };
 use sunrise_core::geometry::Vec3;
-use mod_api::{Identifier, LivingRef, ProjectileRef};
 
 impl Game<'_> {
     pub(super) fn spawn_projectile_from_rotation(
@@ -38,16 +38,7 @@ impl Game<'_> {
         }
         let mut carried = stack.clone();
         carried.count = 1;
-        let kind = match entity_type.to_string().as_str() {
-            "minecraft:snowball" => ProjectileKind::Snowball,
-            "minecraft:egg" => ProjectileKind::Egg,
-            "minecraft:ender_pearl" => ProjectileKind::EnderPearl,
-            "minecraft:experience_bottle" => ProjectileKind::ExperienceBottle,
-            "minecraft:wind_charge" => ProjectileKind::WindCharge,
-            "minecraft:splash_potion" => ProjectileKind::Potion(Box::new(carried.clone()), false),
-            "minecraft:lingering_potion" => ProjectileKind::Potion(Box::new(carried.clone()), true),
-            id => ProjectileKind::Thrown(sunrise_client::projectiles::thrown_type(id)?),
-        };
+        let kind = thrown_projectile_kind(&entity_type.to_string(), &carried)?;
         let entity = owner.entity();
         let [x, y, z] = self.entity_eye_position(entity)?;
         let [yaw, pitch] = self.entity_rotation(entity)?;
@@ -65,19 +56,50 @@ impl Game<'_> {
         (shot.owner_uuid, shot.guest, shot.owner_vehicle) = (uuid, guest, vehicle);
         shot.shoot_from_rotation(pitch, yaw, offset, power, inaccuracy, motion, on_ground);
         shot.item = Some(carried);
+        let id = self.spawn_owned_projectile(Some(target), shot, stack)?;
+        self.projectile(self.entity(id)?)
+    }
+
+    /// `Projectile.spawnProjectile` for a shot whose owner is `owner`: it takes
+    /// the next id and joins with `stack`'s spawn effects. The owner may be an
+    /// inactive guest, so launch listeners see that player's identity, not the
+    /// player currently swapped into Game. The shot's id; None when the guest
+    /// can't be swapped in.
+    pub(super) fn spawn_owned_projectile(
+        &mut self,
+        owner: Option<Target>,
+        mut shot: Projectile,
+        stack: &ItemStack,
+    ) -> Option<u32> {
         self.next_entity += 1;
         shot.id = self.next_entity;
         let id = shot.id;
-        // The explicit owner may be an inactive guest: launch listeners must
-        // see that player's identity, not the player currently swapped into Game.
         // Projectile.spawnProjectile: the spawn effects read the supplied
         // stack, whatever its count, and never change it.
-        match target {
-            t @ (Target::Player | Target::Guest(_)) => {
+        match owner {
+            Some(t @ (Target::Player | Target::Guest(_))) => {
                 self.for_player(t, |game| game.spawn_projectile(shot, stack))?
             }
             _ => self.spawn_projectile(shot, stack),
         };
-        self.projectile(self.entity(id)?)
+        Some(id)
     }
+}
+
+/// The thrown item projectile `entity_type` names, carrying `carried`:
+/// vanilla's throwables or a content thrown type. None for any other type.
+pub(super) fn thrown_projectile_kind(
+    entity_type: &str,
+    carried: &ItemStack,
+) -> Option<ProjectileKind> {
+    Some(match entity_type {
+        "minecraft:snowball" => ProjectileKind::Snowball,
+        "minecraft:egg" => ProjectileKind::Egg,
+        "minecraft:ender_pearl" => ProjectileKind::EnderPearl,
+        "minecraft:experience_bottle" => ProjectileKind::ExperienceBottle,
+        "minecraft:wind_charge" => ProjectileKind::WindCharge,
+        "minecraft:splash_potion" => ProjectileKind::Potion(Box::new(carried.clone()), false),
+        "minecraft:lingering_potion" => ProjectileKind::Potion(Box::new(carried.clone()), true),
+        id => ProjectileKind::Thrown(sunrise_client::projectiles::thrown_type(id)?),
+    })
 }

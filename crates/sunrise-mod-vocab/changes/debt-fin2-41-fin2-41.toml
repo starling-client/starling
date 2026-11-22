@@ -1,0 +1,152 @@
+ids = [
+    "type:DamageValues",
+    "type:DamageValues.original",
+    "type:DamageValues.new_damage",
+    "type:DamageValues.blocked",
+    "type:DamageValues.shield_damage",
+    "type:DamageValues.post_attack_invulnerability_ticks",
+    "type:DamageValues.should_cause_side_effects",
+    "type:DamageValues.reduction_modifiers",
+    "type:DamageValues.entered_pre",
+    "type:DamageValues.inflicted",
+    "type:DamageValues.health_damage",
+    "handle:DamageValues::reduction",
+    "handle:DamageValues::set_reduction",
+    "type:ReductionChange",
+    "type:ReductionChange.Add",
+    "type:ReductionChange.Scale",
+    "type:ReductionChange.AtLeast",
+    "type:ReductionChange.AtMost",
+    "type:DamageWriteRefusal",
+    "type:DamageWriteRefusal.InvalidDamage",
+    "type:DamageWriteRefusal.NegativeCooldown",
+    "type:DamageContainer",
+    "handle:DamageContainer::new",
+    "handle:DamageContainer::reduction_modifiers",
+    "handle:DamageContainer::add_reduction_modifier",
+    "handle:DamageContainer::as_view",
+    "handle:DamageContainer::original",
+    "handle:DamageContainer::new_damage",
+    "handle:DamageContainer::blocked",
+    "handle:DamageContainer::shield_damage",
+    "handle:DamageContainer::post_attack_invulnerability_ticks",
+    "handle:DamageContainer::should_cause_side_effects",
+    "handle:DamageContainer::inflicted",
+    "handle:DamageContainer::health_damage",
+    "handle:DamageContainer::reduction",
+    "handle:DamageContainer::set_new_damage",
+    "handle:DamageContainer::set_post_attack_invulnerability_ticks",
+    "type:DamageContainerView",
+    "handle:DamageContainerView::original",
+    "handle:DamageContainerView::new_damage",
+    "handle:DamageContainerView::blocked",
+    "handle:DamageContainerView::shield_damage",
+    "handle:DamageContainerView::post_attack_invulnerability_ticks",
+    "handle:DamageContainerView::should_cause_side_effects",
+    "handle:DamageContainerView::inflicted",
+    "handle:DamageContainerView::health_damage",
+    "handle:DamageContainerView::reduction",
+    "hook:living_incoming_damage",
+    "hook:living_incoming_damage.container",
+    "type:LivingIncomingDamageEvent.container",
+    "hook:living_damage_pre",
+    "hook:living_damage_pre.container",
+    "type:LivingDamagePreEvent.container",
+    "hook:living_damage_post",
+    "hook:living_damage_post.container",
+    "type:LivingDamagePostEvent.container",
+]
+why = """\
+Follows NeoForge's `LivingIncomingDamageEvent.addReductionModifier`, `LivingDamageEvent.Pre` / \
+`LivingDamageEvent.Post`, `DamageContainer`, and `IReductionFunction`, alongside vanilla 26.3's \
+`LivingEntity.hurtServer`, `LivingEntity.actuallyHurt`, and `Player.actuallyHurt`. \
+The three living-damage hooks now lend the engine's live `DamageContainer` directly—mutable \
+`DamageContainer<'_>` in `living_incoming_damage` and `living_damage_pre`, and read-only \
+`DamageContainerView<'_>` in `living_damage_post`—removing the `DamageValues` snapshot layer and \
+the `ReductionChange` command enum. Reduction modifiers are now owned native closures \
+(`impl FnMut(DamageContainerView<'_>, f32) -> f32 + 'static`) runnable from both \
+`living_incoming_damage` and `living_damage_pre`, executed in registration order at each stage \
+with accurate live container state (`new_damage` and prior reductions updated before each stage). \
+Following `DamageContainer.setNewDamage` and `setPostAttackInvulnerabilityTicks`, live writes are checked before they change the hit. \
+`LivingEntity.getDamageAfterMagicAbsorb` changes the live damage only at a reduction site that ran, and \
+`Witch.getDamageAfterMagicAbsorb` uses its separate local result for innate resistance. \
+`Wolf.actuallyHurt` uses the outer cooldown difference for armor wear, without replacing the live reduction. \
+The `LivingEntity.hurtServer` patch calls NeoForge's `CommonHooks.onLivingDamagePost` at the tail, \
+after `actuallyHurt`, the hurt sounds and death or totem protection, before returning to the caller. \
+Each hit now finishes there, even when death was vetoed or the victim was removed. Neither the \
+next tick nor the playing body's turn exit dispatches Post. Death and protection run there even \
+without a Post listener. The borrowed server tick releases its loans at the hurt boundaries in \
+vanilla `Entity.baseTick`, `Entity.applyEffectsFromBlocks`, `LivingEntity.tickEffects` and \
+`LivingEntity.aiStep`. `Dolphin.tick` finishes dry-out damage before the land hop; \
+`FollowPlayerRiddenEntityGoal.tick` finishes a movement hurt before repathing, and \
+`BreathAirGoal.tick` finishes one before movement restitution and the next goal. \
+`Bee.customServerAiStep` finishes drowning before the stinger expiry check, retaining vanilla's earlier \
+`hasStung` read but using current health for the next hit. Expiry finishes before nectar and anger \
+bookkeeping and `Mob.serverAiStep`'s movement controls. \
+`Entity.checkFallDamage`, `HoneyBlock.fallOn`, `FarmlandBlock.fallOn` and \
+`LivingEntity.handleFallFlyingCollisions` finish landing or gliding hurts before proceeding; \
+`AbstractHorse.causeFallDamage` finishes the horse's own hurt before \
+`Entity.propagateFallToPassengers` visits riders. `ServerGamePacketListenerImpl.handleMovePlayer` \
+and `handleMoveVehicle` settle impacts on the acting body. `Pufferfish.touch` settles each \
+sting before poison, and `FallingBlockEntity.causeFallDamage` settles each victim before the next. \
+`AbstractArrow.onHitEntity`, `ThrownTrident.onHitEntity` and `ShulkerBullet.onHitEntity` finish the \
+projectile's hit before on-hit effects. `DeathProtection.applyEffects` calls \
+`ApplyStatusEffectsConsumeEffect.apply`, which adds status effects without ticking them inside the \
+protection hit. \
+Matching NeoForge's `DamageContainer` and `actuallyHurt` semantics, modified reductions are \
+recorded verbatim without clamping to `[0, limit]` or replacing `NaN` (only resulting damage \
+floors at `0.0`), and `Reduction::Absorption` receives `damage.min(hearts)`, records the modified \
+value verbatim, sets remaining damage to `max(damage - modified, 0)`, and deducts \
+`damage.min(modified)` from absorption hearts floored at `0.0`. A panic while invoking or dropping a reduction callback \
+uses the shared hook panic boundary: it disables that mod's reduction callbacks for the session \
+and reports loudly (error log plus error toast naming the mod) while leaving the reduction unchanged.\
+"""
+migrate = """\
+- Hook event fields: `LivingIncomingDamageEvent.container` and `LivingDamagePreEvent.container` \
+are now `DamageContainer<'a>` instead of `&'a mut DamageContainer`, and \
+`LivingDamagePostEvent.container` is now `DamageContainerView<'a>` instead of \
+`&'a DamageContainer`. Method calls like `event.container.new_damage()` and \
+`event.container.set_new_damage(v)` still use the same receiver, but `set_new_damage` and \
+`set_post_attack_invulnerability_ticks` now return `Result<(), DamageWriteRefusal>`. Handle \
+`InvalidDamage` for negative or NaN damage and `NegativeCooldown` for negative ticks. \
+A refused write leaves the previous value intact. Replace `&mut *event.container` with \
+`&mut event.container`, `&*event.container` on Post with `event.container` (a `Copy` read-only \
+view), and use `event.container.as_view()` in Incoming or Pre where a read-only view is needed. \
+Update manifest hook version pins if present (`living_incoming_damage` -> 4, \
+`living_damage_pre` -> 3, `living_damage_post` -> 3).
+- Reduction modifiers: remove `ReductionChange` imports and replace enum commands with closures \
+receiving `(view: DamageContainerView<'_>, amount: f32) -> f32`:
+  - `ReductionChange::Add(d)` -> `move |_view, amount| amount + d`
+  - `ReductionChange::Scale(k)` -> `move |_view, amount| amount * k`
+  - `ReductionChange::AtLeast(min)` -> `move |_view, amount| amount.max(min)`
+  - `ReductionChange::AtMost(max)` -> `move |_view, amount| amount.min(max)`
+  Closures may inspect live hit state (`view.original()`, `view.new_damage()`, prior \
+`view.reduction(...)`) and may be registered in `living_damage_pre` as well as \
+`living_incoming_damage` (for example for `Reduction::Absorption`).
+- Removed snapshot helpers: `DamageValues`, `DamageValues::reduction`, \
+`DamageValues::set_reduction`, `DamageContainer::new`, `DamageContainer::reduction_modifiers`, \
+`From<DamageValues>`, `From<&DamageContainer>`, `Clone`, `PartialEq`, and `Wire` on \
+`DamageContainer` are removed. Replace `values.original`, `values.blocked`, `values.shield_damage`, \
+`values.post_attack_invulnerability_ticks`, `values.should_cause_side_effects`, `values.inflicted` \
+and `values.health_damage` with the same-named accessors on `event.container`. In Incoming or Pre, \
+`values.new_damage` becomes `event.container.new_damage()`. For the former pre-absorption \
+`new_damage` on player and mob Post, use `event.container.inflicted()`; use \
+`event.container.health_damage()` for damage sent to health after absorption. For \
+`values.entered_pre`, record `event.container.new_damage()` when your Pre listener is called \
+before making your edits. Read `values.reduction(kind)` as `event.container.reduction(kind)`. \
+Replace `values.set_reduction(kind, amount)` with \
+`event.container.add_reduction_modifier(kind, move |_, _| amount)` before that stage runs. \
+Installed closures cannot be enumerated; keep your own registration data if needed. \
+Replace `DamageValues` and `DamageContainer` in Wire payloads with mod-owned `#[derive(Wire)]` \
+records of the values you need, and replace `ReductionChange` with your own command data. \
+`Reduction` and its compact `u8` Wire tags are unchanged: keep them in your payloads. \
+Build your records inside the hook and use the data to construct native closures locally; \
+callbacks are not serialized. In \
+tests, construct a live hit through the engine or use a live backend rather than building a \
+standalone `DamageContainer::new(...)`.
+- Post now runs at version 3's documented hit boundary. No further handler, type or manifest \
+pin changes are needed beyond the migration above. If a handler relied on the accidental \
+next-tick delay, use the in-hit result or explicitly schedule your own later work. The next \
+hazard, poison application or rider's hit already observes the preceding hit completed. This includes \
+a bee's stinger expiry following drowning in the same AI step.\
+"""

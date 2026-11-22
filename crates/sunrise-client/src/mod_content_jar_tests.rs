@@ -1,7 +1,7 @@
 use super::*;
 use crate::datapack::{self, DataPack, DataStore};
-use sunrise_mod_package::manifest::MissingJar;
 use std::io::Write as _;
+use sunrise_mod_package::manifest::MissingJar;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -336,8 +336,8 @@ fn accepted_jar_inputs_distinguish_unreadable_invalid_and_non_file_cache_entries
 
 #[test]
 fn code_only_inventory_changes_cache_roots_and_recipe_conditions_without_content_namespaces() {
-    use sunrise_mod_package::enabled::EnabledMods;
     use mod_api::Side;
+    use sunrise_mod_package::enabled::EnabledMods;
     let fixture = Fixture::new("enabled-inventory");
     fixture.write(
         "base/data/minecraft/recipe/code_only.json",

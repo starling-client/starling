@@ -1,0 +1,3 @@
+ids = ["method:BlockPart::analog_output"]
+why = "BlockPart::analog_output takes a &mut dyn LevelRandomHost instead of a &dyn LevelHost: the comparator container read it performs needs mutable access to the level."
+migrate = "Change the host parameter of the analog_output implementation to &mut dyn LevelRandomHost; reads through it work as before."

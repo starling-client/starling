@@ -5,11 +5,11 @@
 //! one instead (a self-signed certificate in `.sunrise/`), so turning the protocol on is enough, and logs the
 //! certificate's fingerprint for clients to pin.
 
-use sunrise_platform::server_files::properties::{OsEntropy, generate_secret_key};
 use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKeyChain};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Arc};
+use sunrise_platform::server_files::properties::{OsEntropy, generate_secret_key};
 
 pub const PASSWORD_VARIABLE: &str = "MINECRAFT_MANAGEMENT_TLS_KEYSTORE_PASSWORD";
 

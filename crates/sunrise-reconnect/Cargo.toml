@@ -1,0 +1,13 @@
+[package]
+name = "sunrise-reconnect"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Auto-reconnect: the Disconnected screen connects again after a lost connection, never after a kick or ban (docs/extras.md)"
+
+[dependencies]
+sunrise-platform = { path = "../sunrise-platform" }
+
+[lints]
+workspace = true

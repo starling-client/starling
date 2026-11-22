@@ -49,9 +49,9 @@ mod tests {
         fn subscribed(&self) -> &'static [Option<crate::HookId>] {
             &[]
         }
-        fn register(&self, r: &mut dyn Registrar, cx: &RegistrationContext) {
+        fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
             r.crash_section("never", Arc::new(Line("never")));
-            cx.refuse("bootstrap failed");
+            r.refuse("bootstrap failed");
         }
     }
 

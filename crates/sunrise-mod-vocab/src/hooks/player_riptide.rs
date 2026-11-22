@@ -6,9 +6,11 @@ pub trait Hooks {
     /// spin attack and grounded lift have been applied. The player's state is
     /// swapped in. No reply is needed.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_riptide",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event; Bukkit's PlayerRiptideEvent)"
     )]
-    fn player_riptide();
+    fn player_riptide(player: u128, name: &str);
 }

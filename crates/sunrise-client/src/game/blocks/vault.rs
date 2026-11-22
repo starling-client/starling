@@ -2,18 +2,23 @@
 //! (`vault`), the block's state as it changes, the rewards it ejects, the
 //! keys players insert (`VaultBlock.useItemOn`) and the display item spinning
 //! inside (`VaultRenderer`).
-use super::Game;
+use super::{
+    Game,
+    item_draw::{BlockItemDraw, block_entity_pose},
+};
 use sunrise_assets::item_model::DisplayContext;
 use sunrise_client::{
     Result,
     block_entities::BlockEntityLease,
     block_entity_render::vertex_light,
+    camera::rotate_degrees,
     containers::BlockEntity,
     item_render,
     items::ItemStack,
     mesher::Vertex,
     vault::{Vault, VaultEvent, VaultLevel, VaultPlayer, VaultState},
 };
+use sunrise_client_render::block_entity_reach::Reach;
 use sunrise_core::random::{LegacyRandom, LevelRandom};
 
 type Pos = (i32, i32, i32);
@@ -23,6 +28,15 @@ pub(super) struct TakenVault {
     pub(super) vault: Box<Vault>,
     pub(super) current: VaultState,
     pub(super) ominous: bool,
+}
+
+/// What a key insertion supplies to the reward roll
+/// (`VaultBlockEntity.resolveItemsToEject`): the player, the inserted stack and
+/// the player's luck.
+struct VaultEject {
+    player: sunrise_world::loot::LootEntity,
+    tool: sunrise_world::loot::LootStack,
+    luck: f32,
 }
 
 /// What a vault reads: the game time and the players. The players are listed
@@ -58,6 +72,17 @@ impl Game<'_> {
         });
         host.into_iter().chain(guests).collect()
     }
+    /// VaultBlock.useItemOn on a client level: something in the hand on an ACTIVE vault is
+    /// SUCCESS_SERVER, so the click ends there (no UseItem, no other hand, no swing); only the
+    /// server tries the key.
+    pub(super) fn vault_takes_click(&self, pos: [i32; 3], held: Option<&ItemStack>) -> bool {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        held.is_some()
+            && self.pack.assets.registry.state(state).is_some_and(|block| {
+                sunrise_client::block_entity_types::factory_block(&block.name) == "minecraft:vault"
+                    && block.properties.get("vault_state").map(String::as_str) == Some("active")
+            })
+    }
     /// The vault at `key` with its block's state and ominous flag.
     pub(super) fn take_vault(&mut self, key: Pos) -> Option<TakenVault> {
         let state = self.world.block(key.0, key.1, key.2);
@@ -86,6 +111,7 @@ impl Game<'_> {
     fn with_vault<T>(
         &mut self,
         key: Pos,
+        eject: Option<&VaultEject>,
         f: impl FnOnce(
             &mut Vault,
             &Players<'_, '_>,
@@ -122,10 +148,24 @@ impl Game<'_> {
                 let Some(loot) = &loot else {
                     return Vec::new();
                 };
-                let drops = match loot.random_sequence(table).filter(|_| sequence) {
-                    Some(s) => loot.roll_split(table, sequences.get(s, seed)),
-                    None => loot.roll_split(table, random),
+                // `LootContextParamSets.VAULT`: the vault's centre is the ORIGIN of
+                // every roll; the reward adds THIS_ENTITY, TOOL and luck.
+                let reward = eject.filter(|_| sequence);
+                let context = sunrise_world::loot::ContainerLootContext {
+                    luck: reward.map_or(0.0, |e| e.luck),
+                    entity: reward.map(|e| &e.player),
+                    ..Default::default()
                 };
+                let caller = players.game.caller_loot(
+                    Some([key.0, key.1, key.2].map(|v| f64::from(v) + 0.5)),
+                    reward.map(|e| e.tool.clone()),
+                );
+                let drops = caller
+                    .with(|| match loot.random_sequence(table).filter(|_| sequence) {
+                        Some(s) => loot.roll_container_with(table, sequences.get(s, seed), context),
+                        None => loot.roll_container_with(table, random, context),
+                    })
+                    .unwrap_or_default();
                 drops
                     .iter()
                     .map(sunrise_client::structure_blocks::loot_item_with_components)
@@ -153,7 +193,7 @@ impl Game<'_> {
     /// is a window.
     pub(super) fn tick_vault(&mut self, key: Pos) -> Result<()> {
         let pos = [key.0, key.1, key.2];
-        let ticked = self.with_vault(key, |v, l, random, state, ominous, roll, events| {
+        let ticked = self.with_vault(key, None, |v, l, random, state, ominous, roll, events| {
             v.server_tick(l, random, pos, state, ominous, roll, events);
         });
         if let Some(result) = ticked {
@@ -171,8 +211,14 @@ impl Game<'_> {
             return Ok(false);
         };
         let player = self.acting_uuid();
+        let eject = VaultEject {
+            player: self.killer_loot_entity(None),
+            tool: super::creatures::to_loot(&stack),
+            luck: self.acting_luck(),
+        };
         let used = self.with_vault(
             (pos[0], pos[1], pos[2]),
+            Some(&eject),
             |v, l, random, state, ominous, roll, events| {
                 v.use_item_on(
                     l,
@@ -243,6 +289,24 @@ impl Game<'_> {
     /// `VaultRenderer`: the display item of every vault near the camera that
     /// shows one, turning above its floor.
     pub(super) fn vault_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+        self.vault_items(camera, alpha, |d| {
+            self.submit_item_world(d.state, d.pose, d.light, out);
+        });
+    }
+
+    /// The items [`Self::vault_geometry`] draws: each copy of a display item's
+    /// cluster (`ItemEntityRenderer.renderMultipleFromCount`).
+    pub(super) fn vault_items(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        mut draw: impl FnMut(BlockItemDraw),
+    ) {
+        let _items = sunrise_client::spans::raw_flight_guard("block_entity_items");
+        let reach = Reach::Default;
+        sunrise_client::spans::note_block_entity_item_visits(|| {
+            self.world.block_entities.len() as u64
+        });
         for (key, entity) in &self.world.block_entities {
             let BlockEntity::Vault(vault) = entity else {
                 continue;
@@ -250,28 +314,36 @@ impl Game<'_> {
             let Some(stack) = &vault.display_item else {
                 continue;
             };
-            let at = glam::DVec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
-            if at.distance_squared(camera) >= 64.0 * 64.0 {
+            if !reach.should_render([key.0, key.1, key.2], camera, 0) {
                 continue;
             }
             let state = self.resolve_item(stack, DisplayContext::Ground, None, 0);
             if state.is_empty() {
                 continue;
             }
-            let pose =
-                glam::Mat4::from_translation(
-                    (at - camera).as_vec3() + glam::Vec3::new(0.5, 0.4, 0.5),
-                ) * glam::Mat4::from_rotation_y(vault.display_spin(alpha as f32).to_radians());
-            let light = self.world.light(key.0, key.1, key.2);
+            let mut pose = block_entity_pose(*key, camera);
+            pose.translate(0.5, 0.4, 0.5);
+            rotate_degrees(&mut pose, 1, vault.display_spin(alpha as f32));
+            let light = vertex_light(self.world.light(key.0, key.1, key.2));
             let seed =
-                i64::from(self.pack.item_renderer.item_id(&stack.item)) + i64::from(stack.damage);
+                i64::from(self.item_number(&stack.item).unwrap_or(0)) + i64::from(stack.damage);
             for copy in item_render::cluster_poses(
                 &state,
-                pose,
+                pose.to_glam(),
                 item_render::rendered_amount(stack.count),
                 seed,
             ) {
-                self.submit_item_world(&state, copy, vertex_light(light), out);
+                draw(BlockItemDraw {
+                    #[cfg(test)]
+                    stack,
+                    #[cfg(test)]
+                    display: DisplayContext::Ground,
+                    #[cfg(test)]
+                    seed: 0,
+                    state: &state,
+                    pose: copy,
+                    light,
+                });
             }
         }
     }

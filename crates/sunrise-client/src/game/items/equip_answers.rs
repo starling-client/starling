@@ -1,155 +1,37 @@
 //! `IItemExtension.canEquip` on the game's side (`native_can_equip`). The dispenser, a mob's
 //! pickup and the two inventory menus ask it, each with the game as the read-only `Host` and the
-//! target as a handle. A stack is converted for the parts once and lent to every slot and entity
-//! asked about it.
+//! target as a handle. A stack can be converted once for the parts and lent to every slot and
+//! entity asked about it in a synchronous check.
 use super::*;
 use crate::game::api_values::TryIntoApi;
 use sunrise_client::mobs::equip::CanEquip;
 
-/// A stack converted for the parts of its item, ready for any number of `can_equip` questions.
-/// Empty when no part of the item listens (the component's answer stands and nothing is
-/// converted). A listening stack that cannot be prepared refuses the decision.
-pub(in crate::game) struct EquipStack {
-    _leases: Vec<Box<dyn std::any::Any>>,
-    reads: Vec<mod_api::EquipReadRow>,
-    read_indices: std::collections::HashMap<u32, usize>,
-    stack: Option<Box<mod_api::ItemStack>>,
-    refused: bool,
-    epoch: Option<mod_api::WorldEpoch>,
-    admissions: std::collections::HashMap<u32, sunrise_client::join_seq::JoinSeq>,
-    source: Option<(usize, sunrise_client::mobs::equip::EquipStamp)>,
+/// A stack converted once for the parts of its item, ready for any number of `can_equip`
+/// questions in a synchronous check. `DataOnly` when no part of the item listens (the component's
+/// answer stands and nothing is converted); `Refused` when a listening stack cannot be converted.
+pub(in crate::game) enum EquipStack {
+    DataOnly,
+    Refused,
+    Ready(Box<mod_api::ItemStack>),
 }
 
 impl Game<'_> {
-    pub(in crate::game) fn equip_stack(
-        &self,
-        stack: &ItemStack,
-        kinds: &[&str],
-        targets: &[u32],
-    ) -> EquipStack {
-        let empty = |refused| EquipStack {
-            _leases: Vec::new(),
-            reads: Vec::new(),
-            read_indices: Default::default(),
-            stack: None,
-            refused,
-            source: None,
-            epoch: None,
-            admissions: Default::default(),
-        };
+    pub(in crate::game) fn equip_stack(&self, stack: &ItemStack) -> EquipStack {
         if !mod_api::__private::item_listens(mod_api::HookId::CanEquip, &stack.item) {
-            return empty(false);
+            return EquipStack::DataOnly;
         }
-        let address = stack as *const _ as usize;
-        let source = match sunrise_client::mobs::equip::source_stamp_at(address) {
-            Some(Some(stamp)) => Some((address, stamp)),
-            // A retired tracked scope is different from an ordinary immutable
-            // input without a barrier. It must never prepare or ask a guest.
-            Some(None) => return empty(true),
-            None => None,
-        };
         #[cfg(test)]
         EQUIP_CONVERSIONS.with(|count| count.set(count.get() + 1));
-        let stack = stack.try_into_api().ok().map(Box::new);
-        let admissions = {
-            let mut table = self.resident_entities.table.borrow_mut();
-            let order = table.admission_order();
-            targets
-                .iter()
-                .filter_map(|id| order(*id).map(|generation| (*id, generation)))
-                .collect::<std::collections::HashMap<_, _>>()
-        };
-        let rows = admissions
-            .keys()
-            .filter_map(|id| self.capture_equip_read(*id))
-            .collect::<Vec<_>>();
-        let prepared = stack
-            .as_ref()
-            .map(|stack| mod_api::__private::prepare_equip_parts(stack, kinds, &rows))
-            .transpose();
-        let (leases, refused) = match prepared {
-            Ok(Some(leases)) => (leases, false),
-            Ok(None) | Err(_) => (Vec::new(), true),
-        };
-        let reads = rows;
-        let read_indices = reads
-            .iter()
-            .enumerate()
-            .map(|(i, row)| (row.entity.id(), i))
-            .collect();
-        EquipStack {
-            read_indices,
-            epoch: self.native_lifecycle.epoch(),
-            admissions,
-            reads,
-            _leases: leases,
-            stack,
-            refused,
-            source,
+        match stack.try_into_api() {
+            Ok(stack) => EquipStack::Ready(Box::new(stack)),
+            Err(_) => EquipStack::Refused,
         }
-    }
-
-    fn capture_equip_read(&self, id: u32) -> Option<mod_api::EquipReadRow> {
-        let entity = self.entity(id)?;
-        let living = mod_api::LivingRef::new(entity);
-        let slots = [
-            mod_api::EquipmentSlot::MainHand,
-            mod_api::EquipmentSlot::OffHand,
-            mod_api::EquipmentSlot::Feet,
-            mod_api::EquipmentSlot::Legs,
-            mod_api::EquipmentSlot::Chest,
-            mod_api::EquipmentSlot::Head,
-            mod_api::EquipmentSlot::Body,
-            mod_api::EquipmentSlot::Saddle,
-        ];
-        Some(mod_api::EquipReadRow {
-            kind: self.entity_kind(entity),
-            position: self.entity_position(entity),
-            health: self.living_health(living),
-            max_health: self.living_max_health(living),
-            alive: self.living_alive(living),
-            living: self.living(entity).is_some(),
-            equipment: std::array::from_fn(|i| {
-                self.living_equipment(living, slots[i])
-                    .and_then(|stack| stack.try_into_api().ok())
-            }),
-            ..mod_api::EquipReadRow::new(entity)
-        })
-    }
-    pub(in crate::game) fn equip_can_apply(&self, prepared: &EquipStack, id: u32) -> bool {
-        if prepared.stack.is_none() {
-            return !prepared.refused;
-        }
-        if prepared.refused
-            || prepared.epoch != self.native_lifecycle.epoch()
-            || prepared.source.is_some_and(|(address, stamp)| {
-                sunrise_client::mobs::equip::source_stamp_at(address) != Some(Some(stamp))
-            })
-        {
-            return false;
-        }
-        let current = {
-            let mut table = self.resident_entities.table.borrow_mut();
-            let order = table.admission_order();
-            order(id)
-        };
-        if current.is_none() || current != prepared.admissions.get(&id).copied() {
-            return false;
-        }
-        let Some(current) = self.capture_equip_read(id) else {
-            return false;
-        };
-        prepared
-            .reads
-            .iter()
-            .find(|row| row.entity == current.entity)
-            .is_some_and(|expected| *expected == current)
     }
 
     /// `LivingEntity.isEquippableInSlot` with `IItemExtension.canEquip`: `data` is the stack's
-    /// `equippable` answer for the entity `entity` of type `kind` in `slot`, and the parts of the
-    /// prepared `stack`'s item may change it. When a part would be asked and `entity` is no live
-    /// entity of this side (a missing or stale handle), the slot is refused.
+    /// `equippable` answer for the entity `entity` of type `kind` in `slot`, and the parts of
+    /// `stack`'s item may change it. When a part would be asked and `entity` is no live entity of
+    /// this side (a missing or stale handle), the slot is refused.
     pub(in crate::game) fn can_equip(
         &self,
         stack: &EquipStack,
@@ -158,40 +40,15 @@ impl Game<'_> {
         kind: &str,
         data: bool,
     ) -> bool {
-        if stack.refused
-            || stack.source.is_some_and(|(address, stamp)| {
-                sunrise_client::mobs::equip::source_stamp_at(address) != Some(Some(stamp))
-            })
-        {
-            return false;
-        }
-        if stack.stack.is_none() {
-            return data;
-        }
-        if stack.epoch != self.native_lifecycle.epoch() {
-            return false;
-        }
-        let current = {
-            let mut table = self.resident_entities.table.borrow_mut();
-            let order = table.admission_order();
-            order(entity)
+        let stack = match stack {
+            EquipStack::DataOnly => return data,
+            EquipStack::Refused => return false,
+            EquipStack::Ready(stack) => stack,
         };
-        if current.is_none() || stack.admissions.get(&entity).copied() != current {
-            return false;
-        }
-        let row = stack
-            .read_indices
-            .get(&entity)
-            .and_then(|index| stack.reads.get(*index));
-        let stack = stack.stack.as_ref().expect("prepared equip stack");
         let Some(entity) = self.entity(entity) else {
             return false;
         };
-        let Some(row) = row else {
-            return false;
-        };
-        let host = crate::game::equip_host::EquipHost { game: self, row };
-        let native = crate::game::native_hooks::NativeHookHost { host: &host };
+        let native = crate::game::native_hooks::NativeHookHost { host: self };
         let mut can_equip = data;
         native.native_can_equip(
             stack,
@@ -206,81 +63,26 @@ impl Game<'_> {
     /// `can_equip` lent to a menu click that runs while the game is at hand (the player's own
     /// inventory menu, predicted or authoritative).
     pub(in crate::game) fn menu_can_equip(&self) -> MenuEquip<'_, '_> {
-        MenuEquip {
-            game: self,
-            prepared: Default::default(),
-        }
+        MenuEquip { game: self }
     }
 }
 
-/// The game lent to a menu click as its `CanEquip`. Each source scope stays prepared by its
-/// scalar identity and revision, so candidate traversal never compares stack payloads.
+/// The game lent to a menu click as its `CanEquip`.
 pub(in crate::game) struct MenuEquip<'g, 'a> {
     game: &'g Game<'a>,
-    prepared: std::cell::RefCell<
-        std::collections::HashMap<u64, (sunrise_client::mobs::equip::EquipStamp, EquipStack)>,
-    >,
 }
 
-impl MenuEquip<'_, '_> {
-    // A replacement may change to an item with no listeners. It still invalidates
-    // this decision's preparation, before the new item's data-only fast path.
-    fn stale_source(&self, stack: &ItemStack) -> bool {
-        match sunrise_client::mobs::equip::source_stamp_at(stack as *const _ as usize) {
-            Some(Some(current)) => self
-                .prepared
-                .borrow()
-                .get(&current.scope())
-                .is_some_and(|(original, _)| *original != current),
-            Some(None) => true,
-            None => false,
-        }
-    }
+/// Call-scoped `CanEquip` that lazily converts one unchanged `ItemStack` at most once across a
+/// synchronous candidate loop. Rust's `&'s ItemStack` borrow prevents mutation during the loop.
+struct ScopedMenuEquip<'g, 'a, 's> {
+    game: &'g Game<'a>,
+    stack: &'s ItemStack,
+    prepared: std::cell::OnceCell<EquipStack>,
 }
 
-impl CanEquip for MenuEquip<'_, '_> {
-    fn prepare(&self, stack: &ItemStack, entity: u32, kind: &str) -> bool {
-        if self.stale_source(stack) {
-            return false;
-        }
-        if !self.listens(stack) {
-            return true;
-        }
-        let Some(stamp) = sunrise_client::mobs::equip::source_stamp(stack) else {
-            return false;
-        };
-        if let Some((original, ready)) = self.prepared.borrow().get(&stamp.scope()) {
-            return *original == stamp && !ready.refused;
-        }
-        let ready = self.game.equip_stack(stack, &[kind], &[entity]);
-        let valid = !ready.refused;
-        self.prepared
-            .borrow_mut()
-            .insert(stamp.scope(), (stamp, ready));
-        valid
-    }
-    fn can_apply(&self, stack: &ItemStack, entity: u32) -> bool {
-        if self.stale_source(stack) {
-            return false;
-        }
-        if !self.listens(stack) {
-            return true;
-        }
-        let Some(stamp) = sunrise_client::mobs::equip::source_stamp(stack) else {
-            return false;
-        };
-        let prepared = self.prepared.borrow();
-        prepared
-            .get(&stamp.scope())
-            .is_some_and(|(original, prepared)| {
-                *original == stamp && self.game.equip_can_apply(prepared, entity)
-            })
-    }
-    fn listens(&self, stack: &ItemStack) -> bool {
-        // Keep stale observed inputs on the refusal path even if their replacement
-        // item has no listeners; fresh unsubscribed inputs still use the data path.
-        self.stale_source(stack)
-            || mod_api::__private::item_listens(mod_api::HookId::CanEquip, &stack.item)
+impl CanEquip for ScopedMenuEquip<'_, '_, '_> {
+    fn listens(&self, item: &str) -> bool {
+        mod_api::__private::item_listens(mod_api::HookId::CanEquip, item)
     }
     fn can_equip(
         &self,
@@ -290,24 +92,43 @@ impl CanEquip for MenuEquip<'_, '_> {
         kind: &str,
         data: bool,
     ) -> bool {
-        if self.stale_source(stack) {
-            return false;
+        if std::ptr::eq(stack, self.stack) {
+            let prepared = self
+                .prepared
+                .get_or_init(|| self.game.equip_stack(self.stack));
+            self.game.can_equip(prepared, slot, entity, kind, data)
+        } else {
+            let prepared = self.game.equip_stack(stack);
+            self.game.can_equip(&prepared, slot, entity, kind, data)
         }
-        if !mod_api::__private::item_listens(mod_api::HookId::CanEquip, &stack.item) {
-            return data;
-        }
-        let Some(stamp) = sunrise_client::mobs::equip::source_stamp(stack) else {
-            return false;
-        };
-        let prepared = self.prepared.borrow();
-        let Some((original, ready)) = prepared.get(&stamp.scope()) else {
-            return false;
-        };
-        if *original != stamp {
-            return false;
-        }
+    }
+    fn with_stack(&self, _stack: &ItemStack, body: &mut dyn FnMut(&dyn CanEquip)) {
+        body(self);
+    }
+}
 
-        self.game.can_equip(ready, slot, entity, kind, data)
+impl CanEquip for MenuEquip<'_, '_> {
+    fn listens(&self, item: &str) -> bool {
+        mod_api::__private::item_listens(mod_api::HookId::CanEquip, item)
+    }
+    fn can_equip(
+        &self,
+        stack: &ItemStack,
+        slot: &str,
+        entity: u32,
+        kind: &str,
+        data: bool,
+    ) -> bool {
+        let prepared = self.game.equip_stack(stack);
+        self.game.can_equip(&prepared, slot, entity, kind, data)
+    }
+    fn with_stack(&self, stack: &ItemStack, body: &mut dyn FnMut(&dyn CanEquip)) {
+        let scoped = ScopedMenuEquip {
+            game: self.game,
+            stack,
+            prepared: std::cell::OnceCell::new(),
+        };
+        body(&scoped);
     }
 }
 
@@ -334,32 +155,57 @@ mod tests {
             assert!(entity.kind(host).is_some());
             let _health = event.entity.health(host);
             let _alive = event.entity.alive(host);
-            let _equipment = event.entity.equipment(host, mod_api::EquipmentSlot::Head);
-            let _hand = event.entity.hand_item(host, mod_api::Hand::Main);
+            let _equipment =
+                event
+                    .entity
+                    .with_equipment(host, mod_api::EquipmentSlot::Head, |_| ());
+            let _hand = event
+                .entity
+                .with_hand_item(host, mod_api::Hand::Main, |_| ());
             self.0.fetch_add(1, Ordering::Relaxed);
             event.can_equip = event.slot == "feet";
         }
     }
-    struct Cobbler(FeetOnly);
+    /// A part of stone that allows every armor slot and counts asks, for multi-slot QuickCraft
+    /// tests.
+    #[derive(Clone, Default)]
+    struct AllArmor(std::sync::Arc<AtomicUsize>);
+    #[mod_api::sunrise_part]
+    impl mod_api::ItemPart for AllArmor {
+        fn can_equip(&self, host: &dyn mod_api::Host, event: &mut mod_api::CanEquipEvent<'_>) {
+            assert!(event.entity.entity().position(host).is_some());
+            self.0.fetch_add(1, Ordering::Relaxed);
+            event.can_equip = true;
+        }
+    }
+    struct Cobbler(FeetOnly, AllArmor);
     #[mod_api::__subscriptions]
     impl mod_api::Hooks for Cobbler {
         fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
             let helmet = r.item_key("minecraft:iron_helmet");
             r.item_part(helmet, self.0.clone());
+            let stone = r.item_key("minecraft:stone");
+            r.item_part(stone, self.1.clone());
         }
+    }
+
+    /// A component-rich stack of `item` with count `count` whose conversion for the parts
+    /// allocates.
+    fn rich_item(item: &str, count: u32) -> ItemStack {
+        use sunrise_core::nbt::Tag;
+        let mut stack = ItemStack::new(item, count);
+        stack.set_crafting_enchantments(vec![("minecraft:protection".into(), 4)]);
+        let data = stack.data_mut();
+        data.custom_name = Some(Tag::String("Crown".into()));
+        let component = Tag::compound([("slot", Tag::String("head".into()))]);
+        data.set_other("minecraft:equippable", Some(component));
+        stack
     }
 
     /// An iron helmet with enchantments, a name and its own `equippable`: a stack whose
     /// conversion for the parts allocates.
     fn rich_helmet() -> ItemStack {
-        use sunrise_core::nbt::Tag;
-        let mut helmet = ItemStack::new("minecraft:iron_helmet", 1);
-        helmet.set_crafting_enchantments(vec![("minecraft:protection".into(), 4)]);
-        let data = helmet.data_mut();
-        data.custom_name = Some(Tag::String("Crown".into()));
-        let component = Tag::compound([("slot", Tag::String("head".into()))]);
-        data.set_other("minecraft:equippable", Some(component));
-        helmet
+        rich_item("minecraft:iron_helmet", 1)
     }
 
     /// Runs `test` on a game with the cobbler's part installed, given what it counted.
@@ -380,53 +226,42 @@ mod tests {
     /// Runs `test` with the cobbler's mod installed, given what its part counted.
     fn installed(test: impl FnOnce(&AtomicUsize)) {
         let part = FeetOnly::default();
-        let cobbler = mod_api::ModEntry::new("cobbler", Box::new(Cobbler(part.clone())));
+        let all_armor = AllArmor(std::sync::Arc::clone(&part.0));
+        let cobbler = mod_api::ModEntry::new("cobbler", Box::new(Cobbler(part.clone(), all_armor)));
         let mods: mod_api::Mods = vec![cobbler].into();
         crate::entry::install_client_hooks();
         crate::game::api_values::install_parts(&mods).unwrap();
         mod_platform::testing::with_mods(mods, || test(&part.0));
     }
 
-    /// Asked once per candidate slot, a warmed `can_equip` allocates nothing, for a stack with
-    /// components, on every path: a menu the game is lent to (the player's, a guest's), and the
-    /// dispenser's and a pickup's prepared stack; nor does an item no part listens to. Each
-    /// answer is the part's.
+    /// Asked once per candidate slot through a local `MenuEquip::with_stack` scope, a warmed
+    /// `can_equip` allocates nothing and converts the stack only once across all candidates,
+    /// reading live entity state through the read-only host.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn warmed_can_equip_questions_allocate_nothing() {
         with_cobbler(|game, asked| {
-            let (helmet, other) = (
-                sunrise_client::mobs::equip::EquipInput::new(1, rich_helmet()),
-                ItemStack::new("minecraft:diamond_helmet", 1),
-            );
+            let (helmet, other) = (rich_helmet(), ItemStack::new("minecraft:diamond_helmet", 1));
             game.armor[0] = Some(rich_helmet());
             let (player, kind) = (game.own_entity_id() as u32, "minecraft:player");
             let slots = ["head", "chest", "legs", "feet"];
             let feet_only = [false, false, false, true];
             let lent = game.menu_can_equip();
-            assert!(lent.prepare(&helmet, player, kind));
-            assert!(!lent.can_equip(&helmet, "head", player, kind, true));
-            let (answers, allocations) = sunrise_threads::allocation_count::measure(|| {
-                slots.map(|slot| lent.can_equip(&helmet, slot, player, kind, slot == "head"))
-            });
-            assert_eq!((answers, allocations), (feet_only, 0));
             let (answers, allocations) = sunrise_threads::allocation_count::measure(|| {
                 slots.map(|slot| lent.can_equip(&other, slot, player, kind, slot == "head"))
             });
             assert_eq!((answers, allocations), ([true, false, false, false], 0));
-            let prepared = game.equip_stack(&helmet, &["minecraft:player"], &[player]);
-            assert!(
-                prepared.reads[0].equipment[5]
-                    .as_ref()
-                    .unwrap()
-                    .components()
-                    .is_some()
-            );
-            let (answers, allocations) = sunrise_threads::allocation_count::measure(|| {
-                slots.map(|slot| game.can_equip(&prepared, slot, player, kind, slot == "head"))
+            take_equip_conversions();
+            lent.with_stack(&helmet, &mut |scoped| {
+                assert!(!scoped.can_equip(&helmet, "head", player, kind, true));
+                assert_eq!(take_equip_conversions(), 1);
+                let (answers, allocations) = sunrise_threads::allocation_count::measure(|| {
+                    slots.map(|slot| scoped.can_equip(&helmet, slot, player, kind, slot == "head"))
+                });
+                assert_eq!((answers, allocations), (feet_only, 0));
+                assert_eq!(take_equip_conversions(), 0);
             });
-            assert_eq!((answers, allocations), (feet_only, 0));
-            assert_eq!(asked.load(Ordering::Relaxed), 1 + 4 + 4);
+            assert_eq!(asked.load(Ordering::Relaxed), 1 + 4);
         });
     }
 
@@ -436,7 +271,7 @@ mod tests {
     /// helmet inside off the head, and the bundle, the armour and the inventory stay as they were;
     /// it lets it onto the feet, and the bundle is empty after.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_guests_bundle_puts_on_what_the_part_allows() {
         use sunrise_client::bundle::Contents;
         use sunrise_protocol::packets::play::{ContainerClick, Serverbound};
@@ -446,7 +281,7 @@ mod tests {
                 let mut bundle = ItemStack::new("minecraft:bundle", 1);
                 let mut contents = Contents::of(game.items(), &bundle).unwrap();
                 let mut helmet = ItemStack::new("minecraft:iron_helmet", 1);
-                assert_eq!(contents.try_insert(game.items(), &mut helmet), 1);
+                assert_eq!(contents.try_insert(game.items(), &mut helmet, true), 1);
                 contents.store(&mut bundle);
                 let held = |game: &Game<'_>| {
                     let guest = &game.lan.as_ref().unwrap().hub.guests[0];
@@ -497,21 +332,7 @@ mod tests {
             });
         });
     }
-    #[test]
-    #[ignore = "daily"]
-    fn an_unpreparable_listening_stack_refuses_instead_of_using_the_data_answer() {
-        with_cobbler(|game, asked| {
-            let player = game.own_entity_id() as u32;
-            let empty = sunrise_client::mobs::equip::EquipInput::new(
-                42,
-                ItemStack::new("minecraft:iron_helmet", 0),
-            );
-            let prepared = game.equip_stack(&empty, &["minecraft:player"], &[player]);
-            assert!(!game.can_equip(&prepared, "head", player, "minecraft:player", true));
-            assert!(!game.equip_can_apply(&prepared, player));
-            assert_eq!(asked.load(Ordering::Relaxed), 0);
-        });
-    }
+
     #[test]
     #[ignore = "daily"]
     fn local_shift_click_prepares_once_and_preserves_a_refused_helmet() {
@@ -529,82 +350,34 @@ mod tests {
             assert_eq!(asked.load(Ordering::Relaxed), 1);
             assert_eq!(menu.slot(9), Some(&helmet));
             assert!(menu.slot(5).is_none());
-        });
-    }
-    #[test]
-    #[ignore = "daily"]
-    fn menu_replacement_with_an_unsubscribed_item_stays_stale() {
-        use sunrise_client::mobs::equip::EquipDecision;
-        with_cobbler(|game, asked| {
-            let player = game.own_entity_id() as u32;
-            let lent = game.menu_can_equip();
-            let mut slot = Some(rich_helmet());
-            let mut source = EquipDecision::new(42, &mut slot);
-            take_equip_conversions();
-            assert!(lent.prepare(&source, player, "minecraft:player"));
-            assert!(lent.can_equip(&source, "feet", player, "minecraft:player", false));
-            assert_eq!(take_equip_conversions(), 1);
-            source.replace(Some(ItemStack::new("minecraft:diamond_helmet", 3)));
-            assert!(!lent.prepare(&source, player, "minecraft:player"));
-            assert!(!lent.can_equip(&source, "head", player, "minecraft:player", true));
-            assert!(!lent.can_apply(&source, player));
-            let mut env = game.menu_env();
-            env.can_equip = Some(&lent);
-            let menu = sunrise_client::menu::Menu::new(sunrise_client::menu::Kind::Inventory);
-            assert!(!menu.takes_one(&env, 5, &source));
-            assert_eq!(asked.load(Ordering::Relaxed), 1);
-            assert_eq!(take_equip_conversions(), 0);
-            // A separate unsubscribed input still keeps the missing-target data answer.
-            let other = ItemStack::new("minecraft:diamond_helmet", 1);
-            assert!(lent.can_equip(&other, "head", 9999, "minecraft:player", true));
-            assert!(menu.takes_one(&env, 5, &other));
-            assert_eq!(take_equip_conversions(), 0);
-        });
-    }
-    #[test]
-    #[ignore = "daily"]
-    fn source_mutations_refuse_prepared_equip_without_reconversion_or_callback() {
-        use sunrise_client::mobs::equip::EquipDecision;
-        with_cobbler(|game, asked| {
-            let player = game.own_entity_id() as u32;
-            for mutation in 0..5 {
-                let mut helmet = rich_helmet();
-                helmet.count = 3;
-                let mut slot = Some(helmet);
-                let mut source = EquipDecision::new(42, &mut slot);
-                take_equip_conversions();
-                let prepared = game.equip_stack(&source, &["minecraft:player"], &[player]);
-                assert_eq!(take_equip_conversions(), 1);
-                assert!(game.can_equip(&prepared, "feet", player, "minecraft:player", false));
-                let before = asked.load(Ordering::Relaxed);
-                match mutation {
-                    0 => *source.count_mut().unwrap() = 2,
-                    1 => {
-                        source.data_mut().unwrap().custom_name =
-                            Some(sunrise_core::nbt::Tag::String("Changed crown".into()))
-                    }
-                    2 => {
-                        source.replace(Some(rich_helmet()));
-                    }
-                    3 => {
-                        source.remove();
-                    }
-                    4 => {
-                        *source.count_mut().unwrap() = 2;
-                        *source.count_mut().unwrap() = 3;
-                    }
-                    _ => unreachable!(),
-                }
-                assert!(!game.can_equip(&prepared, "feet", player, "minecraft:player", true));
-                assert_eq!(asked.load(Ordering::Relaxed), before);
-                assert_eq!(take_equip_conversions(), 0);
+
+            // Multi-candidate QuickCraft across all four armor slots converts the unchanged
+            // component-rich stack once lazily for the synchronous distribution pass.
+            menu.carried = Some(rich_item("minecraft:stone", 4));
+            menu.click(&env, -999, 0, Input::QuickCraft).unwrap();
+            for slot in 5..9 {
+                menu.click(&env, slot, 1, Input::QuickCraft).unwrap();
             }
+            take_equip_conversions();
+            asked.store(0, Ordering::Relaxed);
+            menu.click(&env, -999, 2, Input::QuickCraft).unwrap();
+            assert_eq!(
+                take_equip_conversions(),
+                1,
+                "four armor-slot candidates in one QuickCraft pass convert the stack once"
+            );
+            assert_eq!(asked.load(Ordering::Relaxed), 4);
+            for slot in 5..9 {
+                assert_eq!(menu.slot(slot).map(|s| s.count), Some(1));
+            }
+            assert!(menu.carried.is_none());
         });
     }
+
     #[test]
     #[ignore = "daily"]
-    fn missing_despawned_and_readmitted_entities_refuse_but_no_listener_keeps_data() {
-        use sunrise_client::{mobs::Mob, mobs::equip::EquipInput};
+    fn missing_and_despawned_entities_refuse_but_no_listener_keeps_data() {
+        use sunrise_client::mobs::Mob;
         with_cobbler(|game, asked| {
             game.options.dedicated = Some(Vec::new());
             let kind = game
@@ -616,19 +389,19 @@ mod tests {
             let at = sunrise_core::geometry::Vec3::new(6.5, 64.0, 5.5);
             let index = game.mobs.len();
             game.mobs.push(Mob::new(21, kind.clone(), at, 0.0));
-            let source = EquipInput::new(1, rich_helmet());
-            let prepared = game.equip_stack(&source, &["minecraft:zombie"], &[21]);
+            let prepared = game.equip_stack(&rich_helmet());
             assert!(game.can_equip(&prepared, "feet", 21, "minecraft:zombie", false));
             let before = asked.load(Ordering::Relaxed);
             assert!(!game.can_equip(&prepared, "feet", 9999, "minecraft:zombie", true));
             game.mobs.remove(index);
             assert!(!game.can_equip(&prepared, "feet", 21, "minecraft:zombie", true));
-            game.mobs.push(Mob::new(21, kind, at, 0.0));
-            assert!(!game.can_equip(&prepared, "feet", 21, "minecraft:zombie", true));
             assert_eq!(asked.load(Ordering::Relaxed), before);
+            game.mobs.push(Mob::new(21, kind, at, 0.0));
+            assert!(game.can_equip(&prepared, "feet", 21, "minecraft:zombie", false));
+            assert_eq!(asked.load(Ordering::Relaxed), before + 1);
             take_equip_conversions();
             let other = ItemStack::new("minecraft:diamond_helmet", 3);
-            let data = game.equip_stack(&other, &[], &[]);
+            let data = game.equip_stack(&other);
             assert_eq!(take_equip_conversions(), 0);
             assert!(game.can_equip(&data, "head", 9999, "minecraft:zombie", true));
         });

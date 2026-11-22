@@ -6,14 +6,28 @@
 //! network threads ([`io_pool`]): they forward decoded packets to the game
 //! thread, frame, compress and encrypt what the game queues, and keep the
 //! keep-alive schedule on their own so a long tick never times a client out.
+mod configuration_tasks;
+mod payloads;
+#[path = "transaction_packets.rs"]
+pub mod transaction_packets;
 use super::config_payloads::ConfigIo;
 use super::{
     Body, Joined, NetEvent, Out, Shared,
     data::{CORE_PACK, SyncData},
-    forwarding,
     io_pool::{self, Session as _},
 };
 use crate::raw_payloads::{Side, Transport};
+use mod_api::{PayloadFrameStage, PayloadId, PayloadSendError};
+use std::{
+    cell::Cell,
+    net::TcpStream,
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering},
+        mpsc::{RecvTimeoutError, Sender, channel},
+    },
+    time::{Duration, Instant},
+};
 use sunrise_protocol::{
     PROTOCOL_VERSION,
     connection::{ConnWriter, Connection, Counters},
@@ -25,17 +39,6 @@ use sunrise_protocol::{
     },
     payload_negotiation::Phase,
     text::translatable,
-};
-use mod_api::{PayloadFrameStage, PayloadId, PayloadSendError};
-use std::{
-    cell::Cell,
-    net::TcpStream,
-    sync::{
-        Arc, Mutex, PoisonError,
-        atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering},
-        mpsc::{RecvTimeoutError, Sender, channel},
-    },
-    time::{Duration, Instant},
 };
 
 /// ServerCommonPacketListenerImpl.keepConnectionAlive: a keep-alive every 15 s,
@@ -279,6 +282,8 @@ pub struct PlayerSender {
     pub undrained: Arc<Undrained>,
     /// The bytes of the bodies sent and not framed yet.
     pub pending: Arc<AtomicUsize>,
+    /// Bytes a network client may leave queued before it is closed ([`io_pool::MAX_PENDING`]).
+    cap: usize,
     held: Arc<Mutex<Vec<Body>>>,
     framing: sunrise_protocol::connection::Framing,
     to: To,
@@ -291,8 +296,8 @@ pub struct PlayerSender {
     pub announced: Arc<super::announced_channels::AnnouncedChannels>,
     /// Its `sunrise:levels` answer: its revision and the levels besides its own it can view.
     pub viewed_levels: sunrise_protocol::viewed_levels::Answer,
-    /// The `sunrise:menu_extra` payload layout the client reads: its revision answer,
-    /// 0 for one that did not answer (the legacy layout, a menu of a block only).
+    /// The `sunrise:menu_extra` revision the client answered in configuration,
+    /// or 0 when the client did not answer (for example, a vanilla client).
     pub menu_extra_rev: u8,
 }
 #[derive(Clone)]
@@ -357,6 +362,7 @@ impl PlayerSender {
         Self {
             undrained: Arc::default(),
             pending,
+            cap: io_pool::MAX_PENDING,
             held: Arc::default(),
             framing: sunrise_protocol::connection::Framing::Network(None),
             to: To::Channel(tx),
@@ -378,9 +384,10 @@ impl PlayerSender {
         sender.payload_transport = transport;
         sender
     }
-    /// Real bounded output queue without socket adoption, for executor tests.
-    #[cfg(test)]
-    pub(crate) fn payload_executor_test_sender(
+    /// Real bounded output queue without socket adoption, for executor tests (and the
+    /// game's, through `test-payload-probe`).
+    #[cfg(any(test, feature = "test-payload-probe"))]
+    pub fn payload_executor_test_sender(
         transport: Arc<Transport>,
     ) -> (Self, impl Fn() -> Vec<Vec<u8>>) {
         let pending = Arc::default();
@@ -390,6 +397,7 @@ impl PlayerSender {
             payload_transport: transport,
             undrained: Arc::default(),
             pending,
+            cap: io_pool::MAX_PENDING,
             held: Arc::default(),
             framing: sunrise_protocol::connection::Framing::Memory,
             to: To::Pool(
@@ -407,11 +415,18 @@ impl PlayerSender {
         };
         (sender, move || inspect.queued_contents())
     }
+    /// Override framing on a test sender (e.g. `Framing::Network(None)` for TCP frame limits).
+    #[cfg(test)]
+    pub fn with_framing(mut self, framing: sunrise_protocol::connection::Framing) -> Self {
+        self.framing = framing;
+        self
+    }
     /// A connectionless actor has no writer, queue or packet delivery.
     pub fn disabled() -> Self {
         Self {
             undrained: Arc::default(),
             pending: Arc::default(),
+            cap: io_pool::MAX_PENDING,
             held: Arc::default(),
             framing: sunrise_protocol::connection::Framing::Network(None),
             to: To::Disabled,
@@ -449,9 +464,21 @@ impl PlayerSender {
     fn reserve(&self, cost: usize) -> bool {
         self.pending
             .try_update(Ordering::AcqRel, Ordering::Relaxed, |n| {
-                n.checked_add(cost).filter(|n| *n <= io_pool::MAX_PENDING)
+                n.checked_add(cost).filter(|n| *n <= self.cap)
             })
             .is_ok()
+    }
+    /// Count a packet's bytes as queued. A network connection is refused (false) past its
+    /// cap, where the caller closes it. A memory connection counts the bytes but never
+    /// refuses: its reader is this process, and a join sends its whole first view in one
+    /// burst. `pending` may then exceed [`io_pool::MAX_PENDING`] until it drains, and
+    /// `prepare_payload` can answer `Backpressure` meanwhile.
+    fn reserve_queued(&self, cost: usize) -> bool {
+        if matches!(self.framing, sunrise_protocol::connection::Framing::Memory) {
+            self.pending.fetch_add(cost, Ordering::AcqRel);
+            return true;
+        }
+        self.reserve(cost)
     }
     /// Prepare a whole encoded packet without publishing it. The channel is diagnostic only;
     /// its wire identifier must already be included in `body`.
@@ -503,10 +530,17 @@ impl PlayerSender {
         if matches!(self.to, To::Disabled) {
             return;
         }
-        if !self.reserve(io_pool::charge(body.retained())) {
+        let cost = io_pool::charge(body.retained());
+        let Err(body) = transaction_packets::capture(self, body, cost) else {
+            return;
+        };
+        if !self.reserve_queued(cost) {
             self.close();
             return;
         }
+        self.publish_reserved(body);
+    }
+    fn publish_reserved(&self, body: Body) {
         if HOLDING.get() {
             self.held().push(body);
         } else {
@@ -538,7 +572,7 @@ impl PlayerSender {
         if matches!(self.to, To::Disabled) {
             return;
         }
-        if !HOLDING.get() {
+        if !HOLDING.get() || transaction_packets::active() {
             bodies
                 .into_iter()
                 .for_each(|body| self.send_body(body.into()));
@@ -547,12 +581,103 @@ impl PlayerSender {
         let mut held = self.held();
         for body in bodies {
             let body = body.into();
-            if !self.reserve(io_pool::charge(body.retained())) {
+            if !self.reserve_queued(io_pool::charge(body.retained())) {
                 self.close();
                 return;
             }
             held.push(body);
         }
+    }
+    /// Queue a bundle (including both delimiters) without interleaving output.
+    pub(super) fn send_batch<B: Into<Body>>(&self, bodies: impl IntoIterator<Item = B>) {
+        if matches!(self.to, To::Disabled) {
+            return;
+        }
+        let bodies = bodies.into_iter().map(Into::into).collect::<Vec<_>>();
+        if bodies.is_empty() {
+            return;
+        }
+        let cost = bodies
+            .iter()
+            .map(|body| io_pool::charge(body.retained()))
+            .sum();
+        let Err(bodies) = transaction_packets::capture(self, bodies, cost) else {
+            return;
+        };
+        if !self.reserve_queued(cost) {
+            self.close();
+            return;
+        }
+        self.publish_reserved_many(bodies);
+    }
+
+    fn publish_reserved_many(&self, bodies: Vec<Body>) {
+        if bodies.is_empty() {
+            return;
+        }
+        if HOLDING.get() {
+            self.held().extend(bodies);
+        } else {
+            self.flush();
+            match &self.to {
+                To::Disabled => {}
+                To::Channel(tx) => drop(tx.send(unshared(bodies))),
+                To::Pool(outbox, _) => outbox.send(bodies, None),
+            }
+        }
+    }
+
+    /// Tracking output is cut only at complete bundles or individual non-bundled
+    /// packets. In particular, a late pairing is a single publication even when
+    /// the tick no longer holds output: reliable publishers cannot split it.
+    pub(super) fn send_tracking_bodies(&self, bodies: &mut Vec<Body>) {
+        if matches!(self.to, To::Disabled) {
+            bodies.clear();
+            return;
+        }
+        if bodies.is_empty() {
+            return;
+        }
+        let prepared = bodies.iter().any(Body::is_prepared);
+        let cost = bodies.iter().map(io_pool::body_charge).sum();
+        if HOLDING.get() && !prepared {
+            let mut held = self.held();
+            if self.reserve_queued(cost) {
+                held.append(bodies);
+            } else {
+                drop(held);
+                bodies.clear();
+                self.close();
+            }
+            return;
+        }
+        self.flush();
+        let mut bodies = std::mem::take(bodies);
+        let To::Pool(outbox, _) = &self.to else {
+            if let To::Channel(tx) = &self.to {
+                drop(tx.send(unshared(bodies)));
+            }
+            return;
+        };
+        if !self.reserve_queued(cost) {
+            self.close();
+            return;
+        }
+        // A pass can be deferred until tracking callbacks. Check the current epoch
+        // at publication, not only when the attachment bytes were prepared.
+        if prepared {
+            if let Some(epoch) = self.payload_transport.epoch() {
+                bodies.retain(|body| body.pairing_epoch().is_none_or(|e| Arc::ptr_eq(e, &epoch)));
+                let published =
+                    epoch.with_active(|| outbox.send(std::mem::take(&mut bodies), None));
+                if published.is_some() {
+                    return;
+                }
+            }
+            // Expiring mod attachments never suppress vanilla pairing packets.
+            bodies.retain(|body| !body.is_prepared());
+        }
+        outbox.send(bodies, None);
     }
     /// Hand the held packets to the network thread.
     pub fn flush(&self) {
@@ -576,7 +701,7 @@ impl PlayerSender {
             To::Pool(outbox, _) => {
                 let body = play::Clientbound::Disconnect(cfg::Disconnect { reason }).encode();
                 let body = Body::from(body);
-                if !self.reserve(io_pool::charge(body.retained())) {
+                if !self.reserve_queued(io_pool::charge(body.retained())) {
                     self.close();
                     return;
                 }
@@ -610,6 +735,19 @@ impl PreparedPayload {
         } else {
             Err(PayloadSendError::Disconnected)
         }
+    }
+    /// Transfer the existing reservation with the framed body into its pairing bundle.
+    pub(crate) fn into_prepared_body(
+        mut self,
+        epoch: Arc<crate::raw_payloads::connection::Epoch>,
+    ) -> Body {
+        let bytes = self.bytes.take().expect("prepared bytes");
+        Body::Prepared(Arc::new(super::body::PairingPayload {
+            bytes,
+            epoch,
+            pending: self.sender.pending.clone(),
+            cost: self.cost,
+        }))
     }
 }
 impl Drop for PreparedPayload {
@@ -765,23 +903,15 @@ fn serve_connection(
     let e = |e: sunrise_protocol::Error| e.to_string();
     c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
-    // Proxy forwarding carries data after the host (for example Floodgate's).
-    let forwarding = shared.config.forwarding_secret.is_some()
-        && shared.config.online.is_none()
-        && !c.is_memory();
-    let intention = if forwarding {
-        handshake::decode_intention(id, &payload, handshake::PROXY_HOST_LIMIT).map_err(e)?
-    } else {
-        match handshake::Serverbound::decode(id, &payload).map_err(e)? {
-            handshake::Serverbound::Intention(i) => i,
-            _ => return Err("expected a handshake".into()),
-        }
+    let intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
+        handshake::Serverbound::Intention(i) => i,
+        _ => return Err("expected a handshake".into()),
     };
     match intention.intent {
         // ServerHandshakePacketListenerImpl: a server that does not reply
         // to status requests closes the connection.
         handshake::STATUS if !shared.enable_status() => Ok(()),
-        handshake::STATUS => serve_status(&mut c, &shared, intention.protocol),
+        handshake::STATUS => serve_status(&mut c, &shared),
         handshake::TRANSFER if !shared.accepts_transfers() => {
             login_disconnect(
                 &mut c,
@@ -790,9 +920,7 @@ fn serve_connection(
             Ok(())
         }
         handshake::LOGIN | handshake::TRANSFER => {
-            if let Some(version) = older_client(&shared, intention.protocol) {
-                c.serve_older(version);
-            } else if intention.protocol != PROTOCOL_VERSION {
+            if intention.protocol != PROTOCOL_VERSION {
                 let key = if intention.protocol < 754 {
                     "multiplayer.disconnect.outdated_client"
                 } else {
@@ -814,22 +942,7 @@ fn serve_connection(
     }
 }
 
-/// The older release a client's handshake states, when this server lets it join
-/// (`sunrise-accept-older-clients`): 26.2 down to 1.20.5. The client-direction adapter
-/// also knows older releases whose server-direction layouts are not implemented.
-fn older_client(
-    shared: &Shared,
-    protocol: i32,
-) -> Option<sunrise_protocol::adapter::ServerVersion> {
-    use sunrise_protocol::adapter::ServerVersion;
-    let version = ServerVersion::from_protocol(protocol)?;
-    (shared.config.accept_older_clients
-        && version.at_most(ServerVersion::V26_2)
-        && !version.at_most(ServerVersion::V1_20_3))
-    .then_some(version)
-}
-
-fn serve_status(c: &mut Connection, shared: &Shared, protocol: i32) -> Result<(), String> {
+fn serve_status(c: &mut Connection, shared: &Shared) -> Result<(), String> {
     let e = |e: sunrise_protocol::Error| e.to_string();
     let mut requested = false;
     loop {
@@ -839,11 +952,7 @@ fn serve_status(c: &mut Connection, shared: &Shared, protocol: i32) -> Result<()
             status::Serverbound::StatusRequest(_) if requested => return Ok(()),
             status::Serverbound::StatusRequest(_) => {
                 requested = true;
-                // A client this server lets join is told its own protocol, so its list shows it joinable.
-                let json = match older_client(shared, protocol) {
-                    Some(_) => shared.status_json_for(protocol),
-                    None => shared.status_json(),
-                };
+                let json = shared.status_json();
                 c.send(
                     &status::Clientbound::StatusResponse(status::StatusResponse { json }).encode(),
                 )
@@ -917,7 +1026,7 @@ fn authenticate(
     name: &str,
     address: std::net::SocketAddr,
     user: &str,
-) -> Result<Result<(u128, Vec<login::Property>), String>, String> {
+) -> Result<Result<(u128, Vec<sunrise_core::profile::AccountProperty>), String>, String> {
     let e = |e: sunrise_protocol::Error| e.to_string();
     let mut challenge = [0u8; 4];
     sunrise_protocol::crypto::random_bytes(&mut challenge).map_err(e)?;
@@ -1024,75 +1133,32 @@ fn serve_login(
         );
         return Ok(());
     }
-    let (mut name, mut address) = (hello.name.clone(), address);
-    let user_of = |name: &str, address| {
-        shared
-            .config
-            .log
-            .as_ref()
-            .map(|log| user_name(name, address, log))
-            .unwrap_or_default()
-    };
-    let mut user = user_of(&name, address);
+    let mut name = hello.name.clone();
+    let user = shared
+        .config
+        .log
+        .as_ref()
+        .map(|log| user_name(&name, address, log))
+        .unwrap_or_default();
     // handleHello: online mode authenticates first; offline mode, and the
     // integrated server's own player through memory, derive the profile
-    // from the name. Behind a Velocity proxy (forwarding.secret) the proxy has
-    // authenticated the player and the profile is the one it forwards.
+    // from the name.
     let online = shared.config.online.as_ref().filter(|_| !c.is_memory());
-    let forwarding = shared
-        .config
-        .forwarding_secret
-        .as_deref()
-        .filter(|_| online.is_none() && !c.is_memory());
     // `ServerLoginPacketListenerImpl.handleHello`: the integrated server's own player
     // (the name matches `getSingleplayerProfile`) logs in as that profile — the account's
-    // UUID — never as an offline profile made from the name. Every other memory player
-    // (a splitscreen seat) stays offline; a LAN guest could not own the name in online
-    // mode, and this keeps an offline host's name from being taken over a memory room.
+    // UUID — never as an offline profile made from the name. Other memory logins stay offline.
+    // TCP does not get this shortcut; the integrated server reserves the owner's identity.
     let singleplayer = shared
         .config
         .singleplayer_profile
         .as_ref()
         .filter(|(owner_name, _)| c.is_memory() && hello.name.eq_ignore_ascii_case(owner_name))
         .map(|(owner_name, uuid)| (owner_name.clone(), *uuid));
-    let (uuid, properties) = match (online, forwarding) {
-        (Some(online), _) => {
-            match authenticate(&mut c, shared, online, &hello.name, address, &user) {
-                Ok(Ok(profile)) => profile,
-                Ok(Err(refused)) => {
-                    lost(shared, &user, &refused);
-                    return Ok(());
-                }
-                Err(err) => {
-                    lost(shared, &user, "Disconnected");
-                    return Err(err);
-                }
-            }
-        }
-        (None, Some(secret)) => match forward(&mut c, secret) {
-            Ok(Ok(forwarded)) => {
-                (name, address) = (
-                    forwarded.name,
-                    std::net::SocketAddr::new(forwarded.address, address.port()),
-                );
-                user = user_of(&name, address);
-                (forwarded.uuid, forwarded.properties)
-            }
-            Ok(Err(reason)) => {
-                let text = "This server is behind a proxy: join through the proxy.";
-                let json = format!("{{\"text\":\"{text}\"}}");
-                let _ = c.send(
-                    &login::Clientbound::Disconnect(login::Disconnect { reason_json: json })
-                        .encode(),
-                );
-                if let Some(log) = &shared.config.log {
-                    (log.write)(
-                        "Server thread",
-                        "WARN",
-                        &format!("Refused {user}: {reason}"),
-                    );
-                }
-                lost(shared, &user, text);
+    let (uuid, properties) = match online {
+        Some(online) => match authenticate(&mut c, shared, online, &hello.name, address, &user) {
+            Ok(Ok(profile)) => profile,
+            Ok(Err(refused)) => {
+                lost(shared, &user, &refused);
                 return Ok(());
             }
             Err(err) => {
@@ -1100,7 +1166,7 @@ fn serve_login(
                 return Err(err);
             }
         },
-        (None, None) => match singleplayer {
+        None => match singleplayer {
             Some((owner_name, owner_uuid)) => {
                 name = owner_name;
                 let properties = shared
@@ -1164,41 +1230,12 @@ fn serve_login(
     }
 }
 
-/// Asks the proxy for the player's forwarded information (login plugin channel `velocity:player_info`) and
-/// checks it against the shared secret. The outer error is the connection failing; the inner one is a refusal
-/// (the client isn't a proxy, or signed with another secret), with the reason for the log.
-fn forward(
-    c: &mut Connection,
-    secret: &[u8],
-) -> Result<Result<forwarding::Forwarded, String>, String> {
-    const TRANSACTION: i32 = 1;
-    let e = |e: sunrise_protocol::Error| e.to_string();
-    c.send(
-        &login::Clientbound::CustomQuery(login::CustomQuery {
-            transaction: TRANSACTION,
-            channel: forwarding::CHANNEL.into(),
-            data: forwarding::request(),
-        })
-        .encode(),
-    )
-    .map_err(e)?;
-    let (id, payload) = c.recv().map_err(e)?;
-    match login::Serverbound::decode(id, &payload).map_err(e)? {
-        login::Serverbound::CustomQueryAnswer(answer) if answer.transaction == TRANSACTION => {
-            Ok(match answer.payload {
-                Some(data) => forwarding::verify(secret, &data),
-                None => Err("the client didn't answer the forwarding request".into()),
-            })
-        }
-        _ => Err("unexpected packet during login".into()),
-    }
-}
-
 struct Parts {
+    sync: Arc<SyncData>,
     payload_transport: Arc<Transport>,
     uuid: u128,
     name: String,
-    properties: Vec<login::Property>,
+    properties: Vec<sunrise_core::profile::AccountProperty>,
     info: ClientInformation,
     brand: String,
     datapack_offer: Option<Vec<u8>>,
@@ -1211,7 +1248,7 @@ fn login_and_configure(
     uuid: u128,
     name: &str,
     user: &str,
-    properties: Vec<login::Property>,
+    properties: Vec<sunrise_core::profile::AccountProperty>,
 ) -> Result<Option<Parts>, String> {
     let e = |e: sunrise_protocol::Error| e.to_string();
     // ServerLoginPacketListenerImpl: memory connections are not compressed.
@@ -1266,7 +1303,7 @@ fn login_and_configure(
         cfg::Clientbound::CustomPayload(cfg::CustomPayload {
             channel: "minecraft:brand".into(),
             data: {
-                let mut w = sunrise_protocol::buf::Writer::new();
+                let mut w = ::sunrise_core::vanilla_bytes::Writer::new();
                 // MinecraftServer.getServerModName: "vanilla" there; a modded
                 // server names itself, and Sunrise's says "sunrise", as its client does.
                 w.string("sunrise");
@@ -1293,9 +1330,15 @@ fn login_and_configure(
     let mut payload_negotiation = sunrise_protocol::payload_negotiation::Negotiation::new(
         payload_transport.local.manifest.clone(),
     );
-    // Query must precede known packs even for empty installations: a client
-    // answers it before its pack reply, so the barrier cannot overtake its Offer.
-    send_payload_control(c, sunrise_protocol::payload_negotiation::Control::Query)?;
+    // Only a mod's declaration opens negotiation before the client is known: with the
+    // engine's alone a vanilla client is sent nothing vanilla's server would not send it.
+    // A Sunrise client is asked once it names itself, and answers before the barrier at its
+    // known-packs reply.
+    if payload_transport.local.has_mod_declarations()
+        && let Some(control) = payload_negotiation.initial()
+    {
+        send_payload_control(c, control)?;
+    }
     // Sunrise clients announce their list after recognizing our brand, before
     // answering known packs. That reply orders the announcement without a ping.
     let server_mods = sunrise_protocol::mod_list::local();
@@ -1333,8 +1376,9 @@ fn login_and_configure(
                     .string(32767)
                     .unwrap_or(brand);
                 if brand == "sunrise" {
-                    // The query was already sent before known packs.
-                    let _ = payload_negotiation.require_protocol();
+                    if let Some(control) = payload_negotiation.require_protocol() {
+                        send_payload_control(c, control)?;
+                    }
                     send(
                         c,
                         cfg::Clientbound::CustomPayload(cfg::CustomPayload {
@@ -1368,6 +1412,18 @@ fn login_and_configure(
                 datapack_offer = Some(p.data);
             }
             cfg::Serverbound::SelectKnownPacks(p) => {
+                // A Sunrise client's Offer answers this server's Query (sent on its
+                // brand) or Offer (sent on its own Query), both after the known
+                // packs, so its pack reply may come first: a ping orders the Offer
+                // before the pong.
+                if brand == "sunrise" && payload_negotiation.accepted().is_none() {
+                    await_payload_answer(
+                        c,
+                        &payload_transport,
+                        &mut payload_negotiation,
+                        &mut info,
+                    )?;
+                }
                 let admission = payload_negotiation
                     .finish_without_offer()
                     .map_err(|e| e.to_string())
@@ -1385,24 +1441,6 @@ fn login_and_configure(
             _ => {}
         }
     };
-    // An older client's packet ids are translated, not yet what is inside them (#10404): the registry data,
-    // tags and play packets would reach it in 26.3's ids and layouts, so it is turned away before them.
-    if let Some(version) = c.older_client()
-        && !shared.config.older_clients_play
-    {
-        let text = super::OLDER_CLIENTS_UNFINISHED;
-        let reason = sunrise_core::nbt::Tag::String(sunrise_core::nbt::JavaString::from(text));
-        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
-        if let Some(log) = &shared.config.log {
-            let line = format!(
-                "Disconnecting {name}: its client is on protocol {} ({text})",
-                version.protocol()
-            );
-            (log.write)("Server thread", "INFO", &line);
-        }
-        lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);
-        return Ok(None);
-    }
     // A Sunrise client hears that this server runs its mods' quiet commands
     // (sunrise_protocol::quiet); a vanilla one is told nothing.
     if brand == "sunrise" {
@@ -1576,6 +1614,15 @@ fn login_and_configure(
         lost(shared, &format!("{name} ({})", uuid_string(uuid)), &text);
         return Ok(None);
     }
+    configuration_tasks::configure(
+        c,
+        shared,
+        uuid,
+        name,
+        &mut info,
+        &payload_transport,
+        &mut payload_negotiation,
+    )?;
     if let Some(epoch) = payload_transport.epoch()
         && !epoch.wait_main()
     {
@@ -1604,6 +1651,7 @@ fn login_and_configure(
     let channels = std::mem::take(&mut c.channels);
     c.finish()?;
     Ok(Some(Parts {
+        sync: sync_data,
         channels,
         payload_transport,
         uuid,
@@ -1627,6 +1675,38 @@ fn send_payload_control(
         .encode(),
     )
     .map_err(|e| e.to_string())
+}
+
+/// The configuration ping that orders a Sunrise client's payload Offer before
+/// its pong (the content identity check pings with 0 later).
+const PAYLOAD_ANSWER_PING: i32 = 1;
+
+/// Read on until the client's Offer froze the negotiation, or its pong came: a client
+/// reads in order, so an answer to what it was sent on `sunrise:payloads` comes before
+/// the pong, and a pong without one is a client that does not negotiate. A pong after
+/// the Offer is read later with the configuration's other packets.
+fn await_payload_answer(
+    c: &mut ConfigIo<'_>,
+    transport: &Transport,
+    negotiation: &mut sunrise_protocol::payload_negotiation::Negotiation,
+    info: &mut ClientInformation,
+) -> Result<(), String> {
+    c.send(
+        &cfg::Clientbound::Ping(cfg::Ping {
+            id: PAYLOAD_ANSWER_PING,
+        })
+        .encode(),
+    )
+    .map_err(|e| e.to_string())?;
+    while negotiation.accepted().is_none() {
+        let (id, payload) = c.recv().map_err(|e| e.to_string())?;
+        match receive_configuration(c, id, &payload, transport, negotiation)? {
+            Some(cfg::Serverbound::Pong(p)) if p.id == PAYLOAD_ANSWER_PING => break,
+            Some(cfg::Serverbound::ClientInformation(i)) => *info = i,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 fn payload_disconnect(c: &mut ConfigIo<'_>, error: String) -> String {
     let reason = sunrise_core::nbt::Tag::String(error.as_str().into());
@@ -1690,6 +1770,11 @@ fn mod_mismatch(difference: &sunrise_protocol::mod_list::Difference) -> crate::t
                 .append("\n")
                 .append(translated(key, &[Text::literal(names.join("\n"))]));
         }
+    }
+    for id in &difference.runtime {
+        text = text
+            .append("\n")
+            .append(translated("sunrise.mods.runtime", &[Text::literal(id)]));
     }
     for changed in &difference.changed {
         text = text.append("\n").append(translated(
@@ -1981,6 +2066,14 @@ fn play(
             return;
         }
     };
+    if let Some(queue) = parts
+        .payload_transport
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.droppable())
+    {
+        outbox.attach_droppable(queue.clone());
+    }
     let latency = Arc::new(AtomicI32::new(0));
     let watch = Arc::new(KeepAliveWatch {
         start: Instant::now(),
@@ -1990,6 +2083,7 @@ fn play(
     let sender = PlayerSender {
         undrained: undrained.clone(),
         pending,
+        cap: io_pool::MAX_PENDING,
         held: Arc::default(),
         framing: c.writer.framing(),
         to: To::Pool(outbox.clone(), watch.clone()),
@@ -2006,6 +2100,7 @@ fn play(
         .as_ref()
         .is_some_and(|p| p.required);
     let session = PlayConn {
+        sync: parts.sync,
         payload_sender: sender.clone(),
         payload_transport: parts.payload_transport,
         conn,
@@ -2049,6 +2144,7 @@ fn play(
 
 /// A player's play state on its network thread.
 struct PlayConn {
+    sync: Arc<SyncData>,
     payload_sender: PlayerSender,
     payload_transport: Arc<Transport>,
     conn: u32,
@@ -2096,10 +2192,13 @@ impl io_pool::Session for PlayConn {
         if let Some(average) = self.rate.as_mut().and_then(|r| r.received(now)) {
             return kick(rate_exceeded(&self.shared, average));
         }
-        match play::Serverbound::decode_with_payload_codecs(
+        match play::Serverbound::decode_reader(
             id,
-            &payload,
-            &self.payload_transport.local.codecs,
+            sunrise_protocol::buf::Reader::with_payload_codecs(
+                &payload,
+                &self.payload_transport.local.codecs,
+            )
+            .with_names(&self.sync.dynamic),
         )
         .and_then(checked_play)
         {
@@ -2181,6 +2280,7 @@ impl io_pool::Session for PlayConn {
                                 }
                                 return Verdict::Go;
                             }
+                            Ok(crate::raw_payloads::Classified::Skipped) => return Verdict::Go,
                             Ok(crate::raw_payloads::Classified::Other(payload))
                                 if self
                                     .payload_sender
@@ -2215,13 +2315,7 @@ impl io_pool::Session for PlayConn {
     /// after the last was answered. The game thread times a client out
     /// ([`PlayerSender::timed_out`]).
     fn tick(&mut self, now: Instant) -> Option<Vec<u8>> {
-        if self.payload_transport.closed() || self.sent_at.is_some() || now < self.next_keep_alive {
-            return None;
-        }
-        let id = i64::try_from(self.watch.start.elapsed().as_millis()).unwrap_or(0);
-        self.sent_at = Some((id, now));
-        self.next_keep_alive = now + KEEP_ALIVE_EVERY;
-        Some(play::Clientbound::KeepAlive(cfg::KeepAlive { id }).encode())
+        self.payload_tick(now)
     }
     fn left(&mut self, reason: String) {
         let _ = self.shared.events.send(NetEvent::Left(self.conn, reason));
@@ -2410,11 +2504,6 @@ pub(super) fn frame_body(
     body: &[u8],
     out: &mut Vec<u8>,
 ) -> sunrise_protocol::Result<()> {
-    // Renumbered first for a client of an older release; one with no such packet gets nothing.
-    let Some(body) = writer.for_client(body)? else {
-        return Ok(());
-    };
-    let body = &body[..];
     match writer.framing() {
         sunrise_protocol::connection::Framing::Network(Some(t))
             if body.len() >= t.max(SHARED_FRAME_MIN) =>
@@ -2537,7 +2626,7 @@ mod tests {
         accept_code_of_conduct(&mut io, "Be kind.", &mut info, &transport, &mut negotiation)
             .unwrap();
         let announced = io.channels.announced.as_ref().map(|list| list.list());
-        assert_eq!(announced, Some(vec!["voicechat:secret".to_owned()]));
+        assert_eq!(announced.unwrap().as_ref(), ["voicechat:secret"]);
     }
 
     #[test]
@@ -2551,6 +2640,7 @@ mod tests {
                 server: "3.0".into(),
                 client: "2.9".into(),
             }],
+            runtime: vec!["baked".into()],
         };
         let reason = crate::lan::data::component_nbt(&mod_mismatch(&difference).component());
         let french = crate::lang::Language::load(&[], "fr_fr");
@@ -2560,25 +2650,30 @@ mod tests {
         assert!(text.contains("extra 2.0"));
         let vanilla = sunrise_protocol::text::plain(&reason, &Default::default());
         assert!(vanilla.starts_with("Your mods don't match"));
+        assert!(vanilla.contains("baked") && vanilla.contains("runtime files"));
         for name in &difference.missing {
             assert!(text.contains(name));
             assert!(vanilla.contains(name));
         }
     }
 
-    /// Having tables for Sunrise to join an old server does not make the reverse direction supported.
+    /// ServerHandshakePacketListenerImpl.beginLogin: a client of another protocol is told it is outdated
+    /// (below 754) or incompatible, as vanilla tells it.
     #[test]
-    fn nbt_item_clients_are_refused_even_when_older_clients_are_enabled() {
+    fn clients_of_another_protocol_are_refused_as_vanilla_refuses_them() {
         let config = crate::lan::NetConfig {
             announce: false,
             listen: false,
-            accept_older_clients: true,
-            ..crate::lan::NetConfig::loopback(0, "Older clients".into(), 8)
+            ..crate::lan::NetConfig::loopback(0, "Other protocols".into(), 8)
         };
         let lan =
             crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
                 .unwrap();
-        for protocol in [764, 765] {
+        for (protocol, key) in [
+            (753, "multiplayer.disconnect.outdated_client"),
+            (764, "multiplayer.disconnect.incompatible"),
+            (776, "multiplayer.disconnect.incompatible"),
+        ] {
             let mut c = Connection::local(lan.connect_local().unwrap());
             c.send(
                 &handshake::Serverbound::Intention(handshake::Intention {
@@ -2603,12 +2698,10 @@ mod tests {
             let login::Clientbound::Disconnect(reason) =
                 login::Clientbound::decode(id, &payload).unwrap()
             else {
-                panic!("protocol {protocol} was allowed into the reverse adapter")
+                panic!("protocol {protocol} was let in")
             };
             assert!(
-                reason
-                    .reason_json
-                    .contains("multiplayer.disconnect.incompatible"),
+                reason.reason_json.contains(key),
                 "protocol {protocol}: {}",
                 reason.reason_json
             );
@@ -2616,7 +2709,7 @@ mod tests {
     }
 
     /// Logs in through `c` and answers the `LoginFinished` profile.
-    fn login_profile(c: &mut Connection, name: &str) -> login::GameProfile {
+    pub(super) fn login_profile(c: &mut Connection, name: &str) -> login::GameProfile {
         c.send(
             &handshake::Serverbound::Intention(handshake::Intention {
                 protocol: sunrise_protocol::PROTOCOL_VERSION,
@@ -2726,7 +2819,7 @@ mod tests {
         login_profile(&mut c, "Owner");
         c.send(&login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode())
             .unwrap();
-        let mut brand = sunrise_protocol::buf::Writer::new();
+        let mut brand = ::sunrise_core::vanilla_bytes::Writer::new();
         brand.string("sunrise");
         c.send(
             &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
@@ -2743,6 +2836,7 @@ mod tests {
                     id: "shared_extra".into(),
                     version: "2.0".into(),
                     side: Side::Both,
+                    runtime: None,
                 }]),
             })
             .encode(),
@@ -2784,9 +2878,14 @@ mod tests {
 
     #[test]
     fn sunrise_client_raw_protocol_admission_at_known_packs() {
-        for mode in [0, 1, 2] {
+        // 0: never answers on `sunrise:payloads` (it answers pings); 1: a wrong revision;
+        // 2: answers the server's Query after its known-packs reply, as the Sunrise client
+        // may; 3: holds its known-packs reply until it answered the Query, as sunrise-bots
+        // does (its Offer is in before the barrier: no ping).
+        for mode in [0, 1, 2, 3] {
             let wrong_version = mode == 1;
-            let compatible = mode == 2;
+            let compatible = mode >= 2;
+            let holds_packs = mode == 3;
             let config = crate::lan::NetConfig {
                 announce: false,
                 listen: false,
@@ -2802,7 +2901,7 @@ mod tests {
                 &login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode(),
             )
             .unwrap();
-            let mut brand = sunrise_protocol::buf::Writer::new();
+            let mut brand = ::sunrise_core::vanilla_bytes::Writer::new();
             brand.string("sunrise");
             c.send(
                 &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
@@ -2822,6 +2921,12 @@ mod tests {
                 )
                 .unwrap();
             }
+            // The server asks once it reads the brand, after its known-packs request: mode 2
+            // answers that request first, so its Offer comes after its pack reply, and only
+            // the server's ping orders it before the barrier.
+            let mut packs_asked = false;
+            let mut held_packs = None;
+            let mut pings = Vec::new();
             loop {
                 let (id, payload) = c.recv().unwrap();
                 match cfg::Clientbound::decode(id, &payload).unwrap() {
@@ -2831,6 +2936,7 @@ mod tests {
                     {
                         use sunrise_protocol::payload_negotiation::{CHANNEL, Control, Manifest};
                         if Control::decode(&p.data).unwrap() == Control::Query {
+                            assert!(packs_asked, "the Query came before known packs");
                             c.send(
                                 &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
                                     channel: CHANNEL.into(),
@@ -2839,13 +2945,27 @@ mod tests {
                                 .encode(),
                             )
                             .unwrap();
+                            if let Some(packs) = held_packs.take() {
+                                c.send(&cfg::Serverbound::SelectKnownPacks(packs).encode())
+                                    .unwrap();
+                            }
                         }
                     }
                     cfg::Clientbound::SelectKnownPacks(p) => {
-                        let _ = c.send(&cfg::Serverbound::SelectKnownPacks(p).encode());
+                        packs_asked = true;
+                        if holds_packs {
+                            held_packs = Some(p);
+                        } else {
+                            let _ = c.send(&cfg::Serverbound::SelectKnownPacks(p).encode());
+                        }
+                    }
+                    cfg::Clientbound::Ping(p) => {
+                        pings.push(p.id);
+                        let _ = c.send(&cfg::Serverbound::Pong(p).encode());
                     }
                     cfg::Clientbound::Disconnect(d) => {
                         assert!(!compatible, "compatible empty Sunrise peer refused");
+                        assert_eq!(pings, if wrong_version { vec![] } else { vec![1] });
                         let text = sunrise_protocol::text::plain(&d.reason, &Default::default());
                         assert!(text.contains(if wrong_version {
                             "protocol version"
@@ -2856,6 +2976,8 @@ mod tests {
                     }
                     cfg::Clientbound::FinishConfiguration(_) => {
                         assert!(compatible, "old Sunrise client admitted");
+                        assert!(held_packs.is_none(), "admitted before its pack reply");
+                        assert_eq!(pings, if holds_packs { vec![] } else { vec![1] });
                         c.send(
                             &cfg::Serverbound::FinishConfiguration(
                                 sunrise_protocol::packets::Empty,
@@ -2981,7 +3103,7 @@ mod tests {
         login_profile(&mut c, "Owner");
         c.send(&login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode())
             .unwrap();
-        let mut data = sunrise_protocol::buf::Writer::new();
+        let mut data = ::sunrise_core::vanilla_bytes::Writer::new();
         data.string("vanilla");
         c.send(
             &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
@@ -2991,11 +3113,17 @@ mod tests {
             .encode(),
         )
         .unwrap();
+        // Vanilla's server sends a vanilla client its brand and no ping in configuration
+        // (ServerConfigurationPacketListenerImpl.startConfiguration): neither the mod list nor
+        // `sunrise:payloads`, even with the engine's declarations in this server's manifest.
+        let mut sent = Vec::new();
         loop {
             let (id, payload) = c.recv().unwrap();
             match cfg::Clientbound::decode(id, &payload).unwrap() {
-                cfg::Clientbound::CustomPayload(p) => {
-                    assert_ne!(p.channel, sunrise_protocol::mod_list::CHANNEL);
+                cfg::Clientbound::CustomPayload(p) => sent.push(p.channel),
+                cfg::Clientbound::Ping(p) => {
+                    sent.push(format!("ping {}", p.id));
+                    c.send(&cfg::Serverbound::Pong(p).encode()).unwrap();
                 }
                 cfg::Clientbound::SelectKnownPacks(p) => {
                     c.send(&cfg::Serverbound::SelectKnownPacks(p).encode())
@@ -3013,6 +3141,7 @@ mod tests {
                 _ => {}
             }
         }
+        assert_eq!(sent, ["minecraft:brand"]);
     }
 
     #[test]
@@ -3031,7 +3160,7 @@ mod tests {
         login_profile(&mut c, "Owner");
         c.send(&login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode())
             .unwrap();
-        let mut brand = sunrise_protocol::buf::Writer::new();
+        let mut brand = ::sunrise_core::vanilla_bytes::Writer::new();
         brand.string("sunrise");
         c.send(
             &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
@@ -3042,7 +3171,8 @@ mod tests {
         )
         .unwrap();
         let mut malformed = mod_list::encode(&[]);
-        malformed.push(0); // Trailing bytes: the list is refused whole, not read as empty.
+        // The extra byte encodes an empty runtime-digest section, which is refused.
+        malformed.push(0);
         c.send(
             &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
                 channel: mod_list::CHANNEL.into(),
@@ -3062,7 +3192,7 @@ mod tests {
                 cfg::Clientbound::Disconnect(d) => {
                     let text = sunrise_protocol::text::plain(&d.reason, &Default::default());
                     assert!(text.contains("couldn't be read"));
-                    assert!(text.contains("trailing bytes"));
+                    assert!(text.contains("runtime digests"));
                     break;
                 }
                 cfg::Clientbound::FinishConfiguration(_) => panic!("malformed list was accepted"),
@@ -3100,7 +3230,7 @@ mod tests {
         assert!(cfg::Serverbound::decode(id, &config(32_767)[1..]).is_ok());
         assert!(cfg::Serverbound::decode(id, &config(32_768)[1..]).is_err());
         let suggestion = |len: usize| {
-            let mut w = sunrise_protocol::buf::Writer::new();
+            let mut w = ::sunrise_core::vanilla_bytes::Writer::new();
             w.varint(7);
             w.string(&"a".repeat(len));
             play::Serverbound::Unknown(COMMAND_SUGGESTION, w.data)
@@ -3452,6 +3582,7 @@ mod tests {
         };
         let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
         let mut c = PlayConn {
+            sync: Arc::new(SyncData::empty()),
             payload_sender: PlayerSender::disabled(),
             payload_transport: Transport::empty(),
             conn: 1,
@@ -3590,6 +3721,7 @@ mod tests {
         };
         let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
         let conn = |uuid: u128, pending: Option<i64>| PlayConn {
+            sync: Arc::new(SyncData::empty()),
             payload_sender: PlayerSender::disabled(),
             payload_transport: Transport::empty(),
             conn: 1,
@@ -3643,6 +3775,7 @@ mod tests {
         };
         let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
         let conn = |uuid: u128| PlayConn {
+            sync: Arc::new(SyncData::empty()),
             payload_sender: PlayerSender::disabled(),
             payload_transport: Transport::empty(),
             conn: 1,
@@ -3701,6 +3834,7 @@ mod outgoing_budget_tests {
             payload_transport: Transport::empty(),
             undrained: Arc::default(),
             pending,
+            cap: io_pool::MAX_PENDING,
             held: Arc::default(),
             framing,
             to: To::Pool(
@@ -3783,6 +3917,63 @@ mod outgoing_budget_tests {
         let reserved = s.prepare_payload(vec![1; 400], &id).unwrap();
         assert!(s.pending.load(Ordering::Relaxed) > before + 20000);
         drop(reserved);
+    }
+    #[test]
+    fn a_pairing_attachment_keeps_its_prepaid_credit_and_play_epoch() {
+        for stale in [false, true] {
+            let transport = Transport::capture(crate::raw_payloads::Side::Server).unwrap();
+            transport
+                .accept(transport.local.manifest.entries())
+                .unwrap();
+            transport.finish_configuration().unwrap();
+            let (sender, inspect) = PlayerSender::payload_executor_test_sender(transport.clone());
+            let prepared = sender
+                .prepare_payload(vec![2], &PayloadId("test:attachment".into()))
+                .unwrap();
+            let prepaid = sender.pending.load(Ordering::Relaxed);
+            assert!(prepaid > 0);
+            let mut out = vec![
+                vec![0].into(),
+                prepared.into_prepared_body(transport.epoch().unwrap()),
+                vec![0].into(),
+            ];
+            assert_eq!(sender.pending.load(Ordering::Relaxed), prepaid);
+            if stale {
+                transport.begin_configuration();
+            }
+            sender.send_tracking_bodies(&mut out);
+            assert!(out.is_empty());
+            let expected = if stale {
+                vec![vec![0], vec![0]]
+            } else {
+                vec![vec![0], vec![2], vec![0]]
+            };
+            assert_eq!(inspect(), expected);
+            let expected_charge = 2 * io_pool::charge(1) + if stale { 0 } else { prepaid };
+            assert_eq!(sender.pending.load(Ordering::Relaxed), expected_charge);
+        }
+    }
+
+    /// #3423: a join's first view can queue more than the limit in one burst; a memory
+    /// connection (single player) outlasts it, a network client past it is closed.
+    #[test]
+    fn a_memory_connection_outlasts_a_burst_past_the_limit() {
+        let queue = |framing| {
+            let mut s = sender(framing);
+            s.cap = 4096;
+            for _ in 0..6 {
+                s.send(vec![0; 1024]);
+            }
+            s
+        };
+        let To::Pool(outbox, _) = &queue(Framing::Memory).to else {
+            unreachable!()
+        };
+        assert!(outbox.alive());
+        let To::Pool(outbox, _) = &queue(Framing::Network(None)).to else {
+            unreachable!()
+        };
+        assert!(!outbox.alive());
     }
     #[test]
     fn network_refuses_before_queueing_and_empty_messages_cost_space() {

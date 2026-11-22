@@ -130,12 +130,17 @@ fn without_infinite_materials_it_is_the_place_inside() {
 #[test]
 fn wrappers_nest_far_deeper_than_any_stack_would_recurse() {
     let (mut host, r) = host_with(&[("minecraft:dirt", 64)]);
-    let dirt = &r[0];
-    host.players
-        .get_mut(STEVE)
-        .unwrap()
-        .slots
-        .insert(3, dirt.to_stack(5).unwrap());
+    let mut stored = r[0].to_stack(5).unwrap();
+    let data = Tag::Compound([("value".into(), Tag::Int(42))].into_iter().collect());
+    stored
+        .set_components(
+            [("minecraft:custom_data".into(), data.clone())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+    let dirt = ItemResource::of(&stored);
+    host.players.get_mut(STEVE).unwrap().slots.insert(3, stored);
     let mut deep = ItemPlace::PlayerSlot {
         player: STEVE,
         slot: 3,
@@ -152,29 +157,25 @@ fn wrappers_nest_far_deeper_than_any_stack_would_recurse() {
     }
     let server: &mut dyn ServerHost = &mut host;
     assert_eq!(deep.amount(server), 1);
-    assert_eq!(extract(&mut host, &deep, dirt, 5), 1);
+    let (count, projected) = deep
+        .with_stack(server, |view| (view.count(), view.project()))
+        .unwrap();
+    let projected = projected.unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(projected.count(), 1);
+    assert_eq!(
+        projected
+            .components()
+            .unwrap()
+            .as_nbt()
+            .get(&crate::JavaString::from("minecraft:custom_data")),
+        Some(&data),
+    );
+    assert_eq!(slots(&host), [(3, 5)], "lending one did not change storage");
+    assert_eq!(extract(&mut host, &deep, &dirt, 5), 1);
     assert_eq!(slots(&host), [(3, 4)]);
     let cloned = deep.clone();
     assert_eq!(cloned.amount(&mut host), 1);
     drop(cloned);
     drop(deep);
-}
-
-#[test]
-fn the_wasm_boundary_refuses_wrappers_nested_past_its_depth() {
-    // `Strict` `wrappers` deep around a player slot, as the wire writes it.
-    let wrapped = |wrappers: usize| {
-        let mut bytes = Vec::new();
-        for _ in 0..wrappers {
-            bytes.extend(11u32.to_le_bytes());
-        }
-        bytes.extend(0u32.to_le_bytes());
-        bytes.extend(STEVE.to_le_bytes());
-        bytes.extend(3i32.to_le_bytes());
-        crate::wire::Reader::decode::<ItemPlace>(&bytes)
-    };
-    // Each wrapper takes two of the wire's 32 levels, its box and the place inside.
-    assert!(wrapped(15).is_ok());
-    assert_eq!(wrapped(16), Err(crate::wire::WireError::Depth));
-    assert_eq!(wrapped(100_000), Err(crate::wire::WireError::Depth));
 }

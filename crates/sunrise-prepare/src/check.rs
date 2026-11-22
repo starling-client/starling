@@ -75,7 +75,7 @@ pub fn check(root: &Path, resources: &Path) -> Result<Vec<String>, String> {
 /// What the resources at `resources` lack of what a preparation may leave out when the player's
 /// asset store lacks it: each as its `sunrise-prepare` command (`packs`, `panorama`, `fonts`,
 /// `languages`, `sounds`) and what it is. `--check` and the launcher's `COMPLETIONS`
-/// (launcher/src/backend.rs) both ask here, so they never disagree.
+/// (https://github.com/sunrise-org/sunrise-launcher/blob/main/src/backend.rs) both ask here, so they never disagree.
 pub fn missing_extras(resources: &Path) -> Vec<(&'static str, &'static str)> {
     EXTRAS
         .iter()
@@ -85,9 +85,9 @@ pub fn missing_extras(resources: &Path) -> Vec<(&'static str, &'static str)> {
 }
 
 /// What, whether it is missing, the command.
-type Extra = (&'static str, fn(&Path) -> bool, &'static str);
+pub(crate) type Extra = (&'static str, fn(&Path) -> bool, &'static str);
 
-const EXTRAS: [Extra; 5] = [
+pub(crate) const EXTRAS: [Extra; 5] = [
     ("the built-in packs", lacks_packs, "packs"),
     ("the title panorama", lacks_panorama, "panorama"),
     ("the Unifont glyphs", lacks_unifont, "fonts"),

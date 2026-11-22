@@ -1,10 +1,12 @@
-//! The advancement packets: `ClientboundUpdateAdvancementsPacket` and
-//! `ServerboundSeenAdvancementsPacket`.
+//! The advancement and statistics packets: `ClientboundUpdateAdvancementsPacket`,
+//! `ServerboundSeenAdvancementsPacket` and `ClientboundAwardStatsPacket`.
 use crate::{
     Result,
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, Reader},
+    packet,
 };
 use sunrise_core::nbt::Tag;
+use sunrise_core::vanilla_bytes::Writer;
 
 /// `DisplayInfo` of an advancement as sent.
 #[derive(Clone, Debug, PartialEq)]
@@ -194,6 +196,28 @@ impl Codec<SeenAdvancements> for SeenAdvancements {
         w.varint(v.action);
         if v.action == 0 {
             w.string(v.tab.as_deref().unwrap_or_default());
+        }
+    }
+}
+packet!(
+    /// ClientboundAwardStatsPacket: (stat type, value, count) by network id.
+    AwardStats { stats: Vec<(i32, i32, i32)> => StatList }
+);
+/// `Object2IntMap<Stat<?>>`: each stat's type and value ids, then its count.
+pub struct StatList;
+impl Codec<Vec<(i32, i32, i32)>> for StatList {
+    fn read(r: &mut Reader) -> Result<Vec<(i32, i32, i32)>> {
+        let n = r.count(r.remaining())?;
+        (0..n)
+            .map(|_| Ok((r.varint()?, r.varint()?, r.varint()?)))
+            .collect()
+    }
+    fn write(v: &Vec<(i32, i32, i32)>, w: &mut Writer) {
+        w.varint(v.len() as i32);
+        for &(a, b, c) in v {
+            w.varint(a);
+            w.varint(b);
+            w.varint(c);
         }
     }
 }

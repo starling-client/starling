@@ -4,12 +4,12 @@
 //! spawner that reads the time since rest (`PhantomSpawner`).
 use super::native_hooks::PhantomSpawnResult;
 use super::{Dim, Game};
+use std::path::PathBuf;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::RandomSource;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-};
+
+pub(super) use sunrise_gameplay::stats::{Stats, locate_player_json, player_json};
+use sunrise_gameplay::stats::{namespaced, stat_registry};
 
 #[cfg(test)]
 #[path = "tests/phantom_spawn_tests.rs"]
@@ -29,6 +29,7 @@ struct PhantomTarget {
     identity: Option<(u128, String)>,
 }
 
+<<<<<<< sync-sunrise-1
 /// `stats[type][key]`, with `type` and `key` namespaced ids.
 #[derive(Default)]
 pub(super) struct Stats {
@@ -255,6 +256,8 @@ fn stat_registry(ty: &str) -> Option<&'static str> {
     })
 }
 
+=======
+>>>>>>> sunrise/main
 impl Game<'_> {
     /// Resolve a hook's complete award before any statistic, scoreboard or packet is changed.
     /// Only listener calls allocate; ordinary per-tick awards keep their borrowed identifiers.
@@ -337,7 +340,11 @@ impl Game<'_> {
     }
     /// `ServerStatsCounter.save`.
     pub(super) fn save_stats(&self) {
-        if !self.stats.loaded || self.remote.is_some() || self.no_player_here() {
+        if !self.stats.loaded
+            || self.remote.is_some()
+            || self.no_player_here()
+            || self.crash_save.holds_interrupted(self.lan_acting)
+        {
             return;
         }
         if let Some(path) = self.stats_path() {
@@ -350,23 +357,37 @@ impl Game<'_> {
         if self.lan_acting_fake {
             return;
         }
-        // No mod, no name copied: the per-tick counters come through here.
-        let acting = if !mod_api::__private::listened(mod_api::HookId::PlayerStatAward) {
-            None
-        } else {
-            self.lan_acting_uuid.zip(self.lan_acting_name.clone())
-        };
-        if let Some((player, name)) = acting {
-            let award = namespaced(ty, |stat_type| {
+        self.award_stat_to(
+            ty,
+            key,
+            n,
+            |game| game.lan_acting_uuid.zip(game.lan_acting_name.clone()),
+            |game| &mut game.stats,
+        );
+    }
+
+    /// Edit the award before borrowing its owner's stats. The normal counter,
+    /// dirty set and scoreboard event are all written by `Stats::add`.
+    pub(super) fn award_stat_to(
+        &mut self,
+        ty: &str,
+        key: &str,
+        n: i32,
+        identity: impl FnOnce(&Self) -> Option<(u128, String)>,
+        stats: impl FnOnce(&mut Self) -> &mut Stats,
+    ) {
+        // No listener, no player name copied: per-tick counters come through here.
+        if mod_api::__private::listened(mod_api::HookId::PlayerStatAward)
+            && let Some((player, name)) = identity(self)
+        {
+            if let Some((ty, key, amount)) = namespaced(ty, |stat_type| {
                 self.edited_stat_award(player, &name, stat_type, key, n)
-            });
-            if let Some((ty, key, amount)) = award {
-                self.stats
-                    .add(ty.strip_prefix("minecraft:").unwrap_or(&ty), &key, amount);
+            }) {
+                stats(self).add(ty.strip_prefix("minecraft:").unwrap_or(&ty), &key, amount);
             }
-            return;
+        } else {
+            stats(self).add(ty, key, n);
         }
-        self.stats.add(ty, key, n);
     }
     /// `Player.awardStat(Identifier)`: `n` more of the custom statistic `key`.
     pub(super) fn award_custom_stat(&mut self, key: &str, n: i32) {
@@ -518,12 +539,12 @@ impl Game<'_> {
         {
             return;
         }
-        self.stats.phantom_tick -= 1;
-        if self.stats.phantom_tick > 0 {
+        if self.stats.phantom_tick_down() > 0 {
             return;
         }
         let r = &mut self.world.random;
-        self.stats.phantom_tick += (60 + r.next_int_bound(60).unwrap_or(0)) * 20;
+        self.stats
+            .phantom_tick_add((60 + r.next_int_bound(60).unwrap_or(0)) * 20);
         if self.sky_darken() < 5 {
             return;
         }
@@ -640,9 +661,10 @@ fn phantom_group_size(random: &mut impl RandomSource, difficulty_id: i32) -> i32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fake_players_do_not_advance_phantom_rng() {
         use sunrise_core::random::RandomSource;
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -671,7 +693,7 @@ mod tests {
             game.world.random = sunrise_core::random::LevelRandom::for_level(
                 sunrise_core::random::LegacyRandom::new(12345),
             );
-            game.stats.phantom_tick = 0;
+            game.stats.set_phantom_tick(0);
             game.lan
                 .as_mut()
                 .unwrap()
@@ -683,63 +705,75 @@ mod tests {
         });
     }
 
-    /// `PlayerList.locateStatsFile`: a stats file an older version named after the player is moved
-    /// to the uuid file the first time it is asked for; a uuid file that is already there wins, and
-    /// a name vanilla would not write as a path segment is not looked for at all.
+    /// A write that cannot finish leaves the last saved JSON of a player: the owner's stats and
+    /// advancements and a network player's, which a crash save can reach mid-write. The new
+    /// file is written beside it and renamed over, so blocking the beside file stops the write
+    /// before the saved one is touched; unblocked, the same saves write.
     #[test]
-    fn an_old_stats_file_named_after_the_player_moves_to_its_uuid() {
-        let world = std::env::temp_dir().join(format!(
-            "sunrise-stats-file-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let stats = world.join("players").join("stats");
-        std::fs::create_dir_all(&stats).unwrap();
-        let uuid = [1, 2, 3, 4];
-        let located = player_json(&world, "stats", uuid);
-        // Nothing to move: the uuid name is the answer, and looking writes nothing.
-        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
-        assert!(!located.exists(), "looking for the file writes none");
-        // The old name-based file is moved onto the uuid name, and not left behind.
-        let old = stats.join("notch.json");
-        std::fs::write(&old, "{}").unwrap();
-        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
-        assert!(located.is_file(), "the old file landed on the uuid name");
-        assert!(!old.exists(), "and is not left behind");
-        // A uuid file that exists is the answer, whether or not an old one does.
-        std::fs::write(&old, "{}").unwrap();
-        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
-        assert!(old.is_file(), "the old file is left alone");
-        // FileUtil.isValidPathSegment on the file name: capitals and separators are not a segment,
-        // while a lowercase name with dashes, dots or digits is.
-        for name in ["Notch", "no/tch", "no tch"] {
-            assert!(
-                !valid_path_segment(&format!("{name}.json")),
-                "{name:?} is not a path segment"
-            );
-        }
-        for name in ["notch", "a-b_c.1", "jeb_"] {
-            assert!(
-                valid_path_segment(&format!("{name}.json")),
-                "{name:?} is a path segment"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&world);
-    }
-
-    /// ServerPlayer.die zeroes the two timers (and only them) and sends the new zero.
-    #[test]
-    fn death_resets_the_timers_since_death_and_rest() {
-        let mut s = Stats::default();
-        s.custom("time_since_death", 700);
-        s.custom("time_since_rest", 900);
-        s.custom("deaths", 2);
-        s.events.clear();
-        s.reset_death_timers();
-        assert_eq!(s.get("custom", "minecraft:time_since_death"), 0);
-        assert_eq!(s.get("custom", "minecraft:time_since_rest"), 0);
-        assert_eq!(s.get("custom", "minecraft:deaths"), 2);
-        assert_eq!(s.events.len(), 2);
+    #[ignore = "daily"]
+    fn a_player_json_write_that_cannot_finish_keeps_the_last_saved_file() {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            let world = std::env::temp_dir().join(format!(
+                "sunrise-player-json-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&world);
+            game.world_root = world.clone();
+            game.level.player_uuid = Some([0, 0, 0, 5]);
+            game.stats.loaded = true;
+            game.adv.loaded = true;
+            assert!(!game.advancement_tree().list.is_empty());
+            let guest = sunrise_client::lan::playerdata::uuid_ints(12);
+            let files = [
+                game.stats_path().unwrap(),
+                player_json(&world, "advancements", [0, 0, 0, 5]),
+                player_json(&world, "stats", guest),
+                player_json(&world, "advancements", guest),
+            ];
+            let beside = |file: &Path| {
+                let mut name = file.file_name().unwrap().to_owned();
+                name.push("_new");
+                file.with_file_name(name)
+            };
+            for file in &files {
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, "last saved").unwrap();
+                std::fs::create_dir(beside(file)).unwrap();
+            }
+            let host = game.lan.as_mut().unwrap();
+            host.play
+                .insert(12, super::super::lan_actions::GuestPlay::default());
+            let save = |game: &Game<'_>| {
+                game.save_stats();
+                game.save_advancements();
+                let host = game.lan.as_ref().unwrap();
+                let guest = host.hub.guests.iter().find(|g| g.conn == 12).unwrap();
+                game.save_guest_records(host, guest);
+            };
+            save(game);
+            for file in &files {
+                assert_eq!(
+                    std::fs::read_to_string(file).unwrap(),
+                    "last saved",
+                    "{}",
+                    file.display()
+                );
+            }
+            for file in &files {
+                std::fs::remove_dir(beside(file)).unwrap();
+            }
+            save(game);
+            for file in &files {
+                let text = std::fs::read_to_string(file).unwrap();
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(&text).is_ok(),
+                    "{} is written",
+                    file.display()
+                );
+            }
+            std::fs::remove_dir_all(&world).unwrap();
+        });
     }
 
     #[test]
@@ -756,51 +790,5 @@ mod tests {
             let got: Vec<i32> = (0..6).map(|_| phantom_group_size(&mut r, id)).collect();
             assert_eq!(got, sizes, "difficulty {id}");
         }
-    }
-
-    #[test]
-    fn counters_events_and_dirty_entries() {
-        let mut s = Stats::default();
-        s.custom("play_time", 1);
-        s.custom("play_time", 1);
-        s.add("mined", "minecraft:stone", 2);
-        s.custom(&"x".repeat(100), 3);
-        assert_eq!(s.get("custom", "minecraft:play_time"), 2);
-        assert_eq!(s.get("mined", "minecraft:stone"), 2);
-        assert_eq!(
-            s.get("custom", &format!("minecraft:{}", "x".repeat(100))),
-            3
-        );
-        assert_eq!(s.events.len(), 4);
-        assert_eq!(
-            s.events[1],
-            (
-                "minecraft:custom".into(),
-                "minecraft:play_time".into(),
-                Some(1)
-            )
-        );
-        let long = format!("minecraft:{}", "x".repeat(100));
-        let sent = |v: &[(&str, &str, i32)]| -> Vec<(String, String, i32)> {
-            v.iter()
-                .map(|&(t, k, n)| (t.to_owned(), k.to_owned(), n))
-                .collect()
-        };
-        assert_eq!(
-            s.take_dirty(),
-            sent(&[
-                ("minecraft:custom", "minecraft:play_time", 2),
-                ("minecraft:custom", &long, 3),
-                ("minecraft:mined", "minecraft:stone", 2),
-            ])
-        );
-        assert!(s.take_dirty().is_empty());
-        s.reset("mined", "minecraft:stone");
-        assert_eq!(
-            s.take_dirty(),
-            sent(&[("minecraft:mined", "minecraft:stone", 0)])
-        );
-        s.mark_all_dirty();
-        assert_eq!(s.take_dirty().len(), 3);
     }
 }

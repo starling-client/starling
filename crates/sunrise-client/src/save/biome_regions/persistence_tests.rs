@@ -80,7 +80,11 @@ fn generated_chunks_survive_restart_substitution_added_regions_and_adoption() {
             .iter()
             .all(|biome| biome == "minecraft:ice_spikes")
     );
-    let save = super::super::SaveDir::new(world.to_path_buf(), super::super::LevelShape::OVERWORLD);
+    let save = super::super::SaveDir::new(
+        world.to_path_buf(),
+        super::super::LevelShape::OVERWORLD,
+        Some(Default::default()),
+    );
     save.save(&[Arc::new(old)], assets.registry, &biomes)
         .unwrap();
     let protos = (1..=2)
@@ -133,8 +137,11 @@ fn generated_chunks_survive_restart_substitution_added_regions_and_adoption() {
             .iter()
             .all(|biome| biome == "minecraft:desert")
     );
-    let reopened =
-        super::super::SaveDir::new(world.to_path_buf(), super::super::LevelShape::OVERWORLD);
+    let reopened = super::super::SaveDir::new(
+        world.to_path_buf(),
+        super::super::LevelShape::OVERWORLD,
+        Some(Default::default()),
+    );
     for (x, decorated) in [(1, false), (2, true)] {
         let saved = reopened.load_proto(x, 0, assets.registry, &biomes).unwrap();
         assert_eq!(saved.decorated, decorated);

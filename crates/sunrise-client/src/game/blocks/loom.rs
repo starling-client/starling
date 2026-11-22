@@ -3,13 +3,13 @@
 //! selectable patterns, the pattern buttons, quick moves, the result) runs on
 //! the verified engine, `sunrise_client::menu`, through `Game::menu_session`.
 use super::{Game, stations::Kind};
+use std::sync::Arc;
 use sunrise_client::{
     banner::{self, BannerLayer},
     hud::{HudBatch, Rect, rgba},
     items::ItemStack,
     screen_layout::{self, LoomView, ScreenDraw},
 };
-use std::sync::Arc;
 
 /// Per-menu loom state: `selectablePatterns`, the selected index and the
 /// screen's scroller.
@@ -168,10 +168,10 @@ impl Game<'_> {
             l.start_row = l.row_for(l.scroll);
         }
     }
-    pub(super) fn loom_release(&mut self) {
-        if let Some(s) = self.station.as_mut() {
-            s.loom.scrolling = false;
-        }
+    pub(super) fn loom_release(&mut self) -> bool {
+        self.station
+            .as_mut()
+            .is_some_and(|s| std::mem::take(&mut s.loom.scrolling))
     }
     /// `LoomScreen.mouseScrolled`.
     pub(super) fn loom_scroll(&mut self, d: f32) {
@@ -247,12 +247,9 @@ impl Game<'_> {
                         );
                     }
                 }
-                ScreenDraw::Sprite { id, x, y, .. } => batch.sprite(
-                    atlas,
-                    &format!("gui/sprites/{id}"),
-                    ox + *x as f32,
-                    oy + *y as f32,
-                ),
+                ScreenDraw::Sprite { id, x, y, .. } => {
+                    batch.sprite(atlas, id, ox + *x as f32, oy + *y as f32)
+                }
                 ScreenDraw::Banner {
                     base,
                     layers,
@@ -328,7 +325,7 @@ impl Game<'_> {
         let result = s
             .result
             .as_ref()
-            .and_then(|r| Some((banner::banner_color(&r.item)?, banner::layers(r))));
+            .and_then(|r| Some((banner::banner_color(&r.item)?, r.banner_layers())));
         let view = LoomView {
             width: 176,
             height: 166,

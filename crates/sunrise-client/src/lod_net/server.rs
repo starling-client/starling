@@ -354,7 +354,7 @@ mod tests {
     /// Far terrain that fails west of x = 0.
     struct Brittle;
     impl LodSampler for Brittle {
-        fn sample(&mut self, x: i32, _z: i32) -> Option<crate::lod::Surface> {
+        fn sample(&mut self, x: i32, _z: i32) -> Option<crate::columns::Surface> {
             assert!(x >= 0, "a broken chunk");
             None
         }

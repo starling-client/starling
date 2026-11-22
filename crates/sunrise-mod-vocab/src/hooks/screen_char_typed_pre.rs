@@ -37,11 +37,20 @@ pub trait Hooks {
     /// backspace. Same screens as the key press, and it fires with no text box
     /// focused (there is nothing to take the character then).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_screen_char_typed_pre",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "ScreenEvent.CharacterTyped.Pre",
         cancellable = true
     )]
-    fn screen_char_typed_pre();
+    fn screen_char_typed_pre(
+        screen: &ScreenView<'_>,
+        c: char,
+        modifiers: u32,
+        field: &mut Option<mod_api::client::widgets::TextEdit>,
+        canceled: &mut bool,
+    );
 }

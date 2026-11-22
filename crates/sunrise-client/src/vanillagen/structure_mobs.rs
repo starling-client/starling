@@ -13,10 +13,6 @@ use crate::{
         spawning::{LocalDifficulty, MOON_BRIGHTNESS},
     },
 };
-use sunrise_core::{
-    geometry::{Aabb, Vec3},
-    random::{LegacyRandom, RandomSource, XoroshiroRandom},
-};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -24,6 +20,10 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicI64, AtomicU8, Ordering},
     },
+};
+use sunrise_core::{
+    geometry::{Aabb, Vec3},
+    random::{LegacyRandom, RandomSource, XoroshiroRandom},
 };
 use {
     sunrise_core::nbt::{Compound, Tag},
@@ -55,7 +55,7 @@ fn load(root: &std::path::Path, defaults: &ItemDefaults) -> Option<Data> {
         .unwrap_or_default(),
         registries: SpawnRegistries::load(root),
         enchantments: Enchantments::load(root, defaults).ok()?,
-        items: Items::tags_only(root, &sunrise_world::loot::PackOverlay::NONE, defaults).ok()?,
+        items: Items::catalog(root, &sunrise_world::loot::PackOverlay::NONE, defaults).ok()?,
         camel_husk,
     })
 }
@@ -165,10 +165,11 @@ impl FinalizeLevel for Level<'_> {
         finalize::is_halloween()
     }
     fn create(&mut self, kind: &str, _: Reason) -> Option<Mob> {
-        if self.difficulty == 0 && !finalize::allowed_in_peaceful(kind) {
+        let t = self.data.types.get(kind)?;
+        if self.difficulty == 0 && !t.allowed_in_peaceful() {
             return None;
         }
-        let t = self.data.types.get(kind)?.clone();
+        let t = t.clone();
         self.next_id += 1;
         Some(Mob::new(self.next_id, t, Vec3::ZERO, 0.0))
     }
@@ -206,10 +207,10 @@ fn run<R: RandomSource>(
 }
 
 /// The saved compound of mob `i` with the mobs riding it under `Passengers`.
-fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
+fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str, items: &Items) -> Compound {
     let (m, raw) = &mobs[i];
     // No block registry here: a carried block stays as the template had it.
-    let saved = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref(), None, |_| None);
+    let saved = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref(), None, |_| None, items);
     let Tag::Compound(mut c) = saved else {
         return Compound::new();
     };
@@ -229,7 +230,7 @@ fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
     crate::mobs::brain::put_brain(&mut c, m, dimension);
     let riders: Vec<Tag> = (0..mobs.len())
         .filter(|&j| mobs[j].0.extra.mount == Some(m.id))
-        .map(|j| Tag::Compound(tree(mobs, j, dimension)))
+        .map(|j| Tag::Compound(tree(mobs, j, dimension, items)))
         .collect();
     if !riders.is_empty() {
         c.insert("Passengers".into(), Tag::List(riders));
@@ -355,7 +356,7 @@ impl StructureMobFinalizer {
             .iter()
             .position(|(m, _)| m.extra.mount.is_none())
             .unwrap_or(0);
-        Some(tree(&mobs, root, &self.dimension))
+        Some(tree(&mobs, root, &self.dimension, &data.items))
     }
 }
 

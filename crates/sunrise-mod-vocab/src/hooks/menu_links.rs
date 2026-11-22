@@ -9,13 +9,13 @@ pub trait Hooks {
     /// Silently skips `pos`, duplicate positions, missing or non-lendable containers,
     /// and positions after 64 accepted containers (`MAX_MENU_LINKS`). First accepted
     /// occurrence wins, preserving answer order.
-    /// Native and wasm listeners append positions with identical copy-out semantics.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "links",
         neoforge = "none (Sunrise mod menus expose linked container slots)",
         cancellable = false
     )]
-    fn menu_links();
+    fn menu_links(player: u128, menu: &str, pos: [i32; 3], links: &mut Vec<[i32; 3]>);
 }

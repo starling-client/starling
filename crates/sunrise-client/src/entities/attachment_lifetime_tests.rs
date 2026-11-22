@@ -96,6 +96,7 @@ fn reusable_entity_lifetimes_cover_clone_moves_and_vec_destruction() {
         width: 1,
         height: 1,
         check_interval: 0,
+        ticks: 0,
     });
     exercise(entity_nbt::cushion_from_nbt(&saved, 1).unwrap());
     exercise(entity_nbt::item_frame_from_nbt(&saved, 1).unwrap());

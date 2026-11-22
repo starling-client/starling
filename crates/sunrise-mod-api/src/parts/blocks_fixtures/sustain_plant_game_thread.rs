@@ -5,7 +5,7 @@ pub fn sustain_plant_game_thread() {
     impl BlockPart for Soil {
         fn can_sustain_plant(
             &self,
-            _: &dyn LevelHost,
+            _: LevelSide<'_>,
             _: &mut CanSustainPlantEvent,
         ) -> Option<bool> {
             Some(self.0)

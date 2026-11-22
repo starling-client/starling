@@ -4,7 +4,10 @@
 //! attack (blocking, armour, knockback), when the `pvp` game rule allows it
 //! (`ServerPlayer.canHarmPlayer`, `isPvpAllowed`). A player's arrow on
 //! another player lands the same way.
-use super::{Game, lan_mobs::guest_bounds, mace::Spared};
+use super::{
+    Game, chat::PLAYER_NAME, commands::Target, lan_actions::CombatPlayer, lan_mobs::guest_bounds,
+    mace::Spared,
+};
 use sunrise_client::enchant::EffectContext;
 
 use sunrise_client::{
@@ -404,19 +407,15 @@ impl Game<'_> {
                 g.combat.player_attacker = None;
                 let (strength, xd, zd) = s.knockback;
                 if hurt && strength > 0.0 {
-                    if g.legacy_rules() {
-                        g.legacy_extra_knockback(f64::from(strength), (xd, zd));
-                    } else {
-                        g.knock_back_player_full(
-                            f64::from(strength),
-                            xd,
-                            zd,
-                            PVP_SOURCE,
-                            &attack,
-                            s.amount,
-                            true,
-                        );
-                    }
+                    g.knock_back_player_full(
+                        f64::from(strength),
+                        xd,
+                        zd,
+                        PVP_SOURCE,
+                        &attack,
+                        s.amount,
+                        true,
+                    );
                 }
                 // Entity.igniteForSeconds on the victim: the fire timer only
                 // rises, and a fire-immune victim (no player is by type) is spared.
@@ -537,39 +536,47 @@ impl Game<'_> {
     /// score.
     pub(super) fn guest_award_kill_score(&mut self, victim: u32, at: [f64; 3]) {
         let Some(id) = self
-            .guest_combat
-            .get(&victim)
+            .guest_combat_record(victim)
             .and_then(|c| c.kill_credit(self.world.game_time))
         else {
             return;
         };
-        let name = self
-            .lan
-            .as_ref()
-            .and_then(|host| host.hub.guest(victim))
-            .map(|g| g.name.clone());
-        let in_place = self.lan_acting.is_none()
-            && self
-                .player
+        // `awardKillScore` excludes the victim, even when that body is in place.
+        if let Some(killer) = self.combat_player(id)
+            && let Some(name) = self
+                .lan
                 .as_ref()
-                .is_some_and(|p| p.entity_id as u32 == id);
-        let guest = self.lan.as_ref().and_then(|host| {
-            host.hub
-                .guests
-                .iter()
-                // `awardKillScore`'s `victim != this`: a player's own blow that
-                // killed them credits nothing.
-                .find(|g| g.entity_id as u32 == id && g.conn != victim)
-                .map(|g| g.conn)
-        });
-        if in_place {
-            self.award_custom_stat("player_kills", 1);
-            self.score_player_killed_named(name, true);
-        } else if let Some(kconn) = guest {
-            self.as_guest(kconn, |g| {
-                g.award_custom_stat("player_kills", 1);
-                g.score_player_killed_named(name, true);
-            });
+                .and_then(|host| host.hub.guest(victim))
+                .filter(|g| g.entity_id as u32 != id)
+                .map(|g| g.name.clone())
+        {
+            match killer {
+                CombatPlayer::InPlace => {
+                    self.award_custom_stat("player_kills", 1);
+                    self.score_player_killed_named(Some(name), true);
+                }
+                CombatPlayer::Displaced(depth, _) => {
+                    let frame = &self.lan_displaced_players[depth];
+                    let killer = frame.name.as_deref().unwrap_or(PLAYER_NAME).to_owned();
+                    let uuid = frame.uuid;
+                    if !frame.fake {
+                        self.award_stat_to(
+                            "custom",
+                            "minecraft:player_kills",
+                            1,
+                            |_| uuid.map(|uuid| (uuid, killer.clone())),
+                            |game| &mut game.lan_displaced_players[depth].stats,
+                        );
+                    }
+                    self.score_player_kill_for(&killer, Some(&name), true);
+                }
+                CombatPlayer::Parked(guest) => {
+                    self.as_guest(guest.conn, |g| {
+                        g.award_custom_stat("player_kills", 1);
+                        g.score_player_killed_named(Some(name), true);
+                    });
+                }
+            }
         }
         self.create_wither_rose_by(at, Some(id));
     }
@@ -664,7 +671,14 @@ impl Game<'_> {
             }
         }
         let (xd, zd) = sweep.knockback;
-        let attacker = self.player_attacker(sweep.attacker);
+        // The sweep uses the attacking player's source, even for a local body.
+        let attacker = match sweep.attacker {
+            Some(conn) => self.player_attacker(Some(conn)),
+            None => self
+                .player
+                .as_ref()
+                .map(|p| (p.entity_id as u32, self.target_name(Target::Player))),
+        };
         let attacker_id = self.player.as_ref().map_or(0, |p| p.entity_id);
         let attack = self.attack_of(attacker.as_ref().map_or(attacker_id, |(id, _)| *id as i32));
         let land = |g: &mut Self| {

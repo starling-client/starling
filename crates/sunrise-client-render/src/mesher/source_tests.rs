@@ -1,9 +1,9 @@
 //! Original synthetic block/model/world controls; no prepared game resources.
 use super::*;
 use crate::assets::{Properties, SpritePixels};
-use sunrise_world::registry::BlockRegistry;
 use serde_json::json;
 use std::{collections::BTreeMap, path::PathBuf};
+use sunrise_world::registry::BlockRegistry;
 
 struct Scratch(PathBuf);
 impl Drop for Scratch {
@@ -94,6 +94,8 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         model_gallery: vec![],
         animations: vec![],
         sprite_layers: BTreeMap::new(),
+        sprite_names: vec![None],
+        file_layers: BTreeMap::new(),
         emissive: vec![],
         translucent_layers: vec![false],
         sprite_mips: vec![],
@@ -117,6 +119,7 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         blocks_fluid_flow: Default::default(),
     };
     let air = Info {
+        air: true,
         solid: false,
         full: false,
         permeable: true,
@@ -145,8 +148,13 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
     };
     let info = vec![
         air,
-        Info { model: true, ..air },
         Info {
+            air: false,
+            model: true,
+            ..air
+        },
+        Info {
+            air: false,
             model: true,
             emission: 13,
             fluid: FluidState::WATER,
@@ -187,6 +195,40 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
 }
 
 #[test]
+fn baked_model_particle_uses_the_published_sprite_name_at_its_layer() {
+    let (_scratch, _, mut render, _, _) = fixture();
+    let key = render
+        .block_state_models(BlockStateId(1))
+        .iter()
+        .next()
+        .unwrap();
+    // Not the quad's texture, the model slot, or the first name in the atlas.
+    render.sprite_names = vec![
+        Some("fixture:block/other".into()),
+        None,
+        Some("fixture:block/particle".into()),
+    ];
+    for (_, model) in render.model_catalog.models_mut() {
+        model.particle = Some(2);
+    }
+    let name = render.baked_model(key).unwrap().particle.unwrap();
+    assert_eq!(name, "fixture:block/particle");
+    assert!(std::ptr::eq(
+        name,
+        render.sprite_names[2].as_deref().unwrap()
+    ));
+
+    render.sprite_names[2] = None;
+    assert_eq!(render.baked_model(key).unwrap().particle, None);
+    render.sprite_names.truncate(2);
+    assert_eq!(render.baked_model(key).unwrap().particle, None);
+    for (_, model) in render.model_catalog.models_mut() {
+        model.particle = None;
+    }
+    assert_eq!(render.baked_model(key).unwrap().particle, None);
+}
+
+#[test]
 fn terrain_source_cpu_multipart_and_waterlogged_faces_keep_their_owner() {
     let (_scratch, assets, render, tables, biomes) = fixture();
     let mut chunk = Chunk::with_layout(3, -2, crate::chunk::ColumnLayout::new(0, 16).unwrap());
@@ -199,6 +241,7 @@ fn terrain_source_cpu_multipart_and_waterlogged_faces_keep_their_owner() {
     ];
     let mut mesher = Mesher {
         hidden_states: &[],
+        part_tables: Default::default(),
         nether_shading: false,
         shader_pack_lighting: false,
         separate_ao: false,
@@ -271,6 +314,83 @@ fn terrain_source_cpu_multipart_and_waterlogged_faces_keep_their_owner() {
             "source tracking altered native vertices"
         );
     }
+}
+
+#[test]
+fn a_folder_without_connected_texture_rules_meshes_exactly_as_before() {
+    let (scratch, assets, mut render, tables, biomes) = fixture();
+    let mut chunk = Chunk::with_layout(3, -2, crate::chunk::ColumnLayout::new(0, 16).unwrap());
+    chunk.set(2, 3, 4, 1);
+    chunk.set(3, 3, 4, 1);
+    chunk.set(6, 3, 4, 2);
+    let region = [
+        [None, None, None],
+        [None, Some(&chunk), None],
+        [None, None, None],
+    ];
+    let bytes = |render: &RenderAssets| {
+        let mut mesher = Mesher {
+            hidden_states: &[],
+            part_tables: Default::default(),
+            nether_shading: false,
+            shader_pack_lighting: false,
+            separate_ao: false,
+            shader_pack: false,
+            assets: &assets,
+            render,
+            tables: &tables,
+            biomes: &biomes,
+            visibility: FaceVisibility::empty(),
+            zoom: BiomeZoom::new(0),
+            blend_radius: 0,
+            smooth_lighting: false,
+            cutout_leaves: true,
+            opaque_ice: false,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
+        };
+        let mesh = mesher.mesh(&region, 0);
+        let both = [&mesh.solid, &mesh.translucent];
+        both.map(|v| bytemuck::cast_slice::<_, u8>(v).to_vec())
+    };
+    let before = bytes(&render);
+    assert!(!before[0].is_empty());
+    let source = sunrise_assets::resource_source::ResourceSource::directory(scratch.0.clone());
+    render.connected = crate::connected::ConnectedTextures::load(
+        &source,
+        crate::connected::read_rules(&source),
+        assets.registry,
+        &mut crate::sprites::Sprites::default(),
+        |_, _| None,
+        |_| false,
+    );
+    assert!(render.connected.is_empty(), "nothing declares a rule here");
+    assert_eq!(bytes(&render), before);
+    // A rule that matches another block leaves the mesh the same.
+    let sheet = sunrise_connected::TableSheet {
+        sprite: "fixture:block/low".into(),
+        table: std::sync::Arc::new(
+            sunrise_connected::Table::new(Vec::new(), false, (1, 1), vec![0]).unwrap(),
+        ),
+    };
+    let mut other = sunrise_connected::Rule::table("other.json".into(), sheet);
+    other.method = sunrise_connected::Method::Fixed;
+    other.table = None;
+    other.tiles = vec![sunrise_connected::Tile::Default];
+    other.match_blocks = vec![sunrise_connected::BlockSel {
+        id: "fixture:other".into(),
+        states: Vec::new(),
+    }];
+    render.connected = crate::connected::ConnectedTextures::load(
+        &source,
+        vec![other],
+        assets.registry,
+        &mut crate::sprites::Sprites::default(),
+        |_, _| None,
+        |_| false,
+    );
+    assert!(!render.connected.is_empty());
+    assert_eq!(bytes(&render), before);
 }
 
 #[test]

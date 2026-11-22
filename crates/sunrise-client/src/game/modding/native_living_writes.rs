@@ -9,10 +9,10 @@
 //! handle, on a client, and for a kind Sunrise keeps no such state for (each
 //! doc says which).
 use super::{Game, commands::Target};
+use mod_api::{Identifier, LivingRef};
 use sunrise_client::first_person::{Hand, SwingAnimation};
 use sunrise_client::lan::waypoints::Icon;
 use sunrise_client::mobs::{spear_use, stuck::Stuck};
-use mod_api::{Identifier, LivingRef};
 
 impl Game<'_> {
     /// The UUID of the player a living handle names.
@@ -313,17 +313,17 @@ mod tests {
     use super::super::native_living_flags::tests::{guest, guest_server, packets, sync_guests};
     use super::super::native_living_position::tests::floor_and_zombies;
     use super::Stuck;
+    use mod_api::client::first_person::Hand;
+    use mod_api::{
+        EntityRef, Flow, Hooks, HostSide, Identifier, ItemPart, LivingEntityUseItemFinishEvent,
+        LivingEntityUseItemStartEvent, LivingEntityUseItemStopEvent, LivingEntityUseItemTickEvent,
+        LivingRef, ModEntry, Mods, OnUseTickEvent, Registrar, ReleaseUsingEvent, WorldEpoch,
+    };
+    use std::sync::{Arc, Mutex};
     use sunrise_client::items::ItemStack;
     use sunrise_client::lan::waypoints::Icon;
     use sunrise_client::mobs::Mob;
     use sunrise_core::geometry::Vec3;
-    use mod_api::client::first_person::Hand;
-    use mod_api::{
-        EntityRef, Flow, Hooks, HostSide, Identifier, ItemPart, LivingEntityUseItemStartEvent,
-        LivingEntityUseItemStopEvent, LivingEntityUseItemTickEvent, LivingRef, ModEntry, Mods,
-        OnUseTickEvent, Registrar, ReleaseUsingEvent, WorldEpoch,
-    };
-    use std::sync::{Arc, Mutex};
 
     /// What a mod heard of item uses, and what it does back.
     #[derive(Default)]
@@ -332,9 +332,18 @@ mod tests {
         releases: Vec<(Option<i32>, i32)>,
         /// Refuses every Start.
         refuse: bool,
+        start_duration: Option<i32>,
+        tick_duration: Option<i32>,
+        cancel_tick: bool,
+        cancel_stop: bool,
+        finishes: usize,
+        clear_finish_result: bool,
+        effects: usize,
+        tick_remaining: Vec<i32>,
         /// Who to release from a Tick hook, and from an `Item.onUseTick`.
         release_on_tick: Option<LivingRef>,
         release_on_use_tick: Option<LivingRef>,
+        remaining_on_use_tick: Option<(LivingRef, i32)>,
         /// Who to release once more from the Stop hook, and what that answered.
         release_on_stop: Option<LivingRef>,
         released_again: Vec<bool>,
@@ -346,9 +355,18 @@ mod tests {
     #[mod_api::sunrise_part]
     impl ItemPart for UsePart {
         fn on_use_tick(&self, host: HostSide, _: &mut OnUseTickEvent<'_>) {
-            let who = self.0.lock().unwrap().release_on_use_tick;
-            if let (Some(who), HostSide::Server(host)) = (who, host) {
-                assert!(who.release_using_item(host));
+            self.0.lock().unwrap().effects += 1;
+            let (release, remaining) = {
+                let mut uses = self.0.lock().unwrap();
+                (uses.release_on_use_tick, uses.remaining_on_use_tick.take())
+            };
+            if let HostSide::Server(host) = host {
+                if let Some((who, remaining)) = remaining {
+                    assert!(who.set_item_use_remaining(host, remaining));
+                }
+                if let Some(who) = release {
+                    assert!(who.release_using_item(host));
+                }
             }
         }
         fn release_using(&self, _: HostSide, event: &mut ReleaseUsingEvent<'_>) {
@@ -365,6 +383,7 @@ mod tests {
                 "minecraft:apple",
                 "minecraft:potion",
                 "minecraft:shield",
+                "minecraft:crossbow",
             ] {
                 let item = r.item_key(id);
                 r.item_part(item, UsePart(self.0.clone()));
@@ -373,8 +392,11 @@ mod tests {
         fn living_entity_use_item_start(
             &self,
             _: HostSide,
-            _: &mut LivingEntityUseItemStartEvent<'_>,
+            event: &mut LivingEntityUseItemStartEvent<'_>,
         ) -> Flow {
+            if let Some(duration) = self.0.lock().unwrap().start_duration {
+                event.duration = duration;
+            }
             if self.0.lock().unwrap().refuse {
                 Flow::Cancel
             } else {
@@ -384,13 +406,34 @@ mod tests {
         fn living_entity_use_item_tick(
             &self,
             host: HostSide,
-            _: &mut LivingEntityUseItemTickEvent<'_>,
+            event: &mut LivingEntityUseItemTickEvent<'_>,
         ) -> Flow {
+            {
+                let mut uses = self.0.lock().unwrap();
+                uses.tick_remaining.push(event.duration);
+                if let Some(duration) = uses.tick_duration {
+                    event.duration = duration;
+                }
+                if uses.cancel_tick {
+                    return Flow::Cancel;
+                }
+            }
             let who = self.0.lock().unwrap().release_on_tick;
             if let (Some(who), HostSide::Server(host)) = (who, host) {
                 assert!(who.release_using_item(host));
             }
             Flow::Continue
+        }
+        fn living_entity_use_item_finish(
+            &self,
+            _: HostSide,
+            event: &mut LivingEntityUseItemFinishEvent<'_>,
+        ) {
+            let mut uses = self.0.lock().unwrap();
+            uses.finishes += 1;
+            if uses.clear_finish_result {
+                *event.result = None;
+            }
         }
         fn living_entity_use_item_stop(
             &self,
@@ -406,7 +449,11 @@ mod tests {
                 let again = who.release_using_item(host);
                 self.0.lock().unwrap().released_again.push(again);
             }
-            Flow::Continue
+            if self.0.lock().unwrap().cancel_stop {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
         }
     }
 
@@ -424,7 +471,7 @@ mod tests {
                 );
                 crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
                 game.screen = super::super::Screen::Playing;
-                game.right = true;
+                game.set_mapping_held("key.use", true);
                 let player = game.living(game.entity(20).unwrap()).unwrap();
                 test(game, &uses, player);
             });
@@ -432,7 +479,204 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn tick_cancel_and_nonpositive_durations_finish_without_releasing() {
+        with_uses(|game, uses, player| {
+            game.creative = false;
+            for (cancel, duration) in [
+                (true, None),
+                (false, Some(0)),
+                (false, Some(-7)),
+                (false, Some(1)),
+            ] {
+                for item in ["minecraft:apple", "minecraft:potion", "minecraft:bow"] {
+                    *uses.lock().unwrap() = Uses {
+                        cancel_tick: cancel,
+                        tick_duration: duration,
+                        ..Uses::default()
+                    };
+                    game.potions.effects.clear();
+                    let stack = ItemStack::new(item, 2);
+                    game.inventory[game.selected] = Some(if item == "minecraft:potion" {
+                        stack.with_potion("minecraft:swiftness")
+                    } else {
+                        stack
+                    });
+                    game.inventory[5] = Some(ItemStack::new("minecraft:arrow", 8));
+                    assert!(game.living_start_using_item(player, Hand::Main));
+                    let projectiles = game.creatures.projectiles.len();
+                    game.tick_using();
+                    assert_eq!(game.using, None, "{item} {cancel} {duration:?}");
+                    assert_eq!(game.creatures.projectiles.len(), projectiles);
+                    let expected_count = if item == "minecraft:bow" { 2 } else { 1 };
+                    assert_eq!(
+                        game.inventory[game.selected].as_ref().unwrap().count,
+                        expected_count
+                    );
+                    let uses = uses.lock().unwrap();
+                    assert_eq!(uses.finishes, 1);
+                    assert!(uses.stops.is_empty());
+                    assert!(uses.releases.is_empty());
+                    if item == "minecraft:apple" {
+                        assert_eq!(uses.effects, usize::from(duration == Some(1) && !cancel));
+                    } else if item == "minecraft:potion" {
+                        assert!(
+                            game.potions.effects.get("speed").is_some(),
+                            "potion effect was not applied"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_crossbows_run_out_counter_keeps_decrementing_until_release() {
+        with_uses(|game, uses, player| {
+            for (cancel, duration, first, second) in [
+                (true, None, -2, -3),
+                (false, Some(0), -1, -2),
+                (false, Some(1), 0, -1),
+                (false, Some(-7), -8, -9),
+            ] {
+                *uses.lock().unwrap() = Uses {
+                    cancel_tick: cancel,
+                    tick_duration: duration,
+                    ..Uses::default()
+                };
+                game.inventory[game.selected] = Some(ItemStack::new("minecraft:crossbow", 1));
+                assert!(game.living_start_using_item(player, Hand::Main));
+                game.tick_using();
+                assert_eq!(game.living_item_use_remaining(player), Some(first));
+                uses.lock().unwrap().cancel_tick = false;
+                uses.lock().unwrap().tick_duration = None;
+                game.tick_using();
+                assert_eq!(game.living_item_use_remaining(player), Some(second));
+                assert_eq!(game.living_used_item_hand(player), Some(Hand::Main));
+                assert_eq!(uses.lock().unwrap().finishes, 0);
+                assert!(game.living_release_using_item(player));
+                assert_eq!(game.using, None);
+                let uses = uses.lock().unwrap();
+                assert_eq!(uses.stops, [(None, Hand::Main, second)]);
+                assert_eq!(uses.tick_remaining.last(), Some(&first));
+                assert_eq!(uses.releases, [(None, second)]);
+                assert_eq!(uses.finishes, 0);
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn tick_completion_applies_the_finish_listeners_result_stack() {
+        with_uses(|game, uses, player| {
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:apple", 2));
+            {
+                let mut uses = uses.lock().unwrap();
+                uses.cancel_tick = true;
+                uses.clear_finish_result = true;
+            }
+            assert!(game.living_start_using_item(player, Hand::Main));
+            game.tick_using();
+            assert_eq!(game.using, None);
+            assert!(game.inventory[game.selected].is_none());
+            let uses = uses.lock().unwrap();
+            assert_eq!(uses.finishes, 1);
+            assert!(uses.stops.is_empty());
+            assert!(uses.releases.is_empty());
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_zero_start_begins_but_a_cancelled_stop_only_skips_release() {
+        with_uses(|game, uses, player| {
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:bow", 1));
+            uses.lock().unwrap().start_duration = Some(0);
+            assert!(game.living_start_using_item(player, Hand::Main));
+            assert!(game.using.is_some());
+            game.tick_using();
+            assert_eq!(game.using, None);
+            assert_eq!(uses.lock().unwrap().finishes, 1);
+            *uses.lock().unwrap() = Uses {
+                cancel_stop: true,
+                ..Uses::default()
+            };
+            assert!(game.living_start_using_item(player, Hand::Main));
+            assert!(game.living_release_using_item(player));
+            assert_eq!(game.using, None);
+            let uses = uses.lock().unwrap();
+            assert_eq!(uses.stops.len(), 1);
+            assert!(uses.releases.is_empty());
+            assert_eq!(uses.finishes, 0);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_tick_replaces_the_remaining_counter_rather_than_the_original_duration() {
+        with_uses(|game, uses, player| {
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:shield", 1));
+            assert!(game.living_start_using_item(player, Hand::Main));
+            for _ in 0..10 {
+                game.tick_using();
+            }
+            *uses.lock().unwrap() = Uses {
+                tick_duration: Some(5),
+                ..Uses::default()
+            };
+            game.tick_using();
+            uses.lock().unwrap().tick_duration = None;
+            assert_eq!(game.living_item_use_remaining(player), Some(4));
+            for expected in [3, 2, 1] {
+                game.tick_using();
+                assert_eq!(game.living_item_use_remaining(player), Some(expected));
+            }
+            game.tick_using();
+            assert_eq!(game.using, None);
+            let uses = uses.lock().unwrap();
+            assert_eq!(uses.tick_remaining, [71_990, 4, 3, 2, 1]);
+            assert_eq!(uses.effects, 5);
+            assert_eq!(uses.finishes, 1);
+            assert!(uses.releases.is_empty());
+            assert!(uses.stops.is_empty());
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_item_part_can_extend_the_last_tick_or_shorten_a_use() {
+        with_uses(|game, uses, player| {
+            for (start, replacement, effects) in [(1, 3, 3), (20, 1, 1), (20, 0, 1), (20, -7, 1)] {
+                *uses.lock().unwrap() = Uses {
+                    start_duration: Some(start),
+                    remaining_on_use_tick: Some((player, replacement)),
+                    ..Uses::default()
+                };
+                game.inventory[game.selected] = Some(ItemStack::new("minecraft:shield", 1));
+                assert!(game.living_start_using_item(player, Hand::Main));
+                game.tick_using();
+                if replacement > 1 {
+                    assert_eq!(game.living_item_use_remaining(player), Some(2));
+                    assert_eq!(uses.lock().unwrap().finishes, 0);
+                    game.tick_using();
+                    assert_eq!(game.living_item_use_remaining(player), Some(1));
+                    assert_eq!(uses.lock().unwrap().finishes, 0);
+                    game.tick_using();
+                }
+                assert_eq!(game.using, None);
+                let uses = uses.lock().unwrap();
+                assert_eq!(uses.effects, effects);
+                assert_eq!(uses.finishes, 1);
+                assert!(uses.stops.is_empty());
+                assert!(uses.releases.is_empty());
+                assert_eq!(game.inventory[game.selected].as_ref().unwrap().count, 1);
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn an_item_used_in_either_hand_is_released_once() {
         with_uses(|game, uses, player| {
             uses.lock().unwrap().release_on_stop = Some(player);
@@ -476,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_start_a_mod_refuses_starts_nothing() {
         with_uses(|game, uses, player| {
             game.offhand = Some(ItemStack::new("minecraft:bow", 1));
@@ -488,10 +732,10 @@ mod tests {
 
     /// A player whose use button is up lets go on the next tick.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_use_with_the_button_up_is_released_on_its_next_tick() {
         with_uses(|game, uses, player| {
-            game.right = false;
+            game.set_mapping_held("key.use", false);
             game.offhand = Some(ItemStack::new("minecraft:bow", 1));
             assert!(game.living_start_using_item(player, Hand::Off));
             game.tick_using();
@@ -503,7 +747,7 @@ mod tests {
     /// A use a mod's own tick released stays released, and finishes nothing:
     /// the tick that called it has no use left to go on with.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_use_released_from_its_own_tick_stays_released() {
         with_uses(|game, uses, player| {
             let items = ["minecraft:apple", "minecraft:potion", "minecraft:shield"];
@@ -531,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mob_uses_either_hand_until_it_is_released() {
         use sunrise_items::equipment::{MAINHAND, OFFHAND};
         with_uses(|game, uses, _| {
@@ -611,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mob_swings_while_its_hand_and_loot_flags_live_on_the_mob_handle() {
         with_game(|game| {
             for (id, kind) in [(12, "minecraft:zombie"), (13, "minecraft:cow")] {
@@ -670,7 +914,7 @@ mod tests {
     /// worth of `20 * (30 - count)` ticks as for a player, the timer a write set
     /// running first.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mobs_stuck_arrows_and_stingers_fall_out_in_its_ticks() {
         with_game(|game| {
             floor_and_zombies(game);
@@ -700,7 +944,7 @@ mod tests {
     /// A spear's use counts its own ticks, which a write to the ticks left
     /// moves: the next tick goes on from there.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mobs_spear_use_goes_on_from_the_ticks_a_write_left() {
         use sunrise_items::equipment::MAINHAND;
         with_game(|game| {
@@ -724,7 +968,7 @@ mod tests {
     /// A waypoint write is `/waypoint modify`: what it stores is what the command
     /// stores, for the entities the command takes.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_waypoint_write_on_a_mob_is_kept_with_the_waypoint() {
         use super::super::commands::Target;
         with_game(|game| {
@@ -750,7 +994,7 @@ mod tests {
     /// style and colour, and a spin shows in the flags the players around get,
     /// counts down in the guest's ticks and ends when asked to.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_guests_waypoint_and_riptide_writes_reach_the_players_around() {
         use sunrise_protocol::{
             entity_data::Value,
@@ -763,6 +1007,9 @@ mod tests {
             let host = game.lan.as_mut().unwrap();
             for conn in [12, 13] {
                 host.hub.update_guest(conn, |g| g.ticks = 5).unwrap();
+            }
+            for conn in [12, 13] {
+                game.lan_register_player_waypoint(conn);
             }
             let waypoints = |sent: &[C]| -> Vec<(i32, String, Option<i32>)> {
                 sent.iter()
@@ -846,15 +1093,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_player_keeps_its_stuck_arrows_and_item_use_timer() {
         use super::super::lan::LanSettings;
-        use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
-        use sunrise_protocol::packets::configuration::ClientInformation;
         use std::sync::{
             Arc,
             atomic::{AtomicI32, AtomicUsize},
         };
+        use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+        use sunrise_protocol::packets::configuration::ClientInformation;
         with_game(|game| {
             let settings = LanSettings {
                 port: 0,
@@ -880,6 +1127,7 @@ mod tests {
                 max_players: 2,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();
             let (tx, _rx) = std::sync::mpsc::channel();
@@ -960,17 +1208,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mobs_swing_reaches_clients_with_the_hand_asked_for() {
         use super::super::lan::LanSettings;
-        use sunrise_client::lan::{
-            Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig,
-        };
-        use sunrise_protocol::packets::{configuration::ClientInformation, play::Clientbound};
         use std::sync::{
             Arc,
             atomic::{AtomicI32, AtomicUsize},
         };
+        use sunrise_client::lan::{
+            Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig,
+        };
+        use sunrise_protocol::packets::{configuration::ClientInformation, play::Clientbound};
         with_game(|game| {
             let settings = LanSettings {
                 port: 0,
@@ -996,6 +1244,7 @@ mod tests {
                 max_players: 2,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();
             let (tx, rx) = std::sync::mpsc::channel();

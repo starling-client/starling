@@ -6,7 +6,7 @@ impl Game<'_> {
         &mut self,
         hit: &crate::game::Hit,
     ) -> sunrise_client::Result<bool> {
-        self.guest_use = Some(crate::game::GuestUse::OnBlock(self.hand));
+        self.guest_use = Some(crate::game::GuestUse::on_block(self.hand));
         let result = self.with_block_use_original(self.hand, |g| {
             let result = g.use_hand(Some(hit));
             if matches!(result, Ok(true)) && !g.use_failed {

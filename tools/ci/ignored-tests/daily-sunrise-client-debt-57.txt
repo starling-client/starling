@@ -1,0 +1,1 @@
+sunrise-client game::block_screen_effect_draw_tests::only_the_last_eligible_renderer_submits lib daily resources

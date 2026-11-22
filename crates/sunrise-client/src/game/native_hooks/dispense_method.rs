@@ -22,7 +22,8 @@ impl Game<'_> {
         state: BlockStateId,
         stack: &ItemStack,
         answer: &mut Option<mod_api::Dispensed>,
+        inert: &mut bool,
     ) {
-        self.fire_dispense_method(dimension, pos, facing, state, stack, answer);
+        self.fire_dispense_method(dimension, pos, facing, state, stack, answer, inert);
     }
 }

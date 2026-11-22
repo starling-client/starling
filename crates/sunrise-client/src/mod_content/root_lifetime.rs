@@ -64,7 +64,8 @@ pub(super) fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duratio
                 .min()
                 .is_none_or(|age| age > keep),
             // The old single root's files and folders.
-            false => old_layout,
+            // The roots' lock stays, whatever the layout: another process may hold it.
+            false => old_layout && name != ROOTS_LOCK,
         };
         if !stale {
             continue;

@@ -3,13 +3,13 @@
 //! writes both lists with each entry's select/unselect/move flags after
 //! every action, and the committed selection.
 #![forbid(unsafe_code)]
-use sunrise_client::packs::{Position, Selectable, SelectionModel};
 use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufWriter, Write},
     path::PathBuf,
 };
+use sunrise_client::packs::{Position, Selectable, SelectionModel};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn lists(m: &SelectionModel) -> Value {

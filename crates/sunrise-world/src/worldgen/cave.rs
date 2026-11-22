@@ -16,12 +16,12 @@ use super::{
     value_provider::IntProvider,
 };
 use crate::registry::BlockStateId;
+use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::{
     geometry::Direction,
     noise::{Noise, NormalNoise},
     random::{LegacyRandom, RandomSource},
 };
-use std::{collections::BTreeSet, sync::Arc};
 
 fn query<E>(error: PlacementQueryError) -> FeatureExecutionError<E> {
     FeatureExecutionError::Query(error)

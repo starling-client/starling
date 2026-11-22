@@ -8,7 +8,6 @@
 //! static GAME_IDENTITY: [u8; sunrise_game::GAME_IDENTITY.len()] = sunrise_game::GAME_IDENTITY;
 //!
 //! fn main() {
-//!     sunrise_game::prepare_main_stack();
 //!     std::hint::black_box(&GAME_IDENTITY);
 //!     my_crate::register();
 //!     sunrise_game::main();
@@ -25,12 +24,7 @@ pub const GAME_IDENTITY: [u8; sunrise_mod_package::game_identity::MARK.len()] =
 /// Runs the game with the hooks registered so far, and returns when it ends. Register hooks
 /// (`sunrise_platform::hooks::register`) before calling it.
 pub fn main() {
-    sunrise_guest_stack::prepare_main();
-    sunrise_mod_host::exit_if_compile_child();
     let startup = sunrise_client::entry::prepare();
     std::hint::black_box(&sunrise_mod_package::holder::CAPABILITY);
-    sunrise_mod_host::main_with(Vec::new(), &[], &[], startup);
+    sunrise_mod_host::main_with(Vec::new(), &[], startup);
 }
-
-/// Establish the executable main thread stack before initialization.
-pub use sunrise_guest_stack::prepare_main as prepare_main_stack;

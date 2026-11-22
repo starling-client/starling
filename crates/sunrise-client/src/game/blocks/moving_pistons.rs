@@ -2,7 +2,7 @@
 //! `minecraft:moving_piston` block entities (drawn as nothing by the chunk
 //! mesher); this draws each moved block at its interpolated offset.
 use super::Game;
-use sunrise_client_render::render_geometry::Vertex;
+use sunrise_client_render::{block_entity_reach::Reach, render_geometry::Vertex};
 use sunrise_world::{piston_shape::MovingPistonState, registry::BlockStateId};
 
 impl Game<'_> {
@@ -29,6 +29,10 @@ impl Game<'_> {
             .map(|&(p, s)| (p, s, true));
         let states: Vec<_> = live.chain(finished).collect();
         for (p, piston, placed) in states {
+            // A finished one stands in for the chunk mesh, which has no reach.
+            if !placed && !Reach::Piston.should_render(p, camera, 0) {
+                continue;
+            }
             let Some((block, base)) = self.moving_piston_blocks(piston, partial) else {
                 continue;
             };
@@ -78,7 +82,9 @@ impl Game<'_> {
     }
     /// Whether a mesh of the section waits for its upload.
     pub(super) fn section_upload_pending(&self, section: (i32, i32, i32)) -> bool {
-        self.pending_uploads.iter().any(|(key, _)| *key == section)
+        self.pending_uploads
+            .iter()
+            .any(|upload| upload.key == section)
     }
     /// The moved block and, for a retracting piston, its extended base.
     fn moving_piston_blocks(

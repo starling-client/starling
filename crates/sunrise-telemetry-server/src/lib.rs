@@ -46,9 +46,9 @@ pub mod store;
 pub mod summary;
 
 use github::Filer;
-use sunrise_telemetry::live::{MAX_PING_BYTES, Ping};
 use live::Live;
 use store::Store;
+use sunrise_telemetry::live::{MAX_PING_BYTES, Ping};
 
 pub struct Config {
     /// Days raw rows are kept.
@@ -80,8 +80,8 @@ pub struct Config {
     pub live_minute_days: u32,
     /// Days its hourly totals are kept; at least 31, for the 30-day view. Daily ones stay.
     pub live_hour_days: u32,
-    /// The official server, asked for its player count every minute (`history`'s `official`
-    /// series); None asks nothing.
+    /// A server asked for its player count every minute (`history`'s `official` series); None,
+    /// the default, asks nothing.
     pub official_server: Option<String>,
     /// The hub's votes and reads of their counts an IP address may make an hour.
     pub hub_per_hour: f64,
@@ -112,7 +112,7 @@ pub struct Config {
 }
 
 /// The website: the browser origin answered by default, and where a game report's capture link must point.
-pub(crate) const WEBSITE: &str = "https://playsunrise.net";
+pub(crate) const WEBSITE: &str = sunrise_addresses::WEBSITE;
 
 impl Default for Config {
     fn default() -> Self {
@@ -129,7 +129,7 @@ impl Default for Config {
             live_max_sessions: 200_000,
             live_minute_days: 7,
             live_hour_days: 90,
-            official_server: Some(sunrise_telemetry::server_status::OFFICIAL_STATUS_ADDRESS.into()),
+            official_server: None,
             hub_per_hour: 600.0,
             hub_posts_per_hour: 20.0,
             hub_reports_per_day: 30,
@@ -137,7 +137,7 @@ impl Default for Config {
             hub_keep_days: 90,
             export_token: None,
             github_token: None,
-            github_repo: "horizon-rust/horizon".into(),
+            github_repo: "sunrise-org/sunrise".into(),
             reads_per_hour: 600.0,
             aggregate_builds_per_hour: 600.0,
             aggregate_days: None,

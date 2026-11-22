@@ -1,0 +1,108 @@
+manifest:
+Manifest {
+    id: "keys_manifest_forms",
+    name: "Rule forms",
+    version: Version {
+        major: 1,
+        minor: 0,
+        patch: 0,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: Some(
+        "rule_host",
+    ),
+    dependencies: {},
+    incompatible: {
+        "client_overlay": Detailed(
+            RuleDetails {
+                version: VersionReq {
+                    comparators: [],
+                },
+                reason: None,
+                url: None,
+                side: Client,
+            },
+        ),
+        "common_overlay": Detailed(
+            RuleDetails {
+                version: VersionReq {
+                    comparators: [],
+                },
+                reason: None,
+                url: None,
+                side: Both,
+            },
+        ),
+    },
+    discouraged: {
+        "server_overlay": Detailed(
+            RuleDetails {
+                version: VersionReq {
+                    comparators: [
+                        Comparator {
+                            op: Less,
+                            major: 4,
+                            minor: None,
+                            patch: None,
+                            pre: Prerelease(""),
+                        },
+                    ],
+                },
+                reason: None,
+                url: None,
+                side: Server,
+            },
+        ),
+        "shared_overlay": Detailed(
+            RuleDetails {
+                version: VersionReq {
+                    comparators: [],
+                },
+                reason: None,
+                url: None,
+                side: Both,
+            },
+        ),
+    },
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/keys_manifest_forms",
+    ),
+    files: [],
+    blocks: [],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "keys_manifest_forms",
+    ],
+}

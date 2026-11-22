@@ -4,8 +4,8 @@
 mod tests;
 
 use crate::{
-    FileToIdConverter, Identifier, ReloadApply, ReloadResourceError,
-    world::reload::{Boundary, ReloadFiles},
+    FileToIdConverter, Identifier, ReloadResourceError,
+    world::reload::{Boundary, ReloadCore, ReloadFiles},
     world::reload_order::ReloadOrderError,
 };
 use std::{
@@ -15,40 +15,31 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-/// Sunrise's vanilla server reload listeners and ordering boundaries.
+/// Sunrise's vanilla server reload listeners.
+// no wire: namespace for local reload dependency IDs, not a payload.
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct VanillaServerListeners;
 impl VanillaServerListeners {
-    /// Boundary before every reload listener.
-    pub fn first() -> Identifier {
-        static ID: LazyLock<Identifier> =
-            LazyLock::new(|| Identifier::parse("minecraft:first").unwrap());
-        ID.clone()
-    }
-    /// Vanilla's function library. Use this anchor rather than its string value,
-    /// which need not match NeoForge's identifier.
-    pub fn functions() -> Identifier {
+    pub(crate) fn functions_ref() -> &'static Identifier {
         static ID: LazyLock<Identifier> =
             LazyLock::new(|| Identifier::parse("minecraft:function_library").unwrap());
-        ID.clone()
+        &ID
     }
-    /// Boundary after every reload listener.
-    pub fn last() -> Identifier {
-        static ID: LazyLock<Identifier> =
-            LazyLock::new(|| Identifier::parse("minecraft:last").unwrap());
-        ID.clone()
+    /// Vanilla's function library: reading the next function files in prepare and
+    /// admitting the library in apply. Use this anchor rather than its string value,
+    /// which need not match NeoForge's identifier.
+    pub fn functions() -> Identifier {
+        Self::functions_ref().clone()
     }
 }
 
 /// Selected server data files for one converter, with pack overrides resolved.
 /// Keys have their directory and extension removed. This cannot read assets or
-/// filesystem paths. Its fields are private so the view can grow.
+/// filesystem paths. IDs and bytes are borrowed from this view.
 // exhaustive: its fields are private, so mods cannot build or destructure it
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+// no wire: a local prepare view of the winning server data files.
 pub struct ServerReloadContext {
-    pub(crate) files: ReloadFiles,
+    files: ReloadFiles,
 }
 impl ServerReloadContext {
     pub(crate) fn new(files: ReloadFiles) -> Self {
@@ -65,37 +56,47 @@ impl ServerReloadContext {
 }
 
 /// A server-side `SimplePreparableReloadListener`: prepare reads the new pack
-/// view without changing live state; its returned apply publishes the result.
-/// All prepares finish before any apply, including vanilla's, runs. Prepare
-/// cannot see another listener's new published state. Dependencies order both
-/// phases deterministically; they do not remove the barrier. On any error all
-/// pending applies are dropped, keeping the previous data and function library.
+/// view without changing live state; the game consumes its returned action to
+/// publish the result. All prepares finish before any apply, including vanilla's,
+/// runs on the server's owning thread. Prepare cannot see another listener's new
+/// published state. Dependencies order both phases; they do not remove the barrier.
+/// On a prepare error, pending actions are dropped without running, keeping the
+/// previous data and function library.
 pub trait ServerReloadListener: Send + Sync + 'static {
     /// Parse and validate new data without changing the listener's live state.
+    /// Return `Ok(Box::new(move || { /* publish prepared data */ }))` with owned
+    /// data. The action is consumed once and cannot report an error. If the
+    /// server cannot prepare its world tables, no apply action runs.
     ///
     /// As vanilla's `SimpleJsonResourceReloadListener.scanDirectory`, a
     /// listener that parses its files logs and skips one that won't parse,
     /// carrying the rest through; returning `Err` aborts the whole reload and
-    /// keeps every listener's previous data. A panic in `prepare` or the
-    /// returned apply is not recovered: it stops the server, and the crash
-    /// report names the listener and the mod that registered it.
+    /// keeps every listener's previous data. Attach the original error to the
+    /// file's ID with [`ReloadResourceError::new`] to preserve its cause.
+    /// A panic in `prepare` or apply skips this listener for the session. The
+    /// mod and listener are reported, unrelated listeners still apply, and a
+    /// failed listener does not replace its last admitted retained object.
+    /// Native callbacks must publish their own state atomically: the engine
+    /// cannot undo writes a closure makes to private mod memory.
     fn prepare(
         &self,
         context: &ServerReloadContext,
-    ) -> Result<Box<dyn ReloadApply>, ReloadResourceError>;
+    ) -> Result<Box<dyn FnOnce() + Send + 'static>, ReloadResourceError>;
 }
 impl ServerReloadListener for Boundary {
     fn prepare(
         &self,
         _: &ServerReloadContext,
-    ) -> Result<Box<dyn ReloadApply>, ReloadResourceError> {
-        Ok(<dyn ReloadApply>::new(|| {}))
+    ) -> Result<Box<dyn FnOnce() + Send + 'static>, ReloadResourceError> {
+        Ok(Box::new(|| {}))
     }
 }
 
 /// The server reload's listener registry, as `add_server_reload_listeners` hands it out: its
 /// registration methods and a read-only view of names and edges, rebuilt on each server reload.
-/// Listener names need not belong to the registering mod.
+/// Listener names need not belong to the registering mod. A rejected registration call
+/// returns its error and does not change the registry. A callback that panics or incurs a
+/// phase refusal loses all of its pending registrations, retained listeners and dependencies.
 pub trait ServerReloadListeners {
     /// Register a unique listener and converter, e.g. `FileToIdConverter::json("machines")`.
     /// Keep the `Arc` to read the listener's published state outside reloads.
@@ -120,12 +121,45 @@ pub trait ServerReloadListeners {
         first: Identifier,
         second: Identifier,
     ) -> Result<(), ReloadOrderError>;
-    /// The registered names in registration order, boundaries included.
-    fn get_registry(&self) -> Vec<Identifier>;
-    /// The dependency edges as `(first, second)` names.
-    fn get_graph(&self) -> Vec<(Identifier, Identifier)>;
-    /// The name of the vanilla anchor preceding mod listeners by default.
-    fn get_last_vanilla_listener(&self) -> Identifier;
+    /// Borrow the registered names in registration order, vanilla anchor included.
+    fn get_registry(&self) -> ServerReloadRegistryView<'_>;
+    /// Borrow the dependency graph as `(first, second)` names.
+    fn get_graph(&self) -> ServerReloadGraphView<'_>;
+    /// Borrow the last vanilla server reload listener
+    /// ([`VanillaServerListeners::functions`]), which unrelated mod listeners
+    /// sort after by default (matching NeoForge's
+    /// `SortedReloadListenerEvent.getLastVanillaListener`).
+    fn get_last_vanilla_listener(&self) -> &Identifier;
+}
+
+// no wire: borrows the live server reload registry during registration.
+/// The names registered so far in one server reload, borrowed from the registry.
+// exhaustive: its fields are private, so mods cannot build or destructure it
+pub struct ServerReloadRegistryView<'a> {
+    core: &'a ReloadCore<dyn ServerReloadListener>,
+}
+
+impl<'a> ServerReloadRegistryView<'a> {
+    /// Iterate over registered names in registration order, vanilla anchor included.
+    pub fn iter(&self) -> impl Iterator<Item = &'a Identifier> + use<'a> {
+        self.core.registry().map(|(id, _)| id)
+    }
+}
+
+// no wire: borrows the live server reload dependency graph during registration.
+/// The current server reload dependencies, borrowed from the registry.
+// exhaustive: its fields are private, so mods cannot build or destructure it
+pub struct ServerReloadGraphView<'a> {
+    core: &'a ReloadCore<dyn ServerReloadListener>,
+}
+
+impl<'a> ServerReloadGraphView<'a> {
+    /// Iterate over dependency edges in insertion order. Each `(first, second)`
+    /// edge requires `first` to run before `second`; this is the explicit
+    /// dependency graph, not a sorted list of listeners.
+    pub fn iter(&self) -> impl Iterator<Item = (&'a Identifier, &'a Identifier)> + use<'a> {
+        self.core.graph()
+    }
 }
 
 impl dyn ServerReloadListeners + '_ {
@@ -147,7 +181,7 @@ impl dyn ServerReloadListeners + '_ {
 /// The game's [`ServerReloadListeners`].
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct ServerListenerRegistry {
-    core: crate::world::reload::ReloadCore<dyn ServerReloadListener>,
+    core: ReloadCore<dyn ServerReloadListener>,
     retained: Vec<RetainedEntry>,
 }
 impl ServerReloadListeners for ServerListenerRegistry {
@@ -177,26 +211,44 @@ impl ServerReloadListeners for ServerListenerRegistry {
     ) -> Result<(), ReloadOrderError> {
         self.core.add_dependency(first, second)
     }
-    fn get_registry(&self) -> Vec<Identifier> {
-        self.core.registry().map(|(id, _)| id.clone()).collect()
+    fn get_registry(&self) -> ServerReloadRegistryView<'_> {
+        ServerReloadRegistryView { core: &self.core }
     }
-    fn get_graph(&self) -> Vec<(Identifier, Identifier)> {
-        self.core
-            .graph()
-            .map(|(first, second)| (first.clone(), second.clone()))
-            .collect()
+    fn get_graph(&self) -> ServerReloadGraphView<'_> {
+        ServerReloadGraphView { core: &self.core }
     }
-    fn get_last_vanilla_listener(&self) -> Identifier {
-        VanillaServerListeners::functions()
+    fn get_last_vanilla_listener(&self) -> &Identifier {
+        VanillaServerListeners::functions_ref()
     }
 }
 impl ServerListenerRegistry {
+    /// Run one registration callback and discard only its appended ordered and retained rows on failure.
+    // hidden: the engine stages one listener at a time; mods receive only the registrar trait.
+    #[doc(hidden)]
+    pub fn register_listener(
+        &mut self,
+        listen: &mut dyn FnMut(&mut dyn ServerReloadListeners) -> bool,
+    ) {
+        let checkpoint = self.core.checkpoint();
+        let retained = self.retained.len();
+        if !listen(self) {
+            let site = (
+                crate::HookId::AddServerReloadListeners,
+                "add_server_reload_listeners",
+            );
+            let owner = crate::content::crash::current_native_mod();
+            let discarded = self.retained.split_off(retained);
+            self.core.rollback(checkpoint, site);
+            for listener in discarded {
+                crate::runtime::discard_registration(site, owner, listener);
+            }
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
-            core: crate::world::reload::ReloadCore::new(
-                VanillaServerListeners::first(),
+            core: ReloadCore::new(
                 VanillaServerListeners::functions(),
-                VanillaServerListeners::last(),
                 || -> Arc<dyn ServerReloadListener> { Arc::new(Boundary) },
             ),
             retained: Vec::new(),
@@ -204,7 +256,7 @@ impl ServerListenerRegistry {
     }
     pub(crate) fn finish(self) -> Result<OrderedServerReload, ReloadOrderError> {
         Ok(OrderedServerReload {
-            listeners: self.core.finish(&VanillaServerListeners::functions())?,
+            listeners: self.core.finish(VanillaServerListeners::functions_ref())?,
             retained: self.retained,
         })
     }
@@ -302,10 +354,17 @@ impl ServerReloadResources for RetainedListeners {
     }
 }
 impl RetainedListeners {
-    pub(crate) fn install(&mut self, retained: Vec<RetainedEntry>) {
-        self.entries = retained
-            .into_iter()
-            .map(|entry| (entry.id, entry.any))
-            .collect();
+    pub(crate) fn install(
+        &mut self,
+        retained: Vec<RetainedEntry>,
+        skipped: &std::collections::BTreeSet<Identifier>,
+    ) {
+        // Refused callbacks never replace a previously admitted retained object.
+        self.entries.retain(|id, _| skipped.contains(id));
+        self.entries.extend(
+            retained.into_iter().filter_map(|entry| {
+                (!skipped.contains(&entry.id)).then_some((entry.id, entry.any))
+            }),
+        );
     }
 }

@@ -1,10 +1,10 @@
 //! BlockGetter clipping: ordered block/fluid queries and interaction-face override.
 use crate::entity_obstruction::EntityIdentity;
+use std::fmt;
 use sunrise_core::{
     geometry::{BlockHit, Direction, TraversalError, Vec3, VoxelShape, traverse_blocks},
     position::BlockPos,
 };
-use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RayBlockMode {
     Collider,

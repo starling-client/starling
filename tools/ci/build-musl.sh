@@ -1,44 +1,45 @@
-#!/bin/sh
-# Called inside rust:alpine3.22 by game-build.yml, without release credentials.
-set -eu
+#!/usr/bin/env bash
+# Run on the glibc Rust host, with Alpine's loader configured to run its C tools.
+set -euo pipefail
 
-apk add --no-cache build-base pkgconf linux-headers alsa-lib-dev eudev-dev python3 git bash
-git config --global --add safe.directory /work
-# Match the shared release/SDK pin, not the image's bundled Rust or the moving stable channel.
-bash tools/ci/rustup_install.sh --profile minimal --component llvm-tools
-export RUSTUP_TOOLCHAIN="$(cat tools/ci/rust-version)"
-
-# Static musl cannot dlopen the graphics/window libraries. Keep audio and controllers,
-# and link against Alpine's native libraries rather than Ubuntu's glibc libraries.
-export RUSTFLAGS='-C target-feature=-crt-static'
+sysroot=$(realpath "$1")
 target=x86_64-unknown-linux-musl
-bin="target/$target/release"
-cargo build --release --locked --target "$target" \
+build_dir=${CARGO_TARGET_DIR:-target}
+bin="$build_dir/$target/release"
+
+# Only target C code uses Alpine's headers, libraries and compiler. Proc macros
+# and build scripts (including libudev-sys's bare rustc probe) run on glibc.
+cat > "$sysroot/sunrise-cc" <<EOF
+#!/usr/bin/env bash
+exec "$sysroot/usr/bin/gcc" --sysroot="$sysroot" -B"$sysroot/usr/bin/" "\$@"
+EOF
+chmod +x "$sysroot/sunrise-cc"
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$sysroot/sunrise-cc"
+export CC_x86_64_unknown_linux_musl="$sysroot/sunrise-cc"
+export AR_x86_64_unknown_linux_musl="$sysroot/usr/bin/ar"
+export PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_musl="$sysroot"
+export PKG_CONFIG_LIBDIR_x86_64_unknown_linux_musl="$sysroot/usr/lib/pkgconfig:$sysroot/usr/share/pkgconfig"
+export PKG_CONFIG_PATH_x86_64_unknown_linux_musl=
+
+# Keep the desktop build able to dlopen graphics and window libraries. A global
+# RUSTFLAGS, even an empty one from the matrix, would override the target flags.
+unset RUSTFLAGS
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS='-C target-feature=-crt-static'
+cargo build --release --locked --timings --target "$target" \
   -p sunrise-official --bin sunrise-official -p sunrise-client-lib --bin sunrise-ctl \
-  -p sunrise-prepare --bin sunrise-prepare -p sunrise-server --bin sunrise-server
+  -p sunrise-perf --bin sunrise-perf \
+  -p sunrise-prepare --bin sunrise-prepare -p sunrise-server --bin sunrise-server \
+  -p sunrise-port-pack --bin sunrise-port-pack
+
+# libudev-sys 0.1.4 decides hwdb by linking on the host. Alpine's eudev exports
+# udev_hwdb_new, so losing the cfg (e.g. if host libudev-dev is absent) is a build error.
+for output in "$bin"/build/libudev-sys-*/output; do
+  grep -Fxq 'cargo:rustc-cfg=hwdb' "$output" || {
+    echo "::error::expected libudev-sys to enable hwdb in $output; check the host's libudev-dev" >&2
+    exit 1
+  }
+done
+
 # The official game (sunrise-client's with Sunrise's own parts, docs/layers.md) is what players
 # get, under the game's name.
 cp -f "$bin/sunrise-official" "$bin/sunrise-client"
-
-set -- "$bin/sunrise-client" "$bin/sunrise-ctl" "$bin/sunrise-prepare" "$bin/sunrise-server"
-python3 tools/check_imports.py --musl "$@"
-python3 tools/check_cpu_baseline.py "$@"
-
-# Even --help must never touch real player data.
-export SUNRISE_HOME="$(mktemp -d)"
-export SUNRISE_LAUNCHER_HOME="$(mktemp -d)"
-export XDG_DATA_HOME="$(mktemp -d)"
-export XDG_CONFIG_HOME="$(mktemp -d)"
-export SUNRISE_LAUNCHER_NO_SELF_UPDATE=1 SUNRISE_NO_AUDIO=1
-"$bin/sunrise-client" --help > "$SUNRISE_HOME/client-help"
-grep -q -- '--resources' "$SUNRISE_HOME/client-help"
-"$bin/sunrise-ctl" --help > /dev/null
-"$bin/sunrise-prepare" --help > "$SUNRISE_HOME/prepare-help"
-grep -q -- '--minecraft-dir' "$SUNRISE_HOME/prepare-help"
-for binary in sunrise-prepare sunrise-server; do
-  test "$("$bin/$binary" --version)" = "$binary $SUNRISE_VERSION"
-done
-
-cargo run --locked --target "$target" -p xtask -- package \
-  "$bin/sunrise-client" dist/sunrise-linux-musl-x86_64
-tar -C dist -czf dist/sunrise-linux-musl-x86_64.tar.gz sunrise-linux-musl-x86_64

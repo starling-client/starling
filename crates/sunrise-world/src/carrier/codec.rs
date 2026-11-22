@@ -23,8 +23,8 @@ use super::model::{
     Carrier, Cell, Invalid, LocalPos, MAX_CARRIER_DATA_BYTES, MAX_CELLS, MAX_LOCAL_COORD,
     MIN_LOCAL_COORD, stored_transform,
 };
-use sunrise_core::nbt::{self, Compound, JavaString, Limits, NamedTag, Tag};
 use std::fmt;
+use sunrise_core::nbt::{self, Compound, JavaString, Limits, NamedTag, Tag};
 
 /// The schema version this build writes and reads. Any other version
 /// fails load explicitly with [`CodecError::UnknownSchemaVersion`].

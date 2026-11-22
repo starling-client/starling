@@ -12,7 +12,7 @@ fn spectral_duration_uses_live_identity_and_preserves_saved_values() {
         None,
     );
     model.arrow.as_mut().unwrap().spectral = true;
-    let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, None).unwrap();
+    let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, None, &Default::default()).unwrap();
     assert_eq!(kind(&saved).as_deref(), Some("minecraft:spectral_arrow"));
     assert_eq!(saved.get("Duration"), Some(&Tag::Int(200)));
     for supplied in [None, Some(77), Some(0), Some(-1), Some(200), Some(i32::MAX)] {
@@ -26,7 +26,15 @@ fn spectral_duration_uses_live_identity_and_preserves_saved_values() {
         }
         let (loaded, _) = arrow_from_nbt(&source, None, |_| None).unwrap();
         assert!(loaded.arrow.as_ref().unwrap().spectral);
-        let saved = arrow_to_nbt(&loaded, [7, 8, 9, 10], None, None, None).unwrap();
+        let saved = arrow_to_nbt(
+            &loaded,
+            [7, 8, 9, 10],
+            None,
+            None,
+            None,
+            &Default::default(),
+        )
+        .unwrap();
         assert_eq!(
             saved.get("Duration"),
             Some(&Tag::Int(supplied.unwrap_or(200)))
@@ -37,7 +45,15 @@ fn spectral_duration_uses_live_identity_and_preserves_saved_values() {
         None,
         Some(Tag::compound([("id", string("minecraft:spectral_arrow"))])),
     ] {
-        let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, raw.as_ref()).unwrap();
+        let saved = arrow_to_nbt(
+            &model,
+            [7, 8, 9, 10],
+            None,
+            None,
+            raw.as_ref(),
+            &Default::default(),
+        )
+        .unwrap();
         assert_eq!(kind(&saved).as_deref(), Some("minecraft:arrow"));
         assert!(saved.get("Duration").is_none());
     }

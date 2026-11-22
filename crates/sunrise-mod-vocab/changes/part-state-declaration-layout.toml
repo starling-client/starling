@@ -1,0 +1,3 @@
+ids = ["type:PartStateDeclaration.layout"]
+why = "Part-state declarations no longer expose the old Wire layout hash: two declarations of one key are compared by the Rust type name, and a resource handle anywhere in the type is found by walking its Wire form."
+migrate = "Use `PartStateDeclaration::of` for a typed attachment declaration and `data_name` to name its type."

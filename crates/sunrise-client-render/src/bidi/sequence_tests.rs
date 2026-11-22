@@ -1,4 +1,8 @@
-use super::*;
+use super::{visual_characters as visual_characters_by_style, *};
+
+fn visual_characters(text: &Text) -> Vec<(char, &Style, u32)> {
+    visual_characters_by_style(text, PartialEq::eq)
+}
 
 // Expected records were read from a real 26.3 client FormattedCharSink using
 // ClientLanguage / FormattedBidiReorder and ICU 78.3, not this implementation.

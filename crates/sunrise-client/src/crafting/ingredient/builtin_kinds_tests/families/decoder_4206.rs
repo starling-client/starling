@@ -1,9 +1,9 @@
 use super::*;
 #[test]
 fn damage_resistant_component_recipes_use_loaded_holder_sets() {
+    use serde_json::json;
     use sunrise_world::damage_source::Catalog;
     use sunrise_world::loot::PackOverlay;
-    use serde_json::json;
 
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -235,25 +235,7 @@ fn damage_resistant_component_recipes_use_loaded_holder_sets() {
             error.contains("component minecraft:damage_resistant:"),
             "{error}"
         );
-        let book = recipes(patch, false, &items);
-        assert!(
-            book.cook(
-                &context,
-                "minecraft:smelting",
-                &ItemStack::new("minecraft:stick", 1)
-            )
-            .is_none()
-        );
-        assert_eq!(
-            book.cook(
-                &context,
-                "minecraft:smelting",
-                &ItemStack::new("minecraft:stone", 1)
-            )
-            .unwrap()
-            .id,
-            "fixture:sibling",
-        );
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
     let empty = recipes(
         json!({"minecraft:damage_resistant":{"types":[]}}),
@@ -354,26 +336,9 @@ fn damage_resistant_component_recipes_use_loaded_holder_sets() {
             .is_some()
     );
     for types in ["#fixture:hot", "fixture:new"] {
-        let refused = recipes(
-            json!({"minecraft:damage_resistant":{"types":types}}),
-            false,
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
             &items,
-        );
-        assert!(
-            refused
-                .cook(&context, "minecraft:smelting", &stack)
-                .is_none()
-        );
-        assert_eq!(
-            refused
-                .cook(
-                    &context,
-                    "minecraft:smelting",
-                    &ItemStack::new("minecraft:stone", 1)
-                )
-                .unwrap()
-                .id,
-            "fixture:sibling",
+            json!({"minecraft:damage_resistant":{"types":types}}),
         );
     }
 }

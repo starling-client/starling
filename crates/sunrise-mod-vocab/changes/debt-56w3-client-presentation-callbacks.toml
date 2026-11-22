@@ -1,0 +1,89 @@
+ids = [
+    "hook:register_gui_layers.layers",
+    "type:RegisterGuiLayersEvent.layers",
+    "type:GuiLayer",
+    "type:GuiLayer.id",
+    "type:GuiLayer.placement",
+    "type:GuiLayerDraw",
+    "type:GuiLayerWrapper",
+    "trait:GuiLayerRegistrar",
+    "method:GuiLayerRegistrar::register",
+    "method:GuiLayerRegistrar::replace_layer",
+    "method:GuiLayerRegistrar::wrap_layer",
+    "trait:GuiLayerWrapContext",
+    "method:GuiLayerWrapContext::host",
+    "method:GuiLayerWrapContext::with_draw",
+    "method:GuiLayerWrapContext::draw_previous",
+    "hook:gui_layer_draw",
+    "hook:gui_layer_draw.layer",
+    "hook:gui_layer_draw.draw",
+    "method:Hooks::gui_layer_draw",
+    "type:GuiLayerDrawEvent",
+    "type:GuiLayerDrawEvent.layer",
+    "type:GuiLayerDrawEvent.draw",
+    "type:DebugEntry",
+    "type:DebugEntry.id",
+    "type:DebugEntry.group",
+    "type:DebugEntryLines",
+    "handle:DebugEntry::text",
+    "handle:DebugEntry::renderer",
+    "handle:DebugEntry::id",
+    "handle:DebugEntry::text_lines",
+    "type:DebugGroup",
+    "type:DebugGroup.Renderer",
+    "hook:debug_entry_lines",
+    "hook:debug_entry_lines.id",
+    "hook:debug_entry_lines.lines",
+    "method:Hooks::debug_entry_lines",
+    "type:DebugEntryLinesEvent",
+    "type:DebugEntryLinesEvent.id",
+    "type:DebugEntryLinesEvent.lines",
+    "type:DebugRenderer",
+    "type:DebugRenderer.id",
+    "handle:DebugRenderer::draw",
+    "hook:debug_renderer_draw",
+    "hook:debug_renderer_draw.id",
+    "hook:debug_renderer_draw.view",
+    "hook:debug_renderer_draw.draw",
+    "method:Hooks::debug_renderer_draw",
+    "type:DebugRendererDrawEvent",
+    "type:DebugRendererDrawEvent.id",
+    "type:DebugRendererDrawEvent.view",
+    "type:DebugRendererDrawEvent.draw",
+    "type:DimensionTransitionScreen",
+    "type:DimensionTransitionScreen.screen",
+    "type:DimensionTransitionScreen.transition",
+    "handle:DimensionTransitionScreen::transition",
+    "handle:DimensionTransitionScreen::create",
+    "trait:DimensionTransitionPresentation",
+    "method:DimensionTransitionPresentation::draw",
+    "hook:dimension_transition_screen_draw",
+    "hook:dimension_transition_screen_draw.screen",
+    "hook:dimension_transition_screen_draw.reason",
+    "hook:dimension_transition_screen_draw.progress",
+    "hook:dimension_transition_screen_draw.draw",
+    "method:Hooks::dimension_transition_screen_draw",
+    "type:DimensionTransitionScreenDrawEvent",
+    "type:DimensionTransitionScreenDrawEvent.screen",
+    "type:DimensionTransitionScreenDrawEvent.reason",
+    "type:DimensionTransitionScreenDrawEvent.progress",
+    "type:DimensionTransitionScreenDrawEvent.draw",
+]
+why = "The client calls the HUD, F3 and loading-screen code installed by the registering mod instead of broadcasting draw IDs. HUD slots can be wrapped or replaced in place, and a canceled Pre no longer fires Post. F3 text stays registered for the client session, renderer callbacks are rebuilt at each refresh (including after DebugScreenEntryList.rebuildCurrentList leaves the selection unchanged), and a loading screen keeps one presentation until it closes. A new login or death screen does not look up a dimension-keyed factory. This follows vanilla's Gui.extractRenderState, Hud.extractRenderState, DebugScreenEntryList, DebugRenderer.refreshRendererList, DebugRenderer.emitGizmos, ClientPacketListener.startWaitingForNewLevel and LevelLoadingScreen.extractBackground, tick and onClose, and NeoForge's GuiLayerManager.renderInner, RegisterGuiLayersEvent.wrapLayer, RegisterDebugEntriesEvent, RegisterDebugRenderersEvent and DimensionTransitionScreenManager.getScreen. Stored callbacks run as their own mod. A failed HUD draw loses its own paint without drawing its delegated bodies again; a delegated vanilla fault still escapes as an engine fault. A failed transition draw loses its paint and queued client effects, and the presentation is disposed under the same owner when the screen closes. Failures in drawing or disposal do not disable the factory."
+migrate = """
+HUD — In `Hooks::register_gui_layers`, replace `event.layers.push(GuiLayer { id, placement })` with `event.layers.register(id, placement, Box::new(move |host, draw| { /* draw this layer */ }))`. `RegisterGuiLayersEvent.layers` is now a `&mut dyn GuiLayerRegistrar`, not a vector. Keep the ID and `GuiLayerPlacement`. Move the matching `Hooks::gui_layer_draw` branch into the callback: `host` is the current `ClientHost` and `draw` replaces `event.draw`. Capture per-layer data instead of branching on `event.layer`. Remove the `GuiLayer` and `GuiLayerDrawEvent` imports and the old draw method. `register` returns `false` if the ID or relative anchor is rejected. To place a layer between the status rows and the contextual bar, use `Above("minecraft:air_level".into())` or `Below("minecraft:contextual_info_bar".into())`.
+
+If your `gui_layer_pre` branch drew a replacement and returned `Flow::Cancel`, move that paint into `event.layers.replace_layer(id, Box::new(|host, draw| { /* replacement */ }))` at registration. To keep or conditionally call the previous body instead, use `event.layers.wrap_layer(id, Box::new(|ctx| { /* paint around ctx.draw_previous() */ }))`. Within the wrapper, read the client with `ctx.host()`, draw with `ctx.with_draw(&mut |draw| { /* before or after paint */ })`, and call `ctx.draw_previous()` at the point where the previous body should paint. Omit that call to skip its paint for this frame. Both methods keep the slot's ID, order and dispatch, and return `false` for an unknown ID. Eligibility checks in an original body apply only when that body runs, including when a wrapper delegates to it. Use Pre for vetoing an entire slot, not replacing its body. `gui_layer_post` keeps its signature but does not follow a canceled Pre. Keep layer-specific after-paint work in Post or the wrapper; move independent after-HUD work to `gui_render_post`, even when the original slot was canceled or F1 hid it.
+
+F3 text — In `Hooks::register_debug_entries`, replace `event.entries.push(DebugEntry { id, group })` with `event.entries.push(DebugEntry::text(id, group, move |host, lines| { /* append lines */ }))`. Move the matching `Hooks::debug_entry_lines` branch into this callback. Read the client through `host` and append to `lines` instead of `event.lines`; there is no `event.id` to match. Remove the old hook and `DebugEntryLinesEvent` import. Replace `DebugEntry { id, group: DebugGroup::Renderer }` with `DebugEntry::renderer(id)`. Use `entry.id()` instead of `entry.id`, and `entry.text_lines()` instead of `entry.group`: it returns the text group and callback, or `None` for a renderer switch. Registration still takes `RegisterDebugEntriesEvent`, but the batch starts empty for each mod. If you previously encoded `DebugGroup::Renderer`, store a renderer flag of your own instead; `DebugGroup` now contains only text groups.
+
+F3 renderers — Keep declaring `DebugEntry::renderer(id)` at startup if you want an F3 toggle switch. On every `Hooks::register_debug_renderers` refresh, push `DebugRenderer::new(move |host, view, draw| { /* draw this renderer */ })` (superseded by `debt-fa-queued-client-presentation.toml`: `DebugRenderer` no longer takes or exposes a switch `id` and the client does not auto-filter by switch state; query event.is_debug_entry_enabled(id) when refreshing). Move the matching `Hooks::debug_renderer_draw` branch into the callback. Read the client through `host`; `view` and `draw` replace `event.view` and `event.draw`. Capture renderer-specific data rather than branching on `event.id`. Remove the old hook and `DebugRendererDrawEvent` import. `RegisterDebugRenderersEvent` still takes a vector of renderers, now empty for each registering mod.
+
+Loading screens — In `Hooks::register_dimension_transition_screen`, push `DimensionTransitionScreen::new(transition, move |host, initial_reason| { /* return a boxed presentation */ })` (superseded by `debt-fa-queued-client-presentation.toml`: `DimensionTransitionScreen` is keyed only by `transition`, with no separate `screen` ID argument or `screen()` getter). The batch in `RegisterDimensionTransitionScreenEvent` now starts empty for each mod. Move the matching `Hooks::dimension_transition_screen_draw` branch into the presentation's `draw` method, or return `Box::new(move |host: &dyn ClientHost, reason, progress, draw: &mut dyn DrawContext| { /* draw the screen */ })` from the factory. Draw with the current host, reason, progress and draw context instead of the old event; there is no `event.screen` to match. Remove the old draw hook and `DimensionTransitionScreenDrawEvent` import. Set up per-load state in the factory and capture it in the returned `DimensionTransitionPresentation`. A factory is called once when a matching trip opens a new screen. If the screen is updated in place, the same instance draws with the new reason and progress. A new login or death screen uses vanilla, not a keyed registration; an already open loading screen keeps its presentation.
+
+A retained HUD or F3 callback runs as its registering mod. A panic disables only that callback for the session and logs and queues an error toast naming the mod. If a HUD wrapper is disabled, `draw_previous()`'s body draws directly; when a wrapper delegates, vanilla paint runs as the engine and a mod body as its own mod. Do not use `catch_unwind` around `ctx.draw_previous()` to recover from a vanilla paint fault: the engine still propagates it out of the layer without disabling the wrapper. A failed HUD painter or wrapper loses its own paint, not the paint of any completed `draw_previous()` calls. A failed transition draw discards its paint and pending blur, local sound, particle clear and camera requests, but not requests that were already pending. A draw panic also disables future draws for that registration, but the factory is still called on the next matching load. A custom presentation's `Drop` runs as its registering mod on normal close or disconnect, even when drawing is disabled. A panicking destructor is reported against that mod and disables drawing, but does not prevent close or disable the factory. No callback signatures change for these failure rules.
+
+`GuiLayer` is gone. `DebugEntry`, `DebugRenderer` and `DimensionTransitionScreen` now own callbacks and no longer implement `Wire`, `Clone`, `Debug`, `PartialEq` or `Eq`. Store IDs, text groups, placements and transition keys in your own data, construct declarations with local functions when registering, and compare or log their IDs or keys instead of the declarations. The four registration hooks and `gui_layer_post` move from version 1 to 2; `gui_layer_pre` stays at version 1.
+
+Registered callbacks use the panic policy described in `debt-fin-panic-fin-panic.toml`. For independent health-row slots and placement changes, see `debt-r1-item56-health-layer.toml`. The final F3 and transition constructor forms are in `debt-fa-queued-client-presentation.toml`.
+"""

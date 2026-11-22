@@ -1,10 +1,10 @@
 #![cfg(test)]
 //! A stick's `ItemPart` answers `highlight_tip` (`IItemExtension.getHighlightTip`):
 //! its text replaces the selected item's name for as long as the name shows.
-use sunrise_client::items::ItemStack;
-use sunrise_client::text::Text;
 use mod_api::{ClientHost, HighlightTipEvent, Hooks, ItemPart, Registrar, RegistrationContext};
 use std::sync::atomic::{AtomicU32, Ordering};
+use sunrise_client::items::ItemStack;
+use sunrise_client::text::Text;
 
 static ASKED: AtomicU32 = AtomicU32::new(0);
 
@@ -28,7 +28,7 @@ impl Hooks for Parts {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "daily"]
 fn a_part_names_the_selected_stick_while_its_name_shows() {
     crate::game::in_own_process(
         "game::highlight_tip_tests::a_part_names_the_selected_stick_while_its_name_shows",

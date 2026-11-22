@@ -1,0 +1,3 @@
+ids = ["hook:living_knockback"]
+why = "Version 2 supplies the pushed living entity's kill credit and its current main-hand stack after accepted-hit memories are committed, distinct from the immediate attacker and source weapon. Remembered players take precedence over recent mobs, including unresolved player references."
+migrate = "Rebuild against hook version 2. Use kill_credit and kill_credit_main when applying kill-credit-dependent push logic; keep attacker and attacker_main for immediate-source logic. A zero kill_credit has no stack and must not be replaced with attacker."

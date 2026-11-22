@@ -78,6 +78,12 @@ def mob_attribute_save(raw=False):
         if phase == 'pre':
             attributes(tag)
     attributes('h105_saved')
+    # Magma cube load writes armor from the unclamped size. Read the saved base
+    # without opening a live attribute instance via /attribute.
+    for n, (size, armor) in enumerate([(-1, 0), (-5, -12), (199, 600)], 22):
+        tag = f'h105_magma_{n}'
+        run(f'/summon minecraft:magma_cube 4.5 240 4.5 {{UUID:{uuid(n)},Tags:["{tag}"],{COMMON},Size:{size}}}', 1)
+        run(f'/data get entity @e[tag={tag},limit=1] attributes[{{id:"minecraft:armor"}}].base', armor)
     # A query makes the instance it reads.
     run('/attribute @e[tag=h105_read,limit=1] minecraft:max_health get')
     attributes('h105_read')

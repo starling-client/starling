@@ -12,9 +12,8 @@ again restores vanilla's behaviour completely.
 | Settings, parsing and saving | `crates/sunrise-client-render/src/extras.rs` |
 | FPS and click counters (for native mods) | `extras.rs` (pure logic, unit tested) |
 | Dynamic lights: item glow, nearest sources | `crates/sunrise-client-render/src/dynamic_light.rs` (unit tested), `game/interface/dynamic_lights.rs`, `terrain.wgsl` and `entity.wgsl` (`dynamic_block_light`) |
-| HUD drawing (a native mod's minimap, corner stacking) | `crates/sunrise-client/src/extras_hud.rs` |
-| Minimap colours, tiles and image (for the Minimap native mod) | `crates/sunrise-client-render/src/minimap.rs` |
-| Reconnect policy and backoff | `crates/sunrise-client/src/reconnect.rs`; its game glue (connect, join, leave, the countdown) in `game/interface/extras/reconnect.rs` |
+| HUD drawing (mods' panels, corner stacking) | `crates/sunrise-client/src/extras_hud.rs` |
+| Auto-reconnect: its setting, its row, the policy and the backoff | crate `sunrise-reconnect`, which the official executable registers ([forking.md](forking.md#modding-and-rendering)); the engine shows its countdown and connects again when it asks (`Hooks::retry`, `game/network/remote/connection.rs`) |
 | Game glue (input hooks, per-frame update) | `crates/sunrise-client/src/game/interface/extras.rs`; each extra's own glue in a child module, `game/interface/extras/` |
 | Mouse Tweaks-style controls, sort buttons | `crates/sunrise-client/src/game/interface/extras/mouse_tweaks.rs`, `game/interface/extras/sorting.rs` |
 | Sort order and its clicks | `crates/sunrise-client/src/inv_sort.rs` (pure, unit tested) |
@@ -55,7 +54,7 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
   time of day and effects. The brightness slider keeps its normal range.
 - Held off on another's server (#3823): a multiplayer server or another player's LAN world draws the normal
   lightmap and the graphics screen hides the row, while the saved choice stays for the next world. Single
-  player, a LAN host, a splitscreen seat in P1's world and Replay Studio keep it (`fullbright_held`,
+  player, a LAN host and Replay Studio keep it (`fullbright_held`,
   `game/options.rs`).
 
 ### Dynamic lights (`dynamicLights`, default off)
@@ -73,24 +72,21 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 - Off: nothing is gathered and the shaders' loop runs zero times (the count is 0), so it costs
   nothing measurable (numbers in the pull request, #814).
 
+### Mod audio streams (`modAudioStreams`, default on)
+- Mods can play audio by supplying a native source to `ClientHost::open_audio_stream`
+  ([the how-to](modding/src/how-to/client/audio-streams.md)).
+  Off, the mixer still consumes each stream's audio at its own pace, but none of it is heard.
+- The one extra that is on by default; its line is written to `sunrise-extras.txt` only while it is off. It lives in
+  `crates/sunrise-official/src/mod_audio.rs` and sets the engine's mod-stream gain (`sunrise_platform::sound`).
+
 ### Moved to native mods
 
-The **FPS counter**, **Keystrokes**, **Zoom** and the **Minimap** are official native mods now (in
-horizon-rust/horizon-mods under `native/<name>/`, [mods.md](modding/src/start/installing.md#sunrises-official-mods)), with the same look and
+The **FPS counter**, **Keystrokes** and **Zoom** are official native mods now (in
+horizon-rust/horizon-mods under `native/<name>/`, [mods.md](modding/src/players/installing-mods.md#sunrises-own-mods)), with the same look and
 options. Players install them from the launcher's Mods page, and the launcher builds them into the game
 ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)). The game keeps
-the hook points they use (`crates/sunrise-client/src/game/native_hooks/`), and `sunrise-extras.txt` keeps the old
-keys and `movedToMods`. The Extras page keeps a **Zoom** row: the mod's switch and Settings button when
+the hook points they use (`crates/sunrise-client/src/game/native_hooks/`). The Extras page keeps a **Zoom** row: the mod's switch and Settings button when
 it is built in, else a note saying to install it from the Mods page.
-
-The game still draws the minimap, for the native mod (`native_minimap` in `native_hooks/`, [mods.md](modding/src/how-to/content-mods.md)):
-- a corner map (top right by default), square or round, small/medium/large, zoom 0.5 to 4 blocks per pixel, rotating
-  with the player or north up, with the player arrow (vanilla's map decoration sprite);
-- vanilla's `MapColor` per block, as map items use, with the map item's height shading and water-depth dithering;
-- underground, in the Nether and under any roof, the floor around the player's height instead of the top block;
-- one cached 16x16 tile per loaded chunk (packed map colour and height), filled nearest first and refreshed when
-  blocks change within 0.3 ms a frame; the 128x128 image is recomposed only when the view moved or a tile changed, and
-  uploaded into a dedicated atlas slot. With no mod showing a map, nothing runs.
 
 ### Own name tag (`ownNameTag`, default off)
 - In third person (F5, either view), the player's own name shows above its head,
@@ -124,6 +120,8 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
 - Online-mode servers: the retry joins with the account the game signed in
   with, held in memory for the whole run (`auth::current()`); nothing is
   written to disk.
+- Only in the official executable (`sunrise-official`), which registers it: sunrise-client's own executable has
+  no such row or setting, and never connects again by itself.
 
 ### Keep channels for UI sounds (`uiSoundReserve`, default off)
 - Positional sounds (a block breaking, a mob, an explosion) start only while at
@@ -182,6 +180,15 @@ and the container screen tests are unchanged).
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 
+### Shader pack key (`shaderPackKey`, `K` by default; `lastShaderPack`, none picked)
+
+- The Extras page's key for the Shader Packs pick: press it and the running pack turns off, press it again and
+  the same pack runs again. Click the row, then press a key to rebind it (Escape unbinds); it is not a vanilla
+  key binding, so it never collides with one (Replay Studio keeps physical `K` for its camera keyframe).
+- Turning off writes the pick to `lastShaderPack`, so the pack stays off across restarts until the key is
+  pressed again. The menu's second click on the picked pack does the same through the same pick.
+- A pack whose owning mod is off can't run: the key reports that instead of claiming it turned on.
+
 ### Smooth chat (`chatAnimation`, default off; `chatIndicator`, default on)
 - A new chat line slides in from the left while it fades in over a quarter of
   a second (5 ticks, `INTRO_TICKS`/`INTRO_WIDTH` in `Chat::layout`), instead of
@@ -202,55 +209,9 @@ and the container screen tests are unchanged).
 - On, the wheel over a button in a list changes the button's value too, and a button focused with
   the keyboard or a pad steps on the wheel wherever the cursor is. Client-only.
 
-### Splitscreen (`splitscreen`, default off)
+### Local multiplayer
 
-**Options → Sunrise Settings... → Splitscreen...** turns local joining on or off at once.
-In P1's single-player world, a controller P1 isn't using can press a button, then A to join
-(or Y to play as P1, while P1 has no controller). Each
-player picks an instance-local profile with its own options and saved progress. LB/RB on
-the profile page move the view between shared positions, a new window or another monitor.
-A joined player's **Splitscreen Settings** in the pause menu switches profiles in place;
-Cancel keeps the current one. The switch is disabled while another player is joined; once
-P1 is alone, turning it off restores the normal controller reader. Leaving it on while
-alone keeps watching for joins without a compositor.
-
-When Splitscreen is enabled, Play in the launcher also hands over its other signed-in
-Microsoft accounts. They appear first in the profile picker, marked **(Microsoft)**, and
-connect with their own sessions, skins and secure-chat keys. An account whose session is
-unavailable appears as **(Offline)**: sign in again in the launcher and restart the game to
-use it on an online-mode server. Launcher accounts cannot be forgotten from this page.
-
-`SUNRISE_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
-The Setup map previews the monitors, windows and player views. Click a player (its name turns
-yellow) and choose a window or monitor, or drag its tile onto a window, a place among another
-window's players, or a monitor; then **Apply** to move the actual views. **Revert** and
-**Done** discard unapplied moves. An emptied window closes only on Apply. A player joining or
-leaving resets the draft so it cannot apply a move to the wrong seat. P1's pause-menu shortcut
-opens Setup; another player's shortcut opens their profiles.
-
-While a window has two or three players, a square at the bottom picks how they share it
-(two: Auto, side by side, top and bottom; three: one wide on top, one tall on the left, side
-by side); Apply saves it (`splitscreenTwo`, `splitscreenThree`). **Names** (top left,
-`splitscreenNames`, on by default) keeps each player's name in the corner of their view; off,
-it shows only for a moment when something changes. **Identify** makes every view say which
-window it is in.
-
-With a controller, A on a player's tile picks it up: left and right (or LB and RB) cycle where
-it goes, the map showing it there, A drops it, B puts it back. **Give Up Pad** (top, while P1
-has a controller in a world) frees P1's controller and offers it to join, for a friend to
-press A; if nobody joins, the offer runs out, or it's declined, it drives P1 again. A player
-whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
-say **Leave** for disconnecting. `SUNRISE_SPLIT_STATS=1` logs every 5 s where a frame's time
-goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
-On a server P1 joined on this computer or its local network (a dedicated server, another
-computer's LAN world: a loopback, private or link-local address, after the SRV redirect) the
-others join the same server, each as its own profile. Anywhere else (a public server, even in
-offline mode, or a friend's invite) an offline profile can't join: everyone who plays there owns
-the game, so each player needs its own signed-in account. A name already on the server can't be
-picked, and an online-mode server refuses offline profiles; both are said on the profile page
-before it tries. A player the server turns away as it comes in picks again, told why; one kicked later
-leaves; when P1 leaves the server, everyone does. The server's resource packs are asked once,
-of P1: the others follow P1's answer.
+Splitscreen is temporarily unavailable; it returns as an official mod.
 
 ### Music page (`musicPage`, default off; `musicOff`, none off by default)
 - An extra like the rest: off, Music & Sounds is exactly vanilla's page and every
@@ -284,11 +245,9 @@ of P1: the others follow P1's answer.
   the world, like vanilla's HUD. Extras in the top left corner give way to the
   debug screen (F3), which shows the FPS anyway.
 - Corners stack: extras placed in the same corner stack downward (top corners)
-  or upward (bottom corners) in the order a mod's minimap, then mods' panels. The top
+  or upward (bottom corners) in the order the PvP HUD widgets, then mods' panels. The top
   right corner starts below the status effect icons.
 
 ## Perf budget
 
 Off: a flag check per frame per extra (no allocations, no world access).
-A mod's minimap stays under 0.3 ms of CPU
-per frame (tile budget) plus a 64 KiB texture upload when its image changes.

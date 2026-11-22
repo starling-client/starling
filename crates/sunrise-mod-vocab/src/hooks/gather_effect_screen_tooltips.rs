@@ -10,10 +10,16 @@ pub trait Hooks {
     /// the effect the panel shows, `screen` the inventory. Asked each frame
     /// a rendered panel is hovered, only while a mod listens. Client-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "GatherEffectScreenTooltipsEvent",
         cancellable = false
     )]
-    fn gather_effect_screen_tooltips();
+    fn gather_effect_screen_tooltips(
+        screen: &ScreenView<'_>,
+        effect: &ActiveEffect,
+        tooltip: &mut Vec<(Text, u32)>,
+    );
 }

@@ -1,16 +1,16 @@
 use super::super::native_entity_refs::tests::with_game;
 use super::{Game, SlotAccess};
+use mod_api::DimensionKey;
+use std::{
+    num::NonZeroU32,
+    sync::{Arc, Mutex},
+};
 use sunrise_client::{
     items::ItemStack,
     join_seq::residency::{Kind, table::EntityLookup},
 };
 use sunrise_mod_runtime::attachments::{
     AttachmentType, Attachments, Holder, index::AttachmentIndex,
-};
-use mod_api::DimensionKey;
-use std::{
-    num::NonZeroU32,
-    sync::{Arc, Mutex},
 };
 
 static VALUE: AttachmentType<i32> = AttachmentType {
@@ -23,7 +23,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
 };
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
     with_game(|game| {
         let index = Arc::new(Mutex::new(AttachmentIndex::default()));
@@ -124,10 +124,13 @@ fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
                 previous: sunrise_core::geometry::Vec3::ZERO,
                 velocity: sunrise_core::geometry::Vec3::ZERO,
                 rotation: [0.0, 0.0],
+                owner: None,
                 fall_distance: 0.0,
                 payload_version: 1,
                 payload_bytes: Vec::new(),
                 mount: None,
+                vehicle_order: 0,
+                boarding_cooldown: 0,
                 attachment_lifetime: Default::default(),
             });
         bind(game, 4242, Kind::General);

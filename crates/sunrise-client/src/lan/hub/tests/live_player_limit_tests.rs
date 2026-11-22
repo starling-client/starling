@@ -68,3 +68,27 @@ fn a_lowered_limit_refuses_logins_and_keeps_the_players_on() {
     assert!(shared.try_admit(address, 13, "Third").is_none());
     assert_eq!(shared.online(), 3);
 }
+
+#[test]
+fn lowering_the_limit_to_zero_only_admits_players_with_a_bypass() {
+    use crate::lan::NetConfig;
+    use std::sync::Arc;
+    use sunrise_protocol::text::translatable;
+
+    const OP: u128 = 11;
+    let config = NetConfig {
+        announce: false,
+        listen: false,
+        bypasses_limit: Some(Arc::new(|uuid| uuid == OP)),
+        ..NetConfig::loopback(0, "LiveLimitTest".into(), 2)
+    };
+    let lan = Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
+    let address = ADDRESS.parse().unwrap();
+    lan.shared.set_max_players(0);
+    assert_eq!(
+        lan.shared.try_admit(address, 12, "Player"),
+        Some(translatable("multiplayer.disconnect.server_full", &[]))
+    );
+    assert!(lan.shared.try_admit(address, OP, "Operator").is_none());
+    assert_eq!(lan.shared.online(), 1);
+}

@@ -8,6 +8,12 @@ pub trait Hooks {
     /// this hook aren't saved: as in vanilla, the chunk is saved before it unloads.
     /// Not told when the world closes, which `world_lifecycle` tells.
     /// Server-side.
-    #[hook(side = "server", contract = "listen", neoforge = "ChunkEvent.Unload")]
-    fn chunk_unload();
+    #[hook(
+        target = "sunrise_client::game::native_hooks::on_chunk_unloaded::Game<'_>::native_chunk_unload",
+        dispatch = "flat",
+        side = "server",
+        contract = "listen",
+        neoforge = "ChunkEvent.Unload"
+    )]
+    fn chunk_unload(dimension: &str, chunk: [i32; 2]);
 }

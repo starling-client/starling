@@ -1,7 +1,7 @@
-"""One real positive stage proof, run before documentation checks in verify: the staging pass over a clean
-checkout writes the SDK's build data, each file with the header naming HEAD's commit.
+"""One real positive stage proof, run by the SDK's Linux leg (prebuilt-game-build.yml) in the daily run: the staging
+pass over a clean checkout writes the SDK's build data, each file with the header naming HEAD's commit.
 
-Kept outside tests/ discovery so the later offline suite cannot stage twice.
+Kept outside tests/ discovery: it takes minutes, and the offline suite must not stage.
 """
 import importlib.util
 import json
@@ -28,13 +28,12 @@ class StageBuildData(unittest.TestCase):
             stage_tool = os.environ.get("SUNRISE_STAGE_TOOL")
             staged = PREBUILT.stage(Path(temporary), stage_tool=Path(stage_tool) if stage_tool else None)
             documents = {name: json.loads((staged / name).read_text()) for name in PREBUILT.BUILD_DATA}
-            for name, document in documents.items():
+            for name, payload in ((PREBUILT.INTERNALS, "internals"), (PREBUILT.LOOPS, "loops"),
+                                  (PREBUILT.FUNCTIONS, "functions")):
+                document = documents[name]
                 self.assertEqual(document["schema"], PREBUILT.BUILD_DATA_SCHEMA, name)
                 self.assertEqual(document["build"]["commit"], commit, name)
-            points = documents[PREBUILT.POINTS]["points"]
-            self.assertTrue(points)
-            self.assertTrue(all(len(point["signature_hash"]) == 32 for point in points))
-            self.assertTrue(documents[PREBUILT.INTERNALS]["internals"])
+                self.assertTrue(document[payload], name)
             self.assertFalse((ROOT / ".sunrise-source-staged").exists())
         # Staging must not change the tracked source it describes.
         subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=ROOT, check=True)

@@ -4,14 +4,14 @@
 //! for. Built on the real hub: a hosted guest, a `MovePlayerPos` packet in
 //! its inbox, the hub's own collide path.
 use crate::game::game_tests::tests::server_game;
+use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause};
+use std::sync::atomic::AtomicI32;
+use std::sync::{Arc, Mutex};
 use sunrise_client::lan::guest::InboxItem;
 use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
 use sunrise_core::position::ChunkPos;
 use sunrise_protocol::packets::configuration::ClientInformation;
 use sunrise_protocol::packets::play::{Clientbound as C, Serverbound as S};
-use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause};
-use std::sync::atomic::AtomicI32;
-use std::sync::{Arc, Mutex};
 
 struct CancelAll(Arc<Mutex<Vec<MoveCause>>>);
 
@@ -83,6 +83,7 @@ fn a_cancelled_player_packet_sends_the_guest_a_correction() {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -220,6 +221,7 @@ fn a_cancelled_vehicle_packet_sends_the_guest_a_correction() {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();

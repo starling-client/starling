@@ -141,19 +141,6 @@ pub enum TextureAtlas {
     Gui,
 }
 
-/// A mod-generated PNG to stitch into the next client resource generation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-// exhaustive: mods submit declarations by value
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct RuntimeSprite {
-    /// The target client atlas.
-    pub atlas: TextureAtlas,
-    /// A namespaced texture id including the `block/` or `gui/` path prefix.
-    pub id: Identifier,
-    /// A static PNG. Images must be at most 256 pixels wide and high.
-    pub png: Vec<u8>,
-}
-
 /// An atlas a client mod adds beside the game's (`RegisterTextureAtlasesEvent`), as
 /// `register_texture_atlases` declares it: its id and the atlas definition listing its sprites.
 /// Sunrise stitches its sprites into the GUI atlas, each under [`Self::sprite_name`].

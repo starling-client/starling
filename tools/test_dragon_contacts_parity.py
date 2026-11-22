@@ -60,8 +60,8 @@ def main():
         run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + cp,
              'dev.sunriselab.parity.VanillaCommandExecOracle',
              Path(scratch) / 'universe', script, expected_path, '1'], 'java', env=env)
-    run(['cargo', 'test', '--locked', '-p', 'sunrise-client-lib', '--lib',
-         'mobs::dragon_contacts::', '--', '--include-ignored'], 'rust',
+    run(['cargo', 'test', '--locked', '-p', 'sunrise-gameplay', '--lib',
+         'dragon_contacts::', '--', '--include-ignored'], 'rust',
         env=dict(os.environ, SUNRISE_DRAGON_CONTACT_OUTPUT=str(actual_path)))
     expected = json.loads(expected_path.read_text())
     actual = json.loads(actual_path.read_text())

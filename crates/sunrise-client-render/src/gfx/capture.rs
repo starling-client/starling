@@ -32,7 +32,7 @@ use std::{
 
 /// CPU copies of the meshes uploaded since capturing was turned on.
 #[derive(Default)]
-pub(super) struct Copies {
+pub(crate) struct Copies {
     sections: FxHashMap<SectionKey, SectionMesh>,
     tiles: FxHashMap<TileKey, SectionMesh>,
 }
@@ -177,6 +177,46 @@ pub struct Clouds {
     pub range: i32,
     pub fast: bool,
     pub color: [f32; 4],
+    /// The layer's bottom (`clouds::Input::height`); a capture from before it was kept has the
+    /// default height.
+    #[serde(default = "default_cloud_height")]
+    pub height: f32,
+}
+
+impl Clouds {
+    /// The frame's cloud inputs as a capture keeps them.
+    fn record(c: &crate::clouds::Input<'_>) -> Self {
+        Self {
+            texture: c.texture.clone(),
+            uv: c.uv,
+            camera: c.camera.to_array(),
+            time: c.time,
+            partial_tick: c.partial_tick,
+            range: c.range,
+            fast: c.fast,
+            color: c.color,
+            height: c.height,
+        }
+    }
+
+    /// The cloud inputs a replay draws from.
+    fn input(&self) -> crate::clouds::Input<'_> {
+        crate::clouds::Input {
+            texture: &self.texture,
+            uv: self.uv,
+            camera: DVec3::from_array(self.camera),
+            time: self.time,
+            partial_tick: self.partial_tick,
+            range: self.range,
+            fast: self.fast,
+            color: self.color,
+            height: self.height,
+        }
+    }
+}
+
+fn default_cloud_height() -> f32 {
+    crate::clouds::CLOUD_HEIGHT
 }
 
 /// The frame's camera and the inputs of its globals, sky, fog and lightmap.
@@ -223,6 +263,8 @@ pub struct FrameInputs {
     pub night_vision: f32,
     pub block_flicker: f32,
     pub boss_darken: f32,
+    /// What each quad of `celestial.bin` is (`Frame::celestial_bodies`).
+    pub celestial_bodies: Vec<super::CelestialBody>,
 }
 
 /// `scene.json`.
@@ -431,16 +473,7 @@ impl Renderer {
                 stars: frame
                     .stars
                     .map(|(rotation, brightness)| (rotation.to_cols_array(), brightness)),
-                clouds: frame.clouds.as_ref().map(|c| Clouds {
-                    texture: c.texture.clone(),
-                    uv: c.uv,
-                    camera: c.camera.to_array(),
-                    time: c.time,
-                    partial_tick: c.partial_tick,
-                    range: c.range,
-                    fast: c.fast,
-                    color: c.color,
-                }),
+                clouds: frame.clouds.as_ref().map(Clouds::record),
                 game_time: frame.game_time,
                 shader_game_time: frame.shader_game_time,
                 end_portal_sprites: frame.end_portal_sprites,
@@ -450,6 +483,7 @@ impl Renderer {
                 night_vision: frame.night_vision,
                 block_flicker: frame.block_flicker,
                 boss_darken: frame.boss_darken,
+                celestial_bodies: frame.celestial_bodies.to_vec(),
             },
             sections,
             tiles,
@@ -533,6 +567,7 @@ impl Scene {
             glint_ticks: f.glint_ticks,
             nether_lighting: f.nether_lighting,
             entities: &[],
+            explicit_particles: None,
             static_block_entities: &[],
             visible_static_block_entity_sections: &[],
             static_block_entity_stats: Default::default(),
@@ -544,22 +579,14 @@ impl Scene {
             dynamic_lights: &[],
             colored_lights: &[],
             emissive_layers: &[],
-            clouds: f.clouds.as_ref().map(|c| crate::clouds::Input {
-                texture: &c.texture,
-                uv: c.uv,
-                camera: DVec3::from_array(c.camera),
-                time: c.time,
-                partial_tick: c.partial_tick,
-                range: c.range,
-                fast: c.fast,
-                color: c.color,
-            }),
+            clouds: f.clouds.as_ref().map(Clouds::input),
             lightning: Default::default(),
             additive: &[],
             see_through: &[],
             world_primitives: Default::default(),
             shadow_only: &[],
             celestial: &self.celestial,
+            celestial_bodies: &f.celestial_bodies,
             stars: f
                 .stars
                 .map(|(rotation, brightness)| (Mat4::from_cols_array(&rotation), brightness)),
@@ -584,3 +611,7 @@ impl Scene {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "capture_clouds_tests.rs"]
+mod capture_clouds_tests;

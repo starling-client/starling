@@ -12,11 +12,13 @@ pub trait Hooks {
     /// change the world only where this `Game` runs the world, not on a
     /// server's client. Runs every tick of every use: check the item first.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_on_use_tick",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "LivingEntityUseItemEvent.Tick"
     )]
-    fn on_use_tick();
+    fn on_use_tick(stack: &ItemStack, entity: Option<i32>, remaining: i32);
 }

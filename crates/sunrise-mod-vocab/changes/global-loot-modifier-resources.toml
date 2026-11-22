@@ -1,0 +1,2 @@
+ids = ["trait:GlobalLootModifierSerializer", "trait:GlobalLootModifier", "trait:LootModifierContext", "type:LootModifierError", "type:LootModifierSettings"]
+why = "Adds static serializer registration and retained, data-enabled global loot modifier resources for native mods. A prepared instance is a data-only callback, like loot functions and conditions, receiving roll facts and a scoped context lending the selected roll random and raw sub-roll capability, without a Host. Existing loot hooks and their meanings do not change."

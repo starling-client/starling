@@ -9,11 +9,14 @@
 //! game and a differential test world answer the same questions.
 use super::{
     Species,
-    spawn_rules::{self, Reason},
+    spawn_rules::{self, Reason, SpawnEntityType},
     spawn_selection::{self, Category, NaturalLevel},
+    species,
 };
 use crate::chunk::block_entity::Next;
 pub use crate::chunk::block_entity::{CustomSpawnRules, SpawnData, Spawner};
+use serde_json::value::RawValue;
+use std::{collections::HashMap, fs, path::Path};
 use sunrise_core::nbt::{Compound, JavaString, Tag};
 use sunrise_core::{geometry::Aabb, geometry::Vec3, random::RandomSource};
 
@@ -229,12 +232,104 @@ pub struct SpawnerSpawn<'a> {
     /// always persistent.
     pub trial: bool,
 }
-/// An entity the level added: its id, box and whether it is a mob.
+/// An entity the level added to its query view: its id and whether it is a mob.
 #[derive(Clone, Copy, Debug)]
 pub struct SpawnerAdded {
     pub id: u32,
-    pub bounds: Aabb,
     pub mob: bool,
+}
+
+/// The type facts read by spawners before constructing an entity.
+#[derive(Clone, Copy)]
+pub struct SpawnerTypeFacts {
+    species: Option<Species>,
+    allowed_in_peaceful: bool,
+    category: Category,
+    half_width: f64,
+    height: f64,
+}
+
+impl SpawnerTypeFacts {
+    /// A native general entity's declared box. It is a non-mob in the misc category.
+    pub fn general_entity(width: f64, height: f64) -> Self {
+        Self {
+            species: None,
+            allowed_in_peaceful: true,
+            category: Category::Misc,
+            half_width: width / 2.0,
+            height,
+        }
+    }
+
+    /// Read spawn facts for the entity keys supplied by registry resolution.
+    /// Every registered type must have a complete row, whether or not it is a mob.
+    pub fn load_registered<'a>(
+        root: &Path,
+        ids: impl IntoIterator<Item = &'a str>,
+    ) -> crate::Result<HashMap<String, Self>> {
+        #[derive(serde::Deserialize)]
+        struct ExportedType {
+            category: String,
+            width: f32,
+            height: f32,
+            allowed_in_peaceful: Option<bool>,
+            template: Option<String>,
+        }
+
+        let path = root.join("entity-types.json");
+        let bytes = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let rows: HashMap<String, &RawValue> = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let mut facts = HashMap::new();
+        for id in ids {
+            let entry = || format!("{}: spawner facts for {id}", path.display());
+            let row = rows
+                .get(id)
+                .ok_or_else(|| format!("{}: missing entity type row", entry()))?;
+            let row: ExportedType =
+                serde_json::from_str(row.get()).map_err(|error| format!("{}: {error}", entry()))?;
+            let category = Category::ALL
+                .into_iter()
+                .find(|category| category.name() == row.category)
+                .ok_or_else(|| format!("{}: unknown category {}", entry(), row.category))?;
+            let base = row.template.as_deref().unwrap_or(id);
+            let def = base
+                .strip_prefix("minecraft:")
+                .and_then(|name| species::ALL.iter().find(|def| def.name == name));
+            let species = def.map(|def| def.species);
+            let (half_width, height) =
+                spawn_selection::spawn_extents(species, row.width, row.height);
+            if !half_width.is_finite() || !height.is_finite() {
+                return Err(format!("{}: non-finite spawn dimensions", entry()).into());
+            }
+            facts.insert(
+                id.to_owned(),
+                Self {
+                    species,
+                    allowed_in_peaceful: row
+                        .allowed_in_peaceful
+                        .unwrap_or_else(|| def.is_none_or(|def| !def.flags(false).not_in_peaceful)),
+                    category,
+                    half_width,
+                    height,
+                },
+            );
+        }
+        Ok(facts)
+    }
+
+    pub(super) fn placement_type(self, id: &str) -> SpawnEntityType<'_> {
+        SpawnEntityType {
+            id,
+            species: self.species,
+            allowed_in_peaceful: self.allowed_in_peaceful,
+        }
+    }
+
+    /// `EntityType.getSpawnAABB`, with the type's pre-creation extents.
+    pub(super) fn spawn_aabb(self, at: [f64; 3]) -> Aabb {
+        spawn_selection::spawn_box_at(at, self.half_width, self.height)
+    }
 }
 
 /// What a spawner reads from the level besides the spawn rules.
@@ -244,8 +339,9 @@ pub trait SpawnerLevel: NaturalLevel {
     fn alive_player_near(&self, x: f64, y: f64, z: f64, range: f64) -> bool;
     /// The `spawner_blocks_work` game rule.
     fn spawner_blocks_work(&self) -> bool;
-    /// `EntityType.byString`: the entity type exists.
-    fn entity_exists(&self, id: &str) -> bool;
+    /// `EntityType.byString`: registry facts, independent of whether the
+    /// spawner can create this type as a mob.
+    fn spawner_type(&self, id: &str) -> Option<SpawnerTypeFacts>;
     /// Entities of the exact class of `id` whose box meets `bounds`.
     fn count_entities(&self, id: &str, bounds: Aabb) -> usize;
 }
@@ -287,12 +383,12 @@ pub trait SpawnerExt: Sized {
     fn delay(&mut self, random: &mut impl RandomSource, events: &mut Vec<SpawnerEvent>);
     /// `serverTick`. `spawn` adds an entity the spawner accepted and returns
     /// it, or None when the level would not take it.
-    fn server_tick<L: SpawnerLevel, R: RandomSource>(
+    fn server_tick<L: SpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<SpawnerAdded>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<SpawnerAdded>,
         events: &mut Vec<SpawnerEvent>,
     );
     /// `clientTick`: with a player near and a mob to show, a smoke and flame
@@ -459,12 +555,12 @@ impl SpawnerExt for Spawner {
         }
         events.push(SpawnerEvent::BlockEvent(1));
     }
-    fn server_tick<L: SpawnerLevel, R: RandomSource>(
+    fn server_tick<L: SpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<SpawnerAdded>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<SpawnerAdded>,
         events: &mut Vec<SpawnerEvent>,
     ) {
         if !self.near_player(l, pos) || !l.spawner_blocks_work() {
@@ -482,11 +578,12 @@ impl SpawnerExt for Spawner {
         let Some(data) = self.next_data().cloned() else {
             return;
         };
-        // Boxes of what this tick added, for the obstruction test.
-        let mut added: Vec<Aabb> = Vec::new();
         for _ in 0..self.spawn_count {
             // EntityType.by: an unknown type delays.
-            let Some(id) = data.id().filter(|id| l.entity_exists(id)) else {
+            let Some((id, kind)) = data
+                .id()
+                .and_then(|id| l.spawner_type(&id).map(|kind| (id, kind)))
+            else {
                 self.delay(random, events);
                 return;
             };
@@ -504,17 +601,7 @@ impl SpawnerExt for Spawner {
                     [x, y, z]
                 }
             };
-            let kind = l.mob_type(&id);
-            let (species, width, height, category) = match kind {
-                Some((s, w, h, c)) => (Some(s), w, h, c),
-                // Entity types Sunrise cannot create: a unit box, misc.
-                None => (None, 1.0, 1.0, Category::Misc),
-            };
-            let spawn_box = match species {
-                Some(s) => spawn_selection::spawn_aabb(s, at[0], at[1], at[2], width, height),
-                None => spawn_selection::spawn_box(at[0], at[1], at[2], width, height),
-            };
-            if !l.no_collision(spawn_box) {
+            if !l.no_collision(kind.spawn_aabb(at)) {
                 continue;
             }
             let block = [
@@ -523,22 +610,33 @@ impl SpawnerExt for Spawner {
                 at[2].floor() as i32,
             ];
             if let Some(rules) = data.custom_spawn_rules {
-                if !category.friendly() && l.peaceful() {
+                if !kind.category.friendly() && l.peaceful() {
                     continue;
                 }
                 if !SpawnData::valid_position(rules, l, block[0], block[1], block[2]) {
                     continue;
                 }
-            } else if let Some(s) = species
-                && !spawn_rules::check_spawn_rules(&id, s, l, Reason::Spawner, random, block)
-            {
+                // Custom rules skip SpawnPlacements, not the type check in
+                // EntityType.loadEntityRecursive.
+                if l.peaceful() && !kind.allowed_in_peaceful {
+                    self.delay(random, events);
+                    return;
+                }
+            } else if !spawn_rules::check_spawn_rules(
+                kind.placement_type(&id),
+                l,
+                Reason::Spawner,
+                random,
+                block,
+            ) {
                 continue;
             }
             // loadEntityRecursive: a type the game cannot create delays.
-            let Some(s) = species else {
+            let Some(mob) = l.mob_type(&id) else {
                 self.delay(random, events);
                 return;
             };
+            let s = mob.species;
             let around = Aabb::new(
                 Vec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])),
                 Vec3::new(
@@ -570,8 +668,8 @@ impl SpawnerExt for Spawner {
                 placed[0],
                 placed[1],
                 placed[2],
-                width * scale,
-                height * scale,
+                mob.width as f32 * scale,
+                mob.height as f32 * scale,
             );
             let pending = spawn_selection::Pending {
                 yaw,
@@ -582,13 +680,7 @@ impl SpawnerExt for Spawner {
                     (data.custom_spawn_rules.is_some()
                         || spawn_selection::mob_spawn_rules(s, l, own[0], own[1], own[2]))
                         && spawn_selection::spawn_obstruction(
-                            s,
-                            l,
-                            bounds,
-                            Some(&added),
-                            own[0],
-                            own[1],
-                            own[2],
+                            s, l, bounds, true, own[0], own[1], own[2],
                         )
                 });
             if !position_ok {
@@ -603,11 +695,10 @@ impl SpawnerExt for Spawner {
                 equipment: data.equipment.as_ref(),
                 trial: false,
             };
-            let Some(result) = spawn(l, &request, random) else {
+            let Some(result) = spawn(l, random, &request) else {
                 self.delay(random, events);
                 return;
             };
-            added.push(result.bounds);
             events.push(SpawnerEvent::LevelEvent(2004));
             events.push(SpawnerEvent::EntityPlace(result.id, block));
             if result.mob {
@@ -742,6 +833,33 @@ mod tests {
 
     fn tag(snbt: &str) -> Tag {
         sunrise_core::nbt::parse_snbt(snbt).expect("snbt").0
+    }
+
+    #[test]
+    fn incomplete_spawner_facts_for_a_registered_non_mob_refuse_at_load() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("entity-types.json");
+        for (rows, reason) in [
+            (r#"{}"#, "missing entity type row"),
+            (
+                r#"{"minecraft:arrow":{"category":"misc","width":0.5}}"#,
+                "missing field `height`",
+            ),
+            (
+                r#"{"minecraft:arrow":{"category":"not_a_category","width":0.5,"height":0.5}}"#,
+                "unknown category not_a_category",
+            ),
+        ] {
+            fs::write(&path, rows).unwrap();
+            let Err(error) = SpawnerTypeFacts::load_registered(root.path(), ["minecraft:arrow"])
+            else {
+                panic!("loaded incomplete facts for a registered arrow: {rows}");
+            };
+            let error = error.to_string();
+            assert!(error.contains("entity-types.json"), "{error}");
+            assert!(error.contains("minecraft:arrow"), "{error}");
+            assert!(error.contains(reason), "{error}");
+        }
     }
 
     #[test]

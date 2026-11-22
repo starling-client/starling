@@ -182,13 +182,20 @@ mod ordered_key_tests {
     #[test]
     fn built_in_registry_order_lists_vanilla_first_and_mods_after_them() {
         crate::__private::part_tests::install_parts_fixture(&[]).unwrap();
-        super::resolve_entity_types(["minecraft:pig", "minecraft:zombie", "test:probe"]).unwrap();
+        super::resolve_entity_types(["minecraft:pig", "minecraft:zombie", "test:probe"], |_| {
+            None
+        })
+        .unwrap();
         // The registry's own order, not sorted: `pig` registers before `zombie`.
         let ordered: Vec<_> = super::entity_type_keys()
             .into_iter()
             .map(|key| super::entity_type_key_id(key).unwrap())
             .collect();
-        assert_eq!(ordered, ["minecraft:pig", "minecraft:zombie", "test:probe"]);
+        let names: Vec<_> = ordered
+            .iter()
+            .map(mod_vocab::RegistryName::as_str)
+            .collect();
+        assert_eq!(names, ["minecraft:pig", "minecraft:zombie", "test:probe"]);
         let first = super::entity_type_keys()[0];
         assert_eq!(
             mod_vocab::__private::parts_installation::validate_entity_type_key(
@@ -200,7 +207,10 @@ mod ordered_key_tests {
             mod_vocab::__private::parts_installation::validate_entity_type_key(u32::MAX).is_err()
         );
         // A second load of the same registry keeps every key and the order.
-        super::resolve_entity_types(["minecraft:pig", "minecraft:zombie", "test:probe"]).unwrap();
+        super::resolve_entity_types(["minecraft:pig", "minecraft:zombie", "test:probe"], |_| {
+            None
+        })
+        .unwrap();
         assert_eq!(super::entity_type_keys(), super::entity_type_keys());
         assert_eq!(
             super::entity_type_key_id(first).as_deref(),
@@ -222,7 +232,11 @@ mod ordered_key_tests {
             .into_iter()
             .map(|key| super::enchantment_key_id(key).unwrap())
             .collect();
-        assert_eq!(ordered, ["minecraft:mending", "minecraft:sharpness"]);
+        let names: Vec<_> = ordered
+            .iter()
+            .map(mod_vocab::RegistryName::as_str)
+            .collect();
+        assert_eq!(names, ["minecraft:mending", "minecraft:sharpness"]);
     }
 }
 #[cfg(test)]
@@ -268,6 +282,59 @@ mod item_tests {
         );
         assert_eq!(item_id(apple), Some("minecraft:apple"));
         assert!(mod_vocab::__private::parts_installation::validate_item_key(3).is_err());
+    }
+
+    #[test]
+    fn client_item_use_binds_one_owner_and_refuses_duplicate_or_missing_items() {
+        use crate::{ClientHost, ClientItemUseBehavior, ItemStack};
+        use mod_vocab::__private::client_item_use;
+        use std::sync::Arc;
+
+        struct Behavior;
+        impl ClientItemUseBehavior for Behavior {
+            fn use_item(&self, _: &mut dyn ClientHost, _: &ItemStack, _: u32) {}
+        }
+        struct Owner(&'static [&'static str], Arc<dyn ClientItemUseBehavior>);
+        #[crate::__subscriptions]
+        impl Hooks for Owner {
+            fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+                for id in self.0 {
+                    let item = registrar.item_key(id);
+                    registrar.register_client_item_use(item, Arc::clone(&self.1));
+                }
+            }
+        }
+
+        let behavior: Arc<dyn ClientItemUseBehavior> = Arc::new(Behavior);
+        let entry = |owner, items| ModEntry::new(owner, Box::new(Owner(items, behavior.clone())));
+        let install = crate::__private::part_tests::install_parts_fixture;
+
+        install(&[entry("first", &["stick"])]).unwrap();
+        resolve_items(["minecraft:apple", "minecraft:stick"]).unwrap();
+        let (index, owner, installed) = client_item_use("minecraft:stick").unwrap();
+        assert_eq!((index, owner), (0, "first"));
+        assert!(Arc::ptr_eq(&installed, &behavior));
+        assert!(client_item_use("minecraft:apple").is_none());
+
+        let errors = install(&[
+            entry("first", &["stick"]),
+            entry("second", &["minecraft:stick"]),
+        ])
+        .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        for part in ["minecraft:stick", "first", "second"] {
+            assert!(errors[0].contains(part), "{errors:?}");
+        }
+        assert_eq!(client_item_use("minecraft:stick").unwrap().1, "first");
+        assert!(install(&[entry("first", &["stick", "minecraft:stick"])]).is_err());
+
+        // A forward reference outside the owner's namespace is accepted by the registrar;
+        // only registry completion knows whether the item actually exists.
+        install(&[entry("requester", &["other:missing"])]).unwrap();
+        let missing = resolve_items(["minecraft:stick"]).unwrap_err();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].id, "other:missing");
+        assert_eq!(missing[0].mod_id, "requester");
     }
 }
 #[cfg(test)]

@@ -20,7 +20,10 @@ pub trait Hooks {
     /// `ItemPart`s attached to `stack`'s item are asked, on both sides, so the
     /// client's prediction agrees with the server: answer from the stack and
     /// `ability` alone, and fast. An item with no such part costs one table lookup.
+    /// A client without this mod predicts vanilla here; the server corrects it.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         scope = "item",
@@ -28,5 +31,5 @@ pub trait Hooks {
         host = "read",
         neoforge = "IItemExtension.canPerformAction"
     )]
-    fn can_perform_action();
+    fn can_perform_action(stack: &ItemStack, ability: &str, can_perform: &mut bool);
 }

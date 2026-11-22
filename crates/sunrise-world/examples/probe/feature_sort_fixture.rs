@@ -1,11 +1,11 @@
-use sunrise_world::worldgen::feature_sort::{
-    FeatureIdentity, FeatureSortError, build_features_per_step,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_world::worldgen::feature_sort::{
+    FeatureIdentity, FeatureSortError, build_features_per_step,
 };
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arg = crate::args().nth(1).expect("private fixture directory");

@@ -13,13 +13,13 @@ use crate::{
     heightmap::{HeightmapState, HeightmapType},
     registry::BlockStateId,
 };
+use std::sync::Arc;
 use sunrise_core::{
     density::{DensitySampler, SamplerContext},
     noise::DensityVolume,
     position::BlockPos,
     random::RandomSource,
 };
-use std::sync::Arc;
 
 pub struct SurfaceInputs<'a, R: RandomSource, S: MaterialSurfaceQueries> {
     pub generation: WorldGenerationContext,

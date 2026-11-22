@@ -1,7 +1,14 @@
 //! Frozen raw-payload declarations and per-connection dispatch tables.
 //! Application packets retain their declared vanilla custom-payload channel.
 pub mod connection;
+pub mod droppable;
 mod encode;
+mod engine;
+pub use engine::{is_engine, negotiated};
+#[cfg(test)]
+mod droppable_wire_tests;
+#[cfg(test)]
+mod engine_tests;
 pub use encode::{encode, encoded_len};
 mod incoming;
 pub use incoming::{Body, Classified, Failure, Incoming};
@@ -15,8 +22,8 @@ mod raw_channel_tests;
 #[cfg(any(test, feature = "test-payload-probe"))]
 pub mod staging_probe;
 #[cfg(test)]
-mod wasm_tests;
-pub use executor::{dispatch, mod_of};
+mod typed_schema_tests;
+pub use executor::{dispatch, dispatch_bundle, dispatch_pending, mod_of};
 mod main_queue;
 pub use main_queue::MainQueue;
 #[cfg(test)]
@@ -31,16 +38,17 @@ pub struct Delivery {
     pub incoming: Incoming,
 }
 mod transport;
-use sunrise_protocol::{
-    packets::custom_payload::{PayloadCodecs, PayloadFlow, PayloadProtocol as CodecProtocol},
-    payload_negotiation::{self as negotiation, Flow, Manifest, Phase, RegistrationPhase},
-};
 use mod_api::__private::game::{PayloadReceiver, Payloads, installed_payloads};
 use mod_api::{PayloadDirection, PayloadId, PayloadProtocol, PayloadSendError};
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
 };
+use sunrise_protocol::{
+    packets::custom_payload::{PayloadCodecs, PayloadFlow, PayloadProtocol as CodecProtocol},
+    payload_negotiation::{self as negotiation, Flow, Manifest, Phase, RegistrationPhase},
+};
+pub(crate) use transport::PlayTransition;
 pub use transport::Transport;
 
 /// Logical receiving side, never inferred from application bytes.
@@ -75,25 +83,31 @@ pub struct Local {
     raw: HashMap<String, Vec<PayloadReceiver>>,
     // Shared by a server installation's connections: abandoned epochs must not
     // accumulate uncharged tables while the main executor is stalled.
+    /// The `Droppable` channels, with their drop counters; empty when no mod declared one.
+    droppable: HashMap<String, Arc<mod_api::__private::game::DropCounters>>,
+    budgets: droppable::Budgets,
+    /// Server side: each bound player's connection, for a group send from a network thread.
+    roster: std::sync::RwLock<HashMap<mod_api::PlayerRef, std::sync::Weak<connection::Connection>>>,
     snapshot_budget: Option<(
         sunrise_mod_runtime::byte_channel::Sender<()>,
         sunrise_mod_runtime::byte_channel::Receiver<()>,
     )>,
 }
 impl Local {
-    /// Capture only enabled declarations. Client setup refuses missing client callbacks;
-    /// dedicated servers do not require callbacks that they cannot receive.
+    /// Capture only enabled declarations, then the engine's own (`engine`), which every
+    /// installation offers. Client setup refuses missing client callbacks; dedicated servers
+    /// do not require callbacks that they cannot receive.
     pub fn capture(side: Side) -> Result<Arc<Self>, String> {
-        let Some(registry) = installed_payloads() else {
-            return Ok(Self::empty());
-        };
-        if side == Side::Client {
+        let registry = installed_payloads();
+        if side == Side::Client
+            && let Some(registry) = &registry
+        {
             registry
                 .validate_client_handlers()
                 .map_err(|errors| errors.join("; "))?;
         }
         let mut manifest = Manifest::builder();
-        for declaration in registry.declarations() {
+        for declaration in registry.iter().flat_map(|registry| registry.declarations()) {
             if sunrise_protocol::packets::custom_payload::is_reserved_channel(&declaration.id.0) {
                 return Err(format!(
                     "payload {} is reserved for an engine service or transport control",
@@ -120,20 +134,29 @@ impl Local {
                 )
                 .map_err(|error| error.to_string())?;
         }
+        engine::register(&mut manifest).map_err(|error| error.to_string())?;
         let manifest = manifest.finish().map_err(|error| error.to_string())?;
         // Raw channels are a server's plugin-channel policy: a client sends none.
-        let raw: HashMap<_, _> = match side {
-            Side::Server => registry
+        let raw: HashMap<_, _> = match (side, &registry) {
+            (Side::Server, Some(registry)) => registry
                 .raw_channels()
                 .map(|id| (id.to_owned(), registry.raw_receivers(id)))
                 .collect(),
-            Side::Client => HashMap::new(),
+            _ => HashMap::new(),
         };
-        if manifest.entries().is_empty() && raw.is_empty() {
-            return Ok(Self::empty());
-        }
-        let mut local = Self::new(manifest, Some(registry));
+        let mut local = Self::new(manifest, registry);
         local.raw = raw;
+        local.droppable = local
+            .registry
+            .iter()
+            .flat_map(|registry| registry.declarations())
+            .filter(|d| d.delivery == mod_api::PayloadDelivery::Droppable)
+            .filter_map(|d| {
+                let counters = local.registry.as_ref()?.drop_counters(&d.id.0)?;
+                Some((d.id.0.clone(), counters.clone()))
+            })
+            .collect();
+        local.budgets = droppable::Budgets::from_env();
         Ok(Arc::new(local))
     }
     pub(crate) fn empty() -> Arc<Self> {
@@ -186,12 +209,93 @@ impl Local {
             registry,
             declarations,
             raw: HashMap::new(),
+            droppable: HashMap::new(),
+            budgets: droppable::Budgets {
+                clientbound: droppable::CLIENTBOUND_BUDGET,
+                serverbound: droppable::SERVERBOUND_BUDGET,
+            },
+            roster: Default::default(),
         }
     }
     /// Whether a connection needs per-connection state: a negotiated declaration,
     /// or a raw channel, which a vanilla peer also uses.
     pub fn has_declarations(&self) -> bool {
         !self.manifest.entries().is_empty() || !self.raw.is_empty()
+    }
+    /// Whether a mod declared a negotiated payload, beside the engine's own declarations.
+    /// Only then does a client open negotiation itself: otherwise it answers the server's
+    /// query, so a vanilla server is sent nothing it was not sent before.
+    pub fn has_mod_declarations(&self) -> bool {
+        self.manifest
+            .entries()
+            .iter()
+            .any(|entry| !engine::is_engine(entry.phase(), entry.id()))
+    }
+    /// The drop counters of `id` when it is a `Droppable` channel.
+    pub fn droppable(&self, id: &str) -> Option<&Arc<mod_api::__private::game::DropCounters>> {
+        self.droppable.get(id)
+    }
+    /// Whether any `Droppable` channel is declared: only then do connections own a queue.
+    pub fn has_droppable(&self) -> bool {
+        !self.droppable.is_empty()
+    }
+    /// Group send of a `Droppable` channel from any thread, to the players a mod snapshot names:
+    /// each queued on its connection's own queue, so a network handler fans a frame out without
+    /// waiting for the main tick. A player who left, is not in play or whose peer lacks the
+    /// channel is skipped. Server side only; the caller checked the side.
+    pub fn send_to(
+        &self,
+        players: &[mod_api::PlayerRef],
+        id: &PayloadId,
+        bytes: mod_api::PayloadBytes,
+    ) -> Result<u32, PayloadSendError> {
+        let Some(counters) = self.droppable.get(&id.0) else {
+            return Err(if self.owns(&id.0) {
+                PayloadSendError::NotDroppable(id.clone())
+            } else {
+                PayloadSendError::UnknownPayload(id.clone())
+            });
+        };
+        if self.declarations[1]
+            .get(&id.0)
+            .is_some_and(|flow| *flow == Flow::ToServer)
+        {
+            return Err(PayloadSendError::WrongDirection(id.clone()));
+        }
+        let len = encoded_len(Phase::Play, Side::Server, id, bytes.0.len());
+        let limit =
+            sunrise_protocol::frame::MAX_FRAME.min(sunrise_protocol::frame::MAX_UNCOMPRESSED);
+        if len > limit {
+            return Err(PayloadSendError::FrameTooLarge {
+                id: id.clone(),
+                stage: mod_api::PayloadFrameStage::Encoded,
+                size: len as u64,
+                limit: limit as u64,
+            });
+        }
+        let body = encode(Phase::Play, Side::Server, id, bytes);
+        let now = std::time::Instant::now();
+        let roster = self.roster.read().unwrap_or_else(|e| e.into_inner());
+        let mut queued = 0;
+        for player in players {
+            let Some(connection) = roster.get(player).and_then(std::sync::Weak::upgrade) else {
+                continue;
+            };
+            let (Some(epoch), Some(queue)) = (connection.epoch(), connection.droppable()) else {
+                continue;
+            };
+            if epoch.phase != Phase::Play || epoch.peer.can_send(Phase::Play, id).is_err() {
+                continue;
+            }
+            // Published under the epoch gate, so a send never outlives its phase.
+            if epoch
+                .with_active(|| queue.push(now, counters, body.clone()))
+                .is_some()
+            {
+                queued += 1;
+            }
+        }
+        Ok(queued)
     }
     /// Whether `id` is a raw play channel a mod declared on this server.
     pub fn is_raw(&self, id: &str) -> bool {
@@ -218,7 +322,8 @@ impl Local {
                     (entry.flow(), side),
                     (Flow::ToClient, Side::Client) | (Flow::ToServer, Side::Server)
                 );
-            let receiver = if receives {
+            // An engine declaration is received by the engine's own decoder.
+            let receiver = if receives && !engine::is_engine(entry.phase(), entry.id()) {
                 let protocol = match entry.phase() {
                     Phase::Configuration => PayloadProtocol::Configuration,
                     Phase::Play => PayloadProtocol::Play,
@@ -283,11 +388,29 @@ impl Peer {
     /// never a silent skip. Callers separately distinguish unrelated engine/plugin channels.
     pub fn receiver(&self, phase: Phase, id: &str) -> Result<&PayloadReceiver, PayloadSendError> {
         match self.phases[index(phase)].get(id) {
-            Some(Some(receiver)) if receiver.enabled() => Ok(receiver),
+            Some(Some(receiver)) if receiver.owner_enabled() => Ok(receiver),
             Some(Some(_)) => Err(PayloadSendError::Disconnected),
             Some(None) => Err(PayloadSendError::WrongDirection(PayloadId(id.to_owned()))),
             None => Err(self.missing(phase, id)),
         }
+    }
+    /// Whether `id` is an engine declaration this side receives and the peer offered: its
+    /// message goes to the engine's decoder as an ordinary custom payload.
+    pub fn engine_receives(&self, phase: Phase, id: &str) -> bool {
+        engine::is_engine(phase, id)
+            && self.phases[index(phase)].contains_key(id)
+            && self.local.declarations[index(phase)]
+                .get(id)
+                .is_some_and(|flow| *flow == Flow::Bidirectional || *flow != self.side.outgoing())
+    }
+    /// Whether `id` is an engine declaration this side sends and the peer offered. Unlike
+    /// [`Self::can_send`] it builds no id, for a check made per player and holder.
+    pub fn engine_sends(&self, phase: Phase, id: &str) -> bool {
+        engine::is_engine(phase, id)
+            && self.phases[index(phase)].contains_key(id)
+            && self.local.declarations[index(phase)]
+                .get(id)
+                .is_some_and(|flow| *flow == Flow::Bidirectional || *flow == self.side.outgoing())
     }
     /// Resolve local authority, phase, direction and peer support before preparing bytes.
     pub fn can_send(&self, phase: Phase, id: &PayloadId) -> Result<(), PayloadSendError> {

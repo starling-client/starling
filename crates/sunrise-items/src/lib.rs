@@ -10,6 +10,7 @@ pub mod blocks;
 pub mod bundle;
 pub mod content_namespaces;
 pub mod cooldowns;
+pub mod creative_catalog;
 pub mod durability;
 pub mod enchant;
 pub mod equipment;
@@ -20,9 +21,13 @@ pub mod item_data;
 pub mod item_nbt;
 pub mod items;
 pub mod kinetic_weapon;
+#[cfg(test)]
+mod loot_predicate_tests;
 mod loot_tags;
 pub mod mining;
 pub mod native_enchantment_hooks;
+#[cfg(test)]
+mod primary_items;
 pub mod properties;
 pub mod random_sequences;
 pub mod recipe_filters;

@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "اتصال مجدد خودکار",
+  "sunrise.extras.auto_reconnect.tooltip": "پس از قطع شدن اتصال یا راه اندازی مجدد، هرگز پس از ضربه زدن یا ممنوعیت، دوباره به سرور می پیوندد."
+}

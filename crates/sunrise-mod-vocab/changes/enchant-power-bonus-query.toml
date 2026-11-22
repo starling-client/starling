@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::get_enchant_power_bonus", "hook:enchant_power_bonus", "hook:enchant_power_bonus.level", "type:EnchantPowerBonusEvent.level"]
+why = "Mods can query a state's live enchanting power against a named level without running the table's scan."
+migrate = "Use event.level for level reads when present. For the client particle snapshot it is absent, so answer from the state alone. An explicit query's supplied state and positions need not describe a bookshelf in the world."

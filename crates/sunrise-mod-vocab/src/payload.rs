@@ -1,12 +1,20 @@
-//! Registered raw custom-payload vocabulary shared by native and wasm mods.
+//! Registered raw custom-payload vocabulary.
+#[path = "payload/codec.rs"]
+mod codec;
+pub use codec::{
+    PAYLOAD_DECODE_BUDGET, PAYLOAD_MAX_DEPTH, PAYLOAD_MAX_LIST_ENTRIES, PAYLOAD_MAX_STRING_BYTES,
+    PAYLOAD_SCHEMA_MARKER, decode_payload, encode_payload, payload_schema, typed_payload_version,
+};
 #[path = "payload/registrar.rs"]
 mod registrar;
 pub use registrar::{
     PayloadRegistrar, RegisterClientPayloadHandlersEvent, RegisterPayloadHandlersEvent,
 };
+#[path = "payload/typed.rs"]
+mod typed;
+pub use typed::{PayloadToken, ToClient, ToServer};
 
-use crate::wire::{Reader, Wire, WireError, Writer};
-use crate::{ClientHost, PlayerRef, ServerHost, Text};
+use crate::{ClientHost, ConfigurationTaskError, PlayerRef, ServerHost, Text};
 use std::sync::Arc;
 
 /// Opaque application bytes. The transport never prepends a mod envelope.
@@ -54,6 +62,40 @@ pub enum HandlerThread {
     Network,
 }
 
+/// What a send may suffer on a congested connection. `Reliable`, the default, is vanilla's: a
+/// queued send is delivered in order or the connection fails. `Droppable` is for data that is
+/// worthless late (voice, a live position): a send waits in the engine's own queue for the
+/// writer and is dropped, and counted, past a watermark, after 250 ms or at the switch to play,
+/// and over the connection's byte budget. Droppable channels are play-only, and a peer that
+/// declares the other delivery refuses the join like another version: the delivery is part of
+/// the negotiated version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+// exhaustive: a send is either never lost or may be dropped; a third kind would change every sender's contract.
+pub enum PayloadDelivery {
+    /// Queued sends are delivered in order (the default).
+    Reliable,
+    /// Queued sends may be dropped, never reordered within one channel and sending thread.
+    Droppable,
+}
+
+/// Marks a `Droppable` declaration in its negotiated version, ahead of a typed schema's marker.
+pub const PAYLOAD_DROPPABLE_MARKER: &str = "+delivery.droppable";
+
+/// How many sends of one `Droppable` channel the engine dropped while they waited, by cause,
+/// since the game started (this process, both directions and every connection).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+// exhaustive: the closed set of drop causes the delivery contract names.
+pub struct PayloadDropCounts {
+    /// Waited longer than 250 ms.
+    pub stale: u64,
+    /// Pushed out by newer sends past the queue's byte watermark.
+    pub watermark: u64,
+    /// Refused or pushed out by the connection's byte budget.
+    pub budget: u64,
+    /// Still waiting when the connection left configuration for play, or ended.
+    pub switch: u64,
+}
+
 /// A registration's complete compatibility and scheduling declaration.
 #[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 // exhaustive: callers construct the complete compatibility and scheduling record explicitly.
@@ -70,6 +112,8 @@ pub struct PayloadDeclaration {
     pub optional: bool,
     /// The receiving executor.
     pub thread: HandlerThread,
+    /// Whether queued sends may be dropped; `Droppable` is play-only.
+    pub delivery: PayloadDelivery,
 }
 
 impl PayloadDeclaration {
@@ -82,6 +126,7 @@ impl PayloadDeclaration {
         direction: PayloadDirection,
         optional: bool,
         thread: HandlerThread,
+        delivery: PayloadDelivery,
     ) -> Self {
         Self {
             id,
@@ -90,6 +135,7 @@ impl PayloadDeclaration {
             direction,
             optional,
             thread,
+            delivery,
         }
     }
 }
@@ -155,11 +201,20 @@ pub enum PayloadSendError {
         /// Inclusive vanilla limit.
         limit: u64,
     },
+<<<<<<< sync-sunrise-1
     /// A typed payload's send token is not one this load handed out for the channel,
     /// direction and value type it names. Sends here go through registered ids, which hold no
     /// token, so this build's own sends never refuse with it; it belongs to the closed set
     /// mods match on.
     StaleToken(PayloadId),
+=======
+    /// A typed payload's token is not one this load's registrar handed out for the
+    /// declaration, direction and value type it claims: forged, from another load, of another
+    /// type, or its owner is off. Nothing is sent.
+    StaleToken(PayloadId),
+    /// `IPayloadContext::send_to` is for `Droppable` channels only.
+    NotDroppable(PayloadId),
+>>>>>>> sunrise/main
 }
 
 impl crate::NoBackend for PayloadSendError {
@@ -194,6 +249,7 @@ pub enum PayloadWorkStatus {
     Queued,
 }
 
+<<<<<<< sync-sunrise-1
 /// Who held the receiving group a payload's handler needed, when it answered
 /// [`PayloadHandleError::Busy`]: a snapshot of names it already had, formatted only when shown.
 #[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
@@ -255,6 +311,26 @@ crate::wire::wire_handlers::handler!(dyn PayloadWork, "PayloadWork");
 /// instead of silently dropping the malformed application message. `Busy` gives the bytes back
 /// unhandled; no receiving group of this build is held across calls, so nothing waits to take
 /// them again, and the session fails as for `Failed`, naming the holder.
+=======
+/// A receiving native callback's failure.
+#[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+// exhaustive: native callback failure.
+pub enum PayloadHandleError {
+    /// The mod refuses this delivery, such as when application decoding fails.
+    Failed(String),
+}
+
+/// One receiving owner for a registered id and direction, never an all-mod broadcast.
+/// Return `Failed` when application decoding fails. For a typed or declared payload the session
+/// names the channel and fails instead of silently dropping the malformed message. For a raw
+/// channel (`PayloadRegistrar::play_raw`) a failure logs the owner and the
+/// channel, drops only that delivery and rolls back its staged effects (a staged disconnect
+/// included); the other owners' copies still run. A successful handler's explicit disconnect
+/// and a main-queue refusal disconnect either way. A panic is not `Failed`: it disables this
+/// callback for the session, reports the owning mod, and discards the current journal or staged
+/// sends without disconnecting or skipping other handlers. Later packets for this callback
+/// still undergo framing and channel checks but do not reserve callback queue capacity.
+>>>>>>> sunrise/main
 pub trait IPayloadHandler: Send + Sync + 'static {
     /// Handle exact application bytes using connection-derived context.
     fn handle(
@@ -264,7 +340,10 @@ pub trait IPayloadHandler: Send + Sync + 'static {
     ) -> Result<(), PayloadHandleError>;
 }
 
-/// Work scheduled on the logical receiving main thread.
+/// Work scheduled on the logical receiving main thread. It retains the handler's owner and
+/// disablement guard: a panic aborts the work's transaction and disables that receiving callback
+/// for the session, without disconnecting the peer. Later deliveries to that callback
+/// follow the same rules as a panic in [`IPayloadHandler::handle`].
 pub trait PayloadWork: Send + Sync + 'static {
     /// Execute with the same connection-derived context and transaction rules.
     fn run(&self, context: &mut dyn IPayloadContext) -> Result<(), String>;
@@ -290,7 +369,49 @@ pub trait IPayloadContext {
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError>;
-    /// Disconnect this session with the supplied component.
+    /// Check a typed payload's token against this load's frozen declarations before a typed
+    /// reply: `StaleToken` for one the registrar did not hand out as it claims.
+    fn check_payload_token(&self, token: &PayloadToken) -> Result<(), PayloadSendError>;
+    /// Queue the same bytes on a `Droppable` channel to each of `players`, from a `Network`
+    /// handler or the main thread, on the server only. `players` is the mod's own snapshot,
+    /// refreshed on the main thread (a `PlayerRef` is a plain value: keep a list in the handler's
+    /// state behind a lock and replace it from a tick or join hook); a player who left or whose
+    /// connection is not in play is skipped. Returns how many sends were queued: each follows the
+    /// channel's drop rules, so a queued send may still be dropped later. `Reliable` channels
+    /// refuse with `NotDroppable`, the client with `WrongDirection`. Sends from the network thread and
+    /// the main thread on one channel have no order relative to each other.
+    fn send_to(
+        &mut self,
+        players: &[PlayerRef],
+        id: &PayloadId,
+        bytes: PayloadBytes,
+    ) -> Result<u32, PayloadSendError>;
+    /// In a server configuration payload handler (on either the main thread or the
+    /// network thread), complete the running configuration task matching `task_type`
+    /// on this receiving connection (matching NeoForge's
+    /// `ServerPayloadContext.finishCurrentTask(ConfigurationTask.Type)` and vanilla's
+    /// `ServerConfigurationPacketListenerImpl.finishCurrentTask`).
+    ///
+    /// Returns `WrongType` if the currently running task on this connection has a
+    /// different type, `NotRunning` if no configuration task is currently running or
+    /// completion was already requested, `WrongContext` if called on the client or
+    /// outside the configuration phase, and `Disconnected` if the connection or its
+    /// configuration epoch has ended or a disconnect was already requested. No refusal
+    /// advances a task.
+    ///
+    /// On the main thread, completion takes effect immediately in the configuration
+    /// session (without transaction staging; the server advances to the next task or
+    /// `FinishConfiguration` on the next tick, after this handler's replies commit).
+    /// On the network thread, completion is bound to the currently running task turn
+    /// and publishes inside the same active-epoch gate as staged replies after they
+    /// succeed; handler failure, an explicit disconnect, or epoch invalidation discards
+    /// that staged completion.
+    fn finish_configuration_task(
+        &mut self,
+        task_type: &crate::Identifier,
+    ) -> Result<(), ConfigurationTaskError>;
+    /// Disconnect this session with the supplied component. On the network thread this
+    /// also discards any staged configuration task completion from this handler.
     fn disconnect(&mut self, reason: Text);
     /// Run now on the main thread or schedule there from the network executor.
     /// Failure of the work is reported as a named session failure.

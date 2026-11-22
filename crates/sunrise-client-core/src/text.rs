@@ -115,6 +115,9 @@ pub struct Style {
     pub font: Option<String>,
     /// Content metadata for a single U+FFFC object span; never inherited.
     pub inline_object: Option<InlineObject>,
+    /// Optional index into an in-process caller's style table for lossless
+    /// round-tripping of opaque API click/hover/metadata payloads across layout.
+    pub opaque_style_id: Option<usize>,
 }
 /// A style's `font` field: an identifier (`alt` is `minecraft:alt`).
 pub fn font_id(v: &Value) -> Option<String> {
@@ -152,6 +155,7 @@ impl Style {
         if self.font.is_none() {
             self.font.clone_from(&base.font);
         }
+        self.opaque_style_id = self.opaque_style_id.or(base.opaque_style_id);
     }
     pub fn is_bold(&self) -> bool {
         self.bold == Some(true)
@@ -441,6 +445,28 @@ impl Text {
         };
         t.source = Some(Value::Object(c).into());
         t
+    }
+    /// Render an argument-free translation, sharing its retained component with
+    /// the previous value when the key is unchanged. The rendered spans still
+    /// use the current language.
+    pub fn translate_reusing(key: &str, previous: Option<&Self>) -> Self {
+        let Some(source) = previous
+            .and_then(|text| text.source.as_ref())
+            .filter(|source| {
+                source
+                    .as_object()
+                    .filter(|component| component.len() == 1)
+                    .and_then(|component| component.get("translate"))
+                    .and_then(Value::as_str)
+                    == Some(key)
+            })
+        else {
+            return Self::translate(key, &[]);
+        };
+        let mut text = format_translatable(key, None, &[]);
+        text.source = Some(source.clone());
+        text.origins = local_origins();
+        text
     }
     /// Component.translatableWithFallback(key, fallback, args): `translate`, with `fallback` as
     /// the template when the language has no `key`.
@@ -1198,22 +1224,45 @@ pub(crate) fn format_translatable_origin(
     args: &[Text],
     origin: Origin,
 ) -> Text {
-    let template = match fallback {
-        Some(fallback) => lang::current()
-            .and_then(|language| language.get(key).map(str::to_owned))
-            .unwrap_or_else(|| fallback.to_owned()),
-        None => lang::get(key),
-    };
-    format_translation_origin(&template, args, origin)
+    let language = lang::current();
+    if let Some(language) = language.as_deref()
+        && let Some(component) = language.component(key)
+    {
+        return resolve_lang_component(language, component, origin)
+            .unwrap_or_else(|| format_translation_origin(fallback.unwrap_or(key), args, origin));
+    }
+    let template = language
+        .as_ref()
+        .and_then(|l| l.get(key))
+        .unwrap_or_else(|| {
+            if fallback.is_none() {
+                lang::missed(key);
+            }
+            fallback.unwrap_or(key)
+        });
+    format_translation_origin(template, args, origin)
+}
+
+/// Component references expand on the component renderer's work stack, independently of
+/// the caller's Rust stack. Budget the rendered result, not each reference that leads to it.
+pub(crate) fn resolve_lang_component(
+    language: &lang::Language,
+    component: &Value,
+    origin: Origin,
+) -> Option<Text> {
+    let text = crate::component::render_lang_component(component, origin, language)?;
+    (text.rendered.spans.len() <= MAX_TRANSLATION_SPANS
+        && crate::component::rendered_bytes(&text, None) <= MAX_TRANSLATION_BYTES)
+        .then_some(text)
 }
 /// The most spans one translation expands to. Vanilla's `TranslatableContents.decompose` keeps
 /// references to its arguments, so its cost stays linear in the input; copying them here makes
 /// nested `%1$s` templates multiply (`k` references nested `D` deep: `k^D` copies), and a server's
 /// `fallback` template is any text it likes.
-const MAX_TRANSLATION_SPANS: usize = 1 << 15;
+pub(crate) const MAX_TRANSLATION_SPANS: usize = 1 << 15;
 /// The most text one translation expands to: one long argument referenced many times multiplies
 /// bytes, not spans.
-const MAX_TRANSLATION_BYTES: usize = 1 << 22;
+pub(crate) const MAX_TRANSLATION_BYTES: usize = 1 << 22;
 
 /// TranslatableContents.decomposeTemplate: `%s` takes the next argument,
 /// `%n$s` a numbered one and `%%` is a percent sign. Malformed templates are
@@ -1281,7 +1330,7 @@ pub(crate) fn format_translation_origin(template: &str, args: &[Text], origin: O
                 };
                 bytes = bytes
                     .saturating_add(literal.len())
-                    .saturating_add(arg.rendered.spans.iter().map(|s| s.text.len()).sum());
+                    .saturating_add(crate::component::rendered_bytes(arg, None));
                 if out
                     .rendered
                     .spans
@@ -1331,61 +1380,6 @@ pub(crate) fn format_translation_origin(template: &str, args: &[Text], origin: O
 impl From<&Text> for serde_json::Value {
     fn from(text: &Text) -> Self {
         text.component()
-    }
-}
-
-/// Text as it crosses to a wasm mod: its JSON component, and the current language's template
-/// for each key the component translates. Where no language is loaded (a wasm mod), the text
-/// is rebuilt with those, so it reads exactly as the game built it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TextForm {
-    /// The component (`Text::component`).
-    pub component: Value,
-    /// Each translated key with its template in the current language; empty with no language.
-    pub translations: Vec<(String, String)>,
-}
-
-impl From<&Text> for TextForm {
-    fn from(text: &Text) -> Self {
-        fn keys<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
-            match v {
-                Value::Object(o) => {
-                    if let Some(Value::String(key)) = o.get("translate") {
-                        out.push(key);
-                    }
-                    o.values().for_each(|v| keys(v, out));
-                }
-                Value::Array(items) => items.iter().for_each(|v| keys(v, out)),
-                _ => {}
-            }
-        }
-        let component = text.component();
-        // Most texts translate nothing: the language is asked only for the keys found.
-        let mut found = Vec::new();
-        keys(&component, &mut found);
-        let translations = match (found.is_empty(), lang::current()) {
-            (false, Some(language)) => found
-                .into_iter()
-                .filter_map(|key| Some((key.to_owned(), language.get(key)?.to_owned())))
-                .collect(),
-            _ => Vec::new(),
-        };
-        Self {
-            component,
-            translations,
-        }
-    }
-}
-
-/// Text from its form: rebuilt from the component in the current language, or, carried where
-/// no language is loaded, in the translations the form brought.
-impl From<TextForm> for Text {
-    fn from(form: TextForm) -> Self {
-        if form.translations.is_empty() || lang::current().is_some() {
-            return Text::from(form.component);
-        }
-        let language = lang::Language::of(lang::DEFAULT, form.translations);
-        lang::scoped(language, || Text::from(form.component)).0
     }
 }
 
@@ -1565,8 +1559,6 @@ mod tests {
             origins(received.spans[0].style.hover.as_ref().unwrap()),
             [Origin::Remote]
         );
-        let form = Text::from(TextForm::from(&translated));
-        assert_eq!(origins(&form), [Origin::Remote; 5]);
         let object_hover = Text::styled(
             "\u{fffc}",
             Style {
@@ -1648,29 +1640,6 @@ mod tests {
                 .iter()
                 .all(|s| s.click_event().is_some())
         );
-    }
-
-    /// A translated text crossing to where no language is loaded reads as the game built it:
-    /// the same spans, so the same `plain()`.
-    #[test]
-    fn a_text_form_reads_the_same_without_a_language() {
-        let language = lang::Language::of(
-            lang::DEFAULT,
-            [("chat.type.text".to_owned(), "<%s> %s".to_owned())],
-        );
-        let ((form, built), _) = lang::scoped(language, || {
-            let text = Text::translate(
-                "chat.type.text",
-                &[Text::literal("Steve"), Text::literal("hello")],
-            );
-            (TextForm::from(&text), text)
-        });
-        assert_eq!(built.plain(), "<Steve> hello");
-        // The component alone, rebuilt with no language, reads as its key.
-        assert_eq!(Text::from(form.component.clone()).plain(), "chat.type.text");
-        let crossed = Text::from(form);
-        assert_eq!(crossed, built);
-        assert_eq!(crossed.plain(), "<Steve> hello");
     }
 
     /// Styling translated text where its language isn't loaded keeps the translation it was
@@ -1757,7 +1726,7 @@ mod tests {
         let object = InlineObject::Atlas {
             atlas: "minecraft:gui".into(),
             sprite: "sunrise:gui/mark".into(),
-            fallback: "H".into(),
+            fallback: "*".into(),
         };
         let sprite = Text::styled(
             "\u{fffc}",
@@ -1771,7 +1740,7 @@ mod tests {
             .append(Text::colored("] ", DARK_GRAY));
         let line = line.slice(0, 3);
         assert_eq!(line.spans[1].style.inline_object, Some(object));
-        assert_eq!(line.plain(), "[H]");
+        assert_eq!(line.plain(), "[*]");
     }
     #[test]
     fn appending_builds_the_same_tree_in_linear_time() {

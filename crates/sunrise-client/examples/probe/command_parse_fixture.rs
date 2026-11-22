@@ -5,14 +5,14 @@
 //! same JSON-lines shape as VanillaCommandParseOracle.
 //!
 //! usage: command_parse_fixture RESOURCES REGISTRIES.json CORPUS PERMISSION OUTPUT
+use serde_json::{Value, json};
+use std::{fs, path::Path};
 use sunrise_client::{
     command::{
         ArgType, CustomArgumentKind, Dispatcher, NodeKind, Registries, args::RegistryIds, vanilla,
     },
     lang,
 };
-use serde_json::{Value, json};
-use std::{fs, path::Path};
 
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
@@ -55,6 +55,7 @@ fn parser_id(ty: &ArgType) -> String {
         ArgType::BlockPredicate => "minecraft:block_predicate".into(),
         ArgType::Resource(_) => "minecraft:resource".into(),
         ArgType::Id(_) => "minecraft:resource_location".into(),
+        ArgType::Identifier => "minecraft:resource_location".into(),
         ArgType::Res(_) => "minecraft:resource".into(),
         ArgType::ResKey(_) => "minecraft:resource_key".into(),
         ArgType::ResOrTag(_) => "minecraft:resource_or_tag".into(),

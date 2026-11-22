@@ -1,0 +1,9 @@
+ids = [
+    "type:RegistrationReadError",
+    "handle:RegistrationContext::instance_dir",
+    "handle:RegistrationContext::registry",
+    "handle:RegistrationContext::setting",
+    "handle:RegistrationContext::runtime_files",
+]
+why = "Follows NeoForge's ModList.getModFileById(modId) (net.neoforged.neoforge.resource.ResourcePackLoader) and FMLPaths (net.neoforged.fml.loading.FMLPaths): RegistrationContext::{setting, registry, instance_dir} now borrow directly from the startup snapshot as `Option` without invented path-character checks, LoadedMods linear scans, or RegistrationReadError, matching DataLoadContext, LoopContext, and WorldgenHost. RegistrationContext::runtime_files takes an explicit mod_id instead of reading only the currently dispatching mod from thread-local caller identity."
+migrate = "Remove imports and matches on RegistrationReadError. Update `cx.instance_dir()` from `Result<&InstanceDirectory, RegistrationReadError>` to `Option<&InstanceDirectory>`; use `Some(dir)` for an available snapshot and `None` if unavailable. `InstanceDirectory` and its path conversion methods remain available. Change cx.registry(name) from Result<Arc<[String]>, RegistrationReadError> to Option<&[String]> (use .map(Arc::from) or .map(<[String]>::to_vec) only if you need an owned copy), and cx.setting(mod_id, key) from Result<Option<String>, RegistrationReadError> to Option<&str> (use .map(str::to_owned) only if you need an owned String). Pass the package ID explicitly to cx.runtime_files(mod_id) instead of cx.runtime_files().\n\nThe former runtime-file count and size caps and whole-snapshot settings caps are gone; continue to declare runtime files in the manifest and match their digests. Non-UTF-8 settings filenames are skipped and reported individually rather than dropping all of that mod’s settings."

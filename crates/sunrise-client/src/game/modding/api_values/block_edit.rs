@@ -1,8 +1,8 @@
 //! Cold, all-or-nothing preparation of typed bulk edit values.
 use super::{TryIntoApi, TryIntoEngine, block_metadata_table};
+use mod_api::BlockMetadata;
 use sunrise_command::args::BlockInput;
 use sunrise_world::registry::BlockStateId;
-use mod_api::BlockMetadata;
 
 pub(in crate::game) struct PreparedBlockEdit {
     pub(in crate::game) palette: Vec<u32>,
@@ -80,9 +80,9 @@ pub(in crate::game) fn column_palette(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_world::registry::BlockRegistry;
     use mod_api::{StateConstraint, StatePredicate, StatePredicateRecord, StatePredicateTarget};
     use std::collections::{HashMap, HashSet};
+    use sunrise_world::registry::BlockRegistry;
 
     fn registry() -> BlockRegistry {
         mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
@@ -178,7 +178,10 @@ mod tests {
         assert_eq!(prepared.palette, [2]);
         assert_eq!(prepared.filters.len(), 1);
         edit.palette
-            .push(mod_api::BlockStateRecord::new(state.block(), u16::MAX).into());
+            .push(mod_api::__private::block_state_from_ordinal(
+                state.block(),
+                u16::MAX,
+            ));
         assert!(
             prepare(&edit).is_err(),
             "late bad palette state must refuse the whole prepared edit"

@@ -28,10 +28,10 @@
 //! Written from OptiFine's `random_entities.properties` and ETF's `RANDOM_GUIDE.md`; no mod's
 //! source was read.
 
-use sunrise_assets::resource_source::ResourceSource;
 use std::collections::{BTreeMap, HashMap};
 #[cfg(test)]
 use std::fs;
+use sunrise_assets::resource_source::ResourceSource;
 
 use crate::paths::files_under;
 use crate::properties::Properties;

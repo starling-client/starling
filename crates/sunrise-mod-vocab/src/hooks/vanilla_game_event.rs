@@ -12,6 +12,7 @@ pub trait Hooks {
     /// Canceling keeps the sculk sensors, wardens and allays from hearing it.
     /// Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -19,5 +20,12 @@ pub trait Hooks {
         version = 2,
         cancellable = true
     )]
-    fn vanilla_game_event();
+    fn vanilla_game_event(
+        dimension: &str,
+        event: &str,
+        pos: [f64; 3],
+        cause: Option<u32>,
+        affected_state: Option<BlockState>,
+        cancel: &mut bool,
+    );
 }

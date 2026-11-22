@@ -1,4 +1,0 @@
-target/
-mod.wasm
-# Built by `cargo sunrise-mod build --wasm`, which also writes [wasm] into sunrise-mod.toml.
-Cargo.lock

@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use sunrise_core::nbt::Limits;
+use sunrise_core::nbt::{Limits, NamedTag};
 use sunrise_world::{compression::Compression, region::ChunkRecord};
 
 use super::Record;
@@ -167,40 +167,94 @@ fn worker_loop(weak_inner: Weak<Inner>) {
     }
 }
 
-pub fn compress_records_with_pool(
+pub(super) struct CompressedWrite {
+    pub(super) record: ChunkRecord,
+    /// The first candidate, rather than a retry with stored block-entity payloads.
+    pub(super) primary: bool,
+}
+
+pub(super) type Prepared = io::Result<Option<CompressedWrite>>;
+
+/// A single encoder cannot unwind the writer or strand the compression pool's other jobs.
+pub(super) fn catch_encoding_panic<T>(encode: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    // The installed panic hook must see this as contained before the unwind starts.
+    crate::crash::contain(encode).map_err(io::Error::other)?
+}
+
+pub(super) fn compress_record(
+    record: &Record,
+    compression: Compression,
+    timestamp: u32,
+    limits: Limits,
+) -> Prepared {
+    let source = match record.source() {
+        Record::Disk(disk) => &disk.original,
+        source => source,
+    };
+    if let Record::Chunk(_, encoding, _) | Record::Proto(_, encoding) = source {
+        encoding
+            .biomes
+            .ensure_saveable()
+            .map_err(io::Error::other)?;
+    }
+    let Some(tag) = super::chunk_disk::encode_record(record)? else {
+        return Ok(None);
+    };
+    let encode = |tag: &NamedTag| -> io::Result<ChunkRecord> {
+        let record = ChunkRecord::from_nbt(tag, compression, timestamp, limits)?;
+        record.check_compressed_size()?;
+        Ok(record)
+    };
+    let error = match encode(&tag) {
+        Ok(record) => {
+            return Ok(Some(CompressedWrite {
+                record,
+                primary: true,
+            }));
+        }
+        Err(error) => error,
+    };
+    drop(tag);
+    // This can re-encode a full chunk; choose its payload before the region is locked.
+    catch_encoding_panic(|| {
+        let Some(stored) = record.without_block_entity_edits() else {
+            return Err(error);
+        };
+        log::warn!(
+            "block_entity_save_additional: discarding listener edits from the chunk record: {error}"
+        );
+        let record = encode(&stored)?;
+        Ok(Some(CompressedWrite {
+            record,
+            primary: false,
+        }))
+    })
+}
+
+pub(super) fn compress_records_with_pool(
     records: &[((i32, i32), &Record)],
     timestamp: u32,
     pool: &CompressionPool,
-) -> Vec<io::Result<Option<ChunkRecord>>> {
+) -> Vec<Prepared> {
     let count = records.len();
     if count == 0 {
         return Vec::new();
     }
     let compression = Compression::selected();
     let compress = move |record: &Record| {
-        if let Record::Chunk(_, encoding, _) | Record::Proto(_, encoding) = record {
-            encoding
-                .biomes
-                .ensure_saveable()
-                .map_err(io::Error::other)?;
-        }
-        record
-            .tag()
-            .map(|tag| ChunkRecord::from_nbt(&tag, compression, timestamp, Limits::saved()))
-            .transpose()
+        catch_encoding_panic(|| compress_record(record, compression, timestamp, Limits::saved()))
     };
     if count < MIN_PARALLEL_CHUNKS || pool.workers() == 0 {
         return records.iter().map(|(_, r)| compress(r)).collect();
     }
     let records_arc: Arc<[Record]> = records.iter().map(|(_, r)| (*r).clone()).collect();
-    let results: Arc<Mutex<Vec<Option<io::Result<Option<ChunkRecord>>>>>> =
+    let results: Arc<Mutex<Vec<Option<Prepared>>>> =
         Arc::new(Mutex::new((0..count).map(|_| None).collect()));
 
     let recs = Arc::clone(&records_arc);
     let res_lock = Arc::clone(&results);
     pool.run(count, move |i| {
-        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compress(&recs[i])))
-            .unwrap_or_else(|_| Err(io::Error::other("chunk compression worker panicked")));
+        let res = compress(&recs[i]);
         res_lock.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(res);
     });
 
@@ -211,9 +265,8 @@ pub fn compress_records_with_pool(
         .collect()
 }
 
-pub fn compress_records(
-    records: &[((i32, i32), &Record)],
-    timestamp: u32,
-) -> Vec<io::Result<Option<ChunkRecord>>> {
+/// Encode and compress records on the worker pool in submission order.
+/// A deletion has no compressed record.
+pub(super) fn compress_records(records: &[((i32, i32), &Record)], timestamp: u32) -> Vec<Prepared> {
     compress_records_with_pool(records, timestamp, pool())
 }

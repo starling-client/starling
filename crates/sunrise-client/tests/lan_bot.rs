@@ -3,6 +3,12 @@
 //! then the play state (login, chunks with light, player list, entities,
 //! block changes). Needs the prepared resources; skipped without them.
 extern crate sunrise_client_lib as sunrise_client;
+use std::{
+    path::Path,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     chunk::{Chunk, MIN_Y},
     lan::{
@@ -17,7 +23,6 @@ use sunrise_client::{
 };
 use sunrise_protocol::{
     PROTOCOL_VERSION,
-    adapter::ServerVersion,
     connection::Connection,
     crypto::offline_uuid,
     packets::{
@@ -29,12 +34,6 @@ use sunrise_protocol::{
     },
 };
 use sunrise_world::registry::BlockStateId;
-use std::{
-    path::Path,
-    sync::Arc,
-    thread,
-    time::{Duration, Instant},
-};
 
 fn resources() -> Option<std::path::PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -171,8 +170,6 @@ struct Server {
     world: World,
     next_entity: u32,
     placed: Vec<(u32, [i32; 3], u32, i32)>,
-    /// Every packet the hub handed to the game, in order.
-    packets: Vec<S>,
 }
 impl Server {
     fn tick(&mut self, entities: &[EntityState]) {
@@ -183,6 +180,7 @@ impl Server {
             next_entity: &mut self.next_entity,
             spawn: [8.5, f64::from(MIN_Y + 5), 8.5],
             spawn_angle: [0.0; 2],
+            spawn_dimension: "minecraft:overworld",
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -198,7 +196,6 @@ impl Server {
             match event {
                 HostEvent::Joined(conn) => self.hub.place_new_player(conn, &mut ctx),
                 HostEvent::Packet(conn, packet) => {
-                    self.packets.push((*packet).clone());
                     if let S::UseItemOn(p) = *packet {
                         let at = [p.pos[0], p.pos[1] + 1, p.pos[2]];
                         ctx.world
@@ -220,17 +217,25 @@ fn server(resources: &Path) -> Server {
 
 fn server_with(resources: &Path, net: NetConfig) -> Server {
     let defaults = sunrise_world::item_defaults::read(resources).expect("item defaults");
+    let items = sunrise_client::items::Items::catalog(
+        resources,
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )
+    .expect("items");
     server_sync(
         Arc::new(
             SyncData::load(
                 resources,
                 &sunrise_world::loot::PackOverlay::NONE,
                 &defaults,
-                &sunrise_client::crafting::ResolvedSources::load_or_empty(
+                &sunrise_client::crafting::ResolvedSources::load(
                     resources,
+                    &items,
                     &sunrise_world::loot::PackOverlay::NONE,
                     &server_load(),
-                ),
+                )
+                .expect("recipe sources"),
             )
             .expect("sync data"),
         ),
@@ -252,7 +257,7 @@ fn server_sync(sync: Arc<SyncData>, net: NetConfig) -> Server {
         (Arc::<str>::from("minecraft:stone"), false),
         (Arc::<str>::from("minecraft:chest"), false),
     ];
-    let encoder = ChunkEncoder::new(states, &sync.builtin, &biomes, &biomes);
+    let encoder = ChunkEncoder::new(states, &sync.builtin, &biomes, &biomes, Default::default());
     let hub = Hub::new(
         lan,
         sync,
@@ -270,6 +275,7 @@ fn server_sync(sync: Arc<SyncData>, net: NetConfig) -> Server {
             seed: 1234,
             max_players: 8,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
         Arc::new(
             server_load().loop_context(sunrise_world::native_load_context::LoopSide::Server, []),
@@ -280,7 +286,6 @@ fn server_sync(sync: Arc<SyncData>, net: NetConfig) -> Server {
         world: flat_world(),
         next_entity: 100,
         placed: Vec::new(),
-        packets: Vec::new(),
     }
 }
 
@@ -307,7 +312,7 @@ fn a_lan_guest_sees_the_signed_in_owners_skin() {
     let Some(resources) = resources() else {
         return;
     };
-    let textures = login::Property {
+    let textures = sunrise_core::profile::AccountProperty {
         name: "textures".into(),
         value: "e30=".into(),
         signature: Some("c2lnbmVk".into()),
@@ -426,13 +431,13 @@ fn recipe_settings_packets_update_only_the_players_book_and_survive_save() {
             let mut saved = sunrise_client::save::Level::default();
             sunrise_client::lan::playerdata::store(&s.hub.guests[0], &mut saved, None);
             let mut reopened = sunrise_client::save::Level::default();
-            reopened.read_player(&saved.player_tag());
+            reopened.read_player(&saved.player_tag(&Default::default()));
             assert_eq!(reopened.recipe_book.open, settings.open);
             assert_eq!(reopened.recipe_book.filtering, settings.filtering);
         }
     }
     for book_type in [-1, 4] {
-        let mut wire = sunrise_protocol::buf::Writer::new();
+        let mut wire = ::sunrise_core::vanilla_bytes::Writer::new();
         wire.varint(book_type);
         wire.bool(true);
         wire.bool(true);
@@ -500,16 +505,21 @@ fn neoforge_shapes_items_reach_two_guests() {
         ),
     ];
     let defaults = sunrise_world::item_defaults::read(&resources).expect("item defaults");
+    let overlay = sunrise_world::loot::PackOverlay::new(&packs);
+    let items =
+        sunrise_client::items::Items::catalog(&resources, &overlay, &defaults).expect("items");
     let sync = Arc::new(
         SyncData::load(
             &resources,
-            &sunrise_world::loot::PackOverlay::new(&packs),
+            &overlay,
             &defaults,
-            &sunrise_client::crafting::ResolvedSources::load_or_empty(
+            &sunrise_client::crafting::ResolvedSources::load(
                 &resources,
-                &sunrise_world::loot::PackOverlay::new(&packs),
+                &items,
+                &overlay,
                 &server_load(),
-            ),
+            )
+            .expect("recipe sources"),
         )
         .expect("sync data"),
     );
@@ -770,16 +780,24 @@ fn a_signed_in_hosts_lan_authenticates_guests_but_not_its_own_player() {
         return;
     };
     let defaults = sunrise_world::item_defaults::read(&resources).expect("item defaults");
+    let items = sunrise_client::items::Items::catalog(
+        &resources,
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )
+    .expect("items");
     let sync = Arc::new(
         SyncData::load(
             &resources,
             &sunrise_world::loot::PackOverlay::NONE,
             &defaults,
-            &sunrise_client::crafting::ResolvedSources::load_or_empty(
+            &sunrise_client::crafting::ResolvedSources::load(
                 &resources,
+                &items,
                 &sunrise_world::loot::PackOverlay::NONE,
                 &server_load(),
-            ),
+            )
+            .expect("recipe sources"),
         )
         .expect("sync data"),
     );
@@ -1096,6 +1114,7 @@ fn guests_see_each_other_and_the_world_entities() {
         horizontal_collision: false,
         needs_sync: false,
         sync_position: false,
+        sync_velocity: false,
         stepped: false,
         idle: false,
         bare: false,
@@ -1103,6 +1122,7 @@ fn guests_see_each_other_and_the_world_entities() {
         spectator: false,
         watching: false,
         hidden: None,
+        general: None,
     };
     let first = thread::spawn(move || {
         let mut bot = connect(port, "Alex", false)?;
@@ -1205,9 +1225,8 @@ fn guests_see_each_other_and_the_world_entities() {
 /// A menu opened with extra data (a mod menu type's, NeoForge's `openMenu`
 /// with an extra-data writer) reaches the client as a `sunrise:menu_extra`
 /// payload naming the window and the block, right before that window's
-/// `OpenScreen`; a menu without it sends no payload. The bot answers no
-/// revision query, so the server serves it the legacy layout — the bytes a
-/// Sunrise client has always read for a block's menu.
+/// `OpenScreen`; a menu without it sends no payload. The server always sends
+/// the current `sunrise:menu_extra` wire layout.
 #[test]
 fn menu_extra_data_comes_right_before_its_menu() {
     use sunrise_client::{items::ItemStack, lan::menu::Slots};
@@ -1241,7 +1260,7 @@ fn menu_extra_data_comes_right_before_its_menu() {
         loop {
             match bot.recv_play()? {
                 C::CustomPayload(p) if p.channel == menu_extra::CHANNEL => {
-                    let message = menu_extra::decode_legacy(&p.data).map_err(|e| e.to_string())?;
+                    let message = menu_extra::decode(&p.data).map_err(|e| e.to_string())?;
                     extras.push((message, true));
                 }
                 C::OpenScreen(p) => return Ok((bot, extras, p.container)),
@@ -1524,89 +1543,6 @@ fn a_click_past_the_menu_is_ignored() {
     );
 }
 
-#[test]
-fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
-    let Some(resources) = resources() else {
-        return;
-    };
-    let mut s = server(&resources);
-    let mut config = sunrise_anticheat::Config {
-        enabled: true,
-        ..Default::default()
-    };
-    config.timer.enabled = false;
-    config.ground.enabled = false;
-    s.hub.set_anticheat(config);
-    let port = s.hub.lan.port;
-    let _bot = run(&mut s, move || connect(port, "Recorded", true));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while s.hub.guests.is_empty() {
-        s.tick(&[]);
-        assert!(Instant::now() < deadline, "guest did not join");
-        thread::yield_now();
-    }
-    s.hub.guests.update(0, |g| g.loaded = true);
-    s.hub.guests.update(0, |g| g.load_timeout = 0);
-    let at = s.hub.guests[0].position;
-    // The server's tick ends with a ping; the client answers it before its next tick.
-    s.hub.anticheat_ping();
-    let pinged = s.hub.ticks;
-    let inbox = s.hub.guests.inbox_mut(0).unwrap();
-    inbox.push_back(InboxItem::Packet(
-        S::Pong(sunrise_protocol::packets::configuration::Ping { id: pinged as i32 }),
-        None,
-    ));
-    inbox.push_back(InboxItem::Packet(
-        S::PlayerInput(play::PlayerInput { flags: 1 }),
-        None,
-    ));
-    inbox.push_back(InboxItem::Packet(
-        S::MovePlayerPosRot(play::MovePlayerPosRot {
-            x: at[0],
-            y: at[1],
-            z: at[2] + 0.1,
-            yaw: 45.0,
-            pitch: 5.0,
-            flags: 1,
-        }),
-        None,
-    ));
-    inbox.push_back(InboxItem::Packet(S::ClientTickEnd(Empty), None));
-    // A tick without a move.
-    inbox.push_back(InboxItem::Packet(S::ClientTickEnd(Empty), None));
-    s.tick(&[]);
-    let record = s.hub.guests[0]
-        .record
-        .as_deref()
-        .expect("the prediction records");
-    let ticks: Vec<_> = record.ticks().copied().collect();
-    assert_eq!(ticks.len(), 2);
-    assert_eq!(ticks[0].position, Some([at[0], at[1], at[2] + 0.1]));
-    assert_eq!(
-        (ticks[0].yaw, ticks[0].pitch, ticks[0].flags),
-        (45.0, 5.0, Some(1))
-    );
-    assert_eq!((ticks[0].input, ticks[0].seen), (1, Some(pinged)));
-    assert_eq!(
-        (ticks[1].position, ticks[1].input, ticks[1].yaw),
-        (None, 1, 45.0)
-    );
-    // An answer to a ping never sent changes nothing.
-    s.hub
-        .guests
-        .inbox_mut(0)
-        .unwrap()
-        .push_back(InboxItem::Packet(
-            S::Pong(sunrise_protocol::packets::configuration::Ping {
-                id: (pinged + 100) as i32,
-            }),
-            None,
-        ));
-    s.tick(&[]);
-    let record = s.hub.guests[0].record.as_deref().unwrap();
-    assert_eq!(record.seen(), Some(pinged));
-}
-
 /// A mod block entity reaches the players that see its chunk as vanilla's do
 /// (`BlockEntityInfo.create`, then `sendBlockUpdated` and
 /// `ChunkHolder.broadcastChanges`): in the chunk with its declared type
@@ -1656,7 +1592,7 @@ fn a_synced_mod_block_entity_reaches_the_chunks_players_once_a_tick() {
         r#"{"minecraft:block_entity_type": {"entries": {"test:machine_entity": {"protocol_id": 60}}}}"#,
     )
     .unwrap();
-    s.hub.encoder = ChunkEncoder::new(states, &builtin, &[], &[]);
+    s.hub.encoder = ChunkEncoder::new(states, &builtin, &[], &[], Default::default());
     // A machine shows whether it runs; one without `on` shows nothing.
     s.hub.encoder.mod_update_tag = Some(|_, entity| {
         let on = entity.nbt.get(&JavaString::from("on"))?.clone();
@@ -1771,6 +1707,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         next_entity: &mut s.next_entity,
         spawn: at,
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
@@ -1781,7 +1718,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         border: &border,
         streaming: None,
     };
-    s.hub.respawn(0, at, None, &ctx);
+    s.hub.respawn(0, at, None, false, &ctx);
     assert!(
         !s.hub.guests[0].client_loaded(),
         "a respawn unloads the client"
@@ -1857,538 +1794,4 @@ fn server_load() -> sunrise_world::native_load_context::LoadContext {
         std::sync::Arc::new(LoadInputs::new(Default::default(), Default::default())),
         [],
     )
-}
-
-/// A client that numbers its packets as `version` does, from the protocol adapter's own tables: for 26.2 its
-/// handshake states 776 and every id it sends and reads is 26.2's. [`Self::send`]'s payloads are the pinned
-/// ones; [`Self::send_raw`] sends a packet as the version lays it out. The clientbound world packets arrive
-/// in 26.2's layout.
-struct Numbered {
-    c: Connection,
-    version: ServerVersion,
-    state: sunrise_protocol::State,
-    /// Reads and writes packets in the version's own layout (Sunrise's adapter for older servers), not
-    /// only its ids.
-    session: Option<sunrise_protocol::adapter::session::Session>,
-}
-impl Numbered {
-    fn send(&mut self, body: Vec<u8>) -> Result<(), String> {
-        if let Some(session) = &self.session {
-            let e = |e: sunrise_protocol::Error| e.to_string();
-            if let Some(body) = session.serverbound(&body).map_err(e)? {
-                self.c.send(&body).map_err(e)?;
-            }
-            for body in session.take_outgoing() {
-                self.c.send(&body).map_err(e)?;
-            }
-            return Ok(());
-        }
-        let body = self
-            .version
-            .serverbound_body(self.state, &body)
-            .map_err(|e| e.to_string())?
-            .ok_or("the client's version has no such packet")?;
-        self.c.send(&body).map_err(|e| e.to_string())
-    }
-    /// A packet by the version's own `id`, its payload in the version's layout.
-    fn send_raw(&mut self, id: i32, payload: &[u8]) -> Result<(), String> {
-        let mut w = sunrise_protocol::buf::Writer::new();
-        w.varint(id);
-        w.bytes(payload);
-        self.c.send(&w.data).map_err(|e| e.to_string())
-    }
-    /// The next packet with its pinned id (the version's own id read off the wire).
-    fn recv(&mut self) -> Result<(i32, Vec<u8>), String> {
-        if let Some(session) = &self.session {
-            let e = |e: sunrise_protocol::Error| e.to_string();
-            loop {
-                if let Some(p) = session.next_incoming() {
-                    return Ok(p);
-                }
-                let (id, payload) = self.c.recv().map_err(e)?;
-                if let Some(p) = session.clientbound(id, payload).map_err(e)? {
-                    return Ok(p);
-                }
-            }
-        }
-        let (id, payload) = self.c.recv().map_err(|e| e.to_string())?;
-        let pinned = self
-            .version
-            .clientbound_id(self.state, id)
-            .ok_or_else(|| format!("no clientbound packet {id} in {:?}", self.state))?;
-        Ok((pinned, payload))
-    }
-}
-
-/// A login as `version`: `Err` with the refusal (login's JSON, configuration's text), or the client once in
-/// play, with the ids of the item tag `beacon_payment_items` it was sent.
-fn join_as(
-    version: ServerVersion,
-    port: u16,
-    name: &str,
-) -> Result<Result<(Numbered, Vec<i32>), String>, String> {
-    join_with(version, port, name, false)
-}
-
-/// [`join_as`], the packets read and written in `version`'s layout when `layouts`.
-fn join_with(
-    version: ServerVersion,
-    port: u16,
-    name: &str,
-    layouts: bool,
-) -> Result<Result<(Numbered, Vec<i32>), String>, String> {
-    use sunrise_protocol::State;
-    let e = |e: sunrise_protocol::Error| e.to_string();
-    let hello = |intent| {
-        handshake::Serverbound::Intention(handshake::Intention {
-            protocol: version.protocol(),
-            host: "127.0.0.1".into(),
-            port,
-            intent,
-        })
-        .encode()
-    };
-    let c = Connection::connect("127.0.0.1", port, Duration::from_secs(5)).map_err(e)?;
-    c.reader
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .map_err(e)?;
-    let mut bot = Numbered {
-        c,
-        version,
-        state: State::Login,
-        session: layouts.then(|| sunrise_protocol::adapter::session::Session::new(version)),
-    };
-    bot.send(hello(handshake::LOGIN))?;
-    bot.send(
-        login::Serverbound::Hello(login::ServerHello {
-            name: name.into(),
-            uuid: offline_uuid(name),
-        })
-        .encode(),
-    )?;
-    loop {
-        let (id, payload) = bot.recv()?;
-        match login::Clientbound::decode(id, &payload).map_err(e)? {
-            login::Clientbound::Compression(p) => bot.c.set_compression(p.threshold),
-            login::Clientbound::LoginFinished(_) => break,
-            login::Clientbound::Disconnect(d) => return Ok(Err(d.reason_json)),
-            other => return Err(format!("unexpected login packet {other:?}")),
-        }
-    }
-    bot.send(login::Serverbound::LoginAcknowledged(Empty).encode())?;
-    bot.state = State::Configuration;
-    bot.send(cfg::Serverbound::ClientInformation(ClientInformation::new(4)).encode())?;
-    let mut payment = Vec::new();
-    loop {
-        let (id, payload) = bot.recv()?;
-        match cfg::Clientbound::decode(id, &payload).map_err(e)? {
-            // A 26.2 client knows its own core pack, not 26.3's: it is sent the registries' data (and so
-            // is this 26.3 client, alike).
-            cfg::Clientbound::SelectKnownPacks(_) => bot.send(
-                cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks { packs: Vec::new() })
-                    .encode(),
-            )?,
-            cfg::Clientbound::UpdateTags(t) => {
-                for registry in t.registries {
-                    if registry.registry == "minecraft:item" {
-                        payment.extend(
-                            registry
-                                .tags
-                                .into_iter()
-                                .filter(|t| t.name == "minecraft:beacon_payment_items")
-                                .flat_map(|t| t.ids),
-                        );
-                    }
-                }
-            }
-            cfg::Clientbound::Disconnect(d) => {
-                return Ok(Err(match d.reason {
-                    sunrise_core::nbt::Tag::String(s) => s.to_string_lossy(),
-                    other => format!("{other:?}"),
-                }));
-            }
-            cfg::Clientbound::FinishConfiguration(_) => {
-                bot.send(cfg::Serverbound::FinishConfiguration(Empty).encode())?;
-                bot.state = State::Play;
-                return Ok(Ok((bot, payment)));
-            }
-            _ => {}
-        }
-    }
-}
-
-/// The protocol a status ping stating `protocol` is answered with.
-fn status_protocol(port: u16, protocol: i32) -> Result<i64, String> {
-    let e = |e: sunrise_protocol::Error| e.to_string();
-    let mut c = Connection::connect("127.0.0.1", port, Duration::from_secs(5)).map_err(e)?;
-    c.send(
-        &handshake::Serverbound::Intention(handshake::Intention {
-            protocol,
-            host: "127.0.0.1".into(),
-            port,
-            intent: handshake::STATUS,
-        })
-        .encode(),
-    )
-    .map_err(e)?;
-    c.send(&status::Serverbound::StatusRequest(Empty).encode())
-        .map_err(e)?;
-    let (id, payload) = c.recv().map_err(e)?;
-    let status::Clientbound::StatusResponse(r) =
-        status::Clientbound::decode(id, &payload).map_err(e)?
-    else {
-        return Err("no status".into());
-    };
-    let v: serde_json::Value = serde_json::from_str(&r.json).map_err(|e| e.to_string())?;
-    v["version"]["protocol"]
-        .as_i64()
-        .ok_or_else(|| "no protocol".into())
-}
-
-/// `accept_older_clients` off (the default), a 26.2 client is turned away as vanilla turns it away and the
-/// server list shows 26.3's protocol; on, the client is told its own protocol, logs in in 26.2's packet ids
-/// and is told, before any registry data, that 26.2 isn't translated yet, while a 26.3 client is served as
-/// before. Let past that (the tests-only `older_clients_play`), it is sent the tags in 26.2's item ids, plays in
-/// 26.2's packet ids and sees the block it places.
-#[test]
-fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
-    let Some(resources) = resources() else {
-        return;
-    };
-    const OLD: ServerVersion = ServerVersion::V26_2;
-    const DIAMOND_26_2: i32 = 926;
-    const DIAMOND_26_3: i32 = 1012;
-    let mut off = server(&resources);
-    let port = off.hub.lan.port;
-    let (status, refused) = run(&mut off, move || {
-        let status = status_protocol(port, 776)?;
-        let refused = join_as(OLD, port, "Old")?
-            .err()
-            .ok_or("a 26.2 client got in")?;
-        Ok((status, refused))
-    });
-    assert_eq!(status, i64::from(PROTOCOL_VERSION));
-    assert!(
-        refused.contains("multiplayer.disconnect.incompatible"),
-        "{refused}"
-    );
-
-    let net = NetConfig {
-        accept_older_clients: true,
-        ..NetConfig::loopback(0, "Test - World".into(), 8)
-    };
-    let mut on = server_with(&resources, net);
-    let port = on.hub.lan.port;
-    let statuses = run(&mut on, move || {
-        Ok((
-            status_protocol(port, 776)?,
-            status_protocol(port, PROTOCOL_VERSION)?,
-        ))
-    });
-    assert_eq!(statuses, (776, i64::from(PROTOCOL_VERSION)));
-    let unfinished = run(&mut on, move || {
-        join_as(OLD, port, "Old")?
-            .err()
-            .ok_or_else(|| "a 26.2 client got past configuration".to_owned())
-    });
-    assert!(
-        unfinished.contains(sunrise_client::lan::OLDER_CLIENTS_UNFINISHED),
-        "{unfinished}"
-    );
-    // A 26.3 client on the same server: its own ids, as on any server.
-    let payment = run(&mut on, move || {
-        let (_bot, payment) =
-            join_as(ServerVersion::Current, port, "New")?.map_err(|r| format!("refused: {r}"))?;
-        Ok(payment)
-    });
-    assert!(payment.contains(&DIAMOND_26_3), "{payment:?}");
-
-    let net = NetConfig {
-        accept_older_clients: true,
-        older_clients_play: true,
-        ..NetConfig::loopback(0, "Test - World".into(), 8)
-    };
-    let mut play = server_with(&resources, net);
-    let port = play.hub.lan.port;
-    let (payment, placed) = run(&mut play, move || {
-        let (mut bot, payment) = join_as(OLD, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
-        let (mut login, mut chunks, mut placed) = (false, 0, None);
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            let (id, payload) = bot.recv()?;
-            // The command tree has argument nodes the client side does not decode.
-            if id == sunrise_protocol::ids::play::clientbound::COMMANDS {
-                continue;
-            }
-            // World packets come in 26.2's own layout, which the pinned readers don't read (the adapter's
-            // unit tests read them back with translate's 26.2 readers).
-            {
-                use sunrise_protocol::ids::play::clientbound as cb;
-                match id {
-                    cb::LEVEL_CHUNK_WITH_LIGHT => {
-                        chunks += 1;
-                        continue;
-                    }
-                    cb::LIGHT_UPDATE
-                    | cb::LEVEL_PARTICLES
-                    | cb::EXPLODE
-                    | cb::MOVE_ENTITY_POS
-                    | cb::MOVE_ENTITY_POS_ROT
-                    | cb::MOVE_ENTITY_ROT
-                    | cb::ENTITY_POSITION_SYNC
-                    | cb::ANIMATE
-                    // Its tag displays are 26.2's bare tag ids.
-                    | cb::RECIPE_BOOK_ADD => continue,
-                    _ => {}
-                }
-            }
-            match C::decode(id, &payload).map_err(|e| format!("packet {id}: {e}"))? {
-                C::Login(_) => login = true,
-                C::PlayerPosition(p) => bot.send(
-                    S::AcceptTeleportation(play::AcceptTeleportation {
-                        id: p.teleport,
-                        x: p.position[0],
-                        y: p.position[1],
-                        z: p.position[2],
-                        yaw: 0.0,
-                        pitch: 0.0,
-                    })
-                    .encode(),
-                )?,
-                C::ChunkBatchFinished(_) => {
-                    bot.send(
-                        S::ChunkBatchReceived(play::ChunkBatchReceived {
-                            chunks_per_tick: 20.0,
-                        })
-                        .encode(),
-                    )?;
-                    if chunks >= 9 && placed.is_none() {
-                        placed = Some(None);
-                        bot.send(S::PlayerLoaded(Empty).encode())?;
-                        bot.send(
-                            S::MovePlayerPosRot(play::MovePlayerPosRot {
-                                x: 9.5,
-                                y: f64::from(MIN_Y + 5),
-                                z: 9.5,
-                                yaw: 90.0,
-                                pitch: 10.0,
-                                flags: 1,
-                            })
-                            .encode(),
-                        )?;
-                        bot.send(
-                            S::UseItemOn(play::UseItemOn {
-                                hand: 0,
-                                pos: [9, MIN_Y + 4, 9],
-                                face: 1,
-                                cursor: [0.5, 1.0, 0.5],
-                                inside: false,
-                                world_border: false,
-                                sequence: 77,
-                            })
-                            .encode(),
-                        )?;
-                    }
-                }
-                C::BlockUpdate(u) => placed = Some(Some((u.pos, u.state))),
-                C::BlockChangedAck(a) if a.sequence == 77 => break,
-                _ => {}
-            }
-        }
-        assert!(login, "no login packet");
-        Ok((payment, placed.flatten()))
-    });
-    assert!(payment.contains(&DIAMOND_26_2), "{payment:?}");
-    assert!(!payment.contains(&DIAMOND_26_3), "{payment:?}");
-    assert_eq!(placed, Some(([9, MIN_Y + 5, 9], STONE as i32)));
-    assert_eq!(play.placed.len(), 1);
-}
-
-/// The serverbound packets whose layout 26.3 changed reach the game from a 26.2 client as 26.3's: its
-/// teleport confirmations (the id alone) are taken, so its walk counts; its digging actions past 0 are one
-/// up (start 0 stays 0, stop 2 is 3); its main-hand swing is a punch and its off-hand swing nothing.
-#[test]
-fn a_26_2_clients_walk_dig_swing_and_teleport_confirmations_read_as_26_3s() {
-    let Some(resources) = resources() else {
-        return;
-    };
-    // 26.2's serverbound ids (play) of the packets whose layout changed.
-    const ACCEPT_TELEPORTATION_26_2: i32 = 0;
-    const PLAYER_ACTION_26_2: i32 = 41;
-    const SWING_26_2: i32 = 63;
-    let net = NetConfig {
-        accept_older_clients: true,
-        older_clients_play: true,
-        ..NetConfig::loopback(0, "Test - World".into(), 8)
-    };
-    let mut s = server_with(&resources, net);
-    let port = s.hub.lan.port;
-    let below = [9, MIN_Y + 4, 9];
-    let walked = [9.5, f64::from(MIN_Y + 5), 9.5];
-    let (_bot, confirmed) = run(&mut s, move || {
-        let (mut bot, _) =
-            join_as(ServerVersion::V26_2, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
-        let (mut confirmed, mut chunks, mut sent) = (0, 0, false);
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            let (id, payload) = bot.recv()?;
-            // The command tree has argument nodes the client side does not decode.
-            if id == sunrise_protocol::ids::play::clientbound::COMMANDS {
-                continue;
-            }
-            // The packets written in 26.2's layout, which the pinned readers don't read.
-            {
-                use sunrise_protocol::ids::play::clientbound as cb;
-                if id == cb::LEVEL_CHUNK_WITH_LIGHT {
-                    chunks += 1;
-                }
-                if matches!(
-                    id,
-                    cb::LEVEL_CHUNK_WITH_LIGHT
-                        | cb::LIGHT_UPDATE
-                        | cb::LEVEL_PARTICLES
-                        | cb::EXPLODE
-                        | cb::MOVE_ENTITY_POS
-                        | cb::MOVE_ENTITY_POS_ROT
-                        | cb::MOVE_ENTITY_ROT
-                        | cb::ENTITY_POSITION_SYNC
-                        | cb::ANIMATE
-                        | cb::RECIPE_BOOK_ADD
-                ) {
-                    continue;
-                }
-            }
-            match C::decode(id, &payload).map_err(|e| format!("packet {id}: {e}"))? {
-                C::PlayerPosition(p) => {
-                    let mut w = sunrise_protocol::buf::Writer::new();
-                    w.varint(p.teleport);
-                    bot.send_raw(ACCEPT_TELEPORTATION_26_2, &w.data)?;
-                    confirmed += 1;
-                }
-                C::ChunkBatchFinished(_) => {
-                    bot.send(
-                        S::ChunkBatchReceived(play::ChunkBatchReceived {
-                            chunks_per_tick: 20.0,
-                        })
-                        .encode(),
-                    )?;
-                }
-                C::BlockChangedAck(a) if a.sequence == 77 => break,
-                _ => {}
-            }
-            if chunks >= 9 && confirmed > 0 && !sent {
-                sent = true;
-                bot.send(S::PlayerLoaded(Empty).encode())?;
-                // A walk from the spawn (8.5, 8.5), on the stone: one move, as vanilla kicks a second in a tick.
-                bot.send(
-                    S::MovePlayerPos(play::MovePlayerPos {
-                        x: walked[0],
-                        y: walked[1],
-                        z: walked[2],
-                        flags: 1,
-                    })
-                    .encode(),
-                )?;
-                // Start and stop destroying the block below, as 26.2 numbers the actions.
-                for (action, sequence) in [(0, 5), (2, 6)] {
-                    let mut w = sunrise_protocol::buf::Writer::new();
-                    w.varint(action);
-                    w.i64(sunrise_protocol::buf::pack_block_pos(below));
-                    w.u8(1);
-                    w.varint(sequence);
-                    bot.send_raw(PLAYER_ACTION_26_2, &w.data)?;
-                }
-                // A main-hand swing, then an off-hand one.
-                bot.send_raw(SWING_26_2, &[0])?;
-                bot.send_raw(SWING_26_2, &[1])?;
-                // Its acknowledgement says the hub has handled everything before it.
-                bot.send(
-                    S::UseItemOn(play::UseItemOn {
-                        hand: 0,
-                        pos: [12, MIN_Y + 4, 12],
-                        face: 1,
-                        cursor: [0.5, 1.0, 0.5],
-                        inside: false,
-                        world_border: false,
-                        sequence: 77,
-                    })
-                    .encode(),
-                )?;
-            }
-        }
-        assert!(sent, "the client never got its chunks");
-        // The bot is kept, so its guest stays to be looked at.
-        Ok((bot, confirmed))
-    });
-    assert!(confirmed > 0, "no teleport to confirm");
-    let g = &s.hub.guests[0];
-    assert!(g.left_reason.is_empty(), "{}", g.left_reason);
-    assert_eq!(g.position, walked, "the walk was not taken");
-    let actions: Vec<i32> = s
-        .packets
-        .iter()
-        .filter_map(|p| match p {
-            S::PlayerAction(a) if a.pos == below => Some(a.action),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(actions, [0, 3]);
-    let punches = s
-        .packets
-        .iter()
-        .filter(|p| matches!(p, S::Punch(_)))
-        .count();
-    assert_eq!(punches, 1);
-}
-
-/// A client of each older release the adapter knows (26.1 down to 1.20.5) gets past configuration and is sent chunks without being
-/// disconnected, on a server that accepts older clients.
-#[test]
-fn older_clients_of_each_release_join_and_are_sent_chunks() {
-    let Some(resources) = resources() else {
-        return;
-    };
-    for version in [
-        ServerVersion::V26_1,
-        ServerVersion::V1_21_11,
-        ServerVersion::V1_21_10,
-        ServerVersion::V1_21_8,
-        ServerVersion::V1_21_6,
-        ServerVersion::V1_21_5,
-        ServerVersion::V1_21_4,
-        ServerVersion::V1_21_3,
-        ServerVersion::V1_21_1,
-        ServerVersion::V1_20_6,
-    ] {
-        let net = NetConfig {
-            accept_older_clients: true,
-            older_clients_play: true,
-            ..NetConfig::loopback(0, "Test - World".into(), 8)
-        };
-        let mut s = server_with(&resources, net);
-        let port = s.hub.lan.port;
-        let chunks = run(&mut s, move || {
-            let (mut bot, _) = join_with(version, port, "Old", true)
-                .map_err(|e| format!("{}: join: {e}", version.name()))?
-                .map_err(|r| format!("refused: {r}"))?;
-            let mut chunks = 0;
-            let mut last = -1;
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < deadline && chunks < 9 {
-                let (id, _) = bot
-                    .recv()
-                    .map_err(|e| format!("{} after packet {last}: {e}", version.name()))?;
-                last = id;
-                use sunrise_protocol::ids::play::clientbound as cb;
-                if id == cb::DISCONNECT {
-                    return Err("disconnected".into());
-                }
-                if id == cb::LEVEL_CHUNK_WITH_LIGHT {
-                    chunks += 1;
-                }
-            }
-            Ok(chunks)
-        });
-        assert!(chunks > 0, "{}: no chunks", version.name());
-    }
 }

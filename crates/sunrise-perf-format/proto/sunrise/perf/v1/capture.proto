@@ -31,7 +31,7 @@ message Capture {
   repeated SlowEvent slow = 12;
   // live: one per block per thread.
   repeated SpanBlock span_blocks = 13;
-  // live: start, every 10 s, stop.
+  // live: start and periodic; dedicated server also at stop.
   repeated MemorySnapshot memory = 14;
   // live: one per second per thread while the timeline is on.
   repeated TimelineChunk timeline = 15;
@@ -116,6 +116,8 @@ message Start {
   uint32 players = 14;
   uint64 world_fs_used_mb = 15;
   uint64 world_fs_total_mb = 16;
+  // Clients only.
+  ClientSettings client_settings = 17;
 }
 
 enum Symbols {
@@ -205,11 +207,28 @@ message GameRules {
 
 // Typed allowlist of the Sunrise switches that change what a tick costs, boolean or numeric.
 message SunriseOptions {
-  // The far ring's distance in chunks; 0 when off.
+  // The far ring's distance in chunks, 0 when off; always 0 since the far ring was removed.
   optional uint32 max_view_distance = 1;
   // How far the server serves LOD tiles, in chunks; 0 when off.
   optional uint32 lod_distance = 2;
-  optional bool anticheat = 3;
+  // 3 was the anticheat switch, removed with the anticheat.
+  reserved 3;
+  reserved "anticheat";
+}
+
+// Typed allowlist of the client options that set how much world it keeps and draws; never a dump of options.txt.
+message ClientSettings {
+  // Render distance as chosen, in chunks.
+  optional uint32 view_distance = 1;
+  // The radius the client keeps and meshes chunks in now, in chunks.
+  optional uint32 loaded_view_distance = 2;
+  optional uint32 simulation_distance = 3;
+  // Far terrain's distance as drawn on this adapter and server, in chunks; 0 when off.
+  optional uint32 far_terrain_distance = 4;
+  // Whether far terrain was drawing when the capture started.
+  optional bool far_terrain_active = 5;
+  // fast, fancy, fabulous or custom.
+  string graphics_preset = 6;
 }
 
 enum ModKind {
@@ -218,7 +237,7 @@ enum ModKind {
   MOD_KIND_CONTENT = 1;
   // A native code mod.
   MOD_KIND_NATIVE = 2;
-  // A wasm code mod (the fork supports the same mod API on both targets).
+  // Historical capture value; current builds do not emit it.
   MOD_KIND_WASM = 3;
 }
 
@@ -389,6 +408,9 @@ message Overhead {
   uint64 heap_samples = 10;
   // Time the allocating threads spent recording them.
   uint64 heap_sample_ns = 11;
+  // Elapsed work in completed memory snapshot stages, across all their threads.
+  // Does not include time waiting for a request or reply.
+  uint64 memory_snapshot_ns = 12;
 }
 
 // Per thread, per block of block_s (default 5 s); span[i] ran under parent[i] (string ids, 0 for a root).

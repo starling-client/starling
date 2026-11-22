@@ -1,12 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <title>Sunrise</title>
-  <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
-  <g clip-path="url(#tile)">
-    <rect x="100" y="100" width="824" height="824" fill="#16181f"/>
-    <g transform="translate(100 100) scale(51.5)">
-      <g fill="#ecedf3"><rect x="4" y="3" width="2" height="4"/><rect x="10" y="3" width="2" height="4"/></g>
-      <g fill="#ecedf3" opacity=".36"><rect x="4" y="8" width="2" height="4"/><rect x="10" y="8" width="2" height="4"/></g>
-      <rect y="7" width="16" height="1" fill="#9a86ff"/>
-    </g>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><title>Sunrise</title><svg x="96" y="96" width="832" height="832" viewBox="0 0 16 16" shape-rendering="crispEdges"><rect width="16" height="16" rx="3" fill="#100a1f"/><path fill="#ffe39a" d="M7 3h2v1H7zM7 4h2v1H7zM2 5h2v1H2zM12 5h2v1h-2zM2 6h2v1H2zM12 6h2v1h-2z"/><path fill="#ffcf5c" d="M6 7h4v1H6zM4 8h8v1H4zM3 9h10v1H3z"/><path fill="#ffb48a" d="M3 10h10v1H3z"/><path fill="#6f58d9" d="M1 12h14v1H1zM1 13h14v1H1z"/></svg></svg>

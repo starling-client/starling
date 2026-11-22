@@ -32,7 +32,10 @@ mod tests {
         ) -> mod_api::Flow {
             assert_eq!(event.entity, 7);
             assert_eq!(event.kind, "minecraft:cow");
-            assert_eq!(event.stack.unwrap().item().id(host), "minecraft:stick");
+            assert_eq!(
+                event.stack.unwrap().item().id(host),
+                Some("minecraft:stick")
+            );
             self.seen.lock().unwrap().push((self.name, event.location));
             if self.claim {
                 mod_api::Flow::Cancel
@@ -42,7 +45,7 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "requires private prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn specific_click_keeps_location_and_stops_after_a_claim() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             for claim in [false, true] {

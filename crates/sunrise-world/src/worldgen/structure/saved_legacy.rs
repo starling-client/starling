@@ -9,8 +9,8 @@ use super::{
     stronghold::StrongholdPiece,
 };
 use crate::datafix::dynamic::{Number, as_number};
-use sunrise_core::{bounding_box::BoundingBox, geometry::Direction, nbt::Tag};
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::{bounding_box::BoundingBox, geometry::Direction, nbt::Tag};
 
 /// `CompoundTag.getIntOr`: `Mth.floor` of a float or double tag, the low 32
 /// bits of the others, 0 for a missing or non-numeric one.

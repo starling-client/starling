@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: [runtime] script.dat must be 128 lowercase hex digits (line 4, column 1)
+
+icon:
+unavailable

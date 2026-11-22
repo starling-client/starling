@@ -171,8 +171,10 @@ fn horse_variant_recipe_defaults_removal_and_strictness_preserve_presence() {
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(omitted.craft(&context, &[Some(egg.clone())], 1).is_none());
     assert!(removal.craft(&context, &[Some(egg.clone())], 1).is_none());
-    egg.data_mut()
-        .set_other("minecraft:custom_data", Some(Tag::Int(3)));
+    egg.data_mut().set_other(
+        "minecraft:custom_data",
+        Some(Tag::compound([("extra", Tag::Int(3))])),
+    );
     assert!(loose.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_none());
     egg.data_mut().set_other("minecraft:custom_data", None);
@@ -207,7 +209,7 @@ fn horse_variant_recipe_defaults_removal_and_strictness_preserve_presence() {
 }
 
 #[test]
-fn horse_variant_invalid_codec_payloads_omit_whole_recipes() {
+fn horse_variant_invalid_codec_payloads_refuse_whole_load() {
     let mut items = Items::empty();
     std::sync::Arc::make_mut(&mut items.component_registry)
         .persistent_components
@@ -243,6 +245,6 @@ fn horse_variant_invalid_codec_payloads_omit_whole_recipes() {
             "components": patch.clone()
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        super::decoder_contracts::assert_malformed_decoder_reload_keeps_sibling(&items, patch);
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
 }

@@ -34,12 +34,8 @@ pub struct ParticleOptions {
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     /// API requests borrow the immutable load table; native file input can own its name.
     pub mod_particle: Option<std::borrow::Cow<'static, str>>,
-    /// Pre-1.20.5 entity-effect providers use spawn velocity as RGB; true is ambient.
-    pub legacy_entity_effect: Option<bool>,
-    /// A pre-1.21.4 server's trail, which had no duration: TrailParticle.Provider chose
-    /// `nextInt(40) + 10` after constructing the particle. Set by the client for an older
-    /// server only, never read from the wire.
-    pub legacy_trail_lifetime: bool,
+    /// A registered type's owned options and its `overrideLimiter` flag.
+    pub typed_particle: Option<(mod_api::__private::TypedParticleOptions, bool)>,
     pub source: Option<std::sync::Arc<str>>,
     pub polytone_seed: Option<std::sync::Arc<super::polytone::Seed>>,
 }
@@ -57,8 +53,7 @@ impl ParticleOptions {
             geyser: None,
             vibration: None,
             mod_particle: None,
-            legacy_entity_effect: None,
-            legacy_trail_lifetime: false,
+            typed_particle: None,
             polytone_seed: None,
             source: None,
         }
@@ -70,6 +65,15 @@ impl ParticleOptions {
             mod_particle: Some(std::borrow::Cow::Owned(name.into())),
             ..Self::simple(ParticleType::Smoke)
         }
+    }
+    /// Resolve the registered metadata once, when making a spawn request.
+    pub fn typed(value: mod_api::__private::TypedParticleOptions) -> Option<Self> {
+        let key = value.key();
+        Some(Self {
+            mod_particle: Some(mod_api::__private::particle_name(key)?.into()),
+            typed_particle: Some((value, mod_api::__private::particle_override_limiter(key)?)),
+            ..Self::simple(ParticleType::Smoke)
+        })
     }
     /// `GeyserParticleOptions(type, waterBlocks)`.
     pub fn geyser(ty: ParticleType, water_blocks: i32) -> Self {

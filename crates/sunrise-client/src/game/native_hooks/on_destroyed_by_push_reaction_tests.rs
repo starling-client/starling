@@ -3,14 +3,6 @@
 //! tells the torch's part before its cell becomes air, and the move overwrites what the part
 //! writes into the move's cells but keeps what it writes elsewhere.
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_core::{
-    geometry::Direction,
-    position::{BlockPos, ChunkPos},
-};
-use sunrise_world::{
-    level::LevelAccess,
-    registry::{BlockRegistry, BlockStateId},
-};
 use mod_api::{
     BlockPart, BlockUpdateFlags, Flow, Hooks, LevelHost, LevelWriteHost,
     OnDestroyedByPushReactionEvent, PistonPreEvent, Registrar,
@@ -18,6 +10,14 @@ use mod_api::{
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, Ordering},
+};
+use sunrise_core::{
+    geometry::Direction,
+    position::{BlockPos, ChunkPos},
+};
+use sunrise_world::{
+    level::LevelAccess,
+    registry::{BlockRegistry, BlockStateId},
 };
 
 /// A torch's part: records what it hears, then writes nothing (0), stone into its own cell
@@ -87,7 +87,7 @@ fn state(registry: &BlockRegistry, name: &str, props: &[(&str, &str)]) -> BlockS
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_block_part_hears_a_piston_destroy_it_before_the_move_overwrites_its_cells() {
     let torch = Torch::default();
     let cancel = Arc::new(AtomicBool::new(false));

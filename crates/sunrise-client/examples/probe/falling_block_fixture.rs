@@ -2,17 +2,17 @@
 //! of `FallingBlockEntity.tick` over the case's block map through
 //! `sunrise_world::level::Behaviours::falling_block_landed` and prints the same
 //! decision, changed blocks and numeric level events as the Java oracle.
-use sunrise_core::{dimension::Dimension, position::BlockPos, random::LegacyRandom};
-use sunrise_world::{
-    fluid::FluidKind,
-    level::{Behaviours, Landing, LevelAccess, LevelEvent, Ticks, data::load_registry},
-    registry::BlockStateId,
-};
 use serde_json::Value;
 use std::{
     collections::HashMap,
     io::{BufRead, Write},
     path::Path,
+};
+use sunrise_core::{dimension::Dimension, position::BlockPos, random::LegacyRandom};
+use sunrise_world::{
+    fluid::FluidKind,
+    level::{Behaviours, Landing, LevelAccess, LevelEvent, Ticks, data::load_registry},
+    registry::BlockStateId,
 };
 
 struct Cells {

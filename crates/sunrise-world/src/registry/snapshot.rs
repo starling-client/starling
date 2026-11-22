@@ -209,6 +209,7 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
                 collided: collided_map,
                 defaults: default_map,
             }),
+            shared_workers: Default::default(),
             saved_states: RwLock::new(sunrise_core::fast_hash::FxHashMap::default()),
         },
         flags,

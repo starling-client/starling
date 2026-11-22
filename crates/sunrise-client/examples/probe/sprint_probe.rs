@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
-use sunrise_client::{
-    Result,
-    sprint::{Conditions, Keys, SprintState},
-};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_client::{
+    Result,
+    sprint::{Conditions, Keys, SprintState},
 };
 fn keys(mask: u64) -> Keys {
     Keys {

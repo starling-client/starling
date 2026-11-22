@@ -13,8 +13,8 @@ impl Game<'_> {
     /// hands' view space, in blocks, +x right, +y up, -z into the screen,
     /// under the hand sway and before vanilla's per-item transforms; both
     /// hands share it, and `render.hand` says which one is asked. It is lit
-    /// with the light at the eyes; add geometry with `native_draw_cube`,
-    /// `native_draw_quad`, `native_draw_block` and `native_draw_item`. It
+    /// with the light at the eyes. Use `draw.render_arm` to submit either
+    /// physical arm with the local avatar's skin, without firing `render_arm`. It
     /// joins the hand's own vertices, ahead of vanilla's: the hand's field of
     /// view, the view bob, a shader pack's hand pass and `native_hand_drawn`
     /// see it as they see vanilla's hand. Unlike NeoForge, the pose stack is
@@ -23,7 +23,7 @@ impl Game<'_> {
     pub(in crate::game) fn native_render_hand(
         &self,
         render: &mut HandRender<'_>,
-        draw: &mut BlockEntityDraw,
+        draw: &mut dyn mod_api::HandDrawContext,
         canceled: &mut bool,
     ) {
         self.fire_render_hand(render, draw, canceled);
@@ -55,9 +55,14 @@ impl Game<'_> {
             sunrise_client::block_entity_render::diffuse_lights(self.dim == Dim::Nether),
             std::mem::take(out),
         )
+        .track_normal_pose()
         .animated(self.animation_time());
         let mut canceled = false;
-        self.native_render_hand(render, &mut draw, &mut canceled);
+        self.native_render_hand(
+            render,
+            &mut crate::game::host::draw::GameBlockEntityDrawContext::new(self, &mut draw),
+            &mut canceled,
+        );
         *out = draw.into_vertices();
         if out.len() > start {
             runs.push((start as u32, 0));

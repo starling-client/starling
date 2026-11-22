@@ -18,7 +18,11 @@ impl IPayloadHandler for Handler {
         &self,
         _: PayloadBytes,
         _: &mut dyn IPayloadContext,
+<<<<<<< sync-sunrise-1
     ) -> Result<(), mod_api::PayloadHandleError> {
+=======
+    ) -> Result<(), crate::PayloadHandleError> {
+>>>>>>> sunrise/main
         Ok(())
     }
 }
@@ -124,6 +128,7 @@ fn invalid_ownership_versions_and_receiving_handlers_refuse_load() {
             direction: PayloadDirection::ToServer,
             optional: false,
             thread: HandlerThread::Main,
+            delivery: PayloadDelivery::Reliable,
         },
         None,
         None,
@@ -254,4 +259,26 @@ fn raw_channels_refuse_engine_namespaces_bare_ids_and_typed_collisions() {
     assert_eq!(registrar.refused.len(), 1);
     assert!(registrar.refused[0].starts_with("typed registered payload typed:data"));
     assert!(registrar.refused[0].contains("declared by rawmod"));
+}
+
+#[test]
+fn droppable_is_play_only_and_part_of_the_negotiated_version() {
+    let mut registrar = PartRegistrar::new("test");
+    let events = (&mut registrar as &mut dyn Registrar).payload_handlers();
+    let mut view = events;
+    let droppable = view.registrar("1").droppable();
+    let mut droppable = droppable;
+    droppable.play_to_server(PayloadId("test:voice".into()), handler());
+    droppable.configuration_to_server(PayloadId("test:early".into()), handler());
+    droppable.common_to_server(PayloadId("test:both".into()), handler());
+    assert_eq!(registrar.refused.len(), 2, "{:?}", registrar.refused);
+    let payloads = frozen(&registrar);
+    let declared = payloads.declarations().next().unwrap();
+    assert_eq!(declared.delivery, PayloadDelivery::Droppable);
+    assert_eq!(
+        declared.version,
+        format!("1{}", crate::PAYLOAD_DROPPABLE_MARKER)
+    );
+    assert!(payloads.drop_counters("test:voice").is_some());
+    assert!(payloads.drop_counters("test:early").is_none());
 }

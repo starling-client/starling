@@ -10,11 +10,13 @@ pub trait Hooks {
     /// who is in the level, once it is set counts from empty. Asked once a tick
     /// for the mobs, after their tick, and once for the players. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_living_equipment_listened",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "listened",
         cancellable = false,
         neoforge = "none (Sunrise-only; NeoForge has no counterpart); an opt-in gate for a hook"
     )]
-    fn living_equipment_listened();
+    fn living_equipment_listened(listened: &mut bool);
 }

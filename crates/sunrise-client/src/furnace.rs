@@ -4,8 +4,8 @@ use crate::{
     containers::{Furnace, recipe_used_key},
     crafting::Recipes,
     items::{ItemStack, Items},
-    providers::Providers,
 };
+use sunrise_items::item_data::cooking_fuel::{self, CookingFuel};
 use sunrise_world::native_load_context::LoopContext;
 
 /// The furnace methods that read the recipes.
@@ -26,18 +26,16 @@ pub trait FurnaceCooking {
         recipes: &Recipes,
         before: Option<ItemStack>,
     );
-    /// One server tick. Returns `Some(lit)` when the LIT block state must change.
-    /// `drops` collects what the furnace lets fall at its position
-    /// (`Containers.dropItemStack`): the remainder of a fuel when more of it is left.
-    fn tick(
-        &mut self,
+    /// Count down before building the loot context, which can read this block entity.
+    fn count_down_burn(&mut self) -> bool;
+    fn prepare_tick<'r>(
+        &self,
         context: &LoopContext,
-        recipes: &Recipes,
+        recipes: &'r Recipes,
         items: &Items,
-        providers: &Providers,
-        drops: &mut Vec<ItemStack>,
-        remainder: &dyn Fn(&ItemStack) -> Option<ItemStack>,
-    ) -> Option<bool>;
+        was_lit: bool,
+        resolve: impl FnOnce(&CookingFuel) -> (i32, f32),
+    ) -> FurnaceTick<'r>;
     fn idle(&self) -> bool;
 }
 impl FurnaceCooking for Furnace {
@@ -72,123 +70,202 @@ impl FurnaceCooking for Furnace {
             self.set_input(context, recipes, after);
         }
     }
-    fn tick(
-        &mut self,
-        context: &LoopContext,
-        recipes: &Recipes,
-        items: &Items,
-        providers: &Providers,
-        drops: &mut Vec<ItemStack>,
-        remainder: &dyn Fn(&ItemStack) -> Option<ItemStack>,
-    ) -> Option<bool> {
+    fn count_down_burn(&mut self) -> bool {
         let was_lit = self.lit_remaining > 0;
-        let mut lit = false;
-        if self.lit_remaining > 0 {
+        if was_lit {
             self.lit_remaining -= 1;
-            lit = self.lit_remaining > 0;
         }
-        let fast = self.kind.fast();
-        let has_ingredient = self.items[0].is_some();
-        let has_fuel = self.items[1].is_some();
-        if lit || has_fuel && has_ingredient {
-            if let Some(ingredient) = self.items[0].clone() {
-                if let Some(recipe) = recipes.cook(context, self.kind.recipe_type(), &ingredient) {
-                    let max = items.get(&recipe.result.item).map_or(64, |i| i.max_stack);
-                    let can_burn = match &self.items[2] {
-                        None => true,
-                        Some(out) => {
+        was_lit
+    }
+
+    fn prepare_tick<'r>(
+        &self,
+        context: &LoopContext,
+        recipes: &'r Recipes,
+        items: &Items,
+        was_lit: bool,
+        resolve: impl FnOnce(&CookingFuel) -> (i32, f32),
+    ) -> FurnaceTick<'r> {
+        let lit = self.lit_remaining > 0;
+        let action = match (&self.items[0], &self.items[1]) {
+            (None, _) if lit => CookAction::Reset,
+            (Some(input), fuel) if lit || fuel.is_some() => {
+                match recipes.cook(context, self.kind.recipe_type(), input) {
+                    None => CookAction::None,
+                    Some(recipe) => {
+                        let max = items.get(&recipe.result.item).map_or(64, |i| i.max_stack);
+                        if self.items[2].as_ref().is_none_or(|out| {
                             out.same_item_same_components(&recipe.result)
                                 && out.count + recipe.result.count <= max
-                        }
-                    };
-                    if can_burn {
-                        if !lit {
-                            let fuel = self.items[1].clone();
-                            let time = fuel
-                                .as_ref()
-                                .map_or(0, |f| providers.burn_time(items, f, fast));
-                            let speed = fuel
-                                .as_ref()
-                                .map_or(1.0, |f| providers.speed(items, f, fast));
-                            self.lit_remaining = time;
-                            self.lit_total = time;
-                            self.speed = speed;
-                            if self.cooking_total > 0 && self.cooking_timer < self.cooking_total {
-                                let ratio = self.cooking_timer as f32 / self.cooking_total as f32;
-                                self.cooking_total = total_time(recipe.time, self.speed);
-                                self.cooking_timer =
-                                    (ratio * self.cooking_total as f32).ceil() as i32;
-                            }
-                            if time > 0 {
-                                // AbstractFurnaceBlockEntity.consumeFuel: the fuel's crafting
-                                // remainder takes the slot once the stack is used up, else
-                                // it is dropped.
-                                if let Some(f) = self.items[1].as_mut() {
-                                    let remainder = remainder(f);
-                                    f.count -= 1;
-                                    if f.count == 0 {
-                                        self.items[1] = remainder;
-                                    } else if let Some(remainder) = remainder {
-                                        drops.push(remainder);
-                                    }
-                                }
-                                lit = true;
-                            }
-                        }
-                        if lit {
-                            self.cooking_timer += 1;
-                            if self.cooking_timer >= self.cooking_total {
-                                self.cooking_timer = 0;
-                                self.cooking_total = total_time(recipe.time, self.speed);
-                                match &mut self.items[2] {
-                                    Some(out) => out.count += recipe.result.count,
-                                    None => self.items[2] = Some(recipe.result.clone()),
-                                }
-                                *self
-                                    .recipes_used
-                                    .entry(recipe_used_key(&recipe.id))
-                                    .or_insert(0) += 1;
-                                // AbstractFurnaceBlockEntity.burn: drying a wet sponge fills
-                                // the bucket in the fuel slot.
-                                if self.items[0]
-                                    .as_ref()
-                                    .is_some_and(|i| &*i.item == "minecraft:wet_sponge")
-                                    && self.items[1]
-                                        .as_ref()
-                                        .is_some_and(|f| &*f.item == "minecraft:bucket")
-                                {
-                                    self.items[1] =
-                                        Some(ItemStack::new("minecraft:water_bucket", 1));
-                                }
-                                if let Some(i) = self.items[0].as_mut() {
-                                    i.count -= 1;
-                                    if i.count == 0 {
-                                        self.items[0] = None;
-                                    }
-                                }
-                            }
+                        }) {
+                            let ignition = (!lit).then(|| {
+                                fuel.as_ref()
+                                    .and_then(|stack| cooking_fuel::for_stack(items, stack))
+                                    .map_or((0, 1.0), resolve)
+                            });
+                            CookAction::Cook(recipe, ignition)
                         } else {
-                            self.cooking_timer = 0;
+                            CookAction::Reset
                         }
-                    } else {
-                        self.cooking_timer = 0;
                     }
                 }
-            } else {
-                self.cooking_timer = 0;
             }
-        } else if self.cooking_timer > 0 {
-            // Vanilla Mth.clamp is min(max(v, 0), max): saturates at a negative total instead of panicking.
-            self.cooking_timer = (self.cooking_timer - 2).max(0).min(self.cooking_total);
+            _ => CookAction::Decay,
+        };
+        FurnaceTick {
+            action,
+            was_lit,
+            lit,
         }
-        (was_lit != lit).then_some(lit)
     }
+
     fn idle(&self) -> bool {
         self.lit_remaining <= 0
             && self.cooking_timer <= 0
             && !(self.items[0].is_some() && self.items[1].is_some())
     }
 }
+/// The read phase of `AbstractFurnaceBlockEntity.serverTick` has finished;
+/// apply its decision to the same furnace before processing another tick.
+pub struct FurnaceTick<'r> {
+    action: CookAction<'r>,
+    was_lit: bool,
+    lit: bool,
+}
+
+enum CookAction<'r> {
+    None,
+    Reset,
+    Decay,
+    Cook(&'r crate::crafting::Cooking, Option<(i32, f32)>),
+}
+
+pub struct FurnaceTickResult {
+    /// `Some(lit)` when the block's LIT property must change.
+    pub lit: Option<bool>,
+    /// The tick actually consumed a fuel, not merely wrote a duration.
+    pub consumed_fuel: bool,
+}
+
+impl FurnaceTick<'_> {
+    pub fn apply(
+        self,
+        furnace: &mut Furnace,
+        drops: &mut Vec<ItemStack>,
+        remainder: impl FnOnce(&ItemStack) -> Option<ItemStack>,
+    ) -> FurnaceTickResult {
+        let mut lit = self.lit;
+        let mut consumed_fuel = false;
+        match self.action {
+            CookAction::None => {}
+            CookAction::Reset => furnace.cooking_timer = 0,
+            CookAction::Decay if furnace.cooking_timer > 0 => {
+                // Mth.clamp is min(max(v, 0), max), also for negative totals.
+                furnace.cooking_timer = (furnace.cooking_timer - 2)
+                    .max(0)
+                    .min(furnace.cooking_total);
+            }
+            CookAction::Decay => {}
+            CookAction::Cook(recipe, ignition) => {
+                if let Some((time, speed)) = ignition {
+                    furnace.lit_remaining = time;
+                    furnace.lit_total = time;
+                    furnace.speed = speed;
+                    if furnace.cooking_total > 0 && furnace.cooking_timer < furnace.cooking_total {
+                        let ratio = furnace.cooking_timer as f32 / furnace.cooking_total as f32;
+                        furnace.cooking_total = total_time(recipe.time, speed);
+                        furnace.cooking_timer =
+                            (ratio * furnace.cooking_total as f32).ceil() as i32;
+                    }
+                    if time > 0 {
+                        // consumeFuel: leave the remainder in the emptied slot, or drop it.
+                        if let Some(fuel) = furnace.items[1].as_mut() {
+                            let remainder = remainder(fuel);
+                            fuel.count -= 1;
+                            if fuel.count == 0 {
+                                furnace.items[1] = remainder;
+                            } else if let Some(remainder) = remainder {
+                                drops.push(remainder);
+                            }
+                            consumed_fuel = true;
+                        }
+                        lit = true;
+                    }
+                }
+                if lit {
+                    furnace.cooking_timer += 1;
+                    if furnace.cooking_timer >= furnace.cooking_total {
+                        furnace.cooking_timer = 0;
+                        furnace.cooking_total = total_time(recipe.time, furnace.speed);
+                        match &mut furnace.items[2] {
+                            Some(out) => out.count += recipe.result.count,
+                            None => furnace.items[2] = Some(recipe.result.clone()),
+                        }
+                        *furnace
+                            .recipes_used
+                            .entry(recipe_used_key(&recipe.id))
+                            .or_insert(0) += 1;
+                        // burn: drying a wet sponge fills a bucket in the fuel slot.
+                        if furnace.items[0]
+                            .as_ref()
+                            .is_some_and(|s| &*s.item == "minecraft:wet_sponge")
+                            && furnace.items[1]
+                                .as_ref()
+                                .is_some_and(|s| &*s.item == "minecraft:bucket")
+                        {
+                            furnace.items[1] = Some(ItemStack::new("minecraft:water_bucket", 1));
+                        }
+                        if let Some(input) = furnace.items[0].as_mut() {
+                            input.count -= 1;
+                            if input.count == 0 {
+                                furnace.items[0] = None;
+                            }
+                        }
+                    }
+                } else {
+                    furnace.cooking_timer = 0;
+                }
+            }
+        }
+        FurnaceTickResult {
+            lit: (self.was_lit != lit).then_some(lit),
+            consumed_fuel,
+        }
+    }
+}
+
+/// Loot conditions in `BaseContainerBlockEntity.getLootContext`: the live
+/// furnace's block state and container, its centre as origin, no entity or tool.
+pub struct FurnaceConditions<'a> {
+    pub world: &'a dyn crate::advancements::World,
+    pub pos: [i32; 3],
+}
+
+impl<'v> crate::providers::ConditionContext<'v> for FurnaceConditions<'v> {
+    fn named(&self, id: &str) -> Option<std::borrow::Cow<'v, serde_json::Value>> {
+        self.world
+            .predicate(&crate::advancements::full(id))
+            .map(std::borrow::Cow::Borrowed)
+    }
+
+    fn valid(&self, condition: &serde_json::Value) -> bool {
+        crate::advancements::references_valid(condition, self.world)
+    }
+
+    fn leaf(&mut self, condition: &serde_json::Value) -> bool {
+        use crate::advancements as adv;
+        let context = adv::Entities {
+            this: None,
+            target: None,
+            interacting: None,
+            tool: None,
+            block_pos: Some(self.pos),
+            origin: self.pos.map(|axis| f64::from(axis) + 0.5),
+        };
+        condition.is_null() || adv::condition_leaf(condition, &context, self.world)
+    }
+}
+
 fn total_time(time: u32, speed: f32) -> i32 {
     if speed > 0.0 {
         (time as f32 / speed).ceil() as i32
@@ -200,9 +277,31 @@ fn total_time(time: u32, speed: f32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{containers::FurnaceKind, items::Items};
-    use sunrise_world::loot::PackOverlay;
+    use crate::{
+        containers::FurnaceKind,
+        items::Items,
+        providers::{Evaluation, Providers},
+    };
+    use sunrise_core::random::{LegacyRandom, LevelRandom};
+
+    pub(super) fn tick(
+        furnace: &mut Furnace,
+        context: &LoopContext,
+        recipes: &Recipes,
+        items: &Items,
+        providers: &Providers,
+        drops: &mut Vec<ItemStack>,
+        remainder: &dyn Fn(&ItemStack) -> Option<ItemStack>,
+    ) -> Option<bool> {
+        let was_lit = furnace.count_down_burn();
+        let plan = furnace.prepare_tick(context, recipes, items, was_lit, |fuel| {
+            Evaluation::new(providers, &mut LevelRandom::for_level(LegacyRandom::new(0)))
+                .cooking_fuel(fuel, &mut |_: &serde_json::Value| false)
+        });
+        plan.apply(furnace, drops, remainder).lit
+    }
     use std::{collections::HashMap, fs};
+    use sunrise_world::loot::PackOverlay;
 
     #[test]
     fn a_furnace_is_idle_only_while_its_tick_changes_nothing() {
@@ -299,9 +398,15 @@ mod tests {
                 let mut drops = Vec::new();
                 assert!(!f.idle());
                 assert_eq!(
-                    f.tick(context, &recipes, &items, &providers, &mut drops, &|s| {
-                        crate::crafting::CraftingRemainder::crafting_remainder(&items, s)
-                    }),
+                    tick(
+                        &mut f,
+                        context,
+                        &recipes,
+                        &items,
+                        &providers,
+                        &mut drops,
+                        &|s| { crate::crafting::CraftingRemainder::crafting_remainder(&items, s) }
+                    ),
                     None
                 );
                 assert!(drops.is_empty());
@@ -374,9 +479,15 @@ mod tests {
             );
             let mut drops = Vec::new();
             assert_eq!(
-                f.tick(context, &recipes, &items, &providers, &mut drops, &|s| {
-                    crate::crafting::CraftingRemainder::crafting_remainder(&items, s)
-                }),
+                tick(
+                    &mut f,
+                    context,
+                    &recipes,
+                    &items,
+                    &providers,
+                    &mut drops,
+                    &|s| { crate::crafting::CraftingRemainder::crafting_remainder(&items, s) }
+                ),
                 eligible.then_some(true),
                 "output {before:?}"
             );
@@ -384,9 +495,15 @@ mod tests {
             if eligible {
                 assert!(f.items[1].is_none());
                 for _ in 1..200 {
-                    f.tick(context, &recipes, &items, &providers, &mut drops, &|s| {
-                        crate::crafting::CraftingRemainder::crafting_remainder(&items, s)
-                    });
+                    tick(
+                        &mut f,
+                        context,
+                        &recipes,
+                        &items,
+                        &providers,
+                        &mut drops,
+                        &|s| crate::crafting::CraftingRemainder::crafting_remainder(&items, s),
+                    );
                 }
                 assert_eq!(f.items[0].as_ref().unwrap().count, 2);
                 assert_eq!(
@@ -430,7 +547,8 @@ mod tests {
             assert!(before.idle(), "{before:?}");
             let mut after = before.clone();
             let mut drops = Vec::new();
-            let lit = after.tick(
+            let lit = tick(
+                &mut after,
                 crate::test_resources::server_loop_context(),
                 &recipes,
                 &items,
@@ -446,7 +564,8 @@ mod tests {
         assert!(!busy.idle());
         let before = format!("{busy:?}");
         assert_eq!(
-            busy.tick(
+            tick(
+                &mut busy,
                 crate::test_resources::server_loop_context(),
                 &recipes,
                 &items,
@@ -478,7 +597,8 @@ mod tests {
             recipes_used: HashMap::new(),
         };
         let mut drops = Vec::new();
-        let lit = furnace.tick(
+        let lit = tick(
+            &mut furnace,
             crate::test_resources::server_loop_context(),
             &recipes,
             &items,
@@ -525,6 +645,7 @@ mod tests {
 
 #[cfg(test)]
 mod crafting_remainder_tests {
+    use super::tests::tick;
     use super::*;
     // A five-use tool: using it at damage four breaks it.
     fn worn(stack: &ItemStack) -> Option<ItemStack> {
@@ -543,20 +664,38 @@ mod crafting_remainder_tests {
                 damage: 2,
                 ..ItemStack::new("test:cell", 1)
             });
-            let first = recipes.remainders("missing", &grid, size, &worn);
+            let first = recipes.remainders(
+                crate::test_resources::server_loop_context(),
+                "missing",
+                &grid,
+                size,
+                &worn,
+            );
             assert_eq!(
                 first[cell].as_ref().map(|s| (s.damage, s.count)),
                 Some((3, 1))
             );
             assert_eq!(first.iter().flatten().count(), 1);
-            let second = recipes.remainders("missing", &first, size, &worn);
+            let second = recipes.remainders(
+                crate::test_resources::server_loop_context(),
+                "missing",
+                &first,
+                size,
+                &worn,
+            );
             assert_eq!(
                 second[cell].as_ref().map(|s| (s.damage, s.count)),
                 Some((4, 1))
             );
             assert!(
                 recipes
-                    .remainders("missing", &second, size, &worn)
+                    .remainders(
+                        crate::test_resources::server_loop_context(),
+                        "missing",
+                        &second,
+                        size,
+                        &worn
+                    )
                     .iter()
                     .all(Option::is_none)
             );
@@ -570,7 +709,13 @@ mod crafting_remainder_tests {
             ..ItemStack::new("test:cell", 1)
         };
         let grid = [Some(stack.clone()), None, None, None];
-        let crafted = recipes.remainders("missing", &grid, 2, &worn);
+        let crafted = recipes.remainders(
+            crate::test_resources::server_loop_context(),
+            "missing",
+            &grid,
+            2,
+            &worn,
+        );
         let mut furnace = crate::containers::Furnace {
             kind: crate::containers::FurnaceKind::Furnace,
             items: [Some(ItemStack::new("test:ore", 1)), Some(stack), None],
@@ -582,7 +727,8 @@ mod crafting_remainder_tests {
             recipes_used: Default::default(),
         };
         let mut drops = Vec::new();
-        furnace.tick(
+        tick(
+            &mut furnace,
             crate::test_resources::server_loop_context(),
             &recipes,
             &items,

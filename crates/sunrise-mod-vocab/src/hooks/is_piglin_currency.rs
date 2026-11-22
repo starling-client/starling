@@ -19,6 +19,8 @@ pub trait Hooks {
     /// no such part costs one table lookup. The contract beyond the method's name and
     /// parameters is Sunrise's reading, not checked against NeoForge's.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         scope = "item",
@@ -26,5 +28,5 @@ pub trait Hooks {
         host = "read",
         neoforge = "IItemExtension.isPiglinCurrency"
     )]
-    fn is_piglin_currency();
+    fn is_piglin_currency(stack: &ItemStack, currency: &mut bool);
 }

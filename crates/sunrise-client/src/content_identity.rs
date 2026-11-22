@@ -1,7 +1,6 @@
 //! Identity of the ordered block-state registry used by chunk packets, and of
 //! the item, mob effect, fluid, entity type, menu and custom statistic registries
 //! once mods add to them. Their packets carry numeric network IDs.
-use sunrise_protocol::registry::Builtin;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use sha2::{Digest, Sha256};
 use std::{
@@ -10,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
+use sunrise_protocol::{item::consume_effects, registry::Builtin};
 
 pub const CHANNEL: &str = "sunrise:block_registry";
 /// Decode the optional identity challenge; an empty body requests our digest.
@@ -31,6 +31,7 @@ pub const MISMATCH: &str =
 /// Registries that a vanilla client cannot validate before reading their IDs.
 pub(crate) fn requires_sunrise() -> bool {
     sunrise_protocol::item::custom::entries().next().is_some()
+        || consume_effects::has_custom_types()
         || !mod_api::__private::custom_stat_declarations().is_empty()
 }
 

@@ -5,16 +5,16 @@
 //! knockback, sounds, contact damage, a TNT fuse), shearing the block out,
 //! buckets, and the outer/inner models and their render scale.
 use super::{
-    Damage, DamageKind, Mob, MobEvent, MobWorld,
+    Damage, DamageKind, Mob, MobEvent, MobWorld, NamedDamage,
     control::MoveKind,
     goals::{Cx, Goal, JUMP, LOOK, MOVE, goal_clone},
 };
 use crate::health::DamageLevel;
-use sunrise_core::{geometry::Vec3, random::RandomSource};
-use sunrise_world::attributes::{Modifier, Operation};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
+use sunrise_core::{geometry::Vec3, random::RandomSource};
+use sunrise_world::attributes::{Modifier, Operation};
 
 // Sulfur cube state (on top of `cube`'s `size`, `counter` jump delay,
 // `flag` aggressive, `flag2` was on ground, `vector[0]` direction):
@@ -402,6 +402,7 @@ mod knockback_sync_tests {
     /// `TemptGoal` scales its range by the player's visibility: an invisible
     /// player five blocks away does not tempt a sulfur cube.
     #[test]
+    #[ignore = "daily"]
     fn an_invisible_player_tempts_a_sulfur_cube_only_within_two_blocks() {
         use crate::mobs::goals::Cx;
         use crate::mobs::world::{test_player, with_test_world};
@@ -447,8 +448,8 @@ mod knockback_sync_tests {
 pub(crate) mod adopt_body_tests {
     use super::*;
     use crate::mobs::{Mob, Species};
-    use sunrise_world::attributes::entity::{Catalog, EntityAttributes};
     use std::sync::Arc;
+    use sunrise_world::attributes::entity::{Catalog, EntityAttributes};
 
     const KR: &str = "minecraft:knockback_resistance";
     const FRICTION: &str = "minecraft:friction_modifier";
@@ -687,6 +688,7 @@ mod burning_arrow_tests {
     /// the arrow's knock, then the fuse lit: the next tick plays
     /// `entity.tnt.primed`, then the archetype's hit sound.
     #[test]
+    #[ignore = "daily"]
     fn a_knock_and_a_lit_fuse_both_sound() {
         let mut test_level = crate::health::TestLevel::new(0);
         let level = &mut test_level.level();
@@ -715,6 +717,7 @@ mod burning_arrow_tests {
     /// crosses the baby boundary: a loaded adult of size 1 and a big baby
     /// keep their size, and only a baby growing up becomes size 2 (#14916).
     #[test]
+    #[ignore = "daily"]
     fn only_growing_up_makes_a_cube_size_2() {
         let mut events = Vec::new();
         let ran = crate::mobs::world::with_test_world(&[], |w, _| {
@@ -862,7 +865,7 @@ pub fn register(m: &mut Mob) {
 /// size 1 makes an adult a baby.
 pub fn set_size(m: &mut Mob, size: i32, update_health: bool) {
     use super::finalize::{Attr, set_base};
-    let size = size.clamp(1, 127);
+    let size = size.clamp(*super::cube::SIZES.start(), *super::cube::SIZES.end());
     m.extra.size = size;
     set_base(m, Attr::MaxHealth, f64::from(4 * size));
     set_base(
@@ -959,6 +962,9 @@ pub fn prime_with_fuse(m: &mut Mob, imminent: bool, fuse: i32) -> bool {
 /// `#sulfur_cube_with_block_immune_to`: the damage a cube with a block shrugs off and is only
 /// knocked by.
 pub fn immune_to(source: &Damage) -> bool {
+    if let DamageKind::Named(named) = source.kind {
+        return named.has(NamedDamage::SULFUR_CUBE_WITH_BLOCK_IMMUNE_TO);
+    }
     matches!(
         source.kind,
         DamageKind::PlayerAttack
@@ -1001,7 +1007,7 @@ pub fn accepts_damage(
     if can_explode(m) && !primed(m) {
         if source.is_fire() {
             prime(m, false);
-        } else if matches!(source.kind, DamageKind::Explosion | DamageKind::Fireworks) {
+        } else if source.kind.is_explosion() {
             prime(m, true);
         }
     }
@@ -1339,7 +1345,7 @@ fn player_push(m: &mut Mob, p: &super::PlayerView, w: &MobWorld, events: &mut Ve
     let speed = (p.velocity.length() * 2.0 * f64::from(0.3f32)).clamp(0.0, 0.5);
     let push = Vec3::new(
         dx / len * kb * speed,
-        if m.on_ground {
+        if m.ground.on_ground {
             kb * f64::from(0.3f32) * speed
         } else {
             0.0
@@ -1487,7 +1493,7 @@ impl Goal for SearchForItems {
     }
 }
 /// `addAdditionalSaveData`: the cube's size, the timers and the fuse.
-pub fn to_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn to_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     use sunrise_core::nbt::Tag;
     map.insert("Size".into(), Tag::Int(m.extra.size.max(1) - 1));
     map.insert("wasOnGround".into(), Tag::Byte(i8::from(m.extra.flag2)));
@@ -1497,13 +1503,6 @@ pub fn to_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
         Tag::Byte(i8::from(m.extra.scratch[3] != 0)),
     );
     map.insert("fuse".into(), Tag::Int(fuse(m)));
-    for (key, value) in [
-        ("Age", Tag::Int(m.extra.age)),
-        ("AgeLocked", Tag::Byte(i8::from(m.extra.age_locked))),
-    ] {
-        map.insert(key.into(), value);
-    }
-    map.entry("ForcedAge".into()).or_insert(Tag::Int(0));
 }
 /// `SulfurCube.readAdditionalSaveData`: size precedes the living health default.
 pub fn from_nbt(m: &mut Mob, tag: &sunrise_core::nbt::Tag) {
@@ -1530,9 +1529,8 @@ pub fn from_nbt(m: &mut Mob, tag: &sunrise_core::nbt::Tag) {
             }
         }
     }
-    // The saved Health, not the one the living load's Health Boost clamp cut
-    // to the unsized maximum: vanilla sizes the cube before `setHealth`.
-    m.health = crate::save::float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
+    // The saved Health, clamped to the sized maximum: vanilla sizes the cube before `setHealth`.
+    m.health = crate::entity_nbt::loaded_health(m, crate::save::float(tag.get("Health")));
     m.extra.flag2 = int("wasOnGround").unwrap_or(0) != 0;
     m.extra.ints[3] = int("pickup_timer").unwrap_or(0);
     m.extra.scratch[3] = int("from_bucket").unwrap_or(0);
@@ -1546,8 +1544,8 @@ pub fn from_nbt(m: &mut Mob, tag: &sunrise_core::nbt::Tag) {
 mod tnt_rule_tests {
     use super::*;
     use crate::mobs::{Damage, DamageKind, Mob, Species};
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     fn tnt_cube() -> Mob {
         test_archetype_items();
@@ -1559,6 +1557,7 @@ mod tnt_rule_tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn mob_tick_counts_the_fuse_but_keeps_noai_cooldowns_still() {
         let mut test_level = crate::health::TestLevel::new(0);
         let level = &mut test_level.level();
@@ -1600,6 +1599,28 @@ mod tnt_rule_tests {
     }
 
     #[test]
+    fn named_damage_tags_drive_block_immunity_and_explosive_fuse() {
+        let mut test_level = crate::health::TestLevel::new(0);
+        let level = &mut test_level.level();
+        let source = |tags| Damage::of(DamageKind::Named(NamedDamage::new("example:hit", tags)));
+        let mut untagged = tnt_cube();
+        assert!(accepts_damage(&mut untagged, level, &source(0), 5.0));
+        assert!(!primed(&untagged));
+        let mut tagged = tnt_cube();
+        assert!(!accepts_damage(
+            &mut tagged,
+            level,
+            &source(
+                NamedDamage::IS_EXPLOSION
+                    | NamedDamage::SULFUR_CUBE_WITH_BLOCK_IMMUNE_TO
+                    | NamedDamage::NO_KNOCKBACK,
+            ),
+            5.0,
+        ));
+        assert!(primed(&tagged));
+    }
+
+    #[test]
     fn no_fuse_is_lit_while_tnt_does_not_explode() {
         let mut test_level = crate::health::TestLevel::new(0);
         let level = &mut test_level.level();
@@ -1619,6 +1640,7 @@ mod tnt_rule_tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_fuse_running_out_while_tnt_does_not_explode_makes_no_blast() {
         // tickFuse: the blast (and its source) only with tnt_explodes, the
         // discard either way.
@@ -1648,8 +1670,8 @@ mod tnt_rule_tests {
 mod fuse_anim_tests {
     use super::*;
     use crate::mobs::{Mob, Species};
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     fn cube() -> Mob {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
@@ -1892,6 +1914,7 @@ mod mob_contact_tests {
     use std::sync::Arc;
 
     #[test]
+    #[ignore = "daily"]
     fn mob_tick_contacts_only_overlapping_pushable_mobs_with_a_hot_body() {
         let mut test_level = crate::health::TestLevel::new(0);
         let level = &mut test_level.level();

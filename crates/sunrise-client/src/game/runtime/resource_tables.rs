@@ -1,6 +1,6 @@
 //! The game's shared read-only tables: `Resources` (blocks, items, recipes, mob types, biomes),
 //! `UiResources` and `PackResources`.
-use super::*;
+use super::{api_values::TryIntoApi, *};
 use std::path::Path;
 
 pub(super) fn load_animate_tables(
@@ -48,6 +48,9 @@ impl Resources {
     }
     pub(super) fn items(&self) -> &Items {
         &self.rest().items
+    }
+    pub(super) fn shared_items(&self) -> Arc<Items> {
+        self.rest().items.clone()
     }
     pub(super) fn recipes(&self) -> &Recipes {
         &self.rest().recipes
@@ -148,11 +151,43 @@ pub struct UiResources {
     pub panorama: Arc<sunrise_client::gfx::panorama::Faces>,
     /// The title screen's splashes (`sunrise_client::splashes::pool`).
     pub splashes: Arc<str>,
+<<<<<<< sync-sunrise-1
     /// Starling: what it was read from, the packs over the game's own, whose sprites' nine-slice
     /// metadata and translations the title takes with it (`StartupMenu::set_root`). The loader
     /// names only the game's own folder, and a 20 x 20 pack button nine-sliced as vanilla's
     /// 200 x 20 one stretched its ends tenfold. None where it was read from no source.
     pub source: Option<sunrise_assets::resource_source::ResourceSource>,
+=======
+    /// The `Text` of each plain string mods draw (`DrawContext::text`).
+    pub plain_texts: PlainTexts,
+}
+
+/// The `Text` of each plain string a mod draws by `&str` (`DrawContext::text`), kept so drawing
+/// the same string again builds no new `Text`. It holds at most [`PlainTexts::MAX`] strings and
+/// starts over past that, so text that changes every frame can't grow it.
+#[derive(Default)]
+pub struct PlainTexts(
+    std::cell::RefCell<std::collections::HashMap<Box<str>, sunrise_client::text::Text>>,
+);
+
+impl PlainTexts {
+    const MAX: usize = 256;
+    /// `draw` with the `Text` of `text`, made the first time it is asked for.
+    pub(in crate::game) fn with<R>(
+        &self,
+        text: &str,
+        draw: impl FnOnce(&sunrise_client::text::Text) -> R,
+    ) -> R {
+        let mut texts = self.0.borrow_mut();
+        if !texts.contains_key(text) {
+            if texts.len() >= Self::MAX {
+                texts.clear();
+            }
+            texts.insert(text.into(), sunrise_client::text::Text::literal(text));
+        }
+        draw(&texts[text])
+    }
+>>>>>>> sunrise/main
 }
 
 impl Game<'_> {
@@ -162,10 +197,22 @@ impl Game<'_> {
     }
 }
 
+/// Whether the HUD atlas packs the pool of dynamic texture slots: whenever a client mod is
+/// loaded, since any of them can call `ClientHost::create_dynamic_texture`, with
+/// no mixin and no opt-in (#4437). A game with no mod packs no slot and its atlas does not grow.
+/// Read where the atlas is built: at the first load and on a resource reload.
+pub(in crate::game) fn dynamic_texture_pool() -> bool {
+    !mod_api::__private::mods().is_empty()
+}
+
 impl UiResources {
-    /// The resolved resource generation, including the base layer and pack filters.
+    /// The resolved resource generation, including the base layer and pack filters, over the
+    /// game's own resources at `vanilla` (which tell the packs' core shaders from the game's).
     /// Its splash pool is empty until `with_splashes`.
-    pub fn load(root: &sunrise_assets::resource_source::ResourceSource) -> Result<Self> {
+    pub fn load(
+        root: &sunrise_assets::resource_source::ResourceSource,
+        vanilla: &Path,
+    ) -> Result<Self> {
         // The title screen waits for both: the panorama's six faces decode
         // beside the atlas.
         std::thread::scope(|scope| {
@@ -174,9 +221,10 @@ impl UiResources {
                     sunrise_client::gfx::panorama::Faces::load(root, root)
                 })
             });
-            let mod_image = sunrise_client_render::render_slots::world_drawn_hooked();
+            let pool = dynamic_texture_pool();
+            let game = sunrise_assets::resource_source::ResourceSource::directory(vanilla.into());
             let atlas = startup::time("ui.atlas", || {
-                HudAtlas::build_over_with_image(root, root, mod_image)
+                HudAtlas::build_over_with_dynamic_textures(root, root, &game, pool)
             });
             let panorama = panorama
                 .join()
@@ -186,6 +234,7 @@ impl UiResources {
                 panorama: Arc::new(panorama),
                 source: Some(root.clone()),
                 splashes: Arc::from(""),
+                plain_texts: PlainTexts::default(),
             })
         })
     }
@@ -207,6 +256,7 @@ impl UiResources {
             panorama: Arc::new(sunrise_client::gfx::panorama::Faces::colour([0; 4])),
             source: Some(root.clone()),
             splashes: Arc::from(""),
+            plain_texts: PlainTexts::default(),
         })
     }
 }
@@ -242,15 +292,7 @@ impl PackResources {
             render.model_library.clone(),
             item_data,
         )?;
-        Ok(Self::assemble(
-            root,
-            assets,
-            render,
-            tables,
-            item_renderer,
-            biomes,
-            light,
-        ))
+        Self::assemble(root, assets, render, tables, item_renderer, biomes, light)
     }
     /// The workers' context over `biomes`: this pack's own when `biomes` is
     /// the table it was built with, else the same parts with that table.
@@ -266,10 +308,12 @@ impl PackResources {
             biomes,
             light: old.light.clone(),
             hidden_states: old.hidden_states.clone(),
+            part_tables: old.part_tables.clone(),
         })
     }
     /// The pack tables over their parts, which `load_resources` builds on
-    /// separate workers.
+    /// separate workers. A cloud texture vanilla refuses fails it, as it fails vanilla's reload
+    /// (`sunrise_client::clouds::load`).
     pub(super) fn assemble(
         root: &sunrise_assets::resource_source::ResourceRoot,
         assets: Arc<Assets>,
@@ -278,14 +322,22 @@ impl PackResources {
         item_renderer: sunrise_client::item_render::ItemRenderer,
         biomes: Arc<Biomes>,
         light: Arc<LightTables>,
-    ) -> Self {
+    ) -> Result<Self> {
+        let water_overlay_state = assets
+            .registry
+            .default_state("minecraft:water")
+            .ok_or("block registry is missing the default minecraft:water state")?
+            .try_into_api()
+            .map_err(|e| format!("cannot bind the default minecraft:water state: {e:?}"))?;
         // These pack-local resources do not depend on one another. Decode the
         // images and language map together so a custom-sky pack cannot put all
         // of the pack assembly on the critical path behind its own files.
         let (names, clouds, forcefield, custom_sky, environments, polytone_particles) =
             std::thread::scope(|scope| {
                 let names = named_scope(scope, "pack.names", || Names::load(root.source()));
-                let clouds = named_scope(scope, "pack.clouds", || load_clouds(root.source()));
+                let clouds = named_scope(scope, "pack.clouds", || {
+                    sunrise_client::clouds::load(root.source())
+                });
                 let forcefield =
                     named_scope(scope, "pack.forcefield", || load_forcefield(root.source()));
                 let custom_sky = named_scope(scope, "pack.custom_sky", || {
@@ -305,6 +357,7 @@ impl PackResources {
                     particles.join().unwrap(),
                 )
             });
+        let clouds = clouds.map_err(|e| e.to_string())?;
         let polytone_post = sunrise_client::polytone_post::PolytonePost::read(
             root.source(),
             sunrise_client::packs::polytone_configs(&sunrise_client::packs::Source::Opened(
@@ -312,7 +365,9 @@ impl PackResources {
             )),
         )
         .map(Arc::new);
-        Self {
+        // Each item's own default name, which the hover name reads as `getDescriptionId` does.
+        let names = names.with_item_names(&item_renderer.models.prototypes, assets.registry);
+        Ok(Self {
             layer_names: Arc::new(sunrise_client::block_sprites::texture_names(
                 &render.sprite_layers,
             )),
@@ -323,15 +378,18 @@ impl PackResources {
                 biomes,
                 light,
                 hidden_states: Arc::from([]),
+                part_tables: Default::default(),
             }),
             block_registries: native_block_states::block_registries(assets.registry),
             assets,
+            water_overlay_state,
             render,
             item_renderer: Arc::new(item_renderer),
             source: root.source().clone(),
             data_source: root.data().clone(),
             data_changes: root.data_changes().clone(),
             additional_data: Arc::from([]),
+            mod_layers: root.mod_layers().clone(),
             names: Arc::new(names),
             clouds: Arc::new(clouds),
             forcefield: Arc::new(forcefield),
@@ -340,7 +398,7 @@ impl PackResources {
             polytone_particles,
             polytone_post,
             polytone_colors: Arc::new(read_colors(root)),
-        }
+        })
     }
 }
 
@@ -391,4 +449,21 @@ fn read_colors(
     sunrise_client::pack_palette::set(&colors);
     sunrise_client::brewing::set_pack_colors(colors.effects.clone());
     colors
+}
+
+#[cfg(test)]
+mod plain_text_tests {
+    use super::PlainTexts;
+
+    #[test]
+    fn a_string_drawn_again_reuses_its_text_and_the_store_stays_bounded() {
+        let texts = PlainTexts::default();
+        let first = texts.with("Jump", |t| t as *const _);
+        assert_eq!(texts.with("Jump", |t| t as *const _), first);
+        assert_eq!(texts.with("Jump", |t| t.plain()), "Jump");
+        for i in 0..PlainTexts::MAX * 2 {
+            texts.with(&i.to_string(), |_| ());
+        }
+        assert!(texts.0.borrow().len() <= PlainTexts::MAX);
+    }
 }

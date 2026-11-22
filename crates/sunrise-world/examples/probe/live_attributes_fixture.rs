@@ -1,4 +1,11 @@
 use crate::support::common::f64_hex;
+use serde_json::Value;
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+    sync::Arc,
+};
 use sunrise_world::{
     attribute_map::ValueKind,
     attributes::{
@@ -7,13 +14,6 @@ use sunrise_world::{
         live::{Error, Handle, LiveAttributes},
     },
     effect_attribute_modifiers::{self as effects, Definitions, Template},
-};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{self, Write},
-    path::Path,
-    sync::Arc,
 };
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())

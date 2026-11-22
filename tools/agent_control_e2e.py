@@ -213,7 +213,10 @@ def scenario(d, out):
     d('wait_ready', seconds=400)
     state = d('state')
     assert state['gamemode'] == 'survival' and state['player']['health'] > 0, state
-    d('command', command='time set day')
+    reply = d('command', command='time set day')
+    # `command` replies with the command's own outcome: `ok` is delivery, `success` the command's
+    # success, `result` its integer result (the clock time here).
+    assert reply['ok'] and reply['success'] and isinstance(reply['result'], int), reply
     # The spawn is random within the spawn radius, on the first full top face below the
     # MOTION_BLOCKING height (PlayerSpawnFinder.getLevelRespawnPos): a tree's leaves too, too high
     # for goto's drops.
@@ -318,8 +321,14 @@ def scenario(d, out):
     planks_before = d('inventory')['counts'].get(planks_id, 0)
     d('drop')
     d('wait', ticks=5)
-    found = d('command', command=f'clear @s {planks_id} 0')['chat']
+    reply = d('command', command=f'clear @s {planks_id} 0')
+    found = reply['chat']
     assert any(f'Found {planks_before - 1} ' in line for line in found), (planks_before, found)
+    # `clear` with a count of 0 only counts: it succeeds with the number of items found.
+    assert reply['success'] and reply['result'] == planks_before - 1, reply
+    # A command that never ran (unknown): delivered, not successful, no result.
+    reply = d('command', command='nosuchcommand')
+    assert reply['ok'] and not reply['success'] and reply['result'] is None, reply
     return {'tree': base, 'log': log_id, 'placed': target}
 
 

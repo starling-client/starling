@@ -1,9 +1,6 @@
 //! `KineticWeapon.STREAM_CODEC` at the saved-component / wire boundary.
-use sunrise_protocol::{
-    buf::{Reader, Writer},
-    item::Component,
-    registry::Builtin,
-};
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_protocol::{buf::Reader, item::Component, registry::Builtin};
 use {
     sunrise_core::{identifier::Identifier, nbt::Tag},
     sunrise_world::datafix::dynamic::as_number,

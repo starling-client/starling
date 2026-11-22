@@ -9,10 +9,10 @@ use super::super::{
 };
 use super::{GoalCx, Resolved};
 use crate::mobs::Mob;
-use mod_api::{EntityRef, MobCategory};
+use mod_api::{EntityRef, EntityTags, MobCategory};
 
 impl GoalCx<'_, '_> {
-    pub(super) fn r_entity_tags(&self, entity: EntityRef) -> Option<Vec<String>> {
+    pub(super) fn r_entity_tags(&self, entity: EntityRef) -> Option<EntityTags<'_>> {
         self.w.goal_host?.mob_tags(self.entity_mob(entity)?)
     }
 
@@ -119,9 +119,7 @@ impl GoalCx<'_, '_> {
     }
 
     pub(super) fn r_entity_fire_immune(&self, entity: EntityRef) -> Option<bool> {
-        Some(crate::mobs::spawn_rules::fire_immune(
-            self.entity_mob(entity)?.species(),
-        ))
+        Some(self.entity_mob(entity)?.fire_immune())
     }
 
     pub(super) fn r_entity_fire_ticks(&self, entity: EntityRef) -> Option<i32> {

@@ -1,0 +1,73 @@
+name: Rebuild reviewed native mod source
+
+on:
+  schedule:
+    - cron: '42 10 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact reviewed mod version (e.g. 0.1.0)
+        type: string
+        required: true
+      target:
+        description: Newer stable Sunrise tag on the source line (e.g. 26.3-0.1.1)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: vars.SUNRISE_MOD_RELEASES == 'true' && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-22.04
+    outputs:
+      selected: ${{ steps.plan.outputs.selected }}
+      author_tag: ${{ steps.plan.outputs.author_tag }}
+      commit: ${{ steps.plan.outputs.commit }}
+      tool_commit: ${{ steps.plan.outputs.tool_commit }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /sunrise-mod.toml
+      - uses: ./.github/actions/sunrise-release-tool
+      - name: Find an eligible build and verify the original source package
+        id: plan
+        env:
+          SUNRISE_MOD_PUBLIC_KEY: ${{ vars.SUNRISE_MOD_PUBLIC_KEY }}
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          python "$SUNRISE_RELEASE_SCRIPTS/sunrise_release_github.py" rebuild-plan \
+            --work "$RUNNER_TEMP/sunrise-release" --repo "$GITHUB_REPOSITORY" \
+            --commit "$(git rev-parse HEAD)" --version "$VERSION" --target "$TARGET"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.plan.outputs.selected == 'true'
+        with:
+          name: sunrise-release-plan
+          path: ${{ runner.temp }}/sunrise-release/plan/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  rebuild:
+    needs: plan
+    if: needs.plan.outputs.selected == 'true'
+    concurrency:
+      group: sunrise-mod-publication-${{ needs.plan.outputs.author_tag }}
+      cancel-in-progress: false
+    uses: ./.github/workflows/sunrise-release-jobs.yml
+    permissions:
+      actions: read
+      contents: write
+    with:
+      commit: ${{ needs.plan.outputs.commit }}
+      tool_commit: ${{ needs.plan.outputs.tool_commit }}
+      matrix: ${{ needs.plan.outputs.matrix }}
+      rebuild: true

@@ -7,12 +7,13 @@
 //! wave); a raid reads them and the world through [`RaidLevel`] and asks the
 //! game for its side effects with [`Action`]s, so the game and the
 //! differential test (`tools/test_raid_parity.py`) run the same rules.
+use std::collections::BTreeMap;
 use sunrise_core::nbt::{JavaString, Tag};
 use sunrise_core::{
     geometry::trig,
+    java_hash_set::{JavaHashSet, JavaUuid},
     random::{LegacyRandom, RandomSource},
 };
-use std::collections::BTreeMap;
 
 pub const MAX_OMEN_LEVEL: i32 = 5;
 /// `Raid.RAID_TIMEOUT_TICKS`.
@@ -276,8 +277,8 @@ pub struct Raid {
     pub num_groups: i32,
     pub status: Status,
     pub center: [i32; 3],
-    /// `heroesOfTheVillage`, in the order they joined the set.
-    heroes: Vec<[i32; 4]>,
+    /// `heroesOfTheVillage`, in Java HashSet traversal order.
+    heroes: JavaHashSet<JavaUuid>,
     pub bar: Bar,
     pub celebration_ticks: i32,
     pub wave_spawn_pos: Option<[i32; 3]>,
@@ -300,7 +301,7 @@ impl Raid {
             num_groups: num_groups(difficulty),
             status: Status::Ongoing,
             center,
-            heroes: Vec::new(),
+            heroes: JavaHashSet::default(),
             bar: Bar {
                 name: BarName::Raid,
                 progress: 0.0,
@@ -390,13 +391,11 @@ impl Raid {
     }
     /// `addHeroOfTheVillage`.
     pub fn add_hero(&mut self, uuid: [i32; 4]) {
-        if !self.heroes.contains(&uuid) {
-            self.heroes.push(uuid);
-        }
+        self.heroes.insert(JavaUuid(uuid));
     }
     /// The heroes in the order vanilla's `HashSet` iterates them.
     pub fn heroes(&self) -> Vec<[i32; 4]> {
-        java_hash_set_order(&self.heroes, 16)
+        self.heroes.iter().map(|u| u.0).collect()
     }
     /// `setLeader`: the raider leading a wave (it wears the banner).
     pub fn set_leader(&mut self, wave: i32, id: u32) {
@@ -1078,9 +1077,9 @@ impl Raid {
             (
                 "heroes_of_the_village",
                 Tag::List(
-                    self.heroes()
+                    self.heroes
                         .iter()
-                        .map(|u| Tag::IntArray(u.to_vec()))
+                        .map(|u| Tag::IntArray(u.0.to_vec()))
                         .collect(),
                 ),
             ),
@@ -1101,14 +1100,8 @@ impl Raid {
         raid.num_groups = fields.num_groups;
         raid.status = fields.status;
         // Sets.newHashSet(list), then addAll into the raid's own set.
-        let cap = java_table_size_for(java_hash_set_capacity(fields.heroes.len()));
-        let mut unique: Vec<[i32; 4]> = Vec::new();
-        for h in fields.heroes {
-            if !unique.contains(&h) {
-                unique.push(h);
-            }
-        }
-        raid.heroes = java_hash_set_order(&unique, cap);
+        let decoded = JavaHashSet::from_collection(fields.heroes.into_iter().map(JavaUuid));
+        raid.heroes.extend(decoded.iter().copied());
         raid.bar.progress = 1.0;
         raid
     }
@@ -1327,38 +1320,6 @@ fn decode_raids(tag: &Tag) -> Option<DecodedRaids> {
 }
 
 // ------------------------------------------------------------------ Java collections
-
-/// `HashMap.hash` of a `UUID` built from its four ints.
-fn uuid_hash(u: [i32; 4]) -> i32 {
-    let most = (i64::from(u[0]) << 32) | (i64::from(u[1]) & 0xffff_ffff);
-    let least = (i64::from(u[2]) << 32) | (i64::from(u[3]) & 0xffff_ffff);
-    let hilo = most ^ least;
-    let h = ((hilo >> 32) as i32) ^ (hilo as i32);
-    h ^ ((h as u32) >> 16) as i32
-}
-/// `HashSet(Collection)`'s requested capacity (JDK 19+: `newHashMap(max(n, 12))`).
-fn java_hash_set_capacity(n: usize) -> usize {
-    (n.max(12) as f64 / 0.75).ceil() as usize
-}
-/// `HashMap.tableSizeFor`.
-fn java_table_size_for(cap: usize) -> usize {
-    cap.max(1).next_power_of_two()
-}
-/// The iteration order of a `HashSet<UUID>` whose table started at
-/// `capacity` (doubling past three quarters full), given insertion order.
-pub fn java_hash_set_order(items: &[[i32; 4]], capacity: usize) -> Vec<[i32; 4]> {
-    let mut cap = capacity.max(1);
-    while items.len() as f64 > cap as f64 * 0.75 {
-        cap *= 2;
-    }
-    let mut keyed: Vec<(usize, usize)> = items
-        .iter()
-        .enumerate()
-        .map(|(i, u)| ((uuid_hash(*u) as u32 as usize) & (cap - 1), i))
-        .collect();
-    keyed.sort();
-    keyed.into_iter().map(|(_, i)| items[i]).collect()
-}
 
 /// `HashCommon.mix` for ints.
 fn mix(x: i32) -> i32 {
@@ -1810,6 +1771,33 @@ mod tests {
         raid.update_bossbar(24.0);
         assert_eq!(raid.bar.progress, 0.5);
     }
+    #[test]
+    fn raid_load_replays_the_collection_set_in_its_own_order() {
+        let input = [10, 5, 0, 12, 3, 8, 6, 7, 14, 4, 15, 2, 9, 1, 13, 11];
+        let raid = Raid::loaded(RaidFields {
+            started: true,
+            active: true,
+            ticks_active: 0,
+            omen_level: 1,
+            groups_spawned: 0,
+            cooldown_ticks: 0,
+            post_raid_ticks: 0,
+            total_health: 0.0,
+            num_groups: 3,
+            status: Status::Ongoing,
+            center: [0; 3],
+            heroes: input.into_iter().map(|i| [i, 0, 0, i]).collect(),
+        });
+        // Temurin 25.0.5: `live.addAll(new HashSet<>(list))`, not `live.addAll(list)`.
+        let expected = [5, 10, 0, 2, 1, 12, 11, 13, 14, 15, 3, 4, 8, 6, 7, 9]
+            .into_iter()
+            .map(|i| Tag::IntArray(vec![i, 0, 0, i]));
+        assert_eq!(
+            raid.to_nbt().get("heroes_of_the_village"),
+            Some(&Tag::List(expected.collect())),
+        );
+    }
+
     #[test]
     fn raids_round_trip_through_nbt() {
         let mut raids = Raids::default();

@@ -1,13 +1,13 @@
 #![cfg(test)]
 use super::*;
 use crate::game::{Audio, Options, Progress, Settings, load_resources};
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig},
 };
 use sunrise_protocol::packets::configuration::ClientInformation;
 use sunrise_world::registry::BlockStateId;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 fn observer(conn: u32, position: [f64; 3], dimension: &str) -> (Guest, mpsc::Receiver<Out>) {
     let (tx, rx) = mpsc::channel();
@@ -57,7 +57,7 @@ fn cracks(rx: &mpsc::Receiver<Out>) -> Vec<(i32, [i32; 3], u8)> {
 /// Exercise actual packet handling, dig feedback, and encoded observer packets without
 /// starting a listener, a server loop, a window, or audio output.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn crack_packets_follow_start_clock_and_strict_observer_radius() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
@@ -130,6 +130,7 @@ fn crack_packets_follow_start_clock_and_strict_observer_radius() {
             max_players: 6,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();

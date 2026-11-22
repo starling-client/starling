@@ -1,0 +1,2 @@
+ids = ["handle:EntityRef::set_fire_immunity", "handle:EntityRef::set_client_fire_immunity"]
+why = "Expose a live, additive fire immunity grant for players, mobs and armor stands. The read now reports effective immunity. Client prediction may set its own grant from existing equipment sync; no packet or hook is added."

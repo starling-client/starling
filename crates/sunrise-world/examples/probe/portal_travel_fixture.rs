@@ -2,16 +2,16 @@
 //! `VanillaPortalOracle` cases (an entity in a nether portal, the destination
 //! level's terrain and portals) through `sunrise_world::level::portal_travel`
 //! and prints the same result text.
-use sunrise_core::{
-    geometry::{Axis, Direction, Vec3},
-    position::BlockPos,
-    random::LegacyRandom,
-};
 use serde_json::Value;
 use std::{
     collections::HashMap,
     io::{BufRead, Write},
     path::Path,
+};
+use sunrise_core::{
+    geometry::{Axis, Direction, Vec3},
+    position::BlockPos,
+    random::LegacyRandom,
 };
 use {
     sunrise_core::dimension::Dimension,

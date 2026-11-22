@@ -1,0 +1,9 @@
+ids = [
+    "type:Gui3dSubject",
+    "type:Gui3dSubject.Item",
+    "type:Gui3dError",
+    "type:Gui3dError.InvalidStack",
+    "method:DrawContext::model_3d",
+]
+why = "A GUI model draw only reads its item stack, so it borrows it instead of requiring a move or clone. The subject is local to the draw and no longer implements Wire. Vanilla GuiGraphicsExtractor.item checks emptiness before model resolution, so a minecraft:air stack is a no-op before validating the view or converting components. A registered non-air stack's component conversion error is distinct from an unknown item."
+migrate = "In `draw.model_3d(subject, view)`, replace `Gui3dSubject::Item(stack)` or `Gui3dSubject::Item(stack.clone())` with `Gui3dSubject::Item(&stack)`. If `stack` is already an `&ItemStack`, pass it directly. Use `Gui3dSubject<'_>` in draw implementations and name the stack's lifetime where a signature needs one. Keep `Gui3dSubject::Model(model)` and `Gui3dView` by value. For serialized data, encode your own draw data instead of `Gui3dSubject` and borrow the resolved stack at the draw call. In an available draw context, drawing `minecraft:air` returns `Ok(())` without validating the view or reading component overrides. `Gui3dError::NotFinite` still applies to subjects that draw. In error matches, handle unknown keys or missing registry entries with `Gui3dError::UnknownItem`, and use `Gui3dError::InvalidStack` for a registered item's component conversion refusal."

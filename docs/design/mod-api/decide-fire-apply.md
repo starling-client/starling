@@ -1,6 +1,10 @@
 # Design: decide, fire, apply
 
-**Status: accepted with changes** by the [maintainer decision](https://github.com/arismoko/horizon/issues/784#issuecomment-6729846827), combining both review views. The requirements below must be settled before runtime code; the note remains a provisional design, not implemented behavior.
+> The native contract below still applies. The WebAssembly guest dispatch route was removed; LAN guest actions still follow this contract.
+> This does not mark the proposed hook migrations as complete.
+> See [transactions](../../modding/src/concepts/transactions.md) for the current native API.
+
+**Status: accepted with changes** by the [maintainer decision](https://github.com/arismoko/horizon/issues/784#issuecomment-6729846827), combining both review views. Implementation status: stage 3b is built for three hooks. `item_stacked_on_other` takes a `HostSide` and a typed answer, and `menu_quick_move` and `menu_clicked` run as decided actions. The other hooks and routes named below are not migrated, and the route evidence and the freshness read set of a decided menu action are still incomplete (the backing holder's generation and every admission input). The requirements below stay the contract for the rest.
 
 Contract for [#784](https://github.com/arismoko/horizon/issues/784), for Ari's review and decision on the issue. This is a documentation proposal, not implemented behavior. The named question is the decision token and stale-apply semantics across client-lib and menus.
 
@@ -48,18 +52,20 @@ The current per-route evidence is in [route inventory](decide-fire-apply-routes.
 | Anvil and grindstone prepare/take | `crates/sunrise-client/src/menu.rs:1389,1401,1412,1425,1440,2059,2073,2084`; migrate paired query/write-back helpers to tokens without merging distinct prepare and take moments. |
 | Menu close and merchant state | `crates/sunrise-client/src/menu.rs:3794,3865`; invalidate generations and journal cursor/inventory settlement. |
 | Motion hooks: living_jump, living_jump_power, living_speed, living_flying_speed, block_jump_factor, block_speed_factor, player_stays_on_ground_surface, fluid_flow | `crates/sunrise-client/src/motion.rs:52,59,67,75,83,95` and `motion/surface.rs:48,56`. Out of scope: retain value-in, value-out fires with Host. Tokens/read sets add per-entity per-tick cost and provide no stale-apply protection for pure value transforms. |
-| Other catalog client-lib targets | `crates/sunrise-mod-vocab/src/hooks/base.rs:2520,3424,4781,4793,4805,4815` owns living_breathe, ingredient, living_drown, living_fall, living_heal targets (living_jump is excluded above). `hooks/ingredient_test.rs:15`, `recipe_property_sets.rs:20`, `ender_entity_teleport.rs:14`, `farmland_trample.rs:13`, `player_name_format.rs:14`, `player_tab_list_name_format.rs:15`, `hooks/entity_move.rs` own remaining explicit client-lib targets. Each needs a typed decision or an explicitly read-only fire boundary, not a Host-less escape hatch. The read-only exception is only a dispatch shape; every hook still receives Host — except where a maintainer ruling says otherwise: `entity_move` (#2414) is a loop-context hook without a host whose listener only decides the delta; its result validation and panic poison replace the stale-decision recheck. |
-| Generator/game dispatch | `crates/sunrise-mod-api-gen/src/lib.rs:547` owns trait generation; `crates/sunrise-client/src/game/native_hooks/fire.rs:5` includes generated dispatch. Generate typed side/Host signatures and native/wasm adapters from one catalog. |
+| Other catalog client-lib targets | `crates/sunrise-mod-vocab/src/hooks/base.rs:2520,3424,4781,4793,4805,4815` owns ingredient, living_drown, living_fall, living_heal targets (living_jump is excluded above). `recipe_property_sets.rs:20`, `ender_entity_teleport.rs:14`, `player_name_format.rs:14`, `player_tab_list_name_format.rs:15`, `hooks/entity_move.rs` own remaining explicit client-lib targets. Each needs a typed decision or an explicitly read-only fire boundary, not a Host-less escape hatch. The read-only exception is only a dispatch shape; every hook still receives Host — except where a maintainer ruling says otherwise: `entity_move` (#2414) is a loop-context hook without a host whose listener only decides the delta; its result validation and panic poison replace the stale-decision recheck. |
+| Generator/game dispatch | `crates/sunrise-mod-api-gen/src/lib.rs:547` owns trait generation; `crates/sunrise-client/src/game/native_hooks/fire.rs:5` includes generated dispatch. Generate typed side/Host signatures and native adapters from one catalog. |
 
 Remote prediction never gains server authority. Client-side hooks receive ClientHost; server menu mutations receive ServerHost; both-side moments use typed HostSide. Network corrections may be sent after refusal to reconcile prediction, containing authoritative pre-action state; no success effects escape. Non-menu targets above are migration scope, but their precise read sets require individual oracle fixtures; this note does not invent their vanilla algorithms.
 
-## Trust, panic, target parity and cost
+## Trust, panic and cost
 
 Validate untrusted mutable hook outputs and Host requests at the callback boundary. Internal typed values guaranteed by construction need no repeated structural validation in apply; apply rechecks live preconditions only. Validate owned IDs, generations, enum discriminants, slot indices, stack components/counts and capacities; reject non-finite numeric outputs and checked-arithmetic overflow. Preserve existing documented clamps where the hook owns them; do not turn unrelated unknown IDs from no-ops into errors. No arbitrary token deserialization, pointers or caller-supplied version numbers. Set finite read-set, plan-size and recursion budgets before runtime rollout; overflow refuses atomically, never truncates a plan.
 
 Menu routes require #2232 and tracking issues #2244 and #2240 before migration: clicks run under `as_guest`, and a panicking listener must leave the guest swap restored.
 
-Catch native unwinding at game dispatch; guest traps use the same ListenerFailed outcome and rollback. Log/report the failing listener under runtime policy. Process-aborting panics and rollback failure cannot be promised recoverable. A subsequent built-in action must work after a caught failure. Native and wasm expose the same hook/Host contract and ordered dependency dispatch; wasm handles are scoped, checked resources, not transferable decisions. Any changed public payload requires a shared-memory `Wire` representation and generated coverage row. Unsupported capabilities must fail registration/load with a named `UnsupportedHookCapability` refusal identifying the hook/capability, for both targets. Internal tokens need no Wire form. Leave frozen injection-point machinery untouched. Update generated bindings, docs and samples together.
+Catch native unwinding at game dispatch. Log/report the failing listener under runtime policy. Process-aborting panics and rollback failure cannot be promised recoverable. A subsequent built-in action must work after a caught failure. Keep the typed hook/Host contract and ordered dependency dispatch. Internal decision tokens need no Wire form. Update generated bindings, docs and samples together.
+
+**Historical guest route:** The original design also mapped guest traps to `ListenerFailed` with the same rollback, used scoped checked guest handles, and proposed shared-memory Wire coverage and a named `UnsupportedHookCapability` refusal for unsupported declarations. Those were dual-runtime requirements, not a current native load contract.
 
 Resolve subscribers at load. With no listeners, take the ordinary operation directly with zero token/read-set/payload allocations and zero all-mod scans; preserve enclosing transaction guarantees. Subscribed cost is proportional to consulted state and planned writes. Validation reads stored rule results and versions; it must not re-fire callbacks or recalculate an alternative action.
 
@@ -76,19 +82,19 @@ These values are proposed requirements, not passing runtime tests. All refused c
 | Menu generation 7 replaced with identical generation 8 layout | Stale; no write to replacement; replacement rolled back with action. |
 | Quick move stone 10 into capacities 4 and 6 | Accept gives 4 and 6, source 0; listener changes either capacity: entire move refused, source 10. |
 | Recipe needs two stone; source stone 2, output empty | Accept consumes 2 once; listener removes one input: stale, source restored to 2, output empty. |
-| Nested transaction commits dirt 2, outer listener traps | Dirt write rolled back; next ordinary stone placement succeeds. |
+| Nested transaction commits dirt 2, outer native listener panics | Dirt write rolled back; next ordinary stone placement succeeds. |
 | Reentrant same-menu click | Inner admission Busy with zero token creation or dispatch; outer proceeds only if unchanged. |
 | Entity table returns Taken | Admission Busy or apply Stale; zero retry or retarget. |
 | Spawn/drop then cancel in lifted pass | No spawn, retirement or journal publication; existing holders survive. |
 | Save during action savepoint | Refused; no tentative state persisted. |
-| Guest listener panics | Guest swap restored, action aborted; next built-in action succeeds. |
+| A native listener panics during a LAN guest's action | Guest swap restored, action aborted; next built-in action succeeds. |
 | Listener reads another tentatively changed entity | Reads tick-exit row until commit. |
-| Changed public payload / unsupported capability | Wire and generated coverage on both targets / named load refusal. |
+| Historical guest route: changed public payload / unsupported capability | The old dual-runtime plan required Wire and generated coverage on both targets, and a named load refusal. |
 | Motion value transform | Existing Host-bearing value fire; zero token/read-set allocations. |
 | Duplicate apply/token from another session | InvalidInput, zero mutations. |
 | NaN, infinity, invalid slot, overflowing count from listener | InvalidInput and complete action rollback; next built-in step succeeds. |
 | Outer transaction aborts after Applied | Original cursor, slots, costs and RNG restored; zero published effects. |
-| Native versus wasm, identical listener sequence | Same outcome, stacks, effects and dispatch order. |
+| Historical guest route: same native and guest listener sequence | The old matrix expected the same outcome, stacks, effects and dispatch order. |
 | No subscriber | Same final state/RNG/effect order as baseline; zero decision allocations. |
 
 ## Proposed implementation stages
@@ -97,7 +103,7 @@ File no issues or PRs from this note.
 
 1. Before code (PR 1), confirm downstream NeoForge menu click, cancellation and transaction contracts from public method/event documentation before assigning counterpart contracts to individual hooks; inventories and class-level coverage do not establish semantics. Finish downstream vanilla oracle/caller fixtures and the accepted token, refusal and rollback requirements on #784. Inventory every generated client-lib target, including targets without explicit annotations.
 2. Add internal typed tokens, mutation generations and action savepoints to the existing coordinator; prove rollback and overlay validation with adversarial fixtures before exposing callbacks.
-3. After #2232, #2244 and #2240 guest restoration prerequisites, migrate menu routes together, coordinating #2318 capacity ownership, #2259 mutable argument write-back and #2249 transaction fixtures. Remove old transports and update generated native/wasm bindings and samples.
+3. After the LAN guest swap and restoration prerequisites (#2232, #2244 and #2240), migrate menu routes together, coordinating #2318 capacity ownership, #2259 mutable argument write-back and #2249 transaction fixtures. Remove old transports and update generated native bindings and samples.
 4. Excluding the eight motion value transforms, migrate remaining client-lib targets in bounded slices with their individual read sets and side contracts. Run parity, failure recovery and allocation measurements before closure.
 
 This unblocks the Host-bearing client-lib/menu half of the clean break, and supplies the stale-action foundation for #855 multi-block placement and #731 screen initialization where applicable. It does not settle #781 attachment Data storage, #792 entity storage or #796 identity by itself; those contracts supply identities this mechanism must validate.

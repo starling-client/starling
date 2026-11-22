@@ -3,9 +3,9 @@
 //! part makes a fence and a wall connect to it, a stone's part refuses its sturdy face, a
 //! panicking part keeps vanilla's answer, and a connector's own `connects_to` has the last word.
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_core::{connection_kind::ConnectionKind, geometry::Direction, position::BlockPos};
 use mod_api::{BlockPart, CanBeConnectedToEvent, ConnectsToEvent, Hooks, LevelHost, Registrar};
 use std::sync::Arc;
+use sunrise_core::{connection_kind::ConnectionKind, geometry::Direction, position::BlockPos};
 
 /// The answer of a target block's part, panicking for `None`.
 #[derive(Clone)]
@@ -51,7 +51,7 @@ impl Hooks for Targets {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_block_beside_a_fence_answers_whether_it_connects() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("targets", Box::new(Targets))].into();
     crate::game::api_values::install_parts(&mods).unwrap();

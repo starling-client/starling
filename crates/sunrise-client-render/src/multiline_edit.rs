@@ -120,9 +120,6 @@ impl MultiLineEdit {
     pub fn cursor(&self) -> usize {
         self.cursor
     }
-    pub fn line_count(&self) -> usize {
-        self.lines.len()
-    }
     pub fn lines(&self) -> &[(usize, usize)] {
         &self.lines
     }
@@ -475,9 +472,9 @@ impl MultiLineEdit {
             crate::widgets::Kind::Field,
         );
         let sprite = if self.focused {
-            "gui/sprites/widget/text_field_highlighted"
+            "widget/text_field_highlighted"
         } else {
-            "gui/sprites/widget/text_field"
+            "widget/text_field"
         };
         ui::nine_slice(
             batch,

@@ -1,0 +1,3 @@
+ids = ["hook:client_pick"]
+why = "Version 2 provides the world-space camera-eye origin of the current pick, including frame interpolation, so mods can measure distances to the supplied hits. Each listener gets the same inputs; only the result is shared for edits. Rays and reach validation are unchanged."
+migrate = "Rebuild and use event.origin when measuring distance to a supplied hit instead of separately reading the current camera or eye position. Continue writing only event.result."

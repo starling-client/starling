@@ -15,5 +15,3 @@ sunrise-protocol resolver::tests::literal_address_can_connect_without_dns lib da
 sunrise-protocol rsa::tests::generated_keys_round_trip lib daily slow
 sunrise-protocol rsa::tests::generated_keys_sign lib daily slow
 sunrise-protocol secure_chat::tests::encoder_signs_what_the_chain_accepts lib daily slow
-sunrise-protocol server_status::tests::a_server_answers_its_player_count lib daily network
-sunrise-protocol server_status::tests::nobody_listening_fails_within_the_timeout lib daily network

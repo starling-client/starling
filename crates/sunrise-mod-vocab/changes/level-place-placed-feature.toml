@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::place_placed_feature"]
+why = "Adds LevelRef::place_placed_feature: a server mod places a minecraft:worldgen/placed_feature by id at a position, as direct PlacedFeature.place does (the placement modifiers run in order from the position, depth first, then the feature at every position they give; reaching a biome modifier without a top feature refuses with PlaceFeatureRefusal::BiomeFilter). It reports whether any feature invocation succeeded, keeping writes made before a reported failure, and refuses as LevelRef::place_feature does, with the same PlaceFeatureRefusal. It is new surface: nothing is removed or renamed."
+migrate = "Additive: nothing to change."

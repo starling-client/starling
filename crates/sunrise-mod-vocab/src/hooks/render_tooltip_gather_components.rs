@@ -10,13 +10,24 @@ pub trait Hooks {
     /// no limit, which leaves the lines as they are; a mod that sets it
     /// wraps every line wider than that, in GUI pixels. Set `cancel` and
     /// nothing is drawn, and no `render_tooltip_texture` is asked. Asked each frame
-    /// the tooltip shows, never for one the stack hides. Client-side.
+    /// the tooltip shows, never for one the stack hides. Text is used in memory without
+    /// serialized component limits. Client-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "cancel",
         neoforge = "RenderTooltipEvent.GatherComponents",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
-    fn render_tooltip_gather_components();
+    fn render_tooltip_gather_components(
+        stack: &ItemStack,
+        screen_width: i32,
+        screen_height: i32,
+        elements: &mut Vec<TooltipElement>,
+        max_width: &mut i32,
+        cancel: &mut bool,
+    );
 }

@@ -1,0 +1,13 @@
+ids = [
+    "hook:item_stacked_on_other",
+    "type:ClickedStackResult",
+    "type:StackedOnOther",
+    "type:StackedOnOther.direction",
+    "type:StackedOnOtherDirection",
+    "type:StackedOnOtherResult",
+    "type:StackedOnOtherResult.clicked",
+    "handle:StackedOnOther::with_direction",
+    "method:ItemPart::item_stacked_on_other",
+]
+why = "Expose vanilla 26.3 Item.overrideStackedOnOther and Item.overrideOtherStackedOnMe on ItemPart::item_stacked_on_other under HookId::ItemStackedOnOther (version 6), with StackedOnOtherDirection distinguishing Event, CarriedOnOther, and OtherStackedOnMe in vanilla AbstractContainerMenu.tryItemClickBehaviourOverride order on both sides (server clicks, client prediction with authoritative server reconciliation, and creative inventory-tab/hotbar pickups) at the resolved pickup moment (including one-slot left/right drags), with ClickedStackResult distinguishing direct writes (Set) from slot takes (Take) on the clicked slot and supporting both handled and declining-with-edits Part outcomes inside the pickup transaction."
+migrate = "Rebuild against item_stacked_on_other v6. StackedOnOther now carries direction: StackedOnOtherDirection (Event for server-side global Hooks::item_stacked_on_other listeners; CarriedOnOther for the cursor item's ItemPart::item_stacked_on_other; OtherStackedOnMe for the clicked slot item's ItemPart::item_stacked_on_other), and StackedOnOtherResult.clicked now uses ClickedStackResult (Keep, Set(Option<ItemStack>) for direct Slot.set writes without Slot.onTake side effects, or Take(u32) for Slot.safeTake/onTake). Global listeners continue receiving StackedOnOtherDirection::Event on the server with their existing contract unchanged (replace StackResult with ClickedStackResult on event.result.clicked; ClickedStackResult::Take is refused); ItemPart overrides receive HostSide::Server on the server and HostSide::Client during client prediction and creative inventory-tab/hotbar pickups, and return handled = true + Flow::Cancel to stop or handled = false + Flow::Continue (optionally with StackResult::Set on carried and ClickedStackResult::Set or ClickedStackResult::Take on clicked) to continue."

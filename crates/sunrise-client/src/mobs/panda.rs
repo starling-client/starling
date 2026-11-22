@@ -358,7 +358,7 @@ fn handle_roll(m: &mut Mob, server: bool) {
             let [x, z] = st(m).roll_delta;
             m.velocity = Vec3::new(x, movement.y, z);
         } else {
-            let y = if m.on_ground { 0.27 } else { movement.y };
+            let y = if m.ground.on_ground { 0.27 } else { movement.y };
             m.velocity = Vec3::new(0.0, y, 0.0);
         }
     }
@@ -710,7 +710,7 @@ impl Goal for PandaPanic {
 }
 /// `DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES` (`armadillo::environmental`), or burning.
 fn environmental(m: &Mob) -> bool {
-    m.fire_ticks > 0 && !m.kind.flags.fire_immune
+    m.is_on_fire()
         || m.last_damage.is_some_and(|(d, t)| {
             super::armadillo::environmental(d.kind) && i64::from(m.age) - t <= 40
         })
@@ -997,7 +997,7 @@ impl Goal for PandaRoll {
         MOVE | LOOK | JUMP
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if !((m.is_baby() || is_playful(m)) && m.on_ground) || !acts(m, cx.w) {
+        if !((m.is_baby() || is_playful(m)) && m.ground.on_ground) || !acts(m, cx.w) {
             return false;
         }
         let angle = m.yaw * DEG_TO_RAD;

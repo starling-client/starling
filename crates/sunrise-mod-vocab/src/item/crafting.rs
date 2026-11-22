@@ -1,4 +1,5 @@
 //! Moved here from the game so mods can name it.
+use crate::item::ingredient_predicate::IngredientPredicate;
 #[allow(unused_imports)]
 use crate::*;
 use serde_json::Value;
@@ -29,20 +30,19 @@ impl RecipePropertyAddition {
         }
     }
 }
+// no wire: an ingredient can hold an in-process predicate bound to its defining mod.
 /// A set of accepted items (expanded from an item, list or tag), and the
 /// items in its `HolderSet` order (`Ingredient.display`'s `TagSlotDisplay`).
-/// Optional metadata is boxed so nested ingredient reads fit the guest stack budget.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 // exhaustive: placement providers and the game construct complete ingredient values
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct Ingredient {
     /// Full candidate set; non-simple predicates test the concrete stack.
     pub items: HashSet<String>,
     /// Default-stack display/simple-match order; non-simple kinds may have none.
     pub order: Vec<String>,
-    /// A mod's own kind, for matching at craft time: the kind and its
-    /// NBT compound, as the load-time hook saw them (`ingredient_test`).
-    pub custom: Option<(String, sunrise_core::nbt::Compound)>,
+    /// The predicate bound to this occurrence by the mod that defined it, not recipe metadata.
+    /// Use [`Self::test`] for the complete match, including the candidate filter.
+    pub custom: Option<IngredientPredicate>,
     /// NeoForge's shapes, with their children parsed: matching a concrete
     /// stack asks each child its own `test` (a mod's kind among them),
     /// as on NeoForge — the flat list above only names items.
@@ -98,7 +98,7 @@ impl Ingredient {
     /// are component-independent. A custom/component predicate anywhere in the tree
     /// returns `NotEnumerable`: the display item list is not an exact predicate (and
     /// for differences containing custom predicates is not even necessarily a superset).
-    /// Such predicates remain mod-owned; this method never invokes a match-time hook.
+    /// Such predicates remain mod-owned; this method never invokes them.
     /// One host call per ingredient at publication; never call this per tick or candidate.
     pub fn item_keys(&self, host: &dyn Host) -> Result<Arc<[crate::ItemKey]>, IngredientKeysError> {
         backend_of(host)
@@ -119,15 +119,103 @@ impl Ingredient {
     /// `Ingredient.test`: whether `stack` fits the candidate list and custom
     /// predicate (`ICustomIngredient.test`). An empty custom list retains the
     /// predicate without item filtering, but cannot be placed by the recipe book.
-    /// An empty tag never matches; a host without a game refuses every stack.
+    /// A bound predicate rejects when its defining mod is disabled or this occurrence's
+    /// predicate has panicked; it never dispatches to other mods. An empty tag never
+    /// matches; a host without a game refuses every stack.
     pub fn test(&self, host: &dyn Host, stack: &ItemStack) -> bool {
         backend_of(host).is_some_and(|backend| backend.recipe_ingredient_test(self, stack))
     }
 }
+impl Clone for Ingredient {
+    fn clone(&self) -> Self {
+        let clone_leaf = |node: &Self| Self {
+            items: node.items.clone(),
+            order: node.order.clone(),
+            custom: node.custom.clone(),
+            children: None,
+            rule: node.rule.clone(),
+            display: node.display.clone(),
+        };
+        let Some((root_shape, root_kids)) = &self.children else {
+            return clone_leaf(self);
+        };
+        let mut stack: Vec<(&Self, Shape, std::slice::Iter<'_, Self>, Vec<Self>)> = vec![(
+            self,
+            root_shape.clone(),
+            root_kids.iter(),
+            Vec::with_capacity(root_kids.len()),
+        )];
+        loop {
+            let next = stack.last_mut().expect("non-empty clone stack").2.next();
+            if let Some(child) = next {
+                if let Some((shape, kids)) = &child.children {
+                    stack.push((
+                        child,
+                        shape.clone(),
+                        kids.iter(),
+                        Vec::with_capacity(kids.len()),
+                    ));
+                } else {
+                    stack
+                        .last_mut()
+                        .expect("non-empty clone stack")
+                        .3
+                        .push(clone_leaf(child));
+                }
+            } else {
+                let (node, shape, _, children) = stack.pop().expect("non-empty clone stack");
+                let mut cloned = clone_leaf(node);
+                cloned.children = Some((shape, children));
+                if let Some(parent) = stack.last_mut() {
+                    parent.3.push(cloned);
+                } else {
+                    return cloned;
+                }
+            }
+        }
+    }
+}
+impl PartialEq for Ingredient {
+    fn eq(&self, other: &Self) -> bool {
+        let mut pending = vec![(self, other)];
+        while let Some((a, b)) = pending.pop() {
+            if a.items != b.items
+                || a.order != b.order
+                || a.custom != b.custom
+                || a.rule != b.rule
+                || a.display != b.display
+            {
+                return false;
+            }
+            match (&a.children, &b.children) {
+                (None, None) => {}
+                (Some((sa, ka)), Some((sb, kb))) if sa == sb && ka.len() == kb.len() => {
+                    pending.extend(ka.iter().zip(kb.iter()));
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+impl Drop for Ingredient {
+    fn drop(&mut self) {
+        let Some((_, mut stack)) = self.children.take() else {
+            return;
+        };
+        while let Some(mut node) = stack.pop() {
+            if let Some((_, mut kids)) = node.children.take() {
+                stack.append(&mut kids);
+            }
+        }
+    }
+}
+// no wire: a recipe snapshot may include ingredients backed by native predicates.
 /// A recipe in force (`RecipeManager.getAllRecipesFor`), whatever its type
 /// (vanilla's or a mod's own): its typed parts, and its file for whatever a
-/// mod's own type keeps there. `json` is the data-pack file's JSON, read by a
-/// mod at reload; host parsing helpers accept JSON text. Plain data.
+/// mod's own type keeps there. The host parsing helpers accept JSON text.
+/// Bound predicates live in the parsed ingredients alone. This snapshot is in-process;
+/// send data-only values instead.
 ///
 /// A recipe the game could not parse (an ingredient it cannot read, no
 /// result) is not in force and is not listed.
@@ -142,7 +230,6 @@ impl Ingredient {
 /// A mod's own type leaves these fields empty and keeps its `json`.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct Recipe {
     /// `<namespace>:<path>`, its place under `data/<namespace>/recipe/`.
     pub id: String,
@@ -164,7 +251,9 @@ pub struct Recipe {
     /// shaped, shapeless, cooking and mod-defined types. The ingredient roles,
     /// bounds and templates come from the game's canonical parse.
     pub rule: Option<RecipeRule>,
-    /// The recipe's file, as the data pack wrote it.
+    /// The locally loaded recipe's file. For a server-synced recipe, this is
+    /// what its serializer sent: resolved item lists for vanilla serializers,
+    /// or the registered mod serializer's written JSON for its own kinds.
     pub json: Arc<Value>,
 }
 impl Recipe {
@@ -189,6 +278,8 @@ impl Recipe {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum RecipeInput {
+    /// Row-major slots matching the checked area. Either dimension may be zero
+    /// with no slots; registered crafting serializers still receive the given dimensions.
     Crafting {
         width: u32,
         height: u32,
@@ -248,29 +339,5 @@ impl RecipeMatch {
             experience,
             processing_time,
         }
-    }
-}
-
-#[cfg(test)]
-mod empty_candidate_tests {
-    use super::*;
-
-    #[test]
-    fn empty_custom_predicate_survives_native_wasm_wire() {
-        use crate::wire::{Reader, Wire, Writer};
-        let mut ingredient = Ingredient::of(vec![]);
-        ingredient.custom = Some((
-            "fixture:predicate".into(),
-            [("required_damage".into(), sunrise_core::nbt::Tag::Int(7))]
-                .into_iter()
-                .collect(),
-        ));
-        let mut writer = Writer::default();
-        ingredient.put(&mut writer);
-        let decoded: Ingredient = Reader::decode(&writer.into_bytes()).unwrap();
-        assert_eq!(decoded, ingredient);
-        assert!(decoded.items.is_empty());
-        assert!(decoded.order.is_empty());
-        assert!(decoded.custom.is_some());
     }
 }

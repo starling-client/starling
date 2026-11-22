@@ -77,9 +77,10 @@ fn unbreakable_unit_recipe_matches_presence_defaults_and_removal() {
     });
     assert_eq!(allocations.calls, 0, "{allocations:?}");
     assert_eq!(allocations.bytes, 0);
-    stone
-        .data_mut()
-        .set_other("minecraft:custom_data", Some(Tag::Int(1)));
+    stone.data_mut().set_other(
+        "minecraft:custom_data",
+        Some(Tag::compound([("extra", Tag::Int(1))])),
+    );
     assert!(!matches(stone.clone()));
     stone.count = 0;
     assert!(!ingredient.test_in(&context, &stone));
@@ -98,16 +99,21 @@ fn unbreakable_unit_recipe_rejects_non_maps_before_publication() {
         source["ingredients"][0]["components"]["minecraft:unbreakable"] =
             serde_json::from_str(payload).unwrap();
         assert!(Ingredient::parse(&source["ingredients"][0], &items).is_none());
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
             vec![("fixture:invalid_unbreakable".into(), source)],
             &load,
         )
-        .unwrap();
-        assert!(recipes.crafting.is_empty(), "{payload}");
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/invalid_unbreakable.json"),
+            "{refused}"
+        );
+        assert!(refused.contains("minecraft:unbreakable"), "{refused}");
     }
 }
 
@@ -160,7 +166,7 @@ fn rollup_rejection_and_absence_matrix_4092() {
         assert!(error.contains("minecraft:unbreakable"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -173,12 +179,13 @@ fn rollup_rejection_and_absence_matrix_4092() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }

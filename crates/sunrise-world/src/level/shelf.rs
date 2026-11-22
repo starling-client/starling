@@ -6,8 +6,8 @@ use super::{
     update::rel,
 };
 use crate::registry::BlockStateId;
-use sunrise_core::{geometry::Direction, position::BlockPos};
 use std::collections::HashMap;
+use sunrise_core::{geometry::Direction, position::BlockPos};
 
 /// `SideChainPart`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

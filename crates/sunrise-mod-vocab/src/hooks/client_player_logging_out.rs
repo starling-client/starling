@@ -5,10 +5,11 @@ pub trait Hooks {
     /// `ClientPlayerNetworkEvent.LoggingOut`). The player may be absent.
     /// Client-side.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ClientPlayerNetworkEvent.LoggingOut",
         cancellable = false
     )]
-    fn client_player_logging_out();
+    fn client_player_logging_out(player_id: Option<i32>, uuid: Option<u128>);
 }

@@ -121,7 +121,7 @@ mod tests {
         let write = |save: &SaveDir, chunk: &Chunk| {
             let record = (
                 (chunk.x, chunk.z),
-                Some(encode(chunk, assets.registry, &biomes)),
+                Some(encode(chunk, assets.registry, &biomes, &Default::default())),
             );
             save.write_records("region", vec![record], true).unwrap();
         };
@@ -129,7 +129,7 @@ mod tests {
             save.saved_portal_blocks(3, -2, assets.registry, &biomes, is_portal)
                 .to_vec()
         };
-        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         let mut chunk = Chunk::empty(3, -2);
         chunk.set(1, 70, 2, obsidian.0);
         write(&save, &chunk);
@@ -145,7 +145,7 @@ mod tests {
             [BlockPos::new(49, 71, -30), BlockPos::new(49, 72, -30)]
         );
         // As a new start of the server reads it.
-        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         assert_eq!(found(&reopened), found(&save));
         // A chunk never saved has none.
         assert!(
@@ -164,7 +164,7 @@ mod tests {
             saved[4 * (3 + 32 * 30) + 2],
         ]);
         broken[sector as usize * 4096 + 4] = 0;
-        let fresh = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let fresh = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         std::fs::write(&region, &broken).unwrap();
         assert!(found(&fresh).is_empty());
         std::fs::write(&region, &saved).unwrap();

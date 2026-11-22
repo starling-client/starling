@@ -1,7 +1,7 @@
 # The release
 
 Every SDK is the release `sdk-<build id>` of this repository, at
-`https://github.com/arismoko/horizon/releases/download/sdk-<build id>/<file>`. Its files:
+`https://github.com/sunrise-org/sunrise/releases/download/sdk-<build id>/<file>`. Its files:
 
 {{#sdk-assets}}
 
@@ -34,7 +34,7 @@ number, removing or redefining one changes it.
 | `build.game` | The vanilla version the build implements (`26.3`). |
 | `build.date` | The commit's date, `YYYY-MM-DD`, UTC. |
 | `build.nightly` | The Nightly name that ships this build, when one does. |
-| `package_format` | The prebuilt package's layout number. A reader takes only the number it was made for. |
+| `package_format` | The prebuilt package's layout number. Readers of compiled packages require a match. The [offline registry fit check](../registry-index.md#fit-on-stable-and-nightly) does not open compiled packages and does not need a match. |
 | `toolchain.rust` | The Rust release everything in the SDK was compiled with. |
 | `content_api` | The content manifest's version: the `api` key of `sunrise-mod.toml`. |
 | `surface.hash` | `surface.json`'s own hash: equal hashes, equal surface. |

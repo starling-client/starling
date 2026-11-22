@@ -1,5 +1,11 @@
 //! Native worker adapters for API-owned structure behaviours.
 use super::native_worldgen::WorkerResources;
+use mod_api::{
+    BiomeId, ChunkPos, GenerationContext, HeightmapType, NoiseBlock, NoiseColumn, PieceContext,
+    RandomSource, StructurePiece, StructureType,
+};
+use mod_api::{BlockKey, BlockMetadata, BlockState};
+use std::sync::Arc;
 use sunrise_core::{
     bounding_box::BoundingBox,
     nbt::{Compound, Tag},
@@ -9,12 +15,6 @@ use sunrise_world::worldgen::{
     placement::PlacementQueryError,
     structure::{legacy::PieceRandom, mod_types::ModStructureType},
 };
-use mod_api::{
-    BiomeId, ChunkPos, GenerationContext, HeightmapType, NoiseBlock, NoiseColumn, PieceContext,
-    StructurePiece, StructureRandom, StructureType,
-};
-use mod_api::{BlockKey, BlockMetadata, BlockState};
-use std::sync::Arc;
 
 fn engine_heightmap(kind: HeightmapType) -> sunrise_world::heightmap::HeightmapType {
     use sunrise_world::heightmap::HeightmapType as Engine;
@@ -48,9 +48,9 @@ impl sunrise_world::worldgen::structure::start::NoiseColumnTarget for Column {
     }
 }
 
-/// The engine's piece random, as a [`StructureRandom`].
+/// The engine's piece random, as a [`RandomSource`].
 struct Draws<'a>(&'a mut dyn PieceRandom);
-impl StructureRandom for Draws<'_> {
+impl RandomSource for Draws<'_> {
     fn next_int_bound(&mut self, bound: i32) -> i32 {
         self.0.int(bound)
     }
@@ -65,6 +65,12 @@ impl StructureRandom for Draws<'_> {
     }
     fn next_boolean(&mut self) -> bool {
         self.0.boolean()
+    }
+    fn next_int(&mut self) -> i32 {
+        self.0.int_unbounded()
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        self.0.gaussian()
     }
 }
 
@@ -96,7 +102,7 @@ impl GenerationContext for Start<'_> {
     fn max_y(&self) -> i32 {
         self.inner.max_y()
     }
-    fn random(&mut self) -> &mut dyn StructureRandom {
+    fn random(&mut self) -> &mut dyn RandomSource {
         &mut self.random
     }
     fn base_height(&mut self, x: i32, z: i32, kind: HeightmapType) -> i32 {
@@ -160,7 +166,7 @@ impl PieceContext for Placing<'_> {
     fn chunk_box(&self) -> BoundingBox {
         self.chunk_box
     }
-    fn random(&mut self) -> &mut dyn StructureRandom {
+    fn random(&mut self) -> &mut dyn RandomSource {
         &mut self.random
     }
     fn state(&self, block: BlockKey) -> BlockState {
@@ -297,8 +303,8 @@ impl ModStructureType for Adapter {
 /// maximum are mod-controlled input, refused with a warning (the piece adds no terrain
 /// adjustment) instead of trusting the decoder to have ordered them.
 fn engine_beardifier(piece: mod_api::PieceBeardifier) -> Option<sunrise_core::density::RigidPiece> {
-    use sunrise_core::density::{StructureBounds, TerrainAdjustment as Engine};
     use mod_api::TerrainAdjustment as Api;
+    use sunrise_core::density::{StructureBounds, TerrainAdjustment as Engine};
     let adjustment = match piece.adjustment {
         Api::None => Engine::None,
         Api::Bury => Engine::Bury,
@@ -399,7 +405,7 @@ impl Adapter {
 #[cfg(test)]
 #[path = "../../../../../docs/modding/examples/src/worldgen.rs"]
 #[allow(dead_code)] // The book example is compiled for its signatures only; TODO(#2273)
-mod book_example;
+pub(super) mod book_example;
 #[cfg(test)]
 #[path = "native_structure_types/tests.rs"]
 mod tests;

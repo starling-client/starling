@@ -4,7 +4,7 @@ use sunrise_client::{chunk::Chunk, mobs::Mob};
 use sunrise_core::nbt::Tag;
 
 #[test]
-#[ignore = "requires private prepared resources and fresh Sunrise homes"]
+#[ignore = "daily"]
 fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
     let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
@@ -77,7 +77,7 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
     );
     let keys = [(0, 0)].into();
     let mut saved = HashMap::new();
-    game.save_every_entity(&keys, &mut saved);
+    game.save_every_entity(&keys, &mut saved, false);
     // A dying but not removed entity still saves until its death animation
     // completes. Both roots are savable before the explicit discard.
     assert_eq!(saved.values().map(Vec::len).sum::<usize>(), 2);
@@ -126,7 +126,7 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
         Some(&Tag::Byte(1))
     );
     saved.clear();
-    game.save_every_entity(&keys, &mut saved);
+    game.save_every_entity(&keys, &mut saved, false);
     assert_eq!(
         saved
             .values()
@@ -171,7 +171,7 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
         .push(Mob::new(45, kind, Vec3::new(0.5, 65.0, 2.5), 0.0));
     game.mobs[3].extra.mount = Some(44);
     saved.clear();
-    game.save_every_entity(&keys, &mut saved);
+    game.save_every_entity(&keys, &mut saved, false);
     let root = &saved[&(0, 0)][0].2;
     assert!(matches!(root.get("Passengers"), Some(Tag::List(list)) if list.len() == 1));
     assert!(game.entity_discard(mod_api::EntityRef::new(
@@ -179,7 +179,97 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
         45
     )));
     saved.clear();
-    game.save_every_entity(&keys, &mut saved);
+    game.save_every_entity(&keys, &mut saved, false);
     assert_eq!(saved[&(0, 0)].len(), 1);
     assert!(saved[&(0, 0)][0].2.get("Passengers").is_none());
+    // EntitySelectorParser gives @e and @n `Entity::isAlive`: a nearer mob at
+    // no health is skipped before its death timer starts (a /kill in the
+    // same tick), though its UUID still resolves.
+    let kind = game.res.mob_types().get("minecraft:blaze").unwrap().clone();
+    let mut killed = Mob::new(46, kind, Vec3::new(0.5, 64.0, 1.5), 0.0);
+    killed.health = 0.0;
+    game.mobs.push(killed);
+    let killed_uuid = game.uuid_for(46);
+    assert_eq!(game.select(&all), [commands::Target::Mob(44)]);
+    let nearest = selector(&game, "@n[type=minecraft:blaze]");
+    assert_eq!(game.select(&nearest), [commands::Target::Mob(44)]);
+    assert_eq!(
+        game.target_with_uuid(killed_uuid),
+        Some(commands::Target::Mob(46))
+    );
+}
+
+/// A registered selector type keeps every candidate it is offered.
+struct Fallen;
+impl mod_api::EntitySelectorType for Fallen {
+    fn base(&self) -> mod_api::SelectorBase {
+        mod_api::SelectorBase::new(false, None, mod_api::SelectorSort::Arbitrary, "test.fallen")
+    }
+    fn matches(
+        &self,
+        _: &mut dyn mod_api::ServerHost,
+        _: &mod_api::CommandSource,
+        _: mod_api::EntityRef,
+    ) -> bool {
+        true
+    }
+}
+struct FallenMod;
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for FallenMod {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.register_entity_selector("fallen", Fallen);
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn dead_guest_leaves_at_e_but_reaches_a_registered_selector() {
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "fallen_fixture",
+        Box::new(FallenMod),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            game.build_registries();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(13, |guest| {
+                    guest.health = 0.0;
+                    guest.dead = true;
+                })
+                .unwrap();
+            game.as_guest(12, |game| {
+                let selector = |token: Option<&str>| sunrise_client::command::args::Selector {
+                    kind: 'e',
+                    include_entities: true,
+                    token: token.map(Into::into),
+                    limit: usize::MAX,
+                    ..Default::default()
+                };
+                let guests = |game: &mut Game<'_>, token| {
+                    let mut found: Vec<_> = game
+                        .select(&selector(token))
+                        .into_iter()
+                        .filter(|t| {
+                            matches!(t, commands::Target::Player | commands::Target::Guest(_))
+                        })
+                        .collect();
+                    found.sort_by_key(|t| matches!(t, commands::Target::Guest(_)));
+                    found
+                };
+                // EntitySelectorParser gives the built-in @e `Entity::isAlive`;
+                // a registered type decides for itself and sees the dead guest.
+                assert_eq!(guests(game, None), [commands::Target::Player]);
+                assert_eq!(
+                    guests(game, Some("fallen")),
+                    [commands::Target::Player, commands::Target::Guest(13)]
+                );
+            });
+        });
+    });
 }

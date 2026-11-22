@@ -14,17 +14,8 @@ use sunrise_client::{
     furnace::FurnaceCooking,
 };
 use sunrise_core::position::BlockPos;
+use sunrise_gameplay::block_entity_ticks::{block_ticking_at, ticker_name};
 use sunrise_world::registry::BlockStateId;
-
-/// Shared decision for a borrowed position read and an owned tick-phase snapshot.
-fn block_ticking_at(
-    levels: &sunrise_client::ticket_levels::Levels,
-    pending: &sunrise_client::fast_hash::FxHashSet<(i32, i32)>,
-    x: i32,
-    z: i32,
-) -> bool {
-    levels.block_ticking_at(x, z) && !pending.contains(&(x >> 4, z >> 4))
-}
 
 /// What `block_entities.tick` is visiting: the kinds its dispatch ticks, read once per entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,14 +210,15 @@ pub(crate) trait BlockEntityTickSlot {
     /// Just before the visited block entity ticks. [`LoopFlow::Skip`] leaves it out this tick;
     /// [`LoopFlow::Stop`] ends the pass (what follows the loop, such as shulker box lids, still runs).
     /// After [`LoopFlow::Continue`] from every slot the loop looks again: when the visited block
-    /// entity was removed, or replaced by one of another [`TickedKind`] or a mod's of another type,
-    /// it does not tick and no slot's [`Self::after`] is called for it.
+    /// entity was removed, replaced by one of another [`TickedKind`] or a mod's of another type,
+    /// or a mod block entity is now on an incompatible block, it does not tick and no slot's
+    /// [`Self::after`] is called for it.
     #[inline(always)]
     fn before(&mut self, tick: &mut BlockEntityTick<'_, '_>) -> LoopFlow {
         let _ = tick;
         LoopFlow::Continue
     }
-    /// Just after the visited block entity ticked; not called for one a slot skipped.
+    /// Just after the visited block entity ticked; not called if its tick was skipped.
     #[inline(always)]
     fn after(&mut self, tick: &mut BlockEntityTick<'_, '_>) {
         let _ = tick;
@@ -259,6 +251,7 @@ impl<N: LoopMod, T: BlockEntityTickSlot> BlockEntityTickSlot for Attributed<N, T
     #[inline(always)]
     fn before(&mut self, tick: &mut BlockEntityTick<'_, '_>) -> LoopFlow {
         self.call(|slot| slot.before(tick))
+            .unwrap_or(LoopFlow::Continue)
     }
     #[inline(always)]
     fn after(&mut self, tick: &mut BlockEntityTick<'_, '_>) {
@@ -295,32 +288,12 @@ impl Drop for Enclosing<'_, '_> {
     }
 }
 
-/// The block entity type a sample is attributed to while its ticker runs.
-fn ticker_name(entity: &BlockEntity) -> &'static str {
-    match entity {
-        BlockEntity::Chest(_) => "hopper",
-        BlockEntity::Crafter(_) => "crafter",
-        BlockEntity::Jukebox(_) => "jukebox",
-        BlockEntity::Beacon(_) => "beacon",
-        BlockEntity::CreakingHeart(_) => "creaking_heart",
-        BlockEntity::Spawner(_) => "mob_spawner",
-        BlockEntity::TrialSpawner(_) => "trial_spawner",
-        BlockEntity::Vault(_) => "vault",
-        BlockEntity::Beehive(_) => "beehive",
-        BlockEntity::Furnace(_) => "furnace",
-        BlockEntity::Brewing(_) => "brewing_stand",
-        BlockEntity::DaylightDetector => "daylight_detector",
-        BlockEntity::Campfire(_) => "campfire",
-        BlockEntity::Mod(_) => "mod_block_entity",
-        BlockEntity::PotentSulfur(_) => "potent_sulfur",
-        _ => "block_entity",
-    }
-}
-
 impl Game<'_> {
     /// The published loop `block_entities.tick` (`published_loops.rs`): with no
     /// `[[native.loop]]` mod its slot is `()`, and a mod build installs its own copy of this
-    /// function, with the mods' slots, through its replacement cell.
+    /// function, with the mods' slots, through its replacement cell. A sleeping hopper is
+    /// still visited for its transfer state (cooldown and `tickedGameTime`) but is not handed
+    /// to the slot: mod loop listeners see it again once something wakes it.
     #[sunrise_mod_api_macros::sunrise_loop(name = "block_entities.tick", side = "server")]
     pub(super) fn tick_block_entities(&mut self) -> Result<()> {
         self.tick_block_entities_with(&mut ())
@@ -355,7 +328,6 @@ impl Game<'_> {
         this.tick_mount_menu();
         this.tick_craft_table();
         this.tick_container_reach();
-        this.load_entity_types();
         this.ensure_stateful_entity_table();
         if !this.world.block_entities.has_states() {
             let states = this.ticking_states();
@@ -372,6 +344,11 @@ impl Game<'_> {
         if this.world.game_time % 20 == 0 {
             this.forget_gone_hoppers();
         }
+        // Items and vehicles have settled for this tick, mobs included: a
+        // sleeping hopper they now reach (even one dropped after
+        // `hoppers_catch_items`) wakes before the hoppers tick.
+        this.wake_hoppers_near_items();
+        this.wake_hoppers_near_vehicles();
         let ticking = this.block_ticking_area();
         this.spawner_tick_positions.clear();
         this.trial_spawner_tick_positions.clear();
@@ -394,20 +371,31 @@ impl Game<'_> {
                 continue;
             }
             // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`).
-            if this.world.block_entities.is_asleep(&pos)
-                || !this.world.block_entities.is_live(ticker)
-                || !this.border.contains(f64::from(pos.0), f64::from(pos.2))
+            let live = this.world.block_entities.is_live(ticker);
+            let inside = this.border.contains(f64::from(pos.0), f64::from(pos.2));
+            if this.world.block_entities.is_asleep(&pos) {
+                // A sleeping hopper's slot still passes: its cooldown and
+                // `tickedGameTime` advance as vanilla's do, without a transfer
+                // attempt, but only where its ticker would run. The published
+                // loop therefore does not visit it.
+                if live && inside && this.world.block_entities.is_hopper_asleep(&pos) {
+                    this.tick_sleeping_hopper(pos);
+                }
+                continue;
+            }
+            if !live || !inside {
+                continue;
+            }
+            let Some(entity) = this.world.block_entities.get(&pos) else {
+                continue;
+            };
+            let Some((kind, mod_type)) = TickedKind::with_type(entity) else {
+                continue;
+            };
+            if matches!(entity, BlockEntity::Mod(m) if mod_api::__private::content_owner_disabled(m.id()))
             {
                 continue;
             }
-            let Some((kind, mod_type)) = this
-                .world
-                .block_entities
-                .get(&pos)
-                .and_then(TickedKind::with_type)
-            else {
-                continue;
-            };
             match slot.before(&mut BlockEntityTick {
                 game: this,
                 pos,
@@ -456,7 +444,11 @@ impl Game<'_> {
                 TickedKind::DaylightDetector => this.tick_daylight_detector(pos),
                 TickedKind::EndGateway => this.tick_end_gateway(pos),
                 TickedKind::Campfire => this.tick_campfire(pos)?,
-                TickedKind::Mod => this.tick_mod_block_entity(pos),
+                TickedKind::Mod => {
+                    if !this.tick_mod_block_entity(pos) {
+                        continue;
+                    }
+                }
                 TickedKind::PotentSulfur => {
                     this.tick_potent_sulfur(pos)?;
                     // A window that simulates the world itself is its own
@@ -631,17 +623,16 @@ impl Game<'_> {
     /// its block's `lit` following it.
     pub(super) fn tick_furnace(&mut self, pos: Pos) -> Result<()> {
         // What the hooks need from before the tick, without cloning stacks: the
-        // fuel's id only while the furnace is out (it can light this tick), the
+        // fuel's id if the furnace can be out after this tick's countdown, the
         // input's id (a last item is gone after it smelts) and the result count.
         let before = match self.world.block_entities.get(&pos) {
             Some(BlockEntity::Furnace(f)) => (
                 f.cooking_timer,
-                (f.lit_remaining == 0)
+                (f.lit_remaining <= 1)
                     .then(|| f.items[1].as_ref().map(|s| s.item.clone()))
                     .flatten(),
                 f.items[0].as_ref().map(|s| s.item.clone()),
                 f.items[2].as_ref().map_or(0, |s| s.count),
-                f.lit_remaining,
             ),
             _ => return Ok(()),
         };
@@ -651,43 +642,53 @@ impl Game<'_> {
                 && matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Furnace(f))
                     if f.lit_remaining <= 1 && f.items[1].as_ref().is_some_and(|s|
                         mod_api::__private::item_listens(mod_api::HookId::CraftingRemainder, &s.item)));
-            let lit = if needs_part {
-                let Some(BlockEntity::Furnace(original)) = self.world.block_entities.get(&pos)
-                else {
-                    return Ok(());
-                };
-                let mut furnace = original.clone();
-                let lit = furnace.tick(
-                    &self.loop_context,
-                    world_recipes!(self),
-                    world_items!(self),
-                    self.res.providers(),
-                    &mut drops,
-                    &|s| self.crafting_remainder(s),
-                );
+            let Some(BlockEntity::Furnace(furnace)) = self.world.block_entities.get_mut(&pos)
+            else {
+                return Ok(());
+            };
+            let was_lit = furnace.count_down_burn();
+            let Some(BlockEntity::Furnace(furnace)) = self.world.block_entities.get(&pos) else {
+                return Ok(());
+            };
+            let items = world_items!(self);
+            let mut random = self.world.random.clone();
+            let plan = furnace.prepare_tick(
+                &self.loop_context,
+                world_recipes!(self),
+                items,
+                was_lit,
+                |fuel| {
+                    sunrise_client::providers::Evaluation::new(self.active_providers(), &mut random)
+                        .cooking_fuel(
+                            fuel,
+                            &mut sunrise_client::furnace::FurnaceConditions {
+                                world: &super::advancements::View(self),
+                                pos: [pos.0, pos.1, pos.2],
+                            },
+                        )
+                },
+            );
+            self.world.random = random;
+            let step = if needs_part {
+                let mut furnace = furnace.clone();
+                let step = plan.apply(&mut furnace, &mut drops, |s| self.crafting_remainder(s));
                 self.world
                     .block_entities
                     .insert(pos, BlockEntity::Furnace(furnace));
-                lit
+                step
             } else {
                 let Some(BlockEntity::Furnace(furnace)) = self.world.block_entities.get_mut(&pos)
                 else {
                     return Ok(());
                 };
-                let items = world_items!(self);
-                furnace.tick(
-                    &self.loop_context,
-                    world_recipes!(self),
-                    items,
-                    self.res.providers(),
-                    &mut drops,
-                    &|s| crate::crafting::CraftingRemainder::crafting_remainder(items, s),
-                )
+                plan.apply(furnace, &mut drops, |s| {
+                    crate::crafting::CraftingRemainder::crafting_remainder(items, s)
+                })
             };
             let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get(&pos) else {
                 return Ok(());
             };
-            let burning = before.1.filter(|_| f.lit_remaining > 0);
+            let burning = before.1.filter(|_| step.consumed_fuel);
             let smelted = f.items[2]
                 .as_ref()
                 .filter(|after| after.count > before.3)
@@ -696,10 +697,7 @@ impl Game<'_> {
             let smelting = started
                 .then(|| f.items[0].as_ref().map(|item| item.item.clone()))
                 .flatten();
-            // The tick takes one off `lit_remaining`; only consuming fuel
-            // sets it higher (a lava bucket leaves a bucket of the same count).
-            let fueled = f.lit_remaining > before.4.saturating_sub(1);
-            (lit, burning, smelted, smelting, fueled)
+            (step.lit, burning, smelted, smelting, step.consumed_fuel)
         };
         // `AbstractFurnaceBlockEntity.serverTick`: `burn` and consuming fuel
         // set the changed flag, so a completed smelt or a refuel marks the
@@ -808,7 +806,7 @@ mod jukebox_stop_tests {
     /// vibration only when the block itself was broken, so pulling the disc out
     /// was silent to a sculk sensor beside it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_jukebox_that_stops_tells_the_listeners() {
         let Some(lines) = with_jukebox(|game, disc| {
             assert!(
@@ -914,7 +912,7 @@ mod add_blocks_tests {
     use std::sync::{Arc, OnceLock};
 
     #[test]
-    #[ignore = "needs prepared resources; isolates process-wide registries"]
+    #[ignore = "daily"]
     fn vanilla_template_membership_creates_ticks_and_saves() {
         const FLAG: &str = "SUNRISE_ADD_BLOCKS_CASE";
         const BLOCK: &str = "add_blocks_test:vault";
@@ -983,7 +981,7 @@ mod add_blocks_tests {
                     (SIGN, "minecraft:oak_sign"),
                     (DECLARED, "minecraft:vault"),
                 ] {
-                    event.blocks.push(mod_api::Block::new(id, template));
+                    event.register(mod_api::Block::new(id, template)).unwrap();
                 }
             }
             fn block_entity_type_add_blocks(
@@ -1082,12 +1080,21 @@ mod add_blocks_tests {
                     panic!("must create vanilla vault")
                 };
                 assert_eq!(vault.state_updating_resumes_at, 120);
-                let tag =
-                    sunrise_client::save::block_entity_encode::encode((1, 64, 1), entity, BLOCK);
+                let tag = sunrise_client::save::block_entity_encode::encode(
+                    (1, 64, 1),
+                    entity,
+                    BLOCK,
+                    &Default::default(),
+                );
                 let (_, restored) =
                     sunrise_client::save::decode_block_entity_for_block(&tag, BLOCK).unwrap();
                 assert_eq!(
-                    sunrise_client::save::block_entity_encode::encode((1, 64, 1), &restored, BLOCK),
+                    sunrise_client::save::block_entity_encode::encode(
+                        (1, 64, 1),
+                        &restored,
+                        BLOCK,
+                        &Default::default()
+                    ),
                     tag
                 );
                 let BlockEntity::Vault(restored) = restored else {
@@ -1126,19 +1133,46 @@ mod add_blocks_tests {
 
 #[cfg(test)]
 mod furnace_changed_tests {
-    use crate::game::game_tests::tests::server_game;
+    use crate::game::{game_tests::tests::server_game, native_entity_refs::tests::run_fresh_cases};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
     use sunrise_client::{
         containers::{BlockEntity, Furnace, FurnaceKind},
         items::ItemStack,
     };
-    use std::collections::HashMap;
+
+    type Burn = ([i32; 3], String);
+    struct Burns(Arc<Mutex<Vec<Burn>>>);
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Burns {
+        fn furnace_burn(
+            &self,
+            _: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::FurnaceBurnEvent<'_>,
+        ) {
+            self.0.lock().unwrap().push((event.pos, event.fuel.into()));
+        }
+    }
+
+    fn with_burns(test: impl FnOnce(&Mutex<Vec<Burn>>)) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "furnace_burn_probe",
+            Box::new(Burns(seen.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || test(&seen));
+    }
 
     /// `AbstractFurnaceBlockEntity.serverTick`'s changed flag: `burn` sets it,
     /// and the old furnace calls `setChanged` at the end of the tick. A smelt
     /// that completes while the furnace stays LIT changes the output and the
     /// input without changing the block state, so nothing else marks it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_finished_smelt_marks_the_chunk() {
         let mut game_resources = None;
         let mut game = server_game(&mut game_resources);
@@ -1186,50 +1220,264 @@ mod furnace_changed_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_refuel_while_lit_marks_the_chunk() {
+        if run_fresh_cases(
+            "game::block_entity_ticks::furnace_changed_tests::a_refuel_while_lit_marks_the_chunk",
+            "SUNRISE_FURNACE_CHANGED_CASE",
+            &["refuel"],
+        ) {
+            return;
+        }
         // litTimeRemaining goes 1 -> 0 and the furnace takes new fuel in the
         // same tick: it stays LIT, and consuming the fuel sets changed.
-        let mut game_resources = None;
-        let mut game = server_game(&mut game_resources);
+        with_burns(|seen| {
+            let mut game_resources = None;
+            let mut game = server_game(&mut game_resources);
+            let registry = &game.pack.assets.registry;
+            let default = registry.default_state("minecraft:furnace").unwrap();
+            let mut lit = registry.state(default).unwrap().clone();
+            lit.properties.insert("lit".into(), "true".into());
+            let state = registry.resolve(&lit).unwrap();
+            let pos = (8, 64, 8);
+            game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+            game.world.block_entities.insert(
+                pos,
+                BlockEntity::Furnace(Furnace {
+                    kind: FurnaceKind::Furnace,
+                    items: [
+                        Some(ItemStack::new("minecraft:raw_iron", 1)),
+                        Some(ItemStack::new("minecraft:coal", 2)),
+                        None,
+                    ],
+                    lit_remaining: 1,
+                    lit_total: 1600,
+                    cooking_timer: 10,
+                    cooking_total: 200,
+                    speed: 1.0,
+                    recipes_used: HashMap::new(),
+                }),
+            );
+            game.world.modified.clear();
+
+            game.tick_furnace(pos).expect("the furnace ticks");
+            assert_eq!(game.world.block(pos.0, pos.1, pos.2), state);
+
+            let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+                panic!("no furnace");
+            };
+            assert_eq!(f.items[1].as_ref().map(|s| s.count), Some(1), "fuel used");
+            assert!(f.items[2].is_none(), "nothing smelted");
+            assert!(
+                game.world.modified.contains(&(0, 0)),
+                "a refuel left the chunk unmarked"
+            );
+            let expected = [([8, 64, 8], "minecraft:coal".to_owned())];
+            assert_eq!(
+                &*seen.lock().unwrap(),
+                &expected,
+                "the refuel fires the hook"
+            );
+
+            game.tick_furnace(pos).expect("the furnace keeps burning");
+            assert_eq!(
+                &*seen.lock().unwrap(),
+                &expected,
+                "continued burning does not fire the hook again"
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_nonpositive_fuel_does_not_mark_or_notify_before_a_real_ignition() {
+        if run_fresh_cases(
+            "game::block_entity_ticks::furnace_changed_tests::a_nonpositive_fuel_does_not_mark_or_notify_before_a_real_ignition",
+            "SUNRISE_FURNACE_CHANGED_CASE",
+            &["nonpositive"],
+        ) {
+            return;
+        }
+        with_burns(|seen| {
+            let mut resources = None;
+            let mut game = server_game(&mut resources);
+            let pos = (8, 64, 8);
+            let state = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:furnace")
+                .unwrap();
+            game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+            let fuel = |duration| {
+                sunrise_client::item_data::parse_stack(&format!(
+                r#"{{id:"minecraft:coal",count:2,components:{{"minecraft:cooking_fuel":{{burn_time:{duration},speed_multiplier:1.0f}}}}}}"#,
+            )).unwrap()
+            };
+            game.world.block_entities.insert(
+                pos,
+                BlockEntity::Furnace(Furnace {
+                    kind: FurnaceKind::Furnace,
+                    items: [Some(ItemStack::new("minecraft:raw_iron", 1)), fuel(0), None],
+                    lit_remaining: 0,
+                    lit_total: 0,
+                    cooking_timer: 0,
+                    cooking_total: 200,
+                    speed: 1.0,
+                    recipes_used: HashMap::new(),
+                }),
+            );
+            game.world.modified.clear();
+            game.tick_furnace(pos).unwrap();
+            assert!(!game.world.modified.contains(&(0, 0)));
+            assert!(seen.lock().unwrap().is_empty());
+            let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get_mut(&pos) else {
+                panic!("no furnace");
+            };
+            assert_eq!(f.items[1], fuel(0));
+            f.items[1] = fuel(-5);
+            for _ in 0..2 {
+                game.tick_furnace(pos).unwrap();
+                let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+                    panic!("no furnace");
+                };
+                assert_eq!(f.lit_remaining, -5);
+                assert_eq!(f.items[1], fuel(-5));
+                assert!(!game.world.modified.contains(&(0, 0)));
+                assert!(seen.lock().unwrap().is_empty());
+            }
+            let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get_mut(&pos) else {
+                panic!("no furnace");
+            };
+            f.items[1] = fuel(31);
+            game.tick_furnace(pos).unwrap();
+            let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+                panic!("no furnace");
+            };
+            assert_eq!(f.lit_remaining, 31);
+            assert_eq!(f.items[1].as_ref().map(|s| s.count), Some(1));
+            assert!(game.world.modified.contains(&(0, 0)));
+            assert_eq!(
+                &*seen.lock().unwrap(),
+                &[([8, 64, 8], "minecraft:coal".to_owned())]
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_world_pack_supplies_and_replaces_furnace_providers() {
+        use crate::game::world_loading::WorldRequest;
+        use sunrise_client::item_data::parse_stack;
+
+        if run_fresh_cases(
+            "game::block_entity_ticks::furnace_changed_tests::a_world_pack_supplies_and_replaces_furnace_providers",
+            "SUNRISE_WORLD_FURNACE_PROVIDERS",
+            &["enabled"],
+        ) {
+            return;
+        }
+        let save = tempfile::tempdir().unwrap();
+        let root = save.path();
+        let pack = root.join("datapacks/furnace");
+        let write = |path: &std::path::Path, body: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        write(
+            &root.join("datapacks.json"),
+            r#"{"enabled":["file/furnace"],"disabled":[]}"#,
+        );
+        write(
+            &pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"furnace provider fixture"}}"#,
+        );
+        let definitions = [
+            ("data/test/context_int_provider/pack_only.json", "37", "71"),
+            (
+                "data/test/context_float_provider/pack_only.json",
+                "1.75",
+                "2.25",
+            ),
+            (
+                "data/minecraft/context_int_provider/cooking/time_coal.json",
+                "53",
+                "83",
+            ),
+            (
+                "data/minecraft/context_float_provider/cooking/speed_default.json",
+                "1.5",
+                "2.5",
+            ),
+        ];
+        for (path, initial, _) in definitions {
+            write(&pack.join(path), initial);
+        }
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        let mut request = WorldRequest::new(
+            "furnace",
+            Some("furnace"),
+            Some(1),
+            true,
+            None,
+            Arc::new(sunrise_client::gamerules::RuleRegistry::vanilla()),
+        )
+        .unwrap();
+        request.save_root = root.to_owned();
+        game.load_world(request).unwrap();
+        assert!(game.fns.enabled().iter().any(|name| name == "file/furnace"));
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
         let state = game
             .pack
             .assets
             .registry
             .default_state("minecraft:furnace")
             .unwrap();
-        let pos = (8, 64, 8);
-        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
-        game.world.block_entities.insert(
-            pos,
-            BlockEntity::Furnace(Furnace {
-                kind: FurnaceKind::Furnace,
-                items: [
-                    Some(ItemStack::new("minecraft:raw_iron", 1)),
-                    Some(ItemStack::new("minecraft:coal", 2)),
-                    None,
-                ],
-                lit_remaining: 1,
-                lit_total: 1600,
-                cooking_timer: 10,
-                cooking_total: 200,
-                speed: 1.0,
-                recipes_used: HashMap::new(),
-            }),
-        );
-        game.world.modified.clear();
-
-        game.tick_furnace(pos).expect("the furnace ticks");
-
-        let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
-            panic!("no furnace");
-        };
-        assert_eq!(f.items[1].as_ref().map(|s| s.count), Some(1), "fuel used");
-        assert!(f.items[2].is_none(), "nothing smelted");
-        assert!(
-            game.world.modified.contains(&(0, 0)),
-            "a refuel left the chunk unmarked"
-        );
+        for reload in [false, true] {
+            if reload {
+                for (path, _, replacement) in definitions {
+                    write(&pack.join(path), replacement);
+                }
+                game.cmd_reload().unwrap();
+            }
+            let cases = if reload {
+                [(10, 71, 2.5_f32), (11, 83, 2.25_f32)]
+            } else {
+                [(8, 37, 1.5_f32), (9, 53, 1.75_f32)]
+            };
+            for ((x, duration, multiplier), (burn, speed)) in cases.into_iter().zip([
+                ("test:pack_only", "minecraft:cooking/speed_default"),
+                ("minecraft:cooking/time_coal", "test:pack_only"),
+            ]) {
+                let pos = (x, 64, 8);
+                game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+                let fuel = parse_stack(&format!(r#"{{id:"minecraft:diamond",count:1,components:{{"minecraft:cooking_fuel":{{burn_time:"{burn}",speed_multiplier:"{speed}"}}}}}}"#)).unwrap();
+                game.world.block_entities.insert(
+                    pos,
+                    BlockEntity::Furnace(Furnace {
+                        kind: FurnaceKind::Furnace,
+                        items: [Some(ItemStack::new("minecraft:raw_iron", 1)), fuel, None],
+                        lit_remaining: 0,
+                        lit_total: 0,
+                        cooking_timer: 0,
+                        cooking_total: 200,
+                        speed: 1.0,
+                        recipes_used: HashMap::new(),
+                    }),
+                );
+                game.tick_furnace(pos).unwrap();
+                let Some(BlockEntity::Furnace(furnace)) = game.world.block_entities.get(&pos)
+                else {
+                    panic!("no furnace");
+                };
+                assert!(furnace.items[1].is_none());
+                assert_eq!(furnace.lit_remaining, duration);
+                assert_eq!(furnace.speed.to_bits(), multiplier.to_bits());
+            }
+        }
     }
 }
 
@@ -1269,7 +1517,7 @@ mod slot_guard_tests {
 
     /// Each call of a slot, before and after an entry, runs inside its mod's guard.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_slot_is_entered_as_its_mod_before_and_after_an_entry() {
         let mut game_resources = None;
         let mut game = server_game(&mut game_resources);
@@ -1282,7 +1530,7 @@ mod slot_guard_tests {
         let mut slots = <(Attributed<Row, Both>, ())>::make();
         assert_eq!(slots.before(&mut tick), LoopFlow::Continue);
         slots.after(&mut tick);
-        let seen = slots.0.call(|slot| std::mem::take(&mut slot.0));
+        let seen = slots.0.call(|slot| std::mem::take(&mut slot.0)).unwrap();
         assert_eq!(seen.before, [Some(Row::CALL)]);
         assert_eq!(seen.after, [Some(Row::CALL)]);
         assert_eq!(current_native_call(), None);
@@ -1377,7 +1625,7 @@ mod slot_mutation_tests {
     /// A slot that removes the entity it is asked about and answers Continue: it does not tick,
     /// and no `after` is called for it; the next one ticks.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_removed_current_entity_does_not_tick() {
         with_blocks(
             &[(A, "minecraft:hopper"), (B, "minecraft:hopper")],
@@ -1395,7 +1643,7 @@ mod slot_mutation_tests {
     /// A slot that puts another kind of block entity in the visited one's place: the old kind's
     /// tick is not run on it, and no `after` is called for it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_replaced_current_entity_of_another_kind_does_not_tick() {
         with_blocks(
             &[(A, "minecraft:hopper"), (B, "minecraft:hopper")],
@@ -1418,21 +1666,27 @@ mod slot_mutation_tests {
     }
 
     /// One a slot adds is not visited in this pass (the pass's list was taken when it started)
-    /// and is from the next.
+    /// and is from the next. The two tickers already there do not sleep, unlike an empty hopper,
+    /// so this stays about registration order.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_added_entity_ticks_from_the_next_pass() {
-        with_blocks(
-            &[(A, "minecraft:hopper"), (B, "minecraft:hopper")],
-            |game| {
-                let mut slot = Mutate::new(|tick| place(tick.game, C, "minecraft:hopper"));
-                game.tick_block_entities_with(&mut slot).unwrap();
-                assert_eq!(slot.before, [A, B]);
-                assert_eq!(slot.after, [A, B]);
-                let mut next = Mutate::new(|_| {});
-                game.tick_block_entities_with(&mut next).unwrap();
-                assert_eq!(next.before, [A, B, C]);
-                assert_eq!(next.after, [A, B, C]);
+        crate::game::in_own_process(
+            "game::block_entity_ticks::slot_mutation_tests::an_added_entity_ticks_from_the_next_pass",
+            || {
+                with_blocks(
+                    &[(A, "minecraft:spawner"), (B, "minecraft:spawner")],
+                    |game| {
+                        let mut slot = Mutate::new(|tick| place(tick.game, C, "minecraft:hopper"));
+                        game.tick_block_entities_with(&mut slot).unwrap();
+                        assert_eq!(slot.before, [A, B]);
+                        assert_eq!(slot.after, [A, B]);
+                        let mut next = Mutate::new(|_| {});
+                        game.tick_block_entities_with(&mut next).unwrap();
+                        assert_eq!(next.before, [A, B, C]);
+                        assert_eq!(next.after, [A, B, C]);
+                    },
+                );
             },
         );
     }
@@ -1441,7 +1695,7 @@ mod slot_mutation_tests {
     /// then the enclosing pass goes on with its own scratch. Its later hopper takes an item, and
     /// its spawner list holds the spawner once, as its own pass ticked it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_nested_pass_leaves_the_enclosing_pass_its_scratch() {
         with_blocks(
             &[
@@ -1475,7 +1729,7 @@ mod slot_mutation_tests {
     /// A slot that catches a nested pass's panic and goes on: the enclosing pass still has its own
     /// scratch, so the spawner it ticked is listed once and its later hopper takes an item.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_caught_nested_panic_leaves_the_enclosing_pass_its_scratch() {
         struct Boom;
         impl BlockEntityTickSlot for Boom {
@@ -1527,11 +1781,11 @@ mod own_block_entity_tests {
     use crate::game::Game;
     use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};
     use crate::game::published_loops::LoopFlow;
+    use mod_api::*;
+    use std::sync::{Arc, OnceLock};
     use sunrise_client::block_entities::Pos;
     use sunrise_client::containers::{BlockEntity, ModBlockEntity};
     use sunrise_core::geometry::Vec3;
-    use mod_api::*;
-    use std::sync::{Arc, OnceLock};
 
     const A: &str = "own_a:machine";
     const B: &str = "own_b:machine";
@@ -1565,8 +1819,8 @@ mod own_block_entity_tests {
         }
         fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
             event
-                .blocks
-                .push(mod_api::Block::new(self.block, "minecraft:stone"));
+                .register(mod_api::Block::new(self.block, "minecraft:stone"))
+                .unwrap();
         }
         fn block_entity_type_add_blocks(
             &self,
@@ -1590,8 +1844,12 @@ mod own_block_entity_tests {
                 event.ticks = true;
             }
         }
-        fn block_entity_tick(&self, _: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
-            event.entity.data.push(mark(self.0));
+        fn block_entity_tick(&self, event: &mut BlockEntityTickEvent<'_>) {
+            event.subject.with_view(|mut entity| {
+                let mut data = entity.data_slots().to_vec();
+                data.push(mark(self.0));
+                assert!(entity.set_data_slots(&data));
+            });
         }
     }
     /// What a tick of mod A's type (1) or mod B's (2) leaves in a block entity's data.
@@ -1679,10 +1937,11 @@ mod own_block_entity_tests {
     }
 
     /// Two mods' block entities and a hopper in one world, one of mod B's standing on mod A's block
-    /// (B made its type valid there): each mod's slot is asked about all of them and counts only
-    /// its own entities, whatever block they stand on. An id with no type counts nothing.
+    /// (B made its type valid there): each slot sees all awake tickers but counts only its own
+    /// entities, whatever block they stand on. The hopper is offered only on the first pass, and
+    /// an id with no type counts nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+    #[ignore = "daily"]
     fn each_slot_counts_only_its_own_mods_block_entities() {
         // The content root freezes the process's block entity types.
         if run_fresh_cases(
@@ -1698,7 +1957,8 @@ mod own_block_entity_tests {
         ]
         .into();
         let (a, b, c) = ((1, 64, 1), (3, 64, 1), (5, 64, 1));
-        let placed = [(a, A), (b, B), (c, A), ((7, 64, 1), "minecraft:hopper")];
+        let hopper = (7, 64, 1);
+        let placed = [(a, A), (b, B), (c, A), (hopper, "minecraft:hopper")];
         with_machines(mods, &placed, |game| {
             // Mod B's entity on mod A's block.
             let d = (9, 64, 1);
@@ -1708,14 +1968,14 @@ mod own_block_entity_tests {
                 Count::new(&[A]),
                 (Count::new(&[B]), Count::new(&["own_a:missing"])),
             );
-            for _ in 0..2 {
-                game.tick_block_entities_with(&mut slots).unwrap();
-            }
+            game.tick_block_entities_with(&mut slots).unwrap();
+            let (own_a, (own_b, missing)) = &slots;
+            assert_eq!((own_a.visited, own_b.visited, missing.visited), (5, 5, 5));
+            assert!(game.world.block_entities.is_hopper_asleep(&hopper));
+
+            game.tick_block_entities_with(&mut slots).unwrap();
             let (own_a, (own_b, missing)) = &mut slots;
-            assert_eq!(
-                (own_a.visited, own_b.visited, missing.visited),
-                (10, 10, 10)
-            );
+            assert_eq!((own_a.visited, own_b.visited, missing.visited), (9, 9, 9));
             own_a.mine.sort_unstable();
             own_b.mine.sort_unstable();
             assert_eq!(own_a.mine, [a, a, c, c]);
@@ -1728,7 +1988,7 @@ mod own_block_entity_tests {
     /// valid on, beside each mod's own block and a detector with its vanilla block entity: mod B's
     /// slot counts it, mod A's doesn't, and it ticks as B's. Neither counts the vanilla detector.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+    #[ignore = "daily"]
     fn a_mods_block_entity_on_a_vanilla_block_is_only_its_own_mods() {
         // The content root freezes the process's block entity types.
         if run_fresh_cases(
@@ -1846,7 +2106,7 @@ mod own_block_entity_tests {
     /// A's type, though B's entity stands there), the replaced entity does not tick, as A's or at
     /// all, and no slot's `after` sees it. The next pass visits it as B's.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; runs in an isolated scratch process"]
+    #[ignore = "daily"]
     fn an_entity_replaced_by_another_mods_type_does_not_tick_as_the_old_one() {
         // The content root freezes the process's block entity types.
         if run_fresh_cases(

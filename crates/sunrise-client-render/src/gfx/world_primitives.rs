@@ -502,9 +502,8 @@ mod tests {
     }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&Default::default())).ok()
+        let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;
+        Some((device, queue))
     }
 
     #[test]
@@ -542,6 +541,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn uploads_preserve_ranges_and_reuse_high_water_storage() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -723,6 +723,7 @@ mod tests {
     /// depth-tested quad and line stay hidden while the same seen through walls show; a
     /// depth-tested quad in front of the wall shows.
     #[test]
+    #[ignore = "daily"]
     fn depth_tested_primitives_hide_behind_walls_and_see_through_ones_do_not() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {

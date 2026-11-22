@@ -3,12 +3,12 @@ use super::{CanyonCarver, CarverError, CaveCarver};
 use crate::worldgen::{
     DecodeError, Object, anchor::WorldGenerationContext, density::identifier, required,
 };
+use std::{collections::BTreeMap, sync::Arc};
 use sunrise_core::{
     carving::{CarverOutput, CarvingMask, CarvingMaskError},
     position::ChunkPos,
     random::{LegacyRandom, RandomSource},
 };
-use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub enum WorldCarver {
@@ -71,6 +71,13 @@ impl CarverCatalog {
         Ok(Self {
             definitions: result,
         })
+    }
+    /// Direct reads of the accepted immutable registry, shared with generic level lookups.
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.definitions.contains_key(id)
+    }
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.definitions.keys().map(String::as_str)
     }
     pub fn decode_set(&self, json: &str) -> Result<Vec<Arc<WorldCarver>>, DecodeError> {
         use serde_json::value::RawValue;

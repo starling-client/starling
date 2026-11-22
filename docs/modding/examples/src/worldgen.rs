@@ -198,3 +198,69 @@ pub mod structures {
     }
     // ANCHOR_END: structure
 }
+
+pub mod features {
+    // ANCHOR: feature
+    use mod_api::{
+        BlockKey, BlockState, BlockUpdateFlags, DatapackField, DatapackFieldKind, DatapackValue,
+        FeatureContext, FeatureError, FeatureType, Hooks, Registrar, RegistrationContext,
+        StateConstraint,
+    };
+
+    /// A pillar of logs on dirt or grass: `{"type": "mymod:pillar", "height": 4}`.
+    struct Pillar {
+        log: BlockKey,
+    }
+
+    impl FeatureType for Pillar {
+        fn place(
+            &self,
+            context: &mut dyn FeatureContext,
+            origin: [i32; 3],
+        ) -> Result<bool, FeatureError> {
+            // Decoded against the schema at load: present, an integer, 1 to 32.
+            let Some(DatapackValue::Int(height)) = context.config().get("height").cloned() else {
+                return Err(FeatureError("height was not decoded".into()));
+            };
+            let below = [origin[0], origin[1] - 1, origin[2]];
+            if context.block_in_tag(below, "minecraft:dirt") != Some(true) {
+                return Ok(false);
+            }
+            let state = BlockState::of(
+                context.metadata(),
+                self.log,
+                &[StateConstraint::new("axis", "y")],
+            )
+            .map_err(|error| FeatureError(format!("log state: {error:?}")))?;
+            let flags = BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS;
+            for dy in 0..height as i32 {
+                let pos = [origin[0], origin[1] + dy, origin[2]];
+                if !context
+                    .block(pos)
+                    .is_some_and(|block| context.is_air(block))
+                {
+                    // Blocked: what is already placed stays, as vanilla keeps it.
+                    return Ok(dy > 0);
+                }
+                context.set_block(pos, state, flags);
+            }
+            Ok(true)
+        }
+    }
+
+    #[derive(Default)]
+    pub struct FeatureMod;
+    #[mod_api::sunrise_mod]
+    impl Hooks for FeatureMod {
+        fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+            let log = registrar.block_key("minecraft:oak_log");
+            let config = vec![DatapackField::with_default(
+                "height",
+                DatapackFieldKind::Int { min: 1, max: 32 },
+                DatapackValue::Int(4),
+            )];
+            registrar.register_feature_type("pillar", config, Pillar { log });
+        }
+    }
+    // ANCHOR_END: feature
+}

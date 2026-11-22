@@ -81,9 +81,9 @@ fn gateway_counters_match_actual_vanilla_methods() {
 // Exercise the real dispatch with cooldown-only states, so no teleport destination is resolved.
 fn game_gateway_phases() -> [[i32; 2]; 4] {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
     use sunrise_core::nbt::Tag;
-    use std::sync::Arc;
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(

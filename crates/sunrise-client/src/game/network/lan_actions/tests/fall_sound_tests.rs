@@ -1,11 +1,11 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
 use crate::game::native_item_places::tests::{guest, open_to_lan};
+use std::sync::{Arc, mpsc};
 use sunrise_client::{
     chunk::Chunk,
-    lan::{Out, PlayerSender},
+    lan::{Out, PlayerSender, guest::GuestMove, hub::CommittedMove},
 };
-use std::sync::{Arc, mpsc};
 
 fn run(distance: f64, expected: usize) {
     mod_platform::testing::with_mods(Vec::new().into(), || {
@@ -23,12 +23,7 @@ fn run(distance: f64, expected: usize) {
             let mut landing = guest(1);
             landing.position = [1.5, 64.0, 1.5];
             landing.loaded = true;
-            landing.moves_from_ground = false;
-            landing.moves.push(([0.0, -distance, 0.0], true));
-            let mut motion = PlayerMotion::new(game.motion, Vec3::new(1.5, 64.0, 1.5)).unwrap();
-            // The replayed downward move accumulates the fall distance.
-            motion.fall_distance = 0.0;
-            landing.motion = Some(Box::new(motion));
+            landing.on_ground = true;
             let (tx, own) = mpsc::channel();
             landing.sender = PlayerSender::new(tx, Arc::default());
             let mut observer = guest(2);
@@ -53,7 +48,20 @@ fn run(distance: f64, expected: usize) {
                 C::Sound(s) => s.sound,
                 _ => unreachable!(),
             };
-            game.guest_server_tick(1);
+            game.guest_accepted_move(
+                1,
+                CommittedMove {
+                    horizontal_collision: false,
+                    from: [1.5, 64.0 + distance, 1.5],
+                    jump_yaw: None,
+                    movement: GuestMove {
+                        position: [1.5, 64.0, 1.5],
+                        delta: [0.0, -distance, 0.0],
+                        on_ground: true,
+                        sneaking: false,
+                    },
+                },
+            );
             let sounds = |rx: mpsc::Receiver<Out>| {
                 rx.try_iter()
                     .flat_map(|out| match out {
@@ -79,12 +87,22 @@ fn run(distance: f64, expected: usize) {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn five_block_fall_sends_stone_once_except_guest() {
-    run(5.0, 1);
+    crate::game::in_own_process(
+        "game::lan_actions::tick::fall_sound_tests::five_block_fall_sends_stone_once_except_guest",
+        || {
+            run(5.0, 1);
+        },
+    );
 }
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn three_block_fall_sends_no_stone_sound() {
-    run(3.0, 0);
+    crate::game::in_own_process(
+        "game::lan_actions::tick::fall_sound_tests::three_block_fall_sends_no_stone_sound",
+        || {
+            run(3.0, 0);
+        },
+    );
 }

@@ -15,10 +15,17 @@ pub trait Hooks {
     /// helpers read the acting one). Diverges from upstream: renamed from
     /// `destroy_block`, to NeoForge's `BreakBlockEvent`.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_break_block",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
         neoforge = "BreakBlockEvent"
     )]
-    fn break_block();
+    fn break_block(
+        pos: [i32; 3],
+        state: BlockState,
+        canceled: &mut bool,
+        exp_to_drop: &mut Option<u32>,
+    );
 }

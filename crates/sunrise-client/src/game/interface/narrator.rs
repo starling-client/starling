@@ -271,10 +271,13 @@ impl Game<'_> {
             Screen::WorldOptions => self.world_options_typing(),
             Screen::CommandBlock | Screen::Social => true,
             Screen::Inventory => self.station_typing() || self.mod_browser_typing(),
-            _ => self
-                .title
-                .as_mut()
-                .is_some_and(|t| t.has_caret_field() || t.focused_field().is_some()),
+            _ => {
+                self.title_input_active()
+                    && self
+                        .title
+                        .as_mut()
+                        .is_some_and(|t| t.has_caret_field() || t.focused_field().is_some())
+            }
         }
     }
     /// The narrator toast over whatever is on screen, the title's own toast
@@ -282,7 +285,7 @@ impl Game<'_> {
     pub(super) fn draw_narrator_toast(&mut self, batch: &mut HudBatch) {
         let title = self.title.as_ref().is_some_and(|t| t.has_toast());
         let used = self.toast_slots_used() | u32::from(title);
-        let multiplier = f64::from(self.settings.notification_display_time);
+        let multiplier = self.settings.notification_display_time;
         let sound = draw_toast(
             &mut self.narrator_toast,
             used,

@@ -7,10 +7,10 @@
 //! Each sprite is a whole layer of a square texture array (`sprites::Sprites`), so a face's UVs run
 //! 0 to 1 within its layer; the renderer's split (`Renderer::sprite_split`) layers to an array.
 use crate::{mesher::TintSource, models::catalog::BakedFace, streaming::WorkerContext};
+pub use mod_api::block::block_sprites::{BlockSprites, FaceSprite, SpriteRef};
 use sunrise_assets::model::Direction;
 use sunrise_core::position::BlockPos;
 use sunrise_world::registry::{BlockRegistry, BlockStateId};
-pub use mod_api::block::block_sprites::{BlockSprites, FaceSprite, SpriteRef};
 
 /// The two axes a side's `rect` and `uv` count along, as indices into (x, y, z): down and up across x then z; north
 /// and south across x then y; west and east across z then y. (The block's corner at 0, 0, 0 is 0 on each.)
@@ -102,28 +102,41 @@ impl<'a> Lookup<'a> {
     }
     /// The sprite at `layer` of all the layers.
     pub fn sprite(&self, layer: u32) -> SpriteRef {
-        let render = &self.context.render;
-        SpriteRef {
-            array: layer / self.split,
-            layer: layer % self.split,
-            animated: render.animations.iter().any(|a| a.layer == layer),
-            cutout: render
-                .sprite_mips
-                .get(layer as usize)
-                .is_some_and(|m| m.has_transparent),
-        }
+        sprite_at(&self.context.render, self.split, layer)
     }
 
-    /// A texture by name (`minecraft:block/stone`, `block/stone`); none for one no model uses (the arrays hold only
-    /// the textures models and the game's own drawing name).
+    /// A texture by name in this lookup.
     pub fn texture(&self, name: &str) -> Option<SpriteRef> {
-        let layers = &self.context.render.sprite_layers;
-        let layer = layers
-            .get(name)
-            .or_else(|| layers.get(&format!("minecraft:{name}")))?;
-        Some(self.sprite(*layer))
+        texture_at(&self.context.render, self.split, name)
     }
+}
 
+fn sprite_at(render: &crate::assets::RenderAssets, split: u32, layer: u32) -> SpriteRef {
+    SpriteRef {
+        array: layer / split,
+        layer: layer % split,
+        animated: render.animations.iter().any(|a| a.layer == layer),
+        cutout: render
+            .sprite_mips
+            .get(layer as usize)
+            .is_some_and(|m| m.has_transparent),
+    }
+}
+
+/// A texture by name in the uploaded block atlas, independently of model publication.
+pub fn texture_at(
+    render: &crate::assets::RenderAssets,
+    split: u32,
+    name: &str,
+) -> Option<SpriteRef> {
+    let layers = &render.sprite_layers;
+    let layer = layers
+        .get(name)
+        .or_else(|| layers.get(&format!("minecraft:{name}")))?;
+    Some(sprite_at(render, split.max(1), *layer))
+}
+
+impl Lookup<'_> {
     /// What block `name` (`minecraft:oak_log[axis=x]`; properties left out take the default) draws on each side;
     /// none for a block the game does not know.
     pub fn block(&self, name: &str) -> Option<BlockSprites> {
@@ -294,7 +307,7 @@ mod tests {
     /// The game's own blocks from real prepared resources: a cube, a grass block's tinted top and overlaid sides, a
     /// log on its side (its texture turned), leaves (cut out, foliage), water, a slab and a flower.
     #[test]
-    #[ignore = "requires prepared models/textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn real_blocks_name_their_sprites() -> crate::Result<()> {
         use crate::{
             assets::Assets, biome::Biomes, blocks::BlockFacts, light::LightTables,
@@ -325,6 +338,7 @@ mod tests {
                 &sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
             )?),
             hidden_states: Arc::from([]),
+            part_tables: Default::default(),
         };
         let names = texture_names(&context.render.sprite_layers);
         let lookup = Lookup::new(&context, 2048, &names);

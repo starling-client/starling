@@ -1,8 +1,7 @@
 //! Icons: a small picture for an action or an entry, from the player's own resources. An icon is
-//! a GUI sprite, an item, a controller glyph or the player's face. Sprites and glyphs draw here;
-//! items and the face need the game (its item models, the player's skin), so the game paints
-//! those through an [`IconPainter`] it implements (`game/item_draw.rs`). The render crate never
-//! reaches gameplay, and tests use [`NoItems`].
+//! a GUI sprite, an item or a controller glyph. Sprites and glyphs draw here; items need the
+//! game (its item models), so the game paints them through an [`IconPainter`] it implements
+//! (`game/item_draw.rs`). The render crate never reaches gameplay, and tests use [`NoItems`].
 //!
 //! Every icon fills a square of `size` GUI px: 16 for a slot, 32 for a large one. A sprite of
 //! another shape keeps its proportions inside the square, centred; an item model is drawn at 16
@@ -28,41 +27,32 @@ use crate::pad_glyph::{self, Glyph};
 
 /// The size, in GUI px, item models draw at before any scaling.
 pub const ITEM_SIZE: f32 = 16.0;
-/// Where GUI sprites sit in the atlas: `Icon::Sprite` names drop this prefix.
-pub const SPRITES: &str = "gui/sprites/";
 
 /// A small picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
-    /// A GUI sprite, by its name under `gui/sprites/` (`statistics/item_dropped`).
+    /// A GUI sprite, by its GUI id (`statistics/item_dropped`).
     Sprite(&'static str),
     /// An item's model, by its id (`minecraft:chest`).
     Item(&'static str),
     /// A controller button's glyph, in the player's glyphs.
     Glyph(Glyph),
-    /// The player's own skin's face, with its hat layer.
-    PlayerFace,
 }
 
-/// What draws the icons only the game can: items and the player's face. `area` is
+/// What draws the icons only the game can: items. `area` is
 /// `[x, y, size]` in GUI px, the square's top left and side.
 pub trait IconPainter {
     /// Draws the item `id` filling `area`; `false` if it can't (an unknown id).
     fn item(&self, batch: &mut HudBatch, id: &str, area: [f32; 3]) -> bool;
-    /// Draws the player's face filling `area`; `false` with no player or skin.
-    fn face(&self, batch: &mut HudBatch, area: [f32; 3]) -> bool;
 }
 
-/// A painter with no game behind it: no items and no face. For tests and screens that show
+/// A painter with no game behind it: no items. For tests and screens that show
 /// sprites only.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoItems;
 
 impl IconPainter for NoItems {
     fn item(&self, _: &mut HudBatch, _: &str, _: [f32; 3]) -> bool {
-        false
-    }
-    fn face(&self, _: &mut HudBatch, _: [f32; 3]) -> bool {
         false
     }
 }
@@ -90,17 +80,14 @@ pub fn draw(
 ) -> bool {
     let start = batch.vertices.len();
     let drawn = match icon {
-        Icon::Sprite(name) => {
-            let key = format!("{SPRITES}{name}");
-            match atlas.sprites.get(&key) {
-                Some(rect) => {
-                    let [x, y, w, h] = fit(area, rect.w as f32, rect.h as f32);
-                    batch.sprite_scaled(atlas, &key, x, y, w, h, u32::MAX);
-                    true
-                }
-                None => false,
+        Icon::Sprite(name) => match atlas.gui_rect(name) {
+            Some(rect) => {
+                let [x, y, w, h] = fit(area, rect.w as f32, rect.h as f32);
+                batch.sprite_scaled(atlas, name, x, y, w, h, u32::MAX);
+                true
             }
-        }
+            None => false,
+        },
         Icon::Item(id) => painter.item(batch, id, area),
         Icon::Glyph(glyph) => {
             let [x, y, size] = area;
@@ -111,7 +98,6 @@ pub fn draw(
             pad_glyph::draw(batch, atlas, glyph, gx, gy);
             true
         }
-        Icon::PlayerFace => painter.face(batch, area),
     };
     batch.alpha_since(start, alpha);
     drawn
@@ -141,14 +127,10 @@ mod tests {
             batch.fill(&atlas(), area[0], area[1], area[2], area[2], u32::MAX);
             true
         }
-        fn face(&self, _: &mut HudBatch, area: [f32; 3]) -> bool {
-            self.0.borrow_mut().push(("face".to_owned(), area));
-            true
-        }
     }
 
     #[test]
-    fn items_and_the_face_go_to_the_painter_and_are_faded() {
+    fn items_go_to_the_painter_and_are_faded() {
         let atlas = atlas();
         let painter = Recorder::default();
         let mut batch = HudBatch::scratch([854, 480]);
@@ -160,38 +142,25 @@ mod tests {
             [4.0, 6.0, 32.0],
             0.5
         ));
-        assert!(draw(
-            &mut batch,
-            &atlas,
-            &painter,
-            Icon::PlayerFace,
-            [0.0, 0.0, 16.0],
-            1.0
-        ));
         assert_eq!(
             *painter.0.borrow(),
-            [
-                ("minecraft:feather".to_owned(), [4.0, 6.0, 32.0]),
-                ("face".to_owned(), [0.0, 0.0, 16.0])
-            ]
+            [("minecraft:feather".to_owned(), [4.0, 6.0, 32.0])]
         );
         assert!(batch.vertices.iter().all(|v| v.color >> 24 == 128));
     }
 
     #[test]
-    fn without_a_painter_items_and_faces_draw_nothing() {
+    fn without_a_painter_items_draw_nothing() {
         let atlas = atlas();
         let mut batch = HudBatch::scratch([854, 480]);
-        for icon in [Icon::Item("minecraft:chest"), Icon::PlayerFace] {
-            assert!(!draw(
-                &mut batch,
-                &atlas,
-                &NoItems,
-                icon,
-                [0.0, 0.0, 16.0],
-                1.0
-            ));
-        }
+        assert!(!draw(
+            &mut batch,
+            &atlas,
+            &NoItems,
+            Icon::Item("minecraft:chest"),
+            [0.0, 0.0, 16.0],
+            1.0
+        ));
         assert!(batch.vertices.is_empty());
     }
 

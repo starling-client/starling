@@ -13,7 +13,7 @@ pub const CHEMICALS: CapabilityKey<dyn ResourceHandler<Chemical>> = CapabilityKe
 Declare the defining mod under `[dependencies]` to build against the same `Chemical` and `CHEMICALS`. Your providers,
 `r.block_entity_capability(&chem_api::CHEMICALS, &vat, …)` (where `vat` is a declared type key or
 `r.block_entity_type_key("chem_pipe:vat")`), answer the same capability, and
-`level.capability(host, &chem_api::CHEMICALS, pos, side)` finds either mod's handler. `move_resources` moves a
+`level.capability(host, &chem_api::CHEMICALS, pos, side)` finds either mod's handler. `resource_util::move_resources` moves a
 chemical as it moves items, in the caller's transaction. The game has no answer of its own for a mod's key, so only
 the mods' providers do, and a lookup with none registered costs one table check. A handler that keeps its amount in
 its block entity's saved data (`BlockEntityRef::merge_data`) is covered by the game's journal, so an aborted

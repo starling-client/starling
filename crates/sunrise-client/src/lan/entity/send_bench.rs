@@ -72,6 +72,8 @@ impl Scene {
             .map(|(i, (tracker, out))| Viewer {
                 entity_id: i as i32 + 1,
                 sunrise: true,
+                general_entity: true,
+                attachment_sender: None,
                 sources: None,
                 spectator: false,
                 permission: 0,
@@ -81,19 +83,19 @@ impl Scene {
                 chunks: &self.chunks,
                 tracker,
                 out,
-                gone: None,
             })
             .collect();
         let riding = Riding::default();
         let started = Instant::now();
         if !send_only {
-            self.level.tick(&refs, &riding, &mut viewers, |_| Some(5));
+            self.level
+                .tick(&refs, &riding, &mut viewers, None, |_| Some(5));
         } else if self.level.send_apart_always == Some(true) {
             self.level
-                .send_on_threads(&refs, &riding, &mut viewers, &self.active);
+                .send_on_threads(&refs, &riding, &mut viewers, &self.active, None);
         } else {
             self.level
-                .send_in_order(&refs, &riding, &mut viewers, &self.active);
+                .send_in_order(&refs, &riding, &mut viewers, &self.active, None);
         }
         started.elapsed()
     }

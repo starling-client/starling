@@ -100,7 +100,7 @@ impl GameLevel<'_> {
                     };
                     loot.count = stack.count as i32;
                     if let Some(sunrise_core::nbt::Tag::Compound(patch)) =
-                        sunrise_client::item_data::encode_components(&stack)
+                        sunrise_client::item_data::component_snapshot(&stack)
                     {
                         loot.components = patch
                             .into_iter()

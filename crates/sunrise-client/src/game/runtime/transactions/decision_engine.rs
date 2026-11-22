@@ -6,22 +6,13 @@
 //! yet a complete LAN read set: guest/backing-storage and registry versions still need
 //! to be bound before any subscribed production route may use it.
 use super::{storage::GameHost, *};
-use crate::game::{Game, lan_stations::GuestStation};
+use crate::game::Game;
 use sunrise_client::menu::{Menu as EngineMenu, MutationStamp, Snapshot};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::game) enum Owner {
-    Inventory,
-    Table,
-    Machine,
-    Station,
-}
-
-/// Names a storage owner, never a borrowed menu moved out for dispatch.
+/// Names the guest's inventory owner, never a borrowed menu moved out for dispatch.
 #[derive(Clone, Copy)]
 pub(in crate::game) struct Target {
     conn: u32,
-    owner: Owner,
     id: MenuId,
 }
 
@@ -37,34 +28,31 @@ pub(in crate::game) struct EnginePlan(pub Option<Snapshot>);
 
 pub(super) struct KeptOwner {
     target: Target,
-    value: KeptValue,
-}
-
-enum KeptValue {
-    Inventory(Option<Box<EngineMenu>>),
-    Table(Option<(i32, i32, Box<EngineMenu>, [i32; 3])>),
-    Machine(Option<(i32, Box<EngineMenu>)>),
-    Station(Option<GuestStation>),
+    value: Option<Box<EngineMenu>>,
 }
 
 impl Target {
     /// Check the active action before looking in a slot that an outer action
     /// might have lifted. A missing menu is never the reentrancy mechanism.
-    pub(in crate::game) fn admit(
-        game: &Game<'_>,
-        conn: u32,
-        owner: Owner,
-    ) -> Result<Self, Admission> {
+    pub(in crate::game) fn admit(game: &Game<'_>, conn: u32) -> Result<Self, Admission> {
         if game.transactions.iter().any(|level| {
             level
                 .action
                 .as_ref()
                 .and_then(|action| level.actions.owners.get(&action.menu))
-                .is_some_and(|kept| kept.target.conn == conn && kept.target.owner == owner)
+                .is_some_and(|kept| kept.target.conn == conn)
         }) {
             return Err(Admission::Busy);
         }
-        Self::find(game, conn, owner).ok_or(Admission::MissingHolder)
+        let menus = game
+            .lan
+            .as_ref()
+            .and_then(|host| host.menus.get(&conn))
+            .ok_or(Admission::MissingHolder)?;
+        Ok(Self {
+            conn,
+            id: menus.crafting.inventory.id(),
+        })
     }
 
     /// The owner's stable identity, which no take, restore or lift changes.
@@ -72,34 +60,10 @@ impl Target {
         self.id
     }
 
-    fn find(game: &Game<'_>, conn: u32, owner: Owner) -> Option<Self> {
-        let menus = game.lan.as_ref()?.menus.get(&conn)?;
-        let id = match owner {
-            Owner::Inventory => menus.crafting.inventory.id(),
-            Owner::Table => menus.crafting.table.id(),
-            Owner::Machine => menus.crafting.machine.id(),
-            Owner::Station => menus.station.id(),
-        };
-        Some(Self { conn, owner, id })
-    }
-
     fn read<'a>(&self, game: &'a Game<'_>) -> Option<(OwnerStamp, &'a EngineMenu)> {
         let menus = game.lan.as_ref()?.menus.get(&self.conn)?;
-        Some(match self.owner {
-            Owner::Inventory => (
-                menus.crafting.inventory.stamp(),
-                menus.crafting.inventory.as_deref()?,
-            ),
-            Owner::Table => (
-                menus.crafting.table.stamp(),
-                &menus.crafting.table.as_ref()?.2,
-            ),
-            Owner::Machine => (
-                menus.crafting.machine.stamp(),
-                &menus.crafting.machine.as_ref()?.1,
-            ),
-            Owner::Station => (menus.station.stamp(), &menus.station.as_ref()?.menu),
-        })
+        let inventory = &menus.crafting.inventory;
+        Some((inventory.stamp(), inventory.as_deref()?))
     }
 
     /// Every route must use this boundary before taking or mutating its owner.
@@ -114,12 +78,7 @@ impl Target {
         }
         self.keep_in(game);
         let menus = game.lan.as_mut()?.menus.get_mut(&self.conn)?;
-        let menu = match self.owner {
-            Owner::Inventory => menus.crafting.inventory.as_deref_mut()?,
-            Owner::Table => &mut menus.crafting.table.as_mut()?.2,
-            Owner::Machine => &mut menus.crafting.machine.as_mut()?.1,
-            Owner::Station => &mut menus.station.as_mut()?.menu,
-        };
+        let menu = menus.crafting.inventory.as_deref_mut()?;
         Some(edit(menu))
     }
 
@@ -133,12 +92,7 @@ impl Target {
         let Some(menus) = game.lan.as_ref().and_then(|h| h.menus.get(&self.conn)) else {
             return;
         };
-        let value = match self.owner {
-            Owner::Inventory => KeptValue::Inventory((*menus.crafting.inventory).clone()),
-            Owner::Table => KeptValue::Table((*menus.crafting.table).clone()),
-            Owner::Machine => KeptValue::Machine((*menus.crafting.machine).clone()),
-            Owner::Station => KeptValue::Station((*menus.station).clone()),
-        };
+        let value = (*menus.crafting.inventory).clone();
         game.transactions.last_mut().unwrap().actions.owners.insert(
             self.id,
             KeptOwner {
@@ -162,12 +116,7 @@ impl KeptOwner {
         else {
             return;
         };
-        match self.value {
-            KeptValue::Inventory(value) => menus.crafting.inventory.restore(value),
-            KeptValue::Table(value) => menus.crafting.table.restore(value),
-            KeptValue::Machine(value) => menus.crafting.machine.restore(value),
-            KeptValue::Station(value) => menus.station.restore(value),
-        }
+        menus.crafting.inventory.restore(self.value);
     }
 }
 

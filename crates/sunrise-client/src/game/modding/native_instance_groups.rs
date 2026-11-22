@@ -101,13 +101,9 @@ impl InstanceGroups for Game<'_> {
         if fields.generation != self.standalone_geometry.generation() {
             return Err(GroupError::Model(mod_api::ModelError::StaleModel));
         }
-        let slot = self
-            .standalone_geometry
+        self.standalone_geometry
             .instance_slot(fields.slot)
             .ok_or(GroupError::Model(mod_api::ModelError::UnknownModel))?;
-        if slot.translucent {
-            return Err(GroupError::Translucent);
-        }
         let owner = mod_api::content::crash::current_native_mod();
         let mut storage = self.instance_groups.borrow_mut();
         let reserved: usize = storage

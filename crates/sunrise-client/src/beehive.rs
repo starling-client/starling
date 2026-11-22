@@ -385,14 +385,28 @@ fn release(
     Some(host.add(m).then_some(id))
 }
 
+/// What `CampfireBlock.isSmokeyPos` reads of a level.
+pub trait SmokeLevel {
+    /// A block of the `minecraft:campfires` tag with `lit=true` at the position.
+    fn is_lit_campfire(&self, at: [i32; 3]) -> bool;
+    /// `BlockState.getCollisionShape` there, as boxes in the world.
+    fn collision_boxes(&self, at: [i32; 3]) -> Vec<sunrise_core::geometry::Aabb>;
+}
+impl SmokeLevel for crate::mobs::MobWorld<'_> {
+    fn is_lit_campfire(&self, at: [i32; 3]) -> bool {
+        self.has_tag("minecraft:campfires", self.block_name(at[0], at[1], at[2]))
+            && self.prop(at[0], at[1], at[2], "lit") == Some("true")
+    }
+    fn collision_boxes(&self, at: [i32; 3]) -> Vec<sunrise_core::geometry::Aabb> {
+        self.block_collision_boxes(at[0], at[1], at[2])
+    }
+}
+
 /// `CampfireBlock.isSmokeyPos`: a lit campfire up to five blocks below,
 /// unless a block whose collision crosses the smoke's centre post comes
 /// first (a lit campfire right under that block still counts).
-pub fn smokey(w: &crate::mobs::MobWorld, at: [i32; 3]) -> bool {
-    let lit = |y: i32| {
-        w.has_tag("minecraft:campfires", w.block_name(at[0], y, at[2]))
-            && w.prop(at[0], y, at[2], "lit") == Some("true")
-    };
+pub fn smokey(w: &impl SmokeLevel, at: [i32; 3]) -> bool {
+    let lit = |y: i32| w.is_lit_campfire([at[0], y, at[2]]);
     for i in 1..=5 {
         let y = at[1] - i;
         if lit(y) {
@@ -400,7 +414,7 @@ pub fn smokey(w: &crate::mobs::MobWorld, at: [i32; 3]) -> bool {
         }
         // SHAPE_VIRTUAL_POST: Block.column(4, 0, 16), the middle quarter.
         let (x0, z0) = (f64::from(at[0]), f64::from(at[2]));
-        let blocked = w.block_collision_boxes(at[0], y, at[2]).iter().any(|b| {
+        let blocked = w.collision_boxes([at[0], y, at[2]]).iter().any(|b| {
             let (min, max) = (b.min_position(), b.max_position());
             min.x < x0 + 0.625 && max.x > x0 + 0.375 && min.z < z0 + 0.625 && max.z > z0 + 0.375
         });

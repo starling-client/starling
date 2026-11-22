@@ -4,11 +4,11 @@
 //! song) starts it again (tools/test_allay_jukebox_source_parity.py measures
 //! the same on vanilla 26.3).
 use crate::game::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
-fn game() -> Game<'static> {
+fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES")
             .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -31,7 +31,7 @@ fn game() -> Game<'static> {
     options.resources = root.clone();
     options.dedicated = Some(Vec::new());
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
-    let res: &'static _ = Box::leak(Box::new(loaded.resources));
+    let res = &*resources.insert(loaded.resources);
     let mut game = Game::new(
         res,
         loaded.pack,
@@ -95,9 +95,10 @@ fn play(game: &mut Game<'_>, x: i32, item: &str) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn stopping_the_first_jukebox_stops_the_dance_until_the_other_plays_again() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     assert!(!dancing(&game));
     play(&mut game, 5, "minecraft:music_disc_cat");
     step(&mut game, 5);
@@ -122,9 +123,10 @@ fn stopping_the_first_jukebox_stops_the_dance_until_the_other_plays_again() {
 const ALLAY: &str = "00000a11-0000-0000-0000-000000000001";
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn control_data_merge_keeps_the_dance_and_its_jukebox() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     play(&mut game, 5, "minecraft:music_disc_cat");
     step(&mut game, 5);
     play(&mut game, 12, "minecraft:music_disc_cat");
@@ -142,9 +144,10 @@ fn control_data_merge_keeps_the_dance_and_its_jukebox() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn control_a_no_ai_allay_never_dances() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     assert!(game.run_command(&format!("data merge entity {ALLAY} {{NoAI:1b}}")));
     play(&mut game, 5, "minecraft:music_disc_cat");
     step(&mut game, 25);
@@ -152,9 +155,10 @@ fn control_a_no_ai_allay_never_dances() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn control_an_allay_out_of_reach_stops_on_a_twentieth_tick() {
-    let mut game = game();
+    let mut resources = None;
+    let mut game = game(&mut resources);
     play(&mut game, 5, "minecraft:music_disc_cat");
     step(&mut game, 2);
     assert!(dancing(&game));

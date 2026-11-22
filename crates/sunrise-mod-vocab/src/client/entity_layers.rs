@@ -5,8 +5,7 @@
 //! its model and the layers before it. The game asks for the layers on every resource load, as the
 //! renderers are built again, and resolves each target's layers to the slot its draw reads, so a
 //! frame hands an entity to its own type's layers and to no other mod.
-use crate::wire::{Reader, Wire, WireError, Writer};
-use crate::{BlockEntityDrawContext, EntityRenderState, PosedParts};
+use crate::{BlockEntityDrawContext, EntityRenderState, FrameModel};
 use std::sync::Arc;
 
 /// A player model, as a player's skin chooses it: each has a renderer of its own, and a layer added
@@ -36,31 +35,30 @@ pub enum LayerTarget {
 /// Entities of a target share one layer, so what differs between them comes from
 /// [`EntityRenderState`].
 ///
-/// A frame has no `Host`: drawing reads nothing of the world but what the state, the parts and
+/// A frame has no `Host`: drawing reads nothing of the world but what the state, the model and
 /// `draw` give. A layer that needs more reads it in a hook and keeps what it read.
 pub trait EntityRenderLayer: Send + Sync + 'static {
     /// `RenderLayer.submit`: draw over `entity` with `draw`'s helpers (`quad`, `cube`, `block`,
     /// `item`, `model_part`), after its model and the layers before this one. The pose stack starts
     /// in the entity's frame: at its feet, turned with its body, +z the way it faces, +x its left,
-    /// +y up, in blocks (`entity.yaw` is the body's turn, `entity.pitch` the head's). `parts` are a
-    /// humanoid model's parts as vanilla posed them this frame, to attach to an arm or the head;
-    /// None for a model that isn't humanoid. `draw` also has the partial tick, the game time and
-    /// the entity's light. Asked once a frame for each entity of the target in view, but not for
-    /// one whose `render_living_pre` or `render_player_pre` a mod canceled: as with NeoForge's
-    /// canceled `RenderLivingEvent.Pre`, none of its layers draw then. A frame is
-    /// drawn afresh: `draw.keep()` does nothing here. `Ok(())` keeps what it drew. An `Err`, a
-    /// panic, and a wasm call that is refused or traps all mean the same: what it drew this frame
-    /// is dropped, the error is logged once, and the layer is asked no more until the next
-    /// resource load adds it again.
+    /// +y up, in blocks (`entity.yaw` is the body's turn, `entity.pitch` the head's). `model`
+    /// borrows the final posed body hierarchy for this callback, as in the Post hooks. Follow
+    /// its parent links when attaching geometry; a layer drawing on the body can honor each
+    /// part's effective visibility, while an independent layer need not. `None` means the
+    /// draw produced no body pose (for example, a successful replacement renderer), not that
+    /// the body is nonhumanoid. `draw` also has the partial tick, the game time and the entity's
+    /// light. In the world, called once a frame for each entity of the target in view, but not
+    /// when its `render_living_pre` or `render_player_pre` was canceled. A frame is drawn afresh:
+    /// `draw.keep()` does nothing here. `Ok(())` keeps what it drew. On an `Err`
+    /// or panic, what it drew this frame is dropped, the error is logged once, and the layer
+    /// is asked no more until the next resource load adds it again.
     fn submit(
         &self,
         entity: &EntityRenderState,
-        parts: Option<&PosedParts>,
+        model: Option<&dyn FrameModel>,
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String>;
 }
-
-crate::wire::wire_handlers::handler!(dyn EntityRenderLayer, "EntityRenderLayer");
 
 /// The layer registry `register_entity_layers` hands out: NeoForge's
 /// `EntityRenderersEvent.AddLayers`, with what it tells of the renderers this load built.

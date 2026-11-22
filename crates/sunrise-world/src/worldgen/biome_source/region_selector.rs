@@ -258,11 +258,11 @@ impl<'a> RegionResolver<'a> {
 mod cache_tests {
     use super::*;
     use crate::worldgen::climate::{Parameter, ParameterPoint};
-    use sunrise_core::density::{ConstantSampler, DensitySampler};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use sunrise_core::density::{ConstantSampler, DensitySampler};
 
     #[test]
     fn chunk_columns_are_reused_across_heights_and_reset_at_chunk_edges() {

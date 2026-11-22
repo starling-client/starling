@@ -14,36 +14,42 @@ enum Change {
 }
 
 #[test]
+#[ignore = "daily"]
 fn replacing_only_world_colour_at_the_same_size_reads_the_new_view() {
     let _gpu = crate::gfx::test_gpu::lock();
     replacement(Change::Colour, true);
 }
 
 #[test]
+#[ignore = "daily"]
 fn replacing_only_world_depth_at_the_same_size_reads_the_new_view() {
     let _gpu = crate::gfx::test_gpu::lock();
     replacement(Change::Depth, true);
 }
 
 #[test]
+#[ignore = "daily"]
 fn replacing_both_world_views_at_the_same_size_matches_fresh_bindings() {
     let _gpu = crate::gfx::test_gpu::lock();
     replacement(Change::Both, true);
 }
 
 #[test]
+#[ignore = "daily"]
 fn retained_world_views_read_updated_contents() {
     let _gpu = crate::gfx::test_gpu::lock();
     replacement(Change::Contents, true);
 }
 
 #[test]
+#[ignore = "daily"]
 fn resized_world_views_match_fresh_bindings() {
     let _gpu = crate::gfx::test_gpu::lock();
     replacement(Change::Resize, true);
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_pack_without_final_reads_the_replaced_world_colour() {
     let _gpu = crate::gfx::test_gpu::lock();
     replacement(Change::Colour, false);
@@ -53,16 +59,19 @@ fn a_pack_without_final_reads_the_replaced_world_colour() {
 /// the picture's size and one copy upsizes it to the window (#9291), so a final that fetches
 /// its pixel by `gl_FragCoord` (as Photon's does) covers every pixel, not a quarter of them.
 #[test]
+#[ignore = "daily"]
 fn a_scaled_picture_fills_the_whole_window() {
     let _gpu = crate::gfx::test_gpu::lock();
-    let instance = crate::gfx::test_gpu::instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
         return;
     };
-    let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: adapter.limits(),
-        ..Default::default()
-    })) else {
+    let Some((device, queue)) = crate::gfx::test_gpu::optional_device_with(
+        &adapter,
+        &wgpu::DeviceDescriptor {
+            required_limits: adapter.limits(),
+            ..Default::default()
+        },
+    ) else {
         return;
     };
     eprintln!("scaled picture adapter: {:?}", adapter.get_info());
@@ -109,14 +118,16 @@ fn a_scaled_picture_fills_the_whole_window() {
 }
 
 fn replacement(change: Change, final_shader: bool) {
-    let instance = crate::gfx::test_gpu::instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
         return;
     };
-    let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: adapter.limits(),
-        ..Default::default()
-    })) else {
+    let Some((device, queue)) = crate::gfx::test_gpu::optional_device_with(
+        &adapter,
+        &wgpu::DeviceDescriptor {
+            required_limits: adapter.limits(),
+            ..Default::default()
+        },
+    ) else {
         return;
     };
     eprintln!("world-target adapter: {:?}", adapter.get_info());
@@ -351,7 +362,10 @@ fn render(
         window,
         &[],
         &mut |_, _, _, _| {},
-    );
+        &std::sync::atomic::AtomicBool::new(false),
+        super::super::in_flight::poll_live,
+    )
+    .unwrap();
     encoder.copy_texture_to_buffer(
         screen.texture().as_image_copy(),
         wgpu::TexelCopyBufferInfo {
@@ -425,6 +439,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         glint_ticks: 0.0,
         nether_lighting: false,
         entities: &[],
+        explicit_particles: None,
         static_block_entities: &[],
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: crate::block_entity_render::StaticCacheFrameStats::default(),
@@ -443,6 +458,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         see_through: &[],
         world_primitives: Default::default(),
         celestial: &[],
+        celestial_bodies: &[],
         stars: None,
         hand: &[],
         hand_items: &[],

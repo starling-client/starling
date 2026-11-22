@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_fluid_tint_range",
+    name: "Refused fluid tint range",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: data/refused_fluid_tint_range/sunrise/fluid/sample.json: invalid value: integer `4294967296`, expected u32 at line 1 column 19

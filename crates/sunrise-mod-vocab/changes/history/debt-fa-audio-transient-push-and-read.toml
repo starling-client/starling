@@ -1,0 +1,10 @@
+ids = [
+    "type:AudioRead",
+    "type:AudioRead.Frames",
+    "type:AudioRead.Eof",
+    "method:prelude::AudioClientHost::open_push_audio_stream",
+]
+why = "The intermediate debt branch had a push entry point and separate read outcomes. Neither appeared in a release. The final pull interface follows NeoForge SoundInstance.getStream and vanilla Channel.pumpBuffers."
+migrate = '''
+For mods built against the intermediate debt branch, replace `open_push_audio_stream(&spec)` with `open_audio_stream(&spec, Box::new(source))`. Move queued PCM into a mod-owned nonblocking buffer consumed by the source. In `AudioStream::read`, return `n` instead of `AudioRead::Frames(n)` for `n > 0`, and `0` instead of `AudioRead::Eof`. To replace `AudioRead::Frames(0)` when playback should continue, return a positive frame count within the zeroed slice without writing to it.
+'''

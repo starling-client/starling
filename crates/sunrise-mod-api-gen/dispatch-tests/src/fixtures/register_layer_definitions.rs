@@ -1,4 +1,4 @@
 mod stubs {
-    pub(super) struct LayerDefinition;
+    pub(super) struct LayerDefinitionRegistration;
     pub(super) struct ModelPart;
 }

@@ -1,0 +1,3 @@
+ids = ["type:RecipeBookDisplay", "type:RecipeBookDisplay.Custom"]
+why = "`RecipeBookDisplay` gains `Custom { slots, result, station }` for a recipe type whose pictures none of the five vanilla layouts fit, such as a cooking pot's inputs beside a container. The book lists its non-empty slots in order as the recipe's ingredients and never draws `station`; the built-in menu layouts map none of it, so a menu bound to one refuses a category that holds it."
+migrate = "Add a `RecipeBookDisplay::Custom { .. }` arm to any exhaustive `match` on `RecipeBookDisplay`."

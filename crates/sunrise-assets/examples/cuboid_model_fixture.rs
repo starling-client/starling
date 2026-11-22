@@ -1,10 +1,10 @@
 mod support;
-use sunrise_assets::model::CuboidModel;
 use serde_json::json;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_assets::model::CuboidModel;
 use support::model;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

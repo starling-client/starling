@@ -9,8 +9,11 @@ pub mod gamepad;
 pub mod gameplay_guide;
 pub mod held;
 pub mod input;
+<<<<<<< sync-sunrise-1
 pub mod input_mode;
 pub mod input_queue;
+=======
+>>>>>>> sunrise/main
 pub mod input_source;
 pub mod interaction_input;
 pub mod key_names;

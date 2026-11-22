@@ -181,6 +181,7 @@ pub fn carry(
     let in_pack = |m: &str| in_pack.contains(m) || shared.contains(m);
     let pack = carry::Pack {
         loaded: &loaded,
+        minecraft: &minecraft,
         mods: &in_pack,
     };
     let mut done = 0;
@@ -220,11 +221,12 @@ pub fn carry(
             Ok(report) => {
                 done += 1;
                 log(format!(
-                    "{}: {} files, {} recipes upgraded ({} kept), {} loot tables upgraded ({} added), {} item definitions added, {} blocks ({} left out, {} with differences), {} items ({} left out), {} convention tags, {} outside",
+                    "{}: {} files, {} recipes upgraded ({} moved out, {} old results moved out), {} loot tables upgraded ({} added), {} item definitions added, {} blocks ({} left out, {} with differences), {} items ({} left out), {} convention tags, {} outside",
                     r.key,
                     report.copied,
                     report.recipes_upgraded,
-                    report.recipes_kept.len(),
+                    report.recipes_custom.len(),
+                    report.recipes_old_result,
                     report.loot_tables_upgraded,
                     report.loot_tables_added,
                     report.item_definitions_added,
@@ -329,6 +331,14 @@ pub fn report(work: &Path, log: Log) -> Result<Vec<report::Row>, String> {
 /// of the data tier (carry-over only).
 pub fn portable(r: &inventory::Record) -> bool {
     r.class == "content" && r.tier == "data"
+}
+
+/// Installs the staged resource packs into the profile's home (`<work>/home`) and records what
+/// happened to each in `profile-resourcepacks.json`; a pack already there is never overwritten.
+pub fn profile(work: &Path) -> Result<crate::resourcepacks::Report, String> {
+    let report = crate::resourcepacks::install(work, &work.join("home"))?;
+    write_json(&work.join("profile-resourcepacks.json"), &report)?;
+    Ok(report)
 }
 
 /// Everything after the import, for the portable mods: their jars (`fetch`,

@@ -1,15 +1,15 @@
 use crate::game::commands::Target;
 use crate::game::{entity_residency::SlotAccess, native_guest_turn_tests::with_guests};
-use sunrise_client::join_seq::residency::table::EntityLookup;
-use sunrise_client::join_seq::residency::{Kind, Source};
-use sunrise_core::geometry::Vec3;
 use std::{
     num::NonZeroU32,
     sync::{Arc, Mutex},
 };
+use sunrise_client::join_seq::residency::table::EntityLookup;
+use sunrise_client::join_seq::residency::{Kind, Source};
+use sunrise_core::geometry::Vec3;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn actual_guest_membership_and_lifetime_survive_nested_body_loans_and_reset() {
     with_guests(|game| {
         use sunrise_mod_runtime::attachments::{AttachmentType, Holder, index::AttachmentIndex};
@@ -117,7 +117,7 @@ fn actual_guest_membership_and_lifetime_survive_nested_body_loans_and_reset() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn refused_body_construction_does_not_begin_guest_or_hook_loans() {
     with_guests(|game| {
         game.as_guest(12, |g| {
@@ -191,7 +191,7 @@ fn refused_body_construction_does_not_begin_guest_or_hook_loans() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn owned_hooks_keep_their_own_uuid_and_source_across_nested_actor_loans() {
     with_guests(|game| {
         let first = [101, 102, 103, 104];
@@ -237,7 +237,7 @@ fn owned_hooks_keep_their_own_uuid_and_source_across_nested_actor_loans() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn production_login_and_local_body_constructor_admit_profile_and_real_loan() {
     use sunrise_client::lan::{NetConfig, guest::Guest, hub::HubConfig};
     use sunrise_protocol::{
@@ -318,6 +318,7 @@ fn production_login_and_local_body_constructor_admit_profile_and_real_loan() {
             max_players: 2,
             integrated: true,
             levels: game.level_shapes,
+            level_seeds: game.levels.runtime.seeds(),
         };
         game.lan_host(settings, net, config).unwrap();
         let motion = sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
@@ -352,7 +353,7 @@ fn production_login_and_local_body_constructor_admit_profile_and_real_loan() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn actual_dragon_admits_exactly_eight_checked_parts_with_independent_uuids() {
     const VALUE: mod_api::AttachmentType<i32> = mod_api::AttachmentType {
         namespace: "source_test",
@@ -476,7 +477,7 @@ fn actual_dragon_admits_exactly_eight_checked_parts_with_independent_uuids() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn dragon_part_registrations_retire_on_replacement_command_and_chunk_unload() {
     const VALUE: mod_api::AttachmentType<i32> = mod_api::AttachmentType {
         namespace: "source_test",
@@ -544,7 +545,7 @@ fn dragon_part_registrations_retire_on_replacement_command_and_chunk_unload() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn parked_mob_attachment_values_survive_other_level_cleanup() {
     const VALUE: mod_api::AttachmentType<i32> = mod_api::AttachmentType {
         namespace: "source_test",

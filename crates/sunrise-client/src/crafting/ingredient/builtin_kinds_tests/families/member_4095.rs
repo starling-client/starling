@@ -93,10 +93,8 @@ fn glider_component_recipe_normalizes_maps_and_matches_borrowed_values() {
 }
 
 #[test]
-fn glider_component_malformed_payloads_name_component_and_omit_recipe() {
+fn glider_component_malformed_payloads_name_component_and_refuse_load() {
     let items = Items::empty();
-    let root = tempfile::tempdir().unwrap();
-    let load = load();
     for payload in [
         serde_json::json!(true),
         serde_json::json!(0),
@@ -116,24 +114,10 @@ fn glider_component_malformed_payloads_name_component_and_omit_recipe() {
         };
         let error = components::validate(&rule, &items).unwrap_err();
         assert!(error.contains("component minecraft:glider:"), "{error}");
-        let recipe = serde_json::json!({
-            "type":"minecraft:crafting_shapeless",
-            "ingredients":[{
-                "type":"neoforge:components",
-                "items":"minecraft:elytra",
-                "components":{"minecraft:glider":payload}
-            }],
-            "result":{"id":"minecraft:diamond"}
-        });
-        let recipes = crate::crafting::Recipes::from_sources(
-            root.path(),
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
             &items,
-            &sunrise_world::loot::PackOverlay::NONE,
-            vec![("fixture:invalid_glider".into(), recipe)],
-            &load,
-        )
-        .unwrap();
-        assert!(recipes.crafting.is_empty(), "{payload}");
+            serde_json::json!({"minecraft:glider":payload}),
+        );
     }
 }
 
@@ -197,29 +181,24 @@ fn rollup_boundary_and_absence_4095() {
         let ingredient = serde_json::json!({"type":"neoforge:components","items":"minecraft:elytra","components":{"minecraft:glider":value}});
         let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
         assert!(error.contains("minecraft:glider"), "{error}");
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            ingredient["components"].clone(),
+        );
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
         let recipes = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
-            vec![
-                ("fixture:invalid_glider".into(), recipe(ingredient)),
-                (
-                    "fixture:valid".into(),
-                    recipe(serde_json::json!("minecraft:elytra")),
-                ),
-            ],
+            vec![(
+                "fixture:valid".into(),
+                recipe(serde_json::json!("minecraft:elytra")),
+            )],
             &load,
         )
         .unwrap();
         assert_eq!(recipes.crafting.len(), 1);
-        assert!(!recipes.recipe_matches(
-            &context,
-            "fixture:invalid_glider",
-            &[Some(ItemStack::new("minecraft:elytra", 1))],
-            1
-        ));
         assert!(recipes.recipe_matches(
             &context,
             "fixture:valid",

@@ -1,8 +1,9 @@
-/// Encode an owned value with the shared native and wasm Wire contract.
+/// Encode an owned value with the Wire codec.
 ///
 /// Fields are encoded in declaration order. Enum tags are zero-based declaration
 /// indices, independent of explicit discriminants. Use `#[wire(via = Type)]` to
 /// encode through `From<&Self>` and validate decoding with `TryFrom<Type>`.
+/// This conversion form is for ordinary Wire, not bounded typed payloads.
 /// Borrowed call arguments are not owned Wire values.
 ///
 /// ```compile_fail
@@ -55,4 +56,4 @@ pub use sunrise_mod_api_macros::__subscriptions;
 /// #[mod_api::sunrise_mod] impl Hooks for A {}
 /// #[mod_api::sunrise_mod] impl Hooks for B {}
 /// ```
-pub use sunrise_mod_api_macros::{sunrise_mod, sunrise_part, if_installed};
+pub use sunrise_mod_api_macros::{if_installed, sunrise_mod, sunrise_part};

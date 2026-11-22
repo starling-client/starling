@@ -1,10 +1,10 @@
 //! Held-live entity attribute allocation workload for external RSS measurement.
-use sunrise_world::attributes::entity::Catalog;
 use std::{
     hint::black_box,
     io::{self, Write},
     sync::Arc,
 };
+use sunrise_world::attributes::entity::Catalog;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     let catalog = Arc::new(Catalog::from_json(&serde_json::from_str(

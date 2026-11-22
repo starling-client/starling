@@ -9,6 +9,7 @@ const VERTEX: &str = "#version 120\nvarying vec2 uv;\nvoid main() { uv=gl_MultiT
 /// cancels the write's own, so `composite1` samples colortex2's cleared side (Iris 1.11.7: 0),
 /// and `composite2`, blended `ONE ONE`, adds 0.5 onto colortex4's 0.25 (Iris 1.11.7: 0.749).
 #[test]
+#[ignore = "daily"]
 fn a_forced_flip_of_a_written_buffer_leaves_it_unflipped() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

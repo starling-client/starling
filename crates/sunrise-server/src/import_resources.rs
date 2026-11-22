@@ -7,11 +7,11 @@
 //! moved in with a rename. The previous copy is put back if any step fails.
 
 use crate::engine;
-use sunrise_server_launch::{GAME_VERSION, Install, config};
 use std::{
     io,
     path::{Path, PathBuf},
 };
+use sunrise_server_launch::{GAME_VERSION, Install, config};
 
 /// Where the prepared files go: the first place the server reads them from
 /// (`sunrise_server_launch::resource_candidates`). That is `[engine] resources` when `server.toml` sets it, else

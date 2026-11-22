@@ -9,8 +9,7 @@
 //! They behave as vanilla's `Button` and `EditBox` do: the game draws them with its own sprites,
 //! label and caret (`DrawContext::widget_button`, `DrawContext::widget_text_field`), so they get
 //! its narration and controller support, and a text field edits with the same core as the
-//! game's own ([`TextEdit`](crate::TextEdit)). Everything else is plain Rust in the mod,
-//! the same in a native and a wasm build.
+//! game's own ([`TextEdit`](crate::TextEdit)). Everything else is plain Rust in the mod.
 //!
 //! ```
 //! use mod_api::client::widgets::{Button, Outcome, TextField, Widgets};
@@ -75,7 +74,34 @@ impl Outcome {
     }
 }
 
-/// A push button (`Button`): a label on the game's `widget/button` sprite.
+/// Custom GUI art for a [`Button`], using the sprite ids accepted by [`DrawContext::sprite`].
+#[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
+#[non_exhaustive]
+pub struct ButtonSprites {
+    /// The normal sprite. If this is selected but missing, uses the vanilla sprite for that state.
+    pub normal: String,
+    /// The hovered or focused sprite. An absent or unknown id falls back to `normal`.
+    pub highlighted: Option<String>,
+    /// The inactive sprite, even when highlighted. An absent or unknown id falls back to `normal`.
+    pub disabled: Option<String>,
+    /// `[x, y]` in GUI pixels, added to the label's draw position, not its hitbox or overflow
+    /// clip. If either coordinate is non-finite, the whole offset is ignored.
+    pub label_offset: [f32; 2],
+}
+
+impl ButtonSprites {
+    /// Uses `normal` in every state, with no label offset.
+    pub fn new(normal: impl Into<String>) -> Self {
+        Self {
+            normal: normal.into(),
+            highlighted: None,
+            disabled: None,
+            label_offset: [0.0; 2],
+        }
+    }
+}
+
+/// A push button (`Button`): a label on a vanilla or custom sprite.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -86,15 +112,18 @@ pub struct Button {
     pub label: Text,
     /// An inactive button is greyed out, takes no press and is skipped by Tab.
     pub active: bool,
+    /// Custom art; `None` draws vanilla sprites with no label offset.
+    pub sprites: Option<ButtonSprites>,
 }
 
 impl Button {
-    /// An active button.
+    /// An active button with vanilla art.
     pub fn new(rect: [f32; 4], label: Text) -> Self {
         Self {
             rect,
             label,
             active: true,
+            sprites: None,
         }
     }
 }
@@ -403,7 +432,13 @@ impl Widgets {
             match widget {
                 Widget::Button(button) => {
                     let highlighted = button.active && (focused || over(button.rect, mouse));
-                    draw.widget_button(button.rect, &button.label, button.active, highlighted)?;
+                    draw.widget_button(
+                        button.rect,
+                        &button.label,
+                        button.active,
+                        highlighted,
+                        button.sprites.as_ref(),
+                    )?;
                 }
                 Widget::TextField(field) => {
                     let layout = draw.widget_text_field(&field.view(focused, now));

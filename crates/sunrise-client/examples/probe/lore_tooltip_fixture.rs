@@ -1,10 +1,10 @@
 //! Lore tooltip companion for tools/test_lore_tooltip_parity.py: the spans
 //! `item_tooltip::lore_texts` gives each stack (SNBT, one per line).
+use std::{error::Error, fmt::Write};
 use sunrise_client::{
     item_data::parse_stack,
     item_tooltip::{lore_texts, tooltip_display},
 };
-use std::{error::Error, fmt::Write};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = crate::args().collect();

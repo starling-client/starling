@@ -4,7 +4,7 @@ use sunrise_client::{items::ItemStack, motion::PlayerMotion};
 use sunrise_core::geometry::Vec3;
 
 #[test]
-#[ignore = "requires SUNRISE_TEST_RESOURCES and fresh Sunrise homes"]
+#[ignore = "daily"]
 fn wing_contacts_restore_motion_and_sync_only_when_hurt_is_refused() {
     with_game(|g| {
         g.creative = false;
@@ -68,7 +68,7 @@ fn wing_contacts_restore_motion_and_sync_only_when_hurt_is_refused() {
 }
 
 #[test]
-#[ignore = "requires SUNRISE_TEST_RESOURCES and fresh Sunrise homes"]
+#[ignore = "daily"]
 fn a_shield_faces_the_dragons_origin_not_the_wing_push() {
     with_game(|g| {
         g.creative = false;

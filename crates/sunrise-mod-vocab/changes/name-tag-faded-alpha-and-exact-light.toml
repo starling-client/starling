@@ -1,0 +1,3 @@
+ids = ["type:NameTagOptions", "handle:NameTagOptions::with_faded_alpha", "handle:NameTagOptions::with_exact_light"]
+why = "NameTagOptions gains faded_alpha (the alpha byte of the faded text, in place of the one derived from the text background opacity) and exact_light (the opaque copy of a see-through label in light exactly, without the floor of 2), with the builders with_faded_alpha and with_exact_light, so a mod can draw a label as Font.drawInBatch takes its alpha and light from the caller (#3281)."
+migrate = "Nothing to change for native mods: NameTagOptions is #[non_exhaustive] and NameTagOptions::new keeps today's drawing."

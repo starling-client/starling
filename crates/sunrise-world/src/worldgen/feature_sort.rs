@@ -36,6 +36,8 @@ impl std::fmt::Display for FeatureSortError {
 }
 impl std::error::Error for FeatureSortError {}
 
+const MAX_ORDER_WORK: usize = 1_048_576; // 2^20: about 13x headroom over the largest known mod pack (80,816); bounds CPU and memory of hostile input
+
 /// Inputs preserve biome order, step order and each holder set's encounter order.
 pub fn build_features_per_step(
     biomes: &[Vec<Vec<FeatureIdentity>>],
@@ -48,7 +50,7 @@ pub fn build_features_per_step(
     let mut encountered = Vec::new();
     let mut graph = BTreeMap::<Node, BTreeSet<Node>>::new();
     let mut steps = 0;
-    let mut remaining = 65536usize;
+    let mut remaining = MAX_ORDER_WORK;
     for biome in biomes {
         if biome.len() > 8192 {
             return Err(FeatureSortError::WorkLimit);

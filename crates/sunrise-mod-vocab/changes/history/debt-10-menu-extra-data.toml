@@ -1,0 +1,3 @@
+ids = ["method:prelude::ScreensClientHost::screen_extra_data"]
+why = "The client host lends the open screen's extra bytes instead of allocating and copying them on every read. Window matching and the distinction between no mod screen and an empty payload are unchanged."
+migrate = "`host.screen_extra_data()` still has the same name, but returns `Option<&[u8]>` instead of `Option<Vec<u8>>`. Change `if let Some(bytes) = host.screen_extra_data() { decode(&bytes); }` to `if let Some(bytes) = host.screen_extra_data() { decode(bytes); }`. If you need to keep the bytes beyond the host borrow, use `host.screen_extra_data().map(|bytes| bytes.to_vec())`."

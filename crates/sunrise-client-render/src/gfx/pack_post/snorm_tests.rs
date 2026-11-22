@@ -3,8 +3,8 @@
 //! PR has them); the programs here are the probe's, cut down. Values that land halfway between
 //! two steps (-0.5 × 127) are left out: GPUs may round them either way.
 use super::destination_tests::Fixture;
-use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 const VERTEX: &str = "#version 120\nvarying vec2 uv;\nvoid main() { uv=gl_MultiTexCoord0.xy; gl_Position=ftransform(); }\n";
 
@@ -54,6 +54,7 @@ fn pack() -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn snorm_buffers_clamp_and_quantise() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

@@ -1,0 +1,1 @@
+sunrise-client game::native_hooks::on_entity_item_update::on_entity_item_update_tests::a_named_item_still_hears_post_when_its_part_halts_physics lib daily resources

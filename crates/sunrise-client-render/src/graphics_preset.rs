@@ -23,7 +23,7 @@ struct Table {
     entity_shadows: bool,
     biome_blend: i32,
     mipmap_levels: i32,
-    entity_distance: f32,
+    entity_distance: f64,
     cutout_leaves: bool,
     weather_radius: i32,
     /// Far terrain's range in chunks; 0 is off.

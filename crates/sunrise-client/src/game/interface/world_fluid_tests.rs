@@ -1,12 +1,12 @@
 //! A mod's world fluid in a real game: its bucket places it, it flows by its own rules and its
 //! part's, a bucket collects it and a save keeps it, while water beside it stays vanilla's.
 use super::native_entity_refs::tests::{run_fresh_cases, with_game_at};
-use sunrise_client::chunk::Chunk;
-use sunrise_core::position::BlockPos;
-use sunrise_world::{chunk::BlockState, fluid::FluidKind, registry::BlockStateId};
 use mod_api::WorldFluid;
 use mod_api::{FluidPart, FluidRulesEvent, Hooks, LevelHost, ModEntry, Registrar};
 use std::sync::Arc;
+use sunrise_client::chunk::Chunk;
+use sunrise_core::position::BlockPos;
+use sunrise_world::{chunk::BlockState, fluid::FluidKind, registry::BlockStateId};
 
 const THICK_ROW: i32 = 8;
 
@@ -34,7 +34,7 @@ impl Hooks for Oily {
 }
 
 #[test]
-#[ignore = "needs prepared resources and an isolated process for native mods"]
+#[ignore = "daily"]
 fn a_mods_fluid_is_placed_flows_is_collected_and_saved() {
     if run_fresh_cases(
         "game::world_fluid_tests::a_mods_fluid_is_placed_flows_is_collected_and_saved",
@@ -152,7 +152,7 @@ fn a_mods_fluid_is_placed_flows_is_collected_and_saved() {
             game.world.set(2, 64, 1, flowing).unwrap();
             let biomes = game.res.biomes().clone();
             let chunk = game.world.chunks.get(&(0, 0)).unwrap();
-            let saved = sunrise_client::save::encode(chunk, registry, &biomes);
+            let saved = sunrise_client::save::encode(chunk, registry, &biomes, &Default::default());
             let loaded = sunrise_client::save::decode(&saved, registry, &biomes).unwrap();
             assert_eq!(loaded.block(1, 64, 1), oil);
             assert_eq!(loaded.block(2, 64, 1), flowing);

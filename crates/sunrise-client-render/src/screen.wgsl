@@ -6,7 +6,7 @@
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 // The block sprites' sampler (nearest), and the entity group's lightmap
 // sampler (linear) for `blur`. A blurred sprite has a one-texel border in the
-// atlas, wrapped as repeat reads it (hud.rs), so the hardware's bilinear
+// atlas, wrapped as repeat reads it (hud/image.rs), so the hardware's bilinear
 // sample is GL_LINEAR with repeat; clamp-to-edge keeps the sample point half
 // a texel inside. Each sampling has its own pipeline (gfx.rs), so a pixel
 // costs what it did with nearest and repeat only: one sample. Each entry

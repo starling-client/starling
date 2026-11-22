@@ -1,0 +1,21 @@
+{
+  "template": "minecraft:stone",
+  "state_properties": {
+    "waterlogged": {
+      "type": "boolean"
+    },
+    "powered": {
+      "type": "boolean"
+    }
+  },
+  "state_light": {
+    "properties": [
+      "powered",
+      "waterlogged"
+    ],
+    "values": {
+      "true,false": 15
+    },
+    "default": 1
+  }
+}

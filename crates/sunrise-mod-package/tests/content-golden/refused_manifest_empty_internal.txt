@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: empty internal path, kind or hash, or duplicate internal path and kind
+
+icon:
+unavailable

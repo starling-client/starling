@@ -295,34 +295,39 @@ fn a_full_ring_drops_and_counts() {
 
 #[test]
 fn a_session_that_needs_a_larger_ring_than_the_threads_first_gets_one() {
-    let (ready, wait) = mpsc::channel();
-    let (go, work) = mpsc::channel::<()>();
-    let (done, finished) = mpsc::channel::<()>();
-    let worker = thread::spawn(move || {
-        sampled_thread("t-grow");
-        ready.send(()).unwrap();
-        while work.recv().is_ok() {
-            on_deep_stack(|| spin_known(cpu_ms_for_samples(100)));
-            done.send(()).unwrap();
-        }
-    });
-    wait.recv().unwrap();
-    let run = |config: Config| {
-        let session = start_session(config, "t-grow");
-        go.send(()).unwrap();
-        finished.recv().unwrap();
-        session.stop(|_, _| {})
-    };
+    // A thread's ring only grows, so every run samples a fresh thread: on the same thread, a run whose large ring fell
+    // short of samples left the large ring behind, and no later small run could drop (#1490).
     first_passing_run(|| {
+        let (ready, wait) = mpsc::channel();
+        let (go, work) = mpsc::channel::<()>();
+        let (done, finished) = mpsc::channel::<()>();
+        let worker = thread::spawn(move || {
+            sampled_thread("t-grow");
+            ready.send(()).unwrap();
+            while work.recv().is_ok() {
+                on_deep_stack(|| spin_known(cpu_ms_for_samples(100)));
+                done.send(()).unwrap();
+            }
+        });
+        wait.recv().unwrap();
+        let run = |config: Config| {
+            let session = start_session(config, "t-grow");
+            go.send(()).unwrap();
+            finished.recv().unwrap();
+            session.stop(|_, _| {})
+        };
         let small = run(at_1khz(Unwind::StackCopy, 4));
-        ensure(small.dropped > 20, || format!("small ring: {small:?}"))?;
-        let large = run(at_1khz(Unwind::StackCopy, 512));
-        ensure(large.dropped == 0 && large.samples > 60, || {
-            format!("large ring: {large:?}")
-        })
+        let outcome =
+            ensure(small.dropped > 20, || format!("small ring: {small:?}")).and_then(|()| {
+                let large = run(at_1khz(Unwind::StackCopy, 512));
+                ensure(large.dropped == 0 && large.samples > 60, || {
+                    format!("large ring: {large:?}")
+                })
+            });
+        drop(go);
+        worker.join().unwrap();
+        outcome
     });
-    drop(go);
-    worker.join().unwrap();
 }
 
 #[test]

@@ -11,6 +11,7 @@ use super::{
 use crate::health::DamageLevel;
 use crate::items::ItemStack;
 use crate::sculk::{self, Context, Info};
+use std::ops::ControlFlow;
 use sunrise_core::geometry::trig::Mth;
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_protocol::entity_data::PositionSource;
@@ -499,28 +500,31 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 /// `Allay.travel`: `travelFlying(input, getSpeed())` — the airborne speed is
 /// the one the move control set this tick, and no gravity applies, so an
 /// allay never falls under its own travel.
-pub fn travel(
+pub(super) fn travel(
     m: &mut Mob,
     w: &MobWorld,
     level: &mut DamageLevel<'_>,
     input: Vec3,
     events: &mut Vec<MobEvent>,
-) -> bool {
+    pause: bool,
+) -> ControlFlow<super::living::TravelPause> {
     let speed = m.ai.speed;
-    m.travel_flying_speeds(w, level, input, events, 0.02, 0.02, speed);
-    true
+    m.travel_flying_speeds(w, level, input, events, 0.02, 0.02, speed, pause)
 }
-/// `Allay.aiStep` / `tick`: healing, cooldowns, the hold and spin clocks.
+/// `Allay.aiStep` / `tick`: pause the Brain's memory clocks, not passive work.
 pub fn ai_step(m: &mut Mob, w: &MobWorld) {
-    tick_liked_player(m);
+    if !m.ai.ai_paused {
+        tick_liked_player(m);
+        // `AllayAi.initCoreActivity`: both cooldowns are Brain behaviours.
+        if m.extra.ints[2] > 0 {
+            m.extra.ints[2] -= 1;
+        }
+        // CountDownCooldownTicks stops and erases a nonpositive memory; a positive
+        // value reaches zero for one tick before that stop.
+        set_pickup_cooldown(m, pickup_cooldown(m).filter(|t| *t > 0).map(|t| t - 1));
+    }
     passive_heal(m, w.loop_context);
     stop_dancing_away(m, w);
-    if m.extra.ints[2] > 0 {
-        m.extra.ints[2] -= 1;
-    }
-    // CountDownCooldownTicks stops and erases a nonpositive memory; a positive
-    // value reaches zero for one tick before that stop.
-    set_pickup_cooldown(m, pickup_cooldown(m).filter(|t| *t > 0).map(|t| t - 1));
     update_duplication_cooldown(m);
     animate(m);
 }

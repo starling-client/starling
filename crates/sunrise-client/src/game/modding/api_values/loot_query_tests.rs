@@ -3,16 +3,32 @@ use mod_api::{Hooks, ItemPart, Registrar, RegistrationContext};
 struct Reader;
 #[mod_api::__subscriptions]
 impl Hooks for Reader {
-    fn loot_condition(&self, event: &mut mod_api::LootConditionEvent<'_>) {
-        assert_eq!(event.ctx.queried_table_id, "minecraft:blocks/short_grass");
-        let stack = event.ctx.queried_stack.as_ref().unwrap();
+    fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+        r.register_loot_condition_type(
+            &mod_api::Identifier::parse("reader:query").unwrap(),
+            Reader,
+        );
+    }
+}
+impl mod_api::ModLootCondition for Reader {
+    fn validate(&self, _: &mod_api::LootEntryData) -> Result<(), String> {
+        Ok(())
+    }
+    fn test(
+        &self,
+        _: &mod_api::LootEntryData,
+        context: &mut dyn mod_api::LootTypeContext,
+    ) -> Result<bool, String> {
+        let snapshot = context.snapshot();
+        assert_eq!(snapshot.queried_table_id, "minecraft:blocks/short_grass");
+        let stack = snapshot.queried_stack.as_ref().unwrap();
         assert_eq!(
             mod_api::__private::item_key_id(stack.item()).unwrap(),
             "minecraft:stick"
         );
         assert_eq!(stack.count(), 3);
         assert_eq!(stack.damage(), 2);
-        event.holds = true;
+        Ok(true)
     }
 }
 #[test]
@@ -40,20 +56,26 @@ fn queried_parameters_reach_native_mod_condition() {
         block: None,
         luck: 0.0,
         biome: None,
-        seed: 7,
+        seed: 0,
         place: None,
     };
     mod_platform::testing::with_mods(
         vec![mod_api::ModEntry::new("reader", Box::new(Reader))].into(),
         || {
-            let mut holds = false;
-            dispatch_loot_condition(
-                "test:query",
-                &serde_json::Value::Null,
-                &ctx,
-                &mut holds,
-                &Tags,
-            );
+            crate::game::api_values::prepare_stack_boundary_tests();
+            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
+                .unwrap();
+            crate::game::api_values::resolve_stack_boundary_test_items();
+            let mut random = sunrise_core::random::LegacyRandom::new(0);
+            let holds = crate::game::loot_types::capture()
+                .test(
+                    "reader:query",
+                    &serde_json::json!({}),
+                    &ctx,
+                    &mut random,
+                    &Tags,
+                )
+                .unwrap();
             assert!(holds);
         },
     );
@@ -99,8 +121,6 @@ fn queried_ability_parts_grant_and_deny_isolated() {
                 loot_ability: dispatch_loot_ability,
                 loot_table_load: |_, _, _| {},
                 modify_default_components: |_, _, _| {},
-                loot_function: |_, _, _, _, _| {},
-                loot_condition: |_, _, _, _, _| {},
             }
         )
         .is_ok()
@@ -158,7 +178,7 @@ fn queried_ability_parts_grant_and_deny_isolated() {
 
 struct Tags;
 impl engine::LootTags for Tags {
-    fn members(&self, _: &str, _: &str) -> Vec<String> {
-        vec![]
+    fn members(&self, _: &str, _: &str) -> Option<Vec<String>> {
+        None
     }
 }

@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Pokazuje „Gra w Sunrise” w twoim profilu Discord, gdy Discord jest uruchomiony: menu, tryb jednoosobowy lub wieloosobowy, wymiar i czas gry. Nigdy nazwy świata ani adresu serwera."
+}

@@ -782,6 +782,78 @@ impl AttributeMap {
             .map(Self)
     }
 
+    /// Encode entries read by `parse` for a dimension registry definition. Unported
+    /// attribute values remain opaque, as in the reader. Code-only expressions
+    /// cannot be sent as registry data.
+    pub(crate) fn into_nbt(self) -> Result<sunrise_core::nbt::Compound, String> {
+        use sunrise_core::{json_nbt, nbt::Tag};
+        fn value(value: Value) -> Result<Tag, String> {
+            Ok(match value {
+                Value::Bool(v) => Tag::Byte(i8::from(v)),
+                Value::Float(v) => Tag::Float(v.to_bits()),
+                Value::Rgb(v) => color(v),
+                Value::Argb(v) => color(v),
+                Value::Other(v) => json_nbt::json_to_tag(&v).map_err(|e| e.to_string())?,
+            })
+        }
+        fn color<const N: usize>(channels: [f32; N]) -> Tag {
+            Tag::List(
+                channels
+                    .into_iter()
+                    .map(|v| Tag::Float(v.to_bits()))
+                    .collect(),
+            )
+        }
+        self.0
+            .into_iter()
+            .map(|(attribute, entry)| {
+                let modified = |name: &str, argument| {
+                    Tag::compound([
+                        ("modifier", Tag::String(name.into())),
+                        ("argument", argument),
+                    ])
+                };
+                let float = |n: f32| Tag::Float(n.to_bits());
+                let tag = match entry {
+                    Entry::Override(v) => value(v)?,
+                    Entry::Add(v) => modified("add", value(v)?),
+                    Entry::Subtract(v) => modified("subtract", value(v)?),
+                    Entry::Multiply(v) => modified("multiply", value(v)?),
+                    Entry::Minimum(v) => modified("minimum", float(v)),
+                    Entry::Maximum(v) => modified("maximum", float(v)),
+                    Entry::AlphaBlendFloat { value, alpha } => modified(
+                        "alpha_blend",
+                        Tag::compound([("value", float(value)), ("alpha", float(alpha))]),
+                    ),
+                    Entry::AlphaBlendColor(v) => modified("alpha_blend", color(v)),
+                    Entry::BlendToGray { brightness, factor } => modified(
+                        "blend_to_gray",
+                        Tag::compound([
+                            ("brightness", float(brightness)),
+                            ("factor", float(factor)),
+                        ]),
+                    ),
+                    Entry::Boolean(op, v) => modified(
+                        match op {
+                            BoolOp::And => "and",
+                            BoolOp::Nand => "nand",
+                            BoolOp::Or => "or",
+                            BoolOp::Nor => "nor",
+                            BoolOp::Xor => "xor",
+                            BoolOp::Xnor => "xnor",
+                        },
+                        Tag::Byte(i8::from(v)),
+                    ),
+                    Entry::Unported(v) => json_nbt::json_to_tag(&v).map_err(|e| e.to_string())?,
+                    Entry::Dynamic(_) => {
+                        return Err(format!("{} is a computed attribute", attribute.id));
+                    }
+                };
+                Ok((format!("minecraft:{}", attribute.id).as_str().into(), tag))
+            })
+            .collect()
+    }
+
     /// A map built in code (`EnvironmentAttributeMap.Builder`); a later entry for the same
     /// attribute replaces the earlier one.
     pub fn from_entries(entries: impl IntoIterator<Item = (&'static Attribute, Entry)>) -> Self {

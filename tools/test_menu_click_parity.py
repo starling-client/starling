@@ -32,9 +32,11 @@ import json
 import random
 try:
     from . import interaction_lab as lib, lab
+    from .test_furnace_parity import fuel_stacks
 except ImportError:
     import interaction_lab as lib
     import lab
+    from test_furnace_parity import fuel_stacks
 
 MENUS = {'inventory': 46, 'crafting': 46, 'chest1': 45, 'chest2': 54, 'chest3': 63, 'chest4': 72, 'chest5': 81,
          'chest6': 90, 'hopper': 41, 'dispenser': 45, 'shulker': 63, 'furnace': 39, 'blast_furnace': 39, 'smoker': 39, 'brewing': 41, 'crafter': 46,
@@ -372,6 +374,17 @@ def main():
     g = Gen(rng, items, random.Random(args.seed + 1))
     cases = []
     chosen = args.menus.split(',') if args.menus else list(MENUS)
+    if 'furnace_be' in chosen:
+        # Carried placement and shift-click from the first main inventory slot.
+        # Buckets can be placed but do not route to the fuel slot on shift-click.
+        for fuel in (*fuel_stacks().values(), snbt('minecraft:bucket', 4)):
+            for click, source in [('PICKUP', 1), ('QUICK_MOVE', 3)]:
+                slots = ['-'] * MENUS['furnace_be']
+                if click == 'QUICK_MOVE':
+                    slots[source] = fuel
+                cases.append({'menu': 'furnace_be', 'creative': False, 'slots': slots,
+                              'carried': fuel if click == 'PICKUP' else '-', 'data': [0] * 4,
+                              'ops': [[source, 0, click]]})
     for n in range(args.cases):
         menu = chosen[n % len(chosen)]
         size = MENUS[menu]
@@ -512,6 +525,8 @@ def main():
                 cur = []
         return out
     native, rust = by_case(native), by_case(rust)
+    if len(native) != len(cases) or len(rust) != len(cases):
+        raise SystemExit(f'Expected {len(cases)} results, got vanilla={len(native)}, Rust={len(rust)}')
     bad = {}
     for case, a, b in zip(cases, native, rust):
         if a != b:

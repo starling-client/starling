@@ -1,9 +1,9 @@
-use sunrise_threads::sampler::test_support::{ensure, first_passing_run};
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime};
+use sunrise_threads::sampler::test_support::{ensure, first_passing_run};
 
 use sunrise_perf_format::v1::{
     Kind as CaptureKind, SampleProfile, Side, Start, Stop, StringEntry, Unit,

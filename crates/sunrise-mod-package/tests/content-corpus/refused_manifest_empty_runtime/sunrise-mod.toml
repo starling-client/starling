@@ -1,0 +1,4 @@
+id = "refused_manifest_empty_runtime"
+name = "Refused manifest empty runtime"
+version = "1.2.3"
+[runtime]

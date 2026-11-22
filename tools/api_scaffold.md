@@ -14,9 +14,8 @@ that domain's `mod.rs`; the domain itself must already be registered by the API.
 modules retain their topic-based filenames. Choose distinct topics for unrelated
 areas, even when they belong to different domains.
 
-Every emitted value, including a handle's hidden fields projection, explicitly
-derives `sunrise_mod_api_macros::Wire`. There is no hand-written codec or generator
-fallback. Handles use `WorldEpoch`. Default API names remove an engine leaf's
+Scaffolding does not emit binary codecs. Add `#[derive(Wire)]` by hand only when a
+value is intended for a binary boundary. Handles use `WorldEpoch`. Default API names remove an engine leaf's
 `Native` prefix; explicit API names with that prefix are refused. Engine paths and
 engine construction expressions are preserved verbatim.
 

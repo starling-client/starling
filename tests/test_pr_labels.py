@@ -62,7 +62,6 @@ class KindTests(unittest.TestCase):
 class AreaTests(unittest.TestCase):
     def test_paths(self):
         cases = {
-            "launcher/src/main.rs": "launcher",
             "crates/sunrise-world/src/worldgen/structure/mod.rs": "worldgen",
             "crates/sunrise-client/src/mobs/ai.rs": "mobs",
             "crates/sunrise-client/src/game/mobs/wither.rs": "mobs",
@@ -96,17 +95,17 @@ class AreaTests(unittest.TestCase):
             self.assertIsNone(pl.area_of(path), path)
 
     def test_biggest_three_with_a_tenth_each(self):
-        files = [("launcher/src/a.rs", 50), ("crates/sunrise-client/src/mobs/a.rs", 30),
+        files = [("crates/sunrise-world/src/worldgen/a.rs", 50), ("crates/sunrise-client/src/mobs/a.rs", 30),
                  ("crates/sunrise-command/src/a.rs", 10), ("crates/sunrise-client-render/src/audio.rs", 9),
                  ("tools/x.py", 1)]
-        self.assertEqual(pl.areas(files), ["launcher", "mobs", "commands"])
-        self.assertEqual(pl.areas([("tools/x.py", 95), ("launcher/src/a.rs", 5)]), [])
+        self.assertEqual(pl.areas(files), ["worldgen", "mobs", "commands"])
+        self.assertEqual(pl.areas([("tools/x.py", 95), ("crates/sunrise-world/src/worldgen/a.rs", 5)]), [])
         self.assertEqual(pl.areas([]), [])
 
     def test_files_count_on_push_not_on_edit(self):
-        files = [("launcher/src/a.rs", 5)]
-        self.assertEqual(pl.plan_event(event(body(), action="synchronize"), files), (["launcher"], None))
-        self.assertEqual(pl.plan_event(event(body(), labels=("launcher",), action="synchronize"), files), ([], None))
+        files = [("crates/sunrise-world/src/worldgen/a.rs", 5)]
+        self.assertEqual(pl.plan_event(event(body(), action="synchronize"), files), (["worldgen"], None))
+        self.assertEqual(pl.plan_event(event(body(), labels=("worldgen",), action="synchronize"), files), ([], None))
 
 
 class BackfillTests(unittest.TestCase):

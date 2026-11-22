@@ -11,11 +11,12 @@ pub trait Hooks {
     /// sounds. Fires on the Game that runs the attack, and on the attacking
     /// client, which only asks.
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "cancel",
         out = "canceled",
         neoforge = "SweepAttackEvent",
         cancellable = true
     )]
-    fn sweep_attack();
+    fn sweep_attack(target: &str, vanilla_sweep: bool, sweeping: &mut bool, canceled: &mut bool);
 }

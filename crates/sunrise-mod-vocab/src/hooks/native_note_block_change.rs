@@ -7,6 +7,8 @@ pub trait Hooks {
     /// through 24; an out-of-range value keeps vanilla's. Cancel to leave the
     /// note unchanged and prevent playback.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -14,5 +16,5 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::native_note_block_change::GameLevel<'_>::native_note_block_change"
     )]
-    fn note_block_change();
+    fn note_block_change(context: &NoteBlockChange, new_note: &mut i32, cancel: &mut bool);
 }

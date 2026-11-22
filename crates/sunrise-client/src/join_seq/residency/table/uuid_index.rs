@@ -1,12 +1,12 @@
 //! Reverse lookup of the UUIDs of admitted entities, scoped to one level.
 use super::{DimensionKey, ResidentRow, SavedUuidUpdate};
 use crate::join_seq::residency::Kind;
-use sunrise_core::fast_hash::FxHashMap;
 use std::{
     collections::{BTreeSet, hash_map::Entry},
     num::NonZeroU32,
     ops::Bound::{Excluded, Unbounded},
 };
+use sunrise_core::fast_hash::FxHashMap;
 
 type LevelUuid = (DimensionKey, [i32; 4]);
 
@@ -23,7 +23,7 @@ pub(super) struct UuidIndex {
 }
 
 impl UuidIndex {
-    fn key(&self, id: NonZeroU32, row: ResidentRow) -> Option<LevelUuid> {
+    pub(super) fn key(&self, id: NonZeroU32, row: ResidentRow) -> Option<LevelUuid> {
         let owner = row.location.owner;
         if owner.kind == Kind::DragonPart {
             return None;

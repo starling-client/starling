@@ -14,7 +14,7 @@ mod kept;
 mod mesh;
 pub mod packed;
 mod samples;
-use sunrise_world::registry::BlockStateId;
+use crate::columns::Surface;
 use std::{
     collections::VecDeque,
     sync::{
@@ -24,6 +24,7 @@ use std::{
     },
     thread,
 };
+use sunrise_world::registry::BlockStateId;
 
 const CELLS: usize = 16;
 const MAX_SAVED: usize = 1024;
@@ -41,39 +42,42 @@ const SAMPLE_JOBS: usize = 4;
 const QUEUED_PER_SAMPLER: usize = 32;
 /// The last `refresh`es `Lod::refreshed_since` tells apart by area.
 const MAX_REFRESHED: usize = 64;
-/// Threads that sample far tiles beside the mesher. Sampling is the cold-load
-/// bottleneck (each task evaluates a shared density lattice for 256 columns),
-/// so medium machines use two thirds of their cores, not half.
+/// Threads that sample far tiles beside the mesher: a quarter of the cores,
+/// at most eight. Sampling is the cold-load bottleneck (each task evaluates a
+/// shared density lattice for 256 columns).
 ///
-/// The mesher has little to do until tiles are sampled, so its threads sit
-/// idle through the part of a cold build that waits on sampling. Measured on
-/// a 12-thread machine building 4336 tiles at LOD distance 256, from the game
-/// answering the control socket until every target tile is sampled, four runs
-/// a configuration:
+/// The three far pools ([`sampling_threads`], [`meshing_threads`],
+/// [`decoration_threads`]) were once sized for the shortest build, taking more
+/// threads than the machine had beside the near chunks' workers. While far
+/// terrain built, the frame ran on a machine that was busy everywhere: every
+/// render thread span, the HUD's too, took three to ten times its idle time,
+/// and the near chunks loaded slower. Sampling and meshing now stay under
+/// half the cores, and decoration takes a fifth. Measured with `--benchmark travel` at render distance 12 and
+/// `lodDistance` 256 on a 16-thread laptop (Ryzen 7 6800H):
 ///
-/// | samplers / meshers | sampling | whole build |
-/// |---|---|---|
-/// | 6 / 5 (before) | 15.0 s | 23.9 s |
-/// | 8 / 3 | 11.8 s | 18.6 s |
-/// | 9 / 2 | 10.6 s | 19.1 s |
+/// | samplers / meshers / decoration | flight 1% low | near chunks in | far terrain in |
+/// |---|---|---|---|
+/// | 8 / 7 / 6 (before) | 46 fps | 5.6 s | 90 s |
+/// | 4 / 3 / 3 | 126 fps | 4.4 s | 115 s |
+/// | 3 / 2 / 2 | 143 fps | 3.4 s | 160 s |
 ///
-/// Nine samplers finish sampling sooner still, but leave the mesher two
-/// threads and the whole build ends later. The cap keeps a large machine
-/// from starving its mesher, and `meshing_threads` keeps the frame and the
-/// ticks a core either way.
+/// Fewer threads still raise the lows a little more, but the far build then
+/// takes much longer.
 fn sampling_threads(cores: usize) -> usize {
-    if cores >= 8 {
-        (cores * 2 / 3).min(8)
-    } else {
-        (cores / 4).clamp(1, 3)
-    }
+    (cores / 4).clamp(1, 8)
 }
-/// Tile meshing used to be one worker with a whole selection batch at a time.
-/// It now has its own pool, sized so ticks and the frame keep a core.
+/// Tile meshing has its own pool: the rest of half the cores after the
+/// samplers and one core for the far terrain worker itself.
 fn meshing_threads(cores: usize) -> usize {
-    cores
+    (cores / 2)
         .saturating_sub(sampling_threads(cores) + 1)
         .clamp(1, 16)
+}
+/// Far decoration's threads (`vanillagen::lod`): a fifth of the cores. They
+/// run at idle priority, but on the same cores as the frame and the near
+/// chunks all the same.
+pub fn decoration_threads(cores: usize) -> usize {
+    (cores / 5).clamp(1, 12)
 }
 /// While the near terrain loads on a machine with four threads or fewer, far
 /// terrain starts one sample job at most this often and no detail: it would
@@ -156,8 +160,7 @@ impl ZoomAim {
         // player faces, and there is no direction to compare it with. Tested
         // on the box rather than on the circle below, whose radius a camera
         // on a corner matches exactly -- a float coin-toss.
-        // In i64: a level 22 tile is 67 million blocks wide, so the sum
-        // at the far edge of the world overflows an i32.
+        // In i64, so a tile at the world's edge never overflows.
         let (ox64, oz64, size64) = (i64::from(ox), i64::from(oz), i64::from(size));
         if (ox64..ox64 + size64).contains(&i64::from(camera[0]))
             && (oz64..oz64 + size64).contains(&i64::from(camera[1]))
@@ -187,19 +190,13 @@ impl ZoomAim {
 }
 
 /// The coarsest tile level: `Plan` roots cover at most `MAX_CHUNKS` chunks
-/// around (a level-22 tile is 67 million blocks wide: the whole world).
-pub(crate) const MAX_LEVEL: u8 = 22;
-/// Tiles this far from the camera (1024 chunks, as far as far terrain went
-/// before it covered the world) are planned with `WORLD_SPLIT`.
-const WORLD_START: i32 = 1024 * 16;
-/// How many tile widths away from the camera a tile of the world-wide terrain
-/// splits (`Plan::visit`: cells then span about 1/48 of the distance).
-const WORLD_SPLIT: i32 = 3;
+/// around (a level-10 tile is 16,384 blocks wide).
+pub(crate) const MAX_LEVEL: u8 = 10;
 /// A split tile stays split until its distance passes the threshold by this
 /// ratio (`Plan::visit`): 1 / 0.95.
 const RETURN: (i64, i64) = (20, 19);
 /// The farthest `Plan` reaches, in chunks.
-pub const MAX_CHUNKS: u32 = 1 << 22;
+pub const MAX_CHUNKS: u32 = 1 << MAX_LEVEL;
 /// The coarsest tile level whose chunks are generated in full (trees,
 /// structures) rather than sampled: cells of up to 4 blocks, out to about
 /// 1024 blocks at Full far detail.
@@ -227,14 +224,6 @@ const DETAIL_REQUEST: usize = 512;
 /// percentile, where the median frame was 6 ms. What the budget leaves waits
 /// in `Lod::detail_backlog` for the frames after it.
 const DETAIL_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
-/// Top solid face and optional fluid face, in absolute block coordinates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Surface {
-    pub height: i32,
-    pub state: BlockStateId,
-    pub water: Option<(i32, BlockStateId)>,
-    pub biome: u16,
-}
 /// A half-open material run; gaps between runs remain air.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
@@ -797,6 +786,7 @@ impl Plan {
         // blocks. Each step of coarseness keeps them twice as large (a quarter
         // of the cells): Reduced one, Mobile two.
         let held = previous.split.contains(&key);
+<<<<<<< sync-sunrise-1
         // How many tile sizes away a tile splits at Full detail, doubled: 8,
         // and 10 once split.
         let doubled: i64 = if held { 20 } else { 16 };
@@ -805,14 +795,17 @@ impl Plan {
         // Reduced's: the whole world is 22 levels, not all of them worth full
         // cells.
         let world = key.distance(camera) >= WORLD_START;
+=======
+        let split = if held { 10 } else { 8 };
+>>>>>>> sunrise/main
         // A zoomed view magnifies the tiles its cone covers, so those split
         // further; every other tile keeps the plan it would have had
-        // ([`ZoomAim`]). The world-wide threshold is boosted too: the horizon is
-        // where a spyglass shows the coarsest cells of all.
+        // ([`ZoomAim`]).
         let boost = match self.aim {
             Some(aim) if aim.covers(key, camera) => i64::from(aim.boost),
             _ => 1,
         };
+<<<<<<< sync-sunrise-1
         let threshold = if world {
             split.min(i64::from(key.size()) * i64::from(WORLD_SPLIT))
         } else {
@@ -823,6 +816,14 @@ impl Plan {
         // split last plan stays split until it is 5% past them, or it
         // flickered between two levels as the camera moved a block to and
         // fro across the line.
+=======
+        let threshold =
+            i64::from(key.size()) * i64::from(if reduced { split / 2 } else { split }) * boost;
+        // The 8 to 10 band above is wide already. The ring of full detail
+        // around the camera has none: a tile split last plan stays split
+        // until it is 5% past it, or it flickered between two levels as the
+        // camera moved a block to and fro across the line.
+>>>>>>> sunrise/main
         let hold = |bound: i64| {
             if held {
                 bound * RETURN.0 / RETURN.1
@@ -833,8 +834,7 @@ impl Plan {
         let distance = i64::from(key.distance(camera));
         if key.level > 0
             && (distance < hold(i64::from(detail) * 16 + 16)
-                || distance.max(i64::from(self.elevation))
-                    < if world { hold(threshold) } else { threshold })
+                || distance.max(i64::from(self.elevation)) < threshold)
         {
             self.split.insert(key);
             for child in key.children() {
@@ -1711,25 +1711,6 @@ impl Lod {
             returned_at: std::time::Instant::now(),
             keeps_observed,
         }
-    }
-    /// The solid ground at block column (x, z): its top face's height and
-    /// its block, from the finest tile sampled there. For aiming past the
-    /// resident chunks (`game.raycast`); water is passed, as the view's ray
-    /// passes it.
-    pub fn ground(&self, x: i32, z: i32) -> Option<(i32, BlockStateId)> {
-        (0..=MAX_LEVEL).find_map(|level| {
-            let size = 16 << level;
-            let key = TileKey {
-                x: x.div_euclid(size),
-                z: z.div_euclid(size),
-                level,
-            };
-            let columns = self.ready.get(&key).filter(|c| c.len() == CELLS * CELLS)?;
-            let cell = size / CELLS as i32;
-            let (cx, cz) = ((x - key.x * size) / cell, (z - key.z * size) / cell);
-            let surface = columns[cz as usize * CELLS + cx as usize].surface?;
-            Some((surface.height, surface.state))
-        })
     }
     pub fn stats(&self) -> (usize, usize) {
         (self.active.len(), self.ready.len())
@@ -3642,6 +3623,7 @@ mod tests {
         );
     }
     #[test]
+<<<<<<< sync-sunrise-1
     fn world_wide_plans_stay_small_and_cover_every_level() {
         // About 10 000 nodes at a corner of the world, 9 000 at its centre.
         const WORLD_PLAN_NODES: usize = 16_384;
@@ -3678,6 +3660,8 @@ mod tests {
         }
     }
     #[test]
+=======
+>>>>>>> sunrise/main
     fn aerial_distance_avoids_unseen_full_detail_outside_the_near_area() {
         let ground = Plan::new([0, 0], 12, 1024);
         let high = Plan::with_previous([0, 0], 12, 1024, &Plan::default(), 1024, 0, None);
@@ -4264,7 +4248,7 @@ mod tests {
         assert!(resampled_over(&ready, &FxHashSet::default(), (40, 40)).is_empty());
     }
     #[test]
-    #[ignore = "requires prepared models/textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn slab_materials_survive_chunk_summaries_and_draw_far_faces() -> crate::Result<()> {
         use crate::{assets::Assets, biome::Biomes, light::LightTables, mesher::MeshTables};
         let root = std::path::PathBuf::from(
@@ -4287,6 +4271,7 @@ mod tests {
             render,
             biomes: Arc::new(Biomes::load(&resource_root)?),
             hidden_states: Arc::from([]),
+            part_tables: Default::default(),
         };
         let kinds = state_kinds(&facts);
         let mut chunk = Chunk::empty(0, 0);
@@ -4334,7 +4319,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    #[ignore = "requires prepared models/textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn real_mesh_clips_near_chunks_and_preserves_water_and_edited_surfaces() -> crate::Result<()> {
         use crate::{
             assets::Assets, biome::Biomes, light::LightTables, mesher::MeshTables,
@@ -4365,6 +4350,7 @@ mod tests {
             render,
             biomes: biomes.clone(),
             hidden_states: Arc::from([]),
+            part_tables: Default::default(),
         });
         let source = Arc::new(TestTerrain::new(assets.registry, &biomes)?);
         let mut lod = Lod::new(source, context);
@@ -4847,22 +4833,18 @@ mod tests {
         }
     }
     #[test]
-    fn extra_sampling_threads_only_on_large_machines() {
-        // Small machines are unchanged: a quarter of their cores, never more
-        // than three, so the near chunks and the frame keep theirs.
-        assert_eq!([1, 2, 4].map(sampling_threads), [1, 1, 1]);
-        // From eight, two thirds rather than half, still capped at eight.
-        assert_eq!([8, 11, 12].map(sampling_threads), [5, 7, 8]);
-        assert_eq!([16, 64].map(sampling_threads), [8, 8]);
-        assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 2, 3, 7]);
-        // From four cores up the two pools together leave one for the frame
-        // and the ticks. Below that both clamp to one and there is nothing
-        // to spare, which is the existing behaviour.
-        for cores in [4usize, 8, 11, 12, 16, 64] {
-            assert!(
-                sampling_threads(cores) + meshing_threads(cores) < cores,
-                "{cores} cores leaves nothing for the frame"
-            );
+    fn far_terrain_pools_stay_within_half_the_cores() {
+        assert_eq!(
+            [1, 2, 4, 8, 12, 16, 64].map(sampling_threads),
+            [1, 1, 1, 2, 3, 4, 8]
+        );
+        assert_eq!([2, 4, 8, 12, 16].map(meshing_threads), [1, 1, 1, 2, 3]);
+        assert_eq!([2, 4, 8, 12, 16].map(decoration_threads), [1, 1, 1, 2, 3]);
+        // From eight cores sampling and meshing stay under half of them, so
+        // the frame, the ticks and the near chunks keep the other half.
+        for cores in [8usize, 11, 12, 16, 24, 32] {
+            let busy = sampling_threads(cores) + meshing_threads(cores);
+            assert!(busy < cores / 2, "{cores} cores: far terrain takes {busy}");
         }
     }
 
@@ -5582,6 +5564,7 @@ mod tests {
             render,
             biomes,
             hidden_states: Arc::from([]),
+            part_tables: Default::default(),
         });
         Ok((context, facts))
     }
@@ -5717,7 +5700,7 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "requires prepared models/textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn chunks_a_server_dropped_stay_drawn_as_far_terrain() -> crate::Result<()> {
         let mut far = ServerLod::new("lod-dropped")?;
         // A server's view distance of 10 (it sends a ring more), drawn to a
@@ -5761,7 +5744,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    #[ignore = "requires prepared models/textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn far_cells_sampled_before_their_chunks_were_kept_fill_in() -> crate::Result<()> {
         let mut far = ServerLod::new("lod-late")?;
         // Seen from 5000 blocks: cells of 32 blocks and wider over them.
@@ -5852,7 +5835,7 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "requires prepared models/textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn coarser_stand_ins_keep_the_ring_past_the_near_chunks_drawn() -> crate::Result<()> {
         let arrived = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut far = ServerLod::with("lod-waiting", |_| {

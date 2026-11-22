@@ -1,10 +1,10 @@
-use sunrise_mod_runtime::block_definitions::{BlockDefinition, DefinitionError, StateError};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     collections::BTreeMap,
     sync::Arc,
 };
+use sunrise_mod_runtime::block_definitions::{BlockDefinition, DefinitionError, StateError};
 
 thread_local! {
     static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };

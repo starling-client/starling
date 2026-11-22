@@ -11,33 +11,63 @@ description = "Sunrise simulation foundations for the pinned vanilla Java Editio
 rng-trace = []
 
 [dependencies]
+stacker = "0.1.25"
+md-5 = { version = "0.10.6", default-features = false }
 libm = "=0.2.16"
+rustc-hash = "2"
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 serde = { version = "1", features = ["derive"] }
+unicode_names2 = "=2.0.0"
+crc32fast = "1.5"
 
+[target.'cfg(any(target_arch = "aarch64", target_arch = "x86_64"))'.dependencies]
+crc-fast = { version = "=1.10.0", default-features = false, features = ["std"] }
+
+# Safe functions for the SSE2 intrinsics, which `jmath::intel_trig` uses to compute as HotSpot's x86-64 stubs do.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+safe_arch = "=1.2.0"
+
+# The binaries hold no tests (the library does): `cargo test` builds no empty test harness for them, each of which
+# linked the whole crate again. They still build for integration tests (CARGO_BIN_EXE_*) and clippy --all-targets.
 [[bin]]
 name = "sunrise-parity"
 path = "src/bin/parity.rs"
+test = false
 
 [[bin]]
 name = "sunrise-tick-parity"
 path = "src/bin/tick_parity.rs"
+test = false
 
 [[bin]]
 name = "sunrise-geometry-parity"
 path = "src/bin/geometry_parity.rs"
+test = false
 
 [[bin]]
 name = "sunrise-noise-parity"
 path = "src/bin/noise_parity.rs"
+test = false
 
 [[bin]]
 name = "sunrise-density-parity"
 path = "src/bin/density_parity.rs"
+test = false
+
+[[bin]]
+name = "sunrise-string-hash-parity"
+path = "src/bin/string_hash_parity.rs"
+test = false
 
 [[bin]]
 name = "sunrise-float-log-parity"
 path = "src/bin/float_log_parity.rs"
+test = false
+
+[[bin]]
+name = "sunrise-modified-utf8-parity"
+path = "src/bin/modified_utf8_parity.rs"
+test = false
 
 [lints]
 workspace = true

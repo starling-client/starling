@@ -18,6 +18,11 @@ use sunrise_core::{
 };
 
 mod experimental;
+mod wire_cache;
+pub(crate) mod wire_graph;
+
+pub(crate) use wire_cache::WireConnections;
+pub(crate) use wire_graph::WireGraph;
 
 const SIGNAL_ORDER: [Direction; 6] = [
     Direction::Down,
@@ -164,20 +169,101 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     fn wire_incoming_signal(&self, pos: BlockPos) -> i32 {
         let mut signal = 0;
+        let above_pos = above(pos);
+        let above_is_conductor = self.is_redstone_conductor(self.state(above_pos), above_pos);
         for direction in HORIZONTAL {
             let neighbour_pos = rel(pos, direction);
             let neighbour = self.state(neighbour_pos);
             signal = signal.max(self.wire_power_of(neighbour));
-            let above_pos = above(pos);
-            if self.is_redstone_conductor(neighbour, neighbour_pos)
-                && !self.is_redstone_conductor(self.state(above_pos), above_pos)
-            {
+            let conductor = self.is_redstone_conductor(neighbour, neighbour_pos);
+            if conductor && !above_is_conductor {
                 signal = signal.max(self.wire_power_of(self.state(above(neighbour_pos))));
-            } else if !self.is_redstone_conductor(neighbour, neighbour_pos) {
+            } else if !conductor {
                 signal = signal.max(self.wire_power_of(self.state(below(neighbour_pos))));
             }
         }
         (signal - 1).max(0)
+    }
+    /// The offsets around `pos` that [`Self::wire_incoming_signal`] reads a
+    /// wire's power from, as a bitmask over
+    /// [`SOURCE_OFFSETS`](wire_graph::SOURCE_OFFSETS).
+    ///
+    /// This is that walk with the position of each `powerOf` argument kept
+    /// instead of its value. A debug build holds the two against each other on
+    /// every identification ([`Self::wire_node`]).
+    fn wire_source_mask(&self, pos: BlockPos) -> u16 {
+        let wire = self.b.named.redstone_wire;
+        let mut mask = 0;
+        let above_pos = above(pos);
+        let above_is_conductor = self.is_redstone_conductor(self.state(above_pos), above_pos);
+        let mut record = |at: BlockPos| {
+            mask |= 1 << wire_graph::source_index(at.x - pos.x, at.z - pos.z, at.y - pos.y);
+        };
+        for direction in HORIZONTAL {
+            let neighbour_pos = rel(pos, direction);
+            let neighbour = self.state(neighbour_pos);
+            if self.b.is_block(neighbour, wire) {
+                record(neighbour_pos);
+            }
+            let conductor = self.is_redstone_conductor(neighbour, neighbour_pos);
+            if conductor && !above_is_conductor {
+                let step = above(neighbour_pos);
+                if self.b.is_block(self.state(step), wire) {
+                    record(step);
+                }
+            } else if !conductor {
+                let step = below(neighbour_pos);
+                if self.b.is_block(self.state(step), wire) {
+                    record(step);
+                }
+            }
+        }
+        mask
+    }
+    /// The incoming signal for a cached source mask: the walk of
+    /// [`Self::wire_incoming_signal`] narrowed to the offsets the mask holds,
+    /// and reading the powers from the run's cache.
+    fn wire_incoming_from(&self, pos: BlockPos, sources: u16) -> i32 {
+        let mut signal = 0;
+        let mut mask = sources;
+        while mask != 0 {
+            let index = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let (dx, dy, dz) = wire_graph::SOURCE_OFFSETS[index];
+            let at = BlockPos::new(pos.x + dx, pos.y + dy, pos.z + dz);
+            signal = signal.max(self.cached_wire_power(at));
+        }
+        (signal - 1).max(0)
+    }
+    /// A wire's power, from the run's cache when it has the wire and from the
+    /// level otherwise (a source the cascade has not needed yet).
+    fn cached_wire_power(&self, pos: BlockPos) -> i32 {
+        match self.ticks.wire_graph.get(pos) {
+            Some(node) => i32::from(node.power),
+            None => self.wire_power_of(self.state(pos)),
+        }
+    }
+    /// The cached inputs for `pos`, walking the level once if this run has not
+    /// needed them yet.
+    fn wire_node(&mut self, pos: BlockPos) -> wire_graph::WireNode {
+        if let Some(node) = self.ticks.wire_graph.get(pos) {
+            return node;
+        }
+        let node = wire_graph::WireNode {
+            block_signal: self.wire_block_signal(pos) as u8,
+            sources: self.wire_source_mask(pos),
+            power: self.wire_power_of(self.state(pos)) as u8,
+        };
+        // The two walks are the same walk: one keeps the positions, the other
+        // sums the powers at them. Check the transcription on every
+        // identification a debug build makes, which includes every parity case
+        // the crate's own tests run.
+        debug_assert!(
+            self.wire_incoming_from(pos, node.sources) == self.wire_incoming_signal(pos),
+            "the cached wire sources at {pos:?} do not match the walk",
+        );
+        self.ticks.wire_graph.insert(pos, node);
+        node
     }
     /// `DefaultRedstoneWireEvaluator.updatePowerStrength`.
     pub(crate) fn wire_update_power(
@@ -191,13 +277,34 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.experimental_wire_update(pos, orientation, update_shape);
             return;
         }
-        let block_signal = self.wire_block_signal(pos);
+        // A signal part can read the wire's own state, so a wire's neighbour
+        // signal is not fixed while a run is propagating and must not be
+        // cached across it. A block templated from redstone wire has its own
+        // id, so `wire_power_of` cannot read its power and the cached
+        // comparison would be against zero: keep it on the uncached path too.
+        let cacheable = self.ticks.wire_graph.active()
+            && !self.level.has_signal_hook()
+            && !self.level.has_weak_power_hook()
+            && self.b.is_block(state, self.b.named.redstone_wire);
+        let node = cacheable.then(|| self.wire_node(pos));
+        let (block_signal, incoming) = match node {
+            Some(node) => (
+                i32::from(node.block_signal),
+                self.wire_incoming_from(pos, node.sources),
+            ),
+            None => (self.wire_block_signal(pos), self.wire_incoming_signal(pos)),
+        };
+        // `updatePowerStrength` compares the *passed* state's power: the
+        // `affectNeighborsAfterRemoval` call after a wire is removed hands over
+        // the old state, whose power — not the level's, already air — decides
+        // the neighbour fan-out.
+        let power = self.b.table.int(state, self.b.props.power);
         let target = if block_signal == 15 {
             15
         } else {
-            block_signal.max(self.wire_incoming_signal(pos))
+            block_signal.max(incoming)
         };
-        if self.b.table.int(state, self.b.props.power) != target {
+        if power != target {
             if self.state(pos) == state {
                 let next = self.b.table.set_int(state, self.b.props.power, target);
                 self.set_block(pos, next, 2);
@@ -393,6 +500,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
     pub(crate) fn comparator_refresh(&mut self, pos: BlockPos, state: BlockStateId) {
+        // A comparator's output lives in its block entity, so it is the one
+        // signal a wire reads that can move without a block write. It moves
+        // only from a scheduled tick and from a player's interaction, and
+        // neither runs inside a neighbour-update run, so no wire cache is ever
+        // open to it; a caller that changes that has to retire the cache too.
+        debug_assert!(
+            !self.ticks.wire_graph.active(),
+            "a comparator refreshed inside a wire run would leave a cached input stale",
+        );
         let b = self.b;
         let output = self.comparator_calculate_output(pos, state);
         let old = self
@@ -525,7 +641,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn torch_toggled_too_frequently(&mut self, pos: BlockPos, add: bool) -> bool {
         if add {
             let time = self.level.game_time();
-            self.ticks.torch_toggles.push((pos, time));
+            self.ticks.torch_toggles.push_back((pos, time));
         }
         self.ticks
             .torch_toggles
@@ -542,10 +658,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         while self
             .ticks
             .torch_toggles
-            .first()
+            .front()
             .is_some_and(|(_, when)| time - when > 60)
         {
-            self.ticks.torch_toggles.remove(0);
+            self.ticks.torch_toggles.pop_front();
         }
         if b.table.bool(state, b.props.lit) {
             if signal {
@@ -843,6 +959,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: "minecraft:block.lever.click".into(),
+            source: None,
             volume: 0.3,
             pitch: if powered { 0.6 } else { 0.5 },
         });
@@ -948,14 +1065,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if b.table.bool(state, p.open) != power {
                 let data = b.data(state);
                 let sound = if power {
-                    data.gate_open.clone()
+                    data.gate_open[super::data::GateSoundSite::Redstone as usize].clone()
                 } else {
-                    data.gate_close.clone()
+                    data.gate_close[super::data::GateSoundSite::Redstone as usize].clone()
                 };
-                let pitch = self.random().next_float() * 0.1 + 0.9;
-                if let Some(sound) = sound {
-                    self.sound(pos, &sound, 1.0, pitch);
-                }
+                self.fence_gate_sound(pos, sound);
                 self.game_event(
                     pos,
                     if power {
@@ -1001,6 +1115,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 self.emit(LevelEvent::Sound {
                     pos,
                     sound: sound.into(),
+                    source: None,
                     volume: 1.0,
                     pitch: 1.0,
                 });
@@ -1083,6 +1198,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: sound.into(),
+            source: None,
             volume: 3.0,
             pitch,
         });
@@ -1193,6 +1309,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: "minecraft:block.bell.use".into(),
+            source: None,
             volume: 2.0,
             pitch: 1.0,
         });
@@ -1369,7 +1486,16 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
             .comparator_outputs
             .get(&pos)
             .copied()
-            .unwrap_or(0)
+            .unwrap_or_else(|| {
+                self.unknown_output.set(true);
+                0
+            })
+    }
+    /// Whether a read so far needed a comparator output the ticks don't hold, which it took
+    /// as 0: a server's comparator that never computed one, or any on a client, whose ticks
+    /// don't hold the server's outputs.
+    pub fn read_unknown_output(&self) -> bool {
+        self.unknown_output.get()
     }
     fn wire_signal(&self, state: BlockStateId, pos: BlockPos, direction: Direction) -> i32 {
         if self.wire_signal_off || direction == Direction::Down {
@@ -1539,12 +1665,21 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
     ) -> BlockStateId {
         let b = self.b;
         let table = &b.table;
+        let power = table.int(state, b.props.power);
         let was_dot = self.wire_is_dot(state);
-        let mut result = table.set_int(
-            b.default_of(b.named.redstone_wire),
-            b.props.power,
-            table.int(state, b.props.power),
-        );
+        // The shape is a pure function of the neighbours and `was_dot`, and a
+        // `Signals` view holds the level and ticks shared, so no block state can
+        // change while this view lives: the answer stays true for the view.
+        // `getBestNeighborSignal` and `getDirectSignalTo` ask for it from every
+        // direction they probe. View 0 caches nothing.
+        if let Some(cached) = self
+            .ticks
+            .wire_connections
+            .get(self.view, pos, power, was_dot)
+        {
+            return cached;
+        }
+        let mut result = table.set_int(b.default_of(b.named.redstone_wire), b.props.power, power);
         let can_up = self.wire_can_connect_up(pos);
         for direction in HORIZONTAL {
             if !self.wire_connected(result, direction) {
@@ -1553,6 +1688,7 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
             }
         }
         if was_dot && self.wire_is_dot(result) {
+            self.cache_wire_connection(pos, power, was_dot, result);
             return result;
         }
         let north = self.wire_connected(result, Direction::North);
@@ -1573,7 +1709,13 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
         if !south && ew_empty {
             result = table.set_text(result, b.props.south, "side");
         }
+        self.cache_wire_connection(pos, power, was_dot, result);
         result
+    }
+    fn cache_wire_connection(&self, pos: BlockPos, power: i32, was_dot: bool, state: BlockStateId) {
+        self.ticks
+            .wire_connections
+            .put(self.view, pos, power, was_dot, state);
     }
 }
 
@@ -1586,19 +1728,19 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.signals().comparator_output(pos)
     }
     pub fn direct_signal(&self, pos: BlockPos, direction: Direction) -> i32 {
-        self.signals().direct_signal(pos, direction)
+        self.query_signals().direct_signal(pos, direction)
     }
     pub fn signal(&self, pos: BlockPos, direction: Direction) -> i32 {
-        self.signals().signal(pos, direction)
+        self.query_signals().signal(pos, direction)
     }
     pub fn has_signal(&self, pos: BlockPos, direction: Direction) -> bool {
-        self.signals().has_signal(pos, direction)
+        self.query_signals().has_signal(pos, direction)
     }
     pub fn has_neighbor_signal(&self, pos: BlockPos) -> bool {
-        self.signals().has_neighbor_signal(pos)
+        self.query_signals().has_neighbor_signal(pos)
     }
     pub fn best_neighbor_signal(&self, pos: BlockPos) -> i32 {
-        self.signals().best_neighbor_signal(pos)
+        self.query_signals().best_neighbor_signal(pos)
     }
     fn wire_can_survive_on(&self, pos: BlockPos) -> bool {
         self.signals().wire_can_survive_on(pos)

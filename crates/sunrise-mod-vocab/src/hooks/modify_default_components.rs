@@ -19,5 +19,5 @@ pub trait Hooks {
         target = "sunrise_world::item_defaults::native_modify_default_components",
         neoforge = "ModifyDefaultComponentsEvent"
     )]
-    fn modify_default_components();
+    fn modify_default_components(item: &str, components: &mut Map<String, Value>);
 }

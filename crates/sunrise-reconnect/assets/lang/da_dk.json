@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Auto-genopret forbindelse",
+  "sunrise.extras.auto_reconnect.tooltip": "Tilslutter sig en server igen efter en mistet forbindelse eller en genstart, aldrig efter et kick eller ban."
+}

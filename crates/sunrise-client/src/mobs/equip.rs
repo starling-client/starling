@@ -2,16 +2,10 @@
 //! `compareWeapons`, `canReplaceEqualItem` and the per-species gates that
 //! decide whether a mob takes an item off the ground at all (`wantsToPickUp`,
 //! `canHoldItem`). `game/mobs/mob_looting.rs` reads the item data and calls these.
-#[path = "equip_decision.rs"]
-mod decision;
-#[path = "equip_source.rs"]
-mod source;
 use super::Species;
+use crate::items::EntityTypeTags;
 use crate::items::ItemStack;
-pub use decision::{EquipAnswer, EquipDecision, EquipEntityStamp, EquipStamp};
 use sunrise_core::nbt::Tag;
-pub use source::{EquipInput, source_stamp, source_stamp_at};
-use std::collections::{HashMap, HashSet};
 
 /// An `EquipmentSlot`, in the order `finalize::item` and `drops::SLOTS` keep
 /// them.
@@ -53,28 +47,19 @@ impl Slot {
 pub struct Equippable<'a> {
     /// `Equippable.slot`, an `EquipmentSlot` name (`head`, `mainhand`, `body`, `saddle`, ...).
     pub slot: &'static str,
-    allowed: Allowed<'a>,
-}
-
-/// `Equippable.allowedEntities`: when absent every entity type may wear it; a set, even an empty
-/// one, allows only its members.
-enum Allowed<'a> {
-    Any,
-    /// The item's default, resolved to entity type ids when the items loaded.
-    Ids(&'a HashSet<String>),
-    /// A stack's own `HolderSet<EntityType>`: one id, a `#tag`, or a list of ids.
-    Holders(&'a Tag),
+    /// `Equippable.allowedEntities`: when absent any entity type may wear it.
+    allowed: Option<&'a Tag>,
+    tags: &'a EntityTypeTags,
 }
 
 impl Equippable<'_> {
-    /// `Equippable.canBeEquippedBy`: whether the entity type `entity` may wear it, with `tags` the
-    /// entity type tags a stack's `#tag` names.
-    pub fn allows(&self, entity: &str, tags: &HashMap<String, HashSet<String>>) -> bool {
+    /// `Equippable.canBeEquippedBy`: whether this holder set contains the entity type
+    /// under the current world's (or the connected server's) entity type tags.
+    pub fn allows(&self, entity: &str) -> bool {
         match self.allowed {
-            Allowed::Any => true,
-            Allowed::Ids(ids) => ids.contains(entity),
-            Allowed::Holders(Tag::List(list)) => list.iter().any(|h| holds(h, entity, tags)),
-            Allowed::Holders(one) => holds(one, entity, tags),
+            None => true,
+            Some(Tag::List(list)) => list.iter().any(|h| holds(h, entity, self.tags)),
+            Some(one) => holds(one, entity, self.tags),
         }
     }
 }
@@ -94,54 +79,48 @@ pub fn equippable<'a>(
     if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
         return None;
     }
-    if let Some(tag) = data.and_then(|d| d.other("minecraft:equippable")) {
-        let Some(Tag::String(slot)) = tag.get("slot") else {
-            return None;
-        };
-        return Some(Equippable {
-            slot: SLOT_NAMES
-                .into_iter()
-                .find(|name| slot.0.iter().copied().eq(name.encode_utf16()))?,
-            allowed: tag
-                .get("allowed_entities")
-                .map_or(Allowed::Any, Allowed::Holders),
-        });
-    }
-    let info = items.get(&stack.item)?;
-    let slot = info.equip_slot.as_deref()?;
+    let component = data
+        .and_then(|d| d.other("minecraft:equippable"))
+        .or_else(|| {
+            items
+                .get(&stack.item)?
+                .component_prototype
+                .data()?
+                .other("minecraft:equippable")
+        })?;
+    let Tag::String(slot) = component.get("slot")? else {
+        return None;
+    };
     Some(Equippable {
-        slot: SLOT_NAMES.into_iter().find(|name| *name == slot)?,
-        allowed: info
-            .equip_allowed
-            .as_ref()
-            .map_or(Allowed::Any, Allowed::Ids),
+        slot: SLOT_NAMES
+            .into_iter()
+            .find(|name| slot.0.iter().copied().eq(name.encode_utf16()))?,
+        allowed: component.get("allowed_entities"),
+        tags: &items.entity_type_tags,
     })
 }
 
 /// `LivingEntity.isEquippableInSlot` as the stack's data answers it for an entity of type `kind`
 /// (`canUseSlot`, what the entity may wear at all, is the caller's): with no `equippable`
-/// component only the main hand, else the component's slot when it allows `kind`. `tags` are the
-/// entity type tags.
+/// component only the main hand, else the component's slot when it allows `kind`.
 pub fn equippable_in_slot(
     items: &crate::items::Items,
-    tags: &HashMap<String, HashSet<String>>,
     stack: &ItemStack,
     slot: &str,
     kind: &str,
 ) -> bool {
-    equippable(items, stack).map_or(slot == "mainhand", |e| {
-        e.slot == slot && e.allows(kind, tags)
-    })
+    equippable(items, stack).map_or(slot == "mainhand", |e| e.slot == slot && e.allows(kind))
 }
 
 /// Whether the `HolderSet` entry `holder`, an entity type id or a `#tag` (`minecraft:` when it
 /// names no namespace), holds the entity type `entity`.
-fn holds(holder: &Tag, entity: &str, tags: &HashMap<String, HashSet<String>>) -> bool {
+fn holds(holder: &Tag, entity: &str, tags: &EntityTypeTags) -> bool {
     let Tag::String(holder) = holder else {
         return false;
     };
     match holder.0.split_first() {
         Some((&hash, tag)) if hash == u16::from(b'#') => tags
+            .members()
             .iter()
             .any(|(name, members)| names(tag, name) && members.contains(entity)),
         _ => names(&holder.0, entity),
@@ -164,16 +143,8 @@ fn names(units: &[u16], id: &str) -> bool {
 /// lends the menu one for the click, with its read-only `Host` and the target behind it. A menu
 /// that has none (a data-only consumer) keeps the component's answer.
 pub trait CanEquip {
-    /// Prepare the immutable input before candidate traversal.
-    fn prepare(&self, _stack: &ItemStack, _entity: u32, _kind: &str) -> bool {
-        true
-    }
-    /// Recheck retained answer preconditions before applying a menu placement.
-    fn can_apply(&self, _stack: &ItemStack, _entity: u32) -> bool {
-        true
-    }
-    /// O(1) gate before creating a source decision or converting its payload.
-    fn listens(&self, _stack: &ItemStack) -> bool {
+    /// O(1) gate before converting a stack or calling into mod parts.
+    fn listens(&self, _item: &str) -> bool {
         true
     }
     /// May `stack` go into the equipment slot `slot` of the entity `entity` of type `kind`? `data`
@@ -181,6 +152,10 @@ pub trait CanEquip {
     /// its item may change.
     fn can_equip(&self, stack: &ItemStack, slot: &str, entity: u32, kind: &str, data: bool)
     -> bool;
+    /// Runs `body` with a call-scoped [`CanEquip`] that may lazily convert `stack` once and reuse
+    /// that conversion for repeated questions about the same unchanged stack during one
+    /// synchronous candidate loop.
+    fn with_stack(&self, stack: &ItemStack, body: &mut dyn FnMut(&dyn CanEquip));
 }
 
 /// `LivingEntity.getEquipmentSlotForItem`: the item's own `equippable` slot,

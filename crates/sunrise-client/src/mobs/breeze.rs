@@ -6,13 +6,13 @@ use super::{
     anim::{Poses, State},
     keyframes::Animation,
 };
+use mod_api::Pose;
+use std::collections::HashMap;
 use sunrise_core::{
     geometry::{Aabb, Vec3},
     jmath,
     random::RandomSource,
 };
-use mod_api::Pose;
-use std::collections::HashMap;
 
 // `variant3` is the pose, `variant` the pose the animations last saw,
 // `vector[2]` `soundTick`. AnimState states: idle, shoot, slide, slide back,
@@ -340,10 +340,10 @@ pub fn client_sounds(m: &mut Mob, events: &mut Vec<MobEvent>) {
 /// `Breeze.playAmbientSound` (a local sound at volume and pitch 1) and its
 /// sound selection.
 pub fn ambient(m: &Mob) -> Option<&'static str> {
-    if m.ai.target.is_some() && m.on_ground {
+    if m.ai.target.is_some() && m.ground.on_ground {
         return None;
     }
-    Some(if m.on_ground {
+    Some(if m.ground.on_ground {
         "entity.breeze.idle_ground"
     } else {
         "entity.breeze.idle_air"
@@ -436,6 +436,7 @@ mod ground_particle_tests {
     /// feet, of the block it stands in or else the one it stands on; none as a
     /// passenger or over a block that draws nothing (air).
     #[test]
+    #[ignore = "daily"]
     fn a_breeze_crumbles_the_block_under_its_feet() {
         use crate::mobs::world::with_built_test_world;
         let ran = with_built_test_world(
@@ -509,7 +510,7 @@ mod ground_particle_tests {
         );
         // Without the vanilla data under .local/sunrise-client there is no world
         // to crumble: the test has nothing to check.
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }
 

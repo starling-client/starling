@@ -58,10 +58,10 @@ impl Game<'_> {
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::super::native_item_places::tests::{guest, open_to_lan};
-    use sunrise_client::entities::ExperienceOrb;
-    use sunrise_core::geometry::Vec3;
     use mod_api::{Hooks, ModEntry, ServerHost, XpOrbTargetingEvent};
     use std::sync::{Arc, Mutex};
+    use sunrise_client::entities::ExperienceOrb;
+    use sunrise_core::geometry::Vec3;
 
     /// What the hook heard: the orb's id, the scan distance and the default
     /// player's UUID.
@@ -85,6 +85,7 @@ mod tests {
     fn orb(id: u32, at: [f64; 3]) -> ExperienceOrb {
         let at = Vec3::new(at[0], at[1], at[2]);
         ExperienceOrb {
+            fire_ticks: 0,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],
@@ -96,7 +97,7 @@ mod tests {
             velocity: Vec3::new(0.0, 0.0, 0.0),
             value: 1,
             age: 0,
-            on_ground: false,
+            ground: Default::default(),
             count: 1,
             ticks: 0,
             air: 300,
@@ -109,7 +110,7 @@ mod tests {
     /// default; a mod sends one orb to a guest out of range and stops another,
     /// and an orb it leaves alone keeps the default.
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn a_mod_chooses_whom_each_orb_follows() {
         let heard = Heard::default();
         let mods = vec![ModEntry::new("shepherd", Box::new(Shepherd(heard.clone())))].into();

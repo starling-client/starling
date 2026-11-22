@@ -37,7 +37,7 @@ pub(super) fn strict_math_literal_bits_on_every_target() {
         assert_eq!(hypot(f64::from_bits(x), f64::from_bits(y)).to_bits(), bits);
     }
     // Obtained once from the existing jmath implementations; cross-checked
-    // with Java 25 StrictMath. These literal expectations also run on wasm.
+    // with Java 25 StrictMath.
     for (f, bits) in [
         (
             atan as fn(f64) -> f64,
@@ -54,7 +54,6 @@ pub(super) fn strict_math_literal_bits_on_every_target() {
     assert_eq!(atan2(1.0, -1.0).to_bits(), 0x4002d97c7f3321d2);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn java_math_matches_native_engine_paths() {
     use crate::java_math as api;

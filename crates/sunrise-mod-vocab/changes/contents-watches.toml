@@ -1,0 +1,3 @@
+ids = ["hook:contents_changed"]
+why = "Version 2 delivers the existing backing-block notice to explicitly registered neighboring block-entity observers as well as the source's own BlockParts. The event now identifies the observer without changing the source position, level or state."
+migrate = "Use observer to distinguish a watched source from your block's own notice. Register through BlockEntityRef::watch_contents; watches are journaled runtime state, and an unloaded or replaced observer must register again after loading. Implicit root-commit and immediate explicit set_changed timing are unchanged."

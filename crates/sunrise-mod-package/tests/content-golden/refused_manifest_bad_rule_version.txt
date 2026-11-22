@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: unexpected character 'n' while parsing major version number (line 5, column 9)
+
+icon:
+unavailable

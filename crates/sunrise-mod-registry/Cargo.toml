@@ -2,7 +2,7 @@
 name = "sunrise-mod-registry"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "PolyForm-Shield-1.0.0"
 rust-version = "1.90"
 publish = false
 description = "The registry's submission service: GitHub sign-in, the file's checks, staging, and a pull request (docs/modding/src/reference/registry-index.md)"

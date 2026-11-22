@@ -17,6 +17,8 @@ pub trait Hooks {
     /// `minecraft:repair_with_xp` effect in a data pack. Server-side,
     /// including `PlayerRef::give_experience_points`.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "item",
@@ -24,5 +26,5 @@ pub trait Hooks {
         host = "read",
         neoforge = "IItemExtension.getXpRepairRatio"
     )]
-    fn xp_repair_ratio();
+    fn xp_repair_ratio(player: u128, stack: &ItemStack, experience: u32, ratio: &mut f32);
 }

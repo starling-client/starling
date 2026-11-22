@@ -1,8 +1,8 @@
 //! `sunrise-relay`: listens on `$PORT` (7000 when unset; `RELAY_BIND` for one
 //! address), limits from the `RELAY_*` variables (docs/play-with-friends.md).
 //! Prints counts every five minutes, nothing else.
-use sunrise_relay::{Config, Relay};
 use std::{net::TcpListener, time::Duration};
+use sunrise_relay::{Config, Relay};
 
 fn main() {
     let port: u16 = std::env::var("PORT")

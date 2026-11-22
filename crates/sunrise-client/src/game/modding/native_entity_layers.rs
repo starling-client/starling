@@ -12,14 +12,10 @@ use super::{
     native_mob_draw::{entity_render_state, mob_pose},
 };
 use glam::DVec3;
-use sunrise_client::{
-    fast_hash::FxHashMap,
-    mesher::Vertex,
-    mobs::{Mob, MobType},
-};
 use mod_api::{
-    __private::game::RegistrationContextNew, EntityLayers, EntityRenderLayer, EntityRenderer,
-    LayerTarget, PlayerModel, PosedParts, RegistrationContext,
+    __private::game::{RegistrationContextNew, discard_registration},
+    EntityLayers, EntityRenderLayer, EntityRenderer, FrameModel, HookId, LayerTarget, PlayerModel,
+    RegistrationContext,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -27,6 +23,11 @@ use std::{
         Arc, PoisonError, RwLock,
         atomic::{AtomicBool, Ordering},
     },
+};
+use sunrise_client::{
+    fast_hash::FxHashMap,
+    mesher::Vertex,
+    mobs::{Mob, MobType},
 };
 
 /// The player's entity type: its renderers are the player models', so its layers go to those.
@@ -43,7 +44,7 @@ static TABLE: RwLock<Option<LayerTable>> = RwLock::new(None);
 
 /// What one `register_entity_layers` round collects: the [`EntityLayers`] mods are handed, with
 /// what this load's renderers are, and the layers added to each target.
-pub(super) struct LayerRegistration<'a> {
+pub(in crate::game) struct LayerRegistration<'a> {
     rows: &'a EntityTypeRows,
     mod_renderers: &'a BTreeMap<String, Arc<dyn EntityRenderer>>,
     /// Whether a living type draws where layers run (as a mob).
@@ -66,6 +67,35 @@ impl<'a> LayerRegistration<'a> {
             entity: BTreeMap::new(),
             wide: Vec::new(),
             slim: Vec::new(),
+        }
+    }
+
+    pub(in crate::game) fn register_listener(
+        &mut self,
+        listen: &mut dyn FnMut(&mut dyn EntityLayers) -> bool,
+    ) {
+        let mut pending = Self::new(self.rows, self.mod_renderers, self.routed);
+        if listen(&mut pending) {
+            for (id, layers) in pending.entity {
+                self.entity.entry(id).or_default().extend(layers);
+            }
+            self.wide.extend(pending.wide);
+            self.slim.extend(pending.slim);
+        } else {
+            let owner = mod_api::content::crash::current_native_mod();
+            for layer in pending
+                .entity
+                .into_values()
+                .flatten()
+                .chain(pending.wide)
+                .chain(pending.slim)
+            {
+                discard_registration(
+                    (HookId::RegisterEntityLayers, "register_entity_layers"),
+                    owner,
+                    layer,
+                );
+            }
         }
     }
 
@@ -178,7 +208,7 @@ impl LayerTable {
 
 impl Game<'_> {
     /// The layers the last load resolved for `mob` (a player's model's for a player), looked up
-    /// once per mob a frame: the answer both decides whether the draw keeps the mob's posed parts
+    /// once per mob a frame: the answer both decides whether the draw keeps the mob's final model
     /// and is what `mod_layer_geometry` draws. With no layer added at all it is none after one
     /// flag check, with no lock and no lookup.
     pub(in crate::game) fn mod_layers(&self, mob: &Mob) -> Option<Layers> {
@@ -207,15 +237,15 @@ impl Game<'_> {
     }
 
     /// Draws `layers` over `mob`, told as the entity `id`, each from its frame (at the feet,
-    /// turned with the body), in the order they were added; `parts` are its humanoid parts as the
-    /// vanilla draw posed them.
+    /// turned with the body), in the order they were added. Each layer borrows the same final
+    /// `model`, if this draw produced a body pose.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::game) fn registered_layer_geometry(
         &self,
         mob: &Mob,
         id: u32,
         layers: &Layers,
-        parts: Option<&PosedParts>,
+        model: Option<&dyn FrameModel>,
         partial: f32,
         camera: DVec3,
         light: u32,
@@ -230,9 +260,112 @@ impl Game<'_> {
         );
         let block = [feet.x, feet.y, feet.z].map(|c| c.floor() as i32);
         for layer in layers.iter() {
-            self.guarded_entity_draw(&layer.failed, partial, block, pose, light, out, |draw| {
-                layer.inner.submit(&entity, parts, draw)
-            });
+            self.guarded_entity_draw(
+                &layer.failed,
+                partial,
+                &mob.kind.id,
+                block,
+                pose,
+                light,
+                None,
+                out,
+                |draw| layer.inner.submit(&entity, model, draw),
+            );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mod_api::{
+        BlockEntityDrawContext, EntityRenderState, Hooks, ModEntry, RegisterEntityLayersEvent,
+    };
+
+    struct NoDraw;
+    impl EntityRenderLayer for NoDraw {
+        fn submit(
+            &self,
+            _: &EntityRenderState,
+            _: Option<&dyn FrameModel>,
+            _: &mut dyn BlockEntityDrawContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Registrant {
+        layer: Arc<dyn EntityRenderLayer>,
+        panic_after: Option<Arc<AtomicBool>>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Registrant {
+        fn register_entity_layers(
+            &self,
+            _: &RegistrationContext,
+            event: &mut RegisterEntityLayersEvent<'_>,
+        ) {
+            for target in [
+                LayerTarget::Entity("test:golem".into()),
+                LayerTarget::Player(PlayerModel::Wide),
+                LayerTarget::Player(PlayerModel::Slim),
+            ] {
+                event.layers.add(target, self.layer.clone()).unwrap();
+            }
+            if let Some(added) = &self.panic_after {
+                added.store(true, Ordering::Relaxed);
+                panic!("after adding all three layers");
+            }
+        }
+    }
+
+    #[test]
+    fn a_panicking_layer_registrar_does_not_publish_its_layers() {
+        let added = Arc::new(AtomicBool::new(false));
+        let earlier: Arc<dyn EntityRenderLayer> = Arc::new(NoDraw);
+        let later: Arc<dyn EntityRenderLayer> = Arc::new(NoDraw);
+        mod_platform::testing::with_mods(
+            vec![
+                ModEntry::new(
+                    "earlier",
+                    Box::new(Registrant {
+                        layer: earlier.clone(),
+                        panic_after: None,
+                    }),
+                ),
+                ModEntry::new(
+                    "failed",
+                    Box::new(Registrant {
+                        layer: Arc::new(NoDraw),
+                        panic_after: Some(added.clone()),
+                    }),
+                ),
+                ModEntry::new(
+                    "later",
+                    Box::new(Registrant {
+                        layer: later.clone(),
+                        panic_after: None,
+                    }),
+                ),
+            ]
+            .into(),
+            || {
+                let rows = EntityTypeRows::parse(br#"{"test:golem":{"attributes":{}}}"#);
+                let renderers = BTreeMap::new();
+                let mut registration = LayerRegistration::new(&rows, &renderers, &|_| true);
+                Game::native_register_entity_layers(&RegistrationContext::new(), &mut registration);
+                assert!(added.load(Ordering::Relaxed));
+                let entity = &registration.entity["test:golem"];
+                assert_eq!(entity.len(), 2);
+                assert!(Arc::ptr_eq(&entity[0], &earlier));
+                assert!(Arc::ptr_eq(&entity[1], &later));
+                let table = LayerTable::resolve(registration, &HashMap::new());
+                for list in [table.wide.unwrap(), table.slim.unwrap()] {
+                    assert_eq!(list.len(), 2);
+                    assert!(Arc::ptr_eq(&list[0].inner, &earlier));
+                    assert!(Arc::ptr_eq(&list[1].inner, &later));
+                }
+            },
+        );
     }
 }

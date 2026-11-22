@@ -25,14 +25,14 @@ pub mod stronghold;
 pub mod template;
 pub mod temple;
 
-use sunrise_core::geometry::Direction;
+use crate::compression::Compression;
 use processor::ProcessorList;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, RwLock},
 };
+use sunrise_core::geometry::Direction;
 pub mod block_entity_transform;
 
 pub use template::{BlockInfo, EntityInfo, JigsawInfo, StructureTemplate, save_nbt};
@@ -264,17 +264,9 @@ impl TemplateStore {
             None => sunrise_core::prepared_files::read(&file).ok(),
         };
         let loaded = bytes.and_then(|bytes| {
-            let mut raw = Vec::new();
-            flate2::read::GzDecoder::new(bytes.as_slice())
-                .read_to_end(&mut raw)
-                .ok()?;
-            StructureTemplate::from_bytes(
-                &raw,
-                Limits::templates(),
-                self.registry,
-                &self.transforms,
-            )
-            .ok()
+            let limits = Limits::templates();
+            let raw = Compression::Gzip.decode(&bytes, limits.max_bytes).ok()?;
+            StructureTemplate::from_bytes(&raw, limits, self.registry, &self.transforms).ok()
         });
         // StructureTemplateManager.getOrCreate: missing templates are empty.
         let mut loaded = loaded.unwrap_or_else(StructureTemplate::empty);

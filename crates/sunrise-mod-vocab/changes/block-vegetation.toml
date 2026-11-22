@@ -1,0 +1,3 @@
+ids = ["type:Block", "type:BlockProperties", "type:BlockProperties.vegetation"]
+why = "A block declaration can opt into base VegetationBlock survival without inheriting a plant template. The BlockProperties Wire layout gains the vegetation flag; may_place_on remains the same server-side answer."
+migrate = "An older package without properties.vegetation does not opt in: a non-vegetation template remains non-vegetation, and a vegetation template keeps its existing rules. To opt in, set BlockProperties.vegetation or JSON properties.vegetation to true. Optionally answer may_place_on to override the default supporting-block tag."

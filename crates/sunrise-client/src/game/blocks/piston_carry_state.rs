@@ -108,7 +108,6 @@ impl Game<'_> {
                         self.world.shulkers.remove(&p);
                         self.world.chest_openers.remove(&at);
                         self.lid_openers.remove(&at);
-                        self.far_beacons.remove(&at);
                         self.test_highlights.remove(&at);
                     }
                     self.mod_container_viewers.retain(|(_, at), _| *at != from);

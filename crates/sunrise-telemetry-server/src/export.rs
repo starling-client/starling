@@ -18,9 +18,9 @@ use std::sync::Arc;
 use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use sunrise_telemetry::payload::BUCKET_EDGES_MS;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sunrise_telemetry::payload::BUCKET_EDGES_MS;
 
 use crate::store::{Extra, Store, unpack};
 use crate::{App, peer, status};

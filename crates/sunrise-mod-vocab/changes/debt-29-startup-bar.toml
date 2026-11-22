@@ -1,0 +1,22 @@
+ids = [
+    "trait:StartupScreen",
+    "method:StartupScreen::open",
+    "method:StartupScreen::step",
+    "method:StartupScreen::set",
+    "method:StartupScreen::label",
+    "method:StartupScreen::close",
+    "method:StartupScreen::message",
+    "trait:ProgressMeter",
+    "method:ProgressMeter::step",
+    "method:ProgressMeter::set",
+    "method:ProgressMeter::label",
+    "method:ProgressMeter::message",
+    "type:StartupProgress",
+    "type:StartupProgressError",
+    "type:StartupProgressError.Refused",
+]
+why = "A startup bar now owns a native, thread-safe meter rather than a numeric ID. Text is borrowed at the call boundary, and errors describe real limits instead of guest callback transport."
+migrate = """Ordinary calls to RegistrationContext::progress and StartupProgress::{step,set,label,message} stay the same. If you implement StartupScreen, replace open(&self, String, u32) -> Result<u32, StartupProgressError> with open(self: Arc<Self>, mod_id: &'static str, label: &str, steps: u32) -> Result<Box<dyn ProgressMeter>, StartupProgressError>, using the supplied mod ID even on worker threads. Put step(), set(done), label(&str), and message(&str) on your meter; implement Drop on it instead of close(id) on the screen. Change StartupScreen::message to take &str. StartupProgress still closes when dropped, but no longer explicitly implements Drop; remove any Drop bound on callers. Remove Refused match arms and (Identifier, String).into() conversions; match TooManyBars for capacity (and AlreadyInstalled for installation). Do not encode or decode StartupProgressError with Wire; handle the error where it is returned.
+
+The 64-bar limit now applies per mod rather than across all mods; `StartupScreen::open` uses the explicit `mod_id` even on a scoped worker. Bar labels keep their full text (including newlines); startup status messages still use their own one-line formatting.
+"""

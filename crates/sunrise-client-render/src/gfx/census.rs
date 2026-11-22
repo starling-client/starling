@@ -2,13 +2,138 @@
 //! `scene_replay --memory`): resident sections and far tiles, and the bytes of its largest
 //! GPU resources and of its per-section bookkeeping.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::size_of, ops::Deref};
 
-use super::{
-    Renderer, SectionGpu, SectionKey, TerrainVertex, arena, flat, lod, texture_bytes, visbuffer,
+use super::{Renderer, SectionKey, arena, flat, lod, texture_bytes, visbuffer};
+use crate::fast_hash::FxHashMap;
+
+type SectionBlock = ([i32; 3], u32);
+type SectionBlocks = FxHashMap<SectionKey, Vec<SectionBlock>>;
+
+/// Block-entity or light-source lists, with their total capacity maintained as
+/// meshes come and go. Only read access to the backing map is exposed.
+#[derive(Default)]
+pub(crate) struct SectionLists {
+    lists: SectionBlocks,
+    entries: usize,
+}
+
+impl SectionLists {
+    /// Replace the list and report whether the membership or state changed.
+    pub(super) fn update(&mut self, key: SectionKey, blocks: &[SectionBlock]) -> bool {
+        if blocks.is_empty() {
+            return self.remove(&key);
+        }
+        let list = blocks.to_vec();
+        self.entries += list.capacity();
+        let old = self.lists.insert(key, list);
+        self.entries -= old.as_ref().map_or(0, Vec::capacity);
+        old.as_deref() != Some(blocks)
+    }
+
+    pub(super) fn remove(&mut self, key: &SectionKey) -> bool {
+        let Some(old) = self.lists.remove(key) else {
+            return false;
+        };
+        self.entries -= old.capacity();
+        true
+    }
+
+    pub(super) fn remove_position(&mut self, key: SectionKey, pos: [i32; 3]) {
+        if let Some(entries) = self.lists.get_mut(&key) {
+            // Retain does not change the backing allocation, even when empty.
+            entries.retain(|(at, _)| *at != pos);
+        }
+    }
+
+    pub(super) fn retain(&mut self, mut keep: impl FnMut(&SectionKey) -> bool) {
+        self.lists.retain(|key, blocks| {
+            let kept = keep(key);
+            if !kept {
+                self.entries -= blocks.capacity();
+            }
+            kept
+        });
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.lists.clear();
+        self.entries = 0;
+    }
+
+    fn heap_bytes(&self) -> usize {
+        self.lists.capacity() * (size_of::<SectionKey>() + size_of::<Vec<SectionBlock>>() + 1)
+            + self.entries * size_of::<SectionBlock>()
+    }
+}
+
+impl Deref for SectionLists {
+    type Target = SectionBlocks;
+
+    fn deref(&self) -> &Self::Target {
+        &self.lists
+    }
+}
+
+/// An owned renderer sample for a native capture worker. The vertex and CPU
+/// counts are from the requesting frame; the backend allocator is queried
+/// when the worker asks for its report, not when the snapshot is taken.
+pub struct RendererMemorySnapshot {
+    device: wgpu::Device,
+    vertices: [u64; 2],
+    cpu: [(&'static str, usize); 4],
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<RendererMemorySnapshot>();
 };
 
+impl RendererMemorySnapshot {
+    /// Vertex arena allocation and vertex bytes in the current near/far meshes.
+    pub fn section_vertex_bytes(&self) -> [u64; 2] {
+        self.vertices
+    }
+
+    /// Heap bytes of renderer per-section bookkeeping, by name.
+    pub fn cpu_census(&self) -> [(&'static str, usize); 4] {
+        self.cpu
+    }
+
+    /// Allocated and reserved device bytes, with allocation labels largest first.
+    /// Runs the backend allocator census on the calling thread.
+    pub fn gpu_memory_by_label(&self) -> Option<(u64, u64, Vec<(String, u64)>)> {
+        allocator_memory(&self.device)
+    }
+}
+
+fn allocator_memory(device: &wgpu::Device) -> Option<(u64, u64, Vec<(String, u64)>)> {
+    let report = device.generate_allocator_report()?;
+    let mut by_label: HashMap<String, u64> = HashMap::new();
+    for a in report.allocations {
+        *by_label.entry(a.name).or_default() += a.size;
+    }
+    let mut labels: Vec<_> = by_label.into_iter().collect();
+    labels.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Some((
+        report.total_allocated_bytes,
+        report.total_reserved_bytes,
+        labels,
+    ))
+}
+
 impl Renderer {
+    /// Copy only maintained counts and the device handle. This does not walk
+    /// any residency store or ask the backend to enumerate GPU allocations.
+    pub fn memory_snapshot(&self) -> RendererMemorySnapshot {
+        RendererMemorySnapshot {
+            device: self.device.clone(),
+            vertices: self.section_vertex_bytes(),
+            cpu: self.cpu_census(),
+        }
+    }
+
     /// Sections with GPU buffers, for soak tests watching residency.
     pub fn resident_sections(&self) -> usize {
         self.sections.len()
@@ -43,34 +168,22 @@ impl Renderer {
     /// tiles hold: the same split `gpu_census` reports, for `status`, so the
     /// compact layouts can be seen working.
     pub fn vertex_bytes_split(&self) -> [u64; 2] {
-        let stride = std::mem::size_of::<TerrainVertex>() as u64;
-        let used = |s: &SectionGpu| (s.solid_slots + u64::from(s.translucent) * 4) * stride;
-        [
-            self.sections.values().map(used).sum(),
-            self.lods.values().map(|tile| used(&tile.mesh)).sum(),
-        ]
+        [self.sections.vertex_bytes(), self.lod_vertex_bytes]
     }
-    /// Bytes of the section vertex arenas' buffers, and of the vertices
-    /// resident sections hold in them.
+    /// Bytes of the section vertex arenas' buffers, and of the vertices held
+    /// by resident sections and current far tiles.
     pub fn section_vertex_bytes(&self) -> [u64; 2] {
-        let stride = std::mem::size_of::<TerrainVertex>() as u64;
-        let vertices: u64 = self
-            .sections
-            .values()
-            .chain(self.lods.values().map(|tile| &*tile.mesh))
-            .map(|s| s.solid_slots + u64::from(s.translucent) * 4)
-            .sum();
+        let [near, far] = self.vertex_bytes_split();
         let translucent = self.translucent_arena.as_ref();
         let arenas = self.arena.bytes() + translucent.map_or(0, arena::Arena::bytes);
-        [arenas, vertices * stride]
+        [arenas, near + far]
     }
     /// Bytes of the renderer's largest GPU resources, by name (`scene_replay --memory`):
     /// the terrain arenas (their pages, and what resident sections and far tiles use of
     /// them), the quad indices, the block sprites with their mips, the LabPBR maps, flat
     /// draws' buffers and the visibility buffer's.
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
-        let stride = std::mem::size_of::<TerrainVertex>() as u64;
-        let used = |s: &SectionGpu| (s.solid_slots + u64::from(s.translucent) * 4) * stride;
+        let [near, far] = self.vertex_bytes_split();
         let textures = |t: &[wgpu::Texture]| t.iter().map(texture_bytes).sum::<u64>();
         let translucent = self.translucent_arena.as_ref();
         vec![
@@ -80,14 +193,8 @@ impl Renderer {
                 translucent.map_or(0, arena::Arena::bytes),
             ),
             ("sorted_index_pages", self.sorted_indices.bytes()),
-            (
-                "near_section_vertices",
-                self.sections.values().map(used).sum(),
-            ),
-            (
-                "far_tile_vertices",
-                self.lods.values().map(|tile| used(&tile.mesh)).sum(),
-            ),
+            ("near_section_vertices", near),
+            ("far_tile_vertices", far),
             ("quad_indices", self.indices.size()),
             ("block_sprites", textures(&self.sprite_textures)),
             (
@@ -110,47 +217,59 @@ impl Renderer {
     /// it, largest first, with its allocated and reserved totals (Vulkan and
     /// DirectX 12; none on Metal and OpenGL) (`sunrise-ctl memory`).
     pub fn gpu_memory_by_label(&self) -> Option<(u64, u64, Vec<(String, u64)>)> {
-        let report = self.device.generate_allocator_report()?;
-        let mut by_label: HashMap<String, u64> = HashMap::new();
-        for a in report.allocations {
-            *by_label.entry(a.name).or_default() += a.size;
-        }
-        let mut labels: Vec<_> = by_label.into_iter().collect();
-        labels.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        Some((
-            report.total_allocated_bytes,
-            report.total_reserved_bytes,
-            labels,
-        ))
+        allocator_memory(&self.device)
     }
     /// Heap bytes of the renderer's per-section bookkeeping (`sunrise-ctl memory`):
     /// resident sections, far tiles, block entities and light sources by section.
     pub fn cpu_census(&self) -> [(&'static str, usize); 4] {
-        use std::mem::size_of;
-        let per_section = |map_len: usize, lists: usize| {
-            map_len * (size_of::<SectionKey>() + size_of::<Vec<([i32; 3], u32)>>() + 1)
-                + lists * size_of::<([i32; 3], u32)>()
-        };
-        let lists = |map: &crate::fast_hash::FxHashMap<SectionKey, Vec<([i32; 3], u32)>>| {
-            per_section(
-                map.capacity(),
-                map.values().map(Vec::capacity).sum::<usize>(),
-            )
-        };
-        let animated: usize = self
-            .sections
-            .values()
-            .map(|s| s.animated_layers.len() * size_of::<u16>())
-            .sum();
         [
-            ("resident_sections", self.sections.heap_bytes() + animated),
+            ("resident_sections", self.sections.heap_bytes()),
             (
                 "far_tiles",
                 self.lods.capacity()
                     * (size_of::<crate::lod::TileKey>() + size_of::<lod::Tile>() + 1),
             ),
-            ("block_entities", lists(&self.block_entities)),
-            ("light_sources", lists(&self.light_blocks)),
+            ("block_entities", self.block_entities.heap_bytes()),
+            ("light_sources", self.light_blocks.heap_bytes()),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn section_list_census_tracks_capacity_through_mesh_changes() {
+        let mut lists = SectionLists::default();
+        let a = (0, 0, 0);
+        let b = (1, 0, 0);
+        let c = (2, 0, 0);
+        let first = ([0, 0, 0], 1);
+        let second = ([1, 0, 0], 2);
+        let check = |lists: &SectionLists, slots| {
+            assert_eq!(
+                lists.heap_bytes(),
+                lists.capacity() * (size_of::<SectionKey>() + size_of::<Vec<SectionBlock>>() + 1)
+                    + slots * size_of::<SectionBlock>()
+            );
+        };
+
+        assert!(lists.update(a, &[first, second]));
+        assert!(!lists.update(a, &[first, second]));
+        assert!(lists.update(b, &[second]));
+        check(&lists, 3);
+        lists.remove_position(b, second.0);
+        check(&lists, 3);
+        assert!(lists.update(a, &[first]));
+        assert!(lists.update(c, &[first, second]));
+        check(&lists, 4);
+        lists.retain(|key| *key != c);
+        check(&lists, 2);
+        assert!(lists.update(b, &[]));
+        assert!(!lists.remove(&b));
+        check(&lists, 1);
+        lists.clear();
+        check(&lists, 0);
     }
 }

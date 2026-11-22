@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: internals need a [native] mod
+
+icon:
+unavailable

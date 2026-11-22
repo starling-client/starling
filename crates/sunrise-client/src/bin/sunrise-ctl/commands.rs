@@ -320,7 +320,7 @@ pub const COMMANDS: &[Cmd] = &[
         &[flag("world", Ty::Str, "world folder to open or create"), flag("seed", Ty::Str, "seed for a new world"), flag("creative", Ty::Bool, "creative mode for a new world"),
           flag("version", Ty::Str, "an installed launcher version tag such as v2026.10.13"), flag("game", Ty::Str, "path to a sunrise-client binary"),
           flag("wait", Ty::Bool, "also wait until the world is ready (default in MCP)"),
-          flag("offscreen", Ty::Bool, "render without showing a window, splitscreen's too (screenshots still work): locked or headless sessions"),
+          flag("offscreen", Ty::Bool, "render without showing a window (screenshots still work): locked or headless sessions"),
           flag("headless", Ty::Bool, "no display, window or GPU: a player that plays through these commands only (no screenshots)")],
         mcp: true, local: true),
     cmd!("wait-for", Session, "wait-for screen NAME|widget ID|loaded|chat TEXT|event KIND [--timeout S] [--since SEQ]", "wait until the game reaches a state, then reply",
@@ -437,10 +437,6 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("look-at-entity", Move, "look-at-entity ID [--over S]", "face an entity (same as look-at entity)", "",
         ["sunrise-ctl look-at-entity 42"], &[p("id", Ty::Int, "entity id from entities"), OVER], mcp: true, local: false, wire: "look-at entity"),
     cmd!("tp", Move, "tp X Y Z", "teleport the player", "", ["sunrise-ctl tp 0 80 0"], &XYZ, mcp: true, local: false),
-    cmd!("emote", Act, "emote [ID|stop]", "play one of the player's emotes, stop it, or list them",
-        "Without an argument: the emotes the player owns (the wheel's) and the one playing. With an ID it plays that emote as the emote wheel does (the player must stand still: moving, attacking or using an item cancels it); stop fades it out. Visual only: nothing is sent to the game server (docs/cosmetics.md).",
-        ["sunrise-ctl emote", "sunrise-ctl emote wave_hello", "sunrise-ctl emote stop"],
-        &[opt("id", Ty::Str, "an owned emote's id, or stop")], mcp: true, local: false),
     // Act
     cmd!("break", Act, "break X Y Z [--timeout S]", "mine a block, holding the attack button until it breaks",
         "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops, picked_up (inventory change, where a tool that broke shows as -1) and held (the item in hand afterwards, also on a timeout: a broken tool leaves the bare hand).",
@@ -536,7 +532,8 @@ pub const COMMANDS: &[Cmd] = &[
         ["sunrise-ctl type hello everyone", "sunrise-ctl type --field name --replace Agent World", "sunrise-ctl type --field seed 12345"], &[flag("field", Ty::Enum(&["name", "seed"]), "create-world field to type into"), flag("replace", Ty::Bool, "clear the field first"), p("text", Ty::Rest, "text to type")], mcp: true, local: false),
     cmd!("chat", Screens, "chat TEXT", "send a chat line (or a /command) as if typed", "", ["sunrise-ctl chat hello"],
         &[p("text", Ty::Rest, "message")], mcp: true, local: false),
-    cmd!("command", Screens, "command TEXT", "run a command (the leading / is optional)", "",
+    cmd!("command", Screens, "command TEXT", "run a command (the leading / is optional)",
+        "Replies ok (the request was delivered, whatever the command did), chat (its feedback lines) and, in a world you host or run alone, success (any run of the command succeeded: an execute that forks counts once per fork) and result (its integer result, the last fork's), as `execute store success|result` sees them. success is false and result null when the command never ran (a syntax error, an unknown command, an execute forking to no target, a line the game refuses, no world served or the owner not placed yet); ok stays true. A client mod's command gives only ok and chat, and a server you joined answers in the chat only.",
         ["sunrise-ctl command time set day", "sunrise-ctl command /give @s oak_log 4"], &[p("command", Ty::Rest, "command line")], mcp: true, local: false),
     cmd!("respawn", Screens, "respawn", "respawn from the death screen", "", ["sunrise-ctl respawn"], &[], mcp: true, local: false),
     cmd!("pause", Screens, "pause", "open the pause menu", "", ["sunrise-ctl pause"], &[], mcp: true, local: false),
@@ -636,7 +633,19 @@ pub const COMMANDS: &[Cmd] = &[
         "on meshes every section and far tile again so the copies are complete (SUNRISE_RENDER_CAPTURE=1 keeps them from the start). DIR gets the camera, frame inputs, settings and every resident near section and far tile mesh; entities, particles, weather, the hand and the HUD are left out. See docs/graphics.md.",
         ["sunrise-ctl render-capture on", "sunrise-ctl render-capture /tmp/scene"], &[], mcp: false, local: false),
     cmd!("fly", Scripting, "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]", "fly the camera along a line, then reply with the frame summary",
-        "The reply's tick_ms and tick_ms_max are the world's smoothed tick time over the flight (the server thread's when single player runs on one). With raw, the reply also lists every frame time in milliseconds (frame_ms).",
+        "The reply's tick_ms and tick_ms_max are the world's smoothed tick time over the flight (the server thread's when single player runs on one). \
+         With raw, the reply lists each rendered frame's time in milliseconds (frame_ms). \
+         The streaming_work series is [unload_entries_visited, upload_elements_sorted, upload_elements_merged]. \
+         The unload counter covers departures and replacements in the active world. \
+         The streaming_uploads series is [meshes_uploaded, vertex_bytes_uploaded] for inline and queued mesh submissions to the renderer. \
+         This includes empty meshes and excludes stale meshes skipped before submission. \
+         Bytes use the upload budget's unpacked vertex size, not actual GPU transfers. \
+         The streaming_block_entities series is [block_entities_inserted_on_load, item_entities_visited]. \
+         Replacements count as inserts; item_entities_visited counts entity visits in the item-render loops. \
+         The streaming_span_ms object holds wall milliseconds for unload_block_entities (column removal on departure or replacement), \
+         order_uploads (stale-entry filtering and queue ordering), upload_queue (queued uploads only), \
+         load_block_entities (column block-entity loads) and block_entity_items (campfire, vault, shelf and brushable item loops). \
+         Spans are summed by name per frame and null where they did not run.",
         ["sunrise-ctl fly 0 100 0 500 100 0 20"], &[], mcp: false, local: false),
     // Repro recordings
     cmd!("record-start", Scripting, "record-start [NAME] [--no-world]", "record input, state and the world for a bug repro",

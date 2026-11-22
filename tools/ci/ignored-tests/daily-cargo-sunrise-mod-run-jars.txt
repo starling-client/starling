@@ -1,0 +1,1 @@
+cargo-sunrise-mod content_run_keeps_the_previous_package_on_jar_refusal_and_starts_with_the_staged_home test:run daily child-process

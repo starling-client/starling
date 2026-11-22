@@ -163,7 +163,7 @@ impl Hooks for Probe {
 
 // A controlled peer holds known packs while the real server executor replies.
 #[test]
-#[ignore = "needs SUNRISE_TEST_RESOURCES; starts a real integrated server and TCP peer"]
+#[ignore = "daily"]
 fn tcp_configuration_reply_precedes_finish() {
     super::tests::require_resources();
     if super::super::native_entity_refs::tests::run_fresh_cases(
@@ -240,6 +240,7 @@ fn tcp_configuration_reply_precedes_finish() {
 /// Real login and payload negotiation, stopped at the known-packs configuration barrier.
 pub(super) fn configuration_peer(
     port: u16,
+    name: &str,
 ) -> (
     sunrise_protocol::connection::Connection,
     Arc<sunrise_client::raw_payloads::Local>,
@@ -266,8 +267,8 @@ pub(super) fn configuration_peer(
     .unwrap();
     c.send(
         &login::Serverbound::Hello(login::ServerHello {
-            name: "ConfigPeer".into(),
-            uuid: sunrise_protocol::crypto::offline_uuid("ConfigPeer"),
+            name: name.into(),
+            uuid: sunrise_protocol::crypto::offline_uuid(name),
         })
         .encode(),
     )
@@ -334,7 +335,7 @@ pub(super) fn configuration_peer(
 
 fn controlled_peer(port: u16, expected: &[u8], game: &super::super::Game<'_>, network: bool) {
     use sunrise_protocol::packets::{Empty, configuration as cfg, play};
-    let (mut c, local, known) = configuration_peer(port);
+    let (mut c, local, known) = configuration_peer(port, "ConfigPeer");
     struct Release(std::sync::mpsc::Sender<()>);
     impl Drop for Release {
         fn drop(&mut self) {

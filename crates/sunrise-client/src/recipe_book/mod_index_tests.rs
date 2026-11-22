@@ -34,6 +34,7 @@ fn category(book: &str, id: &str) -> RecipeBookCategory {
         id: id.into(),
         recipe_type: "demo:cooking".into(),
         icon: "minecraft:stone".into(),
+        secondary_icon: None,
         target_menu: book.into(),
         book: {
             // The key is opaque outside registration. Decode its owned id as a fixture;
@@ -103,6 +104,15 @@ fn invalid_declarations_refuse_the_whole_generation() {
         let mut invalid = valid.clone();
         invalid.id = "demo:stews".into();
         invalid.icon = icon.into();
+        assert!(matches!(
+            ModBookIndex::build(vec![valid.clone(), invalid], &Resources),
+            Err(DisplayLoadError::UnknownResource { kind: "item", .. })
+        ));
+    }
+    for icon in ["minecraft:air", "demo:absent"] {
+        let mut invalid = valid.clone();
+        invalid.id = "demo:stews".into();
+        invalid.secondary_icon = Some(icon.into());
         assert!(matches!(
             ModBookIndex::build(vec![valid.clone(), invalid], &Resources),
             Err(DisplayLoadError::UnknownResource { kind: "item", .. })

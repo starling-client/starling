@@ -1,6 +1,7 @@
 //! winit's `ApplicationHandler` for the game window: window and device events, shutting down,
 //! and the idle step (`about_to_wait`).
 use super::*;
+use sunrise_client::window::PointerSample;
 
 impl Game<'_> {
     /// A run that a person's stray key, click or mouse move would spoil: a screenshot sequence, a
@@ -65,6 +66,59 @@ fn held_focus(
     }
 }
 
+/// What a person's event does at an agent's window no one has clicked yet.
+#[derive(Debug, PartialEq)]
+enum Unclaimed {
+    /// A mouse button pressed inside it: the window is theirs from this press on.
+    Claims,
+    /// Their keys, wheel, input method and button releases, and the focus the system gives the
+    /// window or takes from it: the game the agent drives hears none of them.
+    Dropped,
+    /// Everything else, and whatever the agent or the game sends.
+    Passes,
+}
+
+/// Only a press claims the window. The focus doesn't: Windows and X11 can hand it to a window
+/// nobody clicked, and the person's keys and mouse would then steer the agent's game (#15449).
+/// The pointer's position still passes, so the press that claims a menu lands where it points.
+fn at_unclaimed(
+    origin: input_trace::InputOrigin,
+    unclaimed: bool,
+    event: &WindowEvent,
+) -> Unclaimed {
+    if !unclaimed || origin != input_trace::InputOrigin::User {
+        return Unclaimed::Passes;
+    }
+    match event {
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } => Unclaimed::Claims,
+        WindowEvent::CursorMoved { .. } => Unclaimed::Passes,
+        WindowEvent::Focused(_) => Unclaimed::Dropped,
+        _ if is_input(event) => Unclaimed::Dropped,
+        _ => Unclaimed::Passes,
+    }
+}
+
+/// The Shift, Ctrl or Alt a person holds at an agent's window no one has clicked yet. The game
+/// doesn't hear of them, but winit tells of modifiers only as they change: the last state is
+/// kept for the claim, where a Ctrl held since before the click would otherwise read as up.
+fn held_modifiers(
+    origin: input_trace::InputOrigin,
+    unclaimed: bool,
+    event: &WindowEvent,
+) -> Option<winit::event::Modifiers> {
+    match event {
+        WindowEvent::ModifiersChanged(modifiers)
+            if unclaimed && origin == input_trace::InputOrigin::User =>
+        {
+            Some(*modifiers)
+        }
+        _ => None,
+    }
+}
+
 impl Game<'_> {
     /// winit's `window_event`. The control socket and the pad menu call it too, with the
     /// input they make up.
@@ -75,6 +129,17 @@ impl Game<'_> {
         event: WindowEvent,
         origin: input_trace::InputOrigin,
     ) {
+        self.handle_window_event_with_sample(event_loop, id, event, origin, None);
+    }
+
+    pub(super) fn handle_window_event_with_sample(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        id: WindowId,
+        event: WindowEvent,
+        origin: input_trace::InputOrigin,
+        retained_sample: Option<PointerSample>,
+    ) {
         let input = matches!(
             event,
             WindowEvent::KeyboardInput { .. }
@@ -83,7 +148,7 @@ impl Game<'_> {
                 | WindowEvent::Ime(_)
         );
         self.with_user_input(input, |game| {
-            game.handle_window_event_as(event_loop, id, event, origin);
+            game.handle_window_event_as(event_loop, id, event, origin, retained_sample);
         });
     }
 
@@ -93,6 +158,7 @@ impl Game<'_> {
         id: WindowId,
         mut event: WindowEvent,
         origin: input_trace::InputOrigin,
+        retained_sample: Option<PointerSample>,
     ) {
         // A headless game has no window: its events (the frame, the control socket's input)
         // carry `WindowId::dummy()`.
@@ -103,6 +169,9 @@ impl Game<'_> {
         if !ours {
             return;
         }
+        if let Some(modifiers) = held_modifiers(origin, self.unclaimed_window, &event) {
+            self.unclaimed_modifiers = Some(modifiers);
+        }
         if locks_out(origin, self.scripted_run(), &event) {
             return;
         }
@@ -110,6 +179,7 @@ impl Game<'_> {
             self.focus_after_run = Some(focused);
             return;
         }
+<<<<<<< sync-sunrise-1
         self.save_when_focus_leaves(&event);
         #[cfg(target_os = "android")]
         self.sync_interface_cursor(self.touch_size());
@@ -120,6 +190,12 @@ impl Game<'_> {
             && self.touch_back_key(event)
         {
             return;
+=======
+        match at_unclaimed(origin, self.unclaimed_window, &event) {
+            Unclaimed::Claims => self.claim_window(event_loop),
+            Unclaimed::Dropped => return,
+            Unclaimed::Passes => {}
+>>>>>>> sunrise/main
         }
         follow_keymap(&mut event);
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
@@ -133,9 +209,22 @@ impl Game<'_> {
         {
             *button = MouseButton::Right;
         }
+        let cursor_sample = if let WindowEvent::CursorMoved { position, .. } = &event {
+            Some(retained_sample.unwrap_or_else(|| {
+                // Only the coordinate scale matters here, not the screen extent.
+                let window = self.pointer_space([1, 1]);
+                if origin == input_trace::InputOrigin::User {
+                    window.os_sample(*position)
+                } else {
+                    window.physical_sample(*position)
+                }
+            }))
+        } else {
+            None
+        };
         // Who caused it, before the event is handled: the trace wants the
         // window's own keys, never the ones the socket made up.
-        self.trace_window_event(origin, &event);
+        self.trace_window_event(origin, &event, cursor_sample);
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {
@@ -159,9 +248,14 @@ impl Game<'_> {
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
                 self.physical_buttons.insert(*button);
+                self.physical_presses += 1;
             } else {
                 self.physical_buttons.remove(button);
             }
+            // A container hook's press latch ends here, before any hook can cancel the release.
+            self.container_owned_up = *state == ElementState::Released
+                && !self.pad_synthetic_input()
+                && self.container_button_up(*button);
         }
         let mouse = if !self.pad_synthetic_input()
             && let WindowEvent::MouseInput { state, button, .. } = &event
@@ -177,22 +271,33 @@ impl Game<'_> {
         if let Some((button, pressed, modifiers)) = mouse {
             let mut canceled = false;
             self.native_mouse_button_pre(button, pressed, modifiers, &mut canceled);
+            // This is release cleanup, not gameplay dispatch. Even a consumed release
+            // must not leave a mod's mapping down; presses wait for the screen outcome.
+            if let WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button,
+                ..
+            } = &event
+            {
+                self.mod_mappings_button(*button, false);
+            }
             if canceled {
                 return;
             }
         }
-        if mouse.is_some()
-            && let WindowEvent::MouseInput { state, button, .. } = &event
-        {
-            self.mod_mappings_button(*button, *state == ElementState::Pressed);
-        }
         let resized = matches!(event, WindowEvent::Resized(_));
-        self.handle_window_event_inner(event_loop, event);
+        let mouse_press_millis = (origin == input_trace::InputOrigin::User
+            && mouse.is_some_and(|(_, pressed, _)| pressed))
+        .then(|| self.millis());
+        let title_settled =
+            self.handle_window_event_inner(event_loop, event, cursor_sample, mouse_press_millis);
         if resized {
             self.notify_window_resize();
         }
-        // A title screen the event asked for opens before the next event.
-        self.settle_title_mode();
+        // Button receivers settle before their Post; other events settle here.
+        if !title_settled {
+            self.settle_title_mode();
+        }
         if let Some((button, pressed, modifiers)) = mouse {
             self.native_mouse_button_post(button, pressed, modifiers);
         }
@@ -200,6 +305,7 @@ impl Game<'_> {
 
     /// The loop ended: close the pads' output, save the world.
     pub(super) fn shut_down(&mut self) {
+        self.close_client_tasks();
         if self.error.is_none()
             && let Some(renderer) = &mut self.renderer
         {
@@ -212,8 +318,7 @@ impl Game<'_> {
         }
         self.finish_profile();
         // The client's last moment: its world is left and saved, its options and
-        // resources are still held. A dedicated server and a splitscreen guest skip
-        // it, as `client_setup` does.
+        // resources are still held. A dedicated server skips it, as `client_setup` does.
         if self.options.is_client_start() {
             self.native_client_stopping();
         }
@@ -222,9 +327,7 @@ impl Game<'_> {
     /// winit's `about_to_wait`: what happens between frames (stop requests, the closing
     /// save, world entry, the control socket, pads), then the next frame.
     pub(super) fn idle(&mut self, event_loop: &dyn EventLoopCtl) {
-        // A splitscreen player's game has nothing to save: P1's shuts the process down.
         if sunrise_threads::stop_requests() > 0
-            && !self.options.split_guest
             && self.pending_save.as_ref().is_none_or(|save| !save.quit)
         {
             // SIGTERM, SIGINT or SIGHUP: the shutdown hook's server halt, as a window close.
@@ -248,7 +351,7 @@ impl Game<'_> {
                 }
                 Err(error) => {
                     self.error = Some(error);
-                    self.exit_on_error(event_loop);
+                    event_loop.exit();
                 }
             }
             return;
@@ -256,7 +359,7 @@ impl Game<'_> {
         if let Err(error) = sunrise_client::spans::time("world_entry", || self.resume_world_entry())
         {
             self.error = Some(error);
-            self.exit_on_error(event_loop);
+            event_loop.exit();
             return;
         }
         // The world a backup made before its upgrade opens (EditWorldScreen's callback).
@@ -269,7 +372,7 @@ impl Game<'_> {
         }
         // A Realm's address came back (GetServerDetailsTask hands over to ConnectScreen).
         if let Some(action) = self.title.as_mut().and_then(|t| t.take_connect_request())
-            && let Err(error) = self.title_action(event_loop, action)
+            && let Err(error) = self.title_action(action)
         {
             self.error = Some(error);
             event_loop.exit();
@@ -370,16 +473,17 @@ impl ApplicationHandler for Game<'_> {
         let fullscreen = self.settings.fullscreen || self.options.fullscreen;
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = sunrise_client::window::FullscreenState::new(fullscreen);
-        let attributes =
-            sunrise_client::window::with_icon(Window::default_attributes().with_title("Sunrise"));
+        let attributes = sunrise_client::window::with_icon(
+            Window::default_attributes().with_title(super::window_title::base()),
+        );
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "sunrise", "sunrise",
         );
-        // A game an agent started opens without the focus, as splitscreen's windows do: the
-        // person keeps their keyboard and pointer until they click it (`unclaimed_window`).
-        // X11 activates it anyway, and says so with a `Focused`.
+        // A game an agent started opens without the focus and
+        // the person keeps their keyboard and pointer until they click it (`unclaimed_window`).
+        // X11 activates it anyway, and Windows can too: the focus claims nothing.
         let agent_started = self.options.control.is_some();
         self.unclaimed_window = agent_started && !self.options.offscreen;
         // `--offscreen` renders into a texture: its window would only show white.
@@ -404,19 +508,45 @@ impl ApplicationHandler for Game<'_> {
             sunrise_threads::system_menu::suppress(hwnd);
         }
         drop(window_step);
-        match self.new_renderer(window.clone()) {
-            Ok(r) => {
-                self.renderer = Some(r);
-                self.world_renderer_ready = true;
-            }
-            Err(e) => {
-                self.error = Some(e);
-                event_loop.exit();
-                return;
-            }
-        }
+        let pending = self.pending_initial_models.take();
+        let renderer = match &pending {
+            Some(start) => self.renderer_for(window.clone(), &start.models.pack, &start.models.gui),
+            None => self.new_renderer(window.clone()),
+        };
         self.resize_state = Some(self.resize_state_of(window.inner_size()));
         self.window = Some(window);
+        if let Some(pending) = pending {
+            match self.apply_pending_client_start(*pending, renderer.map(Some)) {
+                Ok(true) => {
+                    self.settings.file.set(
+                        "startedCleanly",
+                        sunrise_client::options_file::V::Bool(true),
+                    );
+                    self.settings.save(&Game::options_path());
+                }
+                Ok(false) => {
+                    event_loop.exit();
+                    return;
+                }
+                Err(error) => {
+                    self.error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
+            }
+        } else {
+            match renderer {
+                Ok(renderer) => {
+                    self.renderer = Some(renderer);
+                    self.world_renderer_ready = true;
+                }
+                Err(error) => {
+                    self.error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
         self.ime_allowed = false;
         self.ime_area = None;
         self.apply_settings();
@@ -425,6 +555,7 @@ impl ApplicationHandler for Game<'_> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let key = if self.window.as_ref().is_some_and(|w| w.id() == id)
             && !self.scripted_run()
+            && !self.unclaimed_window
             && let WindowEvent::KeyboardInput {
                 event,
                 is_synthetic: false,
@@ -460,14 +591,13 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        // A composited view renders offscreen but its keyboard/mouse owner still
-        // controls a visible native window. A headless offscreen run never does.
+        // Offscreen runs do not use native pointer motion.
         if self.pending_save.is_none()
             && !self.scripted_run()
+            && !self.unclaimed_window
             && self.captured
             && self.focused
-            && self.keyboard_mouse
-            && (!self.options.offscreen || self.split_window)
+            && !self.options.offscreen
             && self.screen == Screen::Playing
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {
@@ -571,6 +701,93 @@ mod tests {
             assert_eq!(
                 held_focus(InputOrigin::User, true, &event),
                 None,
+                "{event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_persons_press_claims_an_agents_window() {
+        let device_id = DeviceId::dummy();
+        let press = WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        assert_eq!(
+            at_unclaimed(InputOrigin::User, true, &press),
+            Unclaimed::Claims
+        );
+        // The focus alone claims nothing, and the game doesn't hear of it.
+        for focused in [true, false] {
+            let event = WindowEvent::Focused(focused);
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, true, &event),
+                Unclaimed::Dropped
+            );
+        }
+        let release = WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        for event in inputs().into_iter().skip(1).chain([release]) {
+            let want = match event {
+                WindowEvent::CursorMoved { .. } => Unclaimed::Passes,
+                _ => Unclaimed::Dropped,
+            };
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, true, &event),
+                want,
+                "{event:?}"
+            );
+        }
+        for event in [
+            WindowEvent::CloseRequested,
+            WindowEvent::Resized(PhysicalSize::new(854, 480)),
+        ] {
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, true, &event),
+                Unclaimed::Passes,
+                "{event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_persons_modifiers_are_kept_for_the_claim() {
+        let shift = Modifiers::from(ModifiersState::SHIFT);
+        let event = WindowEvent::ModifiersChanged(shift);
+        assert_eq!(held_modifiers(InputOrigin::User, true, &event), Some(shift));
+        assert_eq!(held_modifiers(InputOrigin::User, false, &event), None);
+        assert_eq!(held_modifiers(InputOrigin::Agent, true, &event), None);
+        assert_eq!(
+            held_modifiers(InputOrigin::User, true, &WindowEvent::Focused(true)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_agent_still_drives_its_unclaimed_window() {
+        let events = inputs().into_iter().chain([WindowEvent::Focused(true)]);
+        for event in events {
+            for origin in [InputOrigin::Agent, InputOrigin::Game] {
+                assert_eq!(
+                    at_unclaimed(origin, true, &event),
+                    Unclaimed::Passes,
+                    "{event:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_ordinary_window_hears_everything() {
+        let events = inputs().into_iter().chain([WindowEvent::Focused(true)]);
+        for event in events {
+            assert_eq!(
+                at_unclaimed(InputOrigin::User, false, &event),
+                Unclaimed::Passes,
                 "{event:?}"
             );
         }

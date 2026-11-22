@@ -10,11 +10,15 @@ description = "Open and Share for saved performance captures: the local viewer l
 sunrise-addresses = { path = "../sunrise-addresses" }
 sunrise-platform = { path = "../sunrise-platform" }
 getrandom = "0.3"
-log = "0.4"
 open = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# rustls (through ureq) builds against `subtle`. The game crate turns on subtle's default features (through
+# sunrise-mod-package's runtime-process and the friends crypto), so this names the same ones: without it
+# `-p sunrise-client-lib` and `-p sunrise-client` build rustls, ureq, this crate and sunrise-perf as two
+# variants in one target directory, and each alternation of the two recompiles them and the package.
+subtle = "2.6"
 url = "2"
 
 [lints]

@@ -250,9 +250,9 @@ Owner: [martipops](https://github.com/martipops)
 
 <details><summary>Technical</summary>
 
-Issue [#2054](https://github.com/horizon-rust/horizon/issues/2054), built by martipops as a series: up to 16 local players on the server thread's multiplayer ([#3541](https://github.com/horizon-rust/horizon/issues/3541)), each controller driving its own player ([#3794](https://github.com/horizon-rust/horizon/issues/3794)), joining with a controller ([#3801](https://github.com/horizon-rust/horizon/issues/3801)), players in windows of their own ([#3825](https://github.com/horizon-rust/horizon/issues/3825)) and the profile page ([#3826](https://github.com/horizon-rust/horizon/issues/3826)).
+The built-in feature was removed. Its replacement will be an official native mod with guests limited to the host's world.
 
-More: [#3777](https://github.com/horizon-rust/horizon/issues/3777)
+More: [https://github.com/sunrise-org/sunrise/issues/614](https://github.com/sunrise-org/sunrise/issues/614) · [https://github.com/sunrise-org/sunrise-splitscreen](https://github.com/sunrise-org/sunrise-splitscreen)
 
 </details>
 
@@ -762,7 +762,7 @@ Install Sunrise on NixOS through a Nix flake.
 
 <details><summary>Technical</summary>
 
-A player's idea (#sunrise-ideas). The launcher's AppImage ships with each launcher release ([packaging/linux/appimage.sh](packaging/linux/appimage.sh)): one file with the libraries GPUI needs, which replaces itself when it updates. A flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, X11/Wayland, ALSA) is still missing, the way sunrise-parity's NixOS setup runs them today.
+A player's idea (#sunrise-ideas). The launcher's AppImage ships with each launcher release (packaging/linux/appimage.sh in sunrise-launcher): one file with the libraries GPUI needs, which replaces itself when it updates. A flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, X11/Wayland, ALSA) is still missing, the way sunrise-parity's NixOS setup runs them today.
 
 </details>
 

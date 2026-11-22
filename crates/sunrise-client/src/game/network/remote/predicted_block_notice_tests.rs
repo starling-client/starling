@@ -1,9 +1,9 @@
 // Applied client writes, held server updates and reconciliation through the real Game.
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
 use crate::game::remote::*;
-use sunrise_core::position::BlockPos;
 use mod_api::{BlockPart, LevelDimension, LevelSide, OnBlockStateChangeEvent, Registrar};
 use std::sync::Mutex;
+use sunrise_core::position::BlockPos;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Notice {
@@ -74,7 +74,7 @@ fn with_client(name: &str, test: impl FnOnce(&mut Game<'_>, &Observer, BlockStat
             };
             game.enter_remote_dimension(
                 &spawn,
-                false,
+                RemoteDimensionEntry::Login,
                 sunrise_client::level_loading::Reason::Other,
             );
             game.remote.as_mut().unwrap().logged_in = true;
@@ -221,7 +221,7 @@ fn ordinary_server_write_is_not_predicted() {
 fn equal_state_writes_are_not_notices() {
     with_client("equal_state_writes_are_not_notices", |game, seen, stone| {
         update(game, [2, 64, 2], stone);
-        game.predict_blocks(&vec![(BlockPos::new(1, 64, 1), stone)], 7);
+        game.predict_blocks(&[(BlockPos::new(1, 64, 1), stone)], 7);
         ack(game);
         assert!(seen.0.lock().unwrap().is_empty());
     });
@@ -233,7 +233,7 @@ fn applied_placement_carries_predicted_true() {
         "applied_placement_carries_predicted_true",
         |game, seen, stone| {
             game.world.set(1, 64, 1, game.world.air).unwrap();
-            game.predict_blocks(&vec![(BlockPos::new(1, 64, 1), stone)], 7);
+            game.predict_blocks(&[(BlockPos::new(1, 64, 1), stone)], 7);
             assert_eq!(
                 *seen.0.lock().unwrap(),
                 [expected(

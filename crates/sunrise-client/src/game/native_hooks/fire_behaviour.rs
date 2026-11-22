@@ -1,8 +1,8 @@
 use super::*;
 
-/// The level's side of fire and lava ignition (`FireBlock`, `LavaFluid`), which `GameLevel`'s
-/// `LevelAccess` forwards to: the mods' answers on an authoritative server, and the level's own
-/// facts. A client's copy of the level asks no mod.
+/// The level's side of fire and lava ignition, called through `GameLevel`'s
+/// `LevelAccess`: authoritative actions and read-only eligibility queries.
+/// Fire-odds and smoke-source queries also run on the client for prediction.
 impl GameLevel<'_> {
     /// `allow_block_ignite`: the `block_ignite` hook's cancel.
     pub(in crate::game) fn block_ignite_allowed(&self, pos: BlockPos, cause: &'static str) -> bool {
@@ -30,9 +30,11 @@ impl GameLevel<'_> {
         face: Direction,
         odds: &mut Option<(i32, i32)>,
     ) {
-        if self.native_authoritative {
-            self.native_fire_odds(self.dimension, state, pos, face, odds);
+        super::mod_api_host::FireOddsLevel {
+            base: self,
+            prediction: None,
         }
+        .native_fire_odds(self.dimension, state, pos, face, odds);
     }
 
     /// `before_is_fire_source`: the block's parts answer `is_fire_source`.
@@ -79,9 +81,7 @@ impl GameLevel<'_> {
         state: BlockStateId,
         smoke: &mut Option<bool>,
     ) {
-        if self.native_authoritative {
-            self.native_smoke_source(self.dimension, state, smoke);
-        }
+        self.native_smoke_source(self.dimension, state, smoke);
     }
 
     /// `ServerLevel.canSpreadFireAround`: a player (not a spectator) closer

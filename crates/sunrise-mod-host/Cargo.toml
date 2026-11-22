@@ -9,10 +9,8 @@ description = "The mod host above the engine: loading, Host implementations, reg
 
 [dependencies]
 mod-render = { package = "sunrise-mod-render", path = "../sunrise-mod-render" }
-sunrise-engine-slots = { path = "../sunrise-engine-slots" }
-mod-points = { package = "sunrise-mod-points", path = "../sunrise-mod-points" }
-sunrise-guest-stack = { path = "../sunrise-guest-stack" }
 sunrise-client = { path = "../sunrise-client", default-features = false }
+sunrise-hooks = { path = "../sunrise-hooks" }
 
 sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
 mod-api = { package = "sunrise-mod-api", path = "../sunrise-mod-api" }
@@ -22,6 +20,7 @@ libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+object = { version = "0.39", default-features = false, features = ["read", "std"] }
 
 [lints]
 workspace = true
@@ -36,7 +35,6 @@ friends = ["sunrise-client/friends"]
 rng-trace = ["sunrise-client/rng-trace"]
 system-allocator = ["sunrise-client/system-allocator"]
 alloc-census = ["sunrise-client/alloc-census"]
-windows-mimalloc = ["sunrise-client/windows-mimalloc"]
 windows-segment-heap = ["sunrise-client/windows-segment-heap"]
 
 [dev-dependencies]

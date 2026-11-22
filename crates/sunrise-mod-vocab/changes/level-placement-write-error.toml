@@ -1,0 +1,3 @@
+ids = ["type:LevelWriteError", "type:LevelWriteError.InvalidStack", "type:LevelWriteError.InTransaction"]
+why = "Playerless placement now reports detached stack conversion failures as InvalidStack and refuses wither completion inside a transaction as InTransaction. Carrying StackWriteError means LevelWriteError is no longer Copy, and the added variants change its Wire layout."
+migrate = "Borrow or move the error as needed, or clone it if both callers need ownership. Handle InvalidStack for a rejected detached stack and run placement that completes a wither outside the transaction."

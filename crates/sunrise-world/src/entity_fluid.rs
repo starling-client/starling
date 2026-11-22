@@ -1,10 +1,10 @@
 //! Entity fluid immersion trackers and current accumulation across update ticks.
 use crate::fluid::{FluidKind, FluidState};
+use std::fmt;
 use sunrise_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
 };
-use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FluidTagId(pub u32);

@@ -43,19 +43,22 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{fishing::Hook, native_entity_refs::tests::with_game};
+    use super::super::{
+        fishing::Hook,
+        native_entity_refs::tests::{collect_game_entities_in, with_game},
+    };
     use super::*;
+    use mod_api::WorldEpoch;
     use sunrise_client::{mobs::Mob, motion::PlayerMotion};
     use sunrise_core::geometry::Vec3;
-    use mod_api::WorldEpoch;
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn real_hook_lifetime_survives_a_body_loan_and_retires_only_at_physical_sweep() {
+        use std::sync::{Arc, Mutex};
         use sunrise_mod_runtime::attachments::{
             AttachmentType, Attachments, HasAttachmentLifetime, Holder, index::AttachmentIndex,
         };
-        use std::sync::{Arc, Mutex};
         static VALUE: AttachmentType<i32> = AttachmentType {
             namespace: "test",
             name: "hook_lifetime",
@@ -98,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_cast_hook_narrows_reads_its_catch_and_goes_when_discarded() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -130,9 +133,8 @@ mod tests {
 
             // A box query finds it, as `Level.getEntities` does.
             let level = game.level(game.dim.id()).unwrap();
-            let found = game
-                .level_entities_in(level, [0.0, 60.0, 0.0], [6.0, 70.0, 6.0])
-                .unwrap();
+            let found =
+                collect_game_entities_in(game, level, [0.0, 60.0, 0.0], [6.0, 70.0, 6.0]).unwrap();
             assert_eq!(found, vec![entity]);
 
             let stale = FishingHookRef::new(EntityRef::new(
@@ -150,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_live_hook_keeps_its_uuid_across_memory_pruning() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -166,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_hook_belongs_to_the_player_who_cast_it() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());

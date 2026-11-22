@@ -51,10 +51,12 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
    The device code page takes whatever Microsoft account the browser is signed in to, and the flow has
    no option for an account picker (no `prompt`, no `login_hint`). To add a different account without any
    change to the Azure app (#3786), the sign-in panel offers **Open in private window**: the default
-   browser's private window (`launcher/src/private_window.rs`: the `https` ProgId on Windows, LaunchServices
+   browser's private window (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/private_window.rs`: the `https` ProgId on Windows, LaunchServices
    on macOS, `xdg-settings` on Linux; `--incognito`, `--inprivate`, `--private`, `--private-window`) has no
    Microsoft session. Safari and unknown browsers get **Copy link** and a hint instead. **Use a different
-   Microsoft account** opens `login.live.com/logout.srf` and then the code page.
+   Microsoft account** opens the end-session page `…/consumers/oauth2/v2.0/logout` and then the code page.
+   It signs the browser out of login.live.com and ends on Microsoft's signed-out page;
+   `login.live.com/logout.srf` opened on its own continues to msn.com (#2034).
 2. **Poll** `POST …/consumers/oauth2/v2.0/token` (`grant_type=urn:ietf:params:oauth:grant-type:device_code`)
    every `interval` seconds; `authorization_pending` waits, `slow_down` adds 5 s, `authorization_declined`,
    `expired_token` and `bad_verification_code` end the sign-in with a message. Result: the Microsoft
@@ -89,7 +91,7 @@ possible; the launcher just doesn't offer it on its own.
   the gate's screen once when the launcher opens: why Sunrise needs the account ("like other
   launchers"), and Sign in, which shows
   the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
-  and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
+  and Home keeps a Sign in row (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/owner_page.rs`).
 - **The answer lives with the tokens.** Each account's keychain item keeps the last answer
   (`owns`), so accounts.json can't say yes. Where there is no keychain the answer sits in the
   secrets file with the tokens; a player can edit that file, as they can write keychain items with
@@ -113,7 +115,7 @@ possible; the launcher just doesn't offer it on its own.
 Decided 2026-10-27. This is the only exception to "Sunrise never downloads the game", and it
 applies only on the player's machine, for an account the owner gate just asked about. The
 launcher's "Download and prepare" (`sunrise-launcher prepare --download`) fetches the pinned
-version straight from Mojang (`launcher/src/mojang.rs`): the version file, the client jar,
+version straight from Mojang (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/mojang.rs`): the version file, the client jar,
 libraries, the asset index and the assets, each checked against the size and sha1 Mojang lists.
 They go to `minecraft/` in the launcher's data folder, and the preparation runs as usual. The
 download can be cancelled and goes on where it stopped. CI, agents, harnesses and the repo never
@@ -248,19 +250,12 @@ machine can read it in the process list. Sunrise keeps it out of argv:
 - The game reads the file at start and deletes it at once; the token lives only in the game's memory.
   A file older than two minutes is refused (and deleted), so a stale file can't be replayed.
 - Without a session file the game is offline as today (`--name`, offline UUID).
+- When the launcher plays offline (no answer from Microsoft, a sign-in to renew, a keyring that
+  didn't open), it says why in the game's `SUNRISE_OFFLINE_REASON`; the game shows that, or why its
+  session file could not be read, as a "Playing offline" toast on the title screen.
 - `SUNRISE_SESSION_FILE` is the same as `--session-file` (development and harnesses).
 - `--session-stdin` takes the same JSON on standard input instead, so nothing touches the disk (for other
   launchers: [the Launch API](api/launch.md)).
-
-
-- While the game's Splitscreen setting is on (`splitscreen:true` in `sunrise-extras.txt`), the
-  other signed-in accounts get a session file each too, for splitscreen players to sign in with, listed in `SUNRISE_ACCOUNT_SESSIONS` (`[{"name", "uuid", "file"}]`). Each token is renewed
-  first when due; after ten seconds no further renewal starts (an in-flight request finishes).
-  Accounts whose sessions cannot be provided are listed with `skipped` instead
-  of `file`, with no token. They remain in the picker marked “(Offline)”, with a “Sign in again
-  in the launcher” tooltip; valid sessions have a “Microsoft online” tooltip. The game logs
-  unavailable accounts and still starts. These names can play in P1's world or on local offline-mode
-  servers; external and online-mode servers require a valid session from the launcher.
 
 ## Online-mode login (game)
 
@@ -341,11 +336,11 @@ offline mode (unsigned chat, as before). Both also click commands: `sendUnattend
 only reaches the chat box, for the player to send.
 
 Chat from other players is checked as vanilla's client does (`ClientPacketListener.handlePlayerChat`,
-`game/network/remote/mod.rs`, `secure_chat::MessageValidator`): a wrong global chat index disconnects, and a sender
-with no list entry or a message its validator refuses shows the red, italic `chat.validation_error`. A
-chat session the services' profile-key keys vouch for makes a keyed validator (the key not past its
-expiry plus 8 hours, the signature, the chain); anything else makes the fallback, which accepts unsigned
-messages, or none where the server enforces secure chat. The unit tests in `secure_chat.rs` cover the
+`game/network/remote/packets_player.rs::Game::apply_player_chat_packet`, `secure_chat::MessageValidator`): a wrong
+global chat index disconnects, and a sender with no list entry or a message its validator refuses shows the red,
+italic `chat.validation_error`. A chat session the services' profile-key keys vouch for makes a keyed
+validator (the key not past its expiry plus 8 hours, the signature, the chain); anything else makes the
+fallback, which accepts unsigned messages, or none where the server enforces secure chat. The unit tests in `secure_chat.rs` cover the
 validators; the script above doesn't send another player's chat.
 
 ## Harnesses

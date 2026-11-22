@@ -1,8 +1,8 @@
 use super::*;
+use std::sync::{Mutex, Weak};
 use sunrise_mod_runtime::attachments::{
     AttachmentType, Holder, index::AttachmentIndex, observer::IndexedAttachmentObserver,
 };
-use std::sync::{Mutex, Weak};
 
 type Index = Arc<Mutex<AttachmentIndex<BlockEntityIdentity>>>;
 static VALUE: AttachmentType<i32> = AttachmentType {

@@ -56,16 +56,15 @@ pub fn attribute_bounds_widenings() -> &'static [AttributeBoundsWidening] {
 pub trait AttributesRegistrar {
     /// Declare an attribute type of the mod's own (vanilla's
     /// `RangedAttribute` in `BuiltInRegistries.ATTRIBUTE`, NeoForge's
-    /// `RegisterEvent`): `path` in the mod's namespace (`mana` of `mymod` is
-    /// `mymod:mana`), its `default` and `[min, max]` bounds, whether it
+    /// `RegisterEvent`): give its `path`, `default` and `[min, max]` bounds, whether it
     /// joins the attribute sync (`Attribute.setSyncable`), and the sentiment
     /// that colors its tooltip lines (`Attribute.setSentiment`, POSITIVE by
     /// default; the translation key is `attribute.name.<ns>.<path>`), and how its
     /// tooltip lines read (`tooltip`: percentages, on/off, a base modifier; NeoForge's
     /// `PercentageAttribute`, `BooleanAttribute` and `IAttributeExtension.getBaseId`).
     ///
-    /// Only both-side packages may declare attributes; other sides refuse because
-    /// declarations assign network registry IDs.
+    /// Only both-side packages (and both-side served namespace suppliers) may declare attributes;
+    /// other sides refuse because declarations assign network registry IDs.
     /// The declarations join the attribute catalog once, at load, appended
     /// after every vanilla attribute **sorted by declaring mod id, then by
     /// attribute id** — the order is the network id's, so every side running
@@ -74,8 +73,12 @@ pub trait AttributesRegistrar {
     /// may name the mod's own new attribute. Sanitizing a value (NaN → min,
     /// else clamp) is the definition's own `sanitize`.
     ///
-    /// An id outside the mod's manifest-owned namespaces (a vanilla attribute's included),
-    /// a malformed id, a duplicate — of this mod's or another's, caught
+    /// A bare `path` uses the calling mod's ID as its namespace (`mana` of `mymod` is
+    /// `mymod:mana`). An explicit ID may use a namespace owned by the caller's manifest or by
+    /// a content package it serves via `served_by`.
+    ///
+    /// An ID outside these namespaces (including a vanilla attribute),
+    /// a malformed ID, a duplicate — of this mod's or another's, caught
     /// where the declarations join the catalog — a non-finite default or
     /// bound, bounds the default is not inside (`min > max` included), or a
     /// base modifier that is not a namespaced id refuses, naming the mod.
@@ -104,9 +107,10 @@ pub trait AttributesRegistrar {
     /// nothing. The default value never moves. An attribute without bounds
     /// stays without them.
     ///
-    /// Only both-side packages may widen bounds, so the client and the server
-    /// build the same catalog; the mod-set check at join is all a client
-    /// needs. A non-finite bound or `min > max` refuses here, naming the mod;
+    /// Only both-side packages may widen bounds. If the attribute is in a namespace supplied
+    /// by a package the caller serves via `served_by`, that supplier must also be `side = "both"`.
+    /// The client and server then build the same catalog; the mod-set check at join is all a
+    /// client needs. A non-finite bound or `min > max` refuses here, naming the mod;
     /// an attribute the catalog does not have, or one whose default is not
     /// inside `[min, max]`, refuses the load where the asks join the catalog,
     /// naming the mod.

@@ -4,21 +4,11 @@
     "builder": "DOCKERFILE",
     "dockerfilePath": "crates/sunrise-mod-registry/Dockerfile",
     "watchPatterns": [
-      "/crates/sunrise-mod-package/**",
-      "/crates/sunrise-core/**",
-      "/crates/sunrise-mod-api-gen/**",
-      "/crates/sunrise-game-discovery/**",
-      "/crates/sunrise-mod-vocab/**",
-      "/crates/sunrise-client/src/game/native_hooks/**",
-      "/crates/sunrise-mod-runtime/**",
-      "/crates/sunrise-mod-api-macros/**",
-      "/crates/sunrise-mod-point-shape/**",
-      "/crates/sunrise-mod-source/**",
-      "/crates/sunrise-mod-surface/**",
-      "/crates/sunrise-release-sign/**",
-      "/crates/sunrise-shader-api/**",
-      "/crates/sunrise-mod-registry/**",
-      "/Cargo.toml"
+      "/crates/**",
+      "/tools/layering/mod_vocab_state.json",
+      "/tools/mixins/narrow-reference-rule.patch",
+      "/Cargo.toml",
+      "/.dockerignore"
     ]
   },
   "deploy": {

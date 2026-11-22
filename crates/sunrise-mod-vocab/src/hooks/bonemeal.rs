@@ -14,7 +14,8 @@ pub trait Hooks {
         contract = "cancel",
         out = "canceled",
         neoforge = "BonemealEvent",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn bonemeal(
         dimension: LevelDimension,

@@ -1,17 +1,17 @@
 //! Real skull, rocket, command and zero-damage projectile entries.
 use super::*;
 use crate::game::native_entity_refs::tests::{bind_local_player, with_game};
-use sunrise_client::{
-    command::args::GameMode,
-    motion::PlayerMotion,
-    projectiles::{Hit, Projectile, ProjectileKind, ThrownType},
-};
 use mod_api::{
     EnderPearlTeleportEvent, EntityInvulnerabilityCheckEvent, Flow, Hooks, LevelSide, ServerHost,
 };
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
+};
+use sunrise_client::{
+    command::args::GameMode,
+    motion::PlayerMotion,
+    projectiles::{Hit, Projectile, ProjectileKind, ThrownType},
 };
 
 struct Probe(Arc<AtomicUsize>);
@@ -45,7 +45,7 @@ fn fresh_player(game: &mut Game<'_>, mode: GameMode) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn remaining_hit_callers_observe_refusals_and_zero_damage() {
     let count = Arc::new(AtomicUsize::new(0));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -232,6 +232,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
                     max_players: 20,
                     integrated: false,
                     levels: Default::default(),
+                    level_seeds: Default::default(),
                 },
             )
             .unwrap();

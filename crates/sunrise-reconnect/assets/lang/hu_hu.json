@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automatikus újracsatlakozás",
+  "sunrise.extras.auto_reconnect.tooltip": "Megszakadt kapcsolat vagy újraindítás után csatlakozik újra a szerverhez, soha nem rúgás vagy kitiltás után."
+}

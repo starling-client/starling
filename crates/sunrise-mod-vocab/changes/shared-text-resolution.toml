@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientTextClientHost::text_string", "method:prelude::TextHost::text_string"]
+why = "Component.getString now works in server hooks too. The client and integrated server share the active client language. The dedicated server uses English, including mod and data-pack language files loaded at server starting."
+migrate = "Calls written as host.text_string(&text) work unchanged. Import TextHost instead of ClientTextClientHost for a qualified call, and rebuild against the new SDK."

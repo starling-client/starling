@@ -1,5 +1,7 @@
 //! Functions registered for the in-world game test runner.
 use crate::ServerHost;
+use crate::generated::HookId;
+use crate::runtime::discard_registration;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// The outcome of a function invocation. Pending keeps the runner's timeout active.
@@ -106,12 +108,21 @@ pub trait GameTests {
     ) -> Result<(), &'static str>;
 }
 /// Load-owned function registry. Duplicate and invalid identifiers are refused.
+// no wire: owns process-local test callbacks.
 #[derive(Default, Clone)]
 pub struct GameTestFunctions {
     definitions: BTreeMap<String, GameTestDefinition>,
     functions: BTreeMap<String, Arc<dyn GameTestFunction>>,
 }
-impl GameTests for GameTestFunctions {
+
+const REGISTRATION: (HookId, &str) = (HookId::RegisterGameTests, "register_game_tests");
+
+struct GameTestEdits<'a> {
+    published: Option<&'a GameTestFunctions>,
+    pending: &'a mut GameTestFunctions,
+}
+
+impl GameTests for GameTestEdits<'_> {
     fn register_test(
         &mut self,
         id: &str,
@@ -128,7 +139,11 @@ impl GameTests for GameTestFunctions {
         {
             return Err("expected namespaced function id");
         }
-        if self.definitions.contains_key(id) {
+        if self.pending.definitions.contains_key(id)
+            || self
+                .published
+                .is_some_and(|registry| registry.definitions.contains_key(id))
+        {
             return Err("duplicate test id");
         }
         if definition.max_ticks < 1
@@ -138,7 +153,7 @@ impl GameTests for GameTestFunctions {
         {
             return Err("invalid test timing");
         }
-        self.definitions.insert(id.into(), definition);
+        self.pending.definitions.insert(id.into(), definition);
         Ok(())
     }
 
@@ -163,14 +178,62 @@ impl GameTests for GameTestFunctions {
         {
             return Err("invalid or reserved function id");
         }
-        if self.functions.contains_key(id) {
+        if self.pending.functions.contains_key(id)
+            || self
+                .published
+                .is_some_and(|registry| registry.functions.contains_key(id))
+        {
             return Err("duplicate function id");
         }
-        self.functions.insert(id.into(), function);
+        self.pending.functions.insert(id.into(), function);
         Ok(())
     }
 }
+
+impl GameTests for GameTestFunctions {
+    fn register_test(
+        &mut self,
+        id: &str,
+        definition: GameTestDefinition,
+    ) -> Result<(), &'static str> {
+        self.edit().register_test(id, definition)
+    }
+
+    fn register(
+        &mut self,
+        id: &str,
+        function: Arc<dyn GameTestFunction>,
+    ) -> Result<(), &'static str> {
+        self.edit().register(id, function)
+    }
+}
+
 impl GameTestFunctions {
+    fn edit(&mut self) -> GameTestEdits<'_> {
+        GameTestEdits {
+            published: None,
+            pending: self,
+        }
+    }
+
+    /// Publish the completed listener's test instances and functions together.
+    #[doc(hidden)]
+    pub fn register_listener(&mut self, listen: &mut dyn FnMut(&mut dyn GameTests) -> bool) {
+        let mut pending = Self::default();
+        if listen(&mut GameTestEdits {
+            published: Some(self),
+            pending: &mut pending,
+        }) {
+            self.definitions.extend(pending.definitions);
+            self.functions.extend(pending.functions);
+        } else {
+            let owner = crate::content::crash::current_native_mod();
+            for function in pending.functions.into_values() {
+                discard_registration(REGISTRATION, owner, function);
+            }
+        }
+    }
+
     /// Test definitions collected at world load, in identifier order.
     pub fn definitions(&self) -> impl Iterator<Item = (&str, &GameTestDefinition)> {
         self.definitions
@@ -193,6 +256,122 @@ mod tests {
             GameTestResult::Pass
         }
     }
+    #[test]
+    fn a_panicking_game_test_registrar_leaves_both_keys_available_to_the_next_listener() {
+        use crate::{Hooks, Host, ModEntry, RegisterGameTestsEvent, testing::FakeHost};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct Registrant {
+            callback: Arc<dyn GameTestFunction>,
+            structure: &'static str,
+            panic_after: Option<Arc<AtomicBool>>,
+        }
+        #[crate::__subscriptions]
+        impl Hooks for Registrant {
+            fn register_game_tests(&self, _: &dyn Host, event: &mut RegisterGameTestsEvent<'_>) {
+                let definition =
+                    GameTestDefinition::new(self.structure.into(), "example:shared".into());
+                event
+                    .functions
+                    .register_test("example:shared", definition.clone())
+                    .unwrap();
+                event
+                    .functions
+                    .register("example:shared", self.callback.clone())
+                    .unwrap();
+                for duplicate in ["example:shared", "example:retained"] {
+                    assert_eq!(
+                        event.functions.register_test(duplicate, definition.clone()),
+                        Err("duplicate test id"),
+                    );
+                    assert_eq!(
+                        event.functions.register(duplicate, self.callback.clone()),
+                        Err("duplicate function id"),
+                    );
+                }
+                if let Some(reached) = &self.panic_after {
+                    event
+                        .functions
+                        .register_test("example:leaked", definition)
+                        .unwrap();
+                    event
+                        .functions
+                        .register("example:leaked", self.callback.clone())
+                        .unwrap();
+                    reached.store(true, Ordering::Relaxed);
+                    panic!("game test registrar fixture failed");
+                }
+            }
+        }
+
+        let reached = Arc::new(AtomicBool::new(false));
+        let healthy: Arc<dyn GameTestFunction> = Arc::new(Pass);
+        let retained: Arc<dyn GameTestFunction> = Arc::new(Pass);
+        crate::testing::with_dispatch(
+            vec![
+                ModEntry::new(
+                    "a",
+                    Box::new(Registrant {
+                        callback: Arc::new(Pass),
+                        structure: "example:failed",
+                        panic_after: Some(reached.clone()),
+                    }),
+                ),
+                ModEntry::new(
+                    "b",
+                    Box::new(Registrant {
+                        callback: healthy.clone(),
+                        structure: "example:healthy",
+                        panic_after: None,
+                    }),
+                ),
+            ]
+            .into(),
+            || {
+                let mut registry = GameTestFunctions::default();
+                registry
+                    .register("example:retained", retained.clone())
+                    .unwrap();
+                registry
+                    .register_test(
+                        "example:retained",
+                        GameTestDefinition::new(
+                            "minecraft:empty".into(),
+                            "example:retained".into(),
+                        ),
+                    )
+                    .unwrap();
+                crate::dispatch_register_game_tests(&FakeHost::new(), |listen| {
+                    registry.register_listener(listen)
+                });
+                assert!(reached.load(Ordering::Relaxed));
+                assert_eq!(
+                    registry
+                        .definitions()
+                        .map(|(id, definition)| (
+                            id,
+                            definition.structure.as_str(),
+                            definition.function.as_str()
+                        ))
+                        .collect::<Vec<_>>(),
+                    [
+                        ("example:retained", "minecraft:empty", "example:retained"),
+                        ("example:shared", "example:healthy", "example:shared"),
+                    ],
+                );
+                assert!(Arc::ptr_eq(
+                    &registry.resolve("example:retained").unwrap(),
+                    &retained
+                ));
+                assert!(Arc::ptr_eq(
+                    &registry.resolve("example:shared").unwrap(),
+                    &healthy
+                ));
+                assert!(registry.resolve("example:leaked").is_none());
+            },
+        );
+    }
+
     #[test]
     fn test_definitions_reject_duplicates_and_invalid_timing() {
         let mut registry = GameTestFunctions::default();

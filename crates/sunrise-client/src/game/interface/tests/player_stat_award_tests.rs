@@ -18,7 +18,9 @@ fn a_ground_jump_awards_the_jump_statistic() {
     let mut player = PlayerMotion::new(game.motion, Vec3::new(2.5, 64.0, 2.5)).unwrap();
     player.ground.on_ground = true;
     {
+        let side = game_side!(game);
         let mut world = MotionWorld {
+            side: &side,
             entities: &[],
             player: &mut player,
             scene: &mut game.world,

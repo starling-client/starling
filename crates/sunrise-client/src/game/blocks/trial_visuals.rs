@@ -44,12 +44,16 @@ impl Game<'_> {
     fn particle(&mut self, ty: T, p: [f64; 3], v: [f64; 3]) {
         self.particles.add(&ParticleOptions::simple(ty), p, v);
     }
+    /// `ClientLevel.playLocalSound`: the sound's seed is the level random's next long, drawn
+    /// in turn with the particles' (`Particles::level_random`).
     fn local_sound(&mut self, name: &str, pos: [i32; 3], volume: f32, pitch: f32) {
-        self.audio.play(
+        let seed = self.particles.level_random().next_long();
+        self.audio.play_seeded(
             &format!("minecraft:{name}"),
             Some(center(pos)),
             volume,
             pitch,
+            seed,
         );
     }
     /// `LevelEventHandler.levelEvent` 3011 to 3021.

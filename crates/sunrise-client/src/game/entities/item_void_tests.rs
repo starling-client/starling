@@ -3,15 +3,15 @@
 //! Overworld keeps it down to y = -128.
 use super::Dim;
 use crate::game::game_tests::tests::server_game;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::items::ItemStack;
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::geometry::Vec3;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn items_fall_to_each_dimensions_own_void_floor() {
     let mut resources = None;
     let mut game = server_game(&mut resources);
@@ -49,7 +49,7 @@ fn items_fall_to_each_dimensions_own_void_floor() {
                 "{dim:?}: an item at y {y}, against the floor {floor}"
             );
             let mut saved = HashMap::new();
-            game.save_every_entity(&keys, &mut saved);
+            game.save_every_entity(&keys, &mut saved, false);
             assert_eq!(
                 saved.values().map(Vec::len).sum::<usize>() > 0,
                 survives,

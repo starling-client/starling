@@ -1,5 +1,9 @@
 # Design: tooltip components in full
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [client tooltips](../../modding/src/how-to/client/client-effects.md) for the current native API.
+> The generalized factory below is a proposal. The guest factory, trap fixtures and both-target build gate are historical, separate from wrapping and font acceptance.
+
 Provisional contract for #2927. This page proposes an API, not an implemented
 feature. The issue and maintainer's contract supplied in the #3129 review govern this
 proposal. Public NeoForge evidence is distinguished from that supplied contract;

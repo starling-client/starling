@@ -1,0 +1,5 @@
+id = "refused_manifest_bad_dependency_version"
+name = "Refused manifest bad dependency version"
+version = "1.2.3"
+[dependencies]
+other = "not a requirement"

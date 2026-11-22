@@ -1,7 +1,6 @@
-//! Sunrise's design tokens, the one source of truth for the launcher (`launcher/src/theme.rs`),
-//! the game's on-screen keyboard (`sunrise-client`'s `ui_theme`) and the website (`tokens.css` in this crate,
-//! generated from [`css`] by `cargo run -p xtask -- tokens`, which the site's build reads from main). Change a value here and all three
-//! follow. The system is described in `docs/design-system.md`.
+//! Sunrise's design tokens for the game and the website. The site's build reads `tokens.css`
+//! from main, generated from [`css`] by `cargo run -p xtask -- tokens`. The standalone launcher
+//! has its own theme crate. The system is described in `docs/design-system.md`.
 //!
 //! Cool neutrals in two appearances and one violet accent; Geist and Geist Mono, bundled here
 //! under the SIL Open Font License (`fonts/OFL-Geist.txt`). The launcher's night look and its
@@ -25,28 +24,13 @@ pub mod fonts {
     pub const GEIST_MEDIUM: &[u8] = include_bytes!("../fonts/Geist-Medium.ttf");
     pub const GEIST_SEMIBOLD: &[u8] = include_bytes!("../fonts/Geist-SemiBold.ttf");
     pub const GEIST_MONO: &[u8] = include_bytes!("../fonts/GeistMono-Regular.ttf");
-    pub const PIXEL_MEDIUM: &[u8] = include_bytes!("../fonts/PixelifySans-Medium.ttf");
-    pub const PIXEL_SEMIBOLD: &[u8] = include_bytes!("../fonts/PixelifySans-SemiBold.ttf");
-    pub const PIXEL_BOLD: &[u8] = include_bytes!("../fonts/PixelifySans-Bold.ttf");
-    /// [`crate::night`]'s faces, cut from upstream's variable font by `tools/bake_bricolage.py`.
-    pub const BRICOLAGE_REGULAR: &[u8] = include_bytes!("../fonts/BricolageGrotesque-Regular.ttf");
-    pub const BRICOLAGE_MEDIUM: &[u8] = include_bytes!("../fonts/BricolageGrotesque-Medium.ttf");
-    pub const BRICOLAGE_SEMIBOLD: &[u8] =
-        include_bytes!("../fonts/BricolageGrotesque-SemiBold.ttf");
-    pub const BRICOLAGE_BOLD: &[u8] = include_bytes!("../fonts/BricolageGrotesque-Bold.ttf");
-    pub const BRICOLAGE_DISPLAY_BOLD: &[u8] =
-        include_bytes!("../fonts/BricolageGrotesqueDisplay-Bold.ttf");
-    /// The glass look's headings ([`crate::glass`]): SemiBold at optical sizes 56 and 28.
-    pub const BRICOLAGE_DISPLAY_SEMIBOLD: &[u8] =
-        include_bytes!("../fonts/BricolageGrotesqueDisplay-SemiBold.ttf");
-    pub const BRICOLAGE_HEADING_SEMIBOLD: &[u8] =
-        include_bytes!("../fonts/BricolageGrotesqueHeading-SemiBold.ttf");
 }
 
 /// The glass look's icons: Hugeicons' free set (MIT, `icons/glass/LICENSE-hugeicons.txt`), the
 /// ones the mockup uses, 24 unit outlines stroked 1.6 in `currentColor`, by Hugeicons' name
 /// (`"folder-01"`, `"more-vertical"`…). `github` is GitHub's mark, drawn for Sunrise (filled,
-/// its cat cut out by a mask), beside the links to GitHub Sponsors.
+/// its cat cut out by a mask), for Settings' credit link. `sparkles` (Home's What's
+/// new) and `chat` (the sidebar's Discord link) are drawn for Sunrise in the same 1.6 stroke.
 pub mod glass_icons {
     macro_rules! icons {
         ($($name:literal),* $(,)?) => {
@@ -61,6 +45,7 @@ pub mod glass_icons {
         "arrow-down-01",
         "arrow-right-01",
         "book",
+        "chat",
         "map",
         "cancel-01",
         "clock",
@@ -73,7 +58,6 @@ pub mod glass_icons {
         "discord",
         "download-04",
         "earth",
-        "favourite",
         "flash",
         "folder-01",
         "game-controller-01",
@@ -94,6 +78,7 @@ pub mod glass_icons {
         "refresh",
         "search-01",
         "sliders-horizontal",
+        "sparkles",
         "stop",
         "tick-02",
         "upload-04",
@@ -137,7 +122,6 @@ pub mod icons {
         "folder",
         "gamepad",
         "globe",
-        "heart",
         "home",
         "image",
         "info-box",
@@ -194,13 +178,6 @@ pub struct Step {
     pub tracking: f32,
     pub weight: u16,
     pub mono: bool,
-}
-
-impl Step {
-    /// The line height in pixels at the app size.
-    pub fn line_px(&self) -> f32 {
-        (self.px * self.line).round()
-    }
 }
 
 const fn step(
@@ -281,8 +258,7 @@ pub const ROW_WEB: f32 = 86.;
 /// The index column of a list (where `01` sits) and how far the hover plate reaches past a row.
 pub const INDEX: f32 = 40.;
 pub const PLATE_BLEED: f32 = 16.;
-/// A pressed primary button's opacity, and disabled controls'.
-pub const PRESSED: f32 = 0.85;
+/// The opacity of disabled controls.
 pub const DISABLED: f32 = 0.4;
 
 /// A duration and its easing curve (CSS `cubic-bezier` control points).
@@ -296,9 +272,6 @@ pub struct Motion {
 impl Motion {
     pub const fn duration(&self) -> Duration {
         Duration::from_millis(self.ms)
-    }
-    pub fn secs(&self) -> f32 {
-        self.ms as f32 / 1000.
     }
     /// The eased progress for a linear `t` in 0..1.
     pub fn ease(&self, t: f32) -> f32 {
@@ -329,11 +302,6 @@ pub const MOTION: [Motion; 3] = [QUICK, MOVE, ENTER];
 pub const STAGGER: Duration = Duration::from_millis(40);
 pub const RISE: f32 = 8.;
 
-/// The launcher's opening: the wordmark holds, then the interface arrives.
-pub const OPENING_HOLD: Duration = Duration::from_millis(1400);
-pub const OPENING_MAX: Duration = Duration::from_millis(2500);
-pub const OPENING_REVEAL: Duration = Duration::from_millis(800);
-
 /// A CSS `cubic-bezier(x1, y1, x2, y2)` at `t`: solves x for the curve parameter, returns y.
 pub fn bezier([x1, y1, x2, y2]: [f32; 4], t: f32) -> f32 {
     let t = t.clamp(0., 1.);
@@ -354,13 +322,6 @@ pub fn bezier([x1, y1, x2, y2]: [f32; 4], t: f32) -> f32 {
         }
     }
     at(y1, y2, (lo + hi) / 2.)
-}
-
-pub fn ease_out_quint(t: f32) -> f32 {
-    1. - (1. - t.clamp(0., 1.)).powi(5)
-}
-pub fn ease_out_cubic(t: f32) -> f32 {
-    1. - (1. - t.clamp(0., 1.)).powi(3)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -518,13 +479,10 @@ pub const BLOCKS_LIGHT: Blocks = Blocks {
     dark: false,
 };
 
-/// Pixel sizes of the blocky look: outlines, bevels and lips, the cut corner, and the stone tile.
+/// Pixel sizes of the blocky look: outlines, bevels and lips.
 pub const BLOCK_OUTLINE: f32 = 2.;
 pub const BLOCK_BEVEL: f32 = 2.;
 pub const BLOCK_LIP: f32 = 4.;
-/// The stone texture: a 16 by 16 tile, each texel this many logical pixels.
-pub const TILE_TEXELS: usize = 16;
-pub const TILE_TEXEL: f32 = 4.;
 /// The texture's shades: the page colour moved this many levels (of 255) lighter or darker.
 pub const TILE_SHADES: [i16; 5] = [0, 2, -2, 5, -4];
 
@@ -541,30 +499,10 @@ pub const BACKDROP_MUTED: u32 = 0x9fa3ae;
 /// brighter than the snowiest title panorama measured (0.49) and a sunlit world.
 pub const BRIGHT_BACKDROP: u32 = 0xe3e3e3;
 
-impl Palette {
-    /// Every colour with its token name, in the order the docs list them.
-    pub fn named(&self) -> [(&'static str, u32); 12] {
-        [
-            ("page", self.page),
-            ("plate-soft", self.plate_soft),
-            ("plate", self.plate),
-            ("surface", self.surface),
-            ("rule", self.rule),
-            ("ink", self.ink),
-            ("ink-soft", self.ink_soft),
-            ("muted", self.muted),
-            ("accent", self.accent),
-            ("on-accent", self.on_accent),
-            ("danger", self.danger),
-            ("success", self.success),
-        ]
-    }
-}
-
 impl Blocks {
-    /// Every colour by its CSS name. The website reads the Blocks palettes; the first twelve keep
-    /// the names of [`Palette::named`] (`plate-soft` is `raised`, `plate` is `button`, `surface`
-    /// is `panel`, `on-accent` is `on_face`), so styles written for those still apply.
+    /// Every colour by its CSS name. The first twelve keep the names of the original website
+    /// palette (`plate-soft` is `raised`, `plate` is `button`, `surface` is `panel`, and
+    /// `on-accent` is `on_face`), so styles written for those still apply.
     pub fn named(&self) -> [(&'static str, u32); 25] {
         [
             ("page", self.page),

@@ -1,10 +1,10 @@
 //! `ItemPart::empty_contents` on a dispenser and a player's pour: an item with the Part is
 //! emptied as a bucket, the Part placing the contents itself through the host.
 use crate::game::api_values::TryIntoApi;
-use sunrise_client::{chunk::Chunk, items::ItemStack};
-use sunrise_core::geometry::Direction;
 use mod_api::*;
 use std::sync::{Arc, Mutex};
+use sunrise_client::{chunk::Chunk, items::ItemStack};
+use sunrise_core::geometry::Direction;
 
 /// The dispenser, and the block it faces, where the Part pours.
 const DISPENSER: [i32; 3] = [5, 64, 5];
@@ -116,7 +116,7 @@ fn honey_at_target(game: &super::Game<'_>) -> bool {
 /// A dispenser asks the Part of an item that is no bucket: `Some(true)` leaves an empty bucket in
 /// the slot, `Some(false)` and `None` (no contents vanilla knows) dispense the item itself.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_part_empties_its_item_from_a_dispenser() {
     let jar = Jar::default();
     with_jar(&jar, |game, _| {
@@ -138,7 +138,7 @@ fn a_part_empties_its_item_from_a_dispenser() {
 /// The Part places its contents through the host: the block stands after the dispense, and the
 /// slot gets the empty bucket.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_dispensed_part_places_its_contents_through_the_host() {
     let jar = Jar::default();
     with_jar(&jar, |game, level| {
@@ -156,7 +156,7 @@ fn a_dispensed_part_places_its_contents_through_the_host() {
 /// A Part that writes the dispenser's slots, which the decision read, is refused: its writes are
 /// undone (slot 1 empty) and the dispenser keeps the stick; direct block writes remain.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_part_that_changes_the_dispensers_slots_is_refused_and_undone() {
     let jar = Jar::default();
     with_jar(&jar, |game, level| {
@@ -188,7 +188,7 @@ fn a_part_that_changes_the_dispensers_slots_is_refused_and_undone() {
 
 /// A stale-hand pour is refused without consuming the listener's final replacement.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_player_pour_with_a_changed_hand_is_refused() {
     let jar = Jar::default();
     with_jar(&jar, |game, level| {
@@ -221,11 +221,8 @@ fn a_player_pour_with_a_changed_hand_is_refused() {
                 used,
                 Some(sunrise_client::first_person::UseResult::Fail)
             ));
-            assert_eq!(
-                game.inventory[slot],
-                Some(ItemStack::new("minecraft:stone", 1))
-            );
-            // A direct block write is not journaled (see the transactions page); only journaled writes are undone.
+            assert_eq!(game.inventory[slot], Some(stick));
+            // The Part's equipment write is journaled and rolls back with the refused pour.
         });
     });
 }
@@ -233,7 +230,7 @@ fn a_player_pour_with_a_changed_hand_is_refused() {
 /// A player's pour asks the Part with the clicked block; the Part places the contents and the hand
 /// becomes an empty bucket.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_player_pours_through_the_part_and_keeps_an_empty_bucket() {
     let jar = Jar::default();
     with_jar(&jar, |game, level| {

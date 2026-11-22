@@ -1,0 +1,10 @@
+# The daily tests of sunrise-native-build: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-native-build registry_compile::tests::registry_adapter_compiles_facade_with_transitive_host_macro_metadata lib daily child-process
+sunrise-native-build registry_generate::tests::a_mods_lock_starts_from_the_games_versions lib daily child-process
+sunrise-native-build registry_plan::tests::a_mods_registry_package_builds_on_the_sdks_naga_and_never_on_the_registrys lib daily child-process
+sunrise-native-build registry_plan::tests::cargo_resolves_registry_parent_through_sdk_local_patch_without_compiling lib daily child-process
+sunrise-native-build registry_plan::tests::fetch_retains_actual_feature_closure_and_excludes_unreachable_pins lib daily child-process
+sunrise-native-build rust::tests::builds_run_at_the_lowest_priority lib daily child-process
+sunrise-native-build tests::a_build_smart_app_control_blocked_says_how_to_build lib daily child-process
+sunrise-native-build tests::each_command_logs_its_time lib daily child-process

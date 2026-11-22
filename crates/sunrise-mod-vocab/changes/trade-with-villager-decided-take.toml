@@ -1,0 +1,3 @@
+ids = ["hook:trade_with_villager"]
+why = "A guest's merchant result click runs in one transaction with its trade listeners. Each listener sees that iteration's counted use and can edit the offer before the next iteration. Invalid answers, listener unwinds, stale preconditions and enclosing aborts restore the pre-click state and discard tentative effects. A committed offer edit refreshes the client snapshot; a listener that leaves the offer alone does not."
+migrate = "Request hook_version = 3; the signature is unchanged. Provide a valid offer. Writes made during a take do not survive its rollback, and edits affect only subsequent trades."

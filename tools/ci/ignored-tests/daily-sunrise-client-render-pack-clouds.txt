@@ -1,0 +1,6 @@
+# The daily tests of sunrise-client-render: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-client-render gfx::core_clouds::tests::a_clouds_shader_that_reads_no_faces_still_draws_a_quad_a_face lib daily slow
+sunrise-client-render gfx::core_clouds::tests::a_pack_clouds_shader_reads_the_faces_and_cloud_info lib daily slow
+sunrise-client-render gfx::core_clouds::tests::faces_past_the_devices_storage_limit_are_refused lib daily slow
+sunrise-client-render gfx::core_clouds::tests::vanillas_clouds_shaders_draw_a_cell_above_the_camera lib daily resources

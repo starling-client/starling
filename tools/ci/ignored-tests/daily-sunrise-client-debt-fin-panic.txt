@@ -1,0 +1,2 @@
+sunrise-client game::native_hooks::render_gui_post::tests::panicking_hud_draw_discards_quads_and_reservations_before_next_listener lib daily resources
+sunrise-client game::payload_transport::task_tests::a_panicking_registration_does_not_fail_the_peer_or_leave_its_task lib daily resources

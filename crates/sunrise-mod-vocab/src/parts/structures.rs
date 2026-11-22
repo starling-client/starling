@@ -25,7 +25,5 @@ impl dyn Registrar + '_ {
 pub trait StructuresRegistrar {
     /// Register structure type `name` with `ty`; mods reach it through
     /// `register_structure_type`.
-    ///
-    /// On WebAssembly, worker calls run under the linked group's store lock and call budget.
     fn add_structure_type(&mut self, name: &str, ty: Arc<dyn crate::StructureType>);
 }

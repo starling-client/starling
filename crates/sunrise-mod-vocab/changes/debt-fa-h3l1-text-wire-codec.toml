@@ -1,0 +1,6 @@
+ids = [
+  "type:text::Text",
+]
+why = "Vanilla 26.3 (`ComponentSerialization.java` and `NbtAccounter.MAX_STACK_DEPTH = 512`) encodes component trees directly without an intermediate node table. `Text` now uses a direct stack-independent iterative `Wire` codec over `content`, `style`, `children` and `metadata`, is admitted to typed payloads under `PAYLOAD_MAX_DEPTH` and `PAYLOAD_DECODE_BUDGET`, and implements an iterative `Drop` so deep component trees drop without stack recursion."
+migrate = """\
+Rebuild native mods against this SDK. Any serialized `Text` bytes written under the old `validated-text-node-table:v1` layout must be re-encoded under `validated-text-tree:v2`. Because `Text` now implements `Drop`, replace by-value field moves out of an owned `Text` (such as `text.style` or `text.content`) with `std::mem::take(&mut text.style)`, `.take()`, or `.clone()`."""

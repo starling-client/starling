@@ -15,7 +15,8 @@ use sunrise_core::{
 use sunrise_world::{
     block_entity_push::BlockPushWorld,
     block_landing::{
-        BlockLandingWorld, DamageSourceOwner, LandingDamage, LandingEvent, LandingSound,
+        BlockLandingWorld, DamageSourceOwner, FallDamageCall, LandingDamage, LandingEvent,
+        LandingSound,
     },
     entity_obstruction::EntityIdentity,
     registry::BlockStateId,
@@ -30,6 +31,16 @@ pub(super) struct MobLanding<'a, 'w, 'l> {
     pub pos: [i32; 3],
 }
 impl MobLanding<'_, '_, '_> {
+    /// Use the registered call's operands, or the plain fall for an unregistered block.
+    pub(super) fn resolve_fall(
+        &mut self,
+        call: Option<FallDamageCall>,
+        distance: f64,
+    ) -> (f64, f32, DamageKind) {
+        call.and_then(|call| call.resolve(self).ok())
+            .unwrap_or((distance, 1.0, DamageKind::Fall))
+    }
+
     fn at(&self) -> [f64; 3] {
         let p = self.mob.position;
         [p.x, p.y, p.z]
@@ -98,23 +109,6 @@ impl BlockLandingWorld for MobLanding<'_, '_, '_> {
     }
     fn entity_dimensions(&self) -> (f32, f32) {
         (self.mob.width(), self.mob.height())
-    }
-    fn cancel_farmland_trample(
-        &mut self,
-        position: BlockPos,
-        state: BlockStateId,
-        distance: f64,
-    ) -> bool {
-        let mut cancel = false;
-        crate::landing::native_farmland_trample(
-            self.w.loop_context,
-            self.mob.id,
-            [position.x, position.y, position.z],
-            state.0,
-            distance,
-            &mut cancel,
-        );
-        cancel
     }
     // A mob never sneaks, so nothing suppresses a slime block's bounce.
     fn suppressing_bounce(&mut self) -> Result<bool, String> {

@@ -1,9 +1,9 @@
 //! Shared by the audio fixtures: a backend recording what an OpenAL source
 //! would hold, and the per-step dump the Java oracles print.
-use sunrise_client::sound_engine::{Backend, ChannelId, InstanceId, PlayResult, SoundEngine};
-use sunrise_client::sound_events::Sound;
 use std::collections::HashMap;
 use std::io::Write;
+use sunrise_client::sound_engine::{Backend, ChannelId, InstanceId, PlayResult, SoundEngine};
+use sunrise_client::sound_events::Sound;
 
 const INITIAL: u32 = 0x1011;
 const PLAYING: u32 = 0x1012;

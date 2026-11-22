@@ -7,7 +7,9 @@ Until 0.2 the game was tagged by date (`v2026.10.19.15`) and the launcher counte
 From 0.2 both follow [semantic versioning](https://semver.org) and share one release line: **Sunrise 0.2.x** is the
 game and the launcher of the 0.2 line.
 
-**Since 2026-10-28 the game ships only Nightlies** ([release-flow.md](release-flow.md#nightly-only)): no new `vX.Y.Z`
+**Since 2026-10-28 the game ships Nightlies** (and stable `26.3-<semver>` releases, each published from the approved head of `release/26.3`, which is cut from a
+green daily's commit and takes later fixes by pull request;
+[release-flow.md](release-flow.md#the-nightly-and-stable-releases)): no new `vX.Y.Z`
 game tag is made, and a game build is named `nightly-<date>-<commit>` (its release title, "Nightly <date> ·
 <commit>"), which launchers and servers rank after every `vX.Y.Z`. The launcher keeps its `launcher@X.Y.Z` tags on
 the release line. What follows describes the `vX.Y.Z` game tags as they were.
@@ -47,7 +49,7 @@ Every 0.2 tag is newer than every tag from before 0.2. Within each:
 
 A tag is a 0.2 tag when it is `v` or `launcher@` followed by exactly three numbers (and an optional `-PRE`) with a
 major below 1000; a date's first number is a year, so `v2026.10.21` never is. The rule is written once per
-language, with the same tests: `crates/sunrise-server/src/update.rs` (`newer`), `launcher/src/backend.rs`
+language, with the same tests: `crates/sunrise-server/src/update.rs` (`newer`), `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/backend.rs`
 (`release_order`), `tools/release_train.py` (`tag_key`) and
 the website's `src/versions.js` (horizon-rust/horizon-site).
 
@@ -57,9 +59,9 @@ the website's `src/versions.js` (horizon-rust/horizon-site).
   version without its `v` in `SUNRISE_VERSION`, so `sunrise_core::release::VERSION` (and `--version`, the user
   agents and crash reports) say `0.2.3`. No version-bump commits: `Cargo.toml` versions are what builds
   from source say. The build checks that `sunrise-server --version` and `sunrise-prepare --version` say it.
-- **`launcher.yml`**: `decide --kind launcher` picks `launcher@0.2.N`; the build gets `SUNRISE_LAUNCHER_VERSION`
-  (`0.2.N`) and `SUNRISE_LAUNCHER_TAG` (`launcher@0.2.N`). The tag tells the launcher which line it is on: a release
-  built with only the version (every launcher before 0.2) is a `launcher-v` one.
+- **The launcher** is released from sunrise-org/sunrise-launcher; `launcher-bridge.yml` publishes each release here as
+  `launcher@X.Y.Z`. The tag tells the launcher which line it is on: a release built with only the version (every
+  launcher before 0.2) is a `launcher-v` one.
 - **Notes**: a line's first release (`X.Y.0`) opens with a paragraph saying so; `v0.2.0`'s and `launcher@0.2.0`'s say
   that releases are numbered from now on, and tell server owners to run `sunrise-server update` (or, if their server
   says it is up to date, `sunrise-server update --version v0.2.0`).

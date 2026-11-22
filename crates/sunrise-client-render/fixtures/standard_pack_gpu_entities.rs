@@ -5,13 +5,12 @@ use client::{
     gfx::{
         Frame, Renderer, ScreenshotRequest,
         entity_skin::{SkinFrame, SkinJob, SkinPart, SkinVertex},
-        native_render,
         pack_draw::EntitySpan,
     },
     graphics::GraphicsApi,
     hud::HudBatch,
+    render_slots as native_render,
 };
-use sunrise_client_render as client;
 use std::{
     path::Path,
     sync::{
@@ -19,6 +18,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
+use sunrise_client_render as client;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -42,8 +42,15 @@ fn observe_world(world: &mut native_render::WorldDrawn<'_>) {
     }
 }
 fn install_observer() {
-    assert!(native_render::__fnr_render_needs(observe_needs));
-    assert!(native_render::__fnr_world_drawn(observe_world));
+    native_render::install(native_render::Slots {
+        world_views: |_| {},
+        world_views_hooked: || false,
+        world_view_drawn: |_| {},
+        world_drawn: observe_world,
+        hand_drawn: |_| {},
+        render_needs: observe_needs,
+        world_drawn_hooked: || true,
+    });
 }
 
 fn pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
@@ -104,9 +111,7 @@ fn read(path: &Path) -> Vec<u8> {
     bytes
 }
 
-fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
-    let out = std::env::args().nth(1).ok_or("output directory required")?;
-    let out = Path::new(&out);
+fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(out)?;
     install_observer();
     let white = [255; 16 * 16 * 4];
@@ -129,7 +134,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         GraphicsApi::Vulkan,
         false,
-        true,
+        (true, true),
         &client::graphics::Graphics::default(),
         Default::default(),
         Default::default(),
@@ -309,15 +314,15 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-struct App;
-impl ApplicationHandler for App {
+struct App<'a>(&'a Path);
+impl ApplicationHandler for App<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
                 .create_window(Window::default_attributes().with_visible(false))
                 .unwrap(),
         );
-        if let Err(error) = fixture(window) {
+        if let Err(error) = fixture(window, self.0) {
             eprintln!("fixture failed: {error}");
             std::process::exit(1);
         }
@@ -325,7 +330,7 @@ impl ApplicationHandler for App {
     }
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
 }
-fn main() {
+fn run(out: &Path) {
     for key in [
         "SUNRISE_HOME",
         "SUNRISE_LAUNCHER_HOME",
@@ -337,7 +342,79 @@ fn main() {
             "set throwaway {key} (AGENTS.md)"
         );
     }
-    EventLoop::new().unwrap().run_app(&mut App).unwrap();
+    let mut builder = EventLoop::builder();
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        builder.with_any_thread(true);
+    }
+    #[cfg(all(test, target_os = "windows"))]
+    {
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+        builder.with_any_thread(true);
+    }
+    builder.build().unwrap().run_app(&mut App(out)).unwrap();
+}
+
+#[cfg(not(test))]
+pub(crate) fn main() {
+    let output = std::env::args_os()
+        .nth(1)
+        .expect("output directory required");
+    run(Path::new(&output));
+}
+
+#[cfg(test)]
+pub(crate) fn run_daily() {
+    const OUTPUT: &str = "SUNRISE_GPU_ENTITY_FIXTURE_OUTPUT";
+    if let Some(output) = std::env::var_os(OUTPUT) {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::VULKAN;
+        let instance = wgpu::Instance::new(descriptor);
+        pollster::block_on(instance.request_adapter(&Default::default()))
+            .expect("standard_pack_gpu_entities refused: no Vulkan adapter");
+        run(Path::new(&output));
+        return;
+    }
+
+    // Keep render slots, the event loop and every writable home in a fresh process.
+    let scratch = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "standard_pack_gpu_entities",
+            "--ignored",
+            "--nocapture",
+        ])
+        .current_dir(scratch.path())
+        .env(OUTPUT, scratch.path().join("output"))
+        .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
+        .env("SUNRISE_NO_AUDIO", "1")
+        .env("SUNRISE_TELEMETRY_URL", "off");
+    for name in [
+        "SUNRISE_HOME",
+        "SUNRISE_LAUNCHER_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_RUNTIME_DIR",
+        "SUNRISE_LAUNCHER_TRASH",
+        "SUNRISE_LAUNCHER_CLIPBOARD",
+        "SUNRISE_LAUNCHER_DESKTOP",
+    ] {
+        let home = scratch.path().join(name);
+        std::fs::create_dir(&home).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        command.env(name, home);
+    }
+    assert!(
+        command.status().unwrap().success(),
+        "GPU entity fixture failed"
+    );
 }
 
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
@@ -384,6 +461,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         glint_ticks: 0.0,
         nether_lighting: false,
         entities: &[],
+        explicit_particles: None,
         static_block_entities: &[],
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: Default::default(),
@@ -402,6 +480,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         world_primitives: Default::default(),
         shadow_only: &[],
         celestial: &[],
+        celestial_bodies: &[],
         stars: None,
         hand: &[],
         hand_items: &[],

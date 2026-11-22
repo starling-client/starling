@@ -3,8 +3,8 @@
 //! the keyframe machinery under them (`KeyframeTrack`, `KeyframeTrackSampler`, `EasingType`,
 //! `Ease`).
 use crate::environment_attributes::{Attribute, Entry, Value, attribute};
-use sunrise_core::{geometry::trig, jmath};
 use serde_json::Value as Json;
+use sunrise_core::{geometry::trig, jmath};
 
 /// `Mth.square` / `Mth.cube`.
 fn square(x: f32) -> f32 {
@@ -562,16 +562,6 @@ impl Timeline {
             period,
             tracks,
         })
-    }
-
-    /// `Timeline.getCurrentTicks`: the clock's total ticks, within the period when there is one.
-    pub fn current_ticks(&self, total: i64) -> i64 {
-        self.period.map_or(total, |p| total % i64::from(p))
-    }
-
-    /// `Timeline.getPeriodCount`: whole periods the clock has run.
-    pub fn period_count(&self, total: i64) -> i32 {
-        self.period.map_or(0, |p| (total / i64::from(p)) as i32)
     }
 }
 

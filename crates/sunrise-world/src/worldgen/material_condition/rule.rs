@@ -4,13 +4,13 @@ use super::{
     MaterialSurfaceQueries, PossibleBiomes, density::MaterialDensitySources,
 };
 use crate::{registry::BlockStateId, worldgen::DecodeError};
+use std::sync::Arc;
 use sunrise_core::{
     density::DensitySampler,
     noise::Noise,
     position::BlockPos,
     random::{PositionalRandom, RandomSource},
 };
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum MaterialRule {

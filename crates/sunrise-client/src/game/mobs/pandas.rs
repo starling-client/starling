@@ -158,7 +158,7 @@ impl Game<'_> {
         for m in &mut mobs {
             if m.species() == Species::Panda
                 && !m.is_baby()
-                && m.on_ground
+                && m.ground.on_ground
                 && !m.fluids.in_water
                 && panda::can_perform_action(m, panda::scared(m))
                 && area.intersects(m.bounds())
@@ -209,7 +209,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod nested_spawn_tests {
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn lifted_mob_callback_keeps_nested_spawns_until_the_next_pass() {
         crate::game::entity::taken_pass_tests::in_both_dimensions(|game, balance| {
             let kind = game.res.mob_types().get("minecraft:panda").unwrap().clone();
@@ -268,8 +268,9 @@ mod pickup_tests {
     /// `CriteriaTriggers.THROWN_ITEM_PICKED_UP_BY_ENTITY` for whoever threw the
     /// bamboo, as the fox's pickup does (`LivingEntity.onItemPickup`).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_panda_that_takes_a_thrown_item_credits_the_thrower() {
+        let world = tempfile::tempdir().unwrap();
         let mut resources = None;
         let mut game = server_game(&mut resources);
         game.options.dedicated = None;
@@ -277,12 +278,12 @@ mod pickup_tests {
         game.level.player_uuid = Some(THROWER);
         game.level.health = 20.0;
         game.creative = false;
-        // A world of its own under the temporary folder, never the cwd.
-        game.world_root =
-            std::env::temp_dir().join(format!("sunrise-panda-pickup-world-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&game.world_root);
-        game.build_registries();
+        game.world_root = world.path().to_owned();
         game.set_allow_commands(true);
+        // Opening the world installs its staged advancement tree. Install the
+        // custom tree afterwards so the first tick cannot replace it.
+        game.open_world_datapacks(&game.level.enabled_features.clone())
+            .unwrap();
         install_pickup_advancement(&mut game);
         // `DistanceManager` keeps a chunk entity-ticking only while its whole
         // 5x5 neighbourhood is resident.
@@ -307,7 +308,7 @@ mod pickup_tests {
         let holding = |g: &Game<'_>| {
             g.mobs
                 .iter()
-                .any(|m| m.id == id && m.extra.main_hand_id().is_some())
+                .any(|m| m.id == id && m.extra.main_hand_id() == Some("minecraft:bamboo"))
         };
         for _ in 0..20 {
             if holding(&game) {
@@ -322,6 +323,5 @@ mod pickup_tests {
             "the thrower's advancement: {:?}",
             game.adv.progress.criteria
         );
-        let _ = std::fs::remove_dir_all(&game.world_root);
     }
 }

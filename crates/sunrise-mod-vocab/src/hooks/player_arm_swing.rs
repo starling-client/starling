@@ -10,6 +10,8 @@ pub trait Hooks {
     /// During a nested player turn, a suspended player's hub record may contain displaced
     /// progress. A listener may retain a clone; later mutations do not change the snapshot.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_advancement_progress",
+        dispatch = "api_carrier",
         side = "server",
         contract = "listen",
         neoforge = "AdvancementEvent.AdvancementProgressEvent",
@@ -26,9 +28,11 @@ pub trait Hooks {
     );
     /// A guest's arm swing was handled by the server. `hand` is `mainhand`. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_arm_swing",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event; Bukkit's PlayerAnimationEvent)"
     )]
-    fn player_arm_swing();
+    fn player_arm_swing(player: u128, name: &str, hand: &str);
 }

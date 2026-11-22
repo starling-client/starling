@@ -1,10 +1,10 @@
 //! Proto-chunk block-entity storage. Active payloads are caller-owned runtime
 //! types; this module does not create entities or execute their behavior.
-use sunrise_core::position::{BlockPos, ChunkPos};
 use std::{
     collections::{HashMap, HashSet},
     io,
 };
+use sunrise_core::position::{BlockPos, ChunkPos};
 use {crate::compression::invalid, sunrise_core::nbt::Tag};
 
 /// Resolve native block-entity coordinates, relocating mismatched X/Z into the

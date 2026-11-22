@@ -14,8 +14,8 @@ use crate::worldgen::{
     tree_blocks::{self as tb, Axis, PosSet, TreeBlocks},
     value_provider::IntProvider,
 };
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use std::sync::Arc;
+use sunrise_core::{geometry::Direction, random::RandomSource};
 
 #[derive(Clone, Debug)]
 pub struct FallenTreeFeature {

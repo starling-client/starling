@@ -293,24 +293,26 @@ fn effect_details(r: &mut Reader) -> Result<()> {
 }
 /// ConsumeEffect.STREAM_CODEC: the consume_effect_type id, then that type's fields.
 fn consume_effect(r: &mut Reader) -> Result<()> {
-    match r.varint()? {
+    use super::consume_effects::{Kind, read_kind, skip_native};
+    match read_kind(r)? {
         // apply_effects: effects, probability.
-        0 => {
+        Kind::Builtin(0) => {
             list(r, mob_effect)?;
             f32(r)
         }
         // remove_effects: a mob effect holder set.
-        1 => holder_set(r),
+        Kind::Builtin(1) => holder_set(r),
         // clear_all_effects.
-        2 => Ok(()),
+        Kind::Builtin(2) => Ok(()),
         // teleport_randomly: diameter, directionalParticles.
-        3 => {
+        Kind::Builtin(3) => {
             f32(r)?;
             boolean(r)
         }
         // play_sound.
-        4 => sound(r),
-        other => Err(Error::new(format!("unknown consume effect type {other}"))),
+        Kind::Builtin(4) => sound(r),
+        Kind::Builtin(_) => unreachable!("built-in consume-effect type"),
+        Kind::Native(_, ty) => skip_native(ty, r),
     }
 }
 /// BlockPredicate: blocks, properties, nbt, then DataComponentMatchers (exact, partial).
@@ -319,7 +321,7 @@ fn block_predicate(r: &mut Reader) -> Result<()> {
     block_properties_and_nbt(r)?;
     component_matchers(r)
 }
-pub(super) fn block_properties_and_nbt(r: &mut Reader) -> Result<()> {
+fn block_properties_and_nbt(r: &mut Reader) -> Result<()> {
     // StatePropertiesPredicate: PropertyMatchers, each a name and an
     // Either<ExactMatcher (value), RangedMatcher (min, max)>.
     optional(r, |r| {
@@ -335,7 +337,7 @@ pub(super) fn block_properties_and_nbt(r: &mut Reader) -> Result<()> {
     })?;
     optional(r, nbt)
 }
-pub(super) fn component_matchers(r: &mut Reader) -> Result<()> {
+fn component_matchers(r: &mut Reader) -> Result<()> {
     // DataComponentExactPredicate: TypedDataComponents, a component type id and its value.
     list(r, |r| {
         let _nested = Nested::enter()?;

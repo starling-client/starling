@@ -1,0 +1,31 @@
+ids = [
+    "type:AttachmentBatch",
+    "type:AttachmentHolder",
+    "type:Holder",
+    "type:AttachmentError",
+    "type:AttachmentForm",
+    "type:AttachmentPolicy",
+    "type:AttachmentWrite",
+    "type:PartStateDeclaration",
+    "type:PartStateError",
+    "type:PartStateRefusal",
+    "type:BlockEntityPartError",
+    "type:BlockEntityStateError",
+    "type:EntityPartStateError",
+    "type:EntityResidency",
+]
+why = "Attachment queries capture live bindings, including values with no saved form. The old Wire encoding silently omitted rows and could rebuild a write identity from bytes. Queries, holder selectors, write tokens, errors and Part state bookkeeping now stay in process. Saving and synchronization still encode attachment values through the declared codec."
+migrate = """
+Replace `Writer::put(&batch)` or `Reader::decode::<AttachmentBatch>(bytes)` with a local
+`host.query(&KEY)?` (import `AttachmentQueries`). Borrow the host with
+`let scope = host.attachment_read_scope()?;`, then use `query.get(scope, holder)` or
+`let mut rows = query.iter(); while let Some(row) = rows.try_next()? { ... }`.
+Borrow a row's value with `row.with_value(scope, |value| ...)`. Keep passing `Holder` or
+`AttachmentHolder` to local calls and handling attachment and Part errors as Rust values.
+Keep `AttachmentForm`, `AttachmentPolicy`, `AttachmentWrite`, Part declarations and
+`EntityResidency` in local storage or registration code. For disk or attachment sync, set
+`KEY`'s `AttachmentCodec` and sync policy as before. For a custom message, replace any of
+these types in a `Wire` field or bound with your own derived payload containing only the
+needed data, such as a stable ID or an explicit error code; do not use the payload to
+recreate a holder or write token.
+"""

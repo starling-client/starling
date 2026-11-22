@@ -1,0 +1,4 @@
+# The daily tests of sunrise-client-render: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-client-render gfx::core_lines::tests::a_pack_outline_reads_its_expression_uniform lib daily slow
+sunrise-client-render gfx::core_sky::expression_tests::a_pack_sky_and_stars_read_their_expression_uniforms lib daily slow

@@ -195,7 +195,7 @@ def main():
     sources = [Path(__file__).resolve(), oracle, lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/sunrise-client/examples/probe/server_files_probe.rs',
-               *sorted((lab.ROOT / 'crates/sunrise-client/src/server').glob('*.rs'))]
+               *sorted((lab.ROOT / 'crates/sunrise-server-files/src').glob('*.rs'))]
     tested = base.source_hashes(sources)
     cases, count = make_cases(build)
     classes = build / 'classes'

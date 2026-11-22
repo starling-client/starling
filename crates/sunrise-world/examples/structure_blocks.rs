@@ -5,9 +5,9 @@
 //! structure_blocks <client resource dir> <seed> <dimension> <cx,cz>...
 //! prints `chunk CX CZ`, one `y Y ID...` line per block row (256 state ids in
 //! z-major order) and `be X Y Z ID LOOTTABLE SEED` per block entity.
-use sunrise_core::position::ChunkPos;
 use serde_json::Value;
 use std::{fs, path::Path};
+use sunrise_core::position::ChunkPos;
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

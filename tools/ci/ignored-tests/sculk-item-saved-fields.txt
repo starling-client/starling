@@ -1,0 +1,1 @@
+sunrise-client game::block_items::tests::placed_sculk_item_data_survives_pending_placement lib daily resources

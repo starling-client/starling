@@ -9,10 +9,14 @@ pub trait Hooks {
     /// (`Camera.getFluidInCamera`) for the block at the eye, the block above it and the blocks
     /// at the near plane's centre and corners: the fog, the field of view in a fluid, the
     /// water vision, the sky's dark disc and conduit power's underwater vision read it. The
-    /// client host is read-only; answer from the event alone, as the game asks every frame. With no
+    /// first-person water overlay uses the player's tick-sampled eye fluid instead; change its
+    /// eligibility with `camera_submersion`. The client host is read-only; answer from the event
+    /// alone, as the game asks every frame. With no
     /// part on any block the subscription check skips the asks; otherwise each block read costs
     /// one table lookup. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "seen",
@@ -20,5 +24,10 @@ pub trait Hooks {
         key = "state",
         neoforge = "IBlockExtension.getStateAtViewpoint, IBlockStateExtension.getStateAtViewpoint"
     )]
-    fn state_at_viewpoint();
+    fn state_at_viewpoint(
+        state: BlockState,
+        pos: BlockPos,
+        viewpoint: [f64; 3],
+        seen: &mut BlockState,
+    );
 }

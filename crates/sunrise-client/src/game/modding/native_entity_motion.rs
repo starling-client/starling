@@ -6,9 +6,10 @@
 //! entities the server shows the window, and nothing moves one.
 use super::entity::{Entity as _, EntityHandle, with_entity, with_entity_mut};
 use super::{Game, commands::Target};
+use mod_api::{ClipBlock, ClipFluid, ClipHit, EntityRef, LevelWriteError};
+use sunrise_client::{collisions::SceneCollisions, motion::player_context};
 use sunrise_core::geometry::{Aabb, Axis, Vec3};
 use sunrise_core::position::BlockPos;
-use mod_api::{ClipBlock, ClipFluid, ClipHit, EntityRef};
 
 /// `Entity.calculateViewVector` for a look turned `pitch_offset` degrees down: the unit
 /// vector along `yaw` and `pitch + pitch_offset`.
@@ -195,26 +196,144 @@ impl Game<'_> {
         with_entity_mut!(self, h, e => e.reset_fall_distance());
         true
     }
-    /// Whether the entity stands on a block (`Entity.onGround`).
-    /// Whether the entity stands on a block (`Entity.onGround`). API
-    /// 379.
+    /// Whether the entity stands on a block (`Entity.onGround`). API 379.
     pub(super) fn entity_on_ground(&self, entity: EntityRef) -> Option<bool> {
-        let t = self.native_entity_target(entity)?;
-        if let Some(p) = self.native_client_player(t) {
+        let t = self.native_entity_read_target(entity)?;
+        if t == Target::Player
+            && let Some(p) = self.player.as_ref()
+        {
             return Some(p.ground.on_ground);
         }
         if let Some(g) = self.native_target_guest(t) {
             return Some(g.on_ground);
+        }
+        if let Target::Hook(id) = t
+            && let Some((hook, _)) = self.fishing_hook_by_id(id)
+        {
+            return Some(hook.ground.on_ground);
         }
         Some(
             self.native_walk_entity(entity.id())
                 .is_some_and(|h| with_entity!(self, h, e => e.on_ground())),
         )
     }
+    /// `Entity.setOnGround` on its live server body, with no movement or fall processing.
+    pub(super) fn entity_set_on_ground(
+        &mut self,
+        entity: EntityRef,
+        on_ground: bool,
+    ) -> Result<bool, LevelWriteError> {
+        if !self.is_logical_server() {
+            return Err(LevelWriteError::Unavailable);
+        }
+        let Some(target) = self.native_entity_target(entity) else {
+            return Ok(false);
+        };
+        match target {
+            Target::Player | Target::Guest(_) => {
+                self.set_server_player_ground(target, entity.id(), on_ground)
+            }
+            Target::Hook(id) => self.set_fishing_hook_ground(id, on_ground),
+            _ => {
+                let Some(handle) = self.native_walk_entity(entity.id()) else {
+                    return Ok(false);
+                };
+                with_entity_mut!(self, handle, e => {
+                    e.update_retained_ground(&self.world, self.collision, &world_items!(self).entity_type_tags, on_ground, None)
+                        .map_err(|_| LevelWriteError::Unavailable)
+                })
+            }
+        }
+    }
+
+    /// The acting player's record and motion must agree when the guest turn ends. A parked
+    /// player's position and equipment belong to its hub row, not to the last simulated motion.
+    fn set_server_player_ground(
+        &mut self,
+        target: Target,
+        entity_id: u32,
+        on_ground: bool,
+    ) -> Result<bool, LevelWriteError> {
+        let Some(body) = self.native_player_body(target) else {
+            return Ok(false);
+        };
+        let (world, position, bounds, descending, held, armor, conn) = match target {
+            Target::Player => (
+                &self.world,
+                body.position,
+                body.bounds(),
+                // PlayerInput updates the guest row before the sneak callback and the body tick.
+                self.lan_acting
+                    .and_then(|conn| self.command_guest(conn))
+                    .map_or(body.shift_key_down, |guest| guest.sneaking),
+                self.inventory.get(self.selected).and_then(Option::as_ref),
+                &self.armor,
+                self.lan_acting,
+            ),
+            Target::Guest(conn) => {
+                let Some(guest) = self.command_guest(conn) else {
+                    return Ok(false);
+                };
+                let world = if guest.dimension == self.dim.id() {
+                    &self.world
+                } else {
+                    self.levels
+                        .parked_world_of(&guest.dimension)
+                        .ok_or(LevelWriteError::Unavailable)?
+                };
+                let [x, y, z] = guest.position;
+                (
+                    world,
+                    Vec3::new(x, y, z),
+                    guest.bounds(),
+                    guest.sneaking,
+                    guest.inventory.get(guest.selected).and_then(Option::as_ref),
+                    &guest.armor,
+                    Some(conn),
+                )
+            }
+            _ => return Ok(false),
+        };
+        let mut subject = body.powder_snow_subject();
+        subject.leather_boots = super::worn_boots::leather_boots(armor);
+        let mut scene = SceneCollisions {
+            world,
+            binding: self.collision,
+            subject: Some(subject),
+        };
+        let mut ground = body.ground;
+        ground.on_ground = on_ground;
+        let scan = scene.update_ground_support(
+            &mut ground,
+            position,
+            bounds,
+            None,
+            player_context(
+                entity_id,
+                position.y,
+                descending,
+                held.map(|s| s.item.as_ref()),
+            ),
+        );
+        let Some(body) = self.native_player_body_mut(target) else {
+            return Ok(false);
+        };
+        body.ground = ground;
+        if let Some((conn, host)) = conn.zip(self.lan.as_mut()) {
+            host.hub
+                .update_guest(conn, |guest| guest.on_ground = on_ground);
+        }
+        scan.map(|()| true)
+            .map_err(|_| LevelWriteError::Unavailable)
+    }
+
     /// The entity's box (`Entity.getBoundingBox`): its lowest and highest
-    /// corner. None for the kinds whose box Sunrise doesn't keep (displays,
-    /// markers, End crystals, the dragon); a dragon part's is its own. API 379.
+    /// corner. Displays and markers have zero-sized physical boxes; interactions use
+    /// their saved dimensions. End crystals have their 2 x 2 box. None for the dragon; a dragon part's is its own. API 379.
     pub(super) fn entity_bounding_box(&self, entity: EntityRef) -> Option<[[f64; 3]; 2]> {
+        if let Some(row) = self.native_client_general(entity) {
+            return Some(corners(row.bounds()));
+        }
         let t = self.native_entity_read_target(entity)?;
         if let Some(p) = self.native_client_player(t) {
             return Some(corners(p.bounds()));
@@ -226,20 +345,36 @@ impl Game<'_> {
             return Some(corners(with_entity!(self, h, e => e.bounds())));
         }
         let (lo, hi) = match t {
+            Target::Other(id) => {
+                return self
+                    .others
+                    .iter()
+                    .find(|e| e.id == id)?
+                    .display_marker_or_interaction_bounds()
+                    .map(corners);
+            }
             Target::DragonPart(id) => {
                 let (dragon, part) = self.resident_dragon_part(id)?;
                 return Some(corners(dragon.part_geometry(part).1));
             }
+            Target::Crystal(id) => {
+                return Some(corners(self.crystals.iter().find(|c| c.id == id)?.bounds()));
+            }
+            Target::Cushion(id) => self.cushions.iter().find(|c| c.id == id)?.bounds(),
             Target::Frame(id) => self.item_frames.iter().find(|f| f.id == id)?.bounds(),
             Target::Painting(id) => self.paintings.iter().find(|p| p.id == id)?.bounds(),
             _ => return None,
         };
+        // A position that came off the wire can be NaN or infinite: no box.
+        if lo.iter().chain(&hi).any(|v| !v.is_finite()) {
+            return None;
+        }
         Some([lo, hi])
     }
     /// The height of the entity's eyes above its feet (`Entity.getEyeHeight`).
     /// API 379.
     pub(super) fn entity_eye_height(&self, entity: EntityRef) -> Option<f64> {
-        Some(self.target_eye_height(self.native_entity_target(entity)?))
+        Some(self.target_eye_height(self.native_entity_read_target(entity)?))
     }
     /// Where the entity's eyes are (`Entity.getEyePosition`). API
     /// 379.
@@ -260,27 +395,30 @@ impl Game<'_> {
         let [yaw, pitch] = self.entity_rotation(entity)?;
         Some(turned_view_vector(yaw, pitch, -90.0))
     }
-    /// `Entity.mainSupportingBlockPos` of an entity on the ground: the player's own, kept
-    /// as it moved, or the one `Entity.checkSupportingBlock` finds under the box of any
-    /// other that stands.
+    /// `Entity.mainSupportingBlockPos`, retained by bodies with a shared ground state.
+    /// Families that have not moved onto that state still use their existing support read.
     fn native_supporting_block(&self, entity: EntityRef, t: Target) -> Option<BlockPos> {
-        if t == Target::Player
-            && let Some(player) = &self.player
-        {
-            return player.ground.supporting_block;
+        match t {
+            Target::Player => return self.player.as_ref()?.ground.supporting_block,
+            Target::Guest(_) => {
+                return self
+                    .native_target_guest(t)?
+                    .motion
+                    .as_ref()?
+                    .ground
+                    .supporting_block;
+            }
+            Target::Hook(id) => return self.fishing_hook_by_id(id)?.0.ground.supporting_block,
+            _ => {}
+        }
+        let handle = self.native_walk_entity(entity.id())?;
+        if let Some(ground) = with_entity!(self, handle, e => e.ground_state()) {
+            return ground.supporting_block;
         }
         if !self.entity_on_ground(entity)? {
             return None;
         }
-        let (position, bounds) = match self.native_target_guest(t) {
-            Some(g) => (
-                Vec3::new(g.position[0], g.position[1], g.position[2]),
-                g.bounds(),
-            ),
-            None => {
-                with_entity!(self, self.native_walk_entity(entity.id())?, e => (e.position(), e.bounds()))
-            }
-        };
+        let (position, bounds) = with_entity!(self, handle, e => (e.position(), e.bounds()));
         self.supporting_block(position, bounds)
     }
     /// The block the entity stands on (`Entity.getOnPos`). API 379.
@@ -319,8 +457,9 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use sunrise_core::geometry::{Aabb, Vec3};
+    use crate::game::entity::Entity as _;
     use mod_api::EntityRef;
+    use sunrise_core::geometry::{Aabb, Vec3};
 
     fn assert_near(got: [f64; 3], want: [f64; 3]) {
         for i in 0..3 {
@@ -389,12 +528,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn on_block_picks_the_support_nearest_the_entity_and_pick_clips_blocks() {
         use super::super::native_entity_refs::tests::with_game;
-        use sunrise_client::{chunk::Chunk, mobs::Mob};
         use mod_api::BlockFace;
         use std::sync::Arc;
+        use sunrise_client::{chunk::Chunk, mobs::Mob};
         with_game(|game| {
             game.world
                 .chunks
@@ -412,21 +551,48 @@ mod tests {
                 .unwrap()
                 .clone();
             // A zombie 0.6 wide straddling x = 1: its box is over blocks 0 and 1.
-            let mut zombie = Mob::new(40, kind, Vec3::new(0.9, 65.0, 0.5), 0.0);
-            zombie.on_ground = true;
-            game.mobs.push(zombie);
+            game.mobs
+                .push(Mob::new(40, kind, Vec3::new(0.9, 65.0, 0.5), 0.0));
             let entity = game.entity(40).unwrap();
             // Only block 1 is under the box: it supports, not the block of the feet's own column.
             game.world.set(1, 64, 0, stone).unwrap();
+            let _ = game.mobs[0].update_retained_ground(
+                &game.world,
+                game.collision,
+                &world_items!(game).entity_type_tags,
+                true,
+                None,
+            );
             assert_eq!(game.entity_on_block(entity), Some([1, 64, 0]));
-            // With both, the one whose centre is nearest the feet: 0.4 against 0.6 away.
+            // Adding a nearer block doesn't change the support until the next check.
             game.world.set(0, 64, 0, stone).unwrap();
+            assert_eq!(game.entity_on_block(entity), Some([1, 64, 0]));
+            let _ = game.mobs[0].update_retained_ground(
+                &game.world,
+                game.collision,
+                &world_items!(game).entity_type_tags,
+                true,
+                None,
+            );
             assert_eq!(game.entity_on_block(entity), Some([0, 64, 0]));
             game.mobs[0].position = Vec3::new(1.1, 65.0, 0.5);
+            let _ = game.mobs[0].update_retained_ground(
+                &game.world,
+                game.collision,
+                &world_items!(game).entity_type_tags,
+                true,
+                None,
+            );
             assert_eq!(game.entity_on_block(entity), Some([1, 64, 0]));
             // Off the ground there is no support: the cell under the feet.
             game.mobs[0].position = Vec3::new(0.9, 65.0, 0.5);
-            game.mobs[0].on_ground = false;
+            let _ = game.mobs[0].update_retained_ground(
+                &game.world,
+                game.collision,
+                &world_items!(game).entity_type_tags,
+                false,
+                None,
+            );
             assert_eq!(game.entity_on_block(entity), Some([0, 64, 0]));
             let air = game
                 .pack
@@ -435,7 +601,13 @@ mod tests {
                 .default_state("minecraft:air")
                 .unwrap();
             game.world.set(0, 64, 0, air).unwrap();
-            game.mobs[0].on_ground = true;
+            let _ = game.mobs[0].update_retained_ground(
+                &game.world,
+                game.collision,
+                &world_items!(game).entity_type_tags,
+                true,
+                None,
+            );
             assert_eq!(game.entity_on_block(entity), Some([1, 64, 0]));
 
             // Facing south (yaw 0) level, the eyes see a block two cells ahead.
@@ -485,7 +657,221 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn set_on_ground_refreshes_the_live_footprint_without_moving_the_body() {
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+        use std::sync::Arc;
+        use sunrise_client::{
+            chunk::Chunk,
+            entities::{ArmorStand, ItemEntity},
+            items::ItemStack,
+            projectiles::{Projectile, ProjectileKind},
+        };
+        use sunrise_core::position::BlockPos;
+
+        if run_fresh_cases(
+            "game::native_entity_motion::tests::set_on_ground_refreshes_the_live_footprint_without_moving_the_body",
+            "SUNRISE_GROUND_SETTER_CASE",
+            &["support"],
+        ) {
+            return;
+        }
+        with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let registry = game.pack.assets.registry;
+            let snow = registry.default_state("minecraft:powder_snow").unwrap();
+            let air = registry.default_state("minecraft:air").unwrap();
+            let supported = [1, 64, 0];
+            let under_feet = [0, 64, 0];
+            game.world.set(1, 64, 0, snow).unwrap();
+            // The feet are over air. Only the edge of this stand is over the snow.
+            let position = Vec3::new(0.9, 65.0, 0.5);
+            let velocity = Vec3::new(0.25, -0.125, 0.5);
+            let mut stand = ArmorStand::new(40, position, 25.0);
+            stand.velocity = velocity;
+            stand.enchantment_fall_distance = 1.5;
+            stand.ground.horizontal_collision = true;
+            game.armor_stands.push(stand);
+            let entity = game.entity(40).unwrap();
+            assert_eq!(entity.set_on_ground(game, true), Ok(true));
+            assert_eq!(entity.on_ground(game), Some(true));
+            assert_eq!(entity.on_block(game), Some(under_feet));
+            assert_eq!(entity.set_on_ground(game, false), Ok(true));
+            game.armor_stands[0].equipment[2] = Some(ItemStack::new("minecraft:leather_boots", 1));
+            assert_eq!(entity.set_on_ground(game, true), Ok(true));
+            assert_eq!(entity.on_block(game), Some(supported));
+            game.world.set(1, 64, 0, air).unwrap();
+            assert_eq!(entity.set_on_ground(game, true), Ok(true));
+            assert_eq!(entity.on_block(game), Some(supported));
+            assert_eq!(entity.set_on_ground(game, true), Ok(true));
+            assert_eq!(entity.on_block(game), Some(under_feet));
+            assert_eq!(entity.on_ground(game), Some(true));
+            game.world.set(1, 64, 0, snow).unwrap();
+            assert_eq!(entity.set_on_ground(game, true), Ok(true));
+            assert_eq!(entity.on_block(game), Some(supported));
+            assert_eq!(entity.set_on_ground(game, false), Ok(true));
+            assert_eq!(entity.on_block(game), Some(under_feet));
+            let stand = &game.armor_stands[0];
+            assert_eq!(stand.ground.supporting_block, None::<BlockPos>);
+            assert!(!stand.ground.on_ground_no_blocks);
+            assert!(stand.ground.horizontal_collision);
+            assert_eq!(stand.enchantment_fall_distance, 1.5);
+            assert_eq!(
+                (stand.position, stand.velocity, stand.yaw),
+                (position, velocity, 25.0)
+            );
+            let stale = EntityRef::new(mod_api::WorldEpoch::new(entity.epoch().get() + 1), 40);
+            assert_eq!(stale.set_on_ground(game, true), Ok(false));
+            assert_eq!(entity.on_ground(game), Some(false));
+
+            // A scan with invalid bounds fails, but vanilla sets the flag before the query.
+            game.armor_stands[0].position.y = f64::INFINITY;
+            assert_eq!(
+                entity.set_on_ground(game, true),
+                Err(mod_api::LevelWriteError::Unavailable)
+            );
+            assert_eq!(entity.on_ground(game), Some(true));
+
+            // A fall over 2.5 blocks selects PowderSnowBlock's 0.9f-high shape.
+            // Only the edge of either body overlaps the snow.
+            let feet = Vec3::new(0.95, 64.0 + f64::from(0.9_f32), 0.5);
+            let mut shot = Projectile::new(
+                ProjectileKind::Arrow {
+                    base_damage: 2.0,
+                    critical: false,
+                    effect: None,
+                },
+                feet,
+                None,
+            );
+            shot.id = 41;
+            shot.arrow.as_mut().unwrap().fall_distance = 3.0;
+            game.creatures.projectiles.push(shot);
+            let projectile = game.entity(41).unwrap();
+            assert_eq!(projectile.on_ground(game), Some(false));
+            assert_eq!(projectile.set_on_ground(game, true), Ok(true));
+            assert_eq!(projectile.on_ground(game), Some(true));
+            assert_eq!(projectile.on_block(game), Some(supported));
+            assert_eq!(projectile.set_on_ground(game, false), Ok(true));
+            assert_eq!(projectile.on_ground(game), Some(false));
+            assert_eq!(projectile.on_block(game), Some(under_feet));
+
+            let mut drop = ItemEntity::new(
+                42,
+                ItemStack::new("minecraft:stone", 1),
+                feet,
+                Vec3::ZERO,
+                0.0,
+            );
+            drop.fall_distance = 3.0;
+            game.dropped.push(drop);
+            let item = game.entity(42).unwrap();
+            assert_eq!(item.set_on_ground(game, true), Ok(true));
+            assert_eq!(item.on_block(game), Some(supported));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn set_on_ground_follows_the_server_players_parked_and_acting_bodies() {
+        use super::super::{
+            Dim, native_entity_refs::tests::run_fresh_cases, native_guest_turn_tests::with_guests,
+        };
+        use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
+
+        if run_fresh_cases(
+            "game::native_entity_motion::tests::set_on_ground_follows_the_server_players_parked_and_acting_bodies",
+            "SUNRISE_GROUND_SETTER_PLAYER_CASE",
+            &["players"],
+        ) {
+            return;
+        }
+        with_guests(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let registry = game.pack.assets.registry;
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let scaffolding = registry.default_state("minecraft:scaffolding").unwrap();
+            let entity = game.entity(12).unwrap();
+            assert_eq!(entity.set_on_ground(game, true), Ok(false), "no body yet");
+            game.as_guest(12, |_| {}).unwrap();
+            // The hub has the latest position; the parked motion still sits elsewhere.
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(12, |guest| guest.position = [0.9, 65.0, 0.5])
+                .unwrap();
+            game.world.set(1, 64, 0, stone).unwrap();
+            game.enter_level(Dim::Nether).unwrap();
+            // This level has no support at the guest's coordinates. The parked
+            // Overworld under their footprint does.
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            assert_eq!(entity.set_on_ground(game, true), Ok(true));
+            assert_eq!(entity.on_ground(game), Some(true));
+            assert_eq!(entity.on_block(game), Some([1, 64, 0]));
+            game.enter_level(Dim::Overworld).unwrap();
+            let hook = game
+                .as_guest(12, |game| {
+                    assert_eq!(entity.on_ground(game), Some(true));
+                    assert_eq!(entity.on_block(game), Some([1, 64, 0]));
+                    assert_eq!(entity.set_on_ground(game, false), Ok(true));
+                    assert_eq!(entity.on_ground(game), Some(false));
+                    // The sneak callback runs after assigning the hub flag, before the body tick.
+                    game.world.set(1, 64, 0, scaffolding).unwrap();
+                    assert!(!game.player.as_ref().unwrap().shift_key_down);
+                    game.lan
+                        .as_mut()
+                        .unwrap()
+                        .hub
+                        .update_guest(12, |guest| guest.sneaking = true)
+                        .unwrap();
+                    assert_eq!(entity.set_on_ground(game, true), Ok(true));
+                    assert_eq!(entity.on_block(game), Some([0, 64, 0]));
+                    game.lan
+                        .as_mut()
+                        .unwrap()
+                        .hub
+                        .update_guest(12, |guest| guest.sneaking = false)
+                        .unwrap();
+                    assert_eq!(entity.set_on_ground(game, true), Ok(true));
+                    assert_eq!(entity.on_block(game), Some([1, 64, 0]));
+                    assert_eq!(entity.set_on_ground(game, false), Ok(true));
+                    game.world.set(1, 64, 0, stone).unwrap();
+
+                    // The caster's live hook moves between the acting slot and the hub.
+                    game.install_fishing_hook(super::super::fishing::Hook::remote(
+                        900,
+                        Vec3::new(0.95, 65.0, 0.5),
+                        [101, 102, 103, 104],
+                    ));
+                    let hook = game.entity(900).unwrap();
+                    assert_eq!(hook.set_on_ground(game, true), Ok(true));
+                    assert_eq!(hook.on_block(game), Some([1, 64, 0]));
+                    hook
+                })
+                .unwrap();
+            assert_eq!(hook.on_ground(game), Some(true));
+            assert_eq!(hook.on_block(game), Some([1, 64, 0]));
+            assert_eq!(hook.set_on_ground(game, false), Ok(true));
+            assert_eq!(hook.on_block(game), Some([0, 64, 0]));
+            assert_eq!(entity.on_ground(game), Some(false));
+            assert_eq!(entity.on_block(game), Some([0, 64, 0]));
+            let guest = game.command_guest(12).unwrap();
+            assert!(!guest.on_ground);
+            assert!(!guest.motion.as_ref().unwrap().ground.on_ground);
+            assert_eq!(guest.motion.as_ref().unwrap().ground.supporting_block, None);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn reset_fall_distance_forgets_a_fall_for_mobs_carts_and_players() {
         use super::super::minecarts::{CartKind, Minecart};
         use sunrise_client::mobs::Mob;
@@ -532,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn only_a_mount_its_rider_controls_takes_the_riders_speed() {
         use super::super::commands::Target;
         use sunrise_client::mobs::{Mob, equine::Rider};

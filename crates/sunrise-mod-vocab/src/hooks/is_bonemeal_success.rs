@@ -5,10 +5,12 @@ pub trait Hooks {
     /// `BonemealableBlock.isBonemealSuccess` for a block that answered
     /// `is_valid_bonemeal_target`, after it did: set `success` to grow
     /// it this time. Vanilla draws the level's random here
-    /// (`isBonemealSuccess(Level, RandomSource, BlockPos, BlockState)`), so
-    /// draw from `native_level_random` to keep vanilla's order.
+    /// (`isBonemealSuccess(Level, RandomSource, BlockPos, BlockState)`).
+    /// Use `host.with_random(|rng| rng.next_int_bound(bound))` to draw from that
+    /// live stream in vanilla's order.
     /// Authoritative servers only.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "success",
@@ -17,5 +19,10 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_is_bonemeal_success",
         neoforge = "none (vanilla BonemealableBlock.isBonemealSuccess; NeoForge adds no event or extension for it)"
     )]
-    fn is_bonemeal_success();
+    fn is_bonemeal_success(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        success: &mut bool,
+    );
 }

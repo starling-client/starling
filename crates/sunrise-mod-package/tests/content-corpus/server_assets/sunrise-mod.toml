@@ -1,0 +1,4 @@
+id = "server_assets"
+name = "Server assets"
+version = "1.2.3"
+side = "server"

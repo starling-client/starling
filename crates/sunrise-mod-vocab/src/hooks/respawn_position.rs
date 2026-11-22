@@ -12,12 +12,15 @@ pub trait Hooks {
     /// loses a charge only when the answer is a spot. Asked on the server as the respawn point
     /// is resolved, before `player_respawn_position`, which receives the answer as its original
     /// position and may still redirect it, and as a player leaves the End, which resolves the
-    /// point the same way. The level is read-only. NeoForge asks only beds; this is asked
+    /// point the same way. A same-level End exit clamps the answer's pitch to `-90..=90`
+    /// when it teleports the player. The level is read-only. NeoForge asks only beds; this is asked
     /// for any block, so a mod block that is neither a bed nor an anchor can be a respawn point.
     /// With no part attached to the state, the game checks the hook subscription and the block
     /// key before any event conversion, so the cost is one table lookup per respawn. Diverges
     /// from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "position",
@@ -26,5 +29,11 @@ pub trait Hooks {
         host = "read",
         neoforge = "IBlockExtension.getRespawnPosition, IBlockStateExtension.getRespawnPosition"
     )]
-    fn respawn_position();
+    fn respawn_position(
+        state: BlockState,
+        pos: BlockPos,
+        entity_type: &str,
+        orientation: f32,
+        position: &mut Option<([f64; 3], f32, f32)>,
+    );
 }

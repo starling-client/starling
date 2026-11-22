@@ -1,6 +1,6 @@
 //! Version-pinned tag codecs, resource-stack merging and dependency resolution.
 use super::{DecodeError, Object, optional, required};
-use sunrise_core::random::java_string_hash;
+use crate::tag_layers::dependency_order;
 use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -117,17 +117,11 @@ pub struct BuiltTags<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TagBuildError {
     TooManyTags,
-    DependencyDepth,
-    HashTreeBucket,
 }
 impl std::fmt::Display for TagBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::TooManyTags => "tag definitions exceed 8192 entries",
-            Self::DependencyDepth => {
-                "tag dependency depth exceeds 256 or cyclic reachability does not terminate"
-            }
-            Self::HashTreeBucket => "tag identifiers require an unsupported Java hash tree bucket",
         })
     }
 }
@@ -181,47 +175,30 @@ impl TagDefinitions {
     pub fn definitions(&self) -> &BTreeMap<String, Vec<TagEntryWithSource>> {
         &self.entries
     }
-    /// Missing required references invalidate their own tags, not unrelated tags.
-    /// Element lookup receives the entry's required flag, as in vanilla.
+    /// Build the bounded worldgen table. Missing required references
+    /// invalidate their own tags, not unrelated tags.
     pub fn build<T: Clone + Ord>(
         &self,
-        mut lookup: impl FnMut(&str, bool) -> Option<T>,
+        lookup: impl FnMut(&str, bool) -> Option<T>,
     ) -> Result<BuiltTags<T>, TagBuildError> {
         if self.entries.len() > 8192 {
             return Err(TagBuildError::TooManyTags);
         }
-        // DependencySorter owns a fresh default-sized HashMap. Required edges
-        // are inserted for every tag before any optional edge is considered.
-        // The resource loader creates keys with HashMap.computeIfAbsent,
-        // which inserts at the head of a bucket. DependencySorter then copies
-        // that map with put (tail insertion), retaining the reversed order of
-        // colliding resource keys. Resizing preserves each split chain's order.
-        let order = java_bucket_order(self.insertion_order.iter().rev().map(String::as_str), 16)?;
-        let mut edges: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for mandatory in [true, false] {
-            for &name in &order {
-                for entry in &self.entries[name] {
-                    let e = &entry.entry;
-                    if e.tag && e.required == mandatory && !reaches(&edges, &e.id, name, 0)? {
-                        let children = edges.entry(name).or_default();
-                        if !children.contains(&e.id.as_str()) {
-                            children.push(&e.id);
-                        }
-                    }
-                }
-            }
-        }
-        // Guava HashMultimap value sets start with capacity four (two expected
-        // values). Their native bucket order matters when cycles are pruned.
-        let edges = edges
-            .into_iter()
-            .map(|(key, children)| Ok((key, java_bucket_order(children, 4)?)))
-            .collect::<Result<BTreeMap<_, _>, TagBuildError>>()?;
-        let mut visited = BTreeSet::new();
-        let mut sorted = Vec::new();
-        for name in order {
-            visit(name, &edges, &mut visited, &mut sorted, 0)?;
-        }
+        Ok(self.bind(lookup))
+    }
+
+    /// Bind the tags of a registry without a worldgen table size limit.
+    /// Element lookup receives the entry's required flag, as in vanilla.
+    pub fn bind<T: Clone + Ord>(
+        &self,
+        mut lookup: impl FnMut(&str, bool) -> Option<T>,
+    ) -> BuiltTags<T> {
+        let sorted = dependency_order(self.insertion_order.iter().map(String::as_str), |name| {
+            self.entries[name].iter().filter_map(|entry| {
+                let entry = &entry.entry;
+                entry.tag.then_some((entry.id.as_str(), entry.required))
+            })
+        });
         let mut result: BuiltTags<T> = BuiltTags {
             tags: BTreeMap::new(),
             missing: BTreeMap::new(),
@@ -255,7 +232,7 @@ impl TagDefinitions {
                 result.missing.insert(name.into(), missing);
             }
         }
-        Ok(result)
+        result
     }
 }
 /// One entry's value into a tag being built: added at the end, or removed
@@ -268,82 +245,6 @@ fn apply<T: Clone + Ord>(values: &mut Vec<T>, seen: &mut BTreeSet<T>, value: &T,
     } else if seen.remove(value) {
         values.retain(|v| v != value);
     }
-}
-fn reaches(
-    edges: &BTreeMap<&str, Vec<&str>>,
-    from: &str,
-    target: &str,
-    depth: usize,
-) -> Result<bool, TagBuildError> {
-    if depth > 256 {
-        return Err(TagBuildError::DependencyDepth);
-    }
-    if let Some(children) = edges.get(from) {
-        if children.contains(&target) {
-            return Ok(true);
-        }
-        for child in children {
-            if reaches(edges, child, target, depth + 1)? {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-fn visit<'a>(
-    name: &'a str,
-    edges: &BTreeMap<&'a str, Vec<&'a str>>,
-    visited: &mut BTreeSet<&'a str>,
-    sorted: &mut Vec<&'a str>,
-    depth: usize,
-) -> Result<(), TagBuildError> {
-    if !visited.insert(name) {
-        return Ok(());
-    }
-    if depth > 256 {
-        return Err(TagBuildError::DependencyDepth);
-    }
-    if let Some(children) = edges.get(name) {
-        for child in children {
-            visit(child, edges, visited, sorted, depth + 1)?;
-        }
-    }
-    sorted.push(name);
-    Ok(())
-}
-fn hash(name: &str) -> u32 {
-    let (namespace, path) = name.split_once(':').expect("canonical tag identifier");
-    let raw = java_string_hash(namespace.encode_utf16())
-        .wrapping_mul(31)
-        .wrapping_add(java_string_hash(path.encode_utf16())) as u32;
-    raw ^ (raw >> 16)
-}
-fn java_bucket_order<'a>(
-    names: impl IntoIterator<Item = &'a str>,
-    initial: usize,
-) -> Result<Vec<&'a str>, TagBuildError> {
-    let names: Vec<_> = names.into_iter().collect();
-    let mut capacity = initial;
-    for count in 1..=names.len() {
-        let bucket = hash(names[count - 1]) as usize & (capacity - 1);
-        let collisions = names[..count]
-            .iter()
-            .filter(|name| hash(name) as usize & (capacity - 1) == bucket)
-            .count();
-        if collisions >= 9 {
-            if capacity < 64 {
-                capacity *= 2;
-            } else {
-                return Err(TagBuildError::HashTreeBucket);
-            }
-        }
-        if count > capacity * 3 / 4 {
-            capacity *= 2;
-        }
-    }
-    let mut ordered = names;
-    ordered.sort_by_key(|name| hash(name) as usize & (capacity - 1));
-    Ok(ordered)
 }
 
 #[cfg(test)]

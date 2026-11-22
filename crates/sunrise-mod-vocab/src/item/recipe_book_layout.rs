@@ -1,7 +1,10 @@
 //! Menu-owned destination roles, not recipe ingredient semantics.
-/// Menu-owned roles, never indices into the appended player inventory.
+/// Recipe destinations at physical container indices, never indices into the
+/// appended player inventory. The menu owns these roles; the registered screen
+/// factory supplies client geometry separately. Local slot moves and hides do
+/// not change the destination of a recipe.
 #[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
-// exhaustive: the four destination maps cover the five vanilla displays
+// exhaustive: the four destination maps cover the five vanilla displays, and `Mod` hands the rest to the mod
 pub enum RecipeBookLayout {
     Crafting {
         width: u16,
@@ -24,18 +27,13 @@ pub enum RecipeBookLayout {
         addition: u16,
         result: u16,
     },
+    /// The menu's placement is answered by the mod: the `recipe_book_place` hook of its
+    /// `MenuPart`, with `ServerHost::place_recipe_in_grid` as vanilla's placer. The roles are the
+    /// mod's own, so none is declared or checked here, and the game maps no display to a slot.
+    Mod,
 }
 
 impl RecipeBookLayout {
-    /// Engine integration: frozen screen geometry, identical for native/wasm registrations.
-    // hidden: engine reads the frozen declaration; mods supply their screen through registration.
-    #[doc(hidden)]
-    pub fn registered_screen(menu: &str) -> Option<crate::Screen> {
-        crate::parts::installed()?
-            .menu_recipe_books
-            .get(menu)
-            .map(|binding| binding.screen.clone())
-    }
     /// Engine integration: diagnostics retain the actual declaring mod identity.
     // hidden: engine diagnostics need registration ownership, not a mod-facing lookup service.
     #[doc(hidden)]
@@ -44,51 +42,6 @@ impl RecipeBookLayout {
             .menu_recipe_books
             .get(menu)
             .map(|binding| binding.owner)
-    }
-    /// Validate typed screen geometry at the same registration boundary as roles.
-    pub fn validate_screen(&self, screen: &crate::Screen) -> Result<(), String> {
-        if ![screen.width, screen.height]
-            .into_iter()
-            .all(|size| size.is_finite() && size > 0.0)
-            || ![screen.inventory_x, screen.inventory_y]
-                .into_iter()
-                .all(f32::is_finite)
-            || screen.slots.len() > 256
-            || screen
-                .slots
-                .iter()
-                .flatten()
-                .any(|pos| pos.iter().any(|n| !n.is_finite()))
-        {
-            return Err("screen dimensions, inventory coordinates and slot geometry must be finite and fit the menu bound".into());
-        }
-        let roles = match self {
-            Self::Crafting { slots, result, .. } => {
-                slots.iter().copied().chain([*result]).collect::<Vec<_>>()
-            }
-            Self::Furnace {
-                input,
-                fuel,
-                result,
-            } => vec![*input, *fuel, *result],
-            Self::Stonecutter { input, result } => vec![*input, *result],
-            Self::Smithing {
-                template,
-                base,
-                addition,
-                result,
-            } => vec![*template, *base, *addition, *result],
-        };
-        for slot in roles {
-            if screen
-                .slots
-                .get(usize::from(slot))
-                .is_none_or(Option::is_none)
-            {
-                return Err(format!("screen omits mapped slot {slot}"));
-            }
-        }
-        Ok(())
     }
     /// Menus with declarations, for content-load validation, never per tick.
     pub fn registered_menus() -> Vec<String> {
@@ -114,60 +67,99 @@ impl RecipeBookLayout {
     }
 
     /// Check role indices against the content menu's container slot count.
-    /// Loading must call this with the actual count, before publishing a layout.
     pub fn validate(&self, slot_count: u16) -> Result<(), String> {
-        if slot_count == 0 || slot_count > 256 {
-            return Err("container slot count must be in 1..=256".into());
+        if slot_count == 0 {
+            return Err("container slot count must be at least 1".into());
         }
-        let slots = match self {
-            Self::Crafting {
-                width,
-                height,
-                slots,
-                result,
-            } => {
-                let cells = u32::from(*width) * u32::from(*height);
-                if *width == 0
-                    || *height == 0
-                    || cells > u32::from(slot_count)
-                    || cells as usize != slots.len()
-                {
-                    return Err("grid dimensions must match its slot list and fit the menu".into());
+        if let Self::Crafting {
+            width,
+            height,
+            slots,
+            ..
+        } = self
+        {
+            let cells = u32::from(*width) * u32::from(*height);
+            if *width == 0
+                || *height == 0
+                || cells > u32::from(slot_count)
+                || cells as usize != slots.len()
+            {
+                return Err("grid dimensions must match its slot list and fit the menu".into());
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        self.check_roles(|slot, role| {
+            if slot >= slot_count {
+                return Err(format!("{role} slot {slot} is outside the menu"));
+            }
+            if !seen.insert(slot) {
+                return Err(format!("{role} slot {slot} overlaps another role"));
+            }
+            Ok(())
+        })
+    }
+
+    fn check_roles(
+        &self,
+        mut check: impl FnMut(u16, &'static str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        match self {
+            Self::Crafting { slots, result, .. } => {
+                for &slot in slots {
+                    check(slot, "grid")?;
                 }
-                slots
-                    .iter()
-                    .map(|slot| (*slot, "grid"))
-                    .chain([(*result, "result")])
-                    .collect::<Vec<_>>()
+                check(*result, "result")
             }
             Self::Furnace {
                 input,
                 fuel,
                 result,
-            } => vec![(*input, "input"), (*fuel, "fuel"), (*result, "result")],
-            Self::Stonecutter { input, result } => vec![(*input, "input"), (*result, "result")],
+            } => {
+                check(*input, "input")?;
+                check(*fuel, "fuel")?;
+                check(*result, "result")
+            }
+            Self::Stonecutter { input, result } => {
+                check(*input, "input")?;
+                check(*result, "result")
+            }
             Self::Smithing {
                 template,
                 base,
                 addition,
                 result,
-            } => vec![
-                (*template, "template"),
-                (*base, "base"),
-                (*addition, "addition"),
-                (*result, "result"),
-            ],
-        };
-        let mut seen = [false; 256];
-        for (slot, role) in slots {
-            if slot >= slot_count {
-                return Err(format!("{role} slot {slot} is outside the menu"));
+            } => {
+                check(*template, "template")?;
+                check(*base, "base")?;
+                check(*addition, "addition")?;
+                check(*result, "result")
             }
-            if seen[usize::from(slot)] {
-                return Err(format!("{role} slot {slot} overlaps another role"));
-            }
-            seen[usize::from(slot)] = true;
+            Self::Mod => Ok(()),
         }
-        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecipeBookLayout;
+
+    #[test]
+    fn validate_accepts_more_than_256_slots_and_rejects_bad_indices() {
+        let big = RecipeBookLayout::Crafting {
+            width: 3,
+            height: 3,
+            slots: (290..299).collect(),
+            result: 299,
+        };
+        assert_eq!(big.validate(300), Ok(()));
+        assert!(big.validate(299).is_err());
+        assert!(big.validate(0).is_err());
+
+        let overlap = RecipeBookLayout::Furnace {
+            input: 270,
+            fuel: 271,
+            result: 270,
+        };
+        assert!(overlap.validate(300).is_err());
     }
 }

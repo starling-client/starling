@@ -14,11 +14,15 @@ struct Skull {
 
 static REGISTERED: OnceLock<HashMap<String, Skull>> = OnceLock::new();
 
-/// Keeps the skull types native mods registered, once at start, after the model layers. A kind
-/// that is not `<namespace>:<path>` in a mod's namespace, or registered already, is left out by
-/// `sunrise_assets::item_model::register_skull_kinds`; one whose layer neither a mod nor vanilla
-/// (`entity-models.json` under `vanilla_root`) has, or whose texture is empty, is logged and left
-/// out here, before its kind is registered, so no item model can name it. Returns the kinds kept.
+/// Keeps the skull types native mods registered, once at start, after the model layers. Any valid
+/// canonical `<namespace>:<path>` identifier (including `minecraft:` for non-vanilla paths) is
+/// accepted; invalid identifiers, the seven built-in vanilla skull types (`minecraft:skeleton`,
+/// `minecraft:wither_skeleton`, `minecraft:player`, `minecraft:zombie`, `minecraft:creeper`,
+/// `minecraft:piglin`, `minecraft:dragon`), and duplicate registrations are logged as errors and
+/// left out by `sunrise_assets::item_model::register_skull_kinds`. One whose layer neither a mod
+/// nor vanilla (`entity-models.json` under `vanilla_root`) has, or whose texture is empty, is
+/// logged and left out here, before its kind is registered, so no item model can name it. Returns
+/// the kinds kept.
 pub fn register(models: Vec<SkullModel>, vanilla_root: &Path) -> Vec<String> {
     if REGISTERED.get().is_some() {
         log::warn!("skull models were registered already; these are left out");

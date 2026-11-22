@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 //! Loads and saves option files like `Options.load`/`save`, for the
 //! differential harness (tools/test_options_parity.py).
+use std::{fs, io::Write};
 use sunrise_client::{
     Result, keybinds,
     options_file::{OptionsFile, V},
 };
-use std::{fs, io::Write};
 
 pub fn main() -> Result<()> {
     let args: Vec<_> = crate::args().skip(1).collect();

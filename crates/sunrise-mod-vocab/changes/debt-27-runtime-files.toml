@@ -1,0 +1,11 @@
+ids = [
+    "trait:RuntimeFileSource",
+    "method:RuntimeFileSource::names",
+    "method:RuntimeFileSource::file",
+    "method:RuntimeFileSource::path",
+    "handle:RuntimeFiles::names",
+    "handle:RuntimeFiles::file",
+    "handle:RuntimeFiles::file_path",
+]
+why = "Runtime file reads now borrow ordered names, verified bytes and exact paths from the retained package instead of copying them. Paths still point to live disk files, not to the verified snapshot."
+migrate = "Open the handle with cx.runtime_files(mod_id), passing the installed package ID explicitly (pass your manifest ID to read your own package). Iterate files.names() as a &[String] instead of a Vec<String>, or use files.names().to_vec() for owned names. Pass the &[u8] from files.file(name) directly to your parser instead of borrowing its old Vec<u8>; use files.file(name).map(|bytes| bytes.to_vec()) only for owned bytes. Pass the &Path from files.file_path(name) directly, or use files.file_path(name)?.to_path_buf() for an owned path. If you implement RuntimeFileSource, retain the ordered names, verified bytes and disk paths. Return &[String] from names() and Option<&[u8]> from file(name), both borrowed from self. Change path(name) from Option<InstanceDirectory> to Result<&Path, RuntimePathError>, returning NotListed for an unlisted name and NotAFolder for a listed archive file."

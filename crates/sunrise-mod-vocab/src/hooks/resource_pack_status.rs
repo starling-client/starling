@@ -13,9 +13,11 @@ pub trait Hooks {
     /// player has joined, and those answers are not heard. Once for each
     /// answer, on a server.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_resource_pack_status",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no resource-pack status event)"
     )]
-    fn resource_pack_status();
+    fn resource_pack_status(player: u128, name: &str, status: i32);
 }

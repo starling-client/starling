@@ -4,12 +4,15 @@ use crate::{heightmap::HeightmapType, worldgen::anchor::WorldGenerationContext};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlacementQueryError {
     Unavailable,
+    /// A direct placed-feature call reached a biome filter without a top feature.
+    MissingTopFeature,
     WorkLimit,
     Failed(String),
 }
 impl std::fmt::Display for PlacementQueryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::MissingTopFeature => f.write_str("biome filter requires a top feature"),
             Self::WorkLimit => f.write_str("predicate work limit exceeded"),
             Self::Unavailable => f.write_str("placement world query is unavailable"),
             Self::Failed(message) => f.write_str(message),
@@ -26,6 +29,18 @@ pub enum LayerBlock {
     Ground,
 }
 pub trait PlacementContext {
+    /// The numeric block registry this world's states are of (the game's are loaded once and
+    /// kept), for a mod feature's state index (`worldgen::mod_features`). Worlds without one
+    /// answer `None`, and a mod feature placed there fails, saying so.
+    fn block_registry(&self) -> Option<&'static crate::registry::BlockRegistry> {
+        None
+    }
+    /// Whether `position` is in a full chunk the world only reads (a decoration region's
+    /// `ImposterProtoChunk`): its block writes answer true and change nothing, so no data for
+    /// a block there is taken.
+    fn full_chunk_at(&mut self, _position: [i32; 3]) -> Result<bool, PlacementQueryError> {
+        Ok(false)
+    }
     /// StructureTemplate.updateShapeAtEdge for one outer face of a placed
     /// voxel shape: update the state at `position` against its neighbor in
     /// `direction`, then the neighbor against the (possibly new) state, writing
@@ -182,6 +197,23 @@ pub trait PlacementContext {
         Err(PlacementQueryError::Unavailable)
     }
 
+    /// A live `LiquidBlockContainer.placeLiquid` override can also make a
+    /// non-waterloggable template block a liquid container.
+    fn has_template_liquid_override(&self, _state: crate::registry::BlockStateId) -> bool {
+        false
+    }
+
+    /// Restore fluid directly, without asking the container's acceptance
+    /// predicate. `None` is an unhandled restore; use the vanilla template.
+    fn place_template_liquid(
+        &mut self,
+        _position: [i32; 3],
+        _state: crate::registry::BlockStateId,
+        _fluid: crate::fluid::FluidState,
+    ) -> Option<bool> {
+        None
+    }
+
     /// Request destruction with no responsible entity. The world adapter owns
     /// replacement, drops, block entities and updates; false is a rejected request.
     fn destroy_block_without_entity(
@@ -306,6 +338,14 @@ pub trait PlacementContext {
         &mut self,
         _position: [i32; 3],
     ) -> Result<crate::registry::BlockStateId, PlacementQueryError> {
+        Err(PlacementQueryError::Unavailable)
+    }
+    /// Whether `state` is in block tag `tag` (a mod feature's own staged block).
+    fn state_matches_tag(
+        &mut self,
+        _state: crate::registry::BlockStateId,
+        _tag: &str,
+    ) -> Result<bool, PlacementQueryError> {
         Err(PlacementQueryError::Unavailable)
     }
     /// Read the state at the requested position and test its block-tag identity.

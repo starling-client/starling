@@ -2,27 +2,44 @@
 //! chunk format, shape and facts of the dimension type the server synced for it. A wrapped
 //! packet changes only its own level's world; nothing here reaches the player's level, its
 //! renderer, its sounds or a mod's hooks.
-use super::{entities::ViewedEntities, routing::RouteError};
-use crate::game::remote_chunks::{ChunkFormat, section_blocks};
-use sunrise_client::{chunk::known_block_state, fast_hash::FxHashMap, world::World};
+use super::{
+    entities::ViewedEntities,
+    meshing::{block_changed, column_changed},
+    routing::RouteError,
+};
+use crate::game::{
+    native_connection_groups::{GroupUpdates, column_groups},
+    remote_chunks::{ChunkFormat, section_blocks},
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use sunrise_client::{
+    chunk::known_block_state,
+    chunk_map::ChunkMap,
+    fast_hash::{FxHashMap, FxHashSet},
+    streaming::{ViewedMeshing, take_resent_column},
+    world::World,
+};
 use sunrise_protocol::{
     chunk::BlockEntityInfo,
+    connection_groups::Section,
     packets::play::{self, Clientbound as C, ClockState},
 };
 use sunrise_world::registry::BlockStateId;
-use std::sync::Arc;
-
-/// The most columns one viewed world holds: the server's own cap on a player's `Loaded` chunks in
-/// one level (`max_viewed_loaded_chunks`, 2048 by default), so that a server cannot fill the
-/// client's memory through one opened level. A server that raises its setting past it is refused.
-pub(in crate::game) const MAX_COLUMNS: usize = 2048;
 
 /// Another level's world, kept while the server sends it.
 pub(in crate::game) struct ViewedWorld {
+    /// This world's own id, which its meshed sections go by (`meshing`): a level opened again
+    /// has another.
+    pub(super) id: u64,
     /// The level's key (`minecraft:the_nether`).
     pub(in crate::game) level: String,
     /// Its key as a mod's `LevelRef` names it.
-    key: mod_api::DimensionKey,
+    pub(super) key: mod_api::DimensionKey,
+    /// Its dimension has the Nether's cardinal light: its sections are shaded so.
+    pub(in crate::game) nether_shading: bool,
     /// What its chunk packets decode with.
     format: Arc<ChunkFormat>,
     /// The world clock its day time follows: its dimension type's `default_clock`.
@@ -36,6 +53,10 @@ pub(in crate::game) struct ViewedWorld {
     /// since: what a travel into the level loads (`switch`). A world that was the player's keeps
     /// its own in `world.block_entities` besides.
     pub(in crate::game) block_entities: FxHashMap<(i32, i32), Vec<BlockEntityInfo>>,
+    /// The most columns it holds: the cap its `open` said, at most
+    /// `viewed_levels::MAX_COLUMNS`, so that a server cannot fill the client's memory through
+    /// one opened level.
+    pub(in crate::game) columns: u32,
 }
 
 impl ViewedWorld {
@@ -44,10 +65,15 @@ impl ViewedWorld {
         format: Arc<ChunkFormat>,
         default_clock: Option<i32>,
         world: World,
+        columns: u32,
     ) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         Self {
+            columns,
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             key: mod_api::__private::dimension_key(&level),
             level,
+            nether_shading: false,
             format,
             default_clock,
             clock: None,
@@ -61,39 +87,59 @@ impl ViewedWorld {
     /// current: what the world keeps of its chunks, light, biomes, blocks, time, weather and
     /// entities. Block events, destruction progress and level events change nothing yet: what
     /// they show is drawn, and drawing a viewed level is gap 13. A chunk of a new column past
-    /// [`MAX_COLUMNS`] is refused before it is decoded.
-    pub(in crate::game) fn apply(&mut self, packet: C) -> Result<(), RouteError> {
+    /// its cap ([`Self::columns`]) is refused before it is decoded.
+    pub(super) fn apply(
+        &mut self,
+        packet: C,
+        mut groups: GroupUpdates,
+        snapshot: &[Section],
+        group_limit: usize,
+    ) -> Result<(), RouteError> {
         match packet {
             // `handleLevelChunkWithLight`: the column replaces any it held, with the light the
             // server sent.
             C::LevelChunkWithLight(p)
-                if self.world.chunks.len() >= MAX_COLUMNS
+                if self.world.chunks.len() >= self.columns as usize
                     && !self.world.chunks.contains_key(&(p.x, p.z)) =>
             {
-                return Err(RouteError::TooManyColumns);
+                return Err(RouteError::TooManyColumns(self.columns));
             }
             C::LevelChunkWithLight(p) => match self.format.column(&p) {
-                Ok(chunk) => {
+                Ok(mut chunk) => {
                     let key = (p.x, p.z);
-                    self.world.chunks.insert(key, Arc::new(chunk));
+                    column_groups(&mut chunk, &self.world, snapshot, group_limit)
+                        .map_err(RouteError::Groups)?;
+                    if let Some(old) = self.world.chunks.get(&key).cloned() {
+                        take_resent_column(&mut self.world, &old, chunk, false);
+                    } else {
+                        self.world.install_light_column(chunk);
+                        column_changed(&mut self.world, key);
+                    }
                     self.unload_block_entities(key);
                     self.block_entities.insert(key, p.chunk.block_entities);
                 }
-                Err(e) => log::warn!("Sunrise: {} chunk {} {}: {e}", self.level, p.x, p.z),
+                Err(e) if !snapshot.is_empty() => {
+                    return Err(RouteError::Groups(sunrise_protocol::Error::new(e)));
+                }
+                Err(e) => {
+                    log::warn!("Sunrise: {} chunk {} {}: {e}", self.level, p.x, p.z);
+                }
             },
             C::ForgetLevelChunk(p) => {
                 let key = (p.pos[0], p.pos[1]);
                 self.world.unload_chunk(key);
                 self.unload_block_entities(key);
+                column_changed(&mut self.world, key);
             }
             C::LightUpdate(p) => {
-                let (layers, _) = self.format.light(&p.light);
+                let layers = self.format.light(&p.light);
                 if let Some(chunk) = self.world.chunks.get_mut(&(p.x, p.z)) {
                     sunrise_client::light::update_light_layers(
                         Arc::make_mut(chunk),
                         &layers,
                         self.format.has_skylight,
                     );
+                    column_changed(&mut self.world, (p.x, p.z));
                 }
             }
             C::ChunksBiomes(p) => {
@@ -104,12 +150,15 @@ impl ViewedWorld {
                     {
                         log::warn!("Sunrise: {} biomes of chunk {x} {z}: {e}", self.level);
                     }
+                    column_changed(&mut self.world, (x, z));
                 }
             }
-            C::BlockUpdate(p) => self.set_block(p.pos, p.state),
+            C::BlockUpdate(p) => {
+                self.set_block(p.pos, p.state, groups.remove(&p.pos));
+            }
             C::SectionBlocksUpdate(p) => {
                 for (pos, state) in section_blocks(&p) {
-                    self.set_block(pos, state);
+                    self.set_block(pos, state, groups.remove(&pos));
                 }
             }
             // `handleSetTime` / `ClientClockManager.handleUpdates`: the clock it follows moves on
@@ -146,8 +195,18 @@ impl ViewedWorld {
 
     /// A server's block: a state the client lacks (a server with mods it lacks) reads as air,
     /// as in its chunks.
-    fn set_block(&mut self, [x, y, z]: [i32; 3], state: i32) {
-        self.world.set_stored(x, y, z, stored_state(state));
+    fn set_block(
+        &mut self,
+        [x, y, z]: [i32; 3],
+        state: i32,
+        group: Option<crate::game::native_connection_groups::ReceivedGroup>,
+    ) {
+        if self.world.set_stored(x, y, z, stored_state(state)) {
+            if let Some(group) = group {
+                group.apply(&mut self.world, [x, y, z]);
+            }
+            block_changed(&mut self.world, [x, y, z]);
+        }
     }
 
     /// `LevelChunk.setBlockState` with another block at `pos`: the block entity there goes, with
@@ -163,11 +222,7 @@ impl ViewedWorld {
     /// The column `key` goes, or is sent again: so do its block entities.
     fn unload_block_entities(&mut self, key: (i32, i32)) {
         self.block_entities.remove(&key);
-        if !self.world.block_entities.is_empty() {
-            self.world
-                .block_entities
-                .unload(|p| (p.0 >> 4, p.2 >> 4) == key);
-        }
+        self.world.block_entities.unload_column(key);
     }
 
     /// A block with a block entity placed at `pos` (`LevelChunk.setBlockState`): the travel makes
@@ -217,71 +272,158 @@ pub(super) fn stored_state(state: i32) -> BlockStateId {
     BlockStateId(if known_block_state(state) { state } else { 0 })
 }
 
-/// The worlds a connection views (`Remote::viewed`), by the level's index in the Login packet's
-/// `levels`.
+/// The worlds a connection views (`Remote::viewed`), by the slot an `open` bound each level to
+/// (`sunrise_protocol::viewed_levels`, revision 4).
 #[derive(Default)]
 pub(in crate::game) struct ViewedWorlds {
-    worlds: FxHashMap<i32, ViewedWorld>,
+    /// Each bound slot's world, with the epoch of the `open` or travel swap that bound it.
+    pub(super) worlds: FxHashMap<i32, (i32, ViewedWorld)>,
+    pub(in crate::game) wanted: FxHashSet<mod_api::DimensionKey>,
+    pub(super) meshing: Option<ViewedMeshing>,
+    /// The newest epoch an `open` or a travel swap gave on this connection. Dropping every world
+    /// leaves it: the server's counter goes on.
+    latest: Option<i32>,
+    /// The world of the level a travel just left, with the slot of the level entered: it waits
+    /// for the server's `swap` right after the Respawn, which binds it there.
+    left: Option<(i32, ViewedWorld)>,
+}
+
+/// Where a `run` or `close` of a slot at an epoch goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::game) enum Binding {
+    /// The slot is bound with that epoch: to its world.
+    Live,
+    /// An epoch no newer than the latest that the slot is not bound with: a packet of a level the
+    /// slot no longer holds, dropped.
+    Stale,
+    /// An epoch newer than any `open` gave: a server's error.
+    Unknown,
 }
 
 impl ViewedWorlds {
+    /// Where a `run` or `close` of `slot` at `epoch` goes.
+    pub(in crate::game) fn binding(&self, slot: i32, epoch: i32) -> Binding {
+        if self.latest.is_none_or(|latest| epoch > latest) {
+            return Binding::Unknown;
+        }
+        match self.worlds.get(&slot) {
+            Some((bound, _)) if *bound == epoch => Binding::Live,
+            _ => Binding::Stale,
+        }
+    }
+    /// Whether an `open` at `epoch` is newer than every epoch given before, as each must be.
+    pub(in crate::game) fn is_new(&self, epoch: i32) -> bool {
+        self.latest.is_none_or(|latest| epoch > latest)
+    }
     /// How many levels it views.
+    #[cfg(test)]
     pub(in crate::game) fn len(&self) -> usize {
         self.worlds.len()
     }
-    pub(in crate::game) fn contains(&self, level: i32) -> bool {
-        self.worlds.contains_key(&level)
-    }
     pub(in crate::game) fn get_mut(&mut self, level: i32) -> Option<&mut ViewedWorld> {
-        self.worlds.get_mut(&level)
+        self.worlds.get_mut(&level).map(|(_, world)| world)
     }
     /// The key of the level named `level`, while the server keeps it open: what `host.level`
     /// hands a client mod for it.
     pub(in crate::game) fn key_of(&self, level: &str) -> Option<mod_api::DimensionKey> {
         self.worlds
             .values()
-            .find(|w| w.level == level)
-            .map(|w| w.key)
+            .find(|(_, w)| w.level == level)
+            .map(|(_, w)| w.key)
     }
     /// The world of the level `key` names, while the server keeps it open: what a client mod's
     /// reads through its handle read.
     pub(in crate::game) fn world_of(&self, key: mod_api::DimensionKey) -> Option<&World> {
         self.worlds
             .values()
-            .find(|w| w.key == key)
-            .map(|w| &w.world)
+            .find(|(_, w)| w.key == key)
+            .map(|(_, w)| &w.world)
     }
-    /// The world of `level`, if the server opened it.
-    pub(in crate::game) fn get(&self, level: i32) -> Option<&ViewedWorld> {
-        self.worlds.get(&level)
+    /// The slot of the level named `level`, if the client views it.
+    pub(in crate::game) fn slot_of(&self, level: &str) -> Option<i32> {
+        self.worlds
+            .iter()
+            .find(|(_, (_, w))| w.level == level)
+            .map(|(&slot, _)| slot)
     }
-    /// `level`'s world, replacing any it held: an `open` starts afresh.
-    pub(in crate::game) fn insert(&mut self, level: i32, world: ViewedWorld) {
-        if let Some(old) = self.worlds.insert(level, world) {
+    /// The world of `slot`, if one is bound to it.
+    pub(in crate::game) fn get(&self, slot: i32) -> Option<&ViewedWorld> {
+        self.worlds.get(&slot).map(|(_, world)| world)
+    }
+    /// Binds `slot` to `world` at `epoch`, replacing any world it held: an `open` starts afresh.
+    pub(in crate::game) fn insert(&mut self, slot: i32, epoch: i32, world: ViewedWorld) {
+        self.latest = Some(self.latest.map_or(epoch, |latest| latest.max(epoch)));
+        if let Some((_, old)) = self.worlds.insert(slot, (epoch, world)) {
+            self.forget_sections(&old);
             free(old);
         }
     }
-    /// Takes `level`'s world out, whole: a travel into it (`switch`).
-    pub(in crate::game) fn take(&mut self, level: i32) -> Option<ViewedWorld> {
-        self.worlds.remove(&level)
+    /// Takes `slot`'s world out, whole: a travel into it (`switch`).
+    pub(in crate::game) fn take(&mut self, slot: i32) -> Option<ViewedWorld> {
+        let (_, world) = self.worlds.remove(&slot)?;
+        self.forget_sections(&world);
+        Some(world)
     }
-    /// Drops `level`'s world (`close`); false when it held none.
-    pub(in crate::game) fn remove(&mut self, level: i32) -> bool {
-        self.worlds.remove(&level).map(free).is_some()
+    /// Drops `slot`'s world (`close`), releasing the slot; false when it held none.
+    pub(in crate::game) fn remove(&mut self, slot: i32) -> bool {
+        let Some((_, world)) = self.worlds.remove(&slot) else {
+            return false;
+        };
+        self.forget_sections(&world);
+        free(world);
+        true
     }
-    /// Drops every world: a Login, a Respawn or a new configuration phase.
+    /// Drops every world: a Login, a Respawn or a new configuration phase. The epochs go on.
     pub(in crate::game) fn clear(&mut self) {
-        for (_, world) in self.worlds.drain() {
+        self.meshing = None;
+        for (_, (_, world)) in self.worlds.drain() {
             free(world);
+        }
+        if let Some((_, world)) = self.left.take() {
+            free(world);
+        }
+    }
+    /// Keeps `world`, the level a travel left, until the `swap` that binds it to `slot`, the slot
+    /// of the level entered.
+    pub(in crate::game) fn hold_left(&mut self, slot: i32, world: ViewedWorld) {
+        if let Some((_, old)) = self.left.replace((slot, world)) {
+            self.forget_sections(&old);
+            free(old);
+        }
+    }
+    /// The server's `swap`: binds the level a travel left to `slot` at `epoch`. False when the
+    /// client made no travel swap to `slot`, which it refuses.
+    pub(in crate::game) fn bind_left(&mut self, slot: i32, epoch: i32) -> bool {
+        match self.left.take() {
+            Some((held, world)) if held == slot => {
+                self.insert(slot, epoch, world);
+                true
+            }
+            other => {
+                self.left = other;
+                false
+            }
+        }
+    }
+    fn forget_sections(&mut self, world: &ViewedWorld) {
+        if let Some(meshing) = &mut self.meshing {
+            meshing.forget(world.id);
         }
     }
 }
 
 /// A world given up: its columns are freed off the game thread when there are many.
 fn free(mut world: ViewedWorld) {
-    let chunks = std::mem::take(&mut world.world.chunks);
+    let chunks = detach_columns_for_free(&mut world);
     let count = chunks.len();
     sunrise_client::chunk::free_columns(chunks, count);
+}
+
+fn detach_columns_for_free(world: &mut ViewedWorld) -> ChunkMap {
+    let mut chunks = std::mem::take(&mut world.world.chunks);
+    // The level left routing now, regardless of when the free worker runs.
+    chunks.untrack_connection_groups();
+    chunks
 }
 
 #[cfg(test)]
@@ -321,8 +463,57 @@ mod tests {
         })
     }
 
-    /// A world full at 2048 columns takes a column it holds again, refuses a new one, and takes
-    /// it once the server forgot another.
+    #[test]
+    fn detaching_a_large_viewed_level_refunds_group_credit_before_its_columns_drop() {
+        use sunrise_client::{chunk::Chunk, chunk_map::ConnectionGroupCount};
+
+        const LIMIT: usize = 1;
+        let format = Arc::new(ChunkFormat::new(
+            &DimensionType::vanilla("minecraft:overworld"),
+            vec![0, 7, 9],
+            2,
+        ));
+        let count = ConnectionGroupCount::default();
+        let mut viewed = ViewedWorld::new(
+            "minecraft:the_nether".into(),
+            format,
+            None,
+            World::new(BlockStateId(0), 1),
+            64,
+        );
+        viewed.world.chunks.track_connection_groups(count.clone());
+        let mut grouped = Chunk::empty(0, 0);
+        assert_eq!(grouped.set_connection_group(0, 64, 0, Some(13)), Some(true));
+        viewed.world.chunks.insert((0, 0), Arc::new(grouped));
+        for x in 1..64 {
+            viewed
+                .world
+                .chunks
+                .insert((x, 0), Arc::new(Chunk::empty(x, 0)));
+        }
+
+        let mut active = ChunkMap::default();
+        active.track_connection_groups(count.clone());
+        assert!(!active.allows_connection_groups(0, 1, LIMIT));
+        // Keep the exact map handed to the worker alive, instead of racing its drop.
+        let detached = detach_columns_for_free(&mut viewed);
+        assert_eq!(detached.len(), 64);
+        assert_eq!(detached[&(0, 0)].connection_group(0, 64, 0), Some(13));
+        assert!(active.allows_connection_groups(0, 1, LIMIT));
+        let mut replacement = Chunk::empty(1, 0);
+        assert_eq!(
+            replacement.set_connection_group(0, 64, 0, Some(21)),
+            Some(true)
+        );
+        active.insert((1, 0), Arc::new(replacement));
+        drop(detached);
+        assert!(!active.allows_connection_groups(0, 1, LIMIT));
+        drop(active);
+        assert!(count.allows_replacement(0, 1, LIMIT));
+    }
+
+    /// A world full at its cap, here 2048 columns, takes a column it holds again, refuses a new
+    /// one, and takes it once the server forgot another.
     #[test]
     fn a_viewed_world_holds_at_most_2048_columns() {
         let overworld = DimensionType::vanilla("minecraft:overworld");
@@ -332,19 +523,26 @@ mod tests {
             format,
             None,
             World::new(BlockStateId(0), 1),
+            2048,
         );
         for x in 0..2048 {
-            viewed.apply(column(x)).unwrap();
+            viewed.apply(column(x), Default::default(), &[], 0).unwrap();
         }
         assert_eq!(viewed.world.chunks.len(), 2048);
         // A replacement is no new column.
-        assert_eq!(viewed.apply(column(17)), Ok(()));
+        assert_eq!(viewed.apply(column(17), Default::default(), &[], 0), Ok(()));
         assert_eq!(viewed.world.chunks.len(), 2048);
-        assert_eq!(viewed.apply(column(2048)), Err(RouteError::TooManyColumns));
+        assert_eq!(
+            viewed.apply(column(2048), Default::default(), &[], 0),
+            Err(RouteError::TooManyColumns(2048))
+        );
         assert!(!viewed.world.chunks.contains_key(&(2048, 0)));
         let forget = C::ForgetLevelChunk(play::ForgetLevelChunk { pos: [5, 0] });
-        viewed.apply(forget).unwrap();
-        assert_eq!(viewed.apply(column(2048)), Ok(()));
+        viewed.apply(forget, Default::default(), &[], 0).unwrap();
+        assert_eq!(
+            viewed.apply(column(2048), Default::default(), &[], 0),
+            Ok(())
+        );
         assert!(viewed.world.chunks.contains_key(&(2048, 0)));
         assert_eq!(viewed.world.chunks.len(), 2048);
     }
@@ -361,6 +559,7 @@ mod tests {
             format,
             Some(3),
             World::new(BlockStateId(0), 1),
+            2048,
         );
         let time = |game_time, clocks| C::SetTime(play::SetTime { game_time, clocks });
         let clock = |clock, total_ticks, rate| ClockState {
@@ -370,16 +569,34 @@ mod tests {
             rate,
         };
         viewed
-            .apply(time(100, vec![clock(0, 7, 1.0), clock(3, 1000, 1.0)]))
+            .apply(
+                time(100, vec![clock(0, 7, 1.0), clock(3, 1000, 1.0)]),
+                Default::default(),
+                &[],
+                0,
+            )
             .unwrap();
         assert_eq!(viewed.world.day_time, 1000);
-        viewed.apply(time(120, Vec::new())).unwrap();
+        viewed
+            .apply(time(120, Vec::new()), Default::default(), &[], 0)
+            .unwrap();
         assert_eq!(viewed.world.day_time, 1020);
         assert_eq!(viewed.world.game_time, 120);
-        viewed.apply(time(120, vec![clock(3, 2000, 0.5)])).unwrap();
-        viewed.apply(time(123, Vec::new())).unwrap();
+        viewed
+            .apply(
+                time(120, vec![clock(3, 2000, 0.5)]),
+                Default::default(),
+                &[],
+                0,
+            )
+            .unwrap();
+        viewed
+            .apply(time(123, Vec::new()), Default::default(), &[], 0)
+            .unwrap();
         assert_eq!(viewed.world.day_time, 2001);
-        viewed.apply(time(124, Vec::new())).unwrap();
+        viewed
+            .apply(time(124, Vec::new()), Default::default(), &[], 0)
+            .unwrap();
         assert_eq!(viewed.world.day_time, 2002);
     }
 
@@ -396,13 +613,16 @@ mod tests {
                 format.clone(),
                 Some(3),
                 World::new(BlockStateId(0), 1),
+                2048,
             )
         };
         let mut viewed = fresh();
         let time = |game_time, clocks| C::SetTime(play::SetTime { game_time, clocks });
-        viewed.apply(time(i64::MIN, Vec::new())).unwrap();
+        viewed
+            .apply(time(i64::MIN, Vec::new()), Default::default(), &[], 0)
+            .unwrap();
         assert_eq!(
-            viewed.apply(time(i64::MAX, Vec::new())),
+            viewed.apply(time(i64::MAX, Vec::new()), Default::default(), &[], 0),
             Err(RouteError::ClockOverflow)
         );
         assert_eq!(viewed.world.game_time, i64::MIN);
@@ -417,10 +637,12 @@ mod tests {
             rate: 1.0,
         };
         let mut viewed = fresh();
-        viewed.apply(time(100, vec![full])).unwrap();
+        viewed
+            .apply(time(100, vec![full]), Default::default(), &[], 0)
+            .unwrap();
         assert_eq!(viewed.world.day_time, i64::MAX);
         assert_eq!(
-            viewed.apply(time(101, Vec::new())),
+            viewed.apply(time(101, Vec::new()), Default::default(), &[], 0),
             Err(RouteError::ClockOverflow)
         );
         assert_eq!(

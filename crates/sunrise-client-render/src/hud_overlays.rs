@@ -11,8 +11,8 @@ use crate::{
     hud_layout::{Blend, GuiDraw, PoseOp, color_from_float, fill, multiply, white, width},
     text::{Style, Text},
 };
-use sunrise_core::color::hsv_to_argb;
 use std::{borrow::Cow, cmp::Ordering};
+use sunrise_core::color::hsv_to_argb;
 
 /// `graphics.text`: dropped when fully transparent.
 fn text(out: &mut Vec<GuiDraw>, text: Text, x: i32, y: i32, color: u32, shadow: bool) {
@@ -875,24 +875,7 @@ pub fn vignette(w: i32, h: i32, brightness: f32, border_warning: f32) -> GuiDraw
     screen_blit(w, h, "misc/vignette", Blend::Vignette, color)
 }
 
-/// The border warning strength of `extractVignette` for a camera
-/// `distance` from a border with `warning_blocks`, `warning_time`, its
-/// `lerp_speed` and how far its size still has to move.
-pub fn border_warning(
-    distance: f32,
-    warning_blocks: i32,
-    warning_time: i32,
-    lerp_speed: f64,
-    size_left: f64,
-) -> f32 {
-    let moving = (lerp_speed * f64::from(warning_time)).min(size_left.abs());
-    let warning_distance = f64::from(warning_blocks).max(moving);
-    if f64::from(distance) < warning_distance {
-        1.0 - (f64::from(distance) / warning_distance) as f32
-    } else {
-        0.0
-    }
-}
+pub use sunrise_border::worldborder::border_warning;
 
 /// `Hud.extractSpyglassOverlay`.
 pub fn spyglass(w: i32, h: i32, scale: f32) -> Vec<GuiDraw> {

@@ -2,6 +2,12 @@
 //! Runs tools/test_entity_components_parity.py's entities and advancement
 //! entity predicates through `sunrise_client::advancements::entity`, with the
 //! variant component `mobs::finalize::species_variant_component` reports.
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+};
 use sunrise_client::{
     Result,
     advancements::{EntityView, World, entity},
@@ -9,12 +15,6 @@ use sunrise_client::{
         Species,
         finalize::{species_variant_component, variant_index},
     },
-};
-use serde_json::Value;
-use std::{
-    collections::BTreeMap,
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
 };
 
 /// Nothing but the entity: these predicates read only its type and components.

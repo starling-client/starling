@@ -2,12 +2,16 @@
 //! and the block entity's `cookTick` (lit) and `cooldownTick` (unlit). The
 //! items drawn on the fire are `campfire_geometry`'s; a server's clients get
 //! them through the block entity's update tag (`lan::chunks::entity_tag`).
-use super::Game;
+use super::{
+    Game,
+    item_draw::{BlockItemDraw, block_entity_pose},
+};
 use sunrise_assets::item_model::DisplayContext;
 use sunrise_client::{
     Result, actions::Action, block_entities::Pos, block_entity_render::vertex_light,
-    containers::BlockEntity, items::ItemStack, mesher::Vertex, mobs::Who,
+    camera::rotate_degrees, containers::BlockEntity, items::ItemStack, mesher::Vertex, mobs::Who,
 };
+use sunrise_client_render::block_entity_reach::Reach;
 use sunrise_core::position::BlockPos;
 
 /// The `campfire_cooking` recipe kind (`RecipeType.CAMPFIRE_COOKING`).
@@ -32,7 +36,7 @@ impl Game<'_> {
         // with a stack in either hand never reaches the block's `useItemOn`,
         // so the food stays in the hand and the item's own use (eating)
         // runs instead.
-        if self.keys.held(Action::Sneak) {
+        if self.held_mapping(Action::Sneak) {
             return Ok(None);
         }
         let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -148,6 +152,18 @@ impl Game<'_> {
     /// (90° about X), at a corner and three eighths of its size, drawn as a
     /// FIXED item seeded by the block's position plus the slot.
     pub(super) fn campfire_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        self.campfire_items(camera, |d| {
+            self.submit_item_world(d.state, d.pose, d.light, out);
+        });
+    }
+
+    /// The items [`Self::campfire_geometry`] draws, in `CampfireRenderer.submit`'s order.
+    pub(super) fn campfire_items(&self, camera: glam::DVec3, mut draw: impl FnMut(BlockItemDraw)) {
+        let _items = sunrise_client::spans::raw_flight_guard("block_entity_items");
+        let reach = Reach::Default;
+        sunrise_client::spans::note_block_entity_item_visits(|| {
+            self.world.block_entities.len() as u64
+        });
         for (key, entity) in &self.world.block_entities {
             let BlockEntity::Campfire(c) = entity else {
                 continue;
@@ -155,8 +171,7 @@ impl Game<'_> {
             if c.items.iter().all(Option::is_none) {
                 continue;
             }
-            let at = glam::DVec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
-            if at.distance_squared(camera) >= 64.0 * 64.0 {
+            if !reach.should_render([key.0, key.1, key.2], camera, 0) {
                 continue;
             }
             // Direction.get2DDataValue: south 0, west 1, north 2, east 3.
@@ -185,15 +200,24 @@ impl Game<'_> {
                 if item.is_empty() {
                     continue;
                 }
+                let mut pose = block_entity_pose(*key, camera);
+                pose.translate(0.5, 0.449_218_75, 0.5);
                 // Direction.toYRot: 90° per 2D step from south.
-                let yaw = -(((i + facing) % 4) as f32 * 90.0);
-                let pose = glam::Mat4::from_translation(
-                    (at - camera).as_vec3() + glam::Vec3::new(0.5, 0.449_218_75, 0.5),
-                ) * glam::Mat4::from_rotation_y(yaw.to_radians())
-                    * glam::Mat4::from_rotation_x(90f32.to_radians())
-                    * glam::Mat4::from_translation(glam::Vec3::new(-0.3125, -0.3125, 0.0))
-                    * glam::Mat4::from_scale(glam::Vec3::splat(0.375));
-                self.submit_item_world(&item, pose, light, out);
+                rotate_degrees(&mut pose, 1, -(((i + facing) % 4) as f32 * 90.0));
+                rotate_degrees(&mut pose, 0, 90.0);
+                pose.translate(-0.3125, -0.3125, 0.0);
+                pose.scale(0.375, 0.375, 0.375);
+                draw(BlockItemDraw {
+                    #[cfg(test)]
+                    stack,
+                    #[cfg(test)]
+                    display: DisplayContext::Fixed,
+                    #[cfg(test)]
+                    seed,
+                    state: &item,
+                    pose: pose.to_glam(),
+                    light,
+                });
             }
         }
     }
@@ -221,3 +245,7 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "tests/campfire_tests.rs"]
 mod campfire_tests;
+
+#[cfg(test)]
+#[path = "tests/block_entity_items_tests.rs"]
+mod block_entity_items_tests;

@@ -5,10 +5,11 @@ use std::{
     collections::{BTreeMap, BinaryHeap},
 };
 
-/// A problem registering or ordering reload listeners.
+/// A problem registering or ordering reload listeners. Match the variants to
+/// inspect the involved IDs without parsing the diagnostic message.
+// no wire: reports a local reload dependency-graph failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum ReloadOrderError {
     /// A listener name has already been registered.
     DuplicateListener {
@@ -98,6 +99,25 @@ impl<T> ReloadOrder<T> {
         }
         Ok(())
     }
+    pub(super) fn checkpoint(&self) -> (usize, usize) {
+        (self.listeners.len(), self.edges.len())
+    }
+
+    pub(super) fn rollback(
+        &mut self,
+        (listeners, edges): (usize, usize),
+        mut discard: impl FnMut(T),
+    ) {
+        self.edges.truncate(edges);
+        let discarded = self.listeners.split_off(listeners);
+        for (id, _) in &discarded {
+            self.indices.remove(id);
+        }
+        for (_, value) in discarded {
+            discard(value);
+        }
+    }
+
     pub(crate) fn registry(&self) -> impl Iterator<Item = (&Identifier, &T)> {
         self.listeners.iter().map(|(id, value)| (id, value))
     }
@@ -106,8 +126,10 @@ impl<T> ReloadOrder<T> {
             .iter()
             .map(|&(a, b)| (&self.listeners[a].0, &self.listeners[b].0))
     }
-    /// Vanilla has priority over unrelated mods, but not over a listener
-    /// explicitly ordered before it. Ties keep registration order.
+    /// Sort listeners in topological order matching NeoForge's `ReloadListenerSort`:
+    /// only dangling non-`minecraft` listeners (those with neither a forward path to
+    /// nor a backward path from any `minecraft:` listener) are linked after `vanilla`,
+    /// and ties follow registration order.
     pub(crate) fn sort(self, vanilla: Option<&Identifier>) -> Result<Vec<T>, ReloadOrderError> {
         let mut outgoing = vec![Vec::new(); self.listeners.len()];
         let mut incoming = vec![Vec::new(); self.listeners.len()];
@@ -115,37 +137,50 @@ impl<T> ReloadOrder<T> {
             outgoing[a].push(b);
             incoming[b].push(a);
         }
-        let vanilla = vanilla.and_then(|id| self.indices.get(id).copied());
-        let mut before_vanilla = vec![false; self.listeners.len()];
-        if let Some(vanilla) = vanilla {
-            let mut pending = incoming[vanilla].clone();
-            while let Some(node) = pending.pop() {
-                if !before_vanilla[node] {
-                    before_vanilla[node] = true;
-                    pending.extend(incoming[node].iter().copied());
+        if let Some(anchor) = vanilla.and_then(|id| self.indices.get(id).copied()) {
+            let is_vanilla = |i: usize| self.listeners[i].0.namespace() == "minecraft";
+            let reaches_vanilla = |start: usize, adj: &[Vec<usize>]| {
+                let mut visited = vec![false; adj.len()];
+                let mut stack = vec![start];
+                visited[start] = true;
+                while let Some(node) = stack.pop() {
+                    if is_vanilla(node) {
+                        return true;
+                    }
+                    for &next in &adj[node] {
+                        if !visited[next] {
+                            visited[next] = true;
+                            stack.push(next);
+                        }
+                    }
+                }
+                false
+            };
+            for i in 0..self.listeners.len() {
+                if !is_vanilla(i)
+                    && !reaches_vanilla(i, &outgoing)
+                    && !reaches_vanilla(i, &incoming)
+                    && !outgoing[anchor].contains(&i)
+                {
+                    outgoing[anchor].push(i);
+                    incoming[i].push(anchor);
                 }
             }
         }
-        let priority = |i| match vanilla {
-            Some(v) if i == v => 1,
-            Some(_) if before_vanilla[i] => 0,
-            Some(_) => 2,
-            None => 0,
-        };
         let mut indegree: Vec<_> = incoming.iter().map(Vec::len).collect();
         let mut ready = BinaryHeap::new();
         for (i, degree) in indegree.iter().enumerate() {
             if *degree == 0 {
-                ready.push(Reverse((priority(i), i)));
+                ready.push(Reverse(i));
             }
         }
         let mut order = Vec::with_capacity(self.listeners.len());
-        while let Some(Reverse((_, node))) = ready.pop() {
+        while let Some(Reverse(node)) = ready.pop() {
             order.push(node);
             for &next in &outgoing[node] {
                 indegree[next] -= 1;
                 if indegree[next] == 0 {
-                    ready.push(Reverse((priority(next), next)));
+                    ready.push(Reverse(next));
                 }
             }
         }
@@ -185,7 +220,12 @@ mod tests {
     }
     fn graph() -> ReloadOrder<&'static str> {
         let mut graph = ReloadOrder::default();
-        for name in ["independent", "vanilla", "before", "after"] {
+        for name in [
+            "demo:independent",
+            "minecraft:vanilla",
+            "demo:before",
+            "demo:after",
+        ] {
             graph.add_listener(id(name), name).unwrap();
         }
         graph
@@ -193,32 +233,76 @@ mod tests {
     #[test]
     fn explicit_before_vanilla_does_not_cycle_with_default_order() {
         let mut graph = graph();
-        graph.add_dependency(id("before"), id("vanilla")).unwrap();
-        graph.add_dependency(id("vanilla"), id("after")).unwrap();
+        graph
+            .add_dependency(id("demo:before"), id("minecraft:vanilla"))
+            .unwrap();
+        graph
+            .add_dependency(id("minecraft:vanilla"), id("demo:after"))
+            .unwrap();
         assert_eq!(
-            graph.sort(Some(&id("vanilla"))).unwrap(),
-            ["before", "vanilla", "independent", "after"]
+            graph.sort(Some(&id("minecraft:vanilla"))).unwrap(),
+            [
+                "demo:before",
+                "minecraft:vanilla",
+                "demo:independent",
+                "demo:after"
+            ]
+        );
+    }
+    #[test]
+    fn only_dangling_non_minecraft_listeners_are_linked_after_anchor() {
+        let mut graph = ReloadOrder::default();
+        for name in [
+            "minecraft:anchor",
+            "minecraft:extra",
+            "demo:after_extra",
+            "demo:before",
+            "demo:dangling",
+        ] {
+            graph.add_listener(id(name), name).unwrap();
+        }
+        graph
+            .add_dependency(id("minecraft:extra"), id("demo:after_extra"))
+            .unwrap();
+        graph
+            .add_dependency(id("demo:before"), id("minecraft:anchor"))
+            .unwrap();
+        assert_eq!(
+            graph.sort(Some(&id("minecraft:anchor"))).unwrap(),
+            [
+                "minecraft:extra",
+                "demo:after_extra",
+                "demo:before",
+                "minecraft:anchor",
+                "demo:dangling",
+            ]
         );
     }
     #[test]
     fn unknown_dependencies_fail_immediately() {
         assert_eq!(
-            graph().add_dependency(id("missing"), id("before")),
-            Err(ReloadOrderError::UnknownListener { id: id("missing") })
+            graph().add_dependency(id("demo:missing"), id("demo:before")),
+            Err(ReloadOrderError::UnknownListener {
+                id: id("demo:missing")
+            })
         );
     }
     #[test]
     fn cycle_does_not_name_downstream_listeners() {
         let mut graph = graph();
-        graph.add_dependency(id("before"), id("after")).unwrap();
-        graph.add_dependency(id("after"), id("before")).unwrap();
         graph
-            .add_dependency(id("after"), id("independent"))
+            .add_dependency(id("demo:before"), id("demo:after"))
+            .unwrap();
+        graph
+            .add_dependency(id("demo:after"), id("demo:before"))
+            .unwrap();
+        graph
+            .add_dependency(id("demo:after"), id("demo:independent"))
             .unwrap();
         let ReloadOrderError::Cycle { listeners } = graph.sort(None).unwrap_err() else {
             panic!("expected cycle")
         };
         assert_eq!(listeners.len(), 2);
-        assert!(listeners.contains(&id("before")) && listeners.contains(&id("after")));
+        assert!(listeners.contains(&id("demo:before")) && listeners.contains(&id("demo:after")));
     }
 }

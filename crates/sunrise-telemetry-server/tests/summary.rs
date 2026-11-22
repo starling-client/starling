@@ -5,14 +5,14 @@ use std::sync::atomic::AtomicU32;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::Value;
 use sunrise_telemetry::Item;
 use sunrise_telemetry::batch::{self, Batch};
 use sunrise_telemetry::payload::{Payload, Source};
 use sunrise_telemetry_server::store::Store;
 use sunrise_telemetry_server::summary::{self, Upload};
 use sunrise_telemetry_server::{App, Config, router};
-use http_body_util::BodyExt;
-use serde_json::Value;
 use tower::ServiceExt;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/benchmarks");

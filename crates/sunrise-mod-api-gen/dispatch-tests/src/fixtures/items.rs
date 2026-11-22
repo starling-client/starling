@@ -1,14 +1,13 @@
 //! Item declarations use the same per-mod ownership boundary as blocks.
 #[test]
-fn item_batches_are_separate_and_keep_each_boundary_answer() {
+fn item_dispatch_records_each_owner_with_its_submission() {
     struct Declares;
     #[mod_api::__subscriptions]
     impl Hooks for Declares {
         fn items(&self, _: &RegistrationContext, event: &mut ItemsEvent<'_>) {
-            assert!(event.items.is_empty());
             event
-                .items
-                .push(mod_api::mod_api::Item { id: "spoon".into() });
+                .register(mod_api::mod_api::Item { id: "spoon".into() })
+                .unwrap();
         }
     }
     install(
@@ -20,13 +19,21 @@ fn item_batches_are_separate_and_keep_each_boundary_answer() {
     );
     DECLARATION_OWNERS.with_borrow_mut(Vec::clear);
     let mut items = Vec::new();
-    dispatch_items(&RegistrationContext("bootstrap"), &mut items);
+    dispatch_items(&RegistrationContext("bootstrap"), &mut |listen| {
+        assert!(listen(&mut |item| {
+            items.push(item);
+            Ok(())
+        }));
+    });
     assert_eq!(
         items
             .iter()
-            .map(|item| item.id.as_str())
+            .map(|item| (item.mod_id, item.answer.id.as_str()))
             .collect::<Vec<_>>(),
-        ["first/checked/spoon", "second/checked/spoon"]
+        [
+            ("first", "first/checked/spoon"),
+            ("second", "second/checked/spoon")
+        ]
     );
     DECLARATION_OWNERS.with_borrow(|calls| {
         assert_eq!(

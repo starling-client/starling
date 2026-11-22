@@ -1,11 +1,11 @@
 //! The native parity harness runs the client boat ticker and authoritative
 //! boat attacks without a renderer, on an empty world.
 use super::{Game, boats::Boat};
-use sunrise_client::Result;
-use sunrise_core::geometry::Vec3;
 use serde::Deserialize;
 use serde_json::json;
 use std::path::Path;
+use sunrise_client::Result;
+use sunrise_core::geometry::Vec3;
 
 #[derive(Deserialize)]
 struct Case {

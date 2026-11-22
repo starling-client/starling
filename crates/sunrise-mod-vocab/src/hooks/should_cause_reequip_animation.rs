@@ -14,11 +14,19 @@ pub trait Hooks {
     /// an unchanged hand and an empty hand aren't asked. Only the `ItemPart`s
     /// attached to `stack`'s item are asked. Client-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "IItemExtension.shouldCauseReequipAnimation"
     )]
-    fn should_cause_reequip_animation();
+    fn should_cause_reequip_animation(
+        stack: &ItemStack,
+        old: Option<&ItemStack>,
+        hand: Hand,
+        slot_changed: bool,
+        reequip: &mut bool,
+    );
 }

@@ -1,6 +1,6 @@
 //! Water-entry sound, particles and game event, with native random draw order.
-use sunrise_core::geometry::Vec3;
 use std::fmt;
+use sunrise_core::geometry::Vec3;
 #[derive(Clone, Copy, Debug)]
 pub enum SplashParticle {
     Bubble,

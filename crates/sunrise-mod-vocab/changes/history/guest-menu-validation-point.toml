@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::lan_actions::menus::Game<'_>::guest_validate_menu"]
+why = "Guest menu validation returns whether the triggering packet may continue. False means the menu closed and the packet must not be dispatched."
+migrate = "For native replacements of guest_validate_menu, return bool instead of (), with false on rejection, and rebuild against the new point signature."

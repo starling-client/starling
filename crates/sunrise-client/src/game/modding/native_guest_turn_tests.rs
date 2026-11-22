@@ -1,21 +1,25 @@
 //! Real-game regressions for native handles used during a guest's turn.
 
 use super::lan::LanSettings;
+use mod_api::{
+    __private::{HookPanicReport, take_hook_panics},
+    EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause,
+    prelude::*,
+};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicI32, AtomicUsize, Ordering},
+};
 use sunrise_client::{
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
     mobs::Mob,
 };
 use sunrise_core::geometry::Vec3;
 use sunrise_protocol::packets::configuration::ClientInformation;
-use mod_api::prelude::*;
-use std::sync::{
-    Arc,
-    atomic::{AtomicI32, AtomicUsize},
-};
 
 pub(in crate::game) fn with_guests(test: impl FnOnce(&mut super::Game<'_>)) {
-    let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-    with_guests_at(root, test);
+    with_guests_at(super::native_entity_refs::tests::fixture_root(), test);
 }
 
 pub(in crate::game) fn with_guests_at(
@@ -47,6 +51,7 @@ pub(in crate::game) fn with_guests_at(
             max_players: 2,
             integrated: true,
             levels: game.level_shapes,
+            level_seeds: game.levels.runtime.seeds(),
         };
         game.lan_host(settings, net, config).unwrap();
         for id in [12, 13] {
@@ -75,8 +80,36 @@ pub(in crate::game) fn with_guests_at(
     });
 }
 
+/// Add a fixture menu to both the hub's protocol registry and the mod API's menu keys.
+pub(in crate::game) fn register_test_menu(
+    game: &mut super::Game<'_>,
+    id: &str,
+) -> mod_api::MenuKey {
+    use sunrise_client::lan::data::SyncData;
+    use sunrise_protocol::registry::Ids;
+
+    let current = game.lan.as_ref().unwrap().hub.sync_data();
+    let mut sync = SyncData::empty();
+    sync.builtin = current.builtin.clone();
+    sync.dynamic = current.dynamic.clone();
+    sync.recipes = current.recipes.clone();
+    sync.tags = current.tags.clone();
+    let mut names = sync.builtin.get("minecraft:menu").unwrap().names.clone();
+    names.push(id.to_owned());
+    mod_api::__private::resolve_menus(names.iter().map(String::as_str)).unwrap();
+    sync.builtin
+        .registries
+        .insert("minecraft:menu".into(), Ids::from_names(names));
+    game.with_advancement_hub(|hub, owners| hub.reload_resources(Arc::new(sync), owners))
+        .unwrap();
+    mod_api::__private::menu_keys()
+        .into_iter()
+        .find(|key| mod_api::__private::menu_key_id(*key).as_deref() == Some(id))
+        .unwrap()
+}
+
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn player_dimensions_validate_identity_on_both_server_roles() {
     use super::execution_role::ExecutionRole;
     let previous_extra = super::EXTRA_DIMS.read().unwrap().clone();
@@ -167,7 +200,7 @@ fn player_dimensions_validate_identity_on_both_server_roles() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn refused_wire_reload_preserves_hub_and_engine_generation() {
     with_guests(|game| {
         let before = game.lan.as_ref().unwrap().hub.lan.shared.sync();
@@ -175,6 +208,25 @@ fn refused_wire_reload_preserves_hub_and_engine_generation() {
         let old_context = game.loop_context.clone();
         let root = std::env::temp_dir().join(format!("reload-wire-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
+        // Table staging now reads the resource root before the wire reload.
+        // Supply its ordinary inputs, but deliberately omit the registry report
+        // so it is still the wire preparation that refuses this candidate.
+        let mut folders = vec![(game.options.resources.clone(), root.clone())];
+        while let Some((source, destination)) = folders.pop() {
+            std::fs::create_dir_all(&destination).unwrap();
+            for entry in std::fs::read_dir(&source).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    if source != game.options.resources || name == "data" {
+                        folders.push((path, destination.join(name)));
+                    }
+                } else if name != "registries.json" {
+                    std::fs::copy(path, destination.join(name)).unwrap();
+                }
+            }
+        }
         let stack = super::functions::pack_stack(
             &game.world_root,
             &root,
@@ -224,7 +276,7 @@ fn refused_wire_reload_preserves_hub_and_engine_generation() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn level_event_excludes_its_source_even_during_another_guests_turn() {
     use sunrise_client::lan::PlayerSender;
     use sunrise_world::level::{LevelEvent, LevelEventPlayer};
@@ -282,7 +334,7 @@ fn level_event_excludes_its_source_even_during_another_guests_turn() {
 /// Before #228, the host was absent during a guest turn and B and the
 /// online list were invisible to native handles.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn another_guest_and_online_players_are_visible_during_a_turn() {
     with_guests(|game| {
         let rider = game.entity(13).unwrap();
@@ -299,10 +351,220 @@ fn another_guest_and_online_players_are_visible_during_a_turn() {
     });
 }
 
-/// B's live menu and motion stay available while A acts, but displaced
-/// menus and an outer turn's motion must not use the swapped-out records.
+/// `entity_move_by` moves a guest the server holds, acting or not, through its own body and the
+/// hub's copy together, tells its client, and refuses what it cannot move without changing
+/// anything.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
+fn move_by_moves_a_player_and_refuses_what_it_cannot() {
+    with_guests(|game| {
+        // A guest has a body once it has had a turn.
+        for conn in [12, 13] {
+            game.as_guest(conn, |_| {}).unwrap();
+        }
+        let a = game.player(12).unwrap();
+        let b = game.player(13).unwrap();
+        let before = b.entity().position(game).unwrap();
+        let by = game
+            .entity_move_by(b.entity(), [0.5, 0.0, 0.25], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(by, [0.5, 0.0, 0.25]);
+        let now = [before[0] + 0.5, before[1], before[2] + 0.25];
+        assert_eq!(b.entity().position(game), Some(now));
+        let hub = &game.lan.as_ref().unwrap().hub;
+        let guest = hub.guest(13).unwrap();
+        assert_eq!(guest.position, now, "the hub's copy follows the body");
+        assert!(guest.awaiting_teleport.is_some(), "the client is told");
+        // The acting player is moved in its turn, and another during it.
+        game.as_guest(12, |game| {
+            let own = a.entity().position(game).unwrap();
+            assert_eq!(
+                game.entity_move_by(a.entity(), [0.0, 0.0, -2.0], MoveCause::SelfMovement),
+                Some([0.0, 0.0, -2.0])
+            );
+            assert_eq!(
+                a.entity().position(game),
+                Some([own[0], own[1], own[2] - 2.0])
+            );
+            assert!(
+                game.entity_move_by(b.entity(), [1.0, 0.0, 0.0], MoveCause::SelfMovement)
+                    .is_some()
+            );
+        })
+        .unwrap();
+        // Nothing moves for a value that is not finite or a target outside the world.
+        let held = b.entity().position(game);
+        for delta in [
+            [f64::NAN, 0.0, 0.0],
+            [0.0, f64::INFINITY, 0.0],
+            [4.0e7, 0.0, 0.0],
+        ] {
+            assert_eq!(
+                game.entity_move_by(b.entity(), delta, MoveCause::SelfMovement),
+                None,
+                "{delta:?}"
+            );
+        }
+        assert_eq!(b.entity().position(game), held);
+    });
+}
+
+/// A player's `entity_move_by` fires `entity_move` once, for the player and with the caller's
+/// cause; a listener that cancels it leaves the player where it was and the client untold.
+#[test]
+#[ignore = "daily"]
+fn a_players_move_by_is_heard_once_and_a_cancel_moves_nothing() {
+    struct Cancel(Arc<Mutex<Vec<(u32, MoveCause)>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Cancel {
+        fn entity_move(&self, _: &dyn LoopContext, event: &mut EntityMoveEvent<'_>) -> Flow {
+            self.0.lock().unwrap().push((event.entity, event.cause));
+            Flow::Cancel
+        }
+    }
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "refuser",
+        Box::new(Cancel(heard.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_guests(|game| {
+            game.as_guest(13, |_| {}).unwrap();
+            let b = game.player(13).unwrap();
+            let before = b.entity().position(game);
+            let moved = game.entity_move_by(b.entity(), [1.0, 0.0, 0.0], MoveCause::Piston);
+            assert_eq!(moved, Some([0.0; 3]));
+            assert_eq!(b.entity().position(game), before);
+            assert!(
+                game.lan
+                    .as_ref()
+                    .unwrap()
+                    .hub
+                    .guest(13)
+                    .unwrap()
+                    .awaiting_teleport
+                    .is_none()
+            );
+            assert_eq!(
+                *heard.lock().unwrap(),
+                [(b.entity().id(), MoveCause::Piston)]
+            );
+        });
+    });
+}
+
+/// A boat in the way stops a player's `entity_move_by`, as it stops a player walking: the move
+/// ends against the boat's side, not at the target.
+#[test]
+#[ignore = "daily"]
+fn a_players_move_by_stops_at_a_boat() {
+    with_guests(|game| {
+        game.as_guest(13, |_| {}).unwrap();
+        let b = game.player(13).unwrap();
+        let [x, y, z] = b.entity().position(game).unwrap();
+        let free = game
+            .entity_move_by(b.entity(), [4.0, 0.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(free, [4.0, 0.0, 0.0], "nothing in the way");
+        // Back to where it was, then a boat 2 blocks along, its box across the line of travel.
+        game.entity_move_by(b.entity(), [-4.0, 0.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.boats.push(crate::game::boats::Boat::new(
+            id,
+            "oak".into(),
+            Vec3::new(x + 2.0, y, z),
+            0.0,
+        ));
+        let by = game
+            .entity_move_by(b.entity(), [4.0, 0.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert!(
+            by[0] > 0.5 && by[0] < 1.6,
+            "stopped against the boat's side, moved {by:?}"
+        );
+    });
+}
+
+/// `entity_move_by` names the player as the mover of its move, so a moving collider whose
+/// vehicle stack holds the player does not stop it, and one that does not hold it does.
+#[test]
+#[ignore = "daily"]
+fn a_players_move_by_is_the_mover_a_colliders_stack_exempts() {
+    use sunrise_client_render::moving_colliders::{Placed, Prepared, Scope};
+    use sunrise_core::geometry::{
+        Aabb,
+        oriented::{ColliderBoxes, Frame, OrientedCollider},
+    };
+    with_guests(|game| {
+        game.as_guest(13, |_| {}).unwrap();
+        let b = game.player(13).unwrap();
+        let [x, y, z] = b.entity().position(game).unwrap();
+        let player = game.lan.as_ref().unwrap().hub.guest(13).unwrap().entity_id as u32;
+        let block = |id: u32, at: f64, exempt: Vec<u32>| Placed {
+            id,
+            collider: OrientedCollider::new(
+                Frame::translation(Vec3::new(at, y, z - 0.5)),
+                std::sync::Arc::new(ColliderBoxes::new(vec![Aabb::new(
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 1.0, 1.0),
+                )])),
+            ),
+            exempt,
+        };
+        // One collider 1 block along whose stack holds the player, another 3 blocks along
+        // whose stack does not.
+        let placed = Prepared::new(vec![
+            block(900, x + 1.0, vec![900, player]),
+            block(901, x + 3.0, vec![901]),
+        ]);
+        let _scope = Scope::enter_level(game.collider_level(), placed);
+        let by = game
+            .entity_move_by(b.entity(), [4.0, 0.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert!(
+            by[0] > 1.5 && by[0] < 2.8,
+            "passed the collider it rides with and stopped at the other, moved {by:?}"
+        );
+    });
+}
+
+/// The server has no predictive landing on a happy ghast: a player over a ghast that is not held
+/// still falls through it (`HappyGhast.canBeCollidedWith`, `isClientSide` branch), so a mod's
+/// move down is not stopped at its top the way the client's own walk is.
+#[test]
+#[ignore = "daily"]
+fn a_players_move_by_falls_through_a_happy_ghast_that_is_not_held_still() {
+    with_guests(|game| {
+        game.as_guest(13, |_| {}).unwrap();
+        let b = game.player(13).unwrap();
+        let [x, y, z] = b.entity().position(game).unwrap();
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:happy_ghast")
+            .unwrap()
+            .clone();
+        game.mobs.push(Mob::new(id, kind, Vec3::new(x, y, z), 0.0));
+        let up = game
+            .entity_move_by(b.entity(), [0.0, 6.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(up, [0.0, 6.0, 0.0], "room to rise past the ghast's top");
+        let down = game
+            .entity_move_by(b.entity(), [0.0, -6.0, 0.0], MoveCause::SelfMovement)
+            .unwrap();
+        assert_eq!(down, [0.0, -6.0, 0.0], "not stopped on a ghast's top");
+    });
+}
+
+/// B's live menu and motion stay available while A acts, and A's own menu reads the swapped-in
+/// state, but displaced menus and an outer turn's motion must not use the swapped-out records.
+#[test]
+#[ignore = "daily"]
 fn another_guests_menu_and_push_work_during_a_turn() {
     use sunrise_client::items::ItemStack;
 
@@ -325,8 +587,8 @@ fn another_guests_menu_and_push_work_during_a_turn() {
             .update_guest(13, |guest| guest.inventory[0] = Some(stone.clone()))
             .unwrap();
         game.as_guest(12, |game| {
-            assert!(game.player_container_menu(a).is_none());
-            assert_eq!(a_menu.slot_count(game), None);
+            assert_eq!(game.player_container_menu(a), Some(a_menu));
+            assert_eq!(a_menu.slot_count(game), Some(46));
             assert_eq!(game.player_container_menu(b), Some(b_menu));
             assert_eq!(b_menu.slot_count(game), Some(46));
             assert_eq!(
@@ -344,8 +606,8 @@ fn another_guests_menu_and_push_work_during_a_turn() {
                     Vec3::new(0.25, 0.5, -0.25)
                 );
                 assert!(game.player_container_menu(a).is_none());
-                assert!(game.player_container_menu(b).is_none());
-                assert_eq!(b_menu.slot_count(game), None);
+                assert_eq!(game.player_container_menu(b), Some(b_menu));
+                assert_eq!(b_menu.slot_count(game), Some(46));
                 assert!(!game.entity_push(a.entity(), [1.0, 0.0, 0.0]));
             })
             .unwrap();
@@ -378,14 +640,14 @@ fn another_guests_menu_and_push_work_during_a_turn() {
 /// Native services can reach B during A's turn without exposing displaced
 /// inventories or changing ordinary command resolution during nested turns.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn another_guests_services_work_during_a_turn() {
     use super::{
         commands::Target,
         native_inventories::NativeInventoryKind::{Ender, Player},
     };
-    use sunrise_client::{advancements as adv, command::args::Selector, items::ItemStack};
     use mod_api::{CriterionContext, CriterionTest, CriterionTestError, TriggerCriterionError};
+    use sunrise_client::{advancements as adv, command::args::Selector, items::ItemStack};
 
     struct Accept;
     impl CriterionTest for Accept {
@@ -533,7 +795,7 @@ fn another_guests_services_work_during_a_turn() {
 
 /// The body/saddle store and existing armor/offhand move with nested turns.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn nested_guest_turns_restore_each_equipment_store() {
     use sunrise_client::items::ItemStack;
     use sunrise_items::equipment::{BODY, SADDLE};
@@ -584,7 +846,7 @@ fn nested_guest_turns_restore_each_equipment_store() {
 
 /// A merchant's live session belongs to B even while A is acting.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn another_guests_live_merchant_session_is_visible_during_a_turn() {
     use super::{
         native_merchant_refs::tests::{offer, spawn},
@@ -632,7 +894,7 @@ fn another_guests_live_merchant_session_is_visible_during_a_turn() {
 
 /// The passenger walk (horizon-rust/horizon#8383) keeps #228's host visibility.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn another_guest_follows_a_vehicle_teleported_during_a_turn() {
     with_guests(|game| {
         game.lan
@@ -648,8 +910,9 @@ fn another_guest_follows_a_vehicle_teleported_during_a_turn() {
         game.guest_boarded(13, None);
         let vehicle = game.entity(42).unwrap();
         let rider = game.entity(13).unwrap();
-        let before = [3.0, 64.0 + (1.44375 - 0.6), 5.0];
-        let after = [10.0, 70.0 + (1.44375 - 0.6), -4.0];
+        // EntityTypes stores the horse's passenger attachment as a float.
+        let before = [3.0, 64.0 + (f64::from(1.44375_f32) - 0.6), 5.0];
+        let after = [10.0, 70.0 + (f64::from(1.44375_f32) - 0.6), -4.0];
         game.as_guest(12, |game| {
             assert_eq!(rider.position(game), Some(before));
             assert!(vehicle.teleport_to(game, [10.0, 70.0, -4.0], None));
@@ -665,7 +928,7 @@ fn another_guest_follows_a_vehicle_teleported_during_a_turn() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mounted_guests_turn_publishes_its_teleport_without_dismounting() {
     use super::native_sound_refs::tests::packets;
     use sunrise_protocol::packets::play::{Clientbound as C, relative};
@@ -675,7 +938,7 @@ fn a_mounted_guests_turn_publishes_its_teleport_without_dismounting() {
         game.mobs
             .push(Mob::new(42, horse, Vec3::new(3.0, 64.0, 5.0), 0.0));
         // Ordinary seating sends no teleport. A passenger transition does,
-        // even to the same position; an unmounted command keeps its relative axes.
+        // even to the same position; both carry the transition's relative axes.
         for (vehicle, teleported, destination) in [
             (Some(42), false, [10.0, 70.0, -4.0]),
             (Some(42), true, [10.0, 70.0, -4.0]),
@@ -727,12 +990,7 @@ fn a_mounted_guests_turn_publishes_its_teleport_without_dismounting() {
                 assert_eq!(packet.position, destination);
                 assert_eq!(packet.delta, [0.0; 3]);
                 assert_eq!([packet.yaw, packet.pitch], [120.0, -15.0]);
-                let expected = if vehicle.is_some() {
-                    relative::DELTA_X | relative::DELTA_Y | relative::DELTA_Z
-                } else {
-                    relative::DELTA_X | relative::DELTA_Z
-                };
-                assert_eq!(packet.relatives, expected);
+                assert_eq!(packet.relatives, relative::DELTA_X | relative::DELTA_Z);
                 assert_eq!(guest.position, destination);
                 assert_eq!(
                     guest.awaiting_teleport,
@@ -746,20 +1004,27 @@ fn a_mounted_guests_turn_publishes_its_teleport_without_dismounting() {
 /// The split services retain connected identities even while another player's
 /// body is swapped in, and still queue acting-player messages after the hook.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn server_services_preserve_identity_and_message_delivery() {
-    use sunrise_protocol::packets::play::Clientbound as C;
     use mod_api::{ServerHost, Text};
+    use sunrise_client::lan::announced_channels::REGISTER;
+    use sunrise_protocol::packets::play::Clientbound as C;
     with_guests(|game| {
         let guests = &mut game.lan.as_mut().unwrap().hub.guests;
         guests.update(0, |g| {
             g.permission = 3;
             g.game_mode = 1;
-            g.address = "192.0.2.12:25565".parse().unwrap();
+            g.set_address("192.0.2.12:25565".parse().unwrap());
+            g.brand = "test client".into();
+            assert!(
+                g.sender
+                    .announced
+                    .apply(REGISTER, b"test:first\0test:second")
+            );
         });
         guests.update(1, |g| {
             g.permission = 1;
-            g.address = "[2001:db8::13]:25566".parse().unwrap();
+            g.set_address("[2001:db8::13]:25566".parse().unwrap());
         });
         let players = game.players().server_players();
         assert_eq!(
@@ -772,12 +1037,16 @@ fn server_services_preserve_identity_and_message_delivery() {
         assert_eq!(host.players().player_by_name("GUEST12"), Some(a));
         assert_eq!(host.players().player_by_name("missing"), None);
         assert!(game.players().acting_player().is_none());
-        assert_eq!(a.name(game).as_deref(), Some("guest12"));
+        assert_eq!(a.name(game), Some("guest12"));
         assert_eq!(a.permission_level(game), Some(3));
         assert_eq!(b.permission_level(game), Some(1));
         assert_eq!(a.can_use_game_master_blocks(game), Some(true));
-        assert_eq!(a.address(game).as_deref(), Some("192.0.2.12"));
-        assert_eq!(b.address(game).as_deref(), Some("2001:db8::13"));
+        assert_eq!(a.address(game), Some("192.0.2.12"));
+        assert_eq!(b.address(game), Some("2001:db8::13"));
+        assert_eq!(a.client_brand(game), Some("test client"));
+        assert_eq!(b.client_brand(game), Some(""));
+        let channels = a.announced_channels(game).unwrap();
+        assert_eq!(channels.as_ref(), ["test:first", "test:second"]);
         let stale = mod_api::__private::game::player_ref(
             mod_api::EntityRef::new(
                 mod_api::WorldEpoch::new(a.entity().epoch().get() + 1),
@@ -800,12 +1069,11 @@ fn server_services_preserve_identity_and_message_delivery() {
             game.chat_capture.take().unwrap()[0].plain(),
             "command answer"
         );
-        assert_eq!(game.messages().text_allowed("message"), Some(true));
         game.as_guest(12, |game| {
             assert_eq!(game.players().acting_player(), Some(a));
             assert_eq!(game.players().server_players(), players);
-            assert_eq!(a.address(game).as_deref(), Some("192.0.2.12"));
-            assert_eq!(b.address(game).as_deref(), Some("2001:db8::13"));
+            assert_eq!(a.address(game), Some("192.0.2.12"));
+            assert_eq!(b.address(game), Some("2001:db8::13"));
             assert_eq!(a.permission_level(game), Some(3));
             assert_eq!(b.permission_level(game), Some(1));
             assert_eq!(a.can_use_game_master_blocks(game), Some(true));
@@ -830,11 +1098,13 @@ fn server_services_preserve_identity_and_message_delivery() {
             game.as_guest(13, |game| {
                 assert_eq!(game.players().acting_player(), Some(b));
                 assert_eq!(game.players().server_players(), players);
-                assert_eq!(a.name(game).as_deref(), Some("guest12"));
+                assert_eq!(a.name(game), Some("guest12"));
                 assert_eq!(a.permission_level(game), Some(3));
                 assert_eq!(b.permission_level(game), Some(1));
-                assert_eq!(a.address(game).as_deref(), Some("192.0.2.12"));
-                assert_eq!(b.address(game).as_deref(), Some("2001:db8::13"));
+                assert_eq!(a.address(game), Some("192.0.2.12"));
+                assert_eq!(b.address(game), Some("2001:db8::13"));
+                assert_eq!(a.client_brand(game), Some("test client"));
+                assert!(Arc::ptr_eq(&channels, &a.announced_channels(game).unwrap()));
                 assert_eq!(a.game_mode(game), None, "body remains displaced");
                 assert_eq!(a.can_use_game_master_blocks(game), None);
                 for invalid in [stale, wrong_entity, wrong_uuid] {
@@ -857,6 +1127,9 @@ fn server_services_preserve_identity_and_message_delivery() {
         assert!(!a.set_nickname(game, Some("offline")));
         assert!(!a.set_sleep_ignored(game, true));
         assert_eq!(a.address(game), None);
+        assert_eq!(a.client_brand(game), None);
+        assert!(a.announced_channels(game).is_none());
+        assert_eq!(channels.as_ref(), ["test:first", "test:second"]);
         assert_eq!(a.permission_level(game), None);
         assert!(!stale.hide(game, None));
         assert_eq!(stale.name(game), None);
@@ -866,10 +1139,10 @@ fn server_services_preserve_identity_and_message_delivery() {
 /// Permission reads keep the existing owner and fake-player contracts, not
 /// just the connected-player list that the services enumerate.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn canonical_permissions_preserve_owner_and_fake_player_reads() {
-    use sunrise_client::motion::PlayerMotion;
     use mod_api::GameMode;
+    use sunrise_client::motion::PlayerMotion;
 
     with_guests(|game| {
         let _serving = super::integrated::tests::install_serving(game, false);
@@ -915,11 +1188,11 @@ fn canonical_permissions_preserve_owner_and_fake_player_reads() {
             .conn;
         game.as_guest(conn, |game| {
             assert_eq!(fake.permission_level(game), Some(0));
-            assert_eq!(
-                fake.address(game).as_deref(),
-                Some(""),
-                "unknown acting address"
-            );
+            assert_eq!(fake.address(game), Some(""), "unknown acting address");
+            assert_eq!(fake.client_brand(game), Some(""));
+            let empty = fake.announced_channels(game).unwrap();
+            assert!(empty.is_empty());
+            assert!(Arc::ptr_eq(&empty, &fake.announced_channels(game).unwrap()));
             assert_eq!(fake.can_use_game_master_blocks(game), Some(false));
         })
         .unwrap();
@@ -949,7 +1222,7 @@ pub(in crate::game) fn place_host(game: &mut super::Game<'_>) {
 /// A turn lists the acting player once, under their own UUID and with their
 /// live body. The host's body is displaced for the turn, so it is not listed.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn level_players_name_each_body_once_during_turns() {
     with_guests(|game| {
         place_host(game);
@@ -972,7 +1245,7 @@ fn level_players_name_each_body_once_during_turns() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn level_players_exclude_guests_in_other_levels() {
     with_guests(|game| {
         place_host(game);
@@ -988,7 +1261,7 @@ fn level_players_exclude_guests_in_other_levels() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn level_players_exclude_fake_players() {
     with_guests(|game| {
         let _serving = super::integrated::tests::install_serving(game, false);
@@ -1020,7 +1293,7 @@ fn level_players_exclude_fake_players() {
 /// A listener sees the newly granted criterion before its recipe reward on
 /// both a player's first tick and a resource reload.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn tick_advancement_notice_precedes_recipe_reward() {
     use crate::game::native_entity_refs::tests::run_fresh_cases;
     use mod_api::{Hooks, ModEntry, Mods, PlayerAdvancementProgressEvent, ServerHost};
@@ -1068,11 +1341,7 @@ fn tick_advancement_notice_precedes_recipe_reward() {
             &scratch,
             &sunrise_world::loot::PackOverlay::NONE,
             // Rewards must name a recipe registered in the server's index.
-            std::collections::BTreeMap::from([(
-                "testmod:reward".into(),
-                r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stone"],"result":{"id":"minecraft:diamond","count":1}}"#.into(),
-            )]),
-            Default::default(),
+            sunrise_client::lan::recipes::BookProjections::single_shapeless("testmod:reward"),
         );
         let reload = std::env::var("SUNRISE_ADVANCEMENT_ORDER_CHILD").as_deref() == Ok("reload");
         let host = game.lan.as_mut().unwrap();
@@ -1100,9 +1369,9 @@ fn tick_advancement_notice_precedes_recipe_reward() {
 }
 
 /// `PlayerRef::set_selected_slot` from inside the guest's own turn: their state is in place, so
-/// the slot is written there, and their client is still told (`leave_guest` sends nothing).
+/// the slot is written there, and their client is still told (the put-back at the end of `guest_turn` sends nothing).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn set_selected_slot_tells_an_acting_guests_client() {
     with_guests(|game| {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1138,12 +1407,12 @@ fn set_selected_slot_tells_an_acting_guests_client() {
 /// `PlayerRef::drop_stack` hands a refused stack back: an empty one, and one a mod's `item_toss`
 /// vetoes, which the game itself would discard.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_vetoed_drop_gives_the_stack_back() {
     use super::api_values::TryIntoApi;
-    use sunrise_client::items::ItemStack;
     use mod_api::{Flow, Hooks, ItemTossEvent, ModEntry, ServerHost};
     use mod_platform::testing::with_mods;
+    use sunrise_client::items::ItemStack;
 
     struct Veto;
     #[mod_api::__subscriptions]
@@ -1173,29 +1442,38 @@ fn a_vetoed_drop_gives_the_stack_back() {
     });
 }
 
-struct PanicOnce(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+struct PanicOnDamage(Arc<AtomicUsize>);
 
 #[mod_api::__subscriptions]
-impl mod_api::Hooks for PanicOnce {
+impl mod_api::Hooks for PanicOnDamage {
     fn living_incoming_damage(
         &self,
-        _: &mut dyn mod_api::LevelRandomHost,
+        _: &mut dyn mod_api::HitHost,
         _: &mut mod_api::LivingIncomingDamageEvent<'_>,
     ) -> mod_api::Flow {
-        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-            std::panic::panic_any(73129_u32);
-        }
-        mod_api::Flow::Continue
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("damage listener panic");
     }
 }
 
+/// Put the follow-up blow outside the victim's damage cooldown.
+fn expire_guest_damage_cooldown(game: &mut super::Game<'_>, conn: u32) {
+    game.as_guest(conn, |game| {
+        let health = &mut game.player.as_mut().unwrap().health;
+        while health.hurt.cooldown > 0 {
+            health.advance_damage_cooldown();
+        }
+    })
+    .unwrap();
+}
+
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn guest_damage_unwind_restores_and_next_same_connection_hit_lands() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
         "panic_once",
-        Box::new(PanicOnce(calls.clone())),
+        Box::new(PanicOnDamage(calls.clone())),
     )]
     .into();
     mod_platform::testing::with_mods(mods, || {
@@ -1217,34 +1495,7 @@ fn guest_damage_unwind_restores_and_next_same_connection_hit_lands() {
             .unwrap();
             let outer = game.lan_acting;
             let position = game.player.as_ref().map(|p| p.position);
-            let health = game
-                .lan
-                .as_ref()
-                .unwrap()
-                .hub
-                .guest(13)
-                .unwrap()
-                .motion
-                .as_ref()
-                .unwrap()
-                .health
-                .health();
-            let hit = |g: &mut super::Game<'_>| {
-                g.pvp_land(
-                    super::lan_pvp::Victim::Guest(13),
-                    &super::lan_pvp::Strike::test_blow(12),
-                )
-            };
-            let panic =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hit(game))).unwrap_err();
-            assert_eq!(panic.downcast_ref::<u32>(), Some(&73129));
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert!(game.lan_guest_swaps.is_empty());
-            assert_eq!(game.lan_acting, outer);
-            assert_eq!(game.player.as_ref().map(|p| p.position), position);
-            assert!(hit(game));
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-            assert!(
+            let health = |game: &super::Game<'_>| {
                 game.lan
                     .as_ref()
                     .unwrap()
@@ -1256,8 +1507,33 @@ fn guest_damage_unwind_restores_and_next_same_connection_hit_lands() {
                     .unwrap()
                     .health
                     .health()
-                    < health
+            };
+            let before = health(game);
+            let hit = |g: &mut super::Game<'_>| {
+                g.pvp_land(
+                    super::lan_pvp::Victim::Guest(13),
+                    &super::lan_pvp::Strike::test_blow(12),
+                )
+            };
+            assert!(hit(game));
+            assert_eq!(health(game), before - 1.0);
+            assert_eq!(
+                take_hook_panics(),
+                [HookPanicReport {
+                    mod_id: "panic_once",
+                    hook: "living_incoming_damage",
+                }],
             );
+            assert!(game.lan_guest_swaps.is_empty());
+            assert!(game.interrupted_turns.is_empty());
+            assert_eq!(game.lan_acting, outer);
+            assert_eq!(game.player.as_ref().map(|p| p.position), position);
+
+            expire_guest_damage_cooldown(game, 13);
+            assert!(hit(game));
+            assert_eq!(health(game), before - 2.0);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(take_hook_panics().is_empty());
             assert!(game.lan_guest_swaps.is_empty());
             assert_eq!(game.lan_acting, outer);
             assert_eq!(game.player.as_ref().map(|p| p.position), position);
@@ -1274,14 +1550,14 @@ fn guest_damage_unwind_restores_and_next_same_connection_hit_lands() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-/// A real native panic inside `as_guest_messaged` puts the outer message capture back, and the
-/// same connection's next messaged turn runs and captures nothing outside it (#2244).
+#[ignore = "daily"]
+/// A contained listener panic and an unwinding engine panic both leave the outer capture in
+/// place. The same connection's next messaged turn still runs (#2244).
 fn guest_message_capture_is_restored_after_a_real_native_panic() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
         "capture_repro",
-        Box::new(PanicOnce(calls.clone())),
+        Box::new(PanicOnDamage(calls.clone())),
     )]
     .into();
     mod_platform::testing::with_mods(mods, || {
@@ -1303,43 +1579,59 @@ fn guest_message_capture_is_restored_after_a_real_native_panic() {
                 })
                 .unwrap();
             }
-            assert!(game.chat_capture.is_none());
             let outer = game.lan_acting;
-            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                game.as_guest_messaged(13, |g| {
-                    g.pvp_land(
-                        super::lan_pvp::Victim::Guest(12),
-                        &super::lan_pvp::Strike::test_blow(13),
-                    )
+            let feedback = || vec![sunrise_client::text::Text::literal("outer feedback")];
+            game.chat_capture = Some(feedback());
+            let hit = |game: &mut super::Game<'_>| {
+                assert_eq!(game.chat_capture, Some(Vec::new()));
+                game.pvp_land(
+                    super::lan_pvp::Victim::Guest(12),
+                    &super::lan_pvp::Strike::test_blow(13),
+                )
+            };
+            assert_eq!(game.as_guest_messaged(13, hit), Some(true));
+            assert_eq!(
+                take_hook_panics(),
+                [HookPanicReport {
+                    mod_id: "capture_repro",
+                    hook: "living_incoming_damage",
+                }],
+            );
+            assert_eq!(game.chat_capture, Some(feedback()));
+            assert!(game.lan_guest_swaps.is_empty());
+            assert!(game.interrupted_turns.is_empty());
+            assert_eq!(game.lan_acting, outer);
+
+            let panic = catch_unwind(AssertUnwindSafe(|| {
+                game.as_guest_messaged(13, |game| {
+                    game.chat_capture
+                        .as_mut()
+                        .unwrap()
+                        .push(sunrise_client::text::Text::literal("guest feedback"));
+                    panic!("engine panic during a messaged turn");
                 })
             }))
             .unwrap_err();
-            assert_eq!(panic.downcast_ref::<u32>(), Some(&73129));
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert!(
-                game.lan_guest_swaps.is_empty(),
-                "guest swap fix must have run"
+            assert_eq!(
+                panic.downcast_ref::<&str>(),
+                Some(&"engine panic during a messaged turn"),
             );
+            assert_eq!(game.chat_capture, Some(feedback()));
+            assert!(game.lan_guest_swaps.is_empty());
             assert_eq!(game.lan_acting, outer);
-            assert!(
-                game.chat_capture.is_none(),
-                "real native panic leaked the guest message capture"
-            );
-            assert!(
-                game.as_guest_messaged(13, |g| g.pvp_land(
-                    super::lan_pvp::Victim::Guest(12),
-                    &super::lan_pvp::Strike::test_blow(13),
-                ))
-                .is_some(),
-                "the same connection's next messaged turn runs"
-            );
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-            assert!(game.chat_capture.is_none() && game.lan_guest_swaps.is_empty());
+
+            expire_guest_damage_cooldown(game, 12);
+            assert_eq!(game.as_guest_messaged(13, hit), Some(true));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(take_hook_panics().is_empty());
+            assert_eq!(game.chat_capture, Some(feedback()));
+            assert!(game.lan_guest_swaps.is_empty());
+            assert_eq!(game.lan_acting, outer);
         });
     });
 }
 
-struct PanicOnFood(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+struct PanicOnFood(Arc<AtomicUsize>);
 
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for PanicOnFood {
@@ -1348,18 +1640,15 @@ impl mod_api::Hooks for PanicOnFood {
         _: &mut dyn mod_api::ServerHost,
         _: &mut mod_api::FoodLevelChangedEvent<'_>,
     ) -> mod_api::Flow {
-        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-            std::panic::panic_any(52417_u32);
-        }
-        mod_api::Flow::Continue
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("food listener panic");
     }
 }
 
-/// A native `food_level_changed` listener that panics while `leave_guest` reports the turn's
-/// food change still lets the guest swap be restored and the turn's progress be written back,
-/// and the same connection's next turn runs and is heard (#2240).
+/// A contained food-listener panic at turn end does not block write-back (#2240).
+/// A later engine panic still unwinds after the guest is restored.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_panic_in_a_turn_end_callback_still_restores_the_guest() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -1382,31 +1671,50 @@ fn a_panic_in_a_turn_end_callback_still_restores_the_guest() {
                 |game: &super::Game<'_>| game.lan.as_ref().unwrap().hub.guest(13).unwrap().food;
             let before = food(game);
             let outer = game.lan_acting;
-            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                game.as_guest(13, |g| g.player.as_mut().unwrap().health.food.food -= 3)
+            assert_eq!(
+                game.as_guest(13, |g| g.player.as_mut().unwrap().health.food.food -= 3),
+                Some(()),
+            );
+            assert_eq!(
+                take_hook_panics(),
+                [HookPanicReport {
+                    mod_id: "turn_end_panic",
+                    hook: "food_level_changed",
+                }],
+            );
+            assert!(game.lan_guest_swaps.is_empty());
+            assert!(game.interrupted_turns.is_empty());
+            assert_eq!(game.lan_acting, outer);
+            assert_eq!(food(game), before - 3);
+
+            let panic = catch_unwind(AssertUnwindSafe(|| {
+                game.as_guest(13, |g| {
+                    g.player.as_mut().unwrap().health.food.food -= 1;
+                    panic!("engine panic during a guest turn");
+                })
             }))
             .unwrap_err();
-            assert_eq!(panic.downcast_ref::<u32>(), Some(&52417));
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert!(
-                game.lan_guest_swaps.is_empty(),
-                "the guest swap was restored"
-            );
-            assert_eq!(game.lan_acting, outer);
             assert_eq!(
-                food(game),
-                before - 3,
-                "the turn's food change is written back"
+                panic.downcast_ref::<&str>(),
+                Some(&"engine panic during a guest turn"),
             );
-
-            let next = game.as_guest(13, |g| {
-                g.player.as_mut().unwrap().health.food.food -= 1;
-                7
-            });
-            assert_eq!(next, Some(7), "the same connection's next turn runs");
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-            assert_eq!(food(game), before - 4);
             assert!(game.lan_guest_swaps.is_empty());
+            assert_eq!(game.lan_acting, outer);
+            assert_eq!(food(game), before - 4);
+
+            assert_eq!(
+                game.as_guest(13, |g| {
+                    g.player.as_mut().unwrap().health.food.food -= 1;
+                    7
+                }),
+                Some(7),
+                "the same connection's next turn runs",
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(take_hook_panics().is_empty());
+            assert_eq!(food(game), before - 5);
+            assert!(game.lan_guest_swaps.is_empty());
+            assert_eq!(game.lan_acting, outer);
         });
     });
 }
@@ -1446,7 +1754,7 @@ fn told_since(game: &super::Game<'_>, before: usize) -> bool {
 /// entity's own (a guest's is 0 here), with no ceiling. `TickCommand` needs admins (3), so game
 /// masters (2) are refused it and admins run it; `GiveCommand` needs game masters.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn run_command_checks_the_line_at_the_level_given() {
     use mod_api::PermissionLevel::{Admins, All, Gamemasters, Owners};
 
@@ -1468,11 +1776,11 @@ fn run_command_checks_the_line_at_the_level_given() {
 /// position, not the server spawn's (from there the stand would end at (2, 64, -1)). A player
 /// out of a turn, the acting player and another player during that turn are each `@s`.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn run_command_runs_as_the_entity_from_where_it_is() {
     use super::native_inventories::NativeInventoryKind::Player;
-    use sunrise_client::items::ItemStack;
     use mod_api::PermissionLevel::Gamemasters;
+    use sunrise_client::items::ItemStack;
 
     with_guests(|game| {
         game.build_registries();
@@ -1511,7 +1819,7 @@ fn run_command_runs_as_the_entity_from_where_it_is() {
 /// (`ServerPlayer.commandSource`); another entity's says nothing to anyone, not even the
 /// player whose turn it runs in (`CommandSource.NULL`).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn run_command_answers_a_player_and_no_one_for_another_entity() {
     use mod_api::PermissionLevel::Admins;
 
@@ -1536,7 +1844,7 @@ fn run_command_answers_a_player_and_no_one_for_another_entity() {
 /// A line that doesn't parse, or parses and fails, answers false without a panic, and so does a
 /// handle of an earlier open or of an entity that is gone.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn run_command_answers_false_for_a_bad_line_or_a_stale_handle() {
     use mod_api::PermissionLevel::Owners;
 
@@ -1568,11 +1876,11 @@ fn run_command_answers_false_for_a_bad_line_or_a_stale_handle() {
 /// the player (`give @s`) nor the part about the server (`gamerule`). Back in the level in
 /// place, the same player and line run.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn run_command_refuses_a_player_whose_level_is_parked() {
     use super::native_inventories::NativeInventoryKind::Player;
-    use sunrise_client::{gamerules::vanilla::SEND_COMMAND_FEEDBACK, items::ItemStack};
     use mod_api::PermissionLevel::Owners;
+    use sunrise_client::{gamerules::vanilla::SEND_COMMAND_FEEDBACK, items::ItemStack};
 
     with_guests(|game| {
         game.build_registries();
@@ -1610,7 +1918,7 @@ fn run_command_refuses_a_player_whose_level_is_parked() {
 /// for it and for the acting player in their own turn. From the outer source, `~1 ~ ~ ~10 ~`
 /// would put them at (51, 80, 50) facing yaw 100, pitch 30.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn run_command_runs_from_the_players_own_place_inside_an_outer_command() {
     use super::commands::execute::Source;
     use mod_api::PermissionLevel::Gamemasters;

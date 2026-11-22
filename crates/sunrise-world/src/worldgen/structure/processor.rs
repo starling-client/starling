@@ -1,17 +1,17 @@
 //! Structure processors (`worldgen/processor_list`) and template placement.
+use serde_json::Value;
+use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::{
     position::BlockPos,
     random::{LegacyRandom, PositionalRandom, RandomSource, position_seed},
 };
-use serde_json::Value;
-use std::{collections::BTreeSet, sync::Arc};
 use {
     super::{BlockInfo, Mirror, Rotation, StructureResources, StructureTemplate},
     sunrise_core::bounding_box::BoundingBox,
 };
 use {
     crate::{
-        fluid::FluidKind,
+        fluid::{FluidKind, FluidState},
         heightmap::HeightmapType,
         registry::BlockStateId,
         worldgen::{
@@ -1568,12 +1568,14 @@ pub fn place_in_world<W: FeatureWorld + PlacementContext>(
         if let Some(previous) = previous {
             if resources.source_fluid(state) {
                 locked.push(info.pos);
-            } else if let Some(wet) = resources.waterlogged.get(&state) {
-                if previous.kind() == FluidKind::Water {
-                    world.set_block(info.pos, *wet, 3).map_err(world_err)?;
-                    world.schedule_fluid_tick(info.pos, previous.kind(), 5).ok();
-                } else if !previous.is_source() {
-                    to_fill.push(info.pos);
+            } else {
+                let part = world.has_template_liquid_override(state);
+                if part || resources.waterlogged.contains_key(&state) {
+                    let restored =
+                        restore_template_liquid(world, resources, info.pos, state, previous)?;
+                    if !previous.is_source() && (part || !restored) {
+                        to_fill.push(info.pos);
+                    }
                 }
             }
         }
@@ -1595,13 +1597,10 @@ pub fn place_in_world<W: FeatureWorld + PlacementContext>(
                 }
             }
             let state = world.block_state(pos)?;
-            match resources.waterlogged.get(&state) {
-                Some(wet) if fluid.is_source() && fluid.kind() == FluidKind::Water => {
-                    world.set_block(pos, *wet, 3).map_err(world_err)?;
-                    world.schedule_fluid_tick(pos, fluid.kind(), 5).ok();
-                    filled = true;
-                }
-                _ => remaining.push(pos),
+            if fluid.is_source() && restore_template_liquid(world, resources, pos, state, fluid)? {
+                filled = true;
+            } else {
+                remaining.push(pos);
             }
         }
         to_fill = remaining;
@@ -1615,6 +1614,32 @@ pub fn place_in_world<W: FeatureWorld + PlacementContext>(
     if !settings.ignore_entities {
         place_entities(world, template, position, settings)?;
     }
+    Ok(true)
+}
+
+/// Both `StructureTemplate.placeInWorld` restores call `placeLiquid` directly.
+/// An explicit answer, even false, takes the place of the template write.
+fn restore_template_liquid<W: FeatureWorld + PlacementContext>(
+    world: &mut W,
+    resources: &StructureResources,
+    pos: [i32; 3],
+    state: BlockStateId,
+    fluid: FluidState,
+) -> Result<bool, PlacementQueryError> {
+    if world.place_template_liquid(pos, state, fluid).is_some() {
+        return Ok(true);
+    }
+    let Some(wet) = resources
+        .waterlogged
+        .get(&state)
+        .filter(|_| fluid.kind() == FluidKind::Water)
+    else {
+        return Ok(false);
+    };
+    world
+        .set_block(pos, *wet, 3)
+        .map_err(|_| PlacementQueryError::Failed("template write".into()))?;
+    world.schedule_fluid_tick(pos, fluid.kind(), 5).ok();
     Ok(true)
 }
 

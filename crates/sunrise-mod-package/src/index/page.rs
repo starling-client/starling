@@ -137,6 +137,38 @@ fn plain_tag(tag: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// The title and one-line summary rules shared by project and collection pages.
+pub(super) fn check_title(name: &str, summary: &str) -> Vec<String> {
+    const MAX_SUMMARY: usize = 160;
+    let mut errors = Vec::new();
+    if name.trim().is_empty() {
+        errors.push("has no name".into());
+    }
+    if summary.trim().is_empty() {
+        errors.push("has no summary".into());
+    } else if summary.chars().count() > MAX_SUMMARY {
+        errors.push(format!("the summary is over {MAX_SUMMARY} characters"));
+    }
+    errors
+}
+
+pub(super) fn check_description_limit(description: &str) -> Option<String> {
+    let length = description.trim().chars().count();
+    (length > MAX_DESCRIPTION)
+        .then(|| format!("the description is {length} characters: at most {MAX_DESCRIPTION}"))
+}
+
+/// A page icon is always local to the registry checkout.
+pub(super) fn check_icon_path(id: &str, icon: Option<&str>) -> Option<String> {
+    match icon {
+        None => Some("has no icon: icons/<id>.png, a square PNG".into()),
+        Some(icon) if icon != format!("icons/{id}.png") => Some(format!(
+            "its icon {icon:?} must be kept in the registry as icons/{id}.png"
+        )),
+        Some(_) => None,
+    }
+}
+
 /// Every problem with a page's description, categories and tags, each a
 /// sentence a submitter can act on.
 pub fn check(
@@ -145,13 +177,7 @@ pub fn check(
     categories: &[String],
     tags: &[String],
 ) -> Vec<String> {
-    let mut errors = Vec::new();
-    let length = description.trim().chars().count();
-    if length > MAX_DESCRIPTION {
-        errors.push(format!(
-            "the description is {length} characters: at most {MAX_DESCRIPTION}"
-        ));
-    }
+    let mut errors: Vec<_> = check_description_limit(description).into_iter().collect();
     let known = self::categories(kind);
     if categories.len() > MAX_CATEGORIES {
         errors.push(format!(
@@ -209,22 +235,26 @@ pub fn check_required(
     if categories.is_empty() {
         errors.push(format!("pick 1 to {MAX_CATEGORIES} categories"));
     }
-    match icon {
-        None => errors.push("has no icon: icons/<id>.png, a square PNG".into()),
-        Some(icon) if icon != format!("icons/{id}.png") => errors.push(format!(
-            "its icon {icon:?} must be kept in the registry as icons/{id}.png"
-        )),
-        Some(_) => {}
-    }
-    for s in screenshots
-        .iter()
-        .filter(|s| !s.starts_with("screenshots/"))
-    {
-        errors.push(format!(
-            "screenshot {s:?} must be kept in the registry, screenshots/<id>/"
-        ));
-    }
+    errors.extend(check_icon_path(id, icon));
+    errors.extend(check_screenshot_paths(id, screenshots));
     errors
+}
+
+/// A page's screenshots are always local to the project in the registry checkout.
+pub(super) fn check_screenshot_paths<'a>(
+    id: &str,
+    screenshots: &'a [String],
+) -> impl Iterator<Item = String> + use<'a> {
+    let folder = format!("screenshots/{id}/");
+    screenshots.iter().filter_map(move |s| {
+        if s.strip_prefix(&folder).is_some_and(super::plain_name) {
+            None
+        } else {
+            Some(format!(
+                "screenshot {s:?} must be kept in the registry as {folder}<name>"
+            ))
+        }
+    })
 }
 
 /// An image's format.

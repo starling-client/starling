@@ -277,7 +277,12 @@ impl Game<'_> {
                 .block_entities
                 .get(&(key[0], key[1], key[2]))
                 .map(|entity| {
-                    block_entity_encode::encode((key[0], key[1], key[2]), entity, &descriptor.name)
+                    block_entity_encode::encode(
+                        (key[0], key[1], key[2]),
+                        entity,
+                        &descriptor.name,
+                        self.res.items(),
+                    )
                 });
             operation_cells.push(OperationCell {
                 world: key,
@@ -850,7 +855,12 @@ impl Game<'_> {
                         .state(state)
                         .map(|descriptor| descriptor.name.as_str())
                         .unwrap_or("");
-                    let encoded = block_entity_encode::encode((pos[0], pos[1], pos[2]), live, name);
+                    let encoded = block_entity_encode::encode(
+                        (pos[0], pos[1], pos[2]),
+                        live,
+                        name,
+                        self.res.items(),
+                    );
                     if !entities_content_equal(&encoded, image) {
                         return Err(TransferError::Revalidation(pos));
                     }
@@ -1017,9 +1027,7 @@ impl Game<'_> {
 
 /// Stops the session after a failed carrier commit, the same way any
 /// fatal save error does: `Game::error` is set (the first error wins),
-/// the event loop exits through it — a tick's error reaches
-/// `Game::exit_on_error` from the event handler's result
-/// (runtime/window_handler.rs), which calls `event_loop.exit()` — and
+/// the event handler sees the error and exits the loop (`runtime/window_handler.rs`), and
 /// every world save refuses while the fences are broken
 /// (`save_game_with`, world/autosave.rs), so the exit path's save and
 /// any autosave write nothing over the affected regions. The prepared
@@ -1035,15 +1043,15 @@ mod tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_game;
     use crate::game::spill;
+    use std::sync::Arc;
     use sunrise_core::geometry::Direction as CoreDirection;
     use sunrise_core::position::BlockPos;
-    use std::sync::Arc;
 
     /// One transfer's whole life: the chest moves to the carrier, its
     /// cell becomes air, the operation commits, and the block has
     /// exactly one owner — the carrier file, decoded back.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn assembling_moves_a_chest_to_one_owner_and_commits() {
         let root =
             std::env::temp_dir().join(format!("sunrise-carrier-transfer-{}", std::process::id()));
@@ -1106,7 +1114,7 @@ mod tests {
     /// While a fence holds a cell, each refusal route refuses exactly at
     /// its one chokepoint, and the moment the fence clears they pass.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fenced_cells_refuse_every_route_at_its_chokepoint() {
         with_game(|game| {
             game.world
@@ -1148,7 +1156,7 @@ mod tests {
 
     /// (item 7) An empty selection refuses before any indexing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_empty_assembly_refuses() {
         with_game(|game| match game.carrier_assemble(51, &[]) {
             Err(TransferError::EmptySelection) => {}
@@ -1159,7 +1167,7 @@ mod tests {
     /// (item 7) A destination arithmetic that overflows refuses instead
     /// of wrapping the world.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_overflowing_destination_refuses() {
         let root = transfer_root("overflow");
         with_game(|game| {
@@ -1170,6 +1178,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1198,7 +1207,7 @@ mod tests {
     /// (item 7) An unsupported block entity in the selection refuses in
     /// preflight — the world keeps the block and its entity.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_ticking_block_entity_refuses_before_the_lift() {
         let root = transfer_root("passive");
         with_game(|game| {
@@ -1209,6 +1218,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1252,7 +1262,7 @@ mod tests {
     /// capacity: ten sequential transfers fit an eight-carrier index,
     /// but all ten deletion witnesses survive this world session.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn repeated_transfers_beyond_the_index_capacity_stay_bounded() {
         let root = transfer_root("capacity");
         with_game(|game| {
@@ -1263,6 +1273,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1306,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn capacity_refusal_leaves_world_untouched() {
         let root = transfer_root("admission");
         with_game(|game| {
@@ -1315,6 +1326,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1342,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn saved_tag_refuses_assembly_and_disassembly_without_mutation() {
         let root = transfer_root("saved-tag");
         with_game(|game| {
@@ -1351,6 +1363,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1372,6 +1385,7 @@ mod tests {
                 (4, 64, 4),
                 &entity,
                 "minecraft:chest",
+                &Default::default(),
             );
             spill::put_saved_entity(&mut game.world, [4, 64, 4], tag.clone());
             assert!(matches!(
@@ -1418,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn assembly_revalidation_refuses_saved_tag_without_mutation() {
         let root = transfer_root("assembly-revalidation-saved-tag");
         with_game(|game| {
@@ -1427,6 +1441,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1447,6 +1462,7 @@ mod tests {
                 (4, 64, 4),
                 &entity,
                 "minecraft:chest",
+                &Default::default(),
             );
             spill::put_saved_entity(&mut game.world, [4, 64, 4], tag.clone());
             let images = [crate::carrier_store::OperationCell {
@@ -1501,7 +1517,7 @@ mod tests {
     /// resolves it cleanly — the carrier file is gone, the journal
     /// holds no operation, and the world reopens.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_crash_after_a_finished_disassembly_recovers_clean() {
         let root = transfer_root("post-disassembly");
         with_game(|game| {
@@ -1512,6 +1528,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1549,7 +1566,7 @@ mod tests {
     /// gaps stay gaps and the input order is irrelevant — the same
     /// selection shuffled produces the byte-identical carrier.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn sparse_selection_geometry_survives_and_order_is_irrelevant() {
         let root = transfer_root("geometry");
         let sparse = [
@@ -1566,6 +1583,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1619,7 +1637,7 @@ mod tests {
     /// keeps facing — resolved from the saved properties at placement,
     /// never from the block's default state.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn non_default_states_survive_the_round_trip() {
         let root = transfer_root("states");
         with_game(|game| {
@@ -1630,6 +1648,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1695,7 +1714,7 @@ mod tests {
     /// file, and the source cell empty. If the live code ever publishes
     /// the carrier after prepared again, this test fails.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_live_assembly_publishes_the_cargo_before_prepared() {
         let root = transfer_root("live-cargo");
         with_game(|game| {
@@ -1706,6 +1725,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1785,7 +1805,7 @@ mod tests {
     /// transfer refuses, and recovery at a reopen finishes the
     /// operation with the chest's items in exactly one place.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_flush_failure_after_prepared_recovers_on_reopen() {
         let root =
             std::env::temp_dir().join(format!("sunrise-carrier-flush-{}", std::process::id()));
@@ -1800,6 +1820,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1860,7 +1881,7 @@ mod tests {
     /// the exit, and the next open's recovery still finishes the
     /// operation with exactly one owner.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_failed_commit_stops_the_session_until_recovery() {
         let root = transfer_root("fail-closed");
         with_game(|game| {
@@ -1871,6 +1892,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -1887,8 +1909,7 @@ mod tests {
             );
 
             // The session stopped like a fatal save error: `Game::error`
-            // is set — the same flag the event loop's error path exits
-            // the loop through (`exit_on_error`).
+            // is set, which tells the event handler to exit the loop.
             assert!(game.error.is_some(), "the failed commit stops the session");
 
             // A further edit of the fenced cell refuses.
@@ -1927,7 +1948,7 @@ mod tests {
     /// gates alike — and the refusal leaves the world untouched: no
     /// store is created, nothing is written.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_mirror_transfer_refuses_without_touching_the_world() {
         let root = std::env::temp_dir().join(format!(
             "sunrise-carrier-client-refusal-{}",
@@ -1955,7 +1976,7 @@ mod tests {
     /// Assemble then disassemble: at every step the chest has exactly
     /// one owner — the world, the carrier's images or the carrier file.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn assemble_then_disassemble_keeps_one_owner_at_every_step() {
         let root = transfer_root("cycle");
         with_game(|game| {
@@ -1995,7 +2016,7 @@ mod tests {
     /// A destination that already holds a block entity refuses, with
     /// the carrier intact.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_destination_with_a_block_entity_refuses() {
         let root = transfer_root("dest");
         with_game(|game| {
@@ -2032,7 +2053,7 @@ mod tests {
     /// A rotation that is not a cube symmetry refuses; a cube rotation
     /// without an adapter refuses too; the carrier survives both.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn rotations_refuse_without_symmetry_or_an_adapter() {
         let root = transfer_root("rot");
         with_game(|game| {
@@ -2072,7 +2093,7 @@ mod tests {
     /// Revalidation itself: images built from the world, the world then
     /// changed underneath — the mismatch refuses and nothing moved.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn revalidation_refuses_a_changed_cell_without_touching_the_world() {
         with_game(|game| {
             game.world
@@ -2118,7 +2139,7 @@ mod tests {
     /// operation replays in the Nether, the Overworld is untouched and
     /// the player stays where the world opened.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_nether_transfer_recovers_while_the_world_opens_in_the_overworld() {
         let root = transfer_root("nether");
         // Opening a second level on demand reads the data-fix tables of
@@ -2139,6 +2160,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/the_nether"),
                 sunrise_client::save::LevelShape::NETHER,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -2203,7 +2225,7 @@ mod tests {
     /// A journal naming a dimension the world cannot hold refuses the
     /// load with that name, and no level is touched.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_unknown_dimension_refuses_the_load_without_touching_levels() {
         let root = transfer_root("nope");
         with_game(|game| {
@@ -2255,7 +2277,7 @@ mod tests {
     /// newest batch") drops the older snapshot. No record number of
     /// our own is needed; this test pins the guarantee.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_older_snapshot_completing_late_cannot_overwrite_the_post_state() {
         let root = transfer_root("writer");
         with_game(|game| {
@@ -2266,6 +2288,7 @@ mod tests {
             let save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             let registry = game.pack.assets.registry;
             let stone = registry.default_state("minecraft:stone").unwrap();
@@ -2311,7 +2334,7 @@ mod tests {
     /// synchronous call, so the steps cannot interleave with a save;
     /// this pins the gate each route passes.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn every_save_route_refuses_under_the_obligation_and_admits_after_commit() {
         let root = transfer_root("saves");
         with_game(|game| {
@@ -2351,7 +2374,7 @@ mod tests {
     /// operation, copy the world folder, load the copy — the carriers
     /// and chunks come out identical.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_supported_backup_restores_identical_carriers_and_chunks() {
         let root = transfer_root("backup");
         with_game(|game| {
@@ -2362,6 +2385,7 @@ mod tests {
             game.save = std::sync::Arc::new(sunrise_client::save::SaveDir::new(
                 root.join("dimensions/minecraft/overworld"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.world
                 .chunks
@@ -2489,7 +2513,7 @@ mod tests {
 
     /// A world without transfers creates nothing and fences nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_world_without_transfers_writes_no_store_files() {
         let root =
             std::env::temp_dir().join(format!("sunrise-carrier-quiet-{}", std::process::id()));

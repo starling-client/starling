@@ -25,6 +25,7 @@ fn use_jar_records_exact_metadata_hash_and_order_without_copying_the_jar() {
         String::from_utf8_lossy(&created.stderr)
     );
     let project = root.join("port");
+    let home = root.join("home");
     let manifest = project.join("sunrise-mod.toml");
     let original = fs::read_to_string(&manifest).unwrap();
     for (name, metadata_name, metadata) in [
@@ -56,6 +57,7 @@ fn use_jar_records_exact_metadata_hash_and_order_without_copying_the_jar() {
         let before = fs::read_to_string(&manifest).unwrap();
         let result = Command::new(binary)
             .current_dir(&project)
+            .env("SUNRISE_HOME", &home)
             .arg("use-jar")
             .arg(&path)
             .output()
@@ -76,14 +78,20 @@ fn use_jar_records_exact_metadata_hash_and_order_without_copying_the_jar() {
                 jar.sha512(),
                 format!("{:x}", Sha512::digest(fs::read(&path).unwrap()))
             );
+            let cached = jar.cache_path(&home.join("jars"));
+            let bytes = fs::read(&path).unwrap();
+            assert_eq!(fs::read(&cached).unwrap(), bytes);
+            fs::remove_file(&cached).unwrap();
             let repeat = Command::new(binary)
                 .current_dir(&project)
+                .env("SUNRISE_HOME", &home)
                 .arg("use-jar")
                 .arg(&path)
                 .output()
                 .unwrap();
             assert!(repeat.status.success());
             assert_eq!(fs::read_to_string(&manifest).unwrap(), added);
+            assert_eq!(fs::read(&cached).unwrap(), bytes);
         }
         assert!(!project.join(name).exists());
     }
@@ -118,6 +126,7 @@ fn use_jar_records_exact_metadata_hash_and_order_without_copying_the_jar() {
         fs::write(&manifest, &input).unwrap();
         let result = Command::new(binary)
             .current_dir(&project)
+            .env("SUNRISE_HOME", &home)
             .arg("use-jar")
             .arg(root.join(jar_name))
             .output()

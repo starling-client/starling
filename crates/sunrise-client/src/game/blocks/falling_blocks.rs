@@ -72,7 +72,7 @@ impl Game<'_> {
         if moved.y < 0.0 {
             f.fall_distance -= f64::from(moved.y as f32);
         }
-        if f.on_ground {
+        if f.ground.on_ground {
             self.falling_block_impact(&mut f);
             if f.fall_distance > 0.0 {
                 let bounds = sunrise_client::falling_block::bounds(f.position);
@@ -169,7 +169,7 @@ impl Game<'_> {
         // false (Entity.isDescending returns isShiftKeyDown, fixes #7553).
         let context = CollisionContext::for_entity(
             CollisionEntity {
-                identity: EntityIdentity(0),
+                identity: EntityIdentity(u64::from(f.id)),
                 kind: sunrise_world::collision_context::EntityContextKind::Other,
                 y: f.position.y,
                 descending: false,
@@ -199,24 +199,40 @@ impl Game<'_> {
             f.position.y + movement.y,
             f.position.z + movement.z,
         );
-        let on_ground = wanted.y < 0.0 && movement.y != wanted.y;
-        f.on_ground = on_ground;
         if movement.y < 0.0 {
             f.fall_distance -= f64::from(movement.y as f32);
         }
         let from = f.position;
         f.position = next;
-        // Entity.move stops it on the axes it collided on.
-        if movement.x != wanted.x {
-            f.velocity.x = 0.0;
+        let body = sunrise_client::motion::BodyMotion {
+            world: &self.world,
+            collision: self.collision,
+            facts: self.res.facts(),
+            blocks: Some(&self.res.motion().blocks),
+            context: &self.loop_context,
+            side: None,
+        };
+        if !gate.skipped() {
+            body.record_move(
+                sunrise_client::motion::BodyCollision {
+                    footprint: (
+                        f.position,
+                        sunrise_client::falling_block::bounds(f.position),
+                    ),
+                    movement: (wanted, movement),
+                    authoritative: !self.options.execution_role.is_client(),
+                    context,
+                    subject: Some(collisions::PowderSnowSubject {
+                        fall_distance: f.fall_distance,
+                        falling_block: true,
+                        ..Default::default()
+                    }),
+                },
+                &mut f.ground,
+            );
         }
-        if movement.y != wanted.y {
-            f.velocity.y = 0.0;
-        }
-        if movement.z != wanted.z {
-            f.velocity.z = 0.0;
-        }
-        if on_ground {
+        let effect = body.legacy_contact(f.position, &f.ground);
+        if !self.options.execution_role.is_client() && f.ground.on_ground {
             self.falling_block_impact(f);
             if f.fall_distance > 0.0 {
                 self.post_landing_event(
@@ -227,6 +243,39 @@ impl Game<'_> {
             }
             f.fall_distance = 0.0;
         }
+        let entity = (f.id, "minecraft:falling_block");
+        let response = self.body_motion(&game_side!(self)).restitute(
+            entity,
+            sunrise_client::motion::BodyMove {
+                wanted,
+                moved: movement,
+                effect,
+            },
+            sunrise_client::entity_rules::EntityRules::get_gravity(f),
+            0.98_f32,
+            f.velocity,
+            f.fall_distance,
+        );
+        f.velocity = self.finish_body_restitution(entity, f.position, response);
+        let side = game_side!(self);
+        let body = self.body_motion(&side);
+        body.apply_block_speed(f.position, &mut f.velocity);
+        let writes = self.body_step_on(
+            entity,
+            (
+                f.position,
+                sunrise_client::falling_block::bounds(f.position),
+            ),
+            &f.ground,
+            &mut f.velocity,
+        );
+        super::entity::apply_contact_writes(
+            writes,
+            &mut f.velocity,
+            Some(&mut f.fall_distance),
+            Some(&mut f.stuck),
+            Some(&mut f.fire_ticks),
+        );
         // applyEffectsFromBlocks: WebBlock.entityInside makes it stuck
         // (Entity.makeStuckInBlock), BubbleColumnBlock.entityInside lifts or
         // drags it. Entity.move records the move unless it was blocked short
@@ -260,6 +309,42 @@ impl Game<'_> {
         if let Some(multiplier) = stuck {
             f.stuck = multiplier;
         }
+        // The same walk's fluids: LavaFluid.entityInside's LAVA_IGNITE, then
+        // its lavaHurt, whose `FallingBlockEntity.hurtServer` harms nothing but
+        // marks the block hurt (`markHurt`, below); then WaterFluid's EXTINGUISH
+        // (`clearFire`). A block not on fire that nothing ignited is put at
+        // `-getFireImmuneTicks()`, 0.
+        let fluids = &self.res.motion().fluids;
+        let touches = |family| {
+            sunrise_client::entities::fluid_contacts(
+                from,
+                f.position,
+                recorded.then_some(wanted),
+                sunrise_client::falling_block::bounds,
+                |p| sunrise_client::entities::fluid_height(world, fluids, p, family),
+            ) > 0
+        };
+        let previous_fire = f.fire_ticks;
+        let mut fire = previous_fire;
+        let in_lava = touches(sunrise_world::fluid::FluidKind::Lava);
+        if in_lava {
+            fire = fire.max(300);
+        }
+        if fire > 0 && touches(sunrise_world::fluid::FluidKind::Water) {
+            fire = 0;
+        }
+        if fire <= 0 && fire <= previous_fire {
+            fire = 0;
+        }
+        f.fire_ticks = fire;
+        // lavaHurt runs on the server alone; `isInvulnerableToBase` reads the
+        // saved `Invulnerable`.
+        if in_lava && self.remote.is_none() {
+            let vanilla = self.saved_refuses_damage(f.id, "minecraft:lava", false);
+            if !self.refuses_lava_hurt(f.id, "minecraft:falling_block", vanilla) {
+                f.sync_velocity = true;
+            }
+        }
         for pos in tops {
             self.bubble_column_particles(pos);
         }
@@ -284,14 +369,17 @@ impl Game<'_> {
         }
         let y = next.y.floor() as i32;
         let outside = y <= self.world.bottom_y() || y >= self.world.top_y();
-        if !on_ground && (f.age > 100 && outside || f.age > 600) {
+        if !self.options.execution_role.is_client()
+            && !f.ground.on_ground
+            && (f.age > 100 && outside || f.age > 600)
+        {
             return Ok(if f.drop_item && entity_drops {
                 FallStep::Dropped(next)
             } else {
                 FallStep::Gone
             });
         }
-        if on_ground {
+        if !self.options.execution_role.is_client() && f.ground.on_ground {
             return Ok(FallStep::Landed([
                 f.position.x.floor() as i32,
                 f.position.y.floor() as i32,
@@ -329,7 +417,7 @@ mod geometry_tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn falling_model_cache_matches_direct_vertices() {
         // Geometry belongs to the client resource graph; server packs have no models.
         crate::game::native_entity_refs::tests::with_client_game(|game| {

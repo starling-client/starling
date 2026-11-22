@@ -1,25 +1,11 @@
 //! What a package's manifest says about it beyond its identity, read by other mods.
 use std::collections::BTreeMap;
 
-/// How a code package runs.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum PackageRuntime {
-    /// Native code, built against the game build it was made for and loaded beside it, not
-    /// compiled into the game.
-    Native,
-    /// A `mod.wasm` run by the wasm runtime.
-    Wasm,
-}
-
 /// Dispatch ordering requested by a manifest dependency.
 ///
 /// This changes listener/content ordering only. `None` never removes a code
-/// library's Cargo or wasm link requirements.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+/// library's Cargo link requirements. This type is deserialized from and serialized to the manifest.
+// no wire: read locally from a manifest; Serde owns the manifest representation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -33,13 +19,12 @@ pub enum DependencyOrder {
     None,
 }
 
-/// The meaning of one manifest declaration about another package.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+/// The meaning of one manifest declaration about another package, as read through [`PackageDependency::kind`].
+// no wire: classifies a declaration inspected in the local package inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DependencyKind {
-    /// A required dependency; code packages also require a physical API library.
+    /// A required dependency. Between code packages it also requires a physical API library.
     Required,
     /// An optional dependency, checked when present.
     Optional,
@@ -55,8 +40,7 @@ pub enum DependencyKind {
 ///
 /// This is the manifest as written, not a side-filtered or override-rewritten
 /// resolution. Inspect `side` against the installation side when needed.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+// no wire: the local package inventory exposes original declarations, not join data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PackageDependency {
@@ -111,7 +95,7 @@ impl PackageDependency {
     pub fn side(&self) -> crate::Side {
         self.side
     }
-    /// The author's explanation, if provided.
+    /// The author's explanation, if provided. Only the complete manifest's byte limit applies.
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
@@ -121,9 +105,8 @@ impl PackageDependency {
     }
 }
 
-/// One value of a manifest's `[properties]` table.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+/// One value of a manifest's `[properties]` table, as read through [`crate::PackageInfo::property`].
+// no wire: the loader publishes these property values for local inspection.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum PropertyValue {
@@ -137,9 +120,8 @@ pub enum PropertyValue {
     Boolean(bool),
 }
 
-/// The descriptive part of a package's manifest. Missing fields are empty or `None`.
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+/// The descriptive part of a local package's manifest. Missing fields are empty or `None`.
+// no wire: these details belong to the local package inventory.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct PackageDetails {
@@ -157,8 +139,6 @@ pub struct PackageDetails {
     pub issues: Option<String>,
     /// The icon's path inside the package.
     pub icon_path: Option<String>,
-    /// How its code runs; `None` for a content package.
-    pub runtime: Option<PackageRuntime>,
     /// The manifest's `[properties]` table.
     pub properties: BTreeMap<String, PropertyValue>,
 }

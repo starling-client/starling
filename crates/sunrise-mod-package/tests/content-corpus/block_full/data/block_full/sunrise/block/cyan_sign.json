@@ -1,0 +1,7 @@
+{
+  "template": "minecraft:oak_sign",
+  "sign_text_color": "cyan",
+  "wood_type": "block_full:alder",
+  "sign_text_glow": true,
+  "wall_block": "block_full:cyan_wall_sign"
+}

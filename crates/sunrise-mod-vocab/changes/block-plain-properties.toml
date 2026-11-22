@@ -1,0 +1,3 @@
+ids = ["type:Block", "type:BlockProperties", "type:BlockProperties.instrument", "type:BlockProperties.ignited_by_lava", "type:BlockProperties.replaceable", "type:BlockProperties.skip_same_block_faces"]
+why = "Block declaration drafts now carry optional instrument, ignited_by_lava, replaceable and skip_same_block_faces properties, matching content JSON. Their Wire form changes as part of the clean break."
+migrate = "Rebuild against the current SDK. Omit these fields to inherit the template; use NoteInstrument for native instrument declarations, and a vanilla uppercase instrument constant in JSON."

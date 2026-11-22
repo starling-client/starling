@@ -1,5 +1,78 @@
 use super::*;
+use sunrise_hooks::title::Button as AddedButton;
+
+/// The main menu's ids for the buttons crates above the engine add (`sunrise_hooks::title`): one
+/// per registration, from `sunrise_hooks::title::FIRST_ID` on, so a press resolves the row it
+/// selected without asking again whether it shows.
+pub(super) const ADDED_IDS: u8 = sunrise_hooks::title::FIRST_ID;
+
+/// Where the logo and edition banner end (`draw_logo`: the banner's top 67, 14 rows).
+const BANNER_BOTTOM: f32 = 81.0;
+
+/// The added rows a main menu of height `h` fits: the block below Minecraft Realms must keep
+/// below the logo and edition banner (`main_menu_top` lifts its top for the copyright line,
+/// which asks `h - 128 - 24 * added` for the top, so at most
+/// `(h - BANNER_BOTTOM - 128) / 24` rows keep that top at or below the banner). The rest stay
+/// hidden: rows that push Singleplayer over the banner show none of their own.
+pub(super) fn added_rows_that_fit(h: f32) -> usize {
+    ((h - BANNER_BOTTOM - 128.0) / 24.0).floor().max(0.0) as usize
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own title buttons, instead of the game's registered ones: each test runs on its
+    /// thread.
+    pub(super) static TEST_BUTTONS: std::cell::Cell<Option<&'static [&'static dyn AddedButton]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The buttons crates registered for the title screen.
+fn registered() -> &'static [&'static dyn AddedButton] {
+    #[cfg(test)]
+    if let Some(buttons) = TEST_BUTTONS.get() {
+        return buttons;
+    }
+    sunrise_hooks::title::engine::all()
+}
+
+/// The action of the press the main menu id `id` carried: the screen the registration names,
+/// whether it shows now or not. The row passed hit testing or took the keyboard focus while it
+/// showed; asking `shown` again here would drop the press because the state behind it moved in
+/// between (`registered` answers by the id alone). No id left, no action.
+pub(super) fn added_action(id: u8) -> Action {
+    let i = usize::from(id).checked_sub(usize::from(ADDED_IDS));
+    match i.and_then(|i| registered().get(i)).map(|b| b.opens()) {
+        Some(sunrise_hooks::title::Opens::Mods) => Action::Mods,
+        _ => Action::None,
+    }
+}
+
 impl Title {
+    /// The added buttons the main menu shows now, with their ids, in registration order: at
+    /// most the rows that fit between the logo and the copyright line (`added_rows_that_fit`).
+    /// The id is the button's registration, not its place among the ones showing, so a press
+    /// resolved from it needs no second look at `shown`.
+    fn added_buttons(&self, h: f32) -> Vec<(u8, &'static dyn AddedButton)> {
+        let title = sunrise_hooks::title::Title::new(self.mods);
+        registered()
+            .iter()
+            .enumerate()
+            .filter(|(_, button)| button.shown(&title))
+            .take(added_rows_that_fit(h))
+            .map(|(i, button)| (ADDED_IDS + i as u8, *button))
+            .collect()
+    }
+    /// The main menu's first row: vanilla's `height / 4 + 48`. With `added` rows below Minecraft
+    /// Realms it lifts on short screens, so Options... and Quit Game stay clear of the copyright
+    /// line drawn at `height - 10`, and so the lifted top stays below the logo and edition
+    /// banner: the caller shows `added_rows_that_fit` rows at most, the most that keeps both.
+    pub(super) fn main_menu_top(h: f32, added: usize) -> f32 {
+        let top = (h / 4.0).floor() + 48.0;
+        if added == 0 {
+            return top;
+        }
+        top.min(h - 128.0 - 24.0 * added as f32)
+    }
     pub(super) fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
         // The game rules draw and press their own.
         if self.rules.borrow().is_some() {
@@ -20,7 +93,10 @@ impl Title {
         match &self.mode {
             Mode::Main => {
                 let cx = (w / 2.0).floor();
-                let y = (h / 4.0).floor() + 48.0;
+                let added = self.added_buttons(h);
+                // Each added button takes a row below Minecraft Realms; the rows after move down.
+                let below = 24.0 * added.len() as f32;
+                let y = Self::main_menu_top(h, added.len());
                 let mut buttons = vec![
                     b(
                         cx - 100.0,
@@ -50,7 +126,7 @@ impl Title {
                     ),
                     b(
                         cx - 100.0,
-                        y + 96.0,
+                        y + 96.0 + below,
                         98.0,
                         &lang::get_or("menu.options", "Options..."),
                         true,
@@ -59,7 +135,7 @@ impl Title {
                     .does(crate::widgets::Action::Options),
                     b(
                         cx + 2.0,
-                        y + 96.0,
+                        y + 96.0 + below,
                         98.0,
                         &lang::get_or("menu.quit", "Quit Game"),
                         true,
@@ -67,6 +143,21 @@ impl Title {
                     )
                     .does(crate::widgets::Action::Exit),
                 ];
+                // After Minecraft Realms, so they come before the icon row and Options... for
+                // the keyboard and the narrator too.
+                for (i, (id, button)) in added.into_iter().enumerate() {
+                    buttons.insert(
+                        3 + i,
+                        b(
+                            cx - 100.0,
+                            y + 72.0 + 24.0 * i as f32,
+                            200.0,
+                            &lang::get(button.label()),
+                            true,
+                            id,
+                        ),
+                    );
+                }
                 // CommonButtons' icon buttons; Sunrise's Join a Friend (an
                 // invite code) sits behind vanilla's Friends button. Starling keeps its Mods in
                 // Options > Mods (the switches and Compile), as in 0.8.0: three icons, centred.
@@ -85,7 +176,11 @@ impl Title {
                 {
                     let mut button = b(
                         cx - 34.0 + i as f32 * 24.0,
+<<<<<<< sync-sunrise-1
                         y + 72.0,
+=======
+                        y + 72.0 + below,
+>>>>>>> sunrise/main
                         20.0,
                         &lang::get_or(key, plain),
                         id != 5 || crate::net::joins_friends(),
@@ -169,7 +264,15 @@ impl Title {
             }
             Mode::Create {
                 creative, options, ..
-            } => create_world::buttons(w, h, *creative, options, self.preset_data.is_some()),
+            } => create_world::buttons(
+                w,
+                h,
+                *creative,
+                options,
+                self.preset_data
+                    .is_some()
+                    .then_some(self.preset_editors.as_ref()),
+            ),
             Mode::CreateFlat { flat, .. } => flat::buttons(w, h, flat),
             Mode::CreateBuffet { buffet, .. } => buffet::buttons(w, h, buffet),
             Mode::CreatePreset { .. } => vec![

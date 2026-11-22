@@ -523,10 +523,8 @@ status = "next"
 area = "gameplay"
 owner = "martipops"
 plain = """Play with a friend on the same screen, each with a controller."""
-dev = """Issue #2054, built by martipops as a series: up to 16 local players on the server thread's multiplayer \
-(#3541), each controller driving its own player (#3794), joining with a controller (#3801), players in windows of \
-their own (#3825) and the profile page (#3826)."""
-links = ["#2054", "#3541", "#3777", "#3794", "#3801", "#3825", "#3826"]
+dev = """The built-in feature was removed. Its replacement will be an official native mod with guests limited to the host's world."""
+links = ["https://github.com/sunrise-org/sunrise/issues/614", "https://github.com/sunrise-org/sunrise-splitscreen"]
 
 # ---------------------------------------------------------------------------------------------------- Later
 
@@ -1257,7 +1255,6 @@ status = "later"
 area = "platforms"
 plain = """Install Sunrise on NixOS through a Nix flake."""
 dev = """A player's idea (#sunrise-ideas). The launcher's AppImage ships with each launcher release \
-(packaging/linux/appimage.sh): one file with the libraries GPUI needs, which replaces itself when it \
+(packaging/linux/appimage.sh in sunrise-launcher): one file with the libraries GPUI needs, which replaces itself when it \
 updates. A flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, \
 X11/Wayland, ALSA) is still missing, the way sunrise-parity's NixOS setup runs them today."""
-links = ["packaging/linux/appimage.sh"]

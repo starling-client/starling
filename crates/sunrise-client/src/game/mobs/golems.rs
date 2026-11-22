@@ -261,10 +261,10 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use sunrise_client::block_pattern::{
         BlockPattern, IRON_GOLEM_BASE, IRON_GOLEM_FULL, SNOW_GOLEM_BASE, SNOW_GOLEM_FULL,
     };
-    use std::collections::HashMap;
 
     /// `BlockPattern.find` over `blocks` (anything else is air): the cells of
     /// the match, column by column, top first.

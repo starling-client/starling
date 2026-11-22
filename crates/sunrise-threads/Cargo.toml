@@ -7,7 +7,6 @@ rust-version.workspace = true
 description = "Scheduling hints for the game's threads and its allocator, and the other OS calls the crates that forbid unsafe code can't make"
 
 [dependencies]
-sunrise-guest-stack = { path = "../sunrise-guest-stack" }
 mimalloc = { version = "0.1.52", default-features = false }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 
@@ -37,6 +36,8 @@ alloc-census = ["alloc-count"]
 test-allocation-probe = []
 # Counts allocation calls on the current thread in behavior tests only.
 test-allocation-count = []
+# A test binary that links it starts in a game folder of its own (`test_game_dir`).
+test-game-dir = []
 
 [lints]
 workspace = true

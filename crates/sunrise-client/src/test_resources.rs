@@ -27,7 +27,11 @@ pub(crate) fn server_sources(
     root: &std::path::Path,
     overlay: &sunrise_world::loot::PackOverlay,
 ) -> sunrise_client::crafting::ResolvedSources {
-    sunrise_client::crafting::ResolvedSources::load_or_empty(root, overlay, &server_load())
+    let defaults = sunrise_world::item_defaults::read(root).expect("test item defaults must load");
+    let items = sunrise_client::items::Items::catalog(root, overlay, &defaults)
+        .expect("test items must load");
+    sunrise_client::crafting::ResolvedSources::load(root, &items, overlay, &server_load())
+        .expect("test recipe sources must load")
 }
 
 /// A server's data load with no mods and no settings, for loaders under test.

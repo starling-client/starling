@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: namespace refused_manifest_id_as_namespace is listed twice
+
+icon:
+unavailable

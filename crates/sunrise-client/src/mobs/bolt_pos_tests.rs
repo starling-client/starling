@@ -4,9 +4,9 @@
 //! value winning; `start` walks to the spot. A raw offset lands inside a hill
 //! or over a pond instead.
 use super::*;
+use std::sync::Arc;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::LegacyRandom;
-use std::sync::Arc;
 
 const SEEDS: i64 = 200;
 
@@ -51,7 +51,7 @@ fn horse(seed: i64, types: &crate::mobs::MobTypes) -> Mob {
         0.0,
         LegacyRandom::new(seed),
     );
-    m.on_ground = true;
+    m.ground.on_ground = true;
     // `isVehicle`: a mob's back is enough to bolt.
     m.extra.rider = Some(9);
     m
@@ -62,6 +62,7 @@ fn horse(seed: i64, types: &crate::mobs::MobTypes) -> Mob {
 /// `RandomPos.generateRandomDirection`'s x, y, z draws, ten times: no further
 /// and no fewer, so a horse never bolts into the hill or onto the pond.
 #[test]
+#[ignore = "daily"]
 fn a_bucking_horse_bolts_only_where_the_filters_allow() {
     use crate::mobs::world::with_built_test_world;
     let mut out = None;

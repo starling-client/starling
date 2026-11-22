@@ -1,5 +1,9 @@
 # Design: typed cauldron interactions
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [cauldron interactions](../../modding/src/how-to/world/cauldron-interactions.md) for the current native API.
+> The old cross-runtime proposal and test matrix are not implementation instructions.
+
 Provisional contract for [#1323](https://github.com/arismoko/horizon/issues/1323) and parent [#854](https://github.com/arismoko/horizon/issues/854). This note implements no API. Typed registration, handler shape, prediction and atomicity require maintainer approval before code. The merged [#1325](https://github.com/arismoko/horizon/pull/1325) table and [#1390](https://github.com/arismoko/horizon/pull/1390) journal are foundations, not a mod registrar.
 
 ## Vanilla and public counterpart
@@ -40,7 +44,7 @@ These file:line anchors describe the inspected base and must be checked again be
 
 Paths abbreviated as `game/` above are under `crates/sunrise-client/src/`. The vanilla caller query identifies AbstractCauldronBlock.useItemOn as the item dispatch moment. Future implementation must test each authority route above and both remote prediction paths.
 
-[PR #2835](https://github.com/arismoko/horizon/pull/2835) owns fluid content/capacity, planned `game/blocks/machines/cauldron_contents.rs`, and native fluid capability integration. That file is absent at this base. Reuse its BlockKey/FluidKey and resolved resource snapshot when integrated; an interaction entry neither registers fluid capacity nor invents a second fluid table. Powder snow need not become a fluid. A fill recipe must respect the registered level schema and content capacity. [PR #2697](https://github.com/arismoko/horizon/pull/2697) owns activity/dispatch restructuring, following vocabulary/loading moves. Declare types in vocabulary and generate facade/transport through the owning generator after that work; do not restore old private point registries. Keep future adapters in small dedicated modules: game.rs, native_hooks/shared.rs and modding/api_values.rs must not grow beyond the fork's file-size gate.
+[PR #2835](https://github.com/arismoko/horizon/pull/2835) owns fluid content/capacity, planned `game/blocks/machines/cauldron_contents.rs`, and native fluid capability integration. That file is absent at this base. Reuse its BlockKey/FluidKey and resolved resource snapshot when integrated; an interaction entry neither registers fluid capacity nor invents a second fluid table. Powder snow need not become a fluid. A fill recipe must respect the registered level schema and content capacity. [PR #2697](https://github.com/arismoko/horizon/pull/2697) owns activity/dispatch restructuring, following vocabulary/loading moves. Declare types in vocabulary and generate facade/transport through the owning generator after that work; do not restore old private point registries. Keep future adapters in small dedicated modules.
 
 ## Proposed typed registration
 

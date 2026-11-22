@@ -12,8 +12,8 @@ pub fn signal_reader_game_thread() {
             let pos = [event.pos.x, event.pos.y, event.pos.z];
             let read = SignalRead::Changed(
                 pos,
-                level.has_neighbor_signal(pos),
-                level.best_neighbor_signal(pos),
+                level.has_neighbor_signal(pos).expect("a tick view"),
+                level.best_neighbor_signal(pos).expect("a tick view"),
                 level.schedule_block_tick(pos, self.0, 2),
             );
             SIGNAL_READS.with(|r| r.borrow_mut().push(read));
@@ -25,7 +25,10 @@ pub fn signal_reader_game_thread() {
         ) -> Flow {
             let pos = [event.pos.x, event.pos.y, event.pos.z];
             let south = [pos[0], pos[1], pos[2] + 1];
-            let read = SignalRead::Ticked(pos, level.signal(south, Direction::South));
+            let read = SignalRead::Ticked(
+                pos,
+                level.signal(south, Direction::South).expect("a tick view"),
+            );
             SIGNAL_READS.with(|r| r.borrow_mut().push(read));
             Flow::Continue
         }

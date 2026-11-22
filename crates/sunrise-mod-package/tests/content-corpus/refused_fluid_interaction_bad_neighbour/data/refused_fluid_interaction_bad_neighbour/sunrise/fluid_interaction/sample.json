@@ -1,0 +1,1 @@
+{"source": "minecraft:lava", "neighbour": {"item": "minecraft:bucket"}, "becomes": {"source": "minecraft:basalt"}}

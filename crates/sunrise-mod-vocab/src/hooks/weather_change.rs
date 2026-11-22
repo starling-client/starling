@@ -6,11 +6,13 @@ pub trait Hooks {
     /// are the requested final states. Set `cancel` to keep the previous
     /// weather parameters. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_weather_change",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge has no such event)",
         cancellable = true
     )]
-    fn weather_change();
+    fn weather_change(dimension: &str, raining: bool, thundering: bool, cancel: &mut bool);
 }

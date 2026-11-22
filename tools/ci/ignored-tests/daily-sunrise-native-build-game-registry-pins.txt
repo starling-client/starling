@@ -1,0 +1,5 @@
+# Offline vendor fixtures exercise joint native builds and native-lock.
+sunrise-native-build registry_generate::tests::a_requirement_that_moves_a_game_pin_leaves_the_old_lock_untouched lib daily child-process
+sunrise-native-build registry_plan::tests::joint_build_chooses_a_pinned_parent_that_keeps_the_games_version lib daily child-process
+sunrise-native-build registry_plan::tests::refusal_names_the_requiring_mod_not_the_other_mod_with_the_same_lock_pin lib daily child-process
+sunrise-native-build registry_plan::tests::two_mods_build_on_the_games_pin_when_both_requirements_allow_it lib daily child-process

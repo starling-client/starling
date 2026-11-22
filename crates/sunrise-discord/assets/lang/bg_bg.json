@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Богато присъствие на Discord",
+  "sunrise.extras.discord_presence.tooltip": "Показва Playing Sunrise във вашия Discord профил, докато Discord работи: менюта, един играч или мултиплейър, измерението и времето на игра. Никога име на света или адрес на сървър."
+}

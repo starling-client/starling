@@ -137,39 +137,88 @@ fn stand_poses(a: &sunrise_client::entities::ArmorStand) -> Vec<(u8, i32, Value)
 }
 
 impl Game<'_> {
-    /// The entities players started and stopped tracking since the last
-    /// tick, told to the mods in order with the hub in `self.lan` and
-    /// no player's state swapped in (`ServerEntity.addPairing` and
-    /// `removePairing`).
+    /// The entities players started and stopped tracking, told to the mods in
+    /// each player's order with the hub in `self.lan` and no player's state
+    /// swapped in (`ServerEntity.addPairing` and `removePairing`). Output a
+    /// tracking pass kept back (`TrackingBatch::held`) is sent up to each
+    /// start's bundle or stop's removal before the mods hear it, so what a
+    /// listener sends the player follows that packet; the rest after the last.
     pub(super) fn run_native_tracking(&mut self) {
         let batches = match self.lan.as_mut() {
             Some(host) => std::mem::take(&mut host.hub.native_tracking),
             None => return,
         };
-        if self.remote.is_some() || self.options.execution_role.is_client() {
-            return;
-        }
-        for batch in batches {
-            for e in batch.events {
-                let (id, kind) = (e.entity as u32, &*e.tracked.kind);
-                if e.start {
-                    self.native_player_start_tracking(
-                        batch.player,
-                        &batch.name,
-                        id,
-                        e.tracked.uuid,
-                        kind,
-                    );
-                } else {
-                    self.native_player_stop_tracking(
-                        batch.player,
-                        &batch.name,
-                        id,
-                        e.tracked.uuid,
-                        kind,
-                    );
+        let tell = self.remote.is_none() && !self.options.execution_role.is_client();
+        for mut batch in batches {
+            // Packet order; the stops a respawn or a level change made without one come first.
+            batch.events.sort_by_key(|e| e.at.unwrap_or(0));
+            let mut held = std::mem::take(&mut batch.held).into_iter();
+            let mut sent = 0;
+            // Removals a captured sound still needs go out after it (`finish_captured_sounds`):
+            // their stops are told then, from `lan_broadcast_effects`.
+            let mut waiting = Vec::new();
+            let mut after_sounds = Vec::new();
+            for mut e in std::mem::take(&mut batch.events) {
+                if let Some(at) = e.at.filter(|&at| at > sent) {
+                    let part = held.by_ref().take(at - sent).collect();
+                    waiting.extend(self.send_tracking_out(batch.conn, part));
+                    sent = at;
+                }
+                if !e.start && waiting.contains(&e.entity) {
+                    e.at = None;
+                    after_sounds.push(e);
+                } else if tell {
+                    self.tell_tracking(batch.player, &batch.name, &e);
                 }
             }
+            let _ = self.send_tracking_out(batch.conn, held.collect());
+            if !after_sounds.is_empty()
+                && let Some(host) = self.lan.as_mut()
+            {
+                host.hub
+                    .tracking_after_sounds
+                    .push(sunrise_client::lan::hub::TrackingBatch {
+                        events: after_sounds,
+                        held: Vec::new(),
+                        ..batch
+                    });
+            }
+        }
+    }
+
+    /// The stops whose removal waited for a captured sound, told once `finish_captured_sounds`
+    /// has sent that removal.
+    pub(in crate::game) fn run_tracking_after_sounds(&mut self) {
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        if host.hub.tracking_after_sounds.is_empty() {
+            return;
+        }
+        let later = std::mem::take(&mut host.hub.tracking_after_sounds);
+        host.hub.native_tracking.extend(later);
+        self.run_native_tracking();
+    }
+
+    fn send_tracking_out(&self, conn: u32, part: Vec<sunrise_client::lan::Body>) -> Vec<i32> {
+        match self.lan.as_ref() {
+            Some(host) => host.hub.send_tracking_out(conn, part),
+            None => Vec::new(),
+        }
+    }
+
+    /// One start or stop of tracking, told to the mods.
+    pub(super) fn tell_tracking(
+        &mut self,
+        player: u128,
+        name: &str,
+        e: &sunrise_client::lan::entity::TrackEvent,
+    ) {
+        let (id, kind) = (e.entity as u32, &*e.tracked.kind);
+        if e.start {
+            self.native_player_start_tracking(player, name, id, e.tracked.uuid, kind);
+        } else {
+            self.native_player_stop_tracking(player, name, id, e.tracked.uuid, kind);
         }
     }
 
@@ -204,6 +253,27 @@ impl Game<'_> {
                 pass.insert(0, d);
             }
         }
+        let mut mixed = sunrise_client::fast_hash::FxHashSet::default();
+        for row in &self.resident_entities.general.rows {
+            if let Some(vehicle) = row.mount
+                && !self
+                    .persist
+                    .removals
+                    .contains(&super::commands::Target::General(row.id))
+            {
+                riding.add(vehicle as i32, row.id as i32);
+                mixed.insert(vehicle);
+            }
+        }
+        for vehicle in mixed {
+            let seats = self.seated_passengers(vehicle);
+            if let Some(passengers) = riding.passengers.get_mut(&(vehicle as i32)) {
+                passengers
+                    .sort_by_key(|&id| seats.iter().position(|&(_, rider, _)| rider == id as u32));
+            }
+        }
+        // Players carry passengers only when a mod seated a mob on one.
+        self.tell_vehicle_players(riding);
     }
 
     /// Boats, minecarts, armor stands, item frames, paintings and the
@@ -233,7 +303,7 @@ impl Game<'_> {
                 &b.entity_type(),
                 [p.x, p.y, p.z],
                 b.yaw,
-                b.on_ground,
+                b.ground.on_ground,
             );
             // Leashable.setLeashedTo / dropLeash: who holds the boat's lead.
             e.leash = leash;
@@ -337,12 +407,12 @@ impl Game<'_> {
                 "minecraft:armor_stand",
                 [p.x, p.y, p.z],
                 a.yaw,
-                a.on_ground,
+                a.ground.on_ground,
             );
             e.head_yaw = a.yaw;
             e.velocity = [a.velocity.x, a.velocity.y, a.velocity.z];
             let mut flags = 0i8;
-            if a.fire_ticks > 0 {
+            if a.is_on_fire() {
                 flags |= 1;
             }
             if a.invisible {
@@ -522,6 +592,7 @@ impl Game<'_> {
             ));
         }
         self.lan_projectile_states(out, after);
+        self.lan_general_states(out, after);
         for o in self.others.iter().filter(|o| o.id > after) {
             let p = o.position;
             let e = add_state(out, o.id, &o.kind, [p.x, p.y, p.z], o.yaw, false);
@@ -692,6 +763,9 @@ impl Game<'_> {
         // A bare state is never paired: its UUID is never read.
         for e in states.as_mut_slice().iter_mut().filter(|e| !e.bare) {
             e.uuid = ints_uuid(self.uuid_for(e.id as u32));
+            if !self.persist.sync_body_position.is_empty() {
+                e.sync_position |= self.persist.sync_body_position.contains(&(e.id as u32));
+            }
             if let Some(bits) = self.persist.forced_meta.get(&(e.id as u32)) {
                 e.forced_meta = *bits;
             }
@@ -702,13 +776,16 @@ impl Game<'_> {
     /// SteppedInterpolationTracker.updateTracking clears syncPosition: once the states for the
     /// tracking pass are taken.
     pub(super) fn lan_syncs_looked(&mut self) {
+        self.persist.sync_body_position.clear();
         for m in &mut self.mobs {
             m.needs_sync = false;
             m.sync_position = false;
         }
-        self.creatures
-            .projectiles
-            .for_each_mut(|p| p.needs_sync = false);
+        self.creatures.projectiles.for_each_mut(|p| {
+            p.needs_sync = false;
+            p.sync_velocity = false;
+        });
+        self.falling.for_each_mut(|f| f.sync_velocity = false);
         for d in &mut self.dropped {
             d.needs_sync = false;
         }
@@ -748,6 +825,30 @@ impl Game<'_> {
         assign_resident_ids!(self.breath_clouds, b, next, None);
     }
 
+    /// A mod's general entity rows (#792), as the tracker reads them. Their type key is no
+    /// entity type a client knows, so pairing introduces them on `sunrise:general_entity`
+    /// (`lan/entity.rs`), to Sunrise clients only; their own data are their synced attachments.
+    /// Only these states are marked general: a quarantined record, which keeps its type's key,
+    /// is no row and is tracked as an unknown kind (never paired).
+    fn lan_general_states(&self, out: &mut States, after: u32) {
+        let catalog = super::general::general_type_catalog();
+        let rows = self.resident_entities.general.rows.iter();
+        for row in rows.filter(|row| row.id > after) {
+            let kind = catalog.key(row.type_slot);
+            let e = out.add(
+                row.id as i32,
+                sunrise_client::lan::playerdata::ints_uuid(row.uuid),
+                kind,
+            );
+            let (p, v) = (row.position, row.velocity);
+            e.position = [p.x, p.y, p.z];
+            e.velocity = [v.x, v.y, v.z];
+            [e.yaw, e.pitch] = row.rotation;
+            e.head_yaw = row.rotation[0];
+            e.general = Some(catalog.tracking(row.type_slot));
+        }
+    }
+
     /// Primed TNT, falling blocks, projectiles, tridents, firework rockets and
     /// end crystals, as guests track them.
     fn lan_projectile_states(&mut self, out: &mut States, after: u32) {
@@ -768,14 +869,21 @@ impl Game<'_> {
             add_state(out, b.id, "minecraft:lightning_bolt", b.at, 0.0, false);
         }
         for t in self.tnts.iter().filter(|t| t.id > after) {
-            let e = add_state(out, t.id, "minecraft:tnt", at(t.position), 0.0, t.on_ground);
+            let e = add_state(
+                out,
+                t.id,
+                "minecraft:tnt",
+                at(t.position),
+                0.0,
+                t.ground.on_ground,
+            );
             e.velocity = at(t.velocity);
             // PrimedTnt.DATA_FUSE_ID, 80 by default; requiresPrecisePosition
             // while it touches a block.
             if t.fuse != 80 {
                 e.meta.push((8, serializer::INT, Value::Int(t.fuse)));
             }
-            e.precise = t.on_ground;
+            e.precise = t.ground.on_ground;
         }
         for f in self.falling.iter().filter(|f| f.id > after) {
             let e = add_state(
@@ -784,9 +892,10 @@ impl Game<'_> {
                 "minecraft:falling_block",
                 at(f.position),
                 0.0,
-                f.on_ground,
+                f.ground.on_ground,
             );
             e.velocity = at(f.velocity);
+            e.sync_velocity = f.sync_velocity;
             // getAddEntityPacket: the block state; DATA_START_POS.
             e.data = f.state.0 as i32;
             if f.no_gravity {
@@ -805,10 +914,11 @@ impl Game<'_> {
                 Some(g) => g.entity_id,
                 None => owner(p.owner),
             };
-            let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.on_ground);
+            let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.ground.on_ground);
             e.pitch = p.pitch;
             e.velocity = at(p.velocity);
             e.needs_sync = p.needs_sync;
+            e.sync_velocity = p.sync_velocity;
             // Projectile.getAddEntityPacket: the owner's id.
             e.data = data;
             let uuid = e.uuid;
@@ -951,7 +1061,7 @@ impl Game<'_> {
                 "minecraft:trident",
                 at(t.position),
                 t.yaw,
-                t.on_ground,
+                t.ground.on_ground,
             );
             e.pitch = t.pitch;
             e.velocity = at(t.velocity);
@@ -992,7 +1102,7 @@ impl Game<'_> {
                 "minecraft:firework_rocket",
                 at(r.position),
                 0.0,
-                r.on_ground,
+                r.ground.on_ground,
             );
             e.velocity = at(r.velocity);
             // DATA_ID_FIREWORKS_ITEM once set from a stack, DATA_ATTACHED_TO_TARGET,
@@ -1101,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn tracking_ids_preserve_all_family_interleaving() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             for (kind, nbt) in [
@@ -1175,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn tracking_ids_refuse_bound_zero_owners() {
         for kind in ["minecraft:falling_block", "minecraft:arrow"] {
             crate::game::native_entity_refs::tests::with_game(|game| {
@@ -1207,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn tracking_ids_only_number_the_spawn_buffer_during_a_taken_pass() {
         macro_rules! check {
             ($kind:expr, $nbt:expr, $game:ident, $list:expr) => {
@@ -1277,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn late_dragon_ids_reserve_parts_before_crystals() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.summon_with_nbt("minecraft:ender_dragon", [1.0, 70.0, 1.0], "{}")
@@ -1306,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn kept_display_data_is_what_a_build_gives() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let snbt = |s: &str| sunrise_client::command::snbt::parse_fully(s).unwrap();

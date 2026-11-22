@@ -11,7 +11,9 @@
 //! saved compound until its destination chunks are loaded.
 use super::entity::{Entity as _, entity_lists_of, for_each_entity};
 use super::{Dim, Game, Result, Screen};
+use std::collections::HashMap;
 use sunrise_client::fast_hash::FxHashMap;
+use sunrise_client::mobs::{Species, spawn_rules};
 use sunrise_client::nether_portal::{ENTITY_DELAY, PortalState};
 use sunrise_client::world::PendingEntity;
 use sunrise_core::{
@@ -20,7 +22,6 @@ use sunrise_core::{
     random::RandomSource,
 };
 use sunrise_world::level::flags as level_flags;
-use std::collections::HashMap;
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::level::portal_travel::{
@@ -32,12 +33,48 @@ use {
 #[path = "nether_portal/respawn_attributes.rs"]
 mod respawn_attributes;
 
+#[cfg(test)]
+#[path = "tests/portal_spawn_tests.rs"]
+mod portal_spawn_tests;
+
 /// `Player.getDimensionChangingDelay`.
 pub(super) const PLAYER_DELAY: i32 = 10;
 /// `VehicleEntity.getDimensionChangingDelay`: boats and minecarts.
 const VEHICLE_DELAY: i32 = 10;
 /// `Projectile.getDimensionChangingDelay`.
 const PROJECTILE_DELAY: i32 = 2;
+
+/// One level's loaded state the portal search reads: the level in place or a parked one.
+pub(in crate::game) struct PortalSide<'a> {
+    pub(in crate::game) dim: Dim,
+    pub(in crate::game) world: &'a sunrise_client::world::World,
+    border: &'a sunrise_client::worldborder::WorldBorder,
+}
+
+impl PortalSide<'_> {
+    /// `PortalForcer`'s search radius in blocks: 16 into the Nether, 128 out of it.
+    pub(in crate::game) fn search_radius(to_nether: bool) -> i32 {
+        if to_nether { 16 } else { 128 }
+    }
+    /// The chunks the search of `radius` around chunk (`cx`, `cz`) reads.
+    pub(in crate::game) fn search_chunks(
+        cx: i32,
+        cz: i32,
+        radius: i32,
+    ) -> impl Iterator<Item = (i32, i32)> {
+        let reach = radius.div_euclid(16) + 1;
+        (cz - reach..=cz + reach).flat_map(move |z| (cx - reach..=cx + reach).map(move |x| (x, z)))
+    }
+    fn bounds_of(border: &sunrise_client::worldborder::WorldBorder) -> BorderBounds {
+        let [min_x, min_z, max_x, max_z] = border.bounds();
+        BorderBounds {
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+        }
+    }
+}
 
 /// Where in its portal a traveller stood, and where its exit is to be found.
 #[derive(Clone, Copy, Debug)]
@@ -50,17 +87,27 @@ pub(super) struct Plan {
     width: f32,
     height: f32,
     /// Through an End portal: `approximate` is the End's spawn point, or the
-    /// Overworld's shared spawn.
+    /// world spawn in its level.
     pub(super) end: bool,
+    /// Through an End portal out of the End, to the world spawn's level, which may be the End
+    /// itself: no platform is built there.
+    pub(super) from_end: bool,
 }
 
 impl Plan {
     /// `EndPortalBlock.getPortalDestination` for an entity other than a
     /// player in `from`: the End's spawn point, or out of the End the
-    /// Overworld's shared spawn `world_spawn`.
-    fn end_portal(from: Dim, world_spawn: BlockPos, width: f32, height: f32) -> Self {
-        let (dim, approximate) = if from == Dim::End {
-            (Dim::Overworld, world_spawn)
+    /// world spawn `world_spawn` in its level `spawn_level` (`respawnData.dimension()`).
+    fn end_portal(
+        from: Dim,
+        spawn_level: Dim,
+        world_spawn: BlockPos,
+        width: f32,
+        height: f32,
+    ) -> Self {
+        let from_end = from == Dim::End;
+        let (dim, approximate) = if from_end {
+            (spawn_level, world_spawn)
         } else {
             let [x, y, z] = super::end::END_SPAWN;
             (Dim::End, BlockPos::new(x, y, z))
@@ -73,6 +120,7 @@ impl Plan {
             width,
             height,
             end: true,
+            from_end,
         }
     }
 }
@@ -229,7 +277,11 @@ fn touches_end_portal(from: Vec3, to: Vec3, width: f32, height: f32, pos: BlockP
 /// of an entity facing `[yaw, pitch]`: into the End it faces west and keeps
 /// its pitch (`Relative.X_ROT`); out of it both turn by the world spawn's
 /// angles (`Relative.ROTATION`). The pitch stays within ±90.
-fn end_portal_rotation(into_end: bool, [yaw, pitch]: [f32; 2], spawn: [f32; 2]) -> [f32; 2] {
+pub(in crate::game) fn end_portal_rotation(
+    into_end: bool,
+    [yaw, pitch]: [f32; 2],
+    spawn: [f32; 2],
+) -> [f32; 2] {
     let (yaw, pitch) = if into_end {
         // Direction.WEST.toYRot().
         (90.0, pitch)
@@ -276,6 +328,7 @@ fn arrival_tag(a: &Arrival) -> Tag {
         ("width", Tag::Float(p.width.to_bits())),
         ("height", Tag::Float(p.height.to_bits())),
         ("end", Tag::Int(i32::from(p.end))),
+        ("from_end", Tag::Int(i32::from(p.from_end))),
         ("entity", a.tag.clone()),
     ])
 }
@@ -313,6 +366,8 @@ fn arrival_from_tag(a: &Tag) -> Option<Arrival> {
             width: float("width").unwrap_or(0.25),
             height: float("height").unwrap_or(0.25),
             end: int("end").unwrap_or(0) != 0,
+            // An End portal's entry always leads into the End.
+            from_end: int("from_end").map_or(dim != Dim::End, |v| v != 0),
         },
         tag: tag.clone(),
     })
@@ -341,13 +396,27 @@ impl Game<'_> {
         } else {
             self.levels.parked_border(dim).unwrap_or(&self.border)
         };
-        let [min_x, min_z, max_x, max_z] = border.bounds();
-        BorderBounds {
-            min_x,
-            min_z,
-            max_x,
-            max_z,
+        PortalSide::bounds_of(border)
+    }
+    /// The level in place as a side of the portal search.
+    pub(in crate::game) fn in_place_side(&self) -> PortalSide<'_> {
+        PortalSide {
+            dim: self.dim,
+            world: &self.world,
+            border: &self.border,
         }
+    }
+    /// The loaded level of `dim` as a side of the portal search: the level in place or a
+    /// parked one, None for a level that is not open. Reads no saved data.
+    pub(in crate::game) fn portal_side(&self, dim: Dim) -> Option<PortalSide<'_>> {
+        if dim == self.dim {
+            return Some(self.in_place_side());
+        }
+        Some(PortalSide {
+            dim,
+            world: self.levels.parked_world(dim)?,
+            border: self.levels.parked_border(dim)?,
+        })
     }
     /// `ServerLevel.isAllowedToEnterPortal`.
     pub(super) fn may_enter(&self, target: Dim) -> bool {
@@ -368,12 +437,31 @@ impl Game<'_> {
         height: f32,
         reset_forward: bool,
     ) -> Plan {
-        let target = if self.dim == Dim::Nether {
+        self.portal_plan_from(
+            &self.in_place_side(),
+            entry,
+            at,
+            width,
+            height,
+            reset_forward,
+        )
+    }
+    /// [`Self::portal_plan`] for a portal in `side`'s level.
+    pub(in crate::game) fn portal_plan_from(
+        &self,
+        side: &PortalSide<'_>,
+        entry: BlockPos,
+        at: Vec3,
+        width: f32,
+        height: f32,
+        reset_forward: bool,
+    ) -> Plan {
+        let target = if side.dim == Dim::Nether {
             Dim::Overworld
         } else {
             Dim::Nether
         };
-        let state = self.world.block(entry.x, entry.y, entry.z);
+        let state = side.world.block(entry.x, entry.y, entry.z);
         let b = self.res.behaviours();
         let (entry_x_axis, offset) = match b.portal_axis(state) {
             Some(x_axis) => {
@@ -383,7 +471,7 @@ impl Game<'_> {
                     21,
                     Axis::Y,
                     21,
-                    |p| self.world.block(p.x, p.y, p.z) == state,
+                    |p| side.world.block(p.x, p.y, p.z) == state,
                 );
                 let mut offset = relative_position(area, x_axis, at, width, height);
                 if reset_forward {
@@ -395,7 +483,7 @@ impl Game<'_> {
         };
         // DimensionType.getTeleportationScale: the coordinate scales of the two levels.
         let scale = sunrise_world::dimension_type::DimensionFacts::teleportation_scale(
-            self.dimension_type(),
+            self.dimension_type_of(side.dim),
             self.dimension_type_of(target),
         );
         Plan {
@@ -409,6 +497,7 @@ impl Game<'_> {
             width,
             height,
             end: false,
+            from_end: false,
         }
     }
     /// Whether entity `id` may take `plan`'s portal: the rule on entering its
@@ -420,6 +509,7 @@ impl Game<'_> {
                 plan.dim,
                 super::server_travel::TravelCause::of_plan(plan),
             )
+            && !self.general_transfer_conflicts(id, plan.dim)
     }
     /// The plan of an item or mob going through the portal block at `entry`:
     /// an End portal's fixed destination, else the Nether portal's.
@@ -441,6 +531,7 @@ impl Game<'_> {
         });
         Plan::end_portal(
             self.dim,
+            self.world_spawn_level(),
             BlockPos::new(spawn[0], spawn[1], spawn[2]),
             width,
             height,
@@ -452,14 +543,14 @@ impl Game<'_> {
     /// Where an item or mob through an End portal lands once `plan`'s level
     /// has loaded around it: the bottom centre of the End's spawn point,
     /// above the platform built below it (`EndPlatformFeature.createEndPlatform`);
-    /// out of the End, the top of the shared spawn's column
+    /// out of the End, the top of the world spawn's column in its level
     /// (`Entity.adjustSpawnLocation`).
     fn end_portal_exit(&mut self, plan: &Plan) -> Vec3 {
         let p = plan.approximate;
         let centre = Vec3::new(f64::from(p.x) + 0.5, f64::from(p.y), f64::from(p.z) + 0.5);
-        if plan.dim == Dim::End {
+        if !plan.from_end {
             // In the End the arrival only builds the platform: no spawn search.
-            if let Err(e) = self.end_arrival(centre, &mut None) {
+            if let Err(e) = self.end_arrival(true, centre, &mut None) {
                 log::error!("End platform: {e}");
             }
             return centre;
@@ -468,26 +559,33 @@ impl Game<'_> {
         Vec3::new(centre.x, f64::from(y), centre.z)
     }
     /// The nether portal blocks of the chunks within `radius` of `center`
-    /// (the points of interest `PortalForcer` searches): loaded chunks as
-    /// they are, the others as saved (each read once until it is saved again);
-    /// chunks never generated have none.
-    fn portal_blocks(&self, center: BlockPos, radius: i32) -> Vec<BlockPos> {
+    /// in `side` (the points of interest `PortalForcer` searches): loaded
+    /// chunks as they are; the others as saved in `save` (each read once until
+    /// it is saved again), or none without one; chunks never generated have none.
+    fn portal_blocks(
+        &self,
+        side: &PortalSide<'_>,
+        save: Option<&sunrise_client::save::SaveDir>,
+        center: BlockPos,
+        radius: i32,
+    ) -> Vec<BlockPos> {
         let b = self.res.behaviours();
         let is_portal = |state| b.portal_axis(state).is_some();
-        let chunk_radius = radius.div_euclid(16) + 1;
         let (cx, cz) = (center.x >> 4, center.z >> 4);
         let mut out = Vec::new();
-        for z in cz - chunk_radius..=cz + chunk_radius {
-            for x in cx - chunk_radius..=cx + chunk_radius {
-                match self.world.chunks.get(&(x, z)) {
-                    Some(c) => out.extend(c.blocks_where(is_portal)),
-                    None => out.extend_from_slice(&self.save.saved_portal_blocks(
-                        x,
-                        z,
-                        self.pack.assets.registry,
-                        world_biomes!(self),
-                        is_portal,
-                    )),
+        for (x, z) in PortalSide::search_chunks(cx, cz, radius) {
+            match side.world.chunks.get(&(x, z)) {
+                Some(c) => out.extend(c.blocks_where(is_portal)),
+                None => {
+                    if let Some(save) = save {
+                        out.extend_from_slice(&save.saved_portal_blocks(
+                            x,
+                            z,
+                            self.pack.assets.registry,
+                            world_biomes!(self),
+                            is_portal,
+                        ));
+                    }
                 }
             }
         }
@@ -496,13 +594,23 @@ impl Game<'_> {
     /// `PortalForcer.findClosestPortalPosition` and the rectangle around it,
     /// for `plan` in the loaded dimension; builds nothing.
     pub(in crate::game) fn find_exit_portal(
-        &mut self,
+        &self,
+        plan: &Plan,
+    ) -> Option<(BlockPos, FoundRectangle)> {
+        self.find_portal_in(&self.in_place_side(), Some(&self.save), plan)
+    }
+    /// [`Self::find_exit_portal`] in `side`'s level, reading the chunks that are not
+    /// loaded from `save` when it is given.
+    pub(in crate::game) fn find_portal_in(
+        &self,
+        side: &PortalSide<'_>,
+        save: Option<&sunrise_client::save::SaveDir>,
         plan: &Plan,
     ) -> Option<(BlockPos, FoundRectangle)> {
         let to_nether = plan.dim == Dim::Nether;
-        let radius = if to_nether { 16 } else { 128 };
-        let border = self.border_bounds();
-        let portals = self.portal_blocks(plan.approximate, radius);
+        let radius = PortalSide::search_radius(to_nether);
+        let border = PortalSide::bounds_of(side.border);
+        let portals = self.portal_blocks(side, save, plan.approximate, radius);
         let (min_section, max_section) = if to_nether { (0, 15) } else { (-4, 19) };
         let found = closest_portal(
             &portals,
@@ -512,7 +620,7 @@ impl Game<'_> {
             min_section,
             max_section,
         )?;
-        let state = self.world.block(found.x, found.y, found.z);
+        let state = side.world.block(found.x, found.y, found.z);
         let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
         let rectangle = largest_rectangle_around(
             found,
@@ -520,21 +628,33 @@ impl Game<'_> {
             21,
             Axis::Y,
             21,
-            |p| self.world.block(p.x, p.y, p.z) == state,
+            |p| side.world.block(p.x, p.y, p.z) == state,
         );
         Some((found, rectangle))
     }
     /// The exit portal of `plan` in the loaded dimension: the closest one
     /// within reach, else one built by `PortalForcer.createPortal`.
     pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
-        let to_nether = plan.dim == Dim::Nether;
-        let border = self.border_bounds();
         if let Some((found, rectangle)) = self.find_exit_portal(plan) {
             // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
             // of the portal found.
             self.place_portal_ticket((found.x >> 4, found.z >> 4));
             return Some(rectangle);
         }
+        let created = self.create_exit_portal(plan);
+        if let Some(exit) = created {
+            // A portal built for the entity: the ticket goes on the chunk it
+            // arrives in (`TeleportTransition.PLACE_PORTAL_TICKET`).
+            let (at, _) = self.arrival(plan, exit);
+            self.place_portal_ticket(Self::chunk_of(at));
+        }
+        created
+    }
+    /// `PortalForcer.createPortal` for `plan` in the loaded dimension, then the
+    /// `portal_create` hook, which hears a portal whose blocks are in the world.
+    pub(in crate::game) fn create_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
+        let to_nether = plan.dim == Dim::Nether;
+        let border = self.border_bounds();
         let logical = if to_nether { 128 } else { 384 };
         let (approximate, x_axis) = (plan.approximate, plan.entry_x_axis);
         let created = self.with_level(|b, level, ticks| {
@@ -549,10 +669,6 @@ impl Game<'_> {
             };
             let corner = exit.min_corner;
             self.native_portal_create(dim, [corner.x, corner.y, corner.z]);
-            // A portal built for the entity: the ticket goes on the chunk it
-            // arrives in (`TeleportTransition.PLACE_PORTAL_TICKET`).
-            let (at, _) = self.arrival(plan, exit);
-            self.place_portal_ticket(Self::chunk_of(at));
         }
         created
     }
@@ -574,10 +690,19 @@ impl Game<'_> {
     /// `NetherPortalBlock.createDimensionTransition`: the arrival position
     /// and the yaw turned by.
     pub(super) fn arrival(&self, plan: &Plan, exit: FoundRectangle) -> (Vec3, f32) {
+        self.arrival_in(&self.in_place_side(), plan, exit)
+    }
+    /// [`Self::arrival`] in `side`'s level.
+    pub(in crate::game) fn arrival_in(
+        &self,
+        side: &PortalSide<'_>,
+        plan: &Plan,
+        exit: FoundRectangle,
+    ) -> (Vec3, f32) {
         let b = self.res.behaviours();
         let corner = exit.min_corner;
         let exit_x_axis = b
-            .portal_axis(self.world.block(corner.x, corner.y, corner.z))
+            .portal_axis(side.world.block(corner.x, corner.y, corner.z))
             .unwrap_or(true);
         let (bottom, rotation) = exit_position(
             exit,
@@ -587,9 +712,9 @@ impl Game<'_> {
             plan.width,
             plan.height,
         );
-        let border = self.border_bounds();
+        let border = PortalSide::bounds_of(side.border);
         let at = collision_free_position(bottom, plan.width, plan.height, &border, |p| {
-            b.collision_shape(self.world.block(p.x, p.y, p.z))
+            b.collision_shape(side.world.block(p.x, p.y, p.z))
                 .map(|s| s.moved(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z))))
         });
         (at, rotation)
@@ -624,7 +749,12 @@ impl Game<'_> {
     /// approximate exit.
     pub(super) fn arrival_centre(&self, plan: &Plan) -> Vec3 {
         let to_nether = plan.dim == Dim::Nether;
-        let portals = self.portal_blocks(plan.approximate, if to_nether { 16 } else { 128 });
+        let portals = self.portal_blocks(
+            &self.in_place_side(),
+            Some(&self.save),
+            plan.approximate,
+            PortalSide::search_radius(to_nether),
+        );
         let (min_section, max_section) = if to_nether { (0, 15) } else { (-4, 19) };
         let border = self.border_bounds();
         let found = closest_portal(
@@ -643,27 +773,23 @@ impl Game<'_> {
         )
     }
     /// `LocalPlayer.handlePortalTransitionEffect`: whether the confusion
-    /// effect grows this tick. Entering a portal closes screens other than
-    /// the chat and death screens and plays `block.portal.trigger` when the
-    /// effect starts from nothing.
+    /// effect grows this tick. Entering a portal closes the screen only when
+    /// it does not allow it (`Screen.isAllowedInPortal`), and plays
+    /// `block.portal.trigger` when the effect starts from nothing.
     pub(super) fn client_portal_effect(&mut self) -> bool {
         let inside = std::mem::take(&mut self.portals.client_inside);
         self.portals.client_was_inside = inside;
         if !inside {
             return false;
         }
-        match self.screen {
-            Screen::Playing | Screen::Chat | Screen::Dead => {}
-            Screen::Inventory | Screen::Creative => {
+        // No screen at all (`screen() == null`) is nothing to close.
+        if self.screen != Screen::Playing && !self.screen.allowed_in_portal() {
+            if matches!(self.screen, Screen::Creative | Screen::Inventory) {
                 self.close_container();
                 self.carried = None;
-                self.set_screen(Screen::Playing);
-                self.capture(true);
             }
-            _ => {
-                self.set_screen(Screen::Playing);
-                self.capture(true);
-            }
+            self.set_screen(Screen::Playing);
+            self.capture(true);
         }
         if self.screen_fx.portal == 0.0 {
             let pitch = self.world.random.next_float() * 0.4 + 0.8;
@@ -905,6 +1031,56 @@ impl Game<'_> {
         self.player
             .as_ref()
             .is_some_and(|p| self.can_use_portal_of(p, self.riding.is_some(), p.sleeping))
+    }
+    /// The rest of `NetherPortalBlock.randomTick` after a won roll: with a
+    /// player close enough for spawning, a zombified piglin spawns on the block
+    /// under the portal column when it is a valid spawn, plays its ambient
+    /// sound (`EntityType.spawn`) and waits out a portal cooldown.
+    pub(super) fn portal_spawn(&mut self, pos: [i32; 3]) {
+        // ChunkMap.anyPlayerCloseEnoughForSpawning: a non-spectator within 128
+        // blocks of the chunk centre.
+        let centre = [
+            f64::from((pos[0] >> 4) * 16 + 8),
+            f64::from((pos[2] >> 4) * 16 + 8),
+        ];
+        let close = self.level_players().iter().any(|p| {
+            let (dx, dz) = (p.position.x - centre[0], p.position.z - centre[1]);
+            !p.spectator && dx * dx + dz * dz < 16384.0
+        });
+        if !close {
+            return;
+        }
+        let facts = self.res.facts();
+        let mut y = pos[1];
+        while &*facts.get(self.world.block(pos[0], y, pos[2])).name == "minecraft:nether_portal" {
+            y -= 1;
+        }
+        // `BlockState.isValidSpawn(level, pos, ZOMBIFIED_PIGLIN)`: the same
+        // per-state table the natural spawns read, so glowstone's 15 light and
+        // bedrock's `isValidSpawn(never)` both refuse it.
+        let w = self.mob_world_base(&[]);
+        if !spawn_rules::is_valid_spawn(Species::ZombifiedPiglin, &w, pos[0], y, pos[2]) {
+            return;
+        }
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(y + 1),
+            f64::from(pos[2]) + 0.5,
+        ];
+        if let Some(id) = self.spawn_mob(
+            "minecraft:zombified_piglin",
+            at,
+            false,
+            super::creatures::SpawnSite::Finalizing(
+                sunrise_client::mobs::spawn_rules::Reason::Structure,
+            ),
+        ) {
+            // `EntityType.spawn` calls `Mob.playAmbientSound` once the mob is in
+            // the level, before the cooldown below.
+            let _ = self.mob_ambient(id);
+            // setPortalCooldown: the new piglin does not travel at once.
+            self.set_portal_cooldown(id);
+        }
     }
     /// `canUsePortal(false)` of a mob: what the mob itself decides
     /// (`mobs::mob_can_use_portal`), riding nothing, not asleep, and not
@@ -1177,14 +1353,9 @@ impl Game<'_> {
     /// `Entity.teleportCrossDimension` away from the loaded dimension: the
     /// entity is saved and removed, and waits for its dimension to load.
     fn remove_portal_vehicle_tree(&mut self, root: u32) {
-        let mounts: Vec<_> = self.mob_objects().map(|m| (m.id, m.extra.mount)).collect();
-        let tree = super::persist::vehicle_tree(root, &mounts);
-        self.mobs.retain(|m| !tree.contains(&m.id));
-        self.persist.off_level.retain(|id, _| !tree.contains(id));
-        self.boats.retain(|b| !tree.contains(&b.id));
-        self.carts.retain(|c| !tree.contains(&c.id));
+        let tree = self.vehicle_tree_ids(root);
+        self.remove_vehicle_rows(&tree);
         for id in tree {
-            self.release_vehicle_container(id);
             self.detach_entity(id);
         }
     }
@@ -1209,6 +1380,26 @@ impl Game<'_> {
         if let Some(o) = self.orbs.iter().find(|o| o.id == id) {
             return Some((o.position, 0.5, 0.5));
         }
+        let entity = self.entity(id)?;
+        let target = self.native_entity_target(entity)?;
+        if matches!(
+            target,
+            super::commands::Target::Stand(_)
+                | super::commands::Target::Frame(_)
+                | super::commands::Target::Painting(_)
+                | super::commands::Target::Falling(_)
+                | super::commands::Target::Cushion(_)
+                | super::commands::Target::Other(_)
+                | super::commands::Target::Fangs(_)
+                | super::commands::Target::Crystal(_)
+                | super::commands::Target::Dragon(_)
+                | super::commands::Target::Spawner(_)
+                | super::commands::Target::Cloud(_)
+        ) {
+            let at = self.target_position(target)?;
+            let [width, height] = self.entity_dimensions(entity)?;
+            return Some((Vec3::new(at[0], at[1], at[2]), width as f32, height as f32));
+        }
         let p = self
             .creatures
             .projectiles
@@ -1227,6 +1418,44 @@ impl Game<'_> {
         &mut self,
         id: u32,
     ) -> Option<(Tag, super::entity_initialization::TransferredEntityState)> {
+        use super::commands::Target;
+        let entity = self.entity(id)?;
+        let target = self.native_entity_target(entity)?;
+        if matches!(
+            target,
+            Target::Stand(_)
+                | Target::Frame(_)
+                | Target::Painting(_)
+                | Target::Falling(_)
+                | Target::Cushion(_)
+                | Target::Other(_)
+                | Target::Fangs(_)
+                | Target::Crystal(_)
+                | Target::Dragon(_)
+                | Target::Spawner(_)
+                | Target::Cloud(_)
+        ) {
+            let mut tag = self.command_target_nbt(target)?;
+            super::persist::write_attachments(&mut tag, id, &self.entity_attachments);
+            let state = self.take_transferred_entity_state(id);
+            // Remove only the resident body: no death, drops, or discard effects.
+            match target {
+                Target::Stand(_) => self.armor_stands.retain(|e| e.id != id),
+                Target::Frame(_) => self.item_frames.retain(|e| e.id != id),
+                Target::Painting(_) => self.paintings.retain(|e| e.id != id),
+                Target::Falling(_) => self.falling.retain(|e| e.id != id),
+                Target::Cushion(_) => self.cushions.retain(|e| e.id != id),
+                Target::Other(_) => self.others.retain(|e| e.id != id),
+                Target::Fangs(_) => self.fangs.list.retain(|e| e.id != id),
+                Target::Crystal(_) => self.crystals.retain(|e| e.id != id),
+                Target::Dragon(_) => self.discard_resident_dragon(),
+                Target::Spawner(_) => self.ominous_spawners.retain(|e| e.id != id),
+                Target::Cloud(_) => self.breath_clouds.retain(|e| e.id != id),
+                _ => unreachable!("lone traveller kind selected above"),
+            }
+            self.forget_entity(id);
+            return Some((tag, state));
+        }
         enum List {
             Item,
             Tnt,
@@ -1237,7 +1466,7 @@ impl Game<'_> {
         }
         let (mut tag, list, i) = if let Some(i) = self.dropped.iter().position(|e| e.id == id) {
             let uuid = self.uuid_for(id);
-            let tag = sunrise_client::entity_nbt::item_entity_to_nbt_with_items(
+            let tag = sunrise_client::entity_nbt::item_entity_to_nbt(
                 &self.dropped[i],
                 uuid,
                 self.persist_raw(id),
@@ -1248,12 +1477,21 @@ impl Game<'_> {
             (self.tnt_nbt(i), List::Tnt, i)
         } else if let Some(i) = self.tridents.iter().position(|t| t.id == id) {
             let uuid = self.uuid_for(id);
-            let tag =
-                self.tridents[i].to_nbt(uuid, self.pack.assets.registry, self.persist_raw(id));
+            let tag = self.tridents[i].to_nbt(
+                uuid,
+                self.pack.assets.registry,
+                self.persist_raw(id),
+                self.res.items(),
+            );
             (tag, List::Trident, i)
         } else if let Some(i) = self.rockets.iter().position(|r| r.id == id) {
             let uuid = self.uuid_for(id);
-            let tag = self.rockets[i].to_nbt(uuid, self.level.player_uuid, self.persist_raw(id));
+            let tag = self.rockets[i].to_nbt(
+                uuid,
+                self.level.player_uuid,
+                self.persist_raw(id),
+                self.res.items(),
+            );
             (tag, List::Rocket, i)
         } else if let Some(i) = self.orbs.iter().position(|o| o.id == id) {
             let uuid = self.uuid_for(id);
@@ -1273,14 +1511,32 @@ impl Game<'_> {
                 .and_then(|a| a.last_state)
                 .map(|s| self.state_to_nbt(s));
             let raw = self.persist_raw(id);
-            let tag =
-                sunrise_client::entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid, in_block, raw)
-                    .or_else(|| {
-                        sunrise_client::entity_nbt::fireball_to_nbt(p, uuid, p.owner_uuid, raw)
-                    })
-                    .or_else(|| {
-                        sunrise_client::entity_nbt::throwable_to_nbt(p, uuid, p.owner_uuid, raw)
-                    })?;
+            let tag = sunrise_client::entity_nbt::arrow_to_nbt(
+                p,
+                uuid,
+                p.owner_uuid,
+                in_block,
+                raw,
+                self.res.items(),
+            )
+            .or_else(|| {
+                sunrise_client::entity_nbt::fireball_to_nbt(
+                    p,
+                    uuid,
+                    p.owner_uuid,
+                    raw,
+                    self.res.items(),
+                )
+            })
+            .or_else(|| {
+                sunrise_client::entity_nbt::throwable_to_nbt(
+                    p,
+                    uuid,
+                    p.owner_uuid,
+                    raw,
+                    self.res.items(),
+                )
+            })?;
             (tag, List::Projectile, i)
         };
         super::persist::write_attachments(&mut tag, id, &self.entity_attachments);
@@ -1320,7 +1576,8 @@ impl Game<'_> {
         // restoreFrom copies to the arriving entity.
         let cooldown = self.dimension_changing_delay(id);
         if let Some((at, width, height)) = self.lone_traveller_box(id) {
-            let plan = self.entity_plan(entry, at, width, height, false);
+            let living = self.armor_stands.iter().any(|stand| stand.id == id);
+            let plan = self.entity_plan(entry, at, width, height, living);
             if !self.may_travel_through(id, &plan) {
                 return;
             }
@@ -1341,7 +1598,7 @@ impl Game<'_> {
             if !self.may_travel_through(id, &plan) {
                 return;
             }
-            let Some(mut tag) = self.vehicle_tree_nbt(id) else {
+            let Some(mut tag) = self.vehicle_tree_nbt_for(id, true) else {
                 return;
             };
             // Entity.removeAfterChangingDimensions drops the leash.
@@ -1367,7 +1624,7 @@ impl Game<'_> {
                 return;
             }
             self.release_vehicle_container(id);
-            let Some(tag) = self.vehicle_tree_nbt(id) else {
+            let Some(tag) = self.vehicle_tree_nbt_for(id, true) else {
                 return;
             };
             let Some(state) = self.capture_vehicle_tree_state(id) else {
@@ -1392,7 +1649,7 @@ impl Game<'_> {
                 return;
             }
             self.release_vehicle_container(id);
-            let Some(mut tag) = self.vehicle_tree_nbt(id) else {
+            let Some(mut tag) = self.vehicle_tree_nbt_for(id, true) else {
                 return;
             };
             // `PositionMoveRotation.of(this)` takes the cart's `getKnownMovement`.
@@ -1484,9 +1741,8 @@ impl Game<'_> {
                 let at = self.end_portal_exit(&plan);
                 // EndPortalBlock.getPortalDestination: PLACE_PORTAL_TICKET.
                 self.place_portal_ticket(Self::chunk_of(at));
-                let into_end = plan.dim == Dim::End;
                 let turn =
-                    end_portal_rotation(into_end, [yaw, pitch], self.level.world_spawn_angle);
+                    end_portal_rotation(!plan.from_end, [yaw, pitch], self.level.world_spawn_angle);
                 (at, motion, turn)
             } else {
                 let exit =
@@ -1666,13 +1922,15 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
-            f.on_ground,
+            f.ground.on_ground,
             f.rotation,
             uuid,
         );
         let mut tag = super::persist::with_raw(modelled, f.saved.as_ref().map(|s| &s.1));
         if let Tag::Compound(fields) = &mut tag {
             fields.insert("PortalCooldown".into(), Tag::Int(f.portal.cooldown));
+            // Its simulated fire, not a saved copy's (`with_raw` keeps those).
+            fields.insert("Fire".into(), Tag::Short(f.fire_ticks as i16));
             if f.no_gravity {
                 fields.insert("NoGravity".into(), Tag::Byte(1));
             } else {
@@ -1725,7 +1983,17 @@ impl Game<'_> {
         if !self.portals.dirty || self.remote.is_some() {
             return;
         }
-        let list = self.portals.arrivals.iter().map(arrival_tag).collect();
+        let list = self
+            .portals
+            .arrivals
+            .iter()
+            .filter(|arrival| match &arrival.transferred {
+                Some(TransferredArrivalState::Entity(state)) => !state.transient,
+                Some(TransferredArrivalState::VehicleTree(tree)) => !tree.is_transient(),
+                None => true,
+            })
+            .map(arrival_tag)
+            .collect();
         let root = Tag::compound([("arrivals", Tag::List(list))]);
         if sunrise_client::save::write_dat(&self.arrivals_path(), root).is_ok() {
             self.portals.dirty = false;
@@ -1862,7 +2130,7 @@ mod tests {
     };
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_capture_preserves_rejected_objects_and_reverses_admission() {
         with_gate(|game, _, _| {
             game.options.execution_role =
@@ -1903,8 +2171,13 @@ mod tests {
             assert!(game.mob_object(child).is_none());
             assert!(game.mob_object(leaf).is_none());
             // Land the queued payload through the real arrival transform/adoption path.
-            game.portals.arrivals[0].plan =
-                Plan::end_portal(Dim::Overworld, BlockPos::new(0, 64, 0), 0.9, 0.9);
+            game.portals.arrivals[0].plan = Plan::end_portal(
+                Dim::Overworld,
+                Dim::Overworld,
+                BlockPos::new(0, 64, 0),
+                0.9,
+                0.9,
+            );
             assert_eq!(game.dim, Dim::Overworld);
             game.enter_level(Dim::End).unwrap();
             assert_eq!(game.dim, Dim::End);
@@ -1985,7 +2258,7 @@ mod tests {
                     == 1
             {
                 let root = mod_api::EntityRef::new(e.entity.epoch(), 101);
-                assert!(root.start_riding(host, e.entity, true));
+                assert!(root.start_riding(host, e.entity, true).is_ok());
             }
             if attack == 1002 && e.entity.id() == 102 {
                 assert!(mod_api::EntityRef::new(e.entity.epoch(), 103).discard(host));
@@ -2031,7 +2304,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_follows_the_class_then_the_first_passenger() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             game.boats.push(super::super::boats::Boat::new(
@@ -2142,7 +2415,7 @@ mod tests {
     /// their own id, the target level and the cause; the spared one stays, the
     /// other may go.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_cancels_one_players_travel_and_allows_the_other() {
         with_gate(|game, spare, heard| {
             // Guests 12 and 13 are entities 12 and 13.
@@ -2167,7 +2440,7 @@ mod tests {
     /// still in the level and waits for no arrival, the other has left it for
     /// one.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_cancels_one_items_portal_trip_and_allows_the_other() {
         with_gate(|game, spare, heard| {
             let stone = || sunrise_client::items::ItemStack::new("minecraft:stone", 1);
@@ -2197,7 +2470,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn discarded_item_does_not_travel() {
         with_gate_mode(true, |game, _, heard| {
             game.spawn_item(
@@ -2221,7 +2494,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn discarded_mob_and_tnt_do_not_travel() {
         with_gate_mode(true, |game, _, heard| {
             let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
@@ -2243,7 +2516,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn refused_mob_passenger_stays_behind() {
         with_gate(|game, spare, heard| {
             let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
@@ -2277,7 +2550,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn passenger_callbacks_cannot_revisit_ancestors_or_discarded_siblings() {
         for attack in [1004, 1001, 1002] {
             with_gate(|game, spare, heard| {
@@ -2314,7 +2587,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mixed_passengers_follow_boarding_not_connection_order() {
         with_gate(|game, _, heard| {
             let kind = game
@@ -2356,9 +2629,70 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
+    fn portal_arrivals_keep_the_live_opt_out_without_writing_a_waiting_entity() {
+        mod_platform::testing::with_mods(Default::default(), || {
+            crate::game::native_entity_refs::tests::with_game(|game| {
+                let chunk = (0, 0);
+                let at = BlockPos::new(4, 64, 4);
+                let spawn = |game: &mut Game<'_>, nbt| {
+                    let target = game
+                        .summon_with_nbt("minecraft:text_display", [4.0, 64.0, 4.0], nbt)
+                        .unwrap()
+                        .unwrap();
+                    game.entity(game.resident_target_id(target).unwrap())
+                        .unwrap()
+                };
+                let transient = spawn(game, "{UUID:[I;0,0,0,583]}");
+                let persistent = spawn(game, "{UUID:[I;0,0,0,584]}");
+                assert_eq!(transient.set_persistent(game, false), Ok(true));
+                game.send_through_portal(transient.id(), at);
+                game.send_through_portal(persistent.id(), at);
+                let world = tempfile::tempdir().unwrap();
+                game.world_root = world.path().to_path_buf();
+                let path = game.arrivals_path();
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                game.save_portal_arrivals();
+                let written = sunrise_client::save::read_dat(&path).unwrap();
+                let Some(Tag::List(saved)) = written.get("arrivals") else {
+                    panic!("missing arrivals list");
+                };
+                assert_eq!(saved.len(), 1);
+                let saved = arrival_from_tag(&saved[0]).unwrap();
+                assert_eq!(
+                    sunrise_client::entity_nbt::uuid(&saved.tag),
+                    Some([0, 0, 0, 584])
+                );
+
+                let waiting = std::mem::take(&mut game.portals.arrivals);
+                assert_eq!(waiting.len(), 2);
+                for pending in waiting {
+                    let Some(TransferredArrivalState::Entity(state)) = pending.transferred else {
+                        panic!("display must carry its live transfer state");
+                    };
+                    game.spawn_teleported_entity(chunk, pending.tag.into(), Some(state));
+                }
+                assert!(game.entity_by_uuid(mod_api::EntityUuid(583)).is_some());
+                let records = game.entity_chunks(&std::collections::HashSet::from([chunk]), false);
+                assert_eq!(records[0].1.len(), 1);
+                assert_eq!(
+                    sunrise_client::entity_nbt::uuid(&records[0].1[0]),
+                    Some([0, 0, 0, 584])
+                );
+            });
+        });
+    }
+
+    #[test]
     fn portal_transfer_pending_arrival_does_not_save_transient_tnt_immunity() {
         let arrival = Arrival {
-            plan: Plan::end_portal(Dim::End, BlockPos::new(0, 64, 0), 0.98, 0.98),
+            plan: Plan::end_portal(
+                Dim::End,
+                Dim::Overworld,
+                BlockPos::new(0, 64, 0),
+                0.98,
+                0.98,
+            ),
             tag: Tag::compound([("id", Tag::String("minecraft:tnt".into()))]),
             tnt_used_portal: true,
             transferred: None,
@@ -2374,14 +2708,18 @@ mod tests {
     fn end_portals_lead_to_the_end_spawn_and_back_to_the_world_spawn() {
         let spawn = BlockPos::new(-7, 70, 12);
         for from in [Dim::Overworld, Dim::Nether] {
-            let plan = Plan::end_portal(from, spawn, 0.9, 1.4);
+            let plan = Plan::end_portal(from, Dim::Nether, spawn, 0.9, 1.4);
             assert_eq!(plan.dim, Dim::End);
             assert_eq!(plan.approximate, BlockPos::new(100, 50, 0));
-            assert!(plan.end);
+            assert!(plan.end && !plan.from_end);
         }
-        let plan = Plan::end_portal(Dim::End, spawn, 0.25, 0.25);
-        assert_eq!(plan.dim, Dim::Overworld);
-        assert_eq!(plan.approximate, spawn);
+        // Out of the End: to the world spawn, in the level it was set in, the End's own too.
+        for level in [Dim::Overworld, Dim::Nether, Dim::End] {
+            let plan = Plan::end_portal(Dim::End, level, spawn, 0.25, 0.25);
+            assert_eq!(plan.dim, level);
+            assert_eq!(plan.approximate, spawn);
+            assert!(plan.from_end);
+        }
     }
 
     #[test]
@@ -2448,7 +2786,13 @@ mod tests {
             preserve_arrival_cooldown(&mut tag);
             let arrival = Arrival {
                 transferred: None,
-                plan: Plan::end_portal(Dim::Overworld, BlockPos::new(0, 64, 0), 1.375, 0.5625),
+                plan: Plan::end_portal(
+                    Dim::Overworld,
+                    Dim::Overworld,
+                    BlockPos::new(0, 64, 0),
+                    1.375,
+                    0.5625,
+                ),
                 tag,
                 tnt_used_portal: false,
             };
@@ -2464,15 +2808,21 @@ mod tests {
     #[test]
     fn waiting_arrivals_keep_their_end_destination_when_saved() {
         let tag = Tag::compound([("id", Tag::String("minecraft:cow".into()))]);
-        for (from, dim) in [(Dim::Overworld, Dim::End), (Dim::End, Dim::Overworld)] {
+        // An exit to a world spawn set in the End stays an exit: no platform there.
+        for (from, level) in [
+            (Dim::Overworld, Dim::Overworld),
+            (Dim::End, Dim::Overworld),
+            (Dim::End, Dim::End),
+        ] {
             let arrival = Arrival {
                 tnt_used_portal: false,
                 transferred: None,
-                plan: Plan::end_portal(from, BlockPos::new(3, 64, -5), 0.9, 1.4),
+                plan: Plan::end_portal(from, level, BlockPos::new(3, 64, -5), 0.9, 1.4),
                 tag: tag.clone(),
             };
             let back = arrival_from_tag(&arrival_tag(&arrival)).unwrap();
-            assert_eq!(back.plan.dim, dim);
+            assert_eq!(back.plan.dim, arrival.plan.dim);
+            assert_eq!(back.plan.from_end, from == Dim::End);
             assert_eq!(back.plan.approximate, arrival.plan.approximate);
             assert!(back.plan.end);
             assert_eq!(back.tag, tag);
@@ -2481,7 +2831,13 @@ mod tests {
         let mut old = arrival_tag(&Arrival {
             tnt_used_portal: false,
             transferred: None,
-            plan: Plan::end_portal(Dim::End, BlockPos::new(0, 64, 0), 0.25, 0.25),
+            plan: Plan::end_portal(
+                Dim::End,
+                Dim::Overworld,
+                BlockPos::new(0, 64, 0),
+                0.25,
+                0.25,
+            ),
             tag,
         });
         if let Tag::Compound(c) = &mut old {
@@ -2498,3 +2854,127 @@ mod cooldown_tests;
 #[cfg(test)]
 #[path = "nether_portal/arrival_effects_tests.rs"]
 pub(in crate::game) mod arrival_effects_tests;
+<<<<<<< sync-sunrise-1
+=======
+
+impl Game<'_> {
+    /// PortalShape: an obsidian frame around 2..=21 by 3..=21 empty blocks.
+    pub(super) fn portal_shape(
+        &self,
+        start: [i32; 3],
+        x_axis: bool,
+    ) -> Option<([i32; 3], i32, i32)> {
+        let name = |p: [i32; 3]| {
+            self.res
+                .facts()
+                .get(self.world.block(p[0], p[1], p[2]))
+                .name
+                .clone()
+        };
+        let empty = |p: [i32; 3]| {
+            let n = name(p);
+            matches!(
+                &*n,
+                "minecraft:air"
+                    | "minecraft:cave_air"
+                    | "minecraft:fire"
+                    | "minecraft:soul_fire"
+                    | "minecraft:nether_portal"
+            )
+        };
+        let frame = |p: [i32; 3]| &*name(p) == "minecraft:obsidian";
+        let d = if x_axis { [1, 0, 0] } else { [0, 0, 1] };
+        let mut bottom = start;
+        let mut n = 0;
+        while empty([bottom[0], bottom[1] - 1, bottom[2]]) && n < 21 {
+            bottom[1] -= 1;
+            n += 1;
+        }
+        if !frame([bottom[0], bottom[1] - 1, bottom[2]]) {
+            return None;
+        }
+        let mut left = bottom;
+        n = 0;
+        while empty([left[0] - d[0], left[1], left[2] - d[2]]) && n < 21 {
+            left = [left[0] - d[0], left[1], left[2] - d[2]];
+            n += 1;
+        }
+        if !frame([left[0] - d[0], left[1], left[2] - d[2]]) {
+            return None;
+        }
+        let mut width = 0;
+        while width <= 21 {
+            let p = [left[0] + d[0] * width, left[1], left[2] + d[2] * width];
+            if !empty(p) || !frame([p[0], p[1] - 1, p[2]]) {
+                break;
+            }
+            width += 1;
+        }
+        if !(2..=21).contains(&width)
+            || !frame([left[0] + d[0] * width, left[1], left[2] + d[2] * width])
+        {
+            return None;
+        }
+        let mut height = 0;
+        'rows: while height <= 21 {
+            let y = left[1] + height;
+            if !frame([left[0] - d[0], y, left[2] - d[2]])
+                || !frame([left[0] + d[0] * width, y, left[2] + d[2] * width])
+            {
+                break;
+            }
+            for i in 0..width {
+                if !empty([left[0] + d[0] * i, y, left[2] + d[2] * i]) {
+                    break 'rows;
+                }
+            }
+            height += 1;
+        }
+        let top_ok =
+            (0..width).all(|i| frame([left[0] + d[0] * i, left[1] + height, left[2] + d[2] * i]));
+        ((3..=21).contains(&height) && top_ok).then_some((left, width, height))
+    }
+    /// BaseFireBlock.onPlace: lighting fire inside a frame creates a portal,
+    /// only in the Overworld and the Nether (`inPortalDimension`).
+    pub(super) fn try_light_portal(&mut self, at: [i32; 3]) -> Result<bool> {
+        if !matches!(self.dim, Dim::Overworld | Dim::Nether) {
+            return Ok(false);
+        }
+        for x_axis in [true, false] {
+            if let Some((origin, width, height)) = self.portal_shape(at, x_axis) {
+                let d = if x_axis { [1, 0, 0] } else { [0, 0, 1] };
+                let registry = &self.pack.assets.registry;
+                let Some(default) = registry.default_state("minecraft:nether_portal") else {
+                    return Ok(false);
+                };
+                let mut portal = registry.state(default).cloned().ok_or("portal state")?;
+                portal
+                    .properties
+                    .insert("axis".into(), if x_axis { "x" } else { "z" }.into());
+                let id = registry.resolve(&portal).unwrap_or(default);
+                // PortalShape.createPortalBlocks uses BlockPos.betweenClosed:
+                // X varies fastest, then Y, then Z.
+                let first = BlockPos::new(origin[0], origin[1], origin[2]);
+                let last = BlockPos::new(
+                    origin[0] + d[0] * (width - 1),
+                    origin[1] + height - 1,
+                    origin[2] + d[2] * (width - 1),
+                );
+                for pos in BlockPos::between_closed(first, last).expect("portal size is bounded") {
+                    self.level_set_with_flags(
+                        [pos.x, pos.y, pos.z],
+                        id,
+                        level_flags::UPDATE_CLIENTS | level_flags::UPDATE_KNOWN_SHAPE,
+                    )?;
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/nether_portal_stand_tests.rs"]
+mod stand_tests;
+>>>>>>> sunrise/main

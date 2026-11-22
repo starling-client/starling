@@ -1,15 +1,15 @@
 //! Load-bound worker metadata. Each numeric registry retains its own immutable snapshot.
 use super::api_values::block_state::{self, Index};
-use sunrise_mod_runtime::block_definitions::Blocks;
-use sunrise_world::{registry::BlockRegistry, worldgen::placement::PlacementQueryError};
 use mod_api::{BlockKey, BlockMetadata, BlockState};
 use std::sync::Arc;
+use sunrise_mod_runtime::block_definitions::Blocks;
+use sunrise_world::{registry::BlockRegistry, worldgen::placement::PlacementQueryError};
 
 /// No thread-local game, Host, registry rebuild or name resolution is needed by workers.
 pub(in crate::game) struct WorkerResources {
     pub index: Arc<Index>,
     pub metadata: &'static Blocks,
-    air: BlockState,
+    pub(super) air: BlockState,
     air_blocks: [Option<BlockKey>; 3],
 }
 impl WorkerResources {
@@ -76,12 +76,18 @@ fn retain_or_prepare(
                     .and_then(|state| index.to_api(state).ok())
                     .map(BlockState::block)
             });
-        let _ = registry.mod_worker_resource.set(Arc::new(WorkerResources {
-            index,
-            metadata,
-            air,
-            air_blocks,
-        }));
+        // Registries interned from one payload and one metadata snapshot derive equal
+        // resources, so the first installation's is shared rather than kept once per install.
+        let resource = registry.share_worker_resource(
+            metadata as *const Blocks as usize,
+            Arc::new(WorkerResources {
+                index,
+                metadata,
+                air,
+                air_blocks,
+            }),
+        );
+        let _ = registry.mod_worker_resource.set(resource);
     }
     let resource = WorkerResources::get(registry)
         .map_err(|_| "worker registry contains an incompatible resource".to_owned())?;
@@ -131,7 +137,7 @@ mod tests {
         .unwrap();
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fresh_game_lifetimes_keep_worker_and_generator_snapshots_separate() {
         use crate::game::native_entity_refs::tests::with_game;
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap())
@@ -151,14 +157,13 @@ mod tests {
         with_game(|game| {
             let registry = game.pack.assets.registry;
             assert!(!std::ptr::eq(old_registry, registry));
-            assert_eq!(
-                prepare(old_registry).err().unwrap(),
-                "worker block registry belongs to a different metadata snapshot"
-            );
+            // Equal installations share one immutable snapshot; the wrapper and the generator
+            // data below stay per game.
+            assert!(Arc::ptr_eq(&prepare(old_registry).unwrap(), &old_index));
             let index = prepare(registry).unwrap();
-            assert!(!Arc::ptr_eq(&old_index, &index));
+            assert!(Arc::ptr_eq(&old_index, &index));
             let metadata = WorkerResources::get(registry).unwrap().metadata;
-            assert!(!std::ptr::eq(old_metadata, metadata));
+            assert!(std::ptr::eq(old_metadata, metadata));
             // Repeated queries within a lifetime share the retained index and generator data.
             assert!(Arc::ptr_eq(&index, &prepare(registry).unwrap()));
             let data = sunrise_client::vanillagen::shared_data(&root, registry).unwrap();
@@ -188,14 +193,17 @@ mod tests {
         let registry = Arc::new(BlockRegistry::from_facts_json(br#"{"defaults":{"minecraft:air":0,"minecraft:stone":1},"states":[["a",true,false,"","minecraft:air"],["s",false,false,"","minecraft:stone"]]}"#.as_slice()).unwrap());
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let owners: Vec<_> = (0..2)
-            .map(|_| {
+            .map(|owner| {
                 let registry = registry.clone();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
                     let properties = std::collections::BTreeMap::new();
+                    // Each owner's metadata differs: equal metadata is one shared snapshot.
                     mod_api::__private::resolve_block_keys(
-                        ["minecraft:air", "minecraft:stone"],
+                        ["minecraft:air", "minecraft:stone"]
+                            .into_iter()
+                            .chain((owner == 1).then_some("minecraft:dirt")),
                         |_| {
                             sunrise_mod_runtime::block_definitions::BlockDefinition::new(
                                 &[&properties],

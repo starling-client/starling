@@ -238,7 +238,7 @@ impl JarRef {
         if version.is_empty() {
             return Err(format!("jar {id}: version is empty"));
         }
-        super::wasm::sha512_hex(&sha512).map_err(|e| format!("jar {id}: sha512 {e}"))?;
+        super::hash::sha512_hex(&sha512).map_err(|e| format!("jar {id}: sha512 {e}"))?;
         Ok(Self {
             id,
             version,

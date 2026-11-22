@@ -152,7 +152,7 @@ const API: [(&str, &str); 15] = [
     ),
     (
         "RegisterSpawnPlacementsEvent",
-        "Registrar::declare_spawn_placement",
+        "Registrar::register_spawn_placement",
     ),
     (
         "RegisterTicketControllersEvent",

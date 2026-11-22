@@ -5,9 +5,11 @@ pub trait Hooks {
     /// A furnace at `pos` began cooking `item` (its cooking timer advanced
     /// from zero). Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_furnace_start_smelt",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn furnace_start_smelt();
+    fn furnace_start_smelt(pos: [i32; 3], item: &str);
 }

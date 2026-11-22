@@ -19,9 +19,13 @@ impl Game<'_> {
             return false;
         };
         let entity = guest.entity_id as u32;
-        let accepted = guest
-            .motion
-            .as_ref()
+        let acting = self.lan_acting == Some(conn);
+        let body = if acting {
+            self.player.as_ref()
+        } else {
+            guest.motion.as_deref()
+        };
+        let accepted = body
             .and_then(|body| body.health.accepted_hit.as_ref())
             .or(guest.carried_hit.as_ref())
             .filter(|hit| {
@@ -47,16 +51,26 @@ impl Game<'_> {
             weapon.as_ref(),
             &mut cancel,
         );
-        if cancel && let Some(host) = self.lan.as_mut() {
-            host.hub.guests.update(gi, |guest| {
-                guest.death_canceled = guest.health <= 0.0;
-                if !guest.death_canceled {
-                    guest.death_time = 0;
-                }
-                if let Some(body) = guest.motion.as_mut() {
+        if cancel {
+            let acting_health = if acting {
+                self.player.as_mut().map(|body| {
                     body.health.dead = false;
-                }
-            });
+                    body.health.health()
+                })
+            } else {
+                None
+            };
+            if let Some(host) = self.lan.as_mut() {
+                host.hub.guests.update(gi, |guest| {
+                    guest.death_canceled = acting_health.unwrap_or(guest.health) <= 0.0;
+                    if !guest.death_canceled {
+                        guest.death_time = 0;
+                    }
+                    if let Some(body) = guest.motion.as_mut() {
+                        body.health.dead = false;
+                    }
+                });
+            }
         }
         cancel
     }

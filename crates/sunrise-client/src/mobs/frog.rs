@@ -15,13 +15,13 @@ use super::{
     sync,
 };
 use crate::blocks::Fluid;
+use mod_api::SoundSource;
+use std::fmt::Debug;
+use std::ops::ControlFlow;
 use sunrise_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
 };
-use sunrise_world::move_gate::MoveGate;
-use mod_api::SoundSource;
-use std::fmt::Debug;
 
 const JUMP: usize = 0;
 const CROAK: usize = 1;
@@ -174,20 +174,18 @@ pub fn tick(m: &mut Mob) {
 /// `Frog.travelInWater`: `moveRelative(getSpeed(), input)`, the move, then
 /// the motion scaled by 0.9. `getSpeed` is the speed the move control stored.
 /// Out of water the usual travel runs.
-pub fn travel(
+pub(super) fn travel(
     m: &mut Mob,
     w: &MobWorld,
     level: &mut DamageLevel<'_>,
     input: Vec3,
     events: &mut Vec<MobEvent>,
-) -> bool {
-    if !m.fluids.in_water {
-        return false;
-    }
+    pause: bool,
+) -> ControlFlow<super::living::TravelPause> {
     m.move_relative(m.ai.speed, input);
-    m.do_move(w, level, events, &mut MoveGate::new());
-    m.velocity = m.velocity.scale(0.9);
-    true
+    m.travel_move(w, level, events, pause, |m, _, _, _| {
+        m.velocity = m.velocity.scale(0.9);
+    })
 }
 
 /// `Frog.canEat`: a slime or magma cube of size 1.
@@ -244,7 +242,7 @@ impl Goal for Croak {
         // checkExtraStartConditions (standing), no walk target, and not in
         // a liquid (start does nothing there).
         m.extra.pose == sync::STANDING
-            && m.on_ground
+            && m.ground.on_ground
             && !m.fluids.in_water
             && !m.fluids.in_lava
             && m.ai.nav.is_done()
@@ -389,7 +387,7 @@ impl LaySpawn {
         }
     }
     fn lay(m: &mut Mob, cx: &mut Cx) {
-        if m.fluids.in_water || !m.on_ground {
+        if m.fluids.in_water || !m.ground.on_ground {
             return;
         }
         let below = [
@@ -862,7 +860,7 @@ impl LongJump {
     /// with `entity.frog.step`), or the end of a search.
     fn end(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.mid_jump {
-            if m.on_ground {
+            if m.ground.on_ground {
                 // multiply(0.1F, 1.0, 0.1F): the float widened.
                 let slow = f64::from(0.1_f32);
                 m.velocity = m.velocity.multiply(Vec3::new(slow, 1.0, slow));
@@ -952,7 +950,7 @@ impl Goal for LongJump {
             m.position.y.floor() as i32,
             m.position.z.floor() as i32,
         );
-        let can = m.on_ground
+        let can = m.ground.on_ground
             && !m.fluids.in_water
             && !m.fluids.in_lava
             && cx.w.block_name(x, y, z) != "minecraft:honey_block";
@@ -999,7 +997,7 @@ impl Goal for LongJump {
                 }
                 Some(t) => self.in_air = Some(t + 1),
             }
-            return !m.on_ground
+            return !m.ground.on_ground
                 && (m.species() == Species::Goat || !m.fluids.in_water)
                 && self.in_air.is_some_and(|t| t <= MID_JUMP_DURATION);
         }
@@ -1062,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared entity resources in .local/sunrise-client"]
+    #[ignore = "daily"]
     fn tongue_acquisition_honors_brain_hooks_and_edible_redirects() {
         use crate::mobs::{MobHooks, PlayerView, TargetChange};
         use std::cell::Cell;
@@ -1164,7 +1162,7 @@ mod tests {
                     let kind = std::sync::Arc::new(types.types["minecraft:frog"].clone());
                     let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
                     register(&mut m);
-                    m.on_ground = true;
+                    m.ground.on_ground = true;
                     m.extra.frog.nearest = Some(2);
                     let mut events = Vec::new();
                     let mut fixture = crate::health::TestLevel::new(0);
@@ -1204,6 +1202,7 @@ mod tests {
     /// turtle's 0.1), then the whole motion is scaled by 0.9. Out of water
     /// this path does not run.
     #[test]
+    #[ignore = "daily"]
     fn water_travel_uses_get_speed_and_scales_by_nine_tenths() {
         let ran = crate::mobs::world::with_test_world(&[], |w, _| {
             let mut m = frog();
@@ -1211,17 +1210,7 @@ mod tests {
             m.ai.speed = 0.25;
             m.yaw = 0.0;
             m.velocity = Vec3::new(1.0, -0.5, 0.125);
-            let kept = m.velocity;
             let mut test_level = crate::health::TestLevel::new(0);
-            assert!(!travel(
-                &mut m,
-                w,
-                &mut test_level.level(),
-                Vec3::new(0.0, 0.0, 1.0),
-                &mut Vec::new()
-            ));
-            assert_eq!(m.velocity, kept);
-
             m.fluids.in_water = true;
             m.position = Vec3::new(0.5, 80.0, 0.5);
             m.travel(
@@ -1237,7 +1226,7 @@ mod tests {
             assert!((m.velocity.z - 0.3375).abs() < 1.0e-9, "{}", m.velocity.z);
         });
         // Without a test world the closure does not run; there is nothing else to check.
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     /// `Frog.updateWalkAnimation`: target `min(distance * 25, 1)`, 0 while
@@ -1362,6 +1351,7 @@ mod tests {
     /// long jump run at 1.25 and 1.0; 1.25 here would make a fleeing frog 60%
     /// slower than vanilla's.
     #[test]
+    #[ignore = "daily"]
     fn a_hurt_frog_panics_at_vanillas_two_times_speed() {
         let ran = crate::mobs::world::with_built_test_world(
             &[],
@@ -1385,7 +1375,7 @@ mod tests {
                 let kind = std::sync::Arc::new(types.types["minecraft:frog"].clone());
                 let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
                 register(&mut m);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 // An environmental hit inside the 40 tick panic window
                 // (`DamageTypeTags.PANIC_CAUSES`).
                 m.last_damage = Some((
@@ -1407,7 +1397,7 @@ mod tests {
                 assert_eq!(m.ai.nav.speed_modifier, 2.0);
             },
         );
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     /// `Frog` keeps its pregnancy as the `IS_PREGNANT` brain memory, and
@@ -1428,7 +1418,7 @@ mod tests {
         };
         let mut m = frog();
         set_pregnant(&mut m, true);
-        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
         assert_eq!(
             memory(&saved),
             Some(Tag::compound([(
@@ -1443,7 +1433,14 @@ mod tests {
         // A frog that laid its spawn saves no memory, even over a compound
         // that still names one.
         set_pregnant(&mut m, false);
-        let saved = mob_to_nbt(&m, [1, 2, 3, 4], Some(&saved), None, |_| None);
+        let saved = mob_to_nbt(
+            &m,
+            [1, 2, 3, 4],
+            Some(&saved),
+            None,
+            |_| None,
+            &Default::default(),
+        );
         assert_eq!(memory(&saved), None, "a laid frog saves no pregnancy");
         let back = mob_from_nbt(&saved, &types, 3, None).unwrap();
         assert!(!is_pregnant(&back), "and does not come back pregnant");
@@ -1453,6 +1450,7 @@ mod tests {
     /// `block_place` is posted from the frog at the new block, then the lay
     /// sound, and the pregnancy is erased.
     #[test]
+    #[ignore = "daily"]
     fn laying_frogspawn_posts_block_place_from_the_frog() {
         let ran = crate::mobs::world::with_built_test_world(
             &[],
@@ -1467,7 +1465,7 @@ mod tests {
             |w, _| {
                 let mut m = frog();
                 m.position = Vec3::new(8.5, 64.0, 8.5);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 set_pregnant(&mut m, true);
                 let mut lr = crate::health::TestLevel::new(3);
                 let mut events = Vec::new();
@@ -1499,6 +1497,6 @@ mod tests {
                 assert!(!is_pregnant(&m), "laying erases the pregnancy");
             },
         );
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }

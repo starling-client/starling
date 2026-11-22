@@ -45,13 +45,6 @@ use crate::{
     heightmap::{HeightmapState, HeightmapType},
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::{
-    biome::{BiomeZoom, obfuscate_seed},
-    density::{DensitySampler, LatticeSamples, SamplerContext},
-    noise::{DensityVolume, Noise},
-    position::{BlockPos, ChunkPos},
-    random::{LegacyRandom, PositionalRandom, RandomSource, XoroshiroRandom},
-};
 use serde_json::Value;
 use std::{
     any::Any,
@@ -59,6 +52,13 @@ use std::{
     fs, io,
     path::Path,
     sync::{Arc, Mutex, OnceLock},
+};
+use sunrise_core::{
+    biome::{BiomeZoom, obfuscate_seed},
+    density::{DensitySampler, LatticeSamples, SamplerContext},
+    noise::{DensityVolume, Noise},
+    position::{BlockPos, ChunkPos},
+    random::{LegacyRandom, PositionalRandom, RandomSource, XoroshiroRandom},
 };
 
 #[derive(Debug)]
@@ -149,6 +149,8 @@ pub mod data;
 pub use data::GeneratorData;
 #[cfg(test)]
 use data::{RING_CACHE_LIMIT, build_tags};
+mod noise_settings;
+use noise_settings::DecodedNoiseSettings;
 /// Convert a data-generator `biome_parameters` report into the quantized
 /// preset table format, using vanilla's float `quantizeCoord`.
 pub(crate) fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
@@ -460,108 +462,16 @@ where
         regions: Option<&RegionLayout>,
     ) -> Result<Self, GeneratorError> {
         let registry = data.registry;
-        let noise = &settings_json["noise"];
-        let min_y = noise["min_y"]
-            .as_i64()
-            .ok_or_else(|| resource("noise min_y"))? as i32;
-        let height = noise["height"]
-            .as_i64()
-            .ok_or_else(|| resource("noise height"))? as i32;
-        let (level_min_y, level_height) = level.unwrap_or((min_y, height));
-        if min_y < level_min_y || min_y + height > level_min_y + level_height {
-            return Err(resource("noise range outside the dimension's build height"));
-        }
-        let codec = crate::registry::BlockStateJsonCodec::new(registry, data.integers.clone())
-            .map_err(|e| resource(e.to_string()))?;
-        let settings = Settings {
-            noise_min_y: min_y,
-            noise_height: height,
-            level_min_y,
-            level_height,
-            sea_level: settings_json["sea_level"]
-                .as_i64()
-                .ok_or_else(|| resource("sea_level"))? as i32,
-            default_block: state(&codec, &settings_json["default_block"])?,
-            default_fluid: state(&codec, &settings_json["default_fluid"])?,
-            legacy: settings_json["legacy_random_source"]
-                .as_bool()
-                .unwrap_or(false),
-            disable_mob_generation: settings_json["disable_mob_generation"]
-                .as_bool()
-                .unwrap_or(false),
-        };
         let root = random.fork_positional();
-        let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)?;
-        let router =
-            NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)?;
-        // NoiseGeneratorSettings.debugFunctions: a registered density or an
-        // inline one, each with its label.
-        let debug_functions = settings_json
-            .get("debug_functions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .map(|entry| {
-                let label = entry["label"]
-                    .as_str()
-                    .ok_or_else(|| resource("debug label"))?;
-                let id = match &entry["function"] {
-                    Value::String(name) => densities
-                        .reference(name)
-                        .ok_or_else(|| resource(format!("debug function {name}")))?,
-                    inline => densities.decode_functions(&[&inline.to_string()])?[0],
-                };
-                Ok((label.to_owned(), id))
-            })
-            .collect::<Result<Vec<_>, GeneratorError>>()?;
-        let aquifers = settings_json
-            .get("aquifers")
-            .filter(|v| !v.is_null())
-            .map(|v| AquiferConfig::from_json(&v.to_string(), &mut densities))
-            .transpose()?;
-        let mut library = MaterialRuleLibrary::from_json(
-            &data.rules,
-            &data.conditions,
-            &codec,
-            densities,
-            seed,
-            settings.legacy,
-        )?;
-        let router = library.compile_router(router)?;
-        let debug_density = debug_functions
-            .into_iter()
-            .map(|(label, id)| Ok((label, library.function_sampler(id)?)))
-            .collect::<Result<Vec<_>, GeneratorError>>()?;
-        let aquifer = aquifers
-            .map(|config| library.compile_aquifer(config))
-            .transpose()?
-            .map(|samplers| AquiferField::ALL.map(|field| samplers.get(field).clone()));
-        let rule_name = settings_json["material_rule"]
-            .as_str()
-            .ok_or_else(|| resource("material_rule"))?;
-        let rule = library.rule(rule_name)?;
+        let DecodedNoiseSettings {
+            settings,
+            router,
+            debug_density,
+            aquifer,
+            rule,
+            spawn_target,
+        } = data.decode_noise_settings(settings_json, seed, level)?;
         let preliminary = router.get(RouterField::ChunkSurfaceLevel).clone();
-        let spawn_target = match settings_json.get("spawn_target") {
-            Some(Value::Array(points)) => points
-                .iter()
-                .map(|point| {
-                    let Value::Object(fields) = point else {
-                        return Err(resource("spawn_target point"));
-                    };
-                    let parameters = fields
-                        .iter()
-                        .map(|(name, interval)| {
-                            Ok((
-                                library.named_density(name)?,
-                                decode_parameter(&interval.to_string())?,
-                            ))
-                        })
-                        .collect::<Result<_, GeneratorError>>()?;
-                    Ok(SpawnTargetPoint { parameters })
-                })
-                .collect::<Result<_, GeneratorError>>()?,
-            _ => Vec::new(),
-        };
         let mut source_json = generator["biome_source"].to_string();
         let definition = data.source_catalog.decode(&source_json)?;
         let source = definition
@@ -1940,8 +1850,6 @@ trait SeededPipeline: Send + Sync {
     }
     /// Empty the caches that only spare work ([`OverworldGenerator::release_caches`]).
     fn release_caches(&self) {}
-    /// The exact `end_island_decorated` origins in a chunk, without terrain.
-    fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]>;
     fn sea_level(&self) -> i32;
     /// `NoiseGeneratorSettings.disableMobGeneration`, which
     /// `NoiseBasedChunkGenerator.spawnOriginalMobs` reads.
@@ -2090,20 +1998,6 @@ where
             start_chunks,
             start_lists,
         }
-    }
-    fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]> {
-        let Some(decoration) = &self.decoration else {
-            return Vec::new();
-        };
-        let mut resolver = self.source.resolver(
-            &self.climate,
-            self.router.get(RouterField::Erosion).as_ref(),
-        );
-        let mut context = SamplerContext::cached();
-        decoration.origins(self.seed, chunk, |position| {
-            let quart = [position[0] >> 2, position[1] >> 2, position[2] >> 2];
-            resolver.sample(&mut context, quart).ok() == Some("minecraft:small_end_islands")
-        })
     }
     fn sea_level(&self) -> i32 {
         self.settings.sea_level
@@ -2498,13 +2392,12 @@ where
             if lowest > highest {
                 (min, min + height)
             } else {
-                let lowest = lowest.max(min);
-                (
-                    min + (lowest - min) / step_y * step_y,
-                    highest
-                        .max(self.settings.sea_level + COARSE)
-                        .min(min + height),
-                )
+                let bottom = min + (lowest.max(min) - min) / step_y * step_y;
+                // Up to COARSE above the picker's highest fluid in these columns.
+                let far = [ox + (nx - 1) * step_xz, oz + (nz - 1) * step_xz];
+                let top = self.picker.level_bound([ox, oz], far);
+                let top = top.map_or(min + height, |l| highest.max(l.saturating_add(COARSE)));
+                (bottom, top.min(min + height))
             }
         } else {
             (min, min + height)
@@ -2613,8 +2506,7 @@ where
                         _ => spans.push((min, band_min, fill)),
                     }
                 }
-                // Void cells still need a biome: the End's small islands are
-                // features over the void, and their biome is 2D there.
+                // A void cell has no surface to tint: a placeholder biome.
                 let biome = if let Some((height, _)) = top {
                     memo_biome(
                         &self.data,
@@ -2964,10 +2856,6 @@ impl OverworldGenerator {
     /// inside the dimension's build height, when the settings reach past it.
     pub fn noise_clamped(&self) -> Option<(NoiseSettings, NoiseSettings)> {
         self.noise_clamped
-    }
-    /// The exact `end_island_decorated` origins in a chunk, without terrain.
-    pub fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]> {
-        self.pipeline.end_island_origins(chunk)
     }
     pub fn sea_level(&self) -> i32 {
         self.pipeline.sea_level()
@@ -4282,7 +4170,7 @@ mod tests {
             })
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn saved_starts_match_generated_layouts() {
         use super::super::structure::start::Piece;
         use sunrise_core::nbt::Compound;

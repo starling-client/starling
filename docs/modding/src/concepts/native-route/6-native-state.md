@@ -8,8 +8,7 @@ E_MIXIN_STATE_LAYOUT: <mod>:<row>: native state changes the prebuilt game's layo
 ```
 
 Remove the row and use an **attachment**. An attachment is a typed value the game keeps for you on an
-entity, block entity, chunk, level or player, and saves with it when you give it a codec. It works the same
-on native and wasm. See [server attachments](../attachments.md) and
+entity, block entity, chunk, level or player, and saves with it when you give it a codec. See [server attachments](../attachments.md) and
 [querying attachment holders](../attachments/querying.md).
 
 For data about the whole game, a [published loop](3-loops.md)'s slot value lives once per `Game`. A `static` in

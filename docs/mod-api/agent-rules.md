@@ -3,20 +3,22 @@
 Rules for a coding agent making a Sunrise mod. They are short on purpose; each links to its page.
 
 1. **Choose the shape.** A content mod has no `Cargo.toml`. A code mod has `Cargo.toml` and `src/` at the top and
-   implements `Hooks` with `#[mod_api::sunrise_mod]`. Never write raw injections first.
+   implements `Hooks` with `#[mod_api::sunrise_mod]`. Prefer the typed API to source edits.
 2. **Use a hook or a Part method** when one exists (search the rustdoc of `sunrise-mod-api`). A per-block,
    per-item or per-entity moment is a Part method ([Parts](../modding/src/concepts/parts.md)).
-3. **Otherwise follow the [injection ladder](../modding/src/concepts/injections.md#declaration):** an API `[[inject]]` declaration
-   naming a crate-root function and its `mod_points` record; use a native `[[native.mixin]]` and declared internals only when the API cannot express it. Every injection comes
-   with a [hook request](../modding/src/concepts/injections.md#ask-for-the-hook). Injects never compile game code; unavailable API points are refused by name on both targets. Use a [mixin](../modding/src/concepts/native-route/2-mixins.md) for native function replacement against the prebuilt SDK.
+3. **Change game code only when needed.** Use the [native route](../modding/src/concepts/native-route.md)
+   when the API cannot express the change. A [`[[native.mixin]]`](../modding/src/concepts/native-route/2-mixins.md)
+   patches a function against the prebuilt SDK.
 4. **Names:** NeoForge 26.3 names for hooks that have a counterpart; no `on_` prefix; the event is `&mut`;
    handles come from the event; writes take `host`.
 5. **Layout:** `sunrise-mod.toml`, `assets/`, `data/`, `Cargo.toml` and `src/` at the top. The id and version come
    only from `sunrise-mod.toml`; ids are `[a-z0-9_]`. No `native/` folder, no `sunrise-native.json`.
 6. **Manifest fields:** `id`, `name`, `version`, `description`, `authors`, `api = "0.2"`, `side`,
-   `capabilities = ["registries"]`, `[dependencies]`, `[incompatible]`, `[discouraged]`, `load_before`, top-level `internals`, `[[inject]]`, `[native]`
-   (`game`, `sunrise`, `mixins`, optional `mixin`, `loop`, `bridge`, `module`; `state` is refused; see [the native route](../modding/src/concepts/native-route.md)) or `[wasm]`, `[[jar]]`. One of `[native]` or `[wasm]`, never both. Unknown fields are refused
+   `capabilities = ["registries"]`, `[dependencies]`, `[incompatible]`, `[discouraged]`, `load_before`, top-level `internals`, `[native]`
+   (`game`, `sunrise`, `mixins`, optional `mixin`, `loop`, `bridge`, `module`; `state` is refused; see [the native route](../modding/src/concepts/native-route.md)) and `[[jar]]`. Unknown fields are refused
    ([manifest](../modding/src/reference/manifest.md)).
-7. **Freshness errors:** a changed function hash refuses the injection; use `inject update` or reselect it with `inject add`. Never substitute a different function.
+7. **Freshness errors:** check changed internals against the pinned source before refreshing their declarations
+   with [`internals add` or `internals sync`](../modding/src/reference/registry-index.md#native-dependency-tools).
 8. **Data and assets** are read through a reload hook, once per reload, never on the tick.
-9. **Missing hook?** File a [hook request](../modding/src/concepts/injections.md#ask-for-the-hook) on arismoko/horizon.
+9. **Missing hook?** File a [hook request](https://github.com/sunrise-org/sunrise/issues/new) naming the
+   game action, side, required values and whether the hook would observe, change or cancel the action.

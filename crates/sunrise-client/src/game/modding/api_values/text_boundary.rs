@@ -1,8 +1,8 @@
 #[path = "text_style_capture.rs"]
 mod text_style_capture;
 use super::{TryIntoApi, TryIntoEngine};
-use sunrise_client_core::text as engine;
 use mod_api::text::{Text, TextFormError};
+use sunrise_client_core::text as engine;
 
 impl TryIntoApi for engine::Text {
     type Api = Text;

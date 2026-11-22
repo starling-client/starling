@@ -7,6 +7,8 @@ pub trait Hooks {
     /// level), so they ask `analog_output`. Asked from inside the
     /// level's update: answer from `state` alone. Authoritative servers only.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "output",
@@ -15,5 +17,5 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_has_analog_output",
         neoforge = "none (vanilla BlockBehaviour.hasAnalogOutputSignal; NeoForge adds no event or extension for it)"
     )]
-    fn has_analog_output();
+    fn has_analog_output(state: BlockState, output: &mut bool);
 }

@@ -5,9 +5,9 @@
 //! damps the light) and a bottom slab (whose up face occludes the sky-light
 //! column) do not. The world is lit by the vanilla light engine, not by hand.
 use crate::game::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::light::{LightTables, apply_lighting, light_chunk};
-use std::sync::Arc;
 
 /// The prepared resources, or `None` where CI has none (the test then skips).
 fn resources() -> Option<std::path::PathBuf> {
@@ -100,7 +100,7 @@ fn attempt(game: &mut Game<'_>, tables: &LightTables, roof: Option<&str>) -> (i3
     // `random.nextInt(timeSinceRest) >= 72000` almost always passes at
     // `i32::MAX`; 64 attempts leave no room for the draw to decide the test.
     for _ in 0..64 {
-        game.stats.phantom_tick = 0;
+        game.stats.set_phantom_tick(0);
         game.spawn_phantoms();
         spawned = game
             .mobs

@@ -29,6 +29,32 @@ pub enum StructureMirror {
     FrontBack,
 }
 
+/// Where a placement's template comes from: a template the game already has, by id, or vanilla
+/// structure NBT the mod carries.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum StructureTemplateSource {
+    /// A template by id (`mymod:hut`), found as `StructureTemplateManager.get` finds it: the world's
+    /// saved structures, then the game's and the mods' own.
+    Id(String),
+    /// Vanilla structure NBT, the bytes of a `structures/<namespace>/<path>.nbt` file: gzipped as the
+    /// game saves one, or plain. Read by the game's own loader, within vanilla's limits for templates.
+    Nbt(Vec<u8>),
+}
+
+impl StructureTemplateSource {
+    /// The template `id` names.
+    pub fn id(id: &str) -> Self {
+        Self::Id(id.to_owned())
+    }
+
+    /// The template `bytes` hold, as vanilla structure NBT.
+    pub fn nbt(bytes: Vec<u8>) -> Self {
+        Self::Nbt(bytes)
+    }
+}
+
 /// The transformed template size and blocks in vanilla placement order.
 #[derive(Clone, Debug, PartialEq, Default)]
 #[non_exhaustive]

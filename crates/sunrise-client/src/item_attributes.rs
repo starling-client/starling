@@ -3,12 +3,12 @@
 //! (`ItemStack::default_attribute_modifiers`), then the mods' answer to
 //! `item_attribute_modifier` (`ItemAttributeModifierEvent`). Every reader of a
 //! stack's modifiers goes through here.
-use sunrise_items::item_data::ModifierRow;
-use sunrise_items::items::{ItemStack, Items};
 use mod_api::{
     AttributeModifier, AttributeOperation, EquipmentSlotGroup, Identifier, ItemAttributeModifier,
 };
 use std::borrow::Cow;
+use sunrise_items::item_data::ModifierRow;
+use sunrise_items::items::{ItemStack, Items};
 
 /// The modifiers `stack` grants, with its item's from `items`.
 pub fn attribute_modifiers<'a>(stack: &ItemStack, items: &'a Items) -> Cow<'a, [ModifierRow]> {

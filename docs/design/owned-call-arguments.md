@@ -9,7 +9,7 @@ cannot call the original twice without inventing another stack.
 
 ## Ownership contract
 
-This proposal applies only to native `[[native.mixin]]` source transformations, not API injection points. Argument expressions are
+For native `[[native.mixin]]` source transformations, argument expressions are
 evaluated once, in their original order, and their values **move** into one record.
 Neither lowering nor dispatch clones a stack, implicitly or explicitly.
 
@@ -59,10 +59,8 @@ not referents. Engine-type lifetimes remain separate from the record borrow life
 A record with any owned non-Copy field always selects the single-use contract.
 
 Mutable-reference arguments still refuse: preserving exclusive reborrows is not covered.
-API injection points retain the existing refusal
-rather than changing a prebuilt interface or introducing an API source adapter. Unresolved
-or unrepresentable types retain the existing named record refusal. Borrowed results and
-alias-dependent receiver arguments retain their existing signature/alias refusals. Before
+Unresolved or unrepresentable types retain the existing named record refusal. Borrowed
+results and alias-dependent receiver arguments retain their existing signature/alias refusals. Before
 any write, canonical identities, function hashes, ordinal/context freshness and eligibility
 must pass; refusal leaves source byte for byte unchanged. Building this proposal waits for
 root's decision after independent review.

@@ -2,9 +2,7 @@
 //! beside vanilla's `@p @a @r @s @e @n`, in every entity and player argument (NeoForge's
 //! `EntitySelectorManager` and `IEntitySelectorType`).
 
-use crate::wire::{Reader, Wire, WireError, Writer};
 use crate::{CommandSource, EntityRef, ServerHost};
-use std::sync::Arc;
 
 /// How a registered selector token orders its candidates before its limit, as `sort=` does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -76,5 +74,3 @@ pub trait EntitySelectorType: Send + Sync + 'static {
     fn matches(&self, host: &mut dyn ServerHost, source: &CommandSource, entity: EntityRef)
     -> bool;
 }
-
-crate::wire::wire_handlers::handler!(dyn EntitySelectorType, "EntitySelectorType");

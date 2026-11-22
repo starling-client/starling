@@ -154,10 +154,14 @@ impl Game<'_> {
         if hurts || extinguishes {
             let source =
                 Damage::indirect_magic(by_player.then_some(Who::Player), [at.x, at.y, at.z]);
-            for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+            let attacker = by_player.then_some(Who::Player);
+            let attack = self.attack_of_who(attacker);
+            for index in 0..self.mobs.len() {
+                let m = &self.mobs[index];
                 // WATER_SENSITIVE_OR_ON_FIRE.
                 let sensitive = m.kind.flags.water_sensitive;
-                if !(sensitive || m.is_on_fire())
+                if m.removed
+                    || !(sensitive || m.is_on_fire())
                     || !reach.intersects(m.bounds())
                     || !near(m.position)
                 {
@@ -165,8 +169,11 @@ impl Game<'_> {
                 }
                 if hurts && sensitive {
                     let invulnerable = m.invulnerable_flag;
+                    let plan = self.prepare_knockback_credit(m.id as i32, attacker, &attack);
+                    let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                    let m = &mut self.mobs[index];
                     m.damage(
-                        crate::game::entity::damage_level_of!(self, scoped),
+                        crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
                         1.0,
                         source,
                     );
@@ -182,7 +189,9 @@ impl Game<'_> {
                     {
                         m.extra.counter2 = 64;
                     }
+                    self.finish_mob_damage_at(index);
                 }
+                let m = &mut self.mobs[index];
                 if extinguishes && m.is_on_fire() && m.alive() {
                     m.extinguish_fire();
                 }
@@ -278,7 +287,7 @@ mod tests {
     /// `AbstractThrownPotion.douseFire` -> `CampfireBlock.douse(entity, ...)`:
     /// the campfire's block change is sourced from the potion's owner.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_doused_campfire_posts_block_change_from_the_potion_owner() {
         let mut resources = None;
         let mut game = server_game(&mut resources);

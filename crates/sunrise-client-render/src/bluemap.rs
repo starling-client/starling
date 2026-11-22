@@ -2,8 +2,7 @@
 //! lowres tiles of the server's web map, fetched over HTTP around the player,
 //! fill the far terrain where no real chunk was ever seen
 //! (`server_terrain`'s store always comes first). Off unless the
-//! player names the server's map (`Settings`), or lets Sunrise look for it
-//! (`bluemap_detect`).
+//! player names the server's map (`Settings`).
 //!
 //! A lowres tile (`LowresTile`) is a PNG of `(size + 1)` × `2 (size + 1)`
 //! pixels: the top half each column's colour, the bottom half its height
@@ -20,12 +19,12 @@ use crate::{
     fast_hash::{FxHashMap, FxHashSet},
     lod::{Column, Span},
 };
-use sunrise_world::registry::{BlockRegistry, BlockStateId};
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, OnceLock, Weak},
+    sync::{Arc, Condvar, Mutex, Weak},
     time::{Duration, Instant, SystemTime},
 };
+use sunrise_world::registry::{BlockRegistry, BlockStateId};
 
 /// Downloaded tiles kept on disk per server, at most.
 const DISK_CAP: u64 = 256 << 20;
@@ -56,7 +55,7 @@ const SKIRT: i32 = 8;
 /// a pack's.
 pub const SERVERS_FILE: &str = "sunrise-bluemap.txt";
 /// The player's BlueMap settings: `blueMapRadius:<chunks>` (or `<blocks>b`)
-/// and `blueMapAutoDetect:true` in `sunrise-graphics.txt`, and
+/// in `sunrise-graphics.txt`, and
 /// `blueMap:<server address> <map URL> [<level>=<map id> ...]` per server in
 /// `SERVERS_FILE`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -64,8 +63,6 @@ pub struct Settings {
     /// How far around the player tiles are downloaded, in chunks; 0 uses
     /// `DEFAULT_RADIUS`.
     pub radius: u32,
-    /// Look for the map of a server no `blueMap:` line names.
-    pub auto_detect: bool,
     pub servers: Vec<Server>,
 }
 pub const DEFAULT_RADIUS: u32 = 64;
@@ -118,10 +115,7 @@ impl Settings {
     }
     /// What goes in `sunrise-graphics.txt` (the servers don't).
     pub fn serialize(&self) -> String {
-        format!(
-            "blueMapRadius:{}\nblueMapAutoDetect:{}\n",
-            self.radius, self.auto_detect
-        )
+        format!("blueMapRadius:{}\n", self.radius)
     }
     /// The settings of the server at `address`, as typed to join it.
     pub fn server(&self, address: &str) -> Option<&Server> {
@@ -609,7 +603,7 @@ impl Palette {
             push(bottom.min(floor - 4), floor - 3, self.deep);
             push(floor - 3, floor, self.under);
             push(floor, top, c.top);
-            column.surface = Some(crate::lod::Surface {
+            column.surface = Some(crate::columns::Surface {
                 height: floor,
                 state: self.under,
                 water: Some((top, c.top)),
@@ -620,7 +614,7 @@ impl Palette {
             push(bottom.min(top - 5), top - 4, self.deep);
             push(top - 4, top - 1, under);
             push(top - 1, top, c.top);
-            column.surface = Some(crate::lod::Surface {
+            column.surface = Some(crate::columns::Surface {
                 height: top,
                 state: c.top,
                 water: None,
@@ -686,9 +680,8 @@ pub struct Change {
     pub widths: (i32, i32),
 }
 struct Inner {
-    /// The map's web address; unset while it is looked for at `probes`.
-    base: OnceLock<String>,
-    probes: Vec<String>,
+    /// The map's web address.
+    base: String,
     level: String,
     chosen: Vec<(String, String)>,
     dir: PathBuf,
@@ -722,48 +715,8 @@ impl BlueMap {
         radius_blocks: i32,
         palette: Palette,
     ) -> Self {
-        let base = OnceLock::from(base_url(url));
-        Self::build(base, Vec::new(), level, chosen, dir, radius_blocks, palette)
-    }
-    /// The map of `level`, looked for at `probes` (`bluemap_detect`) first:
-    /// lookups find nothing new until it is found.
-    pub fn detect(
-        probes: Vec<String>,
-        level: &str,
-        dir: PathBuf,
-        radius_blocks: i32,
-        palette: Palette,
-    ) -> Self {
-        let probes = probes.iter().map(|p| base_url(p)).collect();
-        let base = OnceLock::new();
-        Self::build(base, probes, level, Vec::new(), dir, radius_blocks, palette)
-    }
-    /// The map from where `source` says.
-    pub fn from_source(
-        source: crate::bluemap_detect::Source,
-        level: &str,
-        dir: PathBuf,
-        radius_blocks: i32,
-        palette: Palette,
-    ) -> Self {
-        use crate::bluemap_detect::Source;
-        match source {
-            Source::Url { url, maps } => Self::new(&url, level, maps, dir, radius_blocks, palette),
-            Source::Detect(probes) => Self::detect(probes, level, dir, radius_blocks, palette),
-        }
-    }
-    fn build(
-        base: OnceLock<String>,
-        probes: Vec<String>,
-        level: &str,
-        chosen: Vec<(String, String)>,
-        dir: PathBuf,
-        radius_blocks: i32,
-        palette: Palette,
-    ) -> Self {
         let inner = Arc::new(Inner {
-            base,
-            probes,
+            base: base_url(url),
             level: level.into(),
             chosen,
             dir,
@@ -1169,9 +1122,6 @@ struct Worker {
     disk: Option<u64>,
     /// The settings were fetched on this visit.
     settings: bool,
-    /// Candidates tried while looking for the map, and the right to look.
-    probed: usize,
-    claim: Option<crate::bluemap_detect::Claim>,
     /// Nothing more to do: no map was found.
     done: bool,
 }
@@ -1188,8 +1138,6 @@ fn fetch(inner: Weak<Inner>) {
         backoff: BACKOFF,
         disk: None,
         settings: false,
-        probed: 0,
-        claim: None,
         done: false,
     };
     while !worker.done {
@@ -1206,8 +1154,7 @@ impl Worker {
     /// `Err`: the server didn't answer; `Ok(None)`: it has nothing there.
     fn get(&self, inner: &Inner, path: &str) -> Result<Option<Vec<u8>>, ()> {
         use std::io::Read;
-        let base = inner.base.get().ok_or(())?;
-        match self.agent.get(&format!("{base}/{path}")).call() {
+        match self.agent.get(&format!("{}/{path}", inner.base)).call() {
             Ok(response) if response.status() == 204 => Ok(None),
             Ok(response) => {
                 let mut body = Vec::new();
@@ -1233,8 +1180,7 @@ impl Worker {
             }
         }
         state.queue.clear();
-        let base = inner.base.get().map_or("", String::as_str);
-        log::debug!("Sunrise: BlueMap at {base} isn't answering");
+        log::debug!("Sunrise: BlueMap at {} isn't answering", inner.base);
         self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
     }
     fn answered(&mut self) {
@@ -1252,9 +1198,6 @@ impl Worker {
                 state.offline_until = None;
                 state.reach(inner.radius, &inner.wake);
             }
-        }
-        if inner.base.get().is_none() {
-            return self.look(inner);
         }
         let started = Instant::now();
         // The settings, once a visit: the cached ones serve until then.
@@ -1442,46 +1385,6 @@ impl Worker {
 }
 
 impl Worker {
-    /// One step of looking for the map: the next candidate, one at a time
-    /// and one look a server at a time (another level's map may be looking).
-    fn look(&mut self, inner: &Inner) -> Duration {
-        use crate::bluemap_detect::{self as detect, Claim, Remembered};
-        if self.claim.is_none() {
-            let Some(claim) = Claim::take(&inner.dir) else {
-                return Duration::from_secs(1);
-            };
-            self.claim = Some(claim);
-            // What a look finished meanwhile found: one of this server's
-            // addresses only (`bluemap_detect::source`).
-            match detect::remembered(&inner.dir, SystemTime::now()) {
-                Remembered::Found(url) if !inner.probes.contains(&url) => {}
-                Remembered::Found(url) => {
-                    let _ = inner.base.set(url);
-                    self.claim = None;
-                    return Duration::ZERO;
-                }
-                Remembered::Nothing => return self.found_nothing(inner),
-                Remembered::Stale(_) => {}
-            }
-        }
-        let Some(candidate) = inner.probes.get(self.probed) else {
-            detect::remember(&inner.dir, None, SystemTime::now());
-            log::debug!("Sunrise: no BlueMap found for {}", inner.level);
-            return self.found_nothing(inner);
-        };
-        self.probed += 1;
-        let started = Instant::now();
-        if detect::probe(&self.agent, candidate) {
-            log::info!("Sunrise: found the server's BlueMap");
-            log::debug!("Sunrise: BlueMap at {candidate}");
-            detect::remember(&inner.dir, Some(candidate), SystemTime::now());
-            let _ = inner.base.set(candidate.clone());
-            self.claim = None;
-            return Duration::ZERO;
-        }
-        log::debug!("Sunrise: no BlueMap at {candidate}");
-        detect::GAP.saturating_sub(started.elapsed())
-    }
     /// The server has no map: what was cached of an earlier one isn't drawn.
     fn found_nothing(&mut self, inner: &Inner) -> Duration {
         let mut state = inner.state.lock().unwrap();
@@ -1491,7 +1394,6 @@ impl Worker {
             state.generation += 1;
             state.announce_all();
         }
-        self.claim = None;
         self.done = true;
         Duration::ZERO
     }
@@ -1694,7 +1596,6 @@ mod tests {
         );
         let settings = Settings {
             radius: 32,
-            auto_detect: true,
             servers: vec![server.clone()],
         };
         let text = settings.serialize();
@@ -1702,7 +1603,6 @@ mod tests {
         for line in text.lines() {
             match line.split_once(':') {
                 Some(("blueMapRadius", v)) => parsed.radius = Settings::parse_radius(v).unwrap(),
-                Some(("blueMapAutoDetect", v)) => parsed.auto_detect = v == "true",
                 _ => panic!("{line}: no map in the graphics settings"),
             }
         }
@@ -1911,7 +1811,7 @@ mod tests {
             palette(),
         );
         let terrain = ServerTerrain::new(dir.join("chunks"), Some(Arc::new(map)));
-        let real = Column::from_surface(Some(crate::lod::Surface {
+        let real = Column::from_surface(Some(crate::columns::Surface {
             height: 100,
             state: BlockStateId(9),
             water: None,

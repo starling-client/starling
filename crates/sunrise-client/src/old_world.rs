@@ -2,11 +2,11 @@
 //! chunks are old (`IOWorker.isOldChunkAround`), their `blending_data`, border
 //! columns (`BlendingData.calculateData`) and the biomes they keep.
 use crate::{biome::Biomes, chunk::Chunk, save::SaveDir};
-use sunrise_core::position::ChunkPos;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
 };
+use sunrise_core::position::ChunkPos;
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

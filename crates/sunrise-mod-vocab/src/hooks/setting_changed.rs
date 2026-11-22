@@ -7,10 +7,12 @@ pub trait Hooks {
     /// `setting_bool` and its siblings. Only mod `mod_id` hears it: a mod is told of its own
     /// settings, never another's.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_setting_changed",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         owner = "mod_id",
         neoforge = "ModConfigEvent.Reloading (a ModConfigSpec value set on the config screen)"
     )]
-    fn setting_changed();
+    fn setting_changed(mod_id: &str, key: &str);
 }

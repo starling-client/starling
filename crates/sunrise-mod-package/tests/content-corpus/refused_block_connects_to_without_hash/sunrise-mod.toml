@@ -1,0 +1,3 @@
+id = "refused_block_connects_to_without_hash"
+name = "Refused block connects to without hash"
+version = "1.2.3"

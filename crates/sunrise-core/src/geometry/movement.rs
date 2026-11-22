@@ -1,4 +1,5 @@
 //! Entity geometry helpers operating on an already selected collider list.
+<<<<<<< sync-sunrise-1
 use super::{Aabb, Axis, COLLISION_EPSILON, Vec3, VoxelShape, java_max, java_min};
 
 /// What Entity.collide asks of a collider: VoxelShape.collide along one axis,
@@ -136,6 +137,9 @@ impl Collides for Collider {
         }
     }
 }
+=======
+use super::{Aabb, Axis, Vec3, VoxelShape, oriented::OrientedCollider};
+>>>>>>> sunrise/main
 
 /// BlockGetter's floor-height decision for caller-selected collision shapes.
 /// The lower block is queried lazily only if the current shape is empty.
@@ -187,13 +191,28 @@ pub fn try_resolve_step_movement<S: Collides, E>(
     aabb: Aabb,
     max_step: f32,
     on_ground: bool,
+    collect: impl FnMut(Aabb) -> Result<Vec<S>, E>,
+) -> Result<Vec3, E> {
+    try_resolve_step_movement_oriented(movement, aabb, max_step, on_ground, &[], collect)
+}
+
+/// The same decision with moving colliders beside the shapes: boxes that are oriented in the
+/// world. They are selected once by the caller, like the entity shapes, and take part in every
+/// axis of the movement and in the step-up heights. With none, the answer is exactly
+/// [`try_resolve_step_movement`]'s.
+pub fn try_resolve_step_movement_oriented<S: std::borrow::Borrow<VoxelShape>, E>(
+    movement: Vec3,
+    aabb: Aabb,
+    max_step: f32,
+    on_ground: bool,
+    oriented: &[OrientedCollider],
     mut collect: impl FnMut(Aabb) -> Result<Vec<S>, E>,
 ) -> Result<Vec3, E> {
     let resolved = if movement.length_squared() == 0.0 {
         movement
     } else {
         let shapes = collect(aabb.expand_towards(movement))?;
-        resolve_borrowed_shape_movement(movement, aabb, &shapes)
+        resolve_borrowed_shape_movement(movement, aabb, &shapes, oriented)
     };
     let landed = movement.y != resolved.y && movement.y < 0.0;
     if max_step > 0.0
@@ -210,11 +229,19 @@ pub fn try_resolve_step_movement<S: Collides, E>(
             query = query.expand_towards(Vec3::new(0.0, -(1.0e-5_f32 as f64), 0.0));
         }
         let shapes = collect(query)?;
-        for height in borrowed_step_heights(step_box, &shapes, max_step, resolved.y as f32) {
+        for height in borrowed_step_heights(
+            step_box,
+            &shapes,
+            oriented,
+            Vec3::new(movement.x, 0.0, movement.z),
+            max_step,
+            resolved.y as f32,
+        ) {
             let candidate = resolve_borrowed_shape_movement(
                 Vec3::new(movement.x, height as f64, movement.z),
                 step_box,
                 &shapes,
+                oriented,
             );
             if candidate.horizontal_distance_squared() > resolved.horizontal_distance_squared() {
                 return Ok(candidate.subtract(Vec3::new(
@@ -234,10 +261,20 @@ pub fn try_resolve_step_movement<S: Collides, E>(
 /// This helper does not collect shapes, step up, set grounded flags, modify
 /// velocity, or apply inside-block effects.
 pub fn resolve_shape_movement(movement: Vec3, aabb: Aabb, shapes: &[&VoxelShape]) -> Vec3 {
-    resolve_borrowed_shape_movement(movement, aabb, shapes)
+    resolve_borrowed_shape_movement(movement, aabb, shapes, &[])
 }
+<<<<<<< sync-sunrise-1
 fn resolve_borrowed_shape_movement<S: Collides>(movement: Vec3, aabb: Aabb, shapes: &[S]) -> Vec3 {
     if shapes.is_empty() {
+=======
+fn resolve_borrowed_shape_movement<S: std::borrow::Borrow<VoxelShape>>(
+    movement: Vec3,
+    aabb: Aabb,
+    shapes: &[S],
+    oriented: &[OrientedCollider],
+) -> Vec3 {
+    if shapes.is_empty() && oriented.is_empty() {
+>>>>>>> sunrise/main
         return movement;
     }
     let mut result = [0.0; 3];
@@ -247,7 +284,19 @@ fn resolve_borrowed_shape_movement<S: Collides>(movement: Vec3, aabb: Aabb, shap
             continue;
         }
         let moved = aabb.move_by(Vec3::new(result[0], result[1], result[2]));
+<<<<<<< sync-sunrise-1
         result[axis as usize] = collide_all(axis, moved, shapes, amount);
+=======
+        let stopped = VoxelShape::collide_all(
+            axis,
+            moved,
+            shapes.iter().map(std::borrow::Borrow::borrow),
+            amount,
+        );
+        result[axis as usize] = oriented.iter().fold(stopped, |left, collider| {
+            collider.collide(moved, axis, left)
+        });
+>>>>>>> sunrise/main
     }
     Vec3::new(result[0], result[1], result[2])
 }
@@ -271,16 +320,37 @@ pub fn candidate_step_heights(
     max_step: f32,
     current_y: f32,
 ) -> Vec<f32> {
-    borrowed_step_heights(aabb, shapes, max_step, current_y)
+    borrowed_step_heights(aabb, shapes, &[], Vec3::ZERO, max_step, current_y)
+}
+
+thread_local! {
+    static FOUND: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn borrowed_step_heights<S: Collides>(
     aabb: Aabb,
     shapes: &[S],
+    oriented: &[OrientedCollider],
+    horizontal: Vec3,
     max_step: f32,
     current_y: f32,
 ) -> Vec<f32> {
     let mut heights = Vec::<f32>::with_capacity(4);
+    if !oriented.is_empty() {
+        // Kept between moves: a step attempt on a collider allocates nothing for these.
+        let mut found = FOUND.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        found.clear();
+        for collider in oriented {
+            collider.step_heights(aabb, horizontal, f64::from(max_step), &mut found);
+        }
+        for &height in &found {
+            let height = height as f32;
+            if height != current_y && !heights.iter().any(|old| old.to_bits() == height.to_bits()) {
+                heights.push(height);
+            }
+        }
+        FOUND.with(|c| *c.borrow_mut() = found);
+    }
     for shape in shapes {
         for coordinate in shape.coordinates(Axis::Y) {
             let height = (*coordinate - aabb.min(Axis::Y)) as f32;
@@ -420,6 +490,7 @@ mod fallible_tests {
 }
 
 #[cfg(test)]
+<<<<<<< sync-sunrise-1
 mod moved_block_tests {
     use super::*;
     /// xorshift64*: deterministic inputs without a dependency.
@@ -550,5 +621,136 @@ mod moved_block_tests {
                 );
             }
         }
+=======
+mod oriented_tests {
+    use super::*;
+    use crate::geometry::oriented::{ColliderBoxes, Frame};
+
+    fn resolve(
+        movement: Vec3,
+        mover: Aabb,
+        on_ground: bool,
+        oriented: &[OrientedCollider],
+    ) -> Vec3 {
+        resolve_oriented(movement, mover, 0.6, on_ground, oriented)
+    }
+
+    fn resolve_oriented(
+        movement: Vec3,
+        mover: Aabb,
+        max_step: f32,
+        on_ground: bool,
+        oriented: &[OrientedCollider],
+    ) -> Vec3 {
+        try_resolve_step_movement_oriented(movement, mover, max_step, on_ground, oriented, |_| {
+            Ok::<Vec<VoxelShape>, std::convert::Infallible>(Vec::new())
+        })
+        .unwrap()
+    }
+
+    fn deck(yaw_degrees: f64, pitch_degrees: f64) -> (ColliderBoxes, Frame) {
+        let boxes = ColliderBoxes::new(vec![Aabb::new(
+            Vec3::new(-1.5, -0.5, -10.0),
+            Vec3::new(1.5, 0.0, 10.0),
+        )]);
+        let (hy, hx) = (
+            yaw_degrees.to_radians() / 2.0,
+            pitch_degrees.to_radians() / 2.0,
+        );
+        // yaw about y after pitch about x: q = qy * qx.
+        let q = [
+            hy.cos() * hx.sin(),
+            hy.sin() * hx.cos(),
+            -hy.sin() * hx.sin(),
+            hy.cos() * hx.cos(),
+        ];
+        (boxes, Frame::from_quaternion(Vec3::new(0.0, 64.0, 0.0), q))
+    }
+
+    /// Walking along a turned deck, the box is held on its top and slides along it, and a
+    /// movement into its side is stopped.
+    #[test]
+    fn a_walker_stands_on_a_turned_deck_and_is_stopped_by_its_side() {
+        let (boxes, frame) = deck(30.0, 0.0);
+        let collider = OrientedCollider::new(frame, std::sync::Arc::new(boxes));
+        let stand = frame.to_world(Vec3::new(0.0, 0.0, 2.0));
+        let walker = Aabb::new(
+            Vec3::new(stand.x - 0.3, stand.y, stand.z - 0.3),
+            Vec3::new(stand.x + 0.3, stand.y + 1.8, stand.z + 0.3),
+        );
+        let step = Vec3::new(0.1, -0.08, 0.1);
+        let got = resolve(step, walker, true, std::slice::from_ref(&collider));
+        assert_eq!((got.x, got.z), (0.1, 0.1));
+        assert_eq!(got.y, 0.0, "held on the top");
+        // Outside the deck's side, walking toward it stops at its face.
+        let out = frame.to_world(Vec3::new(-3.0, 0.0, 2.0));
+        let outside = Aabb::new(
+            Vec3::new(out.x - 0.3, out.y - 0.3, out.z - 0.3),
+            Vec3::new(out.x + 0.3, out.y + 1.5, out.z + 0.3),
+        );
+        let toward = frame
+            .to_world(Vec3::new(1.0, 0.0, 0.0))
+            .subtract(frame.origin);
+        let moved = resolve(
+            toward.scale(3.0),
+            outside,
+            false,
+            std::slice::from_ref(&collider),
+        );
+        assert!(moved.length() < 3.0 * toward.length());
+    }
+
+    /// Walking up a pitched deck is a sequence of small steps: the step-up candidates follow
+    /// the tilted top.
+    #[test]
+    fn a_walker_climbs_a_pitched_deck() {
+        let (boxes, frame) = deck(0.0, 15.0);
+        let collider = OrientedCollider::new(frame, std::sync::Arc::new(boxes));
+        // Start on the surface at local z = 4, the box's bottom on the highest point of the
+        // surface under its footprint (its uphill edge), then walk uphill 0.2 per tick.
+        let tan = 15.0_f64.to_radians().tan();
+        let mut at = frame.to_world(Vec3::new(0.0, 0.0, 4.0));
+        let high = 64.0 - (at.z - 0.3) * tan;
+        let mut walker = Aabb::new(
+            Vec3::new(at.x - 0.3, high, at.z - 0.3),
+            Vec3::new(at.x + 0.3, high + 1.8, at.z + 0.3),
+        );
+        for _ in 0..10 {
+            let got = resolve(
+                Vec3::new(0.0, -0.08, -0.2),
+                walker,
+                true,
+                std::slice::from_ref(&collider),
+            );
+            assert!((got.z + 0.2).abs() < 1.0e-6, "blocked: {got:?}");
+            walker = walker.move_by(got);
+            at = at.add_vector(got);
+        }
+        let surface = 64.0 - (at.z - 0.3) * tan;
+        assert!(
+            (walker.min(Axis::Y) - surface).abs() < 1.0e-6,
+            "{} vs {surface}",
+            walker.min(Axis::Y)
+        );
+    }
+
+    /// A walker steps up a 0.5 ledge as vanilla's step-up does, with no collider in the world.
+    #[test]
+    fn no_collider_leaves_the_decision_unchanged() {
+        let ledge = VoxelShape::from_box(Aabb::new(Vec3::ZERO, Vec3::new(1.0, 0.5, 1.0))).unwrap();
+        let b = Aabb::new(Vec3::new(-0.6, 0.0, 0.2), Vec3::new(-0.2, 1.8, 0.8));
+        let requested = Vec3::new(1.0, 0.0, 0.0);
+        let expected = Vec3::new(1.0, 0.5, 0.0);
+        let plain = try_resolve_step_movement(requested, b, 0.6, true, |_| {
+            Ok::<_, std::convert::Infallible>(vec![&ledge])
+        })
+        .unwrap();
+        assert_eq!(plain, expected);
+        let with = try_resolve_step_movement_oriented(requested, b, 0.6, true, &[], |_| {
+            Ok::<_, std::convert::Infallible>(vec![&ledge])
+        })
+        .unwrap();
+        assert_eq!(with, expected);
+>>>>>>> sunrise/main
     }
 }

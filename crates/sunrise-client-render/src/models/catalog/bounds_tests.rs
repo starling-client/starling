@@ -1,6 +1,6 @@
 use super::*;
 
-fn catalog(definition: &str) -> StateModels {
+pub(super) fn catalog(definition: &str, selection: Option<SelectedModels>) -> StateModels {
     let definition = BlockStateDefinition::from_json(definition).unwrap();
     let choices = CompiledChoices::new(&definition)
         .unwrap()
@@ -46,12 +46,11 @@ fn catalog(definition: &str) -> StateModels {
         )
     })
     .collect();
-    StateModels {
-        choices: vec![choices],
-        states: vec![Some((0, SelectedModels::Variant(0)))],
+    StateModels::with_baked(
+        vec![choices],
+        vec![selection.map(|selected| (0, selected))],
         baked,
-        ..StateModels::default()
-    }
+    )
 }
 
 #[test]
@@ -66,8 +65,7 @@ fn envelopes_cover_weighted_and_multipart_geometry_and_mutation_invalidates_them
             SelectedModels::Multipart(vec![0, 1]),
         ),
     ] {
-        let mut models = catalog(definition);
-        models.states[0] = Some((0, selected));
+        let mut models = catalog(definition, Some(selected));
         let [lo, hi] = models.render_bounds(BlockStateId(0)).unwrap();
         assert!(
             lo[0] <= -1.0 && hi[1] >= 2.0,
@@ -91,7 +89,10 @@ fn envelopes_cover_weighted_and_multipart_geometry_and_mutation_invalidates_them
         assert_eq!(hi[0], 100.0);
         assert_eq!(lo[2], -5.0);
         // A resource replacement owns a fresh catalog rather than the previous cache.
-        let replacement = catalog(r#"{"variants":{"":{"model":"sunrise:a"}}}"#);
+        let replacement = catalog(
+            r#"{"variants":{"":{"model":"sunrise:a"}}}"#,
+            Some(SelectedModels::Variant(0)),
+        );
         assert_eq!(
             replacement.render_bounds(BlockStateId(0)),
             Some([[-1.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
@@ -106,7 +107,10 @@ fn envelopes_cover_weighted_and_multipart_geometry_and_mutation_invalidates_them
             .render_bounds(BlockStateId(0))
             .is_none()
     );
-    let mut empty = catalog(r#"{"variants":{"":{"model":"sunrise:a"}}}"#);
+    let mut empty = catalog(
+        r#"{"variants":{"":{"model":"sunrise:a"}}}"#,
+        Some(SelectedModels::Variant(0)),
+    );
     for (_, model) in empty.models_mut() {
         model.faces.clear();
     }

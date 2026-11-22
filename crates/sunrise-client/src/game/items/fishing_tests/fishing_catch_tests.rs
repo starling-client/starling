@@ -1,7 +1,7 @@
 // Included as fishing's child so fixtures can construct its private hook state.
 use super::*;
-use sunrise_client::motion::PlayerMotion;
 use std::sync::Arc;
+use sunrise_client::motion::PlayerMotion;
 
 struct Catch(u8);
 #[mod_api::__subscriptions]
@@ -64,6 +64,7 @@ fn run(mode: Option<u8>) -> (Vec<(String, u32)>, usize, i32, u32, i64, bool) {
             game.save = Arc::new(sunrise_client::save::SaveDir::new(
                 scratch.path().join("save"),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
             game.lan_acting_uuid = Some(7);
@@ -101,7 +102,7 @@ fn run(mode: Option<u8>) -> (Vec<(String, u32)>, usize, i32, u32, i64, bool) {
                 needs_sync: false,
                 tick_count: 0,
                 life: 0,
-                on_ground: false,
+                ground: Default::default(),
                 nibble: 1,
                 time_until_lured: 0,
                 time_until_hooked: 0,
@@ -161,7 +162,7 @@ fn run(mode: Option<u8>) -> (Vec<(String, u32)>, usize, i32, u32, i64, bool) {
     result.unwrap()
 }
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn fishing_catch_replaces_rolled_stack() {
     let (drops, orbs, stat, damage, _, triggered) = run(Some(1));
     assert_eq!(drops, vec![("minecraft:diamond".into(), 2)]);
@@ -169,7 +170,7 @@ fn fishing_catch_replaces_rolled_stack() {
     assert!(triggered);
 }
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn fishing_catch_cancel_keeps_damage() {
     let (drops, orbs, stat, damage, _, triggered) = run(Some(2));
     assert!(drops.is_empty());
@@ -177,7 +178,7 @@ fn fishing_catch_cancel_keeps_damage() {
     assert!(!triggered);
 }
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn fishing_catch_empty_keeps_damage() {
     let (drops, orbs, stat, damage, _, triggered) = run(Some(3));
     assert!(drops.is_empty());
@@ -185,7 +186,7 @@ fn fishing_catch_empty_keeps_damage() {
     assert!(triggered);
 }
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn fishing_catch_noop_listener_preserves_randomness() {
     let absent = run(None);
     assert!(!absent.0.is_empty());
@@ -207,7 +208,7 @@ impl log::Log for Capture {
 static LOG: Capture = Capture(std::sync::Mutex::new(Vec::new()));
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn fishing_catch_invalid_drops_keep_the_earlier_listeners_outputs() {
     // Isolate the process-global logger, as the structure-transform tests do.
     if std::env::var_os("SUNRISE_FISHING_REFUSAL_LOG_CHILD").is_none() {

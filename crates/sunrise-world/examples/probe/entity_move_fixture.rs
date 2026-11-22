@@ -1,5 +1,11 @@
 use crate::support::common::f64_bits;
 use crate::support::shapes::bounds;
+use serde_json::Value;
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+};
 use sunrise_core::{
     geometry::{Aabb, Vec3, VoxelShape, resolve_shape_movement},
     position::BlockPos,
@@ -9,12 +15,6 @@ use sunrise_world::{
     movement_emission::MovementEmission,
     movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
     registry::BlockStateId,
-};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{self, Write},
-    path::Path,
 };
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())
@@ -220,12 +220,14 @@ impl EntityMoveWorld for World<'_> {
     fn restitute(
         &mut self,
         state: BlockStateId,
+        position: BlockPos,
         x: bool,
         z: bool,
         resolved: Vec3,
     ) -> io::Result<()> {
         let input = RestitutionInput {
             block: state,
+            effect_position: position,
             collided_x: x,
             collided_z: z,
             vertical_collision: self.flags.vertical,
@@ -288,7 +290,7 @@ impl RestitutionWorld for Bounce<'_, '_> {
         self.0.query("block-suppresses".into())?;
         Ok(false)
     }
-    fn block_bounce_restitution(&mut self, _: BlockStateId) -> io::Result<f32> {
+    fn block_bounce_restitution(&mut self, _: BlockStateId, _: BlockPos) -> io::Result<f32> {
         self.0.query("block-bounce".into())?;
         Ok(0.0)
     }

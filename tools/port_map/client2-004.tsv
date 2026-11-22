@@ -27,7 +27,7 @@ RenderTypeFeatureRenderer.Group	skip:other		GPU render-type batching, as above
 ShadowFeatureRenderer.buildGroup	port	crates/sunrise-client/src/shadows.rs::shadow	loop over shadow submits
 ShadowFeatureRenderer.prepare	port	crates/sunrise-client/src/shadows.rs::shadow	shadow quads per piece, clamped by the block below
 ShadowFeatureRenderer.shadowVertex	inline	crates/sunrise-client/src/shadows.rs::shadow	vertex push folded into shadow
-ShapeOutlineFeatureRenderer.buildGroup	port	crates/sunrise-client-render/src/gfx.rs::outline_vertices	block selection outline edges as line vertices
+ShapeOutlineFeatureRenderer.buildGroup	port	crates/sunrise-client-render/src/gfx/outline.rs::outline_vertices	block selection outline edges as line vertices
 TextFeatureRenderer.buildGroup	skip:other		dispatch over text and background submits; each kind is covered below or by Sunrise's text draw
 TextFeatureRenderer.renderText	port	crates/sunrise-client-render/src/block_entity_render.rs::draw_text	the outline as the eight one-pixel offsets NORMAL under the text POLYGON_OFFSET; both share a mesh here, so the text is lifted 0.05 of a font pixel instead of z-fighting
 TextFeatureRenderer.GlyphRenderer.acceptRenderable	skip:other		glyph sink for the text pass; Sunrise's font pass draws the glyphs

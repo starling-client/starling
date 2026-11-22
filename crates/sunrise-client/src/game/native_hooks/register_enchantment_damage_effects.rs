@@ -3,23 +3,25 @@ impl Game<'_> {
     /// Register damage value effects before loading enchantment content.
     pub(in crate::game) fn native_register_enchantment_damage_effects(
         context: &mod_api::RegistrationContext,
-        effects: &mut dyn EnchantmentDamageEffects,
+        effects: &mut mod_api::EnchantmentDamageRegistry,
     ) {
-        Self::fire_register_enchantment_damage_effects(context, effects);
+        Self::fire_register_enchantment_damage_effects(context, |listen| {
+            effects.register_listener(listen)
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_client::{mobs::Mob, motion::PlayerMotion};
-    use sunrise_core::geometry::Vec3;
     use mod_api::{
         EnchantmentDamageContext, EnchantmentDamageEffect, Hooks, ModEntry,
         RegisterEnchantmentDamageEffectsEvent, ServerHost,
     };
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
+    use sunrise_client::{mobs::Mob, motion::PlayerMotion};
+    use sunrise_core::geometry::Vec3;
 
     type Observations = Arc<Mutex<Vec<(u32, u32, String, u32, f32)>>>;
     struct Effect {
@@ -80,8 +82,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources and an isolated process for startup registration"]
+    #[ignore = "daily"]
     fn custom_enchantment_changes_real_hit_damage_and_observes_hit_context() {
+        // Startup publishes damage-effect slots and callbacks process-wide.
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::native_hooks::register_enchantment_damage_effects::tests::custom_enchantment_changes_real_hit_damage_and_observes_hit_context",
+            "SUNRISE_ENCHANTMENT_DAMAGE_CHILD",
+            &["combat"],
+        ) {
+            return;
+        }
         let reads: Observations = Default::default();
         with_mods(
             vec![ModEntry::new(
@@ -123,14 +133,19 @@ mod tests {
                         serde_json::to_vec(&definition).unwrap(),
                     )
                     .unwrap();
-                    std::fs::write(definitions.join("unknown.json"), serde_json::to_vec(&serde_json::json!({"effects":{"minecraft:damage":[{"effect":{"type":"absent:damage"}}]}})).unwrap()).unwrap();
+                    std::fs::write(definitions.join("unknown.json"), serde_json::to_vec(&serde_json::json!({
+                        "description":"Unknown fixture", "supported_items":"minecraft:stick", "weight":1, "max_level":1,
+                        "min_cost":{"base":1,"per_level_above_first":0}, "max_cost":{"base":1,"per_level_above_first":0},
+                        "anvil_cost":1, "slots":["mainhand"],
+                        "effects":{"minecraft:damage":[{"effect":{"type":"absent:damage"}}]}
+                    })).unwrap()).unwrap();
                     game.world_root = root.clone();
                     let stack = game.reload_datapacks(false, &[]).unwrap();
                     let resources = game.options.resources.clone();
                     game.world_tables = game
                         .stage_world_tables(&stack, false, &resources)
                         .unwrap()
-                        .0;
+                        .tables;
                     assert!(
                         game.stations()
                             .enchantments
@@ -158,32 +173,41 @@ mod tests {
                         .get("minecraft:iron_golem")
                         .unwrap()
                         .clone();
-                    for (levels, expected) in [
-                        (vec![], 1.0),
-                        (vec![("minecraft:sharpness", 3)], 3.0),
-                        (vec![("damage_test:force", 2)], 8.0),
-                        (
-                            vec![("minecraft:sharpness", 3), ("damage_test:force", 2)],
-                            // Effective component maps put damage_test:force before sharpness:
-                            // ((1 + 2) * 2 + level 2) + Sharpness III's 2 = 10.
-                            10.0,
-                        ),
-                    ] {
+                    let mut damage_with = |levels: &[(&str, u32)]| {
                         game.mobs.clear();
                         game.mobs
                             .push(Mob::new(21, golem.clone(), Vec3::new(1.0, 64.0, 0.0), 0.0));
                         let mut weapon = ItemStack::new("minecraft:stick", 1);
                         weapon.damage = 11;
                         weapon.data_mut().enchantments = levels
-                            .into_iter()
-                            .map(|(id, level)| (id.into(), level))
+                            .iter()
+                            .map(|&(id, level)| (id.into(), level))
                             .collect();
                         game.inventory[game.selected] = Some(weapon);
                         game.attack_ticks = 100;
                         let before = game.mobs[0].health;
                         game.attack_mob(0);
-                        assert_eq!(before - game.mobs[0].health, expected);
-                    }
+                        before - game.mobs[0].health
+                    };
+                    let sharpness = ("minecraft:sharpness", 3);
+                    let force = ("damage_test:force", 2);
+                    assert_eq!(damage_with(&[]), 1.0);
+                    let sharpness_damage = damage_with(&[sharpness]);
+                    assert_eq!(sharpness_damage, 3.0);
+                    // Within one all_of the order is defined: add 2, double, add level 2.
+                    let force_damage = damage_with(&[force]);
+                    assert_eq!(force_damage, (1.0 + 2.0) * 2.0 + 2.0);
+                    assert_eq!(
+                        std::mem::take(&mut *reads.lock().unwrap()),
+                        [
+                            (7, 21, "minecraft:stick".into(), 2, 3.0),
+                            (7, 21, "minecraft:stick".into(), 2, 6.0),
+                        ]
+                    );
+                    // Distinct enchantments have no defined order: both must contribute.
+                    let mixed_damage = damage_with(&[sharpness, force]);
+                    assert!(mixed_damage > sharpness_damage && mixed_damage > force_damage);
+                    assert_eq!(std::mem::take(&mut *reads.lock().unwrap()).len(), 2);
                     let mut trident = sunrise_client::projectiles::Projectile::new(
                         sunrise_client::projectiles::ProjectileKind::Trident,
                         Vec3::ZERO,
@@ -243,10 +267,6 @@ mod tests {
                     assert_eq!(
                         *reads.lock().unwrap(),
                         [
-                            (7, 21, "minecraft:stick".into(), 2, 3.0),
-                            (7, 21, "minecraft:stick".into(), 2, 6.0),
-                            (7, 21, "minecraft:stick".into(), 2, 3.0),
-                            (7, 21, "minecraft:stick".into(), 2, 6.0),
                             (7, 21, "minecraft:trident".into(), 2, 10.0),
                             (7, 21, "minecraft:trident".into(), 2, 20.0),
                             (7, 21, "minecraft:bow".into(), 2, 4.0),

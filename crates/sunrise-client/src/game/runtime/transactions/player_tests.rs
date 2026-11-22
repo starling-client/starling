@@ -1,10 +1,11 @@
-use super::super::native_guest_turn_tests::with_guests;
+use super::super::{Dim, Game, native_guest_turn_tests::with_guests};
+use mod_api::{AttachmentAccess, AttachmentHolder, Host, HostTransaction, PlayerRef, ServerHost};
+use std::sync::{Arc, Mutex};
+use sunrise_client::items::ItemStack;
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_mod_runtime::attachments::{
     AttachmentCodec, AttachmentError, AttachmentType, Holder, index::AttachmentIndex,
 };
-use mod_api::{AttachmentAccess, AttachmentHolder, ServerHost};
-use std::sync::{Arc, Mutex};
 
 const VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "player_test",
@@ -44,8 +45,134 @@ fn rows(index: &Arc<Mutex<AttachmentIndex<AttachmentHolder>>>, name: &str) -> Ve
     values
 }
 
+fn write_player_storage(game: &mut Game<'_>, player: PlayerRef, count: u32) {
+    let host: &dyn Host = game;
+    let stack = host
+        .item_from_snbt(&format!(r#"{{id:"minecraft:stone",count:{count}}}"#))
+        .unwrap();
+    player
+        .set_inventory_slot(game, 0, Some(stack.clone()))
+        .unwrap();
+    player.set_ender_chest_slot(game, 0, Some(stack)).unwrap();
+    player
+        .set_persistent_data_key(game, &"value".into(), Some(&Tag::Int(count as i32)))
+        .unwrap();
+}
+
+fn assert_player_storage(
+    saved: Option<&Tag>,
+    inventory: &[Option<ItemStack>],
+    ender: &[Option<ItemStack>],
+    count: u32,
+) {
+    let value = saved
+        .and_then(|saved| saved.get("NeoForgeData"))
+        .and_then(|data| data.get("value"));
+    assert_eq!(value, Some(&Tag::Int(count as i32)));
+    for slots in [inventory, ender] {
+        let stack = slots[0].as_ref().unwrap();
+        assert_eq!(stack.item.as_ref(), "minecraft:stone");
+        assert_eq!(stack.count, count);
+    }
+}
+
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
+fn abort_restores_fake_players_with_the_same_uuid_in_different_levels() {
+    with_guests(|game| {
+        let overworld = game.level("minecraft:overworld").unwrap();
+        let outside = game.fake_player(overworld, 99, "test").unwrap();
+        assert!(game.enter_command_level(Dim::Nether).is_some());
+        let nether = game.level("minecraft:the_nether").unwrap();
+        let inside = game.fake_player(nether, 99, "test").unwrap();
+        assert_ne!(outside, inside);
+        write_player_storage(game, outside, 3);
+        write_player_storage(game, inside, 5);
+
+        let result: Result<(), ()> = game.transaction(|game, _| {
+            write_player_storage(game, outside, 7);
+            write_player_storage(game, inside, 11);
+            Err(())
+        });
+        assert_eq!(result, Err(()));
+        let guests = &game.lan.as_ref().unwrap().hub.guests;
+        for (player, count) in [(outside, 3), (inside, 5)] {
+            let guest = &guests[guests.identity_index(99, player.entity().id()).unwrap()];
+            assert_player_storage(
+                guest.saved.as_ref(),
+                &guest.inventory,
+                &guest.ender_items,
+                count,
+            );
+        }
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn abort_restores_player_inventory_and_data_after_the_acting_player_dies() {
+    with_guests(|game| {
+        let player = game.player(12).unwrap();
+        write_player_storage(game, player, 13);
+        game.as_guest(12, |game| {
+            let result: Result<(), ()> = game.transaction(|game, _| {
+                write_player_storage(game, player, 17);
+                // Health itself is not a journaled write in this case.
+                game.player
+                    .as_mut()
+                    .unwrap()
+                    .set_health(0.0, false)
+                    .unwrap();
+                Err(())
+            });
+            assert_eq!(result, Err(()));
+            assert!(game.native_live_acting_body().is_none());
+            assert_player_storage(
+                game.level.player_extra.as_ref(),
+                &game.inventory,
+                &game.ender_items,
+                13,
+            );
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn abort_restores_the_suspended_guest_without_touching_the_inner_guest() {
+    with_guests(|game| {
+        let outer = game.player(12).unwrap();
+        let inner = game.player(13).unwrap();
+        write_player_storage(game, outer, 19);
+        write_player_storage(game, inner, 23);
+        game.as_guest(12, |game| {
+            game.open_storage_transaction();
+            write_player_storage(game, outer, 29);
+            game.as_guest(13, |game| {
+                assert_eq!(game.lan_guest_swaps, [12, 13]);
+                game.close_storage_transaction(false);
+                assert_player_storage(
+                    game.level.player_extra.as_ref(),
+                    &game.inventory,
+                    &game.ender_items,
+                    23,
+                );
+            })
+            .unwrap();
+            assert_player_storage(
+                game.level.player_extra.as_ref(),
+                &game.inventory,
+                &game.ender_items,
+                19,
+            );
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn nested_player_turns_preserve_binding_and_rollback_whole_membership() {
     with_guests(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -123,7 +250,7 @@ fn nested_player_turns_preserve_binding_and_rollback_whole_membership() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn retained_player_records_and_save_snapshots_do_not_keep_residency() {
     with_guests(|game| {
         game.options.dedicated = Some(Vec::new());

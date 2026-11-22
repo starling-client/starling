@@ -1,0 +1,3 @@
+ids = ["hook:entity_mount"]
+why = "A mob riding a player is compulsorily ejected on save, logout, death and dimension change. The hook observes the dismount, but cancellation is ignored for this cleanup."
+migrate = "Rebuild against entity_mount version 2; do not rely on cancellation to keep a mob aboard a player during lifecycle cleanup."

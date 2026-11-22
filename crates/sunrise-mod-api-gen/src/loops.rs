@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use syn::visit::Visit;
 
-/// The file beside `points.json` in the prebuilt game.
-pub const FILE: &str = "loops.json";
+/// The published loop catalog in the prebuilt game.
+pub const FILE: &str = mod_surface::build_data::LOOPS;
 
 /// One published loop.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

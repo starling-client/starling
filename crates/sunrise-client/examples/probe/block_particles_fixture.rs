@@ -1,13 +1,13 @@
 //! Transport for ClientLevel shape-aware terrain-particle placement.
-use sunrise_client::{assets::Assets, blocks::BlockFacts, mesher::MeshTables, models, particles};
-use sunrise_core::random::{LegacyRandom, RandomSource};
-use sunrise_world::registry::BlockStateId;
 use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
 };
+use sunrise_client::{assets::Assets, blocks::BlockFacts, mesher::MeshTables, models, particles};
+use sunrise_core::random::{LegacyRandom, RandomSource};
+use sunrise_world::registry::BlockStateId;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = crate::args().collect();
     let root = Path::new(&args[1]);

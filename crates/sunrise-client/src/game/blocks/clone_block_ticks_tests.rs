@@ -3,9 +3,9 @@
 //! destination, with its trigger time, whatever the clone placed there
 //! (tools/test_clone_block_ticks_parity.py measures the same on vanilla 26.3).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::{BlockPos, ChunkPos};
-use std::sync::Arc;
 
 fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_> {
     let root = std::path::PathBuf::from(
@@ -69,7 +69,7 @@ fn ticks_at(game: &Game<'_>, pos: BlockPos) -> Vec<(u32, i64)> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_strict_clone_copies_the_pending_block_ticks_of_its_source() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);
@@ -106,7 +106,7 @@ fn a_strict_clone_copies_the_pending_block_ticks_of_its_source() {
 /// command fails on an empty count, as `copyAreaFrom` is called before
 /// `ERROR_FAILED`.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn copied_block_ticks_keep_order_priority_and_dedup() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);

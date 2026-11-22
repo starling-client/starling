@@ -3,6 +3,7 @@
 //! operator neither empties nor fills a bucket inside the spawn protection
 //! radius, while an operator does both, and a non-operator outside it does.
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::chunk::Chunk;
 use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
 use sunrise_core::position::ChunkPos;
@@ -10,7 +11,6 @@ use sunrise_protocol::packets::{
     configuration::ClientInformation,
     play::{Serverbound, UseItem},
 };
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 const CONN: u32 = 2;
 const GUEST_UUID: u128 = 424;
@@ -37,6 +37,7 @@ fn use_item(sequence: i32) -> Serverbound {
 fn a_guest_without_build_rights_neither_empties_nor_fills_a_bucket_under_spawn_protection() {
     let mut resources = None;
     let mut game = crate::game::game_tests::tests::server_game(&mut resources);
+    game.options.execution_role = crate::game::execution_role::ExecutionRole::DedicatedServer;
     game.build_registries();
     game.set_allow_commands(true);
     game.block_ticks
@@ -74,6 +75,7 @@ fn a_guest_without_build_rights_neither_empties_nor_fills_a_bucket_under_spawn_p
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();

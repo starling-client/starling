@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord-ի Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Ցույց է տալիս «Sunrise» նվագարկումը ձեր Discord պրոֆիլում, երբ աշխատում է Discord-ը. ընտրացանկերը, միայնակ նվագարկիչը կամ բազմախաղացողը, չափը և խաղաժամանակը: Երբեք աշխարհի անունը կամ սերվերի հասցեն:"
+}

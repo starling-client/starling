@@ -2,15 +2,21 @@
 // catalog-order: 0155
 
 pub trait Hooks {
-    /// The entity `entity` of type `kind` ticked in the server level `dimension` (NeoForge's
-    /// `EntityTickEvent.Post`): for each entity `entity_tick_pre` let through, after it
-    /// ticked, also one that died or was removed in its tick. Mobs and items hear their Posts
-    /// once the whole family has ticked; minecarts and boats right after their own tick. Server-side.
+    /// The entities `entities` ticked in the level `dimension`, and `kinds` holds the type of
+    /// each, in the same order (NeoForge's `EntityTickEvent.Post`): those `entity_tick_pre`
+    /// was told and did not cancel, also one that died or was removed in its tick. An entity
+    /// `entity_tick_pre` was told alone is told alone here too, right after its own tick; a
+    /// family is told once, after its last tick. Told where `entity_tick_pre` is, on the
+    /// server and on a client (`host` says which side). Version 3 observes additional families
+    /// without changing the event signature.
     #[hook(
-        side = "server",
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_entity_tick_post",
+        dispatch = "flat",
+        side = "both",
+        version = 3,
         contract = "listen",
         neoforge = "EntityTickEvent.Post",
         cancellable = false
     )]
-    fn entity_tick_post();
+    fn entity_tick_post(dimension: &str, entities: &[u32], kinds: &[&str]);
 }

@@ -1,0 +1,5 @@
+manifest:
+refused: icon.png: Invalid PNG signature.
+
+icon:
+unavailable

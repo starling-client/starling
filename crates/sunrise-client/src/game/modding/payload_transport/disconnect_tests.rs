@@ -2,10 +2,6 @@
 //! right client once, a second call (from `player_kicked`) is refused, and the hub's poll
 //! tells `player_logged_out` exactly once per player.
 use super::sender_tests::connect_peer;
-use sunrise_protocol::{
-    connection::Connection,
-    packets::{configuration as cfg, play},
-};
 use mod_api::{
     HandlerThread, Hooks, IPayloadContext, IPayloadHandler, ModEntry, PayloadBytes, PayloadId,
     PlayerKickedEvent, PlayerLoggedOutEvent, Registrar, ServerHost, Text, text::TextFormError,
@@ -13,6 +9,10 @@ use mod_api::{
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
+};
+use sunrise_protocol::{
+    connection::Connection,
+    packets::{configuration as cfg, play},
 };
 
 const NAME: &str = "game::payload_transport::disconnect_tests::a_payload_handler_disconnects_once_and_the_poll_logs_out_once";
@@ -124,7 +124,7 @@ fn send(c: &mut Connection, target: u8) {
 }
 
 #[test]
-#[ignore = "needs SUNRISE_TEST_RESOURCES; starts an integrated server and two physical TCP clients"]
+#[ignore = "daily"]
 fn a_payload_handler_disconnects_once_and_the_poll_logs_out_once() {
     super::tests::require_resources();
     if super::super::native_entity_refs::tests::run_fresh_cases(

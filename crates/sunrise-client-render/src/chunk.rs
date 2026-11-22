@@ -1,11 +1,11 @@
 //! Resident client chunk storage. Sections are reference-counted so worker
 //! threads can mesh and light immutable snapshots while the game thread edits
 //! (copy-on-write through `Arc::make_mut`).
+use std::sync::atomic::{AtomicI16, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_core::paletted::{PalettedContainer, Strategy};
 use sunrise_world::registry::BlockStateId;
-use std::sync::atomic::{AtomicI16, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
 
 pub mod block_entity;
 
@@ -119,8 +119,6 @@ pub struct ExtraLevel {
     /// The dimension type its level stem names.
     pub dimension_type: &'static str,
     pub shape: LevelShape,
-    /// The level's own seed, for a level a mod opened with one; else the world's.
-    pub seed: Option<i64>,
 }
 impl LevelShapes {
     pub const VANILLA: Self = Self {
@@ -149,10 +147,6 @@ impl LevelShapes {
             id,
             "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
         ) || self.extra.iter().any(|level| level.id == id)
-    }
-    /// The seed of the level `id`, if it has one of its own.
-    pub fn seed_of(&self, id: &str) -> Option<i64> {
-        self.extra.iter().find(|level| level.id == id)?.seed
     }
     /// The dimension type of the level `id`: a vanilla level's is its own name.
     pub fn dimension_type<'a>(&self, id: &'a str) -> &'a str {
@@ -547,6 +541,13 @@ fn column(x: i32, z: i32) -> usize {
 pub fn index(x: i32, y: i32, z: i32) -> usize {
     ((y & 15) << 8 | (z & 15) << 4 | (x & 15)) as usize
 }
+/// What a read outside a column's sections finds when no padding section is stored there.
+pub enum Outside<'a> {
+    /// The sky light of this section's bottom row at the read's X and Z, with no block light.
+    Row(&'a Section),
+    /// This light everywhere.
+    Uniform(u8),
+}
 #[derive(Clone)]
 pub struct Section {
     pub blocks: PalettedContainer,
@@ -647,6 +648,27 @@ impl ColumnCensus {
             + self.column_bytes
     }
 }
+/// Sparse sky and block DataLayer presence, indexed from the column's lower pad.
+#[derive(Clone, Copy)]
+pub struct StoredLight {
+    pub(crate) masks: [crate::section_mask::SectionMask; 2],
+    /// Materialized arrays in a save-backed snapshot, including all-zero arrays.
+    pub(crate) saved_arrays: Option<[crate::section_mask::SectionMask; 2]>,
+}
+
+impl StoredLight {
+    pub fn presence(&self, b: usize) -> [bool; 2] {
+        let [sky, block] = &self.masks;
+        [sky.contains(b), block.contains(b)]
+    }
+
+    /// Saved byte arrays are data layers even if every byte is zero.
+    pub fn saved_arrays(&self, b: usize) -> Option<[bool; 2]> {
+        let [sky, block] = self.saved_arrays.as_ref()?;
+        Some([sky.contains(b), block.contains(b)])
+    }
+}
+
 #[derive(Clone)]
 pub struct Chunk {
     pub x: i32,
@@ -654,6 +676,17 @@ pub struct Chunk {
     /// The minimum block Y of `sections[0]` (the layout's when it was made).
     min_y: i32,
     pub sections: Vec<Arc<Section>>,
+    /// The light section one below the column and the one above it, as the server or save stored
+    /// them (`LevelLightEngine.getMinLightSection`): an all-air section holding only light. `None`
+    /// has no explicit light data (see [`Self::section_at`]).
+    pub pad_below: Option<Arc<Section>>,
+    pub pad_above: Option<Arc<Section>>,
+    /// Packet/save DataLayer presence, indexed from the lower pad. Computed light is dense
+    /// inside the column and has no computed pads yet.
+    pub(crate) light_layers: Option<StoredLight>,
+    pub(crate) light_sky: bool,
+    /// Padded light sections kept by this column's published non-air sections.
+    pub(crate) light_support: crate::section_mask::SectionMask,
     /// `Heightmap.Types.WORLD_SURFACE` per column (`z << 4 | x`): one above
     /// the highest non-air block, or the column's minimum Y. Built on the first read; a
     /// `set` that can move a column's surface marks that column, found again on its next read.
@@ -695,6 +728,16 @@ pub struct Chunk {
     /// The chunk came in holding a `dynamic_light` state and its cells are not asked yet: no light
     /// job reads it until they are (`streaming::light_region_ready`).
     pub dynamic_pending: bool,
+    /// Mod-published per-position connection groups (`LevelRef::set_connection_group`), by
+    /// [`Self::dynamic_cell`]. Read by the mesher when evaluating rules with `connect_group`;
+    /// synced to Sunrise clients over `sunrise:connection_groups`; dropped with the chunk and
+    /// never saved to disk.
+    pub connection_groups: crate::fast_hash::FxHashMap<u32, u64>,
+    /// The standalone models a client mod draws as part of a cell's block
+    /// (`ClientRenderClientHost::set_block_extra_models`), by [`Self::dynamic_cell`]: the mesher
+    /// draws them after the block's own models. A change of the cell's state drops its list;
+    /// dropped with the chunk, never saved or sent.
+    pub extra_models: crate::fast_hash::FxHashMap<u32, Arc<[mod_api::ModelRef]>>,
 }
 impl Chunk {
     /// An all-air chunk in the current `layout`.
@@ -710,6 +753,11 @@ impl Chunk {
             z,
             min_y: layout.min_y(),
             sections: (0..layout.sections()).map(|_| empty.clone()).collect(),
+            pad_below: None,
+            pad_above: None,
+            light_layers: None,
+            light_sky: true,
+            light_support: crate::section_mask::SectionMask::EMPTY,
             surface: Heights::default(),
             motion_blocking: Heights::default(),
             lit: false,
@@ -726,12 +774,59 @@ impl Chunk {
             entities: Vec::new(),
             dynamic_emission: Default::default(),
             dynamic_pending: false,
+            connection_groups: Default::default(),
+            extra_models: Default::default(),
         }
     }
-    /// The [`Self::dynamic_emission`] key of the cell at `y` (chunk-local `x`, `z`):
-    /// `section << 12 | y << 8 | z << 4 | x`; `None` outside the column.
+    /// The [`Self::dynamic_emission`] / [`Self::connection_groups`] key of the cell at `y`
+    /// (chunk-local `x`, `z`): `section << 12 | y << 8 | z << 4 | x`; `None` outside the column.
     pub fn dynamic_cell(&self, x: i32, y: i32, z: i32) -> Option<u32> {
         Some((self.section_index(y)? as u32) << 12 | index(x, y, z) as u32)
+    }
+    /// Inverse of [`Self::dynamic_cell`]: `(local_x 0..16, world_y, local_z 0..16)`.
+    pub fn dynamic_cell_coords(&self, cell: u32) -> (u8, i32, u8) {
+        let s = (cell >> 12) as i32;
+        let idx = (cell & 0xFFF) as i32;
+        let local_x = (idx & 15) as u8;
+        let local_z = ((idx >> 4) & 15) as u8;
+        let local_y = (idx >> 8) & 15;
+        (local_x, self.min_y + s * 16 + local_y, local_z)
+    }
+    /// Read the mod-published connection group at chunk-local `(x, z)` and world `y`.
+    #[inline]
+    pub fn connection_group(&self, x: i32, y: i32, z: i32) -> Option<u64> {
+        if self.connection_groups.is_empty() {
+            return None;
+        }
+        let cell = self.dynamic_cell(x, y, z)?;
+        self.connection_groups.get(&cell).copied()
+    }
+    /// Set or clear the connection group at chunk-local `(x, z)` and world `y`.
+    /// Returns `None` if `y` is outside the column, else `Some(changed)`.
+    pub fn set_connection_group(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        group: Option<u64>,
+    ) -> Option<bool> {
+        let cell = self.dynamic_cell(x, y, z)?;
+        Some(self.write_group(cell, group))
+    }
+
+    pub(crate) fn write_group(&mut self, cell: u32, group: Option<u64>) -> bool {
+        if let Some(group) = group {
+            self.connection_groups.insert(cell, group) != Some(group)
+        } else if self.connection_groups.remove(&cell).is_some() {
+            if self.connection_groups.is_empty() {
+                self.connection_groups = Default::default();
+            } else if self.connection_groups.len() * 4 < self.connection_groups.capacity() {
+                self.connection_groups.shrink_to_fit();
+            }
+            true
+        } else {
+            false
+        }
     }
     /// The original `structures.starts`, including starts with unknown pieces.
     pub fn saved_structure_starts(&self) -> Option<&sunrise_core::nbt::Compound> {
@@ -833,9 +928,13 @@ impl Chunk {
         // move it. Any other change rebuilds that map on the next read.
         if previous != v {
             // A part's answer was for the state the cell held.
+            let cell = (s as u32) << 12 | index(x, y, z) as u32;
             if !self.dynamic_emission.is_empty() {
-                self.dynamic_emission
-                    .remove(&((s as u32) << 12 | index(x, y, z) as u32));
+                self.dynamic_emission.remove(&cell);
+            }
+            // So are the models a mod drew with it.
+            if !self.extra_models.is_empty() {
+                self.extra_models.remove(&cell);
             }
             for map in [&mut self.surface, &mut self.motion_blocking] {
                 map.write(column(x, z), y);
@@ -846,12 +945,14 @@ impl Chunk {
     /// Section `s`'s block states replaced whole (a bulk edit): its storage
     /// compacted, and the heightmaps built again on their next read.
     pub fn replace_blocks(&mut self, s: usize, values: &[u32; 4096]) {
-        // The parts' answers of the cells whose state changes go with it.
+        // The parts' answers and the mods' models of the cells whose state changes go with it.
         let old = &self.sections[s];
-        self.dynamic_emission.retain(|&cell, _| {
+        let kept = |&cell: &u32| {
             let i = (cell & 4095) as usize;
             cell >> 12 != s as u32 || old.get(i) == values[i]
-        });
+        };
+        self.dynamic_emission.retain(|cell, _| kept(cell));
+        self.extra_models.retain(|cell, _| kept(cell));
         let section = Arc::make_mut(&mut self.sections[s]);
         section.blocks = Section::from_blocks(values);
         section.compact();
@@ -936,19 +1037,66 @@ impl Chunk {
     }
     #[inline]
     pub fn light(&self, x: i32, y: i32, z: i32) -> u8 {
-        match self.section_at(y) {
-            Ok(section) => section.light(index(x, y, z)),
-            Err(light) => light,
+        match self.section_index(y) {
+            Some(s) => self.sections[s].light(index(x, y, z)),
+            None => self.light_outside(x, y, z),
         }
     }
-    /// The section holding block height `y`, or the light of the air outside the
-    /// column's sections there: none below them, full sky above.
+    #[cold]
+    #[inline(never)]
+    fn light_outside(&self, x: i32, y: i32, z: i32) -> u8 {
+        match self.section_at(y) {
+            Ok(section) => section.light(index(x, y, z)),
+            Err(Outside::Row(section)) => section.light(index(x, 0, z)) & 0xF0,
+            Err(Outside::Uniform(light)) => light,
+        }
+    }
+    /// Publish that terrain section `s` is non-air: it supports the three light sections
+    /// touching it, in this column and its eight neighbours.
+    pub fn add_light_support(&mut self, s: usize) {
+        for b in s..=s + 2 {
+            self.light_support.insert(b);
+        }
+    }
+
+    /// Stored sky and block presence for a hydrated light section `b` (0 is the lower pad).
+    /// Computed columns have no sparse DataLayer map.
+    pub fn stored_light_layers(&self, b: usize) -> Option<[bool; 2]> {
+        self.stored_light().map(|light| light.presence(b))
+    }
+
+    /// Stored layers of a save or packet. Computed columns have no sparse DataLayer map.
+    pub fn stored_light(&self) -> Option<StoredLight> {
+        self.light_layers
+    }
+
+    pub(crate) fn light_section(&self, b: usize) -> Option<&Arc<Section>> {
+        match b {
+            0 => self.pad_below.as_ref(),
+            _ if b == self.sections.len() + 1 => self.pad_above.as_ref(),
+            _ => self.sections.get(b - 1),
+        }
+    }
+
+    /// The section holding block height `y`; outside the column's sections, the stored padding
+    /// section there, else what vanilla's storage answers without one
+    /// (`SkyLightSectionStorage.getLightValue`): below, the bottom row of the lowest stored section
+    /// above `y` (sky only, no block light); above, full sky.
     #[inline]
-    pub fn section_at(&self, y: i32) -> Result<&Section, u8> {
-        match self.section_index(y) {
-            Some(s) => Ok(&self.sections[s]),
-            None if y < self.min_y => Err(0),
-            None => Err(0xF0),
+    pub fn section_at(&self, y: i32) -> Result<&Section, Outside<'_>> {
+        if let Some(s) = self.section_index(y) {
+            return Ok(&self.sections[s]);
+        }
+        if y >= self.min_y {
+            return match &self.pad_above {
+                Some(pad) if y < self.max_y() + 16 => Ok(pad),
+                _ => Err(Outside::Uniform(if self.light_sky { 0xF0 } else { 0 })),
+            };
+        }
+        match &self.pad_below {
+            Some(pad) if y >= self.min_y - 16 => Ok(pad),
+            Some(pad) => Err(Outside::Row(pad)),
+            None => Err(Outside::Row(&self.sections[0])),
         }
     }
     /// Heap bytes held by the sections (benchmark accounting).
@@ -995,10 +1143,15 @@ impl Chunk {
     /// the quart y clamped to the column).
     #[inline]
     pub fn biome(&self, x: i32, y: i32, z: i32) -> u16 {
-        let qy = ((y - self.min_y) >> 2).clamp(0, self.sections.len() as i32 * 4 - 1);
+        self.biome_quart([x >> 2, y >> 2, z >> 2])
+    }
+    /// A biome at quart coordinates, with Y clamped before converting to a section index.
+    #[inline]
+    pub(crate) fn biome_quart(&self, [qx, qy, qz]: [i32; 3]) -> u16 {
+        let qy = (qy - (self.min_y >> 2)).clamp(0, self.sections.len() as i32 * 4 - 1);
         self.sections[(qy >> 2) as usize]
             .biomes
-            .get(((qy & 3) << 4 | ((z & 15) >> 2) << 2 | (x & 15) >> 2) as usize) as u16
+            .get(((qy & 3) << 4 | (qz & 3) << 2 | (qx & 3)) as usize) as u16
     }
     /// Sets the biome of one quart cell (`qy` counts from the column's bottom).
     pub fn set_biome_cell(&mut self, qx: i32, qy: i32, qz: i32, biome: u16) {
@@ -1033,7 +1186,8 @@ pub struct PendingContainerLoot {
     pub seed: Option<Tag>,
 }
 impl PendingContainerLoot {
-    /// Keep the original tags, including an absent or explicitly zero seed.
+    /// Keep the table and raw seed tag, including an explicit zero seed, until
+    /// loot access or serialization. Vanilla's save omits a zero seed.
     pub fn from_tag(tag: &Tag) -> Option<Self> {
         let table = tag.get("LootTable")?;
         let Tag::String(id) = table else { return None };
@@ -1062,8 +1216,8 @@ impl PendingContainerLoot {
             Tag::String(self.table_id().as_str().into()),
         );
         map.remove(&"LootTableSeed".into());
-        if let Some(seed) = &self.seed {
-            map.insert("LootTableSeed".into(), seed.clone());
+        if let Some(seed) = self.seed_value().filter(|seed| *seed != 0) {
+            map.insert("LootTableSeed".into(), Tag::Long(seed));
         }
         map.remove(&"Items".into());
     }
@@ -1074,6 +1228,9 @@ impl PendingContainerLoot {
 pub struct ChunkExtras {
     /// Server-owned mod data attached to this chunk.
     pub attachments: sunrise_mod_runtime::attachments::Attachments,
+    /// Edited mod payloads, including their final `Items` fields, on a save snapshot
+    /// only. The block entities retain their stored data for a save without edits.
+    pub block_entity_save_edits: Option<Arc<std::collections::BTreeMap<(i32, i32, i32), Compound>>>,
     /// Attachment maps of the chunk's block entities, on a save snapshot.
     pub block_entity_attachments: Vec<(
         (i32, i32, i32),
@@ -1111,15 +1268,12 @@ mod tests {
                 id: "test:pocket",
                 dimension_type: "test:small",
                 shape,
-                seed: Some(7),
             }]
             .leak(),
             ..super::LevelShapes::VANILLA
         };
         assert_eq!(levels.get("test:pocket"), shape);
         assert_eq!(levels.dimension_type("test:pocket"), "test:small");
-        assert_eq!(levels.seed_of("test:pocket"), Some(7));
-        assert_eq!(levels.seed_of("minecraft:overworld"), None);
         assert_eq!(
             levels.dimension_type("minecraft:the_end"),
             "minecraft:the_end"
@@ -1140,10 +1294,9 @@ mod tests {
                 assert_eq!(layout.section_index(y), None);
                 assert_eq!(chunk.section_index(y), None);
                 assert_eq!(chunk.get(0, y, 0), 0);
-                assert_eq!(
-                    chunk.light(0, y, 0),
-                    if y < layout.min_y() { 0 } else { 0xf0 }
-                );
+                // Nothing is stored past the sections: full sky above, and below the bottom row of
+                // the lowest section (full sky here).
+                assert_eq!(chunk.light(0, y, 0), 0xf0);
                 chunk.set(0, y, 0, 9);
             }
             assert_eq!(chunk.get(0, layout.min_y(), 0), 7);
@@ -1442,7 +1595,8 @@ mod tests {
         chunk.set(5, 999, 6, stone);
         assert_eq!(chunk.highest(0, |y| y < 1000), Some(999));
         assert_eq!(chunk.light(0, 2100, 0), 0xF0);
-        assert_eq!(chunk.light(0, -65, 0), 0);
+        // A column with no stored section reads full sky past its sections too.
+        assert_eq!(chunk.light(0, -65, 0), 0xF0);
         chunk.set_biome_cell(0, 130 * 4 + 3, 0, 9);
         assert_eq!(chunk.biome(0, 5000, 0), 9);
     }

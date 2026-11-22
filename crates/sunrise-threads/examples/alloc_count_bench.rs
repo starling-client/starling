@@ -1,10 +1,10 @@
 //! Cost of counting and of the idle heap sampler, 10M 64 B alloc+free pairs on 1 and 8 threads: `cargo run --release -p sunrise-threads --example alloc_count_bench`
-use sunrise_threads::alloc_count::CountingAllocator;
 use std::{
     alloc::{GlobalAlloc, Layout},
     hint::black_box,
     time::Instant,
 };
+use sunrise_threads::alloc_count::CountingAllocator;
 
 const PAIRS: u64 = 10_000_000;
 

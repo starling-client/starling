@@ -3,14 +3,14 @@
 //! `sound_engine_fixture ROOT INPUT OUTPUT`.
 use crate::audio_common as common;
 use common::{Fake, d, describe, f, flush, result_name};
+use std::collections::BTreeMap;
+use std::io::Write;
 use sunrise_client::sound_engine::{
     Attenuation, Backend, CartSound, InstanceId, SoundEngine, SoundEntity, SoundEntityState,
     SoundInstance, TickContext,
 };
 use sunrise_client::sound_events::SoundRegistry;
 use sunrise_core::random::LegacyRandom;
-use std::collections::BTreeMap;
-use std::io::Write;
 
 pub fn main() {
     let args: Vec<String> = crate::args().collect();

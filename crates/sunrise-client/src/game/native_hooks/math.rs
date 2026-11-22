@@ -6,13 +6,23 @@ impl Game<'_> {
     pub(in crate::game) fn math_profile(&self) -> mod_api::MathProfile {
         selected_profile()
     }
+    /// The profile jmath's operations dispatch on before a `Game` instance exists.
+    pub(in crate::game) fn startup_math_profile() -> mod_api::MathProfile {
+        selected_profile()
+    }
 }
 
 fn selected_profile() -> mod_api::MathProfile {
+    use sunrise_core::jmath::Platform;
     match sunrise_core::jmath::PLATFORM {
-        sunrise_core::jmath::Platform::Aarch64 => mod_api::MathProfile::Aarch64Fma,
-        sunrise_core::jmath::Platform::Windows => mod_api::MathProfile::CorrectlyRounded,
-        sunrise_core::jmath::Platform::Libm => mod_api::MathProfile::LibmRounding,
+        Platform::Aarch64 => mod_api::MathProfile::Aarch64Fma,
+        // jmath runs HotSpot's x86-64 stubs on every x86-64 target, Windows
+        // included (see its sin, cos, tan and exp).
+        Platform::Windows | Platform::Libm if cfg!(target_arch = "x86_64") => {
+            mod_api::MathProfile::HotSpotX86_64
+        }
+        Platform::Windows => mod_api::MathProfile::CorrectlyRounded,
+        Platform::Libm => mod_api::MathProfile::LibmRounding,
     }
 }
 

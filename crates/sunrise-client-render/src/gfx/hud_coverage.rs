@@ -382,13 +382,14 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn disabled_coverage_builds_only_the_original_pipeline() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
             return;
         };
-        let Ok((device, _)) = pollster::block_on(adapter.request_device(&Default::default()))
+        let Some((device, _)) =
+            crate::gfx::test_gpu::optional_device_with(&adapter, &Default::default())
         else {
             return;
         };

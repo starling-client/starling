@@ -1,0 +1,5 @@
+manifest:
+refused: a content mod has no code, so no runtime/ folder
+
+icon:
+unavailable

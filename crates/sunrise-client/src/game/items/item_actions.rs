@@ -15,7 +15,7 @@ impl Game<'_> {
         // but on a server a spectator's use on a block opens the block's
         // menu (ServerPlayerGameMode.useItemOn).
         if self.spectator() {
-            if let Some(GuestUse::OnBlock(hand)) = self.guest_use
+            if let Some(GuestUse::OnBlock { hand, .. }) = self.guest_use
                 && let Some(hit) = self.pick()
             {
                 self.with_hand(hand, |game| {
@@ -39,7 +39,7 @@ impl Game<'_> {
                 .with_hand(hand, |g| g.interact_entity(Some(target)))?
                 .then_some(hand));
         }
-        let on_block = matches!(guest, Some(GuestUse::OnBlock(_)));
+        let on_block = matches!(guest, Some(GuestUse::OnBlock { .. }));
         if !on_block
             && self.riding.is_some()
             && let Some(item) = self.held().map(|s| s.item.clone())
@@ -52,7 +52,7 @@ impl Game<'_> {
         }
         // An EntityHitResult may fall through to Item.use, never to useItemOn.
         let block_hit = match guest {
-            Some(GuestUse::OnBlock(_)) => self.pick(),
+            Some(GuestUse::OnBlock { .. }) => self.pick(),
             Some(GuestUse::Item(_)) => None,
             _ if self.entity_targeted() => None,
             _ => self.pick(),
@@ -66,7 +66,9 @@ impl Game<'_> {
             return Ok(Some(Hand::Main));
         }
         let hands = match guest {
-            Some(GuestUse::OnBlock(hand) | GuestUse::Item(hand) | GuestUse::Entity(hand, _)) => {
+            Some(
+                GuestUse::OnBlock { hand, .. } | GuestUse::Item(hand) | GuestUse::Entity(hand, _),
+            ) => {
                 vec![hand]
             }
             None => Hand::BOTH.to_vec(),
@@ -93,6 +95,17 @@ impl Game<'_> {
         id: impl Fn(&T) -> u32,
     ) -> Option<usize> {
         list.iter().position(|e| id(e) as i32 == target)
+    }
+
+    /// Whether `now` is still the stack `before` was: the same item and the
+    /// same count, or both empty. The check after a hook that may change the
+    /// world is this shallow on purpose; components are not compared.
+    pub(super) fn same_item_and_count(now: Option<&ItemStack>, before: Option<&ItemStack>) -> bool {
+        match (now, before) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.item == b.item && a.count == b.count,
+            _ => false,
+        }
     }
 
     /// `Player.interactOn` with the acting hand: whether it took the click. A
@@ -161,7 +174,14 @@ impl Game<'_> {
             {
                 return Ok(self.interaction_consumed(answer));
             }
+            if matches!(entity, commands::Target::General(_)) {
+                // A plain Entity has no default interaction. A pass stays on this row.
+                return Ok(false);
+            }
         }
+        // `AbstractNautilus.interact` keeps a clicked nautilus
+        // (`setPersistenceRequired`), used or not, before its own handling runs.
+        self.nautilus_clicked(named);
         Ok(self.interact_frame(target)
             || self.interact_armor_stand(target)
             || self.interact_cushion(target)

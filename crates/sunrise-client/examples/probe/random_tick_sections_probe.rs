@@ -4,6 +4,7 @@
 //! VanillaRandomTickSectionsOracle for the format; the `#resources` line names
 //! the prepared resources). The level the ticks run against reads as air
 //! everywhere, so nothing ticks for real: its reads are the drawn positions.
+use std::{cell::RefCell, error::Error, fmt::Write, path::PathBuf, sync::Arc};
 use sunrise_client::{
     blocks::BlockFacts,
     chunk::{Chunk, MIN_Y, Section},
@@ -18,7 +19,6 @@ use sunrise_world::{
     level::{GameRules, LevelAccess, LevelEvent, Ticks, data},
     registry::BlockStateId,
 };
-use std::{cell::RefCell, error::Error, fmt::Write, path::PathBuf, sync::Arc};
 
 struct Air {
     reads: RefCell<Vec<BlockPos>>,

@@ -10,7 +10,6 @@
 //!     out of a world's generator, this keeps them so the pack's own worldgen
 //!     runs. The content mods' biome modifiers (`biome-modifiers.json`) are
 //!     the client's, so they are not applied, and a warning says so.
-use sunrise_core::position::ChunkPos;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -23,6 +22,7 @@ use std::{
     },
     time::Instant,
 };
+use sunrise_core::position::ChunkPos;
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

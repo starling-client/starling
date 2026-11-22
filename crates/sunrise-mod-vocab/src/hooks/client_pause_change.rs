@@ -3,19 +3,21 @@
 pub trait Hooks {
     /// NeoForge's `ClientPauseChangeEvent.Pre`: cancel a proposed pause change.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "cancel",
         neoforge = "ClientPauseChangeEvent.Pre",
         cancellable = true
     )]
-    fn client_pause_change_pre();
+    fn client_pause_change_pre(paused: bool, cancel: &mut bool);
     /// NeoForge's `ClientPauseChangeEvent.Post`: the pause state changed.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ClientPauseChangeEvent.Post",
         cancellable = false
     )]
-    fn client_pause_change_post();
+    fn client_pause_change_post(paused: bool);
 }

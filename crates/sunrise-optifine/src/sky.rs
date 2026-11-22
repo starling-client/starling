@@ -12,8 +12,8 @@
 //! Written from OptiFine's public documentation of the format (`OptiFineDoc/doc/sky.properties`
 //! and the Custom Sky page of OptiDocs, with its skybox template); no OptiFine code was read.
 
-use sunrise_assets::resource_source::ResourceSource;
 use std::collections::BTreeMap;
+use sunrise_assets::resource_source::ResourceSource;
 
 use crate::matchers::{IdList, RangeList};
 use crate::paths::{properties_files, resolve};

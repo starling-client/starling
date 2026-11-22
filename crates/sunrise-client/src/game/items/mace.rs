@@ -253,23 +253,6 @@ impl Game<'_> {
             }
         }
     }
-    /// Only the connected owner's acting context supplies a verified identity.
-    /// Guests and unresolved sources retain the existing damage API behavior.
-    pub(super) fn owner_damage_uuid(&self) -> Option<[i32; 4]> {
-        if self.lan_acting.is_some() && self.lan_acting_uuid.is_none() {
-            return None;
-        }
-        let actual = self
-            .lan_acting_uuid
-            .map(sunrise_client::lan::playerdata::uuid_ints)
-            .or(self.level.player_uuid)?;
-        let owner = self
-            .serving
-            .as_ref()
-            .map(|s| sunrise_client::lan::playerdata::uuid_ints(s.owner))
-            .or(self.level.player_uuid)?;
-        (actual == owner).then_some(actual)
-    }
     /// `DamageSource.getWeaponItem` for a hit on the player, when its
     /// `armor_effectiveness` enchantments (Breach) can thin the armour: the
     /// stack the mob that swung holds, and the registry its effects are read
@@ -299,8 +282,16 @@ impl Game<'_> {
     }
     /// `LivingEntity.hurtServer` of the mob at `index` by the player's hit:
     /// the weapon's `armor_effectiveness` enchantments (Breach) thin its armor.
-    pub(super) fn hurt_by_player(&mut self, index: usize, amount: f32, source: Damage) -> bool {
+    /// Returns whether the hurt landed and whether it killed, before death listeners ran.
+    pub(super) fn hurt_by_player(
+        &mut self,
+        index: usize,
+        amount: f32,
+        source: Damage,
+    ) -> (bool, bool) {
         let attack = self.attack_of_who(Some(sunrise_client::mobs::Who::Player));
+        let plan =
+            self.prepare_knockback_credit(self.mobs[index].id as i32, source.attacker, &attack);
         let held = self.held().cloned();
         let aim = self.attacker_aim(source.attacker);
         let kind = self.mobs[index].kind.id.clone();
@@ -329,18 +320,25 @@ impl Game<'_> {
                 fraction,
             )
         };
-        let old_health = self.mobs[index].health;
+        let (id, join, old_health) = (
+            self.mobs[index].id,
+            self.mobs[index].join,
+            self.mobs[index].health,
+        );
         // The causing entity's aim, for what turns a blow by where it points
         // (`SulfurCube.knockback`).
+        self.mobs[index].creative_attacker = self.creative;
         self.mobs[index].attacker_aim = aim;
         self.mobs[index].dealt_absorbed = 0;
+        let mut credit = plan.lend(&mut self.last_hurt_by_player);
         let hurt = self.mobs[index].damage_with(
-            crate::game::entity::damage_level_of!(self, &attack),
+            crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
             amount,
             source,
             Some(&mut breach),
         );
         self.mobs[index].attacker_aim = None;
+        self.mobs[index].creative_attacker = false;
         // `Guardian.hurtServer`'s spikes answer the attacker inside the hurt,
         // before `super.hurtServer` returns: those hits land here, where
         // `Who::Player` is the player whose blow this is. Left in the outbox,
@@ -354,7 +352,15 @@ impl Game<'_> {
             )
         });
         self.mobs[index].outbox = rest;
+        let killed = hurt && old_health > 0.0 && !self.mobs[index].alive();
         let _ = self.handle_mob_events(hits);
+        let Some(index) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
+        else {
+            return (hurt, killed);
+        };
         // LivingEntity.actuallyHurt: Stats.DAMAGE_DEALT_ABSORBED for the attacking player,
         // awarded here, during that player's own attack (a server's guest has its own
         // statistics only inside `as_guest`).
@@ -362,10 +368,20 @@ impl Game<'_> {
         if absorbed > 0 {
             self.award_custom_stat("damage_dealt_absorbed", absorbed);
         }
+        let id = self.mobs[index].id;
         if hurt && self.mobs[index].health != old_health {
-            self.mob_damage_event(self.mobs[index].id);
+            self.mob_damage_event(id);
         }
-        hurt
+        if let Some(index) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
+        {
+            // The accepted hit already committed its player credit, including Thorns.
+            self.finish_mob_damage_at(index);
+            self.settle_mob_hurt(id);
+        }
+        (hurt, killed)
     }
     /// Takes the absorbed tenths a projectile's hit left on the mobs; the shooter gets them
     /// as `damage_dealt_absorbed` when it is the player (`LivingEntity.actuallyHurt`).
@@ -427,7 +443,7 @@ impl Game<'_> {
     /// waived from where the hit landed, the ground or air smash sounds, and
     /// the knockback around the target.
     fn mace_hurt_enemy(&mut self, index: usize) {
-        let target_on_ground = self.mobs[index].on_ground;
+        let target_on_ground = self.mobs[index].ground.on_ground;
         if let Some(fall) = self.mace_smash_self(target_on_ground) {
             let target = &self.mobs[index];
             self.smash_knockback(target.position, Spared::Mob(target.id), fall);
@@ -713,7 +729,9 @@ impl Game<'_> {
                     direct: attack.attacker,
                     position: None,
                 };
-                let level = crate::game::entity::damage_level_of!(self, &attack);
+                let plan = self.prepare_knockback_credit(id as i32, None, &attack);
+                let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                let level = crate::game::entity::damage_level_of!(self, &attack, &mut credit, None);
                 let pushed = sunrise_client::health::Hurting::ArmorStand(id as i32, source);
                 // The smash pushes the armor stand through the short entry, as it pushes the mobs
                 // below (`knockback(power, x, z)`).
@@ -732,7 +750,7 @@ impl Game<'_> {
                 if let Some(s) = self.armor_stands.iter_mut().find(|s| s.id == id) {
                     s.velocity = Vec3::new(
                         s.velocity.x / 2.0 - kx / len * knock.strength,
-                        if s.on_ground {
+                        if s.ground.on_ground {
                             (s.velocity.y / 2.0 + knock.strength).min(0.4)
                         } else {
                             s.velocity.y
@@ -751,14 +769,27 @@ impl Game<'_> {
             let source = self.attack_source(from);
             // hurtServer first; the knockback and post-attack effects follow
             // only when it landed.
-            let old_health = self.mobs[i].health;
-            if self.hurt_by_player(i, amount, source) {
-                if old_health > 0.0 && !self.mobs[i].alive() {
+            let join = self.mobs[i].join;
+            let (hurt, killed) = self.hurt_by_player(i, amount, source);
+            if hurt {
+                if killed
+                    && let Some(i) = self.mob_index.find(&self.mobs, id)
+                    && self.mobs[i].join == join
+                    && !self.mobs[i].removed
+                {
                     self.native_kill_event(i);
                 }
-                let level = crate::game::entity::damage_level_of!(self, &attack);
+                let Some(i) = self
+                    .mob_index
+                    .find(&self.mobs, id)
+                    .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
+                else {
+                    continue;
+                };
+                let plan = self.prepare_knockback_credit(id as i32, None, &attack);
+                let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                let level = crate::game::entity::damage_level_of!(self, &attack, &mut credit, None);
                 self.mobs[i].knockback(level, 0.4, xd, zd, &source, amount);
-                self.remember_mob_player_credit(self.mobs[i].id);
                 self.post_attack(i);
             }
         }
@@ -835,7 +866,7 @@ mod tests {
     /// multiplies the wear by 5 makes it 5, one that halves it leaves 0 (the item stays whole), one
     /// that cancels it none; an iron sword without a part wears as vanilla.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+    #[ignore = "daily"]
     fn a_damage_item_part_changes_the_wear_of_a_weapon_hit() {
         use crate::game::damage_item_tests::{Rule, with_wear_part};
         with_wear_part("minecraft:mace", Rule::Times(5), |game, wear| {

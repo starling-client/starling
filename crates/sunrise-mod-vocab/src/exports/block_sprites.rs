@@ -1,4 +1,3 @@
 pub use crate::block::block_sprites::{
-    AtlasRegion, BlockSprites, FaceSprite, RuntimeSprite, SpriteRef, TextureAtlas,
-    TextureAtlasRegistration,
+    AtlasRegion, BlockSprites, FaceSprite, SpriteRef, TextureAtlas, TextureAtlasRegistration,
 };

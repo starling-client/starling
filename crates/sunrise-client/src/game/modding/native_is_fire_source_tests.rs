@@ -1,9 +1,9 @@
 //! `is_fire_source` answered by a block Part (#3185): stone keeps a fire burning, netherrack
 //! refuses what the overworld's infiniburn tag gives it, and other blocks leave the tag to answer.
 use super::native_entity_refs::tests::with_game;
+use mod_api::{self, BlockPart, Hooks, IsFireSourceEvent, LevelHost, Registrar};
 use sunrise_core::position::BlockPos;
 use sunrise_world::level::LevelAccess;
-use mod_api::{self, BlockPart, Hooks, IsFireSourceEvent, LevelHost, Registrar};
 
 /// Answers `is_fire_source` for its block.
 struct Source(bool);
@@ -28,7 +28,7 @@ impl Hooks for FireSourceMod {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_block_part_decides_whether_it_keeps_a_fire_burning() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
         "fire_source",
@@ -56,6 +56,7 @@ fn a_block_part_decides_whether_it_keeps_a_fire_burning() {
                 "no Part: the tag answers"
             );
             // A client's copy of the level asks no Part.
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
             game.options.dedicated = None;
             assert_eq!(source(game, "minecraft:stone"), None);
         })

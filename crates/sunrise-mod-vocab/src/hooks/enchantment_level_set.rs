@@ -9,10 +9,15 @@ pub trait Hooks {
     /// as vanilla's. Asked for each row in order, before
     /// `prepare_item_enchant`. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "EnchantmentLevelSetEvent",
         cancellable = false
     )]
-    fn enchantment_level_set();
+    fn enchantment_level_set(
+        pos: [i32; 3],
+        offer: &mod_api::item::stations::EnchantmentRow<'_>,
+        level: &mut i32,
+    );
 }

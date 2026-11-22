@@ -52,10 +52,10 @@ pub struct ModBookIndex {
 }
 impl ModBookIndex {
     pub fn build(
-        mut declarations: Vec<RecipeBookCategory>,
+        declarations: Vec<RecipeBookCategory>,
         resources: &dyn DisplayResources,
     ) -> Result<Self, DisplayLoadError> {
-        placement::validate_batch(&mut declarations, resources)?;
+        placement::validate_batch(&declarations, resources)?;
         let mut index = Self::default();
         for menu in mod_api::RecipeBookLayout::registered_menus() {
             let Some((_, recipe_type, layout)) = mod_api::RecipeBookLayout::registered(&menu)
@@ -99,8 +99,10 @@ impl ModBookIndex {
             {
                 return Err(DisplayLoadError::ConflictingBook(category.target_menu));
             }
-            if !resources.item(&category.icon) || category.icon == "minecraft:air" {
-                return Err(unknown("item", &category.icon));
+            for icon in std::iter::once(&category.icon).chain(&category.secondary_icon) {
+                if !resources.item(icon) || icon == "minecraft:air" {
+                    return Err(unknown("item", icon));
+                }
             }
             if index.categories.contains_key(&category.id) {
                 return Err(DisplayLoadError::DuplicateCategory(category.id));
@@ -157,7 +159,9 @@ impl ModBookIndex {
                 }
                 for display in &recipe.displays {
                     validate_display(display, &recipe.recipe, resources)?;
-                    if let Some(layout) = index.layouts.get(&category.target_menu) {
+                    if let Some(layout) = index.layouts.get(&category.target_menu)
+                        && !matches!(layout.declaration(), mod_api::RecipeBookLayout::Mod)
+                    {
                         layout.map(display, true).map_err(|error| {
                             DisplayLoadError::InvalidLayout(format!(
                                 "menu {} recipe {}: {error:?}",
@@ -260,6 +264,11 @@ fn validate_display(
         }
         Display::Shapeless {
             ingredients,
+            result,
+            station,
+        }
+        | Display::Custom {
+            slots: ingredients,
             result,
             station,
         } => ingredients.iter().chain([result, station]).collect(),

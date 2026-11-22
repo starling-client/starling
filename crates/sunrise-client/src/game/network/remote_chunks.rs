@@ -3,395 +3,14 @@
 //! thread as soon as the packet arrives, so the frame that handles it in
 //! order only inserts the result (`ClientPacketListener.handleLevelChunkWithLight`).
 use super::Game;
-use sunrise_client::{
-    chunk::{
-        BIOME_STRATEGY, Chunk, ColumnLayout, Light, Section, block_strategy, known_blocks_only,
-    },
-    streaming::Streaming,
-};
-use sunrise_core::paletted::{PalettedContainer, Strategy};
+use std::sync::Arc;
+use sunrise_client::{chunk::Chunk, streaming::Streaming};
 use sunrise_mod_runtime::attachments::Holder;
-use sunrise_protocol::{
-    chunk::{LightData, Paletted, SectionLight},
-    packets::play::{self, Clientbound as C},
-    registry::DimensionType,
+use sunrise_protocol::packets::play;
+
+pub(in crate::game) use sunrise_client_gameplay::remote::chunks::{
+    ChunkDecoder, ChunkFormat, Next, section_blocks,
 };
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::{
-        Arc, Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
-        mpsc,
-    },
-};
-
-/// What turning a chunk packet into a client column depends on: the
-/// dimension's height and sky, and the server's biome registry mapped to
-/// ours. The connection replaces it when either changes, so a column decoded
-/// with an older one is decoded again.
-#[derive(Default)]
-pub(super) struct ChunkFormat {
-    /// The column decoded chunks hold: the client's for the level.
-    column: ColumnLayout,
-    min_y: i32,
-    sections: usize,
-    pub(super) has_skylight: bool,
-    biome_map: Vec<u16>,
-    biome_bits: u8,
-}
-
-impl ChunkFormat {
-    pub(super) fn new(dimension: &DimensionType, biome_map: Vec<u16>, biome_bits: u8) -> Self {
-        Self {
-            column: ColumnLayout::VANILLA,
-            min_y: dimension.min_y,
-            sections: dimension.sections(),
-            has_skylight: dimension.has_skylight,
-            biome_map,
-            biome_bits,
-        }
-    }
-    /// Decodes into chunks of `column`.
-    pub(super) fn in_column(self, column: ColumnLayout) -> Self {
-        Self { column, ..self }
-    }
-    /// The column decoded chunks hold.
-    pub(super) fn layout(&self) -> ColumnLayout {
-        self.column
-    }
-    pub(super) fn with_dimension(&self, dimension: &DimensionType) -> Self {
-        Self {
-            column: self.column,
-            ..Self::new(dimension, self.biome_map.clone(), self.biome_bits)
-        }
-    }
-
-    /// LevelChunkSection data into the client's column.
-    pub(super) fn column(&self, p: &play::LevelChunkWithLight) -> Result<Chunk, String> {
-        let sections = p
-            .chunk
-            .sections(self.sections, 16, self.biome_bits)
-            .map_err(|e| e.to_string())?;
-        let mut chunk = Chunk::with_layout(p.x, p.z, self.column);
-        let offset = (self.min_y - self.column.min_y()).div_euclid(16);
-        let column = self.column.sections() as i32;
-        for (i, s) in sections.iter().enumerate() {
-            let target = offset + i as i32;
-            if !(0..column).contains(&target) {
-                continue;
-            }
-            // A global section is as wide as the server's registry: 16 bits
-            // from a vanilla server, wider from a Sunrise host with the same
-            // content mods. Read it at that width, then widen it to ours.
-            let ours = block_strategy();
-            let strategy = if ours.wire_has_palette(s.states.bits) {
-                ours
-            } else {
-                Strategy::blocks(s.states.bits)
-            };
-            let palette = s.states.palette.iter().map(|&p| p as u32).collect();
-            let words = s.states.data.iter().map(|&w| w as u64).collect();
-            let blocks = known_blocks_only(
-                PalettedContainer::from_wire(strategy, s.states.bits, palette, words)
-                    .map_err(|e| e.to_string())?,
-            );
-            let mut section = Section {
-                blocks,
-                biomes: PalettedContainer::new(BIOME_STRATEGY, 0),
-                light: Light::Uniform(0xF0),
-            };
-            section.compact();
-            chunk.sections[target as usize] = Arc::new(section);
-        }
-        let biomes: Vec<_> = sections.iter().map(|s| &s.biomes).collect();
-        self.put_biomes(&mut chunk, &biomes);
-        // ClientPacketListener.applyLightData: the column keeps the light
-        // the server sent; nothing is relit.
-        let (layers, above) = self.light(&p.light);
-        sunrise_client::light::light_from_layers(&mut chunk, &layers, above, self.has_skylight);
-        // From the single-player server thread: its own sections where they
-        // are the same.
-        sunrise_client::lan::handoff::take(&mut chunk);
-        Ok(chunk)
-    }
-
-    /// The dimension's sections' biome containers (in the server's
-    /// registry) into the column's sections. Sections outside the
-    /// dimension's range take its nearest biomes (the column's top or bottom
-    /// cell layer repeated).
-    fn put_biomes(&self, chunk: &mut Chunk, biomes: &[&Paletted]) {
-        if biomes.is_empty() {
-            return;
-        }
-        let offset = (self.min_y - self.column.min_y()).div_euclid(16);
-        // Biome table index per quart cell of the dimension's own sections.
-        let biome_cells: Vec<[u32; 64]> = biomes
-            .iter()
-            .map(|b| {
-                std::array::from_fn(|j| {
-                    u32::from(self.biome_map.get(b.get(j) as usize).copied().unwrap_or(0))
-                })
-            })
-            .collect();
-        let last = biome_cells.len() - 1;
-        for si in 0..self.column.sections() as i32 {
-            let i = si - offset;
-            let cells = if (0..biome_cells.len() as i32).contains(&i) {
-                biome_cells[i as usize]
-            } else {
-                let (edge, layer) = if i < 0 { (0, 0) } else { (last, 3) };
-                std::array::from_fn(|j| biome_cells[edge][layer * 16 + j % 16])
-            };
-            let mut container = PalettedContainer::from_values(BIOME_STRATEGY, &cells);
-            if let Some(v) = container.uniform() {
-                container = PalettedContainer::new(BIOME_STRATEGY, v);
-            }
-            Arc::make_mut(&mut chunk.sections[si as usize]).biomes = container;
-        }
-    }
-
-    /// `LevelChunk.replaceBiomes`: each of the dimension's sections reads
-    /// its biome container from the packet's buffer, in order.
-    pub(super) fn replace_biomes(
-        &self,
-        chunk: &mut Chunk,
-        data: &play::ChunkBiomeData,
-    ) -> Result<(), String> {
-        let biomes = data
-            .biomes(self.sections, self.biome_bits)
-            .map_err(|e| e.to_string())?;
-        self.put_biomes(chunk, &biomes.iter().collect::<Vec<_>>());
-        Ok(())
-    }
-
-    /// `ClientPacketListener.readSectionList`: the sky and block layers of a
-    /// light packet, by section of the client's column, and the sky light
-    /// above the column's top section (from the light section just above
-    /// it, else open sky).
-    pub(super) fn light(&self, light: &LightData) -> (Vec<SectionLight>, [u8; 256]) {
-        let column = self.column.sections() as i32;
-        let mut layers: Vec<SectionLight> = vec![(None, None); self.column.sections()];
-        let sky = self.has_skylight;
-        let mut above = [if sky { 15 } else { 0 }; 256];
-        // Light section b is the dimension's section b - 1.
-        let first = (self.min_y - self.column.min_y()).div_euclid(16) - 1;
-        for (b, layer) in light.layers(self.sections + 2).into_iter().enumerate() {
-            let si = first + b as i32;
-            if (0..column).contains(&si) {
-                layers[si as usize] = layer;
-            } else if si == column
-                && sky
-                && let Some(l) = &layer.0
-            {
-                for (i, a) in above.iter_mut().enumerate() {
-                    *a = (l[i >> 1] >> ((i & 1) * 4)) & 15;
-                }
-            }
-        }
-        (layers, above)
-    }
-}
-
-/// `ClientboundSectionBlocksUpdatePacket.runUpdates`: each changed block's position (the
-/// packed local position within the section) and its state.
-pub(super) fn section_blocks(
-    p: &play::SectionBlocksUpdate,
-) -> impl Iterator<Item = ([i32; 3], i32)> + '_ {
-    let [sx, sy, sz] = p.section;
-    p.changes.iter().map(move |&change| {
-        let local = (change & 0xFFF) as i32;
-        let pos = [
-            sx * 16 + (local >> 8 & 15),
-            sy * 16 + (local & 15),
-            sz * 16 + (local >> 4 & 15),
-        ];
-        (pos, (change >> 12) as i32)
-    })
-}
-
-type Decoded = (Box<C>, Result<Chunk, String>);
-
-struct Job {
-    seq: u64,
-    format: Arc<ChunkFormat>,
-    packet: Box<C>,
-}
-
-struct WorkResult {
-    seq: u64,
-    packet: Box<C>,
-    column: Result<Chunk, String>,
-}
-
-struct DecoderQueue {
-    jobs: VecDeque<Job>,
-    stopped: bool,
-}
-
-struct Retirement {
-    next_submit: u64,
-    next_deliver: u64,
-    ready: BTreeMap<u64, Decoded>,
-    done: mpsc::Receiver<WorkResult>,
-}
-
-/// Worker threads that decode chunk packets in parallel while returning
-/// results strictly in the order they arrived, one per `submit`.
-pub(super) struct ChunkDecoder {
-    queue: Arc<(Mutex<DecoderQueue>, Condvar)>,
-    retirement: Mutex<Retirement>,
-    workers_alive: Arc<AtomicUsize>,
-}
-
-impl ChunkDecoder {
-    pub(super) fn new() -> Self {
-        let (finished, done) = mpsc::channel();
-        let queue = Arc::new((
-            Mutex::new(DecoderQueue {
-                jobs: VecDeque::new(),
-                stopped: false,
-            }),
-            Condvar::new(),
-        ));
-        let worker_count = sunrise_threads::worker_count().clamp(1, 4);
-        let workers_alive = Arc::new(AtomicUsize::new(0));
-
-        let mut spawned = 0;
-        for i in 0..worker_count {
-            let queue = Arc::clone(&queue);
-            let finished = finished.clone();
-            let alive = Arc::clone(&workers_alive);
-            let builder = std::thread::Builder::new()
-                .name(format!("Chunk decoder {i}"))
-                .spawn(move || {
-                    sunrise_threads::favour_current();
-                    'worker: loop {
-                        let job = {
-                            let mut q = match queue.0.lock() {
-                                Ok(q) => q,
-                                Err(_) => break 'worker,
-                            };
-                            loop {
-                                if q.stopped && q.jobs.is_empty() {
-                                    break 'worker;
-                                }
-                                if let Some(job) = q.jobs.pop_front() {
-                                    break job;
-                                }
-                                q = match queue.1.wait(q) {
-                                    Ok(guard) => guard,
-                                    Err(_) => break 'worker,
-                                };
-                            }
-                        };
-                        let column =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &*job
-                                .packet
-                            {
-                                C::LevelChunkWithLight(p) => job.format.column(p),
-                                _ => Err("not a chunk packet".into()),
-                            }))
-                            .unwrap_or_else(|_| Err("chunk decoding panicked".into()));
-                        if finished
-                            .send(WorkResult {
-                                seq: job.seq,
-                                packet: job.packet,
-                                column,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    alive.fetch_sub(1, Ordering::Relaxed);
-                });
-            if builder.is_ok() {
-                spawned += 1;
-            } else if let Err(e) = builder {
-                log::warn!("Sunrise: no chunk decoder thread ({e}); chunks decode in the frame");
-            }
-        }
-        workers_alive.store(spawned, Ordering::Relaxed);
-        Self {
-            queue,
-            retirement: Mutex::new(Retirement {
-                next_submit: 0,
-                next_deliver: 0,
-                ready: BTreeMap::new(),
-                done,
-            }),
-            workers_alive,
-        }
-    }
-
-    /// Start decoding a chunk packet with the format it arrived under.
-    /// Without a decoder thread the packet comes back undecoded.
-    pub(super) fn submit(&self, format: Arc<ChunkFormat>, packet: Box<C>) -> Option<Box<C>> {
-        if self.workers_alive.load(Ordering::Relaxed) == 0 {
-            return Some(packet);
-        }
-        let mut retirement = match self.retirement.lock() {
-            Ok(r) => r,
-            Err(_) => return Some(packet),
-        };
-        let seq = retirement.next_submit;
-        retirement.next_submit += 1;
-        let mut q = match self.queue.0.lock() {
-            Ok(q) => q,
-            Err(_) => {
-                retirement.next_submit -= 1;
-                return Some(packet);
-            }
-        };
-        if q.stopped {
-            retirement.next_submit -= 1;
-            return Some(packet);
-        }
-        q.jobs.push_back(Job {
-            seq,
-            format,
-            packet,
-        });
-        self.queue.1.notify_one();
-        None
-    }
-
-    /// The oldest submitted packet and its column, unless it is still
-    /// decoding: a frame never waits for the decoder.
-    pub(super) fn next(&self) -> Next {
-        let mut ret = match self.retirement.lock() {
-            Ok(r) => r,
-            Err(_) => return Next::Lost,
-        };
-        while let Ok(res) = ret.done.try_recv() {
-            ret.ready.insert(res.seq, (res.packet, res.column));
-        }
-        let next_deliver = ret.next_deliver;
-        if let Some(decoded) = ret.ready.remove(&next_deliver) {
-            ret.next_deliver += 1;
-            return Next::Ready(decoded);
-        }
-        if self.workers_alive.load(Ordering::Relaxed) == 0 {
-            return Next::Lost;
-        }
-        Next::Decoding
-    }
-}
-
-impl Drop for ChunkDecoder {
-    fn drop(&mut self) {
-        if let Ok(mut q) = self.queue.0.lock() {
-            q.stopped = true;
-            self.queue.1.notify_all();
-        }
-    }
-}
-
-pub(super) enum Next {
-    Ready(Decoded),
-    Decoding,
-    Lost,
-}
 
 impl Game<'_> {
     /// A chunk packet's column was adopted, with its block entities in the
@@ -463,21 +82,19 @@ impl Game<'_> {
             }
         };
         let (x, z) = (p.x, p.z);
+        self.supersede_group_predictions(&chunk);
         // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
         let resident = self.world.chunks.contains_key(&(x, z));
         if resident {
             sunrise_client::spans::time("replace_remote", || {
                 self.streaming.replace_remote(&mut self.world, chunk)
             });
-            self.world
-                .block_entities
-                .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
         } else {
             self.streaming.insert_remote(&mut self.world, chunk);
         }
-        self.world
-            .block_entities
-            .unload(|k| (k.0 >> 4, k.2 >> 4) == (x, z));
+        sunrise_client::spans::time("unload_block_entities", || {
+            self.world.block_entities.unload_column((x, z));
+        });
         self.load_block_entities((x, z), &p.chunk.block_entities);
         // After the column's block entities load: an attachment keeps its block entity if the
         // packet sent it again, and one left from a forgotten column goes.
@@ -505,6 +122,11 @@ impl Game<'_> {
         (x, z): (i32, i32),
         infos: &[sunrise_protocol::chunk::BlockEntityInfo],
     ) {
+        let _load = if infos.is_empty() {
+            None
+        } else {
+            sunrise_client::spans::raw_flight_guard("load_block_entities")
+        };
         for info in infos {
             let pos = (
                 x * 16 + i32::from(info.packed_xz as u8 >> 4),
@@ -568,7 +190,7 @@ impl Game<'_> {
         if !self.world.chunks.contains_key(&(p.x, p.z)) {
             return;
         }
-        let (layers, _) = format.light(&p.light);
+        let layers = format.light(&p.light);
         let Some(chunk) = self.world.chunks.get_mut(&(p.x, p.z)) else {
             return;
         };
@@ -586,6 +208,9 @@ impl Game<'_> {
 mod tests {
     use super::*;
     use sunrise_protocol::chunk::{ChunkData, Paletted, Section as Wire, Strategy as Wiring};
+    use sunrise_protocol::{
+        chunk::LightData, packets::play::Clientbound as C, registry::DimensionType,
+    };
 
     /// A column of `state` with biome 1 everywhere, unlit.
     fn packet(x: i32, state: i32) -> Box<C> {
@@ -674,6 +299,35 @@ mod tests {
             assert_eq!((column.x, column.z), (x, -3));
         }
         assert!(matches!(decoder.next(), Next::Decoding));
+    }
+
+    /// A tick about to run waits for each column still decoding instead of
+    /// leaving it for the next frame: every packet comes back in order, and
+    /// with none left the wait ends as `Decoding`.
+    #[test]
+    fn a_tick_waits_for_each_column_in_order() {
+        let overworld = DimensionType::vanilla("minecraft:overworld");
+        let format = Arc::new(ChunkFormat::new(&overworld, vec![0, 7, 9], 2));
+        let decoder = ChunkDecoder::new();
+        for x in 0..32 {
+            assert!(decoder.submit(format.clone(), packet(x, 1 + x)).is_none());
+        }
+        for x in 0..32 {
+            let Next::Ready((packet, column)) =
+                decoder.wait_next(std::time::Duration::from_secs(10))
+            else {
+                panic!("column {x} did not come");
+            };
+            let C::LevelChunkWithLight(p) = *packet else {
+                panic!("not a chunk packet");
+            };
+            assert_eq!(p.x, x);
+            assert_eq!(column.unwrap().get(5, 70, 9), 1 + x as u32);
+        }
+        assert!(matches!(
+            decoder.wait_next(std::time::Duration::from_millis(1)),
+            Next::Decoding
+        ));
     }
 
     /// `LevelChunk.replaceBiomes`: the packet's containers go to the

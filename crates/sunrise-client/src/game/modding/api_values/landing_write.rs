@@ -1,7 +1,7 @@
 //! Checked landing writes. Vector conversion stages the entire batch before dispatch commits it.
 use super::{TryIntoApi, TryIntoEngine};
-use sunrise_world::{level::LandingWrite as EngineWrite, registry::BlockStateId};
 use mod_api::{BlockState, BlockStateError, LandingWrite};
+use sunrise_world::{level::LandingWrite as EngineWrite, registry::BlockStateId};
 
 impl TryIntoApi for EngineWrite
 where
@@ -70,11 +70,11 @@ mod tests {
         );
         for (invalid, error) in [
             (
-                mod_api::BlockStateRecord::new(bad_key, 0).into(),
+                mod_api::__private::block_state_from_ordinal(bad_key, 0),
                 BlockStateError::UnknownBlock,
             ),
             (
-                mod_api::BlockStateRecord::new(stone.block(), u16::MAX).into(),
+                mod_api::__private::block_state_from_ordinal(stone.block(), u16::MAX),
                 BlockStateError::UnknownState,
             ),
         ] {

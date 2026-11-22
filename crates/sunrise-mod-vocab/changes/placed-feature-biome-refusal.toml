@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::place_placed_feature", "type:PlaceFeatureRefusal"]
+why = "Direct placed-feature placement has no top feature. Reaching a biome filter now returns PlaceFeatureRefusal::BiomeFilter instead of selecting biome-checked placement. Earlier modifiers that produce no positions still return Ok(false). The new refusal changes the Wire enum layout."
+migrate = "Rebuild native mods against this SDK. Handle BiomeFilter when placing features whose modifiers can reach a biome filter."

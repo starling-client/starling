@@ -8,13 +8,11 @@ pub trait PlayersHost {
     /// `ItemCooldowns.getCooldownGroup(stack)`: the group `stack`'s
     /// cooldown is filed under, the group its `use_cooldown` component names
     /// (its own, else its item's default), else its item id.
-    #[access(Metadata)]
     fn item_cooldown_group(&self, stack: &ItemStack) -> String;
     /// Side: both.
     /// Resolve a real online player by UUID, never a fake. A fake is reached
     /// through the handle returned by its factory. During a nested player swap,
     /// outer players whose records are displaced return None.
-    #[access(WorldOnly)]
     fn player(&self, uuid: u128) -> Option<PlayerRef>;
 }
 /// The server host's methods of the `players` area, implemented by the game and reached through [`ServerHost`].
@@ -22,25 +20,23 @@ pub trait PlayersHost {
 pub trait PlayersServerHost {
     /// Side: server.
     /// Create or retrieve a connectionless player for the level currently in place.
-    #[access(WorldOnly)]
     fn fake_player(&mut self, level: LevelRef, uuid: u128, name: &str) -> Option<PlayerRef>;
     /// Side: server.
     /// The most players who may be on at once (`PlayerList.getMaxPlayers`,
-    /// `max-players`), as the server list shows it and logins are refused
-    /// beyond. None where no server is open to players (a client, or a server
-    /// nobody can join): the one reason there is none.
-    #[access(WorldOnly)]
+    /// `max-players`), as the server list shows it. Logins at or above the limit
+    /// are refused unless they bypass it. None where no server is open to players
+    /// (a client, or a server nobody can join).
     fn server_max_players(&self) -> Option<u32>;
     /// Side: server.
     /// Sets the player limit from the next login and server list ping on
     /// (Paper's `Server.setMaxPlayers`); players already on stay, even when
-    /// they are more than the new limit. `server.properties` is not changed,
-    /// so a restart goes back to its `max-players`. Writes nothing and refuses
-    /// with `PlayerLimitRefusal::NotOpen` where no server is open to players,
+    /// they are more than the new limit. The existing login bypass still applies
+    /// (dedicated operators flagged `bypassesPlayerLimit`). `server.properties`
+    /// is not changed, so a restart goes back to its `max-players`.
+    /// Writes nothing and refuses with `PlayerLimitRefusal::NotOpen` where no server is open to players,
     /// and with `TooHigh { maximum }` for a limit above `i32::MAX`, as vanilla
     /// keeps the limit in an `int` (Paper's `setMaxPlayers` takes one). Zero is
-    /// taken: it lets nobody else on.
-    #[access(WorldOnly)]
+    /// taken: it refuses all new logins that do not bypass the limit.
     fn server_set_max_players(&mut self, max_players: u32) -> Result<(), PlayerLimitRefusal>;
 }
 /// The client host's methods of the `players` area, implemented by the game and reached through [`crate::ClientHost`].
@@ -50,7 +46,6 @@ pub trait PlayersClientHost {
     /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
     /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
     /// clamped to -4..4; a spectator, or a value that is not a number, is left alone.
-    #[access(WorldOnly)]
     fn push_player(&mut self, kick: [f32; 3]);
     /// Side: client.
     /// For a client mod: chooses the local player's hotbar slot, `slot` (0 to 8), as
@@ -60,18 +55,50 @@ pub trait PlayersClientHost {
     /// (not before a block break start). Refused above 8 with `OutOfRange`, without a client
     /// world with `NoWorld`, and for a spectator with `Refused` (its number keys open the
     /// spectator menu), leaving the selection as it was.
-    #[access(WorldOnly)]
     fn select_hotbar_slot(&mut self, slot: u8) -> Result<(), HotbarSlotError>;
     /// Side: client.
     /// For a client mod: the local player's collision exclusions, the client half of
     /// `EntityRef::set_collision_exclusions`, with the same boxes, rules and refusals (a client
     /// with no player of its own answers `Stale`). The client moves its player itself, so a mod
     /// sets the same boxes on both sides: the engine sends neither set to the other.
-    #[access(WorldOnly)]
     fn set_collision_exclusions(
         &mut self,
         boxes: &[[f64; 6]],
     ) -> Result<(), CollisionExclusionsError>;
+    /// Side: client.
+    /// For a client mod: sets the local player's velocity (`Entity.setDeltaMovement`), in blocks
+    /// per tick. Write it from `player_tick_pre`: the tick's own move then integrates it, and
+    /// the position report the move produces is checked by the server as any report is, so a
+    /// velocity the server's speed test or collision check refuses is corrected there. The write
+    /// replaces the velocity outright, as the client's handling of a motion packet does, and
+    /// nothing is sent. `false`, and nothing changes, with no player of its own and for a value
+    /// that is not finite.
+    fn set_local_player_velocity(&mut self, velocity: [f64; 3]) -> bool;
+    /// Side: client.
+    /// For a client mod: sets the local player's on-ground flag. Write it from `player_tick_pre`:
+    /// this tick's jump decision reads it, and the move that follows sets it again from the
+    /// collision, so the report to the server carries the flag the move left. `false`, and
+    /// nothing changes, with no player of its own.
+    fn set_local_player_on_ground(&mut self, on_ground: bool) -> bool;
+    /// Side: client.
+    /// Moves the local player by `delta` in blocks, as `Entity.move(MoverType.SELF, delta)`.
+    /// The move uses the player's usual collisions and step height, and updates its ground
+    /// and fall state, including the usual effects of collisions and blocks on velocity.
+    /// Available to client hooks with world access. For per-tick movement call from the local
+    /// player's client-side `player_tick_pre`, before its own movement. This sends no packet
+    /// and fires no `entity_move` hook (that hook is server-only). A section change is
+    /// reported through `entity_entering_section` at the position write, before the move
+    /// updates collision flags, ground, fall distance and velocity.
+    /// The normal position report carries the movement and ground flag, and the server checks
+    /// the report as usual.
+    /// Returns the displacement actually made, or `Ok(None)` without moving if there is no
+    /// local player, the player is dead, sleeping or riding, or a component is non-finite or
+    /// outside ±64 blocks. `Err(LevelWriteError::Unavailable)` means the call is outside a
+    /// world phase or the engine couldn't finish the move.
+    fn move_local_player_by(
+        &mut self,
+        delta: [f64; 3],
+    ) -> Result<Option<[f64; 3]>, LevelWriteError>;
     /// Moves the window's player through `passage` (#3775), one its server told it of, as
     /// Immersive Portals' client does: its feet, where it was a tick ago (so the frames
     /// between two ticks do not jump), its velocity and its look come out at the far side,
@@ -86,348 +113,12 @@ pub trait PlayersClientHost {
     /// a server, with no player, while riding, for a passage the window does not hold, when
     /// the feet are more than 20 blocks from the opening, and when a mod's
     /// `client_packet_send` cancels the crossing's payload.
-    #[access(WorldOnly)]
     fn cross_passage(&mut self, passage: PassageId) -> Result<(), PassageCrossError>;
     /// Side: client.
     /// The server's refusal of the window's last crossing ([`Self::cross_passage`]) and the
     /// passage it named, until the next crossing; None when it was not refused or no answer
     /// came yet.
-    #[access(WorldOnly)]
     fn last_passage_refusal(&self) -> Option<(PassageId, PassageCrossRefusal)>;
-}
-/// The handles' reads of the `players` area, implemented by the game and reached through [`Backend`].
-// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
-#[doc(hidden)]
-#[sunrise_mod_api_macros::host_area]
-pub trait PlayersBackend {
-    /// Side: server.
-    /// Original UUID while its clone hook is active, otherwise None.
-    #[access(WorldOnly)]
-    fn original_player_uuid(&self, original_player: OriginalPlayerRef) -> Option<u128>;
-    /// Side: server.
-    /// Original position before the data copy, otherwise None.
-    #[access(WorldOnly)]
-    fn original_player_position(&self, original_player: OriginalPlayerRef) -> Option<[f64; 3]>;
-    /// Side: server.
-    /// Original dimension before the data copy, otherwise None.
-    #[access(WorldOnly)]
-    fn original_player_dimension(&self, original_player: OriginalPlayerRef) -> Option<Identifier>;
-    /// Side: server.
-    /// Original level before the data copy, otherwise None.
-    #[access(WorldOnly)]
-    fn original_player_level(&self, original_player: OriginalPlayerRef) -> Option<LevelRef>;
-    /// Side: server.
-    /// Original inventory slot: 0..35 main, 100..103 feet through head, -106 offhand.
-    /// None for an empty or invalid slot or an expired clone hook.
-    #[access(WorldOnly)]
-    fn original_player_inventory_slot(
-        &self,
-        original_player: OriginalPlayerRef,
-        slot: i32,
-    ) -> Option<ItemStack>;
-    /// Side: server.
-    /// Original health at death or End return; None after the clone hook.
-    #[access(WorldOnly)]
-    fn original_player_health(&self, original_player: OriginalPlayerRef) -> Option<f32>;
-    /// Side: server.
-    /// Original experience at death or End return; None after the clone hook.
-    #[access(WorldOnly)]
-    fn original_player_experience(
-        &self,
-        original_player: OriginalPlayerRef,
-    ) -> Option<PlayerExperience>;
-    /// Side: server.
-    /// Original active effects at death or End return; None after the clone hook.
-    #[access(WorldOnly)]
-    fn original_player_effects(
-        &self,
-        original_player: OriginalPlayerRef,
-    ) -> Option<Vec<ActiveEffect>>;
-    /// Side: server.
-    /// Read one registered custom book's authoritative flags. A fresh book
-    /// returns the default pair; an unavailable player or unregistered key
-    /// returns None. This never reads a vanilla ordinal or pending client intent.
-    #[access(WorldOnly)]
-    fn player_recipe_book_settings(
-        &self,
-        player: PlayerRef,
-        book: &RecipeBookTypeKey,
-    ) -> Option<RecipeBookSettings>;
-    /// Side: server.
-    /// The IP address the player connects from, without the port (behind a
-    /// Velocity proxy, the address the proxy forwards). Displaced connected
-    /// players keep their address; an acting player with no known connection
-    /// has an empty address. None for a stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_address(&self, player: PlayerRef) -> Option<String>;
-    /// Side: server.
-    /// The stable name of a connected or acting player. None for a stale or
-    /// unavailable player; displaced online players retain their identity.
-    #[access(WorldOnly)]
-    fn player_name(&self, player: PlayerRef) -> Option<String>;
-    /// Side: server.
-    /// `ServerPlayer.getGameProfile`: the UUID, name and login properties (skin
-    /// `textures` included) of a connected or acting player. An offline-mode
-    /// player has no properties. None for a stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_profile(&self, player: PlayerRef) -> Option<GameProfile>;
-    /// Side: both.
-    /// The level the online player is in (`ServerPlayer.level`): on an integrated
-    /// server or dedicated server, the player's current dimension; on a client,
-    /// the client's level. None for a stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_level(&self, player: PlayerRef) -> Option<LevelRef>;
-    /// Side: both.
-    /// The dimension the online player is in (`ServerPlayer.level().dimension()`):
-    /// `minecraft:overworld`, `minecraft:the_nether`, ... None for a stale
-    /// or unavailable player.
-    #[access(WorldOnly)]
-    fn player_dimension(&self, player: PlayerRef) -> Option<Identifier>;
-    /// Side: both.
-    /// `Inventory.getSelectedSlot`: the hotbar slot the player holds, 0..9. On a client,
-    /// [`crate::ClientHost::select_hotbar_slot`] chooses it.
-    #[access(WorldOnly)]
-    fn player_selected_slot(&self, player: PlayerRef) -> Option<usize>;
-    /// Side: both.
-    /// A player's current supported menu. Refuses crafting tables, merchants,
-    /// workstations, lecterns, mounts and menus with hidden slots; also refuses
-    /// clients, stale players and players whose state is swapped out.
-    #[access(WorldOnly)]
-    fn player_container_menu(&self, player: PlayerRef) -> Option<MenuRef>;
-    /// Side: server.
-    /// Every group the player waits on and its ticks left, ordered by
-    /// group.
-    #[access(WorldOnly)]
-    fn player_item_cooldowns(&self, player: PlayerRef) -> Option<Vec<ItemCooldown>>;
-    /// Side: server.
-    /// `ItemCooldowns.isOnCooldown`: whether `group` still has time to run.
-    #[access(WorldOnly)]
-    fn player_has_item_cooldown(&self, player: PlayerRef, group: &str) -> Option<bool>;
-    /// Side: server.
-    /// `ItemCooldowns.getCooldownPercent(group, 0)`: what is left of the
-    /// group's cooldown, from 1 (just started) to 0 (none).
-    #[access(WorldOnly)]
-    fn player_item_cooldown_percent(&self, player: PlayerRef, group: &str) -> Option<f32>;
-    /// Side: server.
-    /// `Player.getAttackStrengthScale(partial)`: the charge the player's next
-    /// `Player.attack` reads, from 0 (just swung) to 1 (full), where `partial`
-    /// (vanilla reads 0.5) is how far between ticks the read is. It is
-    /// `(attackStrengthTicker + partial) / getCurrentItemAttackStrengthDelay()`,
-    /// the delay from the attack speed attribute and the main-hand item.
-    /// Inside `attack_entity` it reads the charge that blow uses: the hook
-    /// runs before `Player.attack` resets the ticker. 1.0 under 1.8.9 rules,
-    /// which have no cooldown. None for a stale or unavailable player.
-    #[access(WorldOnly)]
-    /// Non-finite partial ticks return `None`; finite partials are not restricted.
-    fn player_attack_strength_scale(&self, player: PlayerRef, partial: f32) -> Option<f32>;
-    /// Side: server.
-    /// `Player.takeXpDelay`: the ticks before the player can take the next
-    /// experience orb.
-    #[access(WorldOnly)]
-    fn player_exp_cooldown(&self, player: PlayerRef) -> Option<u32>;
-    /// Side: both.
-    /// The dimension and block of the player's last death
-    /// (`Player.getLastDeathLocation`).
-    #[access(WorldOnly)]
-    fn player_last_death_location(&self, player: PlayerRef) -> Option<GlobalPos>;
-    /// Side: both.
-    /// `FoodData.needsFood`: the food level is below 20.
-    #[access(WorldOnly)]
-    fn player_needs_food(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: both.
-    /// `FoodData.hasEnoughFood`: the food level is above 6, enough to
-    /// sprint.
-    #[access(WorldOnly)]
-    fn player_has_enough_food(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: both.
-    /// `Player.canEat(always)`: an invulnerable player (creative), `always`
-    /// (food that can always be eaten) or a food level below 20.
-    #[access(WorldOnly)]
-    fn player_can_eat(&self, player: PlayerRef, always: bool) -> Option<bool>;
-    /// Side: both.
-    /// `Player.experienceLevel`, `experienceProgress` and `totalExperience`.
-    #[access(WorldOnly)]
-    fn player_experience(&self, player: PlayerRef) -> Option<PlayerExperience>;
-    /// Side: both.
-    /// `Player.getXpNeededForNextLevel`: the points the current level needs
-    /// to fill.
-    #[access(WorldOnly)]
-    fn player_xp_needed_for_next_level(&self, player: PlayerRef) -> Option<i32>;
-    /// Side: server.
-    /// The player's permission level, 0 to 4 (`Player.permissions()`,
-    /// `PlayerList.getProfilePermissions`): an op's level, the
-    /// single-player owner's 4 with commands allowed. A displaced connected
-    /// player keeps their permission level even while their body is unavailable.
-    /// None for a stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_permission_level(&self, player: PlayerRef) -> Option<u8>;
-    /// Side: server.
-    /// `Player.hasInfiniteMaterials`: the `instabuild` ability, which
-    /// creative mode gives.
-    #[access(WorldOnly)]
-    fn player_has_infinite_materials(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// `Player.canUseGameMasterBlocks`: creative and a permission level of
-    /// at least 2, as command blocks, structure blocks and jigsaws ask.
-    #[access(WorldOnly)]
-    fn player_can_use_game_master_blocks(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// `ServerPlayerGameMode.getPreviousGameModeForPlayer`: the mode the
-    /// player last left (`previousPlayerGameType`, saved with the player), or
-    /// `Some(None)` when they never changed mode. None for a stale or
-    /// unavailable player.
-    #[access(WorldOnly)]
-    fn player_previous_game_mode(&self, player: PlayerRef) -> Option<Option<GameMode>>;
-    /// Side: both.
-    /// `Player.isSecondaryUseActive`: whether the player uses items and
-    /// blocks as with sneak held, as vanilla reads it from the shift-key
-    /// flag (the same read as `EntityRef::is_shift_key_down`). None for a
-    /// stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_is_secondary_use_active(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// Whether a live player handle names a connectionless actor.
-    #[access(WorldOnly)]
-    fn player_is_fake(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// `Player.mayUseItemAt(pos, face, stack)`: whether the player may use `stack` at `pos`, the
-    /// block it would be placed in when clicked on its `face`. A player who may build (survival,
-    /// creative) always may; an adventure or spectator player only with a stack whose
-    /// `can_place_on` component matches the clicked block, the one `pos` lies against. The game's
-    /// own use runs the same check (`ItemStack.useOn`, buckets). None for a stale or unavailable
-    /// player, and for one in another level than the one in place.
-    #[access(WorldOnly)]
-    fn player_may_use_item_at(
-        &self,
-        player: PlayerRef,
-        pos: [i32; 3],
-        face: BlockFace,
-        stack: &ItemStack,
-    ) -> Option<bool>;
-    /// Side: server.
-    /// `ServerPlayer.canHarmPlayer(other)`: whether `player` may hurt `other`: the `pvp` game
-    /// rule is on, and their teams allow it (allies on a team without friendly fire cannot,
-    /// `Player.canHarmPlayer`). Attacks, arrows and tridents ask the same. None when either
-    /// handle is stale or unavailable.
-    #[access(WorldOnly)]
-    fn player_can_harm(&self, player: PlayerRef, other: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// `ServerPlayer.getRespawnConfig`: where the player comes back after dying: a bed, a
-    /// respawn anchor or a `/spawnpoint`, with the yaw they face and whether it is forced.
-    /// `Some(None)` when they have none and respawn at the world spawn. None for a stale or
-    /// unavailable player.
-    #[access(WorldOnly)]
-    fn player_respawn_config(&self, player: PlayerRef) -> Option<Option<PlayerRespawnConfig>>;
-    /// Side: server.
-    /// `ServerPlayer.isTextFilteringEnabled`: the text-filtering option the player's client
-    /// announced (`ClientInformation.textFilteringEnabled`). False for the player running the
-    /// server and for an acting player with no connection, as for a client that sent none. None
-    /// for a stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_text_filtering(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// Whether `player_set_sleep_ignored` left the player out of the night's sleep count. False
-    /// for a player never ignored. None for a stale handle or a player who isn't online.
-    #[access(WorldOnly)]
-    fn player_sleep_ignored(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// Whether the player counts in the night's sleep count (`SleepStatus.update`): not a
-    /// spectator, not a fake player, and not left out through `player_set_sleep_ignored` while
-    /// out of bed. None for a stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_counts_for_sleep(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: server.
-    /// `Player.getSleepTimer` (`sleepCounter`): the ticks the player has been in bed, 100 once
-    /// asleep long enough (`isSleepingLongEnough`, what the night skip waits for), then
-    /// counting up 101 to 109 and back to 0 once they are up. None for a stale or unavailable
-    /// player.
-    #[access(WorldOnly)]
-    fn player_sleep_timer(&self, player: PlayerRef) -> Option<u32>;
-    /// Side: both.
-    /// `Inventory.items`: the non-empty main inventory stacks in slot order, including
-    /// their components. None for a stale or unavailable player; on clients only the
-    /// local player's inventory is available.
-    #[access(WorldOnly)]
-    fn player_inventory(&self, player: PlayerRef) -> Option<Vec<ItemStack>>;
-    /// Side: server.
-    /// The player's non-empty inventory slots by `Inventory`'s numbers, with their
-    /// components: 0 to 35 the main inventory (0 to 8 the hotbar), 36 feet, 37 legs, 38
-    /// chest, 39 head, 40 the off hand, 41 body and 42 saddle
-    /// (`Inventory.EQUIPMENT_SLOT_MAPPING`), lowest first. The numbers
-    /// `player_set_inventory_slot` takes, and for 0 to 35 the `Slot` of a saved player's
-    /// `Inventory` list. None for a player that is not online (stale handle) and on a client.
-    #[access(WorldOnly)]
-    fn player_inventory_slots(&self, player: PlayerRef) -> Option<Vec<(u32, ItemStack)>>;
-    /// Side: server.
-    /// The player's non-empty ender chest slots (`Player.getEnderChestInventory`, 27 slots
-    /// numbered 0 to 26 as the `Slot` of a saved player's `EnderItems`), lowest first. None for
-    /// a stale or unavailable player and on a client.
-    #[access(WorldOnly)]
-    fn player_ender_chest(&self, player: PlayerRef) -> Option<Vec<(u32, ItemStack)>>;
-    /// Side: server.
-    /// The compound mods keep on a server player (NeoForge's `Entity.getPersistentData`),
-    /// saved in their file as `NeoForgeData` beside the keys the game keeps; empty when there
-    /// is none. None for a stale or unavailable player and on a client.
-    #[access(WorldOnly)]
-    fn player_persistent_data(&self, player: PlayerRef) -> Option<Compound>;
-    /// Side: both.
-    /// `ServerPlayerGameMode.getGameModeForPlayer`; Paper `HumanEntity#getGameMode`.
-    /// None for stale, offline or unavailable players (including displaced outer players).
-    #[access(WorldOnly)]
-    fn player_game_mode(&self, player: PlayerRef) -> Option<GameMode>;
-    /// Side: both.
-    /// `Player.isCreative`; Paper `HumanEntity#getGameMode`.
-    #[access(WorldOnly)]
-    fn player_is_creative(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: both.
-    /// `Player.isSpectator`; Paper `HumanEntity#getGameMode`.
-    #[access(WorldOnly)]
-    fn player_is_spectator(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: both.
-    /// `Player.mayBuild`; Paper `HumanEntity#getGameMode`.
-    #[access(WorldOnly)]
-    fn player_may_build(&self, player: PlayerRef) -> Option<bool>;
-    /// Side: both.
-    /// `FoodData.getFoodLevel/getSaturationLevel/getExhaustionLevel`; Paper
-    /// `HumanEntity#getFoodLevel/getSaturation/getExhaustion`. None until the
-    /// guest's body exists, as well as for stale or unavailable players.
-    #[access(WorldOnly)]
-    fn player_food(&self, player: PlayerRef) -> Option<PlayerFood>;
-    /// Side: both.
-    /// `Player.getAbilities`; Paper `Player#getAllowFlight/isFlying/getFlySpeed/getWalkSpeed`.
-    #[access(WorldOnly)]
-    fn player_abilities(&self, player: PlayerRef) -> Option<PlayerAbilities>;
-    /// Side: server.
-    /// The value of statistic `stat_type` for `key` (`minecraft:stone`,
-    /// `minecraft:jump`...), as `ServerStatsCounter.getValue`: 0 when never
-    /// counted.
-    #[access(WorldOnly)]
-    fn player_stat(&self, player: PlayerRef, stat_type: StatType, key: &str) -> Option<i32>;
-    /// Side: server.
-    /// Whether the player's recipe book knows `recipe`
-    /// (`ServerRecipeBook.contains`).
-    #[access(WorldOnly)]
-    fn player_has_discovered_recipe(&self, player: PlayerRef, recipe: &str) -> Option<bool>;
-    /// Side: both.
-    /// The recipes in the player's recipe book (`ServerRecipeBook.recipes`), as qualified ids in
-    /// order (`minecraft:oak_planks`). None for a player it can't reach.
-    #[access(WorldOnly)]
-    fn player_discovered_recipes(&self, player: PlayerRef) -> Option<Vec<String>>;
-    /// Side: both.
-    /// The brand the player's client announced when it connected (`ServerPlayer.clientBrand`),
-    /// empty when it sent none. Displaced connected players keep theirs; an acting player with
-    /// no known connection has an empty one. None for a stale or unavailable player.
-    #[access(WorldOnly)]
-    fn player_client_brand(&self, player: PlayerRef) -> Option<String>;
-    /// Side: server.
-    /// The plugin channels the player's client announced in `minecraft:register`, less those
-    /// it withdrew in `minecraft:unregister`, during configuration and play, in announcement
-    /// order (Bukkit's `Player.getListeningPluginChannels`). Malformed entries are skipped and
-    /// at most 128 channels of up to 64 bytes are kept. Empty for a client that announced
-    /// none and for an acting player with no known connection; None for a stale or
-    /// unavailable player.
-    #[access(WorldOnly)]
-    fn player_announced_channels(&self, player: PlayerRef) -> Option<Vec<String>>;
 }
 /// The handles' client reads of the `players` area, implemented by the game and reached through [`Backend`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
@@ -437,7 +128,6 @@ pub trait PlayersClientBackend {
     /// Side: client.
     /// The local player's last authoritative custom-book pair. None before
     /// negotiation, while resynchronizing, or for a nonlocal/stale handle.
-    #[access(WorldOnly)]
     fn player_synced_recipe_book_settings(
         &self,
         player: PlayerRef,
@@ -446,23 +136,28 @@ pub trait PlayersClientBackend {
     /// Side: client.
     /// The local player's predicted breaking state, including Idle. None for
     /// stale, nonlocal or fake handles and outside a logged-in client world.
-    #[access(WorldOnly)]
     fn player_block_breaking(&self, player: PlayerRef) -> Option<BlockBreakingState>;
     /// Side: client.
     /// The local player's existing cave ambience mood, normally 0 through 1.
     /// None for stale, nonlocal or fake handles and outside a client world.
-    #[access(WorldOnly)]
     fn player_ambient_mood(&self, player: PlayerRef) -> Option<f32>;
 }
-/// Client-only custom book intent, reached through player handles.
+/// Client-only player writes, reached through player handles.
 // hidden: mods call PlayerRef methods, never the generated backend trait
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayersClientBackendMut {
     /// Side: client.
+    /// Clears the local player's accumulated fall distance (`Entity.resetFallDistance`).
+    /// This is client prediction only and sends no packet. Returns `Ok(false)` for a
+    /// stale or non-local player or if no local player is in the world, and
+    /// `Err(LevelWriteError::Unavailable)` without writable client-world access,
+    /// such as in pack discovery or while a section crossing borrows the world.
+
+    fn player_reset_fall_distance(&mut self, player: PlayerRef) -> Result<bool, LevelWriteError>;
+    /// Side: client.
     /// Request a new pair for the local player's negotiated book. True means
     /// queued, not accepted; only an authoritative reply changes saved state.
-    #[access(WorldOnly)]
     fn player_request_recipe_book_settings(
         &mut self,
         player: PlayerRef,
@@ -470,6 +165,7 @@ pub trait PlayersClientBackendMut {
         settings: RecipeBookSettings,
     ) -> bool;
 }
+<<<<<<< sync-sunrise-1
 /// The handles' writes of the `players` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
 #[doc(hidden)]
@@ -1051,3 +747,5 @@ pub trait PlayersBackendMut {
         update_neighbour_shapes: bool,
     ) -> Result<(), PlayerWorldRefusal>;
 }
+=======
+>>>>>>> sunrise/main

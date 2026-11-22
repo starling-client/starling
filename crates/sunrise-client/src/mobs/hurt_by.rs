@@ -1,7 +1,7 @@
 //! The mob that last hurt a mob (`LivingEntity.lastHurtByMob`): its record in
 //! `Ai`, its end in `baseTick`, and what a hit or a stop being angry does to it.
 use super::ai::Ai;
-use super::{Damage, DamageKind, Mob, MobWorld, Species, Who};
+use super::{Damage, Mob, MobWorld, Species, Who};
 
 // `LivingEntity.lastHurtByMob` is a lazy `EntityReference`: a record read back
 // from `last_hurt_by_mob` stays the bare UUID (`Ai::last_hurt_by_ref`) until the
@@ -22,6 +22,16 @@ impl Ai {
         self.last_hurt_by_time = tick;
     }
 }
+impl Mob {
+    /// The last hurting entity within vanilla's inclusive hundred-tick credit window.
+    /// Resolving the reference and remembered-player precedence belong to the game.
+    pub fn recent_hurt_by(&self) -> Option<Who> {
+        self.ai
+            .last_hurt_by
+            .filter(|_| (self.age as i32).wrapping_sub(self.ai.last_hurt_by_time) <= 100)
+    }
+}
+
 /// `LivingEntity.resolveMobResponsibleForDamage` and
 /// `resolvePlayerResponsibleForDamage` after a hit landed: a mob's hit names
 /// its attacker, unless the type is in `#no_anger` (`DamageTypeTagsProvider`
@@ -29,7 +39,7 @@ impl Ai {
 /// record: a player's hit still counts for the kill credit.
 pub(super) fn resolve(m: &mut Mob, source: &Damage) {
     let Some(who) = source.attacker else { return };
-    if !matches!(source.kind, DamageKind::MobAttackNoAggro) {
+    if !source.kind.no_anger() {
         m.ai.hurt_by(who, m.age as i32);
     }
     if who == Who::Player {

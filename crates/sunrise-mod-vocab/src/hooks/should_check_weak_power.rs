@@ -6,6 +6,8 @@ pub trait Hooks {
     /// conductor answer. `direction` is the input side of the block being powered,
     /// opposite the queried block's output side. Authoritative servers only.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "check",
@@ -14,5 +16,11 @@ pub trait Hooks {
         neoforge = "IBlockExtension.shouldCheckWeakPower",
         target = "sunrise_client::game::native_hooks::should_check_weak_power::GameLevel<'_>::native_should_check_weak_power"
     )]
-    fn should_check_weak_power();
+    fn should_check_weak_power(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        direction: Direction,
+        check: &mut bool,
+    );
 }

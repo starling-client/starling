@@ -6,10 +6,12 @@ pub trait Hooks {
     /// The snapshot is read-only. A veto skips the new mining operation and preserves any
     /// retained dig. Release and correction still perform ordinary cleanup.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "none (client mining prediction)"
     )]
-    fn client_mining_predict();
+    fn client_mining_predict(prediction: ClientMiningPrediction, canceled: &mut bool);
 }

@@ -7,14 +7,15 @@
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum TerrainMaterial {
     /// Each quad's own: solid, `cutout` or `cutout_mipped` as its model's `render_type` names
-    /// it. A translucent quad, or a render type the game doesn't know, refuses the whole draw.
+    /// it, and a translucent quad in the sorted translucent material (vanilla's
+    /// `translucent_moving_block`). A render type the game doesn't know refuses the whole draw.
     #[default]
     Model,
     /// Opaque, with no alpha test.
     Solid,
-    /// Texels under alpha 0.1 discarded, sampled without mipmaps.
+    /// Texels under alpha 0.1 discarded.
     Cutout,
-    /// Texels under alpha 0.5 discarded, sampled with mipmaps.
+    /// Texels under alpha 0.5 discarded.
     CutoutMipped,
 }
 
@@ -87,6 +88,12 @@ pub struct TerrainModelOptions<'a> {
     pub uv_shrink_ratio: f32,
     /// `0xRRGGBB` multiplied into quads with a tint index; other quads keep their colour.
     pub tint: u32,
+    /// The draw colour: `0xAARRGGBB`, white (`0xFFFFFFFF`) by default. Its red, green and blue
+    /// multiply every quad's vertex colour, tinted or not, after the quad's own baked colour and,
+    /// on a quad with a tint index, after `tint`; its alpha multiplies every quad's alpha. White
+    /// changes nothing. An alpha below `0xFF` draws the model in the translucent material, as
+    /// does a translucent quad under [`TerrainMaterial::Model`].
+    pub color: u32,
 }
 
 impl Default for TerrainModelOptions<'_> {
@@ -97,6 +104,7 @@ impl Default for TerrainModelOptions<'_> {
             uv_shift: None,
             uv_shrink_ratio: 0.0,
             tint: 0xFF_FFFF,
+            color: u32::MAX,
         }
     }
 }
@@ -133,6 +141,11 @@ impl<'a> TerrainModelOptions<'a> {
     pub fn with_tint(self, tint: u32) -> Self {
         Self { tint, ..self }
     }
+    /// The same options drawn in the `0xAARRGGBB` draw `color` ([`TerrainModelOptions::color`]).
+    #[inline]
+    pub fn with_color(self, color: u32) -> Self {
+        Self { color, ..self }
+    }
 }
 
 /// Why [`BlockEntityDrawContext::terrain_model`](crate::BlockEntityDrawContext::terrain_model)
@@ -143,8 +156,8 @@ impl<'a> TerrainModelOptions<'a> {
 pub enum TerrainModelError {
     /// The handle is stale or not a resolved standalone model.
     Model(crate::ModelError),
-    /// A quad could not be drawn, so none was: under [`TerrainMaterial::Model`] a translucent
-    /// quad or an unknown render type; a sprite missing from the block sprites; a pose or UV
+    /// A quad could not be drawn, so none was: under [`TerrainMaterial::Model`] an unknown
+    /// render type; a sprite missing from the block sprites; a pose or UV
     /// that is not finite, or a pose that flattens the model; a shrink ratio outside
     /// `0.0..=1.0`; or a shift whose scale or offset is not finite, whose sprites are unknown,
     /// or whose source sprite no face of the model uses.

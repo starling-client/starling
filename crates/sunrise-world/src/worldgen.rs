@@ -44,7 +44,6 @@ pub mod generator;
 mod generator_blocks;
 mod generator_decoration;
 mod generator_structures;
-pub(crate) use generator_structures::tag_json;
 pub mod height_provider;
 pub mod iceberg;
 pub mod live;
@@ -54,6 +53,7 @@ pub mod material_extensions;
 pub mod material_stage;
 pub mod material_surface;
 pub mod mod_biome_sources;
+pub mod mod_features;
 pub mod mod_generators;
 pub mod ore_feature;
 pub mod overrides;
@@ -83,9 +83,9 @@ pub mod vegetation;
 pub mod vines;
 pub mod weighted;
 pub mod write_zone;
-use sunrise_core::noise::{NoiseBuildError, NormalNoise, Normalization};
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
+use sunrise_core::noise::{NoiseBuildError, NormalNoise, Normalization};
 
 #[derive(Debug)]
 pub enum DecodeError {

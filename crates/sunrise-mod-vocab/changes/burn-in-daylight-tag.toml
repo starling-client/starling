@@ -1,0 +1,3 @@
+ids = ["behaviour:living_daylight_burning"]
+why = "Living content types no longer inherit daylight burning from their template."
+migrate = "To keep daylight burning, add the type id to data/minecraft/tags/entity_type/burn_in_daylight.json."

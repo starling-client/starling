@@ -10,7 +10,6 @@
 //! is that divergence removed.
 
 use super::Game;
-use sunrise_client::collisions::{SceneCollisions, no_collision_empty};
 use sunrise_client::mobs::{Mob, Species, finalize, spawn_rules::Reason, spawning};
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_world::food::Difficulty;
@@ -60,19 +59,9 @@ impl finalize::FinalizeLevel for FinalizeGame<'_, '_> {
     fn spawning_monsters(&self) -> bool {
         self.game.spawning_monsters()
     }
-    /// `Level.noCollision(null, box)`: block collisions, and living shulkers
-    /// are solid (`getEntityCollisions`).
     fn no_collision(&self, bounds: Aabb) -> bool {
-        let mut scene = SceneCollisions {
-            world: &self.game.world,
-            binding: self.game.res.collision(),
-            subject: None,
-        };
-        let grown = bounds.inflate(Vec3::new(1e-7, 1e-7, 1e-7));
-        no_collision_empty(&mut scene, bounds)
-            && !self.game.mobs.iter().any(|m| {
-                m.species() == Species::Shulker && m.alive() && m.bounds().intersects(grown)
-            })
+        self.game
+            .no_spawn_collision(bounds, |query| self.game.live_spawn_mob_collision(query))
     }
     fn free_chicken(&self, bounds: Aabb) -> Option<u32> {
         self.game.finalize_free_chicken(bounds)
@@ -95,12 +84,13 @@ impl finalize::FinalizeLevel for FinalizeGame<'_, '_> {
         self.game.finalize_spawn_event_result(mob, reason)
     }
     fn create(&mut self, kind: &str, _: Reason) -> Option<Mob> {
+        let t = self.game.res.mob_types().get(kind)?;
         if self.game.world.health_rules.difficulty == Difficulty::Peaceful
-            && !finalize::allowed_in_peaceful(kind)
+            && !t.allowed_in_peaceful()
         {
             return None;
         }
-        let t = self.game.res.mob_types().get(kind)?.clone();
+        let t = t.clone();
         self.game.next_entity += 1;
         Some(Mob::new(self.game.next_entity, t, Vec3::ZERO, 0.0))
     }
@@ -271,7 +261,7 @@ mod tests {
     /// every observable outcome, and the level random advances by exactly
     /// the draws the finalization made.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn finalize_plain_draws_the_level_random_in_vanilla_order() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             let mut mob = zombie(game);
@@ -302,7 +292,7 @@ mod tests {
     /// changes nothing: `finalize_with` finalizes exactly as `finalize_plain`
     /// does, on the same level stream.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn finalize_with_without_listeners_finalizes_like_finalize_plain() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             let mut with = zombie(game);
@@ -334,7 +324,7 @@ mod tests {
     /// `WitherSkeleton.finalizeSpawn`: attack damage base 4.0, not the
     /// default 2.0.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn runtime_wither_skeletons_hit_for_four() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             let mut w = mob_of(game, 1, "minecraft:wither_skeleton");
@@ -348,7 +338,7 @@ mod tests {
     /// #2783: runtime spawns run `Mob.finalizeSpawn`: the follow range
     /// bonus and 5 percent left-handed mobs, drawn from the level random.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn runtime_spawns_run_the_mob_finalize_spawn() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             let difficulty = game.local_difficulty([8.0, 65.0, 8.0]);
@@ -394,7 +384,7 @@ mod tests {
     /// `Zombie` / `AbstractSkeleton` halloween garb: 25% of empty heads, never
     /// on other mobs, and not when it is not Halloween.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn halloween_pumpkins_only_undead_on_halloween() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             let mut pumpkins = 0;
@@ -440,7 +430,7 @@ mod tests {
     /// (`ServerLevel.isSpawningMonsters`: the difficulty and the `spawn_mobs`
     /// and `spawn_monsters` gamerules), not the difficulty alone.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_striders_piglin_rider_needs_spawning_monsters() {
         use sunrise_client::gamerules::Value as RuleValue;
         crate::game::native_guest_turn_tests::with_guests(|game| {

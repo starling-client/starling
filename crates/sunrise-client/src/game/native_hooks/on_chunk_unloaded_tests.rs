@@ -4,8 +4,6 @@
 //! streaming, save and unload; the chunk comes back from its saved data; then the world closes.
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};
 use crate::game::world_loading::WorldRequest;
-use sunrise_client::containers::BlockEntity;
-use sunrise_core::nbt::{Compound, Tag};
 use mod_api::{
     BlockEntityPart, BlockPart, BlocksEvent, Hooks, HostSide, OnChunkUnloadedEvent, Registrar,
     RegistrationContext,
@@ -13,6 +11,8 @@ use mod_api::{
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use sunrise_client::containers::BlockEntity;
+use sunrise_core::nbt::{Compound, Tag};
 
 const POT: &str = "unload_probe:pot";
 /// Chunk (100, 100): far from the spawn, so only its ticket keeps it.
@@ -56,8 +56,8 @@ impl Hooks for Probe {
     }
     fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
         event
-            .blocks
-            .push(mod_api::Block::new(POT, "minecraft:stone"));
+            .register(mod_api::Block::new(POT, "minecraft:stone"))
+            .unwrap();
     }
 }
 
@@ -102,7 +102,7 @@ fn pump_until(game: &mut crate::game::Game<'_>, resident: bool) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn each_mod_block_entity_of_an_unloading_chunk_is_told_once() {
     if run_fresh_cases(
         "game::native_hooks::on_chunk_unloaded_tests::each_mod_block_entity_of_an_unloading_chunk_is_told_once",
@@ -189,7 +189,7 @@ fn each_mod_block_entity_of_an_unloading_chunk_is_told_once() {
 /// A client's copies: a column the server forgets tells its mod block entities, while
 /// the client level going (a respawn, a dimension change, leaving) tells none.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_client_tells_a_forgotten_column_but_not_its_level_going() {
     use crate::game::execution_role::ExecutionRole;
     use sunrise_client::{chunk::Chunk, containers::ModBlockEntity};

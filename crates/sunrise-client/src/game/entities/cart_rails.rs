@@ -4,9 +4,9 @@ use super::Game;
 use super::api_values::TryIntoApi;
 use super::minecarts::{Rail, Shape};
 use super::native_level_signals::ReadLevel;
+use mod_api::RailShape;
 use sunrise_core::position::BlockPos;
 use sunrise_world::level::classes::Class;
-use mod_api::RailShape;
 
 impl Game<'_> {
     /// The rail at (x, y, z) as `cart` (none when the rail is read for itself) sees it: a block

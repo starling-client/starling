@@ -1,13 +1,31 @@
 //! Owned snapshot data of attachment queries.
 use crate::*;
+use std::sync::Mutex;
 use sunrise_mod_runtime::attachments::{self as runtime, index};
+
+/// An immutable borrow of a host for reading attachments captured in its transaction.
+/// Get it from `host.attachment_read_scope()?` or `level.attachment_read_scope()`.
+/// While it is in use the host cannot open or close a transaction. The default
+/// value can be used for captures made outside a transaction.
+// no wire: borrows the capturing host's frame tracker.
+#[derive(Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct AttachmentReadScope<'host>(pub(crate) Option<&'host runtime::AttachmentQueryScopes>);
 
 /// A SNAPSHOT of membership and value bindings in the host's current dimension.
 /// Later changes require a fresh query. This is a residency view: removed but
-/// unswept entities may appear, and stale writes fail. Native acquisition neither
-/// clones values nor decodes saved payloads; iteration decodes lazily.
-/// Codec-less attachment types are native-only; their rows do not cross to wasm.
-// no wire: transfers only saved rows as scoped tokens plus network NBT; decode requires a complete compound envelope and rebuilds runtime entries.
+/// unswept entities may appear, and stale writes fail. Acquisition neither clones values nor
+/// decodes saved payloads; iteration decodes lazily. A batch captured in a transaction
+/// can only be used while that frame is current, on its owning thread. Keep the batch in
+/// process; use the attachment type's codec for saving or syncing individual values.
+///
+/// ```compile_fail
+/// use mod_api::{AttachmentBatch, wire::Writer};
+/// fn encode_batch(batch: &AttachmentBatch) {
+///     Writer::new().put(batch); // snapshots have no Wire encoding
+/// }
+/// ```
+// no wire: retains all captured bindings, including values that have no persistence codec.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct AttachmentBatch(runtime::AttachmentBatch<AttachmentHolder>);
@@ -23,108 +41,129 @@ impl AttachmentBatch {
         self,
         key: &AttachmentType<T>,
     ) -> Result<AttachmentQuery<'_, T>, AttachmentError> {
-        #[cfg(target_arch = "wasm32")]
-        if key.codec.is_none() {
-            return Err(AttachmentError::Decode);
-        }
-        self.0.query(key)
+        crate::parts::validate_attachment_use(key.namespace, key.name, key.sync)?;
+        self.0.query(key).map(AttachmentQuery)
     }
 }
-/// A typed snapshot whose iterator borrows values from its captured bindings.
-/// `get(holder)` returns an owned clone with an expected O(1) probe before decode.
+
+/// A typed snapshot whose rows lend values from their captured bindings.
+/// `get(scope, holder)` returns an owned clone with an expected O(1) probe before decode.
 /// Missing or not yet synced holders return `Ok(None)`; no default is created.
 /// `None` does not mean the holder is alive: absent and not-live holders alike
 /// return `Ok(None)` when absent from the snapshot, without a host liveness check.
-/// Only scoped residency probes report `StaleHolder`.
-// no wire: borrows a live attachment index.
-pub type AttachmentQuery<'key, T> = runtime::AttachmentQuery<'key, AttachmentHolder, T>;
+/// Only scoped residency probes report `StaleHolder`. `get` and iteration report
+/// [`AttachmentRowError::OutsideTransaction`] if the capture's frame is not current.
+// no wire: binds a borrowed key to an in-process snapshot.
+#[non_exhaustive]
+pub struct AttachmentQuery<'key, T: 'static>(runtime::AttachmentQuery<'key, AttachmentHolder, T>);
 
-/// A private-field scoped residency identity, not an access authorization token.
-// no wire: projects the runtime residency owner to holder/generation parts; decoding rebuilds an owner, not access authorization.
+impl<T: Send + Sync + 'static> AttachmentQuery<'_, T> {
+    /// Create a fallible cursor in captured order, decoding values only as rows are visited.
+    pub fn iter(&self) -> AttachmentIter<'_, T> {
+        AttachmentIter(self.0.iter())
+    }
+}
+
+/// A fallible cursor borrowing the snapshot of an [`AttachmentQuery`].
+// no wire: borrows a live snapshot and tracks a local cursor position.
+#[non_exhaustive]
+pub struct AttachmentIter<'q, T: 'static>(runtime::AttachmentIter<'q, AttachmentHolder, T>);
+
+impl<'q, T: Send + Sync + 'static> AttachmentIter<'q, T> {
+    /// Return the next row, or `Ok(None)` at the end while in scope.
+    /// [`AttachmentRowError::OutsideTransaction`] does not advance the cursor;
+    /// the next call can resume once the capturing frame is current again.
+    /// A value error consumes only its own row.
+    pub fn try_next(&mut self) -> Result<Option<AttachmentRow<'q, T>>, AttachmentRowError> {
+        Ok(self.0.try_next()?.map(|binding| AttachmentRow {
+            holder: binding.holder,
+            binding,
+        }))
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> AttachmentQuery<'_, T> {
+    /// Read an owned captured value without inserting a default. A capture made in a
+    /// transaction requires its current frame and a read scope from the capturing host.
+    pub fn get(
+        &self,
+        scope: AttachmentReadScope<'_>,
+        holder: AttachmentHolder,
+    ) -> Result<Option<T>, AttachmentRowError> {
+        self.0.get(scope.0, holder)
+    }
+}
+
+/// One captured binding. The holder is copyable; the value must be used through a loan.
+// no wire: borrows an in-process binding and its transaction scope.
+#[non_exhaustive]
+pub struct AttachmentRow<'q, T: 'static> {
+    binding: runtime::AttachmentRowRef<'q, AttachmentHolder, T>,
+    /// The captured holder's identity.
+    pub holder: AttachmentHolder,
+}
+
+impl<T: 'static> AttachmentRow<'_, T> {
+    /// Lend the value for this call. To keep data beyond the loan, copy what you need.
+    /// A transactional capture requires a read scope from the same host and the current
+    /// frame. The scope borrows the host so the frame cannot change during the loan.
+    /// The default scope is only for captures made outside a transaction.
+    ///
+    /// ```compile_fail,E0500
+    /// use mod_api::{AttachmentRow, ServerHost, TransactionSeal};
+    /// fn close_during_read(row: &AttachmentRow<'_, u32>, host: &mut dyn ServerHost,
+    ///                      seal: &TransactionSeal) {
+    ///     let _ = row.with_value(host.attachment_read_scope().unwrap(), |value| {
+    ///         host.transaction_close(seal, false);
+    ///         *value
+    ///     });
+    /// }
+    /// ```
+    pub fn with_value<R>(
+        &self,
+        scope: AttachmentReadScope<'_>,
+        f: impl FnOnce(&T) -> R,
+    ) -> Result<R, AttachmentRowError> {
+        self.binding.with_value(scope.0, f)
+    }
+
+    /// The row's residency token. A token captured in a transaction is scoped to that frame.
+    pub fn write_token(&self) -> AttachmentWriteToken {
+        AttachmentWriteToken {
+            owner: self.binding.write_token(),
+            scope: self.binding.scope().cloned(),
+        }
+    }
+}
+
+/// A scoped residency identity issued from a captured row, not an access authorization
+/// token. It cannot be reconstructed from bytes. Mods typically use the row's
+/// `set` or `remove` method rather than passing the token to the host themselves.
+///
+/// ```compile_fail
+/// use mod_api::{AttachmentWriteToken, wire::Reader};
+/// let _ = Reader::decode::<AttachmentWriteToken>(&[]);
+/// ```
+// no wire: names a residency issued by the live attachment index.
 #[derive(Clone)]
 #[non_exhaustive]
-pub struct AttachmentWriteToken(index::AttachmentOwner<AttachmentHolder>);
-impl From<index::AttachmentOwner<AttachmentHolder>> for AttachmentWriteToken {
-    fn from(token: index::AttachmentOwner<AttachmentHolder>) -> Self {
-        Self(token)
-    }
+pub struct AttachmentWriteToken {
+    owner: index::AttachmentOwner<AttachmentHolder>,
+    scope: Option<runtime::AttachmentQueryScope>,
 }
-impl AttachmentWriteToken {
-    /// Check the current dimension's residency before the ordinary write path.
-    // hidden: the owning engine validates tokens; mods use the row's set/remove methods.
-    #[doc(hidden)]
-    pub fn validate(
-        &self,
-        index: &index::AttachmentIndex<AttachmentHolder>,
-    ) -> Result<(), AttachmentRowError> {
-        index.validate_owner(&self.0)
+/// The engine's write boundary: check the frame before checking dimension residency.
+pub fn validate_attachment_write(
+    token: &AttachmentWriteToken,
+    index: Option<&Mutex<index::AttachmentIndex<AttachmentHolder>>>,
+) -> Result<(), AttachmentRowError> {
+    if let Some(scope) = &token.scope {
+        scope.check()?;
     }
-}
-
-impl crate::wire::Wire for AttachmentWriteToken {
-    crate::wire::layout_fields!("holder" => crate::AttachmentHolder, "generation" => u64);
-    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(AttachmentWriteToken));
-    const MIN: usize = 12;
-    fn put(&self, out: &mut crate::wire::Writer) {
-        let (holder, generation) = self.0.parts();
-        out.put(holder);
-        out.put(&generation);
-    }
-    fn take(input: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::WireError> {
-        Ok(Self(index::AttachmentOwner::from_parts(
-            input.take()?,
-            input.take()?,
-        )))
-    }
-}
-
-impl crate::wire::Wire for AttachmentBatch {
-    crate::wire::layout_fields!("rows" => Vec<(crate::AttachmentWriteToken,Vec<u8>)>);
-    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(AttachmentBatch));
-    const MIN: usize = 4;
-    fn put(&self, out: &mut crate::wire::Writer) {
-        use sunrise_core::nbt::{self, Limits, Tag};
-        let rows: Vec<_> = self
-            .0
-            .rows()
-            .iter()
-            .filter_map(|row| {
-                let saved = row.entry.saved()?;
-                let bytes = nbt::write_network(&Tag::Compound(saved), Limits::default()).ok()?;
-                Some((AttachmentWriteToken::from(row.write_token()), bytes))
-            })
-            .collect();
-        out.put(&rows);
-    }
-    fn take(input: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::WireError> {
-        use crate::wire::WireError;
-        use sunrise_core::nbt::{self, Limits, Tag};
-        let rows: Vec<(AttachmentWriteToken, Vec<u8>)> = input.take()?;
-        let mut result = Vec::with_capacity(rows.len());
-        let mut identities = std::collections::HashSet::with_capacity(rows.len());
-        for (token, bytes) in rows {
-            let (holder, _) = token.0.parts();
-            if !identities.insert(*holder) {
-                return Err(WireError::Invalid("duplicate attachment residency"));
-            }
-            let (tag, consumed) = nbt::read_network(&bytes, Limits::default())
-                .map_err(|_| WireError::Invalid("invalid attachment NBT"))?;
-            let Tag::Compound(saved) = tag else {
-                return Err(WireError::Invalid("invalid attachment envelope"));
-            };
-            if consumed != bytes.len() {
-                return Err(WireError::Invalid("trailing attachment NBT"));
-            }
-            result.push(
-                token
-                    .0
-                    .into_row(Arc::new(runtime::AttachmentEntry::from_saved(saved))),
-            );
-        }
-        Ok(Self(runtime::AttachmentBatch::new(Arc::new(
-            runtime::index::AttachmentSnapshot::from_rows(result),
-        ))))
-    }
+    index
+        .ok_or(AttachmentRowError::StaleHolder)?
+        .lock()
+        .unwrap()
+        .validate_owner(&token.owner)
 }
 
 #[cfg(test)]
@@ -138,93 +177,7 @@ mod tests {
         copy_on_death: false,
         sync: false,
     };
-    #[test]
-    fn wire_attachment_batch_refuses_duplicate_residencies() {
-        use crate::wire::{Reader, WireError, Writer};
-        use sunrise_core::nbt::{self, Compound, Limits, Tag};
-        let holder = AttachmentHolder::Entity(EntityRef::new(WorldEpoch::new(1), 42));
-        let token = AttachmentWriteToken(index::AttachmentOwner::from_parts(holder, 7));
-        let bytes = nbt::write_network(&Tag::Compound(Compound::new()), Limits::default()).unwrap();
-        let mut out = Writer::new();
-        out.put(&vec![(token.clone(), bytes.clone()), (token, bytes)]);
-        assert!(matches!(
-            Reader::new(out.bytes()).take::<AttachmentBatch>(),
-            Err(WireError::Invalid("duplicate attachment residency"))
-        ));
-    }
 
-    #[test]
-    fn wire_attachment_batch_refuses_different_generations_for_one_holder() {
-        use crate::wire::{Reader, WireError, Writer};
-        use sunrise_core::nbt::{self, Compound, Limits, Tag};
-        let holder = AttachmentHolder::Entity(EntityRef::new(WorldEpoch::new(1), 42));
-        let token = AttachmentWriteToken(index::AttachmentOwner::from_parts(holder, 7));
-        let bytes = nbt::write_network(&Tag::Compound(Compound::new()), Limits::default()).unwrap();
-        let mut out = Writer::new();
-        let newer = AttachmentWriteToken(index::AttachmentOwner::from_parts(holder, 8));
-        out.put(&vec![(token, bytes.clone()), (newer, bytes)]);
-        assert!(matches!(
-            Reader::new(out.bytes()).take::<AttachmentBatch>(),
-            Err(WireError::Invalid("duplicate attachment residency"))
-        ));
-    }
-
-    #[test]
-    fn wire_attachment_rows_and_stale_tokens() {
-        use crate::wire::{Reader, Writer};
-        use sunrise_core::nbt::{Compound, Tag};
-        static CODED: AttachmentType<u32> = AttachmentType {
-            namespace: "test",
-            name: "coded",
-            default: || 0,
-            codec: Some(runtime::AttachmentCodec {
-                encode: |v| Ok([("n".into(), Tag::Int(*v as i32))].into()),
-                decode: |c: &Compound| match c.get(&"n".into()) {
-                    Some(Tag::Int(n)) => Ok(*n as u32),
-                    _ => Err(AttachmentError::Decode),
-                },
-            }),
-            copy_on_death: false,
-            sync: false,
-        };
-        let holder = AttachmentHolder::Entity(EntityRef::new(WorldEpoch::new(1), 42));
-        let index = Arc::new(std::sync::Mutex::new(index::AttachmentIndex::default()));
-        let mut values = runtime::Attachments::default();
-        CODED.set(&mut values, runtime::Holder::Level, 73).unwrap();
-        values.bind_index(&index, holder);
-        let batch = AttachmentBatch::from(runtime::AttachmentBatch::new(
-            index.lock().unwrap().snapshot_named("test", "coded"),
-        ));
-        let mut out = Writer::new();
-        out.put(&batch);
-        let decoded: AttachmentBatch = Reader::new(out.bytes()).take().unwrap();
-        let query = decoded.query(&CODED).unwrap();
-        let row = query.iter().next().unwrap().unwrap();
-        assert_eq!(row.holder, holder);
-        assert_eq!(*row.value, 73);
-        assert_eq!(query.get(holder), Ok(Some(73)));
-        let empty = AttachmentBatch::from(runtime::AttachmentBatch::empty());
-        assert_eq!(empty.query(&CODED).unwrap().get(holder), Ok(None));
-        let token = AttachmentWriteToken::from(row.write_token());
-        assert_eq!(token.validate(&index.lock().unwrap()), Ok(()));
-        index.lock().unwrap().unload(holder).into_result();
-        assert_eq!(
-            token.validate(&index.lock().unwrap()),
-            Err(AttachmentRowError::StaleHolder)
-        );
-        for end in 0..out.bytes().len() {
-            assert!(
-                Reader::new(&out.bytes()[..end])
-                    .take::<AttachmentBatch>()
-                    .is_err()
-            );
-        }
-        assert!(
-            Reader::new(&[255, 255, 255, 255])
-                .take::<AttachmentHolder>()
-                .is_err()
-        );
-    }
     #[test]
     fn write_tokens_go_stale_with_their_residency() {
         let holder = AttachmentHolder::Entity(EntityRef::new(WorldEpoch::new(1), 42));
@@ -236,27 +189,27 @@ mod tests {
             index.lock().unwrap().snapshot_named("test", "value"),
         ));
         let query = batch.query(&KEY).unwrap();
-        let row = query.iter().next().unwrap().unwrap();
+        let row = query.iter().try_next().unwrap().unwrap();
         assert_eq!(row.holder, holder);
-        assert_eq!(*row.value, 7);
-        let token = AttachmentWriteToken::from(row.write_token());
-        assert_eq!(token.validate(&index.lock().unwrap()), Ok(()));
+        assert_eq!(row.with_value(Default::default(), |value| *value), Ok(7));
+        let token = row.write_token();
+        assert_eq!(validate_attachment_write(&token, Some(&index)), Ok(()));
         assert_eq!(
-            token.validate(&index::AttachmentIndex::default()),
+            validate_attachment_write(&token, Some(&Mutex::new(index::AttachmentIndex::default()))),
             Err(AttachmentRowError::StaleHolder)
         );
         index.lock().unwrap().unload(holder).into_result();
         assert_eq!(
-            token.validate(&index.lock().unwrap()),
+            validate_attachment_write(&token, Some(&index)),
             Err(AttachmentRowError::StaleHolder)
         );
         let mut again = runtime::Attachments::default();
         KEY.set(&mut again, runtime::Holder::Level, 7).unwrap();
         again.bind_index(&index, holder);
         assert_eq!(
-            token.validate(&index.lock().unwrap()),
+            validate_attachment_write(&token, Some(&index)),
             Err(AttachmentRowError::StaleHolder)
         );
-        assert_eq!(*row.value, 7);
+        assert_eq!(row.with_value(Default::default(), |value| *value), Ok(7));
     }
 }

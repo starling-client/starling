@@ -1,0 +1,3 @@
+ids = ["hook:blocks", "hook:items", "method:CustomStatsRegistrar::register_custom_stat", "type:BlocksEvent.blocks", "type:ItemsEvent.items"]
+why = "Block and item submissions report malformed IDs, foreign IDs and invalid local fields at the declaring call. Startup retains the submitting mod, kind, ID and reason. Custom-stat registration also returns a typed declaration error."
+migrate = "Replace event.blocks.push and event.items.push with event.register and handle its Result. If your manifest pins blocks or items, request hook_version = 2. Custom-stat callers that matched a String now match DeclarationError."

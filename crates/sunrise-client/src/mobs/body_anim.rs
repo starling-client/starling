@@ -9,8 +9,8 @@ use super::{
     anim::{Poses, State, quadruped},
     keyframes::{Animation, AnimationState},
 };
-use sunrise_core::geometry::trig::Mth;
 use std::{collections::HashMap, f64::consts::PI};
+use sunrise_core::geometry::trig::Mth;
 
 pub type Animations = HashMap<String, Animation>;
 const FPI: f32 = PI as f32;
@@ -968,7 +968,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, a: &Animations) -> bool {
             p,
             s,
             &Turtle {
-                on_land: !m.fluids.in_water && m.on_ground,
+                on_land: !m.fluids.in_water && m.ground.on_ground,
                 laying_egg: m.extra.flag2,
                 has_egg: m.extra.flag,
             },
@@ -985,7 +985,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, a: &Animations) -> bool {
                 ParrotPose::Party
             } else if m.extra.sitting_pose {
                 ParrotPose::Sitting
-            } else if !m.on_ground {
+            } else if !m.ground.on_ground {
                 ParrotPose::Flying
             } else {
                 ParrotPose::Standing
@@ -997,7 +997,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, a: &Animations) -> bool {
             s,
             &Bee {
                 has_stinger: !super::bee::has_stung(m),
-                on_ground: m.on_ground && m.velocity.length_squared() < 1.0e-7,
+                on_ground: m.ground.on_ground && m.velocity.length_squared() < 1.0e-7,
                 // The anger end time is cleared the tick after it passes.
                 angry: super::bee::get(m).is_some_and(|b| b.anger_end > 0),
                 // Bee.getRollAmount(partialTick).

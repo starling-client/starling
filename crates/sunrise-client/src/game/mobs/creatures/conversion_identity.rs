@@ -50,10 +50,10 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use crate::game::native_entity_refs::tests::with_game;
+    use mod_api::{AttachmentType, Holder};
     use sunrise_client::mobs::{Mob, conversion::Params};
     use sunrise_core::{geometry::Vec3, nbt::Tag};
     use sunrise_mod_runtime::attachments::{AttachmentCodec, AttachmentError};
-    use mod_api::{AttachmentType, Holder};
 
     static MARK: AttachmentType<i32> = AttachmentType {
         namespace: "conversion_test",
@@ -81,7 +81,7 @@ mod tests {
     /// A villager struck into a witch keeps the attachment that has a codec and leaves the
     /// one without behind (`copyAttachmentsFrom(villager, false)`).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_converted_mob_keeps_its_serializable_attachments() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());

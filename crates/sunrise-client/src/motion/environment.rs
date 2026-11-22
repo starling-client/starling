@@ -1,6 +1,6 @@
 //! Player liquid travel and environmental damage over the shared fluid state.
 use super::*;
-use crate::breathing::{Breath, breathe, drown};
+use crate::breathing::{AirStep, Breath};
 use sunrise_core::random::RandomSource;
 use sunrise_world::{
     fluid::FluidKind,
@@ -8,20 +8,19 @@ use sunrise_world::{
 };
 impl MotionWorld<'_, '_, '_> {
     pub(super) fn environment_hurt(&mut self, source: &str, damage: f32) -> Result<()> {
-        if self.player.invulnerable || self.player.spectator {
-            return Ok(());
-        }
-        // Frost walker's `damage_immunity`: #burn_from_stepping (magma, campfire).
-        if self.player.burn_from_stepping_immune
-            && matches!(source, "minecraft:hot_floor" | "minecraft:campfire")
-        {
-            return Ok(());
-        }
         let id = self
             .health
             .damage
             .id(source)
             .ok_or("missing environment damage type")?;
+        self.environment_hurt_type(id, damage)
+    }
+
+    pub(super) fn environment_hurt_type(
+        &mut self,
+        id: sunrise_world::damage_source::DamageTypeId,
+        damage: f32,
+    ) -> Result<()> {
         let rules = self.scene.health_rules;
         self.player.hurt(
             &mut crate::health::DamageLevel::of(
@@ -30,7 +29,8 @@ impl MotionWorld<'_, '_, '_> {
                 self.tag_items,
                 self.block_registries,
                 self.damage_hooks,
-            ),
+            )
+            .with_player_equipment(self.side.player_equipment()),
             self.health,
             rules,
             id,
@@ -38,26 +38,39 @@ impl MotionWorld<'_, '_, '_> {
         )?;
         Ok(())
     }
-    pub(super) fn tick_remaining_fire(&mut self) -> Result<()> {
+    pub(super) fn hurt_from_remaining_fire(&mut self) -> Result<()> {
         if self.player.spectator {
             self.player.fire_ticks = 0;
+        } else if self.player.mod_fire_immune {
+            self.player.fire_ticks = self.player.fire_ticks.min(0);
         }
         if self.player.invulnerable && self.player.fire_ticks > 1 {
             self.player.fire_ticks = 1;
         }
-        if self.player.fire_ticks > 0 {
-            if self.player.fire_ticks % 20 == 0 && !self.player.is_in_lava() {
-                self.environment_hurt("minecraft:on_fire", 1.0)?;
-            }
-            self.player.fire_ticks -= 1;
-        }
-        if self.player.fluids.was_touching_water {
-            self.player.fire_ticks = self.player.fire_ticks.min(0);
+        if self.player.fire_ticks > 0
+            && self.player.fire_ticks % 20 == 0
+            && !self.player.is_in_lava()
+        {
+            self.environment_hurt("minecraft:on_fire", 1.0)?;
         }
         Ok(())
     }
-    /// `LivingEntity.baseTick`'s air supply and drowning, then lava.
+    /// `LivingEntity.baseTick`'s air supply and drowning, then lava, with
+    /// vanilla's breathing: a server's game stops between [`Self::decide_air`]
+    /// and [`Self::apply_air`] to fire `living_breathe` with its owning host.
     pub fn tick_environment_damage(&mut self) -> Result<()> {
+        if let Some(step) = self.decide_air()? {
+            self.apply_air(step, step.vanilla)?;
+        }
+        self.tick_lava_contact()
+    }
+    /// What `LivingEntity.baseTick`'s air supply does to the player this tick,
+    /// before the mods are asked. Air is synced entity data: only the server
+    /// runs LivingEntity's air block, so a client's copy decides nothing.
+    pub fn decide_air(&mut self) -> Result<Option<AirStep>> {
+        if self.player.client_side {
+            return Ok(None);
+        }
         let eye = BlockPos::containing(self.player.position.add_vector(Vec3::new(
             0.0,
             f64::from(self.player.dimensions.eye_height),
@@ -103,26 +116,23 @@ impl MotionWorld<'_, '_, '_> {
                 refill: if held { 0 } else { 4 },
             }
         };
-        // LivingBreatheEvent, on the server's copy of the player only.
-        let breath = if self.player.client_side {
-            vanilla
-        } else {
-            breathe(
-                self.loop_context,
-                self.player.entity_id as u32,
-                "minecraft:player",
-                vanilla,
-            )
-        };
-        // LivingDrownEvent, likewise. A player's getMaxAirSupply is Entity's 300.
-        if let Some(drowning) = drown(
+        // Entity.getMaxAirSupply for a player.
+        Ok(Some(AirStep::generic(self.player.air, 300, vanilla)))
+    }
+    /// Apply `breath` (vanilla's, or the mods' answer to `living_breathe`) to
+    /// the air `step` decided on, then LivingDrownEvent. A player whose air is no
+    /// longer what was decided on keeps it: the decision is never recomputed.
+    pub fn apply_air(&mut self, step: AirStep, breath: Breath) -> Result<()> {
+        if self.player.air != step.air {
+            return Ok(());
+        }
+        let entity = self.player.entity_id as u32;
+        if let Some(drowning) = step.finish(
             self.loop_context,
-            self.player.entity_id as u32,
+            entity,
             "minecraft:player",
             &mut self.player.air,
-            300,
             breath,
-            !self.player.client_side,
         ) {
             self.player
                 .events
@@ -134,17 +144,25 @@ impl MotionWorld<'_, '_, '_> {
                 self.environment_hurt("minecraft:drown", damage)?;
             }
         }
+        Ok(())
+    }
+    /// `LivingEntity.baseTick`'s lava contact, after the air.
+    pub fn tick_lava_contact(&mut self) -> Result<()> {
         if self.player.is_in_lava() {
-            self.player.ignite_for_ticks(300)?;
-            self.environment_hurt("minecraft:lava", 4.0)?;
+            self.lava_ignite_and_hurt()?;
         }
         Ok(())
     }
-    /// What a server's `LivingEntity.baseTick` adds for a player it hosts:
-    /// the void (`Entity.checkBelowWorld`, 4 a tick, which creative players
-    /// take too) and suffocation (`isInWall`, which the caller decides from
-    /// the blocks at the eyes).
-    pub fn server_hazards_tick(&mut self, in_wall: bool) -> Result<()> {
+    /// `Entity.lavaIgnite` and `Entity.lavaHurt`: both check `fireImmune`.
+    pub(super) fn lava_ignite_and_hurt(&mut self) -> Result<()> {
+        if self.player.mod_fire_immune {
+            return Ok(());
+        }
+        self.player.ignite_for_ticks(300)?;
+        self.environment_hurt("minecraft:lava", 4.0)
+    }
+    /// Entity.checkBelowWorld: the void damages even a creative player.
+    pub fn check_below_world(&mut self) -> Result<()> {
         if self.player.position.y < self.scene.below_world_y() {
             let id = self
                 .health
@@ -159,18 +177,22 @@ impl MotionWorld<'_, '_, '_> {
                     self.tag_items,
                     self.block_registries,
                     self.damage_hooks,
-                ),
+                )
+                .with_player_equipment(self.side.player_equipment()),
                 self.health,
                 rules,
                 id,
                 4.0,
             )?;
         }
-        if in_wall {
-            self.environment_hurt("minecraft:in_wall", 1.0)?;
-        }
         Ok(())
     }
+
+    /// LivingEntity.baseTick's eye-in-wall hurt, after the owning server's shape check.
+    pub fn suffocation_hurt(&mut self) -> Result<()> {
+        self.environment_hurt("minecraft:in_wall", 1.0)
+    }
+
     pub fn apply_fire_contact(&mut self) -> Result<()> {
         if self.player.spectator {
             self.player.fire_ticks = 0;
@@ -179,7 +201,7 @@ impl MotionWorld<'_, '_, '_> {
         let damage = fire_contact(self.scene, self.assets.registry, self.player.bounds());
         if damage > 0.0 {
             self.player.ticks_frozen = 0;
-            if !self.player.fluids.was_touching_water {
+            if !self.player.mod_fire_immune && !self.player.fluids.was_touching_water {
                 let multiplier = self.player.attribute("minecraft:burning_time")?;
                 let ticks = ignite_contact(
                     self.player.fire_ticks,
@@ -203,22 +225,19 @@ pub(crate) fn fire_contact(
 ) -> f32 {
     let b = bounds.deflate(Vec3::new(1e-5, 1e-5, 1e-5));
     let mut damage = 0.0f32;
-    for x in b.min_position().x.floor() as i32..=b.max_position().x.floor() as i32 {
-        for y in b.min_position().y.floor() as i32..=b.max_position().y.floor() as i32 {
-            for z in b.min_position().z.floor() as i32..=b.max_position().z.floor() as i32 {
-                damage = damage.max(
-                    match registry
-                        .state(world.block(x, y, z))
-                        .map(|s| s.name.as_str())
-                    {
-                        Some("minecraft:fire") => 1.0,
-                        Some("minecraft:soul_fire") => 2.0,
-                        _ => 0.0,
-                    },
-                );
-            }
-        }
-    }
+    crate::block_contact::box_cells(b, |p| {
+        damage = damage.max(
+            match registry
+                .state(world.block(p.x, p.y, p.z))
+                .map(|s| s.name.as_str())
+            {
+                Some("minecraft:fire") => 1.0,
+                Some("minecraft:soul_fire") => 2.0,
+                _ => 0.0,
+            },
+        );
+        true
+    });
     damage
 }
 /// `CactusBlock.entityInside`: the box (deflated by `1.0E-5`, as in
@@ -230,19 +249,12 @@ pub(crate) fn cactus_contact(
     bounds: Aabb,
 ) -> bool {
     let b = bounds.deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    for x in b.min_position().x.floor() as i32..=b.max_position().x.floor() as i32 {
-        for y in b.min_position().y.floor() as i32..=b.max_position().y.floor() as i32 {
-            for z in b.min_position().z.floor() as i32..=b.max_position().z.floor() as i32 {
-                if registry
-                    .state(world.block(x, y, z))
-                    .is_some_and(|s| s.name == "minecraft:cactus")
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    // Stopped early: a cactus cell was found.
+    !crate::block_contact::box_cells(b, |p| {
+        !registry
+            .state(world.block(p.x, p.y, p.z))
+            .is_some_and(|s| s.name == "minecraft:cactus")
+    })
 }
 impl LivingFluidWorld for MotionWorld<'_, '_, '_> {
     fn in_water(&mut self) -> Result<bool> {
@@ -288,6 +300,24 @@ impl PlayerMotion {
     }
 }
 impl MotionWorld<'_, '_, '_> {
+    /// `Player.getBlockSpeedFactor` (#16176): soul sand and honey slow the
+    /// player's move only while it neither flies nor glides.
+    pub(super) fn player_block_speed_factor(&mut self) -> Result<f32> {
+        let efficiency = self.player.attribute("minecraft:movement_efficiency")? as f32;
+        let flying = self.player.flying || self.player.fall_flying;
+        let location = self.location();
+        let context = self.loop_context;
+        Ok(movement_support::player_block_speed_factor(
+            &mut RegistryMovementWorld {
+                properties: &self.resources.blocks,
+                world: self,
+                edits: &ModBlockFactors(context),
+            },
+            location,
+            flying,
+            efficiency,
+        )?)
+    }
     /// `LivingEntity.aiStep`'s jump phase: rise in water or lava, else jump
     /// from the ground (or from shallow fluid); nothing while flying.
     pub(super) fn jump_phase(&mut self) -> Result<()> {
@@ -427,7 +457,7 @@ mod below_world_tests {
     use super::*;
     use crate::chunk::LevelShape;
 
-    /// The player's health after one `server_hazards_tick` at `y` in a level of `shape`.
+    /// The player's health after the server hazard steps at `y` in a level of `shape`.
     fn health_after_hazards(shape: LevelShape, y: f64) -> f32 {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("SUNRISE_TEST_RESOURCES"),
@@ -444,6 +474,7 @@ mod below_world_tests {
         scene.shape = shape;
         let mut player = PlayerMotion::new(&resources, Vec3::new(0.5, y, 0.5)).unwrap();
         MotionWorld {
+            side: sunrise_client::motion::dry_side(),
             tag_items: None,
             block_registries: None,
             loop_context: crate::test_resources::server_loop_context(),
@@ -456,7 +487,7 @@ mod below_world_tests {
             resources: &resources,
             health: &resources.health,
         }
-        .server_hazards_tick(false)
+        .check_below_world()
         .unwrap();
         player.health.health()
     }
@@ -464,7 +495,7 @@ mod below_world_tests {
     /// `Entity.checkBelowWorld` hurts below `Level.getMinY() - 64`: y = -64 in the End and the
     /// Nether (min Y 0), y = -128 in the Overworld, whatever the chunks' widened column holds.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_void_starts_64_blocks_below_each_levels_floor() {
         assert_eq!(
             health_after_hazards(LevelShape::END, -64.5),

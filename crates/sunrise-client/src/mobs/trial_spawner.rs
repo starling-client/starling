@@ -14,9 +14,13 @@ use super::{
     spawner::{self, SpawnData, SpawnDataExt, SpawnerLevel, SpawnerSpawn},
 };
 pub use crate::chunk::block_entity::{ConfigSlot, TrialConfig, TrialSpawner};
-use sunrise_core::nbt::{Compound, JavaString, Tag};
-use sunrise_core::{position::BlockPos, random::RandomSource};
 use std::{collections::HashMap, path::Path, sync::OnceLock};
+use sunrise_core::nbt::{Compound, JavaString, Tag};
+use sunrise_core::{
+    java_hash_set::{JavaHashSet, JavaUuid},
+    position::BlockPos,
+    random::RandomSource,
+};
 
 /// An entity's UUID as its four ints (`UUIDUtil.CODEC`).
 pub type Uuid = [i32; 4];
@@ -216,6 +220,14 @@ pub fn load_registry(root: &Path) {
 pub fn registry_config(id: &str) -> Option<TrialConfig> {
     REGISTRY.get()?.get(id).cloned()
 }
+/// The accepted, decoded trial-spawner registry identities, without cloning configurations.
+pub fn registry_contains(id: &str) -> Option<bool> {
+    Some(REGISTRY.get()?.contains_key(id))
+}
+/// The identities of the same immutable registry gameplay reads.
+pub fn registry_ids() -> Option<Vec<&'static str>> {
+    Some(REGISTRY.get()?.keys().map(String::as_str).collect())
+}
 
 fn float(t: &Tag) -> Option<f32> {
     Some(match t {
@@ -362,31 +374,40 @@ pub trait TrialSpawnerLevel: SpawnerLevel {
     fn seed(&self) -> i64;
 }
 
-fn uuids(tag: Option<&Tag>) -> Vec<Uuid> {
-    let Some(Tag::List(list)) = tag else {
-        return Vec::new();
-    };
-    let mut out: Vec<Uuid> = Vec::new();
-    for t in list {
-        if let Tag::IntArray(v) = t
-            && let Ok(u) = <Uuid>::try_from(v.as_slice())
-            && !out.contains(&u)
-        {
-            out.push(u);
-        }
+fn load_uuids(
+    tag: Option<&Tag>,
+    previous: Option<&JavaHashSet<JavaUuid>>,
+) -> JavaHashSet<JavaUuid> {
+    let mut live = previous.map_or_else(JavaHashSet::default, JavaHashSet::cleared);
+    if let Some(Tag::List(list)) = tag {
+        let uuids: Vec<_> = list
+            .iter()
+            .filter_map(|t| match t {
+                Tag::IntArray(v) => <Uuid>::try_from(v.as_slice()).ok().map(JavaUuid),
+                _ => None,
+            })
+            .collect();
+        let decoded = JavaHashSet::from_collection(uuids.into_iter());
+        live.extend(decoded.iter().copied());
     }
-    out
+    live
 }
-fn encode_uuids(list: &[Uuid]) -> Tag {
-    Tag::List(list.iter().map(|u| Tag::IntArray(u.to_vec())).collect())
+fn encode_uuids(list: &JavaHashSet<JavaUuid>) -> Tag {
+    // Vanilla saves from Set.copyOf, whose traversal varies per JVM run.
+    Tag::List(list.iter().map(|u| Tag::IntArray(u.0.to_vec())).collect())
 }
 
 /// `TrialSpawner`'s behaviour, over the data in `chunk::block_entity`.
 pub trait TrialSpawnerExt: Sized {
-    /// `TrialSpawner.load`, with the configs of [`load_registry`].
-    fn load(tag: &Tag) -> Self;
+    /// `TrialSpawner.load`, with the configs of [`load_registry`]. Preserve
+    /// UUID table capacity when replacing the state of an existing spawner.
+    fn load(tag: &Tag, previous: Option<&Self>) -> Self;
     /// `TrialSpawner.load`. `registry` resolves a config id.
-    fn load_with(tag: &Tag, registry: &dyn Fn(&str) -> Option<TrialConfig>) -> Self;
+    fn load_with(
+        tag: &Tag,
+        registry: &dyn Fn(&str) -> Option<TrialConfig>,
+        previous: Option<&Self>,
+    ) -> Self;
     /// `TrialSpawner.store`: the state data's fields that differ from their
     /// defaults, then the configs.
     fn save(&self) -> Vec<(&'static str, Tag)>;
@@ -461,51 +482,58 @@ pub trait TrialSpawnerExt: Sized {
     ) -> Option<[f64; 3]>;
     /// `TrialSpawner.tickServer`: the next state of the block.
     #[allow(clippy::too_many_arguments)]
-    fn server_tick<L: TrialSpawnerLevel, R: RandomSource>(
+    fn server_tick<L: TrialSpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
         state: TrialState,
         ominous: bool,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState;
     /// `TrialSpawnerState.tickAndGetNext`.
     #[allow(clippy::too_many_arguments)]
-    fn tick_and_get_next<L: TrialSpawnerLevel, R: RandomSource>(
+    fn tick_and_get_next<L: TrialSpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
         state: TrialState,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState;
     /// `TrialSpawner.spawnMob`: the UUID of the mob added, if one was.
-    fn spawn_mob<L: TrialSpawnerLevel, R: RandomSource>(
+    fn spawn_mob<L: TrialSpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<Uuid>,
         events: &mut Vec<TrialEvent>,
     ) -> Option<Uuid>;
 }
 impl TrialSpawnerExt for TrialSpawner {
-    fn load(tag: &Tag) -> Self {
-        Self::load_with(tag, &registry_config)
+    fn load(tag: &Tag, previous: Option<&Self>) -> Self {
+        Self::load_with(tag, &registry_config, previous)
     }
-    fn load_with(tag: &Tag, registry: &dyn Fn(&str) -> Option<TrialConfig>) -> Self {
+    fn load_with(
+        tag: &Tag,
+        registry: &dyn Fn(&str) -> Option<TrialConfig>,
+        previous: Option<&Self>,
+    ) -> Self {
         let long = |k: &str| match tag.get(k) {
             Some(Tag::Long(v)) => *v,
             t => spawner::number(t).unwrap_or(0),
         };
         let mut s = Self {
-            detected_players: uuids(tag.get("registered_players")),
-            current_mobs: uuids(tag.get("current_mobs")),
+            detected_players: load_uuids(
+                tag.get("registered_players"),
+                previous.map(|s| &s.detected_players),
+            ),
+            current_mobs: load_uuids(tag.get("current_mobs"), previous.map(|s| &s.current_mobs)),
             cooldown_ends_at: long("cooldown_ends_at"),
             next_mob_spawns_at: long("next_mob_spawns_at"),
             total_mobs_spawned: spawner::number(tag.get("total_mobs_spawned"))
@@ -731,10 +759,7 @@ impl TrialSpawnerExt for TrialSpawner {
         };
         let mut added = false;
         for uuid in found {
-            if !self.detected_players.contains(&uuid) {
-                self.detected_players.push(uuid);
-                added = true;
-            }
+            added |= self.detected_players.insert(JavaUuid(uuid));
         }
         if added {
             self.next_mob_spawns_at = (l.game_time() + 40).max(self.next_mob_spawns_at);
@@ -757,7 +782,7 @@ impl TrialSpawnerExt for TrialSpawner {
         events.push(TrialEvent::OminousSet(true));
         events.push(TrialEvent::LevelEvent(3020, pos, 1));
         self.is_ominous = true;
-        for uuid in hash_order(&self.current_mobs) {
+        for &JavaUuid(uuid) in self.current_mobs.iter() {
             if let Some(block) = l.entity_block(uuid) {
                 // FlameParticle.NORMAL.
                 events.push(TrialEvent::LevelEvent(3012, block, 0));
@@ -844,18 +869,20 @@ impl TrialSpawnerExt for TrialSpawner {
             (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2) <= range
         };
         let all = l.players();
-        let players: Vec<([f64; 3], f32)> = hash_order(&self.detected_players)
-            .into_iter()
-            .filter_map(|uuid| all.iter().find(|p| p.uuid == uuid))
+        let players: Vec<([f64; 3], f32)> = self
+            .detected_players
+            .iter()
+            .filter_map(|uuid| all.iter().find(|p| p.uuid == uuid.0))
             .filter(|p| !p.creative && !p.spectator && p.alive && near(p.position))
             .map(|p| (p.position, p.height))
             .collect();
         if players.is_empty() {
             return None;
         }
-        let mobs: Vec<([f64; 3], f32)> = hash_order(&self.current_mobs)
-            .into_iter()
-            .filter_map(|uuid| l.entity_box(uuid))
+        let mobs: Vec<([f64; 3], f32)> = self
+            .current_mobs
+            .iter()
+            .filter_map(|uuid| l.entity_box(uuid.0))
             .filter(|(p, _)| near(*p))
             .collect();
         let eligible = if random.next_boolean() { mobs } else { players };
@@ -880,14 +907,14 @@ impl TrialSpawnerExt for TrialSpawner {
             .then_some(down)
     }
     #[allow(clippy::too_many_arguments)]
-    fn server_tick<L: TrialSpawnerLevel, R: RandomSource>(
+    fn server_tick<L: TrialSpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
         state: TrialState,
         ominous: bool,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState {
@@ -895,7 +922,7 @@ impl TrialSpawnerExt for TrialSpawner {
         let before = self.current_mobs.len();
         let max = MAX_MOB_TRACKING_DISTANCE * MAX_MOB_TRACKING_DISTANCE;
         self.current_mobs.retain(|id| {
-            l.entity_block(*id).is_some_and(|b| {
+            l.entity_block(id.0).is_some_and(|b| {
                 let d = [0, 1, 2].map(|i| i64::from(b[i] - pos[i]));
                 d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= max
             })
@@ -907,13 +934,13 @@ impl TrialSpawnerExt for TrialSpawner {
         self.tick_and_get_next(l, random, pos, state, spawn, eject, events)
     }
     #[allow(clippy::too_many_arguments)]
-    fn tick_and_get_next<L: TrialSpawnerLevel, R: RandomSource>(
+    fn tick_and_get_next<L: TrialSpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
         state: TrialState,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState {
@@ -924,7 +951,7 @@ impl TrialSpawnerExt for TrialSpawner {
                 // getOrCreateDisplayEntity: made once, from the next data's id.
                 if !self.has_display {
                     let id = self.next_or_create(random, events).id();
-                    self.has_display = id.is_some_and(|id| l.entity_exists(&id));
+                    self.has_display = id.is_some_and(|id| l.spawner_type(&id).is_some());
                 }
                 if self.has_display {
                     S::WaitingForPlayers
@@ -973,7 +1000,7 @@ impl TrialSpawnerExt for TrialSpawner {
                         < config.target_simultaneous_mobs(additional)
                     && let Some(uuid) = self.spawn_mob(l, random, pos, spawn, events)
                 {
-                    self.current_mobs.push(uuid);
+                    self.current_mobs.insert(JavaUuid(uuid));
                     self.total_mobs_spawned += 1;
                     self.next_mob_spawns_at = now + i64::from(config.ticks_between_spawn);
                     let potentials = &config.spawn_potentials;
@@ -1017,8 +1044,9 @@ impl TrialSpawnerExt for TrialSpawner {
                     events.push(TrialEvent::LevelEvent(3014, pos, 0));
                 }
                 // detectedPlayers.remove(iterator().next()).
-                if let Some(first) = hash_order(&self.detected_players).first() {
-                    self.detected_players.retain(|u| u != first);
+                let first = self.detected_players.iter().next().copied();
+                if let Some(first) = first {
+                    self.detected_players.remove(&first);
                 }
                 state
             }
@@ -1039,17 +1067,18 @@ impl TrialSpawnerExt for TrialSpawner {
             }
         }
     }
-    fn spawn_mob<L: TrialSpawnerLevel, R: RandomSource>(
+    fn spawn_mob<L: TrialSpawnerLevel, R: RandomSource + Clone>(
         &mut self,
         l: &L,
         random: &mut R,
         pos: [i32; 3],
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &mut R, &SpawnerSpawn) -> Option<Uuid>,
         events: &mut Vec<TrialEvent>,
     ) -> Option<Uuid> {
         let data = self.next_or_create(random, events).clone();
         // EntityType.by: an unknown type spawns nothing.
-        let id = data.id().filter(|id| l.entity_exists(id))?;
+        let id = data.id()?;
+        let kind = l.spawner_type(&id)?;
         let at = match spawner::read_pos(data.entity.get(&JavaString::from("Pos"))) {
             Some(p) => p,
             None => {
@@ -1062,14 +1091,17 @@ impl TrialSpawnerExt for TrialSpawner {
                 [x, y, z]
             }
         };
-        // Entity types Sunrise cannot create spawn nothing.
-        let (species, width, height, _) = l.mob_type(&id)?;
-        let spawn_box = spawn_selection::spawn_aabb(species, at[0], at[1], at[2], width, height);
-        if !l.no_collision(spawn_box) || !in_line_of_sight(l, center(pos), at) {
+        if !l.no_collision(kind.spawn_aabb(at)) || !in_line_of_sight(l, center(pos), at) {
             return None;
         }
         let block = at.map(|v| v.floor() as i32);
-        if !spawn_rules::check_spawn_rules(&id, species, l, Reason::TrialSpawner, random, block) {
+        if !spawn_rules::check_spawn_rules(
+            kind.placement_type(&id),
+            l,
+            Reason::TrialSpawner,
+            random,
+            block,
+        ) {
             return None;
         }
         if let Some(rules) = data.custom_spawn_rules
@@ -1077,6 +1109,9 @@ impl TrialSpawnerExt for TrialSpawner {
         {
             return None;
         }
+        // loadEntityRecursive: entity types Sunrise cannot create spawn nothing.
+        let mob = l.mob_type(&id)?;
+        let species = mob.species;
         let yaw = random.next_float() * 360.0;
         let placed = spawner::entity_position(species, at);
         let own = placed.map(|v| v.floor() as i32);
@@ -1085,23 +1120,15 @@ impl TrialSpawnerExt for TrialSpawner {
             placed[0],
             placed[1],
             placed[2],
-            width * scale,
-            height * scale,
+            mob.width as f32 * scale,
+            mob.height as f32 * scale,
         );
         let pending = spawn_selection::Pending {
             yaw,
             fresh: data.unconfigured(),
         };
         if !spawn_selection::position_ok(l, &id, Reason::TrialSpawner, placed, pending, || {
-            spawn_selection::spawn_obstruction(
-                species,
-                l,
-                bounds,
-                Some(&[]),
-                own[0],
-                own[1],
-                own[2],
-            )
+            spawn_selection::spawn_obstruction(species, l, bounds, true, own[0], own[1], own[2])
         }) {
             return None;
         }
@@ -1114,7 +1141,7 @@ impl TrialSpawnerExt for TrialSpawner {
             equipment: data.equipment.as_ref(),
             trial: true,
         };
-        let uuid = spawn(l, &request, random)?;
+        let uuid = spawn(l, random, &request)?;
         let flame = i32::from(self.is_ominous);
         events.push(TrialEvent::LevelEvent(3011, pos, flame));
         events.push(TrialEvent::LevelEvent(3012, block, flame));
@@ -1124,23 +1151,6 @@ impl TrialSpawnerExt for TrialSpawner {
 }
 
 /// `Vec3.atCenterOf`.
-/// The iteration order of a `HashSet<UUID>` holding `ids` (inserted in
-/// order): `HashMap` buckets by the spread `UUID.hashCode`, in a table of 16
-/// slots grown to keep it at most three quarters full; within a bucket,
-/// insertion order.
-fn hash_order(ids: &[Uuid]) -> Vec<Uuid> {
-    let mut table = 16usize;
-    while ids.len() > table * 3 / 4 {
-        table *= 2;
-    }
-    let bucket = |u: &Uuid| {
-        let h = (u[0] ^ u[1] ^ u[2] ^ u[3]) as u32;
-        ((h ^ (h >> 16)) as usize) & (table - 1)
-    };
-    let mut out = ids.to_vec();
-    out.sort_by_key(bucket);
-    out
-}
 fn center(pos: [i32; 3]) -> [f64; 3] {
     pos.map(|v| f64::from(v) + 0.5)
 }
@@ -1162,8 +1172,29 @@ mod tests {
     }
 
     #[test]
+    fn reloading_keeps_the_live_uuid_table_capacity() {
+        let mut previous = TrialSpawner::default();
+        for i in 0..40 {
+            previous.detected_players.insert(JavaUuid([0, 0, 0, i]));
+        }
+        let tag = tag("{registered_players:[[I;0,0,0,1],[I;0,0,0,16]]}");
+        let previous = TrialSpawner::load_with(&tag, &|_| None, Some(&previous));
+        let fresh = TrialSpawner::load_with(&tag, &|_| None, None);
+        // Temurin 25.0.5: clear a 40-member set and addAll the two UUIDs
+        // from a HashSet(Collection), versus adding into a new default set.
+        for (spawner, order) in [(previous, [1, 16]), (fresh, [16, 1])] {
+            let saved = Tag::compound(spawner.save());
+            let uuids = order.into_iter().map(|i| Tag::IntArray(vec![0, 0, 0, i]));
+            assert_eq!(
+                saved.get("registered_players"),
+                Some(&Tag::List(uuids.collect()))
+            );
+        }
+    }
+
+    #[test]
     fn defaults_load_and_save_to_nothing() {
-        let s = TrialSpawner::load_with(&tag("{}"), &|_| None);
+        let s = TrialSpawner::load_with(&tag("{}"), &|_| None, None);
         assert_eq!(s, TrialSpawner::default());
         assert!(s.save().is_empty());
     }
@@ -1180,6 +1211,7 @@ mod tests {
                 r#"{normal_config:"minecraft:trial_chamber/breeze/normal",spawn_data:{entity:{}},total_mobs_spawned:3}"#,
             ),
             &registry,
+            None,
         );
         s.override_entity("minecraft:zombie");
         assert_eq!(s.next_spawn_data, None);
@@ -1212,6 +1244,7 @@ mod tests {
                 r#"{normal_config:"minecraft:trial_chamber/breeze/normal",required_player_range:10}"#,
             ),
             &registry,
+            None,
         );
         assert_eq!(s.normal.config.total_mobs, 2.0);
         assert_eq!(s.required_player_range, 10);
@@ -1226,6 +1259,7 @@ mod tests {
                 r#"{normal_config:"minecraft:nope",required_player_range:200,target_cooldown_length:5}"#,
             ),
             &|_| None,
+            None,
         );
         assert_eq!(s.normal, ConfigSlot::default());
         assert_eq!(s.required_player_range, 14);

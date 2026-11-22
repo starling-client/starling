@@ -149,7 +149,7 @@ impl Game<'_> {
                     player_status(
                         &g.name,
                         g.uuid,
-                        &g.address.ip().to_string(),
+                        g.ip_address(),
                         g.latency.load(Ordering::Relaxed),
                         &g.dimension,
                         g.position,

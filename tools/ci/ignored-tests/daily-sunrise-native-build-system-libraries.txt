@@ -1,0 +1,1 @@
+sunrise-native-build tests::a_link_missing_udev_or_alsa_leads_with_what_to_install lib daily child-process

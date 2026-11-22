@@ -11,6 +11,8 @@ use sunrise_client::{
     hud::HudBatch,
     items::ItemStack,
     merchant::{self, MerchantOffer, TradeContext},
+    random_sequences::RandomSequences,
+    text::Text,
     widgets::{Cursor, request_cursor},
 };
 
@@ -18,6 +20,7 @@ use sunrise_client::{
 const SHIFT: f32 = -50.0;
 const GREY: u32 = 0xFF40_4040;
 
+#[derive(Clone)]
 pub(super) struct MerchantState {
     /// The merchant's side of the menu: offers, experience, level, the
     /// selection hint and active offer (`sunrise_client::merchant::Session`).
@@ -31,7 +34,43 @@ pub(super) struct MerchantState {
     /// The trading mob (its offers and experience are written back on
     /// close) and its custom name.
     pub(super) mob: Option<u32>,
-    pub(super) name: Option<String>,
+    /// `Merchant.getDisplayName()`: the trading mob's custom name with its
+    /// style, else nothing (the profession's name is the default).
+    pub(super) name: Option<Text>,
+}
+/// `Merchant.getDisplayName`: the merchant's custom name (style and all), else
+/// the profession's or the wandering trader's.
+pub(super) fn merchant_display_name(
+    progress: bool,
+    profession: &str,
+    custom: Option<Text>,
+) -> Text {
+    custom.unwrap_or_else(|| {
+        if progress {
+            Text::translate_with_fallback(
+                &format!("entity.minecraft.villager.{profession}"),
+                profession,
+                &[],
+            )
+        } else {
+            Text::translate_with_fallback(
+                "entity.minecraft.wandering_trader",
+                "Wandering Trader",
+                &[],
+            )
+        }
+    })
+}
+/// `MerchantScreen.extractLabels`: a villager's title is `merchant.title` with
+/// the name and its level, so the name keeps the style it was given.
+pub(super) fn merchant_title(progress: bool, level: i32, name: Text) -> Text {
+    // `extractLabels` joins the level for levels 1 to 5 only (`VillagerData`
+    // clamps a villager to 1; a level past 5 draws the name alone).
+    if !progress || !(1..=5).contains(&level) {
+        return name;
+    }
+    let level = Text::translate_with_fallback(&format!("merchant.level.{level}"), "", &[]);
+    Text::translate_with_fallback("merchant.title", "%s - %s", &[name, level])
 }
 impl MerchantState {
     /// `Merchant.showProgressBar`: villagers only.
@@ -53,13 +92,15 @@ pub(super) fn inventory_slot(i: usize) -> (f32, f32) {
 /// `ExplorationMapFunction` in the game world: the nearest structure of the
 /// tag through the generator's `/locate`, a new map centred on it with its
 /// target decoration.
+pub(super) type MadeMaps = Vec<(i32, [i32; 3], u8, String)>;
+
 #[derive(Clone)]
 pub(super) struct GameMaps<'a> {
     pub(super) terrain: Option<std::sync::Arc<sunrise_client::vanillagen::VanillaTerrain>>,
     /// Structure tag -> its structures.
     pub(super) structure_tag: &'a dyn Fn(&str) -> Vec<String>,
     /// Maps made, for the caller to register: (map id, centre x, z, scale, target).
-    pub(super) made: std::cell::RefCell<Vec<(i32, [i32; 3], u8, String)>>,
+    pub(super) made: std::cell::RefCell<MadeMaps>,
     pub(super) next_id: std::cell::Cell<i32>,
 }
 impl merchant::MapMaker for GameMaps<'_> {
@@ -104,9 +145,9 @@ impl merchant::MapMaker for GameMaps<'_> {
         let mut out = stack;
         let d = out.data_mut();
         d.map_id = Some(id);
-        d.other.push((
-            "minecraft:map_decorations".into(),
-            sunrise_core::nbt::Tag::compound([(
+        d.set_other(
+            "minecraft:map_decorations",
+            Some(sunrise_core::nbt::Tag::compound([(
                 "+",
                 sunrise_core::nbt::Tag::compound([
                     (
@@ -126,30 +167,49 @@ impl merchant::MapMaker for GameMaps<'_> {
                         sunrise_core::nbt::Tag::Float(180.0f32.to_bits()),
                     ),
                 ]),
-            )]),
-        ));
+            )])),
+        );
         out
     }
 }
 
-impl Game<'_> {
-    pub(super) fn random_sequences_path(&self) -> std::path::PathBuf {
-        self.world_root.join("data/minecraft/random_sequences.dat")
+/// The world's `data/minecraft/random_sequences.dat`.
+fn random_sequences_file(world_root: &std::path::Path) -> std::path::PathBuf {
+    world_root.join("data/minecraft/random_sequences.dat")
+}
+/// `RandomSequences` as opening the world reads it. A world with no file gets new data,
+/// which `MinecraftServer`'s `savedDataStorage.computeIfAbsent(RandomSequences.TYPE)` stores
+/// dirty (`SavedDataStorage.set`): its first save writes it.
+pub(super) fn read_random_sequences(world_root: &std::path::Path) -> RandomSequences {
+    sunrise_client::save::read_dat(&random_sequences_file(world_root))
+        .and_then(|t| t.get("data").cloned())
+        .map(|d| RandomSequences::from_nbt(&d))
+        .unwrap_or_else(RandomSequences::new_dirty)
+}
+/// `SavedDataStorage.saveAndJoin` for `RandomSequences`: written only while dirty, with
+/// whatever it holds then, so the emptied map and the salt a `/random reset *` left reach
+/// the file after a draw, and not without one.
+pub(super) fn write_random_sequences(world_root: &std::path::Path, data: &mut RandomSequences) {
+    let Some(data) = data.take_dirty_nbt() else {
+        return;
+    };
+    let tag = sunrise_core::nbt::Tag::compound([
+        ("data", data),
+        (
+            "DataVersion",
+            sunrise_core::nbt::Tag::Int(sunrise_world::DATA_VERSION),
+        ),
+    ]);
+    if let Err(e) = sunrise_client::save::write_dat(&random_sequences_file(world_root), tag) {
+        log::warn!("the villager random sequences were not written: {e}");
     }
+}
+
+impl Game<'_> {
     /// `RandomSequences` as `random_sequences.dat` (not on a server's guest).
     pub(super) fn save_random_sequences(&mut self) {
-        if self.remote.is_some() || self.rand_sequences.ids().is_empty() {
-            return;
-        }
-        let tag = sunrise_core::nbt::Tag::compound([
-            ("data", self.rand_sequences.to_nbt()),
-            (
-                "DataVersion",
-                sunrise_core::nbt::Tag::Int(sunrise_world::DATA_VERSION),
-            ),
-        ]);
-        if let Err(e) = sunrise_client::save::write_dat(&self.random_sequences_path(), tag) {
-            log::warn!("the villager random sequences were not written: {e}");
+        if self.remote.is_none() {
+            write_random_sequences(&self.world_root, &mut self.rand_sequences);
         }
     }
     /// `AbstractVillager.addOffersFromTradeSet` with the world's random
@@ -163,6 +223,7 @@ impl Game<'_> {
         let Some(sequence) = self.stations().trades.sequence(set) else {
             return Vec::new();
         };
+        self.journal_trade_sequences();
         let mut random = self.rand_sequences.lend(&sequence, self.level.seed);
         let next_map = self.peek_map_id();
         let tag = |t: &str| self.structure_tag(t);
@@ -206,6 +267,7 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|t| t.unset);
         if unset {
+            self.journal_merchant_mob(self.mobs[index].id);
             let m = &self.mobs[index];
             let variant = format!(
                 "minecraft:{}",
@@ -312,7 +374,14 @@ impl Game<'_> {
         session.random.clone_from(&m.random);
         session.origin = [m.position.x, m.position.y, m.position.z];
         session.ambient_sound_time = m.ambient_timer;
-        let (id, name) = (m.id, m.custom_name.clone());
+        let (id, name) = (
+            m.id,
+            m.custom_name.as_ref().map(|plain| {
+                m.custom_name_text
+                    .clone()
+                    .unwrap_or_else(|| Text::literal(plain))
+            }),
+        );
         if villager {
             session.reputation = self.villager_reputation(id);
             session.hero = self.hero_amplifier();
@@ -401,11 +470,7 @@ impl Game<'_> {
         });
     }
     /// A server's trading window (no mob here: the server keeps it).
-    pub(super) fn open_remote_merchant(
-        &mut self,
-        session: merchant::Session,
-        name: Option<String>,
-    ) {
+    pub(super) fn open_remote_merchant(&mut self, session: merchant::Session, name: Option<Text>) {
         self.open_merchant_state(MerchantState {
             session: Box::new(session),
             scroll: 0,
@@ -421,7 +486,7 @@ impl Game<'_> {
         self.station = Some(s);
         self.set_screen(super::Screen::Inventory);
         self.capture(false);
-        self.right = false;
+        self.set_mapping_held("key.use", false);
     }
     /// The trading mob's random before a menu click (it ticks meanwhile).
     pub(super) fn merchant_sync_in(&self, session: &mut merchant::Session, mob: Option<u32>) {
@@ -472,6 +537,9 @@ impl Game<'_> {
         let events = std::mem::take(&mut session.events);
         let mut traded = Vec::new();
         let (villager, origin) = (session.villager, session.origin);
+        if let Some(id) = mob {
+            self.journal_merchant_mob(id);
+        }
         if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
             m.random = session.random.clone();
             m.ambient_timer = session.ambient_sound_time;
@@ -483,11 +551,14 @@ impl Game<'_> {
             match e {
                 merchant::Event::OffersRefreshed => {}
                 merchant::Event::Orb(v) => {
-                    self.add_orb([origin[0], origin[1] + 0.5, origin[2]], v as u32)
+                    self.merchant_orb([origin[0], origin[1] + 0.5, origin[2]], v as u32)
                 }
                 merchant::Event::LevelUp(_) => {
-                    if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
-                        m.add_effect("minecraft:regeneration", 200, 0);
+                    if let Some(id) = mob {
+                        let _ =
+                            self.mutate_mob_effects(id, Some("minecraft:regeneration"), |mob| {
+                                mob.add_effect("minecraft:regeneration", 200, 0)
+                            });
                     }
                 }
                 merchant::Event::TradeUpdated(yes, pitch) => {
@@ -497,7 +568,7 @@ impl Game<'_> {
                         (false, true) => "minecraft:entity.wandering_trader.yes",
                         (false, false) => "minecraft:entity.wandering_trader.no",
                     };
-                    self.audio.play(sound, Some(origin), 1.0, pitch);
+                    self.merchant_sound(sound, origin, pitch);
                 }
                 merchant::Event::Traded(index, _offer) => {
                     traded.push(index);
@@ -508,7 +579,7 @@ impl Game<'_> {
                     } else {
                         "minecraft:entity.wandering_trader.yes"
                     };
-                    self.audio.play(sound, Some(origin), 1.0, 1.0);
+                    self.merchant_sound(sound, origin, 1.0);
                 }
             }
         }
@@ -525,44 +596,61 @@ impl Game<'_> {
         offers: &mut [MerchantOffer],
         traded: &[usize],
     ) {
-        if !traded.is_empty()
-            && let Some(id) = mob
-        {
-            self.villager_trade_pending(id);
-        }
         for index in traded {
             let Some(offer) = offers.get_mut(*index) else {
                 continue;
             };
-            self.award_custom_stat("traded_with_villager", 1);
-            let merchant = mob.and_then(|id| self.mobs.iter().find(|m| m.id == id));
-            let kind = merchant.map(super::native_hooks::mob_kind);
-            let villager = merchant.map(|m| self.mob_entity(m));
-            if let Some(villager) = villager {
-                self.trigger_trade(&villager, &offer.result);
-            }
+            self.record_merchant_trade(mob, &offer.result);
             // TradeWithVillagerEvent: on the server, in the player's turn.
-            if let (Some(id), Some(kind), Some(_)) = (mob, kind, self.lan_acting) {
-                self.native_trade_with_villager(id, &kind, offer);
+            if let (Some(id), Some(_)) = (mob, self.lan_acting)
+                && let Some(kind) = self
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map(super::native_hooks::mob_kind)
+            {
+                let _ = self.native_trade_with_villager(id, &kind, offer);
             }
         }
     }
-    /// `MerchantMenu.tryMoveItems` for the selected offer (the select trade packet).
+
+    /// The completed trade's criterion and statistic, before its collect hook.
+    pub(super) fn record_merchant_trade(
+        &mut self,
+        mob: Option<u32>,
+        result: &sunrise_client::items::ItemStack,
+    ) {
+        self.award_custom_stat("traded_with_villager", 1);
+        if let Some(id) = mob {
+            self.journal_merchant_mob(id);
+            self.villager_trade_pending(id);
+            if let Some(villager) = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| self.mob_entity(m))
+            {
+                self.trigger_trade(&villager, result);
+            }
+        }
+    }
+    /// `MerchantScreen.postButtonClick` for offer `index`: this client's menu takes the
+    /// selection and moves the payment itself (`setSelectionHint`, `tryMoveItems`), so its
+    /// result and the clicks after it are its own; a server is then told
+    /// (ServerboundSelectTradePacket) and does the same.
     fn try_move_items(&mut self, index: usize) {
+        self.menu_session(|menu, env, _| {
+            menu.merchant_select(env, index);
+            Some(true)
+        });
         if self.remote.is_some() {
-            // ServerboundSelectTradePacket; the server moves the items.
             if let Some(m) = self.station.as_mut().and_then(|s| s.merchant.as_mut()) {
                 m.session.selection_hint = index;
             }
             self.send(sunrise_protocol::packets::play::Serverbound::SelectTrade(
                 sunrise_protocol::packets::play::SelectTrade { item: index as i32 },
             ));
-            return;
         }
-        self.menu_session(|menu, env, _| {
-            menu.merchant_select(env, index);
-            Some(true)
-        });
     }
     /// Clicks on the offer list; true when one was hit. A press on the
     /// scroller holds it (`MerchantScreen.mouseClicked`).
@@ -688,27 +776,13 @@ impl Game<'_> {
         }
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Background);
         let tr = |k: &str, f: &str| sunrise_client::lang::get_or(k, f);
-        let name = custom.unwrap_or_else(|| {
-            if progress {
-                tr(
-                    &format!("entity.minecraft.villager.{profession}"),
-                    &profession,
-                )
-            } else {
-                tr("entity.minecraft.wandering_trader", "Wandering Trader")
-            }
-        });
+        let name = merchant_display_name(progress, &profession, custom);
         // The screen's title is the merchant's name; its label adds the level.
-        super::screen_info::name_container(|| name.clone());
-        let title = if progress {
-            tr("merchant.title", "%s - %s")
-                .replacen("%s", &name, 1)
-                .replacen("%s", &tr(&format!("merchant.level.{level}"), ""), 1)
-        } else {
-            name
-        };
-        let tw = HudBatch::text_width(atlas, &title);
-        batch.text(
+        super::screen_info::name_container(|| name.plain());
+        // `StringDecomposer.iterateFormatted`: `§` codes a name holds apply at draw time.
+        let title = merchant_title(progress, level, name).resolve_legacy();
+        let tw = atlas.font.width_text(&title);
+        batch.text_styled(
             atlas,
             &title,
             ox + SHIFT + (49.0 + 138.0 - (tw / 2.0).floor()),
@@ -737,7 +811,7 @@ impl Game<'_> {
         if offers.get(shop).is_some_and(MerchantOffer::out_of_stock) {
             batch.sprite(
                 atlas,
-                "gui/sprites/container/villager/out_of_stock",
+                "container/villager/out_of_stock",
                 ox + SHIFT + 182.0,
                 oy + 35.0,
             );
@@ -746,7 +820,7 @@ impl Game<'_> {
         if progress && level < 5 {
             batch.sprite(
                 atlas,
-                "gui/sprites/container/villager/experience_bar_background",
+                "container/villager/experience_bar_background",
                 ox + SHIFT + 136.0,
                 oy + 16.0,
             );
@@ -756,7 +830,7 @@ impl Game<'_> {
                 let w = ((mult * (xp - min) as f32).floor()).min(102.0);
                 batch.sprite_part(
                     atlas,
-                    "gui/sprites/container/villager/experience_bar_current",
+                    "container/villager/experience_bar_current",
                     ox + SHIFT + 136.0,
                     oy + 16.0,
                     w / 102.0,
@@ -765,7 +839,7 @@ impl Game<'_> {
                     let fw = (future as f32 * mult).floor().min(102.0 - w);
                     if let Some(mut r) = atlas
                         .sprites
-                        .get("gui/sprites/container/villager/experience_bar_result")
+                        .get("container/villager/experience_bar_result")
                         .copied()
                     {
                         let du = (r.u1 - r.u0) / r.w as f32;
@@ -778,19 +852,14 @@ impl Game<'_> {
         }
         // Scroller (`extractScroller`): its thumb, or the disabled sprite.
         if let Some([x, y, w, h]) = scroller_rect(offers.len(), scroll) {
-            batch.sprite(
-                atlas,
-                "gui/sprites/container/villager/scroller",
-                ox + x,
-                oy + y,
-            );
+            batch.sprite(atlas, "container/villager/scroller", ox + x, oy + y);
             if let Some(cursor) = scroller_cursor(local, [x, y, w, h], dragging) {
                 request_cursor(cursor);
             }
         } else {
             batch.sprite(
                 atlas,
-                "gui/sprites/container/villager/scroller_disabled",
+                "container/villager/scroller_disabled",
                 ox + SHIFT + 94.0,
                 oy + 18.0,
             );
@@ -804,9 +873,9 @@ impl Game<'_> {
                 && local.1 >= 18.0 + 20.0 * row as f32
                 && local.1 < 38.0 + 20.0 * row as f32;
             let sprite = if hover || focused == Some(row) {
-                "gui/sprites/widget/button_highlighted"
+                "widget/button_highlighted"
             } else {
-                "gui/sprites/widget/button"
+                "widget/button"
             };
             batch.sprite_scaled(&self.gui.atlas, sprite, bx, by, 88.0, 20.0, u32::MAX);
             let y = oy + 16.0 + 1.0 + 20.0 * row as f32 + 2.0;
@@ -847,7 +916,7 @@ impl Game<'_> {
                 );
                 batch.sprite(
                     atlas,
-                    "gui/sprites/container/villager/discount_strikethrough",
+                    "container/villager/discount_strikethrough",
                     x + 7.0,
                     y + 12.0,
                 );
@@ -862,7 +931,7 @@ impl Game<'_> {
             };
             batch.sprite(
                 &self.gui.atlas,
-                &format!("gui/sprites/container/villager/{arrow}"),
+                &format!("container/villager/{arrow}"),
                 ox + SHIFT + 60.0,
                 y + 3.0,
             );
@@ -978,6 +1047,10 @@ fn scrolled(scroll: usize, max: usize, d: f32) -> usize {
 }
 
 #[cfg(test)]
+#[path = "tests/random_sequences_save_tests.rs"]
+mod random_sequences_save_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1032,5 +1105,87 @@ mod tests {
         assert_eq!(at(45.0, 45.0, false), Some(Cursor::PointingHand));
         // 7 offers: the disabled scroller takes no cursor.
         assert!(scroller_rect(7, 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod select_on_a_server_tests {
+    use crate::game::native_entity_refs::tests::with_game;
+    use sunrise_client::items::ItemStack;
+    use sunrise_client::merchant::{ItemCost, MerchantOffer};
+    use sunrise_protocol::packets::play::Serverbound as S;
+
+    /// MerchantScreen.postButtonClick on a server: picking an offer moves its payment into
+    /// the menu on this client too (tryMoveItems), then tells the server (SelectTrade); the
+    /// click that then takes the result predicts the trade, and the merchant's effects are
+    /// left to the server (ClientSideMerchant).
+    #[test]
+    #[ignore = "daily"]
+    fn picking_a_trade_on_a_server_moves_the_payment_here_too() {
+        with_game(|game| {
+            let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
+            peer.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            game.remote_open_merchant(1, String::new(), sunrise_client::text::Text::literal(""));
+            let offer = MerchantOffer {
+                base_cost_a: ItemCost {
+                    stack: ItemStack::new("minecraft:emerald", 1),
+                },
+                cost_b: None,
+                result: ItemStack::new("minecraft:bread", 6),
+                uses: 0,
+                max_uses: 12,
+                reward_exp: true,
+                special_price_diff: 0,
+                demand: 0,
+                price_multiplier: 0.05,
+                xp: 1,
+            };
+            if let Some(m) = game.station.as_mut().and_then(|s| s.merchant.as_mut()) {
+                m.session.offers = vec![offer];
+            }
+            game.inventory[0] = Some(ItemStack::new("minecraft:emerald", 5));
+            while peer.recv().is_ok() {}
+            game.try_move_items(0);
+            let mut payment = None;
+            game.menu_session(|menu, _, _| {
+                payment = menu.slot(0).map(|s| (s.item.to_string(), s.count));
+                Some(false)
+            });
+            assert_eq!(payment, Some(("minecraft:emerald".to_owned(), 5)));
+            let mut picked = Vec::new();
+            while let Ok((id, bytes)) = peer.recv() {
+                if let Ok(S::SelectTrade(p)) = S::decode(id, &bytes) {
+                    picked.push(p.item);
+                }
+            }
+            assert_eq!(picked, [0]);
+            // The result, shift-clicked before the server answers: the click carries what this
+            // client's menu moved (payment and result emptied, the bread in the hotbar's last
+            // slot), and the merchant's own effects stay the server's (no orb, no trade stat).
+            let traded = game.stats.get("custom", "minecraft:traded_with_villager");
+            game.remote_menu_ops(&[(
+                Some(super::RESULT),
+                0,
+                sunrise_client::menu::Input::QuickMove,
+            )]);
+            let mut changed = Vec::new();
+            while let Ok((id, bytes)) = peer.recv() {
+                if let Ok(S::ContainerClick(p)) = S::decode(id, &bytes) {
+                    changed.extend(
+                        p.changed
+                            .iter()
+                            .map(|(slot, stack)| (*slot, stack.is_some())),
+                    );
+                }
+            }
+            changed.sort();
+            assert_eq!(changed, [(0, false), (2, false), (38, true)]);
+            assert!(game.orbs.is_empty());
+            assert_eq!(
+                game.stats.get("custom", "minecraft:traded_with_villager"),
+                traded
+            );
+        });
     }
 }

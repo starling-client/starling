@@ -1,9 +1,9 @@
 //! Nether fossils: NetherFossilStructure and NetherFossilPieces.
+use std::sync::Arc;
 use sunrise_core::{
     position::BlockPos,
     random::{LegacyRandom, PositionalRandom, RandomSource},
 };
-use std::sync::Arc;
 use {
     super::{
         Mirror, Rotation, StructureResources,

@@ -160,7 +160,7 @@ impl SystemToast {
 }
 /// SystemToast's 32-pixel background keeps the notice icon and borders intact.
 pub fn background(atlas: &HudAtlas, batch: &mut HudBatch, x: f32, y: f32, width: f32) {
-    let Some(rect) = atlas.sprites.get("gui/sprites/toast/system").copied() else {
+    let Some(rect) = atlas.sprites.get("toast/system").copied() else {
         return;
     };
     let source_x = [0.0, 17.0, rect.w as f32 - 4.0, rect.w as f32];
@@ -333,7 +333,7 @@ fn draw_now_playing_text(
 ) {
     let [x, width] = placement;
     // `toast/now_playing`: a nine slice of 160 by 32 with a border of 4, here 30 high.
-    if let Some(rect) = atlas.sprites.get("gui/sprites/toast/now_playing").copied() {
+    if let Some(rect) = atlas.sprites.get("toast/now_playing").copied() {
         let (du, dv) = (
             (rect.u1 - rect.u0) / rect.w as f32,
             (rect.v1 - rect.v0) / rect.h as f32,
@@ -362,7 +362,7 @@ fn draw_now_playing_text(
             }
         }
     }
-    if let Some(rect) = atlas.sprites.get("gui/sprites/icon/music_notes").copied() {
+    if let Some(rect) = atlas.sprites.get("icon/music_notes").copied() {
         batch.rect_uv(
             x + 7.0,
             7.0,

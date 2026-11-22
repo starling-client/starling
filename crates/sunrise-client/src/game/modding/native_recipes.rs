@@ -1,6 +1,5 @@
 //! Every item and recipe the game knows, made once for the mods that read
-//! them (native mods' `native_recipes`, capability `recipes` of WebAssembly
-//! mods, docs/modding/src/how-to/content-mods.md), and the recipe book's known displays; placing a
+//! them through `native_recipes`, and the recipe book's known displays; placing a
 //! recipe and creative gifts. The recipes are the window's own data — the
 //! content root's — with the server's recipes of the types its native mods
 //! had it send (`sunrise:recipe_content`) in their place, while the known
@@ -13,19 +12,57 @@ use super::{
         NativeRecipeStack as RecipeStack, NativeRecipes as Recipes,
     },
 };
+use mod_api::{LevelRef, RecipeInput, RecipeLookupError, RecipeMatch};
+use std::{collections::HashMap, sync::Arc};
 use sunrise_client::{
     crafting::{Ingredient, qualified},
     items::ItemStack,
     recipe_book::{Category, Display},
     stations::Smithing,
 };
-use mod_api::{LevelRef, RecipeInput, RecipeLookupError, RecipeMatch};
-use std::{collections::HashMap, sync::Arc};
 
 /// The tables, made once, and the recipe book's known displays with the
 /// book's version they are of.
 /// The most recipes a server's recipe content may carry.
 const MAX_SYNCED_RECIPES: usize = 1_000_000;
+
+/// The parts of one recipe update so far. A part whose serializer could not
+/// be decoded refuses the whole update, once, when its last part comes: the
+/// parts after it must not publish what is left, and the previous generation
+/// stays.
+#[derive(Default)]
+struct IncomingRecipes {
+    recipes: Vec<(String, serde_json::Value)>,
+    refused: Option<String>,
+}
+/// A completed update: the recipes and the types they replace, or why it is
+/// refused.
+type RecipeUpdate = Result<(Vec<(String, serde_json::Value)>, Vec<String>), String>;
+impl IncomingRecipes {
+    /// Take one part; the finished update on the last.
+    fn push(&mut self, part: sunrise_client::lan::recipes::ContentPart) -> Option<RecipeUpdate> {
+        if self.refused.is_none() {
+            self.refused = part.refused;
+        }
+        if self.refused.is_none() {
+            self.recipes.extend(part.recipes);
+            // The server is trusted to end its parts; one that never does is
+            // dropped, not kept growing.
+            if self.recipes.len() > MAX_SYNCED_RECIPES {
+                self.recipes = Vec::new();
+                self.refused = Some(format!(
+                    "more than {MAX_SYNCED_RECIPES} recipes; the rest is dropped"
+                ));
+            }
+        }
+        let types = part.last?;
+        let recipes = std::mem::take(&mut self.recipes);
+        Some(match self.refused.take() {
+            Some(why) => Err(why),
+            None => Ok((recipes, types)),
+        })
+    }
+}
 
 #[derive(Default)]
 pub(super) struct RecipeTables {
@@ -46,7 +83,7 @@ pub(super) struct RecipeTables {
     /// included, so the book numbers them the same (`Game::display_index`).
     pub(super) synced_index: Option<sunrise_client::recipe_book::RecipeIndex>,
     /// The recipe content's parts so far, until its last.
-    incoming: Vec<(String, serde_json::Value)>,
+    incoming: IncomingRecipes,
     /// The types that came before the player did: the mods hear of them
     /// once the helpers can answer (`recipes_received_now`).
     received: Option<Vec<String>>,
@@ -87,7 +124,7 @@ impl Index {
 /// them (`[minecraft:potion_contents={potion:"minecraft:swiftness"}]`), or "".
 pub(super) fn components(s: &ItemStack) -> String {
     use sunrise_core::nbt::Tag;
-    let Some(Tag::Compound(entries)) = sunrise_client::item_data::encode_components(s) else {
+    let Some(Tag::Compound(entries)) = sunrise_client::item_data::component_snapshot(s) else {
         return String::new();
     };
     let parts: Vec<String> = entries
@@ -156,37 +193,29 @@ impl Game<'_> {
                     return Err(InvalidInput);
                 };
                 let (w, h) = (*width as usize, *height as usize);
-                if !(1..=3).contains(&w) || !(1..=3).contains(&h) || slots.len() != w * h {
+                if w.checked_mul(h) != Some(slots.len()) {
                     return Err(InvalidInput);
                 }
-                let size = w.max(h);
-                let at = |i: usize| (i / w) * size + i % w;
-                let mut grid: [Option<ItemStack>; 9] = Default::default();
-                for (i, stack) in slots.iter().enumerate() {
+                let mut grid = Vec::with_capacity(slots.len());
+                for stack in slots {
                     #[allow(clippy::needless_borrows_for_generic_args)] // TODO(#2273)
                     {
-                        grid[at(i)] = stack.as_ref().map(&read_stack).transpose()?;
+                        grid.push(stack.as_ref().map(&read_stack).transpose()?);
                     }
                 }
-                let grid = &grid[..size * size];
                 let scale = |id: i32| self.maps.data.get(&id).map(|m| m.scale);
                 let recipes = self.recipes();
                 let matched =
-                    recipes.find_with_dimensions(&self.loop_context, grid, size, w, h, &scale);
+                    recipes.find_with_dimensions(&self.loop_context, &grid, w, w, h, &scale);
                 let Some((id, output)) = matched.filter(|(_, output)| output.count > 0) else {
                     return Ok(None);
                 };
-                let mut placed = if matches!(
-                    recipes.recipe(id),
-                    Some(sunrise_client::crafting::Recipe::Mod(_))
-                ) {
-                    recipes
-                        .mod_remainders_rect(id, grid, size, w, h, &|s| self.crafting_remainder(s))
-                } else {
-                    recipes.remainders(id, grid, size, &|s| self.crafting_remainder(s))
-                };
-                let remainders = (0..w * h)
-                    .map(|i| placed[at(i)].take().try_into_api().map_err(|_| InvalidItem))
+                let remainders = recipes
+                    .remainders_rect(&self.loop_context, id, &grid, w, w, h, &|s| {
+                        self.crafting_remainder(s)
+                    })
+                    .into_iter()
+                    .map(|stack| stack.try_into_api().map_err(|_| InvalidItem))
                     .collect::<Result<Vec<_>, _>>()?;
                 make(id, &output, remainders, 0.0, 0)
             }
@@ -342,6 +371,15 @@ impl Game<'_> {
             self.recipe_tables.known = (Some(version), known.into());
         }
         self.recipe_tables.known.1.clone()
+    }
+
+    /// `RecipesClientHost::recipe_book_ids`: the display ids the recipe book
+    /// gives `recipe_id`, as `transfer_recipe` looks them up.
+    pub(in crate::game) fn recipe_book_ids(&mut self, recipe_id: &str) -> Arc<[i32]> {
+        if self.player.is_none() || self.res.rest.get().is_none() {
+            return Arc::from([]);
+        }
+        self.viewer_book_ids(recipe_id)
     }
 
     fn make_mod_recipes(&mut self) -> Recipes {
@@ -514,30 +552,6 @@ impl Game<'_> {
     }
 }
 
-/// The window's own recipes outside `types` and the server's of them, in
-/// `recipe_sources::sources`' shape. The server sends its ids whole
-/// (`encode_content`), but the tables find a vanilla recipe by its bare name
-/// (`Recipes::placement`, `meta`): kept whole, `minecraft:stick` had no
-/// placement, so the book dropped every synced vanilla recipe and a viewer's
-/// "+" found no book id for it.
-fn synced_sources(
-    own: Vec<(String, serde_json::Value)>,
-    received: Vec<(String, serde_json::Value)>,
-    types: &[String],
-) -> Vec<(String, serde_json::Value)> {
-    let of = |v: &serde_json::Value| sunrise_client::crafting::mod_kinds::file_has_type(v, types);
-    let mut all: Vec<_> = own.into_iter().filter(|(_, v)| !of(v)).collect();
-    all.extend(
-        received
-            .into_iter()
-            .map(|(id, v)| match id.strip_prefix("minecraft:") {
-                Some(name) => (name.to_owned(), v),
-                None => (id, v),
-            }),
-    );
-    all
-}
-
 impl Game<'_> {
     /// The server's recipes a client was sent, over its own; None on a
     /// server and until a server sends any.
@@ -556,7 +570,7 @@ impl Game<'_> {
     pub(super) fn forget_synced_recipes(&mut self) {
         self.recipe_tables.synced = None;
         self.recipe_tables.synced_index = None;
-        self.recipe_tables.incoming.clear();
+        self.recipe_tables.incoming = IncomingRecipes::default();
         self.recipe_tables.received = None;
         self.recipe_tables.tables = None;
         self.forget_book();
@@ -583,18 +597,14 @@ impl Game<'_> {
                 return;
             }
         };
-        self.recipe_tables.incoming.extend(part.recipes);
-        // The server is trusted to end its parts; one that never does is
-        // dropped, not kept growing.
-        if self.recipe_tables.incoming.len() > MAX_SYNCED_RECIPES {
-            log::warn!("Sunrise: the server sent more than {MAX_SYNCED_RECIPES} recipes; dropped");
-            self.recipe_tables.incoming = Vec::new();
-            return;
-        }
-        let Some(types) = part.last else {
-            return;
+        let (received, types) = match self.recipe_tables.incoming.push(part) {
+            None => return,
+            Some(Ok(update)) => update,
+            Some(Err(why)) => {
+                log::warn!("Sunrise: the server's recipes were not taken: {why}");
+                return;
+            }
         };
-        let received = std::mem::take(&mut self.recipe_tables.incoming);
         // No type any more: back on the window's own recipes.
         if types.is_empty() {
             self.recipe_tables.synced_index = None;
@@ -606,20 +616,10 @@ impl Game<'_> {
             }
             return;
         }
-        let root = &self.options.resources;
-        let overlay = sunrise_world::loot::PackOverlay::NONE;
-        let built = sunrise_items::recipe_sources::sources(root, &overlay).and_then(|own| {
-            let all = synced_sources(own, received, &types);
-            let index = sunrise_client::recipe_book::RecipeIndex::load_from_sources(&all);
-            sunrise_client::crafting::Recipes::from_sources(
-                root,
-                self.items(),
-                &overlay,
-                all,
-                self.res.core.item_data.context(),
-            )
-            .map(|recipes| (recipes, index))
-        });
+        let built = self
+            .res
+            .recipes()
+            .with_recipe_content(self.items(), received, &types);
         match built {
             Ok((recipes, index)) => {
                 self.recipe_tables.synced = Some(recipes);
@@ -637,6 +637,43 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// A part with a malformed serializer refuses the whole update: the
+    /// valid last part after it publishes nothing, one refusal is reported
+    /// when the update completes, and the next update is taken whole.
+    #[test]
+    fn a_bad_part_refuses_the_whole_update_at_its_last_part() {
+        use sunrise_client::lan::recipes::ContentPart;
+        let part = |text: &str| ContentPart::decode(text.as_bytes()).unwrap();
+        let mut incoming = super::IncomingRecipes::default();
+        assert!(
+            incoming
+                .push(part(
+                    r#"{"recipes":[["a:one",{"type":"smelting"}]],"last":null}"#
+                ))
+                .is_none()
+        );
+        assert!(
+            incoming
+                .push(part(
+                    r#"{"recipes":[["a:bad",{"type":"x:y:z"}]],"last":null}"#
+                ))
+                .is_none()
+        );
+        let refused = incoming.push(part(
+            r#"{"recipes":[["a:two",{"type":"smelting"}]],"last":["minecraft:smelting"]}"#,
+        ));
+        assert!(refused.unwrap().unwrap_err().contains("a:bad"));
+        let (recipes, types) = incoming
+            .push(part(
+                r#"{"recipes":[["a:three",{"type":"smelting"}]],"last":["minecraft:smelting"]}"#,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].0, "a:three");
+        assert_eq!(types, ["minecraft:smelting"]);
+    }
+
     use super::super::native_entity_refs::tests::{with_game, with_game_at};
     use mod_api::{ItemStack, RecipeInput, RecipeLookupError};
 
@@ -645,33 +682,6 @@ mod tests {
             mod_api::__private::item_key(&format!("minecraft:{item}")).unwrap(),
             1,
         )
-    }
-
-    /// `level.recipe_for` against vanilla's own recipes: a shaped recipe that hands back buckets, the
-    /// same shaped recipe from a smaller grid and from a corner of a larger one, a special
-    /// recipe, and grids that make nothing.
-    /// The server's recipes come with whole ids (`encode_content`); the
-    /// synced set names a vanilla one bare, as the window's own files do,
-    /// and keeps a data pack's whole. The window's own recipes of a synced
-    /// type give way to the server's.
-    #[test]
-    fn synced_sources_name_vanilla_recipes_as_the_tables_find_them() {
-        let shaped = serde_json::json!({"type": "minecraft:crafting_shaped"});
-        let smelting = serde_json::json!({"type": "minecraft:smelting"});
-        let own = vec![
-            ("stick".to_owned(), shaped.clone()),
-            ("iron_ingot".to_owned(), smelting.clone()),
-        ];
-        let received = vec![
-            ("minecraft:stick".to_owned(), shaped.clone()),
-            ("braid:sticks_from_logs".to_owned(), shaped.clone()),
-        ];
-        let types = ["minecraft:crafting".to_owned()];
-        let names: Vec<_> = super::synced_sources(own, received, &types)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        assert_eq!(names, ["iron_ingot", "stick", "braid:sticks_from_logs"]);
     }
 
     /// With the server's crafting recipes synced, the book still holds the
@@ -695,18 +705,25 @@ mod tests {
             let own = ids.map(|id| book_ids(game, id));
             assert!(own.iter().all(|ids| !ids.is_empty()), "{own:?}");
             let types = ["minecraft:crafting", "minecraft:smelting"].map(str::to_owned);
-            let mut sources = sunrise_items::recipe_sources::sources(
-                &game.options.resources,
-                &sunrise_world::loot::PackOverlay::NONE,
-            )
-            .unwrap();
             let pack = serde_json::json!({
                 "type": "minecraft:crafting_shaped",
                 "pattern": ["#", "#"],
                 "key": {"#": "#minecraft:logs"},
                 "result": {"id": "minecraft:stick", "count": 16},
             });
-            sources.push(("zzz:sticks_from_logs".to_owned(), pack));
+            let overlay = sunrise_world::loot::PackOverlay::NONE;
+            let mut files =
+                sunrise_items::recipe_sources::sources(&game.options.resources, &overlay).unwrap();
+            files.push(("zzz:sticks_from_logs".to_owned(), pack));
+            let server = sunrise_client::crafting::Recipes::from_sources(
+                &game.options.resources,
+                game.items(),
+                &overlay,
+                files,
+                game.res.core.item_data.context(),
+            )
+            .unwrap();
+            let sources = server.recipe_content(&types);
             for part in sunrise_client::lan::recipes::encode_content(&types, &sources, false) {
                 game.remote_recipe_content(&part);
             }
@@ -779,11 +796,7 @@ mod tests {
             });
             assert_eq!(ids.map(|id| book_ids(game, id)), server);
             let types = ["minecraft:crafting", "minecraft:smelting"].map(str::to_owned);
-            let sources = sunrise_items::recipe_sources::sources(
-                &game.options.resources,
-                &sunrise_world::loot::PackOverlay::NONE,
-            )
-            .unwrap();
+            let sources = game.recipes().recipe_content(&types);
             for part in sunrise_client::lan::recipes::encode_content(&types, &sources, false) {
                 game.remote_recipe_content(&part);
             }
@@ -794,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn recipe_for_matches_the_grid_and_returns_what_each_slot_keeps() {
         with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -860,9 +873,8 @@ mod tests {
 
             assert!(lookup(1, 1, &[stack("dirt")]).unwrap().is_none());
             assert!(lookup(1, 1, &[None]).unwrap().is_none());
-            assert!(
-                lookup(4, 1, &[None, None, None, None]) == Err(RecipeLookupError::InvalidInput)
-            );
+            assert!(lookup(4, 1, &[None, None, None, None]).unwrap().is_none());
+            assert!(lookup(0, 0, &[]).unwrap().is_none());
             assert!(lookup(1, 2, &planks[..1]) == Err(RecipeLookupError::InvalidInput));
         });
     }
@@ -870,7 +882,7 @@ mod tests {
     /// Vanilla expected outputs, ordered smithing, and a data-pack recipe parsed by the
     /// production recipe loader. These assertions do not derive expectations from matcher output.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn recipe_for_dispatches_cooking_and_stonecutting_and_pack_recipes() {
         mod_platform::testing::with_mods(Vec::new().into(), || {
             with_game(|game| {
@@ -972,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn recipe_for_preserves_smithing_order_and_damage() {
         mod_platform::testing::with_mods(Vec::new().into(), || {
             with_game(|game| {
@@ -1024,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn recipe_for_refuses_mod_owned_types_instead_of_empty_matches() {
         mod_platform::testing::with_mods(Vec::new().into(), || {
             with_game(|game| {

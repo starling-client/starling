@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sys
 import uuid
 try:
@@ -96,7 +97,10 @@ def source_changes(ops, rows):
 def main():
     parser=argparse.ArgumentParser(add_help=False);parser.add_argument('--reference-dir',type=Path)
     options,rest=parser.parse_known_args();sys.argv=[sys.argv[0],*rest]
-    if '--work-dir' not in sys.argv:parser.error('--work-dir must name a fresh capture directory')
+    if '--work-dir' not in sys.argv:  # tools/parity.py passes none: a fresh folder of its own each run
+        default = driver.lab.LOCAL / 'pot-sherd-templates-parity'
+        shutil.rmtree(default, ignore_errors=True)
+        sys.argv += ['--work-dir', str(default)]
     folder=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve();assert not folder.exists(),'preserve previous attempts'
     driver.corpus_module.groups=lambda:[('Pot sherd template representation',program())]
     if '--allow-gaps' not in sys.argv:sys.argv.append('--allow-gaps')

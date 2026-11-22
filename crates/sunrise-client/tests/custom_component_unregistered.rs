@@ -1,6 +1,7 @@
 extern crate sunrise_client_lib as sunrise_client;
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, Reader},
     item::Slot,
 };
 

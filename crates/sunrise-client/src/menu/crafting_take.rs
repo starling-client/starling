@@ -1,31 +1,10 @@
-//! Result-slot take handling, including pre-take revalidation and remainders.
+//! Result-slot take handling and crafting remainders.
 use super::*;
 impl Menu {
-    pub(super) fn crafting_result_is_current(&self, env: &Env, slot: usize) -> bool {
-        if !env.recipes.has_mod_crafting() {
-            return true;
-        }
-        env.recipes
-            .find_with(
-                env.loop_context,
-                &self.state.containers[GRID],
-                self.state.grid_size,
-                &|id| {
-                    env.maps
-                        .and_then(|maps| maps.state(id))
-                        .map(|(_, scale)| scale)
-                },
-            )
-            .is_some_and(|(_, result)| {
-                self.slot(slot).is_some_and(|shown| {
-                    shown.count == result.count && shown.same_item_same_components(&result)
-                })
-            })
-    }
-
     /// `ResultSlot.onTake` and the other `Slot.onTake` overrides.
     pub(super) fn on_take(&mut self, env: &Env, s: usize, taken: &mut ItemStack) {
         self.touch();
+        self.note_take(s, taken);
         if self.state.slots[s].role == Role::Output {
             self.furnace_take(env, taken);
             return;
@@ -58,20 +37,28 @@ impl Menu {
                     vec![self.state.containers[MAIN][0].clone()],
                 ));
             }
-            if self.remove(env, 0, 1).is_some() {
-                self.stone_setup_result(env, self.state.data[0]);
+            if self.remove(env, 0, 1).is_some() && self.state.stone.server_buttons.is_none() {
+                // A LAN server's slotsChanged already rechecked and refilled its result.
+                let recipe = self.stone_recipe(env, self.state.data[0]);
+                self.stone_setup_result(env, recipe);
             }
             self.take_sound("minecraft:ui.stonecutter.take_result");
             return;
         }
+        if matches!(self.state.kind, Kind::Anvil | Kind::Grindstone)
+            && self.state.slots[s].container == MAIN
+        {
+            // GrindstoneMenu and ItemCombinerMenu's input slots inherit Slot.onTake:
+            // the repair container's setChanged recomputes the result again.
+            self.slot_changed(env, s);
+            return;
+        }
         if self.state.slots[s].role == Role::GrindResult {
             if self.state.grind_hook {
-                self.state.grind_take = Some(GrindstoneTake {
+                self.state.grind_take = Some(PendingGrindstoneTake {
                     top: self.state.containers[MAIN][0].clone(),
                     bottom: self.state.containers[MAIN][1].clone(),
                     xp: self.state.grind_xp,
-                    new_top: None,
-                    new_bottom: None,
                 });
                 return;
             }
@@ -88,7 +75,7 @@ impl Menu {
         }
         if self.state.slots[s].role == Role::CombineResult && self.state.kind == Kind::Anvil {
             if self.state.anvil_hook {
-                self.state.anvil_craft = Some(AnvilCraft {
+                self.state.anvil_craft = Some(AnvilCraftSnapshot {
                     left: self.state.containers[MAIN][0].clone(),
                     right: self.state.containers[MAIN][1].clone(),
                     output: taken.clone(),
@@ -177,9 +164,15 @@ impl Menu {
             .find_with(env.loop_context, &grid, n, &map_scale)
         {
             let id = crate::crafting::qualified(id);
-            let made = (id.clone(), taken.clone(), grid.clone());
-            self.state.crafted.push((id, grid.clone()));
-            self.state.item_crafted.push(made);
+            if matches!(self.state.kind, Kind::Mod(_)) {
+                self.crafted_by(taken, taken.count as i32);
+                self.state.crafted.push((id, grid.clone()));
+            } else {
+                self.state.crafted.push((id.clone(), grid.clone()));
+                self.state
+                    .item_crafted
+                    .push((id, taken.clone(), grid.clone()));
+            }
         }
         let remaining = match env
             .recipes
@@ -193,7 +186,8 @@ impl Menu {
                         Some(crate::crafting::Recipe::Mod(_))
                     ) =>
             {
-                env.recipes.remainders(id, &grid, n, &|s| env.remainder(s))
+                env.recipes
+                    .remainders(env.loop_context, id, &grid, n, &|s| env.remainder(s))
             }
             Some(_) => grid
                 .iter()
@@ -219,7 +213,7 @@ impl Menu {
                     Some(_) => {
                         let mut left = replacement;
                         if !self.inventory_add(env, &mut left) {
-                            self.drop_stack(&left);
+                            self.drop_stack(&left, env.items);
                         }
                     }
                 }

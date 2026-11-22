@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automatsko ponovno povezivanje",
+  "sunrise.extras.auto_reconnect.tooltip": "Ponovno se pridružuje poslužitelju nakon izgubljene veze ili ponovnog pokretanja, nikada nakon izbacivanja ili zabrane."
+}

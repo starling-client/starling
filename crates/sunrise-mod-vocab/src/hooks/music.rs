@@ -10,6 +10,13 @@ pub trait Hooks {
     /// `Music::new("mymod:music.spring", 1200, 6000, false)` (the delays in
     /// ticks between songs, and whether it cuts off a different song playing),
     /// None to keep vanilla's quiet, or change `volume` (0 to 1) to fade it.
-    #[hook(side = "client", contract = "listen", neoforge = "SelectMusicEvent")]
-    fn music();
+    #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_music",
+        receiver = "read",
+        dispatch = "flat",
+        side = "client",
+        contract = "listen",
+        neoforge = "SelectMusicEvent"
+    )]
+    fn music(music: &mut Option<Music>, volume: &mut f32);
 }

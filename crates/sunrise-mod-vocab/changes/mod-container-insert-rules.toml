@@ -1,0 +1,3 @@
+ids = ["type:ModContainer", "type:ModContainerInsertRule"]
+why = "Adds typed per-slot insertion admission rules to ModContainer (#1919): one declaration is shared by hopper, dropper, funnel, menu shift-click and ResourceHandler insertion paths."
+migrate = "Additive: missing insert_rules entries keep the previous unrestricted behavior."

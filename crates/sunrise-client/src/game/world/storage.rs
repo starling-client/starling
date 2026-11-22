@@ -3,15 +3,14 @@
 //! player's `PlayerEnderChestContainer`, saved as `EnderItems`).
 use super::Game;
 use sunrise_client::{
-    containers::{BlockEntity, ChestHalf, is_chest_block},
+    containers::{BlockEntity, is_chest_block},
     items::ItemStack,
     text::Text,
 };
 use sunrise_core::random::RandomSource;
 
-pub(super) fn is_shulker_box(name: &str) -> bool {
-    name.ends_with("shulker_box")
-}
+pub(super) use sunrise_gameplay::chests::{chest_connected_pos, is_shulker_box};
+use sunrise_gameplay::chests::{chest_half, facing_step};
 impl Game<'_> {
     /// `ServerPlayerGameMode.useItemOn` for a spectator: the block's menu
     /// (`BlockState.getMenuProvider`) opens, and nothing else happens. The
@@ -76,7 +75,7 @@ impl Game<'_> {
         self.open_container_slots = Some((key, self.open_container_size()));
         self.set_screen(super::Screen::Inventory);
         self.capture(false);
-        self.right = false;
+        self.set_mapping_held("key.use", false);
     }
     /// The custom name of the open container, or its default title
     /// (a double chest is named by whichever half has a name).
@@ -215,36 +214,6 @@ impl Game<'_> {
 
 // ---- chest menus: double chests, titles and shift-click ----
 
-/// A chest block state's half: its block, `type` and `facing`.
-fn chest_half(state: &sunrise_world::chunk::BlockState) -> Option<ChestHalf<'_>> {
-    Some(ChestHalf {
-        block: &state.name,
-        kind: state.properties.get("type")?,
-        facing: state.properties.get("facing")?,
-    })
-}
-fn facing_step(facing: &str) -> (i32, i32) {
-    match facing {
-        "north" => (0, -1),
-        "south" => (0, 1),
-        "west" => (-1, 0),
-        _ => (1, 0),
-    }
-}
-
-/// `ChestBlock.getConnectedBlockPos` for a chest whose `type` is not single:
-/// where its other half belongs, whatever stands there now.
-pub(super) fn chest_connected_pos(
-    state: &sunrise_world::chunk::BlockState,
-    pos: [i32; 3],
-) -> Option<[i32; 3]> {
-    if !is_chest_block(&state.name) {
-        return None;
-    }
-    let (dx, dz) = chest_half(state)?.connected_step()?;
-    Some([pos[0] + dx, pos[1], pos[2] + dz])
-}
-
 impl Game<'_> {
     /// The other half of the open double chest and whether the open one is
     /// the right half (`ChestBlock.getConnectedDirection`).
@@ -265,17 +234,46 @@ impl Game<'_> {
             );
         paired.then_some((other, own.kind == "right"))
     }
-    /// The open or close sound of a container block (`ChestBlockEntity.playSound`,
-    /// `BarrelBlockEntity.playSound`, `ShulkerBoxBlockEntity.startOpen`): volume
-    /// 0.5 and pitch 0.9 to 1.0. A double chest sounds once from the middle of
-    /// both halves, a barrel from the face it opens on.
-    pub(super) fn container_sound(&mut self, sound: &str, key: (i32, i32, i32), name: &str) {
+    /// `ChestBlockEntity.playSound`: resolve the sound for the first or last opener.
+    /// A double chest sounds from the middle of both halves, a barrel from its
+    /// opening face (`BarrelBlockEntity.playSound`), and other containers from
+    /// the block center. Resolve this before notifying game-event listeners.
+    pub(super) fn resolve_container_sound(
+        &self,
+        key: (i32, i32, i32),
+        name: &str,
+        open: bool,
+    ) -> Option<(&'static str, [f64; 3])> {
+        let chest = is_chest_block(name);
+        let sound = if is_shulker_box(name) {
+            if open {
+                "minecraft:block.shulker_box.open"
+            } else {
+                "minecraft:block.shulker_box.close"
+            }
+        } else if name == "minecraft:ender_chest" {
+            if open {
+                "minecraft:block.ender_chest.open"
+            } else {
+                "minecraft:block.ender_chest.close"
+            }
+        } else if chest {
+            sunrise_client::mobs::transport_items::chest_hinge_sound(name, open)
+        } else if name == "minecraft:barrel" {
+            if open {
+                "minecraft:block.barrel.open"
+            } else {
+                "minecraft:block.barrel.close"
+            }
+        } else {
+            return None;
+        };
         let mut at = [
             f64::from(key.0) + 0.5,
             f64::from(key.1) + 0.5,
             f64::from(key.2) + 0.5,
         ];
-        if let Some((other, _)) = self.chest_partner(key) {
+        if chest && let Some((other, _)) = self.chest_partner(key) {
             at[0] = f64::from(key.0 + other.0) / 2.0 + 0.5;
             at[2] = f64::from(key.2 + other.2) / 2.0 + 0.5;
         } else if name == "minecraft:barrel"
@@ -296,6 +294,10 @@ impl Game<'_> {
             };
             at = [at[0] + dx, at[1] + dy, at[2] + dz];
         }
+        Some((sound, at))
+    }
+
+    pub(super) fn play_container_sound(&mut self, sound: &str, at: [f64; 3]) {
         let pitch = self.world.random.next_float() * 0.1 + 0.9;
         // A server's `playSound(null, …)`: every player around, the opener too.
         // `Audio::play` captures the sound while the world is open to the
@@ -303,40 +305,14 @@ impl Game<'_> {
         // so nothing is queued separately (a second queue played it twice).
         self.audio.play(sound, Some(at), 0.5, pitch);
     }
-    /// The open or close sound of the container block at `key`, if it has one.
-    /// Callers play it only when the opener count crosses zero
+    /// Play the current block's sound when its opener count crosses zero
     /// (`ContainerOpenersCounter.onOpen` / `onClose`).
     pub(super) fn container_edge_sound(&mut self, key: (i32, i32, i32), open: bool) {
-        let name = self
-            .res
-            .facts()
-            .get(self.world.block(key.0, key.1, key.2))
-            .name
-            .clone();
-        let sound = if is_shulker_box(&name) {
-            if open {
-                "minecraft:block.shulker_box.open"
-            } else {
-                "minecraft:block.shulker_box.close"
-            }
-        } else if &*name == "minecraft:ender_chest" {
-            if open {
-                "minecraft:block.ender_chest.open"
-            } else {
-                "minecraft:block.ender_chest.close"
-            }
-        } else if name.contains("chest") {
-            sunrise_client::mobs::transport_items::chest_hinge_sound(&name, open)
-        } else if &*name == "minecraft:barrel" {
-            if open {
-                "minecraft:block.barrel.open"
-            } else {
-                "minecraft:block.barrel.close"
-            }
-        } else {
-            return;
-        };
-        self.container_sound(sound, key, &name);
+        let state = self.world.block(key.0, key.1, key.2);
+        let name = &self.res.facts().get(state).name;
+        if let Some((sound, at)) = self.resolve_container_sound(key, name, open) {
+            self.play_container_sound(sound, at);
+        }
     }
     /// The other half of a double chest at `key`, for neighbour updates.
     pub(super) fn chest_other_half(&self, key: (i32, i32, i32)) -> Option<(i32, i32, i32)> {
@@ -448,7 +424,7 @@ impl Game<'_> {
             self.world
                 .block_entities
                 .get_mut(&pos)
-                .and_then(|e| e.slots_mut().get_mut(i))
+                .and_then(|e| e.slot_mut(i))
         }) {
             Some(slot) => slot,
             None => &mut self.scratch_slot,
@@ -585,11 +561,12 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_client::containers::ChestHalf;
 
     /// `ChestBlockEntity`'s opener counter plays the block's own hinge
     /// sound: a copper chest's, by weather state, not the wooden chest's.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_player_opens_and_closes_a_chest_with_its_own_hinge_sound() {
         let mut resources = None;
         let mut game = super::super::game_tests::tests::server_game(&mut resources);
@@ -671,7 +648,7 @@ mod reach_tests {
     /// asks both halves): breaking the half the player did not click ends the
     /// six-row menu instead of leaving a three-row one.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn breaking_the_other_half_closes_the_open_double_chest() {
         let mut resources = None;
         let mut game = server_game(&mut resources);
@@ -725,7 +702,7 @@ mod lock_tests {
     /// `createMenu`, so the block is never set as the open container. A hand
     /// holding the lock's item opens it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_locked_container_refuses_the_local_players_open() {
         let mut resources = None;
         let mut game = server_game(&mut resources);
@@ -780,7 +757,7 @@ mod lock_tests {
     /// `canOpen` of both halves, so a lock on the half the player did not
     /// click still refuses the six-row menu.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_lock_on_either_half_refuses_a_double_chest() {
         let mut resources = None;
         let mut game = server_game(&mut resources);

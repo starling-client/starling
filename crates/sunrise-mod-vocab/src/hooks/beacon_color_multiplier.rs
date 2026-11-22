@@ -14,6 +14,8 @@ pub trait Hooks {
     /// subscription and the block key before any event conversion, so the cost is one table
     /// lookup per block above a beacon. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "collect",
         out = "color",
@@ -22,5 +24,10 @@ pub trait Hooks {
         host = "read",
         neoforge = "IBlockExtension.getBeaconColorMultiplier, IBlockStateExtension.getBeaconColorMultiplier"
     )]
-    fn beacon_color_multiplier();
+    fn beacon_color_multiplier(
+        state: BlockState,
+        pos: BlockPos,
+        beacon_pos: BlockPos,
+        color: &mut Option<u32>,
+    );
 }

@@ -1,6 +1,6 @@
 PlayerHeadItem.getName	port	crates/sunrise-client/src/item_tooltip.rs::player_head_name	name_line titles a head whose profile has a name through block.minecraft.player_head.named ("%s's Head")
 ShearsItem.createToolProperties	skip:data		tool rules (cobweb speed, shears breaking-speed tags) come from item data; items.rs reads minecraft:tool
-ShearsItem.mineBlock	port	crates/sunrise-client/src/game.rs::Game::mine_block_with_held	shears wear one damage_per_block on any block but fire
+ShearsItem.mineBlock	port	crates/sunrise-client/src/game/blocks/block_breaking.rs::Game::mine_block_with_held	shears wear one damage_per_block on any block but fire
 ShearsItem.useOn	port	crates/sunrise-client/src/game/blocks/growth.rs::Game::shears_crop	shears crop a growing plant head to age 25 with block.growing_plant.crop, a block_change and one wear; pumpkin carving is PumpkinBlock's own path (game/blocks/pumpkin.rs)
 SnowballItem.asProjectile	port	crates/sunrise-client/src/game/blocks/dispenser.rs::Game::shoot_projectile_item	a dispensed snowball or egg is shot with the dispenser's own config
 SnowballItem.use	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::throw_item	throw at 1.5 power, throw sound, use cooldown, one consumed
@@ -22,8 +22,8 @@ BlockTransformers.axe	skip:data		axe rules are built in code; Sunrise loads bloc
 BlockTransformers.axeStrippables	skip:data		stripping table is data; Sunrise loads it from block_transform.rs
 BlockTransformers.bootstrap	skip:data		registry bootstrap; transforms are read from data
 CustomData.equals	skip:java
-CustomData.set	inline	crates/sunrise-client/src/game/administration/commands/items.rs::edit_components	gap: minor: does not remove the component when the tag ends up empty
-CustomData.update	inline	crates/sunrise-client/src/game/administration/commands/items.rs::edit_components	gap: minor: does not remove the component when the tag ends up empty
+CustomData.set	inline	crates/sunrise-client/src/game/administration/commands/items.rs::set_custom_data	gap: minor: nothing in commands/items.rs replaces the whole tag; the one custom_data edit, set_custom_data, is the update case and removes the component when the result is empty
+CustomData.update	inline	crates/sunrise-client/src/game/administration/commands/items.rs::set_custom_data	SetCustomDataFunction.run: merges the tag into the stack's custom_data and removes the component when the result is empty, as vanilla does
 CustomModelData.getSafe	port	crates/sunrise-assets/src/item_model.rs::custom_data_at	index bounds check for flags, floats, strings and colors
 DeathProtection.applyEffects	port	crates/sunrise-client/src/game/items/totem.rs::Game::apply_totem	totem use: clears effects, then the totem's regeneration, absorption and fire resistance
 GrowableMutableContainer.replaceSlotItems	inline	crates/sunrise-items/src/bundle.rs::Contents::try_insert	gap: minor: the loop that adds slots while items remain is not ported; bundles insert one stack at a time

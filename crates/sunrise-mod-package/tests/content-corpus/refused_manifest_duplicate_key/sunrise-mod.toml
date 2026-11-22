@@ -1,0 +1,4 @@
+id = "refused_manifest_duplicate_key"
+name = "Refused manifest duplicate key"
+version = "1.2.3"
+name = "Duplicate"

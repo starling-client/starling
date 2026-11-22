@@ -1,7 +1,7 @@
 //! BlockModelFeatureRenderer breaking quads and SheetedDecalTextureGenerator UVs.
 use crate::{camera::joml, mesher::Vertex, models::catalog::BakedModel};
-use sunrise_assets::model::Direction;
 use std::f32::consts::{FRAC_PI_2, PI};
+use sunrise_assets::model::Direction;
 
 /// Project in model space: the inverse decal pose cancels the block translation/offset.
 pub fn decal_uv([x, y, z]: [f32; 3], direction: Direction) -> [f32; 2] {

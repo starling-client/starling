@@ -63,9 +63,8 @@ pub fn format_list(items: Vec<Text>) -> Text {
     out
 }
 /// `ComponentUtils.formatList(Collection<String>)`: sorted, green.
-pub fn format_names(names: Vec<String>) -> Text {
-    let mut names = names;
-    names.sort();
+pub fn format_names(mut names: Vec<String>) -> Text {
+    names.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
     format_list(
         names
             .into_iter()

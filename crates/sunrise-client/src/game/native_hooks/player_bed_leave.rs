@@ -59,9 +59,9 @@ impl Game<'_> {
 #[cfg(test)]
 mod player_bed_leave_tests {
     use crate::game::Game;
-    use sunrise_protocol::packets::play::{PlayerCommand, Serverbound};
     use mod_api::{Hooks, ModEntry, PlayerBedLeaveEvent, ServerHost};
     use std::sync::{Arc, Mutex};
+    use sunrise_protocol::packets::play::{PlayerCommand, Serverbound};
 
     /// What each call heard: the two flags and where the player still slept.
     type Heard = Arc<Mutex<Vec<(bool, bool, Option<[i32; 3]>)>>>;
@@ -82,6 +82,16 @@ mod player_bed_leave_tests {
                 living.stop_sleeping(host);
             }
         }
+    }
+
+    fn with_guests(test: impl FnOnce(&mut Game<'_>)) {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+            );
+            test(game);
+        });
     }
 
     fn in_bed(game: &mut Game<'_>, conn: u32) {
@@ -112,7 +122,7 @@ mod player_bed_leave_tests {
         let mods: mod_api::Mods =
             vec![ModEntry::new("wake", Box::new(Wake(heard.clone(), false)))].into();
         mod_platform::testing::with_mods(mods, || {
-            crate::game::native_guest_turn_tests::with_guests(|game| {
+            with_guests(|game| {
                 in_bed(game, 12);
                 game.wake_guests();
                 assert_eq!(
@@ -145,7 +155,7 @@ mod player_bed_leave_tests {
         let mods: mod_api::Mods =
             vec![ModEntry::new("wake", Box::new(Wake(heard.clone(), true)))].into();
         mod_platform::testing::with_mods(mods, || {
-            crate::game::native_guest_turn_tests::with_guests(|game| {
+            with_guests(|game| {
                 in_bed(game, 12);
                 let id = game.command_guest(12).unwrap().entity_id;
                 let leave = PlayerCommand {
@@ -177,7 +187,7 @@ mod player_bed_leave_tests {
         let mods: mod_api::Mods =
             vec![ModEntry::new("wake", Box::new(Wake(heard.clone(), false)))].into();
         mod_platform::testing::with_mods(mods, || {
-            crate::game::native_guest_turn_tests::with_guests(|game| {
+            with_guests(|game| {
                 let air = game
                     .pack
                     .assets
@@ -194,7 +204,7 @@ mod player_bed_leave_tests {
                 assert!(game.bed_can_sleep_now());
                 game.world.set(5, 64, 5, air).unwrap();
                 in_bed(game, 12);
-                game.guest_sleep_tick(game.guest_index(12).unwrap());
+                game.guest_sleep_tick(game.guest_index(12).unwrap(), true);
                 assert_eq!(
                     std::mem::take(&mut *heard.lock().unwrap()),
                     [(true, true, Some([5, 64, 5]))]
@@ -213,7 +223,7 @@ mod player_bed_leave_tests {
                         g.health = 0.0;
                     })
                     .unwrap();
-                game.guest_sleep_tick(game.guest_index(12).unwrap());
+                game.guest_sleep_tick(game.guest_index(12).unwrap(), true);
                 assert_eq!(
                     std::mem::take(&mut *heard.lock().unwrap()),
                     [(true, true, Some([5, 64, 5]))]
@@ -223,7 +233,7 @@ mod player_bed_leave_tests {
                 game.world.day_time = 6000;
                 assert!(!game.bed_can_sleep_now());
                 in_bed(game, 12);
-                game.guest_sleep_tick(game.guest_index(12).unwrap());
+                game.guest_sleep_tick(game.guest_index(12).unwrap(), true);
                 assert_eq!(
                     std::mem::take(&mut *heard.lock().unwrap()),
                     [(false, true, Some([5, 64, 5]))]
@@ -233,7 +243,7 @@ mod player_bed_leave_tests {
                 // bed-rule refusal just because sleeping would be disallowed.
                 game.world.set(5, 64, 5, air).unwrap();
                 in_bed(game, 12);
-                game.guest_sleep_tick(game.guest_index(12).unwrap());
+                game.guest_sleep_tick(game.guest_index(12).unwrap(), true);
                 assert_eq!(
                     std::mem::take(&mut *heard.lock().unwrap()),
                     [(true, true, Some([5, 64, 5]))]
@@ -250,7 +260,7 @@ mod player_bed_leave_tests {
         let mods: mod_api::Mods =
             vec![ModEntry::new("wake", Box::new(Wake(heard.clone(), false)))].into();
         mod_platform::testing::with_mods(mods, || {
-            crate::game::native_guest_turn_tests::with_guests(|game| {
+            with_guests(|game| {
                 let air = game
                     .pack
                     .assets
@@ -313,7 +323,7 @@ mod player_bed_leave_tests {
     #[ignore = "daily"]
     fn guest_wake_counters_match_the_same_reasons_without_listeners() {
         mod_platform::testing::with_mods(Vec::new().into(), || {
-            crate::game::native_guest_turn_tests::with_guests(|game| {
+            with_guests(|game| {
                 let air = game
                     .pack
                     .assets
@@ -330,7 +340,7 @@ mod player_bed_leave_tests {
                     game.world.set(5, 64, 5, state).unwrap();
                     game.world.day_time = time;
                     in_bed(game, 12);
-                    game.guest_sleep_tick(game.guest_index(12).unwrap());
+                    game.guest_sleep_tick(game.guest_index(12).unwrap(), true);
                     let guest = game.command_guest(12).unwrap();
                     assert!(!guest.sleeping);
                     assert_eq!(guest.sleep_timer, expected);

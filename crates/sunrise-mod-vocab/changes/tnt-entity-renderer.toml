@@ -1,0 +1,3 @@
+ids = ["type:EntityRenderState"]
+why = "Primed TNT reads the registered entity renderer table (#1296): a renderer for minecraft:tnt draws in place of the flashing cube, and EntityRenderState gains tnt_fuse, the remaining fuse in ticks (fuse - partial + 1, the same figure vanilla uses for the flash and the late-fuse scale). Some for primed TNT, none for every other family. New route, no hook version change."
+migrate = "Additive. Existing renderers compile; tnt_fuse is None unless the entity is primed TNT."

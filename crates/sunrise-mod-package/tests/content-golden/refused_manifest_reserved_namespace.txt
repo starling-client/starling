@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: namespace sunrise is not a mod's to claim (only to add to its tags)
+
+icon:
+unavailable

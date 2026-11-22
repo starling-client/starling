@@ -1,16 +1,5 @@
-//! UUIDs as vanilla's four-int form, to and from their text form.
+//! Parse UUIDs into vanilla's four-int form.
 
-pub fn uuid_text(u: [i32; 4]) -> String {
-    let hex: String = u.iter().map(|v| format!("{:08x}", *v as u32)).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
-}
 pub fn uuid_from_text(s: &str) -> Option<[i32; 4]> {
     let mut hex = [0u8; 32];
     let mut len = 0;
@@ -38,6 +27,7 @@ pub fn uuid_from_text(s: &str) -> Option<[i32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_core::uuid::uuid_text;
 
     #[test]
     fn uuid_from_text_rejects_multibyte_and_non_hex() {

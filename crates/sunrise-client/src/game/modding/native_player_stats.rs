@@ -3,7 +3,7 @@
 //! `ServerRecipeBook`. Reads return None for a stale handle or a player who
 //! isn't online here. Writes return false (or None) for those, for a dead
 //! player, and, inside another player's turn, for anyone but that player.
-use super::{Game, stats::Stats};
+use super::{Game, lan_actions::CombatPlayer, native_server::PlayerRead, stats::Stats};
 use mod_api::{PlayerRef, StatType};
 
 use super::native_namespaced_id::namespaced;
@@ -20,19 +20,31 @@ impl Game<'_> {
         player: PlayerRef,
     ) -> Option<&sunrise_client::lan::guest::Guest> {
         match self.player_handle_read(player)? {
-            super::native_server::PlayerRead::Guest(guest) => Some(guest),
-            super::native_server::PlayerRead::Acting { .. } => None,
+            PlayerRead::Guest(guest) => Some(guest),
+            PlayerRead::Acting { .. } => None,
         }
     }
-    /// The player's statistics, where they are kept now.
+    /// The player's statistics, including the counter lent to a nested turn.
     fn native_player_stats(&self, player: PlayerRef) -> Option<Option<&Stats>> {
-        if !self.native_player_current(player) {
-            return None;
+        match self.player_handle_read(player) {
+            Some(PlayerRead::Guest(g)) => {
+                Some(self.lan.as_ref()?.play.get(&g.conn).map(|p| &p.stats))
+            }
+            Some(PlayerRead::Acting { .. }) => Some(Some(&self.stats)),
+            None => {
+                let entity = player.entity();
+                if self.lan_displaced_players.is_empty()
+                    || self.native_lifecycle.epoch()? != entity.epoch()
+                {
+                    return None;
+                }
+                let CombatPlayer::Displaced(depth, _) = self.combat_player(entity.id())? else {
+                    return None;
+                };
+                let frame = &self.lan_displaced_players[depth];
+                (frame.uuid == Some(player.uuid())).then_some(Some(&frame.stats))
+            }
         }
-        Some(match self.native_player_resting(player) {
-            Some(g) => self.lan.as_ref()?.play.get(&g.conn).map(|p| &p.stats),
-            None => Some(&self.stats),
-        })
     }
 
     /// The value of statistic `stat_type` for `key` (`minecraft:stone`,
@@ -158,11 +170,11 @@ mod tests {
     use mod_api::StatType;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_resting_guest_reads_from_their_own_record() {
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
         use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
         use sunrise_protocol::packets::configuration::ClientInformation;
-        use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
         with_game(|game| {
             let settings = super::super::lan::LanSettings {
@@ -187,6 +199,7 @@ mod tests {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             };
             game.lan_host(settings, net, config).unwrap();
             let (tx, _rx) = mpsc::channel();

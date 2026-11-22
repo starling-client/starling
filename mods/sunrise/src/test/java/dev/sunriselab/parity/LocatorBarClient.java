@@ -25,7 +25,9 @@ import java.util.UUID;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 import net.minecraft.SharedConstants;
+import net.minecraft.commands.arguments.item.ItemParser;
 import net.minecraft.core.UUIDUtil;
+import net.minecraft.network.HashedStack;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.ProtocolInfo;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -51,6 +53,7 @@ import net.minecraft.network.protocol.game.GameProtocols;
 import net.minecraft.network.protocol.game.ServerboundAcceptTeleportationPacket;
 import net.minecraft.network.protocol.game.ServerboundChatCommandPacket;
 import net.minecraft.network.protocol.game.ServerboundChunkBatchReceivedPacket;
+import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerInputPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket;
@@ -64,8 +67,10 @@ import net.minecraft.network.protocol.login.LoginProtocols;
 import net.minecraft.network.protocol.login.ServerboundHelloPacket;
 import net.minecraft.network.protocol.login.ServerboundLoginAcknowledgedPacket;
 import net.minecraft.server.level.ClientInformation;
+import net.minecraft.util.HashOps;
 import net.minecraft.world.entity.PositionMoveRotation;
 import net.minecraft.world.entity.player.Input;
+import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -92,7 +97,8 @@ import net.minecraft.world.phys.Vec3;
  * LocalPlayer sends them, each in the server's next tick, with a STAB ahead of
  * the position of TICK, or none when negative), {@code sprint NAME} (START_SPRINTING,
  * ServerboundPlayerCommandPacket), {@code pickup NAME SLOT} (a left click on that
- * slot of the player's inventory menu, claiming nothing), {@code quit NAME},
+ * slot of the player's inventory menu, claiming nothing), {@code click-predicted NAME WINDOW SLOT PLACED CARRIED}
+ * (left click with the last received state and two count-one item specs, or {@code -} for empty), {@code quit NAME},
  * {@code
  * players on|off} (whether each player also records the other players added
  * to and removed from its level, and its own respawns into a dimension),
@@ -208,6 +214,7 @@ public final class LocatorBarClient {
                     case "selfmetadata" -> selfMetadata = w[1].equals("on");
                     case "trackposes" -> trackPoses = w[1].equals("on");
                     case "still" -> players.get(w[1]).still();
+                    case "fallmove" -> players.get(w[1]).fallmove(w[2].split(" "));
                     case "respawn" -> players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
                         net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.PERFORM_RESPAWN));
                     case "use-on" -> {
@@ -218,9 +225,13 @@ public final class LocatorBarClient {
                     case "stab" -> players.get(w[1]).stab();
                     case "arc" -> players.get(w[1]).arc(Integer.parseInt(w[2]));
                     case "sprint" -> players.get(w[1]).sprint();
-                    case "pickup" -> players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundContainerClickPacket(
-                        0, 0, Short.parseShort(w[2]), (byte) 0, net.minecraft.world.inventory.ContainerInput.PICKUP,
-                        new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(), net.minecraft.network.HashedStack.EMPTY));
+                    case "pickup" -> players.get(w[1]).send(new ServerboundContainerClickPacket(
+                        0, 0, Short.parseShort(w[2]), (byte) 0, ContainerInput.PICKUP,
+                        new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(), HashedStack.EMPTY));
+                    case "click-predicted" -> {
+                        String[] a = w[2].split(" ");
+                        players.get(w[1]).clickPredicted(Integer.parseInt(a[0]), Short.parseShort(a[1]), a[2], a[3]);
+                    }
                     // A stale state requests the server's complete authoritative post-click snapshot.
                     case "click" -> {
                         String[] a = w[2].split(" ");
@@ -603,6 +614,23 @@ public final class LocatorBarClient {
             position = new PositionMoveRotation(new Vec3(start.x, y, z), Vec3.ZERO, at.yRot(), at.xRot());
         }
 
+        /** Write the reports together, with a client-tick marker between positions. */
+        synchronized void fallmove(String[] reports) throws Exception {
+            PositionMoveRotation before = position;
+            ByteBuf batch = Unpooled.buffer();
+            frame(batch, net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
+            for (int i = 0; i < reports.length; i += 4) {
+                Vec3 to = new Vec3(Double.parseDouble(reports[i]), Double.parseDouble(reports[i + 1]),
+                    Double.parseDouble(reports[i + 2]));
+                boolean ground = Boolean.parseBoolean(reports[i + 3]);
+                frame(batch, new ServerboundMovePlayerPacket.PosRot(to, before.yRot(), before.xRot(), ground, false));
+                frame(batch, net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
+                position = new PositionMoveRotation(to, Vec3.ZERO, before.yRot(), before.xRot());
+                record("fallmove " + to.x + " " + to.y + " " + to.z + " " + ground);
+            }
+            flush(batch);
+        }
+
         void still() throws Exception {
             PositionMoveRotation at = position;
             // A tick of its own: the server takes one position per client tick (receivedPositionThisTick).
@@ -726,6 +754,23 @@ public final class LocatorBarClient {
                     }
                 }
             }
+        }
+
+        private void clickPredicted(int window, short slot, String placed, String carried) throws Exception {
+            Integer state = menuStates.get(window);
+            if (state == null) throw new IllegalStateException("No slot or content packet received for window " + window);
+            var changed = new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<HashedStack>();
+            changed.put(slot, hashPrediction(placed));
+            record("menu-click " + window + " " + state);
+            send(new ServerboundContainerClickPacket(window, state, slot, (byte) 0, ContainerInput.PICKUP,
+                changed, hashPrediction(carried)));
+        }
+
+        private static HashedStack hashPrediction(String spec) throws Exception {
+            if (spec.equals("-")) return HashedStack.EMPTY;
+            var item = new ItemParser(ParityData.access).parse(new com.mojang.brigadier.StringReader(spec));
+            var ops = ParityData.access.createSerializationContext(HashOps.CRC32C_INSTANCE);
+            return HashedStack.create(item.createItemStack(1), component -> component.encodeValue(ops).getOrThrow().asInt());
         }
 
         private void recordMenu(Packet<?> p, byte[] payload) throws Exception {
@@ -1037,11 +1082,16 @@ if (ownPoses && p instanceof net.minecraft.network.protocol.game.ClientboundSetE
         }
 
         synchronized void send(Packet<?> packet) throws Exception {
+            ByteBuf frame = Unpooled.buffer();
+            frame(frame, packet);
+            flush(frame);
+        }
+
+        private void frame(ByteBuf frame, Packet<?> packet) throws Exception {
             ByteBuf body = Unpooled.buffer();
             ((ProtocolInfo) outbound).codec().encode(body, packet);
             byte[] raw = new byte[body.readableBytes()];
             body.readBytes(raw);
-            ByteBuf frame = Unpooled.buffer();
             if (threshold >= 0) {
                 ByteBuf inner = Unpooled.buffer();
                 if (raw.length >= threshold) {
@@ -1062,8 +1112,11 @@ if (ownPoses && p instanceof net.minecraft.network.protocol.game.ClientboundSetE
                 writeVarInt(frame, raw.length);
                 frame.writeBytes(raw);
             }
-            byte[] bytes = new byte[frame.readableBytes()];
-            frame.readBytes(bytes);
+        }
+
+        private void flush(ByteBuf frames) throws Exception {
+            byte[] bytes = new byte[frames.readableBytes()];
+            frames.readBytes(bytes);
             out.write(bytes);
             out.flush();
         }

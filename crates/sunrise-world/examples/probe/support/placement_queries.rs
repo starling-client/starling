@@ -1,3 +1,5 @@
+use serde_json::Value;
+use std::{cell::RefCell, io::Write};
 use sunrise_world::{
     heightmap::HeightmapType,
     worldgen::{
@@ -5,8 +7,6 @@ use sunrise_world::{
         placement::{LayerBlock, PlacementContext, PlacementQueryError},
     },
 };
-use serde_json::Value;
-use std::{cell::RefCell, io::Write};
 pub struct Queries<'a, W> {
     generation: WorldGenerationContext,
     world_min: i32,

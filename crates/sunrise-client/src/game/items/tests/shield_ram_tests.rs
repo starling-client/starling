@@ -1,9 +1,9 @@
 //! `RamTarget.tick`: the push a ram gives, and the shield that softens it
 //! (`applyItemBlocking`'s `blockingFactor`).
 use crate::game::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::{Damage, MobEvent, Who};
-use std::sync::Arc;
 
 fn game<'a>(resources: &'a mut Option<Arc<Resources>>) -> Game<'a> {
     let root = std::path::PathBuf::from(
@@ -55,7 +55,7 @@ fn game<'a>(resources: &'a mut Option<Arc<Resources>>) -> Game<'a> {
 /// `RamTarget.tick` on a goat with `speedFactor` 3.0 and force 2.5: the hit's
 /// 2 damage, then the push away from the goat.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_shield_halves_the_push_of_a_ram() {
     let mut resources = None;
     let mut game = game(&mut resources);

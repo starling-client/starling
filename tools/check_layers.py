@@ -12,7 +12,10 @@ optional (behind a feature), for the layer and the portable check alike. The che
 - an `optional` entry whose dependency is no longer optional;
 - with --base, an `allowed` or `optional` entry the branch added from a crate that already had a layer on the base;
 - a shipped crate depending on a tool;
-- a portable crate depending on a crate of the repository that isn't portable, or on a `forbidden` library.
+- a portable crate depending on a crate of the repository that isn't portable, or on a `forbidden` library;
+- a `portable.pending` crate doing the same beyond the crates its entry lists, listed as portable too, or (with
+  --base) gaining an entry its base list lacks.
+- a `sides` crate reaching another one, or a crate below them (or sunrise-client-lib) reaching one (#2210).
 An `allowed` or `optional` entry with no dependency left is reported, not failed. Dev-dependencies are exempt: tests may reach the platform, but shipped code may not.
 
     python3 tools/check_layers.py                     # the check
@@ -47,9 +50,13 @@ def base_config(base):
     merge_base = subprocess.run(["git", "merge-base", base, "HEAD"], capture_output=True, text=True, cwd=ROOT)
     if merge_base.returncode != 0:
         return None
-    shown = subprocess.run(["git", "show", f"{merge_base.stdout.strip()}:{CONFIG_PATH}"], capture_output=True,
-                           text=True, cwd=ROOT)
-    return json.loads(shown.stdout) if shown.returncode == 0 else None
+    if __package__:
+        from . import merge_base as shared
+    else:
+        import merge_base as shared
+    # A baseline that is there but can't be read stops the check (merge_base.text_at).
+    text = shared.text_at(merge_base.stdout.strip(), CONFIG_PATH, ROOT)
+    return json.loads(text) if text is not None else None
 
 
 def metadata(manifest):
@@ -103,6 +110,33 @@ def crossings(config, graph):
     return out
 
 
+def reachable(graph, start):
+    """Every crate `start` depends on, directly or through others."""
+    seen, todo = set(), [start]
+    while todo:
+        for dep in graph.get(todo.pop(), ()):
+            if dep not in seen:
+                seen.add(dep)
+                todo.append(dep)
+    return seen
+
+
+def side_problems(config, graph):
+    """Gameplay's side crates (#2210) reaching each other, or a crate below them reaching a side crate."""
+    sides = config.get("sides", {}).get("crates", [])
+    problems = []
+    for crate in sides:
+        reach = reachable(graph, crate)
+        problems += [f"{crate} -> {other}: gameplay's sides may not depend on each other ({CONFIG_PATH} sides)"
+                     for other in sides if other != crate and other in reach]
+    if sides:
+        below = {"sunrise-client-lib"}.union(*(reachable(graph, crate) for crate in sides)) - set(sides)
+        for crate in sorted(below):
+            problems += [f"{crate} -> {side}: a crate below gameplay's sides may not depend on them "
+                         f"({CONFIG_PATH} sides)" for side in sides if side in reachable(graph, crate)]
+    return problems
+
+
 def check(config, graph, base=None, optional=frozenset(), upstream=None):
     """(problems, notes): problems fail the check, notes are only printed. `optional` is optional_edges()."""
     may = config["may_depend"]
@@ -137,6 +171,7 @@ def check(config, graph, base=None, optional=frozenset(), upstream=None):
         problems.append(f"{edge}: {layers[crate]} may not depend on {layers[dep]}. "
                         f"See {DOC}{SECTION[layers[crate]]}: move the code to the right layer, or offer an "
                         f"extension point the other side plugs into")
+    problems += side_problems(config, graph)
     if base is not None:
         base_layers = base.get("crates", {})
         if upstream is not None:
@@ -162,16 +197,25 @@ def check(config, graph, base=None, optional=frozenset(), upstream=None):
     return problems, notes
 
 
-def portable(config, packages):
+def portable(config, packages, base=None):
     """Problems of the portable crates (docs/layers.md#engine): a path dependency on a crate that isn't portable,
     or a normal or build dependency on a library they never take (window, GPU, sound, gamepad, clipboard, HTTP)."""
     spec = config.get("portable", {})
     crates, forbidden = set(spec.get("crates", [])), set(spec.get("forbidden", []))
+    pending = {crate: set(deps) for crate, deps in spec.get("pending", {}).items() if not crate.startswith("_")}
     optional_baselines = optional_rows(config)
     problems = {f"{crate}: listed as portable in {CONFIG_PATH}, but not an engine crate there"
-                for crate in crates if config["crates"].get(crate) != "engine"}
+                for crate in crates | set(pending) if config["crates"].get(crate) != "engine"}
+    problems |= {f"{crate}: in both portable.crates and portable.pending of {CONFIG_PATH}"
+                 for crate in crates & set(pending)}
+    base_pending = (base or {}).get("portable", {}).get("pending", {})
+    for crate, deps in pending.items():
+        if crate in base_pending:
+            for dep in sorted(deps - set(base_pending[crate])):
+                problems.add(f"{crate} -> {dep}: added to portable.pending in {CONFIG_PATH}. "
+                             f"The exceptions only shrink")
     for package in packages:
-        if package["name"] not in crates:
+        if package["name"] not in crates and package["name"] not in pending:
             continue
         for dep in package["dependencies"]:
             if dep.get("kind") == "dev":
@@ -179,7 +223,7 @@ def portable(config, packages):
             edge = f"{package['name']} -> {dep['name']}"
             if dep.get("optional") and edge in optional_baselines:
                 continue
-            if dep.get("path") and dep["name"] not in crates:
+            if dep.get("path") and dep["name"] not in crates | pending.get(package["name"], set()):
                 problems.add(f"{edge}: a portable crate depends only on the other portable crates "
                              f"({DOC}{SECTION['engine']})")
             elif not dep.get("path") and dep["name"] in forbidden:
@@ -197,13 +241,13 @@ def main(argv=None):
     parser.add_argument("--base", help="refuse 'allowed' entries added since this git ref")
     parser.add_argument("--list", action="store_true", help="print each crate's layer and the exceptions")
     if __package__:
-        from . import check_file_size
+        from . import merge_base
     else:
-        import check_file_size
-    parser.add_argument("--pull-request-merge", action="store_true", help=check_file_size.PULL_REQUEST_MERGE_HELP)
+        import merge_base
+    parser.add_argument("--pull-request-merge", action="store_true", help=merge_base.PULL_REQUEST_MERGE_HELP)
     args = parser.parse_args(argv)
     if args.base:
-        args.base, error = check_file_size.pull_request_base(args.base, args.pull_request_merge)
+        args.base, error = merge_base.pull_request_base(args.base, args.pull_request_merge)
         if error:
             print(f"Layer check failed: {error}")
             return 1
@@ -218,14 +262,17 @@ def main(argv=None):
         for edge in ups:
             print(f"  {edge}")
         return 0
-    if args.base:
-        upstream, provenance = check_file_size.verified_sync_config(args.base, CONFIG_PATH)
-    else:
-        upstream, provenance = None, []
-    problems, notes = check(config, graph, base_config(args.base) if args.base else None,
-                            optional_edges(packages), upstream)
-    problems = provenance + problems
-    problems += portable(config, packages)
+    base = base_config(args.base) if args.base else None
+    optional = optional_edges(packages)
+    problems, notes = check(config, graph, base, optional)
+    if args.base and (problems or config != base):
+        # Only a violation, or an inventory that differs from the base's, can need what a verified sync restored:
+        # every other run stays off the network.
+        upstream, provenance = merge_base.verified_sync_config(args.base, CONFIG_PATH)
+        if upstream is not None or provenance:
+            problems, notes = check(config, graph, base, optional, upstream)
+        problems = provenance + problems
+    problems += portable(config, packages, base)
     for note in notes:
         print(f"note: {note}")
     if problems:

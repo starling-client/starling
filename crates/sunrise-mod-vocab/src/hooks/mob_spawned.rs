@@ -10,9 +10,11 @@ pub trait Hooks {
     /// changing level. It only hears; the mob is already among the game's
     /// mobs. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_mob_spawned",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "EntityJoinLevelEvent, FinalizeSpawnEvent"
     )]
-    fn mob_spawned();
+    fn mob_spawned(dimension: &str, kind: &str, pos: [f64; 3], natural: bool);
 }

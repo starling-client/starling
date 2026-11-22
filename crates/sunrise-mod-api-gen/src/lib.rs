@@ -1,35 +1,28 @@
-//! Generate the typed mod interface from native hook signatures and catalog contracts.
+//! Generate the typed mod interface from catalog contracts and signatures.
 mod catalog;
 mod dispatch_fixtures;
 mod exports;
 mod game_modules;
-mod interface_cache;
-#[cfg(test)]
-mod interface_cache_tests;
-#[cfg(test)]
-mod listener_output_fixture;
-#[cfg(feature = "mixed-output-fixture")]
-mod mixed_output_fixture;
+mod hook_wiring;
 #[doc(hidden)]
 pub use dispatch_fixtures::layout as dispatch_fixture_layout;
-pub use game_modules::materialize_game_modules;
-mod hook_targets;
+pub use game_modules::materialize_generated_host;
 mod host;
 mod layout;
-mod named_hooks;
 mod parts;
 pub use catalog::DECLARATIONS;
 use catalog::{Catalog, Contract, DrawContext, Hook, HostAccess, PartKind, PhaseContext, Side};
 use heck::ToSnakeCase;
+pub use hook_wiring::check_hook_wiring;
 pub use layout::native_hook_layout;
 use quote::ToTokens;
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
-use syn::{FnArg, ImplItem, Item, Pat, Type, visit::Visit, visit_mut::VisitMut};
+use syn::{FnArg, ImplItem, Item, Pat, Type, visit_mut::VisitMut};
 
 fn impl_functions(item: syn::ItemImpl) -> impl Iterator<Item = syn::ItemFn> {
     item.items.into_iter().filter_map(|item| match item {
@@ -101,50 +94,11 @@ fn api_types(source: &str) -> Result<ApiTypes, String> {
 }
 
 fn has_call(block: &syn::Block, expected: &str) -> bool {
-    struct Calls<'a> {
-        expected: &'a str,
-        found: bool,
-    }
-    impl<'ast> Visit<'ast> for Calls<'_> {
-        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-            if call.method == self.expected {
-                self.found = true;
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-            if let syn::Expr::Path(path) = &*call.func
-                && path
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|s| s.ident == self.expected)
-            {
-                self.found = true;
-            }
-            syn::visit::visit_expr_call(self, call);
-        }
-    }
-    let mut calls = Calls {
-        expected,
-        found: false,
-    };
-    calls.visit_block(block);
-    calls.found
-}
-
-fn one_function<'a>(
-    items: impl Iterator<Item = &'a syn::ItemFn>,
-    name: &str,
-) -> Result<&'a syn::ItemFn, String> {
-    let mut matches = items.filter(|item| item.sig.ident == name);
-    let first = matches
-        .next()
-        .ok_or_else(|| format!("expected one {name} signature"))?;
-    if matches.next().is_some() {
-        return Err(format!("expected one {name} signature"));
-    }
-    Ok(first)
+    use hook_wiring::Callee;
+    hook_wiring::has_call_matching(block, |call| match call {
+        Callee::Method(method) => method == expected,
+        Callee::Function(path) => path.segments.last().is_some_and(|s| s.ident == expected),
+    })
 }
 
 fn fresh_name(base: &str, used: &mut HashSet<String>) -> String {
@@ -228,19 +182,25 @@ impl VisitMut for EventLifetimes {
 }
 
 impl DrawContext {
-    /// The context whose surface `ty` borrows, and whether it borrows it mutably.
-    fn of<'a>(contexts: &'a [DrawContext], ty: &Type) -> Option<(&'a DrawContext, bool)> {
+    /// A declared borrowed draw trait whose backing game surface is known to the catalog.
+    fn of<'a>(contexts: &'a [DrawContext], ty: &Type) -> Option<&'a DrawContext> {
         let Type::Reference(reference) = ty else {
             return None;
         };
-        let Type::Path(path) = &*reference.elem else {
+        reference.mutability?;
+        let Type::TraitObject(object) = &*reference.elem else {
             return None;
         };
-        let ident = path.path.segments.last()?.ident.to_string();
+        let mut bounds = object.bounds.iter();
+        let Some(syn::TypeParamBound::Trait(bound)) = bounds.next() else {
+            return None;
+        };
+        if bounds.next().is_some() {
+            return None;
+        }
         contexts
             .iter()
-            .find(|context| context.surface.rsplit("::").next() == Some(ident.as_str()))
-            .map(|context| (context, reference.mutability.is_some()))
+            .find(|context| bound.path.is_ident(context.trait_name.as_str()))
     }
     /// The game struct implementing the trait.
     fn game_struct(&self) -> String {
@@ -301,32 +261,6 @@ fn complete_hook_constants(
     ))
 }
 
-/// A catalog hook point, as a raw injection's `target` can name it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HookPoint {
-    pub name: String,
-    /// The contract version an injection's `hook_version` names.
-    pub version: u64,
-    /// The function the hook is called from: an injection's `target` for it.
-    pub target: String,
-    /// A scoped hook is a Part method alone and has no `Hooks` method.
-    pub scoped: bool,
-}
-
-/// The catalog's hook points, from the declaration files, as the generator reads them.
-pub fn hook_points(root: &Path) -> Result<Vec<HookPoint>, String> {
-    Ok(Catalog::load(root)?
-        .hooks
-        .into_iter()
-        .map(|hook| HookPoint {
-            scoped: hook.scope.is_some(),
-            name: hook.name,
-            version: hook.version,
-            target: hook.target,
-        })
-        .collect())
-}
-
 /// Serialize hook names and NeoForge counterparts for the port-pack event report.
 /// The declaration loader remains the single source of these labels.
 pub fn neoforge_catalog(root: &Path) -> Result<String, String> {
@@ -343,20 +277,18 @@ pub fn neoforge_catalog(root: &Path) -> Result<String, String> {
     serde_json::to_string(&serde_json::json!({ "hooks": hooks })).map_err(|e| e.to_string())
 }
 
-/// The crate folder and module path of a hook target that is a free function
-/// outside `Game`. `sunrise-client-lib` builds from `sunrise-client/src`
-/// (`client_lib.rs`).
-fn free_function_source(target: &str) -> Option<(&'static str, String)> {
+/// The Cargo package and module path of a hook target that is a free function outside `Game`.
+fn free_function_source(target: &str) -> Option<(&'static str, &str)> {
     let prefixes = [
         ("sunrise_world::", "sunrise-world"),
         ("mod_api::", "sunrise-mod-vocab"),
         ("mod_render::", "sunrise-mod-render"),
-        ("sunrise_client_lib::", "sunrise-client"),
+        ("sunrise_client_lib::", "sunrise-client-lib"),
         ("sunrise_client_render::", "sunrise-client-render"),
     ];
     prefixes
         .into_iter()
-        .find_map(|(prefix, krate)| target.strip_prefix(prefix).map(|p| (krate, p.to_owned())))
+        .find_map(|(prefix, krate)| target.strip_prefix(prefix).map(|path| (krate, path)))
 }
 
 /// Whether a hook function needs its dispatch `call` filled in: false when it
@@ -473,24 +405,63 @@ const PART_DOCS: &str = "/// A block's part: code attached through [`Registrar`]
 
 /// The doc of [`EntityPart`], the goal- and behavior-registering part trait (#1077, #824),
 /// which the general entity tick moment (#792) also scopes hooks to.
-const ENTITY_PART_DOCS: &str = "/// An entity type's part (arismoko/horizon#1077): code attached through\n/// `RegistrationContext::entity_part` to one entity type, a mod's own or vanilla's\n/// (`minecraft:zombie`). Its `register_goals` runs at every `Mob` construction of that\n/// type, spawned or loaded, right after the species' own goals — vanilla's `registerGoals`\n/// moment — and the goals it adds join the mob's two selectors beside vanilla's, same\n/// priorities and interruption. Its `register_behaviors` runs wherever a brain-driven\n/// species' brain is built (#824). Its `spawn_cluster_size` answers how large a spawn group of the\n/// type may grow. Its `general_entity_tick` runs for one general entity row's authoritative\n/// tick (#792). Annotate each part trait implementation with\n/// [`sunrise_part`] to derive its subscriptions; the goal, behavior and spawn-size methods\n/// are not hooks, so they subscribe nothing whatever they override.\n";
+const ENTITY_PART_DOCS: &str = "/// An entity type's part: code attached through\n/// `RegistrationContext::entity_part` to one entity type, a mod's own or vanilla's\n/// (`minecraft:zombie`). Its `register_goals` runs at every `Mob` construction of that\n/// type, spawned or loaded, right after the species' own goals — vanilla's `registerGoals`\n/// moment — and the goals it adds join the mob's two selectors beside vanilla's, same\n/// priorities and interruption. Its `register_behaviors` runs wherever a brain-driven\n/// species' brain is built (#824). Its `spawn_cluster_size` answers how large a spawn group of the\n/// type may grow. Its `general_entity_tick` runs for one general entity row's authoritative\n/// tick (#792). Annotate each part trait implementation with\n/// [`sunrise_part`] to derive its subscriptions; the goal, behavior and spawn-size methods\n/// are not hooks, so they subscribe nothing whatever they override. \n";
 
 /// The crate whose generated sources are being built.
 #[derive(Clone, Copy)]
 pub enum Target {
-    /// `sunrise-mod-api`: the mod-side WebAssembly guest transport.
-    Api,
     /// Engine vocabulary: hook and host traits, values, and dispatch.
     Vocab,
     /// The game: the host traits' implementation on `Game`.
     Client,
 }
 
-/// Fill new hooks' placeholders in `game/native_hooks/`. Never writes generated files.
-/// Named hooks in other logical game modules must already call their own dispatch;
-/// this command validates them but never fills or rewrites their bodies.
+/// Fill new hooks' placeholders in `game/native_hooks/`. This explicit authoring command
+/// reads game bodies; build scripts and API generation never do.
 pub fn fill_hooks(root: &Path) -> Result<(), String> {
-    sources(root, FillMode::Fill).map(|_| ())
+    let fills: BTreeMap<_, _> = game_hook_sources(root)?
+        .fills
+        .into_iter()
+        .map(|fill| (fill.native.clone(), fill))
+        .collect();
+    let mut outputs = Vec::new();
+    for path in sunrise_game_discovery::native_hook_files(root)? {
+        let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let file = syn::parse_file(&source).map_err(|e| e.to_string())?;
+        let mut local = Vec::new();
+        for item in file.items {
+            if let Item::Impl(item) = item {
+                for method in impl_functions(item) {
+                    let name = method.sig.ident.to_string();
+                    if let Some(hook) = name.strip_prefix("native_")
+                        && let Some(fill) = fills.get(&name)
+                        && needs_fill(&method, &format!("dispatch_{hook}"), true)?
+                    {
+                        local.push(fill.clone());
+                    }
+                }
+            }
+        }
+        if !local.is_empty() {
+            outputs.push((path, filled_hooks(&source, &local)?));
+        }
+    }
+    for (path, output) in outputs {
+        fs::write(&path, output).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn game_hook_sources(root: &Path) -> Result<dispatch::HookSources, String> {
+    let catalog = Catalog::load(root)?;
+    dispatch::emit(
+        catalog
+            .hooks
+            .iter()
+            .filter(|hook| !dispatch::is_render(hook)),
+        &catalog.draw_contexts,
+        true,
+    )
 }
 
 #[derive(Debug)]
@@ -499,138 +470,63 @@ struct Sources {
     host: String,
     /// The area modules `host.rs` includes.
     areas: String,
-    fire: String,
-    goal_view: String,
 }
 
-/// The hand-written sources, in deterministic order; `fire.rs` includes generated dispatch.
-fn native_hook_files(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let dir = root.join("crates/sunrise-client/src/game/native_hooks");
-    let mut paths = fs::read_dir(&dir)
-        .map_err(|e| e.to_string())?
-        .map(|entry| entry.map(|entry| entry.path()).map_err(|e| e.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    paths.retain(|path| {
-        path.extension().is_some_and(|ext| ext == "rs")
-            && path.file_name().is_some_and(|name| name != "fire.rs")
-    });
-    paths.sort();
-    Ok(paths)
-}
-
-/// Parse and validate the catalog and hook/helper signatures.
-fn sources(root: &Path, fill: FillMode) -> Result<Sources, String> {
-    #[allow(unused_mut)]
-    let mut catalog = Catalog::load(root)?;
-    let mut files = Vec::new();
-    let mut methods = Vec::new();
-    for path in native_hook_files(root)? {
-        let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let file = syn::parse_file(&source).map_err(|e| e.to_string())?;
-        let mut names = HashSet::new();
-        for item in file.items {
-            if let Item::Impl(item) = item {
-                for method in impl_functions(item) {
-                    names.insert(method.sig.ident.to_string());
-                    methods.push(method);
-                }
-            }
-        }
-        files.push((path, source, names));
-    }
-    #[cfg(feature = "mixed-output-fixture")]
-    mixed_output_fixture::append(&mut catalog, &mut methods)?;
+/// Generate the vocabulary from declarations without consulting their engine implementations.
+fn sources(root: &Path) -> Result<Sources, String> {
+    let catalog = Catalog::load(root)?;
     let dispatch::HookSources {
         traits,
         dispatch,
         part_traits,
-        fills,
-        fire,
         hook_ids,
         hook_constants,
         cancel_hooks,
+        client_hooks,
         hook_count,
         ..
     } = dispatch::emit(
-        root,
         catalog
             .hooks
             .iter()
             .filter(|hook| !dispatch::is_render(hook)),
-        &methods,
         &catalog.draw_contexts,
+        false,
     )?;
     if catalog.hooks.is_empty() {
         return Err(catalog::CatalogError::NoHooks.into());
     }
     let part = |name: &str| part_traits.get(name).map_or("", String::as_str);
     let code = format!(
-        "// @generated by cargo run -p xtask -- mod-api; do not edit.\nuse super::*;\n#[doc(hidden)]\n#[repr(usize)]\n#[derive(Clone, Copy, sunrise_mod_api_macros::Wire)]\npub enum HookId {{ {hook_ids} }}\n#[doc(hidden)]\n#[allow(non_upper_case_globals)]\npub mod hook_ids {{ {hook_constants} }}\n#[doc(hidden)]\n#[allow(non_upper_case_globals)]\npub mod cancel_hooks {{ {cancel_hooks} }}\n/// How a trait mod's method listens, from its `#[listener]` attribute: a method without one has priority 0 and is not told of cancelled events.\n#[doc(hidden)]\n#[derive(Clone, Copy, sunrise_mod_api_macros::Wire)]\npub struct Listener {{ pub hook: Option<HookId>, pub priority: i32, pub receive_cancelled: bool }}\npub(crate) const HOOK_COUNT: usize = {hook_count};\n/// The hooks a trait mod implements: one method per catalog hook, each documented from its `doc` field.\n/// Annotate the `impl` with `#[mod_api::sunrise_mod]`, which subscribes the mod to just the methods it implements.\npub trait Hooks: std::any::Any + Send + Sync {{\n#[doc(hidden)] fn subscribed(&self) -> &'static [Option<HookId>];\n#[doc(hidden)] fn listeners(&self) -> &'static [Listener] {{ &[] }}\n/// Once, at startup: attach this mod's parts (`let shaft = r.block_key(\"mymod:shaft\"); r.block_part(shaft, Shaft)`).\nfn register(&self, r: &mut dyn Registrar, cx: &RegistrationContext) {{ let _ = (r, cx); }}\n{traits}}}\n{PART_DOCS}pub trait BlockPart: Send + Sync + 'static {{\n#[doc(hidden)] fn block_subscribed(&self) -> &'static [Option<HookId>];\n/// Whether this part's `explosion_resistance` answer depends only on the state and the explosion, not on the position or the level around it: then a batched read (`LevelRef::explosion_resistances`) asks it once a state per call instead of once a cell. False unless the part says so; the answer stays a pure function of its inputs either way.\nfn explosion_resistance_is_pure(&self) -> bool {{ false }}\n{}}}\n/// A block's part that also answers for its block entity, and for the block like a [`BlockPart`].\npub trait BlockEntityPart: BlockPart {{\n#[doc(hidden)] fn block_entity_subscribed(&self) -> &'static [Option<HookId>];\n{}}}\n/// An item's part.\npub trait ItemPart: Send + Sync + 'static {{\n#[doc(hidden)] fn item_subscribed(&self) -> &'static [Option<HookId>];\n#[doc(hidden)] fn __prepare_equip(&self, stack: &ItemStack, kinds: &[&str], reads: &[EquipReadRow]) -> Result<Option<Box<dyn std::any::Any>>, &'static str> {{ let _ = (stack,kinds,reads); Ok(None) }}\n{}}}\n/// A mod menu type's part.\npub trait MenuPart: Send + Sync + 'static {{\n#[doc(hidden)] fn menu_subscribed(&self) -> &'static [Option<HookId>];\n{}}}\n/// A mod world fluid's part.\npub trait FluidPart: Send + Sync + 'static {{\n#[doc(hidden)] fn fluid_subscribed(&self) -> &'static [Option<HookId>];\n{}}}\n{ENTITY_PART_DOCS}pub trait EntityPart: Send + Sync + 'static {{\n#[doc(hidden)] fn entity_subscribed(&self) -> &'static [Option<HookId>] {{ &[] }}\n{}\n/// The mob's mod goals, added to its two selectors as `GoalSelector.addGoal`\n/// does in vanilla's `registerGoals`: fresh at every construction, so a goal's\n/// state is never saved. Branch on the mob with `goals.mob()`.\nfn register_goals(&self, goals: &mut GoalRegistrar<'_>) {{ let _ = goals; }}\n/// Native mods only: entity parts do not cross to wasm yet.\n/// The mob's mod brain behaviors, joined into the species' brain beside\n/// vanilla's (#824): built wherever the brain is built — its first tick and\n/// every rebuild — started and stopped in `Brain.tick`'s order, fresh state\n/// each build, nothing saved. Branch on the mob with `behaviors.mob()`.\nfn register_behaviors(&self, behaviors: &mut BehaviorRegistrar<'_>) {{ let _ = behaviors; }}\n/// How many mobs one spawn group of this mob's type may grow to (`Mob.getMaxSpawnClusterSize`), asked\n/// where the spawner has just added a mob to a group and compares the group's size with the limit:\n/// natural spawning's packs. `mob` is the mob just spawned, finalized and in\n/// no level yet, to read through `host`; `reason` and `spawner` say why and from what it spawned\n/// (`spawner` is none but for a spawner block's mobs); `vanilla` is the limit the species has. Answer\n/// `Some(limit)` to replace it and `None` to leave it to the next part and then to vanilla's. The\n/// first part to answer wins, in dispatch order, and the group stops growing once its size reaches\n/// the limit, so a limit of 0 or 1 ends it with the mob just spawned. The host is the read-only\n/// one: a listener runs on replayed ticks and must be a pure function of its inputs.\nfn spawn_cluster_size(&self, host: &dyn Host, mob: UnspawnedMobRef, reason: SpawnReason, spawner: Option<SpawnSource>, vanilla: u32) -> Option<u32> {{ let _ = (host, mob, reason, spawner, vanilla); None }}\n/// Whether `entity` can be sheared now with `shears` (NeoForge's `IShearable.isShearable`), asked\n/// where a player's shears (`player` is who holds them) or a dispenser's (`player` none) meet it,\n/// before the `player_shear_entity` or `block_shear_entity` hook. The first part to answer wins, in\n/// dispatch order: `Some(true)` shears it through [`EntityPart::on_sheared`] in place of the\n/// species' own shearing, `Some(false)` leaves it unsheared (a player's click then does nothing),\n/// and `None` leaves it to the next part and then to the species. Server-side.\nfn is_shearable(&self, host: &dyn Host, entity: EntityRef, player: Option<PlayerRef>, shears: &ItemStack) -> Option<bool> {{ let _ = (host, entity, player, shears); None }}\n/// Shears `entity` (NeoForge's `IShearable.onSheared`): called on the part whose\n/// [`EntityPart::is_shearable`] said `Some(true)`, once the shear hooks let it through. Change\n/// the entity and play its sound here, and return the drops: the game spawns each as\n/// `spawnShearedDrop` does (one block above the entity's feet, with a small random push), posts\n/// the shear game event and damages the shears. Server-side.\nfn on_sheared(&self, host: &mut dyn ServerHost, entity: EntityRef, player: Option<PlayerRef>, shears: &ItemStack) -> Vec<ItemStack> {{ let _ = (host, entity, player, shears); Vec::new() }}\n}}\n{dispatch}",
+        "// @generated by cargo run -p xtask -- mod-api; do not edit.\nuse super::*;\n/// A local dispatch index, not a binary identifier.\n#[doc(hidden)]\n#[repr(usize)]\n#[derive(Clone, Copy)]\npub enum HookId {{ {hook_ids} }}\n#[doc(hidden)]\n#[allow(non_upper_case_globals)]\npub mod hook_ids {{ {hook_constants} }}\n#[doc(hidden)]\n#[allow(non_upper_case_globals)]\npub mod cancel_hooks {{ {cancel_hooks} }}\n/// The client-side hooks, by name: what a `side = \"server\"` mod may not subscribe to.\n#[doc(hidden)]\npub const CLIENT_HOOKS: &[(HookId, &str)] = &[{client_hooks}];\n/// Local dispatch metadata from a trait mod's `#[listener]` attribute. A method without one has priority 0 and is not told of cancelled events.\n#[doc(hidden)]\n#[derive(Clone, Copy)]\npub struct Listener {{ pub hook: Option<HookId>, pub priority: i32, pub receive_cancelled: bool }}\npub(crate) const HOOK_COUNT: usize = {hook_count};\n/// The hooks a trait mod implements: one method per catalog hook, each documented from its `doc` field.\n/// Annotate the `impl` with `#[mod_api::sunrise_mod]`, which subscribes the mod to just the methods it implements.\n///\n/// A panicking callback loses its unfinished edits and is disabled for that mod and hook\n/// for the rest of the session. The game names the mod and hook in an error log and,\n/// when a local client is present, an error toast. Ordinary phase and output refusals\n/// are reported every time without disabling the callback.\n///\n/// Later eligible listeners start from the last accepted result; a failed proposal is\n/// not a cancellation or a replacement. Successful cancellations still use listener\n/// priority and `receive_cancelled`, and a first-answer hook still stops at an accepted\n/// answer. Staged registration publishes only completed batches. After a chunk-disk\n/// panic or codec failure, other listeners can run, but the failed job cannot publish.\npub trait Hooks: std::any::Any + Send + Sync {{\n#[doc(hidden)] fn subscribed(&self) -> &'static [Option<HookId>];\n#[doc(hidden)] fn listeners(&self) -> &'static [Listener] {{ &[] }}\n/// Once, at startup: attach this mod's parts (`let shaft = r.block_key(\"mymod:shaft\"); r.block_part(shaft, Shaft)`).\n/// If this callback panics, its pending registrations are discarded and its recorded refusals are logged.\nfn register(&self, r: &mut dyn Registrar, cx: &RegistrationContext) {{ let _ = (r, cx); }}\n{traits}}}\n{PART_DOCS}pub trait BlockPart: Send + Sync + 'static {{\n#[doc(hidden)] fn block_subscribed(&self) -> &'static [Option<HookId>];\n/// Whether this part's `explosion_resistance` answer depends only on the state and the explosion, not on the position or the level around it: then a batched read (`LevelRef::explosion_resistances`) asks it once a state per call instead of once a cell. False unless the part says so; the answer stays a pure function of its inputs either way.\nfn explosion_resistance_is_pure(&self) -> bool {{ false }}\n{}}}\n/// A block's part that also answers for its block entity, and for the block like a [`BlockPart`].\npub trait BlockEntityPart: BlockPart {{\n#[doc(hidden)] fn block_entity_subscribed(&self) -> &'static [Option<HookId>];\n{}}}\n/// An item's part.\npub trait ItemPart: Send + Sync + 'static {{\n#[doc(hidden)] fn item_subscribed(&self) -> &'static [Option<HookId>];\n{}}}\n/// A menu type's part: for a mod menu type or a stock menu type opened by mod blocks.\npub trait MenuPart: Send + Sync + 'static {{\n#[doc(hidden)] fn menu_subscribed(&self) -> &'static [Option<HookId>];\n{}}}\n/// A registered mod effect\'s tick behaviour. Each Part keeps its own cadence.\npub trait MobEffectPart: Send + Sync + \'static {{\n#[doc(hidden)] fn effect_subscribed(&self) -> &\'static [Option<HookId>];\n{}}}\n/// A mod world fluid\'s part.\npub trait FluidPart: Send + Sync + 'static {{\n#[doc(hidden)] fn fluid_subscribed(&self) -> &'static [Option<HookId>];\n{}}}\n{ENTITY_PART_DOCS}pub trait EntityPart: Send + Sync + 'static {{\n#[doc(hidden)] fn entity_subscribed(&self) -> &'static [Option<HookId>] {{ &[] }}\n{}\n/// The mob's mod goals, added to its two selectors as `GoalSelector.addGoal`\n/// does in vanilla's `registerGoals`: fresh at every construction, so a goal's\n/// state is never saved. Branch on the mob with `goals.mob()`.\nfn register_goals(&self, goals: &mut GoalRegistrar<'_>) {{ let _ = goals; }}\n/// The mob's mod brain behaviors, joined into the species' brain beside\n/// vanilla's (#824): built wherever the brain is built — its first tick and\n/// every rebuild — started and stopped in `Brain.tick`'s order, fresh state\n/// each build, nothing saved. Branch on the mob with `behaviors.mob()`.\nfn register_behaviors(&self, behaviors: &mut BehaviorRegistrar<'_>) {{ let _ = behaviors; }}\n/// How many mobs one spawn group of this mob's type may grow to (`Mob.getMaxSpawnClusterSize`), asked\n/// where the spawner has just added a mob to a group and compares the group's size with the limit:\n/// natural spawning's packs. `mob` is the mob just spawned, finalized and in\n/// no level yet, to read through `host`; `reason` and `spawner` say why and from what it spawned\n/// (`spawner` is none but for a spawner block's mobs); `vanilla` is the limit the species has. Answer\n/// `Some(limit)` to replace it and `None` to leave it to the next part and then to vanilla's. The\n/// first part to answer wins, in dispatch order, and the group stops growing once its size reaches\n/// the limit, so a limit of 0 or 1 ends it with the mob just spawned. The host is the read-only\n/// one: a listener runs on replayed ticks and must be a pure function of its inputs.\nfn spawn_cluster_size(&self, host: &dyn Host, mob: UnspawnedMobRef, reason: SpawnReason, spawner: Option<SpawnSource>, vanilla: u32) -> Option<u32> {{ let _ = (host, mob, reason, spawner, vanilla); None }}\n/// Whether `entity` can be sheared now with `shears` (NeoForge's `IShearable.isShearable`), asked\n/// where a player's shears (`player` is who holds them) or a dispenser's (`player` none) meet it,\n/// before the `player_shear_entity` or `block_shear_entity` hook. The first part to answer wins, in\n/// dispatch order: `Some(true)` shears it through [`EntityPart::on_sheared`] in place of the\n/// species' own shearing, `Some(false)` leaves it unsheared (a player's click then does nothing),\n/// and `None` leaves it to the next part and then to the species. Server-side.\nfn is_shearable(&self, host: &dyn Host, entity: EntityRef, player: Option<PlayerRef>, shears: &ItemStack) -> Option<bool> {{ let _ = (host, entity, player, shears); None }}\n/// Shears `entity` (NeoForge's `IShearable.onSheared`): called on the part whose\n/// [`EntityPart::is_shearable`] said `Some(true)`, once the shear hooks let it through. Change\n/// the entity and play its sound here, and return the drops: the game spawns each as\n/// `spawnShearedDrop` does (one block above the entity's feet, with a small random push), posts\n/// the shear game event and damages the shears. Server-side.\nfn on_sheared(&self, host: &mut dyn ServerHost, entity: EntityRef, player: Option<PlayerRef>, shears: &ItemStack) -> Vec<ItemStack> {{ let _ = (host, entity, player, shears); Vec::new() }}\n}}\n{dispatch}",
         part("BlockPart"),
         part("BlockEntityPart"),
         part("ItemPart"),
         part("MenuPart"),
+        part("MobEffectPart"),
         part("FluidPart"),
         part("EntityPart"),
     );
     let code = complete_hook_constants(code, "Hooks", "hook_ids", "HookId")?;
-    let (host, goal_view) = host::generate(root)?;
+    let host = host::generate(root)?;
     let areas = host::areas_source(root)?;
-    // A new hook's placeholder body becomes its dispatch call.
-    if !fills.is_empty() && matches!(fill, FillMode::Require) {
-        let natives = fills
-            .iter()
-            .map(|fill| fill.native.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "{natives}: the let _ = (…); placeholder needs its dispatch call; run cargo run -p xtask -- mod-api"
-        ));
-    }
-    for code in [&code, &host, &areas, &goal_view] {
+    for code in [&code, &host, &areas] {
         syn::parse_file(code).map_err(|e| format!("generated Rust: {e}"))?;
-    }
-    if matches!(fill, FillMode::Fill) {
-        let mut outputs = Vec::new();
-        for (path, source, names) in &files {
-            let local = fills
-                .iter()
-                .filter(|fill| names.contains(&fill.native))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !local.is_empty() {
-                outputs.push((path, filled_hooks(source, &local)?));
-            }
-        }
-        for (path, output) in outputs {
-            fs::write(path, output).map_err(|e| format!("{}: {e}", path.display()))?;
-        }
     }
     Ok(Sources {
         hooks: code,
         host,
         areas,
-        fire,
-        goal_view,
     })
-}
-
-#[derive(Clone, Copy)]
-enum FillMode {
-    Fill,
-    Require,
-    Ignore,
 }
 
 mod build;
 mod capability_providers;
+pub mod counterparts;
 pub mod crossing;
 mod dispatch;
 mod host_param;
 mod index;
-mod wire;
-pub use wire::generate as generate_wire;
-pub use wire::generate_coverage as generate_wire_coverage;
 
 static GENERATED_ON_STDOUT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -649,7 +545,7 @@ thread_local! {
 
 /// Tracks the stager's stamp, `.sunrise-source-staged`, only in a staged copy. Cargo reruns a build
 /// script on every build while a tracked path is missing, so tracking an absent stamp rebuilt
-/// sunrise-mod-points, sunrise-client and every crate above them on each `cargo` invocation of an
+/// sunrise-client and every crate above them on each `cargo` invocation of an
 /// ordinary checkout. A stamp never appears in a tree that was already built: staging writes it
 /// first, into a fresh copy, and refuses a tree that already has one.
 pub(crate) fn rerun_if_staged(root: &std::path::Path) {
@@ -671,46 +567,37 @@ pub(crate) fn rerun_if_changed(path: &impl std::fmt::Display) {
         println!("cargo:rerun-if-changed={path}");
     }
 }
-pub use wire::generate_host as generate_wire_host;
 pub mod functions;
 pub mod internals;
 pub mod internals_view;
 pub mod loops;
 pub mod notes;
 pub mod patch;
-pub mod points;
 pub mod replace;
 pub(crate) mod source;
 pub mod staging;
 pub mod surface;
-pub use build::{
-    generate, generate_engine_points, generate_points, generate_render, write_if_changed,
-};
+pub use build::{generate, generate_api_parts, generate_render, write_if_changed};
+pub use counterparts::generate as generate_counterparts;
 pub use notes::generate as generate_hook_notes;
-mod staged;
-pub use staged::{MODS_STAGE, staged_mods};
 
 /// Generate the dispatch test fixture without preventing xtask from filling new placeholders.
 #[doc(hidden)]
 pub fn generate_test_hooks(root: &Path, out_dir: &Path) -> Result<(), String> {
-    build::track(root, true)?;
+    build::track(root)?;
     dispatch_fixtures::generate(root, out_dir)?;
-    // These fixtures deliberately substitute dispatch-only stub values for API
-    // types. Encoding is exercised by the real mod_api's Wire tests, not stubs.
-    let code = sources(root, FillMode::Ignore)?
-        .hooks
-        .replace(", sunrise_mod_api_macros::Wire", "")
-        .replace("#[derive(sunrise_mod_api_macros::Wire)]\n", "");
+    let code = sources(root)?.hooks;
     fs::write(out_dir.join("mod_api_generated.rs"), code).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{PartKind, PhaseContext};
     use quote::ToTokens;
     #[test]
-    fn hook_points_come_from_the_catalog_and_its_fragments() {
+    fn hooks_keep_their_versions_targets_and_scopes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let points = super::hook_points(&root).unwrap();
+        let points = super::Catalog::load(&root).unwrap().hooks;
         let frame = points
             .iter()
             .find(|p| p.name == "render_frame_pre")
@@ -725,13 +612,37 @@ mod tests {
             frame.target,
             "sunrise_client::game::native_hooks::render_frame_pre::Game<'_>::native_render_frame_pre"
         );
-        assert!(!frame.scoped);
+        assert!(frame.scope.is_none());
         let scoped = points
             .iter()
             .find(|p| p.name == "pre_remove_side_effects")
             .unwrap();
-        assert!(scoped.scoped);
-        assert_eq!(scoped.version, 1);
+        assert_eq!(scoped.scope.as_ref().unwrap().kind, PartKind::BlockEntity);
+        assert_eq!(scoped.version, 4);
+        for (name, version, context) in [
+            (
+                "add_client_reload_listeners",
+                4,
+                Some(PhaseContext::ClientReloadListener),
+            ),
+            ("add_server_reload_listeners", 4, Some(PhaseContext::Reload)),
+            (
+                "register_entity_layers",
+                4,
+                Some(PhaseContext::Registration),
+            ),
+            (
+                "register_entity_renderers",
+                4,
+                Some(PhaseContext::Registration),
+            ),
+            ("section_visibility", 2, None),
+            ("movement_input_update", 1, None),
+        ] {
+            let hook = points.iter().find(|hook| hook.name == name).unwrap();
+            assert_eq!(hook.version, version, "{name}");
+            assert_eq!(hook.context, context, "{name}");
+        }
     }
 
     #[test]
@@ -745,9 +656,7 @@ mod tests {
             .find(|h| h.name == "recipes_received")
             .unwrap();
         assert_eq!(hook.contract, super::Contract::Listen);
-        let generated = super::sources(&root, super::FillMode::Require)
-            .unwrap()
-            .hooks;
+        let generated = super::sources(&root).unwrap().hooks;
         assert!(generated.contains("fn recipes_received("));
         assert!(generated.contains("/// Side: client."));
     }
@@ -787,7 +696,7 @@ mod tests {
             host_param(&level, Some(true), false),
             param("&mut dyn LevelRandomHost", "self")
         );
-        let ticks = "&mut super::mod_api_host::LevelTicks { level: self, ticks }";
+        let ticks = "&mut super::mod_api_host::LevelTicks::new(self, ticks)";
         assert_eq!(
             host_param(&level, Some(false), true),
             param("&mut dyn LevelTicksHost", ticks)
@@ -866,6 +775,49 @@ mod tests {
             param("&mut dyn LevelRandomHost", "self")
         );
         super::host_param::validate(&hit, "test", true, Some(true), false).unwrap();
+        // A read-only level view that is neither `GameLevel` nor a hit: a server `&self`
+        // receiver reads the level through the same `&dyn LevelHost`.
+        let read_level = Hook {
+            host: Some(HostAccess::Level),
+            ..Hook::sample(
+                "sunrise_client::game::native_hooks::block_path_type::ReadLevel<'_>::native_test",
+                Side::Server,
+            )
+        };
+        assert!(super::host_param::is_level(&read_level));
+        assert_eq!(
+            host_param(&read_level, Some(false), false),
+            param("&dyn LevelHost", "self")
+        );
+        super::host_param::validate(&read_level, "test", true, Some(false), false).unwrap();
+        // The hit capability: a server hit with a `&mut self` receiver only.
+        let capable = Hook {
+            host: Some(HostAccess::Hit),
+            ..hit.clone()
+        };
+        assert!(super::host_param::is_level(&capable));
+        assert_eq!(
+            host_param(&capable, Some(true), false),
+            param("&mut dyn HitHost", "self")
+        );
+        super::host_param::validate(&capable, "test", true, Some(true), false).unwrap();
+        for (hook, mutable, ticks) in [
+            (capable.clone(), Some(false), false),
+            (capable.clone(), Some(true), true),
+            (
+                Hook {
+                    side: Side::Both,
+                    ..capable.clone()
+                },
+                Some(false),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                super::host_param::validate(&hook, "test", true, mutable, ticks).unwrap_err(),
+                "test: this entry takes no host marker"
+            );
+        }
         // On both sides a hit's level reads, and its host says which side it is.
         let hit_both = Hook {
             side: Side::Both,
@@ -880,8 +832,14 @@ mod tests {
             super::host_param::validate(&hit_both, "test", true, Some(false), true).unwrap_err(),
             "test: this entry takes no host marker"
         );
+        // A read-only level receiver is not tied to the hit capability: any
+        // non-`GameLevel` level may take it.
+        assert_eq!(
+            host_param(&hit, Some(false), false),
+            param("&dyn LevelHost", "self")
+        );
+        super::host_param::validate(&hit, "test", true, Some(false), false).unwrap();
         for (hook, mutable) in [
-            (hit.clone(), Some(false)),
             (
                 Hook {
                     side: Side::Both,
@@ -953,11 +911,8 @@ mod tests {
         );
     }
 
-    /// `item_picked_up` taken back to how a new hook arrives (its body the
-    /// placeholder) in a copy of the sources: the check reports it, any other
-    /// body is left alone, a hook without its attribute fails by name, and the
-    /// generator brings back the shipped file byte for byte with the generated
-    /// code unchanged.
+    /// Vocabulary generation needs no game sources. The wiring check refuses an unfinished
+    /// pickup hook; the authoring command fills its placeholder without changing the vocabulary.
     #[test]
     #[ignore = "daily"]
     fn new_hook_placeholder_is_reported_then_filled() {
@@ -976,30 +931,9 @@ mod tests {
         let root = real
             .join("target")
             .join(format!("mod-api-fill-{}", std::process::id()));
-        let mut inputs: Vec<String> = [
-            "crates/sunrise-mod-vocab/src/hooks",
-            "crates/sunrise-mod-vocab/src/exports",
-            "crates/sunrise-mod-vocab/src/host",
-            "crates/sunrise-mod-vocab/src/parts",
-            "crates/sunrise-client/src/game.rs",
-            "crates/sunrise-client/src/game",
-            "crates/sunrise-mod-vocab/src/lib.rs",
-        ]
-        .map(str::to_owned)
-        .into();
-        for hook in super::Catalog::load(&real).unwrap().hooks {
-            if let Some((krate, path)) = super::free_function_source(&hook.target) {
-                let (module, _) = path.rsplit_once("::").unwrap();
-                inputs.push(format!(
-                    "crates/{krate}/src/{}.rs",
-                    module.replace("::", "/")
-                ));
-            }
-        }
-        for input in &inputs {
-            copy(&real.join(input), &root.join(input));
-        }
-        // The first hook and helper, by declaration order, and the file declaring each.
+        let vocabulary = "crates/sunrise-mod-vocab/src";
+        copy(&real.join(vocabulary), &root.join(vocabulary));
+        // Find hook declarations in the vocabulary-only checkout.
         let catalog = super::Catalog::load(&real).unwrap();
         let declaring = |name: &str| {
             std::fs::read_dir(root.join(super::catalog::DECLARATIONS))
@@ -1008,15 +942,13 @@ mod tests {
                 .find(|path| {
                     std::fs::read_to_string(path)
                         .unwrap()
-                        .contains(&format!("fn {name}();"))
+                        .contains(&format!("fn {name}("))
                 })
                 .unwrap()
         };
         let first = declaring(&catalog.hooks[0].name);
         let original = std::fs::read_to_string(&first).unwrap();
-        let without_counterparts = super::sources(&root, super::FillMode::Require)
-            .unwrap()
-            .hooks;
+        let without_counterparts = super::sources(&root).unwrap().hooks;
         std::fs::write(
             &first,
             original.replacen(
@@ -1026,14 +958,20 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(
-            super::sources(&root, super::FillMode::Require)
-                .unwrap()
-                .hooks,
-            without_counterparts
-        );
+        assert_eq!(super::sources(&root).unwrap().hooks, without_counterparts);
         std::fs::write(&first, original).unwrap();
-        let hooks = root.join("crates/sunrise-client/src/game/native_hooks/item_picked_up.rs");
+        let hook_dir = "crates/sunrise-client/src/game/native_hooks";
+        copy(&real.join(hook_dir), &root.join(hook_dir));
+        let client = root.join("crates/sunrise-client");
+        std::fs::write(client.join("Cargo.toml"), "").unwrap();
+        std::fs::write(client.join("src/lib.rs"), "mod game;").unwrap();
+        std::fs::write(client.join("src/game.rs"), "mod native_hooks;").unwrap();
+        let hooks = root.join(hook_dir).join("item_picked_up.rs");
+        let pickup = catalog
+            .hooks
+            .iter()
+            .find(|hook| hook.name == "item_picked_up")
+            .unwrap();
         let shipped = std::fs::read_to_string(&hooks).unwrap();
         let call = "self.fire_item_picked_up(player, item, can_pickup);";
         assert_eq!(shipped.matches(call).count(), 1);
@@ -1048,14 +986,14 @@ mod tests {
         let placeholder = shipped.replace(call, "let _ = (player, item, can_pickup);");
         std::fs::write(&hooks, &placeholder).unwrap();
         assert_eq!(
-            super::sources(&root, super::FillMode::Require).unwrap_err(),
-            "native_item_picked_up: the let _ = (…); placeholder needs its dispatch call; run cargo run -p xtask -- mod-api"
+            super::hook_wiring::check(&root, std::slice::from_ref(pickup)).unwrap_err(),
+            "item_picked_up (sunrise_client::game::native_hooks::item_picked_up::Game<'_>::native_item_picked_up): target does not call fire_item_picked_up or Self::fire_item_picked_up"
         );
         assert_eq!(std::fs::read_to_string(&hooks).unwrap(), placeholder);
         // A hook without its attribute fails by name.
         let declared = declaring("item_picked_up");
         let shipped_declarations = std::fs::read_to_string(&declared).unwrap();
-        let declaration = shipped_declarations.find("fn item_picked_up();").unwrap();
+        let declaration = shipped_declarations.find("fn item_picked_up(").unwrap();
         let attribute = shipped_declarations[..declaration]
             .rfind("#[hook(")
             .unwrap();
@@ -1085,6 +1023,7 @@ mod tests {
         let decoy_source = "impl Game<'_> { /// mentions fn native_item_picked_up(\n fn unrelated(&self) { let _ = self; } }\n";
         std::fs::write(&decoy, decoy_source).unwrap();
         super::fill_hooks(&root).unwrap();
+        super::hook_wiring::check(&root, std::slice::from_ref(pickup)).unwrap();
         // The generator writes LF; a Windows checkout (core.autocrlf) has CRLF.
         let lf = |s: &str| s.replace("\r\n", "\n");
         assert_eq!(
@@ -1094,12 +1033,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(decoy).unwrap(), decoy_source);
         assert_eq!(lf(&std::fs::read_to_string(&hooks).unwrap()), lf(&shipped));
         assert_eq!(
-            super::sources(&root, super::FillMode::Require)
-                .unwrap()
-                .hooks,
-            super::sources(&real, super::FillMode::Require)
-                .unwrap()
-                .hooks,
+            super::sources(&root).unwrap().hooks,
+            super::sources(&real).unwrap().hooks,
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1150,14 +1085,11 @@ mod tests {
     fn library_crate_targets_resolve_to_their_source() {
         assert_eq!(
             super::free_function_source("sunrise_client_lib::menu::native_menu_slot_rules"),
-            Some(("sunrise-client", "menu::native_menu_slot_rules".to_owned()))
+            Some(("sunrise-client-lib", "menu::native_menu_slot_rules"))
         );
         assert_eq!(
-            super::free_function_source("sunrise_client_lib::breathing::native_living_breathe"),
-            Some((
-                "sunrise-client",
-                "breathing::native_living_breathe".to_owned()
-            ))
+            super::free_function_source("sunrise_client_lib::breathing::native_living_drown"),
+            Some(("sunrise-client-lib", "breathing::native_living_drown"))
         );
         assert_eq!(
             super::free_function_source(
@@ -1165,18 +1097,18 @@ mod tests {
             ),
             Some((
                 "sunrise-client-render",
-                "sound_engine::hooks::native_play_sound".to_owned()
+                "sound_engine::hooks::native_play_sound"
             ))
         );
         for target in [
             "sunrise_client::menu::native_menu_slot_rules",
-            "sunrise_client::breathing::native_living_breathe",
+            "sunrise_client::breathing::native_living_drown",
         ] {
             assert_eq!(super::free_function_source(target), None);
         }
         assert_eq!(
             super::free_function_source("sunrise_client_lib::crafting::native_ingredient"),
-            Some(("sunrise-client", "crafting::native_ingredient".to_owned()))
+            Some(("sunrise-client-lib", "crafting::native_ingredient"))
         );
         assert_eq!(
             super::free_function_source(

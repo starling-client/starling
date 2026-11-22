@@ -74,7 +74,7 @@ impl Game<'_> {
         let Some(entity) = self.world.block_entities.get(&key) else {
             return;
         };
-        if entity.id() != name || fields.is_empty() {
+        if entity.id() != name || fields.is_empty() && !matches!(entity, BlockEntity::Conduit(_)) {
             return;
         }
         let mut full = fields.clone();
@@ -88,6 +88,9 @@ impl Game<'_> {
             keep_client_state(self.world.block_entities.get(&key), &mut loaded);
             let command_block = matches!(loaded, BlockEntity::CommandBlock(_));
             self.world.block_entities.insert(key, loaded);
+            if source == BlockEntityDataSource::Chunk {
+                sunrise_client::spans::note_block_entity_loads(1);
+            }
             self.update_spawner_display(key);
             // The section is drawn again with what the block entity shows.
             let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -105,5 +108,55 @@ impl Game<'_> {
         p: sunrise_protocol::packets::play::BlockEntityData,
     ) {
         self.remote_block_entity_data(p.pos, p.kind, BlockEntityDataSource::UpdatePacket, &p.tag);
+    }
+}
+
+impl Game<'_> {
+    /// Keep the renderable block entities (chests, furnaces) in step with blocks.
+    /// `previous`: the block's state before, when it changed. A column sent again has
+    /// none, and keeps its block entities' synced attachments: the server does not send
+    /// them again (`remote_chunk` drops those of block entities the column lost).
+    pub(in crate::game) fn sync_block_entity(
+        &mut self,
+        pos: (i32, i32, i32),
+        previous: Option<BlockStateId>,
+        state: BlockStateId,
+    ) {
+        let name = self.res.facts().get(state).name.clone();
+        // LevelChunk.setBlockState: another block's block entity goes, even
+        // one of the same type (a mod's blocks may share one).
+        let other_block = previous.is_some_and(|p| self.res.facts().get(p).name != name);
+        self.ensure_stateful_entity_table();
+        // State-aware factories decide creation only. A valid same-block
+        // instance survives even when the new state would create none.
+        if !other_block
+            && self.world.block_entities.stateful_entity(state.0)
+            && matches!(
+                self.world.block_entities.get(&pos),
+                Some(BlockEntity::Mod(_))
+            )
+        {
+            return;
+        }
+        // A mod block's is the mod's own, as on the server.
+        let removed = match self.new_block_entity_for_state(state) {
+            Some(entity) => {
+                let same = self.world.block_entities.get(&pos).is_some_and(|e| {
+                    e.id() == entity.id() && !(other_block && matches!(e, BlockEntity::Mod(_)))
+                });
+                if same {
+                    return;
+                }
+                // With no previous state this is a column load/adoption, not a block edit.
+                if previous.is_none() {
+                    sunrise_client::spans::note_block_entity_loads(1);
+                }
+                self.world.block_entities.replace(pos, entity)
+            }
+            None => self.world.block_entities.remove(&pos),
+        };
+        if let Some(previous) = previous {
+            self.retire_client_block_entity([pos.0, pos.1, pos.2], previous, removed);
+        }
     }
 }

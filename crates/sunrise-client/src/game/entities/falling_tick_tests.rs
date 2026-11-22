@@ -1,16 +1,16 @@
 //! A falling block's parts hear each tick it ends in the air (`falling_tick`), and not the
 //! tick it lands.
 use crate::game::{FallingBlock, native_entity_refs::tests::with_game};
-use sunrise_client::chunk::Chunk;
-use sunrise_core::{geometry::Vec3, position::BlockPos};
 use mod_api::{
     BlockPart, FallingTickEvent, Hooks, ModEntry, Registrar, RegistrationContext, ServerHost,
 };
 use mod_platform::__private::part_tests::{falling_tick_game_thread, falling_ticks_heard};
 use std::sync::{Arc, Mutex};
+use sunrise_client::chunk::Chunk;
+use sunrise_core::{geometry::Vec3, position::BlockPos};
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_falling_part_hears_each_airborne_tick_and_not_the_landing() {
     falling_tick_game_thread();
     with_game(|game| {
@@ -23,12 +23,15 @@ fn a_falling_part_hears_each_airborne_tick_and_not_the_landing() {
         let sand = registry.default_state("minecraft:sand").unwrap();
         let at = Vec3::new(0.5, 70.0, 0.5);
         game.falling.push(FallingBlock {
-            on_ground: false,
+            ground: Default::default(),
+            fire_ticks: 0,
+            sync_velocity: false,
             attachment_lifetime: Default::default(),
             rotation: [0.0; 2],
             join: Default::default(),
             id: 71,
             state: sand,
+            blocks_building: true,
             start_pos: BlockPos::new(0, 70, 0),
             position: at,
             previous: at,
@@ -89,12 +92,15 @@ fn sand_at(game: &mut crate::game::Game<'_>, id: u32) {
         .unwrap();
     let at = Vec3::new(0.5, 70.0, 0.5);
     game.falling.push(FallingBlock {
-        on_ground: false,
+        ground: Default::default(),
+        fire_ticks: 0,
+        sync_velocity: false,
         attachment_lifetime: Default::default(),
         rotation: [0.0; 2],
         join: Default::default(),
         id,
         state: sand,
+        blocks_building: true,
         start_pos: BlockPos::new(0, 70, 0),
         position: at,
         previous: at,
@@ -128,7 +134,7 @@ fn with_recorder(check: impl FnOnce(&mut crate::game::Game<'_>, &Heard)) {
 /// The listener names the falling block and reads where the tick left it, and what it writes
 /// to the block's velocity is what the stored falling block carries afterwards.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_falling_listener_reads_its_block_and_its_velocity_write_lands() {
     with_recorder(|game, heard| {
         sand_at(game, 71);
@@ -146,7 +152,7 @@ fn a_falling_listener_reads_its_block_and_its_velocity_write_lands() {
 
 /// A falling block gone before the delivery is skipped, and the next pass starts empty.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_falling_block_gone_before_delivery_is_skipped() {
     with_recorder(|game, heard| {
         sand_at(game, 71);

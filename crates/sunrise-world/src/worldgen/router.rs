@@ -1,10 +1,10 @@
 //! The eight terrain-router fields used by Java Edition 26.3.
 use super::{DecodeError, Object, climate::ClimateSampler, density::DensityRegistry, required};
+use std::sync::Arc;
 use sunrise_core::density::{
     DensitySampler,
     graph::{CompileError, DensityCompiler, FunctionId},
 };
-use std::sync::Arc;
 
 /// Declaration and compilation order: the six climate fields, surface, density.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,8 +110,8 @@ impl RouterSamplers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::density::SamplerContext;
     use std::collections::BTreeMap;
+    use sunrise_core::density::SamplerContext;
 
     #[test]
     fn roots_share_holder_cache_and_failed_router_leaves_graph_unchanged() {

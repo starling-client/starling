@@ -4,6 +4,14 @@
 //! `VanillaBlockEntityAnimOracle`: the block entity's fields, the level calls
 //! its tick made and the render state the renderer derives from `BlockAnim`.
 #![forbid(unsafe_code)]
+use serde_json::Value;
+use std::{
+    collections::HashMap,
+    fmt::Write as _,
+    fs,
+    io::{BufWriter, Write},
+    path::PathBuf,
+};
 use sunrise_client::{
     assets::Assets,
     block_entity_anim::{
@@ -18,14 +26,6 @@ use sunrise_client::{
 use sunrise_core::random::LegacyRandom;
 use sunrise_world::loot::PackOverlay;
 use sunrise_world::registry::{BlockRegistry, BlockStateId};
-use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fmt::Write as _,
-    fs,
-    io::{BufWriter, Write},
-    path::PathBuf,
-};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn f(v: f32) -> String {

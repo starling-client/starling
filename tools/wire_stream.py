@@ -8,15 +8,17 @@ Some packets are not the tick's: the server's own timing decides them (keep-aliv
 acknowledgements, teleport acceptances and the move that follows one, chat acknowledgements). They are kept
 apart (`frame`), never compared tick by tick, and `misplaced` checks vanilla's rule for them instead: the
 client processes the server's packets at the start of a frame (Minecraft.runTick: processQueuedPackets before
-the ticks), so none of them lands between two packets of one tick. Keep-alive answers are the exception: the
-network thread sends them (ClientCommonPacketListenerImpl.handleKeepAlive).
+the ticks), so none of them lands between two packets of one tick. Keep-alive answers and chunk batch
+acknowledgements are the exception: the network thread sends them (ClientCommonPacketListenerImpl.handleKeepAlive,
+ClientPacketListener.handleChunkBatchFinished), so they may land anywhere.
 """
 import struct
 
 # Sent from the frame (the server's packets), not from a tick.
 FRAME = {'keep_alive', 'pong', 'chunk_batch_received', 'accept_teleportation', 'chat_ack'}
-# Answers to the server that also come from the frame; `misplaced` checks them.
-ASYNC = FRAME - {'keep_alive'}
+# Answers to the server that also come from the frame; `misplaced` checks them. The network thread's own
+# answers are left out: they may come between two packets of a tick.
+ASYNC = FRAME - {'keep_alive', 'chunk_batch_received'}
 
 
 class Reader:
@@ -128,9 +130,16 @@ def self_id(entries):
     return None
 
 
+def is_mark(command):
+    """Whether a chat command is a scenario marker: /wire-mark, or /wire-mark NN naming the scenario's number."""
+    return command is not None and command.split(' ', 1)[0] == 'wire-mark'
+
+
 def scenarios(entries):
     """One list of ticks for each /wire-mark in the play stream, in order (the ticks after a mark run to the
-    next mark); a tick is {'packets': [(name, fields)], 'frame': [(name, fields)], 'misplaced': [name]}.
+    next mark); a tick is {'packets': [(name, fields)], 'frame': [(name, fields)], 'misplaced': [name],
+    'raw': [(where, name, payload hex)]}: 'raw' holds every serverbound packet as it was on the wire, in order,
+    before any of the rewrites below.
 
     A click's state id becomes `stale`: how far it is behind the last one the server sent for that container
     (0 = up to date). The ids themselves count every change the server made since the login, so two runs
@@ -150,13 +159,14 @@ def scenarios(entries):
         if name == 'container_click':
             last = server_state.get(fields['container'], fields['state'])
             fields = {'container': fields['container'], 'stale': last - fields.pop('state'), **fields}
-        if name == 'chat_command' and fields.get('command') == 'wire-mark':
+        if name == 'chat_command' and is_mark(fields.get('command')):
             current = [new_tick()]
             runs.append(current)
             continue
         if current is None:
             continue
         tick = current[-1]
+        tick['raw'].append(('frame' if name in FRAME else 'packets', name, e.get('data', '')))
         if 'entity' in fields and fields['entity'] == me:
             fields['entity'] = 'self'
         if name in FRAME:
@@ -178,7 +188,7 @@ def first_frame(run, name):
 
 
 def new_tick():
-    return {'packets': [], 'frame': [], 'misplaced': []}
+    return {'packets': [], 'frame': [], 'misplaced': [], 'raw': []}
 
 
 def name_entities(run):

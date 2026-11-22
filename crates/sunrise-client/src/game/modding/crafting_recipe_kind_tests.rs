@@ -16,16 +16,18 @@ struct Kind {
 }
 impl mod_api::CraftingRecipeKind for Kind {
     type Value = u32;
-    fn codec(&self) -> Option<mod_api::CraftingRecipeCodec<u32>> {
-        Some(mod_api::CraftingRecipeCodec::wire())
-    }
     fn decode(&self, _: &str) -> Result<u32, String> {
         Ok(3)
     }
     fn write(&self, _: &u32) -> Result<String, String> {
         Ok("{}".into())
     }
-    fn matches(&self, _: &u32, grid: mod_api::CraftingGrid) -> bool {
+    fn matches(
+        &self,
+        _context: &dyn mod_api::LoopContext,
+        _: &u32,
+        grid: mod_api::CraftingGrid,
+    ) -> bool {
         grid.cells.iter().enumerate().all(|(i, s)| {
             if i == 0 {
                 s.as_ref().is_some_and(|s| s.item() == self.stick)
@@ -34,11 +36,17 @@ impl mod_api::CraftingRecipeKind for Kind {
             }
         })
     }
-    fn assemble(&self, value: &u32, _: mod_api::CraftingGrid) -> Option<mod_api::ItemStack> {
+    fn assemble(
+        &self,
+        _context: &dyn mod_api::LoopContext,
+        value: &u32,
+        _: mod_api::CraftingGrid,
+    ) -> Option<mod_api::ItemStack> {
         mod_api::ItemStack::new(self.diamond, *value)
     }
     fn remaining_items(
         &self,
+        _context: &dyn mod_api::CraftingRemainders,
         _: &u32,
         grid: mod_api::CraftingGrid,
     ) -> Option<Vec<Option<mod_api::ItemStack>>> {

@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use sunrise_bench::compare::{Ab, Paired, Verdict as PairVerdict};
 use serde::{Deserialize, Serialize};
+use sunrise_bench::compare::{Ab, Paired, Verdict as PairVerdict};
 
 use crate::diff::{DiffCapture, DiffOptions, DiffRow, Row, captures, row};
 use crate::wire::{BenchKind, DiffOp, Role, Unit, vocab};

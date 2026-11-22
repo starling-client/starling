@@ -1,10 +1,10 @@
 //! Acceptance tests through the registered native command dispatcher and real server selectors.
 
 use super::*;
-use sunrise_client::mobs::Mob;
-use sunrise_core::geometry::Vec3;
 use mod_api::{CommandArgumentValue as Value, CommandInvocation};
 use std::sync::{Arc, Mutex};
+use sunrise_client::mobs::Mob;
+use sunrise_core::geometry::Vec3;
 
 struct SelectorCommands(Arc<Mutex<Vec<CommandInvocation>>>);
 
@@ -15,29 +15,29 @@ impl mod_api::Hooks for SelectorCommands {
         _: &mut dyn mod_api::ServerHost,
         event: &mut mod_api::RegisterCommandsEvent<'_>,
     ) {
-        event.commands.extend([
-            mod_api::Command::new("heal <targets:players>"),
-            mod_api::Command::new("selectone <target:entity>"),
-            mod_api::Command::new("selectall <targets:entities>"),
-            mod_api::Command::new("selectplayer <target:player>"),
-            mod_api::Command::new("optionalplayers [targets:players]"),
-            mod_api::Command::new("optionalentity [target:entity]"),
-            mod_api::Command::new("optionalentities [targets:entities]"),
-        ]);
-    }
-
-    fn run_mod_command(
-        &self,
-        _: &mut dyn mod_api::ServerHost,
-        event: &mut mod_api::RunModCommandEvent<'_>,
-    ) -> mod_api::Flow {
-        self.0.lock().unwrap().push(event.command.clone());
-        mod_api::Flow::Cancel
+        event.commands.extend(
+            [
+                "heal <targets:players>",
+                "selectone <target:entity>",
+                "selectall <targets:entities>",
+                "selectplayer <target:player>",
+                "optionalplayers [targets:players]",
+                "optionalentity [target:entity]",
+                "optionalentities [targets:entities]",
+            ]
+            .map(|usage| {
+                let heard = self.0.clone();
+                mod_api::Command::new(usage).executes(move |_, _, command| {
+                    heard.lock().unwrap().push(command.clone());
+                    Some(1)
+                })
+            }),
+        );
     }
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn native_selectors_deliver_ordered_handles_once_and_refuse_invalid_selections() {
     let heard = Arc::new(Mutex::new(Vec::new()));
     mod_platform::testing::with_mods(
@@ -322,7 +322,7 @@ fn selector_kinds_publish_vanilla_flags_and_share_parser_suggestions() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn entity_selection_has_no_additional_count_cap() {
     let heard = Arc::new(Mutex::new(Vec::new()));
     mod_platform::testing::with_mods(
@@ -419,7 +419,7 @@ fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
 /// (`in_target_level`): a mod command run from the overworld reaches the entity that lives in
 /// the nether, and each tag picks its own cow, not the one with the other id.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_typed_entity_argument_reaches_an_entity_in_another_level() {
     in_two_levels(&[
         (
@@ -439,7 +439,7 @@ fn a_typed_entity_argument_reaches_an_entity_in_another_level() {
 /// `dx`, `dy` and `dz`) confines it to the source's level, which `execute in` sets; and
 /// `execute as` makes the chosen entity `@s`, not the invoker.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn execute_moves_the_selector_source_to_its_level_and_entity() {
     in_two_levels(&[
         // No positional option: both levels, whatever level the source is in.

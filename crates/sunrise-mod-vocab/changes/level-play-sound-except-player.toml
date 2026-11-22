@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::play_sound"]
+why = "`LevelRef::play_sound` takes a last argument, `except: Option<PlayerRef>`, the one player the sound is not sent to (`Level.playSound(player, ...)`, whose excluded player is the one who caused it). A stale handle or a player of another level refuses the call."
+migrate = "Pass `None` as the new last argument to keep the old behaviour: every player in range hears the sound."

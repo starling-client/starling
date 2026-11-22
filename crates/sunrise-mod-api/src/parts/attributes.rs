@@ -20,10 +20,7 @@ impl AttributesRegistrar for PartRegistrar {
             }
         };
         let result = (|| {
-            if mod_vocab::__private::parts_installation::loaded_mods()
-                .get(self.mod_id)
-                .is_some_and(|package| package.side() != crate::Side::Both)
-            {
+            if self.declaration_side_not_both(&id) {
                 return Err(crate::AttributeRegistrationError::WrongSide);
             }
             if self.attributes.iter().any(|declared| declared.id == id) {
@@ -67,10 +64,7 @@ impl AttributesRegistrar for PartRegistrar {
         min: f64,
         max: f64,
     ) -> Result<(), crate::AttributeRegistrationError> {
-        let result = if mod_vocab::__private::parts_installation::loaded_mods()
-            .get(self.mod_id)
-            .is_some_and(|package| package.side() != crate::Side::Both)
-        {
+        let result = if self.declaration_side_not_both(id) {
             Err(crate::AttributeRegistrationError::WrongSide)
         } else if !namespaced(id) {
             Err(crate::AttributeRegistrationError::InvalidId)

@@ -17,9 +17,9 @@
 //! Times are Unix seconds (UTC), each row's the start of its minute, hour or day.
 use std::collections::BTreeMap;
 
-use sunrise_telemetry::live::{Count, PLATFORMS};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
+use sunrise_telemetry::live::{Count, PLATFORMS};
 
 use crate::store::Store;
 

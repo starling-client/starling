@@ -2,7 +2,7 @@
 
 use crate::{
     keybinds::{KeyBinds, key_code},
-    keymapping::{KeyAction, SNEAK, SPRINT, ToggleKeys},
+    keymapping::{KeyAction, SNEAK, SPRINT, VanillaMappings},
 };
 use std::collections::HashSet;
 use winit::keyboard::{KeyCode, ModifiersState};
@@ -79,14 +79,16 @@ pub fn restore(modifiers: &mut ModifiersState, physical: &mut HashSet<KeyCode>, 
 
 /// Recover missing modifier releases without releasing a rebound key or a pad.
 /// ToggleKeyMapping itself preserves keyboard and controller toggles on release.
+/// Reports which mappings received a recovered release, even if a pad still holds them.
 pub fn reconcile(
     modifiers: ModifiersState,
     physical: &mut HashSet<KeyCode>,
     bindings: &KeyBinds,
-    toggles: &mut ToggleKeys,
+    mappings: &mut VanillaMappings,
     options: [bool; 2],
     pad_held: [bool; 2],
-) {
+) -> [bool; 2] {
+    let mut released = [false; 2];
     for (bit, pair) in MODIFIERS {
         if modifiers.contains(bit) {
             continue;
@@ -96,12 +98,20 @@ pub fn reconcile(
                 continue;
             }
             for (slot, name) in [(SNEAK, "key.sneak"), (SPRINT, "key.sprint")] {
-                if key_code(bindings.get(name)) == Some(key) && !pad_held[slot] {
-                    toggles.key(slot, KeyAction::Release, false, options[slot]);
+                if key_code(bindings.get(name)) == Some(key) {
+                    released[slot] = true;
+                    if !pad_held[slot] {
+                        mappings.toggle_state_mut(slot).key(
+                            KeyAction::Release,
+                            false,
+                            options[slot],
+                        );
+                    }
                 }
             }
         }
     }
+    released
 }
 
 #[cfg(test)]
@@ -177,8 +187,10 @@ mod tests {
                         if rebound {
                             physical.insert(KeyCode::KeyC);
                         }
-                        let mut toggles = ToggleKeys::default();
-                        toggles.key(slot, KeyAction::Press, false, toggle);
+                        let mut toggles = VanillaMappings::default();
+                        toggles
+                            .toggle_state_mut(slot)
+                            .key(KeyAction::Press, false, toggle);
                         let mut options = [false; 2];
                         options[slot] = toggle;
                         let mut pad_held = [false; 2];
@@ -191,7 +203,7 @@ mod tests {
                             options,
                             pad_held,
                         );
-                        assert_eq!(toggles.is_down(slot), rebound || pad || toggle);
+                        assert_eq!(toggles.toggle_state(slot).is_down, rebound || pad || toggle);
                         assert!(!physical.contains(&modifier));
                         assert_eq!(physical.contains(&KeyCode::KeyC), rebound);
                     }
@@ -202,8 +214,10 @@ mod tests {
 
     #[test]
     fn unrelated_modifier_change_does_not_release_an_action() {
-        let mut toggles = ToggleKeys::default();
-        toggles.key(SNEAK, KeyAction::Press, false, false);
+        let mut toggles = VanillaMappings::default();
+        toggles
+            .toggle_state_mut(SNEAK)
+            .key(KeyAction::Press, false, false);
         reconcile(
             ModifiersState::ALT,
             &mut HashSet::new(),
@@ -212,13 +226,13 @@ mod tests {
             [false; 2],
             [false; 2],
         );
-        assert!(toggles.is_down(SNEAK));
+        assert!(toggles.toggle_state(SNEAK).is_down);
     }
 
     #[test]
     fn lost_modifier_release_preserves_a_controller_toggle() {
-        let mut toggles = ToggleKeys::default();
-        toggles.pad_toggle(SNEAK, false);
+        let mut toggles = VanillaMappings::default();
+        toggles.toggle_state_mut(SNEAK).pad_toggle();
         reconcile(
             ModifiersState::empty(),
             &mut HashSet::from([KeyCode::ShiftLeft]),
@@ -227,6 +241,6 @@ mod tests {
             [false; 2],
             [false; 2],
         );
-        assert!(toggles.is_down(SNEAK));
+        assert!(toggles.toggle_state(SNEAK).is_down);
     }
 }

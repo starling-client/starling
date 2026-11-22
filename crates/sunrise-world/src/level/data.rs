@@ -11,9 +11,9 @@ use crate::{
     registry::{BlockRegistry, BlockStateId, BlockTableFile},
     worldgen::tags::TagDefinitions,
 };
-use sunrise_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
 use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
+use sunrise_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
 #[path = "data/cache.rs"]
 mod cache;
 pub(super) use cache::set_dir as set_cache_dir;
@@ -38,6 +38,8 @@ pub mod state_flags {
     pub const SKYLIGHT_DOWN: u32 = 1 << 15;
     pub const REQUIRES_TOOL: u32 = 1 << 16;
     pub const SHAPE_OCCLUSION: u32 = 1 << 17;
+    // `VanillaBlockBehaviourExporter`: the predicate could not run on an empty level.
+    pub const CONDUCTOR_ERROR: u32 = 1 << 20;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +69,17 @@ pub struct StateFacts {
     pub instrument: u8,
     /// Index into `Behaviours::shapes`, or -1 for an uncached (dynamic) shape.
     pub shape: i32,
+    /// Column-offset limits for the declared default collision, not the cached metadata.
+    pub(crate) collision_offset: Option<(f32, f32)>,
+}
+
+impl StateFacts {
+    /// Whether a random tick at a block in this state can do anything
+    /// ([`super::Behaviours::random_tick_candidate`]): a randomly ticking block, or lava.
+    pub fn random_tick_candidate(&self) -> bool {
+        self.flags & state_flags::RANDOM_TICKS != 0
+            || super::fluids::fluid_randomly_ticks(self.fluid.kind())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +191,14 @@ impl BlockSet {
     }
 }
 
+/// Index into a fence gate's load-resolved sounds.
+#[derive(Clone, Copy, Debug)]
+pub enum GateSoundSite {
+    Use,
+    Explosion,
+    Redstone,
+}
+
 #[derive(Clone, Debug)]
 pub struct BlockData {
     pub class: Class,
@@ -187,8 +208,9 @@ pub struct BlockData {
     pub classes: ClassSet,
     pub interfaces: u16,
     pub set_type: Option<Arc<SetType>>,
-    pub gate_open: Option<Arc<str>>,
-    pub gate_close: Option<Arc<str>>,
+    /// Resolved sounds in use, explosion, redstone order.
+    pub gate_open: [Option<Arc<str>>; 3],
+    pub gate_close: [Option<Arc<str>>; 3],
     pub open_sound: Option<Arc<str>>,
     pub close_sound: Option<Arc<str>>,
     pub ticks_to_stay_pressed: i32,
@@ -206,12 +228,17 @@ pub struct BlockData {
     pub grow_probability: f64,
     pub growth_direction: Direction,
     pub schedule_fluid_ticks: bool,
+    /// A declared boolean waterlogged property adds placement and shape defaults.
+    pub declared_waterlogged: bool,
     pub weather: u8,
     pub ignite_odds: i32,
     pub burn_odds: i32,
     pub sounds: Arc<Sounds>,
     pub item: Arc<str>,
     pub dynamic_shape: bool,
+    /// A content block opts into base VegetationBlock survival instead of its
+    /// template's survival. The loader leaves native vegetation chains alone.
+    pub(super) declared_vegetation: bool,
 }
 impl BlockData {
     pub fn is(&self, class: Class) -> bool {
@@ -252,6 +279,9 @@ macro_rules! named_blocks {
         #[derive(Clone, Copy, Debug)]
         pub struct Named { $(pub $field: BlockId,)* }
         impl Named {
+            #[cfg(test)]
+            const TEST_NAMES: &'static [&'static str] = &[$(concat!("minecraft:", $name),)*];
+
             pub(super) fn resolve(table: &StateTable) -> io::Result<Self> {
                 Ok(Self { $($field: table.block_by_name(concat!("minecraft:", $name)).ok_or_else(|| invalid(concat!("missing block ", $name)))?,)* })
             }
@@ -837,7 +867,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             .ok_or_else(|| fail("invalid behaviour state row"))?;
         let int = |i: usize| row.get(i).and_then(Value::as_i64).unwrap_or(0);
         let gb = |key: &str| game.flag(key);
-        let mut flags = int(1) as u32 & 0x7f;
+        let mut flags = int(1) as u32 & (0x7f | state_flags::CONDUCTOR_ERROR);
         for (key, bit) in [
             ("replaceable", state_flags::REPLACEABLE),
             ("random_ticks", state_flags::RANDOM_TICKS),
@@ -890,6 +920,10 @@ fn build_with_gameplay<G: GameplayStateSource>(
             push,
             instrument: instrument_index(row.get(8).and_then(Value::as_str).unwrap_or("HARP")),
             shape: shape_ids[id],
+            collision_offset: cached.offset_limits(
+                BlockStateId(id as u32),
+                crate::collision::ShapeChannel::Collision,
+            ),
         });
     }
 
@@ -952,8 +986,17 @@ fn build_with_gameplay<G: GameplayStateSource>(
         let text = |value: Option<&Value>, strings: &mut HashMap<String, Arc<str>>| {
             value.and_then(Value::as_str).map(|s| interned(strings, s))
         };
-        let gate_open = text(wood.and_then(|w| w.get("fenceGateOpen")), &mut strings);
-        let gate_close = text(wood.and_then(|w| w.get("fenceGateClose")), &mut strings);
+        let mut gate_sounds = |key: &str, vanilla: &str| {
+            let fallback = wood.and_then(|w| w.get(vanilla));
+            std::array::from_fn(|site| {
+                let value = field(key)
+                    .and_then(|v| v.get(site))
+                    .filter(|v| !v.is_null());
+                text(value.or(fallback), &mut strings)
+            })
+        };
+        let gate_open = gate_sounds("gateOpenSounds", "fenceGateOpen");
+        let gate_close = gate_sounds("gateCloseSounds", "fenceGateClose");
         let open_sound = text(field("openSound"), &mut strings);
         let close_sound = text(field("closeSound"), &mut strings);
         let link = [
@@ -1005,6 +1048,8 @@ fn build_with_gameplay<G: GameplayStateSource>(
             class,
             chain,
             classes,
+            declared_vegetation: json["declared_vegetation"].as_bool() == Some(true)
+                && !classes.contains(Class::Vegetation),
             interfaces,
             set_type,
             gate_open,
@@ -1024,6 +1069,9 @@ fn build_with_gameplay<G: GameplayStateSource>(
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
             growth_direction,
+            declared_waterlogged: field("declaredWaterlogged")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             schedule_fluid_ticks: field("scheduleFluidTicks")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
@@ -1119,7 +1167,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             }
         }
     }
-    Ok(Behaviours {
+    let behaviours = Behaviours {
         table,
         props,
         named,
@@ -1138,7 +1186,10 @@ fn build_with_gameplay<G: GameplayStateSource>(
         occlusion_cache: Default::default(),
         growth: Default::default(),
         block_maps: Default::default(),
-    })
+        fluid_interactions: Default::default(),
+    };
+    behaviours.install_vanilla_fluid_interactions();
+    Ok(behaviours)
 }
 
 pub(super) fn potted_by_content(
@@ -1197,6 +1248,129 @@ fn instrument_index(name: &str) -> u8 {
         .iter()
         .position(|n| n.eq_ignore_ascii_case(name))
         .map_or(0, |i| i as u8)
+}
+
+/// Minimal in-memory behaviour tables for an unsupported plant carried by a piston.
+#[cfg(test)]
+pub(super) fn inert_support_fixture() -> Behaviours {
+    use serde_json::{Map, json};
+
+    let mut states = Vec::new();
+    let mut defaults = Map::new();
+    for &name in Named::TEST_NAMES.iter().chain(&["test:plant", "test:soil"]) {
+        if defaults.contains_key(name) {
+            continue;
+        }
+        defaults.insert(name.into(), json!(states.len()));
+        if matches!(name, "minecraft:water" | "minecraft:lava") {
+            for level in 0..16 {
+                states.push(json!([name, false, false, "", {
+                    "id": name, "properties": {"level": level.to_string()}
+                }]));
+            }
+        } else {
+            states.push(json!([name, false, false, "", name]));
+        }
+    }
+    let registry = BlockRegistry::from_facts_json(
+        json!({"defaults": defaults, "states": states})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    let mut table = StateTable::new(&registry).unwrap();
+    let props = Props::resolve(&mut table);
+    let named = Named::resolve(&table).unwrap();
+    let plant = table.block_by_name("test:plant").unwrap();
+    let blocks = (0..table.block_count())
+        .map(|index| {
+            let block = BlockId(index as u16);
+            let class = if block == plant {
+                Class::Vegetation
+            } else if block == named.moving_piston {
+                Class::MovingPiston
+            } else {
+                Class::Block
+            };
+            BlockData {
+                class,
+                chain: vec![class],
+                classes: ClassSet::default(),
+                interfaces: 0,
+                set_type: None,
+                gate_open: [None, None, None],
+                gate_close: [None, None, None],
+                open_sound: None,
+                close_sound: None,
+                ticks_to_stay_pressed: 0,
+                max_weight: 0,
+                link: None,
+                link2: None,
+                support_tag: None,
+                support_tag2: None,
+                feature: None,
+                grow_probability: 0.0,
+                growth_direction: Direction::Up,
+                schedule_fluid_ticks: false,
+                declared_waterlogged: false,
+                weather: 0,
+                ignite_odds: 0,
+                burn_odds: 0,
+                sounds: Arc::new(Sounds {
+                    volume: 0.0,
+                    pitch: 0.0,
+                    place: "".into(),
+                    break_: "".into(),
+                    fall: "".into(),
+                }),
+                item: "".into(),
+                dynamic_shape: false,
+                declared_vegetation: false,
+            }
+        })
+        .collect();
+    let facts = (0..table.state_count())
+        .map(|index| StateFacts {
+            flags: if table.block(BlockStateId(index as u32)) == named.air {
+                state_flags::AIR
+            } else {
+                0
+            },
+            sturdy: 0,
+            weak: 0,
+            strong: 0,
+            fluid: FluidState::EMPTY,
+            emission: 0,
+            dampening: 0,
+            hardness: 0.0,
+            push: PushReaction::PushPull,
+            resolved_push: super::piston_reactions::CachedReaction::new(PushReaction::PushPull),
+            instrument: 0,
+            shape: -1,
+            collision_offset: None,
+        })
+        .collect();
+    Behaviours {
+        table,
+        props,
+        named,
+        tags: Tags::default(),
+        all_tags: HashMap::new(),
+        facts,
+        shapes: Vec::new(),
+        shape_info: Vec::new(),
+        fluid_tags: FluidTags::default(),
+        fluid_definitions: HashMap::new(),
+        blocks,
+        items: HashMap::new(),
+        potted_by_content: HashMap::new(),
+        liquid_blocks: FluidBlockBindings::new(&registry).unwrap(),
+        dynamic: HashMap::new(),
+        occlusion_cache: Default::default(),
+        growth: Default::default(),
+        block_maps: Default::default(),
+        fluid_interactions: Default::default(),
+    }
 }
 
 impl GameplayStateSource for Value {

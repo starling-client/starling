@@ -3,18 +3,42 @@
 //! and command item NBT use fills every field. Both sides use it: a client for
 //! what its server sends, a server for a creative client's
 //! `SetCreativeModeSlot`. The other direction is `lan::guest::stack_to_network`.
-use crate::items::{ConsumeEffect, ItemStack};
+use crate::items::{ConsumeEffect, ItemInfo, ItemStack};
+use std::sync::Arc;
 use sunrise_core::nbt::Tag;
 use sunrise_protocol::buf::{Codec, Reader};
 use sunrise_protocol::item::{Component, Profile, Stack, Template, component};
 use sunrise_protocol::registry::{Builtin, Dynamic};
-use std::sync::Arc;
+use sunrise_world::component_value::consume_effects::Admitted;
 
 pub(crate) mod attribute_modifiers;
 pub(crate) mod kinetic;
-use sunrise_core::use_animation::UseAnimation;
 use sunrise_world::consumable::Consumable;
 pub type ItemConsumable = Consumable<String, ConsumeEffect>;
+
+/// Publish native consume-effect codecs to the persistent and protocol layers.
+pub fn install_consume_effect_codecs() -> Result<(), String> {
+    use sunrise_world::component_value::consume_effects::{self, Type};
+    let codecs = mod_api::__private::consume_effect_codecs();
+    if codecs.is_empty() {
+        return Ok(());
+    }
+    consume_effects::install(
+        codecs
+            .into_iter()
+            .map(|(name, codec)| {
+                (
+                    Arc::from(name),
+                    Type {
+                        schema: codec.schema,
+                        load: codec.load,
+                        read: codec.read,
+                    },
+                )
+            })
+            .collect(),
+    )
+}
 
 /// A stack from the wire: its item by the built-in registry's id, its
 /// components by the synced registries' (enchantments, trims).
@@ -25,8 +49,15 @@ pub fn from_network(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> ItemStack
         damage: 0,
         extra: None,
     };
-    let components = components_tag(s, builtin, synced);
-    let (damage, data) = crate::item_data::decode_components(components.as_ref());
+    let mut effects = EffectProjection::default();
+    let components = components_tag(s, builtin, synced, &mut effects);
+    let admitted = if effects.admitted.is_empty() {
+        Arc::default()
+    } else {
+        Arc::from(effects.admitted)
+    };
+    let (damage, data) =
+        crate::item_data::decode_network_components(components.as_ref(), &admitted);
     out.damage = damage;
     if let Some(data) = data {
         *out.data_mut() = *data;
@@ -35,7 +66,17 @@ pub fn from_network(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> ItemStack
     // What it decoded to, to send the server's own patch back if that holds.
     if let Some(patch) = &s.wire.0 {
         let decoded = out.clone();
-        out.data_mut().wire = crate::item_data::Wire::new(decoded, patch.clone());
+        let effect_mapping = synced
+            .consume_effect_codecs
+            .as_ref()
+            .map(|snapshot| snapshot.identity().clone());
+        out.data_mut().wire = crate::item_data::Wire::from_network(
+            decoded,
+            patch.clone(),
+            effect_mapping,
+            admitted,
+            effects.refused,
+        );
     }
     out
 }
@@ -92,11 +133,12 @@ fn glider_and_slot(
             _ => None,
         };
     }
-    let Some((added, removed)) = data
-        .wire
-        .patch()
-        .and_then(|p| sunrise_protocol::item::WirePatch::decode(p).ok())
-    else {
+    let Some((added, removed)) = data.wire.patch().and_then(|p| {
+        sunrise_protocol::item::WirePatch::select(Reader::new(p), |kind| {
+            matches!(kind, component::GLIDER | component::EQUIPPABLE)
+        })
+        .ok()
+    }) else {
         return (glider, slot);
     };
     if removed.contains(&component::GLIDER) {
@@ -128,27 +170,15 @@ fn glider_and_slot(
 /// consumable's `Consumable.consumeTicks` (`consumeSeconds * 20`), and
 /// whether `blocks_attacks` is added.
 pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
-    let Some((added, _)) = stack
-        .data()
-        .and_then(|d| d.wire.patch())
-        .and_then(|p| sunrise_protocol::item::WirePatch::decode(p).ok())
-    else {
+    let Some(patch) = stack.data().and_then(|data| data.wire.patch()) else {
         return (None, false);
     };
-    let mut out = (None, false);
-    for (kind, c) in &added {
-        match (*kind, c) {
-            (component::CONSUMABLE, Component::Raw(bytes)) => {
-                out.0 = Reader::new(bytes)
-                    .f32()
-                    .ok()
-                    .map(|seconds| (seconds * 20.0) as i32);
-            }
-            (component::BLOCKS_ATTACKS, _) => out.1 = true,
-            _ => {}
-        }
-    }
-    out
+    (
+        stack
+            .consumable(None)
+            .map(|value| (value.seconds * 20.0) as i32),
+        sunrise_protocol::item::WirePatch::adds(patch, component::BLOCKS_ATTACKS),
+    )
 }
 
 /// `FoodProperties.canAlwaysEat` from the stack's `food` component.
@@ -162,19 +192,16 @@ pub fn can_always_eat(stack: &ItemStack, default: bool) -> bool {
     }
     default
 }
-/// `UseRemainder` from the stack's `use_remainder` component.
-pub fn use_remainder(stack: &ItemStack, default: Option<String>) -> Option<String> {
+/// `UseRemainder.convertIntoRemainder`: materialize the effective template only on use.
+pub fn use_remainder(stack: &ItemStack, info: Option<&ItemInfo>) -> Option<ItemStack> {
+    const ID: &str = "minecraft:use_remainder";
     let data = stack.data();
-    if data.is_some_and(|d| d.other("!minecraft:use_remainder").is_some()) {
-        return None;
+    if let Some(data) = data
+        && (data.other(ID).is_some() || data.other("!minecraft:use_remainder").is_some())
+    {
+        return data.template_stack(ID);
     }
-    if let Some(remainder) = data.and_then(|d| d.other("minecraft:use_remainder")) {
-        return match remainder.get("id") {
-            Some(Tag::String(id)) => Some(id.to_string_lossy()),
-            _ => None,
-        };
-    }
-    default
+    info?.component_prototype.data()?.template_stack(ID)
 }
 /// `Equippable.dispensable` from the stack's `equippable` component.
 pub fn dispensable(stack: &ItemStack, default: bool) -> bool {
@@ -235,11 +262,12 @@ pub fn equippable(stack: &ItemStack, items: &crate::items::Items) -> Option<Equi
             camera_overlay: string("camera_overlay").map(namespaced),
         });
     }
-    let Some((added, removed)) = data
-        .wire
-        .patch()
-        .and_then(|p| sunrise_protocol::item::WirePatch::decode(p).ok())
-    else {
+    let Some((added, removed)) = data.wire.patch().and_then(|p| {
+        sunrise_protocol::item::WirePatch::select(Reader::new(p), |kind| {
+            kind == component::EQUIPPABLE
+        })
+        .ok()
+    }) else {
         return out;
     };
     if removed.contains(&component::EQUIPPABLE) {
@@ -289,80 +317,7 @@ pub fn damage_on_hurt(stack: &ItemStack, default: bool) -> bool {
 /// `stack.get(DataComponents.CONSUMABLE)`: the item's own, replaced or removed
 /// by the saved components (a command's, a save's), then by the server's patch.
 pub fn consumable(stack: &ItemStack, items: &crate::items::Items) -> Option<ItemConsumable> {
-    let mut out = items.get(&stack.item).and_then(|i| i.consumable.clone());
-    let Some(data) = stack.data() else {
-        return out;
-    };
-    // `from_network` already wrote the wire patch's consumable here, resolved
-    // through the real registries: decoding the raw bytes again without them
-    // would lose registered effects and sounds.
-    let mut resolved = false;
-    if data.other("!minecraft:consumable").is_some() {
-        out = None;
-    } else if let Some(tag) = data.other("minecraft:consumable")
-        && let Some(c) = decode_consumable_tag(tag)
-    {
-        out = Some(c);
-        resolved = true;
-    }
-    let Some((added, removed)) = data
-        .wire
-        .patch()
-        .and_then(|p| sunrise_protocol::item::WirePatch::decode(p).ok())
-    else {
-        return out;
-    };
-    if removed.contains(&component::CONSUMABLE) {
-        out = None;
-    }
-    for (kind, c) in &added {
-        if let (component::CONSUMABLE, Component::Raw(bytes)) = (*kind, c)
-            && !resolved
-            && let Some(mut c) = decode_consumable_bytes(bytes)
-        {
-            if c.sound.is_empty() {
-                if let Some(proto) = items.get(&stack.item).and_then(|i| i.consumable.as_ref()) {
-                    c.sound = proto.sound.clone();
-                } else {
-                    c.sound = "minecraft:entity.generic.eat".to_owned();
-                }
-            }
-            out = Some(c);
-        }
-    }
-    out
-}
-
-/// Decodes the `minecraft:consumable` component from its saved/NBT tag form.
-pub fn decode_consumable_tag(tag: &Tag) -> Option<ItemConsumable> {
-    let json = crate::item_render::tag_json(tag);
-    let seconds = json["consume_seconds"].as_f64().map_or(1.6, |s| s as f32);
-    let animation = crate::first_person::consumable_animation(&json);
-    let sound = json["sound"]
-        .as_str()
-        .or_else(|| json["sound"]["sound_id"].as_str())
-        .unwrap_or("minecraft:entity.generic.eat")
-        .to_owned();
-    let particles = tag
-        .get("has_consume_particles")
-        .and_then(crate::item_data::component_bool)
-        .or_else(|| json["has_consume_particles"].as_bool())
-        .unwrap_or(true);
-    let mut effects = Vec::new();
-    if let Some(arr) = json["on_consume_effects"].as_array() {
-        for eff in arr {
-            if let Some(parsed) = sunrise_items::items::parse_consume_effect(eff) {
-                effects.push(parsed);
-            }
-        }
-    }
-    Some(Consumable {
-        seconds,
-        animation,
-        sound,
-        particles,
-        effects,
-    })
+    stack.consumable(items.get(&stack.item)).cloned()
 }
 
 /// Decodes the `minecraft:consumable` component from wire bytes.
@@ -377,10 +332,11 @@ pub fn decode_consumable_bytes_with(
     let mut r = Reader::new(bytes);
     let seconds = r.f32().ok()?;
     let animation_id = r.varint().ok()?;
-    let animation = match animation_id {
-        2 => UseAnimation::Drink,
-        _ => UseAnimation::Eat,
-    };
+    let animation_name = sunrise_core::use_animation::NAMES
+        .get(animation_id as usize)
+        .copied()
+        .unwrap_or("none");
+    let animation = sunrise_items::use_animation::animation_name(animation_name.encode_utf16());
     let sound_holder = r.varint().ok()?;
     let sound = match sound_holder {
         0 => {
@@ -401,11 +357,10 @@ pub fn decode_consumable_bytes_with(
     let n = r.count(r.remaining()).unwrap_or(0);
     let mut effects = Vec::with_capacity(n.min(64));
     for _ in 0..n {
-        if let Some(tag) = consume_effect_tag(&mut r, b, 0) {
-            let json = crate::item_render::tag_json(&tag);
-            if let Some(parsed) = sunrise_items::items::parse_consume_effect(&json) {
-                effects.push(parsed);
-            }
+        if let Some(Some(tag)) = consume_effect_tag(&mut r, b, &mut EffectProjection::default())
+            && let Some(parsed) = sunrise_items::items::parse_consume_effect(&tag)
+        {
+            effects.push(parsed);
         }
     }
     Some(Consumable {
@@ -498,8 +453,19 @@ fn item_name(builtin: &Builtin, id: i32) -> Arc<str> {
     )
 }
 
+#[derive(Default)]
+struct EffectProjection {
+    admitted: Vec<Admitted>,
+    refused: bool,
+}
+
 /// The item's patched components as vanilla's `components` compound.
-fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag> {
+fn components_tag(
+    s: &Stack,
+    builtin: &Builtin,
+    synced: &Dynamic,
+    admitted: &mut EffectProjection,
+) -> Option<Tag> {
     let name = |id: i32| {
         builtin
             .get("minecraft:data_component_type")
@@ -511,6 +477,14 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                     .flatten()
             })
     };
+    let lookup = |registry: &str, id| {
+        synced
+            .name(registry, id)
+            .or_else(|| builtin.get(registry)?.name(id))
+            .map(str::to_owned)
+    };
+    let names =
+        sunrise_protocol::item::persistent::NameLookup::new(&lookup).with_registries(synced);
     let mut entries: Vec<(&str, Tag)> = Vec::new();
     for (kind, c) in &s.added {
         let Some(key) = name(*kind) else {
@@ -552,10 +526,45 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
             }
             // `ItemContainerContents`: a shulker box's items, for its tooltip.
             Component::Raw(bytes) if *kind == component::CONTAINER => {
-                let Some(slots) = container_tag(bytes, builtin, synced) else {
+                let Some(slots) = container_tag(bytes, builtin, synced, admitted) else {
                     continue;
                 };
                 slots
+            }
+            Component::Raw(bytes)
+                if matches!(
+                    *kind,
+                    component::USE_REMAINDER | component::SULFUR_CUBE_CONTENT
+                ) =>
+            {
+                let Ok(stack) = Template::read(&mut Reader::new(bytes).with_names(synced)) else {
+                    continue;
+                };
+                template_tag(&stack, builtin, synced, admitted)
+            }
+            Component::Raw(bytes) if *kind == component::POT_DECORATIONS => {
+                let mut reader = Reader::new(bytes).with_names(synced);
+                let sides = ["back", "left", "right", "front"]
+                    .into_iter()
+                    .map(|side| {
+                        let stack = reader.bool().ok()?.then(|| Template::read(&mut reader));
+                        Some((
+                            side,
+                            stack
+                                .transpose()
+                                .ok()?
+                                .map(|stack| template_tag(&stack, builtin, synced, admitted)),
+                        ))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let Some(sides) = sides else {
+                    continue;
+                };
+                Tag::compound(
+                    sides
+                        .into_iter()
+                        .filter_map(|(side, tag)| Some((side, tag?))),
+                )
             }
             // `TypedEntityData`: a block item's block entity, which the op
             // warning and a spawner's tooltip read.
@@ -598,7 +607,8 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
             // an item like an apple with the component keeps its own look
             // instead of a plain totem's (#12632).
             Component::Raw(bytes) if *kind == component::DEATH_PROTECTION => {
-                let Some(protection) = death_protection_tag(bytes, builtin) else {
+                let Some(protection) = death_protection_tag(bytes, builtin, synced, admitted)
+                else {
                     continue;
                 };
                 protection
@@ -657,13 +667,20 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                 Tag::compound([("material", material), ("pattern", pattern)])
             }
             Component::Raw(bytes) if *kind == component::CONSUMABLE => {
-                let Some(tag) = consumable_tag(bytes, builtin) else {
+                let Some(tag) = consumable_tag(bytes, builtin, synced, admitted) else {
                     continue;
                 };
                 tag
             }
-            // Read past, not decoded: the item keeps its prototype's value.
-            Component::Raw(_) => continue,
+            // Decode the remaining persistent overrides with the shared component codecs.
+            Component::Raw(_) | Component::Potion { .. } => {
+                let Ok(Some(tag)) =
+                    sunrise_protocol::item::persistent::component_to_tag(*kind, c, &names)
+                else {
+                    continue;
+                };
+                tag
+            }
             // Trim materials and patterns are synced registries, as enchantments are.
             Component::Trim { material, pattern } => {
                 let (Some(material), Some(pattern)) = (
@@ -789,21 +806,11 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                     })
                     .collect(),
             ),
-            // PotionContents' NBT: the potion by name and the custom colour.
-            Component::Potion { potion, color, .. } => {
-                let potion = potion.and_then(|id| builtin.get("minecraft:potion")?.name(id));
-                Tag::compound(
-                    potion
-                        .map(|name| ("potion", Tag::String(name.into())))
-                        .into_iter()
-                        .chain(color.map(|c| ("custom_color", Tag::Int(c)))),
-                )
-            }
             // ItemStackTemplate.CODEC: id, count and components.
             Component::Stacks(stacks) => Tag::List(
                 stacks
                     .iter()
-                    .map(|t| template_tag(t, builtin, synced))
+                    .map(|t| template_tag(t, builtin, synced, admitted))
                     .collect(),
             ),
             Component::CustomModelData {
@@ -853,32 +860,7 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
     let mut out = Tag::compound(entries);
     if let Tag::Compound(map) = &mut out {
         for id in &s.removed {
-            // A removed `attribute_modifiers` grants nothing, not its item type's.
-            if matches!(
-                *id,
-                component::MAX_STACK_SIZE
-                    | component::KINETIC_WEAPON
-                    | component::ATTRIBUTE_MODIFIERS
-            ) && let Some(name) = name(*id)
-            {
-                map.insert(
-                    format!("!{name}").as_str().into(),
-                    Tag::Compound(Default::default()),
-                );
-            }
-            // A removal the item's own prototype would otherwise provide:
-            // `totem_of_undying[!death_protection]` must not keep protecting.
-            if *id == component::DEATH_PROTECTION
-                && let Some(name) = name(*id)
-            {
-                map.insert(
-                    format!("!{name}").as_str().into(),
-                    Tag::Compound(Default::default()),
-                );
-            }
-            if synced.custom_components
-                && let Some(name) = sunrise_protocol::item::custom::name(*id)
-            {
+            if let Some(name) = name(*id) {
                 map.insert(
                     format!("!{name}").as_str().into(),
                     Tag::Compound(Default::default()),
@@ -890,7 +872,12 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
 }
 
 /// An `ItemStackTemplate` as its NBT codec writes it: id, count and components.
-fn template_tag(t: &Stack, builtin: &Builtin, synced: &Dynamic) -> Tag {
+fn template_tag(
+    t: &Stack,
+    builtin: &Builtin,
+    synced: &Dynamic,
+    admitted: &mut EffectProjection,
+) -> Tag {
     let mut entries = vec![
         (
             "id",
@@ -898,7 +885,7 @@ fn template_tag(t: &Stack, builtin: &Builtin, synced: &Dynamic) -> Tag {
         ),
         ("count", Tag::Int(t.count)),
     ];
-    if let Some(c) = components_tag(t, builtin, synced) {
+    if let Some(c) = components_tag(t, builtin, synced, admitted) {
         entries.push(("components", c));
     }
     Tag::compound(entries)
@@ -1111,12 +1098,19 @@ const MAX_EFFECT_NESTING: u32 = 32;
 /// saves it: `death_effects` (absent when empty), each one a `ConsumeEffect` in
 /// its codec's form. The activation animation's hand lookup reads this
 /// (`game::totem`), so an item carrying the component is drawn as itself.
-fn death_protection_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
-    let mut r = Reader::new(bytes);
+fn death_protection_tag(
+    bytes: &[u8],
+    builtin: &Builtin,
+    synced: &Dynamic,
+    admitted: &mut EffectProjection,
+) -> Option<Tag> {
+    let mut r = Reader::new(bytes).with_names(synced);
     let n = r.count(r.remaining()).ok()?;
     let mut effects = Vec::with_capacity(n.min(64));
     for _ in 0..n {
-        effects.push(consume_effect_tag(&mut r, builtin, 0)?);
+        if let Some(effect) = consume_effect_tag(&mut r, builtin, admitted)? {
+            effects.push(effect);
+        }
     }
     (r.remaining() == 0).then_some(())?;
     Some(Tag::compound(if effects.is_empty() {
@@ -1126,21 +1120,28 @@ fn death_protection_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
     }))
 }
 
-/// `Consumable.STREAM_CODEC` (component 45) as `Consumable.CODEC` saves it.
-fn consumable_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
-    let mut r = Reader::new(bytes);
+/// `Consumable.STREAM_CODEC` as `Consumable.CODEC` saves it.
+fn consumable_tag(
+    bytes: &[u8],
+    builtin: &Builtin,
+    synced: &Dynamic,
+    admitted: &mut EffectProjection,
+) -> Option<Tag> {
+    let mut r = Reader::new(bytes).with_names(synced);
     let seconds = r.f32().ok()?;
     let animation_id = r.varint().ok()?;
-    let animation = match animation_id {
-        2 => "drink",
-        _ => "eat",
-    };
+    let animation = sunrise_core::use_animation::NAMES
+        .get(animation_id as usize)
+        .copied()
+        .unwrap_or("none");
     let sound = sound_tag(&mut r, builtin)?;
     let particles = r.bool().ok()?;
     let n = r.count(r.remaining()).ok()?;
     let mut effects = Vec::with_capacity(n.min(64));
     for _ in 0..n {
-        effects.push(consume_effect_tag(&mut r, builtin, 0)?);
+        if let Some(effect) = consume_effect_tag(&mut r, builtin, admitted)? {
+            effects.push(effect);
+        }
     }
     (r.remaining() == 0).then_some(())?;
     let mut fields = vec![
@@ -1157,19 +1158,21 @@ fn consumable_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
 
 /// One `ConsumeEffect.STREAM_CODEC` as `ConsumeEffect.CODEC` saves it: a `type`
 /// then that type's fields, with a field at its default left out.
-fn consume_effect_tag(r: &mut Reader, builtin: &Builtin, depth: u32) -> Option<Tag> {
-    if depth > MAX_EFFECT_NESTING {
-        return None;
-    }
+fn consume_effect_tag(
+    r: &mut Reader,
+    builtin: &Builtin,
+    admitted: &mut EffectProjection,
+) -> Option<Option<Tag>> {
+    use sunrise_protocol::item::consume_effects::{Kind, read_kind, read_native};
     let mut fields: Vec<(&str, Tag)> = Vec::new();
-    match r.varint().ok()? {
+    match read_kind(r).ok()? {
         // apply_effects: effects, probability.
-        0 => {
+        Kind::Builtin(0) => {
             fields.push(("type", Tag::String("minecraft:apply_effects".into())));
             let n = r.count(r.remaining()).ok()?;
             let mut effects = Vec::with_capacity(n.min(64));
             for _ in 0..n {
-                effects.push(mob_effect_tag(r, builtin, depth + 1)?);
+                effects.push(mob_effect_tag(r, builtin, 1)?);
             }
             fields.push(("effects", Tag::List(effects)));
             let probability = r.f32().ok()?;
@@ -1178,16 +1181,18 @@ fn consume_effect_tag(r: &mut Reader, builtin: &Builtin, depth: u32) -> Option<T
             }
         }
         // remove_effects: a mob effect holder set, a tag or its entries.
-        1 => {
+        Kind::Builtin(1) => {
             fields.push(("type", Tag::String("minecraft:remove_effects".into())));
             fields.push((
                 "effects",
                 holder_set_tag(r, "minecraft:mob_effect", builtin)?,
             ));
         }
-        2 => fields.push(("type", Tag::String("minecraft:clear_all_effects".into()))),
+        Kind::Builtin(2) => {
+            fields.push(("type", Tag::String("minecraft:clear_all_effects".into())))
+        }
         // teleport_randomly: diameter, directional particles.
-        3 => {
+        Kind::Builtin(3) => {
             fields.push(("type", Tag::String("minecraft:teleport_randomly".into())));
             let diameter = r.f32().ok()?;
             if diameter.to_bits() != 16.0f32.to_bits() {
@@ -1198,13 +1203,26 @@ fn consume_effect_tag(r: &mut Reader, builtin: &Builtin, depth: u32) -> Option<T
             }
         }
         // play_sound.
-        4 => {
+        Kind::Builtin(4) => {
             fields.push(("type", Tag::String("minecraft:play_sound".into())));
             fields.push(("sound", sound_tag(r, builtin)?));
         }
-        _ => return None,
+        Kind::Builtin(_) => unreachable!("built-in consume-effect type"),
+        Kind::Native(name, ty) => {
+            return Some(match read_native(name, ty, r).ok()? {
+                Some(effect) => {
+                    let tag = (*effect.saved).clone();
+                    admitted.admitted.push(effect);
+                    Some(tag)
+                }
+                None => {
+                    admitted.refused = true;
+                    None
+                }
+            });
+        }
     }
-    Some(Tag::compound(fields))
+    Some(Some(Tag::compound(fields)))
 }
 
 /// `MobEffectInstance.CODEC`: the effect's identifier and its details.
@@ -1298,15 +1316,20 @@ fn sound_tag(r: &mut Reader, builtin: &Builtin) -> Option<Tag> {
 
 /// `ItemContainerContents.STREAM_CODEC`, one optional template per slot, as
 /// the saved `container` lists the slots that hold one.
-fn container_tag(bytes: &[u8], builtin: &Builtin, synced: &Dynamic) -> Option<Tag> {
-    let mut r = Reader::new(bytes);
+fn container_tag(
+    bytes: &[u8],
+    builtin: &Builtin,
+    synced: &Dynamic,
+    admitted: &mut EffectProjection,
+) -> Option<Tag> {
+    let mut r = Reader::new(bytes).with_names(synced);
     let mut slots = Vec::new();
     for slot in 0..r.count(256).ok()? {
         if r.bool().ok()? {
             let stack = Template::read(&mut r).ok()?;
             slots.push(Tag::compound([
                 ("slot", Tag::Int(slot as i32)),
-                ("item", template_tag(&stack, builtin, synced)),
+                ("item", template_tag(&stack, builtin, synced, admitted)),
             ]));
         }
     }
@@ -1374,8 +1397,294 @@ fn profile_tag(p: &Profile) -> Tag {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_protocol::registry::Ids;
     use std::path::Path;
+    use sunrise_core::use_animation::UseAnimation;
+    use sunrise_protocol::registry::Ids;
+
+    #[test]
+    fn nested_registered_effects_encode_with_the_configured_ids() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use sunrise_protocol::item::{consume_effects as stream, persistent};
+        use sunrise_protocol::packets::configuration::{RegistryData, RegistryEntry};
+        use sunrise_world::component_value::consume_effects::{self, Type};
+
+        consume_effects::with_test_registry(|| {
+            let loads = Arc::new(AtomicUsize::new(0));
+            let calls = loads.clone();
+            consume_effects::install(
+                [(
+                    Arc::from("nested:charge"),
+                    Type {
+                        schema: 17,
+                        load: Box::new(move |fields| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            let Some(Tag::Int(points)) = fields.get(&"points".into()) else {
+                                return Err("expected points".into());
+                            };
+                            let mut saved = fields.clone();
+                            saved.insert("canonical".into(), Tag::Byte(1));
+                            Ok((
+                                saved,
+                                vec![u8::try_from(*points).map_err(|e| e.to_string())?],
+                            ))
+                        }),
+                        read: Box::new(|bytes, project| {
+                            let byte = *bytes.first().ok_or("missing points")?;
+                            Ok((
+                                1,
+                                project.then(|| {
+                                    [
+                                        ("points".into(), Tag::Int(i32::from(byte))),
+                                        ("canonical".into(), Tag::Byte(1)),
+                                    ]
+                                    .into()
+                                }),
+                            ))
+                        }),
+                    },
+                )]
+                .into(),
+            )
+            .unwrap();
+            let mut rows: Vec<_> = stream::configuration()
+                .map(|(name, schema)| RegistryEntry {
+                    id: name.into(),
+                    data: Some(Tag::Long(schema as i64)),
+                })
+                .collect();
+            rows.swap(0, 5);
+            let mut synced = Dynamic::default();
+            synced
+                .add_consume_effects(RegistryData {
+                    registry: stream::REGISTRY.into(),
+                    entries: rows,
+                })
+                .unwrap();
+            let ids = |registry: &str, name: &str| match registry {
+                "minecraft:item" if name == "minecraft:stone" => Some(1),
+                stream::REGISTRY => synced.consume_effect_id(name),
+                _ => None,
+            };
+            let lookup = |registry: &str, id| match (registry, id) {
+                ("minecraft:item", 1) => Some("minecraft:stone".into()),
+                _ => None,
+            };
+            let names = persistent::NameLookup::new(&lookup).with_registries(&synced);
+            let template = |points| {
+                let invalid = matches!(points, Tag::String(_));
+                let mut effects = vec![Tag::compound([
+                    ("type", Tag::String("nested:charge".into())),
+                    ("points", points),
+                ])];
+                if invalid {
+                    effects.push(Tag::compound([(
+                        "type",
+                        Tag::String("minecraft:clear_all_effects".into()),
+                    )]));
+                }
+                Tag::compound([
+                    ("id", Tag::String("minecraft:stone".into())),
+                    (
+                        "components",
+                        Tag::compound([(
+                            "minecraft:death_protection",
+                            Tag::compound([("death_effects", Tag::List(effects))]),
+                        )]),
+                    ),
+                ])
+            };
+            // One template, item 1/count 1, one own component, one effect: ID 0 and payload 7.
+            let wire = [1, 1, 1, 1, 0, component::DEATH_PROTECTION as u8, 1, 0, 7];
+            for kind in [component::BUNDLE_CONTENTS, component::CHARGED_PROJECTILES] {
+                let encoded = persistent::component_from_tag(
+                    kind,
+                    &Tag::List(vec![template(Tag::Int(7))]),
+                    &ids,
+                )
+                .unwrap();
+                let Component::Stacks(stacks) = &encoded else {
+                    panic!("expected typed templates")
+                };
+                assert_eq!(
+                    stacks[0].component(component::DEATH_PROTECTION),
+                    Some(&Component::Raw(vec![1, 0, 7]))
+                );
+                assert_eq!(
+                    persistent::component_value(kind, &Component::Raw(wire.to_vec()), &names)
+                        .unwrap(),
+                    persistent::component_value(kind, &encoded, &names).unwrap(),
+                );
+            }
+
+            for (kind, key) in [
+                (component::USE_REMAINDER, "minecraft:use_remainder"),
+                (
+                    component::SULFUR_CUBE_CONTENT,
+                    "minecraft:sulfur_cube_content",
+                ),
+            ] {
+                let saved = |template| {
+                    Tag::compound([
+                        ("id", Tag::String("minecraft:stone".into())),
+                        ("components", Tag::compound([(key, template)])),
+                    ])
+                };
+                let before = loads.load(Ordering::Relaxed);
+                let held = sunrise_items::item_nbt::item_from_persistent_nbt(&saved(template(
+                    Tag::Int(7),
+                )))
+                .unwrap();
+                assert_eq!(
+                    loads.load(Ordering::Relaxed),
+                    before,
+                    "opening the parent must not load its template"
+                );
+                let projected = std::cell::RefCell::new(Vec::<Admitted>::new());
+                let held = Some(held);
+                let sent =
+                    crate::lan::guest::stack_to_network_projecting(|_| 1, ids, &held, &|effect| {
+                        projected.borrow_mut().push(effect.clone())
+                    })
+                    .unwrap();
+                assert_eq!(
+                    sent.component(kind),
+                    Some(&Component::Raw(wire[1..].to_vec()))
+                );
+                let projected = projected.into_inner();
+                assert_eq!(projected.len(), 1);
+                assert_eq!(projected[0].wire.as_ref(), [7]);
+                assert_eq!(projected[0].saved.get("canonical"), Some(&Tag::Byte(1)));
+                assert_eq!(loads.load(Ordering::Relaxed), before + 1);
+
+                let mut components =
+                    vec![String::new(); kind.max(component::DEATH_PROTECTION) as usize + 1];
+                components[kind as usize] = key.into();
+                components[component::DEATH_PROTECTION as usize] =
+                    "minecraft:death_protection".into();
+                let builtin = Builtin {
+                    registries: [
+                        (
+                            "minecraft:item".into(),
+                            Ids::from_names(vec!["minecraft:air".into(), "minecraft:stone".into()]),
+                        ),
+                        (
+                            "minecraft:data_component_type".into(),
+                            Ids::from_names(components),
+                        ),
+                    ]
+                    .into(),
+                };
+                let received = from_network(&sent, &builtin, &synced);
+                let child = received.data().unwrap().template_stack(key).unwrap();
+                assert!(
+                    matches!(child.death_protection(None), Some([ConsumeEffect::Native { registered: Some(effect), .. }]) if effect.wire.as_ref() == [7])
+                );
+                let echoed =
+                    crate::lan::guest::stack_to_network(|_| 1, ids, &Some(received)).unwrap();
+                assert_eq!(echoed.component(kind), sent.component(kind));
+                assert_eq!(
+                    loads.load(Ordering::Relaxed),
+                    before + 1,
+                    "received effects are not reloaded"
+                );
+
+                let data = held.as_ref().unwrap().data().unwrap();
+                let child = data.template_stack(key).unwrap();
+                assert!(
+                    matches!(child.death_protection(None), Some([ConsumeEffect::Native { registered: Some(effect), .. }]) if effect.wire.as_ref() == [7])
+                );
+                assert_eq!(loads.load(Ordering::Relaxed), before + 2);
+
+                let invalid = sunrise_items::item_nbt::item_from_persistent_nbt(&saved(template(
+                    Tag::String("bad".into()),
+                )))
+                .unwrap();
+                assert_eq!(loads.load(Ordering::Relaxed), before + 2);
+                let child = invalid.data().unwrap().template_stack(key).unwrap();
+                assert_eq!(
+                    child.death_protection(None),
+                    Some([ConsumeEffect::ClearAllEffects].as_slice())
+                );
+                assert_eq!(loads.load(Ordering::Relaxed), before + 3);
+                let sent = crate::lan::guest::stack_to_network(|_| 1, ids, &Some(invalid)).unwrap();
+                let mut survivor = wire[1..wire.len() - 2].to_vec();
+                survivor.push(
+                    synced
+                        .consume_effect_id("minecraft:clear_all_effects")
+                        .unwrap() as u8,
+                );
+                assert_eq!(sent.component(kind), Some(&Component::Raw(survivor)));
+                assert_eq!(
+                    loads.load(Ordering::Relaxed),
+                    before + 4,
+                    "the refusal is not latched"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn reopening_inventory_keeps_refused_effect_nbt_and_admits_its_siblings() {
+        use sunrise_world::component_value::consume_effects::{self, Type};
+        consume_effects::with_test_registry(|| {
+            consume_effects::install(
+                [(
+                    Arc::from("saved:charge"),
+                    Type {
+                        schema: 1,
+                        load: Box::new(|_| Err("registered load callback is disabled".into())),
+                        read: Box::new(|_, _| unreachable!("no Wire read during save load")),
+                    },
+                )]
+                .into(),
+            )
+            .unwrap();
+            let saved = Tag::compound([
+                ("Slot", Tag::Byte(2)),
+                ("id", Tag::String("minecraft:stone".into())),
+                ("count", Tag::Int(5)),
+                (
+                    "components",
+                    Tag::compound([
+                        ("minecraft:damage", Tag::Int(2)),
+                        (
+                            "minecraft:death_protection",
+                            Tag::compound([(
+                                "death_effects",
+                                Tag::List(vec![
+                                    Tag::compound([
+                                        ("type", Tag::String("saved:charge".into())),
+                                        ("points", Tag::Int(7)),
+                                    ]),
+                                    Tag::compound([(
+                                        "type",
+                                        Tag::String("minecraft:clear_all_effects".into()),
+                                    )]),
+                                ]),
+                            )]),
+                        ),
+                    ]),
+                ),
+            ]);
+            assert!(sunrise_items::item_nbt::item_from_persistent_nbt(&saved).is_none());
+            let inventory = Tag::List(vec![saved]);
+            let slots = sunrise_items::item_nbt::decode_items(Some(&inventory), 3);
+            let stack = slots[2].as_ref().expect("item survives reopening");
+            assert_eq!(
+                (&*stack.item, stack.count, stack.damage),
+                ("minecraft:stone", 5, 2)
+            );
+            assert!(matches!(
+                stack.death_protection(None),
+                Some([ConsumeEffect::ClearAllEffects])
+            ));
+            let items = crate::items::Items::for_tests(Default::default());
+            assert_eq!(
+                sunrise_items::item_nbt::encode_items(&slots, &items),
+                inventory
+            );
+        });
+    }
 
     /// `Equippable.equipSound` is the stack's component's own: a replaced
     /// component without one plays the generic sound, a removed one none.
@@ -1489,21 +1798,23 @@ mod tests {
     #[test]
     fn saved_components_make_any_item_a_glider() {
         let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
-        stack.data_mut().other = vec![
-            ("minecraft:glider".into(), Tag::Compound(Default::default())),
-            (
-                "minecraft:equippable".into(),
-                Tag::compound([("slot", Tag::String("chest".into()))]),
-            ),
-        ];
+        stack
+            .data_mut()
+            .set_other("minecraft:glider", Some(Tag::Compound(Default::default())));
+        stack.data_mut().set_other(
+            "minecraft:equippable",
+            Some(Tag::compound([("slot", Tag::String("chest".into()))])),
+        );
         assert_eq!(
             glider_and_slot(&stack, false, Some("chest".into())),
             (true, Some("chest".into()))
         );
-        stack.data_mut().other = vec![(
-            "!minecraft:equippable".into(),
-            Tag::Compound(Default::default()),
-        )];
+        stack.data_mut().set_other("minecraft:glider", None);
+        stack.data_mut().set_other("minecraft:equippable", None);
+        stack.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::Compound(Default::default())),
+        );
         assert_eq!(glider_and_slot(&stack, true, Some("chest".into())).1, None);
     }
 
@@ -1547,10 +1858,10 @@ mod tests {
         assert!(!c.particles);
 
         // removal !minecraft:consumable
-        stack.data_mut().other = vec![(
-            "!minecraft:consumable".into(),
-            Tag::Compound(Default::default()),
-        )];
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::Compound(Default::default())),
+        );
         assert!(consumable(&stack, &items).is_none());
     }
 
@@ -1558,14 +1869,33 @@ mod tests {
     #[test]
     fn server_patch_makes_any_item_consumable() {
         let items = crate::items::Items::for_tests(Default::default());
-        let with_patch = |patch: &[u8]| {
-            let mut stack = ItemStack::new("minecraft:stick", 1);
-            stack.data_mut().wire =
-                crate::item_data::Wire::new(stack.clone(), Arc::from(patch.to_vec()));
-            stack
+        let mut names = vec![String::new(); component::CONSUMABLE as usize + 1];
+        names[component::CONSUMABLE as usize] = "minecraft:consumable".into();
+        let direct = Builtin {
+            registries: [
+                (
+                    "minecraft:data_component_type".into(),
+                    sunrise_protocol::registry::Ids::from_names(names),
+                ),
+                (
+                    "minecraft:item".into(),
+                    sunrise_protocol::registry::Ids::from_names(vec!["minecraft:stick".into()]),
+                ),
+            ]
+            .into(),
+        };
+        let synced = Dynamic::default();
+        let from_wire = |stack: Stack| {
+            use sunrise_core::vanilla_bytes::Writer;
+            let mut writer = Writer::new();
+            sunrise_protocol::item::Slot::write(&Some(stack), &mut writer);
+            let decoded = sunrise_protocol::item::Slot::read(&mut Reader::new(&writer.data))
+                .unwrap()
+                .unwrap();
+            from_network(&decoded, &direct, &synced)
         };
 
-        let mut r = sunrise_protocol::buf::Writer::new();
+        let mut r = ::sunrise_core::vanilla_bytes::Writer::new();
         r.f32(2.0);
         r.varint(2); // Drink
         r.varint(0); // Direct sound
@@ -1573,17 +1903,10 @@ mod tests {
         r.bool(false); // No fixed sound range
         r.bool(true); // particles
         r.varint(0); // 0 effects
-        let consumable_bytes = r.data;
-
-        let mut adds = vec![
-            1, // 1 added
-            0, // 0 removed
-            component::CONSUMABLE as u8,
-        ];
-        adds.push(consumable_bytes.len() as u8);
-        adds.extend(consumable_bytes);
-
-        let stack = with_patch(&adds);
+        let mut adds = Stack::new(0, 1);
+        adds.added
+            .push((component::CONSUMABLE, Component::Raw(r.data)));
+        let stack = from_wire(adds);
         let c = consumable(&stack, &items).expect("wire patch consumable");
         assert_eq!(c.seconds, 2.0);
         assert_eq!(c.animation, UseAnimation::Drink);
@@ -1591,12 +1914,20 @@ mod tests {
         assert!(c.particles);
 
         // Removal
-        let removes = [0, 1, component::CONSUMABLE as u8];
-        let stack_removed = with_patch(&removes);
+        let mut removes = Stack::new(0, 1);
+        removes.removed.push(component::CONSUMABLE);
+        let stack_removed = from_wire(removes);
+        assert!(
+            stack_removed
+                .data()
+                .unwrap()
+                .other("!minecraft:consumable")
+                .is_some()
+        );
         assert!(consumable(&stack_removed, &items).is_none());
 
         // Wire patch with on_consume_effects and registered sound holder
-        let mut r = sunrise_protocol::buf::Writer::new();
+        let mut r = ::sunrise_core::vanilla_bytes::Writer::new();
         r.f32(1.6);
         r.varint(2); // Drink
         r.varint(1); // Registered sound holder (id 0 + 1)
@@ -1698,17 +2029,14 @@ mod tests {
             )])),
         );
         assert_eq!(
-            use_remainder(&stack, None).as_deref(),
-            Some("minecraft:bowl")
+            use_remainder(&stack, None),
+            Some(ItemStack::new("minecraft:bowl", 1))
         );
         stack.data_mut().set_other(
             "!minecraft:use_remainder",
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
-        assert_eq!(
-            use_remainder(&stack, Some("minecraft:glass_bottle".into())),
-            None
-        );
+        assert_eq!(use_remainder(&stack, None), None);
     }
 
     #[test]
@@ -1867,8 +2195,9 @@ mod tests {
 
     #[test]
     fn merchant_water_cost_survives_the_offer_packet() {
+        use sunrise_core::vanilla_bytes::Writer;
         use sunrise_protocol::{
-            buf::{Codec, Reader, Writer},
+            buf::{Codec, Reader},
             packets::play::{NetOffer, Offers},
         };
         let mut components = vec![String::new(); component::POTION_CONTENTS as usize + 1];
@@ -2050,7 +2379,8 @@ mod tests {
     /// the inventory stream, including fields that do not affect the pose.
     #[test]
     fn kinetic_patches_survive_inventory_bytes() {
-        use sunrise_protocol::{buf::Writer, item::Slot, registry::SyncedNames};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::{item::Slot, registry::SyncedNames};
         let mut components = vec![String::new(); component::KINETIC_WEAPON as usize + 1];
         components[component::KINETIC_WEAPON as usize] = "minecraft:kinetic_weapon".into();
         let mut sounds = vec![String::new(); 703];
@@ -2206,7 +2536,8 @@ mod tests {
     /// sync, including the integrated server's window (#5721).
     #[test]
     fn unbreakable_survives_inventory_sync() {
-        use sunrise_protocol::buf::{Codec, Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::{Codec, Reader};
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); component::UNBREAKABLE as usize + 1];
         components[component::DAMAGE as usize] = "minecraft:damage".into();
@@ -2261,7 +2592,8 @@ mod tests {
     /// the stack, not from its item (#14641). A removed one stays removed.
     #[test]
     fn a_stacks_tool_and_attribute_modifiers_cross_the_wire() {
-        use sunrise_protocol::buf::{Codec, Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::{Codec, Reader};
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); component::TOOL as usize + 1];
         components[component::ATTRIBUTE_MODIFIERS as usize] =
@@ -2461,7 +2793,8 @@ mod tests {
     /// through the packet's bytes, so its tooltip names the Bad Omen level.
     #[test]
     fn an_ominous_bottle_keeps_its_amplifier_across_the_wire() {
-        use sunrise_protocol::buf::{Codec, Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::{Codec, Reader};
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); 80];
         components[component::OMINOUS_BOTTLE_AMPLIFIER as usize] =
@@ -2519,7 +2852,7 @@ mod tests {
             network.component(component::TRIM),
             Some(Component::TrimDirect { .. })
         ));
-        let mut writer = sunrise_protocol::buf::Writer::new();
+        let mut writer = ::sunrise_core::vanilla_bytes::Writer::new();
         sunrise_protocol::item::Slot::write(&Some(network), &mut writer);
         let mut reader = Reader::new(&writer.data);
         let decoded = sunrise_protocol::item::Slot::read(&mut reader)
@@ -2548,7 +2881,7 @@ mod tests {
         let mut back = from_network(&decoded, &builtin, &Dynamic::default());
         back.data_mut().wire = Default::default();
         assert_eq!(back, modeled);
-        assert_eq!(crate::save::item_to_nbt(&back), source);
+        assert_eq!(crate::save::item_to_nbt(&back, &Default::default()), source);
         let again = crate::lan::guest::stack_to_network(|_| 1, |_, _| None, &Some(back)).unwrap();
         assert!(matches!(
             again.component(component::TRIM),
@@ -2639,8 +2972,7 @@ mod tests {
         d.custom_name = Some(Tag::String("Keeper".into()));
         // A translatable item name reaches the client as the same component.
         let item_name = Tag::compound([("translate", Tag::String("filled_map.monument".into()))]);
-        d.other
-            .push(("minecraft:item_name".into(), item_name.clone()));
+        d.set_other("minecraft:item_name", Some(item_name.clone()));
         d.trim = Some(("minecraft:gold".into(), "minecraft:sentry".into()));
         let id = |registry: &str, name: &str| {
             builtin
@@ -2712,8 +3044,9 @@ mod tests {
     /// layers `Raid.getBannerComponentPatch` gives it, so a guest's copy reads
     /// as the ominous banner rather than a white one (#12530).
     #[test]
-    fn an_ominous_banner_keeps_its_name_across_the_wire() {
-        use sunrise_protocol::buf::{Codec, Reader, Writer};
+    fn a_raid_banner_keeps_its_component_values_across_the_wire() {
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::{Codec, Reader};
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); component::BANNER_PATTERNS as usize + 1];
         for (id, name) in [
@@ -2756,25 +3089,73 @@ mod tests {
                 .and_then(|ids| ids.id(name))
                 .or_else(|| dynamic.id(registry, name))
         };
-        let wire = crate::lan::guest::stack_to_network(
-            |name| id("minecraft:item", name).unwrap_or(0),
-            id,
-            &Some(crate::mobs::raider::ominous_banner()),
+        let round_trip = |stack| {
+            let wire = crate::lan::guest::stack_to_network(
+                |name| id("minecraft:item", name).unwrap_or(0),
+                id,
+                &Some(stack),
+            );
+            let mut w = Writer::new();
+            Slot::write(&wire, &mut w);
+            let mut r = Reader::new(&w.data);
+            let read = Slot::read(&mut r).unwrap().unwrap();
+            assert_eq!(r.remaining(), 0);
+            (from_network(&read, &builtin, &dynamic), read)
+        };
+        let stock = crate::mobs::raider::ominous_banner();
+        let (back, _) = round_trip(stock.clone());
+        assert_eq!(back.banner_layers().len(), layers.len());
+        assert!(back.matches(&stock));
+
+        let mut edited = stock;
+        let name = Tag::String("Renamed raid banner".into());
+        let (_, extra) = crate::item_data::decode_components(Some(&Tag::compound([(
+            "minecraft:item_name",
+            name.clone(),
+        )])));
+        let snapshot = ItemStack {
+            extra,
+            ..edited.clone()
+        };
+        edited.apply_component_fields_from(snapshot, std::iter::once("minecraft:item_name"));
+        assert!(!edited.data().unwrap().ominous_banner);
+        let (received, _) = round_trip(edited.clone());
+        assert_eq!(
+            received.data().unwrap().other("minecraft:item_name"),
+            Some(&name)
         );
-        // Read it as a peer does: the slot codec, then the components.
-        let mut w = Writer::new();
-        Slot::write(&wire, &mut w);
-        let mut r = Reader::new(&w.data);
-        let read = Slot::read(&mut r).unwrap().unwrap();
-        assert_eq!(r.remaining(), 0);
-        let back = from_network(&read, &builtin, &dynamic);
-        let d = back.data().expect("components");
-        assert!(d.ominous_banner, "the name reads as the ominous banner");
-        assert_eq!(d.banner_patterns.len(), layers.len());
-        // The modelled parts are not duplicated into `other`.
-        assert_eq!(d.other("minecraft:item_name"), None);
-        assert_eq!(d.other("minecraft:rarity"), None);
-        assert_eq!(d.other("minecraft:tooltip_display"), None);
+        assert!(
+            !crate::item_tooltip::tooltip_display(&received).shows("minecraft:banner_patterns")
+        );
+        assert!(received.matches(&edited));
+
+        edited.data_mut().set_other(
+            "minecraft:tooltip_display",
+            Some(Tag::compound([(
+                "hidden_components",
+                Tag::List(
+                    [
+                        "banner_patterns",
+                        "minecraft:item_name",
+                        "minecraft:banner_patterns",
+                        "banner_patterns",
+                    ]
+                    .map(|id| Tag::String(id.into()))
+                    .into(),
+                ),
+            )])),
+        );
+        let (received, slot) = round_trip(edited);
+        assert_eq!(
+            slot.component(component::TOOLTIP_DISPLAY),
+            Some(&Component::TooltipDisplay {
+                hide: false,
+                hidden: vec![component::BANNER_PATTERNS, component::ITEM_NAME],
+            })
+        );
+        assert!(
+            !crate::item_tooltip::tooltip_display(&received).shows("minecraft:banner_patterns")
+        );
     }
 
     /// A painting's `painting/variant` (a `painting_variant` holder, id 109)
@@ -2782,7 +3163,8 @@ mod tests {
     /// its client picked, and a client's tooltip names the server's.
     #[test]
     fn a_painting_keeps_its_variant_across_the_wire() {
-        use sunrise_protocol::buf::{Codec, Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::{Codec, Reader};
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); 110];
         components[109] = "minecraft:painting/variant".into();
@@ -2846,8 +3228,9 @@ mod tests {
     /// component leaves it none, and a host sends both on as they came.
     #[test]
     fn a_stacks_own_attribute_modifiers_cross_the_wire() {
+        use sunrise_core::vanilla_bytes::Writer;
         use sunrise_items::item_data::ModifierRow;
-        use sunrise_protocol::buf::{Codec, Reader, Writer};
+        use sunrise_protocol::buf::{Codec, Reader};
         use sunrise_protocol::item::Slot;
         let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let mut components = vec![String::new(); 17];
@@ -2934,7 +3317,8 @@ mod tests {
     /// client's stack, whose own placement puts the text on the sign (#8102).
     #[test]
     fn a_signs_text_crosses_the_wire() {
-        use sunrise_protocol::buf::{Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::Reader;
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); 120];
         components[118] = "minecraft:sign_text_front".into();
@@ -2989,7 +3373,8 @@ mod tests {
     /// `item_model.rs`'s `custom_data_at`).
     #[test]
     fn custom_data_and_custom_model_data_survive_lan_sync() {
-        use sunrise_protocol::buf::{Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::Reader;
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); component::CUSTOM_MODEL_DATA as usize + 1];
         components[component::CUSTOM_DATA as usize] = "minecraft:custom_data".into();
@@ -3047,7 +3432,8 @@ mod tests {
 
     #[test]
     fn rarity_survives_lan_sync_and_enchantment_upgrade() {
-        use sunrise_protocol::buf::{Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::Reader;
         use sunrise_protocol::item::Slot;
         use sunrise_protocol::registry::Ids;
         let mut components = vec![String::new(); component::RARITY as usize + 1];
@@ -3097,7 +3483,8 @@ mod tests {
     /// component is a `!minecraft:max_stack_size` patch.
     #[test]
     fn a_stack_keeps_its_max_stack_size_across_the_wire() {
-        use sunrise_protocol::buf::{Reader, Writer};
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::buf::Reader;
         use sunrise_protocol::item::Slot;
         let mut components = vec![String::new(); 2];
         components[component::CUSTOM_DATA as usize] = "minecraft:custom_data".into();

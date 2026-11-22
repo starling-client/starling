@@ -1,0 +1,3 @@
+ids = ["behaviour:declared_waterlogged"]
+why = "A block that already declared a boolean waterlogged property now gains bucket and container behaviour, even on a stone template: buckets fill and drain it, placement copies source water at the cell, and shape updates schedule a water tick unless a Part replaces the default. Enum waterlogged properties, standalone liquids, and always-water templates are refused."
+migrate = "Declare waterlogged as a boolean on a non-liquid template without that property and without intrinsic water. Existing boolean declarations gain the waterlogging defaults; use state_for_placement or update_shape Parts to replace those defaults where necessary."

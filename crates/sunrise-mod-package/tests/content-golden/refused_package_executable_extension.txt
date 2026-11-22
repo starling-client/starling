@@ -1,0 +1,5 @@
+manifest:
+refused: assets/refused_package_executable_extension/not_executable.cmd: unsupported executable file in a content mod
+
+icon:
+unavailable

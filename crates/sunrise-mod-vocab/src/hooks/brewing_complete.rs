@@ -5,9 +5,11 @@ pub trait Hooks {
     /// A brewing stand finished brewing at `pos`, after its bottle contents
     /// were changed. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_brewing_complete",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn brewing_complete();
+    fn brewing_complete(pos: [i32; 3]);
 }

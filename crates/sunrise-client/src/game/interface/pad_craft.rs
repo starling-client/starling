@@ -34,11 +34,11 @@
 //! LT + A on its recipe, which asks for one more, the pad gone, focus lost), it ends one way: no new craft starts, the step in flight finishes, and
 //! what's in the grid goes back ([`DirectCraft::stop`]).
 use super::Game;
-use sunrise_client::{gamepad, items::ItemStack};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use sunrise_client::{gamepad, items::ItemStack};
 
 /// How long a request waits for the server's answer before the craft ends.
 const ANSWER_WAIT: Duration = Duration::from_secs(2);
@@ -293,24 +293,10 @@ impl DirectCraft {
 }
 
 impl Game<'_> {
-    /// A server direct crafting needs no say of the player's on: one found through LAN discovery
-    /// (the server list's announced worlds, `server_is_lan`), kept through a reconnect, or a split
-    /// guest's link by memory to the host's world on this window (`"local"`). One reached by
-    /// address isn't, even on this computer or the local network: an address can be a proxy, a
-    /// tunnel or a friend's relay as well.
-    fn direct_craft_free_server(&self) -> bool {
-        self.server_is_lan()
-            || self
-                .remote
-                .as_ref()
-                .is_some_and(|r| r.session.address == "local")
-    }
-
-    /// Someone else's server: neither single player's own nor a free one
-    /// (`direct_craft_free_server`). Every request keeps its distance there, and crafting waits for
-    /// the player's say (`craft_on_servers`).
+    /// Direct crafting on an external server is opt-in unless this world was discovered over LAN.
+    /// Joining by address does not count as LAN, even if the address is local.
     fn direct_craft_elsewhere(&self) -> bool {
-        self.integrated.is_none() && !self.direct_craft_free_server()
+        self.integrated.is_none() && !self.server_is_lan()
     }
 
     /// Whether direct crafting is allowed where the player is: only through a server, as every

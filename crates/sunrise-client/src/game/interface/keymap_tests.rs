@@ -1,9 +1,9 @@
 use super::{follow_keymap, follow_named_keymap};
+use std::collections::HashSet;
 use sunrise_client::{
     debug_keys::{DebugAction, DebugHost, DebugKeys, KeyAction, OpenScreen},
     keybinds::{self, KeyBinds},
 };
-use std::collections::HashSet;
 use winit::{
     event::WindowEvent,
     keyboard::{Key, KeyCode, NamedKey, NativeKeyCode, PhysicalKey},

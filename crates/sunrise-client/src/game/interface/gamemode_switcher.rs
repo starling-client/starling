@@ -11,9 +11,9 @@ impl Game<'_> {
     pub(super) fn open_gamemode_switcher(&mut self) {
         self.gamemode_switcher = Some(GameModeSwitcher::new(self.mode, self.previous_mode));
         self.set_screen(Screen::GameModeSwitcher);
-        self.keys.clear();
-        self.left = false;
-        self.right = false;
+        self.clear_device_keys();
+        self.set_mapping_held("key.attack", false);
+        self.set_mapping_held("key.use", false);
         self.mining = None;
         self.capture(false);
     }
@@ -36,13 +36,15 @@ impl Game<'_> {
     /// modifier's own mouse button applies the hovered mode and closes the
     /// screen, as the modifier key's release does (`keyReleased`). A modifier
     /// bound to a keyboard key matches no mouse button.
-    pub(super) fn switcher_release(&mut self, button: winit::event::MouseButton) {
+    pub(super) fn switcher_release(&mut self, button: winit::event::MouseButton) -> bool {
         if sunrise_client::game_mode_switcher::release_applies(
             &keybinds::mouse_name(button),
             self.settings.keys.get("key.debug.modifier"),
         ) {
             self.close_gamemode_switcher(true);
+            return true;
         }
+        false
     }
 
     pub(super) fn draw_gamemode_switcher(&mut self, batch: &mut HudBatch) {
@@ -84,14 +86,14 @@ impl Game<'_> {
             let (x, y) = slot_origin(w, h, index);
             batch.sprite(
                 &self.gui.atlas,
-                "gui/sprites/gamemode_switcher/slot",
+                "gamemode_switcher/slot",
                 x as f32,
                 y as f32,
             );
             if mode == selected {
                 batch.sprite(
                     &self.gui.atlas,
-                    "gui/sprites/gamemode_switcher/selection",
+                    "gamemode_switcher/selection",
                     x as f32,
                     y as f32,
                 );

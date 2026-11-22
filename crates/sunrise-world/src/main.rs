@@ -1,4 +1,3 @@
-use sunrise_core::position::BlockPos;
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -6,6 +5,7 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
+use sunrise_core::position::BlockPos;
 use {
     sunrise_core::{nbt, nbt::Limits},
     sunrise_world::{

@@ -1,5 +1,9 @@
 # Design: mesh visibility
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [`block_render_visibility`](../../../crates/sunrise-mod-vocab/src/hooks/block_render_visibility.rs) for the current native API.
+> The proposed section and position masks are not the current block-state contract; the guest preparation, fuel budget and target-parity gates below are historical.
+
 Provisional answer to [#772](https://github.com/arismoko/horizon/issues/772):
 freeze section-wide and per-cell face decisions before worker dispatch, expose
 raw immutable section input, and invalidate by captured revisions and epochs.

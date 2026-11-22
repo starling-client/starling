@@ -1,0 +1,8 @@
+# Attachment fixtures load prepared resources and write the process-wide block tables.
+sunrise-client-render mesher::extra_models_tests::a_mod_tint_source_is_asked_before_the_mesh_not_by_the_worker lib daily child-process
+sunrise-client-render mesher::extra_models_tests::a_stale_handle_draws_nothing lib daily child-process
+sunrise-client-render mesher::extra_models_tests::an_attachment_overlay_panic_does_not_call_a_different_source_on_the_worker lib daily child-process
+sunrise-client-render mesher::extra_models_tests::extra_faces_are_culled_by_neighbours_and_keep_their_pass lib daily child-process
+sunrise-client-render mesher::extra_models_tests::extra_models_draw_with_the_blocks_place_and_light lib daily child-process
+sunrise-client-render mesher::extra_models_tests::extra_models_stay_within_the_sections_limits lib daily child-process
+sunrise-client-render streaming::tests::a_resend_keeps_models_at_unchanged_resident_cells lib daily child-process

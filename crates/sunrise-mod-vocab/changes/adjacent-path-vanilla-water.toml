@@ -1,0 +1,3 @@
+ids = ["hook:adjacent_block_path_type"]
+why = "adjacent_block_path_type version 2 uses the classified path type for vanilla water when a listener declines. A water-bearing neighbour classified as Blocked no longer contributes WaterBorder solely from its contained water. Custom fluids keep their default WaterBorder contribution."
+migrate = "Rebuild against this SDK. Return Some(PathType::WaterBorder) explicitly from adjacent_block_path_type where a water border is wanted regardless of the neighbour's classified path type."

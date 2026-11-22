@@ -14,6 +14,9 @@ pub trait Hooks {
     /// frame the hand draws one in use, on both sides. It has no user, as
     /// it is asked so often: answer from the stack alone.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_use_duration",
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         scope = "item",
@@ -21,5 +24,5 @@ pub trait Hooks {
         host = "read",
         neoforge = "none (vanilla Item.getUseDuration; NeoForge adds no event or extension for it); LivingEntityUseItemEvent.Start can set a use's duration"
     )]
-    fn use_duration();
+    fn use_duration(stack: &ItemStack, duration: &mut i32);
 }

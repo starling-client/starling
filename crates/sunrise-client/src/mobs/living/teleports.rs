@@ -29,5 +29,14 @@ pub fn set_pos(m: &mut Mob, at: Vec3) {
 pub fn set_pos_with(m: &mut Mob, at: Vec3, observer: Option<super::section_writes::Observer>) {
     let from = m.position;
     m.position = at;
+    if let Some(emission) = &mut m.movement_emission {
+        // Exclude only this write's displacement. A walk earlier in this
+        // tick still contributes its distance and landing state.
+        emission.last = [
+            at.x - (from.x - emission.last[0]),
+            at.y - (from.y - emission.last[1]),
+            at.z - (from.z - emission.last[2]),
+        ];
+    }
     super::section_writes::record_with(m.id, m.join, from, at, observer);
 }

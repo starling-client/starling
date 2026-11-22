@@ -1,9 +1,13 @@
 // Shared state, helpers and mixed tests stay at the original LAN action scope.
+
+pub(super) const RECIPE_CHECK_COST: u32 = 1;
+const RECIPE_CHECK_LIMIT: u32 = 10;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MenuOpen {
     Opened,
     Cancelled,
     Refused,
+    NoProvider,
     Stale,
 }
 
@@ -25,8 +29,7 @@ pub(super) struct GuestPlay {
     pub(super) chat_spam: u32,
     /// `commandSpamThrottler`: 20 for each command, one less each tick.
     pub(super) command_spam: u32,
-    /// The recipe viewer's transfer checks (`sunrise:recipe_check`): 20 for
-    /// each, one less each tick; one from 200 goes unanswered.
+    /// `sunrise:recipe_check` requests still counting against the burst limit.
     pub(super) recipe_checks: u32,
     /// `ServerCommandSuggestionsProvider`: the latest suggestion request not answered yet (a
     /// newer one replaces it, which then never gets an answer), and whether this tick's one
@@ -84,9 +87,8 @@ pub(super) struct GuestPlay {
     /// `Entity.portalProcess` and `portalCooldown` (game/world/server_travel.rs).
     pub(super) portal: sunrise_client::nether_portal::PortalState,
     /// `ServerPlayer.wonGame`: the End poem is showing, the player waits for
-    /// its client's PERFORM_RESPAWN (`respawn_requested`).
+    /// its client's PERFORM_RESPAWN.
     pub(super) won_game: bool,
-    pub(super) respawn_requested: bool,
     /// `Player.takeXpDelay`: ticks until the next orb can be taken.
     pub(super) xp_delay: u32,
     /// This player entity's age and level-up sound cooldown.
@@ -94,7 +96,7 @@ pub(super) struct GuestPlay {
     /// What last killed the guest outright (`/kill`): the death message's key.
     death_cause: Option<String>,
     /// The equipment modifiers on the guest's attributes (`apply_equipment`)
-    /// and the armour and main hand they were put on for: the hub's player
+    /// and the armour and hands they were put on for: the hub's player
     /// is a `ServerPlayer` too, whose worn armour counts
     /// (`LivingEntity.collectEquipmentChanges`).
     modifiers: Vec<(String, String)>,
@@ -106,6 +108,31 @@ pub(super) struct GuestPlay {
     /// What `ServerPlayer` last recorded for the guest's scoreboard criteria
     /// (`lastRecordedHealthAndAbsorption` and the others).
     score_recorded: super::scoreboard::Recorded,
+}
+
+/// `LivingEntity.collectEquipmentChanges` for a guest: whether its armor, main hand or off
+/// hand differs from what its modifiers were put on for (`equipped`), which then records them.
+/// The body tick asks (`detectEquipmentUpdates`), so the packets of a tick act with the
+/// modifiers from before it: a slot change and an attack sent in one tick hit with the old
+/// item's attack damage and charge speed (the attribute swap).
+fn equipment_changed(
+    equipped: &mut Option<Vec<Option<ItemStack>>>,
+    armor: &[Option<ItemStack>],
+    held: Option<&ItemStack>,
+    offhand: Option<&ItemStack>,
+) -> bool {
+    let unchanged = equipped.as_deref().is_some_and(|eq| {
+        eq.len() == armor.len() + 2
+            && eq[..armor.len()] == armor[..]
+            && eq[armor.len()].as_ref() == held
+            && eq[armor.len() + 1].as_ref() == offhand
+    });
+    if !unchanged {
+        let mut now = armor.to_vec();
+        now.extend([held.cloned(), offhand.cloned()]);
+        *equipped = Some(now);
+    }
+    !unchanged
 }
 
 /// A guest's command waiting for the hub (`LanHost::commands`).
@@ -129,113 +156,36 @@ pub(super) enum TurnRefused {
     Nested,
 }
 
-/// The game's own state while a guest's is swapped in (`enter_guest`), and
-/// the guest's records that live outside `Guest`.
-pub(super) struct GuestSwap {
-    attachments: sunrise_mod_runtime::attachments::ResidentAttachments,
-    conn: u32,
-    i: usize,
-    play: GuestPlay,
-    player: Option<PlayerMotion>,
-    player_save_projection: (Option<i32>, Option<bool>),
-    /// The guest's eye height and the game's.
-    eye: (f32, f32),
-    yaw: f32,
-    pitch: f32,
-    selected: usize,
-    mode: sunrise_client::command::args::GameMode,
-    creative: bool,
-    /// The previous game mode of the turn this one nests in: each player's
-    /// own (`ServerPlayerGameMode.previousGameModeForPlayer`).
-    previous_mode: Option<sunrise_client::command::args::GameMode>,
-    /// The abilities of the turn this one nests in.
-    abilities: Option<sunrise_client::lan::abilities::PlayerAbilities>,
-    /// The host's cached interaction ranges, restored after the guest turn.
-    entity_reach: f64,
-    block_reach: f64,
-    /// The host's command permission, swapped for the guest's for its turn.
-    permission: u8,
-    xp: Experience,
-    level_up_sound: sunrise_client::entities::LevelUpSound,
-    host_keys: sunrise_client::held::HeldKeys,
-    screen: Screen,
-    host_sign: Option<super::sign_edit::SignEditor>,
-    host_book: Option<super::books::BookScreen>,
-    host_command_block: Option<super::command_blocks::CommandBlockScreen>,
-    host_mount_menu: super::mount_menu::MountMenu,
-    craft_size: usize,
-    craft_table: Option<[i32; 3]>,
-    craft_grid: Vec<Option<ItemStack>>,
-    container: Option<(i32, i32, i32)>,
-    mining: Option<Mining>,
-    destroy_delay: u32,
-    using: Option<(usize, u32)>,
-    use_duration: i32,
-    use_start: super::using_item::UseStart,
-    use_delay: u32,
-    pub(super) shield_cooldown: u32,
-    /// The guest's item cooldowns (`Game::cooldowns` for its turn).
-    cooldowns: sunrise_client::cooldowns::Cooldowns,
-    /// The guest's `takeXpDelay` (`Game::xp_delay` for its turn).
-    xp_delay: u32,
-    attack_ticks: u32,
-    attack_item: Option<std::sync::Arc<str>>,
-    swing: sunrise_client::first_person::SwingState,
-    left: bool,
-    right: bool,
-    riding: Option<u32>,
-    host_station: Option<super::stations::Station>,
-    sleeping: Option<[i32; 3]>,
-    sleep_timer: u32,
-    spawn: Option<Vec3>,
-    respawn: (
-        Option<super::respawn_anchor::RespawnConfig>,
-        Option<[f64; 3]>,
-    ),
-    message: Option<(String, std::time::Instant)>,
-    host_ender: Option<(i32, i32, i32)>,
-    adv_loaded: bool,
-    last_inventory: u64,
-    levitation: Option<([f64; 3], u64)>,
-    marks: super::advancements::TravelMarks,
-    death_cause: Option<String>,
-    /// The guest's own damage record, in place while they act.
-    combat: super::combat::CombatTracker,
-    /// The guest whose turn this one nests in, if any.
-    acting: (
-        Option<u32>,
-        Option<String>,
-        Option<u128>,
-        Option<u8>,
-        Option<u32>,
-        Option<i32>,
-    ),
-    /// Whether the outer turn is a fake player.
-    acting_fake: bool,
-    /// That turn's other-player building boxes.
-    building_boxes: BuildingPlayers,
-    /// That turn's `known_movement`.
-    known_movement: Vec3,
-    /// The packets queued for that guest.
-    packets: Vec<play::Clientbound>,
-    /// The entity events queued for that guest.
-    entity_events: Vec<i8>,
-    /// The equipment breaks queued for that guest.
-    equipment_breaks: Vec<i8>,
-    /// The cooldown packets queued for that guest.
-    cooldown_events: Vec<(std::sync::Arc<str>, i32)>,
-    /// The player-source sounds queued for that guest.
-    player_sounds: Vec<(String, [f64; 3], f32, f32)>,
-    block_sounds: Vec<(String, [f64; 3], f32, f32)>,
-    /// The host's count of swings started, kept while the guest acts.
-    swings: u32,
-    /// How many projectiles there were: those added since are the guest's.
-    projectiles: usize,
-    /// The host's equipment modifiers.
-    modifiers: Vec<(String, String)>,
-}
-
 impl GuestPlay {
+    /// The guest can make a recipe check if it has room in its burst budget.
+    pub(super) fn recipe_check_available(&self) -> bool {
+        self.recipe_checks < RECIPE_CHECK_LIMIT
+    }
+
+    pub(super) fn decay_recipe_checks(&mut self) {
+        self.recipe_checks = self.recipe_checks.saturating_sub(1);
+    }
+
+    #[cfg(test)]
+    pub(in crate::game) fn arm_mining_for_test(
+        &mut self,
+        pos: [i32; 3],
+        start: u64,
+        delayed: Option<([i32; 3], u64)>,
+    ) {
+        self.digging = Some((pos, [0, 1, 0]));
+        self.dig_start = start;
+        self.mining = Some(Mining {
+            pos,
+            progress: 0.0,
+            per_tick: 0.0,
+            ticks: 1,
+            crack: None,
+        });
+        self.delayed = delayed;
+        self.last_progress = -1;
+    }
+
     /// The guest's `Player.attackStrengthTicker` outside its turn.
     pub(in crate::game) fn attack_ticks(&self) -> u32 {
         self.attack_ticks
@@ -280,6 +230,8 @@ struct ItemRules<'a>(
     &'a sunrise_client::items::Items,
     &'a sunrise_client::enchant::Enchantments,
     Option<&'a dyn sunrise_client::menu::SlotRules>,
+    Option<&'a sunrise_client::menu::StackedOutcome>,
+    Vec<sunrise_client::containers::ModContainerInsertRule>,
 );
 impl Rules for ItemRules<'_> {
     fn items(&self) -> &sunrise_client::items::Items {
@@ -293,6 +245,21 @@ impl Rules for ItemRules<'_> {
     }
     fn slot_rules(&self) -> Option<&dyn sunrise_client::menu::SlotRules> {
         self.2
+    }
+    fn stacked(&self) -> Option<&sunrise_client::menu::StackedOutcome> {
+        self.3
+    }
+    fn mod_container_insert_rule(
+        &self,
+        slot: usize,
+        current: Option<&sunrise_client::items::ItemStack>,
+        offered: &sunrise_client::items::ItemStack,
+    ) -> bool {
+        sunrise_client::containers::mod_container_insert_allowed(
+            self.4.get(slot).copied().unwrap_or_default(),
+            current,
+            offered,
+        )
     }
 }
 
@@ -314,17 +281,6 @@ pub(super) fn guest_within_entity_range(
     let range = if g.creative() { 5.0 } else { 3.0 } + buffer;
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < range * range
 }
-fn direction(face: i32) -> [i32; 3] {
-    match face {
-        0 => [0, -1, 0],
-        1 => [0, 1, 0],
-        2 => [0, 0, -1],
-        3 => [0, 0, 1],
-        4 => [-1, 0, 0],
-        _ => [1, 0, 0],
-    }
-}
-
 fn building_player(g: &sunrise_client::lan::guest::Guest) -> BuildingPlayer {
     BuildingPlayer {
         conn: Some(g.conn),
@@ -351,20 +307,19 @@ thread_local! {
 /// The hub's current bodies, across dimensions. A borrowed ancestor's
 /// live body takes precedence over this saved state until its turn returns.
 fn building_players(host: &LanHost) -> HubBodies {
-    let guests: Vec<_> = host.hub.guests.simulation_iter().collect();
     let kept = BUILDING_CACHE.with(|c| {
         c.borrow()
             .as_ref()
             .filter(|list| {
-                list.len() == guests.len()
-                    && list
-                        .iter()
-                        .zip(&guests)
-                        .all(|(p, g)| p.get().conn == Some(g.conn))
+                list.iter().map(|p| p.get().conn).eq(host
+                    .hub
+                    .guests
+                    .simulation_iter()
+                    .map(|g| Some(g.conn)))
             })
             .cloned()
     });
-    kept.unwrap_or_else(|| shared(guests.into_iter().map(building_player)))
+    kept.unwrap_or_else(|| shared(host.hub.guests.simulation_iter().map(building_player)))
 }
 
 /// Builds the hub's bodies once for the turns to come (`Some`), or drops them.
@@ -392,7 +347,7 @@ fn refresh_building_player(host: &LanHost, _conn: u32) {
     });
 }
 
-/// Kept at LAN action scope to preserve its derived internals point identity.
+/// Kept at LAN action scope to preserve its published internals target path.
 impl Game<'_> {
     pub(super) fn vehicle_has_other_viewers(
         container: Option<(i32, i32, i32)>,
@@ -462,14 +417,6 @@ fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f3
     }
 }
 
-/// What `copyRespawnPosition` sets at respawn time, when it is decided here:
-/// nothing to decide for a point with a block (`has_config`, copied once the
-/// block is found); otherwise the Overworld forced point's block (`spawn`,
-/// stored at its bottom centre), or none.
-fn copied_respawn_point(has_config: bool, spawn: Option<[f64; 3]>) -> Option<Option<[i32; 3]>> {
-    (!has_config).then(|| spawn.map(|s| s.map(|c| c.floor() as i32)))
-}
-
 /// ServerPlayer.swingAndResetAttackStrength resets only when a use starts a swing.
 fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
     if before != after {
@@ -479,9 +426,26 @@ fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{copied_respawn_point, eye_columns, reset_use_attack_strength};
+    use super::{eye_columns, reset_use_attack_strength};
     use crate::game::api_values::TryIntoApi;
     use sunrise_client::pose::Pose;
+
+    struct StopMenu(Option<mod_api::GameMode>);
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for StopMenu {
+        fn container_opened(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            _: &mut mod_api::ContainerOpenedEvent<'_>,
+        ) -> mod_api::Flow {
+            if let Some(mode) = self.0 {
+                let player = host.players().acting_player().unwrap();
+                assert!(player.set_game_mode(host, mode));
+            }
+            mod_api::Flow::Cancel
+        }
+    }
+
     #[test]
     fn a_block_break_suppresses_its_positional_duplicate_but_not_an_entity_sound() {
         let mut sound = sunrise_client::audio::CapturedSound {
@@ -492,6 +456,8 @@ mod tests {
             source: 4,
             entity: None,
             except_entity: None,
+            seed: 0,
+            particles_before: 0,
         };
         let broken = [[1.0, 64.0, -3.0]];
         assert!(super::captured_block_break(&sound, &broken));
@@ -515,8 +481,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn menu_rules_match_guest_packets_and_prediction() {
+        use mod_api::{Hooks, MenuPart, MenuSlotRulesEvent, ModEntry, Mods, Registrar};
+        use std::sync::Arc;
         use sunrise_client::{
             chunk::Chunk,
             containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields, ModMenuType},
@@ -525,8 +493,6 @@ mod tests {
             menu::{Input, Kind, Menu},
         };
         use sunrise_protocol::packets::play::{ContainerClick, Serverbound};
-        use mod_api::{Hooks, MenuPart, MenuSlotRulesEvent, ModEntry, Mods, Registrar};
-        use std::sync::Arc;
 
         struct Part;
         #[mod_api::sunrise_part]
@@ -585,9 +551,13 @@ mod tests {
                 game.world.set(pos.0, pos.1, pos.2, stone).unwrap();
                 let menu_type = Box::leak(Box::new(ModMenuType {
                     id: "test:menu",
+                    owner: "test",
                     slots: 27,
+                    player_inventory: true,
                     data_slots: 0,
+                    owned_slots: None,
                     results: Vec::new(),
+                    inputs: Vec::new(),
                     crafting: None,
                     links: None,
                 }));
@@ -905,11 +875,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn crafting_guest_self_swap_keeps_eight_items() {
+        use std::sync::Arc;
         use sunrise_client::chunk::Chunk;
         use sunrise_protocol::packets::play::{ContainerClick, Serverbound};
-        use std::sync::Arc;
         super::super::native_guest_turn_tests::with_guests(|game| {
             game.world
                 .chunks
@@ -965,126 +935,171 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn block_menu_handle_and_use_each_count_the_guest_once() {
-        use sunrise_client::chunk::Chunk;
-        use mod_api::BlockUpdateFlags;
+        use crate::game::{Game, Hit, sculk::TEST_POSTED_EVENTS};
+        use mod_api::{BlockUpdateFlags, GameMode};
         use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
         super::super::native_guest_turn_tests::with_guests(|game| {
             game.options.dedicated = Some(Vec::new());
             game.world
                 .chunks
                 .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
             let level = game.level("minecraft:overworld").unwrap();
-            let chest = game
-                .pack
-                .assets
-                .registry
-                .default_state("minecraft:chest")
-                .unwrap();
-            let pos = (0, 64, 0);
-            assert_eq!(
-                game.level_set_block(
-                    level,
-                    [pos.0, pos.1, pos.2],
-                    chest,
-                    BlockUpdateFlags::NEIGHBORS
-                ),
-                Ok(true)
-            );
-            // A handle starts here, without an earlier use's `open_menu`.
-            assert_eq!(game.open_block_menu(12, pos), super::MenuOpen::Opened);
-            assert_eq!(game.lid_openers.get(&pos), Some(&1));
-            game.guest_close_all(12);
-            assert!(!game.lid_openers.contains_key(&pos));
-            // A block use starts before leaving the guest turn; its hand-off
-            // must not start the same opener a second time.
-            assert!(
-                game.as_guest(12, |game| game
-                    .open_block_effect_menu([pos.0, pos.1, pos.2]))
-                    .is_some()
-            );
-            assert!(game.lan.as_ref().unwrap().hub.guests[0].menu.is_some());
-            assert_eq!(game.lid_openers.get(&pos), Some(&1));
-            game.guest_close_all(12);
-            assert!(!game.lid_openers.contains_key(&pos));
-            struct StopMenu;
-            #[mod_api::__subscriptions]
-            impl mod_api::Hooks for StopMenu {
-                fn container_opened(
-                    &self,
-                    _: &mut dyn mod_api::ServerHost,
-                    _: &mut mod_api::ContainerOpenedEvent<'_>,
-                ) -> mod_api::Flow {
-                    mod_api::Flow::Cancel
-                }
-            }
-            mod_platform::testing::with_mods(
-                vec![mod_api::ModEntry::new("stop_menu", Box::new(StopMenu))].into(),
-                || {
-                    assert!(
-                        game.as_guest(12, |game| game
-                            .open_block_effect_menu([pos.0, pos.1, pos.2]))
-                            .is_some()
-                    );
-                    assert!(game.lan.as_ref().unwrap().hub.guests[0].menu.is_none());
-                    assert!(!game.lid_openers.contains_key(&pos));
-                },
-            );
-            {
-                let value = 3;
-                game.lan
-                    .as_mut()
-                    .unwrap()
-                    .hub
-                    .guests
-                    .update(0, |guest| guest.game_mode = value);
-            }
-            assert_eq!(game.open_block_menu(12, pos), super::MenuOpen::Opened);
-            assert!(!game.lid_openers.contains_key(&pos));
-            game.guest_close_all(12);
-            assert!(!game.lid_openers.contains_key(&pos));
-            // The incoming double-count bug kept a shulker open after its last close.
-            {
-                let value = 0;
-                game.lan
-                    .as_mut()
-                    .unwrap()
-                    .hub
-                    .guests
-                    .update(0, |guest| guest.game_mode = value);
-            }
-            let shulker = game
-                .pack
-                .assets
-                .registry
-                .default_state("minecraft:shulker_box")
-                .unwrap();
+            let pos = (3, 64, 4);
             let at = [pos.0, pos.1, pos.2];
-            assert_eq!(
-                game.level_set_block(level, at, shulker, BlockUpdateFlags::NEIGHBORS),
-                Ok(true)
-            );
-            assert!(
-                game.as_guest(12, |game| game.open_block_effect_menu(at))
-                    .is_some()
-            );
-            assert_eq!(game.be_anims.shulkers[&at].open_count, 1);
-            game.guest_close_all(12);
-            assert_eq!(game.be_anims.shulkers[&at].open_count, 0);
-            assert_eq!(game.open_block_menu(12, pos), super::MenuOpen::Opened);
-            assert_eq!(game.be_anims.shulkers[&at].open_count, 1);
-            game.guest_close_all(12);
-            assert_eq!(game.be_anims.shulkers[&at].open_count, 0);
+            let hit = Hit {
+                pos: at,
+                inside: false,
+                face: [0, 1, 0],
+                point: [3.5, 65.0, 4.5],
+            };
+            let use_menu = |game: &mut Game<'_>| {
+                assert_eq!(
+                    game.as_guest(12, |game| game.use_hand(Some(&hit)).unwrap()),
+                    Some(true)
+                );
+            };
+            let take_signals = |game: &mut Game<'_>| {
+                let lids = std::mem::take(&mut game.lan_block_events)
+                    .into_iter()
+                    .filter_map(|(p, id, count, _)| (p == at && id == 1).then_some(count))
+                    .collect::<Vec<_>>();
+                let sounds = std::mem::take(game.audio.capture.as_mut().unwrap())
+                    .into_iter()
+                    .map(|sound| sound.event)
+                    .collect::<Vec<_>>();
+                let events = TEST_POSTED_EVENTS.with(|posted| {
+                    std::mem::take(posted.borrow_mut().as_mut().unwrap())
+                        .into_iter()
+                        .map(|(event, _, _)| event)
+                        .collect::<Vec<_>>()
+                });
+                (lids, sounds, events)
+            };
+            for block in ["chest", "ender_chest", "shulker_box"] {
+                game.audio.capture = None;
+                let state = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state(&format!("minecraft:{block}"))
+                    .unwrap();
+                assert_eq!(
+                    game.level_set_block(level, at, state, BlockUpdateFlags::NEIGHBORS),
+                    Ok(true)
+                );
+                game.audio.capture = Some(Vec::new());
+                TEST_POSTED_EVENTS.with(|posted| *posted.borrow_mut() = Some(Vec::new()));
+                let count = |game: &Game<'_>| {
+                    if block == "shulker_box" {
+                        game.be_anims.shulkers.get(&at).map_or(0, |s| s.open_count)
+                    } else {
+                        game.lid_openers.get(&pos).copied().unwrap_or(0)
+                    }
+                };
+                // A shulker's veto can change the acting player to spectator, but
+                // the use still spends the click and must never touch its opener count.
+                let switch = (block == "shulker_box").then_some(GameMode::Spectator);
+                mod_platform::testing::with_mods(
+                    vec![mod_api::ModEntry::new(
+                        "stop_menu",
+                        Box::new(StopMenu(switch)),
+                    )]
+                    .into(),
+                    || {
+                        use_menu(game);
+                        let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+                        assert!(guest.menu.is_none());
+                        assert_eq!(guest.spectator(), switch.is_some());
+                        assert_eq!(count(game), 0, "{block}");
+                        assert_eq!(take_signals(game), (vec![], vec![], vec![]), "{block}");
+                    },
+                );
+                if switch.is_some() {
+                    // In the reverse direction the rejected spectator must not
+                    // remove the other player's actual opener.
+                    assert_eq!(game.open_block_menu(13, pos), super::MenuOpen::Opened);
+                    assert_eq!(count(game), 1);
+                    take_signals(game);
+                    mod_platform::testing::with_mods(
+                        vec![mod_api::ModEntry::new(
+                            "stop_menu",
+                            Box::new(StopMenu(Some(GameMode::Survival))),
+                        )]
+                        .into(),
+                        || {
+                            assert_eq!(
+                                game.as_guest(12, |game| {
+                                    game.spectator_open_menu(at);
+                                    game.container == Some(pos)
+                                }),
+                                Some(true)
+                            );
+                            let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+                            assert!(!guest.spectator());
+                            assert!(guest.menu.is_none());
+                            assert_eq!(count(game), 1);
+                            assert_eq!(take_signals(game), (vec![], vec![], vec![]));
+                        },
+                    );
+                    game.guest_close_all(13);
+                    assert_eq!(count(game), 0);
+                    take_signals(game);
+                }
+                for direct in [false, true] {
+                    if direct {
+                        assert_eq!(game.open_block_menu(12, pos), super::MenuOpen::Opened);
+                    } else {
+                        use_menu(game);
+                    }
+                    assert!(game.lan.as_ref().unwrap().hub.guests[0].menu.is_some());
+                    assert_eq!(count(game), 1, "{block}");
+                    assert_eq!(
+                        take_signals(game),
+                        (
+                            vec![1],
+                            vec![format!("minecraft:block.{block}.open")],
+                            vec!["minecraft:container_open"],
+                        ),
+                        "{block}"
+                    );
+                    game.guest_close_all(12);
+                    assert_eq!(count(game), 0, "{block}");
+                    assert_eq!(
+                        take_signals(game),
+                        (
+                            vec![0],
+                            vec![format!("minecraft:block.{block}.close")],
+                            vec!["minecraft:container_close"],
+                        ),
+                        "{block}"
+                    );
+                }
+                game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+                    guest.game_mode = 3;
+                });
+                assert_eq!(game.open_block_menu(12, pos), super::MenuOpen::Opened);
+                assert_eq!(count(game), 0, "{block}");
+                game.guest_close_all(12);
+                assert_eq!(take_signals(game), (vec![], vec![], vec![]), "{block}");
+                game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+                    guest.game_mode = 0;
+                });
+            }
+            TEST_POSTED_EVENTS.with(|posted| *posted.borrow_mut() = None);
         });
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn block_menu_click_keeps_spent_action_on_cancellation() {
-        use sunrise_client::{chunk::Chunk, lan::guest::GuestKind};
+        use super::MenuOpen;
         use mod_api::BlockUpdateFlags;
         use std::sync::Arc;
+        use sunrise_client::{chunk::Chunk, lan::guest::GuestKind};
+        use sunrise_core::nbt::Tag;
         super::super::native_guest_turn_tests::with_guests(|game| {
             game.options.dedicated = Some(Vec::new());
             game.world
@@ -1101,29 +1116,56 @@ mod tests {
                 game.level_set_block(level, [0, 64, 0], chest, BlockUpdateFlags::NEIGHBORS),
                 Ok(true)
             );
-            assert!(!game.lan_open_container(12, (2, 64, 0)));
-            let mut guest = game.lan.as_mut().unwrap().hub.guests.remove(0);
-            guest.kind = GuestKind::Fake;
-            game.lan.as_mut().unwrap().hub.guests.insert(0, guest);
-            assert!(game.lan_open_container(12, (0, 64, 0)));
+            let pos = (0, 64, 0);
+            assert_eq!(
+                game.lan_open_container(12, (2, 64, 0)),
+                MenuOpen::NoProvider
+            );
+            assert_eq!(game.lan_open_container(999, pos), MenuOpen::Refused);
+            game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+                guest.kind = GuestKind::Fake;
+            });
+            assert_eq!(game.lan_open_container(12, pos), MenuOpen::Refused);
             assert!(game.lan.as_ref().unwrap().hub.guests[0].menu.is_none());
-            let mut guest = game.lan.as_mut().unwrap().hub.guests.remove(0);
-            guest.kind = GuestKind::Network;
-            game.lan.as_mut().unwrap().hub.guests.insert(0, guest);
-            assert!(game.lan_open_container(12, (0, 64, 0)));
+            game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+                guest.kind = GuestKind::Network;
+            });
+            mod_platform::testing::with_mods(
+                vec![mod_api::ModEntry::new(
+                    "stop_menu",
+                    Box::new(StopMenu(None)),
+                )]
+                .into(),
+                || {
+                    assert_eq!(game.lan_open_container(12, pos), MenuOpen::Cancelled);
+                    assert!(game.lan.as_ref().unwrap().hub.guests[0].menu.is_none());
+                },
+            );
+            let lock = Tag::compound([(
+                "lock",
+                Tag::compound([("items", Tag::String("minecraft:gold_ingot".into()))]),
+            )]);
+            assert_eq!(game.lan_open_container(13, pos), MenuOpen::Opened);
+            game.world.set_block_lock(pos, &lock);
+            assert_eq!(game.lan_open_container(12, pos), MenuOpen::Refused);
+            assert!(game.lan.as_ref().unwrap().hub.guests[0].menu.is_none());
+            assert_eq!(game.lid_openers.get(&pos), Some(&1));
+            game.guest_close_all(13);
+            assert!(!game.lid_openers.contains_key(&pos));
+            game.world
+                .set_block_lock(pos, &Tag::Compound(Default::default()));
+            assert_eq!(game.lan_open_container(12, pos), MenuOpen::Opened);
             assert!(game.lan.as_ref().unwrap().hub.guests[0].menu.is_some());
         });
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn block_parts_pick_and_use_on_the_server_and_for_a_guest() {
-        use super::super::{lan::LanSettings, native_entity_refs::tests::with_game};
-        use sunrise_client::{
-            chunk::Chunk,
-            lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
+        use super::super::{
+            lan::LanSettings,
+            native_entity_refs::tests::{run_fresh_cases, with_game},
         };
-        use sunrise_protocol::packets::{configuration::ClientInformation, play};
         use mod_api::InteractionResult as Answer;
         use mod_api::{
             self, BlockPart, CloneItemStackEvent, Hooks, Host, ItemPart, ItemStack, Registrar,
@@ -1133,16 +1175,34 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicI32, AtomicUsize},
         };
+        use sunrise_client::{
+            chunk::Chunk,
+            lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
+        };
+        use sunrise_protocol::packets::{configuration::ClientInformation, play};
 
-        struct Picker(Arc<Mutex<Vec<bool>>>);
+        if run_fresh_cases(
+            "game::lan_actions::tests::block_parts_pick_and_use_on_the_server_and_for_a_guest",
+            "SUNRISE_PICK_PARTS_CHILD",
+            &["players"],
+        ) {
+            return;
+        }
+        type Picks = Arc<Mutex<Vec<(u32, u128, bool)>>>;
+        struct Picker(Picks);
         #[mod_api::sunrise_part]
         impl BlockPart for Picker {
             fn clone_item_stack(
                 &self,
-                _: &dyn Host,
+                host: &dyn Host,
                 event: &mut CloneItemStackEvent<'_>,
             ) -> Option<ItemStack> {
-                self.0.lock().unwrap().push(event.include_data);
+                assert!(event.player.food(host).is_some());
+                self.0.lock().unwrap().push((
+                    event.player.entity().id(),
+                    event.player.uuid(),
+                    event.include_data,
+                ));
                 event.include_data.then(|| {
                     mod_api::ItemStack::new(
                         mod_api::__private::item_key("minecraft:diamond").unwrap(),
@@ -1216,7 +1276,7 @@ mod tests {
             }
         }
         struct Mod {
-            picks: Arc<Mutex<Vec<bool>>>,
+            picks: Picks,
             user: User,
         }
         #[mod_api::__subscriptions]
@@ -1305,29 +1365,38 @@ mod tests {
                     max_players: 2,
                     integrated: true,
                     levels: game.level_shapes,
+                    level_seeds: game.levels.runtime.seeds(),
                 };
                 game.lan_host(settings, net, config).unwrap();
                 let (tx, _rx) = std::sync::mpsc::channel();
-                let mut guest = Guest::new(
-                    Joined {
-                        conn: 12,
-                        uuid: 12,
-                        name: "guest12".into(),
-                        properties: Vec::new(),
-                        info: ClientInformation::new(8),
-                        brand: String::new(),
-                        sender: PlayerSender::new(tx, Arc::new(AtomicUsize::new(0))),
-                        latency: Arc::new(AtomicI32::new(0)),
-                        address: "127.0.0.1:1".parse().unwrap(),
-                        expected: false,
-                    },
-                    12,
-                    [0.5, 64.0, 2.0],
-                    10,
-                );
-                guest.placed = true;
-                guest.game_mode = 1;
-                game.lan.as_mut().unwrap().hub.guests.push(guest);
+                let make_guest = |conn, uuid, entity_id| {
+                    let mut guest = Guest::new(
+                        Joined {
+                            conn,
+                            uuid,
+                            name: format!("guest{conn}"),
+                            properties: Vec::new(),
+                            info: ClientInformation::new(8),
+                            brand: String::new(),
+                            sender: PlayerSender::new(tx.clone(), Arc::new(AtomicUsize::new(0))),
+                            latency: Arc::new(AtomicI32::new(0)),
+                            address: "127.0.0.1:1".parse().unwrap(),
+                            expected: false,
+                        },
+                        entity_id,
+                        [0.5, 64.0, 2.0],
+                        10,
+                    );
+                    guest.placed = true;
+                    guest.game_mode = 1;
+                    guest
+                };
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .guests
+                    .push(make_guest(12, 12, 12));
 
                 // BlockState.useItemOn replaces the template. Only TryWithEmptyHand
                 // reaches useWithoutItem, which toggles this lever on the main hand.
@@ -1746,7 +1815,28 @@ mod tests {
                     &*guest.inventory[guest.selected].as_ref().unwrap().item,
                     "minecraft:wheat_seeds"
                 );
-                assert_eq!(*seen.lock().unwrap(), [true, false]);
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .guests
+                    .push(make_guest(13, 1300, 130));
+                game.lan_guest_packet(
+                    13,
+                    play::Serverbound::PickItemFromBlock(play::PickItemFromBlock {
+                        pos: [0, 64, 0],
+                        include_data: false,
+                    }),
+                );
+                let second = &game.lan.as_ref().unwrap().hub.guests[1];
+                assert_eq!(
+                    &*second.inventory[second.selected].as_ref().unwrap().item,
+                    "minecraft:stone"
+                );
+                assert_eq!(
+                    *seen.lock().unwrap(),
+                    [(12, 12, true), (12, 12, false), (130, 1300, false)]
+                );
 
                 // addBlockDataToItem runs on the part's item: a chest picked with
                 // its data gives the part's diamond carrying the chest's contents.
@@ -1768,12 +1858,18 @@ mod tests {
                 let picked = guest.inventory[guest.selected].as_ref().unwrap();
                 assert_eq!(&*picked.item, "minecraft:diamond");
                 let Some(sunrise_core::nbt::Tag::Compound(components)) =
-                    sunrise_client::item_data::encode_components(picked)
+                    sunrise_client::item_data::component_snapshot(picked)
                 else {
                     panic!("the chest's data is on the diamond");
                 };
                 assert!(components.contains_key(&"minecraft:container".into()));
-                assert_eq!(*seen.lock().unwrap(), [true, false, true]);
+                let expected = [
+                    (12, 12, true),
+                    (12, 12, false),
+                    (130, 1300, false),
+                    (12, 12, true),
+                ];
+                assert_eq!(*seen.lock().unwrap(), expected);
 
                 let hive = game
                     .pack
@@ -1794,22 +1890,22 @@ mod tests {
                         .iter()
                         .any(|item| &*item.stack.item == "minecraft:beehive")
                 );
-                assert_eq!(*seen.lock().unwrap(), [true, false, true]);
+                assert_eq!(*seen.lock().unwrap(), expected);
             })
         });
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn block_part_use_item_on_consumes_once() {
         use super::super::native_entity_refs::tests::with_game;
-        use sunrise_client::chunk::Chunk;
         use mod_api::InteractionResult as Answer;
         use mod_api::{self, BlockPart, Hooks, Registrar, ServerHost, UseItemOnEvent};
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering::SeqCst},
         };
+        use sunrise_client::chunk::Chunk;
 
         #[derive(Clone)]
         struct BlockUse(Arc<AtomicUsize>);
@@ -1868,16 +1964,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn replacing_empty_note_block_use_does_not_award_vanilla_stats() {
         use super::super::native_entity_refs::tests::with_game;
-        use sunrise_client::chunk::Chunk;
         use mod_api::InteractionResult as Answer;
         use mod_api::{self, BlockPart, Hooks, Registrar, ServerHost, UseWithoutItemEvent};
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering::SeqCst},
         };
+        use sunrise_client::chunk::Chunk;
 
         #[derive(Clone)]
         struct Replacement(Arc<AtomicBool>);
@@ -1938,7 +2034,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn fake_body_does_not_count_toward_sleep() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(
@@ -1958,18 +2054,6 @@ mod tests {
         });
     }
 
-    /// `copyRespawnPosition` copies an Overworld forced point, not none; a
-    /// point with a block is left to its block check.
-    #[test]
-    fn respawn_copies_the_forced_point() {
-        assert_eq!(
-            copied_respawn_point(false, Some([12.5, 64.0, -3.5])),
-            Some(Some([12, 64, -4]))
-        );
-        assert_eq!(copied_respawn_point(false, None), Some(None));
-        assert_eq!(copied_respawn_point(true, Some([0.5, 64.0, 0.5])), None);
-    }
-
     /// #4124: a STOP is measured from the START that named its block (`destroyPos`) — an abort, or
     /// a STOP from out of reach, ends the dig the guest's button held but leaves that clock — and
     /// breaks the block at 70 % of the dig, or the server finishes it alone from the same START.
@@ -1986,6 +2070,7 @@ mod tests {
                 progress: 0.5,
                 per_tick: 0.0,
                 ticks: 8,
+                crack: None,
             }),
             destroy_pos: Some(pos),
             dig_start: 1000,
@@ -2107,12 +2192,12 @@ fn first_spin_target(
 mod hotbar_tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::super::native_item_places::tests::{guest, open_to_lan};
-    use sunrise_protocol::packets::play;
     use mod_api::{
         Flow, Hooks, ModEntry, PlayerSwitchHotbarSlotPostEvent, PlayerSwitchHotbarSlotPreEvent,
         ServerHost,
     };
     use std::sync::{Arc, Mutex};
+    use sunrise_protocol::packets::play;
 
     /// What the hooks heard, as (pre or post, uuid, entity id, old, new).
     type Heard = Arc<Mutex<Vec<(&'static str, u128, i32, i32, i32)>>>;
@@ -2148,7 +2233,7 @@ mod hotbar_tests {
     /// player by UUID and entity id; the same slot again fires neither, and a cancelled pre
     /// keeps the old slot with no post.
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn a_hotbar_switch_fires_pre_then_post_and_pre_can_keep_the_slot() {
         let heard = Heard::default();
         let mods = vec![ModEntry::new("hotbar", Box::new(Hotbar(heard.clone())))].into();
@@ -2183,9 +2268,9 @@ mod hotbar_tests {
 mod respawn_position_tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::super::native_item_places::tests::{guest, open_to_lan};
-    use sunrise_client::chunk::Chunk;
     use mod_api::{Hooks, LevelDimension, ModEntry, PlayerRespawnPositionEvent, ServerHost};
     use std::sync::{Arc, Mutex};
+    use sunrise_client::chunk::Chunk;
 
     /// What the hook heard: the player's UUID, the original level and point,
     /// and whether the block was missing.
@@ -2219,7 +2304,7 @@ mod respawn_position_tests {
     /// player's handle, and its new point, facing and copy choice are what
     /// the player gets.
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn a_mod_moves_a_respawn_and_drops_the_point() {
         let heard = Heard::default();
         let mods = vec![ModEntry::new("east", Box::new(East(heard.clone())))].into();
@@ -2269,7 +2354,7 @@ mod respawn_position_tests {
     /// point facing the respawn direction, not the way it died, and keeps
     /// the point.
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn a_listening_mod_leaves_the_respawn_as_it_was() {
         let heard = Arc::default();
         let mods = vec![ModEntry::new(
@@ -2350,8 +2435,9 @@ mod pickup_xp_tests {
                 velocity: Vec3::ZERO,
                 value: 7,
                 age: 0,
-                on_ground: true,
+                ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
                 count: 1,
+                fire_ticks: 0,
                 ticks: 0,
                 air: 300,
                 health: 5,
@@ -2369,7 +2455,7 @@ mod pickup_xp_tests {
     /// `PlayerXpEvent.PickupXp` through the shared `listened` probe: a pickup goes the
     /// same with no listener and with one that changes nothing, and a cancel keeps the orb.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn pickup_xp_is_the_same_with_and_without_a_listener() {
         let none = take_orb();
         assert_eq!(none, (false, 7));
@@ -2383,14 +2469,14 @@ mod pickup_xp_tests {
 #[cfg(test)]
 mod respawn_world_point_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
     use sunrise_core::geometry::Vec3;
     use sunrise_protocol::packets::{configuration::ClientInformation, play::Clientbound};
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     /// PlayerList.respawn sends world respawn data, independently of the personal landing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn guest_respawn_keeps_world_information_distinct_from_personal_landing() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2459,6 +2545,7 @@ mod respawn_world_point_tests {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -2531,6 +2618,7 @@ mod respawn_world_point_tests {
 mod swing_echo_tests {
     use super::ItemStack;
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::chunk::Chunk;
     use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
     use sunrise_core::position::ChunkPos;
@@ -2538,14 +2626,13 @@ mod swing_echo_tests {
         configuration::ClientInformation,
         play::{self, Clientbound, Serverbound},
     };
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     /// handleUseItemOn swings the player's arm, but sends the swing to the
     /// player's own client only when the client did not predict it: a block
     /// placed (SUCCESS) is the client's own swing, a bed's use
     /// (SUCCESS_SERVER) is not (#9887).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn only_a_server_only_use_swings_back_to_the_player() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2625,6 +2712,7 @@ mod swing_echo_tests {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -2732,6 +2820,7 @@ fn touching_unloaded_chunk(
 mod guest_close_listener_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::{
         chunk::Chunk,
         containers::BlockEntity,
@@ -2740,7 +2829,6 @@ mod guest_close_listener_tests {
     };
     use sunrise_core::position::ChunkPos;
     use sunrise_protocol::packets::configuration::ClientInformation;
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     fn selected(game: &Game<'_>) -> Option<Info> {
         let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get(&(9, 100, 4)) else {
@@ -2788,7 +2876,7 @@ mod guest_close_listener_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn ordinary_guest_final_close_posts_to_actual_listener() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
@@ -2860,6 +2948,7 @@ mod guest_close_listener_tests {
                 max_players: 4,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -3039,9 +3128,35 @@ mod guest_close_listener_tests {
 }
 
 #[cfg(test)]
+mod recipe_check_budget_tests {
+    use super::{GuestPlay, RECIPE_CHECK_COST};
+
+    #[test]
+    fn ten_checks_at_once_then_one_each_tick() {
+        let mut play = GuestPlay::default();
+        for _ in 0..10 {
+            assert!(play.recipe_check_available());
+            play.recipe_checks += RECIPE_CHECK_COST;
+        }
+        assert!(!play.recipe_check_available());
+        for _ in 0..20 {
+            play.decay_recipe_checks();
+            assert!(play.recipe_check_available());
+            play.recipe_checks += RECIPE_CHECK_COST;
+            assert!(!play.recipe_check_available());
+        }
+        for _ in 0..20 {
+            play.decay_recipe_checks();
+        }
+        assert_eq!(play.recipe_checks, 0);
+    }
+}
+
+#[cfg(test)]
 mod item_on_block_cooldown_tests {
     use super::ItemStack;
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::chunk::Chunk;
     use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
     use sunrise_core::position::ChunkPos;
@@ -3049,7 +3164,6 @@ mod item_on_block_cooldown_tests {
         configuration::ClientInformation,
         play::{self, Clientbound, Serverbound},
     };
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     // Actual registered guest packet route, with real loaded block facts.
     fn placement_control(check_start: Option<bool>) {
@@ -3129,6 +3243,7 @@ mod item_on_block_cooldown_tests {
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -3277,17 +3392,17 @@ mod item_on_block_cooldown_tests {
         }
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn failed_stick_use_keeps_group_available_for_placement() {
         placement_control(None);
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn actual_guest_placement_starts_its_cooldown() {
         placement_control(Some(true));
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn actual_guest_second_placement_is_rejected() {
         placement_control(Some(false));
     }
@@ -3312,6 +3427,10 @@ mod crack_feedback_tests;
 #[cfg(test)]
 #[path = "tests/menu_still_valid_tests.rs"]
 mod menu_still_valid_tests;
+
+#[cfg(test)]
+#[path = "tests/player_entity_tick_tests.rs"]
+mod player_entity_tick_tests;
 
 #[cfg(test)]
 #[path = "tests/projectile_lifecycle_tests.rs"]

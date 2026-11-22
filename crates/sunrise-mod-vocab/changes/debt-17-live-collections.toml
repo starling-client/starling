@@ -1,0 +1,33 @@
+ids = [
+    "handle:LevelRef::all_entities",
+    "handle:LevelRef::entities_in",
+    "handle:LevelRef::online_players",
+    "handle:TeamRef::members",
+    "handle:LevelRef::visit_all_entities",
+    "handle:LevelRef::visit_entities_in",
+    "handle:LevelRef::visit_online_players",
+    "handle:TeamRef::visit_members",
+    "handle:LevelRef::ray_trace_nearest_entity",
+    "type:TeamMembersReadError",
+    "type:TeamMembersReadError.Stale",
+    "type:TeamMembersReadError.Unavailable",
+]
+why = "Entity, player and team reads no longer build lists for callers that only need to inspect values or stop at a match. The scoped visits preserve order and visibility, distinguish a valid empty collection from a refused read, and borrow team names instead of copying them. Matching vanilla 26.3 (`ServerLevel.getAllEntities`, `ProjectileUtil.getEntityHitResult`, `AABB.inflate`), `visit_all_entities` walks lazily in admission order without an upfront preflight, both `ray_trace_entities` and `ray_trace_nearest_entity` accept any finite margin (positive inflates, negative deflates), and `ray_trace_nearest_entity` filters each candidate `EntityRef` before reading and clipping its box."
+migrate = '''
+Import `core::ops::ControlFlow::{Break, Continue}`. Move the body of the old loop into a visitor:
+
+- `level.all_entities(host)` → `level.visit_all_entities(host, &mut |entity| { /* use EntityRef */ Continue(()) })`.
+- `level.entities_in(host, min, max)` → `level.visit_entities_in(host, min, max, &mut |entity| { /* use EntityRef */ Continue(()) })`.
+- `level.online_players(host)` → `level.visit_online_players(host, &mut |player| { /* use PlayerRef */ Continue(()) })`.
+- `team.members(host)` → `team.visit_members(host, &mut |name| { /* use &str */ Continue(()) })`. Replace destructuring `ScoreHolder::Name(name)` with using `name` directly as `&str`. To keep it, call `name.to_owned()` inside the callback; for a later scoreboard write, pass `ScoreHolder::Name(owned_name)`.
+
+Return `Break(())` to stop, saving any match in a captured variable. `Ok(Break(()))` means the visitor stopped; `Ok(Continue(()))` means the visit completed, including a valid empty result. Where the old call returned `None`, the new call returns `Err(LevelReadError::Stale)` for a stale level or `Err(LevelReadError::Unavailable)` when the query cannot read it (including non-finite spatial bounds). Team visits return `Err(TeamMembersReadError::Stale)` for a removed team or an earlier open, or `Err(TeamMembersReadError::Unavailable)` when the server scoreboard cannot be read. Neither error runs the visitor. `visit_all_entities` walks lazily in admission order, skips any member that cannot resolve cleanly, and stops immediately on `Break(())` without touching later members.
+
+A visitor can make shared reads on the same host. If you used the old list to do mutable work, push the handles or owned names you need into your own list in the visitor, handle the visit result, then use the mutable host after the visit returns.
+
+Both `LevelRef::ray_trace_entities` and `LevelRef::ray_trace_nearest_entity` now accept any finite `margin`, including negative values (`AABB.inflate`: positive inflates, negative deflates; non-finite margins still refuse).
+
+For an entity-only nearest query, change the `LevelRef::ray_trace_nearest_entity` callback from `|hit| predicate(hit.entity)` (a by-value `EntityRayHit`) to `|entity| predicate(entity)` (a by-value `EntityRef`). If you were using the list query with `.find(|hit| accept(hit.entity))`, switch to `level.ray_trace_nearest_entity(host, from, to, margin, exclude, &mut |entity| accept(entity))`. For the nearest query's `Result`, handle `Ok(Some(hit))` for a match, `Ok(None)` for no accepted hit, and `Err(LevelReadError::Stale)` or `Err(LevelReadError::Unavailable)` for refusal. Matching `ProjectileUtil.getEntityHitResult`, the predicate receives each non-excluded candidate before its bounding box is read and clipped; among accepted candidates that clip the segment, the smallest squared distance wins, with the first visited hit winning exact ties.
+
+If your predicate inspects the hit point or distance, or relies on visiting clipped hits nearest first, keep the sorted list query instead. It returns `Option<Vec<EntityRayHit>>`: `None` is a refusal and does not distinguish stale from unavailable; `Some` can contain an empty list. To keep a caller that returns `Result`, map the refusal to your own error, then pass each `Copy` hit by value: `let hits = level.ray_trace_entities(host, from, to, margin, exclude).ok_or(MyError::RayQueryRefused)?; let nearest = hits.into_iter().find(|hit| predicate(*hit));`.
+'''

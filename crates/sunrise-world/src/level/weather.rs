@@ -108,7 +108,8 @@ impl Behaviours {
     }
     /// `SnowLayerBlock.canSurvive` for a default snow layer at `pos`.
     fn snow_survives<L: LevelAccess + ?Sized>(&self, level: &L, pos: BlockPos) -> bool {
-        let below = level.block_state(BlockPos::new(pos.x, pos.y - 1, pos.z));
+        let below_pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
+        let below = level.block_state(below_pos);
         let block = self.block(below);
         if self.tags.cannot_support_snow_layer.contains(block) {
             return false;
@@ -116,8 +117,12 @@ impl Behaviours {
         if self.tags.support_override_snow_layer.contains(block) {
             return true;
         }
-        self.collision_face_full(below, Direction::Up)
-            || (block == self.named.snow && self.table.int(below, self.props.layers) == 8)
+        let full = match level.published_collision_shape(below_pos, below) {
+            Some(shape) => super::data::analyse_shape(&shape)
+                .is_ok_and(|info| info.full_faces & (1 << Direction::Up as u8) != 0),
+            None => self.collision_face_full(below, Direction::Up),
+        };
+        full || (block == self.named.snow && self.table.int(below, self.props.layers) == 8)
     }
     /// `Level.isRainingAt(pos)`.
     pub fn is_raining_at<L: LevelAccess + ?Sized>(&self, level: &L, pos: BlockPos) -> bool {

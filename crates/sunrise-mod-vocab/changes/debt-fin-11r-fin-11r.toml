@@ -1,0 +1,5 @@
+ids = [
+    "hook:menu_slot_rules",
+]
+why = "Menu slot queries inside a slot rule Part no longer dispatch menu Parts again, so even a cycle through other slots or menus cannot overflow the stack. Nested queries keep the slot's own answers, following vanilla Slot.mayPlace, Slot.mayPickup and Slot.getMaxStackSize(ItemStack) as used by AbstractContainerMenu.doClick and NeoForge ResourceHandlerSlot's backing queries. Outer callbacks still use the shared panic boundary."
+migrate = "Rebuild for `menu_slot_rules` version 8. This recursion guard adds no callback arguments; the event now borrows the live menu context. Keep using event.context.slot(container, index) to read the live slots of the current click. Calls to MenuRef::slot_holds and slot_gives within menu_slot_rules now omit menu Parts, even on another slot or menu. Move calls that need an answer from Parts outside the callback."

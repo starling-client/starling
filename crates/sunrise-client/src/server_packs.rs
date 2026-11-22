@@ -280,7 +280,7 @@ impl ServerPacks {
         }
         self.update = true;
     }
-    /// What the player answered for this server's packs (splitscreen: the others follow P1).
+    /// What the player answered for this server's packs.
     pub fn prompt(&self) -> Prompt {
         self.prompt
     }

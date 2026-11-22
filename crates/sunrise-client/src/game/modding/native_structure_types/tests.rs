@@ -1,7 +1,7 @@
 use super::*;
-use sunrise_world::worldgen::structure::legacy::Result as PieceResult;
 use mod_api::Tag;
 use mod_api::{FoundStructure, StructureError};
+use sunrise_world::worldgen::structure::legacy::Result as PieceResult;
 
 /// A type whose piece is a stone box of a size the config names, from the
 /// chunk's corner: what the adapter saves, it loads back.
@@ -498,6 +498,24 @@ fn structure_random_adapter_preserves_vanilla_scalar_draws() {
         0.730967787376657_f64.to_bits()
     );
     assert!(Draws(&mut LegacyRandom::new(0)).next_boolean());
+    // The unbounded int and the gaussian are the engine stream's own, cache and all.
+    let mut engine = LegacyRandom::new(0);
+    let expected = (
+        sunrise_core::random::RandomSource::next_int(&mut engine),
+        sunrise_core::random::RandomSource::next_gaussian(&mut engine),
+        sunrise_core::random::RandomSource::next_gaussian(&mut engine),
+    );
+    let mut random = LegacyRandom::new(0);
+    let mut draws = Draws(&mut random);
+    let random: &mut dyn mod_api::RandomSource = &mut draws;
+    assert_eq!(
+        (
+            random.next_int(),
+            random.next_gaussian(),
+            random.next_gaussian()
+        ),
+        expected
+    );
     let mut random = LegacyRandom::new(0);
     let mut draws = Draws(&mut random);
     assert_eq!(draws.next_int_bound(0), 0);
@@ -553,11 +571,11 @@ impl StructureType for ConfigObserver {
 
 #[test]
 fn structure_config_is_converted_at_load_and_shared_by_starts() {
+    use std::collections::{BTreeMap, BTreeSet};
     use sunrise_world::worldgen::structure::{
         mod_types::ModStructureTypes,
         start::{StructureKind, StructureRegistry},
     };
-    use std::collections::{BTreeMap, BTreeSet};
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let types: ModStructureTypes = BTreeMap::from([(
         "probe:kind".to_owned(),
@@ -624,11 +642,11 @@ fn structure_config_is_converted_at_load_and_shared_by_starts() {
 #[test]
 #[allow(clippy::err_expect)] // TODO(#2273): `expect_err` once the Ok type is Debug
 fn structure_bad_config_refuses_at_load_but_unknown_types_do_not_convert() {
+    use std::collections::{BTreeMap, BTreeSet};
     use sunrise_world::worldgen::structure::{
         mod_types::ModStructureTypes,
         start::{StructureKind, StructureRegistry},
     };
-    use std::collections::{BTreeMap, BTreeSet};
     let types: ModStructureTypes = BTreeMap::from([(
         "probe:kind".to_owned(),
         Adapter::new("probe:kind", Arc::new(ConfigObserver(Default::default()))).into_engine_type(),
@@ -740,12 +758,12 @@ fn compiled_book_piece_resolves_on_worker_load_and_refuses_bad_saved_values() {
 /// Exercise the actual terrain consumer with generated and saved mod pieces.
 #[test]
 fn piece_beardifier_shapes_terrain_and_is_resolved_once() {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use sunrise_core::density::{DensitySampler, SamplerContext, TerrainAdjustment as Engine};
     use sunrise_world::worldgen::structure::start::{
         Piece, StructureRegistry, StructureStart, beardifier,
     };
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TerrainType(Arc<AtomicUsize>);
     #[derive(Debug)]

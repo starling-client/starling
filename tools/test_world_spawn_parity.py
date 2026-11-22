@@ -33,10 +33,12 @@ tools/parity.py runs it in PARITY_SHARDS parts, each creating the worlds of
 every PARITY_SHARDS-th seed: each seed is a vanilla and a Sunrise server start,
 ~15 s, and 60 seeds in one run were the longest harness (~25 min).
 
-Under tools/parity.py's oracle reuse (not --fresh or --all) a seed's vanilla
-spawn is kept and reused: vanilla's server is ~11 s of a seed's ~13 s, and its
+Under tools/parity.py's oracle reuse (never with --fresh; with --all only when
+PARITY_ORACLE_KEEP is set) a seed's vanilla spawn is kept in the checkout's own
+oracle cache and reused: vanilla's server is ~11 s of a seed's ~13 s, and its
 spawn depends only on what the key holds (see vanilla_cache). tools/parity_shim.py
-can't do it: a server's console is a pipe, and it never caches those runs.
+can't do it, so these spawns are never in the CI keep: a server's console is a
+pipe, and the shim never caches those runs.
 
 usage: test_world_spawn_parity.py [--random N] [--jobs N] [--origins-only]
 """

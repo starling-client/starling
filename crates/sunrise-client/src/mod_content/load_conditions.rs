@@ -1,20 +1,6 @@
 //! Content-root condition selection through the owning reload snapshot.
 use super::*;
 
-/// Evaluate a tag layer before its values or replace flag participate in a merge.
-pub(super) fn tag_conditions_hold(
-    doc: &J,
-    conditions: &sunrise_world::conditions::LoadConditions,
-    path: &str,
-) -> Result<bool> {
-    if doc.get("neoforge:conditions").is_none() {
-        return Ok(true);
-    }
-    let allowed = conditions.allows_file(&serde_json::to_value(doc)?, path);
-    conditions.check_errors()?;
-    Ok(allowed)
-}
-
 /// A tag file's `key` list (`values`, `remove`); empty where it has none.
 pub(super) fn tag_list<'a>(tag: &'a J, key: &str) -> &'a [J] {
     match tag.get(key) {
@@ -181,8 +167,9 @@ pub fn build_with_conditions(
             }
         }
     }
-    // The overlay links to the base: a relative base would leave them dangling.
-    let base = &std::path::absolute(base)?;
+    // The overlay links to the base: a relative base would leave them dangling, and a
+    // link through a game folder's own link to the resources would not outlive that folder.
+    let base = &real_base(base)?;
     let loaded = load_layers(jar_store, mods)?;
     let plan = Plan::new(base, mods)?;
     // Publish the completed tables as one generation. Passive asset layers
@@ -200,8 +187,8 @@ pub fn build_with_conditions(
     let mut warnings = Vec::new();
     let mut worldgen: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
     let mut additions: BTreeMap<&str, Vec<Addition>> = BTreeMap::new();
-    let mut modifiers = Vec::new();
-    let mut structure_modifiers = Vec::new();
+    let mut modifier_files = BTreeMap::new();
+    let mut modifier_order = 0;
     let mut namespaces: std::collections::BTreeSet<String> = mods
         .iter()
         .flat_map(|m| m.content.namespaces.iter().cloned())
@@ -229,13 +216,20 @@ pub fn build_with_conditions(
                     namespaces.insert(namespace.to_owned());
                 }
                 let is_tag = file.contains("/tags/") && file.ends_with(".json");
-                if !is_tag
-                    && (file.starts_with(&declarations)
-                        || (!biomes::is_modifier(&file)
-                            && !structures::is_modifier(&file)
-                            && worldgen_entry(&file).is_none()))
-                {
-                    continue;
+                if !is_tag {
+                    if file.starts_with(&declarations) {
+                        continue;
+                    }
+                    let structure = structures::is_modifier(&file);
+                    if structure || biomes::is_modifier(&file) {
+                        // Registry JSON has one winning source; don't even read a loser.
+                        modifier_files.insert(file, (modifier_order, &m.id, layer, structure));
+                        modifier_order += 1;
+                        continue;
+                    }
+                    if worldgen_entry(&file).is_none() {
+                        continue;
+                    }
                 }
                 let bytes = layer.data.read(&file).ok_or_else(|| {
                     std::io::Error::new(
@@ -243,15 +237,6 @@ pub fn build_with_conditions(
                         format!("{}: {file}", layer.assets.id),
                     )
                 })?;
-                // Dynamic registry entries use the same owning-load conditions as tags.
-                // Evaluate before parsing required modifier fields.
-                if biomes::is_modifier(&file) || structures::is_modifier(&file) {
-                    let doc: J = serde_json::from_slice(&bytes)
-                        .map_err(|e| format!("mod {}: {file}: {e}", m.id))?;
-                    if !tag_conditions_hold(&doc, conditions, &file)? {
-                        continue;
-                    }
-                }
                 if is_tag {
                     let doc: J =
                         serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
@@ -266,42 +251,58 @@ pub fn build_with_conditions(
                     if let Some((_, remove)) = merge.layers.last_mut() {
                         remove.extend(tag_list(&doc, "remove").iter().cloned());
                     }
-                } else if !file.starts_with(&declarations) {
-                    if structures::is_modifier(&file) {
-                        let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
-                        structure_modifiers.extend(structures::Modifier::read(
-                            &m.id,
-                            &file,
-                            &text,
-                            &mut warnings,
-                        )?);
-                    } else if biomes::is_modifier(&file) {
-                        let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
-                        modifiers.extend(biomes::Modifier::read(
-                            &m.id,
-                            &file,
-                            &text,
-                            &mut warnings,
-                        )?);
-                    } else if let Some((bundle, id)) = worldgen_entry(&file) {
-                        let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
-                        let entries = worldgen.entry(bundle).or_default();
-                        match Addition::read(bundle, &text).map_err(|e| format!("{file}: {e}"))? {
-                            Some(addition) => additions.entry(bundle).or_default().push(addition),
-                            None => entries.push((id, text)),
-                        }
+                } else if let Some((bundle, id)) = worldgen_entry(&file) {
+                    let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
+                    let entries = worldgen.entry(bundle).or_default();
+                    match Addition::read(bundle, &text).map_err(|e| format!("{file}: {e}"))? {
+                        Some(addition) => additions.entry(bundle).or_default().push(addition),
+                        None => entries.push((id, text)),
                     }
                 }
             }
         }
     }
+    let mut winners: Vec<_> = modifier_files.into_iter().collect();
+    winners.sort_by_key(|(_, (order, ..))| *order);
+    let mut accepted = Vec::new();
+    for (file, (_, owner, layer, structure)) in winners {
+        let bytes = layer
+            .data
+            .read(&file)
+            .ok_or_else(|| format!("mod {owner}: {file}: unreadable"))?;
+        let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
+        let doc = serde_json::from_str(&text).map_err(|e| format!("mod {owner}: {file}: {e}"))?;
+        if conditions.allows_file(&doc, &file) {
+            accepted.push((file, owner, text, structure));
+        }
+    }
+    conditions.check_errors()?;
+    let mut modifiers = Vec::new();
+    let mut structure_modifiers = Vec::new();
+    for (file, owner, text, structure) in accepted {
+        if structure {
+            structure_modifiers.extend(structures::Modifier::read(
+                owner,
+                &file,
+                &text,
+                &mut warnings,
+            )?);
+        } else {
+            modifiers.extend(biomes::Modifier::read(owner, &file, &text, &mut warnings)?);
+        }
+    }
     // A tag naming an id nobody registers fails as a whole in vanilla, and
     // carried-over mods name blocks left out or other mods' ids: such
     // entries are dropped instead, so the rest of the tag holds.
-    let known = Known::new(base, &plan, &tags)?;
+    let mod_biomes = worldgen
+        .get(BIOMES)
+        .into_iter()
+        .flatten()
+        .map(|(id, _)| id.clone());
+    let known = Known::new(base, &plan, &tags, mod_biomes)?;
     for (file, merge) in &mut tags {
         for (values, _) in &mut merge.layers {
-            values.retain(|v| known.keeps(file, v));
+            values.retain(|v| known.keeps(file, v, &mut warnings));
         }
     }
     let mut bundles: Vec<(&str, J)> = Vec::new();
@@ -366,10 +367,12 @@ pub fn build_with_conditions(
     // Structures and the pools, sets, processors and features they use, then
     // what mods add to sets, pools and lists, by priority, then in mod and
     // file order.
-    for list in additions.values_mut() {
-        list.sort_by_key(|a| a.priority);
-    }
     let mut placed_doc = None;
+    let mut biome_doc = None;
+    // A mod's biomes follow vanilla's, by namespace then path.
+    if let Some(entries) = worldgen.get_mut(BIOMES) {
+        entries.sort_by(|a, b| a.0.split_once(':').cmp(&b.0.split_once(':')));
+    }
     for (bundle, entries) in &worldgen {
         if !base.join(bundle).exists() {
             continue;
@@ -378,14 +381,14 @@ pub fn build_with_conditions(
         for (id, text) in entries {
             doc.set(id, J::Str(text.clone()));
         }
-        for addition in additions.get(bundle).into_iter().flatten() {
-            addition
-                .apply(&mut doc)
-                .map_err(|e| format!("{bundle}: {e}"))?;
+        if let Some(list) = additions.get_mut(bundle) {
+            apply_additions(&mut doc, list).map_err(|e| format!("{bundle}: {e}"))?;
         }
         overlay.write(bundle, &serde_json::to_vec(&doc)?)?;
         if *bundle == PLACED_FEATURES {
             placed_doc = Some(doc);
+        } else if *bundle == BIOMES {
+            biome_doc = Some(doc);
         }
     }
     if !modifiers.is_empty() || (!mods.is_empty() && base.join(BIOMES).exists()) {
@@ -396,6 +399,7 @@ pub fn build_with_conditions(
             inventory.server_ids().map(str::to_owned).collect(),
             biome_tag_doc,
             placed_doc,
+            biome_doc,
             &tags,
             &mut warnings,
         )?;
@@ -538,10 +542,42 @@ pub fn build_with_conditions(
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     )?;
     overlay.write(GENERATED_FILES, &generated)?;
-    conditions.check_errors()?;
     let _ = fs::remove_dir_all(out);
     fs::rename(&tables_root, out)?;
     Ok(warnings)
+}
+
+/// Takes the roots folder's lock, waiting (and saying so) while another process holds it. A
+/// filesystem that can't lock goes on without one, as starts did before the lock.
+fn lock_roots(roots: &Path) -> Result<Option<fs::File>> {
+    fs::create_dir_all(roots)?;
+    let path = roots.join(ROOTS_LOCK);
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let locked = match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(fs::TryLockError::WouldBlock) => {
+            log::info!("Sunrise: waiting for another Sunrise process preparing mod content");
+            file.lock()
+        }
+        Err(fs::TryLockError::Error(e)) => Err(e),
+    };
+    // Whatever a filesystem answers to a lock (none at all, or NFS without lockd), a start that
+    // worked without the lock still starts.
+    match locked {
+        Ok(()) => Ok(Some(file)),
+        Err(e) => {
+            log::warn!(
+                "Sunrise: {} can't be locked ({e}): preparing mod content without it",
+                path.display()
+            );
+            Ok(None)
+        }
+    }
 }
 
 /// Builds a root using the owning load's condition registrations.
@@ -585,8 +621,11 @@ pub fn resource_root_noting_build(
     if inventory.is_empty() && !has_content {
         return Ok(base.to_owned());
     }
+    // Resolved once: the stamp and the build must name the same directory.
+    let base = &real_base(base)?;
     let mut stamp = stamp(base, jar_store, mods, inventory)?;
     let roots = cache.join("mod-content");
+<<<<<<< sync-sunrise-1
     let built_for = |out: &Path, matches: &dyn Fn(&[u8]) -> bool| {
         fs::read(out.join(STAMP)).is_ok_and(|s| matches(&s))
             && fs::read(out.join(sunrise_mod_package::enabled::MARKER)).is_ok_and(|bytes| {
@@ -595,6 +634,18 @@ pub fn resource_root_noting_build(
             })
     };
     let reuse = |out: PathBuf| {
+=======
+    let out = roots.join(&stamp[..ROOT_NAME]);
+    // Game folders that reach one stamp share its root: one process at a time checks, builds
+    // or prunes in this cache, so none deletes or replaces a root another is reading.
+    let _lock = lock_roots(&roots)?;
+    if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes())
+        && fs::read(out.join(sunrise_mod_package::enabled::MARKER)).is_ok_and(|bytes| {
+            serde_json::from_slice::<sunrise_mod_package::enabled::EnabledMods>(&bytes)
+                .is_ok_and(|loaded| &loaded == inventory)
+        })
+    {
+>>>>>>> sunrise/main
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Sunrise: {w}"));
@@ -648,8 +699,7 @@ pub fn resource_root_noting_build(
     } else {
         // Code-only packages still own an inventory generation, but need no
         // registry-table rewrite or content scan. Existing tables stay linked.
-        let base = std::path::absolute(base)?;
-        let overlay = Overlay::new(&base, &out)?;
+        let overlay = Overlay::new(base, &out)?;
         overlay.write(
             sunrise_mod_package::enabled::MARKER,
             &serde_json::to_vec(inventory)?,

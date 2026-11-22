@@ -6,8 +6,8 @@ use crate::{
     json::{self, Json},
     user_lists::NameAndId,
 };
-use sunrise_protocol::rsa::RsaPublicKey;
 use std::time::Duration;
+use sunrise_protocol::rsa::RsaPublicKey;
 
 /// Mojang's services discovery document.
 pub const DEFAULT_DISCOVERY: &str = "https://discovery.minecraftservices.com/minecraft/client";

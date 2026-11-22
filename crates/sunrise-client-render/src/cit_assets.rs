@@ -6,11 +6,11 @@
 //! `models/`) keeps its vanilla id, so it is not packed twice.
 
 use crate::resource_source::ResourceSource;
-use sunrise_assets::model::{CuboidModel, TextureSlot};
-use sunrise_optifine::cit::{Kind, Rule};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::fs;
+use sunrise_assets::model::{CuboidModel, TextureSlot};
+use sunrise_optifine::cit::{Kind, Rule};
 
 /// The namespace of CIT files outside `textures/` and `models/`.
 pub const NAMESPACE: &str = "sunrise_cit";
@@ -158,7 +158,7 @@ fn load_model(
     let model = root
         .read_to_string(resource)
         .map_err(|e| e.to_string())
-        .and_then(|text| CuboidModel::from_json(&text).map_err(|e| e.to_string()));
+        .and_then(|text| crate::mod_model_loaders::decode_model(&text).map_err(|e| e.to_string()));
     let mut model = match model {
         Ok(model) => model,
         Err(e) => {

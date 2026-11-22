@@ -11,6 +11,8 @@ pub trait Hooks {
     /// side is always the top. Answer only for your own blocks. The level is
     /// read-only.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "source",
@@ -19,5 +21,10 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::is_fire_source::GameLevel<'_>::native_is_fire_source",
         neoforge = "IBlockExtension.isFireSource"
     )]
-    fn is_fire_source();
+    fn is_fire_source(
+        dimension: LevelDimension,
+        state: BlockState,
+        pos: BlockPos,
+        source: &mut Option<bool>,
+    );
 }

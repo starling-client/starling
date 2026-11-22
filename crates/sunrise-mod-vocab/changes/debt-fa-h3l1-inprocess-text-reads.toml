@@ -1,0 +1,17 @@
+ids = [
+  "method:prelude::TextHost::text_string",
+  "method:prelude::ClientTextClientHost::text_visual_order",
+  "method:prelude::ClientTextClientHost::text_width",
+  "method:prelude::ClientTextClientHost::text_split",
+  "method:BlockEntityDrawContext::text_width",
+  "type:DrawError",
+  "type:DrawError.TextTooDeep",
+  "hook:item_tooltip",
+  "hook:render_tooltip_gather_components",
+]
+why = "Vanilla 26.3 (`Component.java` `getString` and `getVisualOrderText`, `Font.java` `width` and `split`, `GuiGraphicsExtractor.java`) performs in-memory text resolution, font measurement, and local GUI/block-entity drawing without a 512-node tree depth cap or `ExtraCodecs` profile/property bounds; those limits belong to serialization boundaries (`ComponentSerialization.CODEC`, `NbtAccounter`, Wire, and network/NBT writes). Making in-process text reads infallible removes synthetic `TextFormError` results from callers, allows `text_string` to resolve literals and fallbacks during pack discovery and startup reload registration, preserves opaque click/hover/metadata payloads verbatim through `text_split`, `text_visual_order`, and `DrawContext::text_lines`, and drops the 512-node serialization cap from local GUI and block-entity draw/layout paths. Vanilla SubStringSource.substring and Style.equals group equal effective styles in one visual run; returned colors are canonical hex, and each character retains its own opaque style data. Font split/layout retains inline atlas sprites and player heads, including fallbacks. Fallible tooltip and block-entity drawing still reject nonrepresentable components before drawing, rather than silently dropping their metadata. NeoForge ItemTooltipEvent and RenderTooltipEvent.GatherComponents carry local Components; Sunrise now accepts deeper output there, bumping item_tooltip to version 3 and render_tooltip_gather_components to version 2."
+migrate = """\
+Remove `?`, `.unwrap()`, and `Result` pattern matching from calls to `TextHost::text_string`, `ClientTextClientHost::text_visual_order`, `ClientTextClientHost::text_width`, `ClientTextClientHost::text_split`, and `BlockEntityDrawContext::text_width`; they now return `String`, `Vec<VisualTextCharacter>`, `i32`, `Vec<Text>`, and `f32` directly. `TextHost::text_from_json` and network/NBT write boundaries still validate serialized text. Keep calling the local drawing, pack registration and client disconnect methods with `Text` as before; do not expect or handle a depth refusal from them. Keep handling `TextFormError` from `DrawContext::gui_tooltip` and `BlockEntityDrawContext::text` for structural representation failures like non-finite metadata. In visual-order consumers, treat `source_index` as a UTF-16 offset across adjacent components of equal effective style (not a component-local offset), and use the canonical `#RRGGBB` color instead of matching original named spellings. Delete match arms for `DrawError::TextTooDeep`; continue handling geometry and representation errors. `DrawContext::text_lines` still rejects invalid geometry or oversized output, but its returned lines preserve inline objects and inherited styles. Rebuild item-tooltip and tooltip-gather listeners; their signatures are unchanged and local output no longer needs serialization preflight.
+
+Visual order groups otherwise equal styles with equivalent custom click identifiers such as `example` and `minecraft:example`, while each character keeps its original click ID and payload. Do not infer a component boundary from that spelling difference.
+"""

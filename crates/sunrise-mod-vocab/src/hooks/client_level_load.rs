@@ -10,10 +10,12 @@ pub trait Hooks {
     /// tells it after the new level is made. Client-side, on the window; the
     /// server's levels have `level_load`.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_client_level_load",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "LevelEvent.Load",
         cancellable = false
     )]
-    fn client_level_load();
+    fn client_level_load(dimension: &str);
 }

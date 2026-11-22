@@ -10,6 +10,9 @@ pub trait Hooks {
     /// set an infinite value for one never culled. Asked once a frame for each
     /// within its view distance (`block_entity_view_distance`) whose chunk is drawn.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_block_entity_render_bounding_box",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "bounds",
@@ -17,5 +20,11 @@ pub trait Hooks {
         key = "block",
         neoforge = "IBlockEntityRendererExtension.getRenderBoundingBox"
     )]
-    fn block_entity_render_bounding_box();
+    fn block_entity_render_bounding_box(
+        pos: [i32; 3],
+        block: &str,
+        state: BlockState,
+        entity: &ModBlockEntity,
+        bounds: &mut [f32; 6],
+    );
 }

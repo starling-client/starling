@@ -3,15 +3,15 @@
 //! per command in the oracle's format.
 //!
 //! usage: recipe_fixture RESOURCES INPUT OUTPUT
+use std::{fs, path::Path};
 use sunrise_client::{
-    crafting::Recipes,
+    crafting::{RecipeLoadRefusals, Recipes},
     enchant::Enchantments,
     item_data::{canon_stack, parse_stack},
     items::Items,
     stations::StationRecipes,
 };
 use sunrise_world::loot::PackOverlay;
-use std::{fs, path::Path};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
@@ -33,7 +33,7 @@ pub fn main() -> sunrise_client::Result<()> {
         &items,
         &PackOverlay::NONE,
         &crate::test_resources::server_load(),
-    );
+    )?;
     let enchantments = Enchantments::load(root, &defaults)?;
     let mut out = String::new();
     for line in input.lines() {
@@ -49,19 +49,29 @@ pub fn main() -> sunrise_client::Result<()> {
                 match recipes.find(crate::test_resources::server_loop_context(), &grid, n) {
                     None => "none".to_owned(),
                     Some((id, result)) => {
-                        let rest = recipes.remainders(id, &grid, n, &|s| {
-                            sunrise_client::crafting::CraftingRemainder::crafting_remainder(
-                                &items, s,
-                            )
-                        });
+                        let rest = recipes.remainders(
+                            crate::test_resources::server_loop_context(),
+                            id,
+                            &grid,
+                            n,
+                            &|s| {
+                                sunrise_client::crafting::CraftingRemainder::crafting_remainder(
+                                    &items, s,
+                                )
+                            },
+                        );
                         let rest: Vec<String> = rest
                             .iter()
                             .enumerate()
                             .filter_map(|(i, s)| {
-                                Some(format!("{i}={}", canon_stack(Some(s.as_ref()?))))
+                                Some(format!("{i}={}", canon_stack(Some(s.as_ref()?), &items)))
                             })
                             .collect();
-                        format!("{id}\t{}\t{}", canon_stack(Some(&result)), rest.join(";"))
+                        format!(
+                            "{id}\t{}\t{}",
+                            canon_stack(Some(&result), &items),
+                            rest.join(";")
+                        )
                     }
                 }
             }
@@ -76,7 +86,10 @@ pub fn main() -> sunrise_client::Result<()> {
             }) {
                 None => "none".to_owned(),
                 Some((id, result, xp, time)) => {
-                    format!("{id}\t{}\t{xp:?}\t{time}", canon_stack(Some(&result)))
+                    format!(
+                        "{id}\t{}\t{xp:?}\t{time}",
+                        canon_stack(Some(&result), &items)
+                    )
                 }
             },
             "stonecut" => match stack(1)? {
@@ -88,7 +101,7 @@ pub fn main() -> sunrise_client::Result<()> {
                         format!(
                             "{}={}",
                             r.id.trim_start_matches("minecraft:"),
-                            canon_stack(Some(&r.result))
+                            canon_stack(Some(&r.result), &items)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -99,12 +112,26 @@ pub fn main() -> sunrise_client::Result<()> {
                     "recipe/test:transform".to_owned(),
                     vec![f[1].as_bytes().to_vec()],
                 )];
-                let stations = StationRecipes::load(
+                // The oracle decodes the one recipe with SmithingTransformRecipe's
+                // codec and answers none when it doesn't decode; here the load of
+                // that one file refuses instead.
+                let stations = match StationRecipes::load(
                     root,
                     &items,
                     &PackOverlay::new(&files),
                     &crate::test_resources::server_load(),
-                );
+                ) {
+                    Ok(stations) => stations,
+                    Err(error)
+                        if error
+                            .downcast_ref::<RecipeLoadRefusals>()
+                            .is_some_and(|refusals| refusals.only_recipe("test:transform")) =>
+                    {
+                        out.push_str("none\n");
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 let (t, b, a) = (stack(2)?, stack(3)?, stack(4)?);
                 match stations.smithing_result(
                     crate::test_resources::server_loop_context(),
@@ -114,7 +141,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     a.as_ref(),
                 ) {
                     None => "none".to_owned(),
-                    Some(r) => canon_stack(Some(&r)),
+                    Some(r) => canon_stack(Some(&r), &items),
                 }
             }
             "smith" => {
@@ -127,7 +154,7 @@ pub fn main() -> sunrise_client::Result<()> {
                     a.as_ref(),
                 ) {
                     None => "none".to_owned(),
-                    Some(r) => canon_stack(Some(&r)),
+                    Some(r) => canon_stack(Some(&r), &items),
                 }
             }
             other => return Err(format!("unknown command {other}").into()),

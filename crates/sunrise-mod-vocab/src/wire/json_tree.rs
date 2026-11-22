@@ -50,6 +50,8 @@ pub(super) fn text_depth(text: &str) -> Result<(), WireError> {
 }
 
 pub(super) fn take<T: serde::de::DeserializeOwned>(input: &mut Reader<'_>) -> Result<T, WireError> {
+    // Serde's parsed values and intermediate allocations cannot charge the shared budget.
+    input.ordinary_only()?;
     let text: String = input.take()?;
     text_depth(&text)?;
     serde_json::from_str(&text).map_err(|_| WireError::Invalid("not valid JSON for its type"))
@@ -57,11 +59,11 @@ pub(super) fn take<T: serde::de::DeserializeOwned>(input: &mut Reader<'_>) -> Re
 
 impl Wire for crate::ModelPart {
     const MIN: usize = String::MIN;
-    const LAYOUT_SEED: u64 = String::LAYOUT_SEED;
-    fn layout(visiting: &mut Vec<&'static str>) -> u64 {
-        String::layout(visiting)
-    }
+    layout_via!(String, "validated-model-part-json:v1", ordinary_only);
     fn put(&self, out: &mut Writer) {
+        if !out.ordinary_only() {
+            return;
+        }
         let mut pending = vec![(self, 0u16)];
         while let Some((part, depth)) = pending.pop() {
             if depth >= MAX_DEPTH {
@@ -80,5 +82,19 @@ impl Wire for crate::ModelPart {
     }
     fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
         take(input)
+    }
+}
+
+impl Wire for crate::MeshDefinition {
+    const MIN: usize = String::MIN;
+    layout_via!(String, "validated-mesh-definition-json:v1", ordinary_only);
+    fn put(&self, out: &mut Writer) {
+        if out.ordinary_only() {
+            out.put_str(&String::from(self));
+        }
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        input.ordinary_only()?;
+        Self::try_from(input.take::<String>()?).map_err(|_| WireError::Invalid("MeshDefinition"))
     }
 }

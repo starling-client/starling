@@ -10,9 +10,9 @@ use common::TempDir;
 use common::hand::{NAMES, Names, capture};
 use common::samples;
 use common::save;
+use serde_json::Value;
 use sunrise_perf::cli::{self, Env};
 use sunrise_perf::wasm::{hp_alloc, hp_close, hp_export, hp_free, hp_open, hp_query, hp_summary};
-use serde_json::Value;
 
 /// Reads a reply buffer into its kind and payload, and gives its memory back.
 fn read(reply: *mut u8) -> (u8, Vec<u8>) {

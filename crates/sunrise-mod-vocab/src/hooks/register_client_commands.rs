@@ -10,10 +10,12 @@ pub trait Hooks {
     /// behaviour. A client command has no operator level: one with a nonzero
     /// `level` is left out.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_register_client_commands",
+        dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "commands",
         neoforge = "RegisterClientCommandsEvent"
     )]
-    fn register_client_commands();
+    fn register_client_commands(commands: &mut Vec<mod_api::Command>);
 }

@@ -11,11 +11,19 @@ pub trait Hooks {
     /// set it `Some(true)` to keep them asleep, `Some(false)` to wake them. The player's state is not swapped in
     /// on a guest tick.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "may_continue",
         neoforge = "CanContinueSleepingEvent",
         cancellable = false
     )]
-    fn can_continue_sleeping();
+    fn can_continue_sleeping(
+        entity: u128,
+        name: &str,
+        kind: &str,
+        pos: [i32; 3],
+        problem: Option<SleepProblem>,
+        may_continue: &mut Option<bool>,
+    );
 }

@@ -17,9 +17,10 @@ pub trait Hooks {
 
 - **`player_destroyed_block(host, event)`**: a player's break has removed the block. `event.pos` and `event.state` are where it stood and what the removal took out (read just before it, so after `playerWillDestroy` and `break_block`: a cracked decorated pot, a disarmed tripwire where vanilla passes `Block.destroy` the armed one, or a block a `break_block` listener put there), `event.block_entity` is the saved data of that block's block entity (`BlockEntity.saveWithoutMetadata`) or none, and the host's helpers name the acting player. It fires at the `Block.destroy` call that vanilla's `ServerPlayerGameMode.destroyBlock` makes only once `Level.removeBlock` succeeded: after the removal and before a creative player's return and `playerDestroy`'s item drops, statistics and experience. A break `break_block` cancels, or one that removes nothing, is not heard; neither is a level-side break (a piston, water, an explosion): those never go through `destroyBlock`. The block entity is read before the removal only while a mod listens, because the entity is gone afterwards and a `BlockEntityRef` would be stale. There is no NeoForge event for this moment: the name and contract are this fork's."#]
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no event for Block.destroy; BreakEvent fires before the removal)"
     )]
-    fn player_destroyed_block();
+    fn player_destroyed_block(pos: [i32; 3], state: BlockState, block_entity: Option<Compound>);
 }

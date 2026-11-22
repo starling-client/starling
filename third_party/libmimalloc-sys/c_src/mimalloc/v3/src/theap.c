@@ -356,12 +356,9 @@ static bool _mi_theap_page_destroy(mi_theap_t* theap, mi_page_queue_t* pq, mi_pa
   // ensure no more thread_delayed_free will be added
   //_mi_page_use_delayed_free(page, MI_NEVER_DELAYED_FREE, false);
 
-  // stats
-  const size_t bsize = mi_page_block_size(page);
-  if (bsize > MI_LARGE_MAX_OBJ_SIZE) {
-    mi_theap_stat_decrease(theap, malloc_huge, bsize);
-  }
+  // stats; Sunrise: a huge block leaves malloc_huge in _mi_arenas_page_free
   #if (MI_STAT>0)
+  const size_t bsize = mi_page_block_size(page);
   _mi_page_free_collect(page, false);  // update used count
   const size_t inuse = page->used;
   if (bsize <= MI_LARGE_MAX_OBJ_SIZE) {

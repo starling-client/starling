@@ -16,6 +16,15 @@
 //! `--gpu-detail on` adds GPU culling's dispatch times and, on Vulkan, the world passes' counters.
 //! `--memory on` adds the renderer's largest GPU resources and, on macOS, the process's
 //! physical footprint by category (`footprint`), taken after the timed frames.
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 use sunrise_client_render::{
     assets::{Assets, RenderAssets},
     biome::Biomes,
@@ -37,15 +46,6 @@ use sunrise_client_render::{
 use sunrise_core::{
     biome::{BiomeZoom, obfuscate_seed},
     paletted::PalettedContainer,
-};
-use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant},
 };
 use winit::{
     application::ApplicationHandler,
@@ -230,7 +230,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         settings.graphics_api(),
         settings.translucent_batching,
-        false,
+        (false, false),
         // HDR off, as the replays draw.
         &sunrise_client_render::graphics::Graphics::default(),
         Default::default(),
@@ -707,6 +707,7 @@ fn remesh(
                         translucent_layers: &[],
                         leaf_culling,
                         hidden_states: &[],
+                        part_tables: Default::default(),
                     };
                     let mut scratch = MeshScratch::default();
                     let mut out = Vec::new();
@@ -764,7 +765,7 @@ fn world_seed(save: &Path) -> Option<i64> {
 }
 
 /// A saved full chunk's blocks, biomes and light, as the client's own save
-/// loader reads them (`save::decode_lit`, in sunrise-client).
+/// loader reads them (`save::decode_with`, then `save::load_light`, in sunrise-client).
 fn decode(root: &NamedTag, registry: &BlockRegistry, biomes: &Biomes) -> Option<Chunk> {
     let tag = &root.tag;
     let text = |t: Option<&Tag>| match t {

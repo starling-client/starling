@@ -1,5 +1,5 @@
-RemotePlayer.shouldRenderAtSqrDistance	port	crates/sunrise-client/src/game/interface/entity_culling/mod.rs::entity_view_scale	every entity's draw distance is scaled by the view scale and the limit, remote players included
-RemotePlayer.aiStep	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::tick_remote_entities	gap: minor: the head yaws over its lerp steps; the smoothed delta movement and the push step are not ported
+RemotePlayer.shouldRenderAtSqrDistance	port	crates/sunrise-client-gameplay/src/entity_occlusion.rs::entity_view_scale	every entity's draw distance is scaled by the view scale and the limit, remote players included
+RemotePlayer.aiStep	inline	crates/sunrise-client/src/game/network/remote/tick.rs::Game::tick_remote_entities	gap: minor: the head yaws over its lerp steps; the smoothed delta movement and the push step are not ported
 RemotePlayer.lerpMotion	missing		unsure: no lerp of received remote-player motion found in game/network/remote/mod.rs
 Hotbar.storeFrom	port	crates/sunrise-client/src/game/items/creative_hotbar.rs::Game::hotbar_load_or_save	save copies the nine slots into the hotbar.nbt row
 Hotbar.isEmpty	inline	crates/sunrise-client/src/game/items/creative_hotbar.rs::Game::refresh_saved_hotbars	the empty creative hotbar row carries the inventory.hotbarInfo hint
@@ -35,7 +35,7 @@ IntegratedServer.getScaledTrackingDistance	inline	crates/sunrise-client/src/game
 IntegratedServer.getForcedGameType	inline	crates/sunrise-client/src/game/network/lan/mod.rs::Game::lan_guest_joined	forced mode is sent when a guest joins
 IntegratedServer.selectLevelLoadFocusPos	missing		unsure: no load focus at the owner's saved position found in game/world/integrated.rs open_integrated
 IntegratedServer.reportChunkLoadFailure	port	crates/sunrise-client/src/chunk_io.rs::load_failed	a failed load sets low_disk_space, which is warnOnLowDiskSpace plus reportChunkLoadFailure
-IntegratedServer.reportChunkSaveFailure	port	crates/sunrise-client/src/chunk_io.rs::Pending::save_failed	the same low_disk_space flag is raised by the save side
+IntegratedServer.reportChunkSaveFailure	port	crates/sunrise-client/src/chunk_io.rs::SaveFailureReporter::report	an integrated server checks disk space again and queues a client toast after the server diagnostics
 LanServerDetection.LanServerDetector.run	port	crates/sunrise-client/src/lan/discovery.rs::listen	receive loop for LAN announcements
 LanServerDetection.LanServerList.takeDirtyServers	skip:java		dirty flag; Scanner::games returns a copy on each call
 LanServerPinger.run	port	crates/sunrise-client/src/lan/discovery.rs::Pinger::start	announce loop on a thread until dropped

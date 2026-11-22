@@ -1,8 +1,7 @@
 //! [`MobSlot`]: a mob a list hands out.
 use super::Mob;
 
-/// A mob a list hands out: the list's own, or a borrow of one in a larger list (a group of the
-/// server's parallel mob loop, `game/mob_islands.rs`, works on its mobs in place).
+/// A mob a list hands out: the list's own, or a borrow of one in a larger list.
 pub trait MobSlot {
     fn mob(&self) -> &Mob;
     fn mob_mut(&mut self) -> &mut Mob;

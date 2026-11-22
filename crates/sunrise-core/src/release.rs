@@ -16,22 +16,22 @@ pub const VERSION: &str = match RELEASE {
 };
 
 /// A nightly's date and commit (`2026-10-28 0c02067`): nightly-build.yml builds the opt-in Nightly
-/// channel with `SUNRISE_NIGHTLY` set (docs/release-flow.md), and a snapshot the same way, with
-/// `SUNRISE_VERSION` `snapshot-<date>` ([`kind`]). None for a release or a build from source.
+/// channel with `SUNRISE_NIGHTLY` set (docs/release-flow.md), and a Dev build the same way, with
+/// `SUNRISE_VERSION` `dev-<date>` ([`kind`]). None for a release or a build from source.
 pub const NIGHTLY: Option<&str> = match option_env!("SUNRISE_NIGHTLY") {
     Some(nightly) if !nightly.is_empty() => Some(nightly),
     _ => None,
 };
 
-/// How a nightly or a snapshot names itself where players read it, so their reports say which
-/// build they come from: `Nightly 2026-10-28 · 0c02067`, `Snapshot 2026-11-13 · 0c02067`. None for
+/// How a Nightly or Dev build names itself where players read it, so their reports say which
+/// build they come from: `Nightly 2026-10-28 · 0c02067`, `Dev 2026-11-13 · 0c02067`. None for
 /// any other build.
 pub fn nightly_label() -> Option<String> {
     NIGHTLY.map(|nightly| label(kind(RELEASE), nightly))
 }
 
-/// A nightly's or snapshot's version as the launcher installs it (`nightly-2026-10-28-0c02067`,
-/// `snapshot-2026-11-13-0c02067`).
+/// A Nightly or Dev build's version as the launcher installs it (`nightly-2026-10-28-0c02067`,
+/// `dev-2026-11-13-0c02067`).
 pub fn nightly_version() -> Option<String> {
     NIGHTLY.map(|n| {
         format!(
@@ -42,11 +42,11 @@ pub fn nightly_version() -> Option<String> {
     })
 }
 
-/// Which build of nightly-build.yml this is: `Snapshot` when it was built as one (release.yml kind
-/// snapshot sets `SUNRISE_VERSION` to `snapshot-<date>`), else `Nightly`.
+/// Which build of nightly-build.yml this is: `Dev` when it was built as one (release.yml kind
+/// dev sets `SUNRISE_VERSION` to `dev-<date>`), else `Nightly`.
 fn kind(release: Option<&str>) -> &'static str {
-    if release.is_some_and(|version| version.starts_with("snapshot-")) {
-        "Snapshot"
+    if release.is_some_and(|version| version.starts_with("dev-")) {
+        "Dev"
     } else {
         "Nightly"
     }
@@ -72,16 +72,13 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_names_itself_a_snapshot() {
-        assert_eq!(super::kind(Some("snapshot-2026-11-13")), "Snapshot");
+    fn a_dev_build_names_itself_dev() {
+        assert_eq!(super::kind(Some("dev-2026-11-13")), "Dev");
         assert_eq!(super::kind(Some("nightly-2026-11-13")), "Nightly");
         assert_eq!(super::kind(None), "Nightly");
         assert_eq!(
-            super::label(
-                super::kind(Some("snapshot-2026-11-13")),
-                "2026-11-13 0c02067"
-            ),
-            "Snapshot 2026-11-13 · 0c02067"
+            super::label(super::kind(Some("dev-2026-11-13")), "2026-11-13 0c02067"),
+            "Dev 2026-11-13 · 0c02067"
         );
     }
 

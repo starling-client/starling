@@ -54,7 +54,7 @@ impl Interact {
     /// `DoorInteractGoal.canUse`: the mob bumped into something and a
     /// wooden door is on its path within 1.5 blocks, or at its own head.
     fn can_use(&mut self, m: &Mob, w: &MobWorld) -> bool {
-        if !can_navigate_ground(m) || !m.horizontal_collision {
+        if !can_navigate_ground(m) || !m.ground.horizontal_collision {
             return false;
         }
         let Some(path) = m.ai.nav.path.as_ref().filter(|p| !p.is_done()) else {
@@ -378,7 +378,7 @@ mod tests {
     /// with the rule on, a zombie walking into a wooden door may break it,
     /// and a mod that denies it griefing keeps the door.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_hard_zombie_breaks_a_wooden_door_unless_a_mod_denies_it() {
         let build = |world: &mut crate::world::World,
                      registry: &sunrise_world::registry::BlockRegistry| {
@@ -402,7 +402,7 @@ mod tests {
                     Vec3::new(0.5, 64.0, 0.5),
                     0.0,
                 );
-                mob.horizontal_collision = true;
+                mob.ground.horizontal_collision = true;
                 let node = |z| PathNode {
                     x: 0,
                     y: 64,

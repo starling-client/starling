@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Neu verbinden",
+  "sunrise.extras.auto_reconnect.tooltip": "Verbindet nach einem Verbindungsabbruch oder Neustart erneut mit dem Server, nie nach einem Rauswurf oder Bann."
+}

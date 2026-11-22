@@ -1,0 +1,3 @@
+ids = ["hook:render_hand", "hook:render_hand.draw", "type:RenderHandEvent.draw"]
+why = "RenderHandEvent now provides HandDrawContext so listeners can submit the local avatar's skinned arm at the current draw pose and light. The existing BlockEntityDrawContext methods remain available."
+migrate = "Rebuild against the updated SDK. A custom RenderHandEvent draw context must implement HandDrawContext; helpers that only use ordinary drawing can still borrow it as a BlockEntityDrawContext."

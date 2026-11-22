@@ -30,7 +30,7 @@ SulfurCubeArchetypes.contactDamage	skip:data		hot archetype's contact damage is 
 SulfurCubeArchetypes.register	skip:data		registry registration
 TamableAnimal.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: the flags byte (sitting 1, tame 4) is sent to LAN guests; the owner UUID data is never sent
 TamableAnimal.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Owner and modeled Sitting for wolf, cat, parrot and both nautili (their species codec)
-TamableAnimal.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	an owner makes the mob tame (wolf health 40); Sitting restored independently of owner, including both nautili; old owner-name conversion is not done
+TamableAnimal.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	an owner makes the mob tame (wolf health 40); Sitting restored independently of owner, including both nautili; old owner-name conversion is not done
 TamableAnimal.handleEntityEvent	port	crates/sunrise-client-render/src/particles.rs::entity_event_burst	event 7 hearts, event 6 smoke, seven particles
 TamableAnimal.isTame	skip:other		a field: Mob.extra.tame
 TamableAnimal.setInSittingPose	skip:other		a field: Mob.extra.sitting, set by the sit goals and interactions
@@ -77,7 +77,7 @@ AttributeMap.assignAllValues	missing		minor: the player is rebuilt from default 
 AttributeMap.assignBaseValues	missing		minor: base values changed by /attribute (max_health, speed) reset on respawn because the player's attributes are rebuilt
 AttributeMap.assignPermanentModifiers	missing		minor: permanent modifiers added by /attribute are lost on respawn out of the End
 AttributeMap.resetBaseValue	port	crates/sunrise-world/src/attribute_map.rs::reset_base	live.rs reset_base for the player
-AttributeMap.apply	inline	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: of a mob's saved attributes only max_health, movement_speed, attack_damage, jump_strength bases and the follow range bonus are read; other bases and permanent modifiers are dropped, and a player's saved attributes are kept raw in player_extra but not applied on load
+AttributeMap.apply	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	gap: minor: of a mob's saved attributes only max_health, movement_speed, attack_damage, jump_strength bases and the follow range bonus are read; other bases and permanent modifiers are dropped, and a player's saved attributes are kept raw in player_extra but not applied on load
 AttributeSupplier.getAttributeInstance	port	crates/sunrise-world/src/attributes/entity.rs::instance	EntityAttributes::instance
 AttributeSupplier.createInstance	port	crates/sunrise-world/src/attributes/entity.rs::create	Catalog::create builds the entity's attributes from the type's default bases
 AttributeSupplier.Builder.create	skip:data		defaults come from the attribute catalog export (Catalog::from_json)

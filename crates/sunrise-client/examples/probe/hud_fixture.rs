@@ -4,17 +4,20 @@
 //! hotbar, health, mount hearts, experience bar and level) and the
 //! overlays handled in `kinds`.
 #![forbid(unsafe_code)]
-use sunrise_client::{
-    hud::{HudAtlas, HudBatch},
-    hud_layout::{self, GuiDraw, HealthHud, HealthInputs, HeartKind, HotbarInputs, IDENTITY, Pose},
-    lang,
-    text::Text,
-};
 use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufWriter, Write},
     path::PathBuf,
+};
+use sunrise_client::{
+    hud::{HudAtlas, HudBatch},
+    hud_layout::{
+        self, AirInputs, FoodInputs, GuiDraw, HealthHud, HealthInputs, HeartKind, HotbarInputs,
+        IDENTITY, Pose,
+    },
+    lang,
+    text::Text,
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[path = "hud_fixture/kinds.rs"]
@@ -132,6 +135,16 @@ fn encode(draws: &[GuiDraw]) -> Vec<Value> {
             } => {
                 json!({"type": "fill", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "color": *color as i32})
             }
+            GuiDraw::FillGradient {
+                x0,
+                y0,
+                x1,
+                y1,
+                top,
+                bottom,
+            } => {
+                json!({"type": "gradient", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "top": *top as i32, "bottom": *bottom as i32})
+            }
             GuiDraw::Text {
                 text,
                 x,
@@ -218,6 +231,16 @@ fn decorations(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
     } else {
         0
     };
+    let mut heights = hud_layout::StatusBarHeights::default();
+    let mut vehicle = Vec::new();
+    hud_layout::vehicle_health(
+        w,
+        h,
+        vehicle_hearts,
+        float("vehicleHealth", 0.0),
+        &mut heights,
+        &mut vehicle,
+    );
     if survival {
         let millis = 1_000_000_000i64;
         let mut hud = HealthHud {
@@ -236,35 +259,46 @@ fn decorations(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
         } else {
             HeartKind::Normal
         };
-        let inputs = HealthInputs {
-            tick: int("tick", 0),
+        let tick = int("tick", 0);
+        let blink = hud.update_health(
+            float("health", 20.0),
+            tick,
             millis,
-            health: float("health", 20.0),
+            int("damageCooldown", 0) > 0,
+        );
+        let health = HealthInputs {
+            tick,
             max_health: float("maxHealth", 20.0),
             absorption: float("absorption", 0.0),
-            armor: int("armor", 0),
-            food: int("food", 20),
-            saturation: float("saturation", 5.0),
-            kind,
             regeneration: has("minecraft:regeneration"),
-            hunger: has("minecraft:hunger"),
             hardcore: c["hardcore"].as_bool().unwrap_or(false),
-            damage_cooldown: int("damageCooldown", 0) > 0,
+            blink,
+        };
+        let start = draws.len();
+        hud.health_level(&health, kind, w, h, &mut heights, &mut draws);
+        let hearts_end = draws.len();
+        hud_layout::armor_level(int("armor", 0), w, h, &mut heights, &mut draws);
+        // The vanilla oracle records armour before hearts; the live NeoForge slots
+        // draw hearts first so armour stacks above whatever the heart body drew.
+        draws[start..].rotate_left(hearts_end - start);
+        if vehicle_hearts == 0 {
+            let food = FoodInputs {
+                tick,
+                food: int("food", 20),
+                saturation: float("saturation", 5.0),
+                hunger: has("minecraft:hunger"),
+            };
+            hud.food_level(&food, w, h, &mut heights, &mut draws);
+        }
+        let air = AirInputs {
+            tick,
             air: int("air", 300),
             max_air: int("maxAir", 300),
             under_water: c["underWater"].as_bool().unwrap_or(false),
-            vehicle_hearts,
         };
-        draws.extend(hud.layout(&inputs, w, h));
+        let _ = hud.air_level(&air, w, h, &mut heights, &mut draws);
     }
-    if vehicle_hearts > 0 {
-        draws.extend(hud_layout::vehicle_health(
-            w,
-            h,
-            vehicle_hearts,
-            float("vehicleHealth", 0.0),
-        ));
-    }
+    draws.extend(vehicle);
     let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
     let level = if survival { int("xpLevel", 0) } else { 0 };
     draws.extend(hud_layout::experience(

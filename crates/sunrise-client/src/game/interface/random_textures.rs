@@ -27,7 +27,8 @@ impl Game<'_> {
             let m = &self.mobs[i];
             let seed = seed(m, self.persist.uuids.get(&id).copied());
             let seen = (!m.random_textures.has_seen()).then(|| self.seen_at(m.position));
-            choose(&mut self.mobs[i], &textures, res.mob_data(), seen, seed);
+            let names = sunrise_client::mobs::render::drawn_textures(m, self);
+            choose(&mut self.mobs[i], &textures, names, seen, seed);
         }
     }
 

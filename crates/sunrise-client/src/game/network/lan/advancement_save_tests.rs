@@ -19,7 +19,7 @@ mod connected_advancement_save_tests {
         game.chat_capture.take().unwrap()
     }
     #[test]
-    #[ignore = "needs prepared resources and scratch homes"]
+    #[ignore = "daily"]
     fn save_commands_write_the_connected_nonowners_current_advancements() {
         // Reload consults process-wide mod registration. Other fixtures may install
         // rejecting reload listeners, so run this vanilla server in its own process.
@@ -46,6 +46,7 @@ mod connected_advancement_save_tests {
         game.save = Arc::new(sunrise_client::save::SaveDir::new(
             dir.clone(),
             sunrise_client::save::LevelShape::OVERWORLD,
+            Some(Default::default()),
         ));
         use sunrise_client::server::user_lists::{BanList, IpBanList, OpList, WhiteList};
         game.server_lists = Some(Arc::new(Mutex::new(super::super::dedicated::Lists {
@@ -59,7 +60,6 @@ mod connected_advancement_save_tests {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
-            whitelist_bypass: Vec::new(),
         })));
         game.set_allow_commands(true);
         let _rx = super::world_spawn_sync_tests::host_for(&mut game);
@@ -194,7 +194,7 @@ mod connected_advancement_preservation_tests {
     }
     // Added after baseline: actual command/model preservation, not new Java breadth.
     #[test]
-    #[ignore = "needs prepared resources and scratch homes"]
+    #[ignore = "daily"]
     fn empty_progress_missing_play_and_disconnect_wrapper_stay_distinct() {
         use super::super::{execution_role::ExecutionRole, stats};
         use std::sync::{Arc, Mutex};
@@ -213,6 +213,7 @@ mod connected_advancement_preservation_tests {
         game.save = Arc::new(sunrise_client::save::SaveDir::new(
             dir.clone(),
             sunrise_client::save::LevelShape::OVERWORLD,
+            Some(Default::default()),
         ));
         use sunrise_client::server::user_lists::{BanList, IpBanList, OpList, WhiteList};
         game.server_lists = Some(Arc::new(Mutex::new(super::super::dedicated::Lists {
@@ -226,7 +227,6 @@ mod connected_advancement_preservation_tests {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
-            whitelist_bypass: Vec::new(),
         })));
         game.set_allow_commands(true);
         let _rx = super::world_spawn_sync_tests::host_for(&mut game);

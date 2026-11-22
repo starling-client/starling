@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Zengin Durumu",
+  "sunrise.extras.discord_presence.tooltip": "Discord açıkken Discord profilinizde Sunrise oynuyor ifadesini gösterir: menüler, tek oyunculu veya çok oyunculu, boyut ve oynanan süre. Asla bir dünyanın adını veya bir sunucunun adresini göstermez."
+}

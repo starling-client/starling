@@ -1,0 +1,42 @@
+name: modding-book-pages
+# Publishes the modding book and the mod API reference to this repository's GitHub Pages (reference under
+# /api/mod_api/). Deploys only while the repository variable MODDING_BOOK_PAGES is `on` and Pages is turned on in
+# Settings; without it the build still runs and keeps the artifact.
+on:
+  push:
+    branches: [main]
+    paths: ["docs/modding/**", "crates/sunrise-mod-api/**", "crates/sunrise-mod-api-gen/**", "crates/sunrise-stage/**", "xtask/**", "tools/*modding*", "tests/test_modding_*.py"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The pinned Rust (tools/ci/rust-version)
+        run: bash tools/ci/rustup_install.sh --profile minimal
+      - run: cargo install mdbook --locked --version 0.4.52
+      - run: mdbook build docs/modding
+      - run: python3 tools/modding_concept_pages.py --html target/modding-book
+      - run: cargo doc -p sunrise-mod-api --no-deps
+      # book.toml sets build-dir = "../../target/modding-book".
+      - run: cp -r target/doc target/modding-book/api
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/modding-book
+  deploy:
+    needs: build
+    if: vars.MODDING_BOOK_PAGES == 'on'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

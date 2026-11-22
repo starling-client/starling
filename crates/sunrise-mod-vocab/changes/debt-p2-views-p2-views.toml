@@ -1,0 +1,10 @@
+ids = [
+    "hook:on_entity_item_update",
+    "hook:on_entity_item_update.stack",
+    "method:ItemPart::on_entity_item_update",
+    "type:OnEntityItemUpdateEvent.stack",
+    "handle:EntityServerScope::transaction",
+    "handle:ItemEntityServerScope::transaction",
+]
+why = "Vanilla's ServerLevel.tickNonPassenger ticks the resident entity; NeoForge's ItemEntity.tick calls IItemExtension.onEntityItemUpdate on the held item before ticking. Sunrise now routes that hook by the entry item ID and lends the live stack on demand instead of making a second owned stack. Scoped writes use the existing transaction journal, following NeoForge SnapshotJournal.updateSnapshots and onClose: the first write at each depth is kept, and abort restores the fields written at that depth. That makes the entity setters used in these ticks, including ItemEntity.setPickUpDelay and setTarget, commit or abort with other journaled Host writes. Client scopes do not open transactions."
+migrate = "OnEntityItemUpdateEvent.stack.count() -> event.subject.with_view(|item| item.with_stack(|stack| stack.count())).flatten(); for an owned stack or its components, use event.subject.with_view(|item| item.with_stack(|stack| stack.project())).flatten().flatten(). Handle None if the item or stack is unavailable (or projection fails). The read now sees the live stack, including earlier writes. No transaction call changes on EntityServerScope or ItemEntityServerScope: return Ok to keep subject and journaled Host edits, or Err to undo them together. ItemEntityRef's pickup-delay and target setters keep their signatures and now participate in that rollback. Do not call transaction on a client scope."

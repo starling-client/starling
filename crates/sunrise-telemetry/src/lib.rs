@@ -9,7 +9,7 @@
 //!
 //! The one exception is [`live`]: the anonymous "I'm playing" ping the game sends while it
 //! runs, for the live player count. It holds no install ID and nothing about the player.
-//! [`server_status`] asks a Minecraft server how many play on it (the official server's count).
+//! [`server_status`] asks a Minecraft server how many play on it.
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

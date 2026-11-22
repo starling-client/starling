@@ -48,7 +48,7 @@ mod camera_type_tests {
     /// answer is the new type; setting the type does not cycle, and without a listener F5
     /// cycles as vanilla does.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_mod_picks_the_camera_type_f5_cycles_to() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.options.execution_role = super::ExecutionRole::Client;
@@ -120,11 +120,11 @@ mod camera_type_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn shared_camera_pose_requests_apply_before_frame_consumers() {
+        use std::sync::atomic::Ordering;
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
-        use std::sync::atomic::Ordering;
 
         let calls = Arc::new(Calls::default());
         let mods: mod_api::Mods = vec![ModEntry::new(

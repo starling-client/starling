@@ -1,9 +1,48 @@
 //! The players fake: who is online, their inventories, and what the game told them.
 use super::FAKE_EPOCH;
 use crate::{
-    EntityRef, Hand, ItemPlace, ItemStack, LevelRef, PlayerRef, Players, Text, WorldEpoch,
+    EntityRef, GameProfile, Hand, ItemPlace, ItemStack, LevelRef, PlayerRef, Players, Text,
+    WorldEpoch, entity::types::profile_adapter::game_profile,
 };
 use std::collections::BTreeMap;
+use sunrise_core::profile::AccountProperty;
+
+// no wire: owned test data backing a borrowed profile, not a transported value.
+/// Owned login data that a custom test host can lend from its player-profile read.
+// exhaustive: all fields are private.
+pub struct GameProfileFixture {
+    uuid: u128,
+    name: String,
+    properties: Vec<AccountProperty>,
+}
+
+impl GameProfileFixture {
+    /// Set up a profile with `(name, value, signature)` tuples in login order.
+    /// Pass `[]` for a profile with no login properties.
+    pub fn new(
+        uuid: u128,
+        name: impl Into<String>,
+        properties: impl IntoIterator<Item = (String, String, Option<String>)>,
+    ) -> Self {
+        Self {
+            uuid,
+            name: name.into(),
+            properties: properties
+                .into_iter()
+                .map(|(name, value, signature)| AccountProperty {
+                    name,
+                    value,
+                    signature,
+                })
+                .collect(),
+        }
+    }
+
+    /// Lend the profile to the code under test without copying its login data.
+    pub fn profile(&self) -> GameProfile<'_> {
+        game_profile(self.uuid, &self.name, &self.properties)
+    }
+}
 
 /// The off hand's inventory slot (`ItemPlace::PlayerSlot`).
 const OFF_HAND: i32 = -106;

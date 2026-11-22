@@ -22,18 +22,6 @@ const REALLY_FAR: f32 = 332.0;
 /// `EntityAzimuthConnection.update`: half a degree.
 const AZIMUTH_STEP: f32 = 0.008_726_646;
 
-/// Items that hide their wearer (`Waypoint.addHideAttribute` on the head slot).
-pub const HIDING_HEADS: [&str; 8] = [
-    "minecraft:carved_pumpkin",
-    "minecraft:skeleton_skull",
-    "minecraft:wither_skeleton_skull",
-    "minecraft:player_head",
-    "minecraft:zombie_head",
-    "minecraft:creeper_head",
-    "minecraft:dragon_head",
-    "minecraft:piglin_head",
-];
-
 /// A team colour as the locator bar draws it (`Waypoint.Icon.cloneAndAssignStyle`:
 /// `TeamColor.rgb()`, black lightened so it shows).
 pub fn team_rgb(color: &str) -> Option<i32> {
@@ -84,8 +72,11 @@ pub struct Player {
     pub conn: Option<u32>,
     pub position: [f64; 3],
     pub spectator: bool,
-    /// `waypoint_transmit_range`: 0 while hidden.
+    /// The effective `waypoint_transmit_range`, used when making connections.
     pub transmit_range: f64,
+    /// The last tracking decision. An attribute write can change the range
+    /// before `LivingEntity.refreshDirtyAttributes` changes this flag.
+    pub transmitting: bool,
     pub receive_range: f64,
     /// `Entity.firstTick`: the player has not ticked since joining.
     pub first_tick: bool,
@@ -560,6 +551,44 @@ impl Waypoints {
         self.connections.clear();
     }
 
+    /// `LivingEntity.onAttributeUpdated`: change this transmitter's tracking
+    /// now, before the next attribute or movement can change it again.
+    pub fn set_transmitting(
+        &mut self,
+        players: &[Player],
+        source: u128,
+        transmitting: bool,
+        locator_bar: bool,
+    ) -> Vec<(u32, C)> {
+        let Some(memo) = self.memo.get_mut(&source) else {
+            // addPlayer will establish the connections on joining.
+            return Vec::new();
+        };
+        memo.transmitting = transmitting;
+        let mut t = Tick {
+            s: Shared {
+                players: players.iter().map(|p| (p.uuid, p)).collect(),
+                away: &[],
+                fresh: &[],
+                enabled: locator_bar,
+            },
+            view: players
+                .iter()
+                .filter_map(|p| {
+                    let memo = self.memo.get(&p.uuid)?;
+                    Some((p.uuid, (memo.view_center, p.view_distance)))
+                })
+                .collect(),
+            out: Vec::new(),
+        };
+        if transmitting {
+            self.track(&mut t, source);
+        } else {
+            self.untrack(&mut t, source);
+        }
+        t.out
+    }
+
     /// One tick: players who left, joined, moved, hid or changed team, and the
     /// `locator_bar` game rule. `respawned` players are removed and added again,
     /// as `PlayerList.respawn` replaces the ServerPlayer. Returns the packets for
@@ -637,7 +666,7 @@ impl Waypoints {
             }
             let center = p.chunk();
             t.view.insert(p.uuid, (center, p.view_distance));
-            let transmitting = p.transmit_range > 0.0;
+            let transmitting = p.transmitting;
             self.memo.insert(
                 p.uuid,
                 Memo {
@@ -663,7 +692,7 @@ impl Waypoints {
         if players.len() >= by_receiver
             && players.iter().all(|p| {
                 let memo = &self.memo[&p.uuid];
-                (p.transmit_range > 0.0) == memo.transmitting && p.team == memo.team
+                p.transmitting == memo.transmitting && p.team == memo.team
             })
         {
             self.moves_by_receiver(&mut t, players);
@@ -693,7 +722,7 @@ impl Waypoints {
                 }
             }
             // LivingEntity.onAttributeUpdated(WAYPOINT_TRANSMIT_RANGE).
-            let transmitting = p.transmit_range > 0.0;
+            let transmitting = p.transmitting;
             if transmitting != self.memo[&p.uuid].transmitting {
                 self.memo.get_mut(&p.uuid).unwrap().transmitting = transmitting;
                 if transmitting {
@@ -830,6 +859,7 @@ mod tests {
             position,
             spectator: false,
             transmit_range: PLAYER_RANGE,
+            transmitting: true,
             receive_range: PLAYER_RANGE,
             first_tick: false,
             view_distance: 4,
@@ -884,6 +914,7 @@ mod tests {
         ));
         // Hidden: untracked; the rule off: every connection broken.
         b.transmit_range = 0.0;
+        b.transmitting = false;
         let out = w.tick(&[a.clone(), b.clone()], &[], true);
         assert_eq!(to(&out, 10), [(1, WaypointTarget::Empty)]);
         let out = w.tick(&[a.clone(), b.clone()], &[], false);
@@ -969,12 +1000,14 @@ mod tests {
             player(2, 20, [4.5, 64.0, 0.5]),
         );
         b.transmit_range = 0.0;
+        b.transmitting = false;
         let mut w = Waypoints::default();
         w.tick(&[a.clone(), b.clone()], &[], true);
         b.icon.style = "example:flag".into();
         assert!(w.tick(&[a.clone(), b.clone()], &[], true).is_empty());
         // Showing again carries the new style.
         b.transmit_range = PLAYER_RANGE;
+        b.transmitting = true;
         let out = w.tick(&[a, b], &[], true);
         assert_eq!(
             icons(&out, 10),
@@ -1062,11 +1095,8 @@ mod tests {
                     if !calm {
                         match next(40) {
                             0 => {
-                                p.transmit_range = if p.transmit_range > 0.0 {
-                                    0.0
-                                } else {
-                                    PLAYER_RANGE
-                                }
+                                p.transmitting = !p.transmitting;
+                                p.transmit_range = if !p.transmitting { 0.0 } else { PLAYER_RANGE }
                             }
                             1 => p.team = Some(("red".into(), team_rgb("red"))),
                             2 => p.team = None,

@@ -8,9 +8,10 @@ pub trait Hooks {
     /// caused the change. `level.game_rules(host)` of any of the server's
     /// levels reads every rule, the new value included. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "GameRuleChangedEvent"
     )]
-    fn game_rule_changed();
+    fn game_rule_changed(rule: &str, value: GameRuleValue, actor: Option<&GameRuleActor<'_>>);
 }

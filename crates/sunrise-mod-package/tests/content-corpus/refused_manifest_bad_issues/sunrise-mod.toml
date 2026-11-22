@@ -1,0 +1,4 @@
+id = "refused_manifest_bad_issues"
+name = "Refused manifest bad issues"
+version = "1.2.3"
+issues = "issues"

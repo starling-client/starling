@@ -1,15 +1,14 @@
-// game-module-visibility: pub(crate)
 //! The `sound_type` Part method (`IBlockExtension.getSoundType`). The client library asks through
 //! `native_client_hooks`; only a state whose block has a subscribing part is converted, and only
 //! then is its own sound type kept to fall back on.
 use super::api_values::{TryIntoApi, block_state};
 use super::{Game, GameLevel};
+use mod_api::{BlockSoundCause, BlockSoundType};
+use std::sync::Arc;
 use sunrise_core::{identifier::Identifier, position::BlockPos};
 use sunrise_world::{
     level::data::Sounds, native_load_context::LoopContext, registry::BlockStateId,
 };
-use mod_api::{BlockSoundCause, BlockSoundType};
-use std::sync::Arc;
 
 /// The game's side of `sunrise_client::block_sounds::native_sound_type`.
 pub(crate) fn sound_type(
@@ -149,11 +148,11 @@ impl GameLevel<'_> {
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::playable;
+    use mod_api::BlockSoundCause::{Break, Dig, Fall, Place, Step};
+    use std::sync::Arc;
     use sunrise_client::mobs::{Mob, MobEvent, equine};
     use sunrise_core::{geometry::Vec3, position::BlockPos};
     use sunrise_world::level::LevelAccess;
-    use mod_api::BlockSoundCause::{Break, Dig, Fall, Place, Step};
-    use std::sync::Arc;
 
     #[test]
     fn sound_answers_validate_levels_and_names_without_requiring_loaded_events() {
@@ -191,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_block_part_answers_the_sound_type_a_block_plays() {
         // The fixture's parts: glass answers `mymod:block.x.*` at volume 2.0 and pitch 1.5 to
         // every cause, white wool the same to a player only, red and blue wool a NaN volume and

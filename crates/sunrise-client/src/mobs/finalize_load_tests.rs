@@ -7,9 +7,9 @@
 use super::*;
 use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
 use crate::mobs::MobType;
-use sunrise_core::nbt::{Tag, parse_snbt};
 use std::collections::HashMap;
 use std::sync::Arc;
+use sunrise_core::nbt::{Tag, parse_snbt};
 
 /// A mob type of `species` whose attribute defaults are `defaults` (`createAttributes`).
 fn types(id: &str, species: Species, defaults: &[(&str, f64)]) -> HashMap<String, Arc<MobType>> {
@@ -33,7 +33,7 @@ fn loaded(id: &str, species: Species, defaults: &[(&str, f64)], extra: &str) -> 
 fn saved(m: &Mob, input: &Tag) -> Vec<(String, f64)> {
     let mut out: Option<Vec<(String, f64)>> = None;
     for raw in [None, Some(input)] {
-        let tag = mob_to_nbt(m, [1, 2, 3, 4], raw, None, |_| None);
+        let tag = mob_to_nbt(m, [1, 2, 3, 4], raw, None, |_| None, &Default::default());
         let Some(Tag::List(list)) = tag.get("attributes") else {
             panic!("no attributes list");
         };
@@ -204,8 +204,83 @@ fn a_wolf_with_a_health_modifier_keeps_its_taming_base() {
         add_modifier(&mut m, Attr::MaxHealth, "test:boost", 10.0, Op::AddValue);
         for _ in 0..2 {
             assert_eq!(saved(&m, &tag), [(HEALTH.to_owned(), base)], "{extra}");
-            tag = mob_to_nbt(&m, [1, 2, 3, 4], Some(&tag), None, |_| None);
+            tag = mob_to_nbt(
+                &m,
+                [1, 2, 3, 4],
+                Some(&tag),
+                None,
+                |_| None,
+                &Default::default(),
+            );
             m = mob_from_nbt(&tag, &types("minecraft:wolf", Species::Wolf, &d), 1, None).unwrap();
         }
     }
+}
+
+/// Loaded `Health` matches the vanilla 26.3 witness `tools/test_mob_attribute_nbt_parity.py` records (#2360).
+#[test]
+#[ignore = "run by tools/test_mob_attribute_nbt_parity.py"]
+fn a_loaded_health_is_clamped_to_the_loaded_max_health() {
+    let path = std::env::var("SUNRISE_MOB_LOADED_HEALTH_WITNESS")
+        .expect("run through tools/test_mob_attribute_nbt_parity.py, which records the witness");
+    let witness = std::fs::read_to_string(&path).unwrap();
+    let mut rows = 0usize;
+    for line in witness.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        let &[
+            name,
+            entity,
+            default_max_hex,
+            loaded_max_hex,
+            loaded_health_hex,
+            saved_health_hex,
+            snbt,
+        ] = parts.as_slice()
+        else {
+            panic!("bad witness row: {line}");
+        };
+        let short = entity.strip_prefix("minecraft:").unwrap_or(entity);
+        let species = crate::mobs::species::ALL
+            .iter()
+            .find(|def| def.name == short)
+            .unwrap_or_else(|| panic!("unknown species {entity} in {name}"))
+            .species;
+        let default_max = f64::from_bits(u64::from_str_radix(default_max_hex, 16).unwrap());
+        let expected_max = u32::from_str_radix(loaded_max_hex, 16).unwrap();
+        let expected_health = u32::from_str_radix(loaded_health_hex, 16).unwrap();
+        let expected_saved = u32::from_str_radix(saved_health_hex, 16).unwrap();
+
+        let mut mob_types = types(entity, species, &[(HEALTH, default_max)]);
+        Arc::make_mut(mob_types.get_mut(entity).unwrap()).max_health = default_max as f32;
+        let input = parse_snbt(snbt).unwrap().0;
+        let mob = mob_from_nbt(&input, &mob_types, 1, None).unwrap();
+        assert_eq!(
+            mob.attrs.max_health.to_bits(),
+            expected_max,
+            "{name}: loaded max_health bits"
+        );
+        assert_eq!(
+            mob.health.to_bits(),
+            expected_health,
+            "{name}: loaded health bits"
+        );
+        let saved_tag = mob_to_nbt(
+            &mob,
+            [1, 2, 3, 4],
+            None,
+            None,
+            |_| None,
+            &Default::default(),
+        );
+        assert_eq!(
+            saved_tag.get("Health"),
+            Some(&Tag::Float(expected_saved)),
+            "{name}: saved Health bits"
+        );
+        rows += 1;
+    }
+    assert!(rows > 0, "witness file had no rows");
 }

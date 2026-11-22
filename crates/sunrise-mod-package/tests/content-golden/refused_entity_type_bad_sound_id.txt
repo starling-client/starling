@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_entity_type_bad_sound_id",
+    name: "Refused entity type bad sound id",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: refused_entity_type_bad_sound_id:sample: sounds.ambient: invalid full sound id "zombie_ambient"

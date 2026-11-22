@@ -27,10 +27,16 @@ pub trait Hooks {
 
 - **`player_passage_cross(player, passage, from, cancel)`**: `player`'s client crossed `passage` from `from` (its feet before), the move there passed and both ends are tracked; the server has not worked out where the player comes out yet. Set `cancel` and the crossing is refused (`PassageCrossRefusal::Vetoed`), the player put back at `from`. Everything checked before is checked again after the listeners, so one that removes the passage or moves the player refuses it too. A passage into another level (`destination_level`) never reaches the hook: the server refuses it `PassageCrossRefusal::FarLevel` first."###]
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge has no such event; Immersive Portals' Portal.canTeleportEntity)"
     )]
-    fn player_passage_cross();
+    fn player_passage_cross(
+        player: PlayerRef,
+        passage: mod_api::PassageId,
+        from: mod_api::Vec3,
+        cancel: &mut bool,
+    );
 }

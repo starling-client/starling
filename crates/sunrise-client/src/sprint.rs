@@ -11,11 +11,8 @@ pub struct Keys {
     pub jump: bool,
     pub shift: bool,
     pub sprint: bool,
-    /// A movement-input listener explicitly holds sprint off this local tick.
-    /// Server prediction instead replays the client's resulting sprint state.
-    pub sprint_suppressed: bool,
-    /// A controller stick's move vector (`[left, forward]`, Sunrise's own),
-    /// used instead of the keys' direction while it is pushed.
+    /// A sampled stick or listener-edited move vector (`[left, forward]`),
+    /// used instead of deriving the direction from the keys.
     pub analog: Option<[f32; 2]>,
 }
 impl Keys {
@@ -119,35 +116,42 @@ pub struct Conditions {
     pub minor_horizontal_collision: bool,
 }
 impl Conditions {
-    fn possible(self, allow_shallow_water: bool) -> bool {
+    fn possible(self, allow_shallow_water: bool, shallow_water: impl FnOnce(bool) -> bool) -> bool {
         !self.mobility_restricted
             && if self.passenger {
                 self.vehicle_can_sprint && self.vehicle_local
             } else {
                 self.enough_food || self.may_fly
             }
-            && (allow_shallow_water || !self.shallow_water)
+            && (allow_shallow_water || !shallow_water(self.shallow_water))
     }
-    fn can_start(self, forward: bool) -> bool {
+    fn can_start(self, forward: bool, shallow_water: impl FnOnce(bool) -> bool) -> bool {
         !self.sprinting
             && forward
-            && self.possible(self.flying)
+            && self.possible(self.flying, shallow_water)
             && !self.slow_item
             && (!self.fall_flying || self.under_water)
             && (!self.moving_slowly || self.under_water)
     }
-    fn should_stop(self, forward: bool, shift: bool) -> bool {
+    fn should_stop(
+        self,
+        forward: bool,
+        shift: bool,
+        shallow_water: impl FnOnce(bool) -> bool,
+    ) -> bool {
         if self.swimming {
-            !self.possible(true) || !self.in_water || (!forward && !self.on_ground && !shift)
+            !self.possible(true, shallow_water)
+                || !self.in_water
+                || (!forward && !self.on_ground && !shift)
         } else {
-            !self.possible(self.flying)
+            !self.possible(self.flying, shallow_water)
                 || !forward
                 || (self.horizontal_collision && !self.minor_horizontal_collision)
         }
     }
 }
 impl SprintState {
-    /// `LocalPlayer.aiStep`'s sprint phase, with a mod's optional tick suppression.
+    /// `LocalPlayer.aiStep`'s sprint phase.
     /// The default vanilla window is seven ticks; options can select 0..10.
     /// The setter runs for every native request, including repeated true requests.
     pub fn tick<E>(
@@ -156,6 +160,27 @@ impl SprintState {
         conditions: Conditions,
         window: i32,
         mut set_sprinting: impl FnMut(bool) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.tick_with_context(
+            keys,
+            conditions,
+            window,
+            &mut (),
+            |_, vanilla| vanilla,
+            |_, value| set_sprinting(value),
+        )
+    }
+
+    /// Run each shallow-water query at its own `LocalPlayer.isSprintingPossible` check.
+    /// A setter takes effect before a later query in the same tick.
+    pub fn tick_with_context<C, E>(
+        &mut self,
+        keys: Keys,
+        conditions: Conditions,
+        window: i32,
+        context: &mut C,
+        mut shallow_water: impl FnMut(&C, bool) -> bool,
+        mut set_sprinting: impl FnMut(&mut C, bool) -> Result<(), E>,
     ) -> Result<(), E> {
         if self.trigger_time > 0 {
             self.trigger_time -= 1;
@@ -168,30 +193,28 @@ impl SprintState {
         if old_shift || (conditions.slow_item && !conditions.passenger) || keys.backward {
             self.trigger_time = 0;
         }
-        if keys.sprint_suppressed {
-            self.trigger_time = 0;
-            if conditions.sprinting {
-                set_sprinting(false)?;
-            }
-            return Ok(());
-        }
         let mut sprinting = conditions.sprinting;
-        if conditions.can_start(forward) {
+        if conditions.can_start(forward, |vanilla| shallow_water(context, vanilla)) {
             if !old_forward {
                 if self.trigger_time > 0 {
-                    set_sprinting(true)?;
+                    set_sprinting(context, true)?;
                     sprinting = true;
                 } else {
-                    self.trigger_time = window;
+                    // `Options.sprintWindow` uses `IntRange(0, 10)`.
+                    self.trigger_time = window.clamp(0, 10);
                 }
             }
             if keys.sprint {
-                set_sprinting(true)?;
+                set_sprinting(context, true)?;
                 sprinting = true;
             }
         }
-        if sprinting && conditions.should_stop(forward, keys.shift) {
-            set_sprinting(false)?;
+        if sprinting
+            && conditions.should_stop(forward, keys.shift, |vanilla| {
+                shallow_water(context, vanilla)
+            })
+        {
+            set_sprinting(context, false)?;
         }
         Ok(())
     }

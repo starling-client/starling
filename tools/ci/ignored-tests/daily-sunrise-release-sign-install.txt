@@ -1,0 +1,5 @@
+# The daily tests of the server install scripts (packaging/server/install.sh and install.ps1), in sunrise-release-sign:
+# each runs the real script against fake releases and starts processes, so it is #[ignore = "daily"] and runs once a day
+# in the daily run, where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted.
+sunrise-release-sign install::install_sh_installs_only_what_the_verifier_checked test:it daily child-process
+sunrise-release-sign install_ps1_installs_only_what_the_verifier_checked test:install_ps1 daily windows # #![cfg(windows)]; starts processes

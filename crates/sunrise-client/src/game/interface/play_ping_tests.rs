@@ -1,5 +1,6 @@
 //! Registered play-Ping regression with the production sender-flush completion boundary.
 use crate::game::{Game, lan::LanSettings};
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
 use sunrise_protocol::{
     buf::Reader,
@@ -9,7 +10,6 @@ use sunrise_protocol::{
         status,
     },
 };
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 fn decode(packet: S) -> (S, usize) {
     let bytes = packet.encode();
@@ -129,6 +129,7 @@ pub(in crate::game) fn fixture(
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -164,7 +165,7 @@ pub(in crate::game) fn fixture(
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated scratch homes/cwd"]
+#[ignore = "daily"]
 fn registered_play_ping_echoes_exact_long_to_only_its_connection() {
     let mut resources = None;
     let (mut game, receivers) = fixture(&mut resources);
@@ -216,7 +217,7 @@ fn registered_play_ping_echoes_exact_long_to_only_its_connection() {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated scratch homes/cwd"]
+#[ignore = "daily"]
 fn dead_guest_play_ping_is_transport_not_an_action() {
     let mut resources = None;
     let (mut game, receivers) = fixture(&mut resources);
@@ -248,57 +249,7 @@ fn dead_guest_play_ping_is_transport_not_an_action() {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated scratch homes/cwd"]
-fn server_ping_client_pong_keeps_the_existing_prediction_route() {
-    let mut resources = None;
-    let (mut game, receivers) = fixture(&mut resources);
-    let hub = &mut game.lan.as_mut().unwrap().hub;
-    let mut config = sunrise_anticheat::Config::default();
-    config.log.clear();
-    config.strikes.clear();
-    config.prediction.enabled = true;
-    hub.set_anticheat(config);
-    hub.ticks = 123;
-    let holding = sunrise_client::lan::Holding::start();
-    hub.anticheat_ping();
-    drop(holding);
-    // Ending Holding is not delivery: independently admit the existing flush boundary first.
-    for receiver in &receivers {
-        assert!(
-            output(receiver).is_empty(),
-            "actual server Ping is unavailable before flush"
-        );
-    }
-    println!("actual reverse Ping unavailable after Holding drop, before flush");
-    sunrise_client::lan::flush_all(hub.guests.iter().map(|g| &g.sender));
-    for receiver in &receivers {
-        assert!(matches!(output(receiver).as_slice(), [C::Ping(p)] if p.id == 123));
-    }
-    pass(
-        &mut game,
-        1,
-        S::Pong(sunrise_protocol::packets::configuration::Ping { id: 123 }),
-    );
-    game.lan
-        .as_mut()
-        .unwrap()
-        .hub
-        .guests
-        .update_connection(1, |guest| {
-            let record = guest
-                .record
-                .as_deref_mut()
-                .expect("existing client Pong updates prediction");
-            assert_eq!(record.tick_end(0, false).seen, Some(123));
-        })
-        .unwrap();
-    for receiver in &receivers {
-        assert!(output(receiver).is_empty());
-    }
-}
-
-#[test]
-#[ignore = "needs prepared resources and isolated scratch homes/cwd"]
+#[ignore = "daily"]
 fn held_guest_play_ping_survives_the_acknowledgement_filter() {
     let mut resources = None;
     let (mut game, receivers) = fixture(&mut resources);
@@ -328,7 +279,7 @@ fn held_guest_play_ping_survives_the_acknowledgement_filter() {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated scratch homes/cwd"]
+#[ignore = "daily"]
 fn handover_guest_play_ping_survives_the_acknowledgement_filter() {
     let mut resources = None;
     let (mut game, receivers) = fixture(&mut resources);

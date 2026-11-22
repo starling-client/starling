@@ -1,12 +1,11 @@
 //! The Sunrise mod API: the one crate a Sunrise code mod depends on.
 //!
 //! Sunrise is Minecraft: Java Edition 26.3 written in Rust. A code mod is a Rust crate that implements
-//! [`Hooks`], built either natively by the Sunrise launcher or to `mod.wasm` for the game's sandbox. Both
-//! targets use this same API; only the build differs. Add it to your mod's `Cargo.toml` as
+//! [`Hooks`] and builds with the Sunrise mod SDK. Add this API to your mod's `Cargo.toml` as
 //! `sunrise-mod-api` (the library name is `mod_api`).
 //!
-//! The [modding book](https://arismoko.github.io/sunrise/) is the guide: start with
-//! [Your first native mod](https://arismoko.github.io/sunrise/start/first-mod.html). This reference documents
+//! The [modding book](https://playsunrise.net/docs/modding) is the guide: start with
+//! [Your first native mod](https://playsunrise.net/docs/modding/start/first-mod). This reference documents
 //! every item of the API.
 //!
 //! # A first mod
@@ -41,43 +40,21 @@
 //! | [`Registrar`] | What a mod declares in [`Hooks::register`]: registry keys, Parts and settings. |
 //! | [`Host`], [`ServerHost`], [`ClientHost`] | The game as a hook sees it, split by side so a call on the wrong side does not compile. |
 //! | [`AttachmentType`] | Data a mod keeps on levels, chunks, entities and other holders. |
-//! | [`Wire`](derive@Wire) | The derive that lets a mod's own values cross to and from a WebAssembly mod. |
+//! | [`Wire`](derive@Wire) | The derive that encodes typed payloads and other values. |
 //!
-//! An item whose documentation says **Not on wasm** is unavailable to WebAssembly mods.
 //!
 //! # Guides in the book
 //!
-//! - [Hooks and the Host](https://arismoko.github.io/sunrise/concepts/hooks-and-the-host.html)
-//! - [Load phases and access](https://arismoko.github.io/sunrise/concepts/load-phases.html)
-//! - [Parts](https://arismoko.github.io/sunrise/concepts/parts.html),
-//!   [capabilities](https://arismoko.github.io/sunrise/concepts/capabilities.html) and
-//!   [attachments](https://arismoko.github.io/sunrise/concepts/attachments.html)
-//! - [Wire types](https://arismoko.github.io/sunrise/concepts/wire-types.html)
-//! - [The manifest and the package](https://arismoko.github.io/sunrise/reference/manifest.html)
+//! - [Hooks and the Host](https://playsunrise.net/docs/modding/concepts/hooks-and-the-host)
+//! - [Load phases and access](https://playsunrise.net/docs/modding/concepts/load-phases)
+//! - [Parts](https://playsunrise.net/docs/modding/concepts/parts),
+//!   [capabilities](https://playsunrise.net/docs/modding/concepts/capabilities) and
+//!   [attachments](https://playsunrise.net/docs/modding/concepts/attachments)
+//! - [Wire types](https://playsunrise.net/docs/modding/concepts/wire-types)
+//! - [The manifest and the package](https://playsunrise.net/docs/modding/reference/manifest)
 extern crate self as mod_api;
-mod equip_reads;
 
 pub use mod_vocab::*;
-/// Shared Wire values and the mod-side transport.
-pub mod wire {
-    pub use mod_vocab::wire::*;
-    #[path = "wire_resources.rs"]
-    mod resources;
-    mod static_strings;
-    pub(crate) fn initialize() -> Result<(), &'static str> {
-        resources::ensure_installed()
-    }
-    #[doc(hidden)]
-    pub use resources::{
-        ResourceCodec, ResourceScope, ScopeError, ScopeLease, ScopeToken, borrow_token,
-    };
-    /// The mod side of the WebAssembly boundary.
-    #[cfg(any(target_arch = "wasm32", feature = "wasm-guest"))]
-    pub mod wire_guest;
-    #[cfg(any(target_arch = "wasm32", feature = "wasm-guest"))]
-    pub use wire_guest as guest;
-}
-
 /// Platform-owned crash attribution with shared vocabulary types.
 #[doc(hidden)]
 pub mod content {
@@ -89,25 +66,9 @@ pub mod content {
 pub mod __private;
 
 mod load_state;
-#[doc(hidden)]
-pub use load_state::install_guest_packages;
 
 mod fluid_state;
 mod parts;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-#[cfg(all(test, feature = "wasm-guest"))]
-mod phase_tests {
-    use super::*;
-    use prelude::*;
-    #[test]
-    fn frame_services_do_not_read_guest_phase() {
-        let _phase = __private::PhaseOwner::scope(__private::ModPhase::Packages);
-        let mut guest = wire::guest::Guest;
-        let _: &dyn Messages = guest.messages();
-        let _: &dyn Players = guest.players();
-        let _: &dyn Levels = guest.levels();
-        let _: &mut dyn Commands = guest.commands();
-    }
-}

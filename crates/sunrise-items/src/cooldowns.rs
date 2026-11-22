@@ -5,9 +5,9 @@
 //! observers for the parity harness; this is the same data with the lookup a
 //! slot needs, and no observer (vanilla's own player uses the plain class).
 use crate::items::ItemStack;
-use sunrise_core::nbt::Tag;
 use std::collections::HashMap;
 use std::sync::Arc;
+use sunrise_core::nbt::Tag;
 
 /// A stack's `minecraft:use_cooldown` component.
 #[derive(Clone, Debug, PartialEq)]

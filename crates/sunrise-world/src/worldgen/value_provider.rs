@@ -2,8 +2,8 @@
 //! remain separate work; this module does not yet cover every provider.
 use super::weighted::WeightedList;
 use super::{DecodeError, Object, density::identifier, integer, number_text, required};
-use sunrise_core::random::{InvalidBound, RandomSource};
 use serde_json::value::RawValue;
+use sunrise_core::random::{InvalidBound, RandomSource};
 
 #[derive(Clone, Debug)]
 pub enum FloatProvider {
@@ -131,6 +131,65 @@ pub enum IntProvider {
     },
 }
 impl IntProvider {
+    /// Encode the decoded provider in the registry's NBT form. Mean and deviation
+    /// use `Codec.FLOAT`, whose accepted values need not fit in a JSON number.
+    pub(crate) fn to_nbt(&self) -> sunrise_core::nbt::Tag {
+        use sunrise_core::nbt::Tag;
+        let kind = |value: &str| Tag::String(value.into());
+        let range = |name, min, max| {
+            Tag::compound([
+                ("type", kind(name)),
+                ("min_inclusive", Tag::Int(min)),
+                ("max_inclusive", Tag::Int(max)),
+            ])
+        };
+        match *self {
+            Self::Constant(value) => Tag::Int(value),
+            Self::Weighted(ref list) => {
+                let distribution = list.entries().iter().map(|(provider, weight)| {
+                    Tag::compound([("data", provider.to_nbt()), ("weight", Tag::Int(*weight))])
+                });
+                Tag::compound([
+                    ("type", kind("minecraft:weighted_list")),
+                    ("distribution", Tag::List(distribution.collect())),
+                ])
+            }
+            Self::Uniform { min, max } => range("minecraft:uniform", min, max),
+            Self::BiasedToBottom { min, max } => range("minecraft:biased_to_bottom", min, max),
+            Self::VeryBiasedToBottom { min, max } => {
+                range("minecraft:very_biased_to_bottom", min, max)
+            }
+            Self::Trapezoid { min, max, plateau } => Tag::compound([
+                ("type", kind("minecraft:trapezoid")),
+                ("min", Tag::Int(min)),
+                ("max", Tag::Int(max)),
+                ("plateau", Tag::Int(plateau)),
+            ]),
+            Self::Clamped {
+                ref source,
+                min,
+                max,
+            } => Tag::compound([
+                ("type", kind("minecraft:clamped")),
+                ("source", source.to_nbt()),
+                ("min_inclusive", Tag::Int(min)),
+                ("max_inclusive", Tag::Int(max)),
+            ]),
+            Self::ClampedNormal {
+                mean,
+                deviation,
+                min,
+                max,
+            } => Tag::compound([
+                ("type", kind("minecraft:clamped_normal")),
+                ("mean", Tag::Float(mean.to_bits())),
+                ("deviation", Tag::Float(deviation.to_bits())),
+                ("min_inclusive", Tag::Int(min)),
+                ("max_inclusive", Tag::Int(max)),
+            ]),
+        }
+    }
+
     pub fn from_json(json: &str) -> Result<Self, DecodeError> {
         let raw: Box<RawValue> = serde_json::from_str(json)?;
         Self::decode(&raw, 0, &mut 65536)

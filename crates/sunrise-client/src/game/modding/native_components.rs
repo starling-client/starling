@@ -5,7 +5,7 @@ use sunrise_core::nbt::Tag;
 
 /// Failure to access a native item component.
 #[derive(Debug)]
-pub enum NativeComponentError {
+pub(crate) enum NativeComponentError {
     UnknownType,
     InvalidValue(sunrise_protocol::Error),
 }
@@ -179,6 +179,36 @@ impl Game<'_> {
         }
         mod_id
     }
+    /// `Item.getName(ItemStack)` of a mod item: what its `item_name` Part
+    /// answers, or `None` for the default. One table lookup for an item no
+    /// Part names.
+    pub(in crate::game) fn mod_item_name(
+        &self,
+        stack: &ItemStack,
+    ) -> Option<sunrise_client::text::Text> {
+        sunrise_client::stations::item_name_part(&self.loop_context, stack)
+    }
+    /// `ItemStack.getStyledHoverName`, without the rarity colour applied by the tooltip.
+    pub(in crate::game) fn styled_stack_name(
+        &self,
+        stack: &ItemStack,
+    ) -> sunrise_client::text::Text {
+        let name = self.stack_hover_name_text(stack);
+        if stack.data().is_some_and(|data| data.custom_name.is_some()) {
+            sunrise_client::text::Text::empty().append(name).italic()
+        } else {
+            name
+        }
+    }
+    /// `ItemStack.getHoverName` as a component: the custom name or a written
+    /// book's title, else the name a mod item's Part gives the stack, else
+    /// vanilla's. The Part is asked at most once.
+    pub(in crate::game) fn stack_hover_name_text(
+        &self,
+        stack: &ItemStack,
+    ) -> sunrise_client::text::Text {
+        sunrise_client::stations::hover_name_in(&self.loop_context, &self.pack.names, stack)
+    }
     /// `ItemStack.isBarVisible`, `getBarWidth`, `getBarColor`, before client-only hooks.
     pub(in crate::game) fn item_resource_bar(&self, stack: &ItemStack) -> Option<mod_api::ItemBar> {
         use super::api_values::TryIntoApi;
@@ -329,17 +359,15 @@ impl Game<'_> {
             return None;
         }
         self.native_entity_read_target(target)?;
-        let target = self.entity_kind(target).map(|kind| kind.id(self))?;
-        let actor = self
-            .entity_kind(attacker.entity())
-            .map(|kind| kind.id(self))?;
+        let target = self.entity_kind(target)?.id(self)?;
+        let actor = self.entity_kind(attacker.entity())?.id(self)?;
         let source = self.item_resource_damage_source(stack, attacker)?;
         let source = source.damage_type.to_string();
         let effective = self.item_combat_stack(stack);
         let ctx = sunrise_items::enchant::EffectContext {
-            this: Some(&target),
-            attacker: Some(&actor),
-            direct_attacker: Some(&actor),
+            this: Some(target.as_str()),
+            attacker: Some(actor.as_str()),
+            direct_attacker: Some(actor.as_str()),
             is_direct: true,
             damage_type: Some(&source),
             items: Some(world_items!(self)),
@@ -481,7 +509,7 @@ mod equippable_slot_tests {
 
     /// `Equippable.slot`: armour goes where it is worn, a plain item goes nowhere.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_equippable_slot_follows_the_equippable_component() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let slot = |item: &str| game.item_equippable_slot(&ItemStack::new(item, 1));
@@ -497,11 +525,11 @@ mod enchantment_conflict_tests {
     use super::ItemStack;
     use crate::game::api_values::{stack_value, test_snapshot};
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_core::random::RandomSource;
     use mod_api::{Identifier, ItemResource, LevelRef, WorldEpoch};
+    use sunrise_core::random::RandomSource;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn enchanting_a_resource_uses_the_active_levels_random_and_preserves_the_input() {
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -563,7 +591,7 @@ mod enchantment_conflict_tests {
     /// `Enchantment.areCompatible`: the same enchantment twice and the exclusive sets conflict,
     /// others and unknown ids do not.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn enchantments_compatible_follows_the_exclusive_sets() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             assert!(!game.enchantments_compatible("minecraft:sharpness", "minecraft:smite"));
@@ -588,7 +616,7 @@ mod item_resource_property_tests {
     }
     /// All seven reads and their game consumers, with independently recorded vanilla outcomes.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn effective_resource_properties_match_vanilla() {
         let inputs = std::env::var("SUNRISE_ITEM_PROPERTIES_CASES")
             .map(|path| std::fs::read_to_string(path).unwrap())
@@ -666,12 +694,12 @@ mod item_resource_property_tests {
     }
     /// Changed defaults and a patched mod consumable exercise the real game consumers.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn item_resource_changed_defaults_and_consumption() {
-        use sunrise_client::items::ItemStack;
         use mod_api::{ComponentId, ItemResource, Tag};
         use serde_json::json;
         use std::{fs, path::Path};
+        use sunrise_client::items::ItemStack;
         fn link_fixture_source(source: &Path, target: &Path) {
             #[cfg(unix)]
             std::os::unix::fs::symlink(source, target).unwrap();
@@ -827,7 +855,7 @@ mod item_resource_property_tests {
                     .is_none()
             );
             game.creative = false;
-            game.right = true;
+            game.set_mapping_held("key.use", true);
             game.screen = crate::game::Screen::Playing;
             game.inventory[game.selected] = Some(stack);
             assert!(game.start_eating(&info));
@@ -850,7 +878,7 @@ mod item_resource_property_tests {
 #[cfg(test)]
 mod hot_key_tests {
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn resolved_keys_select_fuel_and_compost_metadata() {
         mod_platform::testing::with_mods(Vec::new().into(), || {
             crate::game::native_entity_refs::tests::with_game(|game| {
@@ -928,7 +956,7 @@ mod combat_query_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn stack_combat_queries_match_attacks_and_preserve_equipment_and_rng() {
         with_game(|game| {
             let attacker = actor(game);
@@ -1097,7 +1125,7 @@ mod combat_query_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn stack_combat_immunity_honors_default_override_tag_and_removal() {
         with_game(|game| {
             let attacker = actor(game);
@@ -1143,7 +1171,7 @@ mod combat_query_tests {
         });
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn stack_combat_prototype_overrides_and_removals_match_attacks() {
         with_game(|game| {
             let attacker = actor(game);

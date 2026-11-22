@@ -9,10 +9,11 @@ pub trait Hooks {
     /// window clock. Outside a world both use the window clock. Neither is
     /// recomputed after listeners run. Client-side.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         version = 2,
         neoforge = "RenderFrameEvent.Post"
     )]
-    fn render_frame_post();
+    fn render_frame_post(elapsed: Duration, world_partial_tick: f32, partial_tick: f32);
 }

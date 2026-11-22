@@ -3,6 +3,13 @@
 //! and the block test that turns it in flight
 //! (`collisions::projectile_can_stand_on`), one line per fixture.
 #![forbid(unsafe_code)]
+use serde_json::Value;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::Path,
+    sync::Arc,
+};
 use sunrise_client::{
     Result, collisions,
     mobs::{Mob, MobTypes, Who, shulker},
@@ -14,13 +21,6 @@ use sunrise_core::{
     position::BlockPos,
 };
 use sunrise_world::{chunk::BlockState, registry::BlockStateId};
-use serde_json::Value;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-    sync::Arc,
-};
 
 /// The bullet's first move only asks which neighbours are empty: all are.
 struct Open(Vec<(Who, Aabb)>);

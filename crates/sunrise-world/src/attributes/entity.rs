@@ -194,6 +194,30 @@ impl Catalog {
             defaults,
         })
     }
+    /// An entity type's default of an attribute, by name
+    /// (`DefaultAttributes.getSupplier(type).getValue(attribute)`: its base inside the
+    /// attribute's range, as a fresh entity's value reads before any modifier), both names read
+    /// as `Identifier.parse` reads them: a bare or empty namespace (`zombie`, `:zombie`) is
+    /// `minecraft:`'s. None for a type with no supplier, an attribute it lacks or an unknown name.
+    pub fn type_default(&self, entity: &str, attribute: &str) -> Option<f64> {
+        let id = self.id(&identifier(attribute))?;
+        let base = self.default_base(&identifier(entity), id)?;
+        Some(self.attribute(id).definition.sanitize(base))
+    }
+    /// The entity type's whole supplier by value (`AttributeSupplier.getValue` of each attribute
+    /// it has, by name): [`Self::entity_row`]'s bases inside their attributes' ranges.
+    pub fn supplier_values(&self, entity: &str) -> Option<std::collections::HashMap<String, f64>> {
+        let bases = self.defaults.get(entity)?;
+        Some(
+            self.attributes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| {
+                    bases[i].map(|base| (a.name.clone(), a.definition.sanitize(base)))
+                })
+                .collect(),
+        )
+    }
     /// The entity type's supplier base of an attribute, if the type has it.
     pub fn default_base(&self, entity: &str, id: AttributeId) -> Option<f64> {
         self.defaults.get(entity).and_then(|b| b[id.0])
@@ -366,6 +390,7 @@ impl Catalog {
             defaults,
         })
     }
+    #[inline]
     pub fn id(&self, name: &str) -> Option<AttributeId> {
         self.ids.get(name).copied()
     }
@@ -539,6 +564,17 @@ impl EntityAttributes {
     }
 }
 
+/// `Identifier.parse`'s namespace rule: no namespace, or an empty one, is `minecraft:`'s; a
+/// qualified name is borrowed as it is.
+fn identifier(name: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    match name.split_once(':') {
+        Some(("", path)) => Cow::Owned(format!("minecraft:{path}")),
+        Some(_) => Cow::Borrowed(name),
+        None => Cow::Owned(format!("minecraft:{name}")),
+    }
+}
+
 #[cfg(test)]
 mod row_tests {
     use super::*;
@@ -558,6 +594,101 @@ mod row_tests {
             }
         }))
         .unwrap()
+    }
+
+    /// #3944: a type's default by name, bare names being `minecraft:`'s; a type
+    /// without the attribute, an unknown attribute or a type without a supplier
+    /// has none. Expected values are the fixture's rows (vanilla's Zombie: 20
+    /// health, 2 armor).
+    #[test]
+    fn a_types_default_by_name() {
+        let catalog = catalog();
+        assert_eq!(
+            catalog.type_default("minecraft:zombie", "minecraft:max_health"),
+            Some(20.0)
+        );
+        assert_eq!(catalog.type_default("zombie", "armor"), Some(2.0));
+        assert_eq!(catalog.type_default(":zombie", ":max_health"), Some(20.0));
+        assert_eq!(
+            catalog.type_default("minecraft:zombie", "minecraft:luck"),
+            None
+        );
+        assert_eq!(
+            catalog.type_default("minecraft:zombie", "minecraft:no_such"),
+            None
+        );
+        assert_eq!(
+            catalog.type_default("minecraft:boat", "minecraft:max_health"),
+            None
+        );
+    }
+
+    /// #3944 on the game's own suppliers: a type's default is what a fresh entity of it starts
+    /// with (vanilla's Zombie: 20 health, 2 armor, 3 attack damage), a mod-declared type's row
+    /// and a mod's addition to an existing type reach it, and `minecraft:item` has no supplier.
+    #[test]
+    #[ignore = "daily"]
+    fn a_types_default_is_a_fresh_entitys_base() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("SUNRISE_TEST_RESOURCES").expect("SUNRISE_TEST_RESOURCES"),
+        );
+        let vanilla = Catalog::from_json(
+            &crate::json_file::read::<Value>(&root.join("attributes.json")).unwrap(),
+        )
+        .unwrap();
+        let catalog = Arc::new(
+            vanilla
+                .with_entity_row(
+                    "ruby:ghoul",
+                    "minecraft:zombie",
+                    &[("minecraft:max_health".into(), 40.0)],
+                )
+                .unwrap()
+                .with_entity_additions("minecraft:zombie", &[("minecraft:luck".into(), Some(1.5))])
+                .unwrap(),
+        );
+        let fresh = catalog.create("minecraft:zombie").unwrap();
+        for (attribute, expected) in [
+            ("minecraft:max_health", 20.0),
+            ("minecraft:armor", 2.0),
+            ("minecraft:attack_damage", 3.0),
+            ("minecraft:luck", 1.5),
+        ] {
+            let id = catalog.id(attribute).unwrap();
+            assert_eq!(fresh.base_value(id).unwrap(), expected, "{attribute}");
+            assert_eq!(
+                catalog.type_default("minecraft:zombie", attribute),
+                Some(expected),
+                "{attribute}"
+            );
+        }
+        assert_eq!(catalog.type_default("ruby:ghoul", "max_health"), Some(40.0));
+        assert_eq!(catalog.type_default("ruby:ghoul", "armor"), Some(2.0));
+        assert_eq!(catalog.type_default("minecraft:item", "max_health"), None);
+        assert!(catalog.entities().any(|t| t == "ruby:ghoul"));
+        assert!(!catalog.entities().any(|t| t == "minecraft:item"));
+        // A declared base outside its attribute's range: the supplier's value is inside it, the
+        // raw base (a spawn's) stays what was declared.
+        let wide = Arc::new(
+            vanilla
+                .with_entity_row(
+                    "ruby:titan",
+                    "minecraft:zombie",
+                    &[("minecraft:max_health".into(), 5000.0)],
+                )
+                .unwrap(),
+        );
+        let health = wide.id("minecraft:max_health").unwrap();
+        assert_eq!(wide.default_base("ruby:titan", health), Some(5000.0));
+        assert_eq!(wide.type_default("ruby:titan", "max_health"), Some(1024.0));
+        assert_eq!(
+            wide.supplier_values("ruby:titan").unwrap()["minecraft:max_health"],
+            1024.0
+        );
+        assert_eq!(
+            wide.create("ruby:titan").unwrap().value(health).unwrap(),
+            1024.0
+        );
     }
 
     /// #3728: asks to widen bounds join as their union, in either order; a

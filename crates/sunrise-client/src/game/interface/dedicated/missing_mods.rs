@@ -5,6 +5,7 @@
 
 use super::{Game, Result, log};
 use sunrise_client::save::level_mods;
+use sunrise_server_files::missing_mods::MissingMods as Settings;
 
 /// An intentional refusal to open a world without its saved mods, not a crash.
 #[derive(Debug)]
@@ -20,15 +21,6 @@ impl std::error::Error for MissingModsRefusal {}
 /// Whether this error is the already-explained, intentional world refusal.
 pub(crate) fn is_missing_mods_refusal(error: &(dyn std::error::Error + 'static)) -> bool {
     error.is::<MissingModsRefusal>()
-}
-
-/// `server.toml`'s `[missing_mods]`.
-#[derive(Debug, Default, PartialEq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Settings {
-    /// Open a world whose saved mods are missing, as `--allowMissingMods` does.
-    #[serde(default)]
-    allow: bool,
 }
 
 /// The section in `server.toml`'s text; the default (refuse) without it.
@@ -52,14 +44,11 @@ fn allowed_by_server_toml() -> Result<bool> {
     }
 }
 
-/// `f` with English as the language when none is set: a dedicated server's log is English, as
-/// vanilla's is.
+/// The dedicated server does not load client language layers. Use Sunrise's
+/// bundled English for its own missing-mod diagnostics.
 pub(super) fn in_english<R>(f: impl FnOnce() -> R) -> R {
     use sunrise_client::lang;
-    if lang::current().is_some() {
-        return f();
-    }
-    lang::scoped(lang::Language::load(&[], "en_us"), f).0
+    lang::scoped(lang::Language::load(&[], lang::DEFAULT), f).0
 }
 
 impl Game<'_> {
@@ -110,7 +99,7 @@ mod tests {
     fn missing_mods_refuse_unless_allowed() {
         assert_eq!(parse("").unwrap(), Settings { allow: false });
         assert_eq!(
-            parse("[combat]\nlegacy = true\n").unwrap(),
+            parse("[entities]\nvillager_lobotomize = true\n").unwrap(),
             Settings { allow: false }
         );
         assert_eq!(
@@ -128,7 +117,7 @@ mod tests {
     /// Without the switch the server refuses, naming the switch, and changes nothing in the
     /// world; with it the world opens.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn check_missing_mods_refuses_unless_allowed_and_writes_nothing() {
         use sunrise_core::nbt::Tag;
         let dir = std::env::temp_dir().join(format!(

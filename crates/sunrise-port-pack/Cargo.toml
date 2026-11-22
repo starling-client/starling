@@ -9,6 +9,7 @@ description = "Port a Java modpack to Sunrise: import, inventory, classification
 [dependencies]
 # Content path rules only (no runtime): what the game's content loader accepts.
 sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false }
+sunrise-proxy = { path = "../sunrise-proxy" }
 serde = { version = "1", features = ["derive"] }
 # Exact float parsing: the upgrade writes back the numbers it read (data pack
 # upgrade), and Java reads them exactly.
@@ -16,7 +17,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 sha1 = "0.10"
 sha2 = "0.10"
 toml = "1.1.6"
-ureq = { version = "2", default-features = false, features = ["tls", "socks-proxy"] }
+ureq = { version = "2", default-features = false, features = ["tls"] }
 url = "2"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 

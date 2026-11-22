@@ -1,17 +1,17 @@
 //! Headless transport exercising the actual client resource loader and chunks.
 #![forbid(unsafe_code)]
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, Write},
+    path::PathBuf,
+};
 use sunrise_client::{assets, collisions, world};
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_world::{
     collision_context::CollisionContext,
     entity_obstruction::EntityIdentity,
     world_movement::{self, CollisionCheckRequest, MovementRequest},
-};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{BufRead, Write},
-    path::PathBuf,
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 

@@ -3,7 +3,7 @@
 > **Fork scope:** This is retained upstream design and research, not the fork specification. See the
 > [fork registry reference](../modding/src/reference/registry-index.md). `.smod` is the only mod package;
 > explicit native pins and update flow, and strict published-kind and owner checks, remain in force. This note
-> authorizes neither a `.hnmod` route nor implicit native repinning or rebuilding.
+> authorizes neither a separate native package extension nor implicit native repinning or rebuilding.
 
 Every kind can be submitted, every project has a real page (description, categories, tags, icon, screenshots), and
 installed projects update themselves. Asked by Ludovic on 2026-11-05. This note fixes the schema, the kinds, where
@@ -15,7 +15,7 @@ the launcher installs each one, the category lists and the rollout. The format i
 | Kind | File | What it is | The registry's check | The launcher installs it in |
 |---|---|---|---|---|
 | `mod` | `.smod` | Content mod (and sandboxed code) | manifest + content (today) | `mods/<id>.smod` |
-| `native-mod` | `.hnmod` | Native source mod | bundle + pins (today) | the native build; rebuilt after an update |
+| `native-mod` | `.smod` (with `[native]`) | Native source mod | bundle + pins (today) | the native build; rebuilt after an update |
 | `modpack` | `.spack` | Registry mods played together | manifest + its mods in the index (today) | its own profile |
 | `resourcepack` | `.zip` | `pack.mcmeta` + `assets/` | plain paths + `pack.mcmeta` (today) | `resourcepacks/<file>` |
 | `shader` | `.sshader` | Sunrise's WGSL shader pack | `sunrise_shader_api::check` (today) | `shaderpacks/<file>` |

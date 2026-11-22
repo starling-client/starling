@@ -14,8 +14,8 @@ use crate::{
     datafix::dynamic::{as_bool_opt, as_float, as_number},
     worldgen::block_feature::FeatureBlockBindings,
 };
-use sunrise_core::nbt::Tag;
 use std::sync::Arc;
+use sunrise_core::nbt::Tag;
 
 fn text(tag: &Tag, key: &str) -> Option<String> {
     match tag.get(key)? {
@@ -180,8 +180,8 @@ mod tests {
             },
         },
     };
-    use sunrise_core::{density::TerrainAdjustment, position::ChunkPos};
     use std::collections::{BTreeMap, BTreeSet};
+    use sunrise_core::{density::TerrainAdjustment, position::ChunkPos};
 
     #[test]
     fn saved_templates_round_trip_and_whole_start_fallback() {

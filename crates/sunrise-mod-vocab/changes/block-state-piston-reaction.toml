@@ -1,0 +1,2 @@
+ids = ["handle:BlockStates::piston_push_reaction"]
+why = "Mods can read the resolved block-state reaction used by pistons on either side without asking a Part again."

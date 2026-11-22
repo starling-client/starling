@@ -1,0 +1,11 @@
+ids = [
+    "hook:block_entity_submit",
+    "hook:render_arm",
+    "hook:render_hand",
+    "hook:render_living_post",
+    "hook:render_living_pre",
+    "hook:render_player_post",
+    "hook:render_player_pre",
+]
+why = "The draw animation phase now holds through tick freeze and resumes without a jump. It can differ from the level's partial tick even after unfreezing. block_entity_submit, render_arm, render_hand, render_living_post, render_player_pre and render_player_post are now version 2, render_living_pre version 3."
+migrate = "Use draw.animation_time() for spin animation and the partial tick for world interpolation; do not assume they share a phase. Rebuild against the new SDK."

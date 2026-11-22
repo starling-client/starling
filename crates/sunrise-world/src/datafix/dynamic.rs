@@ -157,16 +157,37 @@ pub fn map(tag: &Tag) -> Option<&Compound> {
         _ => None,
     }
 }
-/// `Dynamic.set`: only maps change.
+/// `Dynamic.set` with a string key: `NbtOps.mergeToMap` shallow-copies the
+/// input compound before putting the value. End starts a fresh compound.
 pub fn set(tag: &mut Tag, field: &str, value: Tag) {
-    if let Tag::End = tag {
-        *tag = empty_map();
-    }
-    if let Tag::Compound(c) = tag {
-        c.insert(key(field), value);
+    match tag {
+        Tag::End => *tag = Tag::compound([(field, value)]),
+        Tag::Compound(c) => {
+            *c = std::mem::take(c).into_shallow_copy();
+            c.insert(key(field), value);
+        }
+        _ => {}
     }
 }
+/// `NbtOps.remove`: size the shallow copy before removing the entry, even if
+/// the field is absent. Move the removed value out for the Rust fix's caller.
 pub fn remove(tag: &mut Tag, field: &str) -> Option<Tag> {
+    let Tag::Compound(c) = tag else { return None };
+    *c = std::mem::take(c).into_shallow_copy();
+    c.remove(&key(field))
+}
+/// Put a field directly, for NBT writers and translators outside DynamicOps.
+pub fn put(tag: &mut Tag, field: &str, value: Tag) {
+    match tag {
+        Tag::End => *tag = Tag::compound([(field, value)]),
+        Tag::Compound(c) => {
+            c.insert(key(field), value);
+        }
+        _ => {}
+    }
+}
+/// Take a field directly, keeping the compound's table history.
+pub fn take(tag: &mut Tag, field: &str) -> Option<Tag> {
     match tag {
         Tag::Compound(c) => c.remove(&key(field)),
         _ => None,
@@ -181,10 +202,14 @@ pub fn rename(tag: &mut Tag, from: &str, to: &str) {
         set(tag, to, v);
     }
 }
-/// `Dynamic.update`: apply `f` to a field that is present.
+/// `Dynamic.update`: replace a present field in a shallow copy, retaining
+/// the key's position in the copy. A missing field leaves the map untouched.
 pub fn update(tag: &mut Tag, field: &str, f: impl FnOnce(Tag) -> Tag) {
-    if let Some(v) = remove(tag, field) {
-        set(tag, field, f(v));
+    if let Tag::Compound(c) = tag
+        && let Some(value) = c.get_mut(&key(field))
+    {
+        *value = f(std::mem::replace(value, Tag::End));
+        *c = std::mem::take(c).into_shallow_copy();
     }
 }
 /// `Dynamic.renameAndFixField`: the fixed value under the new name, removed when
@@ -260,5 +285,62 @@ pub fn ceillog2(n: usize) -> u32 {
         0
     } else {
         usize::BITS - (n - 1).leading_zeros()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(tag: &Tag) -> Vec<String> {
+        map(tag)
+            .unwrap()
+            .keys()
+            .map(JavaString::to_string_lossy)
+            .collect()
+    }
+
+    #[test]
+    fn merge_and_update_size_the_copy_from_the_input_and_only_reorder_the_outer_table() {
+        let initial = Tag::compound([
+            ("zeta", Tag::Int(0)),
+            ("alpha", Tag::Int(1)),
+            (
+                "mid",
+                Tag::compound([
+                    ("zeta", Tag::Int(2)),
+                    ("alpha", Tag::Int(3)),
+                    ("mid", Tag::Int(4)),
+                ]),
+            ),
+        ]);
+        let mut merged = initial.clone();
+        set(&mut merged, "new", Tag::Int(5));
+        // Size 3 gives 4 buckets. The new key grows it to 8, where `mid`
+        // and `new` share a bucket. The nested map still has 16 buckets.
+        assert_eq!(keys(&merged), ["zeta", "mid", "new", "alpha"]);
+        assert_eq!(keys(merged.get("mid").unwrap()), ["zeta", "alpha", "mid"]);
+
+        let mut updated = initial;
+        update(&mut updated, "alpha", |_| Tag::Int(6));
+        assert_eq!(keys(&updated), ["zeta", "mid", "alpha"]);
+        assert_eq!(updated.get("alpha"), Some(&Tag::Int(6)));
+    }
+
+    #[test]
+    fn remove_sizes_the_copy_before_removal_even_for_a_missing_key() {
+        let initial = Tag::compound([
+            ("zeta", Tag::Int(0)),
+            ("alpha", Tag::Int(1)),
+            ("mid", Tag::Int(2)),
+            ("d", Tag::Int(3)),
+        ]);
+        let mut unchanged = initial.clone();
+        assert_eq!(remove(&mut unchanged, "missing"), None);
+        assert_eq!(keys(&unchanged), ["zeta", "mid", "d", "alpha"]);
+        // Removing first and sizing for 3 keys would place `d` before `mid`.
+        let mut pruned = initial;
+        assert_eq!(remove(&mut pruned, "zeta"), Some(Tag::Int(0)));
+        assert_eq!(keys(&pruned), ["mid", "d", "alpha"]);
     }
 }

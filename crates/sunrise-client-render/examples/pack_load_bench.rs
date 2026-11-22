@@ -4,17 +4,17 @@
 //! is printed as a Markdown table.
 //! `cargo run --profile fast -p sunrise-client-render --example pack_load_bench [-- --scale 1]`
 //! (`.github/workflows/pack-bench.yml` runs it on a branch and on its base, side by side).
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use sunrise_client_render::{
     gfx::PreparedTextures,
     hud::HudAtlas,
     model_library::ParsedModels,
     packs::{self, Pack},
     sprites::Sprites,
-};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
 };
 
 /// A small deterministic generator: the same files on every run and every branch.

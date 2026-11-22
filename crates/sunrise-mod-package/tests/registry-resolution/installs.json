@@ -1,0 +1,85 @@
+{
+  "index": {
+    "schema": 1,
+    "projects": [
+      {"id": "fireflies", "kind": "mod", "name": "Fireflies", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "fireflies.smod", "url": "https://example.test/fireflies/0.1.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "0.1.0", "game": "26.3", "dependencies": [{"id": "creature", "version": "^0.1"}, {"id": "jei", "version": "^0.5", "optional": true}]}
+      ]},
+      {"id": "butterflies", "kind": "mod", "name": "Butterflies", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "butterflies.smod", "url": "https://example.test/butterflies/0.1.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "0.1.0", "game": "26.3", "dependencies": [{"id": "creature", "version": "^0.1"}]}
+      ]},
+      {"id": "creature", "kind": "mod", "name": "Creature", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "creature.smod", "url": "https://example.test/creature/0.1.1", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "0.1.1", "game": "26.3", "dependencies": [{"id": "foundation", "version": "^1"}]},
+        {"api": "0.2", "file": {"name": "creature.smod", "url": "https://example.test/creature/0.1.3", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}, "version": "0.1.3", "game": "26.3", "dependencies": [{"id": "foundation", "version": "^1"}]},
+        {"api": "0.2", "file": {"name": "creature.smod", "url": "https://example.test/creature/0.1.2", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}, "version": "0.1.2", "game": "26.3", "dependencies": [{"id": "foundation", "version": "^1"}]},
+        {"api": "0.2", "file": {"name": "creature.smod", "url": "https://example.test/creature/0.2.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000004"}, "version": "0.2.0", "game": "26.3"}
+      ]},
+      {"id": "foundation", "kind": "mod", "name": "Foundation", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "foundation.smod", "url": "https://example.test/foundation/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3"}
+      ]},
+      {"id": "jei", "kind": "mod", "name": "Jei", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "jei.smod", "url": "https://example.test/jei/0.5.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "0.5.0", "game": "26.3"}
+      ]}
+    ],
+    "revoked": []
+  },
+  "game": "26.3",
+  "cases": [
+    {
+      "name": "two roots share one library; preferring an installed version still walks its dependencies",
+      "requests": [{"id": "fireflies"}, {"id": "butterflies"}, {"id": "creature"}],
+      "installed": [{"id": "creature", "version": "0.1.1", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"butterflies": {"status": "installable", "version": "0.1.0"}, "creature": {"status": "already_installed", "version": "0.1.1"}, "fireflies": {"status": "installable", "version": "0.1.0"}}, "install": [{"id": "butterflies", "version": "0.1.0"}, {"id": "fireflies", "version": "0.1.0"}, {"id": "foundation", "version": "1.0.0"}], "kept": [{"id": "creature", "version": "0.1.1"}], "optional": [{"dependency": {"id": "jei", "version": "^0.5", "optional": true}, "from": {"id": "fireflies", "version": "0.1.0"}}], "required_by": {"creature": ["butterflies", "fireflies"], "foundation": ["butterflies", "creature", "fireflies"]}},
+      "refusals": {}
+    },
+    {
+      "name": "an out-of-range dependency moves to the newest compatible SemVer, not first publication",
+      "requests": [{"id": "butterflies"}],
+      "installed": [{"id": "creature", "version": "0.2.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000004"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"butterflies": {"status": "installable", "version": "0.1.0"}}, "install": [{"id": "butterflies", "version": "0.1.0"}, {"id": "foundation", "version": "1.0.0"}], "update": [{"id": "creature", "from": "0.2.0", "to": "0.1.3", "downgrade": true}], "required_by": {"creature": ["butterflies"], "foundation": ["butterflies"]}},
+      "refusals": {}
+    },
+    {
+      "name": "an upgrade does not set the downgrade flag",
+      "requests": [{"id": "butterflies"}],
+      "installed": [{"id": "creature", "version": "0.0.9"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"butterflies": {"status": "installable", "version": "0.1.0"}}, "install": [{"id": "butterflies", "version": "0.1.0"}, {"id": "foundation", "version": "1.0.0"}], "update": [{"id": "creature", "from": "0.0.9", "to": "0.1.3"}], "required_by": {"creature": ["butterflies"], "foundation": ["butterflies"]}},
+      "refusals": {}
+    },
+    {
+      "name": "an unindexed local version in range stays installed; no registry facts to walk",
+      "requests": [{"id": "butterflies"}],
+      "installed": [{"id": "creature", "version": "0.1.9"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"butterflies": {"status": "installable", "version": "0.1.0"}}, "install": [{"id": "butterflies", "version": "0.1.0"}], "kept_unindexed": [{"id": "creature", "version": "0.1.9"}], "required_by": {"creature": ["butterflies"]}},
+      "refusals": {}
+    },
+    {
+      "name": "removing the foundation affects its transitively dependent mods, not optional consumers",
+      "requests": [],
+      "installed": [{"id": "fireflies", "version": "0.1.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, {"id": "creature", "version": "0.1.1", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, {"id": "foundation", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, {"id": "jei", "version": "0.5.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {},
+      "removal": {"id": "foundation", "expected": [{"id": "creature", "version": "0.1.1"}, {"id": "fireflies", "version": "0.1.0"}]}
+    },
+    {
+      "name": "removing an optional dependency does not affect its consumer",
+      "requests": [],
+      "installed": [{"id": "fireflies", "version": "0.1.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, {"id": "jei", "version": "0.5.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {},
+      "removal": {"id": "jei", "expected": []}
+    }
+  ]
+}

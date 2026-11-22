@@ -5,6 +5,12 @@
 //! two rings around it are level chunks with their light, the third ring has
 //! its features and the fourth only its terrain.
 extern crate sunrise_client_lib as sunrise_client;
+use std::{
+    path::Path,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     assets::Assets,
     biome::Biomes,
@@ -19,12 +25,6 @@ use sunrise_client::{
     world::World,
 };
 use sunrise_world::registry::BlockStateId;
-use std::{
-    path::Path,
-    sync::Arc,
-    thread,
-    time::{Duration, Instant},
-};
 
 fn resources() -> Option<std::path::PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -106,6 +106,7 @@ fn forced_chunks_reach_vanillas_rings() {
         assets,
         render: render.clone(),
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     });
     let mut streaming = Streaming::new(Arc::new(Plain), context, 2);
     // The player stands far away: only the forced chunk's own rings are

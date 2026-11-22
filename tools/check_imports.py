@@ -7,11 +7,15 @@ loaded at run time, so a missing driver is an error message, not a dialog.
 Linux ELF: the loader must be the standard one (not a /nix/store path) and the
 needed libraries the ones every desktop distribution has. `--server`: a server
 build, which may not need ALSA or udev either (minimal server images lack them).
-`--musl`: require the musl loader and libraries instead of glibc.
+`--musl`: require the musl loader and libraries, no RPATH/RUNPATH and no
+version requirements on glibc (needs readelf from binutils).
 """
 
 import argparse
+import os
+import re
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -138,7 +142,26 @@ def check(path, server=False, musl=False):
         problems += [f"needs {n}, which not every distribution has" for n in needed if n not in libraries]
         if server:
             problems += [f"needs {n}, which a server may not have" for n in needed if n in LINUX_DESKTOP_ONLY]
-        problems += [f"has a run path to {p}" for p in runpath if "/nix/store" in p]
+        if musl:
+            try:
+                elf = subprocess.run(["readelf", "--wide", "--version-info", "--", path],
+                                     text=True, capture_output=True, env={**os.environ, "LC_ALL": "C"})
+            except FileNotFoundError:
+                sys.exit("readelf is required for --musl (install binutils)")
+            # Any run path, even an empty one: the musl build never needs one, and a build path is no business of
+            # the player's machine.
+            problems += [f"has a run path [{p}]" for p in runpath]
+            if elf.returncode:
+                problems.append(f"could not be inspected by readelf: {elf.stderr.strip()}")
+            else:
+                needs = False
+                for line in elf.stdout.splitlines():
+                    if line.startswith("Version "):
+                        needs = line.startswith("Version needs section")
+                    if needs:
+                        problems.extend(f"requires {name}" for name in re.findall(r"\bName:\s+(GLIBC_\S+)", line))
+        else:
+            problems += [f"has a run path to {p}" for p in runpath if "/nix/store" in p]
         summary = f"{interpreter}; " + ", ".join(needed)
     print(f"{path}: {summary}")
     for problem in problems:

@@ -43,13 +43,16 @@ fn sunrise_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
     out.base = pos;
     return out;
 }
+fn sunrise_shadow_terrain(c: SunriseCorner, origin: vec4<f32>) -> SunriseShadowOut {
+    let atlas = sunrise_terrain_terrain_uv(c.uv, origin.w);
+    let pos = sunrise_material_displace(c.position + origin.xyz, atlas, c.layer, c.color, c.light);
+    return sunrise_shadow_vertex(pos, atlas, c.layer, c.color);
+}
 @vertex fn sunrise_shadow_vs(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> SunriseShadowOut {
-    let atlas = sunrise_terrain_terrain_uv(uv, origin.w);
-    let pos = sunrise_material_displace(position + origin.xyz, atlas, layer, color, light);
-    return sunrise_shadow_vertex(pos, atlas, layer, color);
+    return sunrise_shadow_terrain(SunriseCorner(position, uv, layer, color, light), origin);
 }
 @vertex fn sunrise_shadow_vs_flat(
     @builtin(vertex_index) index: u32,
@@ -57,9 +60,18 @@ fn sunrise_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
     @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> SunriseShadowOut {
     let origin = sunrise_terrain_slot_origins[sunrise_terrain_block_slots[index >> 8u]];
-    let atlas = sunrise_terrain_terrain_uv(uv, origin.w);
-    let pos = sunrise_material_displace(position + origin.xyz, atlas, layer, color, light);
-    return sunrise_shadow_vertex(pos, atlas, layer, color);
+    return sunrise_shadow_terrain(SunriseCorner(position, uv, layer, color, light), origin);
+}
+// Solid draws reading the arena page (`SECTION_CORNER`), in either layout of the solid quads.
+@vertex fn sunrise_shadow_vs_section(@builtin(vertex_index) vertex: u32,
+    @location(5) origin: vec4<f32>) -> SunriseShadowOut {
+    let s = sunrise_terrain_section_corner(vertex);
+    return sunrise_shadow_terrain(sunrise_terrain_corner_inputs(s.c), origin);
+}
+@vertex fn sunrise_shadow_vs_section_flat(@builtin(vertex_index) vertex: u32) -> SunriseShadowOut {
+    let s = sunrise_terrain_section_corner(vertex);
+    let origin = sunrise_corner_origin(s);
+    return sunrise_shadow_terrain(sunrise_terrain_corner_inputs(s.c), origin);
 }
 @fragment fn sunrise_shadow_fs(in: SunriseShadowOut) {
     if sunrise_shadow_taken(in.base, in.layer) { discard; }
@@ -512,13 +524,14 @@ fn shader_source(
         ),
     };
     format!(
-        "{head}// Sunrise's terrain (terrain.wgsl)\n{}{solid}{}{displace}{ENTRIES}",
+        "{head}// Sunrise's terrain (terrain.wgsl)\n{}{solid}{}{displace}{}{ENTRIES}",
         prefixed(
             &(include_str!("../hdr_light.wgsl").to_owned()
                 + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
             PREFIX
         ),
-        super::native_post::line_helpers(api, false)
+        super::native_post::line_helpers(api, false),
+        super::native_material::SECTION_CORNER,
     )
 }
 
@@ -686,31 +699,40 @@ impl NativeShadow {
             pipeline_with(layout, vertex, buffers, fragment)
         };
         let instanced = layout(None);
-        let solid = pipeline(
-            &instanced,
-            "sunrise_shadow_vs",
-            &[Some(vertices.clone()), Some(instances.clone())],
-            false,
-        );
+        let flat_layout = shape.flat.map(|group| layout(Some(group)));
+        // With flat draws' page groups the solid draws read the page themselves
+        // (`SECTION_CORNER`), in either layout of the solid quads, as the renderer's do.
+        let solid = match &flat_layout {
+            Some(paged) => pipeline(
+                paged,
+                "sunrise_shadow_vs_section",
+                &[None, Some(instances.clone())],
+                false,
+            ),
+            None => pipeline(
+                &instanced,
+                "sunrise_shadow_vs",
+                &[Some(vertices.clone()), Some(instances.clone())],
+                false,
+            ),
+        };
         let translucent = pipeline(
             &instanced,
             "sunrise_shadow_vs",
             &[Some(vertices.clone()), Some(instances)],
             true,
         );
-        let flat_layout = shape.flat.map(|group| layout(Some(group)));
-        let flat_pipeline = |translucent| {
-            flat_layout.as_ref().map(|layout| {
-                pipeline(
-                    layout,
-                    "sunrise_shadow_vs_flat",
-                    &[Some(vertices.clone())],
-                    translucent,
-                )
-            })
-        };
-        let flat = flat_pipeline(false);
-        let flat_translucent = flat_pipeline(true);
+        let flat = flat_layout
+            .as_ref()
+            .map(|layout| pipeline(layout, "sunrise_shadow_vs_section_flat", &[], false));
+        let flat_translucent = flat_layout.as_ref().map(|layout| {
+            pipeline(
+                layout,
+                "sunrise_shadow_vs_flat",
+                &[Some(vertices.clone())],
+                true,
+            )
+        });
         let entity = entity_pipeline(device, shape.entities, &frame_layout);
         // The grid's corners come from its group 1, not from vertex buffers.
         let displaced = grid.as_ref().map(|g| {
@@ -820,7 +842,7 @@ mod tests {
     #[test]
     fn what_the_camera_stands_on_is_inside_the_shadow_cameras_depth() {
         let shadow = camera(&Settings::default());
-        let (view, projection) = super::super::pack_uniforms::shadow_camera(
+        let (view, projection) = crate::gfx::pack_uniforms::shadow_camera(
             glam::Vec3::new(0.3, 0.9, 0.0).normalize(),
             glam::DVec3::new(-2064.5, 246.0, -4304.5),
             &shadow,
@@ -839,7 +861,7 @@ mod tests {
         let light = glam::Vec3::Y;
         for x in [5.5, -5.5, -2064.5, 2064.5] {
             let camera = glam::DVec3::new(x, 64.0, x);
-            let (view, _) = super::super::pack_uniforms::shadow_camera(light, camera, &shadow);
+            let (view, _) = crate::gfx::pack_uniforms::shadow_camera(light, camera, &shadow);
             let centre = view.inverse().w_axis.truncate();
             assert!(centre.x.abs() <= SNAP / 2.0, "{x}: {centre}");
             assert!(centre.z.abs() <= SNAP / 2.0, "{x}: {centre}");

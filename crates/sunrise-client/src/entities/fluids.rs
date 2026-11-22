@@ -130,10 +130,9 @@ pub fn update_entity_fluids(
     (water_height, lava_height, eye_in_water)
 }
 impl ItemEntity {
-    /// `Entity.getEyeY` of an item (eye height 0.2125), where
-    /// `updateFluidHeightAndDoFluidPushing` reads the fluid.
+    /// `Entity.getEyeY` of an item, sampled by `EntityFluidInteraction.update`.
     pub fn fluid_eye_y(&self) -> f64 {
-        self.position.y + f64::from(0.2125f32)
+        self.position.y + Self::EYE_HEIGHT
     }
     /// The fluid push as the game runs it, for the unit tests.
     #[cfg(test)]
@@ -155,13 +154,14 @@ impl ExperienceOrb {
     /// resets its fall, and `Entity.baseTick` halves it in lava (`isInLava`
     /// is false on the orb's first tick, `Entity.firstTick`). Answers
     /// `isEyeInFluid(FluidTags.WATER)` for the eye the scan reads, `0.425`
-    /// above the orb's feet, and `isInWater`.
+    /// above the orb's feet, `isInWater`, and `isInLava` (before
+    /// `Entity.firstTick` is taken into account).
     pub fn update_fluids(
         &mut self,
         world: &World,
         fluids: &FluidResources,
         context: &LoopContext,
-    ) -> (bool, bool) {
+    ) -> (bool, bool, bool) {
         let (water, lava, eye) = update_entity_fluids(
             self.bounds(),
             self.position,
@@ -178,7 +178,7 @@ impl ExperienceOrb {
         if lava > 0.0 && self.ticks > 1 {
             self.fall_distance *= 0.5;
         }
-        (eye, water > 0.0)
+        (eye, water > 0.0, lava > 0.0)
     }
 }
 impl ArmorStand {
@@ -376,6 +376,7 @@ mod tests {
     /// while the pool itself, its edge on a solid floor and the air beside it
     /// have no current.
     #[test]
+    #[ignore = "daily"]
     fn fluid_flow_runs_away_from_a_pool_and_is_zero_in_still_water() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
@@ -425,6 +426,7 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "daily"]
     fn items_follow_flowing_water_but_still_water_has_no_horizontal_push() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
@@ -476,9 +478,8 @@ mod tests {
             position: at,
             previous: at,
             velocity: Vec3::ZERO,
-            on_ground: false,
+            ground: Default::default(),
             vertical_collision: false,
-            horizontal_collision: false,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -539,6 +540,7 @@ mod tests {
     /// orb in flowing water gains velocity along the flow and moves, while an orb
     /// in still source water does not gain horizontal velocity (#7442).
     #[test]
+    #[ignore = "daily"]
     fn experience_orbs_follow_flowing_water_but_still_water_has_no_horizontal_push() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
@@ -581,12 +583,13 @@ mod tests {
             velocity: Vec3::ZERO,
             value: 1,
             age: 0,
-            on_ground: false,
+            ground: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,
             air: 300,
             following: None,
+            fire_ticks: 0,
         };
         let mut still = orb.clone();
         assert!(still.tick(
@@ -599,6 +602,8 @@ mod tests {
             None,
             &fluids,
             crate::test_resources::server_loop_context(),
+            None,
+            sunrise_client::motion::dry_side(),
             &mut |_, _| {},
         ));
         assert_eq!(still.position.x, at.x);
@@ -615,6 +620,8 @@ mod tests {
             None,
             &fluids,
             crate::test_resources::server_loop_context(),
+            None,
+            sunrise_client::motion::dry_side(),
             &mut |_, _| {},
         ));
         // Current pushes the orb, then underwater and air drag each widen
@@ -634,6 +641,8 @@ mod tests {
                 None,
                 &fluids,
                 crate::test_resources::server_loop_context(),
+                None,
+                sunrise_client::motion::dry_side(),
                 &mut |_, _| {},
             );
         }
@@ -645,6 +654,7 @@ mod tests {
     /// surface, with its eye in the water, floats (`setUnderwaterMovement`)
     /// instead of falling.
     #[test]
+    #[ignore = "daily"]
     fn an_orb_whose_eye_dips_into_water_floats_with_its_feet_in_air() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
@@ -682,12 +692,13 @@ mod tests {
             velocity: Vec3::ZERO,
             value: 1,
             age: 0,
-            on_ground: false,
+            ground: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,
             air: 300,
             following: None,
+            fire_ticks: 0,
         };
         assert!(orb.tick(
             &world,
@@ -699,6 +710,8 @@ mod tests {
             None,
             &fluids,
             crate::test_resources::server_loop_context(),
+            None,
+            sunrise_client::motion::dry_side(),
             &mut |_, _| {},
         ));
         assert!(
@@ -713,6 +726,7 @@ mod tests {
     /// still source water does not. Vanilla's boat tick runs this before
     /// `floatBoat` scales the velocity, which is what `game::boats` does.
     #[test]
+    #[ignore = "daily"]
     fn a_boat_box_is_pushed_by_the_current_it_sits_in() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
@@ -778,6 +792,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn armor_stands_follow_flowing_water_but_markers_and_still_water_stay_in_place() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")

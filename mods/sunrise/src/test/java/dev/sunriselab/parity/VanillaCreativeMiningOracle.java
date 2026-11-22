@@ -21,8 +21,7 @@ public final class VanillaCreativeMiningOracle {
     public static void main(String[] args) throws Exception {
         net.minecraft.SharedConstants.tryDetectVersion();
         net.minecraft.server.Bootstrap.bootStrap();
-        var defaults = JsonParser.parseString(Files.readString(Path.of(args[0]).getParent()
-            .getParent().resolve("sunrise-client/26.3/items.json"))).getAsJsonObject();
+        var defaults = JsonParser.parseString(Files.readString(Path.of(args[0]).resolveSibling("items.json"))).getAsJsonObject();
         for (var entry : defaults.entrySet()) {
             var item = BuiltInRegistries.ITEM.getValue(Identifier.parse(entry.getKey()));
             var components = DataComponentMap.builder();

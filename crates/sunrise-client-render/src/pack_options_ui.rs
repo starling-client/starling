@@ -240,11 +240,7 @@ impl PackOptionsScreen {
                     0.0
                 };
                 Value::Slider {
-                    position: if span > 0.0 {
-                        ((n - min) / span) as f32
-                    } else {
-                        0.0
-                    },
+                    position: if span > 0.0 { (n - min) / span } else { 0.0 },
                     steps: (stops >= 1.0).then_some(stops as u32),
                     text: shown(number_text(n, step)),
                 }
@@ -369,13 +365,13 @@ impl shell::Screen for PackOptionsScreen {
         Vec::new()
     }
     /// A slider moves its entry to the step nearest it (`Configs::set` snaps it).
-    fn slide(&mut self, _s: &mut Settings, item: Item, position: f32) {
+    fn slide(&mut self, _s: &mut Settings, item: Item, position: f64) {
         let Item::Entry(i) = item else { return };
         let Some(id) = self.ids.get(usize::from(i)).cloned() else {
             return;
         };
         if let ConfigKind::Number { min, max, .. } = self.configs.entries()[&id].kind {
-            let value = min + f64::from(position.clamp(0.0, 1.0)) * (max - min);
+            let value = min + position.clamp(0.0, 1.0) * (max - min);
             self.set(&id, ConfigValue::Number(value));
         }
     }

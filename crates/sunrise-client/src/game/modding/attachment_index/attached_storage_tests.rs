@@ -3,11 +3,11 @@
 use super::*;
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_client::{chunk::Chunk, items::ItemStack};
 use mod_api::{
     AttachedEnergy, AttachedItems, AttachmentType, EnergyHandler, HostTransaction, ITEM_STACKS,
     ItemResource, ResourceHandler, ServerHost, StackList,
 };
+use sunrise_client::{chunk::Chunk, items::ItemStack};
 
 static ITEMS: AttachmentType<StackList<ItemResource>> = AttachmentType {
     namespace: "storage_test",
@@ -36,7 +36,7 @@ fn chunk_game(game: &mut Game<'_>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn attached_items_are_undone_by_an_abort_and_saved_by_their_codec() {
     with_game(|game| {
         chunk_game(game);
@@ -44,10 +44,11 @@ fn attached_items_are_undone_by_an_abort_and_saved_by_their_codec() {
         let slots = AttachedItems::new(&ITEMS, CHUNK, 9, 64, |_| true).unwrap();
         let host: &mut dyn ServerHost = game;
         let aborted =
-            host.transaction(|host, tx| Err::<(), _>(slots.insert(host, tx, 4, &dirt, 10)));
+            host.transaction(|host, tx| Err::<(), _>(slots.insert_at(host, tx, 4, &dirt, 10)));
         assert_eq!(aborted, Err(10));
         assert_eq!(ITEMS.has(host, CHUNK), Ok(false));
-        let went = host.transaction(|host, tx| Ok::<_, ()>(slots.insert(host, tx, 4, &dirt, 10)));
+        let went =
+            host.transaction(|host, tx| Ok::<_, ()>(slots.insert_at(host, tx, 4, &dirt, 10)));
         assert_eq!(went, Ok(10));
         assert_eq!(slots.amount(host, 4), 10);
         // What the save writes reads back to the same index.
@@ -60,7 +61,7 @@ fn attached_items_are_undone_by_an_abort_and_saved_by_their_codec() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn attached_energy_refuses_past_its_capacity() {
     with_game(|game| {
         chunk_game(game);

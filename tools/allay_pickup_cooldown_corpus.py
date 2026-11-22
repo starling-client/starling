@@ -11,6 +11,8 @@ The world is frozen; ticks are stepped. Allays with fixed UUIDs fly in a loaded 
 - `natural` (AI) gets a diamond from the real player (`mob_interact`), then a matching diamond item
   appears beside it; it fetches it and throws it to the player, which starts the cooldown.
 
+`DELIVERY_TICKS` more ticks finish that delivery, then `target-delivery-` rows read what its start tick cannot change: the player's inventory, the allay advancement, the picked-up stat, no diamond left, the allay's pocket and liked player.
+
 Label classes, declared before any native run: `target-` rows read the cooldown memory (`supplied`,
 `frozen`, `plain`) and the full Brain; `rand-` rows are recorded and reported, not compared: their tick depends
 on the natural delivery's flight (the `natural` allay's memory and pocket per tick); `diag-` rows are
@@ -29,6 +31,16 @@ ALLAYS = [('supplied', 1, 4.5, False, 30), ('frozen', 2, 7.5, True, 30), ('plain
           ('natural', 4, 13.5, False, None)]
 DIAMOND = uuid(9)
 TICKS = 80
+DELIVERY_TICKS = 120  # after TICKS: a natural delivery has landed and been picked up, wherever it started
+# The vanilla oracle's answers to the `target-delivery-` rows, by game version: (messages, results).
+DELIVERY_ORACLE = {'26.3': {
+    'target-delivery-player-inventory': (['Player has the following entity data: [{count: 1, Slot: 0b, id: "minecraft:diamond"}]'], [[True, 1]]),
+    'target-delivery-advancement': (['Test passed. Count: 1'], [[True, 1]]),
+    'target-delivery-picked-stat': (['Player has 1 [picked]'], [[True, 1]]),
+    'target-delivery-no-diamond-left': (['Test failed'], [[False, 0]]),
+    'target-delivery-allay-pocket': (['Allay has the following entity data: []'], [[True, 0]]),
+    'target-delivery-allay-liked': (['Allay has the following entity data: {value: [I; -1608632253, -450807400, -1786055591, -2146546415]}'], [[True, 1]]),
+}}
 
 
 def allay_pickup_cooldown(full=False):
@@ -71,6 +83,7 @@ def allay_pickup_cooldown(full=False):
             f'/execute as {uuid(n)} if entity @s[nbt=!{{NoAI:1b}}]', f'{name}-ai-mode', 1)
         cmd(f'/data get entity {uuid(n)} Health', f'{name}-health', admission=False)
     cmd('/scoreboard objectives add ap dummy', 'objective', 1)
+    cmd('/scoreboard objectives add picked minecraft.picked_up:minecraft.diamond', 'objective-picked', 2)
     cmd('/execute store result score #start ap run time query gametime', 'diag-clock-start',
         admission=False, diagnostic=True)
 
@@ -101,4 +114,20 @@ def allay_pickup_cooldown(full=False):
     cmd('/execute store result score #now ap run time query gametime', 'diag-clock-now', admission=False,
         diagnostic=True)
     cmd('/scoreboard players operation #now ap -= #start ap', 'clock', TICKS)
+    # `player_loop` runs the player's own tick too, where it picks the thrown diamond up; `tick` alone does not.
+    cmd(f'/tick step {DELIVERY_TICKS}', 'step-delivery', admission=False)
+    # Its chat (the advancement) lands on the pickup's tick, which the delivery's random start decides: reported.
+    ops.append({'op': 'player_loop', 'n': DELIVERY_TICKS, 'label': 'rand-delivery-loop', 'admission': False})
+    cmd('/execute store result score #end ap run time query gametime', 'diag-clock-end', admission=False,
+        diagnostic=True)
+    cmd('/scoreboard players operation #end ap -= #start ap', 'clock-delivery', TICKS + DELIVERY_TICKS)
+    cmd('/data get entity @s Inventory', 'target-delivery-player-inventory', admission=False)
+    cmd('/execute if entity @s[advancements={minecraft:husbandry/allay_deliver_item_to_player=true}]',
+        'target-delivery-advancement', admission=False)
+    cmd('/scoreboard players get @s picked', 'target-delivery-picked-stat', admission=False)
+    cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:diamond"}}]', 'target-delivery-no-diamond-left',
+        admission=False)
+    cmd(f'/data get entity {uuid(4)} Inventory', 'target-delivery-allay-pocket', admission=False)
+    cmd(f'/data get entity {uuid(4)} Brain.memories."minecraft:liked_player"', 'target-delivery-allay-liked',
+        admission=False)
     return ops

@@ -5,12 +5,17 @@
 //! (`ItemEnv`) and the special renderers' registries to the game.
 use super::api_values::TryIntoApi;
 use super::{Dim, Game, entity_culling::EntityCullDecision};
+use serde_json::Value;
+use std::{cell::RefCell, collections::HashMap};
 use sunrise_assets::item_model::{
-    Components, ComponentsView, DisplayContext, FluidAppearance, GlobalPos, ItemEnv, LevelState,
-    OwnerState, StackView,
+    Components, ComponentsView, DisplayContext, FluidAppearance, GlobalPos, ItemEnv,
+    LayerTransform, LevelState, ModelChoice, OwnerState, RegisteredItemModel,
+    RegisteredRangeProperty, RegisteredSelectKey, RegisteredSelectProperty, RegisteredTintSource,
+    StackView,
 };
 use sunrise_client::{
     block_entity_render::{diffuse_lights, vertex_light},
+    camera::joml,
     cit::{Hand as CitHand, Kind as CitKind},
     graphics::EntityCullingMode,
     hud::{HudBatch, Rect},
@@ -19,8 +24,6 @@ use sunrise_client::{
     mesher::Vertex,
 };
 use sunrise_core::geometry::{Aabb, Vec3};
-use serde_json::Value;
-use std::{cell::RefCell, collections::HashMap};
 
 struct ItemEntityDraw<'a> {
     item: &'a sunrise_client::entities::ItemEntity,
@@ -29,11 +32,9 @@ struct ItemEntityDraw<'a> {
     entity: bool,
 }
 
-/// The game's painter for the HUD kit's icons (`hud_kit::icon`): items by their models, the
-/// player's face from `face`, their skin's texture.
+/// The game's painter for the HUD kit's icons (`hud_kit::icon`): items by their models.
 pub(super) struct IconPainter<'g, 'a> {
     pub(super) game: &'g Game<'a>,
-    pub(super) face: Option<&'g str>,
 }
 
 impl sunrise_client::hud_kit::icon::IconPainter for IconPainter<'_, '_> {
@@ -45,25 +46,6 @@ impl sunrise_client::hud_kit::icon::IconPainter for IconPainter<'_, '_> {
         batch.scale_since(start, x, y, scale, scale);
         batch.vertices.len() > start
     }
-    fn face(&self, batch: &mut HudBatch, [x, y, size]: [f32; 3]) -> bool {
-        let Some(skin) = self.face else {
-            return false;
-        };
-        let mut draws = Vec::new();
-        // `PlayerFaceExtractor`: the face, then its hat layer.
-        sunrise_client::tab_list::face(
-            &mut draws,
-            skin,
-            x as i32,
-            y as i32,
-            size as i32,
-            true,
-            false,
-            u32::MAX,
-        );
-        sunrise_client::hud_layout::paint(batch, &self.game.gui.atlas, &draws);
-        true
-    }
 }
 
 /// The game's answers to what the resolver cannot read from the stack.
@@ -71,12 +53,38 @@ pub(super) struct Env<'a, 'g> {
     game: &'a Game<'g>,
 }
 impl Game<'_> {
-    /// Before a frame is drawn: the model draws prepared for the last one are dropped, and so are
-    /// the special model renderers' answers it didn't draw.
+    /// Before a frame is drawn: drop the model draws prepared for the last one.
     pub(super) fn begin_frame_draws(&self) {
         self.prepared_model_draws.borrow_mut().clear();
-        super::native_special_renderers::begin_frame(std::ptr::from_ref(self) as usize);
     }
+}
+
+impl item_render::ItemDrawEnv for Env<'_, '_> {
+    fn special_model_input(
+        &self,
+        stack: &StackView,
+        context: &sunrise_assets::item_model::Context<'_>,
+    ) -> Option<item_render::SpecialModelInput<'_>> {
+        super::native_special_renderers::draw_input(self.game, stack, context)
+    }
+
+    fn special_model_stack(
+        &self,
+        stack: &mod_api::ItemStack,
+        display: mod_api::ItemDisplayContext,
+    ) -> Option<(StackView, DisplayContext)> {
+        super::native_special_renderers::nested_stack(stack, display)
+    }
+}
+
+fn item_model_context(ctx: &sunrise_assets::item_model::Context<'_>) -> mod_api::ItemModelContext {
+    let Ok(display) = ctx.display.try_into_api();
+    mod_api::ItemModelContext::new(
+        display,
+        ctx.owner.and_then(|owner| owner.try_into_api().ok()),
+        ctx.level.and_then(|level| level.try_into_api().ok()),
+        ctx.seed,
+    )
 }
 
 impl ItemEnv for Env<'_, '_> {
@@ -96,100 +104,110 @@ impl ItemEnv for Env<'_, '_> {
         );
         value
     }
-    fn item_model_range_property(&self, property: &str, stack: &StackView) -> f32 {
-        if !mod_api::__private::listened(mod_api::HookId::ItemModelRangeProperty) {
-            return 0.0;
-        }
-        let Ok(snapshot) = stack.try_into_api() else {
-            return 0.0;
-        };
-        let mut value = 0.0;
-        self.game.native_item_model_range_property(
-            property,
-            &snapshot,
-            stack.bundle_selected,
-            &mut value,
-        );
-        value
-    }
-    fn item_model_select_property(&self, property: &str, stack: &StackView) -> Option<String> {
-        if !mod_api::__private::listened(mod_api::HookId::ItemModelSelectProperty) {
-            return None;
-        }
-        let Ok(snapshot) = stack.try_into_api() else {
-            return None;
-        };
-        let mut value = None;
-        self.game.native_item_model_select_property(
-            property,
-            &snapshot,
-            stack.bundle_selected,
-            &mut value,
-        );
-        value
-    }
-    fn item_tint_source(
+    fn item_model_range_property(
         &self,
-        source: &str,
-        config: &sunrise_core::nbt::Tag,
+        property: &RegisteredRangeProperty,
         stack: &StackView,
-    ) -> i32 {
-        if !mod_api::__private::listened(mod_api::HookId::ItemTintSource) {
+        ctx: &sunrise_assets::item_model::Context<'_>,
+    ) -> f32 {
+        let Some(bound) = property.0.downcast_ref::<item_render::BoundRangeProperty>() else {
+            return 0.0;
+        };
+        if !bound.eval.owner().is_enabled() {
+            return 0.0;
+        }
+        let Ok(snapshot) = stack.try_into_api() else {
+            return 0.0;
+        };
+        let context = item_model_context(ctx);
+        let input =
+            mod_api::ItemModelPropertyInput::new(&snapshot, stack.bundle_selected, &context);
+        bound
+            .eval
+            .owner()
+            .call(
+                "item model range property",
+                "item_model_range_property",
+                || (bound.eval.value())(self.game, &input),
+            )
+            .unwrap_or(0.0)
+    }
+    fn item_model_select_property(
+        &self,
+        property: &RegisteredSelectProperty,
+        stack: &StackView,
+        ctx: &sunrise_assets::item_model::Context<'_>,
+        keys: &mut dyn Iterator<Item = (usize, &RegisteredSelectKey)>,
+    ) -> Option<usize> {
+        let bound = property
+            .payload
+            .downcast_ref::<item_render::BoundSelectProperty>()?;
+        if !bound.eval.owner().is_enabled() {
+            return None;
+        }
+        let Ok(snapshot) = stack.try_into_api() else {
+            return None;
+        };
+        let context = item_model_context(ctx);
+        let input =
+            mod_api::ItemModelPropertyInput::new(&snapshot, stack.bundle_selected, &context);
+        bound.select(self.game, &input, keys)
+    }
+    fn item_tint_source(&self, source: &RegisteredTintSource, stack: &StackView) -> i32 {
+        let Some(bound) = source.0.downcast_ref::<item_render::BoundTintSource>() else {
+            return -1;
+        };
+        if !bound.eval.owner().is_enabled() {
             return -1;
         }
         let Ok(snapshot) = stack.try_into_api() else {
             return -1;
         };
-        let mut color = u32::MAX;
-        self.game.native_item_tint_source(
-            source,
-            config,
-            &snapshot,
-            stack.bundle_selected,
-            &mut color,
-        );
-        color as i32
+        let input = mod_api::ItemTintInput::new(&snapshot, stack.bundle_selected);
+        bound
+            .eval
+            .owner()
+            .call("item tint source", "item_tint_source", || {
+                (bound.eval.value())(self.game, &input)
+            })
+            .map_or(-1, |color| color as i32)
     }
     fn item_model_update(
         &self,
-        kind: &str,
-        config: &sunrise_core::nbt::Tag,
+        model: &RegisteredItemModel,
         stack: &StackView,
-        ctx: &sunrise_assets::item_model::Context,
-        models: &mut Vec<String>,
+        ctx: &sunrise_assets::item_model::Context<'_>,
+        models: &mut Vec<ModelChoice>,
     ) {
-        if !mod_api::__private::listened(mod_api::HookId::ItemModelUpdate) {
+        let Some(bound) = model.0.downcast_ref::<item_render::BoundItemModel>() else {
+            return;
+        };
+        if !bound.eval.owner().is_enabled() {
             return;
         }
         let Ok(snapshot) = stack.try_into_api() else {
             return;
         };
-        let Ok(display) = ctx.display.try_into_api();
-        let owner = ctx.owner.and_then(|owner| owner.try_into_api().ok());
-        let level = ctx.level.and_then(|level| level.try_into_api().ok());
-        self.game
-            .native_item_model_update(mod_api::__private::ItemModelUpdateCall {
-                kind,
-                config,
-                stack: &snapshot,
-                bundle_selected: stack.bundle_selected,
-                display,
-                owner: owner.as_ref(),
-                level: level.as_ref(),
-                seed: ctx.seed,
-                models,
-            });
-    }
-    fn special_model_parts(
-        &self,
-        slot: sunrise_assets::item_model::SpecialModelSlot,
-        base: &str,
-        config: &std::sync::Arc<sunrise_core::nbt::Tag>,
-        stack: &StackView,
-    ) -> Option<sunrise_assets::item_model::PreparedParts> {
-        super::native_special_renderers::parts(self.game, slot, config, stack, |parts| {
-            self.game.pack.item_renderer.prepare_parts(base, parts)
-        })
+        let context = item_model_context(ctx);
+        let input = mod_api::ItemModelUpdateInput::new(&snapshot, stack.bundle_selected, &context);
+        let mut layers = Vec::new();
+        if bound
+            .eval
+            .owner()
+            .call("item model", "item_model_update", || {
+                (bound.eval.value())(self.game, &input, &mut layers);
+            })
+            .is_err()
+        {
+            return;
+        }
+        models.extend(layers.into_iter().map(|layer| ModelChoice {
+            model: layer.model,
+            transform: match layer.item_transform {
+                mod_api::ItemTransformMode::None => LayerTransform::None,
+                _ => LayerTransform::Model,
+            },
+        }));
     }
     fn stack_fluid(&self, stack: &StackView) -> Option<&str> {
         // Vanilla's items keep vanilla's closed set; only a mod's own item asks its parts.
@@ -375,6 +393,36 @@ impl SpecialHost for Host<'_> {
     }
 }
 
+/// One item a block entity renderer hands to the item renderer
+/// (`ItemStackRenderState.submit`): the stack it resolved, as
+/// `ItemModelResolver.updateForTopItem` was asked for it, under `pose`
+/// (camera-relative) at `light` (packed lightmap coordinates).
+/// `stack`, `display` and `seed` are what the parity test compares with vanilla's renderers;
+/// drawing reads only the resolved `state`.
+pub(super) struct BlockItemDraw<'a> {
+    #[cfg(test)]
+    pub(super) stack: &'a ItemStack,
+    #[cfg(test)]
+    pub(super) display: DisplayContext,
+    #[cfg(test)]
+    pub(super) seed: i32,
+    pub(super) state: &'a ItemRenderState,
+    pub(super) pose: glam::Mat4,
+    pub(super) light: u32,
+}
+
+/// The pose `LevelRenderer` gives a block entity's renderer: a `PoseStack`
+/// translated to the block from the camera (`translate(double...)`, narrowed).
+pub(super) fn block_entity_pose(key: (i32, i32, i32), camera: glam::DVec3) -> joml::Mat4 {
+    let mut pose = joml::Mat4::IDENTITY;
+    pose.translate(
+        (f64::from(key.0) - camera.x) as f32,
+        (f64::from(key.1) - camera.y) as f32,
+        (f64::from(key.2) - camera.z) as f32,
+    );
+    pose
+}
+
 /// `ItemOwner` of an entity holding or showing an item.
 pub(super) fn owner_at(position: [f64; 3], yaw: f32, entity_type: &str) -> OwnerState {
     OwnerState {
@@ -457,7 +505,11 @@ impl Game<'_> {
             sun_angle: sky.sun_angle,
             moon_phase: (self.world.day_time.div_euclid(24_000)).rem_euclid(8) as i32,
             respawn: self.spawn.map(|s| GlobalPos {
-                dimension: "minecraft:overworld".to_owned(),
+                dimension: self
+                    .level
+                    .world_spawn_dimension
+                    .clone()
+                    .unwrap_or_else(|| "minecraft:overworld".to_owned()),
                 pos: [s.x.floor() as i32, s.y.floor() as i32, s.z.floor() as i32],
             }),
             runs_normally: true,
@@ -531,7 +583,40 @@ impl Game<'_> {
         seed: i32,
         hand: CitHand,
     ) -> ItemRenderState {
-        let level = self.item_level();
+        self.resolve_item_in_level(stack, display, owner, Some(&self.item_level()), seed, hand)
+    }
+    /// Tint only the resolved draw, never the model shared by other holders or contexts.
+    pub(super) fn tint_held_item(
+        &self,
+        state: &mut ItemRenderState,
+        stack: &ItemStack,
+        entity_id: u32,
+        hand: mod_api::Hand,
+        partial_tick: f32,
+    ) {
+        // Resolving an empty stack produces no layers.
+        if state.is_empty()
+            || !mod_api::__private::item_listens(mod_api::HookId::HeldItemTint, &stack.item)
+        {
+            return;
+        }
+        let mut tint = None;
+        self.native_held_item_tint(entity_id, hand, stack, partial_tick, &mut tint);
+        if let Some(rgb) = tint {
+            state.set_held_tint(rgb);
+        }
+    }
+    /// [`Self::resolve_item_in_hand`] with the level the model reads given: `None` for a
+    /// resolution that has no level, whose `context_dimension` selects take their fallback.
+    pub(super) fn resolve_item_in_level(
+        &self,
+        stack: &ItemStack,
+        display: DisplayContext,
+        owner: Option<&OwnerState>,
+        level: Option<&LevelState>,
+        seed: i32,
+        hand: CitHand,
+    ) -> ItemRenderState {
         let renderer = &self.pack.item_renderer;
         let (rule, glint) = renderer.cit.as_ref().map_or((None, None), |cit| {
             let item_max = self
@@ -550,7 +635,7 @@ impl Game<'_> {
             &item_render::stack_view(stack),
             display,
             owner,
-            Some(&level),
+            level,
             seed,
             &self.item_env(),
             rule,
@@ -595,6 +680,29 @@ impl Game<'_> {
             self.glint_frame.speed,
             self.glint_frame.alpha,
         );
+    }
+    /// An item under `pose` (GUI pixels), cut by no slot and with a depth of its own: what
+    /// `DrawContext::model_3d` draws a turned item with.
+    pub(super) fn draw_item_model_posed(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        pose: glam::Mat4,
+    ) -> bool {
+        let owner = self.player_owner(Some(stack));
+        let state = self.resolve_item(stack, DisplayContext::Gui, Some(&owner), 0);
+        let host = self.item_host();
+        item_render::gui::draw_posed(
+            &state,
+            &item_render::gui::GuiItemEnv {
+                renderer: &self.pack.item_renderer,
+                sprites: &self.gui.atlas.sprites,
+                host: &host,
+            },
+            batch,
+            pose,
+            self.glint_frame,
+        )
     }
     /// The glint clock, options and sprite for this frame: read once per
     /// frame, not per item (`GameRenderer.extractOptions`).
@@ -751,8 +859,9 @@ impl Game<'_> {
         camera: glam::DVec3,
         alpha: f64,
         out: &mut Vec<Vertex>,
+        run: std::ops::Range<usize>,
     ) {
-        let live = self.dropped.iter().map(|item| {
+        let live = self.dropped[run].iter().map(|item| {
             let (p, q) = (item.previous, item.position);
             let at = [
                 p.x + (q.x - p.x) * alpha,
@@ -870,7 +979,7 @@ impl Game<'_> {
                     q.z.floor() as i32,
                 ))
             };
-            let seed = i64::from(self.pack.item_renderer.item_id(&item.stack.item))
+            let seed = i64::from(self.item_number(&item.stack.item).unwrap_or(0))
                 + i64::from(item.stack.damage);
             let copies = item_render::cluster_poses_with_depth(
                 pose,
@@ -964,10 +1073,41 @@ mod tests {
     use mod_api::ClientHost;
     use serde_json::json;
 
+    /// `ClientLevel.setRespawnData`: the client keeps the packet's level beside its position,
+    /// so the spawn compass's target names the level the world spawn is in.
+    #[test]
+    #[ignore = "daily"]
+    fn the_spawn_compass_target_keeps_the_world_spawn_level() {
+        use sunrise_protocol::{
+            connection::Pipe,
+            packets::play::{self, Clientbound as C},
+        };
+        super::super::native_entity_refs::tests::with_client_game(|game| {
+            let (client, _server) = Pipe::pair();
+            game.connect_local(client, "spawn-compass").unwrap();
+            for (dimension, pos) in [
+                ("minecraft:the_nether", [3, 40, 9]),
+                ("minecraft:overworld", [-7, 90, 12]),
+            ] {
+                game.handle_packet(C::SetDefaultSpawnPosition(play::SetDefaultSpawnPosition {
+                    pos: play::GlobalPos {
+                        dimension: dimension.into(),
+                        pos,
+                    },
+                    yaw: 0.0,
+                    pitch: 0.0,
+                }))
+                .unwrap();
+                let respawn = game.level_state_now("minecraft:overworld").respawn.unwrap();
+                assert_eq!((respawn.dimension.as_str(), respawn.pos), (dimension, pos));
+            }
+        });
+    }
+
     /// The resolver skips a mod that leaves `item_model_property` at its default;
     /// a mod that implements it is asked on every resolve.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn item_model_property_is_asked_only_while_a_mod_answers() {
         use mod_api::{self, HookId, Hooks, ItemModelPropertyEvent, ModEntry};
         use std::sync::{
@@ -1026,16 +1166,13 @@ mod tests {
             _: &mod_api::RegistrationContext,
             event: &mut mod_api::RegisterRangeSelectItemModelPropertyEvent<'_>,
         ) {
-            event.properties.push("example:fill".into());
-        }
-        fn item_model_range_property(
-            &self,
-            _: &dyn ClientHost,
-            event: &mut mod_api::ItemModelRangePropertyEvent<'_>,
-        ) {
-            if event.property == "example:fill" {
-                event.value = event.stack.count() as f32 / 64.0;
-            }
+            event.register(mod_api::Identifier::parse("example:fill").unwrap(), |_| {
+                Ok(
+                    |_: &dyn ClientHost, input: &mod_api::ItemModelPropertyInput<'_>| {
+                        input.stack.count() as f32 / 64.0
+                    },
+                )
+            });
         }
     }
 
@@ -1050,28 +1187,69 @@ mod tests {
                 &mod_api::RegistrationContext::new(),
                 &mut properties,
             );
-            assert_eq!(properties, ["example:fill"]);
+            let (_, kept) = item_render::bind_range_property_factories(properties);
+            assert_eq!(kept, ["example:fill"]);
         });
     }
 
     /// The resolver reads a mod's number for its property, 0 for another's or with no mod.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn item_model_range_property_reads_the_mods_number() {
+        use mod_api::__private::game::*;
+        use sunrise_assets::item_model::Context;
         let stack = StackView::new("minecraft:stick", 16);
+        let ctx = Context {
+            display: DisplayContext::Gui,
+            owner: None,
+            level: None,
+            seed: 0,
+        };
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new("fill", Box::new(Fill))].into();
         mod_platform::testing::with_mods(mods, || {
+            let mut properties = Vec::new();
+            Game::native_register_range_select_item_model_property(
+                &mod_api::RegistrationContext::new(),
+                &mut properties,
+            );
+            let (factories, _) = item_render::bind_range_property_factories(properties);
+            let bound = item_render::decode_range_property(
+                Some(&factories),
+                "example:fill",
+                &serde_json::Map::new(),
+            )
+            .unwrap()
+            .expect("registered range property");
+            assert!(
+                item_render::decode_range_property(
+                    Some(&factories),
+                    "other:fill",
+                    &serde_json::Map::new(),
+                )
+                .unwrap()
+                .is_none()
+            );
             super::super::native_entity_refs::tests::with_game(|game| {
                 let env = Env { game };
-                assert_eq!(env.item_model_range_property("example:fill", &stack), 0.25);
-                assert_eq!(env.item_model_range_property("other:fill", &stack), 0.0);
+                assert_eq!(env.item_model_range_property(&bound, &stack, &ctx), 0.25);
             });
         });
         mod_platform::testing::with_mods(Vec::new().into(), || {
-            super::super::native_entity_refs::tests::with_game(|game| {
-                let env = Env { game };
-                assert_eq!(env.item_model_range_property("example:fill", &stack), 0.0);
-            });
+            let mut properties = Vec::new();
+            Game::native_register_range_select_item_model_property(
+                &mod_api::RegistrationContext::new(),
+                &mut properties,
+            );
+            let (factories, _) = item_render::bind_range_property_factories(properties);
+            assert!(
+                item_render::decode_range_property(
+                    Some(&factories),
+                    "example:fill",
+                    &serde_json::Map::new(),
+                )
+                .unwrap()
+                .is_none()
+            );
         });
     }
 
@@ -1083,23 +1261,24 @@ mod tests {
             _: &mod_api::RegistrationContext,
             event: &mut mod_api::RegisterSelectItemModelPropertyEvent<'_>,
         ) {
-            event.properties.push("example:mode".into());
-        }
-        fn item_model_select_property(
-            &self,
-            _: &dyn ClientHost,
-            event: &mut mod_api::ItemModelSelectPropertyEvent<'_>,
-        ) {
-            if event.property == "example:mode" {
-                *event.value = Some(
-                    if event.stack.count() > 1 {
-                        "build"
-                    } else {
-                        "dig"
-                    }
-                    .into(),
-                );
-            }
+            event.register(mod_api::Identifier::parse("example:mode").unwrap(), |_| {
+                Ok((
+                    |when: &sunrise_core::nbt::Tag| match when {
+                        sunrise_core::nbt::Tag::String(s) => Ok(s.clone()),
+                        _ => Err("expected string case".into()),
+                    },
+                    |_: &dyn mod_api::ClientHost, input: &mod_api::ItemModelPropertyInput<'_>| {
+                        Some(
+                            if input.stack.count() > 1 {
+                                "build"
+                            } else {
+                                "dig"
+                            }
+                            .into(),
+                        )
+                    },
+                ))
+            });
         }
     }
 
@@ -1114,39 +1293,80 @@ mod tests {
                 &mod_api::RegistrationContext::new(),
                 &mut properties,
             );
-            assert_eq!(properties, ["example:mode"]);
+            let (_, kept) = item_render::bind_select_property_factories(properties);
+            assert_eq!(kept, ["example:mode"]);
         });
     }
 
     /// The resolver reads a mod's value for its property, none for another's or with no mod.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn item_model_select_property_reads_the_mods_value() {
+        use mod_api::__private::game::*;
+        use sunrise_assets::item_model::Context;
+        let ctx = Context {
+            display: DisplayContext::Gui,
+            owner: None,
+            level: None,
+            seed: 0,
+        };
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new("mode", Box::new(Mode))].into();
         mod_platform::testing::with_mods(mods, || {
+            let mut properties = Vec::new();
+            Game::native_register_select_item_model_property(
+                &mod_api::RegistrationContext::new(),
+                &mut properties,
+            );
+            let (factories, _) = item_render::bind_select_property_factories(properties);
+            let bound = item_render::decode_select_property(
+                Some(&factories),
+                "example:mode",
+                &serde_json::Map::new(),
+            )
+            .unwrap()
+            .expect("registered select property");
+            assert!(
+                item_render::decode_select_property(
+                    Some(&factories),
+                    "other:mode",
+                    &serde_json::Map::new(),
+                )
+                .unwrap()
+                .is_none()
+            );
             super::super::native_entity_refs::tests::with_game(|game| {
                 let env = Env { game };
                 let one = StackView::new("minecraft:stick", 1);
                 let two = StackView::new("minecraft:stick", 2);
+                let dig = bound.decode_case(&serde_json::json!("dig")).unwrap();
+                let build = bound.decode_case(&serde_json::json!("build")).unwrap();
+                let keys = [(0, &dig), (1, &build)];
                 assert_eq!(
-                    env.item_model_select_property("example:mode", &one)
-                        .as_deref(),
-                    Some("dig")
+                    env.item_model_select_property(&bound, &one, &ctx, &mut keys.into_iter()),
+                    Some(0)
                 );
                 assert_eq!(
-                    env.item_model_select_property("example:mode", &two)
-                        .as_deref(),
-                    Some("build")
+                    env.item_model_select_property(&bound, &two, &ctx, &mut keys.into_iter()),
+                    Some(1)
                 );
-                assert_eq!(env.item_model_select_property("other:mode", &one), None);
             });
         });
         mod_platform::testing::with_mods(Vec::new().into(), || {
-            super::super::native_entity_refs::tests::with_game(|game| {
-                let env = Env { game };
-                let one = StackView::new("minecraft:stick", 1);
-                assert_eq!(env.item_model_select_property("example:mode", &one), None);
-            });
+            let mut properties = Vec::new();
+            Game::native_register_select_item_model_property(
+                &mod_api::RegistrationContext::new(),
+                &mut properties,
+            );
+            let (factories, _) = item_render::bind_select_property_factories(properties);
+            assert!(
+                item_render::decode_select_property(
+                    Some(&factories),
+                    "example:mode",
+                    &serde_json::Map::new(),
+                )
+                .unwrap()
+                .is_none()
+            );
         });
     }
 
@@ -1188,24 +1408,24 @@ mod tests {
             _: &mod_api::RegistrationContext,
             event: &mut mod_api::RegisterItemTintSourcesEvent<'_>,
         ) {
-            event.sources.push("example:charge".into());
-        }
-        fn item_tint_source(
-            &self,
-            _: &dyn ClientHost,
-            event: &mut mod_api::ItemTintSourceEvent<'_>,
-        ) {
-            if event.source == "example:charge" {
-                event.color = match event.stack.count() {
-                    1 => {
-                        (match event.config.get("low") {
-                            Some(sunrise_core::nbt::Tag::Long(v)) => *v,
-                            _ => 0,
-                        }) as u32
-                    }
-                    _ => 0xFF11_2233,
-                };
-            }
+            event.register(
+                mod_api::Identifier::parse("example:charge").unwrap(),
+                |config| {
+                    let low = match config.get("low") {
+                        Some(sunrise_core::nbt::Tag::Long(v)) => *v as u32,
+                        _ => 0,
+                    };
+                    Ok(
+                        move |_: &dyn ClientHost, input: &mod_api::ItemTintInput<'_>| match input
+                            .stack
+                            .count()
+                        {
+                            1 => low,
+                            _ => 0xFF11_2233,
+                        },
+                    )
+                },
+            );
         }
     }
 
@@ -1220,33 +1440,47 @@ mod tests {
             _: &mod_api::RegistrationContext,
             event: &mut mod_api::RegisterItemModelsEvent<'_>,
         ) {
-            event.models.push("cellmod:cell".into());
-        }
-        fn item_model_update(
-            &self,
-            _: &dyn ClientHost,
-            event: &mut mod_api::ItemModelUpdateEvent<'_>,
-        ) {
-            if event.kind != "cellmod:cell" {
-                return;
-            }
-            let place = match event.display {
-                mod_api::ItemDisplayContext::Gui => "gui",
-                _ => "ground",
-            };
-            let fill = if event.stack.count() > 1 {
-                "full"
-            } else {
-                "empty"
-            };
-            event.models.push(format!("{place}/{fill}"));
-            event.models.push(format!("seed {}", event.seed));
-            if let Some(owner) = event.owner {
-                event.models.push(format!("owner {}", owner.entity_type));
-            }
-            if let Some(level) = event.level {
-                event.models.push(format!("level {}", level.dimension));
-            }
+            event.register(
+                mod_api::Identifier::parse("cellmod:cell").unwrap(),
+                |_, children| {
+                    children.add_named_models()?;
+                    Ok(
+                        |_: &dyn ClientHost,
+                         input: &mod_api::ItemModelUpdateInput<'_>,
+                         layers: &mut Vec<mod_api::ItemModelLayer>| {
+                            let place = match input.context.display {
+                                mod_api::ItemDisplayContext::Gui => "gui",
+                                _ => "ground",
+                            };
+                            let fill = if input.stack.count() > 1 {
+                                "full"
+                            } else {
+                                "empty"
+                            };
+                            layers.push(mod_api::ItemModelLayer::new(format!("{place}/{fill}")));
+                            layers.push(
+                                mod_api::ItemModelLayer::new(format!(
+                                    "seed {}",
+                                    input.context.seed
+                                ))
+                                .with_item_transform(mod_api::ItemTransformMode::None),
+                            );
+                            if let Some(owner) = &input.context.owner {
+                                layers.push(mod_api::ItemModelLayer::new(format!(
+                                    "owner {}",
+                                    owner.entity_type
+                                )));
+                            }
+                            if let Some(level) = &input.context.level {
+                                layers.push(mod_api::ItemModelLayer::new(format!(
+                                    "level {}",
+                                    level.dimension
+                                )));
+                            }
+                        },
+                    )
+                },
+            );
         }
     }
 
@@ -1254,13 +1488,14 @@ mod tests {
     /// `ItemModel.update` reads: the stack, where the item is drawn, its owner and level when it
     /// has them, and the seed. Another type, or no mod, draws nothing.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_mods_item_model_type_answers_with_the_draws_context() {
-        use sunrise_assets::item_model::{Context, DisplayContext, LevelState, OwnerState};
         use mod_api::__private::game::*;
-        let config =
-            sunrise_core::json_nbt::json_to_tag(&serde_json::json!({"type": "cellmod:cell"}))
-                .unwrap();
+        use sunrise_assets::item_model::{Context, DisplayContext, LevelState, OwnerState};
+        let fields = serde_json::json!({"type": "cellmod:cell"})
+            .as_object()
+            .cloned()
+            .unwrap();
         let owner = OwnerState {
             entity_type: "minecraft:zombie".into(),
             ..OwnerState::default()
@@ -1281,44 +1516,76 @@ mod tests {
             level: Some(&level),
             seed: 42,
         };
-        let drawn = |env: &Env<'_, '_>, kind: &str, count: i32, ctx: &Context<'_>| {
-            let mut models = Vec::new();
-            env.item_model_update(
-                kind,
-                &config,
-                &StackView::new("minecraft:stick", count),
-                ctx,
-                &mut models,
-            );
-            models
-        };
+        let drawn =
+            |env: &Env<'_, '_>, model: &RegisteredItemModel, count: i32, ctx: &Context<'_>| {
+                let mut models = Vec::new();
+                env.item_model_update(
+                    model,
+                    &StackView::new("minecraft:stick", count),
+                    ctx,
+                    &mut models,
+                );
+                models
+                    .into_iter()
+                    .map(|choice| (choice.model, choice.transform == LayerTransform::None))
+                    .collect::<Vec<_>>()
+            };
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new("cellmod", Box::new(Cell))].into();
         mod_platform::testing::with_mods(mods, || {
             let mut types = Vec::new();
             Game::native_register_item_models(&mod_api::RegistrationContext::new(), &mut types);
-            assert_eq!(types, ["cellmod:cell"]);
+            let (factories, kept) = item_render::bind_item_model_factories(types);
+            assert_eq!(kept, ["cellmod:cell"]);
+            let bound = item_render::decode_item_model(
+                Some(&factories),
+                "cellmod:cell",
+                &fields,
+                &sunrise_assets::item_model::ItemModelNode::decode,
+            )
+            .unwrap()
+            .expect("registered item model")
+            .model;
+            assert!(
+                item_render::decode_item_model(
+                    Some(&factories),
+                    "othermod:cell",
+                    &fields,
+                    &sunrise_assets::item_model::ItemModelNode::decode,
+                )
+                .unwrap()
+                .is_none()
+            );
             super::super::native_entity_refs::tests::with_game(|game| {
                 let env = Env { game };
                 assert_eq!(
-                    drawn(&env, "cellmod:cell", 1, &in_screen),
-                    ["gui/empty", "seed 7"]
+                    drawn(&env, &bound, 1, &in_screen),
+                    [("gui/empty".to_owned(), false), ("seed 7".to_owned(), true)]
                 );
                 assert_eq!(
-                    drawn(&env, "cellmod:cell", 2, &on_ground),
+                    drawn(&env, &bound, 2, &on_ground),
                     [
-                        "ground/full",
-                        "seed 42",
-                        "owner minecraft:zombie",
-                        "level minecraft:the_nether"
+                        ("ground/full".to_owned(), false),
+                        ("seed 42".to_owned(), true),
+                        ("owner minecraft:zombie".to_owned(), false),
+                        ("level minecraft:the_nether".to_owned(), false)
                     ]
                 );
-                assert!(drawn(&env, "othermod:cell", 2, &on_ground).is_empty());
             });
         });
         mod_platform::testing::with_mods(Vec::new().into(), || {
-            super::super::native_entity_refs::tests::with_game(|game| {
-                assert!(drawn(&Env { game }, "cellmod:cell", 2, &on_ground).is_empty());
-            });
+            let mut types = Vec::new();
+            Game::native_register_item_models(&mod_api::RegistrationContext::new(), &mut types);
+            let (factories, _) = item_render::bind_item_model_factories(types);
+            assert!(
+                item_render::decode_item_model(
+                    Some(&factories),
+                    "cellmod:cell",
+                    &fields,
+                    &sunrise_assets::item_model::ItemModelNode::decode,
+                )
+                .unwrap()
+                .is_none()
+            );
         });
     }
 
@@ -1333,35 +1600,58 @@ mod tests {
                 &mod_api::RegistrationContext::new(),
                 &mut sources,
             );
-            assert_eq!(sources, ["example:charge"]);
+            let (_, kept) = item_render::bind_item_tint_factories(sources);
+            assert_eq!(kept, ["example:charge"]);
         });
     }
 
     /// The resolver reads a mod's colour per stack, white for another's or with no mod.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn item_tint_source_reads_the_mods_colour() {
-        let config = sunrise_core::json_nbt::json_to_tag(
-            &serde_json::json!({"type": "example:charge", "low": 0xFFAA_BBCC_u32}),
-        )
-        .unwrap();
+        use mod_api::__private::game::*;
+        let fields = serde_json::json!({"type": "example:charge", "low": 0xFFAA_BBCC_u32})
+            .as_object()
+            .cloned()
+            .unwrap();
         let one = StackView::new("minecraft:stick", 1);
         let two = StackView::new("minecraft:stick", 2);
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new("charge", Box::new(Charge))].into();
         mod_platform::testing::with_mods(mods, || {
+            let mut sources = Vec::new();
+            Game::native_register_item_tint_sources(
+                &mod_api::RegistrationContext::new(),
+                &mut sources,
+            );
+            let (factories, _) = item_render::bind_item_tint_factories(sources);
+            let bound =
+                item_render::decode_tint_source(Some(&factories), "example:charge", &fields)
+                    .unwrap()
+                    .expect("registered tint source");
+            assert!(
+                item_render::decode_tint_source(Some(&factories), "other:charge", &fields)
+                    .unwrap()
+                    .is_none()
+            );
             super::super::native_entity_refs::tests::with_game(|game| {
                 let env = Env { game };
-                let color = |source, stack| env.item_tint_source(source, &config, stack) as u32;
-                assert_eq!(color("example:charge", &one), 0xFFAA_BBCC);
-                assert_eq!(color("example:charge", &two), 0xFF11_2233);
-                assert_eq!(color("other:charge", &one), 0xFFFF_FFFF);
+                let color = |stack| env.item_tint_source(&bound, stack) as u32;
+                assert_eq!(color(&one), 0xFFAA_BBCC);
+                assert_eq!(color(&two), 0xFF11_2233);
             });
         });
         mod_platform::testing::with_mods(Vec::new().into(), || {
-            super::super::native_entity_refs::tests::with_game(|game| {
-                let env = Env { game };
-                assert_eq!(env.item_tint_source("example:charge", &config, &one), -1);
-            });
+            let mut sources = Vec::new();
+            Game::native_register_item_tint_sources(
+                &mod_api::RegistrationContext::new(),
+                &mut sources,
+            );
+            let (factories, _) = item_render::bind_item_tint_factories(sources);
+            assert!(
+                item_render::decode_tint_source(Some(&factories), "example:charge", &fields)
+                    .unwrap()
+                    .is_none()
+            );
         });
     }
 

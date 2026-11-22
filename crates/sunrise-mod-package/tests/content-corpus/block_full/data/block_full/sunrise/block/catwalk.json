@@ -1,0 +1,10 @@
+{
+  "template": "minecraft:scaffolding",
+  "context_collision": "scaffolding",
+  "properties": {
+    "render_shape": "INVISIBLE",
+    "push_reaction": "IGNORE_ENTITY",
+    "offset": "NONE",
+    "random_ticks": true
+  }
+}

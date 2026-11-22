@@ -1,4 +1,12 @@
 //! Original column-extension comparison transport.
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{self, Write},
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use sunrise_core::{
     noise::{NanRange, Noise},
     random::{LegacyRandom, PositionalRandom, RandomSource, XoroshiroRandom},
@@ -12,14 +20,6 @@ use sunrise_world::{
             ExtensionBlocks, ExtensionNoises, MaterialColumn, MaterialExtensions,
         },
     },
-};
-use serde_json::Value;
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::{self, Write},
-    path::Path,
-    sync::{Arc, Mutex},
 };
 const NAMES: [&str; 6] = [
     "badlands_surface",

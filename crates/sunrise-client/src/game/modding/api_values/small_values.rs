@@ -6,8 +6,8 @@ impl TryIntoApi for sunrise_items::firework::FireworkShape {
     type Api = mod_api::FireworkShape;
     type Error = Infallible;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        use sunrise_items::firework::FireworkShape as E;
         use mod_api::FireworkShape as A;
+        use sunrise_items::firework::FireworkShape as E;
         Ok(match self {
             E::SmallBall => A::SmallBall,
             E::LargeBall => A::LargeBall,
@@ -21,8 +21,8 @@ impl TryIntoEngine<()> for mod_api::FireworkShape {
     type Engine = sunrise_items::firework::FireworkShape;
     type Error = Infallible;
     fn try_into_engine(&self, _: &()) -> Result<Self::Engine, Self::Error> {
-        use sunrise_items::firework::FireworkShape as E;
         use mod_api::FireworkShape as A;
+        use sunrise_items::firework::FireworkShape as E;
         Ok(match self {
             A::SmallBall => E::SmallBall,
             A::LargeBall => E::LargeBall,
@@ -37,8 +37,8 @@ impl TryIntoEngine<()> for mod_api::KeyConflictContext {
     type Engine = sunrise_mod_package::mod_list::KeyConflictContext;
     type Error = Infallible;
     fn try_into_engine(&self, _: &()) -> Result<Self::Engine, Self::Error> {
-        use sunrise_mod_package::mod_list::KeyConflictContext as E;
         use mod_api::KeyConflictContext as A;
+        use sunrise_mod_package::mod_list::KeyConflictContext as E;
         Ok(match self {
             A::Universal => E::Universal,
             A::InGame => E::InGame,
@@ -73,8 +73,8 @@ impl TryIntoApi for sunrise_mod_package::manifest::JarInputsError {
     type Api = mod_api::JarInputsError;
     type Error = Infallible;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        use sunrise_mod_package::manifest::JarInputsError as E;
         use mod_api::JarInputsError as A;
+        use sunrise_mod_package::manifest::JarInputsError as E;
         Ok(match self {
             E::Missing(m) => A::Missing(Box::new(mod_api::MissingJar::new(
                 m.owners.clone(),
@@ -99,7 +99,7 @@ impl TryIntoApi for sunrise_mod_package::manifest::JarInputsError {
 #[cfg(test)]
 mod recipe_tests {
     #[test]
-    #[ignore = "requires prepared game resources"]
+    #[ignore = "daily"]
     fn recipe_json_text_fields() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             assert_eq!(

@@ -5,8 +5,8 @@
 //! modifier is added or removed. The same id on an attribute the player does
 //! have still works.
 use crate::game::*;
-use sunrise_client::motion::PlayerMotion;
 use std::sync::Arc;
+use sunrise_client::motion::PlayerMotion;
 
 fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let mut game = crate::game::game_tests::tests::server_game(resources);
@@ -16,6 +16,8 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
         .chunks
         .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 100.0, 0.5)).unwrap());
+    game.reset_entity_residency();
+    crate::game::native_entity_refs::tests::bind_local_player(&mut game, 1, 1);
     game
 }
 

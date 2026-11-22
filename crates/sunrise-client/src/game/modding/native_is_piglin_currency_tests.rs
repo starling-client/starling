@@ -6,13 +6,13 @@
 //! `#piglin_loved`) admired and kept instead of bartered. Expected values follow vanilla's
 //! `PiglinAi` flow by hand; the world is ticked for real, `ADMIRE_DURATION` (119) ticks.
 use super::native_entity_refs::tests::{prepare_entity_ticking_neighborhood, with_game};
+use mod_api::{Hooks, Host, IsPiglinCurrencyEvent, ItemPart, Registrar, RegistrationContext};
+use std::sync::Arc;
 use sunrise_client::first_person::Hand;
 use sunrise_client::items::ItemStack;
 use sunrise_client::mobs::{Mob, Species, piglin};
 use sunrise_core::nbt::{Compound, JavaString, Tag};
 use sunrise_core::position::ChunkPos;
-use mod_api::{Hooks, Host, IsPiglinCurrencyEvent, ItemPart, Registrar, RegistrationContext};
-use std::sync::Arc;
 
 /// An emerald is currency when it carries `minecraft:custom_data`.
 #[derive(Clone)]
@@ -173,7 +173,7 @@ fn thrown(game: &super::Game<'_>) -> usize {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "daily"]
 fn a_part_makes_a_coin_currency_and_refuses_the_gold_ingot() {
     crate::game::in_own_process(
         "game::native_is_piglin_currency_tests::a_part_makes_a_coin_currency_and_refuses_the_gold_ingot",
@@ -267,7 +267,7 @@ fn a_part_makes_a_coin_currency_and_refuses_the_gold_ingot_isolated() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "daily"]
 fn without_parts_only_the_gold_ingot_is_currency() {
     crate::game::in_own_process(
         "game::native_is_piglin_currency_tests::without_parts_only_the_gold_ingot_is_currency",
@@ -365,7 +365,7 @@ fn loved_emerald_root(scratch: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "daily"]
 fn a_loved_coin_from_the_ground_is_admired_and_bartered() {
     crate::game::in_own_process(
         "game::native_is_piglin_currency_tests::a_loved_coin_from_the_ground_is_admired_and_bartered",

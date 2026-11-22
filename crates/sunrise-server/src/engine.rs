@@ -2,7 +2,6 @@
 //! game/interface/dedicated/mod.rs). It reads the vanilla files the supervisor writes, takes console commands on stdin and
 //! logs on stdout.
 
-use sunrise_server_launch::config::Entities;
 use std::process::Command;
 use std::{
     io::{BufRead, BufReader, Write},
@@ -146,7 +145,7 @@ pub fn spawn(
     dir: &Path,
     low_memory: bool,
     parallel_tick: bool,
-    entities: &Entities,
+    droppable: (u32, u32),
     transfers: Option<&str>,
 ) -> std::io::Result<Child> {
     command(
@@ -155,7 +154,7 @@ pub fn spawn(
         dir,
         low_memory,
         parallel_tick,
-        entities,
+        droppable,
         transfers,
     )?
     .spawn()
@@ -168,7 +167,7 @@ fn command(
     dir: &Path,
     low_memory: bool,
     parallel_tick: bool,
-    entities: &Entities,
+    droppable: (u32, u32),
     transfers: Option<&str>,
 ) -> std::io::Result<Command> {
     let mut command = sunrise_server_launch::command_with_transfers(
@@ -179,30 +178,17 @@ fn command(
     if parallel_tick {
         command.env("SUNRISE_PARALLEL_TICK", "1");
     }
-    // `[entities] dab`: the game's switch and its three numbers (mobs/dab.rs). Off leaves the variables alone.
-    if entities.dab {
-        command
-            .env("SUNRISE_DAB", "1")
-            .env(
-                "SUNRISE_DAB_START_DISTANCE",
-                entities.dab_start_distance.to_string(),
-            )
-            .env(
-                "SUNRISE_DAB_MAX_TICK_FREQ",
-                entities.dab_max_tick_freq.to_string(),
-            )
-            .env(
-                "SUNRISE_DAB_ACTIVATION_DIST_MOD",
-                entities.dab_activation_dist_mod.to_string(),
-            );
-    }
-    // `[entities] max_collisions`: the cap on the pushes of a mob's tick. 0 (vanilla) leaves the variable alone.
-    if entities.max_collisions > 0 {
-        command.env(
-            "SUNRISE_MAX_ENTITY_COLLISIONS",
-            entities.max_collisions.to_string(),
+    // `[engine] droppable_clientbound` and `droppable_serverbound`: the game's byte budgets for
+    // `Droppable` mod payloads, always passed so the file is the one source.
+    command
+        .env(
+            "SUNRISE_DROPPABLE_CLIENTBOUND_BYTES_PER_SECOND",
+            droppable.0.to_string(),
+        )
+        .env(
+            "SUNRISE_DROPPABLE_SERVERBOUND_BYTES_PER_SECOND",
+            droppable.1.to_string(),
         );
-    }
     Ok(command)
 }
 
@@ -324,7 +310,7 @@ mod tests {
                 &dir,
                 low_memory,
                 false,
-                &Entities::default(),
+                (0, 0),
                 None,
             )
             .unwrap();
@@ -347,7 +333,7 @@ mod tests {
                 &dir,
                 false,
                 parallel_tick,
-                &Entities::default(),
+                (0, 0),
                 None,
             )
             .unwrap();
@@ -361,56 +347,31 @@ mod tests {
     }
 
     #[test]
-    fn dab_reaches_the_game_only_when_it_is_on() {
-        let env = |entities: Entities, name: &str| {
-            let dir = std::env::temp_dir();
-            let command = command(
-                Path::new("sunrise-client"),
-                &dir,
-                &dir,
-                false,
-                false,
-                &entities,
-                None,
-            )
-            .unwrap();
+    fn the_droppable_budgets_always_reach_the_game() {
+        let dir = std::env::temp_dir();
+        let command = command(
+            Path::new("sunrise-client"),
+            &dir,
+            &dir,
+            false,
+            false,
+            (1000, 0),
+            None,
+        )
+        .unwrap();
+        let env = |name: &str| {
             command
                 .get_envs()
                 .find(|(k, _)| *k == name)
                 .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
         };
-        let on = Entities {
-            dab: true,
-            dab_start_distance: 16,
-            dab_max_tick_freq: 10,
-            dab_activation_dist_mod: 7,
-            ..Entities::default()
-        };
-        assert_eq!(env(on.clone(), "SUNRISE_DAB").as_deref(), Some("1"));
         assert_eq!(
-            env(on.clone(), "SUNRISE_DAB_START_DISTANCE").as_deref(),
-            Some("16")
+            env("SUNRISE_DROPPABLE_CLIENTBOUND_BYTES_PER_SECOND").as_deref(),
+            Some("1000")
         );
         assert_eq!(
-            env(on.clone(), "SUNRISE_DAB_MAX_TICK_FREQ").as_deref(),
-            Some("10")
-        );
-        assert_eq!(
-            env(on, "SUNRISE_DAB_ACTIVATION_DIST_MOD").as_deref(),
-            Some("7")
-        );
-        assert_eq!(env(Entities::default(), "SUNRISE_DAB"), None);
-        let capped = Entities {
-            max_collisions: 8,
-            ..Entities::default()
-        };
-        assert_eq!(
-            env(capped, "SUNRISE_MAX_ENTITY_COLLISIONS").as_deref(),
-            Some("8")
-        );
-        assert_eq!(
-            env(Entities::default(), "SUNRISE_MAX_ENTITY_COLLISIONS"),
-            None
+            env("SUNRISE_DROPPABLE_SERVERBOUND_BYTES_PER_SECOND").as_deref(),
+            Some("0")
         );
     }
 
@@ -424,7 +385,7 @@ mod tests {
                 &dir,
                 false,
                 false,
-                &Entities::default(),
+                (0, 0),
                 transfers,
             )
             .unwrap();
@@ -579,7 +540,7 @@ mod tests {
                 &server,
                 false,
                 false,
-                &Entities::default(),
+                (0, 0),
                 None,
             ) {
                 Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {

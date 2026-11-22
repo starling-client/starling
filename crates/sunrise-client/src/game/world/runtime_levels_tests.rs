@@ -3,8 +3,8 @@
 use super::native_entity_refs::tests::with_game;
 use super::runtime_levels::RuntimeTable;
 use mod_api::{
-    Hooks, HostSide, LevelLoadEvent, LevelRef, LevelTickPostEvent, LevelUnloadEvent, ModEntry,
-    RuntimeGenerator, RuntimeLevel, RuntimeLevelError,
+    ChunkRef, ChunkUnloadEvent, Hooks, HostSide, LevelLoadEvent, LevelRef, LevelTickPostEvent,
+    LevelUnloadEvent, ModEntry, RuntimeGenerator, RuntimeLevel, RuntimeLevelError, ServerHost,
 };
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -91,6 +91,8 @@ type Seen<T> = Arc<Mutex<Vec<T>>>;
 const OPEN: u8 = 0;
 const DELETE: u8 = 1;
 const IDLE: u8 = 2;
+/// Nothing in a level tick; a Nether chunk's unload forces chunk (0, 0) of `id`.
+const RESCUE: u8 = 3;
 
 /// A mod that opens `id` in `level_tick_post` and says what each call answered.
 struct Opener {
@@ -103,6 +105,7 @@ struct Opener {
     loads: Seen<String>,
     load_contexts: Seen<(String, String, bool)>,
     unloads: Seen<String>,
+    rescued: Seen<bool>,
 }
 
 #[mod_api::__subscriptions]
@@ -141,6 +144,17 @@ impl Hooks for Opener {
             .unwrap()
             .push(event.dimension.to_owned());
     }
+    fn chunk_unload(&self, host: &mut dyn ServerHost, event: &mut ChunkUnloadEvent<'_>) {
+        if self.mode.load(Ordering::SeqCst) != RESCUE
+            || event.dimension != "minecraft:the_nether"
+            || event.chunk != [0, 0]
+        {
+            return;
+        }
+        let level = host.level(self.id).unwrap();
+        let forced = ChunkRef::new(level, [0, 0]).set_forced(host, true);
+        self.rescued.lock().unwrap().push(forced);
+    }
 }
 
 struct Fixture {
@@ -151,6 +165,7 @@ struct Fixture {
     loads: Seen<String>,
     load_contexts: Seen<(String, String, bool)>,
     unloads: Seen<String>,
+    rescued: Seen<bool>,
 }
 
 /// A mod named `name` that opens `id` each time a level ticks, in a game, for `test`.
@@ -168,6 +183,7 @@ fn with_opener(
         loads: Seen::default(),
         load_contexts: Seen::default(),
         unloads: Seen::default(),
+        rescued: Seen::default(),
     };
     let opener = Opener {
         id,
@@ -179,11 +195,11 @@ fn with_opener(
         loads: fixture.loads.clone(),
         load_contexts: fixture.load_contexts.clone(),
         unloads: fixture.unloads.clone(),
+        rescued: fixture.rescued.clone(),
     };
     let mods = vec![ModEntry::new(name, Box::new(opener))].into();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
-            let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
             // Levels' folders go under a world root of the test's own, never the checkout.
             let root = TempRoot::new(name);
             game.world_root = root.0.clone();
@@ -294,7 +310,7 @@ fn tick_post(game: &mut super::Game<'_>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mod_opens_only_ids_in_its_own_namespace() {
     for (id, expected) in [
         ("other:x", Err(RuntimeLevelError::OutsideNamespace)),
@@ -324,7 +340,7 @@ fn a_mod_opens_only_ids_in_its_own_namespace() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn nothing_opens_inside_a_tick_and_the_queue_is_applied_after_the_levels() {
     with_opener("phase", "phase:a", flat(), |game, seen| {
         tick_post(game);
@@ -343,7 +359,7 @@ fn nothing_opens_inside_a_tick_and_the_queue_is_applied_after_the_levels() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_handle_from_before_an_unload_never_names_the_reopened_level() {
     with_opener("stale", "stale:a", flat(), |game, seen| {
         tick_post(game);
@@ -372,7 +388,7 @@ fn a_handle_from_before_an_unload_never_names_the_reopened_level() {
 /// The idle close drops a runtime level from memory as any level, but it stays open: entering
 /// it opens it again with the same handle, and only `unload` closes it for good.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_idle_close_keeps_a_runtime_level_open_until_its_unload() {
     with_opener("idle", "idle:a", flat(), |game, seen| {
         tick_post(game);
@@ -395,10 +411,158 @@ fn the_idle_close_keeps_a_runtime_level_open_until_its_unload() {
     });
 }
 
+#[test]
+#[ignore = "daily"]
+fn an_idle_level_aborts_an_abandoned_chunk_unload_transaction_before_it_closes() {
+    crate::game::in_own_process(
+        "game::runtime_levels_tests::an_idle_level_aborts_an_abandoned_chunk_unload_transaction_before_it_closes",
+        || {
+            const ID: &str = "abandon:a";
+            const POS: [i32; 3] = [1, -50, 1];
+
+            struct Abandon(Seen<bool>);
+
+            #[mod_api::__subscriptions]
+            impl Hooks for Abandon {
+                fn level_tick_post(&self, host: HostSide, _: &mut LevelTickPostEvent) {
+                    if let HostSide::Server(host) = host {
+                        host.runtime_levels().open(ID, flat()).unwrap();
+                    }
+                }
+
+                fn chunk_unload(
+                    &self,
+                    host: &mut dyn ServerHost,
+                    event: &mut ChunkUnloadEvent<'_>,
+                ) {
+                    if event.dimension == ID && event.chunk == [0, 0] {
+                        let level = host.level(ID).unwrap();
+                        let _seal = host.transaction_open();
+                        assert_eq!(level.set_connection_group(host, POS, Some(30)), Ok(true));
+                        self.0
+                            .lock()
+                            .unwrap()
+                            .push(host.transaction_current().is_some());
+                    }
+                }
+
+                fn level_unload(
+                    &self,
+                    host: &mut dyn ServerHost,
+                    event: &mut LevelUnloadEvent<'_>,
+                ) {
+                    if event.dimension == ID {
+                        self.0
+                            .lock()
+                            .unwrap()
+                            .push(host.transaction_current().is_some());
+                    }
+                }
+            }
+
+            let open_frames = Seen::default();
+            let mods = vec![ModEntry::new(
+                "abandon",
+                Box::new(Abandon(Arc::clone(&open_frames))),
+            )]
+            .into();
+            mod_platform::testing::with_mods(mods, || {
+                with_game(|game| {
+                    let root = TempRoot::new("abandon");
+                    game.world_root = root.0.clone();
+                    tick_post(game);
+                    game.apply_runtime_levels();
+                    place_block(game, ID, "minecraft:stone");
+                    let dim = super::Dim::extra(ID).unwrap();
+                    let custom = game.level(ID).unwrap();
+                    let home = game.level("minecraft:overworld").unwrap();
+                    game.world
+                        .chunks
+                        .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                    assert_eq!(home.set_connection_group(game, POS, Some(10)), Ok(true));
+                    game.enter_level(dim).unwrap();
+                    assert_eq!(custom.set_connection_group(game, POS, Some(20)), Ok(true));
+                    game.enter_level(super::Dim::Overworld).unwrap();
+
+                    game.close_parked_level(dim).unwrap();
+                    assert!(!game.levels.parked.contains_key(&dim));
+                    assert_eq!(*open_frames.lock().unwrap(), [true, false]);
+                    assert!(game.transaction_current().is_none());
+                    assert_eq!(home.connection_group(game, POS), Ok(Some(10)));
+                    game.abort_abandoned_transactions(0);
+                    assert_eq!(home.connection_group(game, POS), Ok(Some(10)));
+                });
+            });
+        },
+    );
+}
+
+/// A chunk-unload listener that forces a chunk in an idle custom level while a
+/// built-in level drains, in the same server tick that would have closed it,
+/// keeps that level open with its new ticket: the close plan is made after the
+/// drains and rechecked before each close.
+#[test]
+#[ignore = "daily"]
+fn a_ticket_a_chunk_unload_listener_adds_keeps_an_idle_custom_level_open() {
+    use super::levels::IDLE_TICKS;
+    use super::native_entity_refs::tests::run_fresh_cases;
+
+    // A parallel world load can replace the process-wide dimension list during the idle ticks.
+    if run_fresh_cases(
+        "game::runtime_levels_tests::a_ticket_a_chunk_unload_listener_adds_keeps_an_idle_custom_level_open",
+        "SUNRISE_RUNTIME_LEVEL_RESCUE_CHILD",
+        &["rescue"],
+    ) {
+        return;
+    }
+    with_opener("rescue", "rescue:a", flat(), |game, seen| {
+        tick_post(game);
+        game.apply_runtime_levels();
+        seen.mode.store(IDLE, Ordering::SeqCst);
+        let dim = super::Dim::extra("rescue:a").unwrap();
+        let custom = ChunkRef::new(game.level("rescue:a").unwrap(), [0, 0]);
+        // Idle the custom level to one server tick short of its close.
+        for _ in 1..IDLE_TICKS {
+            game.tick_server(false).unwrap();
+        }
+        assert_eq!(game.levels.parked[&dim].idle, IDLE_TICKS - 1);
+        // Open the Nether only now and load its chunk (0, 0), then release it:
+        // its first drain leaves the view it opened with, so that drain unloads
+        // the chunk at once, in the tick the custom level's close is due.
+        game.settings.render_distance = 2;
+        game.enter_level(super::Dim::Nether).unwrap();
+        let nether = ChunkRef::new(game.level("minecraft:the_nether").unwrap(), [0, 0]);
+        assert!(game.chunk_set_forced(nether, true));
+        assert!(game.chunk_set_forced(nether, false));
+        game.enter_level(super::Dim::Overworld).unwrap();
+        assert!(game.chunk_loaded(nether));
+        seen.mode.store(RESCUE, Ordering::SeqCst);
+        game.tick_server(false).unwrap();
+        assert!(
+            !game.chunk_loaded(nether),
+            "the released Nether chunk unloaded"
+        );
+        assert_eq!(*seen.rescued.lock().unwrap(), [true]);
+        seen.mode.store(IDLE, Ordering::SeqCst);
+        // Through the idle close and past it, the level and the ticket both remain.
+        for _ in 0..=IDLE_TICKS {
+            game.tick_server(false).unwrap();
+        }
+        // The ticket may make this the first level to tick, leaving it in place.
+        assert!(
+            game.native_level_world(custom.level()).is_some(),
+            "the custom level stays open"
+        );
+        assert!(seen.unloads.lock().unwrap().is_empty());
+        assert_eq!(game.chunk_forced(custom), Some(true));
+        assert!(game.chunk_loaded(custom));
+    });
+}
+
 /// An unload whose save fails leaves the level open and in place: the mod can unload it again,
 /// and that unload goes through once the save can be written.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_failed_unload_leaves_the_level_open_for_a_retry() {
     with_opener("stuck", "stuck:a", flat(), |game, _| {
         tick_post(game);
@@ -424,7 +588,7 @@ fn a_failed_unload_leaves_the_level_open_for_a_retry() {
 /// A save a mod asked for, then an unload in the same tick: the save leaves with the level, so
 /// the next tick does not open it again.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_unload_drops_a_save_waiting_for_its_level() {
     with_opener("saved", "saved:a", flat(), |game, seen| {
         tick_post(game);
@@ -442,7 +606,7 @@ fn an_unload_drops_a_save_waiting_for_its_level() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_level_with_a_player_in_it_is_not_unloaded() {
     with_opener("crowd", "crowd:a", flat(), |game, seen| {
         tick_post(game);
@@ -470,7 +634,7 @@ fn a_level_with_a_player_in_it_is_not_unloaded() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_reopened_level_comes_back_from_its_folder_with_its_block() {
     with_opener("keep", "keep:a", flat(), |game, seen| {
         let stone = game
@@ -525,7 +689,7 @@ fn a_reopened_level_comes_back_from_its_folder_with_its_block() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn failed_construction_rolls_back_every_published_table() {
     with_opener("rollback", "rollback:a", flat(), |game, seen| {
         tick_post(game);
@@ -558,7 +722,7 @@ fn failed_construction_rolls_back_every_published_table() {
 /// Deleting an open, empty level closes it, then removes its folder and the structure references
 /// kept beside the world, and the folders they leave empty.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_closes_the_level_and_removes_its_folder_and_references_file() {
     with_opener("erase", "erase:instance/ab", flat(), |game, seen| {
         tick_post(game);
@@ -597,7 +761,7 @@ fn a_delete_closes_the_level_and_removes_its_folder_and_references_file() {
 
 /// A level that is not open, in the mod's namespace, is only files: what a crash left.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_of_a_level_that_is_not_open_removes_its_leftovers() {
     with_opener("left", "left:room", flat(), |game, seen| {
         let folder = game.world_root.join("dimensions/left/room");
@@ -630,7 +794,7 @@ fn a_delete_of_a_level_that_is_not_open_removes_its_leftovers() {
 /// The folder of another mod's level, of a vanilla level and of a path that leaves the world is
 /// never touched.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_outside_the_mods_namespace_is_refused_and_removes_nothing() {
     with_opener("mine", "mine:a", flat(), |game, _| {
         let other = game.world_root.join("dimensions/other/x/region/r.0.0.mca");
@@ -657,7 +821,7 @@ fn a_delete_outside_the_mods_namespace_is_refused_and_removes_nothing() {
 
 /// A level deleted and opened again starts empty: the block placed before is gone.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_level_opened_again_after_a_delete_starts_empty() {
     with_opener("fresh", "fresh:a", flat(), |game, seen| {
         let stone = game
@@ -702,7 +866,7 @@ fn a_level_opened_again_after_a_delete_starts_empty() {
 /// An open made after the delete of a level that is not open is applied after it: the leftovers
 /// are gone before the level opens.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_open_queued_behind_a_delete_of_leftovers_finds_no_folder() {
     with_opener("behind", "behind:a", flat(), |game, seen| {
         let leftover = game.world_root.join("dimensions/behind/a/region/r.0.0.mca");
@@ -719,7 +883,7 @@ fn an_open_queued_behind_a_delete_of_leftovers_finds_no_folder() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_level_with_a_player_in_it_is_not_deleted() {
     with_opener("guest", "guest:a", flat(), |game, _| {
         tick_post(game);
@@ -753,7 +917,7 @@ fn a_level_with_a_player_in_it_is_not_deleted() {
 /// A delete asked inside a level's tick leaves the level and its files as they are until the
 /// queue is applied after the levels.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_is_applied_after_the_levels_and_not_inside_a_tick() {
     with_opener("later", "later:a", flat(), |game, seen| {
         tick_post(game);
@@ -777,7 +941,7 @@ fn a_delete_is_applied_after_the_levels_and_not_inside_a_tick() {
 
 /// A delete of a level whose open is still waiting is refused: its open comes first.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_of_a_level_still_waiting_to_open_is_refused() {
     with_opener("wait", "wait:a", flat(), |game, _| {
         tick_post(game);
@@ -817,7 +981,7 @@ fn a_delete_marks_an_open_level_closing_and_a_second_unload_finds_it_not_open() 
 /// The folders of levels nest: a delete of a level with a level below it, open or only a folder,
 /// is refused and removes nothing of either.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_of_a_level_with_a_level_below_it_is_refused() {
     with_opener("kid", "kid:instance/ab", flat(), |game, _| {
         let parent_file = game
@@ -853,7 +1017,7 @@ fn a_delete_of_a_level_with_a_level_below_it_is_refused() {
 /// A level below that only exists as a folder, as after a crash, stops the delete too, even when
 /// its folder has the name of one a level writes.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_stops_at_a_folder_that_holds_a_level() {
     with_opener("fold", "fold:unused", flat(), |game, _| {
         let child = game
@@ -904,7 +1068,7 @@ fn a_delete_stops_at_a_folder_that_holds_a_level() {
 /// Two ids can name one structure references file (`a_b:c`, `a:b_c`): a delete of one keeps the
 /// file while the other exists, and removes it once the other is gone.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_keeps_a_references_file_another_level_shares() {
     with_opener("a_b", "a_b:c", flat(), |game, _| {
         let mine = game.world_root.join("dimensions/a_b/c/region/r.0.0.mca");
@@ -933,7 +1097,7 @@ fn a_delete_keeps_a_references_file_another_level_shares() {
 /// A removal that fails leaves the level closed, its id kept from `open` until a `delete` has
 /// removed the files.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_failed_removal_leaves_the_level_closed_and_its_id_closed_to_open() {
     with_opener("stuck2", "stuck2:a", flat(), |game, seen| {
         tick_post(game);
@@ -977,7 +1141,7 @@ fn a_failed_removal_leaves_the_level_closed_and_its_id_closed_to_open() {
 /// An `open` made after the `delete` of leftovers is applied after it; if the removal failed it
 /// is dropped, so the level never starts from the files that are left.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_open_queued_behind_a_failed_removal_is_dropped() {
     with_opener("behind2", "behind2:a", flat(), |game, seen| {
         let leftover = game
@@ -1029,7 +1193,7 @@ fn remove_link(link: &std::path::Path) {
 /// A link under `dimensions` or `data`, or one of the two being a link, is never followed out of
 /// the world, and nothing is removed first.
 #[test]
-#[ignore = "needs permission to create a symbolic link or junction"]
+#[ignore = "daily"]
 fn a_removal_does_not_follow_links_out_of_the_world() {
     let root = TempRoot::new("links");
     let outside = root.0.join("outside");
@@ -1121,7 +1285,7 @@ impl Drop for Lock {
 /// its id is refused to `open`, the file is still there, and a `delete` asked again, once the
 /// file can go, finishes the work.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_removal_that_fails_part_way_is_finished_by_a_second_delete() {
     with_opener("part", "part:a", flat(), |game, seen| {
         tick_post(game);
@@ -1200,7 +1364,7 @@ impl Drop for UnreadableFolder {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_refuses_unreadable_data_and_removes_nothing() {
     with_opener("blind", "blind:a", flat(), |game, _| {
         let folder = game.world_root.join("dimensions/blind/a");
@@ -1228,7 +1392,7 @@ fn a_delete_refuses_unreadable_data_and_removes_nothing() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_delete_keeps_references_when_shared_level_metadata_is_unreadable() {
     with_opener("a_b", "a_b:c", flat(), |game, _| {
         let folder = game.world_root.join("dimensions/a_b/c");
@@ -1303,5 +1467,45 @@ fn a_level_the_player_left_in_single_player_still_unloads_and_deletes() {
         game.apply_runtime_levels();
         assert!(!game.runtime_level_is_open("solo:a"));
         assert!(!game.world_root.join("dimensions/solo/a").exists());
+    });
+}
+
+/// Opening and unloading one id again and again, with a new seed each time, leaks its names,
+/// facts and level table once: every later open hands the game the same copies, and the level
+/// reads the seed of the open it is in (#4019).
+#[test]
+#[ignore = "daily"]
+fn reopening_one_id_with_any_seed_reuses_the_metadata_its_first_open_leaked() {
+    with_opener("cycle", "cycle:a", flat(), |game, seen| {
+        seen.mode.store(IDLE, Ordering::SeqCst);
+        let key = sunrise_core::LevelKey::parse("cycle:a").unwrap();
+        let mut first = None;
+        for seed in [1, 2, 3, i64::MIN, i64::MAX] {
+            let level = RuntimeLevel::new("minecraft:overworld", RuntimeGenerator::Flat, seed);
+            game.levels
+                .runtime
+                .queue_open("cycle", "cycle:a", level)
+                .unwrap();
+            game.apply_runtime_levels();
+            assert!(game.runtime_level_is_open("cycle:a"));
+            assert_eq!(
+                game.levels.runtime.seeds().get("cycle:a").copied(),
+                Some(seed)
+            );
+            let table = game.level_shapes.extra;
+            let level = table.iter().find(|level| level.id == "cycle:a").unwrap();
+            let facts = sunrise_world::dimension_type::DimensionFacts::of_level(key);
+            let leaked = (
+                table.as_ptr(),
+                level.id.as_ptr(),
+                level.dimension_type.as_ptr(),
+                std::ptr::from_ref(facts),
+            );
+            assert_eq!(*first.get_or_insert(leaked), leaked);
+            unload_as(game, "cycle", "cycle:a").unwrap();
+            game.apply_runtime_levels();
+            assert!(!game.runtime_level_is_open("cycle:a"));
+            assert_eq!(game.levels.runtime.seeds().get("cycle:a").copied(), None);
+        }
     });
 }

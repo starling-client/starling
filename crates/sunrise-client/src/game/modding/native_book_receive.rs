@@ -1,9 +1,9 @@
 //! A remote catalogue supplies recipe membership, never the client's local recipe JSON.
 use super::native_book_displays::Resources;
 use super::*;
-use sunrise_client::recipe_book::{DisplayResources, ModBookIndex, placement_sync as sync};
 use std::collections::{BTreeMap, BTreeSet};
 use std::result::Result;
+use sunrise_client::recipe_book::{DisplayResources, ModBookIndex, placement_sync as sync};
 struct RemoteResources<'a, 'w> {
     inner: Resources<'a, 'w>,
     recipes: BTreeMap<String, String>,
@@ -49,8 +49,7 @@ impl Game<'_> {
         &self,
         data: &sync::CatalogBytes,
     ) -> Result<ModBookIndex, sync::Refusal> {
-        let declarations: Vec<mod_api::RecipeBookCategory> =
-            mod_api::wire::Reader::decode(&data.bytes).map_err(|_| sync::Refusal::Invalid)?;
+        let declarations = sync::decode_catalogue(&data.bytes)?;
         let mut recipes = BTreeMap::new();
         for category in &declarations {
             if category.target_menu != data.identity.menu.as_str()

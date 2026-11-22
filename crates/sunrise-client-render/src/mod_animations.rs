@@ -2,88 +2,105 @@
 //! `assets/<namespace>/neoforge/animations/entity/<path>.json`), read on every resource load into
 //! the published render assets, where `RenderAssets::animation` finds them by id. The game's own
 //! exported animations keep their reader (`mobs::keyframes`); both play through `mod_api`'s
-//! sampling. The targets and interpolations mods register (NeoForge's
-//! `RegisterJsonAnimationTypesEvent`) are kept here once at start, for files to name.
+//! sampling. Custom targets and interpolations mods register (NeoForge's
+//! `RegisterJsonAnimationTypesEvent`) are bound once at start and resolved directly onto each
+//! parsed channel and keyframe (matching NeoForge's `AnimationParser`).
 use mod_api::{
-    AnimationChannel, AnimationHolder, AnimationTarget, Answered, Identifier, Interpolation,
-    JsonAnimationType, Keyframe, RegisteredAnimationType,
+    __private::game::{
+        CallbackOwner, JsonAnimationTypeRegistration, bind_animation_interpolation,
+        bind_animation_target, convert_animation_target,
+    },
+    AnimationChannel, AnimationHolder, AnimationTarget, Answered, BoundAnimationTarget,
+    BoundInterpolation, Identifier, Interpolation, Keyframe,
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
-    sync::{Arc, RwLock},
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
 };
 
-/// The registered types of one kind, by id, each with the mod that registered it.
-type Registered = RwLock<BTreeMap<String, RegisteredAnimationType>>;
-
-static TARGETS: Registered = RwLock::new(BTreeMap::new());
-static INTERPOLATIONS: Registered = RwLock::new(BTreeMap::new());
-
-/// Keeps the animation targets and interpolations native mods registered, each with its mod,
-/// before resources load. An id that is not `<namespace>:<path>` in a namespace other than
-/// vanilla's, or one registered already as the same kind, is logged and left out: the first
-/// registration of an id wins.
-pub fn register(types: Vec<Answered<JsonAnimationType>>) {
-    keep(types.into_iter().map(|entry| (entry.answer, entry.mod_id)));
+struct BoundAnimations {
+    targets: BTreeMap<String, BoundAnimationTarget>,
+    interpolations: BTreeMap<String, BoundInterpolation>,
 }
 
-/// [`register`]'s keeping, of each type with the `[mod] id` dispatch named for it. Returns the
-/// types kept, in registration order.
-fn keep<'a>(
-    types: impl IntoIterator<Item = (JsonAnimationType, &'a str)>,
-) -> Vec<RegisteredAnimationType> {
-    let mut kept = Vec::new();
-    for (kind, owner) in types {
-        let (table, name, id) = match &kind {
-            JsonAnimationType::Target(id) => (&TARGETS, "animation target", id.to_string()),
-            JsonAnimationType::Interpolation(id) => {
-                (&INTERPOLATIONS, "animation interpolation", id.to_string())
+static TYPES: OnceLock<Arc<BoundAnimations>> = OnceLock::new();
+
+fn freeze(types: Vec<Answered<JsonAnimationTypeRegistration>>) -> BoundAnimations {
+    let mut targets: BTreeMap<String, BoundAnimationTarget> = BTreeMap::new();
+    let mut interpolations: BTreeMap<String, BoundInterpolation> = BTreeMap::new();
+    for Answered { answer, mod_id, .. } in types {
+        match answer {
+            JsonAnimationTypeRegistration::Target { id, apply, convert } => {
+                let key = id.to_string();
+                if matches!(
+                    key.as_str(),
+                    "minecraft:position" | "minecraft:rotation" | "minecraft:scale"
+                ) {
+                    log::error!(
+                        "Mod {mod_id}: animation target {key} collides with a built-in animation target"
+                    );
+                } else if let Some(first) = targets.get(&key) {
+                    log::error!(
+                        "Mod {mod_id}: animation target {key} is already registered by {}; the first registration is kept",
+                        first.owner()
+                    );
+                } else if let Some(owner) = CallbackOwner::new(mod_id) {
+                    targets.insert(key, bind_animation_target(id, owner, apply, convert));
+                    continue;
+                } else {
+                    log::error!("Animation target {key} has no installed owner {mod_id}");
+                }
+                // Keep their destructors apart: both captures may panic independently.
+                let owner = CallbackOwner::for_mod(mod_id);
+                owner.dispose("animation target", "drop_apply", apply);
+                owner.dispose("animation target", "drop_converter", convert);
             }
-        };
-        if !sunrise_assets::item_model::is_mod_id(&id) {
-            log::warn!("{name} {id:?} is not <namespace>:<path> in a mod's namespace");
-            continue;
-        }
-        match table.write().unwrap_or_else(|e| e.into_inner()).entry(id) {
-            Entry::Occupied(first) => log::warn!(
-                "{name} {} is registered twice: by {} and by {owner}",
-                first.key(),
-                first.get().owner
-            ),
-            Entry::Vacant(slot) => {
-                let registered = RegisteredAnimationType {
-                    kind,
-                    owner: owner.to_owned(),
-                };
-                kept.push(slot.insert(registered).clone());
+            JsonAnimationTypeRegistration::Interpolation { id, interpolate } => {
+                let key = id.to_string();
+                if matches!(key.as_str(), "minecraft:linear" | "minecraft:catmullrom") {
+                    log::error!(
+                        "Mod {mod_id}: animation interpolation {key} collides with a built-in animation interpolation"
+                    );
+                } else if let Some(first) = interpolations.get(&key) {
+                    log::error!(
+                        "Mod {mod_id}: animation interpolation {key} is already registered by {}; the first registration is kept",
+                        first.owner()
+                    );
+                } else if let Some(owner) = CallbackOwner::new(mod_id) {
+                    interpolations
+                        .insert(key, bind_animation_interpolation(id, owner, interpolate));
+                    continue;
+                } else {
+                    log::error!("Animation interpolation {key} has no installed owner {mod_id}");
+                }
+                CallbackOwner::for_mod(mod_id).dispose(
+                    "animation interpolation",
+                    "drop_interpolator",
+                    interpolate,
+                );
+            }
+            other => {
+                CallbackOwner::for_mod(mod_id).dispose("animation type", "drop_registration", other)
             }
         }
     }
-    kept
+    BoundAnimations {
+        targets,
+        interpolations,
+    }
 }
 
-/// The index in `types` of the type `table` registered as `id`, added the first time a file
-/// names it; `None` when `table` has no `id`.
-fn type_index(
-    types: &mut Vec<RegisteredAnimationType>,
-    table: &Registered,
-    id: &str,
-) -> Result<Option<u16>, String> {
-    let table = table.read().unwrap_or_else(|e| e.into_inner());
-    let Some(registered) = table.get(id) else {
-        return Ok(None);
-    };
-    let index = match types.iter().position(|t| t == registered) {
-        Some(index) => index,
-        None => {
-            types.push(registered.clone());
-            types.len() - 1
-        }
-    };
-    u16::try_from(index)
-        .map(Some)
-        .map_err(|_| "more registered types than an animation holds".to_owned())
+/// Binds the animation targets and interpolations native mods registered once at start, before
+/// resources load. Any valid `Identifier` (including `minecraft:` and empty-path ids) is accepted;
+/// collisions with the five built-ins (`minecraft:position`, `minecraft:rotation`,
+/// `minecraft:scale`, `minecraft:linear`, `minecraft:catmullrom`) and duplicates are logged as
+/// registration errors and left out (the first registration wins).
+pub fn register(types: Vec<Answered<JsonAnimationTypeRegistration>>) {
+    let bound = freeze(types);
+    if TYPES.set(Arc::new(bound)).is_err() {
+        log::warn!("animation types were registered already; these are left out");
+    }
 }
 
 /// The folder under each namespace the files are read from.
@@ -98,6 +115,7 @@ impl Animations {
     /// Every animation file of `source`. A file that doesn't parse is logged with its reason and
     /// left out; the others load.
     pub fn load(source: &crate::resource_source::ResourceSource) -> Self {
+        let types = TYPES.get().map(Arc::as_ref);
         let mut out = BTreeMap::new();
         for file in source.list_under("assets", &[FOLDER]) {
             let Some((namespace, path)) = file
@@ -116,7 +134,7 @@ impl Animations {
             match source
                 .read_to_string(&file)
                 .map_err(|e| e.to_string())
-                .and_then(|text| parse(id.clone(), &text))
+                .and_then(|text| parse_with_types(id.clone(), &text, types))
             {
                 Ok(holder) => {
                     out.insert(id, Arc::new(holder));
@@ -133,12 +151,21 @@ impl Animations {
 }
 
 /// One animation file: `length` (seconds), optional `loop`, and `animations`, entries of a
-/// `bone`, a `target` and its `keyframes` (`timestamp`, `target` values, `interpolation`). Values
-/// go through vanilla's builder helpers (`KeyframeAnimations`): a position's y is negated
-/// (`posVec`), a rotation is in degrees (`degreeVec`), a scale is a factor (`scaleVec` keeps its
-/// offset from 1). A registered target's values are kept as written: its mod converts them at
-/// bake. A target or interpolation neither built in nor registered fails the file, naming it.
+/// `bone`, a `target` and its `keyframes` (`timestamp`, `target` or `preTarget`/`postTarget`
+/// values, `interpolation`). Values go through vanilla's builder helpers (`KeyframeAnimations`) for
+/// built-in targets — a position's y is negated (`posVec`), a rotation is in degrees (`degreeVec`),
+/// a scale is a factor (`scaleVec` keeps its offset from 1) — or through a registered custom
+/// target's converter during parse (matching NeoForge's `AnimationParser`). A target or
+/// interpolation neither built in nor registered fails the file, naming it.
 pub fn parse(animation: Identifier, text: &str) -> Result<AnimationHolder, String> {
+    parse_with_types(animation, text, TYPES.get().map(Arc::as_ref))
+}
+
+fn parse_with_types(
+    animation: Identifier,
+    text: &str,
+    types: Option<&BoundAnimations>,
+) -> Result<AnimationHolder, String> {
     let json: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let length = finite(&json["length"]).ok_or("no finite `length`")? as f32;
     if length <= 0.0 {
@@ -152,7 +179,6 @@ pub fn parse(animation: Identifier, text: &str) -> Result<AnimationHolder, Strin
         .as_array()
         .ok_or("no `animations` list")?;
     let mut bones: Vec<(String, Vec<AnimationChannel>)> = Vec::new();
-    let mut types = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let bone = entry["bone"]
             .as_str()
@@ -162,19 +188,11 @@ pub fn parse(animation: Identifier, text: &str) -> Result<AnimationHolder, Strin
             Some("minecraft:position") => AnimationTarget::Position,
             Some("minecraft:rotation") => AnimationTarget::Rotation,
             Some("minecraft:scale") => AnimationTarget::Scale,
-            other => match other
-                .map(|id| type_index(&mut types, &TARGETS, id))
-                .transpose()
-                .map_err(|e| format!("animations[{index}]: {e}"))?
-            {
-                Some(Some(registered)) => AnimationTarget::Registered(registered),
-                _ => {
-                    return Err(format!(
-                        "animations[{index}]: unknown target {}",
-                        other.unwrap_or("(none)")
-                    ));
-                }
+            Some(id) => match types.and_then(|t| t.targets.get(id)) {
+                Some(bound) => AnimationTarget::Custom(bound.clone()),
+                None => return Err(format!("animations[{index}]: unknown target {id}")),
             },
+            None => return Err(format!("animations[{index}]: unknown target (none)")),
         };
         let keyframes = entry["keyframes"]
             .as_array()
@@ -182,7 +200,7 @@ pub fn parse(animation: Identifier, text: &str) -> Result<AnimationHolder, Strin
             .iter()
             .enumerate()
             .map(|(at, keyframe)| {
-                keyframe_of(keyframe, target, &mut types)
+                keyframe_of(keyframe, &target, types)
                     .map_err(|e| format!("animations[{index}].keyframes[{at}]: {e}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -197,7 +215,6 @@ pub fn parse(animation: Identifier, text: &str) -> Result<AnimationHolder, Strin
         length,
         looping,
         bones,
-        types,
     })
 }
 
@@ -207,60 +224,70 @@ fn finite(value: &Value) -> Option<f64> {
     (value as f32).is_finite().then_some(value)
 }
 
-/// A namespaced id, `minecraft:` when it names none (`Identifier.parse`).
+/// A namespaced id parsed with `Identifier::parse` (`minecraft:` for bare or leading `:` names).
 fn id(value: &Value) -> Option<String> {
-    let text = value.as_str()?;
-    Some(if text.contains(':') {
-        text.to_owned()
-    } else {
-        format!("minecraft:{text}")
-    })
+    Identifier::parse(value.as_str()?)
+        .ok()
+        .map(|id| id.to_string())
+}
+
+fn parse_vec3(value: &Value, field: &str) -> Result<[f64; 3], String> {
+    let values = value
+        .as_array()
+        .filter(|values| values.len() == 3)
+        .ok_or_else(|| format!("`{field}` is not three numbers"))?;
+    let mut v = [0.0f64; 3];
+    for (slot, value) in v.iter_mut().zip(values) {
+        *slot = finite(value).ok_or_else(|| format!("`{field}` is not three finite numbers"))?;
+    }
+    Ok(v)
+}
+
+fn convert_vector(target: &AnimationTarget, v: [f64; 3]) -> Result<[f32; 3], String> {
+    match target {
+        // KeyframeAnimations.posVec
+        AnimationTarget::Position => Ok([v[0] as f32, -(v[1] as f32), v[2] as f32]),
+        // KeyframeAnimations.degreeVec
+        AnimationTarget::Rotation => Ok(v.map(|d| d as f32 * 0.017_453_292)),
+        // KeyframeAnimations.scaleVec
+        AnimationTarget::Scale => Ok(v.map(|d| (d - 1.0) as f32)),
+        AnimationTarget::Custom(bound) => convert_animation_target(bound, v.map(|d| d as f32)),
+    }
 }
 
 fn keyframe_of(
     keyframe: &Value,
-    target: AnimationTarget,
-    types: &mut Vec<RegisteredAnimationType>,
+    target: &AnimationTarget,
+    types: Option<&BoundAnimations>,
 ) -> Result<Keyframe, String> {
     let time = finite(&keyframe["timestamp"]).ok_or("no finite `timestamp`")? as f32;
-    let values = keyframe["target"]
-        .as_array()
-        .filter(|values| values.len() == 3)
-        .ok_or("`target` is not three numbers")?;
-    let mut v = [0.0f64; 3];
-    for (slot, value) in v.iter_mut().zip(values) {
-        *slot = finite(value).ok_or("`target` is not three finite numbers")?;
-    }
-    let value = match target {
-        // KeyframeAnimations.posVec
-        AnimationTarget::Position => [v[0] as f32, -(v[1] as f32), v[2] as f32],
-        // KeyframeAnimations.degreeVec
-        AnimationTarget::Rotation => v.map(|d| d as f32 * 0.017_453_292),
-        // KeyframeAnimations.scaleVec
-        AnimationTarget::Scale => v.map(|d| (d - 1.0) as f32),
-        AnimationTarget::Registered(_) => v.map(|d| d as f32),
+    let (pre, post) = if keyframe.get("preTarget").is_some() || keyframe.get("postTarget").is_some()
+    {
+        let pre_raw = parse_vec3(&keyframe["preTarget"], "preTarget")?;
+        let post_raw = parse_vec3(&keyframe["postTarget"], "postTarget")?;
+        (
+            convert_vector(target, pre_raw)?,
+            convert_vector(target, post_raw)?,
+        )
+    } else {
+        let raw = parse_vec3(&keyframe["target"], "target")?;
+        let value = convert_vector(target, raw)?;
+        (value, value)
     };
     let interpolation_id = id(&keyframe["interpolation"]);
     let interpolation = match interpolation_id.as_deref() {
         Some("minecraft:linear") => Interpolation::Linear,
         Some("minecraft:catmullrom") => Interpolation::CatmullRom,
-        other => match other
-            .map(|id| type_index(types, &INTERPOLATIONS, id))
-            .transpose()?
-        {
-            Some(Some(registered)) => Interpolation::Registered(registered),
-            _ => {
-                return Err(format!(
-                    "unknown interpolation {}",
-                    other.unwrap_or("(none)")
-                ));
-            }
+        Some(id) => match types.and_then(|t| t.interpolations.get(id)) {
+            Some(bound) => Interpolation::Custom(bound.clone()),
+            None => return Err(format!("unknown interpolation {id}")),
         },
+        None => return Err("unknown interpolation (none)".to_owned()),
     };
     Ok(Keyframe {
         time,
-        pre: value,
-        post: value,
+        pre,
+        post,
         interpolation,
     })
 }
@@ -269,8 +296,14 @@ fn keyframe_of(
 mod tests {
     use super::*;
     use crate::resource_source::{Resource, ResourceSource};
-    use mod_api::{AnimationState, ModelPart, PartPose};
-    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+    use mod_api::{
+        __private::{game::RegistrationContextNew, take_hook_panics},
+        AnimationState, ModelPart, PartPose, RegistrationContext,
+    };
+    use std::{
+        f32::consts::{FRAC_PI_2, FRAC_PI_4},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     const SWING: &str = r#"{"length": 2.0, "loop": true, "animations": [
         {"bone": "arm", "target": "minecraft:rotation", "keyframes": [
@@ -287,8 +320,8 @@ mod tests {
         parse(Identifier::parse("test:animation").unwrap(), text)
     }
 
-    fn key(holder: &AnimationHolder, bone: usize, channel: usize, at: usize) -> Keyframe {
-        holder.bones[bone].1[channel].keyframes[at]
+    fn key(holder: &AnimationHolder, bone: usize, channel: usize, at: usize) -> &Keyframe {
+        &holder.bones[bone].1[channel].keyframes[at]
     }
 
     /// Values go through vanilla's builder helpers: degrees to radians, y negated, scale as an
@@ -319,6 +352,20 @@ mod tests {
         assert!(
             !read(r#"{"length":1,"animations":[]}"#).unwrap().looping,
             "loop defaults to false"
+        );
+        // Leading colon resolves into minecraft: just like vanilla Identifier.parse.
+        let leading_colon = read(
+            r#"{"length":1,"animations":[{"bone":"arm","target":":position",
+                "keyframes":[{"timestamp":0,"target":[1,2,3],"interpolation":":linear"}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            leading_colon.bones[0].1[0].target,
+            AnimationTarget::Position
+        );
+        assert_eq!(
+            key(&leading_colon, 0, 0, 0).interpolation,
+            Interpolation::Linear
         );
     }
 
@@ -362,105 +409,405 @@ mod tests {
         assert!(read(short).is_err(), "two values");
     }
 
+    /// Any valid `<namespace>:<path>` identifier (including `minecraft:`) is accepted; all five
+    /// built-in collisions and duplicates are rejected (first registration wins), while a target
+    /// and an interpolation with the same id remain separate kinds.
     #[test]
-    fn registration_keeps_each_kind_once_with_its_mod() {
-        let target = |id: &str| JsonAnimationType::Target(Identifier::parse(id).unwrap());
-        let interpolation =
-            |id: &str| JsonAnimationType::Interpolation(Identifier::parse(id).unwrap());
-        let kept = keep([
-            (target("animreg:glow"), "one"),
-            (target("animreg:glow"), "two"),
-            (interpolation("animreg:glow"), "two"),
-            (target("minecraft:glow"), "one"),
-        ]);
-        let kept: Vec<_> = kept
-            .iter()
-            .map(|t| (t.kind.clone(), t.owner.as_str()))
-            .collect();
-        assert_eq!(
-            kept,
-            [
-                (target("animreg:glow"), "one"),
-                (interpolation("animreg:glow"), "two")
-            ],
-            "a second target of an id is refused, an interpolation of it is its own kind"
-        );
+    fn minecraft_namespace_is_accepted_and_builtins_and_duplicates_are_rejected() {
+        struct First;
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for First {
+            fn register_json_animation_types(
+                &self,
+                _: &RegistrationContext,
+                event: &mut mod_api::RegisterJsonAnimationTypesEvent<'_>,
+            ) {
+                event.register_target(
+                    Identifier::parse("minecraft:custom_target").unwrap(),
+                    |part, v| part.offset_pos(v),
+                    |v| v.map(|c| c * 2.0),
+                );
+                event.register_interpolation(
+                    Identifier::parse("minecraft:custom_interp").unwrap(),
+                    |k, _, prev, _, scale| k[prev].post.map(|c| c * scale),
+                );
+                event.register_target(
+                    Identifier::parse("animreg:glow").unwrap(),
+                    |part, v| part.offset_pos(v),
+                    |v| v,
+                );
+                event.register_target(
+                    Identifier::parse("animreg:").unwrap(),
+                    |part, v| part.offset_pos(v),
+                    |v| v,
+                );
+                event.register_interpolation(
+                    Identifier::parse("animreg:").unwrap(),
+                    |k, _, prev, _, scale| k[prev].post.map(|c| c * scale),
+                );
+                // All 5 built-ins must be rejected.
+                for builtin in [
+                    "minecraft:position",
+                    "minecraft:rotation",
+                    "minecraft:scale",
+                ] {
+                    event.register_target(
+                        Identifier::parse(builtin).unwrap(),
+                        |_, _| panic!("built-in target collision should be rejected"),
+                        |_| panic!("built-in target collision should be rejected"),
+                    );
+                }
+                for builtin in ["minecraft:linear", "minecraft:catmullrom"] {
+                    event.register_interpolation(
+                        Identifier::parse(builtin).unwrap(),
+                        |_, _, _, _, _| {
+                            panic!("built-in interpolation collision should be rejected")
+                        },
+                    );
+                }
+            }
+        }
+
+        struct Second;
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Second {
+            fn register_json_animation_types(
+                &self,
+                _: &RegistrationContext,
+                event: &mut mod_api::RegisterJsonAnimationTypesEvent<'_>,
+            ) {
+                // Duplicate target: first registration stands.
+                event.register_target(
+                    Identifier::parse("animreg:glow").unwrap(),
+                    |_, _| panic!("duplicate target should be rejected"),
+                    |_| panic!("duplicate target should be rejected"),
+                );
+                // Same id as an interpolation is a separate kind and is accepted.
+                event.register_interpolation(
+                    Identifier::parse("animreg:glow").unwrap(),
+                    |k, _, _, next, scale| k[next].pre.map(|c| c * scale),
+                );
+                // Duplicate interpolation: first registration stands.
+                event.register_interpolation(
+                    Identifier::parse("minecraft:custom_interp").unwrap(),
+                    |_, _, _, _, _| panic!("duplicate interpolation should be rejected"),
+                );
+            }
+        }
+
+        let mods: mod_api::Mods = vec![
+            mod_api::ModEntry::new("first_anim", Box::new(First)),
+            mod_api::ModEntry::new("second_anim", Box::new(Second)),
+        ]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            let mut types = Vec::new();
+            mod_api::dispatch_register_json_animation_types(
+                &RegistrationContext::new(),
+                &mut types,
+            );
+            let bound = freeze(types);
+            let target_keys: Vec<_> = bound
+                .targets
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.owner()))
+                .collect();
+            let interp_keys: Vec<_> = bound
+                .interpolations
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.owner()))
+                .collect();
+            assert_eq!(
+                target_keys,
+                [
+                    ("animreg:", "first_anim"),
+                    ("animreg:glow", "first_anim"),
+                    ("minecraft:custom_target", "first_anim"),
+                ]
+            );
+            assert_eq!(
+                interp_keys,
+                [
+                    ("animreg:", "first_anim"),
+                    ("animreg:glow", "second_anim"),
+                    ("minecraft:custom_interp", "first_anim"),
+                ]
+            );
+        });
     }
 
-    /// A registered target keeps the file's values as written, its keyframes may use a
-    /// registered interpolation, and each type is listed once with the mod that registered it.
+    /// Registered targets convert keyframe vectors at parse time and bind directly onto channels;
+    /// registered interpolations bind directly onto keyframes; `holder.bake(&root)` plays both
+    /// without a second lookup.
     #[test]
-    fn a_file_names_registered_types_by_index() {
-        keep([
-            (
-                JsonAnimationType::Target(Identifier::parse("animfile:pulse").unwrap()),
-                "pulser",
-            ),
-            (
-                JsonAnimationType::Interpolation(Identifier::parse("animfile:step").unwrap()),
-                "stepper",
-            ),
-        ]);
-        let holder = read(
-            r#"{"length": 1, "animations": [
-            {"bone": "a", "target": "animfile:pulse", "keyframes": [
-                {"timestamp": 0, "target": [90, 2, 1], "interpolation": "animfile:step"},
-                {"timestamp": 1, "target": [0, 0, 0], "interpolation": "linear"}]},
-            {"bone": "a", "target": "minecraft:position", "keyframes": [
-                {"timestamp": 0, "target": [0, 2, 0], "interpolation": "animfile:step"}]}
-        ]}"#,
-        )
-        .unwrap();
-        let owners: Vec<_> = holder
-            .types
-            .iter()
-            .map(|t| (t.id().to_string(), t.owner.as_str()))
-            .collect();
-        assert_eq!(
-            owners,
-            [
-                ("animfile:pulse".to_owned(), "pulser"),
-                ("animfile:step".to_owned(), "stepper")
-            ]
-        );
-        let channels = &holder.bones[0].1;
-        assert_eq!(channels[0].target, AnimationTarget::Registered(0));
-        let first = key(&holder, 0, 0, 0);
-        assert_eq!(first.post, [90.0, 2.0, 1.0], "not converted to radians");
-        assert_eq!(first.interpolation, Interpolation::Registered(1));
-        let built_in = key(&holder, 0, 1, 0);
-        assert_eq!(built_in.post, [0.0, -2.0, 0.0], "posVec still applies");
-        assert_eq!(
-            built_in.interpolation,
-            Interpolation::Registered(1),
-            "the second use shares the first's index"
-        );
-        let huge = r#"{"length":1,"animations":[{"bone":"a","target":"animfile:pulse",
-            "keyframes":[{"timestamp":0,"target":[1e40,0,0],"interpolation":"linear"}]}]}"#;
-        assert_eq!(
-            read(huge).unwrap_err(),
-            "animations[0].keyframes[0]: `target` is not three finite numbers",
-            "a registered target's raw values are checked as the built-in ones are"
-        );
-        let still = r#"{"length":0,"loop":true,"animations":[{"bone":"a","target":"animfile:pulse",
-            "keyframes":[{"timestamp":0,"target":[1,1,1],"interpolation":"animfile:step"}]}]}"#;
-        assert_eq!(read(still).unwrap_err(), "`length` 0 is not positive");
+    fn custom_target_converts_at_parse_and_plays_directly_through_bake() {
+        struct GlowMod;
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for GlowMod {
+            fn register_json_animation_types(
+                &self,
+                _: &RegistrationContext,
+                event: &mut mod_api::RegisterJsonAnimationTypesEvent<'_>,
+            ) {
+                event.register_target(
+                    Identifier::parse("animfile:pulse").unwrap(),
+                    |part, value| part.offset_pos(value),
+                    |raw| raw.map(|v| v * 3.0),
+                );
+                event.register_interpolation(
+                    Identifier::parse("animfile:step").unwrap(),
+                    |keyframes, alpha, _prev, next, scale| {
+                        keyframes[next].pre.map(|v| v * alpha * scale)
+                    },
+                );
+            }
+        }
+
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new("pulser", Box::new(GlowMod))].into();
+        mod_platform::testing::with_mods(mods, || {
+            let mut types = Vec::new();
+            mod_api::dispatch_register_json_animation_types(
+                &RegistrationContext::new(),
+                &mut types,
+            );
+            let bound = freeze(types);
+            let read = |text: &str| {
+                parse_with_types(
+                    Identifier::parse("test:animation").unwrap(),
+                    text,
+                    Some(&bound),
+                )
+            };
+
+            let holder = read(
+                r#"{"length": 1, "animations": [
+                {"bone": "head", "target": "animfile:pulse", "keyframes": [
+                    {"timestamp": 0, "preTarget": [1, 2, 3], "postTarget": [2, 3, 4], "interpolation": "linear"},
+                    {"timestamp": 1, "target": [3, 4, 5], "interpolation": "animfile:step"}]},
+                {"bone": "head", "target": "minecraft:position", "keyframes": [
+                    {"timestamp": 0, "target": [0, 2, 0], "interpolation": "animfile:step"}]}
+            ]}"#,
+            )
+            .unwrap();
+
+            // Keyframe vectors were converted at parse time, not deferred to bake.
+            let first = key(&holder, 0, 0, 0);
+            assert_eq!(first.pre, [3.0, 6.0, 9.0]);
+            assert_eq!(first.post, [6.0, 9.0, 12.0]);
+            let second = key(&holder, 0, 0, 1);
+            assert_eq!(second.pre, [9.0, 12.0, 15.0]);
+            assert_eq!(second.post, [9.0, 12.0, 15.0]);
+            assert!(matches!(
+                &holder.bones[0].1[0].target,
+                AnimationTarget::Custom(bound) if bound.id().to_string() == "animfile:pulse"
+            ));
+            assert!(matches!(
+                &second.interpolation,
+                Interpolation::Custom(bound) if bound.id().to_string() == "animfile:step"
+            ));
+
+            // Built-in posVec still applies on built-in target beside custom interpolation.
+            let built_in = key(&holder, 0, 1, 0);
+            assert_eq!(built_in.post, [0.0, -2.0, 0.0]);
+
+            // Bake and play directly through `holder.bake(&root)`.
+            let root = ModelPart::new(
+                Vec::new(),
+                vec![(
+                    "head".to_owned(),
+                    ModelPart::new(Vec::new(), Vec::new(), PartPose::ZERO),
+                )],
+                PartPose::ZERO,
+            );
+            let baked = holder.bake(&root);
+            let mut state = AnimationState::new();
+            state.start(0);
+            let mut posed = root.clone();
+            // 10 ticks = 500 ms = alpha 0.5:
+            // channel 0 (custom target + custom interp): [9, 12, 15] * 0.5 = [4.5, 6, 7.5]
+            // channel 1 (position, single keyframe at t=0, alpha=0): [0, -2, 0] * 0 = [0, 0, 0]
+            baked.apply(&mut posed, &state, 10.0);
+            let head = posed.get_child("head").unwrap();
+            assert_eq!((head.x, head.y, head.z), (4.5, 6.0, 7.5));
+
+            // Target and interpolation remain separate kinds.
+            let as_interpolation = r#"{"length":1,"animations":[{"bone":"head","target":"animfile:pulse",
+                "keyframes":[{"timestamp":0,"target":[1,1,1],"interpolation":"animfile:pulse"}]}]}"#;
+            assert_eq!(
+                read(as_interpolation).unwrap_err(),
+                "animations[0].keyframes[0]: unknown interpolation animfile:pulse"
+            );
+
+            // Raw non-finite JSON values on custom target are still rejected.
+            let huge = r#"{"length":1,"animations":[{"bone":"head","target":"animfile:pulse",
+                "keyframes":[{"timestamp":0,"target":[1e40,0,0],"interpolation":"linear"}]}]}"#;
+            assert_eq!(
+                read(huge).unwrap_err(),
+                "animations[0].keyframes[0]: `target` is not three finite numbers"
+            );
+        });
     }
 
-    /// A target and an interpolation are separate kinds: an id registered only as a target fails
-    /// a file that names it as an interpolation, by name.
+    /// A converter returning non-finite values fails that file without latching; panics in a
+    /// converter, apply callback, or interpolation disable that callback with a panic notice.
     #[test]
-    fn a_registered_target_is_not_an_interpolation() {
-        keep([(
-            JsonAnimationType::Target(Identifier::parse("animkind:pulse").unwrap()),
-            "pulser",
-        )]);
-        let as_interpolation = r#"{"length":1,"animations":[{"bone":"a","target":"animkind:pulse",
-            "keyframes":[{"timestamp":0,"target":[1,1,1],"interpolation":"animkind:pulse"}]}]}"#;
-        assert_eq!(
-            read(as_interpolation).unwrap_err(),
-            "animations[0].keyframes[0]: unknown interpolation animkind:pulse"
-        );
+    fn converter_and_playback_panics_disable_with_notice_and_non_finite_does_not_latch() {
+        let flaky_calls = Arc::new(AtomicUsize::new(0));
+        let panic_convert_calls = Arc::new(AtomicUsize::new(0));
+        let panic_apply_calls = Arc::new(AtomicUsize::new(0));
+        let panic_interp_calls = Arc::new(AtomicUsize::new(0));
+
+        struct FaultyMod {
+            flaky_calls: Arc<AtomicUsize>,
+            panic_convert_calls: Arc<AtomicUsize>,
+            panic_apply_calls: Arc<AtomicUsize>,
+            panic_interp_calls: Arc<AtomicUsize>,
+        }
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for FaultyMod {
+            fn register_json_animation_types(
+                &self,
+                _: &RegistrationContext,
+                event: &mut mod_api::RegisterJsonAnimationTypesEvent<'_>,
+            ) {
+                let flaky = Arc::clone(&self.flaky_calls);
+                event.register_target(
+                    Identifier::parse("animfault:flaky_convert").unwrap(),
+                    |part, v| part.offset_pos(v),
+                    move |v| {
+                        if flaky.fetch_add(1, Ordering::Relaxed) == 0 {
+                            [f32::NAN, 0.0, 0.0]
+                        } else {
+                            v
+                        }
+                    },
+                );
+                let pc = Arc::clone(&self.panic_convert_calls);
+                event.register_target(
+                    Identifier::parse("animfault:panic_convert").unwrap(),
+                    |_, _| {},
+                    move |_| {
+                        pc.fetch_add(1, Ordering::Relaxed);
+                        panic!("convert boom");
+                    },
+                );
+                let pa = Arc::clone(&self.panic_apply_calls);
+                event.register_target(
+                    Identifier::parse("animfault:panic_apply").unwrap(),
+                    move |_, _| {
+                        pa.fetch_add(1, Ordering::Relaxed);
+                        panic!("apply boom");
+                    },
+                    |v| v,
+                );
+                let pi = Arc::clone(&self.panic_interp_calls);
+                event.register_interpolation(
+                    Identifier::parse("animfault:panic_interp").unwrap(),
+                    move |_, _, _, _, _| {
+                        pi.fetch_add(1, Ordering::Relaxed);
+                        panic!("interp boom");
+                    },
+                );
+            }
+        }
+
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "anim_panicker",
+            Box::new(FaultyMod {
+                flaky_calls: Arc::clone(&flaky_calls),
+                panic_convert_calls: Arc::clone(&panic_convert_calls),
+                panic_apply_calls: Arc::clone(&panic_apply_calls),
+                panic_interp_calls: Arc::clone(&panic_interp_calls),
+            }),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            let mut types = Vec::new();
+            mod_api::dispatch_register_json_animation_types(
+                &RegistrationContext::new(),
+                &mut types,
+            );
+            let bound = freeze(types);
+            let read = |text: &str| {
+                parse_with_types(
+                    Identifier::parse("test:animation").unwrap(),
+                    text,
+                    Some(&bound),
+                )
+            };
+            let _ = take_hook_panics();
+
+            // Non-finite converter fails the file cleanly without latching or panic notice.
+            let flaky_json = r#"{"length":1,"animations":[{"bone":"head","target":"animfault:flaky_convert",
+                "keyframes":[{"timestamp":0,"target":[1,2,3],"interpolation":"linear"}]}]}"#;
+            assert!(read(flaky_json).is_err());
+            assert_eq!(flaky_calls.load(Ordering::Relaxed), 1);
+            assert!(take_hook_panics().is_empty());
+            assert!(read(flaky_json).is_ok());
+            assert_eq!(flaky_calls.load(Ordering::Relaxed), 2);
+
+            // Panicking converter fails the file, disables the target, and records a panic notice.
+            let panic_convert_json = r#"{"length":1,"animations":[{"bone":"head","target":"animfault:panic_convert",
+                "keyframes":[{"timestamp":0,"target":[1,2,3],"interpolation":"linear"}]}]}"#;
+            assert!(read(panic_convert_json).is_err());
+            assert_eq!(panic_convert_calls.load(Ordering::Relaxed), 1);
+            let notices = take_hook_panics();
+            assert!(
+                notices
+                    .iter()
+                    .any(|notice| notice.mod_id == "anim_panicker"
+                        && notice.hook == "convert_target"),
+                "expected converter panic notice, got {notices:?}"
+            );
+            assert!(read(panic_convert_json).is_err());
+            assert_eq!(panic_convert_calls.load(Ordering::Relaxed), 1);
+
+            // Panicking playback interpolation skips its channel (never invoking its target),
+            // and a separate channel with a panicking target disables on first panic with notices.
+            let playback_json = r#"{"length":1,"animations":[
+                {"bone":"head","target":"animfault:panic_apply","keyframes":[
+                    {"timestamp":0,"target":[0,0,0],"interpolation":"linear"},
+                    {"timestamp":1,"target":[1,1,1],"interpolation":"animfault:panic_interp"}
+                ]},
+                {"bone":"head","target":"animfault:panic_apply","keyframes":[
+                    {"timestamp":0,"target":[0,0,0],"interpolation":"linear"},
+                    {"timestamp":1,"target":[1,1,1],"interpolation":"linear"}
+                ]}
+            ]}"#;
+            let holder = read(playback_json).unwrap();
+            let root = ModelPart::new(
+                Vec::new(),
+                vec![(
+                    "head".to_owned(),
+                    ModelPart::new(Vec::new(), Vec::new(), PartPose::ZERO),
+                )],
+                PartPose::ZERO,
+            );
+            let baked = holder.bake(&root);
+            let mut state = AnimationState::new();
+            state.start(0);
+            let mut posed = root.clone();
+            baked.apply(&mut posed, &state, 10.0);
+            assert_eq!(panic_interp_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(panic_apply_calls.load(Ordering::Relaxed), 1);
+            let notices = take_hook_panics();
+            assert!(
+                notices
+                    .iter()
+                    .any(|notice| notice.mod_id == "anim_panicker" && notice.hook == "interpolate"),
+                "expected interpolation panic notice, got {notices:?}"
+            );
+            assert!(
+                notices
+                    .iter()
+                    .any(|notice| notice.mod_id == "anim_panicker" && notice.hook == "apply"),
+                "expected target panic notice, got {notices:?}"
+            );
+            // Second frame does not invoke either disabled callback.
+            baked.apply(&mut posed, &state, 10.0);
+            assert_eq!(panic_interp_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(panic_apply_calls.load(Ordering::Relaxed), 1);
+        });
     }
 
     /// Every load reads the files again: a nested path is part of the id, a broken file is left
@@ -500,7 +847,7 @@ mod tests {
             let mut state = AnimationState::new();
             state.start(0);
             // 10 ticks: 500 ms, halfway to the second keyframe.
-            holder.bake(&model).unwrap().apply(&mut posed, &state, 10.0);
+            holder.bake(&model).apply(&mut posed, &state, 10.0);
             posed.get_child("arm").unwrap().x_rot
         };
         let first = Animations::load(&source(SWING));

@@ -2,7 +2,6 @@ use super::*;
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// A snapshot of the current graphics preferences.
     pub(in crate::game) fn graphics_options(&self) -> ClientGraphicsOptions {
@@ -11,14 +10,14 @@ impl Game<'_> {
             fov: s.fov,
             render_distance: s.render_distance,
             simulation_distance: s.simulation_distance,
-            brightness: s.gamma,
+            brightness: s.gamma as f32,
             max_fps: s.max_fps,
             vsync: s.vsync,
             fullscreen: s.fullscreen,
             view_bobbing: s.view_bobbing,
             smooth_lighting: s.smooth_lighting,
             particles: s.particles,
-            entity_distance: s.entity_distance,
+            entity_distance: s.entity_distance as f32,
             biome_blend: s.biome_blend,
         }
     }
@@ -51,19 +50,19 @@ impl Game<'_> {
             visibility: s.chat_visibility,
             colors: s.chat_colors,
             links: s.chat_links,
-            opacity: s.chat_opacity,
-            scale: s.chat_scale,
-            width: s.chat_width,
-            height_focused: s.chat_height_focused,
-            height_unfocused: s.chat_height_unfocused,
-            line_spacing: s.chat_line_spacing,
+            opacity: s.chat_opacity as f32,
+            scale: s.chat_scale as f32,
+            width: s.chat_width as f32,
+            height_focused: s.chat_height_focused as f32,
+            height_unfocused: s.chat_height_unfocused as f32,
+            line_spacing: s.chat_line_spacing as f32,
             delay: s.chat_delay,
         }
     }
     /// A snapshot of the current audio preferences.
     pub(in crate::game) fn audio_options(&self) -> ClientAudioOptions {
         ClientAudioOptions {
-            master_volume: self.settings.master_volume,
+            master_volume: self.settings.master_volume as f32,
         }
     }
 }
@@ -78,8 +77,8 @@ fn gui_options_snapshot(s: &sunrise_client::settings::Settings) -> ClientGuiOpti
         advanced_item_tooltips: s.file.bool("advancedItemTooltips"),
         high_contrast: s.high_contrast,
         show_subtitles: s.show_subtitles,
-        notification_display_time: s.notification_display_time,
-        text_background_opacity: s.text_background_opacity,
+        notification_display_time: s.notification_display_time as f32,
+        text_background_opacity: s.text_background_opacity as f32,
         menu_blur: s.menu_blur,
     }
 }

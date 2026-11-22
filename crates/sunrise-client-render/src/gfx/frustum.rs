@@ -3,129 +3,64 @@
 
 use super::{Frustum, SectionKey};
 use crate::fast_hash::FxHashMap;
-use crate::render_views::MAX_WORLD_VIEWS;
 use glam::{DVec3, Mat4, Vec3, Vec4};
 
-/// The union of two frusta (the camera's and its water mirror's), for `Resident::visible`.
-#[derive(Clone, Copy, Debug)]
-pub struct Frusta(pub Frustum, pub Option<Frustum>);
-/// What `Resident::visible` culls with: a frustum or a union of them.
-pub trait Cull {
-    fn intersects(&self, min: Vec3, max: Vec3) -> bool;
-    fn contains(&self, min: Vec3, max: Vec3) -> bool;
-    /// Whether a section is tested by the box around its geometry, not its whole 16 blocks.
-    fn tight(&self) -> bool {
-        true
-    }
-}
-impl Cull for Frustum {
-    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
-        Frustum::intersects(self, min, max)
-    }
-    fn contains(&self, min: Vec3, max: Vec3) -> bool {
-        Frustum::contains(self, min, max)
-    }
-}
-impl Cull for Frusta {
-    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
-        self.0.intersects(min, max) || self.1.is_some_and(|f| f.intersects(min, max))
-    }
-    /// Entirely inside one of them is entirely inside the union.
-    fn contains(&self, min: Vec3, max: Vec3) -> bool {
-        self.0.contains(min, max) || self.1.is_some_and(|f| f.contains(min, max))
-    }
-}
-/// The camera's frustum joined to this frame's world views' (`Renderer::camera_frustum`): what
-/// the game builds entities and block entities for is what one of them sees. Without views it
-/// is the camera's alone.
-#[derive(Clone, Copy, Debug)]
-pub struct JoinedFrusta {
-    camera: Frustum,
-    views: [Frustum; MAX_WORLD_VIEWS],
-    len: usize,
-}
-impl JoinedFrusta {
-    pub(super) fn new(camera: Frustum, views: impl IntoIterator<Item = Frustum>) -> Self {
-        let mut joined = Self {
-            camera,
-            views: [camera; MAX_WORLD_VIEWS],
-            len: 0,
-        };
-        for (slot, view) in joined.views.iter_mut().zip(views) {
-            *slot = view;
-            joined.len += 1;
-        }
-        joined
-    }
-    /// The same views with the camera's frustum `camera` (TAA's wider one).
-    pub(super) fn with_camera(self, camera: Frustum) -> Self {
-        Self { camera, ..self }
-    }
-    fn views(&self) -> &[Frustum] {
-        &self.views[..self.len]
-    }
-    /// `Frustum::intersects` for the camera's frustum or a view's.
-    pub fn intersects(&self, min: Vec3, max: Vec3) -> bool {
-        self.camera.intersects(min, max) || self.views().iter().any(|f| f.intersects(min, max))
-    }
-    /// `Frustum::intersects_sphere` for the camera's frustum or a view's.
-    pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
-        self.camera.intersects_sphere(center, radius)
-            || self
-                .views()
-                .iter()
-                .any(|f| f.intersects_sphere(center, radius))
-    }
-    /// The camera's depth planes alone (`Frustum::intersects_depth`), which TAA's jitter cannot
-    /// move, or a view's whole frustum, which it does not move.
-    pub fn intersects_depth(&self, min: Vec3, max: Vec3) -> bool {
-        self.camera.intersects_depth(min, max)
-            || self.views().iter().any(|f| f.intersects(min, max))
-    }
-    /// Entirely inside one of them is entirely inside the union.
-    pub fn contains(&self, min: Vec3, max: Vec3) -> bool {
-        self.camera.contains(min, max) || self.views().iter().any(|f| f.contains(min, max))
-    }
-    /// `Frustum::contains_point` for the camera's frustum or a view's.
-    pub fn contains_point(&self, point: Vec3) -> bool {
-        self.camera.contains_point(point) || self.views().iter().any(|f| f.contains_point(point))
-    }
-    /// Each of them seen from a camera moved `blocks` back (`Frustum::pulled_back`).
-    pub fn pulled_back(&self, blocks: f32) -> Self {
-        Self {
-            camera: self.camera.pulled_back(blocks),
-            views: self.views.map(|f| f.pulled_back(blocks)),
-            len: self.len,
-        }
-    }
-}
-/// The camera's frustum alone, with no world views.
-impl From<Frustum> for JoinedFrusta {
-    fn from(camera: Frustum) -> Self {
-        Self::new(camera, [])
-    }
-}
-impl Cull for JoinedFrusta {
-    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
-        JoinedFrusta::intersects(self, min, max)
-    }
-    fn contains(&self, min: Vec3, max: Vec3) -> bool {
-        JoinedFrusta::contains(self, min, max)
-    }
-}
+pub use sunrise_render_core::{Cull, Frusta, JoinedFrusta};
 /// A shader pack's shadow camera's box, and with `casters` only what can shade the camera's view
 /// (`shadow_casters`): a box must meet all of them.
 #[derive(Clone, Copy, Debug)]
 pub struct ShadowCull {
-    pub light: Frustum,
-    pub casters: Option<[Frustum; 2]>,
+    pub(crate) light: Frustum,
+    pub(crate) casters: Option<[Frustum; 2]>,
     /// `shadowDistance × shadowDistanceRenderMul`: only what lies within this many blocks of the
     /// camera along each axis, a cube around it. Our probe's Iris 1.11.7 maps keep the sections
     /// whose box, grown by `SHADOW_CASTER_MARGIN` as for the casters, meets that cube (#8464):
     /// out to its corners, and a section 1 block past its side but not one 1.5 blocks past.
-    pub reach: Option<f32>,
+    pub(crate) reach: Option<f32>,
 }
 impl ShadowCull {
+    /// Construct a shadow cull for the shadow camera's box `light`.
+    #[inline]
+    pub fn new(light: Frustum) -> Self {
+        Self {
+            light,
+            casters: None,
+            reach: None,
+        }
+    }
+
+    /// Set optional shadow casters (`[near, far]`) that can shade the view.
+    #[inline]
+    pub fn with_casters(mut self, casters: Option<[Frustum; 2]>) -> Self {
+        self.casters = casters;
+        self
+    }
+
+    /// Set the maximum reach cube distance along each axis.
+    #[inline]
+    pub fn with_reach(mut self, reach: Option<f32>) -> Self {
+        self.reach = reach;
+        self
+    }
+
+    /// The shadow camera's light frustum box.
+    #[inline]
+    pub fn light(&self) -> &Frustum {
+        &self.light
+    }
+
+    /// The casters frustums, if any.
+    #[inline]
+    pub fn casters(&self) -> Option<&[Frustum; 2]> {
+        self.casters.as_ref()
+    }
+
+    /// The reach limit in blocks along each axis, if set.
+    #[inline]
+    pub fn reach(&self) -> Option<f32> {
+        self.reach
+    }
+
     /// Whether the camera-relative box `min..max`, grown by the margin, meets (`whole`: lies
     /// within) `reach`'s cube.
     fn within_reach(&self, min: Vec3, max: Vec3, whole: bool) -> bool {
@@ -169,7 +104,7 @@ impl Cull for ShadowCull {
     }
 }
 /// The block entities of `sections` whose box, a block wider on every side, comes within the
-/// 64 blocks block entities are drawn to (`Renderer::visible_block_entities_in_frustum`).
+/// 64 blocks block entities are drawn to (`Renderer::block_entities_in_range`).
 pub(super) fn block_entities_within_reach<'a>(
     sections: impl Iterator<Item = SectionKey> + 'a,
     block_entities: &'a FxHashMap<SectionKey, Vec<([i32; 3], u32)>>,
@@ -247,9 +182,8 @@ pub(super) fn shadow_casters(view_proj: Mat4, light: Vec3) -> [Frustum; 2] {
             }
         }
     }
-    let [a, b] = [0, 6].map(|i| Frustum {
-        planes: planes[i..i + 6].try_into().expect("six planes"),
-    });
+    let [a, b] =
+        [0, 6].map(|i| Frustum::from_planes(planes[i..i + 6].try_into().expect("six planes")));
     [a, b]
 }
 pub(super) fn taa_frustum(view_proj: Mat4, rendered_size: [u32; 2]) -> Frustum {
@@ -257,20 +191,7 @@ pub(super) fn taa_frustum(view_proj: Mat4, rendered_size: [u32; 2]) -> Frustum {
     // Widen x/y before extracting the planes: this includes every such shifted
     // view, including a posed camera, without changing the near/far planes.
     let [x, y] = rendered_size.map(|size| 1.0 / (1.0 + 2.0 / size.max(1) as f32));
-    Frustum {
-        planes: frustum(Mat4::from_scale(Vec3::new(x, y, 1.0)) * view_proj),
-    }
+    Frustum::from_planes(frustum(Mat4::from_scale(Vec3::new(x, y, 1.0)) * view_proj))
 }
 
-pub(super) fn frustum(m: Mat4) -> [Vec4; 6] {
-    let r = |i| m.row(i);
-    let planes = [
-        r(3) + r(0),
-        r(3) - r(0),
-        r(3) + r(1),
-        r(3) - r(1),
-        r(2),
-        r(3) - r(2),
-    ];
-    planes.map(|p| p / p.truncate().length())
-}
+pub(super) use sunrise_render_core::frustum::frustum_planes_from_view_proj as frustum;

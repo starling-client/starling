@@ -1,0 +1,11 @@
+ids = [
+    "hook:consume_effect",
+    "hook:consume_effect.stack",
+    "hook:consume_effect.user",
+    "type:ConsumeEffectEvent.stack",
+    "type:ConsumeEffectEvent.user",
+    "type:item::item_stack::StackError",
+    "type:item::item_stack::StackError.InvalidComponent",
+]
+why = "consume_effect version 2 supplies the consumed stack snapshot and the consuming entity, and fires for mobs as well as players. The effective stack consumable determines the effect list. Typed stack writes now name an invalid component instead of silently dropping malformed villager food."
+migrate = "Read event.stack for components and event.user for the consuming entity instead of assuming the acting player is the consumer. Handle StackError::InvalidComponent { id } in exhaustive matches."

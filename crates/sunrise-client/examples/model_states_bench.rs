@@ -1,12 +1,12 @@
 //! Compare the old two-parse loading path with catalog construction from shared facts.
 //! Run: cargo run -p sunrise-client --profile fast --example model_states_bench -- 15
 extern crate sunrise_client_lib as sunrise_client;
-use sunrise_client::{Result, models::StateModels, sprites::Sprites};
-use sunrise_core::position::BlockPos;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, hint::black_box, path::PathBuf, time::Instant};
+use sunrise_client::{Result, models::StateModels, sprites::Sprites};
+use sunrise_core::position::BlockPos;
 use {
-    sunrise_core::nbt::Tag,
+    sunrise_core::nbt::{Compound, Tag},
     sunrise_world::{
         DATA_VERSION,
         chunk::BlockState,
@@ -44,7 +44,7 @@ impl Fixture {
         let blocks = (target_bytes / (serde_json::to_vec(&fact)?.len() + 26)).max(1);
         let mut facts = BTreeMap::new();
         let mut states = Vec::new();
-        let mut defaults = BTreeMap::new();
+        let mut defaults = Compound::new();
         for i in 0..blocks {
             let block = format!("fixture_{i:04}");
             let name = format!("minecraft:{block}");

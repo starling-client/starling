@@ -1,28 +1,41 @@
 #!/bin/sh
-# Installs sunrise-server (docs/server.md) on Linux or macOS: the current Sunrise Nightly for this computer (the
-# only build Sunrise ships; GitHub's latest release while there is none), downloaded from GitHub Releases and
-# checked against the release's signed SHA256SUMS when OpenSSL 3 is installed (docs/release-flow.md, "Signed
-# checksums"), else against the SHA-256 GitHub publishes for it. On Linux that is the server build (sunrise-server-linux-x86_64.tar.gz), which needs neither ALSA nor udev.
+# Installs sunrise-server (docs/server.md) on Linux or macOS: by default the current Sunrise Nightly for this computer
+# (GitHub's latest release while there is none), or the release --version names, downloaded from GitHub Releases and
+# checked against the release's signed SHA256SUMS (docs/release-flow.md, "Signed checksums") by sunrise-verify, a
+# small program this script downloads and checks against the SHA-256 pinned below before it runs it. A download that
+# can't be verified is not installed. On Linux that is the server build (sunrise-server-linux-x86_64.tar.gz), which needs neither ALSA nor udev.
 #
-#   curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
-#   curl -fsSL .../install.sh | sh -s -- --version v0.5.0 --dir /opt/sunrise --bin /usr/local/bin
-#   sh install.sh --archive sunrise-server-linux-x86_64.tar.gz --version mybuild   (an archive you have)
+#   curl -fsSL https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.sh | sh
+#   curl -fsSL .../install.sh | sh -s -- --version 26.3-0.1.0
+#   curl -fsSL .../install.sh | sh -s -- --version 26.3-0.1.0 --dir /opt/sunrise --bin /usr/local/bin
+#   sh install.sh --archive sunrise-server-linux-x86_64.tar.gz --version mybuild
 #
-# It needs curl, tar or unzip, and sha256sum or shasum (and OpenSSL 3 for the signature: macOS's LibreSSL is not
-# enough, and there the GitHub SHA-256 is all that is checked); it never asks for sudo (pick folders you can write).
+# A stable release's tag (26.3-0.1.0) puts the server on that stable line, which `sunrise-server update` then
+# follows. --archive installs an archive you have, such as your own build.
+#
+# It needs curl, tar or unzip, and sha256sum or shasum; it never asks for sudo (pick folders you can write).
 # Releases go to <dir>/releases/<version>, <dir>/current points at the one in use, and <bin>/sunrise-server
 # runs it. The game files you prepare from your own Minecraft stay in <dir>/game-files across updates.
 # Nothing of Mojang's is downloaded.
 set -eu
 
-REPO=horizon-rust/horizon
+REPO=sunrise-org/sunrise
 VERSION=latest
 DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sunrise"
 BIN="$HOME/.local/bin"
 ARCHIVE=
-# Sunrise's release public keys, base64, space-separated: copy of crates/sunrise-release-sign/release-keys.txt
-# (rotation adds a key there first; keep the two in step).
-RELEASE_KEYS="MU4oiIQcCxkZvbwSjjXs7SySCuM6ywRQ3nGaJYZG0gw="
+INSECURE=
+# sunrise-verify, the release checker the install pins: its SHA-256 per platform,
+# from release verifier@VERIFIER_VERSION. "unpinned" until the first verifier release exists.
+# >>> verifier pin (tools/ci/pin_verifier.py rewrites this block; do not edit it by hand)
+VERIFIER_VERSION=1.0.0
+VERIFIER_SHA256_linux_x86_64=310bba30dd6dba7147d9a14692c4efb5887875c6d6eca953a5e888106f5a7630
+VERIFIER_SHA256_linux_aarch64=5e293dbc2552db7a7df79105005425463b7b0eef2d97ff30a8e65d156f0c50b6
+VERIFIER_SHA256_macos_arm64=0b934c07fe4003bc25554a95adef2dfc3a3b73e84b9647e100d0a3acd472e11e
+VERIFIER_SHA256_macos_x64=912223491295e60f2d338a141b47fe2deab161608b1b8b02134ca7b7bdf0430b
+VERIFIER_SHA256_windows_x64=d26077550c2b8695db181d3f32ba1cb7f2f22cff455f78d6148a298df56f9b79
+VERIFIER_SHA256_windows_arm64=ef5bbdf1440c303c0e8c6056159fc46166727257f1e6a1b98ef63def7932d1d9
+# <<< verifier pin
 
 die() { echo "sunrise install: $*" >&2; exit 1; }
 
@@ -32,7 +45,9 @@ while [ $# -gt 0 ]; do
     --dir) [ $# -ge 2 ] || die "--dir needs a folder"; DIR=$2; shift 2 ;;
     --bin) [ $# -ge 2 ] || die "--bin needs a folder"; BIN=$2; shift 2 ;;
     --archive) [ $# -ge 2 ] || die "--archive needs a file"; ARCHIVE=$2; shift 2 ;;
-    -h|--help) sed -n '2,14p' "$0" 2>/dev/null || true; exit 0 ;;
+    # For CI fixtures only (never in the docs): GitHub's own SHA-256 is all that is checked.
+    --insecure-checksum-only) INSECURE=yes; shift ;;
+    -h|--help) sed -n '2,19p' "$0" 2>/dev/null || true; exit 0 ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -42,10 +57,10 @@ MACHINE=$(uname -m)
 # A shell under Rosetta 2 says x86_64 on Apple Silicon: the native build runs faster there.
 [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ] && MACHINE=arm64
 case "$(uname -s)-$MACHINE" in
-  Linux-x86_64) ASSETS="sunrise-server-linux-x86_64.tar.gz sunrise-linux-x86_64.tar.gz" ;;
-  Darwin-arm64) ASSETS=sunrise-macos-arm64.zip ;;
+  Linux-x86_64) PLATFORM=linux-x86_64; ASSETS="sunrise-server-linux-x86_64.tar.gz sunrise-linux-x86_64.tar.gz" ;;
+  Darwin-arm64) PLATFORM=macos-arm64; ASSETS=sunrise-macos-arm64.zip ;;
   # Intel Macs: the Nightlies built since #1161.
-  Darwin-x86_64) ASSETS=sunrise-macos-x64.zip ;;
+  Darwin-x86_64) PLATFORM=macos-x64; ASSETS=sunrise-macos-x64.zip ;;
   *) die "no Sunrise release for $(uname -s) $(uname -m) yet: build it from source (docs/server.md)" ;;
 esac
 
@@ -73,6 +88,9 @@ else
   TAG=$(printf '%s\n' "$JSON" | sed -n 's/^  "tag_name": "\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$TAG" ] || die "could not read the release's tag"
   RAWTAG=$TAG
+  case "$TAG" in
+    dev|dev-*) die "$TAG is a Dev build, made to test main: servers don't install it. Install the Nightly (the default) or a stable release (--version <tag>)." ;;
+  esac
   # A Nightly installs under its date and commit, as `sunrise-server update` names it:
   # "Nightly 2026-10-28 · 0c02067" is nightly-2026-10-28-0c02067. Its signature is checked for exactly that
   # version, so the title must name it (as sunrise_release_sign::build_title_version reads it, strictly).
@@ -102,51 +120,56 @@ else
   done
   [ -n "$URL" ] || die "release $TAG has none of $ASSETS"
 
-  # The signature (docs/release-flow.md, "Signed checksums"): SHA256SUMS.sig holds one base64 Ed25519 signature per
-  # line over "horizon release <tag>\n" + SHA256SUMS. A Nightly is checked against SHA256SUMS.v2.sig instead, signed
-  # for its own version (nightly-<date>-<commit>, from its title), never the channel's SHA256SUMS.sig: an older
-  # Nightly can't be passed off as the current one (docs/security.md, "Nightly signatures").
-  # It needs OpenSSL 3 (LibreSSL, which macOS ships, and OpenSSL 1.x cannot verify Ed25519 this way); without it
-  # the install says so and keeps the GitHub SHA-256 check below.
-  EXPECT=$DIGEST
+  # A Nightly is checked against SHA256SUMS.v2.sig, signed for its own version (nightly-<date>-<commit>, from its
+  # title), never the channel's SHA256SUMS.sig: an older Nightly can't be passed off as the current one
+  # (docs/security.md, "Nightly signatures").
   if [ -n "$NAME" ]; then SIGTAG=$NAME; SIGFILE=SHA256SUMS.v2.sig; else SIGTAG=$RAWTAG; SIGFILE=SHA256SUMS.sig; fi
-  if ! command -v openssl >/dev/null; then
-    echo "Note: OpenSSL isn't installed, so the release signature was not checked; checking GitHub's SHA-256 only."
-  elif ! openssl version | grep -Eq '^OpenSSL ([3-9]|[1-9][0-9])\.'; then
-    echo "Note: $(openssl version | cut -d' ' -f1-2) can't check Ed25519 signatures (OpenSSL 3 is needed), so the release signature was not checked; checking GitHub's SHA-256 only."
+  mkdir "$TMP/files"
+  if [ -n "$INSECURE" ]; then
+    echo "WARNING: --insecure-checksum-only: the release signature is NOT checked, only the SHA-256 GitHub publishes for the" >&2
+    echo "WARNING: download. Anyone who can change the release can change that too. This is for test fixtures, not for servers." >&2
+    [ -n "$DIGEST" ] || die "release $TAG publishes no SHA-256 for $ASSET"
+    echo "Downloading Sunrise $TAG ($ASSET)..."
+    curl -fL --progress-bar -o "$TMP/files/$ASSET" "$URL"
+    GOT=$($SHA "$TMP/files/$ASSET" | cut -d' ' -f1)
+    [ "$GOT" = "$DIGEST" ] || die "$ASSET doesn't match its SHA-256 (got $GOT, expected $DIGEST): not installed"
   else
+    # The verifier: the pinned version's binary for this platform, run only when its SHA-256 is the pinned one. The
+    # pin is the trust anchor (tools/ci/pin_verifier.py); nothing outside this file can change it.
+    case "$PLATFORM" in
+      linux-x86_64) PIN=$VERIFIER_SHA256_linux_x86_64 ;;
+      macos-arm64) PIN=$VERIFIER_SHA256_macos_arm64 ;;
+      macos-x64) PIN=$VERIFIER_SHA256_macos_x64 ;;
+    esac
+    VERIFIER_FROM=$VERIFIER_VERSION
+    [ "$VERIFIER_FROM" != unpinned ] && [ -n "$VERIFIER_FROM" ] || die "this script has no pinned sunrise-verify yet, so it can't check the release signature: not installed. Use the install.sh from Sunrise's main branch."
+    [ -n "$PIN" ] && [ "$PIN" != unpinned ] || die "there is no sunrise-verify for $PLATFORM (the signature check needs it): not installed"
+    VERIFIER="$TMP/sunrise-verify"
+    curl -fsSL -o "$VERIFIER" "https://github.com/$REPO/releases/download/verifier%40$VERIFIER_FROM/sunrise-verify-$PLATFORM" \
+      || die "could not download sunrise-verify $VERIFIER_FROM for $PLATFORM (needed to check the release signature): not installed"
+    GOT=$($SHA "$VERIFIER" | cut -d' ' -f1)
+    [ "$GOT" = "$PIN" ] || die "sunrise-verify for $PLATFORM isn't the pinned build (got $GOT, expected $PIN): not installed. The download may have been tampered with; please report it on Discord or GitHub."
+    chmod +x "$VERIFIER"
+
     SUMS_URL=$(asset_url SHA256SUMS)
     SIG_URL=$(asset_url "$SIGFILE")
-    if [ -n "$NAME" ] && { [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; }; then
-      die "$TAG has no $SIGFILE (its signature for this exact build): it was published before Nightlies were signed for their own version, so it can't be checked. Install the current Nightly (--version latest) instead."
-    elif [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then
-      echo "Note: release $TAG has no signed checksums (it was published before signing began), so the signature was not checked; checking GitHub's SHA-256 only."
-    else
-      curl -fsSL -o "$TMP/SHA256SUMS" "$SUMS_URL" || die "could not download SHA256SUMS"
-      curl -fsSL -o "$TMP/SHA256SUMS.sig" "$SIG_URL" || die "could not download $SIGFILE"
-      { printf 'horizon release %s\n' "$SIGTAG"; cat "$TMP/SHA256SUMS"; } > "$TMP/message"
-      SIGNED=
-      for KEY in $RELEASE_KEYS; do
-        # The raw 32-byte key in an Ed25519 SubjectPublicKeyInfo, the form OpenSSL reads.
-        { printf '\060\052\060\005\006\003\053\145\160\003\041\000'; printf '%s' "$KEY" | openssl base64 -d -A; } > "$TMP/key.der"
-        while IFS= read -r LINE || [ -n "$LINE" ]; do
-          [ -n "$LINE" ] || continue
-          printf '%s' "$LINE" | openssl base64 -d -A > "$TMP/signature" 2>/dev/null || continue
-          if openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$TMP/key.der" -in "$TMP/message" -sigfile "$TMP/signature" >/dev/null 2>&1; then SIGNED=yes; fi
-        done < "$TMP/SHA256SUMS.sig"
-      done
-      [ -n "$SIGNED" ] || die "$TAG's SHA256SUMS signature doesn't match Sunrise's release key: not installed. The download may have been tampered with; please report it on Discord or GitHub."
-      EXPECT=$(awk -v asset="$ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "$TMP/SHA256SUMS")
-      [ -n "$EXPECT" ] || die "the signed SHA256SUMS doesn't list $ASSET: not installed"
-      echo "Release signature OK (Sunrise release key)."
+    if [ -z "$SUMS_URL" ]; then
+      die "release $TAG has no SHA256SUMS (its checksum list), so it can't be checked: not installed"
+    elif [ -z "$SIG_URL" ] && [ -n "$NAME" ]; then
+      die "$TAG has no $SIGFILE (its signature for this exact build): it was published before Nightlies were signed for their own version, so it can't be checked: not installed. Install the current Nightly (--version latest) instead."
+    elif [ -z "$SIG_URL" ]; then
+      die "release $TAG has no $SIGFILE (the signature of its checksum list), so it can't be checked: not installed"
     fi
+    curl -fsSL -o "$TMP/files/SHA256SUMS" "$SUMS_URL" || die "could not download SHA256SUMS: not installed"
+    curl -fsSL -o "$TMP/files/$SIGFILE" "$SIG_URL" || die "could not download $SIGFILE: not installed"
+    echo "Downloading Sunrise $TAG ($ASSET)..."
+    curl -fL --progress-bar -o "$TMP/files/$ASSET" "$URL" || die "could not download $ASSET: not installed"
+    # The same check the launcher and `sunrise-server update` make, with the keys built into the verifier.
+    "$VERIFIER" verify --tag "$SIGTAG" --signature "$SIGFILE" --only "$ASSET" "$TMP/files" > "$TMP/verify.out" 2>&1 \
+      || die "the release check failed ($SIGFILE for $SIGTAG), so $TAG was not installed: $(cat "$TMP/verify.out"). The download may have been tampered with; please report it on Discord or GitHub."
+    echo "Release signature OK (Sunrise release key)."
   fi
-  [ -n "$EXPECT" ] || die "release $TAG publishes no SHA-256 for $ASSET"
-
-  echo "Downloading Sunrise $TAG ($ASSET)..."
-  curl -fL --progress-bar -o "$TMP/$ASSET" "$URL"
-  GOT=$($SHA "$TMP/$ASSET" | cut -d' ' -f1)
-  [ "$GOT" = "$EXPECT" ] || die "$ASSET doesn't match its SHA-256 (got $GOT, expected $EXPECT): not installed"
+  mv "$TMP/files/$ASSET" "$TMP/$ASSET"
 fi
 
 mkdir -p "$TMP/x"

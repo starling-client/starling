@@ -79,9 +79,15 @@ impl ParticleEngine {
     /// `ClientExplosionTracker.tick`: throws up to 512 debris particles across all
     /// explosions tracked in this tick, weighted by each explosion's block count.
     pub(super) fn tick_explosions(&mut self, level: &ParticleLevel) {
-        self.tick_explosions_with(&|b| level.facts.is_air(level.world.block(b[0], b[1], b[2])));
+        self.tick_explosions_with(Some(level.world), &|b| {
+            level.facts.is_air(level.world.block(b[0], b[1], b[2]))
+        });
     }
-    pub(super) fn tick_explosions_with(&mut self, is_air: &dyn Fn([i32; 3]) -> bool) {
+    pub(super) fn tick_explosions_with(
+        &mut self,
+        world: Option<&super::World>,
+        is_air: &dyn Fn([i32; 3]) -> bool,
+    ) {
         if self.tracked_explosions.is_empty() {
             return;
         }
@@ -155,10 +161,13 @@ impl ParticleEngine {
                 explosion.center[2] + local[2] * scaling,
             ];
             let speed = f64::from(speed * particle.speed);
-            self.add(
+            self.add_with_world(
+                world,
                 &particle.options,
                 p,
                 [d.x * speed, d.y * speed, d.z * speed],
+                false,
+                false,
             );
         }
     }
@@ -167,8 +176,8 @@ impl ParticleEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_assets::resource_source::ResourceSource;
     use std::collections::{HashMap, HashSet};
+    use sunrise_assets::resource_source::ResourceSource;
 
     /// The debris one tick throws in air for a blast of 100 blocks at the
     /// camera whose block particles are smoke with these weights.
@@ -186,7 +195,7 @@ mod tests {
             })
             .collect();
         engine.track_explosion([0.0; 3], 4.0, 100, &particles);
-        engine.tick_explosions_with(&|_| true);
+        engine.tick_explosions_with(None, &|_| true);
         engine.pending.len()
     }
 

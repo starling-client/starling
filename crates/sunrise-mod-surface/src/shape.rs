@@ -35,6 +35,7 @@
 //! A shape is computed once per key and argument list, except for a type in a cycle, which is
 //! described afresh each time it is reached: the result never depends on the order shapes are
 //! asked for.
+use crate::digest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -200,6 +201,13 @@ impl<'a> Shapes<'a> {
         let args = (0..definition.params).map(Shape::Param).collect();
         let text = self.named(key, args, &mut Vec::new())?;
         // With nothing around it, the type is never a `rec`.
+        Ok(text["type(".len()..text.len() - 1].to_owned())
+    }
+
+    /// The shape of the type at `key` applied to `args`, which hold no type parameter of their
+    /// own: how a generic call or type is written for one instance.
+    pub fn applied(&mut self, key: &str, args: Vec<Shape>) -> Result<String, ShapeError> {
+        let text = self.named(key, args, &mut Vec::new())?;
         Ok(text["type(".len()..text.len() - 1].to_owned())
     }
 
@@ -414,17 +422,6 @@ impl<'a> Shapes<'a> {
         }
         Ok(())
     }
-}
-
-/// The first 128 bits of SHA-256 of `text`, as 32 lowercase hex digits.
-pub(crate) fn digest(text: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(text.as_bytes());
-    let mut out = String::with_capacity(32);
-    for byte in &hash[..16] {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 #[cfg(test)]

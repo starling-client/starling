@@ -82,6 +82,7 @@ fn wall_with(
 /// in the same block is on a climbable, and `Spider.onClimbable` is its own
 /// `isClimbing` flag, whatever the block.
 #[test]
+#[ignore = "daily"]
 fn an_equine_and_a_flying_monster_are_never_on_a_climbable() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -107,13 +108,14 @@ fn an_equine_and_a_flying_monster_are_never_on_a_climbable() {
     );
     // Without the vanilla data under .local/sunrise-client the world cannot
     // be built: the test has nothing to check.
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }
 
 /// `LivingEntity.isPushable` vetoes a mob that is `onClimbable`. A horse
 /// standing in vines is still pushed by others (the cache `pushEntities`
 /// refreshes each tick stays false), where a cow in the same block is not.
 #[test]
+#[ignore = "daily"]
 fn a_horse_in_vines_is_still_pushable() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -122,7 +124,7 @@ fn a_horse_in_vines_is_still_pushable() {
             let pushable_after_a_tick = |id: &str| {
                 let kind = Arc::new(types.types[id].clone());
                 let mut m = Mob::new(1, kind, Vec3::new(1.5, 2.0, 1.5), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 let mut events = Vec::new();
                 crate::mobs::ai::tick(
                     &mut m,
@@ -139,13 +141,14 @@ fn a_horse_in_vines_is_still_pushable() {
             }
         },
     );
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }
 
 /// A horse dropped through a column of vines falls exactly as it does through
 /// open air: `handleOnClimbable` never holds it to 0.15 a tick. A cow in the
 /// same column slides down at 0.15, so the column is a real one.
 #[test]
+#[ignore = "daily"]
 fn a_horse_falls_through_vines_at_full_speed() {
     let drop = |vines: bool, id: &str| {
         let mut out = None;
@@ -156,9 +159,9 @@ fn a_horse_falls_through_vines_at_full_speed() {
         crate::mobs::world::with_built_test_world(&[], build, |w, types| {
             let kind = Arc::new(types.types[id].clone());
             let mut m = Mob::new(1, kind, Vec3::new(1.5, 12.0, 1.1), 0.0);
-            m.on_ground = false;
+            m.ground.on_ground = false;
             let mut drops = Vec::new();
-            while !m.on_ground && drops.len() < 200 {
+            while !m.ground.on_ground && drops.len() < 200 {
                 let before = m.position.y;
                 m.travel(
                     w,
@@ -198,6 +201,7 @@ fn a_horse_falls_through_vines_at_full_speed() {
 /// climbable by 0.2 when it is pressed against a wall. A horse pushed into a
 /// ladder stays at the bottom where a cow climbs it.
 #[test]
+#[ignore = "daily"]
 fn a_horse_pressed_into_a_ladder_gains_no_height() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -207,7 +211,7 @@ fn a_horse_pressed_into_a_ladder_gains_no_height() {
                 let kind = Arc::new(types.types[id].clone());
                 // In the ladder block, facing the wall at z = 2.
                 let mut m = Mob::new(1, kind, Vec3::new(1.5, 1.0, 1.0), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 // The speed its move control would ask for this tick.
                 m.ai.speed = 0.3;
                 let start = m.position.y;
@@ -219,7 +223,7 @@ fn a_horse_pressed_into_a_ladder_gains_no_height() {
                         Vec3::new(0.0, 0.0, 1.0),
                         &mut Vec::new(),
                     );
-                    pressed |= m.horizontal_collision;
+                    pressed |= m.ground.horizontal_collision;
                 }
                 (pressed, m.position.y - start)
             };
@@ -233,5 +237,5 @@ fn a_horse_pressed_into_a_ladder_gains_no_height() {
             }
         },
     );
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }

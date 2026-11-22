@@ -12,12 +12,12 @@ use super::{
     },
 };
 use crate::projectiles::{Projectile, ProjectileWorld, STEPS};
+use std::f32::consts::PI;
 use sunrise_core::geometry::trig::Mth;
 use sunrise_core::{
     geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape},
     random::{LegacyRandom, RandomSource},
 };
-use std::f32::consts::PI;
 
 // Shulker state: `variant3` the attach face (3D data value), `counter` the
 // raw peek (0..100), `color` the shell colour (16 none). AnimState slot 0
@@ -262,8 +262,7 @@ fn block_space<'w, 'r>(m: &Mob, w: &'w MobWorld<'r>) -> BlockSpace<'w, 'r> {
         facts: w.facts,
         binding: w.collision,
         powder_walkable: w
-            .data
-            .entity_has("minecraft:powder_snow_walkable_mobs", &m.kind.id),
+            .entity_tag_bit(&m.kind, crate::items::EntityTypeTags::POWDER_SNOW_WALKABLE),
     }
 }
 fn entities_clear(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
@@ -978,8 +977,8 @@ mod space_tests;
 mod tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
-    use sunrise_core::nbt::Tag;
     use std::sync::Arc;
+    use sunrise_core::nbt::Tag;
 
     use sunrise_world::{
         attribute_map::ValueKind,
@@ -1067,7 +1066,14 @@ mod tests {
             // Raw Peek loads independently of saved covered, not through the setter.
             m.extra.counter = 30;
             let types = [(m.kind.id.clone(), m.kind.clone())].into_iter().collect();
-            let tag = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
+            let tag = crate::entity_nbt::mob_to_nbt(
+                &m,
+                [0; 4],
+                None,
+                None,
+                |_| None,
+                &Default::default(),
+            );
             let loaded = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
             assert_eq!(loaded.extra.counter, 30);
             assert!(loaded.extra.live.built().is_none());
@@ -1099,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn teleport_closes_raw_peek_without_adding_covered() {
         assert!(super::super::world::with_built_test_world(
             &[],
@@ -1125,7 +1131,18 @@ mod tests {
                 let mut events = Vec::new();
                 set_peek(&mut m, 100, &mut events, world.attributes);
                 assert!(modifiers(&m, world.attributes).is_empty());
+                m.movement_emission = Some(super::super::MovementEmission {
+                    move_dist: 2.0,
+                    next_step: 3.0,
+                    last: [0.5, 64.0, 0.5],
+                    on_ground: true,
+                    in_water: false,
+                });
                 assert!((0..100).any(|_| teleport(&mut m, world, &mut events)));
+                let emission = m.movement_emission.unwrap();
+                assert_eq!(emission.last, [m.position.x, m.position.y, m.position.z]);
+                assert_eq!(emission.move_dist, 2.0);
+                assert_eq!(emission.next_step, 3.0);
                 assert_eq!(m.extra.counter, 0);
                 assert!(modifiers(&m, world.attributes).is_empty());
                 assert_eq!(super::super::armor::values(&m), (0.0, 0.0));
@@ -1284,7 +1301,7 @@ mod tests {
         let mut fixture = crate::health::TestLevel::new(0);
         let attack = crate::health::Attack {
             projectile: Some(2),
-            projectile_is_arrow: true,
+            projectile_kind: crate::health::DirectEntity::Arrow,
             ..Default::default()
         };
         let mut level = fixture.level().attacked_by(&attack);

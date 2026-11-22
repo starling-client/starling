@@ -33,6 +33,32 @@ class Visibility(unittest.TestCase):
         self.assertNotIn("PRIVATE_RESOURCE_CONTENT", log.getvalue())
         self.assertIn("error[E0308]: custom diagnostic payload withheld", log.getvalue())
 
+    def test_only_tracked_compiler_locations_are_published(self):
+        tracked = 'crates/example/src/lib.rs'
+        lines = lambda path: ['fn tracked() {}'] if path == tracked else None
+        with patch.object(ignored_tests, 'source_lines', side_effect=lines), \
+                contextlib.redirect_stdout(io.StringIO()) as log:
+            ignored_tests.compile_diagnostics(f"error[E0425]: PRIVATE\n  --> {tracked}:1:1\n"
+                                              "error[E0609]: PRIVATE\n"
+                                              "  --> /build/PRIVATE_RUNNER/out/generated.rs:3:9\n"
+                                              "error[E0599]: PRIVATE\n  --> target/PRIVATE/gen.rs:1:1\n")
+        text = log.getvalue()
+        self.assertIn(f"compiler:   --> {tracked}:1:1", text)
+        self.assertIn("compiler source: fn tracked() {}", text)
+        self.assertEqual(text.count("--> location withheld (not a tracked Rust source)"), 2)
+        for heading in ("error[E0425]", "error[E0609]", "error[E0599]"):
+            self.assertIn(heading, text)
+        self.assertNotIn("PRIVATE", text)
+
+    def test_locations_past_the_output_budget_are_not_looked_up(self):
+        output = "".join(f"error[E0425]: PRIVATE\n  --> crates/example/src/f{i}.rs:1:1\n" for i in range(15))
+        with patch.object(ignored_tests, 'source_lines', return_value=None) as lookup, \
+                contextlib.redirect_stdout(io.StringIO()) as log:
+            ignored_tests.compile_diagnostics(output)
+        # 30 headings: the first 20 are shown, ten of them locations; the other ten are only counted.
+        self.assertEqual(lookup.call_count, 10)
+        self.assertIn("compiler diagnostics truncated: 10 more headings", log.getvalue())
+
     def test_codeless_build_failures_keep_category_not_payload(self):
         for message, expected in (
             ('error: linking with `cc` failed: exit status: 1 PRIVATE_LINK_ARGS',
@@ -109,13 +135,15 @@ class Visibility(unittest.TestCase):
 
     def test_list_failure_preserves_compiler_headings_not_source(self):
         process = subprocess.CompletedProcess([], 101, "", "error[E0308]: mismatched types\n"
-                    " --> src/lib.rs:12:3\nerror: expected `SECRET`, found `OTHER`\n"
+                    " --> crates/example/src/lib.rs:12:3\nerror: expected `SECRET`, found `OTHER`\n"
                     " PRIVATE_RESOURCE\n")
-        with patch.object(ignored_tests.subprocess, "run", return_value=process) as run, contextlib.redirect_stdout(io.StringIO()) as log:
+        with patch.object(ignored_tests.subprocess, "run", return_value=process) as run, \
+                patch.object(ignored_tests, "source_lines", return_value=[""] * 12), \
+                contextlib.redirect_stdout(io.StringIO()) as log:
             self.assertIsNone(ignored_tests.run("example", [], 1, 2))
         self.assertEqual(run.call_count, 1)
         self.assertIn("mismatched types", log.getvalue())
-        self.assertIn("src/lib.rs:12:3", log.getvalue())
+        self.assertIn("crates/example/src/lib.rs:12:3", log.getvalue())
         self.assertNotIn("SECRET", log.getvalue())
         self.assertNotIn("PRIVATE_RESOURCE", log.getvalue())
 
@@ -127,3 +155,52 @@ class Visibility(unittest.TestCase):
         self.assertIn("no recognized compiler diagnostic", log.getvalue())
         self.assertLess(len(log.getvalue()), 7500)
         self.assertNotIn("private unexpected payload", log.getvalue())
+<<<<<<< sync-sunrise-1
+=======
+
+    def test_data_end_memory_telemetry_is_bounded_best_effort(self):
+        steps = yaml.safe_load((ROOT / '.github/workflows/ignored-tests.yml').read_text())["jobs"]["ignored-tests-shards"]["steps"]
+        step = next(s for s in steps if s.get("name") == "Record data-leg end and compiler cache")
+        self.assertEqual(step["if"], "always()")
+        script = step["run"]
+        self.assertIn("/sys/fs/cgroup/$metric", script)
+        self.assertIn("memory.peak memory.max memory.swap.peak memory.swap.max", script)
+        self.assertNotIn("cargo", script)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "memory.peak").write_text("123456\n")
+            Path(folder, "memory.max").write_text("max\n")
+            Path(folder, "memory.swap.max").write_text("PRIVATE_PAYLOAD\n")
+            # Exercise the actual shell under errexit; absent/invalid files cannot fail it.
+            script = script.replace("/sys/fs/cgroup/", folder + "/")
+            script = script.replace("sccache --show-stats", "false")
+            result = subprocess.run(["bash", "-e", "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("memory_peak_bytes=123456", result.stdout)
+        self.assertIn("memory_max_bytes=max", result.stdout)
+        self.assertIn("memory_swap_peak_bytes=unavailable", result.stdout)
+        self.assertIn("memory_swap_max_bytes=unavailable", result.stdout)
+        self.assertIn("whole_job_cgroup_including_compilation_tests_file_cache", result.stdout)
+        self.assertNotIn("PRIVATE_PAYLOAD", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_formatting_failure_does_not_skip_later_builds_but_is_propagated(self):
+        steps = yaml.safe_load((ROOT / '.github/workflows/dyna-ci.yml').read_text())["jobs"]["lint"]["steps"]
+        fmt = next(s for s in steps if s.get("id") == "formatting")
+        native = next(s for s in steps if s.get("id") == "native-lint")
+        final = next(s for s in steps if s.get("name") == "Summarize failed gate steps")
+        self.assertNotIn("continue-on-error", fmt)
+        self.assertNotIn("clippy", fmt["run"])
+        self.assertIn("clippy", native["run"])
+        self.assertNotIn("continue-on-error", native)
+        for name in ("Lint native targets", "Lint the server build without sound or controllers"):
+            step = next(s for s in steps if s.get("name") == name)
+            self.assertLess(steps.index(fmt), steps.index(step))
+            self.assertLess(steps.index(step), steps.index(final))
+            self.assertNotIn("formatting", step.get("if", ""))
+        self.assertIn("failure()", final["if"])
+        self.assertIn("!cancelled()", final["if"])
+        for name in ("native-lint", "server-lint"):
+            step = next(s for s in steps if s.get("id") == name)
+            self.assertIn("!cancelled()", step["if"])
+            self.assertNotIn("success()", step["if"])
+>>>>>>> sunrise/main

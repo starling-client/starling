@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord rig tilstedeværelse",
+  "sunrise.extras.discord_presence.tooltip": "Viser Playing Sunrise på din Discord-profil, mens Discord kører: menuer, single player eller multiplayer, dimensionen og spilletid. Aldrig en verdens navn eller en servers adresse."
+}

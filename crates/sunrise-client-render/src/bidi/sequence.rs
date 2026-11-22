@@ -7,7 +7,10 @@ use crate::text::Style;
 /// Characters, effective styles and run-local UTF-16 sink offsets, as accepted
 /// by `Component.getVisualOrderText()`. Input must already resolve legacy codes.
 /// Uses the same shaping and Unicode bidi pass as rendered text.
-pub fn visual_characters(text: &Text) -> Vec<(char, &Style, u32)> {
+pub fn visual_characters(
+    text: &Text,
+    mut same_style: impl FnMut(&Style, &Style) -> bool,
+) -> Vec<(char, &Style, u32)> {
     let chars: Vec<_> = text.chars().map(|(c, _)| c).collect();
     let styles: Vec<_> = text
         .chars()
@@ -23,10 +26,12 @@ pub fn visual_characters(text: &Text) -> Vec<(char, &Style, u32)> {
     let mut offsets = Vec::with_capacity(logical.len());
     let mut absolute = 0;
     let mut local = 0;
-    let mut previous = None;
+    let mut previous: Option<(&Style, u8)> = None;
     for (length, level) in logical {
         let style = styles[absolute];
-        if previous.is_some_and(|(old_style, old_level)| old_style != style || old_level != level) {
+        if previous.is_some_and(|(old_style, old_level)| {
+            old_level != level || (!std::ptr::eq(old_style, style) && !same_style(old_style, style))
+        }) {
             local = 0;
         }
         offsets.push((style, local));

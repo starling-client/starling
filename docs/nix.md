@@ -10,14 +10,17 @@ copy of Minecraft 26.3, as everywhere else ([hosting.md](hosting.md), step 2).
 | `sunrise-engine` | The server build of the game alone | Linux, macOS |
 | `sunrise-prepare` | `sunrise-prepare`, with a JDK 25 for the exporters it compiles | Linux, macOS |
 | `sunrise-client` | The game and `sunrise-ctl` | Linux, macOS |
-| `sunrise-launcher` | The launcher in an FHS environment (it builds native mods with Cargo) | Linux |
 
 ```sh
-nix run github:horizon-rust/horizon#sunrise-server -- --version
-nix profile install github:horizon-rust/horizon#sunrise-server
+nix run github:sunrise-org/sunrise#sunrise-server -- --version
+nix profile install github:sunrise-org/sunrise#sunrise-server
 ```
 
 `overlays.default` adds them to `pkgs`; on Linux, `nix develop` gives the build environment of the workspace.
+
+Sunrise is under the PolyForm Shield licence ([LICENSING.md](../LICENSING.md)), which nixpkgs counts as unfree. The
+flake's own packages, checks and module build as they are. With the overlay, your nixpkgs decides: allow these
+packages, for example with `nixpkgs.config.allowUnfreePredicate = pkg: lib.hasPrefix "sunrise-" (lib.getName pkg);`.
 
 ## Preparing the game files
 
@@ -33,7 +36,7 @@ sunrise-prepare --prepare --server-jar ~/Downloads/server.jar --output ~/sunrise
 
 ```nix
 {
-  inputs.sunrise.url = "github:horizon-rust/horizon";
+  inputs.sunrise.url = "github:sunrise-org/sunrise";
 
   outputs = { nixpkgs, sunrise, ... }: {
     nixosConfigurations.box = nixpkgs.lib.nixosSystem {

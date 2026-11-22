@@ -4,14 +4,14 @@ use crate::{
     registry::BlockStateId,
     worldgen::{DecodeError, decode_noise},
 };
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use sunrise_core::{
     noise::{Noise, NormalNoise},
     position::BlockPos,
     random::PositionalRandom,
-};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
 };
 
 /// Add lazy, shared named noise sources to a material surface provider.

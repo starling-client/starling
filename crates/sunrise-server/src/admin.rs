@@ -10,12 +10,12 @@ use crate::{
     engine,
     http::Response,
 };
+use serde_json::{Value, json};
+use std::{fmt::Write, path::Path, sync::Mutex};
 use sunrise_platform::server_files::user_lists::{
     BanList, IpBanList, OpList, UserList, WhiteList, format_date,
 };
 use sunrise_server_launch::{self as launch, config};
-use serde_json::{Value, json};
-use std::{fmt::Write, path::Path, sync::Mutex};
 
 /// One action at a time, so `changed` compares the files around this action only.
 static ACTING: Mutex<()> = Mutex::new(());
@@ -764,7 +764,7 @@ mod tests {
         .unwrap();
         let inventory = json!([
             {"id": "native_loaded", "version": "2"},
-            {"id": "wasm_loaded", "version": "3"},
+            {"id": "extra_content", "version": "3"},
             {"id": "content_loaded", "version": "4"},
         ]);
         // The mock owns only the transport: the real endpoint must authenticate and issue the query.

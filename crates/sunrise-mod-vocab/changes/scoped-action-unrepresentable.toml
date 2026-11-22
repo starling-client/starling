@@ -1,0 +1,3 @@
+ids = ["handle:ScopedActionResult::new"]
+why = "A scoped action returns the stacks the world cannot represent to the world, and ScopedActionResult carries how many it returned."
+migrate = "Rebuild against this SDK. A mod that constructs a ScopedActionResult passes the new count; one that only reads the result needs no change."

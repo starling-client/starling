@@ -1,0 +1,11 @@
+{
+  "sprite": "fluid_full:block/brine",
+  "tint": 2427112703,
+  "world": {
+    "tick_delay": 11,
+    "drop_off": 2,
+    "slope_find_distance": 3,
+    "source_conversion": true,
+    "bucket": false
+  }
+}

@@ -4,11 +4,11 @@
 //! as vanilla's `submit` does (no block-entity placement transform) and
 //! reports `getExtents` over the same posed parts.
 use super::{Foil, ItemQuad, ItemRenderer, ItemSink, SpecialHost, argb};
-use crate::{block_entity_render::ModelPart, hud::Rect, mobs::EntityModelDocument};
+use crate::{block_entity_render::ModelPart, camera::joml, hud::Rect, mobs::EntityModelDocument};
 use glam::{Mat4, Quat, Vec3};
-use sunrise_assets::item_model::{SpecialKind, SpecialModel};
 use serde_json::Value;
 use std::{collections::HashMap, f32::consts::PI, path::Path};
+use sunrise_assets::item_model::{SpecialKind, SpecialModel};
 
 /// Entity model layers the special renderers bake (`ModelLayers`).
 const LAYERS: [(&str, &str); 22] = [
@@ -160,24 +160,38 @@ fn draw(
         draw(child, child_name, m, adjust, sprite, color, foil, sink);
     }
 }
-/// `ModelPart.getExtentsForGui` from an identity pose.
-fn extents_of(part: &ModelPart, name: &str, parent: Mat4, adjust: Adjust, out: &mut Vec<Vec3>) {
+/// `ModelPart.getExtentsForGui` from an identity pose, posed and transformed as JOML does
+/// (`translateAndRotate`: the rotation only when one is set, the scale only when not 1).
+fn extents_of(
+    part: &ModelPart,
+    name: &str,
+    parent: &joml::Mat4,
+    adjust: Adjust,
+    out: &mut Vec<Vec3>,
+) {
     if part.polygons.is_empty() && part.children.is_empty() {
         return;
     }
     let mut p = part.pose;
     adjust(name, &mut p);
-    let m = part_matrix(parent, &p);
+    let mut m = *parent;
+    m.translate(p[0] / 16.0, p[1] / 16.0, p[2] / 16.0);
+    if p[3] != 0.0 || p[4] != 0.0 || p[5] != 0.0 {
+        m.rotate(joml::Quat::rotation_zyx(p[5], p[4], p[3]));
+    }
+    if p[6] != 1.0 || p[7] != 1.0 || p[8] != 1.0 {
+        m.scale(p[6], p[7], p[8]);
+    }
     for poly in &part.polygons {
         for v in poly {
-            let q = m.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0);
+            let q = Vec3::from_array(m.transform_position([v[0] / 16.0, v[1] / 16.0, v[2] / 16.0]));
             if !out.contains(&q) {
                 out.push(q);
             }
         }
     }
     for (child_name, child) in &part.children {
-        extents_of(child, child_name, m, adjust, out);
+        extents_of(child, child_name, &m, adjust, out);
     }
 }
 fn child<'a>(part: &'a ModelPart, name: &str) -> Option<&'a ModelPart> {
@@ -324,10 +338,10 @@ fn statue_layer(pose: &str) -> &'static str {
 /// `SpecialModelRenderer.getExtents`.
 pub(super) fn extents(renderer: &ItemRenderer, model: &SpecialModel) -> Vec<Vec3> {
     let mut out = Vec::new();
-    let id = Mat4::IDENTITY;
+    let id = joml::Mat4::IDENTITY;
     let mut add = |key: &str, adjust: Adjust| {
         if let Some(part) = renderer.part(key) {
-            extents_of(part, "root", id, adjust, &mut out);
+            extents_of(part, "root", &id, adjust, &mut out);
         }
     };
     match &model.kind {
@@ -357,7 +371,7 @@ pub(super) fn extents(renderer: &ItemRenderer, model: &SpecialModel) -> Vec<Vec3
                 // `neck`, `top` and `bottom` are posed from an identity stack.
                 for name in ["neck", "top", "bottom"] {
                     if let Some(part) = child(base, name) {
-                        extents_of(part, name, id, &none, &mut out);
+                        extents_of(part, name, &id, &none, &mut out);
                     }
                 }
             }
@@ -810,20 +824,46 @@ mod tests {
                 ((*t).to_owned(), rect)
             })
             .collect();
-        let drawn = |argument: Value, has_foil: bool| {
-            let mut quads: Vec<ItemQuad> = Vec::new();
-            submit(
-                &renderer,
-                &SpecialModel {
-                    kind: SpecialKind::Shield,
-                },
-                &argument,
-                has_foil,
-                Mat4::IDENTITY,
-                &sprites,
-                &super::super::NoHost,
-                &mut quads,
-            );
+        use super::super::{ItemRenderState, LayerGeometry, LayerRender, LayerTints, NoHost};
+        use sunrise_assets::item_model::{DisplayContext, FoilType};
+        let display = DisplayContext::ThirdPersonRightHand;
+        let drawn = |argument: Value, has_foil: bool, tint: Option<u32>| {
+            let mut state = ItemRenderState {
+                display,
+                layers: vec![LayerRender {
+                    geometry: LayerGeometry::Special {
+                        model: SpecialModel {
+                            kind: SpecialKind::Shield,
+                        },
+                        argument,
+                    },
+                    tints: LayerTints::Owned(Vec::new()),
+                    foil: if has_foil {
+                        FoilType::Standard
+                    } else {
+                        FoilType::None
+                    },
+                    matrix: Mat4::IDENTITY,
+                    particle: "".into(),
+                    uses_block_light: false,
+                    extents: Default::default(),
+                    display,
+                }],
+                oversized_in_gui: false,
+                animated: false,
+                cit_glint: None,
+                hdr_tier: 0,
+                hdr_light: 0,
+                held_tint: None,
+            };
+            if let Some(rgb) = tint {
+                state.set_held_tint(rgb);
+            }
+            let mut quads = Vec::new();
+            state.submit(&renderer, &sprites, &NoHost, Mat4::IDENTITY, &mut quads);
+            quads
+        };
+        let texture_and_foil = |quads: &[ItemQuad]| {
             quads
                 .iter()
                 .map(|q| {
@@ -843,8 +883,9 @@ mod tests {
                 "color": "blue"
             }]
         });
+        let untinted = drawn(banner.clone(), true, None);
         assert_eq!(
-            drawn(banner.clone(), true),
+            texture_and_foil(&untinted),
             [
                 ("entity/shield/shield_base", Foil::Standard),
                 ("entity/shield/base", Foil::Standard),
@@ -852,7 +893,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            drawn(banner, false),
+            texture_and_foil(&drawn(banner.clone(), false, None)),
             [
                 ("entity/shield/shield_base", Foil::None),
                 ("entity/shield/base", Foil::None),
@@ -860,9 +901,19 @@ mod tests {
             ]
         );
         assert_eq!(
-            drawn(Value::Null, true),
+            texture_and_foil(&drawn(Value::Null, true, None)),
             [("entity/shield/shield_base_nopattern", Foil::Standard)]
         );
+        // Removing green acts on the base and both pattern passes without changing
+        // the model's (possibly resource-pack-defined) red and blue or the foil.
+        let expected = untinted
+            .into_iter()
+            .map(|q| ItemQuad {
+                color: q.color & 0xFFFF_00FF,
+                ..q
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(drawn(banner, true, Some(0xFF_00_FF)), expected);
     }
     /// `DecoratedPotRenderer` draws every part with `RenderTypes.entitySolid`,
     /// whose pipeline culls back faces: the pot's flat `top` and `bottom`

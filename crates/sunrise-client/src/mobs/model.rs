@@ -31,14 +31,14 @@ impl Polygon {
 /// ModelPart uses a separate normal stack: uniform scaling keeps normal lengths,
 /// while nonuniform scaling requires normalization after the complete part transform.
 #[derive(Clone, Copy)]
-pub(super) struct ModelNormals {
+pub struct ModelNormals {
     pub(super) matrix: glam::Mat3,
     pub(super) trusted: bool,
 }
 impl ModelNormals {
     // shortcut: infer the root normal pose from its geometry matrix; pass an explicit
     // root normal stack when root-transform rounding is ported as well.
-    pub(super) fn new(base: glam::Mat4) -> Self {
+    pub fn new(base: glam::Mat4) -> Self {
         let m = glam::Mat3::from_mat4(base);
         let lengths = glam::Vec3::new(m.x_axis.length(), m.y_axis.length(), m.z_axis.length());
         let uniform =
@@ -52,6 +52,30 @@ impl ModelNormals {
             trusted: uniform,
         }
     }
+    /// A rigid root pose: its linear part already transforms normals.
+    pub fn from_rotation(pose: glam::Mat4) -> Self {
+        Self {
+            matrix: glam::Mat3::from_mat4(pose),
+            trusted: true,
+        }
+    }
+
+    pub fn rotate(&mut self, rotation: glam::Mat3) {
+        self.matrix *= rotation;
+    }
+
+    /// `PoseStack.Pose.scale`: test uniform scale exactly and keep reciprocals otherwise.
+    pub fn scale(&mut self, scale: glam::Vec3) {
+        if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
+            if scale.min_element() < 0.0 {
+                self.matrix *= glam::Mat3::from_diagonal(scale.signum());
+            }
+        } else {
+            self.matrix *= glam::Mat3::from_diagonal(scale.recip());
+            self.trusted = false;
+        }
+    }
+
     pub(super) fn rotation(x: f32, y: f32, z: f32) -> glam::Mat3 {
         // JOML derives cosine from the rounded sine, then retains quaternion length.
         // Assuming an exactly unit quaternion changes a packed normal by one byte.
@@ -98,30 +122,12 @@ impl ModelNormals {
             zz - yy - xx + ww,
         ])
     }
-    pub(super) fn part(mut self, pose: [f32; 9]) -> Self {
-        self.matrix *= Self::rotation(pose[3], pose[4], pose[5]);
-        let scale = glam::Vec3::new(pose[6], pose[7], pose[8]);
-        if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
-            if scale.min_element() < 0.0 {
-                self.matrix *= glam::Mat3::from_diagonal(scale.signum());
-            }
-        } else {
-            self.matrix *= glam::Mat3::from_diagonal(scale.recip());
-            self.trusted = false;
-        }
-        self
+    pub(super) fn part(self, pose: [f32; 9]) -> Self {
+        self.part_rotated(pose, Self::rotation(pose[3], pose[4], pose[5]))
     }
     pub(super) fn part_rotated(mut self, pose: [f32; 9], rotation: glam::Mat3) -> Self {
-        self.matrix *= rotation;
-        let scale = glam::Vec3::new(pose[6], pose[7], pose[8]);
-        if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
-            if scale.min_element() < 0.0 {
-                self.matrix *= glam::Mat3::from_diagonal(scale.signum());
-            }
-        } else {
-            self.matrix *= glam::Mat3::from_diagonal(scale.recip());
-            self.trusted = false;
-        }
+        self.rotate(rotation);
+        self.scale(glam::Vec3::new(pose[6], pose[7], pose[8]));
         self
     }
 }

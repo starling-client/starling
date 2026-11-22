@@ -8,9 +8,9 @@
 //! spawner and a shulker bullet take it, starting from the true value their
 //! constructors set.
 use super::{Game, commands::Target};
+use mod_api::EntityRef;
 use sunrise_client::mobs::Species;
 use sunrise_client::projectiles::{Projectile, ProjectileKind};
-use mod_api::EntityRef;
 
 impl Game<'_> {
     /// `Entity.noPhysics`: a player's is whether it spectates (`Player.tick`
@@ -128,7 +128,7 @@ impl Game<'_> {
                 use sunrise_core::nbt::Tag;
                 let mut compound = match self.persist.raw.get(&id) {
                     Some(Tag::Compound(map)) => map.clone(),
-                    _ => std::collections::BTreeMap::new(),
+                    _ => sunrise_core::nbt::Compound::new(),
                 };
                 if no_physics {
                     compound.insert("NoPhysics".into(), Tag::Byte(1));
@@ -214,11 +214,11 @@ mod tests {
     fn no_physics_reads_supported_entities_and_refuses_others() {
         use super::super::native_entity_refs::tests::with_game;
         use super::super::trident::ThrownTrident;
+        use mod_api::WorldEpoch;
         use sunrise_client::mobs::Mob;
         use sunrise_client::motion::PlayerMotion;
         use sunrise_client::projectiles::{Projectile, ProjectileKind};
         use sunrise_core::geometry::Vec3;
-        use mod_api::WorldEpoch;
 
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -437,6 +437,7 @@ mod tests {
                 &game.armor_stands[0],
                 [1, 2, 3, 4],
                 None,
+                &Default::default(),
             );
             let loaded = sunrise_client::entity_nbt::armor_stand_from_nbt(&saved, 44).unwrap();
             assert!(
@@ -555,9 +556,9 @@ mod tests {
     #[ignore = "daily"]
     fn no_physics_entry_is_cleared_when_the_bullet_leaves_with_its_chunk() {
         use super::super::native_entity_refs::tests::with_game;
+        use std::collections::HashSet;
         use sunrise_client::projectiles::Projectile;
         use sunrise_core::geometry::Vec3;
-        use std::collections::HashSet;
 
         with_game(|game| {
             let mut bullet = Projectile::new(

@@ -6,9 +6,14 @@ impl Game<'_> {
         screen: Screen,
         owner: Option<&str>,
     ) {
+        // Publish the accepted native screen before building its layout. A
+        // staged screen is not shown, even on an in-place Inventory open.
+        if screen == Screen::Inventory
+            && let Some(native) = self.mod_screen.as_mut()
+        {
+            native.shown = true;
+        }
         self.apply_screen(screen, owner);
-        // A server-opened native menu installs its declaration before this
-        // transition. It is not a shown screen until apply_screen finishes.
         if self.native_screen_shown() {
             self.begin_mod_book_placement();
             self.ensure_mod_book_catalog();
@@ -22,14 +27,15 @@ impl Game<'_> {
         book: &str,
     ) -> bool {
         self.shown_native_screen().is_some_and(|screen| {
-            screen.window == window
+            screen.menu.window == window
+                && screen.menu.name == menu
                 && screen.layout_revision == nonce
                 && screen
-                    .screen
+                    .layout()
                     .recipe_book
                     .as_ref()
                     .is_some_and(|key| key.as_str() == book)
-        }) && self.native_screen_menu() == Some(menu)
+        })
     }
     pub(in crate::game) fn native_book_placement_window_matches(
         &self,
@@ -57,14 +63,14 @@ impl Game<'_> {
         &self,
     ) -> Option<sunrise_client::recipe_book::placement_sync::Window> {
         let screen = self.shown_native_screen()?;
-        let menu = self.native_screen_menu()?;
+        let menu = screen.menu.name.as_str();
         mod_api::RecipeBookLayout::registered(menu)?;
         Some(sunrise_client::recipe_book::placement_sync::Window {
-            window: screen.window,
+            window: screen.menu.window,
             nonce: screen.layout_revision,
             menu: menu.to_owned().try_into().ok()?,
             book: screen
-                .screen
+                .layout()
                 .recipe_book
                 .as_ref()?
                 .as_str()

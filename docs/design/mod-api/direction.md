@@ -80,7 +80,8 @@ and [Parts](../../modding/src/concepts/parts.md).
 | --- | --- | --- | --- |
 | Block, block entity, item, entity and menu Parts | `Registrar::attach_block_part`, `attach_block_entity_part`, `attach_item_part`, `attach_entity_part`, `attach_menu_part` | Startup on the sides that load the mod | After resolution against the game's registries. Each Part method runs on the side declared for that hook. |
 | Capability providers | `provide_block_entity_capability`, `provide_block_capability`, `provide_item_capability`, `provide_entity_capability` on the registrar | Startup registration, server provider calls | After the game resolves the registrations. A capability query supplies the holder and a server host. |
-| Block entity types, default entity attributes and entity spawn placements | `declare_block_entity_type`, `declare_entity_attributes`, `modify_entity_attributes`, `declare_spawn_placement` | Startup declarations on the sides that load the mod | When the registered types, defaults and spawn rules are resolved against the content tables. |
+| Block entity types and default entity attributes | `declare_block_entity_type`, `declare_entity_attributes`, `modify_entity_attributes` | Startup declarations on the sides that load the mod | When the registered types and defaults are resolved against the content tables. |
+| Entity spawn placements | `Registrar::register_spawn_placement` | Startup registration, server predicate calls | After the game resolves placement, heightmap and native predicates against the loaded entity types ([spawn placements](../../modding/src/how-to/world/spawning.md#registering-a-spawn-predicate)). |
 | Biome modifiers | `declare_biome_modifier` | Startup declarations on the sides that load the mod | When the world's biome tables build, with the data-file biome modifiers. Not applied by the game yet. |
 | Biome regions | `declare_biome_region` | Startup declarations on the sides that load the mod | Sorted by mod id, then region id. A new world records them; from then on its saved layout, not the mods, decides the Overworld's and Nether's regions ([the design](mod-biome-regions.md)). |
 | New attribute types | `declare_attribute` | Startup declarations on the sides that load the mod | When the attribute catalog grows, before entity attribute rows resolve. The mod attributes append after the vanilla ones, sorted by mod id then attribute id — the network id order on every side running the same mods. |
@@ -88,15 +89,17 @@ and [Parts](../../modding/src/concepts/parts.md).
 | Dimension, chunk generation and biome source code, structure types, ticket controllers | `register_dimension`, `register_chunk_generator`, `register_biome_source`, `register_structure_type`, `register_ticket_controller` | Startup declarations, consumed by world setup and generation | When the world resolves its dimension, structure or ticket registrations. |
 | Controls bindings | `Registrar::register_key_mapping` | Startup registration, client consumer | When the client installs the bindings in Controls and restores saved bindings. |
 | Component tooltips | `Registrar::register_tooltip_appender` | Startup registration, client consumer | The item tooltip builder uses the callback for the registered component and placement. |
-| Server commands | `Hooks::register_commands` collects `Command` usages | Server, when opening a world and on explicit command refresh | After the server rebuilds the command tree. The server owns permission checks and sends the tree to players. |
+| Server commands | `Hooks::register_commands` collects each usage bound to its executor with `Command::executes` | Server, when opening a world, reloading data packs or refreshing commands | The current tree calls the executor after permission checks and argument resolution. Only display data goes to players. |
 | Command argument types | `Registrar::register_command_argument` declares parsing and suggestions | Startup, on the sides that load the mod | Before command trees that use the type are built at world open or refresh; clients that do not know the type complete it from the server. |
 | Client commands | `Hooks::register_client_commands` collects `Command` usages | Client, at connection start and when the server sends its tree | After the client incorporates them into completion and local dispatch. |
-| HUD layers and F3 entries | `register_gui_layers` and `register_debug_entries` | Client startup | When the installed HUD order or debug entry list is used for drawing. |
-| World-space debug renderers | `register_debug_renderers` | Client, each refresh of the renderer list | The next debug draw uses the refreshed list. |
+| HUD layers | `register_gui_layers` | Client startup | The HUD calls the installed body of each visible slot unless Pre cancels it. Wrapping or replacing a body keeps its slot. |
+| F3 entries | `register_debug_entries` | Client startup | Visible text entries call their line callbacks. Renderer entries are switches. |
+| World-space debug renderers | `register_debug_renderers` | Client, each refresh of the renderer list | Each world view calls only the installed callbacks for active renderer switches. |
+| Dimension loading screens | `register_dimension_transition_screen` | Client startup | Matching travel creates one presentation for a new screen; it stays active across in-place load updates. |
 | Model layers, colour resolvers, block and item tints, numeric and categorical item model properties | `register_layer_definitions`, `register_color_resolvers`, `register_block_tint_sources`, `register_item_tint_sources`, `register_range_select_item_model_property`, `register_select_item_model_property` | Client startup before resource loading | The client can resolve the declarations when it builds its models and rendering tables. |
 | Entity renderers | `register_entity_renderers` registers an `EntityRenderer` per entity type | Client startup before resource loading; resolved again on every resource load | When a frame draws an entity of the type through a route that reads the table: the content mods' thrown types and the living types drawn as mobs so far ([entity renderers](../../modding/src/how-to/client/entity-renderers.md)). |
 | Entity layers | `register_entity_layers` adds an `EntityRenderLayer` to a living entity type or a player model | Client, on every resource load after the entity renderers resolve | When a frame draws a mob or player of the target, after its model and vanilla layers ([entity layers](../../modding/src/how-to/client/entity-layers.md)). |
-| Special item model renderers | `register_special_model_renderer` registers a `SpecialModelRenderer` per special model type, the last registration of a type winning | Client startup before resource loading; a failed renderer is asked again, and kept answers dropped, on every resource load | When an item whose definition holds a `minecraft:special` model of the type is drawn with a stack that model node has no kept answer for; every display context draws that answer ([special item renderers](../../modding/src/how-to/client/special-item-renderers.md)). |
+| Special item model renderers | `register_special_model_renderer` registers a `SpecialModelFactory` per type; the last registration wins | The hook runs once, at client startup. Each resource load decodes and bakes each node. | Each draw extracts a typed argument from the selected stack and submits via a scoped collector. Only a successful special layer commits ([special item renderers](../../modding/src/how-to/client/special-item-renderers.md)). |
 | Data map types | `data_map_types` | Server, at world data load and each reload | After the server publishes the loaded data maps. |
 | Recipe property additions | `recipe_property_sets` | Server data load and client preload, after recipes resolve, and again on reload | When station slot checks use the published sets. |
 | Mod configs | `register_configs` | Config phase on the owning side, once at startup for Client/Common and per world for Server | After the file is read and the mod receives its config loading callback. |
@@ -121,7 +124,6 @@ reload. Each builder should collect typed declarations and validate keys before 
 | Attribute types | Declare a namespaced attribute and its value rules before entity defaults resolve. | [#812](https://github.com/arismoko/horizon/issues/812) |
 | World generation features | Bind named feature and placement implementations before server worldgen data resolves them. | [#815](https://github.com/arismoko/horizon/issues/815) |
 | Particle providers | Bind client provider factories to particle types before the particle engine spawns instances of those types. | [#822](https://github.com/arismoko/horizon/issues/822) |
-| Entity spawn placement | Bind the server placement rules and predicates to entity types before natural spawning. | [#847](https://github.com/arismoko/horizon/issues/847) |
 | Cauldron interactions | Bind item handlers to the relevant cauldron interaction table before gameplay. | [#854](https://github.com/arismoko/horizon/issues/854) |
 | Entity renderers | The other entity families' draw routes reading the renderer table (boats, displays, TNT, the armour stand, the ender dragon), and the armour stand's and the ender dragon's draws running the layers. | [#860](https://github.com/arismoko/horizon/issues/860) |
 | Biome colour resolvers | Register named client colour resolvers for block rendering and use them when meshing. | [#873](https://github.com/arismoko/horizon/issues/873) |
@@ -187,41 +189,20 @@ Systems that run over many things at once can be added beside the part methods l
 because the game owns the data, the data saves and syncs through the attachment codecs, holders have stable
 identities, and a per-hook part method stays when a system joins it.
 
-## One dependency model, native or wasm
+## One dependency model
 
-A mod can be built two ways, from the same source: native, compiled into the game, or to `mod.wasm`, which the
-game's one sandboxed runtime runs with no rebuild. The only difference between them is the build target.
+`[dependencies]` in `sunrise-mod.toml` declares required and optional mods using semver against their
+manifest versions. One resolver orders dispatch, keeps bundle-order ties, and refuses cycles. A native library
+mod publishes functions and statics its dependents call through Cargo, with one copy shared by its dependents.
 
-- `[dependencies]` in `sunrise-mod.toml` means the same for both: required and optional dependencies, semver
-  against the manifest's versions, dispatch in dependency order, and a mod publishing functions and statics its
-  dependents call. Native links through Cargo; wasm links through the runtime's linker, with one copy of each
-  library shared by its dependents. Both targets use one resolver, keep bundle-order ties, and refuse cycles.
-- There is no wasm-only packaging unit and no native-only dependency rule. A change to the model lands for both
-  targets together.
-- The wasm interface is generated from the same catalog as the `Host`, at build time, and never committed: a
-  committed generated file would make every two catalog changes conflict. CI reports the added, changed and
-  removed imports of a change in its job summary, and a coverage test fails on an entry with no binding.
-- There is no second API. Every `mod_api` type is plain data or a resource, both generated, and nothing in the
-  API is written twice for wasm. An API shape that cannot cross is fixed in the API.
+Native code builds against the exact game build pinned by `[native]`. A typed API hook takes an API-owned
+value, never an engine type. See [Dependencies between mods](../../modding/src/concepts/dependencies.md).
 
-[Building a mod to `mod.wasm`](../../modding/src/how-to/wasm-mods.md) is the how-to. The two targets differ in how a mod is
-checked against the game, because they differ in what they link to:
+## The API comes first
 
-| | Native | Wasm |
-| --- | --- | --- |
-| Pinned to | the exact game build, in `[native]` | the interface: the hooks it imports |
-| Refused when | the build differs | an import it needs is missing or changed |
-
-A wasm mod keeps running on a newer game while the hooks it imports are unchanged. `sunrise-mod-api` therefore
-always builds for `wasm32-unknown-unknown`: a hook that needs an engine type takes a plain-data type of the
-API's own, converted on the game side.
-
-## Injections stay, and the API comes first
-
-`[[inject]]` is the shared native/wasm escape hatch for what the API does not yet reach. The rule is
-API first: a mod needing something the API lacks asks for the hook that replaces the injection, and the
-injection is the stopgap until it exists. The [injections chapter](../../modding/src/concepts/injections.md) holds the current forms,
-the decision ladder and the hook-request format.
+Use a typed hook or Part where possible. When a mod needs a hook the API doesn't expose, ask for it.
+The [native route](../../modding/src/concepts/native-route.md) serves mods that need game internals or
+source edits.
 
 ## The order of the build route
 
@@ -230,15 +211,11 @@ rests on the one before:
 
 1. **The prebuilt game.** The game as a dylib with its metadata, built daily and published as prerelease
    builds, so a native mod compiles against it instead of rebuilding the game.
-2. **Slots.** `[[inject]]` listeners fill compiled points without compiling game code.
-   A missing slot is refused, including on native.
-3. **The internals tier.** A per-mod declared list of game internals the prebuilt game exposes. It is native
-   only and logged, and each internal a mod needs is a request for an API.
-4. **Wasm points.** API `[[inject]]` listeners use the same records on native and wasm.
-   Engine internals and listed call sites are native only.
-
-A native mod that needs a supported source edit uses [mixins](../../modding/src/concepts/native-route/2-mixins.md),
-which compile game code. An inject never falls back to one.
+2. **The internals tier.** A per-mod declared list of game internals the prebuilt game exposes. Each
+   internal a mod needs is a request for an API.
+3. **Function replacement.** A native mod that needs a source edit uses
+   [mixins](../../modding/src/concepts/native-route/2-mixins.md), which compile patched functions
+   against the prebuilt game.
 
 ## No telemetry
 

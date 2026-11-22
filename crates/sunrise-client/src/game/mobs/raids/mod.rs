@@ -3,9 +3,11 @@
 //! `sunrise_client::patrol` and `sunrise_client::raid`; this is the game's
 //! side of them.
 use super::{Dim, Game, creatures::Finalized};
+use std::collections::{HashMap, HashSet};
 use sunrise_client::mobs::villager as mobs_villager;
 use sunrise_client::{
     effects::{EffectInstance, OmenTick},
+    lan::playerdata::ints_uuid,
     mobs::{
         Mob, Species, raider,
         spawn_rules::{self, SpawnLevel},
@@ -20,13 +22,13 @@ use sunrise_core::{
     geometry::Vec3,
     random::{LegacyRandom, LevelRandom, RandomSource},
 };
-use std::collections::{HashMap, HashSet};
+use sunrise_gameplay::village_siege::{SiegeLevel, VillageSiege};
 
 /// Patrol and raid state owned by the game.
 #[derive(Default)]
 pub(super) struct Raiding {
     patrol: PatrolSpawner,
-    siege: Siege,
+    siege: VillageSiege,
     /// The raids of the dimension the player is in, and that dimension.
     pub(super) raids: Raids,
     loaded: Option<Dim>,
@@ -43,17 +45,6 @@ pub(super) struct Raiding {
     /// Beds near each raid's centre, rescanned now and then (`HOME` points
     /// of interest for `RaiderMoveThroughVillageGoal`).
     homes: HashMap<i32, (i64, std::sync::Arc<Vec<[i32; 3]>>)>,
-}
-
-/// `VillageSiege`: whether tonight is a siege, whether the spot is chosen,
-/// and the zombies still to spawn there.
-#[derive(Default)]
-struct Siege {
-    tonight: bool,
-    set_up: bool,
-    zombies_to_spawn: i32,
-    next_spawn_time: i32,
-    spot: [i32; 3],
 }
 
 /// A level's living raid members, in mob-list order.
@@ -85,24 +76,7 @@ impl Raiding {
     }
 }
 
-/// `SectionPos` of a block position.
-pub(super) fn section(p: [i32; 3]) -> (i32, i32, i32) {
-    (p[0] >> 4, p[1] >> 4, p[2] >> 4)
-}
-/// `PoiManager.DistanceTracker`: sections from the nearest village centre,
-/// 7 when farther than 6.
-pub(super) fn sections_to_village(centers: &HashSet<(i32, i32, i32)>, at: (i32, i32, i32)) -> i32 {
-    centers
-        .iter()
-        .map(|c| {
-            (c.0 - at.0)
-                .abs()
-                .max((c.1 - at.1).abs())
-                .max((c.2 - at.2).abs())
-        })
-        .min()
-        .map_or(7, |d| d.min(7))
-}
+pub(super) use sunrise_gameplay::custom_spawner::{section, sections_to_village};
 
 /// The level as a raid sees it, with this tick's village data.
 struct Lvl<'a, 'g> {
@@ -729,17 +703,46 @@ impl Game<'_> {
                     raider::state_mut(m).ticks_outside_raid = ticks;
                 }
             }
-            // Raid.tick on a victory: each hero who is still alive.
-            Action::Victory { heroes, amplifier } => self.for_each_player(|g| {
-                if heroes.contains(&g.acting_uuid()) && !g.spectator() {
-                    let mut effect =
-                        EffectInstance::new("hero_of_the_village", raid::HERO_DURATION, amplifier);
-                    effect.visible = false;
-                    g.potions.effects.add(effect);
-                    g.award_custom_stat("raid_win", 1);
-                    g.trigger_player("minecraft:hero_of_the_village");
-                }
+            Action::Victory { heroes, amplifier } => self.for_each_raid_hero(&heroes, |g| {
+                let mut effect =
+                    EffectInstance::new("hero_of_the_village", raid::HERO_DURATION, amplifier);
+                effect.visible = false;
+                g.apply_player_effect(effect);
+                g.award_custom_stat("raid_win", 1);
+                g.trigger_player("minecraft:hero_of_the_village");
             }),
+        }
+    }
+
+    /// Raid.tick resolves and rewards each living hero in the set's traversal
+    /// order, not in the level's player order.
+    fn for_each_raid_hero(&mut self, heroes: &[[i32; 4]], mut reward: impl FnMut(&mut Self)) {
+        for &hero in heroes {
+            let uuid = ints_uuid(hero);
+            let acting_uuid = self
+                .lan_acting_uuid
+                .or_else(|| self.level.player_uuid.map(ints_uuid));
+            if let Some(p) = self.player.as_ref()
+                && acting_uuid == Some(uuid)
+            {
+                if !self.lan_acting_fake && !self.spectator() && !p.health.dead_or_dying() {
+                    reward(self);
+                }
+                continue;
+            }
+            if let Some((i, conn)) = self.lan.as_ref().and_then(|host| {
+                host.hub.guests.iter().enumerate().find_map(|(i, g)| {
+                    (g.uuid == uuid
+                        && host.hub.here(g)
+                        && g.loaded
+                        && !g.dead
+                        && g.health > 0.0
+                        && !g.spectator())
+                    .then_some((i, g.conn))
+                })
+            }) {
+                let _ = self.as_guest_at(i, conn, &mut reward);
+            }
         }
     }
     /// `Raid.playSound`: the horn, 13 blocks from each player toward the wave,
@@ -849,14 +852,14 @@ impl Game<'_> {
         s.ticks_outside_raid = 0;
         s.active_raid = true;
         s.registered = true;
-        m.on_ground = true;
+        m.ground.on_ground = true;
         self.apply_raid_buffs(id, kind, wave, odds);
         Some(id)
     }
     /// `EntityType.create` then `finalizeSpawn` for a patrol or a raid: the
     /// mob keeps the default rotation; a leader is set before finalizing so
     /// it wears the banner.
-    fn spawn_event_mob(
+    pub(super) fn spawn_event_mob(
         &mut self,
         kind: &str,
         at: [f64; 3],
@@ -1376,15 +1379,13 @@ impl Game<'_> {
                 centers: self.village_centers(),
                 can_spawn: &biome_ok,
             };
-            let mut spawn = |l: &PatrolCx, m: Member, _: &mut sunrise_core::random::LevelRandom| {
-                // EntityType.create makes no monsters in peaceful.
-                if l.level.game.difficulty_id() == 0 {
-                    return false;
-                }
+            let mut spawn = |_: &PatrolCx, m: Member, _: &mut sunrise_core::random::LevelRandom| {
                 members.push(m);
                 true
             };
-            spawner.tick(&level, enemies, &mut random, &mut spawn);
+            if let Some(pillager) = self.res.mob_types().get("minecraft:pillager") {
+                spawner.tick(&level, enemies, pillager, &mut random, &mut spawn);
+            }
         }
         self.raiding.patrol = spawner;
         self.world.random = random;
@@ -1397,171 +1398,27 @@ impl Game<'_> {
             self.spawn_event_mob("minecraft:pillager", at, m.leader, raider::Reason::Patrol);
         }
     }
-    /// `VillageSiege.tick`: at midnight one night in ten, 20 zombies spawn
-    /// two ticks apart near a village 32 blocks from a player standing in it.
+    /// `VillageSiege.tick`, run by `VillageSiege` in `sunrise-gameplay`.
     pub(super) fn tick_village_siege(&mut self) {
-        if self.dim != Dim::Overworld {
-            return;
-        }
-        let enemies = self
-            .ui
-            .rules
-            .bool_at(sunrise_client::gamerules::vanilla::SPAWN_MOBS)
-            && self
-                .ui
-                .rules
-                .bool_at(sunrise_client::gamerules::vanilla::SPAWN_MONSTERS);
-        if self.sky_darken() < 4 || !enemies {
-            self.raiding.siege.tonight = false;
-            self.raiding.siege.set_up = false;
-            return;
-        }
-        // ClockTimeMarkers.ROLL_VILLAGE_SIEGE: tick 18000 of the 24000 tick day.
-        if self.world.day_time.rem_euclid(24000) == 18000 {
-            self.raiding.siege.tonight = self.world.random.next_int_bound(10).unwrap_or(1) == 0;
-        }
-        if !self.raiding.siege.tonight {
-            return;
-        }
-        if !self.raiding.siege.set_up {
-            if !self.try_to_setup_siege() {
-                return;
-            }
-            self.raiding.siege.set_up = true;
-        }
-        if self.raiding.siege.next_spawn_time > 0 {
-            self.raiding.siege.next_spawn_time -= 1;
-            return;
-        }
-        self.raiding.siege.next_spawn_time = 2;
-        if self.raiding.siege.zombies_to_spawn > 0 {
-            self.try_spawn_siege_zombie();
-            self.raiding.siege.zombies_to_spawn -= 1;
-        } else {
-            self.raiding.siege.tonight = false;
-        }
+        let mut siege = std::mem::take(&mut self.raiding.siege);
+        siege.tick(self);
+        self.raiding.siege = siege;
     }
     /// `ServerLevel.isVillage`: within one section of a village.
     fn is_village(centers: &HashSet<(i32, i32, i32)>, pos: [i32; 3]) -> bool {
-        sections_to_village(centers, section(pos)) <= 1
-    }
-    /// `VillageSiege.tryToSetupSiege`: the first player standing in a village
-    /// picks a spot 32 blocks away (ten tries); true when one stood in a
-    /// village, even if no spot was found.
-    fn try_to_setup_siege(&mut self) -> bool {
-        let centers = self.village_centers();
-        for player in self.level_players() {
-            if player.spectator {
-                continue;
-            }
-            let center = block_of(player.position);
-            if !Self::is_village(&centers, center)
-                || self.natural_level().biome_tag(
-                    "minecraft:without_zombie_sieges",
-                    center[0],
-                    center[1],
-                    center[2],
-                )
-            {
-                continue;
-            }
-            for _ in 0..10 {
-                let angle = self.world.random.next_float() * std::f32::consts::TAU;
-                let spot = [
-                    center[0] + (angle.cos() * 32.0).floor() as i32,
-                    center[1],
-                    center[2] + (angle.sin() * 32.0).floor() as i32,
-                ];
-                if let Some(attempted_pos) = self.find_siege_spawn_pos(&centers, spot) {
-                    let mut canceled = false;
-                    self.native_village_siege(
-                        self.dim.id(),
-                        player.uuid,
-                        attempted_pos,
-                        &mut canceled,
-                    );
-                    if canceled {
-                        return false;
-                    }
-                    self.raiding.siege.spot = spot;
-                    self.raiding.siege.next_spawn_time = 0;
-                    self.raiding.siege.zombies_to_spawn = 20;
-                    break;
-                }
-            }
-            return true;
-        }
-        false
-    }
-    /// `VillageSiege.trySpawn`: one zombie, in a random yaw.
-    fn try_spawn_siege_zombie(&mut self) {
-        let centers = self.village_centers();
-        let spot = self.raiding.siege.spot;
-        let Some(at) = self.find_siege_spawn_pos(&centers, spot) else {
-            return;
-        };
-        let Some(id) = self.spawn_event_mob("minecraft:zombie", at, false, raider::Reason::Event)
-        else {
-            return;
-        };
-        let yaw = self.world.random.next_float() * 360.0;
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            (m.yaw, m.previous_yaw, m.body_yaw, m.previous_body_yaw) = (yaw, yaw, yaw, yaw);
-            (m.head_yaw, m.previous_head_yaw) = (yaw, yaw);
-        }
-    }
-    /// `VillageSiege.findRandomSpawnPos`: ten tries within 8 blocks of the
-    /// spot for a village column where a zombie may spawn.
-    fn find_siege_spawn_pos(
-        &mut self,
-        centers: &HashSet<(i32, i32, i32)>,
-        spot: [i32; 3],
-    ) -> Option<[f64; 3]> {
-        let mut random = std::mem::replace(
-            &mut self.world.random,
-            LevelRandom::for_level(LegacyRandom::new(0)),
-        );
-        let mut found = None;
-        for _ in 0..10 {
-            let x = spot[0] + random.next_int_bound(16).unwrap_or(0) - 8;
-            let z = spot[2] + random.next_int_bound(16).unwrap_or(0) - 8;
-            if !self.world.chunks.contains_key(&(x >> 4, z >> 4)) {
-                continue;
-            }
-            let y = self.surface_height(x, z);
-            if Self::is_village(centers, [x, y, z])
-                && spawn_rules::check_spawn_rules(
-                    "minecraft:zombie",
-                    Species::Zombie,
-                    &self.natural_level(),
-                    spawn_rules::Reason::Event,
-                    &mut random,
-                    [x, y, z],
-                )
-            {
-                found = Some([f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]);
-                break;
-            }
-        }
-        self.world.random = random;
-        found
+        sunrise_gameplay::village_siege::is_village(centers, pos)
     }
     /// A raider's ominous banner (drop chance 2.0: always dropped) and a
     /// patrol captain's ominous bottle (`entities/pillager`).
     /// `OminousBottleAmplifier.onConsume`: Bad Omen for 100 minutes at the
-    /// bottle's amplifier, then the dispose sound; the bottle is used up.
-    pub(super) fn drink_ominous_bottle(
-        &mut self,
-        slot: usize,
-        stack: &sunrise_client::items::ItemStack,
-    ) {
+    /// bottle's amplifier. The consumable list owns the dispose sound.
+    pub(super) fn drink_ominous_bottle(&mut self, stack: &sunrise_client::items::ItemStack) {
         let amplifier = stack.data().and_then(|d| d.ominous_amplifier).unwrap_or(0);
         let mut effect =
             sunrise_client::effects::EffectInstance::new("bad_omen", 120_000, i32::from(amplifier));
         effect.visible = false;
         let new = self.potions.effects.get("bad_omen").is_none();
-        self.potions.effects.add(effect);
-        let eye = self.eye_position().unwrap_or_default();
+        self.apply_player_effect(effect);
         // MobEffect.onEffectAdded: Bad Omen's sound when it is new, at the
         // player's feet.
         if new && let Some(p) = self.player.as_ref() {
@@ -1569,16 +1426,40 @@ impl Game<'_> {
             self.audio
                 .play("minecraft:event.mob_effect.bad_omen", Some(at), 1.0, 1.0);
         }
-        self.audio
-            .play("minecraft:item.ominous_bottle.dispose", Some(eye), 1.0, 1.0);
-        if !self.creative
-            && let Some(s) = self.stack_in_mut(slot).as_mut()
-        {
-            s.count -= 1;
-            if s.count == 0 {
-                *self.stack_in_mut(slot) = None;
-            }
-        }
+    }
+}
+
+impl SiegeLevel for Game<'_> {
+    fn sky_darken(&self) -> i32 {
+        Game::sky_darken(self)
+    }
+    fn surface_height(&self, x: i32, z: i32) -> i32 {
+        Game::surface_height(self, x, z)
+    }
+    fn biome_tag(&self, tag: &str, pos: [i32; 3]) -> bool {
+        self.natural_level().biome_tag(tag, pos[0], pos[1], pos[2])
+    }
+    fn check_zombie_spawn_rules(&mut self, [x, y, z]: [i32; 3]) -> bool {
+        let mut random = std::mem::replace(
+            &mut self.world.random,
+            LevelRandom::for_level(LegacyRandom::new(0)),
+        );
+        let ok = spawn_rules::monster_rules(
+            Species::Zombie,
+            &self.mob_world_base(&[]),
+            spawn_rules::Reason::Event,
+            &mut random,
+            x,
+            y,
+            z,
+        );
+        self.world.random = random;
+        ok
+    }
+    fn village_siege_cancelled(&mut self, player: u128, attempted: [f64; 3]) -> bool {
+        let mut canceled = false;
+        self.native_village_siege(self.dim.id(), player, attempted, &mut canceled);
+        canceled
     }
 }
 
@@ -1609,22 +1490,6 @@ fn raid_name_tag(name: BarName) -> Tag {
                 ]),
             ),
         ]),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sections_to_village_is_a_chebyshev_distance_capped_at_seven() {
-        let mut centers = HashSet::new();
-        assert_eq!(sections_to_village(&centers, (0, 0, 0)), 7);
-        centers.insert(section([40, 64, 40]));
-        assert_eq!(sections_to_village(&centers, (2, 4, 2)), 0);
-        assert_eq!(sections_to_village(&centers, (4, 4, 2)), 2);
-        assert_eq!(sections_to_village(&centers, (-10, 4, 2)), 7);
-        assert_eq!(section([-1, -17, 15]), (-1, -2, 0));
     }
 }
 
@@ -1662,6 +1527,7 @@ impl Game<'_> {
                 self.persist.raw.get(&m.id),
                 Some(self.pack.assets.registry),
                 |other| self.persist.uuid_of(other),
+                self.res.items(),
             );
             Ok(json!({"uuid":uuid,"type":m.kind.id,"health":m.health,
                 "pos":[m.position.x,m.position.y,m.position.z],"noai":m.no_ai,
@@ -1698,13 +1564,13 @@ impl Game<'_> {
         let pos: [i32; 3] =
             std::array::from_fn(|i| op["poi"][i].as_i64().unwrap_or(i64::MIN) as i32);
         let loaded = self.world.loaded(pos[0], pos[2]);
-        let live_poi = loaded.then(|| {
+        let live_poi = if loaded {
             let w = self.mob_world_base(&[]);
-            format!(
-                "{:?}",
-                sunrise_client::mobs::villager_brain::poi_at(&w, pos[0], pos[1], pos[2])
-            )
-        });
+            sunrise_client::mobs::villager_brain::poi_at(&w, pos[0], pos[1], pos[2])
+                .and_then(|poi| w.professions.pois.name(poi))
+        } else {
+            None
+        };
         eprintln!(
             "raid input raw: {}",
             json!({"label":op["label"],"id":id,"loaded":loaded,
@@ -1725,14 +1591,22 @@ mod bed_loss_tests;
 mod bar_players_tests;
 
 #[cfg(test)]
+#[path = "tests/victory.rs"]
+mod victory_tests;
+
+#[cfg(test)]
+#[path = "tests/spawn_placements.rs"]
+mod spawn_placement_tests;
+
+#[cfg(test)]
 mod entity_ticking_tests {
     use super::{Lvl, RaidLevel};
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_client::{chunk::Chunk, ticket_levels::Sources};
     use std::{collections::HashSet, sync::Arc};
+    use sunrise_client::{chunk::Chunk, ticket_levels::Sources};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_wave_spawns_only_where_entities_tick() {
         with_game(|game| {
             game.world

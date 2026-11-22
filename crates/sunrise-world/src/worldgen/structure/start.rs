@@ -13,15 +13,15 @@ use crate::{
         weighted::WeightedList,
     },
 };
-use sunrise_core::{
-    density::{Beardifier, JigsawJunction, RigidPiece, StructureBounds, TerrainAdjustment},
-    position::{BlockPos, ChunkPos},
-    random::{LegacyRandom, PositionalRandom, RandomSource, WorldgenRandom},
-};
 use serde_json::{Value, value::RawValue};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
+};
+use sunrise_core::{
+    density::{Beardifier, JigsawJunction, RigidPiece, StructureBounds, TerrainAdjustment},
+    position::{BlockPos, ChunkPos},
+    random::{LegacyRandom, PositionalRandom, RandomSource, WorldgenRandom},
 };
 use {
     super::{

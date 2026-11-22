@@ -3,8 +3,8 @@
 //! `datafix_world IN_WORLD OUT_WORLD [TARGET]` (used by tools/test_datafix_parity.py).
 //! With a TARGET DataVersion only the data fixes up to it run, on a world in the
 //! layout of before 1.16.
-use sunrise_world::datafix::files;
 use std::{fs, io, path::Path, process::ExitCode};
+use sunrise_world::datafix::files;
 
 fn copy(from: &Path, to: &Path) -> io::Result<()> {
     fs::create_dir_all(to)?;

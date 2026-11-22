@@ -5,10 +5,8 @@
 //! versions, corrupt payloads and write failures always use the normal loader.
 //! Snapshots live in the game's own cache folder ([`set_dir`]), never in the
 //! resource folder: that one is shared by worktrees and copied between installed
-//! versions by the launcher. Its key includes a hash of the code that resolves
-//! the tables (this crate, `sunrise-core`, their dependencies; see `build.rs`),
-//! so a build that resolves them differently never reads another build's
-//! snapshot, while a rebuild that only touched other crates keeps them.
+//! versions by the launcher. Its key is the format version plus a hash of the
+//! resources the snapshot is resolved from, so no build input decides it.
 use super::*;
 use crate::registry::snapshot as registry_snapshot;
 use serde::{Deserialize, Serialize};
@@ -23,9 +21,10 @@ use std::{
     time::SystemTime,
 };
 
+// Bump a version, and its file name, with any change to how its snapshot is resolved, stored or restored.
 const MAGIC: &[u8; 8] = b"HZBEHAV\0";
-const VERSION: u32 = 3;
-const FILE_NAME: &str = "behaviours-v3.bin";
+const VERSION: u32 = 7;
+const FILE_NAME: &str = "behaviours-v7.bin";
 const REGISTRY_MAGIC: &[u8; 8] = b"HZREGIS\0";
 const REGISTRY_VERSION: u32 = 1;
 const REGISTRY_FILE_NAME: &str = "registry-v1.bin";
@@ -68,6 +67,7 @@ struct Fact {
     push: u8,
     instrument: u8,
     shape: i32,
+    collision_offset: Option<(f32, f32)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -113,8 +113,8 @@ struct Block {
     chain: Vec<u16>,
     interfaces: u16,
     set_type: Option<SetTypeSnapshot>,
-    gate_open: Option<String>,
-    gate_close: Option<String>,
+    gate_open: [Option<String>; 3],
+    gate_close: [Option<String>; 3],
     open_sound: Option<String>,
     close_sound: Option<String>,
     ticks_to_stay_pressed: i32,
@@ -127,12 +127,14 @@ struct Block {
     grow_probability: f64,
     growth_direction: u8,
     schedule_fluid_ticks: bool,
+    declared_waterlogged: bool,
     weather: u8,
     ignite_odds: i32,
     burn_odds: i32,
     sounds: SoundsSnapshot,
     item: String,
     dynamic_shape: bool,
+    declared_vegetation: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -144,18 +146,9 @@ struct Item {
     game_master: bool,
 }
 
-/// The build that resolves the tables: a hash of this crate's and
-/// `sunrise-core`'s sources, `Cargo.lock` and the profile (`build.rs`). The
-/// version constant alone misses loader changes that keep a snapshot's layout.
-fn hash_build(hasher: &mut Sha256) {
-    hash_str(hasher, env!("SUNRISE_WORLD_SOURCES"));
-}
-
 fn fingerprint(registry: &BlockRegistry, root: &Path) -> io::Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(b"sunrise resolved behaviours 2");
-    // The build that resolved the tables.
-    hash_build(&mut hasher);
     hasher.update(sources_digest(root)?);
     // The registry argument may be modified independently of facts.json.
     hasher.update((registry.len() as u64).to_le_bytes());
@@ -446,6 +439,7 @@ impl Snapshot {
                 push: push_index(fact.push),
                 instrument: fact.instrument,
                 shape: fact.shape,
+                collision_offset: fact.collision_offset,
             })
             .collect();
         let shapes = behaviours
@@ -513,8 +507,12 @@ impl Snapshot {
                     .set_type
                     .as_ref()
                     .map(|value| SetTypeSnapshot::from(value.as_ref())),
-                gate_open: block.gate_open.as_ref().map(|v| v.to_string()),
-                gate_close: block.gate_close.as_ref().map(|v| v.to_string()),
+                gate_open: std::array::from_fn(|i| {
+                    block.gate_open[i].as_ref().map(|v| v.to_string())
+                }),
+                gate_close: std::array::from_fn(|i| {
+                    block.gate_close[i].as_ref().map(|v| v.to_string())
+                }),
                 open_sound: block.open_sound.as_ref().map(|v| v.to_string()),
                 close_sound: block.close_sound.as_ref().map(|v| v.to_string()),
                 ticks_to_stay_pressed: block.ticks_to_stay_pressed,
@@ -527,12 +525,14 @@ impl Snapshot {
                 grow_probability: block.grow_probability,
                 growth_direction: direction_index(block.growth_direction),
                 schedule_fluid_ticks: block.schedule_fluid_ticks,
+                declared_waterlogged: block.declared_waterlogged,
                 weather: block.weather,
                 ignite_odds: block.ignite_odds,
                 burn_odds: block.burn_odds,
                 sounds: SoundsSnapshot::from(block.sounds.as_ref()),
                 item: block.item.to_string(),
                 dynamic_shape: block.dynamic_shape,
+                declared_vegetation: block.declared_vegetation,
             })
             .collect();
         let items = behaviours
@@ -626,6 +626,12 @@ impl Snapshot {
                 if wire.shape < -1 || wire.shape >= shapes.len() as i32 {
                     return Err(invalid("cached shape index out of range"));
                 }
+                if wire
+                    .collision_offset
+                    .is_some_and(|limits| !crate::collision::valid_offset_limits(limits))
+                {
+                    return Err(invalid("invalid cached collision offset limits"));
+                }
                 let fluid_kind = FluidKind::from_tick_id(wire.fluid_kind.into())
                     .ok_or_else(|| invalid("cached fluid kind out of range"))?;
                 let fluid = registry
@@ -651,6 +657,7 @@ impl Snapshot {
                     )?),
                     instrument: wire.instrument,
                     shape: wire.shape,
+                    collision_offset: wire.collision_offset,
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -688,8 +695,8 @@ impl Snapshot {
                     classes,
                     interfaces: wire.interfaces,
                     set_type: wire.set_type.map(|v| Arc::new(SetType::from(v))),
-                    gate_open: wire.gate_open.map(Arc::from),
-                    gate_close: wire.gate_close.map(Arc::from),
+                    gate_open: wire.gate_open.map(|v| v.map(Arc::from)),
+                    gate_close: wire.gate_close.map(|v| v.map(Arc::from)),
                     open_sound: wire.open_sound.map(Arc::from),
                     close_sound: wire.close_sound.map(Arc::from),
                     ticks_to_stay_pressed: wire.ticks_to_stay_pressed,
@@ -702,12 +709,14 @@ impl Snapshot {
                     grow_probability: wire.grow_probability,
                     growth_direction: direction(wire.growth_direction)?,
                     schedule_fluid_ticks: wire.schedule_fluid_ticks,
+                    declared_waterlogged: wire.declared_waterlogged,
                     weather: wire.weather,
                     ignite_odds: wire.ignite_odds,
                     burn_odds: wire.burn_odds,
                     sounds: Arc::new(Sounds::from(wire.sounds)),
                     item: Arc::from(wire.item),
                     dynamic_shape: wire.dynamic_shape,
+                    declared_vegetation: wire.declared_vegetation,
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -747,7 +756,7 @@ impl Snapshot {
             }
         }
         let potted_by_content = super::potted_by_content(&blocks, &table);
-        Ok(Behaviours {
+        let behaviours = Behaviours {
             table,
             props,
             named,
@@ -766,7 +775,10 @@ impl Snapshot {
             occlusion_cache: Default::default(),
             growth: Default::default(),
             block_maps: Default::default(),
-        })
+            fluid_interactions: Default::default(),
+        };
+        behaviours.install_vanilla_fluid_interactions();
+        Ok(behaviours)
     }
 }
 
@@ -874,7 +886,6 @@ fn write(
 fn registry_fingerprint(root: &Path) -> io::Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(b"sunrise block registry 1");
-    hash_build(&mut hasher);
     hasher.update(paths_digest(root, &[root.join("facts.json")])?);
     Ok(hasher.finalize().into())
 }
@@ -975,6 +986,36 @@ mod tests {
         Some(FixtureDir(dir))
     }
 
+    /// The key is the format version and the resource bytes: no resources needed.
+    #[test]
+    fn key_follows_the_format_version_and_the_resource_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "sunrise-snapshot-key-test-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let dir = FixtureDir(dir);
+        fs::write(dir.0.join("facts.json"), b"[1]").unwrap();
+        let key = registry_fingerprint(&dir.0).unwrap();
+        assert_eq!(key, registry_fingerprint(&dir.0).unwrap());
+        write_snapshot(
+            &dir.0,
+            "k.bin",
+            REGISTRY_MAGIC,
+            REGISTRY_VERSION,
+            &key,
+            b"payload",
+        )
+        .unwrap();
+        let bytes = fs::read(dir.0.join("k.bin")).unwrap();
+        let read = |version| decode_snapshot(&bytes, REGISTRY_MAGIC, version, &key);
+        assert_eq!(read(REGISTRY_VERSION).as_deref(), Some(&b"payload"[..]));
+        assert!(read(REGISTRY_VERSION + 1).is_none());
+        fs::write(dir.0.join("facts.json"), b"[1, 2]").unwrap();
+        assert_ne!(key, registry_fingerprint(&dir.0).unwrap());
+    }
+
     #[test]
     fn resolved_snapshot_roundtrips_all_fields() {
         let Some(root) = fixture() else {
@@ -989,6 +1030,34 @@ mod tests {
             serde_json::to_value(Snapshot::capture(&restored)).unwrap(),
             "all resolved fields, shape grids and identities should roundtrip",
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn declared_vegetation_survives_a_warm_cache() {
+        let root = fixture().expect("prepared block behaviour resources");
+        let path = root.0.join("block-behaviours.json");
+        let mut behaviour: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let glass = behaviour["blocks"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|block| block["name"] == "minecraft:glass")
+            .unwrap();
+        glass["declared_vegetation"] = serde_json::Value::Bool(true);
+        fs::write(path, serde_json::to_vec(&behaviour).unwrap()).unwrap();
+
+        let registry = super::super::load_registry(&root.0).unwrap();
+        let vegetation = registry.default_state("minecraft:glass").unwrap();
+        let ordinary = registry.default_state("minecraft:stone").unwrap();
+        let cold = super::super::load_uncached(&registry, &root.0).unwrap();
+        assert!(cold.data(vegetation).declared_vegetation);
+        let dir = root.0.join("game/.sunrise-cache");
+        write(&dir, &registry, &root.0, &cold).unwrap();
+        let warm = load_from(&dir, &registry, &root.0).expect("cache hit");
+        assert!(warm.data(vegetation).declared_vegetation);
+        assert!(!warm.data(ordinary).declared_vegetation);
     }
 
     /// A folder's sources are hashed once while they stay as they are; a

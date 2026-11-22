@@ -2,8 +2,8 @@
 //!
 //! A covered projection rectangle proves that an entire bounding box is hidden.
 //! Testing a few rays would miss openings between those rays.
-use sunrise_core::geometry::Aabb;
 use std::cell::Cell;
+use sunrise_core::geometry::Aabb;
 
 const EPSILON: f64 = 1.0e-5;
 
@@ -23,20 +23,6 @@ impl Culler {
     /// Remaining block lookups in this frame's shared culling budget.
     pub fn remaining(&self) -> usize {
         self.remaining.get()
-    }
-
-    /// Remove only this entity's completed camera-relative mesh when hidden.
-    pub fn cull_vertices(
-        &self,
-        vertices: &mut Vec<crate::mesher::Vertex>,
-        start: usize,
-        opaque: impl FnMut([i32; 3]) -> bool,
-    ) -> bool {
-        let hidden = self.hidden(vertices, start, opaque);
-        if hidden {
-            vertices.truncate(start);
-        }
-        hidden
     }
 
     /// Whether this entity's completed camera-relative mesh (`vertices[start..]`) is hidden.

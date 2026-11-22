@@ -81,13 +81,19 @@ fn default_map_fields_are_omitted_without_losing_nondefaults() {
 /// Sorted, typed NBT transport shared with the Java oracle for these cases.
 fn canonical(tag: &Tag) -> String {
     match tag {
-        Tag::Compound(c) => format!(
-            "{{{}}}",
-            c.iter()
-                .map(|(key, value)| format!("{}:{}", key.to_string_lossy(), canonical(value)))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
+        Tag::Compound(c) => {
+            // ParityData.canon sorts keys as Java strings, independent of NBT traversal order.
+            let mut entries: Vec<_> = c.iter().collect();
+            entries.sort_unstable_by_key(|(key, _)| *key);
+            format!(
+                "{{{}}}",
+                entries
+                    .into_iter()
+                    .map(|(key, value)| format!("{}:{}", key.to_string_lossy(), canonical(value)))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
         Tag::List(list) => format!(
             "[{}]",
             list.iter().map(canonical).collect::<Vec<_>>().join(",")

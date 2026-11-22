@@ -10,10 +10,17 @@ pub trait Hooks {
     /// `can_convert` starts as the fluid's rule (`water_source_conversion`
     /// or `lava_source_conversion`). Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "CreateFluidSourceEvent",
         target = "sunrise_client::game::native_hooks::create_fluid_source::GameLevel<'_>::native_create_fluid_source"
     )]
-    fn create_fluid_source();
+    fn create_fluid_source(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        can_convert: &mut bool,
+    );
 }

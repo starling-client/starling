@@ -10,7 +10,7 @@ pub(super) fn reducible_model_sprites(
     images: &[PackedImage],
     bordered: &HashSet<String>,
 ) -> HashSet<String> {
-    use crate::atlas_sources::{self, SpriteOrigin, unasked};
+    use crate::atlas_sources::{self, SpriteOrigin};
     let fonts: HashSet<_> = bitmap_font_textures(root).into_iter().collect();
     let protected = |name: &str| {
         let path = name.split_once(':').map_or(name, |(_, path)| path);
@@ -23,16 +23,13 @@ pub(super) fn reducible_model_sprites(
         .filter(|(name, ..)| name.starts_with("item/") || name.starts_with("block/"))
         .map(|(name, ..)| name.clone())
         .collect();
-    let textures = atlas_sources::list_textures(root);
     let mut protected_aliases = HashSet::new();
-    for (atlas, sources) in atlas_sources::atlases(root) {
-        if atlas != "minecraft:blocks" && atlas != "minecraft:items" {
-            continue;
-        }
-        for (id, origin) in atlas_sources::list(&sources, &textures, &mut unasked) {
-            let name = id.strip_prefix("minecraft:").unwrap_or(&id).to_owned();
+    let materials = atlas_sources::Materials::new(root);
+    for atlas in ["minecraft:blocks", "minecraft:items"] {
+        for (id, origin) in materials.listing().sprites(atlas) {
+            let name = id.strip_prefix("minecraft:").unwrap_or(id).to_owned();
             if let SpriteOrigin::File(texture) = origin {
-                if protected(&texture) {
+                if protected(texture) {
                     protected_aliases.insert(name);
                 } else {
                     models.insert(name);

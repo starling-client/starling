@@ -1,0 +1,6 @@
+id = "manifest_property_nan"
+name = "Manifest property nan"
+version = "1.0.0"
+
+[properties]
+ratio = nan

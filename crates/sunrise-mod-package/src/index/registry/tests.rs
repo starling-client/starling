@@ -2,9 +2,9 @@
 //! builds the sample index (`tests/index/index-v1.json`) exactly.
 use super::*;
 
-const SMOD: &str = "f891bde88f4b841fd35c4f3305bc8904b671ebe9d5ad28d5aecc57e8b23fc3ce";
-const SPACK: &str = "4ad64fdf094fe3d4a52d7b0d22ee8ea5889d0b76cc3f12c588db501a0ad0c4bd";
-const SSHADER: &str = "331cfe29a666a0de804e9a9ff3d19d246eebcfbfa70b4f49bba8482d30ad9f02";
+const SMOD: &str = "cb6e658445269b2a4d2eb104e83e4b993586bc2e56814fd56454244139f08364";
+const SPACK: &str = "ca9a0207d5a9df142962a2dd7563a639eea6774e7f144b6ef239eb6eaf753f58";
+const SSHADER: &str = "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961";
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/index")
@@ -33,7 +33,7 @@ license = "MIT"
 source = "https://github.com/horizon-rust/horizon"
 icon = "icons/coords_hud.png"
 categories = ["utility"]
-key = "RWS/AoT50ekAULLFG7HiTPTE4eTQEONCCMbKsPE7JBxt3XJ37BY4w7bp"
+key = "RWTVDqAKF4nm3+eZIK4SeLU6R6sSdJyNgrG/8bdFuTPpXlGK0I8+7wmc"
 
 [[versions]]
 version = "0.1.0"
@@ -63,7 +63,7 @@ version = "1.0.0"
 published = "2026-10-24"
 game = "26.3"
 file = "cozy-1.0.0.spack"
-sha256 = "4ad64fdf094fe3d4a52d7b0d22ee8ea5889d0b76cc3f12c588db501a0ad0c4bd"
+sha256 = "ca9a0207d5a9df142962a2dd7563a639eea6774e7f144b6ef239eb6eaf753f58"
 "#;
 
 const GLOW: &str = r#"id = "glow"
@@ -83,7 +83,7 @@ version = "1.0.0"
 published = "2026-10-26"
 game = "26.3"
 file = "glow-1.0.0.sshader"
-sha256 = "331cfe29a666a0de804e9a9ff3d19d246eebcfbfa70b4f49bba8482d30ad9f02"
+sha256 = "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961"
 "#;
 
 const REVOKED_TOML: &str = r#"[[revoked]]
@@ -94,7 +94,7 @@ date = "2026-10-24"
 "#;
 
 /// The header of a PNG of `w`×`h` pixels: what the registry reads of an image.
-fn png(w: u32, h: u32) -> Vec<u8> {
+pub(super) fn png(w: u32, h: u32) -> Vec<u8> {
     let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
     b.extend(w.to_be_bytes());
     b.extend(h.to_be_bytes());
@@ -103,10 +103,10 @@ fn png(w: u32, h: u32) -> Vec<u8> {
 }
 
 /// A registry checkout and its downloaded files, in a scratch folder.
-struct Scratch(PathBuf);
+pub(super) struct Scratch(pub(super) PathBuf);
 
 impl Scratch {
-    fn new(name: &str) -> Scratch {
+    pub(super) fn new(name: &str) -> Scratch {
         let dir =
             std::env::temp_dir().join(format!("sunrise-registry-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -131,17 +131,17 @@ impl Scratch {
         s
     }
 
-    fn write(&self, path: &str, text: &str) {
+    pub(super) fn write(&self, path: &str, text: &str) {
         std::fs::write(self.0.join("repo").join(path), text).unwrap();
     }
 
-    fn write_bytes(&self, path: &str, bytes: &[u8]) {
+    pub(super) fn write_bytes(&self, path: &str, bytes: &[u8]) {
         let path = self.0.join("repo").join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
 
-    fn build(&self) -> Result<Index, Vec<String>> {
+    pub(super) fn build(&self) -> Result<Index, Vec<String>> {
         let (repo, files) = (self.0.join("repo"), self.0.join("files"));
         build(&Sources {
             registry: &repo,
@@ -149,6 +149,9 @@ impl Scratch {
             release: super::super::FILE_HOST,
             site: "https://horizon-rust.github.io/horizon-mods/",
             generated: "2026-10-24T18:00:00Z".into(),
+            releases: None,
+            nightly: None,
+            binary_checks: None,
         })
     }
 }
@@ -169,6 +172,134 @@ fn builds_the_sample_index() {
     assert_eq!(built.generated, sample.generated);
     // What it writes reads back.
     Index::parse(&serde_json::to_string_pretty(&built).unwrap()).unwrap();
+}
+
+#[test]
+fn a_stable_source_file_has_its_kinds_extension() {
+    let mut entry: Entry = toml::from_str(GLOW).unwrap();
+    entry.source = "https://github.com/author/glow".into();
+    let mut row = entry.versions[0].clone();
+    row.sunrise = Some("26.3-0.1.0".into());
+    let asset = "https://github.com/author/glow/releases/download/v1.0.0/glow-1.0.0";
+    row.file = format!("{asset}.sshader");
+    assert_eq!(entry.source_file_name(&row), Ok("glow-1.0.0.sshader"));
+    row.file = format!("{asset}.smod");
+    assert!(entry.source_file_name(&row).is_err());
+    entry.kind = Kind::Other("future-pack".into());
+    assert!(
+        entry
+            .source_file_name(&row)
+            .unwrap_err()
+            .contains("future-pack")
+    );
+}
+
+#[test]
+fn stable_source_uses_an_author_url_but_the_index_uses_the_registry_mirror() {
+    let s = Scratch::new("author-source");
+    let releases = parse_releases(
+        r#"[{"tag":"26.3-0.1.0","commit":"0123456789abcdef0123456789abcdef01234567"}]"#,
+    )
+    .unwrap();
+    let inputs = Sources {
+        registry: &s.0.join("repo"),
+        files: &s.0.join("files"),
+        release: super::super::FILE_HOST,
+        site: "https://example.invalid/",
+        generated: String::new(),
+        releases: Some(&releases),
+        nightly: None,
+        binary_checks: None,
+    };
+    let mut entry: Entry = toml::from_str(&hud_entry()).unwrap();
+    entry.source.clear();
+    entry.repo = Some("author/Coords".into());
+    let mut row = entry.versions[0].clone();
+    let legacy = checked_version(&entry, &row, &inputs, &[]).unwrap();
+    assert_eq!(legacy.file.name, "coords_hud-0.1.0.smod");
+    assert!(
+        legacy
+            .file
+            .url
+            .ends_with("/coords_hud-0.1.0/coords_hud-0.1.0.smod")
+    );
+    assert!(legacy.file.url.starts_with(super::super::FILE_HOST));
+
+    row.sunrise = Some(releases[0].tag.clone());
+    assert!(
+        checked_version(&entry, &row, &inputs, &[])
+            .unwrap_err()
+            .contains("GitHub release asset URL")
+    );
+    for url in [
+        "https://github.com/other/coords/releases/download/v0.1.0/coords_hud-0.1.0.smod",
+        "https://github.com/author/coords/releases/download/v0.1.0/other-0.1.0.smod",
+        "https://github.com/author/coords/releases/download/extra/v0.1.0/coords_hud-0.1.0.smod",
+    ] {
+        row.file = url.into();
+        assert!(
+            checked_version(&entry, &row, &inputs, &[]).is_err(),
+            "{url}"
+        );
+    }
+    row.file =
+        "https://github.com/author/coords/releases/download/v0.1.0/coords_hud-0.1.0.smod".into();
+    let stable = checked_version(&entry, &row, &inputs, &[]).unwrap();
+    assert_eq!(stable.file, legacy.file);
+    entry.versions[0] = row;
+    let mut changed = entry.clone();
+    changed.versions[0].file = changed.versions[0].file.replace("/v0.1.0/", "/retagged/");
+    let review = review(&[entry], &[changed], "author");
+    assert!(
+        review
+            .errors
+            .iter()
+            .any(|e| e.contains("coords_hud 0.1.0") && e.contains("published file")),
+        "{review:?}"
+    );
+}
+
+#[test]
+fn an_entry_with_a_short_version_label_takes_the_file_that_says_it_in_full() {
+    let s = Scratch::new("short");
+    s.write(
+        "mods/coords_hud.toml",
+        &hud_entry().replace("version = \"0.1.0\"", "version = \"0.1\""),
+    );
+    // The sample modpack still needs 0.1.0, which is the only problem left.
+    let errors = s.build().unwrap_err();
+    assert_eq!(
+        errors,
+        ["cozy 1.0.0: needs coords_hud 0.1.0, which is not in the index"]
+    );
+}
+
+#[test]
+fn downloads_and_stars_come_from_the_counts_and_a_zero_is_left_out() {
+    let s = Scratch::new("counts");
+    let mut index = s.build().unwrap();
+    let first = &index.projects[0];
+    let url = first.versions[0].file.url.clone();
+    let repo = first
+        .source
+        .strip_prefix("https://github.com/")
+        .unwrap()
+        .to_ascii_uppercase();
+    let counts: Counts = serde_json::from_str(&format!(
+        r#"{{"downloads": {{"{url}": 7, "{url}?other": 100}}, "stars": {{"{repo}": 3}}}}"#
+    ))
+    .unwrap();
+    count(&mut index, &counts);
+    assert_eq!(
+        (index.projects[0].downloads, index.projects[0].stars),
+        (7, 3)
+    );
+    // A project the counts don't name counts nothing, and the index leaves both out.
+    let second = &index.projects[1];
+    assert_eq!((second.downloads, second.stars), (0, 0));
+    let json = serde_json::to_value(&index).unwrap();
+    assert!(json["projects"][1].get("downloads").is_none());
+    assert_eq!(json["projects"][0]["downloads"], 7);
 }
 
 #[test]
@@ -291,16 +422,98 @@ fn owner_ids_are_optional_and_kept() {
 }
 
 #[test]
+fn owner_only_nightly_changes_are_routine() {
+    let mut old: Entry = toml::from_str(&hud_entry()).unwrap();
+    old.versions[0].sunrise = Some("26.3-0.1.0".into());
+    let mut with_source = old.clone();
+    with_source.nightly = Some(NightlySource {
+        repo: "ludovic111/coords_hud".into(),
+        path: None,
+    });
+    let status = |base: Option<&Entry>, head: &Entry, author| {
+        let review = review(
+            base.map_or(&[], std::slice::from_ref),
+            std::slice::from_ref(head),
+            author,
+        );
+        assert!(review.errors.is_empty(), "{:?}", review.errors);
+        assert_eq!(review.nightly_reviews[0].id, head.id);
+        review.nightly_reviews[0].status
+    };
+    assert_eq!(
+        status(Some(&old), &with_source, "Ludovic111"),
+        ReviewStatus::Routine
+    );
+    assert_eq!(
+        status(Some(&old), &with_source, "someone_else"),
+        ReviewStatus::ReviewRequired
+    );
+    let mut edited = with_source.clone();
+    edited.nightly.as_mut().unwrap().path = Some("new-path".into());
+    assert_eq!(
+        status(Some(&with_source), &edited, "ludovic111"),
+        ReviewStatus::Routine
+    );
+    edited.owners.push("someone_else".into());
+    assert_eq!(
+        status(Some(&with_source), &edited, "ludovic111"),
+        ReviewStatus::ReviewRequired
+    );
+    assert_eq!(
+        status(None, &with_source, "ludovic111"),
+        ReviewStatus::ReviewRequired
+    );
+    with_source.versions.clear();
+    assert_eq!(
+        status(None, &with_source, "ludovic111"),
+        ReviewStatus::Routine
+    );
+    assert_eq!(
+        status(None, &with_source, "someone_else"),
+        ReviewStatus::ReviewRequired
+    );
+}
+
+#[test]
+fn the_release_list_refuses_malformed_or_ambiguous_releases() {
+    let hex = "ab".repeat(20);
+    let row = |tag: &str, commit: &str| serde_json::json!({ "tag": tag, "commit": commit });
+    let check = |rows| parse_releases(&serde_json::Value::Array(rows).to_string());
+    for tag in [
+        "26-0.1.0",
+        "26..3-0.1.0",
+        "26.3-0.1",
+        "26.3-v0.1.0",
+        "26.3-0.1.0-rc.1",
+        "26.3-0.1.0+x",
+    ] {
+        assert!(check(vec![row(tag, &hex)]).unwrap_err().contains(tag));
+    }
+    assert!(
+        check(vec![row("26.3-0.1.0", "abc")])
+            .unwrap_err()
+            .contains("40 hex digits")
+    );
+    let release = row("26.3-0.1.0", &hex);
+    assert!(
+        check(vec![release.clone(), release])
+            .unwrap_err()
+            .contains("listed twice")
+    );
+}
+
+#[test]
 fn a_review_protects_published_files() {
     let base: Entry = toml::from_str(&hud_entry()).unwrap();
-    let cozy: Entry = toml::from_str(COZY).unwrap();
+    let mut cozy: Entry = toml::from_str(COZY).unwrap();
+    cozy.versions[0].sunrise = Some("26.3-0.1.0".into());
     let one = std::slice::from_ref(&base);
-    let same = review(one, one, "someone");
-    assert_eq!(same, Review::default());
+    assert_eq!(review(one, one, "someone"), Review::default());
 
     let mut update = base.clone();
     let mut next = update.versions[0].clone();
     next.version = "0.2.0".into();
+    next.sunrise = Some("26.3-0.1.0".into());
     update.versions.insert(0, next);
     let r = review(one, std::slice::from_ref(&update), "ludovic111");
     assert!(r.errors.is_empty(), "{r:?}");
@@ -310,6 +523,7 @@ fn a_review_protects_published_files() {
 
     let mut swapped = base.clone();
     swapped.versions[0].sha256 = SPACK.into();
+    swapped.versions[0].sunrise = Some("26.3-0.1.0".into());
     swapped.kind = Kind::ResourcePack;
     swapped.key = None;
     let r = review(&[base.clone(), cozy.clone()], &[swapped], "ludovic111");
@@ -320,13 +534,69 @@ fn a_review_protects_published_files() {
     assert!(r.notes.iter().any(|n| n.contains("signing key")));
 
     let r = review(&[], &[cozy], "newcomer");
+    assert!(r.errors.is_empty(), "{r:?}");
     assert_eq!(r.notes, ["cozy: a new modpack by ludovic111"]);
+
+    // A row may gain a stable release; once published, the release it names stays.
+    let mut stable = base.clone();
+    stable.versions[0].sunrise = Some("26.3-0.1.0".into());
+    let r = review(one, std::slice::from_ref(&stable), "ludovic111");
+    assert!(r.errors.is_empty(), "{r:?}");
+    for renamed in [None, Some("26.3-0.2.0".to_owned())] {
+        let mut changed = stable.clone();
+        changed.versions[0].sunrise = renamed;
+        let r = review(std::slice::from_ref(&stable), &[changed], "ludovic111");
+        assert_eq!(r.errors.len(), 1, "{r:?}");
+        assert!(r.errors[0].contains("coords_hud 0.1.0"), "{r:?}");
+    }
+}
+
+#[test]
+fn review_requires_a_stable_release_on_a_new_row() {
+    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    let mut head = base.clone();
+    let mut next = base.versions[0].clone();
+    next.version = "0.2.0".into();
+    head.versions.push(next);
+    for (before, version) in [(std::slice::from_ref(&base), "0.2.0"), (&[][..], "0.1.0")] {
+        let r = review(before, std::slice::from_ref(&head), "ludovic111");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains(&format!("coords_hud {version}:"))
+                    && e.contains("needs sunrise")),
+            "{r:?}"
+        );
+    }
+}
+
+#[test]
+fn review_requires_a_stable_release_on_a_changed_row() {
+    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    let mut head = base.clone();
+    head.versions[0].changelog = "An edited changelog.".into();
+    let r = review(&[base], &[head], "ludovic111");
+    assert!(
+        matches!(&r.errors[..], [e] if e.starts_with("coords_hud 0.1.0:")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn review_refuses_deleting_an_entry_even_with_only_legacy_rows() {
+    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    let r = review(&[base], &[], "ludovic111");
+    assert!(
+        matches!(&r.errors[..], [e] if e.starts_with("coords_hud:")),
+        "{r:?}"
+    );
 }
 
 #[test]
 fn a_version_taken_down_by_hash_may_leave_its_entry() {
     // A lost signing key: the next version comes under a new key, and the old one is dropped.
-    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    let mut base: Entry = toml::from_str(&hud_entry()).unwrap();
+    base.versions[0].sunrise = Some("26.3-0.1.0".into());
     let old = base.versions[0].clone();
     let mut rotated = base.clone();
     rotated.versions[0].version = "0.2.0".into();
@@ -366,6 +636,40 @@ fn a_version_taken_down_by_hash_may_leave_its_entry() {
             "{revoked:?}: {r:?}"
         );
     }
+}
+
+#[test]
+fn a_takedown_review_names_the_dependents_of_a_removed_version() {
+    let mut index = sample();
+    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    let mut fireflies = index.projects.remove(0);
+    fireflies.id = "fireflies".into();
+    fireflies.versions[0].dependencies = serde_json::from_value(serde_json::json!([
+        {"id": "coords_hud", "version": "^0.1"}
+    ]))
+    .unwrap();
+    let mut another = fireflies.clone();
+    another.id = "another".into();
+    another.versions[0].dependencies.as_mut().unwrap()[0].version = "^2".into();
+    let mut optional = fireflies.clone();
+    optional.id = "optional".into();
+    optional.versions[0].dependencies.as_mut().unwrap()[0].optional = true;
+    index.projects = vec![fireflies, another, optional];
+    index.revoked = vec![Revoked {
+        id: "coords_hud".into(),
+        sha256: Some(SMOD.into()),
+        reason: "test".into(),
+        date: String::new(),
+    }];
+    let notes = takedown_notes(std::slice::from_ref(&base), &[], &index);
+    assert_eq!(notes.len(), 1);
+    for word in ["fireflies", "0.1.0", "coords_hud", "^0.1"] {
+        assert!(notes[0].contains(word), "{notes:?}");
+    }
+    assert!(takedown_notes(std::slice::from_ref(&base), &index.revoked, &index).is_empty());
+    index.revoked[0].sha256 = None;
+    assert_eq!(takedown_notes(&[base], &[], &index), notes);
+    // `another` requires ^2, which never matched any affected version either way.
 }
 
 #[test]
@@ -428,6 +732,172 @@ fn native_project_rejects_a_content_only_version() {
     );
 }
 
+const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+const REQUIREMENT_BUILD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+fn package_for_requirement_review(files: &Path, cargo: &str, helper: &str) -> Entry {
+    let manifest = format!(
+        "id='coords_hud'\nname='Coords'\nversion='0.1.0'\napi='0.2'\n[native]\ngame='26.3'\nsunrise='{REQUIREMENT_BUILD}'\n"
+    );
+    let bytes = crate::Package::write_files(
+        &manifest,
+        &[
+            ("Cargo.toml", cargo.as_bytes()),
+            ("src/lib.rs", b""),
+            ("src/helper/Cargo.toml", helper.as_bytes()),
+            (
+                "Cargo.lock",
+                b"version = 4\n[[package]]\nname='serde_json'\nversion='1.0.154'\nsource='registry+https://github.com/rust-lang/crates.io-index'\n",
+            ),
+        ],
+    )
+    .unwrap();
+    let sha256 = super::super::sha256(&bytes);
+    std::fs::write(files.join(&sha256), bytes).unwrap();
+    let mut entry: Entry = toml::from_str(&hud_entry()).unwrap();
+    entry.kind = Kind::NativeMod;
+    entry.versions[0].sha256 = sha256;
+    entry.versions[0].sunrise = Some("26.3-0.1.0".into());
+    entry
+}
+
+fn write_requirement_review_game_lock(sdk_data: &Path) {
+    let build = sdk_data.join(REQUIREMENT_BUILD);
+    std::fs::create_dir(&build).unwrap();
+    let mut lock = String::from("version = 4\n");
+    for (name, version) in [
+        ("syn", "2.0.119"),
+        ("syn", "3.0.5"),
+        ("syn", "3.0.6"),
+        ("serde_json", "1.0.151"),
+        ("log", "0.4.34"),
+        ("parser", "3.1.0"),
+        ("zero", "0.0.1"),
+        ("zero_pre", "0.0.1-alpha.1"),
+    ] {
+        lock.push_str(&format!(
+            "[[package]]\nname='{name}'\nversion='{version}'\nsource='{CRATES_IO}'\n"
+        ));
+    }
+    std::fs::write(build.join("Cargo.lock"), lock).unwrap();
+}
+
+#[test]
+fn native_requirement_review_warns_on_an_edited_row_and_follows_target_path_dependencies() {
+    let files = tempfile::tempdir().unwrap();
+    let sdk = tempfile::tempdir().unwrap();
+    write_requirement_review_game_lock(sdk.path());
+    let old = package_for_requirement_review(
+        files.path(),
+        "[package]\nname='coords_hud'\nversion='0.1.0'\n[dependencies]\nsyn='3.0.10'\nolder={package='parser',version='=3.0.9'}\nzero_pre='0.0.*'\n\
+         [target.'cfg(unix)'.build-dependencies]\nhelper={path='src/helper'}\n",
+        "[package]\nname='helper'\nversion='0.1.0'\n[dev-dependencies]\n\
+         other_json={package='serde_json',version='=1.0.154'}\nlog='>0.4.34, <0.5'\n",
+    );
+    let base = std::slice::from_ref(&old);
+    let mut review = review(base, base, "ludovic111");
+    review.check_native_requirements(base, base, files.path(), Some(sdk.path()), CRATES_IO);
+    assert!(
+        review.warnings.is_empty() && review.notes.is_empty(),
+        "{review:?}"
+    );
+
+    let mut edited = old.clone();
+    edited.versions[0].changelog = "A note about this version.".into();
+    let head = &[edited];
+    review.check_native_requirements(base, head, files.path(), Some(sdk.path()), CRATES_IO);
+    assert!(
+        review.errors.is_empty() && review.notes.is_empty(),
+        "{review:?}"
+    );
+    assert_eq!(review.warnings.len(), 5, "{review:?}");
+    for (warning, (manifest, name, req, pins)) in review.warnings.iter().zip([
+        // Below the game's pin on its line: a build could only use it by moving the pin back.
+        ("Cargo.toml", "parser", "=3.0.9", "3.1.0"),
+        ("Cargo.toml", "syn", "3.0.10", "3.0.5, 3.0.6"),
+        // A prerelease pin shares its line with its own release.
+        ("Cargo.toml", "zero_pre", "0.0.*", "0.0.1-alpha.1"),
+        ("src/helper/Cargo.toml", "log", ">0.4.34, <0.5", "0.4.34"),
+        ("src/helper/Cargo.toml", "serde_json", "=1.0.154", "1.0.151"),
+    ]) {
+        for fact in [
+            "coords_hud 0.1.0",
+            manifest,
+            name,
+            req,
+            pins,
+            &REQUIREMENT_BUILD[..12],
+        ] {
+            assert!(warning.contains(fact), "missing {fact}: {warning}");
+        }
+    }
+    assert!(!review.warnings[1].contains("2.0.119"), "{review:?}");
+
+    // A valid archive at the wrong digest path must not be attributed to the edited row.
+    let mut wrong_hash = head[0].clone();
+    wrong_hash.versions[0].sha256 = "f".repeat(64);
+    std::fs::copy(
+        files.path().join(&head[0].versions[0].sha256),
+        files.path().join(&wrong_hash.versions[0].sha256),
+    )
+    .unwrap();
+    let mut skipped = Review::default();
+    skipped.check_native_requirements(
+        base,
+        &[wrong_hash],
+        files.path(),
+        Some(sdk.path()),
+        CRATES_IO,
+    );
+    assert!(skipped.warnings.is_empty(), "{skipped:?}");
+}
+
+#[test]
+fn native_requirement_review_accepts_game_pins_even_if_the_mod_lock_is_ahead() {
+    let files = tempfile::tempdir().unwrap();
+    let sdk = tempfile::tempdir().unwrap();
+    write_requirement_review_game_lock(sdk.path());
+    let entry = package_for_requirement_review(
+        files.path(),
+        "[package]\nname='coords_hud'\nversion='0.1.0'\n[dependencies]\n\
+         serde_json='1'\nsyn='>=4'\nlog='0.5'\nextra='1'\nparser='>=2, <3'\nzero='0.0.2'\n\
+         matching_syn={package='syn',version='>=2.0.119, <3.0.5'}\n\
+         upstream={package='serde_json',version='1.0.154',git='https://example.invalid/serde'}\n\
+         alternate={package='log',version='0.4.35',registry='other'}\n",
+        "[package]\nname='unused'\nversion='0.1.0'\n[dependencies]\nsyn='3.0.10'\n",
+    );
+    let mut review = Review::default();
+    review.check_native_requirements(&[], &[entry], files.path(), Some(sdk.path()), CRATES_IO);
+    assert_eq!(review, Review::default());
+}
+
+#[test]
+fn native_requirement_review_notes_a_missing_game_lock_once_per_build() {
+    let files = tempfile::tempdir().unwrap();
+    let sdk = tempfile::tempdir().unwrap();
+    let entry = package_for_requirement_review(
+        files.path(),
+        "[package]\nname='coords_hud'\nversion='0.1.0'\n[dependencies]\nsyn='3.0.10'\n",
+        "",
+    );
+    let mut head = vec![entry];
+    let mut other = head[0].clone();
+    other.id = "other".into();
+    head.push(other);
+    for sdk_data in [None, Some(sdk.path())] {
+        let mut review = Review::default();
+        review.check_native_requirements(&[], &head, files.path(), sdk_data, CRATES_IO);
+        assert!(
+            review.warnings.is_empty() && review.errors.is_empty(),
+            "{review:?}"
+        );
+        assert_eq!(review.notes.len(), 1, "{review:?}");
+        for fact in [REQUIREMENT_BUILD, "not compared", "Cargo.lock"] {
+            assert!(review.notes[0].contains(fact), "missing {fact}: {review:?}");
+        }
+    }
+}
+
 #[test]
 fn a_new_icon_is_a_new_address() {
     let s = Scratch::new("icon-address");
@@ -483,7 +953,7 @@ fn page_fields_and_screenshots_reach_the_index() {
     assert!(has("\"bloom\" is not a category of a mod"), "{errors:?}");
     assert!(has("1.png: 100×100 pixels"), "{errors:?}");
     assert!(
-        has("\"screenshots/other/2.png\" is neither screenshots/coords_hud/"),
+        has("\"screenshots/other/2.png\" must be kept in the registry"),
         "{errors:?}"
     );
     assert!(has("the icon is 128×64"), "{errors:?}");
@@ -501,7 +971,6 @@ fn only_open_kinds_are_taken() {
     assert!(open(&Kind::DataPack).is_ok());
     assert!(open(&Kind::Other("world".into())).is_err());
     let mut submit: Entry = toml::from_str(COZY).unwrap();
-    submit.id = "submit".into();
     let dir = std::env::temp_dir();
     let src = Sources {
         registry: &dir,
@@ -509,8 +978,14 @@ fn only_open_kinds_are_taken() {
         release: super::super::FILE_HOST,
         site: "https://x.test/",
         generated: String::new(),
+        releases: None,
+        nightly: None,
+        binary_checks: None,
     };
-    assert!(project(&submit, &src).unwrap_err()[0].contains("reserved"));
+    for page in ["submit", "mine", "account", "policy"] {
+        submit.id = page.into();
+        assert!(project(&submit, &src).unwrap_err()[0].contains("reserved"));
+    }
     assert!(plain_version("1.0.0-beta.2") && !plain_version("../1") && !plain_version("1 0"));
     assert!(plain_date("2026-10-24") && !plain_date("24/10/2026"));
 }
@@ -616,118 +1091,365 @@ fn a_project_listed_by_its_repository_takes_its_versions_from_releases() {
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn native_binaries_round_trip_and_exact_lookup() {
-    let scratch = Scratch::new("native-binaries");
-    let mut entry: Entry = toml::from_str(&hud_entry()).unwrap();
-    let v = &mut entry.versions[0];
-    let file = sample().project("coords_hud").unwrap().versions[0]
-        .file
-        .clone();
-    for (build, target) in [
-        ("build-a", "x86_64-unknown-linux-gnu"),
-        ("build-a", "aarch64-apple-darwin"),
-        ("build-b", "x86_64-unknown-linux-gnu"),
-        ("build-b", "aarch64-apple-darwin"),
-    ] {
-        v.native_binaries.push(super::super::NativeBinary {
-            build: build.into(),
-            target: target.into(),
-            file: file.clone(),
-        });
-    }
-    scratch.write("mods/coords_hud.toml", &entry.to_toml().unwrap());
-    let index = scratch.build().unwrap();
-    assert_eq!(
-        index.project("coords_hud").unwrap().versions[0].native_binaries,
-        entry.versions[0].native_binaries
+fn screenshots_and_caches_refuse_linked_ancestor_directories() {
+    use std::{fs, os::unix::fs::symlink};
+    let s = Scratch::new("linked-screenshot-ancestor");
+    let root = s.0.join("repo");
+    let with_screenshot = hud_entry().replace(
+        "[[versions]]",
+        "screenshots = ['screenshots/coords_hud/view.png']\n\n[[versions]]",
     );
-    let text = serde_json::to_string(&index).unwrap();
-    let decoded = Index::parse(&text).unwrap();
-    let v = &decoded.project("coords_hud").unwrap().versions[0];
-    assert_eq!(v.native_binaries, entry.versions[0].native_binaries);
-    let mut repeated = entry.clone();
-    repeated.versions[0]
-        .native_binaries
-        .push(entry.versions[0].native_binaries[0].clone());
-    scratch.write("mods/coords_hud.toml", &repeated.to_toml().unwrap());
+    s.write("mods/coords_hud.toml", &with_screenshot);
+    s.write_bytes("screenshots/coords_hud/view.png", &png(640, 360));
+    let index = s.build().unwrap();
+    assert_eq!(index.project("coords_hud").unwrap().screenshots.len(), 1);
+    let outside = s.0.join("outside-screenshots");
+    fs::rename(root.join("screenshots"), &outside).unwrap();
+    symlink(outside, root.join("screenshots")).unwrap();
+    let errors = s.build().unwrap_err();
     assert!(
-        scratch
-            .build()
-            .unwrap_err()
+        errors
             .iter()
-            .any(|e| e.contains("duplicate native"))
+            .any(|e| e.contains("coords_hud") && e.contains("view.png")),
+        "{errors:?}"
     );
+    fs::remove_file(root.join("screenshots")).unwrap();
+    s.write("mods/coords_hud.toml", &hud_entry());
+
+    s.write(
+        "mods/cozy.toml",
+        &format!("{COZY_REPO}name='Cozy'\nsummary='Calm.'\nlicense='MIT'\n"),
+    );
+    let cache = Cache {
+        versions: index.project("cozy").unwrap().versions.clone(),
+        ..Cache::default()
+    };
+    s.write_bytes("versions/cozy.json", &serde_json::to_vec(&cache).unwrap());
+    assert!(s.build().unwrap().project("cozy").is_some());
+    let outside = s.0.join("outside-versions");
+    fs::rename(root.join("versions"), &outside).unwrap();
+    symlink(outside, root.join("versions")).unwrap();
+    let errors = s.build().unwrap_err();
+    assert!(errors.iter().any(|e| e.contains("cozy.json")), "{errors:?}");
+}
+
+const STABLE_NATIVE: &str = include_str!("../../../tests/index/stable-native/schema-1.json");
+
+#[test]
+fn native_archive_records_keep_schema_one_and_exact_lookup() {
+    use super::super::NativeBinaryUnavailable;
+    let read = Index::parse(STABLE_NATIVE).unwrap();
+    assert!(read.left_out.is_empty(), "{:?}", read.left_out);
+    read.check().unwrap();
+    let v = &read.project("release_probe").unwrap().versions[0];
+    let commit = "b".repeat(40);
+    let server = v
+        .native_binary(&commit, "x86_64-unknown-linux-gnu-server")
+        .unwrap();
+    assert!(server.file.name.ends_with("-server.tar.xz"));
     assert_eq!(
-        v.native_binary("build-b", "aarch64-apple-darwin")
-            .unwrap()
-            .build,
-        "build-b"
+        v.native_binary(&commit, "aarch64-apple-darwin"),
+        Err(NativeBinaryUnavailable::Absent)
     );
+    assert!(read.project("independent").is_some());
     assert_eq!(
-        v.native_binary("build-c", "aarch64-apple-darwin"),
-        Err(super::super::NativeBinaryAbsent)
+        Index::parse(&serde_json::to_string(&read).unwrap()).unwrap(),
+        read
     );
-    assert_eq!(
-        v.native_binary("build-a", "x86_64-pc-windows-msvc"),
-        Err(super::super::NativeBinaryAbsent)
-    );
-    let mut duplicate = decoded.clone();
-    let v = &mut duplicate
-        .projects
-        .iter_mut()
-        .find(|p| p.id == "coords_hud")
-        .unwrap()
-        .versions[0];
-    v.native_binaries.push(v.native_binaries[0].clone());
-    assert!(duplicate.check().unwrap_err().contains("duplicate native"));
-    for field in ["hash", "signature", "file", "target"] {
-        let mut bad = decoded.clone();
-        let b = &mut bad
-            .projects
-            .iter_mut()
-            .find(|p| p.id == "coords_hud")
-            .unwrap()
-            .versions[0]
-            .native_binaries[0];
-        match field {
-            "hash" => b.file.sha256 = "bad".into(),
-            "signature" => b.file.signature = Some("bad".into()),
-            "file" => b.file.name = "../bad".into(),
-            _ => b.target = "Linux".into(),
+}
+
+#[test]
+fn invalid_optional_binaries_keep_the_source_and_its_dependents() {
+    use super::super::NativeBinaryUnavailable;
+    use serde_json::Value;
+    let original: Value = serde_json::from_str(STABLE_NATIVE).unwrap();
+    let path = "/projects/0/versions/0/native_binaries";
+    let commit = "b".repeat(40);
+    let client = "x86_64-unknown-linux-gnu";
+    let server = "x86_64-unknown-linux-gnu-server";
+    for kind in [
+        "missing signature",
+        "invalid signature",
+        "unknown field",
+        "duplicate",
+    ] {
+        let mut bad = original.clone();
+        let rows = bad.pointer_mut(path).unwrap().as_array_mut().unwrap();
+        match kind {
+            "missing signature" => {
+                rows[0]["file"].as_object_mut().unwrap().remove("signature");
+            }
+            "invalid signature" => rows[0]["file"]["signature"] = "bad".into(),
+            "unknown field" => rows[0]["unexpected"] = "bad".into(),
+            "duplicate" => rows.push(rows[0].clone()),
+            _ => unreachable!(),
         }
-        assert!(bad.check().is_err(), "{field}");
+        let text = bad.to_string();
+        let read = Index::parse(&text).unwrap();
+        let source = read.project("release_probe").unwrap();
+        let version = read.installable(source, "26.3").unwrap();
+        assert_eq!(version.file.name, "release_probe-1.0.0.smod");
+        assert!(
+            matches!(version.native_binary(&commit, client), Err(NativeBinaryUnavailable::Refused(reason)) if reason.contains(client))
+        );
+        assert!(version.native_binary(&commit, server).is_ok());
+        assert_eq!(version.verdicts["26.3-0.1.1"].targets, [server]);
+        assert!(read.project("dependent").is_some());
+        assert!(read.left_out.iter().any(|row| row.reason.contains(client)));
+        assert!(
+            serde_json::from_str::<Index>(&text)
+                .and_then(|index| index.check().map_err(serde::de::Error::custom))
+                .is_err()
+        );
     }
+    let mut bad = original;
+    *bad.pointer_mut(path).unwrap() = Value::Bool(false);
+    let read = Index::parse(&bad.to_string()).unwrap();
+    let source = read.project("release_probe").unwrap();
+    let version = read.installable(source, "26.3").unwrap();
+    assert_eq!(version.file.name, "release_probe-1.0.0.smod");
+    assert!(version.native_binary(&commit, client).is_err());
+    assert!(version.native_binary(&commit, server).is_err());
+    assert!(
+        read.left_out
+            .iter()
+            .any(|row| row.id == source.id
+                && row.version.as_deref() == Some(version.version.as_str()))
+    );
+}
+
+#[test]
+fn duplicate_fields_refuse_only_the_affected_binary() {
+    // Add a second `size` to the first binary, leaving the server binary unchanged.
+    let original: serde_json::Value = serde_json::from_str(STABLE_NATIVE).unwrap();
+    let size = &original["projects"][0]["versions"][0]["native_binaries"][0]["file"]["size"];
+    let text = STABLE_NATIVE.replacen(
+        &format!("\"size\": {size},"),
+        &format!("\"size\": {size}, \"size\": {size},"),
+        1,
+    );
+    assert_ne!(text, STABLE_NATIVE);
+    let read = Index::parse(&text).unwrap();
+    let source = read.project("release_probe").unwrap();
+    let version = read.installable(source, "26.3").unwrap();
+    let commit = "b".repeat(40);
+    let client = "x86_64-unknown-linux-gnu";
+    let server = "x86_64-unknown-linux-gnu-server";
+    assert!(matches!(
+        version.native_binary(&commit, client),
+        Err(super::super::NativeBinaryUnavailable::Refused(_))
+    ));
+    assert!(version.native_binary(&commit, server).is_ok());
+    assert_eq!(version.verdicts["26.3-0.1.1"].targets, [server]);
+}
+
+#[test]
+fn reading_an_index_drops_the_taken_down_host_but_keeps_the_source() {
+    let commit = "b".repeat(40);
+    let client = "x86_64-unknown-linux-gnu";
+    let server = "x86_64-unknown-linux-gnu-server";
+    let mut old: Index = serde_json::from_str(STABLE_NATIVE).unwrap();
+    let original = &old.project("release_probe").unwrap().versions[0];
+    old.revoked.push(Revoked {
+        id: "release_probe".into(),
+        sha256: Some(
+            original
+                .native_binary(&commit, client)
+                .unwrap()
+                .file
+                .sha256
+                .clone(),
+        ),
+        reason: "Withdrawn test archive.".into(),
+        date: String::new(),
+    });
+    let read = Index::parse(&serde_json::to_string(&old).unwrap()).unwrap();
+    let source = read.project("release_probe").unwrap();
+    let version = read.installable(source, "26.3").unwrap();
+    assert_eq!(
+        version.file,
+        old.project(&source.id).unwrap().versions[0].file
+    );
+    assert!(version.native_binary(&commit, client).is_err());
+    assert!(version.native_binary(&commit, server).is_ok());
+    assert_eq!(version.verdicts["26.3-0.1.1"].targets, [server]);
 }
 
 #[test]
 fn native_binary_build_limits() {
-    let mut index = sample();
-    let version = &mut index
-        .projects
-        .iter_mut()
-        .find(|p| p.id == "coords_hud")
-        .unwrap()
-        .versions[0];
-    version.native_binaries.push(super::super::NativeBinary {
-        build: "a".repeat(128),
-        target: "x86_64-unknown-linux-gnu".into(),
-        file: version.file.clone(),
-    });
+    let mut index = Index::parse(STABLE_NATIVE).unwrap();
+    let version = &mut index.projects[0].versions[0];
+    version.native_binaries[0].build = "a".repeat(128);
     assert!(index.check().is_ok());
     for build in ["a".repeat(129), "build\nid".into()] {
         let mut bad = index.clone();
-        bad.projects
-            .iter_mut()
-            .find(|p| p.id == "coords_hud")
-            .unwrap()
-            .versions[0]
-            .native_binaries[0]
-            .build = build;
-        assert!(
-            bad.check()
-                .unwrap_err()
-                .contains("invalid native build or canonical target triple")
-        );
+        bad.projects[0].versions[0].native_binaries[0].build = build;
+        assert!(bad.check().unwrap_err().contains("invalid native build"));
     }
+}
+
+#[test]
+fn an_owner_can_append_a_build_but_not_change_signed_source_or_published_builds() {
+    let mut before: Entry = toml::from_str(&hud_entry()).unwrap();
+    before.versions[0].sunrise = Some("26.3-0.1.0".into());
+    let row = |release: &str| builds::BuildRow {
+        sunrise: release.into(),
+        binaries: format!(
+            "https://github.com/author/project/releases/download/v0.1.0/coords_hud-0.1.0+{release}.binaries.json"
+        ),
+        sha256: "a".repeat(64),
+        signature: String::new(),
+    };
+    before.versions[0].builds.push(row("26.3-0.1.0"));
+    let before = [before];
+    let mut after = before.clone();
+    after[0].versions[0].builds.push(row("26.3-0.1.1"));
+    let result = review(&before, &after, "Ludovic111");
+    assert!(result.errors.is_empty());
+    assert_eq!(result.build_reviews[0].status, ReviewStatus::Routine);
+    assert_eq!(
+        review(&before, &after, "stranger").build_reviews[0].status,
+        ReviewStatus::ReviewRequired
+    );
+    let mut mixed = after.clone();
+    mixed[0].summary.push_str(" Edited.");
+    assert_eq!(
+        review(&before, &mixed, "Ludovic111").build_reviews[0].status,
+        ReviewStatus::ReviewRequired
+    );
+    let mut replaced = after.clone();
+    replaced[0].versions[0].builds.remove(0);
+    assert!(review(&before, &replaced, "Ludovic111").errors[0].contains("append-only"));
+    after[0].versions[0].signature = Some("changed".into());
+    assert!(review(&before, &after, "Ludovic111").errors[0].contains("never changes"));
+}
+
+#[test]
+fn unmet_dependencies_name_the_versions_listed_for_the_game() {
+    let hud: Entry = toml::from_str(&hud_entry()).unwrap();
+    let cozy: Entry = toml::from_str(COZY).unwrap();
+    let mut checkout = Checkout {
+        directory: PathBuf::new(),
+        entries: vec![hud, cozy],
+        collections: Vec::new(),
+        revoked: Vec::new(),
+        caches: BTreeMap::new(),
+    };
+    let required = |id: &str, version: &str| super::super::Dependency {
+        id: id.into(),
+        version: version.into(),
+        optional: false,
+        side: None,
+    };
+    let dependencies = [
+        required("coords_hud", "^0.1"),
+        required("cozy", "^1"),
+        required("absent", "^1"),
+        super::super::Dependency {
+            optional: true,
+            ..required("maybe", "^1")
+        },
+    ];
+    let unmet = |checkout: &Checkout, game: &str, dependencies: &[super::super::Dependency]| {
+        checkout
+            .unmet_dependencies(game, dependencies)
+            .into_iter()
+            .map(|u| (u.id, u.listed))
+            .collect::<Vec<_>>()
+    };
+    let none = Vec::<String>::new;
+    // A modpack is no mod to depend on; an optional dependency is never required.
+    assert_eq!(
+        unmet(&checkout, "26.3", &dependencies),
+        [("cozy".into(), none()), ("absent".into(), none())]
+    );
+    // Only versions for the same game count.
+    assert!(unmet(&checkout, "26.4", &dependencies).contains(&("coords_hud".into(), none())));
+    // A version outside the range is named, so the author sees what is there.
+    assert_eq!(
+        unmet(&checkout, "26.3", &[required("coords_hud", "^0.2")]),
+        [("coords_hud".into(), vec!["0.1.0".to_owned()])]
+    );
+    // A short label is padded as the resolver pads it.
+    checkout.entries[0].versions[0].version = "0.1".into();
+    assert!(unmet(&checkout, "26.3", &[required("coords_hud", "^0.1")]).is_empty());
+    // A version taken down by hash is not listed.
+    checkout.revoked.push(Revoked {
+        id: "coords_hud".into(),
+        sha256: Some(SMOD.into()),
+        reason: "lost key".into(),
+        date: String::new(),
+    });
+    assert_eq!(
+        unmet(&checkout, "26.3", &[required("coords_hud", "^0.1")]),
+        [("coords_hud".into(), none())]
+    );
+}
+
+#[test]
+fn a_cached_native_release_meets_a_dependency_until_its_project_is_taken_down() {
+    let mut lib: Entry = toml::from_str(&hud_entry()).unwrap();
+    lib.id = "lib".into();
+    lib.kind = Kind::NativeMod;
+    lib.repo = Some("ada/lib".into());
+    lib.versions.clear();
+    let mut release = sample().projects.remove(0).versions.remove(0);
+    release.version = "2.1.0".into();
+    release.game = "26.3".into();
+    let mut checkout = Checkout {
+        directory: PathBuf::new(),
+        entries: vec![lib],
+        collections: Vec::new(),
+        revoked: Vec::new(),
+        caches: BTreeMap::from([(
+            "lib".to_owned(),
+            Cache {
+                page: Page::default(),
+                versions: vec![release],
+            },
+        )]),
+    };
+    let dependency = [super::super::Dependency {
+        id: "lib".into(),
+        version: "^2".into(),
+        optional: false,
+        side: None,
+    }];
+    assert!(checkout.unmet_dependencies("26.3", &dependency).is_empty());
+    checkout.revoked.push(Revoked {
+        id: "lib".into(),
+        sha256: None,
+        reason: "malware".into(),
+        date: String::new(),
+    });
+    let unmet = checkout.unmet_dependencies("26.3", &dependency);
+    assert_eq!(unmet.len(), 1);
+    assert_eq!((unmet[0].id.as_str(), unmet[0].listed.len()), ("lib", 0));
+}
+
+#[test]
+fn the_screenshot_rule_covers_new_projects_new_versions_and_exempts_libraries() {
+    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    assert!(screenshot_required(None, &base));
+    assert!(!screenshot_required(Some(&base), &base));
+    let mut update = base.clone();
+    let mut next = update.versions[0].clone();
+    next.version = "0.2.0".into();
+    update.versions.insert(0, next);
+    assert!(screenshot_required(Some(&base), &update));
+    // Only a mod or native-mod in the `library` category is exempt.
+    for kind in [Kind::Mod, Kind::NativeMod] {
+        update.kind = kind;
+        assert!(screenshot_required(None, &update));
+        assert!(screenshot_required(Some(&base), &update));
+        update.categories.push("library".into());
+        assert!(!screenshot_required(None, &update));
+        assert!(!screenshot_required(Some(&base), &update));
+        update.categories.pop();
+    }
+    update.categories = vec!["library".into()];
+    update.kind = Kind::Modpack;
+    assert!(screenshot_required(None, &update));
 }

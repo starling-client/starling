@@ -23,24 +23,39 @@ fn base_color_recipe_compiles_and_matches_typed_shields() {
     ]
     .into_iter()
     .map(|(id, source)| (id.into(), serde_json::from_str(source).unwrap()))
-    .collect();
+    .collect::<Vec<(String, Value)>>();
+    for invalid in &sources[1..] {
+        let refused = crate::crafting::Recipes::from_sources(
+            &root,
+            &items,
+            &sunrise_world::loot::PackOverlay::NONE,
+            vec![sources[0].clone(), invalid.clone()],
+            &load,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(refused.contains("minecraft:base_color"), "{refused}");
+        assert!(
+            refused.contains(invalid.0.strip_prefix("fixture:").unwrap()),
+            "{refused}"
+        );
+    }
     let recipes = crate::crafting::Recipes::from_sources(
         &root,
         &items,
         &sunrise_world::loot::PackOverlay::NONE,
-        sources,
+        vec![sources[0].clone()],
         &load,
     )
     .unwrap();
     assert!(recipes.recipe("fixture:base_color").is_some());
-    assert!(recipes.recipe("fixture:invalid_color").is_none());
-    assert!(recipes.recipe("fixture:numeric_color").is_none());
 
     let mut shield = ItemStack::new("minecraft:shield", 1);
     assert!(recipes.find(&context, &[Some(shield.clone())], 1).is_none());
     // A live shield stores this in StackData, not in its `other` NBT fields.
     shield.data_mut().base_color = Some("red".into());
-    assert!(shield.data().unwrap().other.is_empty());
+    assert!(shield.data().unwrap().preserved_components().is_empty());
     let (id, result) = recipes.find(&context, &[Some(shield.clone())], 1).unwrap();
     assert_eq!(id, "fixture:base_color");
     assert_eq!(result.item.as_ref(), "minecraft:diamond");
@@ -76,7 +91,7 @@ fn base_color_components_preserve_defaults_removals_and_banner_absence() {
     );
     let shown = &red.shown.as_ref().unwrap()[0];
     assert_eq!(shown.data().unwrap().base_color.as_deref(), Some("red"));
-    assert!(shown.data().unwrap().other.is_empty());
+    assert!(shown.data().unwrap().preserved_components().is_empty());
     let load = load();
     let context = load.loop_context(LoopSide::Server, []);
     let mut shield = ItemStack::new("minecraft:shield", 1);
@@ -184,7 +199,7 @@ fn rollup_rejection_and_absence_matrix_4119() {
         assert!(error.contains("minecraft:base_color"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -197,12 +212,13 @@ fn rollup_rejection_and_absence_matrix_4119() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }

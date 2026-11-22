@@ -2,10 +2,10 @@
 //! of those versions look. [`Walker::legacy_children`] answers for the types whose
 //! shape differs from the general code of [`super`]; the other types fall through.
 use super::{Key, Ty, Walker, as_str, key, namespaced};
-use sunrise_core::nbt::Tag;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::sync::OnceLock;
+use sunrise_core::nbt::Tag;
 
 /// DataFixerUpper reads the data once, with the schema of its version: an entity tree
 /// of an id that schema does not register stays untyped for good, even when a later
@@ -32,7 +32,7 @@ pub(in crate::datafix) fn strip_untyped(v: &mut Tag) {
     match v {
         Tag::Compound(c) => {
             c.remove(&crate::datafix::dynamic::key(UNTYPED));
-            c.values_mut().for_each(strip_untyped);
+            c.for_each_mut(|_, value| strip_untyped(value));
         }
         Tag::List(items) => items.iter_mut().for_each(strip_untyped),
         _ => {}

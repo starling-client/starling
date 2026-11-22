@@ -1,0 +1,11 @@
+ids = [
+    "handle:Registrar::block_capability",
+    "handle:Registrar::block_capability_before_game",
+    "handle:Registrar::block_entity_capability",
+    "handle:Registrar::block_entity_capability_before_game",
+    "method:LevelHost::has_item_capability",
+    "trait:BlockCapabilityProvider",
+    "type:BlockCapabilityOffer",
+]
+why = "A read-only level, including a placement preview, can query resident block item capability presence through the same providers as server acquisition, without constructing any handler. The game's composter only offers vertical ports, as NeoForge does."
+migrate = "For block or block entity providers, take a read-only LevelHost, the side, state, entity and offer. Leave the offer untouched to decline; use offer.offer(|| Box::new(handler)) to answer. Keep writes in handler methods. Query a composter from Up or Down, not unsided. Item and entity providers are unchanged."

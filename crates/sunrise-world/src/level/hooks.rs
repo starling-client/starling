@@ -262,6 +262,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         self.emit(super::LevelEvent::Sound {
                             pos,
                             sound: "minecraft:block.wet_sponge.dries".into(),
+                            source: None,
                             volume: 1.0,
                             pitch,
                         });
@@ -644,6 +645,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.emit(super::LevelEvent::Sound {
                 pos: start,
                 sound: "minecraft:block.sponge.absorb".into(),
+                source: None,
                 volume: 1.0,
                 pitch: 1.0,
             });
@@ -780,6 +782,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::Sound {
             pos,
             sound: "minecraft:block.big_dripleaf.tilt_down".into(),
+            source: None,
             volume: 1.0,
             pitch,
         });
@@ -798,6 +801,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.emit(super::LevelEvent::Sound {
                 pos,
                 sound: "minecraft:block.big_dripleaf.tilt_up".into(),
+                source: None,
                 volume: 1.0,
                 pitch,
             });

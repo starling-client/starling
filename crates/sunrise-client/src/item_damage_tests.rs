@@ -2,7 +2,7 @@
 use super::*;
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn effective_damage_resistance_queries_allocate_nothing() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let defaults = sunrise_world::item_defaults::read(&root).unwrap();

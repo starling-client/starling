@@ -1,0 +1,6 @@
+ids = [
+    "point:sunrise_client::game::Game<'_>::tick_world",
+    "point:sunrise_client::game::Game<'_>::tick_mobs",
+]
+why = "Commit e0e8269d76a moved the world and mob tick methods into game::level_tick."
+migrate = "Replacement ids: point:sunrise_client::game::level_tick::Game<'_>::tick_world and point:sunrise_client::game::level_tick::Game<'_>::tick_mobs. In [[inject]], set at to the corresponding path without point: and update hash if pinned."

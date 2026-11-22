@@ -1,15 +1,15 @@
 #![forbid(unsafe_code)]
 //! Replays tools/test_zombie_cure_sound_parity.py without prepared resources.
-use sunrise_client::{
-    Result,
-    mobs::{Anim, Brain, Flags, Mob, MobEvent, MobType, Part, Species, zombie_villager},
-};
-use sunrise_core::{geometry::Vec3, random::RandomSource};
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
     sync::Arc,
 };
+use sunrise_client::{
+    Result,
+    mobs::{Anim, Brain, Flags, Mob, MobEvent, MobType, Part, Species, zombie_villager},
+};
+use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 fn kind(eye_height: f64) -> Arc<MobType> {
     Arc::new(MobType {

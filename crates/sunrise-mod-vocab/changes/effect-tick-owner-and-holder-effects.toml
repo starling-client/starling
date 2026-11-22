@@ -1,0 +1,3 @@
+ids = ["hook:should_apply_effect_tick_this_tick", "method:Hooks::should_apply_effect_tick_this_tick", "type:ShouldApplyEffectTickThisTickEvent", "hook:apply_effect_tick"]
+why = "Both tick hooks become version 2 and dispatch only to the content mod that declared the effect registry entry, not all subscribers. apply_effect_tick also supplies the holder active_effects snapshot and has_effect(key), including removals earlier in the current pass, while the read Host exposes level game rules."
+migrate = "Implement tick behavior in the declaring mod and select its effect by EffectKey. Use event.has_effect(key) rather than querying a holder temporarily borrowed out for its tick."

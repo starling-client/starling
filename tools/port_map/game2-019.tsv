@@ -10,12 +10,12 @@ BlockScanUtils.sectionBasedScan	inline	crates/sunrise-world/src/level/timeline.r
 BlockScanUtils.findBlocksInSection	inline	crates/sunrise-client-render/src/light.rs::light_chunk	gap: minor: section loop only for light emitters; no generic predicate and consumer
 BlockScanUtils.findBlocksWithCache	inline	crates/sunrise-client/src/mobs/world.rs::MobWorld::nearest_block	gap: minor: first match in Manhattan box order, used by mob goals; explicit position lists are not generalised
 WorldBorder.getDistanceToBorder	port	crates/sunrise-core/src/geometry/border.rs::BorderGeometry::distance_to_border	-
-WorldBorder.lerpSizeBetween	port	crates/sunrise-client-render/src/worldborder.rs::WorldBorder::lerp_between	-
+WorldBorder.lerpSizeBetween	port	crates/sunrise-border/src/worldborder.rs::WorldBorder::lerp_between	-
 WorldBorder.setSafeZone	port	crates/sunrise-client/src/game/administration/commands/terrain_cmds.rs::Game::cmd_worldborder	plain field write in the /worldborder damage buffer arm; no listener notification
 WorldBorder.setDamagePerBlock	port	crates/sunrise-client/src/game/administration/commands/terrain_cmds.rs::Game::cmd_worldborder	plain field write in the /worldborder damage amount arm; no listener notification
 WorldBorder.setWarningTime	port	crates/sunrise-client/src/game/administration/commands/terrain_cmds.rs::Game::cmd_worldborder	plain field write in the /worldborder warning time arm; no listener notification
 WorldBorder.setWarningBlocks	port	crates/sunrise-client/src/game/administration/commands/terrain_cmds.rs::Game::cmd_worldborder	plain field write in the /worldborder warning distance arm; no listener notification
-WorldBorder.applyInitialSettings	inline	crates/sunrise-client-render/src/worldborder.rs::WorldBorder::unpack	saved settings restored on every load; no initialized flag
+WorldBorder.applyInitialSettings	inline	crates/sunrise-border/src/worldborder.rs::WorldBorder::unpack	saved settings restored on every load; no initialized flag
 WorldBorder.MovingBorderExtent.getMinX	port	crates/sunrise-core/src/geometry/border.rs::BorderGeometry::bounds	bounds returns all four edges
 WorldBorder.MovingBorderExtent.getMinZ	port	crates/sunrise-core/src/geometry/border.rs::BorderGeometry::bounds	bounds returns all four edges
 WorldBorder.MovingBorderExtent.getMaxX	port	crates/sunrise-core/src/geometry/border.rs::BorderGeometry::bounds	bounds returns all four edges
@@ -114,7 +114,7 @@ Strategy.getIndex	port	crates/sunrise-client-render/src/chunk.rs::index	block fo
 ChunkStatus.register	skip:data	-	status registry entry
 ChunkStatus.getStatusList	skip:data	-	status list is the ALL constant in chunk_status.rs
 EntityStorage.storeEntities	port	crates/sunrise-client/src/save.rs::SaveDir::save_entities	-
-EntityStorage.reportSaveFailureIfPresent	skip:other	-	error reporting plumbing; failures come back as Result from save_entities
+EntityStorage.reportSaveFailureIfPresent	port	crates/sunrise-client/src/chunk_io.rs::SaveFailureReporter::report	failed entity saves log the chunk position before the common server report
 EntityStorage.reportLoadFailureIfPresent	skip:other	-	error reporting plumbing; failures come back as Result from load_entities
 IOWorker.isOldChunkAround	port	crates/sunrise-client/src/old_world.rs::SavedOldWorld::is_old_chunk_around	the region files within range are scanned once each (SaveDir::old_chunk_bits) and searched for an old chunk
 IOWorker.getOrCreateOldDataForRegion	skip:java	-	cache of old-chunk data per region

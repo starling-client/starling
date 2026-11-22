@@ -4,7 +4,8 @@
 //! `block_state`, `clip`, `collision_boxes` and `has_collisions` read its world (`viewed_worlds`),
 //! as do the reads built on `level_block_state`: `block`, `block_property` and the both-sided
 //! fluid reads (`fluid_shape`, `fluid_height`, `fluid_height_for_camera`,
-//! `fluid_can_be_replaced_with`). A read never writes and never loads a column: a column the
+//! `fluid_can_be_replaced_with`). `get_enchant_power_bonus` uses the viewed level as context.
+//! A read never writes and never loads a column: a column the
 //! world does not hold is None. The handle answers None from the server's close of the level,
 //! and from a Login, a Respawn or a new configuration phase, which drop every viewed world. A
 //! `LevelRef` names a level and the client level's epoch, not one open of the view: a close and
@@ -13,8 +14,8 @@
 //! stale and a mod asks `host.level` again (a same-level Respawn keeps the epoch). Writes,
 //! server-only reads, the other reads and the entity reads (until step 9d) refuse it.
 use super::Game;
-use sunrise_client::world::World;
 use mod_api::{DimensionKey, LevelRef};
+use sunrise_client::world::World;
 
 impl Game<'_> {
     /// On a client, the key of the level `dimension` names: the one it shows, or one the server
@@ -78,17 +79,15 @@ mod tests {
     use crate::game::{
         Game,
         api_values::TryIntoApi,
-        viewed_worlds::tests::{client, column, layered, open, payload, run, spawn},
+        native_entity_refs::tests::collect_entities_in,
+        viewed_worlds::tests::{client, close, column, layered, open, run, spawn},
     };
-    use sunrise_protocol::{
-        packets::play::{self, Clientbound as C},
-        viewed_levels,
-    };
-    use sunrise_world::registry::BlockStateId;
     use mod_api::{
-        BlockFace, BlockState, BlockUpdateFlags, ClipBlock, ClipFluid, Host, LevelRef,
-        LevelWriteError,
+        BlockFace, BlockState, BlockUpdateFlags, ClipBlock, ClipFluid, Host, LevelReadError,
+        LevelRef, LevelWriteError,
     };
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+    use sunrise_world::registry::BlockStateId;
 
     const NETHER: &str = "minecraft:the_nether";
     /// The distinguishing block of 9c's fixture: air in the viewed Nether, stone in the
@@ -134,7 +133,7 @@ mod tests {
     /// The viewed level's handle reads the viewed world's block where the player's own level
     /// holds another: air against stone at the same position.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_viewed_block_state_differs_from_the_players_own() {
         let mut resources = None;
         let mut game = client(&mut resources);
@@ -151,7 +150,7 @@ mod tests {
     /// A ray down onto the viewed level's stone hits its top, while the same ray in the
     /// player's own level, all air there, misses.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn clip_hits_the_viewed_block_while_the_players_own_ray_misses() {
         let mut resources = None;
         let mut game = client(&mut resources);
@@ -172,7 +171,7 @@ mod tests {
     /// The viewed level's collision boxes are its own: none in the pocket the player's own
     /// level fills with stone, the stone's box where the player's level is air.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn collision_boxes_read_the_viewed_world() {
         let mut resources = None;
         let mut game = client(&mut resources);
@@ -191,7 +190,7 @@ mod tests {
 
     /// A column the viewed world does not hold answers None, and reading it loads nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_column_the_viewed_world_does_not_hold_is_none() {
         let mut resources = None;
         let mut game = client(&mut resources);
@@ -221,7 +220,7 @@ mod tests {
     /// Writes, server-only reads and the entity reads refuse a viewed level, which keeps its
     /// block.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn writes_and_entity_reads_refuse_a_viewed_level() {
         let mut resources = None;
         let mut game = client(&mut resources);
@@ -232,19 +231,21 @@ mod tests {
         );
         assert_eq!(state(&game, viewed, POCKET), Some(0));
         assert_eq!(viewed.fluid_state(&game, POCKET), None);
-        assert_eq!(viewed.entities_in(&game, [0.0; 3], [16.0; 3]), None);
+        assert_eq!(
+            collect_entities_in(&game, viewed, [0.0; 3], [16.0; 3]),
+            Err(LevelReadError::Unavailable)
+        );
     }
 
     /// The server's close, and a Respawn, end the handle: it and `host.level` answer None until
     /// the server opens the level again.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_close_and_a_respawn_end_the_viewed_handle() {
         let mut resources = None;
         let mut game = client(&mut resources);
         let (_, viewed) = viewing(&mut game);
-        game.handle_packet(payload(&viewed_levels::close(1)))
-            .unwrap();
+        game.handle_packet(close(1)).unwrap();
         assert_eq!(game.level(NETHER), None);
         assert_eq!(state(&game, viewed, [3, 71, 5]), None);
         assert_eq!(

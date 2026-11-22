@@ -1,0 +1,3 @@
+ids = ["behaviour:block_occlusion"]
+why = "An explicit occludes: true now enables occlusion on a non-occluding template. The declared outline, or otherwise the template's published occlusion shape, determines solid render and light dampening. Existing declarations with true on glass-like templates now change behaviour. No hook signature or version changes."
+migrate = "Omit occludes to inherit the template; use false to keep a block non-occluding."

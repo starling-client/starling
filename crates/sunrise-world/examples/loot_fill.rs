@@ -2,8 +2,8 @@
 //!
 //! loot_fill <client resource dir> <table[,table...]> <seed>...: prints
 //! `table TABLE SEED` then `fill TABLE SEED SLOT ITEM COUNT DAMAGE [ENCH=LVL...]`.
-use sunrise_world::loot::{LootData, PackOverlay};
 use std::path::PathBuf;
+use sunrise_world::loot::{LootData, PackOverlay};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);

@@ -4,10 +4,10 @@ use crate::{
     save::{float, number},
     text::Text,
 };
-use sunrise_core::nbt::Tag;
-use sunrise_protocol::entity_data::{Value, serializer};
 use serde::Serialize;
 use std::sync::Arc;
+use sunrise_core::nbt::Tag;
+use sunrise_protocol::entity_data::{Value, serializer};
 
 /// `TextDisplay.Align`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

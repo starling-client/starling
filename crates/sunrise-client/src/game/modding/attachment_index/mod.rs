@@ -1,13 +1,14 @@
 //! Per-dimension attachment indexes, retained independently of level swaps.
 
 use super::{Dim, Game};
-use sunrise_mod_runtime::attachments::{
-    AttachmentLifetime, Holder, index::AttachmentIndex, observer::IndexedAttachmentObserver,
-};
 use mod_api::{AttachmentHolder, ChunkRef};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+};
+use sunrise_mod_runtime::attachments::{
+    AttachmentBatch, AttachmentLifetime, Holder, index::AttachmentIndex,
+    observer::IndexedAttachmentObserver,
 };
 
 pub(super) type Indexes = HashMap<Dim, Arc<Mutex<AttachmentIndex<AttachmentHolder>>>>;
@@ -34,23 +35,37 @@ impl Game<'_> {
         &self,
         namespace: &str,
         name: &str,
-    ) -> mod_api::AttachmentBatch {
-        let Some(index) = self.attachment_indexes.get(&self.dim) else {
-            return sunrise_mod_runtime::attachments::AttachmentBatch::empty().into();
-        };
-        let rows = index.lock().unwrap().snapshot_named(namespace, name);
-        sunrise_mod_runtime::attachments::AttachmentBatch::new(rows).into()
+    ) -> Result<mod_api::AttachmentBatch, mod_api::AttachmentError> {
+        mod_api::__private::validate_attachment_use(namespace, name, false)?;
+        let batch = self
+            .attachment_indexes
+            .get(&self.dim)
+            .map_or_else(AttachmentBatch::empty, |index| {
+                AttachmentBatch::new(index.lock().unwrap().snapshot_named(namespace, name))
+            });
+        Ok(batch
+            .in_scope(&self.transactions.attachment_query_scopes)
+            .into())
+    }
+
+    pub(in crate::game) fn attachment_read_scope(
+        &self,
+    ) -> Result<mod_api::AttachmentReadScope<'_>, mod_api::AttachmentRowError> {
+        Ok(self.attachment_frame_borrow())
+    }
+
+    pub(in crate::game) fn attachment_frame_borrow(&self) -> mod_api::AttachmentReadScope<'_> {
+        mod_api::__private::game::attachment_read_scope(&self.transactions.attachment_query_scopes)
     }
 
     pub(in crate::game) fn attachment_validate_write(
         &self,
         token: mod_api::AttachmentWriteToken,
     ) -> Result<(), mod_api::AttachmentRowError> {
-        let index = self
-            .attachment_indexes
-            .get(&self.dim)
-            .ok_or(mod_api::AttachmentRowError::StaleHolder)?;
-        token.validate(&index.lock().unwrap())
+        mod_api::__private::game::validate_attachment_write(
+            &token,
+            self.attachment_indexes.get(&self.dim).map(Arc::as_ref),
+        )
     }
 
     /// Publish saved contents only when an authoritative entity owns their lifetime.
@@ -134,11 +149,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn chunk_residency_uses_the_owning_level_through_cow_and_swaps() {
+        use mod_api::HostTransaction;
         use sunrise_client::chunk::{Chunk, ChunkExtras};
         use sunrise_mod_runtime::attachments::{AttachmentError, AttachmentType, Holder};
-        use mod_api::HostTransaction;
         static VALUE: AttachmentType<i32> = AttachmentType {
             namespace: "test",
             name: "mana",
@@ -220,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn loaded_levels_keep_independent_index_through_swaps_and_close() {
         with_game(|game| {
             let key = ("test".into(), "mana".into());

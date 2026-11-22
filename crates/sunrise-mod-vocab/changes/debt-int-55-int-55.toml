@@ -1,0 +1,9 @@
+ids = [
+    "hook:register_gui_layers",
+    "hook:gui_layer_pre",
+    "hook:gui_layer_post",
+    "hook:render_gui_pre",
+    "hook:render_gui_post",
+]
+why = "NeoForge Hud.registerVanillaLayers and GuiLayerManager.render walk layers under F1. Vanilla Gui.extractRenderState extracts the HUD before the open screen; Hud.extractSubtitleOverlay can defer paint to Screen.extractBackground without repeating layer events."
+migrate = "Layer hooks, registered painters, replacements and wrappers now run under F1. To hide your paint under F1, check host.hud_mode() == mod_api::HudMode::AllVisible. Visibility checks in an original vanilla body still apply when a wrapper delegates to it. Cancel the subtitle slot to suppress its scheduled paint; deferred paint does not dispatch another event. Move render_gui_post draws that must stay below the status rows to a registered layer below minecraft:player_health. The HUD chat slot does not control the focused chat screen, which paints separately."

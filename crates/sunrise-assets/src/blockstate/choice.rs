@@ -140,6 +140,34 @@ impl<T> CompiledChoices<T> {
     ) -> Result<()> {
         self.for_each(selected, random, |v| output.push(v))
     }
+    /// Every variant `selected` can draw, whatever the random source would pick: each entry of
+    /// a weighted list and each selected multipart part, in order. Consumes no randomness.
+    pub fn each_alternative<'a>(
+        &'a self,
+        selected: &SelectedModels,
+        mut f: impl FnMut(&'a T),
+    ) -> Result<()> {
+        let mut choice = |choice: &'a Choice<T>| match choice {
+            Choice::Single(value) => f(value),
+            Choice::Weighted { variants, .. } => variants.iter().for_each(&mut f),
+        };
+        match selected {
+            SelectedModels::Variant(index) => choice(
+                self.variants
+                    .get(*index)
+                    .ok_or_else(|| error("invalid variant selection"))?,
+            ),
+            SelectedModels::Multipart(indices) => {
+                if indices.iter().any(|index| *index >= self.multipart.len()) {
+                    return Err(error("invalid multipart selection"));
+                }
+                for index in indices {
+                    choice(&self.multipart[*index]);
+                }
+            }
+        }
+        Ok(())
+    }
     /// Each selected variant, in order. A multipart root consumes nextLong
     /// even for an empty selected subset, then resets the same random source
     /// to that seed before each selected part.

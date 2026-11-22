@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::open_mod_menu", "hook:screen_draw", "type:OpenMenuError"]
+why = "A blockless menu declares its data count, takes initial values at open, and supplies its own full-width live data to screen_draw. OpenMenuError adds data-count and title-encoding refusals and is in-process only. Block-backed synchronization is unchanged."
+migrate = "Pass the initial values after the opening bytes (an empty vector for a menu with no data). A screen reads this window's values with data.get; the owning server mod updates them with MenuRef::set_data_slot. Handle OpenMenuError locally rather than using it as a payload."

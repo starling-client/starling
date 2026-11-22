@@ -57,9 +57,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="exit 1 if the file is out of date, change nothing")
     args = parser.parse_args()
-    out = subprocess.run(["gh", "api", f"repos/{REPO}/releases?per_page=100", "--paginate", "--slurp"],
+    # One release per line: the runners' gh (2.45) has no --slurp to join the pages.
+    out = subprocess.run(["gh", "api", f"repos/{REPO}/releases?per_page=100", "--paginate", "--jq", ".[]"],
                          capture_output=True, text=True, check=True).stdout
-    text = render([release for page in json.loads(out) for release in page])
+    text = render([json.loads(line) for line in out.splitlines() if line])
     if args.check:
         current = OUT.read_text() if OUT.exists() else ""
         if current != text:

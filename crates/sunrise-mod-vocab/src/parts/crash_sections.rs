@@ -2,9 +2,6 @@
 //! Crash report lines a mod adds (NeoForge's `CrashReportCallables`), computed when a report is
 //! written rather than when they are registered.
 use super::*;
-use crate::wire::{Reader, Wire, WireError, Writer};
-
-crate::wire::wire_handlers::handler!(dyn CrashSection, "CrashSection");
 
 /// A crash report line a mod computes when the report is written: NeoForge's
 /// `ISystemReportExtender`, `ICrashReportHeader`, or a `registerCrashCallable` supplier with its

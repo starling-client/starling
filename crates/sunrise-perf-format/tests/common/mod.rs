@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::io::{self, Write};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};

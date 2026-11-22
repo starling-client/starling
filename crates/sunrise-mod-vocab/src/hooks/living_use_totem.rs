@@ -7,17 +7,25 @@ pub trait Hooks {
     /// `LivingEntity.checkTotemDeathProtection`). Set `cancel` and the entity gets no
     /// protection: it dies and the item is kept. A player or a mob holding a totem fires it; a
     /// source that bypasses invulnerability never reaches it. `player_totem` still
-    /// hears a server player's totem that did save them, after this. The level is the hit's: its blocks, random and own
-    /// attachments.
+    /// hears a server player's totem that did save them, after this. The host is the hit's (`HitHost`): its blocks, random and own
+    /// attachments, level sounds, and the own random of the entities the hit lends.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
-        host = "level",
+        host = "hit",
         neoforge = "LivingUseTotemEvent",
         cancellable = true,
-        version = 2,
+        version = 3,
         target = "sunrise_client::game::native_hooks::living_use_totem::HitLevel<'_>::native_living_use_totem"
     )]
-    fn living_use_totem();
+    fn living_use_totem(
+        entity: i32,
+        kind: &str,
+        source: &HurtSource<'_>,
+        hand: Hand,
+        item: &str,
+        cancel: &mut bool,
+    );
 }

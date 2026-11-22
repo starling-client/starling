@@ -1,0 +1,2 @@
+# The client ticks of spawners, trial spawners and vaults against vanilla 26.3's committed logs (docs/parity/block-entity-client-ticks.jsonl); tools/test_block_entity_client_tick_parity.py runs it with its own cases.
+sunrise-client game::spawner_client_tick_tests::client_ticks_match_the_vanilla_cases lib daily resources

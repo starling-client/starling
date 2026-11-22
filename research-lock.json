@@ -8,20 +8,15 @@
       "61fff1316bd50312624a858bbb5eb18fa45208ed",
       "5df1795e16eea19d75b923d66ecca9ce183353c5",
       "80608ff6753705b6a82e2cb86a5937d4d233abd4",
-      "9f67e10ed013deeaad20ac3c800652765d493408"
+      "9f67e10ed013deeaad20ac3c800652765d493408",
+      "969f7ab0ce024e8dcf95372971bcf291b34ed9f7",
+      "ead839cbccf0ddf013c3f935f2840080b5cb0d26"
     ],
-    "accepted_manifest_note": "Other 26.3 version JSONs Mojang republished: only assetIndex differs (non-English translations), jars and libraries are identical. A launcher may still hold any of them.",
-    "accepted_asset_index_sha1": [
-      "abfaa525f923f807df8b4e4d29c1b5e3a104adbe",
-      "1e4e4a68dece1c0f51b8f93b45da8fe8da51bcd3",
-      "0c8f43b28f837869c1e54a6aeb22c396a1548946",
-      "917ff6d74b9f635c46bac0d28857206bbcc1ffe4",
-      "331e5c80937c9cd79647ab34bdc1cbb5ef09f456",
-      "e99f9973047785b5a9d52eaf72020b97545053c9"
-    ],
-    "accepted_asset_index_note": "The asset indexes (id 34) of those republished version JSONs: a launcher keeps one 34.json, the last it downloaded, whichever version JSON it reads.",
+    "accepted_manifest_note": "Other 26.3 version JSONs Mojang re-issued for the asset index alone (ead839cb also adds two JVM arguments; jars and libraries are the same). The launcher (sunrise-launcher's src/sources.rs `Pins::read`) accepts a launcher's version JSON by its sha1: the pinned one or one of these; any other it downloads from Mojang, so offline it cannot prepare. sunrise-prepare and tools/lab.py accept by content (`libraries_sha256` below) and do not read this list.",
     "client_sha1": "e877b6a07acd633fb3bb475002175cec036e7b87",
     "server_sha1": "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c",
+    "libraries_sha256": "979d985b42c6e76bfe9fa94f471ff157f7f68ea2bc0f0cb3991846bf8bb1567b",
+    "libraries_note": "The sha256 of the version JSON's library downloads, each artifact's and classifier's `path sha1`, sorted, one per line (tools/lab.py libraries_digest). A version JSON with this entry's version, jars, Java major and libraries is the pinned one whatever its own sha1, so sunrise-prepare needs no change for a re-issue for the asset index alone; the launcher still needs its sha1 in `accepted_manifest_sha1`.",
     "java_major": 25
   },
   "vineflower": {

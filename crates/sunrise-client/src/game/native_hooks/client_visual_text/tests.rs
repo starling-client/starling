@@ -1,7 +1,7 @@
 use mod_api::{ClientHost, Text};
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn visual_read_uses_live_translations_styles_and_bidi_outside_drawing() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         let host: &dyn ClientHost = game;
@@ -16,7 +16,7 @@ fn visual_read_uses_live_translations_styles_and_bidi_outside_drawing() {
                 [("fixture.greet".into(), "Hello, %s!".into())],
             ),
             || {
-                let output = host.text_visual_order(&line).unwrap();
+                let output = host.text_visual_order(&line);
                 assert_eq!(
                     output
                         .iter()
@@ -48,7 +48,7 @@ fn visual_read_uses_live_translations_styles_and_bidi_outside_drawing() {
                 vec![0, 1, 2, 3, 0, 1, 2, 3, 2, 1, 0],
             ),
         ] {
-            let output = host.text_visual_order(&Text::literal(input)).unwrap();
+            let output = host.text_visual_order(&Text::literal(input));
             assert_eq!(
                 output
                     .iter()
@@ -61,6 +61,65 @@ fn visual_read_uses_live_translations_styles_and_bidi_outside_drawing() {
                 indices
             );
         }
+        // Independent equal styles form one UTF-16 run; a color or click change starts
+        // another. The sidecar must still return each character's own opaque metadata.
+        let mut dialog = mod_api::Tag::compound([("leaf", mod_api::Tag::Int(7))]);
+        for _ in 0..mod_api::text::MAX_TEXT_DEPTH {
+            dialog = mod_api::Tag::compound([("next", dialog)]);
+        }
+        let mut separate = Text::literal("");
+        for (letter, color, marker) in [
+            ("A", "red", 1),
+            ("B", "#FF5555", 2),
+            ("C", "gold", 3),
+            ("D", "gold", 4),
+        ] {
+            let mut child = Text::literal(letter);
+            child.style.color = Some(color.into());
+            child.style.metadata = mod_api::Tag::compound([("marker", mod_api::Tag::Int(marker))]);
+            child.style.click = Some(if marker == 4 {
+                mod_api::text::TextClick::CopyToClipboard("different".into())
+            } else {
+                mod_api::text::TextClick::ShowDialog(sunrise_core::nbt::clone_tag(&dialog))
+            });
+            separate.children.push(child);
+        }
+        let output = host.text_visual_order(&separate);
+        assert_eq!(
+            output.iter().map(|v| v.source_index).collect::<Vec<_>>(),
+            [0, 1, 0, 0]
+        );
+        for (i, output) in output.iter().enumerate() {
+            assert_eq!(
+                output.style.metadata.get("marker"),
+                Some(&mod_api::Tag::Int(i as i32 + 1))
+            );
+        }
+        sunrise_core::nbt::discard_tag(dialog);
+
+        let mut custom = Text::literal("");
+        for (letter, id) in [
+            ("A", "example"),
+            ("B", "minecraft:example"),
+            ("C", ":example"),
+            ("D", "other:example"),
+        ] {
+            let mut child = Text::literal(letter);
+            child.style.click = Some(mod_api::text::TextClick::Custom {
+                id: id.into(),
+                payload: Some(mod_api::Tag::Int(7)),
+            });
+            custom.children.push(child);
+        }
+        let output = host.text_visual_order(&custom);
+        assert_eq!(
+            output.iter().map(|v| v.source_index).collect::<Vec<_>>(),
+            [0, 1, 2, 0]
+        );
+        for (character, input) in output.iter().zip(&custom.children) {
+            assert_eq!(character.style.click, input.style.click);
+        }
+
         let mut styled = Text::literal("X");
         styled.style.color = Some("#123456".into());
         styled.style.bold = Some(false);
@@ -73,23 +132,19 @@ fn visual_read_uses_live_translations_styles_and_bidi_outside_drawing() {
         styled.style.insertion = Some("insert".into());
         styled.style.click = Some(mod_api::text::TextClick::CopyToClipboard("copy".into()));
         styled.style.hover = Some(mod_api::TextHover::Text(Box::new(Text::literal("hover"))));
-        let output = host.text_visual_order(&styled).unwrap();
+        let output = host.text_visual_order(&styled);
         assert_eq!(output.len(), 1);
         assert_eq!(output[0].style, styled.style);
-        assert!(
-            host.text_visual_order(&Text::literal(""))
-                .unwrap()
-                .is_empty()
-        );
-        let mut invalid = Text::literal("A");
+        assert!(host.text_visual_order(&Text::literal("")).is_empty());
+        // In-process visual order accepts deep trees (matching vanilla Component.getVisualOrderText).
+        let mut deep = Text::literal("A");
         for _ in 0..mod_api::text::MAX_TEXT_DEPTH {
             let mut parent = Text::literal("");
-            parent.children.push(invalid);
-            invalid = parent;
+            parent.children.push(deep);
+            deep = parent;
         }
-        assert_eq!(
-            host.text_visual_order(&invalid),
-            Err(mod_api::TextFormError::TooDeep)
-        );
+        let deep_output = host.text_visual_order(&deep);
+        assert_eq!(deep_output.len(), 1);
+        assert_eq!(deep_output[0].scalar, 'A' as u32);
     });
 }

@@ -1,6 +1,6 @@
 //! Each scenario runs in its own process so Java discovery sees a controlled environment.
-use sunrise_prepare::java;
 use std::{env, fs, path::Path, process::Command};
+use sunrise_prepare::java;
 
 const TEST: &str = "selects_a_compatible_compiler_and_runtime";
 const CHILD: &str = "SUNRISE_JAVA_SELECTION_CHILD";

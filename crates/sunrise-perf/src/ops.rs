@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use sunrise_perf_format::v1::{Attachment, Capture};
 use serde::{Deserialize, Serialize};
+use sunrise_perf_format::v1::{Attachment, Capture};
 
 use crate::attach;
 use crate::bare;

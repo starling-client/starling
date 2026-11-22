@@ -10,12 +10,15 @@ pub trait Hooks {
     /// the health state machine, before a mod is asked, so a mod cannot veto
     /// it from here. The player's state is swapped in, so
     /// `host.players().acting_player()`, `PlayerRef::tell` and the item helpers reach them.
+    /// When a fall triggered the totem, the same landing is still in progress.
     /// Once for each totem, on a server; the host of a LAN world's totem is
     /// not heard.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_totem",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge's LivingUseTotemEvent can cancel the save; this hook only listens. Bukkit's EntityResurrectEvent)"
     )]
-    fn player_totem();
+    fn player_totem(player: u128, name: &str);
 }

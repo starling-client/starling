@@ -2,43 +2,14 @@
 //! `SkyRenderer.buildStars` does, and drawn each frame with one small uniform
 //! (the sky's rotation and the star brightness) instead of being regenerated
 //! and uploaded every frame.
-use glam::{Mat4, Vec3};
-use sunrise_core::random::RandomSource;
+use glam::Mat4;
 use wgpu::util::DeviceExt;
 
 /// `SkyRenderer.buildStars` with its fixed seed: up to 1500 quads on a
 /// sphere of radius 100, each turned to face the centre and spun about its
 /// own axis, as triangles (two per quad).
 pub fn star_triangles() -> Vec<[f32; 3]> {
-    let mut random = sunrise_core::random::LegacyRandom::new(10842);
-    let mut out = Vec::with_capacity(1500 * 6);
-    for _ in 0..1500 {
-        let x = random.next_float() * 2.0 - 1.0;
-        let y = random.next_float() * 2.0 - 1.0;
-        let z = random.next_float() * 2.0 - 1.0;
-        let size = 0.15 + random.next_float() * 0.1;
-        let l = x * x + y * y + z * z;
-        if l <= 0.010_000_001 || l >= 1.0 {
-            continue;
-        }
-        let center = Vec3::new(x, y, z).normalize() * 100.0;
-        let z_rot = (random.next_double() * std::f64::consts::TAU) as f32;
-        // Matrix3f.rotateTowards(-center, up).rotateZ(-zRot).
-        let forward = -center.normalize();
-        let right = Vec3::Y.cross(forward).normalize_or(Vec3::X);
-        let up = forward.cross(right);
-        let (s, c) = (-z_rot).sin_cos();
-        let (r2, u2) = (right * c + up * s, up * c - right * s);
-        let corner = |a: f32, b: f32| (center + r2 * a + u2 * b).to_array();
-        let quad = [
-            corner(size, -size),
-            corner(size, size),
-            corner(-size, size),
-            corner(-size, -size),
-        ];
-        out.extend([quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]);
-    }
-    out
+    super::pack_sky::star_triangles()
 }
 
 #[repr(C)]
@@ -51,6 +22,7 @@ struct Uniform {
     hdr_light: [f32; 4],
 }
 
+<<<<<<< sync-sunrise-1
 /// The stars' pipeline descriptor, handed to `make`.
 fn with_descriptor<R>(
     (layout, shader, format, linear): (
@@ -116,6 +88,9 @@ fn with_descriptor<R>(
 }
 
 pub(super) struct Stars {
+=======
+pub(crate) struct Stars {
+>>>>>>> sunrise/main
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::PipelineLayout,
     shader: wgpu::ShaderModule,
@@ -261,7 +236,7 @@ mod tests {
         assert!((700 * 6..1500 * 6).contains(&triangles.len()));
         assert_eq!(triangles.len() % 6, 0);
         for p in &triangles {
-            let r = Vec3::from_array(*p).length();
+            let r = glam::Vec3::from_array(*p).length();
             assert!((99.9..100.1).contains(&r), "{r}");
         }
         assert_eq!(triangles, star_triangles());

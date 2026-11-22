@@ -7,7 +7,7 @@ use sunrise_client::items::ItemStack;
 /// only `assignBaseValues`. A new player without them had no armour points, toughness or
 /// custom modifier after an End or Nether portal until the armour was worn again.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_new_player_after_a_portal_keeps_the_old_ones_modifiers() {
     use sunrise_protocol::packets::play::{
         self, AttributeModifier, AttributeSnapshot, Clientbound as C,

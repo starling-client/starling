@@ -2,14 +2,14 @@
 //! a later allowed kill dies exactly once.
 use super::kill_die_vibration_tests::{PIG, deaths, run};
 use super::*;
-use sunrise_client::chunk::Chunk;
-use sunrise_core::position::ChunkPos;
 use mod_api::{Hooks, LivingDeathEvent, ModEntry, ServerHost};
 use mod_platform::testing::with_mods;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use sunrise_client::chunk::Chunk;
+use sunrise_core::position::ChunkPos;
 
 #[derive(Default)]
 struct Probe {
@@ -47,7 +47,7 @@ fn porkchops(game: &Game<'_>) -> usize {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_vetoed_kill_keeps_the_mob_and_a_later_kill_dies_once() {
     crate::game::in_own_process(
         "game::kill_die_cancel_tests::a_vetoed_kill_keeps_the_mob_and_a_later_kill_dies_once",

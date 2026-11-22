@@ -1,0 +1,3 @@
+ids = ["method:prelude::RecipesClientHost::transfer_recipe_check"]
+why = "transfer_recipe_check took a recipe book id, and the client found the recipe's id from the book's entries before asking the server, which checks by recipe id. A server sends the client only the entries of the player's recipe book, so a viewer got no check (no red missing inputs) for any recipe the player hasn't learned, while its transfer_recipe_id worked for them. The check now takes the recipe's id, as transfer_recipe_id does, and answers for every recipe the server knows."
+migrate = "Pass the recipe's id (`minecraft:stick`) instead of a book id: the id transfer_recipe_id takes. A viewer that looked up recipe_book_ids only for the check no longer needs to."

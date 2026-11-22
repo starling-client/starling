@@ -1,7 +1,5 @@
 //! Transport for placement decoding, emissions, failures and random state.
 use crate::support::placement_queries as queries;
-use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
-use sunrise_world::worldgen::{anchor::WorldGenerationContext, placement::PlacementModifier};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::{
@@ -9,6 +7,8 @@ use std::{
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
+use sunrise_world::worldgen::{anchor::WorldGenerationContext, placement::PlacementModifier};
 fn n(v: &Value) -> i32 {
     v.as_i64().unwrap() as i32
 }

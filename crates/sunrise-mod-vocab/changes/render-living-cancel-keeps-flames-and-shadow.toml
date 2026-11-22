@@ -1,0 +1,3 @@
+ids = ["hook:render_living_pre", "hook:render_player_pre"]
+why = "Canceling Player Pre skips Living Pre and both Post hooks. Canceling only Living Pre skips Living Post but still calls Player Post with no model. Either cancel skips the entity's own drawing but leaves its eligible flames and shadow to the frame."
+migrate = "A replacement body should not submit the flames or shadow again; the frame submits them when eligible even if the body draw is canceled."

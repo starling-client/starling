@@ -10,6 +10,7 @@
 //! (`knot_ids`, as it tracks it to a guest), the fence is there, and the knot
 //! the leash tick reads (`leash::knot_state`) is at (8.5, 201.375, 0.5).
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
@@ -18,7 +19,6 @@ use sunrise_client::{
 };
 use sunrise_core::position::ChunkPos;
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 const ELASTIC: &str = "00006099-0000-0000-0000-000000000001";
 const SLACK: &str = "00006099-0000-0000-0000-000000000002";
@@ -98,6 +98,7 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -162,7 +163,7 @@ fn vectors(game: &mut Game<'_>, uuid: &str) -> ([f64; 3], f32) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_fence_leash_pulls_a_pig_as_vanilla_does() {
     let mut resources = None;
     let mut game = game(&mut resources);

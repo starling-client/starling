@@ -3,10 +3,11 @@
 //! entities) and ClientboundLightUpdatePacketData (sky/block DataLayers).
 use crate::{
     Error, Result,
-    buf::{BitSet, Bytes, Codec, Longs, Reader, VarInt, Writer},
+    buf::{BitSet, Bytes, Codec, Longs, Reader, VarInt},
     packet,
 };
 use sunrise_core::nbt::Tag;
+use sunrise_core::vanilla_bytes::Writer;
 
 /// Blocks: 16^3 entries; biomes: 4^3 entries per section.
 pub const BLOCKS: usize = 4096;
@@ -84,22 +85,6 @@ pub struct Paletted {
 }
 impl Paletted {
     pub fn read(r: &mut Reader, strategy: Strategy, global_bits: u8) -> Result<Self> {
-        Self::read_layout(r, strategy, global_bits, false)
-    }
-    /// PalettedContainer.Data.write before 1.21.5 wrote a VarInt long count before the storage.
-    pub(crate) fn read_prefixed(
-        r: &mut Reader,
-        strategy: Strategy,
-        global_bits: u8,
-    ) -> Result<Self> {
-        Self::read_layout(r, strategy, global_bits, true)
-    }
-    fn read_layout(
-        r: &mut Reader,
-        strategy: Strategy,
-        global_bits: u8,
-        prefixed: bool,
-    ) -> Result<Self> {
         let wire = r.u8()?;
         let (has_palette, bits) = strategy.configuration(wire, global_bits);
         // SimpleBitStorage holds 1 to 32 bits; wider wire values would
@@ -115,13 +100,7 @@ impl Paletted {
             let n = r.count(1 << bits)?;
             (0..n).map(|_| r.varint()).collect::<Result<_>>()?
         };
-        let n = storage_len(bits, strategy.entries());
-        if prefixed && r.count(r.remaining() / 8)? != n {
-            return Err(Error::new(
-                "palette long count disagrees with its bits per entry",
-            ));
-        }
-        let data = r.fixed_longs(n)?;
+        let data = r.fixed_longs(storage_len(bits, strategy.entries()))?;
         Ok(Self {
             bits,
             palette,

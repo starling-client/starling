@@ -6,6 +6,7 @@
 //! account, or on a server that plays the account under another profile
 //! (offline mode), there is no session and everything goes unsigned.
 use super::{Game, Screen, books::BookScreen, dialogs::ClosedDialog};
+use std::sync::Arc;
 use sunrise_client::{
     auth::{self, ChatKeyPair},
     command::{Dispatcher, Registries},
@@ -13,11 +14,11 @@ use sunrise_client::{
     hud::HudBatch,
     text::Text,
 };
+use sunrise_java_properties::now_millis;
 use sunrise_protocol::{
     packets::play::{self, Serverbound as S},
     secure_chat::{Body, Encoder, LastSeenTracker, Signature},
 };
-use std::sync::Arc;
 use winit::keyboard::KeyCode;
 
 /// ClientPacketListener.sendChatAcknowledgement's threshold.
@@ -175,17 +176,19 @@ fn random_uuid() -> u128 {
 
 impl Game<'_> {
     /// handleLogin: a new session state and signature cache, and prepareKeyPair.
+    /// The session itself goes out from `tick_chat_session`, never from here:
+    /// vanilla's tick sends it once the key future is done, after the login's
+    /// teleport confirm.
     pub(super) fn remote_chat_login(&mut self) {
         if let Some(r) = self.remote.as_mut() {
             r.secure_chat = SecureChat::default();
             r.signatures = Default::default();
         }
         // Only when the server says it is in online mode (handleLogin).
-        if self.remote.as_ref().is_some_and(|r| r.online_mode) {
-            if let Some(account) = self.auth() {
-                auth::prepare_chat_keys_for(account, true);
-            }
-            self.update_chat_session();
+        if self.remote.as_ref().is_some_and(|r| r.online_mode)
+            && let Some(account) = self.auth()
+        {
+            auth::prepare_chat_keys_for(account, true);
         }
     }
 
@@ -246,7 +249,7 @@ impl Game<'_> {
     /// message; the signature only with a chat session.
     pub(super) fn send_signed_chat(&mut self, content: &str) {
         let content = truncate_utf16(content, 256);
-        let (timestamp, salt) = (auth::now_millis(), salt());
+        let (timestamp, salt) = (now_millis(), salt());
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -277,8 +280,7 @@ impl Game<'_> {
     /// (SignableCommand.of over the chat's tree, the server's once it sent one) has each of them signed,
     /// all with the same time, salt and last seen (without a chat session the
     /// signature list is empty, as in vanilla); any other command goes as the
-    /// unsigned packet on releases that have one. Before 1.20.5 even a command
-    /// without message arguments carries the real last-seen acknowledgement.
+    /// unsigned packet.
     pub(super) fn send_command(&mut self, command: &str) {
         let Some(r) = self.remote.as_mut() else {
             return;
@@ -290,18 +292,13 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        if arguments.is_empty()
-            && !r
-                .session
-                .server_version()
-                .at_most(sunrise_protocol::adapter::ServerVersion::V1_20_3)
-        {
+        if arguments.is_empty() {
             self.send(S::ChatCommand(play::ChatCommand {
                 command: command.to_owned(),
             }));
             return;
         }
-        let (timestamp, salt) = (auth::now_millis(), salt());
+        let (timestamp, salt) = (now_millis(), salt());
         let chat = &mut r.secure_chat;
         let seen = chat.tracker.update();
         let mut signatures = Vec::new();
@@ -511,9 +508,9 @@ impl Game<'_> {
         }
     }
 
-    pub(super) fn command_prompt_click(&mut self) {
+    pub(super) fn command_prompt_click(&mut self) -> bool {
         let Some(prompt) = &self.command_prompt else {
-            return;
+            return false;
         };
         let pressed = self
             .command_prompt_layout(prompt, self.gui_size())
@@ -522,6 +519,7 @@ impl Game<'_> {
             self.audio.play_button_click();
             self.answer_command_prompt(button == 0);
         }
+        pressed.is_some()
     }
 
     /// markMessageAsProcessed, when the chat takes a signed message (past

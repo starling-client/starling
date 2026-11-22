@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Discord ажиллаж байх үед таны Discord профайл дээр Sunrise тоглуулж байгааг харуулна: цэс, ганц тоглогч эсвэл олон тоглогч, хэмжээ, тоглох хугацаа. Хэзээ ч дэлхийн нэр эсвэл серверийн хаяг."
+}

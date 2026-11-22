@@ -13,8 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.Identifier;
+import net.minecraft.core.Direction;
 import net.minecraft.world.flag.FeatureFlags;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
@@ -22,7 +21,9 @@ import net.minecraft.world.item.crafting.RecipeManager;
 import net.minecraft.world.level.block.AbstractFurnaceBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.HopperBlock;
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
+import net.minecraft.world.level.block.entity.HopperBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
@@ -38,7 +39,8 @@ public final class VanillaFurnaceOracle {
     private static Map<String, Block> blocks;
 
     public static void main(String[] args) throws Exception {
-        ParityData.init();
+        Path in = Path.of(args[0]), out = Path.of(args[1]);
+        ParityData.init(in.resolveSibling("fixture-pack"));
         blocks = Map.of(
                 "furnace", Blocks.FURNACE,
                 "blast_furnace", Blocks.BLAST_FURNACE,
@@ -58,11 +60,11 @@ public final class VanillaFurnaceOracle {
                 experience.put(holder.id().identifier().toString(), cooking.experience());
             }
         }
-        Path in = Path.of(args[0]), out = Path.of(args[1]);
         try (var w = new PrintWriter(Files.newBufferedWriter(out, StandardCharsets.UTF_8));
              var lines = Files.newBufferedReader(in, StandardCharsets.UTF_8)) {
             int n = 0;
             for (String line = lines.readLine(); line != null; line = lines.readLine()) {
+                if (line.startsWith("#hopper ")) checkSideHopper(Path.of(line.substring(8)));
                 if (line.startsWith("#")) continue;
                 w.println(run(n++, line, recipes, experience));
             }
@@ -92,19 +94,8 @@ public final class VanillaFurnaceOracle {
         int changeAt = Integer.parseInt(f[11]);
         ItemStack newInput = ParityData.stack(f[12]);
 
-        JsonObject caseJson = new JsonObject();
-        JsonArray cells = new JsonArray();
-        JsonArray cell = new JsonArray();
-        cell.add(0);
-        cell.add(0);
-        cell.add(0);
-        cell.add(Block.getId(block.defaultBlockState()));
-        cells.add(cell);
-        caseJson.add("cells", cells);
-        caseJson.addProperty("seed", 0);
-        VanillaBlockUpdateOracle.World w = VanillaBlockUpdateOracle.build(caseJson);
-        w.registries = ParityData.access;
-        var pos = new BlockPos(0, 0, 0);
+        var pos = BlockPos.ZERO;
+        var w = world(Map.of(pos, block.defaultBlockState()));
         BlockState state = w.getBlockState(pos);
         var be = (AbstractFurnaceBlockEntity) w.getBlockEntity(pos);
         be.setItem(0, input);
@@ -129,8 +120,8 @@ public final class VanillaFurnaceOracle {
           .append(" total=").append(field(AbstractFurnaceBlockEntity.class, "cookingTotalTime").getInt(be))
           .append(" lit=").append(field(AbstractFurnaceBlockEntity.class, "litTimeRemaining").getInt(be))
           .append(" littotal=").append(field(AbstractFurnaceBlockEntity.class, "litTotalTime").getInt(be))
-          .append(" speed=").append(String.format(Locale.ROOT, "%.3f",
-                  field(AbstractFurnaceBlockEntity.class, "speedMultiplier").getFloat(be)))
+          .append(" speed=").append(String.format(Locale.ROOT, "%08x", Float.floatToRawIntBits(
+                  field(AbstractFurnaceBlockEntity.class, "speedMultiplier").getFloat(be))))
           .append(" state=").append(state.getValue(AbstractFurnaceBlock.LIT));
         @SuppressWarnings("unchecked")
         Map<Object, Integer> used = (Map<Object, Integer>) field(AbstractFurnaceBlockEntity.class, "recipesUsed").get(be);
@@ -147,9 +138,58 @@ public final class VanillaFurnaceOracle {
         for (int i = 0; i < ids.size(); i++) {
             if (i > 0) sb.append(',');
             String id = ids.get(i);
-            sb.append(id).append('=').append(experience.getOrDefault(id, 0.0f));
+            sb.append(id).append('=').append(String.format(Locale.ROOT, "%08x",
+                    Float.floatToRawIntBits(experience.getOrDefault(id, 0.0f))));
+        }
+        if (f.length > 14 && f[14].equals("rng")) {
+            sb.append(" rng=").append(w.getRandom().nextInt());
         }
         return sb.toString();
+    }
+
+    private static VanillaBlockUpdateOracle.World world(Map<BlockPos, BlockState> blocks) throws Exception {
+        JsonArray cells = new JsonArray();
+        for (var entry : blocks.entrySet()) {
+            JsonArray c = new JsonArray();
+            c.add(entry.getKey().getX());
+            c.add(entry.getKey().getY());
+            c.add(entry.getKey().getZ());
+            c.add(Block.getId(entry.getValue()));
+            cells.add(c);
+        }
+        JsonObject fixture = new JsonObject();
+        fixture.add("cells", cells);
+        fixture.addProperty("seed", 0);
+        var world = VanillaBlockUpdateOracle.build(fixture);
+        world.registries = ParityData.access;
+        return world;
+    }
+
+    /** The same fixture the Rust game daily drives through its hopper tick. */
+    private static void checkSideHopper(Path fixture) throws Exception {
+        BlockPos from = BlockPos.ZERO, to = from.east();
+        BlockState hopperState = Blocks.HOPPER.defaultBlockState().setValue(HopperBlock.FACING, Direction.EAST);
+        for (String line : Files.readAllLines(fixture)) {
+            if (line.startsWith("#")) continue;
+            String[] fields = line.split("\t");
+            ItemStack offered = ParityData.stack(fields[1]);
+            ItemStack held = ParityData.stack(fields[2]);
+            boolean moves = Boolean.parseBoolean(fields[3]);
+            var world = world(Map.of(from, hopperState, to, Blocks.FURNACE.defaultBlockState()));
+            var hopper = (HopperBlockEntity) world.getBlockEntity(from);
+            var furnace = (AbstractFurnaceBlockEntity) world.getBlockEntity(to);
+            hopper.setItem(0, offered.copy());
+            furnace.setItem(1, held.copy());
+            HopperBlockEntity.pushItemsTick(world, from, hopperState, hopper);
+            int transferred = moves ? 1 : 0;
+            ItemStack source = offered.copyWithCount(offered.getCount() - transferred);
+            ItemStack destination = held.isEmpty() && moves
+                    ? offered.copyWithCount(1) : held.copyWithCount(held.getCount() + transferred);
+            if (!ItemStack.matches(source, hopper.getItem(0)) || !ItemStack.matches(destination, furnace.getItem(1))
+                    || !furnace.getItem(0).isEmpty() || !furnace.getItem(2).isEmpty()) {
+                throw new AssertionError("Unexpected side-hopper transfer: " + fields[0]);
+            }
+        }
     }
 
     private static Object keyFor(Map<Object, Integer> used, String id) {

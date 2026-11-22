@@ -1,23 +1,30 @@
-//! The `build_creative_mode_tab_contents` hooks and helpers: declarations the mod API generator reads (see `hooks/mod.rs`).
+//! The creative build-event declaration read by the mod API generator.
 
 pub trait Hooks {
-    /// The stacks a mod adds to the creative tab `tab` (`minecraft:ingredients`, or another mod's
-    /// `<mod id>:<name>`) while the tabs' contents are built (NeoForge's
-    /// `BuildCreativeModeTabContentsEvent`, during vanilla's `CreativeModeTabs.buildAllTabContents`):
-    /// push each stack to `items`, in order (`accept`). They come after the tab's own items and
-    /// those of the mods before, and join the end of the search tab. A stack the tab or the search
-    /// tab already lists (the same item and components) is not listed twice there, and an empty
-    /// stack is left out. `has_permissions` is the build's `hasPermissions`: whether the operator
-    /// items tab is allowed (the player can use game master blocks and the Operator Items Tab
-    /// option is on). Asked for every item tab, the operator items tab and the mods' tabs among
-    /// them, not for the search, saved toolbars or survival inventory tabs. Asked when the tabs
-    /// are built: the first time the creative inventory opens after the game's resources load,
-    /// and again whenever `has_permissions` changes. Client-side.
+    /// Edit a creative mode tab's ordered parent and search lists after its generator and before
+    /// feature-flag filtering (NeoForge's `BuildCreativeModeTabContentsEvent`). Runs once for
+    /// every registered tab, including Search, Hotbar and Inventory, on the logical side that
+    /// requests the build. The event gives the tab id, enabled feature flags, permission profile
+    /// and a build-scoped edit handle. Edits are visible to later listeners in dispatch order.
+    ///
+    /// Sunrise keeps one last-build cache per logical side and world; opening the screen or
+    /// reading through `ItemsHost::creative_tabs` may build it. Within a build, a same-parameter
+    /// Host read sees completed tabs and the prior contents of tabs yet to be built, including
+    /// the current tab. Different parameters are refused. Tag-only reloads do not rebuild.
+    /// Unlike NeoForge, invalid edits return typed errors, and reads of the mutable lists give
+    /// snapshots. Both-list edits check and change parent before search without undoing parent
+    /// on a search error.
     #[hook(
-        side = "client",
-        contract = "collect",
-        out = "items",
+        dispatch = "flat",
+        side = "both",
+        contract = "listen",
+        version = 3,
         neoforge = "BuildCreativeModeTabContentsEvent"
     )]
-    fn build_creative_mode_tab_contents();
+    fn build_creative_mode_tab_contents(
+        tab: &str,
+        features: Vec<String>,
+        permissions: mod_api::CreativeTabPermissions,
+        edit: mod_api::CreativeTabEdit,
+    );
 }

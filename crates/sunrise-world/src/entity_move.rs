@@ -1,7 +1,7 @@
 //! Entity.move ordering around collision, support, landing and movement effects.
 use crate::{movement_emission::MovementEmission, registry::BlockStateId};
-use sunrise_core::{geometry::Vec3, position::BlockPos};
 use std::collections::VecDeque;
+use sunrise_core::{geometry::Vec3, position::BlockPos};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MoverType {
@@ -10,6 +10,8 @@ pub enum MoverType {
     Piston,
     ShulkerBox,
     Shulker,
+    /// A moving collider carrying or shoving a body (Sunrise's own).
+    Carried,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CollisionFlags {
@@ -95,6 +97,7 @@ pub trait EntityMoveWorld {
     fn restitute(
         &mut self,
         state: BlockStateId,
+        position: BlockPos,
         collided_x: bool,
         collided_z: bool,
         resolved: Vec3,
@@ -114,7 +117,9 @@ pub trait EntityMoveWorld {
 fn java_zero(v: Vec3) -> bool {
     v.x.to_bits() == 0 && v.y.to_bits() == 0 && v.z.to_bits() == 0
 }
-fn different(a: f64, b: f64) -> bool {
+/// `!Mth.equal(a, b)`: further apart than `1.0E-5F`, how `Entity.move` tells a blocked
+/// sideways axis.
+pub fn different(a: f64, b: f64) -> bool {
     let delta = (b - a).abs();
     delta >= f64::from(1.0e-5f32) || delta.is_nan()
 }
@@ -123,18 +128,43 @@ fn different(a: f64, b: f64) -> bool {
 pub fn move_entity<W: EntityMoveWorld>(
     world: &mut W,
     mover: MoverType,
-    mut movement: Vec3,
+    movement: Vec3,
 ) -> Result<(), W::Error> {
+    move_entity_until_landing(world, mover, movement, |world, dy, grounded, state, p| {
+        world.check_fall_damage(dy, grounded, state, p)?;
+        Ok(None::<std::convert::Infallible>)
+    })
+    .map(|_| ())
+}
+
+/// The part of `Entity.move` after its authoritative `checkFallDamage` call.
+/// Keep the resolved movement and support block, not a borrow of the entity or level.
+pub struct MoveTail {
+    resolved: Vec3,
+    x: bool,
+    z: bool,
+    nonzero_y: bool,
+    p: BlockPos,
+    state: BlockStateId,
+}
+
+/// Run a move, pausing its tail only if the landing needs the owning level.
+pub fn move_entity_until_landing<W: EntityMoveWorld, P>(
+    world: &mut W,
+    mover: MoverType,
+    mut movement: Vec3,
+    check_fall: impl FnOnce(&mut W, f64, bool, BlockStateId, BlockPos) -> Result<Option<P>, W::Error>,
+) -> Result<Option<(P, MoveTail)>, W::Error> {
     if world.no_physics() {
         world.set_position(world.position().add_vector(movement))?;
         world.record_movement(mover, movement)?;
         world.set_collision_flags(CollisionFlags::default());
-        return Ok(());
+        return Ok(None);
     }
     if mover == MoverType::Piston {
         movement = world.limit_piston_movement(movement)?;
         if java_zero(movement) {
-            return Ok(());
+            return Ok(None);
         }
     }
     let stuck = world.stuck_multiplier();
@@ -190,27 +220,52 @@ pub fn move_entity<W: EntityMoveWorld>(
     world.set_collision_flags(flags);
     let p = world.legacy_on_position()?;
     let state = world.block_state(p)?;
+    let tail = MoveTail {
+        resolved,
+        x,
+        z,
+        nonzero_y,
+        p,
+        state,
+    };
     if world.locally_authoritative()? {
         let grounded = world.on_ground()?;
-        world.check_fall_damage(resolved.y, grounded, state, p)?;
-    }
-    if world.removed()? {
-        return Ok(());
-    }
-    if world.can_simulate()?
-        && (nonzero_y && world.collision_flags().vertical || world.collision_flags().horizontal)
-    {
-        world.restitute(state, x, z, resolved)?;
-    }
-    if !world.client_side()? || world.locally_authoritative()? {
-        let emission = world.movement_emission()?;
-        if emission.anything() && !world.passenger()? {
-            world.apply_movement_emission(emission, resolved, p, state)?;
+        if let Some(pause) = check_fall(world, resolved.y, grounded, state, p)? {
+            return Ok(Some((pause, tail)));
         }
     }
-    let factor = world.block_speed_factor()?;
-    let velocity = scale_by_block_speed(world.velocity()?, factor);
-    world.set_velocity(velocity)
+    tail.finish(world)?;
+    Ok(None)
+}
+
+impl MoveTail {
+    pub fn finish<W: EntityMoveWorld>(self, world: &mut W) -> Result<(), W::Error> {
+        let Self {
+            resolved,
+            x,
+            z,
+            nonzero_y,
+            p,
+            state,
+        } = self;
+        if world.removed()? {
+            return Ok(());
+        }
+        if world.can_simulate()?
+            && (nonzero_y && world.collision_flags().vertical || world.collision_flags().horizontal)
+        {
+            world.restitute(state, p, x, z, resolved)?;
+        }
+        if !world.client_side()? || world.locally_authoritative()? {
+            let emission = world.movement_emission()?;
+            if emission.anything() && !world.passenger()? {
+                world.apply_movement_emission(emission, resolved, p, state)?;
+            }
+        }
+        let factor = world.block_speed_factor()?;
+        let velocity = scale_by_block_speed(world.velocity()?, factor);
+        world.set_velocity(velocity)
+    }
 }
 /// The last step of `Entity.move`: the horizontal velocity is multiplied by
 /// `getBlockSpeedFactor()` (soul sand, honey), the vertical one is untouched.

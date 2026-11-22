@@ -2,8 +2,8 @@
 //! hostile saved shapes refused, and the journal's nested snapshots.
 use super::*;
 use crate::{HostTransaction, ItemKey, testing::FakeHost};
-use sunrise_core::nbt::JavaString;
 use std::cell::RefCell;
+use sunrise_core::nbt::JavaString;
 
 thread_local! {
     /// The one item `accepts_the_chosen` lets in: a `fn` pointer cannot capture it.
@@ -91,9 +91,7 @@ fn fluid(id: &str) -> FluidResource {
     })
 }
 
-/// The writes run in the World phase: the boundary's access checks refuse a call outside one.
 fn in_world(test: impl FnOnce()) {
-    let _world = crate::world::phase::PhaseOwner::scope(crate::world::phase::ModPhase::World);
     test();
 }
 
@@ -106,7 +104,7 @@ fn a_fluid_tank_round_trips_through_its_codec_and_moves() {
         let water = fluid("minecraft:water");
         let tanks = AttachedFluids::new(&FLUIDS, CHUNK, 3, 1000, |_| true).unwrap();
         let moved =
-            host.transaction(|host, tx| Ok::<_, ()>(tanks.insert(host, tx, 1, &water, 250)));
+            host.transaction(|host, tx| Ok::<_, ()>(tanks.insert_at(host, tx, 1, &water, 250)));
         assert_eq!(moved, Ok(250));
         assert_eq!(tanks.amount(&mut host, 1), 250);
         // The codec of the saved attachment reads back to the same index and amount.
@@ -119,7 +117,7 @@ fn a_fluid_tank_round_trips_through_its_codec_and_moves() {
         assert!(reloaded[..1].iter().all(Option::is_none));
         // A transfer takes the same amount out again.
         let came =
-            host.transaction(|host, tx| Ok::<_, ()>(tanks.extract(host, tx, 1, &water, 250)));
+            host.transaction(|host, tx| Ok::<_, ()>(tanks.extract_at(host, tx, 1, &water, 250)));
         assert_eq!(came, Ok(250));
         assert_eq!(tanks.amount(&mut host, 1), 0);
     });
@@ -134,17 +132,21 @@ fn extraction_takes_part_and_none_of_another_resource() {
         let dirt = item("minecraft:dirt");
         let cobble = item("minecraft:cobblestone");
         let slots = AttachedItems::new(&ITEMS, CHUNK, 9, 64, |_| true).unwrap();
-        let went = host.transaction(|host, tx| Ok::<_, ()>(slots.insert(host, tx, 4, &dirt, 30)));
+        let went =
+            host.transaction(|host, tx| Ok::<_, ()>(slots.insert_at(host, tx, 4, &dirt, 30)));
         assert_eq!(went, Ok(30));
         let none =
-            host.transaction(|host, tx| Ok::<_, ()>(slots.extract(host, tx, 4, &cobble, 30)));
+            host.transaction(|host, tx| Ok::<_, ()>(slots.extract_at(host, tx, 4, &cobble, 30)));
         assert_eq!(none, Ok(0), "none of another resource");
-        let came = host.transaction(|host, tx| Ok::<_, ()>(slots.extract(host, tx, 4, &dirt, 12)));
+        let came =
+            host.transaction(|host, tx| Ok::<_, ()>(slots.extract_at(host, tx, 4, &dirt, 12)));
         assert_eq!(came, Ok(12));
         assert_eq!(slots.amount(&mut host, 4), 18);
-        let rest = host.transaction(|host, tx| Ok::<_, ()>(slots.extract(host, tx, 4, &dirt, 50)));
+        let rest =
+            host.transaction(|host, tx| Ok::<_, ()>(slots.extract_at(host, tx, 4, &dirt, 50)));
         assert_eq!(rest, Ok(18), "at most what remains");
-        let empty = host.transaction(|host, tx| Ok::<_, ()>(slots.extract(host, tx, 4, &dirt, 1)));
+        let empty =
+            host.transaction(|host, tx| Ok::<_, ()>(slots.extract_at(host, tx, 4, &dirt, 1)));
         assert_eq!(empty, Ok(0));
         assert_eq!(slots.amount(&mut host, 4), 0);
     });
@@ -163,22 +165,23 @@ fn capacity_stays_physical_while_validity_refuses_inserts_only() {
         let only_dirt =
             AttachedItems::new(&VALID_ITEMS, CHUNK, 4, 500, accepts_the_chosen).unwrap();
         assert_eq!(
-            only_dirt.capacity(&mut host, 2, &cobble),
+            only_dirt.capacity(&mut host, 2, Some(&cobble)),
             64,
             "the physical limit (the item's stack size), though cobblestone is not valid here"
         );
         assert!(!only_dirt.is_valid(&mut host, 2, &cobble));
         let refused =
-            host.transaction(|host, tx| Ok::<_, ()>(only_dirt.insert(host, tx, 2, &cobble, 10)));
+            host.transaction(|host, tx| Ok::<_, ()>(only_dirt.insert_at(host, tx, 2, &cobble, 10)));
         assert_eq!(refused, Ok(0));
         let went =
-            host.transaction(|host, tx| Ok::<_, ()>(only_dirt.insert(host, tx, 2, &dirt, 120)));
+            host.transaction(|host, tx| Ok::<_, ()>(only_dirt.insert_at(host, tx, 2, &dirt, 120)));
         assert_eq!(went, Ok(64), "at most the item's stack size per index");
         // A cobblestone another (permissive) handler's write stored reads out through this one.
         let anything = AttachedItems::new(&VALID_ITEMS, CHUNK, 4, 500, |_| true).unwrap();
-        let _ = host.transaction(|host, tx| Ok::<_, ()>(anything.insert(host, tx, 3, &cobble, 7)));
+        let _ =
+            host.transaction(|host, tx| Ok::<_, ()>(anything.insert_at(host, tx, 3, &cobble, 7)));
         let came =
-            host.transaction(|host, tx| Ok::<_, ()>(only_dirt.extract(host, tx, 3, &cobble, 7)));
+            host.transaction(|host, tx| Ok::<_, ()>(only_dirt.extract_at(host, tx, 3, &cobble, 7)));
         assert_eq!(came, Ok(7), "extraction is independent of validity");
     });
 }
@@ -222,10 +225,10 @@ fn a_smaller_view_keeps_higher_indices() {
         let mut host = FakeHost::new();
         let dirt = item("minecraft:dirt");
         let big = AttachedItems::new(&ITEMS, CHUNK, 9, 64, |_| true).unwrap();
-        let went = host.transaction(|host, tx| Ok::<_, ()>(big.insert(host, tx, 7, &dirt, 12)));
+        let went = host.transaction(|host, tx| Ok::<_, ()>(big.insert_at(host, tx, 7, &dirt, 12)));
         assert_eq!(went, Ok(12));
         let small = AttachedItems::new(&ITEMS, CHUNK, 3, 64, |_| true).unwrap();
-        let went = host.transaction(|host, tx| Ok::<_, ()>(small.insert(host, tx, 0, &dirt, 5)));
+        let went = host.transaction(|host, tx| Ok::<_, ()>(small.insert_at(host, tx, 0, &dirt, 5)));
         assert_eq!(went, Ok(5));
         assert_eq!(big.amount(&mut host, 7), 12, "the higher index survived");
         assert_eq!(big.amount(&mut host, 0), 5);
@@ -274,11 +277,11 @@ fn handler_and_codec_limits_agree() {
         assert!(AttachedItems::new(&ITEMS, CHUNK, 4097, 64, |_| true).is_none());
         let slots = AttachedItems::new(&ITEMS, CHUNK, 4096, 64, |_| true).unwrap();
         assert_eq!(
-            host.transaction(|host, tx| Ok::<_, ()>(slots.insert(host, tx, 4095, &dirt, 1))),
+            host.transaction(|host, tx| Ok::<_, ()>(slots.insert_at(host, tx, 4095, &dirt, 1))),
             Ok(1)
         );
         assert_eq!(
-            host.transaction(|host, tx| Ok::<_, ()>(slots.insert(host, tx, 4096, &dirt, 1))),
+            host.transaction(|host, tx| Ok::<_, ()>(slots.insert_at(host, tx, 4096, &dirt, 1))),
             Ok(0)
         );
         let server: &mut dyn ServerHost = &mut host;

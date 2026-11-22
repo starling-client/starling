@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Sambung ulang otomatis",
+  "sunrise.extras.auto_reconnect.tooltip": "Bergabung kembali ke server setelah kehilangan koneksi atau muat ulang, tidak pernah setelah dikeluarkan (kick) atau diblokir (ban)."
+}

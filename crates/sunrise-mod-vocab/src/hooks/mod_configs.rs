@@ -7,50 +7,66 @@ pub trait Hooks {
     /// `Client` and `Common` configs), by a dedicated server when it starts
     /// (`Common` and `Server`) and by a server before each world it opens
     /// (`Server`); a game reads only its own kinds, so push them all every
-    /// time. Runs in Config: settings reads and the scoped ConfigFiles service
-    /// are available; world handles and transactions panic naming the phase. A file outside `config/`, or one already registered, is skipped.
+    /// time. Receives a [`ConfigContext`] with settings reads and the scoped
+    /// `ConfigFiles` service. A file outside `config/`, or one already registered, is skipped.
     #[hook(
+        receiver = "associated",
+        context = "config",
+        dispatch = "flat",
         side = "both",
         contract = "collect",
         out = "configs",
-        neoforge = "ModContainer.registerConfig"
+        neoforge = "ModContainer.registerConfig",
+        version = 2
     )]
-    fn register_configs();
+    fn register_configs(configs: &mut Vec<mod_api::Config>);
     /// A registered config was read (`ModConfigEvent.Loading`): `config`
     /// says whose, which file and its text, which the mod parses (TOML by
     /// convention). Every mod hears every config, so check `mod_id`. Fired
     /// where the config's kind loads (`register_configs`), a `Server`
-    /// one before `server_about_to_start`. Config allows settings reads
-    /// and the scoped ConfigFiles service, not world handles or transactions. Client and Common load once on their
-    /// owning side, Server once per world.
+    /// one before `server_about_to_start`. Receives a [`ConfigContext`] with
+    /// settings reads and the scoped `ConfigFiles` service. Client and Common
+    /// load once on their owning side, Server once per world.
     #[hook(
+        receiver = "associated",
+        context = "config",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         neoforge = "ModConfigEvent.Loading",
-        cancellable = false
+        cancellable = false,
+        version = 2
     )]
-    fn config_loading();
+    fn config_loading(config: &ConfigFile);
     /// A loaded config's file changed on disk (`ModConfigEvent.Reloading`):
     /// its new text. The game looks at the files' modification times once a
     /// second, on the window and on the server's tick; a file saved with the
     /// same text, removed or unreadable fires nothing and keeps its last
-    /// text. Polling does not change the current phase.
+    /// text. Receives the polling game's [`HostSide`]; world queries return
+    /// `None` if no world is open. A panic disables only the offending mod’s
+    /// reload callback; later listeners still run. Live writes outside a journal stand.
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         neoforge = "ModConfigEvent.Reloading",
-        cancellable = false
+        cancellable = false,
+        version = 4
     )]
-    fn config_reloading();
+    fn config_reloading(config: &ConfigFile);
     /// A `Server` config is dropped as its server stops
     /// (`ModConfigEvent.Unloading`), after `server_stopping`; the next
     /// world reads it again. `Client` and `Common` configs stay until the
-    /// game quits. This notification leaves the World phase unchanged.
+    /// game quits. Receives the stopping game's [`ServerHost`], before the
+    /// final save and teardown. A panic disables only that mod’s unload callback,
+    /// not other listeners or the rest of teardown. Live writes outside a journal stand.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "ModConfigEvent.Unloading",
-        cancellable = false
+        cancellable = false,
+        version = 4
     )]
-    fn config_unloading();
+    fn config_unloading(config: &ConfigFile);
 }

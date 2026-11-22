@@ -1,0 +1,14 @@
+ids = [
+    "type:ModKeyRefusal",
+    "type:ModKeyRefusal.NotOwner",
+    "handle:ModKeyMappingRef::is_down",
+    "handle:ModKeyMappingRef::consume_click",
+    "handle:ModKeyMappingRef::set_binding",
+    "handle:ModKeyMappingRef::reset_binding",
+]
+why = "Match vanilla 26.3 KeyMapping (isDown, consumeClick, setKey, releaseAll) and NeoForge IKeyMappingExtension / KeyMapping.java.patch (isConflictContextAndModifierActive, setKeyModifierAndCode, setToDefault): remove the invented ModKeyRefusal::NotOwner ownership gate so any mod can rebind or reset any resolved mod key mapping, remove the extra !screen_open override in ModKeyMappingRef::is_down so Universal and Gui conflict contexts observe raw held state while a screen is open, and remove the screen_open parameter and side-effecting release_all() from ModKeys::consume_click so consume_click only decrements the raw click count (screen-opening transitions continue to call release_all())."
+migrate = '''
+Remove match arms handling `ModKeyRefusal::NotOwner`: any mod with a resolved `ModKeyMappingRef` may now call `set_binding` and `reset_binding` on another mod's mapping, matching vanilla `KeyMapping` and NeoForge `IKeyMappingExtension`.
+
+`ModKeyMappingRef::is_down` now returns the raw `KeyMapping.isDown()` state gated only by the mapping's conflict context and bound modifiers (without an extra `!screen_open` override), and `ModKeyMappingRef::consume_click` reads and decrements the raw `KeyMapping.consumeClick()` counter without side-effecting `release_all()` when a screen is open. Opening a screen or overlay still clears held state and pending clicks via `KeyMapping.releaseAll()`, and physical presses behind a screen still do not add clicks; if your mod relied on `consume_click` while a screen was open to suppress or clear unrelated mappings, check screen state or conflict context explicitly. See also `debt-69-key-mappings.toml`.
+'''

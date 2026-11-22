@@ -1,7 +1,7 @@
 use super::*;
 use crate::item::crafting::Shape;
 use crate::world::snapshots::LootEntity;
-use crate::{Ingredient, ItemPlace, RecipeSlotDisplay, Tag, Text};
+use crate::{RecipeSlotDisplay, Tag, Text};
 
 fn round<T: Wire>(value: &T, initial: u16) {
     let mut out = Writer::new();
@@ -15,72 +15,98 @@ fn round<T: Wire>(value: &T, initial: u16) {
     assert!(matches!(reader.take::<T>(), Err(WireError::Depth)));
 }
 
+/// The fixed deepest value crosses the wire; one extra wrap does not encode, and the bytes
+/// of the deepest value do not decode with one more reader envelope.
+fn recursive_at_limit<T: Wire>(leaf: T, wraps: usize, reader_depth: u16, wrap: impl Fn(T) -> T) {
+    let value = (0..wraps).fold(leaf, |value, _| wrap(value));
+    round(&value, reader_depth);
+    let mut out = Writer::new();
+    out.put(&wrap(value));
+    assert_eq!(out.error(), Some(WireError::Depth));
+}
+
+/// #3945: a datapack registry's schema and values are recursive over the Wire. The generic
+/// envelope bounds them: the deepest value or schema the writer takes decodes, one level more
+/// is refused on both sides, and it fits a small stack.
 #[test]
-fn ingredient_at_limit_decodes_and_one_record_past_returns_wire_error() {
-    let mut ingredient = Ingredient::of(vec!["minecraft:stone".into()]);
-    for _ in 1..MAX_DEPTH {
-        let mut parent = Ingredient::of(vec!["minecraft:stone".into()]);
-        parent.children = Some((Shape::Compound, vec![ingredient]));
-        ingredient = parent;
-    }
-    let mut at_limit = Writer::new();
-    at_limit.put(&ingredient);
-    assert_eq!(at_limit.error(), None);
-    assert_eq!(
-        Reader::decode::<Ingredient>(at_limit.bytes()).unwrap(),
-        ingredient
-    );
-    // Write a complete extra record without charging its envelope to the
-    // writer. This is hostile input, not a truncated failed encoder output.
-    let parent = Ingredient::of(vec![]);
-    let mut past_limit = Writer::new();
-    past_limit.put(&parent.items);
-    past_limit.put(&parent.order);
-    past_limit.put(&parent.custom);
-    past_limit.put(&Some((Shape::Compound, vec![ingredient])));
-    past_limit.put(&parent.rule);
-    past_limit.put(&parent.display);
-    assert_eq!(past_limit.error(), None);
-    assert!(matches!(
-        Reader::decode::<Ingredient>(past_limit.bytes()),
-        Err(WireError::Depth)
-    ));
+fn datapack_schemas_and_values_stop_at_the_generic_depth() {
+    use crate::world::datapack_registry::{DatapackField, DatapackFieldKind, DatapackValue};
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(|| {
+            // Value variants each take one envelope; their Vec and tuple add none.
+            recursive_at_limit(DatapackValue::Int(1), 31, 0, |v| {
+                DatapackValue::List(vec![v])
+            });
+            recursive_at_limit(DatapackValue::Int(1), 31, 0, |v| {
+                DatapackValue::Record(vec![("a".into(), v)])
+            });
+            // A boxed list kind uses two envelopes per wrapper and one at the leaf.
+            recursive_at_limit(DatapackFieldKind::Bool, 15, 1, |of| {
+                DatapackFieldKind::List {
+                    of: Box::new(of),
+                    min_len: 0,
+                    max_len: None,
+                }
+            });
+            // A record field and its kind use two envelopes per wrapper and at the leaf.
+            recursive_at_limit(
+                DatapackField::required("a", DatapackFieldKind::Bool),
+                15,
+                0,
+                |field| {
+                    DatapackField::required(
+                        "a",
+                        DatapackFieldKind::Record {
+                            fields: vec![field],
+                        },
+                    )
+                },
+            );
+            // A shallow tree, the usual case, crosses unchanged.
+            let shallow = DatapackValue::Map(vec![(
+                "minecraft:zombie".into(),
+                DatapackValue::List(vec![DatapackValue::Record(vec![(
+                    "count".into(),
+                    DatapackValue::Int(2),
+                )])]),
+            )]);
+            let mut out = Writer::new();
+            out.put(&shallow);
+            assert_eq!(
+                Reader::decode::<DatapackValue>(out.bytes()).unwrap(),
+                shallow
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
-fn structural_families_fit_the_guest_shadow_stack() {
-    // The guest reserves 256 KiB; retain half for callers and transport plumbing.
+fn structural_families_fit_a_small_stack() {
+    // Verify that the depth limit also bounds stack use.
     std::thread::Builder::new()
         .stack_size(128 * 1024)
         .spawn(|| {
             // A raised limit is not safe merely because the depth counter still works.
             assert_eq!(MAX_DEPTH, 32);
-            let mut ingredient = Ingredient::of(vec!["minecraft:stone".into()]);
             let mut display = RecipeSlotDisplay::Empty;
             for _ in 1..32 {
-                let mut parent = Ingredient::of(vec!["minecraft:stone".into()]);
-                parent.children = Some((Shape::Compound, vec![ingredient]));
-                ingredient = parent;
                 display = RecipeSlotDisplay::Composite(vec![display]);
             }
-            round(&ingredient, 0);
             round(&display, 0);
-            let mut place = ItemPlace::ItemEntity { id: 1 };
             let mut entity = LootEntity::default();
             for _ in 0..15 {
-                place = ItemPlace::Nested {
-                    parent: Box::new(place),
-                    slot: 0,
-                };
                 entity = LootEntity {
                     vehicle: Some(Box::new(entity)),
                     ..Default::default()
                 };
             }
-            round(&Box::new(place), 0);
             round(&Box::new(entity), 0);
             // These public SCC members no longer recurse structurally: every Text
-            // edge crosses through a flat table. Their own envelope still guards depth.
+            // edge crosses through the stack-independent iterative codec. Their own
+            // envelope still guards depth.
             round(&crate::text::TextContent::Literal(String::new()), 31);
             round(&crate::text::TextStyle::default(), 31);
             round(
@@ -99,11 +125,6 @@ fn structural_families_fit_the_guest_shadow_stack() {
                 },
                 31,
             );
-            let mut parent = Ingredient::of(vec![]);
-            parent.children = Some((Shape::Compound, vec![ingredient]));
-            let mut out = Writer::new();
-            out.put(&parent);
-            assert_eq!(out.error(), Some(WireError::Depth));
         })
         .unwrap()
         .join()
@@ -111,7 +132,7 @@ fn structural_families_fit_the_guest_shadow_stack() {
 }
 
 #[test]
-fn vanilla_trees_keep_their_depth_on_the_guest_shadow_stack() {
+fn vanilla_trees_keep_their_depth_on_a_small_stack() {
     std::thread::Builder::new()
         .stack_size(128 * 1024)
         .spawn(|| {
@@ -148,27 +169,24 @@ fn vanilla_trees_keep_their_depth_on_the_guest_shadow_stack() {
             let mut out = Writer::new();
             out.put(&text);
             assert_eq!(out.error(), None);
-            let mut form = crate::text::TextForm::try_from(&text).unwrap();
-            let mut extra =
-                crate::text::TextNode::new(crate::text::TextNodeContent::Literal(String::new()));
-            extra.parent = Some(511);
-            form.nodes.push(extra);
-            let mut invalid = Writer::new();
-            invalid.put(&form);
-            assert!(matches!(
-                Reader::decode::<Text>(invalid.bytes()),
-                Err(WireError::Invalid(_))
-            ));
-            // Drop is outside Wire's ownership; intentionally discard a deep tree iteratively.
+            // Wrap the 512-deep encoded tree in one more parent node to exceed MAX_TEXT_DEPTH.
+            let mut too_deep_bytes = vec![0; 4 + 4 + 11]; // Literal(""), unset style options.
+            too_deep_bytes.extend([10, 0, 0, 0, 0, 0, 0, 0]); // Empty style metadata compound.
+            too_deep_bytes.extend([1, 0, 0, 0]); // One child.
+            too_deep_bytes.extend_from_slice(out.bytes());
+            too_deep_bytes.extend([10, 0, 0, 0, 0, 0, 0, 0]); // Empty component metadata compound.
+            assert_eq!(
+                Reader::decode::<Text>(&too_deep_bytes),
+                Err(WireError::Depth)
+            );
             let decoded = Reader::decode::<Text>(out.bytes()).unwrap();
             let text = Text::literal("").append(text);
             let mut too_deep = Writer::new();
             too_deep.put(&text);
             assert_eq!(too_deep.error(), Some(WireError::Depth));
-            let mut pending = vec![text, decoded];
-            while let Some(mut text) = pending.pop() {
-                pending.append(&mut text.children);
-            }
+            // Drop both deep trees directly on the 128 KiB stack (iterative Drop for Text).
+            drop(text);
+            drop(decoded);
         })
         .unwrap()
         .join()

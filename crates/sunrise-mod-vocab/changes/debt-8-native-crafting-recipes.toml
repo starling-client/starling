@@ -1,0 +1,18 @@
+ids = [
+    "type:CraftingRecipeCodec",
+    "handle:CraftingRecipeCodec::wire",
+    "type:CraftingRecipeValue",
+    "type:CraftingRecipeValue.bytes",
+    "handle:CraftingRecipeValue::new",
+    "method:CraftingRecipeKind::codec",
+    "method:RecipeSerializer::codec",
+    "trait:CraftingRecipeHandler",
+    "method:CraftingRecipeHandler::decode",
+    "method:CraftingRecipeHandler::write",
+    "method:CraftingRecipeHandler::matches",
+    "method:CraftingRecipeHandler::assemble",
+    "method:CraftingRecipeHandler::remaining_items",
+    "method:RecipeSerializersRegistrar::add_recipe_serializer",
+]
+why = "The loader keeps each decoded recipe with its owning serializer for the resource generation. Matching, assembly, remainders and JSON writing borrow that native value instead of decoding local Wire bytes again. The legacy 1 MiB `MAX_RAW_RECIPE_JSON_BYTES` cap is removed from `register_raw_recipe_serializer` (client sync packet limits remain enforced at the network transport boundary), and the hardcoded `1..=3` dimension cap is lifted from `CraftingGrid::new` and `RecipeInput::Crafting` following vanilla `net.minecraft.world.item.crafting.CraftingInput.ofPositioned` and NeoForge’s `RecipeManager` serializer dispatch (allowing `0x0` / `CraftingInput.EMPTY` and arbitrary grids whose `width * height == cells.len()`)."
+migrate = "Delete codec() from CraftingRecipeKind and RecipeSerializer implementations and remove CraftingRecipeCodec::wire(). Drop the Value's Wire derive only if recipes were its only use of Wire. Keep Value, decode and write, and keep register_crafting_recipe_serializer(serializer_id, kind) or register_read_only_recipe_serializer(serializer_id, recipe_type_id, serializer) in Hooks::register. If you previously implemented CraftingRecipeHandler and called add_recipe_serializer directly, move the JSON decode and write logic to CraftingRecipeKind (with matches, assemble and any custom remaining_items) or RecipeSerializer (read-only), return your typed Value from decode instead of CraftingRecipeValue::new(bytes), and borrow &Self::Value instead of reading CraftingRecipeValue.bytes in callbacks. Replace add_recipe_serializer with the corresponding typed registration call above. register_raw_recipe_serializer no longer rejects JSON objects over 1 MiB minus four bytes during decode (transport sync limits still apply when syncing to clients), and neither it, CraftingGrid::new nor LevelRef::recipe_for changes signature. CraftingGrid::new and RecipeInput::Crafting in LevelRef::recipe_for accept larger grids and empty cells whenever `width * height` equals the row-major slot count. A zero area preserves the supplied dimensions (including `0x0`) with an empty cell list; crafting serializers that assumed 1..=3 dimensions should check `grid.width` and `grid.height` explicitly if they require a specific size."

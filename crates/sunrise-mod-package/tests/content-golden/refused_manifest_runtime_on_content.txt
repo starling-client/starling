@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: a content mod has no code, so no [runtime]
+
+icon:
+unavailable

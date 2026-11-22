@@ -46,6 +46,7 @@ fn walk(
     (0..20)
         .map(|_| {
             MotionWorld {
+                side: sunrise_client::motion::dry_side(),
                 entities: &[],
                 player: &mut client,
                 scene: &mut *scene,
@@ -67,6 +68,7 @@ fn walk(
 }
 
 #[test]
+#[ignore = "daily"]
 fn the_server_checks_a_guests_moves_through_the_same_exclusions_as_its_client() {
     let Some(fixture) = crate::test_fixtures::vanilla() else {
         return;
@@ -92,6 +94,7 @@ fn the_server_checks_a_guests_moves_through_the_same_exclusions_as_its_client() 
         next_entity: &mut next_entity,
         spawn: [20.5, 5.0, 20.5],
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
@@ -146,6 +149,7 @@ fn a_change_of_level_and_a_respawn_clear_a_guests_exclusions() {
         next_entity: &mut next_entity,
         spawn: [0.5, 64.0, 0.5],
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
@@ -166,6 +170,7 @@ fn a_change_of_level_and_a_respawn_clear_a_guests_exclusions() {
     hub.guests
         .update(0, |g| g.collision_exclusions.set(&OPENING))
         .unwrap();
-    hub.respawn(0, [0.5, 64.0, 0.5], None, &ctx);
+    hub.remove_player_for_respawn(0);
+    hub.respawn(0, [0.5, 64.0, 0.5], None, false, &ctx);
     assert_eq!(boxes(&hub), 0, "a respawn");
 }

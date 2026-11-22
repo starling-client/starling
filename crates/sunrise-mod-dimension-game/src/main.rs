@@ -11,11 +11,11 @@
 use mod_api::__private::native::BuiltMod;
 use mod_api::Side;
 use mod_api::{
-    BlockKey, ChunkAccess, ChunkGenerator, CommandArgumentValue, CommandSource, DimensionSettings,
-    Flow, Hooks, ModEntry, RegisterCommandsEvent, Registrar, RegistrationContext,
-    RunModCommandEvent, ServerHost, ServerTickEvent, ServerTickPhase, Text,
+    BlockKey, ChunkAccess, ChunkGenerator, Command, CommandArgumentValue, CommandInvocation,
+    CommandSource, DimensionSettings, Hooks, ModEntry, RegisterCommandsEvent, Registrar,
+    RegistrationContext, ServerHost, ServerTickEvent, ServerTickPhase, Text,
 };
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const BUILT: &[BuiltMod] = &[BuiltMod {
     id: "dimprobe",
@@ -48,12 +48,22 @@ impl ChunkGenerator for Slab {
 #[derive(Default)]
 struct DimProbe {
     /// The line the next server tick runs.
-    later: Mutex<Option<String>>,
+    later: Arc<Mutex<Option<String>>>,
 }
 
-/// The command that sends `name` to `level`, 40 blocks over the world's y=0.
-fn travel(level: &str, name: &str) -> String {
-    format!("execute in dimprobe:{level} run tp {name} 8 40 8")
+/// The command that sends the issuing player into the named level, 40 blocks over y=0.
+fn travel(
+    host: &dyn ServerHost,
+    source: &CommandSource,
+    command: &CommandInvocation,
+) -> Option<String> {
+    let (CommandSource::Player { player, .. }, Some(CommandArgumentValue::String(level))) =
+        (source, command.argument("level"))
+    else {
+        return None;
+    };
+    let name = player.name(host)?;
+    Some(format!("execute in dimprobe:{level} run tp {name} 8 40 8"))
 }
 
 #[mod_api::__subscriptions]
@@ -85,38 +95,25 @@ impl Hooks for DimProbe {
     }
 
     fn register_commands(&self, _: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
+        let later = self.later.clone();
         event.commands.extend([
-            mod_api::Command::new("dimprobe enter <level:word>"),
-            mod_api::Command::new("dimprobe later <level:word>"),
+            Command::new("dimprobe enter <level:word>").executes(|host, source, command| {
+                let line = travel(host, source, command)?;
+                let ran = host.commands().run_command(&line);
+                host.commands()
+                    .feedback(Text::literal(format!("dimprobe ran={ran}")))
+                    .expect("bounded probe text");
+                Some(1)
+            }),
+            Command::new("dimprobe later <level:word>").executes(move |host, source, command| {
+                let line = travel(host, source, command)?;
+                *later.lock().unwrap() = Some(line);
+                host.commands()
+                    .feedback(Text::literal("dimprobe queued"))
+                    .expect("bounded probe text");
+                Some(1)
+            }),
         ]);
-    }
-
-    fn run_mod_command(
-        &self,
-        host: &mut dyn ServerHost,
-        event: &mut RunModCommandEvent<'_>,
-    ) -> Flow {
-        let (CommandSource::Player { player, .. }, Some(CommandArgumentValue::String(level))) =
-            (event.source, event.command.argument("level"))
-        else {
-            return Flow::Continue;
-        };
-        let Some(name) = player.name(&*host) else {
-            return Flow::Continue;
-        };
-        let line = travel(level, &name);
-        if event.command.literals.iter().any(|word| word == "later") {
-            *self.later.lock().unwrap() = Some(line);
-            host.commands()
-                .feedback(Text::literal("dimprobe queued"))
-                .expect("bounded probe text");
-        } else {
-            let ran = host.commands().run_command(&line);
-            host.commands()
-                .feedback(Text::literal(format!("dimprobe ran={ran}")))
-                .expect("bounded probe text");
-        }
-        Flow::Cancel
     }
 
     fn server_tick(&self, host: &mut dyn ServerHost, event: &mut ServerTickEvent<'_>) {
@@ -130,11 +127,9 @@ impl Hooks for DimProbe {
 }
 
 fn main() {
-    sunrise_mod_host::exit_if_compile_child();
     let startup = sunrise_client::entry::prepare();
     sunrise_mod_host::main_with(
         vec![ModEntry::new("dimprobe", Box::<DimProbe>::default())],
-        &[],
         BUILT,
         startup,
     );

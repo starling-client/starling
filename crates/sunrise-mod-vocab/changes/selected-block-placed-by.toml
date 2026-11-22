@@ -1,0 +1,3 @@
+ids = ["hook:on_block_placed_by"]
+why = "Version 3 reports the selected block's final state to the original item's Part, including when placement selects another block."
+migrate = "Use the supplied state rather than assuming the placed block is bound to the stack's item."

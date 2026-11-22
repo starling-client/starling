@@ -2,33 +2,40 @@
 use super::*;
 
 impl CustomStatsRegistrar for PartRegistrar {
-    fn register_custom_stat(&mut self, id: &str) -> Result<(), String> {
+    fn register_custom_stat(&mut self, id: &str) -> Result<(), crate::DeclarationError> {
+        use crate::DeclarationError;
+        let id = qualified(self.mod_id, id);
         let result = (|| {
-            if mod_vocab::__private::parts_installation::parts_installed() {
-                return Err("registry is frozen".to_owned());
-            }
-            let id = if id.contains(':') {
-                id.to_owned()
-            } else {
-                format!("{}:{id}", self.mod_id)
-            };
-            let identifier = crate::Identifier::parse_namespaced(&id)
-                .ok_or("lowercase resource-id namespace and path required")?;
-            if self.custom_stats.iter().any(|declared| declared == &id) {
-                return Err("duplicate custom statistic".into());
-            }
-            if identifier.namespace() == "minecraft"
-                || !owns_namespace(self.mod_id, identifier.namespace())
+            if mod_vocab::__private::parts_installation::parts_installed()
+                && !REGISTERING_KEYS.with_borrow(Option::is_some)
             {
-                return Err("namespace must be owned by the registering mod, not minecraft".into());
+                return Err(DeclarationError::RegistrationClosed { id });
+            }
+            let Some(identifier) = crate::Identifier::parse_namespaced(&id) else {
+                return Err(DeclarationError::InvalidId { id });
+            };
+            if self.custom_stats.iter().any(|declared| declared == &id) {
+                return Err(DeclarationError::Rejected {
+                    id,
+                    reason: "duplicate custom statistic".into(),
+                });
+            }
+            let namespace = identifier.namespace();
+            if namespace == "minecraft" || !owns_namespace(self.mod_id, namespace) {
+                return Err(DeclarationError::UnownedNamespace {
+                    id,
+                    namespace: namespace.to_owned(),
+                });
             }
             self.custom_stats.push(id);
+            self.custom_stat_owners.push(self.mod_id);
             Ok(())
         })();
-        result.map_err(|reason: String| {
-            let message = format!("mod {} custom statistic {id:?}: {reason}", self.mod_id);
-            self.refused.push(message.clone());
-            message
+        result.inspect_err(|error| {
+            self.refused.push(format!(
+                "mod {} custom statistic declaration refused: {error}",
+                self.mod_id
+            ));
         })
     }
 }
@@ -62,7 +69,13 @@ mod tests {
         registrar.register_custom_stat("steps").unwrap();
         registrar.mod_id = "second";
         assert!(registrar.register_custom_stat("first:steps").is_err());
-        assert!(registrar.register_custom_stat("first:other").is_err());
+        assert_eq!(
+            registrar.register_custom_stat("first:other"),
+            Err(crate::DeclarationError::UnownedNamespace {
+                id: "first:other".into(),
+                namespace: "first".into()
+            }),
+        );
         registrar.register_custom_stat("steps").unwrap();
         assert_eq!(registrar.custom_stats, ["first:steps", "second:steps"]);
     }

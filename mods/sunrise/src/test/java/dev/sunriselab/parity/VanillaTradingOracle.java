@@ -434,6 +434,36 @@ public final class VanillaTradingOracle {
                         .forEach(id -> sb.append(' ').append(this.getRandomSequence(Identifier.parse(id)).nextInt()));
                     out.println(sb);
                 }
+                case "offer_int" -> {
+                    var v = (Villager) merchant(level, "farmer:plains:5", at, null);
+                    var buy = new CompoundTag();
+                    buy.putString("id", "minecraft:emerald");
+                    buy.putInt("count", Integer.parseInt(kv.get("base")));
+                    var sell = new CompoundTag();
+                    sell.putString("id", "minecraft:bread");
+                    var tag = new CompoundTag();
+                    tag.put("buy", buy);
+                    tag.put("sell", sell);
+                    tag.putInt("uses", Integer.parseInt(kv.get("uses")));
+                    tag.putInt("maxUses", Integer.parseInt(kv.get("max")));
+                    tag.putBoolean("rewardExp", false);
+                    tag.putInt("specialPrice", Integer.parseInt(kv.get("special")));
+                    tag.putInt("demand", Integer.parseInt(kv.get("demand")));
+                    tag.putFloat("priceMultiplier", Float.parseFloat(kv.get("multiplier")));
+                    tag.putInt("xp", Integer.parseInt(kv.get("xp")));
+                    var ops = level.registryAccess().createSerializationContext(NbtOps.INSTANCE);
+                    var o = MerchantOffer.CODEC.parse(ops, tag).getOrThrow();
+                    int price = o.getCostA().getCount();
+                    o.updateDemand();
+                    o.addToSpecialPriceDiff(Integer.parseInt(kv.get("delta")));
+                    o.increaseUses();
+                    int used = o.getUses();
+                    o.resetUses();
+                    v.setVillagerXp(Integer.parseInt(kv.get("start")));
+                    method(Villager.class, "rewardTradeXp", MerchantOffer.class).invoke(v, o);
+                    out.printf("%s %d %d %d %d %d %d %d %d%n", name, price, o.getDemand(),
+                        o.getSpecialPriceDiff(), o.getCostA().getCount(), used, o.getUses(), o.getXp(), v.getVillagerXp());
+                }
                 case "price" -> {
                     Villager v = (Villager) merchant(level, kv.get("v"), at, null);
                     prepare(v, kv);

@@ -31,5 +31,12 @@ A call is refused with a `CollisionExclusionsError`, and the set there was stays
 `NotFinite` for a value that is NaN or infinite, `Inverted` for a box whose minimum is above its maximum on an axis,
 `NotAPlayer` for another entity, and `Stale` for a stale handle or a client with no player of its own.
 
+Use `player.collision_flags(host)` to read what the last move actually hit, on the side
+that moves the player. `vertical` is set for either a floor or a ceiling; `vertical_below`
+distinguishes the floor. The client reads its own player's prediction. The call returns
+`Ok(None)` for a stale or untracked player or a connected server guest whose reports do not
+retain collision flags. It returns `Err(LevelReadError::Unavailable)` when the host cannot
+read player motion. It does not repeat the collision query.
+
 A player with no boxes pays one empty-slice check per move. With boxes, each block shape a box reaches is joined
 with it, which allocates, and the server copies the guest's set into its body every turn.

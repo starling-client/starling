@@ -12,8 +12,8 @@ no difference: the mark lives in a file the game and the launcher never read.
 |---|---|---|---|
 | Game | `crates/sunrise-client/assets/sunrise/lang/<code>.json` (`fr_fr`, `de_de`...) | `sunrise.options.foo` style; `en_us.json` is the reference | `crates/sunrise-client-core/src/lang.rs` (`Text::tr`, `lang::get`); a missing key falls back to English |
 | A crate's own text | `crates/<name>/assets/lang/<code>.json`, the same shape | the crate's own keys, never one of the engine's | the same, once the crate registers them ([layers.md](layers.md#lang-files-sunrise_platformlang)) |
-| Launcher | `launcher/lang/<code>.json` (`fr`, `de`, `pt-br`...) | the English sentence itself | `launcher/src/i18n.rs` (`tr("…")`, `trf("… {arg} …")`) |
-| Review record | `tools/lang_review/game/<code>.json`, `tools/lang_review/<crate name>/<code>.json`, `tools/lang_review/launcher/<code>.json` | the same keys, with the text a person checked | `tools/lang_coverage.py` only |
+| Launcher | `lang/<code>.json` in [sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher) (`fr`, `de`, `pt-br`...) | the English sentence itself | `src/i18n.rs` there (`tr("…")`, `trf("… {arg} …")`) |
+| Review record | `tools/lang_review/game/<code>.json`, `tools/lang_review/<crate name>/<code>.json` | the same keys, with the text a person checked | `tools/lang_coverage.py` only |
 
 An entry is **reviewed** when the review record holds its key with exactly its present text. Anything else is
 unreviewed: an entry the record does not hold, and one whose text changed since a person checked it (so a later
@@ -41,12 +41,11 @@ Review happens in **#translations on Sunrise's Discord** ([discord.gg/playsunris
 
    ```sh
    python3 tools/lang_coverage.py --lang fr_fr --mark-reviewed sunrise.options.foo sunrise.options.bar
-   python3 tools/lang_coverage.py --lang fr --mark-reviewed --keys-file checked.txt   # one key per line
+   python3 tools/lang_coverage.py --lang fr_fr --mark-reviewed --keys-file checked.txt   # one key per line
    ```
 
    `--mark-reviewed` records the entries' present text, so change the text first, then mark it. It also drops
-   entries the file no longer has. A code that is both a game and a launcher file (`lmo`, `szl`) needs
-   `--game-only` or `--launcher-only`. Pull requests that only change translations take no label.
+   entries the file no longer has. Pull requests that only change translations take no label.
 
 You can also open the pull request yourself: change the lang file, run `--mark-reviewed` for the entries you wrote
 or checked, and say in the pull request which language you speak.
@@ -56,7 +55,7 @@ or checked, and say in the pull request which language you speak.
 - **Only a person who speaks the language clears a mark.** Never run `--mark-reviewed` on machine-written text, and
   never on text an AI tool rewrote, even when it reads well. An agent marks only entries whose wording came from a
   person, such as a #translations report it turns into a pull request (quote the report in the pull request).
-- A new launcher string still needs an entry in every launcher lang file (`launcher/src/i18n/tests.rs` checks it),
+- A new launcher string still needs an entry in every launcher lang file (`src/i18n/tests.rs` in sunrise-launcher checks it),
   and a new game string falls back to English where a language lacks it. A machine translation is fine for both: it
   starts unreviewed by itself.
 - Keep placeholders as they are (`%s`, `%1$s` in the game, `{name}` in the launcher): `lang_coverage.py` reports a

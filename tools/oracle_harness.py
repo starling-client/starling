@@ -3,9 +3,11 @@
 A harness supplies a Java oracle (compiled against the pinned client jar and its
 libraries), a Rust example probe, and a text input; both programs write one
 result line per input line and the outputs must be byte-identical."""
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 try:
     from . import lab, test_rust_parity as base, test_model_baking_parity as baking
@@ -16,10 +18,30 @@ except ImportError:
 
 
 def run_logged(command, build, name, timeout=900, **kwargs):
-    with (build / (name + '.log')).open('w') as log:
+    path = build / (name + '.log')
+    with path.open('w') as log:
         runner = run_game if Path(command[0]).name == 'sunrise-client' else subprocess.run
-        runner([str(c) for c in command], cwd=lab.ROOT, check=True, timeout=timeout,
-                       stdout=log, stderr=subprocess.STDOUT, **kwargs)
+        result = runner([str(c) for c in command], cwd=lab.ROOT, timeout=timeout,
+                        stdout=log, stderr=subprocess.STDOUT, **kwargs)
+    if result.returncode:
+        # The log stays in the build folder, which CI doesn't keep: a failed cargo build says why here, in the
+        # harness's own output. Only cargo's: its text is compiler output, never a program's (vanilla) data.
+        if Path(command[0]).name == 'cargo':
+            print(cargo_failure(path.read_text(errors='replace')), file=sys.stderr, flush=True)
+        raise subprocess.CalledProcessError(result.returncode, result.args)
+
+
+def cargo_failure(log, tail=30):
+    """What a failed cargo run's log says: its rendered compiler errors and the last `tail` lines of its own text."""
+    errors, text = [], []
+    for line in log.splitlines():
+        if not line.startswith('{'):
+            text.append(line)
+            continue
+        record = json.loads(line)
+        if record.get('reason') == 'compiler-message' and record['message']['level'] == 'error':
+            errors.append(record['message']['rendered'].rstrip())
+    return '\n'.join(['cargo failed:', *errors, *text[-tail:]])
 
 
 def compile_oracle(build, oracle_name, jars, libraries, java_major):

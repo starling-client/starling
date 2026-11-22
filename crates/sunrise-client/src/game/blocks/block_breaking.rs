@@ -8,23 +8,27 @@ impl Game<'_> {
     /// mined the block `name`: an item with a `tool` component counts as used
     /// and loses its `damage_per_block` on a block that doesn't break
     /// instantly (`ShearsItem`: on any block but fire).
-    pub(super) fn mine_block_with_held(&mut self, name: &str, hardness: f32) {
-        let Some(stack) = self.inventory[self.selected].clone() else {
-            return;
-        };
-        let Some(per_block) = self.items().mining_damage(&stack) else {
-            return;
-        };
+    pub(super) fn mine_block_with_held(&mut self, name: &str, hardness: f32) -> Option<ItemStack> {
+        let stack = self.inventory[self.selected].clone()?;
+        let per_block = self.items().mining_damage(&stack)?;
         let max = self.items().mining_damage_capacity(&stack);
         let wears = if &*stack.item == "minecraft:shears" {
             !self.items().block_in_tag("minecraft:fire", name)
         } else {
             hardness != 0.0
         };
-        if wears && per_block > 0 && max > 0 {
-            self.damage_held(per_block);
-        }
+        let broken = if wears && per_block > 0 && max > 0 {
+            self.with_hand(Hand::Main, |game| {
+                game.apply_held_damage(
+                    per_block,
+                    sunrise_core::equipment_slot::EquipmentSlot::MainHand,
+                )
+            })
+        } else {
+            None
+        };
         self.award_stat("used", &stack.item, 1);
+        broken
     }
 
     pub(super) fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
@@ -94,8 +98,33 @@ impl Game<'_> {
     pub(crate) fn destroy_block_progress(&mut self, breaker: i32, pos: [i32; 3], progress: i32) {
         self.expire_client_cracks();
         if (0..10).contains(&progress) {
-            self.destroying
-                .insert(breaker, (pos, progress as u8, self.world.game_time));
+            let stage = progress as u8;
+            if let Some(crack) = self.destroying.get_mut(&breaker)
+                && crack.pos == pos
+                && crack.stage == stage
+            {
+                crack.updated_at = self.world.game_time;
+                return;
+            }
+            // Publish the stage before dispatch: a same-stage client setter
+            // from this block's part must refresh it, not enter the hook again.
+            self.destroying.insert(
+                breaker,
+                crate::game::client_cracks::ClientCrack {
+                    pos,
+                    stage,
+                    updated_at: self.world.game_time,
+                    positions: Vec::new(),
+                },
+            );
+            self.with_break_progress_positions(pos, stage, |game, positions| {
+                if let Some(crack) = game.destroying.get_mut(&breaker)
+                    && crack.pos == pos
+                    && crack.stage == stage
+                {
+                    crack.positions = positions;
+                }
+            });
         } else {
             self.destroying.remove(&breaker);
         }

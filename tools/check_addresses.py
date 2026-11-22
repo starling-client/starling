@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that built-in outside addresses stay where docs/layers.md says (the "Built-in addresses" section).
 
-Reads the string literals of shipped Rust (every crate tools/layers.json doesn't call a tool, and the launcher),
+Reads the string literals of shipped Rust (every crate tools/layers.json doesn't call a tool),
 without tests, examples or #[cfg(test)] modules, and finds the hosts in them: a URL's host anywhere in a string,
 or a whole string that is a host name (`play.playsunrise.net`, `stun.l.google.com:19302`). Placeholders
 (`example.com`, `*.test`, `*.invalid`, `localhost`) and loopback, private and documentation IPs are skipped.
@@ -9,9 +9,10 @@ tools/addresses.json says where each host may be:
 - `homes`: the files that hold the Sunrise layer's addresses; anything goes there;
 - `vanilla`: the endpoints vanilla itself contacts; allowed anywhere;
 - `not_addresses`: strings that look like hosts but are not contacted (a suffix matcher, a translation key);
+- `renamed_hosts`: a host's old name to its new one, so renaming a domain doesn't count as adding a host;
 - `allowed`: today's addresses outside a home, "path host". They only go away: with --base, a branch may move
   an entry to another file but may not add a host nor grow the list. A changed sync-baseline declaration,
-  verified by check_file_size.sync_provenance, may restore exact rows from that upstream commit's inventory;
+  verified by merge_base.sync_provenance, may restore exact rows from that upstream commit's inventory;
   only those newly restored rows are excluded from the growth comparison.
 
     python3 tools/check_addresses.py                     # the check
@@ -156,7 +157,7 @@ def module_dir(path):
 def shipped_files():
     """The shipped Rust files, relative to the root, minus test modules."""
     layers = json.loads((ROOT / "tools" / "layers.json").read_text())["crates"]
-    roots = [ROOT / "launcher" / "src"]
+    roots = []
     for crate in sorted((ROOT / "crates").iterdir()):
         if (crate / "src").is_dir() and layers.get(crate.name) != "tool":
             roots.append(crate / "src")
@@ -243,7 +244,9 @@ def check(config, found, base=None, upstream_rows=frozenset()):
         problems.append(f"{rel}: {host} is a built-in address outside the address list. A vanilla endpoint goes in "
                         f"'vanilla', anything else in the Sunrise layer's address home ({DOC})")
     if base is not None:
-        before = {tuple(entry.split(" ", 1)) for entry in base.get("allowed", [])}
+        renamed = config.get("renamed_hosts", {})
+        before = {(rel, renamed.get(host, host)) for rel, host in
+                  (tuple(entry.split(" ", 1)) for entry in base.get("allowed", []))}
         restored = (allowed - before) & upstream_rows
         effective = allowed - restored
         new_hosts = {host for _, host in effective} - {host for _, host in before}
@@ -262,22 +265,22 @@ def base_config(base):
     merge_base = subprocess.run(["git", "merge-base", base, "HEAD"], capture_output=True, text=True, cwd=ROOT)
     if merge_base.returncode != 0:
         return None
-    shown = subprocess.run(["git", "show", f"{merge_base.stdout.strip()}:{CONFIG_PATH}"], capture_output=True,
-                           text=True, cwd=ROOT)
-    return json.loads(shown.stdout) if shown.returncode == 0 else None
+    # A baseline that is there but can't be read stops the check (merge_base.text_at).
+    text = _merge_base().text_at(merge_base.stdout.strip(), CONFIG_PATH, ROOT)
+    return json.loads(text) if text is not None else None
 
 
-def _check_file_size():
+def _merge_base():
     if __package__:
-        from . import check_file_size
+        from . import merge_base
     else:
-        import check_file_size
-    return check_file_size
+        import merge_base
+    return merge_base
 
 
 def restored_upstream_rows(base):
     """Allow exact upstream rows only for a changed, verified sync declaration."""
-    config, errors = _check_file_size().verified_sync_config(base, CONFIG_PATH)
+    config, errors = _merge_base().verified_sync_config(base, CONFIG_PATH)
     rows = {tuple(row.split(" ", 1)) for row in config.get("allowed", [])} if config is not None else set()
     return rows, errors
 
@@ -286,10 +289,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", help="refuse addresses added to 'allowed' since the branch left this git ref")
     parser.add_argument("--list", action="store_true", help="print every host found and its files")
-    parser.add_argument("--pull-request-merge", action="store_true", help=_check_file_size().PULL_REQUEST_MERGE_HELP)
+    parser.add_argument("--pull-request-merge", action="store_true", help=_merge_base().PULL_REQUEST_MERGE_HELP)
     args = parser.parse_args(argv)
     if args.base:
-        args.base, error = _check_file_size().pull_request_base(args.base, args.pull_request_merge)
+        args.base, error = _merge_base().pull_request_base(args.base, args.pull_request_merge)
         if error:
             print(f"Address check failed: {error}")
             return 1
@@ -302,9 +305,15 @@ def main(argv=None):
         for host in sorted(by_host):
             print(f"{host}: {', '.join(sorted(by_host[host]))}")
         return 0
-    upstream_rows, provenance = restored_upstream_rows(args.base) if args.base else (set(), [])
-    problems, notes = check(config, found, base_config(args.base) if args.base else None, upstream_rows)
-    problems = provenance + problems
+    base = base_config(args.base) if args.base else None
+    problems, notes = check(config, found, base)
+    if args.base and (problems or config != base):
+        # Only a violation, or an inventory that differs from the base's, can need rows a verified sync restored:
+        # every other run stays off the network.
+        upstream_rows, provenance = restored_upstream_rows(args.base)
+        if upstream_rows or provenance:
+            problems, notes = check(config, found, base, upstream_rows)
+        problems = provenance + problems
     for note in notes:
         print(f"note: {note}")
     if problems:

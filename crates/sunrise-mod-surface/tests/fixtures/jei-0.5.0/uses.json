@@ -1,0 +1,3818 @@
+{
+  "schema": 1,
+  "made_for": "234db8df6210165318b2b604dea50275357bfaeb",
+  "entries": [
+    {
+      "id": "assoc:item::item_stack::Component::Value",
+      "hash": "454510966cf2edbabcb72887ec88f986"
+    },
+    {
+      "id": "capability:registries",
+      "hash": "2d511d9adee14cb3f84921d93b664c15"
+    },
+    {
+      "id": "fn:java_math::round",
+      "hash": "e63db9a6f624ff2bbb84845b717b3f4c"
+    },
+    {
+      "id": "fn:transfer",
+      "hash": "b00fedf4e8b3eba4563cc5d21094228f"
+    },
+    {
+      "id": "handle:Block::new",
+      "hash": "50d067ccb3b44cba9e1679121f3f445f"
+    },
+    {
+      "id": "handle:BlockKey::id",
+      "hash": "26da8cdb0b1a5223b09d47ae1f48653c"
+    },
+    {
+      "id": "handle:Capability::owner",
+      "hash": "fbd66945c7ccedc1664e67b1df691377"
+    },
+    {
+      "id": "handle:ClientModifiers::new",
+      "hash": "4330982ee65a1c931737ae719065b8d1"
+    },
+    {
+      "id": "handle:ClientModifiers::shift",
+      "hash": "94662d060f7dc27e33d40d55c449165e"
+    },
+    {
+      "id": "handle:ClientReloadContext::list",
+      "hash": "e618e32b150b8e3bd58acc10fb35df9d"
+    },
+    {
+      "id": "handle:ClientReloadContext::read",
+      "hash": "1b802e6b68a1cd8e205947ac725585f6"
+    },
+    {
+      "id": "handle:Command::new",
+      "hash": "0435243be9cad58632efd16d6bef045e"
+    },
+    {
+      "id": "handle:ComponentId::as_str",
+      "hash": "d7139ac357dc27bf8ecb0197a86b12eb"
+    },
+    {
+      "id": "handle:ComponentId::new",
+      "hash": "5ea76d353538a212465521da8abdb8a1"
+    },
+    {
+      "id": "handle:ConfigPath::as_str",
+      "hash": "9364a32eff01e2cba6941fa4c933a6d6"
+    },
+    {
+      "id": "handle:ConfigPath::new",
+      "hash": "e56a2562515b4db9997df09ab84c99b6"
+    },
+    {
+      "id": "handle:ConfigPath::root",
+      "hash": "f9088e655e1a655f1c61a466168884a0"
+    },
+    {
+      "id": "handle:CreativeModeTabInfo::new",
+      "hash": "ed37fda4ce3ec2261976efef14456dc1"
+    },
+    {
+      "id": "handle:CreativeModeTabs::new",
+      "hash": "e301c3959e0459c5cef3f07778dac90b"
+    },
+    {
+      "id": "handle:CreativeModeTabs::tab",
+      "hash": "bcb0fa7da2e0281a1ebadc3670027f74"
+    },
+    {
+      "id": "handle:DimensionKey::id",
+      "hash": "b8c71e623edc120b35b520e419dc7a50"
+    },
+    {
+      "id": "handle:DisplayRef::background",
+      "hash": "4dd3f3aa64dbec36eb90af3baa43601c"
+    },
+    {
+      "id": "handle:DisplayRef::entity",
+      "hash": "20eefbcb8c5a6be1ee1e4fff0ae6b123"
+    },
+    {
+      "id": "handle:DisplayRef::height",
+      "hash": "b5176d0ad13aa507f01865df08e56503"
+    },
+    {
+      "id": "handle:DisplayRef::item",
+      "hash": "bd825e8144dbf594bcf59ae9438c12df"
+    },
+    {
+      "id": "handle:DisplayRef::kind",
+      "hash": "b101526783572242dbebf4e59e6e7f89"
+    },
+    {
+      "id": "handle:DisplayRef::text",
+      "hash": "547aff40dbf19812a14f951a71033ace"
+    },
+    {
+      "id": "handle:DisplayRef::width",
+      "hash": "a00444af3da5e4b8bed022d26af1f033"
+    },
+    {
+      "id": "handle:EnchantmentInfo::new",
+      "hash": "169b37f0ac1542304206e1551293f6fb"
+    },
+    {
+      "id": "handle:EntityRef::id",
+      "hash": "deb543bed578006f818bfc89a626fb5f"
+    },
+    {
+      "id": "handle:EntityRef::kind",
+      "hash": "ca4e3e3d83566e0dd803b75f066e899a"
+    },
+    {
+      "id": "handle:EntityRef::level",
+      "hash": "7a0d0a22bb6055532aa2d1078130588d"
+    },
+    {
+      "id": "handle:EntityRef::name",
+      "hash": "b88495a60a96e624c771500dfe4f75ff"
+    },
+    {
+      "id": "handle:EntityRef::nbt",
+      "hash": "01776ba493bf897cbe614c42f651fb10"
+    },
+    {
+      "id": "handle:EntityRef::parts",
+      "hash": "52e5be85f3b696658a74dbc5cdcdb1d0"
+    },
+    {
+      "id": "handle:EntityRef::pick",
+      "hash": "13da291c827ca693b017a075b1ea375a"
+    },
+    {
+      "id": "handle:EntityRef::position",
+      "hash": "603b05c7a847eeca7e0168ec0880521d"
+    },
+    {
+      "id": "handle:EntityRef::push",
+      "hash": "c06888b7074ac3be9d0620da2a89c9de"
+    },
+    {
+      "id": "handle:EntityRef::remove",
+      "hash": "036493c6ac6c369ae5b01304e8a0e6f1"
+    },
+    {
+      "id": "handle:EntityRef::tags",
+      "hash": "fd9f57ac14186c7780850df3a98f5f57"
+    },
+    {
+      "id": "handle:EntityRef::uuid",
+      "hash": "233087d8bbae0981940407ea8a361490"
+    },
+    {
+      "id": "handle:EntityTypeKey::id",
+      "hash": "c3cca26f02486d5f991f9efe4f2edd67"
+    },
+    {
+      "id": "handle:FileToIdConverter::json",
+      "hash": "3a134a46f5508ec0d2a791da9ac534d2"
+    },
+    {
+      "id": "handle:FileToIdConverter::new",
+      "hash": "4af12d175046046c8d3b8d3d5f1062bf"
+    },
+    {
+      "id": "handle:FireworkShape::name",
+      "hash": "d5fda62d863038fc52025378d43a8c48"
+    },
+    {
+      "id": "handle:FireworkShapeIngredient::new",
+      "hash": "27f1eb169f3cbb8a75d5cc28daf3ba2a"
+    },
+    {
+      "id": "handle:FluidKey::id",
+      "hash": "9b7714a8a9dce23cc5a20c146b2e8617"
+    },
+    {
+      "id": "handle:GuiEntity::kind",
+      "hash": "2eea4553ce8d2b03a921a66bb4ba2324"
+    },
+    {
+      "id": "handle:GuiEntity::with_data",
+      "hash": "802dd0dc2fa6617d92e1d2edfff559a2"
+    },
+    {
+      "id": "handle:GuiEntityView::new",
+      "hash": "1f9f7948f53cd63988fd81d8d903636a"
+    },
+    {
+      "id": "handle:Identifier::parse",
+      "hash": "f6847573940392b21cfa1b45b4b7ebaf"
+    },
+    {
+      "id": "handle:Identifier::path",
+      "hash": "2fa178a7c023badbc9750a9666f46055"
+    },
+    {
+      "id": "handle:Ingredient::item_keys",
+      "hash": "189feb7b317ae74fb630ccf603ecf06d"
+    },
+    {
+      "id": "handle:Ingredient::of",
+      "hash": "4b0cbb64d5b8aaa1f153bc7c32be8cbf"
+    },
+    {
+      "id": "handle:Ingredient::test",
+      "hash": "235c63337acfc808fe6fc9e60da1f672"
+    },
+    {
+      "id": "handle:Item::new",
+      "hash": "de0484764c6428ceebb240587e9a259e"
+    },
+    {
+      "id": "handle:ItemKey::id",
+      "hash": "243ae413f163c597d8f150188027b933"
+    },
+    {
+      "id": "handle:ItemResource::bar",
+      "hash": "5354ff0c3d348f6af8d7df1263b45bdc"
+    },
+    {
+      "id": "handle:ItemResource::component",
+      "hash": "36a6234c15d91debf6328d3e14ca736e"
+    },
+    {
+      "id": "handle:ItemResource::item",
+      "hash": "5b57089fdaca8a402868874e13a62682"
+    },
+    {
+      "id": "handle:ItemResource::matches",
+      "hash": "b10430ca16cd0ddc72e0af0511f661b9"
+    },
+    {
+      "id": "handle:ItemResource::of",
+      "hash": "a22a72bbf0f43b57ac7a3c745669c5cb"
+    },
+    {
+      "id": "handle:ItemResource::tooltip",
+      "hash": "502bd4241a83d23ec3bf115c229ebcb3"
+    },
+    {
+      "id": "handle:ItemResource::value",
+      "hash": "03abab8c3227dc6f4d5e36827127a1ef"
+    },
+    {
+      "id": "handle:JavaString::to_string",
+      "hash": "bac506e6b6dbe065a11a220437c99321"
+    },
+    {
+      "id": "handle:JavaString::to_string_lossy",
+      "hash": "a5caec3eb7743e8b553fb6b622cc5087"
+    },
+    {
+      "id": "handle:KeyRegistration::category",
+      "hash": "449c5694506d051849a8c883fcd11f6e"
+    },
+    {
+      "id": "handle:KeyRegistration::context",
+      "hash": "fafbb2b613e84bdd8cf4843406685e46"
+    },
+    {
+      "id": "handle:KeyRegistration::label",
+      "hash": "a40c2025a3c5c27d54cab897c01f82fe"
+    },
+    {
+      "id": "handle:KeyRegistration::modifiers",
+      "hash": "b0de8eec4b3238241460b3901a7f7723"
+    },
+    {
+      "id": "handle:KeyRegistration::new",
+      "hash": "eb8dd00ea8ec628bd31ed7074aa1f58c"
+    },
+    {
+      "id": "handle:LevelRef::block",
+      "hash": "8c3219a59cbcf42175a135dcabdca388"
+    },
+    {
+      "id": "handle:LevelRef::clip",
+      "hash": "69954587f88e3158f417ab1ac1405b4c"
+    },
+    {
+      "id": "handle:LevelRef::dimension",
+      "hash": "2de7a18136da69ced5a38985493e5014"
+    },
+    {
+      "id": "handle:LevelRef::height",
+      "hash": "c410f99e8447cb5f20d3e7bd6173c752"
+    },
+    {
+      "id": "handle:LivingRef::drop",
+      "hash": "cb7573f20ce4e252e769d6ea42f82a4b"
+    },
+    {
+      "id": "handle:LivingRef::entity",
+      "hash": "dced0582a4cfcf0538b8424603a589c0"
+    },
+    {
+      "id": "handle:LivingRef::id",
+      "hash": "a35157ce66e09698aa387960576e25ab"
+    },
+    {
+      "id": "handle:LivingRef::owner",
+      "hash": "25d0c69a971a2806d47874616a24654f"
+    },
+    {
+      "id": "handle:MenuRef::click",
+      "hash": "159b69d6e1245c10b1347078b6d26326"
+    },
+    {
+      "id": "handle:MenuRef::close",
+      "hash": "61e90547f13250570565a0e5e21ca13a"
+    },
+    {
+      "id": "handle:MenuRef::kind",
+      "hash": "7056908ccefecdffb8f87b2eade9bb0d"
+    },
+    {
+      "id": "handle:MenuRef::slot",
+      "hash": "b8a1a7f976aeba6e135c35dae7bff66e"
+    },
+    {
+      "id": "handle:MenuRef::slot_boxes",
+      "hash": "82d28283b6257452ee63de6c58498cd0"
+    },
+    {
+      "id": "handle:MobRef::entity",
+      "hash": "32f8433283a89cb5c65c5acb1a26b87f"
+    },
+    {
+      "id": "handle:MobRef::target",
+      "hash": "74a356186cb0115e7aebb3fb7b34d516"
+    },
+    {
+      "id": "handle:PayloadBusy::new",
+      "hash": "edc5ae577ecd58bc5a0ce534336c6aea"
+    },
+    {
+      "id": "handle:PayloadRegistrar::play_bidirectional",
+      "hash": "723d912b26d06c15c97f09e0f17dbdd4"
+    },
+    {
+      "id": "handle:PlayerRef::container_menu",
+      "hash": "299da208fd110fa7417bee6897c24862"
+    },
+    {
+      "id": "handle:PlayerRef::dimension",
+      "hash": "3a171c9b480b946aff051d25aafc0b9c"
+    },
+    {
+      "id": "handle:PlayerRef::entity",
+      "hash": "4496ceffbfa2911daa23e6d4fcd769f8"
+    },
+    {
+      "id": "handle:PlayerRef::experience",
+      "hash": "2807f8178fea43832d875f8e69f5844a"
+    },
+    {
+      "id": "handle:PlayerRef::inventory",
+      "hash": "6d1c9e71d1532ca77c7780387e38bb96"
+    },
+    {
+      "id": "handle:PlayerRef::level",
+      "hash": "94de591cba28f2632efe5780288b4afb"
+    },
+    {
+      "id": "handle:PlayerRef::name",
+      "hash": "73d71aebdf3cf52d186208e5527c483b"
+    },
+    {
+      "id": "handle:PlayerRef::send_payload",
+      "hash": "6a2f49631da919bfcfd0aa444f41a258"
+    },
+    {
+      "id": "handle:PlayerRef::uuid",
+      "hash": "06651e6de0106bd4101e08929c101bbe"
+    },
+    {
+      "id": "handle:PotionInfo::new",
+      "hash": "c08bf7db7581cb21300bac54c5feed10"
+    },
+    {
+      "id": "handle:Recipe::new",
+      "hash": "723dac24421ecd1a231285911fcd2045"
+    },
+    {
+      "id": "handle:RecipeTemplate::new",
+      "hash": "b098bb6988a0734baafa6d7755ee2254"
+    },
+    {
+      "id": "handle:RegisterPayloadHandlersEvent::registrar",
+      "hash": "facc58a0128f160d6164c966a7f62a38"
+    },
+    {
+      "id": "handle:Registrar::payload_handlers",
+      "hash": "be98d7a45f2ab2f779727b7e5ec62946"
+    },
+    {
+      "id": "handle:ReloadApply::new",
+      "hash": "5d2aba736ee77f1c3949d3e35de91a5c"
+    },
+    {
+      "id": "handle:ReloadResourceError::new",
+      "hash": "240870da75525aa4702914c840d15845"
+    },
+    {
+      "id": "handle:ServerReloadContext::list",
+      "hash": "4790f7ebfdb0869e2ce06f2437fe22a3"
+    },
+    {
+      "id": "handle:ServerReloadContext::read",
+      "hash": "d7e9c42ef159553b62c08c61e7fba6ff"
+    },
+    {
+      "id": "handle:StoragePage::clear",
+      "hash": "3f8019ff1a6387159f89c2abaff6513f"
+    },
+    {
+      "id": "handle:StoragePage::entries",
+      "hash": "23b12776cdfcb695828db1138b0d4969"
+    },
+    {
+      "id": "handle:StoragePage::new",
+      "hash": "796cb14f9254c1dffe2fab6318e3923d"
+    },
+    {
+      "id": "handle:StoragePage::push",
+      "hash": "3e8bf674bc8b26b0af9055b12d2e9880"
+    },
+    {
+      "id": "handle:StoragePage::room",
+      "hash": "429a9ac0f706a28f708545eff98d1531"
+    },
+    {
+      "id": "handle:Tag::compound",
+      "hash": "c653e4f5638e2bbe3aeaaf593ea81fe1"
+    },
+    {
+      "id": "handle:Tag::get",
+      "hash": "5958dbb7983d487db910843aaccdc62e"
+    },
+    {
+      "id": "handle:Tag::get_mut",
+      "hash": "aa3fedae3ed5b86fbc108b77c661cdcf"
+    },
+    {
+      "id": "handle:Tag::id",
+      "hash": "0b402448a1e313ac2e52b2bcad8d7915"
+    },
+    {
+      "id": "handle:TextEdit::key",
+      "hash": "4a7bb129d29c8d139e3acbf0b32413ac"
+    },
+    {
+      "id": "handle:TextEdit::new",
+      "hash": "64b65eb7bbd7f91f8e6bb33bdb128d30"
+    },
+    {
+      "id": "handle:item::item_stack::Components::as_nbt",
+      "hash": "c1420dd35b3413d7073d4a282a296cd5"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::components",
+      "hash": "a31a2af5f0ed6f34eb0766739fca71fb"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::count",
+      "hash": "44a5eeef4eb43254daba1f039a9538ef"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::get",
+      "hash": "536fcedec24fe86411ac41887cbf61a9"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::item",
+      "hash": "a2db9458e996e30af3d2b680866641f3"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::new",
+      "hash": "c1d95a503dc9868b8968bdc15c843e44"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::of",
+      "hash": "8f4bd41f27dcb8a33446f3344ed1a7a7"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::remove",
+      "hash": "571b95c5174eb19f46c96e91ac20dccd"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::set",
+      "hash": "453f3a19f7d3937448011acf483a6e07"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::set_components",
+      "hash": "75217c7d3102fbee632dedeb93cad599"
+    },
+    {
+      "id": "handle:item::item_stack::ItemStack::split",
+      "hash": "6700926d55b11458b2b0ff6b0692da0e"
+    },
+    {
+      "id": "handle:text::Text::literal",
+      "hash": "26eb44d34cb91b45bb38c28c68f9adfe"
+    },
+    {
+      "id": "handle:text::Text::new",
+      "hash": "cfec9783240b723d6dcff395c39e5004"
+    },
+    {
+      "id": "handle:text::Text::translate",
+      "hash": "00c587ab711b7add809c50400f0a10c2"
+    },
+    {
+      "id": "handle:wire::Reader::nested",
+      "hash": "7a252073e71da3c1687b34ea996dc1fb"
+    },
+    {
+      "id": "handle:wire::Reader::new",
+      "hash": "ef4dcffe7e808edcb1317f9911889a81"
+    },
+    {
+      "id": "handle:wire::Reader::rest",
+      "hash": "3e3a6efbf39371fe522fb3f329ae8ac0"
+    },
+    {
+      "id": "handle:wire::Reader::take",
+      "hash": "3a1bf85ecc66e9da391ab4e6de9948e8"
+    },
+    {
+      "id": "hook:add_client_reload_listeners",
+      "hash": "91386c85ed06508573fb62156767fa75"
+    },
+    {
+      "id": "hook:add_client_reload_listeners.listeners",
+      "hash": "49bb4662f30bad4b4df5137f7f4c3864"
+    },
+    {
+      "id": "hook:add_server_reload_listeners",
+      "hash": "69dfd5d2318516e51bbbc79b03585533"
+    },
+    {
+      "id": "hook:add_server_reload_listeners.listeners",
+      "hash": "f1271004cc405d055d8203433c68e5f6"
+    },
+    {
+      "id": "hook:blocks",
+      "hash": "21bf9da189f8c75f62a97d22a2a1e124"
+    },
+    {
+      "id": "hook:blocks.blocks",
+      "hash": "8ae83a8910d9b7357ef9e3026e184e52"
+    },
+    {
+      "id": "hook:client_player_logging_in",
+      "hash": "a8bfb96d83f7db7973ec8f2c7eaba5f7"
+    },
+    {
+      "id": "hook:client_player_logging_in.uuid",
+      "hash": "ef672dcf86814f697005124dc3937453"
+    },
+    {
+      "id": "hook:client_player_logging_out",
+      "hash": "a8bfb96d83f7db7973ec8f2c7eaba5f7"
+    },
+    {
+      "id": "hook:client_player_logging_out.uuid",
+      "hash": "11691a734435875ced14c1ffc2c31260"
+    },
+    {
+      "id": "hook:command",
+      "hash": "95efacac9fe52b6cab164a179261e6b7"
+    },
+    {
+      "id": "hook:command.command",
+      "hash": "d7a6e80725118454062c472c1fcac134"
+    },
+    {
+      "id": "hook:ingredient",
+      "hash": "bcbcd4b31d793aed48ce88aed510f624"
+    },
+    {
+      "id": "hook:ingredient.data",
+      "hash": "84afbf9fc798aceb19b1af0d38e2e091"
+    },
+    {
+      "id": "hook:ingredient.items",
+      "hash": "fe25da30f3c780fe38809bc868a85786"
+    },
+    {
+      "id": "hook:ingredient.kind",
+      "hash": "aaa386edcd987083bff006d7bc4b5350"
+    },
+    {
+      "id": "hook:items",
+      "hash": "21bf9da189f8c75f62a97d22a2a1e124"
+    },
+    {
+      "id": "hook:items.items",
+      "hash": "f6a27e59f7ac75dc069a65225f7d109c"
+    },
+    {
+      "id": "hook:panel_event",
+      "hash": "91386c85ed06508573fb62156767fa75"
+    },
+    {
+      "id": "hook:panel_event.event",
+      "hash": "cc54502f2199ad7df0e24505fc2d8312"
+    },
+    {
+      "id": "hook:panel_event.mod_id",
+      "hash": "c74401a9cf14d9ec7586e2d0d8d813fa"
+    },
+    {
+      "id": "hook:player_logged_in",
+      "hash": "e30aa44965a491318c947131d49fef3b"
+    },
+    {
+      "id": "hook:player_logged_in.name",
+      "hash": "514e7d12178734add212d0f526f96c38"
+    },
+    {
+      "id": "hook:player_logged_in.player",
+      "hash": "424138719956bb0f086b285e62d78024"
+    },
+    {
+      "id": "hook:recipes_received",
+      "hash": "91386c85ed06508573fb62156767fa75"
+    },
+    {
+      "id": "hook:register_client_commands",
+      "hash": "2e23d04b1f06753122c33c7ed9d7291b"
+    },
+    {
+      "id": "hook:register_client_commands.commands",
+      "hash": "e79901d998fe16a201806b4e954dfb80"
+    },
+    {
+      "id": "hook:render_frame_pre",
+      "hash": "91386c85ed06508573fb62156767fa75"
+    },
+    {
+      "id": "hook:render_tooltip_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:render_tooltip_pre.draw",
+      "hash": "9ee8411eba2c996be89736444b0b8138"
+    },
+    {
+      "id": "hook:render_tooltip_pre.place",
+      "hash": "f815bfd6b7e1a0324ae9fd6df2805b50"
+    },
+    {
+      "id": "hook:render_tooltip_pre.stack",
+      "hash": "cc5d115e2880305765314fc15a50d154"
+    },
+    {
+      "id": "hook:screen",
+      "hash": "6449dc52bca747a47a1b315fa2445be5"
+    },
+    {
+      "id": "hook:screen.block",
+      "hash": "930bab554169a03feca2eb5affda10a1"
+    },
+    {
+      "id": "hook:screen_char_typed_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_char_typed_pre.c",
+      "hash": "cd00c96bca0403e8f6a6403a3c668b89"
+    },
+    {
+      "id": "hook:screen_char_typed_pre.modifiers",
+      "hash": "bcadb9a4609d9c904a2ba8e90b75f3d0"
+    },
+    {
+      "id": "hook:screen_char_typed_pre.screen",
+      "hash": "da23226d3d1e16299ed617f81482a1b5"
+    },
+    {
+      "id": "hook:screen_closing",
+      "hash": "a8bfb96d83f7db7973ec8f2c7eaba5f7"
+    },
+    {
+      "id": "hook:screen_closing.screen",
+      "hash": "162a65b7447309106f57d326fb7083c6"
+    },
+    {
+      "id": "hook:screen_exclusion_areas",
+      "hash": "526ebb5dfb69ef7f16c5576169910904"
+    },
+    {
+      "id": "hook:screen_exclusion_areas.areas",
+      "hash": "35699cec55bf1d68456602335e41951b"
+    },
+    {
+      "id": "hook:screen_exclusion_areas.screen",
+      "hash": "cf41a1f16004f50c24ce56ab0c3ea7c0"
+    },
+    {
+      "id": "hook:screen_key_pressed_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_key_pressed_pre.key",
+      "hash": "246dd072a6a06acf29e2e21b3b99a242"
+    },
+    {
+      "id": "hook:screen_key_pressed_pre.modifiers",
+      "hash": "9097ae2e1c86092588d78d20ef18ac6b"
+    },
+    {
+      "id": "hook:screen_key_pressed_pre.screen",
+      "hash": "45225311abf996de3c9732804ce1a566"
+    },
+    {
+      "id": "hook:screen_mouse_button_pressed_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_mouse_button_pressed_pre.button",
+      "hash": "3f63799f79fc9b4070970aae2dafff93"
+    },
+    {
+      "id": "hook:screen_mouse_button_pressed_pre.modifiers",
+      "hash": "eb312975f15581ff0c15cdd113a92115"
+    },
+    {
+      "id": "hook:screen_mouse_button_pressed_pre.screen",
+      "hash": "2926d53dd313b9889e88ec84ed2ad6c3"
+    },
+    {
+      "id": "hook:screen_mouse_button_released_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_mouse_button_released_pre.button",
+      "hash": "f1b5458d073192f57ffb84267d4cf20b"
+    },
+    {
+      "id": "hook:screen_mouse_button_released_pre.modifiers",
+      "hash": "2cda9608927c3b6547e69e6ec65c3014"
+    },
+    {
+      "id": "hook:screen_mouse_button_released_pre.screen",
+      "hash": "bae6e3888606c8a174fb4f31f7fd9304"
+    },
+    {
+      "id": "hook:screen_mouse_dragged_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_mouse_dragged_pre.button",
+      "hash": "cd1090086f2d11524deb8c0805dd6ce9"
+    },
+    {
+      "id": "hook:screen_mouse_dragged_pre.modifiers",
+      "hash": "efbecbd608c6629453a0d976efa1b18d"
+    },
+    {
+      "id": "hook:screen_mouse_dragged_pre.screen",
+      "hash": "bcfb03529e6704e229773a4d15cc79d7"
+    },
+    {
+      "id": "hook:screen_mouse_scrolled_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_mouse_scrolled_pre.modifiers",
+      "hash": "efd068e0dde8fb845fb01e3b5e4f091b"
+    },
+    {
+      "id": "hook:screen_mouse_scrolled_pre.screen",
+      "hash": "94624443530bd1d1d961486a01629b76"
+    },
+    {
+      "id": "hook:screen_mouse_scrolled_pre.scroll",
+      "hash": "52648ac30553a0eba303ee132f1a003c"
+    },
+    {
+      "id": "hook:screen_render_post",
+      "hash": "a8bfb96d83f7db7973ec8f2c7eaba5f7"
+    },
+    {
+      "id": "hook:screen_render_post.draw",
+      "hash": "7eda06832ee21eda312cb0777ff0619f"
+    },
+    {
+      "id": "hook:screen_render_post.screen",
+      "hash": "eccd37d9623760f11b4385af0a438559"
+    },
+    {
+      "id": "hook:screen_render_pre",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_render_pre.draw",
+      "hash": "a5a6c8637253134863b0f55e09e579c3"
+    },
+    {
+      "id": "hook:screen_render_pre.screen",
+      "hash": "084551195c9604fe6beb266befaecf77"
+    },
+    {
+      "id": "hook:screen_transparent_background",
+      "hash": "b4fe1dfcd555df503198ca6a14e24014"
+    },
+    {
+      "id": "hook:screen_transparent_background.screen",
+      "hash": "10e0849e7ef796275d56dd5c953fe367"
+    },
+    {
+      "id": "hook:tooltip",
+      "hash": "c6190d5f762d87670179fd158d1c1cc6"
+    },
+    {
+      "id": "hook:tooltip.lines",
+      "hash": "b0d6d90064aecd209abe2021ad822299"
+    },
+    {
+      "id": "hook:tooltip.stack",
+      "hash": "42013711b98923118bb1fbed0d79b8b9"
+    },
+    {
+      "id": "macro:if_installed",
+      "hash": "818eb594e9eaaf1c0b8ed031828eb894"
+    },
+    {
+      "id": "macro:sunrise_mod",
+      "hash": "dd5820eaf44c3c9cddcad4d85933fca4"
+    },
+    {
+      "id": "method:ClientReloadListener::prepare",
+      "hash": "f05aa1a496081a85516ce4cd63473e6b"
+    },
+    {
+      "id": "method:ClientReloadListeners::add_listener",
+      "hash": "453b7863a7a3d8bf064c9c398573587f"
+    },
+    {
+      "id": "method:ConfigFiles::list",
+      "hash": "3c23002fd7b9858811705b30422eb112"
+    },
+    {
+      "id": "method:ConfigFiles::read",
+      "hash": "6d854402fe5d3a76845d5be0d80c131c"
+    },
+    {
+      "id": "method:ConfigFiles::write",
+      "hash": "cfb0ec222fe91a831e560c939329b8bc"
+    },
+    {
+      "id": "method:DrawContext::entity",
+      "hash": "83da9c1be8d024effdcb6bff5895abd0"
+    },
+    {
+      "id": "method:DrawContext::fill",
+      "hash": "7e2b03a46755bee91a9ebf593ed91a65"
+    },
+    {
+      "id": "method:DrawContext::fluid",
+      "hash": "81daca7b245b1a69eea71778ce8f3bf6"
+    },
+    {
+      "id": "method:DrawContext::gui_draw_item_with",
+      "hash": "ba14d353e24563df530c925ede32f158"
+    },
+    {
+      "id": "method:DrawContext::gui_nine_slice",
+      "hash": "4f3d7b1908940625bba648497fe888c2"
+    },
+    {
+      "id": "method:DrawContext::gui_tooltip",
+      "hash": "05fd39ab1c7ee9cd5bec23871d7d7cd1"
+    },
+    {
+      "id": "method:DrawContext::item",
+      "hash": "6d79ed516d256517eb8f701276d28dcc"
+    },
+    {
+      "id": "method:DrawContext::size",
+      "hash": "e04cf2eba9c0a78c9f0386a40620e916"
+    },
+    {
+      "id": "method:DrawContext::sprite",
+      "hash": "d4b5817c6bd2213a44fd58c9cb1273b7"
+    },
+    {
+      "id": "method:DrawContext::text",
+      "hash": "ffbae39af957eb129e4c87019c1f204d"
+    },
+    {
+      "id": "method:DrawContext::text_width",
+      "hash": "082b1d7118a900250d39e2d9782bb928"
+    },
+    {
+      "id": "method:Hooks::add_client_reload_listeners",
+      "hash": "0c7e551ebf11a7abc89880fe16b76d7f"
+    },
+    {
+      "id": "method:Hooks::add_server_reload_listeners",
+      "hash": "48c52fe4d15e36ed73dcb5f8ae431441"
+    },
+    {
+      "id": "method:Hooks::blocks",
+      "hash": "4fab77f1c6734e8b12e2bfbdd11d76de"
+    },
+    {
+      "id": "method:Hooks::client_player_logging_in",
+      "hash": "2e036b9c5c6765c634f30091a3116ab7"
+    },
+    {
+      "id": "method:Hooks::client_player_logging_out",
+      "hash": "d5b118420e7b2c31ce8014951764a63c"
+    },
+    {
+      "id": "method:Hooks::command",
+      "hash": "977f43eff41505b552536a1cce740cc5"
+    },
+    {
+      "id": "method:Hooks::ingredient",
+      "hash": "9b7178ad71776d1926ed26a66b13d5a0"
+    },
+    {
+      "id": "method:Hooks::items",
+      "hash": "f6180456d33ac43e40c531f79ec99d12"
+    },
+    {
+      "id": "method:Hooks::panel_event",
+      "hash": "ca65a7f5d391c6552b30e536d5f5dea4"
+    },
+    {
+      "id": "method:Hooks::player_logged_in",
+      "hash": "b6060d9905a9ad1b0c2415c85cdcf4c9"
+    },
+    {
+      "id": "method:Hooks::recipes_received",
+      "hash": "f834dba37e843fc3a97b5284ea6a8633"
+    },
+    {
+      "id": "method:Hooks::register",
+      "hash": "aae1d439d18717ba92291997acaaf3ec"
+    },
+    {
+      "id": "method:Hooks::register_client_commands",
+      "hash": "5dcf7ba1b6ae7e09da0359f908e87397"
+    },
+    {
+      "id": "method:Hooks::render_frame_pre",
+      "hash": "cc535daf779501c45380f6dc10dcf70e"
+    },
+    {
+      "id": "method:Hooks::render_tooltip_pre",
+      "hash": "c9fbb33e15263f2f275edfed096917b4"
+    },
+    {
+      "id": "method:Hooks::screen_char_typed_pre",
+      "hash": "d99a914ce0843b0aa45be9242d4e260d"
+    },
+    {
+      "id": "method:Hooks::screen_closing",
+      "hash": "ea035826849ec42f46cb765c8b71567b"
+    },
+    {
+      "id": "method:Hooks::screen_exclusion_areas",
+      "hash": "31c1a21cadc7d75f9225786d04b67495"
+    },
+    {
+      "id": "method:Hooks::screen_key_pressed_pre",
+      "hash": "15fd6df6860cd19547e459877b2d657e"
+    },
+    {
+      "id": "method:Hooks::screen_mouse_button_pressed_pre",
+      "hash": "0d72cbeaf5fa7bc0e94a4fe2c74991b9"
+    },
+    {
+      "id": "method:Hooks::screen_mouse_button_released_pre",
+      "hash": "6c4f4cad67535347a4ad31f49e435dcd"
+    },
+    {
+      "id": "method:Hooks::screen_mouse_dragged_pre",
+      "hash": "422774caeac4e46a3f458ac3648ca1cd"
+    },
+    {
+      "id": "method:Hooks::screen_mouse_scrolled_pre",
+      "hash": "e5220846607f265efd00f753599c5ce9"
+    },
+    {
+      "id": "method:Hooks::screen_render_post",
+      "hash": "2f122abc49f12ad2dc620b4ff3324128"
+    },
+    {
+      "id": "method:Hooks::screen_render_pre",
+      "hash": "97ab8c66c1a5252db6dbb4a931eddf95"
+    },
+    {
+      "id": "method:Hooks::screen_transparent_background",
+      "hash": "1f483e1fd7202d6312e483812261e94f"
+    },
+    {
+      "id": "method:IPayloadContext::player",
+      "hash": "8f2112f15b9f198fb2880a4225813acd"
+    },
+    {
+      "id": "method:IPayloadContext::server_host",
+      "hash": "d117c8a345dae868276aeb985cf9a257"
+    },
+    {
+      "id": "method:IPayloadHandler::handle",
+      "hash": "072b63ef46f0668635632f7421f0dedd"
+    },
+    {
+      "id": "method:ItemStorage::amount",
+      "hash": "768a37e8b7367a6287adc25fd0665677"
+    },
+    {
+      "id": "method:ItemStorage::insert",
+      "hash": "bbc401777bf8b17332b52e7b4dcab3c9"
+    },
+    {
+      "id": "method:ItemStorage::page",
+      "hash": "67c60d59a9e2f9fd5d70bfce28d5c499"
+    },
+    {
+      "id": "method:KeyMappingsRegistrar::register_key_mapping",
+      "hash": "cbaf361857a21bae338fb5b9ddb4dbba",
+      "reached_from": [
+        "trait:Registrar"
+      ]
+    },
+    {
+      "id": "method:ServerReloadListener::prepare",
+      "hash": "e4c66685bb75e834a23df120ce42ed70"
+    },
+    {
+      "id": "method:ServerReloadListeners::add_listener",
+      "hash": "b682a36b989d5d24d97ddb8c90a5f4ba"
+    },
+    {
+      "id": "method:Tags::blocks",
+      "hash": "320464ace9b46993a7dbfa7e4918c556"
+    },
+    {
+      "id": "method:Tags::fluids",
+      "hash": "c26b083511f225ac97bb493923798d21"
+    },
+    {
+      "id": "method:Tags::items",
+      "hash": "bb0c9d143a4e1570ca338d2cb11ff8a4"
+    },
+    {
+      "id": "method:Tags::key",
+      "hash": "a34a9cc46da1c503d56e810da95b11af"
+    },
+    {
+      "id": "method:item::item_stack::Component::id",
+      "hash": "132586f5592abd99fc10ba106b753ce4"
+    },
+    {
+      "id": "method:prelude::ClientInputClientHost::millis",
+      "hash": "dcaf0a25649db01895bc05eb76fca421",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ClientInputClientHost::mod_key",
+      "hash": "bbe09a5398b19359d34e962d27e77772",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ClientInputClientHost::modifiers",
+      "hash": "e2d9e609ad0ad59d5ffa9e4c0e8c5f02",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ClientOptionsClientHost::gui_options",
+      "hash": "1e9aa312fa0ce43fab85a727a5d39701",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ClientTextClientHost::text_string",
+      "hash": "a8ce7d16109591c144c00ddc9bbf428c",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ClientTextClientHost::text_width",
+      "hash": "ec8f8c1d78319359f7175e46a9341149",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ConfigClientHost::translate",
+      "hash": "93669abf44b41d254b9b6c93b12fb16d",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ConfigHost::config_files",
+      "hash": "dd6ae2745ca5ed03847caa4ca9b69ca8",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ConfigHost::dimension",
+      "hash": "d2c63683418fa9dfedd6fa94f02ba74f",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::DisplaysServerHost::display",
+      "hash": "06636b166529619d625c38d7a1bfb33f",
+      "reached_from": [
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::DrawClientHost::fluid_name",
+      "hash": "79365cf1c8f6850018519a5df025b193",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::EntitiesHost::entity",
+      "hash": "a35b63a55ef61ea9789749256fc45951",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::EntitiesHost::level",
+      "hash": "9a0c614cae197ac6e1fcca5410a3a62a",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ItemsClientHost::creative_tabs",
+      "hash": "939c8a65a534edf85dea4762a87a6c23",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ItemsClientHost::enchantments",
+      "hash": "40612c96da9d571c8d1c155175ee4e22",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ItemsClientHost::give",
+      "hash": "9d30e9d6232fd7a1cbff05252da421ea",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ItemsClientHost::potions",
+      "hash": "d27aaaae7afa87aba6c93c4c3c1bcfc7",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ItemsHost::item_burn_time",
+      "hash": "ab9a59445dcf2887addc01e5d9f276ef",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ItemsHost::max_stack_size",
+      "hash": "4fa3e82057786aa92af8a7b118599d11",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::KeysHost::item_keys",
+      "hash": "1914ce27607f01ff5af91009f550946c",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::MenusClientHost::local_player",
+      "hash": "13a4a1dc46361ba41643082474cc68fc",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::MenusServerHost::menu",
+      "hash": "bf108a3cddf75ce37d3764486c788355",
+      "reached_from": [
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::MobsHost::mob",
+      "hash": "98db810f0d7ab0fc7ece87395f45ffd5",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::NetworkClientHost::chat_line",
+      "hash": "1c56b20229eda6ac07a7d0b5474a6c39",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::PayloadsClientHost::send_payload_to_server",
+      "hash": "2591eb7b1fc8871748b3ba72b88504d9",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::PlayersHost::player",
+      "hash": "17d58c70c379efb80725f99428a4eb6d",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::RecipesClientHost::panel_items",
+      "hash": "5b8d6b7190572bdabda14c882c3dea0c",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::RecipesClientHost::transfer_recipe_check",
+      "hash": "095febe00f06eabacd7cdfb6813db6f6",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::RecipesClientHost::transfer_recipe_id",
+      "hash": "173b79b6ecc6ac672eee646b78737eaa",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::RecipesHost::recipe_ingredient",
+      "hash": "801a9ca20d24b9b9f0700d7fc99d7e83",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::RecipesHost::recipes_of_type",
+      "hash": "7dc6042bec1b51efe9fbe7db72c0e08f",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ScreensClientHost::screen_hovered_item",
+      "hash": "b286774b2dc43f7ec182f8b9da9cebcf",
+      "reached_from": [
+        "trait:ClientHost"
+      ]
+    },
+    {
+      "id": "method:prelude::ServicesServerHost::commands",
+      "hash": "7cf844a629c3f1da8f61a33ee3364b73",
+      "reached_from": [
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:prelude::TagsHost::tags",
+      "hash": "e959075c1218af9675e8ab78c695c843",
+      "reached_from": [
+        "trait:ClientHost",
+        "trait:Host",
+        "trait:ServerHost"
+      ]
+    },
+    {
+      "id": "method:wire::Wire::take",
+      "hash": "96f159ad6f5166d08205d23e6f7e86f4"
+    },
+    {
+      "id": "part:block",
+      "hash": "b01d711e4da4a88887ab44f5b3e392b3"
+    },
+    {
+      "id": "part:entity",
+      "hash": "39de1e7c3068d335c26f010c56ec5a04"
+    },
+    {
+      "id": "part:fluid",
+      "hash": "d31ed6ed9948c629168a64ca18e55f03"
+    },
+    {
+      "id": "part:item",
+      "hash": "e68d8751e1a6de7ec8d17e3356bead2f"
+    },
+    {
+      "id": "part:menu",
+      "hash": "ffa293f3e64b4a685d6066e684cf0eeb"
+    },
+    {
+      "id": "trait:ClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:ClientReloadListener",
+      "hash": "4a4b7303c0528ae058ae71f2f4681e17"
+    },
+    {
+      "id": "trait:ClientReloadListeners",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:Commands",
+      "hash": "f180869612de98e207238ace823c8407"
+    },
+    {
+      "id": "trait:ConfigFiles",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:DataLoadContext",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:DrawContext",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:Hooks",
+      "hash": "fb4e789435e197f585d6ad8af6888d00"
+    },
+    {
+      "id": "trait:Host",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:IPayloadContext",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:IPayloadHandler",
+      "hash": "7a64d07c4da74cb68e674323fec3070e"
+    },
+    {
+      "id": "trait:ItemStorage",
+      "hash": "8ea8727eeea131f1e62c8259a1014a46"
+    },
+    {
+      "id": "trait:KeyMappingsRegistrar",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:Registrar",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:ReloadApply",
+      "hash": "c724387e3b9ea262d912ed1f3b063e38"
+    },
+    {
+      "id": "trait:ServerHost",
+      "hash": "f180869612de98e207238ace823c8407"
+    },
+    {
+      "id": "trait:ServerReloadListener",
+      "hash": "fbc2766630a7f53e7b8975b46ba625d6"
+    },
+    {
+      "id": "trait:ServerReloadListeners",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:Tags",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:item::item_stack::Component",
+      "hash": "f8ba799e9cfd0203819457c7e5fa8721"
+    },
+    {
+      "id": "trait:prelude::ClientInputClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::ClientOptionsClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::ClientTextClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::ConfigClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::ConfigHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:prelude::DisplaysServerHost",
+      "hash": "f180869612de98e207238ace823c8407"
+    },
+    {
+      "id": "trait:prelude::DrawClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::EntitiesHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:prelude::ItemsClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::ItemsHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:prelude::KeysHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:prelude::MenusClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::MenusServerHost",
+      "hash": "f180869612de98e207238ace823c8407"
+    },
+    {
+      "id": "trait:prelude::MobsHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:prelude::NetworkClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::PayloadsClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::PlayersHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:prelude::RecipesClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::RecipesHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:prelude::ScreensClientHost",
+      "hash": "61a7d7c2aae004ff03e2ad1c845b864d"
+    },
+    {
+      "id": "trait:prelude::ServicesServerHost",
+      "hash": "f180869612de98e207238ace823c8407"
+    },
+    {
+      "id": "trait:prelude::TagsHost",
+      "hash": "e2cde1a0bfba965c2c15677b5bc613cc"
+    },
+    {
+      "id": "trait:wire::Wire",
+      "hash": "45606ceae5557871083f67a73a3a4c87"
+    },
+    {
+      "id": "type:AddClientReloadListenersEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:AddClientReloadListenersEvent.listeners",
+      "hash": "80106308f26c16f0b27f2a78c04c9278"
+    },
+    {
+      "id": "type:AddServerReloadListenersEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:AddServerReloadListenersEvent.listeners",
+      "hash": "6bb20ed59906474afee6b8a921154167"
+    },
+    {
+      "id": "type:ArmPose",
+      "hash": "98b3469e9995fd614f5a084f4d56d0b4",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Deserialize",
+        "Eq",
+        "PartialEq",
+        "Serialize"
+      ]
+    },
+    {
+      "id": "type:ArmPose.Block",
+      "hash": "c73179f38decdb26e53b38cf7fac45be"
+    },
+    {
+      "id": "type:ArmPose.Item",
+      "hash": "c73179f38decdb26e53b38cf7fac45be"
+    },
+    {
+      "id": "type:Block",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Declaration",
+        "Default",
+        "PartialEq"
+      ],
+      "built": "full",
+      "fields_hash": "b4703979b24fc9299e684a8baaf95721",
+      "fields": [
+        "id",
+        "template",
+        "properties",
+        "state_light",
+        "shapes",
+        "collision_shapes",
+        "outline_context_shapes",
+        "collision_context_shapes",
+        "interaction_shapes",
+        "shapes_from_block_entity",
+        "state_properties",
+        "default_state",
+        "item",
+        "open_sound",
+        "close_sound",
+        "block_item",
+        "pick_item",
+        "components",
+        "connects_to",
+        "thickness",
+        "wood_type",
+        "wall_block",
+        "sign_text_color",
+        "sign_text_glow",
+        "base_block"
+      ],
+      "built_at": "src/sources/client.rs:219"
+    },
+    {
+      "id": "type:Block.components",
+      "hash": "1b0b2228c94147d3fc61850f387b044f"
+    },
+    {
+      "id": "type:Block.id",
+      "hash": "f35988edc1e821d223cab89badcdf982"
+    },
+    {
+      "id": "type:Block.item",
+      "hash": "e382aa46ed0cf0dbaf51dd44289fa471"
+    },
+    {
+      "id": "type:BlockFace",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:BlockKey",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:BlockProperties",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:BlockProperties.light",
+      "hash": "db1c2efb8d6650004fe37b34ff21fd0a"
+    },
+    {
+      "id": "type:BlockShapes",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:BlockShapes.default",
+      "hash": "a2cb5a5f80ce9a55e953bb93bdcd299d"
+    },
+    {
+      "id": "type:BlockShapes.values",
+      "hash": "140e2095f329f8405ec7a8dbbb614a9a"
+    },
+    {
+      "id": "type:BlockStateProperty",
+      "hash": "c47d1a51ade6c43ffcc109e6315c4a87",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:BlocksEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:BlocksEvent.blocks",
+      "hash": "4ff13958c099f593958ce42cbc15f042"
+    },
+    {
+      "id": "type:Capability",
+      "hash": "0a650ed74658e1c899660e1638bb2c41",
+      "impls": [
+        "CapabilityChecked",
+        "Deref"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ClientGuiOptions",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ClientGuiOptions.advanced_item_tooltips",
+      "hash": "110c23f6b8b2a2e05025cb0d6d4d936d"
+    },
+    {
+      "id": "type:ClientModifiers",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Default",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ClientPlayerLoggingInEvent",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "built": "none"
+    },
+    {
+      "id": "type:ClientPlayerLoggingInEvent.uuid",
+      "hash": "346a173df04b12960cba2c68924a1b50"
+    },
+    {
+      "id": "type:ClientPlayerLoggingOutEvent",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "built": "none"
+    },
+    {
+      "id": "type:ClientPlayerLoggingOutEvent.uuid",
+      "hash": "e1b0fb431e7c89c02e4effa810a308f9"
+    },
+    {
+      "id": "type:ClientReloadContext",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "ReloadContextNew"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ClipBlock",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:ClipFluid",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:ClipFluid.None",
+      "hash": "71fa28066ff434f4982511cbe1b6fdf0"
+    },
+    {
+      "id": "type:ClipHit",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ClipHit.block",
+      "hash": "1f97613a33353d0dfa795aeae6cdc8e7"
+    },
+    {
+      "id": "type:ClipHit.face",
+      "hash": "9c91d0fa7aaa45cfcbc72479bdebbf06"
+    },
+    {
+      "id": "type:ClipHit.inside",
+      "hash": "8edde7a0a9b56a858905d877f8c8a43d"
+    },
+    {
+      "id": "type:Command",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:Command.level",
+      "hash": "af670ee1167abbfb1e5303cf1109a5cf"
+    },
+    {
+      "id": "type:Command.usage",
+      "hash": "66fc152673166de925b65bd2dd5ae713"
+    },
+    {
+      "id": "type:CommandEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:CommandEvent.command",
+      "hash": "1e02fc877a8e39b37eed4048596bffe0"
+    },
+    {
+      "id": "type:ComponentId",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:Compound",
+      "hash": "47ce957fc60f2c648ca2a0e0e728b4e9",
+      "impls": [
+        "From<&item::item_stack::Components>",
+        "TryFrom<Tag>"
+      ]
+    },
+    {
+      "id": "type:ConfigEntry",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "From<ConfigEntry>",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ConfigEntry.name",
+      "hash": "1abd98a0353c89ed80d729492f63d352"
+    },
+    {
+      "id": "type:ConfigEntryKind",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:ConfigEntryKind.Folder",
+      "hash": "61d9622c5d3e5c26d13ee279eac40605"
+    },
+    {
+      "id": "type:ConfigFileError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Display",
+        "Eq",
+        "Error",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:ConfigPath",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq",
+        "TryFrom<String>"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ConfigStat",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "From<ConfigStat>",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ConfigStat.kind",
+      "hash": "382ce6adcdb4622c37b5e62714ff9983"
+    },
+    {
+      "id": "type:ConfigStat.len",
+      "hash": "c700f5d7a50bfc3339e1c48407c81ece"
+    },
+    {
+      "id": "type:CreativeModeTabInfo",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:CreativeModeTabInfo.display_items",
+      "hash": "1876df840ffd2dbcbcc2287702ace9d1"
+    },
+    {
+      "id": "type:CreativeModeTabInfo.id",
+      "hash": "11219b88e5889ab8db221ec09f1555ac"
+    },
+    {
+      "id": "type:CreativeModeTabs",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:CreativeModeTabs.tabs",
+      "hash": "093c822edfc431219d5bdd236639636e"
+    },
+    {
+      "id": "type:CustomArmPose",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Deserialize",
+        "Eq",
+        "PartialEq",
+        "Serialize"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:DimensionKey",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:DisplayKind",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:DisplayKind.Block",
+      "hash": "5beb450f3008cbaa287734ed7d614f94"
+    },
+    {
+      "id": "type:DisplayKind.Item",
+      "hash": "5beb450f3008cbaa287734ed7d614f94"
+    },
+    {
+      "id": "type:DisplayKind.Text",
+      "hash": "5beb450f3008cbaa287734ed7d614f94"
+    },
+    {
+      "id": "type:DisplayRef",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:DragKind",
+      "hash": "4077ac73b5400dc404b10f1775712235",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:DragKind.Clone",
+      "hash": "e23813bd5c3784be057db4e1418b8189"
+    },
+    {
+      "id": "type:EnchantmentInfo",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:EnchantmentInfo.id",
+      "hash": "bb17b0f114090ae91fe630c21c22d9c7"
+    },
+    {
+      "id": "type:EnchantmentInfo.max_level",
+      "hash": "43f287f600a3f068bc0d4505a053ab02"
+    },
+    {
+      "id": "type:EntityRef",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "From<LivingRef>",
+        "From<PlayerRef>",
+        "Hash",
+        "PartStateHolder",
+        "PartialEq",
+        "Sealed"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:EntityTypeKey",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq",
+        "TryFrom<u32>"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:FileToIdConverter",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "FileToIdConverterPaths",
+        "TryFrom<(String, String)>"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:FileToIdConverterError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Display",
+        "Eq",
+        "Error",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:FireworkShape",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Default",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:FireworkShapeIngredient",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:FireworkShapeIngredient.ingredient",
+      "hash": "739a0c30fca2bfced53862336fc8b3fd"
+    },
+    {
+      "id": "type:FireworkShapeIngredient.shape",
+      "hash": "2d44ababc9be9c61457f0aef949b5710"
+    },
+    {
+      "id": "type:FluidKey",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:GuiEntity",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:GuiEntityError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Display",
+        "Eq",
+        "Error",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:GuiEntityLook",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:GuiEntityLook.At",
+      "hash": "c57675dbbc38f8c80ac55fbe31bd4924"
+    },
+    {
+      "id": "type:GuiEntityView",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:GuiEntityView.look",
+      "hash": "96366a67aa446521699765868fad4c2e"
+    },
+    {
+      "id": "type:GuiEntityView.rect",
+      "hash": "6344f1e97a2efb6d4669214db87a48b2"
+    },
+    {
+      "id": "type:GuiEntityView.size",
+      "hash": "a6810c97309cdbfb34832895471725eb"
+    },
+    {
+      "id": "type:Hand",
+      "hash": "af455f1820bb58d85b99556cba897a90",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:Identifier",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Display",
+        "Eq",
+        "JavaKey",
+        "Ord",
+        "PartialEq",
+        "PartialOrd",
+        "TryFrom<String>"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:Ingredient",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "full",
+      "fields_hash": "13935a5f76b383404aa9dac432cabcd8",
+      "fields": [
+        "items",
+        "order",
+        "custom",
+        "children",
+        "rule",
+        "display"
+      ],
+      "built_at": "src/vanilla.rs:62"
+    },
+    {
+      "id": "type:Ingredient.children",
+      "hash": "8dd567b9241e6b2e240636a8dc4e46c2"
+    },
+    {
+      "id": "type:Ingredient.display",
+      "hash": "66e8165b1c29328d131d13daef43efed"
+    },
+    {
+      "id": "type:Ingredient.items",
+      "hash": "8ecd9ec74d6e286cd59fe77635f3d246"
+    },
+    {
+      "id": "type:Ingredient.order",
+      "hash": "6e6cb3804bd22dc1c48926f2146ef673"
+    },
+    {
+      "id": "type:Ingredient.rule",
+      "hash": "b11fac5ecd0010cc4ed524f5e557b983"
+    },
+    {
+      "id": "type:IngredientEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:IngredientEvent.data",
+      "hash": "e70f3aa6f1e1fddfd137707c1d8367e2"
+    },
+    {
+      "id": "type:IngredientEvent.items",
+      "hash": "e72e88018633c806fccdf657fee6f370"
+    },
+    {
+      "id": "type:IngredientEvent.kind",
+      "hash": "9e83596df61308bee1f3b92be61929da"
+    },
+    {
+      "id": "type:IngredientKeysError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq",
+        "backend::NoBackend"
+      ]
+    },
+    {
+      "id": "type:Item",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Declaration",
+        "Default",
+        "PartialEq"
+      ],
+      "built": "full",
+      "fields_hash": "0b88db767ca9a0ec5e658eb2db1e528a",
+      "fields": [
+        "id",
+        "template",
+        "max_stack_size",
+        "rarity",
+        "components",
+        "crafting_remainder",
+        "block",
+        "arm_pose"
+      ],
+      "built_at": "src/bookmarks.rs:84"
+    },
+    {
+      "id": "type:Item.block",
+      "hash": "ecc417d83ecd5a47369e53feda852088"
+    },
+    {
+      "id": "type:Item.components",
+      "hash": "326e27f2ac27b8acd68e53bf14c1b6bd"
+    },
+    {
+      "id": "type:Item.id",
+      "hash": "ee65e4037bd3adfb52e3593205b8f846"
+    },
+    {
+      "id": "type:Item.max_stack_size",
+      "hash": "aa2c7b8e6448ad81efceb017a3b3b2c7"
+    },
+    {
+      "id": "type:ItemBar",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ItemBar.width",
+      "hash": "4c1bbfc0ac3655f9cfa7e7a9ee0637c3"
+    },
+    {
+      "id": "type:ItemKey",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ItemResource",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq",
+        "StackedResource"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ItemsEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ItemsEvent.items",
+      "hash": "e6d07c68fb2fb50c86352ec5829a60d2"
+    },
+    {
+      "id": "type:JavaString",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "Eq",
+        "From<&str>",
+        "Hash",
+        "Ord",
+        "PartialEq",
+        "PartialOrd"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:JavaString.0",
+      "hash": "3a921e2ae717ec0c08f4130d1dc5a455"
+    },
+    {
+      "id": "type:KeyConflictContext",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Default",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:KeyConflictContext.Gui",
+      "hash": "5ba4850bb7c4717634a9911ee512e354"
+    },
+    {
+      "id": "type:KeyRegistration",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:KeyRegistration.category",
+      "hash": "a7f84a8cf27d3b471313de6122f55ce9"
+    },
+    {
+      "id": "type:KeyRegistration.context",
+      "hash": "978d1c59b4a654ab4a9cc3fe2fdbf4e2"
+    },
+    {
+      "id": "type:KeyRegistration.id",
+      "hash": "a7f84a8cf27d3b471313de6122f55ce9"
+    },
+    {
+      "id": "type:KeyRegistration.key",
+      "hash": "a7f84a8cf27d3b471313de6122f55ce9"
+    },
+    {
+      "id": "type:KeyRegistration.label",
+      "hash": "a7f84a8cf27d3b471313de6122f55ce9"
+    },
+    {
+      "id": "type:KeyRegistration.modifiers",
+      "hash": "2d6c54382e73a9b920ce208004b9d038"
+    },
+    {
+      "id": "type:LevelRef",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:LivingRef",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:MenuClick",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:MenuClick.Clone",
+      "hash": "05ce3134fb87ca086f599bb00e82b109"
+    },
+    {
+      "id": "type:MenuRef",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Fields",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:MobRef",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:MouseButton",
+      "hash": "6fbe2d8170993ab167be9b413f20e2b9",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:PanelEvent",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:PanelEvent.Action",
+      "hash": "3a91982b4e8fb4661dad064fa9d23b5f"
+    },
+    {
+      "id": "type:PanelEvent.Back",
+      "hash": "ee5447e78b7b6d8ef29fda45eeb98095"
+    },
+    {
+      "id": "type:PanelEvent.Clicked",
+      "hash": "e7ee1629c6ab4fef0991950bd5437995"
+    },
+    {
+      "id": "type:PanelEvent.Key",
+      "hash": "396afa5a8bf58859c485e154f02a5cb6"
+    },
+    {
+      "id": "type:PanelEvent.Search",
+      "hash": "11d79c9f4ef41e89559afd65e317491e"
+    },
+    {
+      "id": "type:PanelEvent.Tab",
+      "hash": "3a91982b4e8fb4661dad064fa9d23b5f"
+    },
+    {
+      "id": "type:PanelEventEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:PanelEventEvent.event",
+      "hash": "9a0fe55b3709bd5ce7fd43e47cfacf5c"
+    },
+    {
+      "id": "type:PanelEventEvent.mod_id",
+      "hash": "c0a7bc654ef5afbf527432b115b3d48d"
+    },
+    {
+      "id": "type:PayloadAccepted",
+      "hash": "e288eb4426c2148b1225f46a651f50a5",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:PayloadBusy",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Display",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:PayloadBusy.owner",
+      "hash": "990c1d8ddd17f3ba2a3a9b8aecebd66c"
+    },
+    {
+      "id": "type:PayloadBusy.thread",
+      "hash": "990c1d8ddd17f3ba2a3a9b8aecebd66c"
+    },
+    {
+      "id": "type:PayloadBytes",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "full",
+      "fields_hash": "aa09aeab22275affb3a2d690b6cee4d0",
+      "fields": [
+        "0"
+      ],
+      "built_at": "src/displays.rs:127"
+    },
+    {
+      "id": "type:PayloadBytes.0",
+      "hash": "20e89f2b7a25a00506eb2250a0b9f5da"
+    },
+    {
+      "id": "type:PayloadContextError",
+      "hash": "679bbc9100f482ff5e2c3bbf5500e0a9",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:PayloadFrameStage",
+      "hash": "f9649a9cca8d9cef9e191d25147779ef",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:PayloadHandleError",
+      "hash": "7c18cc471cdcdd0d4ab9c357490eb845",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:PayloadHandleError.Failed",
+      "hash": "512409c1784d85ad61a9518f64584b45"
+    },
+    {
+      "id": "type:PayloadId",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "full",
+      "fields_hash": "d66d713cc7e12fd0423fae78844960dd",
+      "fields": [
+        "0"
+      ],
+      "built_at": "src/displays.rs:127"
+    },
+    {
+      "id": "type:PayloadId.0",
+      "hash": "88ae9d03062ef2560e06e4562a2ca605"
+    },
+    {
+      "id": "type:PayloadRegistrar",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "impls": [
+        "Clone"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:PayloadSendError",
+      "hash": "7b351b73e524cc134e783efb714deb4f",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq",
+        "backend::NoBackend"
+      ]
+    },
+    {
+      "id": "type:PlayerExperience",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "From<PlayerExperience>",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:PlayerExperience.level",
+      "hash": "8ea74df1ff97fb32e7c1c3e14601c721"
+    },
+    {
+      "id": "type:PlayerExperience.total",
+      "hash": "8ea74df1ff97fb32e7c1c3e14601c721"
+    },
+    {
+      "id": "type:PlayerLoggedInEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:PlayerLoggedInEvent.name",
+      "hash": "70a2a3197e4e6604db3cc4c40bc6dad3"
+    },
+    {
+      "id": "type:PlayerLoggedInEvent.player",
+      "hash": "9c95aafe1ff9d61e4b92865089a25706"
+    },
+    {
+      "id": "type:PlayerRef",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Fields",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:PotionInfo",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:PotionInfo.id",
+      "hash": "a60525dcd7d8cb05dca79de632a85f27"
+    },
+    {
+      "id": "type:PushReaction",
+      "hash": "7f9fe1b790f22ee061a44f7a8550370d",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:RandomTicks",
+      "hash": "f8237eeab083de4ddbd4116accf3168c",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:Rarity",
+      "hash": "28af54d00f606763f589c3af073c11ab",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:Recipe",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:Recipe.cooking_time",
+      "hash": "47e2d30b8d33f55aad5af50c026fa6a6"
+    },
+    {
+      "id": "type:Recipe.experience",
+      "hash": "93c9ce7764856ea3596d20405d711380"
+    },
+    {
+      "id": "type:Recipe.group",
+      "hash": "a18f182fb1bf17264e3c5221163316e9"
+    },
+    {
+      "id": "type:Recipe.id",
+      "hash": "a18f182fb1bf17264e3c5221163316e9"
+    },
+    {
+      "id": "type:Recipe.ingredients",
+      "hash": "0de976b2a14a0608bf211168405e0649"
+    },
+    {
+      "id": "type:Recipe.json",
+      "hash": "68579c3b2b97d9acd5cd8d4372d315bb"
+    },
+    {
+      "id": "type:Recipe.kind",
+      "hash": "a18f182fb1bf17264e3c5221163316e9"
+    },
+    {
+      "id": "type:Recipe.results",
+      "hash": "8fa382929245fa4347915ad34a5f7e58"
+    },
+    {
+      "id": "type:Recipe.rule",
+      "hash": "251d3280b7cd3f01394b83587e6b61dd"
+    },
+    {
+      "id": "type:RecipeJsonError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "From<item::item_stack::StackWriteError>",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:RecipeRule",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug"
+      ]
+    },
+    {
+      "id": "type:RecipeRule.Stonecutting",
+      "hash": "56fa53c89b4cc97b83d45a35641f6f88"
+    },
+    {
+      "id": "type:RecipeTemplate",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:RecipeTemplate.components",
+      "hash": "2fb37a1937bc0e44f9571813c40a364d"
+    },
+    {
+      "id": "type:RecipeTemplate.count",
+      "hash": "13f37d2ea1432d8d0f95eefd47ba0130"
+    },
+    {
+      "id": "type:RecipeTemplate.item",
+      "hash": "ba1a42390c0eb9101e0a4a1a0df48f21"
+    },
+    {
+      "id": "type:RecipeTransferCheck",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:RecipeTransferCheck.missing_cells",
+      "hash": "b243786225fb1fd7cacbffd470ab2ade"
+    },
+    {
+      "id": "type:RecipeTransferCheck.result",
+      "hash": "3aaa97f839e62b392070543c4e886f8b"
+    },
+    {
+      "id": "type:RecipeTransferResult",
+      "hash": "7639be29846414fca1e56ccdede7affe",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:RecipeTransferResult.Missing",
+      "hash": "82d837b6fb594b4bdb4aa477f0ea364b"
+    },
+    {
+      "id": "type:RecipeTransferResult.Moves",
+      "hash": "82d837b6fb594b4bdb4aa477f0ea364b"
+    },
+    {
+      "id": "type:RecipeTransferResult.NoRoom",
+      "hash": "82d837b6fb594b4bdb4aa477f0ea364b"
+    },
+    {
+      "id": "type:RecipeTrimPattern",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug"
+      ]
+    },
+    {
+      "id": "type:RecipesReceivedEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:RegisterClientCommandsEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:RegisterClientCommandsEvent.commands",
+      "hash": "192701aaced0c0688c2a95e43716ffe5"
+    },
+    {
+      "id": "type:RegisterPayloadHandlersEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:RegistrationContext",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "RegistrationContextNew"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ReloadOrderError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Display",
+        "Eq",
+        "Error",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:ReloadResourceError",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Debug",
+        "Display",
+        "Error",
+        "From<(Identifier, String)>"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:RemovalReason",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:RenderFramePreEvent",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "built": "none"
+    },
+    {
+      "id": "type:RenderShape",
+      "hash": "2b02ee46af5251d8cc905379e70eabf3",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:RenderTooltipPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:RenderTooltipPreEvent.draw",
+      "hash": "627e7f946131b9887d425bfd47021839"
+    },
+    {
+      "id": "type:RenderTooltipPreEvent.place",
+      "hash": "173c7c7338ee45886368de3340b0b4f3"
+    },
+    {
+      "id": "type:RenderTooltipPreEvent.stack",
+      "hash": "97644a6492db10f15c06ea24f557d949"
+    },
+    {
+      "id": "type:ScreenCharTypedPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenCharTypedPreEvent.c",
+      "hash": "7c27bba9bf2f17c03ee92991ed98ac39"
+    },
+    {
+      "id": "type:ScreenCharTypedPreEvent.modifiers",
+      "hash": "e85118d27eb1ecd6f187ab2b9c585213"
+    },
+    {
+      "id": "type:ScreenCharTypedPreEvent.screen",
+      "hash": "f9ffeeae82637a2772a016c7f0e9b132"
+    },
+    {
+      "id": "type:ScreenClosingEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenClosingEvent.screen",
+      "hash": "bfd589cc84a918f236c93b38729089a9"
+    },
+    {
+      "id": "type:ScreenEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenEvent.block",
+      "hash": "1997183e54a4d7825b0326505920f6b5"
+    },
+    {
+      "id": "type:ScreenExclusionAreasEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenExclusionAreasEvent.areas",
+      "hash": "59ac04fabddcf4b67b30743672a21fd0"
+    },
+    {
+      "id": "type:ScreenExclusionAreasEvent.screen",
+      "hash": "4136098aa50818629036b8090176dd8a"
+    },
+    {
+      "id": "type:ScreenKeyPressedPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenKeyPressedPreEvent.key",
+      "hash": "5e627ea746e7d899953f2a87892c8732"
+    },
+    {
+      "id": "type:ScreenKeyPressedPreEvent.modifiers",
+      "hash": "5e5f2cc37a87d8a1b917bf9dbdce531f"
+    },
+    {
+      "id": "type:ScreenKeyPressedPreEvent.screen",
+      "hash": "a96946bae3ac0740a536b9cddcc4ecf4"
+    },
+    {
+      "id": "type:ScreenMouseButtonPressedPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenMouseButtonPressedPreEvent.button",
+      "hash": "d4fafb38651a176a6027a0321d80c60c"
+    },
+    {
+      "id": "type:ScreenMouseButtonPressedPreEvent.modifiers",
+      "hash": "8991869b18d6775dd6f88bd579e6d586"
+    },
+    {
+      "id": "type:ScreenMouseButtonPressedPreEvent.screen",
+      "hash": "9288fb8c1b0ee45a7aab60659b789aca"
+    },
+    {
+      "id": "type:ScreenMouseButtonReleasedPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenMouseButtonReleasedPreEvent.button",
+      "hash": "24173d00e63cce208bb46add7587e642"
+    },
+    {
+      "id": "type:ScreenMouseButtonReleasedPreEvent.modifiers",
+      "hash": "68b4fbf66ab49d527309c34d661ff051"
+    },
+    {
+      "id": "type:ScreenMouseButtonReleasedPreEvent.screen",
+      "hash": "6219bf554cc981a848a03e2e917981d3"
+    },
+    {
+      "id": "type:ScreenMouseDraggedPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenMouseDraggedPreEvent.button",
+      "hash": "25007b448e1cd65572cc52ba0fc3213f"
+    },
+    {
+      "id": "type:ScreenMouseDraggedPreEvent.modifiers",
+      "hash": "aea78d992c7f9d4634a3bb44de7cb476"
+    },
+    {
+      "id": "type:ScreenMouseDraggedPreEvent.screen",
+      "hash": "c38d068b5d2967a57e172934622b595c"
+    },
+    {
+      "id": "type:ScreenMouseScrolledPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenMouseScrolledPreEvent.modifiers",
+      "hash": "bb7bee2c8bf4dac8c5b0e8411c5d4670"
+    },
+    {
+      "id": "type:ScreenMouseScrolledPreEvent.screen",
+      "hash": "3c1c326235b7a527264d5cbc75f8e1ee"
+    },
+    {
+      "id": "type:ScreenMouseScrolledPreEvent.scroll",
+      "hash": "5c747a7f82aac80bb8bd2bcec575fa7a"
+    },
+    {
+      "id": "type:ScreenRenderPostEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenRenderPostEvent.draw",
+      "hash": "3b28d8db1c4d61b553912d9f7f075b6d"
+    },
+    {
+      "id": "type:ScreenRenderPostEvent.screen",
+      "hash": "2893d7f850f92a341c0011e5a835698c"
+    },
+    {
+      "id": "type:ScreenRenderPreEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenRenderPreEvent.draw",
+      "hash": "a62c80f9c63cd7fcac5188d6ef8a7882"
+    },
+    {
+      "id": "type:ScreenRenderPreEvent.screen",
+      "hash": "09ad039f67b3109eba6c37d6090d2664"
+    },
+    {
+      "id": "type:ScreenTransparentBackgroundEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenTransparentBackgroundEvent.screen",
+      "hash": "7df3ae9dea75a58a521a088b67081c66"
+    },
+    {
+      "id": "type:ScreenView",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "From<ScreenView<'a>>"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ScreenView.id",
+      "hash": "a5ac87e3a49b84ee488842f13c3d4ce2"
+    },
+    {
+      "id": "type:ScreenView.menu",
+      "hash": "db6144bc9799181e7ed657b743d436e5"
+    },
+    {
+      "id": "type:ScreenView.mouse",
+      "hash": "e3a06015431cbfa4d37d649c7dac7f02"
+    },
+    {
+      "id": "type:ScreenView.rect",
+      "hash": "223d4544bea567d6ec74600fafc4c3b6"
+    },
+    {
+      "id": "type:ScreenView.slots",
+      "hash": "43d285a1264c6b4b500d5c5b3fff147a"
+    },
+    {
+      "id": "type:ScreenView.title",
+      "hash": "95d0b55081560c9c808f55109de6c41c"
+    },
+    {
+      "id": "type:ServerReloadContext",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "ReloadContextNew"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:ShapeEntityKind",
+      "hash": "75da8c2adbd0c1ef173d22a1f8d5683f",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Ord",
+        "PartialEq",
+        "PartialOrd"
+      ]
+    },
+    {
+      "id": "type:ShapeEntityKind.Item",
+      "hash": "7fc0fbb2a06a2fea69db30bd39682742"
+    },
+    {
+      "id": "type:ShapeEntityKind.Other",
+      "hash": "7fc0fbb2a06a2fea69db30bd39682742"
+    },
+    {
+      "id": "type:Stack",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ],
+      "built": "full",
+      "fields_hash": "cf958aaa2cbf7fcfd71c34e1188c449c",
+      "fields": [
+        "item",
+        "count",
+        "components"
+      ],
+      "built_at": "src/lib.rs:651"
+    },
+    {
+      "id": "type:Stack.components",
+      "hash": "d6e2051818dacf1eb03b15492341a542"
+    },
+    {
+      "id": "type:Stack.count",
+      "hash": "440cfbc8e4588bb5a2d9644edf5750fd"
+    },
+    {
+      "id": "type:Stack.item",
+      "hash": "b152d9301b19b64eef53b4d5a0758bb9"
+    },
+    {
+      "id": "type:StateLight",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:StateLight.default",
+      "hash": "be2aeb2dd9e6bca87ed2fb082585bcb0"
+    },
+    {
+      "id": "type:StateLight.values",
+      "hash": "c177521c8f12eacc847bdb78d4f0e61b"
+    },
+    {
+      "id": "type:StorageError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "From<(Identifier, String)>",
+        "From<Overanswered>",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:StoragePage",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "built": "none"
+    },
+    {
+      "id": "type:SwapWith",
+      "hash": "61e9163d5b711e20850063e6ca757fb0",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:Tag",
+      "hash": "a85219bbc0b4f076c29ef98c621ed349",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "From<&Compound>",
+        "Hash",
+        "PartialEq",
+        "TryFrom<Vec<u8>>"
+      ]
+    },
+    {
+      "id": "type:Tag.Byte",
+      "hash": "ca8afc6f3cd0f4e59a6d0b4a1236e1ca"
+    },
+    {
+      "id": "type:Tag.Compound",
+      "hash": "79ae6711390c3b57696d4518d61164e7"
+    },
+    {
+      "id": "type:Tag.Double",
+      "hash": "03e5d44b47d5332c451e1012b63819f7"
+    },
+    {
+      "id": "type:Tag.Int",
+      "hash": "f34db00170849c3697fceb7182a52eab"
+    },
+    {
+      "id": "type:Tag.List",
+      "hash": "cad12215b67a35f4af8fad7df3bc815b"
+    },
+    {
+      "id": "type:Tag.Long",
+      "hash": "0fbc66ca0373c813e13140d4ebf34aa6"
+    },
+    {
+      "id": "type:Tag.String",
+      "hash": "d54201dfb8249e806dab194854083527"
+    },
+    {
+      "id": "type:TagKey",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "Hash",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:TextEdit",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:TextEdit.value",
+      "hash": "3745168ca3f4e5ea7809559dc121fd39"
+    },
+    {
+      "id": "type:TooltipElement",
+      "hash": "9748b8d501c6655f4d7e645c791cb60b",
+      "impls": [
+        "Clone",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:TooltipElement.Text",
+      "hash": "766936cad9fab25bcbc360aa3a1febc8"
+    },
+    {
+      "id": "type:TooltipEvent",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:TooltipEvent.lines",
+      "hash": "fd49d3539902acfe7ea54efb220cdfea"
+    },
+    {
+      "id": "type:TooltipEvent.stack",
+      "hash": "59b7ccbac5354948e9e7929de002d131"
+    },
+    {
+      "id": "type:TooltipImage",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:TooltipImage.size",
+      "hash": "3dd1c2ae5065cf7eb48b6052a2e39070"
+    },
+    {
+      "id": "type:TooltipImage.source",
+      "hash": "d5fbb5409a081f857391e88b80820ac0"
+    },
+    {
+      "id": "type:TooltipImageSource",
+      "hash": "67181a75040879f17a39ae964700dfc1",
+      "impls": [
+        "Clone",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:TooltipPlace",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:TooltipPlace.x",
+      "hash": "e67146e7ebe59adc0b8b00564239e4d1"
+    },
+    {
+      "id": "type:TooltipPlace.y",
+      "hash": "e67146e7ebe59adc0b8b00564239e4d1"
+    },
+    {
+      "id": "type:Transaction",
+      "hash": "4ea2ff897957788f427a70b5ebcd6910",
+      "impls": [
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:client::widgets::EditKey",
+      "hash": "a5692cb271375d784df915a5e3d9f1f8",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:item::crafting::IngredientRule",
+      "hash": "6f899c81db88c96192d925c58a130f3d",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:item::crafting::Shape",
+      "hash": "a59885aab15ede7006beceaff552980f",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Deserialize",
+        "PartialEq",
+        "Serialize"
+      ]
+    },
+    {
+      "id": "type:item::crafting::Shape.Compound",
+      "hash": "2f1f35a3e66c97b9111378f531d4b995"
+    },
+    {
+      "id": "type:item::item_stack::Components",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "Eq",
+        "From<Compound>",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:item::item_stack::ItemStack",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none",
+      "paths": [
+        "ItemStack"
+      ]
+    },
+    {
+      "id": "type:item::item_stack::StackError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Display",
+        "Eq",
+        "Error",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:item::item_stack::StackSplit",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:item::item_stack::StackWriteError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "From<text::TextFormError>",
+        "PartialEq",
+        "backend::NoBackend"
+      ]
+    },
+    {
+      "id": "type:item::item_stack::StackWriteError.Text",
+      "hash": "89eda1022e31f4e943feb294515a9bdf"
+    },
+    {
+      "id": "type:runtime::Flow",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ],
+      "paths": [
+        "Flow"
+      ]
+    },
+    {
+      "id": "type:runtime::Flow.Cancel",
+      "hash": "f488e2c444326318e38e0b73e3ee5ebb"
+    },
+    {
+      "id": "type:runtime::Flow.Continue",
+      "hash": "f488e2c444326318e38e0b73e3ee5ebb"
+    },
+    {
+      "id": "type:text::Text",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "From<CommandArgumentError>",
+        "PartialEq",
+        "TryFrom<text::TextForm>"
+      ],
+      "built": "full",
+      "fields_hash": "5a141261ba80aa9a6f4e58ab6275f8db",
+      "fields": [
+        "content",
+        "style",
+        "children",
+        "metadata"
+      ],
+      "built_at": "src/search.rs:21",
+      "paths": [
+        "Text"
+      ]
+    },
+    {
+      "id": "type:text::Text.children",
+      "hash": "12cd503e8e35ad9ad505595271c749ba"
+    },
+    {
+      "id": "type:text::TextClick",
+      "hash": "cc46ba3379a39866baa205212bc07b76",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:text::TextContent",
+      "hash": "c54700d2c3268064d38b9bbe1526332d",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:text::TextContent.Object",
+      "hash": "80bfdf5905bae69ba4e2dfd36e300e00"
+    },
+    {
+      "id": "type:text::TextFormError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Display",
+        "Eq",
+        "Error",
+        "PartialEq",
+        "backend::NoBackend"
+      ]
+    },
+    {
+      "id": "type:text::TextHover",
+      "hash": "25b53d4fc0a8b041915f2941fb539830",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:text::TextHover.Item",
+      "hash": "3e2084b81cac05edf890b70ceb3a130f"
+    },
+    {
+      "id": "type:text::TextHover.Text",
+      "hash": "215452e0eff3809f1e4a7426d025c439"
+    },
+    {
+      "id": "type:text::TextNbtSource",
+      "hash": "ef41c6562139202c23becf2eea8c33ee",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Eq",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:text::TextNbtSource.Block",
+      "hash": "698f1dc9014bf01efa04efe09897d721"
+    },
+    {
+      "id": "type:text::TextObject",
+      "hash": "6361f0b71c5a0ad990c9c1623094040d",
+      "impls": [
+        "Clone",
+        "Debug",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:text::TextProfile",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:text::TextProfile.id",
+      "hash": "182eaa8715eddb0fe452e4b945717576"
+    },
+    {
+      "id": "type:text::TextProfile.name",
+      "hash": "e5a7ce6b935c9587209a2db203cb120d"
+    },
+    {
+      "id": "type:text::TextProfileProperty",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "Eq",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:text::TextProfileProperty.name",
+      "hash": "99ba297beddebce06b75e56278f4a199"
+    },
+    {
+      "id": "type:text::TextProfileProperty.value",
+      "hash": "99ba297beddebce06b75e56278f4a199"
+    },
+    {
+      "id": "type:text::TextStyle",
+      "hash": "af9ca6ca069faa7a811f2bd91230fdc1",
+      "impls": [
+        "Clone",
+        "Debug",
+        "Default",
+        "PartialEq"
+      ],
+      "built": "none"
+    },
+    {
+      "id": "type:text::TextStyle.click",
+      "hash": "8d1ab59ad9fe042f030eb91336c000d1"
+    },
+    {
+      "id": "type:text::TextStyle.hover",
+      "hash": "f0ce3ffa15bd222dd79df0d4d6dffae6"
+    },
+    {
+      "id": "type:wire::Reader",
+      "hash": "b85c928b116ba7e2e6348f4381fa8060",
+      "built": "none"
+    },
+    {
+      "id": "type:wire::WireError",
+      "hash": "6fa6b9ef5c0ec4cda16800c710d41145",
+      "impls": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Display",
+        "Eq",
+        "Error",
+        "PartialEq"
+      ]
+    },
+    {
+      "id": "type:wire::WireError.Tag",
+      "hash": "37d27f6e4093fb3f4b3e923af091dec7"
+    }
+  ]
+}

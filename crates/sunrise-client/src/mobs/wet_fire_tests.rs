@@ -45,7 +45,7 @@ fn step(mob: &mut Mob, w: &MobWorld, environment: &str) -> (f32, i32, usize) {
 }
 
 #[test]
-#[ignore = "requires prepared 26.3 resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn wet_fire_damage_and_extinguishing_follow_the_full_mob_tick() {
     let root = std::env::var_os("SUNRISE_TEST_RESOURCES").expect("SUNRISE_TEST_RESOURCES");
     assert!(crate::mobs::world::with_resource_test_world(
@@ -176,7 +176,8 @@ fn wet_fire_damage_and_extinguishing_follow_the_full_mob_tick() {
                         &rain,
                         &mut crate::health::TestLevel::new(0).level(),
                         &mut events,
-                    );
+                    )
+                    .was_on_fire();
                     assert_eq!(was_on_fire, fire > 1);
                     let mut expected_random = mob.random.clone();
                     let sounds = usize::from(fire > 1);

@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::has_correct_tool_for_drops", "handle:BlockStates::is_correct_tool_for_drops"]
+why = "Adds two read-only queries: whether a stack's tool rules make it the correct tool for a block state, and whether a player's selected tool harvests a state at a position in a level, the answer dig progress, drops and doors use (vanilla's rule, the block's can_harvest_block parts, then player_harvest_check). The player query runs those hooks, so it answers None when a can_harvest_block or player_harvest_check listener calls it."
+migrate = "Additive. Use the stack query for the tool alone; use the player query for what the game decides, from a context that may run hooks, and expect None from inside the harvest hooks themselves."

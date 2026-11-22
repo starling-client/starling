@@ -2,8 +2,8 @@
 //! `ServerGamePacketListenerImpl.handlePickItemFromEntity`): the client aims,
 //! the server answers with `Entity.getPickResult`.
 use super::Game;
-use sunrise_client::{items::ItemStack, save::uuid_text};
 use mod_api::{BlockPos, CrosshairTarget, EntityRef};
+use sunrise_client::{items::ItemStack, save::uuid_text};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CrosshairEntityHit {
@@ -30,18 +30,13 @@ fn nearest_entity(
 
 impl Game<'_> {
     fn crosshair_entity_hit(&self) -> Option<CrosshairEntityHit> {
-        if let Some(entity) = self.targeting().entity {
-            let (_, distance) = self.targeting_entity_hit(entity)?;
+        if let Some(hit) = self.cached_entity_pick() {
+            let (entity, distance, _) = hit?;
             return Some(CrosshairEntityHit {
                 id: entity.id() as i32,
                 distance,
-                pickable: !matches!(
-                    self.native_client_entity_target(entity)?,
-                    crate::game::commands::Target::Projectile(_)
-                        | crate::game::commands::Target::DragonPart(_)
-                        | crate::game::commands::Target::Other(_)
-                ),
-                suggest_uuid: self.level_dragon_part(entity.id()).is_none(),
+                pickable: self.client_pick.entity_metadata.0,
+                suggest_uuid: self.client_pick.entity_metadata.1,
             });
         }
         let hit = |id: u32, distance, pickable| CrosshairEntityHit {
@@ -55,7 +50,8 @@ impl Game<'_> {
                 hit(
                     object.id as u32,
                     object.distance,
-                    !self.interactions.contains_key(&object.id),
+                    !self.interactions.contains_key(&object.id)
+                        && Self::has_pick_result(self.level_entity(object.id)),
                 )
             }),
             self.mob_hit()
@@ -73,22 +69,26 @@ impl Game<'_> {
         if hits.iter().all(Option::is_none) {
             return None;
         }
-        nearest_entity(hits, self.block_distance())
+        nearest_entity(
+            hits,
+            if self.client_pick.ray.is_some() {
+                None
+            } else {
+                self.block_distance()
+            },
+        )
     }
 
-    /// The ordinary block-or-entity pick (Minecraft.hitResult), using the
-    /// game's targeting ray, reach and occlusion. None without a client world
-    /// or on a miss. Entity hits carry this client level's epoch. Unlike
-    /// view_hit, this never traces distant terrain.
+    /// The stored frame decision on a window; original during dispatch.
+    /// Raw computation is private to the frame refresh and server-side readers.
     pub(super) fn crosshair_target(&self) -> Option<CrosshairTarget> {
         use crate::game::api_values::TryIntoApi;
         if !self.native_window() || self.title.is_some() {
             return None;
         }
         self.player.as_ref()?;
-        if let Some(entity) = self.targeting().entity {
-            let (point, _) = self.targeting_entity_hit(entity)?;
-            return Some(CrosshairTarget::Entity { entity, point });
+        if self.uses_stored_pick() {
+            return self.stored_client_pick();
         }
         if let Some(hit) = self.crosshair_entity_hit() {
             let (eye, direction) = self.aim()?;
@@ -108,6 +108,41 @@ impl Game<'_> {
                 .ok()?,
             hit: hit.native(),
         })
+    }
+
+    pub(super) fn pick_entity_candidate(&mut self) -> Option<CrosshairTarget> {
+        use super::pick_accumulator::PickAccumulator;
+        let subscribed = mod_api::__private::has_scoped_hook(mod_api::HookId::CanRiderInteract);
+        let mut pick = if subscribed {
+            PickAccumulator::recording(
+                self.entity_reach,
+                std::mem::take(&mut self.client_pick.rider_candidates),
+            )
+        } else {
+            PickAccumulator::new(self.entity_reach)
+        };
+        self.collect_pick_candidates(&mut pick);
+        if subscribed {
+            let seal = self.transaction_open();
+            self.client_pick.rider_candidates = pick.dispatch(self);
+            self.transaction_close(&seal, true);
+        }
+        let hit = pick.hovered?;
+        let (eye, direction) = self.aim()?;
+        Some(CrosshairTarget::Entity {
+            entity: EntityRef::new(self.native_lifecycle.epoch()?, hit.id),
+            point: std::array::from_fn(|i| eye[i] + direction[i] * hit.distance),
+        })
+    }
+
+    pub(super) fn collect_pick_candidates(
+        &self,
+        pick: &mut super::pick_accumulator::PickAccumulator,
+    ) {
+        self.remote_object_hit_with_pick(true, pick);
+        self.mob_hit_within_with_pick(self.entity_reach, pick);
+        self.redirectable_hit_with_pick(pick);
+        self.dragon_hit_with_pick(pick);
     }
 
     /// The entity the crosshair hits before any block, as `Entity.getId`; an

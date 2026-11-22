@@ -29,13 +29,39 @@ impl Game<'_> {
                     position: Some([block.position.x, block.position.y, block.position.z]),
                     ..Default::default()
                 };
-                falling_block::hurt_mobs_with_kind(
-                    crate::game::entity::damage_level_of!(self, &attack),
-                    &mut self.mobs,
-                    block.position,
-                    impact.amount,
-                    mob_kind,
-                );
+                // FallingBlockEntity.causeFallDamage selects the entities first, then hurts
+                // them in order. Death listeners can spawn or remove rows between hits.
+                let bounds = falling_block::bounds(block.position);
+                let victims: Vec<_> = self
+                    .mobs
+                    .iter()
+                    .filter(|mob| mob.alive() && !mob.removed && bounds.intersects(mob.bounds()))
+                    .map(|mob| mob.join)
+                    .collect();
+                let source = sunrise_client::mobs::Damage {
+                    from: attack.position,
+                    ..sunrise_client::mobs::Damage::of(mob_kind)
+                };
+                for join in victims {
+                    let Some(index) = self.mobs.locate(join) else {
+                        continue;
+                    };
+                    if self.mobs[index].removed {
+                        continue;
+                    }
+                    let plan = self.prepare_knockback_credit(
+                        self.mobs[index].id as i32,
+                        None,
+                        self.combat.attack(),
+                    );
+                    let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                    self.mobs[index].damage(
+                        crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
+                        impact.amount,
+                        source,
+                    );
+                    self.finish_mob_damage_at(index);
+                }
                 // Enderman.hurtServer: a falling block is no living attacker.
                 if let Err(e) = self.settle_hurt_teleports() {
                     log::warn!("Sunrise: falling block: enderman teleport: {e}");
@@ -153,16 +179,16 @@ impl Game<'_> {
             {
                 self.world.block_entities.insert(key, entity);
             }
-            if let Some(entity) = self.world.block_entities.get(&key) {
-                let mut tag = sunrise_client::save::block_entity_encode::encode(key, entity, &name);
+            if let Some(sunrise_core::nbt::Tag::Compound(carried)) = block
+                .saved
+                .as_ref()
+                .and_then(|saved| saved.1.get("TileEntityData"))
+                && let Some(entity) = self.world.block_entities.get(&key)
+            {
+                let mut tag = self.encode_live_block_entity(key, entity, &name, self.res.items());
                 // FallingBlockEntity.tick copies each supplied field over the
                 // new block entity's saved defaults before loadWithComponents.
-                if let Some(sunrise_core::nbt::Tag::Compound(carried)) = block
-                    .saved
-                    .as_ref()
-                    .and_then(|saved| saved.1.get("TileEntityData"))
-                    && let sunrise_core::nbt::Tag::Compound(fields) = &mut tag
-                {
+                if let sunrise_core::nbt::Tag::Compound(fields) = &mut tag {
                     fields.extend(carried.clone());
                     self.load_block_entity_nbt(pos, &sunrise_client::snbt::to_snbt(&tag));
                 }
@@ -213,7 +239,7 @@ impl Game<'_> {
         }) {
             return;
         }
-        let Some(id) = self.motion.health.damage.id(kind) else {
+        let Some(id) = self.health_resources.damage.id(kind) else {
             return;
         };
         let attack = sunrise_client::health::Attack {
@@ -244,19 +270,20 @@ impl Game<'_> {
                 blocked: false,
             });
         }
+        self.finish_guest_damage();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::game::{Game, native_entity_refs::tests::with_game};
-    use sunrise_client::{items::ItemStack, motion::PlayerMotion};
-    use sunrise_core::{equipment_slot::EquipmentSlot, geometry::Vec3};
     use mod_api::{
-        ArmorHurtEvent, DamageItemEvent, Flow, Hooks, ItemPart, LevelRandomHost,
-        LivingIncomingDamageEvent, Registrar, RegistrationContext, ServerHost,
+        ArmorHurtEvent, DamageItemEvent, Flow, HitHost, Hooks, ItemPart, LivingIncomingDamageEvent,
+        Registrar, RegistrationContext, ServerHost,
     };
     use std::sync::{Arc, Mutex};
+    use sunrise_client::{items::ItemStack, motion::PlayerMotion};
+    use sunrise_core::{equipment_slot::EquipmentSlot, geometry::Vec3};
 
     const ANVIL: &str = "minecraft:falling_anvil";
 
@@ -282,7 +309,7 @@ mod tests {
         }
         fn living_incoming_damage(
             &self,
-            _: &mut dyn LevelRandomHost,
+            _: &mut dyn HitHost,
             _: &mut LivingIncomingDamageEvent<'_>,
         ) -> Flow {
             let mut log = self.0.lock().unwrap();
@@ -356,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_canceled_wear_leaves_the_helmet_and_its_share_of_the_hit() {
         with_player(|game, log| {
             start(game, log, Some(iron_helmet()));
@@ -387,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_answered_wear_runs_on_the_real_host_before_the_cooldown_refuses() {
         with_player(|game, log| {
             start(game, log, Some(iron_helmet()));
@@ -407,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_helmet_the_hit_breaks_stops_protecting_in_that_hit() {
         with_player(|game, log| {
             let mut helmet = iron_helmet();
@@ -425,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn no_helmet_or_a_refused_hit_fires_no_helmet_wear() {
         with_player(|game, log| {
             start(game, log, None);

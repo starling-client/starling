@@ -1,210 +1,279 @@
-//! Native debug renderers in a real game: when the renderer list refreshes, and what a frame's
-//! world geometry holds as a renderer is switched and the world goes.
+//! Native debug renderer selection, refresh, and world geometry, with prepared client resources.
 use super::{
-    execution_role::ExecutionRole,
-    mods,
-    native_entity_refs::tests::{run_fresh_cases, with_client_game},
+    Game,
+    debug_options::{Row, rows},
+    native_entity_refs::tests::with_client_game,
 };
 use glam::Mat4;
+use mod_api::{
+    __private::game::RegistrationContextNew, DebugEntry, DebugRenderer, Hooks, ModEntry,
+    RegisterDebugEntriesEvent, RegisterDebugRenderersEvent, RegistrationContext, WorldDepth,
+    WorldLine, content::crash::current_native_mod,
+};
+use std::sync::{Arc, Mutex, Weak};
 use sunrise_client::{
     debug_entries::{self, Category, DebugEntries, Profile, Status},
     world_geometry::WorldGeometry,
 };
 use sunrise_protocol::packets::play::{self, Clientbound as C};
-use mod_api::{
-    ClientHost, DebugEntry, DebugGroup, DebugRenderer, DebugRendererDrawEvent, Hooks, ModEntry,
-    RegisterDebugEntriesEvent, RegisterDebugRenderersEvent, WorldDepth, WorldLine,
-};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 const CAMERA: [f64; 3] = [100.0, 64.0, 100.0];
+// Deliberately not the namespace of the switches.
+const OWNER: &str = "debug_test";
 const SHOWN: &str = "marker:pipes";
 const OTHER: &str = "marker:wires";
-/// Pushed as a renderer, but no entry declares it.
 const UNDECLARED: &str = "marker:ghost";
+const REDUCED_ALLOWED: &str = "minecraft:custom_marker";
+const ALWAYS: &str = "always";
 
-/// The ids `debug_renderer_draw` was asked about since the last frame.
-static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// What the mod pushes at a refresh.
-static PUSHED: Mutex<Vec<&str>> = Mutex::new(Vec::new());
-/// The refreshes since the last look (`refreshes`).
-static REFRESHES: AtomicUsize = AtomicUsize::new(0);
+#[derive(Default)]
+struct Fixture {
+    asked: Vec<&'static str>,
+    pushed: Vec<&'static str>,
+    refresh: usize,
+    checked_refresh: usize,
+}
 
-struct Marker;
+/// The dispatcher fixture retains its registered mods; don't let it retain this test's state.
+struct Marker(Weak<Mutex<Fixture>>);
+
 #[mod_api::__subscriptions]
 impl Hooks for Marker {
     fn register_debug_entries(
         &self,
-        _: &mod_api::RegistrationContext,
+        _: &RegistrationContext,
         event: &mut RegisterDebugEntriesEvent<'_>,
     ) {
         for id in [SHOWN, OTHER] {
-            event.entries.push(DebugEntry {
-                id: id.into(),
-                group: DebugGroup::Renderer,
-            });
+            event.entries.push(DebugEntry::renderer(id.into()));
         }
+        event
+            .entries
+            .push(DebugEntry::renderer(REDUCED_ALLOWED.into()).with_reduced_debug_info(true));
     }
+
     fn register_debug_renderers(
         &self,
-        _: &mod_api::RegistrationContext,
+        _: &RegistrationContext,
         event: &mut RegisterDebugRenderersEvent<'_>,
     ) {
-        REFRESHES.fetch_add(1, Ordering::Relaxed);
-        for id in PUSHED.lock().unwrap().iter() {
-            event.renderers.push(DebugRenderer {
-                id: (*id).to_owned(),
-            });
+        let owner = current_native_mod();
+        assert_eq!(owner, Some(OWNER));
+        let fixture = self.0.upgrade().expect("active debug renderer fixture");
+        let mut state = fixture.lock().unwrap();
+        state.refresh += 1;
+        for (slot, &id) in state.pushed.iter().enumerate() {
+            if id != ALWAYS && !event.is_debug_entry_enabled(id) {
+                continue;
+            }
+            // Height identifies the refresh; depth distinguishes registrations for the same ID.
+            let y = 64.0 + state.refresh as f64;
+            let z = 99.0 - slot as f64;
+            let fixture = Arc::clone(&fixture);
+            event.renderers.push(DebugRenderer::new(move |_, _, draw| {
+                assert_eq!(current_native_mod(), owner);
+                fixture.lock().unwrap().asked.push(id);
+                let marker = WorldLine::new(
+                    [100.25, y, z],
+                    [101.0, y, z],
+                    0xFF00FF00,
+                    2.0,
+                    WorldDepth::Tested,
+                );
+                draw.lines(&[marker]).unwrap();
+            }));
         }
-    }
-    fn debug_renderer_draw(&self, _: &dyn ClientHost, event: &mut DebugRendererDrawEvent<'_>) {
-        ASKED.lock().unwrap().push(event.id.to_owned());
-        let marker = WorldLine::new(
-            [100.25, 64.0, 99.0],
-            [101.0, 64.0, 99.0],
-            0xFF00FF00,
-            2.0,
-            WorldDepth::Tested,
-        );
-        event.draw.lines(&[marker]).unwrap();
     }
 }
 
-/// One frame's view: the lines it queued, camera relative, and the renderers asked.
-fn frame(game: &mut super::Game<'_>, draw: &mut WorldGeometry) -> (Vec<[f32; 6]>, Vec<String>) {
-    let title = game.shows_panorama();
+/// Dispatch the real registration hooks with only this test's listener, and keep the validated
+/// startup declarations on the test game instead of publishing them to the client registry.
+fn with_debug_renderers(test: impl FnOnce(&mut Game<'_>, &Mutex<Fixture>)) {
+    let fixture = Arc::new(Mutex::new(Fixture::default()));
+    let mods = vec![ModEntry::new(
+        OWNER,
+        Box::new(Marker(Arc::downgrade(&fixture))),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_client_game(|game| {
+            let mut entries = Vec::new();
+            {
+                Game::native_register_debug_entries(&RegistrationContext::new(), &mut entries);
+            }
+            game.registered_debug_entries = debug_entries::collect_registrations(entries);
+            // Status changes stay out of debug-profile.json.
+            game.debug_entries = DebugEntries::default();
+            test(game, &fixture);
+        });
+    });
+}
+
+/// One frame's camera-relative lines and the IDs of the callbacks that ran.
+fn frame(
+    game: &mut Game<'_>,
+    fixture: &Mutex<Fixture>,
+    title: bool,
+    draw: &mut WorldGeometry,
+) -> (Vec<[f32; 6]>, Vec<&'static str>) {
     game.fill_world_geometry(title, CAMERA, Mat4::IDENTITY, 0.0, draw, &mut Vec::new());
     let lines = draw
         .batch()
         .lines
         .iter()
-        .map(|l| std::array::from_fn(|i| l[i]));
-    (lines.collect(), std::mem::take(&mut *ASKED.lock().unwrap()))
+        .map(|line| std::array::from_fn(|i| line[i]));
+    (
+        lines.collect(),
+        std::mem::take(&mut fixture.lock().unwrap().asked),
+    )
 }
 
-/// How many times the renderer list refreshed since the last call.
-fn refreshes() -> usize {
-    REFRESHES.swap(0, Ordering::Relaxed)
+/// How many times the renderer list refreshed since the last observation.
+fn refreshes(fixture: &Mutex<Fixture>) -> usize {
+    let mut state = fixture.lock().unwrap();
+    let count = state.refresh - state.checked_refresh;
+    state.checked_refresh = state.refresh;
+    count
 }
 
-fn push(ids: &[&'static str]) {
-    *PUSHED.lock().unwrap() = ids.to_vec();
+fn push(fixture: &Mutex<Fixture>, ids: &[&'static str]) {
+    let mut state = fixture.lock().unwrap();
+    state.pushed.clear();
+    state.pushed.extend_from_slice(ids);
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_renderer_list_refreshes_with_the_selection_and_leaves_nothing_behind() {
-    if fresh_process("the_renderer_list_refreshes_with_the_selection_and_leaves_nothing_behind") {
-        return;
-    }
-    with_client_game(|game| {
-        mod_platform::__private::install(vec![ModEntry::new("marker", Box::new(Marker))].into());
-        push(&[SHOWN, OTHER, UNDECLARED]);
-        mods::register_debug_entries(ExecutionRole::Client);
-        // The options exist before any refresh, and pushing an id does not make one.
-        assert_eq!(refreshes(), 0);
-        for id in [SHOWN, OTHER] {
-            assert_eq!(
-                debug_entries::entry(id).map(|e| e.category),
-                Some(Category::Renderer)
-            );
-        }
-        // Not tied to a file: the statuses below stay out of `debug-profile.json`.
-        game.debug_entries = DebugEntries::default();
+    with_debug_renderers(|game, fixture| {
+        push(fixture, &[SHOWN, OTHER, UNDECLARED]);
+        let toggles: Vec<_> = rows(&game.registered_debug_entries, "marker:")
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Option(entry) if entry.category == Category::Renderer => Some(entry.path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(toggles, [SHOWN, OTHER]);
+        assert_eq!(refreshes(fixture), 0);
+        game.debug_entries.set_status(UNDECLARED, Status::AlwaysOn);
         game.title = None;
         let mut draw = WorldGeometry::default();
         let none = (Vec::new(), Vec::new());
 
         // Off by default. The first view refreshes, as `lastDebugEntriesVersion` starts behind;
         // the next one does not.
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 1);
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 0);
+        assert_eq!(frame(game, fixture, false, &mut draw), none);
+        assert_eq!(refreshes(fixture), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), none);
+        assert_eq!(refreshes(fixture), 0);
 
-        // Selected: one refresh, only that renderer is asked, and its marker is at the world
-        // position.
+        // Selected: one refresh, and the enabled renderer runs.
         game.debug_entries.set_status(SHOWN, Status::AlwaysOn);
-        let marker = vec![[0.25, 0.0, -1.0, 1.0, 0.0, -1.0]];
-        let shown = (marker.clone(), vec![SHOWN.to_owned()]);
-        assert_eq!(frame(game, &mut draw), shown);
-        assert_eq!(refreshes(), 1);
-        // A later frame replaces it rather than adding to it, with no refresh.
-        assert_eq!(frame(game, &mut draw), shown);
-        assert_eq!(refreshes(), 0);
+        let shown = |y| (vec![[0.25, y, -1.0, 1.0, y, -1.0]], vec![SHOWN]);
+        assert_eq!(frame(game, fixture, false, &mut draw), shown(2.0));
+        assert_eq!(refreshes(fixture), 1);
+        // The next frame clears its batch and calls the same installed object.
+        assert_eq!(frame(game, fixture, false, &mut draw), shown(2.0));
+        assert_eq!(refreshes(fixture), 0);
 
         // The overlay changes the selection both ways.
         game.debug_entries.set_status(SHOWN, Status::InOverlay);
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), none);
+        assert_eq!(refreshes(fixture), 1);
         toggle_overlay(game);
-        assert_eq!(frame(game, &mut draw), shown);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), shown(4.0));
+        assert_eq!(refreshes(fixture), 1);
         toggle_overlay(game);
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), none);
+        assert_eq!(refreshes(fixture), 1);
 
-        // So does reduced debug info, which hides a renderer.
+        // Reduced debug info hides default entries, while an entry opted in with
+        // `with_reduced_debug_info(true)` stays enabled.
         game.debug_entries.set_status(SHOWN, Status::AlwaysOn);
-        assert_eq!(frame(game, &mut draw), shown);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), shown(6.0));
+        assert_eq!(refreshes(fixture), 1);
+        push(fixture, &[SHOWN, REDUCED_ALLOWED]);
+        game.debug_entries
+            .set_status(REDUCED_ALLOWED, Status::AlwaysOn);
         game.options_control(
             &["options-set", "reducedDebugInfo", "true"],
             "options-set reducedDebugInfo true",
         )
         .unwrap();
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(
+            frame(game, fixture, false, &mut draw),
+            (
+                vec![[0.25, 7.0, -2.0, 1.0, 7.0, -2.0]],
+                vec![REDUCED_ALLOWED]
+            )
+        );
+        assert_eq!(refreshes(fixture), 1);
+        game.debug_entries
+            .set_status(REDUCED_ALLOWED, Status::Never);
+        push(fixture, &[SHOWN, OTHER, UNDECLARED]);
         game.options_control(
             &["options-set", "reducedDebugInfo", "false"],
             "options-set reducedDebugInfo false",
         )
         .unwrap();
-        assert_eq!(frame(game, &mut draw), shown);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), shown(8.0));
+        assert_eq!(refreshes(fixture), 1);
 
         // A built-in profile leaves it out.
         game.debug_entries.load_profile(Profile::Default);
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), none);
+        assert_eq!(refreshes(fixture), 1);
 
-        // What a mod stops pushing stays until the next refresh, then nothing of it is left. The
-        // renderer with no entry is never asked.
+        // The installed objects keep their captured geometry until refresh, even when the mod
+        // would now push something else. Multiple renderers (including repeated switches and
+        // unconditional ones) all run in registration order with no deduplication.
+        push(fixture, &[SHOWN, SHOWN, OTHER, ALWAYS]);
         game.debug_entries.set_status(SHOWN, Status::AlwaysOn);
         game.debug_entries.set_status(OTHER, Status::AlwaysOn);
-        let both = vec![SHOWN.to_owned(), OTHER.to_owned()];
-        assert_eq!(frame(game, &mut draw).1, both);
-        assert_eq!(refreshes(), 1);
-        push(&[OTHER]);
-        assert_eq!(frame(game, &mut draw).1, both);
-        assert_eq!(refreshes(), 0);
+        let all_four = (
+            vec![
+                [0.25, 10.0, -1.0, 1.0, 10.0, -1.0],
+                [0.25, 10.0, -2.0, 1.0, 10.0, -2.0],
+                [0.25, 10.0, -3.0, 1.0, 10.0, -3.0],
+                [0.25, 10.0, -4.0, 1.0, 10.0, -4.0],
+            ],
+            vec![SHOWN, SHOWN, OTHER, ALWAYS],
+        );
+        assert_eq!(frame(game, fixture, false, &mut draw), all_four);
+        assert_eq!(refreshes(fixture), 1);
+        push(fixture, &[OTHER]);
+        assert_eq!(frame(game, fixture, false, &mut draw), all_four);
+        assert_eq!(refreshes(fixture), 0);
         game.debug_entries.set_status(SHOWN, Status::AlwaysOn);
-        assert_eq!(frame(game, &mut draw).1, [OTHER]);
-        assert_eq!(refreshes(), 1);
-        push(&[SHOWN]);
+        assert_eq!(
+            frame(game, fixture, false, &mut draw),
+            (vec![[0.25, 11.0, -1.0, 1.0, 11.0, -1.0]], vec![OTHER])
+        );
+        assert_eq!(refreshes(fixture), 1);
+        push(fixture, &[SHOWN]);
 
         // Disabled: the marker goes with the next frame.
         game.debug_entries.set_status(OTHER, Status::Never);
         game.debug_entries.set_status(SHOWN, Status::Never);
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), none);
+        assert_eq!(refreshes(fixture), 1);
 
         // Leaving the world with it on: the title frame asks nothing and shows nothing, and
         // refreshes nothing, as it has no `emitGizmos`.
         game.debug_entries.set_status(SHOWN, Status::AlwaysOn);
-        assert_eq!(frame(game, &mut draw), shown);
-        assert_eq!(refreshes(), 1);
+        assert_eq!(frame(game, fixture, false, &mut draw), shown(13.0));
+        assert_eq!(refreshes(fixture), 1);
         game.leave_server(None).unwrap();
         game.debug_entries.set_status(SHOWN, Status::Never);
-        assert_eq!(frame(game, &mut draw), none);
-        assert_eq!(refreshes(), 0);
+        assert_eq!(frame(game, fixture, true, &mut draw), none);
+        assert_eq!(refreshes(fixture), 0);
 
         // `handleLogin` refreshes the list, with no change of selection.
         let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
         game.connect_local(pipe, "Steve").unwrap();
         game.handle_packet(login()).unwrap();
-        assert_eq!(refreshes(), 1);
+        assert_eq!(refreshes(fixture), 1);
         game.fill_world_geometry(
             false,
             CAMERA,
@@ -213,18 +282,12 @@ fn the_renderer_list_refreshes_with_the_selection_and_leaves_nothing_behind() {
             &mut draw,
             &mut Vec::new(),
         );
-        ASKED.lock().unwrap().clear();
-        assert_eq!(refreshes(), 1, "first world view after login");
+        assert!(
+            fixture.lock().unwrap().asked.is_empty(),
+            "the switch is still off"
+        );
+        assert_eq!(refreshes(fixture), 1, "first world view after login");
     });
-}
-
-// Mod declarations and the marker's state are process-global, not one Game's state.
-fn fresh_process(name: &str) -> bool {
-    run_fresh_cases(
-        &format!("game::debug_renderer_tests::{name}"),
-        "SUNRISE_DEBUG_RENDERER_FIXTURE",
-        &["run"],
-    )
 }
 
 fn login() -> C {
@@ -255,7 +318,7 @@ fn login() -> C {
     })
 }
 
-fn toggle_overlay(game: &mut super::Game<'_>) {
+fn toggle_overlay(game: &mut Game<'_>) {
     use sunrise_client::debug_keys::KeyAction;
     use winit::keyboard::KeyCode;
     game.debug_key(KeyCode::F3, KeyAction::Press);
@@ -264,11 +327,11 @@ fn toggle_overlay(game: &mut super::Game<'_>) {
 
 /// Prime a real world's view, change only the mod's renderer state, then invalidate through
 /// the real input/packet path. The next view must collect the new list exactly once.
-fn invalidation_refreshes(expected: &[&str], change: impl FnOnce(&mut super::Game<'_>)) {
-    with_client_game(|game| {
-        mod_platform::__private::install(vec![ModEntry::new("marker", Box::new(Marker))].into());
-        mods::register_debug_entries(ExecutionRole::Client);
-        game.debug_entries = DebugEntries::default();
+fn invalidation_refreshes(
+    expected: &[&'static str],
+    change: impl FnOnce(&mut Game<'_>, &Mutex<Fixture>),
+) {
+    with_debug_renderers(|game, fixture| {
         game.title = None;
         let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
         game.connect_local(pipe, "Steve").unwrap();
@@ -276,52 +339,29 @@ fn invalidation_refreshes(expected: &[&str], change: impl FnOnce(&mut super::Gam
         game.debug_entries.set_status(SHOWN, Status::AlwaysOn);
         game.debug_entries.set_status(OTHER, Status::AlwaysOn);
         let mut draw = WorldGeometry::default();
-        push(&[SHOWN]);
-        game.fill_world_geometry(
-            false,
-            CAMERA,
-            Mat4::IDENTITY,
-            0.0,
-            &mut draw,
-            &mut Vec::new(),
-        );
-        ASKED.lock().unwrap().clear();
-        refreshes();
-        push(&[OTHER]);
-        change(game);
-        game.fill_world_geometry(
-            false,
-            CAMERA,
-            Mat4::IDENTITY,
-            0.0,
-            &mut draw,
-            &mut Vec::new(),
-        );
+        push(fixture, &[SHOWN]);
+        assert_eq!(frame(game, fixture, false, &mut draw).1, [SHOWN]);
+        refreshes(fixture);
+        push(fixture, &[OTHER]);
+        change(game, fixture);
         assert_eq!(
-            (refreshes(), std::mem::take(&mut *ASKED.lock().unwrap())),
-            (1, expected.iter().map(|id| (*id).to_owned()).collect()),
+            frame(game, fixture, false, &mut draw).1.as_slice(),
+            expected,
             "next world view must replace the stale renderer list"
         );
-        game.fill_world_geometry(
-            false,
-            CAMERA,
-            Mat4::IDENTITY,
-            0.0,
-            &mut draw,
-            &mut Vec::new(),
+        assert_eq!(refreshes(fixture), 1);
+        assert_eq!(
+            frame(game, fixture, false, &mut draw).1.as_slice(),
+            expected
         );
-        ASKED.lock().unwrap().clear();
-        assert_eq!(refreshes(), 0, "no work on an unchanged frame");
+        assert_eq!(refreshes(fixture), 0, "no work on an unchanged frame");
     });
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn debug_renderer_respawn_invalidates_unchanged_selection() {
-    if fresh_process("debug_renderer_respawn_invalidates_unchanged_selection") {
-        return;
-    }
-    invalidation_refreshes(&[OTHER], |game| {
+    invalidation_refreshes(&[OTHER], |game, _| {
         let C::Login(login) = login() else {
             unreachable!()
         };
@@ -333,53 +373,36 @@ fn debug_renderer_respawn_invalidates_unchanged_selection() {
     });
 }
 
-fn same_value_event(event: i8, expected: &[&str]) {
-    invalidation_refreshes(expected, |game| {
-        push(&[SHOWN]);
+fn same_value_event(event: i8, expected: &[&'static str]) {
+    invalidation_refreshes(expected, |game, fixture| {
+        push(fixture, &[SHOWN]);
         game.handle_packet(C::EntityEvent(play::EntityEvent { id: 7, event }))
             .unwrap();
         let mut draw = WorldGeometry::default();
-        game.fill_world_geometry(
-            false,
-            CAMERA,
-            Mat4::IDENTITY,
-            0.0,
-            &mut draw,
-            &mut Vec::new(),
-        );
-        ASKED.lock().unwrap().clear();
-        refreshes();
-        push(&[OTHER]);
+        frame(game, fixture, false, &mut draw);
+        assert_eq!(refreshes(fixture), 1);
+        push(fixture, &[OTHER]);
         game.handle_packet(C::EntityEvent(play::EntityEvent { id: 7, event }))
             .unwrap();
     });
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn debug_renderer_same_value_reduced_info_on_invalidates() {
-    if fresh_process("debug_renderer_same_value_reduced_info_on_invalidates") {
-        return;
-    }
     same_value_event(22, &[]);
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn debug_renderer_same_value_reduced_info_off_invalidates() {
-    if fresh_process("debug_renderer_same_value_reduced_info_off_invalidates") {
-        return;
-    }
     same_value_event(23, &[OTHER]);
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn debug_renderer_overlay_round_trip_invalidates() {
-    if fresh_process("debug_renderer_overlay_round_trip_invalidates") {
-        return;
-    }
-    invalidation_refreshes(&[OTHER], |game| {
+    invalidation_refreshes(&[OTHER], |game, _| {
         let before = game.debug;
         toggle_overlay(game);
         assert_ne!(game.debug, before);
@@ -389,16 +412,13 @@ fn debug_renderer_overlay_round_trip_invalidates() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn debug_renderer_second_login_invalidates_first_world_view() {
-    if fresh_process("debug_renderer_second_login_invalidates_first_world_view") {
-        return;
-    }
-    invalidation_refreshes(&[OTHER], |game| {
-        push(&[SHOWN]);
+    invalidation_refreshes(&[OTHER], |game, fixture| {
+        push(fixture, &[SHOWN]);
         game.handle_packet(login()).unwrap();
-        assert_eq!(refreshes(), 1, "immediate handleLogin refresh");
+        assert_eq!(refreshes(fixture), 1, "immediate handleLogin refresh");
         // A logging-in listener can update its state after the immediate refresh.
-        push(&[OTHER]);
+        push(fixture, &[OTHER]);
     });
 }

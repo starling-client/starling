@@ -7,6 +7,7 @@ use crate::hud::HudBatch;
 use wgpu::TextureFormat as T;
 
 #[test]
+#[ignore = "daily"]
 fn an_r11f_image_is_stored_into_and_read_back() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else { return };

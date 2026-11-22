@@ -6,13 +6,14 @@
 //! the inventory when the menu closes (`AbstractContainerMenu.clearContainer`).
 use super::{
     Game,
-    lan_crafting::input,
     stations::{Kind as StationKind, Station},
 };
+use crate::game::{api_values::TryIntoApi, transactions::After};
+use mod_api::item::menu::AnvilCraftInputs;
 use sunrise_client::{
     containers::BlockEntity,
     items::ItemStack,
-    menu::{AnvilCraft, Kind, Menu},
+    menu::{GrindstoneTakeEdits, Kind, Menu, QuickCraftDrag},
 };
 use sunrise_core::random::RandomSource;
 use sunrise_protocol::packets::play::{self, Clientbound as C};
@@ -38,6 +39,8 @@ pub(super) struct GuestLectern {
     pub(super) window: i32,
     state: i32,
     pub(super) key: (i32, i32, i32),
+    /// Persistent quick-craft (drag) state across rebuilt lectern menus.
+    drag: QuickCraftDrag,
     /// The book and page the client was last sent (`broadcastChanges`).
     sent: Option<(Option<ItemStack>, i32)>,
 }
@@ -59,14 +62,46 @@ pub(super) fn menu_of(kind: StationKind) -> Option<(&'static str, Kind, std::ops
 }
 
 impl Game<'_> {
+    /// A reload changes what a stonecutter button number means. Close that window
+    /// before publishing the new recipe generation so queued old buttons cannot act on it.
+    pub(super) fn close_stonecutters_for_reload(&mut self) {
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        let open: Vec<_> = host
+            .menus
+            .iter()
+            .filter_map(|(&conn, menus)| {
+                menus
+                    .station
+                    .as_ref()
+                    .filter(|menu| menu.kind == StationKind::Stonecutter)
+                    .map(|_| conn)
+            })
+            .collect();
+        for conn in open {
+            self.guest_close_menus_and_tell(conn);
+        }
+    }
+
     /// A workstation a guest's use opened (`ServerPlayer.openMenu`); false
     /// when guests can't use that one yet.
     pub(super) fn lan_open_station(&mut self, conn: u32, station: &Station) -> bool {
         let Some((menu_type, kind, _)) = menu_of(station.kind) else {
             return false;
         };
+        // The hub may already have the new button map while native advancement
+        // hooks are still ahead of UpdateRecipes. Do not open on an unpublished map.
+        if kind == Kind::Stonecutter
+            && self
+                .lan
+                .as_ref()
+                .is_some_and(|host| host.hub.native_reload_pending)
+        {
+            return true;
+        }
         // The mods may stop the menu; the click is spent.
-        if !self.guest_may_open(conn, menu_type, Some(station.pos)) {
+        if self.guest_may_open(conn, menu_type, Some(station.pos)) != Some(true) {
             return true;
         }
         // ServerPlayer.openMenu closes the menu that was open.
@@ -81,12 +116,16 @@ impl Game<'_> {
         };
         let mut menu = Box::new(Menu::new(kind));
         menu.set_registry_id(Some(menu_type));
-        // Without a mod the take runs AnvilMenu.onTake's order in the click itself.
-        let hooked = !mod_api::__private::mods().is_empty();
-        menu.anvil_hook = kind == Kind::Anvil && hooked;
-        // Likewise GrindstoneMenu's result onTake.
-        menu.grind_hook = kind == Kind::Grindstone && hooked;
-        menu.item_smithed_hook = kind == Kind::Smithing && hooked;
+        if kind == Kind::Stonecutter {
+            menu.stone.server_buttons = self
+                .lan
+                .as_ref()
+                .map(|host| host.hub.sync_data().stonecutter_buttons.clone());
+        }
+        // These result slots yield to the level at onTake, even without listeners.
+        menu.anvil_hook = kind == Kind::Anvil;
+        menu.grind_hook = kind == Kind::Grindstone;
+        menu.item_smithed_hook = kind == Kind::Smithing && !mod_api::__private::mods().is_empty();
         if kind == Kind::Enchanting {
             // Player.enchantmentSeed, made when first needed.
             let needs_seed = self
@@ -132,11 +171,69 @@ impl Game<'_> {
         window: Option<i32>,
         op: impl FnOnce(&mut Menu, &sunrise_client::menu::Env),
     ) -> bool {
-        let Some(mut gs) = self
+        self.lan_station_op_clicked(conn, window, None, op)
+    }
+
+    /// Deliver any pending `AnvilMenu.createResult` or `GrindstoneMenu.createResult` hook
+    /// live after a slot write or rename, updating `menu`'s result in place.
+    fn lan_station_deliver_result(
+        &mut self,
+        gi: usize,
+        kind: StationKind,
+        pos: [i32; 3],
+        menu: &mut Menu,
+    ) {
+        let (uuid, entity_id) = self
+            .lan
+            .as_ref()
+            .map(|host| (host.hub.guests[gi].uuid, host.hub.guests[gi].entity_id))
+            .unwrap_or((0, 0));
+        if kind == StationKind::Anvil
+            && menu.anvil_created()
+            && mod_api::__private::listened(mod_api::HookId::AnvilUpdate)
+            && let Some((inputs, mut result)) = menu.anvil_update()
+        {
+            self.api_anvil_update(uuid, entity_id, pos, inputs, &mut result);
+            menu.anvil_updated(result);
+        }
+        if kind == StationKind::Grindstone && menu.grindstone_created() && menu.grind_hook {
+            if mod_api::__private::listened(mod_api::HookId::GrindstonePlace) {
+                let mut cancel = false;
+                let edits = self.api_grindstone_place(
+                    uuid,
+                    entity_id,
+                    pos,
+                    menu.grindstone_place(),
+                    &mut cancel,
+                );
+                menu.grindstone_placed(edits, cancel);
+            } else {
+                menu.grindstone_placed(Default::default(), false);
+            }
+        }
+    }
+
+    /// `lan_station_op` for `op` that makes `click`, which the mods decide first when it is a
+    /// pickup they listen to (`guest_menu_op_decided`).
+    fn lan_station_op_clicked(
+        &mut self,
+        conn: u32,
+        window: Option<i32>,
+        click: Option<super::lan_pickup::Click>,
+        op: impl FnOnce(&mut Menu, &sunrise_client::menu::Env),
+    ) -> bool {
+        let Some((owner, mut gs)) = self
             .lan
             .as_mut()
             .and_then(|host| host.menus.get_mut(&conn))
-            .and_then(|p| p.station.take_if(|s| window.is_none_or(|w| s.window == w)))
+            .and_then(|p| {
+                let owner = p.station.id();
+                Some((
+                    owner,
+                    p.station
+                        .take_if(|s| window.is_none_or(|w| s.window == w))?,
+                ))
+            })
         else {
             return false;
         };
@@ -151,110 +248,64 @@ impl Game<'_> {
                     .is_some_and(|h| h.hub.guests[gi].spectator())
             });
         if let Some(gi) = guest {
-            // createResult runs when the inputs change (or a rename): a click
-            // elsewhere must not hand the hooks their own result again.
-            let result_slot = match gs.kind {
-                StationKind::Anvil | StationKind::Grindstone => Some(2),
-                StationKind::Smithing => Some(3),
-                _ => None,
-            };
-            let before = result_slot.map(|r| {
-                let slots: Vec<_> = (0..=r).map(|s| gs.menu.slot(s).cloned()).collect();
-                // Only the anvil has a data slot (its cost) and a name; grindstone and
-                // smithing menus have neither. A rename runs createResult even when the
-                // result comes out the same (AnvilMenu.setItemName).
-                (
-                    slots,
-                    gs.menu.data.first().copied(),
-                    gs.menu.anvil.name.clone(),
-                )
+            let smithing_before = (gs.kind == StationKind::Smithing).then(|| {
+                (0..=3)
+                    .map(|s| gs.menu.slot(s).cloned())
+                    .collect::<Vec<_>>()
             });
-            let mut undo = None;
-            let hook = gs.menu.anvil_hook;
-            self.guest_menu_op(gi, &mut gs.menu, |menu, env| {
-                undo = hook.then(|| menu.anvil_undo());
-                op(menu, env);
-            });
-            // AnvilCraftEvent.Pre: the taken result's onTake waits for the mods.
-            let mut anvil_craft = gs.menu.anvil_craft.take();
-            let mut cancelled = false;
-            if let Some(craft) = &anvil_craft {
-                let (uuid, name) = self
-                    .lan
-                    .as_ref()
-                    .map(|host| {
-                        let guest = &host.hub.guests[gi];
-                        (guest.uuid, guest.name.clone())
-                    })
-                    .unwrap_or((0, String::new()));
-                let mut cancel = false;
-                self.api_anvil_craft_pre(uuid, &name, gs.pos, craft, &mut cancel);
-                if cancel && let Some(undo) = undo {
-                    // The take is refused: the result, inputs, cost, inventory
-                    // and cursor are as before the click (the resync below
-                    // tells the client).
-                    anvil_craft = None;
-                    cancelled = true;
-                    self.guest_menu_op(gi, &mut gs.menu, |menu, _| menu.anvil_cancel(undo));
-                } else {
-                    gs.menu.anvil_take(&self.menu_env());
-                    let dropped = std::mem::take(&mut gs.menu.dropped);
-                    self.drop_guest_items(gi, dropped);
+            let track_results = matches!(gs.kind, StationKind::Anvil | StationKind::Grindstone);
+            let pos = gs.pos;
+            let kind = gs.kind;
+            if gs.kind == StationKind::Grindstone && !self.transactions.is_empty() {
+                self.journal_guest_click(conn);
+                self.journal_station_click(conn, owner, &gs);
+            }
+            let _ = gs.menu.anvil_created();
+            let _ = gs.menu.grindstone_created();
+            if let Some(click) = click.filter(|_| track_results) {
+                self.guest_menu_action(
+                    gi,
+                    &mut gs.menu,
+                    Some(click),
+                    None,
+                    |game, menu, stacked| {
+                        let mut rest =
+                            game.guest_menu_op_with(gi, menu, stacked, |menu, env| {
+                                menu.track_results(true);
+                                menu.start_click(env, click.0, click.1, click.2)
+                            })?;
+                        loop {
+                            game.lan_station_deliver_result(gi, kind, pos, menu);
+                            game.lan_station_finish_take(conn, gi, pos, menu);
+                            let Some(step) = rest.ok().flatten() else {
+                                break;
+                            };
+                            let next = game.guest_menu_op_with(gi, menu, None, |menu, env| {
+                                menu.resume_click(env, step)
+                            })?;
+                            rest = Ok(next);
+                        }
+                        menu.track_results(false);
+                        Some(())
+                    },
+                );
+            } else {
+                self.guest_menu_op_decided(gi, &mut gs.menu, click, None, |menu, env| {
+                    op(menu, env);
+                });
+                if track_results {
+                    self.lan_station_deliver_result(gi, kind, pos, &mut gs.menu);
+                    self.lan_station_finish_take(conn, gi, pos, &mut gs.menu);
                 }
             }
-            // GrindstoneEvent.OnTakeItem: the taken result's onTake waits for the mods.
-            let mut ground_xp = None;
-            if let Some(mut take) = gs.menu.grind_take.take() {
-                let (uuid, entity_id) = self
-                    .lan
-                    .as_ref()
-                    .map(|host| (host.hub.guests[gi].uuid, host.hub.guests[gi].entity_id))
-                    .unwrap_or((0, 0));
-                let mut cancel = false;
-                self.api_grindstone_take(uuid, entity_id, gs.pos, &mut take, &mut cancel);
-                cancelled |= cancel;
-                let env = self.menu_env();
-                ground_xp = gs.menu.grindstone_taken(&env, take, cancel);
-            }
-            // A cancelled take runs no createResult: the inputs are untouched.
-            let recomputed = !cancelled
-                && before.is_some_and(|(slots, cost, item_name)| {
-                    cost != gs.menu.data.first().copied()
-                        || item_name != gs.menu.anvil.name
-                        || slots
-                            .iter()
-                            .enumerate()
-                            .any(|(s, b)| gs.menu.slot(s) != b.as_ref())
-                });
-            // AnvilUpdateEvent after createResult; a cancelled take's undo
-            // is no createResult.
-            let anvil_created =
-                gs.kind == StationKind::Anvil && gs.menu.anvil_created() && !cancelled;
-            if anvil_created
-                && mod_api::__private::listened(mod_api::HookId::AnvilUpdate)
-                && let Some(mut update) = gs.menu.anvil_update()
+            if gs.kind == StationKind::Smithing
+                && smithing_before.is_some_and(|slots| {
+                    slots
+                        .iter()
+                        .enumerate()
+                        .any(|(s, b)| gs.menu.slot(s) != b.as_ref())
+                })
             {
-                let (uuid, entity_id) = self
-                    .lan
-                    .as_ref()
-                    .map(|host| (host.hub.guests[gi].uuid, host.hub.guests[gi].entity_id))
-                    .unwrap_or((0, 0));
-                let mut cancel = false;
-                self.api_anvil_update(uuid, entity_id, gs.pos, &mut update, &mut cancel);
-                gs.menu.anvil_updated(update, cancel);
-            }
-            if recomputed && gs.kind == StationKind::Grindstone && gs.menu.grind_hook {
-                let (uuid, entity_id) = self
-                    .lan
-                    .as_ref()
-                    .map(|host| (host.hub.guests[gi].uuid, host.hub.guests[gi].entity_id))
-                    .unwrap_or((0, 0));
-                let mut place = gs.menu.grindstone_place();
-                let mut cancel = false;
-                self.api_grindstone_place(uuid, entity_id, gs.pos, &mut place, &mut cancel);
-                gs.menu.grindstone_placed(place, cancel);
-            }
-            if recomputed && gs.kind == StationKind::Smithing {
                 let (uuid, name) = self
                     .lan
                     .as_ref()
@@ -272,9 +323,6 @@ impl Game<'_> {
             if let Some(amount) = gs.menu.ground.take() {
                 self.grindstone_taken(gs.pos, amount);
             }
-            if let Some(xp) = ground_xp {
-                self.grindstone_award(gs.pos, xp.unsigned_abs());
-            }
             // ItemSmithedEvent comes before the rest of SmithingMenu.onTake.
             let smithed = std::mem::take(&mut gs.menu.item_smithed);
             if let Some((uuid, entity_id)) = self
@@ -286,7 +334,9 @@ impl Game<'_> {
                     self.native_player_item_smithed(uuid, entity_id, inputs, result);
                 }
             }
-            self.lan_station_combined(conn, &mut gs, anvil_craft.as_ref());
+            if gs.kind == StationKind::Smithing && std::mem::take(&mut gs.menu.combined) {
+                self.level_event_at(1044, pos, 0);
+            }
             if let Some(button) = gs.menu.enchant_button.take() {
                 self.lan_enchant(gi, &mut gs, button);
             }
@@ -294,10 +344,19 @@ impl Game<'_> {
                 self.lan_enchant_offers(gi, &mut gs);
             }
         }
-        if let Some(host) = self.lan.as_mut() {
-            *host.menus.entry(conn).or_default().station = Some(gs);
+        let window = gs.window;
+        let grindstone = gs.kind == StationKind::Grindstone;
+        if let Some(menus) = self.lan.as_mut().and_then(|host| host.menus.get_mut(&conn))
+            && menus.station.id() == owner
+            && menus.station.is_none()
+        {
+            *menus.station = Some(gs);
         }
-        self.lan_send_station(conn);
+        if grindstone {
+            self.after_commit(After::StationContent(conn, owner, window));
+        } else {
+            self.lan_send_station(conn);
+        }
         true
     }
 
@@ -311,7 +370,8 @@ impl Game<'_> {
     /// `LecternBlock.openScreen` for a guest: `minecraft:lectern` over the
     /// block entity, with its book and page.
     pub(super) fn lan_open_lectern(&mut self, conn: u32, key: (i32, i32, i32)) {
-        if !self.guest_may_open(conn, "minecraft:lectern", Some([key.0, key.1, key.2])) {
+        if self.guest_may_open(conn, "minecraft:lectern", Some([key.0, key.1, key.2])) != Some(true)
+        {
             return;
         }
         // ServerPlayer.openMenu closes the menu that was open.
@@ -329,6 +389,7 @@ impl Game<'_> {
                 window,
                 state: 0,
                 key,
+                drag: QuickCraftDrag::default(),
                 sent: None,
             });
         }
@@ -362,29 +423,13 @@ impl Game<'_> {
         let page_changed = sent.as_ref().is_none_or(|(_, p)| *p != page);
         let book = book.clone();
         let now = Some((book.clone(), page));
-        if let Some(host) = self.lan.as_mut() {
-            if let Some(gl) = host.play.get_mut(&conn).and_then(|p| p.lectern.as_mut()) {
-                gl.sent = now;
-                gl.state = (gl.state + 1) & 0x7FFF;
-            }
-            let state = host
-                .play
-                .get(&conn)
-                .and_then(|p| p.lectern.as_ref())
-                .map_or(0, |gl| gl.state);
-            let carried = host
-                .hub
-                .guests
-                .iter()
-                .find(|g| g.conn == conn)
-                .and_then(|g| g.carried.clone());
-            let content = C::ContainerSetContent(play::ContainerSetContent {
-                container: window,
-                state,
-                items: vec![host.hub.stack(&book)],
-                carried: host.hub.stack(&carried),
-            });
-            host.hub.send_to(conn, &content);
+        if let Some(host) = self.lan.as_mut()
+            && let Some(gi) = host.hub.guests.connection_index(conn)
+            && let Some(gl) = host.play.get_mut(&conn).and_then(|p| p.lectern.as_mut())
+        {
+            gl.sent = now;
+            gl.state = (gl.state + 1) & 0x7FFF;
+            host.hub.send_menu_snapshot(gi, window, gl.state, &[book]);
             if all || page_changed {
                 host.hub.send_to(
                     conn,
@@ -407,13 +452,24 @@ impl Game<'_> {
         window: i32,
         op: impl FnOnce(&mut Menu, &sunrise_client::menu::Env),
     ) -> bool {
-        let Some(key) = self
+        self.lan_lectern_op_clicked(conn, window, None, op)
+    }
+
+    /// `lan_lectern_op` for `op` that makes `click` (see `lan_station_op_clicked`).
+    fn lan_lectern_op_clicked(
+        &mut self,
+        conn: u32,
+        window: i32,
+        click: Option<super::lan_pickup::Click>,
+        op: impl FnOnce(&mut Menu, &sunrise_client::menu::Env),
+    ) -> bool {
+        let Some((key, drag)) = self
             .lan
             .as_ref()
             .and_then(|host| host.play.get(&conn))
             .and_then(|p| p.lectern.as_ref())
             .filter(|l| l.window == window)
-            .map(|l| l.key)
+            .map(|l| (l.key, l.drag.clone()))
         else {
             return false;
         };
@@ -430,16 +486,29 @@ impl Game<'_> {
         if let Some(gi) = guest
             && let Some(mut menu) = self.lectern_menu(key)
         {
+            menu.set_quick_craft_state(drag);
             // Player.mayBuild: survival and creative.
             let may_build = self
                 .lan
                 .as_ref()
                 .is_some_and(|host| matches!(host.hub.guests[gi].game_mode, 0 | 1));
-            self.guest_menu_op(gi, &mut menu, |menu, env| {
-                menu.may_build = may_build;
-                op(menu, env);
-            });
-            self.lectern_menu_done(key, &menu);
+            if self
+                .guest_menu_op_decided(gi, &mut menu, click, None, |menu, env| {
+                    menu.may_build = may_build;
+                    op(menu, env);
+                })
+                .is_some()
+            {
+                self.lectern_menu_done(key, &menu);
+                if let Some(gl) = self
+                    .lan
+                    .as_mut()
+                    .and_then(|host| host.play.get_mut(&conn))
+                    .and_then(|p| p.lectern.as_mut())
+                {
+                    gl.drag = menu.quick_craft_state();
+                }
+            }
         }
         self.lan_send_lectern(conn, true);
         true
@@ -447,43 +516,80 @@ impl Game<'_> {
 
     /// A click on the guest's lectern window; false for other windows.
     pub(super) fn lan_lectern_click(&mut self, conn: u32, p: &play::ContainerClick) -> bool {
-        self.lan_lectern_op(conn, p.container, |menu, env| {
-            let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
+        let click = super::lan_pickup::click_of(p);
+        self.lan_lectern_op_clicked(conn, p.container, Some(click), |menu, env| {
+            let _ = menu.click(env, click.0, click.1, click.2);
         })
     }
 
-    /// The rest of a taken anvil or smithing result's `onTake`: the guest
-    /// pays the levels, the anvil wears (level event 1030 or 1029), the
-    /// smithing table sounds (1044). An anvil's `craft` is then reported to
-    /// the mods (`AnvilCraftEvent.Post`).
-    fn lan_station_combined(
-        &mut self,
-        conn: u32,
-        gs: &mut GuestStation,
-        craft: Option<&AnvilCraft>,
-    ) {
-        let change = std::mem::take(&mut gs.menu.level_change);
-        if change != 0 {
-            self.as_guest(conn, |g| g.give_levels(change));
-        }
-        if !std::mem::take(&mut gs.menu.combined) {
-            return;
-        }
-        if gs.kind == StationKind::Smithing {
-            self.level_event_at(1044, gs.pos, 0);
-        } else {
-            let creative = gs.menu.creative;
-            // A broken anvil closes the menu on the next stillValid check.
-            self.anvil_used(gs.pos, creative);
-            if let Some(craft) = craft
-                && let Some((uuid, name)) = self
-                    .lan
-                    .as_ref()
-                    .and_then(|host| host.hub.guests.iter().find(|g| g.conn == conn))
-                    .map(|guest| (guest.uuid, guest.name.clone()))
-            {
-                self.api_anvil_craft_post(uuid, &name, gs.pos, craft);
+    /// Result-slot onTake runs before doClick checks for another result or drops the stack.
+    fn lan_station_finish_take(&mut self, conn: u32, gi: usize, pos: [i32; 3], menu: &mut Menu) {
+        if let Some(craft) = menu.anvil_craft.take() {
+            let pre = mod_api::__private::listened(mod_api::HookId::AnvilCraftPre);
+            let post = mod_api::__private::listened(mod_api::HookId::AnvilCraftPost);
+            let snapshot = (pre || post).then(|| craft.try_into_api().ok()).flatten();
+            let inputs = snapshot
+                .as_ref()
+                .map(|(left, right, output)| AnvilCraftInputs {
+                    left: left.as_ref(),
+                    right: right.as_ref(),
+                    output,
+                });
+            let player = (pre || post)
+                .then(|| self.lan.as_ref()?.hub.guests.get(gi))
+                .flatten()
+                .map(|g| (g.uuid, g.name.clone()));
+            if pre && let (Some((uuid, name)), Some(inputs)) = (&player, &inputs) {
+                let mut cancel = false;
+                self.native_anvil_craft_pre(*uuid, name, pos, inputs, &mut cancel);
+                if cancel {
+                    return;
+                }
             }
+            menu.record_anvil_charge();
+            let charge = std::mem::take(&mut menu.level_change);
+            if charge != 0 {
+                let _ = self.as_guest_at(gi, conn, |g| g.give_levels(charge));
+            }
+            menu.anvil_take_material(&self.menu_env());
+            self.lan_station_deliver_result(gi, StationKind::Anvil, pos, menu);
+            menu.anvil_take_input(&self.menu_env());
+            self.lan_station_deliver_result(gi, StationKind::Anvil, pos, menu);
+            menu.combined = false;
+            self.anvil_used(pos, menu.creative);
+            if post && let (Some((uuid, name)), Some(inputs)) = (player, inputs) {
+                self.native_anvil_craft_post(uuid, &name, pos, &inputs);
+            }
+        }
+        if let Some(take) = menu.grind_take.take() {
+            let edits = if mod_api::__private::listened(mod_api::HookId::GrindstoneTake)
+                && let Some(guest) = self.lan.as_ref().and_then(|host| host.hub.guests.get(gi))
+            {
+                let (uuid, entity_id) = (guest.uuid, guest.entity_id);
+                let mut cancel = false;
+                let edits = self.api_grindstone_take(uuid, entity_id, pos, &take, &mut cancel);
+                if cancel {
+                    return;
+                }
+                edits
+            } else {
+                let xp = if take.xp >= 0 {
+                    take.xp
+                } else {
+                    let amount = take.vanilla_amount(&self.menu_env());
+                    self.journal_level_random();
+                    sunrise_client::stations::grindstone_xp_roll(amount, &mut self.world.random)
+                        as i32
+                };
+                GrindstoneTakeEdits::initial(xp)
+            };
+            self.grindstone_award(pos, edits.xp.max(0) as u32);
+            menu.set_slot(&self.menu_env(), 0, edits.new_top);
+            self.lan_station_deliver_result(gi, StationKind::Grindstone, pos, menu);
+            menu.set_slot(&self.menu_env(), 1, edits.new_bottom);
+            self.lan_station_deliver_result(gi, StationKind::Grindstone, pos, menu);
+            menu.grindstone_inputs_changed(&self.menu_env());
+            self.lan_station_deliver_result(gi, StationKind::Grindstone, pos, menu);
         }
     }
 
@@ -606,14 +712,7 @@ impl Game<'_> {
         }) else {
             return;
         };
-        let Some(enchanted) = sunrise_client::stations::apply_enchantment(
-            &self.stations().enchantments,
-            self.items(),
-            seed,
-            button,
-            gs.menu.data[button],
-            &item,
-        ) else {
+        let Some(enchanted) = self.table_enchant(seed, button, gs.menu.data[button], &item) else {
             return;
         };
         let enchanted_for_hook = enchanted.clone();
@@ -677,13 +776,7 @@ impl Game<'_> {
             .and_then(|host| host.menus.get(&conn))
             .and_then(|p| p.station.as_ref())
             .is_some_and(|s| s.kind == StationKind::Anvil);
-        if anvil
-            && self.chat_filter_text(
-                conn,
-                &[name],
-                sunrise_client::lan::hub::chat_filter::Place::Anvil,
-            )
-        {
+        if anvil {
             self.lan_station_op(conn, None, |menu, env| {
                 menu.rename(env, name);
             });
@@ -706,54 +799,83 @@ impl Game<'_> {
 
     /// A click on the guest's station window; false for other windows.
     pub(super) fn lan_station_click(&mut self, conn: u32, p: &play::ContainerClick) -> bool {
-        self.lan_station_op(conn, Some(p.container), |menu, env| {
-            let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
+        let click = super::lan_pickup::click_of(p);
+        self.lan_station_op_clicked(conn, Some(p.container), Some(click), |menu, env| {
+            let _ = menu.click(env, click.0, click.1, click.2);
         })
     }
 
     /// `ServerGamePacketListenerImpl.handleContainerButtonClick`:
     /// `clickMenuButton`, then `broadcastChanges` when the menu took it.
     pub(super) fn lan_station_button(&mut self, conn: u32, window: i32, id: i32) {
-        // A mod container's menu: its mod's buttons (`native_menu_button`),
-        // as handleContainerButtonClick checks them: the open menu, not a
-        // spectator, still valid.
+        // Route to the active menu type's listeners. Only a validated `Slots::Block`
+        // supplies the optional position and entity backing.
         let mod_menu = self.lan.as_ref().and_then(|host| {
             let g = host.hub.guest(conn)?;
             let menu = g.menu.as_ref().filter(|m| m.window == window)?;
-            let pos = menu.pos?;
+            if !mod_api::__private::menu_listens(mod_api::HookId::MenuButton, &menu.registry_id) {
+                return None;
+            }
             Some((
-                pos,
+                menu.registry_id.clone(),
+                g.menu_generation,
+                match menu.slots {
+                    sunrise_client::lan::menu::Slots::Block(pos) => Some(pos),
+                    _ => None,
+                },
                 !g.spectator() && menu.still_valid(&host.hub.loop_context, &self.world, g),
                 g.carried.clone(),
                 g.uuid,
                 g.entity_id,
             ))
         });
-        if let Some((pos, valid, mut carried, uuid, entity_id)) = mod_menu
-            && self.mod_menu_at(pos).is_some()
+        if let Some((menu, menu_generation, backing, valid, mut carried, uuid, entity_id)) =
+            mod_menu
         {
             if valid {
                 // The clicking player's cursor stack (`clickMenuButton`'s
                 // other half). Single player's own player is a guest of
                 // its own host too (`lan.rs:165`), so this one path covers
                 // both single player and a LAN guest.
+                let original_carried = carried.clone();
+                let backing = backing.filter(|&pos| self.mod_menu_at(pos) == Some(menu.as_ref()));
+                let block = backing.map(|(x, y, z)| self.data_block_name([x, y, z]));
+                let mut accepted = false;
+                self.native_menu_button_valid(&menu, block.as_deref(), id, &mut accepted);
+                if !accepted {
+                    return;
+                }
                 let context = mod_api::item::menu::MenuButtonContext {
                     player: uuid,
                     player_entity_id: entity_id,
-                    pos: [pos.0, pos.1, pos.2],
+                    pos: backing.map(|(x, y, z)| [x, y, z]),
                     id,
                 };
                 // As that player: `native_acting_player` and `native_acting_id`
                 // answer for the one who pressed.
-                self.as_guest(conn, |game| game.mod_menu_button(context, &mut carried));
-                if let Some(host) = self.lan.as_mut()
-                    && host.hub.guest(conn).is_some_and(|g| g.carried != carried)
+                self.as_guest(conn, |game| {
+                    game.mod_menu_button(&menu, context, block.as_deref(), backing, &mut carried)
+                });
+                if carried != original_carried
+                    && let Some(host) = self.lan.as_mut()
+                    && let Some(gi) = host.hub.guests.connection_index(conn)
                 {
-                    let net = host.hub.stack(&carried);
-                    let _ = host.hub.update_guest(conn, |g| {
+                    let changed = host.hub.guests.update(gi, |g| {
+                        if g.menu_generation != menu_generation
+                            || !g
+                                .menu
+                                .as_ref()
+                                .is_some_and(|current| current.window == window)
+                            || g.carried != original_carried
+                        {
+                            return false;
+                        }
                         g.carried = carried;
-                        g.send(&C::SetCursorItem(play::SetCursorItem { item: net }));
+                        true
                     });
+                    if changed {
+                        host.hub.sync_carried(gi, None);
+                    }
                 }
             }
             return;
@@ -772,11 +894,19 @@ impl Game<'_> {
         let mut selected = false;
         let kind = self
             .lan
-            .as_ref()
-            .and_then(|host| host.menus.get(&conn))
-            .and_then(|p| p.station.as_ref())
+            .as_mut()
+            .and_then(|host| host.menus.get_mut(&conn))
+            .and_then(|p| p.station.as_mut())
             .filter(|s| s.window == window)
-            .map(|s| s.kind);
+            .map(|s| {
+                if s.kind == StationKind::Stonecutter
+                    && let Some(sent) = s.sent_data.first_mut()
+                {
+                    // The guest may have predicted a candidate the real stack cannot use.
+                    *sent = None;
+                }
+                s.kind
+            });
         self.lan_station_op(conn, Some(window), |menu, env| {
             selected = menu.button(env, id);
         });
@@ -795,7 +925,7 @@ impl Game<'_> {
 
     /// The whole station menu and its changed data slots for the client
     /// (`sendAllDataToRemote` / `broadcastChanges`).
-    fn lan_send_station(&mut self, conn: u32) {
+    pub(super) fn lan_send_station(&mut self, conn: u32) {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
@@ -811,13 +941,7 @@ impl Game<'_> {
             (0..own).map(|s| gs.menu.slot(s).cloned()).collect();
         let g = &host.hub.guests[gi];
         items.extend((9..36).chain(0..9).map(|i| g.inventory[i].clone()));
-        let carried = g.carried.clone();
-        let packet = C::ContainerSetContent(play::ContainerSetContent {
-            container: gs.window,
-            state: gs.state,
-            items: items.iter().map(|s| host.hub.stack(s)).collect(),
-            carried: host.hub.stack(&carried),
-        });
+        let state = gs.state;
         // ContainerSetData's value is a short. An anvil cost outside it
         // would change sign (`-65535` as `+1`), so the signed cost follows
         // on `sunrise:anvil_cost` after that short.
@@ -843,7 +967,7 @@ impl Game<'_> {
                 value,
             }));
         }
-        host.hub.send_to(conn, &packet);
+        host.hub.send_menu_snapshot(gi, window, state, &items);
         host.hub.guests.update(gi, |g| g.inventory_told());
         for packet in data {
             host.hub.send_to(conn, &packet);
@@ -866,27 +990,29 @@ impl Game<'_> {
     /// back to the inventory, what doesn't fit is dropped. False when no such
     /// window is open.
     pub(super) fn lan_station_closed(&mut self, conn: u32, window: Option<i32>) -> bool {
+        self.lan_station_removed(conn, window, super::lan_crafting::MenuRemoval::Live)
+    }
+
+    pub(super) fn lan_station_removed(
+        &mut self,
+        conn: u32,
+        window: Option<i32>,
+        removal: super::lan_crafting::MenuRemoval,
+    ) -> bool {
         // A lectern's menu keeps nothing of its own (the book is the block entity's).
-        let lectern = self
-            .lan
-            .as_mut()
-            .and_then(|host| host.play.get_mut(&conn))
-            .and_then(|p| p.lectern.take_if(|l| window.is_none_or(|w| l.window == w)))
-            .is_some();
-        if lectern {
+        let Some(host) = self.lan.as_mut() else {
+            return false;
+        };
+        let lectern = host
+            .play
+            .get_mut(&conn)
+            .and_then(|p| p.lectern.take_if(|l| window.is_none_or(|w| l.window == w)));
+        if let Some(lectern) = lectern {
             // AbstractContainerMenu.removed: the carried stack goes back.
-            if let Some(gi) = self
-                .lan
-                .as_ref()
-                .and_then(|host| host.hub.guests.iter().position(|g| g.conn == conn))
+            if let Some(gi) = host.hub.guests.connection_index(conn)
+                && let Some(carried) = self.close_guest_menu_cursor(gi, lectern.window)
             {
-                let carried = self
-                    .lan
-                    .as_mut()
-                    .and_then(|host| host.hub.guests.update(gi, |g| g.carried.take()));
-                if let Some(carried) = carried {
-                    self.lan_place_back(gi, vec![carried]);
-                }
+                self.lan_place_back(gi, vec![carried]);
             }
             if window.is_some() {
                 self.player_menu_closing(conn);
@@ -901,33 +1027,22 @@ impl Game<'_> {
         else {
             return false;
         };
-        let Some(gi) = self
-            .lan
-            .as_ref()
-            .and_then(|host| host.hub.guests.iter().position(|g| g.conn == conn))
-        else {
+        let Some(host) = self.lan.as_mut() else {
             return true;
         };
-        // AbstractContainerMenu.removed: the carried stack first, then the inputs.
-        let mut back: Vec<ItemStack> = self
-            .lan
-            .as_mut()
-            .map(|host| host.hub.guests.update(gi, |g| g.carried.take()))
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let Some(gi) = host.hub.guests.connection_index(conn) else {
+            return true;
+        };
+        let carried = self.close_guest_menu_cursor(gi, gs.window);
         let inputs = station_inputs(&gs);
-        if gs.kind == StationKind::Beacon {
+        if removal.drops_items() {
+            self.drop_guest_items(gi, inputs);
+        } else if gs.kind == StationKind::Beacon {
             // BeaconMenu.removed drops the payment (player.drop).
-            if !back.is_empty() {
-                self.lan_place_back(gi, std::mem::take(&mut back));
-            }
+            self.lan_place_back(gi, carried.into_iter().collect());
             self.drop_guest_items(gi, inputs);
         } else {
-            back.extend(inputs);
-        }
-        if !back.is_empty() {
-            self.lan_place_back(gi, back);
+            self.lan_place_back(gi, carried.into_iter().chain(inputs).collect());
         }
         if window.is_some() {
             self.player_menu_closing(conn);
@@ -1073,6 +1188,7 @@ impl Game<'_> {
                 .guests
                 .iter()
                 .find(|g| g.conn == conn && host.hub.here(g))
+                .filter(|_| !self.player_tick_canceled(conn))
             else {
                 continue;
             };
@@ -1154,7 +1270,7 @@ impl Game<'_> {
             let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn) else {
                 continue;
             };
-            if !host.hub.here(g) {
+            if !host.hub.here(g) || self.player_tick_canceled(conn) {
                 continue;
             }
             if self.lan_lectern_valid(g, key) {
@@ -1177,4 +1293,151 @@ pub(super) fn station_inputs(gs: &GuestStation) -> Vec<ItemStack> {
     menu_of(gs.kind)
         .map(|(_, _, inputs)| inputs.filter_map(|s| gs.menu.slot(s).cloned()).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod anvil_tests {
+    use super::*;
+    use crate::game::native_guest_turn_tests::with_guests;
+    use mod_api::{
+        AnvilCraftPostEvent, AnvilCraftPreEvent, AnvilUpdateEvent, Flow, Hooks, HostSide, ModEntry,
+        ServerHost,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI32, AtomicUsize, Ordering},
+    };
+
+    struct Observe(Arc<AtomicUsize>, Arc<AtomicI32>);
+
+    impl Observe {
+        fn check_inputs(&self, phase: usize, inputs: &AnvilCraftInputs<'_>) {
+            let stack = |s: &mod_api::ItemStack| {
+                (
+                    mod_api::__private::item_key_id(s.item()),
+                    s.count(),
+                    s.damage(),
+                )
+            };
+            assert_eq!(
+                inputs.left.map(stack),
+                Some((Some("minecraft:iron_sword"), 1, 80))
+            );
+            assert_eq!(
+                inputs.right.map(stack),
+                Some((Some("minecraft:iron_ingot"), 2, 0))
+            );
+            assert_eq!(stack(inputs.output), (Some("minecraft:iron_sword"), 1, 0));
+            assert_eq!(self.0.load(Ordering::Relaxed), phase);
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[mod_api::__subscriptions]
+    impl Hooks for Observe {
+        fn anvil_craft_pre(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut AnvilCraftPreEvent<'_>,
+        ) -> Flow {
+            self.check_inputs(0, event.inputs);
+            Flow::Continue
+        }
+
+        fn anvil_update(&self, side: HostSide<'_>, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+            if let HostSide::Server(host) = side
+                && self.0.load(Ordering::Relaxed) == 1
+                && event.inputs.right.is_none()
+                && let Some(xp) = host
+                    .player(event.player)
+                    .and_then(|player| player.experience(host))
+            {
+                self.1.store(xp.level, Ordering::Relaxed);
+            }
+            Flow::Continue
+        }
+
+        fn anvil_craft_post(&self, _: &mut dyn ServerHost, event: &mut AnvilCraftPostEvent<'_>) {
+            self.check_inputs(1, event.inputs);
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn anvil_pre_and_post_read_pre_take_inputs() {
+        const CONN: u32 = 12;
+        const POS: [i32; 3] = [1, 64, 1];
+        let calls = Arc::new(AtomicUsize::new(0));
+        let during_update = Arc::new(AtomicI32::new(-1));
+        let mods = vec![ModEntry::new(
+            "anvil_observer",
+            Box::new(Observe(calls.clone(), during_update.clone())),
+        )];
+        mod_platform::testing::with_mods(mods.into(), || {
+            with_guests(|game| {
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                let [x, y, z] = POS;
+                let state = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:anvil")
+                    .unwrap();
+                game.world.set(x, y, z, state).unwrap();
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .update_guest(CONN, |guest| guest.xp_level = 10)
+                    .unwrap();
+                assert!(game.lan_open_station(CONN, &Station::new(StationKind::Anvil, POS)));
+                assert!(game.lan_station_op(CONN, None, |menu, env| {
+                    let mut sword = ItemStack::new("minecraft:iron_sword", 1);
+                    sword.damage = 80;
+                    menu.set_slot(env, 0, Some(sword));
+                    menu.set_slot(env, 1, Some(ItemStack::new("minecraft:iron_ingot", 2)));
+                }));
+                let window = game.lan.as_ref().unwrap().menus[&CONN]
+                    .station
+                    .as_ref()
+                    .unwrap()
+                    .window;
+                game.lan_guest_packet(
+                    CONN,
+                    play::Serverbound::ContainerClick(play::ContainerClick {
+                        container: window,
+                        state: 0,
+                        slot: 2,
+                        button: 0,
+                        input: 0,
+                        changed: Vec::new(),
+                        carried: None,
+                    }),
+                );
+
+                let host = game.lan.as_ref().unwrap();
+                let menu = &host.menus[&CONN].station.as_ref().unwrap().menu;
+                assert!((0..=2).all(|slot| menu.slot(slot).is_none()));
+                let guest = &host.hub.guests[0];
+                let carried = guest.carried.as_ref().expect("the guest took the output");
+                assert_eq!(
+                    (&*carried.item, carried.count, carried.damage),
+                    ("minecraft:iron_sword", 1, 0)
+                );
+                assert_eq!(guest.xp_level, 8);
+                assert_eq!(
+                    during_update.load(Ordering::Relaxed),
+                    8,
+                    "paid before the material update"
+                );
+                assert_eq!(
+                    calls.load(Ordering::Relaxed),
+                    2,
+                    "Pre and Post both read the pre-take inputs"
+                );
+            });
+        });
+    }
 }

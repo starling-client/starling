@@ -1,6 +1,6 @@
 //! Host lookup keeps the same rectangular input for matching and remainders.
 use super::native_entity_refs::tests::with_game;
-use mod_api::{CraftingGrid, CraftingRecipeCodec, CraftingRecipeKind, ItemKey, ItemStack};
+use mod_api::{CraftingGrid, CraftingRecipeKind, ItemKey, ItemStack};
 
 struct Vertical {
     milk: ItemKey,
@@ -11,24 +11,31 @@ struct Vertical {
 }
 impl CraftingRecipeKind for Vertical {
     type Value = ();
-    fn codec(&self) -> Option<CraftingRecipeCodec<()>> {
-        Some(CraftingRecipeCodec::wire())
-    }
     fn decode(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
     fn write(&self, _: &()) -> Result<String, String> {
         Ok("{}".into())
     }
-    fn matches(&self, _: &(), grid: CraftingGrid) -> bool {
+    fn matches(&self, _context: &dyn mod_api::LoopContext, _: &(), grid: CraftingGrid) -> bool {
         grid.width == 1
             && grid.height == 2
             && grid.cells == [ItemStack::new(self.milk, 1), ItemStack::new(self.stick, 1)]
     }
-    fn assemble(&self, _: &(), _: CraftingGrid) -> Option<ItemStack> {
+    fn assemble(
+        &self,
+        _context: &dyn mod_api::LoopContext,
+        _: &(),
+        _: CraftingGrid,
+    ) -> Option<ItemStack> {
         ItemStack::new(self.diamond, 1)
     }
-    fn remaining_items(&self, _: &(), grid: CraftingGrid) -> Option<Vec<Option<ItemStack>>> {
+    fn remaining_items(
+        &self,
+        _context: &dyn mod_api::CraftingRemainders,
+        _: &(),
+        grid: CraftingGrid,
+    ) -> Option<Vec<Option<ItemStack>>> {
         assert_eq!((grid.width, grid.height), (1, 2));
         assert_eq!(
             grid.cells,

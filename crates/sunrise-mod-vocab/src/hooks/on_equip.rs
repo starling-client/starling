@@ -9,9 +9,11 @@ pub trait Hooks {
     /// Server-side, for every player of the world (the helpers read the
     /// acting one).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_on_equip",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (vanilla's `LivingEntity.onEquipItem`; `living_equipment_change` is the `LivingEquipmentChangeEvent` counterpart)"
     )]
-    fn on_equip();
+    fn on_equip(slot: &str, new: Option<&ItemStack>);
 }

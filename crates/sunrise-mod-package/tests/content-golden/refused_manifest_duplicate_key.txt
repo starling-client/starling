@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: duplicate key (line 4, column 1)
+
+icon:
+unavailable

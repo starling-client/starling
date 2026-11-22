@@ -10,12 +10,15 @@ pub trait Hooks {
     /// the `DataLoadContext` of the load that owns them (`origin()`
     /// `ServerDataLoad` on a server, `ClientPreload` on a client's own load),
     /// and again after `/reload`. A new namespaced key creates a set when its
-    /// namespace belongs to the listener's manifest (its ID or `namespaces`).
+    /// namespace belongs to the listener's manifest (its ID or `namespaces`)
+    /// or to a content package it serves (`served_by`).
     /// Later listeners may extend existing sets. Invalid or foreign new keys,
     /// unknown vanilla keys, and air are logged and skipped; unknown items are
     /// ignored. Custom sets are synced to clients alongside vanilla sets. The
     /// answer must be the same every time.
+    /// A client without this mod predicts vanilla here; the server corrects it.
     #[hook(
+        version = 2,
         side = "both",
         contract = "collect",
         out = "additions",
@@ -24,5 +27,5 @@ pub trait Hooks {
         target = "sunrise_client_lib::crafting::native_hooks::native_recipe_property_sets",
         neoforge = "RegisterRecipePropertiesEvent"
     )]
-    fn recipe_property_sets();
+    fn recipe_property_sets(additions: &mut Vec<RecipePropertyAddition>);
 }

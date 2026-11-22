@@ -65,6 +65,13 @@ impl Game<'_> {
     /// `Interaction` under the crosshair within the entity reach, as its id
     /// and the hit distance along the view.
     pub(super) fn interaction_hit(&self) -> Option<(i32, f64)> {
+        if let Some(hit) = self.cached_entity_pick() {
+            let (entity, distance, _) = hit?;
+            return self
+                .interactions
+                .contains_key(&(entity.id() as i32))
+                .then_some((entity.id() as i32, distance));
+        }
         let (eye, dir) = self.aim()?;
         let reach = self.entity_reach;
         self.interactions
@@ -190,7 +197,7 @@ impl InteractionState {
         }
     }
     /// `Interaction.addAdditionalSaveData`: the settings, and each action when set.
-    pub fn write(&self, c: &mut sunrise_core::nbt::Compound) {
+    pub fn write(&self, c: &mut sunrise_client::entity_nbt::EntityTagWriter) {
         use sunrise_core::nbt::Tag;
         c.insert("width".into(), Tag::Float(self.width.to_bits()));
         c.insert("height".into(), Tag::Float(self.height.to_bits()));

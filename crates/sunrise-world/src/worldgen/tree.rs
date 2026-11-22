@@ -25,9 +25,9 @@ use decorator::TreeDecorator;
 pub(crate) use decorator::{GROUND_FEATURE_KEY, beehive_occupants};
 pub use fallen::FallenTreeFeature;
 use foliage::{FoliageAttachment, FoliagePlacer};
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use serde_json::value::RawValue;
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::{geometry::Direction, random::RandomSource};
 use trunk::TrunkPlacer;
 
 pub(crate) type TreeResult<T, E> = Result<T, FeatureExecutionError<E>>;

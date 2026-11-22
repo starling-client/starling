@@ -5,11 +5,12 @@ impl Game<'_> {
     /// table at `table_pos`. `power` is the block's own answer, which its parts may change.
     pub(in crate::game) fn native_enchant_power_bonus(
         &self,
+        level: Option<mod_api::LevelRef>,
         state: BlockStateId,
         pos: BlockPos,
         table_pos: BlockPos,
         power: &mut f32,
     ) {
-        self.fire_enchant_power_bonus(state, pos, table_pos, power);
+        self.fire_enchant_power_bonus(level, state, pos, table_pos, power);
     }
 }

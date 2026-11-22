@@ -13,12 +13,9 @@ fn valid_dimension_key(id: &str) -> bool {
 }
 
 /// Structural boundary checks; generator-specific codecs run on world loading.
-pub(crate) fn valid_world_gen_dimensions(dimensions: &Tag) -> bool {
+pub(crate) fn valid_world_gen_dimension_stems(stems: &sunrise_core::nbt::Compound) -> bool {
     use sunrise_core::identifier::Identifier;
-    let Tag::Compound(stems) = dimensions else {
-        return false;
-    };
-    dimensions.get("minecraft:overworld").is_some()
+    stems.contains_key(&"minecraft:overworld".into())
         && stems.iter().all(|(id, stem)| {
             let Some(generator) = stem.get("generator") else {
                 return false;
@@ -42,6 +39,14 @@ pub(crate) fn valid_world_gen_dimensions(dimensions: &Tag) -> bool {
                         .get("settings")
                         .is_some_and(crate::flatgen::valid_layer_heights))
         })
+}
+
+/// Structural boundary checks; generator-specific codecs run on world loading.
+pub(crate) fn valid_world_gen_dimensions(dimensions: &Tag) -> bool {
+    let Tag::Compound(stems) = dimensions else {
+        return false;
+    };
+    valid_world_gen_dimension_stems(stems)
 }
 
 /// [`write_world_gen_settings`] with a flat overworld's own generator

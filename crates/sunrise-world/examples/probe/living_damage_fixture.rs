@@ -1,13 +1,13 @@
 use crate::support::common::f32_bits;
-use sunrise_world::{
-    living_damage::{self, DamageContainer, DamageStat, DamageWorld, MagicAbsorb},
-    living_health::{self, HealthWorld},
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_world::{
+    living_damage::{self, DamageContainer, DamageStat, DamageWorld},
+    living_health::{self, HealthWorld},
 };
 fn single(v: &Value) -> f32 {
     f32::from_bits(u32::from_str_radix(v.as_str().unwrap(), 16).unwrap())
@@ -66,19 +66,11 @@ impl DamageWorld for World<'_> {
         self.query(&format!("armor {:08x}", f32_bits(v)))?;
         Ok(single(&self.state()["armor"]))
     }
-    fn bypasses_armor(&mut self) -> io::Result<bool> {
-        unreachable!("the oracle registers no reduction modifier")
-    }
-    fn after_magic(&mut self, v: f32) -> io::Result<MagicAbsorb> {
+    fn after_magic(&mut self, container: &mut DamageContainer, v: f32) -> io::Result<f32> {
         self.query(&format!("magic {:08x}", f32_bits(v)))?;
-        // The oracle answers the whole step; the split only names the reductions.
-        Ok(MagicAbsorb {
-            damage: single(&self.state()["magic"]),
-            mob_effects: 0.0,
-            resisted: false,
-            after_effects: 0.0,
-            protection: None,
-        })
+        let after = single(&self.state()["magic"]);
+        container.record_new_damage(after);
+        Ok(after)
     }
     fn absorption(&mut self) -> io::Result<f32> {
         self.query("absorption")?;

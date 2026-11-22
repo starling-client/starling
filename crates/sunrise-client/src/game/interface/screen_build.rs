@@ -13,9 +13,10 @@
 //! `AbstractCommandBlockEditScreen.resize`), and their buttons are laid out
 //! once per build.
 
+use mod_api::ScreenView;
+use sunrise_client::hud::HudBatch;
 use sunrise_client::inventory_effects::{EffectsLayout, EffectsSpace};
 use sunrise_client::window::GuiSize;
-use mod_api::ScreenView;
 
 use super::{Game, Screen};
 
@@ -45,6 +46,8 @@ impl ObservedScreen {
             slots: self.slots,
             mouse: self.mouse,
             partial_tick: self.partial_tick,
+            // A snapshot for comparing frames: the frame's own view has them.
+            regions: &[],
         })
     }
 }
@@ -71,10 +74,6 @@ pub(super) struct ScreenBuild {
     pub(super) layout: BuildLayout,
     /// Panels drawn outside `rect`.
     pub(super) exclusion: Vec<[f32; 4]>,
-    /// `screen_init_pre` cancelled the screen's own widgets. Always false
-    /// until that hook lands (step 7).
-    #[allow(dead_code, reason = "step 7 of #903 reads the cancel")]
-    pub(super) cancelled: bool,
 }
 
 /// A container screen's layout: the panel it draws in, the panels beside it,
@@ -254,7 +253,6 @@ impl ScreenBuild {
             origin,
             layout,
             exclusion,
-            cancelled: false,
         }
     }
 
@@ -303,6 +301,19 @@ impl ScreenBuild {
 pub(super) struct ScreenState {
     pub(super) observed: Option<ObservedScreen>,
     pub(super) build: ScreenBuildState,
+    /// The last draw's regions and the screen they are of (`ScreenView::regions`).
+    regions: (Option<Screen>, Vec<mod_api::ScreenRegion>),
+    /// The box the recipe book's tab (and category arrow) sprites made as this
+    /// frame painted them (`recipe_book_screen::sprite_bounds`); None when the
+    /// book drew none.
+    pub(super) drawn_book_tabs: std::cell::Cell<Option<[f32; 4]>>,
+    /// A mod's `ScreenOpening::Vanilla` answer is opening its screen: that
+    /// change fires no screen hook again.
+    pub(super) replacing: bool,
+    /// The last change the screen hooks decided went another way than asked
+    /// (a mod's `Cancel`, `ModScreen` or `Vanilla`): a caller's grab after it
+    /// leaves the screen that shows its pointer. Never set with no listener.
+    pub(super) answered: std::cell::Cell<bool>,
 }
 
 /// One frame's `RenderInventoryMobEffects` answer and what it was taken for.
@@ -318,12 +329,23 @@ struct EffectsMemo {
     answer: EffectsLayout,
 }
 
+/// One frame's `screen_room` answer and the screen it was taken for: the
+/// layout's inputs ask it more than once a frame, the hook once.
+#[derive(Clone, Copy, PartialEq)]
+struct RoomMemo {
+    frame: u64,
+    screen: Screen,
+    room: f32,
+}
+
 /// The open screen's build and what it was made from.
 #[derive(Default)]
 pub(super) struct ScreenBuildState {
     current: Option<ScreenBuild>,
     /// The frame's effects answer, while this frame asked for one.
     effects: std::cell::Cell<Option<EffectsMemo>>,
+    /// The frame's `screen_room` answer, while this frame asked for one.
+    room: std::cell::Cell<Option<RoomMemo>>,
     #[cfg(test)]
     builds: u32,
 }
@@ -361,6 +383,23 @@ impl ScreenBuildState {
             screen,
             space,
             answer,
+        }));
+    }
+
+    /// The room the mods asked this frame for `screen`, if they were asked.
+    pub(super) fn room_answer(&self, frame: u64, screen: Screen) -> Option<f32> {
+        self.room
+            .get()
+            .filter(|memo| memo.frame == frame && memo.screen == screen)
+            .map(|memo| memo.room)
+    }
+
+    /// Keeps this frame's room for the layout's other inputs in the same frame.
+    pub(super) fn keep_room_answer(&self, frame: u64, screen: Screen, room: f32) {
+        self.room.set(Some(RoomMemo {
+            frame,
+            screen,
+            room,
         }));
     }
 
@@ -448,10 +487,18 @@ impl ScreenBuildState {
 }
 
 impl Game<'_> {
-    /// The framebuffer's size and its GUI-scaled size and scale, as the HUD
-    /// computes them (`HudBatch::new`). Never asks for the renderer: before one
-    /// exists, the window's own size serves.
-    fn gui_frame_now(&self) -> ([u32; 2], GuiSize) {
+    /// `Gui.setScreen`: `KeyMapping.releaseAll` on a successful screen or overlay
+    /// opening/replacement transition (never on per-frame observation or resize).
+    pub(in crate::game) fn release_mappings_on_screen_open(&mut self) {
+        self.mod_keys.release_all();
+        self.release_screen_mappings();
+    }
+
+    /// `Screen.init`/`Screen.resize` for the game's open screen: builds it
+    /// when it opens, remakes it when the window or the GUI scale changed it,
+    /// and drops it when it closes. A frame that changes neither builds
+    /// nothing, so `observe_screen` calls it every frame.
+    pub(super) fn build_screen(&mut self) {
         let framebuffer = self.renderer.as_ref().map_or_else(
             || {
                 self.window.as_ref().map_or([1280, 720], |window| {
@@ -461,6 +508,7 @@ impl Game<'_> {
             },
             |renderer| [renderer.config.width, renderer.config.height],
         );
+<<<<<<< sync-sunrise-1
         let inputs = self.settings.gui_scale_inputs();
         let gui = GuiSize::new(framebuffer, inputs.requested, inputs.unicode);
         #[cfg(target_os = "android")]
@@ -472,21 +520,16 @@ impl Game<'_> {
             }
         };
         (framebuffer, gui)
+=======
+        self.build_screen_at(framebuffer);
+>>>>>>> sunrise/main
     }
 
-    /// `Screen.init`/`Screen.resize` for the game's open screen: builds it
-    /// when it opens, remakes it when the window or the GUI scale changed it,
-    /// and drops it when it closes. A frame that changes neither builds
-    /// nothing, so `observe_screen` calls it every frame.
-    pub(super) fn build_screen(&mut self) {
+    fn build_screen_at(&mut self, framebuffer: [u32; 2]) {
         let shown =
             self.screen != Screen::Playing || self.title.is_some() || self.screen_over_playing();
-        // Gui.setScreen: KeyMapping.releaseAll, as the screen or overlay opens.
-        if shown {
-            self.native_input.mappings.release_all();
-            self.keys.release_source(sunrise_client::held::Source::Mod);
-        }
-        let (framebuffer, gui) = self.gui_frame_now();
+        let inputs = self.settings.gui_scale_inputs();
+        let gui = GuiSize::new(framebuffer, inputs.requested, inputs.unicode);
         let identity = self
             .title
             .as_ref()
@@ -567,6 +610,85 @@ impl Game<'_> {
         self.screen_state
             .build
             .sync(self.screen, shown, identity, gui, layout);
+    }
+
+    /// What the open container screen draws outside its panel, from the
+    /// `layout` that draws it in a window `width` wide: the recipe book's
+    /// panel beside the window (not one a narrow window draws over it) and
+    /// each creative tab of the page shown, then the effects beside the
+    /// window. The book's tabs join them as painted (`publish_screen_regions`).
+    fn collect_screen_regions(
+        &self,
+        screen: Screen,
+        layout: &ContainerLayout,
+        width: f32,
+        out: &mut Vec<mod_api::ScreenRegion>,
+    ) {
+        use mod_api::{ScreenRegion, ScreenRegionKind};
+        if let Some(book) = layout.book
+            && !self.book_covers_menu(width)
+        {
+            out.push(ScreenRegion::new(ScreenRegionKind::RecipeBook, book));
+        }
+        if screen == Screen::Creative {
+            // `CreativeModeInventoryScreen.extractTabButton`: 26 x 32 each.
+            let (ox, oy) = (layout.image[0], layout.image[1]);
+            let creative = &self.creative_screen;
+            for tab in creative.tabs.iter().filter(|t| creative.on_page(t)) {
+                let (x, y) = sunrise_client::creative::Creative::tab_position(tab);
+                out.push(ScreenRegion::new(
+                    ScreenRegionKind::CreativeTab,
+                    [ox + x, oy + y, 26.0, 32.0],
+                ));
+            }
+        }
+        if let Some(effects) = layout.effects {
+            out.push(ScreenRegion::new(ScreenRegionKind::Effects, effects));
+        }
+    }
+
+    /// What this frame drew outside the panel becomes what the hooks read
+    /// (`ScreenView::regions`): the layout's regions and the book's tabs as
+    /// painted, or nothing when `screen_render_pre` cancelled the drawing.
+    /// Called once the screen has drawn, before `screen_render_post`; the
+    /// input hooks then read it until the next draw.
+    pub(super) fn publish_screen_regions(
+        &mut self,
+        batch: &HudBatch,
+        region_screen: Option<Screen>,
+    ) {
+        use mod_api::{ScreenRegion, ScreenRegionKind};
+        let (_, mut regions) = std::mem::take(&mut self.screen_state.regions);
+        regions.clear();
+        let tabs = self.screen_state.drawn_book_tabs.take();
+        let shown = region_screen.filter(|_| self.screen_view_listened());
+        if let Some(screen) = shown
+            && let Some(layout) = self.built_container(batch)
+        {
+            self.collect_screen_regions(screen, layout, batch.width, &mut regions);
+            if screen == Screen::Inventory
+                && let Some(tabs) = tabs
+            {
+                let at = regions
+                    .iter()
+                    .position(|r| r.kind == ScreenRegionKind::RecipeBook)
+                    .map_or(0, |n| n + 1);
+                regions.insert(
+                    at,
+                    ScreenRegion::new(ScreenRegionKind::RecipeBookTabs, tabs),
+                );
+            }
+        }
+        self.screen_state.regions = (shown, regions);
+    }
+
+    /// The last published draw's regions of `screen` (`ScreenView::regions`).
+    /// Empty for another screen and when no screen hook listens.
+    pub(super) fn screen_regions(&self, screen: Screen) -> &[mod_api::ScreenRegion] {
+        match &self.screen_state.regions {
+            (Some(of), regions) if *of == screen => regions,
+            _ => &[],
+        }
     }
 
     /// The build's container layout, when it holds `batch`'s size.
@@ -693,7 +815,7 @@ mod tests {
     /// `ChatScreen.init` and `InBedChatScreen.init` worked by hand for the
     /// test's 1280x720 window.
     #[test]
-    #[ignore = "needs prepared resources and isolated homes"]
+    #[ignore = "daily"]
     fn the_chat_box_is_resized_by_the_build_not_the_draw() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             use sunrise_client::chat::{ChatAbilities, ChatScreen, ChatVisibility, Commands};
@@ -734,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources and isolated homes"]
+    #[ignore = "daily"]
     fn production_screen_build_geometry() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.screen = Screen::Inventory;
@@ -977,10 +1099,10 @@ mod tests {
                 (113.0, 98.0, 98.0, "gui.advancements", 4, true),
             ],
             icons: [
-                (173.0, 122.0, "gui/sprites/pause_menu/bug"),
-                (197.0, 122.0, "gui/sprites/pause_menu/social_interactions"),
-                (221.0, 122.0, "gui/sprites/friends/friends"),
-                (245.0, 122.0, "gui/sprites/pause_menu/player_reporting"),
+                (173.0, 122.0, "pause_menu/bug"),
+                (197.0, 122.0, "pause_menu/social_interactions"),
+                (221.0, 122.0, "friends/friends"),
+                (245.0, 122.0, "pause_menu/player_reporting"),
             ],
         };
         state.sync(
@@ -1176,7 +1298,7 @@ mod tests {
     /// then `observe_screen`): the effects hook still fires once, and the next
     /// frame fires it again. A mod's once-per-frame side effect stays once.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_effects_answer_is_taken_once_a_frame() {
         use mod_api::{ClientHost, Hooks, ModEntry, ScreenRenderInventoryMobEffectsEvent};
         use std::sync::{
@@ -1235,6 +1357,345 @@ mod tests {
                     "the next frame asks again"
                 );
                 assert_eq!(calls.load(Ordering::Relaxed), 2, "and only once");
+            });
+        });
+    }
+    #[test]
+    #[ignore = "daily"]
+    fn a_mods_room_moves_the_window_and_is_asked_once_a_frame() {
+        use mod_api::{ClientHost, Hooks, ModEntry, ScreenRoomEvent};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use sunrise_client::hud::HudBatch;
+
+        struct Panel {
+            calls: Arc<AtomicUsize>,
+            width: Arc<AtomicUsize>,
+        }
+        #[mod_api::__subscriptions]
+        impl Hooks for Panel {
+            fn screen_room(&self, _: &dyn ClientHost, event: &mut ScreenRoomEvent<'_>) {
+                // The query sees the unreserved window, not the prior frame's shifted one.
+                assert_eq!(event.screen.rect[0], 125.0);
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                event.right = event.right.max(self.width.load(Ordering::Relaxed) as f32);
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let width = Arc::new(AtomicUsize::new(149));
+        let mods: mod_api::Mods = vec![
+            ModEntry::new(
+                "small_panel",
+                Box::new(Panel {
+                    calls: calls.clone(),
+                    width: Arc::new(AtomicUsize::new(80)),
+                }),
+            ),
+            ModEntry::new(
+                "large_panel",
+                Box::new(Panel {
+                    calls: calls.clone(),
+                    width: width.clone(),
+                }),
+            ),
+        ]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            crate::game::native_entity_refs::tests::with_client_game(|game| {
+                game.screen = Screen::Inventory;
+                game.container = None;
+                game.craft_size = 2;
+                game.level.recipe_book.open.fill(false);
+                game.settings.gui_scale = 3;
+                game.frames = 11;
+                game.build_screen();
+                let batch = HudBatch::new([1280, 720], game.settings.gui_scale_inputs());
+                assert_eq!(game.inventory_origin(&batch), (51.0, 37.0));
+                assert_eq!(
+                    game.screen_view(&batch, Screen::Inventory).rect,
+                    [51.0, 37.0, 176.0, 166.0]
+                );
+                let slot = game
+                    .built_container(&batch)
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .find(|(id, _)| *id == 0)
+                    .unwrap()
+                    .1;
+                assert_eq!(slot, [58.0, 178.0, 18.0, 18.0]);
+                assert_eq!(game.slot_at(&batch, 59.0, 179.0), Some(0));
+                assert_eq!(game.slot_at(&batch, 133.0, 179.0), Some(4));
+                let builds = game.screen_state.build.builds;
+                assert_eq!(calls.load(Ordering::Relaxed), 2);
+                game.build_screen();
+                assert_eq!(calls.load(Ordering::Relaxed), 2);
+                assert_eq!(game.screen_state.build.builds, builds);
+                game.frames += 1;
+                game.build_screen();
+                assert_eq!(calls.load(Ordering::Relaxed), 4);
+                assert_eq!(game.screen_state.build.builds, builds);
+                width.store(100, Ordering::Relaxed);
+                game.frames += 1;
+                game.build_screen();
+                assert_eq!(game.inventory_origin(&batch), (75.0, 37.0));
+                assert_eq!(game.screen_state.build.builds, builds + 1);
+                assert_eq!(game.slot_at(&batch, 83.0, 179.0), Some(0));
+                assert_eq!(
+                    game.screen_view(&batch, Screen::Inventory).rect,
+                    [75.0, 37.0, 176.0, 166.0]
+                );
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn room_preserves_vanilla_thresholds_without_listeners_and_on_fit_refusal() {
+        use mod_api::{ClientHost, Hooks, ModEntry, ScreenRoomEvent};
+        use sunrise_client::{hud::HudBatch, recipe_book::BookType};
+        struct Oversized;
+        #[mod_api::__subscriptions]
+        impl Hooks for Oversized {
+            fn screen_room(&self, _: &dyn ClientHost, event: &mut ScreenRoomEvent<'_>) {
+                event.right = event.right.max(1000.0);
+            }
+        }
+        // Both branches use the real game geometry and slots, not room_shift as an oracle.
+        for refuses in [false, true] {
+            let mods: mod_api::Mods = if refuses {
+                vec![ModEntry::new("oversized", Box::new(Oversized))].into()
+            } else {
+                Vec::<ModEntry>::new().into()
+            };
+            mod_platform::testing::with_mods(mods, || {
+                crate::game::native_entity_refs::tests::with_client_game(|game| {
+                    game.screen = Screen::Inventory;
+                    game.container = None;
+                    game.craft_size = 2;
+                    game.settings.gui_scale = 1;
+                    for (width, closed_x, open_x, book_x) in [
+                        (378, 101.0, 101.0, 115.0),
+                        (379, 101.0, 178.0, 30.0),
+                        (380, 102.0, 179.0, 30.0),
+                    ] {
+                        for open in [false, true] {
+                            game.frames += 1;
+                            game.level.recipe_book.open[BookType::Crafting.index()] = open;
+                            let batch =
+                                HudBatch::new([width, 240], game.settings.gui_scale_inputs());
+                            let layout = game.container_layout(&batch);
+                            let x = if open { open_x } else { closed_x };
+                            assert_eq!(layout.origin, (x, 37.0));
+                            assert_eq!(layout.book, open.then_some([book_x, 37.0, 147.0, 166.0]));
+                            assert_eq!(
+                                layout.slots.iter().find(|(id, _)| *id == 0).unwrap().1,
+                                [x + 7.0, 178.0, 18.0, 18.0]
+                            );
+                            assert_eq!(
+                                game.screen_view(&batch, Screen::Inventory).rect,
+                                [x, 37.0, 176.0, 166.0]
+                            );
+                            assert_eq!(
+                                game.slot_at(&batch, x + 8.0, 179.0),
+                                if open && width == 378 { None } else { Some(0) }
+                            );
+                        }
+                    }
+                });
+            });
+        }
+    }
+
+    /// Each `ScreenView::regions` kind where vanilla 26.3 draws it, from its
+    /// constants, as the hooks' view of the screen carries it: the effects
+    /// beside the inventory, every creative tab, the recipe book's panel and
+    /// the tab column it drew, and none for a book drawn over the window. In
+    /// its own process: the game it opens publishes process-wide tables.
+    #[test]
+    #[ignore = "daily"]
+    fn each_screen_region_is_where_vanilla_draws_it() {
+        use mod_api::{
+            ClientHost, Flow, Hooks, ModEntry, ScreenRegion, ScreenRegionKind as Kind,
+            ScreenRenderInventoryMobEffectsEvent, ScreenRenderPostEvent, ScreenRenderPreEvent,
+        };
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::screen_build::tests::each_screen_region_is_where_vanilla_draws_it",
+            "SUNRISE_SCREEN_REGIONS_CHILD",
+            &["regions"],
+        ) {
+            return;
+        }
+
+        #[derive(Default)]
+        struct Observer {
+            canceled: AtomicBool,
+            posts: Mutex<Vec<Vec<ScreenRegion>>>,
+        }
+
+        struct Observe(Arc<Observer>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Observe {
+            fn screen_render_inventory_mob_effects(
+                &self,
+                _: &dyn ClientHost,
+                event: &mut ScreenRenderInventoryMobEffectsEvent<'_>,
+            ) -> Flow {
+                event.horizontal_offset += 5;
+                Flow::Continue
+            }
+
+            fn screen_render_pre(
+                &self,
+                _: &dyn ClientHost,
+                _: &mut ScreenRenderPreEvent<'_>,
+            ) -> Flow {
+                if self.0.canceled.load(Ordering::Relaxed) {
+                    Flow::Cancel
+                } else {
+                    Flow::Continue
+                }
+            }
+
+            fn screen_render_post(
+                &self,
+                _: &dyn ClientHost,
+                event: &mut ScreenRenderPostEvent<'_>,
+            ) {
+                self.0
+                    .posts
+                    .lock()
+                    .unwrap()
+                    .push(event.screen.regions.to_vec());
+            }
+        }
+
+        let observer = Arc::new(Observer::default());
+        let mods: mod_api::Mods = vec![ModEntry::new(
+            "regions",
+            Box::new(Observe(observer.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            crate::game::native_entity_refs::tests::with_client_game(|game| {
+                // The inventory and creative screen belong to a client in a world. An
+                // in-memory connection supplies the client registry holder for creative tabs.
+                let _server = crate::game::native_client_session::tests::logged_client(game);
+                game.native_lifecycle
+                    .begin_open(mod_api::Authority::RemoteClient);
+                game.player = Some(
+                    sunrise_client::motion::PlayerMotion::new(
+                        game.motion,
+                        sunrise_core::geometry::Vec3::ZERO,
+                    )
+                    .unwrap(),
+                );
+                game.title = None;
+                game.container = None;
+                game.craft_size = 2;
+                game.screen = Screen::Inventory;
+                game.settings.gui_scale = 1;
+                game.settings.force_unicode = false;
+                let crafting = sunrise_client::recipe_book::BookType::Crafting.index();
+                game.level.recipe_book.recipes.clear();
+                game.level.recipe_book.open[crafting] = false;
+
+                let render = |game: &mut crate::game::Game<'_>, size| {
+                    game.hud_layers(size);
+                    let mut posts = observer.posts.lock().unwrap();
+                    assert_eq!(posts.len(), 1, "one Render.Post per draw");
+                    posts.pop().unwrap()
+                };
+                let small = [320, 240];
+                game.build_screen_at(small);
+                assert!(render(game, small).is_empty());
+
+                // EffectsInInventory at 320 x 240: leftPos + imageWidth + 2,
+                // shifted five pixels right by the subscriber, one compact row.
+                game.potions.effects.list = vec![sunrise_client::effects::EffectInstance::new(
+                    "speed", 200, 0,
+                )];
+                game.build_screen_at(small);
+                let compact = ScreenRegion::new(Kind::Effects, [255.0, 37.0, 32.0, 32.0]);
+                assert_eq!(render(game, small), [compact]);
+
+                // Build twice in the same frame, opening a book whose only tab
+                // is Search. At 427 x 240 the book and shifted compact effect
+                // fit on opposite sides of the inventory.
+                let wide = [854, 480];
+                game.settings.gui_scale = 2;
+                game.build_screen_at(wide);
+                game.level.recipe_book.open[crafting] = true;
+                game.build_screen_at(wide);
+                assert_eq!(
+                    render(game, wide),
+                    [
+                        ScreenRegion::new(Kind::RecipeBook, [54.0, 37.0, 147.0, 166.0]),
+                        ScreenRegion::new(Kind::RecipeBookTabs, [22.0, 40.0, 35.0, 27.0]),
+                        ScreenRegion::new(Kind::Effects, [385.0, 37.0, 32.0, 32.0]),
+                    ]
+                );
+
+                observer.canceled.store(true, Ordering::Relaxed);
+                assert!(render(game, wide).is_empty());
+                assert!(game.screen_regions(Screen::Inventory).is_empty());
+                observer.canceled.store(false, Ordering::Relaxed);
+
+                // The narrow book covers the inventory, so its panel is not a side region.
+                game.settings.gui_scale = 1;
+                game.build_screen_at(small);
+                assert_eq!(
+                    render(game, small),
+                    [
+                        ScreenRegion::new(Kind::RecipeBookTabs, [54.0, 40.0, 35.0, 27.0]),
+                        compact
+                    ]
+                );
+
+                // Switch directly from drawing the book to drawing Creative.
+                // Vanilla's painted 26 x 32 tabs are in two rows. The player
+                // can use the operator utilities, including the tab in column five.
+                game.potions.effects.list.clear();
+                game.set_mode_id(1);
+                game.ui.registries.permission = 2;
+                game.settings.operator_items_tab = true;
+                game.screen = Screen::Creative;
+                game.refresh_creative_tabs();
+                game.build_screen_at(small);
+                let mut tabs = render(game, small);
+                let by_origin = |a: &ScreenRegion, b: &ScreenRegion| {
+                    a.rect[..2].partial_cmp(&b.rect[..2]).unwrap()
+                };
+                tabs.sort_by(by_origin);
+                let mut expected = Vec::new();
+                for x in [62.0, 89.0, 116.0, 143.0, 170.0, 204.0, 231.0] {
+                    for y in [24.0, 184.0] {
+                        expected.push(ScreenRegion::new(Kind::CreativeTab, [x, y, 26.0, 32.0]));
+                    }
+                }
+                assert_eq!(tabs, expected);
+
+                // AnvilScreen does not paint the inventory's EffectsInInventory panel.
+                game.set_mode_id(0);
+                game.potions.effects.list = vec![sunrise_client::effects::EffectInstance::new(
+                    "speed", 200, 0,
+                )];
+                game.remote_open_station(
+                    1,
+                    "minecraft:anvil".into(),
+                    crate::game::stations::Kind::Anvil,
+                    sunrise_client::text::Text::literal("Anvil"),
+                    [0; 3],
+                );
+                game.build_screen_at(small);
+                assert!(render(game, small).is_empty());
             });
         });
     }

@@ -1,0 +1,5 @@
+manifest:
+refused: unsupported content API 77.0; this Sunrise reads 0.2: delete the api line, the tool writes it
+
+icon:
+unavailable

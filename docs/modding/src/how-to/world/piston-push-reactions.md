@@ -7,6 +7,12 @@ Answers must depend only on state and agree on both sides. They are resolved
 when parts are installed at load and reload; simulation and client replay
 read one cached answer. Removing the last subscriber restores the properties.
 
+On either side, `host.block_states().piston_push_reaction(state)` (or the same read
+through `LevelHost::block_states`) reads that resolved answer without calling the Part.
+`Ok(None)` means the block key or ordinal is unknown; `Err(LevelReadError::Unavailable)`
+means the backend or required block-state tables are unavailable. This is a state fact, not the
+entity reaction (`EntityRef::piston_push_reaction`) or a decision to move a block.
+
 The order is the reaction first, then the shared block-entity rule for any
 reaction that would move the block: push-pull, ignore-entity, and push only.
 Unbreakable hardness, immovable reactions, and push-only in the wrong direction

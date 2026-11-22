@@ -2,13 +2,13 @@
 //! each case's file is loaded, its `PORTAL` tickets ticked, refreshed and reloaded over a
 //! restart, and every step prints what the file then holds and which of the case's chunks a
 //! `PORTAL` ticket holds now.
-use sunrise_client::save::{LevelShape, SaveDir, read_dat, write_dat};
-use sunrise_client::ticket_levels::ChunkTickets;
-use sunrise_core::nbt::{Tag, parse_snbt};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
+use sunrise_client::save::{LevelShape, SaveDir, read_dat, write_dat};
+use sunrise_client::ticket_levels::ChunkTickets;
+use sunrise_core::nbt::{Tag, parse_snbt};
 
 fn chunk(pos: &Value) -> (i32, i32) {
     (
@@ -66,7 +66,11 @@ pub fn main() {
         let file = root.join("data/minecraft/chunk_tickets.dat");
         write_dat(&file, Tag::compound([("data", data)])).unwrap();
         // How the game opens a level (`world_loading::make_streaming`, `open_level`).
-        let save = SaveDir::new(root.clone(), LevelShape::OVERWORLD);
+        let save = SaveDir::new(
+            root.clone(),
+            LevelShape::OVERWORLD,
+            Some(Default::default()),
+        );
         let mut forced = save.load_forced_chunks();
         let mut tickets = ChunkTickets::with_saved_portal(save.load_portal_tickets());
         let level = (&save, file.as_path());

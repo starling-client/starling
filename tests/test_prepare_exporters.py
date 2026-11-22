@@ -21,13 +21,15 @@ class PrepareExportersTests(unittest.TestCase):
                 (folder / 'block-behaviours.json').write_text(json.dumps({
                     'fields': {'shape': f'<Block$$Lambda/0x{i:08x}>', 'solid': True}}))
                 (folder / 'creative-inventory.json').write_text(json.dumps({
-                    'tabs': [{}, {'tags': [['a', 'b'] if i < 2 else ['b', 'a']], 'items': ['stone']}]}))
+                    'tabs': [{}, {'search_metadata': [
+                        {'tags': ['a', 'b'] if i < 2 else ['b', 'a'], 'stack': 'stone'}
+                    ]}]}))
             with contextlib.redirect_stdout(io.StringIO()):
                 verify(folders)
                 for name, changed in [
                     ('stable.nbt', b'changed'),
                     ('block-behaviours.json', b'{"fields":{"shape":"<Block$$Lambda/0x1234>","solid":false}}'),
-                    ('creative-inventory.json', b'{"tabs":[{},{"tags":[["a","b"]],"items":["dirt"]}]}'),
+                    ('creative-inventory.json', b'{"tabs":[{},{"search_metadata":[{"tags":["a","b"],"stack":"dirt"}]}]}'),
                     ('sunrise-resources.json', b'{"schema":8}'),
                 ]:
                     for folder in folders[2:]:

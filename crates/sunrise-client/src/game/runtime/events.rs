@@ -2,13 +2,13 @@
 //! state is compared once per event loop turn, after the game ran, so watching never changes
 //! what the game does.
 use super::Game;
-use sunrise_client::Result;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::mpsc::Sender,
     time::{Duration, Instant},
 };
+use sunrise_client::Result;
 
 pub(super) const HELP: &[&str] = &[
     "events [--since SEQ]           what happened (screen, chat, death, respawn, item, hurt, heal, food, dimension, world), oldest first",

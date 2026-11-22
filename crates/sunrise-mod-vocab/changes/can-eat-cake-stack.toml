@@ -1,0 +1,3 @@
+ids = ["hook:can_eat"]
+why = "Version 2 passes stack = None and can_always_eat = false for cake and candle-cake bites, on the server and in client prediction. Holding a food item no longer applies that food's eligibility rule to cake. Food-item consumption still supplies its food stack."
+migrate = "Answer cake eligibility from the player rather than an incidental held item; event.stack is None for cake and candle cake even with an occupied hand."

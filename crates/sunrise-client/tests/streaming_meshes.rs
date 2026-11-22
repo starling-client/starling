@@ -5,6 +5,13 @@
 //! Relit columns remesh only where their light changed (#270), and every
 //! mesh still matches the world.
 extern crate sunrise_client_lib as sunrise_client;
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     assets::Assets,
     biome::Biomes,
@@ -19,13 +26,6 @@ use sunrise_client::{
 };
 use sunrise_core::biome::BiomeZoom;
 use sunrise_world::registry::BlockStateId;
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    sync::Arc,
-    thread,
-    time::{Duration, Instant},
-};
 
 fn resources() -> Option<std::path::PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -80,6 +80,7 @@ fn columns_loaded_past_the_render_distance_mesh_when_they_come_in_range() {
         assets,
         render: render.clone(),
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     });
     let mut streaming = Streaming::new(Arc::new(Saved), context, 3);
     streaming.radius = 4;
@@ -96,7 +97,7 @@ fn columns_loaded_past_the_render_distance_mesh_when_they_come_in_range() {
             assert!(Instant::now() < deadline, "streaming never settled");
             let before = (world.chunks.len(), meshed.len());
             let (uploads, _) = streaming.update(world);
-            meshed.extend(uploads.iter().map(|(key, _)| *key));
+            meshed.extend(uploads.iter().map(|upload| upload.key));
             // As the game does once they are uploaded: a worker frees them,
             // and nothing comes back (`pending` empties).
             streaming.free(uploads);
@@ -190,6 +191,7 @@ fn relit_columns_keep_every_mesh_current() {
         assets: assets.clone(),
         render: render.clone(),
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     });
     let state = |name: &str| assets.registry.default_state(name).unwrap().0;
     let (stone, glowstone, torch) = (
@@ -219,7 +221,7 @@ fn relit_columns_keep_every_mesh_current() {
             assert!(Instant::now() < deadline, "streaming never settled");
             let (uploads, _) = streaming.update(world);
             let idle = uploads.is_empty() && !streaming.busy();
-            meshes.extend(uploads);
+            meshes.extend(uploads.into_iter().map(|upload| (upload.key, upload.mesh)));
             thread::sleep(Duration::from_millis(5));
             quiet = if idle { quiet + 1 } else { 0 };
         }
@@ -267,6 +269,7 @@ fn relit_columns_keep_every_mesh_current() {
             render: &context.render,
             tables: &context.tables,
             hidden_states: &context.hidden_states,
+            part_tables: &context.part_tables,
             biomes: &context.biomes,
             visibility: context.tables.visibility.clone(),
         };
@@ -315,6 +318,7 @@ fn every_extra_area_loads_however_the_areas_change() {
     let visibility = models::load_visibility(&root, assets.registry).unwrap();
     let context = Arc::new(WorkerContext {
         hidden_states: Default::default(),
+        part_tables: Default::default(),
         tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility, None).unwrap()),
         light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
         biomes: Arc::new(
@@ -391,6 +395,7 @@ fn meshes_waiting_for_upload_hold_back_new_mesh_jobs() {
         assets,
         render,
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     });
     let workers = 3;
     let mut streaming = Streaming::new(Arc::new(Saved), context, workers);
@@ -404,7 +409,7 @@ fn meshes_waiting_for_upload_hold_back_new_mesh_jobs() {
             assert!(Instant::now() < deadline, "streaming never settled");
             let before = (world.chunks.len(), meshed.len());
             let (uploads, _) = streaming.update(world);
-            meshed.extend(uploads.iter().map(|(key, _)| *key));
+            meshed.extend(uploads.iter().map(|upload| upload.key));
             streaming.free(uploads);
             thread::sleep(Duration::from_millis(5));
             let idle = !streaming.busy() && before == (world.chunks.len(), meshed.len());

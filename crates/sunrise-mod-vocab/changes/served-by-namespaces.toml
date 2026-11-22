@@ -1,0 +1,14 @@
+ids = [
+    "type:PackageInfo",
+    "handle:PackageInfo::served_by",
+    "handle:PackageInfo::with_served_by",
+    "hook:blocks",
+    "hook:items",
+    "hook:recipe_property_sets",
+    "hook:register_client_item_extensions",
+    "hook:register_render_pipelines",
+    "hook:should_apply_effect_tick_this_tick",
+    "hook:apply_effect_tick",
+]
+why = "Content packages can delegate code-side namespace ownership to an opting-in native runtime mod via top-level `served_by = \"<native_mod_id>\"` and `[native] serves_content = true`. `PackageInfo` carries `served_by: Option<String>` so pre-resolved namespace authority grants the serving code mod uniform ownership over served packages' namespaces across all namespace-owned registrations (blocks, items, block entity types, fluids, general entity types, attributes, custom stats, game rules, recipe types/serializers, recipe book types, menu recipe books, menu screens, recipe property sets, render pipelines, armour models, arm poses, attachment types, biome modifiers, datapack registries, client dynamic textures, runtime levels, and mob-effect tick ownership) without changing `PackageInfo::namespaces()`."
+migrate = "No source change required for existing mods; rebuild against the updated SDK if crossing Wire with `PackageInfo` or listening to the bumped hooks. Runtime mods that serve generated content packages opt in with `[native] serves_content = true` and inspect served packages via `PackageInfo::served_by()`."

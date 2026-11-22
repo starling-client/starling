@@ -1,5 +1,9 @@
 # Design: Attachment query joins
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [attachment queries](../../modding/src/concepts/attachments/querying.md) for the current native API.
+> The join proposal and its guest validation matrix are design history, not the current query contract.
+
 Provisional proposal for [#2497](https://github.com/arismoko/horizon/issues/2497), extending [#1108's attachment query contract](../../modding/src/concepts/attachments/querying.md). Docs only; approval precedes implementation. The existing single-type API remains the same operation, extended through typed query specifications, without aliases or compatibility paths. Follow [Part instance state](part-instance-state.md) for lifecycle identity and root commit rules.
 
 ## Evidence and route owners

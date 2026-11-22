@@ -14,11 +14,11 @@
 //! modifiers keeps vanilla's bundle, so vanilla features keep their indices
 //! and their random seeds.
 use super::{J, Result};
-use sunrise_world::worldgen::structure::start::STEPS;
 use serde::Deserialize;
 use serde_json::{Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use sunrise_world::worldgen::structure::start::STEPS;
 
 /// The folders a biome modifier sits in, under `data/<ns>`.
 const FOLDERS: [&str; 2] = ["/neoforge/biome_modifier/", "/forge/biome_modifier/"];

@@ -2,9 +2,9 @@
 //! stores into the score named by the orb's UUID, as an armor stand's does
 //! (tools/test_orb_score_store_parity.py measures the same on vanilla 26.3).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 const ORB: &str = "00000000-0000-0000-0000-0000000000a7";
 const STAND: &str = "00000000-0000-0000-0000-0000000000a8";
@@ -81,7 +81,7 @@ fn store(game: &mut Game<'_>, subject: &str, kind: &str, getter: &str) -> (bool,
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_orb_stores_into_its_own_score() {
     let mut resources = None;
     let mut game = game(&mut resources);

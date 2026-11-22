@@ -1,0 +1,27 @@
+ids = [
+    "method:PresetEditor::mouse_clicked",
+    "method:PresetEditor::render",
+    "hook:screen_mouse_button_pressed_pre",
+    "hook:screen_mouse_button_pressed_pre.double_click",
+    "type:ScreenMouseButtonPressedPreEvent.double_click",
+    "hook:screen_mouse_button_pressed_post",
+    "hook:screen_mouse_button_pressed_post.double_click",
+    "type:ScreenMouseButtonPressedPostEvent.double_click",
+    "hook:screen_mouse_button_pressed_post.was_click_handled",
+    "type:ScreenMouseButtonPressedPostEvent.was_click_handled",
+    "hook:screen_mouse_button_pressed_post.result",
+    "type:ScreenMouseButtonPressedPostEvent.result",
+    "hook:screen_mouse_button_released_post",
+    "hook:screen_mouse_button_released_post.was_release_handled",
+    "type:ScreenMouseButtonReleasedPostEvent.was_release_handled",
+    "hook:screen_mouse_button_released_post.result",
+    "type:ScreenMouseButtonReleasedPostEvent.result",
+]
+why = """Vanilla 26.3 `MouseHandler.onButton` detects a double-click on the same screen instance and button less than 250 ms after the last handled press. NeoForge `ClientHooks.onScreenMouseClickedPre`/`onScreenMouseClickedPost` and `onScreenMouseReleasedPre`/`onScreenMouseReleasedPost` implement `ScreenEvent.MouseButtonPressed.Pre`/`.Post` and `ScreenEvent.MouseButtonReleased.Pre`/`.Post`: Pre can skip the screen and Post, and Post gets the original receiver and its answer even when it handled the input. The final Post answer controls further handling. A cancelled real press counts as handled without running Post.
+
+Vanilla `CreateWorldScreen.WorldTab.openPresetEditor` calls `PresetEditor.createEditScreen`; NeoForge `PresetEditorManager.init` and `RegisterPresetEditorsEvent.register` bind the factory to its preset. Sunrise uses its existing `CallbackOwner::call` and `CallbackOwner::dispose` to contain panics in retained providers and editor instances, including destruction, and report them by mod in the log and error toast. Vanilla `Screen.extractRenderStateWithTooltipAndSubtitles` calls `Screen.extractRenderState` before deferred elements, and NeoForge `ClientHooks.extractScreenInternal` posts `ScreenEvent.Render.Post` after screen extraction. Sunrise preserves that phase order: the existing `HudBatch::paint_checkpoint` discards only the failed editor callback's paint after its draw context closes, without removing the stock frame or interrupting Post and toasts."""
+migrate = """Replace `fn mouse_clicked(&mut self, x: f32, y: f32, button: u8, draft: &mut PresetEditorDraft<'_>) -> bool` with `fn mouse_clicked(&mut self, x: f32, y: f32, button: i32, double_click: bool, draft: &mut PresetEditorDraft<'_>) -> bool`. Use the GLFW button index without narrowing it to `u8`. Return `true` when the editor handled the press.
+
+`Hooks::screen_mouse_button_pressed_pre`, `Hooks::screen_mouse_button_pressed_post` and `Hooks::screen_mouse_button_released_post` are now version 2; the host and event parameters stay the same. Read `event.double_click` in press Pre and Post, `event.was_click_handled` in press Post and `event.was_release_handled` in release Post. Button Post runs for handled and unhandled input unless Pre cancelled. Its `event.screen`, `event.button` and `event.modifiers` describe that edge before the handler ran: for example, Done or Cancel still reports `world_preset_editor` in press Post even though Create World is open. A later release uses its own receiver. Write `*event.result = TriState::True` to force handled or `*event.result = TriState::False` to force unhandled. Leave the result at its initial `TriState::Default` (or set it back to `Default`) to use the receiver's original answer. The final press answer controls double-click history; the final press or release answer gates gameplay mappings if no screen remains open. Overriding the answer does not undo actions the screen already took.
+
+Key and character Post are unchanged: they still run only for unhandled input. Drag and scroll Post remain notices. No mod changes are required for owner-bound disposal or failed-paint containment; `PresetEditor::render` keeps its signature."""

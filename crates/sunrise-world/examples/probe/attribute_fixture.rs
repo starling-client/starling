@@ -1,12 +1,12 @@
 use crate::support::common::f64_bits;
-use sunrise_world::attributes::{
-    AttributeError, Definition, Instance, Modifier, Observer, Operation, Packed,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_world::attributes::{
+    AttributeError, Definition, Instance, Modifier, Observer, Operation, Packed,
 };
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())

@@ -1,8 +1,8 @@
 //! Seeded, bolt-local lightning meshes retained until their last active bolt disappears.
 use crate::{gfx::upload::Uploads, mesher::Vertex};
 use glam::DVec3;
-use sunrise_core::random::{LegacyRandom, RandomSource};
 use std::collections::HashMap;
+use sunrise_core::random::{LegacyRandom, RandomSource};
 use wgpu::util::DeviceExt;
 
 /// A bolt's render state. Simulation lifetime and flashes stay in the game.
@@ -145,11 +145,14 @@ impl<T> Cache<T> {
     }
 }
 
-fn offset(bolt: &Bolt, camera: DVec3) -> [f32; 3] {
+/// Where `bolt` is drawn relative to `camera`, the frame's `cameraPosition`: subtracted in
+/// doubles, then narrowed, so a bolt far from the origin keeps its fraction. The renderer's
+/// instance offsets and packs' `lightningBoltPosition` both come from here.
+pub(super) fn offset(bolt: &Bolt, camera: DVec3) -> [f32; 3] {
     (DVec3::from_array(bolt.at) - camera).as_vec3().to_array()
 }
 
-pub(super) struct Renderer {
+pub(crate) struct Renderer {
     cache: Cache<wgpu::Buffer>,
     instances: Option<wgpu::Buffer>,
     capacity: usize,

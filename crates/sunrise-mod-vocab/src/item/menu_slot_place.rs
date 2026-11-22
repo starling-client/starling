@@ -46,8 +46,8 @@ pub enum MenuSlotBackRefusal {
     /// The player is not online here (also a host with no game behind it), or `window` is not
     /// the menu they have open.
     NoPlayerOrWindow,
-    /// The open menu is not a mod menu opened with no block (its slots are a block entity's,
-    /// an entity's or the game's own), so its slots cannot show another storage.
+    /// The open menu cannot show another storage: it is not a blockless mod menu, or
+    /// its container slots are declared as transient, menu-owned storage.
     UnsupportedMenu,
     /// More places than the menu has container slots.
     TooManyPlaces,

@@ -185,8 +185,9 @@ uses the no-pack frame. What it changes from 0.1:
   blend. Under `"linear"` the frame holds linear light: the stages' results are stored as they are and Sunrise's own
   draws are decoded, so glass, water and smoke blend as light does and solid surfaces look as under `"gamma"`. A stage
   sees the same values either way. Where the device can't draw a float frame the pack draws on an 8-bit one, in
-  gamma. Resource packs' `core/sky`, `core/stars` and `core/rendertype_lines` shaders write gamma, so under
-  `"linear"` Sunrise's own sky, stars and block outline draw in their place.
+  gamma. Resource packs' `core/sky`, `core/stars`, `core/rendertype_lines` and `core/clouds` shaders write gamma,
+  so under `"linear"` Sunrise's own sky, stars, block outline and clouds draw in their place. A resource pack's `core/lightmap` is
+  kept: it draws the light texture, not the frame.
 - **`[entity]`**, `fn entity(input: EntityInput) -> Surface`: the lit colour of what is no block terrain (entities,
   block entities, dropped and framed items, particles; `input.kind` says which), from its texture, tint, vanilla's
   shade and hurt flash, its light and a normal, with the material stage's shadow maps and coloured lights. It returns
@@ -196,12 +197,21 @@ uses the no-pack frame. What it changes from 0.1:
   returns. BT.2020 holds colours outside sRGB, which HDR displays show. It needs `blend = "linear"`. `Frame` says
   which in `primaries`, with that space's luminance weights in `luminance`, after `black_level`. `"bt2020"` passes
   the check, but the game doesn't serve it yet.
+- **`[material] coverage`**: `"engine"` (the default) or `"pack"`, whose alpha decides which points of terrain are
+  drawn. Under `"engine"` solid and cutout terrain keep Sunrise's alpha test on the texture's alpha and ignore the
+  returned alpha, translucent terrain is cut on the texture's alpha too and takes the returned alpha as its opacity,
+  and the check refuses a `discard` reachable from `material`. Under `"pack"` the returned alpha drives the alpha
+  test and the stage may `discard`, as in 0.1.
 
 ```toml
 api = "0.2"
 
 [tonemap]                  # optional: the pack's own tone curve
 file = "tonemap.wgsl"
+
+[material]
+file = "material.wgsl"
+coverage = "engine"        # optional: engine (default) or pack, when the material cuts its own holes
 
 [entity]                   # optional: the colour of entities, block entities, items and particles (not drawn yet)
 file = "entity.wgsl"
@@ -246,6 +256,16 @@ draws them itself (the material stage covers terrain only). The first-person han
 
 ## Changelog
 
+- 2026-11-13: API 0.2 (**breaking**, experimental): the material stage keeps the engine's coverage unless the pack
+  declares it, with `[material] coverage`, `"engine"` (the default) or `"pack"`. Under `"engine"` solid and cutout
+  terrain's alpha test reads the texture's alpha, not the returned one, translucent terrain is cut on the texture's
+  alpha and blends by the returned alpha, and `sunrise-shader check` refuses a `discard` that `material` can reach,
+  through its helpers too. A 0.2 material that cuts its own holes sets `coverage = "pack"`, which keeps the old
+  behaviour. API 0.1 is unchanged, and refuses the key.
+- 2026-11-13: API 0.2 (fix, experimental): `MaterialInput.tangent.xyz` now points where `uv.x` grows, as the
+  reference says; it pointed the other way, so a normal map turned into world axes by the reference's rule had both
+  in-plane components negated. `w` is unchanged. A 0.2 pack that negated the tangent to make up for it must stop.
+  API 0.1 keeps the old direction: its WGSL is frozen.
 - 2026-11-10: API 0.2 (additions, experimental): the `[entity]` stage, `fn entity(input: EntityInput) -> Surface`,
   for entities, block entities, items and particles, with the material stage's shadow maps and coloured lights. The
   reference gives vanilla's own as the stage's function. `sunrise-shader check` takes it; the game refuses a pack

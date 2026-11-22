@@ -22,6 +22,8 @@ pub mod stack_dump;
 /// Alt+Space and a bare Alt never open the window's system menu, as in GLFW.
 #[cfg(target_os = "windows")]
 pub mod system_menu;
+#[cfg(feature = "test-game-dir")]
+pub mod test_game_dir;
 pub mod unwind;
 pub mod work;
 
@@ -29,6 +31,10 @@ use std::sync::{
     OnceLock,
     atomic::{AtomicBool, Ordering},
 };
+
+/// The pre-guest stack reservation for a worker that holds and ticks `Game` by value (#2430).
+/// Other gameplay workers use the same host stack without the retired guest allowance.
+pub const GAME_THREAD_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 /// The worker threads the machine offers this process: `available_parallelism`'s
 /// answer (its share of the cores — CPU affinity, a container's quota), resolved
@@ -97,7 +103,8 @@ pub fn par_chunks_mut_with<T: Send>(
         let helpers = worker_count().saturating_sub(1).clamp(1, count - 1);
         let threads: Vec<_> = (0..helpers)
             .filter_map(|_| {
-                sunrise_guest_stack::builder()
+                std::thread::Builder::new()
+                    .stack_size(crate::GAME_THREAD_STACK_BYTES)
                     .spawn_scoped(scope, work)
                     .ok()
             })
@@ -315,31 +322,6 @@ pub fn thread_cpu() -> Option<std::time::Duration> {
     None
 }
 
-/// Clones the file or the whole folder `from` as `to`, which must not exist, in one call
-/// that shares the data (APFS `clonefile`, folders included). `Unsupported` where there is
-/// no such call: the caller copies the files itself.
-pub fn clone_tree(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(target_vendor = "apple")]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let path = |p: &std::path::Path| {
-            std::ffi::CString::new(p.as_os_str().as_bytes())
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
-        };
-        let (from, to) = (path(from)?, path(to)?);
-        // SAFETY: both paths are NUL-terminated strings that outlive the call.
-        if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) } == 0 {
-            return Ok(());
-        }
-        Err(std::io::Error::last_os_error())
-    }
-    #[cfg(not(target_vendor = "apple"))]
-    {
-        let _ = (from, to);
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-}
-
 /// Set once as the game starts, before its helper threads do: they then go
 /// behind the server thread and the render thread (`behind_server`).
 static HELPERS_BEHIND: AtomicBool = AtomicBool::new(false);
@@ -368,13 +350,9 @@ pub fn behind_server() -> bool {
     HELPERS_BEHIND.load(Ordering::Relaxed) && behind()
 }
 
-/// The parameter `SCHED_IDLE` takes: priority 0, the only value that class accepts.
-/// Zeroed first because musl's `sched_param` has more fields (`sched_ss_*`) than
-/// glibc's, so a struct literal doesn't compile there.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn idle_param() -> libc::sched_param {
-    // SAFETY: `sched_param` is a plain C struct of integers (and, on musl, a
-    // timespec pair); all-zero is a valid value.
+fn idle_sched_param() -> libc::sched_param {
+    // SAFETY: `sched_param` is a plain C struct; zero-init also covers musl's extra fields.
     let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
     param.sched_priority = 0;
     param
@@ -390,7 +368,7 @@ fn behind() -> bool {
         if nice + BEHIND <= 19 {
             libc::setpriority(libc::PRIO_PROCESS as _, 0, nice + BEHIND) == 0
         } else {
-            let param = idle_param();
+            let param = idle_sched_param();
             libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) == 0
         }
     }
@@ -475,7 +453,7 @@ pub fn idle_current() -> bool {
 
 #[cfg(target_os = "linux")]
 fn idle() -> bool {
-    let param = idle_param();
+    let param = idle_sched_param();
     // SAFETY: sets the calling thread's own policy (pid 0); `param` lives
     // across the call.
     unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &param) == 0 }
@@ -927,10 +905,13 @@ mod tests {
         .unwrap();
     }
 
-    /// The option set is the purge delay: mimalloc v3's default for it is
-    /// 1000 ms, and it is 0 once configured.
+    /// Configured, the allocator purges at once (the purge delay: mimalloc v3's
+    /// default for it is 1000 ms, and it is 0 once configured) and, on Linux, the
+    /// process takes no transparent huge pages, whatever the system's setting.
+    /// One test: the options are process-wide, so a second test configuring the
+    /// allocator in parallel would change the default the first one reads.
     #[test]
-    fn configuring_the_allocator_purges_at_once() {
+    fn configuring_the_allocator_purges_at_once_and_takes_no_huge_pages() {
         // SAFETY: reads and sets one integer option.
         let get = || unsafe { libmimalloc_sys::mi_option_get(super::PURGE_DELAY) };
         if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
@@ -938,24 +919,19 @@ mod tests {
         }
         super::configure_allocator();
         assert_eq!(get(), 0);
-    }
-
-    /// Configured, the process takes no transparent huge pages, whatever the
-    /// system's setting.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn configuring_the_allocator_turns_transparent_huge_pages_off() {
-        super::configure_allocator();
-        // SAFETY: reads this process's flag.
-        assert_eq!(
-            unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) },
-            1
-        );
-        // SAFETY: reads one integer option.
-        assert_eq!(
-            unsafe { libmimalloc_sys::mi_option_get(super::ALLOW_THP) },
-            0
-        );
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: reads this process's flag.
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) },
+                1
+            );
+            // SAFETY: reads one integer option.
+            assert_eq!(
+                unsafe { libmimalloc_sys::mi_option_get(super::ALLOW_THP) },
+                0
+            );
+        }
     }
 }
 

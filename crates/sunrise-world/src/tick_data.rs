@@ -1,10 +1,10 @@
 //! Save-format bridge for scheduled block/fluid ticks. Registry identity is
 //! supplied by the caller; this module does not implement either type's behavior.
+use std::io;
 use sunrise_core::{
     position::BlockPos,
     ticks::{SavedTick, TickPriority, TickTypeId},
 };
-use std::io;
 use {crate::compression::invalid, sunrise_core::nbt::Tag};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

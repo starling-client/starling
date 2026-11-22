@@ -17,11 +17,12 @@ impl BundleItems {
 }
 impl BundleItems {
     fn slot(&self, host: &mut dyn ServerHost, index: usize) -> Option<ItemStack> {
-        let held = self.0.stack(host)?;
-        backend_of(&*host)?
+        let held = self.0.with_stack(host, |stack| stack.project()).flatten()?;
+        backend_of(host)?
             .item_bundle_slots(&held)?
-            .get(index)?
-            .clone()
+            .into_iter()
+            .nth(index)
+            .flatten()
     }
     /// Rewrites one item at `.0` as `changed`: `moved` when that goes through, else 0.
     fn rewrite(
@@ -40,10 +41,9 @@ impl BundleItems {
 impl ResourceHandler<ItemResource> for BundleItems {
     fn size(&self, host: &mut dyn ServerHost) -> usize {
         self.0
-            .stack(host)
-            .and_then(|held| {
-                backend_of(&*host).and_then(|backend| backend.item_bundle_slots(&held))
-            })
+            .with_stack(host, |stack| stack.project())
+            .flatten()
+            .and_then(|held| backend_of(host)?.item_bundle_slots(&held))
             .map_or(0, |slots| slots.len().max(1))
     }
     fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<ItemResource> {
@@ -52,14 +52,24 @@ impl ResourceHandler<ItemResource> for BundleItems {
     fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
         self.slot(host, index).map_or(0, |stack| stack.count())
     }
-    fn capacity(&self, host: &mut dyn ServerHost, index: usize, resource: &ItemResource) -> u32 {
-        self.0.stack(host).map_or(0, |held| {
-            backend_of(&*host).map_or(0, |backend| {
-                backend.item_bundle_capacity(&held, index, resource.as_stack())
+    fn capacity(
+        &self,
+        host: &mut dyn ServerHost,
+        index: usize,
+        resource: Option<&ItemResource>,
+    ) -> u32 {
+        let Some(resource) = resource else {
+            return if index < self.size(host) { u32::MAX } else { 0 };
+        };
+        self.0
+            .with_stack(host, |stack| stack.project())
+            .flatten()
+            .and_then(|held| {
+                Some(backend_of(host)?.item_bundle_capacity(&held, index, resource.as_stack()))
             })
-        })
+            .unwrap_or(0)
     }
-    fn insert(
+    fn insert_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -70,10 +80,12 @@ impl ResourceHandler<ItemResource> for BundleItems {
         let Some(offer) = resource.to_stack(amount) else {
             return 0;
         };
-        let Some((went, changed)) = self.0.stack(host).and_then(|held| {
-            backend_of(&*host)
-                .and_then(|backend| backend.item_bundle_insert_slot(&held, index, &offer))
-        }) else {
+        let Some((went, changed)) = self
+            .0
+            .with_stack(host, |stack| stack.project())
+            .flatten()
+            .and_then(|held| backend_of(host)?.item_bundle_insert_slot(&held, index, &offer))
+        else {
             return 0;
         };
         match went {
@@ -81,7 +93,7 @@ impl ResourceHandler<ItemResource> for BundleItems {
             went => self.rewrite(host, tx, &changed, went.min(amount)),
         }
     }
-    fn extract(
+    fn extract_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -89,15 +101,19 @@ impl ResourceHandler<ItemResource> for BundleItems {
         resource: &ItemResource,
         amount: u32,
     ) -> u32 {
-        if !self
-            .slot(host, index)
-            .is_some_and(|held| resource.matches(&held))
-        {
-            return 0;
-        }
-        let Some((Some(out), changed)) = self.0.stack(host).and_then(|held| {
-            backend_of(&*host).and_then(|backend| backend.item_bundle_extract(&held, index, amount))
-        }) else {
+        let Some((Some(out), changed)) = self
+            .0
+            .with_stack(host, |stack| stack.project())
+            .flatten()
+            .and_then(|held| {
+                let backend = backend_of(host)?;
+                let slot = backend.item_bundle_slots(&held)?.into_iter().nth(index)??;
+                if !resource.matches(&slot) {
+                    return None;
+                }
+                backend.item_bundle_extract(&held, index, amount)
+            })
+        else {
             return 0;
         };
         self.rewrite(host, tx, &changed, out.count().min(amount))

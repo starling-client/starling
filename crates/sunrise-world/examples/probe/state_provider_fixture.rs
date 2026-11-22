@@ -1,5 +1,4 @@
 use crate::support::common::tag;
-use sunrise_core::random::{LegacyRandom, RandomSource, WorldgenRandom, XoroshiroRandom};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -8,6 +7,7 @@ use std::{
     path::Path,
     sync::Arc,
 };
+use sunrise_core::random::{LegacyRandom, RandomSource, WorldgenRandom, XoroshiroRandom};
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{

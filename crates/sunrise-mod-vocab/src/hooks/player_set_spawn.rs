@@ -4,16 +4,18 @@ pub trait Hooks {
     /// NeoForge's `PlayerSetSpawnEvent`: a server player's respawn point is about to be
     /// set (`ServerPlayer.setRespawnPosition`), once for each call vanilla makes: every sleep
     /// in a bed (the same bed too, which refreshes its angle), an anchor that is a new
-    /// point, `/spawnpoint`, and the copy to the new player when a player respawns and their
-    /// respawn block was found (`pos` is none for a player with no point). A respawn block
-    /// that is gone makes no call. `pos` is the block position and `dimension` its level;
-    /// `forced` is `/spawnpoint`'s flag. Set `cancel` and the point stays as it was (the
-    /// respawned player is left with none). `player_entity_id` is the server's entity id for
-    /// the player. Server-side.
+    /// point, `/spawnpoint`, and the copy to the replacement after `player_clone` when
+    /// `player_respawn_position` allows copying (by default unless the saved block was
+    /// missing). `pos` is the block position and `dimension` its level; `pos` is none
+    /// when no point is set. `forced` is `/spawnpoint`'s flag. Cancel to keep the
+    /// current point, including a point already set on the replacement by a clone
+    /// listener. `player_entity_id` is the server's entity id for the player. Server-side.
     #[hook(
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "cancel",
+        version = 2,
         neoforge = "PlayerSetSpawnEvent",
         cancellable = true
     )]

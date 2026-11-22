@@ -58,7 +58,7 @@ impl Game<'_> {
         self
     }
     /// Whether a mod with the `sunrise-mod.toml` id `id` is installed: a
-    /// native, wasm or content package (Fabric's `FabricLoader.isModLoaded`,
+    /// native or content package (Fabric's `FabricLoader.isModLoaded`,
     /// NeoForge's `ModList.isLoaded`). The list is fixed at startup.
     pub(super) fn is_loaded(id: &str) -> bool {
         mod_api::__private::loaded_mods().get(id).is_some()
@@ -164,6 +164,26 @@ fn read(root: &FileRoot, file: &ConfigPath) -> Result<Vec<u8>, ConfigFileError> 
     Ok(bytes)
 }
 
+/// Neither the implicit bulk root nor a config mod folder can be a file.
+fn refuse_root_folder(root: &FileRoot, file: &ConfigPath) -> Result<(), ConfigFileError> {
+    if file.as_str().is_empty()
+        || (!root.bulk && Some(file.as_str()) == mod_api::content::crash::current_native_mod())
+    {
+        return Err(ConfigFileError::NotAFile);
+    }
+    Ok(())
+}
+
+/// What is at `name` in `directory`, without following a link; None where nothing is.
+fn file_meta(directory: &Dir, name: &str) -> Result<Option<Metadata>, ConfigFileError> {
+    match directory.symlink_metadata(name) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(ConfigFileError::Symlink),
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io(e)),
+    }
+}
+
 /// Whether `name` is the temporary file of a write, `<name>.<pid>-<n>.tmp`.
 fn is_write_temp(name: &str) -> bool {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
@@ -181,19 +201,11 @@ fn write(root: &FileRoot, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigF
     if bytes.len() as u64 > root.cap() {
         return Err(ConfigFileError::TooLarge);
     }
-    // Neither the implicit bulk root nor a config mod folder can be a file.
-    if file.as_str().is_empty()
-        || (!root.bulk && Some(file.as_str()) == mod_api::content::crash::current_native_mod())
-    {
-        return Err(ConfigFileError::NotAFile);
-    }
+    refuse_root_folder(root, file)?;
     let (directory, name) = resolve(root, file, true)?;
-    match directory.symlink_metadata(&name) {
-        Ok(meta) if meta.file_type().is_symlink() => return Err(ConfigFileError::Symlink),
-        Ok(meta) if !meta.is_file() => return Err(ConfigFileError::NotAFile),
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => return Err(io(e)),
+    match file_meta(&directory, &name)? {
+        Some(meta) if !meta.is_file() => return Err(ConfigFileError::NotAFile),
+        _ => {}
     }
     let temp = format!(
         "{name}.{}-{}.tmp",
@@ -213,6 +225,23 @@ fn write(root: &FileRoot, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigF
         let _ = directory.remove_file(&temp);
     }
     written.map_err(io)
+}
+
+fn remove(root: &FileRoot, file: &ConfigPath) -> Result<bool, ConfigFileError> {
+    refuse_root_folder(root, file)?;
+    let (directory, name) = match resolve(root, file, false) {
+        Err(ConfigFileError::NotFound) => return Ok(false),
+        resolved => resolved?,
+    };
+    match file_meta(&directory, &name)? {
+        None => Ok(false),
+        Some(meta) if !meta.is_file() => Err(ConfigFileError::NotAFile),
+        Some(_) => match directory.remove_file(&name) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(io(e)),
+        },
+    }
 }
 
 fn list(
@@ -319,6 +348,9 @@ macro_rules! files {
             fn stat(&self, path: &ConfigPath) -> Result<Option<ConfigStat>, ConfigFileError> {
                 stat(&$root(self)?, path)
             }
+            fn remove(&self, file: &ConfigPath) -> Result<bool, ConfigFileError> {
+                remove(&$root(self)?, file)
+            }
         }
     };
 }
@@ -401,6 +433,38 @@ mod tests {
     }
 
     #[test]
+    fn a_mod_removes_only_its_own_files() {
+        let root = Root::new("remove");
+        let root = &root.0;
+        as_mod("b", || write(root, &path("b.json"), b"b's").unwrap());
+        as_mod("fd", || {
+            write(root, &path("fd/old.bin"), b"x").unwrap();
+            write(root, &path("fd/new.bin"), b"y").unwrap();
+            assert_eq!(remove(root, &path("fd/old.bin")), Ok(true));
+            let names: Vec<_> = list(root, &path("fd"), None, 1024)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+            assert_eq!(names, ["new.bin"]);
+            assert_eq!(remove(root, &path("fd/old.bin")), Ok(false));
+            assert_eq!(remove(root, &path("fd/absent/a.bin")), Ok(false));
+            assert_eq!(remove(root, &path("fd")), Err(ConfigFileError::NotAFile));
+            fs::create_dir(root.path.join("fd/folder")).unwrap();
+            assert_eq!(
+                remove(root, &path("fd/folder")),
+                Err(ConfigFileError::NotAFile)
+            );
+            assert_eq!(
+                remove(root, &path("b.json")),
+                Err(ConfigFileError::NotOwned)
+            );
+        });
+        assert!(root.path.join("fd/folder").is_dir());
+        assert_eq!(fs::read(root.path.join("b.json")).unwrap(), b"b's");
+    }
+
+    #[test]
     fn a_file_named_for_the_mod_cant_block_its_folder_and_list_hides_write_temps() {
         let root = Root::new("folder-name");
         let root = &root.0;
@@ -453,11 +517,11 @@ mod tests {
 
     /// The service through a real game and the hooks' own dispatch: a mod
     /// saves its registered config from `config_loading` and keeps a file in
-    /// its folder, the reload poll hands the saved text back, and the same
-    /// call for another mod's file is refused. In a fresh process, run in a
-    /// scratch folder, since `config/` is beside the game's working folder.
+    /// its folder, the client frame poll hands the saved text back on the client
+    /// host, and a call for another mod's file is refused. A fresh process
+    /// gives the test its own working folder and `config/`.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_mod_saves_its_config_through_the_game_and_the_reload_hears_it() {
         use mod_api::{
             self, ConfigLoadingEvent, ConfigReloadingEvent, Hooks, HostSide, ModEntry, Mods,
@@ -477,24 +541,26 @@ mod tests {
         ) {
             return;
         }
-        fn files(host: &HostSide) -> &'static dyn ConfigFiles {
-            match host {
-                HostSide::Server(host) => host.config_files(),
-                HostSide::Client(host) => host.config_files(),
-            }
-        }
         struct Proof;
         #[mod_api::__subscriptions]
         impl Hooks for Proof {
-            fn register_configs(&self, _: HostSide, event: &mut RegisterConfigsEvent<'_>) {
+            fn register_configs(
+                &self,
+                _: &dyn mod_api::ConfigContext,
+                event: &mut RegisterConfigsEvent<'_>,
+            ) {
                 event.configs.push(mod_api::Config::new(
                     "proof",
                     mod_api::ConfigKind::Common,
                     "count = 0\n",
                 ));
             }
-            fn config_loading(&self, host: HostSide, event: &mut ConfigLoadingEvent<'_>) {
-                let files = files(&host);
+            fn config_loading(
+                &self,
+                context: &dyn mod_api::ConfigContext,
+                event: &mut ConfigLoadingEvent<'_>,
+            ) {
+                let files = context.config_files();
                 heard().push(format!("loading {}", event.config.text.trim()));
                 files
                     .write(&path("proof-common.toml"), b"count = 1\n")
@@ -505,15 +571,24 @@ mod tests {
                 assert_eq!(files.read(&other), Err(ConfigFileError::NotOwned));
                 assert_eq!(files.write(&other, b"x"), Err(ConfigFileError::NotOwned));
             }
-            fn config_reloading(&self, _: HostSide, event: &mut ConfigReloadingEvent<'_>) {
+            fn config_reloading(&self, host: HostSide<'_>, event: &mut ConfigReloadingEvent<'_>) {
+                let HostSide::Client(context) = host else {
+                    panic!("expected the client polling host");
+                };
+                assert!(
+                    context
+                        .config_files()
+                        .read(&path("proof/state.bin"))
+                        .is_ok()
+                );
                 heard().push(format!("reloading {}", event.config.text.trim()));
             }
         }
         let mods: Mods = vec![ModEntry::new("proof", Box::new(Proof))].into();
         mod_platform::testing::with_mods(mods, || {
-            super::super::native_entity_refs::tests::with_game(|game| {
+            super::super::native_entity_refs::tests::with_client_game(|game| {
                 game.native_configs_client_start();
-                game.native_configs_poll();
+                game.native_configs_tick_client();
             });
         });
         assert_eq!(*heard(), ["loading count = 0", "reloading count = 1"]);
@@ -553,8 +628,16 @@ mod tests {
                 list(&root.0, &path("fd"), None, 1024),
                 Err(ConfigFileError::Symlink)
             );
+            for linked in ["fd/passwd", "fd.json"] {
+                assert_eq!(
+                    remove(&root.0, &path(linked)),
+                    Err(ConfigFileError::Symlink)
+                );
+            }
         });
         assert!(!outside.0.path.join("new").exists());
+        assert!(outside.0.path.join("passwd").exists());
+        assert!(root.0.path.join("fd.json").is_symlink());
     }
 
     #[test]
@@ -839,103 +922,6 @@ mod tests {
                 Game::data_files().read(&path("server-cache")).unwrap(),
                 b"game-cache"
             );
-        });
-    }
-    #[test]
-    #[ignore = "daily"]
-    fn compiled_wasm_bulk_files_use_actual_game_filesystem_roots() {
-        use crate::game::native_entity_refs::tests::run_fresh_cases;
-        use crate::game::native_guest_turn_tests::with_guests_at;
-        if run_fresh_cases(
-            "game::native_config_files::tests::compiled_wasm_bulk_files_use_actual_game_filesystem_roots",
-            "SUNRISE_WASM_BULK_FILES_CHILD",
-            &["game"],
-        ) {
-            return;
-        }
-        sunrise_guest_stack::run_on_guest_stack(|| {
-            sunrise_mod_wasm::copy_probe::with_load_budget(|| {
-                use sunrise_mod_package::manifest::Package;
-                use sunrise_mod_wasm::{WasmPackage, load};
-                let package_path = PathBuf::from(std::env::var_os("SUNRISE_WASM_FIXTURE").unwrap());
-                let mut manifest = Package::read(&package_path).unwrap().manifest;
-                manifest.inject.clear();
-                let info = mod_api::PackageInfo::new(
-                    manifest.id.clone(),
-                    manifest.version.clone(),
-                    mod_api::PackageKind::Code,
-                    mod_api::Side::Both,
-                    vec![manifest.id.clone()],
-                    vec![],
-                );
-                let loaded = load(
-                    &fs::read(std::env::var_os("SUNRISE_WASM_STD").unwrap()).unwrap(),
-                    vec![WasmPackage {
-                        manifest,
-                        module: Package::read_wasm(&package_path).unwrap(),
-                    }],
-                );
-                assert!(loaded.refused.is_empty(), "{:?}", loaded.refused);
-                loaded.initialize(&[info]).unwrap();
-                let mods: mod_api::Mods = loaded.mods.into();
-                mod_platform::testing::with_mods(mods.clone(), || {
-                    crate::game::api_values::install_parts(&mods).unwrap();
-                    let base = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-                    let root =
-                        super::super::mods::content_root(&base, &Default::default()).unwrap();
-                    with_guests_at(root.prepared().to_owned(), |game| {
-                        let world = Root::new("wasm-world");
-                        game.world_root = world.0.path.clone();
-                        game.set_allow_commands(true);
-                        game.build_registries();
-                        game.register_native_commands();
-                        assert!(game.native_run_command("wasmbulkfiles"));
-                        let game_dir = Game::game_dir();
-                        assert_eq!(
-                            fs::read(game_dir.join("config/wasm_fixture/a.bin")).unwrap(),
-                            [0]
-                        );
-                        assert_eq!(
-                            fs::read(
-                                game_dir.join("sunrise-mod-data/wasm_fixture/wasm_fixture/a.bin")
-                            )
-                            .unwrap(),
-                            [1, 1]
-                        );
-                        assert_eq!(
-                            fs::read(
-                                world
-                                    .0
-                                    .path
-                                    .join("sunrise-mod-data/wasm_fixture/wasm_fixture/a.bin")
-                            )
-                            .unwrap(),
-                            [2, 2, 2]
-                        );
-                        as_mod("wasm_fixture", || {
-                            let host: &dyn mod_api::ServerHost = game;
-                            assert_eq!(
-                                host.data_files().read(&path("wasm_fixture/a.bin")).unwrap(),
-                                [1, 1]
-                            );
-                            assert_eq!(
-                                host.world_data_files()
-                                    .read(&path("wasm_fixture/a.bin"))
-                                    .unwrap(),
-                                [2, 2, 2]
-                            );
-                        });
-                        as_mod("other", || {
-                            assert_eq!(
-                                Game::data_files().read(&path("wasm_fixture/a.bin")),
-                                Err(ConfigFileError::NotFound)
-                            );
-                        });
-                        game.world_root.clear();
-                        assert!(game.native_run_command("wasmbulkfilesnoworld"));
-                    });
-                });
-            });
         });
     }
 }

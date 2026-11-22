@@ -21,6 +21,7 @@ use super::{
     riders,
     villager_brain::{closer_to_center, sections_to_village, village_sections},
 };
+use std::convert::Infallible;
 use sunrise_core::position::BlockPos;
 use sunrise_core::{
     geometry::{Axis, Vec3},
@@ -31,7 +32,6 @@ use sunrise_items::items::ConsumeEffect;
 use sunrise_world::consumable::EmissionWorld;
 use sunrise_world::registry::BlockStateId;
 use sunrise_world::teleport_consume::TeleportConsumeWorld;
-use std::convert::Infallible;
 
 // Fox.DATA_FLAGS_ID, kept in `extra.ints[0]` (and sent to clients as is).
 pub const SITTING: i32 = 1;
@@ -237,31 +237,6 @@ pub fn resets_x_rot(m: &Mob) -> bool {
     !flag(m, POUNCING | CROUCHING | INTERESTED | FACEPLANTED)
 }
 
-/// `Fox.populateDefaultEquipmentSlots`: one fox in five holds an emerald, an
-/// egg, rabbit feet or hide, wheat, leather or a feather in its mouth.
-pub fn populate_default_equipment(m: &mut Mob) {
-    if m.random.next_float() < 0.2 {
-        let odds = m.random.next_float();
-        let held = if odds < 0.05 {
-            "minecraft:emerald"
-        } else if odds < 0.2 {
-            "minecraft:egg"
-        } else if odds < 0.4 {
-            if m.random.next_boolean() {
-                "minecraft:rabbit_foot"
-            } else {
-                "minecraft:rabbit_hide"
-            }
-        } else if odds < 0.6 {
-            "minecraft:wheat"
-        } else if odds < 0.8 {
-            "minecraft:leather"
-        } else {
-            "minecraft:feather"
-        };
-        m.extra.set_main_hand(Some(held.into()));
-    }
-}
 /// `Fox.registerGoals` and `setTargetGoals` (the targets wait for the variant:
 /// red foxes prefer chickens and rabbits, snow foxes fish).
 pub fn register(m: &mut Mob) {
@@ -391,7 +366,7 @@ impl Consumption {
             && !m.no_ai
             && m.position == expected
             && m.ai.target.is_none()
-            && m.on_ground
+            && m.ground.on_ground
             && !flag(m, SLEEPING)
     }
     /// Finish the original item use after its own effects have moved the actor.
@@ -400,7 +375,7 @@ impl Consumption {
         &self,
         m: &mut Mob,
         expected: Vec3,
-        remainder: Option<std::sync::Arc<str>>,
+        info: Option<&crate::items::ItemInfo>,
     ) -> bool {
         if !self.same_item_use(m) || m.position != expected {
             return false;
@@ -412,7 +387,8 @@ impl Consumption {
             // LivingEntity.handleExtraItemsCreatedOnUse is empty for a fox:
             // an additional use remainder is discarded while food remains.
         } else {
-            m.extra.set_main_hand(remainder);
+            m.extra
+                .set_main_hand_stack(crate::item_sync::use_remainder(&self.stack, info));
         }
         m.extra.ints[TICKS_SINCE_EATEN] = 0;
         true
@@ -430,7 +406,7 @@ pub fn decide_consumption(m: &Mob, w: &MobWorld) -> Option<Consumption> {
         || m.extra.ints[TICKS_SINCE_EATEN] <= 600
         || !eats(w, stack)
         || m.ai.target.is_some()
-        || !m.on_ground
+        || !m.ground.on_ground
         || flag(m, SLEEPING)
     {
         return None;
@@ -449,37 +425,25 @@ pub fn apply_consumption(
     decision: &Consumption,
     w: &MobWorld,
     m: &mut Mob,
-    level: &mut crate::health::DamageLevel<'_>,
     events: &mut Vec<MobEvent>,
 ) -> bool {
     if !decision.still_valid(m) {
         return false;
     }
-    if !consume(w, m, level, events, &decision.stack) {
+    if !consume(w, m, events, &decision.stack) {
         return false;
     }
-    let remainder = crate::item_sync::use_remainder(
-        &decision.stack,
-        w.items
-            .and_then(|items| items.items.get(&decision.stack.item))
-            .and_then(|info| info.use_remainder.clone()),
-    )
-    .map(Into::into);
+    let info = w.items.and_then(|items| items.get(&decision.stack.item));
     let position = m.position;
-    decision.finish(m, position, remainder)
+    decision.finish(m, position, info)
 }
 
 /// `Fox.tick` and `Fox.aiStep`: eating, and `SoundEvents.FOX_AGGRO`
 /// (`Entity.playSound` at its feet) while the fox is defending. Only the
 /// server broadcasts that sound.
-pub fn ai_step(
-    m: &mut Mob,
-    w: &MobWorld,
-    level: &mut crate::health::DamageLevel<'_>,
-    events: &mut Vec<MobEvent>,
-) {
+pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if let Some(decision) = ai_step_until_consumption(m, w, events) {
-        apply_consumption(&decision, w, m, level, events);
+        apply_consumption(&decision, w, m, events);
         before_living_ai_step(m, w);
     }
     finish_ai_step(m, w, events);
@@ -501,7 +465,7 @@ pub fn ai_step_until_consumption(
     if let Some(stack) = m.extra.main_hand_stack()
         && eats(w, stack)
         && m.ai.target.is_none()
-        && m.on_ground
+        && m.ground.on_ground
         && !flag(m, SLEEPING)
     {
         let eaten = m.extra.ints[TICKS_SINCE_EATEN];
@@ -592,7 +556,6 @@ fn eats(w: &MobWorld, stack: &crate::items::ItemStack) -> bool {
 fn consume(
     w: &MobWorld,
     m: &mut Mob,
-    level: &mut crate::health::DamageLevel<'_>,
     events: &mut Vec<MobEvent>,
     stack: &sunrise_items::items::ItemStack,
 ) -> bool {
@@ -625,7 +588,7 @@ fn consume(
                 1.0,
             ));
         } else {
-            m.apply_consume_effect(level, effect);
+            m.apply_consume_effect(effect);
         }
     }
     // `user.gameEvent(animation == DRINK ? GameEvent.DRINK : GameEvent.EAT)` at
@@ -1241,7 +1204,7 @@ impl Goal for Pounce {
             return false;
         }
         let yd = m.velocity.y;
-        (yd * yd >= f64::from(0.05f32) || m.head_pitch.abs() >= 15.0 || !m.on_ground)
+        (yd * yd >= f64::from(0.05f32) || m.head_pitch.abs() >= 15.0 || !m.ground.on_ground)
             && !flag(m, FACEPLANTED)
     }
     fn interruptable(&self) -> bool {
@@ -1289,7 +1252,7 @@ impl Goal for Pounce {
         {
             super::ai::do_hurt_target(m, who, cx);
         } else if m.head_pitch > 0.0
-            && m.on_ground
+            && m.ground.on_ground
             && m.velocity.y as f32 != 0.0
             && cx.w.block_name(
                 m.position.x.floor() as i32,
@@ -1710,7 +1673,7 @@ mod pickup_tests {
     }
 
     #[test]
-    #[ignore = "requires prepared entity resources in .local/sunrise-client"]
+    #[ignore = "daily"]
     fn carry_crouch_advances_only_after_living_step() {
         assert!(crate::mobs::world::with_test_world(&[], |w, _| {
             let mut world = w.clone();
@@ -1728,7 +1691,7 @@ mod pickup_tests {
     }
 
     #[test]
-    #[ignore = "requires prepared entity resources in .local/sunrise-client"]
+    #[ignore = "daily"]
     fn carry_no_ai_keeps_sleeping_in_water_and_animates() {
         assert!(crate::mobs::world::with_test_world(&[], |w, _| {
             let mut f = fox();
@@ -1780,162 +1743,147 @@ mod consume_tests {
     use crate::mobs::world::with_built_test_world;
 
     #[test]
+    #[ignore = "daily"]
     fn effective_components_admit_food_and_preserve_removed_consumables() {
-        let _ = with_built_test_world(
-            &[],
-            |_, _| {},
-            |w, types| {
-                let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
-                let mut fox = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
-                fox.on_ground = true;
-                fox.extra.ints[TICKS_SINCE_EATEN] = 601;
-                for removed in ["!minecraft:food", "!minecraft:consumable"] {
-                    let mut stack = crate::items::ItemStack::new("minecraft:golden_apple", 2);
+        assert!(
+            with_built_test_world(
+                &[],
+                |_, _| {},
+                |w, types| {
+                    let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
+                    let mut fox = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    fox.ground.on_ground = true;
+                    fox.extra.ints[TICKS_SINCE_EATEN] = 601;
+                    for removed in ["!minecraft:food", "!minecraft:consumable"] {
+                        let mut stack = crate::items::ItemStack::new("minecraft:golden_apple", 2);
+                        stack.data_mut().set_other(
+                            removed,
+                            Some(sunrise_core::nbt::Tag::Compound(Default::default())),
+                        );
+                        fox.extra.set_main_hand_stack(Some(stack.clone()));
+                        assert!(decide_consumption(&fox, w).is_none(), "{removed}");
+                        let mut events = Vec::new();
+                        ai_step(&mut fox, w, &mut events);
+                        assert_eq!(fox.extra.main_hand_stack(), Some(&stack), "{removed}");
+                        assert!(!events.iter().any(|event| matches!(
+                            event,
+                            MobEvent::GameEvent {
+                                event: "minecraft:eat",
+                                ..
+                            }
+                        )));
+                    }
+                    let mut stack = crate::items::ItemStack::new("minecraft:stone", 2);
                     stack.data_mut().set_other(
-                        removed,
+                        "minecraft:food",
+                        Some(
+                            sunrise_core::nbt::parse_snbt("{nutrition:1,saturation:0.1f}")
+                                .unwrap()
+                                .0,
+                        ),
+                    );
+                    stack.data_mut().set_other(
+                        "minecraft:consumable",
                         Some(sunrise_core::nbt::Tag::Compound(Default::default())),
                     );
-                    fox.extra.set_main_hand_stack(Some(stack.clone()));
-                    assert!(decide_consumption(&fox, w).is_none(), "{removed}");
+                    fox.extra.set_main_hand_stack(Some(stack));
+                    let decision = decide_consumption(&fox, w)
+                        .expect("effective components make stone edible");
                     let mut events = Vec::new();
-                    ai_step(
-                        &mut fox,
-                        w,
-                        &mut crate::health::TestLevel::new(0).level(),
-                        &mut events,
-                    );
-                    assert_eq!(fox.extra.main_hand_stack(), Some(&stack), "{removed}");
-                    assert!(!events.iter().any(|event| matches!(
+                    assert!(apply_consumption(&decision, w, &mut fox, &mut events));
+                    assert_eq!(fox.extra.main_hand_stack().unwrap().count, 1);
+                    assert!(events.iter().any(|event| matches!(
                         event,
                         MobEvent::GameEvent {
                             event: "minecraft:eat",
+                            source: 1,
                             ..
                         }
                     )));
-                }
-                let mut stack = crate::items::ItemStack::new("minecraft:stone", 2);
-                stack.data_mut().set_other(
-                    "minecraft:food",
-                    Some(
-                        sunrise_core::nbt::parse_snbt("{nutrition:1,saturation:0.1f}")
-                            .unwrap()
-                            .0,
-                    ),
-                );
-                stack.data_mut().set_other(
-                    "minecraft:consumable",
-                    Some(sunrise_core::nbt::Tag::Compound(Default::default())),
-                );
-                fox.extra.set_main_hand_stack(Some(stack));
-                let decision =
-                    decide_consumption(&fox, w).expect("effective components make stone edible");
-                let mut events = Vec::new();
-                assert!(apply_consumption(
-                    &decision,
-                    w,
-                    &mut fox,
-                    &mut crate::health::TestLevel::new(0).level(),
-                    &mut events
-                ));
-                assert_eq!(fox.extra.main_hand_stack().unwrap().count, 1);
-                assert!(events.iter().any(|event| matches!(
-                    event,
-                    MobEvent::GameEvent {
-                        event: "minecraft:eat",
-                        source: 1,
-                        ..
-                    }
-                )));
-                // A one-count food leaves the effective remainder, not its prototype's.
-                for (patch, expected) in [
-                    (None, Some("minecraft:bowl")),
-                    (Some("minecraft:use_remainder"), Some("minecraft:diamond")),
-                    (Some("!minecraft:use_remainder"), None),
-                ] {
-                    let mut stack = crate::items::ItemStack::new("minecraft:mushroom_stew", 1);
-                    if let Some(component) = patch {
-                        stack.data_mut().set_other(
-                            component,
-                            Some(
-                                sunrise_core::nbt::parse_snbt(
-                                    r#"{id:"minecraft:diamond",count:1}"#,
-                                )
-                                .unwrap()
-                                .0,
-                            ),
+                    // A one-count food leaves the effective remainder, not its prototype's.
+                    for (patch, expected) in [
+                        (None, Some("minecraft:bowl")),
+                        (Some("minecraft:use_remainder"), Some("minecraft:diamond")),
+                        (Some("!minecraft:use_remainder"), None),
+                    ] {
+                        let mut stack = crate::items::ItemStack::new("minecraft:mushroom_stew", 1);
+                        if let Some(component) = patch {
+                            stack.data_mut().set_other(
+                                component,
+                                Some(
+                                    sunrise_core::nbt::parse_snbt(
+                                        r#"{id:"minecraft:diamond",count:1}"#,
+                                    )
+                                    .unwrap()
+                                    .0,
+                                ),
+                            );
+                        }
+                        fox.extra.set_main_hand_stack(Some(stack));
+                        fox.extra.ints[TICKS_SINCE_EATEN] = 601;
+                        let decision = decide_consumption(&fox, w).unwrap();
+                        assert!(apply_consumption(&decision, w, &mut fox, &mut Vec::new()));
+                        assert_eq!(
+                            fox.extra.main_hand_id(),
+                            expected,
+                            "remainder patch: {patch:?}"
                         );
                     }
-                    fox.extra.set_main_hand_stack(Some(stack));
-                    fox.extra.ints[TICKS_SINCE_EATEN] = 601;
-                    let decision = decide_consumption(&fox, w).unwrap();
-                    assert!(apply_consumption(
-                        &decision,
-                        w,
-                        &mut fox,
-                        &mut crate::health::TestLevel::new(0).level(),
-                        &mut Vec::new()
-                    ));
-                    assert_eq!(
-                        fox.extra.main_hand_id(),
-                        expected,
-                        "remainder patch: {patch:?}"
-                    );
-                }
-            },
+                },
+            ),
+            "vanilla data is missing"
         );
     }
 
     #[test]
+    #[ignore = "daily"]
     fn explicit_consume_sounds_keep_effect_order_even_for_a_silent_fox() {
-        let _ = with_built_test_world(
-            &[],
-            |_, _| {},
-            |w, types| {
-                let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
-                let mut fox = Mob::new(1, kind, Vec3::new(-1.2, 64.25, 3.75), 0.0);
-                fox.on_ground = true;
-                fox.silent = true;
-                fox.extra.ints[TICKS_SINCE_EATEN] = 601;
-                let mut stack = crate::items::ItemStack::new("minecraft:golden_apple", 1);
-                stack.data_mut().set_other("minecraft:consumable", Some(sunrise_core::nbt::parse_snbt(r#"{has_consume_particles:0b,on_consume_effects:[{type:"minecraft:play_sound",sound:"sunrise:first"},{type:"minecraft:play_sound",sound:"sunrise:second"}]}"#).unwrap().0));
-                fox.extra.set_main_hand_stack(Some(stack));
-                let decision = decide_consumption(&fox, w).unwrap();
-                let mut events = Vec::new();
-                assert!(apply_consumption(
-                    &decision,
-                    w,
-                    &mut fox,
-                    &mut crate::health::TestLevel::new(0).level(),
-                    &mut events
-                ));
-                let effects: Vec<_> = events
-                    .iter()
-                    .filter_map(|event| match event {
-                        MobEvent::SoundId(sound, at, volume, pitch)
-                            if sound.starts_with("sunrise:") =>
-                        {
-                            Some((sound.as_str(), *at, *volume, *pitch))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(
-                    effects,
-                    [
-                        ("sunrise:first", [-1.5, 64.5, 3.5], 1.0, 1.0),
-                        ("sunrise:second", [-1.5, 64.5, 3.5], 1.0, 1.0)
-                    ]
-                );
-                assert!(matches!(
-                    events.last(),
-                    Some(MobEvent::GameEvent {
-                        event: "minecraft:eat",
-                        source: 1,
-                        ..
-                    })
-                ));
-                assert!(fox.extra.main_hand_stack().is_none());
-            },
+        assert!(
+            with_built_test_world(
+                &[],
+                |_, _| {},
+                |w, types| {
+                    let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
+                    let mut fox = Mob::new(1, kind, Vec3::new(-1.2, 64.25, 3.75), 0.0);
+                    fox.ground.on_ground = true;
+                    fox.silent = true;
+                    fox.extra.ints[TICKS_SINCE_EATEN] = 601;
+                    let mut stack = crate::items::ItemStack::new("minecraft:golden_apple", 1);
+                    stack.data_mut().set_other("minecraft:consumable", Some(sunrise_core::nbt::parse_snbt(r#"{has_consume_particles:0b,on_consume_effects:[{type:"minecraft:play_sound",sound:"sunrise:first"},{type:"minecraft:play_sound",sound:"sunrise:second"}]}"#).unwrap().0));
+                    fox.extra.set_main_hand_stack(Some(stack));
+                    let decision = decide_consumption(&fox, w).unwrap();
+                    let mut events = Vec::new();
+                    assert!(apply_consumption(&decision, w, &mut fox, &mut events));
+                    let effects: Vec<_> = events
+                        .iter()
+                        .filter_map(|event| match event {
+                            MobEvent::SoundId(sound, at, volume, pitch)
+                                if sound.starts_with("sunrise:") =>
+                            {
+                                Some((sound.as_str(), *at, *volume, *pitch))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(
+                        effects,
+                        [
+                            ("sunrise:first", [-1.5, 64.5, 3.5], 1.0, 1.0),
+                            ("sunrise:second", [-1.5, 64.5, 3.5], 1.0, 1.0)
+                        ]
+                    );
+                    assert!(matches!(
+                        events.last(),
+                        Some(MobEvent::GameEvent {
+                            event: "minecraft:eat",
+                            source: 1,
+                            ..
+                        })
+                    ));
+                    assert!(fox.extra.main_hand_stack().is_none());
+                },
+            ),
+            "vanilla data is missing"
         );
     }
 
@@ -1943,6 +1891,7 @@ mod consume_tests {
     /// chorus fruit takes `TeleportRandomlyConsumeEffect`'s teleport, with its
     /// own sound and the portal trail (level event 2017).
     #[test]
+    #[ignore = "daily"]
     fn a_chorus_fruit_carries_the_fox_to_free_ground() {
         let ran = with_built_test_world(
             &[],
@@ -1973,19 +1922,14 @@ mod consume_tests {
             |w, types| {
                 let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
                 let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 let velocity = Vec3::new(0.2, 0.0, -0.1);
                 m.velocity = velocity;
                 m.extra.set_main_hand(Some("minecraft:chorus_fruit".into()));
                 // Past the 600 ticks `Fox.aiStep` waits before it finishes the item.
                 m.extra.ints[TICKS_SINCE_EATEN] = 601;
                 let mut events = Vec::new();
-                ai_step(
-                    &mut m,
-                    w,
-                    &mut crate::health::TestLevel::new(0).level(),
-                    &mut events,
-                );
+                ai_step(&mut m, w, &mut events);
                 assert_ne!(m.position, Vec3::new(0.5, 1.0, 0.5), "the fruit moved it");
                 // `Entity.randomTeleport` drops the drawn height by one per
                 // step until the block below it is ground: just above the stone.
@@ -2060,7 +2004,7 @@ mod consume_tests {
         );
         // Without the vanilla data under .local/sunrise-client (CI's unit
         // tests) there is no fox to feed: the test has nothing to check.
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     /// `Consumable.onConsume` runs the whole of a golden apple's consume, not
@@ -2070,6 +2014,7 @@ mod consume_tests {
     /// crumbs of `spawnItemParticles` but hands them to `Level.addParticle`,
     /// which a server does nothing with.
     #[test]
+    #[ignore = "daily"]
     fn a_golden_apple_feeds_the_fox_and_posts_the_eat_event() {
         let ran = with_built_test_world(
             &[],
@@ -2077,16 +2022,11 @@ mod consume_tests {
             |w, types| {
                 let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
                 let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m.extra.set_main_hand(Some("minecraft:golden_apple".into()));
                 m.extra.ints[TICKS_SINCE_EATEN] = 601;
                 let mut events = Vec::new();
-                ai_step(
-                    &mut m,
-                    w,
-                    &mut crate::health::TestLevel::new(0).level(),
-                    &mut events,
-                );
+                ai_step(&mut m, w, &mut events);
                 // `ApplyStatusEffectsConsumeEffect`: regeneration II for 100
                 // ticks, then absorption for 2400.
                 assert!(
@@ -2144,7 +2084,7 @@ mod consume_tests {
         );
         // Without the vanilla data under .local/sunrise-client (CI's unit
         // tests) there is no fox to feed: the test has nothing to check.
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
     #[cfg(test)]
     mod alertable_tests {
@@ -2157,6 +2097,7 @@ mod consume_tests {
         /// `TargetingConditions.forCombat().range(12)`, so an invisible player at
         /// eleven blocks does not keep the fox alert, while a visible one does.
         #[test]
+        #[ignore = "daily"]
         fn an_invisible_player_far_away_is_not_alerting() {
             let mut outcomes = Vec::new();
             if !with_test_world(&[], |w, _| {
@@ -2216,6 +2157,7 @@ mod consume_tests {
         /// `Fox.FoxSleepGoal.canUse` refuses to sleep while `xxa`, `yya` or
         /// `zza` is nonzero, even when already asleep.
         #[test]
+        #[ignore = "daily"]
         fn a_fox_with_movement_input_does_not_sleep() {
             let mut outcomes = Vec::new();
             if !with_test_world(&[], |w, _| {
@@ -2320,6 +2262,7 @@ mod seek_shelter_tests {
     /// shade, but not while it stands in a village (`ServerLevel.isVillage`):
     /// there it stays out in the sun.
     #[test]
+    #[ignore = "daily"]
     fn a_village_fox_does_not_look_for_shade() {
         let (Some(open), Some(village)) =
             (seeks_shelter(&[]), seeks_shelter(&[villager_of_the_bell()]))
@@ -2355,6 +2298,7 @@ mod defend_tests {
     /// that attacker as its target, growls (`FOX_AGGRO`), sets `DEFENDING` and
     /// drops the flag when the goal stops.
     #[test]
+    #[ignore = "daily"]
     fn a_fox_defends_the_player_it_trusts() {
         let ran = with_built_test_world(
             &[zombie()],
@@ -2414,6 +2358,6 @@ mod defend_tests {
                 assert_eq!(fox.ai.target, None, "and drops the target");
             },
         );
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }

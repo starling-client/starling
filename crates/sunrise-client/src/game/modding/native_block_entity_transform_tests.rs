@@ -1,5 +1,6 @@
 //! Placement exercises the real processor and the game-side registration bridge.
 use super::native_block_entity_transform::prepare;
+use std::sync::{Arc, Mutex};
 use sunrise_core::nbt::{Compound, Limits, Tag, write_network};
 use sunrise_world::{
     registry::{BlockRegistry, BlockStateId},
@@ -13,7 +14,6 @@ use sunrise_world::{
         },
     },
 };
-use std::sync::{Arc, Mutex};
 
 type Calls = Arc<Mutex<Vec<mod_api::StructureTransform>>>;
 struct Registration(Calls);
@@ -493,7 +493,7 @@ fn structure_transform_hostile_output_keeps_original_identity() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn structure_transform_survives_real_datapack_reload_with_its_registry() {
     use crate::game::{native_entity_refs::tests::with_game, world_loading::WorldRequest};
     let calls = Calls::default();

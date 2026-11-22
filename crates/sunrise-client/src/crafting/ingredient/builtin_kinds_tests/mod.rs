@@ -24,8 +24,36 @@ fn resources() -> Items {
 
 mod families {
     use super::*;
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/builtin_ingredient_test_modules.rs"
-    ));
+    mod axolotl_variant;
+    mod chicken_variant;
+    mod colour;
+    mod custom_data;
+    mod decoder_4203;
+    mod decoder_4206;
+    mod decoder_4209;
+    mod decoder_4212;
+    mod decoder_4217;
+    mod decoder_4218;
+    mod decoder_4219;
+    mod decoder_contracts;
+    mod enums;
+    mod fuel;
+    mod member_4092;
+    mod member_4095;
+    mod member_4100;
+    mod member_4105;
+    mod member_4109;
+    mod member_4112;
+    mod member_4119;
+    mod member_4124;
+    mod member_4221;
+    mod member_4222;
+    mod mooshroom_variant;
+    mod numeric;
+    mod pet_contracts;
+    mod pet_variants;
+    mod record_contracts;
+    mod records;
+    mod rest;
+    mod salmon_size;
 }

@@ -18,7 +18,6 @@ class FormatScanTest(unittest.TestCase):
                          "crates/sunrise-mod-vocab/src/hooks/player.rs",
                          "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/a.rs",
                          "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/b/c.rs",
-                         "crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback/d.rs",
                          # Reached by cargo fmt through its `mod` lines, so not listed by path.
                          "crates/sunrise-client/src/lib.rs",
                          "crates/sunrise-client/src/game/world/notes.md"):
@@ -32,8 +31,7 @@ class FormatScanTest(unittest.TestCase):
                  "crates/sunrise-mod-api/src/lib.rs",
                  "crates/sunrise-mod-vocab/src/hooks/player.rs",
                  "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/a.rs",
-                 "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/b/c.rs",
-                 "crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback/d.rs"],
+                 "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/b/c.rs"],
             ])
 
     def test_long_file_lists_are_split_and_every_check_runs(self):

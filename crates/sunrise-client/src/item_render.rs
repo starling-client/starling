@@ -7,11 +7,15 @@
 //! them: [`gui`] into the HUD batch with the GUI item lighting, [`WorldSink`]
 //! into entity vertices with the level's lighting.
 use sunrise_assets::resource_source::{ResourceRoot, ResourceSource};
+#[cfg(test)]
+mod block_light_tests;
 pub mod cit;
 mod glint_atlas;
 #[cfg(test)]
 mod glint_tests;
 pub mod gui;
+mod registered_providers;
+mod registered_special;
 mod special;
 #[cfg(test)]
 mod special_parts_tests;
@@ -24,23 +28,39 @@ use crate::{
     mesher::{CULL_BACK, Vertex},
 };
 use glam::{Mat3, Mat4, Vec3};
-use sunrise_assets::{
-    animation::AnimationMetadata,
-    item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model, bake_sprite_layer},
-    item_model::{
-        ClientItem, Context, DisplayContext, FoilType, ItemEnv, ItemModels, LayerContent,
-        LevelState, OwnerState, PreparedParts, SpecialModel, StackView,
-    },
-    model::Direction,
-    palette::PalettedPermutations,
-    resolve::{MISSING_MODEL, ModelLibrary},
+use mod_api::{ClientHost, ItemDisplayContext, ItemKey, SpecialModelContext, SpecialModelTints};
+pub use registered_providers::{
+    BoundItemModel, BoundRangeProperty, BoundSelectProperty, BoundTintSource, ItemModelFactories,
+    ItemProviderEntry, ItemProviderTables, ItemTintFactories, RangePropertyFactories,
+    SelectPropertyFactories, bind_item_model_factories, bind_item_tint_factories,
+    bind_range_property_factories, bind_select_property_factories, decode_item_model,
+    decode_range_property, decode_select_property, decode_tint_source,
+    install_item_model_factories, install_item_tint_factories, install_range_property_factories,
+    install_select_property_factories,
 };
-use sunrise_core::nbt::Tag;
+pub use registered_special::{
+    BakedSpecialGeometry, OwnedSpecialModelFactory, SpecialModelFactories,
+    install_special_model_factories,
+};
+use registered_special::{FACTORIES, StackAncestor};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
+    num::NonZeroU32,
+    ops::ControlFlow,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
 };
+use sunrise_assets::{
+    item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model, bake_sprite_layer},
+    item_model::{
+        ClientItem, Context, DisplayContext, FoilType, ItemEnv, ItemModels, Layer, LayerContent,
+        LayerTransform, LevelState, OwnerState, SpecialModel, StackView,
+    },
+    model::Direction,
+    resolve::{MISSING_MODEL, ModelLibrary},
+};
+use sunrise_core::nbt::Tag;
 
 /// One quad as submitted for drawing: pose-space corners, atlas UVs, the
 /// transformed unit normal, ARGB colour (tint, `-1` white) and its glint.
@@ -158,6 +178,38 @@ impl ItemSink for Vec<ItemQuad> {
     }
 }
 
+/// Client drawing services in addition to the asset resolver's host services.
+pub trait ItemDrawEnv: ItemEnv {
+    /// The host and validated input for a registered special draw. The resolver reports
+    /// unavailable input and refuses this layer only, not the renderer.
+    fn special_model_input(
+        &self,
+        _stack: &StackView,
+        _context: &Context<'_>,
+    ) -> Option<SpecialModelInput<'_>> {
+        None
+    }
+
+    /// Resolve a mod-submitted stack and its display context at the engine boundary.
+    fn special_model_stack(
+        &self,
+        _stack: &mod_api::ItemStack,
+        _display: ItemDisplayContext,
+    ) -> Option<(StackView, DisplayContext)> {
+        None
+    }
+}
+
+/// The game services and stack identity the special renderer reads during this draw.
+pub struct SpecialModelInput<'a> {
+    pub host: &'a dyn ClientHost,
+    pub item: ItemKey,
+    pub count: NonZeroU32,
+    pub context: SpecialModelContext,
+}
+
+impl ItemDrawEnv for sunrise_assets::item_model::NoEnv {}
+
 /// Data special renderers read from the game (registries, skins).
 pub trait SpecialHost {
     /// The banner atlas texture of a banner pattern (`entity/banner/<asset>`).
@@ -189,19 +241,43 @@ pub enum LayerGeometry {
         argument: Value,
     },
 }
+/// Tints computed for an ordinary layer, or the palette supplied by a special renderer.
+#[derive(Clone, Debug)]
+pub enum LayerTints {
+    Owned(Vec<i32>),
+    Special(SpecialModelTints),
+}
+impl LayerTints {
+    fn at(&self, index: i32) -> u32 {
+        match self {
+            // `getLayerColorSafe`: an untinted quad or a missing palette entry draws white.
+            Self::Owned(tints) => tints
+                .get(index as usize)
+                .map_or(u32::MAX, |&tint| argb(tint)),
+            Self::Special(SpecialModelTints::Uniform(tint)) => *tint,
+            Self::Special(SpecialModelTints::Indexed(tints)) => {
+                tints.get(index as usize).copied().unwrap_or(u32::MAX)
+            }
+            Self::Special(_) => u32::MAX,
+        }
+    }
+}
 /// `ItemStackRenderState.LayerRenderState`.
 #[derive(Clone, Debug)]
 pub struct LayerRender {
     pub geometry: LayerGeometry,
-    pub tints: Vec<i32>,
+    pub tints: LayerTints,
     pub foil: FoilType,
     /// `applyTransform`: the display transform, then the local transform.
     pub matrix: Mat4,
     /// `particleMaterial` (atlas sprite name).
-    pub particle: String,
+    pub particle: Arc<str>,
     pub uses_block_light: bool,
     /// Untransformed extents (quad corners or the special model's parts).
     pub extents: Arc<Vec<Vec3>>,
+    /// The display context the layer was resolved for, which its submission follows (a GUI
+    /// glint's atlas coordinates): the state's own, except for the layers of a nested stack.
+    pub display: DisplayContext,
 }
 /// `ItemStackRenderState`.
 #[derive(Clone, Debug)]
@@ -217,8 +293,21 @@ pub struct ItemRenderState {
     /// In HDR output, the block light of an item that glows: its block's, as a placed one has
     /// it, so a torch doesn't go dark in the shade while it shines. 0 for the rest.
     pub hdr_light: u8,
+    /// A third-person held-item submission's opaque ARGB multiplier, never cached with the model.
+    held_tint: Option<u32>,
 }
+
+#[derive(Default)]
+struct RenderLayerFlags {
+    oversized_in_gui: bool,
+    animated: bool,
+}
+
 impl ItemRenderState {
+    /// Apply a held-item Part's RGB answer to this draw only, preserving model alpha.
+    pub fn set_held_tint(&mut self, rgb: u32) {
+        self.held_tint = Some(rgb | 0xFF00_0000);
+    }
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
     }
@@ -227,13 +316,17 @@ impl ItemRenderState {
         self.layers.first().is_some_and(|l| l.uses_block_light)
     }
     /// `getModelBoundingBox`: the transformed extents of every layer, as
-    /// (min, max); a zero box at the origin when there are none.
+    /// (min, max); a zero box at the origin when there are none. Each extent is
+    /// `Vector3f.mulPosition`'s (JOML's `Math.fma` unfused, summed from the right).
     pub fn bounding_box(&self) -> (Vec3, Vec3) {
         let mut lo = Vec3::splat(f32::INFINITY);
         let mut hi = Vec3::splat(f32::NEG_INFINITY);
         for layer in &self.layers {
+            let [c0, c1, c2, c3] = layer.matrix.to_cols_array_2d();
             for p in layer.extents.iter() {
-                let q = layer.matrix.transform_point3(*p);
+                let q = Vec3::from_array(std::array::from_fn(|row| {
+                    c0[row] * p.x + (c1[row] * p.y + (c2[row] * p.z + c3[row]))
+                }));
                 lo = lo.min(q);
                 hi = hi.max(q);
             }
@@ -274,11 +367,18 @@ impl ItemRenderState {
         pose: Mat4,
         sink: &mut dyn ItemSink,
     ) {
+        let mut tinted;
+        let sink: &mut dyn ItemSink = if let Some(tint) = self.held_tint {
+            tinted = TintedItemSink { sink, tint };
+            &mut tinted
+        } else {
+            sink
+        };
         for layer in &self.layers {
             let m = pose * layer.matrix;
             match &layer.geometry {
                 LayerGeometry::Quads(baked) => {
-                    submit_quads(renderer, baked, layer, self.display, m, sprites, sink);
+                    submit_quads(renderer, baked, layer, m, sprites, sink);
                 }
                 LayerGeometry::Special { model, argument } => special::submit(
                     renderer,
@@ -320,7 +420,7 @@ impl ItemRenderState {
             let LayerGeometry::Quads(baked) = &layer.geometry else {
                 return false;
             };
-            if layer.foil != FoilType::None {
+            if layer.foil != FoilType::None || matches!(&layer.tints, LayerTints::Special(_)) {
                 return false;
             }
             let Some(stored) = skin.models.item(baked, skin.frame) else {
@@ -353,16 +453,11 @@ impl ItemRenderState {
                 else {
                     continue;
                 };
-                let color = if run.tint_index >= 0 {
-                    layer
-                        .tints
-                        .get(run.tint_index as usize)
-                        .copied()
-                        .unwrap_or(-1)
-                } else {
-                    -1
-                };
-                let colors = AXES.map(|d| shaded(argb(color), normals.face(d), lights));
+                let color = layer.tints.at(run.tint_index);
+                let color = self
+                    .held_tint
+                    .map_or(color, |tint| crate::hud_layout::multiply(color, tint));
+                let colors = AXES.map(|d| shaded(color, normals.face(d), lights));
                 let frame = &mut *skin.frame;
                 frame.jobs.push(SkinJob {
                     first: run.first,
@@ -382,6 +477,18 @@ impl ItemRenderState {
             skin.grow_bounds(m, bounds);
         }
         true
+    }
+}
+
+/// Multiplies every submitted quad's RGB, including special models, before the world sink lights it.
+struct TintedItemSink<'a> {
+    sink: &'a mut dyn ItemSink,
+    tint: u32,
+}
+impl ItemSink for TintedItemSink<'_> {
+    fn quad(&mut self, mut quad: ItemQuad) {
+        quad.color = crate::hud_layout::multiply(quad.color, self.tint);
+        self.sink.quad(quad);
     }
 }
 
@@ -441,7 +548,6 @@ fn submit_quads(
     renderer: &ItemRenderer,
     baked: &BakedItemModel,
     layer: &LayerRender,
-    display: DisplayContext,
     m: Mat4,
     sprites: &HashMap<String, Rect>,
     sink: &mut dyn ItemSink,
@@ -461,7 +567,7 @@ fn submit_quads(
     let mut last: Option<(&str, bool)> = None;
     let mut last_rect: Option<(&str, Option<Rect>)> = None;
     // A glint in the GUI follows the quad's sprite in the glint atlas: looked up once a sprite too.
-    let gui_glint = display == DisplayContext::Gui && foil == Foil::Standard;
+    let gui_glint = layer.display == DisplayContext::Gui && foil == Foil::Standard;
     let mut last_glint: Option<(&str, Option<Rect>)> = None;
     for q in &baked.quads {
         let rect = match last_rect {
@@ -479,17 +585,7 @@ fn submit_quads(
         let Some(r) = rect else {
             continue;
         };
-        // `getLayerColorSafe`: an untinted quad, or a tint index past the
-        // tints, draws white.
-        let color = if q.tint_index >= 0 {
-            layer
-                .tints
-                .get(q.tint_index as usize)
-                .copied()
-                .unwrap_or(-1)
-        } else {
-            -1
-        };
+        let color = layer.tints.at(q.tint_index);
         let pos = q.positions.map(|p| m.transform_point3(Vec3::from(p)));
         let uv =
             q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v]);
@@ -529,7 +625,7 @@ fn submit_quads(
                     q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v])
                 }),
             normal: normals.face(q.facing),
-            color: argb(color),
+            color,
             foil,
             light_emission: q.light_emission,
             cull_back: true,
@@ -543,11 +639,11 @@ fn submit_quads(
 // Sprites for baking
 // ---------------------------------------------------------------------------
 
-/// The alpha masks of item and block sprites, read from the texture files
-/// (every unique animation frame) and the items atlas's palette sprites.
+/// The alpha masks of item and block sprites as the items and blocks atlases finish them (every
+/// unique animation frame): the same sprites the block models and the HUD atlas draw.
 struct FileSprites {
     root: ResourceSource,
-    permutations: Vec<PalettedPermutations>,
+    materials: crate::atlas_sources::Materials,
     cache: Mutex<HashMap<String, Option<SpriteMask>>>,
     /// Sprites with a pixel that is neither fully transparent nor opaque
     /// (`Transparency.hasTranslucent`), filled in as sprites load.
@@ -575,6 +671,14 @@ fn argb_pixels(rgba: &[u8]) -> Vec<u32> {
         .collect()
 }
 impl FileSprites {
+    fn new(root: ResourceSource) -> Self {
+        Self {
+            materials: crate::atlas_sources::Materials::new(&root),
+            root,
+            cache: Mutex::default(),
+            translucent: Mutex::default(),
+        }
+    }
     fn translucent(&self, sprite: &str) -> bool {
         let known = |this: &Self| this.translucent.lock().ok()?.get(sprite).copied();
         known(self).unwrap_or_else(|| {
@@ -582,39 +686,19 @@ impl FileSprites {
             known(self).unwrap_or(false)
         })
     }
-    fn png(&self, sprite: &str, directory: &str) -> String {
-        crate::atlas_sources::texture_resource(sprite, directory)
-    }
-    fn image(&self, sprite: &str, directory: &str) -> Option<(usize, usize, Vec<u32>)> {
-        let (w, h, rgba) =
-            crate::hud::decode_bytes(&self.root.read(&self.png(sprite, directory)).ok()?).ok()?;
-        Some((w as usize, h as usize, argb_pixels(&rgba)))
-    }
     fn load(&self, sprite: &str) -> Option<SpriteMask> {
-        let png = self.png(sprite, "textures");
-        let (iw, ih, argb) = match self.image(sprite, "textures") {
-            Some(image) => image,
-            None => {
-                let p = self.permutations.iter().find_map(|s| s.find(sprite))?;
-                let (w, h, mut pixels) = self.image(p.base, "textures")?;
-                let (_, _, key) = self.image(p.palette_key, "textures/palettes")?;
-                let (_, _, target) = self.image(p.palette, "textures/palettes")?;
-                sunrise_assets::palette::apply_palette(&mut pixels, &key, &target)?;
-                (w, h, pixels)
-            }
-        };
+        // A candidate whose frames don't fit already gave way to the next atlas.
+        let crate::atlas_sources::Material {
+            image: (iw, ih, rgba),
+            animation,
+            ..
+        } = self.materials.finish(&self.root, sprite)?;
+        let (iw, ih, argb) = (iw as usize, ih as usize, argb_pixels(&rgba));
         let translucent = argb.iter().any(|p| matches!(p >> 24, 1..=254));
         if let Ok(mut cache) = self.translucent.lock() {
             cache.insert(sprite.to_owned(), translucent);
         }
         let alpha: Vec<u8> = argb.iter().map(|p| (p >> 24) as u8).collect();
-        let animation = self
-            .root
-            .read_to_string(&format!("{png}.mcmeta"))
-            .ok()
-            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
-            .and_then(|m| m.get("animation").map(Value::to_string))
-            .and_then(|a| AnimationMetadata::from_json(&a).ok());
         let (w, h) = match &animation {
             Some(a) => {
                 let [w, h] = a.frame_size(iw as i32, ih as i32);
@@ -669,6 +753,7 @@ pub struct ItemRenderer {
     sprites: FileSprites,
     baked: Mutex<HashMap<String, Arc<BakedItemModel>>>,
     extents: Mutex<HashMap<String, Arc<Vec<Vec3>>>>,
+    special_generation: Arc<()>,
     /// GUI items already drawn: the HUD vertices of a static item at a GUI position
     /// (`gui::draw`), which are the same every frame it stays there.
     pub(crate) gui_drawn: Mutex<HashMap<gui::DrawnKey, Arc<[crate::hud::HudVertex]>>>,
@@ -687,9 +772,12 @@ pub struct ItemRenderer {
     glint_atlas: Mutex<HashMap<String, Rect>>,
 }
 
-/// Every `items/**/*.json` client item definition, by identifier. Through
-/// Resolved resource names preserve nested item identifiers.
-fn load_definitions(root: &ResourceSource) -> BTreeMap<String, ClientItem> {
+/// Every winning `items/**/*.json` client item definition, by identifier. An error or panic
+/// while decoding or baking omits the definition rather than looking in a lower pack.
+fn load_definitions(
+    root: &ResourceSource,
+    decode: impl Fn(&str) -> Result<ClientItem, sunrise_assets::DecodeError>,
+) -> BTreeMap<String, ClientItem> {
     let mut out = BTreeMap::new();
     for namespace in root.namespaces("assets") {
         let prefix = format!("assets/{namespace}/items/");
@@ -703,12 +791,28 @@ fn load_definitions(root: &ResourceSource) -> BTreeMap<String, ClientItem> {
             let Ok(text) = root.read_to_string(&name) else {
                 continue;
             };
-            match ClientItem::from_json(&text) {
-                Ok(item) => {
+            match catch_unwind(AssertUnwindSafe(|| decode(&text))) {
+                Ok(Ok(item)) => {
                     out.insert(format!("{namespace}:{id}"), item);
                 }
-                Err(error) => {
-                    log::warn!("Sunrise: item definition {namespace}:{id} not loaded: {error}")
+                Ok(Err(error)) => {
+                    log::warn!("Sunrise: item definition {namespace}:{id} not loaded: {error}");
+                }
+                Err(panic) => {
+                    // An arbitrary native panic payload can itself panic when dropped.
+                    let reason = match panic.downcast::<String>() {
+                        Ok(message) => std::borrow::Cow::Owned(*message),
+                        Err(panic) => match panic.downcast::<&'static str>() {
+                            Ok(message) => std::borrow::Cow::Borrowed(*message),
+                            Err(panic) => {
+                                std::mem::forget(panic);
+                                std::borrow::Cow::Borrowed("unknown panic payload")
+                            }
+                        },
+                    };
+                    log::warn!(
+                        "Sunrise: item definition {namespace}:{id} not loaded; decode or bake panicked: {reason}"
+                    );
                 }
             }
         }
@@ -749,13 +853,20 @@ impl ItemRenderer {
         )
     }
     /// Reuse the immutable models prepared with the block resources at `root`.
-    /// Defer item-only validation failures until after item definitions are loaded.
+    /// Decode special item definitions against this library and its pack sprites.
     pub fn load_with_library(
         root: &ResourceRoot,
         library: std::result::Result<Arc<ModelLibrary>, String>,
         item_data: &sunrise_world::item_defaults::ItemData,
     ) -> crate::Result<Self> {
-        Self::load_tables(root, library, true, item_data, None)
+        Self::load_tables(
+            root,
+            library,
+            true,
+            item_data,
+            None,
+            ItemProviderTables::installed(FACTORIES.get()),
+        )
     }
     /// What a dedicated server reads: the item prototypes (the stacks'
     /// default components) and ids, without the client item definitions,
@@ -766,7 +877,14 @@ impl ItemRenderer {
         library: std::result::Result<Arc<ModelLibrary>, String>,
         item_data: &sunrise_world::item_defaults::ItemData,
     ) -> crate::Result<Self> {
-        Self::load_tables(root, library, false, item_data, None)
+        Self::load_tables(
+            root,
+            library,
+            false,
+            item_data,
+            None,
+            ItemProviderTables::default(),
+        )
     }
     pub fn load_with_library_and_entity_models(
         root: &sunrise_assets::resource_source::ResourceRoot,
@@ -774,7 +892,14 @@ impl ItemRenderer {
         document: &crate::mobs::EntityModelDocument,
         item_data: &sunrise_world::item_defaults::ItemData,
     ) -> crate::Result<Self> {
-        Self::load_tables(root, library, true, item_data, Some(document))
+        Self::load_tables(
+            root,
+            library,
+            true,
+            item_data,
+            Some(document),
+            ItemProviderTables::installed(FACTORIES.get()),
+        )
     }
     fn load_tables(
         root: &ResourceRoot,
@@ -782,16 +907,9 @@ impl ItemRenderer {
         drawn: bool,
         item_data: &sunrise_world::item_defaults::ItemData,
         entity_models: Option<&crate::mobs::EntityModelDocument>,
+        providers: ItemProviderTables<'_>,
     ) -> crate::Result<Self> {
         let prototypes = Arc::clone(item_data.prototypes()?);
-        let models = ItemModels {
-            definitions: if drawn {
-                load_definitions(root.source())
-            } else {
-                BTreeMap::new()
-            },
-            prototypes,
-        };
         // CIT models and glint textures only affect drawing. A server still
         // needs item prototypes and ids, but never these resource-pack assets.
         let (library, cit) = if drawn {
@@ -799,12 +917,6 @@ impl ItemRenderer {
         } else {
             (library?, None)
         };
-        let permutations = PalettedPermutations::from_atlas(
-            &root
-                .source()
-                .read_to_string("assets/minecraft/atlases/items.json")
-                .unwrap_or_default(),
-        );
         let mut parts = if drawn {
             entity_models.map_or_else(
                 || special::load_parts(root.prepared()),
@@ -843,25 +955,30 @@ impl ItemRenderer {
                 Some(out)
             })
             .unwrap_or_default();
-        Ok(Self {
+        let mut renderer = Self {
             glint_atlas: Mutex::default(),
             item_ids,
-            models,
-            library,
-            sprites: FileSprites {
-                root: root.source().clone(),
-                permutations,
-                cache: Mutex::default(),
-                translucent: Mutex::default(),
+            models: ItemModels {
+                definitions: BTreeMap::new(),
+                prototypes,
             },
+            library,
+            sprites: FileSprites::new(root.source().clone()),
             baked: Mutex::default(),
             extents: Mutex::default(),
+            special_generation: Arc::new(()),
             gui_drawn: Mutex::default(),
             parts,
             skull_textures,
             grass,
             cit,
-        })
+        };
+        if drawn {
+            renderer.models.definitions = load_definitions(root.source(), |text| {
+                renderer.decode_definition(text, &providers)
+            });
+        }
+        Ok(renderer)
     }
     /// `ModelBakery` item baking, cached per model.
     pub fn bake(&self, model: &str) -> Arc<BakedItemModel> {
@@ -926,72 +1043,6 @@ impl ItemRenderer {
         }
         out
     }
-    /// A special model renderer's answer `parts` for a model node of `base`, prepared to draw:
-    /// `base` and each part's model baked, once, when the answer is accepted, so a draw looks
-    /// nothing up by name. A part naming a model the packs don't have refuses them all, and the
-    /// layer draws the missing model.
-    pub fn prepare_parts(
-        &self,
-        base: &str,
-        parts: &[sunrise_assets::item_model::SpecialPart],
-    ) -> PreparedParts {
-        let part = |model: &str, tints, pose| {
-            let geometry = self.bake(model);
-            PreparedPart {
-                extents: self.quad_extents(model, &geometry),
-                geometry,
-                tints,
-                pose,
-            }
-        };
-        let parts = match parts.iter().find(|p| !self.library.resolves(&p.model)) {
-            Some(unknown) => {
-                warn_unknown_part_once(&unknown.model);
-                vec![part(
-                    MISSING_MODEL,
-                    Vec::new(),
-                    sunrise_assets::math::Mat4::IDENTITY,
-                )]
-            }
-            None => parts
-                .iter()
-                .map(|p| part(&p.model, p.tints.clone(), p.pose))
-                .collect(),
-        };
-        PreparedParts(Arc::new(PreparedSpecial {
-            base: self.bake(base),
-            parts,
-        }))
-    }
-    /// The layers of a prepared answer (`LayerContent::Parts`), one for each part: the part's own
-    /// model's quads, posed under the layer's transform, with the base model's display transform,
-    /// particle and GUI light.
-    fn push_parts(
-        &self,
-        layers: &mut Vec<LayerRender>,
-        display: DisplayContext,
-        (foil, transform): (FoilType, sunrise_assets::math::Mat4),
-        prepared: &PreparedParts,
-    ) {
-        let Some(prepared) = prepared.0.downcast_ref::<PreparedSpecial>() else {
-            // Only `prepare_parts` makes them.
-            return;
-        };
-        let base = &prepared.base;
-        for part in &prepared.parts {
-            // Under `applyTransform`'s half-block offset, so a part's pose is about the model's
-            // corner, as its elements are.
-            layers.push(LayerRender {
-                geometry: LayerGeometry::Quads(part.geometry.clone()),
-                tints: part.tints.clone(),
-                foil,
-                matrix: glam_matrix(&base.layer_matrix(display, &transform.mul(&part.pose))),
-                uses_block_light: base.uses_block_light,
-                particle: sprite_name(&base.particle.sprite).to_owned(),
-                extents: part.extents.clone(),
-            });
-        }
-    }
     /// `ItemModelResolver.updateForTopItem`.
     pub fn resolve(
         &self,
@@ -1000,7 +1051,7 @@ impl ItemRenderer {
         owner: Option<&OwnerState>,
         level: Option<&LevelState>,
         seed: i32,
-        env: &dyn ItemEnv,
+        env: &dyn ItemDrawEnv,
     ) -> ItemRenderState {
         self.resolve_with_rule(stack, display, owner, level, seed, env, None)
     }
@@ -1015,7 +1066,7 @@ impl ItemRenderer {
         owner: Option<&OwnerState>,
         level: Option<&LevelState>,
         seed: i32,
-        env: &dyn ItemEnv,
+        env: &dyn ItemDrawEnv,
         rule: Option<usize>,
     ) -> ItemRenderState {
         let ctx = Context {
@@ -1024,10 +1075,55 @@ impl ItemRenderer {
             level,
             seed,
         };
-        let resolved = self.models.resolve(stack, &ctx, env);
-        let mut animated = false;
-        let mut layers = Vec::with_capacity(resolved.layers.len());
-        for layer in resolved.layers {
+        let mut layers = Vec::new();
+        let flags = self
+            .append_render_layers(
+                &mut layers,
+                &StackAncestor {
+                    stack,
+                    display,
+                    parent: None,
+                },
+                &ctx,
+                env,
+                rule,
+            )
+            .continue_value()
+            .unwrap_or_default();
+        ItemRenderState {
+            display,
+            layers,
+            oversized_in_gui: flags.oversized_in_gui,
+            animated: flags.animated,
+            cit_glint: None,
+            hdr_tier: 0,
+            hdr_light: 0,
+            held_tint: None,
+        }
+    }
+
+    /// Append into the top-level state even when resolving a nested stack. Nested refusals
+    /// unwind to the outer special layer's checkpoint; only that layer emits a missing model.
+    fn append_render_layers(
+        &self,
+        layers: &mut Vec<LayerRender>,
+        ancestor: &StackAncestor<'_>,
+        ctx: &Context<'_>,
+        env: &dyn ItemDrawEnv,
+        rule: Option<usize>,
+    ) -> ControlFlow<(), RenderLayerFlags> {
+        let stack = ancestor.stack;
+        let mut flags = RenderLayerFlags::default();
+        if stack.count <= 0 || stack.item == "minecraft:air" {
+            return ControlFlow::Continue(flags);
+        }
+        let display = ctx.display;
+        let missing = || {
+            let baked = self.bake(MISSING_MODEL);
+            let extents = self.quad_extents(MISSING_MODEL, &baked);
+            (LayerGeometry::Quads(baked.clone()), baked, extents)
+        };
+        let mut visit = |layer: Layer, layer_stack: &StackView| {
             let (geometry, baked, extents) = match layer.content {
                 LayerContent::Model { model } => {
                     let (baked, extents) = rule
@@ -1047,11 +1143,7 @@ impl ItemRenderer {
                     let extents = self.quad_extents(&key, &baked);
                     (LayerGeometry::Quads(baked.clone()), baked, extents)
                 }
-                LayerContent::Missing => {
-                    let baked = self.bake(MISSING_MODEL);
-                    let extents = self.quad_extents(MISSING_MODEL, &baked);
-                    (LayerGeometry::Quads(baked.clone()), baked, extents)
-                }
+                LayerContent::Missing => missing(),
                 LayerContent::Special {
                     base,
                     model,
@@ -1061,40 +1153,61 @@ impl ItemRenderer {
                     let extents = self.special_extents(&model);
                     (LayerGeometry::Special { model, argument }, baked, extents)
                 }
-                LayerContent::Parts(prepared) => {
-                    // What a mod drew may change with every draw, so no GUI item is kept.
-                    animated = true;
-                    self.push_parts(
-                        &mut layers,
+                LayerContent::RegisteredSpecial { model } => {
+                    // Every draw can give a different result; never keep a static GUI image.
+                    flags.animated = true;
+                    // Vanilla's bundle model can produce a layer for its selected stack.
+                    let selected = StackAncestor {
+                        stack: layer_stack,
                         display,
-                        (layer.foil, layer.transform),
-                        &prepared,
-                    );
-                    continue;
+                        parent: Some(ancestor),
+                    };
+                    let source = if std::ptr::eq(stack, layer_stack) {
+                        ancestor
+                    } else {
+                        &selected
+                    };
+                    if self
+                        .append_registered_special(
+                            layers,
+                            &model,
+                            (layer.foil, layer.transform, layer.display_transform),
+                            ctx,
+                            env,
+                            source,
+                        )
+                        .is_continue()
+                    {
+                        return ControlFlow::Continue(());
+                    }
+                    if ancestor.parent.is_some() {
+                        return ControlFlow::Break(());
+                    }
+                    missing()
                 }
             };
-            if layer.foil != FoilType::None {
-                animated = true;
-            }
+            flags.animated |= layer.foil != FoilType::None;
             layers.push(LayerRender {
                 geometry,
-                tints: layer.tints,
+                tints: LayerTints::Owned(layer.tints),
                 foil: layer.foil,
-                matrix: glam_matrix(&baked.layer_matrix(display, &layer.transform)),
+                matrix: glam_matrix(&baked.layer_matrix(
+                    layer.display_transform,
+                    display,
+                    &layer.transform,
+                )),
                 uses_block_light: baked.uses_block_light,
-                particle: sprite_name(&baked.particle.sprite).to_owned(),
+                particle: Arc::from(sprite_name(&baked.particle.sprite)),
                 extents,
+                display,
             });
-        }
-        ItemRenderState {
-            display,
-            layers,
-            oversized_in_gui: resolved.oversized_in_gui,
-            animated,
-            cit_glint: None,
-            hdr_tier: 0,
-            hdr_light: 0,
-        }
+            ControlFlow::Continue(())
+        };
+        flags.oversized_in_gui = self
+            .models
+            .visit_layers(stack, ctx, env, LayerTransform::Model, &mut visit)?
+            .unwrap_or_default();
+        ControlFlow::Continue(flags)
     }
     /// `GrassColor.get` over the loaded colormap.
     pub fn grass_color(&self, temperature: f64, downfall: f64) -> i32 {
@@ -1119,9 +1232,12 @@ impl ItemRenderer {
     ) {
         special::submit(self, model, argument, has_foil, pose, sprites, host, sink);
     }
-    /// `Item.getId` (0 when the registry report is missing).
-    pub fn item_id(&self, item: &str) -> i32 {
-        self.item_ids.get(item).copied().unwrap_or(0)
+    /// `Item.getId`, unavailable when the registry report or item is missing.
+    pub fn item_registry_id(&self, item: &str) -> Option<u32> {
+        self.item_ids
+            .get(item)
+            .copied()
+            .and_then(|id| id.try_into().ok())
     }
     pub(crate) fn part(&self, key: &str) -> Option<&ModelPart> {
         self.parts.get(key)
@@ -1143,32 +1259,6 @@ fn corners(baked: &BakedItemModel) -> Vec<Vec3> {
         }
     }
     out
-}
-/// A special model renderer's answer as [`ItemRenderer::prepare_parts`] baked it.
-struct PreparedSpecial {
-    /// The model node's `base`: its display transforms, particle and GUI light.
-    base: Arc<BakedItemModel>,
-    parts: Vec<PreparedPart>,
-}
-struct PreparedPart {
-    geometry: Arc<BakedItemModel>,
-    extents: Arc<Vec<Vec3>>,
-    tints: Vec<i32>,
-    pose: sunrise_assets::math::Mat4,
-}
-/// Says once per model id that a mod's special model renderer drew a model the packs don't have.
-fn warn_unknown_part_once(model: &str) {
-    static SEEN: Mutex<std::collections::BTreeSet<String>> =
-        Mutex::new(std::collections::BTreeSet::new());
-    if SEEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(model.to_owned())
-    {
-        log::warn!(
-            "Sunrise: a special model renderer drew the model {model}, which no pack has; the item draws the missing model"
-        );
-    }
 }
 /// A `sunrise-assets` (row-major, JOML-exact) matrix as glam's.
 pub fn glam_matrix(m: &sunrise_assets::math::Mat4) -> Mat4 {
@@ -1351,35 +1441,44 @@ pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64
         return Vec::new();
     }
     let (lo, hi) = state.bounding_box();
-    cluster_poses_with_depth(pose, amount, seed, hi.z - lo.z)
+    // `AABB.getZsize`, in doubles, then narrowed.
+    let depth = (f64::from(hi.z) - f64::from(lo.z)) as f32;
+    cluster_poses_with_depth(pose, amount, seed, depth)
 }
 
 /// [`cluster_poses`] with the depth of the resolved model's bounding box
-/// already computed for this draw (also used to place the stack's bob).
+/// already computed for this draw (also used to place the stack's bob). Each
+/// copy's `PoseStack.translate` is JOML's.
 pub fn cluster_poses_with_depth(pose: Mat4, amount: u32, seed: i64, depth: f32) -> Vec<Mat4> {
+    use crate::camera::joml;
     use sunrise_core::random::{LegacyRandom, RandomSource};
     let mut out = Vec::new();
     if amount == 0 {
         return out;
     }
+    let pose = joml::Mat4::affine(pose);
+    let translated = |p: joml::Mat4, x: f32, y: f32, z: f32| {
+        let mut p = p;
+        p.translate(x, y, z);
+        p
+    };
     let mut random = LegacyRandom::new(seed);
     let mut next = || random.next_float() * 2.0 - 1.0;
     if depth > 0.0625 {
-        out.push(pose);
+        out.push(pose.to_glam());
         for _ in 1..amount {
             let (x, y, z) = (next() * 0.15, next() * 0.15, next() * 0.15);
-            out.push(pose * Mat4::from_translation(Vec3::new(x, y, z)));
+            out.push(translated(pose, x, y, z).to_glam());
         }
     } else {
         let offset = depth * 1.5;
-        let mut p = pose
-            * Mat4::from_translation(Vec3::new(0.0, 0.0, -(offset * (amount - 1) as f32 / 2.0)));
-        out.push(p);
-        p *= Mat4::from_translation(Vec3::new(0.0, 0.0, offset));
+        let mut p = translated(pose, 0.0, 0.0, -(offset * (amount - 1) as f32 / 2.0));
+        out.push(p.to_glam());
+        p.translate(0.0, 0.0, offset);
         for _ in 1..amount {
             let (x, y) = (next() * 0.15 * 0.5, next() * 0.15 * 0.5);
-            out.push(p * Mat4::from_translation(Vec3::new(x, y, 0.0)));
-            p *= Mat4::from_translation(Vec3::new(0.0, 0.0, offset));
+            out.push(translated(p, x, y, 0.0).to_glam());
+            p.translate(0.0, 0.0, offset);
         }
     }
     out
@@ -1388,47 +1487,202 @@ pub fn cluster_poses_with_depth(pose: Mat4, amount: u32, seed: i64, depth: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_world::native_load_context::DataLoadOrigin;
     use std::fs;
+    use sunrise_world::native_load_context::DataLoadOrigin;
 
     /// Item definitions are read again on every load: a node of a registered type keeps its
     /// `models` as the packs now give them, and a definition with a type no mod registered isn't
     /// loaded, so its item draws the missing model.
+    /// A renamed file whose animation frames can't tile it is no candidate: the blocks atlas's
+    /// sprite of the id is the mask, and nothing divides by zero.
+    #[test]
+    fn a_renamed_file_with_unfitting_frames_leaves_the_blocks_sprite() {
+        let root = std::env::temp_dir().join(format!("sunrise-mask-frames-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let textures = root.join("assets/demo/textures/item");
+        let atlases = root.join("assets/minecraft/atlases");
+        fs::create_dir_all(&textures).unwrap();
+        fs::create_dir_all(&atlases).unwrap();
+        let write = |name: &str, width: u32, height: u32, pixels: &[u8]| {
+            let mut encoder = png::Encoder::new(
+                fs::File::create(textures.join(name)).unwrap(),
+                width,
+                height,
+            );
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(pixels)
+                .unwrap();
+        };
+        // A 1 x 1 file declaring frames 2 wide, and a 2 x 1 sheet: opaque, then transparent.
+        write("tiny.png", 1, 1, &[255; 4]);
+        fs::write(
+            textures.join("tiny.png.mcmeta"),
+            r#"{"animation":{"width":2}}"#,
+        )
+        .unwrap();
+        write("sheet.png", 2, 1, &[255, 0, 0, 255, 0, 255, 0, 0]);
+        fs::write(
+            atlases.join("items.json"),
+            r#"{"sources":[{"type":"minecraft:single","resource":"demo:item/tiny","sprite":"demo:item/target"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            atlases.join("blocks.json"),
+            r#"{"sources":[{"type":"minecraft:unstitch","resource":"demo:item/sheet","divisor_x":2,
+                "regions":[{"sprite":"demo:item/target","x":1,"y":0,"width":1,"height":1}]}]}"#,
+        )
+        .unwrap();
+        let sprites = FileSprites::new(ResourceSource::directory(root.clone()));
+        let mask = sprites.mask("demo:item/target").unwrap();
+        assert_eq!((mask.width, mask.height), (1, 1));
+        assert_eq!(mask.frames, vec![vec![true]]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+    /// The items atlas's cut of an id is the mask, not the blocks atlas's; a sprite only an
+    /// atlas cut makes has one at all.
+    #[test]
+    fn a_mask_follows_the_items_atlas_then_the_blocks_atlas() {
+        let root =
+            std::env::temp_dir().join(format!("sunrise-mask-atlases-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let textures = root.join("assets/demo/textures/item");
+        let atlases = root.join("assets/minecraft/atlases");
+        fs::create_dir_all(&textures).unwrap();
+        fs::create_dir_all(&atlases).unwrap();
+        // 2 x 1 sheet: an opaque texel, then a fully transparent one.
+        let mut encoder =
+            png::Encoder::new(fs::File::create(textures.join("sheet.png")).unwrap(), 2, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 0])
+            .unwrap();
+        let cut = |sprite: &str, x: u8| {
+            format!(
+                r#"{{"type":"minecraft:unstitch","resource":"demo:item/sheet","divisor_x":2,
+                "regions":[{{"sprite":"demo:item/{sprite}","x":{x},"y":0,"width":1,"height":1}}]}}"#
+            )
+        };
+        fs::write(
+            atlases.join("items.json"),
+            format!(r#"{{"sources":[{}]}}"#, cut("both", 1)),
+        )
+        .unwrap();
+        fs::write(
+            atlases.join("blocks.json"),
+            format!(
+                r#"{{"sources":[{},{}]}}"#,
+                cut("both", 0),
+                cut("blocks_only", 0)
+            ),
+        )
+        .unwrap();
+        let sprites = FileSprites::new(ResourceSource::directory(root.clone()));
+        // `true` marks a fully transparent texel.
+        assert_eq!(
+            sprites.mask("demo:item/both").unwrap().frames,
+            vec![vec![true]]
+        );
+        assert_eq!(
+            sprites.mask("demo:item/blocks_only").unwrap().frames,
+            vec![vec![false]]
+        );
+        assert!(
+            sprites.mask("demo:item/sheet").is_none(),
+            "no atlas lists the sheet"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn a_registered_item_model_type_is_read_again_on_each_load() {
+        use mod_api::{
+            __private::game::RegistrationContextNew, Hooks, Identifier, ModEntry,
+            RegisterItemModelsEvent, RegistrationContext,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use sunrise_assets::resource_source::Resource;
-        sunrise_assets::item_model::register_item_models(vec!["loadtest:cell".into()]);
-        let source = |full: &str| {
-            let cell = format!(
-                r#"{{"model":{{"type":"loadtest:cell","models":{{"full":{{"type":"minecraft:model","model":"{full}"}}}}}}}}"#
-            );
-            ResourceSource::indexed(BTreeMap::from([
-                (
-                    "assets/loadtest/items/cell.json".to_owned(),
-                    Resource::bytes(cell.into_bytes()),
-                ),
-                (
-                    "assets/loadtest/items/other.json".to_owned(),
-                    Resource::bytes(br#"{"model":{"type":"loadtest:unregistered"}}"#.to_vec()),
-                ),
-            ]))
-        };
-        let models = |full: &str| {
-            let loaded = load_definitions(&source(full));
-            assert!(!loaded.contains_key("loadtest:other"));
-            let mut models = Vec::new();
-            loaded["loadtest:cell"].model.dependencies(&mut models);
-            models
-        };
-        assert_eq!(models("loadtest:item/a"), ["loadtest:item/a"]);
-        assert_eq!(models("loadtest:item/b"), ["loadtest:item/b"]);
+
+        struct CellMod(Arc<AtomicUsize>);
+        #[mod_api::__subscriptions]
+        impl Hooks for CellMod {
+            fn register_item_models(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterItemModelsEvent<'_>,
+            ) {
+                let decodes = Arc::clone(&self.0);
+                event.register(
+                    Identifier::parse("loadtest:cell").unwrap(),
+                    move |_, children| {
+                        decodes.fetch_add(1, Ordering::Relaxed);
+                        children.add_named_models()?;
+                        Ok(
+                            |_: &dyn mod_api::ClientHost,
+                             _: &mod_api::ItemModelUpdateInput<'_>,
+                             _: &mut Vec<mod_api::ItemModelLayer>| {},
+                        )
+                    },
+                );
+            }
+        }
+
+        let decodes = Arc::new(AtomicUsize::new(0));
+        let mods: mod_api::Mods = vec![ModEntry::new(
+            "loadtest",
+            Box::new(CellMod(Arc::clone(&decodes))),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            let mut registered = Vec::new();
+            mod_api::dispatch_register_item_models(&RegistrationContext::new(), &mut registered);
+            let (factories, kept) = bind_item_model_factories(registered);
+            let providers = ItemProviderTables {
+                item_model: Some(&factories),
+                ..Default::default()
+            };
+            assert_eq!(kept, ["loadtest:cell"]);
+
+            let source = |full: &str| {
+                let cell = format!(
+                    r#"{{"model":{{"type":"loadtest:cell","models":{{"full":{{"type":"minecraft:model","model":"{full}"}}}}}}}}"#
+                );
+                ResourceSource::indexed(BTreeMap::from([
+                    (
+                        "assets/loadtest/items/cell.json".to_owned(),
+                        Resource::bytes(cell.into_bytes()),
+                    ),
+                    (
+                        "assets/loadtest/items/other.json".to_owned(),
+                        Resource::bytes(br#"{"model":{"type":"loadtest:unregistered"}}"#.to_vec()),
+                    ),
+                ]))
+            };
+            let models = |full: &str| {
+                let loaded = load_definitions(&source(full), |text| {
+                    registered_providers::decode_definition_without_specials(text, &providers)
+                });
+                assert!(!loaded.contains_key("loadtest:other"));
+                let mut models = Vec::new();
+                loaded["loadtest:cell"].model.dependencies(&mut models);
+                models
+            };
+            assert_eq!(models("loadtest:item/a"), ["loadtest:item/a"]);
+            assert_eq!(models("loadtest:item/b"), ["loadtest:item/b"]);
+            assert_eq!(decodes.load(Ordering::Relaxed), 2);
+        });
     }
 
     #[test]
-    #[ignore = "requires SUNRISE_TEST_RESOURCES with prepared vanilla tables"]
+    #[ignore = "daily"]
     fn archive_item_models_use_real_prepared_tables_without_unpacking() -> crate::Result<()> {
-        use sunrise_assets::resource_source::Resource;
         use std::io::Write;
+        use sunrise_assets::resource_source::Resource;
         struct Scratch(std::path::PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -1535,7 +1789,9 @@ mod tests {
             ("assets/example/textures/item/mask.png", png.as_slice()),
             (
                 "assets/example/textures/item/mask.png.mcmeta",
-                br#"{"animation":{"width":1,"height":1,"frames":[0,1]}}"#.as_slice(),
+                br#"{"animation":{"width":1,"height":1,"frames":[0,1]}}
+// High Contrast pack signature"#
+                    .as_slice(),
             ),
             (
                 "assets/example/items/nested/mask.json",
@@ -1555,13 +1811,10 @@ mod tests {
         writer.finish().unwrap();
         let source = ResourceSource::archive(&jar).unwrap();
         fs::remove_file(&jar).unwrap();
-        assert!(load_definitions(&source).contains_key("example:nested/mask"));
-        let sprites = FileSprites {
-            root: source.clone(),
-            permutations: Vec::new(),
-            cache: Mutex::default(),
-            translucent: Mutex::default(),
-        };
+        assert!(
+            load_definitions(&source, ClientItem::from_json).contains_key("example:nested/mask")
+        );
+        let sprites = FileSprites::new(source.clone());
         let mask = sprites.mask("example:item/mask").unwrap();
         assert_eq!((mask.width, mask.height), (1, 1));
         assert_eq!(mask.frames, vec![vec![true], vec![false]]);
@@ -1642,11 +1895,12 @@ mod tests {
                     },
                     argument: Value::Null,
                 },
-                tints: Vec::new(),
+                tints: LayerTints::Owned(Vec::new()),
                 foil: FoilType::None,
                 matrix: Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0)),
-                particle: String::new(),
+                particle: Arc::from(""),
                 uses_block_light: false,
+                display: DisplayContext::Ground,
                 extents: Arc::new(vec![
                     Vec3::new(-1.0, -0.5, -0.25),
                     Vec3::new(0.5, 1.0, 0.25),
@@ -1657,6 +1911,7 @@ mod tests {
             cit_glint: None,
             hdr_tier: 0,
             hdr_light: 0,
+            held_tint: None,
         };
         let poses = [
             Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0)),
@@ -1800,7 +2055,10 @@ mod tests {
         let empty = r#"{"model":{"type":"minecraft:empty"}}"#;
         fs::write(definitions.join("top.json"), empty)?;
         fs::write(definitions.join("postman/head.json"), empty)?;
-        let loaded = load_definitions(&ResourceSource::directory(root.clone()));
+        let loaded = load_definitions(
+            &ResourceSource::directory(root.clone()),
+            ClientItem::from_json,
+        );
         let _ = fs::remove_dir_all(&root);
         assert!(loaded.contains_key("sunrise:top"));
         assert!(loaded.contains_key("sunrise:postman/head"));

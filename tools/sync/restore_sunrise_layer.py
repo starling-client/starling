@@ -4,7 +4,9 @@
 Default is a dry run. Run with --apply in a disposable checkout; this intentionally
 replaces mixed files with their upstream base. The subsequent delta 9 integration
 commit reapplies the fork's mod-host, resource-boundary and launcher install-source
-changes. This is a historical recipe, not the policy for future upstream syncs.
+changes. This is a historical recipe, not the policy for future upstream syncs. Upstream's
+cosmetics (their crate, the game's cosmetics module and docs/cosmetics.md) are left out: Sunrise
+removed them, and tools/check_public_tree.py refuses their code.
 """
 import argparse
 from pathlib import Path
@@ -14,7 +16,6 @@ TARGET = "1d6e973ab867d599fcbc253242ccb2a218d99696"
 WHOLE = [
     "launcher",
     "crates/sunrise-addresses",
-    "crates/sunrise-cosmetics",
     "crates/sunrise-telemetry",
     "crates/sunrise-telemetry-server",
     "crates/sunrise-system",
@@ -31,10 +32,7 @@ WHOLE = [
     "crates/sunrise-client-input/src/gamepad.rs",
     "crates/sunrise-client-render/src/ban_notice.rs",
     "crates/sunrise-client-render/src/social.rs",
-    "crates/sunrise-client/src/game/cosmetics.rs",
-    "crates/sunrise-client/src/game/cosmetics",
     "crates/sunrise-client/src/game/discord.rs",
-    "docs/cosmetics.md",
     "docs/telemetry.md",
     "docs/layers.md",
     "tools/addresses.json",
@@ -42,10 +40,6 @@ WHOLE = [
     ".github/workflows/telemetry-server.yml",
 ]
 MOVES = {
-    "cosmetics.rs": "interface/cosmetics/mod.rs",
-    "cosmetics/emote_wheel.rs": "interface/cosmetics/emote_wheel.rs",
-    "cosmetics/emotes.rs": "interface/cosmetics/emotes.rs",
-    "cosmetics/fx.rs": "interface/cosmetics/fx.rs",
     "discord.rs": "runtime/discord.rs",
 }
 

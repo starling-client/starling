@@ -2,9 +2,9 @@ use super::*;
 #[test]
 fn attack_range_persistent_codec_matches_recipes_without_candidate_allocations() {
     use crate::crafting::{Recipe, Recipes};
-    use sunrise_world::loot::PackOverlay;
     use serde_json::{Value, json};
     use std::sync::Arc;
+    use sunrise_world::loot::PackOverlay;
 
     fn file(patch: Value, strict: bool, item: &str) -> Value {
         json!({
@@ -213,19 +213,19 @@ fn attack_range_persistent_codec_matches_recipes_without_candidate_allocations()
                     vec![serde_json::to_vec(&file(json!({}), false, "minecraft:stick")).unwrap()],
                 ),
             ];
-            let omitted =
-                Recipes::load(root.path(), &items, &PackOverlay::new(&files), &load).unwrap();
-            assert_eq!(omitted.crafting.len(), 1, "{name}: {invalid}");
+            let error = Recipes::load(root.path(), &items, &PackOverlay::new(&files), &load)
+                .err()
+                .unwrap()
+                .to_string();
             assert!(
-                omitted
-                    .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                    .is_some()
+                error.contains("data/attack_range/recipe/recipe.json"),
+                "{error}"
             );
-            assert!(omitted.recipe("attack_range:recipe").is_none());
+            assert!(error.contains("minecraft:attack_range"), "{error}");
         }
     }
     for invalid in [json!(1), json!("fixture:provider"), json!([]), Value::Null] {
-        super::decoder_contracts::assert_malformed_decoder_reload_keeps_sibling(
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
             &items,
             json!({"minecraft:attack_range":invalid}),
         );

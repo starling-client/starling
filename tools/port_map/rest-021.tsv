@@ -117,7 +117,7 @@ FastBufferedInputStream.skip	skip:java		buffered stream helper; Rust readers do 
 FastBufferedInputStream.fill	skip:java		buffered stream helper; Rust readers do their own buffering
 FileSystemUtil.safeGetPath	skip:other		opens a jar or zip filesystem for a URI; Sunrise reads archives with the zip crate
 FileUtil.sanitizeName	port	crates/sunrise-client/src/title.rs::Title::target_folder	gap: minor: replaces every non-alphanumeric character with _; vanilla only replaces illegal file characters, dots, slashes and quotes
-FileUtil.isPathPortable	port	crates/sunrise-client/src/game/administration/structure_blocks.rs::portable_path	the structure path's check: no empty, `.` or `..` segment; vanilla also tests the part's characters (isPathPartPortable)
+FileUtil.isPathPortable	port	crates/sunrise-gameplay/src/structure_blocks.rs::portable_path	the structure path's check: no empty, `.` or `..` segment; vanilla also tests the part's characters (isPathPartPortable)
 FileUtil.decomposePath	skip:data		resource path handling; Sunrise reads its data from tables and files
 FileUtil.resolvePath	skip:data		resource path handling; Sunrise reads its data from tables and files
 FileUtil.isValidPathSegment	skip:data		resource path handling; Sunrise reads its data from tables and files
@@ -136,3 +136,6 @@ Graph.depthFirstSearch	inline	crates/sunrise-world/src/worldgen/feature_sort.rs:
 Weapon.<clinit>	skip:java		constructs the Java persistent and stream codecs; record validation and values are implemented natively
 UseEffects.<clinit>	skip:java		constructs Java persistent and stream codecs and the immutable default; decoded values and validation are implemented natively
 AttackRange.<clinit>	skip:java		constructs Java persistent and stream codecs; native decoding validates and stores the six range fields
+DamageSourcePredicate.<clinit>	skip:java		RecordCodecBuilder CODEC construction only; runtime DamageSourcePredicate.matches remains mapped separately
+DialogTypes.bootstrap	skip:java		registers five Java MapCodec instances; serialized dialog schemas are decoded natively
+LootPoolEntries.bootstrap	skip:java		registers nine Java MapCodec instances; serialized loot-entry schemas are decoded natively

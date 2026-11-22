@@ -3,8 +3,8 @@
 //! `SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-server reference`.
 
 use crate::api::ROUTES;
-use sunrise_server_launch::config;
 use std::fmt::Write;
+use sunrise_server_launch::config;
 
 const DOC: &str = "docs/api/server-reference.md";
 

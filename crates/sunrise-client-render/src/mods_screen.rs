@@ -17,13 +17,19 @@ use std::{cell::Cell, collections::HashMap, sync::Arc};
 /// `HeaderAndFooterLayout(8, 38)`: the room above and below the content.
 const HEADER_H: i32 = 8;
 const FOOTER_H: i32 = 38;
-/// The sidebar's and the info panel's width, and the controls' height.
+/// The sidebar's width and the controls' height.
 const SIDEBAR_W: i32 = 150;
 const SORT_W: i32 = 50;
 const CONTROL_H: i32 = 20;
-const PANEL_W: i32 = 250;
+/// The widest and narrowest the info panel's text gets: it shrinks on narrow screens.
+const PANEL_MAX: i32 = 250;
+const PANEL_MIN: i32 = 100;
+/// The room between the list and the panel's frame, and between both and the screen's edges.
+const GAP: i32 = 6;
 /// How far the panel's frame reaches beyond its contents.
 const FRAME_PAD: i32 = 2;
+/// The room between the panel's frame and its text, left and right.
+const INSET: i32 = 4;
 /// A list row is its icon and 2 px above and below.
 const ICON: i32 = 24;
 const ROW_H: i32 = ICON + 4;
@@ -32,8 +38,6 @@ const BANNER_H: i32 = 50;
 /// The panel's button row.
 const BUTTONS_H: i32 = 26;
 const MAIN_PAD: i32 = 4;
-/// The sidebar and the panel overlap by 3 px (`columnSpacing(-3)`).
-const TOTAL_W: i32 = SIDEBAR_W - 3 + PANEL_W;
 const SCROLLBAR_W: i32 = 6;
 const WHEEL_STEP: f64 = 18.0;
 const ROWS: usize = 1000;
@@ -95,17 +99,17 @@ impl Entry {
             ..Self::default()
         }
     }
-    fn sunrise() -> Self {
+    fn from_row(row: &sunrise_hooks::mod_rows::Row) -> Self {
         Self {
-            id: "sunrise".into(),
-            name: "Sunrise".into(),
-            version: sunrise_core::release::VERSION.into(),
-            authors: "Ludovic Marie and the Horizon contributors".into(),
-            license: "MIT".into(),
-            license_url: Some("https://github.com/horizon-rust/horizon/blob/main/LICENSE".into()),
-            homepage: Some("https://playsunrise.net".into()),
-            issues: Some("https://github.com/horizon-rust/horizon/issues".into()),
-            description: crate::lang::get("sunrise.mods.screen.sunrise.description"),
+            id: row.id.into(),
+            name: row.name.into(),
+            version: row.version.into(),
+            authors: crate::lang::get(row.authors),
+            license: row.license.into(),
+            license_url: row.license_url.map(Into::into),
+            homepage: row.homepage.map(Into::into),
+            issues: row.issues.map(Into::into),
+            description: crate::lang::get(row.description),
             ..Self::default()
         }
     }
@@ -166,12 +170,25 @@ struct Geo {
     search: [i32; 4],
     sort: [i32; 4],
     list: [i32; 4],
-    /// The scrolling part of the info panel.
+    /// The scrolling part of the info panel: its text, inside the frame.
     panel: [i32; 4],
+    /// The panel's frame: its background and separators, apart from the list.
+    frame: [i32; 4],
     /// Homepage, Issues and Config.
     buttons: [[i32; 4]; 3],
     /// Open Mods Folder and Back.
     footer: [[i32; 4]; 2],
+}
+
+impl Geo {
+    fn panel_track(&self, pinned: i32) -> [i32; 4] {
+        [
+            self.frame[0] + self.frame[2] - FRAME_PAD - SCROLLBAR_W,
+            self.panel[1] + pinned,
+            SCROLLBAR_W,
+            self.panel[3] - pinned,
+        ]
+    }
 }
 
 fn hit(r: [i32; 4], x: f64, y: f64) -> bool {
@@ -259,10 +276,22 @@ pub struct ModsScreen {
 }
 
 impl ModsScreen {
-    /// `ModListScreen.init`: Minecraft, Sunrise, then the installed mods.
+    /// `ModListScreen.init`: Minecraft, the registered rows, then the installed mods.
     pub fn new(width: i32, height: i32, in_world: bool, mods: &ModList) -> Self {
+        let rows = sunrise_hooks::mod_rows::engine::all();
+        Self::with_rows(width, height, in_world, mods, rows)
+    }
+
+    fn with_rows(
+        width: i32,
+        height: i32,
+        in_world: bool,
+        mods: &ModList,
+        rows: &[&sunrise_hooks::mod_rows::Row],
+    ) -> Self {
         let mut icons = HashMap::new();
-        let mut entries = vec![Entry::minecraft(), Entry::sunrise()];
+        let mut entries = vec![Entry::minecraft()];
+        entries.extend(rows.iter().map(|row| Entry::from_row(row)));
         for (index, installed) in mods.installed.iter().enumerate() {
             let info = mods.info.get(&installed.id);
             let key = format!("mod/{index}/icon");
@@ -339,12 +368,18 @@ impl ModsScreen {
 
     fn geo(&self) -> Geo {
         let content = (self.height - HEADER_H - FOOTER_H).max(0);
-        let left = ((self.width - TOTAL_W) / 2).max(0);
+        // The panel takes what the list leaves, up to its widest; the pair is centred.
+        let pad = FRAME_PAD + INSET;
+        let room = self.width - 2 * GAP - SIDEBAR_W - GAP - 2 * pad;
+        let panel_w = room.clamp(PANEL_MIN, PANEL_MAX);
+        let frame_w = panel_w + 2 * pad;
+        let left = ((self.width - (SIDEBAR_W + GAP + frame_w)) / 2).max(GAP);
         let top = HEADER_H - FRAME_PAD;
-        let panel_x = left + SIDEBAR_W - 3;
+        let frame_x = left + SIDEBAR_W + GAP;
+        let panel_x = frame_x + pad;
         let view = (content - BUTTONS_H).max(0);
-        let button_w = PANEL_W / 3 - 1;
-        let gap = (PANEL_W + 2 * FRAME_PAD - 3 * button_w) / 4;
+        let gap = 2;
+        let button_w = (frame_w - 4 * gap) / 3;
         let button_y = HEADER_H + view + (BUTTONS_H - CONTROL_H);
         let footer_w = ((self.width - 4) / 2).clamp(1, 150);
         let footer_x = (self.width - (2 * footer_w + 4)) / 2;
@@ -358,10 +393,11 @@ impl ModsScreen {
                 SIDEBAR_W,
                 (content - CONTROL_H - 5).max(0),
             ],
-            panel: [panel_x, HEADER_H, PANEL_W, view],
+            panel: [panel_x, HEADER_H, panel_w, view],
+            frame: [frame_x, top, frame_w, view + 2 * FRAME_PAD],
             buttons: [0, 1, 2].map(|i| {
                 [
-                    panel_x - FRAME_PAD + gap + i * (button_w + gap),
+                    frame_x + gap + i * (button_w + gap),
                     button_y,
                     button_w,
                     CONTROL_H,
@@ -642,12 +678,12 @@ impl ModsScreen {
     }
     /// The panel's items for the selected mod, narrower by the scrollbar when they need one.
     fn panel_items(&self, m: &Measure, e: &Entry) -> (Vec<Placed>, i32, i32, i32) {
-        let view = self.geo().panel[3];
-        let (items, content, pinned) = self.items(m, e, PANEL_W);
+        let [_, _, panel_w, view] = self.geo().panel;
+        let (items, content, pinned) = self.items(m, e, panel_w);
         if content <= view {
-            return (items, content, PANEL_W, pinned);
+            return (items, content, panel_w, pinned);
         }
-        let width = PANEL_W - SCROLLBAR_W;
+        let width = panel_w - SCROLLBAR_W;
         let (items, content, pinned) = self.items(m, e, width);
         // Keep at least three body lines and a third of the view useful.
         // Otherwise the whole pane scrolls, including an unusually tall status.
@@ -662,6 +698,16 @@ impl ModsScreen {
 
     /// A left click: what it asks of the game, and whether it sounds as a button.
     pub fn click(&mut self, m: &Measure, x: f64, y: f64) -> (Action, bool) {
+        let (action, sound, _) = self.click_with_outcome(m, x, y);
+        (action, sound)
+    }
+
+    pub(crate) fn click_with_outcome(
+        &mut self,
+        m: &Measure,
+        x: f64,
+        y: f64,
+    ) -> (Action, bool, bool) {
         self.place();
         let g = self.geo();
         for (i, r) in g.footer.into_iter().enumerate() {
@@ -672,20 +718,20 @@ impl ModsScreen {
                 } else {
                     Action::Back
                 };
-                return (action, true);
+                return (action, true, true);
             }
         }
         if hit(g.search, x, y) {
             self.search.focused = true;
             self.list_focused = false;
             self.search.click(m, x, false, false);
-            return (Action::None, false);
+            return (Action::None, false, true);
         }
         self.search.focused = false;
         if hit(g.sort, x, y) {
             self.descending = !self.descending;
             self.refresh();
-            return (Action::None, true);
+            return (Action::None, true, true);
         }
         let [lx, ly, lw, lh] = g.list;
         if hit(g.list, x, y) {
@@ -694,7 +740,7 @@ impl ModsScreen {
             let scrollable = Scroll::max(content, lh) > 0;
             if scrollable && x >= f64::from(lx + lw - SCROLLBAR_W) {
                 self.list.held = Some(y);
-                return (Action::None, false);
+                return (Action::None, false, true);
             }
             let row_w = lw - 6 - if scrollable { SCROLLBAR_W } else { 0 };
             if (f64::from(lx + 3)..f64::from(lx + 3 + row_w)).contains(&x) {
@@ -705,10 +751,10 @@ impl ModsScreen {
                     self.select(entry);
                 }
             }
-            return (Action::None, false);
+            return (Action::None, false, true);
         }
         let Some(e) = self.current() else {
-            return (Action::None, false);
+            return (Action::None, false, false);
         };
         for (i, r) in g.buttons.into_iter().enumerate() {
             if !hit(r, x, y) {
@@ -723,22 +769,24 @@ impl ModsScreen {
                     _ => Action::None,
                 },
             };
-            return (action.clone(), action != Action::None);
+            let active = action != Action::None;
+            return (action, active, active);
         }
-        if !hit(g.panel, x, y) {
-            return (Action::None, false);
+        let in_text = hit(g.panel, x, y);
+        if !in_text && !hit(g.panel_track(0), x, y) {
+            return (Action::None, false, false);
         }
-        let e = e.clone();
-        let (items, content, _, pinned) = self.panel_items(m, &e);
+        let (items, content, _, pinned) = self.panel_items(m, e);
         self.panel_content.set(content);
         self.panel_pinned.set(pinned);
         let view = g.panel[3];
-        if Scroll::max(content, view) > 0
-            && y >= f64::from(g.panel[1] + pinned)
-            && x >= f64::from(g.panel[0] + PANEL_W + FRAME_PAD - SCROLLBAR_W)
-        {
+        self.panel.set(self.panel.amount, content, view);
+        if Scroll::max(content, view) > 0 && hit(g.panel_track(pinned), x, y) {
             self.panel.held = Some(y);
-            return (Action::None, false);
+            return (Action::None, false, true);
+        }
+        if !in_text {
+            return (Action::None, false, false);
         }
         for placed in &items {
             let fixed = placed.y < pinned;
@@ -751,7 +799,7 @@ impl ModsScreen {
                 Kind::Subtitle(pieces) => {
                     for piece in pieces {
                         if hit(row(piece.x, piece.w), x, y) {
-                            return (Action::Copy(piece.copy.clone()), false);
+                            return (Action::Copy(piece.copy.clone()), false, true);
                         }
                     }
                 }
@@ -760,12 +808,12 @@ impl ModsScreen {
                     link: Some(url),
                     ..
                 } if hit(row(0, *width), x, y) => {
-                    return (Action::Link(url.clone()), false);
+                    return (Action::Link(url.clone()), false, true);
                 }
                 _ => {}
             }
         }
-        (Action::None, false)
+        (Action::None, false, false)
     }
     /// The pointer moved with the button held: a held scrollbar follows it.
     pub fn drag(&mut self, y: f64) {
@@ -780,9 +828,8 @@ impl ModsScreen {
             g.panel[3] - pinned,
         );
     }
-    pub fn release(&mut self) {
-        self.list.held = None;
-        self.panel.held = None;
+    pub fn release(&mut self) -> bool {
+        self.list.held.take().is_some() | self.panel.held.take().is_some()
     }
     /// The mouse wheel over the list or the panel.
     pub fn scroll(&mut self, x: f64, y: f64, amount: f64) {
@@ -791,16 +838,7 @@ impl ModsScreen {
             let content = self.list_content();
             self.list
                 .set(self.list.amount - amount * WHEEL_STEP, content, g.list[3]);
-        } else if hit(
-            [
-                g.panel[0] - FRAME_PAD,
-                g.panel[1],
-                PANEL_W + 2 * FRAME_PAD,
-                g.panel[3],
-            ],
-            x,
-            y,
-        ) {
+        } else if hit([g.frame[0], g.panel[1], g.frame[2], g.panel[3]], x, y) {
             let content = self.panel_content.get();
             self.panel
                 .set(self.panel.amount - amount * WHEEL_STEP, content, g.panel[3]);
@@ -814,7 +852,13 @@ impl ModsScreen {
 
     /// The screen's calls over the menu background. `blink_ms` is the time since the search box
     /// took the focus.
-    pub fn draw(&self, m: &Measure, mouse: (i32, i32), blink_ms: u64, now_ms: i64) -> Vec<Draw> {
+    pub fn draw(
+        &mut self,
+        m: &Measure,
+        mouse: (i32, i32),
+        blink_ms: u64,
+        now_ms: i64,
+    ) -> Vec<Draw> {
         let g = self.geo();
         let mut out = Vec::new();
         let prefix = if self.in_world { "inworld_" } else { "" };
@@ -856,38 +900,36 @@ impl ModsScreen {
         if sort_hover {
             tooltip = Some(tr(&format!("{name}.hover")));
         }
-        // The info panel's frame, under the list so the list's scrollbar stays on top where
-        // the two overlap.
-        let [px, py, _, view] = g.panel;
-        // `BackgroundWithPipingWidget`: the list's background and separators, with the frame's
-        // 2 px inset on every side for the separators and the scrolling contents between them.
-        let frame_w = PANEL_W + 2 * FRAME_PAD;
+        // The info panel's frame, beside the list: `BackgroundWithPipingWidget`, the list's
+        // background between two separators, 2 px beyond the scrolling contents above and below.
+        let [px, py, panel_w, view] = g.panel;
+        let [fx, fy, frame_w, frame_h] = g.frame;
         d::blit(
             &mut out,
             &format!("textures/gui/{prefix}menu_list_background.png"),
-            px - FRAME_PAD,
-            py - FRAME_PAD,
+            fx,
+            fy,
             (0.0, 0.0),
             frame_w,
-            view + 2 * FRAME_PAD,
+            frame_h,
             [32, 32],
         );
-        separator_at(&mut out, "header", px - FRAME_PAD, py - FRAME_PAD, frame_w);
-        separator_at(&mut out, "footer", px - FRAME_PAD, py + view, frame_w);
+        separator_at(&mut out, "header", fx, fy, frame_w);
+        separator_at(&mut out, "footer", fx, py + view, frame_w);
 
         self.draw_list(&mut out, m, &g);
 
         // The info panel's contents.
-        let selected = self.current();
-        if let Some(e) = selected {
+        if let Some(e) = self.current() {
             let (items, content, width, pinned) = self.panel_items(m, e);
             self.panel_content.set(content);
             self.panel_pinned.set(pinned);
-            let scroll = self.panel.amount.min(f64::from(Scroll::max(content, view))) as i32;
+            self.panel.set(self.panel.amount, content, view);
+            let scroll = self.panel.amount as i32;
             out.push(Draw::Scissor {
-                x0: px - FRAME_PAD,
+                x0: fx,
                 y0: py,
-                x1: px + PANEL_W + FRAME_PAD,
+                x1: fx + frame_w,
                 y1: py + pinned.min(view),
             });
             let mut body = false;
@@ -895,9 +937,9 @@ impl ModsScreen {
                 if !body && placed.y >= pinned {
                     out.push(Draw::NoScissor);
                     out.push(Draw::Scissor {
-                        x0: px - FRAME_PAD,
+                        x0: fx,
                         y0: py + pinned.min(view),
-                        x1: px + PANEL_W + FRAME_PAD,
+                        x1: fx + frame_w,
                         y1: py + view,
                     });
                     body = true;
@@ -905,7 +947,7 @@ impl ModsScreen {
                 let y = py + placed.y - if body { scroll } else { 0 };
                 match &placed.kind {
                     Kind::Image { texture, size } => {
-                        let x = px + (PANEL_W - size) / 2;
+                        let x = px + (panel_w - size) / 2;
                         d::blit(
                             &mut out,
                             texture,
@@ -970,15 +1012,11 @@ impl ModsScreen {
                 }
             }
             out.push(Draw::NoScissor);
-            self.panel.draw(
-                &mut out,
-                px + PANEL_W + FRAME_PAD - SCROLLBAR_W,
-                py + pinned,
-                content - pinned,
-                view - pinned,
-            );
+            let [track_x, track_y, _, track_h] = g.panel_track(pinned);
+            self.panel
+                .draw(&mut out, track_x, track_y, content - pinned, track_h);
         }
-        let e = selected;
+        let e = self.current();
         let enabled = [
             e.is_some_and(|e| e.homepage.is_some()),
             e.is_some_and(|e| e.issues.is_some()),
@@ -1116,56 +1154,10 @@ impl ModsScreen {
     }
 }
 
-/// The atlas sprite of the main menu's Mods button, as the icons beside it are named.
-pub const ICON_SPRITE: &str = "gui/sprites/icon/mods";
-/// A cube, drawn in three greys for its top and two sides: `#` light, `o` middle, `x` dark.
-const ICON_ART: [&str; 15] = [
-    ".......#.......",
-    ".....#####.....",
-    "...#########...",
-    ".#############.",
-    "...#########...",
-    ".....#####.....",
-    ".......#.......",
-    ".oooooo#xxxxxx.",
-    ".oooooo#xxxxxx.",
-    ".oooooo#xxxxxx.",
-    ".oooooo#xxxxxx.",
-    "..ooooo#xxxxx..",
-    "...oooo#xxxx...",
-    ".....oo#xx.....",
-    ".......#.......",
-];
-
-/// The Mods button's icon for the atlas: `(sprite, width, height, RGBA texels)`.
-pub fn icon_image() -> (String, u32, u32, Vec<u8>) {
-    let pixels = ICON_ART
-        .iter()
-        .flat_map(|row| row.chars())
-        .flat_map(|c| match c {
-            '#' => [255, 255, 255, 255],
-            'o' => [176, 176, 176, 255],
-            'x' => [112, 112, 112, 255],
-            _ => [0, 0, 0, 0],
-        })
-        .collect();
-    (ICON_SPRITE.to_owned(), 15, 15, pixels)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mod_list::{Installed, ModInfo, NativePage};
-
-    #[test]
-    fn the_mods_icon_is_a_fifteen_pixel_square_with_a_clear_corner() {
-        assert!(ICON_ART.iter().all(|row| row.chars().count() == 15));
-        let (name, w, h, pixels) = icon_image();
-        assert_eq!((name.as_str(), w, h), (ICON_SPRITE, 15, 15));
-        assert_eq!(pixels.len(), 15 * 15 * 4);
-        assert_eq!(pixels[3], 0, "the corner is clear");
-        assert_eq!(pixels[(7 * 4) + 3], 255, "the cube's top point is drawn");
-    }
 
     fn atlas() -> HudAtlas {
         HudAtlas::build(&sunrise_assets::resource_source::ResourceSource::directory(
@@ -1217,12 +1209,12 @@ mod tests {
         let m = Measure(&atlas.font);
         let mut screen =
             ModsScreen::new(427, 240, false, &mods(&[installed("zoom", "Zoom", None)]));
-        assert_eq!(names(&screen), ["Sunrise", "Minecraft", "Zoom"]);
+        assert_eq!(names(&screen), ["Minecraft", "Zoom"]);
         // The sort button reverses the order.
         let (action, sound) =
             screen.click(&m, centre(screen.geo().sort).0, centre(screen.geo().sort).1);
         assert_eq!((action, sound), (Action::None, true));
-        assert_eq!(names(&screen), ["Zoom", "Minecraft", "Sunrise"]);
+        assert_eq!(names(&screen), ["Zoom", "Minecraft"]);
         // The search keeps the names that contain it, in any case.
         let (x, y) = centre(screen.geo().search);
         screen.click(&m, x, y);
@@ -1239,7 +1231,7 @@ mod tests {
             screen.erase(&m, 1);
         }
         // Everything is listed again and the selection stays.
-        assert_eq!(names(&screen).len(), 3);
+        assert_eq!(names(&screen).len(), 2);
         assert_eq!(screen.current().map(|e| e.id.as_str()), Some("zoom"));
         // A search that drops the selected mod leaves nothing selected.
         screen.type_text(&m, "x");
@@ -1357,13 +1349,53 @@ mod tests {
     }
 
     #[test]
+    fn every_registered_row_follows_minecraft_with_its_text_translated() {
+        let row = |id, name| sunrise_hooks::mod_rows::Row {
+            id,
+            name,
+            version: "1.2.3",
+            authors: "test.authors",
+            license: "PolyForm Shield 1.0.0",
+            license_url: Some("https://example.org/LICENSE"),
+            homepage: Some("https://example.org"),
+            issues: None,
+            description: "test.description",
+        };
+        let (first, second) = (row("first", "Alpha"), row("second", "Beta"));
+        let language = crate::lang::Language::of(
+            "en_us",
+            [
+                ("test.authors".to_owned(), "The Testers".to_owned()),
+                ("test.description".to_owned(), "A test row.".to_owned()),
+            ],
+        );
+        let (screen, _) = crate::lang::scoped(language, || {
+            ModsScreen::with_rows(427, 240, false, &ModList::default(), &[&first, &second])
+        });
+        let ids: Vec<_> = screen.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["minecraft", "first", "second"]);
+        // The list itself is sorted by name, as ModListScreen's is.
+        assert_eq!(names(&screen), ["Alpha", "Beta", "Minecraft"]);
+        let entry = &screen.entries[1];
+        assert_eq!(
+            (entry.authors.as_str(), entry.description.as_str()),
+            ("The Testers", "A test row.")
+        );
+        assert_eq!(
+            (entry.version.as_str(), entry.license.as_str()),
+            ("1.2.3", "PolyForm Shield 1.0.0")
+        );
+        assert_eq!(entry.homepage.as_deref(), Some("https://example.org"));
+    }
+
+    #[test]
     fn the_arrow_keys_walk_the_list_and_scroll_it() {
         let list: Vec<_> = (0..20)
             .map(|i| installed(&format!("m{i:02}"), &format!("Mod {i:02}"), None))
             .collect();
         let mut screen = ModsScreen::new(427, 240, false, &mods(&list));
         screen.step(1);
-        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Sunrise"));
+        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Minecraft"));
         for _ in 0..21 {
             screen.step(1);
         }
@@ -1372,7 +1404,7 @@ mod tests {
         screen.step(1);
         assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 19"));
         screen.step(-30);
-        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Sunrise"));
+        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Minecraft"));
         assert_eq!(screen.list.amount, 0.0);
     }
 
@@ -1521,6 +1553,90 @@ mod tests {
         });
     }
 
+    fn sprite_rect(draws: &[Draw], name: &str) -> [i32; 4] {
+        draws
+            .iter()
+            .find_map(|draw| match draw {
+                Draw::Sprite {
+                    sprite, x, y, w, h, ..
+                } if sprite == name => Some([*x, *y, *w, *h]),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing sprite {name}"))
+    }
+
+    #[test]
+    fn every_painted_panel_scrollbar_pixel_can_start_a_drag() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let (mut row, info) = installed("long", "Long", None);
+        row.description = "A long description. ".repeat(80);
+        let mut screen = ModsScreen::with_rows(427, 240, false, &mods(&[(row, info)]), &[]);
+        screen.select(1);
+        let draws = screen.draw(&m, (0, 0), 0, 0);
+        let [x, y, width, _] = sprite_rect(&draws, "widget/scroller_background");
+        let thumb_y = sprite_rect(&draws, "widget/scroller")[1];
+        assert_eq!(width, 6);
+        for px in x..x + width {
+            let mut screen = screen.clone();
+            screen.click(&m, f64::from(px), f64::from(y + 1));
+            screen.drag(f64::from(y + 12));
+            let after = screen.draw(&m, (0, 0), 0, 0);
+            assert!(
+                sprite_rect(&after, "widget/scroller")[1] > thumb_y,
+                "x = {px}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wider_panel_clamps_the_thumb_and_license_click_to_the_rewrapped_text() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let (mut row, mut info) = installed("long", "Long", None);
+        row.description.clear();
+        info.authors.clear();
+        info.license = "MIT".into();
+        info.license_url = Some("https://example.org/LICENSE".into());
+        info.warnings = vec![("test.long".into(), vec!["A warning sentence. ".repeat(80)])];
+        let language = crate::lang::Language::of(
+            "en_us",
+            [
+                ("test.long".to_owned(), "%s".to_owned()),
+                (
+                    "sunrise.mods.screen.license".to_owned(),
+                    "License: %s".to_owned(),
+                ),
+            ],
+        );
+        crate::lang::scoped(language, || {
+            let mut screen = ModsScreen::with_rows(320, 240, false, &mods(&[(row, info)]), &[]);
+            screen.select(1);
+            screen.draw(&m, (0, 0), 0, 0);
+            // Scroll the narrow pane to the end, then rewrap the text without repainting yet.
+            screen.scroll(180.0, 100.0, -10_000.0);
+            screen.resize(640, 240);
+            let draws = screen.clone().draw(&m, (0, 0), 0, 0);
+            let [_, track_y, _, track_h] = sprite_rect(&draws, "widget/scroller_background");
+            let [_, thumb_y, _, thumb_h] = sprite_rect(&draws, "widget/scroller");
+            assert_eq!(thumb_y + thumb_h, track_y + track_h);
+            let (x, y) = draws
+                .iter()
+                .find_map(|draw| match draw {
+                    Draw::Text { text, x, y, .. } if text.plain() == "License: MIT" => {
+                        Some((*x, *y))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(y >= track_y && y + 9 <= track_y + track_h);
+            assert_eq!(
+                screen.click(&m, f64::from(x + 1), f64::from(y + 1)).0,
+                Action::Link("https://example.org/LICENSE".into())
+            );
+        });
+    }
+
     #[test]
     fn a_tall_failure_status_leaves_the_whole_small_pane_scrollable() {
         let atlas = atlas();
@@ -1538,14 +1654,14 @@ mod tests {
         assert!(screen.panel_content.get() > screen.geo().panel[3]);
     }
 
-    /// `BackgroundWithPipingWidget`: the info panel is framed like the list, 2 px beyond its
-    /// 250 px contents on every side, with the list's background between two separators.
+    /// `BackgroundWithPipingWidget`: the info panel is framed like the list, with the list's
+    /// background between two separators. Literal rectangles at 427 px wide: the list from
+    /// x = 6, 6 px of room, then a 259 px frame whose text starts 6 px inside it.
     #[test]
     fn the_info_panel_has_the_lists_background_and_separators() {
         let atlas = atlas();
         let m = Measure(&atlas.font);
-        let screen = ModsScreen::new(427, 240, false, &ModList::default());
-        let [px, py, _, view] = screen.geo().panel;
+        let mut screen = ModsScreen::new(427, 240, false, &ModList::default());
         let draws = screen.draw(&m, (0, 0), 0, 0);
         let blit = |texture: &str, x: i32, y: i32, w: i32, h: i32| {
             draws.iter().any(|call| {
@@ -1553,46 +1669,48 @@ mod tests {
                     if t == texture && (*bx, *by, *bw, *bh) == (x, y, w, h))
             })
         };
+        // 240 - 8 - 38 = 194 of content, less the 26 px button row: a 168 px view.
+        assert_eq!(screen.geo().panel, [168, 8, 247, 168]);
         assert!(blit(
             "textures/gui/menu_list_background.png",
-            px - 2,
-            py - 2,
-            254,
-            view + 4
+            162,
+            6,
+            259,
+            172
         ));
-        assert!(blit(
-            "textures/gui/header_separator.png",
-            px - 2,
-            py - 2,
-            254,
-            2
-        ));
-        assert!(blit(
-            "textures/gui/footer_separator.png",
-            px - 2,
-            py + view,
-            254,
-            2
-        ));
+        assert!(blit("textures/gui/header_separator.png", 162, 6, 259, 2));
+        assert!(blit("textures/gui/footer_separator.png", 162, 176, 259, 2));
     }
 
-    /// The panel's frame reaches 5 px into the list's scrollbar at 427 px wide, so it is drawn
-    /// first and the list, scrollbar included, goes over it.
+    /// The list and the panel sit side by side with room between them on every width the
+    /// screen meets, the panel narrowing instead of running into the list or off the screen.
     #[test]
-    fn the_panel_frame_is_drawn_under_the_list() {
-        let atlas = atlas();
-        let m = Measure(&atlas.font);
-        let screen = ModsScreen::new(427, 240, false, &ModList::default());
-        let [px, _, _, _] = screen.geo().panel;
-        let [lx, ..] = screen.geo().list;
-        let draws = screen.draw(&m, (0, 0), 0, 0);
-        let background_at = |x: i32| {
-            draws.iter().position(|call| {
-                matches!(call, Draw::Blit { texture, x: bx, .. }
-                    if texture == "textures/gui/menu_list_background.png" && *bx == x)
-            })
-        };
-        let (frame, list) = (background_at(px - 2).unwrap(), background_at(lx).unwrap());
-        assert!(frame < list, "frame at {frame}, list at {list}");
+    fn the_panel_never_overlaps_the_list() {
+        for width in [320, 397, 427, 640, 854, 1280] {
+            let g = ModsScreen::new(width, 240, false, &ModList::default()).geo();
+            let list_right = g.list[0] + g.list[2];
+            let [fx, _, fw, _] = g.frame;
+            assert!(g.list[0] >= 6, "{width}: list at {}", g.list[0]);
+            assert!(
+                fx >= list_right + 6,
+                "{width}: frame at {fx}, list ends at {list_right}"
+            );
+            assert!(
+                g.panel[0] >= fx + 6,
+                "{width}: text at {}, frame at {fx}",
+                g.panel[0]
+            );
+            assert!(
+                g.panel[0] + g.panel[2] <= fx + fw - 6,
+                "{width}: text runs to the frame"
+            );
+            assert!(fx + fw <= width, "{width}: frame ends at {}", fx + fw);
+            for b in g.buttons {
+                assert!(
+                    b[0] >= fx && b[0] + b[2] <= fx + fw,
+                    "{width}: button {b:?}"
+                );
+            }
+        }
     }
 }

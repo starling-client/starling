@@ -5,9 +5,11 @@ pub trait Hooks {
     /// A server player used a firework rocket to boost while gliding, after the rocket was launched
     /// and consumed. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_elytra_boost",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn player_elytra_boost();
+    fn player_elytra_boost(player: u128, name: &str);
 }

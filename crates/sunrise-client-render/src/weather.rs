@@ -150,35 +150,7 @@ impl ParameterCache {
     }
 }
 
-/// One unsplit camera-relative weather vertex. UV animation and atlas-local
-/// repetition happen in the weather shader, rather than rebuilding tiled quads.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    pub pos: [f32; 3],
-    pub uv: [f32; 2],
-    pub rect: [f32; 4],
-    pub animation: [f32; 4],
-    pub bases: [u32; 4],
-    pub color: u32,
-    pub light: u32,
-    pub snow: u32,
-}
-
-/// Current ticks are masked on the CPU before conversion to float, including
-/// negative/large tick values. Do not use the renderer's unbounded game_time.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Time {
-    pub values: [f32; 4],
-}
-impl Time {
-    pub fn new(ticks: i64, partial: f32) -> Self {
-        Self {
-            values: [(ticks & 131_071) as f32, (ticks & 511) as f32, partial, 0.0],
-        }
-    }
-}
+pub use sunrise_render_core::{WeatherTime as Time, WeatherVertex as Vertex};
 
 /// Emit a single quad, retaining column_quad's position, fade, UV rounding and
 /// light semantics. The zero phase leaves the shader to animate both UV axes.

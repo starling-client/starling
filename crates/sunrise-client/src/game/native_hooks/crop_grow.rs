@@ -22,9 +22,12 @@ impl GameLevel<'_> {
     }
 
     /// A crop-like block grew (NeoForge's `CropGrowEvent.Post`).
-    /// `original_state` is the block before it grew and `state` what is at
-    /// `pos` now. Sugar cane reports the new cane above it, and kelp and
-    /// vines the new head, as both states. Server-side.
+    /// Diverges from NeoForge: original_state is always the pre-growth state.
+    /// `state` is what is at `pos` now. Sugar cane reports the new cane above
+    /// it, and kelp and vines the new head, while `original_state` names the
+    /// growing plant before growth. A full-age stem fires even without fruit;
+    /// sugar cane fires only when adding a cane, not when only aging. Cactus
+    /// and chorus report the plant's position. Server-side.
     #[inline(always)]
     pub(in crate::game) fn native_crop_grow_post(
         &mut self,

@@ -25,7 +25,7 @@ impl Hooks for SaveOnPickup {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated homes"]
+#[ignore = "daily"]
 fn save_requested_during_pickup_keeps_lifted_items_on_disk() {
     use sunrise_client::{
         chunk::Chunk,
@@ -44,7 +44,11 @@ fn save_requested_during_pickup_keeps_lifted_items_on_disk() {
         let calls = Arc::new(AtomicUsize::new(0));
         native_guest_turn_tests::with_guests(|game| {
             game.world_root = root.clone();
-            game.save = Arc::new(SaveDir::new(root.clone(), LevelShape::OVERWORLD));
+            game.save = Arc::new(SaveDir::new(
+                root.clone(),
+                LevelShape::OVERWORLD,
+                Some(Default::default()),
+            ));
             game.options.dedicated = Some(Vec::new());
             game.server_lists = Some(Arc::new(Mutex::new(dedicated::Lists {
                 ops: OpList::new(root.join("ops.json")),
@@ -57,7 +61,6 @@ fn save_requested_during_pickup_keeps_lifted_items_on_disk() {
                 player_idle_timeout: 0,
                 stop: false,
                 autosave: true,
-                whitelist_bypass: Vec::new(),
             })));
             game.build_registries();
             game.ui.dispatcher = chat::SessionDispatcher(Arc::new(
@@ -123,13 +126,17 @@ fn save_requested_during_pickup_keeps_lifted_items_on_disk() {
             assert_eq!(game.dropped[0].stack.count, 7);
             game.save.flush().unwrap();
             assert!(
-                game.save.load_entities(0, 0).is_empty(),
+                game.save.load_entities(0, 0).unwrap().is_empty(),
                 "refused save wrote rows"
             );
             game.save_game().unwrap();
         });
-        let disk = SaveDir::new(root.clone(), LevelShape::OVERWORLD);
-        let tags = disk.load_entities(0, 0);
+        let disk = SaveDir::new(
+            root.clone(),
+            LevelShape::OVERWORLD,
+            Some(Default::default()),
+        );
+        let tags = disk.load_entities(0, 0).unwrap();
         std::fs::write(root.join("entity-evidence.txt"), format!("{tags:#?}")).unwrap();
         let kinds: Vec<_> = tags
             .iter()

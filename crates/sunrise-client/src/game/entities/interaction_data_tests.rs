@@ -4,8 +4,8 @@
 //! UUID (tools/test_interaction_data_parity.py measures the same on vanilla
 //! 26.3).
 use super::*;
-use sunrise_core::nbt::{Tag, parse_snbt};
 use std::sync::Arc;
+use sunrise_core::nbt::{Tag, parse_snbt};
 
 const EDITED: &str = "00000042-0000-0000-0000-000000000001";
 
@@ -32,7 +32,7 @@ fn run(game: &mut Game<'_>, command: &str) -> (bool, Option<String>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn data_edits_reach_the_same_live_interaction() {
     game(|game| {
         assert!(game.run_command("summon interaction 4.5 100 4.5 {UUID:[I;66,0,0,1]}"));
@@ -86,7 +86,7 @@ fn data_edits_reach_the_same_live_interaction() {
 /// removed record is gone; a marker and an item display keep their own
 /// state; every entity keeps its identity.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_live_settings_are_what_the_interaction_saves() {
     use super::interactions::{InteractionState, PlayerAction};
     game(|game| {

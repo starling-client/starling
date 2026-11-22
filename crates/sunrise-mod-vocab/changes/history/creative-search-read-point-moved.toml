@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::native_hooks::enchantments::Game<'_>::creative_search_items"]
+why = "Creative search order now comes from the same world catalog as the screen, not from the enchantment module's read of screen-owned contents. It takes a mutable receiver because it can build the catalog and dispatch the build hook on a cache miss."
+migrate = "For client inventory ranking, call ItemsClientHost::creative_search_items on a mutable client Host; it returns an empty list without a live catalog or during setup or reload. To observe the read with [[inject]], retarget to sunrise_client::game::native_hooks::build_creative_mode_tab_contents::Game<'_>::creative_search_items, adapt the listener to the mutable receiver, and update hash if pinned."

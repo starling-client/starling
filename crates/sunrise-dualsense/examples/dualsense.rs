@@ -5,9 +5,9 @@
 //!
 //! The pad's input report carries the triggers' active effect, and its accelerometer and gyro
 //! pick up the motors, so `rumble` measures the shake against the pad lying still.
+use std::time::{Duration, Instant};
 use sunrise_dualsense::device::{DualSense, Link, State};
 use sunrise_dualsense::{Output, TRIGGER_OFF};
-use std::time::{Duration, Instant};
 
 /// Offsets in the input report's data, after the report ID (USB 0x01) or the ID and a tag byte
 /// (Bluetooth 0x31).

@@ -1,14 +1,13 @@
-//! Bootstrap capture -> real registration -> real Game hosts, with the compiled wasm guest.
+//! Bootstrap capture, mod registration and the real Game hosts.
 use crate::game::{Game, Options, api_values, execution_role::ExecutionRole, mods};
-use sunrise_mod_package::selection::LaunchArguments;
 use mod_api::{Dist, Hooks, Host, ModEntry, PackageInfo, RegistrationContext, RuntimeEnvironment};
 use std::sync::{Arc, Mutex};
+use sunrise_mod_package::selection::LaunchArguments;
 
 #[derive(Default)]
 struct Observed {
     registration: Vec<RuntimeEnvironment>,
     later: Vec<RuntimeEnvironment>,
-    messages: Vec<mod_api::Text>,
     tests: usize,
 }
 struct Probe(Arc<Mutex<Observed>>);
@@ -58,35 +57,12 @@ impl Hooks for Probe {
     fn register_game_tests(&self, _: &dyn Host, _: &mut mod_api::RegisterGameTestsEvent<'_>) {
         self.0.lock().unwrap().tests += 1;
     }
-    fn broadcast_message(
-        &self,
-        _: &dyn Host,
-        event: &mut mod_api::BroadcastMessageEvent<'_>,
-    ) -> mod_api::Flow {
-        self.0.lock().unwrap().messages.push(event.line.clone());
-        mod_api::Flow::Continue
-    }
 }
 
 #[test]
-#[ignore = "requires prepared SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn native_process_environment_in_registration_and_game_hosts() {
-    run(false);
-}
-
-#[test]
-#[ignore = "requires prepared SUNRISE_TEST_RESOURCES and rebuilt SUNRISE_WASM_FIXTURE/SUNRISE_WASM_STD"]
-fn native_and_wasm_process_environment_in_registration_and_game_hosts() {
-    sunrise_guest_stack::run_on_guest_stack(|| run(true));
-}
-
-fn run(wasm: bool) {
     if std::env::var_os("SUNRISE_RUNTIME_ENV_CASE").is_none() {
-        let test = if wasm {
-            "native_and_wasm_process_environment_in_registration_and_game_hosts"
-        } else {
-            "native_process_environment_in_registration_and_game_hosts"
-        };
         let resources = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resource root required"),
         )
@@ -116,7 +92,7 @@ fn run(wasm: bool) {
                 .args([
                     "--ignored",
                     "--exact",
-                    &format!("game::native_hooks::runtime_environment::tests::{test}"),
+                    "game::native_hooks::runtime_environment::tests::native_process_environment_in_registration_and_game_hosts",
                     "--nocapture",
                 ])
                 .current_dir(&scratch)
@@ -142,32 +118,18 @@ fn run(wasm: bool) {
             }
             command.output().unwrap()
         };
-        // The wasm case runs alone in the fixture job: four cases at a time there, each still in its
-        // own process. The native case shares the slow shards' memory, so one at a time.
-        for group in cases.chunks(if wasm { 4 } else { 1 }) {
-            let run = &run;
-            let outputs: Vec<_> = std::thread::scope(|scope| {
-                let running: Vec<_> = group
-                    .iter()
-                    .map(|&case| scope.spawn(move || run(case)))
-                    .collect();
-                running
-                    .into_iter()
-                    .map(|child| child.join().unwrap())
-                    .collect()
-            });
-            for (case, output) in group.iter().zip(outputs) {
-                assert!(
-                    output.status.success(),
-                    "{case}: {}\n{}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                assert!(
-                    String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-                    "child must execute the exact acceptance test, not zero tests"
-                );
-            }
+        for case in cases {
+            let output = run(case);
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "child must execute the exact acceptance test, not zero tests"
+            );
         }
         return;
     }
@@ -213,11 +175,11 @@ fn run(wasm: bool) {
         enabled,
     );
     let observed = Arc::new(Mutex::new(Observed::default()));
-    let mut entries = vec![ModEntry::new(
+    let entries = vec![ModEntry::new(
         "runtime_probe",
         Box::new(Probe(observed.clone())),
     )];
-    let mut inventory = vec![PackageInfo::new(
+    let inventory = vec![PackageInfo::new(
         "runtime_probe".into(),
         "1.0.0".into(),
         mod_api::PackageKind::Code,
@@ -225,39 +187,11 @@ fn run(wasm: bool) {
         vec!["runtime_probe".into()],
         vec![],
     )];
-    // Retain the loaded code for the entire registration and host dispatch lifetime.
-    let mut loaded = wasm.then(|| {
-        use sunrise_mod_package::manifest::Package;
-        let path = std::path::PathBuf::from(std::env::var_os("SUNRISE_WASM_FIXTURE").unwrap());
-        let mut manifest = Package::read(&path).unwrap().manifest;
-        manifest.inject.clear();
-        inventory.push(PackageInfo::new(
-            manifest.id.clone(),
-            manifest.version.clone(),
-            mod_api::PackageKind::Code,
-            mod_api::Side::Both,
-            vec![manifest.id.clone()],
-            vec![],
-        ));
-        let loaded = sunrise_mod_wasm::load(
-            &std::fs::read(std::env::var_os("SUNRISE_WASM_STD").unwrap()).unwrap(),
-            vec![sunrise_mod_wasm::WasmPackage {
-                manifest,
-                module: Package::read_wasm(&path).unwrap(),
-            }],
-        );
-        assert!(loaded.refused.is_empty(), "{:?}", loaded.refused);
-        loaded.initialize(&inventory).unwrap();
-        loaded
-    });
-    if let Some(loaded) = &mut loaded {
-        entries.append(&mut loaded.mods);
-    }
     api_values::install_test_platform();
     mod_platform::__private::install_packages(&inventory, &[]);
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     // Freeze the real bootstrap snapshot before with_mods runs registration hooks.
-    mods::install_registration_data(&root).unwrap();
+    mods::install_registration_data(&root, Default::default(), Default::default()).unwrap();
     mod_platform::testing::with_mods(entries.into(), || {
         let role = if dedicated {
             ExecutionRole::DedicatedServer
@@ -267,11 +201,9 @@ fn run(wasm: bool) {
             ExecutionRole::Client
         };
         crate::game::native_entity_refs::tests::with_game_role(
-            root,
+            crate::game::native_entity_refs::tests::fixture_root(),
             role,
             |game: &mut Game<'_>| {
-                let _phase =
-                    mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
                 if role.is_client() {
                     game.native_client_tick_pre();
                     // A client process's integrated logical server must read that same snapshot.
@@ -298,19 +230,6 @@ fn run(wasm: bool) {
         observed.tests, 1,
         "game-test registration runs with the flag off and on"
     );
-    if wasm {
-        assert_eq!(
-            observed.messages,
-            [mod_api::Text::literal(format!(
-                "runtime_environment|{:?}|{}|{}|{}",
-                expected.dist(),
-                expected.game_version(),
-                expected.sunrise_version(),
-                expected.game_tests_enabled(),
-            ))],
-            "compiled guest must finish registration and later Host reads without a trap"
-        );
-    }
 }
 
 #[test]

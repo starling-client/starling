@@ -1,8 +1,8 @@
 use super::*;
 use crate::game::native_guest_turn_tests::with_guests;
+use mod_api::{AttachmentAccess, ServerHost};
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_mod_runtime::attachments::{AttachmentCodec, AttachmentError, AttachmentType};
-use mod_api::{AttachmentAccess, ServerHost};
 
 const VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "activation",
@@ -30,7 +30,7 @@ fn snapshot(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saved_placement_respawn_removal_and_reconnect_publish_player_rows() {
     with_guests(|game| {
         game.world_root = game.save.root.clone();
@@ -40,7 +40,7 @@ fn saved_placement_respawn_removal_and_reconnect_publish_player_rows() {
         VALUE
             .set(guests.attachments_mut(12).unwrap(), Holder::Level, 31)
             .unwrap();
-        sunrise_client::lan::playerdata::save(&guests[0], &game.world_root);
+        sunrise_client::lan::playerdata::save(&guests[0], &game.world_root, &Default::default());
         guests.update_all(|g| g.placed = false);
         game.lan_guest_joined(12, &[], [0.5, 64.0, 0.5]);
         game.lan_guest_joined(13, &[], [0.5, 64.0, 0.5]);
@@ -97,7 +97,7 @@ fn saved_placement_respawn_removal_and_reconnect_publish_player_rows() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn first_stores_bind_once_and_guest_turns_preserve_the_registration() {
     with_guests(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -137,7 +137,7 @@ fn first_stores_bind_once_and_guest_turns_preserve_the_registration() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn travel_moves_rows_before_guest_callbacks_and_keeps_captured_values() {
     with_guests(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -149,7 +149,7 @@ fn travel_moves_rows_before_guest_callbacks_and_keeps_captured_values() {
             .attachments
             .registration()
             .unwrap();
-        game.start_server_trip(12, Dim::Nether, None, false);
+        game.start_server_trip(12, Dim::Nether, None);
         assert!(snapshot(game, Dim::Overworld).is_empty());
         let nether = snapshot(game, Dim::Nether);
         assert_eq!(nether.len(), 1);
@@ -176,7 +176,7 @@ fn travel_moves_rows_before_guest_callbacks_and_keeps_captured_values() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn queued_level_teleport_moves_the_player_row_and_later_writes_stay_in_the_destination() {
     with_guests(|game| {
         game.options.dedicated = Some(Vec::new());

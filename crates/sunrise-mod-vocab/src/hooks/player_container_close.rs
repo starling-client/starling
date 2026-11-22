@@ -2,7 +2,7 @@
 // catalog-order: 0164
 
 pub trait Hooks {
-    /// `player` (`name`) closed the menu `player_container_open` told
+    /// `player` (`name`) closed the `menu_type` that `player_container_open` told
     /// of (NeoForge's `PlayerContainerEvent.Close`, posted in
     /// `ServerPlayer.doCloseContainer` after the menu's `removed`): they
     /// closed it, walked out of reach, died, changed level, or another menu
@@ -13,10 +13,18 @@ pub trait Hooks {
     /// back in the inventory. State swapped in, when the player has a body.
     /// Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_container_close",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "PlayerContainerEvent.Close",
         cancellable = false
     )]
-    fn player_container_close();
+    fn player_container_close(
+        player: u128,
+        name: &str,
+        dimension: &str,
+        menu_type: &str,
+        pos: Option<[i32; 3]>,
+    );
 }

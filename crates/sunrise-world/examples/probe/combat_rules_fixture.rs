@@ -1,11 +1,11 @@
 use crate::support::common::f32_bits;
-use sunrise_world::combat_rules::{self, ArmorWorld};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_world::combat_rules::{self, ArmorWorld};
 fn single(v: &Value) -> f32 {
     f32::from_bits(u32::from_str_radix(v.as_str().unwrap(), 16).unwrap())
 }

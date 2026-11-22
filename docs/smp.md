@@ -49,7 +49,7 @@ horizon-rust/horizon#4483, horizon-rust/horizon#4302), the SMP uses theirs.
 
 | Phase | Hook points and helpers |
 |---|---|
-| 1. Economy | `native_register_commands` (commands every player's chat box completes), `native_run_mod_command` (a player's command on the server, with that player's state as the acting player); helpers: the online players and their game mode, a line to one player or to all, the world's folder |
+| 1. Economy | `register_commands` with `Command::executes` (the server binds each usage to its executor; players receive just the completion tree); helpers: the online players and their game mode, a line to one player or to all, the world's folder |
 | 1. Market | the acting player's items: held, count, carried, take, room, give (plain stacks only, nothing dropped) |
 | 2. Trading | a vanilla chest menu the server opens and fills for a player, display only: its clicks and its closing go to the mod; an atomic exchange of two players' items; a player left or died |
 | 3. Gambling | nothing new |

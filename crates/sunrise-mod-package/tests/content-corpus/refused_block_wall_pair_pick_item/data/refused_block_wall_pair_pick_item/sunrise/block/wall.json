@@ -1,0 +1,5 @@
+{
+  "template": "minecraft:oak_wall_sign",
+  "item": false,
+  "pick_item": "minecraft:oak_sign"
+}

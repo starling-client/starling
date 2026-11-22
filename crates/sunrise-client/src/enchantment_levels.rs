@@ -2,12 +2,12 @@
 //! and `getEnchantmentLevel` as NeoForge has them): sunrise-items' level
 //! reads ask here through `native_enchantment_hooks`, and this asks the mods'
 //! `get_enchantment_level` (`GetEnchantmentLevelEvent`).
-use sunrise_items::item_data::Levels;
-use sunrise_items::items::ItemStack;
 use mod_api::Identifier;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
+use sunrise_items::item_data::Levels;
+use sunrise_items::items::ItemStack;
 
 thread_local! {
     /// Each enchantment id the game has handed a mod, parsed once (`None`

@@ -7,8 +7,8 @@
 //! are mapped back to the old names here. An elytra rule's `texture` replaces the wings'.
 
 use crate::cit_assets::{rule_sprites, sprite_id};
-use sunrise_optifine::cit::{Kind, Rule};
 use std::collections::BTreeSet;
+use sunrise_optifine::cit::{Kind, Rule};
 
 /// The pre-1.21.2 armour texture name of an equipment asset's layer: `asset` (`minecraft:gold`
 /// or `gold`) on the leggings layer (`humanoid_leggings`) or the others (`humanoid`), the dye

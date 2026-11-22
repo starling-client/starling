@@ -31,10 +31,18 @@ impl Game<'_> {
         self.entity_section_moved_id(id as u32);
     }
 
-    pub(super) fn remote_move_vehicle_and_file(&mut self, position: [f64; 3], yaw: f32) {
-        self.remote_move_vehicle(position, yaw);
-        if let Some(mount) = self.driven_mount() {
-            self.entity_section_moved_id(mount.id);
+    /// The driven vehicle put at `position` with `rotation`, its section crossing filed.
+    pub(in crate::game) fn remote_move_vehicle_and_file(
+        &mut self,
+        position: [f64; 3],
+        rotation: (f32, f32),
+    ) {
+        self.remote_move_vehicle(position, rotation);
+        let boat = self
+            .riding
+            .filter(|&id| self.controls_boat(id) && self.boats.iter().any(|b| b.id == id));
+        if let Some(id) = self.driven_mount().map(|m| m.id).or(boat) {
+            self.entity_section_moved_id(id);
         }
     }
 
@@ -45,21 +53,6 @@ impl Game<'_> {
 
 pub(super) fn player_teleport(game: &mut Game<'_>, had_player: bool, from: Vec3, to: Vec3) {
     if had_player && let Ok(id) = u32::try_from(game.own_entity_id()) {
-        game.remote_entity_section_step(id, from, to);
-    }
-}
-
-pub(super) fn player_before(game: &Game<'_>) -> Option<Vec3> {
-    game.player.as_ref().map(|player| player.position)
-}
-
-pub(super) fn player_after(game: &mut Game<'_>, from: Option<Vec3>) {
-    if let (Some(from), Some(to), Ok(id)) = (
-        from,
-        game.player.as_ref().map(|player| player.position),
-        u32::try_from(game.own_entity_id()),
-    ) && from != to
-    {
         game.remote_entity_section_step(id, from, to);
     }
 }

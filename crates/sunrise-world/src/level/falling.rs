@@ -109,7 +109,8 @@ impl Behaviours {
         };
         let may_replace = sim.can_be_replaced(current, &ctx);
         let would_continue = sim.is_free(sim.below_state(pos)) && (!concrete || !stuck_in_water);
-        let would_survive = sim.can_survive(state, pos) && !would_continue;
+        let would_survive =
+            sim.while_landing(pos, state, |sim| sim.can_survive(state, pos)) && !would_continue;
         if !(may_replace && would_survive) {
             return Landing::Broken;
         }

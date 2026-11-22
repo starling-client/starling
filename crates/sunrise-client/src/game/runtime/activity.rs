@@ -21,10 +21,6 @@ pub(super) fn client_started(options: &Options) {
 impl Game<'_> {
     /// Each frame: only a change reaches the hooks.
     pub(super) fn report_activity(&self) {
-        // One status per computer: P1's, not a splitscreen player's.
-        if self.options.split_guest {
-            return;
-        }
         sunrise_hooks::engine::activity(self.activity());
     }
     fn activity(&self) -> Activity {

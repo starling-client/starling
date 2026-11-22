@@ -1,7 +1,7 @@
 //! The in-place resource view Sunrise resolves for a pack selection (`packs::resources`)
 //! and what its loaders read from it, for VanillaPackResourcesOracle.
-use sunrise_client::{lang::Language, packs, sound_events::SoundRegistry};
 use std::{fmt::Write, fs, path::PathBuf};
+use sunrise_client::{lang::Language, packs, sound_events::SoundRegistry};
 fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
         (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)

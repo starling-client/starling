@@ -7,8 +7,8 @@ use crate::{
     fluid_flow::FluidFlowWorld,
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::{geometry::Direction, position::BlockPos};
 use std::{collections::BTreeSet, fmt, io};
+use sunrise_core::{geometry::Direction, position::BlockPos};
 #[derive(Clone, Copy)]
 pub struct FluidBlock {
     id: BlockStateId,

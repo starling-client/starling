@@ -39,3 +39,29 @@ impl<T: ?Sized + 'static> Registry<T> {
         })
     }
 }
+
+/// Why a registry with a bound refused a value.
+pub(crate) enum Beyond {
+    /// The list had sealed: the value registered after the game runs.
+    TooLate,
+    /// The bound holds every place the registry's entries take.
+    Full,
+}
+
+impl<T: ?Sized + 'static> Registry<T> {
+    /// Registers `value` while fewer than `max` wait, then refuses with [`Beyond`]. The count
+    /// and the seal are checked under the lock, so a registry that hands its entries ids or
+    /// places can never hand out one past its bound.
+    pub(crate) fn register_max(&self, value: &'static T, max: usize) -> Result<(), Beyond> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        // Checked under the lock: `all` seals under it too, so a value is never lost in between.
+        if self.sealed.get().is_some() {
+            return Err(Beyond::TooLate);
+        }
+        if pending.len() >= max {
+            return Err(Beyond::Full);
+        }
+        pending.push(value);
+        Ok(())
+    }
+}

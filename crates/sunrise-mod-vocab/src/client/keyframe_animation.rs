@@ -1,18 +1,181 @@
 //! Keyframe animations (vanilla's `AnimationDefinition`, `AnimationChannel`, `Keyframe`,
 //! `KeyframeAnimation` and `AnimationState`) as plain data and pure functions. The game samples its
 //! own mobs' animations through [`AnimationChannel::sample`], and a mod plays the files it ships
-//! (`RenderAssets::animation`) on its own `ModelPart` with the same code, natively or in wasm.
-use crate::{Identifier, ModelPart};
+//! (`RenderAssets::animation`) on its own `ModelPart` with the same code.
+use crate::{
+    Identifier, ModelPart, RegisterJsonAnimationTypesEvent,
+    callback_owner::{CallbackOwner, CallbackValue},
+};
+use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "keyframe_animation_tests.rs"]
 mod tests;
 
-/// What a channel moves (`AnimationChannel.Targets`): its sampled value is added to the part's
-/// position, rotation or scale (`ModelPart.offsetPos`, `offsetRotation`, `offsetScale`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// exhaustive: the three built-in targets and the registered ones
-// no wire: crosses only inside `AnimationHolder`, whose wire form checks each index
+/// Callback that applies a sampled animation value to a model part (NeoForge's
+/// `AnimationTarget.channelTarget` / vanilla's `AnimationChannel.Target.apply`).
+// no wire: retained process-local animation target callback.
+pub type AnimationTargetApply = dyn Fn(&mut ModelPart, [f32; 3]) + Send + Sync;
+
+/// Callback that converts a raw JSON keyframe `[x, y, z]` vector into the target's internal units
+/// during animation file parsing (NeoForge's `AnimationTarget.keyframeTarget`).
+// no wire: retained process-local animation target vector converter.
+pub type AnimationTargetConvert = dyn Fn([f32; 3]) -> [f32; 3] + Send + Sync;
+
+/// Callback that interpolates a channel segment between `keyframes[current_idx]` and
+/// `keyframes[next_idx]` at segment progress `alpha` (`0.0..=1.0`, or `0.0` when
+/// `current_idx == next_idx`) scaled by `scale` (vanilla's `AnimationChannel.Interpolation.apply`).
+// no wire: retained process-local animation interpolation callback.
+pub type AnimationInterpolationFn =
+    dyn Fn(&[Keyframe], f32, usize, usize, f32) -> [f32; 3] + Send + Sync;
+
+struct BoundAnimationTargetInner {
+    id: Identifier,
+    apply: CallbackValue<Arc<AnimationTargetApply>>,
+    convert: CallbackValue<Arc<AnimationTargetConvert>>,
+}
+
+/// A custom animation target bound to its owning mod's callbacks at registration
+/// (`register_json_animation_types`).
+#[derive(Clone)]
+// exhaustive: engine-constructed bound target; private fields prevent downstream construction
+// no wire: carries process-local animation target/interpolation callbacks
+pub struct BoundAnimationTarget(Arc<BoundAnimationTargetInner>);
+
+impl BoundAnimationTarget {
+    /// The target's registered identifier (`mymod:glow`).
+    pub fn id(&self) -> &Identifier {
+        &self.0.id
+    }
+
+    /// The `[mod] id` of the mod that registered this target.
+    pub fn owner(&self) -> &'static str {
+        self.0.apply.owner().id()
+    }
+}
+
+impl std::fmt::Debug for BoundAnimationTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundAnimationTarget")
+            .field("id", &self.0.id)
+            .field("owner", &self.owner())
+            .finish()
+    }
+}
+
+impl PartialEq for BoundAnimationTarget {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for BoundAnimationTarget {}
+
+struct BoundInterpolationInner {
+    id: Identifier,
+    interpolate: CallbackValue<Arc<AnimationInterpolationFn>>,
+}
+
+/// A custom animation interpolation bound to its owning mod's callback at registration
+/// (`register_json_animation_types`).
+#[derive(Clone)]
+// exhaustive: engine-constructed bound interpolation; private fields prevent downstream construction
+// no wire: carries process-local animation target/interpolation callbacks
+pub struct BoundInterpolation(Arc<BoundInterpolationInner>);
+
+impl BoundInterpolation {
+    /// The interpolation's registered identifier (`mymod:step`).
+    pub fn id(&self) -> &Identifier {
+        &self.0.id
+    }
+
+    /// The `[mod] id` of the mod that registered this interpolation.
+    pub fn owner(&self) -> &'static str {
+        self.0.interpolate.owner().id()
+    }
+}
+
+impl std::fmt::Debug for BoundInterpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundInterpolation")
+            .field("id", &self.0.id)
+            .field("owner", &self.owner())
+            .finish()
+    }
+}
+
+impl PartialEq for BoundInterpolation {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for BoundInterpolation {}
+
+/// Bind a registered animation target to its owning mod's callbacks.
+// hidden: pairs the staged engine callback with its owner
+#[doc(hidden)]
+pub fn bind_animation_target(
+    id: Identifier,
+    owner: CallbackOwner,
+    apply: Arc<AnimationTargetApply>,
+    convert: Arc<AnimationTargetConvert>,
+) -> BoundAnimationTarget {
+    BoundAnimationTarget(Arc::new(BoundAnimationTargetInner {
+        id,
+        apply: CallbackValue::new(owner.clone(), "animation target", "drop_apply", apply),
+        convert: CallbackValue::new(owner, "animation target", "drop_converter", convert),
+    }))
+}
+
+/// Bind a registered animation interpolation to its owning mod's callback.
+// hidden: pairs the staged engine callback with its owner
+#[doc(hidden)]
+pub fn bind_animation_interpolation(
+    id: Identifier,
+    owner: CallbackOwner,
+    interpolate: Arc<AnimationInterpolationFn>,
+) -> BoundInterpolation {
+    BoundInterpolation(Arc::new(BoundInterpolationInner {
+        id,
+        interpolate: CallbackValue::new(
+            owner,
+            "animation interpolation",
+            "drop_interpolator",
+            interpolate,
+        ),
+    }))
+}
+
+/// Invoke a bound animation target's parse-time vector converter with panic containment.
+// hidden: converts a decoded animation channel for the game
+#[doc(hidden)]
+pub fn convert_animation_target(
+    target: &BoundAnimationTarget,
+    value: [f32; 3],
+) -> Result<[f32; 3], String> {
+    let convert = &target.0.convert;
+    let converted = convert
+        .owner()
+        .call("animation target", "convert_target", || {
+            (convert.value())(value)
+        })?;
+    if !converted.iter().all(|v| v.is_finite()) {
+        return Err(format!(
+            "mod {}: animation target {} converter returned non-finite vector {converted:?}",
+            target.owner(),
+            target.0.id
+        ));
+    }
+    Ok(converted)
+}
+
+/// What a channel moves (`AnimationChannel.Targets`): its sampled value is applied to a
+/// [`ModelPart`] (`offsetPos`, `offsetRotation`, `offsetScale`, or a custom target bound at
+/// registration).
+#[derive(Clone, Debug, PartialEq, Eq)]
+// exhaustive: the three built-in targets and a bound custom target
+// no wire: carries process-local animation target/interpolation callbacks
 pub enum AnimationTarget {
     /// The part's position, in texels (`minecraft:position`).
     Position,
@@ -20,45 +183,50 @@ pub enum AnimationTarget {
     Rotation,
     /// The part's scale, as an offset from 1 (`minecraft:scale`).
     Scale,
-    /// A target a mod registered (`register_json_animation_types`): its index in the
-    /// animation's [`AnimationHolder::types`].
-    Registered(u16),
+    /// A custom target bound at `register_json_animation_types`.
+    Custom(BoundAnimationTarget),
+}
+
+impl AnimationTarget {
+    /// Apply a sampled `value` to `part` (vanilla's `AnimationChannel.Target.apply`).
+    ///
+    /// For a custom target, invokes the bound callback through its owner's panic containment;
+    /// if the callback panics, it is disabled for the session and a panic notice is recorded.
+    pub fn apply(&self, part: &mut ModelPart, value: [f32; 3]) {
+        match self {
+            Self::Position => part.offset_pos(value),
+            Self::Rotation => part.offset_rotation(value),
+            Self::Scale => part.offset_scale(value),
+            Self::Custom(bound) => {
+                let apply = &bound.0.apply;
+                let owner = apply.owner();
+                if !owner.is_enabled() {
+                    return;
+                }
+                let _ = owner.call("animation target", "apply", || (apply.value())(part, value));
+            }
+        }
+    }
 }
 
 /// How a channel reaches a keyframe from the one before (`AnimationChannel.Interpolations`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// exhaustive: the two built-in interpolations and the registered ones
-// no wire: crosses only inside `AnimationHolder`, whose wire form checks each index
+#[derive(Clone, Debug, PartialEq, Eq)]
+// exhaustive: the two built-in interpolations and a bound custom interpolation
+// no wire: carries process-local animation target/interpolation callbacks
 pub enum Interpolation {
     /// A straight line from the previous keyframe (`minecraft:linear`).
     Linear,
     /// A Catmull-Rom spline through the neighbouring keyframes (`minecraft:catmullrom`).
     CatmullRom,
-    /// An interpolation a mod registered (`register_json_animation_types`): its index in the
-    /// animation's [`AnimationHolder::types`].
-    Registered(u16),
-}
-
-/// A target or interpolation id a mod registers for animation files to name
-/// (`RegisterJsonAnimationTypesEvent.registerTarget` and `registerInterpolation`): pushed to
-/// `register_json_animation_types`. What it does is code in the mod that plays the animation
-/// ([`AnimationTypes`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-// exhaustive: NeoForge's event registers these two kinds
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum JsonAnimationType {
-    /// A channel target (`AnimationTarget`), `<namespace>:<path>` outside vanilla's namespace.
-    Target(Identifier),
-    /// A keyframe interpolation (`AnimationChannel.Interpolation`), `<namespace>:<path>` outside
-    /// vanilla's namespace.
-    Interpolation(Identifier),
+    /// A custom interpolation bound at `register_json_animation_types`.
+    Custom(BoundInterpolation),
 }
 
 /// One keyframe (`Keyframe`): at `time` seconds, the value arriving (`pre`) and the value leaving
 /// (`post`), and how the channel moves into it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 // exhaustive: plain data a parser builds and the sampler reads
-// no wire: crosses only inside `AnimationHolder`, whose wire form checks each index
+// no wire: carries process-local animation target/interpolation callbacks
 pub struct Keyframe {
     /// When, in seconds from the animation's start.
     pub time: f32,
@@ -73,7 +241,7 @@ pub struct Keyframe {
 /// One bone's keyframes for one target (`AnimationChannel`), in time order.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: plain data a parser builds and the sampler reads
-// no wire: crosses only inside `AnimationHolder`, whose wire form checks each index
+// no wire: carries process-local animation target/interpolation callbacks
 pub struct AnimationChannel {
     /// What it moves.
     pub target: AnimationTarget,
@@ -83,28 +251,15 @@ pub struct AnimationChannel {
 
 impl AnimationChannel {
     /// `KeyframeAnimation.Entry.apply`'s interpolation: the channel's value at `seconds`, times
-    /// `scale`. Before the first keyframe it holds the first one, after the last the last. `None`
-    /// at a segment into a registered interpolation, whose answer is a mod's code: such a channel
-    /// plays through [`TypedKeyframeAnimation`].
+    /// `scale`. Before the first keyframe it holds the first one, after the last the last.
+    ///
+    /// For a custom interpolation, invokes the bound callback through its owner's panic
+    /// containment; if the callback is disabled, panics, or returns a non-finite vector,
+    /// returns `None` so [`KeyframeAnimation`] skips only this channel.
     pub fn sample(&self, seconds: f32, scale: f32) -> Option<[f32; 3]> {
-        let mut registered = false;
-        let value = self.sample_by(seconds, scale, |_, _, _, _, _, _| {
-            registered = true;
-            [0.0; 3]
-        });
-        (!registered).then_some(value)
-    }
-    /// [`Self::sample`], with `registered` answering a segment into a registered interpolation:
-    /// its index, the keyframes, the segment's ends, how far along it is and the scale.
-    fn sample_by(
-        &self,
-        seconds: f32,
-        scale: f32,
-        mut registered: impl FnMut(u16, &[Keyframe], usize, usize, f32, f32) -> [f32; 3],
-    ) -> [f32; 3] {
         let k = &self.keyframes;
         if k.is_empty() {
-            return [0.0; 3];
+            return Some([0.0; 3]);
         }
         // Mth.binarySearch(0, len, i -> seconds <= k[i].time) - 1
         let first = k.iter().position(|f| seconds <= f.time).unwrap_or(k.len());
@@ -116,7 +271,7 @@ impl AnimationChannel {
         } else {
             0.0
         };
-        match k[next].interpolation {
+        let value = match &k[next].interpolation {
             Interpolation::CatmullRom => {
                 let p0 = k[prev.saturating_sub(1)].post;
                 let p1 = k[prev].post;
@@ -129,8 +284,29 @@ impl AnimationChannel {
                 let b = k[next].pre;
                 std::array::from_fn(|i| (a[i] + (b[i] - a[i]) * alpha) * scale)
             }
-            Interpolation::Registered(index) => registered(index, k, prev, next, alpha, scale),
-        }
+            Interpolation::Custom(bound) => {
+                let interpolate = &bound.0.interpolate;
+                let owner = interpolate.owner();
+                if !owner.is_enabled() {
+                    return None;
+                }
+                match owner.call("animation interpolation", "interpolate", || {
+                    (interpolate.value())(k, alpha, prev, next, scale)
+                }) {
+                    Ok(v) if v.iter().all(|c| c.is_finite()) => v,
+                    Ok(v) => {
+                        log::warn!(
+                            "Sunrise: mod {}: animation interpolation {} returned non-finite vector {v:?}",
+                            owner.id(),
+                            bound.0.id
+                        );
+                        return None;
+                    }
+                    Err(_) => return None,
+                }
+            }
+        };
+        Some(value)
     }
 }
 
@@ -142,37 +318,15 @@ fn catmullrom(t: f32, p0: f32, p1: f32, p2: f32, p3: f32) -> f32 {
         + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t * t * t)
 }
 
-/// A target or interpolation a mod registered (`register_json_animation_types`) that an
-/// animation's file names, with the mod that registered it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-// exhaustive: plain data the loader builds
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct RegisteredAnimationType {
-    /// Whether it is a target or an interpolation, and the id the file names (`mymod:glow`).
-    pub kind: JsonAnimationType,
-    /// The `[mod] id` of the mod that registered it.
-    pub owner: String,
-}
-
-impl RegisteredAnimationType {
-    /// The id the file names.
-    pub fn id(&self) -> &Identifier {
-        match &self.kind {
-            JsonAnimationType::Target(id) | JsonAnimationType::Interpolation(id) => id,
-        }
-    }
-}
-
 /// An animation as its file gives it, bones by name (vanilla's `AnimationDefinition`; NeoForge's
-/// `AnimationHolder`): what `RenderAssets::animation` answers. Bake it against a model with
-/// [`AnimationHolder::bake`], or [`AnimationHolder::bake_with`] when it names registered types,
-/// before playing it.
+/// `AnimationHolder`): what `RenderAssets::animation` answers. Custom targets and interpolations
+/// are bound directly onto channels and keyframes during resource load, with custom target vectors
+/// already converted. Bake it against a model with [`AnimationHolder::bake`] before playing it.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: plain data a parser builds
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(via = AnimationHolderWire)]
+// no wire: carries process-local animation target/interpolation callbacks
 pub struct AnimationHolder {
-    /// The animation's id (`mymod:golem/attack`), which bake errors name.
+    /// The animation's id (`mymod:golem/attack`).
     pub id: Identifier,
     /// The animation's length in seconds.
     pub length: f32,
@@ -180,305 +334,16 @@ pub struct AnimationHolder {
     pub looping: bool,
     /// Each bone's channels, by the part's name, in file order.
     pub bones: Vec<(String, Vec<AnimationChannel>)>,
-    /// The registered targets and interpolations the file names, which `Registered` indexes
-    /// point into. A registered target's values are as the file wrote them: its
-    /// [`AnimationTypes::convert_target`] converts them at bake.
-    pub types: Vec<RegisteredAnimationType>,
 }
-
-/// [`AnimationHolder`] as it crosses the wire, its channels in their own wire forms: decoding
-/// refuses a holder whose `Registered` index doesn't name a type of its kind in its own `types`,
-/// so an index never crosses without its list.
-#[derive(sunrise_mod_api_macros::Wire)]
-struct AnimationHolderWire {
-    id: Identifier,
-    length: f32,
-    looping: bool,
-    bones: Vec<(String, Vec<ChannelWire>)>,
-    types: Vec<RegisteredAnimationType>,
-}
-
-/// An [`AnimationChannel`] inside [`AnimationHolderWire`].
-#[derive(sunrise_mod_api_macros::Wire)]
-struct ChannelWire {
-    target: TargetWire,
-    keyframes: Vec<KeyframeWire>,
-}
-
-/// A [`Keyframe`] inside [`AnimationHolderWire`].
-#[derive(sunrise_mod_api_macros::Wire)]
-struct KeyframeWire {
-    time: f32,
-    pre: [f32; 3],
-    post: [f32; 3],
-    interpolation: InterpolationWire,
-}
-
-/// An [`AnimationTarget`] inside [`AnimationHolderWire`].
-#[derive(sunrise_mod_api_macros::Wire)]
-enum TargetWire {
-    Position,
-    Rotation,
-    Scale,
-    Registered(u16),
-}
-
-/// An [`Interpolation`] inside [`AnimationHolderWire`].
-#[derive(sunrise_mod_api_macros::Wire)]
-enum InterpolationWire {
-    Linear,
-    CatmullRom,
-    Registered(u16),
-}
-
-impl From<&AnimationHolder> for AnimationHolderWire {
-    fn from(holder: &AnimationHolder) -> Self {
-        let channel = |channel: &AnimationChannel| ChannelWire {
-            target: match channel.target {
-                AnimationTarget::Position => TargetWire::Position,
-                AnimationTarget::Rotation => TargetWire::Rotation,
-                AnimationTarget::Scale => TargetWire::Scale,
-                AnimationTarget::Registered(index) => TargetWire::Registered(index),
-            },
-            keyframes: channel
-                .keyframes
-                .iter()
-                .map(|k| KeyframeWire {
-                    time: k.time,
-                    pre: k.pre,
-                    post: k.post,
-                    interpolation: match k.interpolation {
-                        Interpolation::Linear => InterpolationWire::Linear,
-                        Interpolation::CatmullRom => InterpolationWire::CatmullRom,
-                        Interpolation::Registered(index) => InterpolationWire::Registered(index),
-                    },
-                })
-                .collect(),
-        };
-        Self {
-            id: holder.id.clone(),
-            length: holder.length,
-            looping: holder.looping,
-            bones: holder
-                .bones
-                .iter()
-                .map(|(bone, channels)| (bone.clone(), channels.iter().map(channel).collect()))
-                .collect(),
-            types: holder.types.clone(),
-        }
-    }
-}
-
-impl TryFrom<AnimationHolderWire> for AnimationHolder {
-    type Error = AnimationError;
-    fn try_from(wire: AnimationHolderWire) -> Result<Self, AnimationError> {
-        let channel = |channel: ChannelWire| AnimationChannel {
-            target: match channel.target {
-                TargetWire::Position => AnimationTarget::Position,
-                TargetWire::Rotation => AnimationTarget::Rotation,
-                TargetWire::Scale => AnimationTarget::Scale,
-                TargetWire::Registered(index) => AnimationTarget::Registered(index),
-            },
-            keyframes: channel
-                .keyframes
-                .into_iter()
-                .map(|k| Keyframe {
-                    time: k.time,
-                    pre: k.pre,
-                    post: k.post,
-                    interpolation: match k.interpolation {
-                        InterpolationWire::Linear => Interpolation::Linear,
-                        InterpolationWire::CatmullRom => Interpolation::CatmullRom,
-                        InterpolationWire::Registered(index) => Interpolation::Registered(index),
-                    },
-                })
-                .collect(),
-        };
-        let holder = Self {
-            id: wire.id,
-            length: wire.length,
-            looping: wire.looping,
-            bones: wire
-                .bones
-                .into_iter()
-                .map(|(bone, channels)| (bone, channels.into_iter().map(channel).collect()))
-                .collect(),
-            types: wire.types,
-        };
-        holder.check_indexes()?;
-        Ok(holder)
-    }
-}
-
-/// What a mod's registered targets and interpolations do (the `AnimationTarget` and
-/// `AnimationChannel.Interpolation` a `RegisterJsonAnimationTypesEvent` listener registers). The
-/// mod that plays an animation gives them to [`AnimationHolder::bake_with`], and they run in that
-/// mod, called directly while it plays: no hook is dispatched per sample. An id one mod
-/// registered loads in any mod's file, but plays only where an implementation of it exists: the
-/// registering mod's own, or one a mod that depends on it supplies.
-pub trait AnimationTypes {
-    /// Whether this implementation plays `kind`, a registered target or interpolation: a target
-    /// and an interpolation of one id are separate types.
-    fn provides(&self, kind: &JsonAnimationType) -> bool;
-    /// The target's conversion of a keyframe's file values, applied once at bake as the built-in
-    /// targets apply `posVec`, `degreeVec` and `scaleVec`; the values unchanged by default.
-    fn convert_target(&self, target: &Identifier, value: [f32; 3]) -> [f32; 3] {
-        let _ = target;
-        value
-    }
-    /// The target's `apply`: puts the sampled `value` on `part`.
-    fn apply_target(&self, target: &Identifier, part: &mut ModelPart, value: [f32; 3]);
-    /// The interpolation's answer for the segment from `keyframes[prev]` to `keyframes[next]`,
-    /// `alpha` of the way along (0 to 1, or NaN where vanilla's is: two keyframes at one time, or a
-    /// NaN time), times `scale`. `prev` and `next` are valid indexes.
-    fn interpolate(
-        &self,
-        interpolation: &Identifier,
-        keyframes: &[Keyframe],
-        prev: usize,
-        next: usize,
-        alpha: f32,
-        scale: f32,
-    ) -> [f32; 3];
-}
-
-/// Why an animation can't be baked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-// no wire: `bake` returns it to the mod that bakes; it names an index without its list.
-pub enum AnimationError {
-    /// It names registered targets or interpolations: bake it with
-    /// [`AnimationHolder::bake_with`] and the code that plays them.
-    NeedsTypes {
-        /// The animation's id.
-        animation: Identifier,
-        /// The registered types it names.
-        types: Vec<RegisteredAnimationType>,
-    },
-    /// The supplied [`AnimationTypes`] doesn't play `missing`, which its `owner` registered.
-    Unplayable {
-        /// The animation's id.
-        animation: Identifier,
-        /// The first of its types the code doesn't provide.
-        missing: RegisteredAnimationType,
-    },
-    /// A channel or keyframe names `Registered(index)`, which [`AnimationHolder::types`] lacks,
-    /// or holds as the other kind (a target where an interpolation is named, or the reverse).
-    NoSuchType {
-        /// The animation's id.
-        animation: Identifier,
-        /// The index out of range, or naming the other kind.
-        index: u16,
-    },
-}
-
-impl std::fmt::Display for AnimationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = |t: &RegisteredAnimationType| format!("{} (registered by {})", t.id(), t.owner);
-        match self {
-            Self::NeedsTypes { animation, types } => write!(
-                f,
-                "animation {animation} names registered types, which need bake_with: {}",
-                types.iter().map(name).collect::<Vec<_>>().join(", ")
-            ),
-            Self::Unplayable { animation, missing } => write!(
-                f,
-                "animation {animation}: no implementation of {} was supplied",
-                name(missing)
-            ),
-            Self::NoSuchType { animation, index } => write!(
-                f,
-                "animation {animation} names registered type {index}, not in its types as that kind"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for AnimationError {}
 
 impl AnimationHolder {
     /// `AnimationDefinition.bake(root)`: each bone resolved once through the model's part lookup
     /// (`ModelPart.createPartLookup`). The name `root` always selects the actual root; other names
     /// select the first match, visiting each part's immediate children before their descendants.
     /// Bake once, as a renderer does in its constructor, and keep the result: a bone the model
-    /// lacks is logged here and left out. An animation that names registered types is refused,
-    /// naming them: bake it with [`Self::bake_with`].
-    pub fn bake(&self, root: &ModelPart) -> Result<KeyframeAnimation, AnimationError> {
-        self.check_indexes()?;
-        if !self.types.is_empty() {
-            return Err(AnimationError::NeedsTypes {
-                animation: self.id.clone(),
-                types: self.types.clone(),
-            });
-        }
-        Ok(self.baked(root, |_, value| value))
-    }
-    /// [`Self::bake`] for an animation that names registered types, with `types`, the code that
-    /// plays them, which the result keeps: each registered target's keyframe values go through
-    /// its [`AnimationTypes::convert_target`]. A type `types` doesn't provide is refused here,
-    /// once, naming the animation and the mod that registered the type.
-    pub fn bake_with<T: AnimationTypes>(
-        &self,
-        root: &ModelPart,
-        types: T,
-    ) -> Result<TypedKeyframeAnimation<T>, AnimationError> {
-        self.check_indexes()?;
-        if let Some(missing) = self.types.iter().find(|t| !types.provides(&t.kind)) {
-            return Err(AnimationError::Unplayable {
-                animation: self.id.clone(),
-                missing: missing.clone(),
-            });
-        }
-        let animation = self.baked(root, |target, value| match target {
-            // In range: `check_indexes` refused any other.
-            AnimationTarget::Registered(index) => {
-                types.convert_target(self.types[usize::from(index)].id(), value)
-            }
-            _ => value,
-        });
-        Ok(TypedKeyframeAnimation {
-            animation,
-            types: self.types.clone(),
-            code: types,
-        })
-    }
-    /// Refuses a `Registered` index [`Self::types`] lacks or holds as the other kind, so playing
-    /// never meets one.
-    fn check_indexes(&self) -> Result<(), AnimationError> {
-        let is_target = |kind: &JsonAnimationType| matches!(kind, JsonAnimationType::Target(_));
-        let is_interpolation =
-            |kind: &JsonAnimationType| matches!(kind, JsonAnimationType::Interpolation(_));
-        for channel in self.bones.iter().flat_map(|(_, channels)| channels) {
-            if let AnimationTarget::Registered(index) = channel.target {
-                self.check_index(index, is_target)?;
-            }
-            for keyframe in &channel.keyframes {
-                if let Interpolation::Registered(index) = keyframe.interpolation {
-                    self.check_index(index, is_interpolation)?;
-                }
-            }
-        }
-        Ok(())
-    }
-    /// Refuses `index` unless [`Self::types`] holds a type of the kind `is_kind` accepts there.
-    fn check_index(
-        &self,
-        index: u16,
-        is_kind: impl Fn(&JsonAnimationType) -> bool,
-    ) -> Result<(), AnimationError> {
-        match self.types.get(usize::from(index)) {
-            Some(registered) if is_kind(&registered.kind) => Ok(()),
-            _ => Err(AnimationError::NoSuchType {
-                animation: self.id.clone(),
-                index,
-            }),
-        }
-    }
-    fn baked(
-        &self,
-        root: &ModelPart,
-        convert: impl Fn(AnimationTarget, [f32; 3]) -> [f32; 3],
-    ) -> KeyframeAnimation {
+    /// lacks is logged here and left out. Custom targets and interpolations bound on the channels
+    /// and keyframes play directly with no lookup per sample.
+    pub fn bake(&self, root: &ModelPart) -> KeyframeAnimation {
         let mut entries = Vec::new();
         for (bone, channels) in &self.bones {
             let Some(path) = root.descendant_path(bone) else {
@@ -486,12 +351,7 @@ impl AnimationHolder {
                 continue;
             };
             for channel in channels {
-                let mut channel = channel.clone();
-                for keyframe in &mut channel.keyframes {
-                    keyframe.pre = convert(channel.target, keyframe.pre);
-                    keyframe.post = convert(channel.target, keyframe.post);
-                }
-                entries.push((path.clone(), channel));
+                entries.push((path.clone(), channel.clone()));
             }
         }
         KeyframeAnimation {
@@ -502,11 +362,12 @@ impl AnimationHolder {
     }
 }
 
-/// An animation baked against a model (`KeyframeAnimation`), of the built-in targets and
-/// interpolations: each channel holds the path to its part, so playing it walks no names.
+/// An animation baked against a model (`KeyframeAnimation`): each channel holds the path to its
+/// part and any bound custom target or interpolation callbacks, so playing it walks no names and
+/// performs no registry lookup per sample.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: built by `AnimationHolder::bake` only; its fields are private
-// no wire: baked and played in the mod; a `Registered` index crosses only in its holder's types.
+// no wire: carries process-local animation target/interpolation callbacks
 pub struct KeyframeAnimation {
     pub(crate) length: f32,
     pub(crate) looping: bool,
@@ -529,7 +390,7 @@ impl KeyframeAnimation {
         speed_factor: f32,
     ) {
         if let Some(millis) = state.millis_at(age_in_ticks, speed_factor) {
-            self.apply_at(root, millis, 1.0, None);
+            self.apply_at(root, millis, 1.0);
         }
     }
     /// `KeyframeAnimation.applyWalk(walkAnimationPos, walkAnimationSpeed, speedFactor,
@@ -543,21 +404,14 @@ impl KeyframeAnimation {
         scale_factor: f32,
     ) {
         let (millis, scale) = walk_timing(walk_pos, walk_speed, speed_factor, scale_factor);
-        self.apply_at(root, millis, scale, None);
+        self.apply_at(root, millis, scale);
     }
     /// `KeyframeAnimation.applyStatic()`: the first frame only.
     pub fn apply_static(&self, root: &mut ModelPart) {
-        self.apply_at(root, 0, 1.0, None);
+        self.apply_at(root, 0, 1.0);
     }
-    /// `KeyframeAnimation.apply(millis, scale)`, with the registered types' code and ids for an
-    /// animation [`AnimationHolder::bake_with`] baked.
-    fn apply_at(
-        &self,
-        root: &mut ModelPart,
-        millis: i64,
-        scale: f32,
-        registered: Option<(&dyn AnimationTypes, &[RegisteredAnimationType])>,
-    ) {
+    /// `KeyframeAnimation.apply(millis, scale)`.
+    fn apply_at(&self, root: &mut ModelPart, millis: i64, scale: f32) {
         // getElapsedSeconds: a looping animation wraps by its length.
         let mut seconds = millis as f32 / 1000.0;
         if self.looping {
@@ -567,86 +421,11 @@ impl KeyframeAnimation {
             let Some(part) = root.descendant_mut(path) else {
                 continue;
             };
-            // A `Registered` index is in range and has its code: `bake` refuses one, and
-            // `bake_with` checks each against the types it was given.
-            let value = channel.sample_by(seconds, scale, |index, k, prev, next, alpha, scale| {
-                match registered {
-                    Some((types, ids)) => {
-                        types.interpolate(ids[usize::from(index)].id(), k, prev, next, alpha, scale)
-                    }
-                    // Without the code there is no registered segment: only `bake` builds a
-                    // `KeyframeAnimation`, and it refuses one.
-                    None => k[prev].post.map(|v| v * scale),
-                }
-            });
-            match channel.target {
-                AnimationTarget::Position => part.offset_pos(value),
-                AnimationTarget::Rotation => part.offset_rotation(value),
-                AnimationTarget::Scale => part.offset_scale(value),
-                // Without the code there is no registered channel: only `bake` builds a
-                // `KeyframeAnimation`, and it refuses one.
-                AnimationTarget::Registered(index) => {
-                    if let Some((types, ids)) = registered {
-                        types.apply_target(ids[usize::from(index)].id(), part, value);
-                    }
-                }
-            }
+            let Some(value) = channel.sample(seconds, scale) else {
+                continue;
+            };
+            channel.target.apply(part, value);
         }
-    }
-}
-
-/// An animation that names registered targets or interpolations, baked with the code that plays
-/// them ([`AnimationHolder::bake_with`]), which it keeps: it plays as [`KeyframeAnimation`] does,
-/// and every registered channel runs that code.
-#[derive(Clone, Debug)]
-// exhaustive: built by `AnimationHolder::bake_with` only; its fields are private
-// no wire: holds the playing mod's code, which stays in that mod.
-pub struct TypedKeyframeAnimation<T> {
-    animation: KeyframeAnimation,
-    /// The registered types its `Registered` indexes name.
-    types: Vec<RegisteredAnimationType>,
-    /// The code that plays them, which provides every one.
-    code: T,
-}
-
-impl<T: AnimationTypes> TypedKeyframeAnimation<T> {
-    /// [`KeyframeAnimation::apply`].
-    pub fn apply(&self, root: &mut ModelPart, state: &AnimationState, age_in_ticks: f32) {
-        self.apply_scaled(root, state, age_in_ticks, 1.0);
-    }
-    /// [`KeyframeAnimation::apply_scaled`].
-    pub fn apply_scaled(
-        &self,
-        root: &mut ModelPart,
-        state: &AnimationState,
-        age_in_ticks: f32,
-        speed_factor: f32,
-    ) {
-        if let Some(millis) = state.millis_at(age_in_ticks, speed_factor) {
-            self.animation
-                .apply_at(root, millis, 1.0, Some(self.registered()));
-        }
-    }
-    /// [`KeyframeAnimation::apply_walk`].
-    pub fn apply_walk(
-        &self,
-        root: &mut ModelPart,
-        walk_pos: f32,
-        walk_speed: f32,
-        speed_factor: f32,
-        scale_factor: f32,
-    ) {
-        let (millis, scale) = walk_timing(walk_pos, walk_speed, speed_factor, scale_factor);
-        self.animation
-            .apply_at(root, millis, scale, Some(self.registered()));
-    }
-    /// [`KeyframeAnimation::apply_static`].
-    pub fn apply_static(&self, root: &mut ModelPart) {
-        self.animation
-            .apply_at(root, 0, 1.0, Some(self.registered()));
-    }
-    fn registered(&self) -> (&dyn AnimationTypes, &[RegisteredAnimationType]) {
-        (&self.code, &self.types)
     }
 }
 
@@ -668,7 +447,6 @@ fn walk_timing(walk_pos: f32, walk_speed: f32, speed_factor: f32, scale_factor: 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // exhaustive: its field is private; it changes through vanilla's transitions
 #[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
 pub struct AnimationState {
     pub(crate) start_tick: i32,
 }
@@ -731,5 +509,70 @@ impl AnimationState {
     fn millis_at(&self, age_in_ticks: f32, speed_factor: f32) -> Option<i64> {
         self.is_started()
             .then(|| (self.time_in_millis(age_in_ticks) as f32 * speed_factor) as i64)
+    }
+}
+
+/// A staged custom animation target or interpolation callback; dispatch attributes it to the
+/// registering mod.
+// no wire: retained process-local animation target/interpolation callback.
+// hidden: retained registration staging belongs to the game
+#[doc(hidden)]
+#[non_exhaustive]
+pub enum JsonAnimationTypeRegistration {
+    /// A custom animation channel target (`RegisterJsonAnimationTypesEvent.registerTarget`).
+    Target {
+        /// The target identifier.
+        id: Identifier,
+        /// Callback applying a sampled vector to a model part.
+        apply: Arc<AnimationTargetApply>,
+        /// Callback converting raw JSON keyframe vectors at parse time.
+        convert: Arc<AnimationTargetConvert>,
+    },
+    /// A custom keyframe interpolation (`RegisterJsonAnimationTypesEvent.registerInterpolation`).
+    Interpolation {
+        /// The interpolation identifier.
+        id: Identifier,
+        /// Callback computing a segment's interpolated vector.
+        interpolate: Arc<AnimationInterpolationFn>,
+    },
+}
+
+impl RegisterJsonAnimationTypesEvent<'_> {
+    /// Register a custom animation target under `id` (NeoForge's
+    /// `RegisterJsonAnimationTypesEvent.registerTarget`).
+    ///
+    /// Any valid `<namespace>:<path>` identifier (including `minecraft:`) is accepted; duplicates
+    /// and collisions with the built-in targets (`minecraft:position`, `minecraft:rotation`,
+    /// `minecraft:scale`) are rejected as registration errors. `convert_target` transforms each
+    /// JSON keyframe `[x, y, z]` vector once when animation files are parsed; `apply` applies the
+    /// sampled vector to a [`ModelPart`] during playback.
+    pub fn register_target<A, C>(&mut self, id: Identifier, apply: A, convert_target: C)
+    where
+        A: Fn(&mut ModelPart, [f32; 3]) + Send + Sync + 'static,
+        C: Fn([f32; 3]) -> [f32; 3] + Send + Sync + 'static,
+    {
+        self.types.push(JsonAnimationTypeRegistration::Target {
+            id,
+            apply: Arc::new(apply),
+            convert: Arc::new(convert_target),
+        });
+    }
+
+    /// Register a custom keyframe interpolation under `id` (NeoForge's
+    /// `RegisterJsonAnimationTypesEvent.registerInterpolation`).
+    ///
+    /// Any valid `<namespace>:<path>` identifier (including `minecraft:`) is accepted; duplicates
+    /// and collisions with the built-in interpolations (`minecraft:linear`, `minecraft:catmullrom`)
+    /// are rejected as registration errors. `interpolate` receives
+    /// `(keyframes, alpha, current_idx, next_idx, scale)` during playback.
+    pub fn register_interpolation<F>(&mut self, id: Identifier, interpolate: F)
+    where
+        F: Fn(&[Keyframe], f32, usize, usize, f32) -> [f32; 3] + Send + Sync + 'static,
+    {
+        self.types
+            .push(JsonAnimationTypeRegistration::Interpolation {
+                id,
+                interpolate: Arc::new(interpolate),
+            });
     }
 }

@@ -70,12 +70,7 @@ impl Game<'_> {
         if self.pad_binding() {
             return Vec::new();
         }
-        let mut declared = widgets::last_actions(self.key_screen());
-        // A split guest's Quit Game does nothing.
-        if self.options.split_guest && self.title.is_some() {
-            declared.retain(|d| d.action != Action::Exit);
-        }
-        declared
+        widgets::last_actions(self.key_screen())
     }
 
     /// The job `button` does here, on the target that does it. `None` while it isn't on screen,
@@ -286,7 +281,7 @@ mod tests {
         assert_eq!(glyph_at(button, 10.0, view, false), Some((14.0, 26.0)));
         // A text field's is at its right end.
         assert_eq!(glyph_at(button, 10.0, view, true), Some((148.0, 26.0)));
-        // Too narrow, too short, running off a small split view.
+        // Too narrow, too short, running off a small view.
         assert_eq!(glyph_at([10.0, 20.0, 15.0, 20.0], 10.0, view, false), None);
         assert_eq!(glyph_at([10.0, 20.0, 150.0, 8.0], 10.0, view, false), None);
         // Art as tall as the row fits; a row any shorter would clip it.

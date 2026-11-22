@@ -3,12 +3,12 @@
 //! `should_cause_block_break_reset` (`IItemExtension.shouldCauseReequipAnimation`,
 //! `shouldCauseBlockBreakReset`) on the local player's client.
 use super::Game;
-use sunrise_client::items::ItemStack;
 use mod_api::{
     ClientHost, Hooks, ItemPart, Registrar, RegistrationContext, ShouldCauseBlockBreakResetEvent,
     ShouldCauseReequipAnimationEvent,
 };
 use std::sync::Mutex;
+use sunrise_client::items::ItemStack;
 
 /// What the part answers: `None` leaves vanilla's answer.
 static REEQUIP: Mutex<Option<bool>> = Mutex::new(None);
@@ -104,7 +104,7 @@ fn close(got: &[(f32, u32)], want: &[(f32, u32)]) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "daily"]
 fn a_part_decides_whether_the_hand_lowers_for_a_new_stack() {
     crate::game::in_own_process(
         "game::hand_part_tests::a_part_decides_whether_the_hand_lowers_for_a_new_stack",
@@ -162,7 +162,7 @@ fn a_part_decides_whether_the_hand_lowers_for_a_new_stack() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "daily"]
 fn a_part_decides_whether_a_changed_stick_restarts_the_break() {
     crate::game::in_own_process(
         "game::hand_part_tests::a_part_decides_whether_a_changed_stick_restarts_the_break",
@@ -196,15 +196,18 @@ fn a_part_decides_whether_a_changed_stick_restarts_the_break() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn without_a_part_the_break_compares_item_and_components() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         game.inventory[0] = Some(ItemStack::new("minecraft:stick", 1));
         game.selected = 0;
         let began = game.main_hand_key();
+        // A use shrinks the stack in place: the same break.
         game.inventory[0].as_mut().unwrap().count = 5;
-        game.inventory[0].as_mut().unwrap().damage = 2;
         assert!(game.same_destroying_item(&began));
+        // The server's new stack with more wear: a damage component apart, so it restarts.
+        game.inventory[0].as_mut().unwrap().damage = 2;
+        assert!(!game.same_destroying_item(&began));
         game.inventory[0] = Some(ItemStack::new("minecraft:diamond_pickaxe", 1));
         assert!(!game.same_destroying_item(&began));
         game.inventory[0] = None;
@@ -214,17 +217,17 @@ fn without_a_part_the_break_compares_item_and_components() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn remote_mining_component_update_restarts_unless_the_part_refuses() {
     crate::game::in_own_process(
         "game::hand_part_tests::remote_mining_component_update_restarts_unless_the_part_refuses",
         || {
             for keep in [false, true] {
                 with_stick_part(|game| {
+                    use std::sync::Arc;
                     use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
                     use sunrise_core::geometry::Vec3;
                     use sunrise_protocol::packets::play;
-                    use std::sync::Arc;
                     *RESET.lock().unwrap() = keep.then_some(false);
                     // Play packets are suppressed until login/configuration finishes.
                     let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
@@ -247,12 +250,14 @@ fn remote_mining_component_update_restarts_unless_the_part_refuses() {
                         .default_state("minecraft:stone")
                         .unwrap();
                     game.world.set(0, 64, 0, stone).unwrap();
-                    game.tick_hit.set(Some(Some(crate::game::Hit {
+                    game.forced_hit = Some(crate::game::Hit {
                         pos: [0, 64, 0],
                         face: [0, 1, 0],
                         point: [0.5, 65.0, 0.5],
                         inside: false,
-                    })));
+                    });
+                    game.refresh_client_pick(1.0);
+                    game.forced_hit = None;
                     for _ in 0..4 {
                         game.remote_continue_attack(true);
                     }

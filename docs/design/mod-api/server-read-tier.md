@@ -1,5 +1,9 @@
 # Design: server read tier for handles
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [level hosts](../../modding/src/concepts/hooks-and-the-host.md#level-hosts) for the current native API.
+> The proposed guest import checks, generated guest adapters and target fixtures below are historical; refer to the Host and handle signatures for native access.
+
 Proposed contract for [#2809](https://github.com/arismoko/horizon/issues/2809).
 This is a design, not an implemented guarantee. Recommend option A: immutable
 server reads take `&dyn ServerHost`; shared reads retain `&dyn Host`.
@@ -22,8 +26,8 @@ at line 878 emits handle methods and gathers Backend/ClientBackend reads.
 unions at line 923 expose the shared backend from Host. A server label in prose
 therefore cannot restrict a client caller.
 
-Players illustrate the hole: `crates/sunrise-mod-vocab/src/host/players.rs:42`
-declares PlayersBackend, and line 48 declares `player_recipe_book_settings` under
+Players illustrate the hole: `crates/sunrise-mod-vocab/src/host/player_recipes.rs`
+declares PlayerRecipesBackend, and `player_recipe_book_settings` there is under
 `Side: server`. PlayersServerHost at line 22 supplies services, not a distinct
 immutable handle backend. Moving a label alone cannot change the generated
 receiver. [PR #2784](https://github.com/arismoko/horizon/pull/2784) motivates the
@@ -143,8 +147,7 @@ method-name stderr coverage satisfies the issue without that expansion.
 
 ## One scripted clean break
 
-Commit a reproducible `tools/refactors/server_read_tier.py` with the eventual
-implementation. It must parse declarations, require exactly one valid Side for
+Commit a reproducible implementation script with the eventual clean break. It must parse declarations, require exactly one valid Side for
 every read, inventory handles using the generator's recognition rules, and
 move all server reads together. Preserve server/both/client labels; normalize
 missing or contradictory labels only after explicit review, never infer a

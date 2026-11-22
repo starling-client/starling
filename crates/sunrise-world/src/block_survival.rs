@@ -8,12 +8,12 @@ use crate::{
     fluid::{FluidKind, FluidState},
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::geometry::Direction;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::Arc,
 };
+use sunrise_core::geometry::Direction;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SurvivalRule {
     Fire,

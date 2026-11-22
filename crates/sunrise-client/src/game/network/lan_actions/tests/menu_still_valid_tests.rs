@@ -1,18 +1,18 @@
 //! `menu_still_valid` through a real `MenuPart` on a server's guest: the
-//! per-tick close and the click check ask it, vanilla menus (even with a part
-//! attached) and chest vehicles never do, and respawn and disconnect close a menu it keeps open.
+//! per-tick close and the click check ask it for block and blockless mod menus. Vanilla menus
+//! (even with a part attached) and chest vehicles never ask.
 
-use sunrise_client::{
-    chunk::Chunk,
-    containers::{BlockEntity, ModMenuType},
-    lan::menu::{Menu, Slots, VEHICLE_KEY_Y, asks_still_valid},
-};
-use sunrise_protocol::packets::play::{ContainerClick, Serverbound};
 use mod_api::{Hooks, MenuPart, MenuStillValidEvent, ModEntry, Mods, Registrar};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use sunrise_client::{
+    chunk::Chunk,
+    containers::{BlockEntity, ModMenuType},
+    lan::menu::{Menu, NativeMenuEvent, Slots, VEHICLE_KEY_Y, asks_still_valid},
+};
+use sunrise_protocol::packets::play::{ContainerButtonClick, ContainerClick, Serverbound};
 
 /// What the part answers, and how often it was asked.
 static KEEP: AtomicBool = AtomicBool::new(true);
@@ -47,17 +47,28 @@ impl Hooks for Mod {
     }
 }
 
+fn scoped_dispatch() -> impl Drop {
+    sunrise_client::native_client_hooks::scoped_menu_validity_hooks(
+        crate::game::api_values::menu_still_valid,
+        |menu| mod_api::__private::menu_listens(mod_api::HookId::MenuStillValid, menu),
+    )
+}
+
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn a_mod_menu_part_decides_whether_its_menu_stays_open() {
     let mods: Mods = vec![ModEntry::new("shell", Box::new(Mod))].into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    crate::entry::install_client_hooks();
+    let _callbacks = scoped_dispatch();
     let shell: &'static ModMenuType = Box::leak(Box::new(ModMenuType {
         id: "test:shell",
+        owner: "test",
         slots: 27,
+        player_inventory: true,
         data_slots: 0,
+        owned_slots: None,
         results: Vec::new(),
+        inputs: Vec::new(),
         crafting: None,
         links: None,
     }));
@@ -158,6 +169,25 @@ fn a_mod_menu_part_decides_whether_its_menu_stays_open() {
             click(game);
             assert!(!is_open(game));
 
+            // Only a button click for the open window asks: a stale window's click leaves the
+            // menu be, and the open window's closes it.
+            open(game, Slots::Block(far), true);
+            let window = game.lan.as_ref().unwrap().hub.guests[0]
+                .menu
+                .as_ref()
+                .unwrap()
+                .window;
+            let button = |container| {
+                Serverbound::ContainerButtonClick(ContainerButtonClick {
+                    container,
+                    button: 0,
+                })
+            };
+            game.lan_guest_packet(12, button(window + 1));
+            assert!(is_open(game));
+            game.lan_guest_packet(12, button(window));
+            assert!(!is_open(game));
+
             // A double chest's menu asks too.
             KEEP.store(true, Ordering::Relaxed);
             let before = asked();
@@ -194,12 +224,15 @@ fn a_mod_menu_part_decides_whether_its_menu_stays_open() {
                 sent: Vec::new(),
                 drag: None,
                 sent_data: Vec::new(),
-                hidden: Vec::new(),
+                reported_unsent_data_len: None,
+                blockless_data: Vec::new(),
+
                 mod_type: Some(shell),
                 registry_id: "test:shell".into(),
                 craft: None,
                 links: Vec::new(),
                 asks_still_valid: asks_still_valid(Some(shell), "test:shell"),
+                opening_item: None,
             };
             assert!(menu.asks_still_valid);
             let before = asked();
@@ -207,5 +240,164 @@ fn a_mod_menu_part_decides_whether_its_menu_stays_open() {
             assert!(menu.still_valid(&host.hub.loop_context, &game.world, &host.hub.guests[0]));
             assert_eq!(asked(), before);
         });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_blockless_mod_menu_closes_when_its_part_answers_false() {
+    // Use a prepared registry slot for a synthetic mod menu definition.
+    const MENU: &str = "minecraft:generic_9x1";
+    #[derive(Default)]
+    struct Answer {
+        keep: AtomicBool,
+        asks: AtomicUsize,
+    }
+    struct Blockless(Arc<Answer>);
+    #[mod_api::sunrise_part]
+    impl MenuPart for Blockless {
+        fn menu_still_valid(
+            &self,
+            _: &dyn mod_api::LoopContext,
+            event: &mut MenuStillValidEvent<'_>,
+        ) {
+            assert_eq!(event.menu, MENU);
+            assert_eq!(
+                event.pos, None,
+                "the screen position is not a backing block"
+            );
+            assert!(event.valid, "a blockless menu starts valid");
+            self.0.asks.fetch_add(1, Ordering::Relaxed);
+            event.valid = self.0.keep.load(Ordering::Relaxed);
+        }
+    }
+
+    struct BlocklessMod(Arc<Answer>);
+    #[mod_api::__subscriptions]
+    impl Hooks for BlocklessMod {
+        fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+            r.menu_part(MENU, Blockless(self.0.clone()));
+        }
+    }
+
+    let answer = Arc::new(Answer::default());
+    answer.keep.store(true, Ordering::Relaxed);
+    let mods: Mods = vec![ModEntry::new(
+        "blockless",
+        Box::new(BlocklessMod(answer.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods.clone(), || {
+        crate::game::api_values::install_parts(&mods).unwrap();
+        let _callbacks = scoped_dispatch();
+        sunrise_client::containers::with_mod_menu_types(
+            [(
+                MENU.into(),
+                "test".into(),
+                9,
+                0,
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+                true,
+                None,
+            )],
+            || {
+                super::super::native_guest_turn_tests::with_guests(|game| {
+                    // A screen position is not a vehicle key, even at this reserved Y.
+                    let pos = Some((0, crate::game::minecarts::CART_KEY_Y, 100));
+                    let open = |game: &mut crate::game::Game<'_>| {
+                        game.lan
+                            .as_mut()
+                            .unwrap()
+                            .hub
+                            .open_menu_window(
+                                12,
+                                MENU,
+                                sunrise_core::nbt::Tag::String("test".into()),
+                                pos,
+                                Slots::Native,
+                                vec![None; 9],
+                                None,
+                            )
+                            .unwrap()
+                    };
+                    let window_of_guest = |game: &crate::game::Game<'_>| {
+                        game.lan.as_ref().unwrap().hub.guests[0]
+                            .menu
+                            .as_ref()
+                            .map(|menu| menu.window)
+                    };
+                    let old_window = open(game);
+                    game.lan_containers_tick();
+                    assert_eq!(window_of_guest(game), Some(old_window));
+
+                    answer.keep.store(false, Ordering::Relaxed);
+                    game.lan_containers_tick();
+                    assert_eq!(window_of_guest(game), None);
+
+                    let click = |game: &mut crate::game::Game<'_>, container| {
+                        game.lan_guest_packet(
+                            12,
+                            Serverbound::ContainerClick(ContainerClick {
+                                container,
+                                state: 0,
+                                slot: -999,
+                                button: 0,
+                                input: 0,
+                                changed: Vec::new(),
+                                carried: None,
+                            }),
+                        );
+                    };
+                    let window = open(game);
+                    let before = answer.asks.load(Ordering::Relaxed);
+                    for stale in [0, old_window] {
+                        click(game, stale);
+                        assert_eq!(window_of_guest(game), Some(window));
+                        assert_eq!(answer.asks.load(Ordering::Relaxed), before);
+                    }
+
+                    let state_of_guest = |game: &crate::game::Game<'_>| {
+                        game.lan.as_ref().unwrap().hub.guests[0]
+                            .menu
+                            .as_ref()
+                            .unwrap()
+                            .state
+                    };
+                    game.lan
+                        .as_mut()
+                        .unwrap()
+                        .hub
+                        .guests
+                        .update(0, |g| g.game_mode = 3);
+                    let old_state = state_of_guest(game);
+                    click(game, window);
+                    assert_eq!(window_of_guest(game), Some(window));
+                    assert_eq!(state_of_guest(game), (old_state + 1) & 0x7FFF);
+                    assert_eq!(answer.asks.load(Ordering::Relaxed), before);
+
+                    game.lan
+                        .as_mut()
+                        .unwrap()
+                        .hub
+                        .guests
+                        .update(0, |g| g.game_mode = 0);
+                    click(game, window);
+                    assert_eq!(window_of_guest(game), None);
+                    assert_eq!(answer.asks.load(Ordering::Relaxed), before + 1);
+                    assert!(
+                        game.lan
+                            .as_ref()
+                            .unwrap()
+                            .hub
+                            .native_menu_events
+                            .iter()
+                            .any(|event| matches!(event, NativeMenuEvent::Closed { window: closed, .. } if *closed == window))
+                    );
+                });
+            },
+        );
     });
 }

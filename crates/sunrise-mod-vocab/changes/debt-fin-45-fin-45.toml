@@ -1,0 +1,7 @@
+ids = [
+    "hook:menu_quick_move",
+    "method:BlockEntityPart::menu_quick_move",
+    "hook:contents_changed",
+]
+why = "During a quick move, a committed ITEMS write follows the original container, not a fresh lookup at its coordinates, like NeoForge's VanillaContainerWrapper.onRootCommit calling setChanged on the held container. A replacement and its watchers do not receive the old notice. A write to the block whose contents_changed callback is already active still applies and keeps its dirty and comparator updates, as in vanilla BlockEntity.setChanged, but cannot queue a second callback. Other implicit notices still follow source settlement, matching vanilla AbstractContainerMenu.moveItemStackTo."
+migrate = "This notice fix requires no additional hook pin or signature changes beyond the live-menu migration. Keep calling BlockEntityRef::set_changed(host) for an immediate notice. A same-block ITEMS write from that callback applies without a second contents_changed call. Keep committing ITEMS moves, assigning the remainder to *event.stack and returning Flow::Cancel from menu_quick_move. A deferred notice is delivered only if the original destination remains. If you write to a replacement, use that replacement's own handle or capability."

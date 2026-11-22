@@ -1,14 +1,14 @@
 //! The attacking client's side of a hit, as `Game::remote_player_attack` decides it, against
 //! VanillaRemoteAttackOracle's real `Player.attack` (tools/test_remote_attack_parity.py).
 #![forbid(unsafe_code)]
-use sunrise_client::{
-    Result,
-    attack_strength::{ATTACKER_SLOWDOWN, AttackStrength, attacker_slows_after_hit},
-};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_client::{
+    Result,
+    attack_strength::{ATTACKER_SLOWDOWN, AttackStrength, attacker_slows_after_hit},
 };
 
 fn double(v: &Value) -> f64 {

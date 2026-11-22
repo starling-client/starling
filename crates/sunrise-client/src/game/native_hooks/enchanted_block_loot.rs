@@ -24,46 +24,73 @@ impl GameLevel<'_> {
         state: BlockStateId,
         entity: Option<EntityRef>,
         roll: BlockLootRoll<'_>,
+        source: Option<&sunrise_world::loot::copy::BlockSource>,
     ) -> Vec<ItemStack> {
-        let (items, registry, seed) = (self.items, self.registry, self.seed);
-        if !self.native_authoritative
-            || !mod_api::__private::listened(mod_api::HookId::EnchantedBlockLoot)
-        {
-            let sequences = Some((&mut *self.rand_sequences, seed));
-            return items.block_drops(registry, state, roll, &mut self.world.random, sequences);
-        }
-        let mut random = self.world.random.clone();
-        let mut sequences = std::mem::take(&mut *self.rand_sequences);
-        let tool = roll.held;
-        let level = &*self;
-        let levels = |enchantment: &str, mut read: u32| {
-            if let Some(enchantment) = sunrise_client::enchantment_levels::identifier(enchantment) {
-                level.native_enchanted_block_loot(super::fire::EnchantedBlockLootCall {
-                    dimension: level.dimension,
-                    pos,
+        let at = [pos.x, pos.y, pos.z];
+        let captured = source
+            .is_none()
+            .then(|| {
+                self.pending.source(at).or_else(|| {
+                    crate::game::spill::world_source(
+                        self.world,
+                        at,
+                        &self.facts.get(state).name,
+                        |key, entity, block| self.encode_live_block_entity(key, entity, block),
+                    )
+                })
+            })
+            .flatten();
+        sunrise_world::loot::copy::with_storage(self.loot_storage.clone(), || {
+            sunrise_world::loot::copy::with_block_source(source.or(captured.as_deref()), || {
+                let (items, registry, seed) = (self.items, self.registry, self.seed);
+                if !self.native_authoritative
+                    || !mod_api::__private::listened(mod_api::HookId::EnchantedBlockLoot)
+                {
+                    let sequences = Some((&mut *self.rand_sequences, seed));
+                    return items.block_drops(
+                        registry,
+                        state,
+                        roll,
+                        &mut self.world.random,
+                        sequences,
+                    );
+                }
+                let mut random = self.world.random.clone();
+                let mut sequences = std::mem::take(&mut *self.rand_sequences);
+                let tool = roll.held;
+                let level = &*self;
+                let levels = |enchantment: &str, mut read: u32| {
+                    if let Some(enchantment) =
+                        sunrise_client::enchantment_levels::identifier(enchantment)
+                    {
+                        level.native_enchanted_block_loot(super::fire::EnchantedBlockLootCall {
+                            dimension: level.dimension,
+                            pos,
+                            state,
+                            tool,
+                            enchantment: &enchantment,
+                            level: &mut read,
+                            entity,
+                        });
+                    }
+                    read
+                };
+                let roll = BlockLootRoll {
+                    levels: Some(&levels),
+                    ..roll
+                };
+                let drops = items.block_drops(
+                    registry,
                     state,
-                    tool,
-                    enchantment: &enchantment,
-                    level: &mut read,
-                    entity,
-                });
-            }
-            read
-        };
-        let roll = BlockLootRoll {
-            levels: Some(&levels),
-            ..roll
-        };
-        let drops = items.block_drops(
-            registry,
-            state,
-            roll,
-            &mut random,
-            Some((&mut sequences, seed)),
-        );
-        self.world.random = random;
-        *self.rand_sequences = sequences;
-        drops
+                    roll,
+                    &mut random,
+                    Some((&mut sequences, seed)),
+                );
+                self.world.random = random;
+                *self.rand_sequences = sequences;
+                drops
+            })
+        })
     }
 }
 
@@ -72,10 +99,10 @@ mod tests {
     use super::*;
     use crate::game::api_values::TryIntoApi;
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_core::random::{LegacyRandom, RandomSource};
     use mod_api::{EnchantedBlockLootEvent, Hooks, LevelHost, ModEntry};
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
+    use sunrise_core::random::{LegacyRandom, RandomSource};
 
     #[derive(Debug, PartialEq)]
     struct Read {
@@ -126,7 +153,7 @@ mod tests {
         *game.world.random = LegacyRandom::new(7);
         game.rand_sequences = Default::default();
         let flint = (0..ROLLS)
-            .flat_map(|_| game.block_loot_at(POS, gravel, tool, None))
+            .flat_map(|_| game.block_loot_at(POS, gravel, tool))
             .filter(|stack| &*stack.item == "minecraft:flint")
             .count();
         let seed = game.level.seed;
@@ -140,7 +167,7 @@ mod tests {
     /// naming its breaker; a listener that answers nothing changes neither
     /// the drops nor either random.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn a_listener_sets_the_level_a_block_table_reads() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
@@ -195,7 +222,7 @@ mod tests {
             host.entity_id = 7;
             game.player = Some(host);
             with_mods(mods(None), || {
-                game.block_loot_at(POS, gravel, None, None);
+                game.block_loot_at(POS, gravel, None);
             });
             game.player = None;
             assert_eq!(reads.lock().unwrap()[0].entity, Some(7));

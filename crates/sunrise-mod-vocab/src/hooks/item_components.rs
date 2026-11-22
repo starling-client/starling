@@ -28,8 +28,8 @@ Duration and bar reads need an engine backend and return `None` for an unknown i
 
 `ItemResource::tooltip(client, advanced, creative)` returns styled text and line colours
 for overlays that need the ordinary inventory tooltip. It uses the client's current viewer
-and the requested flags. The base lines do not call mod listeners or lay out a tooltip, so
-calling this from a tooltip listener does not dispatch that listener again.
+and the requested flags. Queries include mod edits, except during item tooltip line construction,
+when they return base lines. A query never gathers images or lays out or draws a tooltip.
 
 `ItemResource::enchant_randomly(server, level, power, pool)` rolls from the specified
 enchantment tag with the active server level's random source and the stack's effective

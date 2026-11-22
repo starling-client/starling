@@ -21,9 +21,14 @@ pub trait Hooks {
     /// tells nothing until it is. NeoForge's `chunkHolder` is not given:
     /// Sunrise keeps no chunk holders. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "ChunkTicketLevelUpdatedEvent"
     )]
-    fn chunk_ticket_level_updated();
+    fn chunk_ticket_level_updated(
+        chunk: ChunkRef,
+        old: mod_api::ChunkTicketLevel,
+        new: mod_api::ChunkTicketLevel,
+    );
 }

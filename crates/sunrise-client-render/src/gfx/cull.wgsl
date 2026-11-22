@@ -17,7 +17,9 @@ struct Globals {
 // second's in the high 16 bits), the second pass's first draw. No draws:
 // phase 1 drew it, and the test only tells whether it is still in sight.
 // Then its box's lowest and highest corner around the origin: a section's
-// padded mesh bounds, or -1 and 17 (`SECTION_BOX`) without mesh bounds.
+// padded mesh bounds, or -1 and 17 (`SECTION_BOX`) without mesh bounds. The corners' fourth
+// words are the place of its translucent draw in `phase2` (low) and 1 when it has one (high),
+// `place_translucent`.
 struct Test {
     data: vec4<u32>,
     low: vec4<f32>,
@@ -120,6 +122,10 @@ fn see(t: u32) {
         }
         for (var k = 0u; k < (test.z >> 16u); k++) {
             phase2[(test.w + k) * 5u + 1u] = 1u;
+        }
+        // The section's translucent draw: its place and a flag in the box corners' fourth words.
+        if tests[t].high.w != 0.0 {
+            phase2[u32(tests[t].low.w) * 5u + 1u] = 1u;
         }
     }
 }

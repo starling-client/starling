@@ -8,23 +8,20 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait DataMapsBackend {
     /// Side: both.
-    /// Entry `entry` (its full registry id, `minecraft:pig`) of registry `registry`: its value
-    /// in data map `map`, before the map decodes it: the merged JSON the server's data packs
-    /// and mods' files gave it, as NBT. `Ok(None)` where it has none.
-    #[access(PublishedResources)]
+    /// Entry `entry` of registry `registry`: its published NBT value in data map `map`, before
+    /// typed decoding. The tag borrows from this backend, not the lookup IDs. Clone it only
+    /// to retain it beyond the borrow. `Ok(None)` means the map gives this entry no value;
+    /// unavailable maps and unknown map types are errors.
     fn data_map_value(
         &self,
         registry: &str,
         entry: &str,
         map: &str,
-    ) -> Result<Option<Tag>, DataMapError>;
+    ) -> Result<Option<&Tag>, DataMapError>;
     /// Side: both.
-    /// Every entry data map `map` of registry `registry` gives a value, with that value as
-    /// `data_map_value` answers it, in id order (`IRegistryExtension.getDataMap`).
-    #[access(PublishedResources)]
-    fn data_map_entries(
-        &self,
-        registry: &str,
-        map: &str,
-    ) -> Result<Vec<(String, Tag)>, DataMapError>;
+    /// The published NBT entries of data map `map` in `registry`, sorted by entry ID
+    /// (`IRegistryExtension.getDataMap`). The slice borrows from this backend; call `to_vec`
+    /// only to retain all the rows beyond that borrow. An empty map gives an empty slice.
+    fn data_map_entries(&self, registry: &str, map: &str)
+    -> Result<&[(String, Tag)], DataMapError>;
 }

@@ -71,7 +71,7 @@ StonecutterBlock.useWithoutItem	port	crates/sunrise-world/src/level/interact.rs:
 SugarCaneBlock.randomTick	port	crates/sunrise-world/src/level/tick.rs::Sim::random_tick_block	growth arm of the random tick
 SugarCaneBlock.tick	port	crates/sunrise-world/src/level/tick.rs::Sim::tick_block
 SugarCaneBlock.updateShape	port	crates/sunrise-world/src/level/shapes.rs::Sim::update_shape_class
-SuspiciousEffectHolder.tryGet	port	crates/sunrise-items/src/flowers.rs::stew_effect	the item's block is looked up in the flower table
+SuspiciousEffectHolder.tryGet	port	crates/sunrise-items/src/items.rs::Items::suspicious_stew_effects	the placing BlockItem's block supplies the effects
 TallSeagrassBlock.canSurvive	port	crates/sunrise-world/src/level/survive.rs::Sim::can_survive_class
 TallSeagrassBlock.getStateForPlacement	port	crates/sunrise-world/src/level/place.rs::Sim::placement_class
 TallSeagrassBlock.mayPlaceOn	port	crates/sunrise-world/src/level/survive.rs::Sim::may_place_on
@@ -153,9 +153,9 @@ PotDecorations.allBrick	skip:data		constant brick decoration set
 PotentSulfurBlockEntity.applyNauseaEffect	port	crates/sunrise-client/src/game/blocks/potent_sulfur.rs::apply_nausea_effect_to_mob	ticked in #3516; `PotentSulfurBlockEntity.applyNauseaEffect` is cited at crates/sunrise-client/src/game/blocks/potent_sulfur.rs:86
 PotentSulfurBlockEntity.canBeReachedByNoxiousGas	port	crates/sunrise-client-render/src/potent_sulfur.rs::can_be_reached_by_noxious_gas	ticked in #3516; `PotentSulfurBlockEntity.canBeReachedByNoxiousGas` is cited at crates/sunrise-client-render/src/potent_sulfur.rs:73
 PotentSulfurBlockEntity.findNoxiousGasSourceBlock	port	crates/sunrise-client-render/src/potent_sulfur.rs::find_noxious_gas_source_block	the first block above the sulfur that the gas can leave through, capped at the geyser's reach
-PotentSulfurBlockEntity.getNearbyLivingEntities	inline	crates/sunrise-client/src/game/blocks/potent_sulfur.rs::nearby_living_area	the source block's box grown 2.5 blocks sideways, which the nausea and launch tickers ask for entities in
+PotentSulfurBlockEntity.getNearbyLivingEntities	inline	crates/sunrise-gameplay/src/potent_sulfur.rs::nearby_living_area	the source block's box grown 2.5 blocks sideways, which the nausea and launch tickers ask for entities in
 PotentSulfurBlockEntity.getUnobstructedBlockCount	port	crates/sunrise-client-render/src/potent_sulfur.rs::unobstructed_block_count	how many blocks of the column above the source the gas is unobstructed through
-PotentSulfurBlockEntity.geyserPositional	port	crates/sunrise-client/src/game/blocks/potent_sulfur.rs::geyser_positional	ticked in #3516; `PotentSulfurBlockEntity.geyserPositional` is cited at crates/sunrise-client/src/game/blocks/potent_sulfur.rs:55
+PotentSulfurBlockEntity.geyserPositional	port	crates/sunrise-gameplay/src/potent_sulfur.rs::geyser_positional	ticked in #3516; `PotentSulfurBlockEntity.geyserPositional` is cited at crates/sunrise-client/src/game/blocks/potent_sulfur.rs:55
 PotentSulfurBlockEntity.haveLineOfSight	port	crates/sunrise-client-render/src/potent_sulfur.rs::have_line_of_sight	a clip over the collider shapes between the two points, water and passable blocks let through
 PotentSulfurBlockEntity.isGeyserPassableBlock	port	crates/sunrise-client-render/src/potent_sulfur.rs::is_geyser_passable_block	air, water, or a block the gas passes through
 PotentSulfurBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	the countdown is read back, the only field vanilla's tag carries (eruptionTick is transient, and saveAdditional writes countdown alone)
@@ -224,10 +224,10 @@ ChunkStep.getAccumulatedRadiusOf	inline	crates/sunrise-client-render/src/streami
 ChunkStep.Builder	skip:java		builder for chunk steps
 ChunkIOErrorReporter.createMisplacedChunkReport	skip:other		report text for a chunk saved at another position; Sunrise logs its own load error
 RecreatingSimpleRegionStorage	skip:java		close: Rust closes the file on drop
-RegionFileStorage.cache	port	crates/sunrise-client/src/save.rs::cached_region
+RegionFileStorage.cache	port	crates/sunrise-client/src/save.rs::RegionStorage::open_cached
 RegionFileStorage.close	skip:java		files close on drop
 RegionFileStorage.flush	port	crates/sunrise-world/src/region.rs::RegionFile::sync
-RegionFileStorage.getRegionFile	port	crates/sunrise-client/src/save.rs::cached_region
+RegionFileStorage.getRegionFile	port	crates/sunrise-client/src/save.rs::RegionStorage::open_cached
 RegionFileStorage.read	port	crates/sunrise-world/src/region.rs::RegionFile::read
 RegionFileStorage.scanChunk	port	crates/sunrise-client/src/save.rs::read_region_record
 RegionFileStorage.write	port	crates/sunrise-world/src/region.rs::RegionFile::write

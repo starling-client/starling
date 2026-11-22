@@ -2,17 +2,17 @@
 //! (`tools/test_block_update_parity.py`, `test_random_tick_parity.py`,
 //! `test_redstone_parity.py`): replays `VanillaBlockUpdateOracle` cases against
 //! `Behaviours` over a map-backed level and prints the same result text.
-use sunrise_core::{
-    geometry::{Aabb, Direction},
-    position::{BlockPos, ChunkPos},
-    random::{LegacyRandom, RandomSource},
-};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Write as _,
     io::{BufRead, Write},
     path::Path,
+};
+use sunrise_core::{
+    geometry::{Aabb, Direction},
+    position::{BlockPos, ChunkPos},
+    random::{LegacyRandom, RandomSource},
 };
 use {
     sunrise_core::dimension::Dimension,
@@ -162,6 +162,7 @@ impl LevelAccess for Cells {
             Some(PreRemove::Beacon) => self.events.push(LevelEvent::Sound {
                 pos,
                 sound: "minecraft:block.beacon.deactivate".into(),
+                source: None,
                 volume: 1.0,
                 pitch: 1.0,
             }),

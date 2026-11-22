@@ -8,10 +8,6 @@ use crate::{
     backup, engine, prune, signals,
     update::{self, UpdateInstall},
 };
-use sunrise_server_launch::{
-    self as launch,
-    config::{self, Config},
-};
 use serde_json::json;
 use std::{
     fs::File,
@@ -21,6 +17,10 @@ use std::{
     sync::{Arc, atomic::Ordering, mpsc},
     thread,
     time::{Duration, Instant},
+};
+use sunrise_server_launch::{
+    self as launch,
+    config::{self, Config},
 };
 
 /// After this many crashes within [`CRASH_WINDOW`] the supervisor stops restarting the game.
@@ -255,6 +255,15 @@ pub fn run(dir: &Path) -> Result<(), String> {
         let written = config
             .write_properties(dir)
             .map_err(|e| format!("server.properties: {e}"))?;
+        for key in written.writer_collisions() {
+            note(
+                &shared,
+                "WARN",
+                &format!(
+                    "Will not copy server.properties key {key:?} back to server.toml: the game's UTF-8 writer cannot distinguish it from another key"
+                ),
+            );
+        }
         prepare_world(&shared, dir, &config)?;
         note(
             &shared,
@@ -273,7 +282,10 @@ pub fn run(dir: &Path) -> Result<(), String> {
             dir,
             config.engine.low_memory,
             config.engine.parallel_tick,
-            &config.entities,
+            (
+                config.engine.droppable_clientbound,
+                config.engine.droppable_serverbound,
+            ),
             transfers.as_deref(),
         )
         .map_err(|e| format!("{}: {e}", program.display()))?;
@@ -553,7 +565,9 @@ fn check_updates(shared: Arc<Shared>) {
         .spawn(move || {
             thread::sleep(Duration::from_secs(60));
             loop {
-                if let (Ok(release), Some(current)) = (update::release(None), install.current()) {
+                if let Some(current) = install.current()
+                    && let Ok(release) = update::newest(&current)
+                {
                     let newer = update::update_available(&release.tag, &current)
                         .then_some(release.tag);
                     let told = shared.update.lock().unwrap().available.clone();

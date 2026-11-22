@@ -24,7 +24,8 @@ def main():
         build, 'VanillaLanAuthOracle', jars, client_libraries(), lock['minecraft']['java_major'])
     oh.java_run(build, classes, dependencies, 'VanillaLanAuthOracle', [], 'vanilla')
     oh.run_logged(['cargo', 'test', '-p', 'sunrise-client-lib', '--lib',
-                   'net::tests::lan_login_continues_after_authentication_failure', '--', '--nocapture'],
+                   'net::tests::lan_login_continues_after_authentication_failure', '--', '--include-ignored',
+                   '--nocapture'],
                   build, 'rust', timeout=180)
     pattern = r'lan_auth=(LAN|OTHER):(true|false):(true|false)'
     expected = re.findall(pattern, (build / 'vanilla.log').read_text(encoding='utf-8'))

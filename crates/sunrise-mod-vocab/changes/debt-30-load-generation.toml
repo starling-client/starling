@@ -1,0 +1,47 @@
+ids = [
+    "method:DataLoadContext::registry",
+    "method:DataLoadContext::setting",
+    "method:DataLoadContext::mods",
+    "method:DataLoadContext::fluid_tags",
+    "trait:LoadReader",
+    "method:LoadReader::registry",
+    "method:LoadReader::setting",
+    "method:LoadReader::fluid_tags",
+    "method:LoopContext::registry",
+    "method:LoopContext::setting",
+    "method:LoopContext::mods",
+    "trait:LoopReader",
+    "method:LoopReader::registry",
+    "method:LoopReader::setting",
+    "method:WorldgenHost::registry",
+    "method:WorldgenHost::setting",
+    "method:WorldgenHost::mods",
+    "method:ChunkDiskHost::registry",
+]
+why = "Load, loop and worldgen callbacks can read frozen metadata without taking ownership of it. Registry names keep ID order and packages keep dispatch order. Chunk disk callbacks borrow registry names from the generation retained by their worker. Fluid-tag reads now distinguish a load that has no recipe overlay from one whose recipe overlay has no fluid tags."
+migrate = """
+Inline reads can stay the same. On DataLoadContext, LoopContext, WorldgenHost and ChunkDiskHost, replace `cx.registry(name).as_deref()` with `cx.registry(name)` (`Option<&[String]>`). On DataLoadContext, LoopContext and WorldgenHost, replace `cx.setting(mod_id, key).as_deref()` with `cx.setting(mod_id, key)` (`Option<&str>`). On those same three contexts, `cx.mods()` now returns `&LoadedMods`; calls to `ids()`, `iter()` and `get(id)` are unchanged. RegistrationContext and ordinary Host reads are unchanged, including the owned `Option<String>` returned by ConfigHost::setting on ChunkDiskHost.
+
+Replace `cx.fluid_tags().as_deref()` with `cx.fluid_tags()` (`Option<&[(String, Arc<[String]>)]>`). Handle `None` for a load without a recipe overlay separately from `Some(&[])` for an available table with no fluid tags. FluidIngredient::from_json and SizedFluidIngredient::from_json calls are unchanged.
+
+Keep an owned value only if it must outlive the callback:
+- Registry: `cx.registry(name).map(Arc::from)` for `Option<Arc<[String]>>`, or `cx.registry(name).map(<[String]>::to_vec)` for `Option<Vec<String>>`.
+- Setting: `cx.setting(mod_id, key).map(str::to_owned)`.
+- Inventory: `LoadedMods::clone(cx.mods())`.
+- Fluid tags: `cx.fluid_tags().map(Arc::from)` for `Option<Arc<[(String, Arc<[String]>)]>>`.
+
+If you implement LoadReader or LoopReader, use these signatures and return references into the frozen data instead of cloning the values:
+
+```rust
+fn registry(&self, name: &str) -> Option<&[String]>;
+fn setting(&self, mod_id: &str, key: &str) -> Option<&str>;
+```
+
+LoadReader also changes its fluid-tag method to:
+
+```rust
+fn fluid_tags(&self) -> Option<&[(String, Arc<[String]>)]>;
+```
+
+For example, store the table as `Option<Arc<[(String, Arc<[String]>)]>>` and return `self.tags.as_deref()`. Store `None` when there is no recipe overlay and `Some` with an empty table when the overlay has no fluid tags.
+"""

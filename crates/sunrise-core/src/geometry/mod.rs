@@ -4,16 +4,23 @@
 //! simulation coordinates; rendering may use a separate camera-relative format.
 
 pub mod border;
+pub mod carried;
 mod movement;
+pub mod oriented;
 mod shape;
 mod sweep;
 mod traversal;
 pub mod trig;
 use crate::position::BlockPos;
 pub use movement::{
+<<<<<<< sync-sunrise-1
     Collider, Collides, MovedBlock, block_floor_height, candidate_step_heights,
     entity_collision_bounds, resolve_shape_movement, resolve_step_movement,
     try_resolve_step_movement,
+=======
+    block_floor_height, candidate_step_heights, entity_collision_bounds, resolve_shape_movement,
+    resolve_step_movement, try_resolve_step_movement, try_resolve_step_movement_oriented,
+>>>>>>> sunrise/main
 };
 pub use shape::{ShapeError, ShapeOp, VoxelShape};
 pub use sweep::sweep_intersected_blocks;
@@ -617,6 +624,12 @@ impl Aabb {
     }
 }
 
+/// `Mth.length(x, z)`: `Math.sqrt(x * x + z * z)`, as `Vec3.horizontalDistance` computes it. Never `f64::hypot`,
+/// which rounds differently for about a sixth of inputs.
+#[inline]
+pub fn length(x: f64, z: f64) -> f64 {
+    (x * x + z * z).sqrt()
+}
 #[inline]
 pub(crate) fn java_min(a: f64, b: f64) -> f64 {
     if a.is_nan() {
@@ -653,19 +666,7 @@ pub(crate) fn clamp(value: f64, min: f64, max: f64) -> f64 {
         java_min(value, max)
     }
 }
-/// `Mth.floor`, which is `(int) Math.floor(v)`: truncate, then step down for
-/// negative fractions. A truncating conversion and a compare, where
-/// `f64::floor` is a libm call on baseline x86-64. Both casts saturate (NaN is
-/// 0), so the step down saturates too: below `i32::MIN` stays `i32::MIN`.
-#[inline]
-pub(crate) fn floor_i32(value: f64) -> i32 {
-    let truncated = value as i32;
-    if value < f64::from(truncated) {
-        truncated.saturating_sub(1)
-    } else {
-        truncated
-    }
-}
+pub(crate) use crate::mth::floor as floor_i32;
 fn lerp(amount: f64, start: f64, end: f64) -> f64 {
     start + amount * (end - start)
 }
@@ -696,6 +697,36 @@ fn next_down(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Mth.length` on the 26.3 jar (JDK 25.0.4.1) where `f64::hypot` rounds the other way: x, z and result bits.
+    #[test]
+    fn length_has_vanillas_bits() {
+        for (x, z, expected) in [
+            (
+                0xc043_3e96_85c7_e498_u64,
+                0x403c_8341_f72b_f12c_u64,
+                0x4047_f327_a424_cf87_u64,
+            ),
+            (
+                0x404e_906e_b65a_f132,
+                0xc04e_0efa_dc03_3206,
+                0x4055_6f21_ba7a_72ea,
+            ),
+            (
+                0xbfef_baff_8000_0000,
+                0x3ea1_2bd2_8000_0000,
+                0x3fef_baff_8000_04a6,
+            ),
+            (
+                0xbf84_297c_a000_0000,
+                0xbe19_523c_0000_0000,
+                0x3f84_297c_a000_003f,
+            ),
+        ] {
+            let got = length(f64::from_bits(x), f64::from_bits(z));
+            assert_eq!(got.to_bits(), expected, "length({x:#x}, {z:#x})");
+        }
+    }
 
     #[test]
     fn floor_i32_is_mths_floor() {

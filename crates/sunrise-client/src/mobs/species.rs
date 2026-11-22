@@ -1540,7 +1540,7 @@ impl Def {
             flying: matches!(s, S::Ghast | S::Phantom | S::HappyGhast),
             climber: matches!(s, S::Spider | S::CaveSpider),
             lava_walker: s == S::Strider,
-            powder_snow_walkable: false,
+            entity_tag_slot: None,
             omnidirectional: matches!(s, S::Bee | S::Parrot),
             fire_immune: fire_immune
                 || matches!(
@@ -1554,36 +1554,7 @@ impl Def {
                         | S::Zoglin
                         | S::Wither
                 ),
-            // The `burn_in_daylight` entity type tag.
-            burns_in_day: matches!(
-                s,
-                S::Zombie
-                    | S::ZombieHorse
-                    | S::Drowned
-                    | S::ZombieVillager
-                    | S::Skeleton
-                    | S::Stray
-                    | S::Bogged
-                    | S::WitherSkeleton
-                    | S::Phantom
-                    | S::ZombieNautilus
-            ),
             undead,
-            // `#can_breathe_under_water`. Not the dolphin: it holds its breath
-            // (4800 ticks) and surfaces for air; nor the iron golem, which keeps
-            // its air through its own `decreaseAirSupply` (`ai.rs`).
-            breathes_water: (aquatic && s != S::Dolphin)
-                || undead
-                || matches!(
-                    s,
-                    S::Axolotl
-                        | S::Frog
-                        | S::Turtle
-                        | S::Guardian
-                        | S::ElderGuardian
-                        | S::CopperGolem
-                        | S::Nautilus
-                ),
             // WaterAnimal.handleAirSupply: it dries out on land; Nautilus's
             // does the same. Dolphin.handleAirSupply is empty, so a dolphin
             // takes LivingEntity.baseTick's air like a land mob.
@@ -1596,6 +1567,49 @@ impl Def {
                     s,
                     S::Villager | S::WanderingTrader | S::IronGolem | S::SnowGolem | S::CopperGolem
                 ),
+            // `EntityType.Builder.notInPeaceful` on the vanilla type.
+            not_in_peaceful: matches!(
+                s,
+                S::Blaze
+                    | S::Bogged
+                    | S::Breeze
+                    | S::CaveSpider
+                    | S::Creaking
+                    | S::Creeper
+                    | S::Drowned
+                    | S::ElderGuardian
+                    | S::Enderman
+                    | S::Endermite
+                    | S::Evoker
+                    | S::Ghast
+                    | S::Giant
+                    | S::Guardian
+                    | S::Hoglin
+                    | S::Husk
+                    | S::Illusioner
+                    | S::MagmaCube
+                    | S::Parched
+                    | S::Phantom
+                    | S::PiglinBrute
+                    | S::Pillager
+                    | S::Ravager
+                    | S::Silverfish
+                    | S::Skeleton
+                    | S::Slime
+                    | S::Spider
+                    | S::Stray
+                    | S::Vex
+                    | S::Vindicator
+                    | S::Warden
+                    | S::Witch
+                    | S::Wither
+                    | S::WitherSkeleton
+                    | S::Zoglin
+                    | S::Zombie
+                    | S::ZombieVillager
+                    | S::ZombifiedPiglin
+            ),
+            tick_alone: false,
         }
     }
     fn hostile_class(&self) -> bool {
@@ -1657,6 +1671,7 @@ impl Def {
             S::Goat => "goat_food",
             S::Sniffer => "sniffer_food",
             S::HappyGhast => "happy_ghast_food",
+            S::Camel => "camel_food",
             S::CamelHusk => "camel_husk_food",
             S::Nautilus | S::ZombieNautilus => "nautilus_food",
             S::SulfurCube => "sulfur_cube_food",

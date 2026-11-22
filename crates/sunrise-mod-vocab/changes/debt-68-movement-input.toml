@@ -1,0 +1,9 @@
+ids = [
+    "hook:movement_input",
+    "method:Hooks::movement_input",
+    "type:MovementInputEvent",
+    "hook:movement_input_update",
+    "type:MovementInput.move_vector",
+]
+why = "The client lends its sampled input object before auto-jump and sprint, matching vanilla `ClientInput` and NeoForge `MovementInputUpdateEvent` (`LocalPlayer.java.patch`). The move vector and key presses are independent, the final `move_vector` is applied directly with no squared-length finiteness fallback, and reading the input no longer changes whether the player sprints."
+migrate = "Rebuild for movement_input_update v1. Rename Hooks::movement_input to Hooks::movement_input_update and take &mut MovementInputUpdateEvent<'_> instead of &mut MovementInputEvent. Replace event.strafe and event.forward with event.input.move_vector[0] and [1] respectively. Replace event.forward_key, backward_key, left_key and right_key with event.input.key_presses.forward, backward, left and right. Replace event.jump, sneak and sprint with the corresponding fields on event.input.key_presses. If you meant to change both movement and the reported direction, write both: neither edit updates the other. Do not rely on the old sampled-vector fallback when `event.input.move_vector` has a non-finite squared length: `event.input.move_vector` is now applied directly. Setting sprint to false now releases the sprint key only; there is no sprint veto. Replace movement_input with movement_input_update in hook declarations."

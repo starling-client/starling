@@ -1,0 +1,91 @@
+name: cargo-sunrise-mod build
+# Builds cargo-sunrise-mod's binstall archives (#2120), publishing nothing: called by cargo-sunrise-mod.yml (pull
+# requests, dispatches and version tags, whose release it publishes) and by the daily run (daily.yml), each with its
+# own read-only token. The targets come from tools/sunrise_mod_binstall.py, the same file the manifest's template is
+# checked against. A pull request (the caller's event) builds only the x86_64 Linux archive: every pull request push
+# building two macOS and a Windows archive on GitHub's runners held the organisation's macOS runners while a launcher
+# release's macOS leg waited behind them (2026-11-18). Every other caller builds them all.
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit to build; empty builds the caller's event commit
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.platforms.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - id: platforms
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: echo "platforms=$(python3 -c 'import json, os, tools.sunrise_mod_binstall as m; print(json.dumps([p for p in m.PLATFORMS if os.environ["EVENT_NAME"] != "pull_request" or p["target"] == "x86_64-unknown-linux-gnu"]))')" >> "$GITHUB_OUTPUT"
+  build:
+    needs: plan
+    # A contributor's pull request (its head in a fork) skips what compiles; a reviewer dispatches it (tools/ci/pr_gate.py).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - name: The pinned Rust (tools/ci/rust-version)
+        id: rust
+        shell: bash
+        run: echo "version=$(cat "$GITHUB_WORKSPACE/tools/ci/rust-version")" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          targets: ${{ matrix.target }}
+      # No compiler cache: a run's cache serves only its own pull request, tag or daily run, as main's pushes never run this workflow,
+      # and the four a push saved (about 1.2 GB) pushed main's caches out of the repository's 10 GB.
+      - name: The aarch64 Linux linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release --locked -p cargo-sunrise-mod --target ${{ matrix.target }}
+      - name: It starts
+        if: matrix.run
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/cargo-sunrise-mod"
+          [ -f "$binary.exe" ] && binary="$binary.exe"
+          out=$("$binary" 2>&1 || true)
+          case "$out" in
+            *"usage: cargo sunrise-mod"*) ;;
+            *) echo "$out"; echo "::error::$binary does not start"; exit 1 ;;
+          esac
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/cargo-sunrise-mod"
+          [ -f "$binary.exe" ] && binary="$binary.exe"
+          mkdir -p dist
+          tar -czf "dist/$(basename "$binary" | sed 's/\.exe$//')-${{ matrix.target }}.tar.gz" -C "$(dirname "$binary")" "$(basename "$binary")"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cargo-sunrise-mod-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3

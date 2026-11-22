@@ -70,6 +70,40 @@ pub fn register(m: &mut Mob) {
     g.add(5, Stroll::avoiding_water(1.0));
     g.add(6, LookAtPlayer::new(6.0));
     g.add(7, RandomLookAround::default());
+    // LivingEntity(): `makeBrain` after the yaw; then Armadillo(), after
+    // `setCanFloat`, `scuteTime = pickNextScuteDropTime()`. All from the
+    // armadillo's own random.
+    delay_sensors(m);
+    m.extra.egg_time = super::ai::next_scute_time(m);
+}
+
+/// `Armadillo.readAdditionalSaveData`, after `LivingEntity`'s, which makes the
+/// brain again (its sensors delayed) when the tag has a `Brain`: the saved
+/// state through `switchToState` (`onSyncedDataUpdated` then restarts the time
+/// in that state), idle for a save that names none; then the time to the next
+/// scute when saved. Absent, it stays the constructor's draw: no second draw
+/// from the armadillo's random.
+pub fn load(m: &mut Mob, brain: bool, state: Option<&str>, scute_time: Option<i32>) {
+    if brain {
+        delay_sensors(m);
+    }
+    set_state(m, state_by_name(state));
+    if let Some(t) = scute_time {
+        m.extra.egg_time = t;
+    }
+}
+
+/// `Brain.Provider.makeBrain`: `Sensor.randomlyDelayStart` for each sensor of
+/// `BRAIN_PROVIDER`, in its order, from the armadillo's own random: nearest
+/// living entities, hurt by, food temptations and nearest adult (`nextInt(20)`
+/// each), then the scare sensor (`nextInt(5)`), whose draw is the time to its
+/// first scan. The constructor runs it, and a load whose tag has a `Brain`
+/// (`LivingEntity.readAdditionalSaveData` makes the brain again).
+pub fn delay_sensors(m: &mut Mob) {
+    for _ in 0..4 {
+        let _ = m.random.next_int_bound(20);
+    }
+    m.extra.armadillo.sensor = m.random.next_int_bound(5).unwrap_or(0);
 }
 
 /// `AdultSensor` and `BabyFollowAdult.create(5..16, 1.25)`: a baby with no walk
@@ -283,6 +317,9 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
 }
 /// `DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES`.
 pub fn environmental(kind: DamageKind) -> bool {
+    if let DamageKind::Named(named) = kind {
+        return named.has(super::NamedDamage::PANIC_ENVIRONMENTAL_CAUSES);
+    }
     matches!(
         kind,
         DamageKind::Cactus
@@ -375,7 +412,11 @@ pub fn server_ai_step(m: &mut Mob, cx: &mut Cx) {
     if m.extra.armadillo.danger == 0 && scared(m) {
         roll_out(m, events);
     }
-    if m.extra.armadillo.panic_activity && !m.extra.armadillo.ball_up && m.on_ground && !liquid(m) {
+    if m.extra.armadillo.panic_activity
+        && !m.extra.armadillo.ball_up
+        && m.ground.on_ground
+        && !liquid(m)
+    {
         // ArmadilloBallUp.start.
         m.extra.armadillo.ball_up = true;
         roll_up(m, events);
@@ -405,7 +446,7 @@ fn ball_up_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     }
     if a.state == ROLLING && a.in_state_ticks > animation_duration(ROLLING) {
         set_state(m, SCARED);
-        if m.on_ground {
+        if m.ground.on_ground {
             play(m, events, "entity.armadillo.land");
         }
         return;
@@ -418,7 +459,7 @@ fn ball_up_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.extra.armadillo.danger_was_around = around;
     let state = m.extra.armadillo.state;
     if state == SCARED {
-        if m.extra.armadillo.next_peek == 0 && m.on_ground && around {
+        if m.extra.armadillo.next_peek == 0 && m.ground.on_ground && around {
             peek(m, events);
             m.extra.armadillo.next_peek = next_peek_timer(m);
         }
@@ -617,7 +658,7 @@ mod tests {
         k.id = "minecraft:armadillo".into();
         k.species = Species::Armadillo;
         let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
-        m.on_ground = true;
+        m.ground.on_ground = true;
         m
     }
 
@@ -708,7 +749,7 @@ mod tests {
             out = Some(at.map(|[x, y, z]| {
                 id += 1;
                 let mut m = Mob::new(id, kind.clone(), Vec3::new(x, y, z), 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m
             }));
         });
@@ -716,6 +757,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn two_armadillos_in_love_make_a_baby() {
         // ArmadilloAi.initIdleActivity: AnimalMakeLove(ARMADILLO, 1.0), so two
         // armadillos fed spider eyes breed (#3512).
@@ -762,6 +804,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_baby_armadillo_follows_an_adult() {
         // BabyFollowAdult(5..16, 1.25) in the idle activity.
         let Some([mut baby, adult]) = real([[0.5, 64.0, 0.5], [8.5, 64.0, 0.5]]) else {
@@ -784,6 +827,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_baby_follows_only_adults_its_sensor_box_meets() {
         // NearestLivingEntitySensor.doTick: the entities whose boxes meet the baby's box inflated
         // by FOLLOW_RANGE (16). Both adults are within BabyFollowAdult's 17 blocks. The baby's box
@@ -810,6 +854,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_baby_stays_when_the_adult_is_within_five_blocks() {
         // BabyFollowAdult: `!closerThan(adult, 5)`.
         let Some([mut baby, adult]) = real([[0.5, 64.0, 0.5], [4.5, 64.0, 0.5]]) else {
@@ -826,6 +871,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_tempted_baby_comes_closer_than_an_adult() {
         // ArmadilloAi.initIdleActivity: FollowTemptation is close enough at
         // 1 block for a baby and 2 for an adult.
@@ -903,6 +949,7 @@ mod tests {
             Some(&armadillo_tag(Some("idle"))),
             None,
             |_| None,
+            &Default::default(),
         );
         assert_eq!(saved.get("state"), Some(&Tag::String("rolling".into())));
         let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
@@ -959,5 +1006,64 @@ mod panic_environmental_tests {
             assert!(environmental(kind), "{id}");
         }
         assert!(!environmental(DamageKind::Drown));
+    }
+}
+
+#[cfg(test)]
+mod armadillo_scute_time_tests {
+    use crate::entity_nbt::mob_from_nbt_with_random;
+    use crate::mobs::{Mob, MobType};
+    use std::{collections::HashMap, sync::Arc};
+    use sunrise_core::nbt::Tag;
+    use sunrise_core::{
+        geometry::Vec3,
+        random::{LegacyRandom, RandomSource},
+    };
+
+    /// #15784: `Armadillo`'s constructor draws `scuteTime` from its own random, and
+    /// `readAdditionalSaveData` replaces it only with a saved `scute_time`. A load without the
+    /// key keeps the constructor's draw (never 0, #12559) and draws nothing more.
+    #[test]
+    #[ignore = "daily"]
+    fn an_armadillo_loaded_without_scute_time_keeps_the_constructors_draw() {
+        let ran = crate::mobs::world::with_test_world(&[], |_, all| {
+            check(Arc::new(all.types["minecraft:armadillo"].clone()));
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; the armadillo load did not run");
+        }
+    }
+
+    fn check(armadillo: Arc<MobType>) {
+        let types: HashMap<String, Arc<MobType>> =
+            [("minecraft:armadillo".to_string(), armadillo.clone())].into();
+        let random = || LegacyRandom::new(15_784);
+        let built = Mob::with_random(1, armadillo, Vec3::ZERO, 0.0, random());
+        assert!(
+            (6000..12000).contains(&built.extra.egg_time),
+            "the constructor's pickNextScuteDropTime: {}",
+            built.extra.egg_time
+        );
+        for (saved, expected) in [(None, built.extra.egg_time), (Some(4321), 4321)] {
+            let mut tag = Tag::compound([
+                ("id", Tag::String("minecraft:armadillo".into())),
+                (
+                    "Pos",
+                    Tag::List([0.5f64, 64.0, 0.5].map(|v| Tag::Double(v.to_bits())).into()),
+                ),
+            ]);
+            if let (Some(t), Tag::Compound(map)) = (saved, &mut tag) {
+                map.insert("scute_time".into(), Tag::Int(t));
+            }
+            let mut loaded = mob_from_nbt_with_random(&tag, &types, 1, None, random()).unwrap();
+            assert_eq!(loaded.extra.egg_time, expected, "saved {saved:?}");
+            // The random is where the constructor left it: the load drew nothing more.
+            let mut after = built.random.clone();
+            assert_eq!(
+                loaded.random.next_int(),
+                after.next_int(),
+                "saved {saved:?}"
+            );
+        }
     }
 }

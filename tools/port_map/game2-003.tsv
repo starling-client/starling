@@ -2,9 +2,9 @@ Strider.checkStriderSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.r
 Strider.checkFallDamage	port	crates/sunrise-client/src/mobs/living.rs::Mob::check_fall_damage	in lava the fall distance is reset and the base's landing never runs: no damage and no dust
 Strider.onSyncedDataUpdated	skip:other		client copy of the boost sync; Sunrise keeps one boost state on the server side (equine.rs boost)
 Strider.defineSynchedData	skip:java		SynchedEntityData builder; the synced values are Mob fields (extra.flag, extra.counter2)
-Strider.canUseSlot	port	crates/sunrise-client/src/game/blocks/dispenser.rs::mob_can_use_slot	saddle needs alive and adult
-Strider.canDispenserEquipIntoSlot	port	crates/sunrise-client/src/game/blocks/dispenser.rs::mob_can_dispenser_equip	saddle or pick-up loot
-Strider.getEquipSound	port	crates/sunrise-client/src/game/blocks/dispenser.rs::equip_sound	strider saddle sound
+Strider.canUseSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_use_slot	saddle needs alive and adult
+Strider.canDispenserEquipIntoSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_dispenser_equip	saddle or pick-up loot
+Strider.getEquipSound	port	crates/sunrise-gameplay/src/dispense_rules.rs::equip_sound	strider saddle sound
 Strider.registerGoals	port	crates/sunrise-client/src/mobs/strider.rs::register	same goal priorities and speeds
 Strider.setSuffocating	inline	crates/sunrise-client/src/mobs/strider.rs::pre_tick	stores the flag; the slowdown is applied on read (strider::movement_speed)
 Strider.getPassengerAttachmentPoint	port	crates/sunrise-client/src/mobs/riders.rs::passenger_attachment	gap: minor: client-only walk bob of the rider is not applied (up to 0.06 block)
@@ -19,13 +19,13 @@ Strider.StriderPathNavigation.isStableDestination	port	crates/sunrise-client/src
 Vex.registerGoals	port	crates/sunrise-client/src/mobs/vex.rs::register	float, charge, random move, look goals, owner and player targets
 Vex.restoreFrom	missing		no mob `restoreFrom`: a vex that changes dimension keeps no owner link
 Vex.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	owner is written as the owner's UUID, nothing when the vex has no owner; bound_pos only when bound, life_ticks only with a limited life
-Vex.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	bound_pos, life_ticks (no limit when absent) and owner, kept as the UUID the save names
+Vex.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	bound_pos, life_ticks (no limit when absent) and owner, kept as the UUID the save names
 Vex.getVexFlag	inline	crates/sunrise-client/src/mobs/vex.rs::Charge::can_continue	the charging bit is the plain extra.flag; there is no flags byte
 Vex.setVexFlag	inline	crates/sunrise-client/src/mobs/vex.rs::Charge::start	start sets extra.flag; stop and tick clear it
 Vex.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	Vex arm: populate (sword) then enchant
 Vex.populateDefaultEquipmentSlots	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::populate	iron sword in hand with drop chance 0
 Witch.registerGoals	port	crates/sunrise-client/src/mobs/witch.rs::register	gap: minor: raiders that hurt a witch are still targeted back (vanilla ignores them)
-Witch.handleEntityEvent	port	crates/sunrise-client/src/game/network/remote_mob_particles.rs::Game::witch_magic_particles	event 15: `nextInt(35) + 10` purple puffs half a block over the head, the count drawn again every pass as the Java loop condition does; `game/network/remote/mod.rs:3949` hands it every witch entity event (the rest of the handler is LivingEntity's)
+Witch.handleEntityEvent	port	crates/sunrise-client/src/game/network/remote_mob_particles.rs::Game::witch_magic_particles	event 15: `nextInt(35) + 10` purple puffs half a block over the head, the count drawn again every pass as the Java loop condition does; `game/network/remote/packets_entity.rs::Game::apply_entity_event_packet` hands it every witch entity event (the rest of the handler is LivingEntity's)
 Witch.getDamageAfterMagicAbsorb	port	crates/sunrise-client/src/mobs.rs::Mob::damage_with	85% less from #witch_resistant_to, nothing from its own hit
 Zoglin.initCoreActivity	inline	crates/sunrise-client/src/mobs/piglin.rs::register_zoglin	gap: minor: look-at-target and move-to-target sinks are not separate; the goal set stands in for them
 Zoglin.initIdleActivity	inline	crates/sunrise-client/src/mobs/piglin.rs::register_zoglin	gap: minor: idle is a stroll only; no look-target sometimes and no do-nothing pauses
@@ -72,7 +72,7 @@ Creaking.createAttributes	skip:data		attribute defaults come from the data table
 Creaking.setupAnimationStates	port	crates/sunrise-client/src/mobs/creaking.rs::animate	attack, invulnerability and tear-down animations
 Creaking.creakingDeathEffects	port	crates/sunrise-client/src/mobs/creaking_heart.rs::remove_protector	gap: minor: no blameSourceForDamage or die(); health is set to 0 and the twitch sound plays
 Creaking.canUsePortal	port	crates/sunrise-client/src/mobs/creaking.rs::can_use_portal	`mob_can_use_portal` also asks it: isHeartBound() refuses the portal
-Creaking.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	home_pos is read back as the transient home
+Creaking.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	home_pos is read back as the transient home
 Creaking.checkEyeBlink	inline	crates/sunrise-client/src/mobs/creaking.rs::animate	eye flicker timing on the dying creaking
 Creaking.knockback	port	crates/sunrise-client/src/mobs.rs::Mob::knockback
 Creaking.CreakingPathNavigation.createPathFinder	missing		no home-distance node evaluator: `m.extra.home` is read for damage, tearing down and the save, never by the pathfinder
@@ -85,7 +85,7 @@ AbstractCubeMob.registerGoals	port	crates/sunrise-client/src/mobs/cube.rs::regis
 AbstractCubeMob.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Size stored minus one, and wasOnGround
 AbstractCubeMob.refreshDimensions	skip:other		bounds are read from the size on each use, so there is no separate refresh; the position is never reset
 AbstractCubeMob.onSyncedDataUpdated	missing		no size sync from a spawn or a data update: `mobs/living.rs` takes a mob's dimensions from its own size, and `game/network/remote/mod.rs` applies no cube size
-AbstractCubeMob.setUpSplitCube	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::mob_died	gap: minor: children get half size and the same fixed offsets, but no random yaw
+AbstractCubeMob.setUpSplitCube	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::split_dead_cube	gap: minor: children get half size and the same fixed offsets, but no random yaw
 AbstractCubeMob.push	inline	crates/sunrise-client/src/mobs/cube.rs::hurt_touching_golems	an iron golem whose box overlaps a cube that can deal damage is hurt through dealDamage (MobEvent::CubeHurtMob, with the attack sound after a landed hit)
 AbstractCubeMob.dealDamage	inline	crates/sunrise-client/src/mobs/cube.rs::ai_step	the player touch (CubeHurtPlayer) and a golem's overlap (CubeHurtMob, hurt_touching_golems): alive, teams allow damage, in melee range, line of sight, then mobAttack for getAttackDamage
 AbstractCubeMob.getPassengerAttachmentPoint	port	crates/sunrise-client/src/mobs/riders.rs::passenger_attachment	gap: minor: the rider sits at full height; vanilla lowers it by size/64 per block
@@ -113,7 +113,7 @@ SulfurCube.collectEquipmentChanges	inline	crates/sunrise-client/src/mobs/sulfur_
 SulfurCube.equipItem	port	crates/sunrise-client/src/game/mobs/sulfur_cubes.rs::Game::interact_sulfur_cube	swallows the item; the old block is ejected
 SulfurCube.applyContactDamage	inline	crates/sunrise-client/src/mobs/sulfur_cube.rs::mob_contacts	gap: minor: ordinary mob targets plus existing player_push only; other entity kinds remain outside this adapter
 SulfurCube.isEquippableInSlot	port	crates/sunrise-client/src/mobs/sulfur_cube.rs::swallowable	swallowable items only
-SulfurCube.canUseSlot	port	crates/sunrise-client/src/game/blocks/dispenser.rs::mob_can_use_slot	body slot needs alive and adult
+SulfurCube.canUseSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_use_slot	body slot needs alive and adult
 SulfurCube.canHoldItem	port	crates/sunrise-client/src/game/mobs/sulfur_cubes.rs::Game::sulfur_cube_pickups	empty body, adult and not on a pickup timer
 SulfurCube.pickUpItem	port	crates/sunrise-client/src/game/mobs/sulfur_cubes.rs::Game::sulfur_cube_pickups	takes one item from the ground into the body
 SulfurCube.getBaseExperienceReward	port	crates/sunrise-client/src/mobs/drops.rs::base_experience	none for babies, 1 or 2 for adults
@@ -136,7 +136,7 @@ Hoglin.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::final
 Hoglin.mobInteract	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::interact_mob	gap: minor: a fed hoglin does not become persistent
 Hoglin.finishConversion	port	crates/sunrise-client/src/mobs/piglin.rs::ai_step	zombification turns it into a zoglin with nausea
 Hoglin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	gap: minor: CannotBeHunted is not written
-Hoglin.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: CannotBeHunted is not read
+Hoglin.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	gap: minor: CannotBeHunted is not read
 Hoglin.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::breed	gap: minor: the hoglin child is not made persistent
 HoglinAi.initCoreActivity	inline	crates/sunrise-client/src/mobs/piglin.rs::register_hoglin	gap: minor: look-at-target and move-to-target sinks are not separate; the goal set stands in for them
 HoglinAi.initIdleActivity	inline	crates/sunrise-client/src/mobs/piglin.rs::register_hoglin	gap: player: hoglins do not walk away from adult piglins within 8 blocks; the rest of the idle is there

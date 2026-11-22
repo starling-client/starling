@@ -41,6 +41,12 @@ pub(super) fn mod_entity_row(
             fields.insert(key.into(), to_raw_value(&value).map_err(fail)?);
         }
     }
+    if let Some(value) = t.allowed_in_peaceful {
+        fields.insert(
+            "allowed_in_peaceful".into(),
+            to_raw_value(&value).map_err(fail)?,
+        );
+    }
     fields.insert("template".into(), to_raw_value(&t.template).map_err(fail)?);
     if t.sounds != Default::default() {
         fields.insert("sounds".into(), to_raw_value(&t.sounds).map_err(fail)?);

@@ -1,0 +1,15 @@
+ids = [
+    "fn:move_resources",
+    "trait:ResourceHandler",
+    "type:Overanswered",
+    "type:Overanswered.owner",
+    "method:ResourceHandler::capacity",
+    "method:ResourceHandler::insert",
+    "method:ResourceHandler::extract",
+    "method:ResourceHandler::insert_any",
+    "method:ResourceHandler::extract_any",
+    "method:ResourceHandler::insert_at",
+    "method:ResourceHandler::extract_at",
+]
+why = "ResourceHandler follows NeoForge’s preferred slot-less names and general-capacity query. Slot-less writes return a typed error instead of reserving an out-of-range count. The move helpers and stock wrappers live in resource_util; moves accept composed handlers, retain capability attribution and roll back the whole move on an overanswer."
+migrate = "Rename indexed calls and impl methods to insert_at/extract_at, and slot-less calls and overrides from insert_any/extract_any to insert/extract. Handle Result on slot-less writes. Pass Some(&resource) for resource-specific capacity and None for a general limit; return u32::MAX if the general limit is unknown. Handle Overanswered.owner as optional. Import mod_api::resource_util::move_resources and pass capability references or borrowed dyn ResourceHandler trait objects. Pass Some(tx) for the current transaction or None to open a root. Rebuild native mods against the updated SDK."

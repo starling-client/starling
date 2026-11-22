@@ -1,0 +1,3 @@
+ids = ["method:LevelTicksHost::signal", "method:LevelTicksHost::direct_signal", "method:LevelTicksHost::direct_signal_to", "method:LevelTicksHost::best_neighbor_signal", "method:LevelTicksHost::has_neighbor_signal"]
+why = "The redstone signal reads (`signal`, `direct_signal`, `direct_signal_to`, `best_neighbor_signal`, `has_neighbor_signal`) are methods of `LevelHost` now, beside the new `collision_shape`, with the same arguments and answers. A signal read does not tick the level, so it no longer needs the ticking host."
+migrate = "Take `&dyn LevelHost` where you took `&dyn LevelTicksHost` only to read a signal; the calls are unchanged."

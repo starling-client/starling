@@ -17,10 +17,25 @@ pub struct SelectorToken {
     /// A `sort=` value: `nearest`, `furthest`, `random` or `arbitrary`.
     pub sort: &'static str,
 }
+/// Who a completion is for: the player typing, whose command permission level is
+/// [`Registries::permission`]. A mod's own completion - the argument type's `suggest`, or the
+/// suggestion provider it declares - decides what to offer. The engine keeps `suggest`'s answer
+/// as it comes and, for a provider, keeps only the candidates that match the typed text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandSender {
+    /// The player's UUID.
+    pub uuid: u128,
+    /// Their account name.
+    pub name: String,
+}
 #[derive(Clone, Debug, Default)]
 pub struct Registries {
     /// Permission level of the command source.
     pub permission: u8,
+    /// The player a completion is for, while a mod's argument type completes the text or the
+    /// provider it declares answers it; `None` for the console and for a client completing its own
+    /// commands before its profile is known.
+    pub sender: Option<CommandSender>,
     pub items: Vec<String>,
     pub item_tags: Vec<String>,
     /// Block id -> (property, allowed values).
@@ -109,7 +124,14 @@ pub struct Registries {
     /// value (`ResourceOrIdArgument`), where the source has the server's live
     /// features; None leaves the decode to when the command runs.
     pub inline_feature: Option<InlineFeatureCheck>,
+    /// The common custom particle codecs available to `ParticleArgument`.
+    pub particle_options: Option<DecodeParticleOptions>,
 }
+
+/// Read the registered particle type's fields. `None` leaves built-in arguments
+/// on their vanilla path; `Some(Err(_))` means the type refused its options.
+pub type DecodeParticleOptions =
+    fn(&str, &sunrise_core::nbt::Compound) -> Option<Result<mod_vocab::ParticleOptions, String>>;
 
 /// A codec check of an inline value: its error message when it does not decode.
 #[derive(Clone)]

@@ -1,7 +1,7 @@
 //! Java numeric text, actual SNBT and DataFixer numeric text on the same bits.
+use std::io::Write;
 use sunrise_core::nbt::Tag;
 use sunrise_world::snbt_text;
-use std::io::Write;
 
 pub fn main() {
     let args: Vec<_> = super::args().collect();

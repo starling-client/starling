@@ -37,6 +37,7 @@ fn tooltip_appender_restores_owner_even_on_panic() {
     let context = TooltipAppendContext {
         player: 0,
         player_entity_id: 0,
+        tick_rate: 20.0,
         advanced: false,
         creative: false,
         nested: false,

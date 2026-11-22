@@ -3,17 +3,17 @@
 //! difficulty and game rules on the server, and weather on both sides.
 //! Stale handles return `None`.
 use super::{Dim, Game};
+use mod_api::{
+    BoolGameRuleKey, FeatureFlags, LevelDimensionShape, LevelDimensionType, LevelReadError,
+    LevelRef,
+};
+use std::sync::Arc;
 use sunrise_client::command::vanilla::DIFFICULTIES;
 use sunrise_client::world::World;
 use sunrise_client_core::gamerules::Value as GameRuleValue;
 use sunrise_core::position::BlockPos;
 use sunrise_core::random::LegacyRandom;
 use sunrise_world::registry::BlockStateId;
-use mod_api::{
-    BoolGameRuleKey, FeatureFlags, LevelDimensionShape, LevelDimensionType, LevelReadError,
-    LevelRef,
-};
-use std::sync::Arc;
 use {sunrise_core::dimension::Dimension as LevelDimension, sunrise_world::level::LevelAccess};
 
 fn weather_for_level(
@@ -35,6 +35,26 @@ fn weather_for_world(world: &World, is_end: bool) -> (f32, f32) {
 /// `Level.isRaining` and `isThundering` from the rain and thunder levels.
 fn weather_flags((rain, thunder): (f32, f32)) -> (bool, bool) {
     (rain > 0.2, thunder > 0.9)
+}
+
+/// `Level.isRainingAt` over `world`, the column of the level in dimension `dim`.
+pub(super) fn rain_at(
+    world: &World,
+    facts: &sunrise_client::blocks::BlockFacts,
+    biomes: &sunrise_client::biome::Biomes,
+    behaviours: &sunrise_world::level::Behaviours,
+    dim: Dim,
+    pos: BlockPos,
+) -> bool {
+    let view = RainView {
+        world,
+        facts,
+        biomes,
+        dimension: dim.level(),
+        raining: weather_flags(weather_for_world(world, dim == Dim::End)).0,
+        random: LegacyRandom::new(0),
+    };
+    behaviours.is_raining_at(&view, pos)
 }
 
 /// A read-only view of one level's column for `Level.isRainingAt`, so a level parked
@@ -94,11 +114,13 @@ impl LevelAccess for RainView<'_> {
 impl Game<'_> {
     /// `Level.getSkyDarken`: the same dimension, time and weather calculation used by gameplay.
     pub(super) fn sky_darken_in(&self, world: &World, dimension: Dim) -> i32 {
-        // A client of a server has the environment its server's type made for a mod's level.
+        // A client of a server has the environment its server's type made for the level it is
+        // in; a parked level keeps the client's own for its dimension.
         let environment = match self
             .remote
             .as_ref()
-            .and_then(|r| r.level_environment.as_ref())
+            .and_then(|r| r.level_environment.as_deref())
+            .filter(|_| dimension == self.dim)
         {
             Some(own) => own,
             None => match dimension {
@@ -129,12 +151,13 @@ impl Game<'_> {
         Some(self.sky_darken_in(world, Dim::from_id(level.dimension_id())))
     }
 
-    /// The enabled feature flags as this side knows them: a client's are the server's, sent at
-    /// join; a server's are its world's `enabled_features`.
-    pub(super) fn enabled_feature_ids(&self) -> &Arc<[String]> {
+    /// The effective flags are set by the server's world or received by the client at join.
+    pub(in crate::game) fn enabled_feature_ids(&self) -> &Arc<[String]> {
         self.remote
             .as_ref()
-            .map_or(&self.level.enabled_features, |remote| &remote.features)
+            .map_or(self.level.enabled_features.as_arc(), |remote| {
+                &remote.features
+            })
     }
     /// Dimension shape of a loaded server level, including parked levels.
     pub(super) fn level_dimension_shape(&self, level: LevelRef) -> Option<LevelDimensionShape> {
@@ -242,6 +265,17 @@ impl Game<'_> {
             .rules
             .bool_slot(mod_api::__private::game_rule_bool_slot(key)?)
     }
+    /// Read a registered integer game rule.
+    pub(super) fn level_game_rule_int(
+        &self,
+        level: LevelRef,
+        key: mod_api::IntGameRuleKey,
+    ) -> Option<i32> {
+        self.native_level_world(level)?;
+        self.ui
+            .rules
+            .int_slot(mod_api::__private::game_rule_int_slot(key)?)
+    }
     /// Game rule `rule` (`minecraft:keep_inventory` or `keep_inventory`), as
     /// `/gamerule` queries it: None for an unknown rule.
     pub(super) fn level_game_rule(
@@ -346,19 +380,15 @@ impl Game<'_> {
         if !world.is_loaded_at(pos[0], pos[1], pos[2]) {
             return None;
         }
-        let view = RainView {
+        self.level_is_raining(level)?;
+        Some(rain_at(
             world,
-            facts: self.res.facts(),
-            biomes: world_biomes!(self),
-            dimension: Dim::from_id(level.dimension_id()).level(),
-            raining: self.level_is_raining(level)?,
-            random: LegacyRandom::new(0),
-        };
-        Some(
-            self.res
-                .behaviours()
-                .is_raining_at(&view, BlockPos::new(pos[0], pos[1], pos[2])),
-        )
+            self.res.facts(),
+            world_biomes!(self),
+            self.res.behaviours(),
+            Dim::from_id(level.dimension_id()),
+            BlockPos::new(pos[0], pos[1], pos[2]),
+        ))
     }
     /// `LevelReader.enabledFeatures` of the level a handle names. Every level of a world shares
     /// the world's flags. None for a stale handle and on a client.
@@ -382,20 +412,18 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
-    use sunrise_client::chunk::Chunk;
-    use sunrise_client::gamerules;
-    use mod_api::{
-        FeatureFlags, GameRuleChangedEvent, GameRuleValue, Hooks, LevelHost, ModEntry, ServerHost,
-    };
+    use mod_api::{GameRuleChangedEvent, GameRuleValue, Hooks, LevelHost, ModEntry, ServerHost};
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
+    use sunrise_client::chunk::Chunk;
+    use sunrise_client::gamerules;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn dimension_shape_reads_current_parked_and_stale_levels() {
         use super::super::Dim;
-        use sunrise_client::chunk::LevelShape;
         use mod_api::{Authority, Host, LevelDimensionShape};
+        use sunrise_client::chunk::LevelShape;
 
         with_game(|game| {
             game.world.shape = LevelShape::new(-32, 320, 256, true, false).unwrap();
@@ -433,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn rain_at_a_position_checks_sky_roof_and_biome() {
         with_game(|game| {
             game.install_live_features();
@@ -478,6 +506,22 @@ mod tests {
                 assert!(!host.is_raining_at(snowy));
                 assert!(!host.is_raining_at(unloaded));
             });
+            // The side a motion tick is lent answers the same, so a friction part sees it.
+            let side = game_side!(game);
+            for (pos, rains) in [
+                (plains, true),
+                (roofed, false),
+                (desert, false),
+                (snowy, false),
+                (unloaded, false),
+            ] {
+                let at = sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
+                assert_eq!(
+                    sunrise_client::motion::SideLevel::is_raining_at(&side, &game.world, at),
+                    rains,
+                    "{pos:?}"
+                );
+            }
 
             game.world.weather.rain_level = (0.0, 0.0);
             assert_eq!(game.level_is_raining_at(level, plains), Some(false));
@@ -487,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn enabled_features_default_to_vanilla_and_follow_the_world() {
         with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
@@ -503,10 +547,6 @@ mod tests {
             let flags = game.level_enabled_features(level).unwrap();
             assert!(flags.contains("minecraft:redstone_experiments"));
             assert_eq!(flags.iter().count(), 2);
-            assert_eq!(
-                FeatureFlags::new(Arc::default()).iter().collect::<Vec<_>>(),
-                ["minecraft:vanilla"]
-            );
             let ids: Vec<String> = flags.iter().map(str::to_owned).collect();
             game.with_level(|_, host, _| {
                 assert_eq!(host.enabled_features().iter().collect::<Vec<_>>(), ids);
@@ -515,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn native_mod_reads_registered_bool_rule_by_key() {
         use std::sync::OnceLock;
         static KEY: OnceLock<mod_api::BoolGameRuleKey> = OnceLock::new();
@@ -542,6 +582,51 @@ mod tests {
                 game.ui.rules = gamerules::GameRules::with_registry(registry, &[]);
                 let level = game.level("minecraft:overworld").unwrap();
                 assert_eq!(level.game_rule_bool(game, *KEY.get().unwrap()), Some(true));
+            })
+        });
+    }
+
+    /// #3316's case: `example:cap` (8, 0..=64) refuses `/gamerule example:cap 70`, takes 12, and
+    /// keeps 12 through a save and load of the rules.
+    #[test]
+    #[ignore = "daily"]
+    fn a_mod_int_rule_is_range_checked_by_gamerule_and_saved() {
+        use std::sync::OnceLock;
+        static KEY: OnceLock<mod_api::IntGameRuleKey> = OnceLock::new();
+        struct RuleMod;
+        #[mod_api::__subscriptions]
+        impl Hooks for RuleMod {
+            fn register(
+                &self,
+                registrar: &mut dyn mod_api::Registrar,
+                _: &mod_api::RegistrationContext,
+            ) {
+                registrar.game_rule_category("machines").unwrap();
+                let key = registrar
+                    .game_rule_int("cap", "example:machines", 8, 0, 64)
+                    .unwrap();
+                let _ = KEY.set(key);
+            }
+        }
+        let mods: mod_api::Mods = vec![ModEntry::new("example", Box::new(RuleMod))].into();
+        with_mods(mods, || {
+            with_game(|game| {
+                let registry = Arc::new(crate::game::api_values::game_rule_registry());
+                game.level.rule_registry = registry.clone();
+                game.ui.rules = gamerules::GameRules::with_registry(registry.clone(), &[]);
+                game.load_world_state().unwrap();
+                game.set_allow_commands(true);
+                game.build_registries();
+                let key = *KEY.get().unwrap();
+                let level = game.level("minecraft:overworld").unwrap();
+                assert_eq!(level.game_rule_int(game, key), Some(8));
+                assert!(!game.run_command("gamerule example:cap 70"));
+                assert_eq!(level.game_rule_int(game, key), Some(8));
+                assert!(game.run_command("gamerule example:cap 12"));
+                assert_eq!(level.game_rule_int(game, key), Some(12));
+                let saved = game.ui.rules.to_nbt().tag;
+                game.ui.rules = gamerules::GameRules::from_nbt_with_registry(&saved, &[], registry);
+                assert_eq!(level.game_rule_int(game, key), Some(12));
             })
         });
     }
@@ -581,7 +666,7 @@ mod tests {
     /// A listener of a change no player made reads every server rule through its host: the new
     /// value and the others as they stand.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_game_rule_listener_reads_the_whole_rule_set() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mods: mod_api::Mods = vec![ModEntry::new(
@@ -619,7 +704,7 @@ mod tests {
     /// `level_set_game_rule` writes what `/gamerule` accepts, refuses what it refuses, and
     /// `level_set_clock_time` moves the level's clock as `/time set` does.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_sets_game_rules_and_the_clock() {
         use mod_api::WorldEpoch;
         with_game(|game| {
@@ -753,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn rule_reads_distinguish_unknown_stale_and_unavailable_and_snapshot_values() {
         use super::super::execution_role::ExecutionRole;
         use mod_api::{LevelReadError, WorldEpoch};
@@ -794,15 +879,6 @@ mod tests {
                 assert_eq!(handle.game_rules(game), Err(LevelReadError::Stale));
                 assert!(game.native_level_world(handle).is_none());
             }
-            {
-                let _scope =
-                    mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::Setup);
-                assert_eq!(
-                    level.game_rule(game, "keep_inventory"),
-                    Err(LevelReadError::Unavailable)
-                );
-                assert_eq!(level.game_rules(game), Err(LevelReadError::Unavailable));
-            }
             game.options.execution_role = ExecutionRole::Client;
             assert_eq!(
                 level.game_rule(game, "keep_inventory"),
@@ -814,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn weather_read_resolves_levels_and_refuses_stale_or_unavailable_handles() {
         use super::super::execution_role::ExecutionRole;
         use mod_api::{LevelRef, WorldEpoch};

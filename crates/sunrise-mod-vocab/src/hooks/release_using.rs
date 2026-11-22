@@ -11,11 +11,13 @@ pub trait Hooks {
     /// vanilla's: change the world only where this `Game` runs the world,
     /// not on a server's client.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_release_using",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "LivingEntityUseItemEvent.Stop"
     )]
-    fn release_using();
+    fn release_using(stack: &ItemStack, entity: Option<i32>, time_left: i32, used: &mut bool);
 }

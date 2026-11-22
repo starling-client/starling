@@ -1,0 +1,3 @@
+ids = ["type:Screen.recipe_book_toggle"]
+why = "`Screen::recipe_book_toggle` was an `[x, y]` offset from the menu's top left. It is now `Option<RecipeBookToggle>`: `x` from the menu's left edge and `y` from the menu's top (`ToggleOrigin::Menu`, the old meaning) or from the window's centre (`ToggleOrigin::ScreenCentre`, vanilla's `height / 2` with integer division), so a screen that places its button at `height / 2 - 49` lands on vanilla's pixel for every window height."
+migrate = "Replace `Some([x, y])` with `Some(RecipeBookToggle { x, y, from: ToggleOrigin::Menu })`."

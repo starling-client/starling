@@ -44,7 +44,22 @@ impl Game<'_> {
                 sets.insert(key.to_owned(), items);
             }
         }
-        Arc::make_mut(&mut self.loop_context).set_recipe_properties(Arc::new(sets));
+        let tags = self
+            .native_tag_items()
+            .filter(|items| items.tags_loaded(sunrise_items::items::TagRegistry::Item))
+            .and_then(|items| {
+                // Only members in this generation's item registry can be exposed.
+                let registry = self
+                    .items()
+                    .registry_order
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect();
+                mod_api::__private::BoundItemTags::bind(&items.item_tag_order, &registry)
+            });
+        let context = Arc::make_mut(&mut self.loop_context);
+        context.set_recipe_properties(Arc::new(sets));
+        context.set_item_tags(tags);
         if let Some(host) = self.lan.as_mut() {
             host.hub.loop_context = self.loop_context.clone();
         }

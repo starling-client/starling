@@ -14,8 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sunrise_client::control::Stream;
 use serde_json::{Value, json};
+use sunrise_client::control::Stream;
 
 /// Exit statuses.
 const GAME_ERROR: u8 = 1;

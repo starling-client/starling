@@ -24,20 +24,18 @@ impl Game<'_> {
         self.fire_item_picked_up(player, item, can_pickup);
     }
 
-    /// `player` picked up the whole stack of the ground item entity `item`
-    /// (`ItemEntity.playerTouch`, right after `Inventory.add` took all of
-    /// it), the entity `item_picked_up` named. `original` is a copy of
-    /// the stack as it lay before the pickup: changing it does nothing.
-    /// `remaining` is what the item entity still holds, so it starts as
-    /// `None` (empty). Set a stack there to leave the entity on the ground
-    /// holding it: the pickup then counts only `original`'s count less its
-    /// count. Neither says how many were picked up; that is `original`'s
-    /// count less `remaining`'s. A mod that removes the item entity meanwhile
-    /// keeps it removed: no take animation, the stat and criteria still run.
-    /// Not called on a partial pickup, where some of the stack went in and
-    /// the rest stayed on the ground: `item_picked_up_partial` hears that one,
-    /// and a pickup is never told to both. Nor when `item_picked_up` refused
-    /// the pickup or the inventory took nothing; a forced `True` from
+    /// `player` picked up all or part of the stack of the ground item entity
+    /// `item` (`ItemEntity.playerTouch`, right after `Inventory.add` took some
+    /// of it), the entity `item_picked_up` named. `original` is a copy of the
+    /// stack as it lay before the pickup: changing it does nothing.
+    /// `remaining` is what the item entity still holds: `None` (empty) after a
+    /// whole pickup, the part that did not fit after a partial one. Set a
+    /// stack there to leave the entity holding it, or `None` to empty it: the
+    /// pickup then counts `original`'s count less what is left. The amount
+    /// taken is `original`'s count less `remaining`'s. A mod that removes the
+    /// item entity meanwhile keeps it removed: no take animation, the stat and
+    /// criteria still run. Not called when `item_picked_up` refused the
+    /// pickup or the inventory took nothing; a forced `True` from
     /// `item_picked_up` changes none of this. A creative player always takes
     /// the whole stack. Server-side.
     pub(in crate::game) fn native_item_picked_up_post(
@@ -50,29 +48,6 @@ impl Game<'_> {
         self.fire_item_picked_up_post(player, item, original, remaining);
     }
 
-    /// `player` picked up part of a ground stack (`ItemEntity.playerTouch`,
-    /// right after `Inventory.add` took some of it and left the rest).
-    /// `original` is a copy of the stack as it lay before the pickup:
-    /// changing it does nothing. `remaining` is what the item entity still
-    /// holds, so it starts as the part that did not fit. Set another stack
-    /// there to leave the entity holding it, or `None` to empty it: the
-    /// pickup then counts `original`'s count less what is left. The amount
-    /// taken is `original`'s count less `remaining`'s. A mod that removes the
-    /// item entity meanwhile keeps it removed: no take animation, the stat
-    /// and criteria still run. Of the two notices, this one hears a partial
-    /// pickup and `item_picked_up_post` a whole one; a pickup is never told
-    /// to both. Not called when `item_picked_up` refused the pickup or the
-    /// inventory took nothing. A creative player always takes the whole
-    /// stack. Server-side; no NeoForge counterpart.
-    pub(in crate::game) fn native_item_picked_up_partial(
-        &mut self,
-        player: u128,
-        original: &ItemStack,
-        remaining: &mut Option<ItemStack>,
-    ) {
-        self.fire_item_picked_up_partial(player, original, remaining);
-    }
-
     /// `Inventory.add` of the ground `stack` the acting player picks up: what
     /// did not fit. A player with infinite materials (creative) takes all of it.
     pub(in crate::game) fn native_pickup_insert(&mut self, stack: &ItemStack) -> Option<ItemStack> {
@@ -80,15 +55,16 @@ impl Game<'_> {
         rest.filter(|_| !self.creative)
     }
 
-    /// `item_picked_up_post` for the acting player, who took all of
-    /// `original` from the item entity `item`: the stack a mod left on it,
-    /// `None` when none did or no mod listens.
+    /// `item_picked_up_post` for the acting player, who took all or part of
+    /// `original` from the item entity `item`, leaving `remaining` (`None`
+    /// when all of it went in): the stack the entity then holds, `None` when
+    /// it is empty, `remaining` when no mod listens.
     pub(in crate::game) fn native_pickup_post(
         &mut self,
         item: u32,
         original: &ItemStack,
+        mut remaining: Option<ItemStack>,
     ) -> Option<ItemStack> {
-        let mut remaining = None;
         if mod_api::__private::listened(mod_api::HookId::ItemPickedUpPost)
             && let Some(item) = self.native_item_handle(item)
         {
@@ -98,25 +74,9 @@ impl Game<'_> {
         remaining
     }
 
-    /// `item_picked_up_partial` for the acting player, who took part of
-    /// `original` and left `rest`: the stack the item entity then holds,
-    /// `None` when a mod emptied it, `rest` when no mod listens.
-    pub(in crate::game) fn native_pickup_partial(
-        &mut self,
-        original: &ItemStack,
-        rest: ItemStack,
-    ) -> Option<ItemStack> {
-        let mut remaining = Some(rest);
-        if mod_api::__private::listened(mod_api::HookId::ItemPickedUpPartial) {
-            let player = self.native_acting_id();
-            self.native_item_picked_up_partial(player, original, &mut remaining);
-        }
-        remaining
-    }
-
     /// `ItemEntity.playerTouch` for the host's player, at `feet`, and each of
     /// the lifted `items` whose box meets `reach` (its low and high corners):
-    /// `item_picked_up`, `Inventory.add`, the post or partial notice, then the
+    /// `item_picked_up`, `Inventory.add`, `item_picked_up_post`, then the
     /// stat, the criterion and the take animation. An item whose notice a mod
     /// hears is lent back to the level meanwhile, so the mod reaches it, and
     /// one that removes it keeps it removed: no take animation, the stat and
@@ -150,18 +110,15 @@ impl Game<'_> {
             // The entity holds the remainder while mods hear it, as on the guest path.
             let (left, removed) = match self.native_pickup_insert(&items[i].stack) {
                 Some(rest) if rest.count >= before => (Some(rest), None),
-                Some(rest) if listened(mod_api::HookId::ItemPickedUpPartial) => {
-                    let during = rest.clone();
-                    self.native_pickup_lent(items, i, during, |game, original| {
-                        game.native_pickup_partial(original, rest)
-                    })
-                }
-                None if listened(mod_api::HookId::ItemPickedUpPost) => {
+                rest if listened(mod_api::HookId::ItemPickedUpPost) => {
                     let id = items[i].id;
-                    let mut during = items[i].stack.clone();
-                    during.count = 0;
+                    let during = rest.clone().unwrap_or_else(|| {
+                        let mut empty = items[i].stack.clone();
+                        empty.count = 0;
+                        empty
+                    });
                     self.native_pickup_lent(items, i, during, |game, original| {
-                        game.native_pickup_post(id, original)
+                        game.native_pickup_post(id, original, rest)
                     })
                 }
                 left => (left, None),
@@ -204,8 +161,9 @@ impl Game<'_> {
             crate::game::pickups::Collector::Player,
         );
         // handleTakeItemEntity: the random pitch of a full pickup.
-        let pitch =
-            ((self.world.random.next_float() - self.world.random.next_float()) * 0.7 + 1.0) * 2.0;
+        // `ClientPacketListener.random`, the listener's own stream, never the level's.
+        let mut random = sunrise_client::random_source::create();
+        let pitch = ((random.next_float() - random.next_float()) * 0.7 + 1.0) * 2.0;
         self.audio
             .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
     }

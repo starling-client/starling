@@ -3,15 +3,15 @@
 //! shears it (`EntityPart::on_sheared`) in place of the species' own shearing.
 use super::api_values::{TryIntoApi, TryIntoEngine};
 use super::{Game, Hand};
+use mod_api::{
+    PlayerRef,
+    content::crash::{ModCall, enter_native_mod},
+};
 use sunrise_client::{
     items::ItemStack,
     mobs::{Species, Who},
 };
 use sunrise_core::{geometry::Vec3, random::RandomSource};
-use mod_api::{
-    PlayerRef,
-    content::crash::{ModCall, enter_native_mod},
-};
 
 impl Game<'_> {
     /// `IShearable.isShearable` as live mob `index`'s entity parts answer it: the answering part's
@@ -100,7 +100,7 @@ impl Game<'_> {
     /// `Bogged`), and a shearable mob fires `player_shear_entity`. `Some(consumed)` ends the
     /// interaction: a part's refusal (false), the hook's cancel or a part's shearing (true);
     /// none leaves the shearing to the species' own interaction.
-    pub(super) fn player_shear(&mut self, index: usize) -> Option<bool> {
+    pub(super) fn player_shear(&mut self, mut index: usize) -> Option<bool> {
         let shears = self.held().cloned()?;
         let player = self.native_acting_player();
         let part = self.part_shearable(index, player, &shears);
@@ -124,6 +124,19 @@ impl Game<'_> {
             self.native_player_shear_entity(uuid, &name, id as i32, off_hand, &mut cancel);
             if cancel {
                 return Some(true);
+            }
+            // The listener had the game in its hands: find the mob again by
+            // its id, and it must still be there, not removed, with the same
+            // shears in hand. Otherwise the click is spent and nothing is
+            // sheared.
+            match self.mobs.iter().position(|m| m.id == id) {
+                Some(now)
+                    if !self.mobs[now].removed
+                        && Self::same_item_and_count(self.held(), Some(&shears)) =>
+                {
+                    index = now;
+                }
+                _ => return Some(true),
             }
         }
         let (part, _) = part?;
@@ -193,7 +206,7 @@ mod tests {
     /// A dispenser's shears ask the mob's entity parts: a cow whose part says yes drops what
     /// the part returns, and a woolly sheep whose part says no keeps its wool.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn entity_parts_decide_and_perform_a_dispensers_shearing() {
         use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
         if run_fresh_cases(

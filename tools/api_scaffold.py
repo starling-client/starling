@@ -7,7 +7,7 @@ For each engine type in the allow-list (api_scaffold.toml) it adds, never overwr
   * for a handle with methods, a `<Name>Backend` host area to src/host/<topic>.rs;
   * both conversions to crates/sunrise-client/src/game/modding/api_values/<topic>.rs.
 It refuses when the type or its `<Name>Backend` already exists in crates/sunrise-mod-vocab/src, and never
-targets lib.rs. Conversions in the client crate are not checked. Every emitted value explicitly derives `Wire`; handles also get a `Fields` impl.
+targets lib.rs. Conversions in the client crate are not checked. Handles also get a `Fields` impl.
 
   api_scaffold.py --dry-run [--inventory points-inventory-runtime.json] [--report out.md]
   api_scaffold.py --apply
@@ -80,14 +80,15 @@ def api_name(entry):
 
 
 def mirror_source(e, name):
+    codec = '// no wire: opt in explicitly only if this value crosses a defined binary boundary.\n'
     exhaustive = e.get('exhaustive')
     if e['kind'] == 'enum':
         body = ''.join(f'    /// `{v}`.\n    {v},\n' for v in e['variants'])
-        return (f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sunrise_mod_api_macros::Wire)]\n#[non_exhaustive]\n"
+        return (f"/// {e['doc']}\n{codec}#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]\n#[non_exhaustive]\n"
                 f'pub enum {name} {{\n{body}}}\n')
     fields = [split_field(f) for f in e['fields']]
     body = ''.join(f'    /// The `{n}` component.\n    pub {n}: {t},\n' for n, t in fields)
-    head = f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, sunrise_mod_api_macros::Wire)]\n"
+    head = f"/// {e['doc']}\n{codec}#[derive(Clone, Copy, Debug, PartialEq)]\n"
     if exhaustive:
         head += f'// exhaustive: {exhaustive}\n'
         tail = ''
@@ -101,13 +102,17 @@ def mirror_source(e, name):
 
 
 def handle_source(e, name):
-    return (f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sunrise_mod_api_macros::Wire)]\n"
+    return (f"/// {e['doc']}\n"
+            '// no wire: opt in only if the handle has a defined binary form and identity checks.\n'
+            '#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]\n'
             '// exhaustive: its fields are private, so mods cannot build or destructure it\n'
             f'pub struct {name} {{\n    pub(crate) epoch: crate::WorldEpoch,\n    pub(crate) id: u64,\n}}\n\n'
             f'impl {name} {{\n    /// Create a handle for the game.\n'
             '    // hidden: a game-side helper, not part of the mod surface\n    #[doc(hidden)]\n'
             '    pub fn new(epoch: crate::WorldEpoch, id: u64) -> Self {\n        Self { epoch, id }\n    }\n}\n\n'
-            f'/// What the game reads of a [`{name}`].\n#[doc(hidden)]\n#[derive(sunrise_mod_api_macros::Wire)]\npub struct {name}Fields {{\n'
+            f'/// What the game reads of a [`{name}`].\n'
+            '// no wire: this projection is local to the game.\n'
+            f'#[doc(hidden)]\npub struct {name}Fields {{\n'
             '    pub epoch: crate::WorldEpoch,\n    pub id: u64,\n}\n\n'
             f'impl crate::__private::game::Fields for {name} {{\n    type Fields<\'a> = {name}Fields;\n'
             f'    fn fields(&self) -> {name}Fields {{\n        {name}Fields {{ epoch: self.epoch, id: self.id }}\n    }}\n}}\n')

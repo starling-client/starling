@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Återanslut automatiskt",
+  "sunrise.extras.auto_reconnect.tooltip": "Återansluter till en server efter en förlorad anslutning eller en omstart, aldrig efter en kick eller förbud."
+}

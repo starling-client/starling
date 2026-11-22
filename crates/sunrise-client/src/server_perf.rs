@@ -1,7 +1,16 @@
 //! A side's .hzperf capture (docs/perf-platform.md §3, §4.1), the dedicated server's or the client's, and the always-on health history and slow ring behind it.
 use crate::gfx::pack_timing::{GpuReadout, TimedFrames};
 use crate::spans::Span;
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::Instant;
 use sunrise_client_render::perf_gpu;
+use sunrise_java_properties::now_millis;
 use sunrise_perf_format::files;
 use sunrise_perf_format::v1::{
     BenchResult, GpuMode, Kind, Mark, MemorySnapshot, Options, Overhead, Side, Start, Stop,
@@ -11,10 +20,6 @@ use sunrise_perf_format::{
     CounterReporter, Field, FieldSender, Gauges, HealthRecorder, Interner, SlowRecord, SlowRing,
     SlowSpan, WriterThread, counter_registry,
 };
-use std::fs::File;
-use std::path::{Path, PathBuf};
-use std::thread::{self, JoinHandle};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 mod tests;
@@ -34,7 +39,7 @@ use samples::{Sampling, Stopped};
 use spans::{SpanRecorder, Tick};
 use system::{BackgroundProbe, SystemProbe};
 pub use system::{
-    build, game_rules, hardware, hardware_now, sunrise_options, machine, settings, warm_hardware,
+    build, game_rules, hardware, hardware_now, machine, settings, sunrise_options, warm_hardware,
 };
 use timeline::{Drained, TimelineRecorder};
 use traffic::{TrafficRecorder, Wire};
@@ -159,6 +164,20 @@ pub struct CaptureStatus {
     pub bytes: u64,
 }
 
+/// One capture's memory census cost, including work on the server and worker threads.
+#[derive(Clone, Default)]
+pub struct MemoryCost(Arc<AtomicU64>);
+
+impl MemoryCost {
+    pub fn measure<T>(&self, work: impl FnOnce() -> T) -> T {
+        let start = Instant::now();
+        let result = work();
+        self.0
+            .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        result
+    }
+}
+
 struct Session {
     side: Side,
     unit: Unit,
@@ -182,6 +201,7 @@ struct Session {
     gpu_log: perf_gpu::FrameLog,
     gpu_block_t: f64,
     timeline: Option<TimelineRecorder>,
+    memory_cost: MemoryCost,
 }
 
 enum Ending {
@@ -355,7 +375,7 @@ impl ServerPerf {
         if self.session.is_some() {
             return Err(std::io::Error::other("a capture is already running"));
         }
-        let now_ms = unix_ms();
+        let now_ms = now_millis();
         let (file, path) = match &options.file {
             Some(path) => (files::create_at(path)?, path.clone()),
             None => files::create(dir, now_ms.div_euclid(1000))?,
@@ -399,7 +419,7 @@ impl ServerPerf {
         dir: &Path,
         options: CaptureOptions,
     ) {
-        let now_ms = unix_ms();
+        let now_ms = now_millis();
         let sampling = options
             .samples
             .then(|| {
@@ -436,6 +456,7 @@ impl ServerPerf {
             gpu_log: perf_gpu::FrameLog::default(),
             gpu_block_t: 0.0,
             timeline,
+            memory_cost: MemoryCost::default(),
         };
         let mut start = options.start;
         if let Some((used, total)) = system::disk_mb() {
@@ -555,24 +576,30 @@ impl ServerPerf {
         true
     }
 
+    pub fn memory_cost(&self) -> Option<MemoryCost> {
+        self.session.as_ref().map(|s| s.memory_cost.clone())
+    }
+
     /// Records a memory snapshot, rows as flattened paths and values, in the running capture; false when none runs.
     pub fn memory_snapshot(&mut self, t: f64, label: &str, rows: &[(String, f64)]) -> bool {
         let Some(session) = &mut self.session else {
             return false;
         };
-        let label = session.strings.intern(label);
-        let path = rows
-            .iter()
-            .map(|(name, _)| session.strings.intern(name))
-            .collect();
-        session.entries();
-        session.tx.send(Field::Memory(MemorySnapshot {
-            side: session.side as i32,
-            t: t - session.origin,
-            label,
-            path,
-            value_mb: rows.iter().map(|(_, value)| *value).collect(),
-        }));
+        session.memory_cost.clone().measure(|| {
+            let label = session.strings.intern(label);
+            let path = rows
+                .iter()
+                .map(|(name, _)| session.strings.intern(name))
+                .collect();
+            session.entries();
+            session.tx.send(Field::Memory(MemorySnapshot {
+                side: session.side as i32,
+                t: t - session.origin,
+                label,
+                path,
+                value_mb: rows.iter().map(|(_, value)| *value).collect(),
+            }));
+        });
         true
     }
 
@@ -655,6 +682,7 @@ impl Session {
     /// Writes the spans, workers, net and world as the capture ends; returns what recording cost.
     fn close(&mut self, rel: f64, end: CaptureEnd) -> Overhead {
         let mut overhead = overhead(&self.spans, &end);
+        overhead.memory_snapshot_ns = self.memory_cost.0.load(Ordering::Relaxed);
         if let Some(timeline) = self.timeline.take() {
             let (drained, stopped_t) = timeline.finish(rel, &mut self.strings);
             self.send_timeline(drained);
@@ -791,6 +819,7 @@ impl Session {
                 mob_timing_ms_per_tick: overhead.mob_timing_ms_per_tick,
                 mob_timing_share: overhead.mob_timing_share,
                 timeline_stopped_t: overhead.timeline_stopped_t,
+                memory_snapshot_ns: overhead.memory_snapshot_ns,
                 ..done.overhead
             };
         }
@@ -823,14 +852,8 @@ impl Session {
     }
 }
 
-fn unix_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
-}
-
 /// Keeps the calling thread's allocations out of the heap samples: it is one of the profiler's own.
-pub(crate) fn profiler_thread() {
+pub fn profiler_thread() {
     #[cfg(target_os = "linux")]
     sunrise_threads::heap_sample::ignore_this_thread();
 }

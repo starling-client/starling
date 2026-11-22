@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "חיבור אוטומטי",
+  "sunrise.extras.auto_reconnect.tooltip": "מצטרף מחדש לשרת לאחר איבוד חיבור או הפעלה מחדש, לעולם לא לאחר בעיטה או איסור."
+}

@@ -1,9 +1,9 @@
 //! `text_from_json`: a text component read as `/tellraw` takes it.
 use super::Game;
-use super::native_text_grammar::build;
+use mod_api::text::TextFormError;
 use sunrise_client::command::Registries;
 use sunrise_client::text::Text;
-use mod_api::text::TextFormError;
+use sunrise_client::text_grammar::build;
 
 impl Game<'_> {
     /// A component read as `/tellraw` takes it; None when it isn't one (an object with no
@@ -36,7 +36,7 @@ fn component_from_json(json: &str, registries: &Registries) -> Result<Option<Tex
             let (value, used) = match sunrise_client::component::parse_snbt(json) {
                 Ok(parsed) => parsed,
                 // NBT's own limit of 512: the named refusal, not "not a component".
-                Err(error) if error.starts_with("tag nesting too deep") => {
+                Err(error) if error.starts_with("arguments.nbtpath.too_deep at ") => {
                     return Err(TextFormError::TooDeep);
                 }
                 Err(_) => return Ok(None),
@@ -108,7 +108,7 @@ mod tests {
     }
 
     /// Objects and lists that are not one component are refused whole, however deep.
-    const NOT_COMPONENTS: [&str; 43] = [
+    const NOT_COMPONENTS: [&str; 46] = [
         "{}",
         r#"{"color":"red"}"#,
         r#"{"unrelated":"x","extra":[]}"#,
@@ -148,6 +148,9 @@ mod tests {
         r#"{"text":"a","click_event":"run_command"}"#,
         r#"{"text":"a","hover_event":{"action":"show_text"}}"#,
         r#"{"text":"a","hover_event":{"action":"show_text","value":{}}}"#,
+        r#"{"text":"a","hover_event":{"action":"show_item","id":"minecraft:bad item"}}"#,
+        r#"{"text":"a","hover_event":{"action":"show_item","id":"air"}}"#,
+        r#"{"text":"a","hover_event":{"action":"show_item","id":"minecraft:stone","components":{"!minecraft:lore":[]}}}"#,
         // The partial result is never used: a good entry before a bad one.
         r#"["a",{"text":"b","extra":["ok",{"bad":1}]}]"#,
         r#"{"text":"a","bold":true,"extra":["ok",{"text":"b","italic":"no"}]}"#,
@@ -206,7 +209,7 @@ mod tests {
         let input = r#"{"text":"a","hover_event":{"action":"show_entity","id":"minecraft:pig","uuid":[0,0,0,1],"name":{"type":"keybind","keybind":"key.jump","text":"wrong"}}}"#;
         let text = api(&component_from_json(input).unwrap());
         assert!(
-            matches!(text.style.hover, Some(mod_api::text::TextHover::Entity { name: Some(name), .. }) if name.content == TextContent::Keybind("key.jump".into()))
+            matches!(&text.style.hover, Some(mod_api::text::TextHover::Entity { name: Some(name), .. }) if name.content == TextContent::Keybind("key.jump".into()))
         );
         assert!(component_from_json(r#"{"text":"a","hover_event":{"action":"show_entity","id":"minecraft:pig","uuid":[0,0,0,1],"name":{"type":"keybind","text":"wrong"}}}"#).is_none());
     }
@@ -224,7 +227,7 @@ mod tests {
     /// An explicit `type` is built as that type, whatever other content keys sit beside it.
     #[test]
     fn text_from_json_builds_an_explicit_type_alone() {
-        let content = |json: &str| api(&component_from_json(json).unwrap()).content;
+        let content = |json: &str| api(&component_from_json(json).unwrap()).content.clone();
         assert_eq!(
             content(r#"{"type":"keybind","keybind":"key.jump","text":"wrong"}"#),
             TextContent::Keybind("key.jump".into())
@@ -259,7 +262,7 @@ mod tests {
     /// field of the wrong kind is dropped from the built value.
     #[test]
     fn text_from_json_builds_what_the_codec_decodes() {
-        let content = |json: &str| api(&component_from_json(json).unwrap()).content;
+        let content = |json: &str| api(&component_from_json(json).unwrap()).content.clone();
         assert_eq!(
             content(r#"{"text":"a","keybind":"key.jump"}"#),
             TextContent::Literal("a".into())
@@ -275,6 +278,14 @@ mod tests {
         assert!(matches!(
             content(r#"{"translate":"k","fallback":5}"#),
             TextContent::Translatable { key, fallback: None, .. } if key == "k"
+        ));
+        assert!(matches!(
+            content(r#"{"sprite":"test:icon","player":{"name":"Steve"}}"#),
+            TextContent::Object(mod_api::text::TextObject::Atlas { sprite, .. }) if sprite == "test:icon"
+        ));
+        assert!(matches!(
+            content(r#"{"atlas":7,"sprite":"test:icon","player":{"name":"Steve"}}"#),
+            TextContent::Object(mod_api::text::TextObject::Player { .. })
         ));
         // `{"text":1}` fails the text kind, so the next kind that decodes is used.
         assert_eq!(
@@ -367,7 +378,15 @@ mod tests {
         use super::super::native_entity_refs::tests::with_game;
         with_game(|game| {
             let host: &dyn mod_api::Host = game;
-            let read = |json: &str| host.text_from_json(json).unwrap().map(|t| t.content);
+            let read = |json: &str| {
+                host.text_from_json(json)
+                    .unwrap()
+                    .map(|t| t.content.clone())
+            };
+            assert_eq!(
+                read(r#"{"text":"Click","click_event":{"action":"run_command","value":"/help"}}"#),
+                None
+            );
             assert_eq!(
                 read(r#"{"text":"Hi"}"#),
                 Some(TextContent::Literal("Hi".into()))
@@ -396,7 +415,7 @@ mod tests {
             ));
             let hover = host.text_from_json(r#"{"text":"a","hover_event":{"action":"show_entity","id":"minecraft:pig","uuid":[0,0,0,1],"name":{"type":"keybind","keybind":"key.jump","text":"wrong"}}}"#).unwrap().unwrap();
             assert!(
-                matches!(hover.style.hover, Some(mod_api::text::TextHover::Entity { name: Some(name), .. }) if name.content == TextContent::Keybind("key.jump".into()))
+                matches!(&hover.style.hover, Some(mod_api::text::TextHover::Entity { name: Some(name), .. }) if name.content == TextContent::Keybind("key.jump".into()))
             );
             assert_eq!(
                 read(
@@ -426,7 +445,7 @@ mod tests {
             }
             assert_eq!(
                 host.text_from_json(&deep)
-                    .map(|text| text.map(|t| t.content)),
+                    .map(|text| text.map(|t| t.content.clone())),
                 Err(mod_api::text::TextFormError::TooDeep)
             );
             assert_eq!(read("{} trailing"), None);

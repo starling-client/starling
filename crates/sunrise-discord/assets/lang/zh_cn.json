@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord 动态状态",
+  "sunrise.extras.discord_presence.tooltip": "Discord 运行时在你的 Discord 资料上显示“正在玩 Sunrise”：菜单、单人、多人、维度以及游玩时长。绝不显示世界名称或服务器地址。"
+}

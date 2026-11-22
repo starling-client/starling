@@ -40,7 +40,6 @@ _G = r"crates/sunrise-client(?:-render|-core|-input)?/src/"  # the client's crat
 _GAME = _G + r"(?:game/(?:[^/]+/)?)?"
 # Area: (label, description, the paths). First match wins for each file.
 AREAS = [
-    ("launcher", "Changes the launcher", r"^launcher/"),
     ("mods", "Area: mods, mod SDK, modpack porting",
      r"^crates/(?:sunrise-mod|cargo-sunrise-mod|sunrise-port-pack)|" + _GAME
      + r"(?:native_hooks/|(?:mods|mod_content|mod_list|native_\w+)\.rs$)|^docs/(?:mods|native-mods|modpacks)"),
@@ -75,7 +74,7 @@ AREAS = [
      r"^crates/sunrise-theme/|/title(?:\.rs$|/)|" + _GAME + r"(?:\w+_ui|\w+_screen|screens|screen_draw|ui|hud\w*"
      r"|chat|tab_list|startup_menu|options|sign_edit|books|containers)\.rs$"),
     ("website", "Area: what playsunrise.net reads from this repository",
-     r"^docs/api/|^roadmap/|^README\.md$|^launcher/links\.json$"),
+     r"^docs/api/|^roadmap/|^README\.md$"),
 ]
 AREA_RES = [(label, re.compile(paths)) for label, _, paths in AREAS]
 MAX_AREAS = 3
@@ -266,7 +265,7 @@ if __name__ == "__main__":
     if verb == "event" and not rest:
         sys.exit(event(Api(os.environ["REPO"])))
     if verb in ("create", "backfill") and rest in ([], ["--apply"]):
-        api, apply = Api(os.environ.get("REPO", "horizon-rust/horizon")), rest == ["--apply"]
+        api, apply = Api(os.environ.get("REPO", "sunrise-org/sunrise")), rest == ["--apply"]
         for line in (create(api, apply) if verb == "create" else backfill(api, apply)):
             print(line)
         sys.exit(0)

@@ -21,7 +21,7 @@ impl RecipeSerializersRegistrar for PartRegistrar {
         &mut self,
         name: &str,
         recipe_type: &str,
-        handler: Option<Arc<dyn crate::CraftingRecipeHandler>>,
+        handler: RegisteredRecipeSerializer,
     ) {
         let id = match self.owned_declaration_id(name) {
             Ok(id) => id,
@@ -30,13 +30,6 @@ impl RecipeSerializersRegistrar for PartRegistrar {
                 return;
             }
         };
-        let Some(handler) = handler else {
-            self.refused.push(format!(
-                "{} recipe serializer {id} requires a Wire value codec",
-                self.mod_id
-            ));
-            return;
-        };
         if self.parts.recipe_serializers.contains_key(id.as_str()) {
             self.refused.push(format!(
                 "{} registered recipe serializer {id} twice",
@@ -44,6 +37,7 @@ impl RecipeSerializersRegistrar for PartRegistrar {
             ));
             return;
         }
+        let handler = handler.bind(self.mod_id, self.mod_index, id.as_str());
         self.parts
             .recipe_serializers
             .insert(id.into(), (self.mod_index, recipe_type.into(), handler));
@@ -53,27 +47,59 @@ impl RecipeSerializersRegistrar for PartRegistrar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Context;
+    impl crate::LoopContext for Context {
+        fn is_in_tag(&self, _: crate::ItemKey, _: crate::TagKey) -> Option<bool> {
+            None
+        }
+        fn items_in_tag(&self, _: crate::TagKey) -> Option<&[crate::ItemKey]> {
+            None
+        }
+        fn side(&self) -> crate::LoopSide {
+            crate::LoopSide::Server
+        }
+        fn registry(&self, _: &str) -> Option<&[String]> {
+            None
+        }
+        fn setting(&self, _: &str, _: &str) -> Option<&str> {
+            None
+        }
+        fn mods(&self) -> &crate::LoadedMods {
+            unreachable!("not used by this fixture")
+        }
+        fn mod_recipe_property_contains(&self, _: &str, _: crate::ItemKey) -> bool {
+            false
+        }
+    }
+    impl crate::CraftingRemainders for Context {
+        fn default_remainder(&self, _: u32) -> Option<crate::ItemStack> {
+            None
+        }
+    }
+    struct Count(u32);
     struct Literal {
         result: crate::ItemKey,
     }
     impl crate::CraftingRecipeKind for Literal {
-        type Value = u32;
-        fn codec(&self) -> Option<crate::CraftingRecipeCodec<u32>> {
-            Some(crate::CraftingRecipeCodec::wire())
-        }
-        fn decode(&self, json: &str) -> Result<u32, String> {
+        type Value = Count;
+        fn decode(&self, json: &str) -> Result<Count, String> {
             let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
             value["count"]
                 .as_u64()
                 .filter(|n| *n == 3)
-                .map(|n| n as u32)
+                .map(|n| Count(n as u32))
                 .ok_or("count must be 3".into())
         }
-        fn write(&self, value: &u32) -> Result<String, String> {
-            Ok(format!("{{\"count\":{value}}}"))
+        fn write(&self, value: &Count) -> Result<String, String> {
+            Ok(format!("{{\"count\":{}}}", value.0))
         }
-        fn matches(&self, value: &u32, grid: crate::CraftingGrid) -> bool {
-            *value == 3
+        fn matches(
+            &self,
+            _: &dyn crate::LoopContext,
+            value: &Count,
+            grid: crate::CraftingGrid,
+        ) -> bool {
+            value.0 == 3
                 && grid.width == 3
                 && grid.height == 3
                 && grid
@@ -82,16 +108,22 @@ mod tests {
                     .enumerate()
                     .all(|(i, c)| c.is_some() == [0, 4, 8].contains(&i))
         }
-        fn assemble(&self, value: &u32, _: crate::CraftingGrid) -> Option<crate::ItemStack> {
-            crate::ItemStack::new(self.result, *value)
+        fn assemble(
+            &self,
+            _: &dyn crate::LoopContext,
+            value: &Count,
+            _: crate::CraftingGrid,
+        ) -> Option<crate::ItemStack> {
+            crate::ItemStack::new(self.result, value.0)
         }
         fn remaining_items(
             &self,
-            _: &u32,
+            _: &dyn crate::CraftingRemainders,
+            value: &Count,
             _: crate::CraftingGrid,
         ) -> Option<Vec<Option<crate::ItemStack>>> {
             let mut cells = vec![None; 9];
-            cells[4] = crate::ItemStack::new(self.result, 1);
+            cells[4] = crate::ItemStack::new(self.result, value.0 / 2);
             Some(cells)
         }
     }
@@ -111,51 +143,32 @@ mod tests {
         )])
         .unwrap();
         mod_vocab::__private::resolve_items(["test:result"]).unwrap();
-        let handler =
-            mod_vocab::__private::parts_installation::crafting_recipe("test:diagonal").unwrap();
-        let value = handler.decode(r#"{"count":3}"#).unwrap();
-        let out = handler
-            .assemble(&value, crate::CraftingGrid::new(1, 1, vec![None]).unwrap())
-            .unwrap();
-        assert_eq!(out.count(), 3);
-        assert_eq!(
-            Some(out.item()),
-            mod_vocab::__private::item_key("test:result")
-        );
+        let (kind, serializer) =
+            mod_vocab::__private::parts_installation::recipe_serializer("test:diagonal").unwrap();
+        assert_eq!(kind, "minecraft:crafting");
+        let loaded = serializer.decode(r#"{"count":3}"#).unwrap();
+        let key = mod_vocab::__private::item_key("test:result").unwrap();
         let mut cells = vec![None; 9];
         for i in [0, 4, 8] {
-            cells[i] = Some(out.clone());
+            cells[i] = crate::ItemStack::new(key, 1);
         }
         let grid = crate::CraftingGrid::new(3, 3, cells).unwrap();
-        assert!(handler.matches(&value, grid.clone()));
-        assert_eq!(handler.write(&value).unwrap(), r#"{"count":3}"#);
+        assert!(loaded.matches(&Context, grid.clone()));
+        let out = loaded.assemble(&Context, grid.clone()).unwrap();
+        assert_eq!(out.count(), 3);
+        assert_eq!(out.item(), key);
+        assert_eq!(loaded.write().unwrap().as_deref(), Some(r#"{"count":3}"#));
         let mut expected = vec![None; 9];
-        expected[4] = crate::ItemStack::new(out.item(), 1);
+        expected[4] = crate::ItemStack::new(key, 1);
         assert_eq!(
-            handler.remaining_items(&value, grid.clone()),
+            loaded.remaining_items(&Context, grid.clone()),
             Some(expected)
         );
         let mut wrong = grid;
         wrong.cells[4] = None;
-        assert!(!handler.matches(&value, wrong));
-        assert!(handler.decode("{").is_err());
-        assert!(handler.decode(r#"{"count":2}"#).is_err());
-    }
-    struct NoWire;
-    impl crate::CraftingRecipeKind for NoWire {
-        type Value = std::sync::Mutex<()>;
-        fn decode(&self, _: &str) -> Result<Self::Value, String> {
-            Ok(std::sync::Mutex::new(()))
-        }
-        fn write(&self, _: &Self::Value) -> Result<String, String> {
-            Ok("{}".into())
-        }
-        fn matches(&self, _: &Self::Value, _: crate::CraftingGrid) -> bool {
-            false
-        }
-        fn assemble(&self, _: &Self::Value, _: crate::CraftingGrid) -> Option<crate::ItemStack> {
-            None
-        }
+        assert!(!loaded.matches(&Context, wrong));
+        assert!(serializer.decode("{").is_err());
+        assert!(serializer.decode(r#"{"count":2}"#).is_err());
     }
     struct Invalid;
     #[mod_api::__subscriptions]
@@ -164,11 +177,10 @@ mod tests {
             let key = r.item_key("test:result");
             r.register_crafting_recipe_serializer("diagonal", Literal { result: key });
             r.register_crafting_recipe_serializer("diagonal", Literal { result: key });
-            r.register_crafting_recipe_serializer("missing_wire", NoWire);
         }
     }
     #[test]
-    fn duplicate_and_non_wire_kinds_refuse_by_name() {
+    fn duplicate_kinds_refuse_by_name() {
         let errors = crate::parts::tests::install_parts_fixture(&[crate::ModEntry::new(
             "test",
             Box::new(Invalid),
@@ -178,12 +190,6 @@ mod tests {
             errors
                 .iter()
                 .any(|e| e.contains("test:diagonal") && e.contains("twice")),
-            "{errors:?}"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("test:missing_wire") && e.contains("Wire")),
             "{errors:?}"
         );
     }

@@ -1,16 +1,13 @@
-//! `item_picked_up_post` and `item_picked_up_partial` through the game's own pickup
+//! `item_picked_up_post` on whole and partial pickups through the game's own pickup
 //! paths, the host's player (`tick_dropped_items`) and a LAN guest (`guest_pickups`),
 //! with literal counts.
-use crate::game::Game;
+use crate::game::{Game, native_entity_refs::tests::collect_all_entities};
+use mod_api::{Hooks, ItemPickedUpEvent, ItemPickedUpPostEvent, ModEntry, ServerHost, TriState};
+use mod_platform::testing::with_mods;
+use std::sync::{Arc, Mutex};
 use sunrise_client::items::ItemStack;
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::geometry::Vec3;
-use mod_api::{
-    Hooks, ItemPickedUpEvent, ItemPickedUpPartialEvent, ItemPickedUpPostEvent, ModEntry,
-    ServerHost, TriState,
-};
-use mod_platform::testing::with_mods;
-use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 struct State {
@@ -28,15 +25,18 @@ struct State {
     posted: Vec<u32>,
 }
 
-/// One notice heard: `"post"` or `"partial"`, player, original count, remainder count.
-type Notice = (&'static str, u128, u32, Option<u32>);
+/// One notice heard: player, original count, remainder count.
+type Notice = (u128, u32, Option<u32>);
 
 #[derive(Clone, Default)]
 struct Probe(Arc<Mutex<State>>);
 #[mod_api::__subscriptions]
 impl Hooks for Probe {
     fn item_picked_up(&self, host: &mut dyn ServerHost, event: &mut ItemPickedUpEvent<'_>) {
-        let read = event.item.stack(host);
+        let read = event
+            .item
+            .with_stack(host, |stack| stack.project())
+            .flatten();
         let mut state = self.0.lock().unwrap();
         state.touched.push((event.item.entity().id(), read));
         *event.can_pickup = state.answer;
@@ -47,29 +47,15 @@ impl Hooks for Probe {
         event: &mut ItemPickedUpPostEvent<'_>,
     ) {
         self.0.lock().unwrap().posted.push(event.item.entity().id());
-        self.heard(host, "post", event.player, event.original, event.remaining);
-    }
-    fn item_picked_up_partial(
-        &self,
-        host: &mut dyn ServerHost,
-        event: &mut ItemPickedUpPartialEvent<'_>,
-    ) {
-        self.heard(
-            host,
-            "partial",
-            event.player,
-            event.original,
-            event.remaining,
-        );
+        self.heard(host, event.player, event.original, event.remaining);
     }
 }
 
 impl Probe {
-    /// Either notice: records it, then makes the case's changes.
+    /// Records the notice, then makes the case's changes.
     fn heard(
         &self,
         host: &mut dyn ServerHost,
-        hook: &'static str,
         player: u128,
         original: &mod_api::ItemStack,
         remaining: &mut Option<mod_api::ItemStack>,
@@ -77,7 +63,6 @@ impl Probe {
         let (raise, empty, kill) = {
             let mut state = self.0.lock().unwrap();
             state.notices.push((
-                hook,
                 player,
                 original.count(),
                 remaining.as_ref().map(|rest| rest.count()),
@@ -97,7 +82,7 @@ impl Probe {
             // the level sweeps out of its list later.
             let _ = host.commands().run_command("kill @e[type=minecraft:item]");
             let level = host.level("minecraft:overworld").unwrap();
-            for entity in level.all_entities(host).unwrap_or_default() {
+            for entity in collect_all_entities(host, level).unwrap_or_default() {
                 let _ = entity.discard(host);
             }
         }
@@ -215,8 +200,8 @@ fn host_stat(game: &Game<'_>) -> i64 {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated SUNRISE_HOME"]
-fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes() {
+#[ignore = "daily"]
+fn host_pickup_tells_whole_and_partial_pickups_and_keeps_listener_changes() {
     let probe = Probe::default();
     with_probe(&probe, || {
         crate::game::native_entity_refs::tests::with_game(|game| {
@@ -235,22 +220,24 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             let (animations, stat) = (host_animations(game), host_stat(game));
             assert_eq!(
                 host_case(game, &probe, &CASE),
-                (vec![("post", 7, 8, None)], None, 64)
+                (vec![(7, 8, None)], None, 64)
             );
             assert_eq!(host_animations(game), animations + 1);
             assert_eq!(host_stat(game), stat + 8);
 
-            // 8 offered, 5 fit: one partial notice, original 8, remainder 3, and no post.
+            // 8 offered, 5 fit: one post notice, original 8 (untouched by the insertion),
+            // remainder 3.
             let (animations, stat) = (host_animations(game), host_stat(game));
             let partial = Case { room: 5, ..CASE };
             assert_eq!(
                 host_case(game, &probe, &partial),
-                (vec![("partial", 7, 8, Some(3))], Some(3), 64)
+                (vec![(7, 8, Some(3))], Some(3), 64)
             );
             assert_eq!(host_animations(game), animations + 1);
             assert_eq!(host_stat(game), stat + 5);
 
-            // The partial listener raises the remainder to 6: the entity keeps 6, the pickup counts 2.
+            // The listener on a partial pickup raises the remainder to 6: the entity keeps 6,
+            // the pickup counts 2.
             let (animations, stat) = (host_animations(game), host_stat(game));
             let raised = Case {
                 raise: Some(6),
@@ -258,12 +245,13 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             };
             assert_eq!(
                 host_case(game, &probe, &raised),
-                (vec![("partial", 7, 8, Some(3))], Some(6), 64)
+                (vec![(7, 8, Some(3))], Some(6), 64)
             );
             assert_eq!(host_animations(game), animations + 1);
             assert_eq!(host_stat(game), stat + 2);
 
-            // The partial listener empties the remainder: the entity goes, the pickup counts 8.
+            // The listener on a partial pickup empties the remainder: the entity goes, the
+            // pickup counts 8.
             let (animations, stat) = (host_animations(game), host_stat(game));
             let emptied = Case {
                 empty: true,
@@ -271,13 +259,13 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             };
             assert_eq!(
                 host_case(game, &probe, &emptied),
-                (vec![("partial", 7, 8, Some(3))], None, 64)
+                (vec![(7, 8, Some(3))], None, 64)
             );
             assert_eq!(host_animations(game), animations + 1);
             assert_eq!(host_stat(game), stat + 8);
 
-            // The partial listener kills the item, lent back to the level while it hears:
-            // it stays gone, with no take animation, and the pickup counts 8.
+            // The listener on a partial pickup kills the item, lent back to the level while it
+            // hears: it stays gone, with no take animation, and the pickup counts 8.
             let (animations, stat) = (host_animations(game), host_stat(game));
             let killed = Case {
                 kill: true,
@@ -285,7 +273,7 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             };
             assert_eq!(
                 host_case(game, &probe, &killed),
-                (vec![("partial", 7, 8, Some(3))], None, 64)
+                (vec![(7, 8, Some(3))], None, 64)
             );
             assert_eq!(host_animations(game), animations);
             assert_eq!(host_stat(game), stat + 8);
@@ -316,7 +304,7 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             };
             assert_eq!(
                 host_case(game, &probe, &forced),
-                (vec![("post", 7, 8, None)], None, 64)
+                (vec![(7, 8, None)], None, 64)
             );
 
             // The listener puts 3 back: the entity stays with 3, the pickup counts 5.
@@ -327,7 +315,7 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             };
             assert_eq!(
                 host_case(game, &probe, &raised),
-                (vec![("post", 7, 8, None)], Some(3), 64)
+                (vec![(7, 8, None)], Some(3), 64)
             );
             assert_eq!(host_animations(game), animations + 1);
             assert_eq!(host_stat(game), stat + 5);
@@ -338,13 +326,13 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             let (animations, stat) = (host_animations(game), host_stat(game));
             assert_eq!(
                 host_case(game, &probe, &full),
-                (vec![("post", 7, 8, None)], None, 0)
+                (vec![(7, 8, None)], None, 0)
             );
             assert_eq!(host_animations(game), animations + 1);
             assert_eq!(host_stat(game), stat + 8);
             game.creative = false;
 
-            // The post listener puts 3 back, then kills the item: it stays gone, with no panic
+            // The listener puts 3 back, then kills the item: it stays gone, with no panic
             // and no take animation.
             let animations = host_animations(game);
             let killed = Case {
@@ -354,7 +342,7 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             };
             assert_eq!(
                 host_case(game, &probe, &killed),
-                (vec![("post", 7, 8, None)], None, 64)
+                (vec![(7, 8, None)], None, 64)
             );
             assert_eq!(host_animations(game), animations);
             let _ = std::fs::remove_dir_all(scratch);
@@ -395,52 +383,53 @@ fn guest_case(game: &mut Game<'_>, probe: &Probe, case: &Case) -> Outcome {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-fn guest_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes() {
+#[ignore = "daily"]
+fn guest_pickup_tells_whole_and_partial_pickups_and_keeps_listener_changes() {
     let probe = Probe::default();
     with_probe(&probe, || {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             // The whole stack goes in: one post notice naming guest 12, original 8.
             assert_eq!(
                 guest_case(game, &probe, &CASE),
-                (vec![("post", 12, 8, None)], None, 64)
+                (vec![(12, 8, None)], None, 64)
             );
 
-            // 8 offered, 5 fit: one partial notice, original 8, remainder 3, and no post.
+            // 8 offered, 5 fit: one post notice, original 8 (untouched by the insertion),
+            // remainder 3.
             let partial = Case { room: 5, ..CASE };
             assert_eq!(
                 guest_case(game, &probe, &partial),
-                (vec![("partial", 12, 8, Some(3))], Some(3), 64)
+                (vec![(12, 8, Some(3))], Some(3), 64)
             );
 
-            // The partial listener raises the remainder to 6: the entity keeps 6.
+            // The listener on a partial pickup raises the remainder to 6: the entity keeps 6.
             let raised = Case {
                 raise: Some(6),
                 ..partial
             };
             assert_eq!(
                 guest_case(game, &probe, &raised),
-                (vec![("partial", 12, 8, Some(3))], Some(6), 64)
+                (vec![(12, 8, Some(3))], Some(6), 64)
             );
 
-            // The partial listener empties the remainder: the entity goes.
+            // The listener on a partial pickup empties the remainder: the entity goes.
             let emptied = Case {
                 empty: true,
                 ..partial
             };
             assert_eq!(
                 guest_case(game, &probe, &emptied),
-                (vec![("partial", 12, 8, Some(3))], None, 64)
+                (vec![(12, 8, Some(3))], None, 64)
             );
 
-            // The partial listener kills the entity: it stays gone, with no panic.
+            // The listener on a partial pickup kills the entity: it stays gone, with no panic.
             let killed = Case {
                 kill: true,
                 ..partial
             };
             assert_eq!(
                 guest_case(game, &probe, &killed),
-                (vec![("partial", 12, 8, Some(3))], None, 64)
+                (vec![(12, 8, Some(3))], None, 64)
             );
 
             // Refused by `item_picked_up`: nothing is told.
@@ -468,7 +457,7 @@ fn guest_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes
             };
             assert_eq!(
                 guest_case(game, &probe, &raised),
-                (vec![("post", 12, 8, None)], Some(3), 64)
+                (vec![(12, 8, None)], Some(3), 64)
             );
 
             // The listener puts 3 back, then kills the entity: it stays gone, with no panic.
@@ -479,7 +468,7 @@ fn guest_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes
             };
             assert_eq!(
                 guest_case(game, &probe, &killed),
-                (vec![("post", 12, 8, None)], None, 64)
+                (vec![(12, 8, None)], None, 64)
             );
         });
     });
@@ -488,7 +477,7 @@ fn guest_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes
 /// Both pickup hooks name the ground item entity, and `item_picked_up`
 /// reads its whole stack through the handle, components included.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn guest_pickup_hooks_name_the_ground_item_entity() {
     let probe = Probe::default();
     with_probe(&probe, || {

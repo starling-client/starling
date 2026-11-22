@@ -59,7 +59,7 @@ fn intersection_filters_default_stacks_without_losing_concrete_predicate() {
     assert!(!only_damaged.test_in(&ctx, &sword));
 }
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn malformed_and_unknown_component_patches_reject_whole_recipe() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let defaults = sunrise_world::item_defaults::read(&root).unwrap();
@@ -71,9 +71,12 @@ fn malformed_and_unknown_component_patches_reject_whole_recipe() {
     ] {
         let ingredient = serde_json::json!({"type":"neoforge:components","items":"minecraft:diamond_sword","components":patch});
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes=crate::crafting::Recipes::from_sources(&root,&items,&sunrise_world::loot::PackOverlay::NONE,vec![("fixture:invalid_component".into(),serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}}))],&load).unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        let error=crate::crafting::Recipes::from_sources(&root,&items,&sunrise_world::loot::PackOverlay::NONE,vec![("fixture:invalid_component".into(),serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}}))],&load).err().unwrap().to_string();
+        assert!(
+            error.contains("data/fixture/recipe/invalid_component.json"),
+            "{error}"
+        );
+        assert!(error.contains("component"), "{error}");
     }
 }
 #[test]
@@ -103,7 +106,7 @@ fn component_display_is_patched_and_candidate_matching_allocates_nothing() {
 fn only_with_component_display_filters_borrowed_presence() {
     let items = Items::empty();
     let ingredient=Ingredient::parse(&serde_json::json!({"type":"neoforge:custom_display","base":"minecraft:apple","display":{"type":"minecraft:only_with_component","component":"minecraft:damage","contents":{"type":"minecraft:composite","contents":[{"type":"minecraft:item","item":"minecraft:apple"},{"type":"minecraft:item_stack","item":{"id":"minecraft:diamond_sword","components":{"minecraft:damage":5}}}]}}}),&items).unwrap();
-    let shown = ingredient.shown.unwrap();
+    let shown = ingredient.shown.as_ref().unwrap();
     assert_eq!(shown.len(), 1);
     assert_eq!(&*shown[0].item, "minecraft:diamond_sword");
     assert_eq!(shown[0].damage, 5);

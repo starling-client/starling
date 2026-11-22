@@ -17,11 +17,11 @@
 //! address is never stored.
 use std::collections::{HashMap, HashSet};
 
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use sunrise_telemetry::Kind;
 use sunrise_telemetry::batch::Batch;
 use sunrise_telemetry::payload::{BUCKET_EDGES_MS, Payload, Summary, System};
-use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 
 const BUCKETS: usize = BUCKET_EDGES_MS.len() + 1;
 

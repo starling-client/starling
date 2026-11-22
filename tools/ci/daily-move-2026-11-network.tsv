@@ -1,6 +1,5 @@
 # PACKAGE	TARGET	TEST	SOURCE	REASON  (tests that opened an inet socket, bound, connected or resolved a name when run alone
 # under a preload library recording socket, bind, connect and getaddrinfo, on main plus the fixture commit)
-sunrise-client	lib	game::split::players::tests::offline_guests_join_only_local_servers	crates/sunrise-client/src/game/runtime/split/players.rs:631	network
 sunrise-client-lib	lib	control::tests::a_request_longer_than_the_limit_is_refused	crates/sunrise-client/src/control.rs:561	network
 sunrise-client-lib	lib	control::tests::long_tcp_endpoint_opens	crates/sunrise-client/src/control.rs:525	network
 sunrise-client-lib	lib	control::tests::tcp_endpoint_round_trip	crates/sunrise-client/src/control.rs:536	network

@@ -1,0 +1,11 @@
+ids = [
+    "method:prelude::ClientRenderClientHost::mod_image",
+    "method:prelude::ClientRenderClientHost::create_dynamic_texture",
+    "method:prelude::ClientRenderClientHost::update_dynamic_texture",
+    "method:prelude::ClientRenderClientHost::free_dynamic_texture",
+    "method:prelude::ClientRenderClientHost::dynamic_texture_budget",
+    "type:DynamicTextureBudget",
+    "type:DynamicTextureError",
+]
+why = "Client mods get dynamic textures, vanilla's DynamicTexture in the TextureManager (#1343), kept in the HUD atlas: ClientRenderClientHost::create_dynamic_texture names an RGBA image under the mod's own namespace and puts it in a slot of the atlas's pool, of the smallest of three size classes (64, 256 and 1024 pixels square) that holds it; the id is then a GUI sprite that DrawContext::sprite and the other sprite paths draw. update_dynamic_texture re-patches the same slot, free_dynamic_texture drops the name and returns the slot, and dynamic_texture_budget reads what remains of the mod's 16 images and 4 MiB of pixels. The pool is packed only when a client mod is loaded, and a resource reload keeps every image. Each refusal is named (DynamicTextureError). ClientRenderClientHost::mod_image, one 1024 by 1024 atlas slot shared by every mod, is removed with its slot `sunrise/modimage`."
+migrate = "Replace `host.mod_image(w, h, &rgba)` with `host.create_dynamic_texture(&Identifier::parse(\"mymod:dynamic/image\")?, w, h, &rgba)` once and `host.update_dynamic_texture(...)` with the same id afterwards, and draw `\"mymod:dynamic/image\"` with `DrawContext::sprite` instead of `sunrise/modimage` (its `src` is in the image's own pixels). Handle the `Result` (DynamicTextureError) instead of the bool, and free the image with `free_dynamic_texture` when it is no longer drawn."

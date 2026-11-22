@@ -1,6 +1,8 @@
 //! A buffer that isn't cleared, in passes that leave pixels alone or blend: what is under them.
 //! The expected values are Iris 1.11.7's, measured with probe packs of our own (#9009).
-use super::*;
+use super::depth_test::VERTEX;
+use super::destination_tests::Fixture;
+use std::io::{Cursor, Write};
 
 /// colortex6 is written three times a frame, the first write leaving the right half alone:
 /// there it reads the previous frame's last write, 0.125 (Iris 1.11.7), not the 0.25 written into
@@ -8,6 +10,7 @@ use super::*;
 /// written and reads 0 (Iris 1.11.7). colortex10 is only blended onto (`ONE ONE`), 0.125 a frame:
 /// it grows by 0.125 every frame (Iris 1.11.7 adds once per frame).
 #[test]
+#[ignore = "daily"]
 fn a_buffer_that_is_not_cleared_starts_the_frame_with_its_last_write() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

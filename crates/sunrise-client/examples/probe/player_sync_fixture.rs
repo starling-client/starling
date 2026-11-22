@@ -1,8 +1,8 @@
+use serde_json::Value;
+use std::io::{BufRead, Write};
 use sunrise_client::player_sync::{PositionSender, teleport_velocity};
 use sunrise_core::geometry::Vec3;
 use sunrise_protocol::packets::play::{PlayerPosition, Serverbound as S};
-use serde_json::Value;
-use std::io::{BufRead, Write};
 
 fn number(value: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(value.as_str().unwrap(), 16).unwrap())

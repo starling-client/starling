@@ -4,10 +4,10 @@
 //! measures the same on vanilla 26.3: the sensor's listener holds the event
 //! before any world tick).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::Who;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 pub(super) const PIG: &str = "00000251-0000-0000-0000-000000000001";
 
@@ -65,7 +65,31 @@ pub(super) fn deaths(
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
+fn a_killed_stand_keeps_its_source_in_the_sensor() {
+    game(|game| {
+        assert!(
+            game.run_command("summon armor_stand 6.5 100 8.5 {NoGravity:1b,UUID:[I;593,0,0,2]}")
+        );
+        let stand = game.armor_stands.last().unwrap().id;
+        assert!(game.run_command("kill 00000251-0000-0000-0000-000000000002"));
+        assert!(!game.armor_stands.iter().any(|entity| entity.id == stand));
+        let Some(sunrise_client::containers::BlockEntity::Sculk(sensor)) =
+            game.world.block_entities.get(&(8, 100, 8))
+        else {
+            panic!("sensor missing");
+        };
+        let (event, _) = sensor.vibration.selector.current().unwrap();
+        assert_eq!(
+            event.source,
+            Some(sunrise_client_core::who::EventSource::Entity(stand))
+        );
+        assert_eq!(event.source_uuid, Some([593, 0, 0, 2]));
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn a_killed_mob_posts_its_death_before_the_command_returns() {
     game(|game| {
         let pig = game

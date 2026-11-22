@@ -10,13 +10,21 @@ pub struct Requests {
     pub declared_fluids: HashMap<String, &'static str>,
     pub items: Names,
     pub effects: Names,
+    pub damage_types: Names,
     pub particles: Names,
     pub block_entity_types: Names,
     pub entity_types: Names,
+    pub game_events: Names,
 }
 
-#[derive(Clone, Default)]
-pub struct Names {
+/// The slots and identities of one registry's keys. Cloning shares the tables until one side
+/// changes them, so a test process can hold equal tables of its many installations once.
+#[derive(Clone, Default, PartialEq)]
+pub struct Names(pub std::sync::Arc<Table>);
+
+/// The shared payload of [`Names`]: a registry's requested keys and their resolved slots.
+#[derive(Clone, Default, PartialEq)]
+pub struct Table {
     pub entries: Vec<Request>,
     pub slots: HashMap<String, u32>,
     /// Typed identifier lookup without formatting a string on metadata reads.
@@ -28,7 +36,20 @@ pub struct Names {
     pub order: Vec<u32>,
 }
 
-#[derive(Clone)]
+impl std::ops::Deref for Names {
+    type Target = Table;
+    fn deref(&self) -> &Table {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Names {
+    fn deref_mut(&mut self) -> &mut Table {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub struct Request {
     pub id: String,
     pub mods: Vec<&'static str>,
@@ -80,6 +101,15 @@ impl Names {
             mods.push(mod_id);
         }
         Ok(slot)
+    }
+
+    /// Take back `mod_id`'s request for `id`, as when its only use was dropped. The slot keeps
+    /// its number and an id another mod requested stays requested; with no requester left,
+    /// resolution has nothing to refuse (and returns no value at that position).
+    pub fn withdraw(&mut self, mod_id: &'static str, id: &str) {
+        if let Some(&slot) = self.slots.get(id) {
+            self.entries[slot as usize].mods.retain(|m| *m != mod_id);
+        }
     }
 
     pub fn id(&self, slot: u32) -> Option<&str> {
@@ -138,6 +168,34 @@ impl Names {
         } else {
             Err(errors)
         }
+    }
+}
+
+/// A resolved entity registry with classification indexed by the same load-owned slots.
+pub struct EntityTypes {
+    names: Names,
+    living: Box<[Option<bool>]>,
+}
+
+impl EntityTypes {
+    /// Attach the living classification to the slots of the completed name table.
+    pub fn new(names: Names, mut is_living: impl FnMut(&str) -> Option<bool>) -> Self {
+        let living = names
+            .entries
+            .iter()
+            .map(|entry| is_living(&entry.id))
+            .collect();
+        Self { names, living }
+    }
+
+    /// The completed entity type names and registration order.
+    pub fn names(&self) -> &Names {
+        &self.names
+    }
+
+    /// Living classification of an exact registered type id, or None if unknown.
+    pub fn is_living(&self, id: &str) -> Option<bool> {
+        self.living[*self.names.slots.get(id)? as usize]
     }
 }
 
@@ -258,7 +316,8 @@ pub fn dimension_id(slot: u32) -> Option<&'static str> {
 #[derive(Default)]
 pub struct Effects {
     pub names: Names,
-    pub indices: Vec<usize>,
+    /// Registry index per retained key slot; withdrawn absent requests keep an empty slot.
+    pub indices: Vec<Option<usize>>,
     pub keys: Vec<u32>,
 }
 
@@ -312,14 +371,31 @@ pub fn resolve_effects<'a>(
             .request("sunrise", id)
             .expect("registry owns valid ids");
     }
-    let indices = names.resolve(&mut resolve, |mod_id, id| {
-        EffectResolutionError::UnknownEffect {
-            mod_id,
-            id: id.to_owned(),
-        }
-    })?;
+    let mut errors = Vec::new();
+    let indices: Vec<_> = names
+        .entries
+        .iter()
+        .map(|entry| {
+            let index = resolve(&entry.id);
+            if index.is_none() {
+                errors.extend(entry.mods.iter().map(|&mod_id| {
+                    EffectResolutionError::UnknownEffect {
+                        mod_id,
+                        id: entry.id.clone(),
+                    }
+                }));
+            }
+            index
+        })
+        .collect();
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let mut keys = vec![u32::MAX; all.len()];
     for (slot, &index) in indices.iter().enumerate() {
+        let Some(index) = index else {
+            continue;
+        };
         let Some(key) = keys.get_mut(index) else {
             return Err(vec![EffectResolutionError::InvalidIndex {
                 id: names.entries[slot].id.clone(),

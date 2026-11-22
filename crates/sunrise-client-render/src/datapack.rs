@@ -2,6 +2,7 @@
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
 use crate::resource_source::ResourceSource;
+use sunrise_world::loot::RecipePriorityLayer;
 mod slot_sources;
 use crate::zip::Zip;
 use std::{
@@ -115,6 +116,11 @@ impl DataPack {
         }
     }
 }
+/// Compare repository IDs as `PackRepository`'s TreeMap compares its keys.
+pub fn compare_ids(a: &str, b: &str) -> std::cmp::Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
 /// The packs in `<world>/datapacks`, sorted by name.
 pub fn discover(world: &Path) -> Vec<DataPack> {
     discover_folder(&world.join("datapacks"))
@@ -168,7 +174,7 @@ pub(crate) fn discover_folder_with(
             });
         }
     }
-    packs.sort_by(|a, b| a.id.cmp(&b.id));
+    packs.sort_by(|a, b| compare_ids(&a.id, &b.id));
     packs
 }
 /// `Pack.readPackMetadata`: even its fallback codec requires a pack section
@@ -232,7 +238,7 @@ pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
             packs.push(pack);
         }
     }
-    packs.sort_by(|a, b| a.id.cmp(&b.id));
+    packs.sort_by(|a, b| compare_ids(&a.id, &b.id));
     packs
 }
 /// The packs of `<world>/datapacks` plus the resources root's feature packs:
@@ -240,6 +246,7 @@ pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
 pub fn discover_with_features(world_root: &Path, resources: &Path) -> Vec<DataPack> {
     let mut packs = discover(world_root);
     packs.extend(feature_packs(resources));
+    packs.sort_by(|a, b| compare_ids(&a.id, &b.id));
     packs
 }
 
@@ -585,16 +592,10 @@ fn stringify(tag: &Tag) -> String {
 }
 /// `DecimalFormat("#")` with up to 15 fraction digits.
 fn decimal(v: f64) -> String {
-    if v.is_nan() {
-        return "NaN".into();
-    }
-    let s = format!("{v:.15}");
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s == "-0" || s.is_empty() {
-        "0".into()
-    } else {
-        s.to_owned()
-    }
+    use sunrise_core::java_number::{DecimalPattern, format_decimal};
+    // FloatTag.valueOf and DoubleTag.valueOf collapse signed zero. A negative
+    // nonzero argument that later rounds to zero must still come out as -0.
+    format_decimal(if v == 0.0 { 0.0 } else { v }, DecimalPattern::Macro)
 }
 fn substitute(template: &str, values: &BTreeMap<&str, String>) -> String {
     let mut out = String::new();
@@ -718,18 +719,22 @@ pub struct DataStore {
     pub slot_source_tags: BTreeMap<String, Vec<TagEntryOf>>,
     /// The content tables' raw files from the packs after the built-in one:
     /// Server JSON resources (recipes, loot, enchantments, songs, instruments,
-    /// predicates, modifiers, advancements, registries, data maps and tags), by
+    /// predicates, modifiers, advancements, registries, world clocks, data maps and tags), by
     /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
     /// merge them over what they read from the resource root.
     pub files: BTreeMap<String, Vec<Vec<u8>>>,
+    /// All copies of the recipe-priority resource in pack order, with their original source.
+    pub priority_layers: Vec<RecipePriorityLayer>,
+    /// Failed reads of the highest-priority resources, keyed like `files`.
+    pub file_errors: BTreeMap<String, String>,
     /// Functions that failed to parse (id, message), for logging.
     pub errors: Vec<(String, String)>,
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
 /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `trade_set/`,
 /// `villager_trade/`, `dialog/`, `damage_type/`, `dimension_type/`, `data_maps/`, enchantments, songs,
-/// instruments, predicates, item modifiers or `tags/<sub>/`, where the id keeps the sub
-/// path so a nested tag kind stays addressable.
+/// instruments, painting variants, banner patterns, predicates, item modifiers, `world_clock/`,
+/// `worldgen/biome/` or `tags/<sub>/`, where the id keeps the subpath for nested tag kinds.
 fn content_id(file: &str) -> Option<String> {
     let rest = file.strip_prefix("data/")?;
     let (ns, rest) = rest.split_once('/')?;
@@ -737,13 +742,19 @@ fn content_id(file: &str) -> Option<String> {
     let kind = match kind {
         "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
         | "villager_trade" | "dialog" | "damage_type" | "dimension_type" | "data_maps"
-        | "enchantment" | "jukebox_song" | "instrument" | "predicate" | "item_modifier" => kind,
+        | "enchantment" | "jukebox_song" | "instrument" | "painting_variant" | "banner_pattern"
+        | "predicate" | "item_modifier" | "world_clock" => kind,
+        "worldgen" => {
+            return resource_id(file, "worldgen/biome", ".json")
+                .map(|id| format!("worldgen/biome/{id}"));
+        }
         // A tag id is `{ns}:{path-under-tags}` (`tags/worldgen/biome/
         // test:sub/mytag`), the whole path after the namespace, so nested
         // registries keep their directory (`TagLoader`'s id shape).
         "tags" => {
             return Some(format!("tags/{ns}:{}", rest.strip_suffix(".json")?));
         }
+        kind if crate::providers::NUMBER_PROVIDER_KINDS.contains(&kind) => kind,
         _ => return None,
     };
     Some(format!("{kind}/{ns}:{}", rest.strip_suffix(".json")?))
@@ -768,13 +779,12 @@ fn resource_id(file: &str, kind: &str, ext: &str) -> Option<String> {
 pub fn registry_files(
     packs: &[&DataPack],
     registries: &[(&str, &str)],
-    fallback: bool,
-    mut accepts: impl FnMut(&str, &str, &[u8]) -> bool,
+    mut accepts: impl FnMut(&str, &[u8]) -> bool,
 ) -> Result<BTreeMap<String, Vec<(String, Vec<u8>)>>, Box<mod_api::DatapackLoadError>> {
     let mut kinds: Vec<&str> = registries.iter().map(|(namespace, _)| *namespace).collect();
     kinds.sort_unstable();
     kinds.dedup();
-    let mut sources: BTreeMap<String, Vec<&DataPack>> = BTreeMap::new();
+    let mut sources = BTreeMap::new();
     for pack in packs {
         for file in pack.list_kinds(&kinds) {
             let in_registry = file
@@ -790,111 +800,141 @@ pub fn registry_files(
                         })
                 });
             if in_registry {
-                sources.entry(file).or_default().push(pack);
+                sources.insert(file, pack);
             }
         }
     }
     let mut files = BTreeMap::new();
     let mut total = 0;
-    for (file, packs) in sources {
-        for pack in packs.into_iter().rev() {
-            // Read at most the custom-registry limit plus a refusal byte, including
-            // decompressed output. No losing payload remains resident.
-            let bytes = pack
-                .source
-                .read_head(&file, mod_api::MAX_DATAPACK_ENTRY_BYTES as u64 + 1)
-                .unwrap_or_default();
-            let oversized = bytes.len() > mod_api::MAX_DATAPACK_ENTRY_BYTES;
-            if oversized || accepts(&file, &pack.id, &bytes) {
-                total += bytes.len();
-                if !oversized && total > mod_api::MAX_SNAPSHOT_BYTES {
-                    let (namespace, path) = registries
-                        .iter()
-                        .find(|(namespace, path)| {
-                            file.splitn(3, '/').nth(2).is_some_and(|rest| {
-                                rest.starts_with(&format!("{namespace}/{path}/"))
-                            })
-                        })
-                        .expect("listed custom registry file");
-                    let rest = file.strip_prefix("data/").unwrap();
-                    let (entry_namespace, rest) = rest.split_once('/').unwrap();
-                    let entry = rest
-                        .strip_prefix(&format!("{namespace}/{path}/"))
-                        .unwrap()
-                        .strip_suffix(".json")
-                        .unwrap();
-                    return Err(Box::new(mod_api::DatapackLoadError {
-                        registry: format!("{namespace}:{path}"),
-                        entry: format!("{entry_namespace}:{entry}"),
-                        file,
-                        pack: pack.id.clone(),
-                        reason: mod_api::DatapackLoadReason::CandidateTooLarge,
-                    }));
-                }
-                files.insert(file.clone(), vec![(pack.id.clone(), bytes)]);
-                break;
-            }
-            if !fallback {
-                break;
-            }
+    for (file, pack) in sources {
+        // Read at most the custom-registry limit plus a refusal byte, including
+        // decompressed output. A rejected winner never reveals a lower file.
+        let bytes = pack
+            .source
+            .read_head(&file, mod_api::MAX_DATAPACK_ENTRY_BYTES as u64 + 1)
+            .unwrap_or_default();
+        let oversized = bytes.len() > mod_api::MAX_DATAPACK_ENTRY_BYTES;
+        if !oversized && !accepts(&file, &bytes) {
+            continue;
         }
+        total += bytes.len();
+        if !oversized && total > mod_api::MAX_SNAPSHOT_BYTES {
+            let (namespace, path) = registries
+                .iter()
+                .find(|(namespace, path)| {
+                    file.splitn(3, '/')
+                        .nth(2)
+                        .is_some_and(|rest| rest.starts_with(&format!("{namespace}/{path}/")))
+                })
+                .expect("listed custom registry file");
+            let rest = file.strip_prefix("data/").unwrap();
+            let (entry_namespace, rest) = rest.split_once('/').unwrap();
+            let entry = rest
+                .strip_prefix(&format!("{namespace}/{path}/"))
+                .unwrap()
+                .strip_suffix(".json")
+                .unwrap();
+            return Err(Box::new(mod_api::DatapackLoadError {
+                registry: format!("{namespace}:{path}"),
+                entry: format!("{entry_namespace}:{entry}"),
+                file,
+                pack: pack.id.clone(),
+                reason: mod_api::DatapackLoadReason::CandidateTooLarge,
+            }));
+        }
+        files.insert(file, vec![(pack.id.clone(), bytes)]);
     }
     Ok(files)
 }
 
+/// Read the singleton at NeoForge's resource location. An absent file is not a layer;
+/// I/O errors on a supplied file retain the identity used by the recipe loader's warning.
+pub fn read_recipe_priority_layer(
+    pack: &str,
+    source: &ResourceSource,
+) -> Option<RecipePriorityLayer> {
+    let path = sunrise_mod_package::content::RECIPE_PRIORITIES_PATH;
+    let contents = match source.read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !source.contains(path) => {
+            return None;
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    Some(RecipePriorityLayer {
+        pack: pack.to_owned(),
+        path,
+        contents,
+    })
+}
+
 impl DataStore {
     pub fn load(packs: &[&DataPack]) -> Self {
-        Self::load_impl(packs, None)
-    }
-    /// Command resources and function tags share the owning server load's
-    /// conditions; raw JSON stacks remain intact for world-table readers.
-    pub fn load_with_conditions(
-        packs: &[&DataPack],
-        conditions: &sunrise_world::conditions::LoadConditions,
-    ) -> Self {
-        Self::load_impl(packs, Some(conditions))
-    }
-    fn load_impl(
-        packs: &[&DataPack],
-        conditions: Option<&sunrise_world::conditions::LoadConditions>,
-    ) -> Self {
+        let mut kinds: Vec<_> = [
+            "advancement",
+            "banner_pattern",
+            "damage_type",
+            "data_maps",
+            "dialog",
+            "dimension_type",
+            "enchantment",
+            "function",
+            "instrument",
+            "item_modifier",
+            "jukebox_song",
+            "loot_table",
+            "painting_variant",
+            "predicate",
+            "recipe",
+            "recipe_filter",
+            "slot_source",
+            "tags",
+            "trade_set",
+            "villager_trade",
+            "world_clock",
+            "worldgen/biome",
+        ]
+        .into_iter()
+        .chain(crate::providers::NUMBER_PROVIDER_KINDS)
+        .collect();
+        kinds.sort_unstable();
         let mut s = Self::default();
         for pack in packs {
+            let builtin = pack.id == "vanilla";
+            // The prepared root supplies the baseline to the recipe loader directly.
+            if !builtin {
+                let sources = pack.source().named_sources();
+                if sources.is_empty() {
+                    s.priority_layers
+                        .extend(read_recipe_priority_layer(&pack.id, pack.source()));
+                } else {
+                    s.priority_layers.extend(
+                        sources
+                            .iter()
+                            .filter_map(|(id, source)| read_recipe_priority_layer(id, source)),
+                    );
+                }
+            }
             // `tags` walks the whole tags tree, so a `tags/function` file is
             // listed by both kinds: handle every file once.
             let mut seen = std::collections::BTreeSet::new();
-            let builtin = pack.id == "vanilla";
-            for f in pack.list_kinds(&[
-                "advancement",
-                "damage_type",
-                "data_maps",
-                "dialog",
-                "dimension_type",
-                "enchantment",
-                "function",
-                "instrument",
-                "item_modifier",
-                "jukebox_song",
-                "loot_table",
-                "predicate",
-                "recipe",
-                "recipe_filter",
-                "slot_source",
-                "tags",
-                "trade_set",
-                "villager_trade",
-            ]) {
+            for f in pack.list_kinds(&kinds) {
                 if !seen.insert(f.clone()) {
                     continue;
                 }
                 // Preserve JSON stacks independently of the command views
                 // below. World-table readers evaluate the winning resource's
                 // conditions using their captured server inventory.
-                if !builtin
-                    && let Some(id) = content_id(&f)
-                    && let Some(bytes) = pack.read(&f)
-                {
-                    s.files.entry(id).or_default().push(bytes);
+                if !builtin && let Some(id) = content_id(&f) {
+                    match pack.source().read(&f) {
+                        Ok(bytes) => {
+                            s.file_errors.remove(&id);
+                            s.files.entry(id).or_default().push(bytes);
+                        }
+                        Err(error) => {
+                            s.file_errors.insert(id, format!("{}: {error}", pack.id));
+                        }
+                    }
                 }
                 if let Some(id) = resource_id(&f, "function", ".mcfunction")
                     && let Some(bytes) = pack.read(&f)
@@ -957,12 +997,33 @@ impl DataStore {
                 }
             }
         }
-        if let Some(conditions) = conditions {
-            s.predicates
-                .retain(|id, value| conditions.allows_id(value, "predicate", id));
-            s.item_modifiers
-                .retain(|id, value| conditions.allows_id(value, "item_modifier", id));
-        }
+        s.predicates.retain(|id, value| {
+            match sunrise_world::loot::validate_loot_condition(value) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("predicate {id} rejected: {error}");
+                    false
+                }
+            }
+        });
+        s.item_modifiers.retain(|id, value| {
+            match sunrise_world::loot::validate_item_modifier(value) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("item modifier {id} rejected: {error}");
+                    false
+                }
+            }
+        });
+        s.slot_sources.retain(
+            |id, value| match sunrise_world::loot::validate_slot_source(value) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("slot source {id} rejected: {error}");
+                    false
+                }
+            },
+        );
         s
     }
     /// `ServerFunctionLibrary.getTag`: only valid function tags expand
@@ -1302,6 +1363,56 @@ pub fn worldgen_overrides_over(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    #[test]
+    fn neoforge_recipe_priorities_keep_pack_order_and_read_errors() {
+        use sunrise_mod_package::content::RECIPE_PRIORITIES_PATH;
+        let root =
+            std::env::temp_dir().join(format!("sunrise-priority-packs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for pack in ["a", "b", "c", "other_namespace"] {
+            let dir = root.join(format!("datapacks/{pack}"));
+            fs::create_dir_all(dir.join("data/neoforge")).unwrap();
+            fs::write(
+                dir.join("pack.mcmeta"),
+                r#"{"pack":{"description":"","pack_format":15}}"#,
+            )
+            .unwrap();
+            let path = dir.join(RECIPE_PRIORITIES_PATH);
+            match pack {
+                "a" => fs::write(path, br#"{"entries":{"test:b":5}}"#).unwrap(),
+                "b" => fs::create_dir(path).unwrap(), // The path exists but cannot be read as a file.
+                "c" => fs::write(path, br#"{"replace":true}"#).unwrap(),
+                _ => {
+                    fs::create_dir_all(dir.join("data/test")).unwrap();
+                    fs::write(dir.join("data/test/recipe_priorities.json"), b"{").unwrap();
+                }
+            }
+        }
+        let packs = discover(&root);
+        let store = DataStore::load(&packs.iter().collect::<Vec<_>>());
+        let layers = store.priority_layers;
+        assert_eq!(
+            layers
+                .iter()
+                .map(|layer| layer.pack.as_str())
+                .collect::<Vec<_>>(),
+            ["file/a", "file/b", "file/c"]
+        );
+        assert!(
+            layers
+                .iter()
+                .all(|layer| layer.path == RECIPE_PRIORITIES_PATH)
+        );
+        assert_eq!(
+            layers[0].contents.as_ref().unwrap(),
+            br#"{"entries":{"test:b":5}}"#
+        );
+        assert!(layers[1].contents.is_err());
+        assert_eq!(layers[2].contents.as_ref().unwrap(), br#"{"replace":true}"#);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn a_pack_level_outside_the_worlds_folder_is_not_a_level() {
@@ -1766,6 +1877,21 @@ mod tests {
         assert_eq!(plain.instantiate(None).unwrap(), ["say 1"]);
     }
 
+    #[test]
+    fn macro_arguments_use_decimal_format_not_fixed_precision() {
+        // Temurin 25 DecimalFormat("#") with 15 fractional places.
+        for (tag, expected) in [
+            (Tag::Float(0.1_f32.to_bits()), ".100000001490116"),
+            (Tag::Double(0.5_f64.to_bits()), ".5"),
+            (Tag::Double((-0.0_f64).to_bits()), "0"),
+            (Tag::Double((-1e-16_f64).to_bits()), "-0"),
+            (Tag::Double(f64::INFINITY.to_bits()), "∞"),
+            (Tag::Double(1e23_f64.to_bits()), "99999999999999990000000"),
+        ] {
+            assert_eq!(stringify(&tag), expected);
+        }
+    }
+
     /// `StringTemplate.fromString` throws "No variables in macro" for a `$`
     /// line with no `$(…)`, so `FunctionBuilder.addMacro` fails and
     /// `ServerFunctionLibrary.reload` leaves the whole file out: `/function`
@@ -1996,18 +2122,35 @@ mod tests {
         }
         assert!(store.predicates.contains_key("demo:nested/entry"));
         assert!(store.item_modifiers.contains_key("demo:nested/entry"));
-        let filtered = DataStore::load_with_conditions(
-            &packs.iter().collect::<Vec<_>>(),
-            &sunrise_world::conditions::LoadConditions::vanilla(),
-        );
-        assert!(filtered.predicates.is_empty());
-        assert!(filtered.item_modifiers.is_empty());
-        assert_eq!(filtered.files, store.files);
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// #1381: predicates and item modifiers carry no element conditions: a
+    /// nested key stays, unevaluated.
     #[test]
-    fn command_json_selects_before_conditions_and_function_tags_gate_each_layer() {
+    fn predicates_and_item_modifiers_keep_list_elements_conditions_as_data() {
+        let root =
+            std::env::temp_dir().join(format!("sunrise-1381-datapack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = serde_json::json!([{"type": "absent:condition"}]);
+        let predicate = serde_json::json!({"condition": "minecraft:all_of", "terms": [
+            {"condition": "minecraft:random_chance", "chance": 0.5, "neoforge:conditions": nested}]});
+        let modifier = serde_json::json!([
+            {"function": "minecraft:set_count", "count": 2, "neoforge:conditions": nested}]);
+        for (kind, value) in [("predicate", &predicate), ("item_modifier", &modifier)] {
+            let file = root.join(format!("data/demo/{kind}/entry.json"));
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, value.to_string()).unwrap();
+        }
+        let pack = DataPack::from_source("pack".into(), ResourceSource::directory(root.clone()));
+        let store = DataStore::load(&[&pack]);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(store.predicates.get("demo:entry"), Some(&predicate));
+        assert_eq!(store.item_modifiers.get("demo:entry"), Some(&modifier));
+    }
+
+    #[test]
+    fn function_tags_ignore_top_level_load_conditions() {
         let root =
             std::env::temp_dir().join(format!("sunrise-command-conditions-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -2019,15 +2162,6 @@ mod tests {
             } else {
                 serde_json::json!([])
             };
-            for kind in ["predicate", "item_modifier"] {
-                let file = folder.join(format!("data/demo/{kind}/entry.json"));
-                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-                std::fs::write(
-                    file,
-                    serde_json::json!({"layer":name,"neoforge:conditions":conditions}).to_string(),
-                )
-                .unwrap();
-            }
             let dir = folder.join("data/demo/tags/function");
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("load.json"), serde_json::json!({"replace":true,"values":[format!("demo:{name}")],"neoforge:conditions":conditions}).to_string()).unwrap();
@@ -2041,28 +2175,45 @@ mod tests {
                 ResourceSource::directory(folder),
             ));
         }
-        let refs = packs.iter().collect::<Vec<_>>();
-        let off = DataStore::load_with_conditions(
-            &refs,
-            &sunrise_world::conditions::LoadConditions::vanilla(),
-        );
-        assert!(off.predicates.is_empty());
-        assert!(off.item_modifiers.is_empty());
+        let store = DataStore::load(&packs.iter().collect::<Vec<_>>());
         assert_eq!(
-            off.function_tags["demo:load"],
+            store.function_tags["demo:load"],
             [("demo:high".into(), true, false)]
         );
-        assert!(off.function_tags["demo:unknown"].is_empty());
-        let enabled = sunrise_world::conditions::LoadConditions::new(["provider"]);
-        let on = DataStore::load_with_conditions(&refs, &enabled);
-        assert_eq!(on.predicates["demo:entry"]["layer"], "high");
-        assert_eq!(on.item_modifiers["demo:entry"]["layer"], "high");
-        assert_eq!(
-            on.function_tags["demo:load"],
-            [("demo:high".into(), true, false)]
-        );
-        assert_eq!(on.files, off.files);
+        assert!(store.function_tags["demo:unknown"].is_empty());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn newly_discovered_packs_follow_utf16_after_saved_selections() {
+        let world = temp_folder().unwrap();
+        for name in ["z-saved", "a-new", "\u{e000}", "\u{10000}"] {
+            let dir = world.join("datapacks").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("pack.mcmeta"),
+                r#"{"pack":{"description":"order"}}"#,
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            world.join("datapacks.json"),
+            r#"{"enabled":["file/z-saved"]}"#,
+        )
+        .unwrap();
+        let packs = discover(&world);
+        let selected = enabled_ids(&world, &packs, &[]);
+        std::fs::remove_dir_all(world).unwrap();
+        // Temurin 25.0.5 natural String order for the three newly added IDs.
+        assert_eq!(
+            selected,
+            [
+                "file/z-saved",
+                "file/a-new",
+                "file/\u{10000}",
+                "file/\u{e000}"
+            ]
+        );
     }
 
     #[test]
@@ -2187,7 +2338,7 @@ mod tests {
             ));
         }
         let refs = packs.iter().collect::<Vec<_>>();
-        let files = registry_files(&refs, &[("example", "spell")], true, |_, _, _| true).unwrap();
+        let files = registry_files(&refs, &[("example", "spell")], |_, _| true).unwrap();
         assert_eq!(
             files.keys().map(String::as_str).collect::<Vec<_>>(),
             [
@@ -2199,19 +2350,21 @@ mod tests {
             files["data/example/example/spell/fire.json"],
             vec![("high".to_owned(), b"high".to_vec())]
         );
+        assert!(registry_files(&refs, &[], |_, _| true).unwrap().is_empty());
         assert!(
-            registry_files(&refs, &[], true, |_, _, _| true)
+            registry_files(&refs, &[("example", "spell")], |_, bytes| bytes == b"low")
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "a rejected winning resource does not reveal the lower version"
         );
         // Oversized losing files are never read; an oversized winner is retained
         // only as the bounded refusal prefix, not as its full payload.
         let path = "data/example/example/spell/fire.json";
         std::fs::write(root.join("low").join(path), vec![b' '; 1_048_577]).unwrap();
-        let files = registry_files(&refs, &[("example", "spell")], true, |_, _, _| true).unwrap();
+        let files = registry_files(&refs, &[("example", "spell")], |_, _| true).unwrap();
         assert_eq!(files[path], vec![("high".to_owned(), b"high".to_vec())]);
         std::fs::write(root.join("high").join(path), vec![b' '; 1_048_578]).unwrap();
-        let files = registry_files(&refs, &[("example", "spell")], true, |_, _, _| true).unwrap();
+        let files = registry_files(&refs, &[("example", "spell")], |_, _| true).unwrap();
         assert_eq!(files[path].len(), 1);
         assert_eq!(files[path][0].1.len(), 1_048_577);
         let _ = std::fs::remove_dir_all(&root);

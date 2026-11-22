@@ -10,6 +10,7 @@
 //! `EntityRenderersEvent.RegisterLayerDefinitions`), and `bake_layer`
 //! bakes one of them or a vanilla layer (`EntityModelSet.bakeLayer`).
 
+use crate::RegisterLayerDefinitionsEvent;
 use sunrise_core::geometry::Direction;
 
 /// `CubeDeformation`: how far a box grows past its size on each side, in
@@ -367,8 +368,6 @@ struct PartNode {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[serde(try_from = "MeshDefinitionData")]
 // exhaustive: private fields; use the builder to create the tree
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(via = String)]
 pub struct MeshDefinition {
     parts: Vec<PartNode>,
 }
@@ -499,6 +498,40 @@ impl LayerDefinition {
         let texture = [self.texture_width as f32, self.texture_height as f32];
         self.mesh.bake(0, texture)
     }
+}
+
+impl RegisterLayerDefinitionsEvent<'_> {
+    /// Register a supplier for a model layer ID such as `mymod:golem#main`.
+    /// Use `<namespace>:<path>#<layer>` with both delimiters. The namespace and path follow
+    /// vanilla `Identifier` rules (including empty components), and the layer can be any string,
+    /// including empty. When multiple registrations share an ID, the last supplier wins
+    /// and overwritten suppliers never run (matching NeoForge's
+    /// `ClientHooks.registerLayerDefinition`). Exact collisions with vanilla layer keys in
+    /// `entity-models.json` fail client startup (matching vanilla's
+    /// `LayerDefinitions.createRoots`). Malformed IDs and registrations from a phase-refused
+    /// listener never call their supplier. An accepted supplier runs once at client startup to
+    /// build the frozen definition, not when the layer is baked or resources are reloaded.
+    /// Capture owned data in the supplier.
+    pub fn register(
+        &mut self,
+        id: impl Into<String>,
+        supplier: impl Fn() -> LayerDefinition + Send + Sync + 'static,
+    ) {
+        self.layers.push(LayerDefinitionRegistration {
+            id: id.into(),
+            supplier: Box::new(supplier),
+        });
+    }
+}
+
+/// A staged layer supplier; dispatch attributes it to the registering mod.
+// no wire: registration retains executable native code.
+#[non_exhaustive]
+pub struct LayerDefinitionRegistration {
+    /// The model layer ID, validated when the layer table is frozen.
+    pub id: String,
+    /// The supplier called when assembling the frozen table.
+    pub supplier: Box<dyn Fn() -> LayerDefinition + Send + Sync>,
 }
 
 /// A corner of a baked face (`ModelPart.Vertex`): in texels in its part's
@@ -780,6 +813,92 @@ impl TryFrom<String> for ModelPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panicking_layer_registration_discards_suppliers_without_stopping_dispatch() {
+        use crate::__private::{HookPanicReport, take_hook_panics};
+        use crate::{Hooks, ModEntry, RegistrationContext};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Capture(Arc<AtomicUsize>, bool);
+        impl Drop for Capture {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                assert!(!self.1, "supplier capture panicked on drop");
+            }
+        }
+
+        struct Failing(Arc<AtomicUsize>);
+        #[crate::__subscriptions]
+        impl Hooks for Failing {
+            fn register_layer_definitions(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterLayerDefinitionsEvent<'_>,
+            ) {
+                for (id, panic_on_drop) in
+                    [("failing:first#main", true), ("failing:second#main", false)]
+                {
+                    let capture = Capture(self.0.clone(), panic_on_drop);
+                    event.register(id, move || {
+                        let _ = &capture;
+                        panic!("an aborted supplier must not run");
+                    });
+                }
+                panic!("registrar panicked after staging suppliers");
+            }
+        }
+
+        struct Healthy(&'static str);
+        #[crate::__subscriptions]
+        impl Hooks for Healthy {
+            fn register_layer_definitions(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterLayerDefinitionsEvent<'_>,
+            ) {
+                event.register(self.0, || {
+                    LayerDefinition::create(MeshDefinition::new(), 64, 64)
+                });
+            }
+        }
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        crate::testing::with_dispatch(
+            vec![
+                ModEntry::new("earlier", Box::new(Healthy("earlier:layer#main"))),
+                ModEntry::new("failing", Box::new(Failing(dropped.clone()))),
+                ModEntry::new("later", Box::new(Healthy("later:layer#main"))),
+            ]
+            .into(),
+            || {
+                let mut layers = Vec::new();
+                crate::dispatch_register_layer_definitions(
+                    &RegistrationContext::new(),
+                    &mut layers,
+                );
+                assert_eq!(dropped.load(Ordering::Relaxed), 2);
+                assert_eq!(
+                    layers
+                        .iter()
+                        .map(|layer| (layer.mod_id, layer.answer.id.as_str()))
+                        .collect::<Vec<_>>(),
+                    [
+                        ("earlier", "earlier:layer#main"),
+                        ("later", "later:layer#main")
+                    ],
+                );
+                assert_eq!(
+                    take_hook_panics(),
+                    [HookPanicReport {
+                        mod_id: "failing",
+                        hook: "register_layer_definitions",
+                    }]
+                );
+            },
+        );
+    }
 
     fn polygon(part: &ModelPart, i: usize) -> ([[f32; 3]; 4], [[f32; 2]; 4], [f32; 3]) {
         let p = &part.polygons[i];

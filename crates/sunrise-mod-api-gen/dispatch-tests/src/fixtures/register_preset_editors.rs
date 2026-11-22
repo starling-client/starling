@@ -1,3 +1,3 @@
-mod api {
-    pub struct PresetEditor;
+mod stubs {
+    pub(super) struct PresetEditorFactoryRegistration;
 }

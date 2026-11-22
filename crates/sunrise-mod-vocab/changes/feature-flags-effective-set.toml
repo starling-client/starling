@@ -1,0 +1,3 @@
+ids = ["type:FeatureFlags"]
+why = "FeatureFlags now stores the effective set. An empty set stays empty when read or sent over Wire; the level save decoder supplies the vanilla set when its tag is omitted."
+migrate = "If you construct a vanilla-default set, pass minecraft:vanilla explicitly. Passing an empty list means no flags."

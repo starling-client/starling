@@ -648,10 +648,16 @@ impl Game<'_> {
                 }
                 Species::Turtle => {
                     m.damage(
-                        crate::game::entity::damage_level_of!(self),
+                        crate::game::entity::damage_level_of!(
+                            self,
+                            &sunrise_client::health::NO_ATTACK,
+                            no_push,
+                            None
+                        ),
                         f32::MAX,
                         damage,
                     );
+                    self.finish_mob_damage_at(i);
                     continue;
                 }
                 Species::Creeper => {
@@ -673,12 +679,24 @@ impl Game<'_> {
                 _ => {}
             }
             // Entity.thunderHit: burning (8 seconds) and 5 lightning damage.
-            m.fire_ticks += 1;
-            if m.fire_ticks == 0 {
-                m.ignite_for_ticks(160);
+            if !m.mod_fire_immune {
+                m.fire_ticks += 1;
+                if m.fire_ticks == 0 {
+                    m.ignite_for_ticks(160);
+                }
             }
 
-            m.damage(crate::game::entity::damage_level_of!(self), 5.0, damage);
+            m.damage(
+                crate::game::entity::damage_level_of!(
+                    self,
+                    &sunrise_client::health::NO_ATTACK,
+                    no_push,
+                    None
+                ),
+                5.0,
+                damage,
+            );
+            self.finish_mob_damage_at(i);
         }
         for entity in powered {
             self.native_creeper_power(entity, [at[0], at[1], at[2]]);
@@ -774,7 +792,9 @@ impl Game<'_> {
                 && meets([p.x, p.y, p.z], 0.3, 1.8)
                 && g.lightning_may_strike(g.own_entity_id() as u32, bolt)
             {
-                if let Some(p) = g.player.as_mut() {
+                if let Some(p) = g.player.as_mut()
+                    && !p.mod_fire_immune
+                {
                     p.fire_ticks += 1;
                     if p.fire_ticks == 0
                         && let Err(error) = p.ignite_for_ticks(160)
@@ -874,15 +894,16 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_client::mobs::{Anim, Brain, Mob, MobType, Part, Species};
-    use sunrise_core::geometry::Vec3;
+    use crate::game::native_entity_refs::tests::collect_entities_in;
     use mod_api::{self, ServerHost};
     use std::sync::Arc;
+    use sunrise_client::mobs::{Anim, Brain, Mob, MobType, Part, Species};
+    use sunrise_core::geometry::Vec3;
 
     /// `LightningBolt.spawnFire` places nothing, and draws no extra sources,
     /// unless `canSpreadFireAround` passes at the bolt (#11376).
     #[test]
-    #[ignore = "needs prepared resources (SUNRISE_TEST_RESOURCES)"]
+    #[ignore = "daily"]
     fn a_bolt_away_from_players_starts_no_fire() {
         use sunrise_client::gamerules::Value;
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -938,7 +959,7 @@ mod tests {
     /// in front of the rod whether or not redstone experiments are on (#14371):
     /// a wire beside that block is strongly powered by the struck rod.
     #[test]
-    #[ignore = "needs prepared resources (SUNRISE_TEST_RESOURCES)"]
+    #[ignore = "daily"]
     fn a_struck_rod_updates_the_wire_beside_the_block_behind_it() {
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);
@@ -984,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn conversion_post_reads_original_and_lightning_outcome() {
         use mod_api::{
             EntityJoinLevelEvent, EquipmentSlot, Flow, Hooks, LivingConversionPostEvent,
@@ -1036,34 +1057,40 @@ mod tests {
             ) {
                 let old = host
                     .entity(event.entity)
-                    .and_then(|entity| entity.kind(host).map(|kind| kind.id(host)));
+                    .and_then(|entity| entity.kind(host)?.id(host))
+                    .map(|name| name.as_str().to_owned());
                 let outcome = host.entity(event.converted);
                 let weapon = outcome
                     .and_then(|entity| host.living(entity))
-                    .and_then(|living| living.equipment(host, EquipmentSlot::MainHand))
-                    .map(|stack| {
-                        mod_api::__private::item_key_id(stack.item())
-                            .unwrap()
-                            .to_string()
+                    .and_then(|living| {
+                        living.with_equipment(host, EquipmentSlot::MainHand, |stack| {
+                            mod_api::__private::item_key_id(stack.item())
+                                .unwrap()
+                                .to_string()
+                        })
                     });
                 let mushrooms = host
                     .level("minecraft:overworld")
                     .and_then(|level| {
-                        level.entities_in(host, [-10.0, 60.0, -10.0], [20.0, 70.0, 20.0])
+                        collect_entities_in(host, level, [-10.0, 60.0, -10.0], [20.0, 70.0, 20.0])
+                            .ok()
                     })
                     .unwrap()
                     .into_iter()
                     .filter_map(|entity| host.item_entity(entity))
-                    .filter_map(|item| item.stack(host))
-                    .filter(|stack| {
-                        mod_api::__private::item_key_id(stack.item())
-                            .unwrap()
-                            .ends_with("mushroom")
+                    .filter(|item| {
+                        item.with_stack(host, |stack| {
+                            mod_api::__private::item_key_id(stack.item())
+                                .unwrap()
+                                .ends_with("mushroom")
+                        }) == Some(true)
                     })
                     .count();
                 self.seen.lock().unwrap().push(SeenConversion {
                     old,
-                    outcome: outcome.and_then(|entity| entity.kind(host).map(|kind| kind.id(host))),
+                    outcome: outcome
+                        .and_then(|entity| entity.kind(host)?.id(host))
+                        .map(|name| name.as_str().to_owned()),
                     weapon,
                     mushrooms,
                 });
@@ -1347,7 +1374,7 @@ mod tests {
     /// the spared one stays a pig, the other becomes a zombified piglin, and
     /// both still count as hit.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn a_mod_spares_one_pig_from_the_bolt() {
         let heard = Arc::default();
         let (spared, struck) = (900, 901);

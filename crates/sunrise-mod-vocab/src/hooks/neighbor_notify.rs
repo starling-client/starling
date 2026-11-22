@@ -9,6 +9,8 @@ pub trait Hooks {
     /// hears, on both paths. Asked for every such update, redstone
     /// included: answer fast. Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -16,5 +18,11 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::neighbor_notify::GameLevel<'_>::native_neighbor_notify"
     )]
-    fn neighbor_notify();
+    fn neighbor_notify(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        skipped_side: Option<Direction>,
+        cancel: &mut bool,
+    );
 }

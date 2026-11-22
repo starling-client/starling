@@ -1,11 +1,11 @@
 //! Emptying a filled bucket from a player's hand: the `empty_contents` Part's say, the guest's
 //! sounds and the client's prediction.
 use super::{Game, Hit};
+use mod_api::HostTransaction;
 use sunrise_client::first_person::UseResult;
 use sunrise_client::items::ItemStack;
 use sunrise_core::{geometry::Direction, position::BlockPos};
 use sunrise_world::level::BucketContent;
-use mod_api::HostTransaction;
 
 impl Game<'_> {
     /// `BucketItem.use`'s `emptyContents` for the acting player's `stack`,

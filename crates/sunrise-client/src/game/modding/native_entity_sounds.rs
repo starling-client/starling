@@ -5,8 +5,8 @@
 //! return None or false for a stale handle, on a client, and for an entity
 //! that is not in the level in place (a player in a parked level).
 use super::{Game, commands::Target};
-use sunrise_client::mobs::Species;
 use mod_api::{EntityRef, SoundSource};
+use sunrise_client::mobs::Species;
 
 /// `Monster`'s sound source is hostile, and so are a few mobs that are not
 /// `Monster`s: `Hoglin`, `Ghast`, `Phantom`, `Shulker` and the slimes
@@ -90,8 +90,16 @@ impl Game<'_> {
                 None
             }
         };
-        self.native_queue_sound(level, sound, at, source, volume, pitch, except)
-            .is_some()
+        self.native_queue_sound(super::native_level_effects::NativeSoundRequest {
+            level,
+            sound,
+            at,
+            source,
+            volume,
+            pitch,
+            except,
+            entity: None,
+        })
     }
     /// `Entity.gameEvent(event)`: game event `event` (`minecraft:step`...)
     /// at the entity's position with the entity as its source, which sculk
@@ -119,22 +127,38 @@ impl Game<'_> {
             },
         )
     }
+    fn resolve_entity_broadcast_event(&self, entity: EntityRef) -> Option<(i32, [f64; 3])> {
+        let target = self.native_entity_target(entity)?;
+        let at = self.target_position(target)?;
+        if !self.native_entity_here(entity) {
+            return None;
+        }
+        let entity_id = i32::try_from(entity.id()).ok()?;
+        Some((entity_id, at))
+    }
     /// `Level.broadcastEntityEvent(entity, id)`: sends entity event `id` (the
     /// byte `Entity.handleEntityEvent` reads: `2` is a hurt flash, `3` a
     /// death, `35` a totem...) to the players tracking the entity and to the
     /// entity itself. True means queued; false for an entity outside the
     /// level in place.
     pub(super) fn entity_broadcast_event(&mut self, entity: EntityRef, id: u8) -> bool {
-        let Some(target) = self.native_entity_target(entity) else {
+        let Some((entity_id, at)) = self.resolve_entity_broadcast_event(entity) else {
             return false;
         };
-        let Some(at) = self.target_position(target) else {
-            return false;
-        };
-        if !self.native_entity_here(entity) {
-            return false;
-        }
-        let Ok(entity_id) = i32::try_from(entity.id()) else {
+        self.emit_level_effect(super::journal_level_write::PendingWrite::EntityEvent {
+            level: self.dim,
+            entity_id,
+            event: id as i8,
+            at,
+        });
+        true
+    }
+    /// Immediate counterpart to `entity_broadcast_event` for unjournaled direct writes whose
+    /// mutation takes effect immediately even inside an open transaction (such as non-player
+    /// `living_hurt_and_break`), keeping the write and its notification on the same side of the
+    /// rollback boundary.
+    pub(super) fn broadcast_entity_event_immediate(&mut self, entity: EntityRef, id: u8) -> bool {
+        let Some((entity_id, at)) = self.resolve_entity_broadcast_event(entity) else {
             return false;
         };
         self.lan_entity_event(entity_id, id as i8, at);
@@ -155,11 +179,11 @@ impl Game<'_> {
 mod tests {
     use super::super::dispense_fixture;
     use super::super::native_entity_refs::tests::with_game;
+    use mod_api::{EntityRef, SoundSource, WorldEpoch};
     use sunrise_client::command::args::GameMode;
     use sunrise_client::mobs::Mob;
     use sunrise_client::motion::PlayerMotion;
     use sunrise_core::geometry::Vec3;
-    use mod_api::{EntityRef, SoundSource, WorldEpoch};
 
     fn spawn(game: &mut super::Game<'_>, id: u32, kind: &str) -> EntityRef {
         let kind = game.res.mob_types().get(kind).unwrap().clone();
@@ -174,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn sound_sources_follow_the_entity_class() {
         with_game(|game| {
             let cow = spawn(game, 10, "minecraft:cow");
@@ -206,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn play_sound_queues_at_the_entity_in_its_source() {
         super::super::native_guest_turn_tests::with_guests(|game| {
             let cow = spawn(game, 10, "minecraft:cow");
@@ -238,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn game_and_entity_events_come_from_the_entity() {
         with_game(|game| {
             let cow = spawn(game, 10, "minecraft:cow");
@@ -260,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn only_a_spectator_player_is_a_spectator() {
         with_game(|game| {
             let cow = spawn(game, 10, "minecraft:cow");

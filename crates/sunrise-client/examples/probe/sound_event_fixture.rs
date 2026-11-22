@@ -1,9 +1,9 @@
 //! Resolves sound instances through Sunrise's sound event registry for
 //! `tools/test_sound_event_parity.py`: `sound_event_fixture ROOT INPUT OUTPUT [NAMES]`.
+use std::io::Write;
 use sunrise_client::sound_engine::{Attenuation, MASTER, SoundEngine, SoundInstance};
 use sunrise_client::sound_events::{Sentinel, SoundRegistry};
 use sunrise_core::random::{LegacyRandom, RandomSource};
-use std::io::Write;
 
 fn bits(v: f32) -> String {
     format!("{:08x}", v.to_bits())

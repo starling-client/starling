@@ -1,0 +1,72 @@
+== top_padding
+read 5 319 5 -> 13 2
+read 5 320 5 -> 0 0
+read 5 335 5 -> 0 0
+read 5 336 5 -> 15 0
+read 53 320 5 -> 15 9
+read 53 335 5 -> 15 9
+read 53 336 5 -> 15 0
+read 101 319 5 -> 15 0
+read 101 320 5 -> 15 0
+read 101 336 5 -> 15 0
+read 101 400 5 -> 15 0
+== bottom_padding
+read 5 -64 5 -> 0 0
+read 5 -65 5 -> 15 1
+read 7 -70 9 -> 10 12
+read 7 -80 9 -> 12 14
+read 7 -81 9 -> 12 0
+read 7 -200 9 -> 12 0
+read 53 -65 5 -> 15 0
+read 53 -70 9 -> 15 0
+read 53 -80 9 -> 15 0
+read 53 -81 9 -> 15 0
+read 101 -65 5 -> 0 0
+read 101 -81 5 -> 0 0
+== omitted_between
+read 3 40 4 -> 2 0
+read 3 47 4 -> 2 0
+read 3 48 4 -> 2 0
+read 3 100 4 -> 2 0
+read 3 143 4 -> 2 0
+read 3 144 4 -> 2 0
+read 3 -17 4 -> 15 0
+read 3 -18 4 -> 15 0
+read 3 -40 4 -> 15 0
+read 3 175 4 -> 13 0
+read 3 176 4 -> 4 0
+read 3 192 4 -> 15 0
+read 3 400 4 -> 15 0
+== unload_beside_neighbour
+read 20 5 5 -> 3 15
+read 20 -10 5 -> 0 0
+read 20 20 5 -> 3 0
+read 20 40 5 -> 15 0
+read 20 -20 5 -> 0 0
+read 20 -50 5 -> 0 0
+read 20 400 5 -> 15 0
+read 20 5 5 -> 15 0
+read 20 -10 5 -> 15 0
+read 20 20 5 -> 15 0
+read 4 5 5 -> 15 0
+read 20 5 5 -> 0 0
+read 20 -10 5 -> 0 0
+== missing_beside_loaded
+read 85 5 85 -> 0 0
+read 85 20 85 -> 0 0
+read 85 40 85 -> 15 0
+read 85 -10 85 -> 0 0
+read 85 -40 85 -> 0 0
+read 85 -100 85 -> 0 0
+read 85 300 85 -> 15 0
+read 150 5 150 -> 15 0
+read 150 -300 150 -> 15 0
+== nosky
+read 5 5 5 -> 0 2
+read 5 100 5 -> 0 0
+read 5 -200 5 -> 0 0
+read 5 400 5 -> 0 0
+read 20 5 5 -> 0 1
+read 20 100 5 -> 0 0
+read 20 400 5 -> 0 0
+read 200 5 5 -> 0 0

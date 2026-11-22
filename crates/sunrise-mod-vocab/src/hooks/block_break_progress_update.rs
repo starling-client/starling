@@ -5,9 +5,11 @@ pub trait Hooks {
     /// A server guest's block-breaking animation changed to `progress` at
     /// `pos` (0 through 9).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_block_break_progress_update",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn block_break_progress_update();
+    fn block_break_progress_update(player: u128, name: &str, pos: [i32; 3], progress: i32);
 }

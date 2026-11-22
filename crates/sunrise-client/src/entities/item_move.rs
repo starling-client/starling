@@ -2,6 +2,7 @@
 //! the move gate (#2414) and the block effects around it, in its own module so
 //! `entities.rs` keeps its size.
 use super::*;
+use crate::motion::BodyMotion;
 impl ItemEntity {
     /// `ItemEntity.tick` up to the blocks' push. The game has just run the
     /// fluid push (`Entity::push_by_fluid`) and passes the heights it found;
@@ -32,7 +33,21 @@ impl ItemEntity {
             blocks,
             context,
         );
-        self.finish_move_block_effects(world, facts, no_physics, blocks, step, context);
+        let motion = BodyMotion {
+            world,
+            collision,
+            facts,
+            blocks,
+            context,
+            side: None,
+        };
+        if let Some(response) = self.move_restitution(motion, step) {
+            self.velocity = response.velocity;
+        }
+        if !no_physics {
+            self.apply_move_and_vanilla_step(motion, step);
+        }
+        self.finish_move_block_effects(world, facts, step);
         step
     }
 
@@ -84,7 +99,7 @@ impl ItemEntity {
         // horizontal speed. The idle branch still runs bubble-column push
         // (`applyEffectsFromBlocksForLastMovements`), so lift builds up and
         // the item moves on the next wake-up (#4558).
-        if !self.on_ground
+        if !self.ground.on_ground
             || horizontal > 1.0e-5
             || self.ticks.wrapping_add(self.id).is_multiple_of(4)
         {
@@ -133,7 +148,7 @@ impl ItemEntity {
                     self.bounds(),
                     wanted,
                     0.0,
-                    self.on_ground,
+                    self.ground.on_ground,
                     self.collision_context(),
                 )
                 .unwrap_or(Vec3::ZERO)
@@ -146,148 +161,135 @@ impl ItemEntity {
                     self.position.z + moved.z,
                 );
             }
+            let physics = !no_physics && !gate.skipped();
+            if physics {
+                let authoritative =
+                    context.side() == sunrise_world::native_load_context::LoopSide::Server;
+                if authoritative || wanted.y.abs() > 0.0 {
+                    self.vertical_collision = moved.y != wanted.y;
+                }
+                BodyMotion {
+                    world,
+                    collision,
+                    facts,
+                    blocks,
+                    context,
+                    side: None,
+                }
+                .record_move(
+                    crate::motion::BodyCollision {
+                        footprint: (self.position, self.bounds()),
+                        movement: (wanted, moved),
+                        authoritative,
+                        context: self.collision_context(),
+                        subject: None,
+                    },
+                    &mut self.ground,
+                );
+            }
+            let restitution = (physics
+                && ((wanted.y.abs() > 0.0 && self.vertical_collision)
+                    || self.ground.horizontal_collision))
+                .then(|| {
+                    let effect = BodyMotion {
+                        world,
+                        collision,
+                        facts,
+                        blocks,
+                        context,
+                        side: None,
+                    }
+                    .legacy_contact(self.position, &self.ground);
+                    (wanted, moved, effect)
+                });
             let mut landed = None;
-            if !no_physics {
-                self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
+            if physics {
                 // Entity.checkFallDamage: the move's drop counts out of water, and a landing
                 // hands the whole fall to the block below (`getOnPosLegacy`).
                 if water_height <= 0.0 && moved.y < 0.0 {
                     self.fall_distance -= f64::from(moved.y as f32);
                 }
-                if self.on_ground {
+                if self.ground.on_ground {
                     if self.fall_distance > 0.0 {
-                        let below = Vec3::new(0.0, -f64::from(0.2_f32), 0.0);
-                        let on = BlockPos::containing(self.position.add_vector(below));
-                        landed = Some((on, self.fall_distance));
+                        landed = restitution
+                            .map(|(_, _, contact)| (contact.position, self.fall_distance));
                     }
                     self.fall_distance = 0.0;
                 }
             }
-            // Entity.move: what the move was stopped on. They outlive the
-            // tick, as vanilla's fields do, for the tracker that sends the
-            // position at the type's update interval.
-            self.vertical_collision = moved.y != wanted.y;
-            // `Mth.equal` on x and z (1e-5 as a float), exact on y.
-            let differs = |a: f64, b: f64| (b - a).abs() >= 9.999_999_747_378_752e-6;
-            self.horizontal_collision = differs(moved.x, wanted.x) || differs(moved.z, wanted.z);
-            if moved.x != wanted.x {
-                self.velocity.x = 0.0;
-            }
-            if moved.z != wanted.z {
-                self.velocity.z = 0.0;
-            }
-            let vertical_contact = if self.vertical_collision && !no_physics {
-                let contact = self.vertical_contact(world, collision, blocks, moved);
-                let slime =
-                    self.on_ground && contact.is_some_and(|pos| slime_at(world, facts, pos));
-                self.velocity.y = vertical_collision_velocity(
-                    wanted.y,
-                    moved.y,
-                    ITEM_GRAVITY,
-                    self.on_ground,
-                    slime,
-                );
-                contact
-            } else {
-                None
-            };
+            let vertical_contact = restitution
+                .filter(|(wanted, moved, _)| wanted.y != moved.y)
+                .map(|(_, _, contact)| contact.position);
             return ItemStep {
                 old_velocity,
                 vertical_contact,
+                restitution,
                 movement: Some(moved),
                 landed,
                 prior_fall,
-                fall_move: (!no_physics).then_some((from, moved, applied)),
+                fall_move: physics.then_some((from, moved, applied)),
             };
-        }
-        // applyEffectsFromBlocksForLastMovements: still lift/drag while idle.
-        if !no_physics {
-            self.slime_step_on(world, facts);
         }
         ItemStep {
             old_velocity,
             landed: None,
             vertical_contact: None,
             movement: None,
+            restitution: None,
             prior_fall,
             fall_move: None,
         }
     }
 
-    /// `Entity.getOnPosLegacy` for a clipped move. Resolve the support under
-    /// the full item box: at a honey wall, its center can be outside the slime
-    /// block even though its box landed on it.
-    fn vertical_contact(
+    /// The remainder of `Entity.move` after the owning side's fall check.
+    pub fn move_restitution(
         &self,
-        world: &World,
-        collision: &BlockCollisionRegistry<'_>,
-        blocks: Option<&BoundMovementProperties>,
-        movement: Vec3,
-    ) -> Option<BlockPos> {
-        let mut scene = SceneCollisions {
-            world,
-            binding: collision,
-            subject: None,
-        };
-        let mut ground = sunrise_world::ground_support::GroundState::default();
-        ground
-            .check_support(self.on_ground, self.bounds(), Some(movement), |bounds| {
-                sunrise_world::ground_support::find_supporting_block(
-                    &mut scene,
-                    sunrise_world::collision_context::CollisionContext::empty(false),
-                    self.position,
-                    bounds,
-                    1_000_000,
-                )
-            })
-            .ok()?;
-        if let Some(blocks) = blocks {
-            return Some(crate::motion::legacy_block_support_at(
-                world,
-                blocks,
-                self.position,
-                ground.supporting_block,
-            ));
-        }
-        // Standalone tests can omit the movement table and its fence/wall tags.
-        Some(ground.supporting_block.unwrap_or_else(|| {
-            let offset = f64::from(sunrise_world::movement_support::LEGACY_SUPPORT_OFFSET);
-            BlockPos::containing(self.position.subtract(Vec3::new(0.0, offset, 0.0)))
-        }))
+        motion: BodyMotion<'_>,
+        step: ItemStep,
+    ) -> Option<crate::motion::BodyRestitution> {
+        let (wanted, moved, effect) = step.restitution?;
+        Some(motion.restitute(
+            (self.id, "minecraft:item"),
+            crate::motion::BodyMove {
+                wanted,
+                moved,
+                effect,
+            },
+            self.get_gravity(),
+            0.98_f32,
+            self.velocity,
+            self.fall_distance,
+        ))
     }
 
-    /// Resume the normal block effects after the collision response.
-    pub fn finish_move_block_effects(
-        &mut self,
-        world: &World,
-        facts: &BlockFacts,
-        no_physics: bool,
-        blocks: Option<&BoundMovementProperties>,
-        step: ItemStep,
-        context: &sunrise_world::native_load_context::LoopContext,
-    ) {
+    /// The speed factor from `Entity.move`, which an idle item did not run.
+    pub fn apply_move_speed(&mut self, motion: BodyMotion<'_>, step: ItemStep) {
         if step.movement.is_some() {
-            // Entity.move applies the block's speed factor before block effects.
-            if !no_physics && let Some(blocks) = blocks {
-                let factor = crate::motion::block_speed_factor_at(
-                    world,
-                    blocks,
-                    context,
-                    self.position,
-                    None,
-                );
-                self.velocity =
-                    sunrise_world::entity_move::scale_by_block_speed(self.velocity, factor);
-            }
+            motion.apply_block_speed(self.position, &mut self.velocity);
+        }
+    }
+
+    /// `Entity.move`'s speed and the vanilla step in a stand-alone or worker tick.
+    pub fn apply_move_and_vanilla_step(&mut self, motion: BodyMotion<'_>, step: ItemStep) {
+        self.apply_move_speed(motion, step);
+        let _ = motion.step_contact(
+            (self.id, "minecraft:item"),
+            (self.position, self.bounds()),
+            &self.ground,
+            &mut self.velocity,
+        );
+    }
+
+    /// The item-specific inside effects of a move, after the grounded step.
+    pub fn finish_move_block_effects(&mut self, world: &World, facts: &BlockFacts, step: ItemStep) {
+        if step.movement.is_some() {
             self.apply_honey_slide(world, facts);
-            self.stuck = match self.stuck_multiplier(world, facts) {
-                // Entity.makeStuckInBlock resets the fall.
-                Some(stuck) => {
-                    self.fall_distance = 0.0;
-                    stuck
-                }
-                None => Vec3::ZERO,
-            };
+            if let Some(stuck) = self.stuck_multiplier(world, facts) {
+                // Entity.makeStuckInBlock resets the fall. No contact leaves
+                // a multiplier already set by step-on or an inside Part alone.
+                self.fall_distance = 0.0;
+                self.stuck = stuck;
+            }
         }
     }
 }

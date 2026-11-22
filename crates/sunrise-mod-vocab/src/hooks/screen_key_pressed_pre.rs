@@ -25,11 +25,20 @@ pub trait Hooks {
     /// are GLFW's separate char callback and still come; see
     /// `screen_char_typed_pre`.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_screen_key_pressed_pre",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "canceled",
         neoforge = "ScreenEvent.KeyPressed.Pre",
         cancellable = true
     )]
-    fn screen_key_pressed_pre();
+    fn screen_key_pressed_pre(
+        screen: &ScreenView<'_>,
+        key: &str,
+        repeat: bool,
+        modifiers: u32,
+        canceled: &mut bool,
+    );
 }

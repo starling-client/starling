@@ -15,11 +15,15 @@
 //! `level.dat`) are migrated on open.
 use crate::mod_chunk_tickets::{ModTicket, ModTickets, TicketOwner};
 mod backpressure;
-use backpressure::compress_records;
+use compression_pool::{CompressedWrite, compress_records};
 pub mod biome_regions;
 pub mod block_entity_encode;
 mod block_entity_order;
 mod far_regions;
+mod horizon_names;
+pub(crate) use horizon_names::adopt_in_player as adopt_horizon_player;
+#[cfg(test)]
+mod horizon_names_tests;
 pub mod level_mods;
 mod respawn;
 mod writes;
@@ -33,13 +37,6 @@ use crate::{
     mobs::{spawner::SpawnerExt, trial_spawner::TrialSpawnerExt},
     streaming::ChunkGenerator,
 };
-use sunrise_core::{
-    paletted::PalettedContainer,
-    position::{BlockPos, ChunkPos},
-    ticks::{SavedTick, TickPriority, TickTypeId},
-};
-use sunrise_mod_runtime::attachments::{ATTACHMENTS_KEY, attachment_compound};
-use sunrise_world::worldgen::blending::BlendingData;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -50,6 +47,13 @@ use std::{
         mpsc,
     },
 };
+use sunrise_core::{
+    paletted::PalettedContainer,
+    position::{BlockPos, ChunkPos},
+    ticks::{SavedTick, TickPriority, TickTypeId},
+};
+use sunrise_mod_runtime::attachments::{ATTACHMENTS_KEY, attachment_compound};
+use sunrise_world::worldgen::blending::BlendingData;
 use {
     sunrise_core::{
         nbt,
@@ -69,6 +73,9 @@ use {
 
 pub const VERSION_NAME: &str = sunrise_core::VANILLA_VERSION;
 
+mod chunk_disk;
+#[cfg(test)]
+mod chunk_disk_tests;
 #[cfg(test)]
 mod compression_bench;
 mod compression_pool;
@@ -77,14 +84,16 @@ mod compression_tests;
 mod gateway;
 #[cfg(test)]
 mod loot_tests;
+mod record;
+use record::{Encoding, Record};
 
 /// Snapshot live block entities and custom names for a save batch without
 /// mutating the world. Each map is visited once, retaining its iteration order
 /// within each chunk (including repeated chunk coordinates in the input).
 /// An empty batch skips both maps; one chunk uses the direct filter path.
-pub fn chunks_with_block_entities<'a, N: std::hash::BuildHasher>(
+pub fn chunks_with_block_entities<'a, E: std::hash::BuildHasher, N: std::hash::BuildHasher>(
     chunks: impl IntoIterator<Item = &'a Arc<Chunk>>,
-    entities: &HashMap<(i32, i32, i32), crate::containers::BlockEntity>,
+    entities: &HashMap<(i32, i32, i32), crate::containers::BlockEntity, E>,
     names: &HashMap<(i32, i32, i32), Tag, N>,
 ) -> Vec<Chunk> {
     let chunks: Vec<_> = chunks.into_iter().collect();
@@ -647,10 +656,6 @@ fn fluid_id(name: &str) -> Option<u32> {
 pub use sunrise_items::item_nbt::{
     decode_items, encode_item, encode_items, item_from_nbt, item_to_nbt,
 };
-/// Whether a mod block entity is temporarily out of the world for its tick.
-pub fn block_entity_placeholder(entity: &crate::containers::BlockEntity) -> bool {
-    matches!(entity, crate::containers::BlockEntity::Mod(m) if m.id().is_empty())
-}
 
 /// The block entity type ID for the block it sits in (a chest-like container
 /// is a chest, trapped chest or barrel).
@@ -672,34 +677,18 @@ pub fn block_entity_id<'a>(e: &'a crate::containers::BlockEntity, block: &'a str
 }
 /// `block_entity_nbt::overlay`, then a container that now holds items loses its
 /// loot table (vanilla clears it when the loot is generated into the container).
-fn merge_block_entity(original: &Tag, loaded: &Tag, current: &Tag) -> Tag {
-    let mut merged = crate::block_entity_nbt::overlay(original, loaded, current);
-    let has_items = matches!(current.get("Items"), Some(Tag::List(items)) if !items.is_empty());
-    if has_items && let Tag::Compound(map) = &mut merged {
+fn merge_block_entity(original: &Tag, loaded: &Tag, current: &Tag, items_are_payload: bool) -> Tag {
+    let mut merged = crate::block_entity_nbt::overlay(original, loaded, current, items_are_payload);
+    let has_items = !items_are_payload
+        && matches!(current.get("Items"), Some(Tag::List(items)) if !items.is_empty());
+    if has_items
+        && current.get("LootTable").is_none()
+        && let Tag::Compound(map) = &mut merged
+    {
         map.remove(&"LootTable".into());
         map.remove(&"LootTableSeed".into());
     }
     merged
-}
-/// `BlockDataAccessor.getData` (`BlockEntity.saveWithFullMetadata`): the tag
-/// `data get block` shows and `data merge block` changes, without the
-/// chunk-only `keepPacked`, and with the fields Sunrise keeps outside its
-/// model: a container's `lock` (`LockCode`), from the tag it was loaded or set
-/// with.
-pub fn block_entity_data(
-    p: (i32, i32, i32),
-    e: &crate::containers::BlockEntity,
-    block: &str,
-    lock: Option<&Tag>,
-) -> Tag {
-    let mut tag = block_entity_encode::encode(p, e, block);
-    if let Tag::Compound(map) = &mut tag {
-        map.remove(&"keepPacked".into());
-        if let Some(lock) = lock {
-            map.insert("lock".into(), lock.clone());
-        }
-    }
-    tag
 }
 /// `BannerBlockEntity.loadAdditional` (and the `components` a block entity keeps).
 pub fn decode_banner(tag: &Tag) -> crate::containers::Banner {
@@ -723,10 +712,16 @@ pub fn decode_end_gateway(tag: &Tag) -> crate::containers::EndGateway {
     }
 }
 /// A mod's block entity: its compound without `id` and the position, and
-/// its `Items` as slots (`ContainerHelper.loadAllItems`; the game sizes them
-/// to the block's container when it uses them). `Items` that are not an item
-/// list saved exactly so stay the mod's own.
-fn decode_mod_block_entity(id: String, tag: &Tag) -> Option<crate::containers::ModBlockEntity> {
+/// (when `decode_items` is true, i.e. container-backed or unknown-block loads)
+/// the `Items` rows that can be represented losslessly as modeled slots.
+/// Slotless holders loaded at a known block keep `Items` verbatim in `nbt`.
+/// The game sizes the modeled vector to its container when it uses it.
+fn decode_mod_block_entity(
+    id: String,
+    tag: &Tag,
+    decode_items: bool,
+) -> Option<crate::containers::ModBlockEntity> {
+    use crate::block_entity_nbt::saved_item_slot;
     let Tag::Compound(map) = tag else {
         return None;
     };
@@ -734,32 +729,75 @@ fn decode_mod_block_entity(id: String, tag: &Tag) -> Option<crate::containers::M
     for key in ["id", "x", "y", "z"] {
         nbt.remove(&key.into());
     }
-    // `Slot` is a byte: 256 slots at most.
-    let mut items = decode_items(nbt.get(&"Items".into()), 256);
-    if nbt.get(&"Items".into()) == Some(&encode_items(&items)) {
-        nbt.remove(&"Items".into());
-        while items.last().is_some_and(Option::is_none) {
-            items.pop();
+    // The published shapes are no field of the mod's: saved data that does not check is dropped.
+    let shapes = nbt
+        .remove(&crate::containers::SHAPES_KEY.into())
+        .and_then(|tag| crate::containers::PublishedShapes::from_tag(&tag));
+    let mut items = Vec::new();
+    if decode_items {
+        let key = "Items".into();
+        if let Some(Tag::List(entries)) = nbt.get_mut(&key) {
+            let mut occurrences = [0u8; 256];
+            for slot in entries.iter().filter_map(saved_item_slot) {
+                occurrences[slot] = occurrences[slot].saturating_add(1);
+            }
+            entries.retain(|raw| {
+                let Some(slot) = saved_item_slot(raw) else {
+                    return true;
+                };
+                if occurrences[slot] == 1
+                    && let Some(stack) = item_from_nbt(raw)
+                    && let Tag::Compound(mut canonical) = Tag::from(&stack)
+                {
+                    canonical.insert("Slot".into(), Tag::Byte(slot as i8));
+                    if raw == &Tag::Compound(canonical) {
+                        if items.len() <= slot {
+                            items.resize(slot + 1, None);
+                        }
+                        items[slot] = Some(stack);
+                        return false;
+                    }
+                }
+                true
+            });
+            if entries.is_empty() && !items.is_empty() {
+                nbt.remove(&key);
+            }
         }
-    } else {
-        items.clear();
     }
-    Some(crate::containers::ModBlockEntity::new(
+    let mut entity = crate::containers::ModBlockEntity::new(
         id,
         crate::containers::ModBlockEntityFields {
             nbt,
             items,
             data: Vec::new(),
         },
-    ))
+    );
+    entity.set_shapes(shapes.map(std::sync::Arc::new));
+    Some(entity)
 }
+/// Whether a mod block owns the saved `Items` field as engine-managed inventory.
+fn block_has_mod_item_slots(block: &str) -> bool {
+    mod_api::__private::parts_installation::block_container(block).is_some_and(|c| c.slots > 0)
+}
+
 /// Decode an entity at a known block, refusing undeclared IDs and invalid native membership.
 /// Canonical membership wins; blocks absent from the table use vanilla membership.
 pub fn decode_block_entity_for_block(
     tag: &Tag,
     block: &str,
 ) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
-    let decoded = decode_block_entity(tag)?;
+    decode_block_entity_replacing(tag, block, None)
+}
+
+/// Like [`decode_block_entity_for_block`], retaining mutable set history when
+/// reading new NBT onto an existing trial spawner.
+pub fn decode_block_entity_replacing(
+    tag: &Tag,
+    block: &str,
+    previous: Option<&crate::containers::BlockEntity>,
+) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
+    let decoded = decode_block_entity_with_history(tag, previous, block_has_mod_item_slots(block))?;
     // Several vanilla types share a decoded representation (for example barrel
     // and chest). Membership belongs to the saved type, not that representation.
     let saved_id = text(tag.get("id"))?;
@@ -774,6 +812,14 @@ pub fn decode_block_entity_for_block(
 }
 
 pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
+    decode_block_entity_with_history(tag, None, true)
+}
+
+fn decode_block_entity_with_history(
+    tag: &Tag,
+    previous: Option<&crate::containers::BlockEntity>,
+    decode_mod_items: bool,
+) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
     use crate::containers::BlockEntity;
     let int = |k: &str| tag.get(k).and_then(crate::nbt_path::int_value); // getIntOr
     let id = text(tag.get("id"))?;
@@ -781,7 +827,11 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     if id.contains(':') && !id.starts_with("minecraft:") {
         return Some((
             pos,
-            BlockEntity::Mod(Box::new(decode_mod_block_entity(id, tag)?)),
+            BlockEntity::Mod(Box::new(decode_mod_block_entity(
+                id,
+                tag,
+                decode_mod_items,
+            )?)),
         ));
     }
     if id == "minecraft:end_gateway" {
@@ -996,7 +1046,13 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
             };
         }
         BlockEntity::Spawner(s) => **s = crate::mobs::spawner::Spawner::load(tag),
-        BlockEntity::TrialSpawner(s) => **s = crate::mobs::trial_spawner::TrialSpawner::load(tag),
+        BlockEntity::TrialSpawner(s) => {
+            let previous = match previous {
+                Some(BlockEntity::TrialSpawner(old)) => Some(old.as_ref()),
+                _ => None,
+            };
+            **s = crate::mobs::trial_spawner::TrialSpawner::load(tag, previous);
+        }
         BlockEntity::Vault(v) => **v = crate::vault::Vault::load(tag),
         BlockEntity::Beehive(h) => **h = crate::beehive::Beehive::from_nbt(tag),
         BlockEntity::CommandBlock(c) => **c = crate::command_block::CommandBlock::load(tag),
@@ -1041,12 +1097,12 @@ fn keep_claims(saved: &mut NamedTag, old: &NamedTag) {
     let Some(Tag::Compound(sections)) = root.get_mut(&"Sections".into()) else {
         return;
     };
-    for section in sections.values_mut() {
+    sections.for_each_mut(|_, section| {
         let Tag::Compound(section) = section else {
-            continue;
+            return;
         };
         let Some(Tag::List(records)) = section.get_mut(&"Records".into()) else {
-            continue;
+            return;
         };
         for r in records {
             let Some(&tickets) = key(r).and_then(|k| claims.get(&k)) else {
@@ -1060,7 +1116,7 @@ fn keep_claims(saved: &mut NamedTag, old: &NamedTag) {
                 }
             }
         }
-    }
+    });
 }
 fn poi_root(sections: Compound) -> NamedTag {
     NamedTag {
@@ -1184,8 +1240,13 @@ fn nibbles(light: &Light, sky: bool) -> Vec<u8> {
     out
 }
 
-pub fn encode(chunk: &Chunk, registry: &BlockRegistry, biomes: &Biomes) -> NamedTag {
-    encode_with(chunk, registry, biomes, None, LevelShape::OVERWORLD)
+pub fn encode(
+    chunk: &Chunk,
+    registry: &BlockRegistry,
+    biomes: &Biomes,
+    items: &crate::items::Items,
+) -> NamedTag {
+    encode_with(chunk, registry, biomes, None, LevelShape::OVERWORLD, items)
 }
 /// A save's lookup of an old chunk's calculated blending data.
 pub type BlendingLookup = Box<dyn Fn(i32, i32) -> Option<Arc<BlendingData>> + Send + Sync>;
@@ -1200,8 +1261,9 @@ fn encode_saved(
     tables: Option<&SaveTables>,
     shape: LevelShape,
     blending: Option<&BlendingData>,
+    items: &crate::items::Items,
 ) -> NamedTag {
-    let mut root = encode_with(chunk, registry, biomes, tables, shape);
+    let mut root = encode_with(chunk, registry, biomes, tables, shape, items);
     if let Some(data) = blending {
         put_calculated_blending(&mut root, data);
     }
@@ -1240,10 +1302,22 @@ pub fn encode_with(
     biomes: &Biomes,
     tables: Option<&SaveTables>,
     shape: LevelShape,
+    items: &crate::items::Items,
+) -> NamedTag {
+    encode_full(chunk, registry, biomes, tables, shape, items, true)
+}
+
+fn encode_full(
+    chunk: &Chunk,
+    registry: &BlockRegistry,
+    biomes: &Biomes,
+    tables: Option<&SaveTables>,
+    shape: LevelShape,
+    items: &crate::items::Items,
+    apply_block_entity_edits: bool,
 ) -> NamedTag {
     let sky_light = shape.sky_light;
     let mut sections = Vec::new();
-    let air = tables.map_or(0, |t| t.air);
     // Sky layers below the highest section with light other than 15 are
     // written (even all-zero ones): vanilla derives missing layers from the
     // layer above them.
@@ -1251,9 +1325,53 @@ pub fn encode_with(
         .sections
         .iter()
         .rposition(|s| s.light.any_not(0xF0, 0xF0));
-    for (si, section) in chunk.sections.iter().enumerate() {
-        let y = (chunk.min_y() >> 4) + si as i32;
+    // `SerializableChunkData.copyOf` checks the engine's whole light range, not just
+    // sections with block data. A dimension can be narrower than the chunk's allocation.
+    let light_y = shape.min_section() - 1..=(shape.max_y() >> 4);
+    let first = (chunk.min_y() >> 4) - 1;
+    for y in light_y {
+        let b = (y - first) as usize;
+        let section = match b {
+            0 => chunk.pad_below.as_ref(),
+            _ if b == chunk.sections.len() + 1 => chunk.pad_above.as_ref(),
+            _ => chunk.sections.get(b - 1),
+        };
+        let Some(section) = section else { continue };
+        let layers = if chunk.lit {
+            if let Some(stored) = chunk.stored_light() {
+                let [sky, block] = stored.presence(b);
+                if let Some([sky_array, block_array]) = stored.saved_arrays(b) {
+                    // `SerializableChunkData.copyOf`: omit empty layers restored from
+                    // section status, but keep materialized arrays, including zero arrays.
+                    [
+                        sky && (sky_array || section.light.any(0xF0)),
+                        block && (block_array || section.light.any(15)),
+                    ]
+                } else {
+                    [sky, block]
+                }
+            } else if shape.has_section(y) {
+                [
+                    top_sky.is_some_and(|top| b <= top + 2),
+                    section.light.any(15),
+                ]
+            } else {
+                [false; 2]
+            }
+        } else {
+            [false; 2]
+        };
+        let mut entries = vec![("Y", Tag::Byte(y as i8))];
+        if layers[1] {
+            entries.push(("BlockLight", Tag::ByteArray(nibbles(&section.light, false))));
+        }
+        if sky_light && layers[0] {
+            entries.push(("SkyLight", Tag::ByteArray(nibbles(&section.light, true))));
+        }
         if !shape.has_section(y) {
+            if entries.len() > 1 {
+                sections.push(Tag::compound(entries));
+            }
             continue;
         }
         // PalettedContainer.pack: distinct states in index order, indices at
@@ -1306,21 +1424,10 @@ pub fn encode_with(
                 Tag::LongArray(data.iter().map(|&w| w as i64).collect()),
             ));
         }
-        let mut entries = vec![
-            ("Y", Tag::Byte(y as i8)),
+        entries.extend([
             ("block_states", Tag::compound(states)),
             ("biomes", Tag::compound(biome_tag)),
-        ];
-        if chunk.lit {
-            let block_lit = section.light.any(15);
-            if block_lit {
-                entries.push(("BlockLight", Tag::ByteArray(nibbles(&section.light, false))));
-            }
-            if sky_light && top_sky.is_some_and(|top| si <= top + 1) {
-                entries.push(("SkyLight", Tag::ByteArray(nibbles(&section.light, true))));
-            }
-        }
-        let _ = air;
+        ]);
         sections.push(Tag::compound(entries));
     }
     let extras = chunk.saved.as_deref();
@@ -1332,55 +1439,126 @@ pub fn encode_with(
     let mut block_entities: Vec<Tag> = chunk
         .block_entities
         .iter()
-        // A mod block entity a native mod is ticking right now
-        // (`tick_mod_block_entity`): its data is out of the world.
-        .filter(|(_, e)| !block_entity_placeholder(e))
         .map(|(p, e)| {
             let block = block_name(p);
-            let mut current = block_entity_encode::encode(*p, e, &block);
-            if let Some((_, name)) = chunk.block_names.iter().find(|(q, _)| q == p)
-                && let Tag::Compound(map) = &mut current
-            {
-                map.insert("CustomName".into(), name.clone());
-            }
-            let source = extras
+            let stored = extras
                 .and_then(|x| x.block_entity_sources.iter().find(|(q, _)| q == p))
-                .map(|(_, tag)| tag)
-                .filter(|tag| {
-                    crate::block_entity_nbt::id(tag) == crate::block_entity_nbt::id(&current)
-                });
-            let merged = match source {
+                .map(|(_, tag)| tag);
+            let source = stored.filter(|tag| {
+                crate::block_entity_nbt::id(tag).as_deref() == Some(block_entity_id(e, &block))
+            });
+            let pending = extras.and_then(|x| x.pending_loot.get(p));
+            let lock = source.and_then(|tag| tag.get("lock"));
+            let hopper_cooldown = (block == "minecraft:hopper").then(|| {
+                source
+                    .and_then(|tag| number(tag.get("TransferCooldown")))
+                    .unwrap_or(-1) as i32
+            });
+            let current = block_entity_encode::encode_with(
+                *p,
+                e,
+                &block,
+                block_entity_encode::DataFields {
+                    lock,
+                    custom_name: chunk
+                        .block_names
+                        .iter()
+                        .find(|(q, _)| q == p)
+                        .map(|(_, name)| name),
+                    pending,
+                    hopper_cooldown,
+                },
+                items,
+                |_| {
+                    if apply_block_entity_edits {
+                        extras?.block_entity_save_edits.as_ref()?.get(p).cloned()
+                    } else {
+                        None
+                    }
+                },
+            );
+            let mut saved = match source {
                 Some(original) => {
-                    let loaded = decode_block_entity(original).map_or_else(
-                        || current.clone(),
-                        |(q, e)| {
-                            let mut loaded = block_entity_encode::encode(q, &e, &block);
-                            if !matches!(
-                                e,
-                                crate::containers::BlockEntity::Banner(_)
-                                    | crate::containers::BlockEntity::Sign(_)
-                                    | crate::containers::BlockEntity::Mod(_)
-                            ) && let Some(name) = original
-                                .get("CustomName")
-                                .and_then(crate::block_entity_nbt::component)
-                                && let Tag::Compound(map) = &mut loaded
-                            {
-                                // BaseContainerBlockEntity.loadAdditional: the
-                                // external name is also part of the loaded model.
-                                // Its removal must win over the source overlay.
-                                map.insert("CustomName".into(), name);
-                            }
-                            loaded
-                        },
-                    );
-                    merge_block_entity(original, &loaded, &current)
+                    let items_are_payload = matches!(e, crate::containers::BlockEntity::Mod(_))
+                        && !block_has_mod_item_slots(&block);
+                    let loaded =
+                        decode_block_entity_with_history(original, None, !items_are_payload)
+                            .map_or_else(
+                                || current.clone(),
+                                |(q, e)| {
+                                    // External name removal must win over the source overlay.
+                                    let custom_name = (!matches!(
+                                        e,
+                                        crate::containers::BlockEntity::Banner(_)
+                                            | crate::containers::BlockEntity::Sign(_)
+                                            | crate::containers::BlockEntity::Mod(_)
+                                    ))
+                                    .then(|| {
+                                        original
+                                            .get("CustomName")
+                                            .and_then(crate::block_entity_nbt::component)
+                                    })
+                                    .flatten();
+                                    block_entity_encode::encode_with(
+                                        q,
+                                        &e,
+                                        &block,
+                                        block_entity_encode::DataFields {
+                                            lock,
+                                            custom_name: custom_name.as_ref(),
+                                            pending: PendingContainerLoot::from_tag(original)
+                                                .as_ref(),
+                                            hopper_cooldown,
+                                        },
+                                        items,
+                                        |_| None,
+                                    )
+                                },
+                            );
+                    merge_block_entity(original, &loaded, &current, items_are_payload)
                 }
                 None => current,
             };
-            let mut saved = crate::block_entity_nbt::canonical(&merged).unwrap_or(merged);
-            if let Some(limit) = extras
-                .and_then(|x| x.block_entity_sources.iter().find(|(q, _)| q == p))
-                .and_then(|(_, tag)| tag.get("sunrise:stack_limit"))
+            // A consumed loot table must not be restored from an opaque source.
+            let chest = matches!(e, crate::containers::BlockEntity::Chest(_));
+            if chest
+                && pending.is_none()
+                && let Tag::Compound(map) = &mut saved
+            {
+                map.remove(&"LootTable".into());
+                map.remove(&"LootTableSeed".into());
+            }
+            // The overlay may restore an unchanged stack's original patch. Apply
+            // catalog validation without rebuilding the Java table when replacing or
+            // dropping fields. If normalization supplies missing defaults, use its
+            // fresh field order, including the common metadata tail.
+            let live_items = (chest && pending.is_some() && e.slots().iter().any(Option::is_some))
+                .then(|| encode_items(e.slots(), items));
+            if let Some(mut canonical) = crate::block_entity_nbt::canonical_with_stack(
+                &saved,
+                &|tag| {
+                    crate::block_entity_nbt::stack(tag)
+                        .and_then(|tag| item_from_nbt(&tag))
+                        .map(|stack| item_to_nbt(&stack, items))
+                },
+                live_items,
+            ) {
+                if let Tag::Compound(map) = &mut saved
+                    && canonical.keys().all(|key| map.contains_key(key))
+                {
+                    map.retain(|key, value| {
+                        if let Some(admitted) = canonical.remove(key) {
+                            *value = admitted;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                } else {
+                    saved = Tag::Compound(canonical);
+                }
+            }
+            if let Some(limit) = stored.and_then(|tag| tag.get("sunrise:stack_limit"))
                 && let Tag::Compound(map) = &mut saved
             {
                 map.insert("sunrise:stack_limit".into(), limit.clone());
@@ -1395,18 +1573,6 @@ pub fn encode_with(
                     map.remove(&ATTACHMENTS_KEY.into());
                 } else {
                     map.insert(ATTACHMENTS_KEY.into(), Tag::Compound(data));
-                }
-            }
-            if matches!(e, crate::containers::BlockEntity::Chest(_))
-                && let Tag::Compound(map) = &mut saved
-            {
-                map.remove(&"LootTable".into());
-                map.remove(&"LootTableSeed".into());
-                if let Some(pending) = extras.and_then(|x| x.pending_loot.get(p)) {
-                    pending.write_tags(map);
-                    if e.slots().iter().any(Option::is_some) {
-                        map.insert("Items".into(), encode_items(e.slots()));
-                    }
                 }
             }
             saved
@@ -1546,19 +1712,6 @@ pub fn decode_with(
         return None;
     }
     decode_column(root, registry, biomes, tables, layout)
-}
-/// A full chunk with the light saved with it (`isLightOn`), as far terrain
-/// reads another client's cache of a server; `None` without its light.
-pub fn decode_lit(
-    root: &NamedTag,
-    registry: &BlockRegistry,
-    biomes: &Biomes,
-    layout: ColumnLayout,
-    sky_light: bool,
-) -> Option<Chunk> {
-    let mut chunk = decode_with(root, registry, biomes, None, layout)?;
-    load_light(&root.tag, &mut chunk, sky_light);
-    chunk.light_loaded.then_some(chunk)
 }
 /// `decode_with` whatever the chunk's status, into a chunk of `layout`
 /// (sections outside it are left out).
@@ -1732,8 +1885,9 @@ pub fn encode_proto(
     biomes: &Biomes,
     tables: Option<&SaveTables>,
     shape: LevelShape,
+    items: &crate::items::Items,
 ) -> NamedTag {
-    let mut root = encode_with(&proto.column, registry, biomes, tables, shape);
+    let mut root = encode_with(&proto.column, registry, biomes, tables, shape, items);
     let status = if proto.decorated {
         ChunkStatus::Features
     } else {
@@ -1809,11 +1963,12 @@ pub fn decode_proto(
     })
 }
 
-/// Read the stored `SkyLight`/`BlockLight` layers of a chunk saved with
-/// `isLightOn` (`SerializableChunkData.read` + `ThreadedLevelLightEngine`),
-/// so it needs no relighting. A missing sky layer repeats the bottom layer of
-/// the section above it (15 above the highest stored one); a missing block
-/// layer is dark.
+/// Read the `SkyLight`/`BlockLight` byte arrays of a chunk saved with
+/// `isLightOn` (`SerializableChunkData.read`, which queues the arrays via
+/// `ThreadedLevelLightEngine.queueSectionData`). The render cache inherits missing
+/// sky light from the bottom row of the next stored layer above, or gets full
+/// sky above all stored layers. Empty layers omitted by NBT are restored from
+/// published section status when the chunk's light is initialized.
 pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
     if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
         return;
@@ -1821,108 +1976,26 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
     let Some(Tag::List(sections)) = tag.get("sections") else {
         return;
     };
-    let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); chunk.sections.len()];
+    let mut layers = vec![(None, None); chunk.sections.len() + 2];
+    let first = (chunk.min_y() >> 4) - 1;
     for section in sections {
         let Some(y) = number(section.get("Y")) else {
             continue;
         };
-        let Some(si) = chunk.section_index(y as i32 * 16) else {
+        let Some(slot) = y
+            .checked_sub(i64::from(first))
+            .and_then(|b| usize::try_from(b).ok())
+            .and_then(|b: usize| layers.get_mut(b))
+        else {
             continue;
         };
         let layer = |name: &str| match section.get(name) {
             Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
             _ => None,
         };
-        layers[si] = (layer("SkyLight"), layer("BlockLight"));
+        *slot = (layer("SkyLight"), layer("BlockLight"));
     }
-    // A saved layer is already the resident `Light::Sky`/`Light::Block`
-    // layer: byte `i` holds block `2i` in its low nibble and `2i + 1` in its
-    // high one. Both nibbles of each byte must match for a layer to be
-    // uniform; only then is the whole section one value.
-    let uniform_layer = |layer: &[u8]| {
-        let first = layer[0];
-        (first & 15 == first >> 4 && layer.iter().all(|&v| v == first)).then_some(first & 15)
-    };
-    let copy_layer = |layer: &[u8]| {
-        let mut out = Box::new([0u8; 2048]);
-        out.copy_from_slice(layer);
-        out
-    };
-    let mut above = [if sky_light { 15 } else { 0 }; 256];
-    for (si, (sky, block)) in layers.into_iter().enumerate().rev() {
-        let sky = sky.filter(|_| sky_light);
-        let sky_uniform = sky.and_then(uniform_layer);
-        let sky_varies = match sky {
-            Some(_) => sky_uniform.is_none(),
-            None => above.iter().any(|&v| v != above[0]),
-        };
-        let block_uniform = block.and_then(uniform_layer);
-        let block_varies = block.is_some() && block_uniform.is_none();
-        let sky_first = sky.map_or(above[0], |layer| layer[0] & 15);
-        let block_first = block.map_or(0, |layer| layer[0] & 15);
-        let section = Arc::make_mut(&mut chunk.sections[si]);
-        section.compact();
-        // The saved layer decides the resident variant directly: expand
-        // only when both nibbles vary (which keeps `Light::Full`).
-        section.light = match (sky_varies, block_varies) {
-            (false, false) => Light::Uniform(sky_first << 4 | block_first),
-            (false, true) => Light::Block(copy_layer(block.expect("block layer")), sky_first),
-            (true, false) => {
-                let layer = match sky {
-                    Some(layer) => copy_layer(layer),
-                    // No stored sky: the same 256-byte bottom row over and
-                    // over, which is exactly `Light::packed`'s layer here.
-                    None => {
-                        let mut layer = Box::new([0u8; 2048]);
-                        for row in layer.as_chunks_mut::<128>().0 {
-                            for (out, v) in
-                                row.iter_mut().zip(above.as_chunks::<2>().0.iter().cycle())
-                            {
-                                *out = v[0] | v[1] << 4;
-                            }
-                        }
-                        layer
-                    }
-                };
-                Light::Sky(layer, block_first)
-            }
-            (true, true) => {
-                let mut data = Box::new([0u8; 4096]);
-                match (sky, block) {
-                    (Some(sky), Some(block)) => {
-                        for ((pair, &s), &b) in
-                            data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
-                        {
-                            pair[0] = s << 4 | (b & 15);
-                            pair[1] = (s & 0xf0) | (b >> 4);
-                        }
-                    }
-                    (None, Some(block)) => {
-                        for (i, (pair, &b)) in data
-                            .as_chunks_mut::<2>()
-                            .0
-                            .iter_mut()
-                            .zip(block)
-                            .enumerate()
-                        {
-                            pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
-                            pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
-                        }
-                    }
-                    _ => unreachable!("both light kinds vary"),
-                }
-                Light::Full(data)
-            }
-        };
-        if let Some(sky) = sky {
-            for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
-                pair[0] = s & 15;
-                pair[1] = s >> 4;
-            }
-        }
-    }
-    chunk.lit = true;
-    chunk.light_loaded = true;
+    crate::light::light_from_saved_layers(chunk, &layers, sky_light);
 }
 
 type RegionCache = Mutex<RegionFiles>;
@@ -1938,6 +2011,8 @@ struct RegionFiles {
     clock: u64,
     /// Each region's write stamp (`far_regions::writing`).
     written: HashMap<(i32, i32), u64>,
+    #[cfg(test)]
+    close_on_evict: Option<fn(RegionFile) -> std::io::Result<()>>,
 }
 impl RegionFiles {
     #[cfg(test)]
@@ -1949,11 +2024,14 @@ impl RegionFiles {
     fn open(&self) -> usize {
         self.regions.values().filter(|(r, _)| r.is_some()).count()
     }
-    /// Close the least recently used regions until there is room for one
-    /// more, as `RegionFileStorage.getRegionFile` does. A region a reader or
-    /// the writer still holds stays: closing it under them would let a
+    /// `RegionFileStorage.cache`: remove the least recently used region before closing it.
+    /// A region a reader or the writer still holds stays: closing it under them would let a
     /// second handle read a header older than its sectors.
-    fn make_room(&mut self) {
+    fn make_room(&mut self) -> Vec<((i32, i32), std::io::Error)> {
+        let close = RegionFile::close;
+        #[cfg(test)]
+        let close = self.close_on_evict.unwrap_or(close);
+        let mut failures = Vec::new();
         while self.regions.len() >= MAX_OPEN_REGIONS {
             let oldest = self
                 .regions
@@ -1962,96 +2040,207 @@ impl RegionFiles {
                 .min_by_key(|(_, (_, used))| *used)
                 .map(|(key, _)| *key);
             let Some(key) = oldest else {
-                return;
+                break;
             };
-            self.regions.remove(&key);
+            let (file, _) = self.regions.remove(&key).unwrap();
+            if let Some(file) = file {
+                // The cache owns the only reference, as checked above under its lock.
+                let closed = Arc::into_inner(file)
+                    .unwrap()
+                    .into_inner()
+                    .map_err(|_| std::io::Error::other("region file poisoned"))
+                    .and_then(close);
+                if let Err(error) = closed {
+                    failures.push((key, error));
+                }
+            }
         }
+        failures
     }
 }
-/// The region file at `path` through the cache, which readers and the writer
-/// share, so a read never sees a header older than the sectors it points to.
-/// `create` makes a missing file (for a write); otherwise a missing file is
-/// `None`, until a write creates it.
-fn cached_region(
-    cache: &RegionCache,
-    key: (i32, i32),
-    path: &Path,
-    create: bool,
-) -> Result<Option<Arc<Mutex<RegionFile>>>> {
-    let mut cache = cache.lock().map_err(|_| "region cache poisoned")?;
-    cache.clock += 1;
-    let now = cache.clock;
-    if let Some((cached, used)) = cache.regions.get_mut(&key)
-        && (cached.is_some() || !create)
-    {
-        *used = now;
-        return Ok(cached.clone());
-    }
-    cache.make_room();
-    if create && let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    // A file this process can't write (a read-only world) is still read.
-    let region = match RegionFile::open_writable(path, create) {
-        Err(e) if !create && e.kind() == std::io::ErrorKind::PermissionDenied => {
-            RegionFile::open(path)
+
+#[derive(Clone, Copy)]
+struct RegionStorage<'a> {
+    root: &'a Path,
+    folder: Folder,
+    cache: &'a RegionCache,
+    reporting: &'a writes::SaveReporting,
+}
+
+impl RegionStorage<'_> {
+    /// Readers and writers share a cache, so a read never sees a header older than the sectors
+    /// it points to. `create` makes a missing file; otherwise a missing file is `None`.
+    fn open_cached(
+        self,
+        (rx, rz): (i32, i32),
+        create: bool,
+    ) -> std::io::Result<Option<Arc<Mutex<RegionFile>>>> {
+        let key = (rx, rz);
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| std::io::Error::other("region cache poisoned"))?;
+        cache.clock += 1;
+        let now = cache.clock;
+        if let Some((cached, used)) = cache.regions.get_mut(&key)
+            && (cached.is_some() || !create)
+        {
+            *used = now;
+            return Ok(cached.clone());
         }
-        other => other,
-    };
-    let region = match region {
-        Ok(r) => Some(Arc::new(Mutex::new(r))),
-        Err(_) if !create => None,
-        Err(e) => return Err(e.into()),
-    };
-    cache.regions.insert(key, (region.clone(), now));
-    Ok(region)
+        let failed_evictions = cache.make_room();
+        let opened = (|| {
+            let path = region_path(self.root, self.folder.name(), rx, rz);
+            if create && let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            // A file this process can't write (a read-only world) is still read.
+            let region = match RegionFile::open_writable(&path, create) {
+                Err(e) if !create && e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    RegionFile::open(&path)
+                }
+                other => other,
+            };
+            let region = match region {
+                Ok(r) => Some(Arc::new(Mutex::new(r))),
+                Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e),
+            };
+            cache.regions.insert(key, (region.clone(), now));
+            Ok(region)
+        })();
+        drop(cache);
+        // Isolate the evicted region's failure: the requested region must use its own result.
+        for ((rx, rz), error) in failed_evictions {
+            let error = std::io::Error::new(
+                error.kind(),
+                format!(
+                    "Failed to close region [{rx}, {rz}] in {}: {error}",
+                    self.folder.name()
+                ),
+            );
+            self.reporting
+                .report(self.folder, (rx << 5, rz << 5), &error);
+        }
+        opened
+    }
 }
 /// Write `records` into the region files of `folder` in place, as vanilla's
 /// `RegionFile.write` does: each chunk takes free sectors and the header
 /// then points to it; the region's other chunks are not touched. `None`
 /// clears a chunk. The chunks are encoded and compressed before their region
 /// is locked for the writes (`compress_records`), and each region is flushed
-/// to the disk once.
+/// to the disk once. An unencodable record is skipped, leaving its old slot alone.
 fn write_region_records(
-    root: &Path,
-    cache: &RegionCache,
-    folder: &str,
+    storage: RegionStorage<'_>,
     records: &[((i32, i32), &Record)],
-) -> Result<()> {
+    sync_data: &impl Fn(&fs::File) -> std::io::Result<()>,
+) -> RegionWriteOutcome {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as u32);
     let compressed = compress_records(records, timestamp);
-    let mut by_region: BTreeMap<(i32, i32), Vec<(ChunkPos, Option<ChunkRecord>)>> = BTreeMap::new();
-    for (&((x, z), _), record) in records.iter().zip(compressed) {
-        let record = record?;
-        by_region
-            .entry((x >> 5, z >> 5))
-            .or_default()
-            .push((ChunkPos::new(x, z), record));
-    }
-    for ((rx, rz), list) in by_region {
-        let path = region_path(root, folder, rx, rz);
-        // Clearing chunks of a region that doesn't exist changes nothing.
-        let create = list.iter().any(|(_, r)| r.is_some());
-        let Some(region) = cached_region(cache, (rx, rz), &path, create)? else {
-            continue;
-        };
-        let mut region = region.lock().map_err(|_| "region file poisoned")?;
-        let _writing = far_regions::writing(cache, (rx, rz));
-        let mut changed = false;
-        for (pos, record) in &list {
-            match record {
-                Some(record) => {
-                    region.write(*pos, record)?;
-                    changed = true;
-                }
-                None => changed |= region.clear(*pos, timestamp)?,
+    write_prepared_region_records(storage, timestamp, records, compressed, sync_data)
+}
+
+#[derive(Default)]
+struct RegionWriteOutcome {
+    failed_records: BTreeMap<(i32, i32), std::io::Error>,
+    sync_error: Option<std::io::Error>,
+}
+
+fn write_prepared_region_records(
+    storage: RegionStorage<'_>,
+    timestamp: u32,
+    records: &[((i32, i32), &Record)],
+    compressed: Vec<compression_pool::Prepared>,
+    sync_data: &impl Fn(&fs::File) -> std::io::Result<()>,
+) -> RegionWriteOutcome {
+    type RegionWrite<'a> = (ChunkPos, &'a Record, Option<CompressedWrite>);
+    let mut by_region: BTreeMap<(i32, i32), Vec<RegionWrite<'_>>> = BTreeMap::new();
+    let mut outcome = RegionWriteOutcome::default();
+    let failed = &mut outcome.failed_records;
+    for (&((x, z), source), record) in records.iter().zip(compressed) {
+        match record {
+            Ok(record) => by_region.entry((x >> 5, z >> 5)).or_default().push((
+                ChunkPos::new(x, z),
+                source,
+                record,
+            )),
+            Err(error) => {
+                failed.insert((x, z), error);
             }
         }
-        if changed {
-            region.sync()?;
+    }
+    for ((rx, rz), mut list) in by_region {
+        // Clearing chunks of a region that doesn't exist changes nothing.
+        let create = list.iter().any(|(_, _, r)| r.is_some());
+        let result: std::io::Result<()> = (|| {
+            let Some(region) = storage.open_cached((rx, rz), create)? else {
+                return Ok(());
+            };
+            // Keep far readers on the exact locked read path until the flush completes.
+            let _writing = far_regions::writing(storage.cache, (rx, rz));
+            let mut region = region
+                .lock()
+                .map_err(|_| std::io::Error::other("region file poisoned"))?;
+            let mut needs_sync = false;
+            for (pos, source, record) in &mut list {
+                let changed = match record.take() {
+                    Some(record) => {
+                        write_chunk_record(&mut region, *pos, source, record).map(|()| true)
+                    }
+                    None => region.clear(*pos, timestamp),
+                };
+                match changed {
+                    Ok(changed) => needs_sync |= changed,
+                    Err(error) => {
+                        failed.insert((pos.x, pos.z), error);
+                    }
+                }
+            }
+            if needs_sync {
+                let synced = match region.sync_handle() {
+                    Ok(handle) => {
+                        drop(region);
+                        sync_data(&handle)
+                    }
+                    // Out of descriptors: flush under the lock rather than skip durability.
+                    Err(_) => region.sync(),
+                };
+                if let Err(error) = synced {
+                    log::warn!(
+                        "Failed to synchronize {} region [{rx}, {rz}]: {error}",
+                        storage.folder.name()
+                    );
+                    outcome.sync_error.get_or_insert(error);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            // Open or lock failed before any record reached this region.
+            let error = Arc::new(error);
+            for (pos, _, _) in list {
+                failed.insert(
+                    (pos.x, pos.z),
+                    std::io::Error::new(error.kind(), error.clone()),
+                );
+            }
         }
+    }
+    outcome
+}
+
+fn write_chunk_record(
+    region: &mut RegionFile,
+    pos: ChunkPos,
+    source: &Record,
+    CompressedWrite { record, primary }: CompressedWrite,
+) -> std::io::Result<()> {
+    region.write(pos, &record)?;
+    if primary {
+        source.accept_block_entity_edits();
     }
     Ok(())
 }
@@ -2099,70 +2288,14 @@ fn region_path(root: &Path, folder: &str, rx: i32, rz: i32) -> PathBuf {
     root.join(format!("{folder}/r.{rx}.{rz}.mca"))
 }
 
-/// A record waiting for the writer thread.
-#[derive(Clone)]
-enum Record {
-    Tag(Arc<NamedTag>),
-    /// A chunk to encode on the writer thread.
-    /// The old chunk's calculated blending data is taken when the save is
-    /// requested ([`SaveDir::calculated_blending`]): a snapshot of that save.
-    Chunk(Arc<Chunk>, Arc<Encoding>, Option<Arc<BlendingData>>),
-    Proto(Arc<SavedProto>, Arc<Encoding>),
-    /// A chunk's points of interest, made on the writer thread against the
-    /// saved ones (`resolve_poi`).
-    Poi(
-        Arc<Chunk>,
-        Arc<SaveTables>,
-        Option<Arc<crate::mobs::villager::ResolvedProfessions>>,
-    ),
-    Delete,
-}
-/// What encoding a chunk needs, captured when it is queued.
-struct Encoding {
-    registry: &'static BlockRegistry,
-    biomes: Arc<Biomes>,
-    tables: Option<Arc<SaveTables>>,
-    shape: LevelShape,
-}
-impl Record {
-    fn tag(&self) -> Option<Arc<NamedTag>> {
-        match self {
-            Record::Tag(t) => Some(t.clone()),
-            Record::Chunk(c, e, blending) => Some(Arc::new(encode_saved(
-                c,
-                e.registry,
-                &e.biomes,
-                e.tables.as_deref(),
-                e.shape,
-                blending.as_deref(),
-            ))),
-            Record::Proto(p, e) => Some(Arc::new(encode_proto(
-                p,
-                e.registry,
-                &e.biomes,
-                e.tables.as_deref(),
-                e.shape,
-            ))),
-            Record::Poi(c, t, professions) => {
-                encode_poi(c, t, professions.as_deref()).map(Arc::new)
-            }
-            Record::Delete => None,
-        }
-    }
-}
 /// A queued POI record as it is written: claims kept from the saved one, and
 /// a chunk that lost its last POI gets an empty one, as vanilla trusts a
 /// saved section. None when the chunk never had any.
-fn resolve_poi(
-    root: &Path,
-    cache: &RegionCache,
-    (x, z): (i32, i32),
-    record: &Record,
-) -> Option<Record> {
+fn resolve_poi(storage: RegionStorage<'_>, (x, z): (i32, i32), record: &Record) -> Option<Record> {
     let Record::Poi(chunk, tables, professions) = record else {
         return Some(record.clone());
     };
-    let old = read_region_record(root, cache, "poi", x, z)
+    let old = read_region_record(storage, x, z)
         .and_then(|old| {
             old.map(|mut old| {
                 upgrade_record(Folder::Poi, &mut old, || None)?;
@@ -2185,16 +2318,8 @@ fn resolve_poi(
     };
     Some(Record::Tag(Arc::new(tag)))
 }
-fn read_region_record(
-    root: &Path,
-    cache: &RegionCache,
-    folder: &str,
-    x: i32,
-    z: i32,
-) -> Result<Option<NamedTag>> {
-    let key = (x >> 5, z >> 5);
-    let path = region_path(root, folder, key.0, key.1);
-    let Some(region) = cached_region(cache, key, &path, false)? else {
+fn read_region_record(storage: RegionStorage<'_>, x: i32, z: i32) -> Result<Option<NamedTag>> {
+    let Some(region) = storage.open_cached((x >> 5, z >> 5), false)? else {
         return Ok(None);
     };
     let record = region
@@ -2251,6 +2376,7 @@ fn upgrade_record<'a>(
     context: impl FnOnce() -> Option<&'a DatafixContext>,
 ) -> Result<()> {
     use sunrise_world::datafix::{self, schema::Ty};
+    horizon_names::adopt_in_record(folder, &mut record.tag);
     let default = if folder == Folder::Poi { 1945 } else { -1 };
     if number(record.tag.get("DataVersion")).unwrap_or(default) >= i64::from(DATA_VERSION) {
         return Ok(());
@@ -2276,7 +2402,6 @@ fn upgrade_record<'a>(
 /// Chunk and entity records waiting for the writer thread, by (entities?,
 /// x, z): reads see them before the region files do.
 type PendingWrites = Mutex<HashMap<(Folder, i32, i32), (u64, Record)>>;
-type WriteBatch = (Folder, Vec<((i32, i32), Record, u64)>);
 /// The region folders of a dimension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Folder {
@@ -2305,11 +2430,18 @@ impl Folder {
 /// read lazily by worker threads.
 pub struct SaveDir {
     pub root: PathBuf,
+    save_reporting: writes::SaveReporting,
+    /// The loaded catalog for stack encoding; absent for metadata-only readers.
+    items: Option<Arc<crate::items::Items>>,
     regions: Arc<RegionCache>,
     entity_regions: Arc<RegionCache>,
+    /// `PersistentEntitySectionManager` leaves a failed read pending for the life of the level.
+    failed_entity_reads: Mutex<HashSet<(i32, i32)>>,
     poi_regions: Arc<RegionCache>,
     pending: Arc<PendingWrites>,
     sequence: AtomicU64,
+    disk: OnceLock<Arc<chunk_disk::DiskRuntime>>,
+    /// The server report destination shared by all dimensions and their I/O workers.
     writer: Mutex<Option<Writer>>,
     outstanding: Arc<Outstanding>,
     /// Set by `Persistent` before the first load.
@@ -2414,8 +2546,14 @@ impl SaveDir {
     /// a warning, and the level opens without them (as vanilla's `SavedDataStorage` starts a
     /// saved data over when its file is broken), so the next save can't overwrite it.
     pub fn load_attachments(&self) -> sunrise_mod_runtime::attachments::Attachments {
-        let path = self.attachments_path();
-        let data = match try_read_dat(&path) {
+        let mut path = self.attachments_path();
+        let mut read = try_read_dat(&path);
+        if matches!(read, Err(DatIssue::Missing)) {
+            // A dimension Horizon saved: its file, written under Sunrise's name at the next save.
+            path = horizon_names::horizon_attachments_path(&self.root);
+            read = try_read_dat(&path);
+        }
+        let data = match read {
             Err(DatIssue::Missing) => return Default::default(),
             Ok(root) => match root.get("data") {
                 Some(Tag::Compound(data)) => Ok(data.clone()),
@@ -2443,7 +2581,11 @@ impl SaveDir {
     ) -> Result<()> {
         let path = self.attachments_path();
         let data = attachments.to_nbt();
-        if data.is_empty() && !path.exists() {
+        // Emptied after a Horizon file was read: an empty file under Sunrise's name keeps it unread.
+        if data.is_empty()
+            && !path.exists()
+            && !horizon_names::horizon_attachments_path(&self.root).exists()
+        {
             return Ok(());
         }
         write_dat(
@@ -2463,14 +2605,23 @@ impl SaveDir {
     }
 
     /// The saves of a level of `shape` at `root` (its dimension folder).
-    pub fn new(root: PathBuf, shape: LevelShape) -> Self {
+    pub fn new(root: PathBuf, shape: LevelShape, items: Option<Arc<crate::items::Items>>) -> Self {
         Self {
+            save_reporting: writes::SaveReporting::new(
+                root.clone(),
+                "minecraft:overworld",
+                Arc::default(),
+                crate::chunk_io::PROCESS_REPORTS.clone(),
+            ),
             root,
+            items,
             regions: Default::default(),
             entity_regions: Default::default(),
+            failed_entity_reads: Default::default(),
             poi_regions: Default::default(),
             pending: Default::default(),
             sequence: AtomicU64::new(0),
+            disk: OnceLock::new(),
             writer: Mutex::new(None),
             outstanding: Default::default(),
             tables: OnceLock::new(),
@@ -2482,6 +2633,43 @@ impl SaveDir {
             datafix_context: OnceLock::new(),
             blending_lookup: OnceLock::new(),
         }
+    }
+    /// Share the world's record diagnostic sink across its levels, before any writes.
+    pub fn set_save_reporting(
+        &mut self,
+        world_root: PathBuf,
+        dimension: &'static str,
+        reporter: Arc<crate::chunk_io::SaveFailureReporter>,
+        inbox: Arc<crate::chunk_io::Reports>,
+    ) {
+        self.save_reporting = writes::SaveReporting::new(world_root, dimension, reporter, inbox);
+    }
+
+    pub fn chunk_reports(&self) -> &Arc<crate::chunk_io::Reports> {
+        &self.save_reporting.inbox
+    }
+
+    pub fn save_failure_reporter(&self) -> &Arc<crate::chunk_io::SaveFailureReporter> {
+        &self.save_reporting.reporter
+    }
+
+    fn region_storage(&self, folder: Folder) -> RegionStorage<'_> {
+        RegionStorage {
+            root: &self.root,
+            folder,
+            cache: match folder {
+                Folder::Region => &self.regions,
+                Folder::Entities => &self.entity_regions,
+                Folder::Poi => &self.poi_regions,
+            },
+            reporting: &self.save_reporting,
+        }
+    }
+
+    fn items_for_save(&self) -> Result<&Arc<crate::items::Items>> {
+        self.items
+            .as_ref()
+            .ok_or_else(|| "cannot save chunks without a loaded item catalog".into())
     }
     /// Mark this as a server-owned world save, not a remote cache.
     pub fn enable_trusted_fluid_load(&mut self) {
@@ -2721,42 +2909,42 @@ impl SaveDir {
     }
     /// A record as saved: the pending write first, then the region file.
     fn read_record_raw(&self, folder: &str, x: i32, z: i32) -> Option<NamedTag> {
-        self.try_read_record_raw(folder, x, z).ok().flatten()
+        self.try_read_record_raw(folder, x, z, Record::tag_for_metadata)
+            .inspect_err(|e| {
+                self.chunk_reports()
+                    .report_load_failure(&self.root, x, z, e)
+            })
+            .ok()
+            .flatten()
     }
-    /// `read_record_raw`, telling a record that isn't there (`Ok(None)`) from a read that failed
-    /// (`Err`, already reported): the second may succeed on a later read.
+    /// `read_record_raw`, telling a record that isn't there (`Ok(None)`) from a read that failed.
     fn try_read_record_raw(
         &self,
         folder: &str,
         x: i32,
         z: i32,
-    ) -> std::result::Result<Option<NamedTag>, ()> {
+        read_pending: fn(&Record) -> Option<Arc<NamedTag>>,
+    ) -> Result<Option<NamedTag>> {
+        let kind = Folder::of(folder);
         let pending = self
             .pending
             .lock()
-            .map_err(|_| ())?
-            .get(&(Folder::of(folder), x, z))
+            .map_err(|_| "pending writes poisoned")?
+            .get(&(kind, x, z))
             .map(|(_, r)| r.clone());
-        if let Some(record) = pending {
-            return Ok(record.tag().map(|t| (*t).clone()));
+        if let Some(record) = pending
+            && let Ok(tag) = compression_pool::catch_encoding_panic(|| Ok(read_pending(&record)))
+        {
+            return Ok(tag.map(|t| (*t).clone()));
         }
-        let cache = match Folder::of(folder) {
-            Folder::Region => &self.regions,
-            Folder::Entities => &self.entity_regions,
-            Folder::Poi => &self.poi_regions,
-        };
-        read_region_record(&self.root, cache, folder, x, z)
-            .inspect(|record| {
-                if self.trusted_fluid_load
-                    && folder == "region"
-                    && let Some(root) = record
-                {
-                    intern_saved_fluids(root);
-                }
-            })
-            .map_err(|e| {
-                crate::chunk_io::report_load_failure(&self.root, x, z, &e);
-            })
+        read_region_record(self.region_storage(kind), x, z).inspect(|record| {
+            if self.trusted_fluid_load
+                && kind == Folder::Region
+                && let Some(root) = record
+            {
+                intern_saved_fluids(root);
+            }
+        })
     }
     /// A record brought to the current version (`upgrade_record`); `Err` when that failed.
     fn try_read_record(
@@ -2764,21 +2952,23 @@ impl SaveDir {
         folder: &str,
         x: i32,
         z: i32,
-    ) -> std::result::Result<Option<NamedTag>, ()> {
-        let Some(mut record) = self.try_read_record_raw(folder, x, z)? else {
+        read_pending: fn(&Record) -> Option<Arc<NamedTag>>,
+    ) -> Result<Option<NamedTag>> {
+        let Some(mut record) = self.try_read_record_raw(folder, x, z, read_pending)? else {
             return Ok(None);
         };
-        match self.upgrade_record(Folder::of(folder), &mut record) {
-            Ok(()) => Ok(Some(record)),
-            Err(e) => {
-                crate::chunk_io::report_load_failure(&self.root, x, z, &e);
-                Err(())
-            }
-        }
+        self.upgrade_record(Folder::of(folder), &mut record)?;
+        Ok(Some(record))
     }
     /// A record brought to the current version (`upgrade_record`).
     fn read_record(&self, folder: &str, x: i32, z: i32) -> Option<NamedTag> {
-        self.try_read_record(folder, x, z).ok().flatten()
+        self.try_read_record(folder, x, z, Record::tag_for_metadata)
+            .inspect_err(|e| {
+                self.chunk_reports()
+                    .report_load_failure(&self.root, x, z, e)
+            })
+            .ok()
+            .flatten()
     }
     fn upgrade_record(&self, folder: Folder, record: &mut NamedTag) -> Result<()> {
         upgrade_record(folder, record, || {
@@ -2787,6 +2977,8 @@ impl SaveDir {
                 .as_ref()
         })
     }
+    /// `ChunkMap.handleChunkLoadFailure`: once this chunk's read failure has been reported,
+    /// let generation replace it, as `ChunkMap.createEmptyChunk` does.
     pub fn load(&self, x: i32, z: i32, registry: &BlockRegistry, biomes: &Biomes) -> Option<Chunk> {
         self.try_load(x, z, registry, biomes).ok().flatten()
     }
@@ -2799,7 +2991,13 @@ impl SaveDir {
         registry: &BlockRegistry,
         biomes: &Biomes,
     ) -> std::result::Result<Option<Chunk>, ()> {
-        let Some(root) = self.try_read_record("region", x, z)? else {
+        let Some(root) = self
+            .try_read_record("region", x, z, Record::tag)
+            .map_err(|e| {
+                self.chunk_reports()
+                    .report_load_failure(&self.root, x, z, &e)
+            })?
+        else {
             return Ok(None);
         };
         let tables = self.tables.get().map(|t| &**t);
@@ -2809,27 +3007,10 @@ impl SaveDir {
         };
         load_light(&root.tag, &mut chunk, self.shape.sky_light);
         chunk.entities = sunrise_world::chunk::legacy_entities(&root.tag);
+        // A failing load listener does not fail the load: the chunk keeps its stored attachments.
+        self.load_disk_attachments(&mut chunk, mod_api::ChunkDiskKind::Full)
+            .map_err(|_| ())?;
         Ok(Some(chunk))
-    }
-    /// A saved full chunk read for a player's far ring (`lan::far`), as `load` but past the gameplay
-    /// region cache (`far_record`).
-    pub fn load_far(
-        &self,
-        x: i32,
-        z: i32,
-        registry: &BlockRegistry,
-        biomes: &Biomes,
-    ) -> Option<Chunk> {
-        let root = self.far_record(x, z)?;
-        let tables = self.tables.get().map(|t| &**t);
-        let mut chunk = decode_with(&root, registry, biomes, tables, self.shape.column())?;
-        load_light(&root.tag, &mut chunk, self.shape.sky_light);
-        // Without its saved light (`isLightOn`) it would need the light engine: not one for the far ring.
-        chunk.light_loaded.then_some(chunk)
-    }
-    /// Chunks queued for the writer thread and not yet in their region files.
-    pub fn pending_writes(&self) -> usize {
-        self.pending.lock().map_or(0, |p| p.len())
     }
     /// A proto chunk saved before it became final (`decode_proto`).
     pub fn load_proto(
@@ -2841,7 +3022,10 @@ impl SaveDir {
     ) -> Option<SavedProto> {
         let root = self.read_record("region", x, z)?;
         let tables = self.tables.get().map(|t| &**t);
-        decode_proto(&root, registry, biomes, tables, self.shape.column())
+        let mut proto = decode_proto(&root, registry, biomes, tables, self.shape.column())?;
+        self.load_disk_attachments(&mut proto.column, mod_api::ChunkDiskKind::Proto)
+            .ok()?;
+        Some(proto)
     }
     /// Queue proto chunks for the writer thread; loads see them meanwhile.
     pub fn save_protos(
@@ -2852,6 +3036,7 @@ impl SaveDir {
     ) -> Result<()> {
         biomes.ensure_saveable()?;
         let encoding = Arc::new(Encoding {
+            items: self.items_for_save()?.clone(),
             registry,
             biomes: biomes.clone(),
             tables: self.tables.get().cloned(),
@@ -2868,15 +3053,27 @@ impl SaveDir {
             .collect();
         self.queue(Folder::Region, records, false)
     }
-    /// Entities saved for a chunk in `entities/` (an old chunk's own list: [`Self::load`]).
-    pub fn load_entities(&self, x: i32, z: i32) -> Vec<Tag> {
+    /// `EntityStorage.loadEntities`: read `entities/` separately from the terrain.
+    /// An absent record is empty; a failed read leaves the entity chunk pending until the level closes.
+    pub fn load_entities(&self, x: i32, z: i32) -> Result<Vec<Tag>> {
+        if self.failed_entity_reads.lock().unwrap().contains(&(x, z)) {
+            return Err("an earlier entity chunk read failed".into());
+        }
+        let record = self
+            .try_read_record("entities", x, z, Record::tag_for_metadata)
+            .inspect_err(|e| {
+                self.failed_entity_reads.lock().unwrap().insert((x, z));
+                log::error!("Failed to load entity chunk {x},{z}: {e}");
+                self.chunk_reports()
+                    .report_load_failure(&self.root, x, z, e);
+            })?;
         let mut out = Vec::new();
-        if let Some(root) = self.read_record("entities", x, z)
+        if let Some(root) = record
             && let Some(Tag::List(list)) = root.tag.get("Entities")
         {
             out.extend(list.iter().cloned());
         }
-        out
+        Ok(out)
     }
     /// Write `chunks` into their region files and wait until they are on disk.
     pub fn save(
@@ -2886,22 +3083,33 @@ impl SaveDir {
         biomes: &Biomes,
     ) -> Result<usize> {
         biomes.ensure_saveable()?;
+        let items = self.items_for_save()?;
+        if let Some(result) = self.save_disk_sync(chunks, registry, biomes, items) {
+            return result;
+        }
         let tables = self.tables.get().map(|t| &**t);
         let records = chunks
             .iter()
-            .map(|c| {
-                let blending = self.calculated_blending(c.x, c.z);
-                (
-                    (c.x, c.z),
-                    Some(encode_saved(
+            .filter_map(|c| {
+                let key = (c.x, c.z);
+                match compression_pool::catch_encoding_panic(|| {
+                    let blending = self.calculated_blending(c.x, c.z);
+                    Ok(encode_saved(
                         c,
                         registry,
                         biomes,
                         tables,
                         self.shape,
                         blending.as_deref(),
-                    )),
-                )
+                        items,
+                    ))
+                }) {
+                    Ok(tag) => Some((key, Some(tag))),
+                    Err(error) => {
+                        self.report_record_failure(Folder::Region, key, &error);
+                        None
+                    }
+                }
             })
             .collect();
         self.write_records("region", records, true)?;
@@ -2959,7 +3167,14 @@ impl SaveDir {
     pub fn save_entities_later(&self, chunks: Vec<((i32, i32), Vec<Tag>)>) -> Result<()> {
         self.write_entities(chunks, false)
     }
-    fn write_entities(&self, chunks: Vec<((i32, i32), Vec<Tag>)>, wait: bool) -> Result<()> {
+    /// `PersistentEntitySectionManager.storeChunkSections`: never store a pending entity chunk.
+    fn write_entities(&self, mut chunks: Vec<((i32, i32), Vec<Tag>)>, wait: bool) -> Result<()> {
+        {
+            let failed = self.failed_entity_reads.lock().unwrap();
+            if !failed.is_empty() {
+                chunks.retain(|(key, _)| !failed.contains(key));
+            }
+        }
         let records = chunks
             .into_iter()
             .map(|((x, z), entities)| {
@@ -3210,6 +3425,19 @@ fn write_dat_as(path: &Path, tag: Tag, durable: bool) -> Result<()> {
         };
         // Util.safeReplaceFile: no backup, no replacement.
         fs::rename(path, old).map_err(|e| format!("{}: {e}", path.display()))?;
+        use sunrise_world::crash_fixture::{CrashFixture, await_save_kill, selected};
+        // Between the two renames, a reader needs the backup.
+        match selected() {
+            Some(CrashFixture::SaveLevel) if file == "level.dat" => await_save_kill("level"),
+            Some(CrashFixture::SavePlayer)
+                if path
+                    .parent()
+                    .is_some_and(|parent| parent.ends_with("players/data")) =>
+            {
+                await_save_kill("player");
+            }
+            _ => {}
+        }
     }
     fs::rename(temporary, path)?;
     if durable {
@@ -3353,23 +3581,90 @@ pub mod later {
 }
 mod saved_data;
 use saved_data::{read_saved_data, saved_data_path, write_saved_data};
-/// The world's generator settings: world_gen_settings.dat (26.3) or
-/// level.dat's Data.WorldGenSettings.
-pub fn world_gen_settings(world: &Path) -> Option<Tag> {
-    // A world still to be file-fixed has them in level.dat in an older shape: they are read as
-    // the fixes would leave them, so the questions on opening it are the same ones.
-    if let Ok(Some(settings)) = sunrise_world::datafix::files::current_world_gen_settings(world) {
-        return Some(settings);
+/// The generator settings used for this world session. A replacement from
+/// enabled packs is kept in memory until the first save.
+#[derive(Clone, Debug)]
+pub struct WorldGenerator {
+    data: Tag,
+    recovered: bool,
+}
+
+impl WorldGenerator {
+    pub fn settings(&self) -> &Tag {
+        &self.data
     }
+<<<<<<< sync-sunrise-1
     read_saved_data(world, "world_gen_settings").or_else(|| {
         read_level_dat(world)?
             .get("Data")?
             .get("WorldGenSettings")
             .cloned()
     })
+=======
+
+    fn read(world: &Path, level_data: Option<&Tag>) -> (Option<Self>, i64) {
+        use sunrise_world::datafix::{files, schema::Ty, update_saved_data};
+        // Before file fixes (world previews), project the old settings into the
+        // current layout. During startup the migration has already run.
+        let old = level_data
+            .and_then(|data| number(data.get("DataVersion")))
+            .and_then(|version| i32::try_from(version).ok())
+            .is_some_and(files::requires_file_fixing);
+        let candidates = [
+            old.then(|| files::current_world_gen_settings(world).ok().flatten())
+                .flatten(),
+            read_dat(&saved_data_path(world, "world_gen_settings")).map(|mut root| {
+                update_saved_data(Ty::SavedWorldGenSettings, &mut root);
+                root.get("data")
+                    .cloned()
+                    .unwrap_or(Tag::Compound(Default::default()))
+            }),
+            level_data.and_then(|data| data.get("WorldGenSettings").cloned()),
+        ];
+        let usable = |s: &Tag| {
+            number(s.get("seed")).is_some()
+                && s.get("dimensions").is_some_and(valid_world_gen_dimensions)
+        };
+        // Old summaries may still display a seed from level.dat even if its
+        // settings are unusable. A dedicated world only uses a validated generator.
+        let displayed_seed = candidates
+            .iter()
+            .flatten()
+            .find_map(|s| number(s.get("seed")))
+            .unwrap_or(0);
+        let generator = candidates
+            .into_iter()
+            .flatten()
+            .find(usable)
+            .map(|data| Self {
+                data,
+                recovered: false,
+            });
+        let seed = generator
+            .as_ref()
+            .and_then(|g| number(g.data.get("seed")))
+            .unwrap_or(displayed_seed);
+        (generator, seed)
+    }
+
+    /// Read the prepared settings for a newly created world, which does not
+    /// have level.dat yet.
+    pub fn read_new(world: &Path) -> Option<Self> {
+        Self::read(world, None).0
+    }
+}
+
+/// The world's usable generator settings, for previews outside the world session.
+pub fn world_gen_settings(world: &Path) -> Option<Tag> {
+    let root = read_level_dat(world);
+    WorldGenerator::read(world, root.as_ref().and_then(|r| r.get("Data")))
+        .0
+        .map(|generator| generator.data)
+>>>>>>> sunrise/main
 }
 include!("save/preset_saved.rs");
-pub use sunrise_client_core::uuid::{uuid_from_text, uuid_text};
+pub use sunrise_client_core::uuid::uuid_from_text;
+pub use sunrise_core::uuid::uuid_text;
 /// A random (version 4) UUID as vanilla's four-int form.
 ///
 /// Every call gets its own: the generator is seeded once from the clock and
@@ -3559,27 +3854,29 @@ pub struct WorldGen {
 impl WorldGen {
     /// A saved world's choices, from its `world_gen_settings`.
     pub fn read(world: &Path) -> Option<Self> {
-        let settings = world_gen_settings(world)?;
+        world_gen_settings(world).as_ref().map(Self::from_settings)
+    }
+
+    /// Options of the generator selected by the world loader.
+    pub fn from_settings(settings: &Tag) -> Self {
         let flag = |key: &str, default: bool| number(settings.get(key)).map_or(default, |v| v != 0);
         let generator = settings
             .get("dimensions")
             .and_then(|d| d.get("minecraft:overworld"))
             .and_then(|o| o.get("generator"));
-        Some(Self {
+        Self {
             preset: generator.map_or(WorldPreset::Normal, WorldPreset::of_generator),
             structures: flag("generate_structures", true),
             bonus_chest: flag("bonus_chest", false),
-        })
+        }
     }
     /// The bundled world preset a saved world's overworld was generated
     /// with, from its generator: `minecraft:amplified` and
     /// `minecraft:large_biomes` by their noise settings, and
     /// `minecraft:single_biome_surface` by a fixed biome source. Anything
     /// else (and any world without settings) is `minecraft:normal`.
-    pub fn preset(world: &Path) -> &'static str {
-        let settings = world_gen_settings(world);
+    pub fn noise_preset(settings: Option<&Tag>) -> &'static str {
         let generator = settings
-            .as_ref()
             .and_then(|s| s.get("dimensions"))
             .and_then(|d| d.get("minecraft:overworld"))
             .and_then(|o| o.get("generator"));
@@ -3610,10 +3907,47 @@ pub fn write_world_gen_settings(dir: &Path, seed: i64, options: WorldGen) -> Res
     write_world_gen_settings_with(dir, seed, options, None, None, None)
 }
 include!("save/preset_generation.rs");
+const VANILLA_FEATURE_FLAGS: [&str; 1] = ["minecraft:vanilla"];
+/// The effective feature flags stored by a level. Fresh and defaulted saves have vanilla's set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeatureFlagIds(Arc<[String]>);
+
+impl Default for FeatureFlagIds {
+    fn default() -> Self {
+        static VANILLA: std::sync::LazyLock<Arc<[String]>> =
+            std::sync::LazyLock::new(|| VANILLA_FEATURE_FLAGS.map(str::to_owned).into());
+        Self(Arc::clone(&VANILLA))
+    }
+}
+
+impl FeatureFlagIds {
+    /// Share the flag ids with views of this level without copying them.
+    pub fn as_arc(&self) -> &Arc<[String]> {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for FeatureFlagIds {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: Into<Arc<[String]>>> From<T> for FeatureFlagIds {
+    fn from(ids: T) -> Self {
+        Self(ids.into())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Level {
     pub name: String,
     pub seed: i64,
+    /// The generator selected for the session, including any replacement settings.
+    #[doc(hidden)]
+    pub generator: Option<WorldGenerator>,
     pub creative: bool,
     /// The game mode id (0 survival, 1 creative, 2 adventure, 3 spectator);
     /// `creative` wins when the two disagree.
@@ -3670,6 +4004,9 @@ pub struct Level {
     pub world_spawn: Option<[i32; 3]>,
     /// The world spawn's yaw and pitch (`setworldspawn`'s rotation).
     pub world_spawn_angle: [f32; 2],
+    /// The level the world spawn is in (`spawn.dimension`, `RespawnData.dimension`); None for
+    /// the Overworld.
+    pub world_spawn_dimension: Option<String>,
     pub difficulty: String,
     pub hardcore: bool,
     /// `difficulty_settings.locked` (LevelData.isDifficultyLocked).
@@ -3680,11 +4017,10 @@ pub struct Level {
     /// `DataPackConfig` (Create World's Data Packs and Experiments): the
     /// enabled and disabled pack ids. Unset keeps vanilla's defaults.
     pub data_packs: Option<(Vec<String>, Vec<String>)>,
-    /// `WorldDataConfiguration`'s `enabled_features`: the feature flag ids
-    /// the world enables, `minecraft:vanilla` included. Empty is vanilla's
-    /// default, which the level.dat omits.
-    pub enabled_features: std::sync::Arc<[String]>,
-    /// The code mods (`fml.LoadingModList` beside `Data`), then the content mods (`sunrise.ContentModList`), the world was saved with; `None` without either list.
+    /// `WorldDataConfiguration`'s `enabled_features`: the effective feature flag ids.
+    /// An omitted `level.dat` tag decodes as vanilla's default, `minecraft:vanilla`.
+    pub enabled_features: FeatureFlagIds,
+    /// The code mods (`fml.LoadingModList` beside `Data`), then the content mods (`sunrise.ContentModList`), the world was saved with; `None` without either list or when both are empty.
     pub saved_mods: Option<Vec<level_mods::ModRecord>>,
     /// Game rule values by name without namespace (`keep_inventory`, ...).
     pub game_rules: BTreeMap<String, i32>,
@@ -3723,6 +4059,7 @@ pub struct Level {
     /// that file, not their own.
     pub singleplayer_file: bool,
 }
+
 impl Level {
     /// `PrimaryLevelData.setDifficulty`: the level data holds the world's
     /// difficulty, so the game and the file follow each other and a world
@@ -3779,7 +4116,7 @@ impl Level {
         }
     }
     pub fn read(dir: &Path) -> Option<Self> {
-        Self::read_root(dir, read_level_dat(dir)?, Default::default())
+        Self::read_with_registry(dir, Default::default())
     }
     /// Load a world using its session rule definitions.
     pub fn read_with_registry(
@@ -3787,6 +4124,40 @@ impl Level {
         registry: std::sync::Arc<crate::gamerules::RuleRegistry>,
     ) -> Option<Self> {
         Self::read_root(dir, read_level_dat(dir)?, registry)
+    }
+    /// Select a generator for an existing dedicated world with unusable settings.
+    pub fn recover_world_generator(
+        &mut self,
+        overrides: &sunrise_world::worldgen::overrides::WorldgenOverrides,
+        random_seed: impl FnOnce() -> i64,
+    ) -> Result<()> {
+        use sunrise_world::worldgen::overrides::DIMENSIONS;
+        if self.generator.is_some() {
+            return Ok(());
+        }
+        log::warn!(
+            "Sunrise: world generator settings do not read; using a random world seed and datapack dimensions"
+        );
+        self.seed = random_seed();
+        let mut data = new_world_gen_settings(self.seed, WorldGen::default(), None, None);
+        let dimensions = data.get_mut("dimensions").expect("default dimension map");
+        let Tag::Compound(stems) = dimensions else {
+            unreachable!()
+        };
+        for (id, stem) in overrides.entries(DIMENSIONS) {
+            stems.insert(
+                id.into(),
+                crate::scoreboard::json_to_tag(&serde_json::from_str(stem)?),
+            );
+        }
+        if !valid_world_gen_dimensions(dimensions) {
+            return Err("invalid datapack dimensions for generator recovery".into());
+        }
+        self.generator = Some(WorldGenerator {
+            data,
+            recovered: true,
+        });
+        Ok(())
     }
     /// `read` from level.dat alone, without the level.dat_old fallback: what
     /// `LevelStorageSource.readLevelSummary` reads for the world list.
@@ -3829,16 +4200,23 @@ impl Level {
             _ => 0.0,
         };
         level.world_spawn_angle = [angle("yaw"), angle("pitch")];
+        level.world_spawn_dimension = text(data.get("spawn").and_then(|s| s.get("dimension")))
+            .filter(|d| d != "minecraft:overworld");
         if let Some(d) = data.get("difficulty_settings") {
             level.difficulty = text(d.get("difficulty")).unwrap_or_else(|| "normal".into());
             level.hardcore = n(d.get("hardcore")) != 0;
             level.difficulty_locked = n(d.get("locked")) != 0;
         }
         level.allow_commands = Some(n(data.get("allowCommands")) != 0);
-        // WorldDataConfiguration.MAP_CODEC's `enabled_features`, flat in the
-        // Data compound and omitted when the flags are vanilla's default.
-        if let Some(Tag::List(flags)) = data.get("enabled_features") {
-            level.enabled_features = flags.iter().filter_map(|f| text(Some(f))).collect();
+        // WorldDataConfiguration.MAP_CODEC's lenient optional field uses the default
+        // for both absent and malformed input. A valid empty list is not the default.
+        if let Some(Tag::List(flags)) = data.get("enabled_features")
+            && let Some(flags) = flags
+                .iter()
+                .map(|flag| text(Some(flag)))
+                .collect::<Option<Arc<[_]>>>()
+        {
+            level.enabled_features = flags.into();
         }
         level.saved_mods = level_mods::saved(&root);
         if let Some(packs) = data.get("DataPacks") {
@@ -3897,11 +4275,7 @@ impl Level {
             rules.remove(&minecart_rule.name);
         }
         level.game_rules = rules;
-        // Seed: world_gen_settings.dat (26.3) or Data.WorldGenSettings.
-        level.seed = read_saved_data(dir, "world_gen_settings")
-            .and_then(|w| number(w.get("seed")))
-            .or_else(|| number(data.get("WorldGenSettings").and_then(|w| w.get("seed"))))
-            .unwrap_or(0);
+        (level.generator, level.seed) = WorldGenerator::read(dir, Some(data));
         // Day time: the overworld clock (26.3) or Data.DayTime.
         level.day_time = read_saved_data(dir, "world_clocks")
             .and_then(|c| {
@@ -3947,7 +4321,10 @@ impl Level {
                 .or_else(|| read_dat(&player_dir.join(format!("{name}.dat_old"))))
         });
         level.singleplayer_file = owner.is_some();
-        let player = owner.or_else(|| data.get("Player").cloned());
+        let mut player = owner.or_else(|| data.get("Player").cloned());
+        if let Some(player) = &mut player {
+            horizon_names::adopt_in_player(player);
+        }
         level.player_uuid = uuid_from_tag(player.as_ref().and_then(|p| p.get("UUID"))).or(uuid);
         let spawn = level
             .world_spawn
@@ -4090,7 +4467,7 @@ impl Level {
     /// The player compound: loaded data with current state written over it.
     /// `LivingEntity.addAdditionalSaveData` / `ServerPlayer.addAdditionalSaveData`:
     /// the live fall fields and the player's empty brain are saved too.
-    pub fn player_tag(&self) -> Tag {
+    pub fn player_tag(&self, items: &crate::items::Items) -> Tag {
         let mut p = compound_or_empty(self.player_extra.clone());
         // Keys rewritten from scratch.
         if let Tag::Compound(map) = &mut p {
@@ -4122,7 +4499,7 @@ impl Level {
             match *slot {
                 0..=35 => {
                     let mut entries = vec![("Slot", Tag::Byte(*slot as i8))];
-                    entries.extend(encode_item(&stack));
+                    entries.extend(encode_item(&stack, items));
                     inventory.push(Tag::compound(entries));
                 }
                 _ => {
@@ -4245,7 +4622,7 @@ impl Level {
             ),
             ("playerGameType", Tag::Int(self.mode())),
             ("Inventory", Tag::List(inventory)),
-            ("EnderItems", encode_items(&self.ender_items)),
+            ("EnderItems", encode_items(&self.ender_items, items)),
             ("recipeBook", self.recipe_book.write()),
             ("abilities", abilities),
             (
@@ -4264,7 +4641,7 @@ impl Level {
             .inventory
             .iter()
             .any(|(slot, _, count, _)| i32::from(*slot) == self.selected_slot && *count > 0);
-        match equipment.write() {
+        match equipment.write(items) {
             Some(tag) => entries.push(("equipment", tag)),
             None if holding => entries.push(("equipment", Tag::Compound(Default::default()))),
             None => {}
@@ -4352,13 +4729,20 @@ impl Level {
         p
     }
     /// Write every file; a world without a player UUID gets a random one.
-    pub fn write(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, true, false)
+    pub fn write(&mut self, dir: &Path, items: &crate::items::Items) -> Result<()> {
+        self.write_internal(dir, Some(items), false, false)
     }
 
     /// Dedicated servers save connected players separately.
     pub fn write_without_player(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, false, false)
+        self.write_internal(dir, None, false, false)
+    }
+
+    /// `level.dat` without a new player file: the single-player owner's file stays as last
+    /// saved, and a legacy `Data.Player` (before the first normal save the owner's only copy)
+    /// stays in `level.dat`.
+    pub fn write_keeping_player(&mut self, dir: &Path) -> Result<()> {
+        self.write_internal(dir, None, false, true)
     }
 
     /// The temporary world a Realms upload packs
@@ -4367,22 +4751,28 @@ impl Level {
     /// generation and game rules, and no player file or weather/clocks the server makes
     /// on its own. The caller writes the data packs and removes the folder.
     pub fn write_upload(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, false, true)
+        self.write_internal(dir, None, true, false)
     }
 
     /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
     /// (`PlayerDataStorage.save`): the one level.dat names.
-    pub fn write_player(&mut self, dir: &Path) -> Result<()> {
+    pub fn write_player(&mut self, dir: &Path, items: &crate::items::Items) -> Result<()> {
         let uuid = self.ensure_player_uuid();
         let player_file = dir
             .join("players")
             .join("data")
             .join(format!("{}.dat", uuid_text(uuid)));
         back_up_unreadable_player(&player_file);
-        write_dat(&player_file, self.player_tag())
+        write_dat(&player_file, self.player_tag(items))
     }
 
-    fn write_internal(&mut self, dir: &Path, write_player: bool, upload: bool) -> Result<()> {
+    fn write_internal(
+        &mut self,
+        dir: &Path,
+        items: Option<&crate::items::Items>,
+        upload: bool,
+        keep_legacy_player: bool,
+    ) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
         let mut root = compound_or_empty(read_level_dat(dir));
@@ -4390,6 +4780,9 @@ impl Level {
             .get("Data")
             .is_some_and(|d| d.get("Player").is_some() || d.get("WorldGenSettings").is_some());
         let mut data = compound_or_empty(root.get("Data").cloned());
+        let kept_player = keep_legacy_player
+            .then(|| data.get("Player").cloned())
+            .flatten();
         if let Tag::Compound(map) = &mut data {
             // Pre-26.3 keys now stored elsewhere (a legacy Sunrise level.dat).
             for key in [
@@ -4431,7 +4824,9 @@ impl Level {
         }
         // An upload's level.dat names no player (`createTag(null)`); every other file
         // names this world's own.
-        let uuid = (!upload).then(|| self.ensure_player_uuid());
+        // A keep-owner write names nothing new: the on-disk `singleplayer_uuid` (or its absence)
+        // stays, so reopening loads the same owner file as before.
+        let uuid = (!upload && !keep_legacy_player).then(|| self.ensure_player_uuid());
         // A new world's first spawn point is its world spawn.
         if self.world_spawn.is_none() {
             self.world_spawn = self.spawn.map(|s| {
@@ -4501,7 +4896,14 @@ impl Level {
                 "spawn",
                 Tag::compound([
                     ("pos", Tag::IntArray(spawn.to_vec())),
-                    ("dimension", string("minecraft:overworld")),
+                    (
+                        "dimension",
+                        string(
+                            self.world_spawn_dimension
+                                .as_deref()
+                                .unwrap_or("minecraft:overworld"),
+                        ),
+                    ),
                     ("yaw", Tag::Float(self.world_spawn_angle[0].to_bits())),
                     ("pitch", Tag::Float(self.world_spawn_angle[1].to_bits())),
                 ]),
@@ -4522,11 +4924,10 @@ impl Level {
                 map.insert("allowCommands".into(), Tag::Byte(i8::from(allow)));
             }
             map.entry("WasModded".into()).or_insert(Tag::Byte(0));
-            // lenientOptionalFieldOf("enabled_features", DEFAULT_FLAGS): the
-            // tag is left out when the set is vanilla's default, so a
-            // `["minecraft:vanilla"]`-only list does not reach the file.
-            let vanilla_only = *self.enabled_features == ["minecraft:vanilla"];
-            if !self.enabled_features.is_empty() && !vanilla_only {
+            // WorldDataConfiguration omits the default, even when the retained Data had a tag.
+            if *self.enabled_features == VANILLA_FEATURE_FLAGS {
+                map.remove(&JavaString::from("enabled_features"));
+            } else {
                 map.insert(
                     "enabled_features".into(),
                     Tag::List(self.enabled_features.iter().map(|s| string(s)).collect()),
@@ -4578,7 +4979,10 @@ impl Level {
             put(&mut clocks, "minecraft:the_end", end);
             write_saved_data(dir, "world_clocks", clocks)?;
         }
-        if legacy || !saved_data_path(dir, "world_gen_settings").exists() {
+        if let Some(generator) = self.generator.as_mut().filter(|g| g.recovered) {
+            write_saved_data(dir, "world_gen_settings", generator.data.clone())?;
+            generator.recovered = false;
+        } else if legacy || !saved_data_path(dir, "world_gen_settings").exists() {
             write_world_gen_settings(dir, self.seed, WorldGen::default())?;
         }
         if !saved_data_path(dir, "game_rules").exists() || !self.game_rules.is_empty() {
@@ -4635,8 +5039,11 @@ impl Level {
             }
             write_saved_data(dir, "game_rules", rules)?;
         }
-        if write_player {
-            self.write_player(dir)?;
+        if let Some(items) = items {
+            self.write_player(dir, items)?;
+        }
+        if let Some(player) = kept_player {
+            put(&mut data, "Player", player);
         }
         put(&mut root, "Data", data);
         write_dat(&dir.join("level.dat"), root)?;
@@ -4774,7 +5181,7 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
         }
         columns
     }
-    fn sample(&mut self, x: i32, z: i32) -> Option<crate::lod::Surface> {
+    fn sample(&mut self, x: i32, z: i32) -> Option<crate::columns::Surface> {
         self.column(x, z).surface
     }
     fn column(&mut self, x: i32, z: i32) -> crate::lod::Column {
@@ -4984,7 +5391,7 @@ fn decode_lod_surfaces(
                             if fluid {
                                 water[cell].get_or_insert((height, state));
                             } else {
-                                column.surface = Some(crate::lod::Surface {
+                                column.surface = Some(crate::columns::Surface {
                                     height,
                                     state,
                                     water: water[cell],
@@ -5121,10 +5528,17 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
         for s in &mut chunk.sections {
             Arc::make_mut(s).compact();
         }
-        chunk.entities.extend(self.save.load_entities(x, z));
+        if let Ok(entities) = self.save.load_entities(x, z) {
+            chunk.entities.extend(entities);
+        }
         Some(chunk)
     }
-    fn lod_surface(&self, worker: &mut G::Worker, x: i32, z: i32) -> Option<crate::lod::Surface> {
+    fn lod_surface(
+        &self,
+        worker: &mut G::Worker,
+        x: i32,
+        z: i32,
+    ) -> Option<crate::columns::Surface> {
         // Resident/visited summaries override this procedural fallback in the LOD cache.
         self.inner.lod_surface(worker, x, z)
     }
@@ -5349,8 +5763,9 @@ mod tests {
         }));
         write_world_gen_settings_with(&dir, 1, WorldGen::default(), None, None, Some(dimensions))
             .unwrap();
+        let generator = WorldGenerator::read_new(&dir).unwrap();
         let mut overrides = WorldgenOverrides::default();
-        merge_saved_world_gen_dimensions(&dir, &mut overrides);
+        generator.merge_dimensions(&mut overrides);
         let overworld = overrides.level_height("minecraft:overworld").unwrap();
         assert_eq!((overworld.min_y, overworld.height), (0, 256));
         assert!(overworld.has_ceiling && !overworld.has_skylight);
@@ -5369,7 +5784,7 @@ mod tests {
         );
         let pack_stem = r#"{"type":"minecraft:overworld","generator":{"type":"minecraft:debug"}}"#;
         overrides.set(DIMENSIONS, "minecraft:overworld", pack_stem.into());
-        merge_saved_world_gen_dimensions(&dir, &mut overrides);
+        generator.merge_dimensions(&mut overrides);
         assert_eq!(
             overrides
                 .entries(DIMENSIONS)
@@ -5394,6 +5809,7 @@ mod tests {
             (1, 2, 3),
             &BlockEntity::Chest(slots.clone()),
             "minecraft:chest",
+            &Default::default(),
         );
         assert!(
             chest.get("Items").is_some(),
@@ -5403,6 +5819,7 @@ mod tests {
             (1, 2, 3),
             &BlockEntity::Chest(slots),
             "minecraft:ender_chest",
+            &Default::default(),
         );
         assert_eq!(
             ender.get("id"),
@@ -5423,14 +5840,14 @@ mod tests {
             max: 0,
         };
         let registry = std::sync::Arc::new(
-            RuleRegistry::with_bool_rules(&["example:machines".into()], &[rule]).unwrap(),
+            RuleRegistry::with_mod_rules(&["example:machines".into()], &[rule]).unwrap(),
         );
         let mut level = super::Level {
             rule_registry: registry.clone(),
             ..Default::default()
         };
         level.game_rules.insert("example:enabled".into(), 0);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         assert_eq!(
             super::read_saved_data(&dir, "game_rules")
                 .unwrap()
@@ -5438,7 +5855,7 @@ mod tests {
             Some(&super::Tag::Byte(0))
         );
         let mut absent = super::Level::read(&dir).unwrap();
-        absent.write(&dir).unwrap();
+        absent.write(&dir, &Default::default()).unwrap();
         assert_eq!(
             super::read_saved_data(&dir, "game_rules")
                 .unwrap()
@@ -5447,8 +5864,76 @@ mod tests {
         );
         let mut returned = super::Level::read_with_registry(&dir, registry).unwrap();
         assert_eq!(returned.game_rules.get("example:enabled"), Some(&0));
-        returned.write(&dir).unwrap();
+        returned.write(&dir, &Default::default()).unwrap();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dedicated_generator_recovery_uses_a_new_seed_and_persists_pack_dimensions() {
+        use super::*;
+        use sunrise_world::worldgen::overrides::{DIMENSIONS, WorldgenOverrides};
+
+        const RECOVERY_SEED: i64 = -546_172;
+        let scratch = tempfile::tempdir().unwrap();
+        let world = scratch.path();
+        let settings = saved_data_path(world, "world_gen_settings");
+        Level::default().write_without_player(world).unwrap();
+        let mut overrides = WorldgenOverrides::default();
+        overrides.set(
+            DIMENSIONS,
+            "minecraft:overworld",
+            r#"{"type":"test:tall","generator":{"type":"minecraft:noise","settings":"minecraft:overworld","biome_source":{"type":"minecraft:fixed","biome":"minecraft:plains"}}}"#.to_owned(),
+        );
+
+        for case in ["missing", "unreadable", "seedless", "no-dimensions"] {
+            match case {
+                "missing" => fs::remove_file(&settings).unwrap(),
+                "unreadable" => fs::write(&settings, b"unreadable generator settings").unwrap(),
+                "seedless" | "no-dimensions" => {
+                    let Tag::Compound(mut invalid) =
+                        read_saved_data(world, "world_gen_settings").unwrap()
+                    else {
+                        panic!("expected saved settings")
+                    };
+                    let missing = if case == "seedless" {
+                        "seed"
+                    } else {
+                        invalid.insert("seed".into(), Tag::Long(13_579));
+                        "dimensions"
+                    };
+                    invalid.remove(&missing.into());
+                    write_saved_data(world, "world_gen_settings", Tag::Compound(invalid)).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let before = fs::read(&settings).ok();
+            let mut recovered = Level::read(world).unwrap();
+            recovered
+                .recover_world_generator(&overrides, || RECOVERY_SEED)
+                .unwrap();
+            assert_eq!(recovered.seed, RECOVERY_SEED, "{case}");
+            assert!(world_gen_settings(world).is_none(), "{case}");
+            assert_eq!(fs::read(&settings).ok(), before, "{case}");
+            recovered.write_without_player(world).unwrap();
+            let saved = read_saved_data(world, "world_gen_settings").unwrap();
+            assert_eq!(saved.get("seed"), Some(&Tag::Long(RECOVERY_SEED)));
+            assert_eq!(
+                saved
+                    .get("dimensions")
+                    .and_then(|d| d.get("minecraft:overworld"))
+                    .and_then(|d| d.get("type")),
+                Some(&Tag::String("test:tall".into())),
+            );
+        }
+
+        write_world_gen_settings(world, 0, WorldGen::default()).unwrap();
+        let mut valid = Level::read(world).unwrap();
+        valid
+            .recover_world_generator(&overrides, || {
+                panic!("a valid saved zero must not draw a new seed")
+            })
+            .unwrap();
+        assert_eq!(valid.seed, 0);
     }
 
     #[test]
@@ -5613,7 +6098,7 @@ mod tests {
         let bell = assets.registry.default_state("minecraft:bell").unwrap().0;
         let dir = std::env::temp_dir().join(format!("sunrise-poi-save-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         let _ = save.tables.set(Arc::new(SaveTables::new(&assets)));
         let mut chunk = Chunk::empty(0, 0);
         chunk.set(5, 71, 5, bell);
@@ -5630,7 +6115,7 @@ mod tests {
             .unwrap();
         save.flush().unwrap();
         assert_eq!(
-            sections(&SaveDir::new(dir.clone(), LevelShape::OVERWORLD)),
+            sections(&SaveDir::new(dir.clone(), LevelShape::OVERWORLD, None)),
             Some(0)
         );
         let _ = fs::remove_dir_all(&dir);
@@ -5678,7 +6163,7 @@ mod tests {
         };
         let dir =
             std::env::temp_dir().join(format!("sunrise-level-attachments-{}", std::process::id()));
-        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         let key = AttachmentType {
             namespace: "test",
             name: "counter",
@@ -5708,7 +6193,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn loaded_chunk_uses_saved_monument_from_its_referenced_start_chunk() {
         use sunrise_core::{
             geometry::Direction,
@@ -5760,7 +6245,12 @@ mod tests {
                 Tag::List(vec![Tag::Compound(top.save().unwrap())]),
             ),
         ]);
-        let mut saved = encode(&Chunk::empty(-2, 3), assets.registry, &biomes);
+        let mut saved = encode(
+            &Chunk::empty(-2, 3),
+            assets.registry,
+            &biomes,
+            &Default::default(),
+        );
         let Some(Tag::Compound(structures)) = saved.tag.get_mut("structures") else {
             panic!("structures")
         };
@@ -5771,6 +6261,7 @@ mod tests {
         let save = Arc::new(SaveDir::new(
             std::env::temp_dir().join(format!("sunrise-saved-monument-{}", std::process::id())),
             LevelShape::OVERWORLD,
+            Some(Default::default()),
         ));
         save.pending
             .lock()
@@ -5838,7 +6329,12 @@ mod tests {
                 Tag::compound([("id", string("INVALID"))]),
             ),
         ]);
-        let mut saved = encode(&Chunk::empty(2, -3), assets.registry, &biomes);
+        let mut saved = encode(
+            &Chunk::empty(2, -3),
+            assets.registry,
+            &biomes,
+            &Default::default(),
+        );
         let Tag::Compound(root) = &mut saved.tag else {
             panic!("chunk root")
         };
@@ -5851,7 +6347,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(loaded.saved_structure_starts(), Some(expected));
-        let again = encode(&loaded, assets.registry, &biomes);
+        let again = encode(&loaded, assets.registry, &biomes, &Default::default());
         assert_eq!(
             again.tag.get("structures").and_then(|s| s.get("starts")),
             Some(&starts)
@@ -5859,6 +6355,7 @@ mod tests {
         let save = Arc::new(SaveDir::new(
             std::env::temp_dir().join(format!("sunrise-saved-starts-{}", std::process::id())),
             LevelShape::OVERWORLD,
+            Some(Default::default()),
         ));
         // A pending record is authoritative even before any region file exists.
         save.pending
@@ -5935,7 +6432,7 @@ mod tests {
             .push((pos, crate::containers::BlockEntity::Chest(vec![None; 27])));
         extras.block_entity_attachments.push((pos, block_data));
         chunk.saved = Some(Arc::new(extras));
-        let saved = encode(&chunk, assets.registry, &biomes);
+        let saved = encode(&chunk, assets.registry, &biomes, &Default::default());
         let mut loaded = decode(&saved, assets.registry, &biomes).expect("chunk");
         assert_eq!(
             key.get(
@@ -5992,6 +6489,7 @@ mod tests {
                 &biomes,
                 Some(&tables),
                 LevelShape::OVERWORLD,
+                &Default::default(),
             );
             let Some(Tag::List(list)) = saved.tag.get("block_entities") else {
                 panic!("no block entities");
@@ -6056,7 +6554,14 @@ mod tests {
         let mut chunk = Chunk::with_layout(0, 0, shape.column());
         chunk.set(0, -64, 0, stone.0);
         chunk.set(0, 2000, 0, stone.0);
-        let saved = encode_with(&chunk, assets.registry, &biomes, Some(&tables), shape);
+        let saved = encode_with(
+            &chunk,
+            assets.registry,
+            &biomes,
+            Some(&tables),
+            shape,
+            &Default::default(),
+        );
         assert_eq!(number(saved.tag.get("yPos")), Some(-4));
         let Some(Tag::List(sections)) = saved.tag.get("sections") else {
             panic!("no sections");
@@ -6171,6 +6676,7 @@ mod tests {
             &biomes,
             Some(&tables),
             LevelShape::NETHER,
+            &Default::default(),
         );
         assert_eq!(number(saved.tag.get("yPos")), Some(0));
         let Some(Tag::List(sections)) = saved.tag.get("sections") else {
@@ -6201,45 +6707,9 @@ mod tests {
             &biomes,
             Some(&tables),
             LevelShape::OVERWORLD,
+            &Default::default(),
         );
         assert_eq!(number(overworld.tag.get("yPos")), Some(-4));
-    }
-
-    /// The far ring's reads (`lan::far`): a chunk saved with its light, without the gameplay's region
-    /// cache; none for a chunk not saved, or saved without its light.
-    #[test]
-    fn far_reads_take_saved_lit_chunks_only() {
-        let Some(root) = std::env::var_os("SUNRISE_TEST_RESOURCES") else {
-            return;
-        };
-        let root = PathBuf::from(root);
-        let assets = crate::assets::Assets::load(&root).expect("assets");
-        let biomes = Biomes::load(&sunrise_assets::resource_source::ResourceRoot::directory(
-            root.to_path_buf(),
-        ))
-        .expect("biomes");
-        let stone = assets.registry.default_state("minecraft:stone").unwrap();
-        let mut lit = Chunk::empty(4, -7);
-        lit.set(1, 70, 2, stone.0);
-        let mut dark = lit.clone();
-        dark.x = 5;
-        lit.lit = true;
-        let dir = std::env::temp_dir().join(format!("sunrise-far-save-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
-        let records =
-            [&lit, &dark].map(|c| ((c.x, c.z), Some(encode(c, assets.registry, &biomes))));
-        save.write_records("region", records.into(), true).unwrap();
-        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
-        let far = reopened
-            .load_far(4, -7, assets.registry, &biomes)
-            .expect("saved with its light");
-        assert_eq!(far.block(1, 70, 2), stone);
-        assert!(far.lit && far.light_loaded);
-        assert!(reopened.load_far(5, -7, assets.registry, &biomes).is_none());
-        assert!(reopened.load_far(6, -7, assets.registry, &biomes).is_none());
-        assert!(reopened.regions.lock().unwrap().is_empty());
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -6303,7 +6773,7 @@ mod tests {
         chunk.set(12, 100, 2, end_stone.0);
         chunk.set(12, 101, 2, chorus.0);
         chunk.set(12, 102, 2, flower.0);
-        let mut saved = encode(&chunk, assets.registry, &biomes);
+        let mut saved = encode(&chunk, assets.registry, &biomes, &Default::default());
         put(
             &mut saved.tag,
             "block_entities",
@@ -6311,10 +6781,10 @@ mod tests {
         );
         let dir = std::env::temp_dir().join(format!("sunrise-lod-save-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         save.write_records("region", vec![((-2, 3), Some(saved))], true)
             .unwrap();
-        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         let surfaces = reopened
             .lod_surfaces(-2, 3, &assets, &biomes)
             .expect("saved summary");
@@ -6384,7 +6854,7 @@ mod tests {
             reopened.regions.lock().unwrap().is_empty(),
             "far reads do not grow gameplay region cache"
         );
-        let mut proto = encode(&chunk, assets.registry, &biomes);
+        let mut proto = encode(&chunk, assets.registry, &biomes, &Default::default());
         put(
             &mut proto.tag,
             "Status",
@@ -6397,7 +6867,7 @@ mod tests {
             reopened.lod_surfaces(-3, 3, &assets, &biomes).is_none(),
             "unfinished proto saves must not suppress complete decoration"
         );
-        let nether = SaveDir::new(dir.clone(), LevelShape::NETHER);
+        let nether = SaveDir::new(dir.clone(), LevelShape::NETHER, Some(Default::default()));
         let dark = nether.lod_surfaces(-2, 3, &assets, &biomes).unwrap();
         assert!(
             dark.iter()
@@ -6407,7 +6877,7 @@ mod tests {
         );
         struct SavedOnly(Vec<crate::streaming::LodDetail>);
         impl crate::streaming::LodSampler for SavedOnly {
-            fn sample(&mut self, _: i32, _: i32) -> Option<crate::lod::Surface> {
+            fn sample(&mut self, _: i32, _: i32) -> Option<crate::columns::Surface> {
                 panic!("saved data must win")
             }
             fn request_detail(&mut self, chunks: &[(i32, i32)], _: [i32; 2]) {
@@ -6620,7 +7090,7 @@ mod tests {
         for section in 0..chunk.sections.len() as i32 {
             chunk.set(8, MIN_Y + section * 16 + 8, 8, dandelion.0);
         }
-        let saved = encode(&chunk, assets.registry, &biomes);
+        let saved = encode(&chunk, assets.registry, &biomes, &Default::default());
         let layout = LevelShape::OVERWORLD.column();
         let far = || decode_lod_surfaces(&saved, &assets, &biomes, layout, true);
         let columns = far().expect("far columns");
@@ -6688,7 +7158,9 @@ mod tests {
         let encode = |entries: &[((i32, i32, i32), BlockEntity)]| {
             entries
                 .iter()
-                .map(|(p, e)| block_entity_encode::encode(*p, e, "minecraft:chest"))
+                .map(|(p, e)| {
+                    block_entity_encode::encode(*p, e, "minecraft:chest", &Default::default())
+                })
                 .collect::<Vec<_>>()
         };
         for input in [&batch[..0], &batch[..1], &batch[..]] {
@@ -6761,7 +7233,8 @@ mod tests {
                 .pop()
                 .expect("one record")
                 .expect("an encoded record")
-                .expect("a chunk, not a deletion");
+                .expect("a chunk, not a deletion")
+                .record;
             assert_eq!(
                 written.compression,
                 Compression::selected(),
@@ -6805,7 +7278,7 @@ mod tests {
                 })
                 .transpose()
                 .unwrap();
-            let got = got.unwrap();
+            let got = got.unwrap().map(|r| r.record);
             assert_eq!(
                 got.as_ref().map(|r| (&r.compressed, r.timestamp)),
                 want.as_ref().map(|r| (&r.compressed, r.timestamp))
@@ -6864,25 +7337,13 @@ mod tests {
         let open_fds = || std::fs::read_dir("/dev/fd").map_or(0, |d| d.count());
         let dir = std::env::temp_dir().join(format!("sunrise-save-fds-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let save = super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let save =
+            super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         let before = open_fds();
-        let held = super::cached_region(
-            &save.regions,
-            (0, 0),
-            &save.region_path("region", 0, 0),
-            true,
-        )
-        .unwrap()
-        .unwrap();
+        let storage = save.region_storage(Folder::Region);
+        let held = storage.open_cached((0, 0), true).unwrap().unwrap();
         for x in 1..=600 {
-            super::cached_region(
-                &save.regions,
-                (x, 0),
-                &save.region_path("region", x, 0),
-                true,
-            )
-            .unwrap()
-            .unwrap();
+            storage.open_cached((x, 0), true).unwrap().unwrap();
         }
         // Other tests open files at the same time: a margin, far below 600.
         let grown = open_fds().saturating_sub(before);
@@ -6909,7 +7370,7 @@ mod tests {
         save.flush().unwrap();
         assert!(save.entity_regions.lock().unwrap().open() <= super::MAX_OPEN_REGIONS);
         for i in [0, 1, 150, 299] {
-            assert_eq!(save.load_entities(i * 32, 0), vec![entity(i)]);
+            assert_eq!(save.load_entities(i * 32, 0).unwrap(), vec![entity(i)]);
         }
         drop(held);
         let _ = std::fs::remove_dir_all(&dir);
@@ -6918,14 +7379,22 @@ mod tests {
     fn write_completion_polls_without_waiting_and_keeps_latest_snapshot() {
         let dir = std::env::temp_dir().join(format!("sunrise-save-poll-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let save = super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let save =
+            super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         let lock = super::SessionLock::acquire(&dir).unwrap();
-        let path = save.region_path("entities", 0, 0);
-        let region = super::cached_region(&save.entity_regions, (0, 0), &path, true)
+        let region = save
+            .region_storage(Folder::Entities)
+            .open_cached((0, 0), true)
             .unwrap()
             .unwrap();
-        // Hold the actual region lock, rather than relying on disk speed or sleeps.
-        let blocked = region.lock().unwrap();
+        let chunk_region = save
+            .region_storage(Folder::Region)
+            .open_cached((0, 0), true)
+            .unwrap()
+            .unwrap();
+        // Hold the actual region locks, rather than relying on disk speed or sleeps. The
+        // writer takes the Region folder before Entities in a pass, so both are held.
+        let blocked = (region.lock().unwrap(), chunk_region.lock().unwrap());
         let entity = |version| Tag::compound([("version", Tag::Int(version))]);
         save.save_entities_later(vec![((1, 2), vec![entity(1)])])
             .unwrap();
@@ -6937,19 +7406,21 @@ mod tests {
             .unwrap();
         // The writer is blocked above: two chunk records in ONE queued batch.
         assert_eq!(save.active_chunk_writes(), 2);
-        assert_eq!(save.load_entities(1, 2), vec![entity(2)]);
+        assert_eq!(save.load_entities(1, 2).unwrap(), vec![entity(2)]);
         assert!(super::SessionLock::acquire(&dir).is_err());
         drop(blocked);
         save.flush().unwrap();
         assert!(save.writes_finished().unwrap());
         assert_eq!(save.active_chunk_writes(), 0);
-        let reopened = super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
-        assert_eq!(reopened.load_entities(1, 2), vec![entity(2)]);
+        let reopened =
+            super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
+        assert_eq!(reopened.load_entities(1, 2).unwrap(), vec![entity(2)]);
         save.save_entities_later(vec![((1, 2), vec![])]).unwrap();
         save.flush().unwrap();
         assert!(
-            super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD)
+            super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD, None)
                 .load_entities(1, 2)
+                .unwrap()
                 .is_empty()
         );
         drop((reopened, save, lock));
@@ -6957,23 +7428,155 @@ mod tests {
     }
 
     #[test]
-    fn failed_async_writes_are_readable_and_never_reported_durable() {
-        let dir = std::env::temp_dir().join(format!("sunrise-save-failure-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // A file where a directory is needed causes a real writer I/O error.
-        std::fs::write(dir.join("entities"), b"blocked").unwrap();
-        let save = super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
-        let entity = Tag::compound([("version", Tag::Int(3))]);
-        save.save_entities_later(vec![((0, 0), vec![entity.clone()])])
+    fn a_failed_entity_read_does_not_clear_the_stored_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let save = super::SaveDir::new(dir.path().to_owned(), LevelShape::OVERWORLD, None);
+        let entity = Tag::compound([("id", Tag::String("minecraft:pig".into()))]);
+        // Put matching records in two different regions.
+        save.save_entities(vec![
+            ((0, 0), vec![entity.clone()]),
+            ((32, 0), vec![entity.clone()]),
+        ])
+        .unwrap();
+        let region_b = save.region_path("entities", 1, 0);
+        let saved = std::fs::read(&region_b).unwrap();
+        let mut broken = saved.clone();
+        let sector = u32::from_be_bytes(saved[..4].try_into().unwrap()) >> 8;
+        // Fail decompression without changing the slot or its record length.
+        broken[sector as usize * 4096 + 5] = 0;
+        std::fs::write(&region_b, &broken).unwrap();
+        assert_eq!(save.load_entities(0, 0).unwrap(), vec![entity.clone()]);
+        assert!(save.load_entities(32, 0).is_err());
+        assert!(save.load_entities(64, 0).unwrap().is_empty());
+        std::fs::write(&region_b, &saved).unwrap();
+
+        // Leaving and returning to the chunk does not restart the failed entity load.
+        assert!(save.load_entities(32, 0).is_err());
+        // The same save pass can clear a healthy chunk and must leave B alone.
+        save.save_entities(vec![((0, 0), vec![]), ((32, 0), vec![])])
             .unwrap();
-        assert!(save.flush().is_err());
-        assert!(save.writes_finished().is_err());
-        assert_eq!(save.load_entities(0, 0), vec![entity]);
-        // The failure stays visible on subsequent barriers too.
-        assert!(save.flush().is_err());
         drop(save);
+        let reopened = super::SaveDir::new(dir.path().to_owned(), LevelShape::OVERWORLD, None);
+        assert!(reopened.load_entities(0, 0).unwrap().is_empty());
+        assert_eq!(reopened.load_entities(32, 0).unwrap(), vec![entity]);
+    }
+
+    #[test]
+    fn a_save_pass_resumes_at_the_write_watermark_instead_of_flushing() {
+        let dir =
+            std::env::temp_dir().join(format!("sunrise-save-watermark-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let save = std::sync::Arc::new(super::SaveDir::new(
+            dir.clone(),
+            super::LevelShape::OVERWORLD,
+            Some(Default::default()),
+        ));
+        let lock = super::SessionLock::acquire(&dir).unwrap();
+        // Hold the region lock so the writer stops there deterministically, rather
+        // than relying on disk speed or sleeps: it keeps the lock while it writes.
+        let region = save
+            .region_storage(Folder::Region)
+            .open_cached((0, 0), true)
+            .unwrap()
+            .unwrap();
+        let blocked = region.lock().unwrap();
+        let record = |x: i32| ((x, 0), None);
+        save.write_records("region", (0..4).map(record).collect(), false)
+            .unwrap();
+        assert_eq!(save.active_chunk_writes(), 4);
+        assert!(!save.writes_finished().unwrap());
+        // The four queued records are at the watermark: a save pass resumes at
+        // once and leaves them to the writer. On its own thread so that a pass
+        // that waited like `flush` fails the test instead of hanging it.
+        let (resumed, resume_result) =
+            std::sync::mpsc::channel::<std::result::Result<(), String>>();
+        let resuming = {
+            let save = save.clone();
+            std::thread::spawn(move || {
+                resumed
+                    .send(
+                        save.wait_for_chunk_writes_below(4)
+                            .map_err(|e| e.to_string()),
+                    )
+                    .unwrap()
+            })
+        };
+        resume_result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        resuming.join().unwrap();
+        assert_eq!(save.active_chunk_writes(), 4);
+        assert!(!save.writes_finished().unwrap());
+        // One below it, on that same queue, the wait does hold the caller, as a
+        // flush does: only releasing the lock below can wake either.
+        let (waited, wait_result) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
+        let waiting = {
+            let save = save.clone();
+            std::thread::spawn(move || {
+                waited
+                    .send(
+                        save.wait_for_chunk_writes_below(3)
+                            .map_err(|e| e.to_string()),
+                    )
+                    .unwrap()
+            })
+        };
+        let (flushed, flush_result) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
+        let flushing = {
+            let save = save.clone();
+            std::thread::spawn(move || {
+                flushed
+                    .send(save.flush().map_err(|e| e.to_string()))
+                    .unwrap()
+            })
+        };
+        let quiet = |rx: &std::sync::mpsc::Receiver<std::result::Result<(), String>>| {
+            matches!(
+                rx.recv_timeout(std::time::Duration::from_millis(200)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            )
+        };
+        assert!(quiet(&wait_result), "the wait returned below its watermark");
+        assert!(quiet(&flush_result), "flush returned while blocked");
+        drop(blocked);
+        wait_result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        flush_result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        flushing.join().unwrap();
+        waiting.join().unwrap();
+        assert!(save.writes_finished().unwrap());
+        assert_eq!(save.active_chunk_writes(), 0);
+        drop((save, lock));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_async_io_failure_retires_the_pending_snapshot_without_retrying_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // A file where a directory is needed causes a real writer I/O error.
+        let blocked = dir.path().join("entities");
+        std::fs::write(&blocked, b"blocked").unwrap();
+        let save = super::SaveDir::new(dir.path().to_path_buf(), LevelShape::OVERWORLD, None);
+        let entity = Tag::compound([("version", Tag::Int(3))]);
+        save.save_entities_later(vec![((0, 0), vec![entity])])
+            .unwrap();
+        save.flush().unwrap();
+        assert!(save.writes_finished().unwrap());
+        assert_eq!(save.record_save_failures(), 1);
+
+        // Fix the directory without submitting another snapshot. A fresh read
+        // does not see the unpersisted entity and a barrier does not retry it.
+        std::fs::remove_file(&blocked).unwrap();
+        save.flush().unwrap();
+        assert!(save.load_entities(0, 0).unwrap().is_empty());
+        assert!(!blocked.exists());
+        assert_eq!(save.record_save_failures(), 1);
     }
 
     #[test]
@@ -7015,6 +7618,7 @@ mod tests {
             (7, 8, 9),
             &crate::containers::BlockEntity::Crafter(crafter),
             "minecraft:crafter",
+            &Default::default(),
         );
         let (pos, back) = decode_block_entity(&tag).expect("crafter");
         assert_eq!(pos, (7, 8, 9));
@@ -7040,6 +7644,7 @@ mod tests {
                 (0, 0, 0),
                 &crate::containers::BlockEntity::Crafter(crafter),
                 "minecraft:crafter",
+                &Default::default(),
             );
             let (_, back) = decode_block_entity(&tag).expect("crafter");
             let crate::containers::BlockEntity::Crafter(back) = back else {
@@ -7077,6 +7682,7 @@ mod tests {
             (3, 64, -2),
             &crate::containers::BlockEntity::Campfire(Box::new(c.clone())),
             "minecraft:soul_campfire",
+            &Default::default(),
         );
         // One block entity type for both campfires.
         assert_eq!(text(tag.get("id")).as_deref(), Some("minecraft:campfire"));
@@ -7088,7 +7694,8 @@ mod tests {
         assert_eq!(*back, c);
         // The update tag a server's clients get: the items alone.
         let campfire = crate::containers::BlockEntity::Campfire(Box::new(c));
-        let update = crate::lan::chunks::entity_tag(&campfire, false).expect("update tag");
+        let update = crate::lan::chunks::entity_tag(&campfire, false, &Default::default())
+            .expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
     /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to
@@ -7147,6 +7754,7 @@ mod tests {
             pos,
             &crate::containers::BlockEntity::Lectern(l),
             "minecraft:lectern",
+            &Default::default(),
         );
         assert_eq!(number(saved.get("Page")), Some(1));
     }
@@ -7165,11 +7773,16 @@ mod tests {
         // The command path keeps an empty inventory and the pending table/seed
         // for data get and saving. No loot resources are needed to keep that state.
         let pending = PendingContainerLoot::from_tag(&saved).unwrap();
-        let mut stored = block_entity_data((1, 2, 3), &chest, "minecraft:chest", None);
-        let Tag::Compound(fields) = &mut stored else {
-            panic!("compound");
-        };
-        pending.write_tags(fields);
+        let stored = block_entity_encode::data(
+            (1, 2, 3),
+            &chest,
+            "minecraft:chest",
+            block_entity_encode::DataFields {
+                pending: Some(&pending),
+                ..Default::default()
+            },
+            &Default::default(),
+        );
         assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
         assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
         assert!(stored.get("Items").is_none());
@@ -7208,11 +7821,16 @@ mod tests {
                 "{id}: loadAdditional ignores Items when a loot table loads"
             );
             let pending = PendingContainerLoot::from_tag(&saved).unwrap();
-            let mut stored = block_entity_data((1, 2, 3), &container, id, None);
-            let Tag::Compound(fields) = &mut stored else {
-                panic!("compound");
-            };
-            pending.write_tags(fields);
+            let stored = block_entity_encode::data(
+                (1, 2, 3),
+                &container,
+                id,
+                block_entity_encode::DataFields {
+                    pending: Some(&pending),
+                    ..Default::default()
+                },
+                &Default::default(),
+            );
             assert_eq!(stored.get("LootTable"), saved.get("LootTable"), "{id}");
             assert_eq!(
                 stored.get("LootTableSeed"),
@@ -7271,10 +7889,20 @@ mod tests {
         assert_eq!(chest.slots().len(), 27);
         assert_eq!(pos, (1, 2, 3));
         // The encoded entity has no field to carry the lock...
-        let plain = block_entity_encode::encode(pos, &chest, "minecraft:chest");
+        let plain =
+            block_entity_encode::encode(pos, &chest, "minecraft:chest", &Default::default());
         assert!(plain.get("lock").is_none());
         // ...so `data get` puts back the one it was loaded with.
-        let data = block_entity_data(pos, &chest, "minecraft:chest", saved.get("lock"));
+        let data = block_entity_encode::data(
+            pos,
+            &chest,
+            "minecraft:chest",
+            block_entity_encode::DataFields {
+                lock: saved.get("lock"),
+                ..Default::default()
+            },
+            &Default::default(),
+        );
         let lock = sunrise_core::nbt::parse_snbt(r#"{items:"minecraft:gold_ingot"}"#)
             .unwrap()
             .0;
@@ -7295,7 +7923,7 @@ mod tests {
         };
         let next = spawner.next_data().and_then(|d| d.id());
         assert_eq!(next.as_deref(), Some("minecraft:zombie"));
-        let tag = block_entity_encode::encode(pos, &back, "minecraft:spawner");
+        let tag = block_entity_encode::encode(pos, &back, "minecraft:spawner", &Default::default());
         let (_, again) = decode_block_entity(&tag).expect("spawner again");
         let crate::containers::BlockEntity::Spawner(again) = again else {
             panic!("not a spawner");
@@ -7497,10 +8125,128 @@ mod tests {
         let batch = Compound::from([("effect".into(), Tag::Int(23))]);
         machine.set_client_update_fields(batch.clone());
         assert_eq!(
-            block_entity_encode::encode(pos, &entity, "test:machine"),
+            block_entity_encode::encode(pos, &entity, "test:machine", &Default::default()),
             saved
         );
         assert_eq!(machine.take_client_update_fields(), Some(batch));
+    }
+
+    #[test]
+    fn published_shapes_are_saved_with_the_block_entity_and_come_back_on_load() {
+        use crate::containers::{BlockEntity, PublishedShapes, SHAPES_KEY};
+        let saved = sunrise_core::nbt::parse_snbt(r#"{id:"test:bus",x:5,y:-60,z:12,progress:7}"#)
+            .unwrap()
+            .0;
+        let (pos, entity) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(mut bus) = entity else {
+            panic!("not a mod's");
+        };
+        assert!(bus.shapes().is_none());
+        let shapes = PublishedShapes::new(mod_api::BlockEntityShapes {
+            outline: vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]],
+            collision: vec![[-0.25, 0.0, 0.0, 1.0, 1.5, 1.0]],
+        })
+        .unwrap();
+        bus.set_shapes(Some(std::sync::Arc::new(shapes)));
+        let saved = block_entity_encode::encode(
+            pos,
+            &BlockEntity::Mod(bus),
+            "test:bus",
+            &Default::default(),
+        );
+        // Kept apart from the mod's own fields.
+        let (_, back) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(back) = back else {
+            panic!("not a mod's");
+        };
+        assert_eq!(back.nbt.len(), 1);
+        assert!(!back.nbt.contains_key(&SHAPES_KEY.into()));
+        let loaded = back.shapes().expect("restored on load");
+        assert_eq!(loaded.boxes().collision, [[-0.25, 0.0, 0.0, 1.0, 1.5, 1.0]]);
+        // Saved data that is over a limit loads without them.
+        let Tag::Compound(mut bad) = saved else {
+            unreachable!()
+        };
+        bad.insert(
+            SHAPES_KEY.into(),
+            Tag::Compound(Compound::from([
+                ("outline".into(), Tag::LongArray(vec![0; 6 * 65])),
+                ("collision".into(), Tag::LongArray(vec![])),
+            ])),
+        );
+        let (_, bad) = decode_block_entity(&Tag::Compound(bad)).unwrap();
+        let BlockEntity::Mod(bad) = bad else {
+            panic!("not a mod's");
+        };
+        assert!(bad.shapes().is_none());
+    }
+
+    #[test]
+    fn mod_block_entity_items_claim_only_the_slots_written() {
+        use crate::{
+            containers::{BlockEntity, ModBlockEntity},
+            items::ItemStack,
+        };
+        let parse = |s| sunrise_core::nbt::parse_snbt(s).unwrap().0;
+        let saved = parse(
+            r#"{id:"test:machine",x:0,y:64,z:0,Items:[{Slot:0b,raw:"superseded"},{Slot:1b,raw:"retained"},{raw:"no slot"}]}"#,
+        );
+        let (pos, BlockEntity::Mod(mut data)) = decode_block_entity(&saved).unwrap() else {
+            panic!("expected mod block entity")
+        };
+        let encode = |data: &ModBlockEntity| {
+            block_entity_encode::encode(
+                pos,
+                &BlockEntity::Mod(Box::new(data.clone())),
+                "test:machine",
+                &Default::default(),
+            )
+        };
+        data.items.resize(2, None);
+        *data.item_slot_mut(0).unwrap() = Some(ItemStack::new("minecraft:stone", 2));
+        let encoded = encode(&data);
+        assert_eq!(
+            encoded.get("Items"),
+            Some(&parse(
+                r#"[{Slot:0b,id:"minecraft:stone",count:2},{Slot:1b,raw:"retained"},{raw:"no slot"}]"#
+            ))
+        );
+        let (_, BlockEntity::Mod(reloaded)) = decode_block_entity(&encoded).unwrap() else {
+            panic!("expected mod block entity")
+        };
+        assert_eq!(reloaded.items[0], data.items[0]);
+        assert_eq!(encode(&reloaded), encoded);
+        *data.item_slot_mut(0).unwrap() = None;
+        // A tick reply replacing the mutable fields, including shrinking the
+        // modeled vector to zero, cannot restore the old saved row for slot 0.
+        let mut snapshot = (**data).clone();
+        snapshot.items.clear();
+        let revision = data.revision().changes() + 1;
+        data.apply_snapshot(snapshot, revision);
+        assert_eq!(
+            encode(&data).get("Items"),
+            Some(&parse(r#"[{Slot:1b,raw:"retained"},{raw:"no slot"}]"#))
+        );
+        data.items.resize(2, None);
+        *data.item_slot_mut(1).unwrap() = None;
+        assert_eq!(
+            encode(&data).get("Items"),
+            Some(&parse(r#"[{raw:"no slot"}]"#))
+        );
+        let (_, BlockEntity::Mod(mixed)) = decode_block_entity(&parse(
+            r#"{id:"test:machine",x:0,y:64,z:0,Items:[{Slot:0b,raw:"opaque"},{Slot:1b,id:"minecraft:stone",count:2}]}"#,
+        ))
+        .unwrap() else {
+            panic!("expected mod block entity")
+        };
+        assert_eq!(
+            mixed.items,
+            [None, Some(ItemStack::new("minecraft:stone", 2))]
+        );
+        data.nbt.insert("Items".into(), parse("{energy:5}"));
+        assert_eq!(encode(&data).get("Items"), Some(&parse("{energy:5}")));
+        data.nbt.remove(&"Items".into());
+        assert_eq!(encode(&data).get("Items"), None);
     }
 
     #[test]
@@ -7526,7 +8272,7 @@ mod tests {
         assert_eq!(m.items.len(), 1);
         assert_eq!(m.items[0].as_ref().map(|s| s.count), Some(3));
         assert_eq!(
-            block_entity_encode::encode(pos, &back, "gtmod:macerator"),
+            block_entity_encode::encode(pos, &back, "gtmod:macerator", &Default::default()),
             saved
         );
         // `Items` that are not an item list stay the mod's, as saved.
@@ -7547,9 +8293,68 @@ mod tests {
             };
             assert!(m.items.is_empty(), "{items}");
             assert_eq!(
-                block_entity_encode::encode(pos, &back, "gtmod:cable"),
+                block_entity_encode::encode(pos, &back, "gtmod:cable", &Default::default()),
                 saved,
                 "{items}"
+            );
+        }
+        // Entries load by their own `Slot`, in any list order (`ContainerHelper.loadAllItems`).
+        let saved = sunrise_core::nbt::parse_snbt(
+            r#"{id:"gtmod:macerator",x:5,y:-60,z:12,Items:[{Slot:2b,id:"minecraft:stone",count:2},{Slot:0b,id:"minecraft:iron_ore",count:3}]}"#,
+        )
+        .unwrap()
+        .0;
+        let (pos, back) = decode_block_entity(&saved).expect("mod block entity");
+        let crate::containers::BlockEntity::Mod(m) = &back else {
+            panic!("not a mod's");
+        };
+        assert!(!m.nbt.contains_key(&"Items".into()));
+        assert_eq!(m.items.len(), 3);
+        assert_eq!(
+            m.items[0].as_ref().map(|s| (&*s.item, s.count)),
+            Some(("minecraft:iron_ore", 3))
+        );
+        assert!(m.items[1].is_none());
+        assert_eq!(
+            m.items[2].as_ref().map(|s| (&*s.item, s.count)),
+            Some(("minecraft:stone", 2))
+        );
+        // Saved again, they are written in slot order.
+        let reordered = sunrise_core::nbt::parse_snbt(
+            r#"{id:"gtmod:macerator",x:5,y:-60,z:12,Items:[{Slot:0b,id:"minecraft:iron_ore",count:3},{Slot:2b,id:"minecraft:stone",count:2}]}"#,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            block_entity_encode::encode(pos, &back, "gtmod:macerator", &Default::default()),
+            reordered
+        );
+        // A lossless slot is modeled even beside an opaque row. Duplicate
+        // slot indices stay opaque because the engine cannot model both stacks.
+        let duplicate = r#"Items:[{Slot:1b,id:"minecraft:stone",count:1},{Slot:1b,id:"minecraft:dirt",count:1}]"#;
+        let modeled = [Some(crate::items::ItemStack::new("minecraft:stone", 1))];
+        let parse = |items| {
+            sunrise_core::nbt::parse_snbt(&format!(r#"{{id:"gtmod:cable",x:0,y:0,z:0,{items}}}"#))
+                .unwrap()
+                .0
+        };
+        for (input, output, slots) in [
+            (
+                r#"Items:[{Slot:1b,id:"minecraft:stone",count:1,note:"mine"},{Slot:0b,id:"minecraft:stone",count:1}]"#,
+                r#"Items:[{Slot:0b,id:"minecraft:stone",count:1},{Slot:1b,id:"minecraft:stone",count:1,note:"mine"}]"#,
+                modeled.as_slice(),
+            ),
+            (duplicate, duplicate, &[]),
+        ] {
+            let (pos, back) = decode_block_entity(&parse(input)).expect("mod block entity");
+            let crate::containers::BlockEntity::Mod(m) = &back else {
+                panic!("not a mod's");
+            };
+            assert_eq!(m.items.as_slice(), slots, "{input}");
+            assert_eq!(
+                block_entity_encode::encode(pos, &back, "gtmod:cable", &Default::default()),
+                parse(output),
+                "{input}"
             );
         }
         // Vanilla's types are never a mod's, modelled or not.
@@ -7592,6 +8397,7 @@ mod tests {
             (1, 2, 3),
             &entity,
             "minecraft:oxidized_copper_golem_statue",
+            &Default::default(),
         );
         assert_eq!(
             tag.get("id"),
@@ -7612,6 +8418,7 @@ mod tests {
             (1, 2, 3),
             &BlockEntity::CopperGolemStatue(Compound::new()),
             "minecraft:copper_golem_statue",
+            &Default::default(),
         ))
         .expect("canonical statue");
         let placed = crate::block_entity_item::place(&fresh, &patch, false);
@@ -7629,6 +8436,7 @@ mod tests {
             (1, 2, 3),
             &crate::containers::BlockEntity::Banner(banner.clone()),
             "minecraft:red_banner",
+            &Default::default(),
         );
         let (pos, back) = decode_block_entity(&tag).expect("banner");
         assert_eq!(pos, (1, 2, 3));
@@ -7713,7 +8521,11 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("sunrise-fluid-source-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let mut save = SaveDir::new(root.clone(), LevelShape::OVERWORLD);
+        let mut save = SaveDir::new(
+            root.clone(),
+            LevelShape::OVERWORLD,
+            Some(Default::default()),
+        );
         save.enable_trusted_fluid_load();
         let record = |id: &str| NamedTag {
             name: "".into(),
@@ -7769,6 +8581,7 @@ mod tests {
                     (702, 100, 0),
                     &BlockEntity::EndGateway(gateway.clone()),
                     "minecraft:end_gateway",
+                    &Default::default(),
                 );
                 assert_eq!(
                     text(tag.get("id")).as_deref(),
@@ -7846,7 +8659,8 @@ mod tests {
             Some("minecraft:entity.player.hurt")
         );
         assert_eq!(back.id(), "minecraft:skull");
-        let tag = block_entity_encode::encode(pos, &back, "minecraft:player_head");
+        let tag =
+            block_entity_encode::encode(pos, &back, "minecraft:player_head", &Default::default());
         assert_eq!(
             crate::block_entity_nbt::id(&tag).as_deref(),
             Some("minecraft:skull")
@@ -7862,6 +8676,7 @@ mod tests {
             pos,
             &crate::containers::BlockEntity::Skull(crate::containers::Skull::default()),
             "minecraft:creeper_head",
+            &Default::default(),
         );
         let (_, decoded) = decode_block_entity(&plain).expect("plain skull");
         assert!(matches!(decoded, crate::containers::BlockEntity::Skull(_)));
@@ -7902,6 +8717,7 @@ mod tests {
             (3, 70, -5),
             &BlockEntity::CreakingHeart(Box::new(heart)),
             "minecraft:creaking_heart",
+            &Default::default(),
         );
         assert_eq!(
             tag.get("creaking"),
@@ -7919,6 +8735,7 @@ mod tests {
             (0, 0, 0),
             &BlockEntity::CreakingHeart(Box::default()),
             "minecraft:creaking_heart",
+            &Default::default(),
         );
         assert!(lonely.get("creaking").is_none());
     }
@@ -7940,13 +8757,13 @@ mod tests {
         let Some(Tag::List(sections)) = tag.get("sections") else {
             return;
         };
-        let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
+        let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS + 2];
         for section in sections {
             let Some(y) = number(section.get("Y")) else {
                 continue;
             };
-            let si = y as i32 - (MIN_Y >> 4);
-            if !(0..SECTIONS as i32).contains(&si) {
+            let si = y as i32 - (MIN_Y >> 4) + 1;
+            if !(0..SECTIONS as i32 + 2).contains(&si) {
                 continue;
             }
             let layer = |name: &str| match section.get(name) {
@@ -7955,8 +8772,7 @@ mod tests {
             };
             layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
         }
-        let above = [if sky_light { 15 } else { 0 }; 256];
-        crate::light::light_from_layers(chunk, &layers, above, sky_light);
+        crate::light::light_from_layers(chunk, &layers, sky_light);
     }
 
     #[test]
@@ -8005,6 +8821,41 @@ mod tests {
         );
         assert!(!unlit.lit && !unlit.light_loaded);
     }
+    #[test]
+    #[ignore = "daily"]
+    fn both_light_pads_survive_full_chunk_save_and_reload() {
+        let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let biomes = Biomes::load(&sunrise_assets::resource_source::ResourceRoot::directory(
+            root,
+        ))
+        .unwrap();
+        let mut original = Chunk::empty(0, 0);
+        let mut layers = vec![(None, None); SECTIONS + 2];
+        layers[0] = (None, Some(vec![0x55; 2048]));
+        layers[SECTIONS + 1] = (Some(vec![0x27; 2048]), Some(vec![0; 2048]));
+        crate::light::light_from_layers(&mut original, &layers, true);
+        let saved = encode(&original, assets.registry, &biomes, &Default::default());
+        let Some(Tag::List(sections)) = saved.tag.get("sections") else {
+            panic!("missing saved sections");
+        };
+        assert_eq!(sections.len(), SECTIONS + 2);
+        for section in [sections.first().unwrap(), sections.last().unwrap()] {
+            assert!(section.get("block_states").is_none());
+            assert!(section.get("biomes").is_none());
+        }
+        let mut loaded = decode(&saved, assets.registry, &biomes).unwrap();
+        load_light(&saved.tag, &mut loaded, true);
+        assert_eq!(loaded.light(0, MIN_Y - 1, 0), 0x75);
+        assert_eq!(loaded.light(1, MIN_Y - 1, 0), 0x25);
+        assert_eq!(loaded.light(0, 70, 0), 0x70);
+        assert_eq!(loaded.light(1, 70, 0), 0x20);
+        assert_eq!(loaded.light(0, loaded.max_y(), 0), 0x70);
+        assert_eq!(loaded.light(1, loaded.max_y(), 0), 0x20);
+        assert_eq!(loaded.stored_light_layers(0), Some([false, true]));
+        assert_eq!(loaded.stored_light_layers(SECTIONS + 1), Some([true, true]));
+    }
+
     #[test]
     #[ignore = "daily"]
     fn saved_light_matches_reference_for_layers_and_metadata() {
@@ -8173,7 +9024,7 @@ mod tests {
         assert_eq!(level.difficulty, "hard");
         assert_eq!(level.difficulty_id(), 3);
         // It survives the save, so the world comes back with it.
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let back = Level::read(&dir).unwrap();
         assert_eq!(back.difficulty, "hard");
         assert_eq!(back.difficulty_id(), 3);
@@ -8203,7 +9054,7 @@ mod tests {
         };
 
         // Create a real player file using the existing singleplayer writer.
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let uuid = level.player_uuid.unwrap();
         let player_file = dir
             .join("players")
@@ -8230,6 +9081,86 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A crash save that excludes the single-player owner writes `level.dat` without a new
+    /// player file and keeps a legacy `Data.Player`, the owner's only copy before a normal save.
+    #[test]
+    fn keeping_the_owner_writes_no_player_file_and_keeps_legacy_data_player() {
+        let dir = std::env::temp_dir().join(format!("sunrise-keep-owner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut level = Level {
+            name: "Test".into(),
+            ..Level::default()
+        };
+        level.write_without_player(&dir).unwrap();
+        let legacy = Tag::compound([("Health", Tag::Float(7.0_f32.to_bits()))]);
+        let mut root = read_dat(&dir.join("level.dat")).unwrap();
+        let Tag::Compound(root_map) = &mut root else {
+            panic!("level.dat is a compound");
+        };
+        let Some(Tag::Compound(data)) = root_map.get_mut(&JavaString::from("Data")) else {
+            panic!("level.dat has Data");
+        };
+        data.insert(JavaString::from("Player"), legacy.clone());
+        write_dat(&dir.join("level.dat"), root).unwrap();
+
+        level.position = Some([1.0, 2.0, 3.0]);
+        level.day_time = 777;
+        level.write_keeping_player(&dir).unwrap();
+
+        let root = read_dat(&dir.join("level.dat")).unwrap();
+        assert_eq!(
+            root.get("Data").and_then(|d| d.get("Player")),
+            Some(&legacy)
+        );
+        assert!(!dir.join("players").join("data").exists());
+        assert_eq!(Level::read(&dir).unwrap().day_time, 777);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A keep-owner write leaves `singleplayer_uuid` as it was on disk, absent included:
+    /// naming the offline `Player` would make a reopen load another account's file.
+    #[test]
+    fn keeping_the_owner_keeps_the_on_disk_singleplayer_uuid() {
+        let dir = std::env::temp_dir().join(format!("sunrise-keep-uuid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut level = Level {
+            name: "Test".into(),
+            ..Level::default()
+        };
+        let set_uuid = |uuid: Option<Tag>| {
+            let mut root = read_dat(&dir.join("level.dat")).unwrap();
+            let Tag::Compound(root_map) = &mut root else {
+                panic!("level.dat is a compound");
+            };
+            let Some(Tag::Compound(data)) = root_map.get_mut(&JavaString::from("Data")) else {
+                panic!("level.dat has Data");
+            };
+            match uuid {
+                Some(tag) => data.insert(JavaString::from("singleplayer_uuid"), tag),
+                None => data.remove(&JavaString::from("singleplayer_uuid")),
+            };
+            write_dat(&dir.join("level.dat"), root).unwrap();
+        };
+        let on_disk = || {
+            read_dat(&dir.join("level.dat"))
+                .unwrap()
+                .get("Data")
+                .and_then(|d| d.get("singleplayer_uuid"))
+                .cloned()
+        };
+        level.write_without_player(&dir).unwrap();
+
+        set_uuid(None);
+        level.write_keeping_player(&dir).unwrap();
+        assert_eq!(on_disk(), None, "a level.dat without a uuid keeps none");
+
+        let owner = Tag::IntArray(vec![1, 2, 3, 4]);
+        set_uuid(Some(owner.clone()));
+        level.write_keeping_player(&dir).unwrap();
+        assert_eq!(on_disk(), Some(owner), "a uuid stays the same");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_ends_clock_keeps_its_own_time() {
         let dir = std::env::temp_dir().join(format!("sunrise-end-clock-{}", std::process::id()));
@@ -8241,12 +9172,12 @@ mod tests {
             ..Level::default()
         };
         // A world without one starts the End's clock at its game time.
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         assert_eq!(Level::read(&dir).unwrap().end_clock, Some(5000));
         // Then it keeps its own count, apart from the game time and the day.
         level.time = 8000;
         level.end_clock = Some(321);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let back = Level::read(&dir).unwrap();
         assert_eq!(
             (back.time, back.day_time, back.end_clock),
@@ -8282,6 +9213,8 @@ mod tests {
             dimension: "minecraft:the_nether".into(),
             world_spawn: Some([8, 64, 8]),
             world_spawn_angle: [45.0, -10.0],
+            // The world spawn's level is the world's, not the player's.
+            world_spawn_dimension: Some("minecraft:the_end".into()),
             spawn: Some([20.0, 70.0, 20.0]),
             difficulty_locked: true,
             flying: true,
@@ -8292,7 +9225,14 @@ mod tests {
         level
             .game_rules
             .insert("minecraft:keep_inventory".into(), 1);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
+        let saved = read_dat(&dir.join("level.dat")).unwrap();
+        let spawn = saved.get("Data").and_then(|d| d.get("spawn"));
+        assert_eq!(
+            text(spawn.and_then(|s| s.get("dimension"))).as_deref(),
+            Some("minecraft:the_end"),
+            "level.dat's spawn.dimension"
+        );
         let back = Level::read(&dir).unwrap();
         assert_eq!(back.name, "Test");
         assert_eq!(back.seed, -42);
@@ -8320,6 +9260,10 @@ mod tests {
         assert_eq!(back.dimension, "minecraft:the_nether");
         assert_eq!(back.world_spawn, Some([8, 64, 8]));
         assert_eq!(back.world_spawn_angle, [45.0, -10.0]);
+        assert_eq!(
+            back.world_spawn_dimension.as_deref(),
+            Some("minecraft:the_end")
+        );
         assert_eq!(back.spawn, Some([8.0, 64.0, 8.0]));
         assert_eq!(
             back.respawn_elsewhere,
@@ -8346,7 +9290,7 @@ mod tests {
             absorption: 2.0,
             ..back
         };
-        again.write(&dir).unwrap();
+        again.write(&dir, &Default::default()).unwrap();
         let third = Level::read(&dir).unwrap();
         assert_eq!(third.absorption, 2.0);
         assert!(matches!(
@@ -8366,7 +9310,7 @@ mod tests {
         dead.health = 0.0;
         dead.inventory.clear();
         dead.inventory_components.clear();
-        dead.write(&dir).unwrap();
+        dead.write(&dir, &Default::default()).unwrap();
         let dead = Level::read(&dir).unwrap();
         assert_eq!(dead.health, 0.0);
         assert!(dead.inventory.is_empty());
@@ -8441,7 +9385,7 @@ mod tests {
         assert_eq!(level.active_effects, [expected]);
         // Written back, the chain is the same compound.
         assert_eq!(
-            level.player_tag().get("active_effects"),
+            level.player_tag(&Default::default()).get("active_effects"),
             tag.get("active_effects")
         );
     }
@@ -8483,11 +9427,16 @@ mod tests {
             active_effects: vec![eff("minecraft:speed", 200, 1, false, true, true)],
             ..Level::default()
         };
-        let loaded = level.player_tag();
+        let loaded = level.player_tag(&Default::default());
         assert!(loaded.get("active_effects").is_some());
         level.player_extra = Some(loaded);
         level.active_effects.clear();
-        assert!(level.player_tag().get("active_effects").is_none());
+        assert!(
+            level
+                .player_tag(&Default::default())
+                .get("active_effects")
+                .is_none()
+        );
     }
 
     #[test]
@@ -8516,7 +9465,7 @@ mod tests {
                 player_extra: raw.clone(),
                 ..Level::default()
             };
-            let saved = level.player_tag();
+            let saved = level.player_tag(&Default::default());
             let Some(Tag::List(entries)) = saved.get("active_effects") else {
                 panic!("modeled live effects must be saved even without raw input")
             };
@@ -8569,7 +9518,7 @@ mod tests {
             active_effects: effects.clone(),
             ..Level::default()
         };
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         let Tag::List(saved) = tag.get("active_effects").expect("active_effects") else {
             panic!("active_effects list");
         };
@@ -8604,12 +9553,12 @@ mod tests {
                 world_spawn: Some([0, 80, 0]),
                 ..Level::default()
             };
-            loaded.read_player(&level.player_tag());
+            loaded.read_player(&level.player_tag(&Default::default()));
             assert_eq!(loaded.respawn_elsewhere, Some(point));
             assert_eq!(loaded.spawn, Some([0.0, 80.0, 0.0]));
             assert_eq!(
-                loaded.player_tag().get("respawn"),
-                level.player_tag().get("respawn")
+                loaded.player_tag(&Default::default()).get("respawn"),
+                level.player_tag(&Default::default()).get("respawn")
             );
         }
     }
@@ -8621,7 +9570,7 @@ mod tests {
             flying: true,
             ..Level::default()
         };
-        let tag = level.player_tag();
+        let tag = level.player_tag(&Default::default());
         let flying_byte = tag
             .get("abilities")
             .and_then(|a| number(a.get("flying")))
@@ -8635,7 +9584,7 @@ mod tests {
         // Survival mode resets flying ability to 0 in save.
         level.creative = false;
         level.game_mode = 0;
-        let tag_survival = level.player_tag();
+        let tag_survival = level.player_tag(&Default::default());
         let flying_survival = tag_survival
             .get("abilities")
             .and_then(|a| number(a.get("flying")))
@@ -8662,10 +9611,16 @@ mod tests {
         level.read_player(&raw);
         level.player_extra = Some(raw);
         assert_eq!(level.root_vehicle, Some([1, 2, 3, 4]));
-        assert_eq!(level.player_tag().get("RootVehicle"), Some(&vehicle));
+        assert_eq!(
+            level.player_tag(&Default::default()).get("RootVehicle"),
+            Some(&vehicle)
+        );
         // Even saving before the vehicle is restored must not destroy it.
         level.root_vehicle = None;
-        assert_eq!(level.player_tag().get("RootVehicle"), Some(&vehicle));
+        assert_eq!(
+            level.player_tag(&Default::default()).get("RootVehicle"),
+            Some(&vehicle)
+        );
     }
 
     /// `RecipesUsed` is what a furnace owes in experience, so a save that drops it pays the
@@ -8678,8 +9633,12 @@ mod tests {
         };
         f.recipes_used
             .insert("minecraft:cooked_porkchop".to_owned(), 3);
-        let tag =
-            block_entity_encode::encode((1, 64, 2), &BlockEntity::Furnace(f), "minecraft:furnace");
+        let tag = block_entity_encode::encode(
+            (1, 64, 2),
+            &BlockEntity::Furnace(f),
+            "minecraft:furnace",
+            &Default::default(),
+        );
         let Some((_, BlockEntity::Furnace(back))) = decode_block_entity(&tag) else {
             panic!("a furnace back");
         };
@@ -8694,7 +9653,7 @@ mod tests {
             std::env::temp_dir().join(format!("sunrise-gamerules-level-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut level = super::Level::default();
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         // Rules changed while playing, then saved and loaded again.
         let mut rules = GameRules::load(&dir);
         assert_eq!(rules, GameRules::default());
@@ -8702,7 +9661,7 @@ mod tests {
         assert!(rules.set("advance_weather", Value::Bool(false)));
         assert!(rules.set("random_tick_speed", Value::Int(0)));
         level.game_rules = rules.by_name();
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         assert_eq!(GameRules::load(&dir), rules);
         let read = super::Level::read(&dir).unwrap();
         assert_eq!(read.game_rules, rules.by_name());
@@ -8719,7 +9678,7 @@ mod tests {
             ));
             let _ = std::fs::remove_dir_all(&dir);
             let mut level = super::Level::default();
-            level.write(&dir).unwrap();
+            level.write(&dir, &Default::default()).unwrap();
             if absent_mod {
                 let mut data = super::read_saved_data(&dir, "game_rules").unwrap();
                 super::put(&mut data, "absent:rule", super::Tag::Long(42));
@@ -8728,7 +9687,10 @@ mod tests {
             let mut before_level = super::read_dat(&dir.join("level.dat")).unwrap();
             let path = super::saved_data_path(&dir, "game_rules");
             let before_rules = std::fs::read(&path).unwrap();
-            super::Level::read(&dir).unwrap().write(&dir).unwrap();
+            super::Level::read(&dir)
+                .unwrap()
+                .write(&dir, &Default::default())
+                .unwrap();
             let mut after_level = super::read_dat(&dir.join("level.dat")).unwrap();
             for level in [&mut before_level, &mut after_level] {
                 if let super::Tag::Compound(root) = level
@@ -8754,7 +9716,7 @@ mod tests {
             rule_registry: first.clone(),
             ..Default::default()
         };
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let loaded = super::Level::read_with_registry(&dir, first.clone()).unwrap();
         assert!(std::sync::Arc::ptr_eq(&loaded.rule_registry, &first));
         let next = super::Level::read_with_registry(&dir, second.clone()).unwrap();
@@ -8771,7 +9733,7 @@ mod tests {
             std::env::temp_dir().join(format!("sunrise-rule-defaults-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut level = super::Level::default();
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let super::Tag::Compound(rules) = super::read_saved_data(&dir, "game_rules").unwrap()
         else {
             panic!("rule compound")
@@ -8798,7 +9760,7 @@ mod tests {
         level.enabled_features = [crate::gamerules::MINECART_IMPROVEMENTS.to_owned()].into();
         level.game_rules =
             crate::gamerules::GameRules::with_features(&level.enabled_features).by_name();
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         assert_eq!(
             super::read_saved_data(&dir, "game_rules")
                 .unwrap()
@@ -8812,7 +9774,9 @@ mod tests {
     fn legacy_bare_saved_rules_load_under_canonical_keys() {
         let dir = std::env::temp_dir().join(format!("sunrise-rule-legacy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        super::Level::default().write(&dir).unwrap();
+        super::Level::default()
+            .write(&dir, &Default::default())
+            .unwrap();
         super::write_saved_data(
             &dir,
             "game_rules",
@@ -8838,7 +9802,7 @@ mod tests {
             std::env::temp_dir().join(format!("sunrise-gamerules-unknown-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut level = super::Level::default();
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         super::write_saved_data(
             &dir,
             "game_rules",
@@ -8846,7 +9810,7 @@ mod tests {
         )
         .unwrap();
         level.game_rules.insert("minecraft:advance_time".into(), 0);
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         assert_eq!(
             super::read_saved_data(&dir, "game_rules")
                 .unwrap()
@@ -8868,8 +9832,12 @@ mod tests {
             .insert("iron_ingot_from_smelting_iron_ore".to_owned(), 2);
         f.recipes_used
             .insert("minecraft:iron_ingot_from_smelting_iron_ore".to_owned(), 3);
-        let tag =
-            block_entity_encode::encode((1, 64, 2), &BlockEntity::Furnace(f), "minecraft:furnace");
+        let tag = block_entity_encode::encode(
+            (1, 64, 2),
+            &BlockEntity::Furnace(f),
+            "minecraft:furnace",
+            &Default::default(),
+        );
         let Some((_, BlockEntity::Furnace(back))) = decode_block_entity(&tag) else {
             panic!("a furnace back");
         };
@@ -8881,11 +9849,9 @@ mod tests {
         );
     }
 
-    /// `WorldDataConfiguration.MAP_CODEC`'s `lenientOptionalFieldOf
-    /// ("enabled_features", DEFAULT_FLAGS)`: a picked experiment's list
-    /// round-trips, a vanilla-only selection leaves the tag out.
+    /// A world with an experiment writes and reads its full feature set.
     #[test]
-    fn enabled_features_round_trip_and_omit_the_vanilla_default() {
+    fn experimental_feature_flags_round_trip() {
         let dir = gen_world("enabled-features");
         let mut level = Level {
             name: "Features".into(),
@@ -8896,32 +9862,83 @@ mod tests {
             .into(),
             ..Level::default()
         };
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         let back = Level::read(&dir).unwrap();
         assert_eq!(back.enabled_features, level.enabled_features);
-        // The tag is in the file.
-        let raw = crate::save::read_level_dat(&dir).unwrap();
-        if let Tag::Compound(data) = &raw {
-            let data = data.get(&JavaString::from("Data")).unwrap();
-            assert!(matches!(data.get("enabled_features"), Some(Tag::List(_))));
-        }
-        // A vanilla-only selection writes no tag, and reads back as the
-        // same vanilla-only list. A fresh folder: write_internal keeps an
-        // older file's fields.
-        let dir2 = gen_world("enabled-features-vanilla");
-        level.enabled_features = ["minecraft:vanilla".into()].into();
-        level.write(&dir2).unwrap();
-        let raw = crate::save::read_level_dat(&dir2).unwrap();
-        if let Tag::Compound(data) = &raw {
-            let data = data.get(&JavaString::from("Data")).unwrap();
-            assert!(data.get("enabled_features").is_none());
-        }
-        let back = Level::read(&dir2).unwrap();
-        // The read side keeps its own convention: empty is the vanilla
-        // default the file omitted.
-        assert!(back.enabled_features.is_empty());
+        let raw = read_level_dat(&dir).unwrap();
+        assert!(matches!(
+            raw.get("Data").unwrap().get("enabled_features"),
+            Some(Tag::List(_)),
+        ));
         let _ = fs::remove_dir_all(dir);
-        let _ = fs::remove_dir_all(dir2);
+    }
+
+    #[test]
+    fn omitted_feature_flags_decode_as_vanilla_and_stay_omitted() {
+        let dir = gen_world("omitted-feature-flags");
+        let output = gen_world("resaved-feature-flags");
+        let mut level = Level::default();
+        assert_eq!(*level.enabled_features, ["minecraft:vanilla"]);
+        level.write(&dir, &Default::default()).unwrap();
+        let raw = read_level_dat(&dir).unwrap();
+        assert!(raw.get("Data").unwrap().get("enabled_features").is_none());
+
+        let mut read = Level::read(&dir).unwrap();
+        assert_eq!(*read.enabled_features, ["minecraft:vanilla"]);
+        // The encoder must drop even a tag retained from an older file.
+        let mut experimental = Level {
+            enabled_features: [
+                "minecraft:vanilla".into(),
+                "minecraft:minecart_improvements".into(),
+            ]
+            .into(),
+            ..Level::default()
+        };
+        experimental.write(&output, &Default::default()).unwrap();
+        read.write(&output, &Default::default()).unwrap();
+        let raw = read_level_dat(&output).unwrap();
+        assert!(raw.get("Data").unwrap().get("enabled_features").is_none());
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(output);
+    }
+
+    /// `WorldDataConfiguration.MAP_CODEC` preserves a valid empty set, but defaults an
+    /// invalid tag instead of interpreting a failed list decode as an empty set.
+    #[test]
+    fn explicit_empty_and_malformed_feature_flags_have_distinct_save_outcomes() {
+        for (case, input, expected_flags, expected_tag) in [
+            ("empty", Tag::List(vec![]), &[][..], Some(Tag::List(vec![]))),
+            (
+                "non-string",
+                Tag::List(vec![Tag::Int(7)]),
+                &["minecraft:vanilla"][..],
+                None,
+            ),
+            ("non-list", Tag::Int(7), &["minecraft:vanilla"][..], None),
+        ] {
+            let dir = gen_world(&format!("feature-flags-{case}"));
+            write_dat(
+                &dir.join("level.dat"),
+                Tag::compound([(
+                    "Data",
+                    Tag::compound([
+                        ("DataVersion", Tag::Int(DATA_VERSION)),
+                        ("enabled_features", input),
+                    ]),
+                )]),
+            )
+            .unwrap();
+            let mut level = Level::read(&dir).unwrap();
+            assert_eq!(&*level.enabled_features, expected_flags, "{case}");
+            level.write_without_player(&dir).unwrap();
+            let raw = read_level_dat(&dir).unwrap();
+            assert_eq!(
+                raw.get("Data").unwrap().get("enabled_features"),
+                expected_tag.as_ref(),
+                "{case}"
+            );
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     fn gen_world(name: &str) -> PathBuf {
@@ -9102,6 +10119,30 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// Settings that fail validation in the old layout do not hide valid saved data.
+    #[test]
+    fn invalid_projected_settings_fall_through_to_saved_data() {
+        let dir = gen_world("stem-prefix");
+        write_world_gen_settings(&dir, 7, WorldGen::default()).unwrap();
+        write_dat(
+            &dir.join("level.dat"),
+            Tag::compound([(
+                "Data",
+                Tag::compound([
+                    ("DataVersion", Tag::Int(4700)),
+                    ("WorldGenSettings", Tag::compound([("seed", Tag::Long(5))])),
+                ]),
+            )]),
+        )
+        .unwrap();
+        assert!(needs_file_fixes(&dir));
+        assert_eq!(
+            number(world_gen_settings(&dir).unwrap().get("seed")),
+            Some(7)
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn low_disk_space_is_under_64_mib_usable() {
         assert_eq!(LOW_DISK_SPACE, 64 * 1024 * 1024);
@@ -9124,7 +10165,11 @@ mod tests {
         use sunrise_mod_runtime::attachments::Attachments;
         let root = std::env::temp_dir().join(format!("sunrise-attach-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let save = SaveDir::new(root.clone(), LevelShape::OVERWORLD);
+        let save = SaveDir::new(
+            root.clone(),
+            LevelShape::OVERWORLD,
+            Some(Default::default()),
+        );
         let file = root.join("data/sunrise/attachments.dat");
         save.save_attachments(&Attachments::default()).unwrap();
         assert!(
@@ -9191,14 +10236,22 @@ mod tests {
             "minecraft:the_end",
         ];
         for (i, dim) in dimensions.iter().enumerate() {
-            let save = SaveDir::new(dimension_dir(&root, dim), LevelShape::OVERWORLD);
+            let save = SaveDir::new(
+                dimension_dir(&root, dim),
+                LevelShape::OVERWORLD,
+                Some(Default::default()),
+            );
             assert!(save.load_forced_chunks().is_empty());
             let forced = HashSet::from([(i as i32, -17), (-23, i as i32), (-1, -1)]);
             save.save_chunk_tickets(&forced, &[]).unwrap();
         }
         for (i, dim) in dimensions.iter().enumerate() {
             let path = dimension_dir(&root, dim);
-            let save = SaveDir::new(path.clone(), LevelShape::OVERWORLD);
+            let save = SaveDir::new(
+                path.clone(),
+                LevelShape::OVERWORLD,
+                Some(Default::default()),
+            );
             let mut forced = save.load_forced_chunks();
             assert_eq!(
                 forced,
@@ -9223,11 +10276,15 @@ mod tests {
             forced.remove(&(-1, -1));
             save.save_chunk_tickets(&forced, &[]).unwrap();
             drop(save);
-            let reopened = SaveDir::new(path.clone(), LevelShape::OVERWORLD);
+            let reopened = SaveDir::new(
+                path.clone(),
+                LevelShape::OVERWORLD,
+                Some(Default::default()),
+            );
             assert_eq!(reopened.load_forced_chunks(), forced);
             reopened.save_chunk_tickets(&HashSet::new(), &[]).unwrap();
             assert!(
-                SaveDir::new(path.clone(), LevelShape::OVERWORLD)
+                SaveDir::new(path.clone(), LevelShape::OVERWORLD, None)
                     .load_forced_chunks()
                     .is_empty()
             );
@@ -9294,12 +10351,12 @@ mod tests {
             name: "".into(),
             tag,
         }));
-        let cache = match Folder::of(folder) {
-            Folder::Region => &save.regions,
-            Folder::Entities => &save.entity_regions,
-            Folder::Poi => &save.poi_regions,
-        };
-        super::write_region_records(&save.root, cache, folder, &[((0, 0), &record)]).unwrap();
+        let result = super::write_region_records(
+            save.region_storage(Folder::of(folder)),
+            &[((0, 0), &record)],
+            &fs::File::sync_data,
+        );
+        assert!(result.failed_records.is_empty() && result.sync_error.is_none());
     }
 
     #[test]
@@ -9309,6 +10366,7 @@ mod tests {
         let save = SaveDir::new(
             super::dimension_dir(&world, "minecraft:overworld"),
             LevelShape::OVERWORLD,
+            Some(Default::default()),
         );
         // A 1.20.1 chunk (DataVersion 3465): 1.20.3 renamed its grass to short_grass.
         let section = Tag::compound([
@@ -9395,7 +10453,7 @@ mod tests {
                 ),
             ]),
         );
-        let entities = save.load_entities(0, 0);
+        let entities = save.load_entities(0, 0).unwrap();
         let item = entities[0].get("Item").expect("the item stack");
         assert_eq!(item.get("count"), Some(&Tag::Int(3)));
         assert!(item.get("Count").is_none());
@@ -9409,6 +10467,7 @@ mod tests {
         let nether = SaveDir::new(
             super::dimension_dir(&world, "minecraft:the_nether"),
             LevelShape::NETHER,
+            Some(Default::default()),
         );
         // A 1.20.1 Nether chunk: upgraded it has no `blending_data` (only Overworld
         // chunks blend) and the current DataVersion, so only the saved record says
@@ -9441,13 +10500,12 @@ mod tests {
                 ("sections", Tag::List(Vec::new())),
             ]),
         }));
-        super::write_region_records(
-            &nether.root,
-            &nether.regions,
-            "region",
+        let result = super::write_region_records(
+            nether.region_storage(Folder::Region),
             &[((1, 0), &current)],
-        )
-        .unwrap();
+            &fs::File::sync_data,
+        );
+        assert!(result.failed_records.is_empty() && result.sync_error.is_none());
         assert!(nether.is_old_chunk(0, 0));
         assert!(!nether.is_old_chunk(1, 0));
         assert!(!nether.is_old_chunk(2, 0));
@@ -9457,6 +10515,7 @@ mod tests {
         let overworld = SaveDir::new(
             super::dimension_dir(&world, "minecraft:overworld"),
             LevelShape::OVERWORLD,
+            Some(Default::default()),
         );
         write_old_record(
             &overworld,
@@ -9482,6 +10541,7 @@ mod tests {
         let save = SaveDir::new(
             super::dimension_dir(&world, "minecraft:overworld"),
             LevelShape::OVERWORLD,
+            Some(Default::default()),
         );
         // A 1.17.1 chunk (DataVersion 2730), its fields under `Level`: section 0 all stone.
         let section = Tag::compound([
@@ -9532,7 +10592,7 @@ mod tests {
     /// (`SerializableChunkData.postLoadChunk`, `ServerLevel.addLegacyChunkEntities`), so its
     /// minecart is in the world (#14424).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_chunk_from_before_1_17_loads_the_entities_it_keeps() {
         let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let assets = crate::assets::Assets::load(&root).expect("assets");
@@ -9545,6 +10605,7 @@ mod tests {
         let save = SaveDir::new(
             super::dimension_dir(&world, "minecraft:overworld"),
             LevelShape::OVERWORLD,
+            Some(Default::default()),
         );
         let section = Tag::compound([
             ("Y", Tag::Byte(0)),
@@ -9593,192 +10654,8 @@ mod tests {
         let ids: Vec<_> = chunk.entities.iter().map(id).collect();
         assert_eq!(ids, [Some("minecraft:minecart".to_owned())]);
         // There is no `entities/` record for it: these are all it has.
-        assert!(save.load_entities(0, 0).is_empty());
+        assert!(save.load_entities(0, 0).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&world);
-    }
-
-    /// A chunk as Bobby leaves it on disk, its palettes in both shapes: a
-    /// list of names, and compounds where a name without properties is
-    /// wrapped as `{"": name}` (a mixed list), read back summarized by far
-    /// terrain and kept in its own folder.
-    #[test]
-    fn far_terrain_reads_and_keeps_bobby_chunks() {
-        use crate::server_terrain::{Bobby, DecodeChunk, ServerTerrain};
-        let Some(root) = std::env::var_os("SUNRISE_TEST_RESOURCES") else {
-            return;
-        };
-        let root = PathBuf::from(root);
-        let assets = crate::assets::Assets::load(&root).expect("assets");
-        let biomes = Arc::new(
-            Biomes::load(&sunrise_assets::resource_source::ResourceRoot::directory(
-                root.to_path_buf(),
-            ))
-            .expect("biomes"),
-        );
-        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).expect("facts");
-        let dir = std::env::temp_dir().join(format!("sunrise-bobby-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let (own, bobby) = (dir.join("own"), dir.join("bobby"));
-        fs::create_dir_all(&bobby).unwrap();
-        let name = |s: &str| Tag::String(s.into());
-        let biome = Tag::compound([("palette", Tag::List(vec![name("minecraft:plains")]))]);
-        let section = |y: i8, states: Tag| {
-            Tag::compound([
-                ("Y", Tag::Byte(y)),
-                ("block_states", states),
-                ("biomes", biome.clone()),
-                ("SkyLight", Tag::ByteArray(vec![0xff; 2048])),
-            ])
-        };
-        // y 48..64 stone; y 64 an upright oak log, air above.
-        let stone = Tag::compound([("palette", Tag::List(vec![name("minecraft:stone")]))]);
-        let log = Tag::compound([
-            ("id", name("minecraft:oak_log")),
-            ("properties", Tag::compound([("axis", name("y"))])),
-        ]);
-        let mut data = vec![0i64; 256];
-        data[..16].fill(0x1111_1111_1111_1111);
-        let logs = Tag::compound([
-            ("palette", Tag::List(vec![name("minecraft:air"), log])),
-            ("data", Tag::LongArray(data)),
-        ]);
-        let chunk = |version: i32| NamedTag {
-            name: "".into(),
-            tag: Tag::compound([
-                ("isLightOn", Tag::Byte(1)),
-                ("Status", name("full")),
-                ("zPos", Tag::Int(5)),
-                ("block_entities", Tag::List(Vec::new())),
-                ("yPos", Tag::Int(-4)),
-                ("DataVersion", Tag::Int(version)),
-                ("xPos", Tag::Int(-2)),
-                (
-                    "sections",
-                    Tag::List(vec![section(3, stone.clone()), section(4, logs.clone())]),
-                ),
-                ("age", Tag::Long(1_793_576_311_368)),
-            ]),
-        };
-        let region = bobby.join("r.-1.0.mca");
-        let mut file = RegionFile::open_writable(&region, true).unwrap();
-        let record = ChunkRecord::from_nbt(
-            &chunk(DATA_VERSION),
-            Compression::Zlib,
-            0,
-            Limits::default(),
-        );
-        file.write(ChunkPos::new(-2, 5), &record.unwrap()).unwrap();
-        let record = ChunkRecord::from_nbt(
-            &chunk(DATA_VERSION - 1),
-            Compression::Zlib,
-            0,
-            Limits::default(),
-        );
-        file.write(ChunkPos::new(-1, 5), &record.unwrap()).unwrap();
-        drop(file);
-        let before = fs::read(&region).unwrap();
-        let registry = assets.registry;
-        let decode: DecodeChunk =
-            Box::new(move |root| decode_lit(root, registry, &biomes, ColumnLayout::VANILLA, true));
-        let terrain =
-            ServerTerrain::with_bobby(own.clone(), None, Some(Bobby::new(bobby, decode, &facts)));
-        let mut upright = registry
-            .state(registry.default_state("minecraft:oak_log").unwrap())
-            .unwrap()
-            .clone();
-        upright.properties.insert("axis".into(), "y".into());
-        let upright = registry.id(&upright).unwrap();
-        let stone = registry.default_state("minecraft:stone").unwrap();
-        let columns = terrain.chunk(-2, 5).expect("Bobby's chunk");
-        for column in columns.iter() {
-            let surface = column.surface.expect("a surface");
-            assert_eq!((surface.height, surface.state), (65, upright));
-            assert!(
-                column
-                    .spans
-                    .as_slice()
-                    .iter()
-                    .any(|span| span.state == stone)
-            );
-        }
-        // Another game version's chunk is none.
-        assert_eq!(terrain.chunk(-1, 5), None);
-        drop(terrain);
-        assert_eq!(
-            fs::read(&region).unwrap(),
-            before,
-            "Bobby's folder is only read"
-        );
-        assert_eq!(ServerTerrain::new(own, None).chunk(-2, 5), Some(columns));
-        let _ = fs::remove_dir_all(&dir);
-    }
-    /// A cache Bobby really wrote (`SUNRISE_TEST_BOBBY`, its `.bobby`: the
-    /// fork's bobby-observe run, three local servers): found as the client
-    /// would find it, and every chunk of its Overworld folders decodes.
-    #[test]
-    fn far_terrain_reads_a_real_bobby_cache() {
-        use crate::server_terrain::{Bobby, DecodeChunk, ServerTerrain, bobby_level_dir};
-        let (Some(resources), Some(cache)) = (
-            std::env::var_os("SUNRISE_TEST_RESOURCES"),
-            std::env::var_os("SUNRISE_TEST_BOBBY"),
-        ) else {
-            return;
-        };
-        let resources = PathBuf::from(resources);
-        let cache = PathBuf::from(cache);
-        let assets = crate::assets::Assets::load(&resources).expect("assets");
-        let biomes = Arc::new(
-            Biomes::load(&sunrise_assets::resource_source::ResourceRoot::directory(
-                resources.to_path_buf(),
-            ))
-            .expect("biomes"),
-        );
-        let facts = crate::blocks::BlockFacts::load(&resources, assets.registry).expect("facts");
-        let registry = assets.registry;
-        let levels = [
-            ("127.0.0.1", -9030034075591913594),
-            ("127.0.0.1", 4696776658964135993),
-            ("localhost:25566", -7181178862026813658),
-        ];
-        for (address, seed) in levels {
-            let dir = bobby_level_dir(&cache, address, seed, "minecraft:overworld")
-                .unwrap_or_else(|| panic!("{address} {seed}: no folder"));
-            let mut chunks = Vec::new();
-            for entry in fs::read_dir(&dir).unwrap().flatten() {
-                if entry.path().extension().is_some_and(|e| e == "mca") {
-                    let file = RegionFile::open(entry.path()).unwrap();
-                    chunks.extend(file.chunks().map(|(pos, _)| pos));
-                }
-            }
-            assert!(
-                chunks.len() > 100,
-                "{address} {seed}: {} chunks",
-                chunks.len()
-            );
-            let own = std::env::temp_dir()
-                .join(format!("sunrise-real-bobby-{seed}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&own);
-            let biomes = biomes.clone();
-            let decode: DecodeChunk = Box::new(move |root| {
-                decode_lit(root, registry, &biomes, ColumnLayout::VANILLA, true)
-            });
-            let terrain =
-                ServerTerrain::with_bobby(own.clone(), None, Some(Bobby::new(dir, decode, &facts)));
-            let read = chunks
-                .iter()
-                .filter(|pos| {
-                    terrain
-                        .chunk(pos.x, pos.z)
-                        .is_some_and(|columns| columns.iter().all(|c| c.surface.is_some()))
-                })
-                .count();
-            assert_eq!(
-                read,
-                chunks.len(),
-                "{address} {seed}: chunks read with a surface"
-            );
-            let _ = fs::remove_dir_all(&own);
-        }
     }
 }
 
@@ -9986,6 +10863,7 @@ mod far_census {
         let save = Arc::new(SaveDir::new(
             world.join("dimensions/minecraft/overworld"),
             LevelShape::OVERWORLD,
+            Some(Default::default()),
         ));
         let generator = Arc::new(Persistent {
             inner: terrain,
@@ -10103,8 +10981,15 @@ mod jukebox_song_clock_tests {
             // `setSongWithoutPlaying`: a saved clock, unstarted; else no song.
             assert_eq!(j.playing, clock.is_some());
             assert_eq!(j.loaded_clock, clock.is_some());
-            let saved = block_entity_encode::encode(pos, &model, "minecraft:jukebox");
-            let command = block_entity_data(pos, &model, "minecraft:jukebox", None);
+            let saved =
+                block_entity_encode::encode(pos, &model, "minecraft:jukebox", &Default::default());
+            let command = block_entity_encode::data(
+                pos,
+                &model,
+                "minecraft:jukebox",
+                Default::default(),
+                &Default::default(),
+            );
             check(label, &saved, clock);
             check(label, &command, clock);
             if with_record {
@@ -10120,7 +11005,12 @@ mod jukebox_song_clock_tests {
                 };
                 j.playing = false;
                 // Decoded clock state, not this separate legacy flag, owns saving.
-                let saved = block_entity_encode::encode(pos, &detached, "minecraft:jukebox");
+                let saved = block_entity_encode::encode(
+                    pos,
+                    &detached,
+                    "minecraft:jukebox",
+                    &Default::default(),
+                );
                 check("clock independent of legacy playing", &saved, clock);
                 record_kept(&saved);
             }
@@ -10128,12 +11018,22 @@ mod jukebox_song_clock_tests {
         let empty = BlockEntity::Jukebox(Jukebox::default());
         check(
             "default modeled/no raw",
-            &block_entity_encode::encode((4, 200, 4), &empty, "minecraft:jukebox"),
+            &block_entity_encode::encode(
+                (4, 200, 4),
+                &empty,
+                "minecraft:jukebox",
+                &Default::default(),
+            ),
             None,
         );
         let raw = input(Some(41), true);
         let (pos, loaded_model) = decode_block_entity(&raw).unwrap();
-        let loaded = block_entity_encode::encode(pos, &loaded_model, "minecraft:jukebox");
+        let loaded = block_entity_encode::encode(
+            pos,
+            &loaded_model,
+            "minecraft:jukebox",
+            &Default::default(),
+        );
         let BlockEntity::Jukebox(j) = loaded_model else {
             unreachable!()
         };
@@ -10142,12 +11042,13 @@ mod jukebox_song_clock_tests {
             playing: true,
             ..Default::default()
         });
-        let current = block_entity_encode::encode(pos, &current, "minecraft:jukebox");
+        let current =
+            block_entity_encode::encode(pos, &current, "minecraft:jukebox", &Default::default());
         check("modeled record-only/no raw", &current, None);
         record_kept(&current);
         // The chunk writer uses this real overlay after encoding its model.
         // A stale input clock must not resurrect the removed modeled field.
-        let merged = merge_block_entity(&raw, &loaded, &current);
+        let merged = merge_block_entity(&raw, &loaded, &current, false);
         check("contradictory raw clock", &merged, None);
         record_kept(&merged);
         let canonical = crate::block_entity_nbt::canonical(&merged).unwrap();
@@ -10222,7 +11123,7 @@ mod calculated_blending_save_tests {
         let dir = std::env::temp_dir().join(format!("sunrise-h077-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD, Some(Default::default()));
         let _ = save.tables.set(Arc::new(SaveTables::new(assets)));
         (dir, save)
     }
@@ -10279,6 +11180,7 @@ mod calculated_blending_save_tests {
         let owner = Arc::new(Owner(calculated(-4, 20)));
         hook(&save, (12, 0), &owner);
         let encoding = Arc::new(Encoding {
+            items: Default::default(),
             registry: assets.registry,
             biomes: biomes.clone(),
             tables: save.tables.get().cloned(),

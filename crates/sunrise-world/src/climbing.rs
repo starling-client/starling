@@ -3,8 +3,8 @@ use crate::{
     compression::invalid,
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::position::BlockPos;
 use std::{collections::BTreeSet, fmt, io};
+use sunrise_core::position::BlockPos;
 #[derive(Clone, Copy)]
 struct State {
     climbable: bool,

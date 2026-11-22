@@ -1,0 +1,3 @@
+ids = ["handle:ClientScoreboard::new"]
+why = "ClientScoreboard now carries every team the server sends beside its objectives, so its constructor takes the teams too."
+migrate = "Pass the teams as the second argument of ClientScoreboard::new (an empty Vec for none) and read them from the new teams field."

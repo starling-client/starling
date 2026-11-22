@@ -5,8 +5,7 @@ use crate::*;
 const MARGIN: f32 = 2.0;
 /// Where the next overlay goes in each corner.
 // exhaustive: its fields are private, so mods cannot build or destructure it
-#[derive(sunrise_mod_api_macros::Wire)]
-#[wire(internal_field_layouts)]
+#[derive(Clone, sunrise_mod_api_macros::Wire)]
 pub struct Corners {
     pub(crate) width: f32,
     pub(crate) height: f32,

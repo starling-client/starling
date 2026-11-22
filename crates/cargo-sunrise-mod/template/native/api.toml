@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# The pinned SDK's API crate, fetched into .sunrise/sdk/ by any `cargo sunrise-mod` command (the
-# launcher builds against its own copy of the same build). Any other registry dependency must be
-# pinned with `sunrise-launcher native-lock .` before building.
+# The pinned SDK's API crate, fetched into .sunrise/sdk/ by any `cargo sunrise-mod` command. Any other
+# registry dependency is pinned in Cargo.lock by `cargo sunrise-mod build`.
 sunrise-mod-api = { path = ".sunrise/sdk/api/crates/sunrise-mod-api" }
-{metadata}

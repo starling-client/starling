@@ -4,16 +4,16 @@
 //! vanilla renderer computes (bounds, fade, wall buffer, transforms, walls
 //! drawn, vignette colour) with floats as raw bits.
 #![forbid(unsafe_code)]
+use serde_json::{Value, json};
+use std::{
+    fs,
+    io::{BufWriter, Write},
+};
 use sunrise_client::{
     border_render::{self, BorderRenderState, BorderRenderer},
     hud_layout::GuiDraw,
     hud_overlays,
     worldborder::{BorderStatus, WorldBorder},
-};
-use serde_json::{Value, json};
-use std::{
-    fs,
-    io::{BufWriter, Write},
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 

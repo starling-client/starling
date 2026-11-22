@@ -1,0 +1,8 @@
+ids = [
+    "trait:Interaction",
+    "method:Interaction::interact",
+]
+why = """
+A registered cauldron click now distinguishes the server's block fallthrough from its final item-on-block result. When the block passes or is skipped, the eligible client item phase runs once without resending UseItemOn, even if the server's item consumes the click, as in vanilla 26.3's `MultiPlayerGameMode.performUseItemOn` and the NeoForge patches to that method and `ServerPlayerGameMode.useItemOn`. Both sides must pass to continue to air use and potentially the other hand. The pending turn is discarded if its original ray cannot be honored: vanilla's `Minecraft.startUseItem` and `Item.getPlayerPOVHitResult` use the player's eye position, direction and block reach in one input turn."""
+migrate = """
+The client continuation requires no further changes to the `Interaction::interact` signature. Keep returning `CauldronDecision::Pass` to leave the item-on-block phase available. Client `use_item_on_block` listeners should handle `UsePhase::ItemAfterBlock` normally when the block phase passes or is skipped, not assume that the server's item-on-block phase must also pass. Do not expect a deferred use to run with a changed slot, stack, eye position, aim or reach."""

@@ -1,5 +1,6 @@
 //! Stack count admission at the mod API conversion boundary.
 use super::*;
+use sunrise_items::items::ItemInfo;
 
 /// Validate an output while retaining its count for a later placement policy.
 /// Item identity, components, maxima and damage retain the ordinary write checks.
@@ -46,64 +47,93 @@ impl TryIntoEngine for ApiStack {
     type Error = StackWriteError;
 
     fn try_into_engine(&self, items: &Items) -> Result<EngineStack, Self::Error> {
-        let id =
-            mod_api::__private::item_key_id(self.item()).ok_or(StackWriteError::UnknownItem)?;
-        let (id, definition) = items
-            .items
-            .get_key_value(id)
-            .ok_or(StackWriteError::UnknownItem)?;
-        let stack = encode_stack(self, id.clone())?;
-        let effective = |name: &str, default: u32| -> Result<u32, StackWriteError> {
-            match stack.data().and_then(|data| data.other(name)) {
-                Some(Tag::Int(value)) => {
-                    u32::try_from(*value).map_err(|_| StackWriteError::InvalidMaximum)
-                }
-                Some(_) => Err(StackWriteError::InvalidMaximum),
-                None => Ok(default),
-            }
-        };
-        let maximum = if stack.carries_component(Some(definition), "minecraft:max_stack_size") {
-            effective("minecraft:max_stack_size", definition.max_stack)?
-        } else {
-            1
-        };
-        if !(1..=99).contains(&maximum) {
-            return Err(StackWriteError::InvalidMaximum);
-        }
-        if !sunrise_world::item_template::durability_allows_stack_size(
-            stack.carries_component(Some(definition), "minecraft:max_damage"),
-            i64::from(maximum),
-        ) {
-            return Err(StackWriteError::StackableDamageable);
-        }
-        if stack.count > maximum {
-            return Err(StackWriteError::CountExceeded { maximum });
-        }
-        let maximum = if stack.carries_component(Some(definition), "minecraft:max_damage") {
-            effective("minecraft:max_damage", definition.max_damage)?
-        } else {
-            0
-        };
-        let damage = self.damage_component().map_or_else(
-            || {
-                u32::try_from(stack.effective_damage(Some(definition))).map_err(|_| {
-                    StackWriteError::InvalidComponents {
-                        reason: mod_api::StackError::InvalidDamage,
-                    }
-                })
-            },
-            Ok,
-        )?;
-        if damage > maximum {
-            return Err(StackWriteError::DamageExceeded { maximum });
-        }
-        if i32::try_from(damage).is_err() {
-            return Err(StackWriteError::InvalidComponents {
-                reason: mod_api::StackError::InvalidDamage,
-            });
-        }
+        let (id, definition) = stack_item_definition(self.item(), items)?;
+        let mut stack = encode_stack(self, id.clone())?;
+        admit_stack_limits(&mut stack, definition, self.damage_component())?;
         Ok(stack)
     }
+}
+
+/// Resolve an API item to the registry's shared identity and definition.
+pub(super) fn stack_item_definition(
+    item: mod_api::ItemKey,
+    items: &Items,
+) -> Result<(&Arc<str>, &ItemInfo), StackWriteError> {
+    let id = mod_api::__private::item_key_id(item).ok_or(StackWriteError::UnknownItem)?;
+    items
+        .items
+        .get_key_value(id)
+        .ok_or(StackWriteError::UnknownItem)
+}
+
+/// Check a decoded stack's effective limits and canonicalize a max-damage override.
+/// Pass explicit damage before signed narrowing; `None` reads effective damage from the stack
+/// and item definition.
+pub(super) fn admit_stack_limits(
+    stack: &mut EngineStack,
+    definition: &ItemInfo,
+    damage: Option<u32>,
+) -> Result<(), StackWriteError> {
+    let max_stack_size = "minecraft:max_stack_size";
+    let maximum = if stack.carries_component(Some(definition), max_stack_size) {
+        match stack.data().and_then(|data| data.other(max_stack_size)) {
+            Some(Tag::Int(value)) => {
+                u32::try_from(*value).map_err(|_| StackWriteError::InvalidMaximum)?
+            }
+            Some(_) => return Err(StackWriteError::InvalidMaximum),
+            None => definition.max_stack,
+        }
+    } else {
+        1
+    };
+    if !(1..=99).contains(&maximum) {
+        return Err(StackWriteError::InvalidMaximum);
+    }
+    let max_damage = "minecraft:max_damage";
+    let carries_max_damage = stack.carries_component(Some(definition), max_damage);
+    if !sunrise_world::item_template::durability_allows_stack_size(
+        carries_max_damage,
+        i64::from(maximum),
+    ) {
+        return Err(StackWriteError::StackableDamageable);
+    }
+    if stack.count > maximum {
+        return Err(StackWriteError::CountExceeded { maximum });
+    }
+    if carries_max_damage {
+        match stack.data().and_then(|data| data.other(max_damage)) {
+            Some(raw) => {
+                let decoded = sunrise_core::nbt::numeric_int(raw)
+                    .filter(|&value| value > 0)
+                    .ok_or(StackWriteError::InvalidMaximum)?;
+                if !matches!(raw, Tag::Int(_)) {
+                    stack
+                        .data_mut()
+                        .set_other(max_damage, Some(Tag::Int(decoded)));
+                }
+            }
+            None if !(1..=i32::MAX as u32).contains(&definition.max_damage) => {
+                return Err(StackWriteError::InvalidMaximum);
+            }
+            None => {}
+        }
+    }
+    let damage = damage.map_or_else(
+        || {
+            u32::try_from(stack.effective_damage(Some(definition))).map_err(|_| {
+                StackWriteError::InvalidComponents {
+                    reason: mod_api::StackError::InvalidDamage,
+                }
+            })
+        },
+        Ok,
+    )?;
+    if i32::try_from(damage).is_err() {
+        return Err(StackWriteError::InvalidComponents {
+            reason: mod_api::StackError::InvalidDamage,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -128,9 +158,22 @@ mod tests {
         );
         let mut sword = ApiStack::new(key("minecraft:iron_sword"), 100).unwrap();
         sword.set_damage(11);
+        let preserved = sword.try_into_engine_preserving_count(&items).unwrap();
+        assert_eq!((preserved.count, preserved.damage), (100, 11));
+        sword.set_damage(u32::MAX);
         assert_eq!(
             sword.try_into_engine_preserving_count(&items),
-            Err(StackWriteError::DamageExceeded { maximum: 10 })
+            Err(StackWriteError::InvalidComponents {
+                reason: mod_api::StackError::InvalidDamage,
+            })
+        );
+        let mut zero_max_damage = ApiStack::new(key("minecraft:iron_sword"), 100).unwrap();
+        zero_max_damage
+            .set_components([(JavaString::from("minecraft:max_damage"), Tag::Int(0))].into())
+            .unwrap();
+        assert_eq!(
+            zero_max_damage.try_into_engine_preserving_count(&items),
+            Err(StackWriteError::InvalidMaximum)
         );
         let mut malformed = oversized;
         malformed

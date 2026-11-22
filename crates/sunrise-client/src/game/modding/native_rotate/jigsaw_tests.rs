@@ -1,6 +1,13 @@
 //! Real assembler and template-placement regressions for position-sensitive rotate Parts.
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
+use mod_api::{BlockPart, Hooks, ModEntry, Mods, RotateEvent, WorldgenHost};
+use serde_json::json;
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{Arc, PoisonError},
+};
 use sunrise_core::{
     bounding_box::BoundingBox,
     nbt::{self, Compound, Limits, NamedTag, Tag},
@@ -25,13 +32,6 @@ use sunrise_world::{
             start::{NoiseColumnTarget, StartContext},
         },
     },
-};
-use mod_api::{BlockPart, Hooks, ModEntry, Mods, RotateEvent, WorldgenHost};
-use serde_json::json;
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    sync::{Arc, PoisonError},
 };
 
 /// The child faces down only at its actual placed height, never at its sampled local Y=2.
@@ -403,7 +403,7 @@ fn publish(game: &mut crate::game::Game<'_>) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn position_sensitive_part_connects_at_built_height_in_both_assemblers() {
     let _publishing = native_worldgen_parts::PUBLISHING
         .lock()
@@ -496,10 +496,10 @@ fn junction(y: i32, delta: i32, projection: &str) -> Tag {
 fn expected_piece(child: bool, rotation: &str, connected: bool) -> Tag {
     // Literal fixed-seed fixture, independently calculated from the vanilla placement equations
     // and java.util.Random's documented recurrence (seed 0), not from the assembler's output.
+    // Insert fields in `StructurePiece.createTag` then `PoolElementStructurePiece.addAdditionalSaveData`
+    // order: the Java compound map's traversal depends on its insertion history.
     Tag::compound([
         ("id", Tag::String("minecraft:jigsaw".into())),
-        ("O", Tag::Int(-1)),
-        ("GD", Tag::Int(0)),
         (
             "BB",
             Tag::IntArray(if child {
@@ -508,12 +508,12 @@ fn expected_piece(child: bool, rotation: &str, connected: bool) -> Tag {
                 vec![10, 9, 20, 10, 9, 20]
             }),
         ),
+        ("O", Tag::Int(-1)),
+        ("GD", Tag::Int(0)),
         ("PosX", Tag::Int(10)),
         ("PosY", Tag::Int(if child { 78 } else { 9 })),
         ("PosZ", Tag::Int(20)),
-        ("rotation", Tag::String(rotation.into())),
         ("ground_level_delta", Tag::Int(if child { 2 } else { 1 })),
-        ("liquid_settings", Tag::String("ignore_waterlogging".into())),
         (
             "pool_element",
             Tag::compound([
@@ -532,6 +532,7 @@ fn expected_piece(child: bool, rotation: &str, connected: bool) -> Tag {
                 ),
             ]),
         ),
+        ("rotation", Tag::String(rotation.into())),
         (
             "junctions",
             Tag::List(if connected {
@@ -544,6 +545,7 @@ fn expected_piece(child: bool, rotation: &str, connected: bool) -> Tag {
                 Vec::new()
             }),
         ),
+        ("liquid_settings", Tag::String("ignore_waterlogging".into())),
     ])
 }
 fn bytes(tags: Vec<Tag>) -> Vec<u8> {
@@ -566,8 +568,15 @@ fn saved(pieces: &[PoolPiece]) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged() {
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::native_rotate::jigsaw_tests::no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged",
+        "SUNRISE_JIGSAW_FIXED_SEED_CHILD",
+        &["fixed-seed"],
+    ) {
+        return;
+    }
     let _publishing = native_worldgen_parts::PUBLISHING
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -675,7 +684,7 @@ fn no_part_fixed_seed_layout_bytes_and_draws_stay_unchanged() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn placed_palette_keeps_connector_identity_and_named_start_requirement() {
     let _publishing = native_worldgen_parts::PUBLISHING
         .lock()

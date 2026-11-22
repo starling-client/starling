@@ -5,14 +5,14 @@
 //! small cancel through. Built on the real hub: a hosted guest, a packet in
 //! its inbox, the hub's own collide path.
 use crate::game::game_tests::tests::server_game;
+use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext};
+use std::sync::Arc;
+use std::sync::atomic::AtomicI32;
 use sunrise_client::lan::guest::{InboxItem, SURVIVAL};
 use sunrise_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
 use sunrise_core::position::ChunkPos;
 use sunrise_protocol::packets::configuration::ClientInformation;
 use sunrise_protocol::packets::play::{Clientbound as C, Serverbound as S};
-use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext};
-use std::sync::Arc;
-use std::sync::atomic::AtomicI32;
 
 /// A listener that cancels every move.
 struct CancelAll;
@@ -121,6 +121,7 @@ fn hosted_guest_starting<R>(
                 max_players: 2,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();

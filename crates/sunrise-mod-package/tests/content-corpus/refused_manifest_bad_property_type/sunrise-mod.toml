@@ -1,0 +1,5 @@
+id = "refused_manifest_bad_property_type"
+name = "Refused manifest bad property type"
+version = "1.2.3"
+[properties]
+complex = [1, 2]

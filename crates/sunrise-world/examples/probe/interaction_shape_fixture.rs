@@ -1,13 +1,13 @@
 use crate::support::common::f64_bits;
-use sunrise_core::{
-    geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape},
-    position::BlockPos,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::{
+    geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape},
+    position::BlockPos,
 };
 use {
     sunrise_core::{

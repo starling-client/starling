@@ -17,7 +17,10 @@ AMP = SERVER / "amp"
 INIT_RS = (ROOT / "crates/sunrise-server/src/init.rs").read_text()
 CONFIG_RS = (ROOT / "crates/sunrise-server-launch/src/config.rs").read_text()
 DEDICATED_RS = (next(ROOT.glob('crates/sunrise-client/src/game/*/dedicated/mod.rs'))).read_text()
-LAN_RS = (ROOT / "crates/sunrise-client/src/game/network/lan/mod.rs").read_text()
+# The leave lines are logged by the shared leave path (native_hooks/player_leave.rs).
+LAN_RS = (ROOT / "crates/sunrise-client/src/game/network/lan/mod.rs").read_text() + (
+    ROOT / "crates/sunrise-client/src/game/native_hooks/player_leave.rs"
+).read_text()
 
 # Read at install only, so init.rs does not know them.
 INSTALL_ONLY = {"SUNRISE_VERSION"}
@@ -173,8 +176,8 @@ class AmpTests(unittest.TestCase):
         self.assertEqual(self.kvp["App.ExitString"], "stop")
 
     def test_the_console_patterns_match_what_the_server_logs(self):
-        done = re.search(r'"(Done \(\{:\.3\}s\)! For help, type \\"help\\")"', DEDICATED_RS).group(1)
-        line = "[12:00:00] [Server thread/INFO]: " + done.replace("{:.3}", "4.217").replace('\\"', '"')
+        done = re.search(r'"(Done \(\{seconds\}s\)! For help, type \\"help\\")"', DEDICATED_RS).group(1)
+        line = "[12:00:00] [Server thread/INFO]: " + done.format(seconds="4.217").replace('\\"', '"')
         self.assertRegex(line, self.kvp["Console.AppReadyRegex"])
         self.assertNotRegex("[12:00:00] [Server thread/INFO]: Preparing spawn area", self.kvp["Console.AppReadyRegex"])
         for key, said in (("Console.UserJoinRegex", "joined"), ("Console.UserLeaveRegex", "left")):

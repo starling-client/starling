@@ -1,10 +1,5 @@
 //! Run alone with private prepared resources: installs process-wide trait mods.
 use super::*;
-use sunrise_client::{
-    chunk::Chunk,
-    merchant::{ItemCost, MerchantOffer, Trader},
-    mobs::Mob,
-};
 use mod_api::{
     self, EntityInteractEvent, Hooks, HostSide, InteractionResult, ItemInteractMobEvent, ItemPart,
     Registrar, RegistrationContext,
@@ -12,6 +7,11 @@ use mod_api::{
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, Ordering},
+};
+use sunrise_client::{
+    chunk::Chunk,
+    merchant::{ItemCost, MerchantOffer, Trader},
+    mobs::Mob,
 };
 
 #[derive(Clone, Default)]
@@ -101,7 +101,7 @@ fn target(id: i32) -> Option<InteractTarget> {
 }
 
 #[test]
-#[ignore = "private prepared resources; process-wide mods, run this test alone"]
+#[ignore = "daily"]
 fn actual_item_interact_mob_fallback_priority_and_filters() {
     crate::game::in_own_process(
         "game::item_interact_mob_tests::actual_item_interact_mob_fallback_priority_and_filters",

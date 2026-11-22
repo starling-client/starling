@@ -1,13 +1,91 @@
 //! Production gameplay triggers, with one isolated game process per group of scenarios.
 use super::*;
 use crate::game::minecarts::{CartKind, Minecart};
-use sunrise_client::save::PendingContainerLoot;
+use std::sync::{Arc, Mutex};
+use sunrise_client::{items::ItemStack, save::PendingContainerLoot};
 use sunrise_core::{geometry::Vec3, nbt::Tag, position::BlockPos};
 use sunrise_world::loot::{LootData, PackOverlay};
-use std::sync::{Arc, Mutex};
 
 const POS: (i32, i32, i32) = (8, 64, 8);
 const TABLE: &str = "test:first_access";
+
+#[test]
+#[ignore = "daily"]
+fn level_container_reads_preserve_snapshot_and_unpack_comparator_once() {
+    if in_child("level_container_reads_preserve_snapshot_and_unpack_comparator_once") {
+        return;
+    }
+    mod_platform::testing::with_mods(Default::default(), || {
+        with_game(|game| {
+            use mod_api::{LevelHost, LevelRandomHost};
+            place(game, POS, TABLE, 37);
+            let handle = game.level(game.dim.id()).unwrap();
+            let at = mod_api::BlockSide {
+                level: handle,
+                pos: [8, 64, 8],
+                side: None,
+            };
+            let entity = game.block_entity(handle, at.pos).unwrap();
+            game.with_level(|_, level, _| {
+                assert_eq!(level.block_entity(at.pos), Some(entity));
+                assert_eq!(level.container_size(at), Some(27));
+                for slot in 0..27 {
+                    assert!(level.container_stack(at, slot).is_none());
+                }
+                assert!(level.block_entity([32, 64, 8]).is_none());
+                let unloaded = mod_api::BlockSide {
+                    pos: [32, 64, 8],
+                    ..at
+                };
+                assert_eq!(level.container_size(unloaded), None);
+                assert!(level.container_stack(unloaded, 0).is_none());
+                assert_eq!(level.container_signal(unloaded.pos), None);
+            });
+            pending_seed(game, POS, &[37]);
+            game.with_level(|_, level, ticks| {
+                let mut host = crate::game::mod_api_host::LevelTicks::new(level, ticks);
+                assert_eq!(host.container_signal(at.pos), Some(1));
+                assert_eq!(host.container_signal([32, 64, 8]), None);
+            });
+            consumed(game, POS);
+            assert_eq!(count(game, POS, "minecraft:diamond"), 1);
+            game.world
+                .block_entities
+                .get_mut(&POS)
+                .unwrap()
+                .slots_mut()
+                .fill(None);
+            game.with_level(|_, level, _| assert_eq!(level.container_signal(at.pos), Some(0)));
+            assert_eq!(
+                count(game, POS, "minecraft:diamond"),
+                0,
+                "no second loot roll"
+            );
+            let chunk = game.world.chunks[&(0, 0)].clone();
+            let chest = game.world.block_entities.remove(&POS).unwrap();
+            game.options.dedicated = None;
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+            let (client, _server) = sunrise_protocol::connection::Pipe::pair();
+            game.connect_local(client, "ContainerReadTest").unwrap();
+            game.remote.as_mut().unwrap().logged_in = true;
+            game.world.chunks.insert((0, 0), chunk);
+            game.world.block_entities.insert(POS, chest);
+            let client_level = game.level(game.dim.id()).unwrap();
+            let at = mod_api::BlockSide {
+                level: client_level,
+                ..at
+            };
+            let local_entity = game.block_entity(client_level, at.pos).unwrap();
+            game.with_level(|_, level, _| {
+                assert_eq!(level.block_entity(at.pos), Some(local_entity));
+                assert_eq!(level.container_size(at), None);
+                assert!(level.container_stack(at, 0).is_none());
+                assert_eq!(level.container_signal(at.pos), None);
+            });
+            assert!(!game.world.loaded(32, 8));
+        });
+    });
+}
 
 /// Runs the group in one child process, so the game resources load once per group and the
 /// memory returns to the system when the child exits. Returns true in the parent, once the
@@ -82,7 +160,7 @@ fn with_game(test: impl FnOnce(&mut Game<'_>)) {
             &game.options.resources,
             &PackOverlay {
                 files: &files,
-                ..PackOverlay::NONE
+                ..PackOverlay::default()
             },
             game.res.item_defaults(),
         )
@@ -723,7 +801,7 @@ fn random_selection_streams() {
         &root,
         &PackOverlay {
             files: &files,
-            ..PackOverlay::NONE
+            ..PackOverlay::default()
         },
         &sunrise_world::item_defaults::read(&root).unwrap(),
     )
@@ -897,13 +975,26 @@ fn container_fill_listener_contract() {
     with_game(|g| {
         g.options.dedicated = Some(Vec::new());
         place(g, POS, TABLE, 37);
+        let initial_random = g.world.random.clone();
         open(g, POS, 0.0);
         let baseline = g.world.block_entities[&POS].slots().to_vec();
         let baseline_random = g.world.random.state();
+
+        // ServerPlayer.openMenu closes the old menu before constructing its replacement.
+        // ChestBlockEntity.playSound draws a pitch for the last close and the first open.
+        place(g, POS, TABLE, 37);
+        let mut reopened_random = g.world.random.clone();
+        reopened_random.next_float();
+        reopened_random.next_float();
+        open(g, POS, 0.0);
+        assert_eq!(g.world.random.state(), reopened_random.state());
+        g.guest_close_all(12);
+
+        place(g, POS, TABLE, 37);
+        g.world.random = initial_random;
         mod_platform::testing::with_mods(
             vec![mod_api::ModEntry::new("empty", Box::new(EmptyFillMod))].into(),
             || {
-                place(g, POS, TABLE, 37);
                 open(g, POS, 0.0);
                 assert_eq!(g.world.block_entities[&POS].slots(), baseline);
                 assert_eq!(g.world.random.state(), baseline_random);
@@ -920,15 +1011,17 @@ fn container_fill_listener_contract() {
             )]
             .into()
         };
-        // A subscribed observer must preserve both the seedless roll and RNG state.
-        *g.world.random = LegacyRandom::new(123);
+        // Compare the seedless roll from the same closed menu and RNG state too.
+        g.guest_close_all(12);
         place(g, POS, TABLE, 0);
+        *g.world.random = LegacyRandom::new(123);
         open(g, POS, 0.0);
         let seedless_slots = g.world.block_entities[&POS].slots().to_vec();
         let seedless_random = g.world.random.state();
+        g.guest_close_all(12);
+        place(g, POS, TABLE, 0);
+        *g.world.random = LegacyRandom::new(123);
         mod_platform::testing::with_mods(mods(0), || {
-            *g.world.random = LegacyRandom::new(123);
-            place(g, POS, TABLE, 0);
             open(g, POS, 0.0);
             assert_eq!(g.world.block_entities[&POS].slots(), seedless_slots);
             assert_eq!(g.world.random.state(), seedless_random);
@@ -1008,6 +1101,80 @@ fn container_fill_listener_contract() {
     });
 }
 
+fn vehicle_slot_read_fills_without_opener_while_acting() {
+    with_game(|game| {
+        game.options.dedicated = Some(Vec::new());
+        let cart_id = cart(game);
+        let cart = game
+            .carts
+            .iter()
+            .position(|cart| cart.id == cart_id)
+            .unwrap();
+        let resident = ItemStack::new("minecraft:stick", 4);
+        game.carts
+            .update(cart, |cart| cart.items[0] = Some(resident.clone()));
+        let (tag, _) = sunrise_core::nbt::parse_snbt(&format!(
+            r#"{{Pos:[8.5d,64d,8.5d],LootTable:"{TABLE}",LootTableSeed:37L}}"#
+        ))
+        .unwrap();
+        game.load_boat(tag, None, "minecraft:oak_chest_boat");
+        let boat = game.boats.len() - 1;
+        let boat_id = game.boats[boat].id;
+        assert!(game.persist.raw[&boat_id].get("LootTable").is_some());
+        assert_eq!(
+            game.persist.raw[&boat_id].get("LootTableSeed"),
+            Some(&Tag::Long(37))
+        );
+        game.boats
+            .update(boat, |boat| boat.items[0] = Some(resident.clone()));
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        mod_platform::testing::with_mods(
+            vec![mod_api::ModEntry::new(
+                "fill",
+                Box::new(FillListener {
+                    mode: 0,
+                    seen: seen.clone(),
+                }),
+            )]
+            .into(),
+            || {
+                game.as_guest(12, |game| {
+                    assert!(game.native_acting_player().is_some());
+                    for entity in [cart_id, boat_id] {
+                        seen.lock().unwrap().clear();
+                        let slot = mod_api::ItemPlace::EntitySlot { entity, slot: 0 };
+                        assert_eq!(slot.with_stack(game, |stack| stack.count()), Some(4));
+                        let items = if entity == cart_id {
+                            assert!(game.carts[cart].loot.is_none());
+                            &game.carts[cart].items
+                        } else {
+                            assert!(game.persist.raw[&boat_id].get("LootTable").is_none());
+                            assert!(game.persist.raw[&boat_id].get("LootTableSeed").is_none());
+                            &game.boats[boat].items
+                        };
+                        assert_eq!(items[0].as_ref(), Some(&resident));
+                        let filled = items[1..].iter().flatten().collect::<Vec<_>>();
+                        assert_eq!(filled, vec![&ItemStack::new("minecraft:diamond", 1)]);
+                        assert_eq!(
+                            seen.lock().unwrap().as_slice(),
+                            &[(
+                                TABLE.to_owned(),
+                                None,
+                                [8.5, 64.0, 8.5],
+                                vec![("minecraft:diamond".to_owned(), 1)]
+                            )],
+                        );
+                        assert_eq!(slot.with_stack(game, |stack| stack.count()), Some(4));
+                        assert_eq!(seen.lock().unwrap().len(), 1);
+                    }
+                })
+                .unwrap();
+            },
+        );
+    });
+}
+
 struct EmptyFillMod;
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for EmptyFillMod {}
@@ -1058,7 +1225,7 @@ fn saved_carts_keep_a_loot_table_only_when_they_hold_a_container() {
     });
 }
 
-struct DurableStickListener;
+struct DurableStickListener(u32);
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for DurableStickListener {
     fn container_loot_filled(
@@ -1077,37 +1244,40 @@ impl mod_api::Hooks for DurableStickListener {
                 .into(),
             )
             .unwrap();
-        stick.set_damage(0);
+        stick.set_damage(self.0);
         event.drops.clear();
         event.drops.push(stick);
     }
 }
 
-fn container_fill_preserves_explicit_zero_damage_on_custom_durable_item() {
+fn container_fill_preserves_valid_damage_overrides() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
-        mod_platform::testing::with_mods(
-            vec![mod_api::ModEntry::new(
-                "durable_stick",
-                Box::new(DurableStickListener),
-            )]
-            .into(),
-            || {
-                place(game, POS, TABLE, 37);
-                open(game, POS, 0.0);
-                let stacks: Vec<_> = game.world.block_entities[&POS]
-                    .slots()
-                    .iter()
-                    .flatten()
-                    .collect();
-                assert_eq!(stacks.len(), 1);
-                let stick = stacks[0];
-                assert_eq!(&*stick.item, "minecraft:stick");
-                assert_eq!(stick.count, 1);
-                assert_eq!(stick.damage, 0);
-                assert_eq!(game.items().stack_max_damage(stick), 10);
-            },
-        );
+        for damage in [0, 11] {
+            mod_platform::testing::with_mods(
+                vec![mod_api::ModEntry::new(
+                    "durable_stick",
+                    Box::new(DurableStickListener(damage)),
+                )]
+                .into(),
+                || {
+                    place(game, POS, TABLE, 37);
+                    open(game, POS, 0.0);
+                    let stacks: Vec<_> = game.world.block_entities[&POS]
+                        .slots()
+                        .iter()
+                        .flatten()
+                        .collect();
+                    let [stick] = stacks.as_slice() else {
+                        panic!("expected one replacement drop, got {stacks:?}");
+                    };
+                    assert_eq!(&*stick.item, "minecraft:stick");
+                    assert_eq!(stick.count, 1);
+                    assert_eq!(stick.damage, damage);
+                    assert_eq!(game.items().stack_max_damage(stick), 10);
+                },
+            );
+        }
     });
 }
 
@@ -1249,8 +1419,12 @@ fn seeds_and_fill_listeners() {
             container_fill_listener_contract as fn(),
         ),
         (
-            "container_fill_preserves_explicit_zero_damage_on_custom_durable_item",
-            container_fill_preserves_explicit_zero_damage_on_custom_durable_item as fn(),
+            "vehicle_slot_read_fills_without_opener_while_acting",
+            vehicle_slot_read_fills_without_opener_while_acting as fn(),
+        ),
+        (
+            "container_fill_preserves_valid_damage_overrides",
+            container_fill_preserves_valid_damage_overrides as fn(),
         ),
     ]);
 }

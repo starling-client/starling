@@ -2,23 +2,16 @@
 // catalog-order: 0152
 
 pub trait Hooks {
-    /// Blocks this mod adds, declared in code rather than one file each
-    /// (NeoForge's `DeferredRegister.Blocks` drained by `RegisterEvent`):
-    /// push a `mod_api::Block` per block, the same declaration
-    /// a content mod's `data/<id>/sunrise/block/<path>.json` holds (a
-    /// vanilla `template`, `properties`, `state_properties`, `shapes`...),
-    /// with its id in a namespace owned by your mod's manifest. It has a block
-    /// item, as a file's does, unless `item` is false (`Block::with_item(false)`).
-    /// They join the content mods' blocks: the one whose
-    /// id is that namespace when it is on (your models, textures, loot and
-    /// recipes are its files), else one of their own, with the template's
-    /// look. Ids, saves and the check that a joining client has the same
-    /// blocks are the files' (docs/modding/src/how-to/content-mods.md). Asked once at start, on every
-    /// side, before any resource loads: push the same ones every time, from
-    /// nothing but your code. Unowned namespaces refuse registration, naming the mod
-    /// and namespace. Each mod receives its own declaration batch. Declarations
-    /// that don't pass the other files' checks
-    /// are logged and that namespace's are left out.
+    /// Declare blocks in code once at startup on each side, before resources load.
+    /// Pass each `mod_api::Block` to `event.register`. The declaration belongs to the
+    /// submitting package — in its own namespaces or in a content package it serves
+    /// (`served_by`) — and works like `data/<id>/sunrise/block/<path>.json` in a
+    /// content mod, including a block item unless disabled with `Block::with_item(false)`.
+    /// Duplicate IDs across the host and served layers, and declarations into a
+    /// `side = "server"` package's namespace, are refused.
+    /// `register` returns a typed `DeclarationError` for invalid IDs or fields.
+    /// The game records the refusal and stops startup even if a returning listener ignores it.
+    /// A panic discards this listener's declarations and diagnostics without rejecting startup.
     #[notes = r#"## Villager farming
 
 Farmers recognize mod blocks made from farmland and `CropBlock` templates, including declarations from
@@ -29,11 +22,19 @@ beetroots mature at age 3, ordinary crops at 7; torchflower crops never reach th
 still crops. Pitcher crops are not `CropBlock`s and are not harvested by this behavior. Farming still
 requires a farmer at work and `mob_griefing` enabled."#]
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_blocks",
+        receiver = "associated",
+        dispatch = "flat",
         side = "both",
         contract = "collect",
         out = "blocks",
         context = "registration",
-        neoforge = "RegisterEvent"
+        neoforge = "RegisterEvent",
+        version = 4
     )]
-    fn blocks();
+    fn blocks(
+        blocks: &mut dyn FnMut(
+            mod_api::Answered<mod_api::Block>,
+        ) -> Result<(), mod_api::DeclarationError>,
+    );
 }

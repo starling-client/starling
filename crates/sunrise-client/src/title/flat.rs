@@ -9,10 +9,10 @@ use crate::{
     text::{Text, format_translation},
     ui,
 };
-use sunrise_assets::item_model::{DisplayContext, ItemEnv};
-use sunrise_core::nbt::Tag;
 use serde_json::Value;
 use std::{collections::BTreeSet, path::Path};
+use sunrise_assets::item_model::{DisplayContext, ItemEnv};
+use sunrise_core::nbt::Tag;
 
 /// DimensionType.Y_SIZE: the most blocks a flat generator takes.
 const Y_SIZE: i32 = 4064;
@@ -337,36 +337,27 @@ impl State {
 /// text is checked against.
 fn load(root: &Path) -> (Vec<Preset>, BTreeSet<String>, BTreeSet<String>) {
     let mut presets = Vec::new();
-    let tag_path =
-        root.join("data/minecraft/tags/worldgen/flat_level_generator_preset/visible.json");
-    if let Ok(text) = std::fs::read_to_string(tag_path)
-        && let Ok(tag) = serde_json::from_str::<Value>(&text)
-    {
-        fn members(root: &Path, tag: &Value, active: &mut BTreeSet<String>) -> Vec<String> {
-            sunrise_world::tag_layers::TagLayers::from_file(tag).build(|id| {
-                if !active.insert(id.to_owned()) {
-                    return Vec::new();
-                }
-                let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
-                let file = root.join(format!(
-                    "data/{namespace}/tags/worldgen/flat_level_generator_preset/{path}.json"
-                ));
-                let out = std::fs::read(file)
-                    .ok()
-                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-                    .map(|v| members(root, &v, active))
-                    .unwrap_or_default();
-                active.remove(id);
-                out
-            })
-        }
-        for id in members(root, &tag, &mut BTreeSet::new()) {
-            let Some((namespace, path)) = id.split_once(':') else {
+    let kind = "worldgen/flat_level_generator_preset";
+    let preset_path = |id: &str| {
+        let (namespace, path) = id.split_once(':')?;
+        let name = format!("data/{namespace}/{kind}/{path}.json");
+        sunrise_assets::resource_source::stays_inside(&name).then(|| root.join(name))
+    };
+    let tags = sunrise_world::tag_layers::load(
+        root,
+        kind,
+        &sunrise_world::loot::PackOverlay::NONE,
+        |id| preset_path(id).is_some_and(|file| file.is_file()),
+    )
+    .unwrap_or_else(|error| {
+        log::warn!("Sunrise: flat preset tags unavailable: {error}");
+        Default::default()
+    });
+    if let Some(ids) = tags.get("minecraft:visible") {
+        for id in ids {
+            let Some(path) = preset_path(id) else {
                 continue;
             };
-            let path = root.join(format!(
-                "data/{namespace}/worldgen/flat_level_generator_preset/{path}.json"
-            ));
             let Ok(text) = std::fs::read_to_string(path) else {
                 continue;
             };
@@ -564,25 +555,28 @@ fn preset_row(state: &State, cursor: (f32, f32), size: (f32, f32)) -> Option<usi
 }
 
 /// A press on the list, the share box or its scrollbar.
-pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
+pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) -> bool {
     let (top, bottom, left, content) = list_area(state, size);
     let bar = left + ROW_WIDTH + 6.0;
     match state.page {
         Page::Layers => {
             if state.scroll.press(cursor, bar, top, bottom, content) {
-                return;
+                return true;
             }
             state.selected = layer_row(state, cursor, size);
+            state.selected.is_some()
         }
         Page::Presets => {
             let field = share_field(size);
             state.share_focused = ui::hovered(cursor, field[0], field[1], field[2], field[3]);
             if state.preset_scroll.press(cursor, bar, top, bottom, content) {
-                return;
+                return true;
             }
             if let Some(row) = preset_row(state, cursor, size) {
                 state.select_preset(row);
+                return true;
             }
+            state.share_focused
         }
     }
 }
@@ -639,9 +633,11 @@ pub(super) fn drag(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
         Page::Presets => state.preset_scroll.drag(cursor.1, top, bottom, content),
     }
 }
-pub(super) fn release(state: &mut State) {
+pub(super) fn release(state: &mut State) -> bool {
+    let handled = state.scroll.held() || state.preset_scroll.held();
     state.scroll.release();
     state.preset_scroll.release();
+    handled
 }
 
 pub(super) fn draw(
@@ -952,6 +948,7 @@ fn draw_presets(
 /// The item environment of the layer icons: only the grass colormap is needed
 /// (`minecraft:grass` tint of the grass block), as the inventory draws it.
 struct GrassEnv<'a>(&'a ItemRenderer);
+impl item_render::ItemDrawEnv for GrassEnv<'_> {}
 impl ItemEnv for GrassEnv<'_> {
     fn grass_color(&self, temperature: f64, downfall: f64) -> i32 {
         self.0.grass_color(temperature, downfall)
@@ -981,7 +978,7 @@ fn slot(
     x: f32,
     y: f32,
 ) {
-    if let Some(rect) = atlas.sprites.get("gui/sprites/container/slot").copied() {
+    if let Some(rect) = atlas.sprites.get("container/slot").copied() {
         batch.rect_uv(x, y, 18.0, 18.0, rect, u32::MAX);
     } else {
         batch.fill(atlas, x, y, 18.0, 18.0, rgba(139, 139, 139, 255));
@@ -1098,7 +1095,7 @@ mod tests {
         FlatSettings, Page, Preset, State, click, focus_row, layer_item, list_area,
         selection_after_removal,
     };
-    use crate::item_render::ItemRenderer;
+    use crate::item_render::{ItemRenderer, LayerTints};
     use std::path::Path;
 
     /// Vanilla keeps the deleted row's position selected: the layer that slid
@@ -1160,7 +1157,12 @@ mod tests {
         let tinted: Vec<i32> = super::layer_state(&renderer, "minecraft:grass_block")
             .layers
             .iter()
-            .flat_map(|layer| layer.tints.clone())
+            .flat_map(|layer| match &layer.tints {
+                LayerTints::Owned(tints) => tints.iter().copied(),
+                LayerTints::Special(_) => {
+                    panic!("expected ordinary grass model tints")
+                }
+            })
             .collect();
         assert!(
             !tinted.is_empty() && !tinted.contains(&-65281),

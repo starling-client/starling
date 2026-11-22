@@ -25,9 +25,9 @@
 //! in the chunks around, its Nether shipwreck open air or lava around the
 //! start, and its End stronghold land around the chunk.
 use crate::{heightmap::HeightmapType, worldgen::biome::BiomeId};
-use sunrise_core::position::ChunkPos;
 use serde_json::Value;
 use std::collections::BTreeSet;
+use sunrise_core::position::ChunkPos;
 
 /// Which block of the start column must not be a liquid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

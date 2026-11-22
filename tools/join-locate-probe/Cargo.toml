@@ -7,9 +7,30 @@ publish = false
 [workspace]
 
 [dependencies]
+# What the production sources this probe imports reach directly: join_seq.rs (sunrise-core's
+# hashing, the mod API's dimension vocabulary, sunrise-mod-runtime's attachment lifetimes) and
+# the residency table's own `log::error!`.
+sunrise-core = { path = "../../crates/sunrise-core" }
 sunrise-mod-runtime = { path = "../../crates/sunrise-mod-runtime" }
+mod_api = { package = "sunrise-mod-vocab", path = "../../crates/sunrise-mod-vocab" }
+log = "0.4"
+
+[features]
+# The residency journal observation sunrise-client-lib turns on for these same sources. The
+# probe's tests reach it through `cfg(test)`; the name is declared so the plain build's
+# `unexpected_cfgs` check accepts it.
+test-residency-observer = []
 
 [profile.fast]
 inherits = "release"
 opt-level = 2
 lto = false
+
+# The production sources this probe imports are checked under the main workspace's lint policy
+# (Cargo.toml [workspace.lints.clippy]): ports mirror vanilla's Java signatures, index loops and
+# nested generic types one to one so they can be checked against the decompiled sources.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

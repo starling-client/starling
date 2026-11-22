@@ -1,13 +1,16 @@
 //! Synchronous mod-block contacts from the server's simulation code.
 use crate::health::DamageLevel;
-use sunrise_core::position::BlockPos;
-use sunrise_world::{
-    level::{InsideWrite, LandingWrite},
-    registry::BlockStateId,
-};
 use std::{
     cell::{Cell, RefCell},
     sync::OnceLock,
+};
+use sunrise_core::{
+    geometry::{Aabb, Axis, Direction, Vec3},
+    position::BlockPos,
+};
+use sunrise_world::{
+    level::{InsideWrite, LandingWrite},
+    registry::BlockStateId,
 };
 
 /// `getEntityInsideCollisionShape` as the shared walk sees it: the whole block, boxes
@@ -17,10 +20,23 @@ use std::{
 pub enum InsideShape {
     /// `Shapes.block()`: every move through the block is inside it.
     Full,
-    /// The shape's boxes, block-local, swept along the move.
+    /// The shape's boxes, in world space at the block, swept along the move.
     Boxes(Vec<sunrise_core::geometry::Aabb>),
     /// An empty shape: nothing is inside it.
     Empty,
+}
+
+/// The collector a walk queues its per-step effects into. `advanceStep` is the only
+/// call the shared walk makes on it; the kind's own moments queue the effects.
+pub trait StepCollector {
+    /// `InsideBlockEffectApplier.StepBasedCollector.advanceStep`.
+    fn advance_step(&mut self, step: i32);
+}
+
+impl StepCollector for mod_api::InsideEffects {
+    fn advance_step(&mut self, step: i32) {
+        mod_api::InsideEffects::advance_step(self, step);
+    }
 }
 
 /// One entity kind's view of `Entity.checkInsideBlocks`: what the walk needs from the
@@ -28,6 +44,12 @@ pub enum InsideShape {
 /// mid-walk where vanilla runs them and queue into the shared collector.
 pub trait InsideWalk {
     type Error;
+    /// The collector the kind's moments queue into.
+    type Effects: StepCollector;
+    /// The epsilon `makeBoundingBox(to).deflate(..)` shrinks the target box by before
+    /// the cells are enumerated. Vanilla's is `1.0E-5F`; a kind that always widened it
+    /// from `f32` keeps that, the others keep the `f64` they always used.
+    const DEFLATE: f64 = 1.0e-5;
     /// `makeBoundingBox(at)`: the entity's box at a position.
     fn bounds_at(&self, at: sunrise_core::geometry::Vec3) -> sunrise_core::geometry::Aabb;
     /// `isAlive`: the walk stops the moment the entity dies.
@@ -55,84 +77,251 @@ pub trait InsideWalk {
         state: BlockStateId,
         step: i32,
         precise: bool,
-        effects: &mut mod_api::InsideEffects,
+        effects: &mut Self::Effects,
     ) -> Result<(), Self::Error>;
     /// `advanceStep` → `fluidState.entityInside`.
     fn fluid_inside(
         &mut self,
         _at: BlockPos,
         _step: i32,
-        _effects: &mut mod_api::InsideEffects,
+        _effects: &mut Self::Effects,
     ) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+/// Which of a candidate cell's two shapes the move touches. Both are decided before
+/// the cell is marked visited, as `Entity.checkInsideBlocks` decides them: a cell
+/// neither touches stays unvisited, so a later segment can still reach it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Contacted {
+    /// The block's inside shape (`collidedWithShapeMovingFrom`, or the full block).
+    pub block: bool,
+    /// The fluid's shape (`collidedWithFluid`).
+    pub fluid: bool,
+}
+
+impl Contacted {
+    /// Whether either shape was touched: the cell is visited.
+    pub fn any(self) -> bool {
+        self.block || self.fluid
+    }
+}
+
+/// The one contact decision every traversal makes for a non-air candidate `state` at
+/// `at`, for the move from `from` to `to`: the block's inside shape, then the fluid's,
+/// independently. A stationary pass gives `from == to`.
+pub fn contact_at<W: InsideWalk>(
+    walk: &mut W,
+    state: BlockStateId,
+    at: BlockPos,
+    from: sunrise_core::geometry::Vec3,
+    to: sunrise_core::geometry::Vec3,
+) -> Contacted {
+    let block = match walk.inside_shape(state, at) {
+        InsideShape::Full => true,
+        InsideShape::Empty => false,
+        InsideShape::Boxes(boxes) => walk
+            .bounds_at(from)
+            .collided_along_vector(to.subtract(from), &boxes),
+    };
+    Contacted {
+        block,
+        fluid: walk.collided_with_fluid(at, from, to),
     }
 }
 
 /// `Entity.checkInsideBlocks(from, to, …)`: the blocks the box at `to` sweeps through
 /// from `from`, in the walk's order, each visited once, stopping when the entity dies
 /// or the iteration budget runs out. Returns the iterations used plus one. Air is
-/// passed over; a block is inside when its shape is the whole block, the move sweeps
-/// its boxes, or its fluid collides, and the step advances before the block's
-/// `entityInside` and again before the fluid's, as vanilla does.
+/// passed over; a block is inside when [`contact_at`] says its shape or its fluid is
+/// touched, and the step advances before the block's `entityInside` and again before
+/// the fluid's, as vanilla does.
 pub fn sweep_inside_blocks<W: InsideWalk>(
     walk: &mut W,
     from: sunrise_core::geometry::Vec3,
     to: sunrise_core::geometry::Vec3,
     visited: &mut crate::fast_hash::FxHashSet<i64>,
-    effects: &mut mod_api::InsideEffects,
+    effects: &mut W::Effects,
     max_iterations: i32,
 ) -> Result<i32, W::Error> {
-    let deflated = walk
-        .bounds_at(to)
-        .deflate(sunrise_core::geometry::Vec3::new(1.0e-5, 1.0e-5, 1.0e-5));
-    // Mth.square(0.9999900000002526): a long move counts every block it crosses as
-    // precise.
-    let far = 0.999_990_000_000_252_6_f64;
-    let moved_far = from.distance_squared(to) > far * far;
-    let mut iterations = 0;
-    let mut hits: Vec<(i32, BlockPos, BlockStateId)> = Vec::new();
-    let _ = sunrise_core::geometry::sweep_intersected_blocks(
-        from,
-        to,
-        deflated,
-        1_000_000,
-        |p, iteration| {
-            if !walk.is_alive() || iteration >= max_iterations {
-                return false;
+    let (mut segment, used) = SweepSegment::collect(walk, from, to, max_iterations);
+    segment.run(walk, visited, effects, |_| false)?;
+    Ok(used)
+}
+
+#[derive(Debug)]
+struct SweepSegment {
+    from: Vec3,
+    to: Vec3,
+    deflated: Aabb,
+    moved_far: bool,
+    hits: std::vec::IntoIter<(i32, BlockPos)>,
+}
+
+impl SweepSegment {
+    fn collect<W: InsideWalk>(walk: &W, from: Vec3, to: Vec3, max_iterations: i32) -> (Self, i32) {
+        let epsilon = Vec3::new(W::DEFLATE, W::DEFLATE, W::DEFLATE);
+        let deflated = walk.bounds_at(to).deflate(epsilon);
+        // Mth.square(0.9999900000002526): a long move counts every block it crosses as precise.
+        let far = 0.999_990_000_000_252_6_f64;
+        let moved_far = from.distance_squared(to) > far * far;
+        let mut iterations = 0;
+        let mut hits = Vec::new();
+        let _ = sunrise_core::geometry::sweep_intersected_blocks(
+            from,
+            to,
+            deflated,
+            (max_iterations.max(0) as usize).max(1_000_000),
+            |p, iteration| {
+                if !walk.is_alive() || iteration >= max_iterations {
+                    return false;
+                }
+                iterations = iteration;
+                hits.push((iteration, p));
+                true
+            },
+        );
+        (
+            Self {
+                from,
+                to,
+                deflated,
+                moved_far,
+                hits: hits.into_iter(),
+            },
+            iterations + 1,
+        )
+    }
+
+    fn run<W: InsideWalk>(
+        &mut self,
+        walk: &mut W,
+        visited: &mut crate::fast_hash::FxHashSet<i64>,
+        effects: &mut W::Effects,
+        halt: impl Fn(&W) -> bool,
+    ) -> Result<bool, W::Error> {
+        for (step, p) in self.hits.by_ref() {
+            if !walk.is_alive() {
+                break;
             }
-            iterations = iteration;
             let state = walk.block(p);
-            if !walk.is_air(state) {
-                hits.push((iteration, p, state));
+            if walk.is_air(state) {
+                continue;
             }
-            true
-        },
-    );
-    for (step, p, state) in hits {
-        let shape = walk.inside_shape(state, p);
-        let inside_block = match shape {
-            InsideShape::Full => true,
-            InsideShape::Empty => false,
-            InsideShape::Boxes(boxes) => walk
-                .bounds_at(from)
-                .collided_along_vector(to.subtract(from), &boxes),
-        };
-        let inside_fluid = walk.collided_with_fluid(p, from, to);
-        if !(inside_block || inside_fluid) || !visited.insert(p.pack()) {
-            continue;
+            let contact = contact_at(walk, state, p, self.from, self.to);
+            if !contact.any() || !visited.insert(p.pack()) {
+                continue;
+            }
+            if contact.block {
+                let precise = self.moved_far || self.deflated.intersects(Aabb::block(p));
+                effects.advance_step(step);
+                walk.entity_inside(p, state, step, precise, effects)?;
+            }
+            if contact.fluid {
+                effects.advance_step(step);
+                walk.fluid_inside(p, step, effects)?;
+            }
+            if halt(walk) {
+                return Ok(false);
+            }
         }
-        if inside_block {
-            // `isPrecise` and the step advance, then the block's own moment.
-            let precise = moved_far || deflated.intersects(sunrise_core::geometry::Aabb::block(p));
-            effects.advance_step(step);
-            walk.entity_inside(p, state, step, precise, effects)?;
-        }
-        if inside_fluid {
-            effects.advance_step(step);
-            walk.fluid_inside(p, step, effects)?;
+        Ok(true)
+    }
+}
+
+/// The cells a box covers, x then y then z, each floor to floor inclusive: the
+/// stationary enumeration (`BlockPos.betweenClosed`) the box-cell passes share.
+/// `each` returns whether to go on; the result is whether every cell was seen.
+pub fn box_cells(
+    area: sunrise_core::geometry::Aabb,
+    mut each: impl FnMut(BlockPos) -> bool,
+) -> bool {
+    let (lo, hi) = (area.min_position(), area.max_position());
+    for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+        for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+            for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                if !each(BlockPos::new(x, y, z)) {
+                    return false;
+                }
+            }
         }
     }
-    Ok(iterations + 1)
+    true
+}
+
+/// A stationary contact pass at `at` over the cells of `area` (the box at `at`,
+/// already deflated), on the shared decision: each non-air cell [`contact_at`]
+/// touches is visited once, its block moment at step 0 and rough, then its fluid
+/// moment. No step advances: the pass shares the walk's first step, as the kind's
+/// own pass always did.
+pub fn visit_box_cells<W: InsideWalk>(
+    walk: &mut W,
+    area: sunrise_core::geometry::Aabb,
+    at: sunrise_core::geometry::Vec3,
+    visited: &mut crate::fast_hash::FxHashSet<i64>,
+    effects: &mut W::Effects,
+) -> Result<(), W::Error> {
+    BoxCellSweep::new(area, at).run(walk, visited, effects, |_| false)?;
+    Ok(())
+}
+
+/// The exact next stationary cell, so a hurt need not replay previous contacts.
+#[derive(Debug)]
+pub(crate) struct BoxCellSweep {
+    lo: BlockPos,
+    hi: BlockPos,
+    at: Vec3,
+    next: Option<BlockPos>,
+}
+
+impl BoxCellSweep {
+    pub(crate) fn new(area: Aabb, at: Vec3) -> Self {
+        let at_cell =
+            |p: Vec3| BlockPos::new(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        let lo = at_cell(area.min_position());
+        let hi = at_cell(area.max_position());
+        let next = (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z).then_some(lo);
+        Self { lo, hi, at, next }
+    }
+
+    pub(crate) fn run<W: InsideWalk>(
+        &mut self,
+        walk: &mut W,
+        visited: &mut crate::fast_hash::FxHashSet<i64>,
+        effects: &mut W::Effects,
+        halt: impl Fn(&W) -> bool,
+    ) -> Result<bool, W::Error> {
+        while let Some(p) = self.next {
+            self.next = if p.z < self.hi.z {
+                Some(BlockPos::new(p.x, p.y, p.z + 1))
+            } else if p.y < self.hi.y {
+                Some(BlockPos::new(p.x, p.y + 1, self.lo.z))
+            } else if p.x < self.hi.x {
+                Some(BlockPos::new(p.x + 1, self.lo.y, self.lo.z))
+            } else {
+                None
+            };
+            let state = walk.block(p);
+            if walk.is_air(state) {
+                continue;
+            }
+            let contact = contact_at(walk, state, p, self.at, self.at);
+            if !contact.any() || !visited.insert(p.pack()) {
+                continue;
+            }
+            if contact.block {
+                walk.entity_inside(p, state, 0, false, effects)?;
+            }
+            if contact.fluid {
+                walk.fluid_inside(p, 0, effects)?;
+            }
+            if halt(walk) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// `Entity.checkInsideBlocks(movements, collector)`: every movement of a tick, each
@@ -143,41 +332,90 @@ pub fn sweep_movements<W: InsideWalk>(
     walk: &mut W,
     movements: &[sunrise_world::entity_move::MovementRecord],
     visited: &mut crate::fast_hash::FxHashSet<i64>,
-    effects: &mut mod_api::InsideEffects,
+    effects: &mut W::Effects,
 ) -> Result<(), W::Error> {
-    use sunrise_core::geometry::{Axis, Direction};
-    for movement in movements {
-        let mut from = movement.from;
-        let delta = movement.to.subtract(movement.from);
-        let mut budget = 16;
-        match movement.original {
-            Some(original) if delta.length_squared() > 0.0 => {
-                for axis in Axis::step_order(original) {
-                    let step = delta.component(axis);
-                    if step != 0.0 {
-                        let to = from.relative(
-                            match axis {
+    MovementSweep::default().run(walk, movements, visited, effects, |_| false)?;
+    Ok(())
+}
+
+/// Walk state is made of values, not borrows of the level or the moving entity.
+#[derive(Debug, Default)]
+pub(crate) struct MovementSweep {
+    row: usize,
+    axis: usize,
+    from: Option<Vec3>,
+    budget: i32,
+    segment: Option<SweepSegment>,
+}
+
+impl MovementSweep {
+    pub(crate) fn run<W: InsideWalk>(
+        &mut self,
+        walk: &mut W,
+        movements: &[sunrise_world::entity_move::MovementRecord],
+        visited: &mut crate::fast_hash::FxHashSet<i64>,
+        effects: &mut W::Effects,
+        halt: impl Fn(&W) -> bool,
+    ) -> Result<bool, W::Error> {
+        loop {
+            if let Some(segment) = self.segment.as_mut() {
+                if !segment.run(walk, visited, effects, &halt)? {
+                    return Ok(false);
+                }
+                self.segment = None;
+            }
+            let Some(movement) = movements.get(self.row) else {
+                return Ok(true);
+            };
+            let mut from = match self.from {
+                Some(from) => from,
+                None => {
+                    self.axis = 0;
+                    self.budget = 16;
+                    movement.from
+                }
+            };
+            let delta = movement.to.subtract(movement.from);
+            let to = match movement.original {
+                Some(original) if delta.length_squared() > 0.0 => {
+                    let axes = Axis::step_order(original);
+                    let mut to = None;
+                    while let Some(&axis) = axes.get(self.axis) {
+                        self.axis += 1;
+                        let step = delta.component(axis);
+                        if step != 0.0 {
+                            let direction = match axis {
                                 Axis::X => Direction::East,
                                 Axis::Y => Direction::Up,
                                 Axis::Z => Direction::South,
-                            },
-                            step,
-                        );
-                        budget -= sweep_inside_blocks(walk, from, to, visited, effects, budget)?;
-                        from = to;
+                            };
+                            to = Some(from.relative(direction, step));
+                            break;
+                        }
                     }
+                    to
                 }
+                _ if self.axis == 0 => {
+                    self.axis = 1;
+                    from = movement.from;
+                    Some(movement.to)
+                }
+                _ => None,
+            };
+            if let Some(to) = to {
+                let (segment, used) = SweepSegment::collect(walk, from, to, self.budget);
+                self.budget -= used;
+                self.from = Some(to);
+                self.segment = Some(segment);
+            } else {
+                if self.budget <= 0 {
+                    self.segment = Some(SweepSegment::collect(walk, movement.to, movement.to, 1).0);
+                }
+                self.row += 1;
+                self.from = None;
             }
-            _ => {
-                budget -=
-                    sweep_inside_blocks(walk, movement.from, movement.to, visited, effects, 16)?;
-            }
-        }
-        if budget <= 0 {
-            sweep_inside_blocks(walk, movement.to, movement.to, visited, effects, 1)?;
         }
     }
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -188,19 +426,33 @@ pub struct Contact<'a> {
     pub position: BlockPos,
 }
 
+/// The body and exact retained contact used by `Block.stepOn`.
+#[derive(Clone, Copy)]
+pub struct StepContact<'a> {
+    pub contact: Contact<'a>,
+    pub carefully: bool,
+    pub bounds: sunrise_core::geometry::Aabb,
+}
+
+pub enum StepLevel<'a, 'world> {
+    Server(&'a mut DamageLevel<'world>),
+    Client(crate::motion::FrictionLevel<'a>),
+}
+
 /// Where the contacts are answered: the game binds these to the hooks of the block
 /// parts, and says which block states have a part for each.
 pub struct Hooks {
-    /// `Block.stepOn` for a mod block, in the dimension.
-    pub step_on: fn(&str, Contact<'_>),
+    pub step_listens: fn(BlockStateId) -> bool,
+    /// `Block.stepOn` for the block's subscribed Parts; returns only checked outputs.
+    pub step_on: fn(StepLevel<'_, '_>, StepContact<'_>, &mut [f64; 3]) -> Vec<mod_api::EntityWrite>,
     pub any_inside: fn() -> bool,
     pub inside_listens: fn(BlockStateId) -> bool,
     pub pass_listens: fn(BlockStateId) -> bool,
     pub fall_listens: fn(BlockStateId) -> bool,
     pub bounce_listens: fn(BlockStateId) -> bool,
-    /// `Block.fallOn`: change `damage`, the fall damage `causeFallDamage` calculated, and
-    /// push the writes the part asks for.
-    pub fall_on: fn(&str, &mut DamageLevel<'_>, Contact<'_>, f64, &mut f32, &mut Vec<LandingWrite>),
+    /// `Block.fallOn`: change the distance and multiplier before calculating damage.
+    pub fall_on:
+        fn(&str, &mut DamageLevel<'_>, Contact<'_>, &mut f64, &mut f32, &mut Vec<LandingWrite>),
     /// `Block.bounceOn`: change `movement`, the movement the bounce leaves the entity.
     pub bounce_on:
         fn(&str, &mut DamageLevel<'_>, Contact<'_>, f64, &mut sunrise_core::geometry::Vec3),
@@ -227,7 +479,7 @@ pub static HOOKS: OnceLock<Hooks> = OnceLock::new();
 pub struct RestitutionHooks {
     pub listens: fn(BlockStateId) -> bool,
     /// Change `factor`, the restitution of `Contact`'s block, for the entity landing on it.
-    pub restitution: fn(&mut DamageLevel<'_>, Contact<'_>, &mut f32),
+    pub restitution: fn(crate::motion::FrictionLevel<'_>, Contact<'_>, &mut f32),
 }
 
 pub static RESTITUTION_HOOKS: OnceLock<RestitutionHooks> = OnceLock::new();
@@ -275,8 +527,13 @@ thread_local! {
 }
 
 /// Scope authority to this thread and restore it even on an error or panic.
-/// Nested guest actions may temporarily enter a different dimension.
-pub fn in_level<R>(dimension: Option<&'static str>, f: impl FnOnce() -> R) -> R {
+/// Nested guest actions may temporarily enter a different dimension. Only the tick's own
+/// thread enters a level (`tick`), so a level never changes under a tick phase.
+pub fn in_level<R>(
+    _tick: crate::parallel::TickThread,
+    dimension: Option<&'static str>,
+    f: impl FnOnce() -> R,
+) -> R {
     struct Restore(Option<&'static str>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -287,22 +544,49 @@ pub fn in_level<R>(dimension: Option<&'static str>, f: impl FnOnce() -> R) -> R 
     f()
 }
 
-/// `Block.stepOn` for a mod block: the entity stands on `contact`'s block.
-pub fn step_on(block: &str, contact: Contact<'_>) {
-    if block.starts_with("minecraft:") {
-        return;
+/// The level this thread's contacts answer in. A tick phase's work is refused one, by name:
+/// the level belongs to the tick's thread, and a phase that needs it reads it through its view.
+fn tick_level(read: &'static str) -> Option<&'static str> {
+    if sunrise_core::tick_phase::in_tick_phase() {
+        static REFUSED: std::sync::Once = std::sync::Once::new();
+        REFUSED.call_once(|| {
+            log::error!(
+                "block contact `{read}` refused inside a tick phase's work: the current level belongs to the tick's thread"
+            );
+        });
+        debug_assert!(false, "block contact `{read}` read inside a tick phase");
+        return None;
     }
-    if let Some(dimension) = LEVEL.get()
-        && let Some(hooks) = HOOKS.get()
-    {
-        (hooks.step_on)(dimension, contact);
-    }
+    LEVEL.get()
+}
+
+/// Prefer checking this before lending the level, so an unmodded step doesn't
+/// borrow the random stream or prepare a host.
+pub fn step_listens(state: BlockStateId) -> bool {
+    HOOKS.get().is_some_and(|hooks| (hooks.step_listens)(state))
+}
+
+/// `Block.stepOn`: give the contacted state the simulating body's current movement.
+/// The body consumes the entity writes before its inside scan, never at the batch drain.
+pub fn step_on(
+    level: StepLevel<'_, '_>,
+    step: StepContact<'_>,
+    movement: &mut sunrise_core::geometry::Vec3,
+) -> Vec<mod_api::EntityWrite> {
+    let Some(hooks) = HOOKS.get() else {
+        return Vec::new();
+    };
+    let mut answer = movement.components();
+    let writes = (hooks.step_on)(level, step, &mut answer);
+    let [x, y, z] = answer;
+    *movement = sunrise_core::geometry::Vec3::new(x, y, z);
+    writes
 }
 
 /// The dimension the current thread's contacts answer in, as `inside` and the
 /// landing routes read it: the server's tick set it around the entity passes.
 pub fn current_level() -> Option<&'static str> {
-    LEVEL.get()
+    tick_level("current_level")
 }
 
 /// Whether a part of the block `state` answers `fall_on`.
@@ -310,32 +594,43 @@ pub fn fall_listens(state: BlockStateId) -> bool {
     HOOKS.get().is_some_and(|hooks| (hooks.fall_listens)(state))
 }
 
-/// `Block.fallOn`: the fall damage `damage` calculated for the entity that landed on
-/// `contact`'s block, after any part of that block changed it. A non-finite answer is
-/// ignored and a negative one is zero. The writes the part asked for are kept until the
-/// entity's batch ends. Nothing runs off the server or without a part.
-pub fn fall(level: &mut DamageLevel<'_>, contact: Contact<'_>, distance: f64, damage: f32) -> f32 {
-    let (Some(dimension), Some(hooks)) = (LEVEL.get(), HOOKS.get()) else {
-        return damage;
+/// `Block.fallOn`: the fall inputs after the block Part's answer. Invalid numeric answers are ignored.
+/// Requested writes remain queued until the entity batch ends.
+pub fn fall(
+    level: &mut DamageLevel<'_>,
+    contact: Contact<'_>,
+    distance: f64,
+    multiplier: f32,
+) -> (f64, f32) {
+    let (Some(dimension), Some(hooks)) = (tick_level("fall"), HOOKS.get()) else {
+        return (distance, multiplier);
     };
     if !(hooks.fall_listens)(contact.state) {
-        return damage;
+        return (distance, multiplier);
     }
-    let mut answer = damage;
+    let mut answer_distance = distance;
+    let mut answer = multiplier;
     let mut writes = Vec::new();
     (hooks.fall_on)(
         dimension,
         level,
         contact,
-        distance,
+        &mut answer_distance,
         &mut answer,
         &mut writes,
     );
     landed(contact.state, contact.position, writes);
-    accepted_damage(answer, damage)
+    (
+        if answer_distance.is_finite() {
+            answer_distance
+        } else {
+            distance
+        },
+        accepted_damage(answer, multiplier),
+    )
 }
 
-/// A part's fall damage answer: negative is zero, and a non-finite one is ignored.
+/// A part's multiplier answer: negative is zero, and a non-finite one is ignored.
 fn accepted_damage(answer: f32, kept: f32) -> f32 {
     if answer.is_finite() {
         answer.max(0.0)
@@ -344,7 +639,7 @@ fn accepted_damage(answer: f32, kept: f32) -> f32 {
     }
 }
 
-/// A part's bounce answer, ignored unless every component is finite.
+/// A contact Part's movement answer, ignored unless every component is finite.
 fn accepted_movement(
     answer: sunrise_core::geometry::Vec3,
     kept: sunrise_core::geometry::Vec3,
@@ -364,7 +659,7 @@ pub fn bounce(
     fall_distance: f64,
     movement: sunrise_core::geometry::Vec3,
 ) -> sunrise_core::geometry::Vec3 {
-    let (Some(dimension), Some(hooks)) = (LEVEL.get(), HOOKS.get()) else {
+    let (Some(dimension), Some(hooks)) = (tick_level("bounce"), HOOKS.get()) else {
         return movement;
     };
     if !(hooks.bounce_listens)(contact.state) {
@@ -375,18 +670,15 @@ pub fn bounce(
     accepted_movement(answer, movement)
 }
 
-/// Whether a part of the block `state` answers `bounce_restitution`.
-pub fn restitution_listens(state: BlockStateId) -> bool {
-    RESTITUTION_HOOKS
-        .get()
-        .is_some_and(|hooks| (hooks.listens)(state))
-}
-
 /// `Entity.getBlockBounciness`' `Block.getBounceRestitution` for the entity landing on
 /// `contact`'s block, whose own restitution is `own`, after any part of that block changed it
 /// (`IBlockExtension.getBounceRestitution`) in `level`, on either side. A non-finite answer is
 /// ignored: it would make the entity's velocity not a number.
-pub fn bounce_restitution(level: &mut DamageLevel<'_>, contact: Contact<'_>, own: f32) -> f32 {
+pub fn bounce_restitution(
+    level: crate::motion::FrictionLevel<'_>,
+    contact: Contact<'_>,
+    own: f32,
+) -> f32 {
     let Some(hooks) = RESTITUTION_HOOKS.get() else {
         return own;
     };
@@ -429,7 +721,9 @@ pub fn inside_written(state: BlockStateId, position: BlockPos, writes: Vec<Insid
 /// Note a minecart on the rail `state` at `position`, if a part there listens; a world
 /// without such a part pays one test per rail step.
 pub fn minecart_pass(entity: i32, state: BlockStateId, position: BlockPos) {
-    if LEVEL.get().is_some() && HOOKS.get().is_some_and(|hooks| (hooks.pass_listens)(state)) {
+    if tick_level("minecart_pass").is_some()
+        && HOOKS.get().is_some_and(|hooks| (hooks.pass_listens)(state))
+    {
         PENDING.with_borrow_mut(|pending| {
             pending.push(Pending::MinecartPass(MinecartPass {
                 entity,
@@ -519,6 +813,7 @@ mod tests {
     }
     impl super::InsideWalk for Grid {
         type Error = ();
+        type Effects = mod_api::InsideEffects;
         fn bounds_at(&self, at: sunrise_core::geometry::Vec3) -> sunrise_core::geometry::Aabb {
             sunrise_core::geometry::Aabb::new(
                 at.subtract(sunrise_core::geometry::Vec3::new(0.3, 0.0, 0.3)),
@@ -751,3 +1046,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "block_contact_parity_tests.rs"]
+mod parity_tests;

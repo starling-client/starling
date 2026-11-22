@@ -53,6 +53,7 @@ pub(super) fn build_renderer(
     shader_pack: shader_packs::PickedPack,
     display: sunrise_client::gfx::DisplayReading,
     filtering: (i32, i32),
+<<<<<<< sync-sunrise-1
 ) -> Result<Renderer> {
     let (mut renderer, _) = RendererParts::new(
         window,
@@ -231,6 +232,10 @@ pub(super) fn finish_renderer(
     filtering: (i32, i32),
     present: (bool, sunrise_client::graphics::PresentMode),
 ) -> Result<()> {
+=======
+) -> Result<(Renderer, std::result::Result<(), String>)> {
+    let assets = &pack.render;
+>>>>>>> sunrise/main
     let atlas = &gui.atlas;
     // The new renderer's atlas texture starts from `HudAtlas.pixels`, which
     // holds the textures but never a glyph rasterized at run time. The font's
@@ -240,6 +245,39 @@ pub(super) fn finish_renderer(
     // Chinese and Japanese menu labels go blank when the loading screen hands
     // over to the game.
     atlas.font.reset_cache();
+<<<<<<< sync-sunrise-1
+=======
+    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
+    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
+    let atlas_pixels = atlas.pixels();
+    let mut renderer = pollster::block_on(Renderer::new(
+        window,
+        offscreen,
+        &assets.pixels.get(),
+        assets.sprite_size,
+        assets.sprite_minimum_size,
+        assets.texture_layers,
+        &assets.sprite_mips,
+        &assets.animations,
+        (&atlas_pixels, atlas.width, atlas.height),
+        (&atlas.glint.0, atlas.glint.1, atlas.glint.2),
+        (
+            &atlas.glint_armor.0,
+            atlas.glint_armor.1,
+            atlas.glint_armor.2,
+        ),
+        (&pack.forcefield.2, pack.forcefield.0),
+        gui.panorama.clone(),
+        prepared,
+        previous,
+        api,
+        translucent_batching,
+        (shader_pack.draws_flat, shader_pack.starts_wide),
+        settings,
+        shader_pack.frame(),
+        display,
+    ))?;
+>>>>>>> sunrise/main
     let (prepared_vertices, prepared_ranges) =
         native_block_entity_draw::StandaloneGeometry::new(pack, gui).prepared_upload();
     renderer.install_prepared_models(
@@ -256,14 +294,25 @@ pub(super) fn finish_renderer(
         .iter()
         .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
         .collect();
-    renderer
-        .hud
-        .set_text_shader(&renderer.device, atlas.text_shaders.gui.as_deref());
+    renderer.hud.set_text_shader(&renderer.device, {
+        let text = &atlas.text_shaders;
+        (text.gui.as_deref()).map(|p| (p, &text.expressions.gui[..]))
+    });
     pack.item_renderer
         .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
-    renderer.set_lines_shader(atlas.lines_shader.as_deref());
+    renderer.set_lines_shader(
+        (atlas.lines_shader.as_deref()).map(|p| (p, &atlas.lines_expressions[..])),
+    );
     renderer.set_world_text_shaders(&atlas.text_shaders);
-    renderer.set_sky_shaders(atlas.sky_shader.as_deref(), atlas.stars_shader.as_deref());
+    renderer.set_sky_shaders(
+        (atlas.sky_shader.as_deref()).map(|p| (p, &atlas.sky_expressions[..])),
+        (atlas.stars_shader.as_deref()).map(|p| (p, &atlas.stars_expressions[..])),
+    );
+    renderer.set_lightmap_shader(
+        atlas.lightmap_shader.as_deref(),
+        &atlas.lightmap_expressions,
+    );
+    let clouds = renderer.set_clouds_shader(atlas.clouds_shader.as_deref());
     renderer.set_custom_sky(&*pack.custom_sky);
     renderer.set_shared_material_maps(&atlas.material_maps);
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
@@ -271,8 +320,17 @@ pub(super) fn finish_renderer(
         .hud
         .set_cit_glints(&renderer.device, &renderer.queue, cit_glints);
     // Last, so a renderer that fails before this marks none of the pack's pipelines invalid.
+<<<<<<< sync-sunrise-1
     renderer.build_mod_pipelines(&pack.render.mod_pipelines)?;
     Ok(())
+=======
+    // Textured pipelines' sprites are looked up in the atlas the renderer was built with.
+    renderer.build_mod_pipelines(&pack.render.mod_pipelines, &|name| {
+        let r = atlas.sprites.get(name)?;
+        Some([r.u0, r.v0, r.u1, r.v1])
+    })?;
+    Ok((renderer, clouds))
+>>>>>>> sunrise/main
 }
 
 /// The loading screen's own renderer, in place of `loading_renderer` wherever there is a window
@@ -391,7 +449,7 @@ pub(super) fn loading_renderer(
         api,
         // It draws no terrain.
         false,
-        false,
+        (false, false),
         // An 8-bit frame, which HDR output takes as well: HDR off until the settings apply.
         &sunrise_client::graphics::Graphics::default(),
         Default::default(),
@@ -455,6 +513,7 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         glint_ticks: 0.0,
         nether_lighting: false,
         entities: &[],
+        explicit_particles: None,
         static_block_entities: &[],
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: Default::default(),
@@ -473,6 +532,7 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         world_primitives: Default::default(),
         shadow_only: &[],
         celestial: &[],
+        celestial_bodies: &[],
         stars: None,
         hand: &[],
         hand_items: &[],
@@ -498,8 +558,8 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
 
 /// The post-load setup once the resources are ready: `Game::new` and the
 /// options, packs, mods, control socket, benchmark and world selection the
-/// old `run` did after loading. `None` means a harness or dedicated run
-/// finished here instead.
+/// old `run` did after loading. The launching path hands over its live
+/// settings. `None` means a harness or dedicated run finished here instead.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_game<'a>(
     res: &'a Arc<Resources>,
@@ -511,16 +571,13 @@ pub(super) fn start_game<'a>(
     vanilla_root: PathBuf,
     started: Instant,
     rest_loader: Option<WorldRestLoader>,
-    settings: Option<Settings>,
+    mut settings: Settings,
     prepared: Option<GameCpuResources>,
     client_applies: Vec<client_reload::PreparedClientReload>,
     entity_models: Option<Arc<sunrise_client::mobs::EntityModelDocument>>,
+    window: Option<(Arc<Window>, Renderer)>,
 ) -> Result<Option<Game<'a>>> {
     let handoff = prepared.is_some();
-    let mut settings = match settings {
-        Some(settings) => settings,
-        None => Settings::load(&Game::options_path()),
-    };
     if let Some(d) = options.distance_override {
         settings.render_distance = d;
     }
@@ -535,19 +592,16 @@ pub(super) fn start_game<'a>(
                 pack.source.clone(),
             ),
             entity_models.as_deref(),
+            pack.render.model_library.as_deref().ok(),
         )?),
     };
-    let mut game = Game::new(res, pack, gui, options, settings, audio, prepared)?;
+    let mut initial = None;
+    let stage = options.is_client_start().then_some(&mut initial);
+    let mut game = Game::construct(res, pack, gui, options, settings, audio, prepared, stage)?;
     // `new DebugRenderer()` refreshes its list.
     game.refresh_debug_renderers();
     game.rest_loader = rest_loader;
     game.ui.vanilla_root = vanilla_root;
-    if pack_error.is_some() {
-        // Minecraft.clearResourcePacksOnError: the selection is cleared and
-        // saved, so the next launch starts without the packs.
-        game.settings.resource_packs.clear();
-        game.settings.save(&Game::options_path());
-    }
     if game.options.benchmark.is_some() {
         // The same conditions on every machine: no VSync, no frame cap, no
         // pause or idle limit without focus. In memory only, never saved.
@@ -561,9 +615,6 @@ pub(super) fn start_game<'a>(
     if game.options.benchmark.is_none() {
         game.start_mods();
     }
-    // The initial load's client reload listeners, registered and staged by
-    // the loader thread, publish now that the game owns the assets.
-    client_reload::apply_client_reload(&game.mod_phase, client_applies);
     game.refresh_loop_context()?;
     // After the mods: their templates are among the ids it lists.
     game.preload_registries();
@@ -593,40 +644,13 @@ pub(super) fn start_game<'a>(
             },
         );
     }
-    if let Some(directory) = std::env::var_os("SUNRISE_NATIVE_CLIENT_PARTICLES_FIXTURE") {
-        game.run_native_client_particles_fixture(std::path::Path::new(&directory))?;
-        return Ok(None);
-    }
-    if let Some(directory) = std::env::var_os("SUNRISE_BOAT_RIDER_FIXTURE") {
-        game.run_boat_rider_fixture(std::path::Path::new(&directory))?;
-        return Ok(None);
-    }
-    if let Some(directory) = std::env::var_os("SUNRISE_BOAT_AUTHORITY_FIXTURE") {
-        game.run_boat_authority_fixture(std::path::Path::new(&directory))?;
-        return Ok(None);
-    }
-    if let Ok(spec) = std::env::var("SUNRISE_SCREEN_BUILD_FIXTURE") {
-        game.screen_build_fixture(&spec)?;
-        return Ok(None);
-    }
-    if let Ok(spec) = std::env::var("SUNRISE_DISPENSE_FIXTURE") {
-        game.run_component_harness(integrated::ComponentHarness::Dispenser(spec))?;
-        return Ok(None);
-    }
-    if let Ok(spec) = std::env::var("SUNRISE_SCULK_FIXTURE") {
-        game.run_component_harness(integrated::ComponentHarness::Sculk(spec))?;
-        return Ok(None);
-    }
-    if let Ok(output) = std::env::var("SUNRISE_HOT_PATHS") {
-        game.run_component_harness(integrated::ComponentHarness::HotPaths(output))?;
-        return Ok(None);
-    }
     if game.options.execution_role == execution_role::ExecutionRole::DedicatedServer {
         let result = game.run_dedicated();
         game.native_game_shutting_down();
         result?;
         return Ok(None);
     }
+<<<<<<< sync-sunrise-1
     // Client entity renderer resolution reads the mob types. Mod setup can
     // also read the items. Join the resource worker before either runs.
     if game.options.is_client_start()
@@ -657,34 +681,152 @@ pub(super) fn start_game<'a>(
                 game.run_net_harness(report.as_ref())?;
                 return Ok(None);
             }
+=======
+    let pending = initial.map(|models| initial_client_models::PendingClientStart {
+        models,
+        applies: client_applies,
+        pack_error: pack_error.clone(),
+        handoff,
+    });
+    if let Some((window, renderer)) = window {
+        game.resize_state = Some(game.resize_state_of(window.inner_size()));
+        game.window = Some(window);
+        let ready = game.apply_pending_client_start(
+            pending.expect("loading screen has a client"),
+            Ok(Some(renderer)),
+        )?;
+        Ok(ready.then_some(game))
+    } else if let Some(pending) = pending {
+        // These synchronous fixtures finish inside startup; they never enter a window loop.
+        let startup_fixture = [
+            "SUNRISE_NATIVE_CLIENT_PARTICLES_FIXTURE",
+            "SUNRISE_BOAT_RIDER_FIXTURE",
+            "SUNRISE_BOAT_AUTHORITY_FIXTURE",
+            "SUNRISE_SCREEN_BUILD_FIXTURE",
+            "SUNRISE_DISPENSE_FIXTURE",
+            "SUNRISE_SCULK_FIXTURE",
+            "SUNRISE_HOT_PATHS",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+            || (std::env::var_os("SUNRISE_COMMAND_SCRIPT").is_some()
+                && std::env::var_os("SUNRISE_COMMAND_OUTPUT").is_some())
+            || (game.options.server.is_some() && std::env::var_os("SUNRISE_NET_REPORT").is_some());
+        if game.options.headless || startup_fixture {
+            let ready = game.apply_pending_client_start(pending, Ok(None))?;
+            Ok(ready.then_some(game))
+        } else {
+            game.pending_initial_models = Some(Box::new(pending));
+            Ok(Some(game))
+>>>>>>> sunrise/main
         }
-        Some(folder) => {
-            let (seed, creative) = (game.options.seed, game.options.creative);
-            if std::env::var_os("SUNRISE_COMMAND_SCRIPT").is_some() {
-                // The loaded-command fixture pins the server's valid minimum.
-                // Client options reject simulationDistance2 (their UI starts at5),
-                // so an options.txt value cannot establish this prerequisite.
-                if std::env::var_os("SUNRISE_HARNESS_LOADED_FIXTURE").is_some() {
-                    game.settings.simulation_distance = 2;
+    } else {
+        let ready = game.finish_start_game(pack_error, handoff)?;
+        Ok(ready.then_some(game))
+    }
+}
+
+impl Game<'_> {
+    pub(super) fn apply_pending_client_start(
+        &mut self,
+        pending: initial_client_models::PendingClientStart,
+        renderer: Result<Option<Renderer>>,
+    ) -> Result<bool> {
+        self.apply_initial_model_generation(pending.models, pending.applies, renderer?)?;
+        self.world_renderer_ready = self.renderer.is_some();
+        self.finish_start_game(pending.pack_error, pending.handoff)
+    }
+
+    fn finish_start_game(&mut self, pack_error: Option<String>, handoff: bool) -> Result<bool> {
+        let game = self;
+        if let Some(directory) = std::env::var_os("SUNRISE_NATIVE_CLIENT_PARTICLES_FIXTURE") {
+            game.run_native_client_particles_fixture(std::path::Path::new(&directory))?;
+            return Ok(false);
+        }
+        if let Some(directory) = std::env::var_os("SUNRISE_BOAT_RIDER_FIXTURE") {
+            game.run_boat_rider_fixture(std::path::Path::new(&directory))?;
+            return Ok(false);
+        }
+        if let Some(directory) = std::env::var_os("SUNRISE_BOAT_AUTHORITY_FIXTURE") {
+            game.run_boat_authority_fixture(std::path::Path::new(&directory))?;
+            return Ok(false);
+        }
+        if let Ok(spec) = std::env::var("SUNRISE_SCREEN_BUILD_FIXTURE") {
+            game.screen_build_fixture(&spec)?;
+            return Ok(false);
+        }
+        if let Ok(spec) = std::env::var("SUNRISE_DISPENSE_FIXTURE") {
+            game.run_component_harness(integrated::ComponentHarness::Dispenser(spec))?;
+            return Ok(false);
+        }
+        if let Ok(spec) = std::env::var("SUNRISE_SCULK_FIXTURE") {
+            game.run_component_harness(integrated::ComponentHarness::Sculk(spec))?;
+            return Ok(false);
+        }
+        if let Ok(output) = std::env::var("SUNRISE_HOT_PATHS") {
+            game.run_component_harness(integrated::ComponentHarness::HotPaths(output))?;
+            return Ok(false);
+        }
+        // Finish Setup -> Config -> World before any screen, connection, input or tick hooks.
+        game.native_configs_client_start();
+        if let Some(error) = pack_error {
+            game.open_options_at(true, sunrise_client::options_ui::Page::Packs);
+            game.ui.options.resource_error = Some(error);
+        }
+        match game.options.world.clone() {
+            _ if game.options.server.is_some() => {
+                let (address, name) = (
+                    game.options.server.clone().unwrap_or_default(),
+                    game.options.player_name(),
+                );
+                game.connect_server(&address, &name)?;
+                if let Some(report) = std::env::var_os("SUNRISE_NET_REPORT") {
+                    game.run_net_harness(report.as_ref())?;
+                    return Ok(false);
                 }
-                // Headless, but with the same server and memory connection as play.
-                game.open_integrated(&folder, None, Some(seed), creative, None)?;
-            } else {
-                // Start after the window is handed over, so --world uses the
-                // same responsive initialization path as the title screen.
-                let title = game
+            }
+            Some(folder) => {
+                let (seed, creative) = (game.options.seed, game.options.creative);
+                if std::env::var_os("SUNRISE_COMMAND_SCRIPT").is_some() {
+                    // The loaded-command fixture pins the server's valid minimum.
+                    // Client options reject simulationDistance2 (their UI starts at5),
+                    // so an options.txt value cannot establish this prerequisite.
+                    if std::env::var_os("SUNRISE_HARNESS_LOADED_FIXTURE").is_some() {
+                        game.settings.simulation_distance = 2;
+                    }
+                    // Headless, but with the same server and memory connection as play.
+                    game.open_integrated(&folder, None, Some(seed), creative, None)?;
+                } else {
+                    // Start after the window is handed over, so --world uses the
+                    // same responsive initialization path as the title screen.
+                    let title = game
+                        .new_title(std::env::current_dir()?.join("saves"))
+                        .with_user(|| game.options.player_name());
+                    game.show_title(title);
+                    game.pending_entry = Some(PendingWorldEntry::Local {
+                        folder,
+                        name: None,
+                        seed: Some(seed),
+                        creative,
+                        create: None,
+                    });
+                }
+            }
+            None if handoff => {}
+            None => {
+                let mut title = game
                     .new_title(std::env::current_dir()?.join("saves"))
                     .with_user(|| game.options.player_name());
+                title.last_server = game.settings.file.string("lastServer");
+                title.skip_multiplayer_warning = game.settings.file.bool("skipMultiplayerWarning");
+                // Gui.addInitialScreens: the accessibility onboarding comes first.
+                if game.settings.file.bool("onboardAccessibility") {
+                    title.start_onboarding();
+                }
                 game.show_title(title);
-                game.pending_entry = Some(PendingWorldEntry::Local {
-                    folder,
-                    name: None,
-                    seed: Some(seed),
-                    creative,
-                    create: None,
-                });
             }
         }
+<<<<<<< sync-sunrise-1
         None if handoff => {}
         None => {
             let mut title = game
@@ -701,13 +843,14 @@ pub(super) fn start_game<'a>(
             // Started again for a world's own mods (the start without a loading screen: the
             // menu's takes it in startup_menu.rs).
             game.pending_entry = world_content::next_entry();
+=======
+        if std::env::var_os("SUNRISE_COMMAND_SCRIPT").is_some()
+            && std::env::var_os("SUNRISE_COMMAND_OUTPUT").is_some()
+        {
+            game.wait_command_harness()?;
+            return Ok(false);
+>>>>>>> sunrise/main
         }
+        Ok(true)
     }
-    if std::env::var_os("SUNRISE_COMMAND_SCRIPT").is_some()
-        && std::env::var_os("SUNRISE_COMMAND_OUTPUT").is_some()
-    {
-        game.wait_command_harness()?;
-        return Ok(None);
-    }
-    Ok(Some(game))
 }

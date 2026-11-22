@@ -1,0 +1,62 @@
+ids = [
+  "hook:register_special_model_renderer",
+  "method:SpecialModelRenderers::register",
+  "trait:SpecialModelRenderer",
+  "method:SpecialModelRenderer::extract",
+  "assoc:SpecialModelRenderer::Argument",
+  "method:SpecialModelRenderer::extract_argument",
+  "method:SpecialModelRenderer::submit",
+  "handle:SpecialModelRendererRegistry::initial_owners",
+  "handle:SpecialModelRendererRegistry::into_renderers",
+  "type:ReplacedSpecialModelRenderer.kind",
+  "type:SpecialModelPolicy",
+  "type:SpecialModelPolicy.Stack",
+  "type:SpecialModelPolicy.Frame",
+  "type:SpecialModelPart",
+  "type:SpecialModelPart.content",
+  "type:SpecialModelPart.transform",
+  "type:SpecialModelPart.tints",
+  "handle:SpecialModelPart::IDENTITY",
+  "handle:SpecialModelPart::new",
+  "handle:SpecialModelPart::stack",
+  "handle:SpecialModelPart::with_transform",
+  "handle:SpecialModelPart::translated",
+  "handle:SpecialModelPart::with_tints",
+  "type:SpecialPartContent",
+  "type:SpecialPartContent.Model",
+  "type:SpecialPartContent.Stack",
+  "type:SpecialModelContext",
+  "handle:SpecialModelContext::STACK",
+  "type:SpecialModelConfig",
+  "handle:SpecialModelConfig::decode",
+  "type:SpecialModelFactory",
+  "handle:SpecialModelFactory::new",
+  "trait:SpecialModelBakeContext",
+  "method:SpecialModelBakeContext::bake_model",
+  "method:SpecialModelBakeContext::bake_geometry",
+  "type:SpecialModelQuad",
+  "type:SpecialModelQuad.positions",
+  "type:SpecialModelQuad.uv",
+  "type:SpecialModelQuad.sprite",
+  "handle:SpecialModelQuad::new",
+  "type:SpecialModelGeometry",
+  "type:SpecialModelStack",
+  "handle:SpecialModelStack::item",
+  "handle:SpecialModelStack::count",
+  "handle:SpecialModelStack::get",
+  "type:SpecialModelCollector",
+  "handle:SpecialModelCollector::with_pose",
+  "handle:SpecialModelCollector::submit_geometry",
+  "handle:SpecialModelCollector::submit_stack",
+  "type:SpecialModelTints",
+  # The surface generator has no records for ordinary free constants (MAX_NESTED_STACK_PARTS);
+  # its removal is covered in the migration below.
+]
+why = '''`8019bce5490` used named-model recipes so renderers could choose and pose pack geometry while the game retained the ordinary item draw state. The recipes used Wire for the guest boundary, not for storage or networking. `685572c8626` kept the unchanged-stack cache and added frame-scoped answers for time- and display-dependent rendering. The native API bakes resource geometry once per node per load, then extracts a fresh typed argument and submits directly on each draw, without either answer cache. Matching vanilla 26.3 (`SpecialModelRenderers`, `ItemModelResolver.updateForTopItem`, `BundleSelectedItemSpecialRenderer.update`, `SpecialModelWrapper`, `FaceBakery.bakeQuad`, `TextureAtlasSprite.getU`/`getV`, and `MaterialBaker.get`) and NeoForge (`RegisterSpecialModelRendererEvent.register(Identifier, ...)`): registration takes a typed `Identifier` validated at construction (with bare paths defaulting to `minecraft:`), empty stacks are skipped cleanly without global warning state, there is no nested-stack expansion cap (`MAX_NESTED_STACK_PARTS` is removed; a `(stack, display)` cycle or low native stack space still refuses the draw), and `SpecialModelBakeContext::bake_geometry` falls back to `Direction::Up` on degenerate quads, accepts any finite UV, and substitutes the missing texture sprite while preserving `force_translucent` when a sprite is absent. Sunrise isolates a failed native submission by discarding that layer, including any nested geometry, without disturbing sibling layers. It reports every ordinary refusal without disabling the callback. A panic logs and shows an error toast naming the mod and disables only that registration's affected callback for the session, including across reloads. A disabled winning factory does not expose the built-in decoder. The hook is version 3 for this error and reload contract.'''
+migrate = '''
+- Rebuild against `register_special_model_renderer` version 3 (same hook and event). Replace `event.renderers.register(kind, policy, renderer)` with `event.renderers.register(Identifier::parse("mymod:kind").expect("valid identifier"), factory)` for a static literal (or handle `Identifier::parse(kind)` explicitly before registering when `kind` is dynamic; the hook returns `()`, so `?` cannot be used directly on `Identifier::parse`). `register` takes a typed `mod_api::Identifier` instead of `String` (bare paths default to `minecraft:`). Make the factory with `SpecialModelFactory::new(|fields| fields.decode::<MyConfig>(), |config, bake| { ... })`, where `MyConfig` derives `serde::Deserialize` and the bake closure returns `Ok(MyRenderer { ... })`. Move reads of the inline model's `Tag` fields into typed decoding; `type` is excluded. If there is no configuration, use `|_| Ok(())`. `SpecialModelRendererRegistry::initial_owners()` yields `(&Identifier, Option<&'static str>)`, `ReplacedSpecialModelRenderer.kind` is `Identifier`, and `SpecialModelRendererRegistry::into_renderers()` returns `BTreeMap<Identifier, (Option<&'static str>, SpecialModelFactory)>` and `Vec<ReplacedSpecialModelRenderer>`.
+- Replace `extract(host, stack, config, context) -> Result<Vec<SpecialModelPart>, String>` with `type Argument`, `extract_argument(host, &SpecialModelStack) -> Self::Argument`, and `submit(&argument, context, collector) -> Result<(), String>`. Read `stack.item()`, `stack.count()` and typed effective components with `stack.get(&descriptor)` during extraction. If extraction can fail, use `Result<DrawArgument, String>` as the argument and propagate its error from `submit`. Keep decoded configuration on the baked renderer. Drop both `SpecialModelPolicy` variants and `SpecialModelContext::STACK`; every `submit` receives the actual display, game time and partial tick even for an unchanged stack. `SpecialModelContext` no longer implements `Wire`: read it in the callback, not as a serialized renderer input.
+- Replace `SpecialModelPart::new(model)` and `SpecialPartContent::Model(model)` with `bake.bake_model(&model_id)?` for a `String` model id in the bake closure, then `collector.submit_geometry(&lease, tints)?` in `submit`. For custom quads, obtain the lease from `bake.bake_geometry(&quads)?` (degenerate quads default to `Up`, any finite UV is accepted, and unknown sprites fall back to the missing texture sprite). Keep the leases on the baked renderer and recreate them on reload. Replace `SpecialModelPart::stack(stack, display)` and `SpecialPartContent::Stack { stack, display }` with `collector.submit_stack(&stack, display)?`.
+- Replace `part.transform` and `with_transform(matrix)` with `collector.with_pose(matrix, |child| ...)`, submitting to `child`. For `translated([x, y, z])` after a transform, add `x`, `y`, and `z` to its translation entries at indices 3, 7, and 11. For identity, drop `SpecialModelPart::IDENTITY` and submit on the current collector. Replace `part.tints` and `with_tints(palette)` with `SpecialModelTints::Indexed(palette.into())` for an existing `Vec<u32>` palette, `Uniform(argb)` for one tint across all quads, or `Untinted` for white. Nested stacks keep their own tints and foil.
+- Delete `MAX_SPECIAL_MODEL_PARTS` and `MAX_NESTED_STACK_PARTS` references: neither count limit exists. You may delegate the same stack in another `ItemDisplayContext`; a repeated `(stack, display)` pair or insufficient native stack space still refuses the draw. Use `?` on `collector.submit_geometry(...)`, `collector.submit_stack(...)` and `collector.with_pose(...)`: even an ignored collector refusal discards the enclosing layer. Return `Err(reason)` for a refused draw; it is reported every time and later draws can still run. Do not use panic for a recoverable refusal or reload to reenable a panicking callback. A draw panic disables extraction and submission for that registered type for the session, not its factory or other registrations. A failed or disabled winning factory refuses the item definition, including when it overrides a built-in type.
+'''

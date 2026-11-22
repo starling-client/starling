@@ -5,6 +5,8 @@ pub trait Hooks {
     /// On an authoritative server, fire is about to burn the block at `pos`
     /// away. Set `cancel` to keep that block.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -12,5 +14,5 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_block_burn"
     )]
-    fn block_burn();
+    fn block_burn(dimension: LevelDimension, pos: BlockPos, cancel: &mut bool);
 }

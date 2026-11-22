@@ -4,12 +4,26 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+default-run = "sunrise-release-sign"
 description = "Signed release checksums: release.yml signs SHA256SUMS, the launcher and sunrise-server check them before installing"
 
 [dependencies]
 # Ed25519 and SHA-256, already in every build through rustls (ureq's TLS): no new crypto code.
 ring = "0.17"
 base64 = "0.22"
+
+[features]
+# The install scripts' tamper tests (tests/install_sh_signature.sh): sunrise-verify trusts exactly the key in
+# SUNRISE_VERIFY_TEST_KEY. Only the tests build it so (tests/common/mod.rs); never enabled for a release build.
+test-key = []
+
+[[bin]]
+name = "sunrise-release-sign"
+path = "src/main.rs"
+
+[[bin]]
+name = "sunrise-verify"
+path = "src/bin/sunrise-verify.rs"
 
 [lints]
 workspace = true

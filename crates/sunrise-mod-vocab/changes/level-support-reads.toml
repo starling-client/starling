@@ -1,0 +1,2 @@
+ids = ["method:LevelHost::block_face_sturdy", "method:LevelHost::can_see_sky"]
+why = "LevelHost exposes block face support and full skylight through the same owning-thread reads as LevelRef, without loading chunks or opening loot containers."

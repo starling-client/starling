@@ -5,14 +5,14 @@
 //! text units [x, y, z, ARGB], as VanillaTextDisplayRenderOracle does.
 //!
 //! usage: text_display_render_fixture RESOURCES INPUTS OUTPUT
+use serde_json::{Value, json};
+use std::{error::Error, io::Write};
 use sunrise_client::{
     hud::{HudAtlas, HudBatch},
     hud_layout::background_color,
     text_display::{self, Lines, TextDisplayData},
 };
 use sunrise_protocol::{ids, packets::play::Clientbound};
-use serde_json::{Value, json};
-use std::{error::Error, io::Write};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = crate::args().collect();

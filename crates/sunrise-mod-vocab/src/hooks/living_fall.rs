@@ -13,5 +13,11 @@ pub trait Hooks {
         version = 2,
         target = "sunrise_client_lib::landing::native_living_fall"
     )]
-    fn living_fall();
+    fn living_fall(
+        entity: u32,
+        kind: &str,
+        distance: &mut f64,
+        multiplier: &mut f32,
+        cancel: &mut bool,
+    );
 }

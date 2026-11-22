@@ -69,9 +69,9 @@ pub(crate) fn registry_keys_resolve_reused_parts_and_rebind_without_changing_ide
     .unwrap();
     let table = parts(HookId::AnalogOutput, "analog_output");
     let table = table.for_hook(HookId::AnalogOutput).unwrap();
-    let value = crate::BlockState::from(crate::BlockStateRecord::new(keys[0], 0));
+    let value = mod_vocab::__private::block_state_from_ordinal(keys[0], 0);
     assert_eq!(table.block_value(value).len(), 1);
-    let invalid = crate::BlockState::from(crate::BlockStateRecord::new(keys[0], u16::MAX));
+    let invalid = mod_vocab::__private::block_state_from_ordinal(keys[0], u16::MAX);
     assert!(table.block_value(invalid).is_empty());
     assert_eq!(block_id(keys[0]), Some("minecraft:stone"));
     assert_eq!(block_id(keys[2]), Some("later:machine"));

@@ -9,9 +9,9 @@ use crate::{
         weighted::WeightedList,
     },
 };
-use sunrise_core::random::RandomSource;
 use serde_json::{Value, value::RawValue};
 use std::sync::Arc;
+use sunrise_core::random::RandomSource;
 use {
     super::{
         Mirror, Rotation, StructureResources, StructureTemplate,

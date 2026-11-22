@@ -10,7 +10,7 @@ out, and carry old-style PRs across a switch. Standard library Python and git on
 | `open_prs.py` | Lists the open PRs whose own diff touches a path. Run it before a switch PR; the list goes in that PR's body. |
 | `carry.py` | Writes an old-style PR's addition to a switched list in the new form, into the working tree. |
 | `check_lists.py` | `verify-static`: a `pub use` brace list under `crates/sunrise-mod-vocab/src/exports/` names at most 12 items; the longer ones in its table may not grow past their entry (shortening needs no edit). A fragment a switch removed (`part_table.rs`) may not come back. |
-| `check_stand_ins.py` | `verify-static`: the dispatch tests' stand-ins are one file each (`fixtures/stubs/<Name>.rs`, `fixtures/api/<Name>.rs`, a name in one folder only, none back in `shared.rs`); every type a hook signature names has one; the wire loopback's hand-written impls of vocabulary traits have every required method, and of `CapabilityProviders` every member trait. Its docstring lists what it cannot see (names the generator adds, derives, stub methods). |
+| `check_stand_ins.py` | `verify-static`: the dispatch tests' stand-ins are one file each (`fixtures/stubs/<Name>.rs`, `fixtures/api/<Name>.rs`, a name in one folder only, none back in `shared.rs`); every type a hook signature names has one. Its docstring lists what it cannot see (names the generator adds, derives, stub methods). |
 
 The nightly schedule of `dyna-checks` runs `measure.py --days 3 --report` and rewrites the issue
 "Conflict hotspots: churn report" (files with 3 or more rollup conflicts or 15 or more PRs in 3 days). It is never a gate.

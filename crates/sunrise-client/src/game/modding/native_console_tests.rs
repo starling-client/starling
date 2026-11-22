@@ -1,57 +1,84 @@
 //! The console for native mods: logged lines reach `console_line`, and a command's feedback
 //! comes back from `run_command_with_output`.
-use super::native_guest_turn_tests::with_guests;
-use sunrise_client::logging;
+use super::{native_entity_refs::tests::with_game, native_guest_turn_tests::with_guests};
 use mod_api::{CommandResult, ConsoleLineEvent, Hooks, ServerHost};
 use std::sync::{Arc, Mutex};
+use sunrise_client::logging::TappedLine;
 
-/// Records the probe lines it hears and logs a line of its own for each.
-struct Mirror(Arc<Mutex<Vec<(String, String, String)>>>);
+type HeardLine = (String, String, String, u64);
+
+struct Mirror {
+    overwrite: bool,
+    heard: Arc<Mutex<Vec<HeardLine>>>,
+}
 
 #[mod_api::__subscriptions]
 impl Hooks for Mirror {
     fn console_line(&self, _: &mut dyn ServerHost, event: &mut ConsoleLineEvent<'_>) {
-        if event.message.starts_with("console probe") {
-            self.0.lock().unwrap().push((
-                event.level.to_owned(),
-                event.thread.to_owned(),
-                event.message.to_owned(),
-            ));
-            log::info!("console probe echo");
+        if self.overwrite {
+            event.dropped = 99;
         }
+        self.heard.lock().unwrap().push((
+            event.level.to_owned(),
+            event.thread.to_owned(),
+            event.message.to_owned(),
+            event.dropped,
+        ));
     }
 }
 
 #[test]
 #[ignore = "daily"]
-fn logged_lines_reach_a_listener_but_not_its_own() {
+fn each_console_listener_gets_the_original_overflow_count() {
     let heard = Arc::new(Mutex::new(Vec::new()));
-    let mods = vec![mod_api::ModEntry::new(
-        "mirror",
-        Box::new(Mirror(heard.clone())),
-    )]
+    let mods = vec![
+        mod_api::ModEntry::new(
+            "first",
+            Box::new(Mirror {
+                overwrite: true,
+                heard: heard.clone(),
+            }),
+        ),
+        mod_api::ModEntry::new(
+            "second",
+            Box::new(Mirror {
+                overwrite: false,
+                heard: heard.clone(),
+            }),
+        ),
+    ]
     .into();
     mod_platform::testing::with_mods(mods, || {
-        with_guests(|game| {
-            game.native_console_lines();
-            logging::write_as("Server thread", log::Level::Warn, "console probe 1");
-            logging::write_as("Server thread", log::Level::Info, "console probe 2");
-            game.native_console_lines();
-            game.native_console_lines();
+        with_game(|game| {
+            // The queue's own tests cover retention and overflow. Drive the hook with local
+            // batches so unrelated threads cannot add lines or consume the first report.
+            let line = |level, message: &str, dropped| TappedLine {
+                level,
+                thread: "Server thread".into(),
+                message: message.into(),
+                dropped,
+            };
+            game.dispatch_console_lines(vec![
+                line(log::Level::Warn, "first in batch", 3),
+                line(log::Level::Info, "later in batch", 0),
+            ]);
+            game.dispatch_console_lines(vec![line(log::Level::Info, "next batch", 0)]);
             let heard = heard.lock().unwrap();
+            let heard: Vec<_> = heard
+                .iter()
+                .map(|(level, thread, message, dropped)| {
+                    (level.as_str(), thread.as_str(), message.as_str(), *dropped)
+                })
+                .collect();
             assert_eq!(
-                *heard,
+                heard,
                 [
-                    (
-                        "WARN".into(),
-                        "Server thread".into(),
-                        "console probe 1".into()
-                    ),
-                    (
-                        "INFO".into(),
-                        "Server thread".into(),
-                        "console probe 2".into()
-                    ),
+                    ("WARN", "Server thread", "first in batch", 99),
+                    ("WARN", "Server thread", "first in batch", 3),
+                    ("INFO", "Server thread", "later in batch", 99),
+                    ("INFO", "Server thread", "later in batch", 0),
+                    ("INFO", "Server thread", "next batch", 99),
+                    ("INFO", "Server thread", "next batch", 0),
                 ]
             );
         });

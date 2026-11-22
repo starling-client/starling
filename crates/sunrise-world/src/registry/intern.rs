@@ -5,8 +5,13 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+/// Worker resources built for one payload, keyed by what the owner derived them from.
+pub(super) type SharedWorkers = Arc<Mutex<Vec<(usize, WorkerResource)>>>;
+type WorkerResource = Arc<dyn std::any::Any + Send + Sync>;
+
 struct Snapshot {
     data: Arc<Data>,
+    workers: SharedWorkers,
     installations: HashMap<usize, &'static BlockRegistry>,
 }
 
@@ -16,12 +21,39 @@ static SNAPSHOTS: LazyLock<Mutex<HashMap<usize, Vec<Snapshot>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl BlockRegistry {
+    /// The worker resource already shared under `owner`, else retain `resource` as it.
+    ///
+    /// Registries interned from equal payloads share one pool, so a new installation whose
+    /// resource derives from the same `owner` key reuses the first instead of keeping another.
+    /// The caller guarantees equal keys build equal resources from equal payloads.
+    #[doc(hidden)]
+    pub fn share_worker_resource(&self, owner: usize, resource: WorkerResource) -> WorkerResource {
+        let mut pool = self
+            .shared_workers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((_, shared)) = pool.iter().find(|(key, _)| *key == owner) {
+            return shared.clone();
+        }
+        pool.push((owner, resource.clone()));
+        resource
+    }
+
+    /// Names this registry's imported payload, which every registry interned from equal
+    /// data shares. A key for caches derived from the data alone: unlike the registry's
+    /// address it is equal across installations. The payload outlives the key's use because
+    /// the intern table retains it for the process lifetime.
+    #[doc(hidden)]
+    pub fn payload_identity(&self) -> usize {
+        Arc::as_ptr(&self.data) as usize
+    }
+
     /// Retain a registry for an immutable host installation.
     ///
     /// This is host plumbing, not a mod API. `mods` identifies the retained mod list;
     /// `parts` identifies its immutable Parts installation. Without a Parts identity,
     /// a future metadata owner is unknown, so only imported data may be shared.
-    /// Worker resources and saved-state caches remain attached to each registry wrapper.
+    /// Saved-state caches remain attached to each registry wrapper; equal payloads may share worker resources under equal owner keys.
     #[doc(hidden)]
     pub fn intern(self, (mods, parts): (usize, Option<usize>)) -> &'static Self {
         let mut snapshots = SNAPSHOTS.lock().unwrap_or_else(|error| error.into_inner());
@@ -34,6 +66,7 @@ impl BlockRegistry {
         } else {
             snapshots.push(Snapshot {
                 data: self.data.clone(),
+                workers: SharedWorkers::default(),
                 installations: HashMap::new(),
             });
             snapshots
@@ -47,6 +80,7 @@ impl BlockRegistry {
         }
         let mut registry = self;
         registry.data = snapshot.data.clone();
+        registry.shared_workers = snapshot.workers.clone();
         let registry = Box::leak(Box::new(registry));
         if let Some(parts) = parts {
             snapshot.installations.insert(parts, registry);
@@ -89,6 +123,22 @@ mod tests {
         assert!(!std::ptr::eq(first, next));
         assert!(Arc::ptr_eq(&first.data, &next.data));
         assert!(next.mod_worker_resource.get().is_none());
+    }
+
+    #[test]
+    fn equal_payloads_share_worker_resources_by_owner_and_other_payloads_do_not() {
+        let first = registry(0, false).intern((105, Some(1)));
+        let next = registry(0, false).intern((105, Some(2)));
+        let other = registry(1, true).intern((105, Some(1)));
+        let make = |value: u32| -> WorkerResource { Arc::new(value) };
+        let kept = first.share_worker_resource(7, make(1));
+        let reused = next.share_worker_resource(7, make(2));
+        assert!(Arc::ptr_eq(&kept, &reused));
+        assert_eq!(reused.downcast_ref::<u32>(), Some(&1));
+        let other_owner = next.share_worker_resource(8, make(3));
+        assert!(!Arc::ptr_eq(&kept, &other_owner));
+        let separate = other.share_worker_resource(7, make(4));
+        assert_eq!(separate.downcast_ref::<u32>(), Some(&4));
     }
 
     #[test]

@@ -1,11 +1,15 @@
-//! Iterative JSON/NBT conversion, following 26.3 JsonOps and NbtOps.
+//! JSON/NBT conversion, following 26.3 JsonOps and NbtOps.
 //!
 //! Call at boundaries, not on the tick. NbtAccounter's 512-container limit
 //! applies before cloning payloads; scalar and typed-array tags do not add
 //! nesting. Conversion is intentionally lossy: JSON has no numeric tag widths,
 //! typed arrays become lists, and byte booleans become JSON numbers.
+//! When the raw JSON is available, [`parse_json_tag`] preserves the source
+//! member order used by NbtOps to build its hash map. An already parsed `Value`
+//! only exposes its map's iteration order, not the original collision history.
 
 use crate::nbt::{Compound, JavaString, Tag};
+use serde::{Deserialize, Deserializer, de};
 use serde_json::{Map, Number, Value};
 
 const MAX_DEPTH: usize = 512;
@@ -35,6 +39,88 @@ impl std::fmt::Display for JsonNbtError {
     }
 }
 impl std::error::Error for JsonNbtError {}
+
+/// Parse raw JSON directly into NBT, inserting members in source order at
+/// every level. Duplicate keys replace the value in its original position.
+/// Applies serde_json's syntax and parser depth limits, plus JsonOps' refusal
+/// of nested nulls. Call this before decoding to `serde_json::Value` when
+/// serialized NBT order matters.
+pub fn parse_json_tag(source: &str) -> Result<Tag, serde_json::Error> {
+    struct OrderedTag(Tag);
+
+    impl<'de> Deserialize<'de> for OrderedTag {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct TagVisitor;
+
+            impl<'de> de::Visitor<'de> for TagVisitor {
+                type Value = OrderedTag;
+
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a JSON value")
+                }
+
+                fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                    Ok(OrderedTag(Tag::End))
+                }
+                fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                    Ok(OrderedTag(Tag::Byte(i8::from(value))))
+                }
+                fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                    Ok(OrderedTag(Tag::String(value.into())))
+                }
+                fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                    Ok(OrderedTag(number(&value.into())))
+                }
+                fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                    Ok(OrderedTag(number(&value.into())))
+                }
+                fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                    let value = Number::from_f64(value).expect("finite JSON number");
+                    Ok(OrderedTag(number(&value)))
+                }
+                fn visit_seq<A: de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<Self::Value, A::Error> {
+                    let mut values = Vec::new();
+                    while let Some(OrderedTag(value)) = seq.next_element()? {
+                        values.push(value);
+                    }
+                    Ok(OrderedTag(Tag::List(values)))
+                }
+                fn visit_map<A: de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<Self::Value, A::Error> {
+                    let mut values = Compound::new();
+                    while let Some((key, OrderedTag(value))) = map.next_entry::<String, _>()? {
+                        values.insert(key.as_str().into(), value);
+                    }
+                    Ok(OrderedTag(Tag::Compound(values)))
+                }
+            }
+
+            d.deserialize_any(TagVisitor)
+        }
+    }
+
+    let OrderedTag(tag) = serde_json::from_str(source)?;
+    // A duplicate member may have replaced a null. Check only the surviving
+    // values, just as JsonOps does after JSON parsing.
+    if matches!(tag, Tag::End) {
+        return Ok(tag);
+    }
+    let mut pending = vec![&tag];
+    while let Some(value) = pending.pop() {
+        match value {
+            Tag::End => return Err(de::Error::custom(JsonNbtError::NestedNull)),
+            Tag::List(children) => pending.extend(children),
+            Tag::Compound(children) => pending.extend(children.values()),
+            _ => {}
+        }
+    }
+    Ok(tag)
+}
 
 /// Convert JSON metadata using JsonOps→NbtOps numeric and nested-null rules.
 /// Top-level null becomes End. Numeric choice uses the JSON number's decimal
@@ -177,7 +263,7 @@ fn build_tag(root: JsonInput<'_>, parent_depth: usize) -> Result<Tag, JsonNbtErr
     Ok(done.pop().expect("one root was built"))
 }
 
-fn validate_tag(root: &Tag) -> Result<(), JsonNbtError> {
+fn validate_tag(root: &Tag, bounded: bool) -> Result<(), JsonNbtError> {
     let valid_string = |s: &JavaString| {
         if char::decode_utf16(s.0.iter().copied()).any(|c| c.is_err()) {
             Err(JsonNbtError::InvalidString)
@@ -196,19 +282,21 @@ fn validate_tag(root: &Tag) -> Result<(), JsonNbtError> {
             }
             Tag::String(s) => valid_string(s)?,
             Tag::List(values) => {
-                if depth >= MAX_DEPTH {
+                if bounded && depth >= MAX_DEPTH {
                     return Err(JsonNbtError::TooDeep);
                 }
                 pending.extend(values.iter().rev().map(|v| (v, depth + 1)));
             }
             Tag::Compound(values) => {
-                if depth >= MAX_DEPTH {
+                if bounded && depth >= MAX_DEPTH {
                     return Err(JsonNbtError::TooDeep);
                 }
                 for key in values.keys() {
                     valid_string(key)?;
                 }
-                pending.extend(values.values().rev().map(|v| (v, depth + 1)));
+                let start = pending.len();
+                pending.extend(values.values().map(|v| (v, depth + 1)));
+                pending[start..].reverse();
             }
             _ => {}
         }
@@ -237,7 +325,12 @@ pub struct JsonTag<'a> {
 impl<'a> JsonTag<'a> {
     /// Check without cloning payloads or constructing JSON.
     pub fn new(root: &'a Tag) -> Result<Self, JsonNbtError> {
-        validate_tag(root)?;
+        validate_tag(root, true)?;
+        Ok(Self { root })
+    }
+    /// Check that the tag can be projected onto an in-memory JSON value, without a wire depth limit.
+    pub fn for_projection(root: &'a Tag) -> Result<Self, JsonNbtError> {
+        validate_tag(root, false)?;
         Ok(Self { root })
     }
     /// Construct JSON from the validated, immutably borrowed tag.
@@ -294,7 +387,7 @@ impl<'a> JsonTag<'a> {
                                     .map(|k| k.to_string().expect("validated UTF-16"))
                                     .collect(),
                             ));
-                            work.extend(values.values().rev().map(Work::Enter));
+                            work.extend(values.values().map(Work::Enter));
                             continue;
                         }
                     };
@@ -306,7 +399,9 @@ impl<'a> JsonTag<'a> {
                 }
                 Work::Object(keys) => {
                     let values = done.split_off(done.len() - keys.len());
-                    done.push(Value::Object(keys.into_iter().zip(values).collect()));
+                    done.push(Value::Object(
+                        keys.into_iter().zip(values.into_iter().rev()).collect(),
+                    ));
                 }
             }
         }
@@ -386,6 +481,38 @@ mod tests {
     use serde_json::json;
     fn tag(value: &Value) -> Tag {
         json_to_tag(value).unwrap()
+    }
+
+    #[test]
+    fn json_source_member_history_reaches_nested_nbt_hash_maps() {
+        // Gson member order reaches NbtOps.createMap unchanged.
+        // These two String keys have the same Java hash.
+        for source in [
+            r#"{"BB":{"BB":1,"Aa":2},"Aa":3}"#,
+            r#"{"BB":null,"Aa":3,"BB":{"BB":1,"Aa":2}}"#,
+        ] {
+            let Tag::Compound(root) = parse_json_tag(source).unwrap() else {
+                panic!("compound")
+            };
+            assert_eq!(
+                root.keys().map(|key| key.0.clone()).collect::<Vec<_>>(),
+                [vec![66, 66], vec![65, 97]],
+            );
+            let Some(Tag::Compound(nested)) = root.get(&"BB".into()) else {
+                panic!("compound")
+            };
+            assert_eq!(
+                nested.keys().map(|key| key.0.clone()).collect::<Vec<_>>(),
+                [vec![66, 66], vec![65, 97]],
+            );
+            assert_eq!(nested.get(&"BB".into()), Some(&Tag::Byte(1)));
+            assert_eq!(nested.get(&"Aa".into()), Some(&Tag::Byte(2)));
+        }
+        let source = r#"{"BB":1,"Aa":2}"#;
+        let shared: Value = serde_json::from_str(source).unwrap();
+        assert_eq!(shared.to_string(), r#"{"Aa":2,"BB":1}"#);
+        assert_eq!(parse_json_tag("null").unwrap(), Tag::End);
+        assert!(parse_json_tag(r#"{"BB":[null]}"#).is_err());
     }
 
     #[test]

@@ -1,0 +1,101 @@
+ids = [
+    "hook:exp_drop",
+    "hook:block_drops",
+    "hook:block_drops.block_entity_data",
+    "hook:block_drops.tool",
+    "hook:block_drops.drops",
+    "type:BlockDropsEvent.block_entity_data",
+    "type:BlockDropsEvent.tool",
+    "type:BlockDropsEvent.drops",
+    "hook:item_tooltip.stack",
+    "hook:item_tooltip.lines",
+    "type:ItemTooltipEvent.stack",
+    "type:ItemTooltipEvent.lines",
+    "type:TooltipLines",
+    "handle:TooltipLines::len",
+    "handle:TooltipLines::is_empty",
+    "handle:TooltipLines::color",
+    "handle:TooltipLines::get",
+    "handle:TooltipLines::iter",
+    "handle:TooltipLines::push",
+    "handle:TooltipLines::insert",
+    "handle:TooltipLines::set",
+    "handle:TooltipLines::set_color",
+    "handle:TooltipLines::remove",
+    "handle:TooltipLines::pop",
+    "handle:TooltipLines::clear",
+    "handle:TooltipLines::truncate",
+    "handle:TooltipLines::swap",
+    "handle:TooltipLines::retain",
+    "type:PreparedBlockDrops",
+    "handle:PreparedBlockDrops::len",
+    "handle:PreparedBlockDrops::is_empty",
+    "handle:PreparedBlockDrops::get",
+    "handle:PreparedBlockDrops::get_mut",
+    "handle:PreparedBlockDrops::iter",
+    "handle:PreparedBlockDrops::push",
+    "handle:PreparedBlockDrops::insert",
+    "handle:PreparedBlockDrops::replace",
+    "handle:PreparedBlockDrops::remove",
+    "handle:PreparedBlockDrops::pop",
+    "handle:PreparedBlockDrops::clear",
+    "handle:PreparedBlockDrops::truncate",
+    "handle:PreparedBlockDrops::swap",
+    "handle:PreparedBlockDrops::retain",
+    "type:PreparedDropView",
+    "handle:PreparedDropView::stack",
+    "handle:PreparedDropView::position",
+    "handle:PreparedDropView::velocity",
+    "handle:PreparedDropView::pickup_delay",
+    "handle:PreparedDropView::thrower",
+    "handle:PreparedDropView::target",
+    "handle:PreparedDropView::no_gravity",
+    "handle:PreparedDropView::age",
+    "handle:PreparedDropView::to_item_drop",
+    "type:PreparedDropMut",
+    "handle:PreparedDropMut::as_view",
+    "handle:PreparedDropMut::stack",
+    "handle:PreparedDropMut::position",
+    "handle:PreparedDropMut::velocity",
+    "handle:PreparedDropMut::pickup_delay",
+    "handle:PreparedDropMut::thrower",
+    "handle:PreparedDropMut::target",
+    "handle:PreparedDropMut::no_gravity",
+    "handle:PreparedDropMut::age",
+    "handle:PreparedDropMut::to_item_drop",
+    "handle:PreparedDropMut::set_stack",
+    "handle:PreparedDropMut::set_position",
+    "handle:PreparedDropMut::set_velocity",
+    "handle:PreparedDropMut::set_pickup_delay",
+    "handle:PreparedDropMut::set_thrower",
+    "handle:PreparedDropMut::set_target",
+    "handle:PreparedDropMut::set_no_gravity",
+    "handle:PreparedDropMut::set_age",
+]
+why = "Match NeoForge BlockDropsEvent (getDrops, getTool, getBlockEntity), ItemTooltipEvent (getItemStack, getToolTip, getDisplay), and IBlockExtension.getExpDrop over vanilla ServerPlayerGameMode.destroyBlock, Block.dropResources, Block.popResource, and ItemStack.getTooltipLines. block_drops and item_tooltip (bumped from version 2 to 3) now lend stacks lazily via ItemStackView and expose live PreparedBlockDrops and TooltipLines views instead of copying whole stack/drop/tooltip vectors and silently discarding every listener's edits on one conversion failure. Vanilla Level.destroyBlock (including WitherBoss.customServerAiStep) binds its block entity before the loot roll and LevelChunk.getBlockEntity promotes packed chunk data. Like NeoForge BlockDropsEvent.getBlockEntity, the event keeps the original break subject: its resident handle if still live, otherwise its read-only block_entity_data (including CustomName), with identity and position removed as in BlockEntity.saveWithoutMetadata. This covers packed level-side and mob breaks and a mob's loot listener replacing the original. Like Block.popResource, a disabled block_drops rule consumes level offsets but constructs no item entities; the hook sees an empty initial list. Like NeoForge CommonHooks.handleBlockDrops, list edits affect item joins, which run before the experience award. Empty or unrepresentable tools omit only event.tool without suppressing the event. exp_drop (bumped to version 2) removes its arbitrary 32,767 cap and clamps only negative values to 0."
+migrate = '''
+### `exp_drop` (version 2)
+- Positive `i32` answers above `32_767` are now awarded as given rather than clamped to `32_767`; negative values still clamp to `0`. If you relied on the old `32_767` ceiling, clamp explicitly before returning `Some(points)`.
+- Rebuild against the new SDK so the SDK regenerates the recorded `exp_drop` version (`2`) in your package's `uses` list.
+
+### `item_tooltip` (version 3)
+- `event.stack` is now `ItemStackView<'_>` instead of `&ItemStack`. Read scalar metadata directly (`event.stack.item()`, `event.stack.count()`, `event.stack.damage()`, `event.stack.damage_component()`) without projecting components. When you need components or an owned stack, handle projection failure: `let Some(stack) = event.stack.project() else { return; };` then use `ItemResource::of(&stack)`.
+- `event.lines` is now `TooltipLines<'_>` instead of `&mut Vec<(Text, u32)>`. `push`, `insert` and `set` validate their `Text` individually and return `Result<_, TextFormError>`, leaving all other lines intact on error:
+  - `event.lines.push((text, color))` -> `event.lines.push(text, color)`; handle its `Result`.
+  - `event.lines.insert(i, (text, color))` -> `event.lines.insert(i, text, color)`; handle its `Result` (out-of-bounds returns `Ok(false)` instead of panicking).
+  - `event.lines[i] = (text, color)` -> `event.lines.set(i, text, color)`; handle its `Result` (or use `event.lines.set_color(i, color)` to change colour without converting text).
+  - `event.lines[i]` / `event.lines.get(i)` -> `event.lines.get(i)` returning `Option<Result<(Text, u32), TextFormError>>` (or `event.lines.color(i)` for colour only).
+  - `event.lines.iter()` yields `Result<(Text, u32), TextFormError>`; `remove(i)` and `pop()` return `Option<Result<(Text, u32), TextFormError>>`: `Some(Err(_))` means the line was removed, but its text could not be projected. `clear()`, `truncate(n)`, `swap(a, b)` and `retain(|entry| ...)` work in place.
+- Update your `Hooks::item_tooltip` callback to the new view types and rebuild against the new SDK so the SDK regenerates the recorded `item_tooltip` version (`3`) in your package's `uses` list.
+
+### `block_drops`
+- `event.tool` is now `Option<ItemStackView<'_>>` instead of `Option<&ItemStack>`. Inspect `tool.item()`, `tool.count()`, `tool.damage()` directly, and call `tool.project()` only when you need components or an owned `ItemStack`. An empty or unrepresentable tool omits only `event.tool` (`None`) and still dispatches the event.
+- `event.drops` is now `PreparedBlockDrops<'_>` instead of `&mut Vec<ItemDrop>`. Stack writes validate individually with `Result<_, StackWriteError>` so a rejected edit leaves every other drop, `experience` and cancel state intact (handle each `Result` explicitly, since `Hooks::block_drops` returns `Flow`):
+  - Read entries via `event.drops.iter()` or `event.drops.get(i)` (`PreparedDropView<'_>`), reading `drop.stack()` (`Option<ItemStackView<'_>>`), `drop.position()`, `drop.velocity()`, `drop.pickup_delay()`, `drop.thrower()`, `drop.target()`, `drop.no_gravity()`, `drop.age()`, or `drop.to_item_drop()` to copy an owned `ItemDrop`.
+  - Edit an existing drop in place via `if let Some(mut drop) = event.drops.get_mut(i) { if let Err(err) = drop.set_stack(stack) { /* report or ignore StackWriteError */ } drop.set_pickup_delay(0); }` (`PreparedDropMut<'_>`) to keep its prepared drop RNG and entity fields intact.
+  - Append, insert or replace owned captures via `event.drops.push(item_drop)`, `event.drops.insert(i, item_drop)` and `event.drops.replace(i, item_drop)`, checking each `Result<_, StackWriteError>` explicitly (for example `if let Err(err) = event.drops.push(item_drop) { ... }`).
+  - Replace `event.drops.drain(..).map(|drop| drop.stack)` with `event.drops.retain(|drop| if let Some(stack) = drop.stack().and_then(|s| s.project()) { kept.push(stack); false } else { true });` so an unprojectable drop stays in the live list to spawn instead of being silently destroyed.
+  - `remove(i)` and `pop()` return `bool`; `clear()`, `truncate(n)`, `swap(a, b)` and `retain(|drop| ...)` mutate the live list without projecting untouched drops.
+- `event.block_entity` is now `Some(BlockEntityRef)` only when the original break subject's block entity is still genuinely resident in the world (level-side and mob breaks; a replacement block entity placed at the same position after removal is never exposed). For a player break after removal, a level-side or mob break of a packed entity (such as a saved-only decorated pot broken with `/setblock ... destroy`), or a mob break whose loot listener removes or replaces the entity, read its original payload on `event.block_entity_data: Option<&Compound>`; no handle is supplied. The payload includes `CustomName` but not identity or position. Replace `event.block_entity.and_then(|be| level.block_entity_data(be))` with `event.block_entity_data.cloned().or_else(|| event.block_entity.and_then(|be| level.block_entity_data(be)))` (or borrow `event.block_entity_data` directly without cloning).
+- Update your `Hooks::block_drops` callback to the new view types and rebuild against the new SDK.
+'''

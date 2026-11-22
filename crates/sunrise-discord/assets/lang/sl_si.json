@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Prikazuje Playing Sunrise v vašem profilu Discord, medtem ko Discord teče: meniji, igra za enega ali več igralcev, dimenzija in čas igranja. Nikoli svetovnega imena ali naslova strežnika."
+}

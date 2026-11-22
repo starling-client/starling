@@ -1,0 +1,6 @@
+ids = [
+    "hook:render_living_pre", "hook:render_living_post", "hook:render_player_pre", "hook:render_player_post",
+    "hook:register_entity_layers", "hook:register_entity_renderers", "hook:entity_outline",
+]
+why = "Mod-defined entity renderers now submit in the same level join order as living and player bodies, rather than after that pass. A row keeps its spawn slot while waiting for its first attachment snapshot."
+migrate = "Do not count on general renderer callbacks running after living or player hooks, layer submissions, or outline queries. Prepare data shared by those callbacks before entity submission rather than in a callback for a different entity."

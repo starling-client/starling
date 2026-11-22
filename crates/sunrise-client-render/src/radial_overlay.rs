@@ -79,7 +79,6 @@ pub fn icon(action: RadialAction) -> Icon {
         RadialAction::ToggleGui => Icon::Item("minecraft:glass"),
         RadialAction::SmoothCamera => Icon::Item("minecraft:feather"),
         RadialAction::SocialInteractions => Icon::Sprite("toast/social_interactions"),
-        RadialAction::Emote => Icon::PlayerFace,
         RadialAction::HotbarPrevious => Icon::Sprite("spectator/scroll_left"),
         RadialAction::HotbarNext => Icon::Sprite("spectator/scroll_right"),
         // A frame round the picture: the window filling the screen.
@@ -261,8 +260,8 @@ const DIM: f32 = 0.3;
 const WAITING_DIM: f32 = 0.55;
 
 /// The vanilla sprites a tile is drawn with (the F3+F4 game mode switcher's).
-const SLOT_SPRITE: &str = "gui/sprites/gamemode_switcher/slot";
-const SELECTION_SPRITE: &str = "gui/sprites/gamemode_switcher/selection";
+const SLOT_SPRITE: &str = "gamemode_switcher/slot";
+const SELECTION_SPRITE: &str = "gamemode_switcher/selection";
 /// The hotbar's size, to dim it under a small view's dial.
 const HOTBAR: [f32; 2] = [182.0, 22.0];
 
@@ -1077,7 +1076,7 @@ mod tests {
     }
 
     /// A 1280x720 window (and 854x480, and a quarter of a 1708x960 one), GUI scale 4 on
-    /// 1280x720, a small view and a wide splitscreen half.
+    /// 1280x720, a small view and a wide short view.
     const VIEWS: [(f32, f32); 4] = [
         (427.0, 240.0),
         (320.0, 180.0),
@@ -1327,7 +1326,7 @@ mod tests {
         );
         available[slot] = false;
         let mut blocked = dial(&pages, &room, seen, available);
-        blocked.why[slot] = Some("sunrise.radial.why.cosmetics");
+        blocked.why[slot] = Some("sunrise.radial.why.quick_actions");
         let dimmed = draw([427, 240], &blocked, &shown(seen));
         let lay = Layout::new(427.0, 240.0, &room);
         let rect = lay.tile_rect(slot);
@@ -1337,7 +1336,7 @@ mod tests {
         let (lines, _) = hub_lines(&atlas(), 60.0, &blocked, page);
         assert_eq!(
             lines[1],
-            (lang::get("sunrise.radial.why.cosmetics"), muted())
+            (lang::get("sunrise.radial.why.quick_actions"), muted())
         );
     }
 
@@ -1641,7 +1640,7 @@ mod tests {
                         };
                         let mut d = dial(&pages, &room, seen, ALL);
                         d.available[1] = false;
-                        d.why[1] = Some("sunrise.radial.why.cosmetics");
+                        d.why[1] = Some("sunrise.radial.why.quick_actions");
                         for view in [
                             View::FirstPerson,
                             View::ThirdPersonBack,
@@ -1654,7 +1653,6 @@ mod tests {
                 }
             }
             for why in [
-                "sunrise.radial.why.cosmetics",
                 "sunrise.radial.why.quick_actions",
                 "sunrise.radial.why.social",
             ] {
@@ -1667,11 +1665,10 @@ mod tests {
             .collect();
         assert!(missed.is_empty(), "no text for {missed:?}");
         for action in RadialAction::ALL {
-            // Every picture is the player's own: an item, a vanilla GUI sprite or their face.
+            // Every picture is the player's own: an item or a vanilla GUI sprite.
             match icon(action) {
                 Icon::Item(id) => assert!(id.starts_with("minecraft:"), "{action:?}"),
                 Icon::Sprite(name) => assert!(!name.starts_with("sunrise"), "{action:?}"),
-                Icon::PlayerFace => assert_eq!(action, RadialAction::Emote),
                 Icon::Glyph(_) => panic!("{action:?} drawn as a glyph"),
             }
         }

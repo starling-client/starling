@@ -79,6 +79,25 @@ fn collect(
     Ok(())
 }
 
+/// The real API types a dispatch snapshots are `Clone`; so are their stand-ins, except those
+/// that hold a borrow or a trait object.
+fn stand_in_clone(item: &mut Item) {
+    let text = item.to_token_stream().to_string();
+    match item {
+        Item::Struct(syn::ItemStruct { attrs, .. }) | Item::Enum(syn::ItemEnum { attrs, .. })
+            if !text.contains("Clone") && !text.contains("& 'a mut") && !text.contains("dyn") =>
+        {
+            attrs.push(syn::parse_quote!(#[derive(Clone)]));
+        }
+        Item::Mod(module) => {
+            for item in module.content.iter_mut().flat_map(|(_, items)| items) {
+                stand_in_clone(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn push(
     scope: &'static str,
     item: Item,
@@ -87,6 +106,10 @@ fn push(
 ) -> Result<(), String> {
     if !seen.insert((scope.to_owned(), key(&item))) {
         return Err(format!("duplicate fixture item in {scope}: {}", key(&item)));
+    }
+    let mut item = item;
+    if matches!(scope, "stubs" | "api") {
+        stand_in_clone(&mut item);
     }
     output
         .entry(scope)
@@ -99,12 +122,13 @@ pub(crate) fn generate(root: &Path, out: &Path) -> Result<(), String> {
     let dir = root.join(DIRECTORY);
     crate::rerun_if_changed(&dir.display());
     let mut areas = Catalog::modules(&root.join(DECLARATIONS))?;
-    // A fixture can support an engine entry-point module as well as a declaration.
+    // A fixture can support a declared engine target as well as a declaration file.
     // Their boundaries need not match when declarations are split per hook.
-    let native_dir = root.join("crates/sunrise-client/src/game/native_hooks");
-    if native_dir.is_dir() {
-        areas.extend(Catalog::modules(&native_dir)?);
-    }
+    const NATIVE: &str = "sunrise_client::game::native_hooks::";
+    areas.extend(Catalog::load(root)?.hooks.iter().filter_map(|hook| {
+        let (area, _) = hook.target.strip_prefix(NATIVE)?.split_once("::")?;
+        Some(area.to_owned())
+    }));
     let mut output = BTreeMap::new();
     let mut seen = BTreeSet::new();
     for area in Catalog::modules(&dir)? {

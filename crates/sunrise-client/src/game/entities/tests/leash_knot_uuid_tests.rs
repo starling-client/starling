@@ -2,10 +2,10 @@
 //! (#13113): `Leashable.restoreLeashFromSave` finds it with
 //! `ServerLevel.getEntity`, as any other holder.
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::leash::Holder;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let mut game = crate::game::game_tests::tests::server_game(resources);
@@ -30,7 +30,7 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mob_leashed_to_a_knots_uuid_is_tied_to_its_post() {
     let mut resources = None;
     let mut game = game(&mut resources);
@@ -50,7 +50,7 @@ fn a_mob_leashed_to_a_knots_uuid_is_tied_to_its_post() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_boat_leashed_to_a_knots_uuid_is_tied_to_its_post() {
     let mut resources = None;
     let mut game = game(&mut resources);

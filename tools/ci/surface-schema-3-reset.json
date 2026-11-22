@@ -1,0 +1,539 @@
+{
+  "base": "be22b449cfae29e14a0d6d8152441a00b7c93713",
+  "checkpoint": "ac055824376f662f5945d67e91dcf50c0c814496",
+  "plain": {
+    "old": "28c36f91a9f574246cb89072425d5e56",
+    "new": "582a4e754dbe3940591b69687cfccfcf"
+  },
+  "diff": {
+    "old": "93b8f647194687559d50447df80c96f6",
+    "new": "1ae8160b55c0482bd2f83eaeb5967efa",
+    "verdict": "breaking",
+    "changes": [
+      {
+        "id": "handle:ChunkDiskData::get",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "signature: `fn get<T: Clone + Send + Sync + wire::Wire + 'static>(&mut self, _: &AttachmentType<T>) -> Result<T, ChunkDiskFailure>` → `fn get<T: Clone + Send + Sync + 'static>(&mut self, _: &AttachmentType<T>) -> Result<T, ChunkDiskFailure>`"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "handle:ChunkDiskData::remove",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "signature: `fn remove<T: Clone + Send + Sync + wire::Wire + 'static>(&mut self, _: &AttachmentType<T>) -> Result<Option<T>, ChunkDiskFailure>` → `fn remove<T: Clone + Send + Sync + 'static>(&mut self, _: &AttachmentType<T>) -> Result<Option<T>, ChunkDiskFailure>`"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "handle:ChunkDiskData::set",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "signature: `fn set<T: Clone + Send + Sync + wire::Wire + 'static>(&mut self, _: &AttachmentType<T>, _: T) -> Result<(), ChunkDiskFailure>` → `fn set<T: Clone + Send + Sync + 'static>(&mut self, _: &AttachmentType<T>, _: T) -> Result<(), ChunkDiskFailure>`"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "handle:PackageInfo::runtime",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "handle:PartStateDeclaration::check",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "signature: `fn check(&self, _: bool) -> Result<(), PartStateRefusal>` → `fn check(&self) -> Result<(), PartStateRefusal>`"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "handle:PartStateDeclaration::of",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "signature: `fn of<T: wire::Wire + 'static>(_: &AttachmentType<T>) -> Self` → `fn of<T: 'static>(_: &AttachmentType<T>) -> Self`"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "method:DimensionsRegistrar::add_biome_source",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "no longer has a default: every implementation must write it"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "method:DimensionsRegistrar::add_chunk_generator",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "no longer has a default: every implementation must write it"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "method:wire::Wire::holds_resource",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "point:sunrise_client::game::Game<'_>::level_can_survive",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "point:sunrise_client::game::block_entity_tick_items::Scope::new",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "signature hash: `9f71bd1a543888672090c0ea089654f1` → `867a6168a57615b6d96a785e1131cded`"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "trait:BlockEntityPartState",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "required `Data`: `type Data: Clone + Send + Sync + wire::Wire + 'static` → `type Data: Clone + Send + Sync + 'static`"
+        ],
+        "members": [
+          "assoc:BlockEntityPartState::Data"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "trait:EntityPartState",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "required `Data`: `type Data: Clone + Send + Sync + wire::Wire + 'static` → `type Data: Clone + Send + Sync + 'static`"
+        ],
+        "members": [
+          "assoc:EntityPartState::Data"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "trait:Registrar",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "no longer requires `RegistrationRefusalRegistrar`: a mod that relies on `Registrar: RegistrationRefusalRegistrar` or calls a method of `RegistrationRefusalRegistrar` through it no longer compiles"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "trait:RegistrationRefusalRegistrar",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "method:RegistrationRefusalRegistrar::registration_refusal",
+          "method:RegistrationRefusalRegistrar::registration_warning"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "trait:wire::Record",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "method:wire::Record::apply",
+          "method:wire::Record::encode"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:AttachmentDiskEntryWire",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "type:AttachmentDiskEntryWire.encoded",
+          "type:AttachmentDiskEntryWire.name",
+          "type:AttachmentDiskEntryWire.namespace",
+          "type:AttachmentDiskEntryWire.schema"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:ChunkDiskData",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "the type `ChunkDiskData` no longer implements `TryFrom<ChunkDiskDataWire>`",
+          "wire layout: `a192cb694d50ebea75d6fa79991b8df0` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:ChunkDiskResultWire",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "type:ChunkDiskResultWire.Refused",
+          "type:ChunkDiskResultWire.Success"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:ModBlockEntity",
+        "kind": "changed",
+        "class": "breaking",
+        "what": [
+          "the type `ModBlockEntity` no longer implements `From<item::containers::ModBlockEntitySnapshot>`",
+          "wire layout: `e086429a309fc4c80205f96c59936ea8` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:PackageDetails.runtime",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:PackageRuntime",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "type:PackageRuntime.Native",
+          "type:PackageRuntime.Wasm"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:PartStateRefusal.NoCodecOnWasm",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:PartStateRefusal.ResourceHandle",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:RuntimePathError.WasmMod",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:item::containers::ModBlockEntitySnapshot",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:wire::Fields",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "type:wire::Fields.0"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:wire::ReadOnly",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "type:wire::ReadOnly.0"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:wire::Refused",
+        "kind": "removed",
+        "class": "breaking",
+        "what": [
+          "removed"
+        ],
+        "members": [
+          "type:wire::Refused.0"
+        ],
+        "notes": [
+          "native-only-mods.toml"
+        ]
+      },
+      {
+        "id": "type:AudioStreamRef",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `cfc5614f71ac3e59278679447754d6e1` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:BlockEntityStateError",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `055efff7c820af5ff2f9985fb2c62e3c` → `97527fd37f54202cac61e778132f86c9`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:BlockProviderOf",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `177ffcd67342fc243a8d86d975c13798` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:BlockTintRegistry",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `dde56533bf214335672042cd802b1026` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:EntityPartStateError",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `70f7e9029cd3201aba54b68189e42313` → `4d404e432f53493438b078e3e7675851`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:EntityProviderOf",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `53e9cf936b1a36b2f5b0b3201398d406` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:FoundStructure",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `6da28c588105574b51f4cf6de93dea66` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:GroundProvider",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `6e9413e73235ca0b9cec81b5c4dd78b8` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:ItemProviderOf",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `41591071404cd908dbc69da55bb1e9de` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:LoadedMods",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `d29e0e5c29a23a793a257a4a4cd310c8` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:LoadingMessage",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `7a8db249bebaef91e457642244cee359` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:OwnProvider",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `a93c3654949a2a934c1c2c32a3a8284e` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:PackageDetails",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `b023a835dcb4cc9a20332edbb9f23a9e` → `70525da719dd91761376825560b9678c`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:PackageInfo",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `5aa32e7f84abe61fe8b53c3a8e8f3ed5` → `d76d47f6482d49e7613679f436f9d193`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:PartStateDeclaration",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `57fc69f757f36997da507ac1bfaa0460` → `9fa919004b17ec08ed9ede2a5c46a7e2`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:PartStateRefusal",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `9f5c2f0d72602c3b2d9986211dd8cc69` → `6908d36a0f02aceb40dcdb55b0b82a87`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:RegistrationContext",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `22fccde9285ef4573ab3d14c587214ac` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:RuntimePathError",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `2d3820e4a36df51c502c8c4e6beee805` → `40a333ff4315f4b99697de608001c655`: affects users of this encoding"
+        ]
+      },
+      {
+        "id": "type:TintLayer",
+        "kind": "changed",
+        "class": "conditional",
+        "what": [
+          "wire layout: `d05b9a78790fb4d96f324a9a7289accf` → none: affects users of this encoding",
+          "no longer implements `Wire`: affects users of this encoding"
+        ]
+      }
+    ]
+  }
+}

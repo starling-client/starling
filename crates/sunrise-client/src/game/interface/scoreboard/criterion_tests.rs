@@ -2,7 +2,7 @@ use super::*;
 use sunrise_core::geometry::Vec3;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn selectors_reject_criteria_absent_from_the_selected_definition() {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use sunrise_client::motion::PlayerMotion;

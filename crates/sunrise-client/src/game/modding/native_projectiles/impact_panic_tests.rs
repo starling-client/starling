@@ -1,15 +1,17 @@
 use super::*;
+use mod_api::{
+    Flow, HearsProjectileImpactsEvent, Hooks, HostTransaction, ProjectileImpactEvent, ServerHost,
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use sunrise_client::{
     chunk::Chunk,
     join_seq::residency::{
         Change, Journal, Kind, Owner,
         table::{EntityLookup, EntityTable, SourceEntity},
     },
-};
-use mod_api::{Flow, HearsProjectileImpactsEvent, Hooks, ProjectileImpactEvent, ServerHost};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
 };
 
 struct PanicAfterAdmission {
@@ -41,27 +43,43 @@ impl Hooks for PanicAfterAdmission {
     ) -> Flow {
         if event.event == "minecraft:projectile_shoot" {
             assert!(self.admitted.load(Ordering::SeqCst));
-            let _ = host.summon(
-                event.dimension,
-                "minecraft:snowball",
-                [9.5, 70.0, 0.5],
-                Default::default(),
-            );
-            self.panicked.store(true, Ordering::SeqCst);
-            panic!("listener panicked after impact admission");
+            // Hook dispatch now contains the panic. The callback's own transaction
+            // still has to abort its tentative spawn before dispatch resumes.
+            let _: Result<(), ()> = host.transaction(|host, _| {
+                let spawned = host.summon(
+                    event.dimension,
+                    "minecraft:snowball",
+                    [9.5, 70.0, 0.5],
+                    Default::default(),
+                );
+                assert!(
+                    spawned.is_some(),
+                    "the tentative spawn must exist to roll back"
+                );
+                self.panicked.store(true, Ordering::SeqCst);
+                panic!("listener panicked after impact admission");
+            });
         }
         Flow::Continue
     }
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn shoot_listener_panic_after_admission_preserves_owned_rows() {
-    eprintln!(
-        "PANIC_GUARD_ASSERTIONS_DISABLED:{}",
-        !cfg!(debug_assertions)
-    );
-    for dimension in [crate::game::Dim::Overworld, crate::game::Dim::Nether] {
+    const CASE: &str = "SUNRISE_PROJECTILE_IMPACT_PANIC_CASE";
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::native_projectiles::impact_panic_tests::shoot_listener_panic_after_admission_preserves_owned_rows",
+        CASE,
+        &["overworld", "nether"],
+    ) {
+        return;
+    }
+    {
+        let dimension = match std::env::var(CASE).as_deref() {
+            Ok("nether") => crate::game::Dim::Nether,
+            _ => crate::game::Dim::Overworld,
+        };
         let admitted = Arc::new(AtomicBool::new(false));
         let panicked = Arc::new(AtomicBool::new(false));
         let mods = vec![mod_api::ModEntry::new(
@@ -120,10 +138,12 @@ fn shoot_listener_panic_after_admission_preserves_owned_rows() {
                     .iter()
                     .map(|p| (p.id, p.join))
                     .collect();
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    game.tick_projectiles().unwrap();
-                }));
-                assert!(result.is_err());
+                game.tick_projectiles().unwrap();
+                assert_eq!(
+                    mod_api::__private::poisoned_listeners(mod_api::HookId::VanillaGameEvent),
+                    1
+                );
+                assert!(game.creatures.projectiles[..2].iter().all(|p| p.stuck));
                 assert!(admitted.load(Ordering::SeqCst));
                 assert!(
                     panicked.load(Ordering::SeqCst),
@@ -155,16 +175,9 @@ fn shoot_listener_panic_after_admission_preserves_owned_rows() {
                     .iter()
                     .map(|p| (p.id, p.join))
                     .collect();
-                assert_eq!(restored.len(), before.len() + 1);
-                assert_eq!(
-                    game.creatures.projectiles[0].position,
-                    Vec3::new(9.5, 70.0, 0.5)
-                );
-                assert_eq!(
-                    restored[1..],
-                    before,
-                    "panic changed survivor identity or spawn admission order"
-                );
+                assert!(game.transaction_current().is_none());
+                // The contained panic cannot retire a live owner or publish the aborted spawn.
+                assert_eq!(restored, before, "panic changed survivor identity or order");
                 let mut table = game.resident_entities.table.borrow_mut();
                 for expected in restored {
                     let found = table.entity_lookup(&owner.dimension, expected.0, |at| {
@@ -188,7 +201,7 @@ fn shoot_listener_panic_after_admission_preserves_owned_rows() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn normal_dispatch_returns_the_owned_pass_for_explicit_restore() {
     for dimension in [crate::game::Dim::Overworld, crate::game::Dim::Nether] {
         crate::game::native_entity_refs::tests::with_game(|game| {
@@ -245,9 +258,26 @@ fn normal_dispatch_returns_the_owned_pass_for_explicit_restore() {
                     .collect::<Vec<_>>(),
                 [child_identity, identity]
             );
+            // An unwind leaving the dispatch itself (rather than a contained listener
+            // panic) still has to restore its owning pass before it propagates.
+            let mut pass = game.creatures.projectiles.lift();
+            let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                game.with_projectile_dispatch(&mut pass, |_| panic!("dispatch unwind"));
+            }))
+            .expect_err("the dispatch guard must not swallow panics");
+            assert_eq!(unwind.downcast_ref::<&str>(), Some(&"dispatch unwind"));
+            assert!(pass.is_empty());
+            assert_eq!(
+                game.creatures
+                    .projectiles
+                    .iter()
+                    .map(|p| (p.id, p.join))
+                    .collect::<Vec<_>>(),
+                [child_identity, identity]
+            );
             EntityTable::new(journal)
                 .end_tick()
-                .expect("normal dispatch changed the lift depth");
+                .expect("dispatch changed the lift depth");
         });
     }
 }

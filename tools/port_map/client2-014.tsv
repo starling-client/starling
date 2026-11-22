@@ -8,9 +8,9 @@ ConfirmScreen.addMessage	port	crates/sunrise-client/src/confirm_screen.rs::Confi
 ConfirmScreen.addButtons	port	crates/sunrise-client/src/confirm_screen.rs::Confirm::answer_at	Yes and No buttons; the answer comes from the click position
 ConfirmScreen.tick	inline	crates/sunrise-client/src/confirm_screen.rs::Confirm::draw_active	the 20-tick delay is a 1000 ms timer kept by the caller; buttons are greyed while it runs
 ConnectScreen.connect	port	crates/sunrise-client/src/net.rs::Session::connect	background connect on its own thread (Session::start)
-ConnectScreen.tick	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::tick_remote	ticks the pending session while it opens; game.rs tick sends remote sessions here
+ConnectScreen.tick	port	crates/sunrise-client/src/game/network/remote/tick.rs::Game::tick_remote	ticks the pending session while it opens; game.rs tick sends remote sessions here
 ConnectScreen.init	port	crates/sunrise-client-render/src/level_loading.rs::draw_connecting	the status centred at (width / 2, height / 2 - 50) and Cancel at `connect_cancel`'s corner while the connection can still be cancelled; unsure whether Escape aborts the join
-ConnectScreen.extractRenderState	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_overlay	gap: minor: also draws the address line, vanilla draws only the status
+ConnectScreen.extractRenderState	port	crates/sunrise-client/src/game/network/remote/ui.rs::Game::remote_overlay	gap: minor: also draws the address line, vanilla draws only the status
 CreateBuffetWorldScreen.init	port	crates/sunrise-client/src/title/buffet.rs::State::new	title, the 200x15 search box, the biome list and the footer's Done and Cancel; the list is drawn each frame
 CreateBuffetWorldScreen.repositionElements	skip:ui		layout only; the list is laid out each frame in buffet.rs::list_area
 CreateBuffetWorldScreen.updateButtonValidity	inline	crates/sunrise-client/src/title/buffet.rs::buttons	Done needs a selected biome, that is one the search text still shows
@@ -77,7 +77,7 @@ LoadingOverlay.extractRenderState	port	crates/sunrise-client/src/game.rs::Game::
 LoadingOverlay.tick	port	crates/sunrise-client/src/game/world/server_packs.rs::Game::tick_server_packs	finishes the reload; gap: minor: no fade-out before it finishes
 LoadingOverlay.isReadyToFadeOut	missing		minor: no one-second fade-in before the reload can finish
 LoadingOverlay.extractProgressBar	port	crates/sunrise-client-render/src/level_loading.rs::draw_progress	200 by 2 bar; gap: minor: no fade alpha
-LoadingOverlay.LogoTexture.loadContents	skip:other		Sunrise ships no Mojang logo (title_edition.rs)
+LoadingOverlay.LogoTexture.loadContents	skip:other		Sunrise ships no Mojang logo
 ManageServerScreen.init	port	crates/sunrise-client/src/multiplayer.rs::Screen::buttons	name and address fields, resource packs cycle, Done and Cancel (Screen::Edit arm)
 ManageServerScreen.resize	skip:ui		layout only; Screen::Edit keeps its fields
 ManageServerScreen.onAdd	port	crates/sunrise-client/src/multiplayer.rs::Screen::click	Done saves the name (default if empty) and the address
@@ -131,7 +131,7 @@ Screen.extractPanorama	port	crates/sunrise-client-render/src/gfx/panorama.rs::Pa
 Screen.extractMenuBackground	port	crates/sunrise-client-render/src/ui.rs::menu_background	the dirt background with blur
 Screen.extractMenuBackgroundTexture	port	crates/sunrise-client-render/src/ui.rs::menu_background	gap: minor: only the standard background texture
 Screen.isValidCharacterForName	port	crates/sunrise-client/src/game/interface/block_editor.rs::valid_character_for_name	structure and command block editors' name field: one `:` before any `/`, `/` only after it
-Screen.scheduleNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::schedule	the delay, the suppression and the trigger of one narration; schedule_now, after_mouse_move, after_mouse_action, after_keyboard_action and after_status_change are the vanilla entry points
+Screen.scheduleNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::schedule	the delay, the suppression and the trigger of one narration; after_mouse_move, after_mouse_action, after_keyboard_action and after_status_change are the vanilla entry points
 Screen.shouldRunNarration	port	crates/sunrise-client/src/screen_narrator.rs::ScreenNarrator::frame_with	GameNarrator.isActive decides it: while the narrator cannot speak the screens still record and the narration is marked said, so turning it on says only what changed
 Screen.handleDelayedNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::due	the trigger of a narration due now, once the delay and the suppression have passed; the frame says it
 Screen.runNarration	port	crates/sunrise-narrator/src/screen.rs::ScreenNarration::run	rebuilds the narration and returns what to say now, empty for nothing

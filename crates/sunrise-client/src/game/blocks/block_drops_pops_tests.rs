@@ -6,12 +6,15 @@
 //! `SweetBerryBushBlock.java:122`) all pop through it, so they drop nothing with
 //! the rule off and their usual item with it on.
 use super::*;
-use crate::game::game_tests::tests::server_game;
+use crate::game::game_tests::tests::{isolated_server_game, server_game};
 use sunrise_client::items::ItemStack;
 use sunrise_core::position::ChunkPos;
 
 fn game(resources: &mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'_> {
-    let mut game = server_game(resources);
+    set_up(server_game(resources))
+}
+
+fn set_up(mut game: Game<'_>) -> Game<'_> {
     game.build_registries();
     game.set_allow_commands(true);
     game.block_ticks
@@ -163,4 +166,144 @@ fn block_drops_on_keeps_the_pop() {
             assert_eq!([p.x, p.y, p.z], at, "{block} pops where vanilla pops it");
         }
     }
+}
+
+/// A game over the isolated fixture with the clicking player beside the
+/// bush at `[14, 100, 2]`, the loot data the entity matcher reads
+/// (`server_loot`) and `table` as the sweet berry harvest table.
+fn harvest_game<'a>(
+    resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+    table: serde_json::Value,
+) -> (crate::game::game_tests::tests::Published, Game<'a>) {
+    let (published, game) = isolated_server_game(resources);
+    let mut game = set_up(game);
+    game.player = Some(
+        sunrise_client::motion::PlayerMotion::new(
+            game.motion,
+            sunrise_core::geometry::Vec3::new(12.5, 100.0, 2.5),
+        )
+        .unwrap(),
+    );
+    game.server_loot.set(Some(std::sync::Arc::new(
+        sunrise_world::loot::LootData::load(
+            &game.options.resources,
+            &Default::default(),
+            game.res.item_defaults(),
+        )
+        .unwrap(),
+    )));
+    let mut items = game.items().clone();
+    items.set_loot_tables(std::sync::Arc::new(
+        [("minecraft:harvest/sweet_berry_bush".to_owned(), table)]
+            .into_iter()
+            .collect(),
+    ));
+    game.server_items = Some(std::sync::Arc::new(items));
+    (published, game)
+}
+
+/// Clicks a ripe bush at `[14, 100, 2]` and returns the sorted item ids it dropped.
+fn harvest(game: &mut Game<'_>) -> Vec<String> {
+    let at = [14, 100, 2];
+    place(game, at, "minecraft:sweet_berry_bush[age=3]");
+    assert!(use_block(game, at, None));
+    let mut dropped: Vec<String> = game
+        .dropped
+        .iter()
+        .map(|d| d.stack.item.to_string())
+        .collect();
+    dropped.sort();
+    dropped
+}
+
+/// `SweetBerryBushBlock.useWithoutItem` drops through `BLOCK_INTERACT`: the
+/// clicking player is `interacting_entity` with the fire it is in, nothing is
+/// `this`, and `location_check` reads around the block (`ORIGIN`). A table of
+/// those conditions, run through the real click, drops what each one holds for.
+#[test]
+#[ignore = "daily"]
+fn a_harvest_rolls_with_its_interacting_player_and_block_origin() {
+    use serde_json::json;
+    let mut resources = None;
+    let item = |name: &str| json!({"type": "minecraft:item", "name": name});
+    let pool = |condition: serde_json::Value, name: &str| json!({"rolls": 1, "condition": condition, "entries": [item(name)]});
+    let who = |who: &str, predicate: serde_json::Value| json!({"type": "minecraft:entity_properties", "entity": who, "predicate": predicate});
+    let below = |block: &str| {
+        json!({"type": "minecraft:location_check", "offsetY": -1,
+            "predicate": {"block": {"blocks": block}}})
+    };
+    let table = json!({"type": "minecraft:block_interact", "pools": [
+        pool(who("interacting_entity", json!({"minecraft:flags": {"is_on_fire": true}})),
+            "minecraft:apple"),
+        pool(who("interacting_entity", json!({"minecraft:entity_type": "minecraft:player"})),
+            "minecraft:stick"),
+        pool(who("this", json!({"minecraft:entity_type": "minecraft:player"})), "minecraft:bone"),
+        pool(below("minecraft:stone"), "minecraft:diamond"),
+        pool(below("minecraft:dirt"), "minecraft:coal"),
+    ]});
+    let (_published, mut game) = harvest_game(&mut resources, table);
+    assert_eq!(
+        harvest(&mut game),
+        ["minecraft:diamond", "minecraft:stick"],
+        "the player is the interacting entity and nothing is `this`; the stone below holds"
+    );
+    game.player.as_mut().unwrap().ignite_for_ticks(100).unwrap();
+    assert_eq!(
+        harvest(&mut game),
+        ["minecraft:apple", "minecraft:diamond", "minecraft:stick"],
+        "the burning player matches `is_on_fire`"
+    );
+}
+
+/// `LocationPredicate.matches` tests the level's dimension: a harvest table
+/// whose `location_check` asks for another dimension drops nothing here, and
+/// one that asks for this dimension (and combines it with a block test, which
+/// the old block-only reader could not read) drops.
+#[test]
+#[ignore = "daily"]
+fn a_harvest_location_check_reads_the_dimension() {
+    use serde_json::json;
+    let mut resources = None;
+    let check = |predicate: serde_json::Value| json!({"type": "minecraft:location_check", "predicate": predicate});
+    let pool = |condition: serde_json::Value, name: &str| {
+        json!({"rolls": 1, "condition": condition,
+            "entries": [{"type": "minecraft:item", "name": name}]})
+    };
+    let table = json!({"type": "minecraft:block_interact", "pools": [
+        pool(check(json!({"dimension": "minecraft:the_nether"})), "minecraft:diamond"),
+        pool(check(json!({"dimension": "minecraft:overworld"})), "minecraft:coal"),
+        pool(check(json!({"dimension": "minecraft:the_nether",
+            "block": {"blocks": "minecraft:sweet_berry_bush"}})), "minecraft:emerald"),
+        pool(check(json!({"dimension": "minecraft:overworld",
+            "block": {"blocks": "minecraft:sweet_berry_bush"}})), "minecraft:stick"),
+    ]});
+    let (_published, mut game) = harvest_game(&mut resources, table);
+    assert_eq!(harvest(&mut game), ["minecraft:coal", "minecraft:stick"]);
+}
+
+/// A player riding a mob is `interacting_entity` with that mob as its
+/// `vehicle`: a `vehicle` predicate on its type holds, one on another type
+/// does not.
+#[test]
+#[ignore = "daily"]
+fn a_harvest_reads_the_vehicle_the_player_rides() {
+    use serde_json::json;
+    let mut resources = None;
+    let vehicle = |kind: &str| {
+        json!({"type": "minecraft:entity_properties", "entity": "interacting_entity",
+            "predicate": {"minecraft:vehicle": {"minecraft:entity_type": kind}}})
+    };
+    let pool = |condition: serde_json::Value, name: &str| {
+        json!({"rolls": 1, "condition": condition,
+            "entries": [{"type": "minecraft:item", "name": name}]})
+    };
+    let table = json!({"type": "minecraft:block_interact", "pools": [
+        pool(vehicle("minecraft:pig"), "minecraft:apple"),
+        pool(vehicle("minecraft:cow"), "minecraft:bone"),
+    ]});
+    let (_published, mut game) = harvest_game(&mut resources, table);
+    assert!(harvest(&mut game).is_empty(), "no vehicle, no drop");
+    assert!(game.run_command("summon minecraft:pig 12.5 100 2.5 {NoAI:1b}"));
+    game.riding = Some(game.mobs.last().unwrap().id);
+    assert_eq!(harvest(&mut game), ["minecraft:apple"]);
 }

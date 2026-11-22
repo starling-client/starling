@@ -1,0 +1,5 @@
+manifest:
+refused: src: unsupported package path
+
+icon:
+unavailable

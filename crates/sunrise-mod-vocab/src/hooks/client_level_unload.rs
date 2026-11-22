@@ -8,10 +8,12 @@ pub trait Hooks {
     /// `client_level_load`. Not told when the game itself quits.
     /// Client-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_client_level_unload",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "LevelEvent.Unload",
         cancellable = false
     )]
-    fn client_level_unload();
+    fn client_level_unload(dimension: &str);
 }

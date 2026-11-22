@@ -1,10 +1,10 @@
 //! The six density roots in the 26.3 aquifer configuration.
 use super::super::{DecodeError, Object, density::DensityRegistry, required};
+use std::sync::Arc;
 use sunrise_core::density::{
     DensitySampler,
     graph::{CompileError, DensityCompiler, FunctionId},
 };
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
@@ -86,8 +86,8 @@ impl AquiferSamplers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::density::{SamplerContext, graph::GraphNode};
     use std::collections::BTreeMap;
+    use sunrise_core::density::{SamplerContext, graph::GraphNode};
     #[test]
     fn bindings_share_named_cache_and_failed_decode_is_atomic() {
         let mut registry = DensityRegistry::from_json(&BTreeMap::new(), &BTreeMap::from([("minecraft:shared".into(), r#"{"type":"cache","input":{"type":"gradient","axis":"x","from_coordinate":0,"to_coordinate":16,"from_value":0,"to_value":1}}"#.into())])).unwrap();

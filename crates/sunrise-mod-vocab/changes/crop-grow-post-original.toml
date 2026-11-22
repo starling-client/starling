@@ -1,0 +1,3 @@
+ids = ["hook:crop_grow_post"]
+why = "crop_grow_post version 2 reports the growing plant's pre-growth state as original_state for every plant, including sugar cane and growing vine/kelp heads. Diverges from NeoForge: original_state is always the pre-growth state. Positions and timing are unchanged: cane/head events name the newly grown position, sugar cane emits no Post for age-only steps, full-age stems still emit Post without fruit, and cactus/chorus name the plant."
+migrate = "Listeners should compare original_state with state as the source plant before growth and the current block at the reported position, rather than expecting identical states for sugar cane or growing heads."

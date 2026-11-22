@@ -1,6 +1,7 @@
 //! What follows a block a client writes from the server or a prediction (vanilla's
 //! `Level.setBlock` on a `ClientLevel`), out of remote.rs, which may not grow: the moving piston
-//! it replaces stops, and the block parts hear `on_block_state_change`.
+//! it replaces stops, the block parts hear `on_block_state_change` and the mods hear
+//! `client_block_changed`.
 use super::Game;
 use sunrise_core::position::BlockPos;
 use sunrise_world::registry::BlockStateId;
@@ -24,8 +25,7 @@ impl Game<'_> {
             self.forget_moving_piston(at);
             self.moving_pistons_stale = true;
         }
-        // No event values or level adapter while no part listens: one flag check.
-        if !mod_api::__private::has_scoped_hook(mod_api::HookId::OnBlockStateChange) {
+        if previous == state {
             return;
         }
         let listens = |s| {
@@ -34,8 +34,17 @@ impl Game<'_> {
                 s,
             )
         };
-        if previous != state && (listens(previous) || listens(state)) {
+        // No event values or level adapter while no part listens: one flag check.
+        if mod_api::__private::has_scoped_hook(mod_api::HookId::OnBlockStateChange)
+            && (listens(previous) || listens(state))
+        {
             self.with_level(|_, level, _| level.block_state_change(at, previous, state, predicted));
+        }
+        // Then the client-wide listeners, a map's invalidation among them.
+        if mod_api::__private::listened(mod_api::HookId::ClientBlockChanged)
+            && let Some(dimension) = self.remote.as_ref().and_then(|r| r.heard_level.as_deref())
+        {
+            self.native_client_block_changed(dimension, at, previous, state, predicted);
         }
     }
 }

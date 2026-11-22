@@ -14,17 +14,28 @@ import lab
 
 
 def snapshot_tests(build):
-    """Run the prepared-resource hurt, landing, world lifetime and wire cases."""
-    run = subprocess.run(
-        ["cargo", "test", "--locked", "-p", "sunrise-client", "-p", "sunrise-client-lib",
-         "--lib", "datapack_damage_", "--", "--include-ignored"],
-        cwd=lab.ROOT, text=True, capture_output=True)
-    output = run.stdout + run.stderr
-    (build / "snapshot-tests.log").write_text(output)
-    if run.returncode:
-        print(output)
-    run.check_returncode()
-    passed = re.findall(r"^test (\S*datapack_damage_\S*) \.\.\. ok$", run.stdout, re.MULTILINE)
+    """Run the prepared-resource hurt, landing, world lifetime and wire cases.
+
+    One package per Cargo run, as other harnesses select them: in one run, sunrise-client-lib's lib test and rlib
+    compiled beside sunrise-client's lib test, 15.6 GiB at once, and a 16 GiB parity runner killed it (signal 9,
+    main, run 43884739298). Apart, the larger, sunrise-client's with its rlib, peaks at 11.5 GiB."""
+    stdout = output = ""
+    # Tests that run their cases in child processes (native_entity_refs::tests::run_fresh_cases) pass the
+    # prepared resources down by this variable; the scratch homes keep the runs out of a player's folders.
+    env = lab.game_env(SUNRISE_TEST_RESOURCES=lab.RESOURCES.resolve())
+    # Written out whole: CI's named-harness step finds the lib tests to build first by these literal arguments.
+    for command in (
+        ["cargo", "test", "--locked", "-p", "sunrise-client-lib", "--lib", "datapack_damage_", "--", "--include-ignored"],
+        ["cargo", "test", "--locked", "-p", "sunrise-client", "--lib", "datapack_damage_", "--", "--include-ignored"],
+    ):
+        run = subprocess.run(command, cwd=lab.ROOT, env=env, text=True, capture_output=True)
+        stdout += run.stdout
+        output += run.stdout + run.stderr
+        (build / "snapshot-tests.log").write_text(output)
+        if run.returncode:
+            print(output)
+        run.check_returncode()
+    passed = re.findall(r"^test (\S*datapack_damage_\S*) \.\.\. ok$", stdout, re.MULTILINE)
     expected = {
         "datapack_damage_new_world_drops_a_removed_resource_root_definition",
         "datapack_damage_initial_snapshot_uses_the_prepared_worlds_features",

@@ -46,9 +46,9 @@ NbtProviders	skip:data		registry bootstrap
 AggregateProvider	skip:java		codec only
 BinaryProvider.mapCodec	skip:java		codec
 BinaryProvider.validate	skip:data		datapack validation
-ConditionalProvider.selectValue	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_select	conditional arm: on_true or on_false by the condition
+ConditionalProvider.selectValue	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::run	Work::Branch: on_true or on_false by the condition
 DispatcherProvider.mapCodec	skip:java		codec
-DispatcherProvider.selectValue	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_select	number_dispatcher arm: first case whose condition holds, else default
+DispatcherProvider.selectValue	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::run	Work::Dispatch: first case whose condition holds, else default
 DispatcherProvider.validate	skip:data		datapack validation
 DispatcherProvider.Case.codec	skip:java		codec
 DispatcherProvider.Case.validate	skip:data		datapack validation
@@ -61,48 +61,48 @@ RangeProvider.mapCodec	skip:java		codec
 RangeProvider.validate	skip:data		datapack validation
 StoredNumberAccess	missing		no storage-backed number provider: `loot.rs::level_value` and the int and float readers know constant, uniform, binomial, linear, clamped, fraction, levels_squared and lookup only
 UnaryProvider	skip:java		codec only
-floats/Average.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	avg arm
+floats/Average.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	avg arm
 floats/ContextFloatProviders	skip:data		registry bootstrap
-floats/Difference.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	sub arm
+floats/Difference.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	sub arm
 floats/EnchantmentLevelProvider.getFloatUnsafe	port	crates/sunrise-items/src/enchant.rs::Enchantments::condition	random_chance arm: chance at the enchantment level; gap: minor: only the random_chance use is read
 floats/EnvironmentAttributeValue	missing		no `environment_attribute` provider in `loot.rs::level_value`
-floats/Length.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	length arm
-floats/Maximum.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	max arm
-floats/Minimum.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	min arm
-floats/Modulus.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	mod arm
-floats/Product.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	mul arm
-floats/Quotient.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	div arm
-ResolvableFloat.getFromItem	port	crates/sunrise-client-render/src/providers.rs::Providers::speed	furnace fuel speed multiplier (COOKING_FUEL); gap: minor: only the furnace fuel component is read
+floats/Length.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	length arm
+floats/Maximum.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	max arm
+floats/Minimum.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	min arm
+floats/Modulus.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::run	Work::Apply evaluates the divisor first and skips the dividend when the divisor is zero; otherwise Op::apply returns the remainder
+floats/Product.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	mul arm
+floats/Quotient.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	div arm
+ResolvableFloat.getFromItem	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::cooking_fuel	furnace fuel speed multiplier (COOKING_FUEL); gap: minor: only the furnace fuel component is read
 ResolvableFloat.wrap	skip:java		codec helper
 floats/StorageValue	missing		no `storage` provider in `loot.rs::level_value`
-floats/Sum.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	add arm
-floats/Truncate.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_float	truncate arm
+floats/Sum.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	add arm
+floats/Truncate.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	truncate arm
 floats/UniformGenerator.getFloatUnsafe	port	crates/sunrise-world/src/loot.rs::Context::float	uniform arm: min + random * (max - min)
-floats/WeightedListValue.getFloatUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_select	weighted list pick (the default branch)
-ints/Average.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	avg arm
+floats/WeightedListValue.getFloatUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::weighted	picks one list entry by weight before visiting its value
+ints/Average.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	avg arm
 ints/BinomialDistributionGenerator.getIntUnsafe	port	crates/sunrise-world/src/loot.rs::Context::int	binomial arm
 ints/BinomialDistributionGenerator.validate	skip:data		datapack validation
 ints/ContextIntProviders.bootstrap	skip:data		registry bootstrap
 ints/ContextIntProviders.compostable	port	crates/sunrise-client/src/game/blocks/composter.rs::Game::compostable	the item's compostable layer provider; evaluated when the composter takes it (Game::composter_add)
-ints/ContextIntProviders.cooking	port	crates/sunrise-client-render/src/providers.rs::Providers::burn_time	fuel burn times (the cooking/time_* providers)
-ints/Difference.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	sub arm
+ints/ContextIntProviders.cooking	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::cooking_fuel	fuel burn times (the cooking/time_* providers)
+ints/Difference.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	sub arm
 ints/EnvironmentAttributeValue	missing		no `environment_attribute` provider in the int reader (`loot.rs::int`)
-ints/FloorModulus.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	floor_mod arm
-ints/FloorQuotient.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	floor_div arm
-ints/Maximum.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	max arm
-ints/Minimum.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	min arm
-ints/Modulus.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	mod arm
-ints/Product.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	mul arm
-ints/Quotient.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	div arm
-ResolvableInt.getFromItem	port	crates/sunrise-client-render/src/providers.rs::Providers::burn_time	furnace fuel burn time (COOKING_FUEL); gap: minor: only the furnace fuel component is read
+ints/FloorModulus.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	floor_mod arm
+ints/FloorQuotient.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	floor_div arm
+ints/Maximum.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	max arm
+ints/Minimum.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	min arm
+ints/Modulus.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	mod arm
+ints/Product.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	mul arm
+ints/Quotient.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	div arm
+ResolvableInt.getFromItem	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::cooking_fuel	furnace fuel burn time (COOKING_FUEL); gap: minor: only the furnace fuel component is read
 ResolvableInt.wrap	skip:java		codec helper
 ints/ScoreboardValue.getIntUnsafe	missing		no `score` provider in `loot.rs::int`
 ints/ScoreboardValue.getScoreInfo	missing		no `score` provider in `loot.rs::int`
 ints/ScoreboardValue.validate	skip:data		datapack validation
 ints/StorageValue	missing		no `storage` provider in `loot.rs::int`
-ints/Sum.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_int	add arm
+ints/Sum.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Op::apply	add arm
 ints/UniformGenerator.getIntUnsafe	port	crates/sunrise-world/src/loot.rs::Context::int	uniform arm: inclusive random int between min and max
-ints/WeightedListValue.getIntUnsafe	port	crates/sunrise-client/src/game/administration/commands/compute.rs::Game::provider_select	weighted list pick (the default branch)
+ints/WeightedListValue.getIntUnsafe	port	crates/sunrise-client-render/src/providers/evaluation.rs::Evaluation::weighted	picks one list entry by weight before visiting its value
 ScoreboardNameProviders	skip:data		registry bootstrap
 FunctionCallback.handle	port	crates/sunrise-client/src/game/administration/functions.rs::Game::run_function_by_id	runs the function by id when its time comes
 FunctionTagCallback.handle	inline	crates/sunrise-client/src/game/administration/functions.rs::Game::tick_functions	tag branch: runs every function in the tag

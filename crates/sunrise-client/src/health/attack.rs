@@ -1,14 +1,64 @@
-use super::{Attack, HurtSource, names_its_projectile};
+use super::{Attack, DirectEntity, HurtSource, names_its_projectile};
 use crate::mobs::{Damage, DamageKind, Who};
 
 impl Attack {
+    /// The vanilla class family of this hit's resolved `DamageSource.getDirectEntity()`.
+    pub fn direct_entity(&self, damage: &Damage) -> DirectEntity {
+        let source = mob_source(damage, self);
+        if let Some(direct) = self.direct {
+            if direct == 0 {
+                return DirectEntity::Other;
+            }
+            if let Some(kind) = self.direct_kind {
+                return kind;
+            }
+            if self.projectile == Some(direct) {
+                return self.projectile_kind;
+            }
+            return DirectEntity::Other;
+        }
+        if melee(damage.kind) {
+            return if damage.attacker.is_some() {
+                DirectEntity::Living
+            } else {
+                DirectEntity::Other
+            };
+        }
+        if self
+            .projectile
+            .is_some_and(|entity| entity != 0 && source.direct == entity)
+        {
+            return self.projectile_kind;
+        }
+        DirectEntity::Other
+    }
     /// `WitherBoss.hurtServer` / `Shulker.hurtServer`: test the direct entity's
     /// `AbstractArrow` family, independently of the damage type's name or tags.
     pub fn direct_is_arrow(&self, damage: &Damage) -> bool {
-        self.projectile_is_arrow
-            && self
-                .projectile
-                .is_some_and(|entity| entity != 0 && mob_source(damage, self).direct == entity)
+        self.direct_entity(damage).is_arrow()
+    }
+    /// `Ghast.isReflectedFireball`: test whether the direct entity is a
+    /// `LargeFireball`, independently of the damage type's name or tags.
+    pub fn direct_is_large_fireball(&self, damage: &Damage) -> bool {
+        self.direct_entity(damage).is_large_fireball()
+    }
+    /// `DamageSource.isDirect`: whether the causing and direct entities are the
+    /// same entity (`causingEntity == directEntity`), independently of the damage type.
+    pub fn is_direct(&self, damage: &Damage) -> bool {
+        let source = mob_source(damage, self);
+        if let Some(direct) = self.direct {
+            if damage.attacker.is_some() && source.causing == 0 {
+                false
+            } else {
+                source.causing == direct
+            }
+        } else if melee(damage.kind) {
+            true
+        } else if damage.attacker.is_some() {
+            source.causing != 0 && source.causing == source.direct
+        } else {
+            source.direct == 0
+        }
     }
     /// `DamageSource.getWeaponItem`: melee's direct living entity or a projectile's saved weapon.
     pub fn weapon_of(&self, direct: i32) -> Option<&crate::items::ItemStack> {

@@ -9,8 +9,8 @@ use crate::{
     compression::invalid,
     registry::{BlockRegistry, BlockStateId},
 };
-use sunrise_core::geometry::{Axis, Direction};
 use std::{collections::HashMap, io};
+use sunrise_core::geometry::{Axis, Direction};
 
 /// Registry-order block index; equals vanilla's `Block` registry ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -47,6 +47,9 @@ struct Slot {
     key: PropKey,
     stride: u32,
     values: Vec<PropValue>,
+    /// The value index of each state of the block, `state.0 - base`: the
+    /// division and modulo `index_in` would otherwise do per read.
+    indices: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +144,7 @@ impl StateTable {
                     key,
                     stride,
                     values,
+                    indices: Vec::new(),
                 });
             }
             if stride != 1 {
@@ -166,7 +170,7 @@ impl StateTable {
             let default = registry
                 .default_state(&first.name)
                 .ok_or_else(|| invalid("block without default state"))?;
-            let info = BlockInfo {
+            let mut info = BlockInfo {
                 name: first.name.as_str().into(),
                 base: BlockStateId(index as u32),
                 count,
@@ -175,10 +179,15 @@ impl StateTable {
             };
             for offset in 0..count {
                 let state = registry.state(BlockStateId(index as u32 + offset)).unwrap();
-                for slot in &info.slots {
-                    let value =
-                        &slot.values[((offset / slot.stride) % slot.values.len() as u32) as usize];
-                    if *value.text != *state.properties[&table.key_names[slot.key.0 as usize]] {
+                for slot in &mut info.slots {
+                    let value_index = (offset / slot.stride) % slot.values.len() as u32;
+                    let Ok(value_index) = u8::try_from(value_index) else {
+                        return Err(invalid("too many values for one property"));
+                    };
+                    slot.indices.push(value_index);
+                    if *slot.values[value_index as usize].text
+                        != *state.properties[&table.key_names[slot.key.0 as usize]]
+                    {
                         return Err(invalid(
                             "registry state order differs from vanilla's state definition",
                         ));
@@ -247,11 +256,12 @@ impl StateTable {
     }
     fn index_in(&self, state: BlockStateId, slot: &Slot) -> u32 {
         let base = self.info(self.block(state)).base.0;
-        ((state.0 - base) / slot.stride) % slot.values.len() as u32
+        u32::from(slot.indices[(state.0 - base) as usize])
     }
     pub fn value(&self, state: BlockStateId, key: PropKey) -> Option<&PropValue> {
-        let slot = self.slot(state, key)?;
-        Some(&slot.values[self.index_in(state, slot) as usize])
+        let info = self.info(self.block(state));
+        let slot = info.slots.iter().find(|slot| slot.key == key)?;
+        Some(&slot.values[slot.indices[(state.0 - info.base.0) as usize] as usize])
     }
     pub fn text(&self, state: BlockStateId, key: PropKey) -> &str {
         self.value(state, key).map_or("", |v| &v.text)

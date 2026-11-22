@@ -1,0 +1,3 @@
+ids = ["type:Screen"]
+why = "Screen declares optional title_label and inventory_label positions relative to the image origin. None uses vanilla defaults [8, 6] and [8, height - 94]; own_labels still suppresses both labels. The inventory label default now follows image height instead of inventory_y - 11, correcting the one-pixel error in standard and hopper mod layouts without changing chest or shulker defaults."
+migrate = "Add title_label: None and inventory_label: None to exhaustive Screen literals, or use ..Default::default(). Set Some([x, y]) for custom positions. Rebuild native mods."

@@ -1,11 +1,11 @@
 #![cfg(test)]
 use crate::game::{native_entity_refs::tests::with_game, *};
-use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
-use sunrise_core::geometry::Vec3;
 use mod_api::{
     BlockPart, BlockPos, ClientHost, Direction, Flow, Hooks, ModEntry, PlayHitSoundEvent, Registrar,
 };
 use std::sync::{Arc, Mutex};
+use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
+use sunrise_core::geometry::Vec3;
 
 type Hits = Arc<Mutex<Vec<(BlockPos, Direction)>>>;
 struct Quiet(Hits);
@@ -26,7 +26,7 @@ impl Hooks for Register {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn play_hit_sound_helper_and_eight_mining_ticks() {
     for installed in [false, true] {
         let hits = Hits::default();
@@ -42,6 +42,7 @@ fn play_hit_sound_helper_and_eight_mining_ticks() {
                 game.save = Arc::new(sunrise_client::save::SaveDir::new(
                     scratch.path().to_path_buf(),
                     sunrise_client::save::LevelShape::OVERWORLD,
+                    Some(Default::default()),
                 ));
                 game.world
                     .chunks
@@ -52,7 +53,7 @@ fn play_hit_sound_helper_and_eight_mining_ticks() {
                 game.creative = false;
                 game.screen = Screen::Playing;
                 game.title = None;
-                game.left = true;
+                game.set_mapping_held("key.attack", true);
                 game.forced_hit = Some(Hit {
                     pos: [5, 63, 4],
                     face: [-1, 0, 0],

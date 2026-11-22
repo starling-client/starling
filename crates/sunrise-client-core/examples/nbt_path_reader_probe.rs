@@ -1,6 +1,6 @@
 //! NBT path parser output and byte cursor for the pinned Java oracle.
-use sunrise_client_core::nbt_path::NbtPath;
 use std::io::{BufRead, Write};
+use sunrise_client_core::nbt_path::NbtPath;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let input = std::io::BufReader::new(std::fs::File::open(args.next().unwrap())?);

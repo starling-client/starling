@@ -3,16 +3,20 @@
 //! every connection state, shared by the Sunrise client and (later) server.
 // `deny`, not `forbid`: crypto/blocks.rs allows the ARMv8 AES intrinsics, nothing else.
 #![deny(unsafe_code)]
-pub mod adapter;
 pub mod anvil_cost;
 pub mod attachment_sync;
 pub mod buf;
+pub mod carry_age;
 pub mod chunk;
+pub mod chunk_batch;
+pub mod collider_sync;
 pub mod connection;
+pub mod connection_groups;
 pub mod crypto;
 pub mod custom_book;
 pub mod entity_data;
 pub mod frame;
+pub mod general_entity;
 pub mod hash_ops;
 pub mod ids;
 pub mod item;
@@ -29,7 +33,6 @@ mod resolver;
 pub use resolver::{server_redirect, set_name_servers};
 pub mod rsa;
 pub mod secure_chat;
-pub mod server_status;
 pub mod servers;
 pub mod text;
 pub mod viewed_levels;

@@ -19,12 +19,12 @@ impl Hooks for Vision {
         _: &RegistrationContext,
         event: &mut RegisterEntitySpectatorShadersEvent<'_>,
     ) {
-        event.shaders.push(EntitySpectatorShader {
+        event.register(EntitySpectatorShader {
             entity: "minecraft:cow".into(),
             shader: "example:cow_vision".into(),
         });
         // Vanilla's creeper registered first: this one is skipped.
-        event.shaders.push(EntitySpectatorShader {
+        event.register(EntitySpectatorShader {
             entity: "minecraft:creeper".into(),
             shader: "example:pink".into(),
         });
@@ -58,7 +58,7 @@ fn add_entity(game: &mut Game<'_>, id: i32, kind: &str) {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_mods_entity_type_puts_its_chain_on_while_spectated() {
     use sunrise_client::motion::PlayerMotion;
     use sunrise_core::geometry::Vec3;

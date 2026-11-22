@@ -11,7 +11,7 @@
 #   packaging/macos/keychain.sh import P12     # once, from the Mac's own Terminal: the identity
 #   packaging/macos/keychain.sh notary         # once: the notarytool profile from the App Store Connect key
 #
-# MACOS_SIGN_IDENTITY names the identity (empty: nothing is signed, see package.sh);
+# MACOS_SIGN_IDENTITY names the identity (empty: nothing is signed);
 # MACOS_SIGN_KEYCHAIN the keychain; MACOS_NOTARY_PROFILE the profile in it; MACOS_KEYCHAIN_PASSWORD,
 # when set, is the keychain's password instead of 1Password's.
 set -euo pipefail

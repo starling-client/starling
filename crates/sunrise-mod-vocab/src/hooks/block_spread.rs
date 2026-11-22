@@ -8,11 +8,19 @@ pub trait Hooks {
     /// Set `canceled` to leave the block at `to` as it is. Fluids ask on
     /// every flow: answer fast.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_block_spread",
         neoforge = "none (BlockEvent.FluidPlaceBlockEvent covers only fluids making stone and the like, not flow or fire spread)"
     )]
-    fn block_spread();
+    fn block_spread(
+        dimension: LevelDimension,
+        kind: &str,
+        from: BlockPos,
+        to: BlockPos,
+        canceled: &mut bool,
+    );
 }

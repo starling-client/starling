@@ -6,17 +6,15 @@ use std::sync::{
 };
 
 fn registered(count: Arc<AtomicUsize>) -> LoadConditions {
-    LoadConditions::new(["testmod", "othermod"]).with_lookup(
-        BTreeMap::from([("testmod".into(), "testmod".into())]),
-        move |name, args| {
-            (name == "testmod:flag").then(|| {
-                count.fetch_add(1, Ordering::SeqCst);
-                args["value"]
-                    .as_bool()
-                    .ok_or_else(|| "value must be a boolean".into())
-            })
+    LoadConditions::new(["testmod", "othermod"]).with_lookup([(
+        "testmod:flag",
+        move |args: &Value| {
+            count.fetch_add(1, Ordering::SeqCst);
+            args["value"]
+                .as_bool()
+                .ok_or_else(|| "value must be a boolean".into())
         },
-    )
+    )])
 }
 fn variants(name: &str) -> Vec<Value> {
     let leaf = json!({"type":name});
@@ -24,39 +22,39 @@ fn variants(name: &str) -> Vec<Value> {
         leaf.clone(),
         json!({"type":"neoforge:not", "value":{"type":"neoforge:not", "value":leaf}}),
         json!({"type":"neoforge:and", "values":[{"type":"neoforge:mod_loaded","modid":"absent"},leaf]}),
-        json!({"type":"neoforge:or", "values":[{"type":"neoforge:true"},leaf]}),
+        json!({"type":"neoforge:or", "values":[{"type":"neoforge:always"},leaf]}),
     ]
 }
 #[test]
-fn owned_unknown_conditions_refuse_at_every_depth_and_foreign_names_report_once() {
-    for (i, node) in variants("testmod:nope").into_iter().enumerate() {
-        let conditions = registered(Arc::default());
-        let path = format!("data/testmod/recipe/owned_{i}.json");
-        assert!(!conditions.allows_file(&json!({"neoforge:conditions":[node]}), &path));
-        let error = conditions.check_errors().unwrap_err();
-        assert!(error.contains(&path), "{error}");
-        assert!(error.contains("testmod:nope"), "{error}");
-        assert!(error.contains("mod testmod"), "{error}");
-    }
-    for node in variants("othermod:thing") {
-        let conditions = registered(Arc::default());
-        let file = json!({"neoforge:conditions":[node.clone(), node, {"type":"othermod:second"}]});
-        for _ in 0..2 {
-            assert!(!conditions.allows_file(&file, "data/testmod/recipe/foreign.json"));
+fn unknown_ids_fail_before_any_test_regardless_of_namespace_or_nesting() {
+    for id in [
+        "testmod:nope",
+        "othermod:nope",
+        "absent:nope",
+        "minecraft:nope",
+        "neoforge:nope",
+    ] {
+        let count = Arc::new(AtomicUsize::new(0));
+        let conditions = registered(count.clone());
+        for (index, node) in variants(id).into_iter().enumerate() {
+            let path = format!("data/example/predicate/file_{index}.json");
+            let file = json!({"neoforge:conditions":[{"type":"testmod:flag","value":true}, node]});
+            assert!(!conditions.allows_file(&file, &path));
+            assert_eq!(
+                conditions.allows_file_isolated(&file, &path),
+                Err(format!("unknown load conditions [{id}]"))
+            );
+            let error = conditions.check_errors().unwrap_err();
+            assert!(
+                error.contains(&format!("{path}: unknown load conditions [{id}]")),
+                "{error}"
+            );
         }
-        assert_eq!(conditions.check_errors(), Ok(()));
         assert_eq!(
-            conditions.foreign_errors(),
-            [
-                "data/testmod/recipe/foreign.json: unknown load conditions [othermod:second, othermod:thing]; file left out"
-            ]
+            conditions.check_errors().unwrap_err().matches(id).count(),
+            4
         );
-        assert_eq!(
-            conditions.foreign_errors()[0]
-                .matches("data/testmod/recipe/foreign.json")
-                .count(),
-            1
-        );
+        assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 }
 #[test]
@@ -73,7 +71,7 @@ fn registered_conditions_cache_each_entry_and_new_reload_evaluates_again() {
         assert_eq!(count.load(Ordering::SeqCst), expected);
     }
     let conditions = registered(count);
-    assert!(conditions.allows_file(&json!({"neoforge:conditions":[{"type":"neoforge:and","values":[{"type":"testmod:flag","value":true},{"type":"neoforge:or","values":[{"type":"testmod:flag","value":false},{"type":"neoforge:true"}]}]}]}), "nested.json"));
+    assert!(conditions.allows_file(&json!({"neoforge:conditions":[{"type":"neoforge:and","values":[{"type":"testmod:flag","value":true},{"type":"neoforge:or","values":[{"type":"testmod:flag","value":false},{"type":"neoforge:always"}]}]}]}), "nested.json"));
     assert!(!conditions.allows_file(
         &json!({"neoforge:conditions":[{"type":"testmod:flag","value":"bad"}]}),
         "bad.json"
@@ -84,24 +82,26 @@ fn registered_conditions_cache_each_entry_and_new_reload_evaluates_again() {
     );
 }
 #[test]
-fn loaded_mod_ids_alone_do_not_own_condition_namespaces() {
-    let conditions = LoadConditions::new(["testmod"]);
-    for name in ["testmod:nope", "othermod:thing"] {
-        for node in variants(name) {
-            let file = json!({"neoforge:conditions":[node]});
-            assert!(!conditions.allows_file(&file, "foreign.json"));
-            assert!(!conditions_hold(&file, &|_| false));
-            assert_eq!(conditions.check_errors(), Ok(()));
-        }
-    }
-    assert_eq!(conditions.foreign_errors().len(), 1);
+fn unavailable_context_does_not_hide_a_registered_handler_error() {
+    let conditions = registered(Arc::new(AtomicUsize::new(0)));
+    assert!(!conditions.allows_file(
+        &json!({"neoforge:conditions":[{"type":"neoforge:or","values":[
+            {"type":"neoforge:always"},
+            {"type":"neoforge:tag_empty","tag":"testmod:empty"},
+            {"type":"testmod:flag","value":"bad"}
+        ]}]}),
+        "bad.json"
+    ));
+    assert_eq!(
+        conditions.check_errors().unwrap_err(),
+        "bad.json: value must be a boolean"
+    );
 }
-
 #[test]
 fn no_mod_conditions_do_not_construct_file_context_for_known_nodes() {
     let conditions = LoadConditions::new([]);
     for (node, expected) in [
-        (json!({"type":"neoforge:true"}), true),
+        (json!({"type":"neoforge:always"}), true),
         (
             json!({"type":"neoforge:mod_loaded","modid":"absent"}),
             false,

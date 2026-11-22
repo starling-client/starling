@@ -1,0 +1,6 @@
+ids = [
+    "hook:render_living_pre", "hook:render_living_post", "hook:render_player_pre", "hook:render_player_post",
+    "hook:register_entity_layers", "hook:register_entity_renderers", "hook:entity_outline",
+]
+why = "The ordered body pass follows level join order across families, including the local player at its admission slot. Render hooks, layer and renderer submissions, and outline queries in that pass follow this order."
+migrate = "Treat each entity's pre and post hooks as a pair. Do not assume the local player's pair or layers run after the mobs, or that renderer submissions and outline queries are grouped by entity family."

@@ -1,0 +1,57 @@
+ids = [
+    "method:prelude::ClientRenderClientHost::biome_tint",
+    "behaviour:client_face_tint_refresh",
+    "type:ColumnBlocks",
+    "type:ColumnBlocks.tints",
+    "type:ColumnBlocks.water_colors",
+]
+why = """
+In vanilla Minecraft 26.3, the grass, foliage, and dry-foliage colormaps are client-only resources
+loaded by GrassColorReloadListener, FoliageColorReloadListener, and DryFoliageColorReloadListener
+from assets/minecraft/textures/colormap/{grass,foliage,dry_foliage}.png (which server.jar does not
+ship), while BiomeSpecialEffects.waterColor (JSON water_color) is server-side biome data. Vanilla
+resolves blended biome tints on the client in ClientLevel.getBlockTint / calculateBlockTint (and
+BiomeColors.getAverageGrassColor / getAverageFoliageColor / getAverageDryFoliageColor /
+getAverageWaterColor), with NeoForge posting RegisterColorHandlersEvent.ColorResolvers in
+ColorResolverManager.init and installing client caches for registered resolvers in
+ColorResolverManager.registerBlockTintCaches.
+
+ServerHost::read_columns previously returned colormap-derived grass and foliage tints alongside
+water colours in ColumnBlocks::tints (3 entries per column), forcing the server to load client
+colormap PNGs and exposing unblended tints that disagreed with what players see. ColumnBlocks now
+carries only water_colors (one 0xRRGGBB biome JSON water colour per column, 0 where unloaded), the
+server loads biomes without requiring colormap textures, and client mods read blended biome tints
+with BlockAndTintGetter::block_tint in block tint callbacks or the new ClientHost::biome_tint on the
+current client level. The client query uses the mesher's current biome table, including updates
+from refresh_biome_colors on a server with stock biome definitions. Neither biome query looks at a
+block model or its tint sources.
+
+ClientHost::block_tint_color now also reads the mesher's current biome table for both block and
+fluid faces instead of stale stock colours after a refresh. This follows vanilla
+BlockTintSources.grassBlock and FluidStateModelSet's water source through BiomeColors.getAverage*Color
+and ClientLevel.getBlockTint, whose caches LevelExtractor.allChanged clears, and NeoForge's
+FluidTintSources.water, which uses the same client tint lookup. Face tint sources and pack
+colormap precedence are unchanged.
+"""
+migrate = """
+- Replace reads of `column_blocks.tints[i * 3 + 2]` with `column_blocks.water_colors[i]` (`0xRRGGBB`,
+  `0` where the column is not loaded).
+- Remove server-side reads of grass and foliage tints from `ColumnBlocks::tints[i * 3]` and
+  `tints[i * 3 + 1]`. On the client:
+  - Inside `BlockTintSource` callbacks (`color_in_world`, `color_as_terrain_particle`), call
+    `level.block_tint(pos, ColorResolver::Grass)`, `ColorResolver::Foliage`,
+    `ColorResolver::DryFoliage`, `ColorResolver::Water`, or a mod `ColorResolver` registered in
+    `register_color_resolvers` (`BlockAndTintGetter::block_tint`, opaque ARGB `0xFF00_0000 | rgb`
+    blended over the biome blend radius).
+  - In other client hooks (World phase), replace the old grass and foliage reads with
+    `host.biome_tint(pos, ColorResolver::Grass)` and `host.biome_tint(pos, ColorResolver::Foliage)`
+    on `&dyn ClientHost`. Pass a block position `[x, y, z]` in the current client level. Handle
+    `Result<u32, LevelReadError>` (opaque ARGB, `Unavailable` outside the World phase or without
+    a readable client level).
+    Mask a successful result with `0x00FF_FFFF` if you need `0xRRGGBB`. Use `block_tint_color` only
+    for a particular block or fluid face, not to read a biome resolver.
+- Keep calling `host.block_tint_color(state, tint_index, pos)` for face tints. If you cache its
+  result for drawing, query it again after `host.refresh_biome_colors()` to get the refreshed colour.
+- Update any literal construction or exhaustive destructuring of `ColumnBlocks` to use
+  `water_colors` instead of `tints`.
+"""

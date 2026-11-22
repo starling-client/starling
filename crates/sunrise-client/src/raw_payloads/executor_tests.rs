@@ -21,7 +21,9 @@ enum Mode {
     Success,
     Pressure,
     Error,
+    Panic,
     Cancel,
+    Reconfigure,
     PublicationClosed,
 }
 struct Probe {
@@ -94,7 +96,12 @@ impl IPayloadHandler for Probe {
                     "deliberate handler error".into(),
                 ));
             }
+<<<<<<< sync-sunrise-1
+=======
+            Mode::Panic => panic!("deliberate handler panic after staging"),
+>>>>>>> sunrise/main
             Mode::Cancel => transport.close(),
+            Mode::Reconfigure => transport.begin_configuration(),
             Mode::PublicationClosed => drop(self.receiver.lock().unwrap().take()),
             _ => {}
         }
@@ -236,7 +243,7 @@ fn provider_pressure_refuses_work_before_acceptance() {
 
 #[test]
 fn handler_error_or_epoch_cancellation_publishes_no_staged_work_or_replies() {
-    for mode in [Mode::Error, Mode::Cancel] {
+    for mode in [Mode::Error, Mode::Panic, Mode::Cancel, Mode::Reconfigure] {
         with_case(mode, 1, |probe, incoming, endpoint, out| {
             let original = Arc::downgrade(&incoming.lease);
             dispatch(incoming, endpoint.clone(), queue(&probe, &endpoint));
@@ -255,8 +262,93 @@ fn handler_error_or_epoch_cancellation_publishes_no_staged_work_or_replies() {
                 };
                 assert!(has(b"a mod's network handler failed (executor_probe)"));
                 assert!(!has(b"deliberate handler error"));
+            } else if mode == Mode::Panic {
+                let transport = endpoint.transport();
+                assert!(!transport.closed());
+                assert!(out().is_empty());
+                let _pressure = transport.reserve_ingress(15 << 20).unwrap();
+                let data = vec![0; 1 << 20];
+                assert!(matches!(
+                    transport.reserve_ingress(data.capacity()),
+                    Err(PayloadSendError::Backpressure)
+                ));
+                assert!(matches!(
+                    Incoming::classify(
+                        transport,
+                        negotiation::Phase::Play,
+                        sunrise_protocol::packets::custom_payload::CustomPayload {
+                            channel: CHANNEL.into(),
+                            data,
+                        },
+                    ),
+                    Ok(Classified::Skipped)
+                ));
             }
         });
+    }
+}
+
+#[test]
+fn main_root_blocks_later_network_delivery_and_keeps_its_ingress_charge() {
+    mod_platform::__private::initialize().unwrap();
+    for cancel in [None, Some(Mode::Reconfigure), Some(Mode::Cancel)] {
+        with_case(
+            Mode::Success,
+            3 << 20,
+            |probe, mut incoming, endpoint, out| {
+                let transport = endpoint.transport();
+                let tail = Incoming::new(
+                    transport,
+                    negotiation::Phase::Play,
+                    sunrise_protocol::packets::custom_payload::CustomPayload {
+                        channel: CHANNEL.into(),
+                        data: vec![2],
+                    },
+                )
+                .unwrap();
+                let head_lease = Arc::downgrade(&incoming.lease);
+                let tail_lease = Arc::downgrade(&tail.lease);
+                incoming.receiver.thread = HandlerThread::Main;
+                dispatch(incoming, endpoint.clone(), queue(&probe, &endpoint));
+                dispatch(tail, endpoint.clone(), queue(&probe, &endpoint));
+                let main = queue(&probe, &endpoint);
+                dispatch_pending(&endpoint, &main);
+                assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+                assert_eq!(reply_count(&*out), 0);
+                assert_eq!(probe.events.stats().queued_items, 1);
+                assert!(matches!(
+                    transport.reserve_ingress(14 << 20),
+                    Err(PayloadSendError::Backpressure)
+                ));
+                assert!(tail_lease.upgrade().is_some());
+                match cancel {
+                    Some(Mode::Reconfigure) => transport.begin_configuration(),
+                    Some(Mode::Cancel) => transport.close(),
+                    _ => {}
+                }
+                if cancel.is_some() {
+                    assert!(tail_lease.upgrade().is_none());
+                    assert!(
+                        head_lease.upgrade().is_some(),
+                        "the main provider still owns the head"
+                    );
+                }
+                // Game consumes the root from the provider and returns its turn at completion.
+                let receiver = probe.receiver.lock().unwrap().take().unwrap();
+                drop(receiver.take_turn());
+                assert!(head_lease.upgrade().is_none());
+                dispatch_pending(&endpoint, &main);
+                assert_eq!(
+                    probe.calls.load(Ordering::SeqCst),
+                    usize::from(cancel.is_none())
+                );
+                assert_eq!(reply_count(&*out), usize::from(cancel.is_none()));
+                assert!(!transport.connection.as_ref().unwrap().payloads_pending());
+                drop(receiver.take_turn());
+                assert!(tail_lease.upgrade().is_none());
+                assert_eq!(probe.events.stats().reserved_bytes, 0);
+            },
+        );
     }
 }
 
@@ -292,4 +384,206 @@ fn failed_publication_and_remaining_work_drop_outside_epoch_gate() {
             assert_eq!(reply_count(&*out), 0);
         },
     );
+}
+
+#[test]
+fn disabled_owner_refuses_before_entering_its_native_handler() {
+    with_case(Mode::Success, 1, |probe, incoming, endpoint, out| {
+        let original = Arc::downgrade(&incoming.lease);
+        assert!(mod_api::__private::set_mod_enabled("executor_probe", false));
+        dispatch(incoming, endpoint.clone(), queue(&probe, &endpoint));
+        assert!(endpoint.transport().closed());
+        assert!(original.upgrade().is_none());
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.drops.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.events.stats().reserved_bytes, 0);
+        assert_eq!(reply_count(&*out), 0);
+    });
+}
+
+#[derive(Clone, Copy)]
+enum ConfigFinishCase {
+    Normal,
+    EpochInvalidated,
+    Disconnect,
+    AdvanceSameType,
+}
+
+fn run_config_finish_case(
+    case: ConfigFinishCase,
+    task_types: Vec<mod_api::Identifier>,
+) -> (
+    Arc<crate::lan::configuration_tasks::Session>,
+    Arc<Transport>,
+    usize,
+) {
+    const CONFIG_CHANNEL: &str = "executor_probe:config";
+    struct Handler {
+        case: ConfigFinishCase,
+        task_type: mod_api::Identifier,
+        session: Mutex<Option<Arc<crate::lan::configuration_tasks::Session>>>,
+        transport: Mutex<Weak<Transport>>,
+        calls: AtomicUsize,
+    }
+    impl IPayloadHandler for Handler {
+        fn handle(
+            &self,
+            _: PayloadBytes,
+            ctx: &mut dyn IPayloadContext,
+        ) -> Result<(), mod_api::PayloadHandleError> {
+            let session = self.session.lock().unwrap().as_ref().unwrap().clone();
+            let transport = self.transport.lock().unwrap().upgrade().unwrap();
+            ctx.finish_configuration_task(&self.task_type).unwrap();
+            assert!(
+                !session.finished(),
+                "network finish must stage until epoch-gated publication"
+            );
+            assert_eq!(
+                ctx.finish_configuration_task(&self.task_type),
+                Err(mod_api::ConfigurationTaskError::NotRunning)
+            );
+            match self.case {
+                ConfigFinishCase::Normal => {}
+                ConfigFinishCase::EpochInvalidated => {
+                    // Replace the epoch on the same open transport. Finishing
+                    // Configuration here would wait for this delivery to return.
+                    transport.begin_configuration();
+                    transport
+                        .accept(transport.local.manifest.entries())
+                        .unwrap();
+                }
+                ConfigFinishCase::Disconnect => {
+                    ctx.disconnect(mod_api::Text::literal("stop"));
+                }
+                ConfigFinishCase::AdvanceSameType => {
+                    // Simulate the server finishing ordinal 0 and starting ordinal 1
+                    // of the exact same task type before network publication runs.
+                    session.finish_current(0);
+                    let (completed, next) = session.turn();
+                    assert_eq!(completed, Some(0));
+                    let next = next.unwrap();
+                    assert!(next.start);
+                    assert_eq!(next.ordinal, 1);
+                    assert!(!session.finished());
+                }
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    struct ConfigReg(Arc<Handler>);
+    #[mod_api::__subscriptions]
+    impl Hooks for ConfigReg {
+        fn register(&self, registrar: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+            registrar
+                .payload_handlers()
+                .registrar("1")
+                .executes_on(HandlerThread::Network)
+                .configuration_bidirectional(
+                    PayloadId(CONFIG_CHANNEL.into()),
+                    self.0.clone(),
+                    Some(self.0.clone()),
+                );
+        }
+    }
+
+    let task_type = task_types[0].clone();
+    let handler = Arc::new(Handler {
+        case,
+        task_type,
+        session: Mutex::new(None),
+        transport: Mutex::new(Weak::new()),
+        calls: AtomicUsize::new(0),
+    });
+    let mut result = None;
+    mod_platform::testing::with_mods(
+        vec![ModEntry::new(
+            "executor_probe",
+            Box::new(ConfigReg(handler.clone())),
+        )]
+        .into(),
+        || {
+            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
+                .unwrap();
+            let transport = Transport::capture(Side::Server).unwrap();
+            transport
+                .accept(transport.local.manifest.entries())
+                .unwrap();
+            let (sender, _peer) =
+                crate::lan::config_payloads::ConfigSender::test_sender(transport.clone());
+            let session = crate::lan::configuration_tasks::Session::new(sender.clone());
+            session.register(task_types);
+            let (completed, turn) = session.turn();
+            assert_eq!(completed, None);
+            assert_eq!(turn.unwrap().ordinal, 0);
+
+            *handler.session.lock().unwrap() = Some(session.clone());
+            *handler.transport.lock().unwrap() = Arc::downgrade(&transport);
+
+            let endpoint = Endpoint::configuration(sender, Some(Arc::downgrade(&session)));
+            let incoming = Incoming::new(
+                &transport,
+                negotiation::Phase::Configuration,
+                sunrise_protocol::packets::custom_payload::CustomPayload {
+                    channel: CONFIG_CHANNEL.into(),
+                    data: vec![1],
+                },
+            )
+            .unwrap();
+            let (events, _receiver) = crate::lan::event_channel();
+            let main = MainQueue::Server {
+                events,
+                endpoint: endpoint.clone(),
+                conn: Some(1),
+            };
+            dispatch(incoming, endpoint, main);
+            result = Some((session, transport, handler.calls.load(Ordering::SeqCst)));
+        },
+    );
+    result.unwrap()
+}
+
+#[test]
+fn configuration_network_finish_respects_epoch_invalidation_and_disconnect() {
+    let kind = mod_api::Identifier::parse("executor_probe:task").unwrap();
+
+    let (session, transport, calls) =
+        run_config_finish_case(ConfigFinishCase::EpochInvalidated, vec![kind.clone()]);
+    assert_eq!(calls, 1);
+    assert!(!transport.closed());
+    assert!(
+        !session.finished(),
+        "epoch invalidation before publication must discard staged completion"
+    );
+
+    let (session, transport, calls) =
+        run_config_finish_case(ConfigFinishCase::Disconnect, vec![kind.clone()]);
+    assert_eq!(calls, 1);
+    assert!(transport.closed());
+    assert!(
+        !session.finished(),
+        "explicit disconnect must discard staged network completion"
+    );
+
+    let (session, transport, calls) = run_config_finish_case(ConfigFinishCase::Normal, vec![kind]);
+    assert_eq!(calls, 1);
+    assert!(!transport.closed());
+    assert!(session.finished());
+}
+
+#[test]
+fn configuration_network_finish_only_completes_the_validated_same_type_turn() {
+    let kind = mod_api::Identifier::parse("executor_probe:same").unwrap();
+    let (session, transport, calls) = run_config_finish_case(
+        ConfigFinishCase::AdvanceSameType,
+        vec![kind.clone(), kind.clone()],
+    );
+    assert_eq!(calls, 1);
+    assert!(!transport.closed());
+    assert!(
+        !session.finished(),
+        "staged completion for ordinal 0 must not finish ordinal 1 of the same type"
+    );
+    assert_eq!(session.running_ordinal_for_type(&kind), Ok(1));
+    assert_eq!(session.result(), None);
 }

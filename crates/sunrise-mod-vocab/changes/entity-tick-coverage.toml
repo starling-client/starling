@@ -1,0 +1,3 @@
+ids = ["hook:entity_tick_pre", "hook:entity_tick_post"]
+why = "Version 3 expands entity tick observations to additional server and client families, including server players, named projectiles and displays. Each Pre has its own cancellation output; a later Pre cannot replace a previous entity's cancellation."
+migrate = "Rebuild against this SDK. Keep handling both the individual and family forms of the entities and kinds arrays. Expect additional calls for these families; use player_tick_pre and player_tick_post for the separate player body tick."

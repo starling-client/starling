@@ -1,31 +1,7 @@
 //! The creative inventory screen (`CreativeModeInventoryScreen`): its tabs, pages, tooltips,
 //! trash slot, search box and clicks.
 use super::*;
-
 impl Game<'_> {
-    /// `CreativeModeInventoryScreen.hasPermissions` (`canUseGameMasterBlocks`
-    /// and the Operator Items Tab option) given to `tryRefreshInvalidatedTabs`,
-    /// as the screen's constructor and `containerTick` do. When the tabs need
-    /// building, each item tab asks the mods for their stacks
-    /// (`BuildCreativeModeTabContentsEvent`) before the build takes them.
-    pub(super) fn refresh_creative_tabs(&mut self) {
-        let permissions = self.can_use_game_master_blocks() && self.settings.operator_items_tab;
-        let enchantments = Arc::clone(self.item_enchantments());
-        self.creative_screen.set_enchantments(enchantments);
-        let Some(tabs) = self.creative_screen.tabs_to_build(permissions) else {
-            return;
-        };
-        let added = tabs
-            .into_iter()
-            .map(|tab| {
-                let mut items = Vec::new();
-                self.native_build_creative_mode_tab_contents(&tab, permissions, &mut items);
-                (tab, items)
-            })
-            .collect();
-        self.creative_screen
-            .build(permissions, added, &self.pack.names);
-    }
     pub(super) fn creative_inventory_open(&self) -> bool {
         self.screen == Screen::Creative && self.creative_screen.tab().inventory
     }
@@ -108,7 +84,7 @@ impl Game<'_> {
             None => {
                 let own = self.translate_with_fallback(&tab.title, &tab.title);
                 self.translate_with_fallback(
-                    &format!("itemGroup.{}", tab.id.replace(':', ".")),
+                    &sunrise_client::creative::mod_item_group_key(&tab.id),
                     &own,
                 )
             }
@@ -160,8 +136,8 @@ impl Game<'_> {
         lines
     }
     /// `CreativeModeInventoryScreen.extractRenderState`: item slots share the
-    /// container screen's hover target for their highlight and tooltip.
-    pub(super) fn draw_creative(&mut self, batch: &mut HudBatch) {
+    /// container screen's hover target for their highlight and tooltip. False if no tab was drawn.
+    pub(super) fn draw_creative(&mut self, batch: &mut HudBatch) -> bool {
         // CreativeModeInventoryScreen: `CommonComponents.EMPTY` for a title.
         screen_info::begin_container("creative");
         if !self.bedrock_held {
@@ -188,15 +164,15 @@ impl Game<'_> {
     /// has no tabs of its own.
     fn draw_creative_window(&mut self, batch: &mut HudBatch, panel: bool) {
         let (ox, oy) = Self::creative_origin(batch);
-        let selected = self.creative_screen.selected;
+        let selected = self.creative_screen.selected_index();
         // Only what is drawn of the tabs: their stacks stay where they are.
         let tabs = self.creative_screen.tab_headers();
         let Some(tab) = tabs.get(selected.min(tabs.len().saturating_sub(1))) else {
-            return;
+            return false;
         };
         let tab_sprite = |t: &sunrise_client::creative::Tab, on: bool| {
             format!(
-                "gui/sprites/container/creative_inventory/tab_{}_{}_{}",
+                "container/creative_inventory/tab_{}_{}_{}",
                 if t.top { "top" } else { "bottom" },
                 if on { "selected" } else { "unselected" },
                 t.column + 1
@@ -375,9 +351,9 @@ impl Game<'_> {
             let scrollable =
                 self.creative_screen.rows(&self.pack.names) > self.creative_screen.shown_rows;
             let scroller = if scrollable {
-                "gui/sprites/container/creative_inventory/scroller"
+                "container/creative_inventory/scroller"
             } else {
-                "gui/sprites/container/creative_inventory/scroller_disabled"
+                "container/creative_inventory/scroller_disabled"
             };
             batch.sprite(
                 &self.gui.atlas,
@@ -407,6 +383,7 @@ impl Game<'_> {
         let effect_tip = self.creative_effect_tip.take();
         let browser_tip = self.draw_mod_browser(batch);
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
+<<<<<<< sync-sunrise-1
         for t in tabs
             .iter()
             .filter(|t| self.bedrock_items.is_none() && self.creative_screen.on_page(t))
@@ -426,6 +403,10 @@ impl Game<'_> {
             }
         }
         if inventory {
+=======
+        self.draw_carried(batch);
+        if tab.inventory {
+>>>>>>> sunrise/main
             if Self::creative_trash_hovered(batch, self.cursor) {
                 // `CreativeModeInventoryScreen`: the destroy slot's tooltip is
                 // `inventory.binSlot`, not an English literal.
@@ -456,7 +437,7 @@ impl Game<'_> {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
         }
         // CreativeModeInventoryScreen.checkTabHovering: a tab says its name.
-        if let Some(i) = Creative::hovered_tab(&tabs, (ox, oy), self.cursor)
+        if let Some(i) = self.creative_screen.hovered_tab((ox, oy), self.cursor)
             && let Some(t) = tabs.get(i)
         {
             let title = self.creative_tab_title(t);
@@ -465,6 +446,7 @@ impl Game<'_> {
         if let Some(tooltip) = browser_tip {
             self.draw_mod_browser_tooltip(batch, tooltip);
         }
+        true
     }
     pub(super) fn creative_trash_hovered(batch: &HudBatch, cursor: (f32, f32)) -> bool {
         let (ox, oy) = Self::creative_origin(batch);
@@ -578,11 +560,11 @@ impl Game<'_> {
             let page = self.creative_screen.page as i64 + step;
             let active = (0..pages as i64).contains(&page);
             let sprite = match (active, hover) {
-                (false, _) => "gui/sprites/widget/button_disabled",
-                (true, true) => "gui/sprites/widget/button_highlighted",
-                (true, false) => "gui/sprites/widget/button",
+                (false, _) => "widget/button_disabled",
+                (true, true) => "widget/button_highlighted",
+                (true, false) => "widget/button",
             };
-            sunrise_client::ui::blit_sprite(batch, atlas, sprite, x, y, 20.0, 20.0, u32::MAX);
+            sunrise_client::ui::nine_slice(batch, atlas, sprite, x, y, 20.0, 20.0, u32::MAX);
             let color = if active {
                 u32::MAX
             } else {
@@ -602,16 +584,16 @@ impl Game<'_> {
             true,
         );
     }
-    pub(super) fn click_creative(&mut self, right: bool) {
+    pub(super) fn click_creative(&mut self, right: bool) -> bool {
         if self.mod_browser_press(right) {
-            return;
+            return true;
         }
         let Some(size) = self
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
         else {
-            return;
+            return false;
         };
         let batch = self.interface_batch(size);
         self.bedrock_side(self.cursor.0, batch.width);
@@ -633,24 +615,34 @@ impl Game<'_> {
                 self.creative_screen.set_page(page as u32);
                 self.refresh_saved_hotbars();
             }
-            return;
+            return true;
         }
+<<<<<<< sync-sunrise-1
         let tabs = self.creative_screen.tabs.clone();
         for (i, t) in tabs.iter().enumerate() {
             if panel || !self.creative_screen.on_page(t) {
                 continue;
             }
+=======
+        // Only the clicked tab's index is needed: cloning the tabs here copied
+        // every tab's items on each click, saved hotbars' stacks included.
+        let creative = &self.creative_screen;
+        let clicked = creative.tabs.iter().position(|t| {
+>>>>>>> sunrise/main
             let (tx, ty) = Creative::tab_position(t);
-            if cx >= ox + tx && cx < ox + tx + 26.0 && cy >= oy + ty && cy < oy + ty + 32.0 {
-                select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, i);
-                // The tab's slots and page replace the previous tab's: the
-                // build reads the new ones from this click on.
-                self.build_screen();
-                self.refresh_saved_hotbars();
-                self.inv_drag = None;
-                self.last_inv_click = None;
-                return;
-            }
+            creative.on_page(t)
+                && cx >= ox + tx
+                && cx < ox + tx + 26.0
+                && cy >= oy + ty
+                && cy < oy + ty + 32.0
+        });
+        if let Some(i) = clicked {
+            select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, i);
+            self.build_screen();
+            self.refresh_saved_hotbars();
+            self.inv_drag = None;
+            self.last_inv_click = None;
+            return true;
         }
         if self.creative_inventory_open() {
             if Self::creative_trash_hovered(&batch, self.cursor) {
@@ -668,13 +660,14 @@ impl Game<'_> {
                 }
                 self.inv_drag = None;
                 self.inv_clicks = Default::default();
+                return true;
             } else if self.slot_at(&batch, cx, cy).is_some() || self.clicked_outside(&batch) {
-                self.inventory_press(right);
+                return self.inventory_press(right);
             }
-            return;
+            return false;
         }
         if !right && self.creative_search_click(ox, oy) {
-            return;
+            return true;
         }
         // Holding the scrollbar scrolls as the mouse moves (mouseDragged).
         if !right
@@ -682,13 +675,18 @@ impl Game<'_> {
                 .creative_screen
                 .press_scrollbar(cx - ox, cy - oy, &self.pack.names)
         {
-            return;
+            return true;
         }
         if self.slot_at(&batch, cx, cy).is_some() || self.clicked_outside(&batch) {
+<<<<<<< sync-sunrise-1
             self.inventory_press(right);
         } else if self.carried.is_some() && self.creative_catalog_at(&batch, (cx, cy)) {
             self.creative_empty_cell_click(right);
+=======
+            return self.inventory_press(right);
+>>>>>>> sunrise/main
         }
+        false
     }
     /// A click on the search tab's box (`EditBox.onClick`).
     pub(super) fn creative_search_click(&mut self, ox: f32, oy: f32) -> bool {

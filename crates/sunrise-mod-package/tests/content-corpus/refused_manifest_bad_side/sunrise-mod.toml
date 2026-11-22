@@ -1,0 +1,4 @@
+id = "refused_manifest_bad_side"
+name = "Refused manifest bad side"
+version = "1.2.3"
+side = "integrated"

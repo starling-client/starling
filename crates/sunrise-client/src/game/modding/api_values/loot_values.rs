@@ -1,44 +1,7 @@
 //! Owned loot values at the guarded game boundary. No inventory count rules apply.
 use super::{TryIntoApi, TryIntoEngine};
-use sunrise_world::loot as engine;
 use mod_api::world::snapshots as api;
-
-pub(crate) fn dispatch_loot_function(
-    kind: &str,
-    data: &serde_json::Value,
-    ctx: &engine::LootContext<'_>,
-    stack: &mut engine::LootStack,
-    tags: &dyn engine::LootTags,
-) {
-    if !mod_api::__private::listened(mod_api::HookId::LootFunction) {
-        return;
-    }
-    let (Ok(ctx), Ok(mut value)) = (ctx.try_into_api(), stack.try_into_api()) else {
-        return;
-    };
-    let tags = crate::game::loot_tags::LootTags(tags);
-    mod_api::loot_callbacks::native_loot_function(kind, data, &ctx, &mut value, &tags);
-    // Stage the complete candidate before making the one engine write.
-    if let Ok(value) = value.try_into_engine(&()) {
-        *stack = value;
-    }
-}
-pub(crate) fn dispatch_loot_condition(
-    kind: &str,
-    data: &serde_json::Value,
-    ctx: &engine::LootContext<'_>,
-    holds: &mut bool,
-    tags: &dyn engine::LootTags,
-) {
-    if !mod_api::__private::listened(mod_api::HookId::LootCondition) {
-        return;
-    }
-    let Ok(ctx) = ctx.try_into_api() else {
-        return;
-    };
-    let tags = crate::game::loot_tags::LootTags(tags);
-    mod_api::loot_callbacks::native_loot_condition(kind, data, &ctx, holds, &tags);
-}
+use sunrise_world::loot as engine;
 
 #[cfg(test)]
 thread_local! { static CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -114,8 +77,7 @@ impl<C: ?Sized> TryIntoEngine<C> for api::LootStack {
             .names
             .iter()
             .map(|(id, name)| {
-                let name: sunrise_client::text::Text = name
-                    .try_into_engine(&())
+                let name = sunrise_client_lib::api_text::to_serialized_engine(name)
                     .map_err(|_| LootValueError::InvalidName)?;
                 Ok((id.clone(), name.component()))
             })
@@ -258,9 +220,39 @@ fn queried_stack(stack: &engine::LootStack) -> Result<mod_api::ItemStack, LootVa
 mod tests {
     use super::*;
     include!("loot_tags_tests.rs");
-    use sunrise_core::nbt::Tag;
-    use mod_api::{Hooks, LootFunctionEvent, ModEntry};
+    use mod_api::{Hooks, LootEntryData, LootStack, LootTypeContext, ModEntry, ModLootFunction};
+    fn apply_type(
+        kind: &str,
+        data: &serde_json::Value,
+        ctx: &engine::LootContext<'_>,
+        stack: &mut engine::LootStack,
+        tags: &dyn engine::LootTags,
+    ) {
+        let types = crate::game::loot_types::capture();
+        if !types.contains(kind, true) {
+            return;
+        }
+        let mut random = sunrise_core::random::LegacyRandom::new(0);
+        if let Ok(candidate) = types.apply(kind, data, ctx, &mut random, tags, stack) {
+            *stack = candidate;
+        }
+    }
+    fn test_type(
+        kind: &str,
+        data: &serde_json::Value,
+        ctx: &engine::LootContext<'_>,
+        holds: &mut bool,
+        tags: &dyn engine::LootTags,
+    ) {
+        let types = crate::game::loot_types::capture();
+        if !types.contains(kind, false) {
+            return;
+        }
+        let mut random = sunrise_core::random::LegacyRandom::new(0);
+        *holds = types.test(kind, data, ctx, &mut random, tags).unwrap();
+    }
     use mod_platform::testing::with_mods;
+    use sunrise_core::nbt::Tag;
     fn stack() -> engine::LootStack {
         engine::LootStack {
             item: "minecraft:stick".into(),
@@ -290,7 +282,7 @@ mod tests {
             block: None,
             luck: 1.5,
             biome: None,
-            seed: 42,
+            seed: 0,
             place: None,
         }
     }
@@ -325,6 +317,8 @@ mod tests {
             place: Some(std::sync::Arc::new(engine::LootPlace {
                 origin: Some([1.0, 2.0, 3.0]),
                 block_entity: Some(Tag::ByteArray(vec![7])),
+                block_components: None,
+                storage: None,
                 level: Some(engine::LootLevel {
                     dimension: "test:level".into(),
                     game_time: 17,
@@ -378,27 +372,45 @@ mod tests {
     struct Edit;
     #[mod_api::__subscriptions]
     impl Hooks for Edit {
-        fn loot_function(&self, event: &mut LootFunctionEvent<'_>) {
-            assert_eq!(event.ctx.seed, 42);
-            assert_eq!(event.stack.count, -7);
-            assert_eq!(event.stack.components[0].1, Some(Tag::ByteArray(vec![7])));
-            assert_eq!(event.stack.components[1].1, Some(Tag::Byte(7)));
-            event.stack.count = -12;
-            event.stack.components.extend([
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            r.register_loot_function_type(&mod_api::Identifier::parse("edit:edit").unwrap(), Edit);
+        }
+    }
+    impl ModLootFunction for Edit {
+        fn validate(&self, _: &LootEntryData) -> Result<(), String> {
+            Ok(())
+        }
+        fn apply(
+            &self,
+            _: &LootEntryData,
+            mut stack: LootStack,
+            context: &mut dyn LootTypeContext,
+        ) -> Result<LootStack, String> {
+            assert_eq!(context.snapshot().seed, 0);
+            assert_eq!(stack.count, -7);
+            assert_eq!(stack.components[0].1, Some(Tag::ByteArray(vec![7])));
+            assert_eq!(stack.components[1].1, Some(Tag::Byte(7)));
+            stack.count = -12;
+            stack.components.extend([
                 ("test:array".into(), None),
                 ("test:array".into(), Some(Tag::List(vec![Tag::Int(7)]))),
                 ("test:array".into(), Some(Tag::ByteArray(vec![8]))),
             ]);
+            Ok(stack)
         }
     }
     #[test]
-    fn loot_hook_preserves_signed_candidates_and_ordered_nbt() {
+    fn loot_type_preserves_signed_candidates_and_ordered_nbt() {
         super::super::prepare_stack_boundary_tests();
         let mut output = stack();
         with_mods(vec![ModEntry::new("edit", Box::new(Edit))].into(), || {
-            dispatch_loot_function(
-                "test:edit",
-                &serde_json::Value::Null,
+            super::super::prepare_stack_boundary_tests();
+            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
+                .unwrap();
+            super::super::resolve_stack_boundary_test_items();
+            apply_type(
+                "edit:edit",
+                &serde_json::json!({}),
                 &context(),
                 &mut output,
                 &TestTags,
@@ -422,21 +434,23 @@ mod tests {
     fn loot_no_subscriber_does_not_convert() {
         super::super::prepare_stack_boundary_tests();
         with_mods(Vec::new().into(), || {
+            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
+                .unwrap();
             CONVERSIONS.with(|count| count.set(0));
             let mut output = stack();
             let before = output.clone();
             let mut holds = false;
             for _ in 0..1000 {
-                dispatch_loot_function(
-                    "test:edit",
-                    &serde_json::Value::Null,
+                apply_type(
+                    "edit:edit",
+                    &serde_json::json!({}),
                     &context(),
                     &mut output,
                     &TestTags,
                 );
-                dispatch_loot_condition(
-                    "test:edit",
-                    &serde_json::Value::Null,
+                test_type(
+                    "edit:edit",
+                    &serde_json::json!({}),
                     &context(),
                     &mut holds,
                     &TestTags,
@@ -496,22 +510,37 @@ mod tests {
         );
     }
 
-    struct Invalid;
+    struct Invalid(std::sync::Arc<std::sync::atomic::AtomicBool>);
     #[mod_api::__subscriptions]
     impl Hooks for Invalid {
-        fn loot_function(&self, event: &mut LootFunctionEvent<'_>) {
-            event.stack.count = 99;
-            event.stack.components.clear();
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            r.register_loot_function_type(
+                &mod_api::Identifier::parse("invalid:invalid").unwrap(),
+                Invalid(self.0.clone()),
+            );
+        }
+    }
+    impl ModLootFunction for Invalid {
+        fn validate(&self, _: &LootEntryData) -> Result<(), String> {
+            Ok(())
+        }
+        fn apply(
+            &self,
+            _: &LootEntryData,
+            mut stack: LootStack,
+            _: &mut dyn LootTypeContext,
+        ) -> Result<LootStack, String> {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            stack.count = 99;
+            stack.components.clear();
             let mut text = mod_api::text::Text::literal("end");
             for _ in 0..513 {
                 let mut parent = mod_api::text::Text::literal("");
                 parent.children.push(text);
                 text = parent;
             }
-            event
-                .stack
-                .names
-                .push(("minecraft:custom_name".into(), text));
+            stack.names.push(("minecraft:custom_name".into(), text));
+            Ok(stack)
         }
     }
     #[test]
@@ -519,18 +548,26 @@ mod tests {
         super::super::prepare_stack_boundary_tests();
         let mut output = stack();
         let before = output.clone();
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         with_mods(
-            vec![ModEntry::new("invalid", Box::new(Invalid))].into(),
+            vec![ModEntry::new("invalid", Box::new(Invalid(called.clone())))].into(),
             || {
-                dispatch_loot_function(
-                    "test:invalid",
-                    &serde_json::Value::Null,
+                super::super::prepare_stack_boundary_tests();
+                mod_platform::__private::part_tests::install_parts_fixture(
+                    mod_api::__private::mods(),
+                )
+                .unwrap();
+                super::super::resolve_stack_boundary_test_items();
+                apply_type(
+                    "invalid:invalid",
+                    &serde_json::json!({}),
                     &context(),
                     &mut output,
                     &TestTags,
                 );
             },
         );
+        assert!(called.load(std::sync::atomic::Ordering::Relaxed));
         assert_eq!(output, before);
     }
 }

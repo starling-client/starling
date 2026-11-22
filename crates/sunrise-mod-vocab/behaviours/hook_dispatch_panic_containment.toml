@@ -1,0 +1,23 @@
+version = 1
+doc = "A generated callback panic discards its staged output, disables only that mod's callback for that hook for the session, and produces a named error log and client diagnostic toast. Other eligible listeners continue from the last accepted output. Collision-shape dispatch instead leaves recovery to the collision adapter: it drops the whole answer for that block and disables only that block's collision Parts. Journaled writes are undone in the existing transaction; published effects outside a journal are not undone. An ordinary phase or output refusal is reported each time without disabling the listener. Failed registrations do not publish; a failed chunk-disk job cannot publish even when later listeners succeed."
+tests = [
+    "crates/sunrise-mod-vocab/src/hooks_tests.rs::panicking_listener_is_disabled_for_that_hook_and_reported_once",
+    "crates/sunrise-mod-vocab/src/hooks_tests.rs::callback_and_registration_contain_panicking_payload_destructors",
+    "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/entity_move.rs::a_panicking_move_listener_loses_its_proposal_but_the_walk_continues",
+    "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/section_visibility.rs::a_section_visibility_listener_that_unwinds_loses_only_its_own_answer",
+    "crates/sunrise-client/src/game/modding/native_collision_shape.rs::a_faulting_part_is_switched_off_for_the_session_and_the_others_keep_answering",
+    "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/living_travel.rs::a_refused_pair_rolls_back_its_cancel_and_later_listeners_hear_the_accepted_result",
+    "crates/sunrise-mod-vocab/src/client/entity_renderers.rs::panicking_renderer_registration_keeps_the_seeded_winner_and_next_listener",
+    "crates/sunrise-mod-vocab/src/chunk_disk/tests.rs::an_unwinding_disk_listener_refuses_publication_but_does_not_stop_the_walk",
+    "crates/sunrise-mod-vocab/src/chunk_disk/tests.rs::disk_operations_report_their_own_error_without_latching_and_later_mods_run",
+    "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/entity_move.rs::an_invalid_move_discards_its_delta_and_veto_and_reports_each_invocation",
+    "crates/sunrise-client/src/game/modding/mods/mod.rs::panicking_native_declarations_publish_neither_prefixes_nor_diagnostics",
+    "crates/sunrise-client/src/game/modding/payload_transport/task_tests.rs::a_panicking_registration_does_not_fail_the_peer_or_leave_its_task",
+    "crates/sunrise-client/src/game/native_hooks/render_gui_post.rs::panicking_hud_draw_discards_quads_and_reservations_before_next_listener",
+    "crates/sunrise-client-render/src/crash.rs::dropping_panicking_startup_parts_does_not_crash_the_server_thread",
+    "crates/sunrise-client/src/game/modding/mod_menu_decisions_tests.rs::a_panicking_live_quick_move_rolls_back_and_disables_only_its_callback",
+    "crates/sunrise-client/src/game/world/server_packs.rs::hook_panic_toast_cannot_be_vetoed_or_rewritten_by_toast_add",
+    "crates/sunrise-client/src/game/interface/client_reload/client_reload_tests.rs::initial_load_stages_and_applies_client_reload_listeners",
+    "crates/sunrise-client/src/game/interface/client_reload/client_reload_tests.rs::panicking_client_reload_registration_discards_its_listener_and_edges",
+    "crates/sunrise-mod-vocab/src/world/server_reload_tests.rs::panicking_server_reload_registration_discards_only_its_ordered_and_retained_tails",
+]

@@ -9,7 +9,6 @@ pub fn block_entity_type_key_slot(key: crate::BlockEntityTypeKey) -> u32 {
 }
 
 /// Validate a token using the current registration or installed lookup epoch.
-#[cfg(any(not(target_arch = "wasm32"), test))]
 pub fn validate_block_entity_type_key(
     slot: u32,
 ) -> Result<crate::BlockEntityTypeKey, &'static str> {

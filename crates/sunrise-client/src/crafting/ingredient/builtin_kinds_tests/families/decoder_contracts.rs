@@ -74,7 +74,7 @@ fn rollup_90_codecs_reject_bad_records_preserve_siblings_and_presence() {
             let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
             assert!(error.contains(id), "{error}");
             let recipe = |ingredient| json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
-            let recipes = crate::crafting::Recipes::from_sources(
+            let refused = crate::crafting::Recipes::from_sources(
                 &std::env::temp_dir(),
                 &items,
                 &sunrise_world::loot::PackOverlay::NONE,
@@ -84,18 +84,14 @@ fn rollup_90_codecs_reject_bad_records_preserve_siblings_and_presence() {
                 ],
                 &load,
             )
-            .unwrap();
-            assert_eq!(recipes.crafting.len(), 1);
+            .err()
+            .unwrap()
+            .to_string();
             assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                    .is_some()
+                refused.contains("data/fixture/recipe/invalid.json"),
+                "{refused}"
             );
-            assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-                    .is_none()
-            );
+            assert!(refused.contains(&error), "{refused}");
         }
         for value in [
             Tag::End,
@@ -140,9 +136,10 @@ fn rollup_90_codecs_reject_bad_records_preserve_siblings_and_presence() {
         paper.data_mut().set_other(id, Some(raw.clone()));
         assert!(strict.test_in(&context, &paper));
         assert!(!absent.test_in(&context, &paper));
-        paper
-            .data_mut()
-            .set_other("minecraft:custom_data", Some(Tag::Int(1)));
+        paper.data_mut().set_other(
+            "minecraft:custom_data",
+            Some(Tag::compound([("extra", Tag::Int(1))])),
+        );
         assert!(!strict.test_in(&context, &paper));
         assert!(loose.test_in(&context, &paper));
         items.component_defaults = std::sync::Arc::new(std::collections::HashMap::from([(
@@ -261,37 +258,44 @@ fn scalar_enum_unknown_names_have_component_named_diagnostics() {
     }
 }
 
-pub(super) fn assert_malformed_decoder_reload_keeps_sibling(
-    items: &Items,
-    patch: serde_json::Value,
-) {
+pub(super) fn assert_malformed_decoder_refuses_load(items: &Items, patch: serde_json::Value) {
     use serde_json::json;
     let root = tempfile::tempdir().unwrap();
     let ingredient =
         json!({"type":"neoforge:components","items":"minecraft:paper","components":patch});
-    let recipe = |ingredient| json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
+    let sibling = json!({"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stick"],"result":{"id":"minecraft:diamond"}});
     let load = load();
-    let ctx = load.loop_context(LoopSide::Server, []);
-    let recipes = crate::crafting::Recipes::from_sources(
-        root.path(),
-        items,
-        &sunrise_world::loot::PackOverlay::NONE,
-        vec![
-            ("fixture:invalid".into(), recipe(ingredient)),
-            ("fixture:sibling".into(), recipe(json!("minecraft:stick"))),
-        ],
-        &load,
-    )
-    .unwrap();
-    assert_eq!(recipes.crafting.len(), 1);
-    assert!(
-        recipes
-            .craft(&ctx, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-            .is_some()
-    );
-    assert!(
-        recipes
-            .craft(&ctx, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-            .is_none()
-    );
+    for (kind, fields) in [
+        (
+            "minecraft:crafting_shapeless",
+            json!({"ingredients":[ingredient.clone()]}),
+        ),
+        (
+            "minecraft:crafting_shaped",
+            json!({"pattern":["A"],"key":{"A":ingredient.clone()}}),
+        ),
+        ("minecraft:smelting", json!({"ingredient":ingredient})),
+    ] {
+        let mut recipe = fields;
+        recipe["type"] = json!(kind);
+        recipe["result"] = json!({"id":"minecraft:diamond"});
+        let error = crate::crafting::Recipes::from_sources(
+            root.path(),
+            items,
+            &sunrise_world::loot::PackOverlay::NONE,
+            vec![
+                ("fixture:invalid".into(), recipe),
+                ("fixture:sibling".into(), sibling.clone()),
+            ],
+            &load,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains("data/fixture/recipe/invalid.json"),
+            "{error}"
+        );
+        assert!(error.contains("component"), "{error}");
+    }
 }

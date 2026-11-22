@@ -1,0 +1,3 @@
+ids = ["hook:on_block_placed_by"]
+why = "Hook version 2 carries the level the block was placed in, including dispenser placements with no player."
+migrate = "Read event.level for the placement level."

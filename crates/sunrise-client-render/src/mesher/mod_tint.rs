@@ -4,14 +4,14 @@
 //! tint index, as `ModelBlockRenderer.computeTintColor` caches it.
 use super::{MeshTables, Resolver, Tint, Tints, lighting};
 use crate::{biome::BiomeInfo, chunk::Chunk};
-use sunrise_assets::model::Direction as D;
-use sunrise_core::geometry::Direction;
-use sunrise_world::{fluid::FluidState, registry::BlockRegistry};
 use mod_api::{
     BiomeColorResolver, BiomeColors, BlockAndTintGetter, BlockTintSource, ColorResolver,
     LightLayer, ResolverBiome, TintLayer, VanillaTint,
 };
 use std::{cell::RefCell, collections::BTreeMap, sync::Arc, sync::OnceLock};
+use sunrise_assets::model::Direction as D;
+use sunrise_core::geometry::Direction;
+use sunrise_world::{fluid::FluidState, registry::BlockRegistry};
 
 /// The registrations, by block id: set once at start, read by every table build.
 static REGISTERED: OnceLock<BTreeMap<String, Arc<[TintLayer]>>> = OnceLock::new();
@@ -152,6 +152,7 @@ impl ModLayer {
 pub(super) struct ModTints {
     pub(super) layers: Vec<Box<[ModLayer]>>,
     pub(super) values: Option<ModTintValues>,
+    pub(super) has_sources: bool,
 }
 
 /// API values prepared by the owning game before mesh tables are built.
@@ -202,13 +203,19 @@ impl MeshTables {
                 continue;
             };
             found.insert(state.name.as_str());
+            let layers = &layers[..layers.len().min(usize::from(u8::MAX))];
+            if !mod_tints.has_sources {
+                mod_tints.has_sources = layers
+                    .iter()
+                    .any(|layer| matches!(layer, TintLayer::Source(_)));
+            }
             let value = |name: &str| state.properties.get(name).map(String::as_str);
             let slot = mod_tints.layers.len() as u32;
             mod_tints
                 .layers
                 .push(layers.iter().map(|l| ModLayer::of(l, value)).collect());
             info.tints = [Tint::Mod(slot); 2];
-            info.tint_count = layers.len().min(usize::from(u8::MAX)) as u8;
+            info.tint_count = layers.len() as u8;
         }
         for block in by_block.keys().filter(|b| !found.contains(b.as_str())) {
             log::warn!("Sunrise: a block tint source names {block}, which no block is");
@@ -241,18 +248,34 @@ pub(super) fn ask(
     let world = [cx * 16 + x, base_y + y, cz * 16 + z];
     let values = tables.mod_tints.values();
     let state = &values.states[id as usize];
-    let color = {
-        let region = Region {
-            tables,
-            tints: RefCell::new(&mut *tints),
-            nether,
-        };
+    let region = Region {
+        tables,
+        tints: RefCell::new(&mut *tints),
+        nether,
+    };
+    // A provider can share a lock with one that failed in another section. Guard the call
+    // itself, including on workers that have no prepared tint record for their section.
+    let color = crate::crash::contain(|| {
         if particle {
             source.color_as_terrain_particle(state, values.metadata, &region, world)
         } else {
             source.color_in_world(state, values.metadata, &region, world)
         }
-    } & 0xFF_FFFF;
+    });
+    let color = match color {
+        Ok(color) => color & 0xFF_FFFF,
+        Err(_) => {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static SOURCE_FAILED: AtomicBool = AtomicBool::new(false);
+            if !SOURCE_FAILED.swap(true, Ordering::Relaxed) {
+                log::warn!("Sunrise: a block tint source failed; using white");
+            }
+            if let Some(preparation) = &mut tints.preparing {
+                preparation.failed = true;
+            }
+            0xFF_FFFF
+        }
+    };
     if !particle {
         if tints.asked != block {
             tints.asked = block;
@@ -347,15 +370,7 @@ impl BlockAndTintGetter for Region<'_, '_, '_> {
         lighting::cardinal(self.nether, face)
     }
     fn block_tint(&self, [x, y, z]: [i32; 3], resolver: ColorResolver) -> u32 {
-        let resolver = match resolver {
-            ColorResolver::Grass => Resolver::Grass,
-            ColorResolver::Foliage => Resolver::Foliage,
-            ColorResolver::DryFoliage => Resolver::Dry,
-            ColorResolver::Water => Resolver::Water,
-            ColorResolver::Mod(resolver) => {
-                Resolver::Mod(mod_api::__private::mod_color_resolver_index(resolver))
-            }
-        };
+        let resolver = Resolver::from(resolver);
         let mut tints = self.tints.borrow_mut();
         let [cx, cz, base_y] = tints.origin;
         let section = [x >> 4, (y - base_y) >> 4, z >> 4];

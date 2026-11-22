@@ -4,6 +4,8 @@
 pub trait Hooks {
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -11,5 +13,11 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_hopper_pickup_item"
     )]
-    fn hopper_pickup_item();
+    fn hopper_pickup_item(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        item: &str,
+        count: u32,
+        cancel: &mut bool,
+    );
 }

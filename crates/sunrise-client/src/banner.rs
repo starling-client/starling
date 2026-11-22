@@ -3,9 +3,9 @@
 //! banners, and the loom rules of `LoomMenu` (selectable patterns, the
 //! six-layer limit and the result stack).
 use crate::{block_entity_render::DYES, items::ItemStack, items::Items};
-use sunrise_core::nbt::Tag;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use sunrise_core::nbt::Tag;
 
 pub use sunrise_items::banner_layer::{BannerLayer, layers_from_nbt, layers_to_nbt};
 
@@ -19,6 +19,24 @@ pub struct Pattern {
     /// `asset_id` path, the texture under `entity/banner` and `entity/shield`.
     pub asset: String,
     pub translation_key: String,
+}
+
+impl Pattern {
+    /// `BannerPattern.DIRECT_CODEC`.
+    pub fn decode(id: &str, value: &Value) -> Result<Self, String> {
+        let asset = value["asset_id"].as_str().ok_or("asset_id is required")?;
+        let asset = sunrise_core::identifier::Identifier::parse(asset)
+            .map_err(|error| format!("asset_id: {error}"))?
+            .to_string();
+        let translation_key = value["translation_key"]
+            .as_str()
+            .ok_or("translation_key is required")?;
+        Ok(Self {
+            id: id.into(),
+            asset: asset.trim_start_matches("minecraft:").to_owned(),
+            translation_key: translation_key.to_owned(),
+        })
+    }
 }
 
 /// The pattern registry, its tags and the item components the loom reads.
@@ -83,16 +101,9 @@ impl Banners {
             else {
                 continue;
             };
-            let asset = v["asset_id"]
-                .as_str()
-                .unwrap_or(stem)
-                .trim_start_matches("minecraft:")
-                .to_owned();
-            banners.patterns.push(Pattern {
-                id: Arc::from(format!("minecraft:{stem}").as_str()),
-                asset,
-                translation_key: v["translation_key"].as_str().unwrap_or_default().to_owned(),
-            });
+            if let Ok(pattern) = Pattern::decode(&format!("minecraft:{stem}"), &v) {
+                banners.patterns.push(pattern);
+            }
         }
         banners.no_item_required = read_tag(root, "no_item_required", 0);
         // Every tag, `pattern_item/globe` included, for a component naming one.
@@ -270,16 +281,12 @@ pub fn dye_rgb(name: &str) -> u32 {
         .position(|d| d.0 == name)
         .map_or(0xFFFFFF, crate::pack_palette::diffuse)
 }
-/// The layers of a banner or shield stack.
-pub fn layers(stack: &ItemStack) -> &[BannerLayer] {
-    stack.data().map_or(&[], |d| &d.banner_patterns)
-}
 /// The ominous banner's component patch hides its pattern tooltip.
 pub fn tooltip_layers(stack: &ItemStack) -> &[BannerLayer] {
     if stack.data().is_some_and(|d| d.ominous_banner) {
         &[]
     } else {
-        layers(stack)
+        stack.banner_layers()
     }
 }
 /// `LoomMenu.setupResultSlot`: one banner with the pattern added in the dye colour.
@@ -290,13 +297,14 @@ pub fn loom_result(banner: &ItemStack, dye: &str, pattern: &str) -> ItemStack {
     };
     result
         .data_mut()
-        .banner_patterns
+        .banner_layers_mut()
         .push(BannerLayer::new(pattern, dye));
+    result.tidy();
     result
 }
 /// Whether the banner already carries the loom's limit.
 pub fn has_max_layers(banner: &ItemStack) -> bool {
-    layers(banner).len() >= MAX_LAYERS
+    banner.banner_layers().len() >= MAX_LAYERS
 }
 
 #[cfg(test)]
@@ -417,7 +425,7 @@ mod tests {
             assert!(!has_max_layers(&banner));
             banner = loom_result(&banner, "red", "minecraft:cross");
             assert_eq!(banner.count, 1);
-            assert_eq!(layers(&banner).len(), i + 1);
+            assert_eq!(banner.banner_layers().len(), i + 1);
         }
         assert!(has_max_layers(&banner));
     }
@@ -425,18 +433,20 @@ mod tests {
     fn ominous_banner_hides_tooltip_layers_but_keeps_its_patterns() {
         let mut banner = crate::mobs::raider::ominous_banner();
         (banner.damage, banner.extra) = crate::item_data::decode_components(
-            crate::item_data::encode_components(&banner).as_ref(),
+            crate::item_data::encode_components(&banner, &Default::default()).as_ref(),
         );
         assert_eq!(
-            layers(&banner).len(),
+            banner.banner_layers().len(),
             crate::item_data::OMINOUS_LAYERS.len()
         );
         assert!(tooltip_layers(&banner).is_empty());
         banner.data_mut().custom_name =
             Some(sunrise_core::nbt::Tag::String("Captain's Standard".into()));
         assert!(tooltip_layers(&banner).is_empty());
-        banner.data_mut().ominous_banner = false;
-        assert_eq!(tooltip_layers(&banner), layers(&banner));
+        banner
+            .data_mut()
+            .set_other("minecraft:tooltip_display", None);
+        assert_eq!(tooltip_layers(&banner), banner.banner_layers());
         assert!(!tooltip_layers(&banner).is_empty());
     }
 

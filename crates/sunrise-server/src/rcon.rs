@@ -14,8 +14,6 @@ use crate::{
     engine,
     supervisor::note,
 };
-use sunrise_platform::server_files::properties::{ServerProperties, SystemEntropy};
-use sunrise_server_launch::config;
 use serde_json::Value;
 use std::{
     io::{self, Read, Write},
@@ -28,6 +26,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use sunrise_platform::server_files::properties::{ServerProperties, SystemEntropy};
+use sunrise_server_launch::config;
 
 /// `RconClient.SERVERDATA_AUTH`: the login, with the password as its payload.
 const AUTH: i32 = 3;
@@ -184,6 +184,23 @@ struct Limits {
     refused: Duration,
 }
 
+/// What a connection is counted under: its IPv4 address (an IPv4-mapped IPv6 one as that), or an IPv6
+/// address's /64, which one home or host holds whole, so addresses rotated inside it don't get
+/// fresh places.
+fn limit_key(address: std::net::IpAddr) -> std::net::IpAddr {
+    use std::net::{IpAddr, Ipv6Addr};
+    match address {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let s = v6.segments();
+                IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+            }
+        },
+        v4 => v4,
+    }
+}
+
 /// Frees a connection's place when its thread ends.
 /// A connection's place: one of the [`Limits::clients`], and one of its address's [`PER_ADDRESS`].
 struct Place {
@@ -199,6 +216,7 @@ impl Place {
         address: std::net::IpAddr,
         clients: usize,
     ) -> Option<Self> {
+        let address = limit_key(address);
         let mut per = per_address.lock().unwrap_or_else(|e| e.into_inner());
         let mine = per.entry(address).or_default();
         if *mine >= PER_ADDRESS {
@@ -650,6 +668,41 @@ mod tests {
         let mut again = connect(address);
         again.write_all(&encode(1, AUTH, "hunter2")).unwrap();
         assert_eq!(reply(&mut again).0, 1);
+    }
+
+    #[test]
+    fn addresses_of_one_ipv6_prefix_share_one_addresss_places() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let open = Arc::new(AtomicUsize::new(0));
+        let per_address = Arc::default();
+        let at =
+            |net: u16, host: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, net, 0, 0, 0, host));
+        // A home line holds a whole /64: ten of its addresses are one client's share, not ten.
+        let held: Vec<_> = (1..=10)
+            .filter_map(|host| Place::take(&open, &per_address, at(1, host), MAX_CLIENTS))
+            .collect();
+        assert_eq!(held.len(), PER_ADDRESS);
+        assert!(
+            Place::take(&open, &per_address, at(2, 1), MAX_CLIENTS).is_some(),
+            "another /64 is another home"
+        );
+        // An IPv4-mapped IPv6 address is its IPv4 address.
+        let v4: Vec<_> = (0..PER_ADDRESS)
+            .filter_map(|_| {
+                Place::take(
+                    &open,
+                    &per_address,
+                    IpAddr::from([198, 51, 100, 1]),
+                    MAX_CLIENTS,
+                )
+            })
+            .collect();
+        assert_eq!(v4.len(), PER_ADDRESS);
+        let mapped = IpAddr::V6(Ipv4Addr::new(198, 51, 100, 1).to_ipv6_mapped());
+        assert!(Place::take(&open, &per_address, mapped, MAX_CLIENTS).is_none());
+        drop((held, v4));
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+        assert!(per_address.lock().unwrap().is_empty());
     }
 
     #[test]

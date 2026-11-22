@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "ऑटो-रीकनेक्ट",
+  "sunrise.extras.auto_reconnect.tooltip": "कनेक्शन टूटने या रीस्टार्ट के बाद सर्वर से दोबारा जुड़ता है, किक या बैन होने के बाद कभी नहीं।"
+}

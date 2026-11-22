@@ -197,14 +197,25 @@ impl Game<'_> {
     }
 
     /// `AbstractBoat.remove`: a boat that is destroyed drops its lead.
+    pub(super) fn drop_removed_boat_lead(&mut self, i: usize) {
+        let (holder, id, at) = self.boats.update(i, |b| {
+            let holder = b.leash;
+            let had_pending = b.leash_pending.take().is_some();
+            let at = Self::take_boat_leash(b, true)
+                .or_else(|| had_pending.then(|| b.position.components()));
+            (holder, b.id, at)
+        });
+        self.notify_knot_leashee_removed(holder, id);
+        if let Some(at) = at {
+            self.drop_lead_item(at);
+        }
+    }
+
+    /// Release a boat already extracted by a fixture.
     pub(super) fn boat_removed(&mut self, b: &Boat) {
         self.notify_knot_leashee_removed(b.leash, b.id);
-        let mut b = b.clone();
-        let pending = b.leash_pending.take().is_some();
-        if b.leash.is_some() || pending {
-            let at = [b.position.x, b.position.y, b.position.z];
-            b.leash = None;
-            self.drop_lead_item(at);
+        if b.leash.is_some() || b.leash_pending.is_some() {
+            self.drop_lead_item(b.position.components());
         }
     }
 
@@ -273,7 +284,7 @@ impl Game<'_> {
 
     /// `Leashable.angularFriction`.
     fn boat_angular_friction(&self, b: &Boat) -> f32 {
-        if b.on_ground {
+        if b.ground.on_ground {
             let (x, z) = (b.position.x.floor() as i32, b.position.z.floor() as i32);
             let y = (b.position.y - 0.500_001).floor() as i32;
             let state = self.world.block(x, y, z);
@@ -468,7 +479,7 @@ impl Game<'_> {
         let id = self.boats[i].id;
         // The sneak branch: the player's mobs and boats on leads are re-tied
         // to this boat.
-        let sneaking = self.keys.held(Action::Sneak);
+        let sneaking = self.held_mapping(Action::Sneak);
         if sneaking
             && self.tie_player_leads(glam::DVec3::new(c.x, c.y, c.z), Holder::Boat(id), None)
         {
@@ -526,12 +537,7 @@ impl Game<'_> {
                 });
                 self.lead_sound("tied", at);
                 // The lead is always used up.
-                if let Some(stack) = self.held_mut().as_mut() {
-                    stack.count -= 1;
-                    if stack.count == 0 {
-                        *self.held_mut() = None;
-                    }
-                }
+                self.consume_player_slot(self.held_slot(), 1);
                 return true;
             }
         }
@@ -560,7 +566,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn command_view_uses_live_and_pending_boat_leashes_not_raw_tags() {
         use crate::game::commands::Target;
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -624,7 +630,7 @@ mod tests {
         assert!((d - 5.0).abs() < 1e-12);
     }
     #[test]
-    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    #[ignore = "daily"]
     fn non_guest_holder_branches_keep_their_existing_velocity_sources() {
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);

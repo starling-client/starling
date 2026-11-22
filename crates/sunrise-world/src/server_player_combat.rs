@@ -320,7 +320,7 @@ impl<A: HealthAttributes, E: CombatEnvironment<A>> HurtWorld for ServerPlayerCom
     fn damage_post(
         &mut self,
         state: &mut HurtState<Self::Source>,
-        container: &DamageContainer,
+        container: DamageContainer,
     ) -> Result<(), Self::Error> {
         HurtWorld::damage_post(self.environment, state, container)
             .map_err(ServerDamageError::Environment)

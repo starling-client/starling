@@ -1,0 +1,3 @@
+ids = ["type:SpecialModelPart", "type:SpecialPartContent", "type:SpecialModelPart.model"]
+why = "A special model renderer's part is now a resource model or an item stack: SpecialModelPart.model is replaced by SpecialModelPart.content (SpecialPartContent::Model or ::Stack { stack, display }), and a stack part is resolved through the item model resolver with the inner item's own models, tints and foil. A cycle, more than MAX_NESTED_STACK_PARTS stack parts in a draw, or an unreadable stack refuses the answer, native alike."
+migrate = "SpecialModelPart::new(model) is unchanged; read part.content instead of part.model. Use SpecialModelPart::stack(stack, display) for a nested item. Rebuild native mods against this SDK."

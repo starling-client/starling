@@ -3,9 +3,12 @@
 pub trait Hooks {
     /// `Gui.setScreen` is about to replace the `current` screen with `new`
     /// (`ScreenEvent.Opening`; the screen `playing` is none: vanilla's null).
-    /// Answer `ScreenOpening::Cancel` to keep the current one, or
-    /// `ScreenOpening::ModScreen` to open a mod's own screen instead.
+    /// Answer `ScreenOpening::Cancel` to keep the current one,
+    /// `ScreenOpening::ModScreen` to open a mod's own screen instead, or
+    /// `ScreenOpening::Vanilla` to open another vanilla screen instead.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "replace",
         out = "outcome",
@@ -13,5 +16,9 @@ pub trait Hooks {
         neoforge = "ScreenEvent.Opening",
         cancellable = true
     )]
-    fn screen_opening();
+    fn screen_opening(
+        current: &ScreenView<'_>,
+        new: &ScreenView<'_>,
+        outcome: &mut Option<Answered<ScreenOpening>>,
+    );
 }

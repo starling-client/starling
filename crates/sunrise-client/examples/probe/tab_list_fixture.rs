@@ -5,6 +5,12 @@
 //! runs, faces as skin blits), each face's skin chosen by
 //! `sunrise_client::skins` from the profile's `textures` property.
 #![forbid(unsafe_code)]
+use serde_json::{Value, json};
+use std::{
+    fs,
+    io::{BufWriter, Write},
+    path::PathBuf,
+};
 use sunrise_client::{
     component,
     hud::HudAtlas,
@@ -14,12 +20,6 @@ use sunrise_client::{
     skins,
     tab_list::{self, TabInputs, TabList, TabPlayer},
     text::Text,
-};
-use serde_json::{Value, json};
-use std::{
-    fs,
-    io::{BufWriter, Write},
-    path::PathBuf,
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -173,7 +173,6 @@ pub fn main() -> Result<()> {
                     gui_ticks: f["tick"].as_i64().unwrap_or(0),
                     background,
                     upside_down: &up,
-                    mark: &|_| None,
                 };
                 for d in list.layout(&inputs, font) {
                     draws.push(match d {

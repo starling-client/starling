@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automatisch herverbinde",
+  "sunrise.extras.auto_reconnect.tooltip": "Sluit zich weer bij ‘n server nao ‘n verlore verbinding of ‘n herstart, noets nao ‘n kick of ban."
+}

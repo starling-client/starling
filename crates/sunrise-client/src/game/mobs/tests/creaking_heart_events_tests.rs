@@ -5,10 +5,10 @@
 //! copper golem posts `SHEAR` at the golem from the player
 //! (`CopperGolem.mobInteract`).
 use super::super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::{Species, Who};
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let mut game = crate::game::game_tests::tests::server_game(resources);

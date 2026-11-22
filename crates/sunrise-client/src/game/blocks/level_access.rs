@@ -50,9 +50,21 @@ impl LevelAccess for GameLevel<'_> {
             self.world.block_entities.insert(key, entity);
         }
     }
-    fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+    fn observe_block_changed(
+        &self,
+        pos: BlockPos,
+        old: BlockStateId,
+        new: BlockStateId,
+        flags: i32,
+    ) {
         if self.native_authoritative {
-            self.native_block_changed(self.dimension, pos, old, new);
+            self.native_block_changed(
+                self.dimension,
+                pos,
+                old,
+                new,
+                mod_api::BlockUpdateFlags::from_bits_retain(flags),
+            );
         }
     }
     fn observes_block_state_change(&self, old: BlockStateId, new: BlockStateId) -> bool {
@@ -116,6 +128,56 @@ impl LevelAccess for GameLevel<'_> {
             self.native_block_spread(self.dimension, kind, from, to, &mut canceled);
         }
         !canceled
+    }
+    fn has_liquid_container_part(&self, state: BlockStateId) -> bool {
+        super::api_values::block_state::block_listens(mod_api::HookId::CanPlaceLiquid, state)
+    }
+    fn can_place_liquid(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        fluid: sunrise_world::fluid::FluidKind,
+        user: sunrise_world::level::LiquidUser,
+    ) -> Option<bool> {
+        if !self.has_liquid_container_part(state) {
+            return None;
+        }
+        let fluid = super::native_world_read::api_fluid_state(
+            sunrise_world::fluid::FluidState::new(fluid, 8, false),
+        )?
+        .fluid;
+        let user = self
+            .api_level
+            .zip(user.entity_id)
+            .map(|(level, id)| mod_api::LivingRef::new(mod_api::EntityRef::new(level.epoch(), id)));
+        let mut answer = None;
+        self.native_can_place_liquid(pos, state, fluid, user, &mut answer);
+        answer
+    }
+    fn has_place_liquid_part(&self, state: BlockStateId) -> bool {
+        self.native_authoritative
+            && super::api_values::block_state::block_listens(mod_api::HookId::PlaceLiquid, state)
+    }
+    fn place_liquid(
+        &mut self,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+        fluid: sunrise_world::fluid::FluidState,
+    ) -> Option<bool> {
+        if !self.has_place_liquid_part(state) || !self.world.is_loaded_at(pos.x, pos.y, pos.z) {
+            return None;
+        }
+        if self.liquid_transaction_open {
+            log::warn!(
+                "Sunrise: refused direct place_liquid during an open transaction at {pos:?}"
+            );
+            return None;
+        }
+        let fluid = super::native_world_read::api_fluid_state(fluid)?;
+        let mut answer = None;
+        self.native_place_liquid(ticks, pos, state, fluid, &mut answer);
+        answer
     }
     fn fluid_place_block(
         &self,
@@ -403,6 +465,11 @@ impl LevelAccess for GameLevel<'_> {
         self.native_authoritative
             && mod_api::__private::has_scoped_hook(mod_api::HookId::ShouldCheckWeakPower)
     }
+    fn has_signal_hook(&self) -> bool {
+        self.native_authoritative
+            && (mod_api::__private::has_scoped_hook(mod_api::HookId::BlockSignal)
+                || mod_api::__private::has_scoped_hook(mod_api::HookId::IsSignalSource))
+    }
     fn adjust_should_check_weak_power(
         &self,
         pos: BlockPos,
@@ -536,7 +603,7 @@ impl LevelAccess for GameLevel<'_> {
         output
     }
     fn adjust_analog_output(
-        &self,
+        &mut self,
         pos: BlockPos,
         state: BlockStateId,
         direction: Direction,
@@ -563,6 +630,16 @@ impl LevelAccess for GameLevel<'_> {
                 *state = self.block_state(pos);
             }
         }
+    }
+    fn has_held_block_ticks(&self) -> bool {
+        self.native_authoritative && mod_api::__private::any_mod_disabled()
+    }
+    fn hold_block_tick(&self, state: BlockStateId) -> bool {
+        self.native_authoritative
+            && api_values::block_state::block_listens(mod_api::HookId::TickBlock, state)
+            && state.try_into_api().is_ok_and(|state| {
+                mod_api::__private::block_hook_inert(mod_api::HookId::TickBlock, state)
+            })
     }
     fn before_tick_block(
         &mut self,
@@ -608,32 +685,69 @@ impl LevelAccess for GameLevel<'_> {
     #[allow(clippy::option_option)]
     fn before_state_for_placement(
         &self,
+        ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
         state: BlockStateId,
         context: &PlacementContext,
         fluid: FluidState,
         answer: &mut Option<Option<BlockStateId>>,
     ) {
-        if self.native_authoritative
-            && let Some(fluid) = native_world_read::api_fluid_state(fluid)
-        {
-            self.native_state_for_placement(self.dimension, state, context, fluid, answer);
+        // Asked on both sides: a client's placement prediction asks it too.
+        if let Some(fluid) = native_world_read::api_fluid_state(fluid) {
+            self.view(ticks)
+                .previewing(preview)
+                .native_state_for_placement(self.dimension, state, context, fluid, answer);
         }
     }
-    fn before_can_survive(&self, pos: BlockPos, state: BlockStateId, survives: &mut Option<bool>) {
-        if self.native_authoritative {
-            self.native_can_survive(self.dimension, pos, state, survives);
-        }
+    fn must_survive(&self, item: &str) -> Option<bool> {
+        let mut answer = None;
+        self.native_must_survive(item, &mut answer);
+        answer
+    }
+    fn fence_gate_in_wall(&self, state: BlockStateId) -> Option<bool> {
+        let mut answer = None;
+        self.native_fence_gate_in_wall(state, &mut answer);
+        answer
+    }
+    fn before_can_survive(
+        &self,
+        ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
+        pos: BlockPos,
+        state: BlockStateId,
+        survives: &mut Option<bool>,
+    ) -> bool {
+        let mut inert = false;
+        self.view(ticks).previewing(preview).native_can_survive(
+            self.dimension,
+            pos,
+            state,
+            survives,
+            &mut inert,
+        );
+        inert
     }
     fn before_can_sustain_plant(
         &self,
+        ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
         state: BlockStateId,
         ground: BlockStateId,
         ground_pos: BlockPos,
         sustains: &mut Option<bool>,
-    ) {
-        if self.native_authoritative {
-            self.native_can_sustain_plant(self.dimension, state, ground, ground_pos, sustains);
-        }
+    ) -> bool {
+        let mut inert = false;
+        self.view(ticks)
+            .previewing(preview)
+            .native_can_sustain_plant(
+                self.dimension,
+                state,
+                ground,
+                ground_pos,
+                sustains,
+                &mut inert,
+            );
+        inert
     }
     fn asks_is_fertile(&self) -> bool {
         self.native_authoritative && mod_api::__private::has_scoped_hook(mod_api::HookId::IsFertile)
@@ -647,6 +761,12 @@ impl LevelAccess for GameLevel<'_> {
                 mod_api::HookId::CanBeHydrated,
                 state,
             )
+    }
+    fn hold_farmland_hydration(&self, state: BlockStateId) -> bool {
+        mod_api::__private::any_mod_disabled()
+            && state.try_into_api().is_ok_and(|state| {
+                mod_api::__private::block_hook_inert(mod_api::HookId::CanBeHydrated, state)
+            })
     }
     fn before_can_be_hydrated(
         &self,
@@ -662,14 +782,23 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn before_may_place_on(
         &self,
+        ticks: &Ticks,
+        preview: Option<&sunrise_world::level::PreviewBlocks>,
         state: BlockStateId,
         ground: BlockStateId,
         ground_pos: BlockPos,
         may: &mut Option<bool>,
-    ) {
-        if self.native_authoritative {
-            self.native_may_place_on(self.dimension, state, ground, ground_pos, may);
-        }
+    ) -> bool {
+        let mut inert = false;
+        self.view(ticks).previewing(preview).native_may_place_on(
+            self.dimension,
+            state,
+            ground,
+            ground_pos,
+            may,
+            &mut inert,
+        );
+        inert
     }
     fn is_client_side(&self) -> bool {
         self.client_side
@@ -1119,6 +1248,23 @@ impl LevelAccess for GameLevel<'_> {
             .get(&[pos.x, pos.y, pos.z])
             .map(|s| s.status == sunrise_client::block_entity_anim::ShulkerStatus::Closed)
     }
+    /// What a mod block entity published for a block that may (`shapes_from_block_entity`).
+    fn published_collision_shape(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+    ) -> Option<sunrise_core::geometry::VoxelShape> {
+        if !self.collision.publishes_shapes(state) {
+            return None;
+        }
+        sunrise_client::collisions::published_shapes(
+            self.world,
+            self.registry,
+            state,
+            [pos.x, pos.y, pos.z],
+        )
+        .map(|shapes| shapes.collision().clone())
+    }
     fn remove_block_entity(&mut self, pos: BlockPos, old: BlockStateId, side_effects: bool) -> u8 {
         if let Some(change) = &mut self.command_block_transition
             && change.preserve(self.world, pos, old)
@@ -1139,9 +1285,12 @@ impl LevelAccess for GameLevel<'_> {
         };
         let name = &block.name;
         let tag = Tag::Compound(nbt);
-        if let Some((key, entity)) = sunrise_client::save::decode_block_entity_for_block(&tag, name)
+        let previous = self.world.block_entities.get(&(pos.x, pos.y, pos.z));
+        if let Some((key, entity)) =
+            sunrise_client::save::decode_block_entity_replacing(&tag, name, previous)
         {
             self.world.block_entities.insert(key, entity);
+            self.notify_block_entity_load_additional(key);
             if tag.get("LootTable").is_some() {
                 self.emit(LevelEvent::ContainerLootTable { pos, tag });
             }

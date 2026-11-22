@@ -16,10 +16,18 @@ pub trait Hooks {
     /// Unknown registration slots are ignored. Mob-specific animations still run after
     /// the humanoid base pose, as in vanilla. Client-side, with a `ClientHost`.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "replace",
         out = "pose",
         neoforge = "IClientItemExtensions.getArmPose"
     )]
-    fn get_arm_pose();
+    fn get_arm_pose(
+        entity_id: u32,
+        hand: Hand,
+        stack: &mod_api::ItemStack,
+        humanoid: &mod_api::HumanoidRenderState<'_>,
+        pose: &mut Option<mod_api::ArmPose>,
+    );
 }

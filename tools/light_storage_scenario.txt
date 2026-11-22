@@ -1,0 +1,94 @@
+# Scenarios for the light storage harness (tools/test_light_storage_parity.py).
+# A level is the Overworld's shape (sections -4..19, light sections -5..20) unless the case says `nosky`.
+# column CX CZ nonair=S,S stored=S:SKY/BLOCK,...  loads a column: its non-air sections and the light layers
+#   it was sent. A layer is U<n> (n everywhere) or R<k> (nibble (x + 2z + 3y + k) & 15, x, y, z within the section).
+# drop CX CZ      the column is forgotten
+# read X Y Z      the sky and block light at the block
+case top_padding
+column 0 0 nonair=19 stored=18:U15/U0,19:R1/U2,20:U0/U0
+column 3 0 nonair=19 stored=18:U15/U0,19:R1/U2,20:U15/U9
+column 6 0 nonair=17 stored=16:U15/U0,17:R1/U2,18:R4/U0
+read 5 319 5
+read 5 320 5
+read 5 335 5
+read 5 336 5
+read 53 320 5
+read 53 335 5
+read 53 336 5
+read 101 319 5
+read 101 320 5
+read 101 336 5
+read 101 400 5
+case bottom_padding
+column 0 0 nonair=-4 stored=-5:R3/R5,-4:R1/U0,-3:U15/U0
+column 3 0 nonair=-3 stored=-4:U15/U0,-3:R2/U0,-2:U15/U0
+column 6 0 nonair=-4 stored=-5:U0/U0,-4:R1/U0,-3:U15/U0
+read 5 -64 5
+read 5 -65 5
+read 7 -70 9
+read 7 -80 9
+read 7 -81 9
+read 7 -200 9
+read 53 -65 5
+read 53 -70 9
+read 53 -80 9
+read 53 -81 9
+read 101 -65 5
+read 101 -81 5
+case omitted_between
+column 0 0 nonair=0,10 stored=-1:U15/U0,0:R1/U0,1:R2/U0,9:R7/U0,10:R5/U0,11:R9/U0
+read 3 40 4
+read 3 47 4
+read 3 48 4
+read 3 100 4
+read 3 143 4
+read 3 144 4
+read 3 -17 4
+read 3 -18 4
+read 3 -40 4
+read 3 175 4
+read 3 176 4
+read 3 192 4
+read 3 400 4
+case unload_beside_neighbour
+column 0 0 nonair=0 stored=-1:R2/U3,0:R1/U0,1:U0/U5
+column 1 0 nonair=0 stored=-1:U0/U0,0:R6/R2,1:R9/U0
+drop 1 0
+read 20 5 5
+read 20 -10 5
+read 20 20 5
+read 20 40 5
+read 20 -20 5
+read 20 -50 5
+read 20 400 5
+drop 0 0
+read 20 5 5
+read 20 -10 5
+read 20 20 5
+read 4 5 5
+column 0 0 nonair=0 stored=-1:R2/U3,0:R1/U0,1:U0/U5
+read 20 5 5
+read 20 -10 5
+case missing_beside_loaded
+column 4 5 nonair=0 stored=-1:R2/U3,0:R1/U0,1:U0/U5
+read 85 5 85
+read 85 20 85
+read 85 40 85
+read 85 -10 85
+read 85 -40 85
+read 85 -100 85
+read 85 300 85
+read 150 5 150
+read 150 -300 150
+case nosky nosky
+column 0 0 nonair=0 stored=-1:R2/R3,0:R1/R4,1:U9/U5
+column 1 0 nonair=0 stored=-1:R2/R3,0:R1/R4,1:U9/U5
+read 5 5 5
+read 5 100 5
+read 5 -200 5
+read 5 400 5
+drop 1 0
+read 20 5 5
+read 20 100 5
+read 20 400 5
+read 200 5 5

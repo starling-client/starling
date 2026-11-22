@@ -96,7 +96,7 @@ impl mod_api::Hooks for LocalTuner {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn local_level_requests_can_mute_sound_without_undoing_prediction() {
     use sunrise_core::position::BlockPos;
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -128,7 +128,13 @@ fn local_level_requests_can_mute_sound_without_undoing_prediction() {
             game.predict_use(
                 &(
                     vec![(at, new)],
-                    vec![(at, "block.wooden_door.open".into(), 1.0, 0.9)],
+                    vec![(
+                        at,
+                        "block.wooden_door.open".into(),
+                        mod_api::SoundSource::Blocks,
+                        1.0,
+                        0.9,
+                    )],
                 ),
                 1,
             );
@@ -199,7 +205,7 @@ fn local_level_requests_can_mute_sound_without_undoing_prediction() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn game_events_ask_client_level_before_playback() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let mods = vec![mod_api::ModEntry::new(
@@ -213,8 +219,8 @@ fn game_events_ask_client_level_before_playback() {
             let mut player = PlayerMotion::new(game.motion, Vec3::new(1.0, 64.0, 1.0)).unwrap();
             player.dimensions.eye_height = 1.25;
             game.player = Some(player);
-            for event in [6, 9, 10] {
-                game.handle_packet(C::GameEvent(play::GameEvent { event, param: 1.0 }))
+            for (event, param) in [(6, 1.0), (9, 1.0), (10, 1.4)] {
+                game.handle_packet(C::GameEvent(play::GameEvent { event, param }))
                     .unwrap();
             }
             assert_eq!(
@@ -246,7 +252,7 @@ fn game_events_ask_client_level_before_playback() {
             );
             game.handle_packet(C::GameEvent(play::GameEvent {
                 event: 10,
-                param: 0.0,
+                param: 1.5,
             }))
             .unwrap();
             assert_eq!(
@@ -272,7 +278,7 @@ fn game_events_ask_client_level_before_playback() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn packets_ask_client_level_before_playback_not_ui() {
     use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs, LoopSide};
     let log = Arc::new(Mutex::new(Log::default()));

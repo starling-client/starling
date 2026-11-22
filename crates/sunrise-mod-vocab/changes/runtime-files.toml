@@ -1,0 +1,3 @@
+ids = ["handle:RegistrationContext::runtime_files", "trait:RuntimeFileSource", "type:RuntimeFiles", "type:RuntimeFilesError", "type:RuntimePathError"]
+why = "RegistrationContext now carries the runtime files of the mod it is handed to: the manual Wire layout changes from runtime.startup.v3 to runtime.startup.runtime_files.v4."
+migrate = "Rebuild against this SDK. A mod reads the files its package lists under [runtime] with RegistrationContext::runtime_files(); file_path opens a listed file."

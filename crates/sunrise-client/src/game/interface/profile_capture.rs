@@ -4,10 +4,19 @@ use super::integrated::{
     NO_ANSWER,
     capture::{Live, ServerSide, Target},
 };
-use super::memory::{MEMORY_EVERY_S, flatten_report};
+use super::memory::{MEMORY_EVERY_S, PendingMemory};
+use super::owner_link::OwnerRequest;
 use super::perf_remote::Served;
 use super::profile_lines::{self as lines, Notice};
 use crate::Result;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    mpsc::{Receiver, Sender, TryRecvError},
+};
+use std::task::Poll;
+use std::time::{Duration, Instant};
 use sunrise_client::client_perf::{
     self, ClientPerf,
     request::{
@@ -21,15 +30,8 @@ use sunrise_client::server_perf::{self, TickDetail, WorldCounts};
 use sunrise_client::spans::{self, Span};
 use sunrise_perf_format::{
     files,
-    v1::{BenchResult, StopReason, Trigger},
+    v1::{BenchResult, ClientSettings, StopReason, Trigger},
 };
-use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc,
-    mpsc::{Receiver, Sender, TryRecvError},
-};
-use std::time::{Duration, Instant};
 
 /// How often a progress notice is set again so the action bar keeps it until the work is done.
 const PROGRESS_EVERY: Duration = Duration::from_secs(2);
@@ -116,6 +118,23 @@ enum Job {
     Share,
 }
 
+#[derive(Default)]
+struct MemorySchedule {
+    /// When the next periodic sample is due and its elapsed period number.
+    due: Option<(f64, u32)>,
+    /// The labeled sample, including canceled work that has not yet released its snapshots.
+    pending: Option<(String, f64, PendingMemory)>,
+}
+
+impl MemorySchedule {
+    fn cancel(&mut self) {
+        self.due = None;
+        if let Some((_, _, pending)) = &mut self.pending {
+            pending.cancel();
+        }
+    }
+}
+
 /// The game's capture state: the health history, the running capture and who is waiting on it.
 pub(super) struct Profile {
     /// The server thread's health history and its side of a capture; set on its own Game only.
@@ -126,8 +145,7 @@ pub(super) struct Profile {
     server_only: Option<ServerOnly>,
     pub(super) perf: ClientPerf,
     started_by: Trigger,
-    /// When the running capture takes its next memory snapshot, and how many it has taken.
-    memory_due: Option<(f64, u32)>,
+    memory: MemorySchedule,
     /// Where the answer to a `/profiler` request that finishes later arrives.
     chat_answer: Option<Receiver<String>>,
     jobs: VecDeque<(PathBuf, Job)>,
@@ -169,7 +187,7 @@ impl Profile {
             server_only: None,
             perf: ClientPerf::new(slow_ms),
             started_by: Trigger::Unspecified,
-            memory_due: None,
+            memory: MemorySchedule::default(),
             chat_answer: None,
             jobs: VecDeque::new(),
             job: None,
@@ -300,10 +318,20 @@ pub(super) fn reports_dir() -> PathBuf {
 
 /// The path as the player sees it: under the game home's folder when it is there.
 pub(super) fn shown(path: &Path) -> String {
-    path.strip_prefix(sunrise_client::logging::game_home())
-        .unwrap_or(path)
-        .display()
-        .to_string()
+    shown_in(path, &sunrise_client::logging::game_home())
+}
+
+/// `path` under `home` as `reports/profile-….hzperf`, with `/` on every platform so replies and chat read the same
+/// everywhere; a path outside `home` as the platform writes it, ready to paste into its file manager.
+fn shown_in(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(inside) => inside
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 fn gpu_readout(
@@ -443,9 +471,10 @@ impl Game<'_> {
                     StopRoute::ServerOnly => {
                         let integrated = self.integrated.as_ref().ok_or(NO_CAPTURE)?;
                         let reply = reply.clone();
-                        if !integrated
-                            .post(move |g| g.stop_server_capture(StopReason::Normal, Some(reply)))
-                        {
+                        if !integrated.tell(OwnerRequest::StopServerCapture(
+                            StopReason::Normal,
+                            Some(reply),
+                        )) {
                             return Err(NO_ANSWER.into());
                         }
                     }
@@ -480,7 +509,7 @@ impl Game<'_> {
                 let posted = server.filter(|_| {
                     self.integrated.as_ref().is_some_and(|integrated| {
                         let label = name.clone();
-                        integrated.post(move |g| g.mark_server_capture(&label))
+                        integrated.tell(OwnerRequest::MarkServerCapture(label))
                     })
                 });
                 let t = client.or(posted).ok_or(NO_CAPTURE)?;
@@ -535,6 +564,19 @@ impl Game<'_> {
             || !self.profile.server_link.is_idle()
     }
 
+    /// The client options a capture records: what sets how much world it keeps and draws.
+    fn perf_client_settings(&self) -> ClientSettings {
+        let s = &self.settings;
+        ClientSettings {
+            view_distance: Some(s.render_distance.max(0) as u32),
+            loaded_view_distance: Some(self.streaming.radius.max(0) as u32),
+            simulation_distance: Some(s.simulation_distance.max(0) as u32),
+            far_terrain_distance: Some(self.lod_distance()),
+            far_terrain_active: Some(self.lod.is_some()),
+            graphics_preset: s.graphics_preset.clone(),
+        }
+    }
+
     fn start_profile(
         &mut self,
         side: Option<ProfileSide>,
@@ -559,6 +601,7 @@ impl Game<'_> {
             sunrise_client::telemetry::gpu_name().as_deref(),
         );
         start.mods = self.perf_mods();
+        start.client_settings = Some(self.perf_client_settings());
         let t = self.profile.perf.now();
         let path =
             self.profile
@@ -611,7 +654,7 @@ impl Game<'_> {
         };
         let handoff = live.clone();
         let path = integrated
-            .call(move |g| g.start_server_capture(target, handoff))
+            .ask(|reply| OwnerRequest::StartServerCapture(target, handoff, Some(reply)))
             .ok_or(NO_ANSWER)??;
         let started = Started {
             ok: true,
@@ -640,11 +683,11 @@ impl Game<'_> {
         };
         let live = Live::new();
         let handoff = live.clone();
-        let posted = integrated.post(move |g| {
-            if let Err(e) = g.start_server_capture(Target::Join(join), handoff) {
-                log::warn!("Sunrise: the server thread is not captured: {e}");
-            }
-        });
+        let posted = integrated.tell(OwnerRequest::StartServerCapture(
+            Target::Join(join),
+            handoff,
+            None,
+        ));
         if posted {
             self.profile.joined = Some(live);
             self.profile.link = ServerLink::Off;
@@ -657,9 +700,8 @@ impl Game<'_> {
     }
 
     fn stop_profile_with(&mut self, reason: StopReason, bench: Vec<BenchResult>) -> Result<()> {
-        if self.profile.perf.capturing() {
-            self.take_memory_snapshot("stop");
-        }
+        // Ending a capture never requests or waits for a final memory sample.
+        self.profile.memory.cancel();
         let t = self.profile.perf.now();
         if self.profile.stopped_after.is_none() {
             self.profile.stopped_after = self.profile.perf.status(t).map(|s| s.elapsed_s);
@@ -670,7 +712,7 @@ impl Game<'_> {
             return Err("no capture is running".into());
         }
         if server && let Some(integrated) = &self.integrated {
-            integrated.post(move |g| g.stop_server_capture(reason, None));
+            integrated.tell(OwnerRequest::StopServerCapture(reason, None));
         }
         self.stop_joined_server();
         self.profile.link = ServerLink::Off;
@@ -902,34 +944,40 @@ impl Game<'_> {
         }
     }
 
-    fn take_memory_snapshot(&mut self, label: &str) {
-        let rows = flatten_report(&self.memory_value());
-        let t = self.profile.perf.now();
-        self.profile.perf.memory_snapshot(t, label, &rows);
-    }
-
-    /// A capture's memory snapshots: one as it starts, then every `MEMORY_EVERY_S`.
+    /// Start a memory census on schedule; publish it only if it finishes in this capture.
     fn poll_memory_snapshot(&mut self) {
-        if !self.profile.perf.capturing() {
-            self.profile.memory_due = None;
+        if let Some((label, t, pending)) = self.profile.memory.pending.take() {
+            match pending.poll() {
+                Poll::Pending => {
+                    self.profile.memory.pending = Some((label, t, pending));
+                    return;
+                }
+                Poll::Ready(Some(rows)) => {
+                    self.profile.perf.memory_snapshot(t, &label, &rows);
+                }
+                Poll::Ready(None) => {}
+            }
+        }
+        let Some(cost) = self.profile.perf.memory_cost() else {
             return;
-        }
+        };
         let now = self.profile.perf.now();
-        match self.profile.memory_due {
+        let label = match self.profile.memory.due {
             None => {
-                self.take_memory_snapshot("start");
-                self.profile.memory_due = Some((now + MEMORY_EVERY_S, 0));
+                self.profile.memory.due = Some((now + MEMORY_EVERY_S, 1));
+                "start".to_owned()
             }
-            Some((due, taken)) if now >= due => {
-                let taken = taken + 1;
-                self.take_memory_snapshot(&format!(
-                    "{}s",
-                    u64::from(taken) * MEMORY_EVERY_S as u64
-                ));
-                self.profile.memory_due = Some((due + MEMORY_EVERY_S, taken));
+            Some((due, period)) if now >= due => {
+                // A slow reply is not a reason to build a queue of stale samples.
+                let elapsed = ((now - due) / MEMORY_EVERY_S) as u32;
+                let period = period + elapsed;
+                self.profile.memory.due =
+                    Some((due + f64::from(elapsed + 1) * MEMORY_EVERY_S, period + 1));
+                format!("{}s", u64::from(period) * MEMORY_EVERY_S as u64)
             }
-            Some(_) => {}
-        }
+            Some(_) => return,
+        };
+        self.profile.memory.pending = PendingMemory::start(self, cost).map(|job| (label, now, job));
     }
 
     fn poll_chat_answer(&mut self) {
@@ -985,6 +1033,7 @@ impl Game<'_> {
         self.profile.perf.set_connection(connection);
         let (wanted, renderer) = (self.profile.gpu, self.renderer.as_ref());
         let entities = self.perf_entity_count() as u32;
+        let memory = &mut self.profile.memory;
         self.profile.perf.frame_with_gpu(
             t,
             wall_ms,
@@ -1002,7 +1051,11 @@ impl Game<'_> {
                 chunks: self.world.chunks.len() as u32,
                 entities,
             },
-            || gpu_readout(wanted, renderer),
+            || {
+                // This callback runs just before the timed capture stops.
+                memory.cancel();
+                gpu_readout(wanted, renderer)
+            },
         );
         if !self.profile.perf.capturing() {
             self.profile.gpu = GpuSwitch::Off;
@@ -1126,6 +1179,18 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capture_under_the_home_is_shown_with_slashes() {
+        let home = std::env::temp_dir().join("sunrise-home");
+        let inside = home.join("reports").join("profile-20261113-190003Z.hzperf");
+        assert_eq!(
+            shown_in(&inside, &home),
+            "reports/profile-20261113-190003Z.hzperf"
+        );
+        let elsewhere = std::env::temp_dir().join("captures").join("a.hzperf");
+        assert_eq!(shown_in(&elsewhere, &home), elsewhere.display().to_string());
+    }
 
     fn chat_request(line: &str) -> std::result::Result<request::Parsed, String> {
         let tree = Dispatcher::profiler();

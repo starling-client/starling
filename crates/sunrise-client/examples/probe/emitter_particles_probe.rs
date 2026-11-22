@@ -2,6 +2,12 @@
 //! Runs tools/test_emitter_particles_parity.py's emitters through
 //! `particles::on_block_faces`, `particles::along_axis` and
 //! `particles::item_use_particles`, plus the tracking emitter queue.
+use serde_json::Value;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::Path,
+};
 use sunrise_client::{
     Result,
     assets::Assets,
@@ -14,12 +20,6 @@ use sunrise_client::{
     world::World,
 };
 use sunrise_core::random::{LegacyRandom, RandomSource};
-use serde_json::Value;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-};
 
 fn d(v: f64) -> String {
     format!("{:016x}", v.to_bits())

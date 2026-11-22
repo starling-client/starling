@@ -4,8 +4,13 @@
 pub trait Hooks {
     /// On an authoritative server, a cauldron at `pos` is about to change
     /// fill level from `from_level` to `to_level` for `reason`. Set `cancel`
-    /// to leave it unchanged.
+    /// to leave it unchanged. For `extinguishing` (a burning entity in a water
+    /// or powder snow cauldron), the game checks after the hook returns without
+    /// cancelling that the block at `pos` still has the block id and properties it
+    /// judged; if not, the block is not changed.
     #[hook(
+        receiver = "read",
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -38,9 +43,12 @@ pub trait Hooks {
     /// before the next mob ticks. Listener writes survive; changing the consumer's
     /// item, position or eligibility refuses the captured effect instead of
     /// overwriting that write. Cancellation still finishes consumption.
-    /// Diverges from upstream: renamed from
-    /// `chorus_fruit_teleport`.
+    /// A consumed stack the API can't carry (a saved item whose id isn't registered) isn't
+    /// heard: the listeners aren't called for that consumption and the teleport goes on as
+    /// vanilla's.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_item_consumption_teleport",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         version = 2,
@@ -48,5 +56,11 @@ pub trait Hooks {
         neoforge = "EntityTeleportEvent.ItemConsumption",
         cancellable = true
     )]
-    fn item_consumption_teleport();
+    fn item_consumption_teleport(
+        consumer: mod_api::LivingRef,
+        consumed: &mod_api::ItemStack,
+        from: [f64; 3],
+        target: &mut [f64; 3],
+        cancel: &mut bool,
+    );
 }

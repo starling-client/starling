@@ -10,6 +10,8 @@ pub trait Hooks {
     /// resolves its structure: answer from the state, without touching the world. With no part
     /// attached to the state, the cost is one table lookup. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "slime",
@@ -18,7 +20,7 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::block_sticky::GameLevel<'_>::native_is_slime_block",
         neoforge = "IBlockExtension.isSlimeBlock"
     )]
-    fn is_slime_block();
+    fn is_slime_block(dimension: LevelDimension, state: BlockState, slime: &mut bool);
     /// Whether the block state this part is attached to is sticky to a piston
     /// (`IBlockExtension.isStickyBlock`): set `sticky` to decide. `sticky` starts with vanilla's
     /// answer, true for `minecraft:slime_block` and `minecraft:honey_block`. A sticky block pulls
@@ -29,6 +31,8 @@ pub trait Hooks {
     /// structure: answer from the state, without touching the world. With no part attached to the
     /// state, the cost is one table lookup. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "sticky",
@@ -37,7 +41,7 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::block_sticky::GameLevel<'_>::native_is_sticky_block",
         neoforge = "IBlockExtension.isStickyBlock"
     )]
-    fn is_sticky_block();
+    fn is_sticky_block(dimension: LevelDimension, state: BlockState, sticky: &mut bool);
     /// Whether the block state this part is attached to sticks to `other`, the state beside it
     /// (`IBlockExtension.canStickTo`): set `sticks` to decide. `sticks` starts with vanilla's
     /// answer: false for honey beside slime (as `is_slime_block` tells slime), otherwise true when
@@ -49,6 +53,8 @@ pub trait Hooks {
     /// structure: answer from the two states, without touching the world. With no part attached to
     /// the state, the cost is one table lookup. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "sticks",
@@ -57,5 +63,10 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::block_sticky::GameLevel<'_>::native_can_stick_to",
         neoforge = "IBlockExtension.canStickTo"
     )]
-    fn can_stick_to();
+    fn can_stick_to(
+        dimension: LevelDimension,
+        state: BlockState,
+        other: BlockState,
+        sticks: &mut bool,
+    );
 }

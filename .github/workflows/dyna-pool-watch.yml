@@ -1,0 +1,28 @@
+name: dyna-pool-watch
+# Ends the runs stranded behind a dead Dyna pool (tools/ci/dyna_ci_pool_watch.py): GitHub lets a job wait a day for a
+# runner. It watches the pool, so it can't run on it; one short sweep every 10 minutes on GitHub's runner replaces a
+# watcher per run, which held one of GitHub's runners for as long as each run lasted. Nothing waits on it.
+on:
+  schedule:
+    - cron: '7-59/10 * * * *'
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: dyna-pool-watch
+  cancel-in-progress: false
+jobs:
+  sweep:
+    if: vars.DYNA_CI_SELF_HOSTED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci/dyna_ci_pool_watch.py
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/dyna_ci_pool_watch.py

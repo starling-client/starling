@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "ไม่ลงรอยกัน Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "แสดง Playing Sunrise บนโปรไฟล์ Discord ของคุณในขณะที่ Discord ทำงาน: เมนู ผู้เล่นเดี่ยวหรือผู้เล่นหลายคน มิติข้อมูลและเวลาที่เล่น ไม่เคยเป็นชื่อของโลกหรือที่อยู่ของเซิร์ฟเวอร์"
+}

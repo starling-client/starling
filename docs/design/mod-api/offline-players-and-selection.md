@@ -1,5 +1,9 @@
 # Design: offline players and selection
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [entity and player selectors](../../modding/src/how-to/entities/server-commands.md#entity-and-player-selectors) for the current native API.
+> The seeded, paged service is a proposal, not the existing selector API. Guest services, trap cleanup and cross-runtime fixtures below are historical.
+
 Provisional answer to [#989](https://github.com/arismoko/horizon/issues/989), including Ari’s release comment: move the existing user cache into each authoritative server Game lifecycle; extract one immutable selector evaluator with an explicit ordering policy. Read-only random selection uses a required caller seed and a temporary RNG, never gameplay RNG. This is an unimplemented design with [provisional maintainer decisions](https://github.com/arismoko/horizon/issues/989#issuecomment-6733678791) on persistence, randomness and paging. No stages have been filed.
 
 ## Evidence and limits

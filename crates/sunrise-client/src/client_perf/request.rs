@@ -1,9 +1,9 @@
 //! `sunrise-ctl profile`: the words the game receives, as typed requests, and the typed replies.
-use sunrise_perf_format::v1::GpuMode;
 use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::str::FromStr;
+use sunrise_perf_format::v1::GpuMode;
 
 /// The longest name a mark takes; it is the one free text in a capture.
 pub const MARK_NAME_MAX: usize = 100;

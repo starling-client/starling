@@ -3,8 +3,8 @@
 //! The pinned vanilla registry's property kinds and all enum comparisons are checked
 //! independently. Direction's possible-values order differs from Comparable order;
 //! other vanilla enums preserve it. This does not establish modded/future enum order.
-use sunrise_core::{geometry::Direction, text::parse_java_integer};
 use serde_json::{Map, Value};
+use sunrise_core::{geometry::Direction, text::parse_java_integer};
 
 fn direction(value: &str) -> Option<Direction> {
     Some(match value {

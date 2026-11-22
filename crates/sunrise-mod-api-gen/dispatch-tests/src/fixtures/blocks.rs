@@ -1,60 +1,74 @@
-//! Declaration dispatch isolates each mod before applying the ownership boundary.
+//! Declaration dispatch passes the owner and context to each mod's registrar view.
 mod stubs {
-    // This fixture tests attribution and applying/refusing boundary results, not
-    // the namespace validator (the API's own tests exercise that boundary).
     pub(super) mod declaration_ownership {
-        use crate::tests::mod_api::mod_api::{Block, Item};
+        use crate::tests::{Answered, DeclarationError, RegistrationContext, mod_api};
+
         pub(in crate::tests) trait Declaration {
             fn id(&mut self) -> &mut String;
         }
-        impl Declaration for Block {
+        impl Declaration for mod_api::mod_api::Block {
             fn id(&mut self) -> &mut String {
                 &mut self.id
             }
         }
-        impl Declaration for Item {
+        impl Declaration for mod_api::mod_api::Item {
             fn id(&mut self) -> &mut String {
                 &mut self.id
             }
         }
-        pub(in crate::tests) fn own_declaration(
-            owner: &str,
-            declaration: &mut impl Declaration,
-        ) -> Result<(), String> {
-            let id = declaration.id();
-            super::super::DECLARATION_OWNERS.with_borrow_mut(|calls| {
-                calls.push((owner.to_owned(), id.clone()));
+        pub(in crate::tests) type DeclarationRefusal = ();
+        pub(in crate::tests) type DeclarationSink<'a, D> =
+            dyn FnMut(Answered<D>) -> Result<(), DeclarationError> + 'a;
+        pub(in crate::tests) type DeclarationStage<'a, D> =
+            dyn FnMut(&mut dyn FnMut(&mut DeclarationSink<'_, D>) -> bool) + 'a;
+        pub(in crate::tests) fn declaration_listener(
+            _: &RegistrationContext,
+            run: impl FnOnce(&mut Vec<DeclarationRefusal>) -> bool,
+        ) -> bool {
+            run(&mut Vec::new())
+        }
+        pub(in crate::tests) fn submit_declaration<T: Declaration>(
+            _: &mut Vec<DeclarationRefusal>,
+            mod_id: &'static str,
+            output: &mut dyn FnMut(Answered<T>) -> Result<(), DeclarationError>,
+            mut answer: T,
+        ) -> Result<(), DeclarationError> {
+            let id = answer.id();
+            crate::tests::DECLARATION_OWNERS.with_borrow_mut(|calls| {
+                calls.push((mod_id.to_owned(), id.clone()));
             });
             if id == "reject" {
-                Err(format!("{owner}: refused declaration"))
-            } else {
-                *id = format!("{owner}/checked/{id}");
-                Ok(())
+                return Err(DeclarationError::Rejected {
+                    id: id.clone(),
+                    reason: "bad ID".into(),
+                });
             }
+            *id = format!("{mod_id}/checked/{id}");
+            output(Answered { answer, mod_id })
         }
     }
 }
 use stubs::declaration_ownership as parts;
+
 thread_local! {
     static DECLARATION_OWNERS: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
-    static DECLARATION_REFUSALS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-impl RegistrationContext {
-    fn refuse_declaration(&self, reason: String) {
-        DECLARATION_REFUSALS.with_borrow_mut(|errors| errors.push(reason));
-    }
 }
 
 #[test]
-fn block_batches_preserve_owner_normalization_and_invalid_output() {
+fn block_dispatch_keeps_owner_context_and_valid_output() {
     struct Declares(&'static str);
     #[mod_api::__subscriptions]
     impl Hooks for Declares {
-        fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
-            assert!(event.blocks.is_empty());
-            event
-                .blocks
-                .push(mod_api::mod_api::Block { id: self.0.into() });
+        fn blocks(&self, context: &RegistrationContext, event: &mut BlocksEvent<'_>) {
+            assert_eq!(context.0, "bootstrap");
+            let result = event.register(mod_api::mod_api::Block { id: self.0.into() });
+            if self.0 == "reject" {
+                assert!(
+                    matches!(result, Err(DeclarationError::Rejected { id, reason }) if id == "reject" && reason == "bad ID")
+                );
+            } else {
+                result.unwrap();
+            }
         }
     }
     install(
@@ -65,17 +79,27 @@ fn block_batches_preserve_owner_normalization_and_invalid_output() {
         .into(),
     );
     DECLARATION_OWNERS.with_borrow_mut(Vec::clear);
-    DECLARATION_REFUSALS.with_borrow_mut(Vec::clear);
-    let mut blocks = vec![mod_api::mod_api::Block {
-        id: "existing".into(),
+    let mut blocks = vec![Answered {
+        answer: mod_api::mod_api::Block {
+            id: "existing".into(),
+        },
+        mod_id: "existing",
     }];
-    dispatch_blocks(&RegistrationContext("bootstrap"), &mut blocks);
+    dispatch_blocks(&RegistrationContext("bootstrap"), &mut |listen| {
+        assert!(listen(&mut |block| {
+            blocks.push(block);
+            Ok(())
+        }));
+    });
     assert_eq!(
         blocks
             .iter()
-            .map(|block| block.id.as_str())
+            .map(|b| (b.mod_id, b.answer.id.as_str()))
             .collect::<Vec<_>>(),
-        ["existing", "first/checked/first:pot", "reject"]
+        [
+            ("existing", "existing"),
+            ("first", "first/checked/first:pot")
+        ]
     );
     DECLARATION_OWNERS.with_borrow(|calls| {
         assert_eq!(
@@ -84,7 +108,6 @@ fn block_batches_preserve_owner_normalization_and_invalid_output() {
                 ("first".into(), "first:pot".into()),
                 ("second".into(), "reject".into())
             ]
-        )
+        );
     });
-    DECLARATION_REFUSALS.with_borrow(|errors| assert_eq!(errors, &["second: refused declaration"]));
 }

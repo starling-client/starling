@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: unknown field `because`, expected one of `version`, `reason`, `url`, `side` (line 5, column 11)
+
+icon:
+unavailable

@@ -7,10 +7,8 @@
 //! hears it sends each batch as a serverbound [`CHANNEL`] payload, and falls
 //! back to chat commands on any other server. A payload is the mod's id, then
 //! the lines without their slash.
-use crate::{
-    Error, Result,
-    buf::{Reader, Writer},
-};
+use crate::{Error, Result, buf::Reader};
+use sunrise_core::vanilla_bytes::Writer;
 
 /// The custom payload channel, both ways.
 pub const CHANNEL: &str = "sunrise:quiet_commands";
@@ -66,7 +64,7 @@ pub fn encode(mod_id: &str, lines: &[String]) -> Vec<Vec<u8>> {
 }
 
 fn string_size(s: &str) -> usize {
-    crate::buf::varint_size(s.len() as i32) + s.len()
+    ::sunrise_core::vanilla_bytes::varint_size(s.len() as i32) + s.len()
 }
 
 /// A payload's batch; an error for one that breaks a cap.

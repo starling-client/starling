@@ -113,7 +113,7 @@ mod saved_attribute_modifier_tests {
             "minecraft:leader_zombie_bonus"
         ));
         // And it is saved again.
-        let saved = mob_to_nbt(&m, [1, 0, 0, 1], None, None, |_| None);
+        let saved = mob_to_nbt(&m, [1, 0, 0, 1], None, None, |_| None, &Default::default());
         let Some(Tag::List(list)) = saved.get("attributes") else {
             panic!("no attributes");
         };
@@ -165,7 +165,14 @@ mod saved_attribute_modifier_tests {
         );
         let raw = sunrise_core::nbt::parse_snbt(&snbt).unwrap().0;
         let m = mob_from_nbt(&raw, &types(), 1, None).unwrap();
-        let out = mob_to_nbt(&m, [1, 0, 0, 1], Some(&raw), None, |_| None);
+        let out = mob_to_nbt(
+            &m,
+            [1, 0, 0, 1],
+            Some(&raw),
+            None,
+            |_| None,
+            &Default::default(),
+        );
         let Some(Tag::List(list)) = out.get("attributes") else {
             panic!("no attributes");
         };
@@ -201,7 +208,7 @@ mod saved_attribute_modifier_tests {
                 "{extra}"
             );
             // The permanent modifier is not saved again either.
-            let out = mob_to_nbt(&m, [1, 0, 0, 1], None, None, |_| None);
+            let out = mob_to_nbt(&m, [1, 0, 0, 1], None, None, |_| None, &Default::default());
             let text = format!("{out:?}");
             assert!(!text.contains("minecraft:baby"), "{extra}: {text}");
         }
@@ -223,7 +230,7 @@ mod saved_attribute_modifier_tests {
         ] {
             let m = load("[]", saved);
             assert_eq!(m.absorption, expected, "{saved}");
-            let out = mob_to_nbt(&m, [1, 0, 0, 1], None, None, |_| None);
+            let out = mob_to_nbt(&m, [1, 0, 0, 1], None, None, |_| None, &Default::default());
             assert_eq!(
                 out.get("AbsorptionAmount"),
                 Some(&Tag::Float(expected.to_bits())),

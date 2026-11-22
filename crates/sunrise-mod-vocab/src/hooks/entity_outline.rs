@@ -9,12 +9,18 @@ pub trait Hooks {
     /// entity glow in that colour, None to take its outline away. It changes
     /// only what this client draws: the entity's `Glowing` flag, what the
     /// server and other players see, stays. Asked each frame for every mob,
-    /// player (yourself in third person), dropped item and projectile drawn.
+    /// player (yourself in third person when you hold the camera), dropped item and projectile
+    /// drawn. In the ordered body pass, these queries for mobs, players and dropped items follow
+    /// level join order, interleaved with general entity renderer submissions. Projectile queries
+    /// run in a later pass. General entities, the dragon and end crystals add no outline queries.
     /// API @API:entity_outline@.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
+        version = 3,
         contract = "listen",
         neoforge = "none (NeoForge 26.3 has no glowing or team colour override)"
     )]
-    fn entity_outline();
+    fn entity_outline(entity_id: u32, kind: &str, outline: &mut Option<u32>);
 }

@@ -94,6 +94,18 @@ impl fmt::Display for EngineCommandError {
         }
     }
 }
+impl EngineCommandError {
+    /// The error's `kind` in `engine-command --json` (docs/api/engine-command.md): one per variant.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Configuration(_) => "configuration",
+            Self::Program(_) => "program",
+            Self::Resources(_) => "resources",
+            Self::Io { .. } => "io",
+        }
+    }
+}
+
 impl std::error::Error for EngineCommandError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -103,10 +115,22 @@ impl std::error::Error for EngineCommandError {
     }
 }
 
+/// The engine a supervisor would run: its command and the prepared game files that command names.
+#[derive(Debug)]
+pub struct Engine {
+    pub command: Command,
+    pub resources: PathBuf,
+}
+
 /// Describe the engine the supervisor at `supervisor` would run in `dir`.
 /// Uses the same config, install/current, PATH, resources and command builder as the supervisor.
 /// Does not launch the engine, run a preflight query, write properties, or download anything.
 pub fn engine_command(supervisor: &Path, dir: &Path) -> Result<Command, EngineCommandError> {
+    engine(supervisor, dir).map(|engine| engine.command)
+}
+
+/// [`engine_command`], with the resources folder it found.
+pub fn engine(supervisor: &Path, dir: &Path) -> Result<Engine, EngineCommandError> {
     // Not `fs::canonicalize`: its `\\?\` prefix on Windows would reach the game's program and resources
     // paths, where a later `/` in a string no longer means a separator.
     let supervisor = dunce::canonicalize(supervisor).map_err(|source| EngineCommandError::Io {
@@ -114,17 +138,28 @@ pub fn engine_command(supervisor: &Path, dir: &Path) -> Result<Command, EngineCo
         source,
     })?;
     let config = Config::load(dir).map_err(EngineCommandError::Configuration)?;
+    if let Ok(text) = std::fs::read_to_string(dir.join(config::FILE)) {
+        for key in config::retired_in(&text) {
+            eprintln!("server.toml: {key} is no longer read and can be removed");
+        }
+    }
     let install = Install::around(&supervisor);
     let program = program_near(&config, dir, install.as_ref(), Some(&supervisor))
         .map_err(EngineCommandError::Program)?;
     let resources =
         resources(&config, dir, Some(&program)).map_err(EngineCommandError::Resources)?;
-    command(&program, &resources, dir, config.engine.low_memory).map_err(|source| {
-        EngineCommandError::Io {
-            path: dir.to_owned(),
-            source,
-        }
-    })
+    let command =
+        command(&program, &resources, dir, config.engine.low_memory).map_err(|source| {
+            EngineCommandError::Io {
+                path: dir.to_owned(),
+                source,
+            }
+        })?;
+    let resources = std::path::absolute(&resources).map_err(|source| EngineCommandError::Io {
+        path: resources.clone(),
+        source,
+    })?;
+    Ok(Engine { command, resources })
 }
 
 /// The Minecraft version this server is pinned to; prepared game files must be stamped with it.

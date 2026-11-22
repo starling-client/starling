@@ -6,65 +6,49 @@ use crate::buf::Reader;
 use crate::item::{ATTRIBUTE_OPERATIONS, EQUIPMENT_SLOT_GROUPS};
 use sunrise_world::snbt_text::to_snbt;
 
-const USE_ANIMATION: [&str; 12] = [
-    "none",
-    "eat",
-    "drink",
-    "block",
-    "bow",
-    "trident",
-    "crossbow",
-    "spyglass",
-    "toot_horn",
-    "brush",
-    "bundle",
-    "spear",
-];
+use sunrise_core::use_animation::NAMES as USE_ANIMATION;
 const SWING: [&str; 3] = ["none", "whack", "stab"];
 /// `EquipmentSlot` by `id` (not declaration order).
 const SLOT: [&str; 8] = [
     "mainhand", "feet", "legs", "chest", "head", "offhand", "body", "saddle",
 ];
 
-fn int(r: &mut Reader) -> Option<i32> {
+fn int_with<O: Ops>(r: &mut Reader) -> Option<i32> {
     r.varint().ok()
 }
-fn float(r: &mut Reader) -> Option<f32> {
+fn float_with<O: Ops>(r: &mut Reader) -> Option<f32> {
     r.f32().ok()
 }
-fn boolean(r: &mut Reader) -> Option<bool> {
+fn boolean_with<O: Ops>(r: &mut Reader) -> Option<bool> {
     r.bool().ok()
 }
-fn ident(r: &mut Reader) -> Option<HashCode> {
-    Some(string(&r.string(32767).ok()?))
+fn ident_with<O: Ops>(r: &mut Reader) -> Option<O::Value> {
+    identifier_with::<O>(&r.string(32767).ok()?)
 }
 /// `Codec.xxx.optionalFieldOf(name, default)` for a float.
-fn float_or(rec: RecordHash, name: &str, v: f32, default: f32) -> RecordHash {
-    or_default(
-        rec,
-        name,
-        v.to_bits(),
-        default.to_bits(),
-        HashOps::create_f32(v),
-    )
+fn float_or_with<O: Ops>(rec: Record<O>, name: &str, v: f32, default: f32) -> Record<O> {
+    or_default_with::<O, _>(rec, name, v.to_bits(), default.to_bits(), O::create_f32(v))
 }
-fn int_or(rec: RecordHash, name: &str, v: i32, default: i32) -> RecordHash {
-    or_default(rec, name, v, default, HashOps::create_int(v))
+fn int_or_with<O: Ops>(rec: Record<O>, name: &str, v: i32, default: i32) -> Record<O> {
+    or_default_with::<O, _>(rec, name, v, default, O::create_int(v))
 }
-fn bool_or(rec: RecordHash, name: &str, v: bool, default: bool) -> RecordHash {
-    or_default(rec, name, v, default, HashOps::create_boolean(v))
+fn bool_or_with<O: Ops>(rec: Record<O>, name: &str, v: bool, default: bool) -> Record<O> {
+    or_default_with::<O, _>(rec, name, v, default, O::create_boolean(v))
 }
-fn optional<T>(
+fn optional_with<O: Ops, T>(
     r: &mut Reader,
     element: impl FnOnce(&mut Reader) -> Option<T>,
 ) -> Option<Option<T>> {
-    if boolean(r)? {
+    if boolean_with::<O>(r)? {
         Some(Some(element(r)?))
     } else {
         Some(None)
     }
 }
-fn list<T>(r: &mut Reader, mut element: impl FnMut(&mut Reader) -> Option<T>) -> Option<Vec<T>> {
+fn list_with<O: Ops, T>(
+    r: &mut Reader,
+    mut element: impl FnMut(&mut Reader) -> Option<T>,
+) -> Option<Vec<T>> {
     let n = r.count(r.remaining()).ok()?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
@@ -75,21 +59,22 @@ fn list<T>(r: &mut Reader, mut element: impl FnMut(&mut Reader) -> Option<T>) ->
 
 /// A `SoundEvent` holder: the codec form and, for a reference, its name (what a
 /// field default compares against).
-pub(super) struct Sound {
-    pub(super) code: HashCode,
+pub(super) struct Sound<O: Ops> {
+    pub(super) code: O::Value,
     name: Option<String>,
 }
 /// `SoundEvent.STREAM_CODEC`: 0 and the event itself (`DIRECT_CODEC`: `sound_id`
 /// and an optional `range`), or the registry id plus one.
-pub(super) fn sound(r: &mut Reader, names: &dyn Names) -> Option<Sound> {
-    match int(r)? {
+pub(super) fn sound_with<O: Ops>(r: &mut Reader, names: &dyn Names) -> Option<Sound<O>> {
+    match int_with::<O>(r)? {
+        id if id < 0 => None,
         0 => {
-            let id = ident(r)?;
-            let range = optional(r, float)?;
+            let id = ident_with::<O>(r)?;
+            let range = optional_with::<O, _>(r, float_with::<O>)?;
             Some(Sound {
-                code: RecordHash::new()
+                code: Record::<O>::new()
                     .field("sound_id", id)
-                    .optional("range", range.map(HashOps::create_f32))
+                    .optional("range", range.map(O::create_f32))
                     .build(),
                 name: None,
             })
@@ -97,14 +82,14 @@ pub(super) fn sound(r: &mut Reader, names: &dyn Names) -> Option<Sound> {
         id => {
             let name = names.name("minecraft:sound_event", id - 1)?;
             Some(Sound {
-                code: string(&name),
+                code: string_with::<O>(&name),
                 name: Some(name),
             })
         }
     }
 }
 /// `SoundEvent.CODEC.optionalFieldOf(name, default)`.
-fn sound_or(rec: RecordHash, name: &str, s: Sound, default: &str) -> RecordHash {
+fn sound_or_with<O: Ops>(rec: Record<O>, name: &str, s: Sound<O>, default: &str) -> Record<O> {
     if s.name.as_deref() == Some(default) {
         rec
     } else {
@@ -113,102 +98,137 @@ fn sound_or(rec: RecordHash, name: &str, s: Sound, default: &str) -> RecordHash 
 }
 /// `ByteBufCodecs.holderSet`: 0 and a tag, or the size plus one and the ids.
 /// `HolderSetCodec` writes `#tag`, a lone entry as itself, else a list.
-fn holder_set(registry: &str, names: &dyn Names, r: &mut Reader) -> Option<HashCode> {
-    match int(r)? {
-        0 => Some(string(&format!("#{}", r.string(32767).ok()?))),
+fn holder_set_with<O: Ops>(registry: &str, names: &dyn Names, r: &mut Reader) -> Option<O::Value> {
+    match int_with::<O>(r)? {
+        size if size < 0 => None,
+        0 => Some(string_with::<O>(&format!("#{}", r.string(32767).ok()?))),
         n => {
             let n = usize::try_from(n - 1)
                 .ok()
                 .filter(|n| *n <= r.remaining())?;
             let mut ids = Vec::with_capacity(n);
             for _ in 0..n {
-                ids.push(entry(names, registry, int(r)?)?);
+                ids.push(entry_with::<O>(names, registry, int_with::<O>(r)?)?);
             }
-            Some(if let [only] = ids[..] {
-                only
+            Some(if ids.len() == 1 {
+                ids.remove(0)
             } else {
-                HashOps::create_list(ids)
+                O::create_list(ids)
             })
         }
     }
 }
 /// `ByteBufCodecs.holderRegistry`.
-fn holder(registry: &str, names: &dyn Names, r: &mut Reader) -> Option<HashCode> {
-    entry(names, registry, int(r)?)
+fn holder_with<O: Ops>(registry: &str, names: &dyn Names, r: &mut Reader) -> Option<O::Value> {
+    entry_with::<O>(names, registry, int_with::<O>(r)?)
+}
+
+/// Structural failure rejects the component; a registered save refusal skips that effect.
+fn consume_effects_with<O: Ops>(r: &mut Reader, names: &dyn Names) -> Option<Vec<O::Value>> {
+    let n = r.count(r.remaining()).ok()?;
+    let mut effects = Vec::with_capacity(n);
+    for _ in 0..n {
+        if let Some(effect) = consume_effect_with::<O>(r, names)? {
+            effects.push(effect);
+        }
+    }
+    Some(effects)
 }
 
 /// `ConsumeEffect.CODEC`: a `type` field and the type's fields.
-fn consume_effect(r: &mut Reader, names: &dyn Names) -> Option<HashCode> {
-    let kind = int(r)?;
-    let rec = RecordHash::new();
-    Some(
-        match kind {
-            0 => {
-                let effects = list(r, |r| super::raw::mob_effect(r, names))?;
-                let probability = float(r)?;
-                float_or(
-                    rec.field("type", string("minecraft:apply_effects"))
-                        .field("effects", HashOps::create_list(effects)),
-                    "probability",
-                    probability,
-                    1.0,
-                )
-            }
-            1 => rec
-                .field("type", string("minecraft:remove_effects"))
-                .field("effects", holder_set("minecraft:mob_effect", names, r)?),
-            2 => rec.field("type", string("minecraft:clear_all_effects")),
-            3 => {
-                let diameter = float(r)?;
-                let particles = boolean(r)?;
-                bool_or(
-                    float_or(
-                        rec.field("type", string("minecraft:teleport_randomly")),
-                        "diameter",
-                        diameter,
-                        16.0,
-                    ),
-                    "directional_particles",
-                    particles,
-                    true,
-                )
-            }
-            4 => rec
-                .field("type", string("minecraft:play_sound"))
-                .field("sound", sound(r, names)?.code),
-            _ => return None,
+fn consume_effect_with<O: Ops>(r: &mut Reader, names: &dyn Names) -> Option<Option<O::Value>> {
+    use crate::item::consume_effects::{Kind, read_kind, read_native};
+    let kind = read_kind(r).ok()?;
+    let rec = Record::<O>::new();
+    let value = match kind {
+        Kind::Builtin(0) => {
+            let effects = list_with::<O, _>(r, |r| super::raw::mob_effect_with::<O>(r, names))?;
+            let probability = float_with::<O>(r)?;
+            float_or_with::<O>(
+                rec.field("type", string_with::<O>("minecraft:apply_effects"))
+                    .field("effects", O::create_list(effects)),
+                "probability",
+                probability,
+                1.0,
+            )
         }
-        .build(),
-    )
+        Kind::Builtin(1) => rec
+            .field("type", string_with::<O>("minecraft:remove_effects"))
+            .field(
+                "effects",
+                holder_set_with::<O>("minecraft:mob_effect", names, r)?,
+            ),
+        Kind::Builtin(2) => rec.field("type", string_with::<O>("minecraft:clear_all_effects")),
+        Kind::Builtin(3) => {
+            let diameter = float_with::<O>(r)?;
+            let particles = boolean_with::<O>(r)?;
+            bool_or_with::<O>(
+                float_or_with::<O>(
+                    rec.field("type", string_with::<O>("minecraft:teleport_randomly")),
+                    "diameter",
+                    diameter,
+                    16.0,
+                ),
+                "directional_particles",
+                particles,
+                true,
+            )
+        }
+        Kind::Builtin(4) => rec
+            .field("type", string_with::<O>("minecraft:play_sound"))
+            .field("sound", sound_with::<O>(r, names)?.code),
+        Kind::Builtin(_) => unreachable!("built-in consume-effect type"),
+        Kind::Native(name, ty) => {
+            return match read_native(name, ty, r).ok()? {
+                Some(effect) => Some(Some(O::registered_consume_effect(effect)?)),
+                None => Some(None),
+            };
+        }
+    }
+    .build();
+    Some(Some(value))
 }
 
 /// `SwingAnimation`: `DEFAULT` is whack for 6 ticks.
-fn swing(r: &mut Reader) -> Option<HashCode> {
-    let kind = int(r)?;
-    let duration = int(r)?;
-    let rec = or_default(RecordHash::new(), "type", kind, 1, pick(&SWING, kind)?);
-    Some(int_or(rec, "duration", duration, 6).build())
+fn swing_with<O: Ops>(r: &mut Reader) -> Option<O::Value> {
+    let kind = int_with::<O>(r)?;
+    let duration = int_with::<O>(r)?;
+    let rec = or_default_with::<O, _>(
+        Record::<O>::new(),
+        "type",
+        kind,
+        1,
+        pick_with::<O>(&SWING, kind)?,
+    );
+    Some(int_or_with::<O>(rec, "duration", duration, 6).build())
 }
 
 /// `ResolvableInt` / `ResolvableFloat`: a constant, or a context provider's key.
-fn resolvable(r: &mut Reader, constant: fn(&mut Reader) -> Option<HashCode>) -> Option<HashCode> {
-    if boolean(r)? { constant(r) } else { ident(r) }
+fn resolvable_with<O: Ops>(
+    r: &mut Reader,
+    constant: fn(&mut Reader) -> Option<O::Value>,
+) -> Option<O::Value> {
+    if boolean_with::<O>(r)? {
+        constant(r)
+    } else {
+        ident_with::<O>(r)
+    }
 }
-fn fixed_int(r: &mut Reader) -> Option<HashCode> {
-    Some(HashOps::create_int(r.i32().ok()?))
+fn fixed_int_with<O: Ops>(r: &mut Reader) -> Option<O::Value> {
+    Some(O::create_int(r.i32().ok()?))
 }
-fn fixed_float(r: &mut Reader) -> Option<HashCode> {
-    Some(HashOps::create_f32(float(r)?))
+fn fixed_float_with<O: Ops>(r: &mut Reader) -> Option<O::Value> {
+    Some(O::create_f32(float_with::<O>(r)?))
 }
 
 /// `KineticWeapon.Condition`.
-fn kinetic_condition(r: &mut Reader) -> Option<HashCode> {
-    let ticks = int(r)?;
-    let speed = float(r)?;
-    let relative = float(r)?;
-    let rec = RecordHash::new().field("max_duration_ticks", HashOps::create_int(ticks));
-    let rec = float_or(rec, "min_speed", speed, 0.0);
-    Some(float_or(rec, "min_relative_speed", relative, 0.0).build())
+fn kinetic_condition_with<O: Ops>(r: &mut Reader) -> Option<O::Value> {
+    let ticks = int_with::<O>(r)?;
+    let speed = float_with::<O>(r)?;
+    let relative = float_with::<O>(r)?;
+    let rec = Record::<O>::new().field("max_duration_ticks", O::create_int(ticks));
+    let rec = float_or_with::<O>(rec, "min_speed", speed, 0.0);
+    Some(float_or_with::<O>(rec, "min_relative_speed", relative, 0.0).build())
 }
 
 /// The `Codec.BOOL` fields of the component predicates' codecs
@@ -233,114 +253,135 @@ pub(super) const PREDICATE_BOOLS: [&str; 12] = [
 /// type, or a component type for `AnyValue`) and the predicate as the NBT its
 /// `CODEC` encodes (`fromCodecWithRegistries`), hashed as the map
 /// `DataComponentPredicate.CODEC` (`Codec.dispatchedMap`) writes.
-fn partial_predicate(r: &mut Reader, names: &dyn Names) -> Option<(HashCode, HashCode)> {
-    let registry = if boolean(r)? {
+fn partial_predicate_with<O: Ops>(
+    r: &mut Reader,
+    names: &dyn Names,
+) -> Option<(O::Value, O::Value)> {
+    let concrete = boolean_with::<O>(r)?;
+    let registry = if concrete {
         "minecraft:data_component_predicate_type"
     } else {
         "minecraft:data_component_type"
     };
-    let key = entry(names, registry, int(r)?)?;
+    let key = entry_with::<O>(names, registry, int_with::<O>(r)?)?;
     let tag = r.nbt().ok()?;
+    if !concrete {
+        return matches!(tag, sunrise_core::nbt::Tag::Compound(_)).then(|| (key, O::empty_map()));
+    }
     // The nested `components` of an item predicate (`container`,
     // `bundle_contents`) are component values as NBT: `exact` hashes them by
     // each component's codec.
-    Some((key, super::exact::predicate(&tag, names)?))
+    Some((key, super::exact::predicate_with::<O>(&tag, names)?))
 }
 
 /// `BlockPredicate.STREAM_CODEC` as `BlockPredicate.CODEC` writes it.
-fn block_predicate(r: &mut Reader, names: &dyn Names) -> Option<HashCode> {
-    let blocks = optional(r, |r| holder_set("minecraft:block", names, r))?;
+fn block_predicate_with<O: Ops>(r: &mut Reader, names: &dyn Names) -> Option<O::Value> {
+    let blocks = optional_with::<O, _>(r, |r| holder_set_with::<O>("minecraft:block", names, r))?;
     // StatePropertiesPredicate: a name and an exact value or a (min, max) range.
-    let state = optional(r, |r| {
-        let props = list(r, |r| {
-            let name = string(&r.string(32767).ok()?);
-            let matcher = if boolean(r)? {
-                string(&r.string(32767).ok()?)
+    let state = optional_with::<O, _>(r, |r| {
+        let props = list_with::<O, _>(r, |r| {
+            let name = string_with::<O>(&r.string(32767).ok()?);
+            let matcher = if boolean_with::<O>(r)? {
+                string_with::<O>(&r.string(32767).ok()?)
             } else {
-                let min = optional(r, |r| Some(string(&r.string(32767).ok()?)))?;
-                let max = optional(r, |r| Some(string(&r.string(32767).ok()?)))?;
-                RecordHash::new()
+                let min =
+                    optional_with::<O, _>(r, |r| Some(string_with::<O>(&r.string(32767).ok()?)))?;
+                let max =
+                    optional_with::<O, _>(r, |r| Some(string_with::<O>(&r.string(32767).ok()?)))?;
+                Record::<O>::new()
                     .optional("min", min)
                     .optional("max", max)
                     .build()
             };
             Some((name, matcher))
         })?;
-        Some(HashOps::create_map(props))
+        Some(O::create_map(props))
     })?;
     // NbtPredicate: `TagParser.LENIENT_CODEC` encodes with its flattened codec,
     // the tag's SNBT string.
-    let nbt = optional(r, |r| match r.nbt().ok()? {
-        tag @ sunrise_core::nbt::Tag::Compound(_) => Some(string(&to_snbt(&tag))),
+    let nbt = optional_with::<O, _>(r, |r| match r.nbt().ok()? {
+        tag @ sunrise_core::nbt::Tag::Compound(_) => Some(string_with::<O>(&to_snbt(&tag))),
         _ => None,
     })?;
     // DataComponentExactPredicate: the expected components, by type name.
-    let exact = list(r, |r| {
+    let exact = list_with::<O, _>(r, |r| {
         let _nested = crate::item::Nested::enter().ok()?;
-        let kind = int(r)?;
-        let name = entry(names, "minecraft:data_component_type", kind)?;
-        let value = Component::read(kind, r).ok()?.code(kind, names)?;
+        let kind = int_with::<O>(r)?;
+        let name = entry_with::<O>(names, "minecraft:data_component_type", kind)?;
+        let value = Component::read(kind, r).ok()?.code_with::<O>(kind, names)?;
         Some((name, value))
     })?;
     // DataComponentPredicate: the partial matchers (at most 64).
-    let partial = list(r, |r| partial_predicate(r, names))?;
+    let partial = list_with::<O, _>(r, |r| partial_predicate_with::<O>(r, names))?;
     if partial.len() > 64 {
         return None;
     }
-    let rec = RecordHash::new()
+    let rec = Record::<O>::new()
         .optional("blocks", blocks)
         .optional("state", state)
         .optional("nbt", nbt);
     let rec = if exact.is_empty() {
         rec
     } else {
-        rec.field("components", HashOps::create_map(exact))
+        rec.field("components", O::create_map(exact))
     };
     Some(
         if partial.is_empty() {
             rec
         } else {
-            rec.field("predicates", HashOps::create_map(partial))
+            rec.field("predicates", O::create_map(partial))
         }
         .build(),
     )
 }
 
 /// The hash of component `kind` from its stream, or `None`.
-pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashCode> {
+pub(super) fn code_with<O: Ops>(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<O::Value> {
     Some(match kind {
         // UseEffects: canSprint, interactVibrations, speedMultiplier.
         5 => {
-            let (sprint, vibrations, speed) = (boolean(r)?, boolean(r)?, float(r)?);
-            let rec = bool_or(RecordHash::new(), "can_sprint", sprint, false);
-            let rec = bool_or(rec, "interact_vibrations", vibrations, true);
-            float_or(rec, "speed_multiplier", speed, 0.2).build()
+            let (sprint, vibrations, speed) = (
+                boolean_with::<O>(r)?,
+                boolean_with::<O>(r)?,
+                float_with::<O>(r)?,
+            );
+            let rec = bool_or_with::<O>(Record::<O>::new(), "can_sprint", sprint, false);
+            let rec = bool_or_with::<O>(rec, "interact_vibrations", vibrations, true);
+            float_or_with::<O>(rec, "speed_multiplier", speed, 0.2).build()
         }
         // ItemAttributeModifiers: attribute, modifier, slot, display.
-        16 => HashOps::create_list(list(r, |r| {
-            let attribute = holder("minecraft:attribute", names, r)?;
-            let id = ident(r)?;
+        16 => O::create_list(list_with::<O, _>(r, |r| {
+            let attribute = holder_with::<O>("minecraft:attribute", names, r)?;
+            let id = ident_with::<O>(r)?;
             let amount = r.f64().ok()?;
-            let operation = pick(&ATTRIBUTE_OPERATIONS, int(r)?)?;
-            let slot = int(r)?;
-            let rec = RecordHash::new()
+            let operation = pick_with::<O>(&ATTRIBUTE_OPERATIONS, int_with::<O>(r)?)?;
+            let slot = int_with::<O>(r)?;
+            let rec = Record::<O>::new()
                 .field("type", attribute)
                 .field("id", id)
-                .field("amount", HashOps::create_double(amount.to_bits()))
+                .field("amount", O::create_double(amount.to_bits()))
                 .field("operation", operation);
-            let rec = or_default(rec, "slot", slot, 0, pick(&EQUIPMENT_SLOT_GROUPS, slot)?);
+            let rec = or_default_with::<O, _>(
+                rec,
+                "slot",
+                slot,
+                0,
+                pick_with::<O>(&EQUIPMENT_SLOT_GROUPS, slot)?,
+            );
             Some(
-                match int(r)? {
+                match int_with::<O>(r)? {
                     0 => rec,
                     1 => rec.field(
                         "display",
-                        RecordHash::new().field("type", string("hidden")).build(),
+                        Record::<O>::new()
+                            .field("type", string_with::<O>("hidden"))
+                            .build(),
                     ),
                     2 => rec.field(
                         "display",
-                        RecordHash::new()
-                            .field("type", string("override"))
-                            .field("value", text(&r.nbt().ok()?))
+                        Record::<O>::new()
+                            .field("type", string_with::<O>("override"))
+                            .field("value", text_with::<O>(&r.nbt().ok()?)?)
                             .build(),
                     ),
                     _ => return None,
@@ -350,83 +391,90 @@ pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashC
         })?),
         // FoodProperties.DIRECT_CODEC: nutrition, saturation, canAlwaysEat.
         23 => {
-            let nutrition = int(r)?;
-            let saturation = float(r)?;
-            bool_or(
-                RecordHash::new()
-                    .field("nutrition", HashOps::create_int(nutrition))
-                    .field("saturation", HashOps::create_f32(saturation)),
+            let nutrition = int_with::<O>(r)?;
+            let saturation = float_with::<O>(r)?;
+            bool_or_with::<O>(
+                Record::<O>::new()
+                    .field("nutrition", O::create_int(nutrition))
+                    .field("saturation", O::create_f32(saturation)),
                 "can_always_eat",
-                boolean(r)?,
+                boolean_with::<O>(r)?,
                 false,
             )
             .build()
         }
         // Consumable: consumeSeconds, animation, sound, hasConsumeParticles, effects.
         24 => {
-            let seconds = float(r)?;
-            let animation = int(r)?;
-            let snd = sound(r, names)?;
-            let particles = boolean(r)?;
-            let effects = list(r, |r| consume_effect(r, names))?;
-            let rec = float_or(RecordHash::new(), "consume_seconds", seconds, 1.6);
-            let rec = or_default(
+            let seconds = float_with::<O>(r)?;
+            let animation = int_with::<O>(r)?;
+            let snd = sound_with::<O>(r, names)?;
+            let particles = boolean_with::<O>(r)?;
+            let effects = consume_effects_with::<O>(r, names)?;
+            let rec = float_or_with::<O>(Record::<O>::new(), "consume_seconds", seconds, 1.6);
+            let rec = or_default_with::<O, _>(
                 rec,
                 "animation",
                 animation,
                 1,
-                pick(&USE_ANIMATION, animation)?,
+                pick_with::<O>(&USE_ANIMATION, animation)?,
             );
-            let rec = sound_or(rec, "sound", snd, "minecraft:entity.generic.eat");
-            let rec = bool_or(rec, "has_consume_particles", particles, true);
+            let rec = sound_or_with::<O>(rec, "sound", snd, "minecraft:entity.generic.eat");
+            let rec = bool_or_with::<O>(rec, "has_consume_particles", particles, true);
             if effects.is_empty() {
                 rec
             } else {
-                rec.field("on_consume_effects", HashOps::create_list(effects))
+                rec.field("on_consume_effects", O::create_list(effects))
             }
             .build()
         }
         // UseCooldown: seconds, cooldownGroup.
         26 => {
-            let seconds = float(r)?;
-            RecordHash::new()
-                .field("seconds", HashOps::create_f32(seconds))
-                .optional("cooldown_group", optional(r, ident)?)
+            let seconds = float_with::<O>(r)?;
+            Record::<O>::new()
+                .field("seconds", O::create_f32(seconds))
+                .optional("cooldown_group", optional_with::<O, _>(r, ident_with::<O>)?)
                 .build()
         }
         // DamageResistant, Repairable: a holder set.
-        27 => RecordHash::new()
-            .field("types", holder_set("minecraft:damage_type", names, r)?)
+        27 => Record::<O>::new()
+            .field(
+                "types",
+                holder_set_with::<O>("minecraft:damage_type", names, r)?,
+            )
             .build(),
-        33 => RecordHash::new()
-            .field("items", holder_set("minecraft:item", names, r)?)
+        33 => Record::<O>::new()
+            .field("items", holder_set_with::<O>("minecraft:item", names, r)?)
             .build(),
         // Tool: rules, defaultMiningSpeed, damagePerBlock, canDestroyBlocksInCreative.
         28 => {
-            let rules = list(r, |r| {
-                let blocks = holder_set("minecraft:block", names, r)?;
-                let speed = optional(r, float)?;
-                let drops = optional(r, boolean)?;
+            let rules = list_with::<O, _>(r, |r| {
+                let blocks = holder_set_with::<O>("minecraft:block", names, r)?;
+                let speed = optional_with::<O, _>(r, float_with::<O>)?;
+                let drops = optional_with::<O, _>(r, boolean_with::<O>)?;
                 Some(
-                    RecordHash::new()
+                    Record::<O>::new()
                         .field("blocks", blocks)
-                        .optional("speed", speed.map(HashOps::create_f32))
-                        .optional("correct_for_drops", drops.map(HashOps::create_boolean))
+                        .optional("speed", speed.map(O::create_f32))
+                        .optional("correct_for_drops", drops.map(O::create_boolean))
                         .build(),
                 )
             })?;
-            let (mining, damage, creative) = (float(r)?, int(r)?, boolean(r)?);
-            let rec = RecordHash::new().field("rules", HashOps::create_list(rules));
-            let rec = float_or(rec, "default_mining_speed", mining, 1.0);
-            let rec = int_or(rec, "damage_per_block", damage, 1);
-            bool_or(rec, "can_destroy_blocks_in_creative", creative, true).build()
+            let (mining, damage, creative) = (
+                float_with::<O>(r)?,
+                int_with::<O>(r)?,
+                boolean_with::<O>(r)?,
+            );
+            let rec = Record::<O>::new().field("rules", O::create_list(rules));
+            let rec = float_or_with::<O>(rec, "default_mining_speed", mining, 1.0);
+            let rec = int_or_with::<O>(rec, "damage_per_block", damage, 1);
+            bool_or_with::<O>(rec, "can_destroy_blocks_in_creative", creative, true).build()
         }
         // Weapon: itemDamagePerAttack, disableBlockingForSeconds.
         29 => {
-            let damage = int(r)?;
-            let seconds = float(r)?;
-            float_or(
-                int_or(RecordHash::new(), "item_damage_per_attack", damage, 1),
+            let damage = int_with::<O>(r)?;
+            let seconds = float_with::<O>(r)?;
+            float_or_with::<O>(
+                int_or_with::<O>(Record::<O>::new(), "item_damage_per_attack", damage, 1),
                 "disable_blocking_for_seconds",
                 seconds,
                 0.0,
@@ -435,21 +483,23 @@ pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashC
         }
         // Equippable.
         32 => {
-            let slot = pick(&SLOT, int(r)?)?;
-            let equip = sound(r, names)?;
-            let asset = optional(r, ident)?;
-            let overlay = optional(r, ident)?;
-            let entities = optional(r, |r| holder_set("minecraft:entity_type", names, r))?;
+            let slot = pick_with::<O>(&SLOT, int_with::<O>(r)?)?;
+            let equip = sound_with::<O>(r, names)?;
+            let asset = optional_with::<O, _>(r, ident_with::<O>)?;
+            let overlay = optional_with::<O, _>(r, ident_with::<O>)?;
+            let entities = optional_with::<O, _>(r, |r| {
+                holder_set_with::<O>("minecraft:entity_type", names, r)
+            })?;
             let flags = [
-                boolean(r)?,
-                boolean(r)?,
-                boolean(r)?,
-                boolean(r)?,
-                boolean(r)?,
+                boolean_with::<O>(r)?,
+                boolean_with::<O>(r)?,
+                boolean_with::<O>(r)?,
+                boolean_with::<O>(r)?,
+                boolean_with::<O>(r)?,
             ];
-            let shearing = sound(r, names)?;
-            let rec = RecordHash::new().field("slot", slot);
-            let rec = sound_or(
+            let shearing = sound_with::<O>(r, names)?;
+            let rec = Record::<O>::new().field("slot", slot);
+            let rec = sound_or_with::<O>(
                 rec,
                 "equip_sound",
                 equip,
@@ -458,12 +508,12 @@ pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashC
             .optional("asset_id", asset)
             .optional("camera_overlay", overlay)
             .optional("allowed_entities", entities);
-            let rec = bool_or(rec, "dispensable", flags[0], true);
-            let rec = bool_or(rec, "swappable", flags[1], true);
-            let rec = bool_or(rec, "damage_on_hurt", flags[2], true);
-            let rec = bool_or(rec, "equip_on_interact", flags[3], false);
-            let rec = bool_or(rec, "can_be_sheared", flags[4], false);
-            sound_or(
+            let rec = bool_or_with::<O>(rec, "dispensable", flags[0], true);
+            let rec = bool_or_with::<O>(rec, "swappable", flags[1], true);
+            let rec = bool_or_with::<O>(rec, "damage_on_hurt", flags[2], true);
+            let rec = bool_or_with::<O>(rec, "equip_on_interact", flags[3], false);
+            let rec = bool_or_with::<O>(rec, "can_be_sheared", flags[4], false);
+            sound_or_with::<O>(
                 rec,
                 "shearing_sound",
                 shearing,
@@ -473,49 +523,61 @@ pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashC
         }
         // DeathProtection: deathEffects.
         36 => {
-            let effects = list(r, |r| consume_effect(r, names))?;
+            let effects = consume_effects_with::<O>(r, names)?;
             if effects.is_empty() {
-                RecordHash::new()
+                Record::<O>::new()
             } else {
-                RecordHash::new().field("death_effects", HashOps::create_list(effects))
+                Record::<O>::new().field("death_effects", O::create_list(effects))
             }
             .build()
         }
         // BlocksAttacks.
         37 => {
-            let delay = float(r)?;
-            let scale = float(r)?;
-            let reductions = list(r, |r| {
-                let angle = float(r)?;
-                let types = optional(r, |r| holder_set("minecraft:damage_type", names, r))?;
-                let (base, factor) = (float(r)?, float(r)?);
+            let delay = float_with::<O>(r)?;
+            let scale = float_with::<O>(r)?;
+            let reductions = list_with::<O, _>(r, |r| {
+                let angle = float_with::<O>(r)?;
+                let types = optional_with::<O, _>(r, |r| {
+                    holder_set_with::<O>("minecraft:damage_type", names, r)
+                })?;
+                let (base, factor) = (float_with::<O>(r)?, float_with::<O>(r)?);
                 Some((angle, types, base, factor))
             })?;
-            let item = [float(r)?, float(r)?, float(r)?];
-            let bypassed = optional(r, |r| holder_set("minecraft:damage_type", names, r))?;
-            let block = optional(r, |r| sound(r, names))?;
-            let disabled = optional(r, |r| sound(r, names))?;
-            let rec = float_or(RecordHash::new(), "block_delay_seconds", delay, 0.0);
-            let rec = float_or(rec, "disable_cooldown_scale", scale, 1.0);
+            let item = [
+                float_with::<O>(r)?,
+                float_with::<O>(r)?,
+                float_with::<O>(r)?,
+            ];
+            let bypassed = optional_with::<O, _>(r, |r| {
+                holder_set_with::<O>("minecraft:damage_type", names, r)
+            })?;
+            let block = optional_with::<O, _>(r, |r| sound_with::<O>(r, names))?;
+            let disabled = optional_with::<O, _>(r, |r| sound_with::<O>(r, names))?;
+            let rec = float_or_with::<O>(Record::<O>::new(), "block_delay_seconds", delay, 0.0);
+            let rec = float_or_with::<O>(rec, "disable_cooldown_scale", scale, 1.0);
             // The default is one reduction: 90 degrees, any damage, base 0, factor 1.
             let is_default = matches!(
                 &reductions[..],
-                [(a, None, b, f)] if a.to_bits() == 90f32.to_bits() && *b == 0.0 && *f == 1.0
+                [(a, None, b, f)] if a.to_bits() == 90f32.to_bits()
+                    && b.to_bits() == 0f32.to_bits() && f.to_bits() == 1f32.to_bits()
             );
             let rec = if is_default {
                 rec
             } else {
                 rec.field(
                     "damage_reductions",
-                    HashOps::create_list(reductions.into_iter().map(
-                        |(angle, types, base, factor)| {
-                            float_or(RecordHash::new(), "horizontal_blocking_angle", angle, 90.0)
-                                .optional("type", types)
-                                .field("base", HashOps::create_f32(base))
-                                .field("factor", HashOps::create_f32(factor))
-                                .build()
-                        },
-                    )),
+                    O::create_list(reductions.into_iter().map(|(angle, types, base, factor)| {
+                        float_or_with::<O>(
+                            Record::<O>::new(),
+                            "horizontal_blocking_angle",
+                            angle,
+                            90.0,
+                        )
+                        .optional("type", types)
+                        .field("base", O::create_f32(base))
+                        .field("factor", O::create_f32(factor))
+                        .build()
+                    })),
                 )
             };
             let rec = if item.map(f32::to_bits) == [1.0f32, 0.0, 1.0].map(f32::to_bits) {
@@ -523,10 +585,10 @@ pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashC
             } else {
                 rec.field(
                     "item_damage",
-                    RecordHash::new()
-                        .field("threshold", HashOps::create_f32(item[0]))
-                        .field("base", HashOps::create_f32(item[1]))
-                        .field("factor", HashOps::create_f32(item[2]))
+                    Record::<O>::new()
+                        .field("threshold", O::create_f32(item[0]))
+                        .field("base", O::create_f32(item[1]))
+                        .field("factor", O::create_f32(item[2]))
                         .build(),
                 )
             };
@@ -537,11 +599,11 @@ pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashC
         }
         // PiercingWeapon: dealsKnockback, dismounts, sound, hitSound.
         38 => {
-            let (knockback, dismounts) = (boolean(r)?, boolean(r)?);
-            let snd = optional(r, |r| sound(r, names))?;
-            let hit = optional(r, |r| sound(r, names))?;
-            bool_or(
-                bool_or(RecordHash::new(), "deals_knockback", knockback, true),
+            let (knockback, dismounts) = (boolean_with::<O>(r)?, boolean_with::<O>(r)?);
+            let snd = optional_with::<O, _>(r, |r| sound_with::<O>(r, names))?;
+            let hit = optional_with::<O, _>(r, |r| sound_with::<O>(r, names))?;
+            bool_or_with::<O>(
+                bool_or_with::<O>(Record::<O>::new(), "deals_knockback", knockback, true),
                 "dismounts",
                 dismounts,
                 false,
@@ -552,65 +614,71 @@ pub(super) fn code(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<HashC
         }
         // KineticWeapon.
         39 => {
-            let (cooldown, delay) = (int(r)?, int(r)?);
-            let dismount = optional(r, kinetic_condition)?;
-            let knockback = optional(r, kinetic_condition)?;
-            let damage = optional(r, kinetic_condition)?;
-            let (forward, multiplier) = (float(r)?, float(r)?);
-            let snd = optional(r, |r| sound(r, names))?;
-            let hit = optional(r, |r| sound(r, names))?;
-            let rec = int_or(RecordHash::new(), "contact_cooldown_ticks", cooldown, 10);
-            let rec = int_or(rec, "delay_ticks", delay, 0)
+            let (cooldown, delay) = (int_with::<O>(r)?, int_with::<O>(r)?);
+            let dismount = optional_with::<O, _>(r, kinetic_condition_with::<O>)?;
+            let knockback = optional_with::<O, _>(r, kinetic_condition_with::<O>)?;
+            let damage = optional_with::<O, _>(r, kinetic_condition_with::<O>)?;
+            let (forward, multiplier) = (float_with::<O>(r)?, float_with::<O>(r)?);
+            let snd = optional_with::<O, _>(r, |r| sound_with::<O>(r, names))?;
+            let hit = optional_with::<O, _>(r, |r| sound_with::<O>(r, names))?;
+            let rec = int_or_with::<O>(Record::<O>::new(), "contact_cooldown_ticks", cooldown, 10);
+            let rec = int_or_with::<O>(rec, "delay_ticks", delay, 0)
                 .optional("dismount_conditions", dismount)
                 .optional("knockback_conditions", knockback)
                 .optional("damage_conditions", damage);
-            let rec = float_or(rec, "forward_movement", forward, 0.0);
-            float_or(rec, "damage_multiplier", multiplier, 1.0)
+            let rec = float_or_with::<O>(rec, "forward_movement", forward, 0.0);
+            float_or_with::<O>(rec, "damage_multiplier", multiplier, 1.0)
                 .optional("sound", snd.map(|s| s.code))
                 .optional("hit_sound", hit.map(|s| s.code))
                 .build()
         }
-        40 | 41 => swing(r)?,
+        40 | 41 => swing_with::<O>(r)?,
         // `JukeboxSong.CODEC` is a `RegistryFixedCodec`: a direct song cannot be
         // encoded (vanilla's client would throw), so only a reference hashes.
-        66 => match int(r)? {
-            0 => return None,
-            id => entry(names, "minecraft:jukebox_song", id - 1)?,
+        66 => match int_with::<O>(r)? {
+            id if id < 0 => return None,
+            0 => O::stream_only(
+                Record::<O>::new()
+                    .field("sound_event", sound_with::<O>(r, names)?.code)
+                    .field("description", text_with::<O>(&r.nbt().ok()?)?)
+                    .field("length_in_seconds", O::create_f32(float_with::<O>(r)?))
+                    .field("comparator_output", O::create_int(int_with::<O>(r)?))
+                    .build(),
+            )?,
+            id => entry_with::<O>(names, "minecraft:jukebox_song", id - 1)?,
         },
-        67 => holder_set("minecraft:banner_pattern", names, r)?,
-        83 => sound(r, names)?.code,
-        84 => RecordHash::new()
-            .field("layers", resolvable(r, fixed_int)?)
+        67 => holder_set_with::<O>("minecraft:banner_pattern", names, r)?,
+        83 => sound_with::<O>(r, names)?.code,
+        84 => Record::<O>::new()
+            .field("layers", resolvable_with::<O>(r, fixed_int_with::<O>)?)
             .build(),
         // CookingFuel (burnTime, speedMultiplier), BrewingFuel (uses, speedMultiplier).
         85 | 86 => {
-            let first = resolvable(r, fixed_int)?;
-            let speed = resolvable(r, fixed_float)?;
-            RecordHash::new()
+            let first = resolvable_with::<O>(r, fixed_int_with::<O>)?;
+            let speed = resolvable_with::<O>(r, fixed_float_with::<O>)?;
+            Record::<O>::new()
                 .field(if kind == 85 { "burn_time" } else { "uses" }, first)
                 .field("speed_multiplier", speed)
                 .build()
         }
         // MobVisibility: targetingEntityTypes, visibility.
         87 => {
-            let types = holder_set("minecraft:entity_type", names, r)?;
-            RecordHash::new()
+            let types = holder_set_with::<O>("minecraft:entity_type", names, r)?;
+            Record::<O>::new()
                 .field("targeting_entity_types", types)
-                .field("visibility", HashOps::create_f32(float(r)?))
+                .field("visibility", O::create_f32(float_with::<O>(r)?))
                 .build()
         }
         // AdventureModePredicate (can_place_on, can_break): `compactListCodec`
         // writes one predicate as itself and `nonEmptyList` refuses none.
         14 | 15 => {
-            let mut predicates = list(r, |r| block_predicate(r, names))?;
+            let mut predicates = list_with::<O, _>(r, |r| block_predicate_with::<O>(r, names))?;
             match predicates.len() {
                 0 => return None,
                 1 => predicates.remove(0),
-                _ => HashOps::create_list(predicates),
+                _ => O::create_list(predicates),
             }
         }
-        // UseRemainder: one template.
-        25 => super::raw::template_code(r, names)?,
         _ => return None,
     })
 }

@@ -112,9 +112,10 @@ fn container_loot_component_recipe_decodes_validates_and_matches() {
     let loaded = recipes(source);
     let mut stack = ItemStack::new("minecraft:stick", 1);
     assert!(loaded.recipe_matches(&context, "fixture:loot", &[Some(stack.clone())], 1));
-    stack
-        .data_mut()
-        .set_loot_component("minecraft:custom_data", &Some(Tag::Int(1)));
+    stack.data_mut().set_loot_component(
+        "minecraft:custom_data",
+        &Some(Tag::compound([("extra", Tag::Int(1))])),
+    );
     assert!(ingredient.test_in(&context, &stack));
     let strict = recipes(ingredient_json(
         json!({"loot_table":"fixture:unregistered"}),
@@ -175,20 +176,10 @@ fn container_loot_component_recipe_decodes_validates_and_matches() {
             // Nested null is refused before a component payload reaches NbtOps.
             Err(error) => assert_eq!(error, sunrise_core::json_nbt::JsonNbtError::NestedNull),
         }
-        let loaded = recipes(source);
-        assert!(loaded.recipe("fixture:loot").is_none());
-        assert!(!loaded.recipe_matches(
-            &context,
-            "fixture:loot",
-            &[Some(ItemStack::new("minecraft:stick", 1))],
-            1
-        ));
-        assert!(loaded.recipe_matches(
-            &context,
-            "fixture:control",
-            &[Some(ItemStack::new("minecraft:stone", 1))],
-            1
-        ));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            source["components"].clone(),
+        );
     }
     for (raw, expected) in [
         (Tag::Byte(-1), -1),
@@ -541,28 +532,10 @@ fn lodestone_tracker_component_recipes_decode_validate_and_match() {
             error.contains("component minecraft:lodestone_tracker:"),
             "{error}"
         );
-        let loaded = book(
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
             &items,
-            vec![
-                ("fixture:refused", recipe(invalid)),
-                (
-                    "fixture:kept",
-                    recipe(ingredient(serde_json::json!({ID:{}}), false)),
-                ),
-            ],
+            invalid["components"].clone(),
         );
-        assert!(
-            loaded
-                .cooking
-                .iter()
-                .all(|recipe| recipe.id != "fixture:refused")
-        );
-        check(
-            &loaded,
-            &stack(Tag::Compound(Default::default())),
-            Some("fixture:kept"),
-        );
-        check(&loaded, &plain, None);
     }
     // Raw NBT can contain End; JSON deliberately refuses nested null first.
     let invalid = Tag::End;
@@ -576,9 +549,9 @@ fn lodestone_tracker_component_recipes_decode_validate_and_match() {
 #[test]
 fn tooltip_display_recipe_uses_registered_component_sets_and_numeric_booleans() {
     use crate::crafting::{Recipe, Recipes};
-    use sunrise_world::loot::PackOverlay;
     use serde_json::json;
     use std::sync::Arc;
+    use sunrise_world::loot::PackOverlay;
 
     let mut items = Items::empty();
     let registry = Arc::make_mut(&mut items.component_registry);
@@ -793,13 +766,9 @@ fn tooltip_display_recipe_uses_registered_component_sets_and_numeric_booleans() 
         json!({"hidden_components":["damage","fixture:unknown"]}),
         json!({"hidden_components":["Bad:identifier"]}),
     ] {
-        let rejected = compile(
-            "minecraft:stone",
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
             json!({"minecraft:tooltip_display":invalid}),
-            false,
         );
-        assert!(rejected.crafting.is_empty());
-        assert!(rejected.by_type.values().all(|recipes| recipes.is_empty()));
-        assert!(outcome(&rejected, &stone).is_none());
     }
 }

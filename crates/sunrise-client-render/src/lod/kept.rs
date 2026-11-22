@@ -147,7 +147,7 @@ impl KeptTiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lod::{CELLS, Surface};
+    use crate::{columns::Surface, lod::CELLS};
     use sunrise_world::registry::BlockStateId;
 
     fn tile(height: i32) -> Arc<Vec<Column>> {

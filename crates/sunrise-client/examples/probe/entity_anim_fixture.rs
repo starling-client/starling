@@ -5,6 +5,8 @@
 //!
 //! cargo run --profile fast -p sunrise-client --example probe -- entity_anim_fixture \
 //!     RESOURCES VANILLA.jsonl OUT.jsonl
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 use sunrise_client::mesher::Vertex;
 use sunrise_client::mobs::{
     Mob, MobData, MobTypes, Part, Species, allay,
@@ -14,8 +16,6 @@ use sunrise_client::mobs::{
     render, shulker, sniffer, species, tame,
 };
 use sunrise_core::geometry::Vec3;
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 
 fn walk(part: &Part, path: &str, poses: &Poses, out: &mut BTreeMap<String, Value>) {
     let p = poses.pose(part);
@@ -403,6 +403,7 @@ pub fn main() -> sunrise_client::Result<()> {
             swing: f("swingAnimation"),
             baby,
             partial: 0.0,
+            observer: None,
         };
         let mut poses = Poses::new(&model);
         entity_state(&mut mob, def.species, case);

@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: jar id "Bad ID" is not a supported NeoForge or Fabric ID (line 4, column 1)
+
+icon:
+unavailable

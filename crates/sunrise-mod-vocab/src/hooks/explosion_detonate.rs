@@ -19,11 +19,17 @@ pub trait Hooks {
     /// Block positions are shuffled before destruction, so their list order is
     /// not destruction order either. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "blocks",
         version = 2,
         neoforge = "ExplosionEvent.Detonate"
     )]
-    fn explosion_detonate();
+    fn explosion_detonate(
+        dimension: &str,
+        center: [f64; 3],
+        blocks: &mut Vec<[i32; 3]>,
+        entities: &mut Vec<EntityRef>,
+    );
 }

@@ -1,11 +1,17 @@
 //! #3120: a bare name is the declaring mod's own, so a block entity type built with
 //! `.blocks(&["press"])` holds the block `press` the same mod declares.
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
-use sunrise_client::mod_content::{BLOCK_ENTITY_TYPES, accept_declared, resource_root};
-use sunrise_mod_package::enabled::EnabledMods;
 use mod_api::Side;
 use mod_api::{__private::game::RegistrationContextNew, BlocksEvent, Hooks, Registrar};
+use sunrise_client::mod_content::{
+    BLOCK_ENTITY_TYPES, DeclaredContent, accept_declared, resource_root,
+};
+use sunrise_mod_package::enabled::EnabledMods;
 
 use crate::game::{Game, api_values::TryIntoEngine};
 
@@ -17,8 +23,8 @@ impl Hooks for Press {
     }
     fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut BlocksEvent<'_>) {
         event
-            .blocks
-            .push(mod_api::Block::new("press", "minecraft:stone"));
+            .register(mod_api::Block::new("press", "minecraft:stone"))
+            .unwrap();
     }
 }
 
@@ -52,18 +58,41 @@ fn a_bare_block_name_binds_the_type_to_the_mods_own_block() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("press_mod", Box::new(Press))].into();
     let (blocks, types) = mod_platform::testing::with_mods(mods.clone(), || {
         crate::game::api_values::install_parts(&mods).unwrap();
+        let _registration = mod_platform::__private::RegistrationGuard::open();
         let context = mod_api::RegistrationContext::new();
         let mut blocks = Vec::new();
-        Game::native_blocks(&context, &mut blocks);
+        Game::native_blocks(&context, &mut |listen| {
+            assert!(listen(&mut |block| {
+                blocks.push(
+                    block
+                        .answer
+                        .try_into_engine(&())
+                        .unwrap()
+                        .validate_local()
+                        .unwrap(),
+                );
+                Ok(())
+            }));
+        });
         assert!(mod_api::__private::take_declaration_refusals(&context).is_empty());
-        let blocks: Vec<sunrise_mod_package::content::Block> = blocks
-            .iter()
-            .map(|block| block.try_into_engine(&()).unwrap())
-            .collect();
-        (blocks, crate::game::api_values::block_entity_declarations())
+        (
+            blocks,
+            crate::game::api_values::block_entity_declarations()
+                .map(|(_, kind)| kind)
+                .collect(),
+        )
     });
     let mut content = Vec::new();
-    let errors = accept_declared(&mut content, &blocks, &[], &types, &BTreeSet::new());
+    let batches = BTreeMap::from([(
+        "press_mod",
+        DeclaredContent {
+            blocks,
+            types,
+            ..Default::default()
+        },
+    )]);
+    let mut errors = Vec::new();
+    accept_declared(&mut content, &batches, &[], &BTreeSet::new(), &mut errors).unwrap();
     assert!(errors.is_empty(), "{errors:?}");
     let scratch = std::env::temp_dir().join(format!(
         "sunrise-bare-declaration-names-{}",

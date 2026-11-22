@@ -205,14 +205,6 @@ impl ShaderOptions {
             .map(|c| Text::legacy(&c.replace("\\n", "\n")))
     }
 
-    /// `Name: value`, in the pack's words, the value yellow when it is not the default.
-    pub fn option_label(&self, name: &str) -> Text {
-        Text::option_name_value(
-            self.named(&format!("option.{name}"), name),
-            self.value_text(name),
-        )
-    }
-
     /// Option `name`'s caption in the pack's words.
     pub fn option_name(&self, name: &str) -> Text {
         self.named(&format!("option.{name}"), name)

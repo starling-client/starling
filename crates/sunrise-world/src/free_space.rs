@@ -6,8 +6,8 @@ use crate::{
     },
     world_movement::{CollisionCheckRequest, EntityMovementWorld, no_world_collision},
 };
-use sunrise_core::geometry::Vec3;
 use std::fmt;
+use sunrise_core::geometry::Vec3;
 #[derive(Debug)]
 pub enum FreeSpaceError<E> {
     Collision(CollisionScanError<E>),

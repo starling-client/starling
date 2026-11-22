@@ -4,12 +4,12 @@
 //! and on its pool elements (docs/modding/src/how-to/content-mods.md); the kernel itself is
 //! [`TerrainKernel`].
 use crate::worldgen::DecodeError;
+use serde_json::Value;
+use std::sync::Arc;
 use sunrise_core::{
     density::{KernelJunction, KernelPiece, StructureBounds, TerrainKernel},
     position::ChunkPos,
 };
-use serde_json::Value;
-use std::sync::Arc;
 use {
     super::{
         Rotation,

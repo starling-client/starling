@@ -1,5 +1,15 @@
 use super::*;
-use crate::{ModelPart, PartPose};
+use crate::{__private::take_hook_panics, Hooks, ModEntry, PartPose, testing::with_dispatch};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
+
+static PANIC_NOTICE_LOCK: Mutex<()> = Mutex::new(());
+
+struct QuietMod;
+#[mod_api::__subscriptions]
+impl Hooks for QuietMod {}
 
 fn key(time: f32, value: [f32; 3], interpolation: Interpolation) -> Keyframe {
     Keyframe {
@@ -83,7 +93,6 @@ fn bake_finds_the_first_part_of_a_name_and_drops_a_missing_bone() {
         id: animation_id(),
         length: 1.0,
         looping: false,
-        types: Vec::new(),
         bones: vec![
             (
                 "arm".into(),
@@ -101,7 +110,7 @@ fn bake_finds_the_first_part_of_a_name_and_drops_a_missing_bone() {
             ),
         ],
     };
-    let baked = holder.bake(&root).unwrap();
+    let baked = holder.bake(&root);
     assert_eq!(baked.entries.len(), 1, "the missing tail is dropped");
     let mut posed = root.clone();
     baked.apply_static(&mut posed);
@@ -122,7 +131,6 @@ fn apply_times_by_the_state_and_wraps_a_loop() {
         id: animation_id(),
         length: 2.0,
         looping: true,
-        types: Vec::new(),
         bones: vec![(
             "head".into(),
             vec![channel(
@@ -134,7 +142,7 @@ fn apply_times_by_the_state_and_wraps_a_loop() {
             )],
         )],
     };
-    let baked = holder.bake(&root).unwrap();
+    let baked = holder.bake(&root);
     let head_x = |root: &ModelPart| root.get_child("head").unwrap().x_rot;
 
     // Not looping, any time past the start would hold the last value, 4.0.
@@ -143,8 +151,7 @@ fn apply_times_by_the_state_and_wraps_a_loop() {
         looping: false,
         ..holder.clone()
     }
-    .bake(&root)
-    .unwrap();
+    .bake(&root);
     let mut stopped = root.clone();
     once.apply(&mut stopped, &AnimationState::new(), 30.0);
     assert_eq!(head_x(&stopped), 0.0, "a stopped state plays nothing");
@@ -210,7 +217,6 @@ fn oracle_root_bone_targets_actual_root_without_children() {
         id: animation_id(),
         length: 1.0,
         looping: false,
-        types: Vec::new(),
         bones: vec![(
             "root".into(),
             vec![channel(
@@ -219,7 +225,7 @@ fn oracle_root_bone_targets_actual_root_without_children() {
             )],
         )],
     };
-    holder.bake(&root).unwrap().apply_static(&mut root);
+    holder.bake(&root).apply_static(&mut root);
     assert_eq!((root.x, root.y, root.z), (1.0, 2.0, 3.0));
 }
 
@@ -230,7 +236,6 @@ fn oracle_root_bone_takes_precedence_over_child_named_root() {
         id: animation_id(),
         length: 1.0,
         looping: false,
-        types: Vec::new(),
         bones: vec![(
             "root".into(),
             vec![channel(
@@ -239,7 +244,7 @@ fn oracle_root_bone_takes_precedence_over_child_named_root() {
             )],
         )],
     };
-    holder.bake(&root).unwrap().apply_static(&mut root);
+    holder.bake(&root).apply_static(&mut root);
     let child = root.get_child("root").unwrap();
     assert_eq!((child.x, child.y, child.z), (0.0, 0.0, 0.0));
     assert_eq!((root.x, root.y, root.z), (1.0, 2.0, 3.0));
@@ -252,7 +257,6 @@ fn oracle_walk_nan_strength_propagates_like_java_math_min() {
         id: animation_id(),
         length: 1.0,
         looping: false,
-        types: Vec::new(),
         bones: vec![(
             "head".into(),
             vec![channel(
@@ -263,7 +267,6 @@ fn oracle_walk_nan_strength_propagates_like_java_math_min() {
     };
     holder
         .bake(&root)
-        .unwrap()
         .apply_walk(&mut root, 0.0, f32::NAN, 1.0, 1.0);
     let head = root.get_child("head").unwrap();
     assert!(
@@ -273,294 +276,301 @@ fn oracle_walk_nan_strength_propagates_like_java_math_min() {
     );
 }
 
-fn glow(kind: fn(Identifier) -> JsonAnimationType, path: &str) -> RegisteredAnimationType {
-    RegisteredAnimationType {
-        kind: kind(Identifier::from_parts("glow", path).unwrap()),
-        owner: "glow_mod".into(),
-    }
-}
+/// Bound custom targets and interpolations play directly through `AnimationHolder::bake(&root)`
+/// and `AnimationChannel::sample`, with no second bake API or lookup per sample.
+#[test]
+fn bound_custom_target_and_interpolation_play_directly_via_bake() {
+    let calls: Arc<Mutex<Vec<(f32, usize, usize, f32)>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls_ref = Arc::clone(&calls);
 
-/// A head with a registered target (`glow:pulse`) whose last keyframe arrives through a
-/// registered interpolation (`glow:step`), and a built-in rotation beside it.
-fn typed_holder() -> AnimationHolder {
-    AnimationHolder {
-        id: animation_id(),
-        length: 1.0,
-        looping: false,
-        types: vec![
-            glow(JsonAnimationType::Target, "pulse"),
-            glow(JsonAnimationType::Interpolation, "step"),
-        ],
-        bones: vec![(
-            "head".into(),
-            vec![
-                channel(
-                    AnimationTarget::Registered(0),
+    with_dispatch(
+        vec![ModEntry::new("glow_mod", Box::new(QuietMod))].into(),
+        || {
+            let target = bind_animation_target(
+                Identifier::from_parts("glow", "pulse").unwrap(),
+                CallbackOwner::new("glow_mod").unwrap(),
+                Arc::new(|part: &mut ModelPart, value: [f32; 3]| part.offset_pos(value)),
+                Arc::new(|raw: [f32; 3]| raw.map(|v| v * 3.0)),
+            );
+            let interp = bind_animation_interpolation(
+                Identifier::from_parts("glow", "step").unwrap(),
+                CallbackOwner::new("glow_mod").unwrap(),
+                Arc::new(move |keyframes, alpha, prev, next, scale| {
+                    calls_ref.lock().unwrap().push((alpha, prev, next, scale));
+                    keyframes[next].pre.map(|v| v * alpha * scale)
+                }),
+            );
+            assert_eq!(target.id().to_string(), "glow:pulse");
+            assert_eq!(target.owner(), "glow_mod");
+            assert_eq!(interp.id().to_string(), "glow:step");
+            assert_eq!(interp.owner(), "glow_mod");
+            assert_eq!(target, target.clone());
+            assert_eq!(interp, interp.clone());
+
+            let v0 = convert_animation_target(&target, [1.0, 2.0, 3.0]).unwrap();
+            let v1 = convert_animation_target(&target, [3.0, 4.0, 5.0]).unwrap();
+            assert_eq!(v0, [3.0, 6.0, 9.0]);
+            assert_eq!(v1, [9.0, 12.0, 15.0]);
+
+            let holder = AnimationHolder {
+                id: animation_id(),
+                length: 1.0,
+                looping: false,
+                bones: vec![(
+                    "head".into(),
                     vec![
-                        key(0.0, [1.0, 2.0, 3.0], Interpolation::Linear),
-                        key(1.0, [3.0, 4.0, 5.0], Interpolation::Registered(1)),
+                        channel(
+                            AnimationTarget::Custom(target),
+                            vec![
+                                key(0.0, v0, Interpolation::Linear),
+                                key(1.0, v1, Interpolation::Custom(interp)),
+                            ],
+                        ),
+                        channel(
+                            AnimationTarget::Rotation,
+                            vec![
+                                key(0.0, [0.0; 3], Interpolation::Linear),
+                                key(1.0, [2.0, 0.0, 0.0], Interpolation::Linear),
+                            ],
+                        ),
                     ],
-                ),
-                channel(
-                    AnimationTarget::Rotation,
+                )],
+            };
+
+            // Direct channel sampling invokes the bound interpolation.
+            assert_eq!(holder.bones[0].1[0].sample(0.5, 1.0), Some([4.5, 6.0, 7.5]));
+
+            let root = part(vec![("head", part(vec![]))]);
+            let baked = holder.bake(&root);
+            let mut state = AnimationState::new();
+            state.start(0);
+            let mut posed = root.clone();
+            baked.apply(&mut posed, &state, 10.0);
+            let head = posed.get_child("head").unwrap();
+            assert_eq!((head.x, head.y, head.z), (4.5, 6.0, 7.5));
+            assert_eq!(head.x_rot, 1.0);
+            assert_eq!(*calls.lock().unwrap(), [(0.5, 0, 1, 1.0), (0.5, 0, 1, 1.0)]);
+        },
+    );
+}
+
+/// Panicking callbacks disable themselves for the session and queue a panic notice; non-finite
+/// values from an interpolation or target converter are rejected without latching.
+#[test]
+fn custom_callback_panic_disables_it_and_non_finite_does_not_latch() {
+    let _notice_lock = PANIC_NOTICE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let interp_panic_calls = Arc::new(AtomicUsize::new(0));
+    let target_panic_calls = Arc::new(AtomicUsize::new(0));
+    let flaky_interp_calls = Arc::new(AtomicUsize::new(0));
+    let flaky_convert_calls = Arc::new(AtomicUsize::new(0));
+
+    with_dispatch(
+        vec![ModEntry::new("faulty", Box::new(QuietMod))].into(),
+        || {
+            let _ = take_hook_panics();
+
+            let ip = Arc::clone(&interp_panic_calls);
+            let bad_interp = bind_animation_interpolation(
+                Identifier::from_parts("faulty", "panic_interp").unwrap(),
+                CallbackOwner::new("faulty").unwrap(),
+                Arc::new(move |_, _, _, _, _| {
+                    ip.fetch_add(1, Ordering::Relaxed);
+                    panic!("interp boom");
+                }),
+            );
+            let ch = channel(
+                AnimationTarget::Position,
+                vec![
+                    key(0.0, [0.0; 3], Interpolation::Linear),
+                    key(1.0, [1.0; 3], Interpolation::Custom(bad_interp)),
+                ],
+            );
+            assert_eq!(ch.sample(0.5, 1.0), None);
+            assert_eq!(interp_panic_calls.load(Ordering::Relaxed), 1);
+            let notices = take_hook_panics();
+            assert!(
+                notices
+                    .iter()
+                    .any(|notice| notice.mod_id == "faulty" && notice.hook == "interpolate"),
+                "expected interpolation panic notice, got {notices:?}"
+            );
+            // Disabled for the session: second sample does not re-enter the panicked callback.
+            assert_eq!(ch.sample(0.5, 1.0), None);
+            assert_eq!(interp_panic_calls.load(Ordering::Relaxed), 1);
+
+            let tp = Arc::clone(&target_panic_calls);
+            let bad_target = bind_animation_target(
+                Identifier::from_parts("faulty", "panic_target").unwrap(),
+                CallbackOwner::new("faulty").unwrap(),
+                Arc::new(move |_, _| {
+                    tp.fetch_add(1, Ordering::Relaxed);
+                    panic!("target boom");
+                }),
+                Arc::new(|v| v),
+            );
+            let mut root = part(vec![]);
+            let target_enum = AnimationTarget::Custom(bad_target.clone());
+            target_enum.apply(&mut root, [1.0, 2.0, 3.0]);
+            assert_eq!(target_panic_calls.load(Ordering::Relaxed), 1);
+            let notices = take_hook_panics();
+            assert!(
+                notices
+                    .iter()
+                    .any(|notice| notice.mod_id == "faulty" && notice.hook == "apply"),
+                "expected target panic notice, got {notices:?}"
+            );
+            // Clones share the same CallbackOwner poison flag.
+            AnimationTarget::Custom(bad_target).apply(&mut root, [4.0, 5.0, 6.0]);
+            assert_eq!(target_panic_calls.load(Ordering::Relaxed), 1);
+
+            // Non-finite interpolation output returns None without latching.
+            let fi = Arc::clone(&flaky_interp_calls);
+            let flaky_interp = bind_animation_interpolation(
+                Identifier::from_parts("faulty", "flaky_interp").unwrap(),
+                CallbackOwner::new("faulty").unwrap(),
+                Arc::new(move |_, _, _, _, _| {
+                    if fi.fetch_add(1, Ordering::Relaxed) == 0 {
+                        [f32::NAN, 0.0, 0.0]
+                    } else {
+                        [1.0, 2.0, 3.0]
+                    }
+                }),
+            );
+            let flaky_ch = channel(
+                AnimationTarget::Position,
+                vec![
+                    key(0.0, [0.0; 3], Interpolation::Linear),
+                    key(1.0, [1.0; 3], Interpolation::Custom(flaky_interp)),
+                ],
+            );
+            assert_eq!(flaky_ch.sample(0.5, 1.0), None);
+            assert!(take_hook_panics().is_empty());
+            assert_eq!(flaky_ch.sample(0.5, 1.0), Some([1.0, 2.0, 3.0]));
+            assert_eq!(flaky_interp_calls.load(Ordering::Relaxed), 2);
+
+            // Non-finite converter output returns Err without latching.
+            let fc = Arc::clone(&flaky_convert_calls);
+            let flaky_target = bind_animation_target(
+                Identifier::from_parts("faulty", "flaky_convert").unwrap(),
+                CallbackOwner::new("faulty").unwrap(),
+                Arc::new(|_, _| {}),
+                Arc::new(move |v| {
+                    if fc.fetch_add(1, Ordering::Relaxed) == 0 {
+                        [f32::INFINITY, 0.0, 0.0]
+                    } else {
+                        v
+                    }
+                }),
+            );
+            assert!(convert_animation_target(&flaky_target, [1.0, 2.0, 3.0]).is_err());
+            assert!(take_hook_panics().is_empty());
+            assert_eq!(
+                convert_animation_target(&flaky_target, [1.0, 2.0, 3.0]).unwrap(),
+                [1.0, 2.0, 3.0]
+            );
+            assert_eq!(flaky_convert_calls.load(Ordering::Relaxed), 2);
+        },
+    );
+}
+
+/// A panicking, disabled, or non-finite custom interpolation returns `None` so `apply_at` skips
+/// only that channel and never calls its target with a fabricated zero vector, while other
+/// channels on the same bone still apply.
+#[test]
+fn failed_custom_interpolation_skips_only_that_channel_and_never_calls_target() {
+    let _notice_lock = PANIC_NOTICE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let target_calls = Arc::new(AtomicUsize::new(0));
+
+    with_dispatch(
+        vec![ModEntry::new("faulty", Box::new(QuietMod))].into(),
+        || {
+            let _ = take_hook_panics();
+            let calls_ref = Arc::clone(&target_calls);
+            // Distinguishes an applied zero from no call: writes a non-zero marker even for [0; 3].
+            let overwriting_target = bind_animation_target(
+                Identifier::from_parts("faulty", "overwrite").unwrap(),
+                CallbackOwner::new("faulty").unwrap(),
+                Arc::new(move |part: &mut ModelPart, value: [f32; 3]| {
+                    calls_ref.fetch_add(1, Ordering::Relaxed);
+                    part.x = value[0] + 100.0;
+                }),
+                Arc::new(|v| v),
+            );
+            let panicking_interp = bind_animation_interpolation(
+                Identifier::from_parts("faulty", "panic_interp").unwrap(),
+                CallbackOwner::new("faulty").unwrap(),
+                Arc::new(|_, _, _, _, _| panic!("boom")),
+            );
+            let nan_interp = bind_animation_interpolation(
+                Identifier::from_parts("faulty", "nan_interp").unwrap(),
+                CallbackOwner::new("faulty").unwrap(),
+                Arc::new(|_, _, _, _, _| [f32::NAN, 0.0, 0.0]),
+            );
+
+            let holder = AnimationHolder {
+                id: animation_id(),
+                length: 1.0,
+                looping: false,
+                bones: vec![(
+                    "head".into(),
                     vec![
-                        key(0.0, [0.0; 3], Interpolation::Linear),
-                        key(1.0, [2.0, 0.0, 0.0], Interpolation::Linear),
+                        channel(
+                            AnimationTarget::Custom(overwriting_target.clone()),
+                            vec![
+                                key(0.0, [0.0; 3], Interpolation::Linear),
+                                key(1.0, [1.0; 3], Interpolation::Custom(panicking_interp)),
+                            ],
+                        ),
+                        channel(
+                            AnimationTarget::Custom(overwriting_target),
+                            vec![
+                                key(0.0, [0.0; 3], Interpolation::Linear),
+                                key(1.0, [1.0; 3], Interpolation::Custom(nan_interp)),
+                            ],
+                        ),
+                        channel(
+                            AnimationTarget::Rotation,
+                            vec![
+                                key(0.0, [0.0; 3], Interpolation::Linear),
+                                key(1.0, [2.0, 0.0, 0.0], Interpolation::Linear),
+                            ],
+                        ),
                     ],
-                ),
-            ],
-        )],
-    }
-}
+                )],
+            };
 
-/// The glow mod's code: its target triples the file's values at bake and offsets the part's
-/// position; its interpolation answers the next keyframe's value times `alpha` and records how
-/// it was called. It provides every glow type.
-#[derive(Clone, Debug, Default)]
-struct Glow {
-    calls: std::rc::Rc<std::cell::RefCell<Vec<(String, usize, usize, f32, f32)>>>,
-}
+            let root = part(vec![("head", part(vec![]))]);
+            let baked = holder.bake(&root);
+            let mut state = AnimationState::new();
+            state.start(0);
 
-impl AnimationTypes for Glow {
-    fn provides(&self, kind: &JsonAnimationType) -> bool {
-        let (JsonAnimationType::Target(id) | JsonAnimationType::Interpolation(id)) = kind;
-        id.namespace() == "glow"
-    }
-    fn convert_target(&self, _: &Identifier, value: [f32; 3]) -> [f32; 3] {
-        value.map(|v| v * 3.0)
-    }
-    fn apply_target(&self, target: &Identifier, part: &mut ModelPart, value: [f32; 3]) {
-        assert_eq!(target.to_string(), "glow:pulse");
-        part.offset_pos(value);
-    }
-    fn interpolate(
-        &self,
-        interpolation: &Identifier,
-        keyframes: &[Keyframe],
-        prev: usize,
-        next: usize,
-        alpha: f32,
-        scale: f32,
-    ) -> [f32; 3] {
-        self.calls
-            .borrow_mut()
-            .push((interpolation.to_string(), prev, next, alpha, scale));
-        keyframes[next].pre.map(|v| v * alpha * scale)
-    }
-}
+            // First apply: panicking channel panics (disabled), NaN channel fails, rotation applies.
+            let mut posed = root.clone();
+            baked.apply(&mut posed, &state, 10.0);
+            assert_eq!(target_calls.load(Ordering::Relaxed), 0);
+            let head = posed.get_child("head").unwrap();
+            assert_eq!(
+                head.x, 0.0,
+                "failed channels must not call overwriting target"
+            );
+            assert_eq!(head.x_rot, 1.0, "healthy channel still applies");
+            assert!(
+                take_hook_panics()
+                    .iter()
+                    .any(|notice| notice.mod_id == "faulty" && notice.hook == "interpolate")
+            );
 
-/// Provides nothing: a mod that plays another mod's animation without its code.
-#[derive(Debug)]
-struct NoTypes;
-
-impl AnimationTypes for NoTypes {
-    fn provides(&self, _: &JsonAnimationType) -> bool {
-        false
-    }
-    fn apply_target(&self, _: &Identifier, _: &mut ModelPart, _: [f32; 3]) {
-        unreachable!("never provided")
-    }
-    fn interpolate(
-        &self,
-        _: &Identifier,
-        _: &[Keyframe],
-        _: usize,
-        _: usize,
-        _: f32,
-        _: f32,
-    ) -> [f32; 3] {
-        unreachable!("never provided")
-    }
-}
-
-/// Half a second in: the registered segment runs the mod's interpolation on the converted
-/// keyframes, (3, 4, 5) * 3 * 0.5 = (4.5, 6, 7.5), and its target puts that on the position; the
-/// built-in rotation beside it is halfway to 2.
-#[test]
-fn registered_types_play_through_the_mods_code() {
-    let root = part(vec![("head", part(vec![]))]);
-    let glow = Glow::default();
-    let baked = typed_holder().bake_with(&root, glow.clone()).unwrap();
-    let mut state = AnimationState::new();
-    state.start(0);
-    let mut posed = root.clone();
-    baked.apply(&mut posed, &state, 10.0);
-    let head = posed.get_child("head").unwrap();
-    assert_eq!((head.x, head.y, head.z), (4.5, 6.0, 7.5));
-    assert_eq!(head.x_rot, 1.0);
-    assert_eq!(
-        *glow.calls.borrow(),
-        [("glow:step".to_owned(), 0, 1, 0.5, 1.0)]
+            // Second apply: disabled channel skips without calling target either.
+            let mut posed2 = root.clone();
+            baked.apply(&mut posed2, &state, 10.0);
+            assert_eq!(target_calls.load(Ordering::Relaxed), 0);
+            let head2 = posed2.get_child("head").unwrap();
+            assert_eq!(head2.x, 0.0);
+            assert_eq!(head2.x_rot, 1.0);
+        },
     );
-}
-
-/// An animation with registered types never plays without their code: `bake` refuses it, and so
-/// does `bake_with` given code that lacks one, each naming the animation, the type and the mod
-/// that registered it.
-#[test]
-fn baking_without_the_types_is_refused_naming_the_animation_and_mod() {
-    let root = part(vec![("head", part(vec![]))]);
-    let holder = typed_holder();
-    let needs = holder.bake(&root).unwrap_err();
-    assert_eq!(
-        needs,
-        AnimationError::NeedsTypes {
-            animation: animation_id(),
-            types: holder.types.clone()
-        }
-    );
-    let unplayable = holder.bake_with(&root, NoTypes).unwrap_err();
-    assert_eq!(
-        unplayable,
-        AnimationError::Unplayable {
-            animation: animation_id(),
-            missing: glow(JsonAnimationType::Target, "pulse")
-        }
-    );
-    for error in [needs, unplayable] {
-        let message = error.to_string();
-        for named in ["test:animation", "glow:pulse", "glow_mod"] {
-            assert!(message.contains(named), "{message:?} names {named}");
-        }
-    }
-}
-
-/// A holder is plain data a mod can build: an index one past its types is refused at bake rather
-/// than panicking in play, and NaN times and values play without a panic.
-#[test]
-fn a_mods_holder_cannot_panic_the_player() {
-    let root = part(vec![("head", part(vec![]))]);
-    let mut holder = typed_holder();
-    holder.bones[0].1[0].keyframes[1].interpolation = Interpolation::Registered(2);
-    let out_of_range = AnimationError::NoSuchType {
-        animation: animation_id(),
-        index: 2,
-    };
-    assert_eq!(
-        holder.bake_with(&root, Glow::default()).unwrap_err(),
-        out_of_range
-    );
-    assert_eq!(holder.bake(&root).unwrap_err(), out_of_range);
-
-    let mut holder = typed_holder();
-    for keyframe in &mut holder.bones[0].1[0].keyframes {
-        keyframe.time = f32::NAN;
-        keyframe.pre = [f32::NAN; 3];
-    }
-    holder.length = f32::NAN;
-    holder.looping = true;
-    let baked = holder.bake_with(&root, Glow::default()).unwrap();
-    let mut state = AnimationState::new();
-    state.start(0);
-    let mut posed = root.clone();
-    baked.apply(&mut posed, &state, 10.0);
-    baked.apply_walk(&mut posed, f32::NAN, f32::NAN, 1.0, 1.0);
-    baked.apply_static(&mut posed);
-    assert!(
-        posed.get_child("head").unwrap().x.is_nan(),
-        "the registered target got the NaN its keyframes give"
-    );
-}
-
-/// A target and an interpolation of one id are separate types: a channel's target index naming an
-/// interpolation is refused, and code that plays only targets can't bake an animation that also
-/// names a registered interpolation.
-#[test]
-fn a_types_kind_counts() {
-    let root = part(vec![("head", part(vec![]))]);
-    let mut holder = typed_holder();
-    holder.bones[0].1[0].target = AnimationTarget::Registered(1);
-    assert_eq!(
-        holder.bake_with(&root, Glow::default()).unwrap_err(),
-        AnimationError::NoSuchType {
-            animation: animation_id(),
-            index: 1
-        }
-    );
-
-    #[derive(Debug)]
-    struct TargetsOnly(Glow);
-    impl AnimationTypes for TargetsOnly {
-        fn provides(&self, kind: &JsonAnimationType) -> bool {
-            matches!(kind, JsonAnimationType::Target(_)) && self.0.provides(kind)
-        }
-        fn apply_target(&self, target: &Identifier, part: &mut ModelPart, value: [f32; 3]) {
-            self.0.apply_target(target, part, value);
-        }
-        fn interpolate(
-            &self,
-            _: &Identifier,
-            _: &[Keyframe],
-            _: usize,
-            _: usize,
-            _: f32,
-            _: f32,
-        ) -> [f32; 3] {
-            unreachable!("plays no interpolation")
-        }
-    }
-    assert_eq!(
-        typed_holder()
-            .bake_with(&root, TargetsOnly(Glow::default()))
-            .unwrap_err(),
-        AnimationError::Unplayable {
-            animation: animation_id(),
-            missing: glow(JsonAnimationType::Interpolation, "step")
-        }
-    );
-}
-
-/// The built-in sampler has no mod code: at a segment into a registered interpolation it answers
-/// `None`, and before it, where the segment is built in, the value.
-#[test]
-fn sampling_a_registered_segment_without_its_code_is_none() {
-    let channel = &typed_holder().bones[0].1[0];
-    assert_eq!(channel.sample(0.5, 1.0), None);
-    assert_eq!(
-        channel.sample(-1.0, 1.0),
-        None,
-        "held before the first keyframe, the segment into the second is still registered"
-    );
-    let built_in = &typed_holder().bones[0].1[1];
-    assert_eq!(built_in.sample(0.5, 1.0), Some([1.0, 0.0, 0.0]));
-}
-
-/// A holder crosses the wire with its types, and decoding refuses one whose `Registered` index
-/// its own list doesn't back, so no bare index crosses alone.
-#[test]
-fn a_holder_crosses_the_wire_only_with_the_types_its_indexes_name() {
-    use crate::wire::{Reader, WireError, Writer};
-    let decode = |holder: &AnimationHolder| {
-        let mut out = Writer::new();
-        out.put(holder);
-        assert_eq!(out.error(), None);
-        Reader::new(out.bytes()).take::<AnimationHolder>()
-    };
-    let holder = typed_holder();
-    assert_eq!(decode(&holder), Ok(holder.clone()));
-    // Every target and interpolation, and a keyframe arriving and leaving at different values,
-    // come back as they went.
-    let mut every = holder.clone();
-    every.bones[0].1.extend(
-        [AnimationTarget::Position, AnimationTarget::Scale].map(|target| AnimationChannel {
-            target,
-            keyframes: vec![
-                Keyframe {
-                    time: 0.25,
-                    pre: [1.0, 2.0, 3.0],
-                    post: [4.0, 5.0, 6.0],
-                    interpolation: Interpolation::CatmullRom,
-                },
-                key(0.5, [7.0; 3], Interpolation::Linear),
-            ],
-        }),
-    );
-    assert_eq!(decode(&every), Ok(every.clone()));
-
-    let mut past = holder.clone();
-    past.bones[0].1[0].keyframes[1].interpolation = Interpolation::Registered(2);
-    assert!(matches!(decode(&past), Err(WireError::Invalid(_))));
-    let mut wrong_kind = holder;
-    wrong_kind.bones[0].1[0].target = AnimationTarget::Registered(1);
-    assert!(matches!(decode(&wrong_kind), Err(WireError::Invalid(_))));
 }

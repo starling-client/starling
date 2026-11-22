@@ -6,6 +6,8 @@ pub trait Hooks {
     /// `from` and `to` are block state IDs. Set `cancel` to keep the old state.
     /// Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -13,5 +15,11 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_block_form"
     )]
-    fn block_form();
+    fn block_form(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        from: BlockState,
+        to: BlockState,
+        cancel: &mut bool,
+    );
 }

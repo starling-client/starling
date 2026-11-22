@@ -10,11 +10,18 @@ pub trait Hooks {
     /// enderman then holds nothing). Asked once per block, only while a mod is
     /// loaded. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "LivingDestroyBlockEvent",
         cancellable = true
     )]
-    fn living_destroy_block();
+    fn living_destroy_block(
+        entity: u32,
+        kind: &str,
+        pos: [i32; 3],
+        state: BlockState,
+        cancel: &mut bool,
+    );
 }

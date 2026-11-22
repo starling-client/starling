@@ -1,10 +1,10 @@
 //! Standalone receiver actor; no libtest threads before private bootstrap.
-use sunrise_mod_package::holder;
 use std::{
     io::{Read, Write},
     path::PathBuf,
     time::{Duration, Instant},
 };
+use sunrise_mod_package::holder;
 #[path = "holder_actor/scene.rs"]
 mod scene;
 #[cfg(unix)]

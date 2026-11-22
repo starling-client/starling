@@ -1,6 +1,6 @@
 Fox.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: the type and the flags byte are synced; the two trusted-entity slots are not
 Fox.canEat	inline	crates/sunrise-client/src/mobs/fox.rs::ai_step	held food (eats), no target, on the ground and awake, tested in the eating block of ai_step
-Fox.populateDefaultEquipmentSlots	port	crates/sunrise-client/src/mobs/fox.rs::populate_default_equipment	called for a live spawn by spawning.rs::finalize; Ctx::populate has its own copy of the same draws for a structure mob: one fox in five (nextFloat below 0.2) holds, by a second draw, an emerald (below 0.05), egg (0.2), rabbit foot or hide (0.4, by nextBoolean), wheat (0.6), leather (0.8) or feather
+Fox.populateDefaultEquipmentSlots	port	crates/sunrise-client/src/mobs/finalize.rs::populate	Ctx::finalize calls Ctx::populate for fox equipment: one fox in five (nextFloat below 0.2) holds, by a second draw, an emerald (below 0.05), egg (0.2), rabbit foot or hide (0.4, by nextBoolean), wheat (0.6), leather (0.8) or feather
 Fox.handleEntityEvent	port	crates/sunrise-client/src/mobs/fox.rs::ai_step	ticked in #3512; `Fox.handleEntityEvent` is cited at crates/sunrise-client/src/mobs/fox.rs:227 (in a comment, so `where` names the enclosing fn)
 Fox.createAttributes	skip:data		attributes come from entity-types.json
 Fox.checkFoxSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	foxes_spawnable_on below and bright enough
@@ -10,7 +10,7 @@ Fox.get	missing		minor: the fox/variant component is not reported (species_varia
 Fox.applyImplicitComponent	port	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	the `minecraft:fox/variant` name sets the variant (SNOW over RED)
 Fox.getTrustedEntities	port	crates/sunrise-client/src/mobs/fox.rs::trusted_entities	the trusted list decides whom the avoid-player goal leaves alone (`Fox.trusts`); defending a trusted player (`DefendTrustedTargetGoal`) is still missing
 Fox.addTrustedEntity	port	crates/sunrise-client/src/mobs/fox.rs::add_trusted_entity	the two DATA_TRUSTED_ID slots, first free then replacing the second; a baby fox made by using a fox spawn egg on a fox trusts that player (`Fox.onOffspringSpawnedFromEgg`)
-Fox.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	Type, Trusted (clearTrusted then addTrustedEntity per UUID), Sleeping, Sitting and Crouching
+Fox.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Type, Trusted (clearTrusted then addTrustedEntity per UUID), Sleeping, Sitting and Crouching
 Fox.clearTrusted	port	crates/sunrise-client/src/mobs/fox.rs::clear_trusted	both trusted slots emptied, before a load reads Trusted
 Fox.getFlag	port	crates/sunrise-client/src/mobs/fox.rs::flag	flags byte in extra.ints[0]
 Fox.canHoldItem	port	crates/sunrise-client/src/mobs/fox.rs::can_hold_item	an empty mouth, or consumable food when the mouth holds something that is not
@@ -64,7 +64,7 @@ ShootTongue.canPathfindToTarget	inline	crates/sunrise-client/src/mobs/frog.rs::S
 ShootTongue.addUnreachableTargetToMemory	inline	crates/sunrise-client/src/mobs/frog.rs::ShootTongue::can_use	up to 5 ids kept 100 ticks in Frog.State.unreachable
 Tadpole.customServerAiStep	port	crates/sunrise-client/src/mobs/animal_brain.rs::tadpole_package	the tadpole brain package: panic 2.0 in the core activity, look at players, the food tempt and the stroll actions, run beside the AbstractFish goals aquatic.rs::register adds
 Tadpole.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Age and AgeLocked
-Tadpole.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	Age and AgeLocked
+Tadpole.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Age and AgeLocked
 Tadpole.saveToBucketTag	port	crates/sunrise-client/src/entity_nbt.rs::bucket_data	Age and AgeLocked for axolotls and tadpoles
 Tadpole.loadFromBucketTag	port	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	Age and AgeLocked from `minecraft:bucket_entity_data`
 Tadpole.ageUp	inline	crates/sunrise-client/src/mobs/aquatic.rs::ai_step	gap: player: at 24000 the frog is spawned fresh with yaw and persistence only (SpawnSetup), so a named, silenced or glowing tadpole turns into a plain frog; the grow-up sound is 1.0 loud, not 0.15
@@ -83,7 +83,7 @@ Goat.getDeathSound	port	crates/sunrise-client/src/mobs/ai.rs::voice_sounds	screa
 Goat.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::goat_spawn	called for a live spawn by spawning.rs::finalize; Ctx::finalize has its own arm with the same draws for a structure mob: the ram and long jump cooldowns, screaming when nextDouble is below 0.02, ageBoundaryReached, and for an adult a lost horn one time in ten (nextFloat below 0.1, the side by nextBoolean)
 Goat.getDefaultDimensions	port	crates/sunrise-client/src/mobs/living.rs::Mob::dims	baby box (0.45 x 0.65, eye 0.59375) from the species table; no long jump pose scale since there is no long jump
 Goat.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	IsScreamingGoat, HasLeftHorn, HasRightHorn; the GoatAi LONG_JUMP_COOLDOWN_TICKS brain memory is saved too
-Goat.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	IsScreamingGoat and both horn flags (default true)
+Goat.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	IsScreamingGoat and both horn flags (default true)
 Goat.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: the two horn flags are synced; the screaming flag is not
 Goat.checkGoatSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	goats_spawnable_on below and bright enough
 GoatAi.initMemories	port	crates/sunrise-client/src/mobs/finalize.rs::goat_init_memories	the long jump cooldown uniform 600 to 1200 and the ram cooldown uniform 600 to 6000 (TIME_BETWEEN_LONG_JUMPS, TIME_BETWEEN_RAMS); Ctx::finalize and creatures.rs::breed (a baby, as Goat.getBreedOffspring calls initMemories) call it, and goat_spawn draws the same two values for a live spawn
@@ -107,7 +107,7 @@ IronGolem.doPush	port	crates/sunrise-client/src/mobs/ai.rs::push_entities	a mons
 IronGolem.canSpawnSprintParticle	port	crates/sunrise-client/src/mobs/ai.rs::Mob::base_tick	ticked in #3512; `IronGolem.canSpawnSprintParticle` is cited at crates/sunrise-client/src/mobs/ai.rs:862 (in a comment, so `where` names the enclosing fn)
 IronGolem.canAttack	port	crates/sunrise-client/src/mobs/goals.rs::Mob::spares_players	the creator rule: player_created makes every player-target path skip players; gap: minor: the creeper refusal is only golem_prey's nearest-target filter, so HurtByTarget can still target a creeper that hits the golem
 IronGolem.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	PlayerCreated in the iron golem arm; persistent anger writes anger_end_time and angry_at
-IronGolem.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	PlayerCreated (absent is false); persistent anger reads anger_end_time and angry_at
+IronGolem.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	PlayerCreated (absent is false); persistent anger reads anger_end_time and angry_at
 IronGolem.hurtServer	port	crates/sunrise-client/src/mobs.rs::Mob::damage_with	golem::crackiness is read before the hit and compared after; a changed level plays entity.iron_golem.damage at 1.0/1.0
 IronGolem.isPlayerCreated	inline	crates/sunrise-client/src/mobs/goals.rs::Mob::spares_players	the flag is extra.player_created; spares_players reads it, and entity_nbt.rs writes and reads it
 IronGolem.setPlayerCreated	inline	crates/sunrise-client/src/game/mobs/golems.rs::Game::check_golem_spawn	sets extra.player_created on the golem built from blocks; mob_from_nbt sets it on load
@@ -119,7 +119,7 @@ SnowGolem.setPumpkin	inline	crates/sunrise-client/src/game/mobs/creatures/mod.rs
 SnowGolem.getLeashOffset	port	crates/sunrise-client/src/mobs/leash.rs::leash_offset	0.75 of the eye height
 HappyGhast.setServerStillTimeout	inline	crates/sunrise-client/src/mobs/happy_ghast.rs::still_tick	gap: minor: the timeout is extra.counter (10 when a player stands on top, 10 on dismount, 0 on boarding); the one-off position sync to tracking players is not sent, lan.rs only marks the entity precise
 HappyGhast.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	still_timeout, the serverStillTimeout `still_tick` keeps in `counter`
-HappyGhast.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	still_timeout back into `counter`; absent is 0
+HappyGhast.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	still_timeout back into `counter`; absent is 0
 HappyGhast.registerGoals	port	crates/sunrise-client/src/mobs/happy_ghast.rs::setup	adult goals: float, tempt (harness and food for a bare adult, food otherwise), float around within 16
 HappyGhast.adultGhastSetup	port	crates/sunrise-client/src/mobs/happy_ghast.rs::setup	adult half: ghast move control, happy ghast look control, goals, brain stopped
 HappyGhast.babyGhastSetup	port	crates/sunrise-client/src/mobs/happy_ghast.rs::setup	baby half: flying move control, baby flying navigation, no goals, timeout cleared
@@ -139,5 +139,6 @@ HappyGhast.getLeashOffset	port	crates/sunrise-client/src/mobs/leash.rs::leash_of
 HappyGhastAi.initCoreActivity	port	crates/sunrise-client/src/mobs/animal_brain.rs::ghastling_package	swim, flying panic 2.0, look sink, move sink and the tempt cooldown countdown
 HappyGhastAi.initIdleActivity	port	crates/sunrise-client/src/mobs/animal_brain.rs::ghastling_package	tempt with look in the eyes, follow a player, follow an adult, then fly stroll or walk to the look target
 Frog.canBeABaby	port	crates/sunrise-client/src/mobs/species.rs::can_be_a_baby	the false arm: a frog with a negative Age is an adult
+DefendVillageTargetGoal.canUse	port	crates/sunrise-client/src/mobs/golem.rs::DefendVillage::can_use	player range scaled by visibility, floor 2
 Fox.SleepGoal.canUse	port	crates/sunrise-client/src/mobs/fox.rs::Sleep::can_use	requires xxa, yya and zza to be zero
 Fox.FoxBehaviorGoal.alertable	port	crates/sunrise-client/src/mobs/fox.rs::alertable	range scaled by visibility, floor 2

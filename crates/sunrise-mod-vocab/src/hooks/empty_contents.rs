@@ -23,6 +23,7 @@ pub trait Hooks {
     /// successful pour counts for the `placed_block` criterion. Only the
     /// `ItemPart`s attached to `stack`'s item are asked. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "answer",
@@ -30,5 +31,11 @@ pub trait Hooks {
         key = "stack",
         neoforge = "IDispensibleContainerItemExtension.emptyContents"
     )]
-    fn empty_contents();
+    fn empty_contents(
+        player: Option<PlayerRef>,
+        pos: BlockPos,
+        hit: Option<(BlockPos, Direction)>,
+        stack: &ItemStack,
+        answer: &mut Option<bool>,
+    );
 }

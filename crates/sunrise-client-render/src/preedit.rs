@@ -267,7 +267,7 @@ pub fn draw_overlay(batch: &mut HudBatch, atlas: &HudAtlas) {
     nine_slice(
         batch,
         atlas,
-        "gui/sprites/widget/preedit",
+        "widget/preedit",
         left - 5.0,
         top - 5.0,
         right - left + 10.0,

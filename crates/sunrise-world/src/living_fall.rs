@@ -56,9 +56,9 @@ pub trait LivingFallWorld {
     ) -> Result<(), Self::Error>;
     fn safe_fall_distance(&mut self) -> Result<f64, Self::Error>;
     fn fall_damage_multiplier(&mut self) -> Result<f64, Self::Error>;
-    /// A host may adjust a mod block's landing damage before sounds and hurt.
-    fn modify_fall_damage(&mut self, _distance: f64, damage: f32) -> Result<f32, Self::Error> {
-        Ok(damage)
+    /// A host may adjust a mod block's fall inputs before calculation, sounds and hurt.
+    fn modify_fall(&mut self, distance: f64, multiplier: f32) -> Result<(f64, f32), Self::Error> {
+        Ok((distance, multiplier))
     }
     /// Select the entity type's small/big fall sound. Big applies above four.
     fn fall_sound(&mut self, big: bool) -> Result<Self::Sound, Self::Error>;
@@ -108,12 +108,12 @@ pub fn cause_living_fall_damage<W: LivingFallWorld>(
     } else {
         distance
     };
+    let (distance, multiplier) = world.modify_fall(distance, multiplier)?;
     // Base Entity.causeFallDamage returns false, even after notifying riders.
     if !world.immune_to_fall_damage()? {
         world.propagate_fall_to_passengers(distance, multiplier)?;
     }
-    let damage = calculate_fall_damage(world, distance, multiplier)?;
-    let damage = world.modify_fall_damage(distance, damage as f32)?;
+    let damage = calculate_fall_damage(world, distance, multiplier)? as f32;
     if damage > 0.0 {
         world.reset_impulse()?;
         let sound = world.fall_sound(damage > 4.0)?;
@@ -132,9 +132,10 @@ mod tests {
     use sunrise_core::geometry::Vec3;
 
     struct Landing {
-        replacement: Option<f32>,
+        replacement: Option<(f64, f32)>,
         damage: f32,
         sounds: usize,
+        passenger_fall: Option<(f64, f32)>,
     }
     impl LivingFallWorld for Landing {
         type Error = ();
@@ -154,7 +155,12 @@ mod tests {
         fn immune_to_fall_damage(&mut self) -> Result<bool, ()> {
             Ok(false)
         }
-        fn propagate_fall_to_passengers(&mut self, _: f64, _: f32) -> Result<(), ()> {
+        fn propagate_fall_to_passengers(
+            &mut self,
+            distance: f64,
+            multiplier: f32,
+        ) -> Result<(), ()> {
+            self.passenger_fall = Some((distance, multiplier));
             Ok(())
         }
         fn safe_fall_distance(&mut self) -> Result<f64, ()> {
@@ -163,10 +169,10 @@ mod tests {
         fn fall_damage_multiplier(&mut self) -> Result<f64, ()> {
             Ok(1.0)
         }
-        fn modify_fall_damage(&mut self, distance: f64, damage: f32) -> Result<f32, ()> {
-            assert_eq!((distance, damage), (13.0, 10.0));
+        fn modify_fall(&mut self, distance: f64, multiplier: f32) -> Result<(f64, f32), ()> {
+            assert_eq!((distance, multiplier), (13.0, 1.0));
             assert_eq!((self.sounds, self.damage), (0, 0.0));
-            Ok(self.replacement.unwrap_or(damage))
+            Ok(self.replacement.unwrap_or((distance, multiplier)))
         }
         fn fall_sound(&mut self, big: bool) -> Result<bool, ()> {
             Ok(big)
@@ -186,15 +192,26 @@ mod tests {
     }
     #[test]
     fn landing_damage_is_changed_before_sounds_and_hurt() {
-        for (replacement, expected) in [(None, 10.0), (Some(2.0), 2.0), (Some(0.0), 0.0)] {
+        for (replacement, expected) in [
+            (None, 10.0),
+            (Some((6.5, 1.0)), 3.0),
+            (Some((3.0, 1.0)), 0.0),
+            (Some((13.0, 0.0)), 0.0),
+        ] {
             let mut w = Landing {
                 replacement,
                 damage: 0.0,
                 sounds: 0,
+                passenger_fall: None,
             };
             assert_eq!(
                 cause_living_fall_damage(&mut w, 13.0, 1.0),
                 Ok(expected > 0.0)
+            );
+            assert_eq!(
+                w.passenger_fall,
+                Some(replacement.unwrap_or((13.0, 1.0))),
+                "riders receive the block's modified fall inputs"
             );
             assert_eq!(w.damage, expected);
             assert_eq!(w.sounds, if expected > 0.0 { 2 } else { 0 });

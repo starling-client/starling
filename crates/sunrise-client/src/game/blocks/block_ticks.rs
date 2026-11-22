@@ -235,7 +235,7 @@ impl Game<'_> {
                         &scratch.ticking,
                         |key| chunks.get(&key).cloned(),
                         level.facts,
-                        &|id| b.random_tick_candidate(BlockStateId(id)),
+                        b,
                     );
                 });
             }

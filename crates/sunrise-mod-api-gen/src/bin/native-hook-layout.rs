@@ -5,12 +5,8 @@ fn main() -> Result<(), String> {
     if let Some(out) = std::env::args().nth(1) {
         let out = std::path::Path::new(&out);
         std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
-        for target in [
-            sunrise_mod_api_gen::Target::Api,
-            sunrise_mod_api_gen::Target::Client,
-        ] {
-            sunrise_mod_api_gen::generate(&root, out, target)?;
-        }
+        sunrise_mod_api_gen::generate_api_parts(&root, out)?;
+        sunrise_mod_api_gen::generate(&root, out, sunrise_mod_api_gen::Target::Client)?;
     } else {
         let mut source = String::new();
         std::io::stdin()

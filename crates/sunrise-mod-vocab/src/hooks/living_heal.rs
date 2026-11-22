@@ -13,5 +13,5 @@ pub trait Hooks {
         version = 2,
         target = "sunrise_client_lib::hunger::native_living_heal"
     )]
-    fn living_heal();
+    fn living_heal(entity: u32, amount: &mut f32, cancel: &mut bool);
 }

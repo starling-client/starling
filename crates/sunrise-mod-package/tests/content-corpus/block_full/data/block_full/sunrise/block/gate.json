@@ -1,0 +1,9 @@
+{
+  "template": "minecraft:oak_fence_gate",
+  "open_sound": {
+    "use": "minecraft:block.chain.break",
+    "explosion": "minecraft:block.note_block.bass",
+    "redstone": "minecraft:block.note_block.bell"
+  },
+  "close_sound": "minecraft:block.note_block.harp"
+}

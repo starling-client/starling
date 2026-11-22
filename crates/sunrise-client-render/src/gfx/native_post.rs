@@ -358,9 +358,16 @@ pub struct NativeFrame {
     /// Whether the pack's material reads `reflection` (`NativePack::new`): else no mirror
     /// is drawn and `has_reflection` stays 0.
     pub reflects: bool,
+<<<<<<< sync-sunrise-1
     /// The world's TLAS for `rt_trace`/`rt_occluded` ([ray_tracing] packs): the renderer's
     /// object, shared, so rebuilds into it reach every group bound with it.
     tlas: Option<wgpu::Tlas>,
+=======
+    /// Whether the pack's material reads `opaque_depth` or `opaque_color`
+    /// (`NativePack::new`): else they stay 1×1 and unwritten, and the world pass doesn't break
+    /// before translucent terrain to copy them.
+    pub reads_opaque: bool,
+>>>>>>> sunrise/main
     /// Last frame's view-projection, camera and time (`write`).
     last: Option<([[f32; 4]; 4], glam::DVec3, std::time::Instant)>,
     /// The eased eye light (block, sky) and being in water and lava (`write`); NaN until the
@@ -606,6 +613,7 @@ impl NativeFrame {
             shadow_map,
             shadow_camera: shadow.map(super::native_shadow::camera),
             reflects: false,
+            reads_opaque: false,
             api,
             linear,
             decoder: (api == Api::V0_2).then(|| Decoder::new(device, linear)),
@@ -623,17 +631,13 @@ impl NativeFrame {
     /// What the shadow camera sees this frame, for the renderer's shadow lists.
     pub fn shadow_view(&self, frame: &Frame) -> Option<super::pack_post::ShadowView> {
         let camera = self.shadow_camera.as_ref()?;
-        Some(super::pack_post::ShadowView {
-            cull: super::pack_uniforms::shadow_culling(frame, camera),
-            light: super::pack_uniforms::shadow_light(frame, camera),
-            // The light's box culls: on the ground it reaches further than `distance` along
-            // the sun's azimuth while the sun is low.
-            distance: None,
-            unculled: None,
-            every_face: false,
-            view_casters: false,
-            depth_planes: true,
-        })
+        Some(
+            super::pack_post::ShadowView::new(
+                crate::gfx::pack_uniforms::shadow_culling(frame, camera),
+                crate::gfx::pack_uniforms::shadow_light(frame, camera),
+            )
+            .with_depth_planes(true),
+        )
     }
 
     fn group(
@@ -722,13 +726,17 @@ impl NativeFrame {
 
     /// Keeps the opaque copies the size of the world's depth `depth` and, where the world's
     /// colour `color` can be copied (the scaled target, not the window's own), its size and
-    /// format; the group is made again when they change.
+    /// format; the group is made again when they change. Nothing for a pack that doesn't read
+    /// them.
     pub fn fit_opaque(
         &mut self,
         device: &wgpu::Device,
         depth: &wgpu::Texture,
         color: Option<&wgpu::Texture>,
     ) {
+        if !self.reads_opaque {
+            return;
+        }
         let size = [depth.width(), depth.height()];
         let (color_size, format) = match color {
             Some(c) if self.decoder.is_some() => ([c.width(), c.height()], INTERMEDIATE),
@@ -1091,7 +1099,7 @@ impl NativePost {
             let present = present_constants(&stage.module, constants);
             let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&stage.label),
+                label: Some(&super::dx12_compiler::module_label(&stage.label)),
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(stage.module)),
             });
             let options = wgpu::PipelineCompilationOptions {
@@ -1636,13 +1644,13 @@ pub fn frame_inputs(
         reflection_resolution: reflection_size(size).map(|s| s as f32),
         mods: pack.mod_params,
         light_direction: match shadow {
-            Some(s) => super::pack_uniforms::shadow_light(frame, s),
+            Some(s) => crate::gfx::pack_uniforms::shadow_light(frame, s),
             None => Vec3::Y,
         }
         .to_array(),
         has_shadow: u32::from(shadow.is_some()),
         shadow_view_proj: m(shadow.map_or(Mat4::IDENTITY, |s| {
-            super::pack_uniforms::shadow_culling(frame, s)
+            crate::gfx::pack_uniforms::shadow_culling(frame, s)
         })),
         shadow_distance: shadow.map_or(0.0, |s| s.distance),
         shadow_distortion: shadow.map_or(0.0, |s| {
@@ -1810,6 +1818,7 @@ mod tests {
     /// A scripted clock comes before STILL's ticks, eased values and wetness move by its
     /// delta, and a long wait between its frames is not a gap that starts them over.
     #[test]
+    #[ignore = "daily"]
     fn a_scripted_clock_drives_time_frame_index_and_eased_values() {
         let _gpu = crate::gfx::test_gpu::lock();
         use crate::gfx::pack_uniforms::FrameTiming;
@@ -1817,7 +1826,7 @@ mod tests {
             return;
         };
         let hud = crate::hud::HudBatch::scratch([4, 4]);
-        let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let mut frame = crate::gfx::frame_tests::frame(&hud);
         let mut native = NativeFrame::new(
             &device,
             None,
@@ -1861,6 +1870,7 @@ mod tests {
     /// After a reset, the same frames give the same inputs, to the bit, as a pack just made,
     /// however the frames before moved the eased values, wetness and the frame count.
     #[test]
+    #[ignore = "daily"]
     fn a_reset_frame_gives_a_fresh_pack_s_inputs() {
         let _gpu = crate::gfx::test_gpu::lock();
         use crate::gfx::pack_uniforms::FrameTiming;
@@ -1874,7 +1884,7 @@ mod tests {
                 unicode: false,
             },
         );
-        let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let mut frame = crate::gfx::frame_tests::frame(&hud);
         let new = || {
             NativeFrame::new(
                 &device,
@@ -1912,6 +1922,7 @@ mod tests {
     /// After a reset a pass reads its pack's own targets blank, as in a pack just made: here
     /// `fb`, which a pass reads before the pass that writes it, so it holds last frame's.
     #[test]
+    #[ignore = "daily"]
     fn a_reset_post_reads_its_own_targets_blank() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {
@@ -2047,6 +2058,7 @@ mod tests {
     /// Two passes: the first doubles the world's colour (over 1, so the half-float target
     /// must keep it) times an option, the second halves it and writes the depth as alpha.
     #[test]
+    #[ignore = "daily"]
     fn passes_chain_through_half_float_targets_with_options_and_depth() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {
@@ -2169,6 +2181,7 @@ mod tests {
     /// `history` is black on the first frame, then what the pass before the last wrote the
     /// frame before.
     #[test]
+    #[ignore = "daily"]
     fn the_last_pass_reads_last_frames_input_as_history() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {
@@ -2296,6 +2309,7 @@ mod tests {
     /// `EXT_color_buffer_float`) but always renders to the integer formats, so the surface
     /// is an integer format, and `surface_at` gets the floats back from the stored bits.
     #[test]
+    #[ignore = "daily"]
     fn the_surface_is_an_integer_target_that_the_post_stage_reads_bit_exact() {
         let _gpu = crate::gfx::test_gpu::lock();
         assert_eq!(
@@ -2475,6 +2489,7 @@ mod tests {
     /// pipeline) on bits fed as integers and checks the texture holds them exactly: payloads,
     /// signs and denormals included.
     #[test]
+    #[ignore = "daily"]
     fn the_surface_keeps_every_bit_of_the_floats_written_through_the_material_stage_bitcast() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(false) else {
@@ -2611,6 +2626,7 @@ mod tests {
     /// Sunrise's tonemap or the pack's identity one, comes back encoded as it went in (within
     /// an 8-bit step), at alpha 1.
     #[test]
+    #[ignore = "daily"]
     fn a_0_2_world_comes_back_through_decode_tonemap_and_encode() {
         let _gpu = crate::gfx::test_gpu::lock();
         assert!(tonemap_entries(false).contains("sunrise_encode(min(sunrise_sanitize(out)"));
@@ -2735,13 +2751,14 @@ mod tests {
     /// A 0.2 pack's `Frame` describes the HDR display its picture goes to, and SDR
     /// without one: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0.
     #[test]
+    #[ignore = "daily"]
     fn a_0_2_frame_describes_the_display_it_goes_to() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device(false) else {
             return;
         };
         let hud = crate::hud::HudBatch::scratch([4, 4]);
-        let frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let frame = crate::gfx::frame_tests::frame(&hud);
         let mut native = NativeFrame::new(
             &device,
             None,
@@ -2778,6 +2795,7 @@ mod tests {
     /// alone, held to the headroom. In SDR Sunrise's is a clip at white. An HDR output switched
     /// to scRGB and back to HDR10 (`Hdr::retargeted`) maps it once all the same.
     #[test]
+    #[ignore = "daily"]
     fn a_0_2_pack_is_tone_mapped_once_by_its_own_curve_or_sunrises() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {

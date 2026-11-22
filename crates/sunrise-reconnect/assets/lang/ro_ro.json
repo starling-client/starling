@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Reconectare automată",
+  "sunrise.extras.auto_reconnect.tooltip": "Se reunește pe un server după o conexiune pierdută sau o repornire, niciodată după o lovitură sau ban."
+}

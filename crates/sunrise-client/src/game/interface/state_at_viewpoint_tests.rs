@@ -1,11 +1,11 @@
 //! A block's parts answer the state the camera sees of it (`state_at_viewpoint`), and the
 //! camera's fluid follows the answer.
 use crate::game::native_entity_refs::tests::with_client_game;
-use sunrise_client::{chunk::Chunk, fog::FogType};
 use std::sync::Arc;
+use sunrise_client::{chunk::Chunk, fog::FogType};
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_camera_reads_the_state_a_block_part_says_it_sees() {
     // The fixture's part: glass is seen as water below half its height.
     mod_platform::__private::part_tests::state_at_viewpoint_game_thread();

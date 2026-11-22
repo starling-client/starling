@@ -16,9 +16,9 @@ use crate::worldgen::{
     tree_blocks::{self as tb, Axis, TreeBlocks},
     value_provider::IntProvider,
 };
-use sunrise_core::{geometry::Direction, random::RandomSource};
 use serde_json::value::RawValue;
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::{geometry::Direction, random::RandomSource};
 
 #[derive(Clone, Debug)]
 enum Kind {
@@ -81,6 +81,12 @@ impl<W: FeatureWorld, R: RandomSource> WorldgenRandom for GrowRun<'_, '_, W, R> 
     }
     fn next_boolean(&mut self) -> bool {
         self.run.random.next_boolean()
+    }
+    fn next_int(&mut self) -> i32 {
+        self.run.random.next_int()
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        self.run.random.next_gaussian()
     }
 }
 

@@ -1,0 +1,1 @@
+{"template": "minecraft:stone", "state_properties": {"phase": {"type": "enum", "values": ["on", "on"]}}}

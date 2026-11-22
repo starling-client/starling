@@ -14,7 +14,8 @@ impl Game<'_> {
         tool: &ToolUse,
         final_state: &mut Option<BlockStateId>,
         cancel: &mut bool,
+        inert: &mut bool,
     ) {
-        self.fire_tool_modified_state(state, stack, tool, final_state, cancel);
+        self.fire_tool_modified_state(state, stack, tool, final_state, cancel, inert);
     }
 }

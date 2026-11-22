@@ -32,7 +32,12 @@ pub struct TridentSave<'a> {
 /// `soundEvent` until its first block hit.
 pub const TRIDENT_HIT_GROUND: &str = "minecraft:item.trident.hit_ground";
 /// `ThrownTrident.addAdditionalSaveData`, including its arrow/projectile state.
-pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+pub fn trident_to_nbt(
+    t: &TridentSave,
+    uuid: [i32; 4],
+    raw: Option<&Tag>,
+    items: &crate::items::Items,
+) -> Tag {
     let mut tag = Base {
         id: "minecraft:trident",
         uuid,
@@ -66,7 +71,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         ("crit", Tag::Byte(0)),
         ("PierceLevel", Tag::Byte(0)),
         ("SoundEvent", string(t.sound_event)),
-        ("item", item_to_nbt(t.item)),
+        ("item", item_to_nbt(t.item, items)),
         ("DealtDamage", Tag::Byte(i8::from(t.dealt_damage))),
         ("Fire", Tag::Short(t.fire_ticks as i16)),
     ] {

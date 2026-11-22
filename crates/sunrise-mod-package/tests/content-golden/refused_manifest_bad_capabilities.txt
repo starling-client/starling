@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: capabilities = [] but the tool writes ["registries"]; delete the capabilities line
+
+icon:
+unavailable

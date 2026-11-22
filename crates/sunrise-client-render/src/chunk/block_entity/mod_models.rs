@@ -1,8 +1,15 @@
 //! Engine-owned mod block entity storage and revision tracking.
-use sunrise_core::nbt::Compound;
-#[cfg(test)]
-use sunrise_core::nbt::Tag;
+use super::published_shapes::{PublishedShapes, SHAPES_KEY};
+use std::sync::{Arc, LazyLock};
+use sunrise_client_core::{
+    block_entity_nbt::saved_item_slot,
+    block_entity_types::{self, RegisteredBlockEntityType},
+};
+use sunrise_core::nbt::{Compound, JavaString, Tag};
 use sunrise_items::items::ItemStack;
+
+static ITEMS: LazyLock<JavaString> = LazyLock::new(|| "Items".into());
+
 /// A mod's block entity, read and changed through its fields
 /// (`ModBlockEntityFields`) as a struct's: `entity.nbt`. Each change goes
 /// through `DerefMut` and gives it a new `revision`, so a client tells
@@ -12,17 +19,23 @@ use sunrise_items::items::ItemStack;
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct ModBlockEntity {
     pub(crate) id: String,
-    /// `id`'s numeric wire ID (`block_entity_types::numeric_id`), looked up once when the entity is
-    /// made, so a published loop's slot compares types by integer; `None` for an id the table
-    /// does not have, or one made before the table is installed. The table is frozen for the
-    /// process, so the ID never goes stale.
-    pub(crate) numeric_id: Option<u32>,
+    /// Looked up once when the entity is made. `None` for an unknown type or before the
+    /// process's type table is installed. Both the numeric id and keyed Parts are frozen.
+    registered_type: Option<RegisteredBlockEntityType>,
+    tick_kind: Option<mod_api::BlockEntityTypeKey>,
     pub(crate) fields: ModBlockEntityFields,
     pub(crate) revision: ModRevision,
+    /// What its block's collision and outline are while it holds some
+    /// (`BlockEntityRef::set_shapes`). Saved and sent with it, outside its `nbt`.
+    pub(crate) shapes: Option<Arc<PublishedShapes>>,
+    /// Whether the shapes were cleared after holding some, which an update tag says
+    /// (`shapes_update_tag`) so a client drops its copy. Neither saved, compared nor
+    /// part of a mod's replaceable client fields.
+    pub(crate) shapes_cleared: bool,
 }
 /// What a `ModBlockEntity` can change: its saved compound without `id`,
-/// `x`, `y`, `z` and `Items`, its item slots
-/// (`Items`) when its block has a container (`ModContainer`), and the data
+/// `x`, `y`, `z` or modeled `Items` rows, its item slots
+/// when its block has a container (`ModContainer`), and the data
 /// slots its menu shows (`ContainerData`: a furnace menu's flame and arrow),
 /// which the mod sets and nothing saves.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -31,6 +44,19 @@ pub struct ModBlockEntityFields {
     pub nbt: Compound,
     pub items: Vec<Option<ItemStack>>,
     pub data: Vec<i32>,
+}
+
+impl ModBlockEntityFields {
+    /// The retained `Items` rows are their own ownership record. A modeled
+    /// stack taking a slot drops its pending saved row from the same snapshot.
+    fn claim_modeled_item_rows(&mut self) {
+        if let Some(Tag::List(rows)) = self.nbt.get_mut(&ITEMS) {
+            rows.retain(|row| {
+                saved_item_slot(row)
+                    .is_none_or(|slot| self.items.get(slot).is_none_or(Option::is_none))
+            });
+        }
+    }
 }
 /// Which contents a `ModBlockEntity` has had: one per entity made (a clone
 /// is another), counted on by each change. Equal revisions, equal contents.
@@ -55,25 +81,90 @@ impl ModRevision {
 impl ModBlockEntity {
     /// Apply a validated callback snapshot in place, keeping this entity's identity.
     /// The game passes the snapshot's original write count, including no-op writes.
-    pub fn apply_snapshot(&mut self, fields: ModBlockEntityFields, changes: u64) {
+    pub fn apply_snapshot(&mut self, mut fields: ModBlockEntityFields, changes: u64) {
+        fields.claim_modeled_item_rows();
         self.fields = fields;
         self.revision.changes = changes;
     }
 
-    pub fn new(id: String, fields: ModBlockEntityFields) -> Self {
-        let numeric_id = sunrise_client_core::block_entity_types::numeric_id(&id);
-        Self::with_numeric_id(id, numeric_id, fields)
+    pub fn has_opaque_item_slot(&self, slot: usize) -> bool {
+        matches!(self.nbt.get(&ITEMS), Some(Tag::List(rows)) if
+            rows.iter().any(|row| saved_item_slot(row) == Some(slot)))
     }
-    fn with_numeric_id(id: String, numeric_id: Option<u32>, fields: ModBlockEntityFields) -> Self {
+
+    /// A write (including an explicit clear) supersedes raw rows for this index.
+    pub fn item_slot_mut(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
+        if slot >= self.items.len() {
+            return None;
+        }
+        if let Some(Tag::List(rows)) = self.fields.nbt.get_mut(&ITEMS) {
+            rows.retain(|row| saved_item_slot(row) != Some(slot));
+        }
+        self.items.get_mut(slot)
+    }
+
+    pub fn new(id: String, mut fields: ModBlockEntityFields) -> Self {
+        fields.claim_modeled_item_rows();
+        let registered_type = block_entity_types::registered(&id);
+        let tick_kind = registered_type
+            .filter(|kind| kind.has_tick_part)
+            .and_then(|_| mod_api::__private::block_entity_type_key(&id));
+        Self::with_type(id, registered_type, tick_kind, fields)
+    }
+    fn with_type(
+        id: String,
+        registered_type: Option<RegisteredBlockEntityType>,
+        tick_kind: Option<mod_api::BlockEntityTypeKey>,
+        fields: ModBlockEntityFields,
+    ) -> Self {
         Self {
             id,
-            numeric_id,
+            registered_type,
+            tick_kind,
             fields,
             revision: ModRevision {
                 born: sunrise_mod_runtime::block_entities::new_identity(),
                 changes: 0,
             },
+            shapes: None,
+            shapes_cleared: false,
         }
+    }
+    /// The shapes this block entity published for its block, if it holds any.
+    pub fn shapes(&self) -> Option<&PublishedShapes> {
+        self.shapes.as_deref()
+    }
+    /// Publishes `shapes`, or clears them with None; whether that changed them. A change moves
+    /// the revision, so what was drawn from the old shapes is drawn again.
+    pub fn set_shapes(&mut self, shapes: Option<Arc<PublishedShapes>>) -> bool {
+        if self.shapes == shapes {
+            return false;
+        }
+        self.shapes_cleared = shapes.is_none();
+        self.shapes = shapes;
+        self.revision.changes += 1;
+        true
+    }
+    /// What goes beside the saved fields for the published shapes: they are not among
+    /// `nbt`, so a mod's own writes to it never touch them.
+    pub fn shapes_tag(&self) -> Option<(&'static str, Tag)> {
+        self.shapes().map(|shapes| (SHAPES_KEY, shapes.to_tag()))
+    }
+    /// Whether the shapes were cleared after holding some and clients may not know yet.
+    pub fn shapes_cleared(&self) -> bool {
+        self.shapes_cleared
+    }
+    /// Carries a clear over to the entity that replaces this one on a data write.
+    pub fn keep_shapes_cleared(&mut self, cleared: bool) {
+        self.shapes_cleared = cleared && self.shapes.is_none();
+    }
+    /// [`Self::shapes_tag`] for an update tag, which also says when they were cleared (an
+    /// empty compound), always as the entity holds them now.
+    pub fn shapes_update_tag(&self) -> Option<(&'static str, Tag)> {
+        self.shapes_tag().or_else(|| {
+            self.shapes_cleared
+                .then(|| (SHAPES_KEY, Tag::Compound(Compound::new())))
+        })
     }
     /// The block entity's immutable type id (`mymod:machine`).
     ///
@@ -92,7 +183,12 @@ impl ModBlockEntity {
     /// The type's numeric wire ID, resolved from [`Self::id`] when the entity was made; `None`
     /// for a type the game has not registered.
     pub fn numeric_id(&self) -> Option<u32> {
-        self.numeric_id
+        self.registered_type.map(|kind| kind.numeric_id)
+    }
+
+    /// The resolved route for a resident server tick, only when its type subscribes.
+    pub fn tick_kind(&self) -> Option<mod_api::BlockEntityTypeKey> {
+        self.tick_kind
     }
     pub fn revision(&self) -> ModRevision {
         self.revision
@@ -101,9 +197,21 @@ impl ModBlockEntity {
     /// in `ClientPacketListener.handleBlockEntityData`): `tag`'s fields
     /// replace its own of the same names. One it already has as sent is
     /// left alone, so a tag sent again unchanged keeps its revision.
+    ///
+    /// The published shapes' field (`SHAPES_KEY`) is not one of the fields: it sets them, an
+    /// empty compound clears them, and one that does not check is left out.
     pub fn merge_update_tag(&mut self, tag: &Compound) {
         for (k, v) in tag {
-            if self.nbt.get(k) != Some(v) {
+            if k.to_string().is_ok_and(|k| k == SHAPES_KEY) {
+                match v {
+                    Tag::Compound(empty) if empty.is_empty() => _ = self.set_shapes(None),
+                    v => {
+                        if let Some(shapes) = PublishedShapes::from_tag(v) {
+                            self.set_shapes(Some(Arc::new(shapes)));
+                        }
+                    }
+                }
+            } else if self.nbt.get(k) != Some(v) {
                 self.nbt.insert(k.clone(), v.clone());
             }
         }
@@ -114,6 +222,10 @@ impl ModBlockEntity {
     /// and the revision stays.
     pub fn set_client_update_fields(&self, fields: Compound) {
         sunrise_mod_runtime::block_entities::set_client_update_fields(self.revision.born, fields);
+    }
+    /// Keep the queued one-shot fields for transaction rollback without consuming them.
+    pub fn snapshot_client_update_fields(&self) -> Option<Compound> {
+        sunrise_mod_runtime::block_entities::snapshot_client_update_fields(self.revision.born)
     }
     /// Take the queued one-shot fields for a tag about to go to every viewer.
     pub fn take_client_update_fields(&self) -> Option<Compound> {
@@ -130,20 +242,28 @@ impl Drop for ModBlockEntity {
         drop(self.take_client_update_fields());
     }
 }
-/// The empty placeholder a tick leaves in a mod block entity's place: no type, nothing looked up.
+/// An empty mod block entity with no type id, for tests and defaults.
 impl Default for ModBlockEntity {
     fn default() -> Self {
-        Self::with_numeric_id(String::new(), None, ModBlockEntityFields::default())
+        Self::with_type(String::new(), None, None, ModBlockEntityFields::default())
     }
 }
 impl Clone for ModBlockEntity {
     fn clone(&self) -> Self {
-        Self::with_numeric_id(self.id.clone(), self.numeric_id, self.fields.clone())
+        let mut copy = Self::with_type(
+            self.id.clone(),
+            self.registered_type,
+            self.tick_kind,
+            self.fields.clone(),
+        );
+        copy.shapes.clone_from(&self.shapes);
+        copy.shapes_cleared = self.shapes_cleared;
+        copy
     }
 }
 impl PartialEq for ModBlockEntity {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.fields == other.fields
+        self.id == other.id && self.fields == other.fields && self.shapes == other.shapes
     }
 }
 impl std::fmt::Debug for ModBlockEntity {
@@ -151,6 +271,7 @@ impl std::fmt::Debug for ModBlockEntity {
         f.debug_struct("ModBlockEntity")
             .field("id", &self.id)
             .field("fields", &self.fields)
+            .field("shapes", &self.shapes)
             .finish()
     }
 }
@@ -207,6 +328,34 @@ mod tests {
         assert_ne!(other_kind, machine);
         let fresh = ModBlockEntity::default();
         assert_ne!(fresh.revision(), ModBlockEntity::default().revision());
+    }
+
+    #[test]
+    fn a_clients_copy_takes_published_shapes_from_the_update_tag_and_clears_them() {
+        use mod_api::BlockEntityShapes;
+        let shapes = PublishedShapes::new(BlockEntityShapes {
+            outline: vec![],
+            collision: vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]],
+        })
+        .unwrap();
+        let mut sent = Compound::from([("progress".into(), Tag::Int(2))]);
+        sent.insert(SHAPES_KEY.into(), shapes.to_tag());
+        let mut copy = ModBlockEntity::new("mymod:machine".into(), Default::default());
+        copy.merge_update_tag(&sent);
+        assert_eq!(copy.shapes().unwrap().boxes(), shapes.boxes());
+        // The shapes are no field of the mod's, and a clone keeps them.
+        assert_eq!(copy.nbt.len(), 1);
+        assert_eq!(copy.clone().shapes().unwrap().boxes(), shapes.boxes());
+        // The same tag again leaves the revision; an empty compound clears them.
+        let revision = copy.revision();
+        copy.merge_update_tag(&sent);
+        assert_eq!(copy.revision(), revision);
+        copy.merge_update_tag(&Compound::from([(
+            SHAPES_KEY.into(),
+            Tag::Compound(Compound::new()),
+        )]));
+        assert!(copy.shapes().is_none());
+        assert_ne!(copy.revision(), revision);
     }
 
     #[test]

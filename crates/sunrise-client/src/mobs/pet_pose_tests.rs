@@ -5,8 +5,8 @@
 //! metadata read.
 use super::*;
 use crate::mobs::sensor_scan_tests::kind;
-use sunrise_core::geometry::Vec3;
 use std::sync::Arc;
+use sunrise_core::geometry::Vec3;
 
 fn pet(id: &str, species: Species, at: Vec3) -> Mob {
     let mut kind = kind();
@@ -22,6 +22,7 @@ fn pet(id: &str, species: Species, at: Vec3) -> Mob {
 /// is in water or in the air, so a pet fed a bone mid-swim keeps swimming;
 /// `start` and `stop` are the only writers of the pose.
 #[test]
+#[ignore = "daily"]
 fn ordering_a_pet_to_sit_in_water_leaves_the_pose_alone() {
     let ran = crate::mobs::world::with_test_world(&[], |w, _| {
         let mut lr = crate::health::TestLevel::new(0);
@@ -45,12 +46,12 @@ fn ordering_a_pet_to_sit_in_water_leaves_the_pose_alone() {
             assert!(!m.extra.sitting_pose, "{id}: still standing in the water");
             // In the air (falling, jumping) it does not sit either.
             m.fluids.in_water = false;
-            m.on_ground = false;
+            m.ground.on_ground = false;
             assert!(!goal.can_use(&mut m, &mut cx), "{id}: sits in the air");
             assert!(!m.extra.sitting_pose, "{id}: still standing in the air");
             // On dry ground it sits, and standing up ends the pose but not
             // the order.
-            m.on_ground = true;
+            m.ground.on_ground = true;
             assert!(goal.can_use(&mut m, &mut cx), "{id}: does not sit on land");
             goal.start(&mut m, &mut cx);
             assert!(m.extra.sitting_pose, "{id}: not sitting on land");
@@ -69,6 +70,7 @@ fn ordering_a_pet_to_sit_in_water_leaves_the_pose_alone() {
 /// pose the renderer, the metadata and `ChestBlock` read, and the order alone
 /// (a cat told to sit in water) is not that pose.
 #[test]
+#[ignore = "daily"]
 fn a_cat_on_a_chest_is_in_the_sitting_pose() {
     use crate::mobs::world::with_built_test_world;
     let mut seen = None;
@@ -98,7 +100,7 @@ fn a_cat_on_a_chest_is_in_the_sitting_pose() {
                 events: &mut events,
             };
             let mut m = pet("minecraft:cat", Species::Cat, Vec3::new(0.5, 65.0, 0.5));
-            m.on_ground = true;
+            m.ground.on_ground = true;
             let mut goal = CatSitOnBlock(super::super::goals::MoveToBlock::new(0.8, 8, 1));
             let found = goal.can_use(&mut m, &mut cx);
             goal.start(&mut m, &mut cx);

@@ -1,0 +1,3 @@
+ids = ["handle:EntityRef::is_on_fire", "handle:EntityRef::is_under_water", "handle:PlayerRef::trigger_consume_item"]
+why = "Expose vanilla Entity.isOnFire and Entity.isUnderWater on both sides and the typed server CONSUME_ITEM criterion, using each side's own entity state and the existing advancement path."
+migrate = "New Host reads and a typed criterion helper are available to native mods; no existing hook meaning changes."

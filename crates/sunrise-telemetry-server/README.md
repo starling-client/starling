@@ -61,7 +61,7 @@ Frame rates are whole numbers, milliseconds have one decimal under 10, megabytes
 
 Measured: **about 190 bytes per play session** on disk, indexes included (`tests/server.rs`, 10 000 sessions). 1 000 players playing twice a day for 180 days is about 70 MB.
 
-The live count's history (`src/history.rs`) is three small tables of totals, never sessions: `live_minute` (one row a minute, kept `LIVE_MINUTE_DAYS`, 7), `live_hour` (sum, sample count, peak and its minute, kept `LIVE_HOUR_DAYS`, 90) and `live_day` (the same per UTC day, kept for good). The server writes one sample a minute, starting a whole window (2 minutes) after it starts so a restart doesn't record a dip. About 1 MB a year. The `official_` tables hold the official server's player count the same way, from a server-list status ping every minute (`SUNRISE_TELEMETRY_OFFICIAL_SERVER`, default `sunrise_telemetry::server_status::OFFICIAL_STATUS_ADDRESS`, the SRV target of the official address since this server doesn't look SRV up; `off` for none); a minute it didn't answer has no row.
+The live count's history (`src/history.rs`) is three small tables of totals, never sessions: `live_minute` (one row a minute, kept `LIVE_MINUTE_DAYS`, 7), `live_hour` (sum, sample count, peak and its minute, kept `LIVE_HOUR_DAYS`, 90) and `live_day` (the same per UTC day, kept for good). The server writes one sample a minute, starting a whole window (2 minutes) after it starts so a restart doesn't record a dip. About 1 MB a year. The `official_` tables hold one server's player count the same way, from a server-list status ping every minute (`SUNRISE_TELEMETRY_OFFICIAL_SERVER`, none by default; give the SRV target, since this server doesn't look SRV up); a minute it didn't answer has no row.
 
 The live count is a table in memory: a session ID, when it last pinged, its version, platform and LAN flag, about 100 bytes a session. A session counts while its last ping is under 2 minutes old and is forgotten after that. Nothing of it reaches the disk, so a restart empties it; it is whole again a minute later.
 
@@ -86,7 +86,7 @@ All are environment variables:
 - `SUNRISE_TELEMETRY_LIVE_PER_HOUR` per address, pings and reads (600, bursts of 60: ten players behind one address)
 - `SUNRISE_TELEMETRY_LIVE_WINDOW_SECONDS` (120)
 - `SUNRISE_TELEMETRY_LIVE_MAX_SESSIONS` (200 000)
-- `SUNRISE_TELEMETRY_OFFICIAL_SERVER` (`play.playsunrise.net:24454`; `off` asks no server): the server whose player count is kept as the `official` series
+- `SUNRISE_TELEMETRY_OFFICIAL_SERVER` (none; `off` asks no server): the server whose player count is kept as the `official` series
 - `SUNRISE_TELEMETRY_LIVE_MINUTE_DAYS` (7) and `…_LIVE_HOUR_DAYS` (90, at least 31): how long the history keeps minute and hourly samples; daily ones stay
 - `SUNRISE_TELEMETRY_HUB_PER_HOUR` votes and vote reads per address (600, bursts of 60: a page load is one read, and several players can share an address)
 - `SUNRISE_TELEMETRY_HUB_POSTS_PER_HOUR` bug reports per address (20, bursts of 2)
@@ -94,7 +94,7 @@ All are environment variables:
 - `SUNRISE_TELEMETRY_GAME_REPORTS_PER_DAY` reports from the game, from everyone (20): each opens an issue
 - `SUNRISE_TELEMETRY_HUB_KEEP_DAYS` (90)
 - `SUNRISE_TELEMETRY_GITHUB_TOKEN`: a fine-grained token with Issues read and write on the repository only (unset: `POST /hub/report` answers 503 and the form points to GitHub and Discord)
-- `SUNRISE_TELEMETRY_GITHUB_REPO` (`horizon-rust/horizon`)
+- `SUNRISE_TELEMETRY_GITHUB_REPO` (`sunrise-org/sunrise`)
 - `SUNRISE_TELEMETRY_READS_PER_HOUR` per address, for `/v1/aggregate` and `/v1/benchmarks/summary` (600, bursts of 60)
 - `SUNRISE_TELEMETRY_AGGREGATE_BUILDS_PER_HOUR` from everyone (600, bursts of 60): totals built from the database on a cache miss; past it a miss answers 503
 - `SUNRISE_TELEMETRY_AGGREGATE_DAYS`, e.g. `7,30,90,366`: the only `days` `/v1/aggregate` answers (others get 400), so the cache holds a handful of windows. Unset: any value from 1 to 366. List every value the website asks for before setting it.

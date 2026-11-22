@@ -1,0 +1,4 @@
+id = "refused_server_registry_content"
+name = "Refused server registry content"
+version = "1.2.3"
+side = "server"

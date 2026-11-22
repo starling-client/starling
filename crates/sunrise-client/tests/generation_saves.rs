@@ -222,6 +222,7 @@ fn worker_context(root: &Path) -> Arc<WorkerContext> {
         assets,
         render: render.clone(),
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     })
 }
 
@@ -336,6 +337,7 @@ fn proto_chunks_are_viewed_once_per_state() {
         assets,
         render: render.clone(),
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     });
     let generator = Arc::new(Recorder::default());
     let mut session = Session::new(generator.clone(), context);
@@ -395,6 +397,7 @@ fn saved_proto_chunks_restore_exactly() {
     let save = Arc::new(SaveDir::new(
         dir.clone(),
         sunrise_client::save::LevelShape::OVERWORLD,
+        Some(Default::default()),
     ));
     let generator = Persistent {
         inner: Arc::new(terrain),
@@ -536,6 +539,7 @@ fn saved_proto_block_entities_keep_their_id() {
     let save = Arc::new(SaveDir::new(
         dir.clone(),
         sunrise_client::save::LevelShape::OVERWORLD,
+        Some(Default::default()),
     ));
     let generator = Persistent {
         inner: Arc::new(terrain),
@@ -625,6 +629,7 @@ fn persistent_forwards_the_block_entities_decoration_made_in_a_final_chunk() {
         save: Arc::new(SaveDir::new(
             dir.clone(),
             sunrise_client::save::LevelShape::OVERWORLD,
+            Some(Default::default()),
         )),
         registry: assets,
         biomes,

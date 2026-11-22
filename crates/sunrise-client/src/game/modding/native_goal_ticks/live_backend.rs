@@ -7,10 +7,14 @@ impl GoalCx<'_, '_> {
     pub(super) fn is_game_entity(&self, entity: EntityRef) -> bool {
         if matches!(
             self.resolve(entity),
-            Some(Resolved::Own | Resolved::Live(_) | Resolved::Seen(_))
+            Some(Resolved::Own | Resolved::Live(_) | Resolved::Seen(_) | Resolved::Unavailable)
         ) {
             return false;
         }
         self.host.entity(entity.id()) == Some(entity)
+            || self
+                .w
+                .goal_host
+                .is_some_and(|host| host.mob_in_other_level(entity))
     }
 }

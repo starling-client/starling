@@ -1,7 +1,7 @@
 //! Shared queried parameters and NeoForge conditions for both loot evaluators.
 use super::LootStack;
-pub use sunrise_core::UNKNOWN_LOOT_TABLE;
 use std::{cell::RefCell, rc::Rc};
+pub use sunrise_core::UNKNOWN_LOOT_TABLE;
 
 /// Parameters shared unchanged by all nested tables. The first id set wins.
 #[derive(Default)]
@@ -33,10 +33,10 @@ impl LootQuery {
     pub fn table_id(&self) -> String {
         self.id().unwrap_or_else(|| UNKNOWN_LOOT_TABLE.into())
     }
-    /// Root-only completion point, after all nested tables. Nested rolls never call this.
+    /// Set-once id completion, called by each evaluator's `roll_root` after
+    /// all nested tables. Nested raw rolls never call this.
     pub fn finish(&self, id: Option<&str>) {
         self.set_id(id.unwrap_or(UNKNOWN_LOOT_TABLE));
-        // #1270: the global loot modifier pass belongs here.
     }
 }
 thread_local! { static QUERY: RefCell<Option<Rc<LootQuery>>> = const { RefCell::new(None) }; }
@@ -78,14 +78,4 @@ pub fn condition(
         ),
         _ => None,
     }
-}
-
-/// Run a named root with one shared query, completing it after every nested table.
-pub fn root<T>(id: &str, roll: impl FnOnce() -> T) -> T {
-    let query = current_query();
-    with_query(query.clone(), || {
-        let result = roll();
-        query.finish(Some(id));
-        result
-    })
 }

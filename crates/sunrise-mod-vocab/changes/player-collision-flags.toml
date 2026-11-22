@@ -1,0 +1,2 @@
+ids = ["handle:PlayerRef::collision_flags", "type:CollisionFlags"]
+why = "Mods can distinguish a player's last wall hit, ceiling hit and ground collision on the side that moved the player."

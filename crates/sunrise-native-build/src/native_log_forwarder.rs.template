@@ -1,0 +1,29 @@
+struct Forwarder;
+
+impl facade::Log for Forwarder {
+    fn enabled(&self, meta: &facade::Metadata<'_>) -> bool {
+        mod_api::__private::native_log::enabled(meta.level() as u8, meta.target())
+    }
+
+    fn log(&self, record: &facade::Record<'_>) {
+        mod_api::__private::native_log::record(
+            record.level() as u8,
+            record.target(),
+            *record.args(),
+            record.file(),
+            record.line(),
+        );
+    }
+
+    fn flush(&self) {
+        mod_api::__private::native_log::flush();
+    }
+}
+
+pub(super) fn install() {
+    // The game initializes its logger after it loads the native entries, but before registration.
+    // Set its INFO ceiling now so debug/trace are filtered before constructing a record.
+    if facade::set_logger(&Forwarder).is_ok() {
+        facade::set_max_level(facade::LevelFilter::Info);
+    }
+}

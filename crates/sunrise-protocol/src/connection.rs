@@ -111,10 +111,6 @@ pub struct ConnReader {
     decrypt: Option<Cfb8>,
     pub threshold: Option<usize>,
     pub counters: Arc<Counters>,
-    /// Set for a server of an older release: what arrives is renumbered.
-    adapter: Option<Arc<crate::adapter::Session>>,
-    /// Set on a server for a client of an older release: what arrives is renumbered.
-    older_client: Option<Arc<crate::adapter::ClientSession>>,
 }
 /// Closes a connection from another thread: a read or a write blocked on it fails.
 pub struct Closer(Stream);
@@ -130,10 +126,6 @@ pub struct ConnWriter {
     encrypt: Option<Cfb8>,
     pub threshold: Option<usize>,
     counters: Arc<Counters>,
-    /// Set for a server of an older release: what is sent is renumbered.
-    adapter: Option<Arc<crate::adapter::Session>>,
-    /// Set on a server for a client of an older release: what is sent is renumbered.
-    older_client: Option<Arc<crate::adapter::ClientSession>>,
 }
 /// `InetAddress.getByName` under Java's default `java.net.preferIPv6Addresses=false`: IPv4
 /// addresses first, whatever order the system resolver gives (macOS lists IPv6 first). Vanilla
@@ -276,8 +268,6 @@ impl Connection {
                 decrypt: None,
                 threshold: None,
                 counters: counters.clone(),
-                adapter: None,
-                older_client: None,
             },
             writer: ConnWriter {
                 memory,
@@ -285,30 +275,8 @@ impl Connection {
                 encrypt: None,
                 threshold: None,
                 counters,
-                adapter: None,
-                older_client: None,
             },
         })
-    }
-    /// Speak to a server of `version` from now on (before the handshake): packets are renumbered both
-    /// ways (crate::adapter). The pinned version needs nothing.
-    pub fn adapt(&mut self, version: crate::adapter::ServerVersion) {
-        let session = (version != crate::adapter::ServerVersion::Current)
-            .then(|| Arc::new(crate::adapter::Session::new(version)));
-        self.reader.adapter = session.clone();
-        self.writer.adapter = session;
-    }
-    /// Serve a client of `version` from now on (after its handshake): packets are renumbered both ways
-    /// (crate::adapter::ClientSession). The pinned version needs nothing.
-    pub fn serve_older(&mut self, version: crate::adapter::ServerVersion) {
-        let session = (version != crate::adapter::ServerVersion::Current)
-            .then(|| Arc::new(crate::adapter::ClientSession::new(version)));
-        self.reader.older_client = session.clone();
-        self.writer.older_client = session;
-    }
-    /// The older release this connection's client is on ([`Self::serve_older`]), `None` for the pinned one.
-    pub fn older_client(&self) -> Option<crate::adapter::ServerVersion> {
-        self.reader.older_client.as_ref().map(|s| s.version)
     }
     /// `Connection.isMemoryConnection`: through a [`Pipe`] rather than a socket.
     pub fn is_memory(&self) -> bool {
@@ -385,45 +353,19 @@ impl ConnReader {
     }
     /// Block until a whole packet arrives: (id, payload).
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
-        if let Some(packet) = self.adapter.as_ref().and_then(|a| a.next_incoming()) {
-            return Ok(packet);
-        }
         loop {
             match self.next()? {
-                Next::Packet((id, payload)) if self.older_client.is_some() => {
-                    let client = self.older_client.as_ref().expect("checked");
-                    if let Some(packet) = client.serverbound(id, payload)? {
-                        return Ok(packet);
-                    }
-                }
-                Next::Packet(packet) => match &self.adapter {
-                    None => return Ok(packet),
-                    Some(a) => {
-                        if let Some(packet) = a.clientbound(packet.0, packet.1)? {
-                            return Ok(packet);
-                        }
-                        if let Some(packet) = a.next_incoming() {
-                            return Ok(packet);
-                        }
-                    }
-                },
+                Next::Packet(packet) => return Ok(packet),
                 Next::Empty => {}
                 Next::Partial(wanted) => self.fill(wanted)?,
             }
         }
     }
     /// The next whole packet among the bytes already read, without reading
-    /// more: for a detached reader, after [`Self::read_from`]. Only an older
-    /// client's renumbering applies (a server's connection has no other).
+    /// more: for a detached reader, after [`Self::read_from`].
     pub fn buffered(&mut self) -> Result<Option<(i32, Vec<u8>)>> {
         loop {
             match self.next()? {
-                Next::Packet((id, payload)) if self.older_client.is_some() => {
-                    let client = self.older_client.as_ref().expect("checked");
-                    if let Some(packet) = client.serverbound(id, payload)? {
-                        return Ok(Some(packet));
-                    }
-                }
                 Next::Packet(packet) => return Ok(Some(packet)),
                 Next::Empty => {}
                 Next::Partial(_) => return Ok(None),
@@ -586,8 +528,6 @@ impl ConnWriter {
             encrypt: None,
             threshold: None,
             counters: self.counters.clone(),
-            adapter: None,
-            older_client: None,
         };
         std::mem::replace(self, placeholder)
     }
@@ -610,30 +550,6 @@ impl ConnWriter {
         }
     }
 
-    /// The server release selected for this connection (local play uses the pinned release).
-    pub fn server_version(&self) -> crate::adapter::ServerVersion {
-        self.adapter
-            .as_ref()
-            .map_or(crate::adapter::ServerVersion::Current, |a| a.version)
-    }
-
-    /// The old ServerData flag, once it arrived on a pre-component connection.
-    pub fn legacy_secure_chat_enforcement(&self) -> Option<bool> {
-        self.adapter
-            .as_ref()
-            .and_then(|a| a.legacy_secure_chat_enforcement())
-    }
-
-    /// Observe live secure-chat metadata after moving the writer to another thread.
-    pub fn legacy_secure_chat_observer(&self) -> impl Fn() -> Option<bool> + Send + Sync + 'static {
-        let adapter = self.adapter.clone();
-        move || {
-            adapter
-                .as_ref()
-                .and_then(|a| a.legacy_secure_chat_enforcement())
-        }
-    }
-
     /// Write bytes as they are, with no framing: the legacy server list ping
     /// (`LegacyServerPinger`) is not a framed protocol.
     pub fn write_raw(&mut self, data: &[u8]) -> Result<()> {
@@ -641,31 +557,8 @@ impl ConnWriter {
         self.stream.flush()?;
         Ok(())
     }
-    /// A packet body as this connection's client takes it: renumbered for a client of an older release
-    /// ([`Connection::serve_older`]), `None` when it has no such packet; as it is otherwise.
-    pub fn for_client<'a>(&self, body: &'a [u8]) -> Result<Option<std::borrow::Cow<'a, [u8]>>> {
-        match &self.older_client {
-            None => Ok(Some(std::borrow::Cow::Borrowed(body))),
-            Some(client) => Ok(client.clientbound(body)?.map(std::borrow::Cow::Owned)),
-        }
-    }
     /// Send one packet body (VarInt id + payload).
     pub fn send(&mut self, body: &[u8]) -> Result<()> {
-        if self.older_client.is_some() {
-            return match self.for_client(body)? {
-                Some(body) => self.send_contents(&self.contents(&body)?),
-                None => Ok(()),
-            };
-        }
-        if let Some(a) = self.adapter.clone() {
-            if let Some(body) = a.serverbound(body)? {
-                self.send_contents(&self.contents(&body)?)?;
-            }
-            for body in a.take_outgoing() {
-                self.send_contents(&self.contents(&body)?)?;
-            }
-            return Ok(());
-        }
         self.send_contents(&self.contents(body)?)
     }
     /// Send a frame whose contents [`Self::contents`] made for this transport.
@@ -683,7 +576,7 @@ impl ConnWriter {
         if self.memory {
             out.extend_from_slice(&(contents.len() as u64).to_le_bytes());
         } else {
-            crate::buf::write_varint(out, contents.len() as i32);
+            ::sunrise_core::vanilla_bytes::write_varint(out, contents.len() as i32);
         }
         out.extend_from_slice(contents);
         if let Some(c) = &mut self.encrypt {

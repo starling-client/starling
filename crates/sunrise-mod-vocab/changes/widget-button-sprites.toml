@@ -1,0 +1,3 @@
+ids = ["type:client::widgets::Button", "method:DrawContext::widget_button"]
+why = "Button can carry custom GUI sprites without losing narration or input handling. Adding Button.sprites changes the Wire layout of Button and the payload it contributes to Widget and Widgets."
+migrate = "Rebuild against the new SDK. Button::new still uses vanilla art. Pass None as the last argument to widget_button for the old look, or pass the desired ButtonSprites by reference."

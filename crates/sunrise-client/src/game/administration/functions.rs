@@ -7,6 +7,8 @@ use super::{
         execute::{ExecState, Source},
     },
 };
+use mod_api::__private::reload::ReloadStageError;
+use std::sync::Arc;
 use sunrise_client::{
     command::{Arg, Context},
     datapack::{self, DataPack, DataStore, Function},
@@ -15,8 +17,6 @@ use sunrise_client::{
     text::{self, Text},
 };
 use sunrise_core::nbt::Tag;
-use mod_api::__private::reload::ReloadStageError;
-use std::sync::Arc;
 
 /// A `TimerQueue` event.
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +88,9 @@ pub(super) struct PackStack {
     pub(super) content: DataPack,
     pub packs: Vec<Arc<DataPack>>,
     pub enabled: Vec<String>,
+    /// The feature flags the stack was selected for: the incoming world's, also on its first
+    /// open, before `self.level` holds them (what `neoforge:feature_flags_enabled` reads).
+    pub(super) features: Vec<String>,
 }
 impl PackStack {
     /// The enabled packs in `enabled` (the selected) order, later overriding
@@ -116,24 +119,18 @@ pub(super) fn pack_stack(
         builtin,
         packs: packs.into_iter().map(Arc::new).collect(),
         enabled,
+        features: enabled_features.to_vec(),
     }
 }
 
-/// The world's enabled packs' content files (`recipe/`, `loot_table/`,
-/// `advancement/`, `tags/…`) for the tables to merge over the resource
-/// root's own. Empty when the world has no packs.
-pub(super) fn content_overlay(stack: &PackStack) -> Vec<(String, Vec<Vec<u8>>)> {
-    let packs: Vec<&DataPack> = std::iter::once(&stack.content)
-        .chain(stack.enabled_packs())
-        .collect();
-    if packs.is_empty() {
-        return Vec::new();
-    }
-    DataStore::load(&packs).files.into_iter().collect()
+pub(super) struct OverlayFiles {
+    pub(super) files: Vec<(String, Vec<Vec<u8>>)>,
+    pub(super) read_errors: std::collections::BTreeMap<String, String>,
+    pub(super) priority_layers: Vec<sunrise_world::loot::RecipePriorityLayer>,
 }
 
-/// The files the content tables load from: the world's enabled packs'
-/// (`content_overlay`) with what native mods contribute for this load
+/// The files the content tables load from: the world's enabled packs
+/// with what native mods contribute for this load
 /// (`native_data_pack_files`) below them. `PackOverlay::top` is a path's last
 /// file, so a pack's file still overrides a mod's for the same path, and a
 /// later contribution overrides an earlier one, as packs do. `Game` builds
@@ -142,25 +139,33 @@ pub(super) fn content_overlay(stack: &PackStack) -> Vec<(String, Vec<Vec<u8>>)> 
 pub(super) fn overlay_files(
     stack: &PackStack,
     contributed: Vec<(String, Vec<u8>)>,
-) -> Vec<(String, Vec<Vec<u8>>)> {
-    if contributed.is_empty() {
-        return content_overlay(stack);
-    }
+) -> OverlayFiles {
     // Passive content replaces prepared data, native contributions sit over
     // it, and the world's selected packs retain the highest priority.
-    let mut files = DataStore::load(&[&stack.content]).files;
+    let mut store = DataStore::load(&[&stack.content]);
     for (path, bytes) in contributed {
-        if let Err(e) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes) {
+        if !sunrise_client::lan::data::is_pack_registry_file(&path)
+            && let Err(e) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes)
+        {
             log::warn!("Sunrise: a native mod's data pack file {path} is not JSON, skipped: {e}");
             continue;
         }
-        files.entry(path).or_default().push(bytes);
+        store.file_errors.remove(&path);
+        store.files.entry(path).or_default().push(bytes);
     }
     let packs = stack.enabled_packs().collect::<Vec<_>>();
-    for (path, versions) in DataStore::load(&packs).files {
-        files.entry(path).or_default().extend(versions);
+    let world = DataStore::load(&packs);
+    for (path, versions) in world.files {
+        store.file_errors.remove(&path);
+        store.files.entry(path).or_default().extend(versions);
     }
-    files.into_iter().collect()
+    store.file_errors.extend(world.file_errors);
+    store.priority_layers.extend(world.priority_layers);
+    OverlayFiles {
+        files: store.files.into_iter().collect(),
+        read_errors: store.file_errors,
+        priority_layers: store.priority_layers,
+    }
 }
 
 impl FnState {
@@ -213,7 +218,9 @@ impl Game<'_> {
         if self.fns.loaded || self.world_root.as_os_str().is_empty() {
             return;
         }
-        let _ = self.reload_datapacks(false, &self.level.enabled_features.clone());
+        if let Err(error) = self.reload_datapacks(false, &self.level.enabled_features.clone()) {
+            log::warn!("Sunrise: {}", error.diagnostic());
+        }
     }
     pub(super) fn open_world_datapacks(
         &mut self,
@@ -230,6 +237,7 @@ impl Game<'_> {
         run_load: bool,
         enabled_features: &[String],
     ) -> Result<PackStack, ReloadStageError> {
+        let opening_world = !run_load;
         sunrise_client::mod_content::check_jars(
             &self.options.resources,
             &sunrise_client::logging::game_home().join("jars"),
@@ -266,7 +274,6 @@ impl Game<'_> {
         let context = self
             .prepare_loop_context(&resources)
             .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
-        let prepared = self.apply_server_reload_callbacks(prepared);
         let world = if run_load && self.remote.is_none() {
             Some(
                 self.prepare_world_reload(&stack, &resources)
@@ -275,14 +282,46 @@ impl Game<'_> {
         } else {
             None
         };
+        let initial = if opening_world {
+            // This load warns again about saved attribute bases clamped to their bounds (#3728).
+            sunrise_client::living_attributes::LOAD_CLAMPS.begin_load();
+            let tables = self
+                .stage_world_tables(&stack, false, &resources)
+                .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
+            let wire = super::lan::sync::prepare_world_sync_data(
+                &resources,
+                &self.res.core.item_data,
+                &super::pack_files(&tables.tables),
+                &tables.health.damage,
+                tables
+                    .tables
+                    .as_ref()
+                    .map_or_else(|| self.res.shared_items(), |tables| tables.items.clone()),
+                tables
+                    .tables
+                    .as_ref()
+                    .map(|tables| tables.packed_registries.clone()),
+                tables.advancements.clone(),
+            )
+            .map_err(|error| ReloadStageError::DataSource(format!("world registries: {error}")))?;
+            Some((tables, wire))
+        } else {
+            None
+        };
+        if let Some(world) = &world {
+            prepared.bind_loot(world);
+        }
+        // Every candidate, including world tables, must prepare successfully
+        // before any listener publishes its new state.
         if let Some(root) = next_root {
             self.options.resources = root.prepared().to_owned();
             self.pack.data_source = root.data().clone();
             self.pack.data_changes = root.data_changes().clone();
+            self.pack.mod_layers = root.mod_layers().clone();
             self.mods.data_switched = true;
         }
         self.install_loop_context(context);
-        if !run_load {
+        if opening_world {
             self.fns = Default::default();
         }
         self.fns.packs = stack.packs.clone();
@@ -291,10 +330,14 @@ impl Game<'_> {
         self.fns.loaded = true;
         self.fns.load_pending = true;
         // An explicit reload (`/reload`, `/datapack`) also rebuilds the
-        // content tables, as `ReloadableServerResources` does; on world open
-        // `finish_open_world` builds them right after this.
+        // content tables, as `ReloadableServerResources` does. World open must
+        // also install its tables before function admission validates inline holders.
         if let Some(world) = world {
             self.install_world_tables(world);
+        } else if let Some((initial, wire)) = initial {
+            self.open_world_tables(initial)
+                .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
+            super::lan::sync::install_world_sync_data(wire);
         }
         self.apply_server_reload(prepared, &stack, enabled_features);
         self.run_native_advancement_grants();
@@ -313,18 +356,26 @@ impl Game<'_> {
     /// Macro lines are parsed
     /// only after substitution, but ordinary lines in a macro file still
     /// have to compile (`CommandFunction.fromLines`).
-    pub(super) fn admit_store(
-        &mut self,
-        mut store: DataStore,
-        stack: &PackStack,
-        enabled_features: &[String],
-    ) {
-        // On explicit reload the actual content tables have already refreshed.
-        // The candidate's named predicates/modifiers must also be available to
-        // argument codecs before any of its functions can be exposed.
+    pub(super) fn admit_store(&mut self, mut store: DataStore, stack: &PackStack) {
+        // The installed candidate already selected and checked the same winners
+        // gameplay uses, including the native contributions.
+        if let Some(tables) = &self.world_tables {
+            let copy = |entries: &std::collections::HashMap<String, serde_json::Value>| {
+                entries
+                    .iter()
+                    .map(|(id, value)| (id.clone(), value.clone()))
+                    .collect()
+            };
+            store.predicates = copy(tables.loot.predicates());
+            store.item_modifiers = copy(tables.loot.item_modifiers());
+        }
         self.sync_enchantment_registries();
         // A function's `loot ... loot <id>` names the reloaded packs' tables.
         self.sync_loot_table_ids();
+        // `ReloadableServerRegistries.reload` binds the packs' tags before
+        // `ServerFunctionLibrary` compiles its functions: an item or block
+        // argument's `#tag` resolves against them.
+        self.sync_pack_tag_ids();
         let mut registries = self.ui.registries.clone();
         registries.permission = self.fns.command_level();
         registries.functions = store.functions.keys().cloned().collect();
@@ -350,10 +401,7 @@ impl Game<'_> {
                 entry.ids.clone_from(ids);
             }
         }
-        let dispatcher = sunrise_client::command::vanilla::session_dispatcher(
-            &self.level.rule_registry,
-            enabled_features,
-        );
+        let dispatcher = self.function_dispatcher();
         store.functions.retain(|id, function| {
             for line in &function.lines {
                 if let datapack::FunctionLine::Command(line) = line
@@ -364,7 +412,7 @@ impl Game<'_> {
                         format!(
                             "Invalid command {line:?}: {} at position {}",
                             error.message.plain(),
-                            error.cursor
+                            error.java_cursor()
                         ),
                     ));
                     return false;
@@ -377,6 +425,36 @@ impl Game<'_> {
         }
         self.fns.store = store;
         self.sync_function_registries(stack);
+    }
+    /// The item and block tags the world's packs define, as `TagLoader` binds
+    /// them into the registries before the functions compile: the item and
+    /// block arguments' `#tag` and the completions read them. Recomputed from
+    /// the content tables, so a tag a pack no longer defines leaves again.
+    pub(in crate::game) fn sync_pack_tag_ids(&mut self) {
+        let tags = |ids: &std::collections::HashMap<String, std::collections::HashSet<String>>| {
+            let mut out: Vec<String> = ids
+                .keys()
+                .map(|k| sunrise_client::command::args::normalize(k))
+                .collect();
+            out.sort();
+            out
+        };
+        let item_tags = tags(&self.items().item_tags);
+        let block_tags = tags(&self.items().block_tags);
+        let reg = &mut self.ui.registries;
+        reg.item_tags.clone_from(&item_tags);
+        reg.block_tags.clone_from(&block_tags);
+        // `Registries::tags` reads an exported registry's entry first. Only
+        // update one the export made: a new empty entry would also take over
+        // `Registries::ids` and hide every item id.
+        for (registry, tags) in [
+            ("minecraft:item", item_tags),
+            ("minecraft:block", block_tags),
+        ] {
+            if let Some(entry) = reg.by_registry.get_mut(registry) {
+                entry.tags = tags;
+            }
+        }
     }
     fn save_datapack_settings(&self) {
         let disabled: Vec<&String> = self
@@ -704,7 +782,7 @@ impl Game<'_> {
             return Ok(());
         }
         let level = std::mem::replace(&mut self.ui.registries.permission, self.fns.command_level());
-        let d = self.ui.dispatcher.0.clone();
+        let d = self.function_dispatcher();
         let mut out = Ok(());
         for (line, entry) in lines.iter().zip(&f.lines) {
             if matches!(entry, datapack::FunctionLine::Macro(_))
@@ -719,6 +797,12 @@ impl Game<'_> {
         }
         self.ui.registries.permission = level;
         out
+    }
+    /// The tree every function line is checked against, a plain line at load and a macro line
+    /// after substitution: the session's (live rules, enabled features and the mods' commands,
+    /// registered before functions load), as the server's own dispatcher compiles functions.
+    fn function_dispatcher(&self) -> Arc<sunrise_client::command::Dispatcher> {
+        self.ui.dispatcher.0.clone()
     }
     /// The functions a `FunctionArgument` names: a function or a tag.
     pub(in crate::game) fn functions_named(&mut self, name: &str) -> R<Vec<Function>> {
@@ -1186,11 +1270,12 @@ impl Game<'_> {
         let previous_vanilla_disabled = self.cmds.vanilla_disabled;
         // `DataPackCommand.listAvailablePacks`: a feature pack the world's
         // features do not cover is not available.
-        let available: Vec<String> = std::iter::once("vanilla".to_owned())
+        let mut available: Vec<String> = std::iter::once("vanilla".to_owned())
             .chain(self.fns.packs.iter().map(|p| p.id.clone()))
             .filter(|p| !selected.contains(p))
             .filter(|p| self.missing_pack_features(p).is_empty())
             .collect();
+        available.sort_by(|a, b| datapack::compare_ids(a, b));
         let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
         match id {
             "datapack.create" => self.create_pack(ctx),
@@ -1381,7 +1466,6 @@ impl Game<'_> {
                 )));
             }
         };
-        let prepared = self.apply_server_reload_callbacks(prepared);
         let world = match self.prepare_world_reload(&stack, &root) {
             Ok(world) => world,
             Err(error) => {
@@ -1392,6 +1476,7 @@ impl Game<'_> {
                 )));
             }
         };
+        prepared.bind_loot(&world);
         self.install_loop_context(context);
         self.fns.packs = stack.packs.clone();
         self.fns.enabled = stack.enabled.clone();
@@ -1405,10 +1490,11 @@ impl Game<'_> {
     }
 
     fn reload_failure(error: ReloadStageError) -> sunrise_client::command::CommandError {
-        log::warn!("Sunrise: {error}");
+        let diagnostic = error.diagnostic();
+        log::warn!("Sunrise: {diagnostic}");
         sunrise_client::command::CommandError::new(
             Text::translate("commands.reload.failure", &[])
-                .append(Text::literal(format!("\n{error}"))),
+                .append(Text::literal(format!("\n{diagnostic}"))),
         )
     }
 
@@ -1423,29 +1509,25 @@ impl Game<'_> {
         let json = if id.starts_with('{') {
             let (tag, _) = sunrise_core::nbt::parse_snbt(id)
                 .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
-            sunrise_client::scoreboard::tag_to_json(&tag)
+            let value = sunrise_client::scoreboard::tag_to_json(&tag);
+            sunrise_world::loot::validate_loot_condition(&value)
+                .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
+            value
         } else {
-            self.fns
-                .store
-                .predicates
-                .get(id)
-                .cloned()
-                .ok_or_else(|| err("argument.predicate.unknown", &[&id]))?
+            self.fns.store.predicates.get(id).cloned().ok_or_else(|| {
+                let id = if id.contains(':') {
+                    id.to_string()
+                } else {
+                    format!("minecraft:{id}")
+                };
+                err(
+                    "argument.resource_or_id.no_such_element",
+                    &[&id, &"minecraft:predicate"],
+                )
+            })?
         };
         let source = self.command_source.unwrap_or_else(|| self.player_source());
-        let view = source.entity.map(|t| {
-            let scores = self.holder_name(t).map(|holder| {
-                self.score
-                    .board
-                    .holder_scores(&holder)
-                    .into_iter()
-                    .map(|(objective, value)| (objective.name.clone(), value))
-                    .collect()
-            });
-            let mut view = self.entity_view_asked(t, &json);
-            view.scores = scores;
-            view
-        });
+        let view = source.entity.map(|t| self.entity_view_scored(t, &json));
         Ok(self.command_conditions_hold(&json, view.as_ref(), source.pos))
     }
 }
@@ -1455,7 +1537,105 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn reload_failure_formats_nested_listener_error_source_chain() {
+        #[derive(Debug)]
+        struct Inner;
+        impl std::fmt::Display for Inner {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("inner cause")
+            }
+        }
+        impl std::error::Error for Inner {}
+
+        #[derive(Debug)]
+        struct Middle(Inner);
+        impl std::fmt::Display for Middle {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("middle cause")
+            }
+        }
+        impl std::error::Error for Middle {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        #[derive(Debug)]
+        struct Outer(Middle);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("outer cause")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let source = mod_api::ReloadResourceError::new(
+            mod_api::Identifier::parse("test_mod:machine").unwrap(),
+            Outer(Middle(Inner)),
+        );
+        let reply = Game::reload_failure(ReloadStageError::Listener {
+            listener: mod_api::Identifier::parse("test_mod:listener").unwrap(),
+            source,
+        })
+        .message
+        .plain();
+        assert!(
+            reply.contains(
+                "reload listener test_mod:listener: test_mod:machine: outer cause: middle cause: inner cause"
+            ),
+            "{reply}"
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn mob_entity_membership_follows_world_pack_reload() {
+        crate::game::in_own_process(
+            "game::functions::tests::mob_entity_membership_follows_world_pack_reload",
+            || {
+                crate::game::native_entity_refs::tests::with_game(|game| {
+                    let world = tempfile::tempdir().unwrap();
+                    game.world_root = world.path().to_owned();
+                    let pack = world.path().join("datapacks/snow_walkers");
+                    let tags = pack.join("data/minecraft/tags/entity_type");
+                    std::fs::create_dir_all(&tags).unwrap();
+                    let f = sunrise_core::version::DATA_PACK_FORMAT;
+                    std::fs::write(
+                        pack.join("pack.mcmeta"),
+                        serde_json::json!({"pack": {
+                            "description": "Snow walkers", "pack_format": f.0,
+                            "min_format": [f.0, f.1], "max_format": [f.0, f.1]
+                        }})
+                        .to_string(),
+                    )
+                    .unwrap();
+                    let tag_file = tags.join("powder_snow_walkable_mobs.json");
+                    std::fs::write(&tag_file, r#"{"replace":true,"values":["minecraft:cow"]}"#)
+                        .unwrap();
+                    game.reload_datapacks(false, &[]).unwrap();
+                    let walkable = "minecraft:powder_snow_walkable_mobs";
+                    let world = game.mob_world_base(&[]);
+                    assert!(world.entity_has(walkable, "minecraft:cow"));
+                    assert!(!world.entity_has(walkable, "minecraft:fox"));
+
+                    std::fs::write(&tag_file, r#"{"replace":true,"values":["minecraft:fox"]}"#)
+                        .unwrap();
+                    // This unopened-world fixture has no operator player. Run at console authority.
+                    assert!(game.as_console(|game| game.run_command("reload")));
+                    let world = game.mob_world_base(&[]);
+                    assert!(!world.entity_has(walkable, "minecraft:cow"));
+                    assert!(world.entity_has(walkable, "minecraft:fox"));
+                });
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn first_world_open_admits_block_function() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let folder = "first-open-block-function";
@@ -1509,8 +1689,129 @@ mod tests {
         });
     }
 
+    /// #4449: the mods' commands are in the tree before functions load, from the first world open
+    /// on, so a plain line and a macro line naming one both load and run; an unknown command is
+    /// refused as before, and a command the mods stop registering is refused after a reload.
     #[test]
-    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    #[ignore = "daily"]
+    fn functions_name_mod_commands_from_the_first_world_open() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU32, Ordering},
+        };
+        struct Commands {
+            offered: Arc<AtomicBool>,
+            ran: Arc<AtomicU32>,
+        }
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Commands {
+            fn register_commands(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::RegisterCommandsEvent<'_>,
+            ) {
+                if self.offered.load(Ordering::Relaxed) {
+                    let ran = self.ran.clone();
+                    event
+                        .commands
+                        .push(mod_api::Command::new("fnmod [n:integer]").executes(
+                            move |_, _, _| {
+                                ran.fetch_add(1, Ordering::Relaxed);
+                                Some(1)
+                            },
+                        ));
+                }
+            }
+        }
+        let offered = Arc::new(AtomicBool::new(true));
+        let ran = Arc::new(AtomicU32::new(0));
+        let mods = vec![mod_api::ModEntry::new(
+            "fnmod",
+            Box::new(Commands {
+                offered: offered.clone(),
+                ran: ran.clone(),
+            }),
+        )];
+        mod_platform::testing::with_mods(mods.into(), || {
+            crate::game::native_entity_refs::tests::with_game(|game| {
+                let scratch = tempfile::tempdir().unwrap();
+                let folder = "functions-name-mod-commands";
+                let world = scratch.path().join(folder);
+                let pack = world.join("datapacks/fnmod");
+                let functions = pack.join("data/fnmod/function");
+                std::fs::create_dir_all(&functions).unwrap();
+                let f = sunrise_core::version::DATA_PACK_FORMAT;
+                std::fs::write(
+                    pack.join("pack.mcmeta"),
+                    serde_json::json!({"pack":{
+                        "description":"Mod commands in functions", "pack_format":f.0,
+                        "min_format":[f.0,f.1], "max_format":[f.0,f.1]
+                    }})
+                    .to_string(),
+                )
+                .unwrap();
+                for (name, line) in [
+                    ("plain", "fnmod 1"),
+                    ("macro", "$fnmod $(n)"),
+                    ("unknown", "nosuchmodcommand"),
+                ] {
+                    std::fs::write(functions.join(format!("{name}.mcfunction")), line).unwrap();
+                }
+                let mut request = crate::game::world_loading::WorldRequest::new(
+                    folder,
+                    None,
+                    Some(3042),
+                    true,
+                    None,
+                    game.level.rule_registry.clone(),
+                )
+                .unwrap();
+                request.save_root = world;
+                game.load_world(request).unwrap();
+                let store = &game.fns.store;
+                assert!(
+                    store.functions.contains_key("fnmod:plain"),
+                    "{:?}",
+                    store.errors
+                );
+                assert!(
+                    store.functions.contains_key("fnmod:macro"),
+                    "{:?}",
+                    store.errors
+                );
+                assert!(!store.functions.contains_key("fnmod:unknown"));
+                let refusal = |game: &Game<'_>, id: &str| {
+                    game.fns
+                        .store
+                        .errors
+                        .iter()
+                        .find(|(f, _)| f == id)
+                        .map(|(_, e)| e.clone())
+                };
+                assert!(
+                    refusal(game, "fnmod:unknown")
+                        .unwrap()
+                        .starts_with("Invalid command \"nosuchmodcommand\": ")
+                );
+                game.ui.registries.permission = 4;
+                assert!(game.run_command("function fnmod:plain"));
+                assert!(game.run_command("function fnmod:macro {n:3}"));
+                assert_eq!(ran.load(Ordering::Relaxed), 2);
+                offered.store(false, Ordering::Relaxed);
+                let features = game.level.enabled_features.clone();
+                game.reload_datapacks(false, &features).unwrap();
+                assert!(!game.fns.store.functions.contains_key("fnmod:plain"));
+                assert!(
+                    refusal(game, "fnmod:plain")
+                        .unwrap()
+                        .starts_with("Invalid command \"fnmod 1\": ")
+                );
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn prepared_function_calls_keep_causality_and_fallback_boundaries() {
         use crate::game::native_entity_refs::tests::with_game;
         use sunrise_client::motion::PlayerMotion;
@@ -1814,7 +2115,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn forked_function_replies_keep_task_order_and_actual_callbacks() {
         use crate::game::native_entity_refs::tests::with_game;
         use sunrise_client::motion::PlayerMotion;
@@ -1995,7 +2296,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn function_frames_restore_outer_frame() {
         use crate::game::native_entity_refs::tests::with_game;
         use sunrise_client::datapack::{Function, FunctionLine};
@@ -2020,7 +2321,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn refused_item_key_reload_keeps_previous_world_generation() {
         use mod_api::{Hooks, ModEntry, Registrar, RegistrationContext};
 
@@ -2047,6 +2348,15 @@ mod tests {
                 br#"{"values":["minecraft:stone"]}"#,
             )
             .unwrap();
+            let modifiers = pack.join("data/reload_test/loot_modifiers");
+            std::fs::create_dir_all(&modifiers).unwrap();
+            let modifier_file = modifiers.join("append.json");
+            std::fs::write(
+                &modifier_file,
+                br#"{"type":"neoforge:add_table","table":"minecraft:blocks/stone"}"#,
+            )
+            .unwrap();
+            let modifier_id = mod_api::Identifier::parse("reload_test:append").unwrap();
             game.world_root = root.clone();
             game.set_allow_commands(true);
             // Establish the live pack generation before injecting a refused candidate.
@@ -2054,8 +2364,43 @@ mod tests {
             // a subsequent successful reload of the same live worker registry.
             game.reload_datapacks(true, &[]).unwrap();
             assert!(game.items().block_tags["reload_test:candidate"].contains("minecraft:stone"));
+            let first = game
+                .reload_resources()
+                .listener(&mod_api::GlobalLootModifierManager::key())
+                .unwrap();
+            let first_instance = first.get(&modifier_id).unwrap();
+            assert_eq!(first.id_of(&first_instance), Some(&modifier_id));
+            assert_eq!(first.modifiers().len(), 1);
+            let first_generation =
+                Arc::downgrade(game.world_tables.as_ref().unwrap().loot.global_modifiers());
             assert!(game.run_command("datapack disable \"file/candidate\""));
+            assert!(
+                game.reload_resources()
+                    .listener(&mod_api::GlobalLootModifierManager::key())
+                    .unwrap()
+                    .modifiers()
+                    .is_empty()
+            );
+            // A retained manager keeps the preceding immutable instance generation.
+            assert_eq!(first.modifiers().len(), 1);
+            assert!(first_generation.upgrade().is_some());
+            drop(first);
+            assert!(first_generation.upgrade().is_none());
+            std::fs::write(&modifier_file, br#"{"type":"neoforge:add_table","table":"minecraft:blocks/stone","priority":1002}"#).unwrap();
             assert!(game.run_command("datapack enable \"file/candidate\""));
+            let live_modifiers = game
+                .reload_resources()
+                .listener(&mod_api::GlobalLootModifierManager::key())
+                .unwrap();
+            assert_eq!(
+                live_modifiers
+                    .get(&modifier_id)
+                    .unwrap()
+                    .priority()
+                    .unwrap(),
+                1002
+            );
+            assert_eq!(first_instance.priority().unwrap(), 1000);
             let live_stone = mod_platform::__private::part_tests::block_key("minecraft:stone");
             assert_eq!(
                 super::super::native_world_read::block_in_tag(live_stone, "reload_test:candidate"),
@@ -2080,8 +2425,18 @@ mod tests {
             let old_tables = game.world_tables.as_ref().map(|tables| tables as *const _);
             let old_generation = game.damage_tag_generation;
             let old_enabled = game.fns.enabled.clone();
+            std::fs::write(&modifier_file, br#"{"type":"neoforge:add_table","table":"minecraft:blocks/stone","priority":1003}"#).unwrap();
             let error = game.reload_datapacks(true, &[]).err().unwrap();
             assert!(error.to_string().contains("reload_test:missing"));
+            let retained = game
+                .reload_resources()
+                .listener(&mod_api::GlobalLootModifierManager::key())
+                .unwrap();
+            assert!(Arc::ptr_eq(&retained, &live_modifiers));
+            assert_eq!(
+                retained.get(&modifier_id).unwrap().priority().unwrap(),
+                1002
+            );
             assert_eq!(game.options.resources, old_root);
             assert!(game.pack.data_source.same_generation(&old_data));
             assert!(Arc::ptr_eq(&game.loop_context, &old_context));
@@ -2114,7 +2469,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn pack_changes_publish_the_new_zip_generation_for_template_reads() {
         use std::{io::Write, path::PathBuf};
         use {
@@ -2188,7 +2543,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn world_open_loads_functions_before_first_tick() {
         use crate::game::{native_entity_refs::tests::with_game, world_loading::WorldRequest};
 
@@ -2304,16 +2659,18 @@ mod tests {
                     .tags
                     .contains(&"test:feature_marker".to_owned())
             );
-            (game.world_tables, game.health_resources, _) = game
+            let staged = game
                 .stage_world_tables(&stack, false, &game.options.resources.clone())
                 .unwrap();
+            game.world_tables = staged.tables;
+            game.health_resources = staged.health;
             assert!(game.items().item_tags["test:sample"].contains("minecraft:diamond"));
         });
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn function_pack_rejects_invalid_ordinary_lines_before_execution() {
         use crate::game::{Audio, Options, Settings, load_resources};
         use std::time::Instant;
@@ -2567,6 +2924,11 @@ mod tests {
         );
         let error = run(&mut game, "function h166:novar").unwrap_err();
         assert_eq!(error.key, "arguments.function.unknown");
+        let error = game.check_predicate("h166missing").unwrap_err();
+        assert_eq!(error.key, "argument.resource_or_id.no_such_element");
+        let text = error.message.plain();
+        assert!(text.contains("minecraft:h166missing"), "{text}");
+        assert!(text.contains("minecraft:predicate"), "{text}");
         // A substituted line that does not parse fails the call, so no line of
         // it runs, and the reason names the line `MacroEntry.instantiate` got.
         let error = run(&mut game, "function h166:bad {v:1}").unwrap_err();
@@ -2586,11 +2948,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn unless_function_keeps_a_fallthrough_after_running_it_once() {
         use crate::game::{Audio, Options, Settings, load_resources};
-        use sunrise_client::datapack::FunctionLine;
         use std::time::Instant;
+        use sunrise_client::datapack::FunctionLine;
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
         let loaded = load_resources(
@@ -2709,7 +3071,10 @@ mod tests {
                 &[],
                 &[],
             );
-            let files = content_overlay(&stack);
+            let OverlayFiles {
+                files, read_errors, ..
+            } = overlay_files(&stack, Vec::new());
+            assert!(read_errors.is_empty());
             let (_, versions) = files.iter().find(|(id, _)| id == "recipe/x:r").unwrap();
             let last = versions.last().unwrap();
             assert_eq!(
@@ -2772,7 +3137,7 @@ mod tests {
             &[],
             &[],
         );
-        let files = overlay_files(
+        let OverlayFiles { files, .. } = overlay_files(
             &stack,
             vec![
                 ("tags/pkg:item/both".to_owned(), tag("pkg:from_mod")),
@@ -2811,7 +3176,7 @@ mod tests {
             ["pkg:only_mod"]
         );
         // The next load asks again: the new contribution, not the first's.
-        let files = overlay_files(
+        let OverlayFiles { files, .. } = overlay_files(
             &stack,
             vec![("tags/pkg:item/mod_only".to_owned(), tag("pkg:second_load"))],
         );
@@ -2822,7 +3187,7 @@ mod tests {
             ["pkg:second_load"]
         );
         // A file that isn't JSON is skipped alone, not the whole load.
-        let files = overlay_files(
+        let OverlayFiles { files, .. } = overlay_files(
             &stack,
             vec![
                 ("tags/pkg:item/mod_only".to_owned(), b"{not json".to_vec()),
@@ -2833,8 +3198,6 @@ mod tests {
         let tags = sunrise_items::items::load_tags(&dir, "item", &overlay).unwrap();
         assert!(!tags.contains_key("pkg:mod_only"));
         assert!(tags["pkg:good"].contains("pkg:good"));
-        // With nothing contributed the overlay is the packs' own.
-        assert_eq!(overlay_files(&stack, Vec::new()), content_overlay(&stack));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -2846,7 +3209,7 @@ mod entity_score_tests {
     use sunrise_core::nbt::Tag;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn named_scores_follow_the_registered_target_holder_and_mutations() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2947,7 +3310,7 @@ mod entity_score_tests {
         assert_eq!(game.world.game_time, time);
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn folder_metadata_rejection_reaches_actual_function_commands() {
         use crate::game::{Audio, Options, Settings, load_resources};
         use std::time::Instant;
@@ -3080,7 +3443,7 @@ mod required_tag_tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn real_pack_required_tag_failures_execute_no_partial_functions() {
         use crate::game::{Audio, Options, Settings, load_resources};
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -3295,7 +3658,7 @@ mod required_tag_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn named_predicates_resolve_loaded_references_for_actual_sources() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.build_registries();
@@ -3440,29 +3803,35 @@ mod required_tag_tests {
             assert!(game.check_predicate("h121:absent").is_err());
             game.command_source = previous;
             // Defensive evaluator controls only. Java rejects these graphs at
-            // world load, so this does not establish startup/availability parity.
-            write(
-                "missing",
+            // world load (a reload refuses a dangling or cyclic reference, so they cannot come from a
+            // pack): they are put in the loaded store directly. This does not establish
+            // startup/availability parity.
+            let mut defensive_graphs = Vec::new();
+            let mut defensive = |name: &str, value: serde_json::Value| {
+                defensive_graphs.push((name.to_owned(), value));
+            };
+            defensive(
+                "h121:missing",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:absent"]}),
             );
-            write(
-                "nested_missing",
+            defensive(
+                "h121:nested_missing",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:missing"]}),
             );
-            write(
-                "not_missing",
+            defensive(
+                "h121:not_missing",
                 serde_json::json!({"type":"minecraft:inverted","term":"h121:absent"}),
             );
-            write(
-                "cycle_a",
+            defensive(
+                "h121:cycle_a",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_b"]}),
             );
-            write(
-                "cycle_b",
+            defensive(
+                "h121:cycle_b",
                 serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_a"]}),
             );
-            write(
-                "not_cycle",
+            defensive(
+                "h121:not_cycle",
                 serde_json::json!({"type":"minecraft:inverted","term":"h121:cycle_a"}),
             );
             for invalid in ["h121:absent", "h121:cycle_a"] {
@@ -3472,20 +3841,18 @@ mod required_tag_tests {
                     ("all_skip", "minecraft:all_of", "h121:cow"),
                     ("all_reach", "minecraft:all_of", "h121:pig"),
                 ] {
-                    write(
-                        &format!("{label}_{}", invalid.split(':').next_back().unwrap()),
+                    defensive(
+                        &format!("h121:{label}_{}", invalid.split(':').next_back().unwrap()),
                         serde_json::json!({"type":kind,"terms":[first,invalid]}),
                     );
                 }
             }
-            let canonical = pack.join("data/minecraft/predicate/h121_canonical.json");
-            std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
-            std::fs::write(
-                canonical,
-                r#"{"type":"minecraft:all_of","terms":["h121_canonical"]}"#,
-            )
-            .unwrap();
-            game.reload_datapacks(false, &[]).unwrap();
+            // A predicate naming itself by its short id: the same cycle, under its canonical name.
+            defensive(
+                "minecraft:h121_canonical",
+                serde_json::json!({"type":"minecraft:all_of","terms":["h121_canonical"]}),
+            );
+            game.fns.store.predicates.extend(defensive_graphs);
             let mut source = game.player_source();
             source.entity = Some(Target::Mob(actors[0].0));
             source.pos = game.target_position(Target::Mob(actors[0].0)).unwrap();
@@ -3527,6 +3894,11 @@ mod required_tag_tests {
 
 #[cfg(test)]
 include!("functions/typed_state_range_tests.rs");
+
+#[cfg(test)]
+#[path = "functions/pack_tag_tests.rs"]
+mod pack_tag_tests;
+
 #[cfg(test)]
 #[path = "functions/schedule_reload_tests.rs"]
 mod schedule_reload_tests;

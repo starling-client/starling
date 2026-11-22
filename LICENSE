@@ -1,21 +1,184 @@
-MIT License
+Required Notice: Copyright The Sunrise contributors (https://github.com/sunrise-org/sunrise)
+Licensor Line of Business: Sunrise, a Minecraft-compatible game client, server and launcher (https://github.com/sunrise-org/sunrise)
 
-Copyright (c) 2026 Ludovic Marie and the Horizon contributors
+# Sunrise Additional Terms 1.0
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+These terms apply together with the PolyForm Shield License 1.0.0 below ("Shield"). Each contributor is the
+licensor of their own contribution and offers it under Shield with these terms. These terms add permissions
+to Shield and take nothing away from it.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+## 1. Scope
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+"The software" means everything in this repository except:
+
+a. what was already in it at commit de8b4e2526df9d7f611515b78123a26a3914176f, the last code taken from
+   Horizon and ari's fork. That stays under the licences it had there: the MIT licence in
+   LICENSES/MIT-Horizon.txt, or for third-party parts the licence THIRD_PARTY_NOTICES.md names. Only later
+   changes to it are the software.
+b. code taken later from other projects, which LICENSES/IMPORTS lists with its source and licence.
+
+"The Project" means Sunrise as developed at https://github.com/sunrise-org/sunrise, or at the place its
+GOVERNANCE.md names as its successor.
+
+"Your group" means you, your affiliates, and anyone who can publish or sign releases of a fork, or of a
+product the fork is shipped in or started from, or who shares with you in money made from either.
+
+## 2. Always allowed
+
+None of the following counts as competing under Shield's Noncompete, whoever does it, a fork's own makers
+included, and whether or not they charge for it:
+
+a. Playing, and running, hosting or renting out game servers, changed for your own operation or not,
+   including selling things on them.
+b. Making and sharing mods, plugins, packs, shaders and tools that run inside the software or a fork allowed
+   by section 3, or work with it through its mod API, network protocol or file formats. They may contain
+   whatever the Project's SDK, templates and build tools put into them, but not the game itself, and need not
+   carry these terms or the Required Notice for it.
+c. Videos, streams, guides, reviews and links about the software or about a fork.
+d. Carrying copies for others without changing them, charging for them or passing them off as your own:
+   code hosts, package registries, app stores, mirrors. The ads and sign-ins such a carrier applies to
+   everything it carries do not count against a fork or server build it carries, unless those who make it
+   take a share of the money from them.
+e. The Project itself, for as long as it meets 3a to 3d. For the Project, Shield's 32 days to fix apply to
+   the first and the second violation it is notified of, not only the first. Notices about the same violation
+   count once, and a notice reaches the Project as an issue opened in its repository.
+f. Handing dedicated server software to others, for as long as it costs nothing to get or use, getting it is
+   not gated by ads or sign-ups, and it meets 3a and 3e as a fork would. A dedicated server serves the game
+   to clients over the network and cannot itself be used to play. Charging to run or host one is covered
+   by 2a.
+
+## 3. Free forks
+
+You may also provide a product that Shield's Noncompete would otherwise forbid, such as a fork, a port to
+another platform or a build tuned for particular hardware (a "fork"). Doing so is a permitted purpose for as
+long as all of these hold:
+
+a. Open. Every part of the fork that is the software or based on it, your changes included, is offered to
+   everyone under Shield with these terms. The complete source for each build you release is public, free of
+   charge and without sign-up, from the day of that release. You may leave out a platform maker's SDK that
+   you are not allowed to publish.
+b. Free. The fork, its builds, updates and features cost nothing, and getting them is not gated by ads,
+   sign-ups or payment. Nothing in the fork, or on the page your group offers it from, advertises, sells or
+   unlocks anything paid: no ads, sponsor or paid placement, shop, paid cosmetics, pay-to-win, tiers or early
+   access. Outside servers, and mods the player added themselves, are not part of the fork, whatever they
+   sell. Your group takes no payment for the fork or for anything in it, and does not sell or trade its
+   users' data. Donations under 3c, and what section 2 allows, are not payment for the fork.
+c. Donations. People may give money to those who make the fork. An ask for it is a plain link or button. It
+   never interrupts: no pop-up, notification, timer, or screen the user has to close or wait through. It
+   gates nothing, and giving gets the giver nothing in the fork.
+d. Whole product. 3b and 3c also apply to everything your group ships the fork in or with, and to any client,
+   launcher or installer of your group's that installs, starts or updates it. One counts as your group's when it
+   is named or branded after the fork, or is published from the same account, organization or signing key, or
+   from a domain your group controls. A server that the fork contains, starts or needs for single-player play is
+   part of the fork.
+e. Own identity. The fork states that it is based on Sunrise and links to
+   https://github.com/sunrise-org/sunrise. If its name contains "Sunrise", it also states that it is
+   unofficial, and the word "unofficial" (or its translation) appears beside the name on its download page
+   or store listing and on its title or about screen. It does not use the Project's logo or icon as its own, and it does not use the Project's sign-in,
+   update, telemetry or signing services unless the Project's published policy allows it.
+
+If you stop meeting these conditions, this permission no longer covers what you do from then on, and Shield's
+Violations section applies. Other people's rights are not affected.
+
+## 4. Same terms downstream
+
+Everyone who receives the software, inside a fork or any other way, receives it from its licensors under
+Shield with these terms. Nobody can pass it on under other terms, and putting it into a product under another
+licence does not change this.
+
+## 5. Later versions
+
+The Project may publish later versions of these terms only by the decision its GOVERNANCE.md requires for a
+licence change. A later version may make the wording clearer or add permissions. It may never allow a competing
+product that fails 3a, 3b or 3d, never allow dedicated server software to be sold, and never add rights that not
+everyone gets. You may use the software under the version it came with or any later one.
+
+# PolyForm Shield License 1.0.0
+
+<https://polyformproject.org/licenses/shield/1.0.0>
+
+## Acceptance
+
+In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
+
+## Copyright License
+
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose.  However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
+
+## Distribution License
+
+The licensor grants you an additional copyright license to distribute copies of the software.  Your license to distribute covers distributing the software with changes and new works permitted by [Changes and New Works License](#changes-and-new-works-license).
+
+## Notices
+
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software.  For example:
+
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
+
+## Changes and New Works License
+
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
+
+## Patent License
+
+The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
+
+## Noncompete
+
+Any purpose is a permitted purpose, except for providing any product that competes with the software or any product the licensor or any of its affiliates provides using the software.
+
+## Competition
+
+Goods and services compete even when they provide functionality through different kinds of interfaces or for different technical platforms.  Applications can compete with services, libraries with plugins, frameworks with development tools, and so on, even if they're written in different programming languages or for different computer architectures.  Goods and services compete even when provided free of charge.  If you market a product as a practical substitute for the software or another product, it definitely competes.
+
+## New Products
+
+If you are using the software to provide a product that does not compete, but the licensor or any of its affiliates brings your product into competition by providing a new version of the software or another product using the software, you may continue using versions of the software available under these terms beforehand to provide your competing product, but not any later versions.
+
+## Discontinued Products
+
+You may begin using the software to compete with a product or service that the licensor or any of its affiliates has stopped providing, unless the licensor includes a plain-text line beginning with `Licensor Line of Business:` with the software that mentions that line of business.  For example:
+
+> Licensor Line of Business: YoyodyneCMS Content Management System (http://example.com/cms)
+
+## Sales of Business
+
+If the licensor or any of its affiliates sells a line of business developing the software or using the software to provide a product, the buyer can also enforce [Noncompete](#noncompete) for that product.
+
+## Fair Use
+
+You may have "fair use" rights for the software under the law. These terms do not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else.  These terms do not imply any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice.  Otherwise, all your licenses end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these terms, and the **software** is the software the licensor makes available under these terms.
+
+A **product** can be a good or service, or a combination of them.
+
+**You** refers to the individual or entity agreeing to these terms.
+
+**Your company** is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all its affiliates.
+
+**Affiliates** means the other organizations than an organization has control over, is under the control of, or is under common control with.
+
+**Control** means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the software under these terms.
+
+**Use** means anything you do with the software requiring one of your licenses.

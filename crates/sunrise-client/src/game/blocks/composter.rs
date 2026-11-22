@@ -2,7 +2,10 @@
 //! through its input container (hoppers, droppers, crafters above), and the
 //! fill feedback of level event 1500 (`handleFill`). Emptying a full
 //! composter by hand is `useWithoutItem` in sunrise-world.
-use super::{Game, commands::compute::ComputeContext};
+use super::{
+    Game,
+    commands::{Target, compute::ComputeContext},
+};
 use sunrise_client::{
     items::ItemStack,
     mobs::villager,
@@ -60,12 +63,20 @@ impl Game<'_> {
         self.items().get(&stack.item)?.compostable.clone()
     }
     /// The shared `ComposterBlock.addLayer` block-interaction loot context and level random.
-    fn composter_layers(&mut self, pos: [i32; 3], provider: &serde_json::Value) -> i32 {
+    fn composter_layers(
+        &mut self,
+        pos: [i32; 3],
+        provider: &serde_json::Value,
+        interacting: Option<Target>,
+    ) -> i32 {
         let context = ComputeContext {
             block: Some(pos),
             target: None,
+            interacting,
+            // BLOCK_INTERACT: no THIS_ENTITY, ORIGIN = Vec3.atCenterOf(pos).
+            without_this: Some(pos.map(|c| f64::from(c) + 0.5)),
         };
-        self.provider_int(provider, &context, 0).unwrap_or(0)
+        self.provider_int(provider, &context).unwrap_or(0)
     }
 
     /// ComposterWrapper's private transactional random, using the unchanged vanilla layers
@@ -83,11 +94,16 @@ impl Game<'_> {
             pos,
             world_random: Some(random),
         };
-        scope.game.composter_layers(pos, provider)
+        scope.game.composter_layers(pos, provider, None)
     }
     /// `ComposterBlock.addLayer` and level event 1500 for immediate vanilla callers.
-    fn composter_add(&mut self, pos: [i32; 3], layers: &serde_json::Value) -> bool {
-        let layers = self.composter_layers(pos, layers);
+    fn composter_add(
+        &mut self,
+        pos: [i32; 3],
+        layers: &serde_json::Value,
+        interacting: Option<Target>,
+    ) -> bool {
+        let layers = self.composter_layers(pos, layers, interacting);
         let before = self.world.block(pos[0], pos[1], pos[2]);
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let after = self.with_level(|b, level, ticks| b.composter_insert(level, ticks, at, layers));
@@ -113,7 +129,7 @@ impl Game<'_> {
             return false;
         }
         if level < 7 {
-            self.composter_add(pos, &layers);
+            self.composter_add(pos, &layers, Some(Target::Player));
             self.native_compost_item(pos, &stack.item);
             self.award_stat("used", &stack.item, 1);
             self.consume_held();
@@ -153,7 +169,7 @@ impl Game<'_> {
         // InputContainer.getMaxStackSize is 1: one item goes in, and its
         // setChanged composts it at once.
         stack.count -= 1;
-        self.composter_add(pos, &layers);
+        self.composter_add(pos, &layers, None);
         (stack.count > 0).then_some(stack)
     }
 
@@ -286,7 +302,8 @@ impl Game<'_> {
         let Some(layers) = self.compostable(stack) else {
             return;
         };
-        let layers = self.composter_layers(pos, &layers);
+        let interacting = Some(Target::Mob(self.mobs[mob].id));
+        let layers = self.composter_layers(pos, &layers, interacting);
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| b.composter_layer(level, ticks, at, layers));
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));

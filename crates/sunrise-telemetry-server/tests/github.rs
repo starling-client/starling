@@ -1,6 +1,6 @@
 //! A website bug report as the issue GitHub gets: the template, and people's text made inert.
-use sunrise_telemetry_server::github::{issue, neutralise};
 use serde_json::{Map, Value, json};
+use sunrise_telemetry_server::github::{issue, neutralise};
 
 #[test]
 fn people_text_mentions_and_references_nothing() {

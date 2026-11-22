@@ -90,6 +90,19 @@ def compare(args, build, classes, dependencies, queries, run, mode):
     vanilla = json.loads((build / f'vanilla{suffix}.json').read_text(encoding='utf-8'))
     rust = json.loads((build / f'rust{suffix}.json').read_text(encoding='utf-8'))
     bad = 0
+    expected_tabs = vanilla['tabs']
+    built_tabs = rust['built_tabs']
+    if [t['id'] for t in expected_tabs] != [t['id'] for t in built_tabs]:
+        bad += 1
+        print('BUILDER: tab registry order differs')
+    for expected, actual in zip(expected_tabs, built_tabs):
+        for key in ('items', 'search_items'):
+            v, r = expected[key], actual[key]
+            if v != r:
+                bad += 1
+                index = next((i for i, (a, b) in enumerate(zip(v, r)) if a != b), min(len(v), len(r)))
+                print(f'BUILDER {expected["id"]} {key}: first difference at {index}: '
+                      f'{v[index:index+1]} vanilla, {r[index:index+1]} Sunrise ({len(v)} vs {len(r)} stacks)')
     shown = [{k: t[k] for k in ('id', 'title', 'icon', 'row', 'column', 'items')} for t in vanilla['tabs'] if t['shown']]
     if [t['id'] for t in shown] != [t['id'] for t in rust['tabs']]:
         bad += 1

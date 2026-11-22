@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: invalid type: integer `12`, expected a string (line 2, column 8)
+
+icon:
+unavailable

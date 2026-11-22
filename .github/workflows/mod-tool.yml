@@ -1,0 +1,358 @@
+name: mod tool
+# The rolling mod tool (docs/release-flow.md "Rolling mod tool"): the one release `mod-tool` always holds the newest
+# `cargo-sunrise-mod` built from main, for the three hosts, so a tool fix reaches modders without waiting for a Nightly
+# and its SDK. A prerelease, never "latest". Assets: tool-<target>.tar.xz (the same archives an SDK holds, made by
+# tools/prebuilt_game.py), tool.json (the commit, its date, the native-* contract number), SHA256SUMS and
+# SHA256SUMS.sig, signed with the release key for the tag `mod-tool` (the message is "horizon release mod-tool\n" and
+# the sums, as an SDK's is for its tag). tool.json is in the sums, so the commit a tool says it is built from is signed.
+#
+# Runs when dyna-checks finishes a main push and by dispatch, never on a pull request (a run that starts at the push
+# would look for the gate before it had finished), and builds only when the tool changed: the folders
+# are the workspace crates cargo-sunrise-mod depends on, from `cargo metadata` (tools/ci/mod_tool.py), plus the files
+# that build and sign it. Like release.yml's Dev build, it needs dyna-checks' gate green on the commit.
+# - `decide` (no secrets, a read-only token) refuses a commit that is not on main in a step of this file, before any
+#   code of that commit runs; then refuses one not containing what `mod-tool` holds, finds whether the tool changed
+#   since, and needs the gate green on the commit (a cancelled gate is run again by hand, or the next push covers it).
+# - `build` compiles the tool on each host's hosted runner (the SDK's legs' runners); no secrets, `contents: read`.
+# - `assemble` (no secrets) writes tool.json beside the three archives.
+# - `sign` is the only job with the release key, only for a publishing run on main (the `release` environment): it
+#   checks out nothing but tools/ci/sign_release.sh. Any other run signs with a throwaway key.
+# - `verify` (a read-only token) checks the signature as users' install blocks do (tools/ci/nightly.py verify-sums) and the
+#   asset set; a dry run ends here.
+# - `publish` exists only for a publishing run on main and is the only job with a write token: it checks that the
+#   published tool is not newer, then replaces the assets. It compiles nothing.
+# A push run publishes only when the repository variable MOD_TOOL_AUTOPUBLISH is `true`; without it a push run is a dry
+# run (throwaway key, nothing published). A dispatch publishes with `-f dry_run=false` on main.
+on:
+  workflow_run:
+    workflows: [dyna-checks]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit to build (default the dispatched ref's head); a commit of main
+        type: string
+        default: ''
+      dry_run:
+        description: Build and sign with a throwaway key, publish nothing
+        type: boolean
+        default: true
+      force:
+        description: Build even when the tool is unchanged since what mod-tool holds
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  # One at a time: a newer push waits behind the one running (and replaces an older waiting one: its commit holds the
+  # older one's changes). A dry run has a group of its own, as release.yml's: a dispatched one, a run off main, and a
+  # push while MOD_TOOL_AUTOPUBLISH is off, so none of them holds up or cancels a publishing dispatch.
+  group: mod-tool${{ ((github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name == 'workflow_run' && vars.MOD_TOOL_AUTOPUBLISH != 'true') || github.ref != 'refs/heads/main') && '-dry-run' || '' }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+env:
+  TAG: mod-tool
+jobs:
+  decide:
+    # Of dyna-checks' runs, only this repository's main pushes that ran to the end: a pull request from a branch
+    # named main is a `pull_request` run, and a push run a newer push cancelled is covered by that push's own.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.conclusion != 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read  # dyna-checks' gate jobs on the commit
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      commit: ${{ steps.decide.outputs.commit }}
+      publish: ${{ steps.mode.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.commit || github.event.workflow_run.head_sha }}
+      # Before anything of the checkout runs: the commit, as a full id, is on main. Every later job builds this id.
+      - name: The commit is on main
+        id: commit
+        env:
+          COMMIT: ${{ inputs.commit || github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          sha=$(git rev-parse --verify "$COMMIT^{commit}")
+          git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main \
+            || { echo "::error::refused: $sha is not on main; $TAG holds only a commit of main"; exit 1; }
+          [ "$(git rev-parse HEAD)" = "$sha" ] || { echo "::error::the checkout is not $sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: The Rust that reads the workspace
+        id: rust
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+      # Publishing: on main only, from a dispatch with dry_run false or a push while MOD_TOOL_AUTOPUBLISH is true.
+      - id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY: ${{ inputs.dry_run }}
+          AUTO: ${{ vars.MOD_TOOL_AUTOPUBLISH }}
+        run: |
+          publish=false
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            if [ "$EVENT" = workflow_dispatch ] && [ "$DRY" = false ]; then publish=true; fi
+            if [ "$EVENT" = workflow_run ] && [ "$AUTO" = true ]; then publish=true; fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ steps.commit.outputs.sha }}
+          FORCE: ${{ inputs.force && 'yes' || '' }}
+        run: |
+          python3 tools/ci/mod_tool.py decide ${FORCE:+--force} | tee -a "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: decide
+    if: needs.decide.outputs.build == 'true'
+    name: build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The SDK's client legs (prebuilt-game-build.yml): the runner and target each host's tool is built on.
+        include:
+          - {name: linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu}
+          - {name: windows, os: windows-latest, target: x86_64-pc-windows-gnu}
+          - {name: macos, os: macos-15, target: aarch64-apple-darwin}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-15' && 120 || 90 }}
+    env:
+      COMMIT: ${{ needs.decide.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.decide.outputs.commit }}
+      - name: The launcher's pinned Rust
+        id: rust
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}-${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: mod-tool-${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The archive an SDK holds for this host: the same command and layout (prebuilt_game.py `tool`).
+      - name: Build and pack the tool
+        env:
+          SUNRISE_TOOL_COMMIT: ${{ needs.decide.outputs.commit }}
+        run: python tools/prebuilt_game.py tool dist
+      - name: The tool starts and names this commit
+        run: |
+          mkdir unpacked
+          tar -xJf dist/tool-${{ matrix.target }}.tar.xz -C unpacked
+          out=$(./unpacked/cargo-sunrise-mod --version)
+          echo "$out"
+          case "$out" in
+            *"commit $COMMIT "*) ;;
+            *) echo "::error::the tool does not say it is built from $COMMIT"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod-tool-leg-${{ matrix.name }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  assemble:
+    needs: [decide, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      COMMIT: ${{ needs.decide.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.decide.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mod-tool-leg-*
+          path: dist
+          merge-multiple: true
+      - name: tool.json beside the three archives
+        run: |
+          python3 tools/ci/mod_tool.py tool-json "$COMMIT" dist/tool.json
+          cat dist/tool.json
+          expected=$(printf '%s\n' tool-x86_64-unknown-linux-gnu.tar.xz tool-x86_64-pc-windows-gnu.tar.xz \
+            tool-aarch64-apple-darwin.tar.xz tool.json | sort)
+          actual=$(ls dist | sort)
+          [ "$expected" = "$actual" ] || { echo "::error::not releasing: the assets are not exactly $(echo $expected) (found: $(echo $actual))"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod-tool-release
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  sign:
+    needs: [decide, assemble]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      COMMIT: ${{ needs.decide.outputs.commit }}
+      PUBLISH: ${{ needs.decide.outputs.publish }}
+    # The key's only job, and only for a publishing run on main: sign_release.sh hashes the assets and signs with the
+    # runner's OpenSSL, never running what the legs built.
+    environment: ${{ needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main' && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/ci/sign_release.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          # main's history without its files' contents: enough for the check below.
+          fetch-depth: 0
+          filter: blob:none
+      # Where the key is: whatever the caller says, the real key signs only a commit of main.
+      - name: The commit is on main
+        if: ${{ needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main' }}
+        run: |
+          git fetch -q --no-tags --filter=blob:none origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$COMMIT" refs/remotes/origin/main \
+            || { echo "::error::$COMMIT is not on main: its tool is not signed"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: mod-tool-release
+          path: dist
+      - name: Sign SHA256SUMS for mod-tool
+        env:
+          RELEASE_SIGNING_KEY: ${{ needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main' && secrets.RELEASE_SIGNING_KEY || '' }}
+          RELEASE_SIGNING_KEY_NEXT: ${{ needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main' && secrets.RELEASE_SIGNING_KEY_NEXT || '' }}
+          EPHEMERAL: ${{ !(needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main') && 'yes' || '' }}
+        run: bash tools/ci/sign_release.sh "$TAG" dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod-tool-signature
+          path: dist/SHA256SUMS*
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - uses: actions/upload-artifact@v4
+        if: ${{ !(needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main') }}
+        with:
+          name: mod-tool-ephemeral.pub
+          path: dist/ephemeral.pub
+          retention-days: 7
+          overwrite: true
+
+  verify:
+    needs: [decide, assemble, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      COMMIT: ${{ needs.decide.outputs.commit }}
+      PUBLISH: ${{ needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main' }}
+    steps:
+      # The workflow's own checker, never the built commit's.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mod-tool-release
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: mod-tool-signature
+          path: dist
+      - uses: actions/download-artifact@v4
+        if: env.PUBLISH != 'true'
+        with:
+          name: mod-tool-ephemeral.pub
+          path: key
+      - name: The signature, checked as an install block checks it
+        run: |
+          key=(); [[ "$PUBLISH" != true ]] && key=(--key "$(cat key/ephemeral.pub)")
+          # The workflow checkout's Python and the runner's OpenSSL against main's release keys: nothing is compiled, and
+          # no binary of the release runs.
+          python3 tools/ci/nightly.py verify-sums --tag "$TAG" --publishing "${key[@]}" dist
+      - name: Exactly the assets an install block takes
+        run: |
+          expected=$(printf '%s\n' tool-x86_64-unknown-linux-gnu.tar.xz tool-x86_64-pc-windows-gnu.tar.xz \
+            tool-aarch64-apple-darwin.tar.xz tool.json SHA256SUMS SHA256SUMS.sig | sort)
+          actual=$(ls dist | sort)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::not releasing $TAG: the assets are not exactly $(echo $expected) (found: $(echo $actual))"
+            exit 1
+          fi
+      - name: Dry run, the tool that would be published
+        if: env.PUBLISH != 'true'
+        run: |
+          echo "### Would publish $TAG at $COMMIT (a branch or dry run: signed with a throwaway key)" >> "$GITHUB_STEP_SUMMARY"
+          ls -l dist | tee -a "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: [decide, verify]
+    # The only job with a write token, and only for a publishing run on main. It runs no code but the workflow's own
+    # tools/ci/mod_tool.py (never the built commit's), and compiles nothing.
+    if: needs.decide.outputs.publish == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write  # the mod-tool release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      COMMIT: ${{ needs.decide.outputs.commit }}
+    steps:
+      # The workflow's own checkout, with main's history: `decide` found the built commit on main.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mod-tool-release
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: mod-tool-signature
+          path: dist
+      - name: Release mod-tool
+        run: |
+          set -euo pipefail
+          # Never replace a newer tool with an older one (a rerun, or a dispatch for an old commit).
+          python3 tools/ci/mod_tool.py newer "$COMMIT"
+          notes="The newest cargo-sunrise-mod built from main ($COMMIT): tool.json names the commit, SHA256SUMS is signed for $TAG."
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" dist/* --target "$COMMIT" --prerelease --latest=false \
+              --title "Mod tool ${COMMIT::10}" --notes "$notes"
+            exit 0
+          fi
+          # The archives first, the sums and their signature last: until then a reader's check of the new archive
+          # against the old sums fails, never passes.
+          gh release upload "$TAG" dist/tool-*.tar.xz dist/tool.json --clobber
+          gh release upload "$TAG" dist/SHA256SUMS dist/SHA256SUMS.sig --clobber
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$COMMIT" -F force=true > /dev/null
+          gh release edit "$TAG" --prerelease --latest=false --title "Mod tool ${COMMIT::10}" --notes "$notes"

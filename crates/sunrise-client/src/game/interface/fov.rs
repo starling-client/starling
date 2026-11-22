@@ -123,9 +123,17 @@ impl Game<'_> {
             .then(|| self.ui.death_time.min(i32::MAX as u32) as i32)
     }
     /// `Camera.getFluidInCamera` for the camera at `camera`, where the parts of each block it
-    /// reads may answer the state the camera sees there (`state_at_viewpoint`). Both paths go
-    /// through the replaceable `fog_type`.
+    /// reads may answer the state the camera sees there (`state_at_viewpoint`), and the mods may
+    /// then replace the answer (`camera_submersion`). Every client reader of the camera's fluid
+    /// reads it.
     pub(super) fn camera_fog_type(&self, camera: [f64; 3]) -> FogType {
+        let mut fog_type = self.camera_fog_type_seen(camera);
+        self.native_camera_submersion(camera, &mut fog_type);
+        fog_type
+    }
+    /// The fog type at `camera` as the blocks the camera sees there give it. Both paths go
+    /// through the replaceable `fog_type`.
+    fn camera_fog_type_seen(&self, camera: [f64; 3]) -> FogType {
         let (world, facts, near) = (&self.world, self.res.facts(), self.near_plane());
         if !mod_api::__private::has_scoped_hook(mod_api::HookId::StateAtViewpoint) {
             return fog_type(world, facts, camera, &near, &|state, _| state);

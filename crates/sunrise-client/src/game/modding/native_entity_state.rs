@@ -4,13 +4,14 @@
 //! Players and mobs have them all; the other kinds have the ones Sunrise
 //! keeps for them (an armor stand's fire and invisibility, an item's fire),
 //! and `None` for the rest, as for a stale handle. Secondary use also reads
-//! the local client's live semantic sneak state; the other flags are server-only.
-//! Ticks lived (`Entity.tickCount`) are read for mobs, items, orbs and minecarts.
+//! the local client's live semantic sneak state; fire and underwater reads also
+//! use the client's own cached state.
+//! Ticks lived (`Entity.tickCount`) are read for players, mobs, items, orbs and minecarts.
 use super::{Game, commands::Target};
+use mod_api::EntityRef;
 use sunrise_client::mobs::{Mob, Species, sync};
 use sunrise_client::motion::PlayerMotion;
 use sunrise_client::pose::Pose;
-use mod_api::EntityRef;
 
 /// `Pose`'s serialized names by id (`Pose.STANDING` is 0).
 pub(super) const POSES: [&str; 18] = [
@@ -65,7 +66,11 @@ enum Body<'a> {
 impl Game<'_> {
     /// The player's body or the mob a handle names, or its target.
     fn native_entity_body(&self, entity: EntityRef) -> Option<Body<'_>> {
-        Some(match self.native_entity_target(entity)? {
+        self.native_target_body(self.native_entity_target(entity)?)
+    }
+
+    fn native_target_body(&self, target: Target) -> Option<Body<'_>> {
+        Some(match target {
             Target::Player => Body::Player(self.player.as_ref()?),
             Target::Guest(conn) => Body::Player(self.command_guest(conn)?.motion.as_deref()?),
             Target::Mob(id) => Body::Mob(self.mobs.iter().find(|m| m.id == id)?),
@@ -78,7 +83,7 @@ impl Game<'_> {
     pub(super) fn entity_is_shift_key_down(&self, entity: EntityRef) -> Option<bool> {
         if !self.is_logical_server() {
             return Some(match self.native_client_entity_target(entity)? {
-                Target::Player => self.keys.held(sunrise_client::actions::Action::Sneak),
+                Target::Player => self.held_mapping(sunrise_client::actions::Action::Sneak),
                 _ => false,
             });
         }
@@ -102,13 +107,64 @@ impl Game<'_> {
             _ => false,
         })
     }
+    /// `Entity.setSprinting` for a player (the flag and the speed modifier) or a mob (the
+    /// flag, sent to the clients). False for other kinds, a stale handle and a client.
+    pub(super) fn entity_set_sprinting(&mut self, entity: EntityRef, sprinting: bool) -> bool {
+        if !self.is_logical_server() {
+            return false;
+        }
+        match self.native_entity_target(entity) {
+            // The acting body: a guest's turn writes its flag back from the guest row, so the
+            // row (`Guest::sprinting`, what metadata publishes) is set with it.
+            Some(Target::Player) => {
+                let Some(player) = self.player.as_mut() else {
+                    return false;
+                };
+                if player.set_sprinting(sprinting).is_err() {
+                    return false;
+                }
+                if let (Some(&conn), Some(lan)) = (self.lan_guest_swaps.last(), self.lan.as_mut()) {
+                    lan.hub
+                        .update_guest(conn, |guest| guest.sprinting = sprinting);
+                }
+                true
+            }
+            // A parked guest: its row and, with it, the body's flag and speed modifier.
+            Some(Target::Guest(conn)) => self
+                .lan
+                .as_mut()
+                .and_then(|lan| {
+                    lan.hub.update_guest(conn, |guest| {
+                        let body = guest.motion.as_mut()?;
+                        body.set_sprinting(sprinting).ok()?;
+                        guest.sprinting = sprinting;
+                        Some(())
+                    })
+                })
+                .flatten()
+                .is_some(),
+            Some(Target::Mob(id)) => self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                m.extra.sprinting = sprinting;
+                m.needs_sync = true;
+                true
+            }),
+            _ => false,
+        }
+    }
     /// Whether the entity touched water at its last fluid update
     /// (`Entity.isInWater`): players and mobs.
     pub(super) fn entity_is_in_water(&self, entity: EntityRef) -> Option<bool> {
-        match self.native_entity_body(entity)? {
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
             Body::Player(p) => Some(p.fluids.was_touching_water),
             Body::Mob(m) => Some(m.fluids.in_water),
             Body::Other(_) => None,
+        }
+    }
+    /// The player's swimming flag, distinct from its pose (which also covers crawling).
+    pub(super) fn entity_is_swimming(&self, entity: EntityRef) -> Option<bool> {
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
+            Body::Player(p) => Some(p.swimming),
+            _ => None,
         }
     }
     /// Whether the entity is in lava (`Entity.isInLava`): players and mobs.
@@ -121,41 +177,156 @@ impl Game<'_> {
     }
     /// The fluids the entity touched at its last fluid update, each with how deep its box is in
     /// it (`IEntityExtension.getFluidTypeHeight`), highest first; empty in no fluid. Players and
-    /// mobs: water and lava, the fluids Sunrise's entity update tracks. Server only.
+    /// mobs: water and lava, the fluids Sunrise's entity update tracks. On a client these
+    /// are the predicted local player's state or the displayed entity's last fluid update.
     pub(super) fn entity_fluid_heights(&self, entity: EntityRef) -> Option<Vec<(String, f64)>> {
         use sunrise_client::motion::{LAVA, WATER};
-        Some(match self.native_entity_body(entity)? {
-            Body::Player(p) => touched_fluids(
-                (p.fluid_height(WATER), p.fluids.was_touching_water),
-                (p.fluid_height(LAVA), p.is_in_lava()),
-            ),
-            Body::Mob(m) => touched_fluids(
-                (m.fluids.water, m.fluids.in_water),
-                (m.fluids.lava, m.fluids.in_lava),
-            ),
-            Body::Other(_) => return None,
-        })
+        Some(
+            match self.native_target_body(self.native_entity_read_target(entity)?)? {
+                Body::Player(p) => touched_fluids(
+                    (p.fluid_height(WATER), p.fluids.was_touching_water),
+                    (p.fluid_height(LAVA), p.is_in_lava()),
+                ),
+                Body::Mob(m) => touched_fluids(
+                    (m.fluids.water, m.fluids.in_water),
+                    (m.fluids.lava, m.fluids.in_lava),
+                ),
+                Body::Other(_) => return None,
+            },
+        )
     }
     /// The fluid at the entity's eyes from its last fluid update
     /// (`IEntityExtension.getFirstEyeInFluidType`): water or lava, none in air. Players and mobs.
-    /// Server only.
+    /// On a client this reads its own cached fluid update, without sampling the world again.
     pub(super) fn entity_eye_fluid(&self, entity: EntityRef) -> Option<Option<String>> {
         use sunrise_client::motion::{LAVA, WATER};
-        Some(match self.native_entity_body(entity)? {
-            Body::Player(p) => eye_fluid(p.is_eye_in_fluid(WATER), p.is_eye_in_fluid(LAVA)),
-            Body::Mob(m) => eye_fluid(m.fluids.eye_in_water, m.fluids.eye_in_lava),
-            Body::Other(_) => return None,
-        })
+        Some(
+            match self.native_target_body(self.native_entity_read_target(entity)?)? {
+                Body::Player(p) => eye_fluid(p.is_eye_in_fluid(WATER), p.is_eye_in_fluid(LAVA)),
+                Body::Mob(m) => eye_fluid(m.fluids.eye_in_water, m.fluids.eye_in_lava),
+                Body::Other(_) => return None,
+            },
+        )
     }
-    /// Whether the entity's type never burns (`EntityType.fireImmune`):
-    /// players and mobs.
-    pub(super) fn entity_fire_immune(&self, entity: EntityRef) -> Option<bool> {
-        match self.native_entity_body(entity)? {
-            Body::Player(_) => Some(false),
-            Body::Mob(m) => Some(sunrise_client::mobs::spawn_rules::fire_immune(m.species())),
+    /// Entity.isUnderWater uses eye sample AND contact; LocalPlayer's override uses the sample alone.
+    pub(super) fn entity_is_under_water(&self, entity: EntityRef) -> Option<bool> {
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
+            Body::Player(p) if !self.is_logical_server() => Some(p.is_under_water()),
+            Body::Player(p) => Some(p.fluids.was_eye_in_water && p.fluids.was_touching_water),
+            Body::Mob(m) => Some(m.was_eye_in_water && m.fluids.in_water),
             Body::Other(_) => None,
         }
     }
+
+    /// Entity.isOnFire: remaining ticks or the client's synced flag, unless fire immune.
+    pub(super) fn entity_is_on_fire(&self, entity: EntityRef) -> Option<bool> {
+        let (ticks, immune) = match self
+            .native_entity_read_target(entity)
+            .and_then(|target| self.native_target_body(target))
+        {
+            Some(Body::Player(p)) => (p.fire_ticks, p.mod_fire_immune),
+            Some(Body::Mob(m)) => (m.fire_ticks, m.fire_immune()),
+            Some(Body::Other(Target::Stand(stand))) => {
+                let stand = self.armor_stands.iter().find(|s| s.id == stand)?;
+                (stand.fire_ticks, stand.mod_fire_immune)
+            }
+            Some(Body::Other(Target::Item(item))) => {
+                let item = self.dropped.iter().find(|i| i.id == item)?;
+                (
+                    item.fire_ticks,
+                    self.stack_can_be_hurt_by(&item.stack, "minecraft:in_fire") == Some(false),
+                )
+            }
+            _ => (0, self.client_tracked_player_fire_immunity(entity)?),
+        };
+        let synced = !self.is_logical_server()
+            && self
+                .remote
+                .as_ref()?
+                .entity_on_fire(i32::try_from(entity.id()).ok()?)?;
+        Some(!immune && (ticks > 0 || synced))
+    }
+
+    /// `Entity.fireImmune`: effective immunity on the side of the host.
+    pub(super) fn entity_fire_immune(&self, entity: EntityRef) -> Option<bool> {
+        match self
+            .native_entity_read_target(entity)
+            .and_then(|target| self.native_target_body(target))
+        {
+            Some(Body::Player(p)) => Some(p.mod_fire_immune),
+            Some(Body::Mob(m)) => Some(m.fire_immune()),
+            Some(Body::Other(Target::Stand(id))) => self
+                .armor_stands
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.mod_fire_immune),
+            Some(Body::Other(Target::Dragon(_))) => Some(true),
+            _ => self.client_tracked_player_fire_immunity(entity),
+        }
+    }
+
+    fn client_tracked_player_fire_immunity(&self, entity: EntityRef) -> Option<bool> {
+        let (kind, _) = self.native_client_tracked(entity)?;
+        (kind == "minecraft:player").then_some(())?;
+        self.remote
+            .as_ref()?
+            .tracked_fire_immunity(i32::try_from(entity.id()).ok()?)
+    }
+
+    pub(super) fn entity_set_fire_immunity(&mut self, entity: EntityRef, immune: bool) -> bool {
+        self.native_entity_target(entity)
+            .is_some_and(|target| self.set_fire_immunity_for(target, immune))
+    }
+
+    pub(super) fn entity_set_client_fire_immunity(
+        &mut self,
+        entity: EntityRef,
+        immune: bool,
+    ) -> bool {
+        if let Some(target) = self.native_client_entity_target(entity) {
+            return self.set_fire_immunity_for(target, immune);
+        }
+        if self.client_tracked_player_fire_immunity(entity).is_none() {
+            return false;
+        }
+        self.remote
+            .as_mut()
+            .is_some_and(|remote| remote.set_tracked_fire_immunity(entity.id() as i32, immune))
+    }
+
+    fn set_fire_immunity_for(&mut self, target: Target, immune: bool) -> bool {
+        let server = self.is_logical_server();
+        let (grant, ticks) = match target {
+            Target::Mob(id) => {
+                let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+                    return false;
+                };
+                mob.needs_sync |= server && mob.mod_fire_immune != immune;
+                (&mut mob.mod_fire_immune, &mut mob.fire_ticks)
+            }
+            Target::Stand(id) => {
+                let Some(stand) = self.armor_stands.iter_mut().find(|s| s.id == id) else {
+                    return false;
+                };
+                (&mut stand.mod_fire_immune, &mut stand.fire_ticks)
+            }
+            Target::Player | Target::Guest(_) => {
+                let Some(player) = self.native_player_body_mut(target) else {
+                    return false;
+                };
+                (&mut player.mod_fire_immune, &mut player.fire_ticks)
+            }
+            _ => return false,
+        };
+        *grant = immune;
+        // Remote mobs and stands keep the server's fire bit in this field. Mask it
+        // while rendering, but keep the copy so revocation needs no new packet.
+        if immune && (server || matches!(target, Target::Player)) {
+            *ticks = (*ticks).min(0);
+        }
+        true
+    }
+
     /// The ticks the entity burns for (`Entity.getRemainingFireTicks`):
     /// players, mobs, armor stands and items.
     pub(super) fn entity_fire_ticks(&self, entity: EntityRef) -> Option<i32> {
@@ -176,7 +347,7 @@ impl Game<'_> {
     /// kinds its portal walk carries (zero when it keeps no state for one).
     pub(super) fn entity_portal_cooldown(&self, entity: EntityRef) -> Option<i32> {
         let id = match self.native_entity_target(entity)? {
-            // The acting guest's state is in place for its turn (`enter_guest`).
+            // The acting guest's state is in place for its turn (the entry of `guest_turn`).
             Target::Player => return Some(self.portals.player.cooldown),
             Target::Guest(conn) => {
                 let play = self.lan.as_ref()?.play.get(&conn);
@@ -313,7 +484,7 @@ impl Game<'_> {
     }
     /// The entity's air (`Entity.getAirSupply`): players and mobs.
     pub(super) fn entity_air_supply(&self, entity: EntityRef) -> Option<i32> {
-        match self.native_entity_body(entity)? {
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
             Body::Player(p) => Some(p.air),
             Body::Mob(m) => Some(m.air),
             Body::Other(_) => None,
@@ -354,7 +525,7 @@ impl Game<'_> {
     /// The most air the entity holds (`Entity.getMaxAirSupply`): 300, a
     /// dolphin's 4800, an axolotl's 6000.
     pub(super) fn entity_max_air_supply(&self, entity: EntityRef) -> Option<i32> {
-        match self.native_entity_body(entity)? {
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
             Body::Mob(m) => Some(max_air(Some(m.species()))),
             _ => Some(max_air(None)),
         }
@@ -447,10 +618,20 @@ impl Game<'_> {
             _ => None,
         }
     }
-    /// Ticks the entity has lived (`Entity.tickCount`): mobs, item entities,
-    /// experience orbs and minecarts. Wraps as vanilla's `int` does.
+    /// Ticks the entity has lived (`Entity.tickCount`): players, mobs, item
+    /// entities, experience orbs and minecarts. Wraps as vanilla's `int` does.
     pub(super) fn entity_tick_count(&self, entity: EntityRef) -> Option<i32> {
         Some(match self.native_entity_target(entity)? {
+            Target::Player => self.player.as_ref()?.health.tick_count,
+            Target::Guest(conn) => {
+                let guest = self.command_guest(conn)?;
+                guest
+                    .motion
+                    .as_deref()
+                    .map(|motion| motion.health.tick_count)
+                    .or(guest.carried_tick_count)
+                    .unwrap_or(0)
+            }
             Target::Mob(id) => self.mobs.iter().find(|m| m.id == id)?.age as i32,
             Target::Item(id) => self.dropped.iter().find(|i| i.id == id)?.ticks as i32,
             Target::Orb(id) => self.orbs.iter().find(|o| o.id == id)?.ticks as i32,
@@ -579,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn mob_setters_update_stored_state() {
         use super::super::native_entity_refs::tests::with_game;
         use sunrise_core::geometry::Vec3;
@@ -630,12 +811,72 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn a_granted_player_does_not_burn_or_take_damage_in_lava() {
+        use std::sync::Arc;
+        use sunrise_client::{chunk::Chunk, motion::MotionWorld};
+        use sunrise_core::geometry::Vec3;
+
+        with_player(|game, player| {
+            // `EntityFluidInteraction.update` needs the chunks around the box loaded as well.
+            for chunk in [(-1, -1), (-1, 0), (0, -1), (0, 0)] {
+                game.world
+                    .chunks
+                    .insert(chunk, Arc::new(Chunk::empty(chunk.0, chunk.1)));
+            }
+            let lava = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:lava")
+                .unwrap();
+            assert!(game.world.set_stored(0, 64, 0, lava));
+            game.player.as_mut().unwrap().position = Vec3::new(0.5, 64.0, 0.5);
+            let tick_lava = |game: &mut Game<'_>| {
+                let side = game_side!(game);
+                let mut world = MotionWorld {
+                    side: &side,
+                    entities: &[],
+                    player: game.player.as_mut().unwrap(),
+                    scene: &mut game.world,
+                    assets: &game.pack.assets,
+                    collision_binding: game.collision,
+                    resources: game.motion,
+                    health: &game.health_resources,
+                    tag_items: None,
+                    loop_context: &game.loop_context,
+                    damage_hooks: &game.damage_hooks,
+                    block_registries: None,
+                };
+                world.fluid_base_tick().unwrap();
+                assert!(world.player.is_in_lava());
+                world.tick_environment_damage().unwrap();
+            };
+            let health = |game: &Game<'_>| game.player.as_ref().unwrap().health.health();
+            let before = health(game);
+            assert_eq!(player.fire_immune(game), Some(false));
+            assert!(player.set_fire_immunity(game, true));
+            assert_eq!(player.fire_immune(game), Some(true));
+            game.hurt_player_by("minecraft:on_fire", 2.0);
+            assert_eq!(health(game), before, "direct fire damage is also refused");
+            tick_lava(game);
+            assert_eq!(player.is_on_fire(game), Some(false));
+            assert_eq!(health(game), before);
+
+            assert!(player.set_fire_immunity(game, false));
+            tick_lava(game);
+            assert_eq!(player.is_on_fire(game), Some(true));
+            assert!(health(game) < before);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn fire_ticks_reads_supported_entities_and_refuses_others() {
+        use mod_api::WorldEpoch;
         use sunrise_client::entities::ArmorStand;
         use sunrise_client::items::ItemStack;
         use sunrise_core::geometry::Vec3;
-        use mod_api::WorldEpoch;
 
         with_player(|game, player| {
             game.player.as_mut().unwrap().fire_ticks = 0;
@@ -688,16 +929,39 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn tick_count_reads_supported_entities_and_refuses_others() {
         use super::super::minecarts::{CartKind, Minecart};
+        use super::super::native_entity_refs::tests::bind_local_player;
+        use super::super::native_guest_turn_tests::with_guests;
+        use mod_api::WorldEpoch;
         use sunrise_client::entities::ExperienceOrb;
         use sunrise_client::items::ItemStack;
+        use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
-        use mod_api::WorldEpoch;
 
-        with_player(|game, player| {
-            assert_eq!(player.tick_count(game), None);
+        with_guests(|game| {
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            bind_local_player(game, 20, 123);
+            let player = game.entity(20).unwrap();
+            game.player.as_mut().unwrap().health.tick_count = i32::MAX;
+            game.player.as_mut().unwrap().health.advance_entity_clock();
+            assert_eq!(player.tick_count(game), Some(i32::MIN));
+
+            let acting_guest = game.entity(12).unwrap();
+            let parked_guest = game.entity(13).unwrap();
+            assert_eq!(parked_guest.tick_count(game), Some(0));
+            game.as_guest(13, |game| {
+                game.player.as_mut().unwrap().health.tick_count = 314;
+            })
+            .unwrap();
+            assert_eq!(parked_guest.tick_count(game), Some(314));
+
+            game.as_guest(12, |game| {
+                game.player.as_mut().unwrap().health.tick_count = 2718;
+                assert_eq!(acting_guest.tick_count(game), Some(2718));
+            })
+            .unwrap();
 
             let kind = game
                 .res
@@ -738,8 +1002,9 @@ mod tests {
                 velocity: Vec3::ZERO,
                 value: 7,
                 age: 600,
-                on_ground: true,
+                ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
                 count: 1,
+                fire_ticks: 0,
                 ticks: 21,
                 health: 5,
                 air: 300,
@@ -769,18 +1034,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_reads_simulated_kinds_and_refuses_others() {
         use super::super::native_guest_turn_tests::with_guests;
         use super::super::{
             Dim, FallingBlock, boats::Boat, fireworks::Rocket, minecarts::CartKind,
             minecarts::Minecart, trident::ThrownTrident,
         };
+        use mod_api::WorldEpoch;
         use sunrise_client::entities::{ArmorStand, ExperienceOrb};
         use sunrise_client::items::ItemStack;
         use sunrise_client::projectiles::{Projectile, ProjectileKind};
         use sunrise_core::{geometry::Vec3, position::BlockPos};
-        use mod_api::WorldEpoch;
 
         with_guests(|game| {
             // Players keep their own state: in place during their turn, beside the hub otherwise.
@@ -833,8 +1098,9 @@ mod tests {
                 velocity: Vec3::ZERO,
                 value: 1,
                 age: 0,
-                on_ground: false,
+                ground: Default::default(),
                 count: 1,
+                fire_ticks: 0,
                 ticks: 0,
                 health: 5,
                 air: 300,
@@ -892,12 +1158,15 @@ mod tests {
             game.next_entity += 1;
             let falling = game.next_entity;
             game.falling.push(FallingBlock {
-                on_ground: false,
+                ground: Default::default(),
+                fire_ticks: 0,
+                sync_velocity: false,
                 attachment_lifetime: Default::default(),
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 id: falling,
                 state,
+                blocks_building: true,
                 start_pos: BlockPos::default(),
                 position: Vec3::ZERO,
                 previous: Vec3::ZERO,
@@ -938,13 +1207,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_blocks_entry_and_counts_down() {
         use super::super::native_entity_refs::tests::with_game;
+        use std::sync::Arc;
         use sunrise_client::chunk::Chunk;
         use sunrise_client::motion::PlayerMotion;
         use sunrise_core::geometry::Vec3;
-        use std::sync::Arc;
 
         with_game(|game| {
             game.world
@@ -1018,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_is_refused_for_a_player() {
         with_player(|game, player| {
             game.portals.player.cooldown = 7;
@@ -1029,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_is_refused_for_an_acting_guest() {
         use super::super::native_guest_turn_tests::with_guests;
 
@@ -1054,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_is_refused_for_a_falling_block() {
         use super::super::FallingBlock;
         use super::super::native_entity_refs::tests::with_game;
@@ -1071,12 +1340,15 @@ mod tests {
             game.next_entity += 1;
             let id = game.next_entity;
             game.falling.push(FallingBlock {
-                on_ground: false,
+                ground: Default::default(),
+                fire_ticks: 0,
+                sync_velocity: false,
                 attachment_lifetime: Default::default(),
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 id,
                 state,
+                blocks_building: true,
                 start_pos: BlockPos::default(),
                 position: Vec3::ZERO,
                 previous: Vec3::ZERO,
@@ -1109,7 +1381,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_is_refused_on_a_client() {
         use super::super::execution_role::ExecutionRole;
         use super::super::native_entity_refs::tests::with_game;
@@ -1140,7 +1412,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_reaches_an_item() {
         use super::super::native_entity_refs::tests::with_game;
         use sunrise_client::items::ItemStack;
@@ -1164,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_reaches_an_arrow() {
         use super::super::native_entity_refs::tests::with_game;
         use sunrise_client::projectiles::{Projectile, ProjectileKind};
@@ -1187,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn portal_cooldown_write_is_refused_for_a_non_portal_projectile() {
         use super::super::native_entity_refs::tests::with_game;
         use sunrise_client::projectiles::{Projectile, ProjectileKind};
@@ -1206,25 +1478,25 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn player_invisibility_write_is_refused() {
         with_player(|game, player| assert!(!player.set_invisible(game, true)));
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn player_glowing_write_is_refused() {
         with_player(|game, player| assert!(!player.set_glowing(game, true)));
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn player_no_gravity_write_is_refused() {
         with_player(|game, player| assert!(!player.set_no_gravity(game, true)));
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn player_frozen_write_updates_server_state() {
         with_player(|game, player| {
             assert!(player.set_ticks_frozen(game, 53));
@@ -1233,7 +1505,180 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn on_fire_reads_timers_immunity_and_client_shared_flag() {
+        mod_platform::testing::with_mods(Vec::new().into(), || {
+            with_player(|g, player| {
+                for ticks in [-1, 0, 1] {
+                    g.player.as_mut().unwrap().fire_ticks = ticks;
+                    assert_eq!(player.is_on_fire(g), Some(ticks > 0));
+                }
+                for (id, kind, expected) in [
+                    (40, "minecraft:zombie", true),
+                    (41, "minecraft:blaze", false),
+                ] {
+                    let kind = g.res.mob_types().get(kind).unwrap().clone();
+                    g.mobs
+                        .push(Mob::new(id, kind, sunrise_core::geometry::Vec3::ZERO, 0.0));
+                    g.mobs.last_mut().unwrap().fire_ticks = 20;
+                    assert_eq!(g.entity(id).unwrap().is_on_fire(g), Some(expected));
+                }
+                assert_eq!(
+                    EntityRef::new(mod_api::WorldEpoch::new(0), 40).is_on_fire(g),
+                    None
+                );
+            });
+            super::super::native_entity_refs::tests::with_client_game(|g| {
+                let _server = super::super::native_client_session::tests::logged_client(g);
+                g.player =
+                    Some(PlayerMotion::new(g.motion, sunrise_core::geometry::Vec3::ZERO).unwrap());
+                let local = g.entity(7).unwrap();
+                // Spawn actual renderable client copies through the normal packet path.
+                for (id, name) in [(15, "minecraft:armor_stand"), (16, "minecraft:zombie")] {
+                    let kind = g
+                        .remote
+                        .as_ref()
+                        .unwrap()
+                        .builtin
+                        .get("minecraft:entity_type")
+                        .unwrap()
+                        .id(name)
+                        .unwrap();
+                    g.handle_packet(sunrise_protocol::packets::play::Clientbound::AddEntity(
+                        sunrise_protocol::packets::play::AddEntity {
+                            id,
+                            uuid: id as u128,
+                            kind,
+                            position: [0.0; 3],
+                            velocity: [0.0; 3],
+                            pitch: 0,
+                            yaw: 0,
+                            head_yaw: 0,
+                            data: 0,
+                        },
+                    ))
+                    .unwrap();
+                }
+                let stand = g.entity(15).unwrap();
+                let zombie = g.entity(16).unwrap();
+                for flag in [1, 0] {
+                    for id in [7, 15, 16] {
+                        g.handle_packet(
+                            sunrise_protocol::packets::play::Clientbound::SetEntityData(
+                                sunrise_protocol::packets::play::SetEntityData {
+                                    id,
+                                    values: vec![(
+                                        0,
+                                        0,
+                                        sunrise_protocol::entity_data::Value::Byte(flag),
+                                    )],
+                                },
+                            ),
+                        )
+                        .unwrap();
+                    }
+                    assert_eq!(
+                        local.is_on_fire(&*g as &dyn mod_api::ClientHost),
+                        Some(flag != 0)
+                    );
+                    assert_eq!(
+                        stand.is_on_fire(&*g as &dyn mod_api::ClientHost),
+                        Some(flag != 0)
+                    );
+                    assert!(local.set_client_fire_immunity(g, true));
+                    assert_eq!(local.fire_immune(g), Some(true));
+                    assert_eq!(local.is_on_fire(g), Some(false));
+                    assert!(local.set_client_fire_immunity(g, false));
+                    assert_eq!(local.is_on_fire(g), Some(flag != 0));
+                    // Revoking while the server flag is unchanged must reveal the
+                    // existing flame again, both in the handle and in the draw state.
+                    for (grant, burning) in [(true, false), (false, flag != 0)] {
+                        assert!(zombie.set_client_fire_immunity(g, grant));
+                        assert!(stand.set_client_fire_immunity(g, grant));
+                        assert_eq!(zombie.is_on_fire(g), Some(burning));
+                        assert_eq!(stand.is_on_fire(g), Some(burning));
+                        assert_eq!(
+                            g.mobs.iter().find(|m| m.id == 16).unwrap().is_on_fire(),
+                            burning
+                        );
+                        assert_eq!(
+                            g.armor_stands
+                                .iter()
+                                .find(|s| s.id == 15)
+                                .unwrap()
+                                .is_on_fire(),
+                            burning
+                        );
+                    }
+                }
+                g.player.as_mut().unwrap().fire_ticks = 2;
+                assert_eq!(
+                    local.is_on_fire(&*g as &dyn mod_api::ClientHost),
+                    Some(true)
+                );
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn under_water_reads_previous_eye_sample_and_current_contact_on_both_sides() {
+        mod_platform::testing::with_mods(Vec::new().into(), || {
+            for client in [false, true] {
+                super::super::native_entity_refs::tests::with_game(|g| {
+                    if client {
+                        g.options.execution_role =
+                            super::super::execution_role::ExecutionRole::Client;
+                        g.options.dedicated = None;
+                    }
+                    let _server = client
+                        .then(|| super::super::native_client_session::tests::logged_client(g));
+                    g.player = Some(
+                        PlayerMotion::new(g.motion, sunrise_core::geometry::Vec3::ZERO).unwrap(),
+                    );
+                    if !client {
+                        g.options.dedicated = Some(Vec::new());
+                        super::super::native_entity_refs::tests::bind_local_player(g, 7, 123);
+                    }
+                    let player = g.entity(7).unwrap();
+                    if client {
+                        g.spawn_entity(15, "minecraft:zombie", [0.0; 3], [0.0; 3]);
+                    } else {
+                        let kind = g.res.mob_types().get("minecraft:zombie").unwrap().clone();
+                        g.mobs
+                            .push(Mob::new(15, kind, sunrise_core::geometry::Vec3::ZERO, 0.0));
+                    }
+                    let mob = g.entity(15).unwrap();
+                    for old_eye in [false, true] {
+                        for contact in [false, true] {
+                            let p = g.player.as_mut().unwrap();
+                            p.fluids.was_eye_in_water = old_eye;
+                            p.fluids.was_touching_water = contact;
+                            assert_eq!(
+                                g.entity_is_under_water(player),
+                                Some(if client { old_eye } else { old_eye && contact })
+                            );
+                            let m = g.mobs.iter_mut().find(|m| m.id == 15).unwrap();
+                            m.was_eye_in_water = old_eye;
+                            m.fluids.eye_in_water = !old_eye;
+                            m.fluids.in_water = contact;
+                            assert_eq!(g.entity_is_under_water(mob), Some(old_eye && contact));
+                            assert_eq!(
+                                g.entity_is_under_water(EntityRef::new(
+                                    mod_api::WorldEpoch::new(0),
+                                    15
+                                )),
+                                None
+                            );
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn secondary_use_reads_reachable_client_handles_and_keeps_server_flags() {
         use super::super::execution_role::ExecutionRole;
         use sunrise_core::geometry::Vec3;
@@ -1255,10 +1700,10 @@ mod tests {
             let local = game.local_player().unwrap();
             let entity = game.entity(7).unwrap();
             assert_eq!(local.entity(), entity);
-            game.keys.insert(KeyCode::ShiftLeft);
+            game.insert_device_key(KeyCode::ShiftLeft);
             assert!(!game.player.as_ref().unwrap().shift_key_down);
             assert_eq!(entity.is_shift_key_down(game), Some(true));
-            game.keys.clear();
+            game.remove_device_key(&KeyCode::ShiftLeft);
             game.player.as_mut().unwrap().shift_key_down = true;
             assert_eq!(
                 entity.is_shift_key_down(game),
@@ -1272,13 +1717,102 @@ mod tests {
             assert_eq!(entity.is_shift_key_down(game), None);
         });
         with_player(|game, player| {
-            game.keys.clear();
+            game.clear_device_keys();
             game.player.as_mut().unwrap().shift_key_down = true;
             assert_eq!(
                 player.is_shift_key_down(game),
                 Some(true),
                 "server keeps its semantic entity flag"
             );
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn client_fluid_reads_use_cached_local_and_tracked_bodies() {
+        use super::super::{
+            native_client_session::tests::logged_client,
+            native_entity_refs::tests::with_client_game,
+        };
+        use sunrise_core::geometry::Vec3;
+        use sunrise_protocol::packets::play;
+
+        with_client_game(|game| {
+            let _server = logged_client(game);
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            let local = game.entity(7).unwrap();
+            let host = &*game as &dyn mod_api::ClientHost;
+            assert_eq!(local.fluid_heights(host), Some(Vec::new()));
+            assert_eq!(local.eye_fluid(host), Some(None));
+
+            game.spawn_entity(15, "minecraft:zombie", [2.0, 0.0, 0.0], [0.0; 3]);
+            let zombie = game.entity(15).unwrap();
+            // No water or lava in the world: these answers must come from the last
+            // client fluid update, without a fresh world query or a server body.
+            for (water, lava, eye_water, eye_lava, expected, eye) in [
+                (
+                    0.75,
+                    0.0,
+                    true,
+                    false,
+                    vec![("minecraft:water".to_owned(), 0.75)],
+                    Some("minecraft:water"),
+                ),
+                (
+                    0.0,
+                    0.5,
+                    false,
+                    false,
+                    vec![("minecraft:lava".to_owned(), 0.5)],
+                    None,
+                ),
+                (
+                    0.25,
+                    1.5,
+                    false,
+                    true,
+                    vec![
+                        ("minecraft:lava".to_owned(), 1.5),
+                        ("minecraft:water".to_owned(), 0.25),
+                    ],
+                    Some("minecraft:lava"),
+                ),
+                (0.0, 0.0, false, false, Vec::new(), None),
+            ] {
+                let fluids = &mut game.mobs.iter_mut().find(|m| m.id == 15).unwrap().fluids;
+                fluids.water = water;
+                fluids.lava = lava;
+                fluids.in_water = water > 0.0;
+                fluids.in_lava = lava > 0.0;
+                fluids.eye_in_water = eye_water;
+                fluids.eye_in_lava = eye_lava;
+                let host = &*game as &dyn mod_api::ClientHost;
+                assert_eq!(zombie.fluid_heights(host), Some(expected));
+                assert_eq!(zombie.eye_fluid(host), Some(eye.map(str::to_owned)));
+            }
+            game.spawn_entity(16, "minecraft:armor_stand", [2.0, 0.0, 0.0], [0.0; 3]);
+            let stand = game.entity(16).unwrap();
+            let host = &*game as &dyn mod_api::ClientHost;
+            assert_eq!(stand.fluid_heights(host), None);
+            assert_eq!(stand.eye_fluid(host), None);
+            let stale = EntityRef::new(mod_api::WorldEpoch::new(0), 15);
+            assert_eq!(stale.fluid_heights(host), None);
+            assert_eq!(stale.eye_fluid(host), None);
+            game.handle_packet(play::Clientbound::RemoveEntities(play::RemoveEntities {
+                ids: vec![15],
+            }))
+            .unwrap();
+            assert_eq!(
+                zombie.fluid_heights(&*game as &dyn mod_api::ClientHost),
+                None
+            );
+            assert_eq!(zombie.eye_fluid(&*game as &dyn mod_api::ClientHost), None);
+            game.remote.as_mut().unwrap().logged_in = false;
+            assert_eq!(
+                local.fluid_heights(&*game as &dyn mod_api::ClientHost),
+                None
+            );
+            assert_eq!(local.eye_fluid(&*game as &dyn mod_api::ClientHost), None);
         });
     }
 

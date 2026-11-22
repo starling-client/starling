@@ -1,0 +1,6 @@
+# case	offered stack	fuel slot before	moves one
+fuel_added	{id:"minecraft:diamond",count:2,components:{"minecraft:cooking_fuel":{burn_time:80,speed_multiplier:1.0f}}}	-	true
+fuel_removed	{id:"minecraft:coal",count:2,components:{"!minecraft:cooking_fuel":{}}}	-	false
+both_patch_entries	{id:"minecraft:diamond",count:2,components:{"minecraft:cooking_fuel":{burn_time:80,speed_multiplier:1.0f},"!minecraft:cooking_fuel":{}}}	-	true
+ordinary_bucket	{id:"minecraft:bucket",count:2}	{id:"minecraft:bucket",count:1}	false
+fuel_bucket	{id:"minecraft:bucket",count:2,components:{"minecraft:cooking_fuel":{burn_time:80,speed_multiplier:1.0f}}}	{id:"minecraft:bucket",count:1,components:{"minecraft:cooking_fuel":{burn_time:80,speed_multiplier:1.0f}}}	true

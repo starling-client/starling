@@ -26,9 +26,9 @@ def write_build_data(root: Path, identity: dict | None = None, commit: str = COM
     so, exe = prebuilt_game.dylib_suffix(), ".exe" if sys.platform == "win32" else ""
     lib = prebuilt_game.dylib_prefix()
     members = {"runtime": [f"bin/sunrise-client{exe}",
-                           f"deps/{lib}sunrise_mod_host{so}", f"deps/{lib}sunrise_mod_wasm{so}",
-                           *[f"deps/{lib}{crate}{so}" for crate in ("mod_api", "mod_vocab", "mod_points")]],
-               "api": [prebuilt_game.NATIVE_MODS_TEMPLATE, "deps/libmod_api-1.rmeta", "deps/libmod_points-1.rmeta"]}
+                           f"deps/{lib}sunrise_mod_host{so}",
+                           *[f"deps/{lib}{crate}{so}" for crate in ("mod_api", "mod_vocab")]],
+               "api": [prebuilt_game.NATIVE_MODS_TEMPLATE, "deps/libmod_api-1.rmeta"]}
     for name in members["runtime"] + members["api"]:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_bytes(b"")
@@ -39,6 +39,90 @@ def write_build_data(root: Path, identity: dict | None = None, commit: str = COM
 
 
 class StageToolTests(unittest.TestCase):
+    def test_stage_sync_only_rewrites_different_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, stage = root / "next", root / "stage"
+            before = {"same": b"unchanged\r\n", "nested/changed": b"new", "stale/removed": b"old",
+                      "file-to-dir": b"old", "dir-to-file/old": b"old"}
+            # A revert can have older source mtimes and the same byte count as the previous build's sources.
+            after = {"same": b"unchanged\r\n", "nested/changed": b"old", "nested/added": b"new",
+                     "file-to-dir/new": b"new", "dir-to-file": b"new"}
+            for folder, files, mtime in ((stage, before, 2000), (source, after, 1000)):
+                for name, data in files.items():
+                    path = folder / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+                    os.utime(path, (mtime, mtime))
+            same, changed = stage / "same", stage / "nested/changed"
+            same_mtime, changed_mtime = same.stat().st_mtime_ns, changed.stat().st_mtime_ns
+
+            prebuilt_game.sync_stage(source, stage)
+
+            self.assertEqual(same.stat().st_mtime_ns, same_mtime)
+            self.assertGreater(changed.stat().st_mtime_ns, changed_mtime)
+            self.assertEqual(sorted(prebuilt_game.tree(stage)), sorted(prebuilt_game.tree(source)))
+            self.assertEqual({path.relative_to(stage).as_posix(): path.read_bytes()
+                              for path in stage.rglob("*") if path.is_file()}, after)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX executable bits and symlinks")
+    def test_sync_mirrors_execute_bits_without_rewriting_bytes_or_following_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, stage = root / "next", root / "stage"
+            for folder in (source, stage):
+                folder.mkdir()
+                (folder / "script").write_bytes(b"unchanged")
+                (folder / "link").symlink_to("script")
+            incoming, staged = source / "script", stage / "script"
+            staged.chmod(0o644)
+            os.utime(staged, (1000, 1000))
+            mtime = staged.stat().st_mtime_ns
+            for mode in (0o755, 0o644):
+                with self.subTest(mode=mode):
+                    incoming.chmod(mode)
+                    prebuilt_game.sync_stage(source, stage)
+                    self.assertEqual(staged.stat().st_mode & 0o777, mode)
+                    self.assertEqual(staged.stat().st_mtime_ns, mtime)
+                    self.assertEqual(staged.read_bytes(), b"unchanged")
+                    self.assertFalse((stage / "link").is_symlink())
+                    self.assertFalse((stage / "link").exists())
+
+    def test_stage_tool_failure_cleans_scratch_and_keeps_previous_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            stage = target / "stage"
+            stage.mkdir()
+            marker = stage / "old"
+            marker.write_bytes(b"previous build")
+            with patch.object(prebuilt_game, "head", return_value=COMMIT), \
+                 patch.object(prebuilt_game, "tracked_files", return_value=[("new", b"new input", 0o644)]), \
+                 patch.object(prebuilt_game, "run", side_effect=subprocess.CalledProcessError(1, "sunrise-stage")):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    prebuilt_game.stage(target, stage_tool=target / "sunrise-stage")
+            self.assertEqual(list(target.iterdir()), [stage])
+            self.assertEqual(list(stage.iterdir()), [marker])
+            self.assertEqual(marker.read_bytes(), b"previous build")
+
+    def test_sdk_build_rejects_a_second_writer_and_releases_the_lock_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def build_then_fail(out, server, target_dir):
+                self.assertEqual(target_dir, root.resolve() / "prebuilt")
+                with self.assertRaises(SystemExit):
+                    prebuilt_game.build(root / "other-sdk", server=False)
+                raise RuntimeError("build failed")
+
+            with patch.dict(os.environ, CARGO_TARGET_DIR=directory), \
+                 patch.object(prebuilt_game, "_build_locked", side_effect=build_then_fail) as build_locked:
+                with self.assertRaisesRegex(RuntimeError, "build failed"):
+                    prebuilt_game.build(root / "sdk", server=True)
+                build_locked.assert_called_once()
+                build_locked.side_effect = None
+                prebuilt_game.build(root / "other-sdk", server=False)
+                build_locked.assert_called_with(root / "other-sdk", False, root.resolve() / "prebuilt")
+
     def test_prebuilt_tool_stages_fresh_tracked_copy_without_cargo(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -46,12 +130,13 @@ class StageToolTests(unittest.TestCase):
             source.mkdir()
             committed = b"fn first() {}\nfn second() {}\n"
             (source / "tracked.rs").write_bytes(committed)
-            manifest = source / "crates/sunrise-mod-wasm/Cargo.toml"
+            manifest = source / "crates/sunrise-mod-api/Cargo.toml"
             manifest.parent.mkdir(parents=True)
             manifest.write_text("[package]\nname = 'fixture'\n")
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
             subprocess.run([*git, "init", "-q"], cwd=source, check=True)
             subprocess.run([*git, "add", "tracked.rs", "crates"], cwd=source, check=True)
+            subprocess.run([*git, "update-index", "--chmod=+x", "tracked.rs"], cwd=source, check=True)
             subprocess.run([*git, "commit", "-qm", "fixture"], cwd=source, check=True)
             commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True,
                                     stdout=subprocess.PIPE).stdout.strip()
@@ -61,32 +146,89 @@ class StageToolTests(unittest.TestCase):
             target = root / "output"
             tool = root / "unused" / ".." / "sunrise-stage"
             calls = []
+            metadata_calls = []
             real_run = prebuilt_game.run
 
             def capture(command, **kwargs):
                 if command[0] == "git":
                     return real_run(command, **kwargs)
-                calls.append(command)
-                self.assertEqual(command, [str(tool.resolve()), str(target / "stage"),
-                                          str(target / "stage/points.json"),
-                                          str(target / "stage/internals.json"), commit])
-                self.assertEqual(kwargs["cwd"], target / "stage")
+                scratch = kwargs["cwd"]
+                self.assertEqual(scratch.parent, target)
+                self.assertNotEqual(scratch, target / "stage")
+                if command[:2] == ["cargo", "metadata"]:
+                    metadata_calls.append(scratch)
+                    package = {"id": "api", "name": "sunrise-mod-api",
+                               "manifest_path": str(scratch / manifest.relative_to(source)),
+                               "targets": [{"kind": ["lib"]}]}
+                    return json.dumps({"packages": [package, {"id": "core", "name": "sunrise-core", "targets": []}],
+                                       "resolve": {"nodes": [{"id": "api", "deps": [
+                                           {"pkg": "core", "dep_kinds": [{"kind": None}]}]},
+                                           {"id": "core", "deps": []}]}})
+                calls.append(scratch)
+                self.assertEqual(command, [str(tool.resolve()), str(scratch), str(scratch / "internals.json"), commit])
                 self.assertIsNone(kwargs["env"])
-                self.assertEqual((target / "stage/tracked.rs").read_bytes(), committed)
-                self.assertFalse((target / "stage/untracked.rs").exists())
-                (target / "stage/tracked.rs").write_text("staged")
+                self.assertEqual((scratch / "tracked.rs").read_bytes(), committed)
+                if os.name == "posix":
+                    self.assertTrue((scratch / "tracked.rs").stat().st_mode & 0o100)
+                self.assertFalse((scratch / "untracked.rs").exists())
+                (scratch / "tracked.rs").write_text("staged")
                 return "staged fixture\n"
 
             with patch.object(prebuilt_game, "ROOT", source), \
+                 patch.object(prebuilt_game, "rustc_host", return_value="x86_64-unknown-linux-gnu"), \
                  patch.object(prebuilt_game, "run", side_effect=capture):
-                prebuilt_game.stage(target, stage_tool=tool)
-                # A second call must replace the mutated stage with fresh tracked source.
-                prebuilt_game.stage(target, stage_tool=tool)
-            self.assertEqual(len(calls), 2)
+                staged = prebuilt_game.stage(target, stage_tool=tool)
+                self.assertEqual(staged, target / "stage")
+                staged_manifest = staged / manifest.relative_to(source)
+                self.assertEqual(staged_manifest.read_bytes(), manifest.read_bytes())
+                self.assertEqual(metadata_calls, [])
+
+                self.assertEqual(prebuilt_game.stage(target, stage_tool=tool, sdk_dylibs=True), staged)
+                self.assertEqual(staged_manifest.read_text(),
+                                 "[package]\nname = 'fixture'\n\n[lib]\ncrate-type = [\"rlib\", \"dylib\"]\n")
+                # Both the stage tool and the manifest rewrite start over, but their output stays in place.
+                mtimes = {}
+                for file in (staged / "tracked.rs", staged_manifest):
+                    os.utime(file, (1000, 1000))
+                    mtimes[file] = file.stat().st_mtime_ns
+                self.assertEqual(prebuilt_game.stage(target, stage_tool=tool, sdk_dylibs=True), staged)
+                self.assertEqual({file: file.stat().st_mtime_ns for file in mtimes}, mtimes)
+
+                self.assertEqual(prebuilt_game.stage(target, stage_tool=tool, sdk_dylibs=False), staged)
+                self.assertEqual(staged_manifest.read_bytes(), manifest.read_bytes())
+                if os.name == "posix":
+                    self.assertTrue((staged / "tracked.rs").stat().st_mode & 0o100)
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(metadata_calls, calls[1:3])
+            self.assertTrue(all(not scratch.exists() for scratch in calls))
             self.assertTrue((source / "tracked.rs").read_bytes().endswith(b"fn edited() {}\r\n"))
 
 
 class RegistryPatchTests(unittest.TestCase):
+    def test_a_crate_beside_the_base_library_stays_inside_the_library_above_it(self):
+        """`call` and `core` both use `digest` and neither links the other: as two libraries each would hold a
+        copy, which rustc refuses. `call` is not split out, so the library above it holds it. A derive both
+        use is no copy: it runs in the compiler."""
+        def package(name, *dependencies, kind="lib"):
+            return ({"id": name, "name": name, "manifest_path": "", "targets": [{"kind": [kind]}]},
+                    {"id": name, "deps": [{"pkg": dependency, "dep_kinds": [{"kind": None}]}
+                                          for dependency in dependencies]})
+        packages, nodes = zip(
+            package("sunrise-mod-api", "sunrise-core", "vocab", "call"),
+            package("vocab", "sunrise-core"), package("call", "sha2", "derive"), package("sha2", "digest"),
+            package("sunrise-core", "md-5", "derive"), package("md-5", "digest"), package("digest"),
+            package("derive", "syn", kind="proc-macro"), package("syn"),
+            package("sunrise-mod-host", "sunrise-mod-api", "sha2"))
+        metadata = {"packages": list(packages), "resolve": {"nodes": list(nodes)}}
+        split = prebuilt_game.sdk_dylibs(metadata)
+        self.assertEqual(split, {"sunrise-core", "vocab", "sunrise-mod-api"})
+        self.assertIsNone(prebuilt_game.shared_twice(metadata, split | {"sunrise-mod-host"}))
+        clash = prebuilt_game.shared_twice(metadata, split | {"sunrise-mod-host", "call"})
+        for crate in ("call", "sunrise-core", "digest"):
+            self.assertIn(crate, clash)
+        for crate in ("derive", "syn", "sha2", "md-5"):
+            self.assertNotIn(crate, clash)
+
     def test_sdk_carries_only_patched_crate_and_resolution_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -128,7 +270,7 @@ class RegistryPatchTests(unittest.TestCase):
             declared = patch / "Cargo.toml"
             declared.write_text("manifest")
             (sdk / "deps").mkdir()
-            for crate in ("sunrise_mod_wasm", "sunrise_mod_host"):
+            for crate in ("sunrise_official", "sunrise_mod_host"):
                 (sdk / "deps" / f"lib{crate}.so").write_bytes(b"")
             write_build_data(sdk, {"patch_files": {
                 "patches/allocator-sys/Cargo.toml": prebuilt_game.sha256(declared)}})
@@ -148,9 +290,9 @@ class RegistryPatchTests(unittest.TestCase):
 
 
 class SdkAssetTests(unittest.TestCase):
-    RUNTIME = ["deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so", "bin/sunrise-client",
-               "deps/libmod_api.so", "deps/libmod_vocab.so", "deps/libmod_points.so"]
-    API = ["deps/libmod_api-1.rmeta", "deps/libmod_points-1.rmeta", "host/libserde_derive.so"]
+    RUNTIME = ["deps/libsunrise_mod_host.so", "bin/sunrise-client",
+               "deps/libmod_api.so", "deps/libmod_vocab.so"]
+    API = ["deps/libmod_api-1.rmeta", "host/libserde_derive.so"]
     ENGINE = ["deps/libsunrise_client-1.rmeta", "native/libwindows.a"]
 
     def out(self, root: Path, mtime: int) -> Path:
@@ -167,12 +309,16 @@ class SdkAssetTests(unittest.TestCase):
             os.utime(path, (mtime, mtime))
         return out
 
-    def pack(self, out: Path, dist: Path) -> None:
+    def pack(self, out: Path, dist: Path, **options) -> None:
         def run(command, **kwargs):
             self.assertEqual(command[-3:], ["surface", str(prebuilt_game.ROOT), str(dist / "surface.json")])
             (dist / "surface.json").write_text('{"hash": "ab"}')
-        with patch.object(prebuilt_game, "head", return_value=COMMIT), patch.object(prebuilt_game, "run", side_effect=run):
-            prebuilt_game.pack(out, dist, stage_tool=Path("sunrise-stage"))
+        built = out.parent / "tool"
+        built.mkdir(exist_ok=True)
+        (built / prebuilt_game.TOOL_PROGRAM).write_bytes(b"tool")
+        with patch.object(prebuilt_game, "head", return_value=COMMIT), patch.object(prebuilt_game, "run", side_effect=run), \
+                patch.object(prebuilt_game, "tool", return_value=built):
+            prebuilt_game.pack(out, dist, stage_tool=Path("sunrise-stage"), **options)
 
     def test_pack_writes_three_archives_that_split_the_package_and_the_same_every_run(self):
         import lzma
@@ -190,8 +336,7 @@ class SdkAssetTests(unittest.TestCase):
                                          "engine-x86_64-unknown-linux-gnu-server.tar.xz",
                                          "runtime-x86_64-unknown-linux-gnu-server.tar.xz", "surface.json"])
                 with tarfile.open(dist / "build-data.tar.xz") as tar:
-                    self.assertEqual(tar.getnames(), [".", "./functions.json", "./internals.json", "./loops.json",
-                                                      "./points.json"])
+                    self.assertEqual(tar.getnames(), [".", "./functions.json", "./internals.json", "./loops.json"])
                 files = {}
                 for kind in ("runtime", "api", "engine"):
                     with lzma.open(dist / f"{kind}-x86_64-unknown-linux-gnu-server.tar.xz") as xz, \
@@ -208,6 +353,34 @@ class SdkAssetTests(unittest.TestCase):
                 self.assertEqual(sorted(files["runtime"] + files["api"] + files["engine"]), every)
                 archives.append([(dist / name).read_bytes() for name in names])
         self.assertEqual(archives[0], archives[1])
+
+    def test_parallel_pack_matches_serial_with_spawn(self):
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out = self.out(root, 1000)
+            serial, parallel = root / "serial", root / "parallel"
+            serial.mkdir()
+            identity = json.loads((out / prebuilt_game.IDENTITY).read_text())
+            for kind, names in prebuilt_game.archives(out, identity["slices"]).items():
+                prebuilt_game.tar_xz(out, names, serial / f"{kind}-{identity['target']}-server.tar.xz")
+            prebuilt_game.tar_xz(out, [".", *prebuilt_game.BUILD_DATA], serial / prebuilt_game.BUILD_DATA_ARCHIVE)
+            with patch.object(prebuilt_game, "ProcessPoolExecutor", side_effect=lambda **kwargs:
+                              ProcessPoolExecutor(mp_context=multiprocessing.get_context("spawn"), **kwargs)):
+                self.pack(out, parallel)
+            for archive in serial.iterdir():
+                self.assertEqual(archive.read_bytes(), (parallel / archive.name).read_bytes(), archive.name)
+
+    def test_worker_failure_names_archive_and_stops_surface_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out = self.out(root, 1000)
+            dist = root / "dist"
+            (dist / prebuilt_game.BUILD_DATA_ARCHIVE).mkdir(parents=True)
+            with self.assertRaisesRegex(SystemExit, "build-data.tar.xz"):
+                self.pack(out, dist)
+            self.assertFalse((dist / "surface.json").exists())
 
     def test_check_refuses_slices_naming_absent_or_shared_files(self):
         api = [*self.API, *prebuilt_game.API_BUILD_DATA, prebuilt_game.NATIVE_MODS_TEMPLATE]
@@ -240,35 +413,74 @@ class SdkAssetTests(unittest.TestCase):
                     {"id": name, "deps": [{"pkg": dep, "dep_kinds": [{"kind": dep_kind}]} for dep, dep_kind in deps]})
         packages, nodes = zip(
             package("sunrise-mod-api", deps=[("vocab", None), ("macros", None), ("tool", "build")]),
-            package("sunrise-mod-points", deps=[("vocab", None)]),
             package("vocab", deps=[("serde", None)]),
             package("serde"),
             package("macros", "proc-macro", deps=[("syn", None)]),
             package("syn"),
             package("tool"),
             package("sunrise-mod-host", "dylib", deps=[("sunrise-mod-api", None), ("engine", None)]),
-            package("sunrise-mod-wasm", "dylib"),
+            package("sunrise-official", "dylib"),
             package("engine"),
         )
         metadata = {"packages": list(packages), "resolve": {"nodes": list(nodes)}}
         self.assertEqual(prebuilt_game.api_closure(metadata),
-                         {"sunrise-mod-api", "sunrise-mod-points", "vocab", "serde", "macros"})
-        copied = {name: [f"deps/lib{name}-1.rmeta"] for name in ("sunrise-mod-api", "sunrise-mod-points", "vocab",
-                                                                  "serde", "syn", "tool", "engine")}
+                         {"sunrise-mod-api", "vocab", "serde", "macros"})
+        copied = {name: [f"deps/lib{name}-1.rmeta"] for name in ("sunrise-mod-api", "vocab", "serde",
+                                                                  "syn", "tool", "engine")}
         copied["macros"] = ["host/libmacros-1.so"]
         copied["sunrise-mod-host"] = ["deps/libsunrise_mod_host.so"]
-        copied["sunrise-mod-wasm"] = ["deps/libsunrise_mod_wasm.so"]
+        copied["sunrise-official"] = ["deps/libsunrise_official.so"]
         sliced = prebuilt_game.slices(metadata, copied, ["bin/sunrise-client"])
         self.assertEqual(sliced["runtime"], sorted([prebuilt_game.IDENTITY, "bin/sunrise-client",
-                                                    "deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so"]))
+                                                    "deps/libsunrise_mod_host.so", "deps/libsunrise_official.so"]))
         self.assertEqual(sliced["api"], sorted([
-            "deps/libsunrise-mod-api-1.rmeta", "deps/libsunrise-mod-points-1.rmeta", "deps/libvocab-1.rmeta",
+            "deps/libsunrise-mod-api-1.rmeta", "deps/libvocab-1.rmeta",
             "deps/libserde-1.rmeta", "host/libmacros-1.so", *prebuilt_game.API_BUILD_DATA,
             prebuilt_game.NATIVE_MODS_TEMPLATE]))
         # Each slice unpacks to its own folder, so a game library inside the API closure is refused.
-        nodes[1]["deps"].append({"pkg": "sunrise-mod-wasm", "dep_kinds": [{"kind": None}]})
-        with self.assertRaisesRegex(SystemExit, "sunrise-mod-wasm"):
+        nodes[1]["deps"].append({"pkg": "sunrise-official", "dep_kinds": [{"kind": None}]})
+        with self.assertRaisesRegex(SystemExit, "sunrise-official"):
             prebuilt_game.slices(metadata, copied, ["bin/sunrise-client"])
+
+    def test_fixed_client_links_and_installs_official_layer(self):
+        for platform, host, expected_link_args in (
+            ("linux", "x86_64-unknown-linux-gnu", ["link-arg=-Wl,-rpath,$ORIGIN"]),
+            ("darwin", "aarch64-apple-darwin", ["link-arg=-Wl,-rpath,@executable_path"]),
+            ("win32", "aarch64-pc-windows-msvc", ["link-arg=/STACK:8388608"]),
+            ("win32", "x86_64-pc-windows-gnu", ["link-arg=-Wl,--stack,8388608"]),
+        ):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(sys, "platform", platform), patch.object(prebuilt_game, "run") as rustc:
+                out = Path(directory)
+                deps = out / "deps"
+                deps.mkdir()
+                for crate in ("sunrise_client", "mod_api", "sunrise_mod_package"):
+                    (deps / f"lib{crate}.rmeta").touch()
+                prefix, suffix = prebuilt_game.dylib_prefix(), prebuilt_game.dylib_suffix()
+                (deps / f"{prefix}sunrise_mod_host{suffix}").touch()
+                official = deps / f"{prefix}sunrise_official{suffix}"
+                official.touch()
+                files = prebuilt_game.api_route(out, host)
+                command = rustc.call_args.args[0]
+                self.assertIn('feature="official"', command)
+                self.assertIn(f"sunrise_official={official}", command)
+                self.assertEqual([arg for arg in command if arg.startswith("link-arg=")], expected_link_args)
+                metadata = {"packages": [{"id": "official", "name": "sunrise-official"}], "resolve": {"nodes": []}}
+                compiled = official.relative_to(out).as_posix()
+                self.assertIn(compiled, prebuilt_game.slices(metadata, {"official": [compiled]}, files)["runtime"])
+
+    def test_a_server_leg_packs_the_tool_only_when_asked(self):
+        for with_tool in (False, True):
+            with self.subTest(with_tool=with_tool), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(sys, "platform", "linux"):
+                root = Path(directory)
+                out = self.out(root / "server", 1000)
+                identity = json.loads((out / prebuilt_game.IDENTITY).read_text())
+                identity["side"] = "server"
+                (out / prebuilt_game.IDENTITY).write_text(json.dumps(identity))
+                self.pack(out, root / "dist", with_tool=with_tool)
+                names = {path.name for path in (root / "dist").iterdir()}
+                self.assertEqual("tool-x86_64-unknown-linux-gnu.tar.xz" in names, with_tool)
 
     def test_gather_takes_every_legs_archives_once_and_one_build_data_that_all_copies_match(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(sys, "platform", "linux"):
@@ -281,9 +493,13 @@ class SdkAssetTests(unittest.TestCase):
                 (out / prebuilt_game.IDENTITY).write_text(json.dumps(identity))
                 self.pack(out, legs / f"sdk-linux-{side}")
             prebuilt_game.gather(legs, root / "dist")
+            # The client leg alone packs the target's tool: it serves both sides.
             self.assertEqual(sorted(path.name for path in (root / "dist").iterdir()), sorted(
                 [f"{kind}-x86_64-unknown-linux-gnu{suffix}.tar.xz" for kind in ("api", "engine", "runtime")
-                 for suffix in ("", "-server")] + ["build-data.tar.xz", "surface.json"]))
+                 for suffix in ("", "-server")] + ["build-data.tar.xz", "surface.json",
+                                                   "tool-x86_64-unknown-linux-gnu.tar.xz"]))
+            with tarfile.open(root / "dist" / "tool-x86_64-unknown-linux-gnu.tar.xz") as tar:
+                self.assertEqual(tar.getnames(), [".", "./" + prebuilt_game.TOOL_PROGRAM])
 
             def refused(why, change):
                 broken = root / "broken"
@@ -305,8 +521,8 @@ class SdkAssetTests(unittest.TestCase):
                 prebuilt_game.tar_xz(folder, prebuilt_game.tree(folder), leg / archive)
 
             refused("surface.json differs", lambda leg: (leg / "surface.json").write_text('{"hash": "cd"}'))
-            refused("points.json differ",
-                    lambda leg: repack(leg, "build-data.tar.xz", prebuilt_game.POINTS, "{}"))
+            refused("internals.json differ",
+                    lambda leg: repack(leg, "build-data.tar.xz", prebuilt_game.INTERNALS, "{}"))
             # The package's own copy, in the api slice, is checked too.
             refused("api-x86_64-unknown-linux-gnu-server.tar.xz: loops.json differ",
                     lambda leg: repack(leg, "api-x86_64-unknown-linux-gnu-server.tar.xz", prebuilt_game.LOOPS, "{}"))
@@ -334,6 +550,32 @@ class SdkAssetTests(unittest.TestCase):
             prebuilt_game.tar_xz(root, prebuilt_game.tree(root), root / "fixture.tar.xz")
             fixture = prebuilt_game.ROOT / "crates/sunrise-mod-package/src/sdk/fixture.tar.xz"
             self.assertEqual((root / "fixture.tar.xz").read_bytes(), fixture.read_bytes())
+
+
+class ToolBuildTests(unittest.TestCase):
+    def built_with(self, environment: dict, binary: bytes = b"tool") -> dict:
+        calls = []
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": directory}), \
+                patch.object(prebuilt_game, "rustc_host", return_value="x86_64-unknown-linux-gnu"), \
+                patch.object(prebuilt_game, "head", return_value=COMMIT), \
+                patch.object(prebuilt_game, "run", side_effect=lambda *args, **kwargs: calls.append(kwargs)):
+            os.environ.pop("SUNRISE_TOOL_COMMIT", None)
+            os.environ.update(environment)
+            release = Path(directory) / "release"
+            release.mkdir()
+            (release / prebuilt_game.TOOL_PROGRAM).write_bytes(binary)
+            prebuilt_game.tool("x86_64-unknown-linux-gnu")
+        return calls[0]["env"]
+
+    def test_the_tool_is_built_naming_the_sources_commit_unless_the_workflow_names_one(self):
+        self.assertEqual(self.built_with({})["SUNRISE_TOOL_COMMIT"], COMMIT)
+        self.assertEqual(self.built_with({"SUNRISE_TOOL_COMMIT": "d" * 40})["SUNRISE_TOOL_COMMIT"], "d" * 40)
+
+    def test_a_tool_that_reads_the_developer_sdk_key_is_never_packed(self):
+        # The release build of the real tool holds no such name; one built with debug assertions does.
+        with self.assertRaisesRegex(SystemExit, "built with debug assertions"):
+            self.built_with({}, b"\0{SUNRISE_SDK_TRUSTED_KEY} ignored: \0")
 
 
 class TrackedBlobsTests(unittest.TestCase):
@@ -373,6 +615,41 @@ class AllocatorSelectionTests(unittest.TestCase):
             self.assertEqual(prebuilt_game.cargo_features(True, platform),
                              ["--no-default-features", "--features", "system-allocator"])
 
+    def test_sdk_build_refuses_an_output_that_overlaps_its_target_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target" / "prebuilt"
+            with patch.dict(os.environ, CARGO_TARGET_DIR=str(target.parent)), \
+                    patch.object(prebuilt_game, "_build_locked") as build_locked:
+                for out in (root, target, target / "stage"):
+                    with self.subTest(out=out), self.assertRaisesRegex(SystemExit, "E_SDK_OUT_OVERLAPS_TARGET"):
+                        prebuilt_game.build(out, server=False)
+                build_locked.assert_not_called()
+            self.assertFalse(target.exists())
+
+    def test_sdk_build_preserves_a_stage_under_a_linked_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "sdk"
+            work = output / "work"
+            stage = work / "stage"
+            stage.mkdir(parents=True)
+            source = stage / "keep.rs"
+            source.write_text("// staged source\n")
+            target = root / "target" / "prebuilt"
+            target.parent.mkdir()
+            try:
+                target.symlink_to(work, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks unavailable")
+            with patch.dict(os.environ, CARGO_TARGET_DIR=str(target.parent)), \
+                    patch.object(prebuilt_game, "_build_locked") as build_locked:
+                with self.assertRaisesRegex(SystemExit, "E_SDK_OUT_OVERLAPS_TARGET"):
+                    prebuilt_game.build(output, server=False)
+                build_locked.assert_not_called()
+            self.assertEqual(source.read_text(), "// staged source\n")
+            self.assertFalse((work / ".sdk-build.lock").exists())
+
     def test_linux_keeps_mimalloc(self):
         self.assertEqual(prebuilt_game.cargo_features(False, "linux"), [])
         self.assertEqual(prebuilt_game.cargo_features(True, "linux"), ["--no-default-features"])
@@ -388,65 +665,32 @@ class AllocatorSelectionTests(unittest.TestCase):
             self.assertEqual(kwargs["env"]["SUNRISE_GAME_BUILD_ID"], "fixture-commit")
             self.assertIn("-C prefer-dynamic", kwargs["env"]["RUSTFLAGS"])
             self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", kwargs["env"])
+            self.assertEqual(kwargs["env"]["CARGO_PROFILE_RELEASE_CODEGEN_UNITS"], "1")
             raise Captured
 
-        with patch.object(prebuilt_game, "stage", return_value=Path("staged")), \
+        with tempfile.TemporaryDirectory() as target, \
+             patch.object(prebuilt_game, "stage", return_value=Path("staged")), \
              patch.object(prebuilt_game, "head", return_value="fixture-commit"), \
              patch.object(prebuilt_game, "rustc_host", return_value="fixture-host"), \
              patch.object(prebuilt_game, "run", side_effect=capture), \
-             patch.dict(prebuilt_game.os.environ, {"CARGO_ENCODED_RUSTFLAGS": "-Cprefer-dynamic=no"}):
+             patch.object(prebuilt_game, "os", ScopedOs({
+                 "CARGO_ENCODED_RUSTFLAGS": "-Cprefer-dynamic=no",
+                 # An inherited unit count must not reach the SDK game.
+                 "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
+                 "CARGO_TARGET_DIR": target})):
+            # Its own target folder: the build takes that folder's lock, never the checkout's.
             with self.assertRaises(Captured):
-                prebuilt_game.build(Path("unused-sdk"), False)
+                prebuilt_game.build(Path(target) / "unused-sdk", False)
 
 
-class ExecutableLinkPolicyTests(unittest.TestCase):
-    def test_windows_sdk_identity_keeps_the_source_executable_stack_policy(self):
-        compiler = shutil.which("rustc")
-        if compiler is None:
-            self.skipTest("requires Rust to build and run the engine's build script")
-        target = prebuilt_game.ROOT / "target"
-        target.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=target) as directory:
-            root = Path(directory)
-            # Isolate unrelated code generation/resource compilation, but execute the actual
-            # engine build script and its real shared link policy, as the SDK build does.
-            stubs = {
-                "sunrise_game_discovery": 'pub fn declarations(_: &std::path::Path, _: &[&str]) '
-                    '-> std::io::Result<String> { Ok(String::new()) } '
-                    'pub fn folder_modules(_: &std::path::Path)->Result<String,String>{Ok(String::new())}',
-                "sunrise_mod_api_gen": 'pub enum Target { Client } '
-                    'pub fn generate(_: &std::path::Path, _: &std::path::Path, _: Target) '
-                    '-> std::io::Result<()> { Ok(()) }',
-                "winresource": 'pub struct WindowsResource; impl WindowsResource { '
-                    'pub fn new() -> Self { Self } pub fn set_icon(&mut self, _: &str) {} '
-                    'pub fn set_manifest_file(&mut self, _: &str) {} '
-                    'pub fn compile(&self) -> Result<(), String> { Ok(()) } }',
-            }
-            externs = []
-            for name, code in stubs.items():
-                source = root / f"{name}.rs"
-                source.write_text(code)
-                library = root / f"lib{name}.rlib"
-                subprocess.run([compiler, "--edition=2024", "--crate-type=rlib", str(source),
-                                "-o", str(library)], check=True)
-                externs.extend(["--extern", f"{name}={library}"])
-            binary = root / ("producer.exe" if sys.platform == "win32" else "producer")
-            subprocess.run([compiler, "--edition=2024",
-                            str(prebuilt_game.ROOT / "crates/sunrise-client/build.rs"),
-                            *externs, "-o", str(binary)], check=True)
-            for target_os, env, expected in [("windows", "msvc", ["/STACK:142606336"]),
-                                      ("windows", "gnu", ["-Wl,--stack,142606336"]),
-                                      ("linux", "gnu", []), ("macos", "", ["-Wl,-stack_size,0x8800000"])]:
-                with self.subTest(os=target_os, env=env):
-                    output = root / "output"
-                    output.write_text(subprocess.check_output([str(binary)], text=True, env={
-                        **os.environ,
-                        "CARGO_MANIFEST_DIR": str(prebuilt_game.ROOT / "crates/sunrise-client"),
-                        "OUT_DIR": str(root), "CARGO_PKG_NAME": "sunrise-client",
-                        "CARGO_CFG_TARGET_OS": target_os, "CARGO_CFG_TARGET_ENV": env,
-                    }))
-                    identity = {"link_args": prebuilt_game.executable_link_args(output)}
-                    self.assertEqual(identity["link_args"], expected)
+class ScopedOs:
+    """`os` for the module under test, with its own environment: a fixture never writes the process's."""
+
+    def __init__(self, environ: dict[str, str]):
+        self.environ = environ
+
+    def __getattr__(self, name):
+        return getattr(os, name)
 
 
 class PrebuiltContentsTests(unittest.TestCase):
@@ -520,23 +764,23 @@ class PrebuiltContentsTests(unittest.TestCase):
 
         metadata = {
             "packages": [package("sunrise-mod-host", "dylib"), package("sunrise-client"),
-                         package("sunrise-mod-wasm", "rlib"), package("point_shape"), package("sunrise_core"),
+                         package("sunrise-items", "rlib"), package("mod_vocab"), package("sunrise_core"),
                          package("build_tool"), package("derive", "proc-macro"), package("macro_helper")],
             "resolve": {"nodes": [
-                node("sunrise-mod-host", ("sunrise-client", None), ("sunrise-mod-wasm", None),
-                     ("build_tool", "build")), node("sunrise-mod-wasm"),
-                node("sunrise-client", ("point_shape", None), ("sunrise_core", None), ("derive", None)),
-                node("point_shape"), node("sunrise_core"), node("build_tool"),
+                node("sunrise-mod-host", ("sunrise-client", None), ("sunrise-items", None),
+                     ("build_tool", "build")), node("sunrise-items"),
+                node("sunrise-client", ("mod_vocab", None), ("sunrise_core", None), ("derive", None)),
+                node("mod_vocab"), node("sunrise_core"), node("build_tool"),
                 node("derive", ("macro_helper", None)), node("macro_helper"),
             ]},
         }
         runtime = prebuilt_game.runtime_crates(metadata, "sunrise-mod-host")
-        self.assertEqual(runtime, {"sunrise_mod_host", "sunrise_mod_wasm", "sunrise_client", "point_shape", "sunrise_core"})
-        deps = self.folder("libpoint_shape-host.rmeta", "libpoint_shape-target.rmeta",
+        self.assertEqual(runtime, {"sunrise_mod_host", "sunrise_items", "sunrise_client", "mod_vocab", "sunrise_core"})
+        deps = self.folder("libmod_vocab-host.rmeta", "libmod_vocab-target.rmeta",
                            "libsunrise_core-one.rmeta", "libbuild_tool-one.rmeta", "libmacro_helper-one.rmeta",
-                           "libsunrise_mod_host.so", "libsunrise_mod_wasm-one.rmeta", "libsunrise_client-one.rmeta")
+                           "libsunrise_mod_host.so", "libsunrise_items-one.rmeta", "libsunrise_client-one.rmeta")
         eligible = prebuilt_game.facade_crates(deps, runtime)
-        self.assertEqual(eligible, ["sunrise_client", "sunrise_core", "sunrise_mod_host", "sunrise_mod_wasm"])
+        self.assertEqual(eligible, ["sunrise_client", "sunrise_core", "sunrise_items", "sunrise_mod_host"])
 
     def test_native_link_inventory_uses_package_identity_not_a_same_named_host_variant(self):
         def package(package_id, version, library=None):
@@ -574,7 +818,7 @@ class PrebuiltContentsTests(unittest.TestCase):
             prebuilt_game.extern_args(root, "sunrise_mod_package")
 
     def test_host_macros_pass_but_host_dependency_metadata_is_refused(self):
-        root = self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so", "deps/libsunrise_mod_host.so",
+        root = self.folder("deps/libsunrise_client.so", "deps/libsunrise_official.so", "deps/libsunrise_mod_host.so",
                            "host/libderive.so", "host/derive.dll", "host/libderive.dylib")
         write_build_data(root)
         prebuilt_game.check(root)
@@ -592,14 +836,14 @@ class PrebuiltContentsTests(unittest.TestCase):
         root = self.folder(
             "sunrise-prebuilt.json", "Cargo.lock", "native_main.rs.template", "deps/libsunrise_client.so", "deps/libmod_api-1.rmeta",
             "native/libwindows.0.52.0.a",
-            "deps/libserde_derive-2.so", "deps/libsunrise_client.dll.a", "deps/libsunrise_mod_wasm.so",
-            "deps/sunrise_mod_wasm.dll", "deps/libsunrise_mod_wasm.dylib", "deps/libsunrise_mod_host.so",
+            "deps/libserde_derive-2.so", "deps/libsunrise_client.dll.a", "deps/libsunrise_official.so",
+            "deps/sunrise_official.dll", "deps/libsunrise_official.dylib", "deps/libsunrise_mod_host.so",
         )
         write_build_data(root)
         prebuilt_game.check(root)
 
     def test_build_data_without_its_header_for_this_commit_is_refused(self):
-        root = self.folder("deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so")
+        root = self.folder("deps/libsunrise_mod_host.so", "deps/libsunrise_official.so")
         for name in prebuilt_game.BUILD_DATA:
             for broken in ('{"build": {"commit": "%s"}}' % COMMIT, '{"schema": 2, "build": {"commit": "%s"}}' % COMMIT,
                            '{"schema": 1, "build": {"commit": "%s"}}' % ("d" * 40), '{"schema": 1}', "[]", None):
@@ -615,21 +859,16 @@ class PrebuiltContentsTests(unittest.TestCase):
     def test_anything_else_is_refused(self):
         for stray in ("assets/minecraft/lang/en_us.json", "deps/Cargo.lock", "deps/client.jar", "deps/libmod_api-3.rlib", "native/libfoo.so", "deps/internals.json", "notes.txt"):
             with self.subTest(stray), self.assertRaises(SystemExit):
-                prebuilt_game.check(self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so", stray))
-
-    def test_a_folder_without_either_runtime_is_refused(self):
-        for present, missing in (("sunrise_mod_host", "sunrise-mod-wasm"), ("sunrise_mod_wasm", "sunrise-mod-host")):
-            with self.subTest(present), self.assertRaisesRegex(SystemExit, missing):
-                prebuilt_game.check(self.folder(f"deps/lib{present}.so"))
+                prebuilt_game.check(self.folder("deps/libsunrise_client.so", "deps/libsunrise_official.so", stray))
 
     def test_host_carries_engine_code_with_engine_metadata_for_mods(self):
-        root = self.folder("deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so", "deps/libsunrise_client-123.rmeta")
+        root = self.folder("deps/libsunrise_mod_host.so", "deps/libsunrise_official.so", "deps/libsunrise_client-123.rmeta")
         write_build_data(root)
         prebuilt_game.check(root)
 
-    def test_engine_and_wasm_without_host_are_refused(self):
+    def test_engine_without_host_is_refused(self):
         with self.assertRaisesRegex(SystemExit, "sunrise-mod-host"):
-            prebuilt_game.check(self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so"))
+            prebuilt_game.check(self.folder("deps/libsunrise_client.so", "deps/libsunrise_official.so"))
 
     def dll(self, root: Path, name: str, count: int, pe64: bool = True) -> None:
         # One PE section: RVA 0x1000 maps to raw offset 0x200, holding the export directory.
@@ -649,18 +888,18 @@ class PrebuiltContentsTests(unittest.TestCase):
     def test_exports_reports_every_dll(self):
         root = self.folder("deps/libsunrise_client.so")
         self.dll(root, "sunrise_client.dll", 45000)
-        self.dll(root, "sunrise_mod_wasm.dll", 12000)
+        self.dll(root, "sunrise_official.dll", 12000)
         self.dll(root, "serde_derive.dll", 1, pe64=False)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             prebuilt_game.exports(root)
-        for name, count in (("sunrise_client", 45000), ("sunrise_mod_wasm", 12000), ("serde_derive", 1)):
+        for name, count in (("sunrise_client", 45000), ("sunrise_official", 12000), ("serde_derive", 1)):
             self.assertIn(f"{name}.dll: {count} exported names", output.getvalue())
 
     def test_exports_warns_past_80_percent_without_failing(self):
-        for large in ("sunrise_client", "sunrise_mod_wasm"):
+        for large in ("sunrise_client", "sunrise_official"):
             root = self.folder("deps/libsunrise_client.so")
-            for name in ("sunrise_client", "sunrise_mod_wasm"):
+            for name in ("sunrise_client", "sunrise_official"):
                 self.dll(root, f"{name}.dll", 52429 if name == large else 52428)
             output = io.StringIO()
             with self.subTest(large), contextlib.redirect_stdout(output):
@@ -673,19 +912,19 @@ class PrebuiltContentsTests(unittest.TestCase):
     def test_exports_fails_past_90_percent_after_reporting_every_dll(self):
         root = self.folder("deps/libsunrise_client.so")
         self.dll(root, "sunrise_client.dll", 58982)
-        self.dll(root, "sunrise_mod_wasm.dll", 58981)
+        self.dll(root, "sunrise_official.dll", 58981)
         self.dll(root, "mod_api.dll", 171)
         output = io.StringIO()
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as failed:
             prebuilt_game.exports(root)
         self.assertIn("sunrise_client.dll (58,982)", str(failed.exception.code))
-        self.assertNotIn("sunrise_mod_wasm", str(failed.exception.code))
+        self.assertNotIn("sunrise_official", str(failed.exception.code))
         self.assertEqual(output.getvalue().count("exported names (Windows' limit"), 3)
 
     def test_exports_is_silent_without_dlls(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            prebuilt_game.exports(self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so"))
+            prebuilt_game.exports(self.folder("deps/libsunrise_client.so", "deps/libsunrise_official.so"))
         self.assertEqual(output.getvalue(), "")
 
 
@@ -693,21 +932,96 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class LauncherPinTests(unittest.TestCase):
+    def test_only_a_full_lowercase_sha_is_accepted_by_the_script_and_the_smoke(self):
+        script = prebuilt_game.ROOT / "tools/ci/launcher_pin.sh"
+        pin = prebuilt_game.ROOT / "tools/ci/launcher-pin"
+        original = pin.read_text()
+        try:
+            for value, accepted in (("a" * 40, True), ("A" * 40, False), ("a" * 39, False), ("main", False), ("a" * 41, False)):
+                pin.write_text(value + "\n")
+                shell = subprocess.run([str(script)], capture_output=True, text=True)
+                self.assertEqual(shell.returncode == 0, accepted, value)
+                if accepted:
+                    self.assertEqual(prebuilt_game.launcher_pin(), value)
+                else:
+                    with self.assertRaises(SystemExit):
+                        prebuilt_game.launcher_pin()
+        finally:
+            pin.write_text(original)
+        self.assertEqual(subprocess.run([str(script)], capture_output=True, text=True).stdout.strip(), original.strip())
+
+
+class LauncherCheckoutTests(unittest.TestCase):
+    def test_checks_out_the_pinned_commit_detached_and_refuses_an_unfetchable_pin(self):
+        script = prebuilt_game.ROOT / "tools/ci/launcher_checkout.sh"
+        pin_file = prebuilt_game.ROOT / "tools/ci/launcher-pin"
+        original = pin_file.read_text()
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            subprocess.run(git + ["init", "-q", str(source)], check=True)
+            commits = []
+            for name in ("one", "two"):
+                (source / "file").write_text(name)
+                subprocess.run(git + ["-C", str(source), "add", "file"], check=True)
+                subprocess.run(git + ["-C", str(source), "commit", "-q", "-m", name], check=True)
+                commits.append(subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], check=True,
+                                              capture_output=True, text=True).stdout.strip())
+            env = {**os.environ, "LAUNCHER_URL": source.as_uri(), "GIT_CONFIG_GLOBAL": os.devnull}
+            try:
+                pin_file.write_text(commits[0] + "\n")
+                done = subprocess.run([str(script), str(root / "out")], env=env, capture_output=True, text=True)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual((root / "out/file").read_text(), "one")
+                state = subprocess.run(["git", "-C", str(root / "out"), "symbolic-ref", "-q", "HEAD"], capture_output=True)
+                self.assertNotEqual(state.returncode, 0)  # detached
+                pin_file.write_text("f" * 40 + "\n")
+                done = subprocess.run([str(script), str(root / "out2")], env=env, capture_output=True, text=True)
+                self.assertNotEqual(done.returncode, 0)
+            finally:
+                pin_file.write_text(original)
+
+
 class SmokeStartTests(unittest.TestCase):
-    def test_only_expected_missing_resources_exit_is_accepted_and_homes_are_scratch(self):
+    def test_launcher_files_fetched_at_the_pin_keep_the_layout_that_includes_the_icon(self):
+        urls = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = prebuilt_game.fetch_launcher_files(Path(directory), "a" * 40, lambda url: urls.append(url) or b"x")
+            self.assertTrue((root / "src/game_app.rs").is_file())
+            self.assertTrue((root / "src/../assets/icons/sunrise.icns").is_file())
+        self.assertTrue(all("/sunrise-launcher/" + "a" * 40 + "/" in url for url in urls))
+
+    def test_start_requires_the_expected_missing_resources_exit_for_each_side(self):
         from types import SimpleNamespace
-        for code in (1, 0, 2, 3221225477):
-            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+        for side, code, launcher, refusal in (
+            ("client", 1, True, None),
+            ("server", 1, False, None),
+            ("client", 1, False, "client omitted the launcher download URL"),
+            ("server", 1, True, "server showed the launcher download URL"),
+            ("client", 0, True, "stopped before the prepared-files check"),
+            ("client", 2, True, "stopped before the prepared-files check"),
+            ("client", 3221225477, True, "stopped before the prepared-files check"),
+        ):
+            with self.subTest(side=side, code=code, launcher=launcher), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                result = subprocess.CompletedProcess([], code, stdout=prebuilt_game.NO_RESOURCES)
+                out = root / "out"
+                out.mkdir()
+                (out / prebuilt_game.IDENTITY).write_text(json.dumps({"side": side}))
+                stdout = prebuilt_game.NO_RESOURCES
+                if launcher:
+                    stdout += "\nSunrise is started from its launcher: download it at https://example.test (Download)."
+                result = subprocess.CompletedProcess([], code, stdout=stdout)
                 with patch.dict(sys.modules, {"lab": SimpleNamespace(game_env=lambda **_: {"SUNRISE_HOME": "/inherited"})}), \
+                     patch.object(prebuilt_game.sys, "platform", "linux"), \
                      patch.object(prebuilt_game.subprocess, "run", return_value=result) as run, \
                      contextlib.redirect_stdout(io.StringIO()):
-                    if code == 1:
-                        prebuilt_game.start(root / "out")
+                    if refusal is None:
+                        prebuilt_game.start(out)
                     else:
-                        with self.assertRaises(SystemExit):
-                            prebuilt_game.start(root / "out")
+                        with self.assertRaisesRegex(SystemExit, refusal):
+                            prebuilt_game.start(out)
                 environment = run.call_args.kwargs["env"]
                 for key in ("SUNRISE_HOME", "SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
                     self.assertTrue(Path(environment[key]).is_relative_to(root))

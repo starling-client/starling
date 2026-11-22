@@ -1,0 +1,5 @@
+manifest:
+refused: Cargo.toml: unsupported executable file in a content mod
+
+icon:
+unavailable

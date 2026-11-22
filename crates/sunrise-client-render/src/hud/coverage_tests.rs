@@ -2,6 +2,7 @@ use super::*;
 use crate::gfx::hud_coverage;
 
 #[test]
+#[ignore = "daily"]
 fn standalone_picture_draw_order_and_screen_exit_release() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(mut gpu) = Gpu::new() else { return };
@@ -67,16 +68,15 @@ fn standalone_picture_draw_order_and_screen_exit_release() {
     eprintln!("standalone picture GPU rendering and release exercised");
 }
 
-struct Gpu {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    hud: HudRenderer,
+pub(super) struct Gpu {
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
+    pub(super) hud: HudRenderer,
 }
 
 impl Gpu {
-    fn new() -> Option<Self> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+    pub(super) fn new() -> Option<Self> {
+        let adapter = crate::gfx::test_gpu::adapter()?;
         if !hud_coverage::supported(
             adapter.limits().max_color_attachments,
             adapter.get_downlevel_capabilities().flags,
@@ -86,7 +86,7 @@ impl Gpu {
             return None;
         }
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).ok()?;
+            crate::gfx::test_gpu::optional_device_with(&adapter, &Default::default())?;
         let atlas = device.create_texture_with_data(
             &queue,
             &wgpu::TextureDescriptor {
@@ -139,7 +139,7 @@ impl Gpu {
 
     /// `batch` drawn on the HUD's target cleared to `backdrop`, with coverage cleared to
     /// `initial`: the target's and the coverage's 8-bit texels.
-    fn draw(
+    pub(super) fn draw(
         &self,
         batch: &HudBatch,
         backdrop: f64,
@@ -235,7 +235,7 @@ impl Gpu {
     }
 }
 
-fn quad(batch: &mut HudBatch, blend: Blend, color: u32, x: f32, uv: f32) {
+pub(super) fn quad(batch: &mut HudBatch, blend: Blend, color: u32, x: f32, uv: f32) {
     let start = batch.vertices.len();
     batch.quad(
         [[x, 0.0], [x + 2.0, 0.0], [x + 2.0, 2.0], [x, 2.0]],
@@ -246,6 +246,7 @@ fn quad(batch: &mut HudBatch, blend: Blend, color: u32, x: f32, uv: f32) {
 }
 
 #[test]
+#[ignore = "daily"]
 fn coverage_follows_hud_blends_discard_scissor_and_depth_without_changing_colour() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else {
@@ -310,6 +311,7 @@ fn coverage_follows_hud_blends_discard_scissor_and_depth_without_changing_colour
 /// The HUD's target is 8-bit as vanilla's frame is, so each draw clips at white before the
 /// next blends over it: a text highlight added over a light backdrop, then a 50% black panel.
 #[test]
+#[ignore = "daily"]
 fn each_hud_draw_clips_at_white_as_on_an_8_bit_frame() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Gpu::new() else {
@@ -349,6 +351,7 @@ fn each_hud_draw_clips_at_white_as_on_an_8_bit_frame() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn coverage_preserves_each_cit_blend_and_its_destination_alpha() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(mut gpu) = Gpu::new() else {
@@ -410,18 +413,19 @@ fn coverage_preserves_each_cit_blend_and_its_destination_alpha() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn coverage_uses_pack_texts_final_alpha_and_discard() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(mut gpu) = Gpu::new() else {
         return;
     };
     // A translated-style struct result and early return; no dependency on game resources.
-    let program = crate::core_shader::CoreProgram {
-        vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p.x / 2.0 - 1.0, 1.0 - p.y, 0.0, 1.0); }").unwrap(),
-        fragment: naga::front::wgsl::parse_str("struct Result { @location(0) color: vec4<f32> } @fragment fn main(@builtin(position) p: vec4<f32>) -> Result { if p.x > 2.0 { discard; } return Result(vec4(0.4, 0.2, 0.1, 0.5)); }").unwrap(),
-        other: Vec::new(),
-    };
-    gpu.hud.set_text_shader(&gpu.device, Some(&program));
+    let program = crate::core_shader::CoreProgram::validated(
+        naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p.x / 2.0 - 1.0, 1.0 - p.y, 0.0, 1.0); }").unwrap(),
+        naga::front::wgsl::parse_str("struct Result { @location(0) color: vec4<f32> } @fragment fn main(@builtin(position) p: vec4<f32>) -> Result { if p.x > 2.0 { discard; } return Result(vec4(0.4, 0.2, 0.1, 0.5)); }").unwrap(),
+        Vec::new(),
+    );
+    gpu.hud.set_text_shader(&gpu.device, Some((&program, &[])));
     assert!(gpu.hud.pack_text.is_some());
     let mut batch = HudBatch::new(
         [4, 2],
@@ -440,16 +444,17 @@ fn coverage_uses_pack_texts_final_alpha_and_discard() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_pack_text_shader_without_a_colour_output_is_dropped_not_wrapped() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(mut gpu) = Gpu::new() else {
         return;
     };
-    let program = crate::core_shader::CoreProgram {
-        vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p, 0.0, 1.0); }").unwrap(),
-        fragment: naga::front::wgsl::parse_str("@fragment fn main() -> @location(1) vec4<f32> { return vec4(1.0); }").unwrap(),
-        other: Vec::new(),
-    };
-    gpu.hud.set_text_shader(&gpu.device, Some(&program));
+    let program = crate::core_shader::CoreProgram::validated(
+        naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p, 0.0, 1.0); }").unwrap(),
+        naga::front::wgsl::parse_str("@fragment fn main() -> @location(1) vec4<f32> { return vec4(1.0); }").unwrap(),
+        Vec::new(),
+    );
+    gpu.hud.set_text_shader(&gpu.device, Some((&program, &[])));
     assert!(gpu.hud.pack_text.is_none());
 }

@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automatinis pakartotinis prisijungimas",
+  "sunrise.extras.auto_reconnect.tooltip": "Vėl prisijungia prie serverio nutrūkus ryšiui arba paleidus iš naujo, niekada po smūgio ar uždraudimo."
+}

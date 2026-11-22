@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::place_feature", "type:PlaceFeatureRefusal"]
+why = "Adds LevelRef::place_feature: a server mod places a minecraft:worldgen/feature by id at a position, as /place feature does (PlaceCommand.placeFeature: Feature.place with the level's random and generator, after checkLoaded over the 3x3 chunks). The bool is the feature's own report: Ok(false) means it reported failure, and blocks it set before that are kept, as the command keeps them. Each refusal is checked before the feature runs, is named by PlaceFeatureRefusal (Stale, Client, NotInPlace, NotLoaded, UnknownFeature) and changes nothing. Tinkers' Construct's island trees and ender-tree propagules needed it; mods had no way to place a feature from code."
+migrate = "Additive: nothing to change."

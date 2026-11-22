@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_block_wall_pair_double_pair",
+    name: "Refused block wall pair double pair",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: refused_block_wall_pair_double_pair:second_sign: wall_block refused_block_wall_pair_double_pair:wall is already paired with refused_block_wall_pair_double_pair:sample

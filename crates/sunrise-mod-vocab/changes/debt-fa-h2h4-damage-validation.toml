@@ -1,0 +1,43 @@
+ids = [
+    "hook:apply_enchantments",
+    "hook:block_drops",
+    "hook:bonemeal",
+    "hook:build_creative_mode_tab_contents",
+    "hook:clone_item_stack",
+    "hook:container_loot_filled",
+    "hook:crafting_remainder",
+    "hook:dispense_item",
+    "hook:dispense_method",
+    "hook:item_after_vertical_collision",
+    "hook:item_fished",
+    "hook:item_picked_up_post",
+    "hook:item_stacked_on_other",
+    "hook:living_drops",
+    "hook:living_entity_use_item_finish",
+    "hook:living_get_projectile",
+    "hook:loot_drops",
+    "hook:player_swap_hands",
+    "hook:potion_brew_post",
+    "hook:potion_brew_pre",
+    "hook:pre_remove_side_effects",
+    "hook:prepare_item_craft",
+    "hook:prepare_smithing",
+    "hook:trade_with_villager",
+    "type:item::item_stack::StackError",
+    "type:item::item_stack::StackError.ConflictingDamage",
+    "type:item::item_stack::StackWriteError",
+    "type:item::item_stack::StackWriteError.DamageExceeded",
+]
+why = "Vanilla 26.3 DataComponents.DAMAGE uses ExtraCodecs.NON_NEGATIVE_INT and MAX_DAMAGE uses ExtraCodecs.POSITIVE_INT with NbtOps numeric decoding; ItemStack.validateComponents does not cap damage by max_damage. DataComponentPatch.Builder.remove replaces an earlier set in an ordered patch edit; NeoForge's DataComponentPatch patch does not change that. For a single compound containing both spellings, Sunrise normalizes damage removal to win, as it already does for other components; vanilla's persistent codec folds the decoded entries in map order instead of specifying removal priority. Remove the two invented damage refusals and version the hook writebacks whose accepted results change. container_loot_filled also observes the first vehicle slot access (even with occupied slots) without an opener, following vanilla ContainerEntity.getChestVehicleItem and LootTable.fill and NeoForge's ContainerEntity patch. Vanilla ServerPlayer.sendCarriedChange and DataComponents' integer stream codecs also require explicit zero damage and the decoded integer maximum to reach the client."
+migrate = '''
+- Remove `StackError::ConflictingDamage` match arms. Setting `!minecraft:damage` or passing both `minecraft:damage` and `!minecraft:damage` in one patch now clears any prior or incoming damage value uniformly with other `!id` removals on `ItemStack::set`, `ItemStack::set_components`, `ItemStack::apply_components`, and `ItemStack::from_nbt`, and stages `clear_damage()` overwriting any prior original or earlier staged damage on `ItemComponentEditor::set` and `ItemComponentEditor::apply_components`. Malformed `minecraft:damage` or `!minecraft:damage` values still return `Err(StackError::InvalidDamage)` on the `Result`-returning methods (`ItemStack::{set, set_components, apply_components}` and `ItemComponentEditor::{set, apply_components}`) and `None` on `ItemStack::from_nbt`.
+- A `set_components` patch with a new numeric `minecraft:damage` and no removal now overwrites the existing scalar damage instead of returning `ConflictingDamage`. Pass raw numeric damage (for example, a Float containing `2.75` to set damage `2`) directly to `ItemStack::{set, set_components, apply_components, from_nbt}`, `ItemComponentEditor::{set, apply_components}` or `ItemResource::with_component`; the codec converts it with Java's `Number.intValue` first and rejects nonnumeric tags and negative decoded results.
+- Remove `StackWriteError::DamageExceeded` match arms. Stack writes now accept any non-negative `damage` in `0..=i32::MAX` regardless of `minecraft:max_damage` (including when `max_damage` is absent or smaller). A carried `minecraft:max_damage` override uses the numeric component codec, must decode in `1..=i32::MAX` (`StackWriteError::InvalidMaximum` otherwise), and is saved and synced as an Int. An explicit unsigned value passed to `set_damage` that exceeds `i32::MAX` still fails the game write with `StackWriteError::InvalidComponents { reason: StackError::InvalidDamage }`.
+- `build_creative_mode_tab_contents` is bumped to `hook_version = 3` with the same signature; if your manifest pins this hook, request `hook_version = 3`. `CreativeTabEdit::insert` now accepts a count-one stack with valid damage (`0..=i32::MAX`) even when `damage > max_damage` or `minecraft:max_damage` is absent. Out-of-`i32`-range damage on an inserted stack or `Before`/`After` anchor in `CreativeTabEdit::insert`, or on the target stack in `CreativeTabEdit::remove`, now returns `CreativeTabEditError::Stack(StackWriteError::InvalidComponents { reason: StackError::InvalidDamage })` instead of `DamageExceeded`.
+- `container_loot_filled` keeps its callback signature; if your manifest pins it, replace `hook_version = 1` with `hook_version = 2`. Handle `event.context.opener == None` when the first read of an `ItemPlace::EntitySlot` fills a chest vehicle, even inside a player action and with items already in some slots. Later listeners now receive accepted stacks with non-negative signed-int damage above `max_damage`; don't assume that such an edit leaves the previous list intact.
+- The ordinary and count-preserving hook writebacks also keep their signatures. They now admit non-negative signed-int damage above `max_damage` (or without `max_damage`) in their writable stacks, subject to the remaining stack checks. Later listeners that read the accepted writeback, or the game that applies the final answer, receive that damage rather than the previous stack/list or a refused action. For example, a sword with damage `1000` and maximum `10` remains in the `loot_drops` list and can be sent as the `prepare_item_craft` result. If your manifest pins any of these hooks, update its `hook_version` as follows:
+  - `1` → `2`: `anvil_update`, `apply_enchantments`, `bonemeal`, `clone_item_stack`, `crafting_remainder`, `dispense_item`, `dispense_method`, `item_after_vertical_collision`, `living_drops`, `living_entity_use_item_finish`, `living_get_projectile`, `loot_drops`, `potion_brew_post`, `potion_brew_pre`, `prepare_item_craft`, `prepare_smithing`.
+  - `2` → `3`: `block_drops`, `grindstone_place`, `grindstone_take`, `item_fished`, `menu_button`, `player_swap_hands`, `pre_remove_side_effects`.
+  - `3` → `4`: `item_picked_up_post`, `menu_quick_move`, `trade_with_villager`.
+  - `4` → `5`: `item_stacked_on_other`.
+'''

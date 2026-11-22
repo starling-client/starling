@@ -1,13 +1,13 @@
 //! Saved section palettes and storage-level chunk access. Changes here do not
 //! run block behavior, lighting, heightmaps, neighbor updates or scheduled ticks.
 pub use crate::block_state_properties::BlockProperties;
+use std::collections::HashMap;
+use std::io;
 use sunrise_core::{
     position::{BlockPos, ChunkPos},
     storage::PackedStorage,
     ticks::{ChunkTicks, SavedTick, TickTypeId},
 };
-use std::collections::HashMap;
-use std::io;
 use {
     crate::{
         DATA_VERSION,
@@ -209,6 +209,8 @@ pub struct BlockState {
     pub properties: BlockProperties,
 }
 impl BlockState {
+    /// `StateDefinition.createCodec`: nested map-pair property encoders write
+    /// the last appended (greatest-name) property first.
     pub fn to_nbt(&self) -> Tag {
         let mut map = Compound::new();
         map.insert(key("id"), Tag::String(key(&self.name)));
@@ -218,6 +220,7 @@ impl BlockState {
                 Tag::Compound(
                     self.properties
                         .iter()
+                        .rev()
                         .map(|(k, v)| (key(k), Tag::String(key(v))))
                         .collect(),
                 ),
@@ -1158,7 +1161,7 @@ mod tests {
                 Tag::compound([("id", Tag::String(format!("minecraft:b{i}").as_str().into()))])
             })
             .collect();
-        let defaults: std::collections::BTreeMap<_, _> = (0..states)
+        let defaults: sunrise_core::nbt::Compound = (0..states)
             .map(|i| {
                 (
                     JavaString::from(format!("minecraft:b{i}").as_str()),

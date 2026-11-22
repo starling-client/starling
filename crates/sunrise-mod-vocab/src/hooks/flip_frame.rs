@@ -28,9 +28,14 @@ Where a frame goes decides what "presented" means when the hook runs:
   which shows it up to half a real frame later and can still fail to. The game does
   not wait, because that would hold back the next frame and undo frame generation.
   A made frame fires nothing of its own: the hook follows the real frames.
-- Offscreen, with no swapchain (agent control, a splitscreen view): the frame has
+- Offscreen, with no swapchain (for example, agent control): the frame has
   been submitted to its offscreen target.
 "#]
-    #[hook(side = "client", contract = "listen", neoforge = "FlipFrameEvent")]
+    #[hook(
+        dispatch = "flat",
+        side = "client",
+        contract = "listen",
+        neoforge = "FlipFrameEvent"
+    )]
     fn flip_frame();
 }

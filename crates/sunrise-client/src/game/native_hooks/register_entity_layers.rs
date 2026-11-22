@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::native_entity_layers::LayerRegistration;
 
 impl Game<'_> {
     /// The layers a mod adds to living entity renderers (NeoForge's
@@ -11,8 +12,8 @@ impl Game<'_> {
     /// from one load to the next, so add them again each time.
     pub(in crate::game) fn native_register_entity_layers(
         context: &mod_api::RegistrationContext,
-        layers: &mut dyn EntityLayers,
+        layers: &mut LayerRegistration<'_>,
     ) {
-        Self::fire_register_entity_layers(context, layers);
+        Self::fire_register_entity_layers(context, |listen| layers.register_listener(listen));
     }
 }

@@ -29,11 +29,12 @@ parked server levels and the current client level, without loading chunks or swa
     fn level_reads_note1();
     #[notes = r#"## Respawn data, maps, ticks, sky and sight
 
-`LevelRef::respawn_data(host)` is the world spawn and the way a player appearing there faces
-(`LevelData.getRespawnData`), and `set_respawn_data(host, pos, yaw, pitch)` is `/setworldspawn`'s
-own write: the yaw wraps and the pitch clamps as `RespawnData.of` does, a player whose respawn
-point was the old world spawn follows it, and `spawn_change` fires. Sunrise keeps one world spawn,
-in the Overworld, so only the Overworld's handle writes it.
+`LevelRef::respawn_data(host)` is the world spawn, the level it is in and the way a player
+appearing there faces (`LevelData.getRespawnData`), and `set_respawn_data(host, pos, yaw, pitch)`
+is `/setworldspawn`'s own write in the handle's level: the yaw wraps and the pitch clamps as
+`RespawnData.of` does, a player whose respawn point was the old world spawn follows it, and
+`spawn_change` fires. The world has one world spawn, so any level's handle reads the same one,
+and writing through a level moves it there.
 
 `map_data(host, id)` is a map's saved data (`MapItemSavedData`): centre, scale, dimension, the
 locked, tracking and unlimited flags and its 128 by 128 colour ids, from memory or from its
@@ -74,13 +75,25 @@ up to the fluid's height, a full block under the same fluid. `has_collisions(hos
 whether any block collision shape is in a box, with `collision_boxes`'s walk and limits and
 without building the list; entities and the world border are not part of it.
 
-`ray_trace_entities(host, from, to, margin, exclude)` lists every entity the segment passes
-through, nearest first, with where it enters each box grown by `margin` and how far that is:
-the test `ProjectileUtil.getEntityHitResult` makes on each candidate. Vanilla's filter is a
-predicate (`canHitEntity`, `isPickable`); here it is the caller's, who takes the first hit it
-accepts, for example the first living entity. A ray starting inside a box does not hit it, so
-pass the shooter as `exclude` or start outside it. Candidates are the entities `entities_in`
-finds, so spectators are never hit."#]
+Use `ray_trace_nearest_entity(host, from, to, margin, exclude, &mut accept)` if you
+only need one hit. Matching `ProjectileUtil.getEntityHitResult`, it passes each
+non-excluded candidate `EntityRef` in `visit_entities_in` order to `accept` before
+reading its bounding box and clipping against the segment. The predicate can make shared
+reads through the same host; no residency guard is held. Of the accepted candidates that
+the segment clips, the one with the smallest squared distance wins; an exact tie keeps
+the first visited hit. No accepted hit is `Ok(None)`. Non-finite geometry or unavailable
+world access returns `Err(LevelReadError::Unavailable)`; a stale level gives
+`Err(LevelReadError::Stale)`. A refused query never runs the predicate.
+
+Keep `ray_trace_entities(host, from, to, margin, exclude)` if you need the full hit list
+or must process hits nearest first. It preserves spatial traversal order for equal distances.
+
+Both queries use the test `ProjectileUtil.getEntityHitResult` makes on each candidate:
+clip against its box inflated by `margin` (`AABB.inflate`: positive grows, negative
+shrinks; any finite value is accepted) and report the entry point and distance. A ray
+starting inside the adjusted box does not hit it. `exclude` skips an entity such as the
+shooter; `visit_entities_in` supplies the candidates, so spectator guests are not hit.
+The filter (`canHitEntity`, `isPickable`) is up to the caller."#]
     fn level_reads_note2();
     #[notes = r#"## Fluid properties and the explicit fluid tick
 
@@ -110,12 +123,19 @@ queues one."#]
     fn level_reads_note4();
     #[notes = r#"## Players, structures and chunk watchers
 
-`LevelRef::online_players(host)` is `ServerLevel.players`: the online players in the level, parked or in
-place, each once under their own UUID, also while a guest's turn is running. Fake players are not
-listed, nor is a player a nested guest turn displaced, whose handle resolves again when that turn
-ends. `entities_in` stays the one area query: on a server it finds players in a box too;
-on a client it includes only the window's own player, not other players
-(arismoko/horizon#3033).
+`LevelRef::visit_online_players(host, &mut visit)` visits `ServerLevel.players` without collecting
+them. This works on active and parked server levels. In the active level, the local or acting
+player comes first, followed by placed guests in server order. A parked level has only its
+placed guests. Each resolvable player is visited once; fake players and players displaced by a
+nested guest turn are skipped. Return `ControlFlow::Break(())` to stop, or `Continue(())` for the
+next player. The walk returns `Ok(Break(()))` on an early stop and `Ok(Continue(()))` on completion,
+including an empty walk. A stale level returns `LevelReadError::Stale`; a client or unavailable
+world access returns `LevelReadError::Unavailable`. Neither calls the visitor. You can
+make shared reads on the same host inside the visitor. If you need to write or send a packet,
+collect the players you need and use the mutable host after the visit returns.
+
+`visit_entities_in` is the spatial query: it visits placed non-spectator guests on a server,
+or the tracked players and the window's own non-spectator player on a client.
 
 `find_nearest_structure(host, structure, StructureSearch::new(origin, radius))` is
 `ServerLevel.findNearestMapStructure` without skipping known starts, the search `/locate
@@ -127,7 +147,7 @@ chunks; a world without structures, a structure this level cannot generate, an o
 world's 30,000,000-block edge and a radius out of range give `None`.
 
 `ChunkRef::watchers(host)` is `ChunkMap.getPlayers(pos, false)`: the players the chunk was sent to
-and is inside the view of, from their `chunk_watch` until they move away from it. Sunrise's
-far-ring columns past the view distance are not watched, and fake players watch nothing."#]
+and is inside the view of, from their `chunk_watch` until they move away from it. Fake players
+watch nothing."#]
     fn level_reads_note5();
 }

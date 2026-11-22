@@ -33,10 +33,7 @@ impl Game<'_> {
     /// The actual direct projectile's family and saved weapon, also for explicit damage sources.
     pub(in crate::game) fn set_projectile_attack(attack: &mut Attack, shot: &Projectile) {
         attack.projectile = Some(shot.id as i32);
-        attack.projectile_is_arrow = matches!(
-            shot.kind,
-            ProjectileKind::Arrow { .. } | ProjectileKind::Trident
-        );
+        attack.projectile_kind = Self::projectile_direct_entity(&shot.kind);
         let weapon = shot.arrow.as_ref().and_then(|arrow| {
             if matches!(shot.kind, ProjectileKind::Trident) {
                 Some(&arrow.pickup_item)
@@ -45,6 +42,20 @@ impl Game<'_> {
             }
         });
         Self::set_projectile_weapon(attack, weapon);
+    }
+    /// Classify a projectile's vanilla `DamageSource.getDirectEntity()` family.
+    pub(in crate::game) fn projectile_direct_entity(
+        kind: &ProjectileKind,
+    ) -> sunrise_client::health::DirectEntity {
+        match kind {
+            ProjectileKind::Arrow { .. } | ProjectileKind::Trident => {
+                sunrise_client::health::DirectEntity::Arrow
+            }
+            ProjectileKind::LargeFireball { .. } => {
+                sunrise_client::health::DirectEntity::LargeFireball
+            }
+            _ => sunrise_client::health::DirectEntity::Projectile,
+        }
     }
     /// Only listeners need a saved weapon copy; physical family classification never does.
     pub(in crate::game) fn set_projectile_weapon(attack: &mut Attack, weapon: Option<&ItemStack>) {
@@ -55,7 +66,8 @@ impl Game<'_> {
             attack.projectile_weapon = weapon.cloned();
         }
     }
-    /// Commit the weapon only after hurtServer committed this projectile's source.
+    /// Hurt and settle a living target before the projectile resumes its on-hit work.
+    /// The weapon is committed only when hurtServer accepts this projectile's source.
     pub(in crate::game) fn damage_projectile_with_weapon(
         &mut self,
         projectile: &Projectile,
@@ -70,18 +82,25 @@ impl Game<'_> {
                 game.damage_projectile_with_weapon(projectile, id, amount, source, aim)
             });
         }
-        self.mobs
-            .iter_mut()
-            .find(|mob| mob.id == id)
-            .is_some_and(|mob| {
-                mob.damage_projectile(
-                    crate::game::entity::damage_level_of!(self, scoped),
-                    amount,
-                    source,
-                    aim,
-                    [projectile.velocity.x, projectile.velocity.z],
-                )
-            })
+        let Some(index) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| !self.mobs[i].removed)
+        else {
+            return false;
+        };
+        let plan = self.prepare_knockback_credit(id as i32, source.attacker, self.combat.attack());
+        let mut credit = plan.lend(&mut self.last_hurt_by_player);
+        let hurt = self.mobs[index].damage_projectile(
+            crate::game::entity::damage_level_of!(self, self.combat.attack(), &mut credit, None),
+            amount,
+            source,
+            aim,
+            [projectile.velocity.x, projectile.velocity.z],
+        );
+        self.finish_mob_damage_at(index);
+        self.settle_creaking_hurt(id);
+        hurt
     }
     /// What an arrow or a thrown trident hits an entity of type `victim`
     /// for (`AbstractArrow.onHitEntity`, `ThrownTrident.onHitEntity`): a
@@ -179,6 +198,30 @@ impl Game<'_> {
         pos: [f64; 3],
         source: Option<(&'static str, u32)>,
     ) {
+        let mob_drops = self
+            .ui
+            .rules
+            .bool_at(sunrise_client::gamerules::vanilla::MOB_DROPS);
+        self.drop_death_loot_items(m, player_uuid, player_killed, killer, pos, source);
+        let experience =
+            sunrise_client::mobs::drops::experience_reward(m, player_killed, mob_drops);
+        if let Some(reward) = experience.filter(|_| !consumed) {
+            let kind = crate::game::native_hooks::mob_kind(m);
+            let amount = self.living_experience_drop(m.id, &kind, player_uuid, reward);
+            self.spawn_orbs(pos, amount as u32);
+        }
+    }
+
+    /// The snapshot-dependent item half of a death; experience is handled by the caller.
+    fn drop_death_loot_items(
+        &mut self,
+        m: &mut Mob,
+        player_uuid: Option<u128>,
+        player_killed: bool,
+        killer: sunrise_world::loot::LootEntity,
+        pos: [f64; 3],
+        source: Option<(&'static str, u32)>,
+    ) {
         use sunrise_client::mobs::{DamageKind, Who, drops};
         use sunrise_world::loot::{LootDamage, LootEntity};
         let accepted = m
@@ -200,8 +243,8 @@ impl Game<'_> {
                 Some(Who::Mob(id)) => self
                     .mobs
                     .iter()
-                    .find(|o| o.id == id)
-                    .map(|o| drops::loot_entity(o, None))
+                    .any(|mob| mob.id == id)
+                    .then(|| self.target_loot_entity(crate::game::commands::Target::Mob(id)))
                     // A charged creeper's blast kills after the creeper left the list.
                     .or_else(|| {
                         self.combat
@@ -246,6 +289,12 @@ impl Game<'_> {
             .map(|o| LootEntity::new(&o.kind.id));
         let kind = crate::game::native_hooks::mob_kind(m);
         let death = drops::Death {
+            this_nbt: if loot.copies_entity_nbt() {
+                self.command_target_nbt(crate::game::commands::Target::Mob(m.id))
+                    .map(std::sync::Arc::new)
+            } else {
+                None
+            },
             loot: &loot,
             damage,
             player: player_uuid.is_some().then(player),
@@ -371,7 +420,6 @@ impl Game<'_> {
             .filter(|stack| stack.count > 0 && &*stack.item != "minecraft:air")
             .map(|stack| (stack, pos, 0))
             .collect();
-        let mut experience = None;
         for d in rest {
             match d {
                 drops::Drop::CarriedBlock(state) => {
@@ -400,7 +448,6 @@ impl Game<'_> {
                         stacks.push((stack, pos, age));
                     }
                 }
-                drops::Drop::Experience(reward) if !consumed => experience = Some(reward),
                 drops::Drop::Item(_) | drops::Drop::Stack(_) | drops::Drop::Experience(_) => {}
             }
         }
@@ -428,10 +475,6 @@ impl Game<'_> {
             recently_hit: player_killed,
         };
         self.drop_death_items(&dying, stacks, 10, |_| None);
-        if let Some(reward) = experience {
-            let amount = self.living_experience_drop(m.id, &kind, player_uuid, reward);
-            self.spawn_orbs(pos, amount as u32);
-        }
     }
 }
 

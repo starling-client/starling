@@ -1,0 +1,3 @@
+ids = ["hook:item_stacked_on_other"]
+why = "A handled replacement of the clicked slot goes through that slot's rules (#784 stage 3d). A cancelled and handled answer that changes the clicked slot is now refused when the slot is a result slot (its onTake would not run), when mayPickup refuses the stack taken out, or when mayPlace or the slot's size refuses the stack put in; the click changes nothing and the decision undoes every write the listener made. It used to assign the stacks without those rules."
+migrate = "Rebuild listeners against hook version 4. Answer a handled click with stacks the clicked slot accepts (not a result slot, a stack its mayPlace admits and that fits its size); one it does not accept refuses the click."

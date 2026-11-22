@@ -1,4 +1,5 @@
 //! Client interaction state through the production Allay predictor; no prepared resources.
+use std::{io::Write, sync::Arc};
 use sunrise_client::{
     Result,
     items::ItemStack,
@@ -8,7 +9,6 @@ use sunrise_client::{
     },
 };
 use sunrise_core::geometry::Vec3;
-use std::{io::Write, sync::Arc};
 
 fn kind() -> Arc<MobType> {
     Arc::new(MobType {

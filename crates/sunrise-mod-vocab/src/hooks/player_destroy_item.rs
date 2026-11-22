@@ -2,16 +2,27 @@
 // catalog-order: 0250
 
 pub trait Hooks {
-    /// The item `item` of the server player `player` (`name`) broke in `slot`
-    /// (`mainhand`, `offhand`, `head`, `chest`, `legs`, `feet`, `body` or
-    /// `saddle`): `LivingEntity.onEquippedItemBroken`, Bukkit's
-    /// `PlayerItemBreakEvent`. Listen only; armour has a slot, not a hand.
-    /// The player's state is swapped in. Once for each break, on a server; a
-    /// creative player and the host of a LAN world are not heard.
+    /// The player's item was used up or broke. `original` is the complete
+    /// stack before the use or durability loss, including count, damage and
+    /// components. `hand` is the hand it was in, or None for worn equipment
+    /// and ammunition consumed from the inventory. `player` and
+    /// `player_entity_id` identify the acting player, including the local host.
+    /// Listen only, after consumption or the break has applied and before a
+    /// use remainder is installed. A mining break notifies after block drops.
+    /// Both sides hear their own actions; the client does not report a break
+    /// inferred from an equipment status packet. Partial consumption, refused
+    /// actions and creative use that preserves the stack do not fire.
     #[hook(
-        side = "server",
+        dispatch = "flat",
+        side = "both",
+        version = 2,
         contract = "listen",
-        neoforge = "none (NeoForge's PlayerDestroyItemEvent carries the original stack and a hand, which armour has not; this hook only listens and names the slot instead. Bukkit's PlayerItemBreakEvent)"
+        neoforge = "PlayerDestroyItemEvent"
     )]
-    fn player_destroy_item();
+    fn player_destroy_item(
+        player: u128,
+        player_entity_id: i32,
+        original: &ItemStack,
+        hand: Option<Hand>,
+    );
 }

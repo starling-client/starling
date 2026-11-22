@@ -1,5 +1,8 @@
 # Client action pipeline design
 
+> The native contract below still applies. WebAssembly mods were removed; the parts about guests are history.
+> See [hooks and their hosts](../../modding/src/concepts/hooks-and-the-host.md) for the current native API.
+
 The window owns input, targeting, animation and prediction. The logical server owns
 combat and world changes. A single-player window uses the same client path as a window
 connected to a remote server. Client action hooks serve mods such as auto-tool, hold-attack
@@ -30,7 +33,7 @@ can veto it, and an animation already in progress can prevent a new swing from
 starting during held mining. An uncancelled use that naturally does not request a
 swing still does not request one when the flag is true. Main-hand cancellation skips
 the off-hand event. Pick retains its packet veto and never requests a swing,
-including when `swing_hand` is true. Native and wasm listeners share this decision
+including when `swing_hand` is true. Native listeners use this decision
 and the no-listener path retains vanilla behavior.
 
 Extend `interaction_key_mapping_triggered` at its existing call sites. The event should

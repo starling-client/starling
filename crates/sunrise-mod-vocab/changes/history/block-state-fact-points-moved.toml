@@ -1,0 +1,30 @@
+ids = [
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_next_weathering_stage",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_previous_weathering_stage",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_definition",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_destroy_speed",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_explosion_resistance",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_friction",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_has_block_entity",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_is_redstone_conductor",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_is_solid_render",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_light_emission",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_map_color",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_map_color_rgba",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_matches",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_replaceable",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_requires_correct_tool",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_sound",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_unwaxed",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_state_waxed",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_states_of",
+  "point:sunrise_client::game::native_block_states::Game<'_>::block_weathering_age",
+  "point:sunrise_client::game::native_block_states::Game<'_>::fluid_legacy_block",
+  "point:sunrise_client::game::native_block_states::Game<'_>::fluid_state_definition",
+  "point:sunrise_client::game::native_block_states::Game<'_>::fluid_state_validate",
+  "point:sunrise_client::game::native_block_states::Game<'_>::fluid_type_properties",
+  "point:sunrise_client::game::native_block_states::Game<'_>::weathering_state",
+]
+landed = "6597e0855f562498319f093afcf2ed1ea8d717cb"
+why = "#3349 moved the block-state fact reads out of impl Game onto a borrowed BlockTables view that Game and every level view share, so a block part's level callback can read the same facts. The reads are no longer methods of Game, so they are no longer injection points. What BlockStates answers is unchanged."
+migrate = "Read these facts through BlockStates: host.block_states() in a hook, or LevelHost::block_states() in a native part's level callback. A native mod that must replace one of these reads uses [[native.mixin]] on the matching BlockTables method in sunrise_client::game::modding::native_block_tables instead of [[inject]]."

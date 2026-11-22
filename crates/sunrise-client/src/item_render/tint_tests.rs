@@ -1,34 +1,63 @@
 use super::*;
-use sunrise_assets::{
-    item_model::{FluidAppearance, register_tint_sources},
-    resource_source::ResourceRoot,
+use mod_api::{
+    __private::{game::RegistrationContextNew, parts_installation::item_key},
+    Hooks, Identifier, ItemStack, ItemTintInput, ModEntry, RegisterItemTintSourcesEvent,
+    RegistrationContext,
+    testing::FakeHost,
 };
 use std::fs;
+use sunrise_assets::{
+    item_model::{FluidAppearance, RegisteredTintSource},
+    resource_source::ResourceRoot,
+};
 
 /// Red for one, green for two, the entry's own `default` for more.
-struct Charge;
-impl ItemEnv for Charge {
-    fn item_tint_source(
+struct ChargeMod;
+#[mod_api::__subscriptions]
+impl Hooks for ChargeMod {
+    fn register_item_tint_sources(
         &self,
-        source: &str,
-        config: &sunrise_core::nbt::Tag,
-        stack: &StackView,
-    ) -> i32 {
-        assert_eq!(source, "tintdraw:charge");
-        match stack.count {
-            1 => 0xFFCC_2211_u32 as i32,
-            2 => 0xFF11_CC22_u32 as i32,
-            _ => {
-                (match config.get("default") {
-                    Some(Tag::Int(v)) => *v,
-                    _ => panic!("expected integer default"),
-                }) as i32
-            }
-        }
+        _: &RegistrationContext,
+        event: &mut RegisterItemTintSourcesEvent<'_>,
+    ) {
+        event.register(Identifier::parse("tintdraw:charge").unwrap(), |config| {
+            let default = match config.get("default") {
+                Some(Tag::Int(v)) => *v as u32,
+                _ => return Err("expected integer default".into()),
+            };
+            Ok(
+                move |_: &dyn ClientHost, input: &ItemTintInput<'_>| match input.stack.count() {
+                    1 => 0xFFCC_2211,
+                    2 => 0xFF11_CC22,
+                    _ => default,
+                },
+            )
+        });
     }
 }
 
-fn renderer(root: &std::path::Path) -> ItemRenderer {
+struct BoundTintEnv(FakeHost);
+impl ItemDrawEnv for BoundTintEnv {}
+impl ItemEnv for BoundTintEnv {
+    fn item_tint_source(&self, source: &RegisteredTintSource, stack: &StackView) -> i32 {
+        let Some(bound) = source.0.downcast_ref::<BoundTintSource>() else {
+            return -1;
+        };
+        let Some(snapshot) = ItemStack::new(item_key(0), stack.count.max(0) as u32) else {
+            return -1;
+        };
+        let input = ItemTintInput::new(&snapshot, stack.bundle_selected);
+        bound
+            .eval
+            .owner()
+            .call("item tint source", "item_tint_source", || {
+                (bound.eval.value())(&self.0, &input)
+            })
+            .map_or(-1, |color| color as i32)
+    }
+}
+
+fn renderer(root: &std::path::Path, providers: ItemProviderTables<'_>) -> ItemRenderer {
     let write = |name: &str, data: &str| {
         let path = root.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -60,7 +89,16 @@ fn renderer(root: &std::path::Path) -> ItemRenderer {
         sunrise_world::native_load_context::DataLoadOrigin::ClientPreload,
     )
     .unwrap();
-    ItemRenderer::load(&ResourceRoot::directory(root.to_path_buf()), &data).unwrap()
+    let root = ResourceRoot::directory(root.to_path_buf());
+    ItemRenderer::load_tables(
+        &root,
+        crate::model_library::ParsedModels::load(root.source()).into_item_library(),
+        true,
+        &data,
+        None,
+        providers,
+    )
+    .unwrap()
 }
 
 fn rect() -> Rect {
@@ -87,55 +125,69 @@ fn stack(count: i32) -> StackView {
 #[test]
 fn a_registered_source_tints_each_stack_in_hand_and_in_the_inventory() {
     let root = std::env::temp_dir().join(format!("sunrise-item-tint-{}", std::process::id()));
-    register_tint_sources(vec!["tintdraw:charge".into()]);
-    let renderer = renderer(&root);
-    let sprites = HashMap::from([(
-        "tintdraw:item/grey".to_owned(),
-        Rect {
-            u0: 0.0,
-            v0: 0.0,
-            u1: 1.0,
-            v1: 1.0,
-            w: 16,
-            h: 16,
-        },
-    )]);
-    let in_hand = |count| {
-        let state = renderer.resolve(
-            &stack(count),
-            DisplayContext::FirstPersonRightHand,
-            None,
-            None,
-            0,
-            &Charge,
+    let mods: mod_api::Mods = vec![ModEntry::new("tintdraw", Box::new(ChargeMod))].into();
+    mod_platform::testing::with_mods(mods, || {
+        let mut sources = Vec::new();
+        mod_api::dispatch_register_item_tint_sources(&RegistrationContext::new(), &mut sources);
+        let (factories, kept) = bind_item_tint_factories(sources);
+        assert_eq!(kept, ["tintdraw:charge"]);
+        let renderer = renderer(
+            &root,
+            ItemProviderTables {
+                tint: Some(&factories),
+                ..Default::default()
+            },
         );
-        let mut quads = Vec::new();
-        state.submit(&renderer, &sprites, &NoHost, Mat4::IDENTITY, &mut quads);
-        quads.iter().map(|q| q.color).collect::<Vec<_>>()
-    };
-    assert_eq!(in_hand(1), [0xFFCC_2211]);
-    assert_eq!(in_hand(2), [0xFF11_CC22]);
-    assert_eq!(in_hand(3), [0xFF00_00FF]);
+        let env = BoundTintEnv(FakeHost::new());
+        let sprites = HashMap::from([(
+            "tintdraw:item/grey".to_owned(),
+            Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 16,
+                h: 16,
+            },
+        )]);
+        let in_hand = |count| {
+            let state = renderer.resolve(
+                &stack(count),
+                DisplayContext::FirstPersonRightHand,
+                None,
+                None,
+                0,
+                &env,
+            );
+            let mut quads = Vec::new();
+            state.submit(&renderer, &sprites, &NoHost, Mat4::IDENTITY, &mut quads);
+            quads.iter().map(|q| q.color).collect::<Vec<_>>()
+        };
+        assert_eq!(in_hand(1), [0xFFCC_2211]);
+        assert_eq!(in_hand(2), [0xFF11_CC22]);
+        assert_eq!(in_hand(3), [0xFF00_00FF]);
 
-    let in_inventory = |count| {
-        let state = renderer.resolve(&stack(count), DisplayContext::Gui, None, None, 0, &Charge);
-        let mut batch = crate::hud::HudBatch::scratch([64, 64]);
-        gui::draw(
-            &state, &renderer, &sprites, &NoHost, &mut batch, 0.0, 0.0, 0.0, 0.0, 0.0,
-        );
-        let mut colors: Vec<_> = batch.vertices.iter().map(|v| v.color).collect();
-        colors.dedup();
-        colors
-    };
-    // Vertex colours are `0xAABBGGRR`, and the same slot draws each stack's own colour.
-    assert_eq!(in_inventory(1), [0xFF11_22CC]);
-    assert_eq!(in_inventory(2), [0xFF22_CC11]);
-    assert_eq!(in_inventory(1), [0xFF11_22CC]);
+        let in_inventory = |count| {
+            let state = renderer.resolve(&stack(count), DisplayContext::Gui, None, None, 0, &env);
+            let mut batch = crate::hud::HudBatch::scratch([64, 64]);
+            gui::draw(
+                &state, &renderer, &sprites, &NoHost, &mut batch, 0.0, 0.0, 0.0, 0.0, 0.0,
+            );
+            let mut colors: Vec<_> = batch.vertices.iter().map(|v| v.color).collect();
+            colors.dedup();
+            colors
+        };
+        // Vertex colours are `0xAABBGGRR`, and the same slot draws each stack's own colour.
+        assert_eq!(in_inventory(1), [0xFF11_22CC]);
+        assert_eq!(in_inventory(2), [0xFF22_CC11]);
+        assert_eq!(in_inventory(1), [0xFF11_22CC]);
+    });
     fs::remove_dir_all(root).unwrap();
 }
 
 /// The host's answer for `tintdraw:gas`, and for no fluid at all.
 struct Gas(Option<&'static str>);
+impl ItemDrawEnv for Gas {}
 impl ItemEnv for Gas {
     fn stack_fluid(&self, _stack: &StackView) -> Option<&str> {
         self.0
@@ -161,7 +213,14 @@ fn a_fluid_containers_fluid_layer_takes_the_fluids_sprite_and_tint() {
         fs::write(path, data).unwrap();
     };
     write("items.json", "{}");
-    write("assets/minecraft/atlases/items.json", r#"{"sources":[]}"#);
+    write(
+        "assets/minecraft/atlases/items.json",
+        r#"{"sources":[{"type":"directory","source":"item","prefix":"item/"}]}"#,
+    );
+    write(
+        "assets/minecraft/atlases/blocks.json",
+        r#"{"sources":[{"type":"directory","source":"block","prefix":"block/"}]}"#,
+    );
     // A fully opaque base and mask: both layers cover the item, so each extrudes
     // 16*4 edge faces and a front and back face.
     super::glint_tests::png(

@@ -101,6 +101,7 @@ fn category(book: &str, id: &str, recipe: &str) -> RecipeBookCategory {
         target_menu: "demo:menu".into(),
         search_group: format!("{book}_search"),
         icon: "demo:icon".into(),
+        secondary_icon: None,
         recipe_type: "demo:type".into(),
         displays: vec![mod_api::RecipeBookDisplayEntry {
             recipe: recipe.into(),
@@ -131,6 +132,98 @@ fn five_layouts_have_independent_expected_cells() {
             .collect();
         assert_eq!(actual, expected);
     }
+}
+#[test]
+fn a_category_tab_carries_its_secondary_icon() {
+    let mut two_icons = category("demo:first", "demo:a", "demo:one");
+    two_icons.secondary_icon = Some("demo:sauce".into());
+    let plain = category("demo:first", "demo:b", "demo:two");
+    let index = ModBookIndex::build(vec![two_icons, plain], &Resources).unwrap();
+    let book = key("demo:first");
+    let panel = index.panel("demo:menu", &book).unwrap();
+    let view = panel
+        .prepare(&Resolver)
+        .presentation(None, "", false, 0, &Resolver);
+    let icons: Vec<_> = view.tabs.iter().map(|t| t.icons.clone()).collect();
+    assert_eq!(
+        icons,
+        [
+            ("minecraft:compass".to_owned(), None),
+            ("demo:icon".to_owned(), Some("demo:sauce".to_owned())),
+            ("demo:icon".to_owned(), None),
+        ]
+    );
+}
+#[test]
+fn custom_display_shows_its_non_empty_slots_in_order() {
+    let custom = Display::Custom {
+        slots: vec![item("a"), Slot::Empty, item("b"), item("bowl")],
+        result: item("meal"),
+        station: item("station"),
+    };
+    let shown: Vec<_> = cells(&custom, &Resolver)
+        .iter()
+        .map(|(x, y, s)| (*x, *y, s[0].item.to_string()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (0, 0, "demo:a".to_owned()),
+            (2, 0, "demo:b".to_owned()),
+            (0, 1, "demo:bowl".to_owned())
+        ]
+    );
+    assert_eq!(result(&custom), &item("meal"));
+}
+/// Matches ingredients against real stock counts, as the game's resolver does.
+struct Stocked(crate::menu::place::Stacked);
+impl DisplayResolver for Stocked {
+    fn resolve(&self, slot: &Slot) -> Vec<ItemStack> {
+        Resolver.resolve(slot)
+    }
+    fn craftable(&self, _: &str, _: &Display, ingredients: &[crate::crafting::Ingredient]) -> bool {
+        self.0.can_craft(&ingredients.iter().collect::<Vec<_>>())
+    }
+    fn search_text(&self, stacks: &[ItemStack]) -> String {
+        Resolver.search_text(stacks)
+    }
+}
+fn stock(items: &[(&str, i32)]) -> Stocked {
+    let mut stacked = crate::menu::place::Stacked::default();
+    for (id, count) in items {
+        stacked.account(&std::sync::Arc::from(*id), *count);
+    }
+    Stocked(stacked)
+}
+#[test]
+fn custom_display_is_craftable_only_when_every_non_empty_slot_is_stocked() {
+    let mut pot = category("demo:first", "demo:a", "demo:meal");
+    pot.displays[0].displays = vec![Display::Custom {
+        slots: vec![item("a"), Slot::Empty, item("a"), item("bowl")],
+        result: item("meal"),
+        station: item("station"),
+    }];
+    let index = ModBookIndex::build(vec![pot], &Resources).unwrap();
+    let book = key("demo:first");
+    let panel = index.panel("demo:menu", &book).unwrap();
+    let prepared = panel.prepare(&Resolver);
+    let listed = |stock: &Stocked, filtering: bool| {
+        let view = prepared.presentation(None, "", filtering, 0, stock);
+        view.recipes
+            .iter()
+            .map(|r| (r.recipe.clone(), r.button.has_craftable))
+            .collect::<Vec<_>>()
+    };
+    let meal = |craftable| vec![("demo:meal".to_owned(), craftable)];
+    // The station is never in the inventory, and never needed.
+    let enough = stock(&[("demo:a", 2), ("demo:bowl", 1)]);
+    assert_eq!(listed(&enough, true), meal(true));
+    let one_a = stock(&[("demo:a", 1), ("demo:bowl", 1)]);
+    assert_eq!(listed(&one_a, true), []);
+    assert_eq!(listed(&one_a, false), meal(false));
+    let no_bowl = stock(&[("demo:a", 2)]);
+    assert_eq!(listed(&no_bowl, true), []);
+    assert_eq!(listed(&no_bowl, false), meal(false));
 }
 #[test]
 fn panel_search_selection_and_inventory_filter_are_isolated() {

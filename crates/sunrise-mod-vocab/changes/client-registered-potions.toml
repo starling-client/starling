@@ -1,0 +1,2 @@
+ids = ["method:prelude::ItemsClientHost::potions", "type:PotionInfo", "handle:PotionInfo::new"]
+why = "Additive client read potions() -> Vec<PotionInfo> lists the registered potions (Registries.POTION) in registry order, each by its registry id, so a recipe viewer can build potion, splash, lingering and tipped-arrow entries per potion with the potion contents component. PotionInfo is a new non-exhaustive Wire value type."

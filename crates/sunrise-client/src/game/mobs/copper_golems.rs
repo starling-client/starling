@@ -4,6 +4,7 @@
 //! shearing interactions.
 use super::Game;
 use super::level_sounds::LevelSound;
+use mod_api::SoundSource;
 use sunrise_client::{
     containers::BlockEntity,
     items::ItemStack,
@@ -14,7 +15,6 @@ use sunrise_client::{
 };
 use sunrise_core::random::RandomSource;
 use sunrise_world::chunk::BlockState;
-use mod_api::SoundSource;
 
 use sunrise_core::nbt::{Compound, Tag};
 
@@ -43,6 +43,10 @@ impl Game<'_> {
     /// the clients see the block event (`openerCountChanged`).
     pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool, mob: u32) {
         let key = (chest[0], chest[1], chest[2]);
+        if self.mod_menu_at(key).is_some() {
+            self.mod_container_opener(key, open, Some(sunrise_client::mobs::Who::Mob(mob)), 3.0);
+            return;
+        }
         let entry = self.world.chest_openers.entry(key).or_insert((0, 0.0));
         let before = entry.0;
         if open {
@@ -77,7 +81,7 @@ impl Game<'_> {
     ) {
         let key = (chest[0], chest[1], chest[2]);
         if let Some(e) = self.world.block_entities.get_mut(&key)
-            && let Some(s) = e.slots_mut().get_mut(slot)
+            && let Some(s) = e.slot_mut(slot)
         {
             *s = stack;
             // TransportItemsBetweenContainers calls Container.setChanged.
@@ -172,25 +176,41 @@ impl Game<'_> {
     }
     /// `CopperGolem.turnToStatue`, which its weathering asked for.
     pub(super) fn golem_become_statue(&mut self, id: u32) {
-        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+        let Some(i) = self.mobs.iter().position(|m| m.id == id && !m.removed) else {
             return;
         };
-        self.with_entity_held_out(id, |game| {
+        let statue_at = self.with_entity_held_out(id, |game| {
             let mut m = game.mobs[i].clone();
-            game.golem_turn_to_statue(&mut m);
-            if !game
-                .persist
-                .removals
-                .contains(&super::commands::Target::Mob(id))
-                && let Some(i) = game.mobs.iter().position(|x| x.id == id)
-            {
+            let became_statue = game.golem_turn_to_statue(&mut m);
+            let position = m.position.components();
+            if let Some(i) = game.mobs.iter().position(|x| x.id == id && !x.removed) {
                 game.mobs.update(i, |owner| {
                     sunrise_client::join_seq::store_back(owner, m);
                 });
             }
+            became_statue.then_some(position)
         });
+        if let Some(at) = statue_at {
+            self.remove_mob_now(id, false);
+            self.audio.play(
+                "minecraft:entity.copper_golem_become_statue",
+                Some(at),
+                1.0,
+                1.0,
+            );
+            if self
+                .mob_object(id)
+                .is_some_and(|mob| mob.extra.leash.is_some())
+            {
+                let drop = self
+                    .ui
+                    .rules
+                    .bool_at(sunrise_client::gamerules::vanilla::ENTITY_DROPS);
+                self.break_leash(id, drop, false);
+            }
+        }
     }
-    fn golem_turn_to_statue(&mut self, m: &mut Mob) {
+    fn golem_turn_to_statue(&mut self, m: &mut Mob) -> bool {
         let pos = [
             m.position.x.floor() as i32,
             m.position.y.floor() as i32,
@@ -213,10 +233,10 @@ impl Game<'_> {
         };
         let registry = self.pack.assets.registry;
         let Some(id) = registry.id(&state) else {
-            return;
+            return false;
         };
         if self.level_set(pos, id).is_err() {
-            return;
+            return false;
         }
         // `createStatue`: the golem's custom name goes into the statue's components.
         let mut components = Compound::new();
@@ -229,17 +249,7 @@ impl Game<'_> {
         );
         self.golem_drop_equipment(m);
         m.extra.opened_chest = None;
-        if m.extra.leash.is_some() {
-            self.break_leash(m.id, true, false);
-            m.extra.leash = None;
-        }
-        m.removed = true;
-        self.audio.play(
-            "minecraft:entity.copper_golem_become_statue",
-            Some([m.position.x, m.position.y, m.position.z]),
-            1.0,
-            1.0,
-        );
+        true
     }
     /// The golem's `CustomName` as a component: the styled name it was loaded
     /// or summoned with while it still matches the plain name, else the plain one.

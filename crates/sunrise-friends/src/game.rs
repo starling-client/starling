@@ -7,6 +7,7 @@ use crate::{
     guest::{self, GuestConfig},
     invite::{Parsed, parse},
 };
+use std::net::SocketAddr;
 use sunrise_platform::{
     hooks::{
         Hooks,
@@ -14,7 +15,6 @@ use sunrise_platform::{
     },
     version::{PROTOCOL_VERSION, VANILLA_VERSION},
 };
-use std::net::SocketAddr;
 
 /// What `sunrise-official` registers: Play with Friends' hooks.
 pub static HOOKS: Friends = Friends;

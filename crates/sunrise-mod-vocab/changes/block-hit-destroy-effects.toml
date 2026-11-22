@@ -1,0 +1,3 @@
+ids = ["hook:add_hit_effects", "hook:add_destroy_effects", "type:AddHitEffectsEvent", "type:AddDestroyEffectsEvent", "type:HookId"]
+why = "Adds the client BlockPart hooks add_hit_effects and add_destroy_effects, version 1: NeoForge's IClientBlockExtensions.addHitEffects and addDestroyEffects, so a block Part can replace the debris a hit or a destroy spawns, with LevelRef::add_terrain_particle and add_breaking_particles to spawn vanilla's own. HookId gains their variants."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the two new arms; one with a wildcard arm compiles unchanged."

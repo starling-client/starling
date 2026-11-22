@@ -1,0 +1,6 @@
+ids = [
+    "type:ItemPlace",
+    "type:MobGoalEntry",
+]
+why = "ItemPlace is a process-local handle (its Mod variant previously relied on the general static-string Wire decoder) and MobGoalEntry is a local mob-goal inspection record carrying a static goal id. The general &'static str Wire decoder and its interner (wire::intern, impl Wire for &str, and &'static str fields in #[derive(Wire)]) have been removed so general Wire string decoding produces only owned text. Typed payloads still reject LevelKey, while LevelKey's ordinary Wire codec is unchanged. This is a Sunrise-only Wire cleanup with no vanilla or NeoForge counterpart."
+migrate = "Keep ItemPlace values in-process rather than encoding or decoding them with Wire. If a custom typed payload needs to refer to a target, define an owned #[derive(Wire)] record containing only the needed fields (such as String, u128, [i32; 3], or usize) instead of embedding ItemPlace. Keep MobGoalEntry local, or encode an owned #[derive(Wire)] record with priority, id.to_owned(), and running. Replace &str or &'static str fields in #[derive(Wire)] types and Reader::decode::<&str> or Reader::decode::<&'static str> calls with owned string types (String, Cow<'static, str>, Box<str>, or Arc<str>). Writer::put(\"...\") via Put for str remains available for encoding string slices."

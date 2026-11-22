@@ -1,0 +1,20 @@
+ids = [
+    "hook:screen",
+    "hook:screen.block",
+    "hook:screen_click",
+    "hook:screen_click.block",
+    "hook:screen_draw",
+    "hook:screen_draw.block",
+    "hook:screen_tooltip",
+    "hook:screen_tooltip.block",
+    "method:BlockEntityPart::screen",
+    "method:BlockEntityPart::screen_click",
+    "method:BlockEntityPart::screen_draw",
+    "method:BlockEntityPart::screen_tooltip",
+    "type:ScreenEvent.block",
+    "type:ScreenClickEvent.block",
+    "type:ScreenDrawEvent.block",
+    "type:ScreenTooltipEvent.block",
+]
+why = "A screen belongs to its menu type, not its block, so a menu opened without a block can have a screen too. The four screen hooks are scoped and keyed by menu type and leave BlockEntityPart; each event's block is present only when the menu was opened for a mod block."
+migrate = "Move the four screen hooks from BlockEntityPart to a MenuPart registered with r.menu_part for the menu type. Read event.menu for that type; event.block is Some only if the menu was opened for a mod block whose container opens that type. Use one owning part per mod menu type, or one per mod on a vanilla menu type."

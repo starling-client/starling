@@ -1,9 +1,9 @@
 //! Authoritative custom displays, with slot examples resolved in the server's context.
 use super::api_values::TryIntoApi;
 use super::*;
-use sunrise_client::recipe_book::{DisplayResources, placement_sync as sync};
 use mod_api::{RecipeBookDisplay as Display, RecipeSlotDisplay as Slot};
 use std::result::Result;
+use sunrise_client::recipe_book::{DisplayResources, placement_sync as sync};
 
 impl Game<'_> {
     fn concretize_mod_book_slot(&self, slot: &mut Slot) -> Result<(), sync::Refusal> {
@@ -33,6 +33,11 @@ impl Game<'_> {
             }
             | Display::Shapeless {
                 ingredients,
+                result,
+                station,
+            }
+            | Display::Custom {
+                slots: ingredients,
                 result,
                 station,
             } => {
@@ -124,30 +129,31 @@ impl Game<'_> {
             .declaration()
             .clone();
         let generation = index.generation();
-        let mut declarations: Vec<_> = index
-            .categories()
-            .filter(|category| {
-                category.target_menu == menu.as_str() && category.book.as_str() == book.as_str()
-            })
-            .cloned()
-            .collect();
-        for category in &mut declarations {
-            category
-                .displays
-                .retain(|entry| before.known.contains(&entry.recipe));
-            for entry in &mut category.displays {
-                for display in &mut entry.displays {
+        let mut declarations = Vec::new();
+        for category in index.categories().filter(|category| {
+            category.target_menu == menu.as_str() && category.book.as_str() == book.as_str()
+        }) {
+            let mut entries = Vec::new();
+            for entry in &category.displays {
+                if !before.known.contains(&entry.recipe) {
+                    continue;
+                }
+                let mut displays = entry.displays.clone();
+                for display in &mut displays {
                     self.concretize_mod_book_display(display)?;
                 }
+                entries.push(sync::BorrowedDisplayEntry {
+                    recipe: entry.recipe.as_str(),
+                    displays,
+                    placement: entry.placement.as_ref(),
+                });
             }
+            declarations.push(sync::BorrowedCategory {
+                category,
+                displays: entries,
+            });
         }
-        let mut writer = mod_api::wire::Writer::new();
-        writer.limit(sync::MAX_CATALOG_BYTES);
-        writer.put(&declarations);
-        if writer.error().is_some() {
-            return Err(Refusal::TooLarge);
-        }
-        let bytes = writer.into_bytes();
+        let bytes = sync::encode_borrowed_catalogue(&declarations)?;
         if !self.mod_book_menu_unchanged(&before) {
             return Err(Refusal::Changed);
         }
@@ -167,8 +173,9 @@ impl Game<'_> {
         let displays = declarations
             .iter()
             .flat_map(|category| &category.displays)
-            .map(|entry| (entry.recipe.clone(), entry.displays.len() as u32))
+            .map(|entry| (entry.recipe.to_owned(), entry.displays.len() as u32))
             .collect();
+        drop(declarations);
         let authority = self
             .native_net
             .placement

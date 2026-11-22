@@ -1,5 +1,5 @@
 //! Hint rows: a controller's glyphs and what pressing them does, "(A) Jump". The gameplay guide,
-//! the controller notice, splitscreen's prompts and the on-screen keyboard all show them; they
+//! controller notices and the on-screen keyboard all show them; they
 //! measure and draw them here, so their spacing and their fitting are the same everywhere.
 //!
 //! A row is its glyphs (`pad_glyph::Glyph`, already in the player's glyphs and letters) and its
@@ -74,12 +74,6 @@ pub const NOTICE: Look = Look {
     gap: 5.0,
     between: 1.0,
     side: Side::Leading,
-};
-
-/// The answers of a splitscreen prompt: a little lighter than a notice's line.
-pub const PROMPT: Look = Look {
-    color: rgba(220, 220, 220, 255),
-    ..NOTICE
 };
 
 /// GUI px of plate a plated row keeps on its caption's side (`draw_plated`); the glyphs' art
@@ -369,9 +363,8 @@ mod tests {
                 );
             }
 
-            // The controller notice's first line (controller_notice.rs) and a splitscreen
-            // prompt's answer (game/split/hud.rs): the glyph at `lx`, the words past it.
-            for (look, grey) in [(NOTICE, 200), (PROMPT, 220)] {
+            // A controller notice: the glyph at `lx`, the words past it.
+            {
                 let lx = 77.0;
                 let mut old = batch();
                 pad_glyph::draw(&mut old, &atlas, a, lx, 50.0);
@@ -381,13 +374,13 @@ mod tests {
                     caption,
                     lx + indent,
                     50.0,
-                    rgba(grey, grey, grey, 255),
+                    rgba(200, 200, 200, 255),
                     false,
                 );
                 let mut new = batch();
                 let row = HintRow::new([a], caption);
-                draw_hint(&mut new, &atlas, &row, &look, lx - 1.0, 50.0);
-                assert_eq!(drawn(&new), drawn(&old), "{caption:?} with {look:?}");
+                draw_hint(&mut new, &atlas, &row, &NOTICE, lx - 1.0, 50.0);
+                assert_eq!(drawn(&new), drawn(&old), "{caption:?}");
             }
         }
 

@@ -1,7 +1,7 @@
 //! The plugin channels a client announces (`minecraft:register`, `minecraft:unregister`):
 //! NUL-separated identifiers, as Bukkit's `StandardMessenger` and Velocity read them.
 //! The server keeps them per connection, in configuration and play, for mods to read.
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// The channel lists' payload channels.
 pub const REGISTER: &str = "minecraft:register";
@@ -13,7 +13,7 @@ pub const MAX_CHANNEL_LEN: usize = 64;
 
 /// One connection's announced channels, in announcement order.
 #[derive(Debug, Default)]
-pub struct AnnouncedChannels(Mutex<Vec<String>>);
+pub struct AnnouncedChannels(Mutex<Arc<[String]>>);
 
 /// Whether `channel` is one of the two list channels the engine consumes.
 pub fn is_list_channel(channel: &str) -> bool {
@@ -31,30 +31,36 @@ impl AnnouncedChannels {
             UNREGISTER => false,
             _ => return false,
         };
-        let mut list = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut snapshot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut updated: Option<Vec<String>> = None;
         for entry in data.split(|&b| b == 0) {
             let Some(id) = valid(entry) else {
                 continue;
             };
+            let list = updated.as_deref().unwrap_or(snapshot.as_ref());
             let known = list.iter().position(|c| c == id);
             match (register, known) {
-                (true, None) if list.len() < MAX_CHANNELS => list.push(id.to_owned()),
+                (true, None) if list.len() < MAX_CHANNELS => {
+                    updated
+                        .get_or_insert_with(|| snapshot.to_vec())
+                        .push(id.to_owned());
+                }
                 (false, Some(at)) => {
-                    list.remove(at);
+                    updated.get_or_insert_with(|| snapshot.to_vec()).remove(at);
                 }
                 _ => {}
             }
         }
+        if let Some(updated) = updated {
+            *snapshot = updated.into();
+        }
         true
     }
-    /// The channels, in announcement order.
-    pub fn list(&self) -> Vec<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+    /// Shares the current announcement order. The snapshot needs no lock after this call.
+    pub fn list(&self) -> Arc<[String]> {
+        Arc::clone(&self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }
-    /// Moves the list collected during configuration into the play connection's.
+    /// Transfers the configuration snapshot into the play connection's list.
     pub fn take_from(&self, other: &AnnouncedChannels) {
         let taken = std::mem::take(&mut *other.0.lock().unwrap_or_else(PoisonError::into_inner));
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = taken;
@@ -89,11 +95,37 @@ mod tests {
             REGISTER,
             b"voicechat:secret\0bungeecord:main\0voicechat:secret"
         ));
-        assert_eq!(channels.list(), ["voicechat:secret", "bungeecord:main"]);
+        let first = channels.list();
+        assert_eq!(first.as_ref(), ["voicechat:secret", "bungeecord:main"]);
         assert!(channels.apply(UNREGISTER, b"voicechat:secret\0not:there"));
-        assert_eq!(channels.list(), ["bungeecord:main"]);
+        let withdrawn = channels.list();
+        assert_eq!(withdrawn.as_ref(), ["bungeecord:main"]);
         assert!(!channels.apply("minecraft:brand", b"vanilla"));
-        assert_eq!(channels.list(), ["bungeecord:main"]);
+        assert!(channels.apply(REGISTER, b"bungeecord:main"));
+        assert!(channels.apply(UNREGISTER, b"not:there"));
+        assert!(Arc::ptr_eq(&withdrawn, &channels.list()));
+        assert!(channels.apply(REGISTER, b"voicechat:secret\0bungeecord:main"));
+        let reregistered = channels.list();
+        assert_eq!(
+            reregistered.as_ref(),
+            ["bungeecord:main", "voicechat:secret"]
+        );
+
+        let play = AnnouncedChannels::default();
+        assert!(play.apply(REGISTER, b"old:channel"));
+        let replaced = play.list();
+        play.take_from(&channels);
+        assert!(channels.list().is_empty());
+        assert!(Arc::ptr_eq(&reregistered, &play.list()));
+        assert!(play.apply(UNREGISTER, b"bungeecord:main"));
+        assert_eq!(play.list().as_ref(), ["voicechat:secret"]);
+        assert_eq!(replaced.as_ref(), ["old:channel"]);
+        assert_eq!(
+            reregistered.as_ref(),
+            ["bungeecord:main", "voicechat:secret"]
+        );
+        assert_eq!(withdrawn.as_ref(), ["bungeecord:main"]);
+        assert_eq!(first.as_ref(), ["voicechat:secret", "bungeecord:main"]);
     }
 
     #[test]
@@ -119,11 +151,6 @@ mod tests {
         assert_eq!(list.len(), MAX_CHANNELS);
         assert_eq!(list[0], "ok:first");
         assert!(channels.apply(REGISTER, &vec![0xff; 1 << 16]));
-        assert_eq!(channels.list(), list);
-        let configured = AnnouncedChannels::default();
-        configured.apply(REGISTER, b"cfg:channel");
-        channels.take_from(&configured);
-        assert_eq!(channels.list(), ["cfg:channel"]);
-        assert!(configured.list().is_empty());
+        assert!(Arc::ptr_eq(&list, &channels.list()));
     }
 }

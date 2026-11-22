@@ -16,8 +16,8 @@ fn add_listener_attributes_its_calls_to_the_registering_mod() {
         fn prepare(
             &self,
             _: &ClientReloadContext,
-        ) -> Result<Box<dyn ReloadApply>, ReloadResourceError> {
-            Ok(<dyn ReloadApply>::new(|| {}))
+        ) -> Result<Box<dyn FnOnce() + Send + 'static>, ReloadResourceError> {
+            Ok(Box::new(|| {}))
         }
     }
     let guard = mod_api::content::crash::enter_native_mod(mod_api::content::crash::ModCall {

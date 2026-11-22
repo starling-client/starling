@@ -116,8 +116,6 @@ pub enum RadialAction {
     ToggleGui,
     SmoothCamera,
     SocialInteractions,
-    /// Sunrise's emote wheel; it opens only with cosmetics on.
-    Emote,
     HotbarPrevious,
     HotbarNext,
     Fullscreen,
@@ -130,8 +128,7 @@ pub enum RadialAction {
 #[cfg(test)]
 const SUNRISE: &str = "sunrise:";
 /// Ids a slot was saved under before, and the action each is now.
-const ALIASES: [(&str, RadialAction); 3] = [
-    ("key.emote", RadialAction::Emote),
+const ALIASES: [(&str, RadialAction); 2] = [
     (
         crate::gamepad::HOTBAR_PREVIOUS,
         RadialAction::HotbarPrevious,
@@ -140,7 +137,7 @@ const ALIASES: [(&str, RadialAction); 3] = [
 ];
 impl RadialAction {
     /// Every action a slot can hold.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 17] = [
         Self::Inventory,
         Self::Chat,
         Self::Command,
@@ -153,7 +150,6 @@ impl RadialAction {
         Self::ToggleGui,
         Self::SmoothCamera,
         Self::SocialInteractions,
-        Self::Emote,
         Self::HotbarPrevious,
         Self::HotbarNext,
         Self::Fullscreen,
@@ -161,10 +157,9 @@ impl RadialAction {
         Self::DebugOverlay,
     ];
     /// Its id in the settings file: a vanilla key mapping's name (`key.chat`), or one of
-    /// Sunrise's own in its namespace (`sunrise:emote`).
+    /// Sunrise's own in its namespace (`sunrise:hotbar_next`).
     pub fn id(self) -> &'static str {
         match self {
-            Self::Emote => "sunrise:emote",
             Self::HotbarPrevious => "sunrise:hotbar_previous",
             Self::HotbarNext => "sunrise:hotbar_next",
             other => other.action(),
@@ -185,7 +180,6 @@ impl RadialAction {
             Self::ToggleGui => "key.toggleGui",
             Self::SmoothCamera => "key.smoothCamera",
             Self::SocialInteractions => "key.socialInteractions",
-            Self::Emote => "key.emote",
             Self::HotbarPrevious => crate::gamepad::HOTBAR_PREVIOUS,
             Self::HotbarNext => crate::gamepad::HOTBAR_NEXT,
             Self::Fullscreen => "key.fullscreen",
@@ -225,7 +219,6 @@ impl RadialAction {
             Self::ToggleGui => "sunrise.radial.action.key_toggleGui",
             Self::SmoothCamera => "sunrise.radial.action.key_smoothCamera",
             Self::SocialInteractions => "sunrise.radial.action.key_socialInteractions",
-            Self::Emote => "sunrise.radial.action.key_emote",
             Self::HotbarPrevious => "sunrise.radial.action.pad_hotbarPrevious",
             Self::HotbarNext => "sunrise.radial.action.pad_hotbarNext",
             Self::Fullscreen => "sunrise.radial.action.key_fullscreen",
@@ -1706,12 +1699,6 @@ mod tests {
                 None,
             ]
         );
-        // Emote runs only with cosmetics on: the picker has it, the defaults don't.
-        assert!(
-            (0..pages.len()).all(|i| !actions(i).contains(&Some(A::Emote))),
-            "a default slot that may not run"
-        );
-        assert!(RadialAction::ALL.contains(&A::Emote));
     }
 
     #[test]
@@ -1733,7 +1720,7 @@ mod tests {
             .into_iter()
             .filter(|action| action.is_sunrises())
             .collect();
-        assert_eq!(sunrises, [A::Emote, A::HotbarPrevious, A::HotbarNext]);
+        assert_eq!(sunrises, [A::HotbarPrevious, A::HotbarNext]);
         // Held actions, the opener itself and anything else aren't slot actions.
         for id in [
             "key.attack",
@@ -1749,22 +1736,15 @@ mod tests {
     fn ids_saved_before_the_namespaces_read_as_their_actions() {
         use RadialAction as A;
         let read = Pages::parse(
-            [(
-                "radial_0_slots",
-                "key.emote,pad.hotbarPrevious,pad.hotbarNext,,,,,",
-            )]
-            .into_iter(),
+            [("radial_0_slots", "pad.hotbarPrevious,pad.hotbarNext,,,,,,")].into_iter(),
         )
         .unwrap();
         let actions = read.page(0).slots().map(Slot::action);
-        assert_eq!(
-            actions[..3],
-            [Some(A::Emote), Some(A::HotbarPrevious), Some(A::HotbarNext)]
-        );
+        assert_eq!(actions[..2], [Some(A::HotbarPrevious), Some(A::HotbarNext)]);
         // Written back under their new ids, which read the same.
         let text = read.serialize();
         assert!(
-            text.contains("sunrise:emote,sunrise:hotbar_previous,sunrise:hotbar_next"),
+            text.contains("sunrise:hotbar_previous,sunrise:hotbar_next"),
             "{text}"
         );
         assert_eq!(Pages::parse(lines(&text)), Some(read));

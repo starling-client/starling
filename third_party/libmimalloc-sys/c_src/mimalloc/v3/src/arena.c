@@ -1038,14 +1038,18 @@ void _mi_arenas_page_free(mi_page_t* page, mi_theap_t* current_theapx) {
   mi_assert_internal(page->next==NULL && page->prev==NULL);
   mi_assert_internal(current_theapx == NULL || _mi_thread_id()==current_theapx->tld->thread_id);
 
+  // Sunrise: a huge page's block leaves malloc_huge here, once, at every MI_STAT level, as page.c counted it in
+  const size_t huge = (mi_page_is_huge(page) ? mi_page_block_size(page) : 0);
   if (current_theapx != NULL) {
     mi_theap_stat_decrease(current_theapx, page_bins[_mi_page_stats_bin(page)], 1);
     mi_theap_stat_decrease(current_theapx, pages, 1);
+    if (huge > 0) { mi_theap_stat_decrease(current_theapx, malloc_huge, huge); }
   }
   else {
     mi_heap_t* const heap = mi_page_heap(page);
     mi_heap_stat_decrease(heap, page_bins[_mi_page_stats_bin(page)], 1);
     mi_heap_stat_decrease(heap, pages, 1);
+    if (huge > 0) { mi_heap_stat_decrease(heap, malloc_huge, huge); }
   }
 
   #if MI_DEBUG>1

@@ -295,9 +295,11 @@ mod tests {
         let output = run("game");
         assert_eq!(output.status.code(), Some(78));
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("unregistered"), "{stderr}");
         assert!(
-            stderr.contains("this managed installation has unregistered cache directories; use Sunrise Launcher Play from the same launcher data directory with the intended instance and installed version (sunrise-launcher play --instance <instance> --version <tag>)"),
+            stderr.contains(&format!(
+                "{} is in the launcher's data folder but has no cache lease there",
+                install.canonicalize().unwrap().display()
+            )),
             "{stderr}"
         );
         assert!(!stderr.contains("start the launcher once"), "{stderr}");
@@ -616,6 +618,61 @@ mod tests {
         let selection = LaunchArguments::for_command(&command).unwrap();
         let paths = lease_paths(&executable, &selection, &data, &game).unwrap();
         assert!(paths.iter().any(|(path, _)| *path == resources));
+    }
+
+    #[test]
+    fn a_game_copied_out_of_its_version_needs_the_copy_leased_and_names_it() {
+        // The launcher on Windows starts the game from a copy in `run/<slot>/game`, not from
+        // `versions/<tag>`: the game locks the copy and its folders up to the data folder.
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().canonicalize().unwrap();
+        let version = data.join("versions/v1");
+        let game = data.join("run/slot/game");
+        let home = data.join("instances/player");
+        for path in [&version, &game, &home] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        for installed in [&version, &game] {
+            std::fs::write(installed.join(".installed"), "").unwrap();
+        }
+        let registry = Registry::with_release(&data, Release::Close).unwrap();
+        let register = |path: &Path| {
+            drop(
+                registry
+                    .lock(&open_directory(path).unwrap(), LockMode::Shared)
+                    .unwrap(),
+            )
+        };
+        // What the launcher registered before Windows' copy was: the version, the instance.
+        for path in [
+            &version,
+            &data.join("versions"),
+            &home,
+            &data.join("instances"),
+        ] {
+            register(path);
+        }
+        let executable = game.join("game");
+        let mut command = Command::new(&executable);
+        command.current_dir(&home).env("SUNRISE_HOME", &home);
+        let selection = LaunchArguments::for_command(&command).unwrap();
+        let error = acquire_standalone(&executable, &selection).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            error.to_string().starts_with(&format!(
+                "{} is in the launcher's data folder but has no cache lease there",
+                game.display()
+            )),
+            "{error}"
+        );
+        for path in [&game, &data.join("run/slot"), &data.join("run")] {
+            register(path);
+        }
+        assert!(
+            acquire_standalone(&executable, &selection)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

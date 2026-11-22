@@ -27,6 +27,8 @@ pub trait Hooks {
     /// either way. Set `canceled` and the clock is left where it is, as
     /// NeoForge's cancel leaves it: `time_skip` is not asked either.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_sleep_finished_time",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
@@ -34,5 +36,11 @@ pub trait Hooks {
         cancellable = true,
         version = 2
     )]
-    fn sleep_finished_time();
+    fn sleep_finished_time(
+        dimension: &str,
+        current: i64,
+        new_time: i64,
+        adjustment: &mut ClockAdjustment,
+        canceled: &mut bool,
+    );
 }

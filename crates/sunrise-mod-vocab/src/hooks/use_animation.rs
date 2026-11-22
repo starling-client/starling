@@ -8,11 +8,14 @@ pub trait Hooks {
     /// as `None`. Asked on the client when each render consumer updates; answer
     /// from the stack alone.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_use_animation",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "none (vanilla Item.getUseAnimation; NeoForge adds no event or extension for it)"
     )]
-    fn use_animation();
+    fn use_animation(stack: &ItemStack, animation: &mut UseAnimation);
 }

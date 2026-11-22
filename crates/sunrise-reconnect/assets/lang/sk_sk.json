@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automatické opätovné pripojenie",
+  "sunrise.extras.auto_reconnect.tooltip": "Opätovne sa pripojí k serveru po strate spojenia alebo reštarte, nikdy nie po kopnutí alebo zákaze."
+}

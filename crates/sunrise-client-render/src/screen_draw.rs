@@ -474,15 +474,21 @@ const MIN_SCROLL_PERIOD: f64 = 3.0;
 /// `max(max_position * 0.5, 3)` seconds, eased with a sine, so the line rests
 /// a moment at each end; at time 0 it is at the far end.
 pub fn scroll_offset(max_position: i32, now_ms: i64) -> i32 {
+    scroll_position(f64::from(max_position), now_ms) as i32
+}
+
+/// The slide before the `(int)` cast, shared with the batch renderer
+/// (`ui::scrolled_left`), whose lengths are `f32`.
+pub(crate) fn scroll_position(max_position: f64, now_ms: i64) -> f64 {
     let time = now_ms as f64 / 1000.0;
-    let period = (f64::from(max_position) * PERIOD_PER_SCROLLED_PIXEL).max(MIN_SCROLL_PERIOD);
+    let period = (max_position * PERIOD_PER_SCROLLED_PIXEL).max(MIN_SCROLL_PERIOD);
     let alpha = sunrise_core::jmath::sin(
         (std::f64::consts::PI / 2.0)
             * sunrise_core::jmath::cos(std::f64::consts::PI * 2.0 * time / period),
     ) / 2.0
         + 0.5;
-    // `Mth.lerp(alpha, 0.0, maxPosition)`, then the `(int)` cast.
-    (0.0 + alpha * (f64::from(max_position) - 0.0)) as i32
+    // `Mth.lerp(alpha, 0.0, maxPosition)`.
+    0.0 + alpha * (max_position - 0.0)
 }
 
 /// `ActiveTextCollector.defaultScrollingHelper` with the line height of 9
@@ -1061,7 +1067,7 @@ pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) -> Option<u
             } => crate::ui::nine_slice(
                 batch,
                 atlas,
-                &format!("gui/sprites/{sprite}"),
+                sprite,
                 *x as f32,
                 *y as f32,
                 *w as f32,

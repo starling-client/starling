@@ -8,6 +8,7 @@ use crate::{
     heightmap::{Heightmap, HeightmapChunk, HeightmapError, HeightmapState, HeightmapType},
     registry::{BlockRegistry, BlockStateId},
 };
+use std::{cell::RefCell, io};
 use sunrise_core::{
     density::{DensitySampler, SampleError, SamplerContext},
     noise::DensityVolume,
@@ -15,7 +16,6 @@ use sunrise_core::{
     random::PositionalRandom,
     ticks::ProtoChunkTicks,
 };
-use std::{cell::RefCell, io};
 
 thread_local! {
     static SCRATCH_DENSITY: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
@@ -37,7 +37,7 @@ pub trait TerrainAquifer {
     fn should_schedule_fluid_update(&self) -> bool;
     /// The y above which every non-positive density is the aquifer's air. The
     /// fill skips those blocks without asking the aquifer; `None` keeps the
-    /// per-block call for aquifers whose global fluid can vary with x/z.
+    /// per-block call (a picker with no `FluidPicker::level_bound` there).
     fn air_above_y(&self) -> Option<i32> {
         None
     }
@@ -939,6 +939,9 @@ mod tests {
                 level: -64,
                 state: BlockStateId(3),
             }
+        }
+        fn level_bound(&self, _: [i32; 2], _: [i32; 2]) -> Option<i32> {
+            Some(-64)
         }
     }
 

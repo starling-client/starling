@@ -1,0 +1,21 @@
+ids = [
+    "hook:register_debug_entries",
+    "hook:register_debug_renderers",
+    "hook:register_dimension_transition_screen",
+    "handle:DebugEntry::with_reduced_debug_info",
+    "handle:DebugEntry::allowed_in_reduced_debug_info",
+    "handle:DebugEntry::is_allowed",
+    "handle:DebugRenderer::new",
+    "handle:RegisterDebugRenderersEvent::is_debug_entry_enabled",
+    "handle:DimensionTransitionScreen::new",
+]
+why = "Match vanilla 26.3 (`DebugScreenEntry.isAllowed`, `DebugScreenEntryList.isCurrentlyEnabled`, `DebugRenderer.refreshRendererList`) and NeoForge 26.3 (`RegisterGuiLayersEvent`, `RegisterDebugEntriesEvent`, `RegisterDebugRenderersEvent`, `RegisterDimensionTransitionScreenEvent`): allow custom `minecraft:<path>` IDs that do not duplicate built-in vanilla entries on HUD layers and F3 debug entries, expose per-entry reduced-debug-info opt-in (`DebugEntry::with_reduced_debug_info`, `allowed_in_reduced_debug_info`, `is_allowed`), drop the synthetic switch ID from `DebugRenderer` so listeners query `event.is_debug_entry_enabled(id)` or push unconditional renderers without ID-based deduplication, and drop the synthetic diagnostic screen ID from `DimensionTransitionScreen`."
+migrate = """
+HUD layers (`hook:register_gui_layers` v5) — No signature change. Custom `minecraft:<path>` layer IDs that do not collide with built-in vanilla layer IDs are now accepted alongside mod namespaces; duplicate IDs (including built-in vanilla layers) are still rejected. Completed listener batches publish in order; failed batches are discarded.
+
+F3 debug entries (`hook:register_debug_entries` v2 -> v3) — Custom `minecraft:<path>` entry IDs that do not collide with built-in vanilla entries are now accepted. Entries still hide under reduced debug info by default (`DebugScreenEntry.isAllowed`), and can opt in with `DebugEntry::text(...).with_reduced_debug_info(true)` or `DebugEntry::renderer(...).with_reduced_debug_info(true)`. Query the policy with `entry.allowed_in_reduced_debug_info()` and `entry.is_allowed(reduced_debug_info)`.
+
+F3 debug renderers (`hook:register_debug_renderers` v2 -> v3) — Remove the `id` argument from `DebugRenderer::new(draw)` and remove calls to `DebugRenderer::id()`. To gate a renderer on a vanilla or mod debug switch, check `if event.is_debug_entry_enabled(id) { event.renderers.push(DebugRenderer::new(draw)); }`. Unconditional renderers can be pushed directly without registering a `DebugEntry::renderer` switch. All renderers pushed by enabled mods run in registration order with no ID-based deduplication.
+
+Dimension transition screens (`hook:register_dimension_transition_screen` v2 -> v3) — Remove the first `screen: String` argument from `DimensionTransitionScreen::new(transition, factory)` and remove calls to `DimensionTransitionScreen::screen()`. Only the `DimensionTransition` key is validated and deduplicated.
+"""

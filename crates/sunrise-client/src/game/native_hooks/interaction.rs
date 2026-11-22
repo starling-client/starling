@@ -20,8 +20,8 @@ impl Game<'_> {
     /// main hand first; pick block fires only with something aimed at. Set `canceled`
     /// to skip the action: a cancelled use also skips the other hand. A cancelled
     /// attack or use still swings `hand` unless the mod clears `swing_hand` (it
-    /// starts true). A window client only, including single player; a mod
-    /// that claims an item's use (`mod_use_start`) sees the event first.
+    /// starts true). A window client only, including single player. The main-hand
+    /// hook runs before item input interception; a cancel prevents interception.
     /// Uncancelled attacks and uses also honour false by suppressing natural swings.
     /// Pick only vetoes its packet and never swings.
     pub(in crate::game) fn native_interaction_key_mapping_triggered(
@@ -34,7 +34,7 @@ impl Game<'_> {
     ) {
         self.fire_interaction_key_mapping_triggered(key, hand, attempt, swing_hand, canceled);
     }
-    /// Preserve cancellation and swing independently for both native and wasm dispatch.
+    /// Preserve cancellation and swing independently during dispatch.
     pub(in crate::game) fn native_interaction(
         &mut self,
         key: InteractionKey,

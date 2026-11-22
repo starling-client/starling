@@ -9,10 +9,10 @@ checks, from the files the server leaves:
 
 - Connected player: save-all writes five diamonds while the player stays joined;
   stop writes the newer inventory of twelve diamonds.
-- `guest`: the panic comes in the joined player's turn (which runs with the hub out of the game,
-  as every network turn does). The player's file is byte for byte what the previous clean stop
-  wrote, and a block placed before the panic is still there on the next start.
-- `hub`: the panic comes while a console line has the hub out with a player in. Same checks.
+- `guest`: the panic comes in the joined player's turn. The log names the player; their file is byte for
+  byte what the previous clean stop wrote, and a block placed before the panic is still there on the next start.
+- `hub`: the panic comes while a console line has the hub out of the game, with a player in
+  (the fixture takes it out first, as a panic in the network tick leaves it). Same checks.
 """
 import hashlib
 import os
@@ -227,7 +227,7 @@ def main():
         problems.append('the clean run wrote no player file')
 
     for fixture, y, trigger, expect in (
-        ('guest', 0, {'y': 0}, 'The panic interrupted the network tick'),
+        ('guest', 0, {'y': 0}, f"The panic interrupted a player's turn ({PLAYER})"),
         ('hub', 1, {'y': 1, 'console': True}, 'The panic interrupted the network tick'),
     ):
         log = crash(directory, fixture, port, out, trigger)

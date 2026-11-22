@@ -6,9 +6,18 @@ pub trait Hooks {
     /// `put`, `rotate`, `remove_item` or `break`; `item` is empty when no item remains, and `rotation`
     /// is the resulting step. Server-side.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_item_frame_change",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn player_item_frame_change();
+    fn player_item_frame_change(
+        player: u128,
+        name: &str,
+        entity_id: u32,
+        action: &str,
+        item: &str,
+        rotation: u8,
+    );
 }

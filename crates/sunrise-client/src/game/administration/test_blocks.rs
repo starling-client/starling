@@ -7,48 +7,16 @@ use sunrise_client::{
 };
 use sunrise_core::position::BlockPos;
 use sunrise_protocol::packets::play;
-use sunrise_world::registry::{BlockRegistry, BlockStateId};
 
 type Pos = (i32, i32, i32);
 
-/// `TestBlock.ownSignal`: the block state's mode is the gate, and only then
-/// does the block entity's powered flag count.
-pub(super) fn own_signal(registry: &BlockRegistry, state: BlockStateId, powered: bool) -> i32 {
-    let start = registry
-        .state(state)
-        .and_then(|s| s.properties.get("mode"))
-        .is_some_and(|mode| mode == "start");
-    if start && powered { 15 } else { 0 }
-}
+pub(super) use sunrise_gameplay::test_blocks::own_signal;
 
 impl Game<'_> {
     fn test_block_mut(&mut self, pos: Pos) -> Option<&mut TestBlock> {
         match self.world.block_entities.get_mut(&pos)? {
             BlockEntity::TestBlock(b) => Some(b),
             _ => None,
-        }
-    }
-
-    /// The `mode` of the block state at `pos`.
-    pub(super) fn test_block_state_mode(&self, pos: Pos) -> Option<TestBlockMode> {
-        let state = self.world.block(pos.0, pos.1, pos.2);
-        let mode = self
-            .pack
-            .assets
-            .registry
-            .state(state)?
-            .properties
-            .get("mode")?;
-        TestBlockMode::of_serialized_name(mode)
-    }
-
-    /// `new TestBlockEntity(pos, state)`: the mode is the state's.
-    pub(super) fn test_block_placed(&mut self, pos: Pos) {
-        let Some(mode) = self.test_block_state_mode(pos) else {
-            return;
-        };
-        if let Some(b) = self.test_block_mut(pos) {
-            b.mode = mode;
         }
     }
 

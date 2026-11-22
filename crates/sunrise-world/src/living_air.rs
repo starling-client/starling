@@ -44,11 +44,14 @@ pub trait LivingAirWorld {
 pub fn modified_friction(friction: f32, modifier: f32) -> f32 {
     (1.0 - (1.0 - friction) * modifier).clamp(0.0, 1.0)
 }
+/// `Entity.getInputVector` ignores input below this squared length.
+pub const MIN_INPUT_LENGTH_SQUARED: f64 = 1.0e-7;
+
 /// Entity.getInputVector: normalize only above unit length, then rotate using
 /// the native float-angle sine table. Tiny input returns canonical positive zero.
 pub fn input_vector(input: Vec3, speed: f32, yaw: f32) -> Vec3 {
     let length = input.length_squared();
-    if length < 1.0e-7 {
+    if length < MIN_INPUT_LENGTH_SQUARED {
         return Vec3::ZERO;
     }
     let input = if length > 1.0 {
@@ -64,6 +67,20 @@ pub fn input_vector(input: Vec3, speed: f32, yaw: f32) -> Vec3 {
         input.x * cos - input.z * sin,
         input.y,
         input.z * cos + input.x * sin,
+    )
+}
+/// `Entity.getCollisionHorizontalEscapeVector`: out of the vehicle's box along `yaw`, to the edge of the square
+/// it spans. The widths are what the caller widened from its floats (`getBbWidth()`).
+pub fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) -> Vec3 {
+    // 1.0E-5F: a float literal widened to double.
+    let distance = (vehicle_width + passenger_width + f64::from(1.0e-5_f32)) / 2.0;
+    let radians = f64::from(yaw * trig::DEG_TO_RAD);
+    let (sin, cos) = (-trig::sin(radians), trig::cos(radians));
+    let max = f64::from(sin.abs().max(cos.abs()));
+    Vec3::new(
+        f64::from(sin) * distance / max,
+        0.0,
+        f64::from(cos) * distance / max,
     )
 }
 pub fn move_relative<W: LivingAirWorld>(
@@ -176,4 +193,32 @@ pub fn travel_in_air<W: LivingAirWorld>(
         );
     }
     world.set_velocity(velocity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_vector;
+
+    /// `Entity.getCollisionHorizontalEscapeVector` for a boat (`1.375F * Mth.SQRT_OF_TWO` wide) and a player (`0.6F`), from
+    /// the 26.3 jar: x, y and z bits.
+    #[test]
+    fn the_escape_vector_has_vanillas_bits() {
+        let boat = f64::from(1.375_f32 * std::f32::consts::SQRT_2);
+        for (yaw, expected) in [
+            (
+                0.0_f32,
+                [0x8000_0000_0000_0000_u64, 0, 0x3ff4_5b3e_ee2d_6000],
+            ),
+            (37.5, [0xbfef_3c66_9270_6fb2, 0, 0x3ff4_5b3e_ee2d_6000]),
+            (-123.4, [0x3ff4_5b3e_ee2d_5fff, 0, 0xbfea_d7f5_78b3_3c48]),
+            (270.1, [0x3ff4_5b3e_ee2d_6000, 0, 0x3f61_fc85_3cc0_8af5]),
+        ] {
+            let v = escape_vector(boat, f64::from(0.6_f32), yaw);
+            assert_eq!(
+                [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()],
+                expected,
+                "yaw {yaw}"
+            );
+        }
+    }
 }

@@ -1,0 +1,9 @@
+{
+  "template": "minecraft:zombie",
+  "sounds": {
+    "ambient": "none",
+    "hurt": "none",
+    "death": "keys_entity_sounds:farewell",
+    "step": "none"
+  }
+}

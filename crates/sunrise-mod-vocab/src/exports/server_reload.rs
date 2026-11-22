@@ -1,6 +1,6 @@
 pub use world::server_reload::{
-    ListenerKey, ServerReloadContext, ServerReloadListener, ServerReloadListeners,
-    ServerReloadResources, VanillaServerListeners,
+    ListenerKey, ServerReloadContext, ServerReloadGraphView, ServerReloadListener,
+    ServerReloadListeners, ServerReloadRegistryView, ServerReloadResources, VanillaServerListeners,
 };
 // hidden: the game's registries and store, not part of the mod surface
 #[doc(hidden)]

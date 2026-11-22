@@ -1,10 +1,10 @@
-use sunrise_assets::blockstate::{BlockStateDefinition, Condition, Variant, VariantSet};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_assets::blockstate::{BlockStateDefinition, Condition, Variant, VariantSet};
 fn variant(v: &Variant) -> Value {
     json!({"model":v.model,"rotations":v.rotations,"uvlock":v.uv_lock})
 }

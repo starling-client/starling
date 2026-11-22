@@ -18,14 +18,16 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod customize_boss_event_progress_tests {
-    use sunrise_client::hud_layout::GuiDraw;
-    use sunrise_core::nbt::Tag;
-    use sunrise_protocol::packets::play::{BossAction, BossEvent};
+    use crate::game::{api_values::TryIntoApi, native_entity_refs::tests::run_fresh_cases};
     use mod_api::{
         BossBarColor, ClientHost, CustomizeBossEventProgressEvent, Flow, Hooks, ModEntry,
+        text::TextFormError,
     };
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
+    use sunrise_client::hud_layout::GuiDraw;
+    use sunrise_core::nbt::Tag;
+    use sunrise_protocol::packets::play::{BossAction, BossEvent};
 
     type Seen = Arc<Mutex<Vec<(u128, BossBarColor, i32, i32, i32)>>>;
 
@@ -85,11 +87,68 @@ mod customize_boss_event_progress_tests {
             .collect()
     }
 
+    #[test]
+    #[ignore = "daily"]
+    fn an_unconvertible_boss_bar_keeps_vanilla_draws_without_dispatch() {
+        if run_fresh_cases(
+            "game::native_hooks::customize_boss_event_progress::customize_boss_event_progress_tests::an_unconvertible_boss_bar_keeps_vanilla_draws_without_dispatch",
+            "SUNRISE_BOSS_BAR_CONVERSION_CHILD",
+            &["malformed-profile"],
+        ) {
+            return;
+        }
+        super::super::super::native_entity_refs::tests::with_game(|game| {
+            // Inject a malformed local component without the packet codec. Its UUID has
+            // three words instead of the four required by vanilla's UUIDUtil.CODEC.
+            let name = Tag::compound([
+                ("object", Tag::String("player".into())),
+                (
+                    "player",
+                    Tag::compound([
+                        ("name", Tag::String("Steve".into())),
+                        ("id", Tag::IntArray(vec![1, 2, 3])),
+                    ]),
+                ),
+            ]);
+            game.boss_overlay.apply(
+                &BossEvent {
+                    id: 1,
+                    action: BossAction::Add {
+                        name,
+                        progress: 1.0,
+                        color: 0,
+                        overlay: 0,
+                        darken: false,
+                        music: false,
+                        fog: false,
+                    },
+                },
+                0,
+            );
+            assert!(matches!(
+                game.boss_overlay.mod_bar(0, 0).unwrap().try_into_api(),
+                Err(TextFormError::Malformed)
+            ));
+            let vanilla = game.boss_bar_draws(480, 270);
+            assert!(!backgrounds(&vanilla).is_empty());
+            let seen = Seen::default();
+            let mods = vec![ModEntry::new(
+                "rearrange",
+                Box::new(Rearrange(Arc::clone(&seen))),
+            )]
+            .into();
+            with_mods(mods, || {
+                assert_eq!(game.boss_bar_draws(480, 270), vanilla);
+                assert!(seen.lock().unwrap().is_empty());
+            });
+        });
+    }
+
     /// `CustomizeGuiOverlayEvent.BossEventProgress`: with no mod the bars sit 19 pixels apart from
     /// y = 12; a mod hears each bar at vanilla's place, and hides one, spaces the next and moves
     /// another without touching the rest.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_mod_hides_and_spaces_boss_bars() {
         let (w, h) = (480, 270);
         let left = w / 2 - 91;

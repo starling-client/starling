@@ -3,8 +3,8 @@
 //! there. #8459's probe; #8459 reports Iris 1.11.7 drawing (0, 200, 0) at every point
 //! sampled from it. Without a `final` that draws it, the pack is refused (#9165).
 use super::destination_tests::Fixture;
-use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 const VERTEX: &str = "#version 120\nvarying vec2 uv;\nvoid main() { uv=gl_MultiTexCoord0.xy; gl_Position=ftransform(); }\n";
 
@@ -57,6 +57,7 @@ fn pack(depth: bool, last: Option<&str>) -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn an_integer_colortex0_keeps_what_the_pack_wrote() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };
@@ -75,6 +76,7 @@ fn an_integer_colortex0_keeps_what_the_pack_wrote() {
 /// no colours the screen can show: the pack is refused, so the game turns it off and draws
 /// without it instead of a black screen (#9165). The refusal keeps why `final` was skipped.
 #[test]
+#[ignore = "daily"]
 fn an_integer_colortex0_without_a_working_final_is_refused() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

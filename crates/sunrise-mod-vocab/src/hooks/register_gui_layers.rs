@@ -1,41 +1,70 @@
 //! The `register_gui_layers` hooks: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// The HUD layers a mod adds among vanilla's (NeoForge's `RegisterGuiLayersEvent`): push a
-    /// `GuiLayer` per layer, its id `<mod id>:<path>` and its `GuiLayerPlacement`. Asked once at
-    /// start, on the client. `gui_layer_draw` draws each layer, between `gui_layer_pre` and
-    /// `gui_layer_post` like a vanilla layer, so other mods can hide it or draw around it.
+    /// Register, wrap or replace a HUD layer with an owned draw callback (NeoForge's
+    /// `RegisterGuiLayersEvent`). Asked once at client startup. The installed body runs
+    /// between `gui_layer_pre` and `gui_layer_post` unless Pre cancels it. Use
+    /// `event.layers.register(id, placement, Box::new(draw))` to insert a new slot,
+    /// or `replace_layer` and `wrap_layer` to change an existing slot's body.
+    /// `minecraft:player_health` is the heart slot only. Use `minecraft:air_level` as the
+    /// `Above` anchor to place a layer above all status rows. A status replacement or wrapper
+    /// runs even when the original body would not draw, including under F1.
+    /// A listener sees its pending edits; they publish only after a successful return.
+    /// A panic during registration, including while dropping a superseded staged body, disables
+    /// that listener for the session and reports its mod in the log and client error toast.
     #[notes = r#"## HUD layers
 
 `Hooks::register_gui_layers` is the client registration-phase counterpart of NeoForge 26.3's
-`RegisterGuiLayersEvent`. It receives a `RegistrationContext`, once at client startup, and
-collects a `GuiLayer` per layer: an id `<mod id>:<path>` and a `GuiLayerPlacement`, which is
-`BelowAll`, `Below(id)`, `Above(id)` or `AboveAll`, as `registerBelowAll`, `registerBelow`,
-`registerAbove` and `registerAboveAll`. `Below` and `Above` name a vanilla layer (the ids
-`Hooks::gui_layer_pre` lists) or a layer pushed before this one; order against your own layers,
-since other mods' layers depend on load order. Layers are placed in push
-order, in mod load order. An id in vanilla's namespace, not
-of that form, registered already, or placed against a layer that is not in the list yet is
-logged and left out.
+`RegisterGuiLayersEvent`. It receives a `RegistrationContext` and a `GuiLayerRegistrar` as
+`event.layers`, once at client startup. Call `layers.register(id, placement, Box::new(draw))`
+with a namespaced ID, a `GuiLayerPlacement` and an owned draw callback. The four placements
+are `BelowAll`, `Below(id)`, `Above(id)` and `AboveAll`, as `registerBelowAll`, `registerBelow`,
+`registerAbove` and `registerAboveAll`. `Below` and `Above` name a vanilla layer (the IDs
+`Hooks::gui_layer_pre` lists) or a layer already registered, including in this callback's own
+batch. The game publishes a completed batch in call order before invoking the next listener.
+A failed listener publishes none of its pending insertions, replacements or wrappers. A panic
+in that listener, including while dropping one of its superseded bodies, disables its registration
+callback for the session and reports its mod in the log and client error toast. Invalid or duplicate
+IDs (including built-in vanilla layer IDs) and unknown relative anchors are logged and refused at
+the call. The client calls each installed callback as the mod that registered it.
 
-Each frame the HUD shows, every layer is drawn in that order. A mod's layer fires
-`Hooks::gui_layer_pre` with its id (a cancel hides it), then `Hooks::gui_layer_draw`, then
-`Hooks::gui_layer_post`, as every layer does. So another mod
-hides or wraps a mod's layer the way it hides or wraps a vanilla one, and replacing a layer
-(`replaceLayer`, `wrapLayer`) is a cancel in `gui_layer_pre` and a draw of its own. Every mod
-is asked about every id in `gui_layer_draw`, so a mod ignores ids it does not own.
+Use `layers.replace_layer(id, Box::new(draw))` to discard an existing body, or
+`layers.wrap_layer(id, Box::new(wrap))` to add an outer wrapper. Both keep the slot's ID,
+order and dispatch. A replacement does not inherit eligibility checks in the body it replaces.
+A wrapper uses `ctx.with_draw` to paint with the current scoped drawing context and
+`ctx.draw_previous()` to run the previous body, including its own checks, at that point.
+It can omit that call to skip the previous body. Both methods refuse an unknown ID.
+Bodies from earlier listeners retire after publication in first-replacement order. A panic while
+retiring a body is reported against its owner without undoing the replacement or stopping the next listener.
 
-A vanilla layer Sunrise does not draw this frame (the crosshair in third person, the mount's
-health off a mount) still keeps its place: the mod layers around it are drawn in order, at the
-next layer that is. As for vanilla's layers, F1 and a canceled `Hooks::render_gui_pre` hide
-every mod layer; a mod that
-draws under F1 uses `Hooks::gui_render_post`."#]
+A layer fires `Hooks::gui_layer_pre` with its ID, runs its installed body, and fires
+`Hooks::gui_layer_post` once. No body or Post runs if Pre cancels. Drawing a previous
+body does not fire layer hooks again. A callback panic disables only that callback for the
+session and reports its mod through the shared error log and toast. A non-panic refusal is
+reported without disabling the callback.
+
+The status slots run in order: `minecraft:player_health`, `minecraft:armor_level`,
+`minecraft:food_level`, `minecraft:vehicle_health` and `minecraft:air_level`.
+F1 hides their vanilla paint, not their installed bodies or layer events. The vanilla heart,
+armor, food and air bodies need a player in survival or adventure, and vanilla vehicle health
+needs a mount with hearts. Custom paint can check `host.hud_mode()` if it should respect F1.
+`Above("minecraft:player_health".into())` puts a new layer between hearts and armor;
+use `Above("minecraft:air_level".into())` to put it above all status rows. Use
+`Below("minecraft:player_health".into())` to stay below the player rows or
+`Above("minecraft:vehicle_health".into())` to stay above mount hearts. No single anchor
+keeps a layer both above the mount hearts and below the player rows after the reorder.
+
+The whole walk runs under F1: visibility checks belong to the original bodies, not to
+inserted layers, replacements or wrappers. A canceled `Hooks::render_gui_pre` skips the whole walk."#]
     #[hook(
+        receiver = "associated",
+        dispatch = "flat",
         side = "client",
-        contract = "collect",
-        out = "layers",
+        version = 6,
+        contract = "listen",
+        staged_surface = "layers",
         context = "registration",
         neoforge = "RegisterGuiLayersEvent"
     )]
-    fn register_gui_layers();
+    fn register_gui_layers(layers: &mut dyn GuiLayerRegistrar);
 }

@@ -28,9 +28,9 @@
 //!   refused, never clamped, and NaN, infinity, zero quaternions and zero
 //!   rotation axes are refused.
 
+use std::fmt;
 use sunrise_core::geometry::{Aabb, BlockHit, COLLISION_EPSILON, Direction, Vec3, VoxelShape};
 use sunrise_core::position::BlockPos;
-use std::fmt;
 
 /// Design trust-boundary limit: a translation step moves at most one block
 /// per axis. Larger steps are refused, never clamped.
@@ -1069,8 +1069,8 @@ fn world_direction(rotation: Rotation, direction: Direction) -> Direction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_core::geometry::Axis;
     use std::f64::consts::{FRAC_PI_2, PI};
+    use sunrise_core::geometry::Axis;
 
     const FIVE_DEGREES: f64 = 5.0 * PI / 180.0;
     const PLUS_Y: Vec3 = Vec3::new(0.0, 1.0, 0.0);

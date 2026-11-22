@@ -1,6 +1,7 @@
 //! Cloud visibility and flat/fancy cell geometry (`CloudRenderer`).
-/// `EnvironmentAttributes.CLOUD_HEIGHT`'s default, and the overworld's `visual/cloud_height`.
-pub const CLOUD_HEIGHT: f64 = 192.33;
+/// `EnvironmentAttributes.CLOUD_HEIGHT`'s default (the overworld's `visual/cloud_height`); the
+/// layer itself follows [`Input::height`].
+pub const CLOUD_HEIGHT: f32 = 192.33;
 
 /// Whether the cloud color has any packed alpha (vanilla gates the clouds on it).
 pub fn has_color(alpha: f32) -> bool {
@@ -144,6 +145,10 @@ pub struct Input<'a> {
     pub range: i32,
     pub fast: bool,
     pub color: [f32; 4],
+    /// The layer's bottom: `EnvironmentAttributes.CLOUD_HEIGHT` probed at the camera this frame
+    /// (`LevelExtractor`: `levelRenderState.cloudHeight`, a float), as the game samples it
+    /// (`environment::Sky::cloud_height`).
+    pub height: f32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -175,17 +180,24 @@ pub fn drift(time: i64, partial_tick: f64, width: u32) -> f64 {
 }
 
 impl Input<'_> {
-    fn state(&self) -> (MeshKey, Uniform) {
+    /// The mesh around the camera's cell snapped to `snap` cells (1: vanilla's own mesh, which a
+    /// pack's `core/clouds` shader reads).
+    fn state(&self, snap: i64) -> (MeshKey, Uniform) {
         let (w, h, _) = self.texture;
-        let offset = drift(self.time, self.partial_tick, *w);
-        let mut x = self.camera.x + offset * 0.030_000_001;
-        let mut z = self.camera.z + 3.96;
+        // CloudRenderer.prepare's float arithmetic: the drift in ticks is a float (the game time's
+        // remainder plus the partial tick), times the float speed, then widened.
+        let offset = (self.time % (i64::from(*w) * 400)) as f32 + self.partial_tick as f32;
+        let mut x = self.camera.x + f64::from(offset * 0.030_000_001_f32);
+        // Vanilla adds 3.96 as a double literal written from the float: 3.9600000381469727.
+        let mut z = self.camera.z + 3.960_000_038_146_972_7;
         let (tw, th) = (f64::from(*w) * 12.0, f64::from(*h) * 12.0);
         x -= (x / tw).floor() * tw;
         z -= (z / th).floor() * th;
-        let cell_x = (x / 12.0).floor() as i64 / SNAP_CELLS * SNAP_CELLS;
-        let cell_z = (z / 12.0).floor() as i64 / SNAP_CELLS * SNAP_CELLS;
-        let bottom = (CLOUD_HEIGHT - self.camera.y) as f32;
+        let cell_x = (x / 12.0).floor() as i64 / snap * snap;
+        let cell_z = (z / 12.0).floor() as i64 / snap * snap;
+        // `prepare`'s bottomY is a float (the cloud height attribute's), widened to subtract
+        // the camera's double y, then narrowed again.
+        let bottom = (f64::from(self.height) - self.camera.y) as f32;
         // The inward faces of the 3x3 cells around the camera are only seen from inside the
         // layer; outside it they are back-facing, so the mesh need not follow the camera there.
         let inside_layer = bottom <= 0.0 && bottom + 4.0 >= 0.0;
@@ -201,7 +213,7 @@ impl Input<'_> {
             cell_x,
             cell_z,
             // One more ring than the range, for the cells the snapped origin can uncover.
-            radius: radius_cells(self.range) + SNAP_CELLS as i32,
+            radius: radius_cells(self.range) + if snap > 1 { snap as i32 } else { 0 },
             fast: self.fast,
             top: bottom <= 0.0,
             bottom: bottom + 4.0 >= 0.0,
@@ -354,7 +366,7 @@ impl Mesh {
     /// Returns true only when vertices must be uploaded. Sub-cell motion and
     /// color changes update only the uniform, as in CloudRenderer.prepare.
     pub fn prepare(&mut self, input: &Input<'_>) -> (bool, Uniform) {
-        let (key, uniform) = input.state();
+        let (key, uniform) = input.state(SNAP_CELLS);
         if self.key.as_ref() == Some(&key) {
             return (false, uniform);
         }
@@ -407,6 +419,230 @@ impl Mesh {
     }
 }
 
+/// The cloud texture's pixel vanilla 26.3's `CloudRenderer.prepare` asks for outside the image
+/// (`NativeImage.getPixel`'s message: `(x, y) outside of image bounds (width, height)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutsideImage {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl std::fmt::Display for OutsideImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            x,
+            y,
+            width,
+            height,
+        } = self;
+        write!(f, "({x}, {y}) outside of image bounds ({width}, {height})")
+    }
+}
+
+/// Where `CloudRenderer.prepare` would read past a cloud texture: it packs each filled cell's
+/// north, east, south and west neighbours, rows first, and wraps east and west by the texture's
+/// *height*. A texture no wider than tall is read inside; one taller than wide is read outside
+/// for a filled cell in its first column (west) or its last (east), and vanilla's `getPixel`
+/// throws there: the reload fails and every selected pack is dropped. The first such pixel, as
+/// vanilla meets it, or none.
+pub fn outside_image(texture: &(u32, u32, Vec<bool>)) -> Option<OutsideImage> {
+    let (w, h, filled) = texture;
+    let (wi, hi) = (*w as i32, *h as i32);
+    for y in 0..hi {
+        for x in 0..wi {
+            if !filled[(y * wi + x) as usize] {
+                continue;
+            }
+            for nx in [(x + 1).rem_euclid(hi), (x - 1).rem_euclid(hi)] {
+                if nx >= wi {
+                    return Some(OutsideImage {
+                        x: nx,
+                        y,
+                        width: *w,
+                        height: *h,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Where the cloud texture is read from.
+pub const TEXTURE: &str = "assets/minecraft/textures/environment/clouds.png";
+
+/// A cloud texture vanilla 26.3 would read past ([`outside_image`]): the pixel, named as
+/// `NativeImage.getPixel` names it, as the reload's error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refused(pub OutsideImage);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{TEXTURE}: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// The cloud texture (`textures/environment/clouds.png`) of the resources at `root` as filled
+/// cells (alpha 10 or more, `CloudRenderer.isCellEmpty`); one with no such file, or that doesn't
+/// decode, has none. One vanilla would read past ([`outside_image`]) is refused: in vanilla
+/// `CloudRenderer.prepare` throws, the reload fails and the selected packs are dropped, and the
+/// caller's reload fails the same way.
+pub fn load(
+    root: &crate::resource_source::ResourceSource,
+) -> Result<(u32, u32, Vec<bool>), Refused> {
+    let texture = root
+        .read(TEXTURE)
+        .map_err(Into::into)
+        .and_then(|bytes| crate::hud::decode_bytes(&bytes))
+        .map(|(w, h, px)| {
+            (
+                w,
+                h,
+                px.as_chunks::<4>().0.iter().map(|p| p[3] >= 10).collect(),
+            )
+        })
+        .unwrap_or((1, 1, vec![false]));
+    match outside_image(&texture) {
+        None => Ok(texture),
+        Some(pixel) => Err(Refused(pixel)),
+    }
+}
+
+/// What a pack's `core/clouds` shader reads (`CloudRenderer.prepare` and `buildMesh`): the faces
+/// it reads from `CloudFaces` and its `CloudInfo` block; and its programs.
+pub mod pack {
+    use super::{Input, MeshKey};
+
+    /// `encodeFace`'s flags beside the direction (`clouds.vsh`'s `FLAG_INSIDE_FACE`,
+    /// `FLAG_USE_TOP_COLOR`), and `Direction.get3DDataValue`.
+    const INSIDE_FACE: i32 = 16;
+    const USE_TOP_COLOR: i32 = 32;
+    const DOWN: i32 = 0;
+    const UP: i32 = 1;
+    const NORTH: i32 = 2;
+    const SOUTH: i32 = 3;
+    const WEST: i32 = 4;
+    const EAST: i32 = 5;
+
+    /// A pack's `core/clouds` as vanilla compiles it: for `RenderPipelines.CLOUDS` and
+    /// `FLAT_CLOUDS`, and for `OIT_CLOUDS` and `OIT_FLAT_CLOUDS`, one program a stage
+    /// (`OitStage`'s order). Vanilla requires them all: a pack whose shader can't make one
+    /// fails the load (`hud::RequiredShaderRefused`).
+    #[derive(Debug)]
+    pub struct Programs {
+        pub classic: crate::core_shader::CoreProgram,
+        pub oit: Box<[crate::core_shader::CoreProgram; 3]>,
+    }
+
+    /// What [`faces`] depends on: the camera's cell and side of the layer, the range and the
+    /// style, and the cloud texture. `CloudRenderer.prepare` builds its mesh again only when the
+    /// cell, the side or the style change.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct FacesKey(MeshKey, usize, u32, u32);
+
+    /// The key [`faces`] gives the same faces for.
+    pub fn faces_key(input: &Input<'_>) -> FacesKey {
+        let (w, h, filled) = input.texture;
+        FacesKey(input.state(1).0, filled.as_ptr() as usize, *w, *h)
+    }
+
+    /// `CloudInfo` (std140: `CloudColor`, then `CloudOffset`, the camera's place in its cell
+    /// negated with the layer's bottom relative to it, then `CellSize`), which follows the
+    /// camera every frame. The colour goes through 8 bits a channel, as vanilla's ARGB int.
+    pub fn info(input: &Input<'_>) -> [u8; 48] {
+        let (_, uniform) = input.state(1);
+        let mut info = [0f32; 12];
+        info[..4].copy_from_slice(
+            &input
+                .color
+                .map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8 as f32 / 255.0),
+        );
+        info[4..7].copy_from_slice(&uniform.offset[..3]);
+        info[8..11].copy_from_slice(&[12.0, 4.0, 12.0]);
+        let mut bytes = [0u8; 48];
+        bytes.copy_from_slice(bytemuck::cast_slice(&info));
+        bytes
+    }
+
+    /// `buildMesh`'s faces, three `R8_SINT` texels each (here one `i32` a texel): the cell's
+    /// relative x and z halved, then the direction with its flags, the halves' lost bits in
+    /// bits 7 (x) and 6 (z). Cells in `buildMesh`'s rings, nearest first.
+    pub fn faces(input: &Input<'_>) -> Vec<i32> {
+        let (key, uniform) = input.state(1);
+        let (w, h, filled) = input.texture;
+        let (w, h) = (*w as i32, *h as i32);
+        let empty = |x: i32, y: i32| !filled[(y * w + x) as usize];
+        // RelativeCameraPos: above the layer's top, below its bottom, or inside it.
+        let bottom = uniform.offset[1];
+        let above = bottom + 4.0 < 0.0;
+        let below = bottom > 0.0;
+        let fancy = !input.fast;
+        let radius = key.radius;
+        let mut faces = Vec::new();
+        let mut encode = |x: i32, z: i32, direction: i32, flags: i32| {
+            let dir_and_flags = direction | flags | (x & 1) << 7 | (z & 1) << 6;
+            // `(byte)` casts, read back as signed 8-bit texels.
+            faces.extend([(x >> 1) as i8, (z >> 1) as i8, dir_and_flags as i8].map(i32::from));
+        };
+        // tryBuildCell.
+        let mut cell = |x: i32, z: i32| {
+            let ix = (key.cell_x as i32 + x).rem_euclid(w);
+            let iy = (key.cell_z as i32 + z).rem_euclid(h);
+            if empty(ix, iy) {
+                return;
+            }
+            if !fancy {
+                encode(x, z, DOWN, USE_TOP_COLOR);
+                return;
+            }
+            // The neighbours `CloudRenderer.prepare` packs into a cell, east and west wrapping
+            // by the texture's height as vanilla's do; a texture where that leaves the image is
+            // refused at load ([`super::outside_image`]).
+            let north = empty(ix, (iy - 1).rem_euclid(h));
+            let east = empty((ix + 1).rem_euclid(h), iy);
+            let south = empty(ix, (iy + 1).rem_euclid(h));
+            let west = empty((ix - 1).rem_euclid(h), iy);
+            // buildExtrudedCell.
+            if !below {
+                encode(x, z, UP, 0);
+            }
+            if !above {
+                encode(x, z, DOWN, 0);
+            }
+            if north && z > 0 {
+                encode(x, z, NORTH, 0);
+            }
+            if south && z < 0 {
+                encode(x, z, SOUTH, 0);
+            }
+            if west && x > 0 {
+                encode(x, z, WEST, 0);
+            }
+            if east && x < 0 {
+                encode(x, z, EAST, 0);
+            }
+            if x.abs() <= 1 && z.abs() <= 1 {
+                for direction in [DOWN, UP, NORTH, SOUTH, WEST, EAST] {
+                    encode(x, z, direction, INSIDE_FACE);
+                }
+            }
+        };
+        // buildMesh's rings, nearest first.
+        for (x, z) in super::cells(radius) {
+            cell(x, z);
+        }
+        faces
+    }
+}
+
+#[cfg(test)]
+#[path = "clouds_pack_tests.rs"]
+mod pack_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +658,7 @@ mod tests {
             range: 2,
             fast: false,
             color: [1.0; 4],
+            height: CLOUD_HEIGHT,
         };
         let mut mesh = Mesh::default();
         assert!(mesh.prepare(&input).0);
@@ -437,7 +674,10 @@ mod tests {
             assert!(!rebuilt);
             assert_eq!(mesh.vertices.as_ptr(), pointer);
             assert_eq!(bytemuck::cast_slice::<_, u8>(&mesh.vertices), vertices);
-            assert_eq!(uniform.offset[1], (192.33 - input.camera.y) as f32);
+            assert_eq!(
+                uniform.offset[1],
+                (f64::from(192.33f32) - input.camera.y) as f32
+            );
             assert_eq!(
                 uniform.colors[1],
                 [0.8 * 0.7, 0.7 * 0.7, 0.6 * 0.7, 0.5].map(|v| (v * 255.0) as u8 as f32 / 255.0)
@@ -452,7 +692,8 @@ mod tests {
         for (x, y, z, range, fast) in [
             (far_cell, 101.0, 1.0, 2, false),
             (far_cell, 101.0, -5.0, 2, false),
-            (far_cell, 192.33, -5.0, 2, false),
+            // Level with the clouds' bottom, the float height vanilla subtracts from.
+            (far_cell, f64::from(192.33f32), -5.0, 2, false),
             (far_cell, 196.34, -5.0, 2, false),
             (far_cell, 196.34, -5.0, 3, false),
             (far_cell, 196.34, -5.0, 3, true),
@@ -475,6 +716,12 @@ mod tests {
         input.partial_tick = 0.0;
         assert!(mesh.prepare(&input).0);
         assert!(!mesh.prepare(&input).0);
+        // A higher layer, still above the camera, moves only the uniform: its bottom is 250 less
+        // the camera's 101.
+        input.height = 250.0;
+        let (rebuilt, uniform) = mesh.prepare(&input);
+        assert!(!rebuilt);
+        assert_eq!(uniform.offset[1], 149.0);
         // 400 ticks of drift move the clouds 12 blocks: one whole snap cell.
         input.time = SNAP_CELLS * 400;
         assert!(mesh.prepare(&input).0);
@@ -499,6 +746,7 @@ mod tests {
             range: 2,
             fast: false,
             color: [1.0; 4],
+            height: CLOUD_HEIGHT,
         };
         // One snap cell, in blocks.
         let cell = SNAP_CELLS as f64 * 12.0;
@@ -540,6 +788,7 @@ mod tests {
             range: 2,
             fast: false,
             color: [1.0; 4],
+            height: CLOUD_HEIGHT,
         };
         let mut mesh = Mesh::default();
         assert!(mesh.prepare(&input).0);

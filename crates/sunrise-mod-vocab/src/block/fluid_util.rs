@@ -2,14 +2,15 @@
 //! case of a player right-clicking a tank with a bucket or any fluid container, in one call, with
 //! the bucket's sound and game event, and a container picking up and placing fluid in the world
 //! as a bucket does. Vocabulary over [`FLUIDS`], [`ITEM_FLUIDS`] at an [`ItemPlace`], the move
-//! step of [`move_resources`](crate::move_resources) and the level's
-//! [`pickup_fluid`](LevelRef::pickup_fluid) and [`place_fluid`](LevelRef::place_fluid): nothing
-//! changes until a mod calls them.
+//! step of [`move_resources`](crate::resource_util::move_resources) and the level's
+//! [`pickup_fluid`](LevelRef::pickup_fluid) and [`place_fluid`](LevelRef::place_fluid), and a
+//! dispenser's answer for a fluid container ([`dispense_container`]): nothing changes until a mod
+//! calls them.
 use crate::content::resource::{Ends, move_once};
 use crate::{
-    Capability, Direction, FLUIDS, FluidResource, FluidStack, GameEventContext, Hand,
-    HostTransaction, ITEM_FLUIDS, ItemPlace, LevelRef, PlayerRef, ResourceHandler, ServerHost,
-    SoundSource,
+    Capability, Direction, DispenseItemEvent, Dispensed, FLUIDS, FluidResource, FluidStack,
+    GameEventContext, Hand, HostTransaction, ITEM_FLUIDS, ItemPlace, LevelRef, PlayerRef,
+    ResourceHandler, ServerHost, SoundSource,
 };
 
 /// `FluidType.BUCKET_VOLUME`: what a source block holds, and what a placement takes.
@@ -135,7 +136,7 @@ pub fn trigger_sound_and_game_event(
         false => host.fluid_empty_sound(id),
     });
     if let Some(sound) = sound {
-        level.play_sound(host, sound, at, SoundSource::Blocks, 1.0, 1.0);
+        level.play_sound(host, sound, at, SoundSource::Blocks, 1.0, 1.0, None);
     }
     let event = match pickup {
         true => "minecraft:fluid_pickup",
@@ -193,7 +194,11 @@ pub fn try_pickup_world_fluid(
     host.transaction(|host, tx| {
         let picked = level.pickup_fluid(host, pos, player, tx).ok_or(())?;
         let fluid = FluidResource::of(&picked);
-        match destination.insert_any(host, tx, &fluid, picked.amount) == picked.amount {
+        match destination
+            .insert(host, tx, &fluid, picked.amount)
+            .map_err(|_| ())?
+            == picked.amount
+        {
             true => Ok(picked),
             false => Err(()),
         }
@@ -203,9 +208,10 @@ pub fn try_pickup_world_fluid(
 
 /// `FluidUtil.tryPlaceFluid` with a handler: a bucket of the first fluid of `source`, index by
 /// index, that comes out whole and places at `pos` in `level` ([`LevelRef::place_fluid`]):
-/// into air or a block it replaces, water into a waterloggable block, or hissing away where
-/// water evaporates. `validate` refuses a waterloggable block that won't take it, which a
-/// bucket empties into all the same (NeoForge's `validatePlaced`). Each try is a transaction
+/// into air or a block it replaces, into a liquid container that accepts it (including nonwater
+/// fluids accepted by a block part), or hissing away where water evaporates. The acceptance query
+/// lends `player` when supplied. `validate` treats a container's false placement answer as failure,
+/// while a normal bucket still empties (NeoForge's `validatePlaced`). Each try is a transaction
 /// of its own (nested in one the caller has open, which then decides). What was placed, or
 /// None with nothing changed. The block's updates, the fluid tick, a replaced block's drops
 /// and the bucket's empty sound and `minecraft:fluid_place` follow at the outermost commit.
@@ -225,7 +231,7 @@ pub fn try_place_fluid(
             continue;
         };
         let placed = host.transaction(|host, tx| {
-            if source.extract(host, tx, index, &fluid, BUCKET) != BUCKET {
+            if source.extract_at(host, tx, index, &fluid, BUCKET) != BUCKET {
                 return Err(());
             }
             match level.place_fluid(host, pos, key, player, validate, tx) {
@@ -238,6 +244,58 @@ pub fn try_place_fluid(
         }
     }
     None
+}
+
+/// NeoForge's `DispenseFluidContainer`: a dispenser's answer for a fluid container, which a
+/// container's [`dispense_item`](crate::ItemPart::dispense_item) part returns (it is no default:
+/// vanilla's buckets keep their own behaviours). `event.stack` runs in a two-slot copy whose
+/// item may change ([`ItemPlace::ScratchSlots`]), reached one item at a time
+/// ([`ItemPlace::OneByOne`]): the container's handler sees one container, and an empty one may
+/// become a full one of another item. It picks up from the block in front first
+/// ([`try_pickup_fluid`], its `FLUIDS` reached from the dispenser's side), and places a bucket
+/// of what it holds there ([`try_place_fluid`], unvalidated, as a bucket) only where nothing
+/// was picked up; the fluid's sound and game event go out as the transfer commits, before the
+/// dispenser's click and smoke. A single container is replaced in place; from a larger stack
+/// the slot keeps the rest and the changed container goes into the dispenser, else out of its
+/// front with a second click ([`dispense_with_remainder`](crate::prelude::ItemsServerHost::dispense_with_remainder)).
+/// Where neither moves anything, nothing is changed and one container is dispensed as it is
+/// ([`dispense_default`](crate::prelude::ItemsServerHost::dispense_default)). None, for vanilla
+/// to decide, only where the dispenser's level isn't open.
+pub fn dispense_container(
+    host: &mut dyn ServerHost,
+    event: &DispenseItemEvent<'_>,
+) -> Option<Dispensed> {
+    let level = host.level(event.dimension)?;
+    let [x, y, z] = event.pos;
+    let [dx, dy, dz] = event.facing.normal();
+    let front = [x + dx, y + dy, z + dz];
+    let side = Some(event.facing.opposite());
+    let stack = event.stack.clone();
+    let moved = host.transaction(|host, tx| {
+        let copy = host
+            .scratch_slots(tx, stack.clone())
+            .ok()
+            .flatten()
+            .ok_or(())?;
+        // The container's handler sees one container at a time, whatever the stack.
+        let one = ItemPlace::OneByOne(Box::new(copy.clone()));
+        let item = one.capability(host, &ITEM_FLUIDS).ok_or(())?;
+        let transferred = try_pickup_fluid(host, &item, None, level, front, side).is_some()
+            || try_place_fluid(host, &item, None, level, front, false).is_some();
+        match transferred {
+            true => host.scratch_take_slots(tx, &copy).ok_or(()),
+            false => Err(()),
+        }
+    });
+    let left = match moved {
+        // The changed container went into the first slot: a single one, replaced in place.
+        Ok((first, None)) => Ok(first),
+        Ok((_, Some(changed))) => {
+            host.dispense_with_remainder(event.dimension, event.pos, event.facing, stack, changed)
+        }
+        Err(()) => host.dispense_default(event.dimension, event.pos, event.facing, stack),
+    };
+    Some((left.ok()?, 1000))
 }
 
 /// `FluidUtil.getFirstStackContained`: what the fluid container at `place` holds at its first
@@ -255,7 +313,7 @@ pub fn first_stack_contained(host: &mut dyn ServerHost, place: &ItemPlace) -> Op
 /// One move of the first fluid of `from`, index by index, that `to` takes any of, as much of it
 /// as `to` takes in one go (NeoForge's `ResourceHandlerUtil.moveFirst`), all or nothing in a
 /// transaction of its own: what moved, or none, with nothing changed, where none moves or a
-/// handler answers more than it was asked. One go, not [`move_resources`](crate::move_resources)' repeats: a stack of
+/// handler answers more than it was asked. One go, not [`move_resources`](crate::resource_util::move_resources)' repeats: a stack of
 /// buckets has one filled, as vanilla's click fills one.
 fn move_first(
     host: &mut dyn ServerHost,
@@ -276,8 +334,8 @@ fn move_first(
             host,
             ends,
             want,
-            |host, tx, want| from.extract(host, tx, index, &fluid, want),
-            |host, tx, out| to.insert_any(host, tx, &fluid, out),
+            |host, tx, want| from.extract_at(host, tx, index, &fluid, want),
+            |host, tx, out| to.insert(host, tx, &fluid, out),
         );
         if let Ok(moved) = moved
             && moved > 0

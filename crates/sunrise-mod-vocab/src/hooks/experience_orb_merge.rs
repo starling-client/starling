@@ -22,6 +22,8 @@ pub trait Hooks {
 - `set_experience_orb` writes a `value` within -32768..=32767 (a save keeps it as a short) and a `count` from 1 to `i32::MAX`; it refuses anything else with nothing written, so an accepted write reloads unchanged.
 - Version 2 adds `into_value`, `into_count` and `from_count`; rebuild listeners against this SDK."#]
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_experience_orb_merge",
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         out = "canceled",

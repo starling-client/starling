@@ -4,12 +4,14 @@
     "builder": "DOCKERFILE",
     "dockerfilePath": "crates/sunrise-telemetry-server/Dockerfile",
     "watchPatterns": [
-      "/crates/sunrise-telemetry/**",
       "/crates/sunrise-addresses/**",
+      "/crates/sunrise-bench/**",
       "/crates/sunrise-core/**",
       "/crates/sunrise-hooks/**",
+      "/crates/sunrise-perf-format/**",
       "/crates/sunrise-platform/**",
       "/crates/sunrise-system/**",
+      "/crates/sunrise-telemetry/**",
       "/crates/sunrise-telemetry-server/**",
       "/Cargo.toml"
     ]

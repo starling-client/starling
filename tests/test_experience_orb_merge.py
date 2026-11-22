@@ -31,7 +31,7 @@ impl Aabb {
             && self.lo.z < o.hi.z && self.hi.z > o.lo.z
     }
 }
-struct ExperienceOrb { join: u32, id: u32, x: f64, value: i32, count: u32, age: u32, ticks: u32 }
+struct ExperienceOrb { join: u32, id: u32, x: f64, value: i32, count: u32, age: i32, ticks: u32 }
 impl ExperienceOrb {
     fn bounds(&self) -> Aabb {
         Aabb::new(Vec3::new(self.x - 0.25, 0.0, -0.25), Vec3::new(self.x + 0.25, 0.5, 0.25))
@@ -72,6 +72,8 @@ impl Game {
         }
     }
     fn add_orb(&mut self, _: [f64; 3], value: u32) { self.added.push(value); }
+    // This isolated hook fixture has no open transaction.
+    fn journal_orb_merge(&mut self, _: join_seq::JoinSeq, _: (i32, u32, i32)) {}
     RESTORE_ORB
     ORB_MERGES
     AWARD_ORB

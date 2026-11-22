@@ -1,11 +1,11 @@
 //! Inline atlas glyph geometry for `tools/test_inline_object_parity.py`.
+use serde_json::Value;
+use std::{error::Error, fs, io::Write};
 use sunrise_client::{
     component,
     hud::{HudAtlas, HudBatch, Rect},
     text::Text,
 };
-use serde_json::Value;
-use std::{error::Error, fs, io::Write};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = crate::args().collect();

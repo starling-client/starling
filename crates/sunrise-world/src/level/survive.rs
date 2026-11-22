@@ -11,11 +11,43 @@ use crate::registry::BlockStateId;
 use sunrise_core::{geometry::Direction, position::BlockPos};
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
+    /// Count the carried block as already present for inert survival only.
+    pub(super) fn while_landing<T>(
+        &mut self,
+        pos: BlockPos,
+        state: BlockStateId,
+        check: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.landing_block.replace((pos, state));
+        let answer = check(self);
+        self.landing_block = previous;
+        answer
+    }
+
+    fn retains_block(&self, state: BlockStateId, pos: BlockPos) -> bool {
+        let block = self.b.block(state);
+        self.landing_block
+            .is_some_and(|(target, carried)| target == pos && self.b.block(carried) == block)
+            || self.block_of(self.state(pos)) == block
+    }
+
     /// `BlockState.canSurvive(level, pos)`.
     pub fn can_survive(&self, state: BlockStateId, pos: BlockPos) -> bool {
         let mut survives = None;
-        self.level.before_can_survive(pos, state, &mut survives);
-        survives.unwrap_or_else(|| self.can_survive_at(0, state, pos))
+        if self
+            .level
+            .before_can_survive(&*self.ticks, None, pos, state, &mut survives)
+        {
+            return self.retains_block(state, pos);
+        }
+        survives.unwrap_or_else(|| {
+            if self.b.data(state).declared_vegetation {
+                let ground = below(pos);
+                self.may_place_on(state, self.state(ground), ground)
+            } else {
+                self.can_survive_at(0, state, pos)
+            }
+        })
     }
     fn can_survive_at(&self, depth: usize, state: BlockStateId, pos: BlockPos) -> bool {
         let chain = &self.b.data(state).chain;
@@ -215,7 +247,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
             Class::HangingMoss => {
                 let neighbour = self.above_state(pos);
-                b.multiface_can_attach(neighbour, Direction::Up) || b.is_block(neighbour, block)
+                self.multiface_can_attach_at(above(pos), Direction::Up)
+                    || b.is_block(neighbour, block)
             }
             Class::HangingRoots => self.sturdy(above(pos), Direction::Down),
             Class::Ladder => {
@@ -252,7 +285,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let mut any = false;
                 for direction in Direction::ALL {
                     if self.multiface_has_face(state, direction) {
-                        if !b.multiface_can_attach(self.rel_state(pos, direction), direction) {
+                        if !self.multiface_can_attach_at(rel(pos, direction), direction) {
                             return Some(false);
                         }
                         any = true;
@@ -363,20 +396,35 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     ) -> bool {
         // NeoForge's `BushBlock.canSurvive`: the soil's answer first, the plant's second.
         let mut sustains = None;
-        self.level
-            .before_can_sustain_plant(state, ground, ground_pos, &mut sustains);
+        if self.level.before_can_sustain_plant(
+            &*self.ticks,
+            None,
+            state,
+            ground,
+            ground_pos,
+            &mut sustains,
+        ) {
+            return self.retains_block(state, above(ground_pos));
+        }
         if let Some(sustains) = sustains {
             return sustains;
         }
         let mut may = None;
-        self.level
-            .before_may_place_on(state, ground, ground_pos, &mut may);
+        if self
+            .level
+            .before_may_place_on(&*self.ticks, None, state, ground, ground_pos, &mut may)
+        {
+            return self.retains_block(state, above(ground_pos));
+        }
         if let Some(may) = may {
             return may;
         }
         let b = self.b;
         let t = &b.tags;
         let data = b.data(state);
+        if data.declared_vegetation {
+            return b.in_set(ground, &t.supports_vegetation);
+        }
         for class in &data.chain {
             let result = match class {
                 Class::AttachedStem | Class::NetherFungus | Class::NetherRoots | Class::Stem => {
@@ -386,9 +434,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::Azalea => b.in_set(ground, &t.supports_azalea),
                 Class::CactusFlower => {
+                    // `isFaceSturdy(level, pos, UP, CENTER)` asks the live block: a
+                    // shulker box's support shape comes from its block entity, where
+                    // the cached center fact only knows a closed box.
                     let below = self.state(ground_pos);
                     b.in_set(below, &t.support_override_cactus_flower)
-                        || b.is_face_sturdy_center(below, Direction::Up)
+                        || self.can_support_center(ground_pos, Direction::Up)
                 }
                 Class::Crop | Class::PitcherCrop => b.in_set(ground, &t.supports_crops),
                 Class::DryVegetation => b.in_set(ground, &t.supports_dry_vegetation),
@@ -578,7 +629,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let p = &b.props;
         let above_pos = above(pos);
         if b.table.bool(state, p.up) {
-            let accept = b.multiface_can_attach(self.state(above_pos), Direction::Down);
+            let accept = self.multiface_can_attach_at(above_pos, Direction::Down);
             state = b.table.set_bool(state, p.up, accept);
         }
         let mut above_state = None;
@@ -605,7 +656,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if direction == Direction::Down {
             return false;
         }
-        if b.multiface_can_attach(self.rel_state(pos, direction), direction) {
+        if self.multiface_can_attach_at(rel(pos, direction), direction) {
             return true;
         }
         if direction == Direction::Up {

@@ -54,11 +54,10 @@ mod tests {
     use super::*;
     use wgpu::util::DeviceExt;
     #[test]
-    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
+    #[ignore = "daily"]
     fn world_text_blends_culls_and_obeys_world_depth() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let adapter = crate::gfx::test_gpu::adapter().unwrap();
         let (device, queue) =
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         // Use the production pipeline/vertex layout with a pass-through shader

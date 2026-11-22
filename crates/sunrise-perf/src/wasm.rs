@@ -27,8 +27,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use sunrise_perf_format::v1::Capture;
 use serde::{Deserialize, Serialize};
+use sunrise_perf_format::v1::Capture;
 
 use crate::diff::DiffOptions;
 use crate::export::{ExportOptions, Format};

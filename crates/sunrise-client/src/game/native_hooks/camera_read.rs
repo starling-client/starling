@@ -11,8 +11,6 @@ impl Drop for ProjectionFrame {
 }
 
 /// Helpers for native mods, kept as stable as the hook points.
-// Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
 impl Game<'_> {
     pub(in crate::game) fn activate_projection_frame(&self) -> ProjectionFrame {
         ProjectionFrame(PROJECT_VIEW.replace(self as *const Self as usize))

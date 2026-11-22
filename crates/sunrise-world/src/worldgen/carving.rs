@@ -11,11 +11,11 @@ use crate::{
     heightmap::HeightmapState,
     registry::{BlockRegistry, BlockStateId},
 };
+use std::collections::BTreeSet;
 use sunrise_core::{
     carving::CarvingMask, density::SamplerContext, noise::DensityVolume, position::BlockPos,
     random::RandomSource,
 };
-use std::collections::BTreeSet;
 
 /// Per-state predicates resolved once from the world's block registry and
 /// `minecraft:uncarvable` tag. Keep these bound to the same registry as the chunk.

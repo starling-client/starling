@@ -1,9 +1,9 @@
 use super::*;
+use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::{
     geometry::{Axis, VoxelShape},
     random::LegacyRandom,
 };
-use std::{collections::BTreeSet, sync::Arc};
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{collision::CachedCollisionRegistry, registry::BlockRegistry},

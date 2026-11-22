@@ -1,11 +1,11 @@
 use super::Game;
 use crate::game::native_guest_turn_tests::with_guests;
-use sunrise_client::{advancements as a, chunk::Chunk, items::ItemStack as EngineStack};
 use mod_api::{
     CriterionContext, CriterionTest, CriterionTestError, Identifier, TriggerCriterionError,
 };
 use serde_json::json;
 use std::sync::Arc;
+use sunrise_client::{advancements as a, chunk::Chunk, items::ItemStack as EngineStack};
 
 fn install(game: &mut Game<'_>) {
     game.build_registries();
@@ -35,6 +35,11 @@ fn install(game: &mut Game<'_>) {
             json!({"location":{"type":"minecraft:match_tool","predicate":{"items":"minecraft:stone","count":1}}}),
         ),
         ("any", "any_block_use", json!({})),
+        (
+            "consume",
+            "consume_item",
+            json!({"item":{"items":"minecraft:stone","count":2}}),
+        ),
     ] {
         let trigger = format!("minecraft:{trigger}");
         let index = tree.list.len();
@@ -77,7 +82,7 @@ fn has(game: &Game<'_>, id: &str) -> bool {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn default_block_use_awards_only_default() {
     with_guests(|g| {
         install(g);
@@ -92,7 +97,7 @@ fn default_block_use_awards_only_default() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn item_block_use_distinguishes_snapshots() {
     with_guests(|g| {
         install(g);
@@ -120,7 +125,7 @@ fn item_block_use_distinguishes_snapshots() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn block_use_refusals_grant_nothing() {
     with_guests(|g| {
         install(g);
@@ -181,7 +186,7 @@ fn block_use_refusals_grant_nothing() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn remote_block_use_refuses() {
     crate::game::native_entity_refs::tests::with_client_game(|g| {
         let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
@@ -194,5 +199,60 @@ fn remote_block_use_refuses() {
             p.trigger_block_use(g, [0, 64, 0]),
             Err(TriggerCriterionError::NotServer)
         );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn consume_item_uses_supplied_snapshot_and_refuses_invalid_inputs() {
+    crate::game::native_entity_refs::tests::with_client_game(|g| {
+        let _server = crate::game::native_client_session::tests::logged_client(g);
+        let p = mod_api::__private::game::player_ref(
+            mod_api::EntityRef::new(mod_api::WorldEpoch::new(1), 7),
+            12,
+        );
+        let key = mod_api::__private::item_key("minecraft:stone").unwrap();
+        let stack = mod_api::ItemStack::new(key, 1).unwrap();
+        assert_eq!(
+            p.trigger_consume_item(g, &stack),
+            Err(TriggerCriterionError::NotServer)
+        );
+    });
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        with_guests(|g| {
+            install(g);
+            let p = g.player(12).unwrap();
+            let key = mod_api::__private::item_key("minecraft:stone").unwrap();
+            let one = mod_api::ItemStack::new(key, 1).unwrap();
+            assert_eq!(p.trigger_consume_item(g, &one), Ok(()));
+            assert!(!has(g, "consume"));
+            let invalid = mod_api::ItemStack::new(key, 999).unwrap();
+            assert_eq!(
+                p.trigger_consume_item(g, &invalid),
+                Err(TriggerCriterionError::Stack(
+                    mod_api::StackWriteError::CountExceeded { maximum: 64 }
+                ))
+            );
+            assert!(!has(g, "consume"));
+            let two = mod_api::ItemStack::new(key, 2).unwrap();
+            assert_eq!(p.trigger_consume_item(g, &two), Ok(()));
+            assert!(has(g, "consume"));
+            assert!(!has(g, "any"));
+            g.as_guest(12, |g| {
+                g.as_guest(13, |g| {
+                    assert_eq!(
+                        p.trigger_consume_item(g, &two),
+                        Err(TriggerCriterionError::PlayerUnavailable)
+                    );
+                })
+                .unwrap();
+            })
+            .unwrap();
+            let stale = mod_api::__private::game::player_ref(p.entity(), 999);
+            assert_eq!(
+                stale.trigger_consume_item(g, &two),
+                Err(TriggerCriterionError::PlayerUnavailable)
+            );
+        });
     });
 }

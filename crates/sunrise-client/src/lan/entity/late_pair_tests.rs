@@ -29,6 +29,8 @@ fn late_pairing_does_not_duplicate_or_spend_the_next_arrow_update() {
         spectator: false,
         permission: 0,
         sunrise: true,
+        general_entity: true,
+        attachment_sender: None,
         moved: false,
         position: [0.5, 64.0, 0.5],
         view_distance: 10,
@@ -36,13 +38,18 @@ fn late_pairing_does_not_duplicate_or_spend_the_next_arrow_update() {
         sources: None,
         tracker: &mut tracker,
         out: &mut out,
-        gone: None,
     }];
     let riding = Riding::default();
-    level.tick(&[], &riding, &mut viewers, |_| Some(0));
+    level.tick(&[], &riding, &mut viewers, None, |_| Some(0));
     assert_eq!(level.tick, 1);
     let mut e = trident();
-    level.pair_after_tick(std::slice::from_ref(&e), &riding, &mut viewers, |_| Some(0));
+    level.pair_after_tick(
+        std::slice::from_ref(&e),
+        &riding,
+        &mut viewers,
+        None,
+        |_| Some(0),
+    );
     assert_eq!(level.tick, 1);
     assert_eq!(level.states.get(&37).unwrap().tick, 0);
     assert!(viewers[0].tracker.is_tracking(37));
@@ -56,7 +63,13 @@ fn late_pairing_does_not_duplicate_or_spend_the_next_arrow_update() {
     );
     assert_eq!(viewers[0].tracker.take_events().len(), 1);
     viewers[0].out.clear();
-    level.pair_after_tick(std::slice::from_ref(&e), &riding, &mut viewers, |_| Some(0));
+    level.pair_after_tick(
+        std::slice::from_ref(&e),
+        &riding,
+        &mut viewers,
+        None,
+        |_| Some(0),
+    );
     assert!(viewers[0].out.is_empty());
     assert!(viewers[0].tracker.take_events().is_empty());
     assert_eq!(level.states.get(&37).unwrap().tick, 0);
@@ -64,7 +77,7 @@ fn late_pairing_does_not_duplicate_or_spend_the_next_arrow_update() {
     e.position[0] += 0.25;
     e.velocity = [0.0; 3];
     e.meta.push((10, serializer::BOOLEAN, Value::Bool(true)));
-    level.tick(&[&e], &riding, &mut viewers, |_| Some(0));
+    level.tick(&[&e], &riding, &mut viewers, None, |_| Some(0));
     assert_eq!(level.tick, 2);
     assert_eq!(level.states.get(&37).unwrap().tick, 1);
     assert!(
@@ -108,6 +121,8 @@ fn late_pairing_keeps_chunk_range_and_own_entity_filters() {
             spectator: false,
             permission: 0,
             sunrise: true,
+            general_entity: true,
+            attachment_sender: None,
             moved: false,
             position: [x, 64.0, 0.5],
             view_distance: 10,
@@ -115,10 +130,11 @@ fn late_pairing_keeps_chunk_range_and_own_entity_filters() {
             sources: None,
             tracker: &mut tracker,
             out: &mut out,
-            gone: None,
         }];
-        level.tick(&[], &Riding::default(), &mut viewers, |_| Some(0));
-        level.pair_after_tick(&[trident()], &Riding::default(), &mut viewers, |_| Some(0));
+        level.tick(&[], &Riding::default(), &mut viewers, None, |_| Some(0));
+        level.pair_after_tick(&[trident()], &Riding::default(), &mut viewers, None, |_| {
+            Some(0)
+        });
         assert_eq!(
             viewers[0].tracker.is_tracking(37),
             expected,
@@ -154,6 +170,8 @@ fn a_vehicle_uses_a_later_passengers_range_in_the_same_late_batch() {
             spectator: false,
             permission: 0,
             sunrise: true,
+            general_entity: true,
+            attachment_sender: None,
             moved: false,
             position: [144.5, 64.0, 0.5],
             view_distance: 10,
@@ -161,12 +179,11 @@ fn a_vehicle_uses_a_later_passengers_range_in_the_same_late_batch() {
             sources: None,
             tracker: &mut tracker,
             out: &mut out,
-            gone: None,
         }];
         let mut riding = Riding::default();
         riding.add(37, 38);
-        level.tick(&[], &riding, &mut viewers, |_| Some(0));
-        level.pair_after_tick(&entities, &riding, &mut viewers, |_| Some(0));
+        level.tick(&[], &riding, &mut viewers, None, |_| Some(0));
+        level.pair_after_tick(&entities, &riding, &mut viewers, None, |_| Some(0));
         // Outside the boat's 128 blocks, inside its ghast passenger's 160.
         assert!(viewers[0].tracker.is_tracking(37));
         assert!(viewers[0].tracker.is_tracking(38));

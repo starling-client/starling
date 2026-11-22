@@ -46,7 +46,7 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    paths = ['crates/sunrise-client-core/src/nbt_path.rs',
+    paths = ['crates/sunrise-world/src/nbt_path.rs',
              'crates/sunrise-client-core/examples/nbt_path_reader_probe.rs',
              'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaNbtPathReaderOracle.java',
              'tools/test_nbt_path_reader_parity.py']

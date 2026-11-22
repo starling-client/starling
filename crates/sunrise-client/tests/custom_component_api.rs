@@ -1,5 +1,7 @@
 //! Native component registration, value limits and content identity.
 extern crate sunrise_client_lib as sunrise_client;
+use std::fs;
+use std::path::Path;
 use sunrise_client::{
     content_identity,
     mod_content::{ContentMod, accept_mod, build, known_components},
@@ -9,8 +11,6 @@ use sunrise_protocol::{
     buf::NBT_QUOTA,
     item::custom::{self, InstallError},
 };
-use std::fs;
-use std::path::Path;
 
 #[test]
 fn registration_limits_and_defaults_are_bound_to_the_connection() {

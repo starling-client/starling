@@ -1,15 +1,14 @@
 # sunrise-mod-registry
 
 The service behind the registry's submission form (`playsunrise.net/mods/submit`). A creator signs in with GitHub and
-**lists a project by its GitHub repository and a page** (`repo` plus name, summary, licence...): the service checks that the
-repository is public and opens a pull request adding `mods/<id>.toml` to
-[horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods), where a reviewer reads the repository once.
-**It takes no versions for such a project**: they are the repository's GitHub releases, read and checked by that
-repository's CI with no pull request ("publish a GitHub release in <repo>", a 409). Projects listed before that
-(no `repo`) can still be sent as a file: the service runs the file's own checks
+**submits a project's page and each version's file**: the service runs the file's own checks
 (`sunrise_mod_package::index::inspect`, the signature, the entry's fields), uploads it to the `staging` release as
 `<sha256>.<extension>` and opens a pull request adding or updating the entry. Formats and rules:
 [docs/modding/src/reference/registry-index.md](../../docs/modding/src/reference/registry-index.md).
+
+**The registry doesn't follow repositories.** A submission that names a `repo` instead of sending a file is refused
+(400), and the index's review refuses a new entry that has one. An entry listed by its repository before that rule
+keeps its versions from that repository's GitHub releases until it is pinned, and the form sends it there (409).
 
 Signed-in players also rate published projects, 1 to 5 stars: one rating per GitHub account and project, which they can
 change, never their own project's. That is the only data it keeps, in one SQLite file (`REGISTRY_DB`); it only ever
@@ -22,7 +21,7 @@ is used once, to read them, and dropped. The sign-in asks for no scope.
 | `GET /api/mods/auth/callback` | GitHub's redirect: sets the session, back to `/mods/submit` or the `back` page |
 | `POST /api/mods/auth/logout` | Ends it |
 | `GET /api/mods/me` | `{login, csrf}`, or 401 |
-| `POST /api/mods/submit` | Multipart: `entry` (JSON: `id kind name summary description authors license icon key`, and either `repo` (no file: lists the project) or `source signature version game changelog` with the `file` (a project with no `repo`)); `{pull_request}` or `{error}` |
+| `POST /api/mods/submit` | Multipart: `entry` (JSON: `id kind name summary description authors license icon key`, `source signature version game changelog`) with the `file`; `{pull_request}` or `{error}` |
 | `GET /api/mods/ratings` | `{projects: {<id>: {average, count}}}` for every rated project; cached a minute |
 | `GET /api/mods/<id>/rating` | The signed-in account's own `{stars}` (null when it hasn't rated), or 401 |
 | `POST /api/mods/<id>/rating` | JSON `{stars}`, 1 to 5: sets or changes it; `{stars, average, count}` or `{error}` |
@@ -35,7 +34,7 @@ is a pull request by hand.
 
 ## Owner updates
 
-Only for projects with no `repo` (a project listed by its repository has no update to send). A reviewer's approval is not needed for an *owner update*: the submitter's login is in the entry's `owners` on the
+A reviewer's approval is not needed for an *owner update*: the submitter's login is in the entry's `owners` on the
 registry's `main`, and the only change to the entry is one new version (key, owners, icon, kind, id, name, summary,
 description, authors, licence and source as they were; a signature when the entry has a key). Then, and only when
 `REGISTRY_UPDATE_KEY` is set, the pull request's body ends with a trailer and it gets the label `owner-update`:
@@ -80,8 +79,10 @@ REGISTRY_PUBLIC_URL=http://localhost:4173 REGISTRY_SESSION_KEY=... GITHUB_CLIENT
 | `PORT` | Default 8080 |
 
 On Railway it is the service `sunrise-mod-registry` of the project `sunrise-site`, next to the website: built from
-`main` with this `Dockerfile` from the repository root, health check `/healthz`, no public domain, and the volume
-`registry-data` at `/data` for the ratings. The
+`main` with this `Dockerfile` from the repository root (it copies all of `crates/`, `tools/layering/mod_vocab_state.json` and
+`tools/mixins/narrow-reference-rule.patch`: `sunrise-mod-vocab`'s build script reads the game's hook sources and that
+inventory, and `sunrise-mod-package` includes that patch; the `mod-registry` workflow builds the image), health check `/healthz`, no public
+domain, and the volume `registry-data` at `/data` for the ratings. The
 website's Caddy sends `/api/mods/*` to it over Railway's private network (`REGISTRY_UPSTREAM` on the website service:
 `http://sunrise-mod-registry.railway.internal:8080`). `railway.json` lists the same settings; Railway reads them from
 the service, not from the file.

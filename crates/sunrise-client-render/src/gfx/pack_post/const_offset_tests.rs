@@ -1,8 +1,8 @@
 //! A texel offset given by a `const` local reads the texel that far away, as a literal offset
 //! does (GLSL 4.60, 4.3.3 and 8.9.2, as #8462 quotes them). #8462's probe.
 use super::destination_tests::Fixture;
-use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 
 const VERTEX: &str = "#version 120\nvarying vec2 uv;\nvoid main() { uv=gl_MultiTexCoord0.xy; gl_Position=ftransform(); }\n";
 
@@ -44,6 +44,7 @@ fn pack() -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_const_local_offset_reads_the_offset_texel() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

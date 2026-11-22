@@ -15,19 +15,39 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def method(source, name):
+    # A method moved out of game.rs keeps its file's visibility; the fixture pastes it private.
+    plain = f"    fn {name}("
+    start = source.index(plain) if plain in source else next(
+        source.index(f"    {vis} fn {name}(") for vis in ("pub(super)", "pub(in crate::game)")
+        if f"    {vis} fn {name}(" in source)
+    opening = source.index("{", start)
+    depth = 1
+    end = opening + 1
+    while depth:
+        depth += (source[end] == "{") - (source[end] == "}")
+        end += 1
+    body = source[start:end]
+    for vis in ("pub(super) fn", "pub(in crate::game) fn"):
+        body = body.replace(vis, "fn", 1)
+    return body
+
+
 @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
 class RemoteMiningTests(unittest.TestCase):
     def test_break_timing_and_packets(self):
-        source = (next(ROOT.glob('crates/sunrise-client/src/game/*/remote/mod.rs'))).read_text()
-        start = source.index("    pub(super) fn stop_remote_mining(")
-        end = source.index("    fn veto_mining_prediction(", start)
+        remote = ROOT / "crates/sunrise-client/src/game/network/remote"
+        breaking = method((remote / "use.rs").read_text(encoding="utf-8"), "remote_mining")
+        stopping = method((remote / "break_prediction.rs").read_text(encoding="utf-8"), "stop_remote_mining")
+        source = breaking + "\n" + stopping
         fixture = r'''
 #![allow(dead_code)]
 #[derive(Clone, Copy)]
 struct Hit { pos: [i32; 3], face: u8 }
 /// The held stack: `ItemStack.item`, which the debug-stick check reads.
 struct Stack { item: &'static str }
-struct Mining { pos: [i32; 3], progress: f32, per_tick: f32, ticks: u32 }
+// Display-only crack state is covered by the client crack integration tests.
+struct Mining { pos: [i32; 3], progress: f32, per_tick: f32, ticks: u32, crack: Option<()> }
 #[derive(Default)]
 struct Remote { destroy_delay: u32, destroying: Option<([i32; 3], u8, f32)>, destroying_item: String, is_destroying: bool }
 struct Ground { on_ground: bool }
@@ -76,6 +96,8 @@ struct Game {
     veto: bool,
 }
 impl Game {
+    // No display subscribers in this packet/gameplay fixture.
+    fn set_client_mining(&mut self, mining: Option<Mining>) { self.mining = mining; }
     fn main_hand_key(&self) -> String { String::new() }
     fn same_destroying_item(&self, began: &String) -> bool { *began == self.main_hand_key() }
     fn reset_attack_strength(&mut self) {}
@@ -227,8 +249,31 @@ fn main() {
         assert!(game.mining.is_none());
         assert!(game.remote.as_ref().unwrap().destroying.is_none());
     }
+    // A gradual break at A, then an instant break at B, then another at C: the instant
+    // break leaves A as the running target, so each later start aborts A again.
+    let mut game = Game::new(1.0, 1.0, false);
+    game.hit.pos = [1, 64, 0];
+    game.remote_mining(true);
+    game.res.speed = 60.0;
+    game.hit.pos = [2, 64, 0];
+    game.remote_mining(true);
+    assert_eq!(game.remote.as_ref().unwrap().destroying.map(|(p, _, _)| p), Some([1, 64, 0]));
+    assert!(game.remote.as_ref().unwrap().is_destroying);
+    game.hit.pos = [3, 64, 0];
+    game.remote_mining(true);
+    assert_eq!(
+        game.packets.iter().map(|p| (p.action, p.pos)).collect::<Vec<_>>(),
+        [
+            (0, [1, 64, 0]),
+            (2, [1, 64, 0]),
+            (0, [2, 64, 0]),
+            (2, [1, 64, 0]),
+            (0, [3, 64, 0]),
+        ]
+    );
+    assert_eq!(game.world.broken, [[2, 64, 0], [3, 64, 0]]);
 }
-'''.replace("METHOD", source[start:end].replace("pub(super) fn", "fn"))
+'''.replace("METHOD", source)
         with tempfile.TemporaryDirectory(prefix="remote-mining-") as directory:
             path = Path(directory)
             (path / "main.rs").write_text(fixture)

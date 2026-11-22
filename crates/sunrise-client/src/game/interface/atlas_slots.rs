@@ -1,8 +1,6 @@
-//! The GUI atlas's fixed slots for runtime images (`sunrise/skin{N}`,
-//! `sunrise/map{N}`): which image each slot holds, least recently shown
-//! first. A new atlas (a resource pack reload) has every slot blank, so the
-//! table is forgotten with it and each image uploads again.
+//! The GUI atlas's fixed slots for runtime images (`sunrise/skin{N}`, `sunrise/map{N}`).
 
+<<<<<<< sync-sunrise-1
 pub(super) struct AtlasSlots<K> {
     count: usize,
     /// (image, slot, the frame it was last shown in), most recently shown last.
@@ -111,3 +109,6 @@ mod tests {
         assert_eq!(slots.claim("skins/abc".to_string()), Some((0, None)));
     }
 }
+=======
+pub(super) use sunrise_client_gameplay::atlas_slots::AtlasSlots;
+>>>>>>> sunrise/main

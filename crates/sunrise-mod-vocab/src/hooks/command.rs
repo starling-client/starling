@@ -15,9 +15,12 @@ pub trait Hooks {
     /// runs often, at least six times per `setBlock` that updates shapes
     /// (more for redstone wire's diagonals and knock-on updates): keep it
     /// short.
+    /// A disabled owner's subscribed update keeps the input state instead of running the template.
     #[hook(
+        receiver = "read",
         side = "server",
         contract = "replace",
+        inert = "*new = Some(state);",
         out = "new",
         scope = "block",
         key = "state",
@@ -32,17 +35,20 @@ pub trait Hooks {
         neighbour_pos: BlockPos,
         neighbour: BlockState,
         new: &mut Option<BlockState>,
+        #[engine] ticks: &mut Ticks,
     );
     /// A command the local player typed or clicked in chat, without its
     /// slash, before the server and Sunrise's commands see it: set `ran`
     /// when the mod ran it. Client-side: a server never asks, not for
     /// command blocks, guests or the console.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_command",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "ran",
         version = 2,
         neoforge = "none (ClientChatEvent is for chat messages; client commands are added by RegisterClientCommandsEvent)"
     )]
-    fn command();
+    fn command(command: &str, ran: &mut bool);
 }

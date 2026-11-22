@@ -3,25 +3,21 @@
 //! memory, written to `<world>/generated/<namespace>/structures/<path>.nbt`),
 //! `StructureBlock.neighborChanged` and `handleSetStructureBlock`.
 use super::Game;
+use std::collections::HashSet;
 use sunrise_client::{
     containers::BlockEntity,
     gizmos::{Gizmos, InvisibleBlock},
-    save,
     structure_block::{
         self, RenderMode, SCAN_CORNER_BLOCKS_RANGE, StructureBlock, StructureMode, UpdateType,
     },
     text::Text,
 };
+use sunrise_client_render::block_entity_reach::Reach;
 use sunrise_core::position::BlockPos;
 use sunrise_protocol::packets::play;
-use std::collections::HashSet;
 use {
-    sunrise_core::{
-        nbt,
-        nbt::{Compound, Limits, NamedTag, Tag},
-    },
+    sunrise_core::nbt::{Compound, Tag},
     sunrise_world::{
-        compression::Compression,
         level::{TemplateSettings, flags},
         worldgen::structure::{BlockInfo, EntityInfo, StructureTemplate, save_nbt},
     },
@@ -29,53 +25,30 @@ use {
 
 type Pos = (i32, i32, i32);
 
-/// A template the manager holds: its file's tree and the author `setAuthor`
-/// gave it (the file does not keep one, so a loaded template's is `?`).
-#[derive(Clone)]
-pub(super) struct TemplateEntry {
-    pub(super) tag: Tag,
-    pub(super) author: String,
-}
-
-/// `StructureTemplate.size` of a template's tree.
-pub(super) fn template_size(tag: &Tag) -> [i32; 3] {
-    let mut size = [0; 3];
-    if let Some(Tag::List(values)) = tag.get("size") {
-        for (slot, value) in size.iter_mut().zip(values) {
-            if let Tag::Int(v) = value {
-                *slot = *v;
-            }
-        }
-    }
-    size
-}
-
-/// `FileUtil.isPathPortable`-like check of the path under `structures/`: no
-/// empty, `.` or `..` segments.
-fn portable_path(path: &str) -> bool {
-    path.split('/')
-        .all(|s| !s.is_empty() && s != "." && s != "..")
-}
+pub(super) use sunrise_gameplay::structure_blocks::{
+    TemplateEntry, encode_template, load_settings, template_file,
+};
+pub use sunrise_gameplay::structure_blocks::{create_seed, template_size};
 
 impl Game<'_> {
     /// `BlockEntityWithBoundingBoxRenderer`: for a player who may use game
     /// master blocks (or a spectator), each structure block's box and, with
     /// Show Invisible Blocks on, a marker for every barrier, light, structure
-    /// void and air block in it. Blocks beyond `getViewDistance` (96) are
-    /// not drawn.
+    /// void and air block in it, as far as each renderer reaches (`Reach`).
     pub(super) fn bounding_box_gizmos(&self, camera: [f64; 3], g: &mut Gizmos) {
         let game_master = self.can_use_game_master_blocks() || self.spectator();
         let facts = self.res.facts();
+        let render_distance = self.effective_render_distance();
+        let camera_at = glam::DVec3::from_array(camera);
         for (pos, entity) in self.world.block_entities.boxes() {
-            let centre = [pos.0, pos.1, pos.2].map(|v| f64::from(v) + 0.5);
-            let dist: f64 = (0..3).map(|i| (centre[i] - camera[i]).powi(2)).sum();
             let block = [pos.0, pos.1, pos.2];
+            let drawn = |reach: Reach| reach.should_render(block, camera_at, render_distance);
             let (mode, area) = match entity {
-                BlockEntity::StructureBlock(b) if game_master && dist < 96.0 * 96.0 => {
+                BlockEntity::StructureBlock(b) if game_master && drawn(Reach::BoundingBox) => {
                     (b.render_mode(), b.renderable_box())
                 }
                 BlockEntity::TestInstanceBlock(b) => {
-                    if !game_master || dist >= 96.0 * 96.0 {
+                    if !game_master || !drawn(Reach::TestInstance) {
                         continue;
                     }
                     // TestInstanceBlockEntity.renderMode: BOX.
@@ -163,27 +136,13 @@ impl Game<'_> {
     /// `StructureTemplateManager.save`: the file under the world's
     /// `generated` folder.
     fn write_template(&self, name: &str, tag: &Tag) -> bool {
-        let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
-        if !portable_path(path) || !portable_path(ns) {
+        let Some(file) = template_file(&self.world_root, name) else {
             return false;
-        }
-        let file = self
-            .world_root
-            .join("generated")
-            .join(ns)
-            .join("structures")
-            .join(format!("{path}.nbt"));
+        };
         let Some(parent) = file.parent() else {
             return false;
         };
-        let named = NamedTag {
-            name: "".into(),
-            tag: tag.clone(),
-        };
-        let Ok(raw) = nbt::write_named(&named, Limits::templates()) else {
-            return false;
-        };
-        let Ok(bytes) = Compression::Gzip.encode(&raw) else {
+        let Some(bytes) = encode_template(tag) else {
             return false;
         };
         std::fs::create_dir_all(parent).is_ok() && std::fs::write(file, bytes).is_ok()
@@ -215,7 +174,8 @@ impl Game<'_> {
                     }
                     let nbt = self.world.block_entities.get(&at).map(|entity| {
                         let name = &*self.res.facts().get(state).name;
-                        let mut tag = save::block_entity_encode::encode(at, entity, name);
+                        let mut tag =
+                            self.encode_live_block_entity(at, entity, name, self.res.items());
                         Self::write_pending_loot(&self.world, at, &mut tag);
                         let Tag::Compound(mut c) = tag else {
                             return Compound::new();
@@ -261,7 +221,9 @@ impl Game<'_> {
             })
             .collect();
         let mut out = Vec::new();
-        for (_, tags) in self.entity_chunks(&chunks, false) {
+        for (_, tags) in
+            self.snapshot_entity_chunks(&chunks, super::persist::EntitySnapshot::Structure)
+        {
             for tag in tags {
                 let Some(Tag::List(pos)) = tag.get("Pos") else {
                     continue;
@@ -394,8 +356,23 @@ impl Game<'_> {
             return false;
         };
         let template = StructureTemplate::from_nbt(&entry.tag, registry, transforms);
+        self.place_template_object(&template, at, settings, mirror, rotation)
+    }
+
+    /// [`place_template_entry`](Self::place_template_entry) for a template
+    /// already read, whichever way it was read: the level's own placement, the
+    /// entities it brings spawned, and the block entities it loaded sent to the
+    /// clients. Returns whether it placed.
+    pub(super) fn place_template_object(
+        &mut self,
+        template: &StructureTemplate,
+        at: BlockPos,
+        settings: TemplateSettings,
+        mirror: sunrise_world::worldgen::structure::Mirror,
+        rotation: sunrise_world::worldgen::structure::Rotation,
+    ) -> bool {
         let placed = self.with_level(|behaviours, level, ticks| {
-            behaviours.place_template(level, ticks, &template, at, settings)
+            behaviours.place_template(level, ticks, template, at, settings)
         });
         let _ = self.process_level_events();
         let Some((placed, entities)) = placed else {
@@ -405,7 +382,7 @@ impl Game<'_> {
             self.spawn_entity_from_nbt(Tag::Compound(entity));
         }
         // The block entities the template loaded reach the clients.
-        let area = template.bounding_box([at.x, at.y, at.z], rotation, [0; 3], mirror);
+        let area = template.bounding_box([at.x, at.y, at.z], rotation, settings.pivot, mirror);
         let keys: Vec<Pos> = self
             .world
             .block_entities
@@ -652,89 +629,5 @@ impl Game<'_> {
         }
         // `setChanged` and `sendBlockUpdated`: the clients get the new data.
         self.mark_block_entity_updated(pos);
-    }
-}
-
-/// The `StructurePlaceSettings` that `StructureBlockEntity.placeStructure`
-/// and `PlaceCommand.placeTemplate` both build: mirror and rotation, the
-/// known shape when strict, the integrity and seed that `place_template`
-/// turns into `BlockRotProcessor` and `createRandom(seed)`, and the
-/// `setBlock` flags `2 | (strict ? 816 : 0)`.
-pub(super) fn load_settings(
-    mirror: sunrise_world::worldgen::structure::Mirror,
-    rotation: sunrise_world::worldgen::structure::Rotation,
-    integrity: f32,
-    seed: i64,
-    strict: bool,
-) -> TemplateSettings {
-    TemplateSettings {
-        mirror,
-        rotation,
-        ignore_entities: false,
-        known_shape: strict,
-        integrity,
-        seed: create_seed(seed),
-        flags: flags::UPDATE_CLIENTS | if strict { 816 } else { 0 },
-    }
-}
-
-/// `StructureBlockEntity.createRandom`'s seed: 0 is the clock.
-pub(super) fn create_seed(seed: i64) -> i64 {
-    if seed == 0 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(1, |d| d.as_millis() as i64)
-    } else {
-        seed
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn paths_must_stay_under_structures() {
-        assert!(portable_path("house/small"));
-        assert!(!portable_path("../x"));
-        assert!(!portable_path("a//b"));
-        assert!(!portable_path("a/./b"));
-        assert!(!portable_path(""));
-    }
-
-    #[test]
-    fn template_size_reads_the_size_list() {
-        let tag = Tag::compound([(
-            "size",
-            Tag::List(vec![Tag::Int(3), Tag::Int(4), Tag::Int(5)]),
-        )]);
-        assert_eq!(template_size(&tag), [3, 4, 5]);
-        assert_eq!(
-            template_size(&Tag::compound(Vec::<(&str, Tag)>::new())),
-            [0; 3]
-        );
-    }
-
-    #[test]
-    fn a_zero_seed_is_the_clock() {
-        assert_eq!(create_seed(42), 42);
-        assert_ne!(create_seed(0), 0);
-    }
-
-    #[test]
-    fn template_settings_are_flags_2_and_unknown_shape_unless_strict() {
-        use sunrise_world::worldgen::structure::{Mirror, Rotation};
-        let loose = load_settings(Mirror::LeftRight, Rotation::Clockwise90, 0.5, 7, false);
-        assert_eq!(loose.flags, 2);
-        assert!(!loose.known_shape);
-        assert!(!loose.ignore_entities);
-        assert_eq!((loose.integrity, loose.seed), (0.5, 7));
-        assert_eq!(
-            (loose.mirror, loose.rotation),
-            (Mirror::LeftRight, Rotation::Clockwise90)
-        );
-        let strict = load_settings(Mirror::None, Rotation::None, 1.0, 7, true);
-        assert_eq!(strict.flags, 818);
-        assert!(strict.known_shape);
     }
 }

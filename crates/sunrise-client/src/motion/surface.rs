@@ -3,43 +3,129 @@
 use crate::{blocks::BlockFacts, world::World};
 use sunrise_core::position::BlockPos;
 use sunrise_world::{
-    movement_properties::BlockFactorEdits, native_load_context::LoopContext, registry::BlockStateId,
+    movement_properties::BlockFactorEdits,
+    native_load_context::LoopContext,
+    registry::{BlockRegistry, BlockStateId},
 };
 
-/// A block state's friction (`IBlockExtension.getFriction`) is being read for an entity on it.
-/// `friction` starts at the block's own value and the block's parts may change it; an answer that
-/// is not within `0..=2` (NaN included) is dropped for the block's own value. Fires on replayed
-/// ticks too, so a listener must be a pure function of its inputs.
-#[inline(never)]
-pub fn native_friction(
-    context: &LoopContext,
-    entity: u32,
-    kind: &str,
-    pos: BlockPos,
-    state: BlockStateId,
-    friction: &mut f32,
-) {
-    let own = *friction;
-    crate::native_client_hooks::friction(context, entity, kind, pos, state, friction);
-    if !(0.0..=2.0).contains(&*friction) {
-        *friction = own;
+/// The side-local level data beyond the world's blocks that a read-only level view needs,
+/// which the game lends to each motion, mob and entity tick: weather needs the biome and
+/// block-behaviour tables, a block entity's handle needs the level it is in.
+pub trait SideLevel {
+    /// `Level.isRainingAt` in `world`, which this side's level owns.
+    fn is_raining_at(&self, world: &World, pos: BlockPos) -> bool;
+    /// `LevelReader.enabledFeatures` as this side knows it.
+    fn enabled_features(&self) -> &std::sync::Arc<[String]>;
+    /// The merged tag tables: the server's, a client's from the join, none before they exist.
+    fn tag_items(&self) -> Option<&crate::items::Items>;
+    /// Borrow the equipment of the player whose movement this side is driving.
+    fn player_equipment(&self) -> crate::health::PlayerEquipment<'_> {
+        [None; 8]
+    }
+    /// The damage-type registry of this side's current level.
+    fn damage_types(&self) -> &sunrise_world::damage_source::Catalog;
+    /// The resident block entity at `pos` of `world`, as a handle of this side's level.
+    fn block_entity(&self, world: &World, pos: BlockPos) -> Option<mod_api::BlockEntityRef>;
+    /// Saved data for a resident handle of this side's level; never loads chunks or loot.
+    fn block_entity_data(
+        &self,
+        world: &World,
+        registry: &BlockRegistry,
+        entity: mod_api::BlockEntityRef,
+    ) -> Option<mod_api::Compound>;
+}
+
+/// Level data for tests and probes that do not have a live game.
+#[cfg(any(test, feature = "test-dry-side"))]
+pub(crate) struct DrySide<'a>(pub &'a sunrise_world::damage_source::Catalog);
+
+#[cfg(any(test, feature = "test-dry-side"))]
+impl SideLevel for DrySide<'_> {
+    fn is_raining_at(&self, _: &World, _: BlockPos) -> bool {
+        false
+    }
+    fn enabled_features(&self) -> &std::sync::Arc<[String]> {
+        static FEATURES: std::sync::LazyLock<std::sync::Arc<[String]>> =
+            std::sync::LazyLock::new(std::sync::Arc::default);
+        &FEATURES
+    }
+    fn tag_items(&self) -> Option<&crate::items::Items> {
+        None
+    }
+    fn damage_types(&self) -> &sunrise_world::damage_source::Catalog {
+        self.0
+    }
+    fn block_entity(&self, _: &World, _: BlockPos) -> Option<mod_api::BlockEntityRef> {
+        None
+    }
+    fn block_entity_data(
+        &self,
+        _: &World,
+        _: &BlockRegistry,
+        _: mod_api::BlockEntityRef,
+    ) -> Option<mod_api::Compound> {
+        None
     }
 }
 
-/// The friction of the block at `pos` for the entity `entity` of `kind` on it: the block's own
-/// `StateFacts` value, through [`native_friction`].
+/// A side without any live level data, for tests and probes that never read it.
+#[cfg(any(test, feature = "test-dry-side"))]
+pub fn dry_side() -> &'static dyn SideLevel {
+    static CATALOG: std::sync::LazyLock<sunrise_world::damage_source::Catalog> =
+        std::sync::LazyLock::new(sunrise_world::damage_source::Catalog::default);
+    static SIDE: std::sync::LazyLock<DrySide<'static>> =
+        std::sync::LazyLock::new(|| DrySide(&CATALOG));
+    &*SIDE
+}
+
+/// The engine data a subscribed friction part may read. Borrows the actual world, this side's
+/// level data and the caller's coefficient table; it carries no write access or entity snapshot.
+#[derive(Clone, Copy)]
+pub struct FrictionLevel<'a> {
+    pub world: &'a World,
+    pub registry: &'a BlockRegistry,
+    pub context: &'a LoopContext,
+    pub side: &'a dyn SideLevel,
+    pub coefficient: &'a dyn Fn(BlockStateId) -> Option<f32>,
+}
+
+/// `IBlockExtension.getFriction` of a state at a position. A cyclic or over-deep mod
+/// query gets no answer. A non-finite answer keeps the state's own coefficient; any finite one is used as given.
+#[inline(never)]
+pub fn read_friction(
+    level: FrictionLevel<'_>,
+    entity: Option<(u32, &str)>,
+    pos: BlockPos,
+    state: BlockStateId,
+    own: f32,
+) -> Option<f32> {
+    let mut friction = own;
+    if !crate::native_client_hooks::friction(level, entity, pos, state, &mut friction) {
+        return None;
+    }
+    Some(if friction.is_finite() { friction } else { own })
+}
+
+/// The friction of the block at `pos` for the entity on it, starting at its `StateFacts` value.
 pub fn block_friction(
     context: &LoopContext,
-    entity: u32,
-    kind: &str,
+    side: &dyn SideLevel,
+    entity: (u32, &str),
     world: &World,
+    registry: &BlockRegistry,
     facts: &BlockFacts,
     pos: BlockPos,
 ) -> f32 {
     let state = world.block(pos.x, pos.y, pos.z);
-    let mut friction = facts.get(state).friction;
-    native_friction(context, entity, kind, pos, state, &mut friction);
-    friction
+    let own = facts.get(state).friction;
+    let level = FrictionLevel {
+        world,
+        registry,
+        context,
+        side,
+        coefficient: &|id| facts.states.get(id.0 as usize).map(|facts| facts.friction),
+    };
+    read_friction(level, Some(entity), pos, state, own).unwrap_or(own)
 }
 
 /// A block state's jump factor (`Block.getJumpFactor`) is being read (beyond NeoForge: no event).

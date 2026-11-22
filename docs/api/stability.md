@@ -90,14 +90,19 @@ Deprecations and breaking changes are in bold. The release notes of the game rel
 | Content mods (`registries`: data-driven blocks, items, mob effects, thrown entity types and menu types) | preview | manifest `api = "0.2"` |
 | Native mods (flat Rust projects, [../modding/src/how-to/native-mods.md](../modding/src/how-to/native-mods.md)) | experimental | the pinned revisions |
 | `cargo sunrise-mod` (`new`, `build`, `run`, `check`) | preview | none yet (unversioned) |
+| `cargo sunrise-mod native-build`: the plan, its events and exit codes ([08-native-build.md](../modding/src/reference/sdk/08-native-build.md)) | experimental | `"contract": 1` |
+| `sunrise-port-pack --json` ([port-pack.md](port-pack.md)) | experimental | `"format": 1` |
 | Shader API | experimental | 0.1 |
 | Shader API 0.2 (linear light, [hdr-linear-light.md](../design/hdr-linear-light.md)) | experimental, behind a switch: `sunrise-shader` checks it, the game draws it only with `SUNRISE_HDR_FRAME=float` set, and the registry doesn't list it | 0.2 |
 | `sunrise-ctl` commands and MCP tools | preview | none yet (unversioned) |
 | The game's own control-socket commands outside `sunrise-ctl`'s table (test hooks) | experimental | |
 | `sunrise-server` commands, `server.toml` | stable | `sunrise-server --version` |
+| `sunrise-server engine-command --json` ([engine-command.md](engine-command.md)) | experimental | `"format": 1` |
 | Server control API | stable | `/api/v1` |
 | `sunrise-launcher` commands and MCP tools | preview | none yet (unversioned) |
 | Launch API: `sunrise-client`'s launch options, session JSON, exit codes; `sunrise-prepare`'s output and progress | experimental | 0.1.1, `sunrise-client --launch-api` and `sunrise-prepare --launch-api` |
+| `sunrise-prepare needs`, `missing-extras` and `extras` with `--json` ([prepare-extras.md](prepare-extras.md)) | experimental | `"format": 1` |
 | Benchmark report | stable | `"version": 1` |
 | `sunrise-graphics.txt`, `sunrise-extras.txt`, `sunrise-mods.txt` | preview | none |
 | `SHA256SUMS` and `SHA256SUMS.sig` | stable | |
+| `sunrise-release.json` ([release-file.md](release-file.md)) | experimental | `"contract": 1` |

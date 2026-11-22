@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::lan_actions::tick::Game<'_>::tick_guests", "point:sunrise_client::game::lan_actions::tick::Game<'_>::tick_guests_inner"]
+why = "A guest's game-mode tick (digging), immunity and menu changes now run in the level pass before the player body, as ServerPlayer.tick runs before ServerGamePacketListenerImpl.tick reaches doTick; player_tick_pre and player_tick_post bracket only the body. Both functions' bodies changed."
+migrate = "An [[inject]] row or [[native.mixin]] pinned to either function updates its hash. A listener that relied on digging running inside player_tick_pre/post moves to the level pass's own hooks."

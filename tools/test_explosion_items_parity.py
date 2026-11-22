@@ -49,9 +49,8 @@ def main():
     args = parser.parse_args()
     source_paths = [lab.ROOT / path for path in (
         'crates/sunrise-client/src/entities.rs',
-        'crates/sunrise-client/src/game/explosion.rs',
+        'crates/sunrise-client/src/game/entities/explosion.rs',
         'crates/sunrise-client/src/game.rs',
-        'crates/sunrise-client/src/game/native_machines.rs',
         'mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java',
         'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaVehicleContainerOracle.java',
         'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaExplosionItemsOracle.java',

@@ -1,0 +1,3 @@
+ids = ["hook:living_incoming_damage"]
+why = "Version 2 adds causing_weapon: the causing living entity's current main-hand weapon. weapon keeps its meaning as the direct entity's weapon, including a projectile's saved weapon."
+migrate = "Read causing_weapon for rules on the shooter's current weapon and weapon for rules on the direct entity's weapon. Add causing_weapon at event construction sites and use .. when destructuring events."

@@ -8,6 +8,7 @@ pub trait Hooks {
     /// attempt to fail instead, as a failed roll does: smoke for a pet, and
     /// a horse bucks its rider off. Before `entity_tame`. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -15,5 +16,5 @@ pub trait Hooks {
         paper = "EntityTameEvent",
         cancellable = true
     )]
-    fn animal_tame();
+    fn animal_tame(tamer: u128, tamer_entity_id: i32, entity: u32, kind: &str, cancel: &mut bool);
 }

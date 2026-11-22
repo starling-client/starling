@@ -6,8 +6,8 @@ use super::{
     placement::{PlacementContext, PlacementQueryError},
 };
 use crate::{fluid::FluidKind, registry::BlockStateId};
-use sunrise_core::position::BlockPos;
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::position::BlockPos;
 #[derive(Clone, Debug)]
 pub struct BiomeWeatherBindings {
     liquid_blocks: Arc<BTreeSet<BlockStateId>>,

@@ -1,0 +1,17 @@
+ids = [
+  "type:text::TextForm",
+  "type:text::TextNode",
+  "type:text::TextNodeContent",
+  "type:text::TextNodeStyle",
+  "type:text::TextNodeHover",
+  "type:text::TextRelation",
+  "handle:text::TextNode::new",
+  "handle:text::Text::visit_children",
+]
+why = "Mods build component trees directly; the validated table used to encode them in ordinary Wire is private. The old flat-table byte layout has been replaced by the validated component-tree Wire format (`validated-text-tree:v2`); rich styles and direct child traversal remain available."
+migrate = """\
+Replace `Text::try_from(form)?` and `TextNode::new(...)` with `Text::literal(...)`, `Text::translate(key, arguments)` or `Text::new(TextContent::...)`. Attach child rows with `parent.append(child)` (or `parent.children.push(child)`), put arguments and separators directly in `TextContent`, and put inline objects and their fallbacks in `TextContent::Object(TextObject::...)`. Replace `TextNodeStyle` with `TextStyle` and `TextNodeHover` with `TextHover`; box nested separators, fallbacks, hover text and hover entity names in their corresponding fields. Put component metadata on `text.metadata` and style metadata on `text.style.metadata`.
+
+Instead of `TextForm::try_from(&text)`, keep `Text` and lend `&text` to host reads. For Wire, including typed payloads, use `writer.put(&text)` and `Reader::decode::<Text>(bytes)` instead of a table. Re-encode bytes written with the old `validated-text-node-table:v1` format.
+
+Replace `text.visit_children(|child, _relation| ...)` with `text.visit_children(|child| ...)`. If the callback distinguished relations, read `text.children`, match `text.content`, or match `text.style.hover` to read the corresponding components directly."""

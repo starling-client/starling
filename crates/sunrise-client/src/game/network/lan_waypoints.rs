@@ -1,87 +1,151 @@
 //! The locator bar of the players on a served world (lan/waypoints.rs): what
 //! each player looks like to their level's waypoint manager this tick.
 use super::{Game, commands::Target};
-use sunrise_client::{
-    items::ItemStack,
-    lan::waypoints::{self, HIDING_HEADS, PLAYER_RANGE},
-};
-
-/// `waypoint_transmit_range`: hidden by crouching, invisibility or a head worn.
-fn transmit_range(crouching: bool, invisible: bool, head: Option<&ItemStack>) -> f64 {
-    let hiding_head = head.is_some_and(|s| HIDING_HEADS.contains(&&*s.item));
-    if crouching || invisible || hiding_head {
-        0.0
-    } else {
-        PLAYER_RANGE
-    }
-}
+use sunrise_client::lan::waypoints::{self, PLAYER_RANGE};
+use sunrise_client::motion::MotionEvent;
 
 impl Game<'_> {
+    /// `ServerLevel.EntityCallbacks.onTrackingStart`: register from the loaded
+    /// attributes. Saved equipment contributes modifiers on the first living tick.
+    pub(in crate::game) fn lan_register_player_waypoint(&mut self, conn: u32) {
+        self.as_guest(conn, |game| {
+            game.update_waypoint_transmitter(Target::Guest(conn));
+        });
+    }
+
+    /// `LivingEntity.onAttributeUpdated` runs both at a player tick and on
+    /// effect updates/removals. Dispatch its transmit requests where it runs.
+    pub(in crate::game) fn apply_player_waypoint_updates(&mut self) {
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        let updates: Vec<_> = player
+            .events
+            .extract_if(.., |event| {
+                matches!(
+                    event,
+                    MotionEvent::Waypoint {
+                        receiver: false,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        let target = self.waypoint_target(Target::Player);
+        for event in updates {
+            if let MotionEvent::Waypoint { enabled, .. } = event {
+                self.set_waypoint_transmitter(target, enabled);
+            }
+        }
+    }
+
+    fn waypoint_player(&self, g: &sunrise_client::lan::guest::Guest) -> waypoints::Player {
+        let body = if self.lan_acting == Some(g.conn) {
+            self.player.as_ref()
+        } else {
+            g.motion.as_deref()
+        };
+        waypoints::Player {
+            uuid: g.uuid,
+            conn: Some(g.conn),
+            position: body.map_or(g.position, |p| p.position.components()),
+            spectator: g.spectator(),
+            transmit_range: body.map_or(PLAYER_RANGE, |p| {
+                p.attributes
+                    .computed_value_of("minecraft:waypoint_transmit_range")
+                    .unwrap_or_default()
+            }),
+            transmitting: self
+                .cmds
+                .waypoints
+                .as_ref()
+                .is_some_and(|tracked| tracked.contains(&Target::Guest(g.conn))),
+            receive_range: PLAYER_RANGE,
+            first_tick: g.ticks == 0,
+            view_distance: g.view_distance,
+            team: self.score.board.players_team(&g.name).map(|team| {
+                (
+                    team.name.clone(),
+                    team.color.as_deref().and_then(waypoints::team_rgb),
+                )
+            }),
+            icon: self
+                .cmds
+                .waypoint_icons
+                .get(&Target::Guest(g.conn))
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(in crate::game) fn lan_set_waypoint_transmitting(&mut self, conn: u32, enabled: bool) {
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        let Some(guest) = host.hub.guest(conn) else {
+            return;
+        };
+        let level = guest.dimension.clone();
+        if !host.waypoints.contains_key(&level) {
+            return;
+        }
+        let uuid = guest.uuid;
+        let players: Vec<_> = host
+            .hub
+            .online_players()
+            .filter(|g| g.dimension == level)
+            .map(|g| self.waypoint_player(g))
+            .collect();
+        let locator_bar = self
+            .ui
+            .rules
+            .bool_at(sunrise_client::gamerules::vanilla::LOCATOR_BAR);
+        if let Some(host) = self.lan.as_mut()
+            && let Some(manager) = host.waypoints.get_mut(&level)
+        {
+            for (conn, packet) in manager.set_transmitting(&players, uuid, enabled, locator_bar) {
+                if let Some(g) = host.hub.guest(conn) {
+                    g.send(&packet);
+                }
+            }
+        }
+    }
+
     /// Each level's `ServerWaypointManager` ticked with the players in that
     /// level: a player who changes level leaves the old one's manager
     /// (`ServerLevel.removePlayerImmediately`: untracked for everyone there)
     /// and joins the new one's (`addDuringTeleport`).
     pub(super) fn lan_update_waypoints(&mut self) {
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        let players: Vec<_> = host
+            .hub
+            .online_players()
+            .map(|g| (g.dimension.clone(), g.dead, self.waypoint_player(g)))
+            .collect();
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        let mut players: Vec<(&str, waypoints::Player)> = Vec::new();
         let mut respawned = Vec::new();
-        for g in host
-            .hub
-            .guests
-            .iter()
-            .filter(|g| g.placed && g.participates_online())
-        {
+        for (_, dead, p) in &players {
             // PlayerList.respawn makes a new ServerPlayer.
-            if g.dead {
-                host.waypoint_dead.insert(g.uuid);
-            } else if host.waypoint_dead.remove(&g.uuid) {
-                respawned.push(g.uuid);
+            if *dead {
+                host.waypoint_dead.insert(p.uuid);
+            } else if host.waypoint_dead.remove(&p.uuid) {
+                respawned.push(p.uuid);
             }
-            // Player.updatePlayerPose: the shift key crouches unless flying.
-            let crouching = g.sneaking && !g.abilities.flying && !g.fall_flying && !g.sleeping;
-            players.push((
-                &g.dimension,
-                waypoints::Player {
-                    uuid: g.uuid,
-                    conn: Some(g.conn),
-                    position: g.position,
-                    spectator: g.spectator(),
-                    transmit_range: transmit_range(
-                        crouching,
-                        g.effects.get("invisibility").is_some(),
-                        g.armor[0].as_ref(),
-                    ),
-                    receive_range: PLAYER_RANGE,
-                    first_tick: g.ticks == 0,
-                    view_distance: g.view_distance,
-                    team: self.score.board.players_team(&g.name).map(|team| {
-                        (
-                            team.name.clone(),
-                            team.color.as_deref().and_then(waypoints::team_rgb),
-                        )
-                    }),
-                    // `/waypoint modify` and a mod's writes, kept by connection.
-                    icon: self
-                        .cmds
-                        .waypoint_icons
-                        .get(&Target::Guest(g.conn))
-                        .cloned()
-                        .unwrap_or_default(),
-                },
-            ));
         }
         host.waypoint_dead
-            .retain(|uuid| players.iter().any(|(_, p)| p.uuid == *uuid));
+            .retain(|uuid| players.iter().any(|(_, _, p)| p.uuid == *uuid));
         let locator_bar = self
             .ui
             .rules
             .bool_at(sunrise_client::gamerules::vanilla::LOCATOR_BAR);
         let mut levels: Vec<String> = host.waypoints.keys().cloned().collect();
-        for (level, _) in &players {
+        for (level, _, _) in &players {
             if !levels.iter().any(|l| l == level) {
-                levels.push((*level).to_owned());
+                levels.push(level.clone());
             }
         }
         levels.sort();
@@ -89,13 +153,13 @@ impl Game<'_> {
         for level in levels {
             let here: Vec<waypoints::Player> = players
                 .iter()
-                .filter(|(l, _)| *l == level)
-                .map(|(_, p)| p.clone())
+                .filter(|(l, _, _)| *l == level)
+                .map(|(_, _, p)| p.clone())
                 .collect();
             let away: Vec<(u128, u32)> = players
                 .iter()
-                .filter(|(l, _)| *l != level)
-                .filter_map(|(_, p)| Some((p.uuid, p.conn?)))
+                .filter(|(l, _, _)| *l != level)
+                .filter_map(|(_, _, p)| Some((p.uuid, p.conn?)))
                 .collect();
             let manager = host.waypoints.entry(level.clone()).or_default();
             out.extend(manager.tick_level(&here, &away, &respawned, locator_bar));

@@ -1,19 +1,56 @@
 //! Commands and their authority.
 
-/// A command a native mod adds, as one usage: words, then arguments
-/// `<name:kind>`, optional ones last in brackets `[name:kind]`:
+use crate::{CommandInvocation, CommandSource, ServerHost};
+use std::sync::Arc;
+
+// no wire: a native executor runs only in the server process.
+/// The server's retained callable for an executable command usage.
+pub type CommandExecutor = dyn Fn(&mut dyn ServerHost, &CommandSource, &CommandInvocation) -> Option<i32>
+    + Send
+    + Sync
+    + 'static;
+
+// no wire: a registration binds server code to a descriptor; only the descriptor is data.
+// exhaustive: only Command::executes constructs the opaque descriptor/executor pair.
+/// A server command usage together with its executor. Create it with [`Command::executes`].
+pub struct CommandRegistration {
+    command: Command,
+    executor: Arc<CommandExecutor>,
+}
+
+/// Separate a registration's display descriptor from its process-local executor.
+pub fn split_command_registration(
+    registration: CommandRegistration,
+) -> (Command, Arc<CommandExecutor>) {
+    (registration.command, registration.executor)
+}
+
+/// A data-only command usage. Attach behavior with [`Command::executes`] when
+/// registering it on the server.
+///
+/// Literal words use lowercase letters, digits, `_` and `-`. Only the first word may
+/// additionally begin with one `/`: register `/set <x:word>` and type `//set stone` in chat.
+/// The command's literals retain `/set`. A slash alone, repeated leading slashes and
+/// slashes in later literal words are refused.
+///
+/// A usage is words followed by arguments `<name:kind>`, with optional arguments
+/// last in brackets `[name:kind]`:
 /// `pay <player:player> <amount:integer>`, `balance [player:player]`,
 /// `eco give <player:player> <amount:integer>`. Kinds: `word`, `text` (the
 /// rest of the line, last), `integer`, `number`, `boolean`, `player`, `players`,
-/// `entity`, `entities`, `item`, `block_pos`, `mod_id` (a loaded package id, delivered as a
+/// `entity`, `entities`, `item`, `block_pos`, `vec3` (a point, `Vec3Argument.vec3()`; delivered
+/// as `Vec3`), `id` (a free `namespace:path` identifier, delivered as that canonical string),
+/// `mod_id` (a loaded package id, delivered as a
 /// string), `resource:<registry>` (an id that registry holds, delivered as `Id`:
 /// `<kind:resource:minecraft:entity_type>`), or a command argument type a mod registered with
 /// `Registrar::register_command_argument`, named by its namespaced id:
 /// `machine use <machine:mymod:machine>`. Usages of one command share their
-/// words; the server merges them into one tree. Each executable usage keeps its own level:
-/// a public `foo bar` lets everyone traverse `foo`, but does not make an
-/// operator-only `foo` executable. Optional arguments also allow execution at
-/// their preceding prefixes, at that usage's level.
+/// words; the server merges them into one tree. A public `foo bar` lets everyone traverse
+/// `foo`, but does not by itself make an operator-only `foo` executable. Optional arguments
+/// allow a usage to execute at their preceding prefixes too. If accepted usages execute at
+/// the same node, each later accepted registration overwrites that node's executor (matching
+/// Brigadier's `CommandNode.addChild`) and updates Sunrise's paired execution permission
+/// level for that node.
 ///
 /// Side: server. Selector arguments use vanilla's source position, permissions,
 /// cardinality and selection order; `player`/`entity` require one result and
@@ -43,6 +80,32 @@ impl Command {
         Self {
             usage: usage.to_owned(),
             level: level.min(4),
+        }
+    }
+
+    /// Bind this usage to a server executor for `register_commands`.
+    /// The executor runs as the registering mod, after permission checks and argument
+    /// resolution. The source identifies the origin and permission, independent of
+    /// `execute as`; feedback respects silence, track-output and the acting player.
+    /// Return `Some(n)` for success with result `n` (including zero), or `None` for
+    /// failure. A failed executor or disabled owner never gives another mod a turn.
+    /// A panic is reported with the mod's name and disables this usage's executor for the
+    /// session. It aborts the executor's writes in the caller's open transaction and does
+    /// not publish a result to `execute store`. A failed invocation also aborts any
+    /// transaction the executor opened and left unfinished. Ordinary commands do not get
+    /// an implicit transaction, and neither failure undoes unjournaled effects.
+    /// Only a parse from the current server dispatcher can reach this executor.
+    /// Capture owned or shared state rather than borrowing the registration event.
+    pub fn executes(
+        self,
+        executor: impl Fn(&mut dyn ServerHost, &CommandSource, &CommandInvocation) -> Option<i32>
+        + Send
+        + Sync
+        + 'static,
+    ) -> CommandRegistration {
+        CommandRegistration {
+            command: self,
+            executor: Arc::new(executor),
         }
     }
 }

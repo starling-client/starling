@@ -1,9 +1,9 @@
 //! Saved data from older versions upgraded for mods: one block entity's or entity's NBT through the datafixers the
 //! chunk loaders run (`upgrade_block_entity_nbt`, `upgrade_entity_nbt`).
 use super::Game;
+use mod_api::NbtUpgradeError;
 use sunrise_core::nbt::Compound;
 use sunrise_world::datafix::{self, UpgradeError};
-use mod_api::NbtUpgradeError;
 
 impl Game<'_> {
     /// A block entity's NBT saved at `data_version`, upgraded as the chunk loader upgrades it, or the refusal.

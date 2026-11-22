@@ -6,7 +6,6 @@
 use super::mcpr::{McprWriter, Metadata, TimestampedPacket};
 use crate::net::PacketRecorder;
 pub use crate::net::RecorderStatus;
-use sunrise_protocol::{buf::Reader, crypto::generate_secret, packets::play};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -18,6 +17,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+use sunrise_protocol::{buf::Reader, crypto::generate_secret, packets::play};
 
 static RECORDING_NAME_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -302,19 +302,19 @@ pub fn generate_recording_filename(name: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use sunrise_core::nbt::Tag;
     use sunrise_protocol::packets::configuration as cfg;
-    use std::fs;
 
     #[test]
     fn studio_recording_drops_packets_with_direct_player_identity_or_private_text() {
-        use sunrise_protocol::packets::configuration::{
-            ResourcePackPush, ServerLink, ServerLinkKind, ServerLinks, StoreCookie, Transfer,
-        };
         use play::{
             ChatTypeBound, Clientbound as P, CustomChatCompletions, PlayerInfo, PlayerInfoRemove,
             PlayerInfoUpdate, ResetScore, SetPlayerTeam, SetScore, TrackedWaypoint, WaypointId,
             WaypointTarget,
+        };
+        use sunrise_protocol::packets::configuration::{
+            ResourcePackPush, ServerLink, ServerLinkKind, ServerLinks, StoreCookie, Transfer,
         };
 
         let packets = [

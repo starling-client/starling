@@ -139,6 +139,43 @@ mod tests {
         );
     }
 
+    /// Non-ASCII text is refused in the namespace and in the path, never hashed. A valid
+    /// identifier hashes as vanilla's `31 * namespace.hashCode() + path.hashCode()`.
+    #[test]
+    fn only_ascii_reaches_the_hash() {
+        for text in ["\u{e9}", "a\u{1F600}", "\u{0101}", "\u{ff}"] {
+            assert_eq!(
+                Identifier::from_parts(text, "x"),
+                Err(IdentifierError::Namespace)
+            );
+            assert_eq!(
+                Identifier::from_parts("x", text),
+                Err(IdentifierError::Path)
+            );
+        }
+        assert_eq!(
+            Identifier::parse("minecraft:stone").unwrap().hash_code(),
+            182_203_480
+        );
+    }
+
+    #[test]
+    fn java_key_hashes_namespaces_and_orders_paths_first() {
+        let id = |name| Identifier::parse(name).unwrap();
+        let later_namespace = id("z:a");
+        let earlier_namespace = id("a:z");
+        assert_eq!(later_namespace.java_hash(), 3_879); // 31 * 'z' + 'a'
+        assert_eq!(
+            later_namespace.comparable_compare(&earlier_namespace),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            later_namespace.tie_break(&earlier_namespace),
+            Ordering::Less
+        );
+        assert_eq!(later_namespace.tie_break(&id("a:a")), Ordering::Greater);
+    }
+
     /// A character outside `[a-z0-9_.-]` is refused in the namespace; `/` only in the path.
     #[test]
     fn invalid_characters_are_still_refused() {

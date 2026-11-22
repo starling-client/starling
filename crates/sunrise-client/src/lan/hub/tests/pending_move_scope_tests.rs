@@ -118,7 +118,8 @@ fn a_teleport_in_the_level_is_not_a_first_tick_and_the_first_report_after_it_is_
 fn a_respawn_is_a_teleport_not_a_first_tick_and_the_first_report_after_it_is_heard() {
     let mut hub = standing(true, vec![]);
     let conn = hub.guests[0].conn;
-    with_input_context(|ctx| hub.respawn(0, [0.5, 64.0, 0.5], Some([0.0; 2]), ctx));
+    hub.remove_player_for_respawn(0);
+    with_input_context(|ctx| hub.respawn(0, [0.5, 64.0, 0.5], Some([0.0; 2]), false, ctx));
     assert_eq!(hub.guests[0].level_entered, 0, "the same level");
     hub.guests.update(0, |g| g.load_timeout = 0);
     hub.ticks = 11;
@@ -161,8 +162,8 @@ fn a_confirmation_with_a_changed_position_is_not_heard() {
     hub.teleport_command(0, [10.5, 70.0, 10.5], [false; 3]);
     hub.ticks = 11;
     let (id, _) = hub.guests[0].awaiting_teleport.unwrap();
-    // The server's own handling: the accepted position is the teleport's, the packet's own values go
-    // through the same validation as any report.
+    // `handleAcceptTeleportPacket` snaps to the teleport's target, then handles the packet's own
+    // position as an ordinary report: it is where the client stands.
     let moved = S::AcceptTeleportation(play::AcceptTeleportation {
         id,
         x: 10.75,
@@ -176,19 +177,44 @@ fn a_confirmation_with_a_changed_position_is_not_heard() {
     assert!(hub.guests[0].pending_move.is_none());
     assert_eq!(
         hub.guests[0].position,
-        [10.5, 70.0, 10.5],
-        "the teleport's target, not the packet's position"
+        [10.75, 70.0, 10.5],
+        "the client's landing, not the teleport's target"
     );
 }
 
 #[test]
-fn a_confirmation_never_commits_the_displacement_a_veto_refused() {
+fn a_confirmation_from_too_far_is_corrected_to_the_teleports_target() {
+    let mut hub = standing(true, vec![]);
+    hub.teleport_command(0, [10.5, 70.0, 10.5], [false; 3]);
+    hub.ticks = 11;
+    let (id, _) = hub.guests[0].awaiting_teleport.unwrap();
+    // The speed test holds the packet's own position to the same limit as any report.
+    let far = S::AcceptTeleportation(play::AcceptTeleportation {
+        id,
+        x: 510.5,
+        y: 70.0,
+        z: 10.5,
+        yaw: 0.0,
+        pitch: 0.0,
+    });
+    push(&mut hub, vec![far]);
+    drain(&mut hub);
+    assert_eq!(hub.guests[0].position, [10.5, 70.0, 10.5]);
+    assert!(
+        hub.guests[0].awaiting_teleport.is_some(),
+        "the client is sent back to the target"
+    );
+}
+
+#[test]
+fn a_confirmation_lands_where_the_client_says_even_after_a_veto_corrected_it() {
     let mut hub = standing(true, vec![at(0.5)]);
     let conn = hub.guests[0].conn;
     assert_eq!(moves(&drain(&mut hub)), [conn]);
     hub.resolve_move(conn, false);
     let (id, _) = hub.guests[0].awaiting_teleport.unwrap();
-    // The client confirms the correction while claiming the position the veto refused.
+    // The client confirms the correction from the position the veto refused: its report of where
+    // it stands is handled as any other, from the correction's target.
     let refused = S::AcceptTeleportation(play::AcceptTeleportation {
         id,
         x: 0.5,
@@ -202,8 +228,8 @@ fn a_confirmation_never_commits_the_displacement_a_veto_refused() {
     assert!(hub.guests[0].awaiting_teleport.is_none(), "it confirmed");
     assert_eq!(
         hub.guests[0].position,
-        [0.0, 64.0, 0.0],
-        "the correction's target"
+        [0.5, 64.0, 0.0],
+        "the position the confirmation reports"
     );
 }
 
@@ -244,7 +270,8 @@ fn the_baseline_is_the_destination_of_every_server_side_teleport() {
     );
     hub.resend_teleport(0, Some([11.5, 71.0, 11.5]));
     assert_eq!(baseline(&hub), ([11.5, 71.0, 11.5], [0.0, 0.0]), "a resend");
-    with_input_context(|ctx| hub.respawn(0, [0.5, 64.0, 0.5], Some([30.0, 5.0]), ctx));
+    hub.remove_player_for_respawn(0);
+    with_input_context(|ctx| hub.respawn(0, [0.5, 64.0, 0.5], Some([30.0, 5.0]), false, ctx));
     assert_eq!(baseline(&hub), ([0.5, 64.0, 0.5], [30.0, 5.0]), "a respawn");
     with_input_context(|ctx| hub.change_level(0, [100.5, 49.0, 0.5], 90.0, None, false, 0, ctx));
     assert_eq!(

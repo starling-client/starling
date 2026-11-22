@@ -8,7 +8,6 @@ mod import;
 use crate::resource_source::stays_inside;
 use crate::text::Style;
 use crate::text::Text;
-pub use sunrise_client_core::pattern;
 pub use import::copy_pack;
 use pattern::Pattern;
 use std::{
@@ -16,6 +15,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
 };
+pub use sunrise_client_core::pattern;
 
 /// SharedConstants resource pack format of 26.3 (major, minor).
 pub const RESOURCE_FORMAT: (i64, i64) = sunrise_core::version::RESOURCE_PACK_FORMAT;
@@ -917,6 +917,9 @@ pub fn build_overlay(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<(
 struct ResolvedPacks {
     files: BTreeMap<String, (usize, Provided)>,
     stacks: BTreeMap<String, Vec<(usize, Provided)>>,
+    /// Every pack's copy of each file, lowest pack first, after the packs' filters: what a
+    /// resource manager's `getResourceStack` gives above vanilla's own.
+    layers: BTreeMap<String, Vec<(usize, Provided)>>,
     hidden: BTreeSet<String>,
 }
 
@@ -929,11 +932,19 @@ fn resolve(packs: &[Pack]) -> io::Result<ResolvedPacks> {
     let mut files: BTreeMap<String, (usize, Provided)> = BTreeMap::new();
     // Every pack's copy of the files vanilla reads as a resource stack.
     let mut stacks: BTreeMap<String, Vec<(usize, Provided)>> = BTreeMap::new();
+    let mut layers: BTreeMap<String, Vec<(usize, Provided)>> = BTreeMap::new();
     for (i, (p, source)) in packs.iter().zip(&sources).enumerate() {
         // A pack's filter hides what the packs below it provide.
         files.retain(|name, _| !p.filter.iter().any(|f| f.blocks(name)));
         stacks.retain(|name, _| !p.filter.iter().any(|f| f.blocks(name)));
+        if !p.filter.is_empty() {
+            layers.retain(|name, _| !p.filter.iter().any(|f| f.blocks(name)));
+        }
         for (name, provided) in pack_files(p, source)? {
+            layers
+                .entry(name.clone())
+                .or_default()
+                .push((i, provided.clone()));
             if merge_kind(&name).is_some() {
                 stacks
                     .entry(name.clone())
@@ -981,6 +992,7 @@ fn resolve(packs: &[Pack]) -> io::Result<ResolvedPacks> {
     Ok(ResolvedPacks {
         files,
         stacks,
+        layers,
         hidden,
     })
 }
@@ -997,13 +1009,13 @@ pub fn resources(
         return Ok(base);
     }
     let ResolvedPacks {
-        mut files,
+        files,
         stacks,
-        mut hidden,
+        layers,
+        hidden,
     } = resolve(packs)?;
     let filters: Vec<_> = packs.iter().flat_map(|pack| &pack.filter).collect();
     let merged = merged_resources(&base, packs, &stacks);
-    add_sprite_renames(&base, &merged, &filters, &mut files, &mut hidden);
     let mut index: BTreeMap<_, _> = base
         .list("")
         .into_iter()
@@ -1020,7 +1032,32 @@ pub fn resources(
     for (name, bytes) in merged {
         index.insert(name, Resource::bytes(bytes));
     }
-    Ok(ResourceSource::indexed(index))
+    let deprecated = VANILLA_LANG_DEPRECATIONS;
+    // These renames come from the game, not its resource packs.
+    if base.contains(deprecated) {
+        index.insert(
+            deprecated.to_owned(),
+            Resource::file(base.clone(), deprecated.to_owned()),
+        );
+    } else {
+        index.remove(deprecated);
+    }
+    // Every layer of the files the packs provide: the layers below `base` (it may be stacked
+    // itself), then each pack's copy. What `base` stacked and no pack provides stays as it was.
+    let mut stacked = base.layers().cloned().unwrap_or_default();
+    for (name, provided) in layers {
+        let below = if filters.iter().any(|filter| filter.blocks(&name)) {
+            Vec::new()
+        } else {
+            base.stack(&name)
+        };
+        let copies = provided
+            .into_iter()
+            .map(|(_, (_, source, inner))| Resource::file(source, inner));
+        stacked.insert(name, below.into_iter().chain(copies).collect());
+    }
+    stacked.retain(|name, _| index.contains_key(name));
+    Ok(ResourceSource::indexed_with_layers(index, stacked))
 }
 
 fn merged_resources(
@@ -1073,9 +1110,10 @@ fn build_overlay_uncached(
     }
     fs::create_dir_all(out)?;
     let ResolvedPacks {
-        mut files,
+        files,
         stacks,
-        mut hidden,
+        hidden,
+        ..
     } = resolve(packs)?;
     // Vanilla sits below every pack, so filters hide its files too.
     let filters: Vec<&Filter> = packs.iter().flat_map(|p| &p.filter).collect();
@@ -1086,13 +1124,6 @@ fn build_overlay_uncached(
         &crate::resource_source::ResourceSource::directory(vanilla.to_owned()),
         packs,
         &stacks,
-    );
-    add_sprite_renames(
-        &crate::resource_source::ResourceSource::directory(vanilla.to_owned()),
-        &merged,
-        &filters,
-        &mut files,
-        &mut hidden,
     );
     let touched_dirs: BTreeSet<String> = files
         .keys()
@@ -1152,6 +1183,14 @@ fn build_overlay_uncached(
         }
         for name in names {
             let child = format!("{prefix}{name}");
+            if child == VANILLA_LANG_DEPRECATIONS {
+                let base = vanilla.join(&child);
+                if base.is_file() {
+                    dependencies.file(&base);
+                    link(&base, &out.join(&child))?;
+                }
+                continue;
+            }
             // Vanilla's files in one file: it describes vanilla's root, not this mirror.
             if hidden.contains(&child) || child == sunrise_core::prepared_files::FILE_NAME {
                 continue;
@@ -1245,118 +1284,6 @@ fn build_overlay_uncached(
     }
     extracted
 }
-/// `SingleFile` with a `sprite`: the atlas holds the resource's pixels, and the resource's
-/// `.mcmeta`, under the sprite's id. Every other sprite of the blocks and items atlases is its
-/// texture's own id, and the loaders read a model's sprite from `textures/<sprite>.png`, so the
-/// overlay gives a renamed sprite that file. ItemsAdder and Nexo packs name their models'
-/// textures only through these renames (#14485).
-///
-/// A sprite gets its resource's file only when the whole source list, in order, ends on the
-/// rename (`SpriteSourceList.list`: a later source of the same id replaces it), when the other
-/// atlas, which reads the same file, lists it from that resource too or not at all, and when it
-/// has no texture of its own. A texture that is there may be read as itself (another source's
-/// resource, an unstitched or paletted sprite's input), so no alias ever replaces one; such a
-/// sprite draws its own texture, as before aliases.
-fn add_sprite_renames(
-    vanilla: &crate::resource_source::ResourceSource,
-    merged: &BTreeMap<String, Vec<u8>>,
-    filters: &[&Filter],
-    files: &mut BTreeMap<String, (usize, Provided)>,
-    hidden: &mut BTreeSet<String>,
-) {
-    use crate::atlas_sources::{
-        SpriteOrigin, SpriteSource, decode, list, list_textures, texture_path,
-    };
-    let png = |id: &str| {
-        texture_path(Path::new(""), id, "textures")
-            .to_string_lossy()
-            .replace('\\', "/")
-    };
-    let atlases: Vec<Vec<SpriteSource>> = ["blocks", "items"]
-        .into_iter()
-        .filter_map(|atlas| merged.get(&format!("assets/minecraft/atlases/{atlas}.json")))
-        .filter_map(|bytes| decode(std::str::from_utf8(bytes).ok()?).ok())
-        .collect();
-    let renamed = |source: &SpriteSource| matches!(source, SpriteSource::Single { resource, sprite: Some(sprite) } if sprite != resource);
-    if !atlases.iter().flatten().any(renamed) {
-        return;
-    }
-    // The textures a source can list: the packs' and vanilla's the packs leave visible.
-    let mut textures: Vec<String> = list_textures(vanilla)
-        .into_iter()
-        .filter(|id| {
-            let name = png(id);
-            !hidden.contains(&name) && !filters.iter().any(|f| f.blocks(&name))
-        })
-        .chain(files.keys().filter_map(|name| {
-            let (namespace, rest) = name.strip_prefix("assets/")?.split_once('/')?;
-            let path = rest.strip_prefix("textures/")?.strip_suffix(".png")?;
-            Some(format!("{namespace}:{path}"))
-        }))
-        .collect();
-    textures.sort();
-    textures.dedup();
-    // Each sprite's resource, `None` where an atlas lists it any other way.
-    let mut renames: BTreeMap<String, Option<String>> = BTreeMap::new();
-    for sources in &atlases {
-        for (sprite, origin) in list(sources, &textures, &mut crate::atlas_sources::unasked) {
-            let from = match origin {
-                SpriteOrigin::File(resource) if resource != sprite => Some(resource),
-                _ => None,
-            };
-            renames
-                .entry(sprite)
-                .and_modify(|seen| {
-                    if *seen != from {
-                        *seen = None;
-                    }
-                })
-                .or_insert(from);
-        }
-    }
-    let renames = renames
-        .into_iter()
-        .filter(|(sprite, _)| textures.binary_search(sprite).is_err())
-        .filter_map(|(sprite, resource)| Some((png(&resource?), png(&sprite))));
-    // Each resource is the file the packs give, never another rename's sprite.
-    let mut found = Vec::new();
-    for (from, to) in renames {
-        // `texture_path` names an id that would leave the root as a file that is never there.
-        if !stays_inside(&from) || !stays_inside(&to) {
-            continue;
-        }
-        let from_meta = format!("{from}.mcmeta");
-        // A pack's texture with its own `.mcmeta`, or vanilla's below every pack.
-        let (file, meta) = match files.get(&from) {
-            Some(file) => (file.clone(), files.get(&from_meta).cloned()),
-            None => {
-                if !vanilla.contains(&from) || filters.iter().any(|f| f.blocks(&from)) {
-                    continue;
-                }
-                let meta = files.get(&from_meta).cloned().or_else(|| {
-                    (vanilla.contains(&from_meta) && !filters.iter().any(|f| f.blocks(&from_meta)))
-                        .then(|| (0, (None, vanilla.clone(), from_meta.clone())))
-                });
-                ((0, (None, vanilla.clone(), from.clone())), meta)
-            }
-        };
-        found.push((to, file, meta));
-    }
-    for (to, file, meta) in found {
-        let to_meta = format!("{to}.mcmeta");
-        files.insert(to, file);
-        match meta {
-            Some(meta) => {
-                hidden.remove(&to_meta);
-                files.insert(to_meta, meta);
-            }
-            None => {
-                files.remove(&to_meta);
-                hidden.insert(to_meta);
-            }
-        }
-    }
-}
 /// The most the zip packs in `packs` may unpack to in one overlay: 16 times their size on disk
 /// (real packs are mostly PNGs and JSON, a few times smaller zipped at most), at least 64 MiB
 /// for a small pack of text, and never past 8 GiB.
@@ -1401,8 +1328,13 @@ pub fn merge_stacks(name: &str) -> bool {
     merge_kind(name).is_some()
 }
 
+const VANILLA_LANG_DEPRECATIONS: &str = "assets/minecraft/lang/deprecated.json";
+
 fn merge_kind(name: &str) -> Option<Merge> {
     let (_, rest) = name.strip_prefix("assets/")?.split_once('/')?;
+    if name == VANILLA_LANG_DEPRECATIONS {
+        return None;
+    }
     if rest == "sounds.json" {
         return Some(Merge::Sounds);
     }
@@ -1419,29 +1351,26 @@ fn merge_kind(name: &str) -> Option<Merge> {
 /// does. Layers that do not parse are skipped, as vanilla logs and skips them.
 fn merge(kind: Merge, layers: &[Vec<u8>]) -> Option<Vec<u8>> {
     use serde_json::{Map, Value};
+    if kind == Merge::Lang {
+        // The client reads each original file in its own order. A non-primitive
+        // ends that file, not the rest of the stack; merging JSON objects first
+        // can both lose and admit the wrong entries.
+        let mut strings = std::collections::HashMap::new();
+        for layer in layers {
+            sunrise_client_core::lang::read_lang_file(layer, &mut strings);
+        }
+        return serde_json::to_vec(&Map::from_iter(
+            strings
+                .into_iter()
+                .map(|(key, value)| (key, Value::String(value))),
+        ))
+        .ok();
+    }
     let mut parsed: Vec<Map<String, Value>> = layers
         .iter()
         // SoundManager skips a sounds.json Gson rejects, whole.
         .filter(|b| kind != Merge::Sounds || crate::sound_events::is_valid_file(b))
-        .filter_map(|b| {
-            match serde_json::from_slice(b) {
-                Ok(Value::Object(m)) => Some(m),
-                // `Language.loadFromJson` reads with Gson's lenient reader, so
-                // a lang file with `#` comments still counts; a file that
-                // strict JSON accepts keeps its bytes as they are.
-                _ if kind == Merge::Lang => {
-                    let mut strings = std::collections::HashMap::new();
-                    sunrise_client_core::lang::read_lang_file(b, &mut strings);
-                    Some(
-                        strings
-                            .into_iter()
-                            .map(|(k, v)| (k, Value::String(v)))
-                            .collect(),
-                    )
-                }
-                _ => None,
-            }
-        })
+        .filter_map(|b| serde_json::from_slice(b).ok())
         .collect();
     let list = |key: &str, layers: &mut dyn Iterator<Item = &Map<String, Value>>| {
         let items: Vec<Value> = layers
@@ -1452,7 +1381,7 @@ fn merge(kind: Merge, layers: &[Vec<u8>]) -> Option<Vec<u8>> {
         Value::Object(Map::from_iter([(key.to_owned(), Value::Array(items))]))
     };
     let out = match kind {
-        Merge::Lang => Value::Object(parsed.into_iter().flatten().collect()),
+        Merge::Lang => unreachable!("language files are read before merging"),
         Merge::Sounds => {
             let mut events = Map::new();
             for (event, def) in parsed.into_iter().flatten() {
@@ -1480,9 +1409,15 @@ fn merge(kind: Merge, layers: &[Vec<u8>]) -> Option<Vec<u8>> {
         // appended to its own, from the bottom up. A layer whose sources
         // are not a list is skipped, as vanilla logs and skips the file.
         Merge::Atlas => {
-            let mut layers = parsed
-                .into_iter()
-                .filter(|l| l.get("sources").is_none_or(Value::is_array));
+            // Each definition stands or falls on its own: one whose sources don't decode is
+            // dropped whole, and the others' sources still run.
+            let mut layers = parsed.into_iter().filter(|l| {
+                crate::atlas_sources::decode(
+                    &Value::Object(l.clone()).to_string(),
+                    &crate::mod_sprite_sources::Registered,
+                )
+                .is_ok()
+            });
             let mut doc = layers.next()?;
             let added = layers
                 .filter_map(|l| l.get("sources").and_then(Value::as_array).cloned())
@@ -1557,16 +1492,12 @@ pub fn enabled(all: &[Pack], ids: &[String]) -> Vec<Pack> {
         .filter_map(|selected| all.iter().find(|p| p.id == selected.id).cloned())
         .collect()
 }
-/// `PackRepository.isAbleToClearAnyPack`: clearing the selection
-/// (`rebuildSelected([])`, which keeps only the required vanilla pack)
-/// changes it, that is, some selected pack still exists.
-pub fn able_to_clear_any_pack(all: &[Pack], selected: &[String]) -> bool {
-    let current = enabled(all, selected);
-    let required = enabled(all, &[]);
-    current
+/// NeoForge's `Minecraft.rollbackResourcePacks`: recover only when a selected
+/// client pack can be disabled. Reordering required packs does not count.
+pub fn has_optional_pack(selected: &[Pack]) -> bool {
+    selected
         .iter()
-        .map(|pack| &pack.id)
-        .ne(required.iter().map(|pack| &pack.id))
+        .any(|pack| !pack.selection.as_ref().is_some_and(|info| info.required))
 }
 /// Resource root for a pack selection: vanilla itself when no pack is on.
 pub fn resource_root(vanilla: &Path, packs: &[Pack], cache: &Path) -> io::Result<PathBuf> {
@@ -1794,6 +1725,74 @@ impl SelectionModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A resource manager's `getResourceStack`: every visible copy, lowest first, the packs'
+    /// own files (not the merged document the game reads of a stacked kind), with a pack's
+    /// filter hiding what is below it.
+    #[test]
+    fn a_resource_stack_keeps_every_visible_original_lowest_first() {
+        use crate::resource_source::ResourceSource;
+        let root = std::env::temp_dir().join(format!("sunrise-stack-packs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let write = |pack: &str, name: &str, bytes: &str| {
+            let path = root.join(pack).join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        };
+        let (plain, lang) = ("assets/demo/plain.txt", "assets/demo/lang/en_us.json");
+        for (pack, plain_text, lang_text) in [
+            ("vanilla", "base", r#"{"a":"base"}"#),
+            ("one", "one", r#"{"a":"one","b":"one"}"#),
+            ("two", "two", r#"{"b":"two"}"#),
+        ] {
+            write(pack, plain, plain_text);
+            write(pack, lang, lang_text);
+        }
+        let one = Pack::mod_layer("one".into(), Source::Dir(root.join("one")));
+        let mut two = Pack::mod_layer("two".into(), Source::Dir(root.join("two")));
+        let loaded = resources(
+            ResourceSource::directory(root.join("vanilla")),
+            &[one.clone(), two.clone()],
+        )
+        .unwrap();
+        let originals = |source: &ResourceSource, name: &str| -> Vec<String> {
+            source
+                .stack(name)
+                .iter()
+                .map(|layer| String::from_utf8(layer.read().unwrap()).unwrap())
+                .collect()
+        };
+        assert_eq!(originals(&loaded, plain), ["base", "one", "two"]);
+        assert_eq!(
+            originals(&loaded, lang),
+            [
+                r#"{"a":"base"}"#,
+                r#"{"a":"one","b":"one"}"#,
+                r#"{"b":"two"}"#
+            ],
+            "the originals of a file the game merges"
+        );
+        assert_eq!(
+            loaded.read_to_string(lang).unwrap(),
+            r#"{"a":"one","b":"two"}"#,
+            "while the game reads the merge"
+        );
+        // A stack over a stacked base keeps the base's layers below the new pack's.
+        let over = resources(
+            loaded.clone(),
+            &[Pack::mod_layer("one".into(), Source::Dir(root.join("one")))],
+        )
+        .unwrap();
+        assert_eq!(originals(&over, plain), ["base", "one", "two", "one"]);
+        // A filter on the top pack hides every copy below it.
+        two.filter = filter_of(
+            &serde_json::json!({"filter":{"block":[{"namespace":"demo","path":"plain\\.txt"}]}}),
+        );
+        let hidden =
+            resources(ResourceSource::directory(root.join("vanilla")), &[one, two]).unwrap();
+        assert_eq!(originals(&hidden, plain), ["two"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn indexed_layers_keep_priority_filters_metadata_and_reload_without_unpacking() {
@@ -2265,6 +2264,35 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
     #[test]
+    fn mod_pack_languages_keep_each_files_primitive_prefix() {
+        use crate::resource_source::{Resource, ResourceSource};
+        let make_source = |data: &str| {
+            ResourceSource::indexed(BTreeMap::from([(
+                "assets/test/lang/en_us.json".to_owned(),
+                Resource::bytes(data.as_bytes().to_vec()),
+            )]))
+        };
+        let base = make_source(r#"{"a":"old","m":"still here"}"#);
+        let lower = Pack::mod_layer(
+            "lower".into(),
+            Source::Opened(make_source(
+                r#"{"z":1.50,"b":{"text":"not a client value"},"a":"unread"}"#,
+            )),
+        );
+        let upper = Pack::mod_layer(
+            "upper".into(),
+            Source::Opened(make_source(r#"{"h":"higher pack still loads"}"#)),
+        );
+        let merged = resources(base, &[lower, upper]).unwrap();
+        let language = sunrise_client_core::lang::Language::load(&[&merged], "en_us");
+        assert_eq!(language.get("a"), Some("old"));
+        assert_eq!(language.get("m"), Some("still here"));
+        assert_eq!(language.get("z"), Some("1.50"));
+        assert_eq!(language.get("h"), Some("higher pack still loads"));
+        assert_eq!(language.get("b"), None);
+    }
+
+    #[test]
     fn stacked_resources_merge_like_vanilla() {
         let json = |v: &str| v.as_bytes().to_vec();
         let parse = |b: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&b).unwrap();
@@ -2321,16 +2349,34 @@ mod tests {
         );
         // SpriteSourceList: sources from the bottom pack up, and the bottom
         // file keeps the fields a merge must not drop.
+        let directory =
+            |source: &str| serde_json::json!({"type": "directory", "source": source, "prefix": ""});
         let atlas = merge(
             Merge::Atlas,
             &[
-                json(r#"{"sources":[1],"unseen":true}"#),
-                json(r#"{"sources":[2]}"#),
+                json(
+                    r#"{"sources":[{"type":"directory","source":"a","prefix":""}],"unseen":true}"#,
+                ),
+                json(r#"{"sources":[{"type":"directory","source":"b","prefix":""}]}"#),
             ],
         );
         assert_eq!(
             parse(atlas.unwrap()),
-            serde_json::json!({"sources":[1,2],"unseen":true})
+            serde_json::json!({"sources":[directory("a"), directory("b")],"unseen":true})
+        );
+        // A definition that does not decode is skipped alone: the sources of the packs
+        // below and above it still run.
+        let atlas = merge(
+            Merge::Atlas,
+            &[
+                json(r#"{"sources":[{"type":"directory","source":"low","prefix":""}]}"#),
+                json(r#"{"sources":[{"type":"nobody:such_source"}]}"#),
+                json(r#"{"sources":[{"type":"directory","source":"high","prefix":""}]}"#),
+            ],
+        );
+        assert_eq!(
+            parse(atlas.unwrap()),
+            serde_json::json!({"sources":[directory("low"), directory("high")]})
         );
         // BlockStateModelLoader: every definition kept, bottom first, for the
         // catalog to bind one by one; one that does not parse is skipped.
@@ -2413,6 +2459,14 @@ mod tests {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
             fs::write(root.join(path), bytes).unwrap();
         }
+        for (root, bytes) in [
+            (&vanilla, br#"{"removed":["base.old"]}"#.as_slice()),
+            (&mod_b, br#"{"removed":["pack.old"]}"#.as_slice()),
+        ] {
+            let file = root.join(VANILLA_LANG_DEPRECATIONS);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, bytes).unwrap();
+        }
         let layers = [
             Pack::mod_layer("jar-a".into(), Source::Zip(jar_a)),
             Pack::mod_layer("mod-a".into(), Source::Dir(mod_a)),
@@ -2424,6 +2478,10 @@ mod tests {
         assert_eq!(fs::read(out.join(path)).unwrap(), b"jar-b");
         build_overlay(&vanilla, &layers, &out).unwrap();
         assert_eq!(fs::read(out.join(path)).unwrap(), b"mod-b");
+        assert_eq!(
+            fs::read(out.join(VANILLA_LANG_DEPRECATIONS)).unwrap(),
+            br#"{"removed":["base.old"]}"#
+        );
         assert!(!out.join("data/shared/recipe/test.json").exists());
         assert!(!out.join("Example.class").exists());
         fs::remove_dir_all(base).unwrap();
@@ -2563,94 +2621,6 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
-        let _ = fs::remove_dir_all(base);
-    }
-    #[test]
-    fn a_renamed_atlas_sprite_reads_its_resource() {
-        let base =
-            std::env::temp_dir().join(format!("sunrise-sprite-rename-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let write = |path: PathBuf, bytes: &[u8]| {
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, bytes).unwrap();
-        };
-        let vanilla = base.join("vanilla");
-        let textures = vanilla.join("assets/minecraft/textures");
-        let animation = b"{\"animation\":{}}";
-        write(textures.join("block/sea_lantern.png"), b"lantern");
-        write(textures.join("block/sea_lantern.png.mcmeta"), animation);
-        write(textures.join("item/stick.png"), b"vanilla stick");
-        write(textures.join("item/stick.png.mcmeta"), animation);
-        let meta = br#"{"pack":{"description":"d","pack_format":97}}"#;
-        let pack = base.join("packs/IA");
-        write(pack.join("pack.mcmeta"), meta);
-        write(pack.join("assets/iageneric/textures/item/box.png"), b"box");
-        // An ItemsAdder pack's items atlas: its models name only the `ia:` sprites.
-        write(
-            pack.join("assets/minecraft/atlases/items.json"),
-            br#"{"sources":[
-                {"type":"single","resource":"iageneric:item/box","sprite":"ia:0"},
-                {"type":"single","resource":"minecraft:block/sea_lantern","sprite":"ia:1199"},
-                {"type":"single","resource":"iageneric:item/box","sprite":"minecraft:item/stick"},
-                {"type":"single","resource":"minecraft:item/stick","sprite":"ia:3"},
-                {"type":"single","resource":"iageneric:item/gone","sprite":"ia:2"},
-                {"type":"single","resource":"iageneric:item/box","sprite":"ia:../../../escape"},
-                {"type":"single","resource":"iageneric:item/box","sprite":"ia:7"},
-                {"type":"single","resource":"iageneric:item/box","sprite":"ia:8"},
-                {"type":"single","resource":"iageneric:item/box","sprite":"ia:9"}
-            ]}"#,
-        );
-        // A pack above it: later sources of three of those sprites, a blocks atlas that
-        // disagrees about another, and a filter hiding vanilla's animation of the stick.
-        let higher = base.join("packs/Top");
-        write(
-            higher.join("pack.mcmeta"),
-            br#"{"pack":{"description":"d","pack_format":97},
-                "filter":{"block":[{"path":"textures/item/stick\\.png\\.mcmeta"}]}}"#,
-        );
-        write(
-            higher.join("assets/minecraft/atlases/items.json"),
-            br#"{"sources":[
-                {"type":"single","resource":"minecraft:block/sea_lantern","sprite":"ia:8"},
-                {"type":"filter","pattern":{"namespace":"ia","path":"7"}}
-            ]}"#,
-        );
-        write(
-            higher.join("assets/minecraft/atlases/blocks.json"),
-            br#"{"sources":[
-                {"type":"single","resource":"minecraft:block/sea_lantern","sprite":"ia:9"}
-            ]}"#,
-        );
-        let packs = discover(&vanilla, &base.join("packs"));
-        let out = base.join("overlay");
-        build_overlay(&vanilla, &packs, &out).unwrap();
-        let read = |rel: &str| fs::read(out.join(rel)).ok();
-        let texture = |id: &str| read(&format!("assets/ia/textures/{id}.png"));
-        assert_eq!(texture("0").as_deref(), Some(&b"box"[..]));
-        assert_eq!(read("assets/ia/textures/0.png.mcmeta"), None);
-        // A vanilla resource comes with its animation.
-        assert_eq!(texture("1199").as_deref(), Some(&b"lantern"[..]));
-        assert_eq!(
-            read("assets/ia/textures/1199.png.mcmeta").as_deref(),
-            Some(&animation[..])
-        );
-        // A texture that is there stays itself: other sources may read it (here as `ia:3`'s
-        // resource; an unstitched or paletted sprite's input alike).
-        assert_eq!(
-            read("assets/minecraft/textures/item/stick.png").as_deref(),
-            Some(&b"vanilla stick"[..])
-        );
-        // ...with its `.mcmeta` only where no filter hides it.
-        assert_eq!(texture("3").as_deref(), Some(&b"vanilla stick"[..]));
-        assert_eq!(read("assets/ia/textures/3.png.mcmeta"), None);
-        // A missing resource adds nothing, and no rename leaves the overlay.
-        assert_eq!(texture("2"), None);
-        assert!(!out.join("escape.png").exists());
-        // The last source of a sprite wins: a filter drops it, a later rename replaces it.
-        assert_eq!(texture("7"), None);
-        assert_eq!(texture("8").as_deref(), Some(&b"lantern"[..]));
-        // The two atlases read one file, and disagree about `ia:9`: it gets neither.
-        assert_eq!(texture("9"), None);
         let _ = fs::remove_dir_all(base);
     }
     #[test]
@@ -2988,5 +2958,33 @@ mod tests {
                 .exists()
         );
         let _ = fs::remove_dir_all(base);
+    }
+
+    /// A pack's filter that hides a vanilla GUI sprite leaves a row's check box drawing the
+    /// missing texture, as vanilla does, while the sprites it left alone still draw.
+    #[test]
+    fn a_gui_sprite_a_pack_filters_out_draws_the_missing_texture() {
+        use crate::graphics_style::{checkbox, drew_rect, drew_sprite, write_widget_resources};
+        use crate::resource_source::ResourceSource;
+        let base = tempfile::tempdir().unwrap();
+        write_widget_resources(base.path());
+        let pack_dir = tempfile::tempdir().unwrap();
+        let mut pack = Pack::mod_layer("filter".into(), Source::Dir(pack_dir.path().to_owned()));
+        pack.filter = filter_of(&serde_json::json!({"filter":{"block":[
+            {"namespace":"minecraft","path":"textures/gui/sprites/widget/checkbox\\.png"}]}}));
+        let source = resources(ResourceSource::directory(base.path().to_owned()), &[pack]).unwrap();
+        let atlas = crate::hud::HudAtlas::build(&source).unwrap();
+        crate::hud::take_gui_sprite_misses();
+        let mut off = crate::hud::HudBatch::scratch([640, 480]);
+        checkbox(&mut off, &atlas, 100.0, 0.0, false, (false, true));
+        assert_eq!(crate::hud::take_gui_sprite_misses(), ["widget/checkbox"]);
+        let missing = &atlas.sprites[crate::hud::MISSING_SPRITE];
+        assert!(
+            drew_rect(&off, missing, None),
+            "the missing texture in its place"
+        );
+        let mut on = crate::hud::HudBatch::scratch([640, 480]);
+        checkbox(&mut on, &atlas, 100.0, 0.0, true, (false, true));
+        assert!(drew_sprite(&on, &atlas, "widget/checkbox_selected"));
     }
 }

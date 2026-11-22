@@ -64,10 +64,19 @@ pub(crate) fn contains(id: i32) -> bool {
 /// Check a decoded stack before converting it on an unverified connection.
 #[doc(hidden)]
 pub fn permitted(stack: &Stack, negotiated: bool) -> crate::Result<bool> {
+    permitted_with_names(stack, negotiated, &super::NoNames)
+}
+
+#[doc(hidden)]
+pub fn permitted_with_names(
+    stack: &Stack,
+    negotiated: bool,
+    names: &dyn super::Names,
+) -> crate::Result<bool> {
     if negotiated || entries().next().is_none() {
         return Ok(true);
     }
-    fn contains_custom(stack: &Stack) -> crate::Result<bool> {
+    fn contains_custom(stack: &Stack, names: &dyn super::Names) -> crate::Result<bool> {
         if stack.removed.iter().any(|id| contains(*id)) {
             return Ok(true);
         }
@@ -78,7 +87,7 @@ pub fn permitted(stack: &Stack, negotiated: bool) -> crate::Result<bool> {
             match value {
                 Component::Stacks(stacks) => {
                     for stack in stacks {
-                        if contains_custom(stack)? {
+                        if contains_custom(stack, names)? {
                             return Ok(true);
                         }
                     }
@@ -97,7 +106,7 @@ pub fn permitted(stack: &Stack, negotiated: bool) -> crate::Result<bool> {
                             | component::SULFUR_CUBE_CONTENT
                     ) =>
                 {
-                    let mut reader = Reader::new(bytes);
+                    let mut reader = Reader::new(bytes).with_names(names);
                     let count = match *id {
                         component::USE_REMAINDER | component::SULFUR_CUBE_CONTENT => 1,
                         component::POT_DECORATIONS => 4,
@@ -108,7 +117,7 @@ pub fn permitted(stack: &Stack, negotiated: bool) -> crate::Result<bool> {
                             *id,
                             component::USE_REMAINDER | component::SULFUR_CUBE_CONTENT
                         ) || reader.bool()?)
-                            && contains_custom(&Template::read(&mut reader)?)?
+                            && contains_custom(&Template::read(&mut reader)?, names)?
                         {
                             return Ok(true);
                         }
@@ -119,7 +128,7 @@ pub fn permitted(stack: &Stack, negotiated: bool) -> crate::Result<bool> {
         }
         Ok(false)
     }
-    Ok(!contains_custom(stack)?)
+    Ok(!contains_custom(stack, names)?)
 }
 
 #[doc(hidden)]

@@ -7,7 +7,6 @@ static GAME_IDENTITY: [u8; sunrise_mod_package::game_identity::MARK.len()] =
     sunrise_mod_package::game_identity::MARK;
 
 fn main() {
-    sunrise_guest_stack::prepare_main();
     std::hint::black_box(&GAME_IDENTITY);
     sunrise_game::main();
 }

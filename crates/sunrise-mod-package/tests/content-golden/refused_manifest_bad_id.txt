@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: id "Bad-Id" is not [a-z0-9_]{1,64}
+
+icon:
+unavailable

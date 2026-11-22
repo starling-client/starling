@@ -1,0 +1,3 @@
+ids = ["hook:fall_on", "hook:fall_on.damage", "type:FallOnEvent.damage"]
+why = "Hook version 2 edits fall distance and damage multiplier before vanilla calculates damage, instead of overriding computed damage."
+migrate = "Write event.distance and event.damage_multiplier. Halving distance does not halve damage; the safe fall distance attribute is subtracted before multiplication."

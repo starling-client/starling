@@ -1,12 +1,12 @@
 #![cfg(test)]
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_client::chunk::Chunk;
-use sunrise_core::position::BlockPos;
 use mod_api::*;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use sunrise_client::chunk::Chunk;
+use sunrise_core::position::BlockPos;
 
 type Notices = Arc<Mutex<Vec<(BlockPos, BlockPos)>>>;
 struct Counter(Notices);
@@ -35,7 +35,7 @@ impl Hooks for Listener {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn installed_block_entity_neighbor_parts_dispatch_through_game() {
     let notices = Arc::new(Mutex::new(Vec::new()));
     let weak = Arc::new(AtomicBool::new(true));
@@ -52,6 +52,7 @@ fn installed_block_entity_neighbor_parts_dispatch_through_game() {
             game.save = Arc::new(sunrise_client::save::SaveDir::new(
                 directory.path().to_path_buf(),
                 sunrise_client::save::LevelShape::OVERWORLD,
+                Some(Default::default()),
             ));
             game.options.dedicated = Some(Vec::new());
             game.world
@@ -113,7 +114,7 @@ impl Hooks for EdgeListener {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn block_entity_neighbor_traversal_keeps_far_chunk_unloaded() {
     let notices = Arc::new(Mutex::new(Vec::new()));
     let queries = Arc::new(AtomicUsize::new(0));

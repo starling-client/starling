@@ -1,9 +1,9 @@
 //! Authoritative server recipe properties, replaced as one resource generation.
-use sunrise_protocol::packets::recipes::{HolderSet, SlotDisplay, UpdateRecipes};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
+use sunrise_protocol::packets::recipes::{HolderSet, SlotDisplay, UpdateRecipes};
 
 /// The client's current server generation. None is distinct from an empty
 /// generation: before the first packet local preload data may be used, but

@@ -2,10 +2,11 @@
 //! ([`ItemResource`]), and a [`ResourceHandler`] is the indexed contents of one holder, written
 //! only inside a transaction.
 use crate::{
-    Capability, Host, HostTransaction, ItemStack, ServerHost, Tag, Transaction, backend_of,
+    Backend, BackendRef, Capability, Host, HostTransaction, ItemStack, ItemStackView, ServerHost,
+    Tag, Transaction, backend_of,
 };
-use sunrise_core::nbt::JavaString;
 use std::fmt;
+use sunrise_core::nbt::JavaString;
 
 /// A data component's id, `namespace:path` (`minecraft:damage`, `mymod:charge`), checked once
 /// where a mod names it: what [`ItemResource`]'s component methods take, as NeoForge's take a
@@ -136,9 +137,38 @@ pub struct ItemDamageSource {
     pub position: Option<[f64; 3]>,
 }
 
+/// A context that can supply item resource metadata without lending a world.
+pub trait HostItemResourceMetadata {
+    /// The item resource queries available to an [`ItemResource`].
+    fn item_resource_metadata(&self) -> ItemResourceMetadata<'_>;
+}
+
+/// Borrow of the item tables used by [`ItemResource`]'s metadata reads.
+// no wire: lends the current item metadata for a scoped callback.
+#[non_exhaustive]
+pub struct ItemResourceMetadata<'a> {
+    backend: Option<&'a dyn Backend>,
+}
+
+impl<H: Host + ?Sized> HostItemResourceMetadata for H {
+    fn item_resource_metadata(&self) -> ItemResourceMetadata<'_> {
+        ItemResourceMetadata {
+            backend: self.backend().map(BackendRef::open),
+        }
+    }
+}
+
 /// An item and its components, without a count, as NeoForge's `ItemResource`: what a slot holds.
 /// An empty slot holds none.
-// no wire: decoding calls ItemResource::of to normalize the incoming stack count to one; a structural derive would preserve a non-unit wire count.
+///
+/// This is a process-local transfer and query identity: convert to [`ItemStack`] for `Wire`
+/// schemas.
+///
+/// ```compile_fail,E0277
+/// fn requires_wire<T: mod_api::wire::Wire>() {}
+/// requires_wire::<mod_api::ItemResource>();
+/// ```
+// no wire: process-local transfer and query identity; convert to ItemStack at Wire boundaries.
 #[derive(Clone)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct ItemResource(pub(crate) ItemStack);
@@ -167,6 +197,12 @@ impl ItemResource {
     /// Whether `stack` is this item with these components.
     pub fn matches(&self, stack: &ItemStack) -> bool {
         self.0.is_stackable_with(stack)
+    }
+    /// Reject different items and damage without projecting their component patches.
+    pub(crate) fn matches_view(&self, stack: &ItemStackView<'_>) -> bool {
+        self.item() == stack.item()
+            && self.0.damage_component() == stack.damage_component()
+            && stack.project().is_some_and(|stack| self.matches(&stack))
     }
     /// This item's own value of component `id` in its patch, as saved (`minecraft:damage` on a
     /// worn sword); none where it keeps the item's default or has the component removed.
@@ -207,16 +243,20 @@ impl ItemResource {
     }
     /// `ItemStack.isDamageableItem`: maximum damage and damage components are
     /// present, and the unbreakable component is absent, after this stack's patch.
-    pub fn damageable(&self, host: &dyn Host) -> bool {
-        backend_of(host).is_some_and(|backend| backend.item_resource_damageable(&self.0))
+    pub fn damageable(&self, host: &(impl HostItemResourceMetadata + ?Sized)) -> bool {
+        host.item_resource_metadata()
+            .backend
+            .is_some_and(|backend| backend.item_resource_damageable(&self.0))
     }
     fn enchanted(&self, host: &dyn Host) -> bool {
         matches!(self.value_id(host, "minecraft:enchantments"), Some(Tag::Compound(levels)) if !levels.is_empty())
     }
     /// `ItemStack.hasFoil`: the effective glint override wins, otherwise a
     /// item-specific foil applies (lodestone compass or nonempty enchantments).
-    pub fn foil(&self, host: &dyn Host) -> bool {
-        backend_of(host).is_some_and(|backend| backend.item_resource_foil(&self.0))
+    pub fn foil(&self, host: &(impl HostItemResourceMetadata + ?Sized)) -> bool {
+        host.item_resource_metadata()
+            .backend
+            .is_some_and(|backend| backend.item_resource_foil(&self.0))
     }
     /// `ItemStack.getRarity`: the effective rarity, upgraded for a nonempty
     /// enchantments component; removing rarity restores common before the upgrade.
@@ -236,8 +276,13 @@ impl ItemResource {
     /// `ItemStack.isValidRepairItem`: whether `material` belongs to the
     /// effective repairable component's item holder set. The comparison is by
     /// item identity/tag, not its count, damage or components.
-    pub fn repairable(&self, host: &dyn Host, material: &ItemResource) -> bool {
-        backend_of(host)
+    pub fn repairable(
+        &self,
+        host: &(impl HostItemResourceMetadata + ?Sized),
+        material: &ItemResource,
+    ) -> bool {
+        host.item_resource_metadata()
+            .backend
             .is_some_and(|backend| backend.item_resource_repairable(&self.0, material.item()))
     }
     /// `Item.getUseDuration` and its item overrides, in ticks, including the
@@ -298,10 +343,13 @@ impl ItemResource {
     ) -> Option<f32> {
         backend_of(host)?.item_resource_attack_damage_bonus(&self.0, attacker, target, base_damage)
     }
-    /// Standard tooltip text, with explicit advanced and creative flags and the client's
-    /// current viewer context. Uses the same line builder as inventory tooltips and skips
-    /// mod callbacks, so a tooltip hook can safely request another item's base lines.
-    /// Returns None without a client backend, or when the item cannot be resolved.
+    /// `ItemStack.getTooltipLines` with the client's current viewer context and explicit
+    /// advanced and creative flags. Includes item parts, component appenders and edits from
+    /// `item_tooltip`, just as inventory tooltips do. A request during item tooltip line
+    /// construction returns base lines without dispatching line callbacks again. No request
+    /// gathers images or draws.
+    /// Returns None without a client backend, when the item is unknown, or when its lines
+    /// cannot be represented.
     pub fn tooltip(
         &self,
         host: &dyn crate::ClientHost,
@@ -347,7 +395,7 @@ impl ItemResource {
     /// where `value` is the item's default (`host.item_default_component`), so the stack is
     /// the plain item again. A stack changes where it lives by an exchange of one of it for
     /// this: `place.exchange(host, tx, &changed, 1)`, which splits it off a bigger stack, in the
-    /// transaction.
+    /// transaction. Raw `minecraft:damage` follows the same codec as [ItemStack::set].
     pub fn with_component(
         &self,
         host: &dyn Host,
@@ -488,6 +536,8 @@ impl fmt::Debug for ItemResource {
 pub trait ResourceHandler<R> {
     /// Set the container limit transactionally, accepting 1..=99 (vanilla's upper bound).
     /// Existing oversized stacks remain extractable. The game persists this with block entity data.
+    /// On the default block `ITEMS` handler, a successful call queues the backing container's
+    /// change notice at root commit, even if no items moved.
     /// Unsupported handlers return false without mutation.
     fn set_max_stack_size(
         &self,
@@ -504,17 +554,26 @@ pub trait ResourceHandler<R> {
     fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<R>;
     /// How much of it.
     fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32;
-    /// How much of `resource` index `index` holds when it holds that, whatever it holds now
-    /// (`getCapacityAsLong`). Capacity is not free space or permission to insert: validity,
-    /// current contents and access rules can still refuse it.
-    fn capacity(&self, host: &mut dyn ServerHost, index: usize, resource: &R) -> u32;
+    /// The amount as a signed int, capped at `i32::MAX` (`getAmountAsInt`).
+    fn amount_int(&self, host: &mut dyn ServerHost, index: usize) -> i32 {
+        self.amount(host, index).min(i32::MAX as u32) as i32
+    }
+    /// How much of `resource` index `index` can hold, regardless of what it holds now
+    /// (`getCapacityAsLong`). Pass `None` for the index's general capacity. Use `u32::MAX`
+    /// when that general limit is unknown, and 0 when the index can hold nothing. Capacity
+    /// is not free space or permission to insert: contents and access rules can still refuse it.
+    fn capacity(&self, host: &mut dyn ServerHost, index: usize, resource: Option<&R>) -> u32;
+    /// The capacity as a signed int, capped at `i32::MAX` (`getCapacityAsInt`).
+    fn capacity_int(&self, host: &mut dyn ServerHost, index: usize, resource: Option<&R>) -> i32 {
+        self.capacity(host, index, resource).min(i32::MAX as u32) as i32
+    }
     /// Whether `resource` may go in index `index` at all (`isValid`). The default uses capacity;
-    /// a handler with separate acceptance rules overrides this and enforces them in `insert`.
+    /// a handler with separate acceptance rules overrides this and enforces them in `insert_at`.
     fn is_valid(&self, host: &mut dyn ServerHost, index: usize, resource: &R) -> bool {
-        self.capacity(host, index, resource) > 0
+        self.capacity(host, index, Some(resource)) > 0
     }
     /// Puts up to `amount` of `resource` into index `index`: how much went in.
-    fn insert(
+    fn insert_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -524,7 +583,7 @@ pub trait ResourceHandler<R> {
     ) -> u32;
     /// Takes up to `amount` of `resource` out of index `index`: how much came out. None of
     /// another resource.
-    fn extract(
+    fn extract_at(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
@@ -532,95 +591,92 @@ pub trait ResourceHandler<R> {
         resource: &R,
         amount: u32,
     ) -> u32;
-    /// Puts up to `amount` of `resource` in wherever it goes (NeoForge's `insert` without an
-    /// index): by default index by index from 0. How much went in.
-    fn insert_any(
+    /// Puts up to `amount` of `resource` in wherever it goes: by default index by index from 0.
+    /// Prefer this to `insert_at` unless targeting a specific index. The default runs in its
+    /// own journal and rolls back with [`Overanswered`] if an index answers more than requested.
+    fn insert(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
         resource: &R,
         amount: u32,
-    ) -> u32 {
-        let mut went = 0u32;
-        for index in 0..self.size(host) {
-            if went >= amount {
-                break;
-            }
-            went = went.saturating_add(self.insert(host, tx, index, resource, amount - went));
-        }
-        went
+    ) -> Result<u32, Overanswered> {
+        let size = self.size(host);
+        in_turn(host, tx, amount, 0..size, |host, tx, index, left| {
+            Ok(self.insert_at(host, tx, *index, resource, left))
+        })
     }
-    /// Takes up to `amount` of `resource` out from wherever it is (`extract` without an index):
-    /// by default index by index from 0. How much came out.
-    fn extract_any(
+    /// Takes up to `amount` of `resource` out from wherever it is: by default index by index
+    /// from 0. Prefer this to `extract_at` unless targeting a specific index. Overanswers are
+    /// handled as in [`Self::insert`].
+    fn extract(
         &self,
         host: &mut dyn ServerHost,
         tx: &Transaction,
         resource: &R,
         amount: u32,
-    ) -> u32 {
-        let mut came = 0u32;
-        for index in 0..self.size(host) {
-            if came >= amount {
-                break;
-            }
-            came = came.saturating_add(self.extract(host, tx, index, resource, amount - came));
-        }
-        came
+    ) -> Result<u32, Overanswered> {
+        let size = self.size(host);
+        in_turn(host, tx, amount, 0..size, |host, tx, index, left| {
+            Ok(self.extract_at(host, tx, *index, resource, left))
+        })
     }
 }
 
-/// A handler answered more than it was asked (`move_resources`): a mod bug, warned once naming
-/// the mod. Returned from a `host.transaction` closure with `?`, it aborts the whole move, so
-/// neither end keeps any of it.
+/// A slot-less transfer owns its journal, so an overanswer cannot leave part of it committed.
+pub(crate) fn in_turn<P>(
+    host: &mut dyn ServerHost,
+    tx: &Transaction,
+    amount: u32,
+    parts: impl IntoIterator<Item = P>,
+    ask: impl FnMut(&mut dyn ServerHost, &Transaction, &P, u32) -> Result<u32, Overanswered>,
+) -> Result<u32, Overanswered> {
+    if amount == 0 || host.transaction_current().as_ref() != Some(tx) {
+        return Ok(0);
+    }
+    host.transaction(|host, tx| try_in_turn(host, tx, amount, parts, ask))
+}
+
+/// Asks each part for the full remaining amount. The owning transaction aborts on `Err`.
+pub(crate) fn try_in_turn<P>(
+    host: &mut dyn ServerHost,
+    tx: &Transaction,
+    amount: u32,
+    parts: impl IntoIterator<Item = P>,
+    mut ask: impl FnMut(&mut dyn ServerHost, &Transaction, &P, u32) -> Result<u32, Overanswered>,
+) -> Result<u32, Overanswered> {
+    let mut done = 0;
+    for part in parts {
+        let left = amount - done;
+        if left == 0 {
+            break;
+        }
+        done += checked_transfer(ask(host, tx, &part, left)?, left)?;
+    }
+    Ok(done)
+}
+
+pub(crate) fn checked_transfer(answer: u32, asked: u32) -> Result<u32, Overanswered> {
+    if answer > asked {
+        return Err(Overanswered { owner: None });
+    }
+    Ok(answer)
+}
+
+/// A handler answered more than it was asked. A move that returns this error rolls back.
+///
+/// This is a local handler error returned inside [`TransactionError`], not a `Wire` type.
+///
+/// ```compile_fail,E0277
+/// fn requires_wire<T: mod_api::wire::Wire>() {}
+/// requires_wire::<mod_api::Overanswered>();
+/// ```
+// no wire: local handler refusal returned inside TransactionError.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct Overanswered {
-    /// The mod whose handler answered, or "the game".
-    pub owner: String,
-}
-
-/// Moves up to `max` of what `filter` accepts out of `from` into wherever `to` takes it, index by
-/// index from 0 (NeoForge's `ResourceHandlerUtil.move`), in transaction `tx`: how much moved.
-/// Each move is all or nothing, in a transaction of its own: what `to` won't take stays in
-/// `from`, and a move `to` takes only part of is tried again with that part (a cauldron gives
-/// whole thirds). A handler answering more than it was asked has its move undone and ends the
-/// moving with [`Overanswered`].
-pub fn move_resources<R>(
-    host: &mut dyn ServerHost,
-    from: &Capability<dyn ResourceHandler<R>>,
-    to: &Capability<dyn ResourceHandler<R>>,
-    filter: impl Fn(&R) -> bool,
-    max: u32,
-    tx: &Transaction,
-) -> Result<u32, Overanswered> {
-    let _ = tx;
-    let mut moved = 0;
-    for index in 0..from.size(host) {
-        while moved < max {
-            let Some(resource) = from.resource(host, index).filter(|r| filter(r)) else {
-                break;
-            };
-            let want = (max - moved).min(from.amount(host, index));
-            let went = move_once(
-                host,
-                Ends {
-                    from,
-                    to,
-                    at: &index,
-                },
-                want,
-                |host, tx, want| from.extract(host, tx, index, &resource, want),
-                |host, tx, out| to.insert_any(host, tx, &resource, out),
-            )?;
-            if went == 0 {
-                break;
-            }
-            moved += went;
-        }
-    }
-    Ok(moved)
+    /// The mod whose handler answered, or "the game", if the provider is known.
+    pub owner: Option<String>,
 }
 
 /// The two ends of a move and where it is, for warnings.
@@ -632,15 +688,16 @@ pub(crate) struct Ends<'a, A: ?Sized, B: ?Sized> {
 
 /// One move of up to `want` by `extract` out of `ends.from` and `insert` into `ends.to`, all or
 /// nothing in a transaction of its own, nested in the caller's: how much moved. A move `to` takes
-/// only part of is undone and tried again with that part; a handler answering more than it was
-/// asked has its move undone and gives [`Overanswered`]. The one step of `move_resources`,
-/// `move_energy` and the 64-bit `transfer`.
+/// only part of is undone and tried again with that part, and one that moves nothing is undone
+/// (NeoForge's `move` commits only what moved); a handler answering more than it was asked has
+/// its move undone and gives [`Overanswered`]. The fluid pickup, `move_energy` and the 64-bit
+/// `transfer` keep this order; the resource-handler kit has its own probe-before-insert contract.
 pub(crate) fn move_once<A: ?Sized, B: ?Sized, N: Copy + PartialOrd + Default>(
     host: &mut dyn ServerHost,
     ends: Ends<'_, A, B>,
     want: N,
     extract: impl Fn(&mut dyn ServerHost, &Transaction, N) -> N,
-    insert: impl Fn(&mut dyn ServerHost, &Transaction, N) -> N,
+    insert: impl Fn(&mut dyn ServerHost, &Transaction, N) -> Result<N, Overanswered>,
 ) -> Result<N, Overanswered> {
     let Ends { from, to, at } = ends;
     // `Err(Ok(took))`: `to` took only that much; `Err(Err(_))`: a handler answered more than it
@@ -649,12 +706,15 @@ pub(crate) fn move_once<A: ?Sized, B: ?Sized, N: Copy + PartialOrd + Default>(
         host.transaction(|host, tx| {
             let Some(out) = from.checked(extract(host, tx, want), want, at) else {
                 return Err(Err(Overanswered {
-                    owner: from.owner(),
+                    owner: Some(from.owner()),
                 }));
             };
-            match to.checked(insert(host, tx, out), out, at) {
-                None => Err(Err(Overanswered { owner: to.owner() })),
-                Some(took) if took == out => Ok(out),
+            let took = insert(host, tx, out).map_err(Err)?;
+            match to.checked(took, out, at) {
+                None => Err(Err(Overanswered {
+                    owner: Some(to.owner()),
+                })),
+                Some(took) if took == out && took > N::default() => Ok(out),
                 Some(took) => Err(Ok(took)),
             }
         })

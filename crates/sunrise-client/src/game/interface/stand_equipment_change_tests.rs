@@ -3,10 +3,10 @@
 //! `living_equipment_change` like the six hand and armor slots.
 use std::sync::{Arc, Mutex};
 
+use mod_api::{self, Hooks, LivingEquipmentChangeEvent, ServerHost};
 use sunrise_client::{entities::ArmorStand, items::ItemStack};
 use sunrise_core::geometry::Vec3;
 use sunrise_items::equipment::{BODY, HEAD, SADDLE};
-use mod_api::{self, Hooks, LivingEquipmentChangeEvent, ServerHost};
 
 use super::native_entity_refs::tests::with_game;
 
@@ -36,7 +36,7 @@ impl Hooks for Counter {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_stands_body_and_saddle_writes_are_told_once_each() {
     let heard = Arc::new(Mutex::new(Heard::new()));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(

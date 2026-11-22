@@ -261,20 +261,39 @@ impl Game<'_> {
         } else {
             0.0
         };
-        let old_health = self.mobs[index].health;
-        let hurt = deals_damage && self.hurt_by_player(index, total, Damage::spear(from));
-        if hurt && old_health > 0.0 && !self.mobs[index].alive() {
-            self.native_kill_event(index);
+        let (old_health, join) = (self.mobs[index].health, self.mobs[index].join);
+        let (hurt, killed) = if deals_damage {
+            self.hurt_by_player(index, total, Damage::spear(from))
+        } else {
+            (false, false)
+        };
+        if killed
+            && let Some(i) = self.mob_index.find(&self.mobs, id)
+            && self.mobs[i].join == join
+            && !self.mobs[i].removed
+        {
+            self.native_kill_event(i);
         }
+        let Some(index) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
+        else {
+            return hurt;
+        };
         // causeExtraKnockback: a push of 0.4, then the weapon's Knockback.
         if deals_knockback {
             let (xd, zd) = self.extra_knockback_direction();
             let source = Damage::spear(from);
-            let level = crate::game::entity::damage_level_of!(self, &attack);
+            let plan = self.prepare_knockback_credit(id as i32, None, &attack);
+            let mut credit = plan.lend(&mut self.last_hurt_by_player);
+            let level = crate::game::entity::damage_level_of!(self, &attack, &mut credit, None);
             self.mobs[index].knockback_full(level, 0.4, xd, zd, &source, total, false);
             let (strength, _) = self.extra_knockback(&kind, 0.0);
             if strength > 0.0 {
-                let level = crate::game::entity::damage_level_of!(self, &attack);
+                let plan = self.prepare_knockback_credit(id as i32, None, &attack);
+                let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                let level = crate::game::entity::damage_level_of!(self, &attack, &mut credit, None);
                 self.mobs[index].knockback_full(
                     level,
                     f64::from(strength),
@@ -296,6 +315,7 @@ impl Game<'_> {
             return false;
         }
         let mob = &self.mobs[index];
+        let actual = old_health - mob.health;
         let (feet, width, height) = (
             [mob.position.x, mob.position.y, mob.position.z],
             mob.kind.width,
@@ -316,11 +336,7 @@ impl Game<'_> {
             self.weapon_wear(&stack);
         }
         // damageStatsAndHearts.
-        let actual = old_health - self.mobs[index].health;
         self.damage_stats_and_hearts(actual, feet, height);
-        if hurt {
-            self.remember_mob_player_credit(id);
-        }
         if let Some(p) = self.player.as_mut()
             && !self.creative
         {
@@ -468,35 +484,6 @@ impl Game<'_> {
         };
         if let (Some(kinetic), Some(at)) = (item.as_deref().and_then(Kinetic::of), at) {
             self.kinetic_hit_feedback(if own { OWN } else { id }, &kinetic, [at.x, at.y, at.z]);
-        }
-    }
-
-    /// Synchronize look rotation before sending a spear jab so the server
-    /// raycasts along the player's updated look direction.
-    pub(in crate::game) fn remote_sync_look(&mut self) {
-        let (yaw, pitch) = (self.yaw, self.pitch);
-        let (riding, controls) = (self.riding.is_some(), self.controls_camera());
-        if let Some(p) = self.player.as_ref()
-            && let Some(r) = self.remote.as_mut()
-        {
-            let pos = [p.position.x, p.position.y, p.position.z];
-            let (g, c) = (p.ground.on_ground, p.collision.horizontal);
-            let pkt = if riding {
-                Some(sunrise_protocol::packets::play::Serverbound::MovePlayerRot(
-                    sunrise_protocol::packets::play::MovePlayerRot {
-                        yaw,
-                        pitch,
-                        flags: u8::from(g) | u8::from(c) << 1,
-                    },
-                ))
-            } else if controls {
-                r.position_sender.update(pos, (yaw, pitch), g, c)
-            } else {
-                None
-            };
-            if let Some(pkt) = pkt {
-                r.session.send(pkt);
-            }
         }
     }
 }

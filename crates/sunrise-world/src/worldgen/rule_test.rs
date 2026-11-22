@@ -8,9 +8,9 @@ use crate::{
     fluid::{FluidKind, FluidStateTable},
     registry::BlockStateId,
 };
-use sunrise_core::random::RandomSource;
 use serde_json::value::RawValue;
 use std::{collections::BTreeSet, sync::Arc};
+use sunrise_core::random::RandomSource;
 
 #[derive(Clone, Debug)]
 pub struct RuleTest(Node);

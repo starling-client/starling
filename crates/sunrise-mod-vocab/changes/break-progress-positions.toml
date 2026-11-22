@@ -1,0 +1,3 @@
+ids = ["hook:break_progress_positions", "type:BreakProgressPositionsEvent"]
+why = "Adds the client BlockPart break_progress_positions hook, version 1, at crack stage updates. Extra positions are stored with local and remote cracks, validated against display bounds, and read without dispatch during rendering."
+migrate = "Attach a BlockPart to the cracked block and append the other display cells to event.positions. Display bounds are at most 64 distinct extras within Euclidean distance 8; the original position is already drawn. This changes no breaking or server behavior."

@@ -17,6 +17,15 @@ impl Crystal {
             fall: (false, 0.0),
         }
     }
+    /// `EndCrystal.<init>`'s draws, all from the crystal's own random (`Entity.random`,
+    /// `RandomSource.create()`): its UUID (`Mth.createInsecureUUID`), then
+    /// `time = random.nextInt(100000)`. The level's random draws nothing. Returns the drawn time
+    /// (for `start_time`) and the UUID.
+    pub(in crate::game) fn own_draws() -> (i32, [i32; 4]) {
+        let mut random = sunrise_client::random_source::entity();
+        let uuid = sunrise_client::save::insecure_uuid(&mut random);
+        (random.next_int_bound(100_000).unwrap_or(0), uuid)
+    }
     /// The start of `time` (the spin and bob) for a crystal at `position`: the random draw
     /// vanilla makes, or under `SUNRISE_STILL` one seeded from the position alone. Which crystal
     /// gets which draw, and a server's entity ids, follow the order chunks load in, which differs

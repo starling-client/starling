@@ -1,0 +1,404 @@
+# Code areas and the tests that cover them: `python3 tools/test_areas.py list|run|coverage`.
+# tests/test_test_areas.py keeps it whole: every harness, LAN check and game-boot daily test belongs to an area
+# (or, for harnesses, to [unassigned], a list that only shrinks), every pattern matches something, and every cargo
+# entry's package has its target (cargo metadata).
+#
+# Per area:
+#   paths      repository paths, fnmatch patterns (`*` crosses `/`); a changed file under one selects the area
+#   cargo      Rust tests: { package, target ("lib", "bin:NAME" or "test:NAME"), filter (a libtest substring) }.
+#              `run` runs the filter's ordinary tests; `run --daily` also runs the daily rows
+#              (tools/ci/ignored-tests/) whose package, target and test path the entry matches.
+#   harnesses  parity harness names (tools/test_<name>_parity.py), fnmatch patterns; a proof parity.py refuses
+#              (PARITY_MANUAL) is named, to run by hand
+#   lan        tools/lan_e2e.py check names, fnmatch patterns; run with `run --lan`, and an opt-in check
+#              (test_areas.py LAN_OPT_IN) only on a game built for it, `--lan-bin-dir`
+# Selection from a diff stays with tools/parity.py --changed (harnesses) and tools/ci/test_scope.py (crates):
+# an area adds its name, its daily game-boot tests and its LAN checks, and is how a person asks for "the explosion tests".
+
+# A changed path here can reach every area: `run --changed` tests the whole workspace as well.
+escalate = [
+  "Cargo.lock", "Cargo.toml", "tools/ci/rust-version", "research-lock.json",
+  "tools/parity.py", "tools/parity_reach.py", "tools/parity_shim.py", "tools/lab.py", "tools/integration_env.py",
+  "tools/parity_hosts.json", "tools/test_areas.py", "tools/test_areas.toml",
+]
+
+[[area]]
+name = "worldgen"
+about = "terrain, biomes, features, structures, carvers, spawn search"
+paths = [
+  "crates/sunrise-world/src/worldgen*", "crates/sunrise-world/src/retrogen.rs", "crates/sunrise-world/src/heightmap.rs",
+  "crates/sunrise-world/src/native_worldgen_hooks.rs", "crates/sunrise-client/src/vanillagen.rs",
+  "crates/sunrise-client/src/game/world/postprocess.rs", "crates/sunrise-client/src/game/world/initial_spawn.rs",
+  "crates/sunrise-client/src/game/world/player_spawn.rs",
+]
+cargo = [{ package = "sunrise-world", target = "lib", filter = "worldgen::" }]
+harnesses = [
+  "biome_*", "feature_*", "basic_feature", "tree_feature", "place_feature_inline", "inline_feature_parse", "*_carver",
+  "carving_*", "noise", "density", "terrain", "blending", "structure_*", "material_*", "placement", "chunk_stage",
+  "chunk_generation", "flat_generation", "decoration*", "decorated_region", "scattered_ore", "height*", "anchor",
+  "spring", "vines", "disk", "pillar", "spike", "delta", "bamboo", "speleothem", "end_podium", "end_gateway",
+  "chorus_plant", "bonus_chest", "fill_layer", "rule_test", "state_provider", "value_provider", "block_blob",
+  "block_pile", "block_column", "replace_blo*", "retrogen_*", "generation_tick", "world_spawn*", "blue_ice",
+  "underwater_magma", "snow_freeze", "neighbor_spread", "server_world_gen", "worldgen*", "float_log",
+  "datapack_worldgen", "bulk_section",
+]
+lan = ["spawned"]
+
+[[area]]
+name = "explosions"
+about = "explosions, TNT, creepers, beds and anchors, end crystals, wind charges"
+paths = [
+  "crates/sunrise-client/src/game/entities/explosion*", "crates/sunrise-client/src/game/entities/tnt.rs",
+  "crates/sunrise-client/src/game/blocks/respawn_anchor.rs", "crates/sunrise-client/src/game/mobs/dragon/crystal.rs",
+  "crates/sunrise-client/src/game/native_hooks/wind_burst.rs", "crates/sunrise-client/src/game/interface/wind.rs",
+  "crates/sunrise-client/src/game/blocks/nether_portal*", "crates/sunrise-client/src/game/entities/vehicle_teleport*",
+]
+cargo = [
+  { package = "sunrise-client", target = "lib", filter = "game::explosion" },
+  { package = "sunrise-client", target = "lib", filter = "game::tnt::" },
+  { package = "sunrise-client", target = "lib", filter = "game::wind::" },
+]
+harnesses = [
+  "explosions", "explosion_items", "bed_explosion", "tnt_*", "projectile_hits_tnt", "sulfur_portal_blast", "sulfur_prime_phase",
+  "wind_charge_*", "*_wind_charge", "wind_bursts_all_push", "remote_fireball", "dragon_fireball_motion",
+]
+lan = ["blast", "blast-*", "crystal_blast", "crystals", "fireball", "fishing-tnt", "wind", "wind_burst_player", "wind-*"]
+
+[[area]]
+name = "blocks"
+about = "block behaviour, redstone, pistons, fluids, block entities and their ticks"
+paths = [
+  "crates/sunrise-world/src/level/*", "crates/sunrise-world/src/piston_*", "crates/sunrise-world/src/block_*",
+  "crates/sunrise-world/src/dynamic_support.rs", "crates/sunrise-world/src/ground_support.rs",
+  "crates/sunrise-world/src/fluid*", "crates/sunrise-client/src/game/blocks/*",
+]
+cargo = [
+  { package = "sunrise-world", target = "lib", filter = "level::" },
+  { package = "sunrise-world", target = "lib", filter = "piston_" },
+  { package = "sunrise-world", target = "lib", filter = "fluid" },
+]
+harnesses = [
+  "redstone*", "piston_*", "block_*", "blockstate_*", "client_redstone_preview", "dispenser", "crafter*", "sculk*",
+  "server_player_sculk", "shrieker_local_capture", "vibration_source", "kill_die_vibration", "server_wool_vibration",
+  "pot_hopper", "random_tick*", "simple_block", "fluid*", "liquid_collision", "cauldron", "lava_cauldron_item",
+  "composter", "furnace*", "brewing*", "vault", "jukebox_saved_clock", "cushion_placement", "face_support",
+  "ground_support", "dynamic_support", "falling_*", "clone_block_ticks", "wet_fire", "lava_fire", "fire_starter_sound",
+  "dripleaf_projectiles", "geyser_*", "sulfur_bucket", "nether_portal", "portal_*", "gateway_*", "level_place",
+  "level_shape", "flat_place", "geometry", "chest_*", "anvil_turtle_egg", "hive_default_patch", "lodestone_default",
+  "structure_blocks", "sign_literal", "cuboid_model", "tick_order", "tick", "tick_step_network", "frozen_first_tick_water",
+]
+lan = [
+  "machines", "piston-*", "plates", "plate-projectiles", "doors", "sculk_*", "cauldron", "farmland", "growth",
+  "crafter", "lectern", "sulfur_cube_power", "placement", "walls", "flow-push", "bubble-column", "push", "falling",
+  "large_chest", "chest", "brewing", "beacon", "cracks", "replant",
+]
+
+[[area]]
+name = "mobs"
+about = "mob AI, brains, navigation, spawning, villagers and raids, bosses"
+paths = [
+  "crates/sunrise-client/src/mobs*", "crates/sunrise-client/src/raid.rs", "crates/sunrise-client/src/gossip.rs",
+  "crates/sunrise-client/src/merchant.rs", "crates/sunrise-client/src/game/mobs/*",
+  "crates/sunrise-client/src/game/creatures/*", "crates/sunrise-world/src/poi*",
+]
+cargo = [
+  { package = "sunrise-client-lib", target = "lib", filter = "mobs::" },
+  { package = "sunrise-client", target = "lib", filter = "game::creatures::" },
+  { package = "sunrise-client", target = "lib", filter = "game::stats::phantom_spawn_tests" },
+  { package = "sunrise-client", target = "lib", filter = "game::wither_star_tests" },
+]
+harnesses = [
+  "mob_*", "allay_*", "animal_love_cause", "armadillo_save_reload", "baby_pig_attachment", "breeze_hook",
+  "camel_*", "chicken_egg", "conversion_*", "dragon_*", "server_dragon", "forced_end", "elder_curse", "equine_temper",
+  "finalize_spawn", "natural_spawn", "spawn_*", "spawner", "trial_spawner", "glow_squid_noai", "goat_voices",
+  "golem_defense_guest", "happy_ghast_leash", "hoglin_repeat_attack", "piglin_anger_memory", "pufferfish_*",
+  "raid*", "raider_celebration", "sheep_dye", "shulker_*", "squid_*", "tropical_fish_variant", "villager_*",
+  "trading", "trade_components", "merchant_*", "warden_owned_memories", "wolf_anger_writes", "zombie_cure_sound",
+  "noai_*", "nautilus_memory", "pet_owner_teleport", "enderman_placement", "loaded_pig_tags", "ageable_integer_load",
+  "bed_poi", "peaceful_summon", "return_to_sender", "hostile_sound_categories", "ominous_warning_sound",
+  "command_reinforcements", "last_hurt_by_mob", "spell_ticks", "gateway_cooldown", "damage_source_entities",
+  "creaking_hit_order",
+]
+lan = [
+  "mobs", "barter", "piglin_offspring", "sleep-villager", "trials", "villagers", "hero-trading", "cure-discount",
+  "merchant-*", "parrot_follows_mob", "guardian-beams", "fangs", "sonic", "mooshroom", "pet_death", "hoglin-wall",
+  "raid-captain-fields", "mob-thorns", "shulker_bullets", "shulker_menu", "shulker_lift",
+]
+
+[[area]]
+name = "lighting"
+about = "the light engine and dynamic light"
+paths = [
+  "crates/sunrise-client-render/src/light.rs", "crates/sunrise-client-render/src/dynamic_light.rs",
+  "crates/sunrise-client-render/src/hdr_light.wgsl", "crates/sunrise-client/src/game/world/dynamic_light_emission*",
+  "crates/sunrise-client-render/src/light_border.rs", "crates/sunrise-client-render/src/light_storage_tests.rs",
+  "tools/light_storage_scenario.txt", "tools/light_storage_witness.txt",
+]
+cargo = [
+  { package = "sunrise-client-render", target = "lib", filter = "light::" },
+  { package = "sunrise-client-render", target = "lib", filter = "light_storage_tests::" },
+  { package = "sunrise-client", target = "lib", filter = "game::dynamic_light_emission" },
+]
+harnesses = ["light", "light_storage"]
+lan = ["light"]
+
+[[area]]
+name = "chunks"
+about = "chunk streaming, tickets, loading, random ticks"
+paths = [
+  "crates/sunrise-client-render/src/streaming*", "crates/sunrise-client-render/src/chunk*",
+  "crates/sunrise-client-render/src/world.rs", "crates/sunrise-client-render/src/world/*",
+  "crates/sunrise-client-render/src/mod_chunk_tickets.rs", "crates/sunrise-client/src/ticket_levels.rs",
+  "crates/sunrise-client/src/tick_chunk_membership.rs", "crates/sunrise-client/src/game/world/world_loading.rs",
+  "crates/sunrise-client/src/game/world/world_entry.rs", "crates/sunrise-world/src/chunk*",
+]
+cargo = [
+  { package = "sunrise-client-render", target = "lib", filter = "streaming" },
+  { package = "sunrise-client-lib", target = "test:streaming_meshes", filter = "" },
+]
+harnesses = ["chunk_status", "chunk_entity_order", "chunk_restart_ticks", "paletted_container", "section_mesh", "portal_tickets"]
+lan = ["distance", "forced-levels"]
+
+[[area]]
+name = "network"
+about = "LAN host and guests, the multiplayer client, the protocol, dedicated servers"
+paths = [
+  "crates/sunrise-client/src/lan/*", "crates/sunrise-client/src/net.rs", "crates/sunrise-client/src/*_net.rs",
+  "crates/sunrise-client/src/game/network/*", "crates/sunrise-protocol/*", "crates/sunrise-server*",
+  "crates/sunrise-friends/*", "crates/sunrise-relay/*", "tools/lan_e2e.py",
+]
+cargo = [
+  { package = "sunrise-client-lib", target = "lib", filter = "lan::" },
+  { package = "sunrise-protocol", target = "lib", filter = "" },
+  { package = "sunrise-client", target = "lib", filter = "game::remote::" },
+  { package = "sunrise-client-lib", target = "test:lan_bot", filter = "" },
+]
+harnesses = [
+  "lan*", "server_*", "remote_*", "dedicated_*", "online_mode", "secure_chat", "wire_stream", "item_wire",
+  "stop_sound_wire", "protocol_*", "friends_integration", "management_protocol", "user_cache", "player_sync",
+  "*_guest", "guest_*", "connected_guest_advancement_save", "disconnect_crafting", "entity_sound_packet",
+  "synced_*", "test_pos_guest",
+]
+# Every LAN check runs through a guest: all of them belong here as well.
+lan = ["*"]
+
+[[area]]
+name = "saves"
+about = "saving and loading worlds, entities and players, region files, datafix"
+paths = [
+  "crates/sunrise-client/src/save.rs", "crates/sunrise-client/src/save/*", "crates/sunrise-client/src/entity_nbt.rs",
+  "crates/sunrise-client/src/game/world/saving.rs", "crates/sunrise-client/src/game/world/persist*",
+  "crates/sunrise-client/src/game/world/storage.rs", "crates/sunrise-client/src/game/world/autosave.rs",
+  "crates/sunrise-world/src/region.rs", "crates/sunrise-world/src/datafix/*", "crates/sunrise-core/src/nbt.rs",
+  "crates/sunrise-world/src/crash_fixture.rs", "tools/save_fault_harness.py",
+  "crates/sunrise-client-core/src/block_entity_nbt.rs",
+]
+cargo = [
+  { package = "sunrise-client-lib", target = "lib", filter = "save::" },
+  { package = "sunrise-world", target = "lib", filter = "datafix::" },
+  { package = "sunrise-world", target = "lib", filter = "region::" },
+  { package = "sunrise-client-lib", target = "test:generation_saves", filter = "" },
+]
+harnesses = [
+  "save_roundtrip", "world_reopen", "world", "datafix", "*_save_reload", "*_save", "*_load", "*_saved_*",
+  "saved_empty_tags", "player_save_fields", "display_save", "trident_save", "stand_fall_save", "dedicated_crash_save",
+  "save_kill", "save_corruption", "structure_start_nbt", "entity_nbt_boolean", "nbt_path_reader", "snbt_unicode", "java_*", "string_hash", "modified_utf8",
+]
+lan = ["sleep-reload", "leash_reload", "reopen_player"]
+
+[[area]]
+name = "motion"
+about = "entity and player movement, collision, vehicles and riding, projectiles"
+paths = [
+  "crates/sunrise-client/src/motion*", "crates/sunrise-client/src/projectiles.rs", "crates/sunrise-client/src/arrows.rs",
+  "crates/sunrise-world/src/entity_move.rs", "crates/sunrise-world/src/player_travel.rs",
+  "crates/sunrise-world/src/*collision*", "crates/sunrise-world/src/movement_*", "crates/sunrise-world/src/living_motion.rs",
+  "crates/sunrise-world/src/swimming.rs", "crates/sunrise-world/src/climbing.rs",
+  "crates/sunrise-client/src/game/entities/boat*", "crates/sunrise-client/src/game/entities/minecart*",
+  "crates/sunrise-client/src/game/entities/passengers.rs", "crates/sunrise-client/src/game/entities/seats.rs",
+]
+cargo = [
+  { package = "sunrise-client-lib", target = "lib", filter = "motion::" },
+  { package = "sunrise-client", target = "lib", filter = "game::mounts::" },
+]
+harnesses = [
+  "*motion*", "*move*", "*collision*", "collision", "climbing", "swimming", "auto_jump", "boat_*", "*vehicle*",
+  "mount_*", "passenger_relation", "mob_removal_order", "player_travel", "world_movement", "world_ray", "registry_fall_ray",
+  "edge_backoff", "world_edge_backoff", "restitution", "stepped_interpolation", "view_direction", "projectile_*",
+  "arrow*", "client_arrow", "bounced_projectile_tick_order", "frame_projectile", "pearl_*", "trident",
+  "lunge_motion", "fall_damage", "living_fall", "living_landing", "block_landing", "free_space", "entity_fluid*",
+  "registered_entity_fluid", "registry_fluid", "fluid_box", "water_splash", "scaffolding_collision",
+  "powder_snow_collision", "shulker_space", "local_input", "sprint_input", "leash_knot_uuid", "mob_quad_leash",
+  "knot_command_view", "self_pose_metadata", "entity_obstruction", "armor_stand_*", "stand_lodestone",
+  "late_entity_pair",
+]
+lan = [
+  "boat*", "minecarts", "riding", "riders", "ride_*", "mounts", "vehicles", "vehicle-teleport", "rider-look",
+  "cart_*", "flight", "elytra", "ladder", "projectiles", "projectile*", "thrown", "arrows", "flame-arrows",
+  "spectator-travel", "riding_teleport", "portal_rider", "occupied_horse", "pig-saddle-shears", "leads",
+]
+
+[[area]]
+name = "items"
+about = "items and their use, combat and damage, effects, food, enchantments, loot"
+paths = [
+  "crates/sunrise-items/*", "crates/sunrise-client/src/game/items/*", "crates/sunrise-world/src/item_*",
+  "crates/sunrise-world/src/living_*", "crates/sunrise-world/src/*damage*", "crates/sunrise-world/src/food*",
+  "crates/sunrise-world/src/*effect*", "crates/sunrise-world/src/consum*", "crates/sunrise-world/src/loot*",
+  "crates/sunrise-world/src/attribute*", "crates/sunrise-world/src/player_*",
+]
+cargo = [
+  { package = "sunrise-items", target = "lib", filter = "" },
+  { package = "sunrise-client", target = "lib", filter = "game::maps::" },
+]
+harnesses = [
+  "item_*", "*_item", "extra_items", "entity_attribute", "use_*", "inventory_*", "consum*", "consume_effect", "stored_*", "active_effect*",
+  "status_*", "effect*", "potion_effect_icon", "player_*", "food*", "damage_*", "*_damage", "living_*", "combat_rules",
+  "registered_player_combat", "special_attack", "mace", "blocking_*", "item_blocking", "invulnerable_time",
+  "attribute*", "live_attribute*", "enchant*", "stored_enchantment_patch", "loot_*", "opened_loot", "spawn_loot",
+  "stand_break_loot", "entity_death_loot", "component_*", "*_components", "effective_item_components",
+  "builtin_component_delivery", "numeric_damage_component", "bundle_weight", "stack_*", "held_*", "helmet_damage",
+  "use_flag_reaction", "teleport_consume", "pumpkin_equippable_use", "fishing_*", "inline_fishing_tool",
+  "inline_loot_reference", "inline_trim_holders", "craft_map_take", "map_*", "exploration_map_command",
+  "lore_tooltip", "tooltip_display", "firework_tooltip", "orb_*", "absorption_save_reload", "suffocation",
+  "squid_damage_result", "server_knockback", "elder_curse", "pick_block_data", "hotbar", "slot_range_codec",
+  "creative_mining", "creative",
+]
+lan = [
+  "damage", "hazards", "pvp", "deaths", "kills", "looting", "hurt", "eat*", "xp", "effects", "absorption", "breath",
+  "lava", "drops", "shield", "totem", "keepinv", "helduse", "consume-release", "fishing*", "maps", "strikes",
+  "digging", "instant_digging", "knockback", "sprint-hit-slowdown", "spear", "critical-hits",
+  "mob-thorns", "player-thorns", "death-credit", "damage-attacker", "entity-die", "trident*", "arrow_pickup",
+  "riptide_rain", "explorer_map", "loot_give_guest", "creative_*", "mining-drop-latency", "deathmining", "contacts",
+  "levelup-sounds", "worn", "armour", "dig_*", "popped_break_effects",
+]
+
+[[area]]
+name = "commands"
+about = "command parsing and execution, functions, scoreboards, selectors, data packs"
+paths = [
+  "crates/sunrise-command/*", "crates/sunrise-client/src/game/administration/*", "crates/sunrise-client/src/scoreboard_cmd.rs",
+  "crates/sunrise-client/src/data_cmd.rs", "crates/sunrise-client-core/src/scoreboard.rs",
+  "crates/sunrise-*/src/nbt_path.rs", "crates/sunrise-client/src/game/world/server_reload/*",
+  "tools/command_exec_corpus.py", "tools/command_parse_corpus.py",
+]
+cargo = [
+  { package = "sunrise-command", target = "lib", filter = "" },
+  { package = "sunrise-world", target = "lib", filter = "nbt_path::" },
+  { package = "sunrise-client", target = "lib", filter = "game::commands::" },
+  { package = "sunrise-client", target = "lib", filter = "game::server_reload::" },
+  { package = "sunrise-client", target = "lib", filter = "game::mob_discard_tests::" },
+]
+harnesses = [
+  "command_*", "function_*", "tick_function_time", "macro_source_type", "scoreboard", "entity_scores", "selector_*",
+  "named_predicate_reference", "predicate_reference_startup", "run_coordinate_feedback", "terminal_execute_fork",
+  "fork_function_feedback", "loaded_command", "storage_alias", "seed_sync", "team_rules", "local_coordinate_rotation",
+  "folder_datapack_metadata", "world_pack_enchantment_loader", "entity_type_tags", "world_test_def*", "vehicle_command_damage",
+  "stand_command_hurt", "dialog_codec", "clone_dimensions", "inline_object", "entity_lookup_order",
+]
+lan = [
+  "commands", "feedback", "styles", "tag-query", "selector-tags", "entity-tags", "data_uuid", "command-block-chat",
+  "datapack-recipe", "time",
+]
+
+[[area]]
+name = "containers"
+about = "menus, inventories, crafting, the recipe book, workstations"
+paths = [
+  "crates/sunrise-client/src/menu.rs", "crates/sunrise-client/src/container_screen.rs", "crates/sunrise-client/src/creative.rs",
+  "crates/sunrise-client/src/crafting.rs", "crates/sunrise-client/src/recipe_book*", "crates/sunrise-client/src/stations.rs",
+  "crates/sunrise-client-render/src/containers.rs", "crates/sunrise-world/src/simple_container.rs",
+  "crates/sunrise-client/src/game/interface/container_*",
+  "crates/sunrise-client/src/game/interface/extras/mouse_tweaks.rs",
+]
+cargo = [
+  { package = "sunrise-client-lib", target = "lib", filter = "menu::" },
+  { package = "sunrise-client-lib", target = "lib", filter = "crafting::" },
+  { package = "sunrise-client", target = "lib", filter = "game::container_hooks::" },
+  { package = "sunrise-client", target = "lib", filter = "game::extras::mouse_tweaks::" },
+]
+harnesses = [
+  "menu_click", "anvil_name", "container_*", "storage_menu", "vehicle_container", "carrier_inventory", "simple_container",
+  "recipe*", "ghost_recipe", "place_recipe", "machine_recipe_placement", "crafting_priority", "merchant_crafted",
+  "enchanting", "screen_layout", "hotbar",
+]
+lan = [
+  "containers", "clicks", "shift-*", "recipe*", "modifier-release", "wheel", "crafting", "menu-transfer", "loom",
+  "stonecutter", "grindstone", "anvil", "smithing", "enchanting", "cartography", "spectator-container",
+]
+
+[[area]]
+name = "render"
+about = "rendering, models, particles, HUD and screens, audio, resource packs, options"
+paths = [
+  "crates/sunrise-client-render/*", "crates/sunrise-assets/*", "crates/sunrise-optifine/*", "crates/sunrise-connected/*", "crates/sunrise-polytone/*",
+  "crates/sunrise-shader*", "crates/sunrise-hdr/*",
+]
+cargo = [
+  { package = "sunrise-assets", target = "lib", filter = "" },
+  { package = "sunrise-client-render", target = "lib", filter = "hud" },
+  { package = "sunrise-client-render", target = "test:standard_pack_gpu_entities", filter = "" },
+  { package = "sunrise-client", target = "lib", filter = "game::advancements::" },
+]
+harnesses = [
+  "*render*", "*model*", "*particle*", "*sound*", "sound_*", "ambient_sound", "audio_attributes", "music",
+  "situational_music", "subtitle", "source_silence", "zombie_cure_sound", "camera", "first_person", "frame_*",
+  "hud", "tab_list", "locator_bar", "chat_screen", "screen_build", "title_debug", "options", "toggle_keys",
+  "interaction_input", "game_loop", "mipmap", "sprite_animation", "resource_pack", "pack_*", "server_resource_pack",
+  "translucency", "block_tint", "face_visibility", "breaking_model", "crack_feedback", "stack_foil", "text_*",
+  "float_text", "potion_effect_icon", "hdr_auto_flip", "environment_*", "level_environment_reads", "world_border*",
+  "world_options", "squid_client", "cursor_death", "interaction_*", "view_direction",
+]
+lan = [
+  "tab", "self", "nametags", "names", "titles", "chat", "hud", "sidebar", "border", "particles", "sparks", "swings",
+  "looks", "body", "scale-body", "cursor", "hands", "f3_density", "fireworks", "rocket-*", "stopsound", "keys_released",
+  "sprint-fov", "boat-dismount-pose", "popped_break_effects", "frames", "signs", "sign", "sign_copy", "books",
+]
+
+[[area]]
+name = "tick-order"
+about = "the order entities and blocks tick in: the level's tick, the join-order walk"
+# game.rs holds tick_world; `*_tick.rs`: ordered_tick.rs, and level_tick.rs once tick_world moves there.
+paths = [
+  "crates/sunrise-client/src/game.rs", "crates/sunrise-client/src/game/world/*_tick.rs",
+  "crates/sunrise-client/src/join_seq.rs",
+]
+harnesses = ["tick_order", "chunk_entity_order", "entity_lookup_order"]
+
+[[area]]
+name = "client-packets"
+about = "what the client sends to a server: movement, acks, keep-alives, settings, mod channels"
+paths = [
+  "crates/sunrise-client/src/player_sync.rs", "crates/sunrise-client/src/net.rs",
+  "crates/sunrise-client/src/game/network/remote*", "crates/sunrise-protocol/src/packets/*",
+  "crates/sunrise-client/src/game/world/tick_script.rs", "tools/net_capture.py", "tools/wire_stream.py",
+]
+harnesses = ["wire_stream", "protocol_*", "item_wire", "stop_sound_wire", "player_sync"]
+
+[[area]]
+name = "mod-api"
+about = "the native mod API: hooks, the Host, handles and parts"
+paths = [
+  "crates/sunrise-mod-*", "crates/cargo-sunrise-mod/*", "crates/sunrise-native-build/*",
+  "crates/sunrise-hooks/*", "crates/sunrise-client/src/game/native_hooks/*",
+  "crates/sunrise-client/src/game/modding/*",
+]
+cargo = [
+  { package = "sunrise-client", target = "lib", filter = "game::native_" },
+  { package = "sunrise-client", target = "lib", filter = "game::transactions::" },
+  { package = "sunrise-client", target = "lib", filter = "game::gui_entity::" },
+  { package = "sunrise-client", target = "lib", filter = "game::host::" },
+  { package = "sunrise-client", target = "lib", filter = "game::api_values::" },
+  { package = "sunrise-client", target = "lib", filter = "game::load_conditions::" },
+  { package = "sunrise-client", target = "lib", filter = "game::creatures::pending_birth_matrix_tests" },
+]
+harnesses = []
+lan = ["recipes-smod"]
+
+# Harnesses no area claims yet. Names, not patterns, so a new harness must be placed in an area: this list only
+# shrinks. Some of these fail by design in automatic runs (tools/parity_hosts.json named_only).
+[unassigned]
+harnesses = [
+  "hardcore_respawn", "loaded_sleeper_position", "object_open_map", "object_open_set", "pot_sherd_templates",
+  "respawn_world_point", "rust", "spectral_duration", "unused_feature_startup",
+]

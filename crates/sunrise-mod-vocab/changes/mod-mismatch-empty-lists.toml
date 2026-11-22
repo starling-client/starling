@@ -1,0 +1,3 @@
+ids = ["hook:mod_mismatch"]
+why = "mod_mismatch version 2 no longer dispatches for a world whose saved mod lists are empty: an empty saved list counts as absent, and saves record only nonempty lists. Unchanged nonempty lists still dispatch."
+migrate = "Rebuild against version 2. A listener that relied on a dispatch for an empty saved list no longer receives one."

@@ -5,45 +5,40 @@ mod components;
 mod display;
 #[path = "ingredient/matching.rs"]
 mod matching;
-use super::native_hooks::native_ingredient;
+#[path = "ingredient/stack.rs"]
+mod stack;
 use super::{ItemStack, Items};
-use crate::native_stack_hooks::ingredient_test as native_ingredient_test;
 use display::display_stacks;
-use sunrise_world::native_load_context::LoadContext;
-use mod_api::__private::{WalkedIngredient, dedup_keep_order, resolved_items};
 pub use mod_api::item::crafting::{IngredientRule, Shape};
+use mod_api::{
+    __private::{WalkedIngredient, ingredient_parser::CustomIds},
+    IngredientPredicate,
+};
 use serde_json::Value;
 use std::collections::HashSet;
-/// Where `Ingredient::resolve` leaves the hook's answer inside the occurrence
-/// it resolved. Written and read only here; the loads that own the sources
-/// never send or save it.
-const RESOLVED_ITEMS: &str = "sunrise:resolved_items";
 
 /// The kind an ingredient object names: `neoforge:ingredient_type` in
 /// current NeoForge, `type` in older packs.
-fn ingredient_kind(o: &serde_json::Map<String, Value>) -> Option<&str> {
+pub(super) fn ingredient_kind(o: &serde_json::Map<String, Value>) -> Option<&str> {
     o.get("neoforge:ingredient_type")
         .or_else(|| o.get("type"))?
         .as_str()
 }
 
-/// A mod's own kind: a namespaced type that is not minecraft's.
-fn is_custom(kind: &str) -> bool {
-    kind.contains(':') && !kind.starts_with("minecraft:")
-}
-
 /// A set of accepted items (expanded from an item, list or tag), and the
 /// items in its `HolderSet` order, with built-in component and display rules.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 // exhaustive: the game builds it with a literal; mods only read it
 pub struct Ingredient {
     /// Full candidate set; a non-simple predicate tests each concrete stack.
     pub items: HashSet<String>,
     /// Default-stack display/simple-match order; may be empty for non-simple kinds.
     pub order: Vec<String>,
-    /// A mod's own kind, for matching at craft time: the kind and its
-    /// NBT compound, as the load-time hook saw them (`native_ingredient_test`).
-    pub custom: Option<(String, sunrise_core::nbt::Compound)>,
+    /// Original `#tag` name (without `#`) when the ingredient JSON was a tag reference,
+    /// preserved for vanilla `HolderSet::Tag` / `TagSlotDisplay` wire encoding.
+    pub tag: Option<String>,
+    /// The predicate bound to this occurrence by the mod that defined it.
+    pub custom: Option<IngredientPredicate>,
     /// NeoForge's shapes, with their children parsed: matching a concrete
     /// stack asks each child its own `test` (a mod's kind among them),
     /// as on NeoForge — the flat list above only names items.
@@ -61,22 +56,31 @@ pub struct Ingredient {
         std::sync::Arc<std::collections::HashMap<String, sunrise_core::nbt::Compound>>,
 }
 impl Ingredient {
-    /// Reject malformed component patches before any part of a recipe is published.
-    pub fn validate_recipe(value: &Value, items: &Items, recipe: &str) -> bool {
-        components::validate_recipe(value, items, recipe)
+    pub(crate) fn validate_persistence(value: &Value, recipe: &str) -> bool {
+        if let Err(error) = components::persistent_recipe(value) {
+            let recipe = sunrise_items::recipe_sources::qualified(recipe);
+            log::warn!("recipe {recipe} rejected: {error}");
+            return false;
+        }
+        true
     }
     /// Decode built-in rules and materialize display stacks at a load boundary.
     pub fn prepare_components(&mut self, items: &Items) -> Option<()> {
+        self.prepare_components_checked(items).ok()
+    }
+    fn prepare_components_checked(&mut self, items: &Items) -> Result<(), String> {
         if let Some(rule) = &self.rule {
-            let compiled = std::sync::Arc::new(
-                components::ComponentPredicate::compile(rule, &self.items, items).ok()?,
-            );
+            let compiled = std::sync::Arc::new(components::ComponentPredicate::compile(
+                rule,
+                &self.items,
+                items,
+            )?);
             if self.display.is_none() {
                 self.shown = Some(compiled.shown(&self.order));
             }
             self.compiled = Some(compiled);
         }
-        Some(())
+        Ok(())
     }
     fn default_matches(&self, stack: &ItemStack) -> bool {
         match &self.children {
@@ -106,12 +110,16 @@ impl Ingredient {
 
     /// Whether item membership fully determines shapeless matching.
     pub fn is_simple(&self) -> bool {
-        self.rule.is_none()
-            && self.custom.is_none()
-            && self
-                .children
-                .as_ref()
-                .is_none_or(|(_, kids)| kids.iter().all(Self::is_simple))
+        let mut pending = vec![self];
+        while let Some(node) = pending.pop() {
+            if node.rule.is_some() || node.custom.is_some() {
+                return false;
+            }
+            if let Some((_, kids)) = &node.children {
+                pending.extend(kids);
+            }
+        }
+        true
     }
 
     /// The items of a list, in order.
@@ -119,6 +127,7 @@ impl Ingredient {
         Self {
             items: items.iter().cloned().collect(),
             order: items,
+            tag: None,
             custom: None,
             children: None,
             rule: None,
@@ -128,131 +137,26 @@ impl Ingredient {
             component_defaults: Default::default(),
         }
     }
-    /// Asks the `ingredient` hook once for each mod kind in `v`, nested ones
-    /// included, and leaves each answer with its occurrence for `parse`: the
-    /// one place the hook is called, so every table that reads the recipes
-    /// shares the same answers. A file's own answer is dropped first, so data
-    /// cannot forge one. `true`: `v` changed.
-    // hidden: the load's half of the ingredient hook, not part of the mod surface
-    #[doc(hidden)]
-    pub fn resolve(v: &mut Value, context: &LoadContext) -> bool {
-        match v {
-            Value::Array(entries) => entries
-                .iter_mut()
-                .fold(false, |changed, e| Self::resolve(e, context) | changed),
-            Value::Object(o) => {
-                let mut changed = o.remove(RESOLVED_ITEMS).is_some();
-                let kind = ingredient_kind(o).map(str::to_owned);
-                match kind.as_deref() {
-                    Some("neoforge:compound" | "neoforge:intersection") => {
-                        for key in ["children", "ingredients"] {
-                            if let Some(children) = o.get_mut(key) {
-                                changed |= Self::resolve(children, context);
-                            }
-                        }
-                    }
-                    Some("neoforge:difference") => {
-                        for key in ["base", "subtracted"] {
-                            if let Some(part) = o.get_mut(key) {
-                                changed |= Self::resolve(part, context);
-                            }
-                        }
-                    }
-                    Some("neoforge:custom_display") => {
-                        if let Some(base) = o.get_mut("base") {
-                            changed |= Self::resolve(base, context);
-                        }
-                    }
-                    Some("neoforge:components" | "neoforge:block_tag") => {}
-                    Some(k) if is_custom(k) => {
-                        let mut list = Vec::new();
-                        if mod_api::__private::listened(mod_api::HookId::Ingredient)
-                            && let Ok(data) = crate::json_nbt::json_to_compound(o)
-                        {
-                            native_ingredient(context, k, &data, &mut list);
-                        }
-                        dedup_keep_order(&mut list);
-                        o.insert(RESOLVED_ITEMS.to_owned(), list.into());
-                        changed = true;
-                    }
-                    Some(_) => {}
-                    // A brewing slot's item predicate wraps its ingredient.
-                    None => {
-                        if let Some(item) = o.get_mut("item") {
-                            changed |= Self::resolve(item, context);
-                        }
-                    }
-                }
-                changed
-            }
-            _ => false,
-        }
-    }
-    /// Every mod kind named in `v`, nested ones included, with whether
-    /// `resolve` already left an empty answer for it. Walks the same shapes
-    /// `resolve` does.
-    pub fn custom_kinds(v: &Value) -> Vec<(String, bool)> {
-        let mut found = Vec::new();
-        Self::collect_custom_kinds(v, &mut found);
-        found
-    }
-    fn collect_custom_kinds(v: &Value, found: &mut Vec<(String, bool)>) {
-        match v {
-            Value::Array(entries) => entries
-                .iter()
-                .for_each(|e| Self::collect_custom_kinds(e, found)),
-            Value::Object(o) => {
-                let parts: &[&str] = match ingredient_kind(o) {
-                    Some("neoforge:compound" | "neoforge:intersection") => {
-                        &["children", "ingredients"]
-                    }
-                    Some("neoforge:difference") => &["base", "subtracted"],
-                    Some("neoforge:custom_display") => &["base"],
-                    Some("neoforge:components" | "neoforge:block_tag") => &[],
-                    Some(k) if is_custom(k) => {
-                        let empty = o
-                            .get(RESOLVED_ITEMS)
-                            .and_then(Value::as_array)
-                            .is_some_and(Vec::is_empty);
-                        found.push((k.to_owned(), empty));
-                        &[]
-                    }
-                    Some(_) => &[],
-                    None => &["item"],
-                };
-                for key in parts {
-                    if let Some(part) = o.get(*key) {
-                        Self::collect_custom_kinds(part, found);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    /// Drops every answer `resolve` left anywhere in `v`: what a load sends
-    /// or shows is the files' own JSON. `true`: `v` changed.
-    // hidden: the load's half of the ingredient hook, not part of the mod surface
-    #[doc(hidden)]
-    pub fn forget_answers(v: &mut Value) -> bool {
-        match v {
-            Value::Array(entries) => entries
-                .iter_mut()
-                .fold(false, |changed, e| Self::forget_answers(e) | changed),
-            Value::Object(o) => {
-                let mut changed = o.remove(RESOLVED_ITEMS).is_some();
-                for part in o.values_mut() {
-                    changed |= Self::forget_answers(part);
-                }
-                changed
-            }
-            _ => false,
-        }
-    }
+    /// Parse a built-in ingredient without answers from a recipe load.
     pub fn parse(v: &Value, items: &Items) -> Option<Self> {
-        // A mod's own kind: `resolve` asked the hook once at load and left
-        // the item list it matches with the occurrence; one no load
-        // resolved fails the file.
-        let walked = WalkedIngredient::walk(
+        Self::parse_with(v, items, &|_, _| None)
+    }
+
+    pub(super) fn parse_with(
+        v: &Value,
+        items: &Items,
+        custom: CustomIds<'_, IngredientPredicate>,
+    ) -> Option<Self> {
+        Self::parse_with_error(v, items, custom).ok()
+    }
+
+    pub(super) fn parse_with_error(
+        v: &Value,
+        items: &Items,
+        custom: CustomIds<'_, IngredientPredicate>,
+    ) -> Result<Self, String> {
+        let component_error = std::cell::RefCell::new(None::<String>);
+        let walked = WalkedIngredient::walk_with_components(
             v,
             &items.item_tag_order,
             &|tag| {
@@ -273,44 +177,61 @@ impl Ingredient {
                         .collect(),
                 )
             },
-            &resolved_items,
+            custom,
+            &|data| match components::convert_component_patch(data, items) {
+                Ok(patch) => Some(patch),
+                Err(error) => {
+                    let mut slot = component_error.borrow_mut();
+                    if slot.is_none() {
+                        *slot = Some(error);
+                    }
+                    None
+                }
+            },
             &components::json_patch,
         );
-        let Some(walked) = walked else {
-            log::error!("recipes: invalid ingredient (unresolved tag or malformed input): {v}");
-            return None;
-        };
+        if let Some(error) = component_error.into_inner() {
+            return Err(error);
+        }
+        let walked = walked.ok_or_else(|| format!("invalid ingredient: {v}"))?;
         // A mod kind's empty answer is warned about at load, with its recipe file.
         if walked.order.is_empty() && walked.custom.is_none() {
             log::warn!(
                 "recipes: ingredient has no placement candidates; recipe cannot be placed: {v}"
             );
         }
-        Self::of_walked(walked, items)
+        let tag = v
+            .as_str()
+            .and_then(|s| s.strip_prefix('#'))
+            .map(str::to_owned);
+        Self::of_walked(walked, items, tag)
     }
-    /// The walk of an item ingredient's answer: NeoForge's standard shapes
-    /// keep their children, and a mod's own kind keeps its kind and NBT metadata,
-    /// since the load-time list only names items and matching a concrete
-    /// stack (its components) is the match-time hook's.
-    fn of_walked(walked: WalkedIngredient, items: &Items) -> Option<Self> {
-        // The shapes' children walk the same way; a child no wrapper
-        // answers fails the file.
+    /// Preserve the standard shapes and the predicate bound to each custom leaf.
+    fn of_walked(
+        walked: WalkedIngredient<IngredientPredicate>,
+        items: &Items,
+        tag: Option<String>,
+    ) -> Result<Self, String> {
         let children = match walked.children {
             Some((shape, kids)) => Some((
                 shape,
                 kids.into_iter()
-                    .map(|kid| Self::of_walked(kid, items))
-                    .collect::<Option<_>>()?,
+                    .map(|kid| Self::of_walked(kid, items, None))
+                    .collect::<Result<Vec<_>, _>>()?,
             )),
             None => None,
         };
         let shown = match &walked.display {
-            Some(display) => Some(display_stacks(display, items)?),
+            Some(display) => Some(
+                display_stacks(display, items)
+                    .ok_or_else(|| "invalid custom display slot".to_owned())?,
+            ),
             None => None,
         };
         let mut ingredient = Self {
             items: walked.set,
             order: walked.order,
+            tag,
             custom: walked.custom,
             rule: walked.rule,
             compiled: None,
@@ -319,7 +240,7 @@ impl Ingredient {
             component_defaults: items.component_defaults.clone(),
             children,
         };
-        ingredient.prepare_components(items)?;
+        ingredient.prepare_components_checked(items)?;
         let order: Vec<String> = match &ingredient.children {
             Some((Shape::Difference, kids)) => ingredient
                 .order
@@ -333,13 +254,78 @@ impl Ingredient {
                 .filter(|id| ingredient.default_matches(&ItemStack::new(id, 1)))
                 .cloned()
                 .collect(),
-            _ => return Some(ingredient),
+            _ => return Ok(ingredient),
         };
         if ingredient.is_simple() {
             ingredient.items = order.iter().cloned().collect();
         }
         ingredient.order = order;
-        Some(ingredient)
+        Ok(ingredient)
+    }
+}
+impl Clone for Ingredient {
+    fn clone(&self) -> Self {
+        let clone_leaf = |node: &Self| Self {
+            items: node.items.clone(),
+            order: node.order.clone(),
+            tag: node.tag.clone(),
+            custom: node.custom.clone(),
+            children: None,
+            rule: node.rule.clone(),
+            compiled: node.compiled.clone(),
+            display: node.display.clone(),
+            shown: node.shown.clone(),
+            component_defaults: node.component_defaults.clone(),
+        };
+        let Some((root_shape, root_kids)) = &self.children else {
+            return clone_leaf(self);
+        };
+        let mut stack: Vec<(&Self, Shape, std::slice::Iter<'_, Self>, Vec<Self>)> = vec![(
+            self,
+            root_shape.clone(),
+            root_kids.iter(),
+            Vec::with_capacity(root_kids.len()),
+        )];
+        loop {
+            let next = stack.last_mut().expect("non-empty clone stack").2.next();
+            if let Some(child) = next {
+                if let Some((shape, kids)) = &child.children {
+                    stack.push((
+                        child,
+                        shape.clone(),
+                        kids.iter(),
+                        Vec::with_capacity(kids.len()),
+                    ));
+                } else {
+                    stack
+                        .last_mut()
+                        .expect("non-empty clone stack")
+                        .3
+                        .push(clone_leaf(child));
+                }
+            } else {
+                let (node, shape, _, children) = stack.pop().expect("non-empty clone stack");
+                let mut cloned = clone_leaf(node);
+                cloned.children = Some((shape, children));
+                if let Some(parent) = stack.last_mut() {
+                    parent.3.push(cloned);
+                } else {
+                    return cloned;
+                }
+            }
+        }
+    }
+}
+impl Drop for Ingredient {
+    fn drop(&mut self) {
+        let Some((_, mut stack)) = self.children.take() else {
+            return;
+        };
+        while let Some(mut node) = stack.pop() {
+            if let Some((_, mut kids)) = node.children.take() {
+                stack.append(&mut kids);
+            }
+        }
     }
 }
 
@@ -354,6 +340,10 @@ mod builtin_kinds_tests;
 #[cfg(test)]
 #[path = "ingredient/review_tests.rs"]
 mod review_tests;
+
+#[cfg(test)]
+#[path = "ingredient/list_entry_tests.rs"]
+mod list_entry_tests;
 
 #[cfg(test)]
 #[path = "ingredient/second_review_tests.rs"]

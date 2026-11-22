@@ -51,6 +51,20 @@ pub struct GroundState {
     pub supporting_block: Option<BlockPos>,
 }
 impl GroundState {
+    /// At load or spawn only the flag is known; no move has selected support yet.
+    pub fn from_ground_flag(on_ground: bool) -> Self {
+        Self {
+            on_ground,
+            ..Self::default()
+        }
+    }
+
+    /// Drop the previous level/footprint's support when movement state is replaced.
+    pub fn clear_support(&mut self) {
+        self.on_ground_no_blocks = false;
+        self.supporting_block = None;
+    }
+
     /// Entity.setOnGroundWithMovement writes these flags before support queries.
     /// A failed query preserves any earlier writes, as in the native method.
     pub fn set_with_movement<E>(
@@ -90,8 +104,7 @@ impl GroundState {
             }
             self.on_ground_no_blocks = found.is_none();
         } else {
-            self.on_ground_no_blocks = false;
-            self.supporting_block = None;
+            self.clear_support();
         }
         Ok(())
     }

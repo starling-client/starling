@@ -1,5 +1,4 @@
-//! Saved chunks for far readers: far terrain's sampling threads and a
-//! player's far ring (`lan::far`).
+//! Saved chunks for far terrain's sampling threads.
 //!
 //! A far read stays out of the gameplay region cache: the far view spans
 //! more region files than the cache keeps open, and would push the ones the
@@ -14,8 +13,8 @@
 //! writer goes through (`writing`), and a far read uses a kept header only
 //! where the stamp says that nothing was written since it was read.
 use super::*;
-use sunrise_world::region::RegionHeader;
 use std::time::{Duration, Instant};
+use sunrise_world::region::RegionHeader;
 
 /// How long a far read trusts a kept header that this process did not write
 /// under: what another program saved shows in the far view this long after.
@@ -105,8 +104,11 @@ impl SaveDir {
             .ok()?
             .get(&(Folder::Region, x, z))
             .map(|(_, record)| record.clone());
-        if let Some(record) = pending {
-            return record.tag().map(|tag| (*tag).clone());
+        if let Some(record) = pending
+            && let Ok(tag) =
+                compression_pool::catch_encoding_panic(|| Ok(record.tag_for_metadata()))
+        {
+            return tag.map(|tag| (*tag).clone());
         }
         let mut root = self.far_region_record(x, z)?;
         self.upgrade_record(Folder::Region, &mut root).ok()?;
@@ -131,7 +133,7 @@ impl SaveDir {
         }
         // The region is being written, or was a moment ago. The writer's own
         // open file is in the gameplay cache, and exact under its lock.
-        read_region_record(&self.root, &self.regions, "region", x, z).ok()?
+        read_region_record(self.region_storage(Folder::Region), x, z).ok()?
     }
 }
 
@@ -143,7 +145,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sunrise-far-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        (dir.clone(), SaveDir::new(dir, LevelShape::OVERWORLD))
+        (
+            dir.clone(),
+            SaveDir::new(dir, LevelShape::OVERWORLD, Some(Default::default())),
+        )
     }
     /// A current record that says which chunk it is and which of its saves.
     fn record((x, z): (i32, i32), version: i32) -> Record {
@@ -158,7 +163,12 @@ mod tests {
         }))
     }
     fn write(save: &SaveDir, records: &[((i32, i32), &Record)]) {
-        write_region_records(&save.root, &save.regions, "region", records).unwrap();
+        let result = write_region_records(
+            save.region_storage(Folder::Region),
+            records,
+            &fs::File::sync_data,
+        );
+        assert!(result.failed_records.is_empty() && result.sync_error.is_none());
     }
     /// What a far read finds for the chunk: `(xPos, zPos, version)`.
     fn far(save: &SaveDir, (x, z): (i32, i32)) -> Option<(i64, i64, i64)> {
@@ -188,6 +198,22 @@ mod tests {
         assert_eq!(far(&save, a), None);
         assert_eq!(far(&save, c), Some((5, 5, 1)));
         assert_eq!(far(&save, b), Some((4, 5, 1)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panicking_pending_snapshot_does_not_hide_the_saved_far_chunk() {
+        let (dir, save) = save_dir("refused-pending");
+        let key = (3, 5);
+        write(&save, &[(key, &record(key, 1))]);
+        save.pending.lock().unwrap().insert(
+            (Folder::Region, key.0, key.1),
+            (
+                0,
+                Record::TestEncode(Arc::new(|_| panic!("fixture failed to encode"))),
+            ),
+        );
+        assert_eq!(far(&save, key), Some((3, 5, 1)));
         let _ = fs::remove_dir_all(&dir);
     }
 

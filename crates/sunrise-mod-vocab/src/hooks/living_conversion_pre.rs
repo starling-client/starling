@@ -10,11 +10,12 @@ pub trait Hooks {
     /// mooshroom a player shears, a zombie villager's cure, a villager turned
     /// by a zombie.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "LivingConversionEvent.Pre",
         cancellable = true
     )]
-    fn living_conversion_pre();
+    fn living_conversion_pre(entity: u32, kind: &str, outcome: &str, cancel: &mut bool);
 }

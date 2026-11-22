@@ -3,7 +3,85 @@
 //! it (`viewed_levels`).
 use super::{Guest, Hub};
 use crate::{chunk::Chunk, lan::viewed_levels::send::Runs, world::World};
-use sunrise_protocol::packets::play::{self, Clientbound as C};
+use std::collections::BTreeMap;
+use sunrise_protocol::{
+    connection_groups::{self, Cell, Entry, Section},
+    packets::{
+        Empty,
+        custom_payload::CustomPayload,
+        play::{self, Clientbound as C},
+    },
+    viewed_levels::Level,
+};
+
+fn encode_groups(section: Section) -> Vec<u8> {
+    C::CustomPayload(CustomPayload {
+        channel: connection_groups::CHANNEL.into(),
+        data: section
+            .encode()
+            .expect("at most one group per section cell"),
+    })
+    .encode()
+}
+
+/// `LevelChunkAuxiliaryLightManager.sendLightDataTo`: the vanilla packet is
+/// first, followed by private data, only when this peer negotiated the channel.
+pub(in crate::lan) fn group_bundle(
+    body: Vec<u8>,
+    groups: Vec<Vec<u8>>,
+) -> impl Iterator<Item = Vec<u8>> {
+    let delimiter = (!groups.is_empty()).then(|| C::BundleDelimiter(Empty).encode());
+    delimiter
+        .clone()
+        .into_iter()
+        .chain([body])
+        .chain(groups)
+        .chain(delimiter)
+}
+
+pub(in crate::lan) fn encode_chunk_connection_groups(chunk: &Chunk) -> Vec<Vec<u8>> {
+    let mut sections: BTreeMap<i32, Vec<Entry>> = BTreeMap::new();
+    for (&cell, &group) in &chunk.connection_groups {
+        let (x, y, z) = chunk.dynamic_cell_coords(cell);
+        sections.entry(y >> 4).or_default().push(Entry {
+            cell: Cell::of([x.into(), y, z.into()]),
+            group: Some(group),
+        });
+    }
+    sections
+        .into_iter()
+        .map(|(y, entries)| {
+            encode_groups(Section {
+                pos: [chunk.x, y, chunk.z],
+                entries,
+            })
+        })
+        .collect()
+}
+
+type Block = (i32, i32, i32);
+
+fn block_packet(world: &World, section: Block, positions: &[Block]) -> C {
+    if let [(x, y, z)] = *positions {
+        C::BlockUpdate(play::BlockUpdate {
+            pos: [x, y, z],
+            state: world.block(x, y, z).0 as i32,
+        })
+    } else {
+        C::SectionBlocksUpdate(play::SectionBlocksUpdate {
+            section: [section.0, section.1, section.2],
+            changes: positions
+                .iter()
+                .map(|&(x, y, z)| {
+                    i64::from(world.block(x, y, z).0) << 12
+                        | i64::from(x & 15) << 8
+                        | i64::from(z & 15) << 4
+                        | i64::from(y & 15)
+                })
+                .collect(),
+        })
+    }
+}
 
 impl Hub {
     /// The players sent chunk `key` of the level in place: those in it (None), and those whose
@@ -11,7 +89,11 @@ impl Hub {
     fn chunk_holders(
         &self,
         key: (i32, i32),
-    ) -> Vec<(usize, Option<i32>, &crate::fast_hash::FxHashSet<(i32, i32)>)> {
+    ) -> Vec<(
+        usize,
+        Option<Level>,
+        &crate::fast_hash::FxHashSet<(i32, i32)>,
+    )> {
         let viewed = self.viewed.active();
         (0..self.guests.len())
             .filter_map(|i| {
@@ -31,19 +113,89 @@ impl Hub {
             .collect()
     }
 
-    /// `body`, a play clientbound packet, to each of `holders`.
-    fn send_to_holders(&self, holders: &[(usize, Option<i32>)], body: &[u8]) {
-        for &(i, level) in holders {
-            let g = &self.guests[i];
-            match level {
-                None => g.sender.send(body.to_vec()),
-                Some(level) => {
-                    let mut runs = Runs::new(level);
-                    runs.push(body);
-                    g.sender.send_many(runs.finish());
-                }
+    /// Send a world-state correction directly to one guest, with its group at the same
+    /// receive boundary. This does not publish the replacement to its other holders.
+    pub fn send_authoritative_block(&self, conn: u32, world: &World, pos: [i32; 3]) {
+        let Some(guest) = self.guest(conn) else {
+            return;
+        };
+        let [x, y, z] = pos;
+        let block = block_packet(world, (x >> 4, y >> 4, z >> 4), &[(x, y, z)]);
+        if guest.negotiated_connection_groups() && guest.sent_chunks.contains(&(x >> 4, z >> 4)) {
+            let group = world.connection_group(x, y, z);
+            if group.is_some()
+                || world
+                    .connection_group_log
+                    .as_ref()
+                    .is_some_and(|log| log.contains(&(x, y, z)))
+            {
+                let payload = encode_groups(Section {
+                    pos: [x >> 4, y >> 4, z >> 4],
+                    entries: vec![Entry {
+                        cell: Cell::of(pos),
+                        group,
+                    }],
+                });
+                guest
+                    .sender
+                    .send_batch(group_bundle(block.encode(), vec![payload]));
+                return;
             }
         }
+        guest.send(&block);
+    }
+
+    /// Plain holders take the original body, with the same scoped run if needed.
+    /// For a refused scoped resend, forget the stale column and let the view's
+    /// usual requeue pick it up. Do not publish just one half of a pair.
+    fn send_to_holders_grouped(
+        &mut self,
+        holders: &[(usize, Option<Level>)],
+        body: &[u8],
+        groups: &[Vec<u8>],
+        resend: Option<(i32, i32)>,
+    ) {
+        let dimension = &self.config.dimension;
+        for &(i, level) in holders {
+            self.guests.update(i, |guest| {
+                let groups = if guest.negotiated_connection_groups() {
+                    groups
+                } else {
+                    &[]
+                };
+                if let Some(level) = level {
+                    let mut runs = Runs::new(level);
+                    if runs.push_grouped(body, groups) {
+                        if groups.is_empty() {
+                            guest.sender.send_many(runs.finish());
+                        } else {
+                            guest.sender.send_batch(runs.finish());
+                        }
+                    } else if let Some(key @ (x, z)) = resend
+                        && let Some(view) = guest.viewed.views.get_mut(dimension)
+                    {
+                        view.sent.remove(&key);
+                        view.linger.remove(&key);
+                        view.dirty = true;
+                        let mut runs = Runs::new(level);
+                        runs.push(
+                            &C::ForgetLevelChunk(play::ForgetLevelChunk { pos: [x, z] }).encode(),
+                        );
+                        guest.sender.send_many(runs.finish());
+                    }
+                } else if groups.is_empty() {
+                    guest.sender.send(body.to_vec());
+                } else {
+                    guest
+                        .sender
+                        .send_batch(group_bundle(body.to_vec(), groups.to_vec()));
+                }
+            });
+        }
+    }
+
+    fn send_to_holders(&mut self, holders: &[(usize, Option<Level>)], body: &[u8]) {
+        self.send_to_holders_grouped(holders, body, &[], None);
     }
 
     /// `ChunkHolder.broadcastChanges`' light part: the light sections that
@@ -61,10 +213,7 @@ impl Hub {
         // One entry per column, so the order is the columns'.
         changes.sort_unstable_by_key(|&(column, _)| column);
         for ((x, z), sections) in changes {
-            if let Some(far) = self.far.as_mut() {
-                far.changed(x, z);
-            }
-            let viewers: Vec<(usize, Option<i32>)> = self
+            let viewers: Vec<(usize, Option<Level>)> = self
                 .chunk_holders((x, z))
                 .into_iter()
                 .filter(|(_, _, sent)| {
@@ -98,7 +247,7 @@ impl Hub {
             // handed the column to summarize again (`handoff::changed`).
             let unsent = |g: &Guest, key: &(i32, i32)| {
                 self.here(g)
-                    && g.address == crate::lan::conn::MEMORY_ADDRESS
+                    && g.address() == crate::lan::conn::MEMORY_ADDRESS
                     && !g.sent_chunks.contains(key)
             };
             for key in &bulk {
@@ -108,7 +257,6 @@ impl Hub {
                     crate::lan::handoff::changed(chunk);
                 }
             }
-            let recording = self.recording();
             let columns: Vec<&Chunk> = bulk
                 .iter()
                 .filter_map(|k| world.chunks.get(k).map(|c| &**c))
@@ -116,44 +264,30 @@ impl Hub {
             self.encoder.warm(&columns);
             for chunk in columns {
                 let key = (chunk.x, chunk.z);
-                if let Some(far) = self.far.as_mut() {
-                    far.changed(key.0, key.1);
-                }
                 let holders = self.holders(key);
                 if holders.is_empty() {
                     continue;
                 }
                 let body = self.encoder.body_in(chunk, world);
-                self.send_to_holders(&holders, &body);
-                if recording {
-                    // The prediction's replay excuses a client near the column: any of its blocks may have
-                    // changed, so the one nearest the player stands for them.
-                    for i in in_level(&holders) {
-                        self.guests.update(i, |g| {
-                            let Some(record) = g.record.as_deref_mut() else {
-                                return;
-                            };
-                            let slack = crate::lan::prediction::slack(std::array::from_fn(|i| {
-                                g.position[i] - g.previous_position[i]
-                            }));
-                            let column =
-                                |c: f64, at: i32| (c.floor() as i32).clamp(at * 16, at * 16 + 15);
-                            let at = [
-                                column(g.position[0], key.0),
-                                g.position[1].floor() as i32,
-                                column(g.position[2], key.1),
-                            ];
-                            if crate::lan::prediction::near(g.position, at, slack) {
-                                record.changed_near(self.ticks, at);
-                            }
-                        });
-                    }
-                }
+                let groups =
+                    if !chunk.connection_groups.is_empty() && self.has_group_holders(&holders) {
+                        encode_chunk_connection_groups(chunk)
+                    } else {
+                        Vec::new()
+                    };
+                self.send_to_holders_grouped(&holders, &body, &groups, Some(key));
             }
         }
-        let Some(log) = world.block_log.as_mut() else {
-            return;
-        };
+        let mut group_changes = world
+            .connection_group_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        let mut log = world
+            .block_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
         if !bulk.is_empty() {
             // (what changed in them one at a time went with them, but for one-shot fields: a chunk has none)
             log.retain(|p| {
@@ -164,50 +298,127 @@ impl Hub {
                     )
             });
         }
-        if log.is_empty() {
-            return;
-        }
-        let mut changes = std::mem::take(log);
-        changes.sort_unstable();
-        changes.dedup();
-        // The prediction's replay excuses a client that hadn't seen a change near it.
-        let recording = self.recording();
-        // Group by section.
-        let mut sections: std::collections::BTreeMap<(i32, i32, i32), Vec<(i32, i32, i32)>> =
-            Default::default();
-        for p in changes {
-            sections
-                .entry((p.0 >> 4, p.1 >> 4, p.2 >> 4))
-                .or_default()
-                .push(p);
-        }
-        for ((sx, sy, sz), positions) in sections {
-            if let Some(far) = self.far.as_mut() {
-                far.changed(sx, sz);
+        if !log.is_empty() {
+            log.sort_unstable();
+            log.dedup();
+            // Group by section.
+            let mut sections: std::collections::BTreeMap<(i32, i32, i32), Vec<(i32, i32, i32)>> =
+                Default::default();
+            for p in log {
+                sections
+                    .entry((p.0 >> 4, p.1 >> 4, p.2 >> 4))
+                    .or_default()
+                    .push(p);
             }
-            let holders = self.holders((sx, sz));
-            if holders.is_empty() {
-                continue;
+            for ((sx, sy, sz), positions) in sections {
+                let key = (sx, sz);
+                let holders = self.holders(key);
+                let mut entries = Vec::new();
+                if !group_changes.is_empty()
+                    || world
+                        .chunks
+                        .get(&key)
+                        .is_some_and(|c| !c.connection_groups.is_empty())
+                {
+                    let negotiated = self.has_group_holders(&holders);
+                    for &(x, y, z) in &positions {
+                        let changed = group_changes.remove(&(x, y, z));
+                        if negotiated {
+                            let group = world.connection_group(x, y, z);
+                            if changed || group.is_some() {
+                                entries.push(Entry {
+                                    cell: Cell::of([x, y, z]),
+                                    group,
+                                });
+                            }
+                        }
+                    }
+                }
+                if holders.is_empty() {
+                    continue;
+                }
+                let body = block_packet(world, (sx, sy, sz), &positions).encode();
+                let groups = (!entries.is_empty()).then(|| {
+                    encode_groups(Section {
+                        pos: [sx, sy, sz],
+                        entries,
+                    })
+                });
+                self.send_to_holders_grouped(&holders, &body, groups.as_slice(), None);
+                // Block entities with data the client shows.
+                for &(x, y, z) in &positions {
+                    let state = world.block(x, y, z).0;
+                    if !self
+                        .encoder
+                        .entity_matches(state, world.block_entities.get(&(x, y, z)))
+                    {
+                        continue;
+                    }
+                    // A decorated pot is no block entity: its tag is the chunk's saved one.
+                    let state = world.block(x, y, z).0;
+                    let tag = match world.block_entities.get(&(x, y, z)) {
+                        Some(entity) => self.encoder.change_tag((x, y, z), state, entity),
+                        None => world
+                            .chunks
+                            .get(&(x >> 4, z >> 4))
+                            .and_then(|c| crate::lan::chunks::pot_tag(c, (x, y, z))),
+                    };
+                    let Some(tag) = tag else {
+                        continue;
+                    };
+                    let Some(kind) = self.encoder.entity_type(state) else {
+                        continue;
+                    };
+                    let body = C::BlockEntityData(play::BlockEntityData {
+                        pos: [x, y, z],
+                        kind,
+                        tag,
+                    })
+                    .encode();
+                    self.send_to_holders(&holders, &body);
+                }
             }
-            let packet = if positions.len() == 1 {
-                let (x, y, z) = positions[0];
-                C::BlockUpdate(play::BlockUpdate {
+        }
+        if !group_changes.is_empty() {
+            // A block scheduled for the next broadcast is still held by the
+            // existing block log. Leave its group in the same dirty set.
+            let held: crate::fast_hash::FxHashSet<_> =
+                world.block_log_held.iter().copied().collect();
+            let mut sections: BTreeMap<Block, Vec<Block>> = BTreeMap::new();
+            group_changes.retain(|&(x, y, z)| {
+                let key = (x >> 4, z >> 4);
+                if bulk.binary_search(&key).is_ok() || !world.is_loaded_at(x, y, z) {
+                    return false;
+                }
+                if held.contains(&(x, y, z)) {
+                    return true;
+                }
+                sections
+                    .entry((key.0, y >> 4, key.1))
+                    .or_default()
+                    .push((x, y, z));
+                false
+            });
+            for (section @ (x, y, z), mut positions) in sections {
+                let mut holders = self.holders((x, z));
+                holders.retain(|&(i, _)| self.guests[i].negotiated_connection_groups());
+                if holders.is_empty() {
+                    continue;
+                }
+                positions.sort_unstable();
+                // Without a scheduled vanilla update, send the current state
+                // rather than risk decorating an older block on the client.
+                let body = block_packet(world, section, &positions).encode();
+                let groups = encode_groups(Section {
                     pos: [x, y, z],
-                    state: world.block(x, y, z).0 as i32,
-                })
-            } else {
-                C::SectionBlocksUpdate(play::SectionBlocksUpdate {
-                    section: [sx, sy, sz],
-                    changes: positions
-                        .iter()
-                        .map(|&(x, y, z)| {
-                            let state = i64::from(world.block(x, y, z).0);
-                            state << 12
-                                | i64::from(x & 15) << 8
-                                | i64::from(z & 15) << 4
-                                | i64::from(y & 15)
+                    entries: positions
+                        .into_iter()
+                        .map(|(x, y, z)| Entry {
+                            cell: Cell::of([x, y, z]),
+                            group: world.connection_group(x, y, z),
                         })
                         .collect(),
+<<<<<<< sync-sunrise-1
                 })
             };
             self.send_to_holders(&holders, &packet.encode());
@@ -250,23 +461,28 @@ impl Hub {
                 })
                 .encode();
                 self.send_to_holders(&holders, &body);
+=======
+                });
+                self.send_to_holders_grouped(&holders, &body, &[groups], None);
+>>>>>>> sunrise/main
             }
+        }
+        if let Some(log) = &mut world.connection_group_log {
+            *log = group_changes;
         }
     }
 
+    fn has_group_holders(&self, holders: &[(usize, Option<Level>)]) -> bool {
+        holders
+            .iter()
+            .any(|&(i, _)| self.guests[i].negotiated_connection_groups())
+    }
+
     /// [`Self::chunk_holders`] without the chunks they were sent.
-    fn holders(&self, key: (i32, i32)) -> Vec<(usize, Option<i32>)> {
+    fn holders(&self, key: (i32, i32)) -> Vec<(usize, Option<Level>)> {
         self.chunk_holders(key)
             .into_iter()
             .map(|(i, level, _)| (i, level))
             .collect()
     }
-}
-
-/// The holders in the level in place: the prediction's replay is of them only.
-fn in_level(holders: &[(usize, Option<i32>)]) -> impl Iterator<Item = usize> + '_ {
-    holders
-        .iter()
-        .filter(|(_, level)| level.is_none())
-        .map(|&(i, _)| i)
 }

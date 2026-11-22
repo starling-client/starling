@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord-ის მდიდარი სტატუსი",
+  "sunrise.extras.discord_presence.tooltip": "აჩვენებს Playing Sunrise-ს თქვენს Discord პროფილზე, სანამ Discord მუშაობს: მენიუები, ერთი მოთამაშე ან მრავალმოთამაშიანი, განზომილება და თამაშის დრო. არასოდეს მსოფლიოს სახელი ან სერვერის მისამართი."
+}

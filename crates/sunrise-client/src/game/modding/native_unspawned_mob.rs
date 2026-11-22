@@ -4,26 +4,27 @@
 //! (`UnspawnedMobEdits`), and the spawn group data at the API boundary
 //! (`SpawnGroup`).
 //!
-//! A lend copies the mob into `Game::lent_mobs` for the call and copies it back
-//! after, so it works where the caller holds the level shared (natural
-//! spawning's and the spawners' passes): reads and edits reach that copy only,
-//! never the level. A handle from a finished call, or another lend's, finds no
-//! copy and is refused with `Expired`.
+//! Standalone lends move a mob into `Game::lent_mobs` and restore it afterward.
+//! Pending-child lends resolve the action arena's actual object instead. Both
+//! paths share the editor below; neither writes a resident mob. Kind/position
+//! metadata is subject to the same lease checks as all other reads and writes.
 
 use super::Game;
 use super::api_values::TryIntoEngine;
 use super::living_attributes::{AttributeWrite, collect_equipment, write_unspawned_attribute};
-use sunrise_client::mobs::finalize::{Ageable, Group};
-use sunrise_client::mobs::{Mob, equine, llama, render, tame};
-use sunrise_client::text::Text;
-use sunrise_world::attribute_map::ValueKind;
-use sunrise_world::attributes::Operation;
 use mod_api::{
     AgeableGroup, AttributeModifier, AttributeOperation, EntityRef, EquipmentSlot, Identifier,
     ItemStack, SpawnGroup, TropicalVariant, UnspawnedMobEdits, UnspawnedMobError, UnspawnedMobRef,
     WorldEpoch,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{cell::RefCell, rc::Rc};
+use sunrise_client::mobs::finalize::{Ageable, Group};
+use sunrise_client::mobs::{Mob, equine, llama, render, tame};
+use sunrise_client::text::Text;
+use sunrise_mod_runtime::pending_children::PendingChildren;
+use sunrise_world::attribute_map::ValueKind;
+use sunrise_world::attributes::Operation;
 
 /// The most tags an entity holds (`Entity.addTag`).
 const MAX_TAGS: usize = 1024;
@@ -34,13 +35,18 @@ static NEXT_LEND: AtomicU64 = AtomicU64::new(1);
 
 /// The mobs lent to the hook calls running now, the latest last.
 #[derive(Default)]
-pub(in crate::game) struct LentMobs(Vec<Lent>);
+pub(in crate::game) struct LentMobs {
+    lends: Vec<Lent>,
+    pub(super) pending: Rc<RefCell<PendingChildren<super::native_pending_children::PendingMob>>>,
+    /// The hook whose listeners the innermost pending action is dispatching to, if any.
+    pub(super) hook: Rc<std::cell::Cell<Option<mod_api::HookId>>>,
+}
 
 #[cfg(test)]
 impl LentMobs {
     /// Whether no lend is open.
     pub(in crate::game) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.lends.is_empty()
     }
 }
 
@@ -51,6 +57,7 @@ struct Lent {
     kind: String,
     position: [f64; 3],
     mob: Option<Mob>,
+    valid: bool,
 }
 
 /// Ends a lend when it drops, after the call or while a listener's panic
@@ -66,8 +73,8 @@ impl Drop for Withdraw<'_, '_, '_> {
     fn drop(&mut self) {
         let lent = {
             let mut lent = self.game.lent_mobs.borrow_mut();
-            let at = lent.0.iter().rposition(|l| l.handle == self.handle);
-            at.map(|at| lent.0.remove(at))
+            let at = lent.lends.iter().rposition(|l| l.handle == self.handle);
+            at.map(|at| lent.lends.remove(at))
         };
         if let (
             Some(slot),
@@ -83,11 +90,18 @@ impl Drop for Withdraw<'_, '_, '_> {
 
 /// The editor a lend hands out: it reaches only the lent copies, through the
 /// game it was made from.
-struct Edits<'a, 'g> {
-    game: &'a Game<'g>,
+pub(super) struct Edits<'a, 'g> {
+    pub(super) game: &'a Game<'g>,
 }
 
 impl Game<'_> {
+    /// A nested pending action must expire standalone lends too, including their metadata.
+    pub(super) fn expire_standalone_lends(&self) {
+        for previous in &mut self.lent_mobs.borrow_mut().lends {
+            previous.valid = false;
+        }
+    }
+
     /// Lends `mob` (or, with `None`, only its `kind` and `position`) to `call`,
     /// then takes it back with whatever the call changed. `call` gets the
     /// handle and the editor; both are dead once it returns.
@@ -103,6 +117,14 @@ impl Game<'_> {
         mob: Option<&mut Mob>,
         call: impl FnOnce(UnspawnedMobRef, &dyn UnspawnedMobEdits) -> R,
     ) -> R {
+        self.expire_standalone_lends();
+        {
+            let lent = self.lent_mobs.borrow();
+            lent.pending
+                .borrow_mut()
+                .suspend()
+                .expect("pending lease budget exhausted");
+        }
         let handle =
             UnspawnedMobRef::new(self.lend_epoch(), NEXT_LEND.fetch_add(1, Ordering::Relaxed));
         let mob = mob.map(|slot| {
@@ -113,11 +135,12 @@ impl Game<'_> {
             Some((lent, slot)) => (Some(lent), Some(slot)),
             None => (None, None),
         };
-        self.lent_mobs.borrow_mut().0.push(Lent {
+        self.lent_mobs.borrow_mut().lends.push(Lent {
             handle,
             kind: kind.to_owned(),
             position,
             mob: lent,
+            valid: true,
         });
         let _withdraw = Withdraw {
             game: self,
@@ -141,35 +164,57 @@ impl Game<'_> {
     ) -> Result<T, UnspawnedMobError> {
         let lent = self.lent_mobs.borrow();
         read(
-            lent.0
-                .iter()
-                .find(|l| l.handle == handle)
+            lent.lends
+                .last()
+                .filter(|l| l.valid && l.handle == handle && handle.epoch() == self.lend_epoch())
                 .ok_or(UnspawnedMobError::Expired)?,
         )
     }
 
     /// Runs `read` on the mob the lend `handle` names.
-    fn with_lent_mob<T>(
+    pub(super) fn with_lent_mob<T>(
         &self,
         handle: UnspawnedMobRef,
         read: impl FnOnce(&Mob) -> Result<T, UnspawnedMobError>,
     ) -> Result<T, UnspawnedMobError> {
+        if let Some(key) = super::native_pending_children::pending_key(self, handle)? {
+            let arena = self.lent_mobs.borrow().pending.clone();
+            let borrowed = arena.borrow();
+            let child = borrowed
+                .get(key)
+                .map_err(super::native_pending_children::pending_error)?;
+            if child.dimension != self.dim {
+                return Err(UnspawnedMobError::Expired);
+            }
+            return read(&child.mob);
+        }
         self.with_lent(handle, |l| {
             read(l.mob.as_ref().ok_or(UnspawnedMobError::Unsupported)?)
         })
     }
 
     /// Runs `edit` on the mob the lend `handle` names.
-    fn edit_lent_mob<T>(
+    pub(super) fn edit_lent_mob<T>(
         &self,
         handle: UnspawnedMobRef,
         edit: impl FnOnce(&Game<'_>, &mut Mob) -> Result<T, UnspawnedMobError>,
     ) -> Result<T, UnspawnedMobError> {
+        if let Some(key) = super::native_pending_children::pending_key(self, handle)? {
+            let arena = self.lent_mobs.borrow().pending.clone();
+            let mut borrowed = arena.borrow_mut();
+            let child = borrowed
+                .get_mut(key)
+                .map_err(super::native_pending_children::pending_error)?;
+            if child.dimension != self.dim {
+                return Err(UnspawnedMobError::Expired);
+            }
+            return edit(self, &mut child.mob);
+        }
         let mut lent = self.lent_mobs.borrow_mut();
         let l = lent
-            .0
-            .iter_mut()
-            .find(|l| l.handle == handle)
+            .lends
+            .last_mut()
+            .filter(|l| l.valid && l.handle == handle && handle.epoch() == self.lend_epoch())
             .ok_or(UnspawnedMobError::Expired)?;
         edit(self, l.mob.as_mut().ok_or(UnspawnedMobError::Unsupported)?)
     }
@@ -179,6 +224,11 @@ impl Game<'_> {
         &self,
         mob: UnspawnedMobRef,
     ) -> Result<Identifier, UnspawnedMobError> {
+        if mob.pending_parts().is_some() {
+            return self.with_lent_mob(mob, |m| {
+                Identifier::parse(&m.kind.id).map_err(|_| UnspawnedMobError::Unsupported)
+            });
+        }
         self.with_lent(mob, |l| {
             Identifier::parse(&l.kind).map_err(|_| UnspawnedMobError::Unsupported)
         })
@@ -189,6 +239,9 @@ impl Game<'_> {
         &self,
         mob: UnspawnedMobRef,
     ) -> Result<[f64; 3], UnspawnedMobError> {
+        if mob.pending_parts().is_some() {
+            return self.with_lent_mob(mob, |m| Ok([m.position.x, m.position.y, m.position.z]));
+        }
         self.with_lent(mob, |l| Ok(l.position))
     }
 
@@ -243,7 +296,7 @@ impl Game<'_> {
         })
     }
 
-    /// The tags a mod gave the mob so far (`Entity.getTags`).
+    /// The tags a mod gave the mob so far (`Entity.entityTags()`).
     pub(super) fn unspawned_mob_tags(
         &self,
         mob: UnspawnedMobRef,
@@ -545,7 +598,10 @@ impl UnspawnedMobEdits for Edits<'_, '_> {
         mob: UnspawnedMobRef,
         name: Option<mod_api::Text>,
     ) -> Result<(), UnspawnedMobError> {
-        let name = name.try_into_engine(&())?;
+        let name = name
+            .as_ref()
+            .map(sunrise_client_lib::api_text::to_serialized_engine)
+            .transpose()?;
         self.game.edit_lent_mob(mob, |_, m| {
             m.custom_name = name.as_ref().map(Text::plain);
             m.custom_name_text = name;
@@ -582,10 +638,10 @@ mod tests {
     use super::super::creatures::SpawnSite;
     use super::super::native_entity_refs::tests::with_game;
     use super::*;
-    use sunrise_client::mobs::finalize::{self, Attr};
-    use sunrise_client::mobs::spawn_rules::Reason;
     use mod_api::{FinalizeSpawnEvent, Flow, Host};
     use std::sync::{Arc, Mutex};
+    use sunrise_client::mobs::finalize::{self, Attr};
+    use sunrise_client::mobs::spawn_rules::Reason;
 
     type Listen = dyn Fn(&dyn Host, &mut FinalizeSpawnEvent<'_>) -> Flow + Send + Sync;
     /// Answers `finalize_spawn` with the test's closure.
@@ -629,7 +685,7 @@ mod tests {
     /// What a listener edits through the editor is on the mob that joins the
     /// level, and the handle reads the edits back inside the call.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn edits_through_the_editor_are_on_the_mob_that_joins() {
         type Seen = (
             Result<Identifier, UnspawnedMobError>,
@@ -685,18 +741,19 @@ mod tests {
                     assert_eq!(m.custom_name.as_deref(), Some("Bacon"));
                     assert_eq!(game.tags_of(Target::Mob(spawned)), ["test:tagged"]);
                 });
+                // Item keys resolve with the game inside this scope, so the stack is read here.
+                let (kind, base, head) = seen.lock().unwrap().take().expect("the hook ran");
+                assert_eq!(kind, Ok(id("minecraft:pig")));
+                assert_eq!(base, Ok(20.0));
+                assert_eq!(head, Ok(Some(pumpkin())));
             },
         );
-        let (kind, base, head) = seen.lock().unwrap().take().expect("the hook ran");
-        assert_eq!(kind, Ok(id("minecraft:pig")));
-        assert_eq!(base, Ok(20.0));
-        assert_eq!(head, Ok(Some(pumpkin())));
     }
 
     /// A handle kept past its hook reads `Expired`, and the next call's
     /// editor refuses it the same way: it reaches only its own lend.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn a_handle_kept_past_its_hook_is_expired() {
         let kept: Arc<Mutex<Vec<UnspawnedMobRef>>> = Arc::default();
         let refused = Arc::new(Mutex::new(Vec::new()));
@@ -732,7 +789,7 @@ mod tests {
     /// `Flow::Cancel` skips finalization and keeps the listener's edits on
     /// the mob that still joins; `spawn_cancelled` adds no mob at all.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn both_cancels_keep_their_contract_with_edits() {
         let max_health = id("minecraft:max_health");
         listening(
@@ -779,7 +836,7 @@ mod tests {
     /// leaves there is what finalization reads: an ageable group whose later
     /// members are all babies makes this pig one.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn the_group_a_listener_leaves_is_what_finalization_reads() {
         with_game(|game| {
             let alone = spawn_pig(game).unwrap();
@@ -840,7 +897,7 @@ mod tests {
     /// and the mob in the caller's slot is the one that was lent, mod goal
     /// and all, not a copy (whose mod goal would have no goal) or a default.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_panicking_listener_still_ends_the_lend() {
         let installed = || vec![mod_api::ModEntry::new("kept-goal", Box::new(KeptGoalMod))];
         mod_platform::testing::with_mods(installed().into(), || {
@@ -870,7 +927,7 @@ mod tests {
                 }));
                 assert!(panicked.is_err());
                 assert!(
-                    game.lent_mobs.borrow().0.is_empty(),
+                    game.lent_mobs.borrow().lends.is_empty(),
                     "the lend is withdrawn"
                 );
                 let kept = kept.expect("the call ran");

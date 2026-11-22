@@ -72,6 +72,7 @@ fn reference(pad: &Padded, info: &[Info]) -> u64 {
 
 fn info(solid: bool) -> Info {
     Info {
+        air: false,
         solid,
         full: false,
         permeable: false,

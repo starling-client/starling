@@ -2,13 +2,12 @@
 //! hooks and the hit's level host: when each fires in a hit, and what a mod may change.
 use super::entity::damage_level_of;
 use super::native_entity_refs::tests::with_game;
-use sunrise_client::mobs::{Damage, DamageKind, Mob};
-use sunrise_core::{geometry::Vec3, random::RandomSource};
 use mod_api::{
-    self, Hand, Hooks, LevelRandomHost, LivingDamagePostEvent, LivingShieldBlockEvent,
-    LivingUseTotemEvent,
+    self, Hand, HitHost, Hooks, LivingDamagePostEvent, LivingShieldBlockEvent, LivingUseTotemEvent,
 };
 use std::sync::{Arc, Mutex};
+use sunrise_client::mobs::{Damage, DamageKind, Mob};
+use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 #[derive(Default)]
 struct Heard {
@@ -27,11 +26,7 @@ struct Probe(Arc<Mutex<Heard>>);
 
 #[mod_api::__subscriptions]
 impl Hooks for Probe {
-    fn living_shield_block(
-        &self,
-        level: &mut dyn LevelRandomHost,
-        event: &mut LivingShieldBlockEvent<'_>,
-    ) {
+    fn living_shield_block(&self, level: &mut dyn HitHost, event: &mut LivingShieldBlockEvent<'_>) {
         let mut heard = self.0.lock().unwrap();
         heard.order.push("shield");
         heard
@@ -45,12 +40,12 @@ impl Hooks for Probe {
             level.with_random(|random| random.next_int());
         }
     }
-    fn living_damage_post(&self, _: &mut dyn LevelRandomHost, _: &mut LivingDamagePostEvent<'_>) {
+    fn living_damage_post(&self, _: &mut dyn HitHost, _: &mut LivingDamagePostEvent<'_>) {
         self.0.lock().unwrap().order.push("post");
     }
     fn living_use_totem(
         &self,
-        _: &mut dyn LevelRandomHost,
+        _: &mut dyn HitHost,
         event: &mut LivingUseTotemEvent<'_>,
     ) -> mod_api::Flow {
         let mut heard = self.0.lock().unwrap();
@@ -87,13 +82,13 @@ fn zombie(game: &super::Game<'_>, id: u32) -> Mob {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_shield_hook_sees_the_hit_before_armor_and_enchantment_reductions() {
     let heard = heard(Heard::default(), |game| {
         let mut hit = zombie(game, 226001);
         // A mob's attack: its armor takes a share of the 10 later, in `actuallyHurt`.
         assert!(hit.damage(
-            damage_level_of!(game),
+            damage_level_of!(game, &sunrise_client::health::NO_ATTACK, no_push, None),
             10.0,
             Damage::mob(226002, [2.0, 0.0, 2.0])
         ));
@@ -103,7 +98,7 @@ fn the_shield_hook_sees_the_hit_before_armor_and_enchantment_reductions() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_blocked_damage_above_the_hit_is_clamped_to_it() {
     let setup = Heard {
         set_block: Some((true, 100.0)),
@@ -112,7 +107,11 @@ fn a_blocked_damage_above_the_hit_is_clamped_to_it() {
     let heard = heard(setup, |game| {
         let mut hit = zombie(game, 226003);
         let before = hit.health;
-        hit.damage(damage_level_of!(game), 6.0, Damage::of(DamageKind::Generic));
+        hit.damage(
+            damage_level_of!(game, &sunrise_client::health::NO_ATTACK, no_push, None),
+            6.0,
+            Damage::of(DamageKind::Generic),
+        );
         // All 6 are stopped, no more: the zombie lost nothing.
         assert_eq!(hit.health, before);
     });
@@ -120,7 +119,7 @@ fn a_blocked_damage_above_the_hit_is_clamped_to_it() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn setting_blocked_false_blocks_nothing() {
     let setup = Heard {
         set_block: Some((false, 6.0)),
@@ -129,14 +128,18 @@ fn setting_blocked_false_blocks_nothing() {
     let heard = heard(setup, |game| {
         let mut hit = zombie(game, 226004);
         let before = hit.health;
-        hit.damage(damage_level_of!(game), 6.0, Damage::of(DamageKind::Generic));
+        hit.damage(
+            damage_level_of!(game, &sunrise_client::health::NO_ATTACK, no_push, None),
+            6.0,
+            Damage::of(DamageKind::Generic),
+        );
         assert!(hit.health < before);
     });
     assert_eq!(heard.shield.len(), 1);
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_totem_hook_fires_after_the_health_is_gone_and_a_cancel_lets_the_mob_die() {
     let setup = Heard {
         cancel_totem: true,
@@ -146,12 +149,9 @@ fn the_totem_hook_fires_after_the_health_is_gone_and_a_cancel_lets_the_mob_die()
         let mut hit = zombie(game, 226005);
         hit.extra
             .set_main_hand(Some("minecraft:totem_of_undying".into()));
-        hit.damage(
-            damage_level_of!(game),
-            1000.0,
-            Damage::of(DamageKind::Generic),
-        );
-        assert_eq!(hit.health, 0.0);
+        game.mobs.push(hit);
+        assert!(game.mob_hits_mob(226005, 1000.0, Damage::of(DamageKind::Generic)));
+        assert_eq!(game.mobs[0].health, 0.0);
     });
     assert_eq!(
         heard.totem,
@@ -162,14 +162,14 @@ fn the_totem_hook_fires_after_the_health_is_gone_and_a_cancel_lets_the_mob_die()
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_uncanceled_totem_saves_the_mob() {
     let heard = heard(Heard::default(), |game| {
         let mut hit = zombie(game, 226006);
         hit.extra
             .set_main_hand(Some("minecraft:totem_of_undying".into()));
         hit.damage(
-            damage_level_of!(game),
+            damage_level_of!(game, &sunrise_client::health::NO_ATTACK, no_push, None),
             1000.0,
             Damage::of(DamageKind::Generic),
         );
@@ -177,12 +177,13 @@ fn an_uncanceled_totem_saves_the_mob() {
         assert!(hit.extra.main_hand_stack().is_none());
     });
     assert_eq!(heard.totem.len(), 1);
+    assert_eq!(heard.order, ["shield", "totem", "post"]);
 }
 
 /// The hit's level is the one the hit draws from: a mod's draw moves the world's random on by
 /// exactly one place.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_shield_hook_draws_from_the_hits_random() {
     let after = |random_draw| {
         let next = Mutex::new(0);
@@ -194,7 +195,11 @@ fn the_shield_hook_draws_from_the_hits_random() {
             |game| {
                 *game.world.random = sunrise_core::random::LegacyRandom::new(5);
                 let mut hit = zombie(game, 226007);
-                hit.damage(damage_level_of!(game), 1.0, Damage::of(DamageKind::Generic));
+                hit.damage(
+                    damage_level_of!(game, &sunrise_client::health::NO_ATTACK, no_push, None),
+                    1.0,
+                    Damage::of(DamageKind::Generic),
+                );
                 *next.lock().unwrap() = game.world.random.next_int();
             },
         );

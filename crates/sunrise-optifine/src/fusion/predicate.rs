@@ -1,6 +1,6 @@
 //! Connection predicates: whether a connecting texture joins the neighbour in one of the eight
 //! directions of its face. Each direction is tested on its own, and the true ones make the
-//! face's [`crate::ctm::connect`] mask.
+//! face's `sunrise_connected` mask.
 //!
 //! The predicate's block lists are `B`: [`BlockMatch`]es as parsed, which the game turns into
 //! whatever it tests block states with ([`Connection::map_blocks`]). What a test reads of the
@@ -9,7 +9,7 @@
 use super::kind;
 use crate::BlockMatch;
 use crate::cem::json::Json;
-use crate::ctm::connect::{D, DL, DR, L, R, U, UL, UR};
+use sunrise_connected::{D, DL, DR, L, R, U, UL, UR};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Connection<B = Vec<BlockMatch>> {

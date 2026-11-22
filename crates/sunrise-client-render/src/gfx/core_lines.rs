@@ -3,6 +3,7 @@
 //! or animates. Without one the outline draws natively (`vs_line` in terrain.wgsl).
 
 use crate::core_shader::{CoreProgram, Glue};
+use crate::polytone_post::ExpressionUniform;
 use glam::Mat4;
 
 /// The outline's edges (`pack_lines::layout`: start, end, ARGB colour and width per instance) as
@@ -27,22 +28,37 @@ pub(crate) const GLUE: Glue = Glue {
     vertex_id: "int(gl_VertexIndex)",
 };
 
-/// Each uniform block's offset in the one buffer (`core_shader::BLOCKS` order).
-const BLOCK_OFFSETS: [u64; 4] = [0, 256, 512, 768];
-const BLOCK_SIZES: [u64; 4] = [48, 64, 160, 48];
-
-pub(super) struct CoreLines {
+pub(crate) struct CoreLines {
     lines: wgpu::RenderPipeline,
     secondary: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
+    /// The packs' expression uniforms its stages read (`shader_modifiers`).
+    pub(super) extra: super::expression_blocks::ExpressionBlocks,
+}
+
+/// The packs' block outline on the renderer.
+impl super::Renderer {
+    /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`, with the
+    /// expression uniforms resolved for it) for the block outline, or the built-in one.
+    pub fn set_lines_shader(&mut self, program: Option<(&CoreProgram, &[ExpressionUniform])>) {
+        let format = self.output.frame.format;
+        // A pack's GLSL writes vanilla's gamma: a frame of linear light keeps the built-in one.
+        let program = program.filter(|_| !self.output.frame.linear_light);
+        self.core_lines = program.and_then(|(program, expressions)| {
+            CoreLines::new(&self.device, format, program, expressions)
+        });
+    }
 }
 
 impl CoreLines {
+    /// The pipelines for `program` with `expressions` (resolved when it loaded: the expression
+    /// blocks its stages read).
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         program: &CoreProgram,
+        expressions: &[ExpressionUniform],
     ) -> Option<Self> {
         // A pack's shader is untrusted: the backend failing to compile it is an internal error.
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -58,38 +74,21 @@ impl CoreLines {
         // Vanilla's LINES pipeline has no samplers: a pack that reads one is not used. The
         // blocks' sizes are checked here too, not at the draw: a pack's own larger block fails
         // in this scope.
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..4)
-            .map(|binding| wgpu::BindGroupLayoutEntry {
-                binding,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(BLOCK_SIZES[binding as usize]),
-                },
-                count: None,
-            })
-            .collect();
+        // Each block a stage reads is bound to the stages reading it: vanilla's four, then the
+        // expression uniforms.
+        let extra = super::expression_blocks::ExpressionBlocks::new(program, expressions, 1024);
+        let blocks = super::expression_blocks::vanilla_blocks(program);
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Resource pack lines uniforms"),
+            size: extra.size(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (entries, resources) = super::expression_blocks::bindings(&blocks, &extra, &uniform);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Resource pack lines"),
             entries: &entries,
         });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Resource pack lines uniforms"),
-            size: 1024,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let resources: Vec<wgpu::BindGroupEntry> = (0..4)
-            .map(|i| wgpu::BindGroupEntry {
-                binding: i as u32,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform,
-                    offset: BLOCK_OFFSETS[i],
-                    size: wgpu::BufferSize::new(BLOCK_SIZES[i]),
-                }),
-            })
-            .collect();
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Resource pack lines"),
             layout: &layout,
@@ -149,11 +148,20 @@ impl CoreLines {
             secondary,
             group,
             uniform,
+            extra,
         })
     }
 
-    pub(super) fn uniform(&self) -> &wgpu::Buffer {
-        &self.uniform
+    /// Uploads the frame's blocks: `data` (the pipeline's own, [`uniforms`]), then its Polytone
+    /// blocks (the frame's `PolyGlobals` and each expression uniform's value).
+    pub(super) fn upload(
+        &self,
+        uploads: &mut super::upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        data: &[u8],
+    ) {
+        uploads.buffer(encoder, &self.uniform, 0, data);
+        self.extra.upload(uploads, encoder, &self.uniform);
     }
 
     /// Draw `edges` (instances of the outline buffer bound at slot 0) with the pack's shader:
@@ -187,10 +195,10 @@ pub(super) fn uniforms(
     layering: f32,
     fog_color: [f32; 4],
     fog: [f32; 6],
-) -> Vec<u8> {
+) -> [u8; 1024] {
     let projection = jitter * view.projection * pose;
     let model_view = view.view * Mat4::from_scale(glam::Vec3::splat(layering));
-    let mut data = vec![0f32; 256];
+    let mut data = [0f32; 256];
     data[64..80].copy_from_slice(&projection.to_cols_array());
     let transforms = 128;
     data[transforms..transforms + 16].copy_from_slice(&model_view.to_cols_array());
@@ -198,7 +206,8 @@ pub(super) fn uniforms(
     data[transforms + 32..transforms + 36].fill(1.0);
     data[192..196].copy_from_slice(&fog_color);
     data[196..202].copy_from_slice(&fog);
-    let mut bytes: Vec<u8> = bytemuck::cast_slice(&data).to_vec();
+    let mut bytes = [0u8; 1024];
+    bytes.copy_from_slice(bytemuck::cast_slice(&data));
     bytes[..48].copy_from_slice(&globals);
     bytes
 }
@@ -286,17 +295,34 @@ mod tests {
     }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&Default::default())).ok()
+        let (_, device, queue) = crate::gfx::test_gpu::optional_device()?;
+        Some((device, queue))
     }
 
     /// One edge across the middle of a 64 by 64 target, 4 pixels wide, blue (ARGB `ff0000ff`),
     /// at `GameTime` 0.25, drawn with `program`: the RGBA rows read back.
     fn draw_edge(device: &wgpu::Device, queue: &wgpu::Queue, program: &CoreProgram) -> Vec<u8> {
+        draw_edge_with(device, queue, program, &[], None)
+    }
+
+    /// [`draw_edge`] with `expressions` evaluated and uploaded as in a frame (`CoreLines::upload`),
+    /// beside `poly_globals`.
+    fn draw_edge_with(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        program: &CoreProgram,
+        expressions: &[ExpressionUniform],
+        poly_globals: Option<&super::super::expression_blocks::PolyGlobalsBytes>,
+    ) -> Vec<u8> {
         const SIZE: u32 = 64;
-        let lines = CoreLines::new(device, wgpu::TextureFormat::Rgba8Unorm, program)
-            .expect("the pack's pipelines");
+        let mut lines = CoreLines::new(
+            device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            program,
+            expressions,
+        )
+        .expect("the pack's pipelines");
+        lines.extra.evaluate(&Default::default());
         let target = |format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
@@ -340,7 +366,12 @@ mod tests {
             [0.0; 4],
             [0.0; 6],
         );
-        queue.write_buffer(lines.uniform(), 0, &data);
+        let mut uploads = super::super::upload::Uploads::new(device);
+        let mut upload = device.create_command_encoder(&Default::default());
+        lines.extra.set_globals(poly_globals);
+        lines.upload(&mut uploads, &mut upload, &data);
+        uploads.finish(&upload);
+        queue.submit([upload.finish()]);
         let mut edge = [-1.0, 0.0, -2.0, 1.0, 0.0, -2.0, 0.0, 4.0f32];
         edge[6] = f32::from_bits(0xff00_00ff);
         let edges = wgpu::util::DeviceExt::create_buffer_init(
@@ -404,6 +435,109 @@ mod tests {
         read.slice(..).get_mapped_range().unwrap().to_vec()
     }
 
+    /// A pack's outline reading an expression uniform (`shader_modifiers`) in its fragment stage
+    /// gets the value the frame gives it, in a block of its own after the pipeline's, uploaded
+    /// with the pipeline's blocks (`CoreLines::upload`): 0.2, which a unorm byte holds (51).
+    #[test]
+    #[ignore = "daily"]
+    fn a_pack_outline_reads_its_expression_uniform() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU: skipping");
+            return;
+        };
+        let fsh = "#version 330\nlayout(std140) uniform Tint {\n    float value;\n};\n\
+                   layout(location = 2) in vec4 vertexColor;\n\
+                   layout(location = 0) out vec4 fragColor;\n\
+                   void main() {\n    fragColor = vec4(value, 0.0, vertexColor.b, 1.0);\n}\n";
+        let program = crate::core_shader::translate_core_with(
+            LINES_VSH,
+            fsh,
+            &[],
+            &include,
+            &GLUE,
+            &|block| block == "Tint",
+        )
+        .expect("the shaders translate");
+        let id = super::super::expression_blocks::LINES[0];
+        let modifiers = modifiers(r#"{"Tint": "0.2"}"#);
+        let expressions = modifiers.resolve((id, id), &program, &[]).unwrap();
+        let fragment = wgpu::ShaderStages::FRAGMENT;
+        assert_eq!(
+            expressions
+                .iter()
+                .map(|e| (&*e.name, e.stages))
+                .collect::<Vec<_>>(),
+            [("Tint", fragment)]
+        );
+        let pixels = draw_edge_with(&device, &queue, &program, &expressions, None);
+        let middle = &pixels[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 4];
+        assert_eq!(middle, [51, 0, 255, 255]);
+    }
+
+    /// A pack's outline importing Polytone's built-in `polytone_globals.glsl` reads the
+    /// `PolyGlobals` the frame gives, beside its expression uniform: the player's block height
+    /// (64) in red, `Tint` (its file's `0.1 * 2`, evaluated: 51) in green; zeros when none is
+    /// given.
+    #[test]
+    #[ignore = "daily"]
+    fn a_pack_outline_reads_poly_globals() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU: skipping");
+            return;
+        };
+        let fsh = "#version 330\n#moj_import <polytone_globals.glsl>\n\
+                   layout(std140) uniform Tint {\n    float value;\n};\n\
+                   layout(location = 2) in vec4 vertexColor;\n\
+                   layout(location = 0) out vec4 fragColor;\n\
+                   void main() {\n    fragColor = vec4(float(PolyPlayerBlockPos.y) / 255.0, value, \
+                   vertexColor.b, 1.0);\n}\n";
+        let with_globals = |id: &str| {
+            include(id).or_else(|| {
+                sunrise_polytone::globals::is_include(id)
+                    .then(|| sunrise_polytone::globals::GLSL.to_owned())
+            })
+        };
+        let globals = sunrise_polytone::globals::BLOCK;
+        let program = crate::core_shader::translate_core_with(
+            LINES_VSH,
+            fsh,
+            &[],
+            &with_globals,
+            &GLUE,
+            &|block| block == "Tint" || block == globals,
+        )
+        .expect("the shaders translate");
+        let id = super::super::expression_blocks::LINES[0];
+        let modifiers = modifiers(r#"{"Tint": "0.1 * 2"}"#);
+        let expressions = modifiers.resolve((id, id), &program, &[globals]).unwrap();
+        let bytes = sunrise_polytone::globals::Globals {
+            player: [0.5, 64.9, 0.5],
+            ..Default::default()
+        }
+        .std140();
+        let middle = |given| {
+            let pixels = draw_edge_with(&device, &queue, &program, &expressions, given);
+            pixels[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 4].to_vec()
+        };
+        assert_eq!(middle(Some(&bytes)), [64, 51, 255, 255]);
+        assert_eq!(middle(None), [0, 51, 255, 255]);
+    }
+
+    /// The packs' `shader_modifiers/core/rendertype_lines.json`, `file`.
+    fn modifiers(file: &str) -> crate::polytone_post::ShaderModifiers {
+        let pack = sunrise_assets::resource_source::ResourceSource::indexed(
+            [(
+                "assets/minecraft/polytone/shader_modifiers/core/rendertype_lines.json".to_owned(),
+                sunrise_assets::resource_source::Resource::bytes(file.as_bytes().to_vec()),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        crate::polytone_post::ShaderModifiers::read(&pack, Default::default())
+    }
+
     /// The stroke's middle takes the pack's colour (`GameTime` red, its inverse green, the
     /// vertex colour's blue); a pixel far from it stays clear.
     fn assert_pack_coloured(pixels: &[u8]) {
@@ -420,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_pack_fragment_shader_colours_the_outline() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
@@ -434,6 +569,7 @@ mod tests {
     /// A pack's own include with a bigger block than vanilla's (an older `DynamicTransforms`)
     /// is not used, and the outline draws natively, rather than failing at the draw.
     #[test]
+    #[ignore = "daily"]
     fn a_pack_block_bigger_than_vanillas_falls_back() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
@@ -445,12 +581,13 @@ mod tests {
         };
         let program = crate::core_shader::translate_core(LINES_VSH, RGB_FSH, &[], &bigger, &GLUE)
             .expect("the shaders translate");
-        assert!(CoreLines::new(&device, wgpu::TextureFormat::Rgba8Unorm, &program).is_none());
+        assert!(CoreLines::new(&device, wgpu::TextureFormat::Rgba8Unorm, &program, &[]).is_none());
     }
 
     /// Vanilla's own `rendertype_lines.vsh` (from the prepared resources) under a pack's
     /// fragment shader.
     #[test]
+    #[ignore = "daily"]
     fn vanillas_lines_vertex_shader_takes_a_packs_fragment_shader() {
         let _gpu = crate::gfx::test_gpu::lock();
         let root = std::env::var_os("SUNRISE_RESOURCES")
@@ -460,15 +597,10 @@ mod tests {
                     .join("../../.local/sunrise-client")
                     .join(sunrise_core::VANILLA_VERSION)
             });
-        let Ok(vertex) = std::fs::read_to_string(
+        let vertex = std::fs::read_to_string(
             root.join("assets/minecraft/shaders/core/rendertype_lines.vsh"),
-        ) else {
-            eprintln!(
-                "skipping resource-backed lines shader check: {}",
-                root.display()
-            );
-            return;
-        };
+        )
+        .expect("prepared vanilla rendertype_lines.vsh");
         let include = |id: &str| {
             let (namespace, path) = id.split_once(':')?;
             std::fs::read_to_string(root.join(format!("assets/{namespace}/{path}"))).ok()
@@ -484,6 +616,6 @@ mod tests {
             return;
         };
         assert_pack_coloured(&draw_edge(&device, &queue, &program));
-        assert!(CoreLines::new(&device, wgpu::TextureFormat::Rgba8Unorm, &vanilla).is_some());
+        assert!(CoreLines::new(&device, wgpu::TextureFormat::Rgba8Unorm, &vanilla, &[]).is_some());
     }
 }

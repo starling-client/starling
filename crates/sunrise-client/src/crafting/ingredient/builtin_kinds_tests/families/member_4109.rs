@@ -26,6 +26,13 @@ fn tooltip_style_recipe_decodes_identifiers_and_matches_borrowed_values() {
         (serde_json::json!("a:b:c"), false),
         (serde_json::json!(3), false),
     ] {
+        if !valid {
+            super::decoder_contracts::assert_malformed_decoder_refuses_load(
+                &items,
+                serde_json::json!({"minecraft:tooltip_style":value}),
+            );
+            continue;
+        }
         let source = serde_json::json!({
             "type":"minecraft:crafting_shapeless",
             "ingredients":[{"type":"neoforge:components","items":"minecraft:stone",
@@ -40,10 +47,7 @@ fn tooltip_style_recipe_decodes_identifiers_and_matches_borrowed_values() {
             &load,
         )
         .unwrap();
-        assert_eq!(recipes.crafting.len(), usize::from(valid), "{value}");
-        if !valid {
-            continue;
-        }
+        assert_eq!(recipes.crafting.len(), 1, "{value}");
         let crate::crafting::Recipe::Shapeless { ingredients, .. } = &recipes.crafting[0].1 else {
             panic!("expected shapeless recipe");
         };
@@ -144,29 +148,24 @@ fn rollup_boundary_and_absence_4109() {
         let ingredient = serde_json::json!({"type":"neoforge:components","items":"minecraft:stone","components":{"minecraft:tooltip_style":value}});
         let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
         assert!(error.contains("minecraft:tooltip_style"), "{error}");
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            ingredient["components"].clone(),
+        );
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
         let recipes = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
-            vec![
-                ("fixture:invalid_tooltip_style".into(), recipe(ingredient)),
-                (
-                    "fixture:valid".into(),
-                    recipe(serde_json::json!("minecraft:stone")),
-                ),
-            ],
+            vec![(
+                "fixture:valid".into(),
+                recipe(serde_json::json!("minecraft:stone")),
+            )],
             &load,
         )
         .unwrap();
         assert_eq!(recipes.crafting.len(), 1);
-        assert!(!recipes.recipe_matches(
-            &context,
-            "fixture:invalid_tooltip_style",
-            &[Some(ItemStack::new("minecraft:stone", 1))],
-            1
-        ));
         assert!(recipes.recipe_matches(
             &context,
             "fixture:valid",

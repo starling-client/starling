@@ -27,6 +27,8 @@ pub enum MoveDecision {
 /// module.
 #[derive(Clone, Copy, Debug)]
 pub struct MoveGate {
+    /// The entity the invocation moves.
+    mover: u32,
     cause: MoverType,
     requested: Vec3,
     decision: MoveDecision,
@@ -37,6 +39,7 @@ impl MoveGate {
     /// it at its move moment.
     pub const fn new() -> Self {
         Self {
+            mover: 0,
             cause: MoverType::SelfMovement,
             requested: Vec3::ZERO,
             decision: MoveDecision::Run(Vec3::ZERO),
@@ -46,7 +49,8 @@ impl MoveGate {
     /// Arm the gate for one move invocation: this cause asked for this
     /// movement. The client's `move_gate::arm` is the one door that calls
     /// this; from PR 1b it fires the `entity_move` hook first.
-    pub fn arm(&mut self, cause: MoverType, movement: Vec3) {
+    pub fn arm(&mut self, mover: u32, cause: MoverType, movement: Vec3) {
+        self.mover = mover;
         self.cause = cause;
         self.requested = movement;
         self.decision = MoveDecision::Run(movement);
@@ -69,6 +73,11 @@ impl MoveGate {
             MoveDecision::Run(delta) => delta != self.requested,
             MoveDecision::Skip => true,
         }
+    }
+
+    /// The entity the gate was armed for: the one whose collision the move resolves.
+    pub fn mover(&self) -> u32 {
+        self.mover
     }
 
     /// The cause the gate was armed with.

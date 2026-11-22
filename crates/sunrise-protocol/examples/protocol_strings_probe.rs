@@ -1,10 +1,10 @@
 //! The packet string parity corpus, without a connection or game resources.
-use sunrise_protocol::buf::Reader;
 use std::{
     error::Error,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_protocol::buf::Reader;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().collect();

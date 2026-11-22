@@ -40,6 +40,10 @@ impl GuestList {
             guest.residency.retire();
             return false;
         }
+        if guest.respawning {
+            guest.residency.retire();
+            return false;
+        }
         let uuid = crate::lan::playerdata::uuid_ints(guest.uuid);
         let source = crate::join_seq::residency::Source::Guest(guest.conn);
         if guest.residency.identity().is_some_and(|identity| {
@@ -72,6 +76,7 @@ impl GuestList {
             .as_ref()
             .map(|(_, key)| key(&self.rows[index].dimension));
         let released = self.rows[index].released;
+        let respawning = self.rows[index].respawning;
         let edit = Edit {
             list: self,
             index,
@@ -79,6 +84,7 @@ impl GuestList {
             registration,
             dimension,
             released,
+            respawning,
         };
         update(&mut edit.list.rows[index])
     }
@@ -105,34 +111,49 @@ impl GuestList {
     pub(super) fn tracking_viewers<'a>(
         &'a mut self,
         visible: impl Fn(&Guest) -> bool,
-        outputs: impl IntoIterator<Item = (&'a mut Vec<super::Body>, Option<&'a mut Vec<[f64; 3]>>)>,
+        outputs: impl IntoIterator<Item = &'a mut Vec<super::Body>>,
         take_moved: bool,
-    ) -> Vec<super::entity::Viewer<'a>> {
+    ) -> (
+        Vec<super::entity::Viewer<'a>>,
+        crate::fast_hash::FxHashMap<i32, (u128, &'a sunrise_mod_runtime::attachments::Attachments)>,
+    ) {
         self.tracking_viewers_and_views(visible, outputs, take_moved, ("", &mut []))
     }
 
     /// [`Self::tracking_viewers`], then the clients that view level `views.0` from another
     /// (#3716, `viewed_levels::entities`), each with its view's tracker, chunks and areas and
-    /// one of `views.1`, in the guests' order.
+    /// one of `views.1`, in the guests' order. Also borrows each guest's non-empty attachments
+    /// map by entity id so tracked players pair with their `Holder::Player` snapshot lazily.
     pub(super) fn tracking_viewers_and_views<'a>(
         &'a mut self,
         visible: impl Fn(&Guest) -> bool,
-        outputs: impl IntoIterator<Item = (&'a mut Vec<super::Body>, Option<&'a mut Vec<[f64; 3]>>)>,
+        outputs: impl IntoIterator<Item = &'a mut Vec<super::Body>>,
         take_moved: bool,
         (dimension, views): (&str, &'a mut [Vec<super::Body>]),
-    ) -> Vec<super::entity::Viewer<'a>> {
+    ) -> (
+        Vec<super::entity::Viewer<'a>>,
+        crate::fast_hash::FxHashMap<i32, (u128, &'a sunrise_mod_runtime::attachments::Attachments)>,
+    ) {
         use super::viewed_levels::entities::tracks_view;
         let viewing = !views.is_empty();
         let (mut outputs, mut views) = (outputs.into_iter(), views.iter_mut());
         let mut viewers = Vec::new();
+        let mut player_attachments = crate::fast_hash::FxHashMap::default();
         for g in self.rows.iter_mut() {
             let (spectator, sunrise) = (g.spectator(), g.is_sunrise());
-            let (chunks, sources, tracker, out, gone, moved) = if visible(g) {
-                let Some((out, gone)) = outputs.next() else {
+            let is_visible = visible(g);
+            let general_entity = is_visible && g.negotiated_general_entity();
+            let attachment_sender =
+                (is_visible && g.negotiated_attachment_sync()).then(|| g.sender.clone());
+            if g.attachments.has_index_entries() {
+                player_attachments.insert(g.entity_id, (g.uuid, &*g.attachments));
+            }
+            let (chunks, sources, tracker, out, moved) = if is_visible {
+                let Some(out) = outputs.next() else {
                     continue;
                 };
                 let moved = take_moved && std::mem::take(&mut g.moved);
-                (&g.sent_chunks, None, &mut g.tracker, out, gone, moved)
+                (&g.sent_chunks, None, &mut g.tracker, out, moved)
             } else if viewing && tracks_view(g, dimension) {
                 let (Some(out), Some(view)) = (views.next(), g.viewed.views.get_mut(dimension))
                 else {
@@ -144,7 +165,6 @@ impl GuestList {
                     Some(&view.sources[..]),
                     &mut view.tracker,
                     out,
-                    None,
                     true,
                 )
             } else {
@@ -155,6 +175,8 @@ impl GuestList {
                 spectator,
                 permission: g.permission,
                 sunrise,
+                general_entity,
+                attachment_sender,
                 moved,
                 position: g.position,
                 view_distance: g.view_distance,
@@ -162,10 +184,9 @@ impl GuestList {
                 sources,
                 tracker,
                 out,
-                gone,
             });
         }
-        viewers
+        (viewers, player_attachments)
     }
 
     /// Borrow only queued packets, without exposing the guest's indexed fields.
@@ -377,6 +398,7 @@ struct Edit<'a> {
     registration: Option<sunrise_mod_runtime::attachments::AttachmentRegistration>,
     dimension: Option<mod_api::DimensionKey>,
     released: bool,
+    respawning: bool,
 }
 fn index_fields(guest: &Guest) -> (u32, u128, i32, bool) {
     (
@@ -420,6 +442,7 @@ impl Drop for Edit<'_> {
         if identity_changed
             || dimension != self.dimension
             || self.list.rows[self.index].released != self.released
+            || self.list.rows[self.index].respawning != self.respawning
         {
             self.list.bind_guest(self.index);
         }
@@ -473,8 +496,8 @@ mod tests {
 
     #[test]
     fn canonical_attachment_retirement_does_not_wait_for_removed_records_or_clones() {
-        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
         use std::sync::{Arc, Mutex};
+        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
 
         for action in ["remove", "replace", "retain", "clear", "drop", "update"] {
             let index = Arc::new(Mutex::new(AttachmentIndex::default()));
@@ -524,8 +547,8 @@ mod tests {
 
     #[test]
     fn identity_edits_retire_only_the_retained_old_attachment_registration() {
-        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
         use std::sync::{Arc, Mutex};
+        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
         for field in ["connection", "uuid", "entity"] {
             for replace_registration in [false, true] {
                 let index = Arc::new(Mutex::new(AttachmentIndex::default()));
@@ -576,8 +599,8 @@ mod tests {
 
     #[test]
     fn displaced_updates_retire_retained_owners() {
-        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
         use std::sync::{Arc, Mutex};
+        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
 
         for action in ["replace", "swap", "capture", "connection", "unwind"] {
             let index = Arc::new(Mutex::new(AttachmentIndex::default()));
@@ -619,8 +642,8 @@ mod tests {
 
     #[test]
     fn a_save_take_moves_canonical_binding_and_destruction_retires_it() {
-        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
         use std::sync::{Arc, Mutex};
+        use sunrise_mod_runtime::attachments::{Holder, index::AttachmentIndex};
 
         let index = Arc::new(Mutex::new(AttachmentIndex::default()));
         let key = ("guest_test".into(), "value".into());

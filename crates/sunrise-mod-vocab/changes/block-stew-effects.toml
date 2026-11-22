@@ -1,0 +1,3 @@
+ids = ["type:Block", "type:Block.suspicious_stew_effects"]
+why = "Blocks can now declare the ordered mob effects that their block items supply to Creative's suspicious stew generator and to brown mooshrooms. The optional field changes the native Block Wire layout."
+migrate = "Rebuild native mods against the new layout. Existing source does not need to set the field; None declares no effect source. JSON without the field continues to declare none."

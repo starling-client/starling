@@ -6,10 +6,10 @@
 //! half's, or "single".
 //!
 //! usage: chest_pair_fixture INPUT OUTPUT
-use sunrise_client::containers::{ChestHalf, is_chest_block};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
+use sunrise_client::containers::{ChestHalf, is_chest_block};
 
 /// `minecraft:chest[facing=north,type=left]` as its name and properties.
 fn parse(state: &str) -> Option<(&str, BTreeMap<&str, &str>)> {

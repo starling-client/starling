@@ -190,7 +190,14 @@ fn save_cycle(species: crate::mobs::Species, id: &str, missing: bool) {
         ProfessionState::Registered { .. }
     ));
     let expected_offers = mob.extra.trade.as_ref().unwrap().offers.clone();
-    let first = mob_to_nbt(&mob, [7, 8, 9, 10], None, None, |_| None);
+    let first = mob_to_nbt(
+        &mob,
+        [7, 8, 9, 10],
+        None,
+        None,
+        |_| None,
+        &Default::default(),
+    );
     let name = |tag: &sunrise_core::nbt::Tag| {
         crate::save::text(
             tag.get("VillagerData")
@@ -217,7 +224,14 @@ fn save_cycle(species: crate::mobs::Species, id: &str, missing: bool) {
     assert_eq!(loaded.extra.trade.as_ref().unwrap().offers, expected_offers);
     assert_eq!(loaded.extra.trade.as_ref().unwrap().xp, 37);
     assert_eq!(loaded.extra.villager_level, 3);
-    let second = mob_to_nbt(&loaded, [7, 8, 9, 10], Some(&first), None, |_| None);
+    let second = mob_to_nbt(
+        &loaded,
+        [7, 8, 9, 10],
+        Some(&first),
+        None,
+        |_| None,
+        &Default::default(),
+    );
     assert_eq!(name(&second), "test:engineer");
     assert_eq!(second.get("Offers"), first.get("Offers"));
     let mut restored = mob_from_nbt(&second, &kinds, 73, None).unwrap();

@@ -41,16 +41,17 @@ pub fn loaded() -> Option<Vec<ModRecord>> {
     LOADED.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The code mods a level.dat's root lists; `None` without the list (vanilla, or saved before
-/// Sunrise wrote it).
+/// The code mods a level.dat's root lists; `None` without the list or with an empty one
+/// (vanilla, saved before Sunrise wrote it, or saved with no code mods).
 fn saved_code(data: &Tag) -> Option<Vec<ModRecord>> {
     let Some(Tag::List(mods)) = data.get("fml").and_then(|fml| fml.get("LoadingModList")) else {
         return None;
     };
-    Some(records(mods))
+    let records = records(mods);
+    (!records.is_empty()).then_some(records)
 }
 
-/// The code mods, then the content mods, a level.dat's root lists; `None` without either list.
+/// The code mods, then the content mods, a level.dat's root lists; `None` without either list, or when both are empty (an empty list reads as absent).
 pub(super) fn saved(data: &Tag) -> Option<Vec<ModRecord>> {
     let content = sunrise_records(data).content_mods;
     match (saved_code(data), content) {
@@ -80,7 +81,8 @@ pub(super) fn list(mods: &[ModRecord]) -> Tag {
 
 /// Puts the loaded mods' list into `data`'s `fml`, in place of the one there, keeping the rest
 /// of `fml` (left as it is while the loaded mods aren't known), and Sunrise's records into its
-/// `sunrise` compound.
+/// `sunrise` compound. An empty loaded list, or empty content-mod and block-namespace records,
+/// writes no empty tag: a vanilla-only world stays without `fml` and `sunrise`.
 pub(super) fn write(data: &mut Tag) {
     if let Some(mods) = loaded() {
         write_list(data, &mods);
@@ -88,8 +90,28 @@ pub(super) fn write(data: &mut Tag) {
     write_sunrise(data);
 }
 
-/// `write` with the list given.
+/// Remove `key` from a compound tag.
+fn take(tag: &mut Tag, key: &str) {
+    if let Tag::Compound(map) = tag {
+        map.remove(&key.into());
+    }
+}
+/// `write` with the list given. An empty list removes `LoadingModList`, and removes `fml`
+/// altogether when nothing else remains in it, so a world with no code mods writes no empty
+/// record.
 fn write_list(data: &mut Tag, mods: &[ModRecord]) {
+    if mods.is_empty() {
+        let Some(Tag::Compound(mut fml)) = data.get("fml").cloned() else {
+            return;
+        };
+        fml.remove(&"LoadingModList".into());
+        if fml.is_empty() {
+            take(data, "fml");
+        } else {
+            put(data, "fml", Tag::Compound(fml));
+        }
+        return;
+    }
     let mut fml = compound_or_empty(data.get("fml").cloned());
     put(&mut fml, "LoadingModList", list(mods));
     put(data, "fml", fml);
@@ -110,13 +132,14 @@ pub(super) fn mismatches<'a>(
             }
             let current = loaded.iter().find(|m| m.id == saved.id);
             let differs = current.is_none_or(|current| {
-                match (
-                    sunrise_mod_package::dependencies::parse_version(&saved.version),
-                    sunrise_mod_package::dependencies::parse_version(&current.version),
-                ) {
-                    (Ok(saved), Ok(current)) => saved != current,
-                    _ => saved.version != current.version,
-                }
+                // A save is outside data: a version it holds that isn't semver (or a loaded mod
+                // whose version wasn't known) differs, unless it is the very same text.
+                let parse = |v: &str| sunrise_mod_package::manifest::parse_version(v).ok();
+                saved.version != current.version
+                    && match (parse(&saved.version), parse(&current.version)) {
+                        (Some(saved), Some(current)) => saved != current,
+                        _ => true,
+                    }
             });
             differs.then(|| mod_api::ModMismatch {
                 mod_id: saved.id.clone(),
@@ -194,7 +217,8 @@ pub fn build_commit() -> Option<&'static str> {
 }
 
 /// What a `level.dat`'s `sunrise` compound says; each `None` when the world has none (vanilla,
-/// or saved before Sunrise wrote it).
+/// saved before Sunrise wrote it, or saved with an empty list, which is read the same as a
+/// missing tag).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SunriseRecords {
     pub content_mods: Option<Vec<ModRecord>>,
@@ -210,16 +234,20 @@ pub fn sunrise_records(root: &Tag) -> SunriseRecords {
         return SunriseRecords::default();
     };
     let content_mods = match compound.get(CONTENT_MODS) {
-        Some(Tag::List(mods)) => Some(records(mods)),
+        Some(Tag::List(mods)) => {
+            let records = records(mods);
+            (!records.is_empty()).then_some(records)
+        }
         _ => None,
     };
     let block_namespaces = match compound.get(BLOCK_NAMESPACES) {
-        Some(Tag::List(namespaces)) => Some(
-            namespaces
+        Some(Tag::List(namespaces)) => {
+            let namespaces: Vec<String> = namespaces
                 .iter()
                 .filter_map(|namespace| text(Some(namespace)))
-                .collect(),
-        ),
+                .collect();
+            (!namespaces.is_empty()).then_some(namespaces)
+        }
         _ => None,
     };
     let build_commit = match compound.get(BUILD_COMMIT) {
@@ -242,7 +270,9 @@ pub fn sunrise_records(root: &Tag) -> SunriseRecords {
 /// Puts what this process loaded into `root`'s `sunrise` compound, keeping its other keys: the
 /// content mods and block namespaces once startup said them (left as they are before), and this
 /// build's commit (removed when the build does not know it, so the marker never names an
-/// earlier build than the last one to save).
+/// earlier build than the last one to save). Empty lists are omitted; the compound itself is
+/// omitted when it would have no content mods, no block namespaces, and no other leftover keys
+/// (a vanilla-only world writes no `sunrise` tag, even when this build knows its commit).
 fn write_sunrise(root: &mut Tag) {
     write_with(
         root,
@@ -260,20 +290,34 @@ fn write_with(
     commit: Option<&str>,
 ) {
     let mut compound = compound_or_empty(root.get(COMPOUND).cloned());
-    if let Some(content) = content {
-        put(&mut compound, CONTENT_MODS, list(content));
+    match content {
+        Some([]) => take(&mut compound, CONTENT_MODS),
+        Some(content) => put(&mut compound, CONTENT_MODS, list(content)),
+        None => {}
     }
-    if let Some(namespaces) = namespaces {
-        let list = namespaces.iter().map(|namespace| string(namespace));
-        put(&mut compound, BLOCK_NAMESPACES, Tag::List(list.collect()));
+    match namespaces {
+        Some([]) => take(&mut compound, BLOCK_NAMESPACES),
+        Some(namespaces) => {
+            let list = namespaces.iter().map(|namespace| string(namespace));
+            put(&mut compound, BLOCK_NAMESPACES, Tag::List(list.collect()));
+        }
+        None => {}
     }
     match commit {
         Some(commit) => put(&mut compound, BUILD_COMMIT, string(commit)),
-        None => {
-            if let Tag::Compound(map) = &mut compound {
-                map.remove(&BUILD_COMMIT.into());
-            }
+        None => take(&mut compound, BUILD_COMMIT),
+    }
+    // A vanilla-only world (no content mods, no mod block namespaces, no other leftover keys)
+    // writes no sunrise compound, even if this build could record a commit.
+    let only_commit_or_empty = match &compound {
+        Tag::Compound(map) => {
+            map.is_empty() || (map.len() == 1 && map.contains_key(&BUILD_COMMIT.into()))
         }
+        _ => true,
+    };
+    if only_commit_or_empty {
+        take(root, COMPOUND);
+        return;
     }
     put(root, COMPOUND, compound);
 }
@@ -378,7 +422,7 @@ pub fn missing_in(dir: &Path, loaded: &Loaded) -> Vec<MissingMod> {
 }
 
 /// `mod_mismatch`'s differences for the world in `dir`: its saved code and content mods against
-/// the loaded ones (`Level::mod_mismatches`); `None` without a saved list.
+/// the loaded ones (`Level::mod_mismatches`); `None` without a saved list or with only empty ones.
 pub fn mismatches_in(dir: &Path, loaded: &Loaded) -> Option<Vec<mod_api::ModMismatch>> {
     let saved = saved(&super::read_level_dat(dir)?)?;
     Some(mismatches(&saved, &loaded.mods()))
@@ -577,7 +621,7 @@ mod tests {
         .unwrap();
         let mut level = Level::read(&dir).unwrap();
         assert_eq!(level.saved_mods, Some(vec![record("old", "0.1.0")]));
-        level.write(&dir).unwrap();
+        level.write(&dir, &Default::default()).unwrap();
         assert_eq!(
             Level::read(&dir).unwrap().saved_mods,
             Some(vec![record("old", "0.1.0")])

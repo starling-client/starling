@@ -86,14 +86,14 @@ impl RecipeTemplate {
     }
 }
 
+// no wire: the shape selector can retain an in-process ingredient predicate.
 /// An ingredient that chooses a firework star's explosion shape.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct FireworkShapeIngredient {
     /// Shape selected by this ingredient.
     pub shape: FireworkShape,
-    /// Items which select the shape.
+    /// The resolved ingredient tested against the actual stack to select the shape.
     pub ingredient: Ingredient,
 }
 impl FireworkShapeIngredient {
@@ -121,6 +121,7 @@ pub enum RecipeTrimPattern {
     },
 }
 
+// no wire: the resolved rules can retain in-process ingredient predicates.
 /// The parsed rule of a stonecutting, smithing or special crafting recipe.
 /// These are the same resolved ingredients and rules the game uses, not a
 /// second recipe implementation. Only `Stonecutting` has a fixed output;
@@ -128,10 +129,10 @@ pub enum RecipeTrimPattern {
 /// counts, dyes, trim material, damage or map state). Special crafting
 /// results are assembled by [`crate::LevelRef::recipe_for`], not by treating the
 /// template as a fixed stack. A mod-defined recipe type keeps its raw JSON
-/// instead of inventing a vanilla rule.
+/// instead of inventing a vanilla rule. Rules stay local with the resolved ingredients;
+/// send separate data for a recipe display.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum RecipeRule {
     /// A stonecutter input and fixed result.
     Stonecutting {

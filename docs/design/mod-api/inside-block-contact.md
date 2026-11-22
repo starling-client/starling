@@ -1,5 +1,9 @@
 # Design: inside-block contact shapes
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [block parts](../../modding/src/concepts/parts/block-parts.md) for the current native API.
+> The guest shape capability, dispatch and acceptance plan below is historical.
+
 Provisional answer to [#1011](https://github.com/arismoko/horizon/issues/1011):
 share the sweep decision, with an API-owned shape value and a restricted,
 synchronous level/entity view. This is not an implemented API. No Rust changes

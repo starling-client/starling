@@ -18,6 +18,7 @@ pub trait Hooks {
     /// vanilla's removal runs. Server-side, for every player of the world; the first part answering
     /// wins. Asked of the block's own parts only, so a block with none costs nothing.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "destroyed",
@@ -25,5 +26,12 @@ pub trait Hooks {
         key = "state",
         neoforge = "IBlockExtension.onDestroyedByPlayer"
     )]
-    fn on_destroyed_by_player();
+    fn on_destroyed_by_player(
+        player: u128,
+        pos: [i32; 3],
+        state: BlockState,
+        tool: Option<&ItemStack>,
+        will_harvest: bool,
+        destroyed: &mut Option<bool>,
+    );
 }

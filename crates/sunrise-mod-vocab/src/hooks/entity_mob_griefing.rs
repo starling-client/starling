@@ -18,10 +18,12 @@ pub trait Hooks {
     /// in explosions (asked for the exploding entity, and for the mob that
     /// causes the blast). Asked often: answer fast. Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         host = "read",
         neoforge = "EntityMobGriefingEvent"
     )]
-    fn entity_mob_griefing();
+    fn entity_mob_griefing(entity: EntityRef, can_grief: &mut bool);
 }

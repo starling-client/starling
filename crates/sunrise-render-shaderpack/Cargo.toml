@@ -1,0 +1,30 @@
+[package]
+name = "sunrise-render-shaderpack"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Shader pack pipeline, atlas stitching, passes and GPU timing for Sunrise"
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+glam = "0.30"
+half = "2"
+log = "0.4"
+naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "hlsl-out"] }
+pollster = "0.4"
+serde_json = "1.0"
+smallvec = { version = "1", features = ["const_new"] }
+sunrise-core = { path = "../sunrise-core" }
+sunrise-render-core = { path = "../sunrise-render-core" }
+sunrise-shaders = { path = "../sunrise-shaders" }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
+
+[lints]
+workspace = true
+
+# tools/shader_fuzz.py's fuzzer; `test = true` runs its unit tests with the crate's.
+[[example]]
+name = "shader_fuzz"
+path = "examples/shader_fuzz/main.rs"
+test = true

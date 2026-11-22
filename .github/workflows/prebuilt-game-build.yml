@@ -1,0 +1,176 @@
+name: prebuilt game build
+# The SDK's per-OS build (#589): each leg packs its assets (nightly.SDK_ARCHIVES) as artifact sdk-leg-<leg> and writes nothing.
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit to build (default the caller's)
+        type: string
+        default: ''
+      legs:
+        description: Which legs to build, `all`, `linux` (both Linux legs) or `windows-macos`
+        type: string
+        default: all
+    outputs:
+      needed:
+        description: Whether sdk-<sha> was missing, so this run built it
+        value: ${{ jobs.fresh.outputs.needed }}
+      tag:
+        description: The release tag the archives publish under
+        value: ${{ jobs.fresh.outputs.tag }}
+permissions:
+  contents: read
+env:
+  TAG: sdk-${{ inputs.commit || github.sha }}
+jobs:
+  fresh:
+    # Main's head may already have its build: a quiet day, or a second dispatch.
+    runs-on: ubuntu-latest
+    outputs:
+      needed: ${{ steps.release.outputs.needed }}
+      tag: ${{ env.TAG }}
+      matrix: ${{ steps.legs.outputs.matrix }}
+    steps:
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then echo needed=false; else echo needed=true; fi >> "$GITHUB_OUTPUT"
+      # The build's matrix: every leg, or the Linux ones or the others alone. The daily run calls the two groups
+      # separately, so its fn-replace-check, which reads only the Linux legs, does not wait for macOS.
+      - id: legs
+        env:
+          LEGS: ${{ inputs.legs }}
+          # The launcher builds native mods with the windows-gnu toolchain and its own MinGW linker.
+          ALL: >-
+            [{"name": "linux", "os": "ubuntu-22.04", "blacksmith": "blacksmith-16vcpu-ubuntu-2204",
+              "target": "x86_64-unknown-linux-gnu", "linkage": true},
+            {"name": "linux-server", "os": "ubuntu-22.04", "blacksmith": "blacksmith-16vcpu-ubuntu-2204",
+              "target": "x86_64-unknown-linux-gnu", "server": true},
+            {"name": "windows", "os": "windows-latest", "blacksmith": "blacksmith-16vcpu-windows-2025",
+              "target": "x86_64-pc-windows-gnu", "linkage": true},
+            {"name": "macos", "os": "macos-15", "blacksmith": "blacksmith-6vcpu-macos-15", "target": "aarch64-apple-darwin"}]
+        run: |
+          case "$LEGS" in
+            all) pick='.' ;;
+            linux) pick='map(select(.os == "ubuntu-22.04"))' ;;
+            windows-macos) pick='map(select(.os != "ubuntu-22.04"))' ;;
+            *) echo "::error::legs is all, linux or windows-macos, not '$LEGS'"; exit 1 ;;
+          esac
+          echo "matrix=$(jq -c "{include: $pick}" <<< "$ALL")" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: fresh
+    if: needs.fresh.outputs.needed == 'true'
+    name: build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.fresh.outputs.matrix) }}
+    # Blacksmith's machines (owner, 2026-11-18): 16 vCPUs for Linux and Windows, the M4 Mac, the same images as
+    # GitHub's with the Rust cache beside them. The repository variable BLACKSMITH=off puts every leg back on `os`.
+    runs-on: ${{ vars.BLACKSMITH != 'off' && matrix.blacksmith || matrix.os }}
+    # Hosted macOS runner speed varies: 41 to 90+ minutes observed. Windows without its build cache (the first run after
+    # a lock or toolchain change saves it) takes over 85 minutes in "Build and collect" alone.
+    timeout-minutes: ${{ (matrix.os == 'macos-15' && 120) || (matrix.os == 'windows-latest' && 180) || 90 }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - name: The launcher's pinned Rust
+        id: rust
+        run: |
+          echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}-${{ matrix.target }}
+          components: ${{ matrix.linkage && 'clippy' || '' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Saved by main's runs only, which every branch restores from: a branch's copy (about 700 MB a leg) serves no
+      # other ref and pushed main's out of the repository's 10 GB, so main's daily legs found no cache at all.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: prebuilt-${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: ALSA and udev headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - name: Build and collect
+        run: python tools/prebuilt_game.py build prebuilt ${{ matrix.server && '--server' || '' }}
+      # The staging pass on a clean checkout, with the sunrise-stage `build` compiled from this commit: HEAD's build
+      # data, each file headed with its commit, listed internals, and the tracked source
+      # untouched. A failure is its own daily issue (tools/ci/daily_summary.py SDK_CHECKS), and the leg's assets
+      # never upload, so no SDK publishes from a tree that does not stage.
+      - name: The source stages with this commit's build data
+        if: matrix.name == 'linux'
+        env:
+          SUNRISE_STAGE_TOOL: target/prebuilt/tools/release/sunrise-stage
+        run: python tools/ci/test_stage_catalog.py -v
+      # Two starter mods, the second calling the first through its library as a mod calls a declared dependency
+      # (on windows-gnu through the first's import library); `start` then loads both.
+      - name: Two starter mods and the game executable build against the archive alone
+        run: python tools/prebuilt_game.py smoke prebuilt
+      # Runs what smoke built, installed as the launcher installs it, with no game data: it loads the game's
+      # libraries and sets up the mods' runtime, and must stop cleanly at the missing prepared files. A crash
+      # there (two allocators, #3877) fails this OS's leg, so its archive never publishes.
+      - name: The game executable starts and loads the game's libraries
+        timeout-minutes: 10
+        run: python tools/prebuilt_game.py start prebuilt
+      # Warns past 80% of Windows' 65,535 exported names per DLL and fails past 90%.
+      - name: Exported names, toward Windows' 65,535
+        run: python tools/prebuilt_game.py exports prebuilt | tee -a "$GITHUB_STEP_SUMMARY"
+      # The checks' scratch folders are in the runner's temporary folder, never target/: rust-cache saves and restores
+      # target/, pruning each folder it does not know to Cargo's own, so a scratch folder came back half there
+      # (an emptied check folder without its mark: E_SCRATCH), and its builds made the cache larger for nothing.
+      - name: Two mod libraries share the game's exact Rust state
+        id: linkage
+        if: matrix.linkage
+        run: python tools/native_dylib_probe.py --sdk prebuilt --output "$RUNNER_TEMP/native-dylib-probe"
+      - name: The starter mod checks against the API source alone
+        if: matrix.name == 'linux'
+        run: |
+          python tools/sdk_api_source.py build "$RUNNER_TEMP/api-source"
+          python tools/sdk_api_source.py check "$RUNNER_TEMP/api-source" --scratch "$RUNNER_TEMP/sdk-api-source-check"
+      - name: Probe command log
+        if: failure() && steps.linkage.outcome == 'failure'
+        run: |
+          if [ -f "$RUNNER_TEMP/native-dylib-probe/commands.log" ]; then
+            tail -n 120 "$RUNNER_TEMP/native-dylib-probe/commands.log"
+          fi
+      # The leg's assets, named for its target and side; the layout's number is in each identity (package_format).
+      # The surface export runs the sunrise-stage that `build` compiled from this commit (target/prebuilt/tools).
+      - name: Pack the SDK's assets
+        run: >-
+          python tools/prebuilt_game.py pack prebuilt dist
+          --stage-tool target/prebuilt/tools/release/sunrise-stage${{ runner.os == 'Windows' && '.exe' || '' }}
+      # Build a native mod library on macOS against the SDK just built, using the release's
+      # own `cargo sunrise-mod native-build` tool.
+      - name: A native mod builds through the shipped route
+        if: matrix.name == 'macos'
+        run: python tools/ci/native_build_route.py --sdk prebuilt --tool target/release/cargo-sunrise-mod --work "$RUNNER_TEMP/native-route"
+      - name: Asset sizes
+        run: (cd dist && du -h *) | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-leg-${{ matrix.name }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      # The sunrise-stage `build` compiled from this commit, for sdk-publish.yml's surface diff on Linux, which
+      # otherwise compiled it again (80 to 87 s). Not an SDK asset: its name is outside `sdk-leg-*`.
+      - name: The stage tool for the index
+        uses: actions/upload-artifact@v4
+        if: matrix.name == 'linux'
+        with:
+          name: sdk-stage-tool
+          path: target/prebuilt/tools/release/sunrise-stage
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true

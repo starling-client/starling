@@ -21,14 +21,17 @@ impl Game<'_> {
         self.client_cauldron_prediction(pos, held).0
     }
     /// `CauldronInteractions` for the held item aimed at a cauldron.
-    pub(super) fn use_on_cauldron(&mut self, pos: [i32; 3]) -> Result<bool> {
+    pub(super) fn use_on_cauldron(
+        &mut self,
+        pos: [i32; 3],
+    ) -> Result<sunrise_client::cauldron::Outcome> {
         use sunrise_client::cauldron::{self, Outcome};
         let registry = self.pack.assets.registry;
         let Some((state, under_water)) = self.cauldron_at(pos) else {
-            return Ok(false);
+            return Ok(Outcome::Pass);
         };
         let Some(held) = self.held() else {
-            return Ok(false);
+            return Ok(Outcome::Pass);
         };
         let removes_dye = cauldron::removes_dye(self.items(), &held.item);
         // `Stats.ITEM_USED.get(itemInHand.getItem())`: the item the hand held
@@ -40,7 +43,7 @@ impl Game<'_> {
             items.item_in_tag(tag, &held.item)
         });
         if let Some(cauldron::interactions::Entry::Mod(callback)) = &entry {
-            return Ok(self.use_mod_cauldron(pos, under_water, callback, &table));
+            return Ok(self.use_mod_cauldron(pos, under_water, callback));
         }
 
         let slot = self.held_slot();
@@ -55,7 +58,7 @@ impl Game<'_> {
             let result =
                 cauldron::interact_selected(&state, under_water, entry.as_ref(), &mut hand);
             if result.outcome == Outcome::Pass {
-                return Ok(false);
+                return Ok(Outcome::Pass);
             }
             if let Some(stat) = result.stat {
                 self.defer_effect(DeferredEffect::CustomStat {
@@ -93,7 +96,7 @@ impl Game<'_> {
             if let Some(event) = result.fluid_event {
                 self.post_block_game_event(event, pos, None, None);
             }
-            return Ok(true);
+            return Ok(result.outcome);
         }
         let outcome = mod_api::run_transaction(self, |game, _| {
             use transactions::DeferredEffect;
@@ -145,8 +148,8 @@ impl Game<'_> {
             if let Some(event) = result.fluid_event {
                 game.post_block_game_event(event, pos, None, None);
             }
-            Ok(())
+            Ok(result.outcome)
         });
-        Ok(outcome.is_ok())
+        Ok(outcome.unwrap_or(Outcome::Pass))
     }
 }

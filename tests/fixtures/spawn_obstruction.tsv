@@ -1,0 +1,36 @@
+# case installation entity x-offset spawn-data collision-clear unobstructed
+empty empty - 0 {} true true
+boat live minecraft:oak_boat 0 {} false false
+boat-away live minecraft:oak_boat 5 {} true true
+shulker live minecraft:shulker 0 {} false false
+shulker-dying live minecraft:shulker 0 {Health:0f,DeathTime:1s} true false
+shulker-removed removed minecraft:shulker 0 {} true true
+ghast-still live minecraft:happy_ghast 0 {still_timeout:10} false false
+ghast-moving live minecraft:happy_ghast 0 {} true false
+ghast-baby live minecraft:happy_ghast 0 {Age:-20,still_timeout:10} true false
+ghast-dying live minecraft:happy_ghast 0 {Health:0f,DeathTime:1s,still_timeout:10} true false
+zombie-dying live minecraft:zombie 0 {Health:0f,DeathTime:1s} true false
+stand live minecraft:armor_stand 0 {} true false
+stand-marker live minecraft:armor_stand 0 {Marker:1b} true true
+cart live minecraft:minecart 0 {} true false
+tnt live minecraft:tnt 0 {} true false
+falling-created falling - 0 {} true false
+falling-loaded live minecraft:falling_block 0 {BlockState:{Name:"minecraft:sand"}} true true
+crystal live minecraft:end_crystal 0 {} true false
+pending-shulker pending minecraft:shulker 0 {} false false
+pending-dying-shulker pending minecraft:shulker 0 {Health:0f,DeathTime:1s} true false
+pending-ghast pending minecraft:happy_ghast 0 {still_timeout:10} false false
+pig-edge-live live minecraft:pig 0.89999995 {} true true
+pig-edge-pending pending minecraft:pig 0.89999995 {} true true
+pending-passenger pending-riders minecraft:zombie 1 {Passengers:[{id:"minecraft:zombie",Passengers:[{id:"minecraft:shulker"}]}]} false false
+dragon-parent live minecraft:ender_dragon 0 {} true false
+dragon-part dragon-part minecraft:ender_dragon 16 {} true true
+# Spawner rows: attempt-two x offset; expected accepted roots and yaw draws.
+spawner-edge batch minecraft:pig 0.89999995 {NoAI:1b} 2 2
+spawner-passenger batch minecraft:zombie 0.75 {Passengers:[{id:"minecraft:shulker"}]} 1 1
+# Admission rows: roots:positions:yaws:delay:burst:place:anim:reset:installed and clear:unobstructed:shulkers (preview/actual).
+mixed-relay admission-mixed minecraft:zombie 0.75 {Passengers:[{id:"spawn_fixture:relay",UUID:[I;0,0,0,201],Passengers:[{id:"minecraft:shulker"}]}]} 1:2:1:20:1:1:1:1:zombie,relay,shulker false:false:1/false:false:1
+unsupported-relay admission-unsupported minecraft:zombie 0.75 {Passengers:[{id:"minecraft:not_a_spawn_fixture_type",Passengers:[{id:"minecraft:shulker"}]}]} 2:2:2:20:2:2:2:1:zombie,zombie true:false:0/true:false:0
+resident-descendant-uuid admission-resident minecraft:zombie 0.99 {UUID:[I;0,0,0,102],Passengers:[{id:"spawn_fixture:relay",UUID:[I;0,0,0,103],Passengers:[{id:"minecraft:shulker",UUID:[I;0,0,0,101]}]}]} 0:1:1:20:0:0:0:1:- true:true:0/true:true:0
+deferred-descendant-uuid admission-deferred minecraft:zombie 0.99 {Passengers:[{id:"minecraft:shulker",UUID:[I;0,0,0,107]}]} 1:2:2:20:1:1:1:1:zombie,shulker false:false:1/false:false:1
+intra-tree-uuid admission-intra minecraft:zombie 0 {UUID:[I;0,0,0,110],Passengers:[{id:"minecraft:silverfish",UUID:[I;0,0,0,111]},{id:"minecraft:shulker",UUID:[I;0,0,0,111]},{id:"minecraft:chicken",UUID:[I;0,0,0,113]}]} 1:1:1:20:1:1:1:1:zombie,silverfish,chicken true:true:0/true:true:0

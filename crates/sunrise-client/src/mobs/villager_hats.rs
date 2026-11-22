@@ -1,8 +1,8 @@
 //! VillagerProfessionLayer's cached texture metadata and type-layer head visibility.
 #[cfg(test)]
 use super::anim::Poses;
-use sunrise_assets::resource_source::ResourceSource;
 use std::collections::HashMap;
+use sunrise_assets::resource_source::ResourceSource;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) enum Hat {
@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared 26.3 models and textures in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn metadata_head_visibility_matches_exported_no_hat_models() {
         use crate::mobs::{load_model, render::draw};
         let root = std::env::var_os("SUNRISE_TEST_RESOURCES").expect("SUNRISE_TEST_RESOURCES");

@@ -83,13 +83,14 @@ impl Game<'_> {
             // removed it.
             let after = match rest {
                 Some(rest) if rest.count >= before => continue,
-                // `item_picked_up_partial`: the remainder is the entity's while mods hear it, and
-                // the count after comes from the entity.
-                Some(rest)
-                    if mod_api::__private::listened(mod_api::HookId::ItemPickedUpPartial) =>
-                {
-                    self.dropped[i].stack = rest.clone();
-                    let told = self.as_guest(conn, |g| g.native_pickup_partial(&stack, rest));
+                // ItemEntityPickupEvent.Post, on a whole or partial pickup: the remainder is the
+                // entity's while mods hear it, and the count after comes from the entity.
+                rest if mod_api::__private::listened(mod_api::HookId::ItemPickedUpPost) => {
+                    match &rest {
+                        Some(rest) => self.dropped[i].stack = rest.clone(),
+                        None => self.dropped[i].stack.count = 0,
+                    }
+                    let told = self.as_guest(conn, |g| g.native_pickup_post(item_id, &stack, rest));
                     let at = self.dropped.iter().position(|d| d.id == item_id);
                     if let (Some(at), Some(remaining)) = (at, told) {
                         match remaining {
@@ -102,19 +103,6 @@ impl Game<'_> {
                 Some(rest) => {
                     self.dropped[i].stack = rest;
                     Some(i)
-                }
-                // ItemEntityPickupEvent.Post, only on a whole pickup: the empty remainder is the
-                // entity's while mods hear it, and the count after comes from the entity.
-                None if mod_api::__private::listened(mod_api::HookId::ItemPickedUpPost) => {
-                    self.dropped[i].stack.count = 0;
-                    let raised = self
-                        .as_guest(conn, |g| g.native_pickup_post(item_id, &stack))
-                        .flatten();
-                    let at = self.dropped.iter().position(|d| d.id == item_id);
-                    if let (Some(at), Some(raised)) = (at, raised) {
-                        self.dropped[at].stack = raised;
-                    }
-                    at
                 }
                 None => {
                     self.dropped[i].stack.count = 0;
@@ -344,7 +332,8 @@ impl Game<'_> {
             host.hub.take_item(orb.id as i32, id, 1, at);
         }
         // ClientPacketListener.handleTakeItemEntity's sound, at the orb.
-        let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.35 + 0.9;
+        let mut random = sunrise_client::random_source::create(); // the listener's own stream
+        let pitch = (random.next_float() - random.next_float()) * 0.35 + 0.9;
         let p = orb.position;
         self.audio.play(
             "minecraft:entity.experience_orb.pickup",

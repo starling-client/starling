@@ -3,9 +3,9 @@
 //! shape at all (`rail_valid_shape`).
 use super::minecarts::Shape;
 use crate::game::{Game, native_entity_refs::tests::with_game};
+use std::sync::Arc;
 use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
 use sunrise_core::{geometry::Vec3, position::ChunkPos};
-use std::sync::Arc;
 
 /// A serving world with commands, a stone floor at y 63 and its chunk ticking. Returns the
 /// scratch world folder to remove.
@@ -38,7 +38,7 @@ fn shape(game: &Game<'_>, [x, y, z]: [i32; 3]) -> String {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn rail_parts_decide_the_track_carts_and_connections_follow() {
     // The fixture's parts: a plain rail lays east-west for a cart and can't curve, a powered
     // rail can't climb, and an activator rail refuses east-west.

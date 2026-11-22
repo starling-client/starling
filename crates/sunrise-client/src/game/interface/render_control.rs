@@ -1,10 +1,10 @@
 //! Control-socket commands for inspecting rendering: place blocks without
 //! updates (`setblock`, `fill`) to build test scenes.
 use super::Game;
+use serde_json::{Value, json};
 use sunrise_client::Result;
 use sunrise_core::random::RandomSource;
 use sunrise_world::registry::BlockStateId;
-use serde_json::{Value, json};
 
 pub const HELP: &[&str] = &[
     "setblock X Y Z STATE           set a block state (name[prop=value,...]) without updates",

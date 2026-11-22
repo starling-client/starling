@@ -1,134 +1,61 @@
-// `invert_generic`, `invert_affine` and the formulas of `pack_projection` and `shadow_ortho` in
-// this file are adapted from JOML 1.10.9's `Matrix4f` (https://github.com/JOML-CI/JOML, MIT; see
-// THIRD_PARTY_NOTICES.md).
-//
-// Copyright (c) 2015-2026 Richard Greenlees
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
+//! The client's `Frame` as the shadow light reads it: a `UniformFrameView` of the camera, the
+//! sky, the fog and the lights, and the shadow matrices a post pass needs. The uniforms themselves
+//! live in `sunrise_render_shaderpack::pack_uniforms`; they take the view this file builds.
 
-//! The uniforms a shader pack's post-processing programs read once per frame (spec 5.2, class
-//! F), from the renderer's `Frame` and the few values only the game knows (`PackInputs`).
-//! Matrices follow GL's conventions (5.5): `gbufferProjection` maps view depth to clip z in
-//! [-w, w], and the depth buffers packs read hold GL window depth.
+use super::*;
+use sunrise_render_core::{FogView, SkyView, UniformFrameView};
+// The client's `Frame` carries the game's values by this name.
+pub use sunrise_render_shaderpack::pack_uniforms::{PackInputs, PlayerStatus, cloud_height};
+// The shadow matrices and timings its own tests build here, beside the `Frame`s they read; the
+// frame timing is the game's too (a screenshot sequence replays a fixed clock through it).
+pub use sunrise_render_shaderpack::pack_uniforms::FrameTiming;
+#[cfg(test)]
+pub use sunrise_render_shaderpack::pack_uniforms::{shadow_camera, shadow_culling_at};
 
-use glam::{DMat4, DVec3, Mat4, Vec3, Vec4};
-use sunrise_shaders::Shadow;
-
-use super::Frame;
-
-/// What the game passes for the pack's uniforms, beyond what `Frame` carries.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PackInputs {
-    /// `Level.getDayTime`.
-    pub day_time: i64,
-    /// The interpolated rain and thunder levels, 0..1.
-    pub rain: f32,
-    pub thunder: f32,
-    /// The fluid at the camera: 0 none, 1 water, 2 lava, 3 powder snow.
-    pub eye_in: i32,
-    pub blindness: f32,
-    /// Block and sky light at the camera, 0..15.
-    pub eye_light: [i32; 2],
-    pub hide_gui: bool,
-    /// The brightness option, 0..1.
-    pub brightness: f32,
-    /// The biome at the camera (3.4): registry id, `CAT_*`, `PPT_*`, temperature, downfall.
-    pub biome: i32,
-    pub biome_category: i32,
-    pub biome_precipitation: i32,
-    pub temperature: f32,
-    pub rainfall: f32,
-    /// Whether the biome at the camera is known (its chunk is loaded).
-    pub biome_known: bool,
-    /// `heldItemId`, `heldItemId2` (item.properties, 5.3) and `heldBlockLightValue(2)`.
-    pub held_items: [i32; 2],
-    pub held_light: [i32; 2],
-    /// `isRightHanded` (the Main Hand option) and `is_on_ground`.
-    pub right_handed: bool,
-    pub on_ground: bool,
-    /// The dimension type's lowest block (`bedrockLevel`), build height (`heightLimit`),
-    /// logical height, sky light and ceiling.
-    pub min_y: i32,
-    pub height: i32,
-    pub logical_height: i32,
-    pub has_skylight: bool,
-    pub has_ceiling: bool,
-    /// `isElytraFlying`: the player is fall flying.
-    pub elytra_flying: bool,
-    /// `cloudHeight`, see [`cloud_height`].
-    pub cloud_height: f32,
-    /// `cloudTime`: how far the game's clouds have moved along X, in blocks (`clouds::drift`
-    /// times vanilla's 0.03 blocks a tick). Iris 1.11.7 gives it, though ShaderDoc doesn't list
-    /// it: observed with a probe pack, three game times 0.03 apart per tick.
-    pub cloud_time: f32,
-    /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
-    pub mod_params: [[f32; 4]; 8],
-    /// The player's state, for Iris's status uniforms.
-    pub status: PlayerStatus,
-    /// The End flash: its intensity, 0..1 (0 outside the End), and its direction from the
-    /// camera in world space, of length 100 (`endFlashIntensity`, `endFlashPosition`).
-    pub end_flash: f32,
-    pub end_flash_direction: Vec3,
-    /// The dimension type's `ambient_light` (`ambientLight`).
-    pub ambient_light: f32,
-    /// The player's cave mood, 0..1 (`BiomeAmbientSoundsHandler`'s moodiness):
-    /// `playerMood` and `constantMood`.
-    pub mood: f32,
-    /// Under `SUNRISE_STILL`, the world's ticks: the pack's clock (`frameTimeCounter`,
-    /// `frameCounter`) instead of the wall clock and the frames drawn, and smoothed values
-    /// (`wetness`, `eyeBrightnessSmooth`, `centerDepthSmooth`) at their targets.
-    pub still_ticks: Option<u64>,
-    /// A scripted clock (`screenshot-sequence`): taken before `still_ticks` and the wall
-    /// clock, and smoothed values move by its `delta`.
-    pub frame_timing: Option<FrameTiming>,
-}
-
-/// One frame of a scripted pack clock: the frame's number from 1, the seconds since frame 1,
-/// and the seconds since the frame before (0 on frame 1).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameTiming {
-    pub counter: u32,
-    pub elapsed: f32,
-    pub delta: f32,
-}
-
-impl FrameTiming {
-    /// Frame `n` (from 1) of frames `step_ms` milliseconds apart (`16.666667` for 60 fps). The
-    /// elapsed time is worked out in f64, so frame 10 000 is as exact as frame 2.
-    pub fn nth(n: u32, step_ms: f64) -> Self {
-        let step = step_ms / 1000.0;
-        Self {
-            counter: n,
-            elapsed: (f64::from(n.saturating_sub(1)) * step) as f32,
-            delta: if n <= 1 { 0.0 } else { step as f32 },
-        }
+/// The frame as the shadow light reads it: the camera, the sky and the eye, and no fog, lights or
+/// entities (a shadow pass's uniforms read none of those).
+fn view<'a>(frame: &'a Frame<'_>, lights: bool) -> UniformFrameView<'a> {
+    UniformFrameView {
+        camera: frame.camera,
+        yaw: frame.yaw,
+        pitch: frame.pitch,
+        fov_degrees: frame.fov_degrees,
+        eye: frame.eye,
+        eye_rotation: frame.eye_rotation,
+        first_person: frame.first_person,
+        bob: frame.bob,
+        spin: frame.spin,
+        sky: SkyView {
+            sun_angle: frame.sky.sun_angle,
+            moon_angle: frame.sky.moon_angle,
+            sky_color: frame.sky.sky_color,
+            fog_color: frame.sky.fog_color,
+        },
+        distance: frame.distance,
+        detail_distance: frame.detail_distance,
+        depth_far: frame.depth_far,
+        fog: match &frame.fog {
+            Some(f) if lights => Some(FogView {
+                color: [f.color[0], f.color[1], f.color[2]],
+                environmental_start: f.environmental_start,
+                environmental_end: f.environmental_end,
+            }),
+            _ => None,
+        },
+        night_vision: frame.night_vision,
+        darkness: frame.darkness,
+        dynamic_lights: if lights { frame.dynamic_lights } else { &[] },
+        entities: if lights { frame.entities } else { &[] },
+        // The shadow light reads no bolt position.
+        lightning_bolt: None,
     }
 }
 
-/// The `cloudHeight` uniform: the dimension's `visual/cloud_height`
-/// (`EnvironmentAttributes.CLOUD_HEIGHT`, 192.33 where the dimension doesn't set it), whether or
-/// not it has clouds. ShaderDoc says NaN for a dimension without clouds, but Iris 1.11.7 reads
-/// 192.33 in the Nether and the End, in every program kind our probe packs read it from.
-pub fn cloud_height(sky: &crate::environment::Sky) -> f32 {
-    sky.cloud_height
+pub fn shadow_light(frame: &Frame<'_>, shadow: &sunrise_shaders::Shadow) -> glam::Vec3 {
+    sunrise_render_shaderpack::pack_uniforms::shadow_light(&view(frame, false), shadow)
 }
 
+<<<<<<< sync-sunrise-1
 /// The local player's state behind Iris's status uniforms (`currentPlayerHealth`,
 /// `isSpectator`, `is_burning`...).
 #[derive(Clone, Copy, Debug, Default)]
@@ -593,53 +520,24 @@ pub fn pack_projection(fov_degrees: f32, aspect: f32, far: f32) -> (Mat4, Mat4) 
         glam::DVec4::new(0.0, 1.0 / h, 0.0, 0.0),
         glam::DVec4::new(0.0, 0.0, (far + near) / (near - far), -1.0),
         glam::DVec4::new(0.0, 0.0, (far + far) * near / (near - far), 0.0),
+=======
+/// `lightningBoltPosition` (spec 5.2) for the frame's bolts (`Frame::lightning.bolts`, the
+/// draw list): the last one, in player space, w = 1; zeros when the list is empty.
+pub fn lightning_bolt_position(
+    bolts: &[crate::gfx::lightning::Bolt],
+    camera: glam::DVec3,
+) -> [f32; 4] {
+    sunrise_render_shaderpack::pack_uniforms::lightning_bolt_position(
+        bolts.last().map(|bolt| glam::DVec3::from_array(bolt.at)),
+        camera,
+>>>>>>> sunrise/main
     )
-    .as_mat4();
-    (m, invert_generic(m))
 }
 
-/// JOML's `Matrix4f.invert()` of a matrix with no known shape (`invertGeneric`), operation by
-/// operation (JOML's `Math.fma` without `joml.useMathFma` is a product and a sum).
-fn invert_generic(m: Mat4) -> Mat4 {
-    let g = |c: usize, r: usize| m.col(c)[r];
-    let (m00, m01, m02, m03) = (g(0, 0), g(0, 1), g(0, 2), g(0, 3));
-    let (m10, m11, m12, m13) = (g(1, 0), g(1, 1), g(1, 2), g(1, 3));
-    let (m20, m21, m22, m23) = (g(2, 0), g(2, 1), g(2, 2), g(2, 3));
-    let (m30, m31, m32, m33) = (g(3, 0), g(3, 1), g(3, 2), g(3, 3));
-    let a = m00 * m11 - m01 * m10;
-    let b = m00 * m12 - m02 * m10;
-    let c = m00 * m13 - m03 * m10;
-    let d = m01 * m12 - m02 * m11;
-    let e = m01 * m13 - m03 * m11;
-    let f = m02 * m13 - m03 * m12;
-    let gg = m20 * m31 - m21 * m30;
-    let h = m20 * m32 - m22 * m30;
-    let i = m20 * m33 - m23 * m30;
-    let j = m21 * m32 - m22 * m31;
-    let k = m21 * m33 - m23 * m31;
-    let l = m22 * m33 - m23 * m32;
-    let det = 1.0 / (a * l - b * k + c * j + d * i - e * h + f * gg);
-    // `Math.fma(x, y, z)` unfused.
-    let fma = |x: f32, y: f32, z: f32| x * y + z;
-    Mat4::from_cols_array(&[
-        fma(m11, l, fma(-m12, k, m13 * j)) * det,
-        fma(-m01, l, fma(m02, k, -m03 * j)) * det,
-        fma(m31, f, fma(-m32, e, m33 * d)) * det,
-        fma(-m21, f, fma(m22, e, -m23 * d)) * det,
-        fma(-m10, l, fma(m12, i, -m13 * h)) * det,
-        fma(m00, l, fma(-m02, i, m03 * h)) * det,
-        fma(-m30, f, fma(m32, c, -m33 * b)) * det,
-        fma(m20, f, fma(-m22, c, m23 * b)) * det,
-        fma(m10, k, fma(-m11, i, m13 * gg)) * det,
-        fma(-m00, k, fma(m01, i, -m03 * gg)) * det,
-        fma(m30, e, fma(-m31, c, m33 * a)) * det,
-        fma(-m20, e, fma(m21, c, -m23 * a)) * det,
-        fma(-m10, j, fma(m11, h, -m12 * gg)) * det,
-        fma(m00, j, fma(-m01, h, m02 * gg)) * det,
-        fma(-m30, d, fma(m31, b, -m32 * a)) * det,
-        fma(m20, d, fma(-m21, b, m22 * a)) * det,
-    ])
+pub fn shadow_culling(frame: &Frame<'_>, shadow: &sunrise_shaders::Shadow) -> glam::Mat4 {
+    sunrise_render_shaderpack::pack_uniforms::shadow_culling(&view(frame, false), shadow)
 }
+<<<<<<< sync-sunrise-1
 
 /// `shadow_camera`'s view and projection in wgpu's clip space (depth 0..1), for culling.
 pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
@@ -2878,3 +2776,5 @@ fn dynamic_light_index(name: &str) -> Option<usize> {
 #[cfg(test)]
 #[path = "pack_uniforms/ftransform_test.rs"]
 mod ftransform_test;
+=======
+>>>>>>> sunrise/main

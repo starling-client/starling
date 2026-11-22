@@ -9,19 +9,15 @@ description = "Unstable native-only raw rendering places for mods"
 [lib]
 name = "mod_render"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[dependencies]
 sunrise-client-render = { path = "../sunrise-client-render", default-features = false }
 sunrise-mod-api = { path = "../sunrise-mod-api" }
 wgpu = { version = "30.0.1", default-features = false, features = ["std"] }
 glam = "0.30"
-bytemuck = { version = "1.24", features = ["derive"] }
+sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
 
 [build-dependencies]
 sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }
 
 [lints]
 workspace = true
-
-[dependencies]
-sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
-sunrise-engine-slots = { path = "../sunrise-engine-slots" }

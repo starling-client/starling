@@ -1,0 +1,25 @@
+ids = [
+    "hook:build_creative_mode_tab_contents",
+    "method:Hooks::build_creative_mode_tab_contents",
+    "type:BuildCreativeModeTabContentsEvent.has_permissions",
+    "type:BuildCreativeModeTabContentsEvent.items",
+    "method:prelude::ItemsHost::creative_tabs",
+    "method:prelude::ItemsClientHost::creative_tabs",
+    "method:prelude::ItemsClientHost::creative_search_items",
+    "type:CreativeModeTabs",
+    "type:CreativeModeTabs.has_permissions",
+    "handle:CreativeModeTabs::new",
+    "handle:CreativeModeTabs::tabs_showing",
+    "handle:CreativeModeTabInfo::new",
+    "type:CreativeModeTabInfo",
+    "type:CreativeTabPermissions",
+    "type:CreativeTabReadError",
+    "type:CreativeTabEdit",
+    "type:CreativeTabEditError",
+    "type:CreativeTabList",
+    "type:CreativeTabPlacement",
+    "type:CreativeTabVisibility",
+    "handle:CreativeModeTabInfo::contains",
+]
+why = "Version 2 runs on demand on both logical sides, for every registered tab. It exposes ordered parent/search edits before feature filtering. The world-scoped Host read uses an explicit permission profile and includes both ordered lists of every tab. Same-key reentrant reads see completed tabs and the prior contents of the remaining tabs; another key returns a typed refusal."
+migrate = "Match the hook's HostSide and edit its scoped handle with CreativeTabPlacement::Last and CreativeTabVisibility::Both instead of pushing to a client-only vector. Use ItemsHost::creative_tabs(CreativeTabPermissions::Normal) for membership, or Operator to request the operator build context. Use tab.contains(host, &stack) for exact search membership and tabs_showing(host, &stack) for display membership, with the originating world's item prototypes. Client inventory ranking uses the mutable creative_search_items method and returns no items during setup and reload."

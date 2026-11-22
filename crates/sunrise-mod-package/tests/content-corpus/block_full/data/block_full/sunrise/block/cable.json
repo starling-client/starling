@@ -1,0 +1,9 @@
+{
+  "template": "minecraft:chorus_plant",
+  "connects_to": "#block_full:sockets",
+  "thickness": 6,
+  "properties": {
+    "push_reaction": "PUSH",
+    "offset": "XZ"
+  }
+}

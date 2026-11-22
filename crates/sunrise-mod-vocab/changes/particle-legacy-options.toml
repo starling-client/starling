@@ -1,0 +1,3 @@
+ids = ["type:ParticleOptions.legacy_entity_effect", "type:ParticleOptions.legacy_trail_lifetime"]
+why = "ParticleOptions loses legacy_entity_effect and legacy_trail_lifetime. They reproduced pre-1.20.5 entity-effect particles (velocity as colour) and pre-1.21.4 trails (a lifetime the provider chose), which only the old-protocol adapter sent; the game no longer speaks those protocols, and 26.3's particles take their colour and their trail duration from the options themselves."
+migrate = "Rebuild. Drop both fields where a ParticleOptions is built field by field. An entity effect takes its colour and alpha from color; a trail lasts the duration in trail."

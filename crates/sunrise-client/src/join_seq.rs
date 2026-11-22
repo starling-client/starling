@@ -291,7 +291,7 @@ impl<T> ResidentSlot<T> {
     }
     /// Report the existing allocator's delayed zero-to-live id assignment.
     pub fn id_assigned(&self) {
-        self.emit_current(residency::Change::Install);
+        self.emit_current(residency::Change::Spawned);
     }
     /// Finish a consumed extraction after its terminal work has completed.
     pub fn retire_extracted(&self, id: u32, join: JoinSeq) {
@@ -551,7 +551,7 @@ impl<T, const DIRECT: bool> JoinList<T, DIRECT> {
     /// Report the existing allocator's delayed zero-to-live id assignment.
     pub fn id_assigned(&self, index: usize) {
         if let Some(binding) = &self.1 {
-            binding.entity(&self.0[index], residency::Change::Install);
+            binding.entity(&self.0[index], residency::Change::Spawned);
         }
     }
     /// Finish a consumed extraction after its terminal work has completed.
@@ -1297,8 +1297,8 @@ mod tests {
 
     #[test]
     fn store_back_uses_its_supplied_slot_without_searching() {
-        use sunrise_mod_runtime::attachments::{AttachmentLifetime, HasAttachmentLifetime};
         use std::cell::Cell;
+        use sunrise_mod_runtime::attachments::{AttachmentLifetime, HasAttachmentLifetime};
         #[derive(Clone, Default)]
         struct Counted {
             join: JoinSeq,
@@ -1351,10 +1351,10 @@ mod tests {
 
     #[test]
     fn store_back_preserves_join_and_registration_after_reordering() {
+        use std::sync::{Arc, Mutex};
         use sunrise_mod_runtime::attachments::{
             AttachmentLifetime, Attachments, index::AttachmentIndex,
         };
-        use std::sync::{Arc, Mutex};
         let index = Arc::new(Mutex::new(AttachmentIndex::default()));
         let mut map = Attachments::default();
         let lifetime = AttachmentLifetime::new(map.bind_index(&index, 1u32));
@@ -1390,10 +1390,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "entity edit overwrote its registration")]
     fn bound_update_rejects_whole_entity_overwrite() {
+        use std::sync::{Arc, Mutex};
         use sunrise_mod_runtime::attachments::{
             AttachmentLifetime, Attachments, index::AttachmentIndex,
         };
-        use std::sync::{Arc, Mutex};
         let index = Arc::new(Mutex::new(AttachmentIndex::default()));
         let mut map = Attachments::default();
         let mut list = JoinList::<_, false>::default();
@@ -1873,7 +1873,7 @@ mod tests {
 
     #[test]
     fn journal_snapshots_are_detached_and_delayed_ids_install_only_after_assignment() {
-        use residency::Change::{Install, Remove};
+        use residency::Change::{Remove, Spawned};
         let (mut list, journal) = journal_list();
         changes(&journal);
         let mut snapshot = list.clone();
@@ -1890,7 +1890,7 @@ mod tests {
         list.id_assigned(0);
         let assigned = residency::Identity::new(7, join).unwrap();
         list.clear();
-        assert_eq!(changes(&journal), [Install(assigned), Remove(assigned)]);
+        assert_eq!(changes(&journal), [Spawned(assigned), Remove(assigned)]);
     }
 
     #[test]
@@ -1985,7 +1985,7 @@ mod tests {
             events,
             [Event {
                 owner: home,
-                change: Install(identity)
+                change: residency::Change::Spawned(identity)
             }]
         );
         events.clear();
@@ -2042,7 +2042,10 @@ mod tests {
         list.id_assigned(0);
         list.clear();
         let assigned = residency::Identity::new(7, join).unwrap();
-        assert_eq!(changes(&journal), [Install(assigned), Remove(assigned)]);
+        assert_eq!(
+            changes(&journal),
+            [residency::Change::Spawned(assigned), Remove(assigned)]
+        );
     }
 
     const SINGLETON_OWNER: residency::Owner = residency::Owner {

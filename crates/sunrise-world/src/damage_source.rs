@@ -7,10 +7,7 @@ use crate::{
     worldgen::tags::{TagDefinitions, identifier},
 };
 use serde_json::Value;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-};
+use std::{collections::BTreeMap, io};
 mod resources;
 pub use resources::{resource_files, resource_tags};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -39,11 +36,11 @@ pub struct Definition {
     pub effects: String,
     pub death_message_type: String,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Catalog {
     definitions: Vec<Definition>,
     ids: BTreeMap<String, DamageTypeId>,
-    tags: BTreeMap<String, BTreeSet<DamageTypeId>>,
+    tags: BTreeMap<String, Vec<DamageTypeId>>,
 }
 fn string(v: &Value) -> io::Result<&str> {
     v.as_str()
@@ -120,13 +117,10 @@ impl Catalog {
         Ok(Self {
             definitions,
             ids,
-            tags: tags
-                .tags
-                .into_iter()
-                .map(|(id, v)| (id, v.into_iter().collect()))
-                .collect(),
+            tags: tags.tags,
         })
     }
+    #[inline]
     pub fn id(&self, name: &str) -> Option<DamageTypeId> {
         self.ids.get(name).copied()
     }
@@ -145,6 +139,19 @@ impl Catalog {
     }
     pub fn in_tag(&self, id: DamageTypeId, tag: &str) -> bool {
         self.tags.get(tag).is_some_and(|v| v.contains(&id))
+    }
+    pub fn immunity_tag(&self, id: DamageTypeId, tag: crate::damage_immunity::ImmunityTag) -> bool {
+        use crate::damage_immunity::ImmunityTag;
+        self.in_tag(
+            id,
+            match tag {
+                ImmunityTag::BypassesInvulnerability => "minecraft:bypasses_invulnerability",
+                ImmunityTag::Fire => "minecraft:is_fire",
+                ImmunityTag::Fall => "minecraft:is_fall",
+                ImmunityTag::Drowning => "minecraft:is_drowning",
+                ImmunityTag::Freezing => "minecraft:is_freezing",
+            },
+        )
     }
     pub fn source<E: Copy + Eq>(
         &self,
@@ -226,14 +233,7 @@ impl<E: Copy + Eq> DamageSource<'_, E> {
         })
     }
     pub fn immunity_tag(&self, tag: crate::damage_immunity::ImmunityTag) -> bool {
-        use crate::damage_immunity::ImmunityTag;
-        self.in_tag(match tag {
-            ImmunityTag::BypassesInvulnerability => "minecraft:bypasses_invulnerability",
-            ImmunityTag::Fire => "minecraft:is_fire",
-            ImmunityTag::Fall => "minecraft:is_fall",
-            ImmunityTag::Drowning => "minecraft:is_drowning",
-            ImmunityTag::Freezing => "minecraft:is_freezing",
-        })
+        self.catalog.immunity_tag(self.id, tag)
     }
     pub fn direct_entity(&self) -> Option<E> {
         self.direct

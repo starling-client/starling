@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord のリッチなプレゼンス",
+  "sunrise.extras.discord_presence.tooltip": "Discord の実行中に、Discord プロフィールに Playing Sunrise が表示されます: メニュー、シングル プレーヤーまたはマルチプレーヤー、ディメンション、および再生時間が表示されます。決して世界の名前やサーバーのアドレスではありません。"
+}

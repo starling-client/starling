@@ -8,7 +8,7 @@ use crate::{
     compression::invalid,
     damage_reduction::{self, Bypass, DamageReductionWorld},
     food::FoodData,
-    living_damage::{self, DamageContainer, DamageStat, DamageWorld, MagicAbsorb},
+    living_damage::{self, DamageContainer, DamageStat, DamageWorld},
     player_health::{PlayerAttributeHealth, PlayerFloatIds, PlayerHealthError},
     synced_floats::{DataError, Observer, SyncedFloats},
 };
@@ -146,7 +146,6 @@ impl<'a, A: HealthAttributes, E: ServerDamageEnvironment<A>> ServerPlayerDamage<
             before,
             before - damage,
             damage,
-            !bypass_armor,
         );
         living_damage::actually_hurt_after_armor(self, container, damage, true)
     }
@@ -250,11 +249,8 @@ impl<A: HealthAttributes, E: ServerDamageEnvironment<A>> DamageWorld
     fn after_armor(&mut self, v: f32) -> Result<f32, Self::Error> {
         damage_reduction::after_armor(self, v)
     }
-    fn bypasses_armor(&mut self) -> Result<bool, Self::Error> {
-        self.bypasses(Bypass::Armor)
-    }
-    fn after_magic(&mut self, v: f32) -> Result<MagicAbsorb, Self::Error> {
-        damage_reduction::after_magic(self, v)
+    fn after_magic(&mut self, container: &mut DamageContainer, v: f32) -> Result<f32, Self::Error> {
+        damage_reduction::after_magic(self, container, v)
     }
     fn absorption(&mut self) -> Result<f32, Self::Error> {
         self.health_binding().absorption().map_err(health_error)

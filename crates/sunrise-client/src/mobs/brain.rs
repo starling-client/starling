@@ -216,7 +216,7 @@ pub fn put_brain(map: &mut Compound, m: &Mob, dimension: &str) {
 /// `Frog`'s brain memory `IS_PREGNANT`, which `Brain.Packed` writes beside the
 /// other memories and `mob_from_nbt` reads back into the frog's memories. The
 /// memory is a `Unit`: its value is an empty compound, with no TTL.
-pub fn write_frog(m: &Mob, map: &mut Compound) {
+pub fn write_frog(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     let brain = map
         .entry("Brain".into())
         .or_insert_with(|| Tag::Compound(Compound::new()));

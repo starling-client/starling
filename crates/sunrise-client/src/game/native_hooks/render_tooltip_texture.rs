@@ -21,9 +21,9 @@ impl Game<'_> {
 #[cfg(test)]
 mod render_tooltip_texture_tests {
     use super::ItemStack;
-    use sunrise_client::hud::{HudBatch, Rect};
     use mod_api::{ClientHost, Hooks, Identifier, ModEntry, RenderTooltipTextureEvent};
     use mod_platform::testing::with_mods;
+    use sunrise_client::hud::{HudBatch, Rect};
 
     /// Gives a stick's tooltip the `lobby:gold` style and a text tooltip a red background.
     struct Gold;
@@ -40,7 +40,7 @@ mod render_tooltip_texture_tests {
                 (0xf0100010, 0x505000ff, 0x5028007f)
             );
             match event.stack {
-                Some(stack) if stack.item().id(host) == "minecraft:stick" => {
+                Some(stack) if stack.item().id(host) == Some("minecraft:stick") => {
                     *event.texture = Some(Identifier::parse("lobby:gold").unwrap());
                 }
                 Some(_) => {}
@@ -73,7 +73,7 @@ mod render_tooltip_texture_tests {
     /// back to the fills when no pack has it; its colours change the fills; and an unheard
     /// tooltip draws as before.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mod_gives_a_tooltip_its_own_texture_or_colours() {
         let stick = ItemStack::new("minecraft:stick", 1);
         let stone = ItemStack::new("minecraft:stone", 1);
@@ -89,8 +89,8 @@ mod render_tooltip_texture_tests {
         let mods: mod_api::Mods = vec![ModEntry::new("gold", Box::new(Gold))].into();
         with_mods(mods, || {
             crate::game::native_entity_refs::tests::with_game(|game| {
-                let names = ["background", "frame"]
-                    .map(|part| format!("lobby:gui/sprites/tooltip/gold_{part}"));
+                let names =
+                    ["background", "frame"].map(|part| format!("lobby:tooltip/gold_{part}"));
                 // No pack has the style: the stick keeps the fills.
                 assert_eq!(drawn(game, Some(&stick)), unheard[1]);
                 for (first, then) in [(0.0, 0.5), (0.25, 0.75)] {

@@ -1,0 +1,4 @@
+sunrise-client game::native_chat_recipients_tests::console_and_command_block_say_can_be_hidden_per_receiver lib daily resources
+sunrise-client game::native_chat_recipients_tests::dispatcher_say_filters_the_acting_guests_captured_copy lib daily resources
+sunrise-client game::native_chat_recipients_tests::listener_commands_do_not_count_as_command_block_successes lib daily resources
+sunrise-client game::native_chat_recipients_tests::nested_say_fails_without_sending_an_unchecked_line lib daily resources

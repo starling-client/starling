@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::native_text_grammar::path_parses"]
+why = "The component decoder now shares its grammar with registry admission. Its NBT path check moved out of the game module into a private client-library helper without an injection slot."
+migrate = "Remove the [[inject]] row targeting path_parses. There is no replacement injection point. To decode a component supplied by your mod, use TextHost::text_from_json; it still validates the complete NBT path in NBT components."

@@ -462,6 +462,45 @@ impl CustomImage {
     }
 }
 
+/// `sky`, `stars`, `sun` and `moon` (3.2): which parts of the vanilla sky draw, whether the
+/// pack's `gbuffers_skybasic` and `gbuffers_skytextured` or the game draws them. Each is on unless
+/// its key is `false`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkySwitches {
+    /// The sky disc, the sunset fan and the void disc (`sky`).
+    pub sky: bool,
+    pub stars: bool,
+    pub sun: bool,
+    pub moon: bool,
+}
+
+impl Default for SkySwitches {
+    fn default() -> Self {
+        Self {
+            sky: true,
+            stars: true,
+            sun: true,
+            moon: true,
+        }
+    }
+}
+
+impl SkySwitches {
+    fn parse(properties: &Properties) -> Self {
+        Self {
+            sky: on_unless_false(properties, "sky"),
+            stars: on_unless_false(properties, "stars"),
+            sun: on_unless_false(properties, "sun"),
+            moon: on_unless_false(properties, "moon"),
+        }
+    }
+}
+
+/// A boolean key that is on by default: only `false` turns it off.
+fn on_unless_false(properties: &Properties, key: &str) -> bool {
+    properties.get(key).is_none_or(|v| v.trim() != "false")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ShadowCulling {
     On,
@@ -528,6 +567,8 @@ pub struct Post {
     pub hand_water: Option<PostProgram>,
     /// `clouds=off`: no clouds at all, neither the game's nor the pack's program for them.
     pub clouds_off: bool,
+    /// `sky`, `stars`, `sun` and `moon`: the parts of the vanilla sky left out.
+    pub sky_switches: SkySwitches,
     /// Some program reads a shadow buffer, or `shadow.enabled=true`: the shadow pass runs (2.5).
     pub shadow_pass: bool,
     /// When it runs: what draws solid and cutout terrain from the light (`shadow`), and
@@ -812,6 +853,7 @@ pub fn load_post(
         hand: None,
         hand_water: None,
         clouds_off: false,
+        sky_switches: SkySwitches::parse(properties),
         shadow_pass: false,
         shadow: None,
         shadow_water: None,
@@ -1315,7 +1357,7 @@ fn load_shadow(
     // leave their part out of the shadow pass; all are on by default (OQ-19). `shadowPlayer`
     // and `shadowLightBlockEntities` (E, off by default) keep the player, and block entities
     // that emit light, when the first two are off.
-    let keep = |key: &str| properties.get(key).is_none_or(|v| v.trim() != "false");
+    let keep = |key: &str| on_unless_false(properties, key);
     let set = |key: &str| properties.get(key).is_some_and(|v| v.trim() == "true");
     let only_player = !keep("shadowEntities") && set("shadowPlayer");
     let only_lit = !keep("shadowBlockEntities") && set("shadowLightBlockEntities");
@@ -3628,3 +3670,6 @@ mod buffer_blend_tests;
 
 #[cfg(test)]
 mod material_variant_tests;
+
+#[cfg(test)]
+mod sky_switch_tests;

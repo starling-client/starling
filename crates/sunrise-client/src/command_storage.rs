@@ -1,16 +1,16 @@
 //! `CommandStorage`: named compounds for `/data ... storage <id>`, kept per
 //! namespace in `data/<namespace>/command_storage.dat`.
 use crate::save;
-use sunrise_core::nbt::{Compound, Tag};
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::Arc,
 };
+use sunrise_core::nbt::{Compound, Tag};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CommandStorage {
     /// namespace -> path -> contents.
-    namespaces: BTreeMap<String, BTreeMap<String, Tag>>,
+    namespaces: Arc<sunrise_world::loot::copy::StorageData>,
     dirty: bool,
 }
 fn split_id(id: &str) -> (&str, &str) {
@@ -40,7 +40,7 @@ impl CommandStorage {
                     .iter()
                     .map(|(k, v)| (k.to_string_lossy(), v.clone()))
                     .collect();
-                s.namespaces.insert(namespace, map);
+                Arc::make_mut(&mut s.namespaces).insert(namespace, map);
             }
         }
         s
@@ -50,7 +50,7 @@ impl CommandStorage {
             return;
         }
         self.dirty = false;
-        for (namespace, map) in &self.namespaces {
+        for (namespace, map) in self.namespaces.iter() {
             let contents: Compound = map
                 .iter()
                 .map(|(k, v)| (k.as_str().into(), v.clone()))
@@ -69,6 +69,10 @@ impl CommandStorage {
             }
         }
     }
+    /// An immutable read view; subsequent writes detach only while a reader holds it.
+    pub fn snapshot(&self) -> Arc<sunrise_world::loot::copy::StorageData> {
+        self.namespaces.clone()
+    }
     /// `get`: an empty compound when unset.
     pub fn get(&self, id: &str) -> Tag {
         let (ns, path) = split_id(id);
@@ -82,7 +86,9 @@ impl CommandStorage {
     pub fn set(&mut self, id: &str, contents: Tag) {
         let (ns, path) = split_id(id);
         let empty = matches!(&contents, Tag::Compound(c) if c.is_empty());
-        let map = self.namespaces.entry(ns.to_owned()).or_default();
+        let map = Arc::make_mut(&mut self.namespaces)
+            .entry(ns.to_owned())
+            .or_default();
         if empty {
             map.remove(path);
         } else {
@@ -97,7 +103,10 @@ impl CommandStorage {
     /// marked for saving.
     pub fn set_unsaved(&mut self, id: &str, contents: Tag) {
         let (ns, path) = split_id(id);
-        if let Some(stored) = self.namespaces.get_mut(ns).and_then(|m| m.get_mut(path)) {
+        if let Some(stored) = Arc::make_mut(&mut self.namespaces)
+            .get_mut(ns)
+            .and_then(|m| m.get_mut(path))
+        {
             *stored = contents;
         }
     }
@@ -114,6 +123,25 @@ impl CommandStorage {
 mod tests {
     use super::*;
     use sunrise_core::nbt::parse_snbt;
+
+    #[test]
+    fn held_loot_snapshot_is_unchanged_by_storage_writes() {
+        let mut storage = CommandStorage::default();
+        storage.set("test:cache", Tag::compound([("value", Tag::Long(1))]));
+        let held = storage.snapshot();
+        storage.set("test:cache", Tag::compound([("value", Tag::Long(2))]));
+        storage.set_unsaved("test:cache", Tag::compound([("value", Tag::Long(3))]));
+        storage.set("test:other", Tag::compound([("value", Tag::Byte(4))]));
+        assert_eq!(
+            held["test"]["cache"],
+            Tag::compound([("value", Tag::Long(1))])
+        );
+        assert!(!held["test"].contains_key("other"));
+        assert_eq!(
+            storage.get("test:cache"),
+            Tag::compound([("value", Tag::Long(3))])
+        );
+    }
 
     #[test]
     fn stores_per_namespace_and_persists() {

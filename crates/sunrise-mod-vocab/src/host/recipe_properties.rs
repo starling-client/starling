@@ -11,6 +11,5 @@ pub trait RecipePropertiesHost {
     /// preload before the first packet). The same read on `LoopContext` lets
     /// `menu_slot_rules` filter a slot identically for server and prediction.
     /// Membership reads allocate nothing and perform no registry scans.
-    #[access(PublishedResources)]
     fn mod_recipe_property_contains(&self, set: &str, item: ItemKey) -> bool;
 }

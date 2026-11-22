@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
 use sunrise_telemetry::batch::{self, Batch};
 use sunrise_telemetry::payload::{
     Crash, Payload, Perf, Settings, SlowFrames, Source, System, Timings,
@@ -11,7 +12,6 @@ use sunrise_telemetry::payload::{
 use sunrise_telemetry::{Item, outbox};
 use sunrise_telemetry_server::store::{self, Store};
 use sunrise_telemetry_server::{App, Config, router};
-use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 const DAY: u32 = 20_741;

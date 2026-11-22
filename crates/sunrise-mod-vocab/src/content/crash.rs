@@ -28,19 +28,19 @@ pub fn native_frame() -> Option<u64> {
         .flatten()
 }
 #[inline]
-pub(crate) fn push(call: ModCall) -> (u64, Option<ModCall>) {
+pub(crate) fn push(call: Option<ModCall>) -> (u64, Option<ModCall>) {
     CURRENT_CRASH_OWNER
         .try_with(|owner| {
             let mut current = owner.get();
             let outer = (current.frame, current.call);
-            current.frame = match current.next_frame.checked_add(1) {
-                Some(next) => {
-                    current.next_frame = next;
-                    next
-                }
-                None => 0,
+            current.frame = if let Some(next) = call.and_then(|_| current.next_frame.checked_add(1))
+            {
+                current.next_frame = next;
+                next
+            } else {
+                0
             };
-            current.call = Some(call);
+            current.call = call;
             owner.set(current);
             outer
         })
@@ -84,7 +84,7 @@ pub struct ConvertedCall {
 // no wire: process-local crash attribution uses static runtime identities; not a hook payload.
 /// The packages one native runtime declared it loaded.
 ///
-/// A runtime that hosts converted code (a converter's wasm packages, a Java interpreter running
+/// A runtime that hosts converted code (for example, a Java interpreter running
 /// jars) builds this once from the packages it loaded and keeps it while they run. A call into
 /// a package goes through the [`ConvertedPackage`] this registry hands out for an id it
 /// declared, so guest code cannot name a package from another mod. The runtime's own `[mod] id`

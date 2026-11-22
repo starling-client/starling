@@ -6,8 +6,9 @@
 //! on it in the same tick and the inbox goes on from there (the turn pauses as it does for a raw
 //! payload). The game
 //! fires the hook with nothing of the hub borrowed and calls [`Hub::resolve_move`]: commit, or drop
-//! and correct the client to the accepted position and look. With no listener nothing is held:
-//! [`Hub::accept_move`] commits at once, as it did before the hook existed.
+//! and correct the client to the accepted position and look. With no listener,
+//! [`Hub::accept_move`] commits at once. Either way, the game completes the effects of an
+//! accepted move before the inbox resumes.
 //!
 //! Not heard, and committed in place: a player's first tick in a level (the tick after a join or a
 //! level change), the confirmation of a teleport, and a passage crossing. A report that arrives
@@ -15,6 +16,7 @@
 //! correction a veto sends is not heard either.
 
 use super::{HostEvent, Hub};
+use crate::lan::guest::GuestMove;
 
 /// How many ticks a report may stay pending, the tick it was held at the first of them: it can be
 /// ruled on up to the 20th tick, and the 21st finds it out of time, dropped with the correction and
@@ -72,6 +74,15 @@ pub struct MoveReport {
     pub to_rotation: [f32; 2],
 }
 
+/// The committed position and the pre-move state needed by the game's movement effects.
+#[derive(Clone, Copy, Debug)]
+pub struct CommittedMove {
+    pub movement: GuestMove,
+    pub horizontal_collision: bool,
+    pub from: [f64; 3],
+    pub jump_yaw: Option<f32>,
+}
+
 impl Hub {
     /// Commits the validated report `m` of guest `i`, or holds it for the mods when one listens, it
     /// is `Heard` and it changes the position or the look. A passenger never gets here (its vehicle
@@ -106,7 +117,10 @@ impl Hub {
             events.push(HostEvent::PlayerMove(conn));
             return;
         }
-        self.commit_move(i, m, events);
+        let committed = self.commit_move(i, m);
+        if self.dispatch_move_effects {
+            events.push(HostEvent::AcceptedMove(self.guests[i].conn, committed));
+        }
         // Committed in place: the baseline follows it, except on a teleport's confirmation, which
         // leaves it at the teleport's destination.
         if hearing != Hearing::Confirmation {
@@ -125,7 +139,7 @@ impl Hub {
     }
 
     /// `handlePlayerPositionChange`'s commit: the report becomes the player's state.
-    fn commit_move(&mut self, i: usize, m: Accepted, events: &mut Vec<HostEvent>) {
+    fn commit_move(&mut self, i: usize, m: Accepted) -> CommittedMove {
         let Accepted {
             to,
             yaw,
@@ -138,30 +152,37 @@ impl Hub {
             g.client_is_floating = floating;
             // Entity.move's verticalCollisionBelow, which the check above reads of the last move.
             g.rests_on_ground = stands;
-            g.previous_position = g.position;
-            g.position = to;
+            g.accept_move(to);
             // ServerChunkCache.move: its pairs are checked again.
             g.moved = true;
-            let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+            let from = g.previous_position;
+            let moved = [0, 1, 2].map(|k| g.position[k] - from[k]);
             if g.moves.is_empty() {
                 g.moves_from_ground = g.on_ground;
             }
             let on_ground = flags & 1 != 0;
-            if g.on_ground && !on_ground && moved[1] > 0.0 && !g.spectator() {
-                events.push(HostEvent::Jump {
-                    conn: g.conn,
-                    from: g.previous_position,
-                    yaw: g.yaw,
-                });
-            }
-            g.moves.push((moved, on_ground));
+            let jump_yaw =
+                (g.on_ground && !on_ground && moved[1] > 0.0 && !g.spectator()).then_some(g.yaw);
+            let movement = GuestMove {
+                position: g.position,
+                delta: moved,
+                on_ground,
+                sneaking: g.sneaking,
+            };
+            g.moves.push(movement);
             g.known_movement = moved;
             g.yaw = yaw;
             g.pitch = pitch.clamp(-90.0, 90.0);
             g.head_yaw = g.yaw;
-            g.on_ground = flags & 1 != 0;
+            g.on_ground = on_ground;
             g.ticks = g.ticks.max(1);
-        });
+            CommittedMove {
+                movement,
+                horizontal_collision: flags & 2 != 0,
+                from,
+                jump_yaw,
+            }
+        })
     }
 
     /// Whether guest `i`'s inbox waits behind a pending report. A report past its time, or whose
@@ -236,23 +257,17 @@ impl Hub {
     /// The mods ruled on guest `conn`'s pending report: `commit` applies it, otherwise (or when the
     /// ruling is past [`MOVE_PENDING_TICKS`]) it is dropped and the client corrected. Nothing happens if the player is gone or has no pending
     /// report any more (a disconnect, a teleport or a level change dropped it).
-    pub fn resolve_move(&mut self, conn: u32, commit: bool) {
-        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
-            return;
-        };
-        let Some(p) = self.guests.update(i, |g| g.pending_move.take()) else {
-            return;
-        };
+    pub fn resolve_move(&mut self, conn: u32, commit: bool) -> Option<CommittedMove> {
+        let i = self.guests.connection_index(conn)?;
+        let p = self.guests.update(i, |g| g.pending_move.take())?;
         if !self.pending_is_current(i, &p) {
-            return;
+            return None;
         }
         // A ruling that comes too late is no ruling: out of time, the report is dropped.
         if !commit || self.move_expired(&p) {
             self.correct_move(i);
-            return;
+            return None;
         }
-        let mut events = Vec::new();
-        self.commit_move(i, p.report, &mut events);
-        self.pending_kicks.extend(events);
+        Some(self.commit_move(i, p.report))
     }
 }

@@ -9,6 +9,7 @@ description = "Commands (Brigadier): the vanilla command tree, argument types, s
 [dependencies]
 sunrise-client-core = { path = "../sunrise-client-core" }
 sunrise-core = { path = "../sunrise-core" }
+mod_vocab = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
 sunrise-items = { path = "../sunrise-items" }
 sunrise-protocol = { path = "../sunrise-protocol" }
 sunrise-world = { path = "../sunrise-world" }

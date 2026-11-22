@@ -1,0 +1,1 @@
+sunrise-mod-vocab client::client_reload::tests::reload_registration_reports_each_refusal_without_latching_but_a_cycle_fails lib daily child-process

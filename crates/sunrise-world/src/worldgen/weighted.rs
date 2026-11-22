@@ -1,7 +1,7 @@
 //! Weighted choices with vanilla draw consumption and ordered entries.
 use super::{DecodeError, Object, int_range, required};
-use sunrise_core::random::{InvalidBound, RandomSource};
 use serde_json::value::RawValue;
+use sunrise_core::random::{InvalidBound, RandomSource};
 
 #[derive(Clone, Debug)]
 pub struct WeightedList<T> {

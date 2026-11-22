@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::native_entity_refs::tests::run_fresh_cases;
 use sunrise_client::{datapack_net, lan::Out};
 use sunrise_protocol::{buf::Reader, packets::play::Clientbound};
 
@@ -39,8 +40,16 @@ fn apply_packets(rx: &std::sync::mpsc::Receiver<Out>) -> usize {
 }
 
 #[test]
-#[ignore = "needs prepared resources and isolated homes"]
+#[ignore = "daily"]
 fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_refused_guests() {
+    // Both peers use process-wide snapshots; another fixture must not replace either one.
+    if run_fresh_cases(
+        "game::server_reload::tests::datapack_publication_tests::datapack_game_delivery_tests::datapack_game_reload_delivers_only_successful_generations_and_disconnects_refused_guests",
+        "SUNRISE_DATAPACK_RELOAD_DELIVERY_CHILD",
+        &["delivery"],
+    ) {
+        return;
+    }
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path();
     let pack = root.join("datapacks/base");
@@ -67,9 +76,13 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
                 };
                 datapack_net::accept(&bytes).unwrap();
                 let first = datapack_net::received().unwrap();
-                let handle = first
-                    .handle("registry_test:spell", "registry_test:fire")
-                    .unwrap();
+                assert_eq!(
+                    first
+                        .get("registry_test:spell", "registry_test:fire")
+                        .unwrap()
+                        .get("power"),
+                    Some(&DatapackValue::Int(7))
+                );
                 let rx = crate::game::lan::world_spawn_sync_tests::host_for(game);
                 game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
                     g.brand = "sunrise".into();
@@ -79,19 +92,14 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
                 assert!(game.run_command("reload"));
                 assert!(
                     apply_packets(&rx) > 0,
-                    "the coordinator must send its committed generation"
+                    "the coordinator must send its committed set"
                 );
                 let received = datapack_net::received().unwrap();
-                assert_eq!(received.generation(), 2);
                 assert_eq!(
-                    received.get(&handle),
-                    Err(mod_api::DatapackReadError::StaleGeneration)
-                );
-                let next = received
-                    .handle("registry_test:spell", "registry_test:fire")
-                    .unwrap();
-                assert_eq!(
-                    received.get(&next).unwrap().get("power"),
+                    received
+                        .get("registry_test:spell", "registry_test:fire")
+                        .unwrap()
+                        .get("power"),
                     Some(&DatapackValue::Int(9))
                 );
                 write(&entry, "{broken");
@@ -101,7 +109,14 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
                     0,
                     "failed preparation must send no replacement"
                 );
-                assert_eq!(datapack_net::received().unwrap().generation(), 2);
+                assert_eq!(
+                    datapack_net::received()
+                        .unwrap()
+                        .get("registry_test:spell", "registry_test:fire")
+                        .unwrap()
+                        .get("power"),
+                    Some(&DatapackValue::Int(9))
+                );
                 game.lan
                     .as_mut()
                     .unwrap()

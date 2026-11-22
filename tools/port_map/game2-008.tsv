@@ -68,7 +68,7 @@ HangingEntityItem.appendHoverText	port	crates/sunrise-client/src/game/blocks/sta
 Item.getDestroySpeed	port	crates/sunrise-items/src/items.rs::Items::mining_speed
 Item.finishUsingItem	port	crates/sunrise-client/src/game/items/using_item.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
 Item.getBarColor	port	crates/sunrise-client-render/src/hud_overlays.rs::damage_bar	width and hue from the damage fraction
-Item.mineBlock	port	crates/sunrise-client/src/game.rs::Game::mine_block_with_held
+Item.mineBlock	port	crates/sunrise-client/src/game/blocks/block_breaking.rs::Game::mine_block_with_held
 Item.isCorrectToolForDrops	port	crates/sunrise-items/src/items.rs::Items::correct_for_drops
 Item.getUseAnimation	port	crates/sunrise-items/src/use_animation.rs::consumable_animation	consumable animation; the block and spear poses are handled by the item pose code
 Item.getPlayerPOVHitResult	port	crates/sunrise-client/src/game.rs::Game::pick	the view ray from the eyes; the fluid variant is Game::pick_fluid

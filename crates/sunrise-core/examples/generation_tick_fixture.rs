@@ -1,15 +1,15 @@
 //! Private native differential transport for generation-stage tick containers.
+use std::{
+    collections::BTreeMap,
+    io::{self, BufRead, Write},
+    str::{FromStr, SplitWhitespace},
+};
 use sunrise_core::{
     position::BlockPos,
     ticks::{
         ChunkTicks, ProtoChunkTicks, SavedTick, ScheduledTick, TickContainerAccess, TickPriority,
         TickTypeId, WorldGenTickAccess, WorldGenTickContainers,
     },
-};
-use std::{
-    collections::BTreeMap,
-    io::{self, BufRead, Write},
-    str::{FromStr, SplitWhitespace},
 };
 enum Container {
     Proto(ProtoChunkTicks),

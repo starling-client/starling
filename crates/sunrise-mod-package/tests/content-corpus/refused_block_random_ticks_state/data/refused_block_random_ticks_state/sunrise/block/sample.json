@@ -1,0 +1,1 @@
+{"template": "minecraft:stone", "properties": {"random_ticks": {"property": "lit", "values": ["on"]}}, "state_properties": {"lit": {"type": "boolean"}}}

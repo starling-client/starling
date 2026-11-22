@@ -1,0 +1,43 @@
+ids = [
+    "type:BlockState",
+    "type:BlockStateRecord",
+    "handle:BlockStateRecord::new",
+    "type:BlockStateRecord.block",
+    "type:BlockStateRecord.state",
+    "method:BlockMetadata::property",
+    "method:BlockMetadata::with",
+    "method:BlockMetadata::of",
+]
+why = "Block metadata uses the existing copyable BlockState instead of a second record. Property reads still borrow from immutable metadata, and changing a property returns a value without writing to the world."
+migrate = """
+Replace `BlockStateRecord` with `BlockState`. Replace `record.block` with
+`state.block()` and `record.state` with `state.ordinal()`. Drop both conversions:
+`BlockState::from(record)` and `BlockStateRecord::from(&state)` become the state
+value itself, as do the corresponding `.into()` calls.
+
+Replace `BlockStateRecord::new(key, ordinal)` with a registry lookup. With
+`let metadata = host.block_states()` (import `HostBlockStates`), use
+`metadata.states_of(key).and_then(|range| range.iter().nth(usize::from(ordinal)))`
+to look up an existing local ordinal, or `BlockState::of(&metadata, key, constraints)`
+to construct a state from its block's default and a slice of `StateConstraint`s.
+Handle `None` for an unavailable range or missing ordinal, or `BlockStateError`
+for refused construction. Tint workers get only `&dyn BlockMetadata`, not a
+`Host`. If you previously passed only a key and ordinal to a worker, do the
+`states_of` lookup on the owning thread while you have the Host, handle a missing
+state there, and retain the copyable `BlockState` in the data sent to the worker.
+Use the callback's `BlockState` for the block being tinted. If you have property
+constraints rather than an ordinal, the worker can pass its metadata directly
+to `BlockState::of`.
+
+In implementations of the low-level `BlockMetadata` trait, `property` and `with`
+take `state: BlockState`; `with` and `of` return `Result<BlockState, BlockStateError>`.
+Apply the same changes to `block_metadata_property`, `block_metadata_with` and
+`block_metadata_of` in low-level test backends. The backend methods
+`block_weathering_age`, `block_next_weathering_stage`, `block_previous_weathering_stage`,
+`block_state_waxed` and `block_state_unwaxed` take `state: BlockState`; their
+return types are unchanged.
+
+Normal calls to `state.property`, `state.with`, `BlockState::of` and the weathering
+and wax queries on `host.block_states()` are unchanged. `with` does not write to
+the world; world writes still use the existing level methods.
+"""

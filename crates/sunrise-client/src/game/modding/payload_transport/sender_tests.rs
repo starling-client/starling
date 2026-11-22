@@ -1,8 +1,4 @@
 //! Physical sender identity and action ordering through the real server main inbox.
-use sunrise_protocol::{
-    connection::Connection,
-    packets::{Empty, configuration as cfg, play},
-};
 use mod_api::{
     HandlerThread, Hooks, IPayloadContext, IPayloadHandler, ModEntry, PayloadBytes,
     PayloadDirection, PayloadId, PayloadProtocol, Registrar,
@@ -10,6 +6,10 @@ use mod_api::{
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
+};
+use sunrise_protocol::{
+    connection::Connection,
+    packets::{Empty, configuration as cfg, play},
 };
 
 const NAME: &str =
@@ -79,7 +79,7 @@ impl Hooks for Registration {
 }
 
 #[test]
-#[ignore = "needs SUNRISE_TEST_RESOURCES; starts an integrated server and two physical TCP clients"]
+#[ignore = "daily"]
 fn published_tcp_attributes_players_and_orders_actions() {
     super::tests::require_resources();
     if super::super::native_entity_refs::tests::run_fresh_cases(

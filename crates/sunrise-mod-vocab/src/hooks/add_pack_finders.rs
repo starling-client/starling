@@ -3,21 +3,28 @@ pub trait Hooks {
     /// Add discoverable resource or data packs before a repository selects its
     /// packs (`AddPackFindersEvent`). The builder reports the repository's pack
     /// type. Runs at startup and whenever that repository is rediscovered; no
-    /// world state is available during startup registration.
+    /// world state is available during startup registration. Disabled native
+    /// mods' listeners are skipped from the first startup discovery onwards.
+    /// A callback that panics contributes no packs; later callbacks still run.
     #[notes = r##"## Discoverable bundled packs
 
-`Hooks::add_pack_finders` receives a typed `HostSide` and an
-`AddPackFindersEvent`. Use `event.packs.pack_type()` to distinguish
+`Hooks::add_pack_finders` receives a `&mut dyn PackDiscoveryContext` and an
+`AddPackFindersEvent`. It provides local text operations before a game exists.
+On live rediscovery, `context.live_host()` lends the game's `HostSide`; whether
+that host has an open world is separate. Use `event.packs.pack_type()` to distinguish
 `PackType::ClientResources` from `PackType::ServerData`. Register a
 `PackRegistration` with `event.packs.add_pack_finders(...)`; registrations for
 the other repository type are ignored. This hook contributes whole packs, while
-resource-file hooks and reload listeners retain their separate roles.
+resource-file hooks and reload listeners retain their separate roles. Native
+mods disabled in `sunrise-mods.txt` are skipped before their listener is
+entered, from the first startup discovery onwards.
 
 A location such as `example:assets/example/resourcepacks/high_contrast` names a
 loaded mod and a directory inside its package, containing `pack.mcmeta` and the
 usual `assets/` or `data/` tree. Folder packages and `.smod` archives use the same
 logical paths, without extraction. Invalid locations, missing metadata and
-duplicate repository ids return `PackFinderError` without adding a partial pack.
+duplicate repository ids return and log a `PackFinderError` without adding a partial pack.
+A panic discards only the current listener's packs.
 
 The repository id is `mod/<location>`. Packs are optional by default: resource
 packs appear in Resource Packs, and data packs appear in the world's Data Packs
@@ -39,6 +46,15 @@ screens, for a compatibility pack or texture override players should not see.
 A hidden pack still loads when selected, so pair it with `always_active` for one
 that is always on. `/datapack list` and `/datapack enable|disable` still name
 hidden data packs for operators."##]
-    #[hook(side = "both", contract = "listen", neoforge = "AddPackFindersEvent")]
-    fn add_pack_finders();
+    #[hook(
+        receiver = "associated",
+        context = "pack_discovery",
+        dispatch = "flat",
+        side = "both",
+        contract = "listen",
+        staged_surface = "packs",
+        neoforge = "AddPackFindersEvent",
+        version = 4
+    )]
+    fn add_pack_finders(packs: &mut dyn mod_api::PackFinders);
 }

@@ -1,241 +1,14 @@
 //! Text components from commands: `ComponentArgument` reads an SNBT (or JSON)
 //! value, `ComponentSerialization` turns it into styled text.
-use crate::text::{InlineObject, Origin, Style, Text, named_color};
+use crate::text::{ClickEvent, InlineObject, Origin, Style, Text, named_color};
+use serde_json::Value;
 use sunrise_core::nbt::Tag;
-use serde_json::{Map, Value};
 
-/// `SnbtGrammar`, enough for components: compounds, lists, quoted and
-/// unquoted strings, numbers (with type suffixes) and booleans. Returns the
-/// value and the bytes consumed.
+/// `SnbtGrammar` into JSON for the text renderer, using the canonical NBT parser.
 pub fn parse_snbt(input: &str) -> Result<(Value, usize), String> {
-    let mut p = Parser {
-        s: input.as_bytes(),
-        i: 0,
-        depth: 0,
-    };
-    let v = p.value()?;
-    Ok((v, p.i))
-}
-/// Nesting deeper than NBT's own limit (`NbtAccounter`'s 512) is refused
-/// rather than overflowing the stack.
-const SNBT_MAX_DEPTH: usize = 512;
-struct Parser<'a> {
-    s: &'a [u8],
-    i: usize,
-    depth: usize,
-}
-impl Parser<'_> {
-    fn ws(&mut self) {
-        while self.i < self.s.len() && self.s[self.i].is_ascii_whitespace() {
-            self.i += 1;
-        }
-    }
-    fn peek(&self) -> Option<u8> {
-        self.s.get(self.i).copied()
-    }
-    fn expect(&mut self, c: u8) -> Result<(), String> {
-        self.ws();
-        if self.peek() == Some(c) {
-            self.i += 1;
-            Ok(())
-        } else {
-            Err(format!("expected '{}'", c as char))
-        }
-    }
-    fn value(&mut self) -> Result<Value, String> {
-        self.ws();
-        match self.peek() {
-            Some(b'{') => {
-                if self.depth >= SNBT_MAX_DEPTH {
-                    return Err(format!("tag nesting too deep at {}", self.i));
-                }
-                self.depth += 1;
-                let v = self.object();
-                self.depth -= 1;
-                v
-            }
-            Some(b'[') => {
-                if self.depth >= SNBT_MAX_DEPTH {
-                    return Err(format!("tag nesting too deep at {}", self.i));
-                }
-                self.depth += 1;
-                let v = self.array();
-                self.depth -= 1;
-                v
-            }
-            Some(b'"' | b'\'') => Ok(Value::String(self.string()?)),
-            Some(_) => {
-                let word = self.unquoted();
-                if word.is_empty() {
-                    return Err("expected a value".into());
-                }
-                Ok(match word.as_str() {
-                    "true" => Value::Bool(true),
-                    "false" => Value::Bool(false),
-                    _ => {
-                        let digits = word
-                            .trim_end_matches(['b', 'B', 's', 'S', 'l', 'L', 'f', 'F', 'd', 'D']);
-                        // Only digits (and an exponent) make a number: `nan`
-                        // or `Infinity`, which Rust's parse would take, stays
-                        // a string.
-                        if digits
-                            .bytes()
-                            .any(|c| c.is_ascii_alphabetic() && c != b'e' && c != b'E')
-                        {
-                            Value::String(word)
-                        } else {
-                            match (digits.parse::<i64>(), digits.parse::<f64>()) {
-                                (Ok(n), _) if digits.len() + 1 >= word.len() => Value::from(n),
-                                (_, Ok(f)) if digits.len() + 1 >= word.len() => Value::from(f),
-                                _ => Value::String(word),
-                            }
-                        }
-                    }
-                })
-            }
-            None => Err("expected a value".into()),
-        }
-    }
-    fn object(&mut self) -> Result<Value, String> {
-        self.i += 1;
-        let mut map = Map::new();
-        self.ws();
-        if self.peek() == Some(b'}') {
-            self.i += 1;
-            return Ok(Value::Object(map));
-        }
-        loop {
-            self.ws();
-            let key = self.string()?;
-            self.expect(b':')?;
-            map.insert(key, self.value()?);
-            self.ws();
-            match self.peek() {
-                // SnbtGrammar: an entry may be followed by a comma before the brace.
-                Some(b',') => {
-                    self.i += 1;
-                    self.ws();
-                    if self.peek() == Some(b'}') {
-                        self.i += 1;
-                        return Ok(Value::Object(map));
-                    }
-                }
-                Some(b'}') => {
-                    self.i += 1;
-                    return Ok(Value::Object(map));
-                }
-                _ => return Err("expected ',' or '}'".into()),
-            }
-        }
-    }
-    fn array(&mut self) -> Result<Value, String> {
-        self.i += 1;
-        let mut list = Vec::new();
-        self.ws();
-        // Typed arrays [B;...], [I;...], [L;...].
-        if matches!(
-            self.s.get(self.i..self.i + 2),
-            Some([b'B' | b'I' | b'L', b';'])
-        ) {
-            self.i += 2;
-        }
-        self.ws();
-        if self.peek() == Some(b']') {
-            self.i += 1;
-            return Ok(Value::Array(list));
-        }
-        loop {
-            list.push(self.value()?);
-            self.ws();
-            match self.peek() {
-                // SnbtGrammar: a list or array may end with a comma.
-                Some(b',') => {
-                    self.i += 1;
-                    self.ws();
-                    if self.peek() == Some(b']') {
-                        self.i += 1;
-                        return Ok(Value::Array(list));
-                    }
-                }
-                Some(b']') => {
-                    self.i += 1;
-                    return Ok(Value::Array(list));
-                }
-                _ => return Err("expected ',' or ']'".into()),
-            }
-        }
-    }
-    fn unquoted(&mut self) -> String {
-        let start = self.i;
-        while let Some(c) = self.peek() {
-            if c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b'+') {
-                self.i += 1;
-            } else {
-                break;
-            }
-        }
-        String::from_utf8_lossy(&self.s[start..self.i]).into_owned()
-    }
-    /// Up to four hex digits after `\u`; 0xFFFD where they are missing.
-    fn hex4(&mut self) -> u32 {
-        let digits = self.s[self.i..]
-            .iter()
-            .take(4)
-            .map_while(|b| (*b as char).to_digit(16));
-        let (mut value, mut n) = (0, 0);
-        for d in digits {
-            value = value * 16 + d;
-            n += 1;
-        }
-        self.i += n;
-        if n == 4 { value } else { 0xFFFD }
-    }
-    fn string(&mut self) -> Result<String, String> {
-        self.ws();
-        let Some(q @ (b'"' | b'\'')) = self.peek() else {
-            return Ok(self.unquoted());
-        };
-        self.i += 1;
-        let mut out = Vec::new();
-        while let Some(c) = self.peek() {
-            self.i += 1;
-            match c {
-                b'\\' => {
-                    let Some(e) = self.peek() else { break };
-                    self.i += 1;
-                    match e {
-                        b'n' => out.push(b'\n'),
-                        b't' => out.push(b'\t'),
-                        b'r' => out.push(b'\r'),
-                        b'b' => out.push(0x08),
-                        b'f' => out.push(0x0c),
-                        // `\uXXXX` as JSON and SNBT write it, a surrogate pair as one char.
-                        b'u' => {
-                            let mut unit = self.hex4();
-                            if (0xD800..0xDC00).contains(&unit)
-                                && self.s[self.i..].starts_with(b"\\u")
-                            {
-                                let saved = self.i;
-                                self.i += 2;
-                                let low = self.hex4();
-                                if (0xDC00..0xE000).contains(&low) {
-                                    unit = 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00);
-                                } else {
-                                    self.i = saved;
-                                }
-                            }
-                            let c = char::from_u32(unit).unwrap_or('\u{FFFD}');
-                            out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
-                        }
-                        other => out.push(other),
-                    }
-                }
-                c if c == q => return Ok(String::from_utf8_lossy(&out).into_owned()),
-                c => out.push(c),
-            }
-        }
-        Err("unterminated string".into())
-    }
+    let (tag, used) = sunrise_core::nbt::parse_snbt(input)?;
+    let value = sunrise_core::json_nbt::tag_to_json(&tag).map_err(|error| error.to_string())?;
+    Ok((value, used))
 }
 /// `click_event` / `hover_event`, or the pre-datafixer `clickEvent` /
 /// `hoverEvent` names SNBT and older chat JSON still use.
@@ -258,31 +31,24 @@ pub fn style_flag(v: Option<&Value>) -> Option<bool> {
     }
 }
 
-/// ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
-/// https only, scheme case-insensitive. Every `open_url` a server sends must
-/// pass it: anything else (`file:`, a UNC path, a custom protocol handler)
-/// could start a program through the system's URL handler.
-pub fn untrusted_http_url(url: &str) -> bool {
-    url.split_once(':').is_some_and(|(scheme, _)| {
-        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-    })
-}
+pub use sunrise_core::text::untrusted_http_url;
 
-/// `ClickEvent.CODEC` plus the legacy `value` field TextComponentHoverAndClickEventFix
-/// renames (`url` / `command` / `page`).
+/// A current `ClickEvent.CODEC` value, with no legacy field fallbacks.
 pub fn parse_click_event(
     e: &serde_json::Map<String, Value>,
 ) -> Result<Option<crate::text::ClickEvent>, sunrise_core::json_nbt::JsonNbtError> {
-    parse_click_event_origin(e, Origin::Remote)
+    parse_click_event_origin(e, Origin::Remote, false)
 }
 fn parse_click_event_origin(
     e: &serde_json::Map<String, Value>,
     origin: Origin,
+    legacy_fields: bool,
 ) -> Result<Option<crate::text::ClickEvent>, sunrise_core::json_nbt::JsonNbtError> {
     use crate::text::ClickEvent;
     use sunrise_core::json_nbt::json_to_tag;
     let text = |k: &str| e.get(k).and_then(Value::as_str).map(str::to_owned);
-    let legacy = || text("value");
+    // Rendering also reads pre-DataFixer chat and SNBT. The current codec does not.
+    let legacy = || legacy_fields.then(|| text("value")).flatten();
     let event = match e.get("action").and_then(Value::as_str) {
         Some("open_file") if origin == Origin::Local => text("path").map(ClickEvent::OpenFile),
         Some("open_url") => text("url")
@@ -292,11 +58,12 @@ fn parse_click_event_origin(
         Some("change_page") => e
             .get("page")
             .and_then(Value::as_i64)
-            .or_else(|| e.get("value").and_then(Value::as_i64))
             .or_else(|| {
-                e.get("value")
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.parse().ok())
+                if !legacy_fields {
+                    return None;
+                }
+                let value = e.get("value")?;
+                value.as_i64().or_else(|| value.as_str()?.parse().ok())
             })
             .and_then(|p| i32::try_from(p).ok())
             .filter(|p| origin == Origin::Local || *p >= 1)
@@ -389,10 +156,18 @@ fn object_style<'a>(
     o: &'a serde_json::Map<String, Value>,
     child: &mut dyn FnMut(&'a Value) -> Text,
     origin: Origin,
+    decoded_clicks: Option<&[crate::text::ClickEvent]>,
+    local_styles: bool,
 ) -> Style {
     let mut style = Style::default();
+    if local_styles {
+        style.opaque_style_id = o
+            .get("__sunrise_local_style_id")
+            .and_then(Value::as_u64)
+            .and_then(|id| usize::try_from(id).ok());
+    }
     if let Some(c) = o.get("color").and_then(Value::as_str) {
-        style.color = named_color(c).or_else(|| hex_color(c));
+        style.color = parse_color(c);
     }
     style.shadow_color = o.get("shadow_color").and_then(shadow_color);
     style.bold = style_flag(o.get("bold"));
@@ -403,8 +178,14 @@ fn object_style<'a>(
     style.font = o.get("font").and_then(crate::text::font_id);
     // ClickEvent.CODEC: the actions a chat line acts on here. A component
     // from a server never opens a file.
-    if let Some(e) = style_event_object(o, "click_event", "clickEvent") {
-        style.click = parse_click_event_origin(e, origin).ok().flatten();
+    if let Some(clicks) = decoded_clicks {
+        style.click = o
+            .get("click_event")
+            .and_then(Value::as_u64)
+            .and_then(|index| clicks.get(index as usize))
+            .cloned();
+    } else if let Some(e) = style_event_object(o, "click_event", "clickEvent") {
+        style.click = parse_click_event_origin(e, origin, true).ok().flatten();
     }
     // HoverEvent.ShowText, ShowItem and ShowEntity.
     if let Some(e) = style_event_object(o, "hover_event", "hoverEvent") {
@@ -443,8 +224,8 @@ pub(crate) fn hex_color(c: &str) -> Option<u32> {
 }
 
 /// Whether `c` is a style `color` (`TextColor.parseColor`): a named colour or `#` and hex.
-pub fn is_color(c: &str) -> bool {
-    named_color(c).is_some() || hex_color(c).is_some()
+pub fn parse_color(c: &str) -> Option<u32> {
+    named_color(c).or_else(|| hex_color(c))
 }
 
 /// `Style.shadow_color`: a packed ARGB int or normalized RGBA array.
@@ -479,9 +260,50 @@ pub fn to_text_with(
     resolve: &mut dyn FnMut(&str) -> Text,
     contents: &mut dyn FnMut(&serde_json::Map<String, Value>) -> Option<Text>,
 ) -> Text {
-    build(v, resolve, contents, Sourced(true, Origin::Remote), &|_| {
-        Origin::Remote
-    })
+    build(
+        v,
+        resolve,
+        contents,
+        Sourced(true, Origin::Remote),
+        &|_| Origin::Remote,
+        None,
+        None,
+        false,
+    )
+    .unwrap_or_default()
+}
+
+/// Project an already checked network component. Its `click_event` fields are
+/// indices into `clicks`, so opaque NBT never passes through the JSON renderer.
+pub fn text_with_decoded_clicks(v: &Value, clicks: &[crate::text::ClickEvent]) -> Text {
+    build(
+        v,
+        &mut |s| Text::literal(s),
+        &mut |_| None,
+        Sourced(true, Origin::Remote),
+        &|_| Origin::Remote,
+        None,
+        Some(clicks),
+        false,
+    )
+    .unwrap_or_default()
+}
+
+/// Render the engine-generated local layout projection, which omits user metadata.
+/// Only that projection's internally assigned style indices are used, and its
+/// objects are not retained as a serialized source.
+pub fn text_with_local_styles(v: &Value) -> Text {
+    build(
+        v,
+        &mut |s| Text::literal(s),
+        &mut |_| None,
+        Sourced(false, Origin::Local),
+        &|_| Origin::Local,
+        None,
+        None,
+        true,
+    )
+    .unwrap_or_default()
 }
 
 /// The spans of `v` alone, as [`to_text`] decodes them, with `v` itself as the text's
@@ -494,12 +316,31 @@ pub(crate) fn spans_of(v: Value) -> Text {
 }
 
 pub(crate) fn render_source(v: &Value, origin: &dyn Fn(&Value) -> Origin) -> Text {
+    build_source(v, origin, None).unwrap_or_default()
+}
+
+pub(crate) fn render_lang_component(
+    v: &Value,
+    origin: Origin,
+    language: &crate::lang::Language,
+) -> Option<Text> {
+    build_source(v, &|_| origin, Some(language))
+}
+
+fn build_source(
+    v: &Value,
+    origin: &dyn Fn(&Value) -> Origin,
+    language: Option<&crate::lang::Language>,
+) -> Option<Text> {
     build(
         v,
         &mut |s| Text::literal(s),
         &mut |_| None,
         Sourced(false, Origin::Remote),
         origin,
+        language,
+        None,
+        false,
     )
 }
 
@@ -534,8 +375,25 @@ impl Sourced {
             }
         }
     }
-    /// MutableComponent.append.
-    fn append(self, base: &mut Text, other: Text) {
+    /// MutableComponent.append. Don't allocate an oversized concatenation while
+    /// resolving pack entries. The remaining allowance is local to this output;
+    /// returning the same rendered text through references doesn't charge it again.
+    fn append(
+        self,
+        base: &mut Text,
+        other: Text,
+        style: &Style,
+        remaining: &mut Option<usize>,
+    ) -> Option<()> {
+        if let Some(bytes) = remaining {
+            if base.rendered.spans.len() + other.rendered.spans.len()
+                > crate::text::MAX_TRANSLATION_SPANS
+            {
+                return None;
+            }
+            *bytes = bytes.checked_sub(rendered_bytes(&other, Some(style)))?;
+        }
+        let other = self.styled(other, style);
         match self.0 {
             true => base.push(other),
             false => {
@@ -544,6 +402,7 @@ impl Sourced {
                 crate::text::discard_text(other);
             }
         }
+        Some(())
     }
     fn styled(self, mut text: Text, style: &Style) -> Text {
         match self.0 {
@@ -578,6 +437,202 @@ impl Sourced {
     }
 }
 
+/// The owned bytes copied by rendering or flattening these spans. Count the
+/// payload behind an object marker and text added by style inheritance before
+/// cloning either. Shared hover and NBT payloads are reference-counted.
+pub(crate) fn rendered_bytes(text: &Text, inherited: Option<&Style>) -> usize {
+    text.rendered
+        .spans
+        .iter()
+        .map(|span| {
+            let style = &span.style;
+            let insertion = style
+                .insertion
+                .as_ref()
+                .or(inherited.and_then(|base| base.insertion.as_ref()));
+            let font = style
+                .font
+                .as_ref()
+                .or(inherited.and_then(|base| base.font.as_ref()));
+            let click = match style
+                .click
+                .as_ref()
+                .or(inherited.and_then(|base| base.click.as_ref()))
+            {
+                Some(
+                    ClickEvent::OpenUrl(text)
+                    | ClickEvent::SuggestCommand(text)
+                    | ClickEvent::RunCommand(text)
+                    | ClickEvent::CopyToClipboard(text)
+                    | ClickEvent::OpenFile(text)
+                    | ClickEvent::Profiler(text),
+                ) => text.len(),
+                Some(ClickEvent::Custom { id, .. }) => id.len(),
+                Some(ClickEvent::ChangePage(_) | ClickEvent::ShowDialog(_)) | None => 0,
+            };
+            let object = match &style.inline_object {
+                Some(InlineObject::Player { fallback, .. }) => fallback.len(),
+                Some(InlineObject::Atlas {
+                    atlas,
+                    sprite,
+                    fallback,
+                }) => atlas.len() + sprite.len() + fallback.len(),
+                None => 0,
+            };
+            span.text.len()
+                + object
+                + click
+                + insertion.map_or(0, String::len)
+                + font.map_or(0, String::len)
+        })
+        .fold(0usize, usize::saturating_add)
+}
+
+/// A cached replacement owns its rendering once, even when many keys simply alias it.
+struct CachedPiece {
+    text: Text,
+    bytes: usize,
+}
+
+impl Drop for CachedPiece {
+    fn drop(&mut self) {
+        crate::text::discard_text(std::mem::take(&mut self.text));
+    }
+}
+
+enum Piece {
+    Owned(Text, usize),
+    Cached(std::rc::Rc<CachedPiece>),
+}
+
+impl Piece {
+    fn new(text: Text, measure: bool) -> Self {
+        let bytes = if measure {
+            rendered_bytes(&text, None)
+        } else {
+            0
+        };
+        Self::Owned(text, bytes)
+    }
+
+    fn text(&self) -> &Text {
+        match self {
+            Self::Owned(text, _) => text,
+            Self::Cached(piece) => &piece.text,
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Owned(_, bytes) => *bytes,
+            Self::Cached(piece) => piece.bytes,
+        }
+    }
+
+    fn into_text(self) -> Text {
+        match self {
+            Self::Owned(text, _) => text,
+            Self::Cached(piece) => piece.text.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct OutputSize {
+    bytes: usize,
+    spans: usize,
+}
+
+impl OutputSize {
+    fn add(&mut self, bytes: usize, spans: usize) -> Option<()> {
+        self.bytes = self.bytes.checked_add(bytes)?;
+        self.spans = self.spans.checked_add(spans)?;
+        (self.bytes <= crate::text::MAX_TRANSLATION_BYTES
+            && self.spans <= crate::text::MAX_TRANSLATION_SPANS)
+            .then_some(())
+    }
+}
+
+type Node = *const Value;
+
+/// Stack-machine results needed by a parent. A finished sibling must fit before
+/// another starts. A transfer removes the old charge before adding the new one.
+struct ComponentResults {
+    values: std::collections::HashMap<Node, (Piece, Style)>,
+    live: Option<OutputSize>,
+}
+
+impl ComponentResults {
+    fn hold(&mut self, piece: &Piece) -> Option<()> {
+        if let Some(size) = &mut self.live {
+            size.add(piece.bytes(), piece.text().rendered.spans.len())?;
+        }
+        Some(())
+    }
+
+    fn release(&mut self, piece: &Piece) {
+        if let Some(size) = &mut self.live {
+            size.bytes -= piece.bytes();
+            size.spans -= piece.text().rendered.spans.len();
+        }
+    }
+
+    fn insert(&mut self, node: &Value, piece: Piece, style: Style) -> Option<()> {
+        self.hold(&piece)?;
+        self.values.insert(std::ptr::from_ref(node), (piece, style));
+        Some(())
+    }
+
+    fn take(&mut self, node: &Value) -> Option<Piece> {
+        let (piece, style) = self.values.remove(&std::ptr::from_ref(node))?;
+        self.release(&piece);
+        crate::text::discard_style(style);
+        Some(piece)
+    }
+
+    fn take_text(&mut self, node: &Value) -> Text {
+        self.take(node).map(Piece::into_text).unwrap_or_default()
+    }
+}
+
+/// A cached result is independent of the active path unless its expansion
+/// cut a cycle. Path-dependent results may still be shared by siblings in
+/// that same context, but must not change how the cycle is cut elsewhere.
+#[derive(Default)]
+struct Expansion {
+    active: std::collections::HashSet<Node>,
+    memo: std::collections::HashMap<(Node, Option<usize>), std::rc::Rc<CachedPiece>>,
+    path: usize,
+    next_path: usize,
+    cuts: usize,
+    visits_left: Option<usize>,
+    retained: OutputSize,
+}
+
+impl Expansion {
+    // Count scheduled visits as well as new memo entries. Empty results and
+    // distinct paths through a cycle still cost time and table space.
+    fn charge_visits(&mut self, count: usize) -> Option<()> {
+        if let Some(left) = &mut self.visits_left {
+            *left = left.checked_sub(count)?;
+        }
+        Some(())
+    }
+
+    fn remember(&mut self, key: Node, path: Option<usize>, piece: Piece) -> Option<Piece> {
+        self.charge_visits(1)?;
+        let piece = match piece {
+            Piece::Owned(text, bytes) => {
+                self.retained.add(bytes, text.rendered.spans.len())?;
+                std::rc::Rc::new(CachedPiece { text, bytes })
+            }
+            Piece::Cached(piece) => piece,
+        };
+        self.memo.insert((key, path), piece.clone());
+        Some(Piece::Cached(piece))
+    }
+}
+
 // Continuations preserve lazy content selection and callback order while keeping
 // every component relation off the call stack. Hover decoding has its own policy.
 fn build(
@@ -586,16 +641,32 @@ fn build(
     contents: &mut dyn FnMut(&serde_json::Map<String, Value>) -> Option<Text>,
     sourced: Sourced,
     origin: &dyn Fn(&Value) -> Origin,
-) -> Text {
-    use std::collections::HashMap;
+    language: Option<&crate::lang::Language>,
+    decoded_clicks: Option<&[crate::text::ClickEvent]>,
+    local_styles: bool,
+) -> Option<Text> {
+    enum Content<'a> {
+        Decode(Option<Text>),
+        Ready(Piece),
+        Expand(&'a Value, usize, usize),
+    }
     enum Work<'a> {
         Enter(&'a Value, bool),
         Styled(&'a Value, bool),
-        Content(&'a Value, bool, Style, Option<Text>),
-        Finish(&'a Value, bool, Style, Text),
+        Content(&'a Value, bool, Style, Content<'a>),
+        Finish(&'a Value, bool, Style, Piece),
     }
     let mut pending = vec![Work::Enter(v, false)];
-    let mut done = HashMap::<*const Value, (Text, Style)>::new();
+    let mut expansion = Expansion::default();
+    if language.is_some() {
+        const MAX_VISITS: usize = 1 << 17;
+        expansion.visits_left = Some(MAX_VISITS - 1); // The root is already scheduled.
+        expansion.active.insert(std::ptr::from_ref(v));
+    }
+    let mut done = ComponentResults {
+        values: std::collections::HashMap::new(),
+        live: language.map(|_| OutputSize::default()),
+    };
     while let Some(work) = pending.pop() {
         match work {
             Work::Enter(value, hover) => match value {
@@ -608,14 +679,26 @@ fn build(
                             .or_else(|| e.get("contents"))
                             .or_else(|| e.get("text"))
                     {
+                        expansion.charge_visits(1)?;
                         pending.push(Work::Enter(v, true));
                     }
                 }
                 Value::Array(a) => {
-                    pending.push(Work::Content(value, hover, Style::default(), None));
+                    pending.push(Work::Content(
+                        value,
+                        hover,
+                        Style::default(),
+                        Content::Decode(None),
+                    ));
+                    expansion.charge_visits(a.len())?;
                     pending.extend(a.iter().rev().map(|v| Work::Enter(v, hover)));
                 }
-                _ => pending.push(Work::Content(value, hover, Style::default(), None)),
+                _ => pending.push(Work::Content(
+                    value,
+                    hover,
+                    Style::default(),
+                    Content::Decode(None),
+                )),
             },
             Work::Styled(value, hover) => {
                 let Value::Object(o) = value else {
@@ -623,41 +706,74 @@ fn build(
                 };
                 let style = object_style(
                     o,
-                    &mut |v| {
-                        done.remove(&(v as *const Value))
-                            .map(take_built_text)
-                            .unwrap_or_default()
-                    },
+                    &mut |v| done.take_text(v),
                     origin(value),
+                    decoded_clicks,
+                    local_styles,
                 );
                 let overridden = if hover { None } else { contents(o) };
                 let needs_content = overridden.is_none();
-                pending.push(Work::Content(value, hover, style, overridden));
+                let translation = o.get("translate").and_then(Value::as_str).filter(|_| {
+                    needs_content && inline_object_fields(o).is_none() && !o.contains_key("text")
+                });
+                if let Some(replacement) = language.and_then(|lang| lang.component(translation?)) {
+                    // A replacement ignores the referring translation's arguments and fallback.
+                    let key = std::ptr::from_ref(replacement);
+                    let path = expansion.path;
+                    let (content, enter) = if expansion.active.contains(&key) {
+                        expansion.cuts += 1;
+                        (Content::Ready(Piece::Owned(Text::empty(), 0)), false)
+                    } else if let Some(piece) = expansion.memo.get(&(key, None)) {
+                        (Content::Ready(Piece::Cached(piece.clone())), false)
+                    } else if let Some(piece) = expansion.memo.get(&(key, Some(path))) {
+                        expansion.cuts += 1;
+                        (Content::Ready(Piece::Cached(piece.clone())), false)
+                    } else {
+                        expansion.active.insert(key);
+                        expansion.next_path += 1;
+                        expansion.path = expansion.next_path;
+                        (Content::Expand(replacement, path, expansion.cuts), true)
+                    };
+                    pending.push(Work::Content(value, hover, style, content));
+                    if enter {
+                        expansion.charge_visits(1)?;
+                        pending.push(Work::Enter(replacement, false));
+                    }
+                    continue;
+                }
+                pending.push(Work::Content(
+                    value,
+                    hover,
+                    style,
+                    Content::Decode(overridden),
+                ));
                 if needs_content {
                     // inline_object evaluates its fallback before selecting the content.
                     // Arguments are evaluated only for the translation branch.
-                    if inline_object_fields(o).is_none()
-                        && !o.contains_key("text")
-                        && o.get("translate").is_some_and(Value::is_string)
+                    if translation.is_some()
                         && let Some(Value::Array(a)) = o.get("with")
                     {
+                        expansion.charge_visits(a.len())?;
                         pending.extend(a.iter().rev().map(|v| Work::Enter(v, hover)));
                     }
                     if let Some(v) = o.get("fallback") {
+                        expansion.charge_visits(1)?;
                         pending.push(Work::Enter(v, hover));
                     }
                 }
             }
-            Work::Content(value, hover, mut style, overridden) => {
+            Work::Content(value, hover, mut style, content) => {
                 let mode = Sourced(sourced.0 || hover, origin(value));
                 if let Value::Array(a) = value
                     && let Some(first) = a.first()
-                    && let Some((text, own_style)) = done.get(&(first as *const Value))
+                    && let Some((piece, own_style)) = done.values.get(&std::ptr::from_ref(first))
                 {
                     style = if first.is_object() {
                         own_style.clone()
                     } else {
-                        text.rendered
+                        piece
+                            .text()
+                            .rendered
                             .spans
                             .first()
                             .map(|s| s.style.clone())
@@ -667,53 +783,88 @@ fn build(
                 let mut literal = |s: &str| Text::literal(s);
                 let resolver: &mut dyn FnMut(&str) -> Text =
                     if hover { &mut literal } else { resolve };
-                let text = build_node(value, resolver, overridden, mode, &style, &mut |v| {
-                    done.remove(&(v as *const Value))
-                        .map(take_built_text)
-                        .unwrap_or_default()
-                });
+                let replacement_needs_style = !matches!(content, Content::Decode(_));
+                let piece = match content {
+                    Content::Decode(overridden) => Piece::new(
+                        build_node(
+                            value,
+                            resolver,
+                            overridden,
+                            mode,
+                            &style,
+                            &mut |v| done.take_text(v),
+                            language.is_some(),
+                        )?,
+                        language.is_some(),
+                    ),
+                    Content::Ready(piece) => piece,
+                    Content::Expand(replacement, path, cuts) => {
+                        let key = std::ptr::from_ref(replacement);
+                        expansion.active.remove(&key);
+                        expansion.path = path;
+                        let path = (expansion.cuts != cuts).then_some(path);
+                        expansion.remember(key, path, done.take(replacement)?)?
+                    }
+                };
+                let piece = if !replacement_needs_style || (!mode.0 && style == Style::default()) {
+                    piece
+                } else {
+                    if language.is_some()
+                        && rendered_bytes(piece.text(), Some(&style))
+                            > crate::text::MAX_TRANSLATION_BYTES
+                    {
+                        return None;
+                    }
+                    Piece::new(mode.styled(piece.into_text(), &style), language.is_some())
+                };
                 if let Value::Object(o) = value {
-                    pending.push(Work::Finish(value, hover, style, text));
+                    done.hold(&piece)?;
+                    pending.push(Work::Finish(value, hover, style, piece));
                     if let Some(Value::Array(a)) = o.get("extra") {
+                        expansion.charge_visits(a.len())?;
                         pending.extend(a.iter().rev().map(|v| Work::Enter(v, hover)));
                     }
                 } else {
-                    done.insert(value as *const Value, (text, style));
+                    done.insert(value, piece, style)?;
                 }
             }
-            Work::Finish(value, hover, style, mut text) => {
+            Work::Finish(value, hover, style, mut piece) => {
+                done.release(&piece);
                 let Value::Object(o) = value else {
                     unreachable!()
                 };
                 let mode = Sourced(sourced.0 || hover, origin(value));
-                if let Some(Value::Array(a)) = o.get("extra") {
+                if let Some(a) = o
+                    .get("extra")
+                    .and_then(Value::as_array)
+                    .filter(|a| !a.is_empty())
+                {
+                    let mut text = piece.into_text();
+                    let mut remaining = language.map(|_| {
+                        crate::text::MAX_TRANSLATION_BYTES
+                            .saturating_sub(rendered_bytes(&text, None))
+                    });
                     for v in a {
-                        let extra = done
-                            .remove(&(v as *const Value))
-                            .map(take_built_text)
-                            .unwrap_or_default();
-                        mode.append(&mut text, mode.styled(extra, &style));
+                        let extra = done.take_text(v);
+                        mode.append(&mut text, extra, &style, &mut remaining)?;
                     }
+                    piece = Piece::new(text, language.is_some());
                 }
                 if mode.0
+                    && decoded_clicks.is_none()
                     && (o.contains_key("object")
                         || o.contains_key("player")
                         || o.contains_key("sprite"))
                 {
+                    let mut text = piece.into_text();
                     text.retain_annotated_source(value, origin);
+                    piece = Piece::new(text, language.is_some());
                 }
-                done.insert(value as *const Value, (text, style));
+                done.insert(value, piece, style)?;
             }
         }
     }
-    done.remove(&(v as *const Value))
-        .map(take_built_text)
-        .unwrap_or_default()
-}
-
-fn take_built_text((text, style): (Text, Style)) -> Text {
-    crate::text::discard_style(style);
-    text
+    Some(done.take_text(v))
 }
 
 fn build_node<'a>(
@@ -723,22 +874,26 @@ fn build_node<'a>(
     sourced: Sourced,
     style: &Style,
     child: &mut dyn FnMut(&'a Value) -> Text,
-) -> Text {
-    match v {
+    budget_output: bool,
+) -> Option<Text> {
+    Some(match v {
         Value::String(s) => sourced.literal(s.clone()),
         Value::Number(n) => sourced.literal(n.to_string()),
         Value::Bool(b) => sourced.literal(b.to_string()),
         // A list is its first element with the rest as siblings.
         Value::Array(list) => {
             let Some((first, rest)) = list.split_first() else {
-                return Text::empty();
+                return Some(Text::empty());
             };
             let mut base = child(first);
             // The siblings take the first component's own style, even when
             // its text is empty.
+            let mut remaining = (budget_output && !rest.is_empty()).then(|| {
+                crate::text::MAX_TRANSLATION_BYTES.saturating_sub(rendered_bytes(&base, None))
+            });
             for sibling in rest {
                 let sibling = child(sibling);
-                sourced.append(&mut base, sourced.styled(sibling, style));
+                sourced.append(&mut base, sibling, style, &mut remaining)?;
             }
             base
         }
@@ -770,14 +925,23 @@ fn build_node<'a>(
             } else if let Some(sel) = o.get("selector").and_then(Value::as_str) {
                 Text::from(resolve(sel).component())
             } else if let Some(key) = o.get("keybind").and_then(Value::as_str) {
-                Text::from(crate::key_display::display_name(key).component())
+                if crate::lang::current().is_some_and(|lang| lang.literal_keybinds) {
+                    sourced.literal(key.to_owned())
+                } else {
+                    Text::from(crate::key_display::display_name(key).component())
+                }
             } else {
                 Text::empty()
             };
+            if budget_output
+                && rendered_bytes(&content, Some(style)) > crate::text::MAX_TRANSLATION_BYTES
+            {
+                return None;
+            }
             sourced.styled(content, style)
         }
         Value::Null => Text::empty(),
-    }
+    })
 }
 
 fn plain_component(text: Text) -> String {
@@ -811,7 +975,7 @@ pub fn inline_object_fields(
         Some("player") | None if object.contains_key("player") => {
             Some(InlineObjectFields::Player {
                 profile: object.get("player")?,
-                hat: object.get("hat").and_then(Value::as_bool).unwrap_or(true),
+                hat: style_flag(object.get("hat")).unwrap_or(true),
             })
         }
         Some("atlas") | None if object.contains_key("sprite") => Some(InlineObjectFields::Atlas {
@@ -1281,6 +1445,17 @@ mod tests {
             to_text(&gui, &mut |_| Text::empty()).plain(),
             "[hud/heart/full@gui]"
         );
+    }
+
+    #[test]
+    fn snbt_player_object_preserves_false_hat() {
+        let (component, _) =
+            parse_snbt(r#"{object:"player",player:{name:"Steve"},hat:false}"#).unwrap();
+        let text = to_text(&component, &mut |_| Text::empty());
+        assert!(matches!(
+            &text.rendered.spans[0].style.inline_object,
+            Some(InlineObject::Player { hat: false, .. })
+        ));
     }
 
     #[test]

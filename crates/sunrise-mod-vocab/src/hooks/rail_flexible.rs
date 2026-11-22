@@ -9,6 +9,8 @@ pub trait Hooks {
     /// world. With no part attached to the state, the cost is one table lookup. Diverges from
     /// upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "flexible",
@@ -17,5 +19,10 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::rails::GameLevel<'_>::native_rail_flexible",
         neoforge = "IBaseRailBlockExtension.isFlexibleRail"
     )]
-    fn rail_flexible();
+    fn rail_flexible(
+        dimension: LevelDimension,
+        state: BlockState,
+        pos: BlockPos,
+        flexible: &mut bool,
+    );
 }

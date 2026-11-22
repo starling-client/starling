@@ -10,7 +10,6 @@ description = "Generated mod API dispatch contract tests"
 [dependencies]
 sunrise-core = { path = "../../sunrise-core" }
 sunrise-mod-api-macros = { path = "../../sunrise-mod-api-macros" }
-sunrise-client-core = { path = "../../sunrise-client-core" }
 sunrise-mod-runtime = { path = "../../sunrise-mod-runtime" }
 log = "0.4"
 serde_json = "1"

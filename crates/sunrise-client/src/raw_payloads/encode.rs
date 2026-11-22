@@ -1,6 +1,7 @@
 use super::Side;
-use sunrise_protocol::{buf::Writer, ids, payload_negotiation::Phase};
 use mod_api::{PayloadBytes, PayloadId};
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_protocol::{ids, payload_negotiation::Phase};
 
 /// Encode vanilla packet id + declared channel + exact body, with no mod envelope.
 /// Call only after resolving the declaration against the connection's frozen table.

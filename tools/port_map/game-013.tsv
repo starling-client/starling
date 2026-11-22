@@ -1,8 +1,8 @@
 AbstractNautilus.createAttributes	skip:data		attributes come from the entity type table (MobType in mobs.rs)
 AbstractNautilus.canBeAffected	port	crates/sunrise-client/src/mobs.rs::Mob::can_be_affected	poison, for the nautilus and its zombie
 AbstractNautilus.checkNautilusSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Nautilus arm: sea level minus 25 to minus 5, water below and above; only the nautilus has a placement (the zombie nautilus has none of its own)
-AbstractNautilus.canUseSlot	port	crates/sunrise-client/src/game/blocks/dispenser.rs::mob_can_use_slot	saddle and body slots need an alive, grown, tame nautilus
-AbstractNautilus.canDispenserEquipIntoSlot	port	crates/sunrise-client/src/game/blocks/dispenser.rs::mob_can_dispenser_equip	body and saddle always, other slots only with pick_up_loot
+AbstractNautilus.canUseSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_use_slot	saddle and body slots need an alive, grown, tame nautilus
+AbstractNautilus.canDispenserEquipIntoSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_dispenser_equip	body and saddle always, other slots only with pick_up_loot
 AbstractNautilus.getControllingPassenger	port	crates/sunrise-client/src/mobs/nautilus.rs::controlled	a rider on a saddled nautilus
 AbstractNautilus.getRiddenSpeed	inline	crates/sunrise-client/src/mobs/nautilus.rs::ridden	0.0325 in water, 0.02 on land, times the movement speed
 AbstractNautilus.doPlayerRide	inline	crates/sunrise-client/src/game/mobs/nautili.rs::Game::interact_nautilus	the player mounts it and a lead breaks; there is no home to clear
@@ -18,7 +18,7 @@ AbstractNautilus.hurtServer	port	crates/sunrise-client/src/mobs/nautilus.rs::aft
 AbstractNautilus.finalizeSpawn	port	crates/sunrise-client/src/mobs/nautilus.rs::finalize	attack target cooldown of 2400 to 3600 ticks
 AbstractNautilus.getEquipSound	port	crates/sunrise-client/src/mobs/nautilus.rs::saddle_sound	underwater saddle sound while the eyes are in water
 AbstractNautilus.createInventory	skip:other		getInventoryColumns is 0, so the container has no slots; saddle and armour are equipment slots
-AbstractNautilus.openCustomInventoryScreen	port	crates/sunrise-client/src/game/interface/mount_menu.rs::has_mount_menu	shift-use on a tame nautilus and the inventory key while riding open the saddle/armour screen
+AbstractNautilus.openCustomInventoryScreen	port	crates/sunrise-gameplay/src/mount_rules.rs::has_mount_menu	shift-use on a tame nautilus and the inventory key while riding open the saddle/armour screen
 AbstractNautilus.getSlot	skip:other		slots 500 and up address the container, which has no slots; every other slot is an equipment slot
 AbstractNautilus.isAggravated	port	crates/sunrise-client/src/mobs/nautilus.rs::aggravated	the anger clock (its target is last_hurt_by) or a live attack target stand in for the brain's ANGRY_AT and ATTACK_TARGET memories; can_be_leashed in leash.rs asks it for nautilus and zombie nautilus
 Nautilus.customServerAiStep	inline	crates/sunrise-client/src/mobs/nautilus.rs::register	the goal list replaces the brain and its fight or idle switch; the cooldowns tick in ai_step
@@ -44,7 +44,7 @@ Panda.setHiddenGene	skip:other		stores the gene id in extra.variant2; the random
 Panda.defineSynchedData	skip:other		synched flags, counters and genes; Sunrise keeps them in the panda State and extra.variant, extra.variant2
 Panda.getFlag	port	crates/sunrise-client/src/mobs/panda.rs::flag	reads the DATA_ID_FLAGS bit (set_flag writes it)
 Panda.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	MainGene and HiddenGene by name
-Panda.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	MainGene and HiddenGene by name, normal when absent
+Panda.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	MainGene and HiddenGene by name, normal when absent
 Panda.addEatingParticles	inline	crates/sunrise-client/src/mobs/panda.rs::handle_eating	eat sound every 5 ticks and the six crumbs (crumbs)
 Panda.updateSitAmount	inline	crates/sunrise-client/src/mobs/panda.rs::update_amounts	sit amount rises 0.15 and falls 0.19 a tick
 Panda.updateOnBackAnimation	inline	crates/sunrise-client/src/mobs/panda.rs::update_amounts	on-back amount, same steps
@@ -76,11 +76,11 @@ Pig.getControllingPassenger	port	crates/sunrise-client/src/mobs/equine.rs::contr
 Pig.onSyncedDataUpdated	missing		minor: a server's pig does not start its client boost timer from the synched boost time (remote.rs reads only the strider's flag there)
 Pig.defineSynchedData	skip:other		synched boost time, variant and sound variant; Sunrise keeps them in extra.counter, extra.counter2, extra.variant and extra.sound_variant
 Pig.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	variant, sound_variant and the saddle in equipment
-Pig.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	variant, sound_variant and the saddle
+Pig.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	variant, sound_variant and the saddle
 Pig.mobInteract	port	crates/sunrise-client/src/game/mobs/mounts.rs::Game::interact_steerable	gap: player: a saddled pig is mounted even when the click holds its food, so it cannot be fed or bred while saddled (vanilla feeds first)
-Pig.canUseSlot	port	crates/sunrise-client/src/game/blocks/dispenser.rs::mob_can_use_slot	the saddle needs an alive, grown pig
-Pig.canDispenserEquipIntoSlot	port	crates/sunrise-client/src/game/blocks/dispenser.rs::mob_can_dispenser_equip	the saddle always
-Pig.getEquipSound	port	crates/sunrise-client/src/game/blocks/dispenser.rs::equip_sound	entity.pig.saddle
+Pig.canUseSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_use_slot	the saddle needs an alive, grown pig
+Pig.canDispenserEquipIntoSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_dispenser_equip	the saddle always
+Pig.getEquipSound	port	crates/sunrise-gameplay/src/dispense_rules.rs::equip_sound	entity.pig.saddle
 Pig.thunderHit	port	crates/sunrise-client/src/game/entities/lightning.rs::Game::thunder_hit	a pig outside peaceful becomes a zombified piglin
 Pig.tickRidden	inline	crates/sunrise-client/src/mobs/equine.rs::ridden_step	turns to the rider's yaw, pitch halved, and ticks the boost
 Pig.getRiddenSpeed	inline	crates/sunrise-client/src/mobs/equine.rs::ridden_step	movement speed times 0.225 times the boost factor
@@ -104,7 +104,7 @@ Rabbit.facePoint	inline	crates/sunrise-client/src/mobs/rabbit.rs::server_ai_step
 Rabbit.setLandingDelay	inline	crates/sunrise-client/src/mobs/rabbit.rs::server_ai_step	10 ticks, 3 when the speed modifier is 2.2 or more
 Rabbit.createAttributes	skip:data		attributes come from the entity type table
 Rabbit.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	RabbitType; MoreCarrotTicks is kept at 0
-Rabbit.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: RabbitType (0 to 5 and 99) is read but MoreCarrotTicks is ignored
+Rabbit.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	gap: minor: RabbitType (0 to 5 and 99) is read but MoreCarrotTicks is ignored
 Rabbit.playAttackSound	port	crates/sunrise-client/src/mobs/rabbit.rs::attack_sound	only the killer bunny: `entity.rabbit.attack` at volume 1 and a pitch drawn from its own random (not the baby voice pitch)
 Rabbit.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::breed	gap: minor: the baby always takes the first parent's coat; vanilla takes either parent's and one time in 20 rolls a biome coat
 Rabbit.setVariant	inline	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	gap: player: variant 99 (killer bunny, from /summon or a save) only changes the texture: no armour 8, no plus 5 attack, no melee or target goals, no Killer Bunny name

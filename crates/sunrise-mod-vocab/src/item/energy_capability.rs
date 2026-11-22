@@ -26,11 +26,11 @@ pub trait EnergyHandler: Send + Sync {
 /// a fill comes through and a drain leaves by.
 pub const ENERGY: CapabilityKey<dyn EnergyHandler> = CapabilityKey {
     name: "sunrise:energy",
-    default: Some(|host, at| {
+    default: Some(crate::BlockCapabilityDefault::Server(|host, at| {
         crate::backend_of(host)
             .and_then(|backend| backend.energy_amount(at))
             .map(|_| Box::new(GameEnergy(at)) as Box<dyn EnergyHandler>)
-    }),
+    })),
     handler: PhantomData,
 };
 
@@ -66,9 +66,9 @@ impl EnergyHandler for GameEnergy {
 }
 
 /// Moves up to `max` energy out of `from` into `to` (NeoForge's `EnergyHandlerUtil.move`), in
-/// transaction `tx`: how much moved. As one step of `move_resources`: all or nothing in a
-/// transaction of its own, a move `to` takes only part of tried again with that part, and a
-/// handler answering more than it was asked ending it with [`Overanswered`].
+/// transaction `tx`: how much moved. Extract from `from` first, then offer the extracted amount
+/// to `to` in the same journal. If `to` takes only part, roll back and retry once with that amount.
+/// A handler that answers more than it was asked rolls back the move with [`Overanswered`].
 pub fn move_energy(
     host: &mut dyn ServerHost,
     from: &Capability<dyn EnergyHandler>,
@@ -90,7 +90,7 @@ pub fn move_energy(
         },
         want,
         |host, tx, want| from.extract(host, tx, want),
-        |host, tx, out| to.insert(host, tx, out),
+        |host, tx, out| Ok(to.insert(host, tx, out)),
     )
 }
 

@@ -1,0 +1,3 @@
+ids = ["method:WorldDrawContext::name_tag", "type:NameTagOptions", "handle:NameTagOptions::new", "type:DrawError", "type:DrawError.TextTooDeep", "type:DrawError.TextRefused"]
+why = "Mods label places in the world (#4171): WorldDrawContext::name_tag draws text as vanilla's submitNameTag draws a name, 0.5 above a point, facing the camera, once translucent and depth tested in the caller's light, or see-through (opaque in the world and a faded copy over everything), the faded text and backdrop following the player's text background opacity, sorted far to near with the name tags and sharing the view's quad budget. DrawError gains TextTooDeep and TextRefused."
+migrate = "Nothing to change for native mods: DrawError is #[non_exhaustive]."

@@ -1,0 +1,6 @@
+id = "manifest_property_inf"
+name = "Manifest property inf"
+version = "1.0.0"
+
+[properties]
+ratio = inf

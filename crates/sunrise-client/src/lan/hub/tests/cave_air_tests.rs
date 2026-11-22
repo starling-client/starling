@@ -30,6 +30,7 @@ fn a_guest_hovering_in_cave_air_is_kicked_for_flying() {
         &sunrise_protocol::registry::Builtin::default(),
         &[],
         &[],
+        Default::default(),
     );
     hub.guests.update(0, |g| {
         g.position = [0.5, 64.0, 0.5];
@@ -62,6 +63,7 @@ fn a_guest_hovering_in_cave_air_is_kicked_for_flying() {
         next_entity: &mut next_entity,
         spawn: [0.5, 64.0, 0.5],
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,

@@ -1,0 +1,2 @@
+# sunrise-native-build's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+sunrise-native-build registry_compile::tests::real_sdk_registry_compile by-hand manual # needs SUNRISE_TEST_REGISTRY_{SDK,MOD,OUT,ADAPTER,RUST}: a prepared private SDK, a mod, an output folder, a cargo-sunrise-mod as the rustc adapter and a Rust toolchain

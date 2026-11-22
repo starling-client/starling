@@ -6,9 +6,8 @@ impl ParticleOptions {
     /// using the same path as `ClientHost::item_particle_options`.
     /// A send refuses unknown, invalid or oversized stacks and returns false.
     pub fn item_stack(ty: ParticleKey, stack: ItemStack) -> Self {
-        Self {
-            item_stack: Some(stack),
-            ..Self::simple(ty)
-        }
+        let mut options = Self::simple(ty);
+        options.item_stack = Some(stack);
+        options
     }
 }

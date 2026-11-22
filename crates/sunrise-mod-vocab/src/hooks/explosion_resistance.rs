@@ -16,6 +16,8 @@ pub trait Hooks {
 
 - **`BlockPart::explosion_resistance(level, event)`** (`ExplosionResistanceEvent { pos, state, explosion }`): answer `Some(resistance)` to replace the block's own explosion resistance (NeoForge's `IBlockExtension.getExplosionResistance`) against the blast `event.explosion` describes, the same `ExplosionStart` the global `explosion_start` hears. A ray of the blast asks as it enters the block; its next steps in the same block reuse the answer, so keep it a pure function of the inputs. The answer replaces only the block's static value: a fluid in the cell still raises it to 100, and the overrides vanilla applies after the block's value keep winning (a respawn anchor's water cell, a TNT minecart's rails and the blocks under them, which are never asked, and a dangerous wither skull's 0.8 cap on a block that is not `#wither_immune`). `None` leaves it to another part and then the block's value. A negative or non-finite answer is refused with a warning, and a panicking part is contained; the block's own value is used for both. Authoritative servers only; the level is read-only. With no part attached to the state, one table lookup. Diverges from upstream: new hook."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "resistance",
@@ -24,5 +26,10 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::explosion_resistance::GameLevel<'_>::native_explosion_resistance",
         neoforge = "IBlockExtension.getExplosionResistance"
     )]
-    fn explosion_resistance();
+    fn explosion_resistance(
+        pos: BlockPos,
+        state: BlockState,
+        explosion: &ExplosionStart<'_>,
+        resistance: &mut Option<f32>,
+    );
 }

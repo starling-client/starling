@@ -462,6 +462,9 @@ fn swirls(list: &[Particle], builtin: &Builtin) -> Vec<ParticleOptions> {
     let channel = |argb: i32, shift: u32| ((argb >> shift) & 255) as f32 / 255.0;
     list.iter()
         .filter_map(|p| {
+            if let Some(ParticleData::Mod { name, options }) = &p.data {
+                return super::lan_particles::decode_mod_particle(name, options);
+            }
             let name = builtin.get("minecraft:particle_type")?.name(p.id)?;
             let ty = ParticleType::from_name(name)?;
             Some(match p.data {
@@ -536,8 +539,8 @@ mod tests {
     use sunrise_protocol::entity_data::serializer as s;
 
     fn fixture_mob(kind: &str) -> Mob {
-        use sunrise_client::mobs::{Anim, Brain, Flags, MobType, Part};
         use std::sync::Arc;
+        use sunrise_client::mobs::{Anim, Brain, Flags, MobType, Part};
         let species = match kind {
             "minecraft:cow" => Species::Cow,
             "minecraft:axolotl" => Species::Axolotl,
@@ -721,6 +724,8 @@ mod tests {
                     spectator: false,
                     permission: 0,
                     sunrise: true,
+                    general_entity: true,
+                    attachment_sender: None,
                     moved: true,
                     position: [0.0; 3],
                     view_distance: 10,
@@ -728,8 +733,8 @@ mod tests {
                     sources: None,
                     tracker: &mut tracker,
                     out: &mut packets,
-                    gone: None,
                 }],
+                None,
                 |_| Some(100),
             );
             let mut sent = Vec::new();
@@ -885,6 +890,8 @@ mod tests {
                     spectator: false,
                     permission: 0,
                     sunrise: true,
+                    general_entity: true,
+                    attachment_sender: None,
                     moved: true,
                     position: [0.0; 3],
                     view_distance: 10,
@@ -892,8 +899,8 @@ mod tests {
                     sources: None,
                     tracker: &mut tracker,
                     out: &mut packets,
-                    gone: None,
                 }],
+                None,
                 |_| Some(100),
             );
             let mut sent = Vec::new();
@@ -1121,8 +1128,8 @@ mod tests {
     /// a parrot never is one (`Parrot.canBeABaby`).
     #[test]
     fn a_happy_ghast_and_a_nautilus_take_their_babyhood() {
-        use sunrise_client::mobs::MobTypes;
         use std::{fs, sync::Arc};
+        use sunrise_client::mobs::MobTypes;
 
         let root = std::env::temp_dir().join(format!("sunrise-baby-flag-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
@@ -1181,10 +1188,10 @@ mod tests {
 
     #[test]
     fn bat_flags_select_continuous_client_clocks_without_changing_motion() {
-        use sunrise_client::mobs::{MobTypes, anim, keyframes::Animation};
-        use sunrise_core::geometry::Vec3;
         use serde_json::json;
         use std::{collections::HashMap, fs, sync::Arc};
+        use sunrise_client::mobs::{MobTypes, anim, keyframes::Animation};
+        use sunrise_core::geometry::Vec3;
 
         // Original minimal resources keep this regression runnable without vanilla data.
         let root =
@@ -1557,12 +1564,12 @@ mod tests {
     /// `tickBoost` then `boostFactor` is `1 + 1.15 * sin(boostTime / total * PI)`.
     #[test]
     fn a_synced_boost_starts_the_client_timer() {
+        use std::{fs, sync::Arc};
         use sunrise_client::mobs::MobTypes;
         use sunrise_core::geometry::trig::Mth;
         use sunrise_world::native_load_context::{
             DataLoadOrigin, LoadContext, LoadInputs, LoopSide,
         };
-        use std::{fs, sync::Arc};
 
         let root = std::env::temp_dir().join(format!("sunrise-boost-sync-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();

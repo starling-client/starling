@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""mdBook preprocessor: render the Hook notes chapter from the catalog's notes without writing a
+"""mdBook preprocessor: render a catalog chapter (the hook notes, the NeoForge counterparts) from
+what `cargo run -p xtask -- mod-api <chapter>` prints for the declarations, without writing a
 generated source page."""
 import json
 from pathlib import Path
@@ -37,8 +38,13 @@ def generated(context, chapter):
     ).stdout
 
 
+def chapter(context, book, name, title, path):
+    """Fill one draft chapter with the page `mod-api <name>` renders."""
+    return expand(book, generated(context, name), title, path)
+
+
 def preprocess(context, book):
-    return expand(book, generated(context, "notes"), "Hook notes", PAGE)
+    return chapter(context, book, "notes", "Hook notes", PAGE)
 
 
 

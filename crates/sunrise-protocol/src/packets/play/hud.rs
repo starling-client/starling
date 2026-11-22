@@ -2,10 +2,11 @@
 //! scoreboard's objectives and scores, and the teams.
 use crate::{
     Error, Result,
-    buf::{Codec, List, Nbt, Opt, Reader, Str, VarInt, Writer},
+    buf::{Codec, List, Nbt, Opt, Reader, Str, VarInt},
     packet,
 };
 use sunrise_core::nbt::Tag;
+use sunrise_core::vanilla_bytes::Writer;
 
 /// `ClientboundBossEventPacket` (`boss_event`).
 #[derive(Clone, Debug, PartialEq)]

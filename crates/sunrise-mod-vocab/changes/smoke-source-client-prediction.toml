@@ -1,0 +1,3 @@
+ids = ["hook:smoke_source", "method:BlockPart::smoke_source"]
+why = "Version 2 asks the block part on both sides, including client placement prediction, with a read-only LevelSide host."
+migrate = "Rebuild against hook version 2. Accept LevelSide instead of &dyn LevelHost and answer from the supplied state and level so client prediction agrees with the server."

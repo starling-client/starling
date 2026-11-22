@@ -1,8 +1,8 @@
 //! Direct production handlers over an empty in-memory world; no server or renderer.
 use super::*;
 use crate::game::{Audio, Options, Progress, Settings, load_resources};
-use sunrise_client::chunk::Chunk;
 use std::sync::Arc;
+use sunrise_client::chunk::Chunk;
 
 #[test]
 #[ignore = "needs explicit SUNRISE_TEST_RESOURCES and SUNRISE_PORTAL_REFERENCE"]
@@ -44,6 +44,10 @@ fn portal_contact_and_waiting_handoff_match_vanilla_counters() {
     )
     .unwrap();
     game.build_registries();
+    // Lone-traveller handling resolves entity handles, as it does in an open world.
+    game.native_lifecycle
+        .begin_open(mod_api::Authority::IntegratedServer);
+    game.native_lifecycle.world_open_ready().unwrap();
     game.options.dedicated = Some(Vec::new());
     game.world = sunrise_client::world::World::new(game.res.facts().air, 1);
     for z in -2..=2 {

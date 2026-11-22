@@ -2,8 +2,8 @@
 //! the level.
 use super::{Who, number, uuid_from_tag};
 use crate::mobs::Mob;
-use sunrise_core::nbt::Tag;
 use std::collections::HashMap;
+use sunrise_core::nbt::Tag;
 
 /// `LivingEntity.readAdditionalSaveData`: `last_hurt_by_mob` is a lazy
 /// `EntityReference` (the UUID, which the game resolves once the entity is in

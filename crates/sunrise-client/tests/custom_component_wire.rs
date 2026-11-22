@@ -1,9 +1,10 @@
 extern crate sunrise_client_lib as sunrise_client;
 use sunrise_client::{item_sync, items::ItemStack, lan::guest::stack_to_network};
 use sunrise_core::nbt::Tag;
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_items::item_nbt::{item_from_nbt, item_to_nbt};
 use sunrise_protocol::{
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, Reader},
     item::{DelimitedSlot, Hashed, Slot, Stack, Template, component, custom},
     registry::{Builtin, Dynamic, Ids, SyncedNames},
 };
@@ -26,7 +27,7 @@ fn custom_components_survive_save_wire_and_nested_stacks() {
         registries: [
             (
                 "minecraft:item".into(),
-                Ids::from_names(vec!["minecraft:stone".into()]),
+                Ids::from_names(vec!["minecraft:air".into(), "minecraft:stone".into()]),
             ),
             (
                 "minecraft:data_component_type".into(),
@@ -50,19 +51,19 @@ fn custom_components_survive_save_wire_and_nested_stacks() {
     item.data_mut()
         .set_other("!sample:mode", Some(Tag::Compound(Default::default())));
 
-    let saved = item_from_nbt(&item_to_nbt(&item)).unwrap();
+    let saved = item_from_nbt(&item_to_nbt(&item, &Default::default())).unwrap();
     assert!(item.same_item_same_components(&saved));
 
     let encode = |item: &ItemStack| {
-        stack_to_network(|_| 0, |_, name| custom::id(name), &Some(item.clone())).unwrap()
+        stack_to_network(|_| 1, |_, name| custom::id(name), &Some(item.clone())).unwrap()
     };
-    let vanilla = stack_to_network(|_| 0, |_, _| None, &Some(saved.clone())).unwrap();
+    let vanilla = stack_to_network(|_| 1, |_, _| None, &Some(saved.clone())).unwrap();
     assert!(vanilla.added.is_empty());
     assert!(vanilla.removed.is_empty());
     let stack = encode(&saved);
     assert!(!custom::permitted(&stack, false).unwrap());
     assert!(custom::permitted(&stack, true).unwrap());
-    let mut removed = Stack::new(0, 1);
+    let mut removed = Stack::new(1, 1);
     removed.removed.push(FIRST_CUSTOM_ID + 1);
     assert!(!custom::permitted(&removed, false).unwrap());
     for kind in [
@@ -84,14 +85,14 @@ fn custom_components_survive_save_wire_and_nested_stacks() {
                 bytes.bool(false);
             }
         }
-        let mut outer = Stack::new(0, 1);
+        let mut outer = Stack::new(1, 1);
         outer
             .added
             .push((kind, sunrise_protocol::item::Component::Raw(bytes.data)));
         assert!(!custom::permitted(&outer, false).unwrap(), "kind {kind}");
         assert!(custom::permitted(&outer, true).unwrap());
     }
-    let hash = Hashed::create(&stack, &names);
+    let hash = Hashed::create(&stack, &names).unwrap();
     assert_eq!(hash.added.len(), 1);
     assert_eq!(hash.removed, [FIRST_CUSTOM_ID + 1]);
     assert_eq!(
@@ -106,7 +107,7 @@ fn custom_components_survive_save_wire_and_nested_stacks() {
     let received = Slot::read(&mut Reader::new(&writer.data)).unwrap().unwrap();
     let client = item_sync::from_network(&received, &builtin, &dynamic);
     assert!(saved.same_item_same_components(&client));
-    assert_eq!(hash, Hashed::create(&encode(&client), &names));
+    assert_eq!(hash, Hashed::create(&encode(&client), &names).unwrap());
 
     let mut writer = Writer::new();
     DelimitedSlot::write(&Some(encode(&client)), &mut writer);
@@ -124,7 +125,7 @@ fn custom_components_survive_save_wire_and_nested_stacks() {
         saved.same_item_same_components(&item_sync::from_network(&template, &builtin, &dynamic))
     );
 
-    let mut bundle = Stack::new(0, 1);
+    let mut bundle = Stack::new(1, 1);
     bundle.added.push((
         sunrise_protocol::item::component::BUNDLE_CONTENTS,
         sunrise_protocol::item::Component::Stacks(vec![stack]),

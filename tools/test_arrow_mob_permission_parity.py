@@ -15,6 +15,8 @@ import subprocess
 import test_command_exec_parity as runner
 from arrow_mob_permission_corpus import program
 
+PARITY_MANUAL = "a proof run by hand: --work-dir DIR --reference-only for the Java side, then --work-dir DIR2 --reference-dir DIR --binary BIN"  # not a harness: tools/parity.py leaves it out
+
 
 def sha(path):
     with Path(path).open('rb') as source:

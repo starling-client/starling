@@ -5,7 +5,6 @@ mod facts;
 mod intern;
 mod json;
 pub(crate) mod snapshot;
-use sunrise_core::fast_hash::FxHashMap;
 pub use json::BlockStateJsonCodec;
 pub(crate) use json::java_integer;
 use std::{
@@ -17,6 +16,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use sunrise_core::fast_hash::FxHashMap;
 use {
     crate::{DATA_VERSION, chunk::BlockState, compression::invalid},
     sunrise_core::nbt::Tag,
@@ -27,7 +27,8 @@ pub struct BlockStateId(pub u32);
 
 pub struct BlockRegistry {
     /// Game-owned, immutable mod worker metadata for this numeric registry snapshot.
-    /// Filled at resource resolution before any worker can use it; never shared across registries.
+    /// Filled at resource resolution before any worker can use it. Registries that share one
+    /// interned payload may share this value (see [`Self::share_worker_resource`]); otherwise it is never shared.
     pub mod_worker_resource: std::sync::OnceLock<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// Optional higher-layer template data transform, frozen before placement workers start.
     pub structure_block_entity_transform: std::sync::OnceLock<
@@ -36,6 +37,9 @@ pub struct BlockRegistry {
         >,
     >,
     data: std::sync::Arc<data::Data>,
+    /// Worker resources already built for this payload, by the owner's key; one pool per
+    /// interned payload, so installations whose resources are equal build them once.
+    shared_workers: intern::SharedWorkers,
     /// Saved palette entries by the NBT they came from ([`Self::saved_state_id`]).
     /// A saved area repeats the same dozen states in every section of every
     /// column; this outlives one column, unlike the cache it replaces.
@@ -208,6 +212,7 @@ impl BlockRegistry {
         }
         Ok(Self {
             data: std::sync::Arc::new(result),
+            shared_workers: Default::default(),
             mod_worker_resource: std::sync::OnceLock::new(),
             structure_block_entity_transform: std::sync::OnceLock::new(),
             saved_states: RwLock::new(FxHashMap::default()),

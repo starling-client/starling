@@ -1,4 +1,3 @@
-use sunrise_core::geometry::VoxelShape;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -7,6 +6,7 @@ use std::{
     path::Path,
     sync::Arc,
 };
+use sunrise_core::geometry::VoxelShape;
 use {
     sunrise_core::{
         nbt,

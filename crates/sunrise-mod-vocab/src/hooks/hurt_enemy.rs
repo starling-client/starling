@@ -8,11 +8,13 @@ pub trait Hooks {
     /// hears. Another player as the target is not told. Server-side, for
     /// every player of the world (the helpers read the acting one).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_hurt_enemy",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "item",
         key = "stack",
         neoforge = "none (vanilla Item.hurtEnemy; NeoForge adds no event or extension for it); LivingDamageEvent.Post comes later"
     )]
-    fn hurt_enemy();
+    fn hurt_enemy(stack: &ItemStack, entity: u32, kind: &str);
 }

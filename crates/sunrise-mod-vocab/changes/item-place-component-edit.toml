@@ -1,0 +1,2 @@
+ids = ["handle:ItemPlace::edit", "type:ItemPlaceEditError"]
+why = "ItemPlace::edit updates a held or worn stack's components in place without replaying equipment effects. It returns a Result naming item and count changes separately from unavailable storage. No hook version changes."

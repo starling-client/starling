@@ -22,6 +22,7 @@ use crate::mesher::ALL_VISIBLE;
 use glam::DVec3;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use sunrise_core::mth::floor;
 
 /// Vanilla's `Direction` order: down, up, north, south, west, east.
 const STEPS: [(i32, i32, i32); 6] = [
@@ -528,13 +529,6 @@ impl Reach<'_> {
         let i = (((dz + r) * (2 * r + 1) + dx + r) * self.height + dy) as usize;
         (self.bits[i / 32] >> (i % 32)) & 1 != 0
     }
-}
-
-/// `Mth.floor` for coordinates inside the world, without a libm call (the
-/// x86-64 baseline has no rounding instruction).
-fn floor(x: f64) -> i32 {
-    let i = x as i32;
-    i - i32::from(f64::from(i) > x)
 }
 
 struct Job {

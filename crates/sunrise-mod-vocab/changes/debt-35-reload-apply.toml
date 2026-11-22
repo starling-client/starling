@@ -1,0 +1,11 @@
+ids = [
+    "trait:ReloadApply",
+    "method:ReloadApply::apply",
+    "handle:ReloadApply::new",
+    "trait:ServerReloadListener",
+    "method:ServerReloadListener::prepare",
+    "trait:ClientReloadListener",
+    "method:ClientReloadListener::prepare",
+]
+why = "At NeoForge's AddServerReloadListenersEvent and AddClientReloadListenersEvent registration points, the listeners follow the prepare/apply split of vanilla's SimplePreparableReloadListener.reload. Prepared work is now an owned action rather than a shared listener object. The runner consumes it once on the owning thread after all prepares succeed. A failed prepare discards pending actions; a refusal after apply cannot undo their effects."
+migrate = "Rebuild for `add_server_reload_listeners` and `add_client_reload_listeners` v4. The hook methods take `&dyn ReloadContext` and `&dyn ClientReloadListenerContext` respectively; see `debt-fa-h3l1-phase-scoped-contexts.toml`. In either reload listener's prepare method, replace `Result<Box<dyn ReloadApply>, ReloadResourceError>` with `Result<Box<dyn FnOnce() + Send + 'static>, ReloadResourceError>`, and replace `Ok(<dyn ReloadApply>::new(move || { ... }))` with `Ok(Box::new(move || { ... }))`. Remove the ReloadApply import. If you implemented ReloadApply for a struct, move the prepared struct into a closure and perform its publication there. In tests that invoke a returned action directly, replace `action.apply()` with `action()`; this consumes it."

@@ -1,25 +1,26 @@
 //! Read-only client session and local-player status.
 
-use crate::BlockPos;
+use crate::{BlockPos, GameMode, Text};
 
+// no wire: borrows the current client connection and integrated world.
 /// The connected server, not the reconnect target of an earlier session.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Its text borrows the host; copy it only to retain it beyond that borrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct ClientServer {
-    /// The integrated world's display name. External connections do not retain
+pub struct ClientServer<'a> {
+    /// The integrated world's current display name. External connections do not retain
     /// a server display name; this is `None`, never the connecting player's name.
-    pub name: Option<String>,
+    pub name: Option<&'a str>,
     /// The joined address, with friend-invite secrets redacted. Memory
     /// connections have no address (`None`), not a made-up socket address.
-    pub address: Option<String>,
+    pub address: Option<&'a str>,
     /// This window owns the connected integrated server. A loopback address
-    /// alone does not make this true; a splitscreen guest does not own it.
+    /// alone does not make this true.
     pub integrated_local: bool,
     /// Folder name relative to the instance's saves directory for the owned
     /// integrated world. Renaming the world in-game leaves this key unchanged.
-    /// External connections and splitscreen guests return `None`.
-    pub save_folder: Option<String>,
+    /// Connections to a server this window does not own return `None`.
+    pub save_folder: Option<&'a str>,
 }
 
 /// The local player's item use as the client sees it (`LivingEntity.isUsingItem`,
@@ -148,4 +149,66 @@ pub enum BlockBreakingState {
         /// The visible crack stage, 0 through 9; absent while progress is zero.
         stage: Option<u8>,
     },
+}
+
+/// The player list as the Tab overlay draws it (`PlayerTabOverlay`), read with
+/// `ClientSession::client_tab_list`: what this client has been sent, changing as the server
+/// updates the list.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct ClientTabList {
+    /// The listed players in drawn order (`getPlayerInfos`: higher list order first, spectators
+    /// last, then team name and profile name), at most the 80 the overlay draws.
+    pub entries: Vec<ClientTabListEntry>,
+    /// The header the server set; `None` when it is empty or was cleared.
+    pub header: Option<Text>,
+    /// The footer the server set; `None` when it is empty or was cleared.
+    pub footer: Option<Text>,
+}
+
+impl ClientTabList {
+    /// A list from its entries, header and footer.
+    pub fn new(
+        entries: Vec<ClientTabListEntry>,
+        header: Option<Text>,
+        footer: Option<Text>,
+    ) -> Self {
+        Self {
+            entries,
+            header,
+            footer,
+        }
+    }
+}
+
+/// One listed player (`PlayerInfo`) as the Tab overlay shows it.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct ClientTabListEntry {
+    /// The profile name (`GameProfile.name`).
+    pub name: String,
+    /// The profile UUID.
+    pub uuid: u128,
+    /// The game mode the server reported.
+    pub game_mode: GameMode,
+    /// The latency in milliseconds the ping icon shows; negative when unknown.
+    pub latency: i32,
+    /// The name as drawn (`getNameForDisplay`): the display name the server set, else the
+    /// profile name with its team's prefix, suffix and colour; italic for a spectator.
+    pub display: Text,
+}
+
+impl ClientTabListEntry {
+    /// An entry from its parts.
+    pub fn new(name: String, uuid: u128, game_mode: GameMode, latency: i32, display: Text) -> Self {
+        Self {
+            name,
+            uuid,
+            game_mode,
+            latency,
+            display,
+        }
+    }
 }

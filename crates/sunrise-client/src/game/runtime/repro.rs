@@ -17,10 +17,8 @@
 //! ```
 use super::event_loop::EventLoopCtl;
 use super::input_trace::{InputOrigin, TraceEvent, TraceKind};
+use super::owner_link::{ControlRequest, OwnerRequest};
 use super::{Game, Screen};
-use sunrise_client::{Result, gamepad::Button, keybinds, text::Text, title::world_management};
-use sunrise_core::geometry::Vec3;
-use sunrise_system::scrub::Scrubber;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -31,6 +29,9 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime},
 };
+use sunrise_client::{Result, gamepad::Button, keybinds, text::Text, title::world_management};
+use sunrise_core::geometry::Vec3;
+use sunrise_system::scrub::Scrubber;
 use winit::{
     dpi::PhysicalPosition,
     event::{DeviceId, ElementState, MouseScrollDelta, TouchPhase, WindowEvent},
@@ -550,7 +551,9 @@ impl Game<'_> {
         // save folder is the one to copy, not the client's title-screen save.
         let world_root = if mode == "local" {
             match self.integrated.as_ref() {
-                Some(server) => server.call(|game| game.world_root.clone()),
+                Some(server) => {
+                    server.ask(|reply| OwnerRequest::Control(ControlRequest::WorldRoot(reply)))
+                }
                 None if !self.world_root.as_os_str().is_empty() => Some(self.world_root.clone()),
                 None => None,
             }
@@ -587,11 +590,11 @@ impl Game<'_> {
                 // runs its pause save (which renames files into place) during the copy.
                 let (saved_tx, saved) = mpsc::channel();
                 let (copied, copied_rx) = mpsc::channel::<()>();
-                // A server that has stopped drops the task, and `saved_tx` with it.
-                server.post(move |game| {
-                    let _ = saved_tx.send(game.save_game().map_err(|e| e.to_string()));
-                    let _ = copied_rx.recv();
-                });
+                // A server that has stopped drops the request, and `saved_tx` with it.
+                server.tell(OwnerRequest::Control(ControlRequest::SaveThenWait {
+                    saved: saved_tx,
+                    copied: copied_rx,
+                }));
                 match saved.recv() {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
@@ -1289,15 +1292,27 @@ impl Game<'_> {
                 );
                 true
             }
-            TraceKind::Cursor { x, y } => {
-                self.handle_window_event(
+            TraceKind::Cursor { x, y, space } => {
+                let (position, sample) = if let Some(space) = space {
+                    let Some(sample) = space.sample(x, y) else {
+                        return false;
+                    };
+                    (
+                        self.pointer_space([1, 1]).physical_position(sample),
+                        Some(sample),
+                    )
+                } else {
+                    (PhysicalPosition::new(x, y), None)
+                };
+                self.handle_window_event_with_sample(
                     event_loop,
                     id,
                     WindowEvent::CursorMoved {
                         device_id,
-                        position: PhysicalPosition::new(x, y),
+                        position,
                     },
                     InputOrigin::Game,
+                    sample,
                 );
                 true
             }
@@ -1318,11 +1333,11 @@ impl Game<'_> {
 
     /// Let go of everything a replay (or a person) held.
     fn release_replay_inputs(&mut self) {
-        self.keys.clear();
+        self.clear_device_keys();
         self.physical_keys.clear();
         self.physical_buttons.clear();
-        self.left = false;
-        self.right = false;
+        self.set_mapping_held("key.attack", false);
+        self.set_mapping_held("key.use", false);
         self.modifiers = winit::keyboard::ModifiersState::empty();
         self.debug_keys.modifier_down = false;
         self.pad.clear_injected();
@@ -1914,7 +1929,10 @@ mod tests {
             events[2].kind,
             TraceKind::Wheel { lines: true, .. }
         ));
-        assert!(matches!(events[3].kind, TraceKind::Cursor { .. }));
+        assert!(matches!(
+            events[3].kind,
+            TraceKind::Cursor { space: None, .. }
+        ));
         assert!(matches!(events[4].kind, TraceKind::Motion { .. }));
         assert!(matches!(events[5].kind, TraceKind::Pad { .. }));
         assert!(matches!(events[6].kind, TraceKind::Command { .. }));

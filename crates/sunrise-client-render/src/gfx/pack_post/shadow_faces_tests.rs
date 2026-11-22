@@ -4,6 +4,7 @@
 use super::destination_tests::Fixture;
 use super::*;
 use std::io::{Cursor, Write};
+use sunrise_shaders::Post;
 use wgpu::util::DeviceExt;
 
 const FINAL_VSH: &str = "#version 120\nvarying vec2 uv;\nvoid main() { uv=gl_MultiTexCoord0.xy; gl_Position=ftransform(); }\n";
@@ -66,6 +67,7 @@ fn pack() -> Post {
 }
 
 #[test]
+#[ignore = "daily"]
 fn shadow_pass_draws_terrain_back_faces() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };

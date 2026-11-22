@@ -1,0 +1,23 @@
+ids = [
+  "method:LoopContext::item_count",
+  "method:LoopContext::item_at",
+  "method:LoopContext::items_in_tag",
+  "method:LoopReader::item_is_in_tag",
+  "method:LoopReader::item_count",
+  "method:LoopReader::item_at",
+]
+why = "A published loop generation binds its authoritative item tags once and lends their item keys in order. Vanilla TagLoader.tryBuildTag and TagLoader.build, including NeoForge's TagLoader patch, report unresolved required members instead of publishing a partial tag. Likewise, an unmapped member makes its loop tag unavailable without hiding other tags."
+migrate = """
+On LoopContext and CraftingRemainders, replace item_count(tag) with \
+items_in_tag(tag).map(|items| items.len()) and item_at(tag, index) with \
+items_in_tag(tag).and_then(|items| items.get(index)).copied(). To visit every \
+member, use if let Some(items) = context.items_in_tag(tag) { for &item in items { /* use item */ } }. \
+None means the authoritative tags or completed item-key table were unavailable at publication, or a member of this tag could not bind; \
+a missing or empty tag in a loaded table yields an empty slice. Membership via is_in_tag(item, tag) now also returns None if any member of the tag could not bind, even when the queried item is a known member. \
+A missing or empty tag in a loaded table still returns Some(false). For matchers, use context.is_in_tag(item, tag) == Some(true); if you need to distinguish refusal from non-membership, handle None separately from Some(false). \
+If you implement LoopContext, implement items_in_tag by borrowing your snapshot instead of implementing the two indexed methods. \
+LoopReader supplies only metadata now: remove item_is_in_tag, item_count and item_at. \
+Engine adapters replace OwningLoop::new(side, reader) with OwningLoop::new(side, reader, bound_tags) \
+and pass None if tags are unavailable. To publish on the engine LoopContext, pass \
+BoundItemTags::bind(&raw_tags, &generation_items) to set_item_tags rather than passing the raw map.\
+"""

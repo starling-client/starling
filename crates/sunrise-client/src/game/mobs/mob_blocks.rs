@@ -118,6 +118,7 @@ impl Game<'_> {
             * glam::Mat4::from_scale(glam::Vec3::new(k, -k, -k))
             * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.56, 3.5));
         let poses = sunrise_client::mobs::anim::Poses::new(&kind.model);
+        self.mark_entity(out.len(), &kind.id);
         render::draw(
             &kind.model,
             m,
@@ -146,9 +147,7 @@ impl Game<'_> {
         let Some((pole, flag)) = &self.entity_models.banner else {
             return;
         };
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(mob, alpha as f32, camera, self, "head") else {
             return;
         };
         let m = banner_matrix(head);
@@ -272,9 +271,7 @@ impl Game<'_> {
                 }
             }
         }
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(mob, alpha as f32, camera, self, "head") else {
             return;
         };
         // Only wildflowers and pink petals carry the flowerbed display shift.
@@ -302,9 +299,7 @@ impl Game<'_> {
         let Some(state) = self.pack.assets.registry.default_state("minecraft:poppy") else {
             return;
         };
-        let Some(arm) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "right_arm")
-        else {
+        let Some(arm) = render::part_transform(mob, alpha as f32, camera, self, "right_arm") else {
             return;
         };
         let t = arm
@@ -347,8 +342,7 @@ impl Game<'_> {
             return;
         };
         let alpha = alpha as f32;
-        let Some(head) = render::part_transform(mob, alpha, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(mob, alpha, camera, self, "head") else {
             return;
         };
         let unit = Mat4::from_translation(Vec3::splat(-0.5));
@@ -385,17 +379,16 @@ impl Game<'_> {
             }
         }
     }
-    /// `ItemInHandLayer`: both hands through the item model pipeline; `lit`
-    /// applies the level's diffuse lighting (off for GUI previews, which
-    /// light the projected quads themselves).
-    /// `skin`: the mob's GPU path draws, which a lit item joins when it can.
+    /// `ItemInHandLayer`: both hands through the item model pipeline. World
+    /// draws take the held-item tint, level lighting and the mob's GPU path
+    /// when supported. GUI previews light the projected quads themselves.
     pub(super) fn held_item_geometry(
         &self,
         mob: &Mob,
         camera: glam::DVec3,
         alpha: f64,
         light: u32,
-        lit: bool,
+        in_world: bool,
         mut skin: Option<&mut super::creatures::Skinned>,
         out: &mut Vec<Vertex>,
     ) {
@@ -416,9 +409,9 @@ impl Game<'_> {
                 && mob.extra.using_item > 0
                 && sunrise_client::mobs::anim::state(mob, alpha as f32).swing < 1.0e-5;
             let t = if spyglass_to_eye {
-                render::held_to_eye_matrix(mob, alpha as f32, camera, self.res.mob_data(), left)
+                render::held_to_eye_matrix(mob, alpha as f32, camera, self, left)
             } else {
-                render::held_item_transform(mob, alpha as f32, camera, self.res.mob_data(), left)
+                render::held_item_transform(mob, alpha as f32, camera, self, left)
             };
             let Some(t) = t else {
                 continue;
@@ -505,14 +498,24 @@ impl Game<'_> {
             } else {
                 sunrise_client::cit::Hand::Main
             };
-            let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, hand);
-            if lit
-                && let Some(skinned) = skin.as_deref_mut()
-                && self.skin_item_into(&state, t, light, skinned)
-            {
-                continue;
-            }
-            if lit {
+            let mut state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, hand);
+            if in_world {
+                let entity_id = if local_player {
+                    self.own_entity_id() as u32
+                } else {
+                    mob.id
+                };
+                let hand = if off_hand {
+                    mod_api::Hand::Off
+                } else {
+                    mod_api::Hand::Main
+                };
+                self.tint_held_item(&mut state, &stack, entity_id, hand, alpha as f32);
+                if let Some(skinned) = skin.as_deref_mut()
+                    && self.skin_item_into(&state, t, light, skinned)
+                {
+                    continue;
+                }
                 self.submit_item_world(&state, t, light, out);
             } else {
                 self.submit_item_unlit(&state, t, light, out);
@@ -564,9 +567,7 @@ impl Game<'_> {
         {
             stack.enchant("minecraft:unbreaking", 1);
         }
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(mob, alpha as f32, camera, self, "head") else {
             return;
         };
         if let Some(kind) = super::armor_stands::skull_kind(&stack.item) {
@@ -645,7 +646,11 @@ impl Game<'_> {
             let profile = stack
                 .extra
                 .as_deref()
-                .and_then(|d| d.other.iter().find(|(k, _)| k == "minecraft:profile"))
+                .and_then(|d| {
+                    d.preserved_components()
+                        .iter()
+                        .find(|(k, _)| k == "minecraft:profile")
+                })
                 .map(|(_, t)| sunrise_client::scoreboard::tag_to_json(t))
                 .unwrap_or(serde_json::Value::Null);
             let has_foil = stack.data().is_some_and(|d| !d.enchantments.is_empty());

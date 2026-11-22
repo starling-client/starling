@@ -1,11 +1,11 @@
 //! Nether fortresses: NetherFortressStructure and NetherFortressPieces.
 use crate::registry::BlockStateId;
+use std::sync::Mutex;
 use sunrise_core::nbt::Tag;
 use sunrise_core::{
     geometry::Direction,
     random::{LegacyRandom, RandomSource},
 };
-use std::sync::Mutex;
 use {
     super::{
         legacy::{

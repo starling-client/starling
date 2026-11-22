@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Tự động kết nối lại",
+  "sunrise.extras.auto_reconnect.tooltip": "Tham gia lại máy chủ sau khi mất kết nối hoặc khởi động lại, không bao giờ sau khi bị kick hoặc ban."
+}

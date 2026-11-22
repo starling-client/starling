@@ -1,0 +1,3 @@
+ids = ["type:EntityWrite", "type:DamageTypeKey", "method:DamageTypesRegistrar::damage_type_key", "hook:entity_inside", "hook:step_on"]
+why = "Contact hurt uses the level's registered damage type, including data-pack tags and death messages, rather than always using generic damage. The source still has no causing or direct entity."
+migrate = "Request the damage type once with Registrar::damage_type_key and pass it as damage_type in EntityWrite::Hurt. Rebuild for entity_inside version 2 and step_on version 3."

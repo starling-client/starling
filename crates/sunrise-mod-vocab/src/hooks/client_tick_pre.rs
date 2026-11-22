@@ -5,6 +5,7 @@ pub trait Hooks {
     /// `ClientTickEvent.Pre`): the window's `Game` only, so not on a server's
     /// own tick (`server_tick` is that moment). Client-side.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "ClientTickEvent.Pre",

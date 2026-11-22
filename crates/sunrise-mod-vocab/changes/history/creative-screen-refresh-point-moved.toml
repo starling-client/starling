@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::creative_screen::Game<'_>::refresh_creative_tabs"]
+why = "The screen refresh no longer builds its own tab contents. It now requests the world catalog on demand and publishes the completed lists to the screen."
+migrate = "For a listener on the screen refresh itself, set at in [[inject]] to sunrise_client::game::native_hooks::build_creative_mode_tab_contents::Game<'_>::refresh_creative_tabs and update hash if pinned. To edit catalog contents, use Hooks::build_creative_mode_tab_contents (version 2) and its scoped tab editor instead; a catalog build need not come from a screen refresh."

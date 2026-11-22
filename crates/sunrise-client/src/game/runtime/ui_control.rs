@@ -3,16 +3,16 @@
 //! clicks that go through the same window events as the mouse.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen, agent::Handled};
+use serde_json::{Value, json};
+use std::{
+    sync::mpsc::Sender,
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     Result,
     control::Request,
     creative::Creative,
     widgets::{self, Kind, Node},
-};
-use serde_json::{Value, json};
-use std::{
-    sync::mpsc::Sender,
-    time::{Duration, Instant},
 };
 use winit::event::MouseButton;
 

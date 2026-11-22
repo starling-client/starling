@@ -9,8 +9,8 @@ use crate::{
         placement::{PlacementContext, PlacementQueryError},
     },
 };
-use sunrise_core::geometry::Direction;
 use std::{collections::BTreeSet, io, sync::Arc};
+use sunrise_core::geometry::Direction;
 
 const HORIZONTAL: [Direction; 4] = [
     Direction::North,

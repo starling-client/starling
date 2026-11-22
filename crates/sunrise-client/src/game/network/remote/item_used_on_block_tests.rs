@@ -1,7 +1,7 @@
 //! ITEM_USED_ON_BLOCK after the block phase sees the stack copied before it (#2940).
 use super::*;
-use sunrise_client::advancements as a;
 use serde_json::json;
+use sunrise_client::advancements as a;
 
 /// One `item_used_on_block` advancement per stick count the tool must have.
 pub(super) fn install_criteria(game: &mut Game<'_>, counts: &[u32], item: &str) {
@@ -39,7 +39,7 @@ pub(super) fn install_criteria(game: &mut Game<'_>, counts: &[u32], item: &str) 
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn the_item_phase_criterion_sees_the_stack_from_before_the_block_phase() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -80,7 +80,7 @@ fn the_item_phase_criterion_sees_the_stack_from_before_the_block_phase() {
 }
 
 #[test]
-#[ignore = "requires prepared game resources"]
+#[ignore = "daily"]
 fn compass_criterion_sees_two_compasses_before_the_block_takes_one() {
     let observer = Observer::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -110,6 +110,42 @@ fn compass_criterion_sees_two_compasses_before_the_block_takes_one() {
             assert_eq!(game.held().map(|stack| stack.count), Some(1));
             assert!(game.adv.progress.has("test:sticks2", "seen"));
             assert!(!game.adv.progress.has("test:sticks1", "seen"));
+        });
+    });
+}
+
+/// `ServerPlayerGameMode.useItemOn` hands the block the stack in hand after
+/// the block phase's listeners: one that takes the last fire charge and lets
+/// the click go on leaves TNT nothing to light it with.
+#[test]
+#[ignore = "daily"]
+fn tnt_reads_the_hand_the_block_phase_listener_left() {
+    let observer = Observer::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "item_used_on_block_observer",
+        Box::new(observer.clone()),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        with_interaction_game(false, |game| {
+            let tnt = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:tnt")
+                .unwrap();
+            game.world.set(0, 64, 0, tnt).unwrap();
+            game.forced_hit = Some(hit());
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:fire_charge", 1));
+            *observer.0.lock().unwrap() = Controls {
+                take_in_block: true,
+                ..Controls::default()
+            };
+            use_block(game, false);
+            assert!(game.held().is_none(), "the listener took the fire charge");
+            assert!(game.tnts.is_empty(), "nothing primed");
+            assert_eq!(game.world.block(0, 64, 0), tnt);
         });
     });
 }

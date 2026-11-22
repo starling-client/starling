@@ -3,8 +3,8 @@
 //! body takes them at each turn; a client keeps its own player's on the body it moves. Neither
 //! side sends its set to the other: a mod sets both.
 use super::{Game, commands::Target};
-use sunrise_world::collision_exclusions::Refused;
 use mod_api::{CollisionExclusionsError, EntityRef};
+use sunrise_world::collision_exclusions::Refused;
 
 fn refused(why: Refused) -> CollisionExclusionsError {
     match why {
@@ -86,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_server_mod_sets_a_guests_exclusions_and_a_refused_set_keeps_them() {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             let entity = game.player(12).unwrap().entity();
@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_sets_its_own_players_and_a_respawn_or_another_level_clears_them() {
         use sunrise_protocol::packets::play::{self, Clientbound as C};
         let mut resources = None;

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn a_biome_the_world_lacks_is_saved_back_unchanged() {
     let Some(root) = std::env::var_os("SUNRISE_TEST_RESOURCES") else {
         return;
@@ -48,7 +48,7 @@ fn a_biome_the_world_lacks_is_saved_back_unchanged() {
             before.saved_id(&format!("gone_mod:cell_{i}")),
         );
     }
-    let saved = encode(&chunk, assets.registry, &before);
+    let saved = encode(&chunk, assets.registry, &before, &Default::default());
     assert!(palette(&saved).contains(&"gone_mod:highland".to_owned()));
     // Reopened without that mod: the column plays as plains...
     let after = load();
@@ -57,7 +57,7 @@ fn a_biome_the_world_lacks_is_saved_back_unchanged() {
     let id = loaded.biome(4, 16, 8);
     assert_eq!(after.name(id), "minecraft:plains");
     // ...and its next save still names the missing biome, not plains.
-    let resaved = encode(&loaded, assets.registry, &after);
+    let resaved = encode(&loaded, assets.registry, &after, &Default::default());
     let names = palette(&resaved);
     assert!(names.contains(&"gone_mod:highland".to_owned()), "{names:?}");
     assert!(!names.contains(&"minecraft:plains".to_owned()), "{names:?}");
@@ -72,11 +72,19 @@ fn a_biome_the_world_lacks_is_saved_back_unchanged() {
         assert!(id > 255);
         assert_eq!(again.saved_name(id), format!("gone_mod:cell_{i}"));
     }
-    assert_eq!(palette(&encode(&reloaded, assets.registry, &again)), names);
+    assert_eq!(
+        palette(&encode(
+            &reloaded,
+            assets.registry,
+            &again,
+            &Default::default()
+        )),
+        names
+    );
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn vanilla_biome_palettes_are_byte_identical_after_reload() {
     let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").expect("resources"));
     let assets = crate::assets::Assets::load(&root).expect("assets");
@@ -97,9 +105,9 @@ fn vanilla_biome_palettes_are_byte_identical_after_reload() {
             }),
         );
     }
-    let saved = encode(&chunk, assets.registry, &biomes);
+    let saved = encode(&chunk, assets.registry, &biomes, &Default::default());
     let loaded = decode(&saved, assets.registry, &biomes).expect("chunk");
-    let resaved = encode(&loaded, assets.registry, &biomes);
+    let resaved = encode(&loaded, assets.registry, &biomes, &Default::default());
     let palettes = |root: &NamedTag| {
         let Some(Tag::List(sections)) = root.tag.get("sections") else {
             panic!("sections")
@@ -147,7 +155,11 @@ fn an_exhausted_biome_table_refuses_every_save_before_touching_the_world() {
     std::fs::create_dir_all(root.join("playerdata")).unwrap();
     std::fs::write(root.join("level.dat"), b"level bytes").unwrap();
     std::fs::write(root.join("playerdata/a.dat"), b"player bytes").unwrap();
-    let save = SaveDir::new(root.clone(), LevelShape::OVERWORLD);
+    let save = SaveDir::new(
+        root.clone(),
+        LevelShape::OVERWORLD,
+        Some(Default::default()),
+    );
     save.save(&[Arc::new(Chunk::empty(0, 0))], registry, &biomes)
         .unwrap();
     let before = disk_bytes(&root);
@@ -185,6 +197,7 @@ fn an_exhausted_biome_table_refuses_every_save_before_touching_the_world() {
     refused(save.save_protos(Vec::new(), registry, &biomes).unwrap_err());
     // A record that reaches the writer thread is refused too, without a file.
     let encoding = Arc::new(Encoding {
+        items: Default::default(),
         registry,
         biomes: biomes.clone(),
         tables: None,

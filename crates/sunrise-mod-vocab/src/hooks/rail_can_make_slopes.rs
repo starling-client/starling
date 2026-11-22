@@ -8,6 +8,8 @@ pub trait Hooks {
     /// state and the position, without touching the world. With no part attached to the
     /// state, the cost is one table lookup. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "collect",
         out = "can",
@@ -16,5 +18,10 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::rails::GameLevel<'_>::native_rail_can_make_slopes",
         neoforge = "IBaseRailBlockExtension.canMakeSlopes"
     )]
-    fn rail_can_make_slopes();
+    fn rail_can_make_slopes(
+        dimension: LevelDimension,
+        state: BlockState,
+        pos: BlockPos,
+        can: &mut bool,
+    );
 }

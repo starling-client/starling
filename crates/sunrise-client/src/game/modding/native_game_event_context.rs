@@ -52,10 +52,10 @@ impl Game<'_> {
 mod tests {
     use crate::game::api_values::TryIntoApi;
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_client::{chunk::Chunk, items::ItemStack};
-    use sunrise_client_core::who::EventSource;
     use mod_api::{EntityRef, GameEventContext};
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, items::ItemStack};
+    use sunrise_client_core::who::EventSource;
 
     fn sensor<'a>(
         game: &'a mut crate::game::Game<'_>,
@@ -67,7 +67,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn contextual_game_event_keeps_guest_cause_until_emission() {
         use crate::game::native_item_places::tests::open_to_lan;
         use crate::game::native_sound_refs::tests::guest;
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn sensor_receives_context_source_and_affected_state_at_requested_position() {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());

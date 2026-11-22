@@ -2,6 +2,7 @@
 //! variables, `if` blocks and calls on context objects. An expression is parsed once when the pack
 //! loads, with every name resolved, and then evaluated against a [`Host`], the game side that
 //! answers context objects (`o`, `p`, `g`...) and their methods.
+pub mod budget;
 mod colors;
 mod fast;
 mod legacy;

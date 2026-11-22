@@ -1,28 +1,27 @@
 use super::*;
 impl Game<'_> {
-    pub(in crate::game) fn text_string(
-        &self,
-        text: &sunrise_client::text::Text,
-    ) -> Result<String, mod_api::TextFormError> {
-        Ok(text.plain())
+    pub(in crate::game) fn text_string(&self, text: &mod_api::Text) -> String {
+        sunrise_client_lib::api_text::to_engine_inprocess(text).plain()
     }
 
-    pub(in crate::game) fn text_width(
-        &self,
-        text: &sunrise_client::text::Text,
-    ) -> Result<i32, mod_api::TextFormError> {
-        Ok(self.gui.atlas.font.width_text(text) as i32)
+    pub(in crate::game) fn text_width(&self, text: &mod_api::Text) -> i32 {
+        let engine = sunrise_client_lib::api_text::to_engine_inprocess(text);
+        self.gui.atlas.font.width_text(&engine) as i32
     }
 
     pub(in crate::game) fn text_split(
         &self,
-        text: &sunrise_client::text::Text,
+        text: &mod_api::Text,
         width: i32,
-    ) -> Vec<sunrise_client::text::Text> {
+    ) -> Vec<mod_api::Text> {
+        let local = sunrise_client_lib::api_text::to_local_engine(text);
         self.gui
             .atlas
             .font
-            .split_formatted(&text.resolved(), width as f32)
+            .split_formatted(&local.engine().resolved(), width as f32)
+            .iter()
+            .map(|line| local.text_to_api(line))
+            .collect()
     }
 }
 
@@ -32,7 +31,7 @@ mod tests {
     use crate::game::api_values::TryIntoEngine;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn plain_text_reads_resolve_current_language_arguments_keys_and_siblings() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let key = mod_api::Text::new(mod_api::text::TextContent::Keybind(
@@ -46,7 +45,7 @@ mod tests {
                 .children
                 .push(mod_api::Text::translate("test.tail", vec![]));
             text.children.push(sibling);
-            let host: &dyn mod_api::ClientHost = game;
+            let host: &dyn mod_api::Host = game;
             for (space, tail, expected) in [
                 ("Space", "tail", "Space / Cake + tail"),
                 ("Espace", "fin", "Espace / Cake + fin"),
@@ -60,35 +59,30 @@ mod tests {
                             ("test.tail".into(), tail.into()),
                         ],
                     ),
-                    || assert_eq!(host.text_string(&text).unwrap(), expected),
+                    || assert_eq!(host.text_string(&text), expected),
                 );
             }
-            assert_eq!(
-                host.text_string(&mod_api::Text::literal("§aX")).unwrap(),
-                "§aX"
-            );
-            assert_eq!(host.text_string(&mod_api::Text::literal("")).unwrap(), "");
+            assert_eq!(host.text_string(&mod_api::Text::literal("§aX")), "§aX");
+            assert_eq!(host.text_string(&mod_api::Text::literal("")), "");
             let fallback = mod_api::Text::new(mod_api::text::TextContent::Translatable {
                 key: "test.missing.plain".into(),
                 fallback: Some("Fallback %s".into()),
                 arguments: vec![mod_api::Text::literal("X")],
             });
-            assert_eq!(host.text_string(&fallback).unwrap(), "Fallback X");
+            assert_eq!(host.text_string(&fallback), "Fallback X");
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn styled_text_reads_use_live_font_language_and_wrapping_outside_drawing() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let mut text = mod_api::Text::literal("AA AA");
             text.style.bold = Some(true);
-            let form = mod_api::text::TextForm::try_from(&text).unwrap();
-            let text = mod_api::Text::try_from(form).unwrap();
             let host: &dyn mod_api::ClientHost = game;
-            assert_eq!(host.text_width(&mod_api::Text::literal("AA")).unwrap(), 12);
-            assert_eq!(host.text_width(&mod_api::Text::literal("")).unwrap(), 0);
-            let lines = host.text_split(&text, 14).unwrap();
+            assert_eq!(host.text_width(&mod_api::Text::literal("AA")), 12);
+            assert_eq!(host.text_width(&mod_api::Text::literal("")), 0);
+            let lines = host.text_split(&text, 14);
             let plain: Vec<_> = lines
                 .iter()
                 .map(|line| {
@@ -98,16 +92,9 @@ mod tests {
                 })
                 .collect();
             assert_eq!(plain, ["AA", "AA"]);
-            assert_eq!(
-                host.text_split(&mod_api::Text::literal("AA"), -1)
-                    .unwrap()
-                    .len(),
-                2
-            );
+            assert_eq!(host.text_split(&mod_api::Text::literal("AA"), -1).len(), 2);
 
-            let lines = host
-                .text_split(&mod_api::Text::literal("A\nAA"), 100)
-                .unwrap();
+            let lines = host.text_split(&mod_api::Text::literal("A\nAA"), 100);
             let plain: Vec<_> = lines
                 .iter()
                 .map(|line| {
@@ -117,24 +104,22 @@ mod tests {
                 .collect();
             assert_eq!(plain, ["A", "AA"]);
 
-            let mut invalid = mod_api::Text::literal("A");
+            // In-process text reads accept deep component trees (matching vanilla
+            // Component.getString / Font.width / Font.split), while serialization
+            // boundaries still enforce MAX_TEXT_DEPTH.
+            let mut deep = mod_api::Text::literal("A");
             for _ in 0..mod_api::text::MAX_TEXT_DEPTH {
                 let mut parent = mod_api::Text::literal("");
-                parent.children.push(invalid);
-                invalid = parent;
+                parent.children.push(deep);
+                deep = parent;
             }
+            assert_eq!(host.text_string(&deep), "A");
+            assert_eq!(host.text_width(&deep), 6);
+            assert_eq!(host.text_split(&deep, 100).len(), 1);
             assert_eq!(
-                host.text_string(&invalid),
+                sunrise_client_lib::api_text::to_serialized_engine(&deep),
                 Err(mod_api::TextFormError::TooDeep)
             );
-            assert_eq!(
-                host.text_width(&invalid),
-                Err(mod_api::TextFormError::TooDeep)
-            );
-            assert!(matches!(
-                host.text_split(&invalid, 100),
-                Err(mod_api::TextFormError::TooDeep)
-            ));
 
             let translated = mod_api::Text::new(mod_api::text::TextContent::Translatable {
                 key: "test.measure".into(),
@@ -148,8 +133,8 @@ mod tests {
                         [("test.measure".into(), value.into())],
                     ),
                     || {
-                        assert_eq!(host.text_width(&translated).unwrap(), width);
-                        assert_eq!(host.text_split(&translated, 6).unwrap().len(), lines);
+                        assert_eq!(host.text_width(&translated), width);
+                        assert_eq!(host.text_split(&translated, 6).len(), lines);
                     },
                 );
             }
@@ -165,13 +150,8 @@ mod tests {
             );
             game.gui.atlas.font = sunrise_client::font::Font::metrics(&source);
             let host: &dyn mod_api::ClientHost = game;
-            assert_eq!(host.text_width(&mod_api::Text::literal("AA")).unwrap(), 8);
-            assert_eq!(
-                host.text_split(&mod_api::Text::literal("AA"), 8)
-                    .unwrap()
-                    .len(),
-                1
-            );
+            assert_eq!(host.text_width(&mod_api::Text::literal("AA")), 8);
+            assert_eq!(host.text_split(&mod_api::Text::literal("AA"), 8).len(), 1);
         });
     }
 }

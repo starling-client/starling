@@ -1,14 +1,14 @@
 #![forbid(unsafe_code)]
 //! Runs the JSON-lines scenarios of tools/test_frame_limiter_parity.py through
 //! the Rust `FramerateLimiter` with the same scripted virtual clock.
-use sunrise_client::{
-    Result,
-    window::{FramerateLimiter, LimiterClock, end_frame},
-};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_client::{
+    Result,
+    window::{FramerateLimiter, LimiterClock, end_frame},
 };
 
 /// The scripted clock of the case: every query costs `call` ns, parking

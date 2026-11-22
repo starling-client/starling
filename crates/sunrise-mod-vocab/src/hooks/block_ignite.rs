@@ -7,6 +7,8 @@ pub trait Hooks {
     /// `player` is the acting server player when there is one. Set `cancel` to
     /// leave the position unchanged.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -14,5 +16,11 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_block_ignite"
     )]
-    fn block_ignite();
+    fn block_ignite(
+        dimension: LevelDimension,
+        player: Option<u128>,
+        pos: BlockPos,
+        cause: &str,
+        cancel: &mut bool,
+    );
 }

@@ -806,16 +806,20 @@ impl PackScreen {
     }
     /// A left click (`Screen.mouseClicked`).
     pub fn click(&mut self, m: &Measure, x: f64, y: f64) -> Action {
+        self.click_with_outcome(m, x, y).0
+    }
+
+    pub(crate) fn click_with_outcome(&mut self, m: &Measure, x: f64, y: f64) -> (Action, bool) {
         if self.confirm.is_some() {
             return self.confirm_click(m, x, y);
         }
         if let Some(action) = self.browser_click(m, x, y) {
-            return action;
+            return (action, true);
         }
         if self.search.contains(x, y) {
             self.search.click(m, x, false, false);
             self.set_focus(Focus::Search);
-            return Action::None;
+            return (Action::None, true);
         }
         for side in 0..2 {
             if !self.lists[side].is_over(x, y) {
@@ -831,7 +835,7 @@ impl PackScreen {
             if scrolling {
                 self.lists[side].held = Some(y);
                 self.set_focus(Focus::List(side));
-                return Action::None;
+                return (Action::None, true);
             }
             let l = &self.lists[side];
             let hit = l.entry_at(x as i32, y as i32);
@@ -839,7 +843,7 @@ impl PackScreen {
                 && let Some((id, bx, by)) = self.options_button(side, i)
                 && d::inside((x as i32, y as i32), bx, by, OPTIONS_SIZE, OPTIONS_SIZE)
             {
-                return Action::Options(id);
+                return (Action::Options(id), true);
             }
             let mut took = false;
             if let Some(i) = hit {
@@ -869,23 +873,28 @@ impl PackScreen {
             if took {
                 self.set_focus(Focus::List(side));
             }
-            return Action::None;
+            return (Action::None, took);
         }
         for (i, (bx, by)) in self.footer().into_iter().enumerate() {
             let w = self.footer_w(i);
             if x >= bx as f64 && y >= by as f64 && x < (bx + w) as f64 && y < (by + 20) as f64 {
                 self.set_focus(Focus::Button(i));
-                return if i == 0 {
+                let action = if i == 0 {
                     Action::OpenFolder
                 } else {
                     Action::Done
                 };
+                return (action, true);
             }
         }
+<<<<<<< sync-sunrise-1
         if self.on_catalog(x, y) {
             return Action::Catalog;
         }
         Action::None
+=======
+        (Action::None, false)
+>>>>>>> sunrise/main
     }
     /// `PackEntry.mouseClicked`; true when the entry clicked is still the
     /// list's own (nothing was repopulated).
@@ -1006,9 +1015,9 @@ impl PackScreen {
             [(bx, by), (bx + 154, by)],
         )
     }
-    fn confirm_click(&mut self, m: &Measure, x: f64, y: f64) -> Action {
+    fn confirm_click(&mut self, m: &Measure, x: f64, y: f64) -> (Action, bool) {
         let Some(c) = self.confirm.clone() else {
-            return Action::None;
+            return (Action::None, false);
         };
         let (_, _, buttons) = self.confirm_layout(m, &c);
         for (i, (bx, by)) in buttons.into_iter().enumerate() {
@@ -1018,7 +1027,7 @@ impl PackScreen {
                 self.reposition(m);
                 if i == 0 {
                     match c.action {
-                        ConfirmAction::Import(paths) => return Action::Import(paths),
+                        ConfirmAction::Import(paths) => return (Action::Import(paths), true),
                         ConfirmAction::Select(id) => {
                             if let Some(index) = self.model_index(0, &id) {
                                 self.model.activate(false, index, true);
@@ -1028,10 +1037,10 @@ impl PackScreen {
                         }
                     }
                 }
-                return Action::None;
+                return (Action::None, true);
             }
         }
-        Action::None
+        (Action::None, false)
     }
     /// The focus, the lists' rows, scroll and selection (for debugging).
     pub fn debug(&self) -> String {
@@ -1069,10 +1078,12 @@ impl PackScreen {
         }
     }
     /// `onRelease`.
-    pub fn release(&mut self) {
+    pub fn release(&mut self) -> bool {
+        let mut handled = false;
         for l in &mut self.lists {
-            l.held = None;
+            handled |= l.held.take().is_some();
         }
+        handled
     }
     pub fn scroll(&mut self, x: f64, y: f64, amount: f64) {
         if self.confirm.is_some() || self.search.contains(x, y) {
@@ -2599,7 +2610,7 @@ mod footer_label_tests {
     /// the crash of #6129) it scrolls. A local `Language` per file: the global
     /// language stays as it was.
     #[test]
-    #[ignore = "requires prepared language data in SUNRISE_TEST_RESOURCES or .local/sunrise-client/26.3"]
+    #[ignore = "daily"]
     fn the_footer_draws_in_every_language_file() {
         let root = std::env::var_os("SUNRISE_TEST_RESOURCES")
             .map(std::path::PathBuf::from)

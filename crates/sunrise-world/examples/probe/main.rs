@@ -185,6 +185,7 @@ mod tree_feature_fixture;
 mod use_flag_reaction_fixture;
 mod use_remainder_fixture;
 mod value_provider_fixture;
+mod vanilla_math_fuzz;
 mod view_direction_fixture;
 mod water_splash_fixture;
 mod world_border_fixture;
@@ -361,6 +362,7 @@ probes! {
     use_flag_reaction_fixture,
     use_remainder_fixture,
     value_provider_fixture,
+    vanilla_math_fuzz,
     view_direction_fixture,
     water_splash_fixture,
     world_border_fixture,

@@ -2,6 +2,13 @@
 //! dimension fixed when the world was created and changed only by its owner's recorded choice.
 //! Design: `docs/design/mod-api/mod-biome-regions.md`.
 use super::{DatIssue, Result, Tag, write_dat_durable};
+use mod_api::__private::BiomeRegionDeclaration;
+use std::io::Read;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use sunrise_core::nbt::JavaString;
 use sunrise_core::{
     identifier::Identifier,
@@ -10,13 +17,6 @@ use sunrise_core::{
 use sunrise_world::compression::Compression;
 use sunrise_world::worldgen::biome_source::regions::{
     LayoutRegion, REGION_SELECTOR_VERSION, RegionLayout, RegionPoint, SelectorParams,
-};
-use mod_api::__private::BiomeRegionDeclaration;
-use std::io::Read;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-    sync::Arc,
 };
 
 #[cfg(test)]

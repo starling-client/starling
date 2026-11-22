@@ -1,11 +1,11 @@
 use super::*;
 
 impl Game<'_> {
-    /// The atlas sprite source types a mod adds (NeoForge's `RegisterSpriteSourcesEvent`): push
-    /// each id, `<mod id>:<path>`. Asked once at start on the client, before resources load.
+    /// Gather attributed atlas sprite source providers at client startup, before resources load
+    /// (NeoForge's `RegisterSpriteSourcesEvent`).
     pub(in crate::game) fn native_register_sprite_sources(
         context: &mod_api::RegistrationContext,
-        sources: &mut Vec<String>,
+        sources: &mut Vec<Answered<SpriteSourceRegistration>>,
     ) {
         Self::fire_register_sprite_sources(context, sources);
     }

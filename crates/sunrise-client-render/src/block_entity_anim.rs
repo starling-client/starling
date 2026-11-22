@@ -133,15 +133,9 @@ fn wrap_pi(mut a: f32) -> f32 {
     a
 }
 
-/// `Mth.floor(float)`.
-fn mth_floor(v: f32) -> i32 {
-    let i = v as i32;
-    if v < i as f32 { i - 1 } else { i }
-}
-
 /// `Mth.frac(float)`.
 pub fn mth_frac(v: f32) -> f32 {
-    v - mth_floor(v) as f32
+    v - sunrise_core::mth::floor_f32(v) as f32
 }
 
 /// `EnchantTableRenderState` (`EnchantTableRenderer.extractRenderState`) and

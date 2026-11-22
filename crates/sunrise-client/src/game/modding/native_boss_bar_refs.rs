@@ -1,5 +1,7 @@
 //! Custom boss bar handles for native server mods: the `/bossbar` store.
 use super::Game;
+use mod_api::__private::game::*;
+use mod_api::{BossBarColor, BossBarOverlay, BossBarRef, PlayerRef};
 use sunrise_client::{
     bossbar::BossBar,
     lan::playerdata::{ints_uuid, uuid_ints},
@@ -7,8 +9,6 @@ use sunrise_client::{
     text::Text,
 };
 use sunrise_core::identifier::Identifier;
-use mod_api::__private::game::*;
-use mod_api::{BossBarColor, BossBarOverlay, BossBarRef, PlayerRef};
 
 impl Game<'_> {
     fn boss_bar_state(&self, bar: BossBarRef) -> Option<&BossBar> {
@@ -252,12 +252,12 @@ impl Game<'_> {
 mod tests {
     use super::super::{lan::LanSettings, native_entity_refs::tests::with_game};
     use super::*;
-    use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
-    use sunrise_protocol::packets::configuration::ClientInformation;
     use std::sync::{
         Arc,
         atomic::{AtomicI32, AtomicUsize},
     };
+    use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use sunrise_protocol::packets::configuration::ClientInformation;
 
     fn guest(uuid: u128, conn: u32) -> Guest {
         let (tx, _) = std::sync::mpsc::channel();
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn handles_create_update_list_and_go_stale_like_bossbar_commands() {
         with_game(|game| {
             let config = HubConfig {
@@ -299,6 +299,7 @@ mod tests {
                 max_players: 10,
                 integrated: true,
                 levels: game.level_shapes,
+                level_seeds: game.levels.runtime.seeds(),
             };
             let mut net = NetConfig::lan(0, "test".into(), 10);
             net.listen = false;
@@ -476,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn generated_text_crossings_refuse_too_deep_before_boss_bar_writes() {
         with_game(|game| {
             let bar = mod_api::prelude::BossBarsServerHost::create_boss_bar(
@@ -553,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn saved_bars_are_found_before_any_tick() {
         with_game(|game| {
             let dir = std::env::temp_dir().join(format!("boss-early-{}", std::process::id()));

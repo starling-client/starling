@@ -1,0 +1,17 @@
+ids = [
+    "method:RenderAssets::block_state_models",
+    "method:RenderAssets::baked_model",
+    "type:BakedModelKeys",
+    "handle:BakedModelKeys::iter",
+    "type:BakedModelView",
+    "type:BakedModelView.particle",
+    "type:BakedModelView.quads",
+    "type:BakedQuad",
+    "type:BakedQuad.positions",
+    "type:BakedQuad.uvs",
+    "type:BakedQuad.sprite",
+    "type:BakedQuad.baked_argb",
+    "handle:BakedQuad::new",
+]
+why = "Model lookups lend immutable geometry, sprite names and variant lists from the published resource generation instead of cloning them for every query. Baked ARGB is now visible independently of the tint index; the view does not resolve draw-time colour or render state. Only keys can be retained across asset borrows."
+migrate = "In explicit type annotations and function signatures, write BakedModelKeys<'_>, BakedModelView<'_>, and BakedQuad<'_> instead of BakedModelKeys, BakedModelView, and BakedQuad; use a named lifetime when tying the result to an input borrow. Replace block_state_models(state)?.first().copied() with block_state_models(state)?.iter().next(); iter() yields BakedModelKey by value. If you need an owned list, collect those keys. Keep the key until model_baking_completed publishes the next generation and call baked_model(key) again when reading geometry. Replace view.quads.iter() or for quad in &view.quads with view.quads(); replace view.quads[i] with view.quad(i) for constant-time lookup, and handle None when i is out of range. Use view.particle and quad.sprite directly as borrowed names; dereference quad.positions or quad.uvs if you need a copied array. Read quad.baked_argb for the optional 0xAARRGGBB colour baked into the quad, not the colour from quad.tint_index. BakedQuad::new and Wire for BakedModelView and BakedQuad are gone: use your own owned geometry type for manually built or serialized data."

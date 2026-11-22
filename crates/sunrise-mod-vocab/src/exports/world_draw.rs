@@ -1,3 +1,4 @@
 pub use client::world_draw::{
-    DrawError, RenderLevelStage, WorldDepth, WorldDrawUsage, WorldLine, WorldQuad, WorldRenderView,
+    DrawError, NameTagOptions, RenderLevelStage, WorldDepth, WorldDrawUsage, WorldLine, WorldQuad,
+    WorldRenderView,
 };

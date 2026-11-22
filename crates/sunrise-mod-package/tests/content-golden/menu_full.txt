@@ -1,0 +1,104 @@
+manifest:
+Manifest {
+    id: "menu_full",
+    name: "Menu full",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/menu_full",
+    ),
+    files: [
+        "data/menu_full/sunrise/menu/carried_case.json",
+        "data/menu_full/sunrise/menu/workbench.json",
+    ],
+    blocks: [],
+    items: [],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [
+        MenuType {
+            id: "menu_full:carried_case",
+            slots: 3,
+            player_inventory: true,
+            data_slots: 0,
+            owned_slots: Some(
+                [
+                    1,
+                    16,
+                    99,
+                ],
+            ),
+            results: [],
+            inputs: [],
+            crafting: None,
+            links: None,
+        },
+        MenuType {
+            id: "menu_full:workbench",
+            slots: 12,
+            player_inventory: false,
+            data_slots: 3,
+            owned_slots: None,
+            results: [
+                6,
+            ],
+            inputs: [
+                5,
+                7,
+            ],
+            crafting: Some(
+                MenuCrafting {
+                    grid: 1,
+                    size: 2,
+                    result: 0,
+                },
+            ),
+            links: Some(
+                MenuLinks {
+                    from: 8,
+                    count: 2,
+                },
+            ),
+        },
+    ],
+    namespaces: [
+        "menu_full",
+    ],
+}

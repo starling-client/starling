@@ -1,0 +1,3 @@
+ids = ["hook:block_entity_load_additional", "hook:block_entity_load_additional.pos", "hook:block_entity_load_additional.level", "type:BlockEntityLoadAdditionalEvent.pos", "type:BlockEntityLoadAdditionalEvent.level"]
+why = "block_entity_load_additional now names the block entity's place: event.pos is its position and event.level its level, so a mod can store data applied by a chunk load or /data merge under its dimension and position. The hook moves from version 1 to 2."
+migrate = "Read event.pos and event.level where the applied data belongs to a place. Destructure BlockEntityLoadAdditionalEvent with .. for the added fields. Rebuild native mods against this SDK."

@@ -22,6 +22,7 @@ pub trait Hooks {
     /// `2`: version `1` was `fence_connects_to`, for fences alone and without
     /// `kind`. Diverges from upstream: new hook.
     #[hook(
+        receiver = "read",
         side = "server",
         contract = "collect",
         out = "connected",

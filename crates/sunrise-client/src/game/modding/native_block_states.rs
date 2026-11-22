@@ -1,151 +1,52 @@
 //! Block state ids and names, and item tags, for native mods:
 //! registry queries with no level, so they answer anywhere a host is given.
 use super::Game;
+use mod_api::{
+    BlockEntityTypeKey, BlockKey, EffectKey, EnchantmentKey, EntityTypeKey, FluidKey, FluidState,
+    ItemKey, MenuKey, RegistryName, StateConstraint, StateMatchError,
+};
+use std::sync::{Arc, Mutex};
 use sunrise_client::command::{Reader, args::Registries, block};
 use sunrise_client::items::ItemStack;
 use sunrise_world::chunk::BlockState;
 use sunrise_world::fluid::{FluidKind, FluidState as EngineFluidState};
-use sunrise_world::level::{fluid_drip_particle, fluid_explosion_resistance, fluid_randomly_ticks};
 use sunrise_world::registry::{BlockRegistry, BlockStateId};
-use mod_api::{
-    BlockEntityTypeKey, BlockKey, BlockSoundType, BlockStateRange, EffectKey, EnchantmentKey,
-    EntityTypeKey, FluidDefinition, FluidKey, FluidState, FluidStateError, FluidTypeProperties,
-    ItemKey, MenuKey, StateConstraint, StateMatchError, StateProperty,
-};
-use std::sync::{Arc, Mutex};
+
+/// The engine's fluid state for an exported one, or none for a state no fluid can be in: no
+/// world form, an amount above 8, a zero amount for anything but the empty fluid, or a source
+/// that isn't full.
+pub(super) fn engine_fluid_state(state: FluidState) -> Option<EngineFluidState> {
+    let kind = super::native_world_read::engine_fluid_kind(state.fluid)?;
+    let engine = EngineFluidState::new(kind, state.amount, state.falling);
+    let consistent = match kind {
+        FluidKind::Empty => state.amount == 0,
+        _ if engine.is_source() => state.amount == 8,
+        _ => (1..=8).contains(&state.amount),
+    };
+    consistent.then_some(engine)
+}
 
 impl Game<'_> {
-    /// The exported definition of a world fluid, or a tank-only identity.
-    pub(super) fn fluid_state_definition(&self, fluid: FluidKey) -> Option<FluidDefinition> {
-        let id = mod_api::__private::fluid_id(fluid)?;
-        let Some(definition) = self.res.behaviours().fluid_definitions().get(id) else {
-            return Some(FluidDefinition::TankOnly);
-        };
-        let default = super::native_world_read::api_fluid_state(definition.default)?;
-        let properties = definition
-            .properties
-            .iter()
-            .map(|(name, values)| StateProperty::new(name.clone(), values.clone()))
-            .collect();
-        Some(FluidDefinition::World {
-            default,
-            properties,
-        })
-    }
-
-    /// A registered fluid's type properties: its block's light and name for a world fluid,
-    /// vanilla's `FluidTags.WATER` and `FluidTags.LAVA` behaviours by its family. None for a
-    /// key the registry doesn't hold.
-    pub(super) fn fluid_type_properties(&self, fluid: FluidKey) -> Option<FluidTypeProperties> {
-        let id = mod_api::__private::fluid_id(fluid)?;
-        let behaviours = self.res.behaviours();
-        let block = behaviours.fluid_definitions().get(id).map(|definition| {
-            self.res
-                .facts()
-                .get(behaviours.legacy_block(definition.default))
-        });
-        let description_id = match &block {
-            Some(block) => description_id("block", &block.name)?,
-            None => description_id("fluid_type", id)?,
-        };
-        let kind = FluidKind::from_name(id);
-        let water = kind.is_some_and(|kind| kind.same_family(FluidKind::Water));
-        let lava = kind.is_some_and(|kind| kind.same_family(FluidKind::Lava));
-        Some(FluidTypeProperties {
-            description_id,
-            light_level: block.map_or(0, |block| block.emission),
-            fall_distance_modifier: match (water, lava) {
-                (true, _) => 0.0,
-                (_, true) => 0.5,
-                _ => 1.0,
-            },
-            can_push_entity: water || lava,
-            can_swim: water,
-            can_drown: water,
-            can_extinguish: water,
-            can_hydrate: water,
-            supports_boating: water,
-            explosion_resistance: kind.map_or(0.0, fluid_explosion_resistance),
-            randomly_ticks: kind.is_some_and(fluid_randomly_ticks),
-            drip_particle: kind.and_then(fluid_drip_particle).map(str::to_owned),
-        })
-    }
-
-    /// `FluidState.createLegacyBlock` for `state`, through the one table the engine converts
-    /// fluid states with. None for a state no fluid can be in: no world form, an amount above
-    /// 8, a zero amount for anything but the empty fluid, or a source that isn't full.
-    pub(super) fn fluid_legacy_block(&self, state: FluidState) -> Option<mod_api::BlockStateId> {
-        let kind = super::native_world_read::engine_fluid_kind(state.fluid)?;
-        let engine = EngineFluidState::new(kind, state.amount, state.falling);
-        let consistent = match kind {
-            FluidKind::Empty => state.amount == 0,
-            _ if engine.is_source() => state.amount == 8,
-            _ => (1..=8).contains(&state.amount),
-        };
-        consistent.then(|| mod_api::BlockStateId(self.res.behaviours().legacy_block(engine).0))
-    }
-
-    /// Validate fluid constraints against the exported property definition.
-    pub(super) fn fluid_state_validate(
-        &self,
-        fluid: FluidKey,
-        constraints: &[StateConstraint],
-    ) -> Result<(), FluidStateError> {
-        let definition = mod_api::__private::fluid_id(fluid)
-            .and_then(|id| self.res.behaviours().fluid_definitions().get(id))
-            .ok_or(FluidStateError::NoWorldState)?;
-        for (index, constraint) in constraints.iter().enumerate() {
-            if constraints[..index]
-                .iter()
-                .any(|previous| previous.name == constraint.name)
-            {
-                return Err(FluidStateError::Duplicate(index as u32));
-            }
-            match_state_properties(
-                &definition.properties,
-                true,
-                |_, _| true,
-                std::slice::from_ref(constraint),
-            )
-            .map_err(|error| match error {
-                StateMatchError::UnknownProperty(_) => {
-                    FluidStateError::UnknownProperty(index as u32)
-                }
-                StateMatchError::InvalidValue(_) => FluidStateError::InvalidValue(index as u32),
-                _ => unreachable!("StateMatchError: unhandled variant"),
-            })?;
-        }
-        Ok(())
-    }
     /// Resolve a registered fluid identifier.
     pub(super) fn fluid_key(&self, id: &str) -> Option<FluidKey> {
         mod_api::__private::fluid_key(id)
     }
-    /// The canonical block id retained by the load-owned registration slot. An invalid slot
-    /// is a boundary error, including when a wasm guest supplies it.
-    pub(super) fn block_key_id(&self, key: BlockKey) -> String {
+    /// Borrows the canonical block id if the name is available.
+    pub(super) fn block_key_id(&self, key: BlockKey) -> Option<&str> {
         mod_api::__private::block_key_id(key)
-            .expect("invalid block key slot")
-            .to_owned()
     }
     /// The canonical item id retained by the load-owned registration slot.
-    pub(super) fn item_key_id(&self, key: ItemKey) -> String {
+    pub(super) fn item_key_id(&self, key: ItemKey) -> Option<&str> {
         mod_api::__private::item_key_id(key)
-            .expect("invalid item key slot")
-            .to_owned()
     }
     /// The canonical effect id retained by the load-owned registration slot.
-    pub(super) fn effect_key_id(&self, key: EffectKey) -> String {
+    pub(super) fn effect_key_id(&self, key: EffectKey) -> Option<&str> {
         mod_api::__private::effect_key_id(key)
-            .expect("invalid effect key slot")
-            .to_owned()
     }
 
     /// The canonical fluid id retained by the completed registry.
-    pub(super) fn fluid_key_id(&self, key: FluidKey) -> String {
+    pub(super) fn fluid_key_id(&self, key: FluidKey) -> Option<&str> {
         mod_api::__private::fluid_id(key)
-            .expect("invalid fluid key slot")
-            .to_owned()
     }
     /// The key of a block in the completed registry.
     pub(super) fn block_key(&self, id: &str) -> Option<BlockKey> {
@@ -156,10 +57,8 @@ impl Game<'_> {
         mod_api::__private::effect_key(id)
     }
     /// The canonical block entity type id retained by the load-owned slot.
-    pub(super) fn block_entity_type_key_id(&self, key: BlockEntityTypeKey) -> String {
+    pub(super) fn block_entity_type_key_id(&self, key: BlockEntityTypeKey) -> Option<&str> {
         mod_api::__private::block_entity_type_name(key)
-            .expect("invalid block entity type key slot")
-            .to_owned()
     }
     /// Every block key in registry order, mod blocks after vanilla's.
     pub(super) fn block_keys(&self) -> Vec<BlockKey> {
@@ -182,16 +81,16 @@ impl Game<'_> {
         mod_api::__private::enchantment_keys()
     }
     /// The canonical entity type id retained by the load-owned slot.
-    pub(super) fn entity_type_key_id(&self, key: EntityTypeKey) -> String {
-        mod_api::__private::entity_type_key_id(key).expect("invalid entity type key slot")
+    pub(super) fn entity_type_key_id(&self, key: EntityTypeKey) -> Option<RegistryName> {
+        mod_api::__private::entity_type_key_id(key)
     }
     /// The canonical menu type id retained by the load-owned slot.
-    pub(super) fn menu_key_id(&self, key: MenuKey) -> String {
-        mod_api::__private::menu_key_id(key).expect("invalid menu key slot")
+    pub(super) fn menu_key_id(&self, key: MenuKey) -> Option<RegistryName> {
+        mod_api::__private::menu_key_id(key)
     }
     /// The canonical enchantment id retained by the load-owned slot.
-    pub(super) fn enchantment_key_id(&self, key: EnchantmentKey) -> String {
-        mod_api::__private::enchantment_key_id(key).expect("invalid enchantment key slot")
+    pub(super) fn enchantment_key_id(&self, key: EnchantmentKey) -> Option<RegistryName> {
+        mod_api::__private::enchantment_key_id(key)
     }
 
     /// The state `name` names, read as `/setblock` reads a block
@@ -218,84 +117,6 @@ impl Game<'_> {
     pub(super) fn block_state_default(&self, block: BlockKey) -> Option<BlockStateId> {
         super::api_values::default_state(block)
     }
-    /// `BlockState.canBeReplaced()`: whether placing a block where this state stands
-    /// replaces it (air, grass, water, snow layers). None for an unknown state.
-    pub(super) fn block_state_replaceable(&self, state: BlockStateId) -> Option<bool> {
-        self.pack.assets.registry.state(state)?;
-        Some(self.res.facts().get(state).replaceable)
-    }
-    /// `BlockBehaviour.Properties.destroyTime`, as `BlockState.getDestroySpeed` reads it:
-    /// stone 1.5, obsidian 50, bedrock -1 (it can't be broken). None for an unknown state.
-    pub(super) fn block_state_destroy_speed(&self, state: BlockStateId) -> Option<f32> {
-        self.pack.assets.registry.state(state)?;
-        Some(self.res.facts().get(state).hardness)
-    }
-    /// The explosion resistance the block of this state declares (`Block.getExplosionResistance`):
-    /// stone 6, obsidian 1200, bedrock 3,600,000. None for an unknown state.
-    pub(super) fn block_state_explosion_resistance(&self, state: BlockStateId) -> Option<f32> {
-        self.pack.assets.registry.state(state)?;
-        Some(self.res.facts().get(state).explosion_resistance)
-    }
-    /// `BlockState.getSoundType()`: its volume, pitch and the sound events for breaking,
-    /// stepping on, placing, hitting and falling on it. None for an unknown state.
-    pub(super) fn block_state_sound(&self, state: BlockStateId) -> Option<BlockSoundType> {
-        self.pack.assets.registry.state(state)?;
-        Some(sunrise_client::block_sounds::own(
-            &self.res.facts().get(state).sounds,
-        ))
-    }
-    /// `BlockState.hasBlockEntity()`. None for an unknown state.
-    pub(super) fn block_state_has_block_entity(&self, state: BlockStateId) -> Option<bool> {
-        self.pack.assets.registry.state(state)?;
-        Some(self.res.facts().get(state).block_entity)
-    }
-    /// `BlockState.getMapColor`: the state's `MapColor.id`, 0 for none. None for an unknown state.
-    pub(super) fn block_state_map_color(&self, state: BlockStateId) -> Option<u8> {
-        self.pack.assets.registry.state(state)?;
-        Some(self.res.facts().get(state).map_color)
-    }
-    /// The immutable local ordinals of `block`, independent of current world ID order.
-    pub(super) fn block_states_of(&self, block: BlockKey) -> Option<BlockStateRange> {
-        mod_api::__private::block_state_range(block).ok()
-    }
-
-    /// The properties of a resolved block, copied for the mod as plain data.
-    pub(super) fn block_state_definition(&self, block: BlockKey) -> Option<Vec<StateProperty>> {
-        let default = super::api_values::default_state(block)?;
-        let state = self.pack.assets.registry.state(default)?;
-        let properties = self.pack.block_registries.blocks.get(&state.name)?;
-        Some(
-            properties
-                .iter()
-                .map(|(name, values)| StateProperty::new(name.clone(), values.clone()))
-                .collect(),
-        )
-    }
-
-    /// Match against the existing command registry definitions without allocating on the call.
-    pub(super) fn block_state_matches(
-        &self,
-        state: BlockStateId,
-        block: BlockKey,
-        constraints: &[StateConstraint],
-    ) -> Option<Result<bool, StateMatchError>> {
-        let default = super::api_values::default_state(block)?;
-        let registry = self.pack.assets.registry;
-        let target = registry.state(default)?;
-        let state = registry.state(state)?;
-        let definition = self.pack.block_registries.blocks.get(&target.name)?;
-        Some(match_state_properties(
-            definition,
-            state.name == target.name,
-            |name, value| {
-                state
-                    .properties
-                    .get(name)
-                    .is_some_and(|actual| actual == value)
-            },
-            constraints,
-        ))
-    }
 
     /// `Item.getCraftingRemainder`: Sunrise currently stores the remainder's
     /// item id, so the result is a single plain stack.
@@ -315,6 +136,7 @@ impl Game<'_> {
 
     pub(in crate::game) fn craft_grid_remainders(&self, recipe: &str) -> Vec<Option<ItemStack>> {
         self.recipes().remainders(
+            &self.loop_context,
             recipe,
             &self.craft_grid[..self.craft_size * self.craft_size],
             self.craft_size,
@@ -362,9 +184,10 @@ pub(super) fn match_state_properties(
 
 /// The command registries' block table of `registry` alone, built once: what
 /// the parser checks properties against, whether a world is open or not.
-pub(super) fn block_registries(registry: &'static BlockRegistry) -> Arc<Registries> {
+pub(super) fn block_registries(registry: &BlockRegistry) -> Arc<Registries> {
     static CACHE: Mutex<Vec<(usize, Arc<Registries>)>> = Mutex::new(Vec::new());
-    let key = std::ptr::from_ref(registry) as usize;
+    // Derived from the registry's data alone, so equal data across installations shares one.
+    let key = registry.payload_identity();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, reg)) = cache.iter().find(|(cached, _)| *cached == key) {
         return reg.clone();
@@ -411,7 +234,7 @@ pub(super) fn serialize(state: &BlockState) -> String {
 }
 
 /// `Util.makeDescriptionId`: `<kind>.<namespace>.<path>`, `/` in the path as `.`.
-fn description_id(kind: &str, id: &str) -> Option<String> {
+pub(super) fn description_id(kind: &str, id: &str) -> Option<String> {
     let (namespace, path) = id.split_once(':')?;
     Some(format!("{kind}.{namespace}.{}", path.replace('/', ".")))
 }
@@ -425,6 +248,7 @@ impl crate::crafting::CraftingRemainder for Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mod_api::{FluidDefinition, FluidStateError, FluidTypeProperties};
 
     /// Air, a stair with two properties (its default `facing=north,half=bottom`)
     /// and wheat with an integer `age`, as `parse` reads them.
@@ -445,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn item_and_block_registry_facts_use_the_loaded_tables() {
         use super::super::api_values::TryIntoApi;
         use mod_api::Host;
@@ -508,7 +332,7 @@ mod tests {
     /// A mod item maps back to the content block it places: the item's
     /// binding is the block the content root registered for it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn item_block_maps_a_mod_items_back_to_its_block() {
         use super::super::native_entity_refs::tests::{run_fresh_cases, with_game_at};
         use mod_api::{self, Hooks, Host};
@@ -532,8 +356,8 @@ mod tests {
                 event: &mut mod_api::BlocksEvent<'_>,
             ) {
                 event
-                    .blocks
-                    .push(mod_api::Block::new(CRATE, "minecraft:stone"));
+                    .register(mod_api::Block::new(CRATE, "minecraft:stone"))
+                    .unwrap();
             }
         }
         let mods: mod_api::Mods =
@@ -555,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn host_key_iteration_matches_the_26_3_registries_in_registry_order() {
         use mod_api::Host;
         let base = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
@@ -568,26 +392,38 @@ mod tests {
             let host: &dyn Host = game;
             let blocks = host.block_keys();
             assert_eq!(blocks.len(), 1286);
-            assert_eq!(blocks[0].id(host), "minecraft:air");
-            assert_eq!(blocks.last().unwrap().id(host), "minecraft:firefly_bush");
+            assert_eq!(blocks[0].id(host), Some("minecraft:air"));
+            assert_eq!(
+                blocks.last().unwrap().id(host),
+                Some("minecraft:firefly_bush")
+            );
 
             let items = host.item_keys();
             assert_eq!(items.len(), 1658);
-            assert_eq!(items[0].id(host), "minecraft:air");
-            assert_eq!(items.last().unwrap().id(host), "minecraft:ominous_bottle");
+            assert_eq!(items[0].id(host), Some("minecraft:air"));
+            assert_eq!(
+                items.last().unwrap().id(host),
+                Some("minecraft:ominous_bottle")
+            );
 
             let entities = host.entity_type_keys();
             assert_eq!(entities.len(), 161);
-            assert_eq!(entities[0].id(host), "minecraft:acacia_boat");
             assert_eq!(
-                entities.last().unwrap().id(host),
-                "minecraft:fishing_bobber"
+                entities[0].id(host).as_deref(),
+                Some("minecraft:acacia_boat")
+            );
+            assert_eq!(
+                entities.last().unwrap().id(host).as_deref(),
+                Some("minecraft:fishing_bobber")
             );
 
             let menus = host.menu_keys();
             assert_eq!(menus.len(), 25);
-            assert_eq!(menus[0].id(host), "minecraft:generic_9x1");
-            assert_eq!(menus.last().unwrap().id(host), "minecraft:stonecutter");
+            assert_eq!(menus[0].id(host).as_deref(), Some("minecraft:generic_9x1"));
+            assert_eq!(
+                menus.last().unwrap().id(host).as_deref(),
+                Some("minecraft:stonecutter")
+            );
 
             // Enchantments load with the item tables, which this harness stops short of;
             // read them the way a world open does.
@@ -605,10 +441,13 @@ mod tests {
             .unwrap();
             let enchantments = host.enchantment_keys();
             assert_eq!(enchantments.len(), 43);
-            assert_eq!(enchantments[0].id(host), "minecraft:aqua_affinity");
             assert_eq!(
-                enchantments.last().unwrap().id(host),
-                "minecraft:wind_burst"
+                enchantments[0].id(host).as_deref(),
+                Some("minecraft:aqua_affinity")
+            );
+            assert_eq!(
+                enchantments.last().unwrap().id(host).as_deref(),
+                Some("minecraft:wind_burst")
             );
 
             // A second read is the same table in the same order.
@@ -618,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires prepared resources"]
+    #[ignore = "daily"]
     fn public_host_resolves_literal_block_and_effect_names() {
         mod_platform::testing::with_mods(std::sync::Arc::from([]), || {
             let root =
@@ -627,11 +466,11 @@ mod tests {
                 let host: &dyn mod_api::Host = game;
                 assert_eq!(
                     host.block_key("minecraft:stone").unwrap().id(host),
-                    "minecraft:stone"
+                    Some("minecraft:stone")
                 );
                 assert_eq!(
                     host.effect_key("minecraft:speed").unwrap().id(host),
-                    "minecraft:speed"
+                    Some("minecraft:speed")
                 );
                 assert_eq!(host.block_key("test:missing_block"), None);
                 assert_eq!(host.effect_key("test:missing_effect"), None);
@@ -649,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fluid_type_properties_answer_each_fluid_family() {
         use mod_api::{Host, HostFluidStates};
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -714,51 +553,47 @@ mod tests {
     /// `FluidState.createLegacyBlock`: a source is its block at level 0, flowing water of amount
     /// 3 is level 5, falling adds 8, the empty fluid is air; states no fluid can be in have none.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn legacy_blocks_follow_the_liquid_levels() {
-        use mod_api::{Host, HostFluidStates};
+        use mod_api::{BlockMetadata, Host, HostBlockStates, HostFluidStates};
         super::super::native_entity_refs::tests::with_game(|game| {
             let host: &dyn Host = game;
             let service = host.fluid_states();
-            // A mod may edit the copy it is given, so any amount and source flag can reach the
-            // service: start from the engine's state and overwrite them.
+            let metadata = host.block_states();
             let state = |id: &str, amount, falling, source| {
-                let kind = FluidKind::from_name(id).unwrap_or(FluidKind::Water);
-                let _ = EngineFluidState::new(kind, 1, falling);
-                let mut state =
-                    mod_api::__private::fluid_state(host.fluid_key(id).unwrap(), 1, falling, false);
-                (state.amount, state.source) = (amount, source);
-                state
+                mod_api::__private::fluid_state(
+                    host.fluid_key(id).unwrap(),
+                    amount,
+                    falling,
+                    source,
+                )
             };
             let block = |state: FluidState| {
-                let id = service.legacy_block(state)?;
-                game.pack.assets.registry.state(BlockStateId(id.0)).cloned()
-            };
-            let liquid = |name: &str, level: &str| {
-                Some(BlockState {
-                    name: name.into(),
-                    properties: [("level".to_owned(), level.to_owned())].into(),
-                })
+                let state = service.legacy_block(state)?;
+                Some((
+                    metadata.name(state.block()).unwrap(),
+                    state.property(&metadata, "level").unwrap(),
+                ))
             };
             assert_eq!(
                 block(state("minecraft:water", 8, false, true)),
-                liquid("minecraft:water", "0")
+                Some(("minecraft:water", Some("0")))
             );
             assert_eq!(
                 block(state("minecraft:flowing_water", 3, false, false)),
-                liquid("minecraft:water", "5")
+                Some(("minecraft:water", Some("5")))
             );
             assert_eq!(
                 block(state("minecraft:flowing_lava", 3, true, false)),
-                liquid("minecraft:lava", "13")
+                Some(("minecraft:lava", Some("13")))
             );
             assert_eq!(
                 block(state("minecraft:flowing_water", 1, false, false)),
-                liquid("minecraft:water", "7")
+                Some(("minecraft:water", Some("7")))
             );
             assert_eq!(
-                block(state("minecraft:empty", 0, false, false)).map(|s| s.name),
-                Some("minecraft:air".into())
+                block(state("minecraft:empty", 0, false, false)),
+                Some(("minecraft:air", None))
             );
             for refused in [
                 state("minecraft:flowing_water", 9, false, false),
@@ -774,43 +609,62 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fluid_definitions_and_constraints_use_the_loaded_registry() {
         use mod_api::{Host, HostFluidStates};
         super::super::native_entity_refs::tests::with_game(|game| {
             let host: &dyn Host = game;
             let water = host.fluid_key("minecraft:water").unwrap();
             let flowing = host.fluid_key("minecraft:flowing_water").unwrap();
-            let service = host.fluid_states();
-            for phase in [
-                mod_api::__private::ModPhase::Setup,
-                mod_api::__private::ModPhase::Reloading,
-            ] {
-                let _scope = mod_api::__private::PhaseOwner::scope(phase);
+            let setup: &dyn mod_api::ClientSetupContext = game;
+            let reload: &dyn mod_api::ReloadContext = game;
+            for context in [setup as &dyn mod_api::ReloadContext, reload] {
+                let water = context.fluid_key("minecraft:water").unwrap();
+                let fluids = context.fluid_states();
                 assert!(matches!(
-                    service.definition(water),
+                    fluids.definition(water),
                     Some(FluidDefinition::World { .. })
                 ));
-                assert_eq!(service.validate(water, &[]), Ok(()));
+                assert_eq!(fluids.validate(water, &[]), Ok(()));
+                let stone = context.block_state_id("minecraft:stone").unwrap();
+                assert_eq!(context.block_states().destroy_speed(stone), Some(1.5));
+
+                let item = |id| {
+                    let key = context
+                        .item_key(&mod_api::Identifier::parse(id).unwrap())
+                        .unwrap();
+                    mod_api::ItemResource::of(&mod_api::ItemStack::new(key, 1).unwrap())
+                };
+                let sword = item("minecraft:iron_sword");
+                assert!(sword.damageable(context));
+                assert!(!sword.foil(context));
+                assert!(sword.repairable(context, &item("minecraft:iron_ingot")));
+                assert!(!sword.repairable(context, &item("minecraft:stick")));
             }
+            let service = host.fluid_states();
             let tank = host.fluid_key("sunrise:definition_test").unwrap();
             assert_eq!(service.definition(tank), Some(FluidDefinition::TankOnly));
             assert_eq!(
                 service.validate(tank, &[]),
                 Err(FluidStateError::NoWorldState)
             );
-            for (id, amount, source, property_count) in [
-                ("minecraft:empty", 0, false, 0),
-                ("minecraft:water", 8, true, 1),
-                ("minecraft:flowing_water", 1, false, 2),
-                ("minecraft:lava", 8, true, 1),
-                ("minecraft:flowing_lava", 1, false, 2),
+            const SOURCE: &[(&str, &[&str])] = &[("falling", &["true", "false"])];
+            const FLOWING: &[(&str, &[&str])] = &[
+                ("falling", &["true", "false"]),
+                ("level", &["1", "2", "3", "4", "5", "6", "7", "8"]),
+            ];
+            for (id, amount, source, expected) in [
+                ("minecraft:water", 8, true, SOURCE),
+                ("minecraft:flowing_water", 1, false, FLOWING),
+                ("minecraft:lava", 8, true, SOURCE),
+                ("minecraft:flowing_lava", 1, false, FLOWING),
+                ("minecraft:empty", 0, false, &[]),
             ] {
                 let key = host.fluid_key(id).unwrap();
                 let FluidDefinition::World {
                     default,
                     properties,
-                } = service.definition(key).unwrap()
+                } = host.fluid_states().definition(key).unwrap()
                 else {
                     panic!("world definition")
                 };
@@ -823,7 +677,12 @@ mod tests {
                     ),
                     (key, amount, source, amount != 0)
                 );
-                assert_eq!(properties.len(), property_count);
+                assert_eq!(properties.is_empty(), id == "minecraft:empty");
+                assert_eq!(properties.len(), expected.len());
+                for (property, &(name, values)) in properties.iter().zip(expected) {
+                    assert_eq!(property.name, name);
+                    assert_eq!(property.values, values);
+                }
                 assert_eq!(service.validate(key, &[]), Ok(()));
             }
             assert_eq!(
@@ -837,15 +696,10 @@ mod tests {
                 ),
                 Err(FluidStateError::UnknownProperty(0))
             );
-            let FluidDefinition::World {
-                default,
-                properties,
-            } = service.definition(water).unwrap()
-            else {
+            let FluidDefinition::World { default, .. } = service.definition(water).unwrap() else {
                 panic!("world fluid")
             };
             assert!(default.is_source());
-            assert!(properties.iter().any(|p| p.name == "falling"));
             assert_eq!(
                 service.validate(water, &[StateConstraint::new("level", "8")]),
                 Err(FluidStateError::UnknownProperty(0))
@@ -1000,10 +854,50 @@ mod tests {
 #[cfg(test)]
 mod facts_tests {
     use crate::game::api_values::TryIntoApi;
-    use mod_api::{BlockStateRecord, HostBlockStates};
+    use mod_api::HostBlockStates;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn weathering_and_wax_reads_keep_shared_properties() {
+        use mod_api::{WeatheringAge::*, prelude::BlockStatesHost};
+
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let stairs = |name| {
+                let id = format!(
+                    "minecraft:{name}[facing=east,half=top,shape=inner_left,waterlogged=true]"
+                );
+                BlockStatesHost::block_state_id(game, &id).unwrap()
+            };
+            let fresh = stairs("cut_copper_stairs");
+            let exposed = stairs("exposed_cut_copper_stairs");
+            let weathered = stairs("weathered_cut_copper_stairs");
+            let oxidized = stairs("oxidized_cut_copper_stairs");
+            let waxed = stairs("waxed_exposed_cut_copper_stairs");
+            let facts = game.block_states();
+            assert_eq!(facts.weathering_age(fresh), Some(Unaffected));
+            assert_eq!(facts.weathering_age(exposed), Some(Exposed));
+            assert_eq!(facts.weathering_age(weathered), Some(Weathered));
+            assert_eq!(facts.weathering_age(oxidized), Some(Oxidized));
+            assert_eq!(facts.weathering_age(waxed), None);
+            assert_eq!(facts.next_weathering_stage(waxed), None);
+            assert_eq!(facts.previous_weathering_stage(waxed), None);
+            assert_eq!(facts.previous_weathering_stage(fresh), None);
+            assert_eq!(facts.next_weathering_stage(oxidized), None);
+            assert_eq!(facts.next_weathering_stage(fresh), Some(exposed));
+            assert_eq!(facts.previous_weathering_stage(oxidized), Some(weathered));
+            assert_eq!(facts.waxed(exposed), Some(waxed));
+            assert_eq!(facts.unwaxed(waxed), Some(exposed));
+            assert_eq!(facts.unwaxed(exposed), None);
+
+            let invalid = mod_api::__private::block_state_from_ordinal(exposed.block(), u16::MAX);
+            assert_eq!(facts.weathering_age(invalid), None);
+            assert_eq!(facts.next_weathering_stage(invalid), None);
+            assert_eq!(facts.waxed(invalid), None);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn block_state_facts_read_vanillas_tables_through_the_host() {
         super::super::native_entity_refs::tests::with_game(|game| {
             let state = |name: &str| {
@@ -1040,10 +934,60 @@ mod facts_tests {
             // MapColor.STONE is id 11 and air has none.
             assert_eq!(facts.map_color(stone), Some(11));
             assert_eq!(facts.map_color(air), Some(0));
+            // getLightEmission: a torch 14, glowstone 15, stone 0.
+            assert_eq!(facts.light_emission(state("minecraft:torch")), Some(14));
+            assert_eq!(facts.light_emission(state("minecraft:glowstone")), Some(15));
+            assert_eq!(facts.light_emission(stone), Some(0));
+            // getFriction: 0.6 by default, ice 0.98, slime 0.8.
+            assert_eq!(facts.friction(stone), Some(0.6));
+            assert_eq!(facts.friction(state("minecraft:ice")), Some(0.98));
+            assert_eq!(facts.friction(state("minecraft:slime_block")), Some(0.8));
+            // isSolidRender: a full occluding cube only.
+            assert_eq!(facts.is_solid_render(stone), Some(true));
+            assert_eq!(facts.is_solid_render(state("minecraft:glass")), Some(false));
+            assert_eq!(
+                facts.is_solid_render(state("minecraft:stone_slab")),
+                Some(false)
+            );
+            assert_eq!(facts.is_redstone_conductor(stone), Some(true));
+            assert_eq!(
+                facts.is_redstone_conductor(state("minecraft:glass")),
+                Some(false)
+            );
+            assert_eq!(
+                facts.is_redstone_conductor(state("minecraft:moving_piston")),
+                Some(false)
+            );
+            assert_eq!(
+                facts.is_redstone_conductor(state("minecraft:red_shulker_box")),
+                None
+            );
             // SoundType.STONE: its break event, at volume and pitch 1.
             let sound = facts.sound(stone).unwrap();
             assert_eq!(&*sound.break_sound, "minecraft:block.stone.break");
             assert_eq!((sound.volume, sound.pitch), (1.0, 1.0));
+            let properties = game.block_states().definition(stairs.block()).unwrap();
+            let expected: [(&str, &[&str]); 4] = [
+                ("facing", &["north", "south", "west", "east"]),
+                ("half", &["top", "bottom"]),
+                (
+                    "shape",
+                    &[
+                        "straight",
+                        "inner_left",
+                        "inner_right",
+                        "outer_left",
+                        "outer_right",
+                    ],
+                ),
+                ("waterlogged", &["true", "false"]),
+            ];
+            assert_eq!(properties.len(), expected.len());
+            for (property, (name, values)) in properties.iter().zip(expected) {
+                assert_eq!(property.name, name);
+                assert_eq!(property.values, values);
+            }
+            assert!(facts.definition(stone.block()).unwrap().is_empty());
             // Oak stairs: facing 4 × half 2 × shape 5 × waterlogged 2 = 80 states, its default
             // among them; stone has one.
             let range = facts
@@ -1071,7 +1015,7 @@ mod facts_tests {
                 Some((stone, 1))
             );
             // A forged local ordinal refuses at the generated Game crossing.
-            let invalid = BlockStateRecord::new(stone.block(), u16::MAX).into();
+            let invalid = mod_api::__private::block_state_from_ordinal(stone.block(), u16::MAX);
             assert_eq!(facts.destroy_speed(invalid), None);
             assert_eq!(facts.sound(invalid), None);
         });
@@ -1140,7 +1084,7 @@ mod crafting_remainder_tests {
         }
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn crafting_remainder_without_parts_matches_data() {
         let mods: mod_api::Mods = Vec::new().into();
         crate::game::api_values::install_parts(&mods).unwrap();
@@ -1155,9 +1099,11 @@ mod crafting_remainder_tests {
                     Some(ItemStack::new("minecraft:stone", 1)),
                     None,
                 ];
-                let remaining = game
-                    .recipes()
-                    .remainders("missing", &grid, 2, &|s| game.crafting_remainder(s));
+                let remaining =
+                    game.recipes()
+                        .remainders(&game.loop_context, "missing", &grid, 2, &|s| {
+                            game.crafting_remainder(s)
+                        });
                 assert_eq!(
                     remaining,
                     vec![
@@ -1172,8 +1118,15 @@ mod crafting_remainder_tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn crafting_remainder_part_override_and_default() {
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::native_block_states::crafting_remainder_tests::crafting_remainder_part_override_and_default",
+            "SUNRISE_FURNACE_CRAFTING_REMAINDER_CASE",
+            &["override"],
+        ) {
+            return;
+        }
         let mods: mod_api::Mods =
             vec![mod_api::ModEntry::new("remainder", Box::new(RemainderMod))].into();
         crate::game::api_values::install_parts(&mods).unwrap();
@@ -1214,12 +1167,11 @@ mod crafting_remainder_tests {
                         .is_none(),
                     "oversized Part output is refused"
                 );
-                use crate::furnace::FurnaceCooking;
                 let fuel = ItemStack {
                     damage: 2,
                     ..ItemStack::new("minecraft:wooden_hoe", 1)
                 };
-                let mut furnace = crate::containers::Furnace {
+                let furnace = crate::containers::Furnace {
                     kind: crate::containers::FurnaceKind::Furnace,
                     items: [
                         Some(ItemStack::new("minecraft:iron_ore", 1)),
@@ -1233,19 +1185,33 @@ mod crafting_remainder_tests {
                     speed: 1.0,
                     recipes_used: Default::default(),
                 };
-                let mut drops = Vec::new();
-                furnace.tick(
-                    &game.loop_context,
-                    game.recipes(),
-                    game.items(),
-                    game.res.providers(),
-                    &mut drops,
-                    &|s| game.crafting_remainder(s),
+                use sunrise_client::containers::BlockEntity;
+                let pos = (8, 64, 8);
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
                 );
+                let state = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:furnace")
+                    .unwrap();
+                game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+                game.world
+                    .block_entities
+                    .insert(pos, BlockEntity::Furnace(furnace));
+                game.tick_furnace(pos).unwrap();
+                let Some(BlockEntity::Furnace(furnace)) = game.world.block_entities.get(&pos)
+                else {
+                    panic!("no furnace");
+                };
                 let grid = [Some(fuel), None, None, None];
-                let crafted = game
-                    .recipes()
-                    .remainders("missing", &grid, 2, &|s| game.crafting_remainder(s));
+                let crafted =
+                    game.recipes()
+                        .remainders(&game.loop_context, "missing", &grid, 2, &|s| {
+                            game.crafting_remainder(s)
+                        });
                 assert_eq!(furnace.items[1], crafted[0]);
                 assert_eq!(
                     furnace.items[1].as_ref().map(|s| (s.damage, s.count)),

@@ -10,7 +10,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-import lab
 import perf_bench as bench
 import stress_scenes as stress
 
@@ -91,19 +90,10 @@ def write_options(game_dir, distance, version=None):
         f'entityCulling:{CURRENT_MODE}\n'
         'entityCullingPrecheck:64\n'
         'graphicsApi:opengl\n'
-        'overlay:fps\n'
     )
     return text
 
 bench.write_options = write_options
-
-original_game_env = lab.game_env
-
-def game_env(base=None, **extra):
-    extra['SUNRISE_OCCLUSION_CULL_COUNTS'] = '1'
-    return original_game_env(base, **extra)
-
-bench.lab.game_env = game_env
 
 original_control_call = bench.Control.__call__
 CURRENT_MODE = 'off'
@@ -117,7 +107,7 @@ def capture(self, line, timeout=600):
         shot_dir.mkdir(parents=True, exist_ok=True)
         scene = SCENE_NAMES[SHOT_INDEX] if SHOT_INDEX < len(SCENE_NAMES) else f'scene-{SHOT_INDEX}'
         shot_path = shot_dir / f'{CURRENT_MODE}-{scene}.png'
-        # The current camera pose is already settled and the graphics file enables the FPS overlay.
+        # The current camera pose is already settled.
         original_control_call(self, f'screenshot {shot_path}')
         print(f'SCREENSHOT {shot_path}', flush=True)
         SHOT_INDEX += 1

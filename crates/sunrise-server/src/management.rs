@@ -11,10 +11,6 @@ use crate::{
     management_schema as schema, management_tls,
     websocket::{Link, Socket},
 };
-use sunrise_platform::server_files::properties::{
-    OsEntropy, ServerProperties, SystemEntropy, generate_secret_key,
-};
-use sunrise_server_launch::config;
 use serde_json::{Value, json};
 use std::{
     net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
@@ -26,6 +22,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use sunrise_platform::server_files::properties::{
+    OsEntropy, ServerProperties, SystemEntropy, generate_secret_key,
+};
+use sunrise_server_launch::config;
 
 /// The connections that have upgraded, and the queue that carries notifications to them, which
 /// `JsonRpcNotificationService.broadcastNotification` does to every `Connection` of the `ManagementServer`.

@@ -9,7 +9,7 @@ snapshots the acting player's live progress, including during a nested turn.
 
 Keep `event.progress.clone()` if it is needed later: the owned `AdvancementProgress` snapshot
 cannot change the player's progress and is not updated by subsequent events. No-op grants and
-revokes do not fire. The snapshot uses the same plain-data bindings in native and wasm mods.
+revokes do not fire.
 
 ## Display icons
 

@@ -11,6 +11,14 @@ use crate::{
     particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleType as T, along_axis},
     world::World,
 };
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{
+        OnceLock,
+        atomic::{AtomicU8, Ordering},
+    },
+};
 use sunrise_core::{
     geometry::Axis,
     random::{LegacyRandom, RandomSource},
@@ -19,14 +27,6 @@ use sunrise_world::{
     block_collision::BlockCollisionRegistry,
     registry::{BlockRegistry, BlockStateId},
     worldgen::tags::TagDefinitions,
-};
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    sync::{
-        OnceLock,
-        atomic::{AtomicU8, Ordering},
-    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -480,6 +480,10 @@ pub struct AnimateContext<'a> {
     pub thundering: bool,
     /// The dimension has `water_evaporates` and drips lava from dripstone (the Nether).
     pub ultrawarm: bool,
+    /// Whether a picked state's block has a mod part answering `animate_tick`, asked after the
+    /// block's vanilla effects: [`AnimateSampling::run`] stops there for the game to call it.
+    /// `None` (no part answers it) asks nothing.
+    pub block_parts: Option<&'a dyn Fn(BlockStateId) -> bool>,
 }
 
 /// `ClientLevel.getMarkerParticleTarget`: only the selected main-hand item counts.
@@ -500,6 +504,14 @@ pub fn marker_particle_target(
 impl AnimateContext<'_> {
     fn state(&self, p: [i32; 3]) -> BlockStateId {
         self.world.block(p[0], p[1], p[2])
+    }
+    /// `BlockState.is(Block)` (`TypedInstance.is(T)`): the same block, whatever
+    /// its properties.
+    fn is_block(&self, a: BlockStateId, b: BlockStateId) -> bool {
+        self.registry
+            .state(a)
+            .zip(self.registry.state(b))
+            .is_some_and(|(a, b)| a.name == b.name)
     }
     fn is_air(&self, p: [i32; 3]) -> bool {
         self.facts.is_air(self.state(p))
@@ -585,50 +597,181 @@ fn redstone(engine: &mut ParticleEngine, p: [f64; 3]) {
     engine.add(&ParticleOptions::dust([1.0, 0.0, 0.0], 1.0), p, [0.0; 3]);
 }
 
-/// `ClientLevel.animateTick` around the player's block position.
+/// `ClientLevel.animateTick` around the player's block position. A pick whose block has a part
+/// (`AnimateContext::block_parts`) gets no part call here: the game runs the tick through
+/// [`AnimateSampling`] to call them.
 pub fn animate_tick(
     tables: &AnimateTables,
     engine: &mut ParticleEngine,
     ctx: &AnimateContext,
     player: [i32; 3],
 ) {
-    for _ in 0..667 {
-        do_animate_tick(tables, engine, ctx, player, 16);
-        do_animate_tick(tables, engine, ctx, player, 32);
+    let mut sampling = AnimateSampling::new(player);
+    while sampling.run(tables, engine, ctx).is_some() {}
+}
+
+/// The picks of one `ClientLevel.animateTick` (667 within 16 blocks and 667 within 32,
+/// alternating), run in steps so the game can call a mod block's part (`Block.animateTick`) in
+/// the middle of its pick, where vanilla calls a block's `animateTick`: after the block's own
+/// effects, before its fluid's and before the next pick.
+pub struct AnimateSampling {
+    player: [i32; 3],
+    /// Picks made so far, of the tick's `2 * 667`.
+    picks: u32,
+    /// The pick [`AnimateSampling::run`] stopped in for its part: its state and position.
+    rest: Option<(BlockStateId, [i32; 3])>,
+}
+
+impl AnimateSampling {
+    /// The picks of one tick around the player's block position.
+    pub fn new(player: [i32; 3]) -> Self {
+        Self {
+            player,
+            picks: 0,
+            rest: None,
+        }
+    }
+    /// Some pick made already.
+    pub fn started(&self) -> bool {
+        self.picks > 0
+    }
+    /// Picks on until one whose block has a part (`ctx.block_parts`), and returns its state and
+    /// position after the block's own effects: the caller calls the part, then runs again,
+    /// which ends that pick (the position's pack emitters, fluid, marker and biome ambience)
+    /// before making the next. `None` once the tick's picks are all done.
+    pub fn run(
+        &mut self,
+        tables: &AnimateTables,
+        engine: &mut ParticleEngine,
+        ctx: &AnimateContext,
+    ) -> Option<(BlockStateId, [i32; 3])> {
+        if let Some((state, pos)) = self.rest.take() {
+            animate_rest(tables, engine, ctx, state, pos, true);
+        }
+        while self.picks < 2 * 667 {
+            let r = if self.picks.is_multiple_of(2) { 16 } else { 32 };
+            self.picks += 1;
+            let pos = pick(engine, self.player, r);
+            let Some((state, part)) = animate_block(tables, engine, ctx, pos, self.player) else {
+                continue;
+            };
+            if part {
+                self.rest = Some((state, pos));
+                return Some((state, pos));
+            }
+            animate_rest(tables, engine, ctx, state, pos, true);
+        }
+        None
+    }
+}
+
+/// `ClientLevel.animateTick` for a screen's scene: `picks` picks among the scene's own
+/// `blocks` (not a radius around a view), each picked block's and fluid's animate tick,
+/// without what belongs to the level rather than its blocks (pack emitters, the creative
+/// marker, biome ambience). The picks come from the engine's random, which the scene
+/// seeds per tick; a scene of no blocks draws none.
+pub fn animate_scene(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    ctx: &AnimateContext,
+    blocks: &[[i32; 3]],
+    picks: u32,
+) {
+    let Ok(count) = i32::try_from(blocks.len()) else {
+        return;
+    };
+    if count == 0 {
+        return;
+    }
+    for _ in 0..picks {
+        let pos = blocks[next_int(engine.random(), count) as usize];
+        animate_at(tables, engine, ctx, pos, pos, false);
     }
 }
 fn next_int(r: &mut LegacyRandom, bound: i32) -> i32 {
     r.next_int_bound(bound).unwrap_or(0)
 }
+/// `ClientLevel.doAnimateTick`'s position: within `r` of `center` on each axis.
+fn pick(engine: &mut ParticleEngine, center: [i32; 3], r: i32) -> [i32; 3] {
+    let random = engine.random();
+    let x = center[0] + next_int(random, r) - next_int(random, r);
+    let y = center[1] + next_int(random, r) - next_int(random, r);
+    let z = center[2] + next_int(random, r) - next_int(random, r);
+    [x, y, z]
+}
+#[cfg(test)]
 fn do_animate_tick(
     tables: &AnimateTables,
     engine: &mut ParticleEngine,
     ctx: &AnimateContext,
     center: [i32; 3],
     r: i32,
+    level: bool,
 ) {
-    let random = engine.random();
-    let x = center[0] + next_int(random, r) - next_int(random, r);
-    let y = center[1] + next_int(random, r) - next_int(random, r);
-    let z = center[2] + next_int(random, r) - next_int(random, r);
-    let pos = [x, y, z];
-    if !ctx.world.loaded(x, z) {
-        return;
+    let pos = pick(engine, center, r);
+    animate_at(tables, engine, ctx, pos, center, level);
+}
+
+/// One picked position's animate tick: its block's and fluid's, and with `level` the
+/// level's own (pack emitters, the creative marker, biome ambience). No block part is called.
+fn animate_at(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    ctx: &AnimateContext,
+    pos: [i32; 3],
+    center: [i32; 3],
+    level: bool,
+) {
+    if let Some((state, _)) = animate_block(tables, engine, ctx, pos, center) {
+        animate_rest(tables, engine, ctx, state, pos, level);
+    }
+}
+
+/// A picked position's block's own animate tick: its state, and whether a mod block's part
+/// (`ctx.block_parts`) is to be called next, before [`animate_rest`]. `None`, with nothing
+/// drawn, where the position isn't loaded.
+fn animate_block(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    ctx: &AnimateContext,
+    pos: [i32; 3],
+    center: [i32; 3],
+) -> Option<(BlockStateId, bool)> {
+    if !ctx.world.loaded(pos[0], pos[2]) {
+        return None;
     }
     let state = ctx.state(pos);
     // A Polytone block modifier's `disable_particles` stops the block's own animate tick.
-    if !engine.polytone_disables_particles(state) {
-        block_animate_tick(tables, engine, ctx, state, pos, center);
+    if engine.polytone_disables_particles(state) {
+        return Some((state, false));
     }
+    block_animate_tick(tables, engine, ctx, state, pos, center);
+    Some((state, ctx.block_parts.is_some_and(|parts| parts(state))))
+}
+
+/// The rest of a picked position's animate tick, after its block's (and the block's parts'):
+/// with `level` the pack emitters, then its fluid's, then with `level` the creative marker and
+/// the biome ambience.
+fn animate_rest(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    ctx: &AnimateContext,
+    state: BlockStateId,
+    pos: [i32; 3],
+    level: bool,
+) {
+    let [x, y, z] = pos;
     // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
-    let level = ParticleLevel {
-        world: ctx.world,
-        facts: ctx.facts,
-        collision: ctx.collision,
-        player: None,
-        cached_chunk: std::cell::Cell::new(None),
-    };
-    engine.polytone_animate(&level, pos);
+    if level {
+        let level = ParticleLevel {
+            world: ctx.world,
+            facts: ctx.facts,
+            collision: ctx.collision,
+            player: None,
+            cached_chunk: std::cell::Cell::new(None),
+        };
+        engine.polytone_animate(&level, pos);
+    }
     let facts = ctx.facts.get(state);
     if facts.fluid != Fluid::None {
         fluid_animate_tick(
@@ -651,6 +794,9 @@ fn do_animate_tick(
             let top_solid = facts.sturdy_full & 1 != 0;
             try_spawn_drip(tables, engine, ctx, [x, y - 1, z], drip, top_solid);
         }
+    }
+    if !level {
+        return;
     }
     if let Some((block, options)) = ctx.marker
         && ctx.registry.state(state).is_some_and(|s| s.name == block)
@@ -1038,8 +1184,9 @@ fn block_animate_tick(
                     pitch,
                 );
             }
-            let along_z = ctx.state([pos[0] - 1, pos[1], pos[2]]) == state
-                || ctx.state([pos[0] + 1, pos[1], pos[2]]) == state;
+            // `is(this)` compares the block, so a portal of the other axis counts.
+            let along_z = ctx.is_block(ctx.state([pos[0] - 1, pos[1], pos[2]]), state)
+                || ctx.is_block(ctx.state([pos[0] + 1, pos[1], pos[2]]), state);
             for _ in 0..4 {
                 let r = engine.random();
                 let mut p = [
@@ -2106,8 +2253,8 @@ mod tests {
     /// each puff is dropped when `calculateParticleLevel`'s `nextInt(3)` is 0.
     #[test]
     fn doused_campfire_smoke_goes_through_the_particle_limiter() {
-        use sunrise_core::random::RandomSource as _;
         use std::collections::{HashMap, HashSet};
+        use sunrise_core::random::RandomSource as _;
         let run = |level: u8, camera: [f64; 3]| {
             let mut engine = ParticleEngine::new(
                 &crate::resource_source::ResourceSource::indexed(Default::default()),
@@ -2169,6 +2316,150 @@ mod tests {
             Animate::CandleCake
         );
     }
+    /// `NetherPortalBlock.animateTick` picks the curtain's axis with
+    /// `getBlockState(pos.west()).is(this)`, and `is` compares the block: a
+    /// portal of the other axis still counts, so its particles leave the z
+    /// faces. Sunrise compared the whole state, axis included.
+    #[test]
+    fn nether_portal_curtain_follows_a_neighbour_of_the_other_axis() {
+        use crate::{assets::Assets, chunk::Chunk};
+        use std::{
+            collections::{HashMap, HashSet},
+            sync::Arc,
+        };
+        use sunrise_world::chunk::BlockState as StateSpec;
+        let root = std::env::var_os("SUNRISE_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/sunrise-client")
+                    .join(sunrise_core::VANILLA_VERSION)
+            });
+        if !root.join("block-behaviours.json").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let registry = assets.registry;
+        let facts = BlockFacts::load(&root, registry).unwrap();
+        let biomes = Biomes::load(&crate::resource_source::ResourceRoot::directory(
+            root.clone(),
+        ))
+        .unwrap();
+        let collision = crate::collisions::load(&root, registry).unwrap();
+        let tables = AnimateTables::load(&root, registry).unwrap();
+        let portal = |axis: &str| {
+            registry
+                .resolve(&StateSpec {
+                    name: "minecraft:nether_portal".to_owned(),
+                    properties: [("axis".to_owned(), axis.to_owned())].into_iter().collect(),
+                })
+                .unwrap()
+        };
+        let state = portal("x");
+        // The four particle requests `block_animate_tick` asks the level for, the
+        // animated portal at (0, 64, 0) with nothing west or east of it but
+        // `neighbour` (an x offset, a state).
+        let run = |neighbour: Option<(i32, BlockStateId)>| {
+            let mut world = World::new(facts.air, 0);
+            for cx in -1..=0 {
+                world.chunks.insert((cx, 0), Arc::new(Chunk::empty(cx, 0)));
+            }
+            world.set(0, 64, 0, state).unwrap();
+            if let Some((dx, neighbour)) = neighbour {
+                world.set(dx, 64, 0, neighbour).unwrap();
+            }
+            let raining_at = |_: [i32; 3]| false;
+            let height = |_: [i32; 3]| 0;
+            let no_offset = |_: BlockStateId, _: i32, _: i32| -> Option<[f64; 3]> { None };
+            let no_gateway = |_: BlockStateId, _: [i32; 3]| 0;
+            let ctx = AnimateContext {
+                world: &world,
+                facts: &facts,
+                collision: &collision,
+                biomes: &biomes,
+                registry,
+                raining_at: &raining_at,
+                height_no_leaves: &height,
+                firefly_bush_sounds: false,
+                creaking_active: false,
+                sky_darken: 0,
+                marker: None,
+                model_offset: &no_offset,
+                gateway_particles: &no_gateway,
+                thundering: false,
+                ultrawarm: false,
+                enchant_power: &EnchantPower::default(),
+                block_parts: None,
+            };
+            let mut engine = ParticleEngine::new(
+                &crate::resource_source::ResourceSource::directory(Path::new("").to_path_buf()),
+                &HashMap::new(),
+                &HashSet::new(),
+            );
+            engine.seed_randoms(5, 9, 0);
+            engine.created_requests = Some(Vec::new());
+            engine.camera = [0.5, 65.0, 0.5];
+            block_animate_tick(&tables, &mut engine, &ctx, state, [0, 64, 0], [0, 64, 0]);
+            let made = engine.created_requests.take().unwrap();
+            assert!(made.iter().all(|(options, ..)| options.ty == T::Portal));
+            made.into_iter().map(|(_, p, v)| (p, v)).collect::<Vec<_>>()
+        };
+        // The same draws in vanilla's order: the ambient sound's `nextInt(100)`
+        // (with its pitch when that is 0), then x/y/z doubles, the three floats,
+        // the flip and the branch's float.
+        let expected = |along_z: bool| {
+            let (fx, fy, fz) = (0.0, 64.0, 0.0);
+            let mut r = LegacyRandom::new(5);
+            if r.next_int_bound(100).unwrap() == 0 {
+                let _ = r.next_float();
+            }
+            (0..4)
+                .map(|_| {
+                    let mut p = [
+                        fx + r.next_double(),
+                        fy + r.next_double(),
+                        fz + r.next_double(),
+                    ];
+                    let mut v = [
+                        f64::from(r.next_float() - 0.5) * 0.5,
+                        f64::from(r.next_float() - 0.5) * 0.5,
+                        f64::from(r.next_float() - 0.5) * 0.5,
+                    ];
+                    let flip = f64::from(r.next_int_bound(2).unwrap() * 2 - 1);
+                    let push = f64::from(r.next_float() * 2.0) * flip;
+                    if along_z {
+                        p[2] = fz + 0.5 + 0.25 * flip;
+                        v[2] = push;
+                    } else {
+                        p[0] = fx + 0.5 + 0.25 * flip;
+                        v[0] = push;
+                    }
+                    (p, v)
+                })
+                .collect::<Vec<_>>()
+        };
+        // The repro's pair (a portal of the other axis east) and the same west,
+        // against no portal neighbour at all.
+        for (label, neighbour, along_z) in [
+            (
+                "a portal of the other axis east still takes the z faces",
+                Some((1, portal("z"))),
+                true,
+            ),
+            (
+                "a portal of the other axis west still takes the z faces",
+                Some((-1, portal("z"))),
+                true,
+            ),
+            (
+                "with no portal west or east the curtain runs along x",
+                None,
+                false,
+            ),
+        ] {
+            assert_eq!(run(neighbour), expected(along_z), "{label}");
+        }
+    }
     #[test]
     fn redstone_colours_match_wire_table() {
         // RedstoneWireBlock.COLORS[15] = (1.0, 0.2, 0.1) before int packing.
@@ -2181,3 +2472,7 @@ mod tests {
 #[cfg(test)]
 #[path = "animate_tick_biome_tests.rs"]
 mod biome_particle_tests;
+
+#[cfg(test)]
+#[path = "animate_tick_parts_tests.rs"]
+mod parts_tests;

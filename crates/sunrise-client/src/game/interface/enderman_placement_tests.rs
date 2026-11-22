@@ -1,12 +1,12 @@
 //! Exercise the actual registered leave-block goal and Game event handler.
 use super::{Audio, Game, Options, Progress, Settings, load_resources};
+use std::sync::Arc;
 use sunrise_client::{
     chunk::Chunk,
     mobs::{Mob, MobEvent, goals::Cx},
 };
+use sunrise_core::random::RandomSource;
 use sunrise_core::{geometry::Vec3, position::ChunkPos};
-use mod_api::RandomSource;
-use std::sync::Arc;
 
 /// The production tick lends the level's RNG and attachments to goals while
 /// they read its blocks. Keep that ownership boundary in the registered-goal test.
@@ -40,7 +40,7 @@ fn tick_registered_goals(game: &mut Game<'_>, mob: &mut Mob) -> Vec<MobEvent> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
@@ -191,13 +191,13 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
 /// Normalization must not bypass the existing entity_place cancel contract:
 /// even a carried flower that becomes AIR stays in the enderman's hand.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn canceled_normalized_placements_keep_the_original_carried_block() {
-    use sunrise_core::position::BlockPos;
-    use sunrise_world::registry::BlockStateId;
     use mod_api::{EntityPlaceEvent, Flow, Hooks, ModEntry, ServerHost};
     use mod_platform::testing::with_mods;
     use std::sync::Mutex;
+    use sunrise_core::position::BlockPos;
+    use sunrise_world::registry::BlockStateId;
 
     struct Cancel {
         heard: Arc<Mutex<Vec<BlockPos>>>,
@@ -279,7 +279,7 @@ fn canceled_normalized_placements_keep_the_original_carried_block() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_placement_listener_discarding_the_enderman_refuses_the_attempt() {
     use mod_api::{EntityPlaceEvent, Flow, Hooks, ModEntry, ServerHost};
     use mod_platform::testing::with_mods;
@@ -349,7 +349,7 @@ fn a_placement_listener_discarding_the_enderman_refuses_the_attempt() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_air_normalized_placement_empties_the_hand_without_a_block_change_notice() {
     use mod_api::{EntityChangeBlockEvent, Hooks, ModEntry, ServerHost};
     use mod_platform::testing::with_mods;

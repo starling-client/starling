@@ -13,11 +13,13 @@ pub trait Hooks {
     /// client asks for is heard: not the flight a game-mode change starts or
     /// ends (`/gamemode`), and not a LAN host's own player.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_toggle_flight",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge has no flight toggle event; Bukkit's PlayerToggleFlightEvent)",
         cancellable = true
     )]
-    fn player_toggle_flight();
+    fn player_toggle_flight(player: u128, name: &str, flying: bool, cancel: &mut bool);
 }

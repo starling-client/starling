@@ -1,5 +1,6 @@
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
-    buf::{Codec, Ident, Reader, Str, Writer},
+    buf::{Codec, Ident, Reader, Str},
     packets::{configuration, play},
 };
 

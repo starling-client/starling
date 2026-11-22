@@ -30,9 +30,20 @@ pub fn notify_leash_holder(m: &mut Mob) {
 pub fn is_leash_holder(m: &Mob) -> bool {
     m.extra.scratch[1] > 0
 }
-/// `Attributes.FLYING_SPEED` and the speed `travel` uses (`* 5 / 3`).
+/// `createAttributes`' default `Attributes.FLYING_SPEED`, and the speed `travel` uses at it
+/// (`* 5 / 3`). A mob reads its own value through [`flying_speed`].
 pub const FLYING_SPEED: f64 = 0.05;
 pub const AIR_SPEED: f32 = 0.05 * 5.0 / 3.0;
+
+/// `getAttributeValue(FLYING_SPEED)`: the base and its modifiers (`/attribute`).
+pub fn flying_speed(m: &Mob) -> f64 {
+    super::finalize::value(m, super::finalize::Attr::FlyingSpeed)
+}
+/// `HappyGhast.travel`: `(float) getAttributeValue(FLYING_SPEED) * 5.0F / 3.0F`, in the
+/// air, in water and in lava.
+pub fn travel_speed(m: &Mob) -> f32 {
+    flying_speed(m) as f32 * 5.0 / 3.0
+}
 
 pub fn register(m: &mut Mob) {
     // No world at construction, and no ghastling to grow out of yet: the
@@ -135,19 +146,6 @@ fn within_home(m: &Mob, p: Vec3) -> bool {
 pub fn on_still_timeout(m: &Mob) -> bool {
     !m.is_baby() && m.extra.counter > 0
 }
-/// Client-side `HappyGhast.canBeCollidedWith(Player)`.
-pub fn collides_with_player(m: &Mob, feet_y: f64) -> bool {
-    player_collision(
-        m.alive(),
-        m.is_baby(),
-        on_still_timeout(m),
-        feet_y,
-        m.bounds().max_position().y,
-    )
-}
-fn player_collision(alive: bool, baby: bool, still: bool, feet_y: f64, top: f64) -> bool {
-    alive && !baby && (feet_y >= top || still)
-}
 /// `Mob.stopInPlace`.
 fn stop_in_place(m: &mut Mob) {
     m.ai.nav.stop();
@@ -178,14 +176,14 @@ pub fn move_control(m: &mut Mob, w: &MobWorld) {
     let [wx, wy, wz] = m.ai.mov.wanted;
     let travel = Vec3::new(wx - m.position.x, wy - m.position.y, wz - m.position.z);
     if can_reach(m, w, travel) {
-        // travel.normalize().scale(FLYING_SPEED * 5 / 3)
+        // travel.normalize().scale(getAttributeValue(FLYING_SPEED) * 5 / 3)
         let len = (travel.x * travel.x + travel.y * travel.y + travel.z * travel.z).sqrt();
         let unit = if len < f64::from(1.0e-5_f32) {
             Vec3::ZERO
         } else {
             Vec3::new(travel.x / len, travel.y / len, travel.z / len)
         };
-        let speed = FLYING_SPEED * 5.0 / 3.0;
+        let speed = flying_speed(m) * 5.0 / 3.0;
         m.velocity =
             m.velocity
                 .add_vector(Vec3::new(unit.x * speed, unit.y * speed, unit.z * speed));
@@ -552,7 +550,7 @@ pub fn ridden(m: &mut Mob) {
     if r.jumping {
         up += 0.5;
     }
-    let scale = 3.9 * FLYING_SPEED as f32;
+    let scale = 3.9 * flying_speed(m) as f32;
     m.ai.xxa = r.strafe * scale;
     m.ai.yya = up * scale;
     m.ai.zza = forward * scale;
@@ -678,16 +676,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn player_collision_matches_vanilla_top_and_still_timeout_rules() {
-        assert!(player_collision(true, false, false, 84.0, 84.0));
-        assert!(player_collision(true, false, false, 85.0, 84.0));
-        assert!(!player_collision(true, false, false, 83.99, 84.0));
-        assert!(player_collision(true, false, true, 83.99, 84.0));
-        assert!(!player_collision(true, true, true, 84.0, 84.0));
-        assert!(!player_collision(false, false, true, 84.0, 84.0));
-    }
-
-    #[test]
     fn a_harness_names_its_texture() {
         assert_eq!(
             harness_texture("minecraft:red_harness").as_deref(),
@@ -698,6 +686,44 @@ mod tests {
     #[test]
     fn travel_speed_is_five_thirds_of_the_flying_speed() {
         assert!((f64::from(AIR_SPEED) - FLYING_SPEED * 5.0 / 3.0).abs() < 1e-7);
+    }
+
+    /// `HappyGhast.getRiddenInput` scales by `3.9F * getAttributeValue(FLYING_SPEED)` and
+    /// `travel` flies at `(float) getAttributeValue(FLYING_SPEED) * 5.0F / 3.0F`, so
+    /// `/attribute ... minecraft:flying_speed base set` changes both; the default is 0.05.
+    #[test]
+    fn a_happy_ghast_rides_and_flies_at_its_flying_speed_attribute() {
+        use crate::mobs::{Species, finalize};
+        let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        t.species = Species::HappyGhast;
+        // `createAttributes`' value, as the registry's table carries it.
+        t.attributes = std::sync::Arc::new(
+            [("minecraft:flying_speed".to_owned(), 0.05)]
+                .into_iter()
+                .collect(),
+        );
+        let mut m = Mob::new(
+            1,
+            std::sync::Arc::new(t),
+            sunrise_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        m.rider = Some(crate::mobs::equine::Rider {
+            forward: 1.0,
+            ..Default::default()
+        });
+
+        ridden(&mut m);
+        assert_eq!(m.ai.zza, 3.9 * 0.05_f32);
+        assert_eq!(travel_speed(&m), 0.05_f32 * 5.0 / 3.0);
+        assert_eq!(travel_speed(&m), AIR_SPEED);
+
+        finalize::set_base(&mut m, finalize::Attr::FlyingSpeed, 0.17);
+
+        ridden(&mut m);
+        assert_eq!(m.ai.zza, 3.9 * 0.17_f32);
+        assert_eq!(travel_speed(&m), 0.17_f32 * 5.0 / 3.0);
+        assert_eq!(flying_speed(&m), 0.17);
     }
 
     /// `HappyGhast.ageBoundaryReached` runs the setup at the age crossing, not
@@ -763,6 +789,7 @@ mod still_float_tests {
     /// the still-timeout guard is re-checked on a running float goal too: a
     /// ghast a player stands on stops floating instead of hopping in water.
     #[test]
+    #[ignore = "daily"]
     fn a_happy_ghast_on_a_still_timeout_stops_floating() {
         let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
         t.species = Species::HappyGhast;
@@ -839,6 +866,7 @@ mod cloud_heal_tests {
     /// `Entity.isInClouds` is half of `isFastHealing`: a hurt ghast whose box
     /// reaches the cloud band heals on tick 20, one just below it on tick 600.
     #[test]
+    #[ignore = "daily"]
     fn a_happy_ghast_in_the_clouds_heals_every_second() {
         let dim = cloudy(0.8);
         let mut seen = None;
@@ -868,6 +896,7 @@ mod cloud_heal_tests {
     /// the bottom is in (`getY() + getBbHeight() < cloudBottom` is false), and
     /// so are feet exactly at the top (`getY() <= cloudTop`), but not above it.
     #[test]
+    #[ignore = "daily"]
     fn the_cloud_band_is_the_four_blocks_over_its_bottom() {
         let dim = cloudy(0.8);
         let mut seen = None;
@@ -898,6 +927,7 @@ mod cloud_heal_tests {
     /// A dimension whose `visual/cloud_color` is transparent has no clouds to
     /// stand in (the Nether and the End), so the slow interval stays.
     #[test]
+    #[ignore = "daily"]
     fn a_dimension_without_clouds_never_counts_as_in_them() {
         let dim = cloudy(0.0);
         let mut seen = None;

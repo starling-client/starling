@@ -13,6 +13,7 @@ use crate::{
 use serde_json::{Map, Value};
 use std::{
     collections::BTreeMap,
+    ops::ControlFlow,
     sync::{Arc, Mutex},
 };
 
@@ -22,12 +23,7 @@ mod foreign;
 mod mod_properties;
 mod special;
 pub use fluid_container::{FluidAppearance, FluidContainer, FluidContainerTextures};
-pub use mod_properties::{
-    SpecialModelSlot, is_item_model_type, is_mod_id, is_range_property, is_select_property,
-    is_skull_kind, is_tint_source, keep_mod_ids, register_item_models, register_range_properties,
-    register_select_properties, register_skull_kinds, register_special_model_types,
-    register_tint_sources, special_model_slot,
-};
+pub use mod_properties::{is_skull_kind, register_skull_kinds};
 pub use special::{SpecialKind, SpecialModel};
 
 type Result<T> = std::result::Result<T, DecodeError>;
@@ -349,20 +345,223 @@ fn transformation(v: &Value) -> Result<Mat4> {
         .scale(scale)
         .rotate(right))
 }
-fn optional_transformation(m: &Map<String, Value>) -> Result<Option<Mat4>> {
+pub fn optional_transformation(m: &Map<String, Value>) -> Result<Option<Mat4>> {
     get(m, "transformation").map(transformation).transpose()
 }
-/// `Mth.floor(float)` as `ARGB.as8BitChannel` uses it.
 /// `ARGB.as8BitChannel`: `Mth.floor(value * 255.0F)`.
 fn channel(v: f32) -> i32 {
-    let scaled = v * 255.0;
-    let i = scaled as i32;
-    if (i as f32) > scaled { i - 1 } else { i }
+    sunrise_core::mth::floor_f32(v * 255.0)
 }
 
 // ---------------------------------------------------------------------------
 // The model tree
 // ---------------------------------------------------------------------------
+
+/// Engine callback for a special renderer's model object, called while loading the item
+/// definition. `kind` is a validated `Identifier` (bare paths default to `minecraft:`), and
+/// `base` is canonical. `Ok(None)` lets the builtin decoder handle the type; `Err` rejects the
+/// enclosing definition, even if the type is also builtin.
+pub type SpecialModelLoader<'a> = dyn Fn(
+        &sunrise_core::identifier::Identifier,
+        &str,
+        &Map<String, Value>,
+    ) -> std::result::Result<Option<RegisteredSpecialModel>, String>
+    + 'a;
+
+/// Engine callback for a registered item tint source, called while loading the item definition.
+/// `kind` is canonical. `Ok(None)` lets the built-in decoder handle the type; `Err` rejects the
+/// enclosing definition, even if the type is also built-in.
+pub type TintSourceLoader<'a> = dyn Fn(&str, &Map<String, Value>) -> std::result::Result<Option<RegisteredTintSource>, String>
+    + 'a;
+
+/// Result returned by [`ItemModelLoader`] when a registered decoder handles an item model node.
+#[derive(Clone, Debug)]
+pub struct DecodedItemModel {
+    pub model: RegisteredItemModel,
+    pub transformation: Option<Mat4>,
+    pub models: Vec<(String, ItemModelNode)>,
+}
+
+/// Engine callback for a registered item model node type, called while loading the item definition.
+/// `kind` is canonical. `decode_child` decodes any nested item model JSON value using the same
+/// provider tables. `Ok(None)` lets the built-in decoder handle the type; `Err` refuses the
+/// enclosing definition, even if the type is also built-in.
+pub type ItemModelLoader<'a> = dyn Fn(
+        &str,
+        &Map<String, Value>,
+        &dyn Fn(&Value) -> std::result::Result<ItemModelNode, DecodeError>,
+    ) -> std::result::Result<Option<DecodedItemModel>, String>
+    + 'a;
+
+/// Engine callback for a registered `range_dispatch` numeric property, called while loading the
+/// item definition. `kind` is canonical. `Ok(None)` lets the built-in decoder handle the property;
+/// `Err` rejects the enclosing definition, even if the property is also built-in.
+pub type RangePropertyLoader<'a> = dyn Fn(&str, &Map<String, Value>) -> std::result::Result<Option<RegisteredRangeProperty>, String>
+    + 'a;
+
+/// Engine callback for a registered `select` categorical property, called while loading the item
+/// definition. `kind` is canonical. `Ok(None)` lets the built-in decoder handle the property;
+/// `Err` rejects the enclosing definition, even if the property is also built-in.
+pub type SelectPropertyLoader<'a> = dyn Fn(&str, &Map<String, Value>) -> std::result::Result<Option<RegisteredSelectProperty>, String>
+    + 'a;
+
+/// A registered special renderer's baked model. The payload is opaque to assets; the
+/// baker and draw host agree on its type. Clones retain the same model identity.
+#[derive(Clone)]
+pub struct RegisteredSpecialModel(pub Arc<dyn std::any::Any + Send + Sync>);
+impl std::fmt::Debug for RegisteredSpecialModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegisteredSpecialModel")
+    }
+}
+impl PartialEq for RegisteredSpecialModel {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A registered item tint source bound at decode time. The payload is opaque to assets; the
+/// decoder and draw host agree on its type. Clones retain the same instance identity.
+#[derive(Clone)]
+pub struct RegisteredTintSource(pub Arc<dyn std::any::Any + Send + Sync>);
+impl std::fmt::Debug for RegisteredTintSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegisteredTintSource")
+    }
+}
+impl PartialEq for RegisteredTintSource {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A registered item model node bound at decode time. The payload is opaque to assets; the
+/// decoder and draw host agree on its type. Clones retain the same instance identity.
+#[derive(Clone)]
+pub struct RegisteredItemModel(pub Arc<dyn std::any::Any + Send + Sync>);
+impl std::fmt::Debug for RegisteredItemModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegisteredItemModel")
+    }
+}
+impl PartialEq for RegisteredItemModel {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A registered `range_dispatch` numeric property bound at decode time. The payload is opaque to
+/// assets; the decoder and draw host agree on its type. Clones retain the same instance identity.
+#[derive(Clone)]
+pub struct RegisteredRangeProperty(pub Arc<dyn std::any::Any + Send + Sync>);
+impl std::fmt::Debug for RegisteredRangeProperty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegisteredRangeProperty")
+    }
+}
+impl PartialEq for RegisteredRangeProperty {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A type-erased `when` case value. Only its provider may compare the underlying value,
+/// inside its callback boundary.
+#[derive(Clone, Debug)]
+pub struct RegisteredSelectKey(Arc<dyn std::any::Any + Send + Sync>);
+
+impl RegisteredSelectKey {
+    pub fn new<T: Send + Sync + 'static>(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+/// Only a codec mismatch may try the scalar branch of the compact-list codec.
+#[derive(Debug)]
+pub enum SelectCaseDecodeError {
+    Mismatch(String),
+    Callback(String),
+}
+
+impl From<SelectCaseDecodeError> for DecodeError {
+    fn from(error: SelectCaseDecodeError) -> Self {
+        match error {
+            SelectCaseDecodeError::Mismatch(reason) | SelectCaseDecodeError::Callback(reason) => {
+                Self(reason)
+            }
+        }
+    }
+}
+
+type RegisteredSelectCaseDecoder =
+    dyn Fn(&Value) -> std::result::Result<RegisteredSelectKey, SelectCaseDecodeError> + Send + Sync;
+type RegisteredSelectCaseEquality = dyn Fn(&RegisteredSelectKey, &RegisteredSelectKey) -> std::result::Result<bool, String>
+    + Send
+    + Sync;
+
+/// A registered `select` categorical property bound at decode time. The payload is opaque to
+/// assets; the decoder and draw host agree on its type, and `decode_case` validates and decodes
+/// each `when` entry into a [`RegisteredSelectKey`]. Clones retain the same instance identity.
+#[derive(Clone)]
+pub struct RegisteredSelectProperty {
+    pub payload: Arc<dyn std::any::Any + Send + Sync>,
+    decode_case: Arc<RegisteredSelectCaseDecoder>,
+    case_eq: Arc<RegisteredSelectCaseEquality>,
+}
+impl RegisteredSelectProperty {
+    pub fn new(
+        payload: Arc<dyn std::any::Any + Send + Sync>,
+        decode_case: impl Fn(&Value) -> std::result::Result<RegisteredSelectKey, SelectCaseDecodeError>
+        + Send
+        + Sync
+        + 'static,
+        case_eq: impl Fn(
+            &RegisteredSelectKey,
+            &RegisteredSelectKey,
+        ) -> std::result::Result<bool, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            payload,
+            decode_case: Arc::new(decode_case),
+            case_eq: Arc::new(case_eq),
+        }
+    }
+
+    pub fn decode_case(
+        &self,
+        value: &Value,
+    ) -> std::result::Result<RegisteredSelectKey, SelectCaseDecodeError> {
+        (self.decode_case)(value)
+    }
+}
+impl std::fmt::Debug for RegisteredSelectProperty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegisteredSelectProperty")
+    }
+}
+impl PartialEq for RegisteredSelectProperty {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.payload, &other.payload)
+    }
+}
+
+/// Optional decode-time provider callbacks for item definitions, checked ahead of built-in
+/// decoders so registered overrides take effect.
+#[derive(Clone, Copy, Default)]
+pub struct ItemModelDecoders<'a> {
+    pub special: Option<&'a SpecialModelLoader<'a>>,
+    pub tint: Option<&'a TintSourceLoader<'a>>,
+    pub item_model: Option<&'a ItemModelLoader<'a>>,
+    pub range_property: Option<&'a RangePropertyLoader<'a>>,
+    pub select_property: Option<&'a SelectPropertyLoader<'a>>,
+}
 
 /// One `items/<name>.json` file: a model tree plus the client properties.
 #[derive(Clone, Debug)]
@@ -375,13 +574,20 @@ pub struct ClientItem {
 impl ClientItem {
     pub const DEFAULT_PROPERTIES: (bool, bool, f32) = (true, false, 1.0);
     pub fn from_json(text: &str) -> Result<Self> {
+        Self::from_json_with_decoders(text, &ItemModelDecoders::default())
+    }
+    /// Decode an item with the engine's decode-time provider registrations, including child nodes.
+    pub fn from_json_with_decoders(text: &str, decoders: &ItemModelDecoders<'_>) -> Result<Self> {
         let value: Value = serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(text))?;
-        Self::decode(&value)
+        Self::decode_with(&value, decoders)
     }
     pub fn decode(value: &Value) -> Result<Self> {
+        Self::decode_with(value, &ItemModelDecoders::default())
+    }
+    pub fn decode_with(value: &Value, decoders: &ItemModelDecoders<'_>) -> Result<Self> {
         let m = object(value)?;
         Ok(Self {
-            model: ItemModelNode::decode(required(m, "model")?)?,
+            model: ItemModelNode::decode_with(required(m, "model")?, decoders)?,
             hand_animation_on_swap: get(m, "hand_animation_on_swap").map_or(Ok(true), boolean)?,
             oversized_in_gui: get(m, "oversized_in_gui").map_or(Ok(false), boolean)?,
             swap_animation_scale: get(m, "swap_animation_scale").map_or(Ok(1.0), float)?,
@@ -428,49 +634,68 @@ pub enum ItemModelNode {
         transformation: Option<Mat4>,
         model: SpecialModel,
     },
-    /// A `minecraft:special` model of a type a native mod registered
-    /// (`register_special_model_renderer`): per stack, its renderer answers which resource models
-    /// draw, each posed and tinted, with `base`'s display transforms, particle and GUI light.
+    /// A `minecraft:special` model decoded by a registered renderer, with `base`'s display
+    /// transforms, particle and GUI light.
     RegisteredSpecial {
-        base: String,
+        base: Arc<str>,
         transformation: Option<Mat4>,
-        /// The `model` object's `type`, resolved to its renderer's slot.
-        slot: SpecialModelSlot,
-        /// The `model` object, converted once at load.
-        config: Arc<sunrise_core::nbt::Tag>,
+        model: RegisteredSpecialModel,
     },
     FluidContainer(FluidContainer),
     BundleSelectedItem,
-    /// A node of a type a native mod registered (`register_item_models`): per stack, its mod
-    /// answers which of `models`, by name, draw (`item_model_update`).
+    /// A node decoded by a registered item model provider (`register_item_models`): per stack, its
+    /// bound provider answers which of `models`, by name, draw.
     Registered {
-        kind: String,
+        model: RegisteredItemModel,
         transformation: Option<Mat4>,
-        /// The node's JSON object, converted once at load.
-        config: Arc<sunrise_core::nbt::Tag>,
         /// The node's `models` object: named nodes decoded and baked as any other.
         models: Vec<(String, ItemModelNode)>,
     },
 }
+/// One `when` value on a [`SwitchCase`]: canonical JSON for built-in properties, or a typed
+/// [`RegisteredSelectKey`] decoded by a registered select property's case decoder.
+#[derive(Clone, Debug)]
+pub enum SwitchCaseValue {
+    Json(Value),
+    Registered(RegisteredSelectKey),
+}
+
 #[derive(Clone, Debug)]
 pub struct SwitchCase {
-    /// Property values, in their canonical JSON form.
-    pub values: Vec<Value>,
+    /// Property values, in their canonical form.
+    pub values: Vec<SwitchCaseValue>,
     pub model: ItemModelNode,
 }
 
 impl ItemModelNode {
     pub fn decode(v: &Value) -> Result<Self> {
+        Self::decode_with(v, &ItemModelDecoders::default())
+    }
+
+    pub fn decode_with(v: &Value, decoders: &ItemModelDecoders<'_>) -> Result<Self> {
+        let decode = |node: &Value| Self::decode_with(node, decoders);
         let m = object(v)?;
         let kind = ident(required(m, "type")?)?;
+        // Registered item model decoders run ahead of built-ins (including vanilla arms and
+        // `neoforge:fluid_container`) so overrides take effect. An error refuses the enclosing
+        // item definition and never falls back to a built-in.
+        if let Some(load) = decoders.item_model
+            && let Some(decoded) = load(&kind, m, &decode).map_err(DecodeError)?
+        {
+            return Ok(Self::Registered {
+                model: decoded.model,
+                transformation: decoded.transformation,
+                models: decoded.models,
+            });
+        }
         if kind == "minecraft:condition" {
             let property = ident(required(m, "property")?)?;
             if !property.starts_with("minecraft:") {
                 return Ok(Self::Condition {
                     transformation: optional_transformation(m)?,
                     property: ConditionProperty::Custom(property),
-                    on_true: Box::new(Self::decode(required(m, "on_true")?)?),
-                    on_false: Box::new(Self::decode(required(m, "on_false")?)?),
+                    on_true: Box::new(decode(required(m, "on_true")?)?),
+                    on_false: Box::new(decode(required(m, "on_false")?)?),
                 });
             }
         }
@@ -483,50 +708,59 @@ impl ItemModelNode {
                     None => Vec::new(),
                     Some(t) => list(t)?
                         .iter()
-                        .map(TintSource::decode)
+                        .map(|tint| TintSource::decode_with(tint, decoders))
                         .collect::<Result<_>>()?,
                 },
             }),
             "minecraft:composite" => Self::Composite {
                 models: list(required(m, "models")?)?
                     .iter()
-                    .map(Self::decode)
+                    .map(decode)
                     .collect::<Result<_>>()?,
                 transformation: optional_transformation(m)?,
             },
             "minecraft:condition" if foreign::property_is_foreign(m)? => foreign::wrap(
-                Self::decode(required(m, "on_false")?)?,
+                decode(required(m, "on_false")?)?,
                 optional_transformation(m)?,
             ),
             "minecraft:condition" => Self::Condition {
                 transformation: optional_transformation(m)?,
                 property: ConditionProperty::decode(m)?,
-                on_true: Box::new(Self::decode(required(m, "on_true")?)?),
-                on_false: Box::new(Self::decode(required(m, "on_false")?)?),
+                on_true: Box::new(decode(required(m, "on_true")?)?),
+                on_false: Box::new(decode(required(m, "on_false")?)?),
             },
-            // A mod's registered property is read per stack; no case matches any other foreign one.
-            "minecraft:select"
-                if foreign::property_is_foreign(m)?
-                    && !is_select_property(&ident(required(m, "property")?)?) =>
-            {
-                // No case can match a property Sunrise cannot read.
-                let fallback = get(m, "fallback").map(Self::decode).transpose()?;
-                foreign::wrap(fallback.unwrap_or(Self::Empty), optional_transformation(m)?)
-            }
             "minecraft:select" => {
+                let Some(property) = SelectProperty::decode_with(m, decoders)? else {
+                    // No case can match an unregistered foreign property.
+                    let fallback = get(m, "fallback").map(decode).transpose()?;
+                    return Ok(foreign::wrap(
+                        fallback.unwrap_or(Self::Empty),
+                        optional_transformation(m)?,
+                    ));
+                };
                 let transformation = optional_transformation(m)?;
-                let property = SelectProperty::decode(m)?;
                 let cases = list(required(m, "cases")?)?
                     .iter()
-                    .map(|c| SwitchCase::decode(&property, c))
+                    .map(|c| SwitchCase::decode(&property, c, decoders))
                     .collect::<Result<Vec<_>>>()?;
                 if cases.is_empty() {
                     return Err(err("empty case list"));
                 }
-                let mut seen: Vec<&Value> = Vec::new();
+                let mut seen: Vec<&SwitchCaseValue> = Vec::new();
                 for value in cases.iter().flat_map(|c| &c.values) {
-                    if seen.contains(&value) {
-                        return Err(err("duplicate case conditions"));
+                    for &previous in &seen {
+                        let equal = match (previous, value, &property) {
+                            (SwitchCaseValue::Json(a), SwitchCaseValue::Json(b), _) => a == b,
+                            (
+                                SwitchCaseValue::Registered(a),
+                                SwitchCaseValue::Registered(b),
+                                SelectProperty::Registered(bound),
+                            ) => (bound.case_eq)(a, b).map_err(DecodeError)?,
+                            _ => unreachable!("all cases of a select use the same decoder"),
+                        };
+                        if equal {
+                            return Err(err("duplicate case conditions"));
+                        }
                     }
                     seen.push(value);
                 }
@@ -535,29 +769,27 @@ impl ItemModelNode {
                     property,
                     cases,
                     fallback: get(m, "fallback")
-                        .map(|f| Self::decode(f).map(Box::new))
+                        .map(|f| decode(f).map(Box::new))
                         .transpose()?,
                 }
             }
             "minecraft:range_dispatch" => {
-                // A mod's registered property is read per stack; any other foreign one is 0.
-                let foreign_property = foreign::property_is_foreign(m)?
-                    && !is_range_property(&ident(required(m, "property")?)?);
+                let property = NumericProperty::decode_with(m, decoders)?;
                 let mut entries = list(required(m, "entries")?)?
                     .iter()
                     .map(|e| {
                         let e = object(e)?;
                         Ok((
                             float(required(e, "threshold")?)?,
-                            Self::decode(required(e, "model")?)?,
+                            decode(required(e, "model")?)?,
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 // `Comparator.comparingDouble`: Double.compare, a total order.
                 entries.sort_by(|a, b| f64::from(a.0).total_cmp(&f64::from(b.0)));
-                if foreign_property {
-                    // A property Sunrise cannot read is 0.
-                    let fallback = get(m, "fallback").map(Self::decode).transpose()?;
+                let Some(property) = property else {
+                    // An unregistered foreign property reads 0.
+                    let fallback = get(m, "fallback").map(decode).transpose()?;
                     let chosen = last_index_less_or_equal(&entries, 0.0)
                         .map(|i| entries.swap_remove(i).1)
                         .or(fallback);
@@ -565,14 +797,14 @@ impl ItemModelNode {
                         chosen.unwrap_or(Self::Empty),
                         optional_transformation(m)?,
                     ));
-                }
+                };
                 Self::RangeDispatch {
                     transformation: optional_transformation(m)?,
-                    property: NumericProperty::decode(m)?,
+                    property,
                     scale: get(m, "scale").map_or(Ok(1.0), float)?,
                     entries,
                     fallback: get(m, "fallback")
-                        .map(|f| Self::decode(f).map(Box::new))
+                        .map(|f| decode(f).map(Box::new))
                         .transpose()?,
                 }
             }
@@ -580,45 +812,31 @@ impl ItemModelNode {
                 let model = required(m, "model")?;
                 let base = ident(required(m, "base")?)?;
                 let transformation = optional_transformation(m)?;
-                // A type a mod registered, vanilla's included, is drawn by its renderer; any other
-                // type that isn't vanilla's is an error naming it (`SpecialModel::decode`), so the
-                // item draws the missing model.
-                match registered_special_type(model)? {
-                    Some(slot) => Self::RegisteredSpecial {
-                        base,
+                let fields = object(model)?;
+                let kind = sunrise_core::identifier::Identifier::parse(&string(required(
+                    fields, "type",
+                )?)?)
+                .map_err(|_| err("invalid resource identifier"))?;
+                // A registration may replace a vanilla decoder. A refusal is an error, not a miss.
+                let registered = match decoders.special {
+                    Some(load) => load(&kind, &base, fields).map_err(DecodeError)?,
+                    None => None,
+                };
+                match registered {
+                    Some(model) => Self::RegisteredSpecial {
+                        base: base.into(),
                         transformation,
-                        slot,
-                        config: Arc::new(
-                            sunrise_core::json_nbt::json_to_tag(model)
-                                .map_err(|_| err("invalid special model data"))?,
-                        ),
+                        model,
                     },
                     None => Self::Special {
                         base,
                         transformation,
-                        model: SpecialModel::decode(model)?,
+                        model: SpecialModel::decode_builtin(&kind.to_string(), fields)?,
                     },
                 }
             }
             "minecraft:bundle/selected_item" => Self::BundleSelectedItem,
-            // NeoForge's own item model type, which the engine owns. It is matched ahead of
-            // the types mods register, so no mod can take it over.
             "neoforge:fluid_container" => Self::FluidContainer(FluidContainer::decode(m)?),
-            kind if is_item_model_type(kind) => Self::Registered {
-                kind: kind.to_owned(),
-                transformation: optional_transformation(m)?,
-                config: Arc::new(
-                    sunrise_core::json_nbt::json_to_tag(v)
-                        .map_err(|_| err("invalid item model data"))?,
-                ),
-                models: match m.get("models") {
-                    None => Vec::new(),
-                    Some(models) => object(models)?
-                        .iter()
-                        .map(|(name, node)| Ok((name.clone(), Self::decode(node)?)))
-                        .collect::<Result<_>>()?,
-                },
-            },
             other => return Err(err(&format!("unknown item model type {other}"))),
         })
     }
@@ -646,39 +864,49 @@ impl ItemModelNode {
                 entries.iter().for_each(|(_, m)| m.dependencies(out));
                 fallback.iter().for_each(|f| f.dependencies(out));
             }
-            Self::Special { base, .. } | Self::RegisteredSpecial { base, .. } => {
-                out.push(base.clone())
-            }
+            Self::Special { base, .. } => out.push(base.clone()),
+            Self::RegisteredSpecial { base, .. } => out.push(base.to_string()),
             Self::Registered { models, .. } => {
                 models.iter().for_each(|(_, m)| m.dependencies(out));
             }
         }
     }
 }
-/// The slot of a `minecraft:special` model's `model` object's `type` when a native mod
-/// registered it.
-fn registered_special_type(model: &Value) -> Result<Option<SpecialModelSlot>> {
-    Ok(special_model_slot(&ident(required(
-        object(model)?,
-        "type",
-    )?)?))
-}
 impl SwitchCase {
-    fn decode(property: &SelectProperty, v: &Value) -> Result<Self> {
+    fn decode(
+        property: &SelectProperty,
+        v: &Value,
+        decoders: &ItemModelDecoders<'_>,
+    ) -> Result<Self> {
         let m = object(v)?;
         let when = required(m, "when")?;
-        // `compactListCodec`: a list, or one value; the list must not be empty.
-        let raw: Vec<&Value> = match when {
-            Value::Array(a) if !a.is_empty() => a.iter().collect(),
-            Value::Array(_) => return Err(err("list must have contents")),
-            single => vec![single],
+        // `compactListCodec` tries the list codec first, then the original value as one key.
+        // An empty list decodes successfully and is then rejected by the nonempty check.
+        let decode = |value: &Value| match property {
+            SelectProperty::Registered(bound) => {
+                bound.decode_case(value).map(SwitchCaseValue::Registered)
+            }
+            _ => property
+                .decode_value(value)
+                .map_err(|e| SelectCaseDecodeError::Mismatch(e.0)),
+        };
+        let values = if let Value::Array(array) = when {
+            match array
+                .iter()
+                .map(decode)
+                .collect::<std::result::Result<Vec<_>, _>>()
+            {
+                Ok(values) if values.is_empty() => return Err(err("list must have contents")),
+                Ok(values) => values,
+                Err(SelectCaseDecodeError::Mismatch(_)) => vec![decode(when)?],
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            vec![decode(when)?]
         };
         Ok(Self {
-            values: raw
-                .into_iter()
-                .map(|v| property.decode_value(v))
-                .collect::<Result<_>>()?,
-            model: ItemModelNode::decode(required(m, "model")?)?,
+            values,
+            model: ItemModelNode::decode_with(required(m, "model")?, decoders)?,
         })
     }
 }
@@ -702,16 +930,21 @@ pub enum TintSource {
     Firework(i32),
     Potion(i32),
     Team(i32),
-    /// A source a native mod registered (`register_tint_sources`), read through
-    /// [`ItemEnv::item_tint_source`] with its entry in the model's `tints`.
-    Mod {
-        id: String,
-        config: Arc<sunrise_core::nbt::Tag>,
-    },
+    /// A source bound by a registered tint decoder (`register_item_tint_sources`), read through
+    /// [`ItemEnv::item_tint_source`].
+    Registered(RegisteredTintSource),
 }
 impl TintSource {
-    fn decode(v: &Value) -> Result<Self> {
+    fn decode_with(v: &Value, decoders: &ItemModelDecoders<'_>) -> Result<Self> {
         let m = object(v)?;
+        let kind = ident(required(m, "type")?)?;
+        // Registered tint decoders run ahead of built-ins so vanilla overrides take effect.
+        // An error rejects the enclosing item definition and never falls back to a built-in.
+        if let Some(load) = decoders.tint
+            && let Some(bound) = load(&kind, m).map_err(DecodeError)?
+        {
+            return Ok(Self::Registered(bound));
+        }
         let default = || rgb(required(m, "default")?);
         let unit = |v: &Value| -> Result<f32> {
             let f = float(v)?;
@@ -721,7 +954,7 @@ impl TintSource {
                 Err(err("value must be within range [0;1]"))
             }
         };
-        Ok(match ident(required(m, "type")?)?.as_str() {
+        Ok(match kind.as_str() {
             "minecraft:constant" => Self::Constant(opaque(rgb(required(m, "value")?)?)),
             "minecraft:custom_model_data" => Self::CustomModelData {
                 index: get(m, "index").map_or(Ok(0), non_negative)?,
@@ -735,14 +968,7 @@ impl TintSource {
             "minecraft:firework" => Self::Firework(default()?),
             "minecraft:potion" => Self::Potion(default()?),
             "minecraft:team" => Self::Team(default()?),
-            other if is_tint_source(other) => Self::Mod {
-                id: other.to_owned(),
-                config: Arc::new(
-                    sunrise_core::json_nbt::json_to_tag(v)
-                        .map_err(|_| err("unknown item tint source"))?,
-                ),
-            },
-            // A mod's own tint source, which its Java code computes: untinted here.
+            // A mod's own tint source that no mod registered: untinted here.
             other if foreign::is_foreign(other) => Self::Constant(-1),
             _ => return Err(err("unknown item tint source")),
         })
@@ -802,9 +1028,9 @@ impl ConditionProperty {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SelectProperty {
-    /// A property a native mod registered (`register_select_properties`), read through
-    /// [`ItemEnv::item_model_select_property`]; its `when` values are strings.
-    Custom(String),
+    /// A property bound by a registered select decoder (`register_select_item_model_property`),
+    /// read through [`ItemEnv::item_model_select_property`]; its `when` values are strings.
+    Registered(RegisteredSelectProperty),
     CustomModelData(i32),
     MainHand,
     ChargeType,
@@ -821,12 +1047,23 @@ pub enum SelectProperty {
     Component(String),
 }
 impl SelectProperty {
-    fn decode(m: &Map<String, Value>) -> Result<Self> {
+    /// Decode a `minecraft:select` property, checking registered decoders ahead of built-ins.
+    /// Returns `Ok(None)` only for an unregistered foreign property, which collapses to its
+    /// fallback.
+    fn decode_with(
+        m: &Map<String, Value>,
+        decoders: &ItemModelDecoders<'_>,
+    ) -> Result<Option<Self>> {
         let property = ident(required(m, "property")?)?;
-        if is_select_property(&property) {
-            return Ok(Self::Custom(property));
+        if let Some(load) = decoders.select_property
+            && let Some(bound) = load(&property, m).map_err(DecodeError)?
+        {
+            return Ok(Some(Self::Registered(bound)));
         }
-        Ok(match property.as_str() {
+        if foreign::is_foreign(&property) {
+            return Ok(None);
+        }
+        Ok(Some(match property.as_str() {
             "minecraft:custom_model_data" => {
                 Self::CustomModelData(get(m, "index").map_or(Ok(0), non_negative)?)
             }
@@ -846,15 +1083,15 @@ impl SelectProperty {
             "minecraft:context_dimension" => Self::ContextDimension,
             "minecraft:component" => Self::Component(component_type(required(m, "component")?)?),
             _ => return Err(err("unknown select property")),
-        })
+        }))
     }
-    /// A `when` value in canonical form (identifiers normalised).
-    fn decode_value(&self, v: &Value) -> Result<Value> {
-        Ok(match self {
-            Self::Custom(_)
-            | Self::CustomModelData(_)
-            | Self::BlockState(_)
-            | Self::LocalTime { .. } => Value::String(string(v)?),
+    /// A built-in `when` value in canonical form (identifiers normalised).
+    fn decode_value(&self, v: &Value) -> Result<SwitchCaseValue> {
+        Ok(SwitchCaseValue::Json(match self {
+            Self::Registered(_) => unreachable!(),
+            Self::CustomModelData(_) | Self::BlockState(_) | Self::LocalTime { .. } => {
+                Value::String(string(v)?)
+            }
             Self::MainHand => match string(v)?.as_str() {
                 s @ ("left" | "right") => Value::String(s.to_owned()),
                 _ => return Err(err("invalid arm")),
@@ -872,7 +1109,7 @@ impl SelectProperty {
                 Value::String(s)
             }
             Self::Component(_) => v.clone(),
-        })
+        }))
     }
 }
 
@@ -937,9 +1174,9 @@ impl PartialEq for NeedleState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NumericProperty {
-    /// A property a native mod registered (`register_range_properties`), read through
-    /// [`ItemEnv::item_model_range_property`].
-    Custom(String),
+    /// A property bound by a registered range decoder (`register_range_select_item_model_property`),
+    /// read through [`ItemEnv::item_model_range_property`].
+    Registered(RegisteredRangeProperty),
     BundleFullness,
     Compass {
         wobble: bool,
@@ -966,13 +1203,23 @@ pub enum NumericProperty {
     },
 }
 impl NumericProperty {
-    fn decode(m: &Map<String, Value>) -> Result<Self> {
+    /// Decode a `minecraft:range_dispatch` property, checking registered decoders ahead of
+    /// built-ins. Returns `Ok(None)` only for an unregistered foreign property, which reads 0.
+    fn decode_with(
+        m: &Map<String, Value>,
+        decoders: &ItemModelDecoders<'_>,
+    ) -> Result<Option<Self>> {
         let normalize = || get(m, "normalize").map_or(Ok(true), boolean);
         let property = ident(required(m, "property")?)?;
-        if is_range_property(&property) {
-            return Ok(Self::Custom(property));
+        if let Some(load) = decoders.range_property
+            && let Some(bound) = load(&property, m).map_err(DecodeError)?
+        {
+            return Ok(Some(Self::Registered(bound)));
         }
-        Ok(match property.as_str() {
+        if foreign::is_foreign(&property) {
+            return Ok(None);
+        }
+        Ok(Some(match property.as_str() {
             "minecraft:custom_model_data" => {
                 Self::CustomModelData(get(m, "index").map_or(Ok(0), non_negative)?)
             }
@@ -1017,7 +1264,7 @@ impl NumericProperty {
                 normalize: normalize()?,
             },
             _ => return Err(err("unknown range dispatch property")),
-        })
+        }))
     }
 }
 
@@ -1147,23 +1394,28 @@ pub trait ItemEnv {
     fn item_model_property(&self, _property: &str, _stack: &StackView) -> bool {
         false
     }
-    /// A mod's registered numeric `range_dispatch` property, 0 when no mod answers.
-    fn item_model_range_property(&self, _property: &str, _stack: &StackView) -> f32 {
+    /// A mod's bound numeric `range_dispatch` property, 0 when no mod answers.
+    fn item_model_range_property(
+        &self,
+        _property: &RegisteredRangeProperty,
+        _stack: &StackView,
+        _ctx: &Context,
+    ) -> f32 {
         0.0
     }
-    /// A mod's registered categorical `select` property, `None` (the fallback) when no
-    /// mod answers.
-    fn item_model_select_property(&self, _property: &str, _stack: &StackView) -> Option<String> {
+    /// Evaluate and compare a bound categorical `select` property in its callback boundary.
+    /// Return the selected case index or `None` to use the fallback.
+    fn item_model_select_property(
+        &self,
+        _property: &RegisteredSelectProperty,
+        _stack: &StackView,
+        _ctx: &Context,
+        _keys: &mut dyn Iterator<Item = (usize, &RegisteredSelectKey)>,
+    ) -> Option<usize> {
         None
     }
-    /// A mod's registered tint source for `stack`, with its entry in the model's `tints`:
-    /// ARGB, white when no mod answers.
-    fn item_tint_source(
-        &self,
-        _source: &str,
-        _config: &sunrise_core::nbt::Tag,
-        _stack: &StackView,
-    ) -> i32 {
+    /// A mod's bound tint source for `stack`: ARGB, white when no mod answers.
+    fn item_tint_source(&self, _source: &RegisteredTintSource, _stack: &StackView) -> i32 {
         -1
     }
     /// The fluid `stack` holds (`FluidUtil.getFirstStackContained`), or `None` when it
@@ -1179,31 +1431,16 @@ pub trait ItemEnv {
     fn fluid_appearance(&self, _fluid: &str) -> Option<FluidAppearance> {
         None
     }
-    /// A mod's registered node type for `stack`, with the node's object and the surroundings
-    /// `ItemModel.update` reads (`ctx`): push the names of the node's `models` to draw, in order.
-    /// None draw when no mod answers.
+    /// A mod's bound node type for `stack` and the surroundings `ItemModel.update` reads (`ctx`):
+    /// push the layers to draw, in order, each naming one of the node's `models`. None draw when
+    /// no mod answers.
     fn item_model_update(
         &self,
-        _kind: &str,
-        _config: &sunrise_core::nbt::Tag,
+        _model: &RegisteredItemModel,
         _stack: &StackView,
         _ctx: &Context,
-        _models: &mut Vec<String>,
+        _layers: &mut Vec<ModelChoice>,
     ) {
-    }
-    /// What a mod's registered special model type (`slot`) draws for `stack` in the model node
-    /// of `base` and the model object `config` (the same allocation for the node until resources
-    /// reload): the resource models its renderer answered, each posed in the model's space and
-    /// tinted, prepared for drawing when the answer was accepted. `None` when its renderer refused
-    /// or failed, and the layer draws the missing model; nothing draws for an empty answer.
-    fn special_model_parts(
-        &self,
-        _slot: SpecialModelSlot,
-        _base: &str,
-        _config: &Arc<sunrise_core::nbt::Tag>,
-        _stack: &StackView,
-    ) -> Option<PreparedParts> {
-        None
     }
     /// `PotionContents.getColorOr` for the potion/effects part: the mixed
     /// effect colour, or `None` when the contents have no visible effects.
@@ -1267,11 +1504,8 @@ pub enum LayerContent {
     },
     /// `MissingItemModel`.
     Missing,
-    /// What a mod's registered special model type drew for the stack, prepared for drawing
-    /// (`ItemEnv::special_model_parts`): each part's geometry is its own model's quads, posed
-    /// under the layer's transform; the display transforms, particle and GUI light are `base`'s,
-    /// as vanilla's `SpecialModelWrapper` takes them from its base model.
-    Parts(PreparedParts),
+    /// A registered special model; the renderer reads it with the stack that selected this layer.
+    RegisteredSpecial { model: RegisteredSpecialModel },
     Special {
         base: String,
         model: SpecialModel,
@@ -1279,32 +1513,23 @@ pub enum LayerContent {
         argument: Value,
     },
 }
-/// A special model renderer's answer as the item renderer prepared it to draw, its models baked
-/// once (`item_render::PreparedSpecial` in the client), so a draw looks nothing up by name. Kept
-/// as long as the answer is; equal only to itself.
-#[derive(Clone)]
-pub struct PreparedParts(pub Arc<dyn std::any::Any + Send + Sync>);
-impl std::fmt::Debug for PreparedParts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PreparedParts")
-    }
+/// Whose display transform a layer is drawn under: the layer owns the choice, not the model it
+/// draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LayerTransform {
+    /// The layer's own model's transform for the display context.
+    #[default]
+    Model,
+    /// None: only the centring every item transform ends with
+    /// ([`crate::item_bake::item_transform_matrix`] of no transform).
+    None,
 }
-impl PartialEq for PreparedParts {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-/// One resource model a mod's special model renderer draws.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SpecialPart {
-    /// The model's id (`mymod:item/skillet_pan`), drawn as the model resource itself.
+/// What a mod's registered node answers for a stack: one of the node's `models`, by name, and
+/// whose display transform it draws under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelChoice {
     pub model: String,
-    /// Where it is drawn, in the special model's space (blocks, as the base model's elements
-    /// over 16).
-    pub pose: Mat4,
-    /// ARGB per tint index, as an item model's `tints`; a quad whose index is past them draws
-    /// white.
-    pub tints: Vec<i32>,
+    pub transform: LayerTransform,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
@@ -1312,6 +1537,7 @@ pub struct Layer {
     pub tints: Vec<i32>,
     pub foil: FoilType,
     pub transform: Mat4,
+    pub display_transform: LayerTransform,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ResolvedItem {
@@ -1361,24 +1587,49 @@ impl ItemModels {
         ctx: &Context,
         env: &dyn ItemEnv,
     ) {
+        if let ControlFlow::Continue(Some(oversized_in_gui)) =
+            self.visit_layers(stack, ctx, env, LayerTransform::Model, &mut |layer, _| {
+                out.layers.push(layer);
+                ControlFlow::Continue(())
+            })
+        {
+            out.oversized_in_gui = oversized_in_gui;
+        }
+    }
+    /// Visit each layer in draw order with the stack it resolved from (which may be a bundle's
+    /// selected stack). An inherited [`LayerTransform::None`] suppresses the model transform
+    /// for every descendant. A visitor break stops traversal, including within composites and
+    /// selected stacks. On completion returns the final `oversized_in_gui`, or `None` if the
+    /// stack has no `minecraft:item_model` string. Like [`Self::append_layers`], this does not
+    /// filter empty stacks.
+    pub fn visit_layers(
+        &self,
+        stack: &StackView,
+        ctx: &Context,
+        env: &dyn ItemEnv,
+        display_transform: LayerTransform,
+        visit: &mut impl FnMut(Layer, &StackView) -> ControlFlow<()>,
+    ) -> ControlFlow<(), Option<bool>> {
         let components = self.components_view(stack);
         let Some(Value::String(model_id)) = components.get("minecraft:item_model") else {
-            return;
+            return ControlFlow::Continue(None);
         };
         let id = identifier(model_id).unwrap_or_else(|_| model_id.clone());
         let definition = self.definitions.get(&id);
-        out.oversized_in_gui = definition.is_some_and(|d| d.oversized_in_gui);
         let mut state = Resolve {
             models: self,
             stack,
             components,
             ctx,
             env,
+            visit,
+            oversized_in_gui: definition.is_some_and(|d| d.oversized_in_gui),
         };
         match definition {
-            Some(d) => state.node(out, &d.model, &Mat4::IDENTITY),
-            None => state.missing(out, &Mat4::IDENTITY),
-        }
+            Some(d) => state.node(&d.model, &Mat4::IDENTITY, display_transform),
+            None => state.missing(&Mat4::IDENTITY, display_transform),
+        }?;
+        ControlFlow::Continue(Some(state.oversized_in_gui))
     }
     /// `ItemModelResolver.shouldPlaySwapAnimation`.
     pub fn hand_animation_on_swap(&self, stack: &StackView) -> bool {
@@ -1405,12 +1656,14 @@ impl ItemModels {
     }
 }
 
-struct Resolve<'a> {
+struct Resolve<'a, 'visit, F> {
     models: &'a ItemModels,
     stack: &'a StackView,
     components: ComponentsView<'a>,
     ctx: &'a Context<'a>,
     env: &'a dyn ItemEnv,
+    visit: &'visit mut F,
+    oversized_in_gui: bool,
 }
 
 /// A `Transformation` of scale `(1, 1, z)` as `FaceBakery.bakeVertex` applies a model
@@ -1426,7 +1679,7 @@ fn compose(parent: &Mat4, own: &Option<Mat4>) -> Mat4 {
     own.as_ref().map_or(*parent, |t| parent.mul(t))
 }
 
-impl Resolve<'_> {
+impl<F: FnMut(Layer, &StackView) -> ControlFlow<()>> Resolve<'_, '_, F> {
     fn component(&self, key: &str) -> Option<&Value> {
         self.components.get(key)
     }
@@ -1464,17 +1717,26 @@ impl Resolve<'_> {
             .and_then(|v| int(v).ok())
             .unwrap_or(1)
     }
-    fn missing(&self, out: &mut ResolvedItem, transform: &Mat4) {
-        out.layers.push(Layer {
+    fn emit(&mut self, layer: Layer) -> ControlFlow<()> {
+        (self.visit)(layer, self.stack)
+    }
+    fn missing(&mut self, transform: &Mat4, display_transform: LayerTransform) -> ControlFlow<()> {
+        self.emit(Layer {
             content: LayerContent::Missing,
             tints: Vec::new(),
             foil: FoilType::None,
             transform: *transform,
-        });
+            display_transform,
+        })
     }
-    fn node(&mut self, out: &mut ResolvedItem, node: &ItemModelNode, parent: &Mat4) {
+    fn node(
+        &mut self,
+        node: &ItemModelNode,
+        parent: &Mat4,
+        display_transform: LayerTransform,
+    ) -> ControlFlow<()> {
         match node {
-            ItemModelNode::Empty => {}
+            ItemModelNode::Empty => ControlFlow::Continue(()),
             ItemModelNode::Model(leaf) => {
                 let transform = compose(parent, &leaf.transformation);
                 let foil = if self.has_foil() {
@@ -1489,14 +1751,15 @@ impl Resolve<'_> {
                     FoilType::None
                 };
                 let tints = leaf.tints.iter().map(|t| self.tint(t)).collect();
-                out.layers.push(Layer {
+                self.emit(Layer {
                     content: LayerContent::Model {
                         model: leaf.model.clone(),
                     },
                     tints,
                     foil,
                     transform,
-                });
+                    display_transform,
+                })
             }
             ItemModelNode::Composite {
                 models,
@@ -1504,8 +1767,9 @@ impl Resolve<'_> {
             } => {
                 let child = compose(parent, transformation);
                 for m in models {
-                    self.node(out, m, &child);
+                    self.node(m, &child, display_transform)?;
                 }
+                ControlFlow::Continue(())
             }
             ItemModelNode::Condition {
                 transformation,
@@ -1519,7 +1783,7 @@ impl Resolve<'_> {
                 } else {
                     on_false
                 };
-                self.node(out, chosen, &child);
+                self.node(chosen, &child, display_transform)
             }
             ItemModelNode::Select {
                 transformation,
@@ -1528,17 +1792,30 @@ impl Resolve<'_> {
                 fallback,
             } => {
                 let child = compose(parent, transformation);
-                let value = self.select_value(property);
-                let chosen = value.and_then(|v| {
-                    cases
-                        .iter()
-                        .find(|c| c.values.contains(&v))
-                        .map(|c| &c.model)
-                });
+                let chosen = if let SelectProperty::Registered(property) = property {
+                    let mut keys = cases.iter().enumerate().flat_map(|(index, case)| {
+                        case.values.iter().filter_map(move |value| match value {
+                            SwitchCaseValue::Registered(key) => Some((index, key)),
+                            SwitchCaseValue::Json(_) => None,
+                        })
+                    });
+                    self.env
+                        .item_model_select_property(property, self.stack, self.ctx, &mut keys)
+                        .and_then(|index| cases.get(index))
+                } else {
+                    self.select_value(property).and_then(|v| {
+                        cases.iter().find(|c| {
+                            c.values.iter().any(
+                                |key| matches!(key, SwitchCaseValue::Json(value) if value == &v),
+                            )
+                        })
+                    })
+                }
+                .map(|case| &case.model);
                 match (chosen, fallback) {
-                    (Some(m), _) => self.node(out, m, &child),
-                    (None, Some(f)) => self.node(out, f, &child),
-                    (None, None) => self.missing(out, &child),
+                    (Some(m), _) => self.node(m, &child, display_transform),
+                    (None, Some(f)) => self.node(f, &child, display_transform),
+                    (None, None) => self.missing(&child, display_transform),
                 }
             }
             ItemModelNode::RangeDispatch {
@@ -1556,9 +1833,9 @@ impl Resolve<'_> {
                     last_index_less_or_equal(entries, value).map(|i| &entries[i].1)
                 };
                 match (chosen, fallback) {
-                    (Some(m), _) => self.node(out, m, &child),
-                    (None, Some(f)) => self.node(out, f, &child),
-                    (None, None) => self.missing(out, &child),
+                    (Some(m), _) => self.node(m, &child, display_transform),
+                    (None, Some(f)) => self.node(f, &child, display_transform),
+                    (None, None) => self.missing(&child, display_transform),
                 }
             }
             ItemModelNode::Special {
@@ -1567,7 +1844,7 @@ impl Resolve<'_> {
                 model,
             } => {
                 let transform = compose(parent, transformation);
-                out.layers.push(Layer {
+                self.emit(Layer {
                     content: LayerContent::Special {
                         base: base.clone(),
                         model: model.clone(),
@@ -1580,56 +1857,64 @@ impl Resolve<'_> {
                         FoilType::None
                     },
                     transform,
-                });
+                    display_transform,
+                })
             }
             ItemModelNode::RegisteredSpecial {
-                base,
                 transformation,
-                slot,
-                config,
-            } => {
-                let content = match self
-                    .env
-                    .special_model_parts(*slot, base, config, self.stack)
-                {
-                    Some(prepared) => LayerContent::Parts(prepared),
-                    None => LayerContent::Missing,
-                };
-                out.layers.push(Layer {
-                    content,
-                    tints: Vec::new(),
-                    foil: if self.has_foil() {
-                        FoilType::Standard
-                    } else {
-                        FoilType::None
-                    },
-                    transform: compose(parent, transformation),
-                });
-            }
+                model,
+                ..
+            } => self.emit(Layer {
+                content: LayerContent::RegisteredSpecial {
+                    model: model.clone(),
+                },
+                tints: Vec::new(),
+                foil: if self.has_foil() {
+                    FoilType::Standard
+                } else {
+                    FoilType::None
+                },
+                transform: compose(parent, transformation),
+                display_transform,
+            }),
             ItemModelNode::FluidContainer(container) => {
-                self.fluid_container(out, container, parent);
+                self.fluid_container(container, parent, display_transform)
             }
             ItemModelNode::BundleSelectedItem => {
-                if let Some(selected) = self.bundle_selected() {
-                    self.models
-                        .append_layers(out, &selected, self.ctx, self.env);
+                if let Some(selected) = self.bundle_selected()
+                    && let Some(oversized_in_gui) = self.models.visit_layers(
+                        &selected,
+                        self.ctx,
+                        self.env,
+                        display_transform,
+                        self.visit,
+                    )?
+                {
+                    self.oversized_in_gui = oversized_in_gui;
                 }
+                ControlFlow::Continue(())
             }
             ItemModelNode::Registered {
-                kind,
+                model,
                 transformation,
-                config,
                 models,
             } => {
                 let mut drawn = Vec::new();
                 self.env
-                    .item_model_update(kind, config, self.stack, self.ctx, &mut drawn);
+                    .item_model_update(model, self.stack, self.ctx, &mut drawn);
                 let child = compose(parent, transformation);
-                for name in &drawn {
-                    if let Some((_, model)) = models.iter().find(|(key, _)| key == name) {
-                        self.node(out, model, &child);
+                for choice in &drawn {
+                    if let Some((_, model)) = models.iter().find(|(key, _)| *key == choice.model) {
+                        // The model's own transform is kept only where no layer above refused it.
+                        let display_transform = if display_transform == LayerTransform::None {
+                            display_transform
+                        } else {
+                            choice.transform
+                        };
+                        self.node(model, &child, display_transform)?;
                     }
                 }
+                ControlFlow::Continue(())
             }
         }
     }
@@ -1638,13 +1923,18 @@ impl Resolve<'_> {
     /// baked under `FLUID_TRANSFORM` and the cover under `COVER_TRANSFORM` (offsets 403-415,
     /// 617-629), Z scales of 1.002 and 1.004 (`<clinit>` 0-83) that `FaceBakery` applies
     /// about the block's middle: each sits a little further out than the one below it.
-    fn fluid_container(&self, out: &mut ResolvedItem, container: &FluidContainer, parent: &Mat4) {
+    fn fluid_container(
+        &mut self,
+        container: &FluidContainer,
+        parent: &Mat4,
+        display_transform: LayerTransform,
+    ) -> ControlFlow<()> {
         let textures = &container.textures;
         // `update`: the fluid the stack holds, else the model's own (offsets 0-29).
         let held = self.env.stack_fluid(self.stack);
         let drawn = held.unwrap_or(&container.fluid);
         if let Some(base) = &textures.base {
-            self.sprite_layer(out, base, None, Vec::new(), parent);
+            self.sprite_layer(base, None, Vec::new(), parent, display_transform)?;
         }
         // `fluid != EMPTY ? FluidStateModelSet.get(fluid).stillMaterial() : null` (offsets
         // 129-145): a fluid the host has no model for gets `ModelBakery.MissingModels.fluid`,
@@ -1662,7 +1952,13 @@ impl Resolve<'_> {
             // same fluid, so its tint is the appearance already looked up.
             let tint = if held.is_some() { appearance.tint } else { -1 };
             let parent = parent.mul(&depth_scale(1.002));
-            self.sprite_layer(out, &appearance.still, Some(mask), vec![tint], &parent);
+            self.sprite_layer(
+                &appearance.still,
+                Some(mask),
+                vec![tint],
+                &parent,
+                display_transform,
+            )?;
         }
         // The cover is always the mask (`bakeItemMaskQuads(baker, 0, cover, drawn, ...)`, offsets
         // 631-639). With `cover_is_mask` it picks out the parts of `base` drawn again over the
@@ -1675,20 +1971,21 @@ impl Resolve<'_> {
             };
             if let Some(drawn) = drawn {
                 let parent = parent.mul(&depth_scale(1.004));
-                self.sprite_layer(out, drawn, Some(cover), Vec::new(), &parent);
+                self.sprite_layer(drawn, Some(cover), Vec::new(), &parent, display_transform)?;
             }
         }
+        ControlFlow::Continue(())
     }
     /// One `item/generated` layer, which [`crate::item_bake::bake_sprite_layer`] extrudes.
     fn sprite_layer(
-        &self,
-        out: &mut ResolvedItem,
+        &mut self,
         sprite: &str,
         mask: Option<&str>,
         tints: Vec<i32>,
         parent: &Mat4,
-    ) {
-        out.layers.push(Layer {
+        display_transform: LayerTransform,
+    ) -> ControlFlow<()> {
+        self.emit(Layer {
             content: LayerContent::Sprite {
                 sprite: sprite.to_owned(),
                 mask: mask.map(str::to_owned),
@@ -1700,7 +1997,8 @@ impl Resolve<'_> {
                 FoilType::None
             },
             transform: *parent,
-        });
+            display_transform,
+        })
     }
     fn item_in_compass_tag(&self) -> bool {
         // `ItemTags.COMPASSES`: the compass and the recovery compass.
@@ -1764,10 +2062,7 @@ impl Resolve<'_> {
     fn select_value(&self, property: &SelectProperty) -> Option<Value> {
         let owner = self.ctx.owner;
         match property {
-            SelectProperty::Custom(property) => self
-                .env
-                .item_model_select_property(property, self.stack)
-                .map(Value::String),
+            SelectProperty::Registered(_) => unreachable!(),
             SelectProperty::CustomModelData(i) => self
                 .component("minecraft:custom_model_data")
                 .and_then(|d| custom_data_at(d, "strings", *i))
@@ -1829,9 +2124,9 @@ impl Resolve<'_> {
     fn numeric(&self, property: &NumericProperty) -> f32 {
         let owner = self.ctx.owner;
         match property {
-            NumericProperty::Custom(property) => {
-                self.env.item_model_range_property(property, self.stack)
-            }
+            NumericProperty::Registered(property) => self
+                .env
+                .item_model_range_property(property, self.stack, self.ctx),
             NumericProperty::BundleFullness => self
                 .env
                 .bundle_fullness(self.stack, &self.components.to_map()),
@@ -2042,7 +2337,7 @@ impl Resolve<'_> {
                     .and_then(|o| o.team_color)
                     .unwrap_or(*default),
             ),
-            TintSource::Mod { id, config } => self.env.item_tint_source(id, config, self.stack),
+            TintSource::Registered(source) => self.env.item_tint_source(source, self.stack),
         }
     }
 }

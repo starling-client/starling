@@ -1,0 +1,5 @@
+id = "refused_manifest_unknown_rule_key"
+name = "Refused manifest unknown rule key"
+version = "1.2.3"
+[discouraged]
+other = { because = "Not supported" }

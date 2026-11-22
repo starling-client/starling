@@ -9,6 +9,7 @@ use super::items::java_hash_order;
 use super::schema::{Key, Ty, key};
 use super::{Cx, FixFn, id_is, reread};
 use sunrise_core::nbt::{Compound, Tag};
+use sunrise_core::uuid::uuid_text;
 
 pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
     // ProjectileStoredWeaponFix only writes and reads arrows with the new schema.
@@ -219,20 +220,6 @@ pub(super) fn feature_flag_remove(cx: &mut Cx, flags: &[&str]) {
 }
 
 // ------------------------------------------------------------------ 3945
-
-fn uuid_text(u: [i32; 4]) -> String {
-    let most = (i64::from(u[0]) << 32) | (i64::from(u[1]) & 0xFFFF_FFFF);
-    let least = (i64::from(u[2]) << 32) | (i64::from(u[3]) & 0xFFFF_FFFF);
-    let (m, l) = (most as u64, least as u64);
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        m >> 32,
-        (m >> 16) & 0xFFFF,
-        m & 0xFFFF,
-        l >> 48,
-        l & 0xFFFF_FFFF_FFFF
-    )
-}
 
 const MODIFIER_IDS: &[(&str, &str)] = &[
     (

@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Presència enriquida de Discord",
+  "sunrise.extras.discord_presence.tooltip": "Mostra Playing Sunrise al teu perfil de Discord mentre s'executa Discord: menús, un jugador o multijugador, la dimensió i el temps jugat. Mai el nom d'un món ni l'adreça d'un servidor."
+}

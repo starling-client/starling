@@ -1,4 +1,9 @@
 use super::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicI32, AtomicUsize, Ordering},
+    mpsc,
+};
 use sunrise_client::{
     containers::{
         Furnace, FurnaceKind, ModBlockEntity, ModBlockEntityFields, ModCrafting, ModLinks,
@@ -6,11 +11,6 @@ use sunrise_client::{
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig, menu::Menu as HubMenu},
 };
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{
-    Arc,
-    atomic::{AtomicI32, AtomicUsize, Ordering},
-    mpsc,
-};
 
 const STATION: (i32, i32, i32) = (4, 200, 4);
 const CHEST: (i32, i32, i32) = (32, 200, 4);
@@ -81,14 +81,19 @@ fn setup(game: &mut Game<'_>) -> &'static ModMenuType {
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
     static MENU_TYPE: std::sync::LazyLock<ModMenuType> = std::sync::LazyLock::new(|| ModMenuType {
         id: "test:lending",
+        owner: "test",
         slots: 37,
+        player_inventory: true,
         data_slots: 0,
+        owned_slots: None,
         results: vec![],
+        inputs: Vec::new(),
         links: Some(ModLinks {
             from: 10,
             count: 27,
@@ -145,18 +150,21 @@ fn setup(game: &mut Game<'_>) -> &'static ModMenuType {
         sent: vec![None; 73],
         drag: None,
         sent_data: vec![],
-        hidden: vec![],
+        reported_unsent_data_len: None,
+        blockless_data: Vec::new(),
+
         mod_type: Some(t),
         craft: None,
         links: vec![],
         asks_still_valid: false,
+        opening_item: None,
     });
     game.lan.as_mut().unwrap().hub.guests.push(guest);
     t
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn lent_chest_supplies_transfer_and_placement_and_is_written_back() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         setup(game);
@@ -208,7 +216,7 @@ fn lent_chest_supplies_transfer_and_placement_and_is_written_back() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn sources_skip_invalid_answers_and_keep_exactly_first_sixty_four() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         let t = setup(game);
@@ -254,7 +262,7 @@ fn sources_skip_invalid_answers_and_keep_exactly_first_sixty_four() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn inventory_menu_does_not_ask_recipe_sources() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         setup(game);
@@ -270,7 +278,7 @@ fn inventory_menu_does_not_ask_recipe_sources() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn menu_links_expose_chest_contents_in_the_answering_tick() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         setup(game);
@@ -323,7 +331,7 @@ fn menu_links_expose_chest_contents_in_the_answering_tick() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn menu_links_skip_a_furnace_the_mod_names() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         setup(game);

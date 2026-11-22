@@ -20,8 +20,8 @@ impl Game<'_> {
             return result;
         }
         // The hook has a shared Host: it cannot write game state between the
-        // decision and apply. The held hand and vanilla hunger are unchanged.
-        let answer = self.can_eat(self.held(), false);
+        // decision and apply. The player's vanilla hunger is unchanged.
+        let answer = self.can_eat(None, false);
         self.with_level(|b, level, ticks| {
             level.cake_answer = Some(answer);
             use_block(b, level, ticks)

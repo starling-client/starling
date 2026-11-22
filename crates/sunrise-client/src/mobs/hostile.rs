@@ -471,12 +471,13 @@ pub(super) fn endermite_lifetime(m: &mut Mob) {
 mod spider_vehicle_tests {
     use super::*;
     use crate::mobs::world::{test_player, with_test_world};
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     /// `SpiderAttackGoal.canUse` is `super.canUse() && !isVehicle()`: a spider
     /// with a player (or a mob) on its back does not start the attack goal.
     #[test]
+    #[ignore = "daily"]
     fn a_spider_carrying_a_player_does_not_start_its_attack() {
         let mut outcomes = None;
         if !with_test_world(&[], |w, types| {

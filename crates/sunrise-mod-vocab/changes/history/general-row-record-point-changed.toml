@@ -1,0 +1,4 @@
+ids = ["point:sunrise_client::game::general::Game<'_>::general_row_record"]
+landed = "6597e0855f562498319f093afcf2ed1ea8d717cb"
+why = "#3339 lets general entities ride and carry passengers. Passengers are now written by the shared tree walker that saves every vehicle family, so general_row_record writes only its own row and takes a transferring flag (a portal or command transfer keeps a NoSave row) instead of a visited set."
+migrate = "An [[inject]] at general_row_record updates its hash and takes (id: u32, transferring: bool). Passenger records are written by the shared tree walker and no longer pass through it."

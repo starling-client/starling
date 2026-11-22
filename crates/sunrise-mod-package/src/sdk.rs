@@ -53,7 +53,7 @@ pub const BESIDE_ASSETS: [&str; 3] = [INDEX, "SHA256SUMS", "SHA256SUMS.sig"];
 pub struct Index {
     pub schema: u32,
     pub build: Build,
-    pub package_format: u32,
+    pub package_format: u64,
     pub toolchain: Toolchain,
     /// The content manifest's version ([`crate::manifest::API`]).
     pub content_api: String,
@@ -154,7 +154,7 @@ pub struct Asset {
 pub enum Kind {
     /// `surface.json`: what an API-only mod can name.
     Surface,
-    /// `build-data.tar.xz`: `points.json`, `internals.json`, `loops.json`, `functions.json`.
+    /// `build-data.tar.xz`: `internals.json`, `loops.json`, `functions.json`.
     BuildData,
     /// The API crates with their generated code written out.
     ApiSource,
@@ -167,16 +167,19 @@ pub enum Kind {
     /// Every other file of the prebuilt game: what the engine route (a `[native]` table,
     /// internals or a registry dependency) builds against, with the other two.
     Engine,
+    /// `cargo-sunrise-mod` for one computer: its `native-build` compiles native mods as the launcher does.
+    Tool,
 }
 
 impl Kind {
-    const ALL: [Kind; 6] = [
+    const ALL: [Kind; 7] = [
         Kind::Surface,
         Kind::BuildData,
         Kind::ApiSource,
         Kind::Runtime,
         Kind::Api,
         Kind::Engine,
+        Kind::Tool,
     ];
 
     /// The name `sdk.json` writes.
@@ -188,11 +191,17 @@ impl Kind {
             Kind::Runtime => "runtime",
             Kind::Api => "api",
             Kind::Engine => "engine",
+            Kind::Tool => "tool",
         }
     }
 
-    /// Whether its assets exist once per target (and side).
+    /// Whether its assets exist once per target.
     pub fn per_target(self) -> bool {
+        matches!(self, Kind::Runtime | Kind::Api | Kind::Engine | Kind::Tool)
+    }
+
+    /// Whether its assets also exist once per side: the tool serves both.
+    pub fn per_side(self) -> bool {
         matches!(self, Kind::Runtime | Kind::Api | Kind::Engine)
     }
 }
@@ -216,8 +225,16 @@ pub enum Side {
 }
 
 impl Asset {
+    /// A runtime host name, also used by the native release archives.
+    pub fn host_name(target: &str, side: Side) -> String {
+        match side {
+            Side::Client => target.to_owned(),
+            Side::Server => format!("{target}-server"),
+        }
+    }
+
     /// The kind, codec, target and side an asset's file name states:
-    /// `surface.json`, `build-data.tar.xz`, `api-source.tar.xz` and
+    /// `surface.json`, `build-data.tar.xz`, `api-source.tar.xz`, `tool-<target>.tar.xz` and
     /// `<runtime|api|engine>-<target>[-server].tar.xz`, where a target is made of `a-z`, `0-9`,
     /// `_` and `-` only. `None` for any other name, so a name this accepts is a plain file name.
     pub fn parts_of(name: &str) -> Option<(Kind, Codec, Option<String>, Option<Side>)> {
@@ -236,19 +253,20 @@ impl Asset {
             return Some((kind, Codec::Xz, None, None));
         }
         let rest = &stem[kind.name().len() + 1..];
-        let (target, side) = match rest.strip_suffix("-server") {
-            Some(target) => (target, Side::Server),
-            None => (rest, Side::Client),
+        let (target, side) = match (kind.per_side(), rest.strip_suffix("-server")) {
+            (false, _) => (rest, None),
+            (true, Some(target)) => (target, Some(Side::Server)),
+            (true, None) => (rest, Some(Side::Client)),
         };
         let plain = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-';
         (!target.is_empty() && target.chars().all(plain))
-            .then(|| (kind, Codec::Xz, Some(target.to_owned()), Some(side)))
+            .then(|| (kind, Codec::Xz, Some(target.to_owned()), side))
     }
 
-    /// A per-target asset's file name, as [`Asset::parts_of`] reads it.
+    /// A per-target asset's file name, as [`Asset::parts_of`] reads it; `side` names only a per-side kind's.
     pub fn name(kind: Kind, target: &str, side: Side) -> String {
-        let suffix = if side == Side::Server { "-server" } else { "" };
-        format!("{}-{target}{suffix}.tar.xz", kind.name())
+        let host = Self::host_name(target, if kind.per_side() { side } else { Side::Client });
+        format!("{}-{host}.tar.xz", kind.name())
     }
 }
 
@@ -297,8 +315,7 @@ impl Inputs {
     }
 
     /// How to make `name` (as listed, without `.exe`) for the game program `program`: `PROFILE`
-    /// becomes the cargo flag of the profile `program` was built with (its folder's name) and
-    /// `PROGRAM_FOLDER` its folder, so the command makes the file where the check looks.
+    /// becomes the cargo flag of the profile `program` was built with (its folder's name).
     /// A program outside `target/<profile>/` (or `target/<triple>/<profile>/`) gets the command
     /// with no flag and the words "with the same profile as the game program".
     pub fn how(&self, name: &str, program: &Path) -> Option<String> {
@@ -309,14 +326,13 @@ impl Inputs {
         let in_target = named(folder.parent()) == Some("target")
             || named(folder.parent().and_then(Path::parent)) == Some("target");
         let how = self.how.get(name)?;
-        let how = match named(Some(folder)).filter(|_| in_target) {
+        Some(match named(Some(folder)).filter(|_| in_target) {
             _ if !how.contains("PROFILE") => how.clone(),
             Some("debug") => how.replace("PROFILE ", ""),
             Some("release") => how.replace("PROFILE", "--release"),
             Some(other) => how.replace("PROFILE", &format!("--profile {other}")),
             None => how.replace("PROFILE ", "") + ", with the same profile as the game program",
-        };
-        Some(how.replace("PROGRAM_FOLDER", &folder.display().to_string()))
+        })
     }
 
     /// Every file of `route` that is missing, beside `program` or in `checkout`, together with
@@ -384,6 +400,8 @@ pub enum Refusal {
     Build { expected: String, found: String },
     /// The package layout is one this reader does not know.
     PackageFormat(u64),
+    /// The pinned horizon-mixins revision is not a full commit sha.
+    MixinsRev(String),
     /// An asset names a kind this reader does not know.
     Kind { asset: String, kind: String },
     /// An asset names a codec this reader does not know.
@@ -431,14 +449,18 @@ impl fmt::Display for Refusal {
             Self::Malformed(why) => write!(f, "{INDEX} is not a valid SDK index: {why}"),
             Self::Schema(schema) => write!(
                 f,
-                "{INDEX} has schema {schema}; this program reads schema {SCHEMA}. Update it to use this SDK"
+                "{INDEX} has schema {schema}; this program reads schema {SCHEMA}, so it is older than this SDK. Update it (`cargo sunrise-mod`: run the install block of the book's \"Install the mod tool\" page), or use the tool in this SDK's own release"
             ),
             Self::Build { expected, found } => {
                 write!(f, "{INDEX} is for build {found}, not {expected}")
             }
             Self::PackageFormat(format) => write!(
                 f,
-                "{INDEX} has package format {format}; this program reads format {PACKAGE_FORMAT}. Update it to use this SDK"
+                "{INDEX} has package format {format}; this program reads format {PACKAGE_FORMAT}, so it is older than this SDK. Update it (`cargo sunrise-mod`: run the install block of the book's \"Install the mod tool\" page), or use the tool in this SDK's own release"
+            ),
+            Self::MixinsRev(rev) => write!(
+                f,
+                "{INDEX}'s mixins revision {rev:?} is not a full commit sha (40 lowercase hex digits)"
             ),
             Self::Kind { asset, kind } => write!(f, "{asset}: unknown asset kind {kind:?}"),
             Self::Codec { asset, codec } => write!(f, "{asset}: unknown codec {codec:?}"),
@@ -551,7 +573,7 @@ impl Index {
         Ok(Index {
             schema: SCHEMA,
             build,
-            package_format: PACKAGE_FORMAT,
+            package_format: u64::from(PACKAGE_FORMAT),
             toolchain: Toolchain { rust },
             content_api: crate::manifest::API.to_owned(),
             surface: Surface {
@@ -660,8 +682,22 @@ impl Index {
     }
 
     /// Read `sdk.json` for build `commit`: its schema, build, package format and every asset's
-    /// kind, codec and name are checked here, once.
+    /// kind, codec and name, and the mixins revision, are checked here, once.
     pub fn read(bytes: &[u8], commit: &str) -> Result<Index, Refusal> {
+        Self::read_with_format(bytes, commit, Some(u64::from(PACKAGE_FORMAT)))
+    }
+
+    /// Read the index for a fit comparison, which never opens compiled packages.
+    /// All index checks except compiled package format compatibility still apply.
+    pub fn read_for_fit(bytes: &[u8], commit: &str) -> Result<Index, Refusal> {
+        Self::read_with_format(bytes, commit, None)
+    }
+
+    fn read_with_format(
+        bytes: &[u8],
+        commit: &str,
+        expected_format: Option<u64>,
+    ) -> Result<Index, Refusal> {
         let malformed = |error: serde_json::Error| Refusal::Malformed(error.to_string());
         Self::schema(bytes)?;
         let written: Written = serde_json::from_slice(bytes).map_err(malformed)?;
@@ -671,8 +707,11 @@ impl Index {
                 found: written.build.commit,
             });
         }
-        if written.package_format != u64::from(PACKAGE_FORMAT) {
+        if expected_format.is_some_and(|expected| expected != written.package_format) {
             return Err(Refusal::PackageFormat(written.package_format));
+        }
+        if !crate::manifest::revision(&written.mixins.rev) {
+            return Err(Refusal::MixinsRev(written.mixins.rev));
         }
         let mut assets = BTreeMap::new();
         for (name, asset) in written.assets {
@@ -711,7 +750,7 @@ impl Index {
         Ok(Index {
             schema: SCHEMA,
             build: written.build,
-            package_format: PACKAGE_FORMAT,
+            package_format: written.package_format,
             toolchain: written.toolchain,
             content_api: written.content_api,
             surface: written.surface,
@@ -818,7 +857,7 @@ impl Index {
 
 /// The largest xz dictionary [`unpack`] decodes with: `xz -9`'s. The decoder's memory is this plus
 /// fixed buffers, whatever the archive holds; an archive asking for more is refused as damaged.
-#[cfg(feature = "prebuilt")]
+#[cfg(any(feature = "prebuilt", feature = "index"))]
 pub const DICTIONARY_LIMIT: usize = 64 << 20;
 
 /// The largest tar extension entry (a GNU long name or link, a PAX header) [`unpack`] reads.

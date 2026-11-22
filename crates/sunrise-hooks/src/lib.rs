@@ -14,21 +14,48 @@
 //!
 //! The platform registries (docs/layers.md, "Platform registries") have the same shape:
 //! [`settings`] for the settings each crate keeps in its own lines, [`pages`] for its settings
-//! pages, [`hud`] for what it draws on the HUD, [`lang`] for the lang files with its text.
+//! pages, [`hud`] for what it draws on the HUD, [`lang`] for the lang files with its text,
+//! [`mod_rows`] for the rows it adds to the Mods screen, [`title`] for the buttons it adds to
+//! the title screen.
 #![forbid(unsafe_code)]
 
+pub mod connection;
+pub mod containers;
 pub mod hud;
 pub mod lang;
+pub mod look;
+pub mod mod_rows;
 pub mod pages;
 pub mod perf;
-pub mod players;
 mod registry;
 pub mod settings;
+pub mod sound;
+pub mod title;
 pub mod tunnel;
 
 use registry::Registry;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// How the client presents itself to the server it joins: its brand and the custom payloads it
+/// sends in the configuration phase, after the brand, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientIdentity {
+    /// The `minecraft:brand` (`ClientBrandRetriever.getClientModName`).
+    pub brand: String,
+    /// Configuration-phase custom payloads: channel and data.
+    pub payloads: Vec<(String, Vec<u8>)>,
+}
+
+impl ClientIdentity {
+    /// Vanilla's: the brand `vanilla`, no payloads.
+    pub fn vanilla() -> Self {
+        Self {
+            brand: "vanilla".to_owned(),
+            payloads: Vec::new(),
+        }
+    }
+}
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
 /// implement only those you need. Hooks run on the game's thread (the render thread) unless a
@@ -46,43 +73,6 @@ pub trait Hooks: Sync {
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
 
-    /// Once a frame, before drawing: `sprites` takes the pictures the crate's
-    /// [`players::Sprites`] lacked. Only a window's game calls it (each splitscreen player in
-    /// turn, [`seat`]), never the integrated server's thread or a dedicated server; so are the
-    /// player methods below (not [`Hooks::tunnel`]).
-    fn frame(&self, _frame: &players::Frame, _sprites: &mut dyn players::SpriteStore) {}
-
-    /// Once a client tick while a world is shown: the player models in view.
-    fn tick(&self, _models: &mut dyn players::PlayerModels) {}
-
-    /// What goes by a player model's name over its head, each frame its name tag is drawn. The
-    /// first hook that answers is used.
-    fn name_decoration(
-        &self,
-        _model: &players::PlayerModel,
-        _sprites: &dyn players::Sprites,
-    ) -> Option<players::NameDecoration> {
-        None
-    }
-
-    /// The mark before the name of the player `uuid` in the player list, each frame it shows.
-    /// The first hook that answers is used.
-    fn player_mark(&self, _uuid: u128) -> Option<players::Mark> {
-        None
-    }
-
-    /// How the camera stands in third person, each frame. The first hook that answers is used.
-    fn camera(&self, _own: &players::CameraView) -> Option<players::CameraOverride> {
-        None
-    }
-
-    /// Draws on a player model, after its vanilla layers, each time it is drawn.
-    fn player_layers(&self, _model: &players::PlayerModel, _draw: &mut dyn players::PlayerDraw) {}
-
-    /// Draws around the window's own model while its body is out of view (first person), once a
-    /// frame after the first-person model: [`players::Pass::FirstPerson`].
-    fn first_person(&self, _own: &players::PlayerModel, _draw: &mut dyn players::PlayerDraw) {}
-
     /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
     /// offers one is used. Asked on the network thread when joining and on the game thread when
     /// an address is shown, never per frame.
@@ -95,12 +85,22 @@ pub trait Hooks: Sync {
         None
     }
 
+    /// What this crate does on a container screen ([`containers`]); the engine dispatches only to
+    /// hooks that offer one, and builds nothing when none does.
+    fn containers(&self) -> Option<&dyn containers::ContainerHooks> {
+        None
+    }
+
+    /// Once a rendered frame is handed off for submission: how long it took
+    /// ([`perf::FrameTimes`]), with the [`seat`] of the `Game` that drew it.
+    fn frame_timed(&self, _times: &perf::FrameTimes) {}
+
     /// A game window opened: once, before the first frame, for every run that has a window,
     /// automated ones included ([`Client::automated`]); never for a dedicated server.
     fn client_started(&self, _client: &Client) {}
 
     /// What the player is doing, for a status shown outside the game (Discord's): called when it
-    /// changes, not every frame. Splitscreen: the first player's only.
+    /// changes, not every frame.
     fn activity(&self, _now: Activity) {}
 
     /// Where a game started without its prepared files (run by hand, not from a launcher) sends
@@ -108,6 +108,43 @@ pub trait Hooks: Sync {
     /// used; with none, the screen says how to prepare the files and opens no page. Asked once,
     /// before that screen's window opens.
     fn get_the_game(&self) -> Option<GetTheGame> {
+        None
+    }
+
+    /// How this client presents itself to the server it is joining: the brand it reports
+    /// (`ClientBrandRetriever.getClientModName`, the `minecraft:brand` payload) and the custom
+    /// payloads it sends in the configuration phase after it. `server` is the session target before
+    /// SRV or DNS resolution: the trimmed address for a direct join, the supplied `host:port` for a
+    /// transfer, the sender's IP and advertised port for an announced LAN world, or the `friend:`
+    /// target for a friend join. The hook runs once on the network thread during initial
+    /// configuration (a transfer starts a new session). The first answer wins; with none it sends
+    /// [`ClientIdentity::vanilla`]. A local join bypasses the hook and uses that identity directly.
+    fn client_identity(&self, _server: &str) -> Option<ClientIdentity> {
+        None
+    }
+
+    /// The window starts a connection to `server` over the network, each attempt; never for its
+    /// own server thread (single player, a splitscreen player joining it). Each such connection
+    /// then closes in exactly one [`Hooks::left`] or [`Hooks::ended`] ([`connection`]).
+    fn connecting(&self, _server: &connection::Server) {}
+
+    /// The server the window is connecting to let the player in; at most once a connection.
+    fn joined(&self) {}
+
+    /// The window's connection closed without being lost: the player disconnected, the game
+    /// closed, or the server transferred the window elsewhere.
+    fn left(&self, _how: connection::Left) {}
+
+    /// The window's connection ended without the player leaving: lost, refused or kicked, or
+    /// dropped by this client ([`connection::By`]). The Disconnected screen shows next, and the
+    /// engine asks [`Hooks::retry`].
+    fn ended(&self, _end: &connection::Ended<'_>) {}
+
+    /// Whether to connect again: asked once right after [`Hooks::ended`], and the engine acts on
+    /// that answer; after [`connection::Retry::Wait`], asked again once a frame while the
+    /// Disconnected screen still offers it (the player can cancel or leave the screen). The
+    /// first hook that answers is used; with none the screen offers nothing, as vanilla's.
+    fn retry(&self) -> Option<connection::Retry> {
         None
     }
 }
@@ -228,10 +265,8 @@ thread_local! {
     static SEAT: Cell<usize> = const { Cell::new(0) };
 }
 
-/// The splitscreen player whose turn it is: 0 for P1 (and without splitscreen), 1 for P2...
-/// Splitscreen players are one process, each `Game` in turn on the game's thread, so a crate's
-/// statics are shared by them: a crate that keeps per-player state (settings, pages, HUD) indexes
-/// it by this. A player keeps its seat while it plays. Other threads always see 0.
+/// The local-instance index of the `Game` whose call runs on this thread: 0 for the
+/// process's first `Game`, and outside any `Game` call.
 pub fn seat() -> usize {
     SEAT.get()
 }
@@ -240,7 +275,7 @@ pub fn seat() -> usize {
 pub mod engine {
     use super::*;
 
-    /// The player whose turn starts on this thread ([`seat`]).
+    /// Engine-only: sets this thread's [`seat`] for a `Game` call.
     pub fn set_seat(seat: usize) {
         SEAT.set(seat);
     }
@@ -253,6 +288,9 @@ pub mod engine {
         crate::pages::engine::all();
         crate::hud::engine::all();
         crate::lang::all();
+        crate::mod_rows::engine::all();
+        crate::containers::engine::any();
+        crate::title::engine::all();
     }
 
     /// [`Hooks::started`].
@@ -309,60 +347,16 @@ pub mod engine {
         }
     }
 
-    /// Whether any hook is registered: without one the engine builds no view to hand them.
-    pub fn any() -> bool {
-        !all().is_empty()
-    }
-
-    /// [`Hooks::frame`].
-    pub fn frame(frame: &players::Frame, sprites: &mut dyn players::SpriteStore) {
-        for hooks in all() {
-            hooks.frame(frame, sprites);
-        }
-    }
-
-    /// [`Hooks::name_decoration`].
-    pub fn name_decoration(
-        model: &players::PlayerModel,
-        sprites: &dyn players::Sprites,
-    ) -> Option<players::NameDecoration> {
-        all().iter().find_map(|h| h.name_decoration(model, sprites))
-    }
-
-    /// [`Hooks::player_mark`].
-    pub fn player_mark(uuid: u128) -> Option<players::Mark> {
-        all().iter().find_map(|h| h.player_mark(uuid))
-    }
-
-    /// [`Hooks::player_layers`].
-    pub fn player_layers(model: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
-        for hooks in all() {
-            hooks.player_layers(model, draw);
-        }
-    }
-
-    /// [`Hooks::first_person`].
-    pub fn first_person(own: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
-        for hooks in all() {
-            hooks.first_person(own, draw);
-        }
-    }
-
-    /// [`Hooks::camera`].
-    pub fn camera(own: &players::CameraView) -> Option<players::CameraOverride> {
-        all().iter().find_map(|h| h.camera(own))
-    }
-
-    /// [`Hooks::tick`].
-    pub fn tick(models: &mut dyn players::PlayerModels) {
-        for hooks in all() {
-            hooks.tick(models);
-        }
-    }
-
     /// [`Hooks::captures`]: the first registered hook's.
     pub fn captures() -> Option<&'static dyn perf::Captures> {
         all().iter().find_map(|hooks| hooks.captures())
+    }
+
+    /// [`Hooks::frame_timed`].
+    pub fn frame_timed(times: &perf::FrameTimes) {
+        for hooks in all() {
+            hooks.frame_timed(times);
+        }
     }
 
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
@@ -374,12 +368,52 @@ pub mod engine {
     pub fn get_the_game() -> Option<GetTheGame> {
         all().iter().find_map(|hooks| hooks.get_the_game())
     }
+
+    /// [`Hooks::client_identity`]: the first answer, or vanilla's.
+    pub fn client_identity(server: &str) -> ClientIdentity {
+        all()
+            .iter()
+            .find_map(|h| h.client_identity(server))
+            .unwrap_or_else(ClientIdentity::vanilla)
+    }
+
+    /// [`Hooks::connecting`].
+    pub fn connecting(server: &connection::Server) {
+        for hooks in all() {
+            hooks.connecting(server);
+        }
+    }
+
+    /// [`Hooks::joined`].
+    pub fn joined() {
+        for hooks in all() {
+            hooks.joined();
+        }
+    }
+
+    /// [`Hooks::left`].
+    pub fn left(how: connection::Left) {
+        for hooks in all() {
+            hooks.left(how);
+        }
+    }
+
+    /// [`Hooks::ended`].
+    pub fn ended(end: &connection::Ended<'_>) {
+        for hooks in all() {
+            hooks.ended(end);
+        }
+    }
+
+    /// [`Hooks::retry`]: the first registered hook's answer.
+    pub fn retry() -> Option<connection::Retry> {
+        all().iter().find_map(|hooks| hooks.retry())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use players::PlayerModels as _;
     use std::sync::Mutex as StdMutex;
 
     /// Records what it heard. One process-wide list, as the game has: this test is the only
@@ -402,6 +436,22 @@ mod tests {
         fn activity(&self, now: Activity) {
             self.0.lock().unwrap().push(format!("{now:?}"));
         }
+        fn connecting(&self, server: &connection::Server) {
+            let line = format!("connecting {}", server.address);
+            self.0.lock().unwrap().push(line);
+        }
+        fn joined(&self) {
+            self.0.lock().unwrap().push("joined".into());
+        }
+        fn left(&self, left: connection::Left) {
+            self.0.lock().unwrap().push(format!("left {left:?}"));
+        }
+        fn ended(&self, end: &connection::Ended<'_>) {
+            self.0.lock().unwrap().push(format!("ended {}", end.reason));
+        }
+        fn retry(&self) -> Option<connection::Retry> {
+            Some(connection::Retry::Wait("in 5 s".into()))
+        }
         fn get_the_game(&self) -> Option<GetTheGame> {
             Some(GetTheGame {
                 address: "https://example.org",
@@ -410,168 +460,11 @@ mod tests {
                 button: "recorder.button",
             })
         }
-        fn frame(&self, frame: &players::Frame, sprites: &mut dyn players::SpriteStore) {
-            self.0
-                .lock()
-                .unwrap()
-                .push(format!("frame {}", frame.connection));
-            if !sprites.has(1) {
-                sprites.put(1, vec![0; 64 * 64 * 4]);
-            }
-        }
-        fn name_decoration(
-            &self,
-            model: &players::PlayerModel,
-            sprites: &dyn players::Sprites,
-        ) -> Option<players::NameDecoration> {
-            let badge = sprites.get(1).map(|uv| players::Badge::new(uv, 0xFF0000));
-            (model.kind == players::Kind::Player)
-                .then(|| players::NameDecoration::new(Some(MARK), badge, Some(2.0)))
-        }
-        fn player_mark(&self, uuid: u128) -> Option<players::Mark> {
-            (uuid == 9).then_some(MARK)
-        }
-        fn camera(&self, own: &players::CameraView) -> Option<players::CameraOverride> {
-            Some(players::CameraOverride::new(own.age / 10.0))
-        }
-        /// A hat on the head, its brim turned by the model's age.
-        fn player_layers(&self, _: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
-            let (Some(head), Some(uv)) = (draw.bone(players::Bone::Head), draw.sprite(1)) else {
-                return;
-            };
-            let turn = draw.ticks() / 100.0;
-            let look = players::Look::new(uv);
-            draw.draw(&HAT, head, look, &mut |p| p.pose("brim")[4] = turn);
-        }
-        /// A spark at the eyes, as bright as the head turns.
-        fn first_person(&self, _: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
-            let alpha = draw.motion().head_yaw / 90.0;
-            let spark = players::Particle::new([[0.0; 3]; 4], [[0.0; 2]; 4], alpha);
-            draw.particles([0.0; 4], &[spark], players::Light::Full);
-        }
-        fn tick(&self, models: &mut dyn players::PlayerModels) {
-            let mut ids = Vec::new();
-            models.for_each(&mut |m| ids.push(m.id));
-            for id in ids {
-                models.set_body_pose(id, Some(std::sync::Arc::new(Still)));
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct Still;
-    impl players::BodyPose for Still {
-        fn pose(&self, _: f32, _: &[[f32; 9]; 6], _: &mut [[f32; 9]; 6]) -> bool {
-            false
-        }
-    }
-
-    /// Two models, poses by id.
-    struct Two(std::collections::BTreeMap<u32, std::sync::Arc<dyn players::BodyPose>>);
-    impl players::PlayerModels for Two {
-        fn connection(&self) -> u64 {
-            1
-        }
-        fn for_each(&self, f: &mut dyn FnMut(players::PlayerModel)) {
-            for id in [3, 7] {
-                f(players::PlayerModel::new(
-                    id,
-                    players::Kind::Player,
-                    None,
-                    0,
-                    false,
-                ));
-            }
-        }
-        fn body_pose(&self, id: u32) -> Option<&std::sync::Arc<dyn players::BodyPose>> {
-            self.0.get(&id)
-        }
-        fn set_body_pose(&mut self, id: u32, pose: Option<std::sync::Arc<dyn players::BodyPose>>) {
-            match pose {
-                Some(p) => self.0.insert(id, p),
-                None => self.0.remove(&id),
-            };
-        }
-    }
-
-    const MARK: players::Mark = &[(0, 0, 8, 8, 0xFF00_00FF)];
-
-    /// One sprite slot, as the game's atlas has many.
-    #[derive(Default)]
-    struct Atlas(Option<(u64, usize)>);
-    impl players::SpriteStore for Atlas {
-        fn has(&self, id: u64) -> bool {
-            self.0.is_some_and(|(i, _)| i == id)
-        }
-        fn put(&mut self, id: u64, rgba: Vec<u8>) {
-            self.0 = Some((id, rgba.len()));
-        }
-    }
-    impl players::Sprites for Atlas {
-        fn get(&self, id: u64) -> Option<[f32; 4]> {
-            players::SpriteStore::has(self, id).then_some([0.0, 0.0, 0.5, 0.5])
-        }
-    }
-
-    static HAT: std::sync::LazyLock<std::sync::Arc<players::Mesh>> =
-        std::sync::LazyLock::new(|| {
-            let brim = players::Mesh::new("brim".into(), [0.0; 9], Vec::new(), Vec::new());
-            std::sync::Arc::new(players::Mesh::new(
-                "hat".into(),
-                [0.0; 9],
-                Vec::new(),
-                vec![brim],
-            ))
-        });
-
-    /// A player drawn at age 50, its head where the camera is, turned 45 degrees; logs each draw
-    /// and its particles' alphas.
-    #[derive(Default)]
-    struct Canvas(Vec<(String, [[f32; 4]; 4], [f32; 4], f32)>, Vec<f32>);
-    impl players::PlayerDraw for Canvas {
-        fn pass(&self) -> players::Pass {
-            players::Pass::World
-        }
-        fn ticks(&self) -> f32 {
-            50.0
-        }
-        fn base(&self) -> [[f32; 4]; 4] {
-            [[1.0, 0.0, 0.0, 0.0]; 4]
-        }
-        fn motion(&self) -> players::Motion {
-            players::Motion::new([0.0; 3], 45.0, 0.0)
-        }
-        fn view(&self) -> players::View {
-            players::View::default()
-        }
-        fn bone(&mut self, bone: players::Bone) -> Option<[[f32; 4]; 4]> {
-            (bone == players::Bone::Head).then_some([[1.0, 0.0, 0.0, 0.0]; 4])
-        }
-        fn body_pose(&self) -> Option<&std::sync::Arc<dyn players::BodyPose>> {
-            None
-        }
-        fn sprite(&self, id: u64) -> Option<[f32; 4]> {
-            (id == 1).then_some([0.0, 0.0, 0.5, 0.5])
-        }
-        fn draw(
-            &mut self,
-            mesh: &std::sync::Arc<players::Mesh>,
-            matrix: [[f32; 4]; 4],
-            look: players::Look,
-            pose: &mut dyn FnMut(&mut dyn players::PartPoses),
-        ) {
-            struct Rest([f32; 9]);
-            impl players::PartPoses for Rest {
-                fn pose(&mut self, _: &str) -> &mut [f32; 9] {
-                    &mut self.0
-                }
-            }
-            let mut brim = Rest(mesh.children[0].pose);
-            pose(&mut brim);
-            self.0.push((mesh.name.clone(), matrix, look.uv, brim.0[4]));
-        }
-        fn particles(&mut self, _: [f32; 4], particles: &[players::Particle], _: players::Light) {
-            self.1.extend(particles.iter().map(|p| p.alpha));
+        fn client_identity(&self, server: &str) -> Option<ClientIdentity> {
+            (server == "first.example").then(|| ClientIdentity {
+                brand: "first".to_owned(),
+                payloads: vec![("recorder:hello".to_owned(), vec![1, 2])],
+            })
         }
     }
 
@@ -579,12 +472,29 @@ mod tests {
     struct Silent;
     impl Hooks for Silent {}
 
+    /// Registered after the recorder: answers for two servers, one the recorder answers too.
+    struct Later;
+    impl Hooks for Later {
+        fn retry(&self) -> Option<connection::Retry> {
+            Some(connection::Retry::Now(connection::Server::new(
+                "b", "P", false,
+            )))
+        }
+        fn client_identity(&self, server: &str) -> Option<ClientIdentity> {
+            matches!(server, "first.example" | "second.example").then(|| ClientIdentity {
+                brand: "later".to_owned(),
+                payloads: Vec::new(),
+            })
+        }
+    }
+
     static RECORDER: Recorder = Recorder(StdMutex::new(Vec::new()));
 
     #[test]
     fn registered_hooks_hear_the_game_and_late_ones_are_refused() {
         register(&RECORDER).unwrap();
         register(&Silent).unwrap();
+        register(&Later).unwrap();
         engine::started(&Started::new("0.2.31", std::path::Path::new("game")));
         // Changes only: the same state every frame is said once.
         for open in [false, true, true, true, false, false] {
@@ -599,44 +509,30 @@ mod tests {
             engine::activity(now);
         }
         engine::shutdown();
-        assert!(engine::any());
+        engine::connecting(&connection::Server::new("a", "P", false));
+        engine::joined();
+        engine::left(connection::Left::Quit);
+        engine::connecting(&connection::Server::new("b", "P", false));
+        engine::ended(&connection::Ended::new(
+            "Timed out",
+            None,
+            connection::By::Server,
+        ));
+        let wait = connection::Retry::Wait("in 5 s".into());
+        assert_eq!(engine::retry(), Some(wait));
         assert_eq!(
             engine::get_the_game().map(|g| g.address),
             Some("https://example.org")
         );
-        let mut atlas = Atlas::default();
-        let model = |kind| players::PlayerModel::new(5, kind, Some(9), 0, false);
-        // Before the frame put the sprite in: the decoration without its badge.
-        let before = engine::name_decoration(&model(players::Kind::Player), &atlas).unwrap();
-        assert!(before.badge.is_none() && before.top == Some(2.0));
-        engine::frame(&players::Frame::new(4, false), &mut atlas);
-        assert_eq!(atlas.0, Some((1, 64 * 64 * 4)));
-        let after = engine::name_decoration(&model(players::Kind::Player), &atlas).unwrap();
+        // The first answer wins, a later hook answers what the first leaves, none gives vanilla.
+        let first = engine::client_identity("first.example");
+        assert_eq!(first.brand, "first");
+        assert_eq!(first.payloads, [("recorder:hello".to_owned(), vec![1, 2])]);
+        assert_eq!(engine::client_identity("second.example").brand, "later");
         assert_eq!(
-            after.badge.map(|b| (b.uv, b.line)),
-            Some(([0.0, 0.0, 0.5, 0.5], 0xFF0000))
+            engine::client_identity("other.example"),
+            ClientIdentity::vanilla()
         );
-        assert!(engine::name_decoration(&model(players::Kind::Mannequin), &atlas).is_none());
-        assert_eq!(engine::player_mark(9), Some(MARK));
-        assert_eq!(engine::player_mark(8), None);
-        let camera = engine::camera(&players::CameraView::new(5.0));
-        assert_eq!(camera.map(|c| c.distance), Some(0.5));
-        let mut canvas = Canvas::default();
-        engine::player_layers(&model(players::Kind::Player), &mut canvas);
-        assert_eq!(
-            canvas.0,
-            [(
-                "hat".to_owned(),
-                [[1.0, 0.0, 0.0, 0.0]; 4],
-                [0.0, 0.0, 0.5, 0.5],
-                0.5
-            )]
-        );
-        engine::first_person(&model(players::Kind::Own), &mut canvas);
-        assert_eq!(canvas.1, [0.5]);
-        let mut models = Two(Default::default());
-        engine::tick(&mut models);
-        assert!(models.body_pose(3).is_some() && models.body_pose(7).is_some());
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
             [
@@ -646,8 +542,16 @@ mod tests {
                 "Menus",
                 "World { play: Singleplayer, dimension: Nether, mode: Creative }",
                 "shutdown",
-                "frame 4"
+                "connecting a",
+                "joined",
+                "left Quit",
+                "connecting b",
+                "ended Timed out",
             ]
+        );
+        assert!(
+            !containers::engine::any(),
+            "no registrant offers containers()"
         );
         assert_eq!(register(&Silent), Err(TooLate));
     }

@@ -20,9 +20,9 @@ Options.chatDelay	port	crates/sunrise-client-render/src/options_ui_values.rs::ch
 Options.loadSelectedResourcePacks	port	crates/sunrise-client-render/src/packs.rs::enabled	gap: minor: dropped packs are not written back to resourcePacks
 Options.readListOfStrings	port	crates/sunrise-client-render/src/options_file.rs::read_list
 Options.dumpOptionsForReport	skip:debug		options dump for the debug report
-Options.pixelValueLabel	port	crates/sunrise-client-render/src/options_ui.rs::chat_px
-Options.percentValueLabel	port	crates/sunrise-client-render/src/options_ui.rs::percent
-Options.genericValueLabel	port	crates/sunrise-client-render/src/options_ui.rs::generic
+Options.pixelValueLabel	port	crates/sunrise-client-render/src/options_ui_values.rs::chat_px
+Options.percentValueLabel	port	crates/sunrise-client-render/src/options_ui_values.rs::percent
+Options.genericValueLabel	port	crates/sunrise-client-render/src/options_ui_values.rs::generic
 Options.percentValueOrOffLabel	port	crates/sunrise-client-render/src/options_ui.rs::Opt::value_text	gap: minor: OFF text is only drawn for sound volumes
 PeriodicNotificationManager.prepare	skip:other		regional play-time notices (REGIONAL_COMPLIANCIES, country check); none ship with the 26.3 assets and Sunrise has no equivalent
 PeriodicNotificationManager.apply	skip:other		regional play-time notices (REGIONAL_COMPLIANCIES, country check); none ship with the 26.3 assets and Sunrise has no equivalent
@@ -30,7 +30,7 @@ PeriodicNotificationManager.calculateOptimalPeriod	skip:other		regional play-tim
 PeriodicNotificationManager.calculateInitialDelay	skip:other		regional play-time notices (REGIONAL_COMPLIANCIES, country check); none ship with the 26.3 assets and Sunrise has no equivalent
 PeriodicNotificationManager.NotificationTask.reset	skip:other		regional play-time notices; see the manager
 PeriodicNotificationManager.NotificationTask.run	skip:other		regional play-time notices; see the manager
-PreferredGraphicsApi.getBackendsToTry	skip:other		GL is not a Sunrise backend; the Vulkan then DX12 order lives in launcher/src/backend.rs
+PreferredGraphicsApi.getBackendsToTry	skip:other		GL is not a Sunrise backend; the Vulkan then DX12 order lives in sunrise-launcher's src/backend.rs
 ResourceLoadStateTracker.startReload	skip:debug		crash-report state of the last resource reload
 ResourceLoadStateTracker.startRecovery	skip:debug		crash-report state of the last resource reload
 ResourceLoadStateTracker.finishReload	skip:debug		crash-report state of the last resource reload
@@ -56,7 +56,7 @@ StringSplitter.stringWidth	port	crates/sunrise-client-render/src/font.rs::Font::
 StringSplitter.plainIndexAtWidth	port	crates/sunrise-client-render/src/screen_draw.rs::Measure::plain	gap: minor: measures without the style (bold widths)
 StringSplitter.plainTailByWidth	port	crates/sunrise-client-render/src/screen_draw.rs::Measure::plain	gap: minor: same as plainIndexAtWidth, from the end
 StringSplitter.findLineBreak	port	crates/sunrise-client-render/src/block_entity_render.rs::first_line	returns the first styled line rather than the break index; production signs use Font.split_formatted
-StringSplitter.getWordPosition	port	crates/sunrise-client-render/src/ui.rs::word_position	gap: minor: always strips spaces; no newline stop
+StringSplitter.getWordPosition	port	crates/sunrise-mod-vocab/src/client/widgets_text_edit.rs::word_position	gap: minor: always strips spaces; no newline stop
 StringSplitter.FlatComponents.getRemainder	inline	crates/sunrise-client-render/src/font.rs::Font::split	the remainder is produced inside split
 StringSplitter.LineBreakFinder.accept	port	crates/sunrise-client-render/src/font.rs::Font::split_lines
 StringSplitter.LineComponent.visit	skip:java		visitor plumbing over FormattedText
@@ -101,8 +101,8 @@ net/minecraft/client/main/Main#getQuickPlayVariant	port	crates/sunrise-client/sr
 net/minecraft/client/main/Main#parseArgument	inline	crates/sunrise-client/src/game/launch_options.rs::Options::parse	the argument loop itself (Options::read is the wrapper that feeds it std::env::args)
 net/minecraft/client/main/Main#hasValidUuid	skip:other		the --uuid argument is what reaches it, and Sunrise's client parses none (game/launch_options.rs::Options::parse takes its own flags)
 net/minecraft/client/main/Main#isUuidValid	skip:other		the check behind hasValidUuid, which no --uuid argument reaches
-AbstractClientPlayer.getPlayerInfo	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_pushes	the entity id -> uuid -> tab entry lookups stand in for the PlayerInfo; the name, team and game mode are read from that entry
-AbstractClientPlayer.getSkin	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::update_remote_skins	the downloaded skin and slim flag, else DefaultPlayerSkin by uuid, as PlayerInfo.getSkin
+AbstractClientPlayer.getPlayerInfo	inline	crates/sunrise-client/src/game/network/remote/sync.rs::Game::remote_pushes	the entity id -> uuid -> tab entry lookups stand in for the PlayerInfo; the name, team and game mode are read from that entry
+AbstractClientPlayer.getSkin	port	crates/sunrise-client/src/game/network/remote/status.rs::Game::update_remote_skins	the downloaded skin and slim flag, else DefaultPlayerSkin by uuid, as PlayerInfo.getSkin
 AbstractClientPlayer.getParrotVariantOnShoulder	port	crates/sunrise-client/src/mobs/render.rs::shoulder_parrot	the shoulder slot's stored variant picks the parrot texture and model in the layer
 ClientInput.makeJump	inline	crates/sunrise-client/src/motion.rs::MotionWorld::controlled_simulation_tick	gap: minor: carries the auto-jump flag; no separate jump input
 FirstPersonHandsAndItems.extractRenderState	inline	crates/sunrise-client/src/game/items/hand.rs::Game::visible_hand_items	gap: minor: bob, swing and map state are read elsewhere; no render-state struct
@@ -113,18 +113,18 @@ ItemActivation.tick	port	crates/sunrise-client/src/item_activation.rs::ItemActiv
 ItemActivation.activate	port	crates/sunrise-client/src/item_activation.rs::ItemActivation::activate	a copy of the stack, the 40 ticks and two offsets in [-1, 1); game/items/totem.rs sets it from findTotem
 KeyboardInput.calculateImpulse	inline	crates/sunrise-client-input/src/input.rs::keyboard_direction
 LocalPlayer.<init>	inline	crates/sunrise-client/src/ambience.rs::Ambience::new	gap: minor: the three ambient handlers are the Ambience loops; no connection set-up
-LocalPlayer.sendChanges	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_send_state
+LocalPlayer.sendChanges	port	crates/sunrise-client/src/game/network/remote/sync.rs::Game::remote_send_state
 LocalPlayer.getCurrentMood	inline	crates/sunrise-client/src/ambience.rs::Ambience::tick_biome	gap: minor: moodiness is built here; no getter is exposed
-LocalPlayer.sendIsSprintingIfNeeded	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_send_state	sprint start and stop commands
+LocalPlayer.sendIsSprintingIfNeeded	inline	crates/sunrise-client/src/game/network/remote/sync.rs::Game::remote_send_state	sprint start and stop commands
 LocalPlayer.closeContainer	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_close_container
 LocalPlayer.isSuppressingSlidingDownLadder	port	crates/sunrise-client/src/motion.rs::MotionWorld::suppressing_ladder_slide	gap: minor: sneak only; vanilla also requires not flying
 LocalPlayer.canSpawnSprintParticle	port	crates/sunrise-client/src/game/interface/client_ambient.rs::Game::sprint_dust	gap: minor: the test there is Entity.canSpawnSprintParticle's (sprinting, not spectator, not crouching, alive, out of water and lava) without the !abilities.flying LocalPlayer adds
 LocalPlayer.sendRidingJump	port	crates/sunrise-client/src/game/network/remote_vehicles.rs::riding_jump	START_RIDING_JUMP carrying the jump scale
 LocalPlayer.removeRecipeHighlight	port	crates/sunrise-client/src/recipe_book.rs::Settings::remove_highlight	gap: minor: the seen-recipe packet is not sent, so the server keeps the highlight
 LocalPlayer.moveTowardsClosestSpace	port	crates/sunrise-client/src/game.rs::Game::closest_space_nudge	the four body corners, 0.1 towards the nearest free side on its axis, a later corner overwriting an earlier one
-LocalPlayer.suffocatesAt	inline	crates/sunrise-client/src/game.rs::closest_space_nudge	the suffocates_at closure tests a full collision cube that is also a full render cube, over the body's Y span
+LocalPlayer.suffocatesAt	inline	crates/sunrise-client/src/game.rs::closest_space_nudge	the level suffocation predicate and collision-shape intersection over the deflated body-height column
 LocalPlayer.setExperienceDisplayStartTickToTickCount	inline	crates/sunrise-client/src/game/interface/locator_bar.rs::Game::track_experience_display
-LocalPlayer.handleEntityEvent	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::handle_packet	gap: minor: only the permission events 24 to 28 of the local player
+LocalPlayer.handleEntityEvent	port	crates/sunrise-client/src/game/network/remote/packets_entity.rs::Game::apply_entity_event_packet	gap: minor: only the permission events 24 to 28 of the local player
 LocalPlayer.startUsingItem	port	crates/sunrise-client/src/game.rs::Game::use_hand
 LocalPlayer.isSlowDueToUsingItem	port	crates/sunrise-client/src/game.rs::Game::sync_player_body	the used item's UseEffects.canSprint reaches sprint's slow_item, which stops a sprint starting and ends one
 LocalPlayer.onSyncedDataUpdated	inline	crates/sunrise-client/src/game/interface/music.rs::Game::tick_sound_engine	starting to glide starts the elytra flying sound; the living flags are local state on this side
@@ -146,5 +146,5 @@ LocalPlayer.getRopeHoldPosition	port	crates/sunrise-client/src/game/entities/lea
 LocalPlayer.raycastHitResult	port	crates/sunrise-client/src/game/items/hand.rs::GameHands::hit	gap: minor: block fallback is Game::pick; no separate item attack-range pass
 LocalPlayer.filterHitResult	inline	crates/sunrise-client/src/game.rs::Game::pick	gap: minor: reach is applied inside the clip; no miss direction is returned
 LocalPlayerResolver.fetchByName	missing		minor: unsure: no player-list lookup by name on the client
-LocalPlayerResolver.fetchById	inline	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_pushes	the uuid -> tab entry lookup is inline wherever a player's name, team or skin is needed
+LocalPlayerResolver.fetchById	inline	crates/sunrise-client/src/game/network/remote/sync.rs::Game::remote_pushes	the uuid -> tab entry lookup is inline wherever a player's name, team or skin is needed
 Options.mouseWheelSensitivity	port	crates/sunrise-client-render/src/options_ui_wheel.rs::kind	IntRange(-200, 100) through logMouse/unlogMouse: the slider runs over 10^(i/100), 0.01 to 10.0

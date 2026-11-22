@@ -3,6 +3,10 @@
 //! Every question has a flag, so it also runs unattended (Docker, scripts).
 
 use crate::engine;
+use std::{
+    io::{BufRead, IsTerminal, Write},
+    path::Path,
+};
 use sunrise_platform::java_properties::now_millis;
 use sunrise_platform::server_files::{
     eula,
@@ -11,10 +15,6 @@ use sunrise_platform::server_files::{
 use sunrise_server_launch::{
     self as launch,
     config::{self, Config},
-};
-use std::{
-    io::{BufRead, IsTerminal, Write},
-    path::Path,
 };
 
 /// The answers given as flags; what is missing is asked, or defaulted with `yes`.

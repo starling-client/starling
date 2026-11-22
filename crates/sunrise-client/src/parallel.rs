@@ -241,52 +241,6 @@ impl Auto {
     }
 }
 
-/// Whether a villager's brain draws from the villager's own random instead of the level's.
-///
-/// The level random is one stream, so a draw has to wait for every mob before it (`OrderedDraws`),
-/// and a villager's brain draws on nearly every turn (behaviour durations, one-in-N rolls).
-/// With the parallel tick on, those draws come from a stream seeded from the villager's own, so
-/// no villager waits on another mob and the lanes run apart. That is the one place the parallel
-/// tick departs from vanilla's draw order: the villagers' rolls have the same odds but not the
-/// same values a vanilla level would give them. The seed is derived from the mob's id and the game
-/// time, so the villager's entity random keeps vanilla's sequence. The serial loop does the same while the parallel
-/// tick is on, so which path a tick takes never changes the result.
-pub fn villagers_own_random() -> bool {
-    OWN_RANDOM_TEST.load(Ordering::Relaxed) || parallel_tick() > 0
-}
-
-/// Whether a mob's turn draws the level-random rolls from a stream of its own instead of the level's.
-///
-/// A draw from the level's one stream waits until every mob before it in the list has had its turn
-/// (`OrderedDraws`), in whatever lane those run. Some mobs draw on every tick (a fish that leads a
-/// school rolls one in 200, `AbstractSchoolingFish.tick`; a parrot one in 400; brains draw their
-/// durations), so on a busy level the lanes took turns instead of running side by side. With the
-/// parallel tick on, a turn's level-random draws come from [`mob_turn_random`]: the same odds, not
-/// the values a vanilla level would give, as for the villagers' brains above. No player can rely on
-/// those values: the level's stream is shared with the spawns and the blocks of every chunk. The
-/// mob's own entity random keeps vanilla's sequence, and the serial loop draws the same way while
-/// the parallel tick is on, so which path a tick takes never changes the result.
-pub fn mobs_own_random() -> bool {
-    parallel_tick() > 0
-}
-
-/// The stream a mob's turn draws its level-random rolls from under [`mobs_own_random`]: seeded
-/// from the mob's id and the game time (a splitmix64 mix), not from a draw.
-pub fn mob_turn_random(id: u32, game_time: i64) -> sunrise_core::random::LegacyRandom {
-    let mut z = (u64::from(id) << 32) ^ (game_time as u64) ^ 0x6d6f_625f_7475_726e;
-    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    sunrise_core::random::LegacyRandom::new((z ^ (z >> 31)) as i64)
-}
-
-/// A test's switch for [`villagers_own_random`], process-wide because the lanes are threads: any
-/// gameplay test running at the same time in the same binary sees villagers on their own random, so
-/// the tests that set it run alone (`--test-threads=1`).
-#[doc(hidden)]
-pub static OWN_RANDOM_TEST: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// How many threads a phase may share its work among: `sunrise-threads`' count (at most 8) while
 /// the parallel tick is on, else 1.
 pub fn lanes() -> usize {
@@ -312,6 +266,127 @@ fn pool() -> &'static rayon::ThreadPool {
             .thread_name(|i| format!("tick-helper-{i}"))
             .build()
             .expect("the tick's helper threads start")
+    })
+}
+
+/// Proof that the caller is the thread that owns a `Game` and its tick: the server thread, or the
+/// window's frame. Zero-sized and `!Send + !Sync`, so it never reaches another thread, and a
+/// closure that captures it can't be handed to [`par_map`] or [`phase`].
+///
+/// The state only the tick may change takes it, today entering a level for block contacts
+/// (`block_contact::in_level`), so such a change happens between a tick's phases, never under
+/// one. A `Game` mints its own when it is built and lends it out by copy.
+#[derive(Clone, Copy, Debug)]
+pub struct TickThread(std::marker::PhantomData<*const ()>);
+
+impl TickThread {
+    /// The token for the `Game` this thread runs. Only a loop owner calls this, once, when it
+    /// builds its `Game`.
+    ///
+    /// # Panics
+    ///
+    /// Inside a tick phase's work: a worker never holds the tick's authority.
+    pub fn mint() -> Self {
+        assert!(
+            !sunrise_core::tick_phase::in_tick_phase(),
+            "the tick thread's token was asked for inside a tick phase's work"
+        );
+        Self(std::marker::PhantomData)
+    }
+}
+
+pub(crate) mod sealed {
+    /// Keeps [`super::PhaseView`] to the views this crate vets.
+    pub trait Sealed {}
+}
+
+/// A tick phase's read-only input: plain data a worker may read on any thread, and nothing that
+/// dispatches a hook, reads or writes mod state, or holds a host, a random or a swappable table.
+/// Sealed: only the views this crate vets implement it (`RandomTickView`), never `LoopContext`,
+/// `World`, `Resources` or the `Game`. A view that needs a table the tick can replace holds its
+/// own `Arc` of it, taken when the phase starts (`ListenSnapshot` for who listens, which `phase` puts in force on each worker).
+pub trait PhaseView: sealed::Sealed + Sync {
+    /// Who listens, for a phase that must tell where a mod would take part: the snapshot the view
+    /// captured when the phase started. `None` for a view that reaches no listener.
+    fn listens(&self) -> Option<&ListenSnapshot> {
+        None
+    }
+}
+
+/// Who listens, as plain data a worker may read on any thread: the listen index of the game's
+/// parts table and each block state's block key, held by `Arc` so a phase keeps the tables it
+/// started with while the tick thread replaces them between phases. The tick thread captures it
+/// ([`ListenSnapshot::capture`]) into the phase's view; [`phase`] puts it in force on every worker
+/// for the work's length, so `block_listens` answers from it there instead of "no listener".
+#[derive(Clone, Debug)]
+pub struct ListenSnapshot(mod_api::__private::ListenScope);
+
+impl ListenSnapshot {
+    /// The snapshot of the tables the tick thread holds now.
+    pub fn capture(
+        _tick: &TickThread,
+        listens: std::sync::Arc<mod_api::__private::ListenIndex>,
+        blocks: std::sync::Arc<[mod_api::BlockKey]>,
+    ) -> Self {
+        Self(mod_api::__private::ListenScope::new(listens, blocks))
+    }
+
+    /// Whether a part answers `hook` for the block state, as `block_listens` does on the tick
+    /// thread: false for a state the snapshot has no block for.
+    pub fn listens(
+        &self,
+        hook: mod_api::HookId,
+        state: sunrise_world::registry::BlockStateId,
+    ) -> bool {
+        self.0.listens(hook, state.0)
+    }
+
+    /// Run `f` with this snapshot answering the engine's routing questions on this thread.
+    pub fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.0.enter(f)
+    }
+}
+
+/// A tick phase: `work` over `items` on the pool (all on this thread while the parallel tick is
+/// off, or for fewer than `min` items), with every result back in the order of `items`, whatever
+/// order the threads took them in. The tick thread applies them in that order.
+///
+/// `work` is a function pointer, not a closure, so it captures nothing: what a worker sees is
+/// `view` and its item, and nothing that only the tick thread may touch. Inside `work`,
+/// `sunrise_core::tick_phase::in_tick_phase` holds on every thread, so tick-owned state refuses it by name
+/// ([`TickThread::mint`], `block_contact`'s level):
+///
+/// ```no_run
+/// # use sunrise_client_lib::parallel::{phase, TickThread};
+/// # fn view() -> &'static sunrise_client_lib::random_tick_sections::RandomTickView<'static> { unimplemented!() }
+/// let _tick = TickThread::mint();
+/// phase(view(), &[1u32], 1, |_, item| item + 1);
+/// ```
+/// ```compile_fail
+/// # use sunrise_client_lib::parallel::{phase, TickThread};
+/// # fn view() -> &'static sunrise_client_lib::random_tick_sections::RandomTickView<'static> { unimplemented!() }
+/// let tick = TickThread::mint();
+/// // A worker can't capture the tick's token (or anything else).
+/// phase(view(), &[1u32], 1, |_, item| {
+///     std::hint::black_box(tick);
+///     item + 1
+/// });
+/// ```
+///
+/// Tick phases use this; [`par_map`] and [`par_chunks_mut`] stay for work outside the tick's mod
+/// reach (rendering, packs, the LAN tracker's plain data).
+pub fn phase<V: PhaseView, T: Sync, R: Send>(
+    view: &V,
+    items: &[T],
+    min: usize,
+    work: fn(&V, &T) -> R,
+) -> Vec<R> {
+    par_map(items, min, |part, out| {
+        let mut run = || out.extend(part.iter().map(|item| work(view, item)));
+        sunrise_core::tick_phase::as_tick_phase(|| match view.listens() {
+            Some(listens) => listens.enter(run),
+            None => run(),
+        });
     })
 }
 
@@ -540,6 +615,48 @@ mod tests {
             "no two chunks ran at once"
         );
         assert!(runs.iter().all(|r| r.load(Ordering::SeqCst) == 1));
+    }
+
+    /// `phase` puts the view's listen snapshot in force on every worker thread, and only inside
+    /// the work: outside a phase no scope answers.
+    #[test]
+    fn a_phase_answers_who_listens_from_its_views_snapshot() {
+        struct View(ListenSnapshot);
+        impl sealed::Sealed for View {}
+        impl PhaseView for View {
+            fn listens(&self) -> Option<&ListenSnapshot> {
+                Some(&self.0)
+            }
+        }
+        let snapshot = ListenSnapshot::capture(
+            &TickThread::mint(),
+            Default::default(),
+            Vec::<mod_api::BlockKey>::new().into(),
+        );
+        let items: Vec<u32> = (0..64).collect();
+        let hook = mod_api::HookId::AnalogOutput;
+        assert_eq!(mod_api::__private::scoped_state_listens(hook, 0), None);
+        let answers = phase(&View(snapshot), &items, 1, |_, _| {
+            mod_api::__private::scoped_state_listens(mod_api::HookId::AnalogOutput, 0)
+        });
+        assert!(answers.iter().all(|&a| a == Some(false)));
+        assert_eq!(mod_api::__private::scoped_state_listens(hook, 0), None);
+    }
+
+    /// A phase's work never gets the tick's authority, on whatever thread it runs: minting the
+    /// token there is refused, and the tick thread can mint it again once the phase is over.
+    #[test]
+    fn a_phase_worker_cannot_take_the_tick_token() {
+        struct View;
+        impl sealed::Sealed for View {}
+        impl PhaseView for View {}
+        let items: Vec<u32> = (0..64).collect();
+        let refused = phase(&View, &items, 1, |_, _| {
+            std::panic::catch_unwind(TickThread::mint).is_err()
+        });
+        assert!(refused.iter().all(|&refused| refused));
+        assert!(!sunrise_core::tick_phase::in_tick_phase());
+        TickThread::mint();
     }
 
     /// A panic in a part reaches the caller instead of being lost on a helper.

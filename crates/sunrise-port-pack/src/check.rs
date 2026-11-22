@@ -71,6 +71,14 @@ fn loader(names: &[String]) -> &'static str {
     }
 }
 
+/// What the user is told of a jar version that isn't semver (see [`carry::manifest_version`]).
+pub(crate) fn version_note(version: &str) -> String {
+    format!(
+        "version {version:?} couldn't be read as semver: the manifest says 0.0.0+unresolved.…, which no \
+         dependency accepts, so set the version by hand before anything depends on this mod"
+    )
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -135,6 +143,7 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
     let alone = |m: &str| m == info.mod_id || m == "minecraft";
     let pack = carry::Pack {
         loaded: &alone,
+        minecraft: "",
         mods: &alone,
     };
     let report = match carry::carry(
@@ -180,6 +189,9 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
             .push("blocks take the closest vanilla block's shape, hardness and sounds".into());
     }
     let mut skipped = Vec::new();
+    if let Some(version) = &report.version_unreadable {
+        skipped.push(version_note(version));
+    }
     if !report.blocks_unknown.is_empty() {
         skipped.push(plural(
             report.blocks_unknown.len(),
@@ -194,11 +206,18 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
             "recipes for left-out blocks",
         ));
     }
-    if !report.recipes_kept.is_empty() {
+    if !report.recipes_custom.is_empty() {
         skipped.push(plural(
-            report.recipes_kept.len(),
-            "recipe of a type Sunrise doesn't have",
-            "recipes of types Sunrise doesn't have",
+            report.recipes_custom.len(),
+            "recipe of a type Sunrise doesn't have (moved to outside/)",
+            "recipes of types Sunrise doesn't have (moved to outside/)",
+        ));
+    }
+    if report.recipes_old_result > 0 {
+        skipped.push(plural(
+            report.recipes_old_result,
+            "recipe written before 1.20.5 (moved to outside/)",
+            "recipes written before 1.20.5 (moved to outside/)",
         ));
     }
     if !report.unreadable.is_empty() {
@@ -387,6 +406,34 @@ displayName = "Ruby"
         assert!(dir.join("out/outside/data/ruby/recipe/odd.json").exists());
         assert!(
             dir.join("out/carry/data/ruby/recipe/ruby_block.json")
+                .exists()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn recipes_of_unknown_types_are_moved_out_and_reported() {
+        let dir = temp("custom");
+        let custom = br#"{"type": "ruby:cutting", "ingredient": {"item": "ruby:ruby"}, "neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "ruby"}]}"#;
+        let bare = br#"{"type": "crafting_shapeless", "ingredients": ["minecraft:red_dye"], "result": {"id": "ruby:ruby"}}"#;
+        let files = [
+            ("META-INF/neoforge.mods.toml", TOML),
+            ("assets/ruby/models/item/ruby.json", b"{}"),
+            ("data/ruby/recipe/cutting.json", custom.as_slice()),
+            // No namespace: written out as `minecraft:`, so it loads and stays.
+            ("data/ruby/recipe/bare.json", bare.as_slice()),
+        ];
+        let c = check(&jar(&dir, &files), &dir.join("out")).unwrap();
+        assert!(
+            c.skipped.contains(
+                &"1 recipe of a type Sunrise doesn't have (moved to outside/)".to_string()
+            ),
+            "{:?}",
+            c.skipped
+        );
+        assert!(!dir.join("out/carry/data/ruby/recipe/cutting.json").exists());
+        assert!(
+            dir.join("out/outside/data/ruby/recipe/cutting.json")
                 .exists()
         );
         fs::remove_dir_all(&dir).unwrap();

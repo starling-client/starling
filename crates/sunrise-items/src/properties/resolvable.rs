@@ -1,5 +1,6 @@
 //! Persistent scalar codecs for component values backed by context number providers.
 use super::{component_float, component_int};
+use std::fmt::{self, Write as _};
 use sunrise_core::nbt::{JavaString, Tag};
 
 /// A validated resource key, borrowing its UTF-16 namespace and path.
@@ -22,6 +23,24 @@ impl PartialEq for Identifier<'_> {
     }
 }
 impl Eq for Identifier<'_> {}
+
+impl fmt::Display for Identifier<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The identifier codec only admits ASCII namespace and path characters.
+        if let Some(namespace) = self.namespace {
+            for &unit in namespace {
+                f.write_char(char::from(unit as u8))?;
+            }
+        } else {
+            f.write_str("minecraft")?;
+        }
+        f.write_char(':')?;
+        for &unit in self.path {
+            f.write_char(char::from(unit as u8))?;
+        }
+        Ok(())
+    }
+}
 
 impl Identifier<'_> {
     /// Canonical UTF-16 length without allocating the encoded identifier.

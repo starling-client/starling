@@ -9,6 +9,12 @@ use std::borrow::Cow;
 pub enum PoseOp {
     Translate(f32, f32),
     Scale(f32, f32),
+    /// `Matrix3x2fStack.rotate(angle)`: a turn by `angle` radians about the current pose's
+    /// origin, applied after the ops before it, as vanilla composes them. Positive angles turn
+    /// clockwise on screen (y grows downwards). Everything drawn after it follows: fills,
+    /// sprites, blits and text. A NaN or infinite angle is refused with
+    /// `E_GUI_POSE_ROTATE_NOT_FINITE` in the log and leaves the pose as it was.
+    Rotate(f32),
 }
 /// The render pipeline of a texture blit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +90,18 @@ pub enum GuiDraw {
         y1: i32,
         color: u32,
     },
+    /// `fillGradient(x0, y0, x1, y1, top, bottom)`: ARGB `top` along the `y0` edge
+    /// blending to `bottom` along the `y1` edge, in the current pose and clip.
+    /// Zero area or inversion on exactly one axis draws nothing. With both axes inverted,
+    /// bounds are sorted and colours flipped: `top` stays on `y0`, now the lower edge.
+    FillGradient {
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        top: u32,
+        bottom: u32,
+    },
     /// `text(font, text, x, y, argb, dropShadow)`.
     Text {
         text: Text,
@@ -115,30 +133,4 @@ pub enum HeartKind {
     Poisoned,
     Withered,
     Frozen,
-}
-// exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct HealthInputs {
-    /// `Hud.tickCount`.
-    pub tick: i32,
-    /// `Util.getMillis()` now.
-    pub millis: i64,
-    pub health: f32,
-    pub max_health: f32,
-    pub absorption: f32,
-    pub armor: i32,
-    pub food: i32,
-    pub saturation: f32,
-    pub kind: HeartKind,
-    pub regeneration: bool,
-    pub hunger: bool,
-    pub hardcore: bool,
-    /// `damageCooldownTime > 0`.
-    pub damage_cooldown: bool,
-    /// `getAirSupply`, `getMaxAirSupply`, `isEyeInFluid(WATER)`.
-    pub air: i32,
-    pub max_air: i32,
-    pub under_water: bool,
-    /// `getVehicleMaxHearts` of the ridden living vehicle (0 = none).
-    pub vehicle_hearts: i32,
 }

@@ -1,9 +1,9 @@
-use sunrise_core::position::{BlockPos, ChunkPos};
 use std::{
     fs,
     io::{self, BufRead, Write},
     str::SplitWhitespace,
 };
+use sunrise_core::position::{BlockPos, ChunkPos};
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::block_entities::{ProtoBlockEntities, position_from_tag},
@@ -91,7 +91,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 chunk = ProtoBlockEntities::new(position);
             }
             "pending" | "resolve" => {
-                let mut entries = std::collections::BTreeMap::new();
+                let mut entries = sunrise_core::nbt::Compound::new();
                 entries.insert("mark".into(), Tag::Long(input.long()));
                 for name in ["x", "y", "z"] {
                     if let Some(tag) = input.tag() {

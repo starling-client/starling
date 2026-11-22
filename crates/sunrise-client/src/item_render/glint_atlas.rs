@@ -1,8 +1,8 @@
 //! Vanilla item-atlas coordinates for GUI glint; the HUD's unrelated packing cannot supply them.
 use crate::{atlas_sources, hud::Rect};
+use std::collections::HashMap;
 use sunrise_assets::animation::AnimationMetadata;
 use sunrise_assets::resource_source::ResourceSource;
-use std::collections::HashMap;
 
 type Entry = (String, u32, u32);
 
@@ -12,27 +12,23 @@ pub(super) fn load(
     padding: u32,
     maximum: u32,
 ) -> crate::Result<HashMap<String, Rect>> {
-    let sources = atlas_sources::atlases(root);
-    let sources = sources
-        .get("minecraft:items")
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let textures = atlas_sources::list_textures(root);
-    let decode = |name: &str, dir: &str| {
+    let listing = atlas_sources::listing(root);
+    let items = listing.sprites("minecraft:items");
+    let decode = |name: &str| {
         crate::hud::decode_bytes(
             &root
-                .read(&atlas_sources::texture_resource(name, dir))
+                .read(&atlas_sources::texture_resource(name, "textures"))
                 .ok()?,
         )
         .ok()
     };
     let mut entries = vec![("minecraft:missingno".into(), 16, 16)];
     let mut names = Vec::new();
-    for (id, origin) in atlas_sources::list(sources, &textures, &mut atlas_sources::unasked) {
+    for (id, origin) in items {
         names.push(id.clone());
         let dimensions = match &origin {
             atlas_sources::SpriteOrigin::File(texture) => (|| {
-                let (w, h, _) = decode(texture, "textures")?;
+                let (w, h, _) = decode(texture)?;
                 let path = format!(
                     "{}.mcmeta",
                     atlas_sources::texture_resource(texture, "textures")
@@ -63,10 +59,10 @@ pub(super) fn load(
                 .then_some((size[0], size[1]))
             })(),
             // Generated sprites have empty resource metadata, so their whole image is one frame.
-            _ => atlas_sources::generate(&origin, &decode).map(|(w, h, _)| (w, h)),
+            _ => atlas_sources::generate(origin, &decode).map(|(w, h, _)| (w, h)),
         };
         if let Some((w, h)) = dimensions {
-            entries.push((id, w, h));
+            entries.push((id.clone(), w, h));
         }
     }
     let mut sprites = stitch(&entries, padding, maximum).ok_or_else(|| {

@@ -11,12 +11,12 @@ use crate::{
     scoreboard::{Comp, NumberFormat, Objective, RenderType, Scoreboard, comp_text},
     text::Text,
 };
-use sunrise_core::java_number::float_to_string;
 use std::{
     borrow::Cow,
     cmp::Ordering,
     collections::{HashMap, HashSet},
 };
+use sunrise_core::java_number::float_to_string;
 
 /// `GameType.SPECTATOR` id.
 pub const SPECTATOR: i32 = 3;
@@ -344,15 +344,7 @@ pub struct TabInputs<'a> {
     /// The player is in the level with an upside-down name
     /// (`AvatarRenderer.isPlayerUpsideDown`).
     pub upside_down: &'a dyn Fn(u128) -> bool,
-    /// A mark after the player's head, or none: an extension point for what lives above the
-    /// engine (Sunrise's mark, `sunrise_cosmetics::mark`). Vanilla draws none.
-    pub mark: &'a dyn Fn(u128) -> Option<NameMark>,
 }
-
-/// A mark drawn after a player's head in the tab list: filled rectangles `(x, y, width, height,
-/// ARGB)` in an 8x8 box. Once any listed player has one, every row gets the column, so the names
-/// stay aligned.
-pub type NameMark = &'static [(u8, u8, u8, u8, u32)];
 
 /// `PlayerTabOverlay`: the header, footer, visibility and heart states.
 #[derive(Clone, Debug, Default)]
@@ -816,7 +808,6 @@ mod tests {
                 gui_ticks: frame,
                 background: 0x20ffffff,
                 upside_down: &|_| false,
-                mark: &|_| None,
             };
             fresh.cache = None;
             assert_eq!(

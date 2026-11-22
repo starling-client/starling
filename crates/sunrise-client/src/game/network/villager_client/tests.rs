@@ -1,6 +1,6 @@
 use super::*;
-use sunrise_client::mobs::{MobTypes, render};
 use std::sync::Arc;
+use sunrise_client::mobs::{MobTypes, render};
 fn table() -> ResolvedProfessions {
     ordered_table(&["test:engineer"])
 }
@@ -84,7 +84,7 @@ fn roundtrip(kind: &str, custom: bool, texture: &str) {
     );
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn engineer_metadata_and_villager_texture() {
     roundtrip(
         "minecraft:villager",
@@ -93,7 +93,7 @@ fn engineer_metadata_and_villager_texture() {
     );
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn engineer_metadata_and_zombie_texture() {
     roundtrip(
         "minecraft:zombie_villager",
@@ -102,7 +102,7 @@ fn engineer_metadata_and_zombie_texture() {
     );
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn vanilla_farmer_metadata_and_texture() {
     roundtrip(
         "minecraft:villager",
@@ -157,6 +157,7 @@ fn profession_hub(name: &str, vanilla_professions: bool) -> sunrise_client::lan:
         &sunrise_protocol::registry::Builtin::default(),
         &[],
         &[],
+        Default::default(),
     );
     let hub_config = hub::HubConfig {
         default_game_mode: 0,
@@ -171,6 +172,7 @@ fn profession_hub(name: &str, vanilla_professions: bool) -> sunrise_client::lan:
         max_players: 20,
         integrated: false,
         levels: Default::default(),
+        level_seeds: Default::default(),
     };
     hub::Hub::new(
         lan,
@@ -207,7 +209,7 @@ fn encoded_receive(client: &mut Mob, values: Vec<(u8, i32, Value)>, table: &Reso
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn villager_client_packet_slots_and_unresolved_identity() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let types = MobTypes::load(&root).unwrap();

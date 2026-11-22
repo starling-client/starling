@@ -145,7 +145,7 @@ impl Game<'_> {
         }
     }
 
-    /// The box of a boat, minecart, armor stand, item frame or painting, and
+    /// The box of a boat, minecart, armor stand, item frame, painting or general row, and
     /// the point an interact packet's location is measured from (the
     /// client's `remote_object_hit` uses the same points).
     pub(super) fn object_target(&self, id: i32) -> Option<([f64; 3], [f64; 3], [f64; 3])> {
@@ -179,9 +179,13 @@ impl Game<'_> {
             let (lo, hi) = f.bounds();
             return Some((lo, hi, centre(f.pos)));
         }
-        let p = self.paintings.iter().find(|p| p.id == id)?;
-        let (lo, hi) = p.bounds();
-        Some((lo, hi, centre(p.pos)))
+        if let Some(p) = self.paintings.iter().find(|p| p.id == id) {
+            let (lo, hi) = p.bounds();
+            return Some((lo, hi, centre(p.pos)));
+        }
+        let row = self.general_row(id)?;
+        let (lo, hi) = corners(super::entity::Entity::bounds(row));
+        Some((lo, hi, at(row.position)))
     }
 
     /// The vehicles the server's players ride: they move with their riders,
@@ -221,11 +225,11 @@ impl Game<'_> {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
-        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+        let Some(gi) = host.hub.guests.connection_index(conn) else {
             return;
         };
         let g = &host.hub.guests[gi];
-        let Some(vehicle) = g.vehicle else {
+        let Some(vehicle) = g.vehicle.filter(|_| host.hub.here(g)) else {
             return;
         };
         if self.persist.removed_vehicles.contains_key(&vehicle) {
@@ -257,25 +261,7 @@ impl Game<'_> {
             // the request; the common boat tick clears it once nobody rides.
             ejected = self.boats[i].eject_riders;
         }
-        // ServerGamePacketListenerImpl.tick: the vehicle's last good position
-        // is where it is now, so a move the server made (a piston, a push)
-        // is not held against the rider's next move, which would fail, be
-        // sent back, and fail again on every answer.
-        let at = boat.map(|i| self.boats[i].position).or_else(|| {
-            self.mobs
-                .iter()
-                .find(|m| m.id == vehicle && equine::moved_by_client(m))
-                .map(|m| m.position)
-        });
-        if let Some(p) = at {
-            {
-                let value = Some([p.x, p.y, p.z]);
-                host.hub
-                    .guests
-                    .update(gi, |guest| guest.vehicle_good = value);
-            }
-        }
-        // Getting out goes through leave_guest, which tells the client and
+        // Getting out goes through the put-back at the end of `guest_turn`, which tells the client and
         // teleports it (ServerPlayer.dismountTo).
         let seat = self.as_guest(conn, |game| {
             // A cushion does not move: the rider sits on it until it sneaks
@@ -321,6 +307,38 @@ impl Game<'_> {
                 g.previous_position = g.position;
                 g.position = at;
             });
+        }
+    }
+
+    /// ServerGamePacketListenerImpl.tickPlayer records the vehicle's last good
+    /// position after doTick, so movement by the server is not held against the
+    /// rider's next packet.
+    pub(super) fn guest_vehicle_movement_baseline(&mut self, conn: u32) {
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        let Some(gi) = host.hub.guests.connection_index(conn) else {
+            return;
+        };
+        let guest = &host.hub.guests[gi];
+        let Some(vehicle) = guest.vehicle.filter(|_| host.hub.here(guest)) else {
+            return;
+        };
+        let at = self
+            .boats
+            .iter()
+            .find(|b| b.id == vehicle)
+            .map(|b| b.position)
+            .or_else(|| {
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == vehicle && equine::moved_by_client(m))
+                    .map(|m| m.position)
+            });
+        if let Some(p) = at {
+            host.hub
+                .guests
+                .update(gi, |g| g.vehicle_good = Some([p.x, p.y, p.z]));
         }
     }
 
@@ -465,7 +483,7 @@ impl Game<'_> {
                 b.velocity,
                 b.bounds(),
                 0.0,
-                b.on_ground,
+                b.ground.on_ground,
             )
         } else if let Some(i) = mount {
             let m = &self.mobs[i];
@@ -477,7 +495,7 @@ impl Game<'_> {
                 m.velocity,
                 m.bounds(),
                 step,
-                m.on_ground,
+                m.ground.on_ground,
             )
         } else {
             if let Some(c) = vehicle.and_then(|v| self.carts.iter().find(|c| c.id == v))
@@ -589,6 +607,8 @@ impl Game<'_> {
             &self.lan.as_ref().unwrap().hub.encoder,
         );
         self.lan.as_mut().unwrap().hub.guests.update(gi, |g| {
+            // `ServerChunkCache.move` after `absSnapTo` of the accepted move.
+            g.release_tickets();
             g.vehicle_good = Some([target.x, target.y, target.z]);
             let rested = std::mem::replace(
                 &mut g.vehicle_rests,
@@ -599,79 +619,73 @@ impl Game<'_> {
             g.vehicle_gravity = gravity;
         });
         if let Some(i) = mount {
-            let mut m = self.mobs[i].clone();
+            use sunrise_client::mobs::living::MovementAction;
+
+            let (id, join) = (self.mobs[i].id, self.mobs[i].join);
             let mut events = Vec::new();
-            let mut lent = sunrise_client::health::LentLevel::take(&mut self.world);
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let w = self.mob_world_base(&[]);
-                // absSnapTo: where and how its rider's client turned it; the
-                // rider sits on it from its own ride tick.
-                let delta = target.subtract(m.position);
-                m.position = target;
-                m.yaw = p.yaw;
-                m.head_pitch = p.pitch;
-                // setOnGroundWithMovement and doCheckFallDamage with the client's
-                // ground and move: a landing hurts the horse and its riders.
-                let mut level = sunrise_client::health::DamageLevel::lent(
-                    &self.world,
-                    self.pack.assets.registry,
-                    &mut lent,
-                    Some(self.items()),
-                    Some(&self.pack.block_registries),
-                    &self.damage_hooks,
-                );
-                m.client_moved_fall(&w, &mut level, delta, p.on_ground, &mut events);
-            }));
-            lent.give_back(&mut self.world);
-            if let Err(panic) = outcome {
-                std::panic::resume_unwind(panic);
-            }
-            self.mobs[i] = m;
-            // propagateFallToPassengers reaches the guests through `host`: it is out
-            // of `self.lan` while their packet is handled.
-            let falls: Vec<(u32, f64, f32)> = events
-                .iter()
-                .filter_map(|e| match *e {
-                    sunrise_client::mobs::MobEvent::FallToPassengers {
-                        mob,
-                        distance,
-                        modifier,
-                    } => Some((mob, distance, modifier)),
-                    _ => None,
-                })
-                .collect();
-            // LivingEntity.checkFallDamage's landing crumbs go to every player
-            // (`sendParticles`), the guests too.
-            let (dust, events): (Vec<_>, Vec<_>) = events
-                .into_iter()
-                .partition(|e| matches!(e, sunrise_client::mobs::MobEvent::LandingDust { .. }));
-            for e in dust {
-                if let sunrise_client::mobs::MobEvent::LandingDust {
-                    state,
-                    at,
-                    count,
-                    speed,
-                } = e
-                {
-                    self.landing_dust(state, Vec3::new(at[0], at[1], at[2]), count, speed);
+            let mut resume = None;
+            while let Some(i) = self.mob_index.find(&self.mobs, id) {
+                if self.mobs[i].join != join || self.mobs[i].removed {
+                    break;
                 }
+                let mut m = self.mobs[i].clone();
+                let mut lent = sunrise_client::health::LentLevel::take(&mut self.world);
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let w = self.mob_world_base(&[]);
+                    let mut level = sunrise_client::health::DamageLevel::lent(
+                        &self.world,
+                        self.pack.assets.registry,
+                        &mut lent,
+                        Some(self.items()),
+                        Some(&self.pack.block_registries),
+                        &self.damage_hooks,
+                    );
+                    if let Some(pause) = resume.take() {
+                        m.resume_client_moved_fall(&w, &mut level, &mut events, pause)
+                    } else {
+                        // absSnapTo, then setOnGroundWithMovement and doCheckFallDamage
+                        // with the client's ground and move; the rider's tick seats it.
+                        let delta = target.subtract(m.position);
+                        m.position = target;
+                        m.yaw = p.yaw;
+                        m.head_pitch = p.pitch;
+                        m.client_moved_fall(&w, &mut level, delta, p.on_ground, &mut events)
+                    }
+                }));
+                lent.give_back(&mut self.world);
+                let pause = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                self.mobs[i] = m;
+                // LivingEntity.checkFallDamage sends dust before Block.fallOn.
+                // Send it to every nearby player, including the driver.
+                for event in events.extract_if(.., |e| {
+                    matches!(e, sunrise_client::mobs::MobEvent::LandingDust { .. })
+                }) {
+                    if let sunrise_client::mobs::MobEvent::LandingDust {
+                        state,
+                        at,
+                        count,
+                        speed,
+                    } = event
+                    {
+                        self.landing_dust(state, Vec3::new(at[0], at[1], at[2]), count, speed);
+                    }
+                }
+                let Some(pause) = pause else {
+                    break;
+                };
+                match pause.action() {
+                    MovementAction::Trample(trample) => self.trample_farmland(id, false, trample),
+                    MovementAction::SettleHit => {
+                        self.finish_mob_damage_at(i);
+                        self.settle_creaking_hurt(id);
+                    }
+                    MovementAction::Passengers(fall) => {
+                        self.fall_to_passengers(id, fall.distance, fall.modifier);
+                    }
+                }
+                resume = Some(pause);
             }
             let _ = self.handle_mob_events(events);
-            for (mob, distance, modifier) in falls {
-                let riders: Vec<u32> = self
-                    .lan
-                    .as_ref()
-                    .unwrap()
-                    .hub
-                    .guests
-                    .iter()
-                    .filter(|g| g.vehicle == Some(mob))
-                    .map(|g| g.conn)
-                    .collect();
-                for conn in riders {
-                    self.guest_hit_by(conn, |g| g.rider_fall_damage(distance, modifier));
-                }
-            }
             return;
         }
         let Some(i) = boat else {
@@ -683,7 +697,7 @@ impl Game<'_> {
             b.position = target;
             b.previous_yaw = b.yaw;
             b.yaw = p.yaw;
-            b.on_ground = p.on_ground;
+            b.ground.on_ground = p.on_ground;
         });
         // handleMoveVehicle's `vehicle.move` counts the fall
         // (AbstractBoat.checkFallDamage); the server's baseTick resets it in
@@ -757,13 +771,13 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod controller_tests {
+pub(in crate::game) mod controller_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
     use sunrise_client::chunk::Chunk;
     use sunrise_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
     use sunrise_core::position::ChunkPos;
     use sunrise_protocol::packets::{configuration::ClientInformation, play};
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     fn guest(conn: u32, uuid: u128) -> Guest {
         guest_with_packets(conn, uuid).0
@@ -806,7 +820,7 @@ mod controller_tests {
     /// seat's client, which still sends where it sees the boat, used to put
     /// the boat back every tick (#11541).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_first_rider_in_drives_the_boat() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -887,6 +901,7 @@ mod controller_tests {
                 max_players: 3,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -945,49 +960,46 @@ mod controller_tests {
             game.boats[0].fall_distance, 0.0,
             "a guest's boat on the ground"
         );
+        // `AbstractBoat.tick` still runs `applyEffectsFromBlocks` on the server
+        // for the boat its guest drives: `WebBlock.entityInside` resets the fall
+        // (`Entity.makeStuckInBlock`).
+        let cobweb = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:cobweb")
+            .unwrap();
+        let p = game.boats[0].position;
+        game.world
+            .set(
+                p.x.floor() as i32,
+                p.y.floor() as i32,
+                p.z.floor() as i32,
+                cobweb,
+            )
+            .unwrap();
+        game.boats.update(0, |b| b.fall_distance = 4.0);
+        game.guest_move_vehicle(
+            3,
+            &play::MoveVehicleRequest {
+                position: [p.x, p.y, p.z],
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: false,
+            },
+        );
+        assert_eq!(game.boats[0].fall_distance, 4.0, "still falling");
+        game.tick_boats();
+        assert_eq!(
+            game.boats[0].fall_distance, 0.0,
+            "a cobweb resets the fall of a boat its guest drives"
+        );
     }
 
-    /// handleMoveVehicle for a horse its guest's client moves: `vehicle.move`
-    /// leaves the fall alone (the server isn't the mount's authority), then
-    /// `doCheckFallDamage` with the client's move and ground adds each drop and,
-    /// on the ground, lands the horse: `AbstractHorse.causeFallDamage` of the
-    /// whole fall. The horse used to keep no fall at all (#13042).
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn a_guests_horse_falls_and_lands() {
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.game_dir = Some(
-            std::env::temp_dir().join(format!("sunrise-horse-fall-unit-{}", std::process::id())),
-        );
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.clone(),
-            )),
-            None,
-        )
-        .unwrap();
+    /// A guest drives a horse with an unobstructed ten-block fall to stone.
+    pub(in crate::game) fn guest_horse_at_start_of_fall(
+        game: &mut Game<'_>,
+    ) -> (u32, mpsc::Receiver<sunrise_client::lan::Out>) {
         game.build_registries();
         game.set_allow_commands(true);
         let stone = game
@@ -1051,6 +1063,7 @@ mod controller_tests {
                 max_players: 3,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -1058,6 +1071,51 @@ mod controller_tests {
         let (mut rider, packets) = guest_with_packets(2, 21);
         (rider.vehicle, rider.vehicle_order) = (Some(horse), 1);
         game.lan.as_mut().unwrap().hub.guests.push(rider);
+        (horse, packets)
+    }
+
+    /// handleMoveVehicle for a horse its guest's client moves: `vehicle.move`
+    /// leaves the fall alone (the server isn't the mount's authority), then
+    /// `doCheckFallDamage` with the client's move and ground adds each drop and,
+    /// on the ground, lands the horse: `AbstractHorse.causeFallDamage` of the
+    /// whole fall. The horse used to keep no fall at all (#13042).
+    #[test]
+    #[ignore = "daily"]
+    fn a_guests_horse_falls_and_lands() {
+        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("sunrise-horse-fall-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        let (_, packets) = guest_horse_at_start_of_fall(&mut game);
         // What the landing should do: the horse's own fall damage for the whole drop.
         let mut twin = game.mobs[0].clone();
         twin.cause_fall_damage_from(

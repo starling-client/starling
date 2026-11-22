@@ -73,24 +73,18 @@ impl Lock {
             .ok_or_else(|| format!("research-lock.json has no minecraft {key}"))
     }
 
-    /// Mojang republishes a version JSON for asset-index changes; every known one is accepted.
-    fn manifest_accepted(&self, checksum: &str) -> bool {
-        self.pin("manifest_sha1").is_ok_and(|pin| pin == checksum)
-            || self.listed("accepted_manifest_sha1", checksum)
+    /// `tools/lab.py pinned_content_differs`: a version JSON whose id, jars, Java major and libraries are the pinned
+    /// version's is its file whatever its own sha1; Mojang re-issues it for the asset index alone.
+    fn manifest_content_accepted(&self, manifest: &Value) -> bool {
+        manifest_pins_match(self, manifest)
+            && self
+                .pin("libraries_sha256")
+                .is_ok_and(|pin| pin == libraries_digest(manifest))
     }
 
-    /// The asset indexes of those republished version JSONs: a launcher keeps one
-    /// `indexes/<id>.json`, the last it downloaded, whichever version JSON it reads.
-    pub(crate) fn asset_index_accepted(&self, checksum: &str) -> bool {
-        self.listed("accepted_asset_index_sha1", checksum)
-    }
-
-    fn listed(&self, key: &str, checksum: &str) -> bool {
-        self.json
-            .get("minecraft")
-            .and_then(|g| g.get(key))
-            .and_then(Value::as_array)
-            .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(checksum)))
+    /// A version JSON file with the pinned content.
+    fn manifest_file_trusted(&self, path: &Path) -> bool {
+        read_json(path).is_ok_and(|manifest| self.manifest_content_accepted(&manifest))
     }
 }
 
@@ -244,7 +238,7 @@ fn layouts(folder: &Path, version: &str) -> [GameFiles; 2] {
 /// packages and Flatpak start it in.
 fn launcher_folders() -> Vec<(&'static str, PathBuf)> {
     let mut folders = vec![("the official launcher", minecraft_dir(None))];
-    // The same folders as the Sunrise launcher's (launcher/src/sources.rs `known_folders`).
+    // The same folders as the Sunrise launcher's (https://github.com/sunrise-org/sunrise-launcher/blob/main/src/sources.rs `known_folders`).
     let atlauncher: Vec<PathBuf> = if cfg!(target_os = "macos") {
         let app = Path::new("Applications/ATLauncher.app/Contents/Java");
         vec![
@@ -531,6 +525,35 @@ fn prism_metadata(manifest: &Value) -> bool {
         || manifest.get("formatVersion").is_some()
 }
 
+/// `tools/lab.py libraries_digest`: the sha256 of the library downloads, each artifact's and classifier's
+/// `path sha1`, sorted, one per line.
+pub(crate) fn libraries_digest(manifest: &Value) -> String {
+    let mut lines = std::collections::BTreeSet::new();
+    for library in manifest
+        .get("libraries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(downloads) = library.get("downloads") else {
+            continue;
+        };
+        let classifiers = downloads
+            .get("classifiers")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|fields| fields.iter().map(|(_, value)| value));
+        for item in downloads.get("artifact").into_iter().chain(classifiers) {
+            let field = |key: &str| item.get(key).and_then(Value::as_str);
+            if let (Some(path), Some(sha1)) = (field("path"), field("sha1")) {
+                lines.insert(format!("{path} {sha1}"));
+            }
+        }
+    }
+    let text: String = lines.into_iter().map(|line| line + "\n").collect();
+    crate::sha256_hex(text.as_bytes())
+}
+
 /// Whether a (possibly normalized) version file still describes the pinned release: its id,
 /// both jars' SHA-1s and its Java version. Every jar and library is checked against its own
 /// SHA-1 afterwards, so this is what lets a launcher's rewrite stand in for Mojang's JSON.
@@ -733,12 +756,12 @@ pub(crate) fn import_manifest(lock: &Lock, files: &GameFiles) -> Result<Value, S
             ));
         }
         let checksum = digest(source, "sha1")?;
-        if !lock.manifest_accepted(&checksum) {
-            // Another launcher's rewrite of Mojang's file (HMCL and PCL add their own fields to
-            // the same jars, #1772), or one Mojang republished: Mojang's own copy saved as the
-            // imported one is used instead.
+        if !lock.manifest_content_accepted(&manifest) {
+            // A file for the pinned jars whose Java version or libraries differ, as another
+            // launcher's rewrite can (#1772): Mojang's own copy saved as the imported one is used
+            // instead.
             let pinned = lock.pin("manifest_sha1")?;
-            if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
+            if !(destination.exists() && lock.manifest_file_trusted(&destination)) {
                 return Err(format!(
                     "{} is not a {version} version file Sunrise knows (sha1 {checksum}): your \
                      launcher may have rewritten it, or Mojang republished it. Prepare from the \
@@ -753,7 +776,7 @@ pub(crate) fn import_manifest(lock: &Lock, files: &GameFiles) -> Result<Value, S
             fs::create_dir_all(&lock.directory).map_err(|e| e.to_string())?;
             fs::copy(source, &destination).map_err(|e| e.to_string())?;
         }
-    } else if !(destination.exists() && lock.manifest_accepted(&digest(&destination, "sha1")?)) {
+    } else if !(destination.exists() && lock.manifest_file_trusted(&destination)) {
         return Err(format!(
             "Missing {}. {}",
             source.display(),
@@ -1361,7 +1384,7 @@ pub fn verify(lock: &Lock) -> Result<Artifacts, String> {
     };
     let manifest_from_prism = source("manifest_source") == Some("prism");
     let server_from_client = source("server_source") == Some("client");
-    let accepted = lock.manifest_accepted(&digest(&manifest_path, "sha1")?);
+    let accepted = lock.manifest_file_trusted(&manifest_path);
     let manifest = read_json(&manifest_path)?;
     if !accepted && !(manifest_from_prism && manifest_pins_match(lock, &manifest)) {
         return Err("Manifest checksum changed; prepare again with --prepare".into());
@@ -1537,12 +1560,13 @@ mod tests {
             let library_sha1 =
                 digest(&imported.join("libraries/client/client.jar"), "sha1").unwrap();
             let manifest = format!(
-                "{{\"id\":\"9.9\",\"downloads\":{{\"client\":{{\"sha1\":\"{client_sha1}\"}},\"server\":{{\"sha1\":\"{server_sha1}\"}}}},\"libraries\":[{{\"name\":\"client:library:1\",\"downloads\":{{\"artifact\":{{\"path\":\"client.jar\",\"sha1\":\"{library_sha1}\"}}}}}}]}}"
+                "{{\"id\":\"9.9\",\"javaVersion\":{{\"majorVersion\":25}},\"downloads\":{{\"client\":{{\"sha1\":\"{client_sha1}\"}},\"server\":{{\"sha1\":\"{server_sha1}\"}}}},\"libraries\":[{{\"name\":\"client:library:1\",\"downloads\":{{\"artifact\":{{\"path\":\"client.jar\",\"sha1\":\"{library_sha1}\"}}}}}}]}}"
             );
             write("manifest.json", manifest.as_bytes());
             let manifest_sha1 = digest(&imported.join("manifest.json"), "sha1").unwrap();
+            let libraries = libraries_digest(&pyjson::loads(&manifest).unwrap());
             let lock = format!(
-                "{{\"minecraft\":{{\"version\":\"9.9\",\"java_major\":25,\"manifest_sha1\":\"{manifest_sha1}\",\"client_sha1\":\"{client_sha1}\",\"server_sha1\":\"{server_sha1}\"}}}}"
+                "{{\"minecraft\":{{\"version\":\"9.9\",\"java_major\":25,\"manifest_sha1\":\"{manifest_sha1}\",\"client_sha1\":\"{client_sha1}\",\"server_sha1\":\"{server_sha1}\",\"libraries_sha256\":\"{libraries}\"}}}}"
             );
             fs::write(target.join("research-lock.json"), lock).unwrap();
             Self {
@@ -1733,32 +1757,102 @@ mod tests {
         }
     }
 
-    /// A launcher that rewrites Mojang's version file in the official layout (HMCL, PCL: the same
-    /// id and jars, its own fields, #1772) is refused with what to do, and Mojang's own copy saved
-    /// as the imported one is then used.
+    /// A version file Mojang re-issued for its asset index alone (the pinned id, jars, Java major and
+    /// libraries) is used whatever its own sha1, also offline from the imported copy; a changed
+    /// library is refused.
     #[test]
     #[ignore = "daily"]
-    fn a_rewritten_version_file_falls_back_to_mojangs() {
-        let root = std::env::temp_dir().join(format!("sunrise-rewritten-{}", std::process::id()));
+    fn a_reissued_version_file_with_the_pinned_content_is_used() {
+        let root = std::env::temp_dir().join(format!("sunrise-reissued-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let mojang = r#"{"id":"9.9","javaVersion":{"majorVersion":25},"downloads":{"client":{"sha1":"c"},"server":{"sha1":"s"}}}"#;
-        let rewritten = r#"{"id":"9.9","javaVersion":{"majorVersion":25},"downloads":{"client":{"sha1":"c"},"server":{"sha1":"s"}},"patches":[],"root":true}"#;
-        let minecraft = root.join("minecraft");
-        fs::create_dir_all(minecraft.join("versions/9.9")).unwrap();
-        fs::write(minecraft.join("versions/9.9/9.9.json"), rewritten).unwrap();
-        fs::write(root.join("mojang.json"), mojang).unwrap();
-        let pinned = digest(&root.join("mojang.json"), "sha1").unwrap();
+        let file = |asset: &str, sha1: &str| {
+            format!(
+                r#"{{"id":"9.9","javaVersion":{{"majorVersion":25}},"assetIndex":{{"sha1":"{asset}"}},"downloads":{{"client":{{"sha1":"c"}},"server":{{"sha1":"s"}}}},"libraries":[{{"downloads":{{"artifact":{{"path":"a/b.jar","sha1":"{sha1}"}}}}}}]}}"#
+            )
+        };
+        let pinned = pyjson::loads(&file("a", "1")).unwrap();
+        fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("research-lock.json"),
             format!(
-                r#"{{"minecraft":{{"version":"9.9","java_major":25,"manifest_sha1":"{pinned}","client_sha1":"c","server_sha1":"s"}}}}"#
+                r#"{{"minecraft":{{"version":"9.9","java_major":25,"manifest_sha1":"0","client_sha1":"c","server_sha1":"s","libraries_sha256":"{}"}}}}"#,
+                libraries_digest(&pinned)
+            ),
+        )
+        .unwrap();
+        let lock = Lock::read(&root).unwrap();
+        let minecraft = root.join("minecraft");
+        let source = minecraft.join("versions/9.9/9.9.json");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let files = || game_files(Some(&minecraft), "9.9");
+
+        fs::write(&source, file("re-issued", "1")).unwrap();
+        let manifest = import_manifest(&lock, &files()).unwrap();
+        let asset_sha1 = |manifest: &Value| {
+            manifest
+                .get("assetIndex")
+                .and_then(|index| index.get("sha1"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        assert_eq!(asset_sha1(&manifest).as_deref(), Some("re-issued"));
+        fs::remove_file(&source).unwrap();
+        let manifest = import_manifest(&lock, &files()).unwrap();
+        assert_eq!(asset_sha1(&manifest).as_deref(), Some("re-issued"));
+
+        // A changed library is refused once no imported copy with the pinned content stands in.
+        fs::remove_dir_all(&lock.directory).unwrap();
+        fs::write(&source, file("re-issued", "2")).unwrap();
+        let error = import_manifest(&lock, &files()).unwrap_err();
+        assert!(
+            error.contains("is not a 9.9 version file Sunrise knows"),
+            "{error}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A launcher that rewrites Mojang's version file in the official layout (HMCL, PCL: the same
+    /// id and jars, its own fields, #1772) is used as is while its Java version and libraries are
+    /// the pinned ones. One whose libraries differ is refused with what to do, and Mojang's own
+    /// copy saved as the imported one is then used.
+    #[test]
+    #[ignore = "daily"]
+    fn a_rewritten_version_file_is_used_by_its_content_else_mojangs() {
+        let root = std::env::temp_dir().join(format!("sunrise-rewritten-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let library = |sha1: &str| {
+            format!(
+                r#""libraries":[{{"downloads":{{"artifact":{{"path":"a/b.jar","sha1":"{sha1}"}}}}}}]"#
+            )
+        };
+        let base = r#""id":"9.9","javaVersion":{"majorVersion":25},"downloads":{"client":{"sha1":"c"},"server":{"sha1":"s"}}"#;
+        let mojang = format!("{{{base},{}}}", library("1"));
+        let rewritten = format!(r#"{{{base},{},"patches":[],"root":true}}"#, library("1"));
+        let other_libraries = format!(r#"{{{base},{},"patches":[]}}"#, library("2"));
+        let minecraft = root.join("minecraft");
+        let source = minecraft.join("versions/9.9/9.9.json");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(root.join("mojang.json"), &mojang).unwrap();
+        let pinned = digest(&root.join("mojang.json"), "sha1").unwrap();
+        let libraries = libraries_digest(&pyjson::loads(&mojang).unwrap());
+        fs::write(
+            root.join("research-lock.json"),
+            format!(
+                r#"{{"minecraft":{{"version":"9.9","java_major":25,"manifest_sha1":"{pinned}","client_sha1":"c","server_sha1":"s","libraries_sha256":"{libraries}"}}}}"#
             ),
         )
         .unwrap();
         let lock = Lock::read(&root).unwrap();
         let destination = lock.directory.join("manifest.json");
+        let files = || game_files(Some(&minecraft), "9.9");
 
-        let error = import_manifest(&lock, &game_files(Some(&minecraft), "9.9")).unwrap_err();
+        fs::write(&source, &rewritten).unwrap();
+        let manifest = import_manifest(&lock, &files()).unwrap();
+        assert!(manifest.get("patches").is_some());
+        fs::remove_dir_all(&lock.directory).unwrap();
+
+        fs::write(&source, &other_libraries).unwrap();
+        let error = import_manifest(&lock, &files()).unwrap_err();
         assert!(error.contains("may have rewritten it"), "{error}");
         assert!(
             error.contains(&format!("packages/{pinned}/9.9.json")),
@@ -1772,7 +1866,7 @@ mod tests {
 
         fs::create_dir_all(&lock.directory).unwrap();
         fs::copy(root.join("mojang.json"), &destination).unwrap();
-        let manifest = import_manifest(&lock, &game_files(Some(&minecraft), "9.9")).unwrap();
+        let manifest = import_manifest(&lock, &files()).unwrap();
         assert!(manifest.get("patches").is_none());
         assert_eq!(digest(&destination, "sha1").unwrap(), pinned);
         fs::remove_dir_all(&root).unwrap();
@@ -1876,19 +1970,17 @@ mod tests {
             netty("aarch_64"),
             netty("x86_64"),
         ];
-        put(
-            "versions/9.9/9.9.json",
-            format!(
-                r#"{{"id":"9.9","javaVersion":{{"majorVersion":25}},"downloads":{{"client":{{"sha1":"{client_sha1}"}},"server":{{"sha1":"{server_sha1}"}}}},"libraries":[{}]}}"#,
-                libraries.join(",")
-            )
-            .as_bytes(),
+        let version_json = format!(
+            r#"{{"id":"9.9","javaVersion":{{"majorVersion":25}},"downloads":{{"client":{{"sha1":"{client_sha1}"}},"server":{{"sha1":"{server_sha1}"}}}},"libraries":[{}]}}"#,
+            libraries.join(",")
         );
+        put("versions/9.9/9.9.json", version_json.as_bytes());
         let manifest_sha1 = digest(&prism.join("versions/9.9/9.9.json"), "sha1").unwrap();
+        let libraries_sha256 = libraries_digest(&pyjson::loads(&version_json).unwrap());
         fs::write(
             fixture.target.join("research-lock.json"),
             format!(
-                r#"{{"minecraft":{{"version":"9.9","java_major":25,"manifest_sha1":"{manifest_sha1}","client_sha1":"{client_sha1}","server_sha1":"{server_sha1}"}}}}"#
+                r#"{{"minecraft":{{"version":"9.9","java_major":25,"manifest_sha1":"{manifest_sha1}","client_sha1":"{client_sha1}","server_sha1":"{server_sha1}","libraries_sha256":"{libraries_sha256}"}}}}"#
             ),
         )
         .unwrap();
@@ -2103,7 +2195,6 @@ mod tests {
         // A version JSON left without its jar does not hide the launcher's complete copy.
         put("instances/Minecraft99/versions/9.9/9.9.json", b"{}");
         let manifest = fs::read_to_string(old.join("manifest.json")).unwrap();
-        let manifest = manifest.replacen('{', r#"{"javaVersion":{"majorVersion":25},"#, 1);
         put("configs/json/minecraft/9.9.json", manifest.as_bytes());
         let pinned = digest(&atlauncher.join("configs/json/minecraft/9.9.json"), "sha1").unwrap();
         let lock_path = fixture.target.join("research-lock.json");
@@ -2145,9 +2236,18 @@ mod tests {
             .unwrap_err()
             .contains("is not the pinned file"));
         put("libraries/net/minecraft/client/9.9/client-9.9.jar", &client);
+        // A copy that differs only in its layout is the pinned file by its content; one with other
+        // libraries is refused.
         put(
             "configs/json/minecraft/9.9.json",
             manifest.replace(',', ", ").as_bytes(),
+        );
+        prepare(&atlauncher).unwrap();
+        put(
+            "configs/json/minecraft/9.9.json",
+            manifest
+                .replace("\"path\":\"client.jar\"", "\"path\":\"other.jar\"")
+                .as_bytes(),
         );
         assert!(prepare(&atlauncher)
             .unwrap_err()

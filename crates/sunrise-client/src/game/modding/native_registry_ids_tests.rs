@@ -45,12 +45,13 @@ fn serve(game: &mut super::Game<'_>) {
         max_players: 2,
         integrated: true,
         levels: game.level_shapes,
+        level_seeds: game.levels.runtime.seeds(),
     };
     game.lan_host(settings, net, config).unwrap();
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_server_answers_vanilla_and_mod_ids() {
     let Some(root) =
         declared_part_root("game::native_registry_ids_tests::a_server_answers_vanilla_and_mod_ids")
@@ -92,7 +93,7 @@ fn a_server_answers_vanilla_and_mod_ids() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_client_answers_its_own_connections_registries() {
     with_client_game(|game| {
         assert_eq!(

@@ -1,0 +1,2 @@
+ids = ["type:MenuSlotKind"]
+why = "Append the Input role for machine feeds without renumbering existing Wire tags. The enum's Wire layout hash changes."

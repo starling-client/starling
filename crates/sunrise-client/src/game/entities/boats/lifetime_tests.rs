@@ -1,8 +1,8 @@
 use super::*;
+use std::sync::Mutex;
 use sunrise_mod_runtime::attachments::{
     AttachmentType, Attachments, HasAttachmentLifetime, Holder, index::AttachmentIndex,
 };
-use std::sync::Mutex;
 
 static VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "test",
@@ -33,7 +33,7 @@ fn a_tick_clone_follows_its_join_but_cannot_replace_a_later_resident() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_bound_boat_keeps_its_registration_through_ticks_until_discard() {
     bound_boat_case(false, |game, step| {
         game.tick_boats();
@@ -44,20 +44,14 @@ fn a_bound_boat_keeps_its_registration_through_ticks_until_discard() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_bound_boat_commits_the_driven_client_tick() {
     bound_boat_case(true, |game, step| {
         game.riding = Some(71);
-        assert!(
-            game.remote_ride(
-                sunrise_client::sprint::Keys {
-                    forward: true,
-                    ..Default::default()
-                },
-                0
-            )
-            .unwrap()
-        );
+        assert!(game.remote_ride(sunrise_client::sprint::Keys {
+            forward: true,
+            ..Default::default()
+        },));
         assert_eq!(game.boats[0].hurt_time, 6 - step);
         assert!(game.boats[0].input[2]);
         assert!(game.boats[0].position.y < 70.0);
@@ -65,7 +59,7 @@ fn a_bound_boat_commits_the_driven_client_tick() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_bound_ridden_boat_commits_the_server_leash_tick() {
     bound_boat_case(false, |game, step| {
         game.riding = Some(71);

@@ -1,0 +1,3 @@
+ids = ["handle:EntityRef::piston_push_reaction", "handle:EntityRef::is_hanging", "method:GeneralTypesRegistrar::declare_general_entity", "type:PushReaction"]
+why = "Mods can identify piston-ignored and hanging entities on either side. General entity registration declares the reaction shared by the piston and the read."
+migrate = "Add a piston reaction argument after pickable when declaring a general entity type. Pass None for vanilla's PushPull default."

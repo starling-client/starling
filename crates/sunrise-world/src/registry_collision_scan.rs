@@ -123,6 +123,16 @@ impl<W: crate::world_movement::EntityMovementWorld> crate::world_movement::Entit
             .movement_border(entity, bounds)
             .map_err(CollisionQueryError::Context)
     }
+    fn moving_colliders(
+        &mut self,
+        entity: crate::entity_obstruction::EntityIdentity,
+        bounds: sunrise_core::geometry::Aabb,
+        out: &mut Vec<sunrise_core::geometry::oriented::OrientedCollider>,
+    ) -> Result<(), Self::Error> {
+        self.world
+            .moving_colliders(entity, bounds, out)
+            .map_err(CollisionQueryError::Context)
+    }
 }
 
 impl<W: crate::fluid_occupancy::FluidOccupancyWorld> crate::fluid_occupancy::FluidOccupancyWorld

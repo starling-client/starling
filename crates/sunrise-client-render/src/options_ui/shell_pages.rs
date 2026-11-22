@@ -199,13 +199,17 @@ impl OptionsUi {
         at: (f32, f32),
         size: (f32, f32),
         ignored: bool,
-    ) -> Vec<Event> {
+    ) -> (Vec<Event>, bool) {
         let entry = self.radial.screen.naming.as_mut();
         let named = match entry.filter(|_| !ignored) {
-            Some(entry) => entry.click(atlas, at, size),
+            Some(entry) => {
+                let named = entry.click(atlas, at, size);
+                let handled = named != Named::Nothing || entry.typing();
+                return (self.name_events(named, s), handled);
+            }
             None => Named::Nothing,
         };
-        self.name_events(named, s)
+        (self.name_events(named, s), false)
     }
     /// Whether a radial page's name is being typed.
     pub(super) fn radial_name_typing(&self) -> bool {

@@ -3,13 +3,13 @@
 //! tick blocks placement where it is now, as when each turn built the boxes
 //! afresh, not at its box from the start of the tick.
 use crate::game::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
     motion::PlayerMotion,
 };
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -84,6 +84,7 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
             max_players: 3,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -145,7 +146,7 @@ fn mover_at(boxes: &Boxes, x: f64) -> bool {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_teleported_guest_blocks_where_it_went_not_where_the_tick_began() {
     let (before, cached, fresh) = the_mover_changed_mid_tick("tp Mover 24.5 100 8.5", false);
     assert!(mover_at(&before, 8.5));
@@ -154,7 +155,7 @@ fn a_teleported_guest_blocks_where_it_went_not_where_the_tick_began() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_guest_killed_mid_tick_no_longer_blocks() {
     // The kill takes its health; the guest dies in its own turn of the tick.
     let (before, cached, fresh) = the_mover_changed_mid_tick("kill Mover", true);
@@ -164,7 +165,7 @@ fn a_guest_killed_mid_tick_no_longer_blocks() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_guest_put_in_spectator_mid_tick_no_longer_blocks() {
     let (before, cached, fresh) = the_mover_changed_mid_tick("gamemode spectator Mover", false);
     assert!(mover_at(&before, 8.5));

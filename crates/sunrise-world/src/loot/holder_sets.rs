@@ -52,18 +52,27 @@ impl Binding {
         }
         Ok(Self { universes })
     }
-    fn field(
+    pub(super) fn ids(&self, registry: &str) -> Option<&[String]> {
+        self.universes.get(registry).map(Vec::as_slice)
+    }
+    pub(super) fn field(
         &self,
         owner: &str,
         registry: &str,
         value: &mut Value,
-        tags: &HashMap<(String, String), crate::tag_layers::TagLayers>,
+        tags: &loot_tags::BoundTags,
     ) -> io::Result<bool> {
         if !value.is_object() {
             return Ok(false);
         }
         let universe = || self.universes[registry].clone();
-        let tag = |tag: &str| Ok(loot_tags::members(tags, registry, tag));
+        let tag = |tag: &str| {
+            Ok(tags
+                .get(registry)
+                .and_then(|tags| tags.get(tag))
+                .cloned()
+                .unwrap_or_default())
+        };
         let entry = |id: &str| Ok(vec![id.to_owned()]);
         let lookup = crate::holder_set::StringLookup {
             what: registry,
@@ -84,7 +93,7 @@ impl Binding {
         &self,
         owner: &str,
         value: &mut Value,
-        tags: &HashMap<(String, String), crate::tag_layers::TagLayers>,
+        tags: &loot_tags::BoundTags,
     ) -> io::Result<bool> {
         let mut changed = false;
         if let Some(items) = value.get_mut("items") {
@@ -111,7 +120,7 @@ impl Binding {
         &self,
         owner: &str,
         value: &mut Value,
-        tags: &HashMap<(String, String), crate::tag_layers::TagLayers>,
+        tags: &loot_tags::BoundTags,
     ) -> io::Result<bool> {
         let mut changed = false;
         if let Some(equipment) = value
@@ -132,7 +141,7 @@ impl Binding {
         &self,
         owner: &str,
         value: &mut Value,
-        tags: &HashMap<(String, String), crate::tag_layers::TagLayers>,
+        tags: &loot_tags::BoundTags,
     ) -> io::Result<bool> {
         if let Value::Array(values) = value {
             let mut changed = false;
@@ -242,7 +251,7 @@ impl Binding {
         }
         for (kind, entries) in [
             ("item_modifier", &mut data.modifiers),
-            ("predicate", &mut data.predicates),
+            ("predicate", Arc::make_mut(&mut data.predicates)),
         ] {
             for (id, value) in entries {
                 self.walk(&format!("{kind} {id}"), value, &data.tags)?;
@@ -275,14 +284,6 @@ impl Binding {
                     &data.tags,
                 )?;
             }
-        }
-        for (i, (ingredient, _, _)) in data.smelting.iter_mut().enumerate() {
-            self.field(
-                &format!("smelting[{i}].ingredient"),
-                "item",
-                ingredient,
-                &data.tags,
-            )?;
         }
         Ok(())
     }

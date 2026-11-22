@@ -15,7 +15,7 @@ when a probe finds no entity or reports an error. Run files stay under `.local/s
 
     test_<x>_save_reload_parity.py [--binary PATH] [--keep]
 
-`--binary` is a built `sunrise-client` (default: `cargo build --profile fast -p sunrise-client`).
+`--binary` is a built `sunrise-client` (default: `cargo build --profile fast -p sunrise-game --bin sunrise-client`).
 """
 import argparse
 import json
@@ -124,13 +124,16 @@ def run_server(name, command, directory, setup, probes, boot_timeout=600):
     return results, replies
 
 
-def sunrise_binary(args, build):
+def sunrise_binary(args):
     if args.binary:
         # Each server runs with its world as the working directory, so a relative path must be the caller's.
         return Path(os.path.abspath(args.binary))
-    with (build / 'cargo-build.log').open('w') as log:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client', '--bin', 'sunrise-client'],
-                       cwd=lab.ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
+    # Cargo's errors go to the harness's own output, the log a failed run keeps: a build that fails or is killed says
+    # why there. --quiet leaves only warnings and errors; a binary the parity runner prebuilt is fresh, so no rebuild.
+    built = subprocess.run(['cargo', 'build', '--quiet', '--profile', 'fast', '-p', 'sunrise-game',
+                            '--bin', 'sunrise-client'], cwd=lab.ROOT)
+    if built.returncode:
+        sys.exit(f'cargo build of sunrise-client failed (exit {built.returncode}); its errors are above')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
     return Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
@@ -144,7 +147,7 @@ def main(name, setup, probes, description):
     build = lab.LOCAL / 'save-reload' / name
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir(parents=True)
-    binary = sunrise_binary(args, build)
+    binary = sunrise_binary(args)
     vanilla = ['java', '-Xmx2g', '-jar', str(lab.GAME / 'jars' / 'server.jar'), '--nogui']
     sunrise = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     runs = {}

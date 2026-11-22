@@ -12,5 +12,5 @@ pub trait Hooks {
         target = "sunrise_client_lib::motion::surface::native_is_ladder",
         neoforge = "IBlockExtension.isLadder"
     )]
-    fn is_ladder();
+    fn is_ladder(entity: u32, pos: BlockPos, state: BlockState, ladder: &mut bool);
 }

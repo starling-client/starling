@@ -175,7 +175,7 @@ impl Game<'_> {
             return Ok(());
         }
         let reason = Text::translate("multiplayer.disconnect.code_of_conduct", &[]);
-        self.leave_server(Some(reason.plain()))
+        self.leave_server(Some(reason))
     }
 
     pub(super) fn draw_code_of_conduct(&self, batch: &mut HudBatch) {
@@ -209,16 +209,7 @@ impl Game<'_> {
 
         let (title, tx, ty) = &layout.title;
         batch.text_styled(atlas, title, *tx, *ty, u32::MAX, true);
-        ui::nine_slice(
-            batch,
-            atlas,
-            "gui/sprites/widget/text_field",
-            ax,
-            ay,
-            aw,
-            ah,
-            u32::MAX,
-        );
+        ui::nine_slice(batch, atlas, "widget/text_field", ax, ay, aw, ah, u32::MAX);
         let start = batch.vertices.len();
         for (i, line) in layout.lines.iter().enumerate() {
             let y = ay + PAD + i as f32 * LINE - offset;
@@ -245,10 +236,10 @@ impl Game<'_> {
             .hovered(hover)
         });
         let sprite = match (prompt.stop_showing, hover) {
-            (true, true) => "gui/sprites/widget/checkbox_selected_highlighted",
-            (true, false) => "gui/sprites/widget/checkbox_selected",
-            (false, true) => "gui/sprites/widget/checkbox_highlighted",
-            (false, false) => "gui/sprites/widget/checkbox",
+            (true, true) => "widget/checkbox_selected_highlighted",
+            (true, false) => "widget/checkbox_selected",
+            (false, true) => "widget/checkbox_highlighted",
+            (false, false) => "widget/checkbox",
         };
         batch.sprite_scaled(atlas, sprite, x, y, BOX, BOX, u32::MAX);
         batch.text_styled(
@@ -271,11 +262,11 @@ impl Game<'_> {
     }
 
     /// A left click: the box toggles, a button answers.
-    pub(super) fn code_of_conduct_click(&mut self) -> Result<()> {
+    pub(super) fn code_of_conduct_click(&mut self) -> Result<bool> {
         let size = self.gui_size();
         let cursor = self.cursor;
         let Some(prompt) = self.code_of_conduct.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         let layout = prompt.layout(&self.gui.atlas.font, size);
         let [x, y, w, h] = layout.check;
@@ -289,13 +280,13 @@ impl Game<'_> {
             .position(|&[x, y, w, h]| ui::hovered(cursor, x, y, w, h))
             .map(|i| i == 0);
         if !toggled && answer.is_none() {
-            return Ok(());
+            return Ok(false);
         }
         self.audio.play_button_click();
-        match answer {
-            Some(accepted) => self.answer_code_of_conduct(accepted),
-            None => Ok(()),
+        if let Some(accepted) = answer {
+            self.answer_code_of_conduct(accepted)?;
         }
+        Ok(true)
     }
 
     /// The mouse wheel over the screen: the text scrolls 10 a step.

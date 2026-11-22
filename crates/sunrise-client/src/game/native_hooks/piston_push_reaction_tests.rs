@@ -3,6 +3,14 @@ use crate::game::{
     execution_role::ExecutionRole,
     native_entity_refs::tests::{run_fresh_cases, with_game_role},
 };
+use mod_api::*;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
+};
 use sunrise_core::{
     geometry::Direction,
     position::{BlockPos, ChunkPos},
@@ -11,14 +19,6 @@ use sunrise_core::{
 use sunrise_world::{
     level::{Behaviours, BlockEntityNeighbors, LevelAccess, PushReaction as EngineReaction, Ticks},
     registry::{BlockRegistry, BlockStateId},
-};
-use mod_api::*;
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
-    },
 };
 
 struct ReactionPart {
@@ -42,7 +42,7 @@ impl BlockPart for ReactionPart {
                 _ => unreachable!(),
             });
         }
-        self.reaction.clone().or_else(|| {
+        self.reaction.or_else(|| {
             Some(if event.state.ordinal() == 0 {
                 PushReaction::Immoveable
             } else {
@@ -84,10 +84,10 @@ impl Hooks for User {
             .state_properties
             .insert("locked".into(), BlockStateProperty::Boolean);
         block.default_state.insert("locked".into(), "false".into());
-        event.blocks.push(block);
+        event.register(block).unwrap();
         let mut fixed = Block::new("test:fixed", "minecraft:stone");
         fixed.properties.push_reaction = Some(PushReaction::Immoveable);
-        event.blocks.push(fixed);
+        event.register(fixed).unwrap();
     }
 }
 struct Level {
@@ -226,7 +226,7 @@ fn exercise(
     }
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn piston_push_reaction_parts_cache_reload_and_replay() {
     const NAME: &str = "game::native_hooks::piston_push_reaction_tests::piston_push_reaction_parts_cache_reload_and_replay";
     const FLAG: &str = "SUNRISE_PISTON_REACTION_CASE";
@@ -259,17 +259,49 @@ fn piston_push_reaction_parts_cache_reload_and_replay() {
                 ExecutionRole::IntegratedServer
             },
             |game| {
+                let host = &*game as &dyn Host;
                 let registry = game.pack.assets.registry;
                 let a = state(registry, "test:lock", &[("locked", "false")]);
                 let z = state(registry, "test:lock", &[("locked", "true")]);
-                assert_eq!(
-                    game.res.behaviours().piston_reaction(a),
-                    if parts {
-                        EngineReaction::Immoveable
-                    } else {
-                        EngineReaction::PushPull
+                let a_api = host.block_state_id("test:lock[locked=false]").unwrap();
+                let z_api = host.block_state_id("test:lock[locked=true]").unwrap();
+                let fixed_api = host.block_state_id("test:fixed").unwrap();
+                let torch = host.block_state_id("minecraft:torch").unwrap();
+                // The callback view exposes the same table, without needing a resident block.
+                let level = crate::game::native_level_signals::ReadLevel {
+                    game,
+                    level: LevelRef::new(
+                        game.native_lifecycle.epoch().unwrap(),
+                        DimensionKey::OVERWORLD,
+                    ),
+                };
+                for facts in [host.block_states(), level.block_states()] {
+                    for (state, expected) in [
+                        (torch, PushReaction::Popped),
+                        (
+                            a_api,
+                            if parts {
+                                PushReaction::Immoveable
+                            } else {
+                                PushReaction::PushPull
+                            },
+                        ),
+                        (z_api, PushReaction::PushPull),
+                        (
+                            fixed_api,
+                            if parts {
+                                PushReaction::PushPull
+                            } else {
+                                PushReaction::Immoveable
+                            },
+                        ),
+                    ] {
+                        assert_eq!(facts.piston_push_reaction(state), Ok(Some(expected)));
                     }
-                );
+                    let invalid =
+                        mod_api::__private::block_state_from_ordinal(a_api.block(), u16::MAX);
+                    assert_eq!(facts.piston_push_reaction(invalid), Ok(None));
+                }
                 exercise(
                     game.res.behaviours(),
                     registry,
@@ -328,10 +360,14 @@ fn piston_push_reaction_parts_cache_reload_and_replay() {
                 // Removing the last subscriber must clear its immovable override on both sides.
                 if parts {
                     unbreakable.store(0, Ordering::Relaxed);
+                    enabled.store(false, Ordering::Relaxed);
                     assert_eq!(
-                        game.res.behaviours().piston_reaction(a),
-                        EngineReaction::Immoveable
+                        (&*game as &dyn Host)
+                            .block_states()
+                            .piston_push_reaction(a_api),
+                        Ok(Some(PushReaction::Immoveable))
                     );
+                    enabled.store(true, Ordering::Relaxed);
                 }
                 // A reload retains registry metadata; only the active subscriber set changes.
                 let after: Mods = if parts {
@@ -346,8 +382,10 @@ fn piston_push_reaction_parts_cache_reload_and_replay() {
                             HookId::PistonPushReaction
                         ));
                         assert_eq!(
-                            game.res.behaviours().piston_reaction(a),
-                            EngineReaction::PushPull
+                            (&*game as &dyn Host)
+                                .block_states()
+                                .piston_push_reaction(a_api),
+                            Ok(Some(PushReaction::PushPull))
                         );
                         exercise(
                             game.res.behaviours(),
@@ -399,7 +437,7 @@ struct PayloadPart {
 #[mod_api::sunrise_part]
 impl BlockPart for PayloadPart {
     fn piston_push_reaction(&self, _: &mut PistonPushReactionEvent) -> Option<PushReaction> {
-        Some(self.reaction.clone())
+        Some(self.reaction)
     }
     fn piston_carries_block_entity(
         &self,
@@ -428,7 +466,7 @@ impl Hooks for PayloadUser {
             r.block_part(
                 key,
                 PayloadPart {
-                    reaction: self.reaction.clone(),
+                    reaction: self.reaction,
                     carry: self.carry,
                     asks: self.asks.clone(),
                 },
@@ -438,7 +476,7 @@ impl Hooks for PayloadUser {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn piston_push_reaction_real_block_entity_payload_lifecycle() {
     const NAME: &str = "game::native_hooks::piston_push_reaction_tests::piston_push_reaction_real_block_entity_payload_lifecycle";
     const FLAG: &str = "SUNRISE_PISTON_PAYLOAD_CASE";
@@ -649,7 +687,7 @@ impl Hooks for TagUser {
     }
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn piston_push_reaction_client_received_tags_refresh_the_cache() {
     const NAME: &str = "game::native_hooks::piston_push_reaction_tests::piston_push_reaction_client_received_tags_refresh_the_cache";
     if run_fresh_cases(NAME, "SUNRISE_PISTON_TAG_CASE", &["client"]) {
@@ -719,7 +757,7 @@ fn piston_push_reaction_client_received_tags_refresh_the_cache() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn piston_push_reaction_position_state_opens_ticks_and_saves() {
     const NAME: &str = "game::native_hooks::piston_push_reaction_tests::piston_push_reaction_position_state_opens_ticks_and_saves";
     const FLAG: &str = "SUNRISE_PISTON_POSITION_CASE";
@@ -863,7 +901,7 @@ fn piston_push_reaction_position_state_opens_ticks_and_saves() {
                         &game.options.resources,
                         &sunrise_world::loot::PackOverlay {
                             files: &files,
-                            ..sunrise_world::loot::PackOverlay::NONE
+                            ..sunrise_world::loot::PackOverlay::default()
                         },
                         game.res.item_defaults(),
                     )
@@ -1038,7 +1076,12 @@ fn piston_push_reaction_position_state_opens_ticks_and_saves() {
                     &game.world.block_names,
                 );
                 game.attach_save_data(&mut batch[0]);
-                let encoded = sunrise_client::save::encode(&batch[0], registry, game.res.biomes());
+                let encoded = sunrise_client::save::encode(
+                    &batch[0],
+                    registry,
+                    game.res.biomes(),
+                    &Default::default(),
+                );
                 let bytes =
                     sunrise_core::nbt::write_named(&encoded, sunrise_core::nbt::Limits::saved())
                         .unwrap();
@@ -1130,7 +1173,7 @@ fn piston_push_reaction_position_state_opens_ticks_and_saves() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn piston_push_reaction_unowned_vanilla_data_stays_refused() {
     const NAME: &str = "game::native_hooks::piston_push_reaction_tests::piston_push_reaction_unowned_vanilla_data_stays_refused";
     if run_fresh_cases(NAME, "SUNRISE_PISTON_UNOWNED_CASE", &["comparator"]) {

@@ -14,7 +14,8 @@ use std::{collections::BTreeSet, fs, io, path::Path, path::PathBuf};
 // Version 6 stamps vanilla's files by their metadata on Windows too.
 // Version 7 stacks blockstate files (every pack's definition, bottom first).
 // Version 8 left an atlas `single` source's renamed sprite without its texture file (#14485).
-const VERSION: u32 = 9;
+// Version 11 has no synthetic renamed-sprite files, and validates each atlas definition alone.
+const VERSION: u32 = 11;
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Dependencies {
@@ -1041,7 +1042,7 @@ mod tests {
             f.rebuild_matches(std::slice::from_ref(&pack));
             assert_eq!(
                 fs::read(f.0.join("cached").join(name)).unwrap(),
-                br#"{"p":2,"v":1}"#
+                br#"{"p":"2","v":"1"}"#
             );
             f.write(&format!("pack/extra/{name}"), br#"{"p":1}"#);
         }
@@ -1057,7 +1058,7 @@ mod tests {
             f.rebuild_matches(std::slice::from_ref(&pack));
             assert_eq!(
                 fs::read(f.0.join("cached").join(name)).unwrap(),
-                br#"{"p":4,"v":1}"#
+                br#"{"p":"4","v":"1"}"#
             );
             f.write(&format!("outside/{name}"), br#"{"p":3}"#);
         }
@@ -1146,9 +1147,9 @@ mod tests {
         for pack in [&a, &b, &a, &b] {
             f.rebuild_matches(std::slice::from_ref(pack));
             let expected = if pack.id == "a" {
-                br#"{"p":"a","v":1}"#
+                br#"{"p":"a","v":"1"}"#
             } else {
-                br#"{"p":"b","v":1}"#
+                br#"{"p":"b","v":"1"}"#
             };
             assert_eq!(fs::read(out.join(name)).unwrap(), expected);
         }

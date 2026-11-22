@@ -31,7 +31,8 @@ import org.joml.Matrix4f;
  * Drives the real Camera (tick, tickFov, alignWithEntity with getMaxZoom over
  * Level.clip, calculateFov, calculateHudFov), AbstractClientPlayer
  * .getFieldOfViewModifier and updateBob, ClientAvatarState and
- * GameRenderer.bobHurt/bobView with scripted entity states, and prints every
+ * GameRenderer.bobHurt/bobView with scripted entity states, and
+ * AbstractBoat.clampRotation for a player rider, and prints every
  * observable bit-exactly. Entities, the level and the renderer are
  * uninitialised shells (Unsafe) with controlled queries; block visual shapes
  * come from the case.
@@ -183,11 +184,26 @@ public final class VanillaCameraOracle {
                     case "camera" -> camera(c, out);
                     case "bob" -> bob(c, out);
                     case "avatar" -> avatar(c, out);
+                    case "boat" -> boat(c, out);
                     default -> throw new IllegalArgumentException(line);
                 }
             }
         }
         System.exit(0);
+    }
+
+    /** The real AbstractBoat.clampRotation on a boat shell and a player shell riding it. */
+    static void boat(JsonObject c, PrintWriter out) throws Exception {
+        var clamp = method(net.minecraft.world.entity.vehicle.boat.AbstractBoat.class, "clampRotation", Entity.class);
+        for (var pair : c.getAsJsonArray("views")) {
+            var views = pair.getAsJsonArray();
+            var rider = make(LocalPlayer.class);
+            var boat = make(net.minecraft.world.entity.vehicle.boat.Boat.class);
+            yRot.setFloat(rider, f(views.get(0)));
+            yRot.setFloat(boat, f(views.get(1)));
+            float turn = (float) clamp.invoke(boat, rider);
+            out.println(fb(rider.getYRot()) + " " + fb(turn));
+        }
     }
 
     static AttributeMap attributes(double scale, double distance, double speed) {

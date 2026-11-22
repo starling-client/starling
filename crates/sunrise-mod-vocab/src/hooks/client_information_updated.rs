@@ -10,10 +10,17 @@ pub trait Hooks {
     /// client joined with, as NeoForge fires it when `ServerPlayer` first sets
     /// it. The player is not swapped in. Server-side.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "ClientInformationUpdatedEvent",
         cancellable = false
     )]
-    fn client_information_updated();
+    fn client_information_updated(
+        player: u128,
+        player_entity_id: i32,
+        name: &str,
+        old: &mod_api::ClientInfo,
+        new: &mod_api::ClientInfo,
+    );
 }

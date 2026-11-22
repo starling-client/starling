@@ -3,64 +3,47 @@ use super::*;
 impl Game<'_> {
     /// Whether the mods let the guest open the menu `kind` (`native_container_opened`),
     /// heard with the guest's state swapped in. Asked before the menu that
-    /// was open closes.
+    /// was open closes. None if the guest's turn cannot be entered.
     pub(in crate::game) fn guest_may_open(
         &mut self,
         conn: u32,
         kind: &str,
         pos: Option<[i32; 3]>,
-    ) -> bool {
-        let Some(guest) = self.lan.as_ref().and_then(|host| host.hub.guest(conn)) else {
-            return true;
-        };
+    ) -> Option<bool> {
+        let guest = self.lan.as_ref()?.hub.guest(conn)?;
         if !guest.participates_in_player_simulation() {
-            return false;
+            return None;
         }
         let (uuid, name) = (guest.uuid, guest.name.clone());
-        let mut cancel = false;
-        let mut hook =
-            |game: &mut Self| game.native_container_opened(uuid, &name, kind, pos, &mut cancel);
+        let hook = |game: &mut Self| {
+            let mut cancel = false;
+            game.native_container_opened(uuid, &name, kind, pos, &mut cancel);
+            !cancel
+        };
         // The guest whose turn it is is in place already.
         if self.lan_acting == Some(conn) {
-            hook(self);
+            Some(hook(self))
         } else {
-            self.as_guest(conn, hook);
+            self.as_guest(conn, hook)
         }
-        !cancel
     }
 
-    /// Hand a container the guest opened over (ServerPlayer.openMenu);
-    /// false when it is not one a guest can open.
-    pub(in crate::game) fn lan_open_container(&mut self, conn: u32, pos: (i32, i32, i32)) -> bool {
-        if pos.1 == crate::game::minecarts::CART_KEY_Y {
-            return self.lan_open_vehicle_container(conn, pos);
-        }
-        let opened = self.open_block_menu_with_opener(conn, pos, true);
-        if opened == MenuOpen::Cancelled
-            && self
-                .lan
-                .as_ref()
-                .and_then(|host| host.hub.guest(conn))
-                .is_some_and(|guest| !guest.spectator())
-        {
-            // The click is spent, but no menu took ownership of the use's opener.
-            self.container_openers_changed(pos, false);
-        }
-        !matches!(opened, MenuOpen::Refused | MenuOpen::Stale)
-    }
-
-    pub(in crate::game) fn open_block_menu(&mut self, conn: u32, pos: (i32, i32, i32)) -> MenuOpen {
-        self.open_block_menu_with_opener(conn, pos, false)
-    }
-
-    /// A use handed over from `open_menu` already started its opener; a direct
-    /// `BlockEntityRef::open_menu` must start it after its checks succeed.
-    pub(super) fn open_block_menu_with_opener(
+    /// Finish the menu handoff after the guest's use. As in
+    /// `ChestBlock.useWithoutItem`, the block has already decided its use
+    /// result independently of what `ServerPlayer.openMenu` does.
+    pub(in crate::game) fn lan_open_container(
         &mut self,
         conn: u32,
         pos: (i32, i32, i32),
-        opener_started: bool,
     ) -> MenuOpen {
+        if pos.1 == crate::game::minecarts::CART_KEY_Y {
+            return self.lan_open_vehicle_container(conn, pos);
+        }
+        self.open_block_menu(conn, pos)
+    }
+
+    /// Install the block menu for a guest's use or a direct BlockEntityRef open.
+    pub(in crate::game) fn open_block_menu(&mut self, conn: u32, pos: (i32, i32, i32)) -> MenuOpen {
         let generation = self.world.block_entities.generation(&pos);
         let name = &self
             .res
@@ -97,13 +80,13 @@ impl Game<'_> {
             (menu, Slots::Block(pos))
         } else {
             let Some(BlockEntity::Chest(items)) = self.world.block_entities.get(&pos) else {
-                return MenuOpen::Refused;
+                return MenuOpen::NoProvider;
             };
             let menu = match items.len() {
                 27 => "minecraft:generic_9x3",
                 9 => "minecraft:generic_3x3",
                 5 => "minecraft:hopper",
-                _ => return MenuOpen::Refused,
+                _ => return MenuOpen::NoProvider,
             };
             (menu, Slots::Block(pos))
         };
@@ -124,12 +107,12 @@ impl Game<'_> {
                     None if self.mod_menu_at(k).is_some() => {
                         format!("block.{}", name.replace(':', "."))
                     }
-                    None => return MenuOpen::Refused,
+                    None => return MenuOpen::NoProvider,
                 };
                 sunrise_client::containers::display_name(custom(k).as_deref(), &key)
             }
             // Opened by a mod (`open_menu`), never here.
-            Slots::Native => return MenuOpen::Refused,
+            Slots::Native => return MenuOpen::NoProvider,
         };
         let Some(host) = self.lan.as_ref() else {
             return MenuOpen::Refused;
@@ -201,18 +184,38 @@ impl Game<'_> {
             self.send_level_sound(LevelSound::new(name, at, 1.0, 1.0), None);
             return MenuOpen::Refused;
         }
-        // A mod menu type only for a client that has it: as
-        // `ServerPlayer.openMenu` with no menu, nothing opens.
+        // A mod menu type only for a client that has it and negotiated the
+        // `sunrise:menu_extra` opening layout: as `ServerPlayer.openMenu` with
+        // no menu, nothing opens.
         let Some(host) = self.lan.as_ref() else {
             return MenuOpen::Refused;
         };
-        let brand = host.hub.guest(conn).map_or("", |g| g.brand.as_str());
-        if !sunrise_client::containers::menu_reaches(brand, menu) {
+        let Some(guest) = host.hub.guest(conn) else {
+            return MenuOpen::Refused;
+        };
+        if !sunrise_client::containers::menu_reaches(&guest.brand, menu) {
+            return MenuOpen::Refused;
+        }
+        let sends_menu_extra = matches!(slots, Slots::Block(k) if self.mod_menu_at(k).is_some());
+        let required_rev = if let Some(kind) = sunrise_client::containers::mod_menu_type(menu) {
+            if !kind.player_inventory || kind.slots == 0 {
+                sunrise_protocol::menu_extra::LIVE_DATA_REVISION
+            } else {
+                1
+            }
+        } else if sends_menu_extra || !menu.starts_with("minecraft:") {
+            1
+        } else {
+            0
+        };
+        if guest.sender.menu_extra_rev < required_rev {
             return MenuOpen::Refused;
         }
         // The mods may stop the menu; the click is spent.
-        if !self.guest_may_open(conn, menu, Some([pos.0, pos.1, pos.2])) {
-            return MenuOpen::Cancelled;
+        match self.guest_may_open(conn, menu, Some([pos.0, pos.1, pos.2])) {
+            Some(true) => {}
+            Some(false) => return MenuOpen::Cancelled,
+            None => return MenuOpen::Refused,
         }
         let mut cancel = false;
         self.native_inventory_block_start(uuid, &name, [pos.0, pos.1, pos.2], &mut cancel);
@@ -224,11 +227,6 @@ impl Game<'_> {
             super::super::native_menus::open_menu_of(host, conn).map(|(window, ..)| window)
         });
         self.guest_close_all(conn);
-        // A hand-off from `open_menu` must not count one player twice. A direct
-        // handle open has no earlier `startOpen`; only it starts the block's lid.
-        let counts_openers =
-            !opener_started && matches!(slots, Slots::Block(_) | Slots::Double(_, _));
-        let hidden = self.native_hidden_slots(pos, items.len());
         // A mod menu type's block tells the client where it is, with what its
         // mod writes (`openMenu` with an extra-data writer); a stock menu
         // sends nothing more.
@@ -236,14 +234,21 @@ impl Game<'_> {
             Slots::Block(k) if self.mod_menu_at(k).is_some() => {
                 let mut data = None;
                 self.native_menu_extra_data(uuid, menu, &block, [k.0, k.1, k.2], &mut data);
-                let mut data = data.unwrap_or_default();
+                let data = data.unwrap_or_default();
                 if data.len() > sunrise_protocol::menu_extra::MAX_DATA {
-                    log::warn!(
-                        "Sunrise: {block}'s menu extra data ({} bytes) is past {} bytes; sent without it",
+                    log::error!(
+                        "Sunrise: {block}'s menu ({menu}) extra data ({} bytes) exceeds {} bytes; refusing open",
                         data.len(),
                         sunrise_protocol::menu_extra::MAX_DATA
                     );
-                    data.clear();
+                    if let Some(container) = previous_window
+                        && let Some(host) = self.lan.as_mut()
+                        && super::super::native_menus::open_menu_of(host, conn).is_none()
+                    {
+                        host.hub
+                            .send_to(conn, &C::ContainerClose(play::ContainerClose { container }));
+                    }
+                    return MenuOpen::Refused;
                 }
                 Some(data)
             }
@@ -259,21 +264,41 @@ impl Game<'_> {
             }
             return MenuOpen::Stale;
         }
-        let Some(host) = self.lan.as_mut() else {
+        let Some(gi) = self.guest_index(conn) else {
             return MenuOpen::Refused;
         };
-        host.hub
-            .open_container(conn, menu, title, pos, slots, items, extra);
-        if !hidden.is_empty() {
-            host.hub.hide_menu_slots(conn, hidden);
+        // Park the opener's window-0 cursor and build the first contents from
+        // their inventory, even when an open through BlockEntityRef runs in their turn.
+        let Some(menu_generation) = self.with_own_record(gi, |host, _| {
+            if host
+                .hub
+                .open_menu_window(conn, menu, title, Some(pos), slots, items, extra)
+                .is_none()
+            {
+                if let Some(container) = previous_window
+                    && super::super::native_menus::open_menu_of(host, conn).is_none()
+                {
+                    host.hub
+                        .send_to(conn, &C::ContainerClose(play::ContainerClose { container }));
+                }
+                return None;
+            }
+            Some(host.hub.guest(conn)?.menu_generation)
+        }) else {
+            return MenuOpen::Refused;
+        };
+        // ChestMenu and ShulkerBoxMenu own startOpen, including a ChestMenu
+        // backed by PlayerEnderChestContainer with an active ender chest.
+        self.guest_container_opener(conn, pos, true);
+        // The game-event listener can close or replace the installed menu.
+        if self
+            .lan
+            .as_ref()
+            .and_then(|host| host.hub.guest(conn))
+            .is_some_and(|guest| guest.menu.is_some() && guest.menu_generation == menu_generation)
+        {
+            self.player_menu_opening(conn);
         }
-        // `ContainerOpenersCounter.incrementOpeners`: a direct handle open
-        // starts the lid once, sounding on its first opener. A spectator's
-        // `startOpen` does nothing, so its close must have nothing to decrement.
-        if counts_openers && !spectator && self.container_openers_changed(pos, true) {
-            self.container_edge_sound(pos, true);
-        }
-        self.player_menu_opening(conn);
         MenuOpen::Opened
     }
 
@@ -281,21 +306,21 @@ impl Game<'_> {
     /// the vehicle's own `MenuProvider.createMenu` builds - three rows of a
     /// `ChestMenu` for a chest boat or a chest minecart, a `HopperMenu` for a
     /// hopper minecart - titled with the vehicle's name.
-    pub(super) fn lan_open_vehicle_container(&mut self, conn: u32, pos: (i32, i32, i32)) -> bool {
+    fn lan_open_vehicle_container(&mut self, conn: u32, pos: (i32, i32, i32)) -> MenuOpen {
         let entity_type = if let Some(cart) = self.carts.iter().find(|c| c.id as i32 == pos.2) {
             cart.kind.id().to_owned()
         } else if let Some(boat) = self.boats.iter().find(|b| b.id as i32 == pos.2) {
             if !boat.chest {
-                return false;
+                return MenuOpen::NoProvider;
             }
             boat.entity_type()
         } else {
-            return false;
+            return MenuOpen::NoProvider;
         };
         // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
         // `MenuProvider.getDisplayName`, the vehicle's name key.
         let Some((menu, _)) = sunrise_client::containers::vehicle_menu(&entity_type) else {
-            return false;
+            return MenuOpen::NoProvider;
         };
         let title = sunrise_protocol::text::translatable(
             &sunrise_client::containers::vehicle_menu_name(&entity_type),
@@ -303,7 +328,7 @@ impl Game<'_> {
         );
         let slots = Slots::Block(pos);
         let Some(host) = self.lan.as_ref() else {
-            return false;
+            return MenuOpen::Refused;
         };
         // The mods may stop the menu; the click is spent. A fake player is
         // stopped here too: the stand-in the open staged leaves the level
@@ -319,7 +344,7 @@ impl Game<'_> {
             host.hub.guest(conn).is_some_and(|g| g.spectator())
                 && self.boat_loot_pending(self.boats[i].id)
         });
-        if spectator_pending {
+        let denied = if spectator_pending {
             // ServerPlayer.openMenu: the refused spectator's action bar, red.
             let message = sunrise_client::text::Text::translate("container.spectatorCantOpen", &[])
                 .with_color(sunrise_client::text::RED);
@@ -330,8 +355,15 @@ impl Game<'_> {
                     overlay: true,
                 }),
             );
-        }
-        if spectator_pending || !self.guest_may_open(conn, menu, None) {
+            Some(MenuOpen::Refused)
+        } else {
+            match self.guest_may_open(conn, menu, None) {
+                Some(true) => None,
+                Some(false) => Some(MenuOpen::Cancelled),
+                None => Some(MenuOpen::Refused),
+            }
+        };
+        if let Some(denied) = denied {
             let viewed = self.lan.as_ref().is_some_and(|host| {
                 host.hub
                     .guests
@@ -346,7 +378,7 @@ impl Game<'_> {
             if !viewed {
                 self.close_cart_container(pos);
             }
-            return true;
+            return denied;
         }
         if let Some(i) = boat
             && self.boat_loot_pending(self.boats[i].id)
@@ -355,7 +387,7 @@ impl Game<'_> {
             self.unpack_boat_loot(i, true);
             // Advancement rewards can remove the boat while generating its loot.
             if !self.boats.iter().any(|boat| boat.id == id) {
-                return false;
+                return MenuOpen::Stale;
             }
         }
         let Some(items) = self
@@ -364,17 +396,24 @@ impl Game<'_> {
             .and_then(|host| host.hub.guest(conn))
             .and_then(|g| slots.read(&self.world, g))
         else {
-            return false;
+            return MenuOpen::Refused;
         };
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(conn);
-        let Some(host) = self.lan.as_mut() else {
-            return false;
+        let Some(gi) = self.guest_index(conn) else {
+            return MenuOpen::Refused;
         };
-        host.hub
-            .open_container(conn, menu, title, pos, slots, items, None);
+        if self
+            .with_own_record(gi, |host, _| {
+                host.hub
+                    .open_menu_window(conn, menu, title, Some(pos), slots, items, None)
+            })
+            .is_none()
+        {
+            return MenuOpen::Refused;
+        }
         self.player_menu_opening(conn);
-        true
+        MenuOpen::Opened
     }
 
     /// The guest's open container is closing (`AbstractContainerMenu.removed`):
@@ -383,29 +422,61 @@ impl Game<'_> {
     /// `playSound` with no player), the guest included, once the last opener
     /// has left.
     pub(in crate::game) fn guest_container_closed(&mut self, conn: u32) {
-        let pos = self.lan.as_ref().and_then(|host| {
-            let guest = host.hub.guest(conn)?;
-            (!guest.spectator())
-                .then(|| guest.menu.as_ref().and_then(|m| m.pos))
-                .flatten()
-        });
-        if let Some(pos) = pos
-            && self.container_openers_changed(pos, false)
+        if let Some(pos) = self
+            .lan
+            .as_ref()
+            .and_then(|host| host.hub.guest(conn))
+            .and_then(|guest| guest.menu.as_ref()?.pos)
         {
-            self.container_edge_sound(pos, false);
-            let post = |game: &mut Self| {
-                game.post_block_game_event(
-                    "minecraft:container_close",
-                    [pos.0, pos.1, pos.2],
-                    Some(sunrise_client::mobs::Who::Player),
-                    None,
-                );
+            self.guest_container_opener(conn, pos, false);
+        }
+    }
+
+    /// `ContainerOpenersCounter.incrementOpeners` / `ContainerOpenersCounter.decrementOpeners`:
+    /// the first opener and the last closer each trigger a sound and game event.
+    fn guest_container_opener(&mut self, conn: u32, pos: (i32, i32, i32), open: bool) {
+        let acting = self.lan_acting == Some(conn);
+        let spectator = if acting {
+            self.spectator()
+        } else {
+            let Some(guest) = self.lan.as_ref().and_then(|host| host.hub.guest(conn)) else {
+                return;
             };
-            if self.lan_acting == Some(conn) {
-                post(self);
-            } else {
-                self.as_guest(conn, post);
-            }
+            guest.spectator()
+        };
+        if spectator || !self.container_openers_changed(pos, open) {
+            return;
+        }
+        let state = self.world.block(pos.0, pos.1, pos.2);
+        let name = &self.res.facts().get(state).name;
+        let shulker = super::super::storage::is_shulker_box(name);
+        // Resolve the sound before the game event; its listener can replace the block.
+        let sound = self.resolve_container_sound(pos, name, open);
+        // ContainerOpenersCounter calls onOpen/onClose before the game event;
+        // ShulkerBoxBlockEntity emits its game event before playing its sound.
+        if !shulker && let Some((sound, at)) = sound {
+            self.play_container_sound(sound, at);
+        }
+        let event = if open {
+            "minecraft:container_open"
+        } else {
+            "minecraft:container_close"
+        };
+        let post = |game: &mut Self| {
+            game.post_block_game_event(
+                event,
+                [pos.0, pos.1, pos.2],
+                Some(sunrise_client::mobs::Who::Player),
+                None,
+            );
+        };
+        if acting {
+            post(self);
+        } else {
+            self.as_guest(conn, post);
+        }
+        if shulker && let Some((sound, at)) = sound {
+            self.play_container_sound(sound, at);
         }
     }
 
@@ -414,31 +485,53 @@ impl Game<'_> {
     /// the container's lid, a vehicle's stand-in (its items go back to the
     /// vehicle), the trade (written back to the villager), the crafting table,
     /// station and mount menus, and the cursor stack back to the inventory.
-    /// Nothing is sent to the client: this is for a guest who is leaving or
-    /// whose server is closing. The guest must be in `host.hub.guests` and the
-    /// level they are in must be the one in place.
+    /// Does not send a close packet or remove window 0: ordinary menu
+    /// replacement keeps its cursor and crafting inputs. The guest's level
+    /// must be the one in place.
     pub(in crate::game) fn guest_close_all(&mut self, conn: u32) {
         self.guest_remove_menus(conn, MenuRemoval::Live);
+    }
+
+    /// Finish removal before saving or exporting a live guest. Neither menu's
+    /// cursor nor the inventory crafting grid is part of the saved player.
+    pub(in crate::game) fn guest_close_menus_for_save(&mut self, conn: u32) {
+        self.guest_close_all(conn);
+        self.lan_crafting_closed(conn, Some(0));
+    }
+
+    /// `Player.remove(CHANGED_DIMENSION)` removes both menus without dropping
+    /// a cursor that still fits. Overflow belongs in the level the guest left.
+    /// Return the retired nonzero window in case the trip fails before sending a respawn.
+    pub(in crate::game) fn guest_close_menus_for_travel(&mut self, conn: u32) -> Option<i32> {
+        self.guest_remove_menus(conn, MenuRemoval::ChangedDimension)
     }
 
     pub(in crate::game) fn guest_disconnected(&mut self, conn: u32) {
         self.guest_remove_menus(conn, MenuRemoval::Disconnected);
     }
 
-    pub(super) fn guest_remove_menus(&mut self, conn: u32, removal: MenuRemoval) {
-        let Some(host) = self.lan.as_ref() else {
-            return;
-        };
-        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
-            return;
-        };
-        let open_menu = host.hub.guests[gi]
-            .menu
-            .as_ref()
-            .map(|m| (m.window, m.slots));
-        if removal == MenuRemoval::Disconnected {
-            self.guest_drop_carried(gi);
+    fn guest_remove_menus(&mut self, conn: u32, removal: MenuRemoval) -> Option<i32> {
+        // Player.remove removes the inventory menu before the open window.
+        if removal != MenuRemoval::Live {
+            self.lan_crafting_removed(conn, Some(0), removal);
         }
+        let gi = self.guest_index(conn)?;
+        if removal.drops_items() {
+            self.guest_drop_carried(gi);
+        } else if let Some(host) = self.lan.as_mut() {
+            let returned = host.hub.take_closed_menu_cursors(conn).collect();
+            self.lan_place_back(gi, returned);
+        }
+        // Overflow listeners can open a menu. Remember the window we will
+        // retire now, not the one that was open before returning cursors.
+        let host = self.lan.as_ref()?;
+        let retired_window =
+            super::super::native_menus::open_menu_of(host, conn).map(|(window, _, _)| window);
+        let open_menu = host
+            .hub
+            .guest(conn)
+            .and_then(|g| g.menu.as_ref())
+            .map(|m| (m.window, m.slots));
         if let Some((window, slots)) = open_menu {
             self.guest_container_closed(conn);
             if let Slots::Block(key) = slots
@@ -446,22 +539,26 @@ impl Game<'_> {
             {
                 self.close_guest_vehicle_menu(conn, key);
             }
-            if let Some(host) = self.lan.as_mut() {
-                host.hub.container_closed(conn, window);
+            // Returning queued cursors and closing a container can both call
+            // listeners that remove another player, shifting the guest list.
+            if let Some(gi) = self.guest_index(conn)
+                && let Some(carried) =
+                    self.with_own_record(gi, |host, _| host.hub.container_closed(conn, window))
+            {
+                if removal.drops_items() {
+                    self.drop_guest_items(gi, vec![carried]);
+                } else {
+                    self.lan_place_back(gi, vec![carried]);
+                }
             }
         }
-        self.lan_merchant_closed(conn, None);
+        self.lan_merchant_removed(conn, None, removal);
         self.lan_crafting_removed(conn, None, removal);
-        if removal == MenuRemoval::Disconnected {
-            self.lan_crafting_removed(conn, Some(0), removal);
-        }
-        self.lan_station_closed(conn, None);
+        self.lan_station_removed(conn, None, removal);
         self.lan_mount_closed(conn, None);
-        if removal == MenuRemoval::Live {
-            self.guest_carried_back(gi);
-        }
         // `PlayerContainerEvent.Close`, after the menu's `removed`.
         self.player_menu_closing(conn);
+        retired_window
     }
 
     /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
@@ -517,19 +614,26 @@ impl Game<'_> {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
-        let far: Vec<u32> = host
+        let far: Vec<_> = host
             .hub
             .guests
             .iter()
-            .filter(|g| host.hub.here(g))
+            .filter(|g| host.hub.here(g) && !self.player_tick_canceled(g.conn))
             .filter(|g| {
                 (g.dead && super::super::native_menus::open_menu_of(host, g.conn).is_some())
                     || !self.container_menu_valid(g)
             })
-            .map(|g| g.conn)
+            .map(|g| (g.conn, g.dead))
             .collect();
-        for conn in far {
-            self.guest_close_menus_and_tell(conn);
+        for (conn, dead) in far {
+            self.guest_close_menus(
+                conn,
+                if dead {
+                    MenuRemoval::Killed
+                } else {
+                    MenuRemoval::Live
+                },
+            );
         }
     }
 
@@ -542,10 +646,9 @@ impl Game<'_> {
         g.menu.as_ref().is_none_or(|m| {
             m.slots.valid(&self.world)
                 && m.still_valid(&host.hub.loop_context, &self.world, g)
-                && !m.pos.is_some_and(|k| {
-                    k.1 == crate::game::minecarts::CART_KEY_Y
-                        && !self.chest_vehicle_still_valid(k.2, g)
-                })
+                && !matches!(m.slots, Slots::Block((_, y, id))
+                    if y == crate::game::minecarts::CART_KEY_Y
+                        && !self.chest_vehicle_still_valid(id, g))
         })
     }
 
@@ -589,17 +692,22 @@ impl Game<'_> {
     /// window with it, so the click lands on nothing
     /// (`ServerGamePacketListenerImpl.handleContainerClick` and the others
     /// ask `stillValid` first).
-    pub(super) fn guest_validate_menu(&mut self, conn: u32) {
+    pub(super) fn guest_validate_menu(&mut self, conn: u32) -> bool {
         if self.guest_menu_still_valid(conn) {
-            return;
+            return true;
         }
         self.guest_close_menus_and_tell(conn);
+        false
     }
 
     /// `ServerPlayer.closeContainer`: the client is told to close each window first, and
     /// then every menu the guest has open closes through `guest_close_all` (the lid,
     /// stand-ins, the cursor stack back to the inventory, `PlayerContainerEvent.Close`), once.
     pub(in crate::game) fn guest_close_menus_and_tell(&mut self, conn: u32) {
+        self.guest_close_menus(conn, MenuRemoval::Live);
+    }
+
+    pub(super) fn guest_close_menus(&mut self, conn: u32, removal: MenuRemoval) {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
@@ -609,10 +717,12 @@ impl Game<'_> {
             .and_then(|g| g.menu.as_ref().map(|m| m.window))
             .into_iter()
             .collect();
+        // These windows stay in the host even while GuestPlay is out on a guest turn.
+        if let Some(menus) = host.menus.get(&conn) {
+            windows.extend(menus.crafting.table.as_ref().map(|t| t.0));
+            windows.extend(menus.station.as_ref().map(|s| s.window));
+        }
         if let Some(p) = host.play.get(&conn) {
-            let menus = host.menus.get(&conn);
-            windows.extend(menus.and_then(|m| m.crafting.table.as_ref()).map(|t| t.0));
-            windows.extend(menus.and_then(|m| m.station.as_ref()).map(|s| s.window));
             windows.extend(p.lectern.as_ref().map(|l| l.window));
             windows.extend(p.merchant.as_ref().map(|m| m.window));
             windows.extend(p.mount_window.as_ref().map(|m| m.window));
@@ -623,7 +733,7 @@ impl Game<'_> {
                     .send_to(conn, &C::ContainerClose(play::ContainerClose { container }));
             }
         }
-        self.guest_close_all(conn);
+        self.guest_remove_menus(conn, removal);
     }
 
     /// `ContainerEntity.isChestVehicleStillValid`: the chest minecart or chest

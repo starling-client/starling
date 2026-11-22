@@ -21,9 +21,8 @@ impl ItemEntity {
             position,
             previous: position,
             velocity,
-            on_ground: false,
+            ground: Default::default(),
             vertical_collision: false,
-            horizontal_collision: false,
             fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
@@ -56,7 +55,7 @@ impl ItemEntity {
         if !self.was_touching_water && moved.y < 0.0 {
             self.fall_distance -= f64::from(moved.y as f32);
         }
-        if self.on_ground {
+        if self.ground.on_ground {
             if let Some((_, distance)) = &mut step.landed {
                 *distance = self.fall_distance;
             }
@@ -85,9 +84,10 @@ mod tests {
             Vec3::ZERO,
             0.0,
         );
-        item.on_ground = true;
+        item.ground.on_ground = true;
         let mut step = ItemStep {
             old_velocity: Vec3::ZERO,
+            restitution: None,
             landed: Some((BlockPos::new(0, 0, 0), 12.0)),
             movement: Some(Vec3::new(0.0, -2.0, 0.0)),
             vertical_contact: None,

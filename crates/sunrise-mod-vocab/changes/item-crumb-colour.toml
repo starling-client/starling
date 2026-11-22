@@ -1,0 +1,3 @@
+ids = ["handle:ParticleOptions::with_color"]
+why = "ParticleOptions::color is now read by the item-break particles (item and its item_* variants): they multiply their red, green and blue by it at spawn and ignore its alpha, and ParticleOptions::with_color sets it, so a mod can tint an item or fluid crumb (#3283). An item crumb's colour that is not finite or has a component outside 0.0..=1.0 is refused by add_particle."
+migrate = "Nothing to change: the default white leaves every item particle as it was, and no Wire layout changes. A mod that set color on an item crumb's options (which was ignored) now sees it applied."

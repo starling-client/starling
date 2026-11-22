@@ -5,14 +5,14 @@
 //! works out where the player comes out itself and follows with a position packet that
 //! changes nothing, or puts the player back.
 use super::Game;
-use sunrise_client::lan::hub::passage_cross::{REACH, crossing_source, refusal_named};
-use sunrise_core::geometry::Vec3 as Motion;
-use sunrise_protocol::packets::{configuration::CustomPayload, play::Serverbound as S};
-use sunrise_protocol::passage_sync::{CROSS_CHANNEL, Cross, decode_cross, encode_cross};
 use mod_api::{
     Passage, PassageCrossError as Error, PassageCrossRefusal as Refusal, PassageId, PassageTurn,
     Vec3,
 };
+use sunrise_client::lan::hub::passage_cross::{REACH, crossing_source, refusal_named};
+use sunrise_core::geometry::Vec3 as Motion;
+use sunrise_protocol::packets::{configuration::CustomPayload, play::Serverbound as S};
+use sunrise_protocol::passage_sync::{CROSS_CHANNEL, Cross, decode_cross, encode_cross};
 
 /// Where `point` comes out of `p`: as far from the destination, turned, as it is from the
 /// opening's centre (Immersive Portals' `Portal.transformPoint`).
@@ -109,6 +109,7 @@ impl Game<'_> {
             data,
         });
         if !self.send_play(payload) {
+            self.native_net.holds.borrow_mut().clear();
             return Err(Error::Cancelled);
         }
         // The send hook's listeners only read the host: the player is still there.
@@ -141,6 +142,9 @@ impl Game<'_> {
             log::debug!("Sunrise: a passage refusal this build does not know: {reason}");
             return;
         };
+        if self.passages.crossing == Some(PassageId::from_raw(id)) {
+            self.native_net.holds.borrow_mut().clear();
+        }
         self.passages.refused = Some((PassageId::from_raw(id), why));
     }
 
@@ -265,14 +269,14 @@ mod tests {
     use super::super::native_passages::tests::{doorway, listen, packets, passage_messages};
     use super::{carried, turned, within_reach, yaw_turn};
     use crate::game::Dim;
+    use mod_api::{DimensionKey, Passage, PassageCrossRefusal as Refusal, PassageId, Vec3};
+    use std::sync::{Arc, mpsc};
     use sunrise_client::chunk::Chunk;
     use sunrise_client::lan::guest::InboxItem;
     use sunrise_client::lan::hub::passage_cross::refusal_code;
     use sunrise_protocol::packets::configuration::CustomPayload;
     use sunrise_protocol::packets::play::{self, Clientbound as C, Serverbound as S, relative};
     use sunrise_protocol::passage_sync::{CROSS_CHANNEL, Cross, Message, encode_cross};
-    use mod_api::{DimensionKey, Passage, PassageCrossRefusal as Refusal, PassageId, Vec3};
-    use std::sync::{Arc, mpsc};
 
     /// The doorway comes out 24 blocks east, turned a clockwise quarter.
     fn near_doorway() -> Passage {
@@ -398,7 +402,7 @@ mod tests {
     /// no correction follows. A passage that leads into the air: the confirmation, checked
     /// off the ground, and the fall after it pass too, and the player is not floating.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_server_follows_a_crossing_without_a_snap() {
         for (destination_y, steps) in [(65.5, [65.0, 65.0]), (75.5, [74.9216, 74.6862])] {
             with_guests(|game| {
@@ -477,7 +481,7 @@ mod tests {
     /// decided from its own `from` before the hub reads the second, and is followed; the
     /// second, read the next tick while the first's acceptance waits, is refused `Pending`.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn two_crossings_in_a_row_are_decided_each_from_its_own_source() {
         with_guests(|game| {
             let rx = scene(game, [0.5, 65.0, 8.25]);
@@ -515,7 +519,7 @@ mod tests {
     /// does not track, feet more than 20 blocks from the opening, and a move to where it
     /// crossed from that the move checks turn down.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_crossing_the_server_cannot_follow_is_refused_by_name() {
         with_guests(|game| {
             let rx = scene(game, [0.5, 65.0, 8.25]);
@@ -623,7 +627,7 @@ mod tests {
     /// A mod hears the crossing, its passage and the feet before it, before the server
     /// follows, and cancels it: refused as `Vetoed`, and the player stays.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and an isolated process for native mods"]
+    #[ignore = "daily"]
     fn a_mod_vetoes_a_crossing_before_the_server_follows() {
         let mods = vec![mod_api::ModEntry::new("veto", Box::new(Veto))];
         mod_platform::testing::with_mods(mods.into(), || {

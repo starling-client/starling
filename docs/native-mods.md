@@ -1,6 +1,6 @@
 # Native mods
 
-Native mod docs live in the modding book: [native mods](modding/src/how-to/native-mods.md), [trait mods, Parts and attachments](modding/src/concepts/parts.md), [injections](modding/src/concepts/injections.md) and the [hook notes](https://arismoko.github.io/sunrise/reference/hook-notes.html).
+Native mod docs live in the modding book: [native mods](modding/src/how-to/native-mods.md), [trait mods, Parts and attachments](modding/src/concepts/parts.md), [the native route](modding/src/concepts/native-route.md) and the [hook notes](https://sunrise-org.github.io/sunrise/reference/hook-notes.html).
 
 ## Living death version 2
 
@@ -31,29 +31,6 @@ and permits a subsequent genuine death; transaction abort restores the prior
 health and continuation together. Saved mobs retain the optional Sunrise-owned
 `sunrise:death_canceled` bit alongside their real `DeathTime`; ordinary loading
 resumes a saved dying body without running its death callback or loot again.
-
-### Portable contract regression
-
-`crates/sunrise-mod-wasm/tests/fixture/src/lending.rs` supplies the same
-`Lender::living_death` listener and `check_death` assertions to the native
-`collect_positions_copy_in_and_out_natively_as_in_the_real_guest` test and
-the compiled-guest `real_member` test. They dispatch a player/arrow source
-with distinct causing/direct IDs and a nonintegral position, and check the
-bow's identity, damage and complete custom-component patch, both optional
-weapon branches, cancellation, and an unchanged borrowed weapon. Their scope is
-the portable record boundary, not Game death timing or loot behavior.
-
-Build the matching real guest and standard module, then run both selectors:
-
-```sh
-cargo build -p cargo-sunrise-mod
-# From crates/sunrise-mod-wasm/tests/fixture, with ROOT set to the repository:
-"$ROOT/target/debug/cargo-sunrise-mod" sunrise-mod build --wasm --catalog points.json
-"$ROOT/target/debug/cargo-sunrise-mod" sunrise-mod wasm-std "$ROOT/target/sunrise-wasm-std.wasm" --catalog points.json
-# From the repository root:
-cargo test -p sunrise-mod-wasm --features listener-fixture --test native_listener collect_positions_copy_in_and_out_natively_as_in_the_real_guest -- --exact
-SUNRISE_WASM_FIXTURE="$PWD/crates/sunrise-mod-wasm/tests/fixture/target/sunrise-mod/wasm_fixture.smod" SUNRISE_WASM_STD="$PWD/target/sunrise-wasm-std.wasm" cargo test -p sunrise-mod-wasm --features listener-fixture --test real_member real_member -- --ignored --exact
-```
 
 ### Victim ownership and hot path
 
@@ -110,7 +87,7 @@ python3 tools/native_dylib_probe.py --sdk prebuilt --output target/native-dylib-
 
 For a server archive, add `--server` to the build command. Use a fresh
 `CARGO_TARGET_DIR` when collecting a clean-build proof; all commands must use the
-same compiler as `launcher/src/rust_toolchain.rs`.
+same compiler as `https://github.com/sunrise-org/sunrise-launcher/blob/main/src/rust_toolchain.rs`.
 
 ## Upstream service contracts carried by this sync
 
@@ -123,13 +100,12 @@ must be converted to the fork's hook catalog before being advertised as availabl
   owner would receive them with `show_death_messages` enabled. Listeners may replace
   or suppress the message in dispatch order. The server-only named-mob log is not
   a second player-message hook.
-- Dedicated-server settings describe the live listener: account authentication,
-  bound port and whether Velocity forwarding is active. They never expose the
-  forwarding secret, and are unavailable before listening or on integrated/LAN
+- Dedicated-server settings describe the live listener: account authentication
+  and bound port. They are unavailable before listening or on integrated/LAN
   servers. Secure-profile enforcement and hardcore are not part of this read.
-- Vehicle and passenger reads use entity handles (`entity_vehicle` and
-  `entity_passengers` on `Host`), not parallel numeric-ID helpers. Passenger order
-  follows vanilla, with the controlling passenger first. These are read-only.
+- Vehicle and passenger reads use `EntityRef::vehicle` and `EntityRef::passengers` with the
+  shared `Host`, not parallel numeric-ID helpers. On the client these reads use the server's
+  passenger packets, preserving their order. These are read-only.
 - UUID lookup from a read-only context must not swap levels. A mutable lookup can
   reach other loaded levels; entity NBT reads there must refuse unloaded levels,
   missing entities and client-side use rather than load a level implicitly.

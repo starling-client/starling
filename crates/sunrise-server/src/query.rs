@@ -15,8 +15,6 @@ use crate::{
     engine,
     supervisor::note,
 };
-use sunrise_platform::server_files::properties::{ServerProperties, SystemEntropy};
-use sunrise_server_launch::config;
 use std::{
     collections::HashMap,
     io,
@@ -26,6 +24,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use sunrise_platform::server_files::properties::{ServerProperties, SystemEntropy};
+use sunrise_server_launch::config;
 
 /// `QueryThreadGs4.GAME_TYPE` and `GAME_ID`.
 const GAME_TYPE: &str = "SMP";

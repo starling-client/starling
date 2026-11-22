@@ -1,0 +1,3 @@
+ids = ["hook:minimap", "method:Hooks::minimap", "type:Minimap", "type:MinimapEvent"]
+why = "The client replace hook minimap (Hooks::minimap, MinimapEvent) and its Minimap type are removed: they let a native mod show a map that Sunrise itself drew (its chunk tiles, image and atlas slot `sunrise/minimap`), which vanilla 26.3 has no counterpart for, and that drawing is deleted from the game."
+migrate = "A mod that set Minimap draws its own map: keep its picture with ClientRenderClientHost::create_dynamic_texture and update_dynamic_texture, read terrain through the client level reads (`client_block_changed` tells it which chunk to redraw), and draw it in render_gui_post with corners.place. sunrise-org/sunrise-minimap is a mod that draws its map this way."

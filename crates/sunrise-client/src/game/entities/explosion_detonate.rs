@@ -154,10 +154,10 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use crate::game::native_entity_refs::tests::with_game;
-    use sunrise_client::mobs::Mob;
-    use sunrise_core::{geometry::Vec3, random::RandomSource};
     use mod_api::{EntityRef, ExplosionDetonateEvent, Hooks, ServerHost};
     use std::sync::{Arc, Mutex};
+    use sunrise_client::mobs::Mob;
+    use sunrise_core::{geometry::Vec3, random::RandomSource};
 
     struct Noop;
     #[mod_api::__subscriptions]
@@ -318,7 +318,7 @@ mod tests {
             }
             fn living_damage_post(
                 &self,
-                _: &mut dyn mod_api::LevelRandomHost,
+                _: &mut dyn mod_api::HitHost,
                 event: &mut mod_api::LivingDamagePostEvent<'_>,
             ) {
                 if let Ok(id) = u32::try_from(event.entity) {
@@ -377,6 +377,16 @@ mod tests {
         mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 zombie(game, 900, 2.0);
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                let stone = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:stone")
+                    .unwrap();
+                game.world.set(0, 0, 0, stone).unwrap();
                 let ground = game.world.block(0, 0, 0);
                 assert!(!game.res.facts().is_air(ground), "the ground is solid");
                 explode(game);
@@ -574,7 +584,10 @@ mod tests {
                 }
             }
         }
-        for listened in [false, true] {
+        // The removed target is a boat, which leaves through the removal
+        // journal, or a mob, which stays in its storage flagged removed. A
+        // mob is walked before the boats, so then its remover is a mob too.
+        for (listened, mob) in [(false, false), (true, false), (false, true), (true, true)] {
             let heard = Arc::new(Mutex::new(Vec::new()));
             let mut mods = vec![mod_api::ModEntry::new(
                 "remove",
@@ -586,6 +599,10 @@ mod tests {
             mod_platform::testing::with_mods(mods.into(), || {
                 with_game(|game| {
                     for (id, x) in [(970, -1.0), (971, 0.0), (972, 1.0)] {
+                        if mob && id != 972 {
+                            zombie(game, id, x);
+                            continue;
+                        }
                         game.boats.push(crate::game::boats::Boat::new(
                             id,
                             "oak".into(),
@@ -599,12 +616,15 @@ mod tests {
                             .iter()
                             .all(|boat| ![970, 971, 972].contains(&boat.id))
                     );
+                    if let Some(zombie) = game.mobs.iter().find(|m| m.id == 971) {
+                        assert_eq!(zombie.health, 20.0, "the discarded zombie is not hurt");
+                    }
                 })
             });
             assert_eq!(
                 *heard.lock().unwrap(),
                 [970, 972],
-                "subscription: {listened}"
+                "subscription: {listened}, mob: {mob}"
             );
         }
     }
@@ -627,6 +647,7 @@ mod tests {
             fixed: false,
             invisible: false,
             check_interval: 0,
+            ticks: 0,
             custom_name: None,
             random: LegacyRandom::new(1),
         });
@@ -640,6 +661,7 @@ mod tests {
             width: 1,
             height: 1,
             check_interval: 0,
+            ticks: 0,
         });
         game.cushions.push(Cushion {
             attachment_lifetime: Default::default(),

@@ -13,13 +13,26 @@ pub trait Hooks {
     /// level event played with the smoke: 1000 the click, 1001 the fail sound,
     /// or 0 for nothing at all. Leave answer None and `dispense_item` decides,
     /// as it did before.
+    /// A disabled owner's subscribed method retains the stack and emits no dispense event unless
+    /// an earlier enabled Part supplies a reply the engine accepts.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "answer",
         scope = "block",
+        inert = "signal",
         key = "state",
-        neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)"
+        neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)",
+        version = 2
     )]
-    fn dispense_method();
+    fn dispense_method(
+        dimension: &str,
+        pos: [i32; 3],
+        facing: Direction,
+        state: BlockState,
+        stack: &ItemStack,
+        answer: &mut Option<mod_api::Dispensed>,
+        #[engine] inert: &mut bool,
+    );
 }

@@ -26,7 +26,6 @@ sunrise-client-lib	lib	save::tests::native_saved_ids_must_match_the_declared_blo
 sunrise-client-lib	lib	structure_blocks::tests::declared_structure_entities_keep_template_payload_not_template_type	crates/sunrise-client/src/structure_blocks.rs:347	child-process
 sunrise-client-lib	lib	telemetry::tests::benchmark_reports_need_their_own_consent_and_go_dated_to_the_day	crates/sunrise-client/src/telemetry.rs:402	child-process
 sunrise-client-lib	test:lan_bot	a_synced_mod_block_entity_reaches_the_chunks_players_once_a_tick	crates/sunrise-client/tests/lan_bot.rs:1616	child-process
-sunrise-client-render	lib	split_ui::tests::locale_switch_and_pack_overrides_keep_the_same_draft	crates/sunrise-client-render/src/split_ui.rs:1570	child-process
 sunrise-command	lib	item::tests::block_entity_data_takes_a_type_a_mod_declared	crates/sunrise-command/src/item.rs:896	child-process
 sunrise-game	test:compile_child	real_executable_refuses_malformed_hidden_requests	crates/sunrise-game/tests/compile_child.rs:3	child-process
 sunrise-game	test:dedicated_walk	a_dedicated_server_keeps_ticking_while_a_player_walks	crates/sunrise-game/tests/dedicated_walk.rs:88	child-process
@@ -51,7 +50,6 @@ sunrise-mod-api-gen	lib	internals::tests::discovery_keeps_the_catalog_and_normal
 sunrise-mod-api-gen	lib	internals::tests::staged_signatures_expose_private_types_and_traits	crates/sunrise-mod-api-gen/src/internals.rs:2018	child-process
 sunrise-mod-api-gen	lib	internals::tests::listed_function_module_helpers_compile_from_outside	crates/sunrise-mod-api-gen/src/internals.rs:2467	child-process
 sunrise-mod-api-gen	lib	tests::only_a_game_hooks_placeholder_body_is_filled	crates/sunrise-mod-api-gen/src/lib.rs:904	child-process
-sunrise-mod-api-gen	lib	listener_output_fixture::tests::mixed_outputs_commit_per_listener_natively	crates/sunrise-mod-api-gen/src/listener_output_fixture.rs:52	child-process
 sunrise-mod-api-gen	lib	parts::tests::a_new_kind_supplies_union_methods_impls_and_fixtures_without_shared_edits	crates/sunrise-mod-api-gen/src/parts.rs:163	child-process
 sunrise-mod-api-gen	lib	parts::installation::tests::a_foreign_author_constructs_nested_inputs_without_access_to_lookup_fields	crates/sunrise-mod-api-gen/src/parts/installation.rs:472	child-process
 sunrise-mod-api-gen	lib	replace::tests::trait_installers_compile_with_warnings_denied	crates/sunrise-mod-api-gen/src/replace.rs:1669	child-process
@@ -111,10 +109,6 @@ sunrise-mod-package	lib	runtime_leases::tests::retiring_an_exclusive_unit_key_do
 sunrise-mod-package	lib	runtime_leases::tests::publication_snapshot_excludes_new_builds_without_blocking_game_tree_claims	crates/sunrise-mod-package/src/runtime_leases/tests.rs:272	child-process
 sunrise-mod-package	lib	runtime_leases::tests::unit_removal_excludes_new_installs_and_games_through_atomic_detachment	crates/sunrise-mod-package/src/runtime_leases/tests.rs:298	child-process
 sunrise-mod-package	lib	runtime_leases::tests::unit_removal_refuses_a_redirected_final_component	crates/sunrise-mod-package/src/runtime_leases/tests.rs:379	child-process
-sunrise-mod-wasm	lib	compile_budget_tests::actual_child_timeout_then_same_module_succeeds_and_is_cached	crates/sunrise-mod-wasm/src/compile_budget_tests.rs:28	child-process
-sunrise-mod-wasm	lib	compile_budget_tests::unavailable_or_untrusted_cache_refuses_applied_unix_budget	crates/sunrise-mod-wasm/src/compile_budget_tests.rs:82	child-process
-sunrise-mod-wasm	lib	compile_budget_tests::invalid_startup_settings_publish_and_report_refusals_on_both_sides	crates/sunrise-mod-wasm/src/compile_budget_tests.rs:153	child-process
-sunrise-mod-wasm	lib	module_cache::tests::child_success_avoids_in_process_compile	crates/sunrise-mod-wasm/src/module_cache_tests.rs:489	child-process
 sunrise-perf	test:cli	the_binary_refuses_an_unfinished_file_with_the_message_and_exit_code_1	crates/sunrise-perf/tests/cli.rs:228	child-process
 sunrise-perf	test:mcp	the_mcp_command_serves_the_protocol_on_stdio	crates/sunrise-perf/tests/mcp.rs:815	child-process
 sunrise-perf	test:query_cli	a_query_prints_one_json_line_and_exits_zero	crates/sunrise-perf/tests/query_cli.rs:23	child-process
@@ -166,5 +160,5 @@ sunrise-system	lib	tests::this_process_is_measured	crates/sunrise-system/src/lib
 sunrise-world	lib	native_load_context::tests::fifo_and_directory_do_not_block_or_become_settings	crates/sunrise-world/src/native_load_context.rs:476	child-process
 sunrise-world	lib	native_load_context::tests::validates_open_handle_after_entry_replacement	crates/sunrise-world/src/native_load_context.rs:526	child-process
 xtask	test:book_chapters	the_hook_notes_chapter_is_the_page_alone	xtask/tests/book_chapters.rs:31	child-process
-xtask	test:packaging	client_and_server_layouts_require_and_ship_std	xtask/tests/packaging.rs:18	child-process
+xtask	test:packaging	client_and_server_layouts_require_and_ship_companion_programs	xtask/tests/packaging.rs:18	child-process
 xtask	bin:xtask	tests::missing_inputs_are_named_before_the_folder_is_touched	xtask/src/main.rs:649	child-process

@@ -1,0 +1,3 @@
+ids = ["hook:remove_block"]
+why = "remove_block version 2 exposes replacement: the exact fluid legacy block state written when answer is unanswered (air when dry, water for a waterlogged block)."
+migrate = "Add the replacement parameter after moved_by_piston at hook call sites and read event.replacement in Part listeners. Rebuild native mods."

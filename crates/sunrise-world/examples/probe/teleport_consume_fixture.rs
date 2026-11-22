@@ -1,16 +1,16 @@
 use crate::support::common::f64_bits;
-use sunrise_core::{
-    geometry::Vec3,
-    position::BlockPos,
-    random::{LegacyRandom, RandomSource, XoroshiroRandom},
-};
-use sunrise_world::teleport_consume::{TeleportConsume, TeleportConsumeWorld};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::{
+    geometry::Vec3,
+    position::BlockPos,
+    random::{LegacyRandom, RandomSource, XoroshiroRandom},
+};
+use sunrise_world::teleport_consume::{TeleportConsume, TeleportConsumeWorld};
 fn n(v: &Value, k: &str) -> i32 {
     v[k].as_i64().unwrap() as i32
 }

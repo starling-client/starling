@@ -32,8 +32,7 @@ pub struct Slot {
 pub struct GlintTextures {
     pub width: u32,
     pub height: u32,
-    /// One `width` x `height` RGBA image per slot, slot after slot. Kept after the upload: every
-    /// split-screen player's renderer builds its own array from it.
+    /// One `width` x `height` RGBA image per slot, slot after slot.
     pub pixels: Vec<u8>,
     /// Per rule (an index into `CitRules::rules`): its slot; `None` for other kinds of rules,
     /// textures that did not load and rules past `MAX_SLOTS`.

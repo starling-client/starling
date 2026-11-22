@@ -1,0 +1,3 @@
+ids = ["hook:can_place_item", "type:CanPlaceItemEvent.pos", "type:CanPlaceItemEvent.state"]
+why = "The admission part now receives the position and current block state of the entity whose slot it is asked about. A single block-entity type can apply different rules to its blocks or their state properties."
+migrate = "Rebuild native listeners for can_place_item version 2. The two new inputs are read-only; existing predicates can ignore them."

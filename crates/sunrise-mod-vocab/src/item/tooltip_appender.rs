@@ -23,8 +23,9 @@ pub enum TooltipPlacement {
     AfterAll,
 }
 
-/// What a tooltip is about, as its appender gets it: the local player and the tooltip's flags.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Shared context for an item's own tooltip and component appenders: player,
+/// flags and vanilla `Item.TooltipContext.tickRate()`.
+#[derive(Clone, Copy, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct TooltipAppendContext {
@@ -32,6 +33,8 @@ pub struct TooltipAppendContext {
     pub player: u128,
     /// The local player's entity id.
     pub player_entity_id: i32,
+    /// The client level's tick rate, or 20 when no client level is present.
+    pub tick_rate: f32,
     /// `TooltipFlag.isAdvanced` (F3+H).
     pub advanced: bool,
     /// `TooltipFlag.isCreative`: a creative tab's own slot.
@@ -45,7 +48,7 @@ pub struct TooltipAppendContext {
 /// only while its mod is enabled. Multiple registrations for the same component all run.
 pub trait TooltipAppender: Send + Sync + 'static {
     /// Add lines to `lines` for `stack`, each with a colour as `rgba` packs it (`u32::MAX` keeps
-    /// the text's own). `context` is the tooltip's player and flags.
+    /// the text's own). `context` is the tooltip's player, flags and client-level tick rate.
     fn append(
         &self,
         host: &dyn ClientHost,

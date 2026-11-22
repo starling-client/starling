@@ -2,10 +2,10 @@
 //! empties it.
 use super::Game;
 use super::dispenser::{CLICK, Dispensed, FAIL, Pos, offset};
+use mod_api::HostTransaction;
 use sunrise_client::{Result, items::ItemStack};
 use sunrise_core::geometry::Direction;
 use sunrise_world::{fluid::FluidKind, level::BucketContent};
-use mod_api::HostTransaction;
 
 impl Game<'_> {
     /// Whether the dispenser empties `item` as a filled bucket: a bucket of a

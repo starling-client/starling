@@ -5,14 +5,14 @@
 //! their pose, in VanillaSubtitleOracle's JSON lines.
 //!
 //! usage: subtitle_fixture RESOURCES INPUTS OUTPUT
+use serde_json::{Value, json};
+use std::{fs, io::Write, path::PathBuf};
 use sunrise_client::{
     hud::HudAtlas,
     hud_layout::{GuiDraw, IDENTITY, background_color, pose_apply},
     hud_overlays::{SubtitleFrame, SubtitleOverlay},
     lang,
 };
-use serde_json::{Value, json};
-use std::{fs, io::Write, path::PathBuf};
 
 fn vec3(v: &Value) -> [f64; 3] {
     std::array::from_fn(|i| v[i].as_f64().unwrap_or(0.0))

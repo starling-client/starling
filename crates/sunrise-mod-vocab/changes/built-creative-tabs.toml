@@ -1,0 +1,2 @@
+ids = ["method:prelude::ItemsHost::built_creative_tabs", "type:CreativeTabReadError"]
+why = "Read the last completed creative tab catalog through a shared Host without building or firing callbacks. CreativeTabReadError now implements AccessRefusal, so the creative catalog reads return Unavailable when the phase rejects access."

@@ -30,9 +30,9 @@ impl Game<'_> {
 mod tests {
     use super::*;
     use crate::game::native_entity_refs::tests::{prepare_entity_ticking_neighborhood, with_game};
+    use mod_api::DimensionKey;
     use sunrise_client::ticket_levels::Sources;
     use sunrise_core::position::ChunkPos;
-    use mod_api::DimensionKey;
 
     fn assert_reads(game: &Game<'_>, level: LevelRef, pos: [i32; 3], expected: Option<bool>) {
         assert_eq!(level.entity_ticking(game, pos), expected);
@@ -40,7 +40,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn ticking_reads_follow_live_tickets_bounds_and_residency() {
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn ticking_reads_refuse_each_unavailable_handle_independently() {
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();

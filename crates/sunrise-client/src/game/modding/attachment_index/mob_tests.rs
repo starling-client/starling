@@ -1,7 +1,7 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
-use sunrise_core::nbt::Tag;
 use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType};
+use sunrise_core::nbt::Tag;
 
 static VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "test",
@@ -38,7 +38,7 @@ fn mob(uuid: [i32; 4]) -> Tag {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -51,7 +51,7 @@ fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
         assert_eq!(index.lock().unwrap().snapshot(&key).len(), 1);
         VALUE.set(game, Holder::Entity(id), 7).unwrap();
         let old = game.query_mut(&VALUE).unwrap();
-        let row = old.iter().next().unwrap().unwrap();
+        let row = old.iter().try_next().unwrap().unwrap();
         let work = index.lock().unwrap().work_count();
         let replacement = game.mobs[0].clone();
         sunrise_client::join_seq::store_back(&mut game.mobs[0], replacement);
@@ -64,11 +64,11 @@ fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
             game.query(&VALUE)
                 .unwrap()
                 .iter()
-                .next()
+                .try_next()
                 .unwrap()
                 .unwrap()
-                .value,
-            &7
+                .with_value(game.attachment_frame_borrow(), |value| *value),
+            Ok(7)
         );
         let entity = game.entity(id).unwrap();
         assert!(game.entity_discard(entity));
@@ -85,12 +85,16 @@ fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
             row.set(game, 9),
             Err(mod_api::AttachmentRowError::StaleHolder)
         );
-        assert_eq!(*row.value(), 7);
+        assert_eq!(
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap(),
+            7
+        );
     });
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -102,7 +106,7 @@ fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
         assert_eq!(source.lock().unwrap().snapshot(&key).len(), 1);
         VALUE.set(game, Holder::Entity(id), 11).unwrap();
         let batch = game.query_mut(&VALUE).unwrap();
-        let row = batch.iter().next().unwrap().unwrap();
+        let row = batch.iter().try_next().unwrap().unwrap();
         game.enter_level(Dim::Nether).unwrap();
         assert_eq!(source.lock().unwrap().snapshot(&key).len(), 1);
         game.enter_level(Dim::Overworld).unwrap();
@@ -130,7 +134,11 @@ fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
             row.set(game, 12),
             Err(mod_api::AttachmentRowError::StaleHolder)
         );
-        assert_eq!(*row.value(), 11);
+        assert_eq!(
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap(),
+            11
+        );
         game.mobs.clear();
         assert!(
             game.attachment_indexes[&Dim::Nether]
@@ -143,7 +151,7 @@ fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saved_mob_binding_rebinds_retained_id_with_a_new_generation() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -151,7 +159,7 @@ fn saved_mob_binding_rebinds_retained_id_with_a_new_generation() {
         let id = game.load_mob(mob([25, 26, 27, 28]), None).unwrap();
         VALUE.set(game, Holder::Entity(id), 13).unwrap();
         let batch = game.query_mut(&VALUE).unwrap();
-        let row = batch.iter().next().unwrap().unwrap();
+        let row = batch.iter().try_next().unwrap().unwrap();
         let holder = game.entity(id).unwrap();
         let source = game.attachment_indexes[&Dim::Overworld].clone();
         let key = ("test".into(), "mana".into());
@@ -173,7 +181,11 @@ fn saved_mob_binding_rebinds_retained_id_with_a_new_generation() {
             row.set(game, 14),
             Err(mod_api::AttachmentRowError::StaleHolder)
         );
-        assert_eq!(*row.value(), 13);
+        assert_eq!(
+            row.with_value(game.attachment_frame_borrow(), |value| *value)
+                .unwrap(),
+            13
+        );
         game.mobs.clear();
         assert!(
             game.attachment_indexes[&Dim::Nether]
@@ -186,7 +198,7 @@ fn saved_mob_binding_rebinds_retained_id_with_a_new_generation() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn mob_first_store_binds_and_nested_rollback_retires_authority() {
     use mod_api::{AttachmentError, HostTransaction};
     with_game(|game| {
@@ -242,17 +254,17 @@ fn mob_first_store_binds_and_nested_rollback_retires_authority() {
             game.query(&VALUE)
                 .unwrap()
                 .iter()
-                .next()
+                .try_next()
                 .unwrap()
                 .unwrap()
-                .value,
-            &11
+                .with_value(game.attachment_frame_borrow(), |value| *value),
+            Ok(11)
         );
     });
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn mob_taken_store_refuses_without_writing_and_missing_store_refuses() {
     use mod_api::AttachmentError;
     with_game(|game| {
@@ -290,7 +302,7 @@ fn mob_taken_store_refuses_without_writing_and_missing_store_refuses() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn tnt_with_real_lifetime_accepts_first_store() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
@@ -304,7 +316,7 @@ fn tnt_with_real_lifetime_accepts_first_store() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn mob_inner_first_binding_commit_outer_abort_invalidates_retained_row() {
     use mod_api::{AttachmentError, HostTransaction};
     with_game(|game| {
@@ -319,28 +331,42 @@ fn mob_inner_first_binding_commit_outer_abort_invalidates_retained_row() {
         let holder = Holder::Entity(id);
         let mut retained = None;
         let result: Result<(), AttachmentError> = game.transaction(|host, _| {
+            let parent_query = host.query(&VALUE).unwrap();
             let inner: Result<(), AttachmentError> = host.transaction(|host, _| {
+                assert!(matches!(
+                    parent_query.iter().try_next(),
+                    Err(mod_api::AttachmentRowError::OutsideTransaction)
+                ));
                 VALUE.set(host, holder, 13)?;
-                retained = Some(host.query_mut(&VALUE).unwrap());
+                let query = host.query_mut(&VALUE).unwrap();
+                let row = query.iter().try_next().unwrap().unwrap();
+                assert_eq!(
+                    row.with_value(host.attachment_read_scope().unwrap(), |value| *value),
+                    Ok(13)
+                );
+                retained = Some(query);
                 Ok(())
             });
             inner?;
+            assert!(parent_query.iter().try_next().unwrap().is_none());
+            assert!(matches!(
+                retained.as_ref().unwrap().iter().try_next(),
+                Err(mod_api::AttachmentRowError::OutsideTransaction)
+            ));
             Err(AttachmentError::MissingHolder)
         });
         assert!(result.is_err());
         assert!(!game.mobs[0].attachment_lifetime.is_bound());
         let batch = retained.unwrap();
-        let row = batch.iter().next().unwrap().unwrap();
-        assert_eq!(row.value(), &13);
-        assert_eq!(
-            row.set(game, 99),
-            Err(mod_api::AttachmentRowError::StaleHolder)
-        );
+        assert!(matches!(
+            batch.iter().try_next(),
+            Err(mod_api::AttachmentRowError::OutsideTransaction)
+        ));
         VALUE.set(game, holder, 17).unwrap();
-        assert_eq!(
-            row.set(game, 99),
-            Err(mod_api::AttachmentRowError::StaleHolder)
-        );
+        assert!(matches!(
+            batch.iter().try_next(),
+            Err(mod_api::AttachmentRowError::OutsideTransaction)
+        ));
         assert_eq!(VALUE.get_existing(game, holder), Ok(Some(17)));
     });
 }

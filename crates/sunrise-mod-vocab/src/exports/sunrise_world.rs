@@ -5,6 +5,8 @@ pub use sunrise_core::identifier::Identifier;
 /// A level's key (`LevelDimension::Custom`).
 pub use sunrise_core::level_key::LevelKey;
 pub use sunrise_core::nbt::Compound;
+/// The NBT string: every `Compound` key and `Tag::String`, held as UTF-16 so it can keep Java's unpaired surrogates.
+pub use sunrise_core::nbt::JavaString;
 pub use sunrise_core::nbt::Tag;
 pub use sunrise_core::use_animation::UseAnimation;
 pub use {

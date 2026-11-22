@@ -2,23 +2,41 @@ use super::*;
 
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// A mouse press after the open screen's arms ran (`ScreenEvent.MouseButtonPressed.Post`).
+    /// A mouse press after its receiving screen ran (`ScreenEvent.MouseButtonPressed.Post`).
     pub(in crate::game) fn native_screen_mouse_button_pressed_post(
         &self,
         screen: &ScreenView<'_>,
         button: i32,
         modifiers: u32,
+        double_click: bool,
+        was_click_handled: bool,
+        result: &mut TriState,
     ) {
-        self.fire_screen_mouse_button_pressed_post(screen, button, modifiers);
+        self.fire_screen_mouse_button_pressed_post(
+            screen,
+            button,
+            modifiers,
+            double_click,
+            was_click_handled,
+            result,
+        );
     }
-    /// A mouse release after the open screen's arms ran (`ScreenEvent.MouseButtonReleased.Post`).
+    /// A mouse release after its receiving screen ran (`ScreenEvent.MouseButtonReleased.Post`).
     pub(in crate::game) fn native_screen_mouse_button_released_post(
         &self,
         screen: &ScreenView<'_>,
         button: i32,
         modifiers: u32,
+        was_release_handled: bool,
+        result: &mut TriState,
     ) {
-        self.fire_screen_mouse_button_released_post(screen, button, modifiers);
+        self.fire_screen_mouse_button_released_post(
+            screen,
+            button,
+            modifiers,
+            was_release_handled,
+            result,
+        );
     }
     /// A drag the open screen's handlers have seen (`ScreenEvent.MouseDragged.Post`).
     pub(in crate::game) fn native_screen_mouse_dragged_post(

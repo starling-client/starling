@@ -24,11 +24,6 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use github::GitHub;
 use hmac::{Hmac, Mac};
-use sunrise_mod_package::index::{
-    self, Kind,
-    registry::{self, Entry, EntryVersion, Sources},
-};
-use sunrise_release_sign::native_build::{self, Mod, Request as BuildRequest};
 use ratings::Ratings;
 use serde::Deserialize;
 use serde_json::json;
@@ -39,6 +34,11 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use sunrise_mod_package::index::{
+    self, Kind,
+    registry::{self, Entry, EntryVersion, Sources},
+};
+use sunrise_release_sign::native_build::{self, Mod, Request as BuildRequest};
 
 /// How long a sign-in lasts.
 const SESSION: u64 = 12 * 3600;
@@ -933,7 +933,8 @@ pub fn publish(
     let sha256 = index::sha256_file(file).map_err(bad)?;
     let extension = kind.extension().unwrap_or("zip");
     let version = EntryVersion {
-        native_binaries: Vec::new(),
+        sunrise: None,
+        builds: Vec::new(),
         version: form.version.trim().to_owned(),
         published: date(now()),
         game: form.game.trim().to_owned(),
@@ -956,6 +957,7 @@ pub fn publish(
             Entry {
                 id: form.id.clone(),
                 repo: None,
+                nightly: None,
                 kind: kind.clone(),
                 name: form.name.trim().to_owned(),
                 summary: form.summary.trim().to_owned(),
@@ -1043,7 +1045,7 @@ pub fn publish(
     };
     let mut entry = entry;
     let writes = page::place(&mut entry, form, images).map_err(bad)?;
-    // Every check CI runs but the trial run: the file as its kind, its id and
+    // Validate the submitted kind, id and
     // version, its signature, the entry's fields. CI runs it all again.
     let files = file.parent().unwrap_or(Path::new("."));
     std::fs::copy(file, files.join(&sha256)).map_err(|e| bad(e.to_string()))?;
@@ -1060,6 +1062,9 @@ pub fn publish(
             release: index::FILE_HOST,
             site: "https://example.invalid/",
             generated: String::new(),
+            releases: None,
+            nightly: None,
+            binary_checks: None,
         },
     )
     .map_err(|errors| bad(errors.join("; ")))?;
@@ -1122,6 +1127,7 @@ pub fn publish(
     let v = &project.versions[0];
     let capabilities: Vec<String> = v
         .capabilities
+        .known()
         .iter()
         .map(|c| format!("- may {}", c.describe()))
         .collect();
@@ -1134,7 +1140,7 @@ pub fn publish(
         "<!-- submitted-by: {login} -->\n🤖 Submitted through [{site}]({public}/mods/submit) by @{login}. The form opens the pull request with \
          the registry's token: neither Ludovic nor a reviewer wrote it.\n\n\
          | | |\n|---|---|\n| Project | `{id}` ({kind}, {new}) |\n| Version | {version} for {game} |\n| File | `{file}`, {size} bytes, SHA-256 `{sha256}` |\n| Signed | {signed} |\n| Source | {source} |\n\n{lists}\n\n\
-         The checks below run the file's own checks again and, for a mod, a trial run in the sandbox. \
+         The checks below validate the package without running mod code. \
          Reviewers: read the source and the checks' report before you approve.",
         public = config.public_url,
         site = config

@@ -1,0 +1,3 @@
+ids = ["method:LevelHost::block_entity_data"]
+why = "Friction callbacks can read the saved data of a resident block entity through the same engine read as other hosts. The method is required so a view cannot silently inherit a refusal."
+migrate = "Mods calling this method need no changes. Custom LevelHost implementations, including test doubles, must implement it and may return None explicitly if they expose no block entities."

@@ -60,7 +60,15 @@ def main():
         # sprites.rs holds it since the gfx -> sprites cut; older refs kept it in gfx.rs.
         code += '\n' + (function(source, 'sprite_mipmap_limit') if 'fn sprite_mipmap_limit' in source
                          else 'use sprites::sprite_mipmap_limit;')
-        code += '\n' + source[source.index('#[cfg(test)]\nmod sprite_upload_tests'):]
+        tests = source[source.index('#[cfg(test)]\nmod sprite_upload_tests'):]
+        if 'mod sprite_upload_tests;' in tests:
+            # The tests moved to gfx/sprite_upload_tests.rs; the generated main.rs has no such sibling
+            # file, so inline them from the same ref (or the working tree). Older refs hold them inline.
+            tests_path = 'crates/sunrise-client-render/src/gfx/sprite_upload_tests.rs'
+            body = (subprocess.check_output(['git', 'show', f'{args.ref}:{tests_path}'], cwd=ROOT, text=True)
+                    if args.ref else (ROOT / tests_path).read_text())
+            tests = tests.replace('mod sprite_upload_tests;', 'mod sprite_upload_tests {\n' + body + '\n}', 1)
+        code += '\n' + tests
     modules = '\n'.join(f'#[path = {json.dumps(str(ROOT / "crates/sunrise-client-render/src" / (name + ".rs")))}] mod {name};'
                         for name in ('mipmap', 'sprites', 'fast_hash'))
     (build / 'main.rs').write_text(modules + '\nuse sprites::SpriteAnimation;\n'

@@ -21,7 +21,7 @@ impl Game<'_> {
         }
         self.play_mob_bound_sound(index, "minecraft:item.dye.use", 7, 1.0, 1.0, !client);
         if !client && !self.creative {
-            self.with_hand(hand, |g| *g.held_mut() = (stack.count > 0).then_some(stack));
+            self.with_hand(hand, |g| g.consume_player_slot(g.held_slot(), 1));
         }
         true
     }

@@ -1,7 +1,7 @@
 //! Sunrise's mod registry from inside the game (Options > Mods > Browse mods,
 //! docs/design/mod-hotload.md): the same `index.json` the launcher reads, the
 //! projects this game can install, and installing one exactly as the launcher
-//! does (`launcher/src/browser/sunrise.rs`, `install_version`): downloaded into
+//! does (`https://github.com/sunrise-org/sunrise-launcher/blob/main/src/browser/sunrise.rs`, `install_version`): downloaded into
 //! `mod-browser/downloads/`, checked against the index (size, SHA-256, the
 //! author's signature, the file's own manifest), moved into `sunrise-mods/`
 //! and recorded in `mod-browser.json`, so the launcher lists, updates and
@@ -11,25 +11,23 @@
 //! game needs. Everything here blocks: the game runs it on a worker
 //! (`game/interface/mod_browser.rs`).
 use crate::mod_browser::Listing;
-use sunrise_mod_package::index::{self, Index, Kind, Project, Trust, Version};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use sunrise_mod_package::durable;
+use sunrise_mod_package::index::browser_state::{Installed, content_file};
+use sunrise_mod_package::index::{self, Index, Kind, Project, Trust, Version};
 
 /// Where the registry publishes its index (the launcher's `INDEX_URL`).
-pub const INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
+pub const INDEX_URL: &str = "";
 /// The Minecraft version this game is: the registry's `game`.
 pub const GAME: &str = sunrise_core::version::VERSION_ID;
 /// The registry's pages on the website, `<SITE>/<id>`.
-pub const SITE: &str = "https://playsunrise.net/mods";
+pub const SITE: &str = "";
 /// The last index fetched, beside `options.txt`: the launcher keeps its own copy there too.
 pub const CACHE: &str = "mod-browser/sunrise-index.json";
-/// What the launcher's browser installed (`installed::MANIFEST`).
-pub const MANIFEST: &str = "mod-browser.json";
 /// Where a download waits for its checks.
 const DOWNLOADS: &str = "mod-browser/downloads";
-/// Larger than any index should be.
-const MAX_INDEX: u64 = 16 << 20;
 /// The game asks the registry by this name.
 const AGENT: &str = concat!(
     "horizon-rust/horizon/",
@@ -54,6 +52,9 @@ fn is_local(at: &str) -> bool {
 /// The index from `at`, kept in `home`'s [`CACHE`]; the kept copy when the
 /// registry can't be reached.
 pub fn load_index(home: &Path, at: &str) -> Result<Index, String> {
+    if at.is_empty() {
+        return Err("The Sunrise mod registry is not available yet.".into());
+    }
     let local = is_local(at);
     let parse = |text: &str| match local {
         true => Index::parse_local(text),
@@ -90,7 +91,7 @@ fn fetch_text(at: &str) -> Result<String, String> {
     let mut text = String::new();
     response
         .into_reader()
-        .take(MAX_INDEX)
+        .take(index::MAX_INDEX)
         .read_to_string(&mut text)
         .map_err(|e| e.to_string())?;
     Ok(text)
@@ -104,14 +105,16 @@ pub fn installable<'a>(index: &Index, p: &'a Project) -> Option<&'a Version> {
     }
     index
         .installable(p, GAME)
-        .filter(|v| v.capabilities == [sunrise_mod_package::Capability::Registries])
+        .filter(|v| v.capabilities.known() == [sunrise_mod_package::Capability::Registries])
 }
 
 /// The registry's projects the browser offers, most downloaded first: content
 /// mods this game installs, with the version installed in `home` when there is
 /// one.
 pub fn listings(index: &Index, home: &Path) -> Vec<Listing> {
-    let installed = Installed::load(home).unwrap_or_default();
+    let installed = Installed::load(home)
+        .inspect_err(|e| log::warn!("Cannot load mod browser state: {e}"))
+        .unwrap_or_default();
     let mut out: Vec<Listing> = index
         .projects
         .iter()
@@ -165,13 +168,13 @@ pub fn install(
         .ok_or_else(|| format!("{id} isn't in Sunrise's registry"))?;
     let v = installable(index, p)
         .ok_or_else(|| format!("{} has no version this game can install", p.name))?;
-    let relative = format!("{}/{id}.smod", crate::mod_list::DIR);
+    let relative = content_file(id);
     let target = home.join(&relative);
     // Share the entire read/modify/write transaction with the launcher's installers.
     let _lock = sunrise_mod_package::install_lock::lock_home(home)
         .map_err(|e| format!("cannot lock mod browser in {}: {e}", home.display()))?;
     let mut list = Installed::load(home)?;
-    let ours = list.position(id);
+    let ours = list.single(id)?;
     let old_file = ours.and_then(|i| list.entries[i]["file"].as_str().map(str::to_owned));
     // A missing file does not relinquish the launcher's native pin or change its kind.
     if (ours.is_some() && old_file.as_deref() != Some(relative.as_str()))
@@ -182,9 +185,10 @@ pub fn install(
     {
         return Err("code mods are installed and updated in the launcher".into());
     }
+    list.check_file_claim(home, &relative, id)?;
     if target.exists() && old_file.as_deref() == Some(relative.as_str()) {
         let package = sunrise_mod_package::Package::read(&target)?;
-        if package.manifest.native.is_some() || package.manifest.wasm.is_some() {
+        if package.manifest.native.is_some() {
             return Err("code mods are installed and updated in the launcher".into());
         }
     }
@@ -206,18 +210,15 @@ pub fn install(
             crate::mod_list::DIR
         ));
     }
-    if let Some(other) = list.taken_by(&relative, id) {
-        return Err(format!("{relative} belongs to {other}: remove it first"));
-    }
     let bytes = get(&v.file.url, v.file.size)?;
     let staging = home.join(DOWNLOADS);
     fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
     let download = staging.join(format!("{id}.smod.part"));
-    fs::write(&download, &bytes).map_err(|e| format!("{}: {e}", download.display()))?;
+    durable::write(&download, &bytes).map_err(|e| format!("{}: {e}", download.display()))?;
     let checked = || -> Result<_, String> {
         let trust = index::check_file(index, p, v, &download)?;
         let package = sunrise_mod_package::Package::read(&download)?;
-        if package.manifest.native.is_some() || package.manifest.wasm.is_some() {
+        if package.manifest.native.is_some() {
             return Err("code mods are installed and updated in the launcher".into());
         }
         Ok(trust)
@@ -228,9 +229,8 @@ pub fn install(
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    fs::rename(&download, &target).map_err(|e| format!("{}: {e}", target.display()))?;
     let verified = trust == Trust::Verified;
-    list.record(serde_json::json!({
+    let entry = serde_json::json!({
         "source": "sunrise",
         "project": p.id,
         "slug": p.id,
@@ -243,8 +243,8 @@ pub fn install(
         "page": format!("{SITE}/{}", p.id),
         "dependency": false,
         "verdict": if verified { "Verified" } else { "Unsigned" },
-    }));
-    list.save(home)?;
+    });
+    list.publish(home, id, &download, entry)?;
     Ok(Done {
         id: id.to_owned(),
         version: v.version.clone(),
@@ -278,82 +278,6 @@ pub fn download(url: &str, max: u64) -> Result<Vec<u8>, String> {
         return Err(format!("{url} is larger than the index says"));
     }
     Ok(body)
-}
-
-/// `mod-browser.json`, kept as JSON values so the launcher's entries this
-/// game doesn't model (Modrinth resource packs, ported Java mods) are written
-/// back as they were.
-#[derive(Debug, Default)]
-struct Installed {
-    entries: Vec<serde_json::Value>,
-}
-
-impl Installed {
-    fn load(home: &Path) -> Result<Self, String> {
-        let path = home.join(MANIFEST);
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
-            }
-            Err(error) => return Err(format!("{}: {error}", path.display())),
-        };
-        let value: serde_json::Value =
-            serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
-        let entries = value["entries"]
-            .as_array()
-            .ok_or_else(|| format!("{}: entries must be an array", path.display()))?
-            .clone();
-        Ok(Self { entries })
-    }
-
-    fn save(&self, home: &Path) -> Result<(), String> {
-        let path = home.join(MANIFEST);
-        let part = home.join(format!(".{MANIFEST}.part"));
-        let text = serde_json::to_string_pretty(&serde_json::json!({ "entries": self.entries }))
-            .map_err(|e| e.to_string())?;
-        fs::write(&part, text).map_err(|e| format!("{}: {e}", part.display()))?;
-        fs::rename(&part, &path).map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    /// The registry's entry for project `id`.
-    fn position(&self, id: &str) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|e| e["source"] == "sunrise" && e["project"] == id)
-    }
-
-    /// The title of another entry that owns `file`.
-    fn taken_by(&self, file: &str, id: &str) -> Option<String> {
-        self.entries
-            .iter()
-            .find(|e| e["file"] == file && !(e["source"] == "sunrise" && e["project"] == id))
-            .map(|e| e["title"].as_str().unwrap_or("another mod").to_owned())
-    }
-
-    fn record(&mut self, entry: serde_json::Value) {
-        let id = entry["project"].clone();
-        self.entries
-            .retain(|e| !(e["source"] == "sunrise" && e["project"] == id));
-        self.entries.push(entry);
-    }
-
-    /// The version of `id` installed from the registry whose file is still
-    /// there; for a `sunrise-mods/<id>.smod` put there another way, its
-    /// manifest's version.
-    fn version_of(&self, home: &Path, id: &str) -> Option<String> {
-        if let Some(e) = self.position(id).map(|i| &self.entries[i])
-            && let (Some(version), Some(file)) = (e["version"].as_str(), e["file"].as_str())
-            && home.join(file).exists()
-        {
-            return Some(version.to_owned());
-        }
-        let path: PathBuf = home.join(crate::mod_list::DIR).join(format!("{id}.smod"));
-        sunrise_mod_package::Package::read(&path)
-            .ok()
-            .filter(|p| p.manifest.id == id)
-            .map(|p| p.manifest.version)
-    }
 }
 
 #[cfg(test)]

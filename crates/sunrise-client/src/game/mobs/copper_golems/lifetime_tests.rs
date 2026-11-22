@@ -1,9 +1,9 @@
 use super::*;
+use std::sync::{Arc, Mutex};
 use sunrise_core::geometry::Vec3;
 use sunrise_mod_runtime::attachments::{
     AttachmentType, Attachments, HasAttachmentLifetime, Holder, index::AttachmentIndex,
 };
-use std::sync::{Arc, Mutex};
 
 static VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "test",
@@ -15,7 +15,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
 };
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn statue_conversion_keeps_the_owner_until_physical_discard() {
     super::super::native_entity_refs::tests::with_game(|game| {
         game.world

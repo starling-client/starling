@@ -1,0 +1,3 @@
+ids = ["hook:baby_entity_spawn", "hook:mob_split"]
+why = "Explicitly refusing a birth or split now rolls back journaled listener writes in that action's level. Construction draws stay spent, and work in another level without an open transaction still commits immediately."
+migrate = "Request hook_version = 3 for either hook; the signatures are unchanged. Do not rely on journaled writes in the action's level surviving an explicit veto."

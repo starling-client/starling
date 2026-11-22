@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
 use sunrise_telemetry_server::github::{Filer, Issue};
 use sunrise_telemetry_server::store::Store;
 use sunrise_telemetry_server::{App, Config, router};
-use http_body_util::BodyExt;
-use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const DAY: u32 = 20_741;
@@ -41,7 +41,7 @@ fn hub(config: Config) -> Hub {
             labels: issue.labels.clone(),
         });
         Ok(format!(
-            "https://github.com/horizon-rust/horizon/issues/{}",
+            "https://github.com/sunrise-org/sunrise/issues/{}",
             1000 + opened.len()
         ))
     });
@@ -151,7 +151,7 @@ async fn a_report_becomes_an_issue_in_the_bug_template() {
     assert_eq!(code, StatusCode::CREATED);
     assert_eq!(
         body["issue"],
-        "https://github.com/horizon-rust/horizon/issues/1001"
+        "https://github.com/sunrise-org/sunrise/issues/1001"
     );
     let issue = hub.github.opened.lock().unwrap().remove(0);
     assert_eq!(issue.title, "Water is black on AMD");
@@ -345,7 +345,7 @@ async fn a_report_sent_twice_while_github_is_slow_opens_one_issue() {
         started.lock().unwrap().send(()).unwrap();
         wait.lock().unwrap().recv().unwrap();
         Ok(format!(
-            "https://github.com/horizon-rust/horizon/issues/{}",
+            "https://github.com/sunrise-org/sunrise/issues/{}",
             1000 + n
         ))
     });

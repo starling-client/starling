@@ -1,7 +1,7 @@
 //! `ItemPart::creator_mod_id` behind `ItemResource::creator_mod_id`'s read.
 use super::native_entity_refs::tests::with_game;
-use sunrise_client::items::ItemStack;
 use mod_api::{CreatorModIdEvent, Hooks, ItemPart, Registrar, RegistrationContext};
+use sunrise_client::items::ItemStack;
 
 /// A bucket's Part: a stack of more than one stands for another mod's content.
 #[derive(Clone)]
@@ -38,7 +38,7 @@ impl ItemPart for NoMod {
 /// The Part's answer wins for its own item, the namespace stands when it leaves it, and an item
 /// without the Part reports its namespace. A Part may answer no mod, and an unknown item has no answer.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide parts, run this test alone"]
+#[ignore = "daily"]
 fn a_part_names_the_mod_that_made_the_stack() {
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("creator", Box::new(Bucket))].into();
     mod_platform::testing::with_mods(mods.clone(), || {

@@ -1,8 +1,9 @@
 //! `ItemAttributeModifiers.STREAM_CODEC` at the saved-component / wire boundary: the
 //! modifiers a stack grants of its own (a command's, a loot function's, a mod's), which
 //! `item_attributes` reads in place of its item type's.
+use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
-    buf::{Reader, Writer},
+    buf::Reader,
     item::{ATTRIBUTE_OPERATIONS, Component, EQUIPMENT_SLOT_GROUPS},
     registry::Builtin,
 };

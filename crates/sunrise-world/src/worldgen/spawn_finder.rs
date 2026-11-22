@@ -5,9 +5,9 @@
 //! the block whose climate fits them best, biased towards 0 0. The world spawn
 //! search (MinecraftServer.setInitialSpawn) then spirals out from its chunk.
 use super::climate::{Parameter, quantize};
+use std::sync::Arc;
 use sunrise_core::density::{DensitySampler, SampleError, SamplerContext};
 use sunrise_core::jmath;
-use std::sync::Arc;
 
 const MAX_RADIUS: f32 = 2048.0;
 

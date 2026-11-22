@@ -12,9 +12,9 @@ pub mod client {
         pub struct TextEdit;
     }
     pub mod hud_layout {
-        pub struct HealthInputs;
-        pub struct GuiDraw;
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum HeartKind {}
+        pub enum HeartKind {
+            Normal,
+        }
     }
 }

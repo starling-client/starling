@@ -89,7 +89,7 @@ fn strips_of(
             .into(),
         ..Default::default()
     };
-    let inputs = super::super::pack_atlas::game_terrain(Some(terrain), &[LAVA, LAVA + 1]);
+    let inputs = crate::gfx::pack_atlas::game_terrain(Some(terrain), &[LAVA, LAVA + 1]);
     const ATTRS: [wgpu::VertexAttribute; 3] =
         wgpu::vertex_attr_array![0=>Float32x3,2=>Uint32,3=>Unorm8x4];
     let layouts = [Some(wgpu::VertexBufferLayout {
@@ -173,6 +173,7 @@ fn strips_of(
 }
 
 #[test]
+#[ignore = "daily"]
 fn solid_and_cutout_programs_draw_their_own_terrain() {
     let _gpu = crate::gfx::test_gpu::lock();
     let programs = [
@@ -185,6 +186,7 @@ fn solid_and_cutout_programs_draw_their_own_terrain() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn without_a_cutout_program_cutout_terrain_falls_back_to_gbuffers_terrain() {
     let _gpu = crate::gfx::test_gpu::lock();
     let programs = [
@@ -196,6 +198,7 @@ fn without_a_cutout_program_cutout_terrain_falls_back_to_gbuffers_terrain() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn without_a_solid_program_solid_terrain_falls_back_to_gbuffers_terrain() {
     let _gpu = crate::gfx::test_gpu::lock();
     let programs = [
@@ -207,6 +210,7 @@ fn without_a_solid_program_solid_terrain_falls_back_to_gbuffers_terrain() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn solid_terrain_keeps_alpha_0_05_and_cutout_loses_it() {
     let _gpu = crate::gfx::test_gpu::lock();
     let programs = [
@@ -228,6 +232,7 @@ fn solid_terrain_keeps_alpha_0_05_and_cutout_loses_it() {
 /// With `separateAo` a vertex's alpha is its own ambient occlusion, so the corners of one quad
 /// differ; the quad still draws whole, with its part's program.
 #[test]
+#[ignore = "daily"]
 fn a_quad_draws_whole_whatever_its_vertex_alphas() {
     let _gpu = crate::gfx::test_gpu::lock();
     let programs = [
@@ -244,6 +249,7 @@ fn a_quad_draws_whole_whatever_its_vertex_alphas() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_pack_with_neither_draws_all_terrain_with_gbuffers_terrain() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some(got) = strips(&[("gbuffers_terrain", RED, 1.0)]) else {
@@ -256,6 +262,7 @@ fn a_pack_with_neither_draws_all_terrain_with_gbuffers_terrain() {
 /// and nothing draws the other: Iris 1.11.7 left it undrawn with our probes `tsc-solidonly` and
 /// `tsc-cutoutonly`.
 #[test]
+#[ignore = "daily"]
 fn a_lone_split_program_draws_only_its_own_terrain() {
     let _gpu = crate::gfx::test_gpu::lock();
     let solid = strips(&[("gbuffers_terrain_solid", GREEN, 1.0)]);
@@ -268,6 +275,7 @@ fn a_lone_split_program_draws_only_its_own_terrain() {
 /// When one part's pipeline can't be built (here a cutout program writing no buffer, which
 /// Sunrise skips), the other part doesn't draw alone either: the game draws all terrain.
 #[test]
+#[ignore = "daily"]
 fn a_part_that_fails_to_build_takes_the_other_with_it() {
     let _gpu = crate::gfx::test_gpu::lock();
     let mut files: Vec<(String, String)> = [
@@ -301,6 +309,7 @@ fn a_part_that_fails_to_build_takes_the_other_with_it() {
 /// strip (#9307): solid terrain kept every fragment, alpha 0.0 included, and cutout terrain
 /// kept those above 0.5 (0.51 kept; 0.5, 0.49 and lower discarded), whichever program drew it.
 #[test]
+#[ignore = "daily"]
 fn cutout_terrain_keeps_alphas_above_0_5_and_solid_terrain_keeps_all() {
     let _gpu = crate::gfx::test_gpu::lock();
     for (alpha, cutout) in [(0.0, false), (0.49, false), (0.5, false), (0.51, true)] {
@@ -322,6 +331,7 @@ fn cutout_terrain_keeps_alphas_above_0_5_and_solid_terrain_keeps_all() {
 /// `alphaTestRef` in the same probes: 0 for solid terrain and 0.5 for cutout terrain, through
 /// `gbuffers_terrain` alone or through the split programs.
 #[test]
+#[ignore = "daily"]
 fn alpha_test_ref_is_0_for_solid_terrain_and_0_5_for_cutout() {
     let _gpu = crate::gfx::test_gpu::lock();
     let program = |name: &str| {
@@ -355,6 +365,7 @@ fn alpha_test_ref_is_0_for_solid_terrain_and_0_5_for_cutout() {
 /// did when they drew in two passes: over `GREATER 0.25`, alpha 0.3 keeps cutout terrain too
 /// and 0.2 loses solid terrain too, and `alphaTestRef` reads 0.25 in both.
 #[test]
+#[ignore = "daily"]
 fn a_packs_terrain_alpha_test_applies_to_both_parts() {
     let _gpu = crate::gfx::test_gpu::lock();
     let properties = || {
@@ -392,6 +403,7 @@ fn a_packs_terrain_alpha_test_applies_to_both_parts() {
 
 /// The vertex stage reads its own quad's `alphaTestRef` too: 0 for solid, 0.5 for cutout.
 #[test]
+#[ignore = "daily"]
 fn the_vertex_stage_reads_its_parts_alpha_test_ref() {
     let _gpu = crate::gfx::test_gpu::lock();
     let files = vec![

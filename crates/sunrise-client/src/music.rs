@@ -5,7 +5,6 @@
 use crate::options_ui::{MusicGroup, MusicTrack};
 use crate::sound_engine::{InstanceId, MUSIC, PlayResult, SoundEngine, SoundInstance, Sounds};
 use crate::sound_events::{Sentinel, SoundRegistry};
-use sunrise_core::random::{LegacyRandom, RandomSource};
 pub use mod_api::client::music::{Music, MusicLayer};
 use serde_json::Value;
 use std::{
@@ -13,6 +12,7 @@ use std::{
     fs,
     path::Path,
 };
+use sunrise_core::random::{LegacyRandom, RandomSource};
 
 /// The Music page's groups: each built-in situation's own tracks first, then
 /// every other `music.` event's tracks that no earlier group listed, under

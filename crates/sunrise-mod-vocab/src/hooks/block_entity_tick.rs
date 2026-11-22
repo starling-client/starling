@@ -1,32 +1,42 @@
-//! The `block_entity_tick` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
+//! The server block-entity ticker, in vanilla's `Level.tickBlockEntities` order.
 // catalog-order: 0024
 
 pub trait Hooks {
-    /// A server tick of the block entity at `pos`, in vanilla's order among
-    /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
-    /// and change its saved compound `nbt`, its item slots `items` (keep
-    /// their count: as many as its container has, none without one) and the
-    /// data slots its menu shows (`data`). It is out of the world during the
-    /// call (the block entity at `pos` reads as a `Mod` with an empty id, and
-    /// a save leaves it out); if the call removes or replaces it, `entity` is
-    /// dropped. Clients, the window's own in single player included, get
-    /// what `block_entity_update_tag` gives when its chunk is sent or
-    /// its block changes.
-    /// Each Part starts with `Changed` and sees the preceding accepted payload.
-    /// `*event.reply = BlockEntityTickReply::Unchanged` discards only this Part's
-    /// payload edits: no reply snapshot is encoded, decoded or applied. Earlier
-    /// Parts' `Changed` edits survive later `Unchanged` replies.
-    /// If all Parts answer `Unchanged`, ticking alone does not dirty the chunk,
-    /// advance its revision or notify containers/comparators. The original
-    /// placeholder must still exist; independent Host writes keep their own effects,
-    /// including accepted item writes, while aborted Host transactions stay aborted.
-    /// The default `Changed` retains full checked write-back.
+    /// A server tick of a resident mod block entity of your registered `kind`.
+    /// The game skips the callback if the current block does not support that
+    /// entity type, as in `LevelChunk.BoundTickingBlockEntity.tick`. The first
+    /// invalid visit logs a warning; a valid tick clears it for the next episode.
+    /// `event.subject.with_view` lends its live storage. To reach the level or
+    /// another object, return from the loan and call `event.subject.host()`.
+    /// Ask for another loan afterwards; it returns `None` if the level, chunk
+    /// load, generation or block-entity type validity (`BlockEntityType.isValid`
+    /// for the live block state) no longer matches. In-place block-state updates
+    /// to another valid state remain borrowable with the live state. For a
+    /// Part-state edit, first get the handle with
+    /// `event.subject.with_view(|view| view.handle())`, then borrow
+    /// `event.subject.host()` to call `edit_state`. Keep a handle only to use
+    /// across calls.
+    ///
+    /// Setters apply checked writes in place, without cloning the row on
+    /// read-only or unchanged loans. Edits join the ambient transaction; abort
+    /// restores any one-shot client fields waiting before its first edit. Nothing
+    /// opens a per-listener transaction and there is no tick reply. Use
+    /// `event.subject.transaction` when one operation must edit the subject and
+    /// other storage atomically. Views do not automatically mark the chunk
+    /// unsaved, notify neighbors, or send a block update; call `set_changed`
+    /// explicitly through `event.subject.host()` when persisted state changes
+    /// (matching vanilla `BlockEntity.setChanged` / `AbstractFurnaceBlockEntity.serverTick`).
+    /// Normal menu synchronization reads the resident data slots. With no Part
+    /// subscribed for this type, the game skips the tick dispatch.
     #[hook(
+        receiver = "associated",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "block_entity",
-        key = "entity",
-        neoforge = "none (vanilla BlockEntityTicker; NeoForge adds no event or extension for it)"
+        key = "kind",
+        neoforge = "none (vanilla BlockEntityTicker; NeoForge adds no event or extension for it)",
+        version = 5
     )]
-    fn block_entity_tick();
+    fn block_entity_tick(kind: mod_api::BlockEntityTypeKey, subject: mod_api::BlockEntityScope<'_>);
 }

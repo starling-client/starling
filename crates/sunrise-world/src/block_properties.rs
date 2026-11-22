@@ -1,11 +1,11 @@
 //! Immutable block-definition flags and legacy solidity calculated from cached
 //! collision shapes. Replacement with an item/fluid context is separate behavior.
-use sunrise_core::geometry::{Direction, ShapeError, ShapeOp, VoxelShape};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
     sync::Arc,
 };
+use sunrise_core::geometry::{Direction, ShapeError, ShapeOp, VoxelShape};
 use {
     crate::{
         DATA_VERSION,

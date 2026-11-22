@@ -4,10 +4,11 @@ pub trait Hooks {
     /// The local player right-clicks empty space with an empty `hand`.
     /// Client-side only; the server does not receive this event.
     #[hook(
+        dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "PlayerInteractEvent.RightClickEmpty",
         cancellable = false
     )]
-    fn right_click_empty();
+    fn right_click_empty(hand: Hand);
 }

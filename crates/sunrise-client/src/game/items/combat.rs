@@ -2,6 +2,9 @@
 //! where the player fell from, turned into the vanilla death message.
 use super::{Game, commands::Target};
 
+#[cfg(test)]
+#[path = "tests/infested_roll_tests.rs"]
+mod infested_roll_tests;
 use sunrise_client::{
     health::{Attack, HealthEvent},
     mobs::{Damage, Mob, Species, Who, stuck::Stuck},
@@ -39,6 +42,11 @@ struct PendingAttacker {
 /// `LivingEntity.lastHurtByPlayer`: a reference that survives a disconnect.
 #[derive(Clone, Copy)]
 pub(super) struct PlayerCredit(pub(super) u128);
+impl From<PlayerCredit> for u128 {
+    fn from(credit: PlayerCredit) -> Self {
+        credit.0
+    }
+}
 impl CombatTracker {
     /// `LivingEntity.lastHurtByPlayer`, remembered for 100 ticks (taken, as a
     /// dead player's memory goes with them).
@@ -201,7 +209,7 @@ impl CombatTracker {
         self.blast_hit_list.is_none() || self.blast_hit_ids.contains(&id)
     }
 
-    /// The attack lent by the enclosing [`Game::with_attack`] (`damage_level_of!(game, scoped)`).
+    /// The attack lent by the enclosing [`Game::with_attack`] (`damage_level_of!(game, game.combat.attack(), .., ..)`).
     pub(super) fn attack(&self) -> &Attack {
         &self.attack
     }
@@ -405,17 +413,25 @@ impl Game<'_> {
     /// hit by entity `id`, which only a native mod reads: a player's hit names
     /// them, a tame wolf's its owner (no one without one), and other mobs leave
     /// it as it was.
-    fn resolve_player_responsible_for_player(&mut self, id: u32) {
+    fn resolve_player_responsible_for_player(
+        &mut self,
+        id: u32,
+        captured_player: Option<[i32; 4]>,
+    ) {
         let now = self.world.game_time;
         match self.mobs.iter().find(|m| m.id == id) {
             None => {
-                let uuid = self.lan.as_ref().and_then(|host| {
-                    host.hub
-                        .guests
-                        .iter()
-                        .find(|g| g.entity_id as u32 == id)
-                        .map(|g| g.uuid)
-                });
+                let uuid = captured_player
+                    .map(sunrise_client::lan::playerdata::ints_uuid)
+                    .or_else(|| {
+                        self.lan.as_ref().and_then(|host| {
+                            host.hub
+                                .guests
+                                .iter()
+                                .find(|g| g.entity_id as u32 == id)
+                                .map(|g| g.uuid)
+                        })
+                    });
                 if let Some(uuid) = uuid {
                     self.combat.note_hurt_by_player(PlayerCredit(uuid), now);
                 }
@@ -430,36 +446,54 @@ impl Game<'_> {
             Some(_) => {}
         }
     }
+    /// Commit accepted hurt memories while its source is still in the pending queue.
+    /// Knockback needs this before the later event drain consumes RecordedDamage.
+    pub(super) fn commit_pending_hurt_memories(
+        &mut self,
+        damage_type: &str,
+        attack: Option<&Attack>,
+    ) {
+        let Some(pending) = self.combat.pending.iter().find(|p| {
+            p.damage_type == damage_type
+                && attack.is_none_or(|attack| p.attacker.0 == attack.attacker as u32)
+        }) else {
+            return;
+        };
+        let id = pending.attacker.0;
+        self.combat.last_hurt_by = pending
+            .credit
+            .then(|| (pending.attacker.clone(), self.world.game_time));
+        self.resolve_player_responsible_for_player(
+            id,
+            attack.and_then(|attack| attack.player_uuid),
+        );
+    }
+
     /// `CombatTracker.recordDamage` for the motion events of this tick.
     pub(super) fn record_combat(&mut self, events: &[MotionEvent]) {
         self.recheck_combat();
         // The attacker of the hit whose damage was just recorded, for its criterion.
         let mut recorded: Option<(String, u32)> = None;
         for e in events {
+            // `LivingEntity.hurtServer` ends with the effects' `onMobHurt`,
+            // whatever `actuallyHurt` made of the hit: a hit absorption or
+            // armor takes whole still rolls the Infested chance.
+            if matches!(e, MotionEvent::Health(HealthEvent::MobHurt)) {
+                self.player_infested();
+                continue;
+            }
             let (name, amount) = match e {
                 // LivingEntity.hurtServer reached resolvePlayerResponsibleForDamage:
                 // every hit that got past the cooldown, absorbed or blocked too.
                 MotionEvent::Health(HealthEvent::Criterion { source, .. }) => {
-                    if let Some(d) = self.motion.health.damage.definition(*source) {
-                        let attacker = match recorded.take() {
-                            Some((t, id)) if t == d.name => Some(id),
-                            _ => {
-                                if let Some(pending) = self
-                                    .combat
-                                    .pending
-                                    .iter()
-                                    .find(|pending| pending.damage_type == d.name)
-                                {
-                                    self.combat.last_hurt_by =
-                                        Some((pending.attacker.clone(), self.world.game_time));
-                                    Some(pending.attacker.0)
-                                } else {
-                                    None
-                                }
+                    // The world's frozen registry, the one the hit's source id is of.
+                    let damage = &self.health_resources.damage;
+                    if let Some(name) = damage.definition(*source).map(|d| d.name.clone()) {
+                        match recorded.take() {
+                            Some((t, id)) if t == name => {
+                                self.resolve_player_responsible_for_player(id, None)
                             }
-                        };
-                        if let Some(id) = attacker {
-                            self.resolve_player_responsible_for_player(id);
+                            _ => self.commit_pending_hurt_memories(&name, None),
                         }
                     }
                     continue;
@@ -539,10 +573,6 @@ impl Game<'_> {
                 direct,
             });
             self.combat.last_damage = now;
-            // InfestedMobEffect.onMobHurt.
-            if self.potions.effects.get("infested").is_some() {
-                self.player_infested();
-            }
         }
         self.combat.pending.clear();
         self.combat.pending_direct.clear();
@@ -587,7 +617,9 @@ impl Game<'_> {
             self.combat.in_combat = false;
         }
     }
-    fn damage_in_tag(&self, name: &str, tag: &str) -> bool {
+    /// Whether damage type `name` is in `tag` (with or without its `minecraft:`) in the
+    /// world's frozen registry, the one that holds the world's datapack types and tags.
+    pub(in crate::game) fn damage_in_tag(&self, name: &str, tag: &str) -> bool {
         let damage = &self.health_resources.damage;
         damage.id(name).is_some_and(|id| {
             damage.in_tag(id, tag) || damage.in_tag(id, &format!("minecraft:{tag}"))
@@ -1167,17 +1199,17 @@ mod kill_credit_tests {
 
 #[cfg(test)]
 mod pet_credit_tests {
+    use std::sync::Arc;
     use sunrise_client::lan::playerdata::uuid_ints;
     use sunrise_client::mobs::Mob;
     use sunrise_core::geometry::Vec3;
-    use std::sync::Arc;
 
     /// A tame wolf's hit on the player in place is its owner's
     /// (`resolvePlayerResponsibleForDamage` asks `instanceof Wolf`), so a
     /// content mod's type copying the wolf (#4031) names its owner too, and
     /// an untamed one names no one.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_tame_mod_wolf_types_hit_is_its_owners() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let wolf = game.res.mob_types().get("minecraft:wolf").cloned().unwrap();
@@ -1194,7 +1226,7 @@ mod pet_credit_tests {
                 pet.extra.tame = tame;
                 pet.extra.owner = Some(uuid_ints(12));
                 game.mobs.push(pet);
-                game.resolve_player_responsible_for_player(7);
+                game.resolve_player_responsible_for_player(7, None);
                 assert_eq!(game.combat.last_hurt_by_player.map(|(c, _)| c.0), credit);
             }
         });
@@ -1210,7 +1242,7 @@ mod guest_hit_tests {
     /// A bystander stands exactly under the mob that bites, listed first: the
     /// search by position ignores height and would have named the bystander.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_effect_hit_on_a_guest_credits_the_mob_that_swung() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 100.0, 0.5)).unwrap());

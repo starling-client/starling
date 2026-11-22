@@ -1,12 +1,12 @@
 //! Runtime binding of Blocks' suffocation definitions to the native registry.
-use sunrise_world::{
-    block_collision::BlockCollisionRegistry,
-    suffocation::{SuffocationDefinition, SuffocationRegistry},
-};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::Arc,
+};
+use sunrise_world::{
+    block_collision::BlockCollisionRegistry,
+    suffocation::{SuffocationDefinition, SuffocationRegistry},
 };
 
 /// The predicates installed by Blocks' registrations. Predicate evaluation,

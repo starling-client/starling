@@ -1,6 +1,6 @@
 //! Chest inventory loading without unpacking loot, for the vanilla differential harness.
-use sunrise_client::save;
 use std::{fs, io::Write};
+use sunrise_client::save;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = super::args().collect();

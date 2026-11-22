@@ -12,6 +12,7 @@ pub trait Hooks {
     /// Only the `ItemPart`s attached to `stack`'s item are asked. Server-side,
     /// for every player of the world (the helpers read the acting one).
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
@@ -19,7 +20,13 @@ pub trait Hooks {
         key = "stack",
         neoforge = "IItemExtension.onLeftClickEntity"
     )]
-    fn on_left_click_entity();
+    fn on_left_click_entity(
+        player: u128,
+        stack: &ItemStack,
+        entity: i32,
+        kind: &str,
+        canceled: &mut bool,
+    );
     /// `IItemExtension.onEntitySwing`: the player in place (`entity`, its
     /// `Entity.getId` when known) is about to swing `stack` in `hand`:
     /// where `LivingEntity.swing` starts, for an attack, a use or a swing the
@@ -29,6 +36,7 @@ pub trait Hooks {
     /// the world only where this `Game` runs the world, not on a server's
     /// client.
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "cancel",
         out = "canceled",
@@ -36,5 +44,5 @@ pub trait Hooks {
         key = "stack",
         neoforge = "IItemExtension.onEntitySwing"
     )]
-    fn on_entity_swing();
+    fn on_entity_swing(stack: &ItemStack, entity: Option<i32>, hand: Hand, canceled: &mut bool);
 }

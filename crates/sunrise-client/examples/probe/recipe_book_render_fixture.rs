@@ -5,6 +5,8 @@
 //! in the oracle's JSON form.
 //!
 //! usage: recipe_book_render_fixture RESOURCES CASES OUTPUT
+use serde_json::{Value, json};
+use std::{fmt::Write as _, fs, path::Path};
 use sunrise_client::{
     crafting::Recipes,
     hud::{HudAtlas, HudBatch},
@@ -17,8 +19,6 @@ use sunrise_client::{
     },
 };
 use sunrise_world::loot::PackOverlay;
-use serde_json::{Value, json};
-use std::{fmt::Write as _, fs, path::Path};
 
 fn runs(r: &[Run]) -> Value {
     Value::Array(
@@ -118,25 +118,15 @@ pub fn main() -> sunrise_client::Result<()> {
                 anim: anims.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32,
             })
             .collect();
-        let (xo, yo) = Screen {
-            book: kind,
-            width: int(&case["width"]),
-            height: int(&case["height"]),
-            narrow: case["narrow"].as_bool().unwrap_or(false),
-            mouse: (0, 0),
-            index: 0,
-            filtering,
-            search: &search,
-            tabs: &[],
-            buttons: &[],
-            page,
-            pages,
-            overlay: None,
-            ghost: None,
-            translate: &translate,
-            text_width: &text_width,
-        }
-        .origin();
+        let (xo, yo) = (
+            (int(&case["width"]) - 147) / 2
+                - if case["narrow"].as_bool().unwrap_or(false) {
+                    0
+                } else {
+                    86
+                },
+            (int(&case["height"]) - 166) / 2,
+        );
         let overlay = case["overlay"].as_u64().map(|i| {
             let i = i as usize;
             let c = &shown[i];
@@ -182,12 +172,11 @@ pub fn main() -> sunrise_client::Result<()> {
             .collect();
         let screen = Screen {
             book: kind,
-            width: int(&case["width"]),
-            height: int(&case["height"]),
-            narrow: case["narrow"].as_bool().unwrap_or(false),
+            origin: (xo, yo),
             mouse: (int(&case["mouse"][0]), int(&case["mouse"][1])),
             index: case["index"].as_u64().unwrap_or(0) as usize,
             filtering,
+            filter_look: None,
             search: &search,
             tabs: &tabs,
             buttons: &buttons,

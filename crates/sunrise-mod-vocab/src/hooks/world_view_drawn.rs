@@ -11,5 +11,5 @@ pub trait Hooks {
         target = "mod_render::render::world_view_drawn",
         neoforge = "none (Sunrise-only; NeoForge has no counterpart)"
     )]
-    fn world_view_drawn();
+    fn world_view_drawn(view: &mut WorldViewDrawn<'_>);
 }

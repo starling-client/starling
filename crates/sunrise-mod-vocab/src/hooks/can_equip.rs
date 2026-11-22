@@ -20,29 +20,29 @@ pub trait Hooks {
     /// whether the entity may wear one at all (`canUseSlot`) or the dispenser's
     /// own rules for the entity. Only the `ItemPart`s attached to `stack`'s
     /// item are asked, on both sides, as the client's menu predicts the slot.
-    /// `host` is read-only: read `entity` through it (its position, its
-    /// equipment) to answer from its state when asked. The stack is converted
-    /// once and lent to each slot and entity a native menu click, dispense or pickup
-    /// asks about. Each decision prepares one owned copy per participating wasm guest
-    /// instance and lends it by token to every candidate. Mutable access invalidates
-    /// the source revision; replacing or removing it changes its identity. Stale
-    /// preparation and stale apply preconditions refuse without asking again. Pickup
-    /// scope is one mob's attempt. Missing prepared exports refuse at load or part
-    /// registration. A stale or missing target refuses wherever a part is asked;
-    /// the no-listener data path performs no conversion or entity lookup.
-    /// Target type, position, health, maximum health, alive/living status and physical
-    /// equipment are retained outside traversal; other Host reads can allocate.
+    /// `host` is read-only and reads live entity and world state directly,
+    /// for example `entity.entity().position(host)`. A missing or despawned
+    /// target refuses wherever a part is asked; the no-listener data path
+    /// performs no conversion or entity lookup. A client without this mod
+    /// predicts vanilla here; the server corrects it.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
-        version = 2,
+        version = 3,
         contract = "listen",
         scope = "item",
         key = "stack",
-        prepared = "stack",
         host = "read",
         target = "sunrise_client::game::native_hooks::can_equip::NativeHookHost<'_>::native_can_equip",
         cancellable = false,
         neoforge = "IItemExtension.canEquip"
     )]
-    fn can_equip();
+    fn can_equip(
+        stack: &mod_api::ItemStack,
+        slot: &str,
+        entity: LivingRef,
+        kind: &str,
+        can_equip: &mut bool,
+    );
 }

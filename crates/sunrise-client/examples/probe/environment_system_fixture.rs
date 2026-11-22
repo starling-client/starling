@@ -1,11 +1,11 @@
 //! Environment attribute layer stacks for tools/test_environment_system_parity.py: per case, a
 //! dimension's attributes, the biome layer and the weather layers, sampled at a position whose
 //! biome mix comes from the Gaussian sampler over a test grid of biomes.
+use serde_json::Value as Json;
+use std::{collections::HashMap, error::Error, fmt::Write};
 use sunrise_world::environment_attributes::{ATTRIBUTES, AttributeMap, Kind, Value};
 use sunrise_world::environment_system::{BiomeBlend, Builder, Conditions, gaussian_sample};
 use sunrise_world::environment_timeline::Timeline;
-use serde_json::Value as Json;
-use std::{collections::HashMap, error::Error, fmt::Write};
 
 fn bits(f: f32) -> String {
     format!("{:08x}", f.to_bits())

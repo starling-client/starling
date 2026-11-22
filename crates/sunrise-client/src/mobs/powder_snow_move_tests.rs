@@ -1,7 +1,7 @@
 use super::{Mob, MobTypes};
 use crate::mobs::world::with_built_test_world;
-use sunrise_core::geometry::Vec3;
 use std::sync::Arc;
+use sunrise_core::geometry::Vec3;
 
 fn fixture(block: &str, f: impl FnOnce(&super::MobWorld<'_>, &MobTypes)) {
     assert!(
@@ -43,7 +43,7 @@ fn mob(types: &MobTypes, id: &str, y: f64) -> Mob {
 }
 
 #[test]
-#[ignore = "requires prepared vanilla resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn powder_snow_move_standing_and_sinking() {
     fixture("minecraft:powder_snow", |w, types| {
         for (id, boots, stands) in [
@@ -75,7 +75,7 @@ fn powder_snow_move_standing_and_sinking() {
 }
 
 #[test]
-#[ignore = "requires prepared vanilla resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn powder_snow_move_landing() {
     fixture("minecraft:powder_snow", |w, types| {
         let mut mob = mob(types, "minecraft:pig", 70.0);
@@ -83,7 +83,7 @@ fn powder_snow_move_landing() {
         let mut events = Vec::new();
         for _ in 0..40 {
             mob.travel(w, &mut test_level.level(), Vec3::ZERO, &mut events);
-            if mob.on_ground {
+            if mob.ground.on_ground {
                 assert_eq!(mob.position.y, 64.0 + f64::from(0.9f32));
                 return;
             }
@@ -94,7 +94,7 @@ fn powder_snow_move_landing() {
 
 /// Vanilla 26.3 returns SHAPE_STABLE above scaffolding, including while holding it.
 #[test]
-#[ignore = "requires prepared vanilla resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn powder_snow_move_main_hand_scaffolding() {
     fixture("minecraft:scaffolding", |w, types| {
         let mut mob = mob(types, "minecraft:zombie", 65.0);
@@ -107,7 +107,7 @@ fn powder_snow_move_main_hand_scaffolding() {
         }
         assert_eq!(mob.position.y, 65.0);
         assert!(
-            mob.collision_subject()
+            mob.collision_subject(w.items.map(|items| items.entity_type_tags.as_ref()))
                 .main_hand
                 .unwrap()
                 .is_item("minecraft:scaffolding")

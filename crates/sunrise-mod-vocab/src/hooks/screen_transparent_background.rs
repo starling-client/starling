@@ -23,6 +23,8 @@ The event identifies the player, position and old/new block names. This veto is
 separate from `entity_change_block`, the existing post-change mob notification,
 and from `farmland_trample`, the farmland-specific in-write event."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         neoforge = "ScreenEvent.Render.Pre (transparent background)",
@@ -30,5 +32,9 @@ and from `farmland_trample`, the farmland-specific in-write event."#]
         out = "canceled",
         target = "sunrise_client::game::native_hooks::screen_transparent_background::Game<'_>::native_screen_transparent_background"
     )]
-    fn screen_transparent_background();
+    fn screen_transparent_background(
+        screen: &str,
+        batch: &mut dyn DrawContext,
+        canceled: &mut bool,
+    );
 }

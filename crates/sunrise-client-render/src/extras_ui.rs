@@ -96,14 +96,14 @@ fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
                     continue;
                 }
                 added::Row::Note(text) => Row::new(id, text, Value::Note).live(false),
-                added::Row::Toggle { label, on } => {
-                    Row::new(id, lang::get(label), Value::Switch(on))
-                }
+                added::Row::Toggle {
+                    label, on, active, ..
+                } => Row::new(id, lang::get(label), Value::Switch(on)).live(active),
                 added::Row::Cycle { label, value } => {
                     Row::new(id, lang::get(label), Value::Choice(label_text(value)))
                 }
                 added::Row::Slider { label, value, text } => {
-                    let position = value.clamp(0.0, 1.0);
+                    let position = f64::from(value.clamp(0.0, 1.0));
                     let text = label_text(text);
                     let value = Value::Slider {
                         position,
@@ -117,9 +117,11 @@ fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
                     active: true,
                     ..
                 } => Row::new(id, lang::get(label), Value::Press),
-                added::Row::Key { label, key } => {
+                added::Row::Key {
+                    label, key, active, ..
+                } => {
                     let key = crate::keybinds::display_name(&key).plain();
-                    Row::new(id, lang::get(label), Value::Read(key))
+                    Row::new(id, lang::get(label), Value::Read(key)).live(active)
                 }
                 // A row kind newer than this engine.
                 _ => continue,
@@ -150,7 +152,7 @@ fn steps(page: usize, r: usize) -> bool {
     }
     matches!(
         rows.get(r),
-        Some(added::Row::Toggle { .. } | added::Row::Cycle { .. })
+        Some(added::Row::Toggle { active: true, .. } | added::Row::Cycle { .. })
     )
 }
 
@@ -170,8 +172,7 @@ fn item_row(item: Item, s: &Settings) -> Row<ExtraRow> {
         .live(live)
 }
 
-/// Zoom, the FPS counter, Keystrokes and the Minimap are official mods now; Extras keeps a way to
-/// the one players look for here.
+/// Zoom is an official mod now; Extras keeps a way to it, as players look for it here.
 fn zoom_rows(s: &Settings) -> Vec<Row<ExtraRow>> {
     let installed = &s.mods.installed;
     let found = installed
@@ -256,9 +257,9 @@ impl Screen for ExtrasScreen {
             }
         }
     }
-    fn slide(&mut self, _s: &mut Settings, row: ExtraRow, position: f32) {
+    fn slide(&mut self, _s: &mut Settings, row: ExtraRow, position: f64) {
         if let ExtraRow::Added(page, r) = row {
-            act(page, r, Act::Slide(position));
+            act(page, r, Act::Slide(position as f32));
         }
     }
     /// With the wheel extra on, the wheel over an item changes it, without a click; the mod's rows
@@ -320,6 +321,25 @@ mod tests {
         assert_ne!(s.extras.mouse_tweaks_wheel, before);
     }
 
+    /// #3202: smooth chat moves a line in, but the indicator bar colours its left edge whether
+    /// it slides or not, so the row is live and toggles with smooth chat off.
+    #[test]
+    fn the_message_indicator_toggles_while_smooth_chat_is_off() {
+        let mut s = Settings::default();
+        assert!(!s.extras.chat_animation, "smooth chat starts off");
+        assert!(s.extras.chat_indicator, "the indicator starts on");
+        let row = ExtraRow::Item(Item::ChatIndicator);
+        assert!(rows_of(&s).iter().find(|r| r.id == row).unwrap().live);
+        let mut shell = Shell::<ExtrasScreen>::default();
+        let at = shell.point_at(&s, SIZE, row);
+        assert!(
+            !shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(!s.extras.chat_indicator);
+    }
+
     /// The sort key binds instead of cycling; the wheel leaves it be.
     #[test]
     fn the_key_row_waits_for_a_key() {
@@ -339,6 +359,26 @@ mod tests {
         );
         ExtrasScreen.wheel_step(&mut s, row, true);
         assert_eq!(s.extras.sort_key, key);
+    }
+
+    /// The shader pack key binds the same way, without cycling: a click waits for its key.
+    #[test]
+    fn the_shader_pack_key_row_waits_for_a_key() {
+        use crate::settings_shell::Capture;
+        let mut s = Settings::default();
+        let mut shell = Shell::<ExtrasScreen>::default();
+        let row = ExtraRow::Item(Item::ShaderPackKey);
+        let key = s.extras.shader_pack_key.clone();
+        let at = shell.point_at(&s, SIZE, row);
+        assert_eq!(
+            shell.click(&mut s, at, SIZE, false, false, false),
+            vec![
+                Output::Event(Event::ButtonClick),
+                Output::Bind(Capture::Key(extras::SHADER_PACK_KEY))
+            ]
+        );
+        ExtrasScreen.wheel_step(&mut s, row, true);
+        assert_eq!(s.extras.shader_pack_key, key);
     }
 
     #[test]
@@ -445,10 +485,10 @@ mod tests {
             added::Place::Extras
         }
         fn rows(&self, rows: &mut Vec<added::Row>) {
-            rows.push(added::Row::Toggle {
-                label: "test.section.switch",
-                on: *self.on.lock().unwrap(),
-            });
+            rows.push(added::Row::toggle(
+                "test.section.switch",
+                *self.on.lock().unwrap(),
+            ));
             rows.push(added::Row::Heading("test.section.heading"));
             rows.push(added::Row::Cycle {
                 label: "test.section.step",
@@ -532,6 +572,101 @@ mod tests {
         assert!(!all.iter().any(|r| matches!(r.id, ExtraRow::Added(0, _))));
     }
 
+    /// A page with a greyed switch and a greyed key.
+    struct Greyed;
+    impl added::Page for Greyed {
+        fn id(&self) -> &'static str {
+            "test.greyed"
+        }
+        fn title(&self) -> &'static str {
+            "sunrise.extras.header.multiplayer"
+        }
+        fn place(&self) -> added::Place {
+            added::Place::Extras
+        }
+        fn rows(&self, rows: &mut Vec<added::Row>) {
+            rows.push(added::Row::toggle("test.greyed.switch", true).active(false));
+            rows.push(added::Row::key("test.greyed.key", "key.keyboard.z").active(false));
+        }
+        fn act(&self, _: usize, _: Act) {
+            panic!("a greyed row heard an act");
+        }
+    }
+
+    /// A registered switch or key that is inactive is drawn greyed, and a press does nothing.
+    #[test]
+    fn an_inactive_registered_switch_and_key_are_greyed() {
+        static GREYED: Greyed = Greyed;
+        static PAGES: [&dyn added::Page; 1] = [&GREYED];
+        TEST_PAGES.set(Some(&PAGES));
+        let s = Settings::default();
+        let all = rows_of(&s);
+        for r in 0..2 {
+            let row = all.iter().find(|x| x.id == ExtraRow::Added(0, r)).unwrap();
+            assert!(!row.live, "row {r} is greyed");
+        }
+        assert!(!steps(0, 0));
+        let mut shell = Shell::<ExtrasScreen>::default();
+        // Only the greyed rows are listed, so they are on screen for the click, frame and keys.
+        shell.set_search("test.greyed");
+        let at = shell.point_at(&s, SIZE, ExtraRow::Added(0, 0));
+        let mut s = s;
+        assert!(
+            shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        let switch_at = shell.point_at(&s, SIZE, ExtraRow::Added(0, 0));
+        let key_at = shell.point_at(&s, SIZE, ExtraRow::Added(0, 1));
+        let atlas = crate::hud::HudAtlas::build(
+            &crate::resource_source::ResourceSource::directory("/nonexistent".into()),
+        )
+        .unwrap();
+        let mut batch = crate::hud::HudBatch::scratch([1708, 960]);
+        shell.draw_test_frame(
+            &s,
+            &mut batch,
+            &atlas,
+            (0.0, 0.0),
+            false,
+            None,
+            &mut |_, _| {},
+        );
+        crate::widgets::end_frame(1);
+        let greyed: Vec<_> = crate::widgets::last_labelled()
+            .into_iter()
+            .filter(|w| w.label.contains("test.greyed"))
+            .collect();
+        assert_eq!(greyed.len(), 2, "both rows are drawn: {greyed:?}");
+        assert!(
+            greyed.iter().all(|w| !w.enabled),
+            "drawn disabled: {greyed:?}"
+        );
+        let targets = crate::widgets::last_targets();
+        for (x, y) in [switch_at, key_at] {
+            assert!(
+                !targets.iter().any(|t| {
+                    let [tx, ty, tw, th] = t.rect;
+                    x >= tx && x < tx + tw && y >= ty && y < ty + th
+                }),
+                "no controller target at ({x}, {y})"
+            );
+        }
+        let size = (batch.width, batch.height);
+        for _ in 0..60 {
+            shell.key(
+                &mut s,
+                winit::keyboard::KeyCode::ArrowDown,
+                None,
+                false,
+                size,
+            );
+            let at = shell.focused_row();
+            assert_ne!(at, Some(ExtraRow::Added(0, 0)));
+            assert_ne!(at, Some(ExtraRow::Added(0, 1)));
+        }
+    }
+
     /// A click flips the switch, a Shift click steps the number back, the wheel steps it, and the
     /// note takes no click; the rows show what the section holds after each.
     #[test]
@@ -567,5 +702,49 @@ mod tests {
         );
         screen.slide(&mut s, ExtraRow::Added(1, 4), 0.25);
         assert_eq!(*section.volume.lock().unwrap(), 0.25);
+    }
+
+    /// A switch row shows its state on screen: vanilla's empty check box while off, the ticked one
+    /// once a click turns it on (#3715).
+    #[test]
+    fn a_switch_row_draws_the_check_box_of_its_state() {
+        use crate::graphics_style::{drew_sprite, widget_atlas};
+        let section = with_section();
+        let atlas = widget_atlas();
+        crate::hud::take_gui_sprite_misses();
+        let mut s = Settings::default();
+        let mut shell = Shell::<ExtrasScreen>::default();
+        shell.set_search("test.section.switch");
+        let switch = ExtraRow::Added(1, 0);
+        let frame = |shell: &mut Shell<ExtrasScreen>, s: &Settings| {
+            let mut batch = crate::hud::HudBatch::scratch([1708, 960]);
+            shell.draw_test_frame(
+                s,
+                &mut batch,
+                &atlas,
+                (0.0, 0.0),
+                false,
+                None,
+                &mut |_, _| {},
+            );
+            crate::widgets::end_frame(1);
+            let drew = |ids: [&str; 2]| ids.iter().any(|id| drew_sprite(&batch, &atlas, id));
+            let off = drew(["widget/checkbox", "widget/checkbox_highlighted"]);
+            let on = drew([
+                "widget/checkbox_selected",
+                "widget/checkbox_selected_highlighted",
+            ]);
+            (off, on)
+        };
+        assert_eq!(frame(&mut shell, &s), (true, false), "off: the empty box");
+        let at = shell.point_at(&s, SIZE, switch);
+        assert!(
+            !shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(*section.on.lock().unwrap());
+        assert_eq!(frame(&mut shell, &s), (false, true), "on: the ticked box");
+        assert_eq!(crate::hud::take_gui_sprite_misses(), Vec::<String>::new());
     }
 }

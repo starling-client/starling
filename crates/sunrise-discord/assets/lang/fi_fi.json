@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.discord_presence": "Discord Rich Presence",
+  "sunrise.extras.discord_presence.tooltip": "Näyttää Playing Sunrisein Discord-profiilissasi, kun Discord on käynnissä: valikot, yksin- tai moninpeli, ulottuvuus ja peliaika. Ei koskaan maailman nimeä tai palvelimen osoitetta."
+}

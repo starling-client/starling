@@ -102,7 +102,7 @@ impl Title {
         self.scroll.set(scroll);
         true
     }
-    pub(super) fn press_missing_mods(&mut self, cursor: (f32, f32), size: (f32, f32)) -> Action {
+    pub(super) fn press_missing_mods(&mut self, cursor: (f32, f32), size: (f32, f32)) -> bool {
         let (top, bottom, _) = layout(size.0, size.1);
         self.scroll.get_mut().press(
             cursor,
@@ -110,8 +110,7 @@ impl Title {
             top,
             bottom,
             self.message_lines.get() as f32 * 9.0,
-        );
-        Action::None
+        )
     }
     pub(super) fn confirm_missing_mods(&mut self) -> Option<(Action, bool)> {
         let Mode::MissingMods { world, .. } = &self.mode else {

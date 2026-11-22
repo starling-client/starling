@@ -98,7 +98,7 @@ pub struct Memories {
     pub walk_target: Slot<WalkTarget>,
     pub path: Slot<Path>,
     pub cant_reach_walk_target_since: Slot<i64>,
-    pub attack_target: Slot<Who>,
+    pub(super) attack_target: Slot<warden::AttackTarget>,
     pub attack_cooling_down: Slot<bool>,
     pub roar_target: Slot<Who>,
     pub disturbance_location: Slot<[i32; 3]>,
@@ -116,6 +116,15 @@ pub struct Memories {
     pub sonic_boom_sound_delay: Slot<()>,
 }
 impl Memories {
+    pub(super) fn target(&self) -> Option<Who> {
+        self.attack_target.value().map(|target| target.who)
+    }
+
+    pub(super) fn set_target(&mut self, target: Option<Who>, player_id: Option<u32>) {
+        self.attack_target
+            .set_opt(target.map(|who| warden::AttackTarget::new(who, player_id)));
+    }
+
     fn tick(&mut self) {
         self.nearest_players.tick();
         self.nearest_visible_player.tick();
@@ -595,13 +604,21 @@ pub(super) fn set_disturbance(m: &mut Mob, w: &MobWorld, position: [i32; 3]) {
     mm.walk_target.clear();
 }
 /// `Warden.setAttackTarget`.
-pub(super) fn set_attack_target(m: &mut Mob, w: &MobWorld, target: Who) {
-    let TargetChange::Set(target) = w.change_target(m, true, Some(target)) else {
+pub(super) fn set_attack_target(m: &mut Mob, w: &MobWorld, target: warden::AttackTarget) {
+    let before = w.selected_player_identity();
+    let TargetChange::Set(chosen) = w.change_target(m, true, Some(target.who)) else {
         return;
+    };
+    let after = w.selected_player_identity();
+    // Keep the proposed identity unless a target hook redirects the mob.
+    let player_id = if chosen == Some(target.who) && before == after {
+        target.player_id
+    } else {
+        after.map(|(_, id)| id)
     };
     let mm = mem(m);
     mm.roar_target.clear();
-    mm.attack_target.set_opt(target);
+    mm.set_target(chosen, player_id);
     mm.cant_reach_walk_target_since.clear();
     mm.sonic_boom_cooldown.set_ttl((), 200);
 }
@@ -827,11 +844,11 @@ impl B {
                     return false;
                 }
                 let liquid = m.fluids.in_water || m.fluids.in_lava;
-                if !(m.on_ground || liquid) {
+                if !(m.ground.on_ground || liquid) {
                     return false;
                 }
                 t.begin(cx.level.random(), cx.now);
-                if m.on_ground {
+                if m.ground.on_ground {
                     warden::set_pose(m, Pose::Digging);
                     sound(m, "entity.warden.dig", 5.0, 1.0, cx.events);
                 } else {
@@ -973,7 +990,7 @@ impl B {
                 true
             }),
             B::StopAttackingIfTargetInvalid(r) => one(r, || {
-                let Some(target) = mem(m).attack_target.value() else {
+                let Some(target) = mem(m).target() else {
                     return false;
                 };
                 let alive = cx.w.target_info(target).is_some_and(|t| t.alive);
@@ -988,7 +1005,10 @@ impl B {
                         st.anger.clear(target);
                     }
                     set_dig_cooldown(m);
-                    mem(m).attack_target.set_opt(replacement);
+                    mem(m).set_target(
+                        replacement,
+                        cx.w.selected_player_identity().map(|(_, id)| id),
+                    );
                 }
                 true
             }),
@@ -997,7 +1017,7 @@ impl B {
                 if mm.look_target.present() || !mm.visible_mobs.present() {
                     return false;
                 }
-                let target = mm.attack_target.value();
+                let target = mm.target();
                 let max = (FOLLOW_RANGE as f32 * FOLLOW_RANGE as f32) as f64;
                 let w = cx.w;
                 let found = find_closest(m, w, |m, who| {
@@ -1010,7 +1030,7 @@ impl B {
                 true
             }),
             B::SetWalkTargetFromAttackTarget(r) => one(r, || {
-                let Some(target) = mem(m).attack_target.value() else {
+                let Some(target) = mem(m).target() else {
                     return false;
                 };
                 let w = cx.w;
@@ -1036,7 +1056,7 @@ impl B {
                 if mm.sonic_boom_cooldown.present() {
                     return false;
                 }
-                let Some(target) = mm.attack_target.value() else {
+                let Some(target) = mm.target() else {
                     return false;
                 };
                 let close =
@@ -1065,7 +1085,7 @@ impl B {
                 if mm.attack_cooling_down.present() || !mm.visible_mobs.present() {
                     return false;
                 }
-                let Some(target) = mm.attack_target.value() else {
+                let Some(target) = mm.target() else {
                     return false;
                 };
                 let w = cx.w;
@@ -1266,7 +1286,8 @@ impl B {
                     warden::set_pose(m, Pose::Standing);
                 }
                 if let Some(target) = mem(m).roar_target.value() {
-                    set_attack_target(m, cx.w, target);
+                    let player_id = cx.w.selected_player_identity().map(|(_, id)| id);
+                    set_attack_target(m, cx.w, warden::AttackTarget::new(target, player_id));
                 }
                 mem(m).roar_target.clear();
             }
@@ -1392,7 +1413,11 @@ pub fn describe(m: &Mob) -> Option<(String, String)> {
         mm.cant_reach_walk_target_since,
         |t: &i64| t.to_string()
     );
-    slot!("attack_target", mm.attack_target, |e: &Who| who(*e));
+    slot!(
+        "attack_target",
+        mm.attack_target,
+        |e: &warden::AttackTarget| who(e.who)
+    );
     slot!("attack_cooling_down", mm.attack_cooling_down, |t: &bool| t
         .to_string());
     slot!("roar_target", mm.roar_target, |e: &Who| who(*e));
@@ -1427,9 +1452,9 @@ mod warden_owned_memory_tests {
     use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
     use crate::mobs::MobType;
     use crate::save::{doubles, put};
+    use std::{collections::HashMap, sync::Arc};
     use sunrise_core::nbt::{Compound, Tag};
     use sunrise_world::registry::BlockRegistry;
-    use std::{collections::HashMap, sync::Arc};
     fn string(s: &str) -> Tag {
         Tag::String(s.into())
     }
@@ -1545,7 +1570,14 @@ mod warden_owned_memory_tests {
                     ]),
                 );
                 for source in [None, Some(&raw), Some(&stale)] {
-                    let saved = mob_to_nbt(&m, [29, 0, 0, 1], source, None, |_| None);
+                    let saved = mob_to_nbt(
+                        &m,
+                        [29, 0, 0, 1],
+                        source,
+                        None,
+                        |_| None,
+                        &Default::default(),
+                    );
                     assert_saved(&saved, expected);
                     if source.is_some() {
                         assert_eq!(saved.get("audit:keep"), Some(&Tag::Int(42)));
@@ -1561,6 +1593,49 @@ mod warden_owned_memory_tests {
         }
     }
     #[test]
+    fn a_saved_sonic_boom_cooldown_restores_its_live_expiry() {
+        let kinds = types();
+        let key = "minecraft:sonic_boom_cooldown";
+        for (ttl, loaded) in [
+            (Tag::Int(2), Some(2)),
+            (Tag::String("unreadable".into()), None),
+        ] {
+            let mut raw = input(true, 0);
+            let mut unit = entry(None);
+            put(&mut unit, "ttl", ttl);
+            put(
+                &mut raw,
+                "Brain",
+                Tag::compound([("memories", Tag::compound([(key, unit)]))]),
+            );
+            let mut mob = mob_from_nbt(&raw, &kinds, 91, None).unwrap();
+            let saved = |mob: &Mob| {
+                mob_to_nbt(
+                    mob,
+                    [29, 0, 0, 1],
+                    Some(&raw),
+                    None,
+                    |_| None,
+                    &Default::default(),
+                )
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get(key))
+                .cloned()
+            };
+            assert_eq!(saved(&mob), Some(entry(loaded)));
+            for expected in if loaded.is_some() {
+                [Some(entry(Some(1))), Some(entry(Some(0))), None]
+            } else {
+                [Some(entry(None)), Some(entry(None)), Some(entry(None))]
+            } {
+                mob.extra.warden.as_mut().unwrap().brain.mem.tick();
+                assert_eq!(saved(&mob), expected);
+            }
+        }
+    }
+
+    #[test]
     fn owned_memory_mutations_remove_stale_raw_without_replacing_the_brain() {
         let raw = input(true, 2);
         let mut m = mob_from_nbt(&raw, &types(), 92, None).unwrap();
@@ -1569,7 +1644,14 @@ mod warden_owned_memory_tests {
         mem.is_emerging.clear();
         mem.dig_cooldown.set_ttl((), 7);
         mem.sniff_cooldown.set_ttl((), 17);
-        let saved = mob_to_nbt(&m, [29, 0, 0, 1], Some(&raw), None, |_| None);
+        let saved = mob_to_nbt(
+            &m,
+            [29, 0, 0, 1],
+            Some(&raw),
+            None,
+            |_| None,
+            &Default::default(),
+        );
         assert_saved(&saved, [None, Some(7)]);
         assert_eq!(
             saved.get("Brain").and_then(|b| b.get("audit:brain")),
@@ -1601,12 +1683,19 @@ mod warden_owned_memory_tests {
         mem.is_emerging.set(());
         mem.dig_cooldown.clear();
         assert_saved(
-            &mob_to_nbt(&m, [29, 0, 0, 1], Some(&raw), None, |_| None),
+            &mob_to_nbt(
+                &m,
+                [29, 0, 0, 1],
+                Some(&raw),
+                None,
+                |_| None,
+                &Default::default(),
+            ),
             [Some(i64::MAX), None],
         );
     }
     #[test]
-    #[ignore = "needs prepared resources; actual full Mob ticks, no skipped coverage"]
+    #[ignore = "daily"]
     fn actual_mob_ticks_expire_owned_memories_and_noai_retains_them() {
         let build = |world: &mut crate::world::World, registry: &BlockRegistry| {
             world
@@ -1641,7 +1730,7 @@ mod warden_owned_memory_tests {
                     };
                     assert_eq!(slot_state(&m), expected, "actual tick={tick},NoAI={no_ai}");
                     assert_saved(
-                        &mob_to_nbt(&m, [29, 0, 0, 1], None, None, |_| None),
+                        &mob_to_nbt(&m, [29, 0, 0, 1], None, None, |_| None, &Default::default()),
                         expected,
                     );
                     assert_eq!(m.health, 500.0);
@@ -1661,6 +1750,7 @@ mod tests {
     /// a summon's `Passengers`) gets off so that it can dig. It was stubbed
     /// out, and such a warden stayed aboard for good (#8833).
     #[test]
+    #[ignore = "daily"]
     fn a_warden_forced_aboard_gets_off_to_dig() {
         let ran = crate::mobs::world::with_test_world(&[], |w, _| {
             let at = sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5);
@@ -1687,6 +1777,6 @@ mod tests {
                 [MobEvent::EjectPassengers { mob: 1, .. }]
             ));
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }

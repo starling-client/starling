@@ -11,8 +11,5 @@ fn value(state: u32) -> BlockState {
     .copied()
     .unwrap_or("test:gauge");
     let key = mod_vocab::__private::block_key(name).unwrap();
-    BlockState::from(BlockStateRecord::new(
-        key,
-        if state > 4 { u16::MAX } else { 0 },
-    ))
+    mod_vocab::__private::block_state_from_ordinal(key, if state > 4 { u16::MAX } else { 0 })
 }

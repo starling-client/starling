@@ -11,6 +11,8 @@ use crate::{
 use sunrise_core::random::{LegacyRandom, RandomSource};
 use sunrise_world::loot::PackOverlay;
 use sunrise_world::native_load_context::LoopContext;
+#[cfg(test)]
+mod grindstone_part_tests;
 mod models;
 pub use models::{AnvilResult, EnchantmentRow};
 use serde_json::Value;
@@ -29,20 +31,24 @@ pub struct StationData {
     pub recipe_index: crate::recipe_book::RecipeIndex,
 }
 impl StationData {
+    /// Load one complete generation; malformed known recipes refuse the load.
     pub fn load(
         root: &Path,
         items: &Items,
         overlay: &PackOverlay,
         defaults: &sunrise_world::item_defaults::ItemDefaults,
         context: &sunrise_world::native_load_context::LoadContext,
-    ) -> Self {
-        let sources = crate::crafting::ResolvedSources::load_or_empty(root, overlay, context);
-        let recipes = crate::crafting::Recipes::from_resolved(root, items, overlay, &sources)
-            .unwrap_or_else(|error| {
-                log::error!("recipes: could not load station recipe index: {error}");
-                crate::crafting::Recipes::empty()
-            });
-        Self::from_sources(root, items, overlay, defaults, (&sources, &recipes))
+    ) -> crate::Result<Self> {
+        let sources =
+            crate::crafting::ResolvedSources::load_collecting(root, items, overlay, context)?;
+        let recipes = crate::crafting::Recipes::from_resolved(root, items, overlay, &sources)?;
+        Ok(Self::from_sources(
+            root,
+            items,
+            overlay,
+            defaults,
+            (&sources, &recipes),
+        ))
     }
     /// The tables of one load whose recipes are `sources`.
     pub fn from_sources(
@@ -56,7 +62,9 @@ impl StationData {
             enchantments: std::sync::Arc::clone(&items.enchantments),
             recipes: StationRecipes::from_sources(root, items, sources),
             brewing: {
-                let mut brewing = crate::brewing::Brewing::load(root, items, overlay);
+                let mut brewing = crate::brewing::Brewing::from_recipes(
+                    sources.brewing_recipes().cloned().collect(),
+                );
                 let added = |key| sources.property_additions.get(key).into_iter().flatten();
                 brewing.reagents.extend(added("brewing_reagent").cloned());
                 brewing.inputs.extend(added("brewing_input").cloned());
@@ -283,46 +291,153 @@ fn can_store_enchantments(stack: &ItemStack) -> bool {
 pub fn increased_repair_cost(cost: u32) -> u32 {
     (u64::from(cost) * 2 + 1).min(i32::MAX as u64) as u32
 }
-/// `ItemStack.getHoverName`: the custom name, a potion's or tipped arrow's
-/// contents, a written book's title, the `item_name` component, else the
-/// item's or head owner's name.
-pub fn hover_name(names: &crate::creative::Names, stack: &ItemStack) -> String {
-    if let Some(name) = stack.custom_name() {
-        return name;
+/// `ItemStack.getHoverName` as a component: the custom name, a written book's nonblank title,
+/// or the item's name. It stays translatable so each viewer renders it in their own language.
+/// The name a mod item's part gives the stack is not asked: [`hover_name_in`] asks it.
+pub fn hover_name_text(names: &crate::creative::Names, stack: &ItemStack) -> crate::text::Text {
+    hover_name_text_with(names, stack, |_| None, None)
+}
+/// [`hover_name_text`] with the name the parts of a mod item give the stack
+/// (`Item.getName(ItemStack)`, `ItemPart::item_name`), asked once, with the loop `context` of the
+/// side naming it, when the stack has no custom name or book title.
+pub fn hover_name_in(
+    context: &LoopContext,
+    names: &crate::creative::Names,
+    stack: &ItemStack,
+) -> crate::text::Text {
+    hover_name_in_reusing(context, names, stack, None)
+}
+/// Resolve as in [`hover_name_in`], sharing an unchanged translation's component
+/// with the previous HUD tick.
+pub fn hover_name_in_reusing(
+    context: &LoopContext,
+    names: &crate::creative::Names,
+    stack: &ItemStack,
+    previous: Option<&crate::text::Text>,
+) -> crate::text::Text {
+    hover_name_text_with(
+        names,
+        stack,
+        |stack| item_name_part(context, stack),
+        previous,
+    )
+}
+/// Whether `stack` names itself (`ItemStack.getCustomName`): a custom name, or a written book's
+/// non-blank title. `Item.getName` isn't asked then.
+pub fn names_itself(stack: &ItemStack) -> bool {
+    stack.custom_name().is_some()
+        || stack
+            .data()
+            .and_then(|d| d.written.as_ref())
+            .is_some_and(|w| !sunrise_core::java_character::is_blank(&w.title))
+}
+/// `Item.getName(ItemStack)` of a mod item: the name the parts of `stack`'s item give it
+/// (`ItemPart::item_name`), or None to keep the default. Asked with the loop `context` only, so a
+/// part can't name a stack again through a host. An item with no such part costs one lookup.
+pub fn item_name_part(context: &LoopContext, stack: &ItemStack) -> Option<crate::text::Text> {
+    let mut name = None;
+    crate::native_client_hooks::item_name(context, stack, &mut name);
+    name
+}
+/// `Item.getName(ItemStack)` is being asked of the parts of `stack`'s item: `name` starts as
+/// `None`, the default, and a part may set it. Asked on both sides.
+#[inline(never)]
+pub fn native_item_name(
+    context: &LoopContext,
+    stack: &mod_api::ItemStack,
+    name: &mut Option<mod_api::Text>,
+) {
+    mod_api::dispatch_item_name(
+        &sunrise_client_render::api_context::LoopReader(context).context(),
+        stack,
+        name,
+    );
+}
+fn hover_name_text_with(
+    names: &crate::creative::Names,
+    stack: &ItemStack,
+    part: impl FnOnce(&ItemStack) -> Option<crate::text::Text>,
+    previous: Option<&crate::text::Text>,
+) -> crate::text::Text {
+    use crate::text::Text;
+    let translate = |key: &str| Text::translate_reusing(key, previous);
+    let data = stack.data();
+    // `ItemStack.getCustomName`: the custom name, else a written book's non-blank title.
+    if stack.custom_name().is_some()
+        && let Some(component) = data.and_then(|d| d.custom_name.as_ref())
+    {
+        return crate::entity_nbt::name_text(component);
     }
-    if let Some(key) = crate::brewing::contents_name_key(stack) {
-        return names
-            .display_get(&key)
-            .unwrap_or_else(|| names.display_item(&stack.item));
-    }
-    if let Some(title) = stack
-        .data()
+    if let Some(title) = data
         .and_then(|d| d.written.as_ref())
         .map(|w| w.title.as_str())
-        .filter(|t| !t.trim().is_empty())
+        .filter(|t| !sunrise_core::java_character::is_blank(t))
     {
-        return title.to_owned();
+        return Text::literal(title);
+    }
+    // `ItemStack.getItemName`: a mod item's `getName` (its part), asked once.
+    if let Some(name) = part(stack) {
+        return name;
+    }
+    // `ItemStack.getItemName`: the item's own `getName`, which for a few items is not its
+    // `item_name` component.
+    if let Some(key) = crate::brewing::contents_name_key(stack) {
+        return translate(&key);
+    }
+    if &*stack.item == "minecraft:shield"
+        && let Some(color) = data.and_then(|d| d.base_color.as_deref())
+    {
+        // `ShieldItem.getName`: the banner's base colour names the shield.
+        return translate(&format!("item.minecraft.shield.{color}"));
+    }
+    if &*stack.item == "minecraft:compass"
+        && data.is_some_and(|d| d.other("minecraft:lodestone_tracker").is_some())
+    {
+        // `CompassItem.getName`: a lodestone tracker names it, over `item_name`.
+        return translate("item.minecraft.lodestone_compass");
     }
     if let Some(head) = crate::item_tooltip::player_head_name(stack) {
         // `PlayerHeadItem.getName`: a profile's name, else the item name.
-        return head.title(&|key| names.display_get(key));
+        return head.text();
     }
-    if let Some(name) = stack.item_name() {
-        return name;
+    // `Item.getName`: the stack's `item_name` component, including the compact raid banner.
+    if let Some(component) = data.and_then(|d| d.saved_other("minecraft:item_name")) {
+        return crate::entity_nbt::name_text(component);
     }
-    if stack
-        .data()
-        .is_some_and(|d| d.other("!minecraft:item_name").is_some())
-    {
+    if data.is_some_and(|d| d.other("!minecraft:item_name").is_some()) {
         // `Item.getName` is `getOrDefault(ITEM_NAME, EMPTY)`.
-        return String::new();
+        return Text::literal("");
     }
-    if stack.data().is_some_and(|d| d.ominous_banner) {
-        return names
-            .display_get("block.minecraft.ominous_banner")
-            .unwrap_or_else(|| "Ominous Banner".to_owned());
+    // Keep the prototype's component, including any fallback it actually carries.
+    // Do not insert an English fallback into a component shared with other viewers.
+    if let Some(name) = names.item_name(&stack.item) {
+        return match name
+            .as_object()
+            .filter(|component| component.len() == 1)
+            .and_then(|component| component.get("translate"))
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(key) => translate(key),
+            None => crate::entity_nbt::name_text(&crate::scoreboard::json_to_tag(name)),
+        };
     }
-    names.display_item(&stack.item)
+    // An item without a prototype (a mod's) takes the key `Item.Properties` gives it: its
+    // block's for a block item (`useBlockDescriptionPrefix`), else `item.*`.
+    let (namespace, path) = stack
+        .item
+        .split_once(':')
+        .unwrap_or(("minecraft", &stack.item));
+    let prefix = if names.is_block_item(&stack.item) {
+        "block"
+    } else {
+        "item"
+    };
+    translate(&format!("{prefix}.{namespace}.{}", path.replace('/', ".")))
+}
+/// `ItemStack.getHoverName` as plain text in the current language: the component of
+/// [`hover_name_text`], rendered.
+pub fn hover_name(names: &crate::creative::Names, stack: &ItemStack) -> String {
+    hover_name_text(names, stack).plain()
 }
 /// `AnvilMenu.createResult`. `name` is the rename box text (None = untouched).
 pub fn anvil_result(
@@ -396,8 +511,8 @@ pub fn anvil_result(
                     (*level).max(current)
                 };
                 let Some(def) = e.get(id) else { continue };
-                let mut compatible = e.can_enchant(items, id, &input.item);
-                if creative || &*input.item == "minecraft:enchanted_book" {
+                let mut compatible = e.can_enchant_in_anvil(items, def, &input.item);
+                if creative {
                     compatible = true;
                 }
                 for (other, _) in &enchantments {
@@ -428,7 +543,7 @@ pub fn anvil_result(
         }
     }
     match name {
-        Some(n) if !n.trim().is_empty() => {
+        Some(n) if !sunrise_core::java_character::is_blank(n) => {
             if n != hover_name {
                 naming_cost = 1;
                 price += 1;
@@ -489,6 +604,7 @@ pub fn anvil_result(
 fn max_stack_size(items: &Items, stack: &ItemStack) -> u32 {
     crate::menu::item_max_stack(items, stack)
 }
+<<<<<<< sync-sunrise-1
 /// `GrindstoneMenu` slot filter: damageable or enchanted, the damage as the parts of the
 /// stack's item answer `can_grindstone_repair`.
 pub fn grindstone_accepts(context: &LoopContext, items: &Items, stack: &ItemStack) -> bool {
@@ -510,6 +626,36 @@ pub fn native_can_grindstone_repair(
     can_repair: &mut bool,
 ) {
     crate::native_client_hooks::can_grindstone_repair(context, stack, can_repair);
+=======
+/// `GrindstoneMenu` slot filter: damageable or enchanted, with the damageable test
+/// `ItemStack.canGrindstoneRepair`'s ([`can_grindstone_repair`]).
+pub fn grindstone_accepts(context: &LoopContext, items: &Items, stack: &ItemStack) -> bool {
+    stack.has_any_enchantments() || can_grindstone_repair(context, items, stack)
+}
+/// `ItemStack.canGrindstoneRepair`: vanilla's answer, whether the stack is damageable, then
+/// the parts of its item (`ItemPart::can_grindstone_repair`). An item with no such part keeps
+/// vanilla's answer at the cost of one table lookup.
+pub fn can_grindstone_repair(context: &LoopContext, items: &Items, stack: &ItemStack) -> bool {
+    let mut can_repair = is_damageable(items, stack);
+    crate::native_client_hooks::can_grindstone_repair(context, stack, &mut can_repair);
+    can_repair
+}
+/// Whether the grindstone repairs `stack` as a damageable item
+/// (`IItemExtension.canGrindstoneRepair`) is being decided: `can_repair` starts with vanilla's
+/// answer and the parts of the stack's item may change it. Asked inside the grindstone menu on
+/// both sides.
+#[inline(never)]
+pub fn native_can_grindstone_repair(
+    context: &LoopContext,
+    stack: &mod_api::ItemStack,
+    can_repair: &mut bool,
+) {
+    mod_api::dispatch_can_grindstone_repair(
+        &sunrise_client_render::api_context::LoopReader(context).context(),
+        stack,
+        can_repair,
+    );
+>>>>>>> sunrise/main
 }
 fn remove_non_curses(e: &Enchantments, mut item: ItemStack) -> ItemStack {
     let kept: Levels = item
@@ -538,7 +684,8 @@ fn remove_non_curses(e: &Enchantments, mut item: ItemStack) -> ItemStack {
     item.tidy();
     item
 }
-/// `GrindstoneMenu.computeResult`.
+/// `GrindstoneMenu.computeResult`. `context` is the loop the menu runs in, which
+/// `can_grindstone_repair` is given.
 pub fn grindstone_result(
     context: &LoopContext,
     e: &Enchantments,
@@ -667,28 +814,32 @@ pub(crate) enum ParsedStationRecipe {
     Stonecutting(Stonecutting),
 }
 impl ParsedStationRecipe {
-    pub(crate) fn parse(id: String, v: &Value, items: &Items) -> Option<Self> {
+    pub(crate) fn parse(
+        id: String,
+        v: &Value,
+        ingredient: impl Fn(&Value) -> Option<Ingredient>,
+    ) -> Option<Self> {
         match v["type"].as_str().unwrap_or("") {
             "minecraft:smithing_transform" => {
                 // Only omitted ingredients mean empty slots; malformed present
                 // ingredients invalidate the recipe rather than becoming optional.
                 let parse_optional = |key: &str| match v.get(key) {
                     None => Some(None),
-                    Some(value) => Ingredient::parse(value, items).map(Some),
+                    Some(value) => ingredient(value).map(Some),
                 };
                 Some(Self::Smithing(Smithing::Transform {
                     id,
                     template: parse_optional("template")?,
-                    base: Ingredient::parse(&v["base"], items)?,
+                    base: ingredient(&v["base"])?,
                     addition: parse_optional("addition")?,
                     result: crate::crafting::Template::parse(&v["result"])?,
                 }))
             }
             "minecraft:smithing_trim" => Some(Self::Smithing(Smithing::Trim {
                 id,
-                template: Ingredient::parse(&v["template"], items)?,
-                base: Ingredient::parse(&v["base"], items)?,
-                addition: Ingredient::parse(&v["addition"], items)?,
+                template: ingredient(&v["template"])?,
+                base: ingredient(&v["base"])?,
+                addition: ingredient(&v["addition"])?,
                 // Use the same holder codec as item components, collapsing
                 // unstyled literal text once at the recipe boundary before
                 // publishing the typed snapshot.
@@ -709,8 +860,10 @@ impl ParsedStationRecipe {
             })),
             "minecraft:stonecutting" => Some(Self::Stonecutting(Stonecutting {
                 id,
-                input: Ingredient::parse(&v["ingredient"], items)?,
-                result: crate::crafting::Template::parse(&v["result"])?.create(),
+                input: ingredient(&v["ingredient"])?,
+                result: crate::crafting::Template::parse(&v["result"])
+                    .filter(|template| template.item.is_some())?
+                    .create(),
             })),
             _ => None,
         }
@@ -749,10 +902,10 @@ impl ParsedStationRecipe {
         }
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StationRecipes {
     pub smithing: Vec<Smithing>,
-    /// Sorted by recipe id, the registry order vanilla lists them in.
+    /// Descending recipe priority, then vanilla's registration order.
     pub stonecutting: Vec<Stonecutting>,
     /// `trim_material` registry: id -> (asset name, description).
     pub trim_materials: Vec<(String, String)>,
@@ -762,14 +915,24 @@ pub struct StationRecipes {
     item_limits: std::collections::HashMap<Arc<str>, (u32, u32)>,
 }
 impl StationRecipes {
+    /// These tables with `stonecutting` in place of their own stonecutter list.
+    pub fn with_stonecutting(&self, stonecutting: Vec<Stonecutting>) -> Self {
+        Self {
+            stonecutting,
+            ..self.clone()
+        }
+    }
+    /// Load station tables only after the complete recipe candidate validates.
     pub fn load(
         root: &Path,
         items: &Items,
         overlay: &PackOverlay,
         context: &sunrise_world::native_load_context::LoadContext,
-    ) -> Self {
-        let sources = crate::crafting::ResolvedSources::load_or_empty(root, overlay, context);
-        Self::from_sources(root, items, &sources)
+    ) -> crate::Result<Self> {
+        let sources =
+            crate::crafting::ResolvedSources::load_collecting(root, items, overlay, context)?;
+        crate::crafting::Recipes::from_resolved(root, items, overlay, &sources)?;
+        Ok(Self::from_sources(root, items, &sources))
     }
     /// The station tables of `sources`, the recipes one load resolved.
     pub fn from_sources(
@@ -779,7 +942,7 @@ impl StationRecipes {
     ) -> Self {
         let mut smithing = Vec::new();
         let mut stonecutting = Vec::new();
-        for recipe in sources.station_recipes(items).iter().flatten() {
+        for recipe in sources.station_recipes() {
             match recipe {
                 ParsedStationRecipe::Smithing(recipe) => smithing.push(recipe.clone()),
                 ParsedStationRecipe::Stonecutting(recipe) if !recipe.input.items.is_empty() => {
@@ -938,7 +1101,7 @@ impl StationRecipes {
                             .copied()
                             .unwrap_or((64, 0));
                         if let Some(data) = output.data() {
-                            for (key, value) in &data.other {
+                            for (key, value) in data.preserved_components() {
                                 match (key.as_str(), value) {
                                     (
                                         "minecraft:max_stack_size",
@@ -1063,9 +1226,15 @@ mod tests {
     use crate::enchant::tests::{sample, sample_items};
     use sunrise_core::nbt::Tag;
 
+<<<<<<< sync-sunrise-1
     /// A server's loop context, as the grindstone's menu gives its rules.
     fn loop_context() -> Arc<LoopContext> {
         crate::test_resources::loop_context(sunrise_world::native_load_context::LoopSide::Server)
+=======
+    /// The loop a menu under test runs in: no mods, so every part keeps vanilla's answer.
+    fn context() -> &'static LoopContext {
+        crate::test_resources::server_loop_context()
+>>>>>>> sunrise/main
     }
 
     fn sword(ench: &[(&str, u32)]) -> ItemStack {
@@ -1147,6 +1316,7 @@ mod tests {
             book
         };
         let one = enchanted_book(Some(Tag::Int(1)));
+<<<<<<< sync-sunrise-1
         assert!(grindstone_result(&loop_context(), &e, &items, Some(&one), Some(&one)).is_none());
         // A removed component is vanilla's default of one, not the item's 64.
         let removed = enchanted_book(None);
@@ -1158,6 +1328,16 @@ mod tests {
         let mut book = ItemStack::new("minecraft:book", 1);
         book.enchant("minecraft:sharpness", 1);
         let out = grindstone_result(&loop_context(), &e, &items, Some(&book), Some(&book)).unwrap();
+=======
+        assert!(grindstone_result(context(), &e, &items, Some(&one), Some(&one)).is_none());
+        // A removed component is vanilla's default of one, not the item's 64.
+        let removed = enchanted_book(None);
+        assert!(grindstone_result(context(), &e, &items, Some(&removed), Some(&removed)).is_none());
+        // Two plain books still combine to a count of two.
+        let mut book = ItemStack::new("minecraft:book", 1);
+        book.enchant("minecraft:sharpness", 1);
+        let out = grindstone_result(context(), &e, &items, Some(&book), Some(&book)).unwrap();
+>>>>>>> sunrise/main
         assert_eq!(out.count, 2);
         assert!(!out.has_any_enchantments());
     }
@@ -1330,7 +1510,11 @@ mod tests {
         let items = sample_items();
         let a = worn("minecraft:diamond_sword", 100, 90);
         let b = worn("minecraft:diamond_sword", 200, 190);
+<<<<<<< sync-sunrise-1
         let out = grindstone_result(&loop_context(), &e, &items, Some(&a), Some(&b)).unwrap();
+=======
+        let out = grindstone_result(context(), &e, &items, Some(&a), Some(&b)).unwrap();
+>>>>>>> sunrise/main
         assert_eq!(
             out.data().unwrap().other("minecraft:max_damage"),
             Some(&sunrise_core::nbt::Tag::Int(200))
@@ -1361,7 +1545,11 @@ mod tests {
         a.damage = 819;
         let mut b = ItemStack::new("minecraft:diamond_sword", 1);
         b.damage = 602;
+<<<<<<< sync-sunrise-1
         let out = grindstone_result(&loop_context(), &e, &items, Some(&a), Some(&b)).unwrap();
+=======
+        let out = grindstone_result(context(), &e, &items, Some(&a), Some(&b)).unwrap();
+>>>>>>> sunrise/main
         assert_eq!(
             out.data().and_then(|d| d.other("minecraft:max_damage")),
             None
@@ -1370,7 +1558,11 @@ mod tests {
         assert_eq!(out.damage, 0);
         // A larger patched MAX_DAMAGE on the second stack still wins and is written.
         let b = worn("minecraft:diamond_sword", 2000, 1990);
+<<<<<<< sync-sunrise-1
         let out = grindstone_result(&loop_context(), &e, &items, Some(&a), Some(&b)).unwrap();
+=======
+        let out = grindstone_result(context(), &e, &items, Some(&a), Some(&b)).unwrap();
+>>>>>>> sunrise/main
         assert_eq!(
             out.data().unwrap().other("minecraft:max_damage"),
             Some(&sunrise_core::nbt::Tag::Int(2000))
@@ -1487,6 +1679,45 @@ mod tests {
             apply_enchantment(&e, &items, 99, 2, 30, &ItemStack::new("minecraft:book", 1)).unwrap();
         assert_eq!(&*books.item, "minecraft:enchanted_book");
         assert!(!books.stored_enchantments().is_empty());
+    }
+
+    #[test]
+    fn anvil_books_keep_the_vanilla_default_but_respect_a_support_refusal() {
+        let e = sample();
+        let items = sample_items();
+        let input = book(&[]);
+        let addition = book(&[("minecraft:sharpness", 1)]);
+        let combine = |creative| {
+            anvil_result(
+                &e,
+                &items,
+                Some(&input),
+                Some(&addition),
+                None,
+                "Enchanted Book",
+                creative,
+            )
+        };
+        let vanilla = combine(false);
+        assert_eq!(
+            vanilla.result.unwrap().crafting_enchantments(),
+            [(Arc::from("minecraft:sharpness"), 1)]
+        );
+        assert_eq!(vanilla.cost, 1);
+        e.support_answers()
+            .install(std::collections::HashMap::from([(
+                "minecraft:enchanted_book".into(),
+                std::collections::HashMap::from([("minecraft:sharpness".into(), false)]),
+            )]));
+        assert!(
+            combine(false).result.is_none(),
+            "an enchanted book no longer bypasses the support answer"
+        );
+        assert_eq!(
+            combine(true).result.unwrap().crafting_enchantments(),
+            [(Arc::from("minecraft:sharpness"), 1)],
+            "creative still bypasses support"
+        );
     }
 
     #[test]
@@ -1708,8 +1939,129 @@ mod tests {
             };
             assert_eq!(hover_name(&names, &book("Log")), "Log");
             assert_eq!(hover_name(&names, &book(" ")), "Written Book");
+            assert_eq!(hover_name(&names, &book("\u{001c}")), "Written Book");
+            assert_eq!(hover_name(&names, &book("\u{0085}")), "\u{0085}");
             let diamond = stack(r#"{id:"minecraft:diamond",count:1}"#);
             assert_eq!(hover_name(&names, &diamond), "Diamond");
+        });
+    }
+
+    /// `ItemStack.getHoverName`'s branches, each by what it renders to in a language holding only
+    /// the keys vanilla's rules name. The expected values are written from those rules
+    /// (`PotionItem.getName`, `ShieldItem.getName`, `CompassItem.getName`,
+    /// `PlayerHeadItem.getName`, `ItemStack.getCustomName`), not derived from the code.
+    #[test]
+    fn hover_name_component_of_each_branch() {
+        use sunrise_core::nbt::Tag;
+        let names = crate::creative::Names::default();
+        let parse = |snbt: &str| item_data::parse_stack(snbt).unwrap().unwrap();
+        let mut head = ItemStack::new("minecraft:player_head", 1);
+        head.data_mut()
+            .set_other("minecraft:profile", Some(Tag::String("Notch".into())));
+        let mut compass = ItemStack::new("minecraft:compass", 1);
+        compass.data_mut().set_other(
+            "minecraft:lodestone_tracker",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        let mut named = ItemStack::new("minecraft:diamond", 1);
+        named.data_mut().set_other(
+            "minecraft:item_name",
+            Some(Tag::compound([(
+                "translate",
+                Tag::String("custom.key".into()),
+            )])),
+        );
+        let mut removed = ItemStack::new("minecraft:diamond", 1);
+        removed.data_mut().set_other(
+            "!minecraft:item_name",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        let cases = [
+            (
+                "potion",
+                parse(
+                    r#"{id:"minecraft:potion",count:1,components:{"minecraft:potion_contents":{potion:"minecraft:water"}}}"#,
+                ),
+                "Water Bottle",
+            ),
+            (
+                "written book",
+                parse(
+                    r#"{id:"minecraft:written_book",count:1,components:{"minecraft:written_book_content":{title:"Log",author:"A"}}}"#,
+                ),
+                "Log",
+            ),
+            (
+                "shield",
+                parse(
+                    r#"{id:"minecraft:shield",count:1,components:{"minecraft:base_color":"red"}}"#,
+                ),
+                "Red Shield",
+            ),
+            ("lodestone compass", compass, "Lodestone Compass"),
+            ("player head", head, "Notch's Head"),
+            (
+                "ominous banner",
+                parse(
+                    r#"{id:"minecraft:white_banner",count:1,components:{"minecraft:item_name":{translate:"block.minecraft.ominous_banner"}}}"#,
+                ),
+                "Ominous Banner",
+            ),
+            ("item_name", named, "Custom"),
+            ("removed item_name", removed, ""),
+        ];
+        let lang = crate::lang::Language::of(
+            "en_us",
+            [
+                ("item.minecraft.potion.effect.water", "Water Bottle"),
+                ("item.minecraft.shield.red", "Red Shield"),
+                ("item.minecraft.lodestone_compass", "Lodestone Compass"),
+                ("block.minecraft.player_head.named", "%s's Head"),
+                ("block.minecraft.ominous_banner", "Ominous Banner"),
+                ("custom.key", "Custom"),
+            ]
+            .map(|(k, v)| (k.to_owned(), v.to_owned())),
+        );
+        crate::lang::scoped(lang, || {
+            for (branch, stack, expected) in cases {
+                assert_eq!(
+                    hover_name_text(&names, &stack).plain(),
+                    expected,
+                    "{branch}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn hover_name_keeps_only_authored_fallbacks() {
+        use serde_json::json;
+        use std::collections::BTreeMap;
+        let blocks = Box::leak(Box::new(
+            sunrise_world::registry::BlockRegistry::from_facts_json(
+                br#"{"defaults":{"minecraft:air":0},"states":[["a",true,false,"","minecraft:air"]]}"#
+                    .as_slice(),
+            )
+            .unwrap(),
+        ));
+        let sword = ItemStack::new("minecraft:diamond_sword", 1);
+        let name = json!({"translate": "item.minecraft.diamond_sword"});
+        let names = crate::creative::Names::default().with_item_names(
+            &BTreeMap::from([(
+                sword.item.to_string(),
+                BTreeMap::from([("minecraft:item_name".into(), name.clone())]),
+            )]),
+            blocks,
+        );
+        crate::lang::scoped(crate::lang::Language::default(), || {
+            assert_eq!(hover_name_text(&names, &sword).component(), name);
+            let mut renamed = sword;
+            let name = json!({"translate": "test.name", "fallback": "A custom sword"});
+            renamed.data_mut().set_other(
+                "minecraft:item_name",
+                Some(crate::scoreboard::json_to_tag(&name)),
+            );
+            assert_eq!(hover_name_text(&names, &renamed).component(), name);
         });
     }
 
@@ -1737,7 +2089,11 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+<<<<<<< sync-sunrise-1
         let out = grindstone_result(&loop_context(), &e, &items, Some(&book), None).unwrap();
+=======
+        let out = grindstone_result(context(), &e, &items, Some(&book), None).unwrap();
+>>>>>>> sunrise/main
         assert_eq!(&*out.item, "minecraft:book");
         assert_eq!(out.enchantment_level("minecraft:sharpness"), 1);
         assert!(
@@ -1758,7 +2114,11 @@ mod tests {
             "!minecraft:repair_cost",
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
+<<<<<<< sync-sunrise-1
         let out = grindstone_result(&loop_context(), &e, &items, Some(&book), None).unwrap();
+=======
+        let out = grindstone_result(context(), &e, &items, Some(&book), None).unwrap();
+>>>>>>> sunrise/main
         assert_eq!(out.repair_cost(), 0);
         assert!(
             out.data()
@@ -1790,7 +2150,8 @@ mod tests {
             &PackOverlay::NONE,
             &defaults,
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         let e = &data.enchantments;
         assert_eq!(e.list.len(), 43);
         assert_eq!(
@@ -1960,12 +2321,20 @@ mod tests {
         let e = sample();
         let items = sample_items();
         let s = sword(&[("minecraft:sharpness", 3)]);
+<<<<<<< sync-sunrise-1
         let out = grindstone_result(&loop_context(), &e, &items, Some(&s), None).unwrap();
+=======
+        let out = grindstone_result(context(), &e, &items, Some(&s), None).unwrap();
+>>>>>>> sunrise/main
         assert!(out.enchantments().is_empty());
         assert_eq!(out.repair_cost(), 0);
         assert!(out.extra.is_none());
         let b = grindstone_result(
+<<<<<<< sync-sunrise-1
             &loop_context(),
+=======
+            context(),
+>>>>>>> sunrise/main
             &e,
             &items,
             None,
@@ -1973,7 +2342,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&*b.item, "minecraft:book");
+<<<<<<< sync-sunrise-1
         assert!(grindstone_result(&loop_context(), &e, &items, Some(&sword(&[])), None).is_none());
+=======
+        assert!(grindstone_result(context(), &e, &items, Some(&sword(&[])), None).is_none());
+>>>>>>> sunrise/main
         let mut r = LegacyRandom::new(5);
         // min cost of Sharpness III = 23; ceil(23/2)=12 -> 12..23.
         let xp = grindstone_experience(&e, &mut r, Some(&s), None);
@@ -1996,6 +2369,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+<<<<<<< sync-sunrise-1
         assert!(
             grindstone_result(&loop_context(), &e, &items, Some(&zero), Some(&plain)).is_none()
         );
@@ -2007,6 +2381,11 @@ mod tests {
             Some(&zero.clone()),
         )
         .unwrap();
+=======
+        assert!(grindstone_result(context(), &e, &items, Some(&zero), Some(&plain)).is_none());
+        let out =
+            grindstone_result(context(), &e, &items, Some(&zero), Some(&zero.clone())).unwrap();
+>>>>>>> sunrise/main
         assert_eq!(out.count, 2);
         assert!(!out.has_any_enchantments());
     }
@@ -2050,12 +2429,18 @@ mod tests {
         // `/give @s minecraft:stick[minecraft:max_damage=10,minecraft:max_stack_size=1]`
         let patched = stick(r#"{"minecraft:max_damage":10,"minecraft:max_stack_size":1}"#);
         assert_eq!(patched.damage, 0);
+<<<<<<< sync-sunrise-1
         assert!(!grindstone_accepts(&loop_context(), &items, &patched));
         // Two of them are not one "repaired" stick.
         assert!(
             grindstone_result(&loop_context(), &e, &items, Some(&patched), Some(&patched))
                 .is_none()
         );
+=======
+        assert!(!grindstone_accepts(context(), &items, &patched));
+        // Two of them are not one "repaired" stick.
+        assert!(grindstone_result(context(), &e, &items, Some(&patched), Some(&patched)).is_none());
+>>>>>>> sunrise/main
         // The anvil's combine gate refuses a non-damageable stack
         // (`AnvilMenu.java:151`), so its enchantments do not merge either.
         let (a, b) = (sharp(patched.clone()), sharp(patched.clone()));
@@ -2068,6 +2453,7 @@ mod tests {
         let explicit = stick(
             r#"{"minecraft:max_damage":10,"minecraft:max_stack_size":1,"minecraft:damage":0}"#,
         );
+<<<<<<< sync-sunrise-1
         assert!(grindstone_accepts(&loop_context(), &items, &explicit));
         // So the grindstone merges two into one and the anvil combines them.
         let merged = grindstone_result(
@@ -2078,6 +2464,12 @@ mod tests {
             Some(&explicit),
         )
         .unwrap();
+=======
+        assert!(grindstone_accepts(context(), &items, &explicit));
+        // So the grindstone merges two into one and the anvil combines them.
+        let merged =
+            grindstone_result(context(), &e, &items, Some(&explicit), Some(&explicit)).unwrap();
+>>>>>>> sunrise/main
         assert_eq!((merged.count, merged.damage), (1, 0));
         let (a, b) = (sharp(explicit.clone()), sharp(explicit.clone()));
         assert_eq!(
@@ -2090,17 +2482,29 @@ mod tests {
         let sword = item_data::parse_stack(r#"{id:"minecraft:diamond_sword",count:1}"#)
             .unwrap()
             .unwrap();
+<<<<<<< sync-sunrise-1
         assert!(grindstone_accepts(&loop_context(), &items, &sword));
+=======
+        assert!(grindstone_accepts(context(), &items, &sword));
+>>>>>>> sunrise/main
         let mut removed = sword.clone();
         removed.data_mut().set_other(
             "!minecraft:damage",
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
+<<<<<<< sync-sunrise-1
         assert!(!grindstone_accepts(&loop_context(), &items, &removed));
         // An enchanted book is accepted for its enchantments, not its damage.
         let mut book = ItemStack::new("minecraft:enchanted_book", 1);
         book.enchant("minecraft:sharpness", 1);
         assert!(grindstone_accepts(&loop_context(), &items, &book));
+=======
+        assert!(!grindstone_accepts(context(), &items, &removed));
+        // An enchanted book is accepted for its enchantments, not its damage.
+        let mut book = ItemStack::new("minecraft:enchanted_book", 1);
+        book.enchant("minecraft:sharpness", 1);
+        assert!(grindstone_accepts(context(), &items, &book));
+>>>>>>> sunrise/main
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2108,9 +2512,10 @@ mod tests {
     fn stonecutting_component_result_is_retained() {
         let items = Items::for_tests(Default::default());
         let json = serde_json::json!({"type":"minecraft:stonecutting","ingredient":"minecraft:stone","result":{"id":"minecraft:diamond","count":2,"components":{"minecraft:damage":7}}});
-        let rule = ParsedStationRecipe::parse("test:cut".into(), &json, &items)
-            .unwrap()
-            .rule();
+        let rule =
+            ParsedStationRecipe::parse("test:cut".into(), &json, |v| Ingredient::parse(v, &items))
+                .unwrap()
+                .rule();
         let crate::crafting::RecipeRule::Stonecutting { result, .. } = rule else {
             panic!("wrong rule")
         };
@@ -2123,7 +2528,10 @@ mod tests {
     fn smithing_transform_omitted_slots_match_empty() {
         let items = Items::for_tests(Default::default());
         let json = serde_json::json!({"type":"minecraft:smithing_transform","base":"minecraft:stone","result":"minecraft:diamond"});
-        let parsed = ParsedStationRecipe::parse("test:smith".into(), &json, &items).unwrap();
+        let parsed = ParsedStationRecipe::parse("test:smith".into(), &json, |v| {
+            Ingredient::parse(v, &items)
+        })
+        .unwrap();
         assert!(matches!(
             parsed.rule(),
             crate::crafting::RecipeRule::SmithingTransform {
@@ -2159,7 +2567,10 @@ mod tests {
         let items = Items::for_tests(Default::default());
         let json = serde_json::json!({"type":"minecraft:smithing_transform","base":"minecraft:diamond_sword","result":{"id":"minecraft:netherite_sword","count":2}});
         let ParsedStationRecipe::Smithing(recipe) =
-            ParsedStationRecipe::parse("test:smith".into(), &json, &items).unwrap()
+            ParsedStationRecipe::parse("test:smith".into(), &json, |v| {
+                Ingredient::parse(v, &items)
+            })
+            .unwrap()
         else {
             panic!("wrong rule")
         };
@@ -2188,9 +2599,10 @@ mod tests {
     fn smithing_inline_trim_pattern_is_retained() {
         let items = Items::for_tests(Default::default());
         let json = serde_json::json!({"type":"minecraft:smithing_trim","template":"minecraft:stick","base":"minecraft:stone","addition":"minecraft:iron_ingot","pattern":{"asset_id":"example:wave","description":{"translate":"trim.example.wave"},"decal":true}});
-        let rule = ParsedStationRecipe::parse("test:trim".into(), &json, &items)
-            .unwrap()
-            .rule();
+        let rule =
+            ParsedStationRecipe::parse("test:trim".into(), &json, |v| Ingredient::parse(v, &items))
+                .unwrap()
+                .rule();
         let crate::crafting::RecipeRule::SmithingTrim {
             pattern:
                 crate::crafting::RecipeTrimPattern::Inline {
@@ -2239,7 +2651,7 @@ mod tests {
             vec![serde_json::to_vec(&recipe).unwrap()],
         )];
         let overlay = PackOverlay::new(&files);
-        let stations = StationRecipes::load(&root, &items, &overlay, &context);
+        let stations = StationRecipes::load(&root, &items, &overlay, &context).unwrap();
         let e = sample();
         let mut base = ItemStack::new("minecraft:stick", 2);
         base.data_mut()
@@ -2300,6 +2712,7 @@ mod tests {
             can_equip: None,
             known_recipes: None,
             slot_rules: None,
+            stacked: None,
         };
         let mut menu = menu::Menu::new(menu::Kind::Smithing);
         menu.set_slot(&env, 1, Some(base));
@@ -2311,11 +2724,23 @@ mod tests {
         assert_eq!(menu.slot(1).unwrap().count, 1);
         assert_eq!(menu.slot(2).unwrap().count, 1);
         assert_eq!(menu.crafted[0].0, "test:upgrade");
-        for result in [
-            serde_json::json!({"id":"minecraft:emerald","count":0}),
-            serde_json::json!({"id":"minecraft:emerald","count":100}),
-            serde_json::json!({"id":"minecraft:diamond_sword","count":2}),
-            serde_json::json!({"id":"minecraft:emerald","components":{"minecraft:max_damage":10}}),
+        for (result, malformed) in [
+            (
+                serde_json::json!({"id":"minecraft:emerald","count":0}),
+                true,
+            ),
+            (
+                serde_json::json!({"id":"minecraft:emerald","count":100}),
+                true,
+            ),
+            (
+                serde_json::json!({"id":"minecraft:diamond_sword","count":2}),
+                false,
+            ),
+            (
+                serde_json::json!({"id":"minecraft:emerald","components":{"minecraft:max_damage":10}}),
+                false,
+            ),
         ] {
             let mut invalid = recipe.clone();
             invalid["result"] = result;
@@ -2323,13 +2748,24 @@ mod tests {
                 "recipe/test:invalid".to_owned(),
                 vec![serde_json::to_vec(&invalid).unwrap()],
             )];
-            let stations = StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context);
-            assert!(
-                stations
-                    .smithing_result(ctx, &e, None, menu.slot(1), menu.slot(2))
-                    .is_none(),
-                "{invalid}"
-            );
+            let candidate =
+                StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context);
+            if malformed {
+                let error = candidate.err().unwrap().to_string();
+                assert!(error.contains("data/test/recipe/invalid.json"), "{error}");
+                assert!(
+                    error.contains("invalid ingredients or required fields"),
+                    "{error}"
+                );
+            } else {
+                assert!(
+                    candidate
+                        .unwrap()
+                        .smithing_result(ctx, &e, None, menu.slot(1), menu.slot(2))
+                        .is_none(),
+                    "{invalid}"
+                );
+            }
         }
         for key in ["template", "base", "addition"] {
             let mut invalid = recipe.clone();
@@ -2338,11 +2774,12 @@ mod tests {
                 "recipe/test:invalid".to_owned(),
                 vec![serde_json::to_vec(&invalid).unwrap()],
             )];
-            let stations = StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context);
-            assert!(
-                stations.smithing.is_empty(),
-                "malformed {key} must not become optional"
-            );
+            let error = StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("data/test/recipe/invalid.json"), "{error}");
+            assert!(error.contains("invalid ingredient: null"), "{error}");
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -2383,7 +2820,8 @@ mod tests {
             &items,
             &PackOverlay::NONE,
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         assert_eq!(recipes.smithing.len(), 1);
         let out = recipes
             .smithing_result(
@@ -2428,7 +2866,8 @@ mod tests {
             &sample_items(),
             &PackOverlay::NONE,
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         let _ = fs::remove_dir_all(&root);
         let listed = recipes.stonecutter(
             crate::test_resources::server_loop_context(),
@@ -2462,7 +2901,8 @@ mod tests {
             &sample_items(),
             &PackOverlay::new(&packs),
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         let _ = fs::remove_dir_all(&root);
         let listed: Vec<_> = recipes
             .stonecutter(

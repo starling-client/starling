@@ -13,33 +13,33 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use crate::game::native_entity_refs::tests::with_game;
+    use mod_api::{
+        DataLoadContext, DefaultComponentsBoundEvent, Hooks, Identifier, ModEntry,
+        ModifyDefaultComponentsEvent, ReloadContext, TagsUpdateCause, TagsUpdatedEvent,
+    };
+    use std::sync::{Arc, Mutex};
     use sunrise_protocol::packets::{
         configuration::{RegistryTags, TagEntry, UpdateTags},
         play::{self, Clientbound as C},
     };
-    use mod_api::{
-        DataLoadContext, DefaultComponentsBoundEvent, Hooks, Host, HostSide, Identifier, ModEntry,
-        ModifyDefaultComponentsEvent, TagsUpdateCause, TagsUpdatedEvent,
-    };
-    use std::sync::{Arc, Mutex};
 
     struct Probe(Arc<Mutex<Vec<(&'static str, TagsUpdateCause)>>>);
     #[mod_api::__subscriptions]
     impl Hooks for Probe {
         fn default_components_bound(
             &self,
-            _: HostSide<'_>,
+            _: &dyn ReloadContext,
             event: &mut DefaultComponentsBoundEvent,
         ) {
             self.0.lock().unwrap().push(("bound", event.cause));
         }
-        fn tags_updated(&self, _: HostSide<'_>, event: &mut TagsUpdatedEvent) {
+        fn tags_updated(&self, _: &dyn ReloadContext, event: &mut TagsUpdatedEvent) {
             self.0.lock().unwrap().push(("tags", event.cause));
         }
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn defaults_are_announced_bound_before_the_tags() {
         let heard = Arc::new(Mutex::new(Vec::new()));
         let mods = vec![ModEntry::new("bound_probe", Box::new(Probe(heard.clone())))].into();
@@ -58,9 +58,9 @@ mod tests {
 
     /// The bound notice's default read: the value the mod's
     /// `modify_default_components` set, off the published defaults.
-    fn dirt_stack_size(host: &dyn Host) -> Option<mod_api::Tag> {
-        let key = host.item_key(&Identifier::parse("minecraft:dirt").unwrap())?;
-        host.item_default_component(key, "minecraft:max_stack_size")
+    fn dirt_stack_size(context: &dyn ReloadContext) -> Option<mod_api::Tag> {
+        let key = context.item_key(&Identifier::parse("minecraft:dirt").unwrap())?;
+        context.item_default_component(key, "minecraft:max_stack_size")
     }
 
     /// The load boundary a test's defaults edit flows through: the same
@@ -79,8 +79,6 @@ mod tests {
                     let context = reader.context();
                     mod_api::dispatch_modify_default_components(&context, item, components);
                 },
-                loot_function: |_, _, _, _, _| {},
-                loot_condition: |_, _, _, _, _| {},
             },
         );
     }
@@ -103,13 +101,10 @@ mod tests {
         }
         fn default_components_bound(
             &self,
-            host: HostSide<'_>,
+            context: &dyn ReloadContext,
             event: &mut DefaultComponentsBoundEvent,
         ) {
-            let stack = match host {
-                HostSide::Server(host) => dirt_stack_size(host),
-                HostSide::Client(host) => dirt_stack_size(host),
-            };
+            let stack = dirt_stack_size(context);
             self.0.lock().unwrap().push((event.cause, stack));
         }
     }
@@ -119,7 +114,7 @@ mod tests {
     /// cause, and a listener's read inside the notice returns the stack
     /// size its own `modify_default_components` published.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_first_open_announces_bound_defaults_readable() {
         install_default_component_loads();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -181,7 +176,7 @@ mod tests {
     /// with the client cause, before the tags notice; a listener's read
     /// inside returns the published defaults. An update in play refires.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_remote_login_announces_the_client_cause_before_the_tags() {
         install_default_component_loads();
         struct Both(Arc<Mutex<Vec<&'static str>>>);
@@ -200,14 +195,10 @@ mod tests {
             }
             fn default_components_bound(
                 &self,
-                host: HostSide<'_>,
+                context: &dyn ReloadContext,
                 event: &mut DefaultComponentsBoundEvent,
             ) {
-                assert!(matches!(&host, HostSide::Client(_)));
-                let stack = match host {
-                    HostSide::Server(host) => dirt_stack_size(host),
-                    HostSide::Client(host) => dirt_stack_size(host),
-                };
+                let stack = dirt_stack_size(context);
                 assert_eq!(
                     stack,
                     Some(mod_api::Tag::Int(99)),
@@ -222,7 +213,7 @@ mod tests {
                 assert!(event.cause.should_update_static_data());
                 self.0.lock().unwrap().push("bound");
             }
-            fn tags_updated(&self, _: HostSide<'_>, _: &mut TagsUpdatedEvent) {
+            fn tags_updated(&self, _: &dyn ReloadContext, _: &mut TagsUpdatedEvent) {
                 self.0.lock().unwrap().push("tags");
             }
         }

@@ -1,0 +1,3 @@
+ids = ["hook:mod_container_viewers"]
+why = "mod_container_viewers version 2 follows ContainerOpenersCounter: counts change synchronously at open and close, and are rechecked five ticks later while open. Zero crossings post container_open/container_close game events with the opening or closing entity, or no source on a recheck."
+migrate = "Handle open and close notices synchronously, including multiple changes in one tick and unchanged counts during scheduled rechecks. Rebuild native mods against this SDK."

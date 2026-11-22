@@ -53,7 +53,7 @@ QUALIFIED = re.compile(rf"{IDENT}(?:\s*::\s*{IDENT})*")
 GLOB_IMPORT = re.compile(r"\buse\s[^;]*::\s*\*")
 # File names a source may name in a literal (include_str!, include_bytes!, a path it reads). A file of another kind
 # is never "named", so it always counts.
-FILE_NAME = re.compile(r"[\w-]+\.(?:wgsl|glsl|json|png|ttf|otf|svg|txt|toml|ogg|wav|nbt|bin|dat|csv|mcmeta|wit|wasm)\b")
+FILE_NAME = re.compile(r"[\w-]+\.(?:wgsl|glsl|json|png|ttf|otf|svg|txt|toml|ogg|wav|nbt|bin|dat|csv|mcmeta)\b")
 TYPE_KINDS = {"struct", "enum", "union", "trait", "type", "macro_call"}
 # Names an impl header can take from outside the workspace: std's prelude and primitive types, and the std and serde
 # traits a glob import may bring. A glob-imported name outside this list is taken to be the workspace's.

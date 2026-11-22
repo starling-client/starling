@@ -1,8 +1,8 @@
 //! `LivingEntity.isBlocking` for native mods through a `LivingRef`: a player or a mob holding up
 //! an item that blocks attacks, past the item's block delay.
-use super::{Game, commands::Target, shield::block_delay_passed};
-use sunrise_client::mobs::spear_use;
+use super::{Game, commands::Target, native_living_refs::hand_slot, shield::block_delay_passed};
 use mod_api::LivingRef;
+use sunrise_client::mobs::spear_use;
 
 impl Game<'_> {
     /// `LivingEntity.isBlocking` (`getItemBlockingWith` is not null): the entity uses an item
@@ -12,7 +12,8 @@ impl Game<'_> {
     pub(super) fn living_is_blocking(&self, living: LivingRef) -> Option<bool> {
         // How long the item in use has been used: a player's and a guest's use counts up from 0,
         // a mob's counter from 1.
-        let ticks = match self.native_living_read_target(living)? {
+        let target = self.native_living_read_target(living)?;
+        let ticks = match target {
             Target::Player => self.using.map(|(_, ticks)| ticks),
             Target::Guest(conn) => self.lan.as_ref()?.play.get(&conn)?.using().map(|(_, t)| t),
             Target::Mob(id) => {
@@ -23,9 +24,9 @@ impl Game<'_> {
         };
         let blocking = ticks.is_some_and(|ticks| {
             self.living_used_item_hand(living)
-                .and_then(|hand| self.living_hand_item(living, hand))
+                .and_then(|hand| self.equipment_stack_for(target, hand_slot(hand)))
                 .is_some_and(|stack| {
-                    self.blocks_attacks(&stack)
+                    self.blocks_attacks(&stack.project())
                         .is_some_and(|component| block_delay_passed(&component, ticks))
                 })
         });
@@ -36,16 +37,16 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
+    use mod_api::client::first_person::Hand;
     use sunrise_client::items::ItemStack;
     use sunrise_client::mobs::Mob;
     use sunrise_core::geometry::Vec3;
-    use mod_api::client::first_person::Hand;
 
     /// A raised shield blocks after vanilla's 5-tick delay (`block_delay_seconds` 0.25), in
     /// either hand, for the player as the damage path sees it and for a mob; a bow in use, an
     /// unraised shield and a lowered one don't.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_raised_shield_blocks_after_its_delay_for_a_player_and_a_mob() {
         use sunrise_items::equipment::OFFHAND;
         with_game(|game| {
@@ -54,7 +55,7 @@ mod tests {
                 Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
             game.screen = super::super::Screen::Playing;
-            game.right = true;
+            game.set_mapping_held("key.use", true);
             let player = game.living(game.entity(20).unwrap()).unwrap();
             let shield = ItemStack::new("minecraft:shield", 1);
             let delay = game.blocks_attacks(&shield).unwrap().delay_seconds;

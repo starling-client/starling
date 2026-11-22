@@ -13,11 +13,9 @@ pub trait Hooks {
     /// and the correction after a veto). `from` is that location. Set `cancel`
     /// for a real veto and not a rollback: the report is not applied and its
     /// bookkeeping is skipped, and the client is corrected to the accepted
-    /// position and rotation through the existing teleport correction. The veto
-    /// adds no anticheat violation of its own, but the report was already seen
-    /// by the server's own checks and by the anticheat's record of the client's
-    /// ticks before the hook, and what a violation of those would have done
-    /// still happens. The values are the exact ones: there is no once-per-tick
+    /// position and rotation through the existing teleport correction. The report
+    /// was already seen by the server's own checks before the hook, and what a
+    /// violation of those would have done still happens. The values are the exact ones: there is no once-per-tick
     /// accumulation and no threshold in the engine, so the mod filters
     /// (`if (to - from).length() < 1.0 / 16.0 { return; }` skips anything under
     /// 1/16 of a block). Their state is swapped in
@@ -33,8 +31,8 @@ pub trait Hooks {
     /// drops a pending report cleanly. Not heard: the first tick in a level (the
     /// tick after a join or a level change; the second is heard), a player riding
     /// something (`vehicle_moved` hears the vehicle), any teleport (its
-    /// confirmation is validated and committed without the hook, at the teleport's
-    /// target, and so is the veto's own correction; a report that arrives while a teleport is
+    /// confirmation's own position is validated from the teleport's target and
+    /// committed without the hook, and so is the veto's own correction; a report that arrives while a teleport is
     /// unconfirmed is not heard either), and a passage crossing (its caller
     /// reads the position at once, so the report is committed in place). The
     /// first report after a teleport that passed validation is heard, with the
@@ -43,16 +41,13 @@ pub trait Hooks {
     /// allocated. With one, the cost is one held report for each moving player
     /// a tick.
     ///
-    /// A fault or an epoch timeout in a wasm listener answers nothing: it is
-    /// not a veto and the report is committed, like every cancellable hook; the
-    /// fault is logged, counted against the mod, and stops the mod's group for
-    /// the session. A native listener that never returns is out of scope: it
-    /// blocks the game thread like any native code, and the 20-tick deadline
-    /// covers only a report held pending across ticks. Server-side.
+    /// The 20-tick deadline covers only a report held pending across ticks.
+    /// A listener that never returns blocks the game thread. Server-side.
     #[notes = r#"## Player move
 
 - **`player_move(host, event)`**: Bukkit's `PlayerMoveEvent` for a guest's own movement, fired from `ServerGamePacketListenerImpl.handlePlayerPositionChange`'s place: after the server validated the report, before it is committed. Cancelling vetoes it; the client is sent back to the accepted position and rotation. The engine applies no threshold: a mod that wants Paper's 1/256 square block or ten degrees compares `from` and `to` itself."#]
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -60,5 +55,12 @@ pub trait Hooks {
         paper = "PlayerMoveEvent",
         cancellable = true
     )]
-    fn player_move();
+    fn player_move(
+        player: u128,
+        from: [f64; 3],
+        from_rotation: [f32; 2],
+        to: [f64; 3],
+        to_rotation: [f32; 2],
+        cancel: &mut bool,
+    );
 }

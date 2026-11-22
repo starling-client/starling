@@ -183,8 +183,10 @@ fn tropical_fish_pattern_recipe_defaults_removal_and_strictness_preserve_presenc
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(omitted.craft(&context, &[Some(egg.clone())], 1).is_none());
     assert!(removal.craft(&context, &[Some(egg.clone())], 1).is_none());
-    egg.data_mut()
-        .set_other("minecraft:custom_data", Some(Tag::Int(3)));
+    egg.data_mut().set_other(
+        "minecraft:custom_data",
+        Some(Tag::compound([("extra", Tag::Int(3))])),
+    );
     assert!(loose.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_none());
     egg.data_mut().set_other("minecraft:custom_data", None);
@@ -218,7 +220,7 @@ fn tropical_fish_pattern_recipe_defaults_removal_and_strictness_preserve_presenc
 }
 
 #[test]
-fn tropical_fish_pattern_invalid_codec_payloads_omit_whole_recipes() {
+fn tropical_fish_pattern_invalid_codec_payloads_refuse_whole_load() {
     let items = Items::empty();
     for (payload, diagnostic) in [
         (serde_json::json!(0), "Not a string"),
@@ -254,10 +256,7 @@ fn tropical_fish_pattern_invalid_codec_payloads_omit_whole_recipes() {
             "components": patch.clone()
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = tropical_fish_pattern_recipes(&items, patch, false);
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.cooking.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
 }
 
@@ -349,7 +348,7 @@ fn rollup_rejection_and_absence_matrix_4221() {
         assert!(error.contains("minecraft:tropical_fish/pattern"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &sunrise_world::loot::PackOverlay::NONE,
@@ -362,13 +361,14 @@ fn rollup_rejection_and_absence_matrix_4221() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 

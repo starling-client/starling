@@ -1,14 +1,14 @@
 //! `contained_fluid`: a mod's own container item says which fluid a stack holds, and its
 //! `neoforge:fluid_container` model draws it as a held stack of that fluid. Run alone with
 //! prepared resources: installs process-wide trait mods.
-use sunrise_assets::item_model::{
-    ClientItem, Context, DisplayContext, ItemModels, Layer, LayerContent, StackView,
-};
 use mod_api::{
     ClientHost, ContainedFluidEvent, FluidKey, Hooks, ItemPart, Registrar, RegistrationContext,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use sunrise_assets::item_model::{
+    ClientItem, Context, DisplayContext, ItemModels, Layer, LayerContent, StackView,
+};
 
 /// A canister's model: a bucket's base, the held fluid through the bucket's fluid mask, and
 /// no fluid layer while it holds none.
@@ -129,7 +129,7 @@ fn drawn_with(game: &crate::game::Game<'_>, item: &str, model: &str) -> Vec<Laye
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES; process-wide mods"]
+#[ignore = "daily"]
 fn a_mod_container_draws_the_fluid_its_part_reports() {
     crate::game::in_own_process(
         "game::contained_fluid_tests::a_mod_container_draws_the_fluid_its_part_reports",

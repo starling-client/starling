@@ -25,7 +25,7 @@ mod entity_inside_tests {
     /// Landing writes reach the level at the batch end, in the order asked, and only
     /// where the block is still the state landed on.
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn landing_writes_apply_at_the_batch_end() {
         use crate::game::api_values::{TryIntoApi, TryIntoEngine};
         use sunrise_client::block_contact::{landed, take_pending};
@@ -126,7 +126,8 @@ mod sweep_tests {
         contacts: std::sync::Arc<std::sync::Mutex<Vec<[i32; 3]>>>,
         wither: std::sync::Arc<std::sync::Mutex<Option<mod_api::EffectKey>>>,
         speed: std::sync::Arc<std::sync::Mutex<Option<mod_api::EffectKey>>>,
-        kill_after: Option<usize>,
+        hurt_after: Option<(usize, f32)>,
+        generic: std::sync::Arc<std::sync::Mutex<Option<mod_api::DamageTypeKey>>>,
         panic_after: Option<usize>,
     }
     #[mod_api::sunrise_part]
@@ -141,16 +142,18 @@ mod sweep_tests {
             let seen = contacts.len();
             drop(contacts);
             // A level draw, in vanilla's order: between the vanilla contacts.
-            let _ = host.with_random(sunrise_core::random::RandomSource::next_long);
+            let _ = host.with_random(|random| random.next_long());
             if self.panic_after.is_some_and(|after| seen > after) {
                 panic!("an entity_inside part panics");
             }
-            if self.kill_after.is_some_and(|after| seen > after) {
+            if let Some((after, amount)) = self.hurt_after
+                && seen > after
+            {
                 event.run_after(
                     mod_api::InsideEffect::Freeze,
                     mod_api::EntityWrite::Hurt {
-                        source: None,
-                        amount: 1000.0,
+                        damage_type: self.generic.lock().unwrap().unwrap(),
+                        amount,
                     },
                 );
             }
@@ -184,10 +187,15 @@ mod sweep_tests {
     #[mod_api::__subscriptions]
     impl mod_api::Hooks for InsideMod {
         fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            *self.0.generic.lock().unwrap() = Some(r.damage_type_key("minecraft:generic"));
             *self.0.wither.lock().unwrap() = Some(r.effect_key("minecraft:wither"));
             *self.0.speed.lock().unwrap() = Some(r.effect_key("minecraft:speed"));
             let stone = r.block_key("minecraft:stone");
             r.block_part(stone, self.0.clone());
+            if self.0.hurt_after.is_some() {
+                let grass = r.block_key("minecraft:short_grass");
+                r.block_part(grass, self.0.clone());
+            }
         }
     }
 
@@ -259,22 +267,27 @@ mod sweep_tests {
             ..
         } = game;
         let entities: [sunrise_core::geometry::Aabb; 0] = [];
-        sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-            let mut w = MotionWorld {
-                tag_items: None,
-                block_registries: Some(&pack.block_registries),
-                loop_context,
-                damage_hooks,
-                entities: &entities,
-                player: player.as_mut().unwrap(),
-                scene: world,
-                assets: &pack.assets,
-                collision_binding: collision,
-                resources: motion,
-                health: health_resources,
-            };
-            runs(&mut w).unwrap();
-        });
+        sunrise_client::block_contact::in_level(
+            sunrise_client::parallel::TickThread::mint(),
+            Some("minecraft:overworld"),
+            || {
+                let mut w = MotionWorld {
+                    side: sunrise_client::motion::dry_side(),
+                    tag_items: None,
+                    block_registries: Some(&pack.block_registries),
+                    loop_context,
+                    damage_hooks,
+                    entities: &entities,
+                    player: player.as_mut().unwrap(),
+                    scene: world,
+                    assets: &pack.assets,
+                    collision_binding: collision,
+                    resources: motion,
+                    health: health_resources,
+                };
+                runs(&mut w).unwrap();
+            },
+        );
         let player = game.player.as_ref().unwrap();
         (before, player.velocity.x, player.health.dead_or_dying())
     }
@@ -284,7 +297,7 @@ mod sweep_tests {
     /// for the server's `give_player_effect`, which runs before this tick's effect
     /// tick.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_part_pushes_the_player_and_its_effect_lands() {
         let part = InsidePart::default();
         let mods = install_inside_mod("inside-push", &part);
@@ -325,39 +338,43 @@ mod sweep_tests {
     /// still happen, but the flush stops at the death, so the later writes and
     /// effects never apply.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_killing_write_stops_the_flush() {
-        let part = InsidePart {
-            kill_after: Some(0),
-            ..InsidePart::default()
-        };
-        let mods = install_inside_mod("inside-kill", &part);
-        mod_platform::testing::with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                let _ = sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
-                let (before, after, dead) = sweep_game_player(game);
-                assert_eq!(
-                    part.contacts.lock().unwrap().len(),
-                    2,
-                    "the walk itself reaches both contacts"
-                );
-                assert!(dead, "the killing write applied");
-                assert!(
-                    (after - before).abs() < 1e-9,
-                    "the writes after the death never apply"
-                );
-            });
-        });
+        crate::game::in_own_process(
+            "game::native_hooks::entity_inside::sweep_tests::a_killing_write_stops_the_flush",
+            || {
+                let part = InsidePart {
+                    hurt_after: Some((0, 1000.0)),
+                    ..InsidePart::default()
+                };
+                let mods = install_inside_mod("inside-kill", &part);
+                mod_platform::testing::with_mods(mods, || {
+                    crate::game::native_entity_refs::tests::with_game(|game| {
+                        let _ =
+                            sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
+                        let (before, after, dead) = sweep_game_player(game);
+                        assert_eq!(
+                            part.contacts.lock().unwrap().len(),
+                            2,
+                            "the walk itself reaches both contacts"
+                        );
+                        assert!(dead, "the killing write applied");
+                        assert_eq!(
+                            after.to_bits(),
+                            before.to_bits(),
+                            "the writes after the death never apply"
+                        );
+                    });
+                });
+            },
+        );
     }
 
-    /// A part that panics on its second contact: the panic is contained, the walk
-    /// and the player's tick go on, and the panicking callback's writes are refused
-    /// with it.
+    /// A part that panics on its first contact is disabled for this hook. The walk
+    /// and the player's tick go on without applying the failed callback's writes.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_panicking_part_leaves_the_players_tick_restored() {
-        // The panic lands on every contact: each one is caught in the staged fire,
-        // and the mod keeps receiving the walk's contacts.
         let part = InsidePart {
             panic_after: Some(0),
             ..InsidePart::default()
@@ -370,8 +387,8 @@ mod sweep_tests {
                 assert!(!dead);
                 assert_eq!(
                     part.contacts.lock().unwrap().len(),
-                    2,
-                    "both contacts reached the part; each panic was contained"
+                    1,
+                    "the first panic disables the callback before the next contact"
                 );
                 assert!(
                     (after - before).abs() < 1e-9,
@@ -397,7 +414,7 @@ mod sweep_tests {
     /// player's writes and the pending queue alone: no part is installed, so the
     /// fire's gate answers false and its DamageLevel is never built.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn without_a_part_the_walk_costs_no_mod_work() {
         // The production binding, as every sweep test sets it: nothing is installed
         // on this thread, so its gate answers false for every state and the fire's
@@ -430,7 +447,7 @@ mod sweep_tests {
     /// `applyAndClear`'s own, ready for the server's `give_player_effect` before
     /// this tick's effect tick.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_added_effect_keeps_its_collector_position() {
         let part = InsidePart::default();
         let mods = install_inside_mod("inside-order", &part);
@@ -471,7 +488,7 @@ mod sweep_tests {
     /// part — two blocks, two contacts, not four, as vanilla's `entityInside`
     /// runs once a move.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_servers_player_is_told_once_a_tick() {
         let part = InsidePart::default();
         let mods = install_inside_mod("inside-once", &part);
@@ -527,7 +544,7 @@ mod sweep_tests {
     /// Without a part the two server passes leave the player as vanilla has it:
     /// the walk still reports its blocks and nothing is queued.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_server_passes_without_a_part_keep_vanilla_behavior() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let stone = game
@@ -620,7 +637,7 @@ mod sweep_tests {
 
     /// A part's pushes reach the item in its own tick, one contact a block.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_part_pushes_an_item_once_a_block() {
         let part = InsidePart::default();
         let mods = install_inside_mod("inside-item", &part);
@@ -629,9 +646,13 @@ mod sweep_tests {
                 let _ = sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
                 let mut item = item_at_blocks(game);
                 let before = item.velocity.x;
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    game.sweep_item_inside(&mut item);
-                });
+                sunrise_client::block_contact::in_level(
+                    sunrise_client::parallel::TickThread::mint(),
+                    Some("minecraft:overworld"),
+                    || {
+                        game.sweep_item_inside(&mut item);
+                    },
+                );
                 assert_eq!(
                     *part.contacts.lock().unwrap(),
                     vec![[1, 100, 0], [2, 100, 0]],
@@ -649,36 +670,96 @@ mod sweep_tests {
     /// A killing write stops the item's flush: the walk still reaches both blocks,
     /// the writes after the destruction never apply.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_killing_write_stops_the_items_flush() {
-        let part = InsidePart {
-            kill_after: Some(0),
-            ..InsidePart::default()
-        };
-        let mods = install_inside_mod("inside-item-kill", &part);
-        mod_platform::testing::with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                let _ = sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
-                let mut item = item_at_blocks(game);
-                let before = item.velocity.x;
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    game.sweep_item_inside(&mut item);
+        crate::game::in_own_process(
+            "game::native_hooks::entity_inside::sweep_tests::a_killing_write_stops_the_items_flush",
+            || {
+                let part = InsidePart {
+                    hurt_after: Some((0, 0.5)),
+                    ..InsidePart::default()
+                };
+                let mods = install_inside_mod("inside-item-kill", &part);
+                mod_platform::testing::with_mods(mods, || {
+                    crate::game::native_entity_refs::tests::with_game(|game| {
+                        let _ =
+                            sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
+                        let mut item = item_at_blocks(game);
+                        use sunrise_client::items::ItemStack;
+                        let diamonds = ItemStack::new("minecraft:diamond", 3);
+                        item.stack = ItemStack::new("minecraft:shulker_box", 1);
+                        item.stack.data_mut().container = vec![(0, diamonds.clone())];
+                        item.health = 1;
+                        let before = item.velocity.x;
+                        sunrise_client::block_contact::in_level(
+                            sunrise_client::parallel::TickThread::mint(),
+                            Some("minecraft:overworld"),
+                            || {
+                                game.sweep_item_inside(&mut item);
+                            },
+                        );
+                        assert_eq!(part.contacts.lock().unwrap().len(), 2);
+                        assert_eq!(item.health, 0, "subtract 0.5 before truncating health");
+                        assert_eq!(game.dropped.len(), 1);
+                        assert_eq!(game.dropped[0].stack, diamonds);
+                        assert_eq!(game.dropped[0].position, item.position);
+                        assert_eq!(
+                            item.velocity.x.to_bits(),
+                            before.to_bits(),
+                            "the writes after the destruction never apply"
+                        );
+
+                        // Run the real batch on a merge tick. The victim touches a
+                        // non-solid block, its neighbour is close enough to merge
+                        // but doesn't touch that block.
+                        let grass = game
+                            .pack
+                            .assets
+                            .registry
+                            .default_state("minecraft:short_grass")
+                            .unwrap();
+                        game.world.set(1, 104, 0, grass).unwrap();
+                        game.tickets.update(None);
+                        game.ticked_entities_through = u32::MAX;
+                        for (health, count) in [(5, 3), (1, 2)] {
+                            part.contacts.lock().unwrap().clear();
+                            game.dropped.clear();
+                            for (x, count, ticks, health) in
+                                [(1.25, 1, 39, health), (0.75, 2, 0, 5)]
+                            {
+                                game.spawn_item(
+                                    ItemStack::new("minecraft:stone", count),
+                                    [x, 104.5, 0.5],
+                                    [0.0; 3],
+                                    20,
+                                );
+                                let item = game.dropped.last_mut().unwrap();
+                                item.no_gravity = true;
+                                item.health = health;
+                                item.ticks = ticks;
+                            }
+                            let neighbour = game.dropped[1].id;
+                            sunrise_client::block_contact::in_level(
+                                sunrise_client::parallel::TickThread::mint(),
+                                Some("minecraft:overworld"),
+                                || game.tick_items(),
+                            );
+                            assert_eq!(*part.contacts.lock().unwrap(), [[1, 104, 0]]);
+                            assert_eq!(game.dropped.len(), 1);
+                            assert_eq!(game.dropped[0].id, neighbour);
+                            assert_eq!(game.dropped[0].stack.count, count);
+                        }
+                    });
                 });
-                assert_eq!(part.contacts.lock().unwrap().len(), 2);
-                assert!(item.health <= 0, "the killing write applied");
-                assert!(
-                    (item.velocity.x - before).abs() < 1e-9,
-                    "the writes after the destruction never apply"
-                );
-            });
-        });
+            },
+        );
     }
 
     /// A panicking part inside the item batch: the staged fire contains it, the
     /// lent level goes back, and the lifted row the batch holds returns to the
     /// level's list (#2194's and #2213's carrier discipline).
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_panicking_part_leaves_the_item_batch_restored() {
         let part = InsidePart {
             panic_after: Some(0),
@@ -693,14 +774,18 @@ mod sweep_tests {
                 let rows = game.dropped.len();
                 let mut items = game.dropped.lift();
                 let before = items[0].velocity.x;
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    game.sweep_item_inside(&mut items[0]);
-                });
+                sunrise_client::block_contact::in_level(
+                    sunrise_client::parallel::TickThread::mint(),
+                    Some("minecraft:overworld"),
+                    || {
+                        game.sweep_item_inside(&mut items[0]);
+                    },
+                );
                 game.put_back_dropped(items);
                 assert_eq!(
                     part.contacts.lock().unwrap().len(),
-                    2,
-                    "both contacts reached the part; each panic was contained"
+                    1,
+                    "the first panic disables the callback before the next contact"
                 );
                 assert_eq!(game.dropped.len(), rows, "the lifted row returned");
                 let item = game.dropped.first().unwrap();
@@ -721,15 +806,19 @@ mod sweep_tests {
     /// Without a part the item's sweep costs one gate test: nothing is written,
     /// nothing queued, exactly what main's recorded route did with no listener.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_item_without_a_part_is_left_alone() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let _ = sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
             let mut item = item_at_blocks(game);
             let before = (item.velocity.x, item.health, item.fire_ticks);
-            sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                game.sweep_item_inside(&mut item);
-            });
+            sunrise_client::block_contact::in_level(
+                sunrise_client::parallel::TickThread::mint(),
+                Some("minecraft:overworld"),
+                || {
+                    game.sweep_item_inside(&mut item);
+                },
+            );
             assert_eq!(
                 (item.velocity.x, item.health, item.fire_ticks),
                 before,
@@ -742,7 +831,7 @@ mod sweep_tests {
     /// The projectile's batch sweep: a part's push reaches it, one contact a
     /// block, and a removed projectile's flush stops.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_part_pushes_a_projectile_and_removal_stops_the_flush() {
         let part = InsidePart::default();
         let mods = install_inside_mod("inside-shot", &part);
@@ -770,9 +859,13 @@ mod sweep_tests {
                 shot.id = 9;
                 shot.previous = sunrise_core::geometry::Vec3::new(0.5, 100.0, 0.5);
                 let before = shot.velocity.x;
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    game.sweep_projectile_inside(&mut shot);
-                });
+                sunrise_client::block_contact::in_level(
+                    sunrise_client::parallel::TickThread::mint(),
+                    Some("minecraft:overworld"),
+                    || {
+                        game.sweep_projectile_inside(&mut shot);
+                    },
+                );
                 assert_eq!(
                     *part.contacts.lock().unwrap(),
                     vec![[1, 100, 0], [2, 100, 0]],
@@ -801,9 +894,13 @@ mod sweep_tests {
                     a.removed = true;
                 }
                 let before = arrow.velocity.x;
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    game.sweep_projectile_inside(&mut arrow);
-                });
+                sunrise_client::block_contact::in_level(
+                    sunrise_client::parallel::TickThread::mint(),
+                    Some("minecraft:overworld"),
+                    || {
+                        game.sweep_projectile_inside(&mut arrow);
+                    },
+                );
                 assert!(
                     part.contacts.lock().unwrap().is_empty(),
                     "a removed projectile is not walked"
@@ -816,7 +913,7 @@ mod sweep_tests {
     /// Without a part the projectile's sweep costs one gate test and nothing else,
     /// exactly what main's recorded route did with no listener.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_projectile_without_a_part_is_left_alone() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             let _ = sunrise_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
@@ -838,9 +935,13 @@ mod sweep_tests {
             );
             shot.previous = sunrise_core::geometry::Vec3::new(0.5, 100.0, 0.5);
             let before = (shot.velocity.x, shot.fire_ticks, shot.fall_distance);
-            sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                game.sweep_projectile_inside(&mut shot);
-            });
+            sunrise_client::block_contact::in_level(
+                sunrise_client::parallel::TickThread::mint(),
+                Some("minecraft:overworld"),
+                || {
+                    game.sweep_projectile_inside(&mut shot);
+                },
+            );
             assert_eq!(
                 (shot.velocity.x, shot.fire_ticks, shot.fall_distance),
                 before,
@@ -854,7 +955,7 @@ mod sweep_tests {
     /// a flying arrow meets its blocks in walk order, once each, and a stuck
     /// arrow keeps the contact of the block it sits in.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_arrow_is_told_once_a_block_stuck_and_flying() {
         let part = InsidePart::default();
         let mods = install_inside_mod("inside-arrow", &part);
@@ -877,9 +978,13 @@ mod sweep_tests {
                 let flying = arrow_shot(9, (0.5, 100.0, 0.5), (2.5, 100.0, 0.5));
                 let before = flying.velocity.x;
                 let mut flying = flying;
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    game.sweep_projectile_inside(&mut flying);
-                });
+                sunrise_client::block_contact::in_level(
+                    sunrise_client::parallel::TickThread::mint(),
+                    Some("minecraft:overworld"),
+                    || {
+                        game.sweep_projectile_inside(&mut flying);
+                    },
+                );
                 assert_eq!(
                     *part.contacts.lock().unwrap(),
                     vec![[1, 100, 0], [2, 100, 0]],
@@ -893,9 +998,13 @@ mod sweep_tests {
                 // A stuck arrow: no move, the block it sits in still tells the part.
                 let mut stuck = arrow_shot(10, (1.5, 100.0, 0.5), (1.5, 100.0, 0.5));
                 stuck.velocity = sunrise_core::geometry::Vec3::ZERO;
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    game.sweep_projectile_inside(&mut stuck);
-                });
+                sunrise_client::block_contact::in_level(
+                    sunrise_client::parallel::TickThread::mint(),
+                    Some("minecraft:overworld"),
+                    || {
+                        game.sweep_projectile_inside(&mut stuck);
+                    },
+                );
                 assert_eq!(
                     *part.contacts.lock().unwrap(),
                     vec![[1, 100, 0]],
@@ -910,7 +1019,7 @@ mod sweep_tests {
     /// in the staged fire, the lifted projectile row returns to the level's list
     /// exactly once, and the arrow keeps its state.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_panicking_part_leaves_the_arrow_list_whole() {
         let part = InsidePart {
             panic_after: Some(0),
@@ -940,17 +1049,21 @@ mod sweep_tests {
                 game.creatures.projectiles.push(shot);
                 let rows = game.creatures.projectiles.len();
                 let mut projectiles = game.creatures.projectiles.lift();
-                sunrise_client::block_contact::in_level(Some("minecraft:overworld"), || {
-                    projectiles.update(0, |p| game.sweep_projectile_inside(p));
-                });
+                sunrise_client::block_contact::in_level(
+                    sunrise_client::parallel::TickThread::mint(),
+                    Some("minecraft:overworld"),
+                    || {
+                        projectiles.update(0, |p| game.sweep_projectile_inside(p));
+                    },
+                );
                 game.creatures.projectiles.restore(
                     projectiles,
                     sunrise_client::join_seq::RestoreOrder::SpawnsFirst,
                 );
                 assert_eq!(
                     part.contacts.lock().unwrap().len(),
-                    2,
-                    "both contacts reached the part; each panic was contained"
+                    1,
+                    "the first panic disables the callback before the next contact"
                 );
                 assert_eq!(
                     game.creatures.projectiles.len(),

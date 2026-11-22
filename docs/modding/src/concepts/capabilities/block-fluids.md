@@ -2,7 +2,7 @@
 
 Look up `level.capability(host, &FLUIDS, pos, side)` to access a block's
 `ResourceHandler<FluidResource>`. Transfer fluids inside a transaction with
-`move_resources`, as you transfer items. `FLUIDS` corresponds to NeoForge's
+`resource_util::move_resources`, as you transfer items. `FLUIDS` corresponds to NeoForge's
 `Capabilities.Fluid.BLOCK`. Amounts are millibuckets (mB); one bucket is 1000 mB.
 
 ## Resources and tanks
@@ -24,11 +24,13 @@ Cauldrons are position-based providers, not block entities. They accept register
 fluids regardless of components and discard those components; extracted fluid is
 plain. An empty cauldron accepts any fluid with registered cauldron content.
 
-If a destination accepts only part of a transfer, `move_resources` rolls back and
-retries with that amount. A full water cauldron asked for a bucket when the
-destination has room for 500 mB supplies one level, 334 mB, without overanswering.
+The source must extract exactly what the destination accepted. If it cannot, the
+step rolls back. For example, a full water cauldron cannot supply exactly 500 mB:
+request 334 mB to move one level into a tank with 500 mB of room.
 
 ## Cauldron contents
+
+`register_cauldron_fluid_content` publishes a listener's entries only after [successful registration](../load-phases.md#registration-and-setup).
 
 To inspect a cauldron without probing its capability, use the `fluids` host reads
 `host.cauldron_content_for_block(block_key)` and `host.cauldron_content_for_fluid(fluid_key)`.
@@ -39,8 +41,7 @@ typed state's current level (water at level 2 answers 2); an always-full content
 answers its maximum. Unregistered contents, including powder snow, answer `None`.
 These `WorldOnly` reads work on both sides, over the existing registration table,
 including mods and rebuilt resource generations. A client that has not built that table
-answers `None`. Native and wasm consumers receive the same plain values; there is no
-work unless called. A content lookup scans the existing content table without a mod
+answers `None`. The lookup does no work unless called. A content lookup scans the existing content table without a mod
 scan, clones its shared snapshot, and allocates only the returned level-property string
 when present; the scalar level read allocates no result.
 
@@ -109,3 +110,28 @@ fallback's fill sound and event also wait for that commit
 (`level.play_fluid_effects(host, pos, fluid, pickup, player, tx)`). An aborted pickup or
 placement leaves the world unchanged, with no drop, sound or event, where NeoForge's may
 leave it changed.
+
+## Dispensing a fluid container
+
+`fluid_util::dispense_container(host, event)` is NeoForge's `DispenseFluidContainer`: a
+dispenser's answer for a fluid container. Return it from the container's `dispense_item`
+part. It is no default, and vanilla's buckets keep their own behaviours.
+
+```rust,ignore
+fn dispense_item(&self, host: &mut dyn ServerHost, event: &mut DispenseItemEvent<'_>)
+    -> Option<Dispensed> {
+    fluid_util::dispense_container(host, event)
+}
+```
+
+The dispensed container runs in a private two-slot copy (`ItemPlace::ScratchSlots`), so an
+empty container may become a full one of another item, as a bucket does. Its handler reaches
+the copy one item at a time (`ItemPlace::OneByOne`), so it sees one container whatever the
+stack. It always tries
+`try_pickup_fluid` on the block in front first (its `FLUIDS` reached from the dispenser's side)
+and places with `try_place_fluid` (unvalidated, as a bucket) only where nothing was picked up.
+A single container is replaced in its slot. From a larger stack the slot keeps the rest and the
+changed container goes into the dispenser's other slots, else out of its front with a second
+click (`host.dispense_with_remainder`). The fluid's sound and game event come before the
+dispenser's click and smoke. Where neither moves anything, nothing changes and one unchanged
+container is dispensed as `DefaultDispenseItemBehavior` does.

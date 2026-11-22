@@ -28,22 +28,55 @@ pub fn check_fall_damage<W: FallDamageWorld>(
     state: W::State,
     position: BlockPos,
 ) -> Result<(), W::Error> {
+    check_fall_damage_until(
+        world,
+        dy,
+        on_ground,
+        state,
+        position,
+        |world, state, pos, distance| {
+            world.fall_on(state, pos, distance)?;
+            Ok(None::<()>)
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn check_fall_damage_until<W: FallDamageWorld, T>(
+    world: &mut W,
+    dy: f64,
+    on_ground: bool,
+    state: W::State,
+    position: BlockPos,
+    fall_on: impl FnOnce(&mut W, W::State, BlockPos, f64) -> Result<Option<T>, W::Error>,
+) -> Result<Option<T>, W::Error> {
     if !world.is_in_water()? && dy < 0.0 {
         world.set_fall_distance(world.fall_distance() - f64::from(dy as f32));
     }
     if on_ground {
         if world.fall_distance() > 0.0 {
-            world.fall_on(state, position, world.fall_distance())?;
-            // Landing callbacks may move the entity or replace its support.
-            let position = world.position();
-            let state = if let Some(support) = world.supporting_block() {
-                world.block_state(support)?
-            } else {
-                state
-            };
-            world.hit_ground(position, state)?;
+            if let Some(pause) = fall_on(world, state, position, world.fall_distance())? {
+                return Ok(Some(pause));
+            }
+            finish_ground_hit(world, state)?;
+        } else {
+            world.reset_fall_distance()?;
         }
-        world.reset_fall_distance()?;
     }
-    Ok(())
+    Ok(None)
+}
+
+pub(crate) fn finish_ground_hit<W: FallDamageWorld>(
+    world: &mut W,
+    state: W::State,
+) -> Result<(), W::Error> {
+    // Landing callbacks may move the entity or replace its support.
+    let position = world.position();
+    let state = if let Some(support) = world.supporting_block() {
+        world.block_state(support)?
+    } else {
+        state
+    };
+    world.hit_ground(position, state)?;
+    world.reset_fall_distance()
 }

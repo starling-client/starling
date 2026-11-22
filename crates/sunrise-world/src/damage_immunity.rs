@@ -14,7 +14,7 @@ pub enum DamageRule {
     Fire,
     Freeze,
 }
-pub trait ImmunityWorld {
+pub trait EntityImmunityWorld {
     type Error;
     fn removed(&self) -> bool;
     fn permanently_invulnerable(&mut self) -> Result<bool, Self::Error>;
@@ -26,25 +26,28 @@ pub trait ImmunityWorld {
     fn creative_source(&mut self) -> Result<bool, Self::Error>;
     fn fire_immune(&mut self) -> Result<bool, Self::Error>;
     fn fall_immune(&mut self) -> Result<bool, Self::Error>;
-    fn enchantment_immunity(&mut self) -> Result<bool, Self::Error>;
-    fn damage_rule(&mut self, rule: DamageRule) -> Result<bool, Self::Error>;
-    fn changing_dimension(&mut self) -> Result<bool, Self::Error>;
-    fn ender_pearl(&mut self) -> Result<bool, Self::Error>;
-    fn client_loaded(&mut self) -> Result<bool, Self::Error>;
     /// Allow the server to override the vanilla per-source immunity decision.
     fn invulnerability_check(&mut self, vanilla: bool) -> Result<bool, Self::Error> {
         Ok(vanilla)
     }
 }
-pub fn entity_invulnerable<W: ImmunityWorld + ?Sized>(w: &mut W) -> Result<bool, W::Error> {
+
+pub trait ImmunityWorld: EntityImmunityWorld {
+    fn enchantment_immunity(&mut self) -> Result<bool, Self::Error>;
+    fn damage_rule(&mut self, rule: DamageRule) -> Result<bool, Self::Error>;
+    fn changing_dimension(&mut self) -> Result<bool, Self::Error>;
+    fn ender_pearl(&mut self) -> Result<bool, Self::Error>;
+    fn client_loaded(&mut self) -> Result<bool, Self::Error>;
+}
+pub fn entity_invulnerable<W: EntityImmunityWorld + ?Sized>(w: &mut W) -> Result<bool, W::Error> {
     Ok(w.permanently_invulnerable()? || w.temporarily_invulnerable()?)
 }
-pub fn base_immunity<W: ImmunityWorld + ?Sized>(w: &mut W) -> Result<bool, W::Error> {
+pub fn base_immunity<W: EntityImmunityWorld + ?Sized>(w: &mut W) -> Result<bool, W::Error> {
     let vanilla = vanilla_base_immunity(w)?;
     w.invulnerability_check(vanilla)
 }
 
-fn vanilla_base_immunity<W: ImmunityWorld + ?Sized>(w: &mut W) -> Result<bool, W::Error> {
+pub fn vanilla_base_immunity<W: EntityImmunityWorld + ?Sized>(w: &mut W) -> Result<bool, W::Error> {
     if w.removed() {
         return Ok(true);
     }

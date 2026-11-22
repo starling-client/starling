@@ -2,10 +2,10 @@
 //! `11 x 1`, which saves unchanged and pays 11 once on pickup.
 use crate::game::native_entity_refs::tests::with_game;
 use crate::game::native_item_places::tests::{guest, open_to_lan};
+use mod_api::{ExperienceOrbCanMergeEvent, ExperienceOrbMergeEvent, Flow, Hooks, ServerHost};
 use sunrise_client::entities::ExperienceOrb;
 use sunrise_client::entity_nbt::{orb_to_nbt, orbs_from_nbt};
 use sunrise_core::geometry::Vec3;
-use mod_api::{ExperienceOrbCanMergeEvent, ExperienceOrbMergeEvent, Flow, Hooks, ServerHost};
 
 fn orb(id: u32, x: f64, value: i32, count: u32) -> ExperienceOrb {
     let at = Vec3::new(x, 70.0, 0.5);
@@ -20,8 +20,9 @@ fn orb(id: u32, x: f64, value: i32, count: u32) -> ExperienceOrb {
         velocity: Vec3::ZERO,
         value,
         age: 0,
-        on_ground: true,
+        ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
         count,
+        fire_ticks: 0,
         ticks: 0,
         health: 5,
         air: 300,

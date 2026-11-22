@@ -1,12 +1,12 @@
 #![cfg(test)]
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig},
 };
 use sunrise_core::position::ChunkPos;
 use sunrise_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 fn scene<'a>(
     resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
@@ -56,6 +56,7 @@ fn scene<'a>(
             max_players: 2,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();
@@ -218,17 +219,17 @@ fn walk_stop(assert_trajectory: bool) {
     }
 }
 #[test]
-#[ignore = "needs prepared resources and isolated homes/cwd"]
+#[ignore = "daily"]
 fn empty_markers_preserve_actual_walk_and_still_movement_bookkeeping() {
     walk_stop(false);
 }
 #[test]
-#[ignore = "needs prepared resources and isolated homes/cwd"]
+#[ignore = "daily"]
 fn boat_tick_uses_stopped_players_known_movement() {
     walk_stop(true);
 }
 #[test]
-#[ignore = "needs prepared resources and isolated homes/cwd"]
+#[ignore = "daily"]
 fn walking_then_still_tick_end_preserves_the_accepted_displacement() {
     let mut resources = None;
     let (mut g, _rx) = scene(&mut resources);

@@ -4,14 +4,14 @@
 //! from one keeps its cooldown until it ticks again.
 
 use super::native_entity_refs::tests::with_game;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::Mob;
 use sunrise_client::nether_portal::ENTITY_DELAY;
 use sunrise_core::geometry::Vec3;
-use std::sync::Arc;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn mobs_past_the_simulation_distance_neither_enter_portals_nor_cool_down() {
     with_game(|game| {
         game.world

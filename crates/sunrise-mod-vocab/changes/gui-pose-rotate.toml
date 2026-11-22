@@ -1,0 +1,3 @@
+ids = ["type:client::hud_layout::PoseOp", "type:client::hud_layout::PoseOp.Rotate", "type:GuiDraw"]
+why = "A gui_paint pose can turn (Matrix3x2fStack.rotate, #4526): PoseOp::Rotate(radians), applied to a copy of the current pose with JOML's float order, composing with Translate and Scale in vanilla's order and scoped by Push / Pop. A NaN or infinite angle is refused with E_GUI_POSE_ROTATE_NOT_FINITE and leaves the pose unchanged."
+migrate = "A match on PoseOp needs an arm for Rotate (or a wildcard)."

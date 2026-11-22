@@ -1,0 +1,5 @@
+{
+  "template": "minecraft:snowball",
+  "item": "entity_type_full:chalk",
+  "damage": 1.25
+}

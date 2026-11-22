@@ -1,0 +1,39 @@
+manifest:
+Manifest {
+    id: "refused_server_registry_content",
+    name: "Refused server registry content",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Server,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+refused: refused_server_registry_content: a side = "server" mod carries data/refused_server_registry_content/sunrise/block/sample.json, which every client must have; declare side = "both"

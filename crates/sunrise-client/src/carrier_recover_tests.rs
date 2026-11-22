@@ -11,6 +11,7 @@ use crate::carrier_store::{
     AllStatesKnown, CellImage, OpKind, Opened, Operation, OperationCell, RecoveryRefused, Store,
     encode_operation, recover,
 };
+use std::{fs, path::PathBuf};
 use sunrise_core::nbt::{self, NamedTag, Tag};
 use sunrise_core::position::{BlockPos, ChunkPos};
 use sunrise_world::carrier::codec;
@@ -18,7 +19,6 @@ use sunrise_world::carrier::model::{Carrier, Cell, LocalPos};
 use sunrise_world::carrier::region_strict::{self, Strict};
 use sunrise_world::chunk::{ChunkData, PalettedContainer};
 use sunrise_world::region::{ChunkRecord, RegionFile};
-use std::{fs, path::PathBuf};
 
 /// A throwaway folder holding a world `data/` and a dimension region
 /// directory, removed on drop.

@@ -1,12 +1,12 @@
-use sunrise_assets::blockstate::{
-    BlockStateDefinition,
-    bind::{Properties, PropertySchema, PropertyValues, SelectedModels},
-};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_assets::blockstate::{
+    BlockStateDefinition,
+    bind::{Properties, PropertySchema, PropertyValues, SelectedModels},
 };
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();

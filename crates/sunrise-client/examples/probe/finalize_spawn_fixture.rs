@@ -5,6 +5,7 @@
 //! oracle's format.
 //!
 //! usage: finalize_spawn_fixture RESOURCES INPUT OUTPUT HALLOWEEN
+use std::{collections::HashMap, fmt::Write as _, fs, path::Path, sync::Arc};
 use sunrise_client::{
     assets::Assets,
     blocks::BlockFacts,
@@ -25,7 +26,6 @@ use sunrise_core::{
     random::{LegacyRandom, RandomSource},
 };
 use sunrise_world::loot::PackOverlay;
-use std::{collections::HashMap, fmt::Write as _, fs, path::Path, sync::Arc};
 
 struct Level<'a> {
     types: &'a MobTypes,
@@ -106,10 +106,11 @@ impl FinalizeLevel for Level<'_> {
         self.halloween
     }
     fn create(&mut self, kind: &str, _reason: Reason) -> Option<Mob> {
-        if self.peaceful && !finalize::allowed_in_peaceful(kind) {
+        let t = self.types.types.get(kind)?;
+        if self.peaceful && !t.allowed_in_peaceful() {
             return None;
         }
-        let t = Arc::new(self.types.types.get(kind)?.clone());
+        let t = Arc::new(t.clone());
         let index = self.created;
         self.created += 1;
         let mut m = Mob::new(index as u32 + 1, t, Vec3::ZERO, 0.0);

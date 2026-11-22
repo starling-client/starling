@@ -1,0 +1,2 @@
+sunrise-client game::native_hooks::client_pick::tests::rider_pick_rejects_shared_passengers_unless_their_part_allows_them lib daily resources
+sunrise-client game::native_hooks::client_pick::tests::rider_pick_refuses_a_camera_changed_by_its_listener lib daily resources

@@ -25,7 +25,10 @@ pub fn painting_to_nbt(p: &Painting, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             (lo[1] + hi[1]) / 2.0,
             (lo[2] + hi[2]) / 2.0,
         ),
-        motion: Vec3::ZERO,
+        // BlockAttachedEntity.move and push never call setDeltaMovement (on the server
+        // they kill and drop the item instead), and its tick only checks survival, so
+        // the Motion stays the one Entity.load read.
+        motion: raw.map_or(Vec3::ZERO, loaded_motion),
         rotation: [f32::from(p.facing) * 90.0, loaded_pitch(raw)],
         // BlockAttachedEntity.tick never moves a painting (nor runs baseTick), so its
         // onGround and fallDistance stay the ones Entity.load read.
@@ -98,15 +101,52 @@ mod tests {
             ("fall_distance", Tag::Double(3.5f64.to_bits())),
         ]);
         let frame = item_frame_from_nbt(&tag, 1).unwrap();
-        let saved = item_frame_to_nbt(&frame, [1, 2, 3, 4], Some(&tag));
+        let saved = item_frame_to_nbt(&frame, [1, 2, 3, 4], Some(&tag), &Default::default());
         // A component beyond 10 loads as 0, the others stay.
         assert_eq!(motion(&saved), Vec3::new(0.5, 0.0, -0.25));
         assert!(flag(&saved, "OnGround"));
         assert_eq!(float(saved.get("fall_distance")), Some(3.5));
         // A frame made in play has nothing loaded: zeros.
-        let made = item_frame_to_nbt(&frame, [1, 2, 3, 4], None);
+        let made = item_frame_to_nbt(&frame, [1, 2, 3, 4], None, &Default::default());
         assert_eq!(motion(&made), Vec3::ZERO);
         assert!(!flag(&made, "OnGround"));
         assert_eq!(float(made.get("fall_distance")), Some(0.0));
+    }
+
+    #[test]
+    fn painting_keeps_loaded_motion_and_saves_zeros_when_placed() {
+        let tag = Tag::compound([
+            ("id", string("minecraft:painting")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+            ("Motion", doubles(&[0.5, 20.0, -0.25])),
+            ("facing", Tag::Byte(0)),
+            ("block_pos", Tag::IntArray(vec![0, 64, 0])),
+            ("variant", string("minecraft:kebab")),
+        ]);
+        let (pos, facing, variant) = painting_from_nbt(&tag).unwrap();
+        let mut painting = Painting {
+            attachment_lifetime: Default::default(),
+            join: Default::default(),
+            id: 1,
+            pos,
+            facing,
+            variant: variant.unwrap().into(),
+            width: 1,
+            height: 1,
+            check_interval: 0,
+            ticks: 0,
+        };
+        let saved = painting_to_nbt(&painting, [1, 2, 3, 4], Some(&tag));
+        // A component beyond 10 loads as 0, the others stay.
+        assert_eq!(motion(&saved), Vec3::new(0.5, 0.0, -0.25));
+        // BlockAttachedEntity.tick only raises tickCount and checks survival, and a
+        // reload keeps the compound it was saved from: neither touches the motion.
+        painting.ticks = painting.ticks.saturating_add(1);
+        painting.check_interval += 1;
+        let reloaded = painting_to_nbt(&painting, [1, 2, 3, 4], Some(&saved));
+        assert_eq!(motion(&reloaded), motion(&saved));
+        // A painting placed in play has nothing loaded: zeros.
+        let made = painting_to_nbt(&painting, [1, 2, 3, 4], None);
+        assert_eq!(motion(&made), Vec3::ZERO);
     }
 }

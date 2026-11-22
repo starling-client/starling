@@ -9,9 +9,21 @@ use crate::Identifier;
 /// commits. A phase change or disconnect before publication cancels it. Registered and
 /// engine-reserved custom payload channels require their payload/service API instead.
 /// This is not a connection or protocol implementation; submission applies no local effects.
+/// A `container_click`, whose carried stacks the game hashes, is built by
+/// [`NetworkClientHost::container_click`](crate::NetworkClientHost::container_click).
+/// Signed chat, signed commands and chat sessions have no typed builders:
+/// ```compile_fail
+/// mod_vocab::ServerboundPlayPacket::chat("hello");
+/// ```
+/// ```compile_fail
+/// mod_vocab::ServerboundPlayPacket::chat_command_signed("help");
+/// ```
+/// ```compile_fail
+/// mod_vocab::ServerboundPlayPacket::chat_session_update();
+/// ```
+// no wire: the local submission envelope carries an already-encoded vanilla body.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct ServerboundPlayPacket {
     /// Packet type, for example `minecraft:pong` or `minecraft:custom_payload`.
     pub id: Identifier,
@@ -27,9 +39,9 @@ impl ServerboundPlayPacket {
 }
 
 /// Why the client could not submit a play packet.
+// no wire: returned locally by the client packet service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum SendPacketError {
     /// There is no server connection.
     NotConnected,
@@ -71,10 +83,55 @@ pub enum SendPacketError {
     },
 }
 
-/// Why a client mod's `disconnect` was refused.
+/// Opaque identity of one connection's packet hold.
+// no wire: only the issuing connection's local hold table resolves this ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: the private field prevents mods constructing or destructuring the id
+pub struct HoldId(pub(crate) u64);
+impl HoldId {
+    /// Construct an identity for the game implementation.
+    // hidden: game-side identity construction
+    #[doc(hidden)]
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Why a hold operation was refused.
+// no wire: returned locally by packet-hold operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+pub enum HoldError {
+    /// No joined client world is available.
+    NoWorld,
+    /// The hold ended or belongs to a different connection.
+    Unknown,
+    /// Another hold is active, or this hold overflowed and was flushed.
+    /// These are the configured bounds.
+    Limit {
+        /// Maximum held packets.
+        packets: usize,
+        /// Maximum held encoded bytes, including packet type ids.
+        bytes: usize,
+    },
+    /// Publication failed. The remaining packets were discarded.
+    Send {
+        /// Packets successfully published before the failure.
+        sent: usize,
+        /// The existing packet service's refusal.
+        error: SendPacketError,
+    },
+}
+impl crate::NoBackend for HoldError {
+    fn no_backend() -> Self {
+        Self::NoWorld
+    }
+}
+
+/// Why a client mod's `disconnect` was refused.
+// no wire: returned locally by the client disconnect operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DisconnectError {
     /// No server or world is joined: there is nothing to leave.
     Unavailable,

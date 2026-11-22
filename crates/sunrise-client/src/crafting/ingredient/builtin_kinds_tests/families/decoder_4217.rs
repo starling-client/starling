@@ -107,7 +107,7 @@ fn rabbit_variant_recipe_codec_presence_and_borrowed_matching() {
                 .unwrap_err()
                 .contains("minecraft:rabbit/variant")
         );
-        super::decoder_contracts::assert_malformed_decoder_reload_keeps_sibling(&items, patch);
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
     let absent = compile(
         &items,
@@ -145,8 +145,10 @@ fn rabbit_variant_recipe_codec_presence_and_borrowed_matching() {
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(omitted.craft(&context, &[Some(egg.clone())], 1).is_none());
     assert!(removal.craft(&context, &[Some(egg.clone())], 1).is_none());
-    egg.data_mut()
-        .set_other("minecraft:custom_data", Some(Tag::Int(3)));
+    egg.data_mut().set_other(
+        "minecraft:custom_data",
+        Some(Tag::compound([("extra", Tag::Int(3))])),
+    );
     assert!(loose.craft(&context, &[Some(egg.clone())], 1).is_some());
     assert!(exact.craft(&context, &[Some(egg.clone())], 1).is_none());
     egg.data_mut().set_other("minecraft:custom_data", None);

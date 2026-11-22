@@ -9,15 +9,32 @@
     let
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
       systems = linuxSystems ++ [ "aarch64-darwin" ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      forLinuxSystems = f: nixpkgs.lib.genAttrs linuxSystems (system: f nixpkgs.legacyPackages.${system});
+      # Sunrise's licence (LICENSE, LICENSING.md), for the packages' meta. nixpkgs has no entry for it. Its terms
+      # restrict use, so like the source-available licences nixpkgs lists (bsl11, elastic20, sspl) it is not free in
+      # nixpkgs' sense; it lets anyone pass Sunrise on with its notice, so redistributable, as bsl11 and sspl are.
+      polyformShield = {
+        fullName = "PolyForm Shield License 1.0.0";
+        spdxId = "PolyForm-Shield-1.0.0";
+        url = "https://polyformproject.org/licenses/shield/1.0.0/";
+        free = false;
+        redistributable = true;
+      };
+      # The packages under that licence. The flake's nixpkgs allows exactly these as unfree, so its own builds need no
+      # allowUnfree; every other package keeps nixpkgs' default.
+      sunrisePackages = [ "sunrise-engine" "sunrise-server" "sunrise-prepare" "sunrise-client" ];
+      pkgsFor = system: import nixpkgs {
+        inherit system;
+        config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) sunrisePackages;
+      };
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (pkgsFor system));
+      forLinuxSystems = f: nixpkgs.lib.genAttrs linuxSystems (system: f (pkgsFor system));
 
       # The game's packages, built from this workspace (nix/, docs/nix.md). Releases are tagged by
       # release.yml, which never uses this flake, so a build from it says which commit it is.
       version = "0-unstable-${builtins.substring 0 8 (self.lastModifiedDate or "19700101")}";
       gamePackages = pkgs:
         let
-          call = pkgs.lib.callPackageWith (pkgs // packages // { inherit version; });
+          call = pkgs.lib.callPackageWith (pkgs // packages // { inherit version polyformShield; });
           packages = {
             sunrise-engine = call ./nix/sunrise-engine.nix { };
             sunrise-server = call ./nix/sunrise-server.nix { };
@@ -26,129 +43,9 @@
           };
         in packages;
     in {
-      packages = forAllSystems (pkgs: gamePackages pkgs // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
-        let
-          version = "0.2.0";
-          pname = "sunrise-launcher";
+      packages = forAllSystems gamePackages;
 
-          unwrapped = pkgs.rustPlatform.buildRustPackage {
-            pname = "${pname}-unwrapped";
-            inherit version;
-
-            src = self;
-            cargoRoot = "launcher";
-            buildAndTestSubdir = "launcher";
-            cargoLock = {
-              lockFile = ./launcher/Cargo.lock;
-            };
-
-            nativeBuildInputs = with pkgs; [
-              pkg-config
-            ];
-
-            buildInputs = with pkgs; [
-              libxkbcommon
-              wayland
-              libx11
-              libxcb
-              fontconfig
-              vulkan-loader
-              alsa-lib
-            ];
-
-            doCheck = false;
-          };
-
-          desktopItem = pkgs.makeDesktopItem {
-            name = pname;
-            desktopName = "Sunrise";
-            genericName = "Game launcher";
-            comment = "Install, prepare and play Sunrise, Minecraft: Java Edition rewritten in Rust";
-            exec = pname;
-            icon = "sunrise";
-            categories = [ "Game" ];
-            startupWMClass = "sunrise-launcher";
-          };
-
-          sunriseLauncher = pkgs.buildFHSEnv {
-            inherit pname version;
-
-            targetPkgs = pkgs: with pkgs; [
-              # Windowing, graphics, Vulkan, Wayland, X11
-              vulkan-loader
-              libglvnd
-              wayland
-              libxkbcommon
-              libx11
-              libxcb
-              libxcursor
-              libxext
-              libxi
-              libxrandr
-              libxrender
-              libxxf86vm
-
-              # Audio, udev & dev packages for native builds
-              udev
-              udev.dev
-              alsa-lib
-              alsa-lib.dev
-
-              # Desktop integration, fonts, keyring
-              fontconfig
-              freetype
-              dbus
-              xdg-utils
-              procps
-
-              # Mojang Java runtime dependencies
-              zlib
-              libxtst
-
-              # Gamemode support
-              gamemode
-
-              # Build environment for native mods
-              gcc
-              glibc.dev
-              pkg-config
-            ];
-
-            runScript = "${unwrapped}/bin/sunrise-launcher";
-
-            profile = ''
-              export SUNRISE_LAUNCHER_NO_SELF_UPDATE=1
-              export SUNRISE_LAUNCHER_DESKTOP_EXEC="''${SUNRISE_LAUNCHER_DESKTOP_EXEC:-${pname}}"
-              export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/share/pkgconfig:''${PKG_CONFIG_PATH:-}"
-            '';
-
-            extraInstallCommands = ''
-              install -Dm444 ${desktopItem}/share/applications/${pname}.desktop -t $out/share/applications
-              if [ -d ${./packaging/icons/hicolor} ]; then
-                mkdir -p $out/share/icons/hicolor
-                cp -r ${./packaging/icons/hicolor}/. $out/share/icons/hicolor/
-              fi
-            '';
-
-            passthru = { inherit unwrapped; };
-
-            meta = with pkgs.lib; {
-              description = "Launcher for Sunrise, Minecraft: Java Edition rewritten in Rust";
-              homepage = "https://playsunrise.net";
-              license = licenses.mit;
-              platforms = [ "x86_64-linux" "aarch64-linux" ];
-              mainProgram = pname;
-            };
-          };
-        in {
-          sunrise-launcher = sunriseLauncher;
-          default = sunriseLauncher;
-        })
-      );
-
-      overlays.default = final: prev: {
-        sunrise-launcher = self.packages.${final.stdenv.hostPlatform.system}.sunrise-launcher;
-      } // gamePackages final;
+      overlays.default = final: prev: gamePackages final;
 
       # services.sunrise-server (docs/nix.md).
       nixosModules = {

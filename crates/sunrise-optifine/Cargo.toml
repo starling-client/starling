@@ -7,8 +7,8 @@ rust-version.workspace = true
 description = "OptiFine-format resource pack files: .properties, the name, range, biome and block matchers, paths and the optifine/ folders; CEM entity models and connected-texture rules, and the Fusion mod's connected-texture format"
 
 [dependencies]
-sunrise-core = { path = "../sunrise-core" }
 sunrise-assets = { path = "../sunrise-assets" }
+sunrise-connected = { path = "../sunrise-connected" }
 log = "0.4"
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 

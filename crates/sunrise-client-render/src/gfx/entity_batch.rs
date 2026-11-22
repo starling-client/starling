@@ -16,10 +16,13 @@ use super::Vertex;
 /// ignored and they stay in the first one, in their order.
 /// Sorted still-fluid geometry follows, then the two native world-canvas text materials,
 /// NORMAL and POLYGON_OFFSET. Material storage order is independent of their draw stages.
-const MATERIALS: usize = 16;
+const MATERIALS: usize = 17;
 pub const TERRAIN_MODEL_SOLID_OVERLAY: u32 = 42;
 pub const TERRAIN_MODEL_CUTOUT_OVERLAY: u32 = 43;
 pub const TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY: u32 = 44;
+/// `RenderTypes.translucentMovingBlock`: a translucent block drawn outside the terrain, from the
+/// terrain sprite arrays; alpha blended, depth written, quads sorted far to near.
+pub const TERRAIN_MODEL_TRANSLUCENT_OVERLAY: u32 = 46;
 /// The overlay of a resource pack's Polytone custom particle drawn additively
 /// (`additive_translucent`): fog tints its colour as vanilla's particle shader does, which the
 /// other additive geometry does not take.
@@ -32,6 +35,7 @@ pub fn is_native_terrain(layer: u32) -> bool {
             | TERRAIN_MODEL_SOLID_OVERLAY
             | TERRAIN_MODEL_CUTOUT_OVERLAY
             | TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY
+            | TERRAIN_MODEL_TRANSLUCENT_OVERLAY
     )
 }
 /// Sorted depth-writing still fluid, sampling terrain sprite arrays rather than the shared atlas.
@@ -122,6 +126,7 @@ fn material(layer: u32, oit: bool) -> usize {
         TERRAIN_MODEL_SOLID_OVERLAY => return 13,
         TERRAIN_MODEL_CUTOUT_OVERLAY => return 14,
         TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY => return 15,
+        TERRAIN_MODEL_TRANSLUCENT_OVERLAY => return 16,
         _ => {}
     }
     if layer & 0xffff == FLUID_OVERLAY {
@@ -146,16 +151,56 @@ fn material(layer: u32, oit: bool) -> usize {
 }
 
 #[derive(Default)]
-pub(super) struct EntityBatch {
+pub(crate) struct EntityBatch {
     // Runs of consecutive quads of one material (first quad, quad count): a
     // model's quads share one, so whole runs are copied at once. Cleared each
     // frame, keeping their storage.
     runs: [Vec<(usize, usize)>; MATERIALS],
     pub(super) combined: Vec<Vertex>,
+    sort: QuadSort,
     /// Additive quads tagged `OIT_ENTITY` that the last `update` moved into the
     /// last material (improved transparency on): the dragon's eyes, which share
     /// the additive buffer with its rays.
     pub(super) moved_additive: u32,
+}
+
+/// The buffers [`append_sorted`] sorts through, kept between frames so a sort allocates nothing
+/// once warm.
+#[derive(Default)]
+struct QuadSort {
+    /// Each quad's distance and its place before the sort.
+    keys: Vec<(f32, u32)>,
+    quads: Vec<[Vertex; 4]>,
+}
+
+/// `runs` of `entities` appended to `combined`, their quads far to near, quads at one distance
+/// in the order they came: the order a stable sort gives, by an in-place unstable one on
+/// (distance, original index).
+fn append_sorted(
+    sort: &mut QuadSort,
+    combined: &mut Vec<Vertex>,
+    entities: &[Vertex],
+    runs: &[(usize, usize)],
+) {
+    let start = combined.len();
+    for &(first, count) in runs {
+        combined.extend_from_slice(&entities[first * 4..(first + count) * 4]);
+    }
+    let quads = combined[start..].as_chunks_mut::<4>().0;
+    sort.keys.clear();
+    sort.keys.extend(quads.iter().enumerate().map(|(i, q)| {
+        let distance = (0..3)
+            .map(|axis| ((q[0].pos[axis] + q[2].pos[axis]) * 0.5).powi(2))
+            .sum::<f32>();
+        (distance, i as u32)
+    }));
+    sort.keys
+        .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    sort.quads.clear();
+    sort.quads.extend_from_slice(quads);
+    for (quad, &(_, from)) in quads.iter_mut().zip(&sort.keys) {
+        *quad = sort.quads[from as usize];
+    }
 }
 
 impl EntityBatch {
@@ -219,30 +264,17 @@ impl EntityBatch {
         // near. Fluid precedes both world-canvas layers, after existing materials
         // (including eyes moved out of additive).
         for runs in &self.runs[10..13] {
-            let start = self.combined.len();
-            for &(first, count) in runs {
-                self.combined
-                    .extend_from_slice(&entities[first * 4..(first + count) * 4]);
-            }
-            self.combined[start..]
-                .as_chunks_mut::<4>()
-                .0
-                .sort_by(|a, b| {
-                    let distance = |q: &[Vertex; 4]| {
-                        (0..3)
-                            .map(|i| ((q[0].pos[i] + q[2].pos[i]) * 0.5).powi(2))
-                            .sum::<f32>()
-                    };
-                    distance(b).total_cmp(&distance(a))
-                });
+            append_sorted(&mut self.sort, &mut self.combined, entities, runs);
         }
         // Native solid/cutout models are depth writing and keep their submission order.
-        for runs in &self.runs[13..] {
+        for runs in &self.runs[13..16] {
             for &(first, count) in runs {
                 self.combined
                     .extend_from_slice(&entities[first * 4..(first + count) * 4]);
             }
         }
+        // Native translucent models sort their quads far to near, as `sortOnUpload` does.
+        append_sorted(&mut self.sort, &mut self.combined, entities, &self.runs[16]);
         if self.moved_additive == 0 {
             self.combined.extend_from_slice(additive);
         } else {
@@ -411,6 +443,34 @@ mod tests {
         assert_eq!(out.len(), draws as usize);
     }
     #[test]
+    fn sorted_quads_go_far_to_near_and_those_at_one_distance_keep_their_order() {
+        // The distance is from the origin: (5, 0), (3, 4) and (4, 3) are all 5 away, so those
+        // three must keep the order they came in.
+        let quad = |x: f32, y: f32| {
+            [Vertex {
+                layer: TERRAIN_MODEL_TRANSLUCENT_OVERLAY,
+                pos: [x, y, 0.0],
+                ..geometry(1, false)[0]
+            }; 4]
+        };
+        let entities: Vec<_> = [(2.0, 0.0), (5.0, 0.0), (9.0, 0.0), (3.0, 4.0), (4.0, 3.0)]
+            .into_iter()
+            .flat_map(|(x, y)| quad(x, y))
+            .collect();
+        let mut batch = EntityBatch::default();
+        batch.update(&entities, &[], &[], &[], false);
+        let order: Vec<_> = batch
+            .combined
+            .iter()
+            .step_by(4)
+            .map(|v| (v.pos[0], v.pos[1]))
+            .collect();
+        assert_eq!(
+            order,
+            [(9.0, 0.0), (5.0, 0.0), (3.0, 4.0), (4.0, 3.0), (2.0, 0.0)]
+        );
+    }
+    #[test]
     fn native_models_keep_opaque_order_and_do_not_move_existing_materials_or_tails() {
         let quad = |layer, x| {
             [Vertex {
@@ -440,7 +500,7 @@ mod tests {
             &quad(0, 12.0),
             true,
         );
-        assert_eq!(counts, [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1]);
+        assert_eq!(counts, [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1, 0]);
         let xs: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
             xs,
@@ -450,6 +510,30 @@ mod tests {
             batch.combined[16].layer,
             TERRAIN_MODEL_SOLID_OVERLAY | 279 << 16
         );
+    }
+    #[test]
+    fn translucent_native_models_sort_far_to_near_after_the_opaque_ones() {
+        let quad = |layer, x| {
+            [Vertex {
+                layer,
+                pos: [x, 0.0, 0.0],
+                ..geometry(1, false)[0]
+            }; 4]
+        };
+        let entities: Vec<_> = [
+            (TERRAIN_MODEL_TRANSLUCENT_OVERLAY | 5 << 16, 2.0),
+            (TERRAIN_MODEL_SOLID_OVERLAY, 1.0),
+            (TERRAIN_MODEL_TRANSLUCENT_OVERLAY | 5 << 16, 9.0),
+            (TERRAIN_MODEL_TRANSLUCENT_OVERLAY | 5 << 16, 4.0),
+        ]
+        .into_iter()
+        .flat_map(|(layer, x)| quad(layer, x))
+        .collect();
+        let mut batch = EntityBatch::default();
+        let counts = batch.update(&entities, &[], &[], &[], false);
+        assert_eq!((counts[13], counts[16]), (1, 3));
+        let xs: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
+        assert_eq!(xs, [1.0, 9.0, 4.0, 2.0]);
     }
     #[test]
     fn tagging_oit_does_not_corrupt_a_native_models_sprite_index() {
@@ -489,7 +573,7 @@ mod tests {
         let mut batch = EntityBatch::default();
         assert_eq!(
             batch.update(&entities, &additive, &quad(0, 9.0), &quad(0, 10.0), true),
-            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0]
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0, 0]
         );
         let positions: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
@@ -596,12 +680,12 @@ mod tests {
         let mut batch = EntityBatch::default();
         // Off: the tag changes nothing, the quads keep their place.
         let counts = batch.update(&entities, &[], &[], &[], false);
-        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0, 4.0, 3.0]);
         // On: the tagged quads come last, in order.
         let counts = batch.update(&entities, &[], &[], &[], true);
-        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 2.0, 3.0, 1.0, 4.0]);
     }

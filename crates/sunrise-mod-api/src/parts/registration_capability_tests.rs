@@ -130,7 +130,8 @@ mod tests {
         assert_ne!(zombie, pig);
         super::super::install_registrar(registrar, &crate::__private::part_tests::rule_schema())
             .unwrap();
-        mod_vocab::__private::resolve_entity_types(["minecraft:pig", "minecraft:zombie"]).unwrap();
+        mod_vocab::__private::resolve_entity_types(["minecraft:pig", "minecraft:zombie"], |_| None)
+            .unwrap();
         assert_eq!(
             mod_vocab::__private::entity_type_key_id(zombie).as_deref(),
             Some("minecraft:zombie")
@@ -140,7 +141,8 @@ mod tests {
             Some("minecraft:pig")
         );
         assert_eq!(mod_vocab::__private::entity_type_keys(), [pig, zombie]);
-        let errors = mod_vocab::__private::resolve_entity_types(["minecraft:pig"]).unwrap_err();
+        let errors =
+            mod_vocab::__private::resolve_entity_types(["minecraft:pig"], |_| None).unwrap_err();
         assert_eq!(
             errors,
             ["mod requester requested unknown entity type minecraft:zombie"]

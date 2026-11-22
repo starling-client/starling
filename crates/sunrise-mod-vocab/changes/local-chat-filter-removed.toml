@@ -1,0 +1,3 @@
+ids = ["method:Messages::text_allowed", "hook:server_chat", "hook:sign_changed"]
+why = "Sunrise no longer applies its built-in text filter. Valid player chat and sign edits now reach their hooks even if that filter would have rejected the text. The hooks are version 2."
+migrate = "Remove calls to Messages::text_allowed. If a mod wants its own filtering policy, apply it to the event text and cancel the event when the policy rejects it."

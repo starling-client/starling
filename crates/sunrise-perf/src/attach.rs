@@ -4,8 +4,8 @@ use std::io::Write;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use sunrise_perf_format::v1::Attachment;
 use prost::Message;
+use sunrise_perf_format::v1::Attachment;
 
 use crate::error::Error;
 use crate::follow::{Entry, Follower};

@@ -1,7 +1,8 @@
 # Villager secondary work blocks
 
 Add blocks to a vanilla profession's secondary work sites with the block tag
-`sunrise:villager_secondary_poi/<profession>`. For example,
+`sunrise:villager_secondary_poi/<profession>`, one of the documented
+[extension tags](../extension-tags.md) that every package kind may add to. For example,
 `data/sunrise/tags/block/villager_secondary_poi/farmer.json`:
 
 ```json

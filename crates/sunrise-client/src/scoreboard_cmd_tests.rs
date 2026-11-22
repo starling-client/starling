@@ -330,6 +330,13 @@ fn teams() {
 }
 
 #[test]
+fn team_members_sort_by_java_utf16_code_units() {
+    // String.compareTo puts D800 DC00 before E000 (Temurin 25.0.5).
+    let names = vec!["\u{e000}".to_owned(), "\u{10000}".to_owned()];
+    assert_eq!(super::format_names(names).plain(), "\u{10000}, \u{e000}");
+}
+
+#[test]
 fn selector_options_parse() {
     let reg = Registries {
         permission: 4,

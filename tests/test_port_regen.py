@@ -5,33 +5,37 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from tools import port_regen as regen
+from tools import lab, port_regen as regen
 
-LOCK = {"minecraft": {"version": "26.3", "manifest_sha1": "m3", "accepted_manifest_sha1": ["m3old"],
-                      "accepted_manifest_note": "republished", "client_sha1": "c3", "server_sha1": "s3",
-                      "java_major": 25},
-        "vineflower": {"version": "1.12.0"}}
-
-
-def manifest(version, client, server, java=25):
+def manifest(version, client, server, java=25, library="1"):
     return {"id": version, "downloads": {"client": {"sha1": client}, "server": {"sha1": server}},
-            "javaVersion": {"majorVersion": java}}
+            "javaVersion": {"majorVersion": java},
+            "libraries": [{"downloads": {"artifact": {"path": "a/b.jar", "sha1": library}}}]}
+
+
+LOCK = {"minecraft": {"version": "9.9", "manifest_sha1": "m3", "client_sha1": "c3", "server_sha1": "s3",
+                      "libraries_sha256": lab.libraries_digest(manifest("9.9", "c3", "s3")), "java_major": 25},
+        "vineflower": {"version": "1.12.0"}}
 
 
 class PinTests(unittest.TestCase):
     def test_another_version_gets_a_new_block(self):
-        pinned = regen.pinned_lock(LOCK, manifest("26.4", "c4", "s4", 26), "m4")
-        self.assertEqual(pinned["minecraft"], {"version": "26.4", "manifest_sha1": "m4", "client_sha1": "c4",
-                                               "server_sha1": "s4", "java_major": 26})
+        new = manifest("9.10", "c4", "s4", 26)
+        pinned = regen.pinned_lock(LOCK, new, "m4")
+        self.assertEqual(pinned["minecraft"], {"version": "9.10", "manifest_sha1": "m4", "client_sha1": "c4",
+                                               "server_sha1": "s4", "libraries_sha256": lab.libraries_digest(new),
+                                               "java_major": 26})
         self.assertEqual(pinned["vineflower"], LOCK["vineflower"])
 
-    def test_the_same_version_keeps_its_block(self):
-        for sha1 in ["m3", "m3old"]:
-            self.assertIs(regen.pinned_lock(LOCK, manifest("26.3", "c3", "s3"), sha1), LOCK)
+    def test_the_same_content_keeps_its_block_whatever_the_files_sha1(self):
+        for sha1 in ["m3", "re-issued"]:
+            self.assertIs(regen.pinned_lock(LOCK, manifest("9.9", "c3", "s3"), sha1), LOCK)
 
-    def test_the_same_version_with_other_jars_is_repinned(self):
-        self.assertEqual(regen.pinned_lock(LOCK, manifest("26.3", "c3b", "s3"), "m3b")["minecraft"]["client_sha1"],
+    def test_the_same_version_with_other_jars_or_libraries_is_repinned(self):
+        self.assertEqual(regen.pinned_lock(LOCK, manifest("9.9", "c3b", "s3"), "m3b")["minecraft"]["client_sha1"],
                          "c3b")
+        self.assertEqual(regen.pinned_lock(LOCK, manifest("9.9", "c3", "s3", library="2"), "m3c")["minecraft"]
+                         ["manifest_sha1"], "m3c")
 
 
 class CompileErrorTests(unittest.TestCase):

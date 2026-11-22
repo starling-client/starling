@@ -20,6 +20,7 @@ impl Streaming {
     ) {
         if let Some(chunk) = world.chunks.get_mut(&(x, z)) {
             let chunk = Arc::make_mut(chunk);
+            let before = chunk.light_support;
             // Keep blocks edited since the snapshot; take only light.
             // A chunk relit (a neighbour loaded or changed) remeshes
             // only around the light that changed, as vanilla's light
@@ -28,6 +29,7 @@ impl Streaming {
             let mut changed = LightChanges::default();
             if first {
                 apply_lighting(chunk, sections);
+                self.light_tables.publish_section_status(chunk, world.shape);
             } else {
                 apply_relighting(chunk, sections, &mut changed);
             }
@@ -38,6 +40,7 @@ impl Streaming {
             }
             chunk.lit = true;
             if first {
+                world.publish_light_border((x, z), before);
                 for dz in -1..=1 {
                     for dx in -1..=1 {
                         for sy in 0..world.layout().sections() as i32 {

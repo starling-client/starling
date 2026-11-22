@@ -1,0 +1,3 @@
+ids = ["hook:item_picked_up_partial", "method:Hooks::item_picked_up_partial", "type:ItemPickedUpPartialEvent", "hook:item_picked_up_post"]
+why = "item_picked_up_post (NeoForge ItemEntityPickupEvent.Post) now fires whenever Inventory.add took any of the ground stack, whole or partial, and item_picked_up_partial, a second hook at the same call site, is removed: one hook per moment. On a partial pickup, remaining starts as the part that did not fit. Hook version 2 to 3."
+migrate = "Move item_picked_up_partial listeners to item_picked_up_post, which also names the item entity. A post listener that assumed a whole pickup must handle remaining being Some on a partial one; the amount taken is original's count less remaining's."

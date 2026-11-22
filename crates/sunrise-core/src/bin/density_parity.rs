@@ -1,4 +1,8 @@
 //! Original line transport for differential tests of density evaluation.
+use std::{
+    io::{self, BufRead, BufWriter, Write},
+    sync::Arc,
+};
 use sunrise_core::density::graph::{
     DensityCompiler, DensityGraph, FunctionId, GraphBinary, GraphNode, GraphUnary, NoiseId,
 };
@@ -19,10 +23,6 @@ use sunrise_core::{
         SmearedPerlinNoise,
     },
     random::{LegacyRandom, RandomSource, XoroshiroRandom},
-};
-use std::{
-    io::{self, BufRead, BufWriter, Write},
-    sync::Arc,
 };
 #[derive(Debug)]
 struct CountedSampler {

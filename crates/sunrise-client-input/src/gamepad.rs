@@ -14,7 +14,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+<<<<<<< sync-sunrise-1
 pub mod android;
+=======
+use crate::mouse::SmoothDouble;
+>>>>>>> sunrise/main
 
 pub const FILE: &str = "sunrise-controller.txt";
 
@@ -292,8 +296,6 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.screenshot", None),
     ("key.toggleGui", None),
     ("key.smoothCamera", None),
-    // Sunrise's emote wheel: no button is free by default; the stick's cursor picks.
-    ("key.emote", None),
     ("key.fullscreen", None),
     ("key.socialInteractions", None),
     ("key.quickActions", None),
@@ -1165,6 +1167,36 @@ pub fn look_delta(
     )
 }
 
+/// The right stick under the cinematic camera (`Options.smoothCamera`): the
+/// turn `look_delta` gives is spread over the following frames by a
+/// `SmoothDouble` per axis, as `MouseHandler.turnPlayer` does the mouse's.
+#[derive(Clone, Debug, Default)]
+pub struct SmoothLook {
+    yaw: SmoothDouble,
+    pitch: SmoothDouble,
+}
+
+impl SmoothLook {
+    /// The `(yaw, pitch)` to turn this frame, in degrees: `turn` itself
+    /// without the cinematic camera, or with it the part of what the stick
+    /// gave that is due now. Call it every frame the stick turns the view,
+    /// centred too, so a turn keeps easing out after the stick is let go.
+    /// `seconds` paces the easing as the frame time does the mouse's at the
+    /// default sensitivity.
+    pub fn turn(&mut self, turn: (f32, f32), seconds: f32, smooth: bool) -> (f64, f64) {
+        if !smooth {
+            self.yaw.reset();
+            self.pitch.reset();
+            return (f64::from(turn.0), f64::from(turn.1));
+        }
+        let seconds = f64::from(seconds);
+        (
+            self.yaw.get_new_delta_value(f64::from(turn.0), seconds),
+            self.pitch.get_new_delta_value(f64::from(turn.1), seconds),
+        )
+    }
+}
+
 /// Menu cursor speed in GUI pixels per second at full tilt.
 pub const CURSOR_SPEED: f32 = 300.0;
 
@@ -1896,8 +1928,8 @@ bind_key.hotbar.2:north
                 .unwrap()
                 .as_nanos()
         ));
-        let p2 = dir.join("P2");
-        fs::create_dir_all(&p2).unwrap();
+        let other_dir = dir.join("other");
+        fs::create_dir_all(&other_dir).unwrap();
         let fresh = PadSettings::load(&dir);
         assert_eq!(fresh, PadSettings::default());
         // An older file, with the removed menuNavigation key: bindings kept.
@@ -1912,9 +1944,13 @@ bind_key.hotbar.2:north
         other.scroll_speed = 24.0;
         other.repeat_delay = 0.6;
         other.repeat_interval = 0.12;
-        other.save(&p2);
-        assert_eq!(PadSettings::load(&p2), other);
-        assert_eq!(PadSettings::load(&dir), fresh, "P2 did not write P1");
+        other.save(&other_dir);
+        assert_eq!(PadSettings::load(&other_dir), other);
+        assert_eq!(
+            PadSettings::load(&dir),
+            fresh,
+            "the other settings directory did not overwrite this one"
+        );
         let invalid = PadSettings::parse(
             "pointerSpeed:NaN\nscrollSpeed:inf\nrepeatDelay:-10\nrepeatInterval:20\n",
         );
@@ -2017,7 +2053,7 @@ bind_key.hotbar.2:north
         for (action, _) in ACTIONS {
             assert!(
                 action.starts_with("pad.")
-                    || crate::keybinds::all_mappings().any(|m| m.0 == *action),
+                    || crate::keybinds::MAPPINGS.iter().any(|m| m.0 == *action),
                 "{action}"
             );
         }
@@ -2281,6 +2317,34 @@ bind_key.hotbar.2:north
         );
         assert_eq!(look_delta([0.05, 0.05], &s, 1.0, false), (0.0, 0.0));
         assert!(look_delta([1.0, 0.0], &s, 1.0, true).0 < YAW_SPEED * 0.5);
+    }
+
+    #[test]
+    fn the_cinematic_camera_eases_the_sticks_turn_in_and_out() {
+        let frame = 1.0 / 60.0;
+        let mut look = SmoothLook::default();
+        assert_eq!(
+            look.turn((2.0, -1.0), frame, false),
+            (2.0, -1.0),
+            "without it the stick turns at once"
+        );
+        let first = look.turn((2.0, -1.0), frame, true);
+        assert!(
+            first.0 > 0.0 && first.0 < 2.0 && first.1 < 0.0 && first.1 > -1.0,
+            "only part of the turn on its first frame: {first:?}"
+        );
+        let after = look.turn((0.0, 0.0), frame, true);
+        assert!(after.0 > 0.0, "the turn goes on once the stick is centred");
+        let mut total = (first.0 + after.0, first.1 + after.1);
+        for _ in 0..3000 {
+            let (yaw, pitch) = look.turn((0.0, 0.0), frame, true);
+            total.0 += yaw;
+            total.1 += pitch;
+        }
+        assert!(
+            (total.0 - 2.0).abs() < 1e-6 && (total.1 + 1.0).abs() < 1e-6,
+            "all of the turn in the end: {total:?}"
+        );
     }
 
     #[test]

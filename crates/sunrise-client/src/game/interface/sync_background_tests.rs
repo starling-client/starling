@@ -1,8 +1,8 @@
 //! Regressions for the typed bindings carried by the upstream sync.
 use super::native_entity_refs::tests::{with_client_game, with_game_at};
-use sunrise_client::chunk::Chunk;
 use mod_api::{ClientHost, Flow, Hooks, ModEntry, ServerHost};
 use std::{path::PathBuf, sync::Arc};
+use sunrise_client::chunk::Chunk;
 
 mod background {
     use super::*;
@@ -26,7 +26,7 @@ mod background {
     }
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn cancelled_background_keeps_custom_geometry_and_one_blur_request() {
     mod_platform::testing::with_mods(
         vec![ModEntry::new("background", background::hooks())].into(),
@@ -80,7 +80,7 @@ mod claims {
     }
 }
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn cancelled_landing_restores_farmland_before_its_crop_is_notified() {
     let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     mod_platform::testing::with_mods(

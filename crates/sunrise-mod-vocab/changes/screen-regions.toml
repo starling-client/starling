@@ -1,0 +1,3 @@
+ids = ["type:ScreenView.regions", "type:ScreenRegion", "type:ScreenRegionKind"]
+why = "A screen hook reads what the open screen itself draws outside its container panel this frame: the recipe book's panel and tab column, each creative tab, the effects beside the inventory, each a kind and a rectangle from the layout that draws it. A mod laying out its own panel beside the screen (a recipe viewer's item list) keeps clear of them."
+migrate = "Nothing to migrate: ScreenView is non_exhaustive. Read event.screen.regions in a screen hook; it is empty on a screen with none."

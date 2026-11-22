@@ -3,18 +3,19 @@ mod tests {
     use super::super::super::{
         native_entity_refs::tests::with_client_game, native_lifecycle::NativeLifecycle,
     };
-    use sunrise_client::level_loading::Reason;
-    use sunrise_protocol::{connection::Pipe, packets::play::SpawnInfo};
+    use crate::game::remote::RemoteDimensionEntry;
     use mod_api::{Hooks, HostSide, LevelRef, LevelTickPostEvent, LevelTickPreEvent, ModEntry};
     use std::sync::{Arc, Mutex};
+    use sunrise_client::level_loading::Reason;
+    use sunrise_protocol::{connection::Pipe, packets::play::SpawnInfo};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn server_hook_resolves_uuid_only_while_the_entity_is_in_its_active_level() {
         use super::super::super::{Dim, native_entity_refs::tests::with_game};
+        use mod_api::EntityUuid;
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::Vec3;
-        use mod_api::EntityUuid;
 
         const UUID: EntityUuid = EntityUuid(0x0123_4567_89ab_cdef_1020_3040_ffff_ffff);
 
@@ -44,8 +45,6 @@ mod tests {
         .into();
         mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
-                let _phase =
-                    mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
                 let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
                 game.mobs
                     .push(Mob::new(91, kind.clone(), Vec3::new(3.5, 70.0, 5.5), 0.0));
@@ -114,7 +113,7 @@ mod tests {
     /// One pre then one post for each client level tick, naming the level in
     /// place, and nothing before a tick or for a client with no level.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn client_level_tick_fires_pre_then_post_around_each_tick() {
         let heard = Arc::new(Mutex::new(Vec::new()));
         let mods = vec![ModEntry::new("moments", Box::new(Moments(heard.clone())))].into();
@@ -137,7 +136,7 @@ mod tests {
                     portal_cooldown: 0,
                     sea_level: 63,
                 };
-                game.enter_remote_dimension(&spawn, false, Reason::Other);
+                game.enter_remote_dimension(&spawn, RemoteDimensionEntry::Login, Reason::Other);
                 game.remote.as_mut().unwrap().logged_in = true;
                 let level = game.level("minecraft:overworld").unwrap();
 
@@ -174,7 +173,7 @@ mod tests {
                 heard.lock().unwrap().clear();
                 let mut second = spawn.clone();
                 second.dimension = "minecraft:the_nether".into();
-                game.enter_remote_dimension(&second, false, Reason::Other);
+                game.enter_remote_dimension(&second, RemoteDimensionEntry::Login, Reason::Other);
                 let other = game.level("minecraft:the_nether").unwrap();
                 assert_ne!(level, other);
                 game.tick_remote_level().unwrap();

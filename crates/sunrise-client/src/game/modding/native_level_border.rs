@@ -5,8 +5,8 @@
 //! are told on the next host sync, as for the command.
 use super::Game;
 use crate::game::level_control_hooks::LevelControl;
-use sunrise_client::worldborder::{MAX_CENTER, MAX_SIZE};
 use mod_api::LevelRef;
+use sunrise_client::worldborder::{MAX_CENTER, MAX_SIZE};
 
 impl Game<'_> {
     /// `WorldBorder.setCenter(x, z)`; the border-center hook hears it. The centre it already
@@ -97,7 +97,7 @@ mod tests {
     use mod_api::{LevelRef, WorldEpoch};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn border_writes_move_the_shared_border_and_refuse_bad_values() {
         super::super::native_entity_refs::tests::with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();

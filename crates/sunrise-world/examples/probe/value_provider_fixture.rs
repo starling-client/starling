@@ -1,12 +1,12 @@
 //! Transport for decoded scalar provider samples and subsequent random state.
-use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
-use sunrise_world::worldgen::value_provider::{FloatProvider, IntProvider};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
+use sunrise_world::worldgen::value_provider::{FloatProvider, IntProvider};
 fn bits(value: f32) -> u32 {
     if value.is_nan() {
         0x7fc00000

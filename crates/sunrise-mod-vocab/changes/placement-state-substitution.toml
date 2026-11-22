@@ -1,0 +1,3 @@
+ids = ["hook:state_for_placement"]
+why = "Version 3 accepts another block's registered state as the placement candidate, instead of ignoring the answer."
+migrate = "Return None to delegate placement, Some(None) to refuse, or Some(Some(state)) to place the named state. Return another block's state only when placing that block is intended."

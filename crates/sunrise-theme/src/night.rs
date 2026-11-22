@@ -40,6 +40,39 @@ pub const PLAY: f32 = 56.;
 /// lower stops (the sunset) are too bright for light text, so text there always has a plate.
 pub const UNCARDED_STOPS: usize = 3;
 
+/// What drifts or glows over a theme's sky besides the clouds, in the colours the theme gives it
+/// (`https://github.com/sunrise-org/sunrise-launcher/blob/main/scenery/src/sky.rs` draws it, a few steps a second; nothing under reduced motion or in
+/// performance mode).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mood {
+    Plain,
+    /// Light shafts from the surface (colour) and rising bubbles (rim, shine).
+    Water([u32; 3]),
+    /// Falling leaves in three tones.
+    Leaves([u32; 3]),
+    /// Falling petals in two tones.
+    Petals([u32; 2]),
+    /// Curtains of light in three tones.
+    Aurora([u32; 3]),
+    /// A glow over the horizon and a grid floor scrolling toward the viewer (glow, grid).
+    Neon([u32; 2]),
+    /// Snow falling softly: the flakes and the shade under each.
+    Snow([u32; 2]),
+}
+
+/// How the skylines and the sun are cut. Baked with the sky, so it stays in performance mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Land {
+    /// Plain silhouettes under a round sun sliced by the sky.
+    Plain,
+    /// A line of light along each skyline's top (far, near).
+    Neon([u32; 2]),
+    /// Grass along each skyline's top (far, near), leafy trees, and a square sun or moon.
+    Blocks { grass: [u32; 2], leaves: u32 },
+    /// Spruce woods on snowy hills: snow along each skyline's top (far, near), trees capped too.
+    Taiga { snow: [u32; 2] },
+}
+
 /// The sky's hand-drawn art (the clouds, the sun and the two skylines): the colours a launcher
 /// theme paints them with, beside the sky's own bands.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,6 +87,8 @@ pub struct SkyArt {
     pub lit: [u32; 3],
     pub shade: u32,
     pub star: u32,
+    pub mood: Mood,
+    pub land: Land,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,25 +125,25 @@ pub struct Night {
 }
 
 pub const NIGHT: Night = Night {
-    sky: [0x07061a, 0x140f38, 0x2a1656, 0x5b2a78, 0xb0477d, 0xf08a5d],
-    page: 0x0e0b26,
-    side: 0x0a0820,
-    card: 0x15112e,
-    card_alpha: 0.84,
-    card_hi: 0x231c4a,
-    card_hi_alpha: 0.90,
-    stroke: 0xb9acff,
-    stroke_alpha: 0.12,
-    rule_alpha: 0.10,
-    ink: 0xf4f2ff,
-    ink_soft: 0xcfc9ea,
-    muted: 0xa59fc6,
-    accent: 0x7656fa,
-    accent_hi: 0xa08cff,
+    sky: [0x0f1220; 6],
+    page: 0x0f1220,
+    side: 0x0b0d18,
+    card: 0x171b2e,
+    card_alpha: 1.,
+    card_hi: 0x20253d,
+    card_hi_alpha: 1.,
+    stroke: 0x2c3250,
+    stroke_alpha: 1.,
+    rule_alpha: 0.7,
+    ink: 0xf2f4fb,
+    ink_soft: 0xc6cbe0,
+    muted: 0x9aa1bd,
+    accent: 0x4f60e6,
+    accent_hi: 0x93b4ff,
     on_accent: 0xffffff,
-    success: 0x5fd39a,
-    warn: 0xf5b45a,
-    danger: 0xff8a78,
+    success: 0x4cd08a,
+    warn: 0xf5a94a,
+    danger: 0xff7d7d,
     dark: true,
     art: SkyArt {
         sun: [0xffe28c, 0xffbf66, 0xff944f],
@@ -118,6 +153,8 @@ pub const NIGHT: Night = Night {
         lit: [0x5a3f8a, 0x9c5a92, 0xf7a98a],
         shade: 0x2a1a4c,
         star: 0xf4f2ff,
+        mood: Mood::Plain,
+        land: Land::Plain,
     },
 };
 
@@ -151,6 +188,8 @@ pub const DAWN: Night = Night {
         lit: [0xffffff; 3],
         shade: 0xd9cbe8,
         star: 0xffffff,
+        mood: Mood::Plain,
+        land: Land::Plain,
     },
 };
 

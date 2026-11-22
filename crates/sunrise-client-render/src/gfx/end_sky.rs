@@ -5,7 +5,7 @@ use wgpu::util::DeviceExt;
 const VERTICES: u32 = 6 * 16 * 16 * 4;
 
 #[derive(Default)]
-pub(super) struct EndSky {
+pub(crate) struct EndSky {
     mesh: Option<([f32; 4], wgpu::Buffer)>,
 }
 

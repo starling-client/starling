@@ -3,7 +3,7 @@ use crate::game::game_tests::tests::server_game;
 use sunrise_core::position::BlockPos;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+#[ignore = "daily"]
 fn count_equality_uses_live_stack_bounds_and_command_flow() {
     let mut resources = None;
     let mut game = server_game(&mut resources);
@@ -42,7 +42,7 @@ fn count_equality_uses_live_stack_bounds_and_command_flow() {
         );
         let stack = ItemStack::new("minecraft:diamond", count);
         assert!(
-            sunrise_client::item_data::encode_components(&stack)
+            sunrise_client::item_data::component_snapshot(&stack)
                 .is_none_or(|t| t.get("minecraft:count").is_none()),
             "count is not a component patch"
         );

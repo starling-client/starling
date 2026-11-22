@@ -1,12 +1,12 @@
-use sunrise_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
-use sunrise_world::entity_obstruction::{
-    EntityIdentity, EntityObstructionWorld, ObstructionEntity, is_unobstructed,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
+use sunrise_world::entity_obstruction::{
+    EntityIdentity, EntityObstructionWorld, ObstructionEntity, is_unobstructed,
 };
 struct World<'a, W> {
     entities: Vec<ObstructionEntity>,

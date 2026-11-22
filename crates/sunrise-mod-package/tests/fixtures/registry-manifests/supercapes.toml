@@ -1,0 +1,173 @@
+id = "supercapes"
+name = "SuperCapes"
+version = "1.0.0"
+description = "Cape cloth that moves with the player, and public cape pictures (OptiFine and MinecraftCapes by default), with a settings card. No extra keybind."
+authors = ["Zekrenlight"]
+license = "MIT"
+api = "0.2"
+side = "client"
+capabilities = ["registries"]
+
+# The Sunrise build and mixins tool commit this mod is compiled against.
+# Bump both with `cargo sunrise-mod update --sunrise <build>` when a new mod API lands.
+# Current pin: Sunrise Mod SDK 9425651 (94256510f74, 19 Nov 2026, API 0.2, game 26.3).
+[native]
+game = "26.3"
+sunrise = "94256510f74e6843754e0a93fd9e4da7e45b1056"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+# Game side: cape downloads, atlas skin slots and each player's cape sprite.
+# The typed API has no way to put a downloaded picture on a player's cape, hide
+# the vanilla cape layer, or add a pause-menu button, so this part uses the
+# native route (a support module plus the mixins below).
+[[native.module]]
+id = "game"
+file = "crates/sunrise-client/src/game/native_hooks/render_frame_pre.rs"
+name = "supercapes_native"
+source = "src/native/game.rs"
+
+[[native.mixin]]
+id = "frame"
+target = "sunrise_client::game::native_hooks::render_frame_pre::Game<'_>::native_render_frame_pre"
+kind = "HEAD"
+helper = "src/mixins/frame.rs"
+bindings = [{ name = "game", ty = "&mut Game<'_>", value = "&mut *self" }]
+
+# One cape per player: skip the vanilla cape layer for the players whose cape
+# the cloth draws (the elytra and the screen preview keep the vanilla layer),
+# and draw the winning picture when the game is about to draw another.
+[[native.mixin]]
+id = "cape_layer"
+target = "sunrise_client::game::perspective::Game<'_>::player_cape_geometry"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/cape_layer.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "self" },
+  { name = "m", ty = "&Mob", value = "m" },
+  { name = "chest", ty = "Option<&str>", value = "chest" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "partial", ty = "f32", value = "partial" },
+  { name = "light", ty = "u32", value = "light" },
+  { name = "out", ty = "&mut Vec<sunrise_client_render::render_geometry::Vertex>", value = "&mut *out" },
+]
+
+# Elytra wings take the winning cape picture ("Elytra uses cape").
+[[native.mixin]]
+id = "elytra"
+target = "sunrise_client::game::perspective::Game<'_>::player_elytra_geometry"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/elytra.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "self" },
+  { name = "m", ty = "&Mob", value = "m" },
+  { name = "chest", ty = "Option<&str>", value = "chest" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "partial", ty = "f32", value = "partial" },
+  { name = "light", ty = "u32", value = "light" },
+  { name = "out", ty = "&mut Vec<sunrise_client_render::render_geometry::Vertex>", value = "&mut *out" },
+]
+
+# The inventory preview draws the player's cape with the vanilla layer.
+[[native.mixin]]
+id = "preview_on"
+target = "sunrise_client::game::perspective::Game<'_>::draw_player_preview"
+kind = "BEFORE_CALL"
+selector = "self.player_cape_geometry"
+require = 1
+ordinal = 0
+helper = "src/mixins/preview_on.rs"
+
+[[native.mixin]]
+id = "preview_off"
+target = "sunrise_client::game::perspective::Game<'_>::draw_player_preview"
+kind = "AFTER_CALL"
+selector = "self.player_cape_geometry"
+result = "()"
+require = 1
+ordinal = 0
+helper = "src/mixins/preview_off.rs"
+
+# A vanilla pause-menu button (the game's own button sprites, so resource
+# packs restyle it), full width, directly above Save and Quit to Title.
+[[native.mixin]]
+id = "pause_row"
+target = "sunrise_client::game::screens::pause_buttons"
+kind = "RETURN"
+helper = "src/mixins/pause_row.rs"
+bindings = [
+  { name = "buttons", ty = "Vec<(f32, f32, f32, &'static str, u8, bool)>", value = "$value" },
+]
+
+[[native.mixin]]
+id = "pause_action"
+target = "sunrise_client::game::screens::Game<'_>::execute_pause_action"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/pause_action.rs"
+bindings = [{ name = "hit", ty = "u8", value = "hit" }]
+
+# The settings card (shared Sunrise dark card). Sunrise opens a mod's settings as its
+# Options page `NativeMod(index)` (SunnyMods' Settings button, Sunrise's Mods list and the
+# mod's own settings key all land there). These HEAD hooks act only on this mod's own page
+# and let every other page, and every other mod's card, through untouched.
+[[native.module]]
+id = "card"
+file = "crates/sunrise-client/src/game.rs"
+name = "supercapes_card"
+source = "src/native/card.rs"
+
+[[native.mixin]]
+id = "card_draw"
+target = "sunrise_client::game::options::Game<'_>::draw_options"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_draw.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "batch", ty = "&mut sunrise_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+[[native.mixin]]
+id = "card_mouse"
+target = "sunrise_client::game::options::Game<'_>::options_mouse"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_mouse.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+  { name = "right", ty = "bool", value = "right" },
+]
+
+[[native.mixin]]
+id = "card_drag"
+target = "sunrise_client::game::options::Game<'_>::options_drag"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_drag.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+[[native.mixin]]
+id = "card_scroll"
+target = "sunrise_client::game::options::Game<'_>::options_scroll"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_scroll.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "amount", ty = "f32", value = "amount" },
+]
+
+[[native.mixin]]
+id = "card_key"
+target = "sunrise_client::game::options::Game<'_>::options_key"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_key.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "KeyCode", value = "key" },
+  { name = "text", ty = "Option<&str>", value = "text" },
+]

@@ -19,7 +19,7 @@ class PrepareOutputTests(unittest.TestCase):
         a = {
             'sunrise-resources.json': json.dumps(manifest).encode(),
             'render-definitions.json': b'{"a": 1, "b": [1, 2]}',
-            'creative-inventory.json': b'{"tags": [["b", "a"]]}',
+            'creative-inventory.json': b'{"tabs":[{"search_metadata":[{"stack":"stone","tags":["b","a"]}]}]}',
             'block-behaviours.json': b'{"c": "Foo$$Lambda/0x0000012a"}',
             'export.log': b'run 1',
             'assets/minecraft/sounds/a.ogg': b'one',
@@ -28,7 +28,7 @@ class PrepareOutputTests(unittest.TestCase):
         b = {
             'sunrise-resources.json': json.dumps(manifest).encode(),
             'render-definitions.json': b'{"b": [1, 2], "a": 1}',
-            'creative-inventory.json': b'{"tags": [["a", "b"]]}',
+            'creative-inventory.json': b'{"tabs":[{"search_metadata":[{"stack":"stone","tags":["a","b"]}]}]}',
             'block-behaviours.json': b'{"c": "Foo$$Lambda/0x00000ff0"}',
             'export.log': b'run 2',
             'assets/minecraft/sounds/a.ogg': b'two',

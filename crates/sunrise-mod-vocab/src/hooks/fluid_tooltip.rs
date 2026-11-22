@@ -12,6 +12,8 @@ pub trait Hooks {
 
 - **`native_fluid_tooltip(stack, lines)`** is `FluidTooltipEvent`: the tooltip of a fluid, with no item behind it. `lines` starts as the game's own (`sunrise_client::fluid_tooltip::lines`): the fluid's name (`fluid_type.<mod>.<name>`, vanilla's by its block), its amount as `sunrise.fluid.amount` ("%s mB") and, with F3+H, its id. Each line is a `Text` (translation-ready) with a colour as `rgba` packs it. Add, change, reorder or remove lines; an empty list draws nothing. The game asks it where it draws a fluid slot itself (the recipe viewer's wells under the cursor), before `render_tooltip_pre` lays the tooltip out. Nothing item-shaped fires for it: `item_tooltip` and `render_tooltip_gather_components` belong to stacks of items."#]
     #[hook(
+        receiver = "read",
+        dispatch = "api_carrier",
         side = "client",
         contract = "listen",
         neoforge = "FluidTooltipEvent",

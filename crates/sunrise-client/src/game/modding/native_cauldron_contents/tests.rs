@@ -3,7 +3,7 @@ use crate::game::api_values::TryIntoApi;
 use mod_api::{Hooks, Host};
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn registered_contents_and_rebuilt_tables_are_read_through_public_host() {
     use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};
     if run_fresh_cases(
@@ -22,10 +22,12 @@ fn registered_contents_and_rebuilt_tables_are_read_through_public_host() {
             r.declare_fluid("unregistered");
         }
         fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut mod_api::BlocksEvent<'_>) {
-            event.blocks.push(mod_api::Block::new(
-                "test:honey_cauldron",
-                "minecraft:lava_cauldron",
-            ));
+            event
+                .register(mod_api::Block::new(
+                    "test:honey_cauldron",
+                    "minecraft:lava_cauldron",
+                ))
+                .unwrap();
         }
         fn register_cauldron_fluid_content(
             &self,

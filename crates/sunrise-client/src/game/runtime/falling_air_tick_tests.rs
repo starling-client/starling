@@ -1,11 +1,11 @@
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::nbt::Tag;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+#[ignore = "daily"]
 fn loaded_air_is_discarded_on_first_actual_game_tick() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         game.build_registries();

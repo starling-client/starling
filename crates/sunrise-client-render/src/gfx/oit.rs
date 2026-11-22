@@ -28,6 +28,19 @@ pub enum Stage {
     Accumulate,
 }
 
+impl Stage {
+    /// `OitStage.values()`.
+    pub const ALL: [Self; 3] = [Self::DepthBounds, Self::Transmittance, Self::Accumulate];
+}
+
+/// What the clouds' transmittance and accumulate passes sample (`CloudRenderer.renderOit`'s
+/// `params`): the culled depth bounds and the two transmittance targets, in that order; and
+/// which targets these are, a number made new each time they are.
+pub(super) struct CloudSamples<'a> {
+    pub generation: u64,
+    pub views: [&'a wgpu::TextureView; 3],
+}
+
 /// What the device must support: max blending on 32-bit float targets.
 ///
 /// `FLOAT32_BLENDABLE` is a Vulkan/WebGPU feature. wgpu's Metal adapter reports
@@ -99,6 +112,8 @@ fn projection_terms(projection: &Mat4) -> [f32; 2] {
 
 struct Targets {
     size: [u32; 2],
+    /// Which targets these are ([`CloudSamples::generation`]).
+    generation: u64,
     bounds: wgpu::Texture,
     culled: wgpu::Texture,
     views: Views,
@@ -153,8 +168,9 @@ fn extent(size: [u32; 2]) -> wgpu::Extent3d {
 pub struct Extras<'a> {
     /// `executeOitWaterMask`: the boats' water patches, depth only.
     pub water_mask: Option<&'a dyn Fn(&mut wgpu::RenderPass<'_>)>,
-    /// `CloudRenderer.renderOit`: draws the clouds with the pipeline given.
-    pub clouds: Option<&'a dyn Fn(&mut wgpu::RenderPass<'_>, &wgpu::RenderPipeline)>,
+    /// `CloudRenderer.renderOit`: draws the clouds in the stage's pass, with its own pipeline
+    /// of the stage (the native mesh's [`Oit::clouds`], or a pack's `OIT_CLOUDS`).
+    pub clouds: Option<&'a dyn Fn(&mut wgpu::RenderPass<'_>, Stage)>,
     /// "Features, World Border, Weather": draws what the entity, weather and
     /// border shaders put after the opaque world, with `Oit::features`'s
     /// pipelines of the stage.
@@ -182,6 +198,8 @@ pub struct Oit {
     cull: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     targets: Option<Targets>,
+    /// Targets made so far.
+    made: u64,
 }
 
 impl Oit {
@@ -540,6 +558,7 @@ impl Oit {
             cull,
             composite,
             targets: None,
+            made: 0,
         }
     }
 
@@ -556,6 +575,21 @@ impl Oit {
 
     pub fn features(&self) -> &Features {
         &self.features
+    }
+
+    /// The native clouds' pipeline in `stage`.
+    pub fn clouds(&self, stage: Stage) -> &wgpu::RenderPipeline {
+        &self.clouds[stage as usize]
+    }
+
+    /// What the clouds' stages sample, once [`Oit::prepare`] made the targets.
+    pub(super) fn cloud_samples(&self) -> Option<CloudSamples<'_>> {
+        let t = self.targets.as_ref()?;
+        let [c0, c1] = &t.views.coefficients;
+        Some(CloudSamples {
+            generation: t.generation,
+            views: [&t.views.culled, c0, c1],
+        })
     }
 
     /// Sizes the targets to the world's and writes this frame's projection.
@@ -631,8 +665,10 @@ impl Oit {
             })
         };
         let [c0, c1] = &views.coefficients;
+        self.made += 1;
         self.targets = Some(Targets {
             size,
+            generation: self.made,
             alone: group(&self.layouts[0], &[]),
             sampled: group(&self.layouts[1], &[&views.culled]),
             accumulate: group(&self.layouts[2], &[&views.culled, c0, c1]),
@@ -810,10 +846,7 @@ impl Oit {
             &wgpu::BindGroup,
             &[Option<wgpu::RenderPassColorAttachment<'_>>],
         ),
-        (draw, cloud_depth): (
-            &dyn Fn(&mut wgpu::RenderPass<'_>, &wgpu::RenderPipeline),
-            &Depth,
-        ),
+        (draw, cloud_depth): (&dyn Fn(&mut wgpu::RenderPass<'_>, Stage), &Depth),
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         if stage == Stage::DepthBounds {
@@ -838,7 +871,7 @@ impl Oit {
             ..Default::default()
         });
         pass.set_bind_group(GROUP, group, &[]);
-        draw(&mut pass, &self.clouds[stage as usize]);
+        draw(&mut pass, stage);
     }
 
     /// `LevelRenderer.executeOitWaterMask`: the terrain's depth is the world's

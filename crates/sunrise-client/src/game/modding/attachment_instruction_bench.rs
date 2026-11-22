@@ -1,4 +1,3 @@
-// game-module-cfg: test
 use crate::game::native_entity_refs::tests::{prepare_entity_ticking_neighborhood, with_game};
 use sunrise_client::mobs::Mob;
 use sunrise_core::{geometry::Vec3, position::ChunkPos};

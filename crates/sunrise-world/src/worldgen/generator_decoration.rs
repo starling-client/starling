@@ -22,7 +22,7 @@ use super::{
     generator::{
         DecorateStats, GenBlockStates, GeneratorData, GeneratorError, ProtoChunk, WorkerState,
     },
-    placement::{FeaturePlacer, LayerBlock, PlacementContext, PlacementQueryError},
+    placement::{LayerBlock, PlacementContext, PlacementQueryError},
     tags::TagDefinitions,
     terrain::PreLightChunkStage,
     write_zone::GenerationWriteZone,
@@ -41,17 +41,17 @@ use crate::{
     heightmap::{HeightmapState, HeightmapType},
     registry::BlockStateId,
 };
-use sunrise_core::random::{WorldgenRandom, XoroshiroRandom};
-use sunrise_core::{
-    biome::obfuscate_seed,
-    geometry::{Axis, Direction, VoxelShape},
-    position::{BlockPos, ChunkPos},
-};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
+};
+use sunrise_core::random::{WorldgenRandom, XoroshiroRandom};
+use sunrise_core::{
+    biome::obfuscate_seed,
+    geometry::{Axis, Direction, VoxelShape},
+    position::{BlockPos, ChunkPos},
 };
 use {
     super::structure::start::{STEPS, place_in_chunk},
@@ -338,53 +338,11 @@ impl Decoration {
     }
     /// Vanilla's feature identity and the step-local index/step mixed into
     /// `set_feature_seed`.
+    #[cfg(test)]
     pub(super) fn seed(&self, name: &str) -> Option<(u32, i32, i32)> {
         let identity = self.names.iter().position(|candidate| candidate == name)? as u32;
         let (index, step) = self.plan.seed(FeatureIdentity(identity))?;
         Some((identity, index as i32, step as i32))
-    }
-    /// Replays a feature's placement chain and the feature itself on a no-op
-    /// world. This advances vanilla's random stream but writes no blocks, so a
-    /// caller can reproduce the exact origins without generating terrain.
-    pub(super) fn origins(
-        &self,
-        world_seed: i64,
-        chunk: ChunkPos,
-        mut biome_allows: impl FnMut([i32; 3]) -> bool,
-    ) -> Vec<[i32; 3]> {
-        let Some((identity, index, step)) = self.seed("minecraft:end_island_decorated") else {
-            return Vec::new();
-        };
-        let Ok(feature) = &self.features[identity as usize] else {
-            return Vec::new();
-        };
-        let blocks = self.blocks;
-        let mut random = WorldgenRandom::new(XoroshiroRandom::new(0));
-        let seed = random.set_decoration_seed(world_seed, chunk.x * 16, chunk.z * 16);
-        random.set_feature_seed(seed, index, step);
-        let mut world = OriginWorld {
-            air: blocks.air,
-            generation: WorldGenerationContext::new(0, 256, 0),
-            biome_allows: &mut biome_allows,
-        };
-        let mut origins = Vec::new();
-        let mut placer = FeaturePlacer::new();
-        let _ = placer.place_with_biome_check(
-            &feature.placement,
-            &mut world,
-            &mut random,
-            [chunk.x * 16, 0, chunk.z * 16],
-            FeatureIdentity(identity),
-            |world, random, position| {
-                origins.push(position);
-                feature
-                    .feature
-                    .place(world, random, position, blocks)
-                    .map(|_| true)
-                    .map_err(|_| ())
-            },
-        );
-        origins
     }
     /// Placed-feature roots that cannot run, with their decode errors.
     pub(super) fn unsupported(&self) -> Vec<(String, String)> {
@@ -725,44 +683,6 @@ impl World<'_> {
         Some(found)
     }
 }
-/// Advances a feature's random stream with no block storage; every write is
-/// discarded. Placement modifiers still see the real biome and build bounds.
-struct OriginWorld<'a> {
-    air: BlockStateId,
-    generation: WorldGenerationContext,
-    biome_allows: &'a mut dyn FnMut([i32; 3]) -> bool,
-}
-impl FeatureWorld for OriginWorld<'_> {
-    type Error = ();
-    fn block(&mut self, _: [i32; 3]) -> Result<BlockStateId, ()> {
-        Ok(self.air)
-    }
-    fn set_block(&mut self, _: [i32; 3], _: BlockStateId, _: i32) -> Result<bool, ()> {
-        Ok(false)
-    }
-}
-impl PlacementContext for OriginWorld<'_> {
-    fn generation(&self) -> WorldGenerationContext {
-        self.generation
-    }
-    fn min_y(&mut self) -> Result<i32, PlacementQueryError> {
-        Ok(self.generation.min_y)
-    }
-    fn height(&mut self, _: HeightmapType, _: i32, _: i32) -> Result<i32, PlacementQueryError> {
-        Ok(self.generation.min_y + self.generation.height)
-    }
-    fn max_y(&mut self) -> Result<i32, PlacementQueryError> {
-        Ok(self.generation.min_y + self.generation.height - 1)
-    }
-    fn biome_allows_feature(
-        &mut self,
-        position: [i32; 3],
-        _: FeatureIdentity,
-    ) -> Result<bool, PlacementQueryError> {
-        Ok((self.biome_allows)(position))
-    }
-}
-
 /// WorldGenRegion-style view: reads anywhere in the 3×3 region, writes within
 /// the FEATURES step's write radius, biome lookups through the biome zoom.
 struct World<'a> {
@@ -1125,6 +1045,12 @@ impl SurvivalWorld for World<'_> {
     }
 }
 impl PlacementContext for World<'_> {
+    fn block_registry(&self) -> Option<&'static crate::registry::BlockRegistry> {
+        Some(self.decoration.bindings.registry())
+    }
+    fn full_chunk_at(&mut self, position: [i32; 3]) -> Result<bool, PlacementQueryError> {
+        Ok(self.is_full_chunk(position))
+    }
     fn state_collision_empty(
         &mut self,
         state: BlockStateId,
@@ -1624,6 +1550,13 @@ impl PlacementContext for World<'_> {
         tag: &str,
     ) -> Result<bool, PlacementQueryError> {
         let state = self.region.block(position)?;
+        self.state_matches_tag(state, tag)
+    }
+    fn state_matches_tag(
+        &mut self,
+        state: BlockStateId,
+        tag: &str,
+    ) -> Result<bool, PlacementQueryError> {
         if self
             .last_tag
             .as_ref()

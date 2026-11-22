@@ -15,14 +15,3 @@ pub struct EnchantmentRow<'a> {
     pub item: &'a ItemStack,
     pub original_level: i32,
 }
-#[derive(Clone, Debug, Default, PartialEq)]
-// exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct AnvilResult {
-    pub result: Option<ItemStack>,
-    /// Level cost (the `cost` data slot).
-    pub cost: i32,
-    /// Material items consumed from the second slot on take.
-    pub repair_item_count_cost: u32,
-    pub only_renaming: bool,
-}

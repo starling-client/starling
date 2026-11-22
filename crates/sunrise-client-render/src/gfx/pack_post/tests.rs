@@ -1,0 +1,539 @@
+//! The unit tests that take the GPU and build a whole pack (`test_gpu` is the client's).
+
+use crate::gfx::pack_draw::DrawUniforms;
+use sunrise_render_shaderpack::pack_images;
+use sunrise_render_shaderpack::pack_textures;
+use sunrise_shaders::{BUFFERS, Group};
+use wgpu::TextureFormat as T;
+
+use super::*;
+
+/// A pack's pipelines are made together on several threads: each lands in its pass's slot,
+/// and one wgpu refuses comes back by name (the pack is then built a program at a time).
+#[test]
+#[ignore = "daily"]
+fn pipelines_compile_together_and_a_refused_one_is_named() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    let Some((_adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
+        return;
+    };
+    let layout = device.create_pipeline_layout(&Default::default());
+    let module = |source: &str| {
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        })
+    };
+    let job = |label: &str, module: wgpu::ShaderModule| {
+        let slot = Slot::default();
+        let job = ComputeJob {
+            label: label.into(),
+            layout: layout.clone(),
+            module,
+        };
+        (slot.clone(), Job::Compute(slot, job))
+    };
+    let plain = "@compute @workgroup_size(1) fn main() {}";
+    let go = std::sync::atomic::AtomicBool::new(false);
+    let (slots, jobs): (Vec<_>, Vec<_>) = (0..12)
+        .map(|i| job(&format!("composite{i}"), module(plain)))
+        .unzip();
+    // Cancelled before it starts: nothing is made (`new` then drops the pack).
+    assert_eq!(compile(&device, &jobs, &true.into()), None);
+    assert!(slots.iter().all(|s| s.get().is_none()));
+    assert_eq!(compile(&device, &jobs, &go), None);
+    assert!(slots.iter().all(|s| s.get().is_some()));
+    // A binding the layout doesn't have: wgpu refuses the pipeline.
+    let bound = "@group(0) @binding(0) var<storage, read_write> b: array<u32>;\n\
+                 @compute @workgroup_size(1) fn main() { b[0] = 1u; }";
+    let (_, bad) = job("deferred3", module(bound));
+    let (slots, mut jobs): (Vec<_>, Vec<_>) =
+        (0..4).map(|i| job(&format!("c{i}"), module(plain))).unzip();
+    jobs.insert(2, bad);
+    let (program, _why) = compile(&device, &jobs, &go).expect("the pipeline is refused");
+    assert_eq!(program, "deferred3");
+    // The refusal stops none of the others: they are all made.
+    assert!(slots.iter().all(|s| s.get().is_some()));
+}
+
+/// #3525: naga's SPIR-V writer panicked on Photon's gbuffers programs as the pipeline was
+/// made. Such a panic skips the pass, as a validation error does, and the device goes on.
+#[test]
+#[ignore = "daily"]
+fn a_shader_compiler_panic_skips_the_pass() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    let Some((_adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
+        return;
+    };
+    let failed = checked(&device, || -> wgpu::Buffer {
+        panic!("internal error: entered unreachable code: Expression [89] is not cached!")
+    });
+    let error = failed.expect_err("the panic comes back as an error");
+    assert!(error.contains("Expression [89] is not cached!"), "{error}");
+    let buffer = |usage| {
+        checked(&device, || {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 16,
+                usage,
+                mapped_at_creation: false,
+            })
+        })
+    };
+    // The device still makes things, and its errors still come back.
+    assert!(buffer(wgpu::BufferUsages::UNIFORM).is_ok());
+    assert!(buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE).is_err());
+}
+
+/// `texture.composite.colortex0` stands in for buffer 0 in composite programs until one of
+/// them flips that buffer; later ones, and `final`, read the buffer (Super Duper Vanilla,
+/// Bliss, SEUS PTGI HRR). Another stage's flips don't release it.
+#[test]
+#[ignore = "daily"]
+fn a_custom_texture_over_a_buffer_ends_when_its_stage_flips_it() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    let Some((adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
+        return;
+    };
+    let textures = [pack_textures::PackTexture {
+        stage: "composite".into(),
+        name: "colortex0".into(),
+        dimension: wgpu::TextureViewDimension::D2,
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        blur: false,
+        clamp: false,
+        png: false,
+        image: pack_textures::Image::Atlas,
+    }];
+    let interface = sunrise_shaders::Interface {
+        uniform_size: 48,
+        initial_values: vec![0; 48],
+        uniforms: Vec::new(),
+        samplers: vec![sunrise_shaders::Sampler {
+            name: "colortex0".into(),
+            ty: "sampler2D".into(),
+            binding: 1,
+        }],
+        outputs: vec![0],
+        draw: false,
+        images: Vec::new(),
+        buffers: Vec::new(),
+    };
+    let buffers = pack_images::Buffers::new(
+        &device,
+        Default::default(),
+        Default::default(),
+        wgpu::ShaderStages::FRAGMENT,
+    );
+    let stand_ins = std::cell::RefCell::new(Vec::new());
+    let pack = Resources {
+        textures: &textures,
+        images: &[],
+        left_out: &[],
+        buffers: &buffers,
+        indices: None,
+        gpu: Gpu::of(&adapter, device.features()),
+        storable: 0,
+        rgb: 0,
+        packed: [None; BUFFERS],
+        released: std::cell::Cell::new(("", 0)),
+        stand_ins: &stand_ins,
+        shadow_linear: 0,
+        jobs: None,
+    };
+    let reads = |group: Group| {
+        let (_, samplers, ..) = bindings(
+            device.features(),
+            &interface,
+            "composite",
+            group,
+            &[1],
+            None,
+            &[T::Rgba8Unorm; BUFFERS],
+            None,
+            &mut Vec::new(),
+            &pack,
+        )
+        .expect("the pass is kept");
+        samplers[0].source
+    };
+    assert!(reads(Group::Composite) == Source::Atlas);
+    pack.released.set(("deferred", 1));
+    assert!(reads(Group::Composite) == Source::Atlas);
+    pack.released.set(("composite", 1));
+    assert!(reads(Group::Composite) == Source::Color(0));
+    assert!(reads(Group::Final) == Source::Color(0));
+}
+
+/// Iris 1.11.7 (a probe pack of ours, #9064) didn't bind a PNG under
+/// `texture.<stage>.<name>` when `name` was a name of the pack's own, no sampler of the
+/// game's; a raw texture there, a PNG over `gaux2` or `noisetex`, and a `customTexture` PNG
+/// were bound.
+#[test]
+#[ignore = "daily"]
+fn a_png_under_a_name_of_its_own_is_not_bound() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    let Some((adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
+        return;
+    };
+    let texture = |stage: &str, name: &str, png: bool| pack_textures::PackTexture {
+        stage: stage.into(),
+        name: name.into(),
+        dimension: wgpu::TextureViewDimension::D2,
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        blur: !png,
+        clamp: !png,
+        png,
+        image: pack_textures::Image::Atlas,
+    };
+    let textures = [
+        texture("composite", "tp", true),
+        texture("composite", "tr", false),
+        texture("composite", "gaux2", true),
+        texture("composite", "noisetex", true),
+        texture(sunrise_shaders::EVERY_STAGE, "cp", true),
+    ];
+    let names = ["tp", "tr", "gaux2", "noisetex", "cp"];
+    let interface = sunrise_shaders::Interface {
+        uniform_size: 48,
+        uniforms: Vec::new(),
+        samplers: names
+            .iter()
+            .zip(1..)
+            .map(|(name, k)| sunrise_shaders::Sampler {
+                name: (*name).into(),
+                ty: "sampler2D".into(),
+                binding: 2 * k - 1,
+            })
+            .collect(),
+        outputs: vec![0],
+        draw: false,
+        images: Vec::new(),
+        buffers: Vec::new(),
+        initial_values: vec![0; 48],
+    };
+    let buffers = pack_images::Buffers::new(
+        &device,
+        Default::default(),
+        Default::default(),
+        wgpu::ShaderStages::FRAGMENT,
+    );
+    let stand_ins = std::cell::RefCell::new(Vec::new());
+    let pack = Resources {
+        textures: &textures,
+        images: &[],
+        left_out: &[],
+        buffers: &buffers,
+        indices: None,
+        gpu: Gpu::of(&adapter, device.features()),
+        storable: 0,
+        rgb: 0,
+        released: std::cell::Cell::new(("", 0)),
+        stand_ins: &stand_ins,
+        shadow_linear: 0,
+        jobs: None,
+        packed: [None; BUFFERS],
+    };
+    let (_, samplers, ..) = bindings(
+        device.features(),
+        &interface,
+        "final",
+        Group::Final,
+        &[0],
+        None,
+        &[T::Rgba8Unorm; BUFFERS],
+        None,
+        &mut Vec::new(),
+        &pack,
+    )
+    .expect("the pass is kept");
+    let read: Vec<Source> = samplers.iter().map(|b| b.source).collect();
+    assert!(
+        read == [
+            Source::Dummy,
+            Source::Atlas,
+            Source::Atlas,
+            Source::Atlas,
+            Source::Atlas
+        ]
+    );
+}
+
+/// Iris 1.11.7 runs a program whose image no `image.*` gives, and its loads read zero
+/// (observed with a probe pack). Its pass is kept, the image bound to a stand-in of its
+/// declared format, zero again before each pass even after one stored into it.
+#[test]
+#[ignore = "daily"]
+fn an_image_without_an_entry_reads_zero() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    use wgpu::TextureViewDimension as D;
+    let Some((adapter, device, queue)) = crate::gfx::test_gpu::optional_device() else {
+        return;
+    };
+    let image = |name: &str, ty: &str, format: &str, binding| sunrise_shaders::Image {
+        name: name.into(),
+        ty: ty.into(),
+        format: format.into(),
+        access: String::new(),
+        binding,
+        before: None,
+    };
+    let interface = sunrise_shaders::Interface {
+        uniform_size: 48,
+        initial_values: vec![0; 48],
+        uniforms: Vec::new(),
+        samplers: Vec::new(),
+        outputs: vec![0],
+        draw: false,
+        images: vec![
+            image("mask", "uimage3D", "r32ui", 1),
+            image("other", "uimage3D", "r32ui", 2),
+            image("flat", "image2D", "rgba8", 3),
+        ],
+        buffers: Vec::new(),
+    };
+    let buffers = pack_images::Buffers::new(
+        &device,
+        Default::default(),
+        Default::default(),
+        wgpu::ShaderStages::FRAGMENT,
+    );
+    let stand_ins = std::cell::RefCell::new(Vec::new());
+    let pack = Resources {
+        textures: &[],
+        images: &[],
+        left_out: &[],
+        buffers: &buffers,
+        indices: None,
+        gpu: Gpu::of(&adapter, device.features()),
+        storable: 0,
+        rgb: 0,
+        packed: [None; BUFFERS],
+        released: std::cell::Cell::new(("", 0)),
+        stand_ins: &stand_ins,
+        shadow_linear: 0,
+        jobs: None,
+    };
+    let mut notes = Vec::new();
+    let (.., images) = bindings(
+        device.features(),
+        &interface,
+        "composite",
+        Group::Composite,
+        &[0],
+        None,
+        &[T::Rgba8Unorm; BUFFERS],
+        None,
+        &mut notes,
+        &pack,
+    )
+    .expect("the pass is kept");
+    assert!(
+        images
+            == [
+                (1, Image::StandIn(T::R32Uint, D::D3)),
+                (2, Image::StandIn(T::R32Uint, D::D3)),
+                (3, Image::StandIn(T::Rgba8Unorm, D::D2)),
+            ]
+    );
+    assert_eq!(notes.len(), 3, "{notes:?}");
+    // One stand-in for each format and dimension.
+    let made = pack_images::stand_ins(&device, stand_ins.take());
+    assert_eq!(made.len(), 2);
+    let mask = pack_images::stand_in(&made, T::R32Uint, D::D3).expect("made");
+    let texture = mask.view.texture();
+    queue.write_texture(
+        texture.as_image_copy(),
+        &7u32.to_le_bytes(),
+        wgpu::TexelCopyBufferLayout::default(),
+        texture.size(),
+    );
+    let read = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    mask.clear(&mut encoder);
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &read,
+            layout: wgpu::TexelCopyBufferLayout::default(),
+        },
+        texture.size(),
+    );
+    queue.submit([encoder.finish()]);
+    read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    assert_eq!(&read.slice(..).get_mapped_range().unwrap()[..], &[0; 4]);
+}
+
+/// `blend.<program>` of a composite program blends its output onto what the buffer's side
+/// holds (Iris 1.11.7, probed: 0.25 over 0.75 with SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO and
+/// a source alpha of 0.25 reads 0.625).
+#[test]
+#[ignore = "daily"]
+fn a_composite_program_blends_onto_its_buffer() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    let Some(adapter) = crate::gfx::test_gpu::adapter() else {
+        return;
+    };
+    // A pass's pipeline layout has six bind group slots.
+    let desc = wgpu::DeviceDescriptor {
+        required_limits: adapter.limits(),
+        ..Default::default()
+    };
+    let Some((device, queue)) = crate::gfx::test_gpu::optional_device_with(&adapter, &desc) else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("hz-composite-blend-{}", std::process::id()));
+    let shaders = dir.join("shaders");
+    std::fs::create_dir_all(&shaders).unwrap();
+    let file = |name: &str, text: &str| std::fs::write(shaders.join(name), text).unwrap();
+    file(
+        "composite.vsh",
+        "#version 120\nvoid main() { gl_Position = ftransform(); }\n",
+    );
+    file(
+        "composite.fsh",
+        "#version 120\n/* DRAWBUFFERS:3 */\n\
+         void main() { gl_FragData[0] = vec4(0.25, 0.25, 1.0, 0.25); }\n",
+    );
+    let pack = sunrise_shaders::Pack::open(&dir).unwrap();
+    let properties = sunrise_shaders::Properties::parse(
+        "blend.composite = SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO\n",
+        &sunrise_shaders::Macros::default(),
+    );
+    let mut post = sunrise_shaders::load_post(
+        &pack,
+        "",
+        &properties,
+        &sunrise_shaders::Macros::standard(),
+        &Default::default(),
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let program = post.programs.remove(0);
+    let buffers = pack_images::Buffers::new(
+        &device,
+        Default::default(),
+        Default::default(),
+        wgpu::ShaderStages::FRAGMENT,
+    );
+    let stand_ins = std::cell::RefCell::new(Vec::new());
+    let pack = Resources {
+        textures: &[],
+        images: &[],
+        left_out: &[],
+        buffers: &buffers,
+        indices: None,
+        gpu: Gpu::of(&adapter, device.features()),
+        storable: 0,
+        rgb: 0,
+        packed: [None; BUFFERS],
+        released: std::cell::Cell::new(("", 0)),
+        stand_ins: &stand_ins,
+        shadow_linear: 0,
+        jobs: None,
+    };
+    let draws = DrawUniforms::new(&device);
+    let mut notes = Vec::new();
+    let pass = build_pass(
+        &device,
+        program,
+        &[T::Rgba8Unorm; BUFFERS],
+        None,
+        T::Rgba8Unorm,
+        &mut notes,
+        None,
+        &[],
+        &draws.layout,
+        &pack,
+        false,
+    )
+    .unwrap_or_else(|| panic!("the pass builds: {notes:?}"));
+    // colortex3 holds (0.75, 0.5, 0.25, 0.5) before the pass.
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 64,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: T::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let head = [64.0f32, 1.0, 1.0 / 64.0, 1.0];
+    queue.write_buffer(&pass.ubo, 0, bytemuck::cast_slice(&head));
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pass.layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: pass.ubo.as_entire_binding(),
+        }],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let before = wgpu::Color {
+        r: 0.75,
+        g: 0.5,
+        b: 0.25,
+        a: 0.5,
+    };
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        color_attachments: &[attach(
+            &view,
+            wgpu::Operations {
+                load: wgpu::LoadOp::Clear(before),
+                store: wgpu::StoreOp::Store,
+            },
+        )],
+        ..Default::default()
+    });
+    {
+        // Loaded, as `PackPost::render` attaches a buffer a composite pass writes.
+        let load = wgpu::Operations {
+            load: wgpu::LoadOp::Load,
+            store: wgpu::StoreOp::Store,
+        };
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[attach(&view, load)],
+            ..Default::default()
+        });
+        rp.set_pipeline(pass.render());
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(0..6, 0..1);
+    }
+    let read = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &read,
+            layout: wgpu::TexelCopyBufferLayout::default(),
+        },
+        texture.size(),
+    );
+    queue.submit([encoder.finish()]);
+    read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let texel: Vec<u8> = read.slice(..).get_mapped_range().unwrap()[..4].to_vec();
+    // rgb = 0.25 × src + 0.75 × dst, alpha = the source's.
+    let expected = [0.625, 0.4375, 0.4375, 0.25].map(|v: f32| v * 255.0);
+    for (got, want) in texel.iter().zip(expected) {
+        assert!(
+            (f32::from(*got) - want).abs() <= 1.0,
+            "{texel:?} vs {expected:?}"
+        );
+    }
+}

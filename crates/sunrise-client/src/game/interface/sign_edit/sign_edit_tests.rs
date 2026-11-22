@@ -6,6 +6,7 @@
 //! `SignBlockEntity.updateSignText`.
 use super::*;
 use crate::game::{Audio, Options, Progress, Settings, lan::LanHost, load_resources};
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     items::ItemStack,
@@ -14,7 +15,6 @@ use sunrise_client::{
 };
 use sunrise_core::position::ChunkPos;
 use sunrise_protocol::packets::{configuration::ClientInformation, play::Clientbound};
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 const A: u32 = 2;
 const B: u32 = 3;
@@ -24,16 +24,19 @@ const B_UUID: u128 = 0x5100_0000_0000_000b;
 const SIGN: [i32; 3] = [4, 100, 4];
 
 /// Two players on one world and what each player's client was sent.
-struct Edits {
-    game: Game<'static>,
+struct Edits<'a> {
+    game: Game<'a>,
     inbox: Vec<(u32, mpsc::Receiver<Out>)>,
     sequence: i32,
 }
 
-impl Edits {
+impl<'a> Edits<'a> {
     /// A fresh world: the blocks `setup` names, two players beside `SIGN`
     /// (A at x+2.5, B at x-1.5, one block south).
-    fn new(setup: &[&str]) -> Self {
+    fn new(
+        resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
+        setup: &[&str],
+    ) -> Self {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES")
                 .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
@@ -55,7 +58,7 @@ impl Edits {
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
         options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let res = &*resources.insert(loaded.resources);
         let mut game = Game::new(
             res,
             loaded.pack,
@@ -68,6 +71,9 @@ impl Edits {
             None,
         )
         .unwrap();
+        // A placed sign opens its editor for a live server player, whose
+        // handle needs the open world's epoch.
+        game.native_lifecycle_open_started();
         game.build_registries();
         game.set_allow_commands(true);
         game.world
@@ -100,6 +106,7 @@ impl Edits {
                 max_players: 4,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -261,9 +268,10 @@ fn oak_sign() -> &'static str {
 /// `SignBlockEntity.updateSignText` writes only for the sign's own editor,
 /// and `SignBlock.openTextEdit` refuses the click of everyone else.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn one_sign_belongs_to_one_editor() {
-    let mut w = Edits::new(&[oak_sign()]);
+    let mut resources = None;
+    let mut w = Edits::new(&mut resources, &[oak_sign()]);
     w.click(A, SIGN);
     assert!(w.opened(A), "A's click opened no editor");
     // B's click does nothing at all, as in vanilla.
@@ -288,9 +296,10 @@ fn one_sign_belongs_to_one_editor() {
 /// block interaction range plus four blocks, or gone from the world
 /// (`playerIsTooFarAwayToEdit`, `Level.getPlayerByUUID`).
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_sign_lets_its_editor_go_when_they_walk_away_or_leave() {
-    let mut w = Edits::new(&[oak_sign()]);
+    let mut resources = None;
+    let mut w = Edits::new(&mut resources, &[oak_sign()]);
     w.click(A, SIGN);
     assert!(w.opened(A));
     // A standing there keeps the sign, tick after tick.
@@ -317,11 +326,13 @@ fn a_sign_lets_its_editor_go_when_they_walk_away_or_leave() {
 /// `SignBlock.useItemOn`: `otherPlayerIsEditingSign` refuses a dye while
 /// somebody edits the sign, so nothing is coloured and no dye is used up.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_dye_is_refused_while_another_player_edits_the_sign() {
-    let mut w = Edits::new(&[
-        "setblock 4 100 4 oak_sign{front_text:{messages:[\"hello\",\"\",\"\",\"\"]}}",
-    ]);
+    let mut resources = None;
+    let mut w = Edits::new(
+        &mut resources,
+        &["setblock 4 100 4 oak_sign{front_text:{messages:[\"hello\",\"\",\"\",\"\"]}}"],
+    );
     w.click(A, SIGN);
     assert!(w.opened(A));
     w.hold(B, ItemStack::new("minecraft:red_dye", 4));
@@ -344,7 +355,7 @@ fn a_dye_is_refused_while_another_player_edits_the_sign() {
 /// on a side holding anything but plain text, while a style or an empty line
 /// does not count.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_editor_opens_only_on_plain_text() {
     // The first line of the side (`ComponentSerialization.CODEC` in NBT: a
     // string is a literal, a compound carries the contents), and whether
@@ -366,7 +377,8 @@ fn the_editor_opens_only_on_plain_text() {
         })
         .collect();
     let setup: Vec<&str> = setup.iter().map(String::as_str).collect();
-    let mut w = Edits::new(&setup);
+    let mut resources = None;
+    let mut w = Edits::new(&mut resources, &setup);
     for (i, (line, editable)) in cases.iter().enumerate() {
         let pos = [2 + (i as i32) * 2, 100, 4];
         w.click(A, pos);
@@ -377,9 +389,13 @@ fn the_editor_opens_only_on_plain_text() {
 /// `SignBlock.setPlacedBy`: a sign placed with text that is not plain text
 /// keeps it and opens no editor.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_placed_sign_with_a_translated_line_opens_no_editor() {
-    let mut w = Edits::new(&["setblock 4 99 4 stone", "setblock 6 99 4 stone"]);
+    let mut resources = None;
+    let mut w = Edits::new(
+        &mut resources,
+        &["setblock 4 99 4 stone", "setblock 6 99 4 stone"],
+    );
     // The sign item's text (`DataComponents.SIGN_TEXT_FRONT`, which
     // `SignBlockEntity.applyImplicitComponents` puts on the placed sign).
     let mut stack = ItemStack::new("minecraft:oak_sign", 1);

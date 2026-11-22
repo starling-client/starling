@@ -2,13 +2,17 @@
 use super::*;
 use sunrise_core::random::RandomSource;
 
+fn decode_packet(bytes: &[u8]) -> C {
+    let mut reader = sunrise_protocol::buf::Reader::new(bytes);
+    let id = reader.varint().unwrap();
+    C::decode(id, reader.rest()).unwrap()
+}
+
 fn next_sent_packet(rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -> C {
     let crate::lan::Out::Packet(bytes) = rx.try_recv().expect("a sound packet") else {
         panic!("expected a packet");
     };
-    let mut reader = sunrise_protocol::buf::Reader::new(&bytes);
-    let id = reader.varint().unwrap();
-    C::decode(id, reader.rest()).unwrap()
+    decode_packet(&bytes)
 }
 
 #[test]
@@ -31,6 +35,7 @@ fn a_trident_joining_after_tracking_is_paired_before_its_throw_sound() {
         next_entity: &mut next_entity,
         spawn: [0.5, 64.0, 0.5],
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
@@ -41,7 +46,7 @@ fn a_trident_joining_after_tracking_is_paired_before_its_throw_sound() {
         border: &border,
         streaming: None,
     };
-    hub.track_entities(&mut ctx);
+    hub.track_entities(&mut ctx, None);
     while rx.try_recv().is_ok() {}
     let trident = EntityState {
         id: 37,
@@ -51,7 +56,7 @@ fn a_trident_joining_after_tracking_is_paired_before_its_throw_sound() {
         velocity: [0.25, 0.0, 0.0],
         ..EntityState::default()
     };
-    hub.note_joined(std::slice::from_ref(&trident));
+    hub.note_joined(std::slice::from_ref(&trident), None);
     hub.captured_sound(
         &crate::audio::CapturedSound {
             event: "minecraft:item.trident.throw".into(),
@@ -61,12 +66,20 @@ fn a_trident_joining_after_tracking_is_paired_before_its_throw_sound() {
             source: 7,
             entity: Some(37),
             except_entity: None,
+            seed: 0,
+            particles_before: 0,
         },
         None,
     );
+    let crate::lan::Out::Packets(pairing) = rx.try_recv().unwrap() else {
+        panic!("expected one publication for late pairing");
+    };
     assert!(
-        matches!(next_sent_packet(&rx), C::AddEntity(p) if p.id == 37),
-        "ChunkMap.addEntity pairs a late spawn before the throw sound"
+        matches!(
+            pairing.iter().map(|bytes| decode_packet(bytes)).collect::<Vec<_>>().as_slice(),
+            [C::BundleDelimiter(_), C::AddEntity(p), C::BundleDelimiter(_)] if p.id == 37
+        ),
+        "ChunkMap.addEntity publishes the late pairing before the throw sound"
     );
     let mut heard = false;
     while let Ok(out) = rx.try_recv() {
@@ -92,7 +105,7 @@ fn a_trident_joining_after_tracking_is_paired_before_its_throw_sound() {
     );
     hub.native_tracking.clear();
     hub.attachment_snapshots.clear();
-    hub.note_joined(std::slice::from_ref(&trident));
+    hub.note_joined(std::slice::from_ref(&trident), None);
     hub.collect_tracking();
     assert!(hub.native_tracking.is_empty());
     assert!(hub.attachment_snapshots.is_empty());
@@ -125,6 +138,7 @@ fn a_captured_sound_reaches_the_client_before_its_emitter_is_removed() {
         next_entity: &mut next_entity,
         spawn: mooshroom.position,
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
@@ -135,7 +149,7 @@ fn a_captured_sound_reaches_the_client_before_its_emitter_is_removed() {
         border: &border,
         streaming: None,
     };
-    hub.track_entities(&mut ctx);
+    hub.track_entities(&mut ctx, None);
     assert!(hub.guests[0].tracker.is_tracking(37));
     while rx.try_recv().is_ok() {}
     // This is the current game's end-of-tick order: tracking sees the
@@ -149,22 +163,29 @@ fn a_captured_sound_reaches_the_client_before_its_emitter_is_removed() {
         source: 7,
         entity: Some(37),
         except_entity: None,
+        seed: 0,
+        particles_before: 0,
     };
     let mut sounds = vec![sound];
     hub.prepare_captured_sounds(&mut sounds, ctx.entities);
-    hub.track_entities(&mut ctx);
+    hub.track_entities(&mut ctx, None);
     for sound in sounds {
         hub.captured_sound(&sound, None);
     }
     hub.finish_captured_sounds();
     let mut order = Vec::new();
-    while let Ok(crate::lan::Out::Packet(bytes)) = rx.try_recv() {
-        let mut reader = sunrise_protocol::buf::Reader::new(&bytes);
-        let id = reader.varint().unwrap();
-        match C::decode(id, reader.rest()).unwrap() {
-            C::SoundEntity(p) if p.id == 37 => order.push("sound"),
-            C::RemoveEntities(p) if p.ids.contains(&37) => order.push("remove"),
-            _ => {}
+    while let Ok(message) = rx.try_recv() {
+        let packets = match message {
+            crate::lan::Out::Packet(body) => vec![body],
+            crate::lan::Out::Packets(batch) => batch,
+            _ => panic!("unexpected disconnect"),
+        };
+        for body in packets {
+            match decode_packet(&body) {
+                C::SoundEntity(p) if p.id == 37 => order.push("sound"),
+                C::RemoveEntities(p) if p.ids.contains(&37) => order.push("remove"),
+                _ => {}
+            }
         }
     }
     assert_eq!(
@@ -218,6 +239,7 @@ fn a_new_pair_does_not_reorder_sounds_or_remove_an_old_emitter_early() {
                 next_entity: &mut next_entity,
                 spawn: old.position,
                 spawn_angle: [0.0; 2],
+                spawn_dimension: "minecraft:overworld",
                 difficulty: 2,
                 difficulty_locked: false,
                 clock_rate: 1.0,
@@ -228,7 +250,7 @@ fn a_new_pair_does_not_reorder_sounds_or_remove_an_old_emitter_early() {
                 border: &border,
                 streaming: None,
             };
-            hub.track_entities(&mut ctx);
+            hub.track_entities(&mut ctx, None);
             assert!(hub.guests[0].tracker.is_tracking(37));
             assert!(hub.guests[0].tracker.is_tracking(39));
             while rx.try_recv().is_ok() {}
@@ -242,6 +264,8 @@ fn a_new_pair_does_not_reorder_sounds_or_remove_an_old_emitter_early() {
                 source: 7,
                 entity: Some(37),
                 except_entity: None,
+                seed: 0,
+                particles_before: 0,
             };
             let fresh_sound = crate::audio::CapturedSound {
                 event: "minecraft:entity.ghastling.spawn".into(),
@@ -258,7 +282,7 @@ fn a_new_pair_does_not_reorder_sounds_or_remove_an_old_emitter_early() {
             ctx.entities = &current;
             hub.prepare_captured_sounds(&mut sounds, ctx.entities);
             assert_eq!(sounds.len(), if new_first { 2 } else { 1 });
-            hub.track_entities(&mut ctx);
+            hub.track_entities(&mut ctx, None);
             for sound in sounds {
                 hub.captured_sound(&sound, None);
             }
@@ -348,6 +372,8 @@ fn direct_removals_split_the_sound_emitters_and_do_not_leak_into_the_next_batch(
             source: 6,
             entity: Some(38),
             except_entity: None,
+            seed: 0,
+            particles_before: 0,
         };
         let mut sounds = vec![
             sound.clone(),
@@ -405,6 +431,8 @@ fn captured_entity_sound_routes_by_player_dimension_range_and_exclusion() {
         source: 6,
         entity: Some(37),
         except_entity: None,
+        seed: 0,
+        particles_before: 0,
     };
     hub.guests.update(0, |g| g.position = [0.0; 3]);
     // The server broadcasts by distance even if this player does not track
@@ -489,6 +517,8 @@ fn captured_and_direct_sounds_share_the_server_seed_stream_and_synced_registry()
         source: 6,
         entity: Some(37),
         except_entity: None,
+        seed: 0,
+        particles_before: 0,
     };
     hub.sound("fixture:bound", sound.position, 1.0, 1.0, 6, None);
     let C::Sound(packet) = next_sent_packet(&rx) else {
@@ -580,4 +610,155 @@ fn a_global_level_event_keeps_its_level_when_another_level_is_in_place() {
         .pos,
         [10, 64, -3]
     );
+}
+
+#[test]
+fn a_late_spawn_pairs_with_the_only_held_viewer_before_the_next_pass() {
+    use crate::raw_payloads::{Side, Transport};
+    use sunrise_core::nbt::Tag;
+    use sunrise_mod_runtime::attachments::{AttachmentSync, Attachments};
+    use sunrise_protocol::attachment_sync;
+
+    let mut sync = SyncData::empty();
+    sync.builtin.registries.insert(
+        "minecraft:entity_type".into(),
+        sunrise_protocol::registry::Ids::from_names(vec!["minecraft:trident".into()]),
+    );
+    let (mut hub, _rx) = hub_with_sync(sync);
+    let transport = Transport::capture(Side::Server).unwrap();
+    transport
+        .accept(transport.local.manifest.entries())
+        .unwrap();
+    transport.finish_configuration().unwrap();
+    let (sender, inspect) = crate::lan::PlayerSender::payload_executor_test_sender(transport);
+    hub.sync_attachments = true;
+    hub.guests.update(0, |g| {
+        g.placed = false;
+        g.held = true;
+        g.sent_chunks.insert((0, 0));
+        g.sender = sender;
+    });
+    assert!(!hub.guests.iter().any(|g| hub.here(g)));
+    assert!(hub.guests.iter().any(|g| hub.watches(g)));
+
+    let trident = EntityState {
+        id: 37,
+        uuid: 37,
+        kind: "minecraft:trident".into(),
+        position: [0.5, 65.5, 0.5],
+        ..EntityState::default()
+    };
+    let change = AttachmentSync {
+        namespace: "test".into(),
+        name: "flight".into(),
+        value: Some([("n".into(), Tag::Int(9))].into()),
+    };
+    let mut map = Attachments::default();
+    map.apply_sync(change.clone());
+    let maps = [(37, map)].into_iter().collect();
+    let ticks = hub.tracking_ticks().unwrap_or_default();
+    hub.note_joined(&[trident], Some(&maps));
+
+    assert_eq!(hub.tracking_ticks(), Some(ticks));
+    let queued: Vec<_> = inspect().iter().map(|body| decode_packet(body)).collect();
+    let [
+        C::BundleDelimiter(_),
+        C::AddEntity(entity),
+        C::CustomPayload(sync),
+        C::BundleDelimiter(_),
+    ] = queued.as_slice()
+    else {
+        panic!("held viewer did not receive one complete pairing bundle: {queued:?}");
+    };
+    assert_eq!(entity.id, 37);
+    assert_eq!(sync.channel, attachment_sync::CHANNEL);
+    assert_eq!(
+        attachment_sync::decode(&sync.data).unwrap(),
+        attachment_sync::Message {
+            holder: Holder::Entity(37),
+            replace: true,
+            changes: vec![change],
+        }
+    );
+}
+
+#[test]
+fn late_pairing_is_one_publication_amid_concurrent_reliable_replies() {
+    use crate::raw_payloads::{Side, Transport};
+    use std::sync::Barrier;
+    use sunrise_core::nbt::Tag;
+    use sunrise_mod_runtime::attachments::{AttachmentSync, Attachments};
+    use sunrise_protocol::{attachment_sync, packets::configuration::Ping};
+
+    let mut sync = SyncData::empty();
+    sync.builtin.registries.insert(
+        "minecraft:entity_type".into(),
+        sunrise_protocol::registry::Ids::from_names(vec!["minecraft:trident".into()]),
+    );
+    let (mut hub, _rx) = hub_with_sync(sync);
+    let transport = Transport::capture(Side::Server).unwrap();
+    transport
+        .accept(transport.local.manifest.entries())
+        .unwrap();
+    transport.finish_configuration().unwrap();
+    let (sender, inspect) = crate::lan::PlayerSender::payload_executor_test_sender(transport);
+    hub.sync_attachments = true;
+    hub.guests.update(0, |g| {
+        g.sent_chunks.insert((0, 0));
+        g.sender = sender.clone();
+    });
+    let trident = EntityState {
+        id: 37,
+        uuid: 37,
+        kind: "minecraft:trident".into(),
+        position: [0.5, 65.5, 0.5],
+        ..EntityState::default()
+    };
+    let mut map = Attachments::default();
+    map.apply_sync(AttachmentSync {
+        namespace: "test".into(),
+        name: "flight".into(),
+        value: Some([("n".into(), Tag::Int(9))].into()),
+    });
+    let maps = [(37, map)].into_iter().collect();
+    let ready = Barrier::new(2);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            ready.wait();
+            for id in 0..16 {
+                sender
+                    .prepare_payload(
+                        C::Ping(Ping { id }).encode(),
+                        &mod_api::PayloadId("test:reply".into()),
+                    )
+                    .unwrap()
+                    .publish()
+                    .unwrap();
+            }
+        });
+        ready.wait();
+        hub.note_joined(&[trident], Some(&maps)); // No Holding guard.
+    });
+    let queued: Vec<_> = inspect().iter().map(|body| decode_packet(body)).collect();
+    let start = queued
+        .iter()
+        .position(|p| matches!(p, C::BundleDelimiter(_)))
+        .unwrap();
+    assert!(matches!(
+        &queued[start..][..4],
+        [C::BundleDelimiter(_), C::AddEntity(entity), C::CustomPayload(sync), C::BundleDelimiter(_)]
+            if entity.id == 37 && sync.channel == attachment_sync::CHANNEL
+                && attachment_sync::decode(&sync.data).unwrap().holder == Holder::Entity(37)
+    ));
+    let replies: Vec<_> = queued[..start]
+        .iter()
+        .chain(&queued[start + 4..])
+        .map(|packet| {
+            let C::Ping(p) = packet else {
+                panic!("unexpected packet outside the pairing bundle");
+            };
+            p.id
+        })
+        .collect();
+    assert_eq!(replies, (0..16).collect::<Vec<_>>());
 }

@@ -4,65 +4,17 @@ use super::{Game, Screen};
 use sunrise_client::{collisions::SceneCollisions, command::args::GameMode, items::ItemStack};
 use sunrise_world::world_movement::in_range_of_ground;
 
-pub(super) fn mode_from_id(id: i32) -> GameMode {
-    GameMode::from_id(id).unwrap_or(GameMode::Survival)
-}
-/// `ChunkMap.skipPlayer`: a player is skipped when `player.isSpectator() &&
-/// !level.getGameRules().getBoolean(SPECTATORS_GENERATE_CHUNKS)`. A skipped
-/// player holds no distance-manager ticket and streams no chunks around
-/// itself, but still receives the chunks other players load (chunk sending
-/// is untouched).
-pub(super) fn loads_chunks(spectators_generate_chunks: bool, spectator: bool) -> bool {
-    !spectator || spectators_generate_chunks
-}
+pub(super) use sunrise_gameplay::game_modes::{
+    loads_chunks, mode_from_id, projectile_predicate_supported,
+};
 
-/// Fail closed at the new projectile caller when the existing matcher cannot
-/// evaluate an entire conjunct. This does not change held-item interpretation.
-pub(super) fn projectile_predicate_supported(tag: &sunrise_core::nbt::Tag) -> bool {
-    use sunrise_core::nbt::Tag;
-    let supported = |p: &Tag| {
-        matches!(p, Tag::Compound(_))
-            && ["nbt", "components", "predicates"]
-                .iter()
-                .all(|key| p.get(key).is_none())
-            && match p.get("blocks") {
-                None | Some(Tag::String(_)) => true,
-                Some(Tag::List(ids)) => ids.iter().all(|id| matches!(id, Tag::String(_))),
-                _ => false,
-            }
-            && match p.get("state") {
-                None => true,
-                Some(Tag::Compound(properties)) => properties.values().all(|value| match value {
-                    Tag::String(_) => true,
-                    Tag::Compound(_) => ["min", "max"].iter().all(|key| {
-                        value
-                            .get(key)
-                            .is_none_or(|bound| matches!(bound, Tag::String(_)))
-                    }),
-                    _ => false,
-                }),
-                _ => false,
-            }
-    };
-    match tag {
-        Tag::Compound(_) => supported(tag),
-        Tag::List(predicates) => !predicates.is_empty() && predicates.iter().all(supported),
-        _ => false,
-    }
-}
 /// `InventoryScreen.containerTick`: a survival inventory left open when the
 /// player gains infinite materials becomes the creative one, so the player
-/// stays in a menu. A spectator's inventory is closed (`Playing`), which is
-/// what Sunrise did for every mode before; vanilla has no spectator branch
-/// and leaves it open.
-fn inventory_after_mode(screen: Screen, creative: bool, spectator: bool) -> Screen {
-    if screen != Screen::Inventory {
-        return screen;
-    }
-    if creative {
+/// stays in a menu. Vanilla has no other branch: a spectator's open inventory
+/// stays open too.
+fn inventory_after_mode(screen: Screen, creative: bool) -> Screen {
+    if screen == Screen::Inventory && creative {
         Screen::Creative
-    } else if spectator {
-        Screen::Playing
     } else {
         screen
     }
@@ -73,17 +25,23 @@ impl Game<'_> {
     /// open follows the mode. (`CreativeModeInventoryScreen.containerTick`, the way back
     /// to survival, is not ported yet.)
     fn mode_changed_under_inventory(&mut self) {
-        match inventory_after_mode(self.screen, self.creative, self.spectator()) {
+        match inventory_after_mode(self.screen, self.creative) {
             Screen::Creative => {
                 if let Some(c) = self.carried.take() {
                     let _ = self.add_stack_to_inventory(c);
                 }
-                self.screen = Screen::Creative;
+                self.activate_screen(Screen::Creative);
+                self.release_mappings_on_screen_open();
                 self.refresh_creative_tabs();
                 self.creative_screen.reopen();
                 self.refresh_saved_hotbars();
             }
-            next if next != self.screen => self.screen = next,
+            next if next != self.screen => {
+                self.activate_screen(next);
+                if next != Screen::Playing {
+                    self.release_mappings_on_screen_open();
+                }
+            }
             _ => {}
         }
     }
@@ -130,7 +88,7 @@ impl Game<'_> {
         if mode == GameMode::Spectator {
             self.mining = None;
             self.stop_active_item_use();
-            self.left = false;
+            self.set_mapping_held("key.attack", false);
             self.dismount_for_spectator();
             if let Some(p) = self.player.as_mut() {
                 p.flying = true;
@@ -297,7 +255,12 @@ impl Game<'_> {
         if self.spectator() {
             return true;
         }
-        !self.may_build() && !self.adventure_predicate("minecraft:can_break", pos)
+        !self.may_build() && !self.can_break_in_adventure(pos)
+    }
+    /// `ItemStack.canBreakBlockInAdventureMode`: an adventure player may break,
+    /// or prime TNT at, only a block their held stack's `can_break` matches.
+    pub(super) fn can_break_in_adventure(&self, pos: [i32; 3]) -> bool {
+        self.adventure_predicate("minecraft:can_break", pos)
     }
     /// `ItemStack.useOn` in adventure mode: the used item's `can_place_on`
     /// matches the clicked block (`Player.mayUseItemAt`).
@@ -320,6 +283,20 @@ impl Game<'_> {
                 "minecraft:can_place_on",
                 relative(pos, face.opposite()),
             )
+    }
+    /// `ItemStack.canPlaceOnBlockInAdventureMode` of the stack a use names.
+    pub(super) fn stack_can_place_on_in_adventure(
+        &self,
+        stack: &ItemStack,
+        clicked: [i32; 3],
+    ) -> bool {
+        self.stack_adventure_predicate(stack, "minecraft:can_place_on", clicked)
+    }
+    /// `ItemStack.useOn`'s gate before any item's own `useOn`: a player who
+    /// may build, or an adventure player whose held item's `can_place_on`
+    /// matches the clicked block.
+    pub(super) fn may_use_on(&self, clicked: [i32; 3]) -> bool {
+        self.may_build() || self.can_place_on_in_adventure(clicked)
     }
     /// `ServerPlayer.setGameMode(SPECTATOR)`: `stopRiding`.
     fn dismount_for_spectator(&mut self) {
@@ -345,6 +322,10 @@ fn relative(pos: [i32; 3], face: sunrise_core::geometry::Direction) -> [i32; 3] 
         pos[2].wrapping_add(dz),
     ]
 }
+
+#[cfg(test)]
+#[path = "tests/adventure_gate_tests.rs"]
+mod adventure_gate_tests;
 
 #[cfg(test)]
 mod tests {
@@ -410,13 +391,11 @@ mod tests {
     /// screen is left where it is.
     #[test]
     fn a_survival_inventory_becomes_the_creative_one() {
-        assert!(inventory_after_mode(Screen::Inventory, true, false) == Screen::Creative);
-        let stays = inventory_after_mode(Screen::Inventory, false, false);
+        assert!(inventory_after_mode(Screen::Inventory, true) == Screen::Creative);
+        let stays = inventory_after_mode(Screen::Inventory, false);
         assert!(stays == Screen::Inventory, "survival keeps its inventory");
-        // A spectator's inventory is closed, which is what Sunrise did for
-        // both before; vanilla has no spectator branch and leaves it open.
-        let closed = inventory_after_mode(Screen::Inventory, false, true);
-        assert!(closed == Screen::Playing);
+        // Vanilla's only branch is `hasInfiniteMaterials`: a spectator's open
+        // inventory stays open.
         for screen in [
             Screen::Playing,
             Screen::Creative,
@@ -424,7 +403,7 @@ mod tests {
             Screen::Stats,
             Screen::Advancements,
         ] {
-            assert!(inventory_after_mode(screen, true, false) == screen);
+            assert!(inventory_after_mode(screen, true) == screen);
         }
     }
 

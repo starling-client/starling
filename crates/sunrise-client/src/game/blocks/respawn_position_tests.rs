@@ -2,12 +2,12 @@
 //! (`respawn_position`).
 use super::respawn_anchor::RespawnConfig;
 use crate::game::{Dim, native_entity_refs::tests::with_game};
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::geometry::Vec3;
-use std::sync::Arc;
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_block_part_moves_or_refuses_the_respawn_spot() {
     // The fixture's parts: glass puts the player two blocks above it, and a red bed refuses.
     mod_platform::__private::part_tests::respawn_position_game_thread();

@@ -8,9 +8,10 @@ pub trait Hooks {
     /// The display/index load boundary returns typed errors; screen integration
     /// is separate. This declaration does not register a settings book.
     #[hook(
+        dispatch = "flat",
         side = "both",
         contract = "listen",
         neoforge = "none (RegisterRecipeBookSearchCategoriesEvent registers search groups only, not a recipe type's categories)"
     )]
-    fn recipe_book_categories();
+    fn recipe_book_categories(categories: &mut Vec<RecipeBookCategory>);
 }

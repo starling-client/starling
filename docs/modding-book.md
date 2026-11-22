@@ -1,6 +1,6 @@
 # Writing the modding book
 
-The modding book (`docs/modding`, published at <https://arismoko.github.io/sunrise/>) is the manual for mod
+The modding book (`docs/modding`, published at <https://playsunrise.net/docs/modding>: `src/<path>.md` is served at `/docs/modding/<path>`, and `introduction.md` at `/docs/modding` itself) is the manual for mod
 authors: it describes what the game does on main, nothing else. Designs, proposals, plans, trackers and coverage
 ledgers live in [`docs/design/`](design/) (mod API designs in [`docs/design/mod-api/`](design/mod-api/)), and
 notes for people working on Sunrise itself in [`docs/mod-api/`](mod-api/). The book build refuses a page whose
@@ -27,7 +27,7 @@ The book follows [Diátaxis](https://diataxis.fr): a page is one of four kinds, 
   handed to `dispatch_<name>(host, call)`. The generator refuses a flat target over the limit, and a target never carries
   `#[allow(clippy::too_many_arguments)]`. The hooks that were already over the limit are listed in
   `FLAT_TARGETS_OVER_THE_LIMIT` in the same file; that list only shrinks (convert a hook, delete its line) and a new hook
-  is never added to it. The carrier is host-internal plain data, never on wasm, and no modder sees it.
+  is never added to it. The carrier is host-internal plain data, and no modder sees it.
 - **Hook notes:** keep longer prose in a `#[notes = r#"..."#]` attribute on its hook or helper declaration,
   heading included. General catalog prose lives in `hooks/notes.rs`. `mdbook build docs/modding` renders
   the Hook notes chapter from those attributes without writing a Markdown source page. To preview just
@@ -47,6 +47,7 @@ The book follows [Diátaxis](https://diataxis.fr): a page is one of four kinds, 
 - **Images:** SVG under `docs/modding/src/images/`, with alt text that says what the picture says. Text sits on its
   own filled box so a figure reads on the light and the dark themes alike.
 - `src/llms.txt` is the index for agents; keep it in step with `SUMMARY.md`.
+- **Removing or renaming a page:** add its old address (path without `.md` or a numeric prefix) and the page that replaces it to `docs/modding/redirects.json`, or CI fails.
 
 Build the book with `mdbook build docs/modding` and the reference with `cargo doc -p sunrise-mod-api --no-deps`.
 
@@ -78,20 +79,5 @@ A reviewer runs your change in game at your head only when a test can't cover on
 - when or in what order something happens compared with vanilla, such as a hook's firing point.
 
 If your PR changes or removes something mods already use, the reviewer also runs
-[sunrise-machine-sample](https://github.com/arismoko/horizon-machine-sample) against it. A new item's `///` doc is its
+[sunrise-machine-sample](https://github.com/sunrise-org/sunrise-machine-sample) against it. A new item's `///` doc is its
 reference.
-
-## A catalog point and the wasm fixture
-
-A new or changed catalog point is proven by the wasm fixture: real wasm mods (`crates/sunrise-mod-wasm/tests/fixture`,
-`library-fixture` and `groups`) built with `cargo sunrise-mod build --wasm` and loaded by the real loader. The
-`wasm-mods` CI job does all of it on pushes to main and on manual dispatch; it does not run on pull requests. Main
-pushes coalesce: a started run finishes and only the newest waiting push runs next, so the newest finished main run
-proves every commit before it. A red is attributed by reading the error, with a manual dispatch on a suspect commit
-(through a branch pointing at it) when needed. A maintainer dispatches it on a PR branch that changes what it builds. That job is the answer; you don't
-need a local build.
-
-To run it yourself, on Linux or Windows, follow the steps of `.github/workflows/wasm-mods.yml` from the repository
-root; the tool installs its pinned toolchain through rustup. One wasm compile of `sunrise-mod-points` takes about
-10 GiB of memory, so set `CARGO_BUILD_JOBS=1` on a 16 GiB machine. To check one change, build only the member that
-uses the point and run its test. The build rewrites files in the fixture folders; don't commit them.

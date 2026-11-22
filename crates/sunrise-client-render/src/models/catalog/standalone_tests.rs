@@ -1,7 +1,7 @@
 //! CPU bake proofs: literal positions/UVs, dependency atomicity and fresh resource loads.
 use super::*;
-use crate::models::StandaloneFormRegistration;
-use mod_api::StandaloneModelForm;
+use crate::models::{StandaloneModels, freeze_standalone, with_test_registrations};
+use mod_api::StandaloneModelsEvent;
 
 struct Fixture(tempfile::TempDir);
 impl Fixture {
@@ -39,27 +39,23 @@ impl Fixture {
             .write_image_data(&pixels)
             .unwrap();
     }
-    fn bake(&self, forms: &[StandaloneFormRegistration]) -> StateModels {
+    fn bake(&self, standalone: &StandaloneModels) -> StateModels {
         let source = crate::resource_source::ResourceSource::directory(self.0.path().into());
         let parsed = crate::model_library::ParsedModels::load(&source);
+        let mut sprites = Sprites::new(source.clone());
         let mut catalog = StateModels::default();
-        catalog.bake_standalone_forms(&source, &mut Sprites::new(source.clone()), &parsed, forms);
+        catalog
+            .bake_standalone(&source, &mut sprites, &parsed, &standalone.names)
+            .unwrap();
+        catalog.bake_standalone_bakers(&source, &mut sprites, &parsed, &standalone.bakers);
         catalog
     }
 }
-fn registered(form: StandaloneModelForm) -> StandaloneFormRegistration {
-    StandaloneFormRegistration {
-        owner: "registering_mod",
-        form,
-    }
-}
-fn rotated(id: &str, turns: [u8; 3], uvlock: bool) -> StandaloneFormRegistration {
-    registered(StandaloneModelForm::Rotated {
-        id: id.into(),
-        model: "source:arrow".into(),
-        turns,
-        uvlock,
-    })
+fn rotated(event: &mut StandaloneModelsEvent<'_>, id: &str, turns: [u8; 3], uvlock: bool) {
+    let arrow = "source:arrow";
+    event.register(id, [arrow], move |bake| {
+        bake.append_dependency(arrow, turns, uvlock)
+    });
 }
 fn close<const N: usize>(actual: [[f32; N]; 4], expected: [[f32; N]; 4]) {
     for (actual, expected) in actual
@@ -88,13 +84,16 @@ fn standalone_rotated_arrow_has_literal_geometry_and_world_locked_uvs() {
     fixture.north_arrow_texture();
     // A north-pointing arrow on the top and an asymmetric UV rectangle on the north wall.
     fixture.write("arrow", r##"{"textures":{"arrow":"source:north_arrow"},"elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#arrow","uv":[2,4,10,12]},"up":{"texture":"#arrow","uv":[0,0,16,16]}}}]}"##);
-    let models = fixture.bake(&[
-        rotated("result:east", [0, 1, 0], false),
-        rotated("result:locked", [0, 1, 0], true),
-        rotated("result:x", [1, 0, 0], false),
-        rotated("result:z", [0, 0, 1], false),
-        rotated("result:wrapped", [0, 5, 0], false),
-    ]);
+    let models = with_test_registrations(
+        |event| {
+            rotated(event, "result:east", [0, 1, 0], false);
+            rotated(event, "result:locked", [0, 1, 0], true);
+            rotated(event, "result:x", [1, 0, 0], false);
+            rotated(event, "result:z", [0, 0, 1], false);
+            rotated(event, "result:wrapped", [0, 5, 0], false);
+        },
+        |staged| fixture.bake(&freeze_standalone(staged)),
+    );
     let east = models.standalone("result:east").unwrap();
     let locked = models.standalone("result:locked").unwrap();
     let east_positions = [[1., 1., 1.], [1., 0., 1.], [1., 0., 0.], [1., 1., 0.]];
@@ -151,11 +150,17 @@ fn cube(from: [u8; 3], to: [u8; 3], texture: &str) -> String {
     }}]})
     .to_string()
 }
-fn combined(parts: &[&str]) -> StandaloneFormRegistration {
-    registered(StandaloneModelForm::Combined {
-        id: "different_namespace:assembly".into(),
-        parts: parts.iter().map(|part| (*part).into()).collect(),
-    })
+fn combined(event: &mut StandaloneModelsEvent<'_>, parts: &'static [&'static str]) {
+    event.register(
+        "different_namespace:assembly",
+        parts.iter().copied(),
+        move |bake| {
+            for part in parts {
+                bake.append_dependency(part, [0; 3], false)?;
+            }
+            Ok(())
+        },
+    );
 }
 
 #[test]
@@ -163,8 +168,15 @@ fn standalone_combined_keeps_both_cubes_and_rebakes_changed_dependencies() {
     let fixture = Fixture::new();
     fixture.write("base", &cube([0, 0, 0], [8, 8, 8], "source:base"));
     fixture.write("overlay", &cube([8, 8, 8], [16, 16, 16], "source:overlay"));
-    let forms = [combined(&["source:base", "source:overlay"])];
-    let first = fixture.bake(&forms);
+    let (first, second) = with_test_registrations(
+        |event| combined(event, &["source:base", "source:overlay"]),
+        |staged| {
+            let standalone = freeze_standalone(staged);
+            let first = fixture.bake(&standalone);
+            fixture.write("overlay", &cube([12, 0, 0], [16, 4, 4], "source:changed"));
+            (first, fixture.bake(&standalone))
+        },
+    );
     let model = first.standalone("different_namespace:assembly").unwrap();
     assert_eq!(model.faces.len(), 12);
     close(
@@ -202,8 +214,6 @@ fn standalone_combined_keeps_both_cubes_and_rebakes_changed_dependencies() {
     );
     assert!(first.standalone("source:base").is_none());
     assert!(first.standalone("source:overlay").is_none());
-    fixture.write("overlay", &cube([12, 0, 0], [16, 4, 4], "source:changed"));
-    let second = fixture.bake(&forms);
     let model = second.standalone("different_namespace:assembly").unwrap();
     assert_eq!(model.faces.len(), 12);
     let overlay = model.faces[6..]
@@ -223,15 +233,41 @@ fn standalone_combined_keeps_both_cubes_and_rebakes_changed_dependencies() {
 }
 
 #[test]
-fn standalone_missing_dependency_drops_entire_form_and_logs_registering_mod() {
+fn standalone_file_and_baker_keep_a_child_of_a_rejected_model() {
+    let fixture = Fixture::new();
+    fixture.write("rejected", r#"{"loader":"source:unregistered"}"#);
+    fixture.write(
+        "child",
+        r##"{"parent":"source:rejected","textures":{"side":"source:child"},"elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"up":{"texture":"#side"}}}]}"##,
+    );
+    let models = with_test_registrations(
+        |event| {
+            event.register_model("source:child");
+            event.register("result:child", ["source:child"], |bake| {
+                bake.append_dependency("source:child", [0; 3], false)
+            });
+        },
+        |staged| fixture.bake(&freeze_standalone(staged)),
+    );
+    for id in ["source:child", "result:child"] {
+        let model = models.standalone(id).unwrap();
+        assert_eq!(model.faces.len(), 1);
+        assert_eq!(face(model, Direction::Up).material.sprite, "source:child");
+    }
+}
+
+#[test]
+fn standalone_missing_dependency_drops_entire_model_and_logs_registering_mod() {
     let fixture = Fixture::new();
     fixture.write("base", &cube([0, 0, 0], [8, 8, 8], "source:base"));
-    fixture.write("orphan", r#"{"parent":"source:missing_parent"}"#);
     let (models, logs) = crate::test_log::capture(|| {
-        fixture.bake(&[
-            combined(&["source:base", "source:orphan"]),
-            rotated("third_namespace:missing_rotated", [0, 1, 0], true),
-        ])
+        with_test_registrations(
+            |event| {
+                combined(event, &["source:base", "source:missing"]);
+                rotated(event, "third_namespace:missing_rotated", [0, 1, 0], true);
+            },
+            |staged| fixture.bake(&freeze_standalone(staged)),
+        )
     });
     assert!(models.standalone("different_namespace:assembly").is_none());
     assert!(
@@ -243,17 +279,154 @@ fn standalone_missing_dependency_drops_entire_form_and_logs_registering_mod() {
         models.baked.is_empty(),
         "no partially baked dependency is published"
     );
-    {
-        for id in [
-            "different_namespace:assembly",
-            "third_namespace:missing_rotated",
-        ] {
-            assert!(
-                logs.iter()
-                    .any(|line| line.contains("mod registering_mod standalone form")
-                        && line.contains(id)),
-                "{logs:?}"
-            );
-        }
+    for id in [
+        "different_namespace:assembly",
+        "third_namespace:missing_rotated",
+    ] {
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("mod registering_mod standalone model")
+                    && line.contains(id)),
+            "{logs:?}"
+        );
     }
+}
+
+#[test]
+fn standalone_failed_append_does_not_latch_and_propagated_error_discards_only_its_assembly() {
+    let fixture = Fixture::new();
+    fixture.write("base", &cube([0, 0, 0], [8, 8, 8], "source:base"));
+    fixture.write("other", &cube([8, 8, 8], [16, 16, 16], "source:other"));
+    let (models, logs) = crate::test_log::capture(|| {
+        with_test_registrations(
+            |event| {
+                event.register("result:handled", ["source:base"], |bake| {
+                    bake.append_dependency("source:base", [0; 3], false)?;
+                    let err = bake.append_dependency("source:other", [0; 3], false);
+                    assert_eq!(
+                        err,
+                        Err(StandaloneModelBakeError::UndeclaredDependency(
+                            "source:other".into()
+                        ))
+                    );
+                    // A failed append leaves the assembly intact and does not poison later appends.
+                    bake.append_dependency("source:base", [0, 1, 0], false)?;
+                    Ok(())
+                });
+                event.register("result:propagated", ["source:base"], |bake| {
+                    bake.append_dependency("source:base", [0; 3], false)?;
+                    bake.append_dependency("source:other", [0; 3], false)
+                });
+                event.register("result:valid", ["source:other"], |bake| {
+                    bake.append_dependency("source:other", [0; 3], false)
+                });
+            },
+            |staged| fixture.bake(&freeze_standalone(staged)),
+        )
+    });
+    let handled = models.standalone("result:handled").unwrap();
+    assert_eq!(handled.faces.len(), 12);
+    assert!(
+        handled
+            .faces
+            .iter()
+            .all(|face| face.quad.material.sprite == "source:base")
+    );
+    assert!(models.standalone_slot("result:propagated").is_none());
+    let valid = models.standalone("result:valid").unwrap();
+    assert_eq!(valid.faces.len(), 6);
+    assert_eq!(
+        models.model_count(),
+        2,
+        "the failed baker must not consume a slot"
+    );
+    assert!(
+        logs.iter().any(|line| line
+            .contains("mod registering_mod standalone model result:propagated")
+            && line.contains("undeclared dependency source:other")),
+        "{logs:?}"
+    );
+    assert!(
+        !logs.iter().any(|line| line.contains("result:handled")),
+        "{logs:?}"
+    );
+}
+
+#[test]
+fn standalone_non_panic_failure_retries_on_next_reload() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let fixture = Fixture::new();
+    fixture.write("base", &cube([0, 0, 0], [8, 8, 8], "source:base"));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let calls = attempts.clone();
+    let (first, second) = with_test_registrations(
+        move |event| {
+            let calls = calls.clone();
+            event.register("result:recoverable", ["source:base"], move |bake| {
+                if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                    return Err(StandaloneModelBakeError::Rejected("not ready".into()));
+                }
+                bake.append_dependency("source:base", [0; 3], false)
+            });
+            event.register("result:late_file", ["source:late"], |bake| {
+                bake.append_dependency("source:late", [0; 3], false)
+            });
+        },
+        |staged| {
+            let standalone = freeze_standalone(staged);
+            let first = fixture.bake(&standalone);
+            fixture.write("late", &cube([0, 0, 0], [16, 16, 16], "source:late"));
+            let second = fixture.bake(&standalone);
+            (first, second)
+        },
+    );
+    assert!(first.standalone("result:recoverable").is_none());
+    assert!(first.standalone("result:late_file").is_none());
+    assert_eq!(
+        second.standalone("result:recoverable").unwrap().faces.len(),
+        6
+    );
+    assert_eq!(
+        second.standalone("result:late_file").unwrap().faces.len(),
+        6
+    );
+    assert_eq!(attempts.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn standalone_panicking_baker_is_not_retried_and_later_baker_can_publish() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let fixture = Fixture::new();
+    fixture.write("base", &cube([0, 0, 0], [8, 8, 8], "source:base"));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let panics = attempts.clone();
+    with_test_registrations(
+        move |event| {
+            let panics = panics.clone();
+            event.register("result:slot", std::iter::empty::<&str>(), move |_| {
+                panics.fetch_add(1, Ordering::Relaxed);
+                panic!("test baker panic");
+            });
+            event.register("result:slot", ["source:base"], |bake| {
+                bake.append_dependency("source:base", [0; 3], false)
+            });
+        },
+        |staged| {
+            let standalone = freeze_standalone(staged);
+            for _ in 0..2 {
+                let models = fixture.bake(&standalone);
+                assert_eq!(models.standalone("result:slot").unwrap().faces.len(), 6);
+                assert_eq!(models.model_count(), 1);
+            }
+        },
+    );
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
 }

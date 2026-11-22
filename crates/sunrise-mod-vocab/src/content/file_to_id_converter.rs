@@ -2,9 +2,9 @@
 use crate::Identifier;
 
 /// An invalid directory or extension passed to [`FileToIdConverter`].
+// no wire: reports invalid converter arguments during local construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum FileToIdConverterError {
     /// Directory.
     Directory,
@@ -23,27 +23,14 @@ impl std::error::Error for FileToIdConverterError {}
 
 /// Maps `data/<namespace>/<directory>/<path><extension>` to `namespace:path`,
 /// preserving subdirectories. Any namespace may add entries for a listener.
-/// The same converter can be used for client assets.
+/// Construct it with [`Self::new`] or [`Self::json`] when registering a
+/// server data or client asset reload listener.
 // exhaustive: its fields are private, so mods cannot build or destructure it
-// no wire: transfers directory/extension only, reconstructing cached prefix through new and validating resource-path syntax.
+// no wire: selects resource files in the local reload manager.
 pub struct FileToIdConverter {
     directory: String,
     prefix: String,
     extension: String,
-}
-/// The converter as its directory and extension, the form it crosses a wasm mod's boundary in.
-impl From<&FileToIdConverter> for (String, String) {
-    fn from(converter: &FileToIdConverter) -> Self {
-        (converter.directory.clone(), converter.extension.clone())
-    }
-}
-/// A converter from its directory and extension, checked as [`FileToIdConverter::new`] checks
-/// them.
-impl TryFrom<(String, String)> for FileToIdConverter {
-    type Error = FileToIdConverterError;
-    fn try_from((directory, extension): (String, String)) -> Result<Self, Self::Error> {
-        Self::new(&directory, &extension)
-    }
 }
 impl FileToIdConverter {
     /// A relative directory without trailing `/`, and a suffix such as `.json`.

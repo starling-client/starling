@@ -3,13 +3,18 @@
 use super::{Game, remote::Remote};
 #[cfg(test)]
 use mod_api::prelude::*;
+<<<<<<< sync-sunrise-1
 use mod_api::{
     BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, ClientTabList,
     ClientTabListEntry, PlayerRef,
 };
+=======
+use mod_api::{BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, PlayerRef};
+use std::sync::Arc;
+>>>>>>> sunrise/main
 
 impl Game<'_> {
-    fn native_session(&self) -> Option<&Remote> {
+    pub(super) fn native_session(&self) -> Option<&Remote> {
         self.native_window().then_some(())?;
         self.native_lifecycle.epoch()?;
         self.remote.as_ref().filter(|remote| remote.logged_in)
@@ -18,28 +23,22 @@ impl Game<'_> {
     /// The connected server, not a stale reconnect target. None outside a
     /// logged-in client world. External display names are not retained; memory
     /// connections have no address. Friend-invite secrets are redacted.
-    pub(super) fn native_client_server(&self) -> Option<ClientServer> {
+    pub(super) fn native_client_server(&self) -> Option<ClientServer<'_>> {
         let remote = self.native_session()?;
+        let integrated = self.integrated.as_ref();
         Some(ClientServer {
-            name: self
-                .integrated
-                .as_ref()
-                .map(|server| server.world_name.clone()),
-            address: (remote.session.address != "local")
-                .then(|| sunrise_client::net::shown_address(&remote.session.address)),
-            integrated_local: self.integrated.is_some(),
-            save_folder: self
-                .integrated
-                .as_ref()
-                .map(|server| server.save_folder.clone()),
+            name: integrated.map(|server| server.world_name.as_str()),
+            address: remote.display_address.as_deref(),
+            integrated_local: integrated.is_some(),
+            save_folder: integrated.map(|server| server.save_folder.as_str()),
         })
     }
 
-    /// The applied language code, not a pending options selection. None outside
-    /// a logged-in client world. Read is_paused for the applied pause state.
-    pub(super) fn native_client_language(&self) -> Option<String> {
+    /// A snapshot of the applied language code, not a pending options selection.
+    /// None outside a logged-in client world.
+    pub(super) fn native_client_language(&self) -> Option<Arc<str>> {
         self.native_session()?;
-        Some(sunrise_client::lang::code())
+        Some(sunrise_client::lang::code_snapshot())
     }
 
     /// `PlayerInfo.getLatency` of the local player in milliseconds, 0 before the server's first
@@ -48,6 +47,18 @@ impl Game<'_> {
         self.native_session()?;
         let latency = self.own_latency()?;
         Some(u32::try_from(latency).unwrap_or(0))
+    }
+
+    /// The player list as the Tab overlay draws it ([`tab_list`]); None outside a logged-in
+    /// client world.
+    pub(super) fn native_client_tab_list(&self) -> Option<mod_api::ClientTabList> {
+        let remote = self.native_session()?;
+        Some(tab_list(
+            &remote.listed_tab_players(),
+            &self.score.board,
+            self.tab_list.header.as_ref(),
+            self.tab_list.footer.as_ref(),
+        ))
     }
 
     /// The local player's item use (`isUsingItem`, `getUsedItemHand`, `getTicksUsingItem`,
@@ -173,10 +184,121 @@ impl Game<'_> {
     }
 }
 
+/// `PlayerTabOverlay`'s list: the overlay's own order and cap (`tab_list::sorted_players`) and
+/// names (`tab_list::name_for_display`), so the read cannot drift from what is drawn.
+fn tab_list(
+    players: &[sunrise_client::tab_list::TabPlayer],
+    board: &sunrise_client::scoreboard::Scoreboard,
+    header: Option<&sunrise_client::text::Text>,
+    footer: Option<&sunrise_client::text::Text>,
+) -> mod_api::ClientTabList {
+    use super::api_values::TryIntoApi;
+    use sunrise_client::tab_list::{name_for_display, sorted_players};
+    // A text too deep for the API reads as its plain words rather than dropping the entry.
+    let text = |text: &sunrise_client::text::Text| {
+        text.try_into_api()
+            .unwrap_or_else(|_| mod_api::Text::literal(text.plain()))
+    };
+    let entries = sorted_players(players, board)
+        .into_iter()
+        .map(|p| {
+            mod_api::ClientTabListEntry::new(
+                p.name.clone(),
+                p.uuid,
+                // `GameType.byId`: an id it lacks is survival.
+                mod_api::GameMode::from_id(p.game_mode).unwrap_or(mod_api::GameMode::Survival),
+                p.latency,
+                text(&name_for_display(p, board)),
+            )
+        })
+        .collect();
+    mod_api::ClientTabList::new(entries, header.map(text), footer.map(text))
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::super::native_entity_refs::tests::with_client_game;
     use super::*;
+
+    /// The Tab overlay's names, order, cap, header and footer, as `client_tab_list` reads them.
+    #[test]
+    fn the_tab_list_reads_as_the_overlay_draws_it() {
+        use sunrise_client::{
+            scoreboard::Scoreboard, tab_list::TabPlayer, text::Text as EngineText,
+        };
+        let mut board = Scoreboard::default();
+        let team = board.add_team("red");
+        team.prefix = serde_json::json!("[R] ");
+        team.suffix = serde_json::json!(" *");
+        board.add_to_team("Alex", "red");
+        let mut named = TabPlayer::new(1, "Steve");
+        named.display_name = Some(serde_json::json!({"text": "Captain"}));
+        named.latency = 42;
+        let teamed = TabPlayer::new(2, "Alex");
+        let mut watcher = TabPlayer::new(3, "Bob");
+        watcher.game_mode = 3;
+        let mut first = TabPlayer::new(4, "Zed");
+        first.list_order = 5;
+        let header = EngineText::literal("Welcome");
+        let list = tab_list(
+            &[watcher, named, teamed, first],
+            &board,
+            Some(&header),
+            None,
+        );
+        let names: Vec<_> = list.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Zed", "Steve", "Alex", "Bob"],
+            "list order, then spectators last"
+        );
+        fn plain(text: &mod_api::Text) -> String {
+            let own = match &text.content {
+                mod_api::text::TextContent::Literal(words) => words.as_str(),
+                _ => "",
+            };
+            text.children
+                .iter()
+                .map(plain)
+                .fold(own.to_owned(), |all, c| all + &c)
+        }
+        assert_eq!(plain(&list.entries[1].display), "Captain");
+        assert_eq!(list.entries[1].latency, 42);
+        assert_eq!(list.entries[1].uuid, 1);
+        assert_eq!(plain(&list.entries[2].display), "[R] Alex *");
+        assert_eq!(list.entries[3].game_mode, mod_api::GameMode::Spectator);
+        assert_eq!(list.entries[0].game_mode, mod_api::GameMode::Survival);
+        assert_eq!(list.header.as_ref().map(plain).as_deref(), Some("Welcome"));
+        assert_eq!(list.footer, None);
+        let crowd: Vec<_> = (0..100)
+            .map(|i| TabPlayer::new(i, format!("p{i:03}")))
+            .collect();
+        let list = tab_list(&crowd, &board, None, None);
+        assert_eq!(list.entries.len(), 80, "the overlay draws 80");
+        assert_eq!(list.entries[0].name, "p000");
+        assert_eq!(list.entries[79].name, "p079");
+        assert_eq!(list.header, None);
+        let mut overlay = sunrise_client::tab_list::TabList::default();
+        overlay.header = Some(EngineText::literal("Header"));
+        overlay.footer = Some(EngineText::literal("Footer"));
+        let set = tab_list(
+            &[],
+            &board,
+            overlay.header.as_ref(),
+            overlay.footer.as_ref(),
+        );
+        assert_eq!(set.header.as_ref().map(plain).as_deref(), Some("Header"));
+        assert_eq!(set.footer.as_ref().map(plain).as_deref(), Some("Footer"));
+        overlay.reset();
+        let cleared = tab_list(
+            &[],
+            &board,
+            overlay.header.as_ref(),
+            overlay.footer.as_ref(),
+        );
+        assert_eq!(cleared.header, None);
+        assert_eq!(cleared.footer, None);
+    }
 
     pub(in crate::game) fn logged_client(
         game: &mut Game<'_>,
@@ -190,9 +312,43 @@ pub(super) mod tests {
         server
     }
 
+    /// Drive the server's side of a memory client login through to play, so a test can
+    /// read packets from the ordinary client sender.
+    pub(in crate::game) fn finish_login(
+        game: &mut Game<'_>,
+        server: &mut sunrise_protocol::connection::Connection,
+    ) {
+        use sunrise_protocol::packets::{Empty, configuration as cfg, login};
+        server.recv().unwrap(); // Intention.
+        server.recv().unwrap(); // Hello.
+        server
+            .send(
+                &login::Clientbound::LoginFinished(login::LoginFinished {
+                    profile: login::GameProfile {
+                        uuid: 42,
+                        name: "SessionReadTest".into(),
+                        properties: vec![],
+                    },
+                    session: 1,
+                })
+                .encode(),
+            )
+            .unwrap();
+        server.recv().unwrap(); // Login acknowledged.
+        server.recv().unwrap(); // Brand.
+        server.recv().unwrap(); // Client information.
+        server
+            .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
+            .unwrap();
+        game.acknowledge_test_configuration();
+        server.recv().unwrap(); // Finish configuration.
+    }
+
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn client_session_reads_follow_connection_language_and_frame_state() {
+        use sunrise_client::lang::{self, Language};
+
         with_client_game(|game| {
             assert_eq!(game.client_session().client_server(), None);
             assert_eq!(game.client_session().client_language(), None);
@@ -206,47 +362,59 @@ pub(super) mod tests {
                 "a memory guest does not own the server"
             );
 
-            game.remote.as_mut().unwrap().session.address = "127.0.0.1:25565".into();
-            let external = game.client_session().client_server().unwrap();
-            assert_eq!(external.address.as_deref(), Some("127.0.0.1:25565"));
-            assert_eq!(
-                external.name, None,
-                "Session.name is the player, not the server"
-            );
-            assert!(
-                !external.integrated_local,
-                "loopback does not mean integrated"
-            );
-            game.remote.as_mut().unwrap().session.address = "friend:private-invite".into();
-            assert_eq!(
-                game.client_session()
-                    .client_server()
-                    .unwrap()
-                    .address
-                    .as_deref(),
-                Some("Friend's world")
-            );
+            // Exercise the same display-address calculation as Remote construction without
+            // opening an extra network connection for either address.
+            for (address, display) in [
+                ("127.0.0.1:25565", "127.0.0.1:25565"),
+                ("friend:private-invite", "Friend's world"),
+            ] {
+                let remote = game.remote.as_mut().unwrap();
+                remote.session.address = address.into();
+                remote.display_address = Remote::display_address_for(&remote.session.address);
+                let external = game.client_session().client_server().unwrap();
+                assert_eq!(external.address, Some(display));
+                assert_eq!(
+                    external.name, None,
+                    "Session.name is the player, not the server"
+                );
+                assert!(
+                    !external.integrated_local,
+                    "an address does not determine ownership"
+                );
+            }
 
             game.settings.language = "fr_fr".into();
-            sunrise_client::lang::scoped(sunrise_client::lang::Language::of("es_es", []), || {
-                assert_eq!(
-                    game.client_session().client_language().as_deref(),
-                    Some("es_es")
-                );
-                sunrise_client::lang::scoped(
-                    sunrise_client::lang::Language::of("de_de", []),
-                    || {
-                        assert_eq!(
-                            game.client_session().client_language().as_deref(),
-                            Some("de_de")
-                        );
-                    },
-                );
-                assert_eq!(
-                    game.client_session().client_language().as_deref(),
-                    Some("es_es")
-                );
-            });
+            let _publication = lang::isolate_publication(Language::of("es_es", []));
+            let outer = game.client_session().client_language().unwrap();
+            assert_eq!(outer.as_ref(), "es_es");
+            let inner = {
+                let _nested = lang::isolate_publication(Language::of("en_us", []));
+                lang::set(Language::of("de_de", []));
+                let inner = game.client_session().client_language().unwrap();
+                assert_eq!(inner.as_ref(), "de_de");
+                lang::scoped(Language::of("ja_jp", []), || {
+                    assert_eq!(
+                        game.client_session().client_language().as_deref(),
+                        Some("ja_jp")
+                    );
+                });
+                assert_eq!(lang::code(), "de_de");
+                inner
+            };
+            assert_eq!(
+                inner.as_ref(),
+                "de_de",
+                "the snapshot outlives its publication"
+            );
+            assert_eq!(
+                game.client_session().client_language().as_deref(),
+                Some("es_es")
+            );
+            assert_eq!(
+                outer.as_ref(),
+                "es_es",
+                "publication does not mutate earlier snapshots"
+            );
             game.debug_charts.frame_times.reset();
             assert_eq!(
                 game.client_session()
@@ -288,7 +456,7 @@ pub(super) mod tests {
             assert_eq!(game.client_session().client_frame_stats(), None);
             game.remote = None;
             // A reconnect target must not be mistaken for the current session.
-            game.extras_connecting("stale.example:25565", "OldPlayer", false);
+            game.connection_starts("stale.example:25565", "OldPlayer", false);
             assert_eq!(game.client_session().client_server(), None);
         });
     }
@@ -333,7 +501,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn local_player_status_tracks_mining_mood_and_refuses_other_handles() {
         with_client_game(|game| {
             let _server = logged_client(game);
@@ -347,6 +515,7 @@ pub(super) mod tests {
                     progress,
                     per_tick: 0.0,
                     ticks: 3,
+                    crack: None,
                 });
                 assert_eq!(
                     player.block_breaking(game),

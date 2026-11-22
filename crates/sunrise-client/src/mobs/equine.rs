@@ -1,7 +1,7 @@
 //! Horses, donkeys, mules and the undead horses (`AbstractHorse`): random
 //! stats, coat colours and markings, eating, rearing, taming by riding,
 //! the ridden movement and jump, offspring stats and `AbstractEquineModel`.
-use super::finalize::{Attr, set_base};
+use super::finalize::{Attr, base_value, set_base};
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species,
     anim::{Poses, State},
@@ -10,11 +10,11 @@ use super::{
         Tempt, goal_clone,
     },
 };
+use std::f32::consts::PI;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::geometry::trig::Mth;
 use sunrise_core::random::RandomSource;
 use sunrise_world::native_load_context::LoopContext;
-use std::f32::consts::PI;
 
 pub const COLORS: [&str; 7] = [
     "white",
@@ -242,9 +242,14 @@ pub fn register(m: &mut Mob) {
 /// the jump, zombie horses a smaller jump and their own speed. The health and
 /// speed are attribute bases (`setBaseValue`), so the server syncs them to
 /// the clients that draw the mount's hearts.
-pub fn finalize(m: &mut Mob) {
+pub fn finalize(m: &mut Mob, r: &mut impl RandomSource) {
     let species = m.species();
-    let r = &mut m.random;
+    // Horse.finalizeSpawn picks the coat and markings before it calls
+    // AbstractHorse.finalizeSpawn, which randomizes the attributes.
+    if species == Species::Horse {
+        m.extra.variant = r.next_int_bound(7).unwrap_or(0) as u8;
+        m.extra.variant2 = r.next_int_bound(5).unwrap_or(0) as u8;
+    }
     let health = matches!(species, Species::Horse | Species::Donkey | Species::Mule).then(|| {
         15.0 + r.next_int_bound(8).unwrap_or(0) as f32 + r.next_int_bound(9).unwrap_or(0) as f32
     });
@@ -257,8 +262,6 @@ pub fn finalize(m: &mut Mob) {
             );
             m.extra.vector[0] =
                 0.4 + r.next_double() * 0.2 + r.next_double() * 0.2 + r.next_double() * 0.2;
-            m.extra.variant = r.next_int_bound(7).unwrap_or(0) as u8;
-            m.extra.variant2 = r.next_int_bound(5).unwrap_or(0) as u8;
         }
         Species::Donkey | Species::Mule => m.extra.vector[0] = 0.5,
         Species::ZombieHorse => {
@@ -313,17 +316,17 @@ pub struct OffspringAttributes {
 }
 impl OffspringAttributes {
     pub fn draw(m: &mut Mob, partner: &Seen) -> Self {
+        // `setOffspringAttribute` reads `getAttributeBaseValue`: an effect's
+        // modifier is not inherited.
+        let (health, speed) = (
+            base_value(m, Attr::MaxHealth),
+            base_value(m, Attr::MovementSpeed),
+        );
         let r = &mut m.random;
         Self {
-            max_health: offspring(
-                f64::from(m.attrs.max_health),
-                partner.stats[0],
-                15.0,
-                30.0,
-                r,
-            ) as f32,
+            max_health: offspring(health, partner.stats[0], 15.0, 30.0, r) as f32,
             jump: offspring(m.extra.vector[0], partner.stats[1], 0.4, 1.0, r),
-            speed: offspring(m.attrs.speed, partner.stats[2], 0.1125, 0.3375, r),
+            speed: offspring(speed, partner.stats[2], 0.1125, 0.3375, r),
         }
     }
 }
@@ -672,7 +675,7 @@ pub fn is_vehicle(m: &Mob) -> bool {
 /// it splashes for the first five steps, then gallops through the water every
 /// third and swims in between.
 pub fn skeleton_horse_swim_sound(m: &mut Mob) -> &'static str {
-    if !m.on_ground {
+    if !m.ground.on_ground {
         return "entity.skeleton_horse.swim";
     }
     if !is_vehicle(m) {
@@ -695,7 +698,7 @@ pub fn swim_volume(m: &Mob, f: f32) -> f32 {
     if m.species() != Species::SkeletonHorse {
         return f;
     }
-    if m.on_ground {
+    if m.ground.on_ground {
         0.3
     } else {
         (f * 25.0).min(0.1)
@@ -843,9 +846,9 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
         return;
     }
     if super::camel::is_camel(m.species()) {
-        // Camel.tickRidden / getRiddenInput: forward stands it up; no input
-        // while sitting; the jump is a dash.
-        if r.forward > 0.0 && super::camel::sitting(m) {
+        // Camel.tickRidden / getRiddenInput: forward stands it up once a pose
+        // transition is over; no input while sitting; the jump is a dash.
+        if r.forward > 0.0 && super::camel::sitting(m) && !super::camel::in_transition(m) {
             let mut ev = Vec::new();
             super::camel::stand_up(m, &mut ev);
         }
@@ -880,7 +883,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
     // AbstractHorse.getRiddenInput: no input on the ground while rearing,
     // unless a jump let it slide.
     let standing = m.extra.counter > 0;
-    if m.on_ground && r.jump == 0.0 && standing && !m.extra.stand_sliding {
+    if m.ground.on_ground && r.jump == 0.0 && standing && !m.extra.stand_sliding {
         m.ai.xxa = 0.0;
         m.ai.zza = 0.0;
         return;
@@ -894,7 +897,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
     m.set_speed(speed);
     m.ai.xxa = r.strafe * 0.5;
     m.ai.zza = forward;
-    if m.on_ground && r.jump > 0.0 {
+    if m.ground.on_ground && r.jump > 0.0 {
         // executeRidersJump
         let impulse = m.extra.vector[0] as f32 * r.jump;
         m.velocity.y = f64::from(impulse);
@@ -903,7 +906,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
             m.velocity.x += f64::from(-0.4 * s * r.jump);
             m.velocity.z += f64::from(0.4 * c * r.jump);
         }
-        crate::motion::native_living_jump(context, m.id, &m.kind.id);
+        m.living_jumped(context);
         if let Some(rider) = m.rider.as_mut() {
             rider.jump = 0.0;
         }
@@ -1229,8 +1232,8 @@ mod tests {
     use crate::mobs::Damage;
     use crate::mobs::finalize::base_value;
     use crate::mobs::sensor_scan_tests::kind;
-    use sunrise_core::geometry::Vec3;
     use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
 
     /// Every vanilla horse armour item draws the `horse_body` texture its
     /// `equippable.asset_id` equipment names (`items.json`, `equipment/*.json`).
@@ -1305,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources"]
+    #[ignore = "daily"]
     fn tame_listener_defers_the_successful_tame() {
         use sunrise_core::random::{LegacyRandom, RandomSource};
         assert!(crate::mobs::world::with_test_world(&[], |world, _| {
@@ -1314,6 +1317,7 @@ mod tests {
                 .unwrap();
             for asks_animal_tame in [false, true] {
                 let world = crate::mobs::MobWorld {
+                    side: sunrise_client::motion::dry_side(),
                     goal_host: None,
                     asks_animal_tame,
                     ..world.clone()
@@ -1355,7 +1359,7 @@ mod tests {
     /// The existing goal reads the loaded counter; only its failed attempt
     /// modifies it, with the gameplay clamp. The random continuation is kept.
     #[test]
-    #[ignore = "needs prepared resources for the existing mob world fixture"]
+    #[ignore = "daily"]
     fn temper_preservation_reaches_the_existing_taming_consumer() {
         use sunrise_core::random::LegacyRandom;
         let ran = crate::mobs::world::with_test_world(&[], |w, types| {
@@ -1416,8 +1420,14 @@ mod tests {
                         expected.next_long(),
                         "{name}: RNG continuation"
                     );
-                    let saved =
-                        crate::entity_nbt::mob_to_nbt(&m, [93, 0, 0, 1], None, None, |_| None);
+                    let saved = crate::entity_nbt::mob_to_nbt(
+                        &m,
+                        [93, 0, 0, 1],
+                        None,
+                        None,
+                        |_| None,
+                        &Default::default(),
+                    );
                     assert_eq!(
                         saved.get("Temper"),
                         Some(&sunrise_core::nbt::Tag::Int(if value < 0 {
@@ -1487,7 +1497,7 @@ mod tests {
     fn rolled_health_and_speed_are_attribute_bases() {
         for species in [Species::Horse, Species::Donkey, Species::Mule] {
             let mut m = horse(species);
-            finalize(&mut m);
+            finalize(&mut m, &mut sunrise_core::random::LegacyRandom::new(0));
             assert!((15.0..=30.0).contains(&m.attrs.max_health));
             assert_eq!(
                 base_value(&m, Attr::MaxHealth),
@@ -1496,7 +1506,7 @@ mod tests {
             assert_eq!(m.health, m.attrs.max_health);
         }
         let mut m = horse(Species::Horse);
-        finalize(&mut m);
+        finalize(&mut m, &mut sunrise_core::random::LegacyRandom::new(0));
         assert_eq!(base_value(&m, Attr::MovementSpeed), m.attrs.speed);
     }
 
@@ -1584,10 +1594,10 @@ mod tests {
         let mut m = equine(1, Species::SkeletonHorse, "minecraft:skeleton_horse");
         // In the water it swims; every other animal's default is the generic
         // splash (Entity.getSwimSound).
-        m.on_ground = false;
+        m.ground.on_ground = false;
         assert_eq!(sound(&mut m), "entity.skeleton_horse.swim");
         // Standing on the ground with nobody on it, it splashes.
-        m.on_ground = true;
+        m.ground.on_ground = true;
         assert_eq!(sound(&mut m), "entity.skeleton_horse.step_water");
         m.extra.rider = Some(9);
         let ridden: Vec<&str> = (0..9).map(|_| sound(&mut m)).collect();
@@ -1617,14 +1627,14 @@ mod tests {
     #[test]
     fn a_skeleton_horses_splash_is_quiet_in_the_water() {
         let mut m = equine(1, Species::SkeletonHorse, "minecraft:skeleton_horse");
-        m.on_ground = true;
+        m.ground.on_ground = true;
         assert_eq!(swim_volume(&m, 0.35), 0.3);
-        m.on_ground = false;
+        m.ground.on_ground = false;
         assert_eq!(swim_volume(&m, 0.35), 0.1);
         assert_eq!(swim_volume(&m, 1.0), 0.1);
         assert!((swim_volume(&m, 0.001) - 0.025).abs() < 1.0e-6);
         let mut horse = equine(2, Species::Horse, "minecraft:horse");
-        horse.on_ground = false;
+        horse.ground.on_ground = false;
         assert_eq!(swim_volume(&horse, 0.35), 0.35);
     }
 
@@ -1632,11 +1642,12 @@ mod tests {
     /// untamed horse with a mob on its back bolts; a zombie horse with a mob
     /// rider is `isMobControlled()` and does not.
     #[test]
+    #[ignore = "daily"]
     fn a_mob_riding_an_untamed_horse_starts_the_bolt() {
         use crate::mobs::world::with_built_test_world;
         let mut horse = horse(Species::Horse);
         horse.position = Vec3::new(0.5, 1.0, 0.5);
-        horse.on_ground = true;
+        horse.ground.on_ground = true;
         horse.extra.rider = Some(9);
         let mut zombie = zombie_horse();
         zombie.extra.rider = Some(9);
@@ -1696,7 +1707,7 @@ mod tests {
     fn zombie_horse() -> Mob {
         let mut m = horse(Species::ZombieHorse);
         m.position = Vec3::new(0.5, 1.0, 0.5);
-        m.on_ground = true;
+        m.ground.on_ground = true;
         m
     }
 }
@@ -1719,7 +1730,7 @@ mod follow_mommy_tests {
         with_test_world(&[], |_, types| {
             let mob = |id: u32, name: &str, at: Vec3| {
                 let mut m = Mob::new(id, Arc::new(types.types[name].clone()), at, 0.0);
-                m.on_ground = true;
+                m.ground.on_ground = true;
                 m
             };
             let seen: Vec<_> = others
@@ -1778,6 +1789,7 @@ mod follow_mommy_tests {
     /// to the nearest bred `AbstractHorse` within 16 blocks while it is more
     /// than two blocks away.
     #[test]
+    #[ignore = "daily"]
     fn a_bred_foal_paths_to_the_nearest_bred_horse() {
         let Some(_) = target_pos((true, true, false), &[]) else {
             return;

@@ -8,6 +8,8 @@ pub trait Hooks {
     /// level: a part may read its inputs (`signal`, `has_neighbor_signal`) and
     /// schedule its tick here, as a diode does (`DiodeBlock.checkTickOnNeighbor`).
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "block",
@@ -16,5 +18,12 @@ pub trait Hooks {
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_neighbor_changed",
         neoforge = "none (vanilla Block.neighborChanged; NeoForge adds no event or extension for it); BlockEvent.NeighborNotifyEvent is the neighbour broadcast, a different point"
     )]
-    fn neighbor_changed();
+    fn neighbor_changed(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        changed: mod_api::BlockKey,
+        moved: bool,
+        #[engine] ticks: &mut Ticks,
+    );
 }

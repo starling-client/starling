@@ -109,7 +109,6 @@ impl GoalCx<'_, '_> {
         if let Some(rider) = self.entity_mob(first) {
             let tagged = self
                 .w
-                .data
                 .entity_has("minecraft:non_controlling_rider", &rider.kind.id);
             return (!vehicle.no_ai && !tagged).then(|| LivingRef::new(first));
         }

@@ -1,0 +1,3 @@
+ids = ["method:DrawContext::model_3d", "type:Gui3dSubject", "type:Gui3dView", "type:Gui3dError"]
+why = "Adds DrawContext::model_3d: an item (as a slot draws it, without decorations) or a resolved standalone model drawn in a screen in 3D at a GUI point, with a size in pixels per block and a row-major 3x4 transform the caller gives, so any rotation including roll is expressible (#3282). Orthographic, with a depth of its own, cut by push_clip, refused on a server."
+migrate = "Nothing to change: a new method with a default that answers Gui3dError::Unavailable."

@@ -1,0 +1,3 @@
+ids = ["method:GeneralTypesRegistrar::declare_general_entity", "type:GeneralEntityTypeDeclaration"]
+why = "General entity types can declare a finite, vehicle-local passenger point. It rotates with the vehicle's yaw; the default is the top center of the declared box. The registration signature and declaration's wire layout change."
+migrate = "Pass None after height for the default passenger point, or Some([x, y, z]) to set it."

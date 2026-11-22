@@ -11,6 +11,8 @@ import sys
 
 import test_command_exec_parity as runner
 
+PARITY_MANUAL = "a proof run by hand: --work-dir DIR --reference-only for the Java side, then --work-dir DIR2 --reference-dir DIR --binary BIN"  # not a harness: tools/parity.py leaves it out
+
 GROUP = "shulker external lock drop"
 
 

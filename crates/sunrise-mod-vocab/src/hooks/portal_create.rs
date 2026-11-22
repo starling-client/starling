@@ -7,9 +7,11 @@ pub trait Hooks {
     /// portal rectangle or the End platform origin. The completed blocks are
     /// already in the world.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_portal_create",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn portal_create();
+    fn portal_create(dimension: &str, pos: [i32; 3]);
 }

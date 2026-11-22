@@ -1,9 +1,8 @@
 use glam::{DVec3, Mat4, Vec4};
 use mod_api::LevelRef;
 use std::fmt;
+pub use sunrise_render_core::MAX_WORLD_VIEWS;
 
-/// The most world views ([`crate::render_slots::world_views`]) one frame draws.
-pub const MAX_WORLD_VIEWS: usize = 8;
 /// The largest side of a world view's target, in pixels.
 pub const MAX_WORLD_VIEW_SIDE: u32 = 4096;
 /// How deep views go in views ([`WorldView::with_parent`]): a view with no parent is at depth 1,

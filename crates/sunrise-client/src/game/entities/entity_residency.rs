@@ -1,5 +1,6 @@
 //! One storage-family dispatch for the server's residency journal.
 use super::{Game, commands::Target};
+use mod_api::DimensionKey;
 use sunrise_client::join_seq::{
     Joined,
     residency::{
@@ -7,7 +8,6 @@ use sunrise_client::join_seq::{
         table::{Location, SourceEntity},
     },
 };
-use mod_api::DimensionKey;
 
 /// Assign a stored zero-id entity through its residency boundary exactly once.
 macro_rules! assign_resident_id {
@@ -279,7 +279,7 @@ mod tests {
     use sunrise_core::{geometry::Vec3, position::BlockPos};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn resident_slot_access_routes_live_parked_taken_and_disjoint() {
         use crate::game::Dim;
         use std::num::NonZeroU32;
@@ -358,14 +358,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn resident_slot_access_cushion_reentry_and_panic_preserve_actual_lifetime() {
-        use sunrise_mod_runtime::attachments::{
-            Attachments, HasAttachmentLifetime, index::AttachmentIndex,
-        };
         use std::{
             num::NonZeroU32,
             sync::{Arc, Mutex},
+        };
+        use sunrise_mod_runtime::attachments::{
+            Attachments, HasAttachmentLifetime, index::AttachmentIndex,
         };
         with_game(|game| {
             game.reset_entity_residency();
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn game_residency_tracks_lift_spawn_restore_and_epoch_rebind() {
         with_game(|game| {
             game.reset_entity_residency();
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn initial_non_overworld_owner_is_bound_before_level_notification() {
         use crate::game::Dim;
         with_game(|game| {
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn parked_owners_rebind_and_route_without_trial_dimension_swaps() {
         use crate::game::Dim;
         with_game(|game| {
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn logical_removal_is_not_lifted_absence_or_physical_retirement() {
         with_game(|game| {
             game.reset_entity_residency();
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn late_tracking_admission_publishes_the_previously_zero_id() {
         with_game(|game| {
             game.reset_entity_residency();

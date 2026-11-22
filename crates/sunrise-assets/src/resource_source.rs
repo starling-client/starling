@@ -1,7 +1,6 @@
 //! Open resource layers, shared by asset packs and passive mod data.
 //! Archive layers retain one reader and never materialize their entries.
 //! Diverges from upstream: asset and passive jar-data layers share this source.
-#[cfg(not(target_arch = "wasm32"))]
 use crate::zip::Zip;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -55,15 +54,27 @@ fn copy_resource_bytes(
     out.write_all(bytes)
 }
 
+type ReadFixed = dyn Fn(&str, Option<u64>) -> io::Result<Vec<u8>> + Send + Sync;
+type FingerprintFixed = dyn Fn(&str) -> Option<u64> + Send + Sync;
+
 enum Storage {
     Directory(PathBuf),
-    #[cfg(not(target_arch = "wasm32"))]
     Archive(Zip),
     Prefix {
         source: ResourceSource,
         prefix: String,
     },
-    Index(BTreeMap<String, Resource>),
+    Fixed {
+        names: Arc<[String]>,
+        read: Box<ReadFixed>,
+        fingerprint: Box<FingerprintFixed>,
+    },
+    /// Winning files and any retained file or named source stacks, lowest layer first.
+    Index(
+        BTreeMap<String, Resource>,
+        BTreeMap<String, Vec<Resource>>,
+        Arc<[(String, ResourceSource)]>,
+    ),
 }
 
 /// A winning resource keeps its source alive; merged resources keep only their
@@ -97,7 +108,9 @@ impl Resource {
 /// Clones share the open archive; construct a new source for a resource reload.
 /// Equality and hashing identify that generation, rather than comparing file contents.
 #[derive(Clone)]
-pub struct ResourceSource(Arc<Storage>);
+pub struct ResourceSource(Arc<Storage>, Arc<Memo>);
+/// What one resource generation computed for its readers, by the type of the value.
+type Memo = std::sync::Mutex<HashMap<std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>>>;
 impl PartialEq for ResourceSource {
     fn eq(&self, other: &Self) -> bool {
         self.same_generation(other)
@@ -113,10 +126,10 @@ impl std::fmt::Debug for ResourceSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match self.0.as_ref() {
             Storage::Directory(_) => "Directory",
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(_) => "Archive",
             Storage::Prefix { .. } => "Prefix",
-            Storage::Index(_) => "Index",
+            Storage::Index(..) => "Index",
+            Storage::Fixed { .. } => "Fixed",
         };
         f.debug_tuple("ResourceSource").field(&kind).finish()
     }
@@ -133,7 +146,7 @@ struct Root {
     source: ResourceSource,
     data: ResourceSource,
     data_changes: ResourceSource,
-    runtime_block_sprites: Vec<String>,
+    mod_layers: Arc<[ResourceSource]>,
 }
 impl ResourceRoot {
     pub fn directory(path: PathBuf) -> Self {
@@ -147,45 +160,33 @@ impl ResourceRoot {
             source,
             data,
             data_changes: ResourceSource::default(),
-            runtime_block_sprites: Vec::new(),
+            mod_layers: Arc::from([]),
         }))
     }
     /// Passive server data is independent of the client's selected asset packs.
-    pub fn with_data(self, data: ResourceSource, data_changes: ResourceSource) -> Self {
-        Self(Arc::new(Root {
-            prepared: self.0.prepared.clone(),
-            cache: self.0.cache.clone(),
-            source: self.0.source.clone(),
-            data,
-            data_changes,
-            runtime_block_sprites: self.0.runtime_block_sprites.clone(),
-        }))
+    pub fn with_data(mut self, data: ResourceSource, data_changes: ResourceSource) -> Self {
+        let root = Arc::make_mut(&mut self.0);
+        root.data = data;
+        root.data_changes = data_changes;
+        self
+    }
+    /// Original mod packs in priority order, before flattening their assets or data.
+    pub fn with_mod_layers(mut self, layers: Arc<[ResourceSource]>) -> Self {
+        Arc::make_mut(&mut self.0).mod_layers = layers;
+        self
+    }
+    pub fn mod_layers(&self) -> &Arc<[ResourceSource]> {
+        &self.0.mod_layers
     }
     /// Add generated client textures as the highest asset layer, keeping the
     /// prepared tables and passive server data on their original sources.
-    pub fn with_runtime_textures(
-        mut self,
-        textures: BTreeMap<String, Resource>,
-        block_sprites: Vec<String>,
-    ) -> Self {
+    pub fn with_runtime_textures(mut self, textures: BTreeMap<String, Resource>) -> Self {
         if textures.is_empty() {
             return self;
         }
         let root = Arc::make_mut(&mut self.0);
-        let source = &root.source;
-        let mut files: BTreeMap<_, _> = source
-            .list("")
-            .into_iter()
-            .map(|name| (name.clone(), Resource::file(source.clone(), name)))
-            .collect();
-        files.extend(textures);
-        root.source = ResourceSource::indexed(files);
-        root.runtime_block_sprites = block_sprites;
+        root.source = root.source.extended(textures);
         self
-    }
-    /// Runtime block sprites to stitch even when no baked model names them.
-    pub fn runtime_block_sprites(&self) -> &[String] {
-        &self.0.runtime_block_sprites
     }
     pub fn data_changes(&self) -> &ResourceSource {
         &self.0.data_changes
@@ -307,31 +308,119 @@ impl ResourceSource {
                 .collect()
         }
         match self.0.as_ref() {
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => {
                 collect(archive.names().filter(|name| stays_inside(name)), top)
             }
-            Storage::Index(files) => collect(files.keys().map(String::as_str), top),
+            Storage::Index(files, ..) => collect(files.keys().map(String::as_str), top),
             _ => collect(
                 self.list(&format!("{top}/")).iter().map(String::as_str),
                 top,
             ),
         }
     }
+    fn from(storage: Storage) -> Self {
+        Self(Arc::new(storage), Arc::default())
+    }
+    /// A fixed, sorted list with lazy reads from an already opened source.
+    /// The reader receives a listed name and either no limit or a maximum prefix length.
+    /// The fingerprint identifies that file's current version for derived resource caches.
+    pub fn fixed(
+        names: Arc<[String]>,
+        read: impl Fn(&str, Option<u64>) -> io::Result<Vec<u8>> + Send + Sync + 'static,
+        fingerprint: impl Fn(&str) -> Option<u64> + Send + Sync + 'static,
+    ) -> Self {
+        Self::from(Storage::Fixed {
+            names,
+            read: Box::new(read),
+            fingerprint: Box::new(fingerprint),
+        })
+    }
+
     pub fn indexed(files: BTreeMap<String, Resource>) -> Self {
-        Self(Arc::new(Storage::Index(files)))
+        Self::from(Storage::Index(files, BTreeMap::new(), Arc::from([])))
+    }
+    /// An index that also keeps, for each name in `layers`, the file of every layer that
+    /// provides it, lowest first: what [`ResourceSource::stack`] gives.
+    pub fn indexed_with_layers(
+        files: BTreeMap<String, Resource>,
+        layers: BTreeMap<String, Vec<Resource>>,
+    ) -> Self {
+        Self::from(Storage::Index(files, layers, Arc::from([])))
+    }
+    /// Retain the named sources below the flattened index, lowest layer first.
+    pub fn indexed_with_sources(
+        files: BTreeMap<String, Resource>,
+        sources: Arc<[(String, ResourceSource)]>,
+    ) -> Self {
+        Self::from(Storage::Index(files, BTreeMap::new(), sources))
+    }
+    /// The original named sources, when this index represents a composed pack.
+    pub fn named_sources(&self) -> &[(String, ResourceSource)] {
+        match self.0.as_ref() {
+            Storage::Index(.., sources) => sources,
+            _ => &[],
+        }
+    }
+    /// Every layer's file of `name`, lowest first, the winning one last: where the source was
+    /// made from layers ([`ResourceSource::indexed_with_layers`]) their files, else the one
+    /// file. Empty where there is none.
+    pub fn stack(&self, name: &str) -> Vec<Resource> {
+        match self.0.as_ref() {
+            Storage::Index(files, layers, _) => match layers.get(name) {
+                Some(layers) => layers.clone(),
+                None => files.get(name).cloned().into_iter().collect(),
+            },
+            _ if self.contains(name) => vec![Resource::file(self.clone(), name.to_owned())],
+            _ => Vec::new(),
+        }
+    }
+    /// The layers of the names an index keeps them for ([`ResourceSource::indexed_with_layers`]).
+    pub fn layers(&self) -> Option<&BTreeMap<String, Vec<Resource>>> {
+        match self.0.as_ref() {
+            Storage::Index(_, layers, _) => Some(layers),
+            _ => None,
+        }
+    }
+    /// A source of the same files, `files` added over them, in the same generation: it keeps
+    /// the layers and shares what [`ResourceSource::cached`] holds.
+    pub fn extended(&self, files: BTreeMap<String, Resource>) -> Self {
+        let mut index: BTreeMap<_, _> = self
+            .list("")
+            .into_iter()
+            .map(|name| (name.clone(), Resource::file(self.clone(), name)))
+            .collect();
+        index.extend(files);
+        let layers = self.layers().cloned().unwrap_or_default();
+        let sources = match self.0.as_ref() {
+            Storage::Index(.., sources) => sources.clone(),
+            _ => Arc::from([]),
+        };
+        Self(
+            Arc::new(Storage::Index(index, layers, sources)),
+            self.1.clone(),
+        )
+    }
+    /// A value computed once for this generation and shared by every clone of the source and
+    /// every source `extended` from it: the first caller makes it, the rest wait for it and take
+    /// the same one. `make` must not call `cached` on this source.
+    pub fn cached<T: Send + Sync + 'static>(&self, make: impl FnOnce() -> T) -> Arc<T> {
+        let mut memo = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        let value = memo
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| Arc::new(make()));
+        Arc::clone(value)
+            .downcast()
+            .expect("a value is kept under its own type")
     }
     pub fn directory(root: PathBuf) -> Self {
-        Self(Arc::new(Storage::Directory(root)))
+        Self::from(Storage::Directory(root))
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn archive(path: &Path) -> io::Result<Self> {
         Ok(Self::opened_archive(Zip::open(path)?))
     }
     /// Share an archive that was already opened while discovering its metadata.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn opened_archive(archive: Zip) -> Self {
-        Self(Arc::new(Storage::Archive(archive)))
+        Self::from(Storage::Archive(archive))
     }
     /// Select an overlay root. Folder paths are trusted repository inputs;
     /// archive prefixes must remain inside that archive.
@@ -348,10 +437,10 @@ impl ResourceSource {
                 "unsafe archive prefix",
             ));
         }
-        Ok(Self(Arc::new(Storage::Prefix {
+        Ok(Self::from(Storage::Prefix {
             source: self.clone(),
             prefix: format!("{directory}/"),
-        })))
+        }))
     }
     pub fn read(&self, name: &str) -> io::Result<Vec<u8>> {
         if !stays_inside(name) {
@@ -362,10 +451,10 @@ impl ResourceSource {
         }
         match self.0.as_ref() {
             Storage::Directory(root) => sunrise_core::prepared_files::read(&root.join(name)),
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => archive.read(name),
             Storage::Prefix { source, prefix } => source.read(&format!("{prefix}{name}")),
-            Storage::Index(files) => files
+            Storage::Fixed { names, read, .. } => read_fixed(names, read.as_ref(), name, None),
+            Storage::Index(files, ..) => files
                 .get(name)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?
                 .read(),
@@ -391,10 +480,9 @@ impl ResourceSource {
         }
         match self.0.as_ref() {
             Storage::Directory(root) => root.join(name).is_file().then(|| root.clone()),
-            #[cfg(not(target_arch = "wasm32"))]
-            Storage::Archive(_) => None,
+            Storage::Archive(_) | Storage::Fixed { .. } => None,
             Storage::Prefix { source, prefix } => source.folder_of(&format!("{prefix}{name}")),
-            Storage::Index(files) => match &files.get(name)?.0 {
+            Storage::Index(files, ..) => match &files.get(name)?.0 {
                 ResourceStorage::File { source, name } => source.folder_of(name),
                 ResourceStorage::Bytes(_) => None,
             },
@@ -414,12 +502,11 @@ impl ResourceSource {
             ));
         }
         match self.0.as_ref() {
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => archive.copy_to(name, out, budget).map(|_| ()),
             Storage::Prefix { source, prefix } => {
                 source.copy_to(&format!("{prefix}{name}"), out, budget)
             }
-            Storage::Index(files) => match &files
+            Storage::Index(files, ..) => match &files
                 .get(name)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?
                 .0
@@ -427,6 +514,9 @@ impl ResourceSource {
                 ResourceStorage::File { source, name } => source.copy_to(name, out, budget),
                 ResourceStorage::Bytes(bytes) => copy_resource_bytes(bytes, out, budget),
             },
+            Storage::Fixed { names, read, .. } => {
+                copy_resource_bytes(&read_fixed(names, read.as_ref(), name, None)?, out, budget)
+            }
             Storage::Directory(root) => copy_resource_bytes(
                 &sunrise_core::prepared_files::read(&root.join(name))?,
                 out,
@@ -450,10 +540,10 @@ impl ResourceSource {
             Storage::Directory(root) => {
                 sunrise_core::prepared_files::read_head(&root.join(name), max)
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => archive.read_head(name, max),
             Storage::Prefix { source, prefix } => source.read_head(&format!("{prefix}{name}"), max),
-            Storage::Index(files) => match &files
+            Storage::Fixed { names, read, .. } => read_fixed(names, read.as_ref(), name, Some(max)),
+            Storage::Index(files, ..) => match &files
                 .get(name)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?
                 .0
@@ -479,10 +569,12 @@ impl ResourceSource {
                     path.is_file()
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => archive.contains(name),
             Storage::Prefix { source, prefix } => source.contains(&format!("{prefix}{name}")),
-            Storage::Index(files) => files.contains_key(name),
+            Storage::Index(files, ..) => files.contains_key(name),
+            Storage::Fixed { names, .. } => {
+                names.binary_search_by(|n| n.as_str().cmp(name)).is_ok()
+            }
         }
     }
     /// Read only when the complete resource fits the limit. Bounds actual bytes
@@ -498,12 +590,14 @@ impl ResourceSource {
             Storage::Directory(root) => {
                 sunrise_core::prepared_files::read_head(&root.join(name), max.saturating_add(1))?
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => return archive.read_limited(name, max),
             Storage::Prefix { source, prefix } => {
                 return source.read_limited(&format!("{prefix}{name}"), max);
             }
-            Storage::Index(files) => match &files
+            Storage::Fixed { names, read, .. } => {
+                read_fixed(names, read.as_ref(), name, Some(max.saturating_add(1)))?
+            }
+            Storage::Index(files, ..) => match &files
                 .get(name)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?
                 .0
@@ -545,7 +639,6 @@ impl ResourceSource {
                 out.sort();
                 out
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => archive
                 .names()
                 .filter(|name| name.starts_with(prefix) && stays_inside(name))
@@ -559,7 +652,12 @@ impl ResourceSource {
                 .into_iter()
                 .filter_map(|name| name.strip_prefix(base).map(str::to_owned))
                 .collect(),
-            Storage::Index(files) => files
+            Storage::Fixed { names, .. } => names[names.partition_point(|n| n.as_str() < prefix)..]
+                .iter()
+                .take_while(|name| name.starts_with(prefix))
+                .cloned()
+                .collect(),
+            Storage::Index(files, ..) => files
                 .range(prefix.to_owned()..)
                 .map_while(|(name, _)| name.starts_with(prefix).then(|| name.clone()))
                 .collect(),
@@ -628,7 +726,6 @@ impl ResourceSource {
             Storage::Directory(root) => {
                 metadata_fingerprint(&fs::metadata(root.join(name)).ok()?).ok()
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Storage::Archive(archive) => {
                 let key = Arc::as_ptr(&self.0) as usize;
                 let fingerprint = match archives.get(&key) {
@@ -647,7 +744,8 @@ impl ResourceSource {
             Storage::Prefix { source, prefix } => {
                 source.file_fingerprint(&format!("{prefix}{name}"), archives)
             }
-            Storage::Index(files) => match &files.get(name)?.0 {
+            Storage::Fixed { fingerprint, .. } => fingerprint(name),
+            Storage::Index(files, ..) => match &files.get(name)?.0 {
                 ResourceStorage::File { source, name } => source.file_fingerprint(name, archives),
                 ResourceStorage::Bytes(bytes) => {
                     let mut hash = DefaultHasher::new();
@@ -657,6 +755,18 @@ impl ResourceSource {
             },
         }
     }
+}
+
+fn read_fixed(
+    names: &[String],
+    read: &ReadFixed,
+    name: &str,
+    limit: Option<u64>,
+) -> io::Result<Vec<u8>> {
+    names
+        .binary_search_by(|listed| listed.as_str().cmp(name))
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?;
+    read(name, limit)
 }
 
 #[cfg(test)]
@@ -680,15 +790,12 @@ mod tests {
             .with_data(data.clone(), ResourceSource::default());
         let name = "assets/demo/textures/block/generated.png";
         let texture = |byte| BTreeMap::from([(name.into(), Resource::bytes(vec![byte]))]);
-        let first = root
-            .clone()
-            .with_runtime_textures(texture(2), vec!["demo:block/generated".into()]);
-        let second = root.with_runtime_textures(texture(3), vec!["demo:block/generated".into()]);
+        let first = root.clone().with_runtime_textures(texture(2));
+        let second = root.with_runtime_textures(texture(3));
         assert_eq!(first.source().list("assets/").len(), 2);
         assert_eq!(first.source().read(name).unwrap(), [2]);
         assert!(!source.contains(name));
         assert!(first.data().same_generation(&data));
-        assert_eq!(first.runtime_block_sprites(), ["demo:block/generated"]);
         assert_ne!(
             first.source().fingerprint_under("assets", &["textures"]),
             second.source().fingerprint_under("assets", &["textures"]),

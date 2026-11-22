@@ -2,6 +2,13 @@
 //! sections) streams, lights and meshes to its top, and edits near the top
 //! relight and remesh it.
 extern crate sunrise_client_lib as sunrise_client;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 use sunrise_client::{
     assets::Assets,
     biome::Biomes,
@@ -16,13 +23,6 @@ use sunrise_client::{
 };
 use sunrise_core::biome::BiomeZoom;
 use sunrise_world::registry::BlockStateId;
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::Arc,
-    thread,
-    time::{Duration, Instant},
-};
 
 fn resources() -> Option<std::path::PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -86,6 +86,7 @@ fn a_tall_column_streams_lights_and_meshes_to_its_top() {
         assets: assets.clone(),
         render: render.clone(),
         hidden_states: Arc::from([]),
+        part_tables: Default::default(),
     });
     let state = |name: &str| assets.registry.default_state(name).unwrap().0;
     let (stone, torch) = (state("minecraft:stone"), state("minecraft:torch"));
@@ -103,7 +104,7 @@ fn a_tall_column_streams_lights_and_meshes_to_its_top() {
             assert!(Instant::now() < deadline, "streaming never settled");
             let (uploads, _) = streaming.update(world);
             let idle = uploads.is_empty() && !streaming.busy();
-            meshes.extend(uploads);
+            meshes.extend(uploads.into_iter().map(|upload| (upload.key, upload.mesh)));
             thread::sleep(Duration::from_millis(5));
             quiet = if idle { quiet + 1 } else { 0 };
         }
@@ -154,6 +155,7 @@ fn a_tall_column_streams_lights_and_meshes_to_its_top() {
             render: &context.render,
             tables: &context.tables,
             hidden_states: &context.hidden_states,
+            part_tables: &context.part_tables,
             biomes: &context.biomes,
             visibility: context.tables.visibility.clone(),
         };

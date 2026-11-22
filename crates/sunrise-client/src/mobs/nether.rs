@@ -10,12 +10,12 @@ use super::{
     },
 };
 use crate::projectiles::{Projectile, ProjectileKind};
+use std::f32::consts::PI;
 use sunrise_core::geometry::trig::Mth;
 use sunrise_core::{
     geometry::{Aabb, Vec3},
     random::RandomSource,
 };
-use std::f32::consts::PI;
 
 /// `RandomSource.triangle(mode, deviation)`.
 fn triangle(m: &mut Mob, mode: f64, deviation: f64) -> f64 {
@@ -138,9 +138,9 @@ impl Goal for BlazeAttack {
 }
 /// `Blaze.aiStep`: slow falling. The burning sound and the smoke are its
 /// `isClientSide()` branch, which the window's game makes for itself
-/// (`ambient::client_ai_step`): a server neither plays them nor draws for them.
+/// (`sunrise_client_gameplay::mob_ambient::client_ai_step`): a server neither plays them nor draws for them.
 pub fn blaze_ai_step(m: &mut Mob) {
-    if !m.on_ground && m.velocity.y < 0.0 {
+    if !m.ground.on_ground && m.velocity.y < 0.0 {
         m.velocity.y *= 0.6;
     }
 }
@@ -192,8 +192,7 @@ pub fn blaze_anim(s: &State, p: &mut Poses) {
     p.xrot("head", s.x_rot.to_radians());
 }
 
-/// `Ghast.explosionPower`'s `Extra::ints` slot (a named field would grow
-/// `mobs.rs`, which is over the file-size limit).
+/// `Ghast.explosionPower`'s `Extra::ints` slot.
 const EXPLOSION_POWER: usize = 0;
 
 pub fn register_ghast(m: &mut Mob) {
@@ -214,7 +213,7 @@ pub fn register_ghast(m: &mut Mob) {
 }
 /// `Ghast.addAdditionalSaveData`: `putByte("ExplosionPower", (byte)explosionPower)`,
 /// the power the blast of the fireball it shoots uses (`LargeFireball.onHit`).
-pub fn to_nbt(m: &Mob, map: &mut sunrise_core::nbt::Compound) {
+pub fn to_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
     map.insert(
         "ExplosionPower".into(),
         sunrise_core::nbt::Tag::Byte(m.extra.ints[EXPLOSION_POWER] as i8),

@@ -1,6 +1,6 @@
-use sunrise_assets::model::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use sunrise_assets::model::*;
 
 fn bits<const N: usize>(values: [f32; N]) -> Vec<u32> {
     values.map(f32::to_bits).to_vec()

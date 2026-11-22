@@ -3,7 +3,7 @@
 //! files into the 26.x layout, then level.dat brought to the current version,
 //! and the upgrades vanilla runs as it reads each file ([`upgrade_world`]
 //! does them all at once, as a converter).
-use super::dynamic::{as_bool, as_int, as_str, int_list, remove, set, string};
+use super::dynamic::{as_bool, as_int, as_str, int_list, put, string, take};
 use super::json::{self, Json};
 use super::progress::{UpgradeProgress, UpgradeType};
 use super::schema::Ty;
@@ -11,15 +11,15 @@ use super::world_upgrader::worker_threads;
 use super::{CURRENT, update};
 use crate::compression::Compression;
 use crate::region::{ChunkRecord, RegionFile, RegionWriter};
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use sunrise_core::{
     nbt,
     nbt::{Compound, JavaString, Limits, NamedTag, Tag},
 };
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The name `SharedConstants.getCurrentVersion().name()` writes in level.dat.
 pub const VERSION_NAME: &str = sunrise_core::version::VANILLA_VERSION;
@@ -39,25 +39,38 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 /// `NbtIo.readCompressed`: the root compound of a gzip NBT file, if it exists.
 pub fn read_dat(path: &Path) -> io::Result<Option<Tag>> {
+    read_dat_with_quota(path, None)
+}
+
+/// [`read_dat`] under a `NbtAccounter` heap quota, `None` for unlimited.
+/// The depth cap of [`Limits::saved`] is vanilla's read-depth limit; its byte
+/// cap is a Sunrise guard on top of the contract.
+fn read_dat_with_quota(path: &Path, quota: Option<u64>) -> io::Result<Option<Tag>> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let limits = Limits::default();
+    let limits = Limits::saved();
     let raw = Compression::Gzip.decode(&bytes, limits.max_bytes)?;
-    let (root, _) = nbt::read_named(&raw, limits).map_err(|e| invalid(e.to_string()))?;
+    let (root, _) = match quota {
+        Some(quota) => nbt::read_named_quota(&raw, limits, quota),
+        None => nbt::read_named(&raw, limits),
+    }
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(Some(root.tag))
 }
 
 /// `SavedDataStorage.readTagFromDisk`: a file without the gzip header is plain NBT.
+/// The depth cap of [`Limits::saved`] is vanilla's read-depth limit; its byte
+/// cap is a Sunrise guard on top of the contract.
 pub fn read_saved_dat(path: &Path) -> io::Result<Option<Tag>> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let limits = Limits::default();
+    let limits = Limits::saved();
     let raw = if bytes.starts_with(&[0x1f, 0x8b]) {
         Compression::Gzip.decode(&bytes, limits.max_bytes)?
     } else {
@@ -67,7 +80,10 @@ pub fn read_saved_dat(path: &Path) -> io::Result<Option<Tag>> {
     Ok(Some(root.tag))
 }
 
-/// `NbtIo.writeCompressed`, creating the parent folders.
+/// `NbtIo.writeCompressed`, creating the parent folders. The byte and depth
+/// caps of [`Limits::saved`] on the written NBT are Sunrise's write guards, not
+/// the contract's read-depth limit: vanilla applies no read quota to what it
+/// writes.
 pub fn write_dat(path: &Path, tag: &Tag) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -76,7 +92,7 @@ pub fn write_dat(path: &Path, tag: &Tag) -> io::Result<()> {
         name: JavaString::default(),
         tag: tag.clone(),
     };
-    let raw = nbt::write_named(&root, Limits::default()).map_err(|e| invalid(e.to_string()))?;
+    let raw = nbt::write_named(&root, Limits::saved()).map_err(|e| invalid(e.to_string()))?;
     fs::write(path, Compression::Gzip.encode(&raw)?)
 }
 
@@ -193,7 +209,7 @@ fn read_level(base: &Path, version: i32) -> io::Result<Option<Tag>> {
     }))
 }
 fn write_level(base: &Path, mut data: Tag, version: i32) -> io::Result<()> {
-    set(&mut data, "DataVersion", Tag::Int(version));
+    put(&mut data, "DataVersion", Tag::Int(version));
     write_dat(&base.join("level.dat"), &Tag::compound([("Data", data)]))
 }
 /// `SavedDataNbt.write`.
@@ -345,7 +361,7 @@ fn level_dat_to_saved_data(base: &Path) -> io::Result<()> {
         base.join(format!("dimensions/minecraft/{dim}/data/minecraft/{file}"))
     };
     let extract = |content: &mut Tag, key: &str, path: PathBuf| -> io::Result<()> {
-        if let Some(tag) = remove(content, key) {
+        if let Some(tag) = take(content, key) {
             write_saved_data(&path, tag, V)?;
         }
         Ok(())
@@ -355,13 +371,13 @@ fn level_dat_to_saved_data(base: &Path) -> io::Result<()> {
         "dragon_fight",
         dim_data("the_end", "ender_dragon_fight.dat"),
     )?;
-    if let Some(mut player) = remove(&mut content, "Player") {
+    if let Some(mut player) = take(&mut content, "Player") {
         let from = data_version(&player, -1);
         update(Ty::Player, &mut player, from, V);
         let uuid = match player.get("UUID") {
             Some(u) => u.clone(),
             None => {
-                set(&mut player, "DataVersion", Tag::Int(V));
+                put(&mut player, "DataVersion", Tag::Int(V));
                 write_dat(
                     &base.join("players/data/00000000-0000-0000-0000-000000000000.dat"),
                     &player,
@@ -369,7 +385,7 @@ fn level_dat_to_saved_data(base: &Path) -> io::Result<()> {
                 int_list(&[0, 0, 0, 0])
             }
         };
-        set(&mut content, "singleplayer_uuid", uuid);
+        put(&mut content, "singleplayer_uuid", uuid);
     }
     extract(
         &mut content,
@@ -393,15 +409,15 @@ fn level_dat_to_saved_data(base: &Path) -> io::Result<()> {
             for k in ["center_x", "center_z"] {
                 if let Some(v) = b.get(k) {
                     let v = super::dynamic::as_double(Some(v), 0.0) / divider;
-                    set(&mut b, k, Tag::Double(v.to_bits()));
+                    put(&mut b, k, Tag::Double(v.to_bits()));
                 }
             }
             write_saved_data(&dim_data(dim, "world_border.dat"), b, V)?;
         }
     }
-    remove(&mut content, "world_border");
+    take(&mut content, "world_border");
     extract(&mut content, "game_rules", data.join("game_rules.dat"))?;
-    if let Some(mut settings) = remove(&mut content, "world_gen_settings") {
+    if let Some(mut settings) = take(&mut content, "world_gen_settings") {
         let from = data_version(&content, -1);
         update(Ty::WorldGenSettings, &mut settings, from, V);
         write_saved_data(&data.join("world_gen_settings.dat"), settings, V)?;
@@ -459,11 +475,9 @@ pub(crate) fn fix_1493(base: &Path) -> io::Result<()> {
             let Some(Tag::Compound(features)) = data.get("Features") else {
                 continue;
             };
-            let values: Vec<(String, Tag)> = features
-                .iter()
-                .map(|(k, v)| (k.to_string_lossy(), v.clone()))
-                .collect();
-            for (_, mut value) in super::items::java_hash_order(values, |(k, _)| k.clone()) {
+            let values = features.iter().collect();
+            for (_, value) in super::items::java_hash_order(values, |(k, _)| (*k).clone()) {
+                let mut value = value.clone();
                 let chunk_x = as_int(value.get("ChunkX"), 0);
                 let chunk_z = as_int(value.get("ChunkZ"), 0);
                 let children = super::dynamic::stream(value.get("Children"));
@@ -471,7 +485,7 @@ pub(crate) fn fix_1493(base: &Path) -> io::Result<()> {
                     && let Some(current) = as_str(first.get("id"))
                         .and_then(|i| LEGACY_TO_CURRENT.iter().find(|(from, _)| *from == i))
                 {
-                    set(&mut value, "id", string(current.1));
+                    put(&mut value, "id", string(current.1));
                 }
                 let Some(feature_id) = as_str(value.get("id")) else {
                     continue;
@@ -531,15 +545,15 @@ pub(crate) fn fix_1493(base: &Path) -> io::Result<()> {
                 .filter(|s| matches!(s, Tag::Compound(_)))
                 .unwrap_or_else(super::dynamic::empty_map);
             for (id, value) in &legacy.starts {
-                set(&mut starts, id, value.clone());
+                put(&mut starts, id, value.clone());
             }
             for (id, indexes) in &legacy.indexes {
-                set(&mut references, id, Tag::LongArray(indexes.clone()));
+                put(&mut references, id, Tag::LongArray(indexes.clone()));
             }
-            set(&mut structure, "Starts", starts);
-            set(&mut structure, "References", references);
-            set(&mut level, "Structures", structure);
-            set(tag, "Level", level);
+            put(&mut structure, "Starts", starts);
+            put(&mut structure, "References", references);
+            put(&mut level, "Structures", structure);
+            put(tag, "Level", level);
         })?;
     }
     Ok(())
@@ -566,7 +580,7 @@ fn fix_4899(base: &Path) -> io::Result<()> {
         let path = base.join("data/minecraft/game_rules.dat");
         if let Some(mut rules) = read_saved_data(&path, Ty::SavedGameRules, V)? {
             if rules.get("minecraft:spectators_generate_chunks").is_some() {
-                set(
+                put(
                     &mut rules,
                     "minecraft:spectators_generate_chunks",
                     Tag::Byte(1),
@@ -580,12 +594,12 @@ fn fix_4899(base: &Path) -> io::Result<()> {
 
 /// `FileFixerUpper.addVersionsToLevelData`.
 fn add_versions(data: &mut Tag) {
-    set(data, "DataVersion", Tag::Int(CURRENT));
+    put(data, "DataVersion", Tag::Int(CURRENT));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64);
-    set(data, "LastPlayed", Tag::Long(now));
-    set(
+    put(data, "LastPlayed", Tag::Long(now));
+    put(
         data,
         "Version",
         Tag::compound([
@@ -617,7 +631,10 @@ fn fix_world_files_deferred(
     base: &Path,
     progress: &UpgradeProgress,
 ) -> io::Result<(i32, Option<Tag>)> {
-    let root = read_dat(&base.join("level.dat"))?.ok_or_else(|| invalid("missing level.dat"))?;
+    // The file fixer's first read keeps `NbtAccounter.defaultQuota()`, 2 MiB
+    // of estimated heap, unlike the level reads after it.
+    let root = read_dat_with_quota(&base.join("level.dat"), Some(nbt::NETWORK_NBT_QUOTA))?
+        .ok_or_else(|| invalid("missing level.dat"))?;
     let mut data = root
         .get("Data")
         .cloned()
@@ -736,6 +753,22 @@ fn files_with_suffix(folder: &Path, suffix: &str) -> Vec<PathBuf> {
     out
 }
 
+fn same_sidecar_bytes(live: &Path, staged: &Path) -> io::Result<bool> {
+    const BUFFER_SIZE: usize = 8 * 1024;
+    let (mut live, mut staged) = (fs::File::open(live)?, fs::File::open(staged)?);
+    let (mut a, mut b) = ([0; BUFFER_SIZE], [0; BUFFER_SIZE]);
+    let mut equal = true;
+    loop {
+        let a_len = io::copy(&mut (&mut live).take(BUFFER_SIZE as u64), &mut &mut a[..])?;
+        let b_len = io::copy(&mut (&mut staged).take(BUFFER_SIZE as u64), &mut &mut b[..])?;
+        if a_len == 0 && b_len == 0 {
+            return Ok(equal);
+        }
+        // Finish both reads even after a mismatch, so an I/O error still propagates.
+        equal &= a[..a_len as usize] == b[..b_len as usize];
+    }
+}
+
 /// Rewrite every chunk of the region files of a folder with `fix`, the files
 /// spread over [`worker_threads`] workers. Each file is read, fixed and
 /// written whole by one worker, so its bytes do not depend on the thread count.
@@ -762,6 +795,26 @@ fn upgrade_regions_with_threads(
     }
     let staging = folder.join(".datafix");
     fs::create_dir_all(&staging)?;
+    // A staged `.mcc` with no live copy may be the chunk's only one (an older
+    // upgrader replaced the region first): put it in place. One with a live
+    // regular file of the same bytes is a leftover copy and is dropped. Otherwise
+    // (a folder, or a different file) which one the live region needs cannot be
+    // told, even with a staged region: both stay and the region is not rewritten.
+    for staged in files_with_suffix(&staging, ".mcc") {
+        let name = staged.file_name().unwrap_or_default();
+        let live = folder.join(name);
+        if !live.try_exists()? {
+            fs::rename(staged, live)?;
+        } else if live.is_file() && same_sidecar_bytes(&live, &staged)? {
+            fs::remove_file(staged)?;
+        } else {
+            return Err(io::Error::other(format!(
+                "{} and {} both hold a payload for the same chunk",
+                staged.display(),
+                live.display()
+            )));
+        }
+    }
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let failed: Mutex<Option<(usize, io::Error)>> = Mutex::new(None);
@@ -807,7 +860,8 @@ fn upgrade_regions_with_threads(
 /// anew in `staging` and moved over the old one. A file without chunks (most
 /// of a large world's are empty) has nothing to fix and is left as it is.
 fn upgrade_region_file(path: &Path, staging: &Path, fix: &impl Fn(&mut Tag)) -> io::Result<()> {
-    let limits = Limits::default();
+    // Its byte and depth caps are Sunrise's guards, on the read and the write.
+    let limits = Limits::saved();
     let mut region = RegionFile::open(path)?;
     let positions: Vec<_> = region.chunks().map(|(p, _)| p).collect();
     if positions.is_empty() {
@@ -832,7 +886,19 @@ fn upgrade_region_file(path: &Path, staging: &Path, fix: &impl Fn(&mut Tag)) -> 
     for (pos, record) in &records {
         writer.write(*pos, record)?;
     }
+<<<<<<< sync-sunrise-1
     writer.finish_staged()?;
+=======
+    // An oversized chunk's `c.X.Z.mcc` is written next to the staged region.
+    let externals = writer.externals().to_vec();
+    writer.finish()?;
+    // The `.mcc` files go in before the region: until it is replaced, the old
+    // region reads for each chunk its own inline copy or a whole `.mcc`.
+    let folder = path.parent().unwrap_or(Path::new("."));
+    for staged in externals {
+        fs::rename(&staged, folder.join(staged.file_name().unwrap_or_default()))?;
+    }
+>>>>>>> sunrise/main
     fs::rename(&temporary, path)
 }
 
@@ -897,7 +963,7 @@ fn upgrade_saved_data(data: &Path, progress: &Progress) -> io::Result<()> {
             && let Some(mut tag) = read_saved_dat(&file)?
         {
             super::update_saved_data(ty, &mut tag);
-            set(&mut tag, "DataVersion", Tag::Int(CURRENT));
+            put(&mut tag, "DataVersion", Tag::Int(CURRENT));
             write_dat(&file, &tag)?;
         }
         progress.progress.increment_finished_operations();
@@ -907,28 +973,62 @@ fn upgrade_saved_data(data: &Path, progress: &Progress) -> io::Result<()> {
 
 /// A JSON file of the player folders as NBT for the fixes (`JsonOps` and
 /// `NbtOps` see the same structure), booleans kept apart.
-fn json_to_tag(j: &Json) -> Tag {
+#[derive(Clone, Copy)]
+pub(super) enum AdvancementJson {
+    File,
+    Entry,
+    Criteria,
+    Other,
+}
+
+impl AdvancementJson {
+    fn child(self, key: &[u16]) -> Self {
+        match self {
+            Self::File => Self::Entry,
+            Self::Entry if key.iter().copied().eq("criteria".encode_utf16()) => Self::Criteria,
+            _ => Self::Other,
+        }
+    }
+}
+
+pub(super) fn json_to_tag(j: &Json, context: AdvancementJson) -> Tag {
+    if matches!(context, AdvancementJson::Criteria) {
+        return super::advancement_criteria::read(j);
+    }
     match j {
         Json::Bool(b) => Tag::compound([("\u{0}bool", Tag::Byte(i8::from(*b)))]),
-        Json::Arr(items) => Tag::List(items.iter().map(json_to_tag).collect()),
+        Json::Arr(items) => Tag::List(
+            items
+                .iter()
+                .map(|v| json_to_tag(v, AdvancementJson::Other))
+                .collect(),
+        ),
         Json::Obj(entries) => Tag::Compound(
             entries
                 .iter()
-                .map(|(k, v)| (JavaString(k.clone()), json_to_tag(v)))
+                .map(|(k, v)| (JavaString(k.clone()), json_to_tag(v, context.child(k))))
                 .collect(),
         ),
         other => json::to_nbt(other).unwrap_or(Tag::End),
     }
 }
-fn tag_to_json(t: &Tag) -> Json {
+pub(super) fn tag_to_json(t: &Tag, context: AdvancementJson) -> Json {
+    if matches!(context, AdvancementJson::Criteria) {
+        return super::advancement_criteria::write(t);
+    }
     match t {
         Tag::Compound(c) if c.len() == 1 && c.contains_key(&JavaString::from("\u{0}bool")) => {
             Json::Bool(as_int(t.get("\u{0}bool"), 0) != 0)
         }
-        Tag::List(items) => Json::Arr(items.iter().map(tag_to_json).collect()),
+        Tag::List(items) => Json::Arr(
+            items
+                .iter()
+                .map(|v| tag_to_json(v, AdvancementJson::Other))
+                .collect(),
+        ),
         Tag::Compound(c) => Json::Obj(
             c.iter()
-                .map(|(k, v)| (k.0.clone(), tag_to_json(v)))
+                .map(|(k, v)| (k.0.clone(), tag_to_json(v, context.child(&k.0))))
                 .collect(),
         ),
         other => json::from_nbt(other),
@@ -944,15 +1044,20 @@ fn upgrade_json_to(path: &Path, ty: Ty, to: i32) -> io::Result<()> {
     let units: Vec<u16> = text.encode_utf16().collect();
     let parsed = json::parse_lenient(&units)
         .ok_or_else(|| invalid(format!("bad JSON in {}", path.display())))?;
-    let mut tag = json_to_tag(&parsed);
+    let context = if ty == Ty::Advancements {
+        AdvancementJson::File
+    } else {
+        AdvancementJson::Other
+    };
+    let mut tag = json_to_tag(&parsed, context);
     let from = super::dynamic::as_int(tag.get("DataVersion"), 1343);
     if ty == Ty::Advancements {
         // `PlayerAdvancements`: the version field is not part of the data.
-        remove(&mut tag, "DataVersion");
+        take(&mut tag, "DataVersion");
     }
     update(ty, &mut tag, from, to);
-    set(&mut tag, "DataVersion", Tag::Int(to));
-    let out = json::to_stable_string(&tag_to_json(&tag));
+    put(&mut tag, "DataVersion", Tag::Int(to));
+    let out = json::to_stable_string(&tag_to_json(&tag, context));
     fs::write(path, String::from_utf16_lossy(&out))
 }
 
@@ -1023,7 +1128,7 @@ pub fn upgrade_world_data_with(
         run.check()?;
         if let Some(mut tag) = read_dat(&file)? {
             super::update_player(&mut tag);
-            set(&mut tag, "DataVersion", Tag::Int(CURRENT));
+            put(&mut tag, "DataVersion", Tag::Int(CURRENT));
             write_dat(&file, &tag)?;
         }
         progress.increment_finished_operations();
@@ -1058,8 +1163,8 @@ pub fn upgrade_band(base: &Path, target: i32) -> io::Result<()> {
             .unwrap_or_else(|| Tag::Compound(Compound::new()));
         let from = data_version(&data, -1);
         update(Ty::Level, &mut data, from, target);
-        set(&mut data, "DataVersion", Tag::Int(target));
-        set(&mut root, "Data", data);
+        put(&mut data, "DataVersion", Tag::Int(target));
+        put(&mut root, "Data", data);
         write_dat(&level, &root)?;
     }
     for (folder, id) in [
@@ -1108,7 +1213,7 @@ pub fn upgrade_band(base: &Path, target: i32) -> io::Result<()> {
         if let Some(mut tag) = read_dat(&file)? {
             let from = data_version(&tag, 1343);
             update(ty, &mut tag, from, target);
-            set(&mut tag, "DataVersion", Tag::Int(target));
+            put(&mut tag, "DataVersion", Tag::Int(target));
             write_dat(&file, &tag)?;
         }
     }
@@ -1136,6 +1241,36 @@ pub fn upgrade_world_with(base: &Path, progress: &UpgradeProgress) -> io::Result
 #[cfg(test)]
 mod upgrade_tests {
     use super::*;
+
+    #[test]
+    fn advancement_biome_rename_keeps_the_last_json_criterion() {
+        // CavesAndCliffsRenames folds wooded_hills into forest at 2838.
+        for (first, second) in [("forest", "wooded_hills"), ("wooded_hills", "forest")] {
+            let advancement = "minecraft:adventure/adventuring_time";
+            let input = Json::object(vec![(
+                advancement,
+                Json::object(vec![(
+                    "criteria",
+                    Json::object(vec![
+                        (&format!("minecraft:{first}"), Json::string("first")),
+                        (&format!("minecraft:{second}"), Json::string("last")),
+                    ]),
+                )]),
+            )]);
+            let mut data = json_to_tag(&input, AdvancementJson::File);
+            update(Ty::Advancements, &mut data, 2837, 2838);
+            assert_eq!(
+                tag_to_json(&data, AdvancementJson::File),
+                Json::object(vec![(
+                    advancement,
+                    Json::object(vec![(
+                        "criteria",
+                        Json::object(vec![("minecraft:forest", Json::string("last"))])
+                    )]),
+                )])
+            );
+        }
+    }
 
     fn level_version(base: &Path) -> i32 {
         let root = read_dat(&base.join("level.dat")).unwrap().unwrap();
@@ -1332,5 +1467,385 @@ mod upgrade_tests {
         );
         assert!(!dir.join(".datafix").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// [`upgrade_regions_with_threads`] on one thread, cancelable, nobody watching.
+    fn upgrade(dir: &Path, fix: impl Fn(&mut Tag) + Sync) -> io::Result<()> {
+        let progress = UpgradeProgress::new();
+        let run = Progress {
+            progress: &progress,
+            cancelable: true,
+        };
+        upgrade_regions_with_threads(dir, &run, fix, 1)
+    }
+
+    /// A chunk of 256 sectors or more lives in its own `c.X.Z.mcc`: the
+    /// upgraded one replaces the old one next to the region, and the staging
+    /// folder is left empty and removed, even after a try that stopped midway.
+    #[test]
+    fn region_upgrade_moves_an_external_chunk_out_of_staging() {
+        let dir = std::env::temp_dir().join(format!("sunrise-mcc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut tag = old_chunk(0, 0);
+        // Stored uncompressed, so the record is over 256 sectors.
+        put(&mut tag, "Big", Tag::ByteArray(vec![0; 1_100_000]));
+        let root = NamedTag {
+            name: "".into(),
+            tag,
+        };
+        let pos = sunrise_core::position::ChunkPos::new(0, 0);
+        let record = ChunkRecord::from_nbt(&root, Compression::None, 7, Limits::default()).unwrap();
+        let mut region = RegionFile::open_writable(dir.join("r.0.0.mca"), true).unwrap();
+        region.write(pos, &record).unwrap();
+        drop(region);
+        assert!(dir.join("c.0.0.mcc").exists());
+        // What an earlier try that stopped before putting its region in place
+        // leaves behind: the staged region (its `.mcc` already moved or
+        // identical to the live one, so nothing is left to compare).
+        fs::create_dir_all(dir.join(".datafix")).unwrap();
+        fs::write(dir.join(".datafix/r.0.0.mca"), b"stale").unwrap();
+        fs::copy(dir.join("c.0.0.mcc"), dir.join(".datafix/c.0.0.mcc")).unwrap();
+
+        upgrade(&dir, fix_overworld_chunk).unwrap();
+        assert!(!dir.join(".datafix").exists());
+        assert_eq!(chunk_versions(&dir), vec![vec![CURRENT]]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The length of the `Big` byte array of chunk 0, 0 in `dir`'s region.
+    fn big_len(dir: &Path) -> Option<usize> {
+        let mut region = RegionFile::open(dir.join("r.0.0.mca")).unwrap();
+        let record = region
+            .read(sunrise_core::position::ChunkPos::new(0, 0))
+            .unwrap()?;
+        match record.nbt(Limits::default()).unwrap().tag.get("Big") {
+            Some(Tag::ByteArray(bytes)) => Some(bytes.len()),
+            _ => None,
+        }
+    }
+
+    /// An inline chunk the upgrade grows past 256 sectors: when its `.mcc`
+    /// cannot be moved in, the old region stays live with the chunk, and the
+    /// retry upgrades it whole.
+    #[test]
+    fn interrupted_inline_to_external_upgrade_keeps_the_chunk() {
+        let dir = std::env::temp_dir().join(format!("sunrise-mcc-grow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let root = NamedTag {
+            name: "".into(),
+            tag: old_chunk(0, 0),
+        };
+        let record = ChunkRecord::from_nbt(&root, Compression::None, 7, Limits::default()).unwrap();
+        let mut region = RegionFile::open_writable(dir.join("r.0.0.mca"), true).unwrap();
+        region
+            .write(sunrise_core::position::ChunkPos::new(0, 0), &record)
+            .unwrap();
+        drop(region);
+        let grow = |tag: &mut Tag| {
+            fix_overworld_chunk(tag);
+            put(tag, "Big", Tag::ByteArray(vec![0; 1_100_000]));
+        };
+        // A folder where the `.mcc` goes makes its move fail once.
+        fs::create_dir_all(dir.join("c.0.0.mcc")).unwrap();
+        upgrade(&dir, grow).unwrap_err();
+        assert_eq!(chunk_versions(&dir), vec![vec![4000]]);
+
+        fs::remove_dir(dir.join("c.0.0.mcc")).unwrap();
+        upgrade(&dir, grow).unwrap();
+        assert!(!dir.join(".datafix").exists());
+        assert_eq!(chunk_versions(&dir), vec![vec![CURRENT]]);
+        assert_eq!(big_len(&dir), Some(1_100_000));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// What an earlier upgrader that replaced the region before moving its
+    /// `.mcc` out of staging left in `dir` when the move failed: a live region
+    /// whose chunk 0, 0 is an external stub, its payload only in `.datafix`.
+    fn published_stub_with_staged_mcc(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+        let mut tag = old_chunk(0, 0);
+        put(&mut tag, "Big", Tag::ByteArray(vec![0; 1_100_000]));
+        let root = NamedTag {
+            name: "".into(),
+            tag,
+        };
+        let record = ChunkRecord::from_nbt(&root, Compression::None, 7, Limits::default()).unwrap();
+        let mut writer = RegionWriter::create(dir.join(".datafix/r.0.0.mca")).unwrap();
+        writer
+            .write(sunrise_core::position::ChunkPos::new(0, 0), &record)
+            .unwrap();
+        writer.finish().unwrap();
+        fs::rename(dir.join(".datafix/r.0.0.mca"), dir.join("r.0.0.mca")).unwrap();
+        assert!(dir.join(".datafix/c.0.0.mcc").exists());
+        assert!(!dir.join("c.0.0.mcc").exists());
+    }
+
+    /// An earlier upgrader replaced the region before moving its `.mcc` out of
+    /// staging; the staged file is the chunk's only copy and is put in place.
+    #[test]
+    fn region_upgrade_recovers_a_staged_mcc_the_live_region_needs() {
+        let dir = std::env::temp_dir().join(format!("sunrise-mcc-staged-{}", std::process::id()));
+        published_stub_with_staged_mcc(&dir);
+        upgrade(&dir, fix_overworld_chunk).unwrap();
+        assert!(!dir.join(".datafix").exists());
+        assert_eq!(chunk_versions(&dir), vec![vec![CURRENT]]);
+        assert_eq!(big_len(&dir), Some(1_100_000));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The staged `.mcc` of a published stub cannot be put in place while
+    /// something else holds its live path (here a folder, which the reader
+    /// takes for a missing chunk; or a stale sidecar of an earlier write that
+    /// made the chunk inline): both stay as they are and the region is not
+    /// rewritten without the chunk.
+    #[test]
+    fn region_upgrade_keeps_a_staged_mcc_whose_live_path_is_taken() {
+        for (case, folder) in [("dir", true), ("file", false)] {
+            let dir = std::env::temp_dir()
+                .join(format!("sunrise-mcc-taken-{case}-{}", std::process::id()));
+            published_stub_with_staged_mcc(&dir);
+            let live = dir.join("c.0.0.mcc");
+            if folder {
+                fs::create_dir_all(&live).unwrap();
+            } else {
+                fs::write(&live, b"stale").unwrap();
+            }
+            let staged = fs::read(dir.join(".datafix/c.0.0.mcc")).unwrap();
+            let region = fs::read(dir.join("r.0.0.mca")).unwrap();
+
+            upgrade(&dir, fix_overworld_chunk).unwrap_err();
+            assert_eq!(fs::read(dir.join(".datafix/c.0.0.mcc")).unwrap(), staged);
+            assert_eq!(fs::read(dir.join("r.0.0.mca")).unwrap(), region);
+            if folder {
+                assert!(live.is_dir());
+            } else {
+                assert_eq!(fs::read(&live).unwrap(), b"stale");
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A folder at the live path reads as a missing chunk, so a valid staged
+    /// region can omit the chunk: the staged region does not make the staged
+    /// `.mcc` redundant. Both payload and live region stay as they are.
+    #[test]
+    fn region_upgrade_keeps_a_staged_mcc_when_a_staged_region_omits_the_chunk() {
+        let dir = std::env::temp_dir().join(format!("sunrise-mcc-omit-{}", std::process::id()));
+        published_stub_with_staged_mcc(&dir);
+        fs::create_dir_all(dir.join("c.0.0.mcc")).unwrap();
+        let other = NamedTag {
+            name: "".into(),
+            tag: old_chunk(1, 0),
+        };
+        let record =
+            ChunkRecord::from_nbt(&other, Compression::None, 7, Limits::default()).unwrap();
+        let mut writer = RegionWriter::create(dir.join(".datafix/r.0.0.mca")).unwrap();
+        writer
+            .write(sunrise_core::position::ChunkPos::new(1, 0), &record)
+            .unwrap();
+        writer.finish().unwrap();
+        let staged = fs::read(dir.join(".datafix/c.0.0.mcc")).unwrap();
+        let region = fs::read(dir.join("r.0.0.mca")).unwrap();
+
+        upgrade(&dir, fix_overworld_chunk).unwrap_err();
+        assert_eq!(fs::read(dir.join(".datafix/c.0.0.mcc")).unwrap(), staged);
+        assert_eq!(fs::read(dir.join("r.0.0.mca")).unwrap(), region);
+        assert!(dir.join("c.0.0.mcc").is_dir());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A retry that decoded a stale live `.mcc` left a second staged index with
+    /// the chunk inline, while the correct payload is still staged: a staged
+    /// region does not show which payload is current, so both files and the
+    /// live region stay and nothing is rewritten from the stale data.
+    #[test]
+    fn region_upgrade_keeps_both_payloads_when_a_staged_region_meets_a_differing_live_mcc() {
+        let dir = std::env::temp_dir().join(format!("sunrise-mcc-stale-{}", std::process::id()));
+        published_stub_with_staged_mcc(&dir);
+        fs::write(dir.join("c.0.0.mcc"), b"stale").unwrap();
+        let stale = NamedTag {
+            name: "".into(),
+            tag: old_chunk(0, 0),
+        };
+        let record =
+            ChunkRecord::from_nbt(&stale, Compression::None, 7, Limits::default()).unwrap();
+        let mut writer = RegionWriter::create(dir.join(".datafix/r.0.0.mca")).unwrap();
+        writer
+            .write(sunrise_core::position::ChunkPos::new(0, 0), &record)
+            .unwrap();
+        writer.finish().unwrap();
+        let staged = fs::read(dir.join(".datafix/c.0.0.mcc")).unwrap();
+        let region = fs::read(dir.join("r.0.0.mca")).unwrap();
+        let index = fs::read(dir.join(".datafix/r.0.0.mca")).unwrap();
+
+        upgrade(&dir, fix_overworld_chunk).unwrap_err();
+        assert_eq!(fs::read(dir.join(".datafix/c.0.0.mcc")).unwrap(), staged);
+        assert_eq!(fs::read(dir.join("c.0.0.mcc")).unwrap(), b"stale");
+        assert_eq!(fs::read(dir.join("r.0.0.mca")).unwrap(), region);
+        assert_eq!(fs::read(dir.join(".datafix/r.0.0.mca")).unwrap(), index);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A staged `.mcc` whose live copy holds the same bytes was moved in by a
+    /// try that stopped before removing it: the staged one goes.
+    #[test]
+    fn region_upgrade_drops_a_staged_mcc_already_in_place() {
+        let dir = std::env::temp_dir().join(format!("sunrise-mcc-same-{}", std::process::id()));
+        published_stub_with_staged_mcc(&dir);
+        fs::copy(dir.join(".datafix/c.0.0.mcc"), dir.join("c.0.0.mcc")).unwrap();
+        upgrade(&dir, fix_overworld_chunk).unwrap();
+        assert!(!dir.join(".datafix").exists());
+        assert_eq!(chunk_versions(&dir), vec![vec![CURRENT]]);
+        assert_eq!(big_len(&dir), Some(1_100_000));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A chunk past the default node cap (a storage room's worth of tags)
+    /// upgrades, as normal loading reads it: vanilla reads saved chunks with
+    /// no node limit.
+    #[test]
+    fn region_upgrade_reads_a_chunk_past_the_default_node_cap() {
+        let dir = std::env::temp_dir().join(format!("sunrise-big-chunk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut tag = old_chunk(0, 0);
+        put(&mut tag, "Items", Tag::List(vec![Tag::Byte(1); 1_000_001]));
+        let root = NamedTag {
+            name: "".into(),
+            tag,
+        };
+        let pos = sunrise_core::position::ChunkPos::new(0, 0);
+        let record = ChunkRecord::from_nbt(&root, Compression::Zlib, 7, Limits::saved()).unwrap();
+        let mut region = RegionFile::open_writable(dir.join("r.0.0.mca"), true).unwrap();
+        region.write(pos, &record).unwrap();
+        drop(region);
+
+        upgrade(&dir, fix_overworld_chunk).unwrap();
+        let mut region = RegionFile::open(dir.join("r.0.0.mca")).unwrap();
+        let chunk = region
+            .read(pos)
+            .unwrap()
+            .unwrap()
+            .nbt(Limits::saved())
+            .unwrap();
+        assert_eq!(data_version(&chunk.tag, -1), CURRENT);
+        let Some(Tag::List(items)) = chunk.tag.get("Items") else {
+            panic!("the list is gone");
+        };
+        assert_eq!(items.len(), 1_000_001);
+        assert!(items.iter().all(|item| *item == Tag::Byte(1)));
+        drop(region);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A list past the old default node cap (1,000,000 tags).
+    fn over_old_cap() -> Tag {
+        Tag::List(vec![Tag::Byte(1); 1_100_000])
+    }
+
+    /// A chunk past the old node cap and 256 sectors (stored uncompressed, so
+    /// it lives in its own `.mcc`) upgrades with its payload: the published
+    /// region reads the upgraded `.mcc`. A failed try leaves the original
+    /// region and its `.mcc` readable.
+    #[test]
+    fn region_upgrade_publishes_an_over_cap_external_chunk() {
+        let dir = std::env::temp_dir().join(format!("sunrise-big-mcc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut tag = old_chunk(0, 0);
+        put(&mut tag, "Items", over_old_cap());
+        let root = NamedTag {
+            name: "".into(),
+            tag,
+        };
+        let pos = sunrise_core::position::ChunkPos::new(0, 0);
+        let record = ChunkRecord::from_nbt(&root, Compression::None, 7, Limits::saved()).unwrap();
+        let mut region = RegionFile::open_writable(dir.join("r.0.0.mca"), true).unwrap();
+        region.write(pos, &record).unwrap();
+        drop(region);
+        assert!(dir.join("c.0.0.mcc").is_file());
+        let assert_chunk = |version| {
+            let mut region = RegionFile::open(dir.join("r.0.0.mca")).unwrap();
+            let chunk = region.read(pos).unwrap().unwrap();
+            let tag = chunk.nbt(Limits::saved()).unwrap().tag;
+            assert_eq!(data_version(&tag, -1), version);
+            let Some(Tag::List(items)) = tag.get("Items") else {
+                panic!("the list is gone");
+            };
+            assert_eq!(items.len(), 1_100_000);
+            assert!(items.iter().all(|item| *item == Tag::Byte(1)));
+        };
+        // A folder where the staged `.mcc` goes makes the writer fail.
+        fs::create_dir_all(dir.join(".datafix/c.0.0.mcc")).unwrap();
+        upgrade(&dir, fix_overworld_chunk).unwrap_err();
+        assert_chunk(4000);
+
+        fs::remove_dir(dir.join(".datafix/c.0.0.mcc")).unwrap();
+        upgrade(&dir, fix_overworld_chunk).unwrap();
+        assert!(!dir.join(".datafix").exists());
+        assert_chunk(CURRENT);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The file fixer's first level.dat read keeps vanilla's 2 MiB heap
+    /// quota (`NbtAccounter.defaultQuota`): a file whose bytes are well under
+    /// it but whose tags take more is refused, while the other reads take it.
+    #[test]
+    fn early_level_read_keeps_its_heap_quota() {
+        let base = std::env::temp_dir().join(format!("sunrise-early-quota-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let empty = Tag::Compound(Compound::new());
+        let data = Tag::compound([
+            ("DataVersion", Tag::Int(4899)),
+            ("Big", Tag::List(vec![empty; 100_000])),
+        ]);
+        let level = Tag::compound([("Data", data)]);
+        write_dat(&base.join("level.dat"), &level).unwrap();
+        let root = NamedTag {
+            name: JavaString::default(),
+            tag: level,
+        };
+        let raw = nbt::write_named(&root, Limits::saved()).unwrap();
+        assert!(raw.len() < 2_097_152);
+
+        let error = fix_world_files_deferred(&base, &UpgradeProgress::new()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let source = error.get_ref().and_then(|e| e.downcast_ref::<nbt::Error>());
+        assert_eq!(source.map(|e| e.reason), Some("heap quota exceeded"));
+        assert!(read_dat(&base.join("level.dat")).unwrap().is_some());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A gzip player file and a plain (not gzip) saved data file past the old
+    /// node cap upgrade with their payload and the current version.
+    #[test]
+    fn dat_upgrade_round_trips_over_the_old_node_cap() {
+        let base = std::env::temp_dir().join(format!("sunrise-big-dat-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let level = Tag::compound([("Data", Tag::compound([("DataVersion", Tag::Int(4899))]))]);
+        write_dat(&base.join("level.dat"), &level).unwrap();
+        let big = Tag::compound([("DataVersion", Tag::Int(4899)), ("Big", over_old_cap())]);
+        write_dat(&base.join("players/data/a.dat"), &big).unwrap();
+        let storage = base.join("data/minecraft/command_storage.dat");
+        fs::create_dir_all(storage.parent().unwrap()).unwrap();
+        let root = NamedTag {
+            name: JavaString::default(),
+            tag: big,
+        };
+        fs::write(&storage, nbt::write_named(&root, Limits::saved()).unwrap()).unwrap();
+
+        upgrade_world_data(&base).unwrap();
+        for file in [base.join("players/data/a.dat"), storage] {
+            let tag = read_saved_dat(&file).unwrap().unwrap();
+            assert_eq!(data_version(&tag, -1), CURRENT, "{}", file.display());
+            let Some(Tag::List(items)) = tag.get("Big") else {
+                panic!("{} lost its list", file.display());
+            };
+            assert_eq!(items.len(), 1_100_000);
+            assert!(items.iter().all(|item| *item == Tag::Byte(1)));
+        }
+        let _ = fs::remove_dir_all(&base);
     }
 }

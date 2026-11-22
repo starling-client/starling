@@ -10,11 +10,14 @@ sunrise-client game::entity_model_loading_tests::entity_model_document_benchmark
 sunrise-client-lib entity_nbt::equipment_tests::write_fixtures SUNRISE_WRITE_FIXTURES harness
 sunrise-client-lib save::far_census::far_floating_cells_per_level SUNRISE_FAR_SAVE harness
 sunrise-client game::maps::save_tests::saved_map_codec_fixture tools/test_map_saved_data_parity.py harness
+sunrise-client game::block_entity_reach_draw_tests::block_entity_draws_match_the_vanilla_cases tools/test_block_entity_reach_parity.py harness
 sunrise-client game::fishing::tests::breeze_hook_parity_fixture tools/test_breeze_hook_parity.py harness
 sunrise-client game::remote_mob_data::tests::mob_air_parity_fixture tools/test_mob_air_parity.py harness
 sunrise-client game::remote_mob_data::tests::raider_celebration_parity_fixture tools/test_raider_celebration_parity.py harness
 sunrise-client-lib item_render::glint_tests::external_item_atlas_oracle SUNRISE_GLINT_ROOT harness
-sunrise-client-lib mobs::dragon_contacts::parity::contact_transcript tools/test_dragon_contacts_parity.py harness
+sunrise-gameplay dragon_contacts::parity::contact_transcript tools/test_dragon_contacts_parity.py harness
 sunrise-client-lib mobs::villager_brain::farming_tests::vanilla_farming_classification_matches_the_oracle tools/test_villager_farming_parity.py harness
 sunrise-client-lib mobs::villager_brain::reputation_witness_tests::witnesses_use_sensor_candidates_radius_invisibility_and_cached_results tools/test_villager_witness_parity.py harness
 sunrise-client-render packs::cache::tests::benchmark_real_resource_root SUNRISE_OVERLAY_BENCH_VANILLA harness
+sunrise-client game::campfire::block_entity_items_tests::block_entity_items_match_the_vanilla_cases tools/test_block_entity_item_geometry_parity.py harness
+sunrise-client-lib mobs::finalize::load_tests::a_loaded_health_is_clamped_to_the_loaded_max_health tools/test_mob_attribute_nbt_parity.py harness

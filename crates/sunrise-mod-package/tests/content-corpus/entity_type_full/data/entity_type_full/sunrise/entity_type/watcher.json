@@ -1,0 +1,24 @@
+{
+  "template": "minecraft:zombie",
+  "allowed_in_peaceful": true,
+  "shadow_radius": 0.75,
+  "shadow_strength": 0.5,
+  "attributes": {
+    "minecraft:max_health": 32.0,
+    "minecraft:movement_speed": 0.26
+  },
+  "passenger_attachments": [
+    0.8,
+    [
+      0.2,
+      1.0,
+      -0.3
+    ]
+  ],
+  "sounds": {
+    "ambient": "minecraft:entity.zombie.ambient",
+    "hurt": "minecraft:entity.zombie.hurt",
+    "death": "none",
+    "step": "minecraft:entity.zombie.step"
+  }
+}

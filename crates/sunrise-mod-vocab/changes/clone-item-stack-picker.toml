@@ -1,0 +1,2 @@
+ids = ["hook:clone_item_stack.player", "type:CloneItemStackEvent.player"]
+why = "Block clone Parts on the server receive the player who requested the item, as NeoForge's clone query does."

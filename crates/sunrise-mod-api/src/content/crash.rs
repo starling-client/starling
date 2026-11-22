@@ -133,10 +133,11 @@ pub(crate) fn ensure_installed() -> Result<(), &'static str> {
             set_detail: |key, value| set_detail(key, value),
             clear_detail,
             details,
-            current_phase: crate::load_state::current_phase,
-            phase_state: crate::load_state::phase_snapshot,
-            set_phase: crate::load_state::set_phase,
+            registration_open: crate::load_state::is_registration_open,
             packages: crate::load_state::current_packages,
+            visible_packages: crate::load_state::visible_packages,
+            namespace_authority: crate::load_state::current_namespace_authority,
+            owns_namespace: crate::load_state::owns_namespace,
             registration_data: crate::load_state::registration_data,
         })
     })

@@ -1,3 +1,3 @@
 mod stubs {
-    pub(super) struct GuiLayer;
+    pub(super) trait GuiLayerRegistrar {}
 }

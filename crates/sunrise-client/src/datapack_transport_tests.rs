@@ -1,9 +1,9 @@
 use super::*;
+use mod_api::*;
 use sunrise_protocol::{
     frame,
     packets::{configuration as cfg, play},
 };
-use mod_api::*;
 
 fn declaration() -> DatapackRegistryDeclaration {
     DatapackRegistryDeclaration {
@@ -16,13 +16,12 @@ fn declaration() -> DatapackRegistryDeclaration {
         sync: DatapackRegistrySync::Required,
     }
 }
-fn snapshot(generation: u64, text: String) -> DatapackSnapshot {
+fn snapshot(text: String) -> DatapackSnapshot {
     DatapackSnapshot {
-        session: 7,
-        generation,
         registries: vec![DatapackSnapshotRegistry {
             key: "large:blob".into(),
             fields: declaration().fields,
+            tags: Default::default(),
             entries: vec![DatapackSnapshotEntry {
                 id: "large:entry".into(),
                 values: vec![DatapackValue::Text(text)],
@@ -64,7 +63,7 @@ fn incompressible_large_registry_snapshot_fits_each_frame_and_activates_only_whe
     mod_platform::__private::part_tests::install_parts_fixture(&mods).unwrap();
     mod_platform::testing::with_mods(mods.into(), || {
         clear_received();
-        accept(&snapshot(1, "old".into()).encode().unwrap()).unwrap();
+        accept(&snapshot("old".into()).encode().unwrap()).unwrap();
         let mut seed = 0x1a2b3c4d5e6f_u64;
         let text: String = (0..(3 << 20))
             .map(|_| {
@@ -74,7 +73,7 @@ fn incompressible_large_registry_snapshot_fits_each_frame_and_activates_only_whe
                 char::from(b'!' + (seed & 63) as u8)
             })
             .collect();
-        let bytes = snapshot(2, text.clone()).encode().unwrap();
+        let bytes = snapshot(text.clone()).encode().unwrap();
         assert!(bytes.len() > frame::MAX_FRAME);
         assert!(
             frame::encode(&bytes, Some(256)).is_err(),
@@ -94,15 +93,24 @@ fn incompressible_large_registry_snapshot_fits_each_frame_and_activates_only_whe
             frame::encode(&body, Some(256)).unwrap();
             accept_chunk(data).unwrap();
             assert_eq!(finish_transfer().is_ok(), i + 1 == packets.len());
-            assert_eq!(
-                received().unwrap().generation(),
-                if i + 1 == packets.len() { 2 } else { 1 }
-            );
+            let expected = if i + 1 == packets.len() {
+                text.as_str()
+            } else {
+                "old"
+            };
+            let current = received().unwrap();
+            let Some(DatapackValue::Text(actual)) = current
+                .get("large:blob", "large:entry")
+                .unwrap()
+                .get("text")
+            else {
+                panic!("the accepted payload must be readable");
+            };
+            assert_eq!(actual, expected);
         }
         let set = received().unwrap();
-        let handle = set.handle("large:blob", "large:entry").unwrap();
         assert_eq!(
-            set.get(&handle).unwrap().get("text"),
+            set.get("large:blob", "large:entry").unwrap().get("text"),
             Some(&DatapackValue::Text(text))
         );
         finish_transfer().unwrap();

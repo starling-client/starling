@@ -15,6 +15,8 @@ pub trait Hooks {
     /// Server-side. The contract beyond the method's name and parameters is Sunrise's reading,
     /// not checked against NeoForge's.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "item",
@@ -22,5 +24,5 @@ pub trait Hooks {
         host = "read",
         neoforge = "IItemExtension.makesPiglinsNeutral"
     )]
-    fn makes_piglins_neutral();
+    fn makes_piglins_neutral(stack: &ItemStack, wearer: LivingRef, neutral: &mut bool);
 }

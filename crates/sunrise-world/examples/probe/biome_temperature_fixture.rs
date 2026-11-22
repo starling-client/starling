@@ -1,13 +1,13 @@
 //! Original comparison transport for biome temperatures and ordered caches.
-use sunrise_core::position::BlockPos;
-use sunrise_world::worldgen::biome_temperature::{
-    BiomeTemperature, BiomeTemperatureSettings, Precipitation, TemperatureModifier,
-};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::position::BlockPos;
+use sunrise_world::worldgen::biome_temperature::{
+    BiomeTemperature, BiomeTemperatureSettings, Precipitation, TemperatureModifier,
 };
 fn bits(value: f32) -> u32 {
     if value.is_nan() {

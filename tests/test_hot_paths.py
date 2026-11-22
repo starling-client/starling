@@ -1,8 +1,13 @@
 """tools/hot_paths.py: what a published record may hold, which runs a trend compares, and what a dump counts."""
 import copy
 import importlib.util
+import json
+import tempfile
+import tomllib
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 # Loaded by path: tools/ on sys.path would shadow tests/ modules that share a name with a tools/ harness.
 _spec = importlib.util.spec_from_file_location('hot_paths', Path(__file__).resolve().parents[1] / 'tools' / 'hot_paths.py')
@@ -17,6 +22,85 @@ def run(commit, date, value, host='alpha', checksum='0' * 16, wall=100.0):
             'metrics': {'server.tick.mobs_128.instructions': [value, value, value],
                         'server.tick.mobs_128.wall_ns': [wall, wall * 1.05]},
             'notes': []}
+
+
+class Install(unittest.TestCase):
+    def test_native_listeners_have_separate_matching_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game = root / 'game'
+            game.write_bytes(b'benchmark executable')
+            copy = Path(hot_paths.install(game, root, 10))
+            self.assertEqual(copy.read_bytes(), game.read_bytes())
+            packages = root / 'sunrise-native-mods'
+            self.assertEqual({p.name for p in packages.iterdir()},
+                             {'hot_paths_listener', *(f'hot_paths_fanout_{i}' for i in range(10))})
+            for package in packages.iterdir():
+                manifest = tomllib.loads((package / 'sunrise-mod.toml').read_text())
+                cargo = tomllib.loads((package / 'Cargo.toml').read_text())['package']
+                self.assertEqual(manifest['id'], package.name)
+                self.assertEqual(cargo['name'], package.name)
+                self.assertEqual(manifest['version'], '1.0.0')
+                self.assertEqual(manifest['side'], 'both')
+                self.assertIn('native', manifest)
+
+
+class Measure(unittest.TestCase):
+    def test_direct_and_callgrind_runs_inherit_the_main_stack_limit(self):
+        def benchmark(command, *, cwd, env, **kwargs):
+            self.assertIsNone(kwargs.get('preexec_fn'), command)
+            self.assertFalse(any(arg.startswith('--main-stacksize') for arg in command), command)
+            Path(env['SUNRISE_HOT_PATHS']).write_text('{"name":"tick","operations":1}\n')
+            if command[0] == 'valgrind':
+                (cwd / 'callgrind.out').write_text('desc: Trigger: Client Request: tick\ntotals: 7\n')
+            return SimpleNamespace(returncode=0)
+
+        with (tempfile.TemporaryDirectory() as directory,
+              patch.object(hot_paths, 'scratch_env', side_effect=lambda _, **env: env),
+              patch.object(hot_paths.subprocess, 'run', side_effect=benchmark)):
+            root = Path(directory)
+            game = root / 'sunrise-client'
+            expected = {'tick': {'name': 'tick', 'operations': 1}}
+            self.assertEqual(hot_paths.run_game(game, root, root / 'direct', 'none', ''), expected)
+            self.assertEqual(hot_paths.callgrind('valgrind', game, root, root / 'counted', 'none', ''),
+                             ({'tick': (7, 0)}, expected))
+
+    def test_the_same_filter_selects_and_runs_fanout_workloads(self):
+        inherited = 'mod.hook.fanout.entity_tick.10'  # prefix also selects .100 and .1000
+        explicit = 'mod.hook.fanout.server_started.1000'
+
+        def run_game(game, resources, work, mods, only):
+            if not mods.startswith('fanout-'):
+                return {}
+            count = mods.removeprefix('fanout-')
+            return {name: {'operations': 3, 'checksum': '0' * 16, 'wall_ns': 6}
+                    for hook in ('entity_tick', 'server_started')
+                    if (name := f'mod.hook.fanout.{hook}.{count}').startswith(only)}
+
+        def callgrind(valgrind, game, resources, work, mods, only):
+            rows = run_game(game, resources, work, mods, only)
+            return {name: (9, 0) for name in rows}, rows
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game, out = root / 'game', root / 'result.json'
+            args = SimpleNamespace(game=game, out=out, resources=root, work=root, valgrind='valgrind',
+                                   wall_samples=1, count_samples=1, commit='a' * 40, host='test', run='')
+            for only, expected in ((None, {f'mod.hook.fanout.entity_tick.{n}' for n in (10, 100, 1000)}),
+                                   (explicit, {explicit})):
+                args.only = only
+                with (patch.dict('os.environ', SUNRISE_HOT_PATHS_ONLY=inherited),
+                      patch.object(hot_paths, 'install', return_value=game),
+                      patch.object(hot_paths, 'run_game', run_game), patch.object(hot_paths, 'callgrind', callgrind),
+                      patch.object(hot_paths.shutil, 'which', return_value='valgrind'),
+                      patch.object(hot_paths, 'first_line', return_value='test'),
+                      patch('builtins.print')):
+                    hot_paths.measure(args)
+                result = json.loads(out.read_text())
+                self.assertEqual(set(result['workloads']), expected)
+                self.assertEqual(result['metrics'], {f'{name}.{metric}': [value] for name in expected
+                                                     for metric, value in (('instructions', 3), ('allocations', 0),
+                                                                           ('wall_ns', 2))})
 
 
 class Record(unittest.TestCase):

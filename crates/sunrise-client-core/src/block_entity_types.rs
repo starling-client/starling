@@ -13,14 +13,22 @@ struct BlockMembership {
     valid: BTreeSet<String>,
 }
 
+/// Type information bound at content load and copied into each resident mod block entity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegisteredBlockEntityType {
+    pub numeric_id: u32,
+    /// A Part is registered for this type's server tick.
+    pub has_tick_part: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockEntityTypes {
     blocks: BTreeMap<String, BlockMembership>,
     /// Names in protocol order: a reload may not change numeric wire IDs either.
     wire: Vec<Arc<str>>,
     keys: BTreeSet<Arc<str>>,
-    /// Each registered name's numeric wire ID, its place in `wire`.
-    numeric_ids: HashMap<Arc<str>, u32>,
+    /// Each registered name's numeric wire ID and tick subscription.
+    registered: HashMap<Arc<str>, RegisteredBlockEntityType>,
 }
 
 impl BlockEntityTypes {
@@ -28,10 +36,18 @@ impl BlockEntityTypes {
     pub fn new(blocks: BTreeMap<String, String>, wire: Vec<String>) -> Self {
         let wire: Vec<Arc<str>> = wire.into_iter().map(Into::into).collect();
         let keys = wire.iter().filter(|id| !id.is_empty()).cloned().collect();
-        let numeric_ids = (0..)
+        let registered = (0..)
             .zip(&wire)
             .filter(|(_, id)| !id.is_empty())
-            .map(|(numeric, id)| (id.clone(), numeric))
+            .map(|(numeric_id, id)| {
+                (
+                    id.clone(),
+                    RegisteredBlockEntityType {
+                        numeric_id,
+                        has_tick_part: false,
+                    },
+                )
+            })
             .collect();
         let blocks = blocks
             .into_iter()
@@ -51,7 +67,14 @@ impl BlockEntityTypes {
             blocks,
             wire,
             keys,
-            numeric_ids,
+            registered,
+        }
+    }
+
+    /// Bind server tick subscriptions before this process's type table is installed.
+    pub fn bind_tick_parts(&mut self, mut listens: impl FnMut(&str) -> bool) {
+        for (id, kind) in &mut self.registered {
+            kind.has_tick_part = listens(id);
         }
     }
 
@@ -157,7 +180,11 @@ impl BlockEntityTypes {
     /// The numeric wire ID of the registered type `id`: a small integer that names it for this
     /// run, below [`Self::numeric_id_bound`].
     pub fn numeric_id(&self, id: &str) -> Option<u32> {
-        self.numeric_ids.get(id).copied()
+        self.registered(id).map(|kind| kind.numeric_id)
+    }
+
+    fn registered(&self, id: &str) -> Option<RegisteredBlockEntityType> {
+        self.registered.get(id).copied()
     }
 
     /// One more than the largest numeric wire ID.
@@ -206,9 +233,9 @@ pub fn current() -> Option<&'static BlockEntityTypes> {
     TYPES.get()
 }
 
-/// The numeric wire ID of the registered type `id` (none before startup installs the table).
-pub fn numeric_id(id: &str) -> Option<u32> {
-    current()?.numeric_id(id)
+/// The frozen metadata for a type, or `None` for an unknown type or before installation.
+pub fn registered(id: &str) -> Option<RegisteredBlockEntityType> {
+    current()?.registered(id)
 }
 
 /// Whether a mod declared the block entity type `id` (none before startup

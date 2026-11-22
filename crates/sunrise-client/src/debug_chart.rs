@@ -1,9 +1,10 @@
-//! The debug charts (26.3 `debugchart`): F3+2 shows the frame times and, in
-//! single player, the integrated server's tick times; F3+3 the ping and, on a
-//! remote server, the bandwidth. Each chart keeps the last 240 samples
+//! The debug charts (26.3 `debugchart`): F3+2 shows the frame times and the server's tick times
+//! (the integrated server's own, or on a remote server the samples it streams to a client that
+//! asked for them); F3+3 the ping and, on a remote server, the bandwidth. Each chart keeps the last 240 samples
 //! (`LocalSampleLogger`) and draws one bar per sample over a 60 pixel high
 //! box (`AbstractDebugChart`).
 use crate::{
+    clock::FixedStep,
     font::Font,
     hud_layout::{GuiDraw, argb, fill},
     text::Text,
@@ -12,6 +13,7 @@ use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
+use sunrise_core::{java_number::format_fixed, jmath::round as java_round};
 
 /// `LocalSampleLogger.CAPACITY`.
 pub const CAPACITY: usize = 240;
@@ -80,6 +82,9 @@ pub struct DebugCharts {
     pub packet_rates: [f32; 2],
     packet_totals: [i64; 2],
     packet_tick: u8,
+    /// `ClientDebugSubscriber.remoteSubscriptions`: whether the server was last asked for
+    /// `dedicated_server_tick_time`.
+    tick_time_requested: bool,
     previous_tick: Option<Instant>,
     bytes_seen: Option<i64>,
 }
@@ -111,6 +116,31 @@ impl DebugCharts {
             self.network = false;
         }
     }
+    /// `ClientDebugSubscriber.tick`: the request to send when the wanted subscriptions differ
+    /// from the last sent ones (`showFpsCharts` asks for the tick time).
+    pub fn subscription_request(&mut self, overlay: bool) -> Option<bool> {
+        let wanted = overlay && self.fps;
+        (wanted != std::mem::replace(&mut self.tick_time_requested, wanted)).then_some(wanted)
+    }
+    /// `ClientDebugSubscriber.clear`: a new login asks again.
+    pub fn clear_subscriptions(&mut self) {
+        self.tick_time_requested = false;
+    }
+    /// `DebugScreenOverlay.logRemoteSample`: a full tick sample from the server; the logger holds
+    /// four values, a short sample leaves zeros and a longer one (`System.arraycopy` throws) is a
+    /// packet error that adds no row.
+    pub fn log_remote_sample(&mut self, sample: &[i64]) -> sunrise_protocol::Result<()> {
+        if sample.len() > 4 {
+            return Err(sunrise_protocol::Error::new(format!(
+                "debug sample of {} values, at most 4",
+                sample.len()
+            )));
+        }
+        let mut full = [0; 4];
+        full[..sample.len()].copy_from_slice(sample);
+        self.tick_times.log_full(full);
+        Ok(())
+    }
     /// `reset`: leaving a world.
     pub fn reset(&mut self) {
         self.tick_times.reset();
@@ -122,6 +152,7 @@ impl DebugCharts {
         self.packet_rates = [0.0; 2];
         self.packet_totals = [0; 2];
         self.packet_tick = 0;
+        self.clear_subscriptions();
     }
     /// One integrated server tick that started at `started` and ran its
     /// tick method for `method` (`MinecraftServer.logFullTickTime` and
@@ -166,15 +197,15 @@ impl DebugCharts {
     }
     /// The charts along the bottom of the screen (`extractRenderState`):
     /// frame times left and tick times right, or bandwidth left (remote
-    /// servers only) and ping right. `mspt` is the level's milliseconds
-    /// per tick.
+    /// servers only) and ping right. The TPS chart uses the level clock's
+    /// effective milliseconds per tick.
     pub fn draw(
         &self,
         font: &Font,
         width: i32,
         height: i32,
         framerate_limit: u32,
-        mspt: f32,
+        clock: &FixedStep,
         remote: bool,
     ) -> Vec<GuiDraw> {
         let mut out = Vec::new();
@@ -184,7 +215,9 @@ impl DebugCharts {
             let fps = Chart::Fps { framerate_limit };
             out.extend(fps.draw(font, &self.frame_times, 0, chart_width, height));
             if !self.tick_times.is_empty() {
-                let tps = Chart::Tps { mspt };
+                let tps = Chart::Tps {
+                    mspt: clock.millis_per_tick(),
+                };
                 out.extend(tps.draw(
                     font,
                     &self.tick_times,
@@ -287,7 +320,7 @@ impl Chart {
             let value = self.aggregated(samples, index);
             min = min.min(value);
             max = max.max(value);
-            sum += value;
+            sum = sum.wrapping_add(value);
             self.bars(&mut out, samples, bottom, x, index);
         }
         horizontal_line(
@@ -328,29 +361,47 @@ impl Chart {
         x: i32,
         index: usize,
     ) {
+        // Java `int`/`long` arithmetic: a server's samples can be any value, and wrap.
         let value = samples.get(index, 0);
         let height = self.height(value as f64);
-        out.push(fill(x, bottom - height, x + 1, bottom, self.color(value)));
+        out.push(fill(
+            x,
+            bottom.wrapping_sub(height),
+            x + 1,
+            bottom,
+            self.color(value),
+        ));
         if let Chart::Tps { .. } = self {
             let method = samples.get(index, TICK_SERVER_METHOD);
             let method_h = self.height(method as f64);
-            out.push(fill(x, bottom - method_h, x + 1, bottom, TICK_METHOD_COLOR));
+            out.push(fill(
+                x,
+                bottom.wrapping_sub(method_h),
+                x + 1,
+                bottom,
+                TICK_METHOD_COLOR,
+            ));
             let tasks = samples.get(index, SCHEDULED_TASKS);
             let tasks_h = self.height(tasks as f64);
+            let above_method = bottom.wrapping_sub(method_h);
             out.push(fill(
                 x,
-                bottom - method_h - tasks_h,
+                above_method.wrapping_sub(tasks_h),
                 x + 1,
-                bottom - method_h,
+                above_method,
                 TASK_COLOR,
             ));
-            let other = value - samples.get(index, IDLE) - method - tasks;
+            let other = value
+                .wrapping_sub(samples.get(index, IDLE))
+                .wrapping_sub(method)
+                .wrapping_sub(tasks);
             let other_h = self.height(other as f64);
+            let above_tasks = above_method.wrapping_sub(tasks_h);
             out.push(fill(
                 x,
-                bottom - other_h - tasks_h - method_h,
+                above_tasks.wrapping_sub(other_h),
                 x + 1,
-                bottom - tasks_h - method_h,
+                above_tasks,
                 OTHER_COLOR,
             ));
         }
@@ -358,7 +409,7 @@ impl Chart {
     /// `getValueForAggregation`: a tick's time without its idle part.
     fn aggregated(self, samples: &SampleLogger, index: usize) -> i64 {
         match self {
-            Chart::Tps { .. } => samples.get(index, 0) - samples.get(index, IDLE),
+            Chart::Tps { .. } => samples.get(index, 0).wrapping_sub(samples.get(index, IDLE)),
             _ => samples.get(index, 0),
         }
     }
@@ -386,7 +437,7 @@ impl Chart {
                 shaded(
                     out,
                     font,
-                    &format!("{tps:.1} tps"),
+                    &format!("{} tps", format_fixed(f64::from(tps), 1)),
                     left + 1,
                     bottom - CHART_HEIGHT + 1,
                 );
@@ -406,8 +457,10 @@ impl Chart {
     /// `toDisplayString`.
     fn display(self, sample: f64) -> String {
         match self {
-            Chart::Fps { .. } | Chart::Tps { .. } => format!("{} ms", java_round(sample / 1.0e6)),
-            Chart::Ping => format!("{} ms", java_round(sample)),
+            Chart::Fps { .. } | Chart::Tps { .. } => {
+                format!("{} ms", java_round(sample / 1.0e6) as i32)
+            }
+            Chart::Ping => format!("{} ms", java_round(sample) as i32),
             Chart::Bandwidth => bandwidth_display(sample * 20.0),
         }
     }
@@ -438,9 +491,9 @@ impl Chart {
 /// `BandwidthDebugChart.toDisplayStringInternal`.
 fn bandwidth_display(bytes_per_second: f64) -> String {
     if bytes_per_second >= MEGABYTE {
-        format!("{:.1} MiB/s", bytes_per_second / MEGABYTE)
+        format!("{} MiB/s", format_fixed(bytes_per_second / MEGABYTE, 1))
     } else if bytes_per_second >= 1024.0 {
-        format!("{:.1} KiB/s", bytes_per_second / 1024.0)
+        format!("{} KiB/s", format_fixed(bytes_per_second / 1024.0, 1))
     } else {
         format!("{} B/s", bytes_per_second.floor() as i64)
     }
@@ -449,10 +502,6 @@ fn bandwidth_display(bytes_per_second: f64) -> String {
 /// the top.
 fn bandwidth_height(bytes_per_second: f64) -> i32 {
     java_round((bytes_per_second + 1.0).ln() * 60.0 / MEGABYTE.ln()) as i32
-}
-/// `Math.round(double)`: halves round up.
-fn java_round(v: f64) -> i64 {
-    (v + 0.5).floor() as i64
 }
 /// `AbstractDebugChart.getSampleColor(sample, min, minColor, mid, ...)`.
 fn gradient(
@@ -603,6 +652,120 @@ mod tests {
         c.log_bandwidth(1600);
         assert_eq!(c.bandwidth.len(), 1);
         assert_eq!(c.bandwidth.get(0, 0), 600);
+    }
+
+    #[test]
+    fn the_subscription_request_goes_out_on_change_and_after_a_login() {
+        let mut c = DebugCharts::default();
+        assert_eq!(c.subscription_request(true), None);
+        c.fps = true;
+        assert_eq!(c.subscription_request(false), None);
+        assert_eq!(c.subscription_request(true), Some(true));
+        assert_eq!(c.subscription_request(true), None);
+        c.clear_subscriptions();
+        assert_eq!(c.subscription_request(true), Some(true));
+        assert_eq!(c.subscription_request(false), Some(false));
+        assert_eq!(c.subscription_request(false), None);
+    }
+
+    #[test]
+    fn a_remote_sample_lands_in_the_tick_chart() {
+        let mut c = DebugCharts::default();
+        c.log_remote_sample(&[9, 8, 7]).unwrap();
+        c.log_remote_sample(&[1, 2, 3, 4]).unwrap();
+        assert!(c.log_remote_sample(&[1, 2, 3, 4, 5]).is_err());
+        assert_eq!(
+            c.tick_times.samples.len(),
+            2,
+            "the oversized sample adds no row"
+        );
+        assert_eq!(c.tick_times.samples[0], [9, 8, 7, 0]);
+        assert_eq!(c.tick_times.samples[1], [1, 2, 3, 4]);
+    }
+
+    fn chart_test_font() -> Font {
+        use crate::hud::Rect;
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        // The missing-glyph metrics let this run without game assets.
+        Font::load(
+            &sunrise_assets::resource_source::ResourceSource::default(),
+            &std::collections::HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            rect,
+        )
+    }
+
+    #[test]
+    fn a_nan_tick_rate_draws_infinite_tps() {
+        let mut clock = FixedStep::default();
+        clock.set_rate(f32::NAN);
+        let mut charts = DebugCharts {
+            fps: true,
+            ..Default::default()
+        };
+        charts.log_remote_sample(&[25_000_000]).unwrap();
+        let draws = charts.draw(&chart_test_font(), 484, 100, 0, &clock, true);
+        assert!(draws.iter().any(
+            |draw| matches!(draw, GuiDraw::Text { text, .. } if text.plain() == "Infinity tps")
+        ));
+    }
+
+    #[test]
+    fn a_tick_chart_of_extreme_network_samples_wraps_like_java() {
+        let font = chart_test_font();
+        let mut c = DebugCharts::default();
+        // A full chart with overflowing differences and heights in every dimension.
+        // A tick time whose bar height is `i32::MIN + 48`: `bottom - height` wraps, so the bar's
+        // span overflows an `int` where the painter subtracts its corners.
+        let tall = -1_789_569_666_666_667;
+        assert_eq!(
+            Chart::Tps { mspt: 50.0 }.height(tall as f64),
+            -2_147_483_600
+        );
+        for _ in 0..CAPACITY {
+            c.log_remote_sample(&[tall]).unwrap();
+            c.log_remote_sample(&[i64::MAX, i64::MIN, i64::MAX, i64::MIN])
+                .unwrap();
+            c.log_remote_sample(&[i64::MIN, i64::MAX, i64::MIN, i64::MAX])
+                .unwrap();
+        }
+        let width = Chart::width(i32::MAX);
+        let atlas =
+            crate::hud::HudAtlas::build(&crate::resource_source::ResourceSource::directory(
+                "/nonexistent/sunrise-test-assets".into(),
+            ))
+            .unwrap();
+        let tps = Chart::Tps { mspt: 50.0 };
+        let draws = tps.draw(&font, &c.tick_times, 0, width, 100);
+        // The painter takes the wrapped bar ends (`bottom - height` overflows an `int`).
+        let mut batch = crate::hud::HudBatch::scratch([854, 480]);
+        crate::hud_layout::paint(&mut batch, &atlas, &draws);
+        // The last sample's total time minus its idle time wraps to 1.
+        assert_eq!(tps.aggregated(&c.tick_times, CAPACITY - 1), 1);
+    }
+
+    #[test]
+    fn a_tick_chart_average_uses_the_wrapped_sum() {
+        let mut samples = SampleLogger::default();
+        for value in [i64::MAX - 1, i64::MAX - 1, 6_000_004] {
+            samples.log(value);
+        }
+        // Java long addition leaves a sum of 6,000,000 ns and an average of 2 ms.
+        let draws = Chart::Tps { mspt: 50.0 }.draw(&chart_test_font(), &samples, 0, 242, 100);
+        assert!(
+            draws.iter().any(
+                |draw| matches!(draw, GuiDraw::Text { text, .. } if text.plain() == "2 ms avg")
+            )
+        );
     }
 
     #[test]

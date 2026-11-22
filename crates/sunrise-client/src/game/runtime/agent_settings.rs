@@ -4,8 +4,8 @@
 //! when the player turned Agent Control on, and never under No AI (`sunrise_core::no_ai`).
 //! Turning either switch in the game opens or closes it at once.
 use super::Game;
-use sunrise_client::{Result, control};
 use std::path::PathBuf;
+use sunrise_client::{Result, control};
 
 impl Game<'_> {
     /// The endpoint: the one the command line gave, else the default sunrise-ctl looks for.

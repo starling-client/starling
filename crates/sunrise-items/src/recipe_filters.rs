@@ -20,9 +20,9 @@
 //! order, each file's filters in order. A pack's file replaces a file of the
 //! same id, as any data file does. A filter with an unknown key or no action
 //! is skipped with a warning, so a typo never matches every recipe.
-use sunrise_world::loot::PackOverlay;
 use serde_json::Value;
 use std::path::Path;
+use sunrise_world::loot::PackOverlay;
 
 /// The keys under which a recipe lists what it makes.
 const OUTPUT_KEYS: [&str; 4] = ["result", "results", "output", "outputs"];

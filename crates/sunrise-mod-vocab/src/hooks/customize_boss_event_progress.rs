@@ -9,13 +9,22 @@ pub trait Hooks {
     /// (moving `y` does not move the bars after it). Set `cancel` and this bar is not drawn; the
     /// increment is still applied, leaving room for what a mod draws in its place. Asked once a
     /// frame per bar, in the order the server added them, until the next bar would start a third
-    /// of the way down the screen; not under F1. Client-side.
+    /// of the way down the screen; not under F1. Client-side. A bar the API can't carry (a
+    /// server's name text the API refuses) isn't heard and is drawn as vanilla draws it.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "cancel",
         out = "cancel",
         neoforge = "CustomizeGuiOverlayEvent.BossEventProgress",
         cancellable = true
     )]
-    fn customize_boss_event_progress();
+    fn customize_boss_event_progress(
+        bar: &mod_api::ClientBossBar,
+        x: &mut i32,
+        y: &mut i32,
+        increment: &mut i32,
+        cancel: &mut bool,
+    );
 }

@@ -1,6 +1,6 @@
 use super::*;
-use sunrise_perf_format::v1::{Capture, Kind as K, Side as S, StopReason as R};
 use std::fs;
+use sunrise_perf_format::v1::{Capture, Kind as K, Side as S, StopReason as R};
 
 mod timeline_capture;
 
@@ -297,9 +297,9 @@ fn a_capture_without_the_samples_flag_has_no_samples_field() {
 #[cfg(target_os = "linux")]
 mod sampled {
     use super::*;
-    use sunrise_threads::{sampler, work};
     use std::collections::HashMap;
     use std::hint::black_box;
+    use sunrise_threads::{sampler, work};
 
     #[inline(never)]
     fn spin_unit(cpu_ms: u64) {
@@ -1087,14 +1087,12 @@ fn sunrise_perf_queries_read_back_the_spans_the_network_and_the_world() {
 fn start_of(
     scratch: &Scratch,
     rules: &crate::gamerules::GameRules,
-    far: u32,
-    lod: u32,
-    anticheat: bool,
+    sunrise: sunrise_perf_format::v1::SunriseOptions,
 ) -> Start {
     let mut perf = ServerPerf::new(0.0, 250.0);
     let mut o = options(1.0);
     o.start.game_rules = Some(game_rules(rules));
-    o.start.sunrise_options = Some(sunrise_options(far, lod, anticheat));
+    o.start.sunrise_options = Some(sunrise);
     perf.start_capture(0.0, &scratch.0, o).unwrap();
     let saved = stop(&mut perf, 1.0, R::Normal).unwrap().unwrap();
     read(&saved.path).start.remove(0)
@@ -1122,7 +1120,11 @@ fn the_game_rules_read_back_as_set_and_a_default_world_reads_its_defaults() {
         spawn_monsters: Some(monsters),
         spawner_blocks_work: Some(spawners),
     };
-    let rules_of = |r: &Rules| start_of(&scratch, r, 0, 0, false).game_rules.unwrap();
+    let rules_of = |r: &Rules| {
+        start_of(&scratch, r, sunrise_options(0))
+            .game_rules
+            .unwrap()
+    };
 
     // Vanilla's defaults are non-zero and true: a misspelt name would read 0 and false.
     assert_eq!(
@@ -1172,23 +1174,30 @@ fn the_sunrise_options_read_back_as_given() {
     use sunrise_perf_format::v1::SunriseOptions;
     let scratch = Scratch::new("sunrise-options");
     let rules = crate::gamerules::GameRules::default();
-    let on = start_of(&scratch, &rules, 24, 12, true).sunrise_options;
+    let on = start_of(&scratch, &rules, sunrise_options(12)).sunrise_options;
     assert_eq!(
         on,
         Some(SunriseOptions {
-            max_view_distance: Some(24),
+            max_view_distance: Some(0),
             lod_distance: Some(12),
-            anticheat: Some(true),
         })
     );
-    let off = start_of(&scratch, &rules, 0, 0, false).sunrise_options;
+    let off = start_of(&scratch, &rules, sunrise_options(0)).sunrise_options;
     assert_eq!(
         off,
         Some(SunriseOptions {
             max_view_distance: Some(0),
             lod_distance: Some(0),
-            anticheat: Some(false),
         })
+    );
+    // A capture from before the far ring was removed still reads its distance.
+    let older = SunriseOptions {
+        max_view_distance: Some(24),
+        lod_distance: Some(0),
+    };
+    assert_eq!(
+        start_of(&scratch, &rules, older).sunrise_options,
+        Some(older)
     );
 }
 
@@ -1202,6 +1211,8 @@ fn memory_snapshots_keep_their_labels_paths_values_and_capture_time() {
     ];
     assert!(!perf.memory_snapshot(0.0, "idle", &rows));
     perf.start_capture(10.0, &scratch.0, options(5.0)).unwrap();
+    let cost = perf.memory_cost().unwrap();
+    cost.0.store(5_000_000, Ordering::Relaxed);
     assert!(perf.memory_snapshot(10.25, "start", &rows));
     let saved = stop(&mut perf, 11.0, R::Normal).unwrap().unwrap();
     let capture = read(&saved.path);
@@ -1218,5 +1229,28 @@ fn memory_snapshots_keep_their_labels_paths_values_and_capture_time() {
         ["process.resident_mb", "gpu.resident_mb"]
     );
     assert_eq!(snapshot.value_mb, [12.5, 2.0]);
+    assert!(
+        capture.stop[0]
+            .overhead
+            .as_ref()
+            .unwrap()
+            .memory_snapshot_ns
+            >= 5_000_000
+    );
     assert!(!perf.memory_snapshot(11.5, "after", &rows));
+
+    // A worker finishing after its capture stopped must not charge the next one.
+    perf.start_capture(12.0, &scratch.0, options(5.0)).unwrap();
+    cost.0.fetch_add(5_000_000, Ordering::Relaxed);
+    let saved = stop(&mut perf, 13.0, R::Normal).unwrap().unwrap();
+    let capture = read(&saved.path);
+    assert!(capture.memory.is_empty());
+    assert_eq!(
+        capture.stop[0]
+            .overhead
+            .as_ref()
+            .unwrap()
+            .memory_snapshot_ns,
+        0
+    );
 }

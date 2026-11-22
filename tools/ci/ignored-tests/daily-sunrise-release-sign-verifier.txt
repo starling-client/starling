@@ -1,0 +1,6 @@
+# The daily tests of the sunrise-verify binary (crates/sunrise-release-sign/src/bin/sunrise-verify.rs): each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted.
+sunrise-release-sign cli::a_release_verifier_ignores_the_test_key test:it daily child-process
+sunrise-release-sign cli::the_verifier_checks_the_selected_file_and_signature_with_exactly_one_test_key test:it daily child-process
+sunrise-release-sign cli::the_verifier_has_no_keygen_and_writes_no_key test:it daily child-process
+sunrise-release-sign cli::the_verifier_takes_no_option_that_changes_who_is_trusted test:it daily child-process

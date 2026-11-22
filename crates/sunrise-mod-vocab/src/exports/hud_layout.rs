@@ -1,1 +1,1 @@
-pub use crate::client::hud_layout::{GuiDraw, HealthInputs};
+pub use crate::client::hud_layout::GuiDraw;

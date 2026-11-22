@@ -39,10 +39,10 @@ def main():
     source = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaTitleDebugOracle.java'
     sources = [Path(__file__), source, lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/sunrise-client/src/game.rs',
-               lab.ROOT / 'crates/sunrise-client/src/game/debug_options.rs',
-               lab.ROOT / 'crates/sunrise-client/src/game/debug_keys.rs',
-               lab.ROOT / 'crates/sunrise-client/src/game/ime.rs',
-               lab.ROOT / 'crates/sunrise-client/src/game/screen_backgrounds.rs']
+               lab.ROOT / 'crates/sunrise-client/src/game/interface/debug_options.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/interface/debug_keys.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/interface/ime.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/interface/screen_backgrounds.rs']
     hashes = base.source_hashes(sources)
 
     def run(command, label, **kwargs):

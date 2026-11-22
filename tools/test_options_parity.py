@@ -146,6 +146,7 @@ def make_cases(build):
         'graphicsMode:0\nmenuBackgroundBlurriness:0.35\nchatOpacity:1e-3\n',
         'graphicsMode:1\nlang:Fr_Ca\nresourcePacks:["a","programer_art"]\nincompatibleResourcePacks:["programer_art"]\n',
         'key_key.forward:abc\n', 'key_key.forward:\n', 'key_key.attack:k\n', 'chatOpacity:Infinity\n',
+        'chatOpacity: \t0x1p-1d\n', 'menuBackgroundBlurriness: 0x1p-1f\n',
         'chatOpacity: 0.5d\n', 'menuBackgroundBlurriness:0.25\n', 'menuBackgroundBlurriness:1.04999\n',
         # OptionsForceVBOFix writes a key nothing reads; the lower-casing, key and graphics fixers on odd values.
         'useVbo:false\nao:true\nao:3\n', 'ao:\n', 'graphicsMode:3\nao:2\n', 'graphicsMode:abc\n', 'fancyGraphics:abc\n',

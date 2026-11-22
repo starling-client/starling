@@ -7,9 +7,9 @@ use crate::{
     hud::{Blend, EndPortalFill, HudAtlas, HudBatch},
     text::{self, Style, Text},
 };
+use std::collections::HashSet;
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_core::random::{LegacyRandom, RandomSource};
-use std::collections::HashSet;
 
 /// `WinScreen.OBFUSCATE_TOKEN`: `§f§k§a§b` marks where the poem hides a name.
 const OBFUSCATE_TOKEN: &str = "\u{a7}f\u{a7}k\u{a7}a\u{a7}b";
@@ -276,7 +276,7 @@ impl WinScreen {
         );
         batch.sprite_region(
             atlas,
-            crate::title_edition::SPRITE,
+            "gui/title/edition",
             [edition_x, logo_y + 44.0 - 7.0 + y_offs, 128.0, 14.0],
             128.0,
             16.0,

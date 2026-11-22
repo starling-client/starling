@@ -19,9 +19,18 @@ pub trait Hooks {
     /// hand; nothing is used up in creative mode. The hand holds the result,
     /// a mod's replacement included, until the server's inventory update.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_living_entity_use_item_finish",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
-        neoforge = "LivingEntityUseItemEvent.Finish"
+        neoforge = "LivingEntityUseItemEvent.Finish",
+        version = 2
     )]
-    fn living_entity_use_item_finish();
+    fn living_entity_use_item_finish(
+        stack: &ItemStack,
+        entity: Option<i32>,
+        hand: Hand,
+        duration: i32,
+        result: &mut Option<ItemStack>,
+    );
 }

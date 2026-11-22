@@ -1,16 +1,16 @@
 //! Transport for native modifier chains and a feature callback sharing the RNG.
 use crate::support::placement_queries as queries;
-use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
-use sunrise_world::worldgen::{
-    anchor::WorldGenerationContext,
-    placement::{FeaturePlacer, PlacementModifier},
-};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
+};
+use sunrise_core::random::{LegacyRandom, RandomSource, XoroshiroRandom};
+use sunrise_world::worldgen::{
+    anchor::WorldGenerationContext,
+    placement::{FeaturePlacer, PlacementModifier},
 };
 fn n(v: &Value) -> i32 {
     v.as_i64().unwrap() as i32

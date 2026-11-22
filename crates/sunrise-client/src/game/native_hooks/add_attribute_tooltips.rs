@@ -9,9 +9,11 @@ impl Game<'_> {
     /// `AddAttributeTooltipsEvent`: the lines that follow a stack's attribute lines. Push lines
     /// to `lines`, each with a colour as `rgba` packs it (`u32::MAX` keeps the text's own).
     /// `shown` is whether the stack's display shows the attribute modifiers; the hook is asked
-    /// either way. `player` and `player_entity_id` are the local player's, `None` for the recipe
-    /// book's search text and a stack nested in another's tooltip (a crossbow's projectile). Asked each frame the tooltip shows, only while a mod listens.
-    /// Client-side.
+    /// either way. `player` and `player_entity_id` are the local player's, or `None` for recipe
+    /// book search and a stack nested in another's tooltip (a crossbow's projectile). Asked when
+    /// lines are built for display, recipe book search or `ItemResource::tooltip`. Display and
+    /// resource-query builds skip it when the stack hides its entire tooltip. Reentrant line
+    /// queries do not dispatch it. Client-side, only while a mod listens.
     pub(in crate::game) fn native_add_attribute_tooltips(
         &self,
         call: mod_api::__private::AddAttributeTooltipsCall<'_>,
@@ -21,8 +23,8 @@ impl Game<'_> {
 }
 
 /// The attribute tooltip listener of the game: it fires `gather_skipped_attribute_tooltips` and
-/// `add_attribute_tooltips` for the one builder of the ordinary item tooltip and the recipe
-/// book's search text. `player` is the local player's uuid and entity id, none for the search
+/// `add_attribute_tooltips` for item tooltip line builds and the recipe book's search text.
+/// `player` is the local player's uuid and entity id, none for the search
 /// text and for a nested stack (a crossbow's projectile).
 pub(in crate::game) struct HookedAttributeTooltips<'a, 'g> {
     game: &'a Game<'g>,

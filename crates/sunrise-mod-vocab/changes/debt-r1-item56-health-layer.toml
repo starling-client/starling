@@ -1,0 +1,37 @@
+ids = [
+    "hook:gui_layer_pre",
+    "hook:gui_layer_post",
+    "hook:render_gui_pre",
+    "hook:register_gui_layers",
+    "hook:player_heart_type",
+    "hook:health_hud",
+    "hook:health_hud.inputs",
+    "hook:health_hud.wi",
+    "hook:health_hud.hi",
+    "method:Hooks::health_hud",
+    "type:HealthHudEvent",
+    "type:HealthHudEvent.inputs",
+    "type:HealthHudEvent.wi",
+    "type:HealthHudEvent.hi",
+    "type:HealthInputs",
+]
+why = "Vanilla 26.3 updates the heart flash in Hud.extractPlayerHealth and the pop sound in Hud.extractAirBubbles. NeoForge's Hud.registerVanillaLayers gives each status row its own body and applies hudVisible and survivalVisible to the original body, not the slot (GuiLayerManager.add). RegisterGuiLayersEvent replaces or wraps that body in place; GuiLayerManager.renderInner fires RenderGuiLayerEvent.Pre before the installed body and Post after it if Pre did not cancel. Remove the second health callback. The vanilla heart body updates its own state and chooses sprites (Hud.HeartType.forPlayer); the vanilla air body updates bubbles and plays the pop independently. The status slots dispatch even when F1 or another vanilla condition hides their original bodies. GuiLayerManager.render still excludes a vetoed HUD pass, and Hud.extractRenderState excludes the loading screen. The installed status callbacks use the shared retained-callback boundary and the same attributed error report as the rest of the HUD."
+migrate = """
+Remove `Hooks::health_hud` and the `HealthHudEvent` and `HealthInputs` imports. In `Hooks::register_gui_layers`, use `event.layers.replace_layer(\"minecraft:player_health\", Box::new(move |host, draw| { /* paint */ }))` for custom hearts. If replacing all the former rows, also replace `minecraft:armor_level`, `minecraft:food_level` and `minecraft:air_level`. `minecraft:vehicle_health` is a separate slot; leave it alone unless replacing the mount hearts. A `Some(Vec<GuiDraw>)` can become `draw.gui_paint(&draws)` inside the installed body; handle the returned `GuiPaintError`. Either paint each row in its own slot, or paint a combined buffer in `player_health` and replace the other three bodies with no-ops. The painted status rows still reserve space from Sunrise's radial overlay. Replace `event.wi` and `event.hi` with `let [w, h] = draw.size();` (GUI pixels as `f32`).
+
+There is no replacement `event.inputs` snapshot. Get the local player with `host.local_player()`; then use `host.living(player.entity())` and `living.health(host)`, `living.max_health(host)`, `living.absorption(host)` and `living.attribute_value(host, \"minecraft:armor\")` for the corresponding values. Read food and saturation from `player.food(host)` (`level` and `saturation`). Read hunger and regeneration from `living.potion_affected(host, effect_key)` using keys resolved at load. A custom body owns its visual state, including its heart sprites and timing. The old HUD-only fields have no equivalent snapshot; use the vanilla body if you need its flash and bubble behaviour.
+
+If you returned `None` on frames that should use vanilla, use `event.layers.wrap_layer(id, Box::new(move |ctx| { /* choose a body */ }))` instead for each affected slot. Read the player through `ctx.host()`, paint with `ctx.with_draw(&mut |draw| { /* custom paint */ })`, and call `ctx.draw_previous()` on frames that should keep the previous body.
+
+`register_gui_layers` (v5) keeps its signature. If you already replaced or wrapped `minecraft:player_health`, keep that call for hearts only. To replace or wrap the whole former body, use a separate `replace_layer` or `wrap_layer` call for each of `minecraft:player_health`, `minecraft:armor_level`, `minecraft:food_level` and `minecraft:air_level`. If your `register` call used `GuiLayerPlacement::Above("minecraft:player_health".into())` to draw above the whole group, change it to `GuiLayerPlacement::Above("minecraft:air_level".into())`. Keep `GuiLayerPlacement::Below("minecraft:player_health".into())` to draw below the player rows. The mount hearts used to draw before the combined player-health body; now `vehicle_health` draws after the hearts, armor and food and before air. An old `GuiLayerPlacement::Above("minecraft:vehicle_health".into())` or `GuiLayerPlacement::Below("minecraft:player_health".into())` that sat between mount hearts and the player rows cannot preserve both relations. Choose `GuiLayerPlacement::Below("minecraft:player_health".into())` to stay below the player rows (now also below mount hearts), or `GuiLayerPlacement::Above("minecraft:vehicle_health".into())` to stay above mount hearts (now also above hearts, armor and food, but below air).
+
+`GuiLayerRegistrar::replace_layer` and `wrap_layer` keep their signatures and the slot's ID, order and dispatch, not the old body's eligibility. A wrapper calling `ctx.draw_previous()` still gets the previous body's own checks. To hide your custom paint under F1 or other HUD-hidden modes, guard the paint with `host.hud_mode() == mod_api::HudMode::AllVisible` (take `host` from `ctx.host()` in a wrapper). To keep custom paint survival/adventure-only, also get `player` from `host.local_player()` and paint only when `matches!(player.game_mode(host), Some(mod_api::GameMode::Survival | mod_api::GameMode::Adventure))`.
+
+`gui_layer_pre` (v2) and `gui_layer_post` (v3) keep their signatures. Match `minecraft:player_health` for hearts only. For a veto or observation that used to cover all four rows, also match `minecraft:armor_level`, `minecraft:food_level` and `minecraft:air_level`. Return `Flow::Cancel` from Pre for each slot that should be skipped; cancelling only the heart slot no longer skips the air body or bubble audio. Observers of status slots now run even when the vanilla body does not paint (for example, under F1 or `minecraft:vehicle_health` off a mount). If you only want to observe one row while it is eligible to paint, guard with `host.hud_mode() == mod_api::HudMode::AllVisible` and the row's player-mode or mount condition.
+
+`render_gui_pre` (v2) keeps its signature and now fires under F1 so it can veto status-slot dispatch there too. If your listener should do work only with the vanilla HUD visible, guard that work with `host.hud_mode() == mod_api::HudMode::AllVisible`.
+
+`player_heart_type` (v2) keeps its signature; sprite overrides need no source change. It now fires after the heart slot's `gui_layer_pre` and only when the vanilla heart body runs. Move work that must run independently of that body to an independent HUD layer or to `gui_render_post` if it must also run with the HUD hidden.
+
+`register_gui_layers` accepts unused `minecraft:` IDs, but not duplicates of vanilla or mod layers. A refused or panicking registration publishes none of that subscriber’s edits. A HUD veto cannot hide mandatory mod-error toasts, including audio pull failures; the player’s hide-GUI preference still applies.
+"""

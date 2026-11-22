@@ -5,6 +5,8 @@ pub trait Hooks {
     /// A non-persistent leaf block at distance 7 is about to decay at `pos`.
     /// Set `cancel` to keep it. Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -13,5 +15,5 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_leaves_decay"
     )]
-    fn leaves_decay();
+    fn leaves_decay(dimension: LevelDimension, pos: BlockPos, cancel: &mut bool);
 }

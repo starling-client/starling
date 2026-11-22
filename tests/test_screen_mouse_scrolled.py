@@ -39,6 +39,8 @@ struct Game { modifiers: u32, synthetic: bool, open: bool, cancel: bool,
     calls: RefCell<Vec<&'static str>>, scrolled: usize }
 impl Game {
     fn pad_synthetic_input(&self) -> bool { self.synthetic }
+    // No container hook registered: it takes no wheel.
+    fn container_wheel(&mut self, _: f32) -> bool { false }
     fn screen_view_now(&self) -> Option<ScreenView<'_>> {
         self.open.then_some(ScreenView { id: "inventory", mouse: [7.0, 9.0] })
     }

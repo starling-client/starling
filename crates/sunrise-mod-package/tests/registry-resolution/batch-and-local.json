@@ -1,0 +1,172 @@
+{
+  "index": {
+    "schema": 1, "generated": "fixture", "projects": [
+      {"id": "add_on", "kind": "mod", "name": "Add_On", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "add_on.smod", "url": "https://example.test/add_on/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "extra", "version": "^2", "optional": true}]}
+      ]},
+      {"id": "extra", "kind": "mod", "name": "Extra", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "extra.smod", "url": "https://example.test/extra/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}, "version": "1.0.0", "game": "26.3"},
+        {"api": "0.2", "file": {"name": "extra.smod", "url": "https://example.test/extra/2.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}, "version": "2.0.0", "game": "26.3"}
+      ]},
+      {"id": "requires_extra", "kind": "mod", "name": "Requires Extra", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "requires_extra.smod", "url": "https://example.test/requires_extra/1.0.0", "size": 1, "sha256": "000000000000000000000000000000000000000000000000000000000000000c"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "extra", "version": "^1"}]},
+        {"api": "0.2", "file": {"name": "requires_extra.smod", "url": "https://example.test/requires_extra/2.0.0", "size": 1, "sha256": "000000000000000000000000000000000000000000000000000000000000000d"}, "version": "2.0.0", "game": "26.3", "dependencies": [{"id": "extra", "version": "^2"}]}
+      ]},
+      {"id": "a", "kind": "mod", "name": "A", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "a.smod", "url": "https://example.test/a/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000004"}, "version": "1.0.0", "game": "26.3", "dependencies": [{"id": "lib", "version": "^1"}]}
+      ]},
+      {"id": "lib", "kind": "mod", "name": "Lib", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "lib.smod", "url": "https://example.test/lib/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000005"}, "version": "1.0.0", "game": "26.3"},
+        {"api": "0.2", "file": {"name": "lib.smod", "url": "https://example.test/lib/2.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000006"}, "version": "2.0.0", "game": "26.3", "dependencies": [{"id": "b", "version": "^1"}]}
+      ]},
+      {"id": "b", "kind": "mod", "name": "B", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "b.smod", "url": "https://example.test/b/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000007"}, "version": "1.0.0", "game": "26.3"}
+      ]},
+      {"id": "revoked", "kind": "mod", "name": "Revoked", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "revoked.smod", "url": "https://example.test/revoked/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000008"}, "version": "1.0.0", "game": "26.4", "dependencies": [{"id": "missing", "version": "^1"}]}
+      ]},
+      {"id": "global", "kind": "mod", "name": "Global", "summary": "A dependency-resolution fixture.", "license": "MIT", "source": "https://example.test/mods", "versions": [
+        {"api": "0.2", "file": {"name": "global.smod", "url": "https://example.test/global/1.0.0", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000009"}, "version": "1.0.0", "game": "26.3"}
+      ]}
+    ],
+    "revoked": [{"id": "revoked", "sha256": "0000000000000000000000000000000000000000000000000000000000000008", "reason": "Test file takedown."}, {"id": "global", "reason": "Test project takedown."}]
+  },
+  "game": "26.3",
+  "cases": [
+    {
+      "name": "an absent optional dependency stays absent",
+      "requests": [{"id": "add_on"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}], "optional": [{"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "extra", "version": "^2", "optional": true}}]},
+      "refusals": {}
+    },
+    {
+      "name": "a new owner refuses an installed optional target out of range",
+      "requests": [{"id": "add_on"}],
+      "installed": [{"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {"add_on": ["add_on", "extra", "^2"]}
+    },
+    {
+      "name": "a new target respects an installed owner optional range",
+      "requests": [{"id": "extra", "version": "1.0.0"}],
+      "installed": [{"id": "add_on", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {"extra": ["add_on", "extra", "^2"]}
+    },
+    {
+      "name": "a replacement target respects an installed owner optional range",
+      "requests": [{"id": "extra", "version": "1.0.0"}],
+      "installed": [{"id": "add_on", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, {"id": "extra", "version": "2.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {"extra": ["add_on", "extra", "^2"]}
+    },
+    {
+      "name": "selected optional targets connect otherwise independent groups",
+      "requests": [{"id": "add_on"}, {"id": "extra", "version": "1.0.0"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {"add_on": ["add_on", "extra", "^2"], "extra": ["add_on", "extra", "^2"]}
+    },
+    {
+      "name": "a new owner can install with an explicitly requested upgrade of its optional target",
+      "requests": [{"id": "add_on"}, {"id": "extra", "version": "2.0.0"}],
+      "installed": [{"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}, "extra": {"status": "installable", "version": "2.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}], "update": [{"id": "extra", "from": "1.0.0", "to": "2.0.0"}], "optional": [{"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "extra", "version": "^2", "optional": true}}]},
+      "refusals": {}
+    },
+    {
+      "name": "an upgrade and its installed required owner are planned against their final ranges",
+      "requests": [{"id": "extra", "version": "2.0.0"}, {"id": "requires_extra", "version": "2.0.0"}],
+      "installed": [{"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}, {"id": "requires_extra", "version": "1.0.0", "sha256": "000000000000000000000000000000000000000000000000000000000000000c"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"extra": {"status": "installable", "version": "2.0.0"}, "requires_extra": {"status": "installable", "version": "2.0.0"}}, "update": [{"id": "extra", "from": "1.0.0", "to": "2.0.0"}, {"id": "requires_extra", "from": "1.0.0", "to": "2.0.0"}], "required_by": {"extra": ["requires_extra"]}},
+      "refusals": {}
+    },
+    {
+      "name": "a required dependency upgrade also satisfies another request's optional range",
+      "requests": [{"id": "add_on"}, {"id": "requires_extra", "version": "2.0.0"}],
+      "installed": [{"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}, "requires_extra": {"status": "installable", "version": "2.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}, {"id": "requires_extra", "version": "2.0.0"}], "update": [{"id": "extra", "from": "1.0.0", "to": "2.0.0"}], "optional": [{"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "extra", "version": "^2", "optional": true}}], "required_by": {"extra": ["requires_extra"]}},
+      "refusals": {}
+    },
+    {
+      "name": "an impossible unrelated pin does not break the joint dependency upgrade",
+      "requests": [{"id": "add_on"}, {"id": "requires_extra", "version": "2.0.0"}, {"id": "b", "version": "9.0.0"}],
+      "installed": [{"id": "extra", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000002"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"add_on": {"status": "installable", "version": "1.0.0"}, "requires_extra": {"status": "installable", "version": "2.0.0"}}, "install": [{"id": "add_on", "version": "1.0.0"}, {"id": "requires_extra", "version": "2.0.0"}], "update": [{"id": "extra", "from": "1.0.0", "to": "2.0.0"}], "optional": [{"from": {"id": "add_on", "version": "1.0.0"}, "dependency": {"id": "extra", "version": "^2", "optional": true}}], "required_by": {"extra": ["requires_extra"]}},
+      "refusals": {"b": ["b", "9.0.0"]}
+    },
+    {
+      "name": "a guarded dependency downgrade cannot block keeping the installed dependency",
+      "requests": [{"id": "requires_extra", "version": "1.0.0"}, {"id": "extra", "version": "2.0.0"}],
+      "installed": [{"id": "add_on", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000001"}, {"id": "extra", "version": "2.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000003"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"extra": {"status": "already_installed", "version": "2.0.0"}}, "kept": [{"id": "extra", "version": "2.0.0"}]},
+      "refusals": {"requires_extra": ["add_on", "extra", "^2"]}
+    },
+    {
+      "name": "an impossible b pin does not follow an out of range library candidate into a",
+      "requests": [{"id": "a"}, {"id": "b", "version": "9.0.0"}],
+      "installed": [],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"a": {"status": "installable", "version": "1.0.0"}}, "install": [{"id": "a", "version": "1.0.0"}, {"id": "lib", "version": "1.0.0"}], "required_by": {"lib": ["a"]}},
+      "refusals": {"b": ["b", "9.0.0"]}
+    },
+    {
+      "name": "same version and different installed hash is local even when the indexed file was taken down",
+      "requests": [{"id": "revoked"}],
+      "installed": [{"id": "revoked", "version": "1.0.0", "sha256": "000000000000000000000000000000000000000000000000000000000000000a"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"revoked": {"status": "already_installed", "version": "1.0.0"}}, "kept_unindexed": [{"id": "revoked", "version": "1.0.0"}]},
+      "refusals": {}
+    },
+    {
+      "name": "same version without an installed hash is also a local copy",
+      "requests": [{"id": "revoked"}],
+      "installed": [{"id": "revoked", "version": "1.0.0"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {"requested": {"revoked": {"status": "already_installed", "version": "1.0.0"}}, "kept_unindexed": [{"id": "revoked", "version": "1.0.0"}]},
+      "refusals": {}
+    },
+    {
+      "name": "an exact hash match inherits the indexed file takedown",
+      "requests": [{"id": "revoked"}],
+      "installed": [{"id": "revoked", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000008"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {"revoked": ["revoked", "taken down"]}
+    },
+    {
+      "name": "a project-wide takedown applies to local copies too",
+      "requests": [{"id": "global"}],
+      "installed": [{"id": "global", "version": "1.0.0", "sha256": "000000000000000000000000000000000000000000000000000000000000000b"}],
+      "side": "client",
+      "native_fits": {},
+      "expected": {},
+      "refusals": {"global": ["global", "taken down"]}
+    }
+  ]
+}

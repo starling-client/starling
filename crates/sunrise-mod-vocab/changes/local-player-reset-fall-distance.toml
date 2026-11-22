@@ -1,0 +1,2 @@
+ids = ["handle:PlayerRef::reset_fall_distance"]
+why = "Client-side movement mods can clear their own player's accumulated fall distance without sending a packet or changing the server's copy."

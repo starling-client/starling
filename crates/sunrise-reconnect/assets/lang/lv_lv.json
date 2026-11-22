@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Automātiski atjaunot savienojumu",
+  "sunrise.extras.auto_reconnect.tooltip": "Atkārtoti pievienojas serverim pēc zaudēta savienojuma vai restartēšanas, nekad pēc sitiena vai aizlieguma."
+}

@@ -104,6 +104,10 @@ pub(super) fn random(name: &str, args: Vec<Expr>) -> Option<Expr> {
         .then(|| method(Root::Random, name, args))
 }
 
+/// The highest a legacy variable's tree is ([`variable`]'s `SPEED`: a call over two sums of
+/// products of methods on a root), counted as the budget counts heights.
+pub(super) const VARIABLE_HEIGHT: usize = 6;
+
 /// A legacy variable as the scripting expression the wiki maps it to. Any expression may use
 /// them; they come after its locals and context objects.
 pub(super) fn variable(name: &str) -> Option<Result<Expr, String>> {

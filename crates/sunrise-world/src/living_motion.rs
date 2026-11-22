@@ -50,10 +50,11 @@ pub fn add_delta_movement<W: LivingMotionWorld>(
     }
     Ok(())
 }
-pub fn jump_from_ground<W: LivingMotionWorld>(world: &mut W) -> Result<(), W::Error> {
+/// `LivingEntity.jumpFromGround`; false when the jump power is too small to jump.
+pub fn jump_from_ground<W: LivingMotionWorld>(world: &mut W) -> Result<bool, W::Error> {
     let power = jump_power(world, 1.0)?;
     if power <= 1.0e-5f32 {
-        return Ok(());
+        return Ok(false);
     }
     let mut velocity = world.velocity();
     velocity.y = if power.is_nan() || velocity.y.is_nan() {
@@ -74,7 +75,7 @@ pub fn jump_from_ground<W: LivingMotionWorld>(world: &mut W) -> Result<(), W::Er
         )?;
     }
     world.mark_needs_sync();
-    Ok(())
+    Ok(true)
 }
 pub fn gravity<W: LivingMotionWorld>(world: &mut W) -> Result<f64, W::Error> {
     if world.no_gravity()? {

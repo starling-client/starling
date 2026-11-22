@@ -3,11 +3,11 @@
 //! thunder biome" lines and prints the sampled sky state as JSON lines.
 //!
 //! usage: environment_fixture RESOURCES INPUT OUTPUT
+use std::{collections::HashMap, fmt::Write as _, fs, path::Path};
 use sunrise_client::{
     biome::Biomes,
     environment::{Environment, Sample},
 };
-use std::{collections::HashMap, fmt::Write as _, fs, path::Path};
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().collect();

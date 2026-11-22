@@ -10,9 +10,9 @@
 //! server with `sunrise_hooks::pages::connect`.
 use super::{ButtonSpec, Outcome, centered_x, half, quarter};
 use crate::hud::{HudAtlas, HudBatch, rgba};
-use sunrise_hooks::pages::{self, Act, Page, Place, Row};
 use std::cell::RefCell;
 use std::time::Instant;
+use sunrise_hooks::pages::{self, Act, Page, Place, Row};
 
 /// The first button's id; button `k` of the page is `FIRST + k`.
 const FIRST: u8 = 100;

@@ -8,6 +8,5 @@ pub trait AdvancementsServerHost {
     /// `ServerAdvancementManager.get(id)`: the loaded advancement `id`, from the
     /// set the last data-pack load or `/reload` built (loaded on first use).
     /// None when no advancement has that id.
-    #[access(WorldOnly)]
     fn advancement(&mut self, id: &Identifier) -> Option<AdvancementInfo>;
 }

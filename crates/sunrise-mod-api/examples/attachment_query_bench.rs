@@ -1,13 +1,13 @@
 //! Production query/index benchmark. Run optimized, never as a timing assertion in CI:
 //! cargo run -p sunrise-mod-api --profile fast --example attachment_query_bench
 //! The host adapter supplies real attachment maps/indexes, not a second query engine.
-use sunrise_mod_runtime::attachments::{self as runtime, index::AttachmentIndex};
 use mod_api::{prelude::*, *};
 use std::{
     hint::black_box,
     sync::{Arc, Mutex},
     time::Instant,
 };
+use sunrise_mod_runtime::attachments::{self as runtime, index::AttachmentIndex};
 #[path = "attachment_query_bench/allocations.rs"]
 mod allocations;
 use allocations::measured;
@@ -84,9 +84,18 @@ impl BenchHost {
 impl Host for BenchHost {}
 mod_api::impl_host_areas!(BenchHost, except(mod_state));
 impl ModStateHost for BenchHost {
-    fn attachment_query(&self, namespace: &str, name: &str) -> AttachmentBatch {
-        runtime::AttachmentBatch::new(self.index.lock().unwrap().snapshot_named(namespace, name))
-            .into()
+    fn attachment_query(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<AttachmentBatch, AttachmentError> {
+        Ok(runtime::AttachmentBatch::new(
+            self.index.lock().unwrap().snapshot_named(namespace, name),
+        )
+        .into())
+    }
+    fn attachment_read_scope(&self) -> Result<AttachmentReadScope<'_>, AttachmentRowError> {
+        Ok(AttachmentReadScope::default())
     }
     fn attachments(&mut self) -> &mut dyn AttachmentStore {
         self
@@ -99,10 +108,19 @@ impl ModStateServerHost for BenchHost {
         &self,
         token: AttachmentWriteToken,
     ) -> Result<(), AttachmentRowError> {
-        token.validate(&self.index.lock().unwrap())
+        mod_api::__private::game::validate_attachment_write(&token, Some(&self.index))
     }
 }
 impl AttachmentHost for BenchHost {
+    fn validate_attachment(
+        &self,
+        namespace: &str,
+        name: &str,
+        sync: bool,
+    ) -> Result<(), AttachmentError> {
+        let _ = (namespace, name, sync);
+        Ok(())
+    }
     fn attachments(
         &mut self,
         holder: Holder,
@@ -123,12 +141,13 @@ fn contribution(holder: AttachmentHolder, value: &u32) -> u64 {
     u64::from(entity.id()) + u64::from(*value)
 }
 fn api(host: &dyn Host) -> u64 {
-    host.query(&VALUE)
-        .unwrap()
-        .iter()
+    let scope = host.attachment_read_scope().unwrap();
+    let batch = host.query(&VALUE).unwrap();
+    let mut rows = batch.iter();
+    std::iter::from_fn(|| rows.try_next().unwrap())
         .map(|row| {
-            let row = row.unwrap();
-            contribution(row.holder, row.value)
+            row.with_value(scope, |value| contribution(row.holder, value))
+                .unwrap()
         })
         .sum()
 }
@@ -149,6 +168,7 @@ fn timed(rounds: u32, mut f: impl FnMut() -> u64) -> f64 {
     start.elapsed().as_secs_f64() * 1e6 / f64::from(rounds)
 }
 fn warm(host: &BenchHost) -> f64 {
+    let scope = host.attachment_read_scope().unwrap();
     let rows = host.raw();
     let batch = host.query(&VALUE).unwrap();
     assert_eq!(api(host), 99_990_000);
@@ -171,11 +191,11 @@ fn warm(host: &BenchHost) -> f64 {
         }
         let r = timed(ROUNDS, || raw(black_box(&rows)));
         let t = timed(ROUNDS, || {
-            batch
-                .iter()
+            let mut rows = batch.iter();
+            std::iter::from_fn(|| rows.try_next().unwrap())
                 .map(|row| {
-                    let row = row.unwrap();
-                    contribution(row.holder, row.value)
+                    row.with_value(scope, |value| contribution(row.holder, value))
+                        .unwrap()
                 })
                 .sum()
         });
@@ -206,33 +226,39 @@ fn cold() {
         let mut eager = Vec::new();
         for _ in 0..9 {
             let host = BenchHost::new(true, true);
+            let scope = host.attachment_read_scope().unwrap();
             let start = Instant::now();
             let (sum, counts) = measured(|| {
-                host.query(&VALUE)
-                    .unwrap()
-                    .iter()
+                let batch = host.query(&VALUE).unwrap();
+                let mut rows = batch.iter();
+                std::iter::from_fn(|| rows.try_next().unwrap())
                     .take(limit)
                     .map(|row| {
-                        let row = row.unwrap();
-                        contribution(row.holder, row.value)
+                        row.with_value(scope, |value| contribution(row.holder, value))
+                            .unwrap()
                     })
                     .sum::<u64>()
             });
             lazy.push(start.elapsed().as_secs_f64() * 1e6);
             assert_eq!(sum, (limit * (limit - 1)) as u64);
             let host = BenchHost::new(true, true);
+            let scope = host.attachment_read_scope().unwrap();
             let start = Instant::now();
             let (_, eager_counts) = measured(|| {
                 // Eager policy measured using the very same production decode path.
                 let batch = host.query(&VALUE).unwrap();
-                for row in batch.iter() {
-                    black_box(row.unwrap().value);
+                let mut rows = batch.iter();
+                while let Some(row) = rows.try_next().unwrap() {
+                    row.with_value(scope, |value| {
+                        black_box(value);
+                    })
+                    .unwrap();
                 }
+                let mut rows = batch.iter();
                 black_box(
-                    batch
-                        .iter()
+                    std::iter::from_fn(|| rows.try_next().unwrap())
                         .take(limit)
-                        .map(|row| *row.unwrap().value as u64)
+                        .map(|row| u64::from(row.with_value(scope, |value| *value).unwrap()))
                         .sum::<u64>(),
                 );
             });
@@ -253,7 +279,7 @@ fn cow(host: &mut BenchHost) {
     let mut unpinned = Vec::new();
     for _ in 0..9 {
         let batch = host.query_mut(&VALUE).unwrap();
-        let row = batch.iter().next().unwrap().unwrap();
+        let row = batch.iter().try_next().unwrap().unwrap();
         let start = Instant::now();
         let (_, counts) = measured(|| row.set(host, 123).unwrap());
         pinned.push(start.elapsed().as_secs_f64() * 1e6);

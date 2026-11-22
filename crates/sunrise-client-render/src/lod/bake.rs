@@ -8,10 +8,10 @@
 //! game build, the world's data packs, the block and biome registries and the
 //! level's shape guards the folder; when any of them changes it is emptied.
 //! Reduced far detail's approximate samples are kept apart from full ones.
-use super::{Column, Span, Surface};
+use super::{Column, Span};
+use crate::columns::Surface;
 use crate::{chunk::LevelShape, fast_hash::FxHashMap};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
-use sunrise_world::registry::BlockStateId;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -19,6 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
+use sunrise_world::registry::BlockStateId;
 
 const FORMAT: &str = "sunrise-lod-bake 3";
 const FOLDER: &str = "sunrise_lod";

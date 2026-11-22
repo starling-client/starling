@@ -22,6 +22,7 @@ pub enum StateError {
 }
 
 /// One block's immutable properties and state combinations, in imported ordinal order.
+#[derive(PartialEq)]
 pub struct BlockDefinition {
     properties: Vec<(String, Vec<String>)>,
     states: Vec<Box<[u16]>>,
@@ -141,6 +142,7 @@ impl BlockDefinition {
 }
 
 /// Completed names and definitions are published together by the installed registry.
+#[derive(PartialEq)]
 pub struct Blocks {
     pub names: crate::registry_keys::Names,
     pub definitions: Vec<BlockDefinition>,

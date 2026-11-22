@@ -7,7 +7,9 @@
 
 LIST.tsv has one test per line, tab-separated: `PACKAGE TARGET TEST SOURCE REASON`. TARGET is the cargo target the
 test is in (`lib`, `bin:NAME` or `test:NAME`, as the daily run selects it), TEST its libtest path, SOURCE the
-`file:line` of its `fn`, REASON why it is a daily test (`slow`, `game-boot`, ...). `#` starts a comment line.
+`file:line` of its `fn`, REASON why it is a daily test (`slow`, `game-boot`, `gpu` for a test that needs an
+adapter, ...). `#` starts a comment line. For GPU tests, build an apply list from the tests that fail with
+Vulkan hidden and `SUNRISE_GPU_TESTS_REQUIRE_ADAPTER=1`, not from their timings.
 
 `select` reads a measurement of verify's tests (tab-separated with a header: package, target_kind, target, test,
 source, max_seconds, ...; each test timed in-process by libtest's --report-time) and prints the tests that move:
@@ -20,8 +22,8 @@ listed: an attribute cannot move them.
 `apply` finds each test's `fn` at SOURCE (or, if the line moved, the only `fn` of that name in the file), checks
 that its name is TEST's last segment, inserts `#[ignore = "daily"]` on its own line right after the test attribute
 (`#[test]`, `#[tokio::test]`, ...) with that attribute's indentation, and writes the row
-`PACKAGE TEST TARGET daily REASON` into tools/ci/ignored-tests/daily-<PACKAGE>.txt, keeping the rows sorted (one
-file per package, sorted, so two pull requests that each move a test rarely touch the same lines). It never guesses:
+`PACKAGE TEST TARGET daily REASON` into tools/ci/ignored-tests/daily-<PACKAGE>.txt (daily-<PACKAGE>-gpu.txt for
+reason `gpu`), keeping the rows sorted. It never guesses:
 a test it cannot place (a `fn` that is not there, a name that is a macro's, no test attribute on a line of its own)
 is reported and skipped for a hand fix, and so is a test that is already `#[ignore]`d for another reason or listed
 in another policy file. Running it again changes nothing: a test already marked `daily` only gets its missing row.
@@ -140,9 +142,13 @@ def mark(lines, index):
     return "marked"
 
 
-def write_row(folder, package, row):
-    """Add `row` to daily-<package>.txt, keeping its rows sorted; False if it is already there."""
-    path = folder / f"daily-{package}.txt"
+def daily_policy_name(package, reason):
+    suffix = "-gpu" if reason == "gpu" else ""
+    return f"daily-{package}{suffix}.txt"
+
+
+def write_row(path, package, row):
+    """Add `row` to its policy file, keeping the rows sorted; False if it is already there."""
     lines = path.read_text().splitlines() if path.exists() else FILE_HEADER.format(package=package).splitlines()
     if row in lines:
         return False
@@ -170,25 +176,27 @@ def apply(rows, root=ROOT, folder=POLICY):
         placed = []
         for row in file_rows:
             package, target, test, location, reason = row
+            policy = daily_policy_name(package, reason)
             expected = f"{package} {test} {target} daily {reason}"
-            if (package, test) in listed and listed[package, test][1] != expected:
-                skipped.append((row, f"already listed in {listed[package, test][0]}: refused"))
+            existing = listed.get((package, test))
+            if existing is not None and existing != (policy, expected):
+                skipped.append((row, f"already listed in {existing[0]}: refused"))
                 continue
             index, why = place(lines, path, int(location.rpartition(":")[2]), test.rsplit("::", 1)[-1])
             if why:
                 skipped.append((row, why))
                 continue
-            placed.append((index, row, expected))
+            placed.append((index, row, policy, expected))
         # One mark per function: a source file compiled into two targets has a row for each.
         outcomes = {}
-        for index, row, expected in sorted(placed, reverse=True):
+        for index, row, policy, expected in sorted(placed, reverse=True):
             if index not in outcomes:
                 outcomes[index] = mark(lines, index)
             outcome = outcomes[index]
             if outcome not in ("marked", "already"):
                 skipped.append((row, outcome))
                 continue
-            added = write_row(folder, row[0], expected)
+            added = write_row(folder / policy, row[0], expected)
             (moved if outcome == "marked" or added else already).append(row)
         new = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
         if new != text:
@@ -216,7 +224,7 @@ def restore(rows, root=ROOT, folder=POLICY):
                 skipped.append((row, why or "no daily mark above the fn"))
                 continue
             del lines[k]
-            policy = folder / f"daily-{package}.txt"
+            policy = folder / daily_policy_name(package, reason)
             kept = [line for line in policy.read_text().splitlines()
                     if line != f"{package} {test} {target} daily {reason}"]
             policy.write_text("\n".join(kept) + "\n")

@@ -147,9 +147,12 @@ pub fn resolve_resources(
             notes.push(format!("`{key}`: the game has no `{location}`"));
             return false;
         };
-        let Some(mut texture) = decode_png(&bytes) else {
-            notes.push(format!("`{key}`: `{location}` is not a PNG"));
-            return false;
+        let mut texture = match decode_png(&bytes) {
+            Ok(texture) => texture,
+            Err(e) => {
+                notes.push(format!("`{key}`: `{location}` {e}"));
+                return false;
+            }
         };
         let meta = read(namespace, &format!("{path}.mcmeta"));
         let text = meta.as_deref().map(String::from_utf8_lossy);
@@ -181,7 +184,7 @@ fn source(pack: &Pack, value: &str) -> Result<TextureSource, String> {
     let (blur, clamp) = mcmeta(pack.read_text(&format!("{path}.mcmeta")).as_deref());
     let rest: Vec<&str> = words.collect();
     let mut texture = if rest.is_empty() {
-        decode_png(&bytes).ok_or_else(|| format!("`{path}` is not a PNG"))?
+        decode_png(&bytes).map_err(|e| format!("`{path}` {e}"))?
     } else {
         raw(&bytes, &rest)?
     };
@@ -202,41 +205,88 @@ fn mcmeta(text: Option<&str>) -> (Option<bool>, Option<bool>) {
     (flag("blur"), flag("clamp"))
 }
 
+/// Why a PNG gives no texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PngError {
+    /// Not a PNG the decoder reads.
+    NotPng,
+    /// Past the textures' side or byte limit, or a buffer the allocator would not give.
+    OverSizeLimit,
+}
+
+impl std::fmt::Display for PngError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotPng => "is not a PNG",
+            Self::OverSizeLimit => "is over the size limit",
+        })
+    }
+}
+
+/// The most bytes a PNG's texels may take as floats (16 per texel): 512 MiB, an 8192x4096 RGBA
+/// image such as a large equirectangular sky, where the side limit alone lets a 16384x16384 PNG
+/// take 4 GiB.
+const MAX_PNG_BYTES: usize = 512 << 20;
+
 /// A PNG as 8-bit RGBA, rows top first.
-pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
+pub fn decode_png(bytes: &[u8]) -> Result<Texture, PngError> {
+    decode_png_within(bytes, MAX_PNG_BYTES)
+}
+
+/// An empty buffer with room for `len` values of `T`, refused past `budget` bytes or when the
+/// allocator refuses it.
+fn buffer<T>(len: usize, budget: usize) -> Result<Vec<T>, PngError> {
+    let mut buffer = Vec::new();
+    len.checked_mul(size_of::<T>())
+        .filter(|&bytes| bytes <= budget)
+        .and_then(|_| buffer.try_reserve_exact(len).ok())
+        .ok_or(PngError::OverSizeLimit)?;
+    Ok(buffer)
+}
+
+/// [`decode_png`], each of its buffers held to `budget` bytes.
+fn decode_png_within(bytes: &[u8], budget: usize) -> Result<Texture, PngError> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     // Packs ship PNGs with wrong chunk checksums (a server's obfuscated pack);
     // the game's other pack textures decode them, as stb_image does.
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()?];
-    let info = reader.next_frame(&mut buf).ok()?;
+    let mut reader = decoder.read_info().map_err(|_| PngError::NotPng)?;
+    // The header alone sizes the buffer: hold it to the raw textures' limit first.
+    if reader.info().width.max(reader.info().height) > MAX_SIZE {
+        return Err(PngError::OverSizeLimit);
+    }
+    let size = reader.output_buffer_size().unwrap_or(usize::MAX);
+    let mut buf = buffer(size, budget)?;
+    buf.resize(size, 0);
+    let info = reader.next_frame(&mut buf).map_err(|_| PngError::NotPng)?;
     let pixels = &buf[..info.buffer_size()];
-    let rgba: Vec<f32> = match info.color_type {
-        png::ColorType::Rgba => pixels.iter().map(|&b| b as f32 / 255.0).collect(),
-        png::ColorType::Rgb => pixels
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .flat_map(|p| [p[0], p[1], p[2], 255])
-            .map(|b| b as f32 / 255.0)
-            .collect(),
-        png::ColorType::GrayscaleAlpha => pixels
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .flat_map(|p| [p[0], p[0], p[0], p[1]])
-            .map(|b| b as f32 / 255.0)
-            .collect(),
-        png::ColorType::Grayscale => pixels
-            .iter()
-            .flat_map(|&g| [g, g, g, 255])
-            .map(|b| b as f32 / 255.0)
-            .collect(),
-        png::ColorType::Indexed => return None,
-    };
-    Some(Texture {
+    let mut rgba = buffer(info.width as usize * info.height as usize * 4, budget)?;
+    let float = |b: u8| b as f32 / 255.0;
+    match info.color_type {
+        png::ColorType::Rgba => rgba.extend(pixels.iter().map(|&b| float(b))),
+        png::ColorType::Rgb => rgba.extend(
+            pixels
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .map(float),
+        ),
+        png::ColorType::GrayscaleAlpha => rgba.extend(
+            pixels
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|p| [p[0], p[0], p[0], p[1]])
+                .map(float),
+        ),
+        png::ColorType::Grayscale => {
+            rgba.extend(pixels.iter().flat_map(|&g| [g, g, g, 255]).map(float))
+        }
+        png::ColorType::Indexed => return Err(PngError::NotPng),
+    }
+    Ok(Texture {
         dim: Dim::D2,
         size: [info.width, info.height, 1],
         format: Format::RGBA8,
@@ -432,7 +482,47 @@ mod tests {
         }
         let ihdr = encoded.windows(4).position(|w| w == b"IHDR").unwrap();
         encoded[ihdr + 4 + 13] ^= 0xFF;
-        assert!(decode_png(&encoded).is_some());
+        assert!(decode_png(&encoded).is_ok());
+    }
+
+    /// A PNG is held to the raw textures' side limit by the size its header
+    /// claims, before the reader sizes a buffer from that header.
+    #[test]
+    fn png_sizes_are_bounded() {
+        let png = |width: u32| {
+            let mut bytes = Vec::new();
+            let mut encoder = png::Encoder::new(&mut bytes, width, 1);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&vec![0; width as usize]).unwrap();
+            writer.finish().unwrap();
+            bytes
+        };
+        assert_eq!(decode_png(&png(16_384)).map(|t| t.size), Ok([16_384, 1, 1]));
+        assert_eq!(
+            decode_png(&png(40_000)).map(|t| t.size),
+            Err(PngError::OverSizeLimit)
+        );
+        assert_eq!(decode_png(b"GIF89a").map(|t| t.size), Err(PngError::NotPng));
+    }
+
+    /// The decoder's buffer and the float copy are each held to the byte budget before they
+    /// are made: a 64x64 grey PNG decodes to 4096 bytes and converts to 65536.
+    #[test]
+    fn png_buffers_are_held_to_the_byte_budget() {
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 64, 64);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[7; 64 * 64]).unwrap();
+        }
+        let size = |budget| decode_png_within(&png, budget).map(|t| t.size);
+        assert_eq!(size(64 * 64 * 16), Ok([64, 64, 1]));
+        assert_eq!(size(64 * 64 * 16 - 1), Err(PngError::OverSizeLimit));
+        assert_eq!(size(64 * 64 - 1), Err(PngError::OverSizeLimit));
     }
 
     #[test]

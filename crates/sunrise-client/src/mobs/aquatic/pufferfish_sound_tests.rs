@@ -4,8 +4,8 @@
 //! plays nothing and still moves its random stream by those two draws.
 use super::*;
 use crate::mobs::world::with_test_world;
-use sunrise_core::random::LegacyRandom;
 use std::sync::Arc;
+use sunrise_core::random::LegacyRandom;
 
 /// `LivingEntity.getVoicePitch` for an adult from the random as it stands, with
 /// the random after its two draws.
@@ -40,6 +40,7 @@ fn sounds(events: &[MobEvent]) -> Vec<(&'static str, [f64; 3], f32, f32)> {
 /// `Pufferfish.tick` blows up and out with `makeSound`, so a silent fish puffs in
 /// silence while its pitch is still drawn.
 #[test]
+#[ignore = "daily"]
 fn a_pufferfish_puffs_with_its_voice_pitch_or_in_silence() {
     let ran = with_test_world(&[], |_, types| {
         for (counter, counter2, puff, puffed, event) in [
@@ -70,12 +71,13 @@ fn a_pufferfish_puffs_with_its_voice_pitch_or_in_silence() {
             }
         }
     });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }
 
 /// `AbstractFish.aiStep` flops with `makeSound` after the two floats of its hop:
 /// a silent cod hops in silence and still draws its pitch.
 #[test]
+#[ignore = "daily"]
 fn a_flopping_fish_plays_at_its_voice_pitch_or_in_silence() {
     let ran = with_test_world(&[], |w, types| {
         for (name, event) in [
@@ -87,12 +89,12 @@ fn a_flopping_fish_plays_at_its_voice_pitch_or_in_silence() {
                 let mut m = fish(types, name, silent);
                 // `!isInWater() && onGround() && verticalCollision`.
                 m.fluids.in_water = false;
-                (m.on_ground, m.vertical_collision_below) = (true, true);
+                (m.ground.on_ground, m.vertical_collision_below) = (true, true);
                 let (_, hop) = pitch_then(&m.random);
                 let mut events = Vec::new();
                 let mut test_level = crate::health::TestLevel::new(0);
                 ai_step(&mut m, w, &mut test_level.level(), &mut events);
-                assert!(!m.on_ground && m.velocity.y > 0.0, "{name} hops");
+                assert!(!m.ground.on_ground && m.velocity.y > 0.0, "{name} hops");
                 let played = sounds(&events);
                 if silent {
                     assert!(played.is_empty(), "a silent {name} flops in silence");
@@ -109,17 +111,19 @@ fn a_flopping_fish_plays_at_its_voice_pitch_or_in_silence() {
             }
         }
     });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }
 
 /// `Pufferfish.aiStep` plays no sting of its own for the player: `playerTouch`
 /// runs in the player's tick, and its sting is the game event, not a sound of
 /// the fish, so the fish's AI tick count cannot make it play.
 #[test]
+#[ignore = "daily"]
 fn the_fish_ai_never_plays_the_players_sting() {
     let ran = with_test_world(&[], |w, types| {
         let p = crate::mobs::world::test_player(Vec3::new(0.5, 64.0, 0.5));
         let world = MobWorld {
+            side: sunrise_client::motion::dry_side(),
             player: Some(p),
             ..w.clone()
         };
@@ -138,5 +142,5 @@ fn the_fish_ai_never_plays_the_players_sting() {
             );
         }
     });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }

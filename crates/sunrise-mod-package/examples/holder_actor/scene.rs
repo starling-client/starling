@@ -1,13 +1,13 @@
-use sunrise_mod_package::{
-    holder::{self, Prepared, Program, Started},
-    local_control::Marker,
-    selection::ModSelectionContext,
-};
 use std::{
     fs,
     path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
+};
+use sunrise_mod_package::{
+    holder::{self, Prepared, Program, Started},
+    local_control::Marker,
+    selection::ModSelectionContext,
 };
 pub fn until(mut ready: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);

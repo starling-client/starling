@@ -14,7 +14,7 @@ fn eating(ticks: u32, f: impl FnOnce(&mut Game<'_>)) -> Vec<String> {
         game.build_registries();
         game.ui.registries.permission = 4;
         game.screen = Screen::Playing;
-        game.right = true;
+        game.set_mapping_held("key.use", true);
         game.inventory[9] = Some(ItemStack::new("minecraft:arrow", 64));
         assert!(game.start_using_item());
         for _ in 0..ticks {
@@ -37,13 +37,13 @@ fn arrows(game: &Game<'_>) -> u32 {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn a_bow_put_in_place_of_the_apple_stops_the_use() {
     let lines = eating(5, |game| {
         *game.held_mut() = Some(ItemStack::new("minecraft:bow", 1));
         game.tick_using();
         assert!(game.using.is_none());
-        game.right = false;
+        game.set_mapping_held("key.use", false);
         assert!(!game.release_using_item());
         assert_eq!(arrows(game), 64, "no arrow is fired");
     });
@@ -51,7 +51,7 @@ fn a_bow_put_in_place_of_the_apple_stops_the_use() {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn replacing_the_apple_with_air_stops_the_use() {
     let lines = eating(5, |game| {
         assert!(game.run_command("item replace entity @s weapon.mainhand with air"));
@@ -62,7 +62,7 @@ fn replacing_the_apple_with_air_stops_the_use() {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn clearing_the_apple_ends_the_use_silently() {
     let lines = eating(5, |game| {
         assert!(game.run_command("clear @s minecraft:golden_apple"));
@@ -73,7 +73,7 @@ fn clearing_the_apple_ends_the_use_silently() {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn another_apple_stack_goes_on_with_the_use() {
     eating(5, |game| {
         assert!(game.run_command("item replace entity @s weapon.mainhand with golden_apple 3"));
@@ -87,11 +87,11 @@ fn another_apple_stack_goes_on_with_the_use() {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn releasing_right_after_a_bow_replaced_the_apple_fires_nothing() {
     let lines = eating(20, |game| {
         *game.held_mut() = Some(ItemStack::new("minecraft:bow", 1));
-        game.right = false;
+        game.set_mapping_held("key.use", false);
         assert!(game.release_using_item());
         assert!(game.using.is_none());
         assert_eq!(arrows(game), 64, "no arrow is fired");
@@ -100,7 +100,7 @@ fn releasing_right_after_a_bow_replaced_the_apple_fires_nothing() {
 }
 
 #[test]
-#[ignore = "requires prepared resources"]
+#[ignore = "daily"]
 fn a_command_putting_the_apple_back_keeps_the_use() {
     let lines = eating(5, |game| {
         // A mod's raw write puts a bow in; the command puts an apple back

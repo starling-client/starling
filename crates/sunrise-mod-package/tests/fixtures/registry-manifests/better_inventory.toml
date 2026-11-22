@@ -1,0 +1,185 @@
+id = "better_inventory"
+name = "Better Inventory"
+version = "1.0.0"
+description = "Sort buttons and a sort key, quiet hotbar auto-refill, armour and held items with their wear beside the hotbar, and a hotbar that glides and lifts the held item, and a list of what you pick up in a corner of the screen. Every part has its own switch."
+authors = ["Zekrenlight"]
+license = "MIT"
+api = "0.2"
+side = "client"
+capabilities = ["registries"]
+
+# Sunrise Mod SDK 9425651 (94256510f74, 19 Nov 2026, API 0.2, game 26.3). Mixins tool rev e59da909.
+# Besides the hook points it uses the game's own inventory (slots, the menus' predicted clicks)
+# and HUD layout, so the mod is pinned to this commit.
+[native]
+game = "26.3"
+sunrise = "94256510f74e6843754e0a93fd9e4da7e45b1056"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+# Everything that needs the game's types: sorting, auto-refill, the equipment HUD, the
+# hotbar's motion and the pickup list.
+[[native.module]]
+id = "glue"
+file = "crates/sunrise-client/src/game.rs"
+name = "better_inventory_glue"
+source = "src/native/glue.rs"
+
+# As the game starts something flying to a collector: what reaches you joins the pickup list.
+# This is where both the server's pickups and the game's own (single player) ones pass.
+[[native.mixin]]
+id = "pickup"
+target = "sunrise_client::game::pickups::Game<'_>::add_pickup_toward"
+kind = "HEAD"
+helper = "src/mixins/pickup.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "taken", ty = "&crate::game::pickups::Taken", value = "&taken" },
+  { name = "collector", ty = "&crate::game::pickups::Collector", value = "&collector" },
+]
+
+# Once a client tick: auto-refill.
+[[native.mixin]]
+id = "tick"
+target = "sunrise_client::game::native_hooks::client_tick_post::Game<'_>::native_client_tick_post"
+kind = "HEAD"
+helper = "src/mixins/tick.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+# Every key event: the drop and swap-hands keys hold off auto-refill for a moment.
+[[native.mixin]]
+id = "key_input"
+target = "sunrise_client::game::native_hooks::input_key::Game<'_>::native_input_key"
+kind = "HEAD"
+helper = "src/mixins/key_input.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "key", ty = "&str", value = "key" },
+  { name = "action", ty = "mod_api::KeyAction", value = "action" },
+]
+
+# Before each HUD layer: with any hotbar motion on, the hotbar is drawn here and the game's
+# drawing of it skipped. Late (low priority), so a mod hiding the hotbar is seen first.
+[[native.mixin]]
+id = "layer_pre"
+target = "sunrise_client::game::native_hooks::base::Game<'_>::native_gui_layer_pre"
+kind = "HEAD"
+priority = 50
+helper = "src/mixins/layer_pre.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "layer", ty = "&str", value = "layer" },
+  { name = "batch", ty = "&mut sunrise_client::hud::HudBatch", value = "&mut *draw" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+# After each HUD layer: the equipment HUD, after the hotbar.
+[[native.mixin]]
+id = "layer_post"
+target = "sunrise_client::game::native_hooks::base::Game<'_>::native_gui_layer_post"
+kind = "HEAD"
+helper = "src/mixins/layer_post.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "layer", ty = "&str", value = "layer" },
+  { name = "batch", ty = "&mut sunrise_client::hud::HudBatch", value = "&mut *draw" },
+]
+
+# The sort buttons are drawn where the container screen draws the game's own (Extras > Sorting),
+# over the slots and under the tooltips; they sit just left of that place.
+[[native.mixin]]
+id = "draw_buttons"
+target = "sunrise_client::game::extras::sorting::Game<'_>::draw_sort_buttons"
+kind = "HEAD"
+helper = "src/mixins/draw_buttons.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "batch", ty = "&mut sunrise_client::hud::HudBatch", value = "&mut *batch" },
+  { name = "ox", ty = "f32", value = "ox" },
+  { name = "oy", ty = "f32", value = "oy" },
+]
+
+# A left press on a container screen, where the game asks its own sort buttons first.
+[[native.mixin]]
+id = "press"
+target = "sunrise_client::game::extras::sorting::Game<'_>::sort_press"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/press.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+# A key press, where the game asks its own sort key first: the mod's sort key (Options >
+# Controls, R at first) over a container screen.
+[[native.mixin]]
+id = "sort_key"
+target = "sunrise_client::game::extras::sorting::Game<'_>::sort_key_press"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/sort_key.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "winit::keyboard::KeyCode", value = "key" },
+]
+
+# The settings card (shared Sunrise dark card). Sunrise opens a mod's settings as its
+# Options page `NativeMod(index)` (SunnyMods' Settings button, Sunrise's Mods list and the
+# mod's own settings key all land there). These HEAD hooks act only on this mod's own page
+# and let every other page, and every other mod's card, through untouched.
+[[native.module]]
+id = "card"
+file = "crates/sunrise-client/src/game.rs"
+name = "better_inventory_card"
+source = "src/native/card.rs"
+
+[[native.mixin]]
+id = "card_draw"
+target = "sunrise_client::game::options::Game<'_>::draw_options"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_draw.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "batch", ty = "&mut sunrise_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+[[native.mixin]]
+id = "card_mouse"
+target = "sunrise_client::game::options::Game<'_>::options_mouse"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_mouse.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+  { name = "right", ty = "bool", value = "right" },
+]
+
+[[native.mixin]]
+id = "card_drag"
+target = "sunrise_client::game::options::Game<'_>::options_drag"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_drag.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+[[native.mixin]]
+id = "card_scroll"
+target = "sunrise_client::game::options::Game<'_>::options_scroll"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_scroll.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "amount", ty = "f32", value = "amount" },
+]
+
+[[native.mixin]]
+id = "card_key"
+target = "sunrise_client::game::options::Game<'_>::options_key"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/card_key.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "KeyCode", value = "key" },
+  { name = "text", ty = "Option<&str>", value = "text" },
+]

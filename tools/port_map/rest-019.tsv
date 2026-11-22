@@ -31,7 +31,7 @@ PackDetector.detectPackResources	inline	crates/sunrise-client-render/src/packs.r
 PackRepository.displayPackList	skip:debug		pack ids for the system report (MinecraftServer)
 PackRepository.reload	port	crates/sunrise-client/src/game/world/packs/mod.rs::Game::refresh_pack_lists	re-discovers the packs and resets the selection
 PackRepository.discoverAvailable	port	crates/sunrise-client-render/src/packs.rs::discover	scans the sources for packs
-PackRepository.isAbleToClearAnyPack	port	crates/sunrise-client-render/src/packs.rs::able_to_clear_any_pack	a failed reload drops every selected pack and toasts (game/world/packs/mod.rs::selection_reload_failed), as clearResourcePacksOnError does
+PackRepository.isAbleToClearAnyPack	missing		vanilla compares the ordered selection with the selection rebuilt from an empty request; has_optional_pack only checks for an optional pack and does not detect reordering required packs
 PackRepository.addPack	inline	crates/sunrise-client-render/src/packs.rs::SelectionModel::activate	gap: minor: vanilla appends by id with no position rules
 PackRepository.removePack	inline	crates/sunrise-client-render/src/packs.rs::SelectionModel::activate	gap: minor: vanilla removes by id even when the pack is required; the screen never offers that
 PackRepository.getAvailablePacks	inline	crates/sunrise-client-render/src/packs.rs::SelectionModel::rebuild	rebuild also adds required packs (vanilla and active downloaded server packs from Game::pack_infos)

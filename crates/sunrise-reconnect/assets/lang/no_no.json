@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "Koble til automatisk",
+  "sunrise.extras.auto_reconnect.tooltip": "Blir med på en server igjen etter en tapt forbindelse eller en omstart, aldri etter et kick eller utestengelse."
+}

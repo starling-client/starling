@@ -5,7 +5,7 @@ impl GameLevel<'_> {
     /// configured `feature`, `None` when vanilla has none to place (a lone dark
     /// oak sapling). Set `cancel`, or `feature` to `None`, to keep the block;
     /// set `feature` to another key to grow that one. Server-side.
-    /// Mods can use `level.random()` to access the growth random source.
+    /// Listeners draw from the live level stream with `host.with_random`.
     #[inline(always)]
     pub(in crate::game) fn native_block_grow_feature(
         &mut self,

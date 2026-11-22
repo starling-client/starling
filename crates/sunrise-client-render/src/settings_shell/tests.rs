@@ -41,7 +41,7 @@ impl Screen for Probe {
                 SLIDER,
                 "Level".to_owned(),
                 Value::Slider {
-                    position: self.slider,
+                    position: f64::from(self.slider),
                     steps: Some(10),
                     text: s.fov.to_string(),
                 },
@@ -94,8 +94,8 @@ impl Screen for Probe {
         s.fov = before.fov;
         Vec::new()
     }
-    fn slide(&mut self, _: &mut Settings, _: u32, position: f32) {
-        self.slider = position;
+    fn slide(&mut self, _: &mut Settings, _: u32, position: f64) {
+        self.slider = position as f32;
     }
     fn wheel_step(&mut self, _: &mut Settings, row: u32, _: bool) -> Option<Vec<Output>> {
         (row == CHOICE).then(|| {

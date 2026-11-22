@@ -1,6 +1,5 @@
 pub use block::cauldron_interactions::{
-    CauldronDecision, CauldronFire, CauldronInteractions, CauldronPlan, CauldronRegistrationError,
-    CauldronUse, Interaction,
+    CauldronDecision, CauldronInteractions, CauldronRegistrationError, CauldronUse, Interaction,
 };
 
 mod __private {

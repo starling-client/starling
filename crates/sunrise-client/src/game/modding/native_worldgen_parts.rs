@@ -1,11 +1,11 @@
-// game-module-visibility: pub(crate)
 //! What a server publishes for its world generation at each Parts install (world open and
 //! `/reload`): its resolved Part table, which the worldgen Part methods read on the workers and on
 //! the server thread alike, and the block-state index their states convert through, with the
 //! registry that index was built from.
 use super::api_values::block_state::Index;
-use sunrise_world::registry::BlockRegistry;
 use std::sync::{Arc, PoisonError, RwLock};
+use sunrise_client_render::api_context::WorldgenReader;
+use sunrise_world::registry::BlockRegistry;
 
 /// The published index and the registry it converts against.
 type Published = (Arc<Index>, &'static BlockRegistry);
@@ -43,9 +43,8 @@ pub(in crate::game) fn with_host<R>(
     f: impl FnOnce(&mod_api::OwningWorldgen<'_>) -> R,
 ) -> Option<R> {
     let context = sunrise_world::native_worldgen_hooks::context()?;
+    let reader = WorldgenReader(&context);
     let published = published();
-    let registries = |name: &str| context.registry(name);
-    let setting = |mod_id: &str, key: &str| context.setting(mod_id, key);
     let state_with_property = |state: mod_api::BlockState, key: &str, value: &str| {
         let (index, registry) = published.as_ref()?;
         let engine = index.to_engine(state).ok()?;
@@ -53,8 +52,7 @@ pub(in crate::game) fn with_host<R>(
         index.to_api(set).ok()
     };
     Some(f(&mod_api::OwningWorldgen::new(
-        &registries,
-        &setting,
+        &reader,
         &state_with_property,
     )))
 }

@@ -9,13 +9,13 @@ use super::{
     minecarts::CartKind,
     native_hooks::{mod_particles_ok, sound_id},
 };
+use mod_api::{EntityRef, ExplodeError, ExplosionInteraction, ExplosionSettings};
 use sunrise_client::particles::{ExplosionParticle, ParticleOptions, ParticleType};
 use sunrise_client::projectiles::ProjectileKind;
 use sunrise_client::{
     gamerules::vanilla,
     mobs::{NamedDamage, Who},
 };
-use mod_api::{EntityRef, ExplodeError, ExplosionInteraction, ExplosionSettings};
 
 /// Whether `native_explode` takes this centre and radius. Vanilla bounds
 /// neither: any finite radius goes, one of 0 or below finding no blocks. A
@@ -101,8 +101,14 @@ impl Game<'_> {
             }
         }
         // Only the source's `isSilent` keeps the blast quiet.
-        let blast =
+        let mut blast =
             ExplosionSource::default().with_silence(id.is_some_and(|id| self.entity_silent(id)));
+        if let Some((id, target)) = source {
+            blast = blast.with_damage_direct(
+                id,
+                Self::target_direct_entity(Some(target), &self.creatures.projectiles),
+            );
+        }
         let done = self.server_explode_from(center, radius, interaction, fire, blast);
         self.restore_blast_state(outer);
         done.map_err(|_| ExplodeError::Unavailable)
@@ -280,10 +286,12 @@ impl Game<'_> {
     /// The damage calculator the source `id` brings to its blast when the mod
     /// passes none (`ServerExplosion.makeDamageCalculator`), as the source's
     /// own blast has it: a primed TNT that went through a portal the
-    /// portal-proof one (`PrimedTnt.explode`), a wind charge the tag one
-    /// (`AbstractWindCharge.explode`). Other sources bring the default
-    /// calculator. The rays take it from the blast state
-    /// (`blast_calculator_step`).
+    /// portal-proof one (`PrimedTnt.explode`), a wind charge its tag one that
+    /// damages no entity and pushes by 1.22 for a player's charge or 1 for a
+    /// breeze's (`WindCharge.explode`, `BreezeWindCharge.explode`). Other
+    /// sources bring the default calculator. The rays and the entity walk
+    /// take it from the blast state (`blast_calculator_step`,
+    /// `blast_damages_entities`, `blast_knockback`).
     pub(super) fn native_blast_calculator(&mut self, id: u32, target: Target) {
         match target {
             Target::Projectile(_)
@@ -310,20 +318,23 @@ impl Game<'_> {
             Target::Tnt(_) if self.tnts.iter().any(|t| t.id == id && t.used_portal) => {
                 SourceCalculator::PortalProof
             }
-            Target::Projectile(_)
-                if self.creatures.projectiles.iter().any(|p| {
-                    p.id == id
-                        && matches!(
-                            p.kind,
-                            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
-                        )
-                }) =>
-            {
+            Target::Projectile(_) => {
+                let charge = self.creatures.projectiles.iter().find(|p| p.id == id);
+                let knockback = match charge.map(|p| &p.kind) {
+                    Some(ProjectileKind::WindCharge) => super::wind::PLAYER_KNOCKBACK,
+                    Some(ProjectileKind::BreezeWindCharge) => 1.0,
+                    _ => return,
+                };
                 let items = self.res.items();
                 let tag = items
                     .block_tags
                     .get("minecraft:blocks_wind_charge_explosions");
-                SourceCalculator::WindCharge(tag.cloned().unwrap_or_default())
+                SourceCalculator::WindCharge(BlastCalculator {
+                    explodes_blocks: true,
+                    damages_entities: false,
+                    knockback,
+                    immune: Some(tag.cloned().unwrap_or_default()),
+                })
             }
             _ => return,
         };

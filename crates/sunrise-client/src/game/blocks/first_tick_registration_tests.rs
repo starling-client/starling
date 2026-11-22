@@ -5,9 +5,9 @@
 //! (tools/test_frozen_first_tick_water_parity.py measures the same on
 //! vanilla 26.3: it flows 5 ticks after placement).
 use super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_core::position::ChunkPos;
-use std::sync::Arc;
 
 fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_> {
     let root = std::path::PathBuf::from(
@@ -61,7 +61,7 @@ fn fluid_ticks(game: &Game<'_>, key: (i32, i32)) -> Option<usize> {
 /// A chunk that becomes resident is registered with both tick schedulers by
 /// the time the next command runs, with no world tick in between.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn water_placed_before_the_first_world_tick_keeps_its_flow_tick() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);
@@ -101,7 +101,7 @@ fn water_placed_before_the_first_world_tick_keeps_its_flow_tick() {
 /// no world tick and draws nothing from the level random, and a second
 /// `update_world` registers nothing again.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn early_registration_keeps_saved_ticks_and_ticks_nothing() {
     use sunrise_core::random::RandomSource;
     use sunrise_core::ticks::{SavedTick, TickPriority, TickTypeId};
@@ -156,7 +156,7 @@ fn early_registration_keeps_saved_ticks_and_ticks_nothing() {
 /// tick with delay 2 and a saved fluid tick with delay 3, registered at game
 /// time T, trigger at T - 1 + 2 and T - 1 + 3 once the chunk starts ticking.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn saved_block_and_fluid_ticks_unpack_when_the_chunk_starts_ticking() {
     use sunrise_core::ticks::{SavedTick, TickPriority, TickTypeId};
     let mut game_resources = None;
@@ -236,7 +236,7 @@ fn saved_block_and_fluid_ticks_unpack_when_the_chunk_starts_ticking() {
 /// loaded back from that save gets them again. Registering twice, or a chunk
 /// that left and came back before `update_world`, queues nothing twice.
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_unloaded_chunk_saves_its_ticks_and_a_reloaded_one_gets_them_back() {
     let mut game_resources = None;
     let mut game = game(&mut game_resources);

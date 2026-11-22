@@ -1,0 +1,3 @@
+ids = ["hook:mob_split", "hook:baby_entity_spawn", "hook:mob_split.count", "hook:baby_entity_spawn.kind", "type:MobSplitEvent.count", "type:BabyEntitySpawnEvent.kind"]
+why = "Listeners receive the fully constructed pending children through PendingChildrenEdits, not count or kind-only transport. Leases expire when any next or nested listener begins."
+migrate = "Rebuild against version 2 and use edits.children() to borrow the list. Reacquire handles after nested dispatch; retained children and ownership tokens expire."

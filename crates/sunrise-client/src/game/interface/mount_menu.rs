@@ -11,42 +11,15 @@ use super::{Game, Screen};
 use sunrise_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
-    mobs::{Mob, Species, equine, llama, nautilus},
+    mobs::{Mob, Species, llama, nautilus},
 };
 
-/// Menu slot ids: the saddle, the body armour and the chest from 710.
-pub(super) const SADDLE: usize = 700;
-pub(super) const ARMOR: usize = 701;
-pub(super) const CHEST: usize = 710;
-/// `AbstractChestedHorse.INV_CHEST_COUNT` and `getInventoryColumns`.
+/// `AbstractChestedHorse.INV_CHEST_COUNT`.
 const CHEST_SIZE: usize = 15;
-const COLUMNS: usize = 5;
-
-/// `AbstractHorse.getInventoryColumns`: five for a donkey's or mule's chest,
-/// a llama's strength for its chest, else none.
-pub(super) fn mount_columns(m: &Mob) -> usize {
-    let species = m.species();
-    if llama::is_llama(species) {
-        llama::inventory_columns(m).clamp(0, 5) as usize
-    } else if m.extra.chested && matches!(species, Species::Donkey | Species::Mule) {
-        COLUMNS
-    } else {
-        0
-    }
-}
-/// Whether the mount has a horse inventory (`AbstractHorse`, `AbstractNautilus`).
-pub(super) fn has_mount_menu(species: Species) -> bool {
-    equine::is_equine(species) || llama::is_llama(species) || nautilus::is_nautilus(species)
-}
-/// The saddle slot is active (`canUseSlot(SADDLE)` and `CAN_EQUIP_SADDLE`):
-/// not on llamas.
-fn shows_saddle(species: Species) -> bool {
-    !llama::is_llama(species)
-}
-/// The body slot is active: horse armour, a llama's carpet, or nautilus armour.
-fn shows_body(species: Species) -> bool {
-    can_wear_horse_armor(species) || llama::is_llama(species) || nautilus::is_nautilus(species)
-}
+pub(super) use sunrise_gameplay::mount_rules::{
+    ARMOR, CHEST, COLUMNS, SADDLE, body_armor_fits, has_mount_menu, mount_columns, shows_body,
+    shows_saddle,
+};
 
 /// The open mount menu: copies of the mount's slots, written back on every change.
 #[derive(Default)]
@@ -69,22 +42,6 @@ struct Open {
     /// `shouldRenderSaddleSlot` / `shouldRenderArmorSlot`.
     show_saddle: bool,
     show_armor: bool,
-}
-
-/// `EntityTypeTags.CAN_WEAR_HORSE_ARMOR`.
-fn can_wear_horse_armor(species: Species) -> bool {
-    matches!(species, Species::Horse | Species::ZombieHorse)
-}
-/// Whether `item` fits the body slot of the species (`isEquippableInSlot`).
-fn body_armor_fits(species: Species, item: &str) -> bool {
-    if llama::is_llama(species) {
-        return item.ends_with("_carpet");
-    }
-    // EntityTypeTags.CAN_WEAR_NAUTILUS_ARMOR: the nautilus armours.
-    if nautilus::is_nautilus(species) {
-        return item.ends_with("_nautilus_armor");
-    }
-    can_wear_horse_armor(species) && item.ends_with("_horse_armor")
 }
 
 impl Game<'_> {
@@ -189,8 +146,11 @@ impl Game<'_> {
     pub(super) fn mount_menu_columns(&self) -> Option<usize> {
         self.mount_menu.open.as_ref().map(|o| o.columns)
     }
-    /// The menu ends when the mount dies or is more than 4 blocks away
-    /// (`AbstractMountInventoryMenu.stillValid`).
+    /// The menu ends when the mount dies or its box leaves the entity
+    /// interaction range plus 4 of the player's eyes
+    /// (`AbstractMountInventoryMenu.stillValid` with
+    /// `Player.isWithinEntityInteractionRange(mount, 4.0)`: 7 blocks away, 9
+    /// in creative).
     pub(super) fn tick_mount_menu(&mut self) {
         // A server's menu ends when the server closes it.
         if self.remote.is_some() {
@@ -199,15 +159,14 @@ impl Game<'_> {
         let Some(open) = self.mount_menu.open.as_ref() else {
             return;
         };
-        let valid = self.mount_mob_index(open.mob).is_some_and(|i| {
-            let m = &self.mobs[i];
-            let c = m.center();
-            m.alive()
-                && self.eye_position().is_some_and(|e| {
-                    let d = (e[0] - c[0]).powi(2) + (e[1] - c[1]).powi(2) + (e[2] - c[2]).powi(2);
-                    d <= 16.0 + 4.0
-                })
-        });
+        let mob = open.mob;
+        let mount = self
+            .mount_mob_index(mob)
+            .map(|i| (self.mobs[i].alive(), self.mobs[i].bounds()));
+        let valid = match mount {
+            Some((true, bounds)) => self.within_entity_interaction_range(&bounds, 4.0),
+            _ => false,
+        };
         if !valid {
             self.close_container();
             self.set_screen(Screen::Playing);
@@ -474,34 +433,29 @@ impl Game<'_> {
         if open.columns > 0 {
             batch.sprite_region(
                 atlas,
-                "gui/sprites/container/horse/chest_slots",
+                "container/horse/chest_slots",
                 [ox + 79.0, oy + 17.0, open.columns as f32 * 18.0, 54.0],
                 90.0,
                 54.0,
             );
         }
         if open.show_saddle {
-            batch.sprite(atlas, "gui/sprites/container/slot", ox + 7.0, oy + 17.0);
+            batch.sprite(atlas, "container/slot", ox + 7.0, oy + 17.0);
         }
         if open.show_armor {
-            batch.sprite(atlas, "gui/sprites/container/slot", ox + 7.0, oy + 35.0);
+            batch.sprite(atlas, "container/slot", ox + 7.0, oy + 35.0);
         }
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Background);
         if open.show_saddle && open.saddle.is_none() {
-            batch.sprite(
-                atlas,
-                "gui/sprites/container/slot/saddle",
-                ox + 8.0,
-                oy + 18.0,
-            );
+            batch.sprite(atlas, "container/slot/saddle", ox + 8.0, oy + 18.0);
         }
         if open.show_armor && open.armor.is_none() {
             let sprite = if llama::is_llama(open.species) {
-                "gui/sprites/container/slot/llama_armor"
+                "container/slot/llama_armor"
             } else if nautilus::is_nautilus(open.species) {
-                "gui/sprites/container/slot/nautilus_armor_inventory"
+                "container/slot/nautilus_armor_inventory"
             } else {
-                "gui/sprites/container/slot/horse_armor"
+                "container/slot/horse_armor"
             };
             batch.sprite(atlas, sprite, ox + 8.0, oy + 36.0);
         }
@@ -578,7 +532,7 @@ impl Game<'_> {
                 camera,
                 &lookup,
                 240 | 240 << 8,
-                self.res.mob_data(),
+                self,
                 &[],
                 &mut verts,
             );
@@ -618,6 +572,10 @@ impl Game<'_> {
         batch.clip_since(start, x0, y0, x1, y1);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/mount_menu_reach_tests.rs"]
+mod reach_tests;
 
 #[cfg(test)]
 mod tests {

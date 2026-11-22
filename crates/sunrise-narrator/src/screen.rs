@@ -192,10 +192,6 @@ impl ScreenNarration {
             self.suppress_time = i64::MIN;
         }
     }
-    /// `scheduleNarration()`: as soon as the screen next ticks.
-    pub fn schedule_now(&mut self, now: i64) {
-        self.schedule(now, 0, true, Trigger::System);
-    }
     pub fn after_mouse_move(&mut self, now: i64) {
         self.schedule(now, DELAY_MOUSE_MOVE_MS, false, Trigger::Mouse);
     }

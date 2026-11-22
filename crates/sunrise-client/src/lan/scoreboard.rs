@@ -10,12 +10,12 @@
 //! have now, which are the ones `ServerScoreboard`'s callbacks send.
 use crate::scoreboard::{NumberFormat, RenderType, Scoreboard, component_tag, display_slots};
 use crate::text::COLORS;
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_core::nbt::Tag;
 use sunrise_protocol::packets::play::{
     self, Clientbound as C, ResetScore, SetDisplayObjective, SetObjective, SetPlayerTeam, SetScore,
     TeamParameters,
 };
-use std::collections::{BTreeMap, BTreeSet};
 
 type Format = Option<play::NumberFormat>;
 
@@ -115,6 +115,56 @@ impl View {
             scores,
             teams,
         }
+    }
+
+    /// `ServerScoreboard.getStartTrackingPackets` for a joining player: every
+    /// team, then each displayed objective in slot order, once, with its add,
+    /// every slot showing it and its scores before the next objective's add.
+    pub fn initial(&self) -> Vec<C> {
+        let mut out: Vec<C> = self
+            .teams
+            .iter()
+            .map(|(name, (params, players))| {
+                C::SetPlayerTeam(SetPlayerTeam {
+                    name: name.clone(),
+                    method: 0,
+                    parameters: Some(params.clone()),
+                    players: players.clone(),
+                })
+            })
+            .collect();
+        let mut seen = BTreeSet::new();
+        for objective in self.display.values() {
+            if !seen.insert(objective) {
+                continue;
+            }
+            let Some(display) = self.objectives.get(objective) else {
+                continue;
+            };
+            out.push(C::SetObjective(SetObjective {
+                name: objective.clone(),
+                method: 0,
+                display: Some(display.clone()),
+            }));
+            for (slot, _) in self.display.iter().filter(|(_, o)| *o == objective) {
+                out.push(C::SetDisplayObjective(SetDisplayObjective {
+                    slot: *slot,
+                    objective: objective.clone(),
+                }));
+            }
+            for ((holder, _), (value, display, number_format)) in
+                self.scores.iter().filter(|((_, o), _)| o == objective)
+            {
+                out.push(C::SetScore(SetScore {
+                    owner: holder.clone(),
+                    objective: objective.clone(),
+                    score: *value,
+                    display: display.clone(),
+                    number_format: number_format.clone(),
+                }));
+            }
+        }
+        out
     }
 
     /// The packets that take a client from `self` to `next`.
@@ -331,6 +381,42 @@ mod tests {
                 "team red 4 [\"Alpha\"]",
                 "team amber 0 [\"Beta\"]",
                 "team blue 3 [\"Alpha\"]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_joining_player_gets_each_displayed_objective_whole_in_slot_order() {
+        let mut board = Scoreboard::default();
+        for name in ["zebra", "alpha", "hidden"] {
+            board.add_objective(name, "dummy", json!(name), RenderType::Integer, false, None);
+            board.score_mut("Alpha", name).value = 1;
+        }
+        board.score_mut("Beta", "zebra").value = 2;
+        board.set_display_objective("list", Some("zebra"));
+        board.set_display_objective("sidebar", Some("alpha"));
+        board.set_display_objective("below_name", Some("zebra"));
+        board.add_team("red");
+        board.add_to_team("Alpha", "red");
+        let mut view = View::of(&board);
+        view.display.insert(3, "missing".into());
+        let mut trace = methods(&view.initial());
+        assert_eq!(trace.len(), 9);
+        // Score order within an objective is unspecified; the group stays between
+        // zebra's display packets and alpha's add.
+        trace[4..6].sort_unstable();
+        assert_eq!(
+            trace,
+            [
+                "team red 0 [\"Alpha\"]",
+                "objective zebra 0",
+                "display 0 zebra",
+                "display 2 zebra",
+                "score Alpha zebra 1",
+                "score Beta zebra 2",
+                "objective alpha 0",
+                "display 1 alpha",
+                "score Alpha alpha 1",
             ]
         );
     }

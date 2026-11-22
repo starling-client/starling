@@ -1,5 +1,9 @@
 # Design: a mod's biomes inside the Overworld and Nether
 
+> The native contract below still applies. WebAssembly mods were removed; the parts about guests are history.
+> The saved region rules and native fixture matrix still apply.
+> See [biome regions](../../modding/src/how-to/content-mods/biome-regions.md) for the current native API.
+
 Scope 2 of [#2554](https://github.com/arismoko/horizon/issues/2554): how a mod's biomes generate among vanilla's in the Overworld and the Nether. The design below was ruled on in [#2554](https://github.com/arismoko/horizon/issues/2554#issuecomment-6803604498) and built in the stages listed at the end. One part is not built yet and is marked so. Scope 1, a mod's own dimension with its own climate points (`BiomeSourceKind::Points`), is separate and does not need this note.
 
 ## Starting points
@@ -82,7 +86,9 @@ Each row names fixture coverage, not a passing run. The generated-column persist
 | Opt-in on an existing world | New chunks may use B's region; existing chunks unchanged; the saved list includes B afterwards. | `sunrise-client` `save::biome_regions::tests::adopting_takes_installed_regions_and_keeps_saved_weights` (the saved list); the server setting in the dedicated test above. `save::biome_regions::persistence_tests::generated_chunks_survive_restart_substitution_added_regions_and_adoption` checks adopted new biomes against saved old biomes and unchanged region bytes. The client prompt tests cover Escape, failed writes with retry and changed records at confirmation. |
 | Malformed record | The open is refused with the reason; the file is unchanged on disk. | `save::biome_regions::tests::a_malformed_record_is_refused_and_left_untouched`, `every_required_record_field_refuses_missing_or_wrong_types`, `saved_selector_identity_climate_and_counts_are_bounded`, `oversized_and_overbudget_nbt_refuse_before_materializing_the_record` and `literal_version_one_file_decodes_without_the_record_encoder` |
 | A region with invalid points, a bad weight or a duplicate id | Refused at registration, naming the mod; no region installed. | `sunrise-mod-vocab` `world::biome_region::tests::a_region_needs_a_preset_dimension_a_weight_and_valid_points`; `sunrise-mod-api` `parts::biome_regions::tests::biome_region_declarations_validate_and_refuse_duplicates` |
-| A wasm mod's region | Reaches the game as declared. | `sunrise-mod-wasm-wire-loopback` `wire_loopback_biome_region_declaration_reaches_the_host_bit_exact` |
+
+The former guest loopback checked that a declared region reached the game unchanged. That
+fixture was removed with the guest runtime and is not part of the native acceptance matrix.
 
 The same resource-gated generated-column fixture also saves and reloads both `Terrain` and `Features` proto chunks, checking that resumed biomes use the adopted layout while saved blocks and completion status remain. The agent JSON contract is covered by the ignored `game::agent::tests::region_adoption_agent_state_reports_the_actual_title_mode` fixture.
 

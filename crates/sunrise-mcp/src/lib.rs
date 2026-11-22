@@ -1,6 +1,7 @@
-//! The Model Context Protocol, as Sunrise's three servers speak it (`sunrise-ctl mcp`,
-//! `sunrise-server mcp`, `sunrise-launcher mcp`: docs/agent-control.md, docs/server.md section 8):
+//! The Model Context Protocol for `sunrise-ctl mcp` and `sunrise-server mcp`:
 //! JSON-RPC 2.0 over stdin and stdout, one message per line.
+//! The separate launcher has its own MCP implementation. Its `game_*` tools depend on the
+//! wire contract with the installed game's `sunrise-ctl mcp`, not on this crate.
 //!
 //! Two revisions, newest first. `2026-07-28` is stateless: every request carries its version,
 //! its capabilities and who it is in `_meta`, servers answer `server/discover`, every result
@@ -10,12 +11,73 @@
 //! than this crate). A request carrying `_meta` is served statelessly whatever the process
 //! answered before it, as the revision requires.
 //!
-//! Each server supplies its identity, its instructions and the two tool methods; the protocol
-//! methods (`server/discover`, `initialize`), the framing and the line loop live here, so the
-//! three cannot drift apart.
+//! Each binary supplies its identity, instructions and the two tool methods. This crate
+//! handles `server/discover`, `initialize`, framing and the line loop for both.
+//!
+//! ## Input tolerances
+//!
+//! These are compatibility decisions, not an oversight: clients in the wild send them, and
+//! tightening any of them would change the wire, so it is a protocol decision rather than a
+//! refactor. Pinned by the tests in `tests/wire_contract.rs`.
+//!
+//! - `jsonrpc` is ignored: a request is served whether the field is missing or invalid.
+//! - `id` is only rejected when it is `null`. Any other JSON value (string, boolean, object,
+//!   array, float) is echoed back unchanged.
+//! - A message that is not an object (array, string, number) has no accessible `id`, so it is
+//!   treated as a notification and gets no reply. JSON-RPC batches are silently ignored.
+//! - A response object (`{"jsonrpc":"2.0","id":1,"result":...}`) is not recognised as such:
+//!   its `id` makes it a request, and the absent method yields `-32601`.
+//! - Missing `params` becomes `{}`; a non-object `params` is passed to the application as-is.
+//! - Client capabilities are checked for presence only: `null`, `0` and `"x"` all pass.
+//! - `initialize` and `server/discover` bypass the version check: `initialize` answers legacy
+//!   even when `_meta` names the modern revision, and `discover` answers even for a version we
+//!   do not serve.
+//! - A non-object application result is left unframed in the modern revision.
+//! - An invalid UTF-8 line ends the loop silently, with no reply.
 
 use serde_json::{Map, Value, json};
-use std::io::{BufRead, Write};
+use std::io::{self, BufRead, Write};
+
+/// The strings that define the wire. Copy values, never rewrite them: they are the contract.
+pub(crate) mod wire {
+    pub(crate) const METHOD_INITIALIZE: &str = "initialize";
+    pub(crate) const METHOD_DISCOVER: &str = "server/discover";
+    pub(crate) const METHOD_TOOLS_LIST: &str = "tools/list";
+    pub(crate) const METHOD_TOOLS_CALL: &str = "tools/call";
+    pub(crate) const METHOD_PING: &str = "ping";
+
+    pub(crate) const KEY_JSONRPC: &str = "jsonrpc";
+    pub(crate) const KEY_ID: &str = "id";
+    pub(crate) const KEY_METHOD: &str = "method";
+    pub(crate) const KEY_PARAMS: &str = "params";
+    pub(crate) const KEY_RESULT: &str = "result";
+    pub(crate) const KEY_ERROR: &str = "error";
+    pub(crate) const KEY_CODE: &str = "code";
+    pub(crate) const KEY_MESSAGE: &str = "message";
+    pub(crate) const KEY_DATA: &str = "data";
+    pub(crate) const KEY_META: &str = "_meta";
+    pub(crate) const KEY_RESULT_TYPE: &str = "resultType";
+    pub(crate) const KEY_TTL_MS: &str = "ttlMs";
+    pub(crate) const KEY_CACHE_SCOPE: &str = "cacheScope";
+    pub(crate) const KEY_SUPPORTED_VERSIONS: &str = "supportedVersions";
+    pub(crate) const KEY_SUPPORTED: &str = "supported";
+    pub(crate) const KEY_REQUESTED: &str = "requested";
+    pub(crate) const KEY_PROTOCOL_VERSION: &str = "protocolVersion";
+    pub(crate) const KEY_CAPABILITIES: &str = "capabilities";
+    pub(crate) const KEY_SERVER_INFO: &str = "serverInfo";
+    pub(crate) const KEY_INSTRUCTIONS: &str = "instructions";
+    pub(crate) const KEY_TOOLS: &str = "tools";
+    pub(crate) const KEY_NAME: &str = "name";
+    pub(crate) const KEY_VERSION: &str = "version";
+
+    pub(crate) const PROTOCOL_JSONRPC: &str = "2.0";
+    pub(crate) const RESULT_COMPLETE: &str = "complete";
+
+    pub(crate) const PARSE_ERROR: i64 = -32700;
+    pub(crate) const INVALID_REQUEST: i64 = -32600;
+    pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
+    pub(crate) const INVALID_PARAMS: i64 = -32602;
+}
 
 /// The newest revision: no handshake, every request carries `_meta`.
 pub const MODERN: &str = "2026-07-28";
@@ -84,7 +146,9 @@ impl From<(i64, String)> for Fault {
 /// `initialize` (the handshake revision): the client's version when it is one we serve,
 /// otherwise ours. The client has no fall-forward, so never claim one we do not implement.
 pub fn negotiate_legacy(params: &Value) -> &'static str {
-    let wanted = params.get("protocolVersion").and_then(Value::as_str);
+    let wanted = params
+        .get(wire::KEY_PROTOCOL_VERSION)
+        .and_then(Value::as_str);
     LEGACY_VERSIONS
         .iter()
         .copied()
@@ -103,36 +167,65 @@ impl<'a> Server<'a> {
 
     /// Serve the process's stdin and stdout until the client closes them.
     ///
-    /// `app` answers the two tool methods (`tools/list` and `tools/call`); the protocol
-    /// methods and the framing are this module's.
-    pub fn serve<F>(&self, mut app: F) -> Result<(), String>
+    /// `app` answers the two tool methods (`tools/list` and `tools/call`); this crate handles
+    /// the protocol methods and [stdio framing](Server::serve_on).
+    ///
+    /// # Errors
+    ///
+    /// A stdout write or flush error is returned as a string.
+    pub fn serve<F>(&self, app: F) -> Result<(), String>
     where
         F: FnMut(&str, &Value) -> Result<Value, (i64, String)>,
     {
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout();
-        for line in stdin.lock().lines() {
+        self.serve_on(stdin.lock(), &mut stdout, app)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Serve one reader into one writer until the reader is exhausted: the line loop behind
+    /// [`Server::serve`], on injected streams.
+    ///
+    /// Input accepts LF and CRLF. Each reply is compact JSON followed by exactly one LF and
+    /// is flushed before the next request is handled. Blank lines and notifications produce
+    /// no output. A malformed JSON line produces a `-32700` reply with a null ID, then the
+    /// loop continues. A read error (including invalid UTF-8) ends the loop without a reply.
+    ///
+    /// # Errors
+    ///
+    /// A write or flush error stops the loop and is returned.
+    pub fn serve_on<R: BufRead, W: Write, F>(
+        &self,
+        reader: R,
+        writer: &mut W,
+        mut app: F,
+    ) -> io::Result<()>
+    where
+        F: FnMut(&str, &Value) -> Result<Value, (i64, String)>,
+    {
+        for line in reader.lines() {
             let Ok(line) = line else { break };
             if line.trim().is_empty() {
                 continue;
             }
             if let Some(reply) = self.handle_line(&line, &mut app) {
-                writeln!(stdout, "{reply}")
-                    .and_then(|_| stdout.flush())
-                    .map_err(|e| e.to_string())?;
+                writeln!(writer, "{reply}")?;
+                writer.flush()?;
             }
         }
         Ok(())
     }
 
-    /// One line of stdin in, one line of stdout out; none for a notification.
+    /// Handle one JSON message, returning its reply as a value, or `None` for a notification.
+    ///
+    /// Malformed JSON produces a `-32700` parse error with a null ID.
     pub fn handle_line<F>(&self, line: &str, app: &mut F) -> Option<Value>
     where
         F: FnMut(&str, &Value) -> Result<Value, (i64, String)>,
     {
         match serde_json::from_str::<Value>(line) {
             Ok(message) => self.handle(&message, app),
-            Err(e) => Some(error(Value::Null, -32700, e.to_string(), None)),
+            Err(e) => Some(error(Value::Null, wire::PARSE_ERROR, e.to_string(), None)),
         }
     }
 
@@ -141,12 +234,12 @@ impl<'a> Server<'a> {
         F: FnMut(&str, &Value) -> Result<Value, (i64, String)>,
     {
         // A request has an id, a notification has none and gets no reply.
-        let id = match message.get("id") {
+        let id = match message.get(wire::KEY_ID) {
             None => return None,
             Some(Value::Null) => {
                 return Some(error(
                     Value::Null,
-                    -32600,
+                    wire::INVALID_REQUEST,
                     "A request's id is a string or an integer, not null".into(),
                     None,
                 ));
@@ -154,12 +247,19 @@ impl<'a> Server<'a> {
             Some(id) => id.clone(),
         };
         let method = message
-            .get("method")
+            .get(wire::KEY_METHOD)
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+        let params = message
+            .get(wire::KEY_PARAMS)
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         Some(match self.dispatch(method, &params, app) {
-            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Ok(result) => json!({
+                (wire::KEY_JSONRPC): wire::PROTOCOL_JSONRPC,
+                (wire::KEY_ID): id,
+                (wire::KEY_RESULT): result,
+            }),
             Err(Fault {
                 code,
                 message,
@@ -173,12 +273,12 @@ impl<'a> Server<'a> {
         F: FnMut(&str, &Value) -> Result<Value, (i64, String)>,
     {
         // `initialize` opens the handshake revision, whatever else the request carries.
-        if method == "initialize" {
+        if method == wire::METHOD_INITIALIZE {
             return Ok(self.initialize(params));
         }
         // `server/discover` is always answered modern: it is how a client learns the versions
         // this server serves, and the probe a client that speaks both revisions sends first.
-        if method == "server/discover" {
+        if method == wire::METHOD_DISCOVER {
             return Ok(self.discover());
         }
         // The revision comes from the request itself. Without `_meta` the client is on the
@@ -192,7 +292,10 @@ impl<'a> Server<'a> {
                         UNSUPPORTED_PROTOCOL_VERSION,
                         "Unsupported protocol version",
                     )
-                    .with(json!({ "supported": VERSIONS, "requested": requested })));
+                    .with(json!({
+                        (wire::KEY_SUPPORTED): VERSIONS,
+                        (wire::KEY_REQUESTED): requested,
+                    })));
                 }
             },
         };
@@ -200,15 +303,22 @@ impl<'a> Server<'a> {
         // server must not rely on capabilities the client did not declare.
         if version == Some(MODERN) && meta_value(params, CLIENT_CAPABILITIES_KEY).is_none() {
             return Err(Fault::new(
-                -32602,
+                wire::INVALID_PARAMS,
                 format!("_meta.{CLIENT_CAPABILITIES_KEY} is required"),
             ));
         }
         let result = match method {
-            "tools/list" | "tools/call" => app(method, params).map_err(Fault::from)?,
+            wire::METHOD_TOOLS_LIST | wire::METHOD_TOOLS_CALL => {
+                app(method, params).map_err(Fault::from)?
+            }
             // `ping` was removed in 2026-07-28: only the handshake revision still has it.
-            "ping" if version != Some(MODERN) => json!({}),
-            _ => return Err(Fault::new(-32601, format!("Method not found: {method}"))),
+            wire::METHOD_PING if version != Some(MODERN) => json!({}),
+            _ => {
+                return Err(Fault::new(
+                    wire::METHOD_NOT_FOUND,
+                    format!("Method not found: {method}"),
+                ));
+            }
         };
         Ok(self.frame(version, method, result))
     }
@@ -216,23 +326,23 @@ impl<'a> Server<'a> {
     /// `initialize`: the handshake revision's answer, unchanged since 2025-06-18.
     fn initialize(&self, params: &Value) -> Value {
         json!({
-            "protocolVersion": negotiate_legacy(params),
-            "capabilities": self.capabilities(),
-            "serverInfo": self.info(),
-            "instructions": self.instructions,
+            (wire::KEY_PROTOCOL_VERSION): negotiate_legacy(params),
+            (wire::KEY_CAPABILITIES): self.capabilities(),
+            (wire::KEY_SERVER_INFO): self.info(),
+            (wire::KEY_INSTRUCTIONS): self.instructions,
         })
     }
 
     /// `server/discover`: the versions, capabilities and identity of this server.
     fn discover(&self) -> Value {
         json!({
-            "resultType": "complete",
-            "supportedVersions": VERSIONS,
-            "capabilities": self.capabilities(),
-            "_meta": meta_object(self.info()),
-            "instructions": self.instructions,
-            "ttlMs": DISCOVER_TTL_MS,
-            "cacheScope": CACHE_SCOPE,
+            (wire::KEY_RESULT_TYPE): wire::RESULT_COMPLETE,
+            (wire::KEY_SUPPORTED_VERSIONS): VERSIONS,
+            (wire::KEY_CAPABILITIES): self.capabilities(),
+            (wire::KEY_META): meta_object(self.info()),
+            (wire::KEY_INSTRUCTIONS): self.instructions,
+            (wire::KEY_TTL_MS): DISCOVER_TTL_MS,
+            (wire::KEY_CACHE_SCOPE): CACHE_SCOPE,
         })
     }
 
@@ -245,12 +355,12 @@ impl<'a> Server<'a> {
         let Some(object) = result.as_object_mut() else {
             return result;
         };
-        object.insert("resultType".into(), json!("complete"));
-        if method == "tools/list" {
-            object.insert("ttlMs".into(), json!(LIST_TTL_MS));
-            object.insert("cacheScope".into(), json!(CACHE_SCOPE));
+        object.insert(wire::KEY_RESULT_TYPE.into(), json!(wire::RESULT_COMPLETE));
+        if method == wire::METHOD_TOOLS_LIST {
+            object.insert(wire::KEY_TTL_MS.into(), json!(LIST_TTL_MS));
+            object.insert(wire::KEY_CACHE_SCOPE.into(), json!(CACHE_SCOPE));
         }
-        let meta = object.entry("_meta").or_insert_with(|| json!({}));
+        let meta = object.entry(wire::KEY_META).or_insert_with(|| json!({}));
         if let Some(meta) = meta.as_object_mut() {
             meta.insert(SERVER_INFO_KEY.into(), self.info());
         }
@@ -258,18 +368,21 @@ impl<'a> Server<'a> {
     }
 
     fn info(&self) -> Value {
-        json!({ "name": self.name, "version": self.version })
+        json!({
+            (wire::KEY_NAME): self.name,
+            (wire::KEY_VERSION): self.version,
+        })
     }
 
     /// Only tools: no resources, prompts, sampling or logging to declare.
     fn capabilities(&self) -> Value {
-        json!({ "tools": {} })
+        json!({ (wire::KEY_TOOLS): {} })
     }
 }
 
 /// A header of the request's `params`, whatever its type.
 fn meta_value<'v>(params: &'v Value, key: &str) -> Option<&'v Value> {
-    params.get("_meta")?.get(key)
+    params.get(wire::KEY_META)?.get(key)
 }
 
 /// A header of the request's `params`, when it is a string.
@@ -285,11 +398,18 @@ fn meta_object(info: Value) -> Value {
 }
 
 fn error(id: Value, code: i64, message: String, data: Option<Value>) -> Value {
-    let mut error = json!({ "code": code, "message": message });
+    let mut error = json!({
+        (wire::KEY_CODE): code,
+        (wire::KEY_MESSAGE): message,
+    });
     if let Some(data) = data {
-        error["data"] = data;
+        error[wire::KEY_DATA] = data;
     }
-    json!({ "jsonrpc": "2.0", "id": id, "error": error })
+    json!({
+        (wire::KEY_JSONRPC): wire::PROTOCOL_JSONRPC,
+        (wire::KEY_ID): id,
+        (wire::KEY_ERROR): error,
+    })
 }
 
 #[cfg(test)]

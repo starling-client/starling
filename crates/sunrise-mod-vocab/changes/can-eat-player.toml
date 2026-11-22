@@ -1,0 +1,3 @@
+ids = ["hook:can_eat"]
+why = "Version 3 carries the eating player on both sides and skips dispatch when no resident eater or lifecycle epoch resolves, keeping vanilla eligibility."
+migrate = "Read event.player for food and effects. Do not depend on can_eat being asked before a player is resident or outside an open world lifecycle."

@@ -66,7 +66,7 @@ fn pet_holder_contracts_preserve_siblings_removals_and_prototypes() {
             let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
             assert!(error.contains(id), "{error}");
             let recipe = |ingredient| json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
-            let recipes = crate::crafting::Recipes::from_sources(
+            let refused = crate::crafting::Recipes::from_sources(
                 &std::env::temp_dir(),
                 &items,
                 &sunrise_world::loot::PackOverlay::NONE,
@@ -76,18 +76,14 @@ fn pet_holder_contracts_preserve_siblings_removals_and_prototypes() {
                 ],
                 &load,
             )
-            .unwrap();
-            assert_eq!(recipes.crafting.len(), 1);
+            .err()
+            .unwrap()
+            .to_string();
             assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                    .is_some()
+                refused.contains("data/fixture/recipe/invalid.json"),
+                "{refused}"
             );
-            assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-                    .is_none()
-            );
+            assert!(refused.contains(&error), "{refused}");
         }
         for value in [
             Tag::End,
@@ -126,9 +122,10 @@ fn pet_holder_contracts_preserve_siblings_removals_and_prototypes() {
         paper.data_mut().set_other(id, Some(raw.clone()));
         assert!(strict.test_in(&context, &paper));
         assert!(!absent.test_in(&context, &paper));
-        paper
-            .data_mut()
-            .set_other("minecraft:custom_data", Some(Tag::Int(1)));
+        paper.data_mut().set_other(
+            "minecraft:custom_data",
+            Some(Tag::compound([("extra", Tag::Int(1))])),
+        );
         assert!(!strict.test_in(&context, &paper));
         assert!(loose.test_in(&context, &paper));
         items.component_defaults = std::sync::Arc::new(std::collections::HashMap::from([(

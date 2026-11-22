@@ -1,14 +1,14 @@
 //! One source staging pass for the launcher and `sunrise-stage`.
-use crate::{internals, points, replace};
+use crate::{internals, replace};
 /// The build a staged copy is of, named in each build-data file's header.
-pub use point_shape::build_data::Build;
-use point_shape::build_data::Document;
+pub use mod_surface::build_data::Build;
+use mod_surface::build_data::Document;
 use std::{path::Path, time::Instant};
 
 /// Discovery instrumentation must never be used to build or publish a game.
 #[derive(Clone, Copy)]
 pub enum Mode {
-    /// Widen visibility, mark injection points and give functions their replacement slots,
+    /// Widen visibility and give functions their replacement slots,
     /// without diagnostic attributes.
     Build,
     /// Add internal-use diagnostics for an isolated metadata-only mod check.
@@ -17,23 +17,18 @@ pub enum Mode {
 
 /// Counts and catalog produced by source staging.
 pub struct Staged {
-    /// Injection point counts.
-    pub points: points::Staged,
     /// Replacement slot counts.
     pub replace: replace::Staged,
     /// Exposed internal signatures and changed visibility counts.
     pub internals: internals::Widened,
 }
 
-/// Expose internals, mark points, give functions their replacement slots and write the build
-/// data (`points.json`, `internals.json`, `loops.json`, `functions.json`, each with the header
-/// naming `build`) in a
-/// disposable source copy. Internals precede points so their catalog contains only the
-/// original game items, and points precede the slots so only game functions are points.
+/// Expose internals, give functions replacement slots and write the build data
+/// (`internals.json`, `loops.json`, `functions.json`), each with a header naming `build`.
+/// Catalog only the original game items, before adding the replacement helpers.
 /// A pass stamps the copy before edits; even a failed pass requires fresh source for a retry.
 pub fn stage(
     root: &Path,
-    points_json: &Path,
     internals_json: &Path,
     mode: Mode,
     build: &Build,
@@ -74,7 +69,7 @@ pub fn stage(
         started.elapsed().as_secs_f64()
     );
     write(
-        &points_json.with_file_name(crate::loops::FILE),
+        &internals_json.with_file_name(crate::loops::FILE),
         &Document::new(build, loops),
     )?;
     let started = Instant::now();
@@ -84,7 +79,7 @@ pub fn stage(
     };
     internals
         .entries
-        .extend(crate::crossing::foreign_internals());
+        .extend(crate::crossing::foreign_internals(root)?);
     #[derive(serde::Serialize)]
     struct Internals<'a> {
         internals: &'a [internals::Internal],
@@ -103,39 +98,6 @@ pub fn stage(
         started.elapsed().as_secs_f64()
     );
     let started = Instant::now();
-    let wire = crate::build::wire_types(root)?;
-    eprintln!(
-        "stage_phase=wire seconds={:.3}",
-        started.elapsed().as_secs_f64()
-    );
-    let started = Instant::now();
-    let (points, records) = points::stage_with_manifest(root, &wire)?;
-    eprintln!(
-        "stage_phase=points seconds={:.3}",
-        started.elapsed().as_secs_f64()
-    );
-    let started = Instant::now();
-    #[derive(serde::Serialize)]
-    struct Manifest {
-        points: Vec<points::GamePoint>,
-        /// The `mod_api` types with a `Wire` layout: what an engine point's API record may hold.
-        wire: std::collections::BTreeSet<String>,
-    }
-    write(
-        points_json,
-        &Document::new(
-            build,
-            Manifest {
-                points: records,
-                wire,
-            },
-        ),
-    )?;
-    eprintln!(
-        "stage_phase=point_manifest seconds={:.3}",
-        started.elapsed().as_secs_f64()
-    );
-    let started = Instant::now();
     let replace = replace::stage(root)?;
     eprintln!(
         "stage_phase=replace seconds={:.3}",
@@ -143,15 +105,11 @@ pub fn stage(
     );
     functions.retain_slotted(&replace.slots, &generic);
     // One line: the index is the largest build-data file, and only programs read it.
-    let path = points_json.with_file_name(crate::functions::FILE);
+    let path = internals_json.with_file_name(crate::functions::FILE);
     let text = serde_json::to_string(&Document::new(build, &functions))
         .map_err(|error| error.to_string())?;
     std::fs::write(&path, text + "\n").map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(Staged {
-        points,
-        replace,
-        internals,
-    })
+    Ok(Staged { replace, internals })
 }
 
 fn write(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
@@ -163,15 +121,15 @@ fn write(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn stage(root: &Path, points: &Path, internals: &Path, mode: Mode) -> Result<Staged, String> {
+    fn stage(root: &Path, internals: &Path, mode: Mode) -> Result<Staged, String> {
         let build = Build {
             commit: "c".repeat(40),
         };
-        super::stage(root, points, internals, mode, &build)
+        super::stage(root, internals, mode, &build)
     }
 
     #[test]
-    fn staging_marks_points_and_slots_and_refuses_reuse() {
+    fn staging_writes_catalogs_and_slots_and_refuses_reuse() {
         // Each iteration starts from fresh source, not the preceding staged fixture.
         for copy in 0..3 {
             let temporary = tempfile::tempdir().unwrap();
@@ -191,7 +149,7 @@ mod tests {
             .unwrap();
             std::fs::write(
                 root.join("crates/sunrise-client/Cargo.toml"),
-                "[package]\nname = 'sunrise-client'\n[dependencies]\nsunrise-engine-slots = { path = '../sunrise-engine-slots' }\n",
+                "[package]\nname = 'sunrise-client'\n[dependencies]\n",
             )
             .unwrap();
             std::fs::write(
@@ -202,47 +160,31 @@ mod tests {
             let lists = root.join("crates/sunrise-mod-api-gen");
             std::fs::create_dir_all(&lists).unwrap();
             std::fs::write(lists.join("internals.txt"), "").unwrap();
-            let package = root.join("crates/sunrise-engine-slots");
-            std::fs::create_dir_all(&package).unwrap();
-            std::fs::write(
-                package.join("Cargo.toml"),
-                "[package]\nname = 'sunrise-engine-slots'\n",
-            )
-            .unwrap();
-            let output = root.join("points.json");
+            std::fs::write(root.join(crate::crossing::CROSSING_FOREIGN_FILE), "[]").unwrap();
+            let output = root.join("internals.json");
+            let functions = root.join(crate::functions::FILE);
             if copy == 2 {
                 // Refuse retries even when a late output failure leaves edited source.
-                std::fs::create_dir(&output).unwrap();
-                assert!(stage(&root, &output, &root.join("internals.json"), Mode::Build).is_err());
+                std::fs::create_dir(&functions).unwrap();
+                assert!(stage(&root, &output, Mode::Build).is_err());
             } else {
-                stage(&root, &output, &root.join("internals.json"), Mode::Build).unwrap();
-                let bytes = std::fs::read(&output).unwrap();
+                stage(&root, &output, Mode::Build).unwrap();
+                let bytes = std::fs::read(&functions).unwrap();
                 assert_eq!(bytes.last(), Some(&b'\n'));
-                let manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                 // Every build-data file opens with the header naming the build.
-                for file in point_shape::build_data::FILES {
+                for file in mod_surface::build_data::FILES {
                     let text = std::fs::read_to_string(root.join(file)).unwrap();
                     let (build, _): (Build, serde_json::Value) =
-                        point_shape::build_data::read(file, &text).unwrap();
+                        mod_surface::build_data::read(file, &text).unwrap();
                     assert_eq!(build.commit, "c".repeat(40), "{file}");
-                }
-                let points = manifest["points"].as_array().unwrap();
-                for (name, returns) in [("unit", "cancel"), ("optional", "result")] {
-                    let point = points.iter().find(|point| point["name"] == name).unwrap();
-                    assert_eq!(point["returns"], returns);
-                    assert_eq!(point["signature_hash"].as_str().unwrap().len(), 32);
                 }
             }
             let before = std::fs::read(&source).unwrap();
             let text = String::from_utf8_lossy(&before);
-            assert!(text.contains("sunrise_mod_api_macros"));
-            // The slots follow the points: a pass that failed between them left none.
-            assert_eq!(
-                text.contains("slot = 0") && text.contains("__fnr_unit"),
-                copy != 2
-            );
+            // Even a failure writing the last catalog leaves this copy with replacement slots.
+            assert!(text.contains("__fnr_unit") && text.contains("__fnr_optional"));
             for mode in [Mode::Build, Mode::Discovery] {
-                let error = stage(&root, &output, &root.join("internals.json"), mode)
+                let error = stage(&root, &output, mode)
                     .err()
                     .expect("staging twice must fail");
                 assert_eq!(

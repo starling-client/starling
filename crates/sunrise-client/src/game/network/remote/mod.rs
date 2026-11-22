@@ -7,12 +7,21 @@
 //! client predicts its own movement; the server stays authoritative for
 //! everything else.
 mod selector_metadata;
+use crate::game::collision_source::Mover;
 use selector_metadata::hurt_sound_for;
 mod attack_target;
 mod break_prediction;
+use break_prediction::Prediction;
+mod connection;
 mod fall_sound;
+pub(in crate::game) mod general;
+pub(in crate::game) use general::RemoteGeneral;
 mod interaction_actions;
 mod interaction_prediction;
+use inventory::{
+    CREATIVE_SYNCED, Predicted, changed_slots, creative_sync_slot, creative_sync_stacks,
+    mark_synced, menu_items, predict_clicks, predict_clicks_with,
+};
 mod level_format;
 mod raw_ingress;
 mod recipe_properties;
@@ -21,15 +30,30 @@ mod use_item;
 mod block_entity_data;
 #[cfg(test)]
 mod block_entity_data_tests;
+#[cfg(test)]
+mod claimed_item_use_tests;
 use super::raw_backlog::Received;
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
+use super::remote_vehicles::PassengerSeat;
 use super::render_tick::{mob_tracking_body, player_tracking_body};
-use super::{Dim, Game, Mining, Screen, level_sounds::LevelSound};
+use super::{Dim, Game, Hit, Mining, Screen, item_use::ticks_left, level_sounds::LevelSound};
 use crate::game::api_values::TryIntoApi;
-use sunrise_client::actions::Action;
+use mod_api::InteractionKey;
+use movement::MovePacket;
+#[cfg(test)]
+// The move-packet tests reach it through `super::super`.
+use movement::stepped_move;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use sunrise_client::first_person::{Hand, SwingAnimation};
+<<<<<<< sync-sunrise-1
 use sunrise_client::gamepad::ServerStick;
 use sunrise_client::input_queue::InputQueue;
+=======
+>>>>>>> sunrise/main
 use sunrise_client::{
     Result,
     blocks::Fluid,
@@ -38,6 +62,7 @@ use sunrise_client::{
     entities::{Experience, ExperienceOrb, ItemEntity},
     hud::HudBatch,
     items::ItemStack,
+    join_seq::JoinSeq,
     lan::data::{BIOME_REGISTRY, client_biomes},
     menu::Input,
     mobs::{Mob, MobType, Who},
@@ -50,6 +75,7 @@ use sunrise_client::{
     sprint::Keys,
     streaming::{ChunkGenerator, Proto, Streaming},
     tab_list::SPECTATOR,
+    text::Text,
 };
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 use sunrise_protocol::{
@@ -64,13 +90,6 @@ use sunrise_protocol::{
     secure_chat::{self, Signature},
     text::{Language, plain},
 };
-use mod_api::InteractionKey;
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use winit::keyboard::KeyCode;
 use {
     sunrise_core::nbt::Tag,
     sunrise_mod_runtime::attachments::{Holder, ResidentAttachments},
@@ -82,19 +101,45 @@ use {
 };
 
 mod abilities;
+mod chat;
 mod chat_received;
+mod commands;
+pub(in crate::game) use chat::{ChatTrust, Decoration};
 use chat_received::QueuedChat;
 pub(in crate::game) mod client_level_tick;
+mod effect;
 mod entity_section_steps;
+mod inventory;
 mod item_use;
-mod queued_keys;
+mod kept_columns;
+mod menu_interactions;
+mod minecarts;
+use minecarts::CartLerp;
+mod motion;
+mod movement;
+mod packets_entity;
+mod packets_object;
+mod packets_player;
+mod packets_world;
 mod remote_attributes;
+mod remote_state;
+mod session;
+mod skin;
+mod status;
+mod sync;
+mod tab_entries;
 mod tables;
+mod tick;
+mod tracking;
+mod ui;
+#[path = "use.rs"]
+mod r#use;
 
 pub(super) use super::villager_client::builtin_registries;
 
 mod chat_queue;
 
+<<<<<<< sync-sunrise-1
 /// `ChatType`'s two decorations: how a message shows in the chat, and what the narrator says of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Decoration {
@@ -151,6 +196,9 @@ fn chat_type_decorate(
 
 /// A text component the server sent, for the HUD and the chat. Legacy `§` codes in its strings
 /// (which plugins still send) style the text as the font's StringDecomposer does.
+=======
+/// A text component the server sent, for the HUD.
+>>>>>>> sunrise/main
 pub(super) fn remote_text(tag: &Tag) -> sunrise_client::text::Text {
     use sunrise_client::scoreboard::{comp_text, tag_to_json};
     comp_text(&tag_to_json(tag)).resolve_legacy()
@@ -206,26 +254,6 @@ fn menu_title(tag: &Tag) -> sunrise_client::text::Text {
     remote_text(tag).resolve_legacy()
 }
 
-/// `ChatTrustLevel`; a modified message keeps the signed content it was changed from.
-pub(super) enum ChatTrust {
-    Secure,
-    Modified(String),
-    NotSecure,
-    /// `GuiMessageTag.chatError`: the line `ChatListener.handleChatMessageError` adds.
-    Error,
-}
-impl ChatTrust {
-    /// `ChatTrustLevel.createTag`.
-    fn tag(&self) -> Option<sunrise_client::chat::Tag> {
-        match self {
-            Self::Secure => None,
-            Self::Modified(original) => Some(sunrise_client::chat::Tag::modified(original)),
-            Self::NotSecure => Some(sunrise_client::chat::Tag::not_secure()),
-            Self::Error => Some(sunrise_client::chat::Tag::chat_error()),
-        }
-    }
-}
-
 /// Streaming needs a generator; a server world never generates.
 struct NoTerrain;
 impl ChunkGenerator for NoTerrain {
@@ -248,9 +276,18 @@ pub(super) struct Tracked {
     /// packet's delta counts from. A TeleportEntity moves the entity but not
     /// this base, so the server's next delta still lands where it means.
     codec_base: [f64; 3],
+    on_fire: bool,
+    mod_fire_immune: bool,
     silent: bool,
     /// `Entity.vehicle`: the entity it rides (`SetPassengers`), whatever either one's type.
     pub(in crate::game) vehicle: Option<u32>,
+}
+
+/// An item has joined the client level, but has no stack to draw yet.
+pub(super) struct PendingItem {
+    join: JoinSeq,
+    position: [f64; 3],
+    velocity: Vec3,
 }
 
 /// `Entity.startRiding` / `removePassenger` for a `SetPassengers` packet: the
@@ -272,189 +309,26 @@ fn seat_passengers(entities: &mut HashMap<i32, Tracked>, vehicle: u32, passenger
 /// `LinearInterpolationHandler`'s target: a position and rotation (yRot,
 /// xRot) reached in `steps` ticks.
 pub(super) struct Lerp {
-    target: [f64; 3],
+    pub(super) target: [f64; 3],
     rotation: Option<(f32, f32)>,
-    steps: u32,
-}
-
-/// `NewMinecartBehavior.MinecartStep`, including the server's rail pitch.
-#[derive(Clone, Copy)]
-struct CartStep {
-    position: Vec3,
-    movement: Vec3,
-    yaw: f32,
-    pitch: f32,
-    weight: f32,
-}
-
-/// The client's state of a minecart on `NewMinecartBehavior`: the steps the
-/// server sent (`lerpSteps`), the ones being played over 3 ticks
-/// (`currentLerpSteps`) and where the cart was when they began (`oldLerp`).
-pub(super) struct CartLerp {
-    pending: Vec<CartStep>,
-    current: Vec<CartStep>,
-    total_weight: f64,
-    delay: i32,
-    old: CartStep,
-}
-
-impl CartLerp {
-    fn new() -> Self {
-        Self {
-            pending: Vec::new(),
-            current: Vec::new(),
-            total_weight: 0.0,
-            delay: 0,
-            old: CartStep {
-                position: Vec3::ZERO,
-                movement: Vec3::ZERO,
-                yaw: 0.0,
-                pitch: 0.0,
-                weight: 0.0,
-            },
-        }
-    }
-
-    /// `NewMinecartBehavior.getCartLerpPosition`, `getCartLerpMovements` and
-    /// `getCartLerpYRot` / `getCartLerpXRot` at `partial`: the step the weights
-    /// put this moment in, and how far along it from the one before.
-    fn at(&self, partial: f32) -> (Vec3, Vec3, f32, f32) {
-        let alpha = ((3 - self.delay) as f32 + partial) / 3.0;
-        let mut count_up = 0.0f32;
-        let mut in_step = 1.0f32;
-        let mut found = None;
-        for (i, s) in self.current.iter().enumerate() {
-            if s.weight <= 0.0 {
-                continue;
-            }
-            count_up += s.weight;
-            if f64::from(count_up) >= self.total_weight * f64::from(alpha) {
-                let before = count_up - s.weight;
-                in_step = ((f64::from(alpha) * self.total_weight - f64::from(before))
-                    / f64::from(s.weight)) as f32;
-                found = Some(i);
-                break;
-            }
-        }
-        let index = found.unwrap_or(self.current.len() - 1);
-        let current = self.current[index];
-        let previous = if index > 0 {
-            self.current[index - 1]
-        } else {
-            self.old
-        };
-        let t = f64::from(in_step);
-        let lerp = |a: Vec3, b: Vec3| {
-            Vec3::new(
-                a.x + t * (b.x - a.x),
-                a.y + t * (b.y - a.y),
-                a.z + t * (b.z - a.z),
-            )
-        };
-        (
-            lerp(previous.position, current.position),
-            lerp(previous.movement, current.movement),
-            previous.yaw + in_step * wrap_degrees(current.yaw - previous.yaw),
-            previous.pitch + in_step * wrap_degrees(current.pitch - previous.pitch),
-        )
-    }
-
-    /// `NewMinecartBehavior.lerpClientPositionAndRotation`: once the steps
-    /// being played are used up, the queued ones become the current ones;
-    /// the cart then sits where the steps put it at the end of this tick.
-    /// False when it has no steps to play.
-    fn tick(&mut self, c: &mut super::minecarts::Minecart) -> bool {
-        self.delay -= 1;
-        if self.delay <= 0 {
-            self.old = CartStep {
-                position: c.position,
-                movement: c.velocity,
-                yaw: c.yaw,
-                pitch: c.pitch,
-                weight: 0.0,
-            };
-            self.current.clear();
-            if !self.pending.is_empty() {
-                self.current.append(&mut self.pending);
-                self.total_weight = self.current.iter().map(|s| f64::from(s.weight)).sum();
-                self.delay = if self.total_weight == 0.0 { 0 } else { 3 };
-            }
-        }
-        if self.current.is_empty() {
-            return false;
-        }
-        let (position, movement, yaw, pitch) = self.at(1.0);
-        c.position = position;
-        c.velocity = movement;
-        c.yaw = yaw;
-        c.pitch = pitch;
-        true
-    }
+    pub(super) steps: u32,
 }
 
 /// `SteppedInterpolationHandler.doInterpolate`'s `setPos` and `setRot` on a
 /// mob: its yaw kept continuous (the same turn as vanilla's, without the
 /// wrap that would spin it in the frame between ticks), its pitch clamped.
-fn place_interpolated(m: &mut Mob, at: PosRot) {
+pub(super) fn place_interpolated(m: &mut Mob, at: PosRot) {
     m.position = Vec3::new(at.position[0], at.position[1], at.position[2]);
     m.yaw += wrap_degrees(at.yaw - m.yaw);
     m.head_pitch = (at.pitch % 360.0).clamp(-90.0, 90.0);
 }
 
-/// The packet a living entity's move came in.
-#[derive(Clone, Copy, PartialEq)]
-enum MovePacket {
-    /// `handleMoveEntity`: always interpolated.
-    Move,
-    /// `handleEntityPositionSync`.
-    PositionSync,
-    /// `handleTeleportEntity` (`setValuesFromPositionPacket`).
-    Teleport,
-}
-
-impl MovePacket {
-    /// `tooBigToInterpolate`: a move to `to` of more than 64 blocks snaps.
-    /// A position sync measures it from where the entity is, a teleport from
-    /// where it is headed (`PositionMoveRotation.of`'s
-    /// `getClientPositionAndRotation`).
-    fn snaps(self, handler: &SteppedInterpolation, entity: PosRot, to: [f64; 3]) -> bool {
-        let from = match self {
-            MovePacket::Move => return false,
-            MovePacket::PositionSync => entity.position,
-            MovePacket::Teleport => handler.heading(entity).position,
-        };
-        let d = [0, 1, 2].map(|i| to[i] - from[i]);
-        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 4096.0
-    }
-}
-
-/// A move `packet` to `to` for a living entity at `entity`, through its
-/// handler (`interpolateTo`): where it is put at once, if anywhere. A move
-/// too big to interpolate is a `snapTo`; vanilla leaves the handler running
-/// and its next step shifts what is left by the jump
-/// (`adjustInterpolationTargetFromDeltas`), which this handler doesn't port,
-/// so the steps are dropped instead. That is the same for an entity that
-/// wasn't moving, as a teleported one usually isn't.
-fn stepped_move(
-    handler: &mut SteppedInterpolation,
-    packet: MovePacket,
-    entity: PosRot,
-    to: [f64; 3],
-    path: Option<Path>,
-    rotation: Option<(f32, f32)>,
-) -> Option<PosRot> {
-    if packet.snaps(handler, entity, to) {
-        handler.cancel();
-        let (yaw, pitch) = rotation.unwrap_or((entity.yaw, entity.pitch));
-        return Some(PosRot {
-            position: to,
-            yaw,
-            pitch,
-        });
-    }
-    match handler.interpolate_to(entity, path, rotation) {
-        Start::Snap(at) => Some(at),
-        Start::Interpolating | Start::Unchanged => None,
+/// Where a mob is, as its `SteppedInterpolationHandler` sees it.
+fn mob_pos_rot(m: &Mob) -> PosRot {
+    PosRot {
+        position: [m.position.x, m.position.y, m.position.z],
+        yaw: m.yaw,
+        pitch: m.head_pitch,
     }
 }
 
@@ -474,10 +348,44 @@ enum OwnProfile {
     Done(Option<sunrise_client::skins::Textures>),
 }
 
+pub(in crate::game) struct PendingCauldron {
+    hand: Hand,
+    hit: Hit,
+    attempt: mod_api::InteractionAttempt,
+    selected: usize,
+    main: Option<ItemStack>,
+    off: Option<ItemStack>,
+    aim: ItemUseAim,
+    swing: [bool; 2],
+    sequence: i32,
+    item_after_block: bool,
+}
+
+#[derive(PartialEq)]
+struct ItemUseAim {
+    // UseItem carries these angles but not the server's ray origin.
+    rotation: (f32, f32),
+    eye: Option<[f64; 3]>,
+    // The local ray can also come from a tracked input device.
+    ray: Option<([f64; 3], [f64; 3])>,
+    reach: f64,
+}
+
+/// The packet route that starts a remote level entry.
+pub(in crate::game) enum RemoteDimensionEntry {
+    Login,
+    Respawn,
+    DeathRespawn,
+}
+
 pub(super) struct Remote {
     pub(super) professions: Arc<sunrise_client::mobs::villager::ResolvedProfessions>,
     pub session: Session,
+    /// Display-only address computed at connection setup. Never holds the raw friend invite.
+    pub(super) display_address: Option<String>,
     pub brand: String,
+    /// `ClientPacketListener.random` draws packet spread, not provider RNG.
+    pub(super) particle_packet_random: sunrise_core::random::LegacyRandom,
     pub(super) recipe_viewer: crate::game::recipe_book::ViewerChannels,
     /// This connection's configured feature flags, carried through reconfiguration.
     pub(super) features: std::sync::Arc<[String]>,
@@ -489,6 +397,13 @@ pub(super) struct Remote {
     pub custom_books: bool,
     /// The synced attachments the server sent, by holder.
     pub attachments: HashMap<Holder, ResidentAttachments>,
+    /// The colliders the server sent, by entity id (`sunrise:collider_sync`).
+    pub colliders: HashMap<u32, sunrise_client::colliders::ColliderState>,
+    /// The colliders at the last client tick, before any packets handled between ticks.
+    pub(super) collider_shove_start:
+        Option<(Dim, sunrise_client_render::moving_colliders::Prepared)>,
+    /// How old the copy of the collider carrying the player is (`sunrise:carry_age`).
+    pub carry_age: sunrise_client::colliders::CarryAge,
     /// The server samples far terrain for us, this far at most (`lod_net`).
     pub far_terrain: Option<sunrise_client::lod_net::Offer>,
     pub(super) builtin: Arc<Builtin>,
@@ -523,9 +438,21 @@ pub(super) struct Remote {
     /// sent none the game takes): owned by the connection, so entering a level touches no other
     /// level's facts, the integrated server's included.
     pub(in crate::game) level_facts: Option<Arc<sunrise_world::dimension_type::DimensionFacts>>,
-    /// The sky, fog and cloud attributes (and timelines) of the level from the server's type, for a
-    /// level of a mod or a pack (`None` for a built-in level, or when the type is refused).
-    pub(in crate::game) level_environment: Option<sunrise_client::environment::Environment>,
+    /// The sky, fog and cloud attributes (and timelines) of the level from the server's type over
+    /// the client's own environment of that type: what gameplay reads. `None` when the type is
+    /// refused, or has no data at all: neither the server sent it nor the client's resources hold
+    /// it (`fill_known_entries` fills a known pack's entries from the client's own files).
+    pub(in crate::game) level_environment: Option<Arc<sunrise_client::environment::Environment>>,
+    /// The same over the packs' Polytone stack of that type, what the frame draws (`None` without
+    /// pack modifiers, or for a type the packs have no stack of: any but the three vanilla IDs).
+    pub(in crate::game) level_pack_environment:
+        Option<Arc<sunrise_client::environment::Environment>>,
+    /// The level's synchronized dimension type, which both environments are built from again
+    /// when the packs change.
+    synced_type: Option<(String, serde_json::Value)>,
+    /// Both environments by synchronized type name, with what they were built from, so that a
+    /// level of an unchanged type is entered again without reading the biome files.
+    level_environments: HashMap<String, level_format::LevelEnvironments>,
     /// Connection-owned facts, cached by level and the full named type identity.
     facts_cache: HashMap<
         String,
@@ -547,7 +474,7 @@ pub(super) struct Remote {
     pub(super) hashed_seed: i64,
     /// What chunk packets decode with (the dimension's height and sky, the
     /// biome registry); replaced whenever one of them changes.
-    pub(super) chunk_format: Arc<ChunkFormat>,
+    pub(in crate::game) chunk_format: Arc<ChunkFormat>,
     /// Decodes chunk packets as they arrive, off the frame.
     decoder: ChunkDecoder,
     /// Options.serverRenderDistance: the server's view distance from the
@@ -606,6 +533,7 @@ pub(super) struct Remote {
     last_recorded_pose: Option<crate::pose::Pose>,
     /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
     /// holds its abilities from the login on; here the player is made at
+<<<<<<< sync-sunrise-1
     /// the first teleport, which takes them then. None after a respawn
     /// until the server sends them: the game mode's then
     /// (`GameType.updatePlayerAbilities`).
@@ -621,6 +549,16 @@ pub(super) struct Remote {
     /// movement speed, jump strength, gravity, step height... kept for a LocalPlayer made
     /// after the packet came, and across respawns.
     player_attributes: Vec<play::AttributeSnapshot>,
+=======
+    /// the first teleport, which takes them then.
+    abilities: Option<play::PlayerAbilities>,
+    /// The old player's motion, from a Respawn with KEEP_ENTITY_DATA
+    /// (`handleRespawn`: `newPlayer.setDeltaMovement(oldPlayer.getDeltaMovement())`),
+    /// for the player made at the next teleport: a portal's teleport adds to it.
+    respawn_velocity: Option<Vec3>,
+    /// ServerboundPlayerLoadedPacket went out: the tick's keybinds act from then on.
+    pub(in crate::game) loaded_sent: bool,
+>>>>>>> sunrise/main
     /// The dimension of the client level the mods heard made
     /// (`native_client_level_load`), to be told dropped once.
     pub(super) heard_level: Option<String>,
@@ -630,6 +568,7 @@ pub(super) struct Remote {
     /// The ClientInformation last sent (`Options.broadcastOptions` sends it
     /// again when a view distance, Chat, skin or Main Hand option changes).
     sent_info: sunrise_protocol::packets::configuration::ClientInformation,
+    pub(in crate::game) group_count: sunrise_client::chunk_map::ConnectionGroupCount,
     /// BlockStatePredictionHandler: blocks changed ahead of the server (a predicted break),
     /// with what it remembers of each of them. Until the server acknowledges the
     /// sequence its block updates only replace the remembered state; then the block
@@ -649,7 +588,17 @@ pub(super) struct Remote {
     menu_title: Option<sunrise_client::text::Text>,
     menu_title_snapshot: Option<Arc<mod_api::Text>>,
     pub(in crate::game) state_id: i32,
+    /// Window 0's state and carried stack while another menu is active.
+    inventory_state_id: i32,
+    inventory_carried: Option<ItemStack>,
+    inventory_craft_grid: [Option<ItemStack>; 4],
+    inventory_craft_result: Option<ItemStack>,
     use_target: Option<[i32; 3]>,
+    pub(super) cauldron_entries: Option<sunrise_client::cauldron::interactions::Dispatcher<()>>,
+    /// Receipts are connection-scoped; unlike block prediction sequences, they
+    /// are never reset on a level change.
+    cauldron_receipt: i64,
+    pub(in crate::game) pending_cauldrons: std::cell::RefCell<HashMap<i64, PendingCauldron>>,
     /// A mod menu's extra data, kept for the `OpenScreen` of its window that
     /// follows (`sunrise:menu_extra`).
     pub(in crate::game) menu_extra: Option<sunrise_protocol::menu_extra::Message>,
@@ -660,8 +609,10 @@ pub(super) struct Remote {
     tick_standings: Vec<Option<String>>,
     tick_water_fx: Vec<sunrise_client::mobs::MobEvent>,
     /// Complete network riding graph, including invisible plugin seat entities.
-    pub(super) passenger_vehicles: HashMap<u32, u32>,
+    pub(super) passenger_vehicles: HashMap<u32, PassengerSeat>,
     pub(super) lerps: HashMap<i32, Lerp>,
+    /// A native mod's general rows the server shows the window (`general.rs`).
+    pub(super) general: general::RemoteGenerals,
     /// The minecarts the server moves with `ClientboundMoveMinecartPacket`
     /// (`NewMinecartBehavior`), which have no interpolation handler.
     pub(super) cart_lerps: HashMap<i32, CartLerp>,
@@ -678,7 +629,7 @@ pub(super) struct Remote {
     /// The player's place in its vehicle's `getPassengers`.
     pub(super) passenger_index: usize,
     /// Item entities waiting for their item data: where they are and their motion.
-    pub(super) pending_items: HashMap<i32, ([f64; 3], Vec3)>,
+    pub(super) pending_items: HashMap<i32, PendingItem>,
     health: (f32, i32, f32),
     /// `LocalPlayer.flashOnSetHealth`: set by the first health the server
     /// sends; from then on a drop starts the hurt animation.
@@ -782,16 +733,10 @@ pub(super) struct Remote {
     /// Per-hand swing policy, restored when the current input attempt ends.
     pub(in crate::game) interaction_swing: [bool; 2],
     destroy_delay: u32,
-    pub(super) input: sunrise_client::interaction_input::InteractionInput,
-    /// Keys whose presses send a packet (swap hands, drop, a mount's
-    /// inventory): like the click queue, they wait for the tick's
-    /// `handleKeybinds` phase rather than going out between window events.
-    pub(super) pending_keys: InputQueue<KeyCode>,
     /// Whether the main and off hand still wait for the server's answer to
     /// a SWAP_ITEM_WITH_OFFHAND (`remote_hand_slot_set`).
     swap_answer: [bool; 2],
     stop_mining: bool,
-    placing: Option<([i32; 3], u64)>,
     /// `CommonPlayerSpawnInfo.isFlat`: the level is a superflat one.
     pub(super) flat: bool,
     death_message: Option<sunrise_client::text::Text>,
@@ -820,9 +765,6 @@ pub(super) struct Remote {
     /// the oldest of them first waited (`poll_remote`).
     backlog: VecDeque<Received>,
     backlog_since: Option<Instant>,
-    /// `ClientboundTransferPacket`'s target: when the connection ends the
-    /// game connects here, the stored cookies carried over (`TransferState`).
-    transfer: Option<String>,
     /// `ClientCommonPacketListenerImpl.serverLinks`: the links "Server
     /// Links..." in the pause menu lists (only `http`/`https` URIs kept).
     pub(super) server_links: Vec<sunrise_protocol::packets::configuration::ServerLink>,
@@ -840,6 +782,7 @@ const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
 /// whatever inserting their columns costs, up to a column still decoding:
 /// the packets after a slow machine's chunks don't wait on its frames.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
+<<<<<<< sync-sunrise-1
 /// What a frame spends on an overdue backlog's chunk packets on a phone: there one frame
 /// taking the whole backlog after a teleport was a visible hitch (a 214 ms frame on the POCO
 /// F6 Pro); four times a frame's usual share still drains it in a few frames.
@@ -870,6 +813,11 @@ const TRAIL: usize = 12;
 /// Free stick direction rests this long after a hit, a use or a drop: those go with the view's
 /// rotation, and turning away at once after a hit looks like an aimbot to an anticheat.
 const STEER_REST: Duration = Duration::from_secs(1);
+=======
+/// How long a tick about to run waits for one chunk column still decoding;
+/// past it the column, and what came after it, wait for the next frame.
+const TICK_DECODE_WAIT: Duration = Duration::from_millis(250);
+>>>>>>> sunrise/main
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "sunrise:mount";
@@ -965,6 +913,7 @@ fn number_format(f: &play::NumberFormat) -> sunrise_client::scoreboard::NumberFo
 }
 
 impl Game<'_> {
+<<<<<<< sync-sunrise-1
     #[cfg(target_os = "android")]
     pub(super) fn touch_mining_progress(&self) -> f32 {
         self.remote
@@ -1032,7 +981,23 @@ impl Game<'_> {
             state.position = position;
         }
         Some(state)
+=======
+    /// One vanilla active cache: `(2 * (max(2, client_view_distance) + 3) + 1)^2` columns
+    /// (`ClientChunkCache.calculateStorageRange`), times the active dimension's sections,
+    /// times 4,096 cells. Viewed levels share that footprint; a legitimate server need not
+    /// group more cells than one full active world.
+    /// The server's view-radius packet and per-view column caps cannot grow the ceiling.
+    pub(in crate::game) fn connection_group_limit(&self) -> usize {
+        self.remote.as_ref().map_or(0, |remote| {
+            let radius = remote.sent_info.view_distance.max(2) as usize + 3;
+            let width = 2 * radius + 1;
+            (width * width).saturating_mul(self.world.shape.section_count() * 4096)
+        })
+>>>>>>> sunrise/main
     }
+
+    // remote_sound_name: remote/sync.rs
+
     /// The hurt sound the hurt player's own client plays from
     /// `ClientboundDamageEventPacket` (`LivingEntity.handleDamageEvent`):
     /// `Player.getHurtSound` is the damage type's effects, with the codec's
@@ -1043,6 +1008,7 @@ impl Game<'_> {
             None => sunrise_client::health::hurt_sound("hurt"),
         }
     }
+<<<<<<< sync-sunrise-1
     /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
     pub(super) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
         self.connect_server_with_cookies(address, name, None)
@@ -1457,69 +1423,13 @@ impl Game<'_> {
         self.stats = Default::default();
         Ok(())
     }
+=======
+    // connect_remote_session: remote/session.rs
+>>>>>>> sunrise/main
 
-    /// Prepare a client session and remote state to receive packets from a studio replay.
-    pub(super) fn init_remote_for_replay(&mut self) -> Result<()> {
-        self.realm_session = false;
-        self.reset_tutorial();
-        self.perf.world_opening();
-        self.world_biomes = None;
-        self.world_biomes_base = None;
-        let root = self.options.resources.clone();
-        let builtin = builtin_registries(&root).ok_or("Resources are incomplete")?;
-        let lang = Arc::new(sunrise_client::net::load_language(&root));
-        let info = self
-            .settings
-            .client_information(client_view_distance(self.settings.render_distance));
-        let auth = self.auth();
-        let name = auth.as_ref().map_or("ReplayPlayer", |a| a.name.as_str());
-        let user = auth.as_ref().map_or_else(
-            || {
-                (
-                    name.to_owned(),
-                    sunrise_protocol::crypto::offline_uuid(name),
-                )
-            },
-            |a| (a.name.clone(), a.uuid),
-        );
-        self.server_packs_connect(None, user);
-        let session = Session::replay(name);
-        let player_type = super::perspective::player_type(&root);
-        let mut streaming = Streaming::new(
-            Arc::new(NoTerrain),
-            self.worker_context(),
-            self.res.threads(),
-        );
-        streaming.remote = true;
-        streaming.radius = self.settings.render_distance;
-        self.streaming = streaming;
-        self.world = Game::world_for_mods(self.res.facts().air, 0);
-        self.save = Arc::new(SaveDir::new(
-            std::env::temp_dir().join("sunrise-replay-unused"),
-            sunrise_client::save::LevelShape::OVERWORLD,
-        ));
-        self.inventory = vec![None; 36];
-        self.offhand = None;
-        self.armor = [None, None, None, None];
-        self.craft_grid = vec![None; 9];
-        self.craft_size = 2;
-        self.remove_local_player_body();
-        self.spawn = None;
-        self.mobs.clear();
-        self.clear_remote_objects();
-        self.clear_remote_projectiles();
-        self.creatures.projectiles.clear();
-        self.dropped.clear();
-        self.particles.clear();
-        self.pickups.clear();
-        self.orbs.clear();
-        self.falling.clear();
-        self.mining = None;
-        self.container = None;
-        self.carried = None;
-        self.using = None;
-        self.end_mod_use();
+    // init_remote_for_replay: remote/session.rs
 
+<<<<<<< sync-sunrise-1
         self.set_mode_id(0);
         self.experience = Experience {
             level: 0,
@@ -1857,6 +1767,9 @@ impl Game<'_> {
         self.titles.clear();
         self.titles.reset_times();
     }
+=======
+    // leave_server: remote/session.rs
+>>>>>>> sunrise/main
 
     pub(super) fn send(&self, packet: S) {
         if let Some(r) = &self.remote {
@@ -1891,15 +1804,6 @@ impl Game<'_> {
             self.send_play(packet);
         }
     }
-    /// `Connection.send` for the game's play packets: a mod may cancel one
-    /// (`client_packet_send`), and the server never hears of it. True when queued.
-    pub(super) fn send_play(&self, packet: S) -> bool {
-        let queued = self.remote.is_some() && !self.client_packet_send_canceled(&packet);
-        if let (true, Some(r)) = (queued, &self.remote) {
-            r.session.send(packet);
-        }
-        queued
-    }
     fn send_action(&self, action: i32) {
         self.send(S::PlayerAction(play::PlayerAction {
             action,
@@ -1908,6 +1812,7 @@ impl Game<'_> {
             sequence: 0,
         }));
     }
+<<<<<<< sync-sunrise-1
     /// The hits and uses held back while the stick steered (`send`), the tick after.
     fn send_held_back(&self) {
         if let Some(r) = &self.remote {
@@ -2116,6 +2021,9 @@ impl Game<'_> {
         // Moving forward at yaw - a is moving at angle a (to the left) of yaw: Entity.moveRelative.
         Some(self.yaw - left.atan2(forward).to_degrees())
     }
+=======
+
+>>>>>>> sunrise/main
     /// `LocalPlayer.isShiftKeyDown` (and so `isSecondaryUseActive`): the input as of the player's
     /// last tick (`input.keyPresses`, what the last ServerboundPlayerInputPacket said), not the key
     /// now: a sneak pressed in the frame of a click acts from the next tick, as on the server.
@@ -2123,6 +2031,11 @@ impl Game<'_> {
         self.remote
             .as_ref()
             .is_some_and(|r| r.last_input & SHIFT_INPUT != 0)
+    }
+    /// Whether secondary use skips a block's default interaction on this client.
+    pub(super) fn remote_secondary_use_skips_block(&self) -> bool {
+        self.remote_shift_down()
+            && (self.stack_in(self.selected).is_some() || self.offhand.is_some())
     }
     fn next_sequence(&mut self) -> i32 {
         let r = self.remote.as_mut().expect("remote");
@@ -2138,64 +2051,8 @@ impl Game<'_> {
                 .unwrap_or("minecraft:air"),
         )
     }
-    /// The server's network id of a mob effect (`brewing::EFFECTS` id).
-    pub(super) fn remote_effect_network_id(&self, effect: &str) -> Option<i32> {
-        let r = self.remote.as_ref()?;
-        r.builtin
-            .get("minecraft:mob_effect")?
-            .id(&format!("minecraft:{effect}"))
-    }
-    /// A mob effect's network id as the effect (`brewing::EFFECTS` id).
-    pub(super) fn remote_effect_id(&self, effect: i32) -> Option<&'static str> {
-        self.remote_effect_def(effect).map(|def| def.id)
-    }
-    fn remote_effect_def(
-        &self,
-        effect: i32,
-    ) -> Option<&'static sunrise_client::brewing::EffectDef> {
-        let r = self.remote.as_ref()?;
-        let name = r.builtin.get("minecraft:mob_effect")?.name(effect)?;
-        sunrise_client::brewing::effect(name)
-    }
-    /// ClientPacketListener.handleUpdateMobEffect for the player itself
-    /// (`LivingEntity.forceAddEffect`): the effect replaces any of its kind.
-    /// Other entities' effects are not shown.
-    fn remote_effect(&mut self, p: &play::UpdateMobEffect) {
-        if self.remote.as_ref().is_none_or(|r| r.entity_id != p.id) {
-            return;
-        }
-        let Some(def) = self.remote_effect_def(p.effect) else {
-            return;
-        };
-        let id = def.id;
-        let mut e = sunrise_client::effects::EffectInstance::from_def(def, p.duration, p.amplifier);
-        e.ambient = p.flags & 1 != 0;
-        e.visible = p.flags & 2 != 0;
-        e.show_icon = p.flags & 4 != 0;
-        let list = &mut self.potions.effects.list;
-        match list.iter_mut().find(|x| x.id == id) {
-            // forceAddEffect's copyBlendState: an updated effect keeps its fade.
-            Some(existing) => {
-                e.client_blend = existing.client_blend;
-                *existing = e;
-            }
-            None => {
-                // ClientboundUpdateMobEffectPacket.shouldBlend (flag 8).
-                let blend = p.flags & 8 != 0;
-                if id == "darkness" {
-                    self.sculk.darkness = super::sculk::darkness_blend_added(&e, blend);
-                } else if id == "nausea" {
-                    let (o_nausea, nausea) = screen_effects::nausea_blend_added(&e, blend);
-                    self.screen_fx.o_nausea = o_nausea;
-                    self.screen_fx.nausea = nausea;
-                } else if !blend {
-                    let has_effect = !e.ends_within(0);
-                    e.client_blend = (has_effect, has_effect);
-                }
-                list.push(e);
-            }
-        }
-    }
+
+    // remote_effect_network_id: remote/sync.rs
     fn item_id(&self, name: &str) -> i32 {
         let r = self.remote.as_ref().expect("remote");
         r.builtin
@@ -2203,13 +2060,21 @@ impl Game<'_> {
             .and_then(|i| i.id(name))
             .unwrap_or(0)
     }
+
     /// A stack from the server, decoded as the saved and command item NBT
     /// are, so tooltips and models see every field.
     pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
+        self.decode_remote_stack(s.as_ref()?)
+    }
+
+    fn decode_remote_stack(&self, stack: &Stack) -> Option<ItemStack> {
         let r = self.remote.as_ref()?;
-        let stack = s.as_ref()?;
-        if !sunrise_protocol::item::custom::permitted(stack, r.registries.custom_components)
-            .unwrap_or(false)
+        if !sunrise_protocol::item::custom::permitted_with_names(
+            stack,
+            r.registries.custom_components,
+            &*r.registries,
+        )
+        .unwrap_or(false)
         {
             log::warn!("Dropping a stack with unnegotiated custom components");
             return None;
@@ -2220,37 +2085,54 @@ impl Game<'_> {
             &r.registries,
         ))
     }
-    /// A stack to the server (`SetCreativeModeSlot`): the same component
-    /// patch a Sunrise server sends its clients, with the registries' ids, so
-    /// the server's echo doesn't hand back a bare item.
-    fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
+
+    pub(super) fn to_network_projecting(
+        &self,
+        s: &Option<ItemStack>,
+        projected: &dyn Fn(&sunrise_world::component_value::consume_effects::Admitted),
+    ) -> Option<Stack> {
         let r = self.remote.as_ref()?;
         // A stack as the server sent it, only its count changed: its own
         // components go back, as a vanilla client keeps them.
-        if let Some((stack, patch)) = s.as_ref().and_then(|s| Some((s, s.wire_patch()?))) {
-            let mut out = Stack::new(self.item_id(&stack.item), stack.count as i32);
+        let effect_mapping = r
+            .registries
+            .consume_effect_codecs
+            .as_ref()
+            .map(|snapshot| snapshot.identity());
+        let source = s.as_ref()?;
+        if let Some(patch) = source.wire_patch_for(effect_mapping) {
+            let mut out = Stack::new(self.item_id(&source.item), source.count as i32);
             let safe = r.registries.custom_components
                 || sunrise_protocol::item::custom::entries().next().is_none()
-                || sunrise_protocol::item::WirePatch::decode(&patch)
-                    .and_then(|(added, removed)| {
-                        let decoded = Stack {
-                            added,
-                            removed,
-                            ..Stack::new(out.item, out.count)
-                        };
-                        sunrise_protocol::item::custom::permitted(&decoded, false)
-                    })
-                    .unwrap_or(false);
+                || sunrise_protocol::item::WirePatch::decode_reader(
+                    sunrise_protocol::buf::Reader::new(&patch).with_names(&*r.registries),
+                )
+                .and_then(|(added, removed)| {
+                    let decoded = Stack {
+                        added,
+                        removed,
+                        ..Stack::new(out.item, out.count)
+                    };
+                    sunrise_protocol::item::custom::permitted_with_names(
+                        &decoded,
+                        false,
+                        &*r.registries,
+                    )
+                })
+                .unwrap_or(false);
             if safe {
                 out.wire = sunrise_protocol::item::WirePatch(Some(patch));
                 return Some(out);
             }
             log::warn!("Cannot send cached custom components to this peer");
         }
-        sunrise_client::lan::guest::stack_to_network(
+        let mut wire = sunrise_client::lan::guest::stack_to_network_projecting(
             |name| self.item_id(name),
             // Built-in first, as a hub's `SyncData::id` does: potions are one.
             |registry, name| {
+                if registry == sunrise_protocol::item::consume_effects::REGISTRY {
+                    return r.registries.consume_effect_id(name);
+                }
                 r.builtin
                     .get(registry)
                     .and_then(|ids| ids.id(name))
@@ -2263,16 +2145,32 @@ impl Game<'_> {
                     })
             },
             s,
-        )
+            projected,
+        )?;
+        sunrise_client::lan::guest::canonicalize_stack_patch(
+            &mut wire,
+            source,
+            self.items(),
+            &r.builtin,
+        );
+        Some(wire)
     }
+
     /// `HashedStack.create` with the connection's registries (the client's
     /// `decoratedHashOpsGenerator`).
-    fn hashed_stack(&self, s: &Option<ItemStack>) -> Option<Hashed> {
-        let r = self.remote.as_ref()?;
+    fn hashed_stack(&self, s: &Option<ItemStack>) -> sunrise_protocol::Result<Option<Hashed>> {
+        if s.is_none() {
+            return Ok(None);
+        }
+        let r = self
+            .remote
+            .as_ref()
+            .ok_or_else(|| sunrise_protocol::Error::new("no live menu connection"))?;
         let names = SyncedNames {
             builtin: &r.builtin,
             dynamic: &r.registries,
         };
+<<<<<<< sync-sunrise-1
         self.to_network(s).map(|s| Hashed::create(&s, &names))
     }
     /// A line in the connection's chat, with its styles, click and hover
@@ -2416,87 +2314,35 @@ impl Game<'_> {
                     .font
                     .as_deref()
                     .is_some_and(|font| font != "minecraft:default")
+=======
+        let projected = std::cell::RefCell::new(Vec::new());
+        let stack = self
+            .to_network_projecting(s, &|effect| projected.borrow_mut().push(effect.clone()))
+            .ok_or_else(|| sunrise_protocol::Error::new("cannot encode a nonempty stack"))?;
+        let projected = projected.into_inner();
+        let hash = if let Some(data) = s.as_ref().and_then(ItemStack::data) {
+            Hashed::create_with_admitted(&stack, &names, &|name, bytes| {
+                let matches =
+                    |effect: &sunrise_world::component_value::consume_effects::Admitted| {
+                        &effect.name == name && effect.wire.as_ref() == bytes
+                    };
+                if stack.wire.0.is_some() {
+                    data.wire
+                        .admitted_effects()
+                        .iter()
+                        .find(|effect| matches(effect))
+                        .cloned()
+                } else {
+                    data.find_admitted_consume_effect(&matches)
+                        .or_else(|| projected.iter().find(|effect| matches(effect)).cloned())
+                }
+>>>>>>> sunrise/main
             })
-        });
-        if !decorated.plain().contains(content) || font_changed {
-            ChatTrust::Modified(content.to_owned())
         } else {
-            ChatTrust::Secure
-        }
-    }
-
-    /// `ClientPacketListener.handleDeleteChat`: the packed signature names a
-    /// message; one still held back by Chat Delay never shows
-    /// (`ChatListener.removeFromDelayedMessageQueue`), a shown one is
-    /// replaced (`ChatComponent.deleteMessage`). A signature the cache
-    /// doesn't hold is an invalid packet.
-    fn handle_delete_chat(&mut self, packed: &(i32, Option<Vec<u8>>)) -> Result<()> {
-        let Some(r) = self.remote.as_mut() else {
-            return Ok(());
+            Hashed::create(&stack, &names)
         };
-        let Some(signature) = r.signatures.unpack(packed) else {
-            let reason =
-                sunrise_client::text::Text::translate("multiplayer.disconnect.invalid_packet", &[]);
-            return self.leave_server(Some(reason.plain()));
-        };
-        r.secure_chat.ignore_pending(&signature);
-        let queued = r.chat_queue.len();
-        r.chat_queue
-            .retain(|chat| chat.signature.as_ref() != Some(&signature));
-        if r.chat_queue.len() == queued {
-            let ticks = self.visual_ticks();
-            self.ui
-                .chat
-                .delete_message(&self.gui.atlas, &signature, ticks);
-        }
-        Ok(())
-    }
-
-    /// A message's `accept`: shown, it is narrated (`narrateChatMessage`) and
-    /// starts the Chat Delay wait again.
-    fn accept_chat(&mut self, chat: QueuedChat) -> bool {
-        let signature = chat.signature;
-        let shown = self.player_chat_line(chat);
-        if let Some(signature) = &signature {
-            self.mark_message_processed(signature, shown);
-        }
-        if shown && let Some(r) = self.remote.as_mut() {
-            r.chat_previous = Some(Instant::now());
-        }
-        shown
-    }
-
-    /// `showMessageToPlayer`: the line joins the chat if Only Show Secure
-    /// Chat, mods and the Chat option let it through, and the narrator says
-    /// it (`sayChatQueued`).
-    fn player_chat_line(&mut self, chat: QueuedChat) -> bool {
-        let QueuedChat {
-            mut line,
-            signature,
-            trust,
-            narration,
-            sender,
-            chat_type,
-            player,
-        } = chat;
-        // ChatListener.showMessageToPlayer: Only Show Secure Chat drops what is not secure.
-        if matches!(trust, ChatTrust::NotSecure) && self.settings.file.bool("onlyShowSecureChat") {
-            return false;
-        }
-        // handleChatMessageError says its line as system chat, and mods are not told of it.
-        let error = matches!(trust, ChatTrust::Error);
-        let (system, kind, player) = (false, Some(chat_type), player.as_ref());
-        if !error && !self.chat_received(system, false, sender, kind, player, &mut line) {
-            return false;
-        }
-        let source = sunrise_client::chat::ChatSource::Player;
-        let shown = self.signed_chat_line(line, source, signature, trust);
-        if shown && error {
-            self.say_system_chat_queued(&sunrise_client::text::Text::untrusted(&narration));
-        } else if shown {
-            self.say_chat_queued(&narration);
-        }
-        shown
+        hash.map(Some)
+            .map_err(|e| sunrise_protocol::Error::new(e.to_string()))
     }
 
     /// The minecarts the server sent, for the control socket's `status`
@@ -2521,16 +2367,9 @@ impl Game<'_> {
         )
     }
 
-    /// This player's account: a splitscreen player's own, else the game's (P1's).
+    /// The account playing this game.
     pub(super) fn auth(&self) -> Option<std::sync::Arc<sunrise_client::auth::AuthSession>> {
-        match self.options.split_guest {
-            true => self.split_auth.clone(),
-            false => sunrise_client::auth::current(),
-        }
-    }
-    /// Connected to a server in online mode (its Login): each player needs its own account.
-    pub(super) fn online_server(&self) -> bool {
-        self.remote.as_ref().is_some_and(|r| r.online_mode)
+        sunrise_client::auth::current()
     }
 
     /// `ClientSuggestionProvider.customCompletionSuggestions` of the server
@@ -2541,6 +2380,7 @@ impl Game<'_> {
             .map(|r| r.custom_completions.clone())
             .unwrap_or_default()
     }
+
     /// The names in the server's player list, sorted.
     pub(super) fn remote_online_names(&self) -> Option<Vec<String>> {
         let r = self.remote.as_ref()?;
@@ -2548,41 +2388,16 @@ impl Game<'_> {
         names.sort();
         Some(names)
     }
-    /// The open menu's window id (0: the inventory).
-    pub(super) fn remote_menu_id(&self) -> i32 {
-        self.remote
-            .as_ref()
-            .and_then(|r| r.menu.as_ref())
-            .map_or(0, |m| m.0)
-    }
-    /// The server's last `n` chat lines, newest first.
-    pub(super) fn remote_chat(&self, n: usize) -> Option<Vec<String>> {
-        let r = self.remote.as_ref()?;
-        Some(r.chat.iter().rev().take(n).map(|l| l.0.clone()).collect())
-    }
 
     /// Received events left for the next frame (`poll_remote`): until they
     /// are handled, the terrain the server sent is not all there.
     pub(super) fn remote_backlog(&self) -> usize {
         self.remote.as_ref().map_or(0, |r| r.backlog.len())
     }
-    /// A headless command oracle has a real connection but no movement tick.
-    /// Acknowledge loaded terrain without predicting or sending movement.
-    pub(super) fn poll_stationary_client(&mut self) -> Result<()> {
-        self.poll_remote()?;
-        let loaded = self.player.as_ref().is_some_and(|p| {
-            self.streaming.is_lit(
-                (p.position.x.floor() as i32) >> 4,
-                (p.position.z.floor() as i32) >> 4,
-            )
-        });
-        if loaded && self.remote.as_ref().is_some_and(|r| !r.loaded_sent) {
-            self.send(S::PlayerLoaded(Empty));
-            let r = self.remote.as_mut().unwrap();
-            r.loaded_sent = true;
-            r.level_load.finish();
-        }
-        Ok(())
+
+    /// The attack clicks queued for the next tick (`KeyMapping.click`, not yet handled).
+    pub(in crate::game) fn remote_attack_clicks_queued(&self) -> u32 {
+        self.pending_mapping_clicks("key.attack")
     }
 
     /// Process what the network thread received (once per frame, like the
@@ -2593,7 +2408,23 @@ impl Game<'_> {
     /// `OVERDUE_CHUNK_PACKETS_PER_FRAME` of them). A chunk packet still
     /// decoding holds back what follows it.
     pub(super) fn poll_remote(&mut self) -> Result<()> {
-        let polled = self.poll_remote_events();
+        self.poll_remote_with(false)
+    }
+
+    /// `Minecraft.runTick` handles every packet that came (`runAllTasks`)
+    /// before the frame's ticks. What this frame's poll left for later (chunks
+    /// past its budget or still decoding, and everything after them) is taken
+    /// when a tick is about to run, so the tick moves through those chunks, as
+    /// vanilla's does. A batch's `ChunkBatchReceived` is not among them: the
+    /// network thread answers it (`net::receive_play`).
+    pub(in crate::game) fn poll_remote_before_tick(&mut self) -> Result<()> {
+        if self.remote.as_ref().is_none_or(|r| r.backlog.is_empty()) {
+            return Ok(());
+        }
+        self.poll_remote_with(true)
+    }
+    fn poll_remote_with(&mut self, before_tick: bool) -> Result<()> {
+        let polled = self.poll_remote_events(before_tick);
         // The block events and block changes of a piston clock start and end
         // thousands of moves at once: the collision view and the renderer
         // take them all in one sync, before the tick or frame reads them.
@@ -2602,6 +2433,7 @@ impl Game<'_> {
         }
         polled
     }
+<<<<<<< sync-sunrise-1
     fn poll_remote_events(&mut self) -> Result<()> {
         let Some(r) = self.remote.as_mut() else {
             return Ok(());
@@ -2880,6 +2712,9 @@ impl Game<'_> {
         self.send_suggestion_request();
         Ok(())
     }
+=======
+
+>>>>>>> sunrise/main
     /// ClientSuggestionProvider.customSuggestion: the chat's completion
     /// request for an `ask_server` node goes to the server.
     fn send_suggestion_request(&mut self) {
@@ -2895,7 +2730,7 @@ impl Game<'_> {
         else {
             return;
         };
-        let mut w = sunrise_protocol::buf::Writer::new();
+        let mut w = ::sunrise_core::vanilla_bytes::Writer::new();
         w.varint(id);
         w.string(&command);
         self.send(S::Unknown(
@@ -2903,6 +2738,7 @@ impl Game<'_> {
             w.data,
         ));
     }
+<<<<<<< sync-sunrise-1
     /// Entity.DATA_CUSTOM_NAME (2) and DATA_CUSTOM_NAME_VISIBLE (3) of any entity. Displays
     /// (text, item and block) are `text_displays.rs`'s (`remote_objects.rs` feeds them).
     fn remote_names_and_displays(&mut self, id: i32, values: &[(u8, i32, Value)]) {
@@ -3169,115 +3005,9 @@ impl Game<'_> {
         }
         self.finish_remote_level();
     }
+=======
+>>>>>>> sunrise/main
 
-    /// `ClientChunkCache.Storage.inRange`: within the storage around the
-    /// view centre, `calculateStorageRange` (the server's radius, at least
-    /// two, plus three) chunks each way.
-    pub(super) fn remote_chunk_in_range(&self, x: i32, z: i32) -> bool {
-        if self.replay.playing() {
-            return true;
-        }
-        self.remote
-            .as_ref()
-            .is_none_or(|r| in_storage_range(r.view_distance, r.chunk_center, x, z))
-    }
-    fn chunk_inside_remote_range(center: (i32, i32), distance: i32, x: i32, z: i32) -> bool {
-        in_storage_range(distance, center, x, z)
-    }
-    /// The columns a moved or resized storage no longer holds. Returns the
-    /// positions it freed (`forget_remote_columns`).
-    pub(in crate::game) fn drop_remote_chunks_out_of_range(
-        &mut self,
-        center: (i32, i32),
-        distance: i32,
-    ) -> Vec<(i32, i32)> {
-        let mut gone: sunrise_client::fast_hash::FxHashSet<(i32, i32)> = self
-            .world
-            .chunks
-            .keys()
-            .copied()
-            .filter(|&(x, z)| !Self::chunk_inside_remote_range(center, distance, x, z))
-            .collect();
-        self.forget_remote_columns(&mut gone, true)
-    }
-    /// Every column goes with the client level. Returns the positions it
-    /// freed (`forget_remote_columns`).
-    pub(in crate::game) fn forget_all_remote_columns(&mut self) -> Vec<(i32, i32)> {
-        let mut gone = self.world.chunks.keys().copied().collect();
-        self.forget_remote_columns(&mut gone, false)
-    }
-    /// Forgets the `gone` columns (and empties the set): their chunks (freed on a thread
-    /// of their own when there are many), their sections in the renderer and their block
-    /// entities, each store once for all of them. When the level stays open,
-    /// far terrain keeps their last state (`server_terrain`). Returns the
-    /// positions it freed, in `gone`'s order: only those still resident,
-    /// so a later forget of the same positions frees nothing.
-    pub(in crate::game) fn forget_remote_columns(
-        &mut self,
-        gone: &mut sunrise_client::fast_hash::FxHashSet<(i32, i32)>,
-        keep_terrain: bool,
-    ) -> Vec<(i32, i32)> {
-        if gone.is_empty() {
-            return Vec::new();
-        }
-        // The client chunk seam: one unload per column still resident, with
-        // its data still there, before `take_remote_columns` frees it.
-        let freed_at: Vec<(i32, i32)> = gone
-            .iter()
-            .filter(|&&(x, z)| self.world.chunks.contains_key(&(x, z)))
-            .copied()
-            .collect();
-        for &(x, z) in &freed_at {
-            self.client_chunk_unload(x, z, keep_terrain);
-        }
-        let freed =
-            sunrise_client::streaming::Streaming::take_remote_columns(&mut self.world, gone);
-        self.streaming.forget_columns(&mut self.world, gone);
-        if keep_terrain && let Some(lod) = &mut self.lod {
-            for chunk in &freed {
-                lod.observe(chunk.clone(), self.res.facts());
-            }
-        }
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.remove_columns(gone.iter().copied());
-        }
-        sunrise_client::chunk::free_columns(freed, gone.len());
-        self.world
-            .block_entities
-            .unload(|k| gone.contains(&(k.0 >> 4, k.2 >> 4)));
-        if let Some(r) = self.remote.as_mut() {
-            r.attachments.retain(|holder, _| match *holder {
-                Holder::Chunk([x, z]) => !gone.contains(&(x, z)),
-                Holder::BlockEntity([x, _, z]) => !gone.contains(&(x >> 4, z >> 4)),
-                _ => true,
-            });
-        }
-        gone.clear();
-        freed_at
-    }
-    /// `handleAnimate`: a player wakes up, or an entity gets the critical
-    /// hit (`CRIT`) or magic critical hit (`ENCHANTED_HIT`) emitter.
-    fn remote_animate(&mut self, id: i32, action: u8) {
-        use sunrise_client::particles::{ParticleOptions, ParticleType};
-        let Some((target, body)) = self.remote_tracking_body(id) else {
-            return;
-        };
-        let particle = match action {
-            // Player.stopSleepInBed.
-            0 => {
-                if target == TrackingTarget::LocalPlayer {
-                    self.sleeping = None;
-                    self.sleep_timer = 100;
-                }
-                return;
-            }
-            1 => ParticleType::Crit,
-            2 => ParticleType::EnchantedHit,
-            _ => return,
-        };
-        self.particles
-            .tracking_emitter(ParticleOptions::simple(particle), target, body);
-    }
     /// `handleServerData`: the server list entry of the server joined keeps
     /// the icon the server sends (`ServerList.saveSingleServer`). Single
     /// player has no entry.
@@ -3296,104 +3026,7 @@ impl Game<'_> {
             );
         }
     }
-    /// Keep the renderable block entities (chests, furnaces) in step with blocks.
-    /// `previous`: the block's state before, when it changed. A column sent again has
-    /// none, and keeps its block entities' synced attachments: the server does not send
-    /// them again (`remote_chunk` drops those of block entities the column lost).
-    pub(super) fn sync_block_entity(
-        &mut self,
-        pos: (i32, i32, i32),
-        previous: Option<BlockStateId>,
-        state: BlockStateId,
-    ) {
-        let name = self.res.facts().get(state).name.clone();
-        // LevelChunk.setBlockState: another block's block entity goes, even
-        // one of the same type (a mod's blocks may share one).
-        let other_block = previous.is_some_and(|p| self.res.facts().get(p).name != name);
-        self.ensure_stateful_entity_table();
-        // State-aware factories decide creation only. A valid same-block
-        // instance survives even when the new state would create none.
-        if !other_block
-            && self.world.block_entities.stateful_entity(state.0)
-            && matches!(
-                self.world.block_entities.get(&pos),
-                Some(BlockEntity::Mod(_))
-            )
-        {
-            return;
-        }
-        // A mod block's is the mod's own, as on the server.
-        match self.new_block_entity_for_state(state) {
-            Some(entity) => {
-                let same = self.world.block_entities.get(&pos).is_some_and(|e| {
-                    e.id() == entity.id() && !(other_block && matches!(e, BlockEntity::Mod(_)))
-                });
-                if !same {
-                    if previous.is_some() {
-                        self.forget_block_entity_attachments(pos);
-                    }
-                    self.world.block_entities.replace(pos, entity);
-                }
-            }
-            None => {
-                if previous.is_some() {
-                    self.forget_block_entity_attachments(pos);
-                }
-                self.world.block_entities.remove(&pos);
-            }
-        }
-    }
-    /// The server's synced attachments of a block entity that goes with it.
-    fn forget_block_entity_attachments(&mut self, (x, y, z): (i32, i32, i32)) {
-        if let Some(r) = self.remote.as_mut() {
-            r.attachments.remove(&Holder::BlockEntity([x, y, z]));
-        }
-    }
-    /// ClientLevel.setServerVerifiedBlockState: a block the client predicted keeps its
-    /// predicted state until the server acknowledges the action; the server's state is
-    /// remembered for then.
-    fn server_block(&mut self, pos: [i32; 3], state: i32) {
-        if let Some(p) = self
-            .remote
-            .as_mut()
-            .and_then(|r| r.predictions.get_mut(&pos))
-        {
-            p.state = state;
-            return;
-        }
-        self.set_block(pos, state, false);
-    }
-    /// BlockStatePredictionHandler.endPredictionsUpTo (ClientboundBlockChangedAckPacket): the
-    /// actions up to `sequence` are settled, so the blocks they predicted take the state the
-    /// server gave them (a break the server refused comes back).
-    fn end_predictions(&mut self, sequence: i32) {
-        let Some(r) = self.remote.as_mut() else {
-            return;
-        };
-        let last_teleport = r.last_teleport_sequence;
-        let settled: Vec<_> = r
-            .predictions
-            .iter()
-            .filter(|(_, p)| p.sequence <= sequence)
-            .map(|(&pos, &p)| (pos, p))
-            .collect();
-        for (pos, prediction) in settled {
-            if let Some(r) = self.remote.as_mut() {
-                r.predictions.remove(&pos);
-            }
-            if self.world.block(pos[0], pos[1], pos[2]).0 as i32 == prediction.state {
-                continue;
-            }
-            self.set_block(pos, prediction.state, false);
-            // ClientLevel.syncBlockState: the block that comes back may now hold
-            // the player, and then it goes to the position the prediction
-            // remembered.
-            let meets = self.block_meets_player(pos, prediction.state);
-            if let Some(at) = snap_target(prediction.player_pos, last_teleport, sequence, meets) {
-                self.snap_player_to(at);
-            }
-        }
-    }
+
     /// The player's position, for `retainKnownServerState`'s `player.position()`.
     fn player_position(&self) -> [f64; 3] {
         let at = self
@@ -3403,39 +3036,7 @@ impl Game<'_> {
             .unwrap_or(Vec3::ZERO);
         [at.x, at.y, at.z]
     }
-    /// `Entity.isColliding(pos, state)` for the local player: the state's own
-    /// collision shape, at the player's pose, against the player's box.
-    fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
-        let Some(player) = self.player.as_ref() else {
-            return false;
-        };
-        let entity = player.bounds();
-        let context = sunrise_world::collision_context::CollisionContext::for_entity(
-            sunrise_world::collision_context::CollisionEntity {
-                identity: sunrise_world::entity_obstruction::EntityIdentity(0),
-                kind: sunrise_world::collision_context::EntityContextKind::Player,
-                y: player.position.y,
-                descending: player.shift_key_down,
-                main_hand: None,
-            },
-            false,
-        );
-        let mut scene = sunrise_client::collisions::SceneCollisions {
-            world: &self.world,
-            binding: self.collision,
-            subject: None,
-        };
-        let at = sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
-        match self.collision.collision_shape_with_context(
-            &mut scene,
-            BlockStateId(state.max(0) as u32),
-            at,
-            &context,
-        ) {
-            Ok(shape) => shape_meets(&shape, pos, entity),
-            Err(_) => false,
-        }
-    }
+
     /// `Entity.absSnapTo`: the remembered point, clamped to the level's edge.
     /// The velocity is left alone, and the player has no separate previous
     /// position to reset (its box is drawn from `position`).
@@ -3447,62 +3048,22 @@ impl Game<'_> {
         let z = at[2].clamp(-3.0e7, 3.0e7);
         player.position = Vec3::new(x, at[1], z);
     }
-    fn set_block(&mut self, pos: [i32; 3], state: i32, predicted: bool) {
-        // A state we don't have (a server with mods we lack) reads as air, as in its chunks.
-        let state = state.max(0) as u32;
-        let known = sunrise_client::chunk::known_block_state(state);
-        let state = BlockStateId(if known { state } else { 0 });
-        let previous = self.world.block(pos[0], pos[1], pos[2]);
-        if self.world.loaded(pos[0], pos[2])
-            && self.world.set(pos[0], pos[1], pos[2], state).is_ok()
-        {
-            self.sync_block_entity((pos[0], pos[1], pos[2]), Some(previous), state);
-            self.client_block_written(pos, previous, state, predicted);
-        }
-        // A block we just placed: play its place sound (the server skips the placer).
-        if let Some((target, _)) = self.remote.as_ref().and_then(|r| r.placing)
-            && target == pos
-            && !self.res.facts().is_air(state)
-        {
-            let s = self.own_sound_type(pos, state, mod_api::BlockSoundCause::Place);
-            let at = [
-                f64::from(pos[0]) + 0.5,
-                f64::from(pos[1]) + 0.5,
-                f64::from(pos[2]) + 0.5,
-            ];
-            self.play_client_local_sound(
-                LevelSound::new(&s.place, at, (s.volume + 1.0) / 2.0, s.pitch * 0.8)
-                    .in_source(mod_api::SoundSource::Blocks),
-            );
-            if let Some(r) = self.remote.as_mut() {
-                r.placing = None;
-            }
-        }
-    }
+
     /// `Entity.isVehicle` on a client: the entities a tracked entity rides.
     pub(super) fn remote_vehicle_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.remote
             .iter()
             .flat_map(|r| r.entities.values().filter_map(|t| t.vehicle))
     }
+
     /// The `SetPassengers` bookkeeping of the tracked entities.
     pub(super) fn remote_seat_passengers(&mut self, vehicle: u32, passengers: &[i32]) {
         if let Some(r) = self.remote.as_mut() {
             seat_passengers(&mut r.entities, vehicle, passengers);
         }
     }
-    /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
-    /// both at its head yaw (LivingEntity).
-    pub(super) fn client_attachment_entity_exists(&self, holder: Holder) -> bool {
-        self.remote.as_ref().is_some_and(|remote| match holder {
-            Holder::Entity(id) => remote.entities.contains_key(&(id as i32)),
-            Holder::Player(uuid) => {
-                remote.profile == uuid || remote.level_players.values().any(|p| *p == uuid)
-            }
-            _ => false,
-        })
-    }
 
+<<<<<<< sync-sunrise-1
     pub(super) fn spawn_entity(
         &mut self,
         id: i32,
@@ -3968,6 +3529,9 @@ impl Game<'_> {
             self.remote_station_slot_changed(internal);
         }
     }
+=======
+    // move_entity: remote/motion.rs
+>>>>>>> sunrise/main
 
     pub(in crate::game) fn apply_packet(&mut self, packet: C) -> Result<()> {
         self.observe_client_packet(&packet);
@@ -3975,6 +3539,15 @@ impl Game<'_> {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
             // thread, after all preceding packets (especially teleports).
             C::Ping(p) => self.send(S::Pong(p)),
+            C::CustomPayload(p) if p.channel == super::cauldron_prediction::ENTRIES_CHANNEL => {
+                let entries = super::cauldron_prediction::decode_registrations(&p.data)?;
+                if let Some(remote) = &mut self.remote {
+                    remote.cauldron_entries = Some(entries);
+                }
+            }
+            C::CustomPayload(p) if p.channel == super::cauldron_prediction::USE_CHANNEL => {
+                self.receive_cauldron_use(&p.data)?;
+            }
             // The server's next generation of mod registries: all of it or the connection.
             C::CustomPayload(p) if p.channel == sunrise_client::datapack_net::CHANNEL => {
                 sunrise_client::datapack_net::accept_chunk(&p.data)?;
@@ -3994,14 +3567,33 @@ impl Game<'_> {
             {
                 self.remote_book_settings(&p.data);
             }
-            // The synced attachments of a holder the server shows the window.
-            C::CustomPayload(p) if p.channel == sunrise_protocol::attachment_sync::CHANNEL => {
-                self.remote_attachment_sync(&p.data);
+            // A native mod's general row the server starts showing the window.
+            C::CustomPayload(p) if p.channel == sunrise_protocol::general_entity::CHANNEL => {
+                self.remote_general_entity(&p.data);
             }
-            // A mod menu type's block and its mod's bytes, just before the
-            // menu's `OpenScreen`.
+            // The collider boxes of an entity the server shows the window.
+            C::CustomPayload(p) if p.channel == sunrise_protocol::collider_sync::CHANNEL => {
+                self.remote_collider_sync(&p.data);
+            }
+            // Per-position connected-texture groups synced for the window's chunks.
+            C::CustomPayload(p) if p.channel == sunrise_protocol::connection_groups::CHANNEL => {
+                self.refuse_play_payload("connection groups: payload outside its bundle")?;
+            }
+            // Full-width data slots for the open blockless mod menu.
+            C::CustomPayload(p) if p.channel == sunrise_protocol::menu_extra::DATA_CHANNEL => {
+                use sunrise_protocol::menu_extra::{DataSlot, LIVE_DATA_REVISION};
+                if self
+                    .remote
+                    .as_ref()
+                    .is_some_and(|r| r.registries.menu_extra_revision >= LIVE_DATA_REVISION)
+                    && let Ok(slot) = DataSlot::decode(&p.data)
+                {
+                    self.native_screen_data(slot.window, usize::from(slot.index), slot.value);
+                }
+            }
+            // A mod menu type's opening context, just before its OpenScreen.
             C::CustomPayload(p) if p.channel == sunrise_protocol::menu_extra::CHANNEL => {
-                self.receive_menu_extra(&p.data);
+                self.receive_menu_extra(&p.data)?;
             }
             C::CustomPayload(p) if sunrise_client::lan::recipes::viewer_channel(&p.channel) => {
                 self.remote_recipe_viewer(&p.channel, &p.data);
@@ -4024,9 +3616,10 @@ impl Game<'_> {
             }
             // PingDebugMonitor.onPongReceived.
             C::PongResponse(p) => {
-                let delay = self.debug_millis() - p.time;
+                let delay = sunrise_client::net::ping_millis().wrapping_sub(p.time);
                 self.debug_charts.ping.log(delay);
             }
+<<<<<<< sync-sunrise-1
             C::Login(p) => {
                 // A client's parts, from the tags it plays with.
                 if let Err(e) = self.resolve_parts() {
@@ -4201,6 +3794,11 @@ impl Game<'_> {
                     );
                 }
             }
+=======
+            C::DebugSample(p) => self.debug_charts.log_remote_sample(&p.sample)?,
+            C::Login(p) => self.apply_login_packet(p),
+            C::Respawn(p) => self.apply_respawn_packet(p),
+>>>>>>> sunrise/main
             C::PlayerPosition(p) => self.remote_teleport(&p)?,
             C::PlayerRotation(p) => self.remote_rotation(&p),
             C::PlayerLookAt(p) => self.remote_look_at(&p),
@@ -4210,54 +3808,15 @@ impl Game<'_> {
             C::LevelChunkWithLight(p) => self.remote_chunk(&p, None),
             C::LightUpdate(p) => self.remote_light_update(&p),
             C::ChunksBiomes(p) => self.remote_chunks_biomes(&p),
-            // `poll_remote` forgets a run of them at once.
-            C::ForgetLevelChunk(p) => {
-                self.forget_remote_columns(&mut [(p.pos[0], p.pos[1])].into_iter().collect(), true);
-            }
-            C::ChunkBatchFinished(_) => {
-                // ChunkBatchSizeCalculator's ceiling; meshing runs on workers.
-                self.send(S::ChunkBatchReceived(play::ChunkBatchReceived {
-                    chunks_per_tick: 64.0,
-                }));
-            }
-            C::BlockUpdate(p) => self.server_block(p.pos, p.state),
+            C::ForgetLevelChunk(p) => self.apply_forget_level_chunk_packet(p),
+            C::BlockUpdate(p) => self.server_block(p.pos, p.state, None),
             C::AddTransientBlock(p) => self.add_transient_block(p.pos, p.state),
-            // ClientPacketListener.handleBlockDestruction: another player's crack.
-            C::BlockDestruction(p) => {
-                self.destroy_block_progress(p.id, p.pos, i32::from(p.progress));
-            }
+            C::BlockDestruction(p) => self.apply_block_destruction_packet(p),
             C::SectionBlocksUpdate(p) => {
-                for (pos, state) in super::remote_chunks::section_blocks(&p) {
-                    self.server_block(pos, state);
-                }
+                self.apply_section_blocks_update_packet(&p, Default::default())
             }
-            C::BlockChangedAck(p) => self.end_predictions(p.sequence),
-            // Level.blockEvent on the client level: the block's triggerEvent
-            // runs on the client's copy of whatever is at pos (a piston's
-            // moveBlocks builds the moving block entities it animates, a note
-            // block plays); what it doesn't handle reaches the client copy of
-            // the block entity (chest lids, shulker boxes).
-            C::BlockEvent(p) => {
-                let pos = sunrise_core::position::BlockPos::new(p.pos[0], p.pos[1], p.pos[2]);
-                let triggered = self.with_level(|b, level, ticks| {
-                    b.client_block_event(level, ticks, pos, i32::from(p.b0), i32::from(p.b1))
-                });
-                self.moving_pistons_stale = true;
-                self.process_level_events()?;
-                if !triggered {
-                    let state = self.world.block(p.pos[0], p.pos[1], p.pos[2]);
-                    let block = &self.res.facts().get(state).name;
-                    let named = self.remote.as_ref().and_then(|r| {
-                        r.builtin
-                            .get("minecraft:block")?
-                            .name(p.block)
-                            .map(str::to_owned)
-                    });
-                    if named.as_deref() == Some(&**block) {
-                        self.block_entity_event(p.pos, i32::from(p.b0), i32::from(p.b1));
-                    }
-                }
-            }
+            C::BlockChangedAck(p) => self.end_predictions(p.sequence)?,
+            C::BlockEvent(p) => self.apply_block_event_packet(p)?,
             // ClientLevel.levelEvent: LevelEventHandler, as this client's own
             // level plays them (particles and sounds: a spawner's burst, bone
             // meal, waxing, a block broken by someone else).
@@ -4267,125 +3826,13 @@ impl Game<'_> {
             C::LevelEvent(p) => self.level_event_at(p.kind, p.pos, p.data),
             C::LevelParticles(p) => self.remote_level_particles(&p),
             C::Explode(p) => self.remote_explode(&p),
-            C::Sound(p) => {
-                if let Some(name) = self.remote_sound_name(&p.sound)
-                    && !self.pvp_mutes_sound(&name)
-                {
-                    let at = [
-                        f64::from(p.x) / 8.0,
-                        f64::from(p.y) / 8.0,
-                        f64::from(p.z) / 8.0,
-                    ];
-                    let mut sound = LevelSound::new(&name, at, p.volume, p.pitch);
-                    if let Ok(source) = usize::try_from(p.source)
-                        && let Some(source) = mod_api::SoundSource::ALL.get(source)
-                    {
-                        sound.source = *source;
-                    }
-                    self.play_client_level_sound(sound, p.seed);
-                }
-            }
-            C::SoundEntity(p) => {
-                if let Some(name) = self.remote_sound_name(&p.sound)
-                    && !self.pvp_mutes_sound(&name)
-                {
-                    let mut sound = LevelSound::new(&name, [0.0; 3], p.volume, p.pitch);
-                    sound.emitter = Some(p.id as u32);
-                    if let Ok(source) = usize::try_from(p.source)
-                        && let Some(source) = mod_api::SoundSource::ALL.get(source)
-                    {
-                        sound.source = *source;
-                    }
-                    self.play_client_level_sound(sound, p.seed);
-                }
-            }
+            C::Sound(p) => self.apply_sound_packet(p),
+            C::SoundEntity(p) => self.apply_sound_entity_packet(p),
             C::StopSound(p) => self
                 .audio
                 .stop_sounds(p.sound.as_deref(), p.source.map(|s| s as usize)),
-            C::AddEntity(p) => {
-                self.audio.remove_sound_entity(p.id as u32);
-                let kind = self
-                    .remote
-                    .as_ref()
-                    .and_then(|r| {
-                        r.builtin
-                            .get("minecraft:entity_type")?
-                            .name(p.kind)
-                            .map(str::to_owned)
-                    })
-                    .unwrap_or_default();
-                let rotation =
-                    [p.yaw, p.pitch, p.head_yaw].map(sunrise_protocol::buf::unpack_degrees);
-                if let Some(r) = self.remote.as_mut() {
-                    // ClientLevel.addEntity: an id it holds already is removed
-                    // and added again, after the player.
-                    r.ticked_before_player.remove(&(p.id as u32));
-                    // A new entity looks its PlayerInfo up afresh.
-                    r.level_player_textures.remove(&p.id);
-                    if kind == "minecraft:player" {
-                        r.level_players.insert(p.id, p.uuid);
-                        // createEntityFromPacket: the player takes the profile of its list entry.
-                        match r.players.get(&p.uuid) {
-                            Some(name) => r.level_player_names.insert(p.id, name.clone()),
-                            None => r.level_player_names.remove(&p.id),
-                        };
-                    } else {
-                        r.level_players.remove(&p.id);
-                        r.level_player_names.remove(&p.id);
-                    }
-                }
-                // Entity.getTeam: a mob is on a team by its UUID, a player by
-                // its profile name (`Game::scoreboard_name`).
-                self.persist.uuids.insert(
-                    p.id as u32,
-                    sunrise_client::lan::playerdata::uuid_ints(p.uuid),
-                );
-                let holder = if kind == "minecraft:player" {
-                    Holder::Player(p.uuid)
-                } else {
-                    Holder::Entity(p.id as u32)
-                };
-                self.initialize_entity(holder, &kind);
-                let replace = self.tracks_remote_entity(p.id);
-                self.spawn_entity(p.id, &kind, p.position, rotation);
-                if let Some(r) = self.remote.as_mut() {
-                    r.cart_lerps.remove(&p.id);
-                    r.lerps.remove(&p.id);
-                }
-                if !self.spawn_remote_object(
-                    p.id,
-                    &kind,
-                    p.position,
-                    (rotation[0], rotation[1]),
-                    p.data,
-                ) {
-                    self.spawn_added_projectile(&p, &kind, (rotation[0], rotation[1]), replace);
-                }
-                // Entity.recreateFromPacket: objects must exist before applying motion.
-                self.remote_motion(p.id, p.velocity);
-                if self.minecart_improvements()
-                    && self.carts.iter().any(|c| c.id == p.id as u32)
-                    && let Some(r) = self.remote.as_mut()
-                {
-                    r.cart_lerps.insert(p.id, CartLerp::new());
-                }
-                self.move_remote_text_display(p.id, p.position, Some((rotation[0], rotation[1])));
-                self.move_remote_interaction(p.id, p.position);
-            }
-            C::RemoveEntities(p) => {
-                for &id in &p.ids {
-                    self.forget_remote_entity_construction(id);
-                    if let Some(r) = self.remote.as_mut() {
-                        if let Some(uuid) = r.level_players.remove(&id) {
-                            r.attachments.remove(&Holder::Player(uuid));
-                        }
-                        r.level_player_names.remove(&id);
-                        r.level_player_textures.remove(&id);
-                        r.attachments.remove(&Holder::Entity(id as u32));
-                    }
-                }
-                self.remove_entities(&p.ids);
-            }
+            C::AddEntity(p) => self.apply_add_entity_packet(p),
+            C::RemoveEntities(p) => self.apply_remove_entities_packet(p),
             C::MoveEntityPos(play::MoveEntityPos(m))
             | C::MoveEntityPosRot(play::MoveEntityPosRot(m))
             | C::MoveEntityRot(play::MoveEntityRot(m)) => {
@@ -4427,81 +3874,13 @@ impl Game<'_> {
                 }
                 self.remote_move_entity_and_file(m.id, path, rotation, m.on_ground);
             }
-            C::EntityPositionSync(p) => {
-                let path = match p.path {
-                    play::PositionPath::Linear(at) => Path::Linear(at),
-                    play::PositionPath::Stepped(steps) => Path::Stepped(steps),
-                };
-                // handleEntityPositionSync: the position codec's base is set.
-                if let Some(t) = self.remote.as_mut().and_then(|r| r.entities.get_mut(&p.id)) {
-                    t.codec_base = path.end();
-                }
-                self.remote_position_sync_and_file(p.id, path, p.yaw, p.pitch, p.on_ground);
-            }
-            C::TeleportEntity(p) => {
-                let base = self
-                    .remote
-                    .as_ref()
-                    .and_then(|r| r.entities.get(&p.id))
-                    .map_or([0.0; 3], |t| t.position);
-                let rel = |bit: i32, i: usize| {
-                    if p.relatives & bit != 0 {
-                        base[i] + p.position[i]
-                    } else {
-                        p.position[i]
-                    }
-                };
-                let position = [
-                    rel(play::relative::X, 0),
-                    rel(play::relative::Y, 1),
-                    rel(play::relative::Z, 2),
-                ];
-                // setValuesFromPositionPacket: interpolated, unless too far.
-                self.move_entity(
-                    p.id,
-                    Some(Path::Linear(position)),
-                    Some((p.yaw, p.pitch)),
-                    p.on_ground,
-                    MovePacket::Teleport,
-                );
-                // handleTeleportEntity: the mount this client moves is put
-                // there at once.
-                if self.driven_mount().is_some_and(|m| m.id as i32 == p.id) {
-                    self.remote_move_vehicle(position, p.yaw);
-                }
-                self.entity_section_moved_id(p.id as u32);
-            }
-            C::SetPassengers(p) => self.remote_set_passengers(p.vehicle, &p.passengers),
-            // ClientPacketListener.handleEntityLinkPacket: who holds a mob's
-            // lead (this player, another player, a mob or a fence knot), for
-            // the rope.
-            C::SetEntityLink(p) => {
-                let me = self.remote.as_ref().map(|r| r.entity_id);
-                use sunrise_client::mobs::leash::Holder;
-                let holder = match p.dest {
-                    0 => None,
-                    d if Some(d) == me => Some(Holder::Player),
-                    d => match self.remote_knots.get(&(d as u32)) {
-                        Some(&block) => Some(Holder::Knot(block)),
-                        // Not a known knot yet: kept by id until the knot
-                        // arrives (game/network/remote_objects.rs).
-                        None if self.boats.iter().any(|b| b.id == d as u32) => {
-                            Some(Holder::Boat(d as u32))
-                        }
-                        None => Some(Holder::Mob(d as u32)),
-                    },
-                };
-                if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.source as u32) {
-                    m.extra.leash = holder;
-                } else if let Some(i) = self.boats.iter().position(|b| b.id == p.source as u32) {
-                    self.boats.update(i, |b| {
-                        // A leashed boat or raft (AbstractBoat is Leashable).
-                        b.leash = holder;
-                    });
-                }
-            }
-            C::MoveVehicle(p) => self.remote_move_vehicle_and_file(p.position, p.yaw),
+            C::EntityPositionSync(p) => self.apply_entity_position_sync_packet(p),
+            C::TeleportEntity(p) => self.apply_teleport_entity_packet(p)?,
+            C::SetPassengers(p) => self.remote_set_passengers(p.vehicle, p.passengers),
+            C::SetEntityLink(p) => self.apply_set_entity_link_packet(p),
+            C::MoveVehicle(p) => self.apply_move_vehicle_packet(p),
             C::MoveMinecartAlongTrack(p) => self.remote_move_minecart(p),
+<<<<<<< sync-sunrise-1
             // ClientPacketListener.handleRotateMob: lerpHeadTo(yHeadRot, 3).
             C::RotateHead(p) => {
                 if let Some(r) = self.remote.as_mut() {
@@ -5232,284 +4611,41 @@ impl Game<'_> {
                 self.apply_remote_health();
             }
             C::UpdateAttributes(p) => self.remote_mob_attributes(p.id, &p.values),
+=======
+            C::RotateHead(p) => self.apply_rotate_head_packet(p),
+            C::SetEntityData(p) => self.apply_set_entity_data_packet(p),
+            C::SetEquipment(p) => self.apply_set_equipment_packet(p),
+            C::TakeItemEntity(p) => self.apply_take_item_entity_packet(p),
+            C::SetEntityMotion(p) => self.apply_set_entity_motion_packet(p)?,
+            C::ProjectilePower(p) => self.apply_projectile_power_packet(p),
+            C::DamageEvent(p) => self.apply_damage_event_packet(p),
+            C::HurtAnimation(p) => self.apply_hurt_animation_packet(p),
+            C::EntityEvent(p) => self.apply_entity_event_packet(p)?,
+            C::Animate(p) => self.remote_animate(p.id, p.action),
+            C::SwingAnimation(p) => self.apply_swing_animation_packet(p),
+            C::UpdateAttributes(p) => self.apply_update_attributes_packet(p)?,
+>>>>>>> sunrise/main
             C::UpdateMobEffect(p) => self.remote_effect(&p),
-            C::RemoveMobEffect(p) => {
-                if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id)
-                    && let Some(id) = self.remote_effect_id(p.effect)
-                {
-                    self.potions.effects.list.retain(|e| e.id != id);
-                }
-            }
+            C::RemoveMobEffect(p) => self.apply_remove_mob_effect_packet(p),
             C::ChangeDifficulty(p) => {
                 self.ui.difficulty = p.difficulty.clamp(0, 3) as u8;
                 self.level.difficulty_locked = p.locked;
                 self.remote_world_options_difficulty(self.ui.difficulty, p.locked);
             }
             C::GameRuleValues(p) => self.remote_world_options_rules(p.entries),
-            // ClientPacketListener.handleSetHealth: LocalPlayer.hurtTo.
-            C::SetHealth(p) => {
-                let flash = self.remote.as_mut().is_some_and(|r| {
-                    r.health = (p.health, p.food, p.saturation);
-                    std::mem::replace(&mut r.flash_on_set_health, true)
-                });
-                if flash && let Some(pl) = self.player.as_mut() {
-                    pl.health.flash_health_change(p.health);
-                }
-                self.apply_remote_health();
-                // The death screen opens (or the respawn is asked for) with the
-                // death packet when the rule hides it.
-                let shown = self.remote.as_ref().is_none_or(|r| r.show_death_screen);
-                if p.health <= 0.0 && shown && self.screen != Screen::Dead && self.player.is_some()
-                {
-                    self.close_dialogs();
-                    self.set_screen(Screen::Dead);
-                    self.ui.death_time = 0;
-                    self.ui.death_confirm = None;
-                    self.capture(false);
-                }
-            }
-            C::PlayerCombatKill(p) => {
-                // The component resolves in the client's current language, as
-                // the chat line does, not in the language the session joined
-                // with (`Remote.lang` is the vanilla server-language table).
-                let message = remote_text(&p.message);
-                let me = self.remote.as_ref().is_some_and(|r| r.entity_id == p.id);
-                if let Some(r) = self.remote.as_mut() {
-                    r.death_message = Some(message);
-                }
-                // ClientPacketListener.handlePlayerCombatKill: the death
-                // screen, whatever health was last sent, or `respawn()` at
-                // once when it is hidden.
-                if me && self.screen != Screen::Dead && self.player.is_some() {
-                    if self.remote.as_ref().is_none_or(|r| r.show_death_screen) {
-                        self.close_dialogs();
-                        self.set_screen(Screen::Dead);
-                        self.ui.death_time = 0;
-                        self.ui.death_confirm = None;
-                        self.capture(false);
-                    } else {
-                        self.respawn_player()?;
-                    }
-                }
-            }
+            C::SetHealth(p) => self.apply_set_health_packet(p),
+            C::PlayerCombatKill(p) => self.apply_player_combat_kill_packet(p)?,
             C::TrackedWaypoint(p) => self.handle_waypoint(&p),
-            C::SetExperience(p) => {
-                self.experience = Experience {
-                    level: p.level,
-                    progress: p.progress,
-                    total: p.total,
-                }
-            }
-            // ClientPacketListener.handleSetTime / ClientClockManager.handleUpdates:
-            // advance all clocks to the packet's game time before applying its
-            // (possibly partial) updates. The sky still uses only the default clock.
-            C::SetTime(p) => {
-                self.world.game_time = p.game_time;
-                self.remote_clock_tick();
-                if let Some(r) = self.remote.as_mut() {
-                    for clock in p.clocks {
-                        if r.registries
-                            .name("minecraft:world_clock", clock.clock)
-                            .is_some()
-                        {
-                            r.clocks.insert(clock.clock, clock);
-                        }
-                    }
-                    self.world.day_time = r.clock_time(r.default_clock);
-                }
-            }
-            C::GameEvent(p) => match p.event {
-                // NO_RESPAWN_BLOCK_AVAILABLE: ClientPacketListener.handleGameEvent
-                // sends the player this system message.
-                0 => self.system_message(sunrise_client::text::Text::translate(
-                    "block.minecraft.spawn.not_valid",
-                    &[],
-                )),
-                // LEVEL_CHUNKS_LOAD_START: the server has begun sending the level.
-                13 => {
-                    if let Some(r) = self.remote.as_mut() {
-                        r.level_load.loading_packets_received();
-                    }
-                }
-                // GUARDIAN_ELDER_EFFECT: the apparition, and the curse sound
-                // unless the elder guardian is silent.
-                10 => {
-                    self.particles.elder_guardian();
-                    if p.param == 1.0
-                        && let Some(at) = self.player.as_ref().map(|m| m.position)
-                    {
-                        self.play_client_local_sound(
-                            LevelSound::new(
-                                "minecraft:entity.elder_guardian.curse",
-                                [at.x, at.y, at.z],
-                                1.0,
-                                1.0,
-                            )
-                            .in_source(mod_api::SoundSource::Hostile),
-                        );
-                    }
-                }
-                // WIN_GAME: the poem and credits, then PERFORM_RESPAWN.
-                4 if self.screen != Screen::Win => {
-                    self.open_win_screen(true, super::win::Finish::RemoteRespawn);
-                }
-                // START_RAINING, STOP_RAINING, RAIN_LEVEL_CHANGE and THUNDER_LEVEL_CHANGE.
-                event @ (1 | 2 | 7 | 8) => self.world.weather.game_event(event, p.param),
-                3 => {
-                    let mode = p.param as i32;
-                    self.set_mode_id(mode);
-                    if let Some(r) = self.remote.as_mut() {
-                        r.game_mode = mode;
-                    }
-                }
-                // IMMEDIATE_RESPAWN: LocalPlayer.setShowDeathScreen.
-                11 => {
-                    if let Some(r) = self.remote.as_mut() {
-                        r.show_death_screen = p.param == 0.0;
-                    }
-                }
-                // PLAY_ARROW_HIT_SOUND: ClientPacketListener.handleGameEvent
-                // plays ARROW_HIT_PLAYER at player eye height.
-                6 => {
-                    if let Some(at) = self.eye_position() {
-                        self.play_client_local_sound(
-                            LevelSound::new("minecraft:entity.arrow.hit_player", at, 0.18, 0.45)
-                                .in_source(mod_api::SoundSource::Players),
-                        );
-                    }
-                }
-                // PUFFER_FISH_STING: ClientPacketListener.handleGameEvent
-                // plays PUFFER_FISH_STING at player position.
-                9 => {
-                    if let Some(at) = self.player.as_ref().map(|m| m.position) {
-                        self.play_client_local_sound(
-                            LevelSound::new(
-                                "minecraft:entity.puffer_fish.sting",
-                                [at.x, at.y, at.z],
-                                1.0,
-                                1.0,
-                            )
-                            .in_source(mod_api::SoundSource::Neutral),
-                        );
-                    }
-                }
-                // LIMITED_CRAFTING: LocalPlayer.setDoLimitedCrafting.
-                12 => {
-                    if let Some(r) = self.remote.as_mut() {
-                        r.do_limited_crafting = p.param == 1.0;
-                    }
-                }
-                _ => {}
-            },
-            C::PlayerAbilities(p) => {
-                self.creative = p.flags & 8 != 0;
-                if let Some(r) = self.remote.as_mut() {
-                    r.abilities = Some(p);
-                }
-                self.apply_remote_abilities();
-            }
-            // ClientPacketListener.handleSetHeldSlot: a hotbar slot only, and the
-            // carried index stays, so the next tick answers with SetCarriedItem.
-            C::SetHeldSlot(p) => {
-                if (0..9).contains(&p.slot) {
-                    self.selected = p.slot as usize;
-                }
-            }
-            C::ContainerSetContent(p) => {
-                self.remote_menu_state(p.container, p.state);
-                for (slot, item) in p.items.iter().enumerate() {
-                    let stack = self.to_stack(item);
-                    self.set_menu_slot(p.container, slot as i32, stack);
-                }
-                self.carried = self.to_stack(&p.carried);
-                self.remote_synced();
-            }
-            C::ContainerSetSlot(p) => {
-                self.remote_menu_state(p.container, p.state);
-                let stack = self.to_stack(&p.item);
-                self.tutorial_get_item(stack.as_ref());
-                // ClientPacketListener.handleContainerSetSlot: a hotbar slot that
-                // gains items squeezes for 5 ticks.
-                if p.container == 0
-                    && (36..=45).contains(&p.slot)
-                    && let Some(new) = &stack
-                {
-                    let (pop, old) = match p.slot {
-                        45 => (9, self.offhand.as_ref()),
-                        s => (s as usize - 36, self.inventory[s as usize - 36].as_ref()),
-                    };
-                    if old.is_none_or(|old| old.count < new.count) {
-                        self.hotbar_pop[pop] = 5;
-                    }
-                }
-                let before = self.creative_stacks();
-                self.set_menu_slot(p.container, i32::from(p.slot), stack);
-                self.remote_synced_since(&before);
-            }
-            C::SetCursorItem(p) => {
-                let stack = self.to_stack(&p.item);
-                self.tutorial_get_item(stack.as_ref());
-                self.carried = stack;
-            }
-            C::SetPlayerInventory(p) => {
-                let stack = self.to_stack(&p.item);
-                self.tutorial_get_item(stack.as_ref());
-                let before = self.creative_stacks();
-                let held = match p.slot {
-                    0..=35 => self.inventory[p.slot as usize].as_ref(),
-                    40 => self.offhand.as_ref(),
-                    _ => None,
-                };
-                let changed = !super::hand::matches_for_swap(held, stack.as_ref());
-                if let Ok(slot) = usize::try_from(p.slot) {
-                    self.remote_hand_slot_set(slot, changed);
-                }
-                match p.slot {
-                    0..=35 => self.inventory[p.slot as usize] = stack,
-                    36..=39 => self.armor[3 - (p.slot - 36) as usize] = stack,
-                    // Inventory.SLOT_OFFHAND.
-                    40 => self.offhand = stack,
-                    _ => {}
-                }
-                self.remote_synced_since(&before);
-            }
-            C::ContainerSetData(p) if self.open_menu_name(p.container) == "minecraft:lectern" => {
-                self.remote_lectern_page(i32::from(p.value));
-            }
-            C::ContainerSetData(p) if self.remote_station_open(p.container) => {
-                self.remote_station_data(usize::try_from(p.id).unwrap_or(usize::MAX), p.value);
-            }
-            C::ContainerSetData(p) if self.native_screen_data(p.container, p.id, p.value) => {}
-            C::ContainerSetData(p) => {
-                let v = i32::from(p.value);
-                match self
-                    .container
-                    .and_then(|key| self.world.block_entities.get_mut(&key))
-                {
-                    Some(BlockEntity::Furnace(f)) => match p.id {
-                        0 => f.lit_remaining = v,
-                        1 => f.lit_total = v,
-                        2 => f.cooking_timer = v,
-                        3 => f.cooking_total = v,
-                        _ => {}
-                    },
-                    // CrafterBlockEntity.containerData.
-                    Some(BlockEntity::Crafter(c)) => match usize::try_from(p.id) {
-                        Ok(k @ 0..9) => c.disabled[k] = v == 1,
-                        Ok(9) => c.triggered = v,
-                        _ => {}
-                    },
-                    // BrewingStandBlockEntity.dataAccess.
-                    Some(BlockEntity::Brewing(b)) => match p.id {
-                        0 => b.brew_time = v,
-                        1 => b.fuel = v,
-                        2 => b.total_brew_time = v,
-                        3 => b.total_fuel = v,
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            }
+            C::SetExperience(p) => self.apply_set_experience_packet(p),
+            C::SetTime(p) => self.apply_set_time_packet(p),
+            C::GameEvent(p) => self.apply_game_event_packet(p),
+            C::PlayerAbilities(p) => self.apply_player_abilities_packet(p),
+            C::SetHeldSlot(p) => self.apply_set_held_slot_packet(p),
+            C::ContainerSetContent(p) => self.apply_container_set_content_packet(p),
+            C::ContainerSetSlot(p) => self.apply_container_set_slot_packet(p),
+            C::SetCursorItem(p) => self.apply_set_cursor_item_packet(p),
+            C::SetPlayerInventory(p) => self.apply_set_player_inventory_packet(p),
+            C::ContainerSetData(p) => self.apply_container_set_data_packet(p)?,
             C::OpenScreen(p) => self.remote_open_screen(p),
             C::MountScreenOpen(p) => self.remote_open_mount(p),
             C::UpdateRecipes(p) => self.remote_recipe_properties(p),
@@ -5554,19 +4690,7 @@ impl Game<'_> {
                 }
             }
             C::UpdateTags(p) => self.remote_update_tags(&p),
-            C::Commands(p) => {
-                let tree = sunrise_client::command::network::from_packet(
-                    &p,
-                    sunrise_client::command::vanilla::dispatcher(),
-                );
-                // The chat's tree follows the server's now; a mod's commands
-                // go into it again (`chat_tree_for`).
-                let chat_tree = self.chat_tree_for(Some(&tree));
-                if let Some(r) = self.remote.as_mut() {
-                    r.chat_tree = chat_tree;
-                    r.chat_tree_received = true;
-                }
-            }
+            C::Commands(p) => self.apply_commands_packet(p),
             C::Cooldown(p) => {
                 // ClientPacketListener.handleItemCooldown: the server starts
                 // (or confirms) a group's cooldown; 0 ends it.
@@ -5583,320 +4707,22 @@ impl Game<'_> {
             C::TestInstanceBlockStatus(p) => {
                 self.block_editor_status(remote_text(&p.status), p.size);
             }
-            C::SystemChat(p) => {
-                // The component as sent, translated in the client's own
-                // language; mods may change or cancel it. ChatListener.handleOverlay
-                // for the action bar.
-                let mut text = remote_text(&p.content);
-                if !self.chat_received(true, p.overlay, 0, None, None, &mut text) {
-                    return Ok(());
-                }
-                if p.overlay {
-                    self.say_system_queued(&text);
-                    self.titles.set_overlay(text, false);
-                } else if self.add_chat_line(text.clone(), sunrise_client::chat::ChatSource::Server)
-                {
-                    // handleSystemMessage: said once the chat takes it.
-                    self.say_system_chat_queued(&text);
-                }
-            }
-            C::PlayerChat(p) => {
-                use sunrise_client::scoreboard::tag_to_json;
-                // SignedMessageBody.Packed.unpack: the last seen it names must
-                // be in the cache; then the message joins it
-                // (MessageSignatureCache.push).
-                let Some(r) = self.remote.as_mut() else {
-                    return Ok(());
-                };
-                // handlePlayerChat: the global index counts every chat packet; one out of
-                // order disconnects.
-                let expected = r.next_chat_index;
-                r.next_chat_index = r.next_chat_index.wrapping_add(1);
-                if p.global_index != expected {
-                    log::error!(
-                        "Missing or out-of-order chat message from server, expected index {expected} but got {}",
-                        p.global_index
-                    );
-                    let reason = sunrise_client::text::Text::translate(
-                        "multiplayer.disconnect.bad_chat_index",
-                        &[],
-                    );
-                    return self.leave_server(Some(reason.plain()));
-                }
-                let last_seen: Option<Vec<Signature>> =
-                    p.last_seen.iter().map(|s| r.signatures.unpack(s)).collect();
-                let Some(last_seen) = last_seen else {
-                    log::error!(
-                        "Message from player with ID {:032x} referenced unrecognized signature id",
-                        p.sender
-                    );
-                    let reason = sunrise_client::text::Text::translate(
-                        "multiplayer.disconnect.invalid_packet",
-                        &[],
-                    );
-                    return self.leave_server(Some(reason.plain()));
-                };
-                let signature = p
-                    .signature
-                    .as_deref()
-                    .and_then(sunrise_protocol::secure_chat::signature);
-                r.signatures.push(&last_seen, signature.as_ref());
-                // The sender's PlayerInfo: none is an error line; else their
-                // `SignedMessageValidator` decides (`updateAndValidate`), and a message it
-                // takes without a signature of its own shows as unsigned.
-                if !r.tab_players.contains_key(&p.sender) {
-                    log::error!(
-                        "Received player chat packet for unknown player with ID: {:032x}",
-                        p.sender
-                    );
-                    self.handle_chat_message_error(&p.chat_type, signature.as_ref());
-                    return Ok(());
-                }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_millis() as i64);
-                let incoming = secure_chat::Incoming {
-                    sender: p.sender,
-                    index: p.index,
-                    signature: signature.as_ref(),
-                    body: secure_chat::Body {
-                        content: &p.content,
-                        timestamp: p.timestamp,
-                        salt: p.salt,
-                        last_seen: &last_seen,
-                    },
-                    unsigned_content: p.unsigned_content.as_ref(),
-                    filter: &p.filter,
-                };
-                let Some(validated) = r.validate_chat(&incoming, now) else {
-                    self.handle_chat_message_error(&p.chat_type, signature.as_ref());
-                    return Ok(());
-                };
-                let signature = signature.filter(|_| validated == secure_chat::Validated::Signed);
-                // ChatListener.handlePlayerChatMessage: Only Show Secure Chat
-                // shows the signed content, never the server's replacement.
-                // The narrator says the message's own decorated content
-                // (`narrateChatMessage(boundChatType, message.decoratedContent())`).
-                let decorated = p
-                    .unsigned_content
-                    .as_ref()
-                    .map_or_else(|| serde_json::Value::from(p.content.as_str()), tag_to_json);
-                let content = if self.settings.file.bool("onlyShowSecureChat") {
-                    serde_json::Value::from(p.content.as_str())
-                } else {
-                    decorated.clone()
-                };
-                let narration = self
-                    .decorate_chat(&p.chat_type, &decorated, Decoration::Narration)
-                    .plain();
-                let line = self.decorate_chat(&p.chat_type, &content, Decoration::Chat);
-                let trust = self.chat_trust(
-                    p.sender,
-                    signature.is_some(),
-                    p.timestamp,
-                    &p.content,
-                    p.unsigned_content.as_ref(),
-                    &line,
-                );
-                // A hidden or fully filtered message counts as processed, not shown.
-                let Some((line, narration)) = self.shown_player_chat(&p, line, narration) else {
-                    if let Some(signature) = &signature {
-                        self.mark_message_processed(signature, false);
-                    }
-                    return Ok(());
-                };
-                let listened = mod_api::__private::listened(mod_api::HookId::ClientChatReceived);
-                let player =
-                    listened.then(|| chat_received::player_chat_info(&p, signature.is_some()));
-                self.handle_player_chat(QueuedChat {
-                    line,
-                    signature,
-                    trust,
-                    narration,
-                    sender: p.sender,
-                    chat_type: p.chat_type.chat_type,
-                    player,
-                });
-            }
-            C::DisguisedChat(p) => {
-                let content = sunrise_client::scoreboard::tag_to_json(&p.message);
-                let narration = self
-                    .decorate_chat(&p.chat_type, &content, Decoration::Narration)
-                    .plain();
-                let line = self.decorate_chat(&p.chat_type, &content, Decoration::Chat);
-                self.handle_player_chat(QueuedChat {
-                    line,
-                    signature: None,
-                    trust: ChatTrust::Secure,
-                    narration,
-                    sender: 0,
-                    chat_type: p.chat_type.chat_type,
-                    player: None,
-                });
-            }
+            C::SystemChat(p) => self.apply_system_chat_packet(p)?,
+            C::PlayerChat(p) => self.apply_player_chat_packet(p)?,
+            C::DisguisedChat(p) => self.apply_disguised_chat_packet(p),
             C::DeleteChat(p) => self.handle_delete_chat(&p.signature)?,
-            C::PlayerInfoUpdate(p) => {
-                if let Some(r) = self.remote.as_mut() {
-                    // handlePlayerInfoUpdate: new entries first, then every
-                    // action on every known entry.
-                    // INITIALIZE_CHAT: the session (or none) each entry carries; the
-                    // player's validator is made again when their chat is next read.
-                    if p.actions & 2 != 0 {
-                        for e in &p.entries {
-                            r.chat_sessions.insert(e.uuid, e.chat_session.clone());
-                            r.chat_validators.remove(&e.uuid);
-                        }
-                    }
-                    if p.actions & 1 != 0 {
-                        for e in &p.entries {
-                            if let Some(name) = &e.name {
-                                r.tab_players.entry(e.uuid).or_insert_with(|| {
-                                    sunrise_client::tab_list::TabPlayer::new(e.uuid, name.clone())
-                                });
-                                if let Some(t) = e.properties.iter().find(|p| p.name == "textures")
-                                {
-                                    // Without the services' profile property keys a
-                                    // signature can't be checked; a signed property
-                                    // counts as genuine.
-                                    use sunrise_client::skins::{self, Signature};
-                                    let signature = if t.signature.is_some() {
-                                        Signature::Signed
-                                    } else {
-                                        Signature::Unsigned
-                                    };
-                                    let textures =
-                                        skins::unpack(&t.value, signature, skins::texture_uris());
-                                    r.skin_textures.entry(e.uuid).or_insert(textures);
-                                }
-                            }
-                        }
-                    }
-                }
-                for e in p.entries {
-                    if mod_api::__private::listened(mod_api::HookId::ClientPlayerChangeGameType)
-                        && self.player.is_some()
-                        && let Some(mode) = e.game_mode
-                        && let Some(r) = self.remote.as_ref()
-                        && r.profile == e.uuid
-                        && let Some(info) = r.tab_players.get(&e.uuid)
-                        && info.game_mode != mode
-                    {
-                        let current = info.game_mode;
-                        self.native_client_player_change_game_type(
-                            self.own_entity_id(),
-                            e.uuid,
-                            current,
-                            mode,
-                        );
-                    }
-                    if let Some(r) = self.remote.as_mut() {
-                        if let Some(t) = r.tab_players.get_mut(&e.uuid) {
-                            if let Some(mode) = e.game_mode {
-                                t.game_mode = mode;
-                            }
-                            if let Some(latency) = e.latency {
-                                t.latency = latency;
-                            }
-                            if let Some(name) = &e.display_name {
-                                t.display_name =
-                                    name.as_ref().map(sunrise_client::scoreboard::tag_to_json);
-                            }
-                            if let Some(order) = e.list_order {
-                                t.list_order = order;
-                            }
-                            if let Some(hat) = e.show_hat {
-                                t.show_hat = hat;
-                            }
-                            match e.listed {
-                                Some(true) => {
-                                    r.listed.insert(e.uuid);
-                                }
-                                Some(false) => {
-                                    r.listed.remove(&e.uuid);
-                                }
-                                None => {}
-                            }
-                        }
-                        if let Some(name) = e.name {
-                            r.players.insert(e.uuid, name);
-                        }
-                    }
-                }
-            }
-            C::PlayerInfoRemove(p) => {
-                if let Some(r) = self.remote.as_mut() {
-                    for u in p.uuids {
-                        r.players.remove(&u);
-                        r.tab_players.remove(&u);
-                        r.chat_sessions.remove(&u);
-                        r.chat_validators.remove(&u);
-                        r.skin_textures.remove(&u);
-                        r.listed.remove(&u);
-                        r.attachments.remove(&Holder::Player(u));
-                    }
-                }
-            }
-            C::TabList(p) => {
-                // handleTabListCustomisation: empty text clears it.
-                let text = |t: &Tag| {
-                    let json = sunrise_client::scoreboard::tag_to_json(t);
-                    let text = sunrise_client::scoreboard::comp_text(&json);
-                    text.spans
-                        .iter()
-                        .any(|span| !span.text.is_empty())
-                        .then_some(text)
-                };
-                self.tab_list.header = text(&p.header);
-                self.tab_list.footer = text(&p.footer);
-            }
-            C::InitializeBorder(p) => {
-                let b = &mut self.border;
-                b.set_center([p.center_x, p.center_z]);
-                if p.lerp_time > 0 {
-                    b.lerp_between(p.old_size, p.new_size, p.lerp_time);
-                } else {
-                    b.set_size(p.new_size);
-                }
-                b.set_absolute_max_size(p.absolute_max_size);
-                b.warning_distance = p.warning_blocks;
-                b.warning_time = p.warning_time;
-            }
+            C::PlayerInfoUpdate(p) => self.apply_player_info_update_packet(p),
+            C::PlayerInfoRemove(p) => self.apply_player_info_remove_packet(p),
+            C::TabList(p) => self.apply_tab_list_packet(p),
+            C::InitializeBorder(p) => self.apply_initialize_border_packet(p),
             C::SetBorderCenter(p) => self.border.set_center([p.x, p.z]),
-            C::SetBorderLerpSize(p) => {
-                self.border
-                    .lerp_between(p.old_size, p.new_size, p.lerp_time)
-            }
+            C::SetBorderLerpSize(p) => self.apply_set_border_lerp_size_packet(p),
             C::SetBorderSize(p) => self.border.set_size(p.size),
             C::SetBorderWarningDelay(p) => self.border.warning_time = p.delay,
             C::SetBorderWarningDistance(p) => self.border.warning_distance = p.blocks,
             C::SetObjective(p) => self.remote_objective(p),
-            C::SetDisplayObjective(p) => {
-                // DisplaySlot ids: list, sidebar, below_name, then the team sidebars.
-                let slot = match p.slot {
-                    0 => "list".to_owned(),
-                    2 => "below_name".to_owned(),
-                    n @ 3..=18 => format!(
-                        "sidebar.team.{}",
-                        sunrise_client::text::COLORS[(n - 3) as usize].1
-                    ),
-                    _ => "sidebar".to_owned(),
-                };
-                let board = &mut self.score.board;
-                let objective = board.objective(&p.objective).map(|o| o.name.clone());
-                board.set_display_objective(&slot, objective.as_deref());
-            }
-            C::SetScore(p) => {
-                let board = &mut self.score.board;
-                if board.objective(&p.objective).is_some() {
-                    let s = board.score_mut(&p.owner, &p.objective);
-                    s.value = p.score;
-                    s.display = p
-                        .display
-                        .as_ref()
-                        .map(sunrise_client::scoreboard::tag_to_json);
-                    s.number_format = p.number_format.as_ref().map(number_format);
-                }
-            }
+            C::SetDisplayObjective(p) => self.apply_set_display_objective_packet(p),
+            C::SetScore(p) => self.apply_set_score_packet(p),
             C::ResetScore(p) => match &p.objective {
                 Some(o) => self.score.board.reset_one(&p.owner, o),
                 None => self.score.board.reset_all(&p.owner),
@@ -5930,67 +4756,20 @@ impl Game<'_> {
             C::BlockEntityData(p) => self.remote_block_entity_packet(p),
             C::OpenSignEditor(p) => self.remote_open_sign_editor(p),
             C::OpenBook(p) => self.remote_open_book(p.hand),
-            // handleSetSpawn: ClientLevel.setRespawnData, which spawn compasses point at.
-            C::SetDefaultSpawnPosition(p) => {
-                let [x, y, z] = p.pos.pos;
-                self.spawn = (p.pos.dimension == "minecraft:overworld")
-                    .then(|| Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5));
-                // 1.20.2 handleSetSpawn notified ReceivingLevelScreen here; the later
-                // LEVEL_CHUNKS_LOAD_START game event did not exist yet.
-                if let Some(r) = self.remote.as_mut()
-                    && r.session
-                        .server_version()
-                        .at_most(sunrise_protocol::adapter::ServerVersion::V1_20_2)
-                {
-                    r.level_load.loading_packets_received();
-                }
-            }
-            C::ServerData(p) => {
-                if let Some(r) = self.remote.as_mut()
-                    && let Some(enforced) = r.session.legacy_secure_chat_enforcement()
-                    && r.enforces_secure_chat != enforced
-                {
-                    r.enforces_secure_chat = enforced;
-                    r.chat_validators.clear();
-                }
-                self.remote_server_data(p.icon.as_deref());
-            }
+            C::SetDefaultSpawnPosition(p) => self.apply_set_default_spawn_position_packet(p),
+            C::ServerData(p) => self.remote_server_data(p.icon.as_deref()),
             C::MapItemData(p) => self.remote_map_item_data(&p),
-            // handleTickingState / handleTickingStep: the level's TickRateManager.
-            C::TickingState(p) => {
+            // handleTickingState / handleTickingStep do nothing without a ClientLevel.
+            C::TickingState(p) if self.remote.as_ref().is_some_and(Remote::has_level) => {
                 self.clock.set_rate(p.rate);
                 self.clock.set_frozen(p.frozen);
             }
-            C::TickingStep(p) => self.clock.set_frozen_ticks_to_run(p.steps),
-            C::UpdateAdvancements(p) => self.remote_advancements(p),
-            // handleAwardStats: StatsCounter.setValue for each.
-            C::AwardStats(p) => {
-                let Some(r) = self.remote.as_ref() else {
-                    return Ok(());
-                };
-                let mut known = Vec::new();
-                for (ty, value, count) in p.stats {
-                    let Some(ty) = r
-                        .builtin
-                        .get("minecraft:stat_type")
-                        .and_then(|t| t.name(ty))
-                    else {
-                        continue;
-                    };
-                    let values = match ty {
-                        "minecraft:mined" => "minecraft:block",
-                        "minecraft:killed" | "minecraft:killed_by" => "minecraft:entity_type",
-                        "minecraft:custom" => "minecraft:custom_stat",
-                        _ => "minecraft:item",
-                    };
-                    if let Some(key) = r.builtin.get(values).and_then(|v| v.name(value)) {
-                        known.push((ty.to_owned(), key.to_owned(), count));
-                    }
-                }
-                for (ty, key, count) in known {
-                    self.stats.values.entry(ty).or_default().insert(key, count);
-                }
+            C::TickingStep(p) if self.remote.as_ref().is_some_and(Remote::has_level) => {
+                self.clock.set_frozen_ticks_to_run(p.steps);
             }
+            C::TickingState(_) | C::TickingStep(_) => {}
+            C::UpdateAdvancements(p) => self.remote_advancements(p),
+            C::AwardStats(p) => self.apply_award_stats_packet(p)?,
             // ClientPacketListener.setActionBarText, setTitleText,
             // setSubtitleText, setTitlesAnimation and handleTitlesClear.
             C::BossEvent(p) => self.apply_boss_event(&p),
@@ -6002,171 +4781,16 @@ impl Game<'_> {
             C::ShowDialog(p) => self.show_play_dialog(&p.dialog),
             C::ClearDialog(_) => self.clear_dialog(),
             // ClientPacketListener.handleLowDiskSpaceWarning.
-            C::LowDiskSpaceWarning(_) => sunrise_client::chunk_io::report_low_disk_space(),
-            C::ClearTitles(p) => {
-                self.titles.clear();
-                if p.value {
-                    self.titles.reset_times();
-                }
-            }
+            C::LowDiskSpaceWarning(_) => self.client_reports.report_low_disk_space(),
+            C::ClearTitles(p) => self.apply_clear_titles_packet(p),
             _ => {}
         }
         Ok(())
     }
-    /// `handleAddObjective`: add, remove or change an objective.
-    fn remote_objective(&mut self, p: play::SetObjective) {
-        use sunrise_client::scoreboard::{RenderType, tag_to_json};
-        let board = &mut self.score.board;
-        match (p.method, p.display) {
-            (1, _) => board.remove_objective(&p.name),
-            (method, Some((name, render, format))) => {
-                let render = if render == 1 {
-                    RenderType::Hearts
-                } else {
-                    RenderType::Integer
-                };
-                let format = format.as_ref().map(number_format);
-                if method == 0 {
-                    board.add_objective(
-                        &p.name,
-                        "dummy",
-                        tag_to_json(&name),
-                        render,
-                        false,
-                        format,
-                    );
-                } else if let Some(o) = board.objective_mut(&p.name) {
-                    o.display_name = tag_to_json(&name);
-                    o.render_type = render;
-                    o.number_format = format;
-                }
-            }
-            _ => {}
-        }
-    }
-    /// `handleSetPlayerTeamPacket`.
-    fn remote_team(&mut self, p: play::SetPlayerTeam) {
-        use sunrise_client::scoreboard::{CollisionRule, Visibility, tag_to_json};
-        let board = &mut self.score.board;
-        if p.method == 1 {
-            board.remove_team(&p.name);
-            return;
-        }
-        if p.method == 0 {
-            board.add_team(&p.name);
-        }
-        if let Some(params) = &p.parameters
-            && let Some(team) = board.team_mut(&p.name)
-        {
-            team.display_name = tag_to_json(&params.display_name);
-            team.prefix = tag_to_json(&params.prefix);
-            team.suffix = tag_to_json(&params.suffix);
-            team.color = params
-                .color
-                .and_then(|c| sunrise_client::text::COLORS.get(c as usize))
-                .map(|c| c.1.to_owned());
-            team.allow_friendly_fire = params.options & 1 != 0;
-            team.see_friendly_invisibles = params.options & 2 != 0;
-            team.nametag_visibility = Visibility::ALL
-                .get(params.name_tag_visibility as usize)
-                .copied()
-                .unwrap_or(Visibility::Always);
-            team.collision_rule = CollisionRule::ALL
-                .get(params.collision_rule as usize)
-                .copied()
-                .unwrap_or(CollisionRule::Always);
-        }
-        match p.method {
-            0 | 3 => {
-                for player in &p.players {
-                    board.add_to_team(player, &p.name);
-                }
-            }
-            // Scoreboard.removePlayerFromTeam: only out of this team (vanilla
-            // throws for a player in another one).
-            4 => {
-                for player in &p.players {
-                    if board.players_team(player).is_some_and(|t| t.name == p.name) {
-                        board.remove_from_team(player);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    /// The player list's view of the connection: the listed players (with
-    /// their downloaded skins once ready), online mode, and which players
-    /// are in the level with an upside-down name.
-    pub(super) fn publish_tab_object_skins(&mut self) {
-        let Some(r) = self.remote.as_mut() else {
-            return;
-        };
-        let fingerprint = (
-            r.listed.len(),
-            r.listed.iter().fold(0, |xor, uuid| xor ^ uuid),
-            r.skins_revision,
-            self.gui.atlas.object_skins_revision,
-        );
-        if r.published_skins == Some(fingerprint) {
-            return;
-        }
-        for uuid in &r.listed {
-            let Some(p) = r.tab_players.get(uuid) else {
-                continue;
-            };
-            let skin = r.skins.get(uuid).map_or_else(
-                || sunrise_client::tab_list::default_skin(*uuid),
-                String::as_str,
-            );
-            for key in [
-                format!("id:{uuid:032x}"),
-                format!("name:{}", p.name.to_ascii_lowercase()),
-            ] {
-                if object_skin_changed(&self.gui.atlas.object_skins, &key, skin) {
-                    self.gui.atlas.set_object_skin(key, skin.to_owned());
-                }
-            }
-        }
-        // Publication itself mutates the atlas; cache its final revision.
-        r.published_skins = Some((
-            fingerprint.0,
-            fingerprint.1,
-            fingerprint.2,
-            self.gui.atlas.object_skins_revision,
-        ));
-    }
 
-    pub(super) fn remote_tab_players(
-        &mut self,
-    ) -> Option<(Vec<sunrise_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
-        self.update_remote_skins();
-        self.publish_tab_object_skins();
-        let mut players: Vec<_> = {
-            let r = self.remote.as_ref()?;
-            r.listed
-                .iter()
-                .filter_map(|u| r.tab_players.get(u).cloned())
-                .collect()
-        };
-        for p in &mut players {
-            p.skin = self
-                .remote
-                .as_ref()
-                .and_then(|r| r.skins.get(&p.uuid).cloned())
-                .unwrap_or_else(|| sunrise_client::tab_list::default_skin(p.uuid).to_owned());
-        }
-        let r = self.remote.as_ref()?;
-        let upside_down = players
-            .iter()
-            .filter(|p| {
-                (p.name == "Dinnerbone" || p.name == "Grumm")
-                    && (p.uuid == r.profile || r.level_players.values().any(|u| *u == p.uuid))
-            })
-            .map(|p| p.uuid)
-            .collect();
-        Some((players, r.online_mode, upside_down))
-    }
+    // remote_objective: remote/sync.rs
 
+<<<<<<< sync-sunrise-1
     /// Resolve inline `object:player` profiles through the same skin cache as
     /// player heads on items. The next frame uses the uploaded atlas texture.
     pub(super) fn resolve_inline_profiles(
@@ -6630,11 +5254,15 @@ impl Game<'_> {
         let chat_type = r.registries.data("minecraft:chat_type", bound.chat_type);
         comp_text(&chat_type_decorate(chat_type, decoration, bound, content)).resolve_legacy()
     }
+=======
+    // remote_tab_players: remote/sync.rs
+    // update_remote_skins: remote/status.rs
+>>>>>>> sunrise/main
     fn remote_item_data(&mut self, id: i32, stack: &Option<Stack>) {
         let Some(stack) = self.to_stack(stack) else {
             return;
         };
-        let position = self
+        let pending = self
             .remote
             .as_mut()
             .and_then(|r| r.pending_items.remove(&id));
@@ -6642,6 +5270,7 @@ impl Game<'_> {
             item.stack = stack;
             return;
         }
+<<<<<<< sync-sunrise-1
         let Some((p, velocity)) = position else {
             return;
         };
@@ -6752,73 +5381,32 @@ impl Game<'_> {
             .mobs
             .iter_mut()
             .find(|m| m.id == id && m.species() == sunrise_client::mobs::Species::HappyGhast)
+=======
+        let Some(PendingItem {
+            join,
+            position: [x, y, z],
+            velocity,
+        }) = pending
+>>>>>>> sunrise/main
         else {
             return;
         };
-        let at = Vec3::new(spot.x, spot.y - f64::from(m.height()), spot.z);
-        // Only a teleport that is that dismount: right above the ghast.
-        if (at.x - m.position.x).powi(2) + (at.z - m.position.z).powi(2) > 25.0
-            || (at.y - m.position.y).abs() > 5.0
-        {
-            return;
-        }
-        m.position = at;
-        m.previous = at;
-        if let Some(handler) = self
-            .remote
-            .as_mut()
-            .and_then(|r| r.stepped.get_mut(&(id as i32)))
-        {
-            handler.cancel();
-        }
-    }
-    /// `ClientPacketListener.handleLookAt`: `Entity.lookAt` from this
-    /// player's feet or eyes, towards the packet's entity (its feet or eyes)
-    /// when this client tracks it, else towards the packet's point.
-    fn remote_look_at(&mut self, p: &play::PlayerLookAt) {
-        // `EntityAnchorArgument.Anchor`: 0 feet, 1 eyes.
-        const EYES: i32 = 1;
-        let Some(player) = self.player.as_ref() else {
-            return;
-        };
-        let mut from = [player.position.x, player.position.y, player.position.z];
-        if p.from == EYES {
-            from[1] += f64::from(player.dimensions.eye_height);
-        }
-        let to = p
-            .entity
-            .as_ref()
-            .and_then(|e| {
-                let m = self.mobs.iter().find(|m| m.id == e.id as u32)?;
-                let y = if e.anchor == EYES {
-                    m.eye_y()
-                } else {
-                    m.position.y
-                };
-                Some([m.position.x, y, m.position.z])
-            })
-            .unwrap_or(p.target);
-        (self.yaw, self.pitch) = look_at_rotation(from, to);
-    }
-    /// ClientPacketListener.handleMovePlayer.
-    fn remote_teleport(&mut self, p: &play::PlayerPosition) -> Result<()> {
-        use play::relative as rel;
-        let (had_player, current) = self
-            .player
-            .as_ref()
-            .map(|pl| (true, pl.position))
-            .unwrap_or((false, Vec3::ZERO));
-        let velocity = self
-            .player
-            .as_ref()
-            .map(|pl| pl.velocity)
-            .unwrap_or(Vec3::ZERO);
-        let pick = |bit: i32, base: f64, v: f64| if p.relatives & bit != 0 { base + v } else { v };
-        let position = Vec3::new(
-            pick(rel::X, current.x, p.position[0]),
-            pick(rel::Y, current.y, p.position[1]),
-            pick(rel::Z, current.z, p.position[2]),
+        let at = Vec3::new(x, y, z);
+        // ItemEntity's constructor draws bobOffs from the item's own random.
+        let mut random = sunrise_client::mobs::entity_random(id as u32, at);
+        let bob = super::item_entities::bob_offset(at, random.next_float(), self.clock.still());
+        // Metadata can arrive after newer entities (including other items). Insert at the
+        // reserved ClientLevel.addEntity slot, not the tail at metadata time.
+        let index = self.dropped.partition_point(|item| item.join < join);
+        self.dropped.insert(
+            index,
+            ItemEntity {
+                join,
+                random,
+                ..ItemEntity::new(id as u32, stack, at, velocity, bob)
+            },
         );
+<<<<<<< sync-sunrise-1
         let yaw = if p.relatives & rel::Y_ROT != 0 {
             self.yaw + p.yaw
         } else {
@@ -7543,803 +6131,23 @@ impl Game<'_> {
         self.remote_send_state(input | u8::from(auto_jumped) << 4);
         Ok(())
     }
+=======
+    }
+
+    // remote_teleport: remote/sync.rs
+
+    // tick_remote and tick_remote_player: remote/tick.rs
+>>>>>>> sunrise/main
 
     /// The last `ClientboundPlayerAbilities` the server sent, on a client.
     pub(super) fn remote_abilities(&self) -> Option<&play::PlayerAbilities> {
         self.remote.as_ref()?.abilities.as_ref()
     }
 
-    /// The local player's share of every touching entity's
-    /// `LivingEntity.pushEntities`, and of the boats' pushes: on a client
-    /// `EntitySelector.pushableBy` lets entities push only the local player,
-    /// so the server never sends these pushes. `doPush(player)` is
-    /// `player.push(entity)`. `before_player`: the mobs that tick before the
-    /// player (`ticked_before_player`) and the boats, else the mobs that tick
-    /// after it.
-    fn remote_pushes(&self, before_player: bool) -> Vec3 {
-        let (Some(p), Some(r)) = (self.player.as_ref(), self.remote.as_ref()) else {
-            return Vec3::ZERO;
-        };
-        // LivingEntity.isPushable: alive, no spectator, off ladders.
-        let feet = [
-            p.position.x.floor() as i32,
-            p.position.y.floor() as i32,
-            p.position.z.floor() as i32,
-        ];
-        if self.screen == Screen::Dead
-            || p.spectator
-            || self.named_block_in_tag("minecraft:climbable", &self.block_name(feet))
-        {
-            return Vec3::ZERO;
-        }
-        let bounds = p.bounds();
-        let teams = self.mob_teams();
-        // `Entity.getTeam` is `Scoreboard.getPlayersTeam(getScoreboardName())`:
-        // a player's score holder is its profile name, every other entity's
-        // its UUID text. `mob_teams` keys by UUID and names the local player
-        // `PLAYER_NAME`, which misses a server's teams for players.
-        let board = &self.score.board;
-        let player_team = board.players_team(&r.profile_name);
-        let mut push = Vec3::ZERO;
-        let order = |id: u32| r.ticked_before_player.contains(&id) == before_player;
-        for m in self.mobs.iter().filter(|m| order(m.id)) {
-            // Bats never push, nor passengers of one vehicle, nor a spectator; the
-            // box test comes before the lookups that far mobs never need (#14053).
-            if !m.alive()
-                || m.species() == sunrise_client::mobs::Species::Bat
-                || self
-                    .riding
-                    .is_some_and(|v| v == m.id || m.extra.mount == Some(v))
-                || !m.bounds().intersects(bounds)
-            {
-                continue;
-            }
-            let listed = r
-                .level_players
-                .get(&(m.id as i32))
-                .and_then(|uuid| r.tab_players.get(uuid));
-            let mob_team =
-                listed.map_or_else(|| teams.of(Who::Mob(m.id)), |t| board.players_team(&t.name));
-            if listed.is_some_and(|t| t.game_mode == SPECTATOR)
-                || !sunrise_client::scoreboard::pushable_by(mob_team, player_team, true)
-            {
-                continue;
-            }
-            // Entity.push(Entity), `this` the player.
-            let (mut xa, mut za) = (m.position.x - p.position.x, m.position.z - p.position.z);
-            let mut dd = xa.abs().max(za.abs());
-            if dd < f64::from(0.01_f32) {
-                continue;
-            }
-            dd = dd.sqrt();
-            xa /= dd;
-            za /= dd;
-            let pow = (1.0 / dd).min(1.0);
-            xa *= pow;
-            za *= pow;
-            xa *= f64::from(0.05_f32);
-            za *= f64::from(0.05_f32);
-            push = Vec3::new(push.x - xa, push.y, push.z - za);
-        }
-        // AbstractBoat.push(player) from the boat's own tick (its box grown
-        // by 0.2 sideways) and from the player's pushEntities (its box).
-        let area = Vec3::new(f64::from(0.2_f32), f64::from(-0.01_f32), f64::from(0.2_f32));
-        // The boats' pushes stay where they were measured: with the entities
-        // that tick before the player.
-        let boats = if before_player {
-            &self.boats[..]
-        } else {
-            &[][..]
-        };
-        for b in boats.iter().filter(|b| self.riding != Some(b.id)) {
-            let bb = b.bounds();
-            let times = usize::from(
-                bounds.intersects(bb.inflate(area))
-                    && sunrise_client::scoreboard::pushable_by(None, player_team, true),
-            ) + usize::from(
-                bounds.intersects(bb)
-                    && sunrise_client::scoreboard::pushable_by(player_team, None, true),
-            );
-            if times > 0
-                && super::boat_passengers::boat_pushes(bb, bounds, false)
-                && let Some(v) = super::boat_passengers::push_impulse(b.position, p.position)
-            {
-                push = push.add_vector(v.scale(times as f64));
-            }
-        }
-        push
-    }
-    /// ClientLevel.tickEntities; a frozen level only ticks the players
-    /// (`TickRateManager.isEntityFrozen`).
-    /// `GuardianRenderer.getEntityToLookAt`: a guardian's eye follows its
-    /// synched attack target, else the camera.
-    fn tick_remote_guardian_eyes(&mut self, running: bool) {
-        use sunrise_client::mobs::{Species, Who, guardian};
-        if !running {
-            return;
-        }
-        let camera = self.player.as_ref().map(|p| {
-            [
-                p.position.x,
-                p.position.y + f64::from(p.dimensions.eye_height),
-                p.position.z,
-            ]
-        });
-        let mut looks = std::mem::take(&mut self.guardian_look_scratch);
-        looks.clear();
-        looks.extend(
-            self.mobs
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| {
-                    matches!(m.species(), Species::Guardian | Species::ElderGuardian) && m.alive()
-                })
-                .filter_map(|(i, m)| {
-                    let look = match m.ai.target.filter(|_| m.extra.flag) {
-                        Some(Who::Mob(id)) => self
-                            .mobs
-                            .iter()
-                            .find(|t| t.id == id)
-                            .map(|t| [t.position.x, t.eye_y(), t.position.z]),
-                        _ => camera,
-                    };
-                    look.map(|look| (i, look))
-                }),
-        );
-        for &(i, look) in &looks {
-            guardian::look_at(&mut self.mobs[i], look);
-        }
-        self.guardian_look_scratch = looks;
-    }
-    /// Humanoid held arm poses, once the tick has set equipment and use state.
-    pub(in crate::game) fn tick_remote_arm_poses(&mut self) {
-        for i in 0..self.mobs.len() {
-            let m = &self.mobs[i];
-            if !sunrise_client::mobs::anim::extracts_humanoid(m) {
-                continue;
-            }
-            // Extraction also runs while the world is frozen: derive the use
-            // animation from the current equipment rather than last tick's state.
-            if &*m.kind.id != "minecraft:player" {
-                let slot = if m.extra.using_off_hand {
-                    sunrise_items::equipment::OFFHAND
-                } else {
-                    sunrise_items::equipment::MAINHAND
-                };
-                let animation = (m.extra.using_item > 0)
-                    .then(|| m.extra.slot_stack(slot))
-                    .flatten()
-                    .map_or_else(Default::default, |stack| self.item_use_animation(stack));
-                self.mobs[i].extra.use_animation = animation;
-            }
-            let m = &self.mobs[i];
-            let poses = self.held_arm_poses(m.id, m);
-            let charge_duration = (&*m.kind.id != "minecraft:player").then(|| {
-                let using_slot = if m.extra.using_off_hand {
-                    sunrise_items::equipment::OFFHAND
-                } else {
-                    sunrise_items::equipment::MAINHAND
-                };
-                m.extra
-                    .slot_stack(using_slot)
-                    .map_or(25, |stack| Self::charge_ticks(stack).max(1)) as i32
-            });
-            self.mobs[i].extra.held_arm_pose = poses;
-            if let Some(duration) = charge_duration {
-                self.mobs[i].extra.ints[5] = duration;
-            }
-        }
-    }
-    fn tick_remote_entities(&mut self, running: bool) {
-        if running {
-            self.tick_text_displays();
-            self.tick_remote_ominous_item_spawners();
-        }
-        // EntityFluidInteraction.update for the entities this window only displays: the
-        // server never sends the fluid contact, and the renderers read it (cod, salmon and
-        // tropical fish lie on their side without `in_water`, #1591).
-        // A frozen level ticks only the players, as below.
-        // Entity.isInRain for the wolves, which dry off by their own `Wolf.tick`.
-        let (mut fluids, mut rain, mut standings, mut water_fx) = {
-            let r = self
-                .remote
-                .as_mut()
-                .expect("remote entity tick without remote state");
-            (
-                std::mem::take(&mut r.tick_fluids),
-                std::mem::take(&mut r.tick_rain),
-                std::mem::take(&mut r.tick_standings),
-                std::mem::take(&mut r.tick_water_fx),
-            )
-        };
-        let thundering = {
-            let w = self.mob_world_base(&[]);
-            let players = self.remote.as_ref().map(|r| &r.level_players);
-            fluids.clear();
-            fluids.extend(self.mobs.iter().map(|m| {
-                (running || players.is_some_and(|p| p.contains_key(&(m.id as i32))))
-                    .then(|| w.fluids(m.bounds(), m.eye_y()))
-            }));
-            rain.clear();
-            rain.extend(self.mobs.iter().map(|m| {
-                m.species() == sunrise_client::mobs::Species::Wolf
-                    && sunrise_client::mobs::tame::in_rain(m, &w)
-            }));
-            // The block under each mob the packs' random-model rules read (a grazing
-            // cow), one hair below the feet like `Entity.getBlockStateOn`; nothing
-            // without rules.
-            standings.clear();
-            standings.extend(self.mobs.iter().map(|m| {
-                sunrise_client::mobs::cem::tracks_standing(&m.kind.id).then(|| {
-                    let (x, y, z) = (
-                        m.position.x.floor() as i32,
-                        (m.position.y - 0.0001).floor() as i32,
-                        m.position.z.floor() as i32,
-                    );
-                    w.block_name(x, y, z).to_owned()
-                })
-            }));
-            w.thundering
-        };
-        // The window's own player already splashes from its motion tick.
-        let own = self.remote.as_ref().map(|r| r.entity_id);
-        for i in 0..self.mobs.len() {
-            let m = &mut self.mobs[i];
-            let fluids = fluids[i].take();
-            let standing = standings[i].take();
-            if let Some(fluids) = fluids {
-                let was = m.fluids.in_water;
-                let first = m.first_tick;
-                m.fluids = fluids;
-                // Entity.doWaterSplashEffect on the client copy. Particles
-                // only: ClientLevel draws addParticle, and playSeededSound
-                // drops Entity.playSound (the server broadcasts that).
-                if m.fluids.in_water && !was && !first && Some(m.id as i32) != own {
-                    sunrise_client::mobs::living::client_water_splash(m, &mut water_fx);
-                }
-                m.first_tick = false;
-            }
-            if let Some(name) = standing {
-                m.standing_on = Some(name);
-            }
-        }
-        let game_time = self.world.game_time;
-        // `AbstractPiglin.isConverting`: the dimension is not piglin safe.
-        let nether = !self.dimension_type().piglins_zombify;
-        // What a wither's side heads can look at, by network entity id: the
-        // mobs and the player (position and eye height).
-        let wither_targets: Vec<(i32, [f64; 3], f64)> = if self
-            .mobs
-            .iter()
-            .any(|m| m.species() == sunrise_client::mobs::Species::Wither)
-        {
-            let own = self
-                .remote
-                .as_ref()
-                .zip(self.eye_position())
-                .map(|(r, eye)| (r.entity_id, eye, eye[1]));
-            self.mobs
-                .iter()
-                .map(|m| {
-                    (
-                        m.id as i32,
-                        [m.position.x, m.position.y, m.position.z],
-                        m.eye_y(),
-                    )
-                })
-                .chain(own)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // ExperienceOrb.followNearbyPlayer: the players an orb may go for,
-        // their feet and the point `eyeHeight / 2` above them.
-        let followed: Vec<([f64; 3], [f64; 3])> = {
-            let own = self
-                .player
-                .as_ref()
-                .filter(|p| !p.health.dead_or_dying() && !self.spectator())
-                .map(|p| {
-                    let feet = [p.position.x, p.position.y, p.position.z];
-                    let eye = f64::from(p.dimensions.eye_height);
-                    (feet, [feet[0], feet[1] + eye / 2.0, feet[2]])
-                });
-            let others = self.remote.as_ref().into_iter().flat_map(|r| {
-                self.mobs
-                    .iter()
-                    .filter(move |m| m.alive() && r.level_players.contains_key(&(m.id as i32)))
-                    .filter(move |m| {
-                        let listed = r.level_players.get(&(m.id as i32));
-                        !listed
-                            .and_then(|uuid| r.tab_players.get(uuid))
-                            .is_some_and(|t| t.game_mode == SPECTATOR)
-                    })
-                    .map(|m| {
-                        let feet = [m.position.x, m.position.y, m.position.z];
-                        (
-                            feet,
-                            [feet[0], feet[1] + (m.eye_y() - feet[1]) / 2.0, feet[2]],
-                        )
-                    })
-            });
-            own.into_iter().chain(others).collect()
-        };
-        // The mount this client moves ticks in `remote_ride` instead, as its
-        // authoritative side (LivingEntity.tick with travelRidden).
-        let driven = self.driven_mount().map(|m| m.id);
-        // Cat.handleLieDown: the sleeping players (another's, drawn lying in
-        // a bed, and this client's own) a lying cat can lie on top of.
-        let sleepers: Vec<sunrise_core::geometry::Aabb> = self
-            .remote
-            .as_ref()
-            .map(|r| {
-                self.mobs
-                    .iter()
-                    .filter(|m| {
-                        r.level_players.contains_key(&(m.id as i32)) && m.extra.ints[1] != 0
-                    })
-                    .map(|m| {
-                        let p = m.position;
-                        sunrise_core::geometry::Aabb::new(
-                            sunrise_core::geometry::Vec3::new(p.x - 0.1, p.y, p.z - 0.1),
-                            sunrise_core::geometry::Vec3::new(p.x + 0.1, p.y + 0.2, p.z + 0.1),
-                        )
-                    })
-                    .chain(self.sleeping.map(|bed| {
-                        let p = sunrise_core::geometry::Vec3::new(
-                            f64::from(bed[0]) + 0.5,
-                            f64::from(bed[1]) + 0.6875,
-                            f64::from(bed[2]) + 0.5,
-                        );
-                        sunrise_core::geometry::Aabb::new(
-                            sunrise_core::geometry::Vec3::new(p.x - 0.1, p.y, p.z - 0.1),
-                            sunrise_core::geometry::Vec3::new(p.x + 0.1, p.y + 0.2, p.z + 0.1),
-                        )
-                    }))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let Some(r) = self.remote.as_mut() else {
-            return;
-        };
-        let mut lerps = std::mem::take(&mut r.lerps);
-        let mut cart_lerps = std::mem::take(&mut r.cart_lerps);
-        let mut using = Vec::new();
-        let mut mob_fx = water_fx;
-        let tick_listened = mod_api::__private::listened(mod_api::HookId::PlayerTickPre)
-            || mod_api::__private::listened(mod_api::HookId::PlayerTickPost);
-        for (i, rain) in rain.iter().copied().enumerate() {
-            let id = self.mobs[i].id;
-            let player = self
-                .remote
-                .as_ref()
-                .unwrap()
-                .level_players
-                .contains_key(&(id as i32));
-            if (!running && !player) || driven == Some(id) {
-                continue;
-            }
-            let animation = if player && self.mobs[i].extra.using_item > 0 {
-                let extra = &self.mobs[i].extra;
-                let slot = if extra.using_off_hand {
-                    sunrise_items::equipment::OFFHAND
-                } else {
-                    sunrise_items::equipment::MAINHAND
-                };
-                extra
-                    .slot_stack(slot)
-                    .map_or_else(Default::default, |stack| self.item_use_animation(stack))
-            } else {
-                Default::default()
-            };
-            let player_ref = tick_listened
-                .then(|| {
-                    self.remote.as_ref().and_then(|r| {
-                        let uuid = *r.level_players.get(&(id as i32))?;
-                        Some(mod_api::__private::game::player_ref(
-                            mod_api::EntityRef::new(self.native_lifecycle.epoch()?, id),
-                            uuid,
-                        ))
-                    })
-                })
-                .flatten();
-            let r = self.remote.as_mut().unwrap();
-            let stepped = &mut r.stepped;
-            let players = &r.level_players;
-            let tab_players = &r.tab_players;
-            let m = &mut self.mobs[i];
-            let section_from = m.position;
-            if player {
-                // AvatarRenderer.extractRenderState: isSpectator, from the player list.
-                m.extra.spectator = players
-                    .get(&(m.id as i32))
-                    .and_then(|uuid| tab_players.get(uuid))
-                    .is_some_and(|t| t.game_mode == SPECTATOR);
-            }
-            m.previous = m.position;
-            // `Entity.deltaMovementOnPreviousTick`: the elytra's flight yaw
-            // lerps from it, so another player's model does not snap when a
-            // new tick's velocity arrives.
-            m.extra.previous_velocity = m.velocity;
-            m.previous_yaw = m.yaw;
-            m.previous_body_yaw = m.body_yaw;
-            m.previous_head_yaw = m.head_yaw;
-            m.previous_head_pitch = m.head_pitch;
-            m.previous_limb_speed = m.limb_speed;
-            m.age += 1;
-            if m.species() == sunrise_client::mobs::Species::Rabbit {
-                sunrise_client::mobs::rabbit::base_tick(m);
-            }
-            if matches!(
-                m.species(),
-                sunrise_client::mobs::Species::Horse
-                    | sunrise_client::mobs::Species::Donkey
-                    | sunrise_client::mobs::Species::Mule
-                    | sunrise_client::mobs::Species::SkeletonHorse
-                    | sunrise_client::mobs::Species::ZombieHorse
-            ) {
-                sunrise_client::mobs::equine::tail_tick(m);
-            }
-            if m.species() == sunrise_client::mobs::Species::Creeper {
-                sunrise_client::mobs::hostile::creeper_client_tick(m);
-            }
-            if matches!(
-                m.species(),
-                sunrise_client::mobs::Species::Guardian
-                    | sunrise_client::mobs::Species::ElderGuardian
-            ) {
-                sunrise_client::mobs::guardian::client_tick(m);
-            }
-            // PolarBear.tick: the stand animation follows the synched flag.
-            if m.species() == sunrise_client::mobs::Species::PolarBear {
-                sunrise_client::mobs::polar_bear::client_tick(m);
-            }
-            // The particles these mobs' own ticks draw on the client side.
-            {
-                use sunrise_client::mobs::{
-                    Species as S, cube, illager, illusioner, nautilus, tame, wither,
-                };
-                match m.species() {
-                    S::Wolf => tame::client_tick(m, rain, &mut mob_fx),
-                    S::Slime | S::MagmaCube | S::SulfurCube => cube::client_tick(m, &mut mob_fx),
-                    S::Nautilus | S::ZombieNautilus => nautilus::client_tick(m, &mut mob_fx),
-                    S::Illusioner => {
-                        illusioner::client_tick(m, &mut mob_fx);
-                        illager::cast_particles(m, &mut mob_fx);
-                    }
-                    S::Evoker => illager::cast_particles(m, &mut mob_fx),
-                    S::Wither => {
-                        wither::client_smoke(m, &mut mob_fx);
-                        // `getInvulnerableTicks() > 0`: the charge's cloud,
-                        // after the heads' smoke as in `aiStep`.
-                        wither::charging_particles(m, &mut mob_fx);
-                    }
-                    _ => {}
-                }
-            }
-            if m.hurt_time > 0 {
-                m.hurt_time -= 1;
-            }
-            if !m.alive() {
-                m.death_time += 1;
-            }
-            // LivingEntity.updateSwingTime.
-            m.anim.attack_anim_o = m.anim.attack_anim;
-            sunrise_client::mobs::ai::tick_swing(m);
-            // Entity.tick: the SteppedInterpolationHandler's step.
-            if let Some(at) = stepped
-                .get_mut(&(m.id as i32))
-                .and_then(|h| h.interpolate())
-            {
-                place_interpolated(m, at);
-            }
-            // `ClientLevel.tickNonPassenger`'s `commonTick` interpolated the
-            // entity before `Player.tick`, which `Pre` precedes.
-            if let Some(player) = player_ref {
-                self.native_player_tick_pre(mod_api::__private::PlayerTickPreCall { player });
-            }
-            let head_lerps = &mut self.remote.as_mut().unwrap().head_lerps;
-            let m = &mut self.mobs[i];
-            // LivingEntity.aiStep: the head's own interpolation.
-            if let Some((yaw, steps)) = head_lerps.get_mut(&(m.id as i32))
-                && *steps > 0
-            {
-                m.head_yaw += wrap_degrees(*yaw - m.head_yaw) / *steps as f32;
-                *steps -= 1;
-            }
-            // Fox.tick: the head tilt and crouch follow the synched flags.
-            if m.species() == sunrise_client::mobs::Species::Fox {
-                sunrise_client::mobs::fox::client_tick(m);
-            }
-            // Cat.tick: the lying and relaxing amounts follow the synched flags.
-            if m.species() == sunrise_client::mobs::Species::Cat {
-                m.anim.vo = m.anim.v;
-                sunrise_client::mobs::tame::cat_amounts(m);
-                sunrise_client::mobs::tame::cat_lying_on_sleeper(m, &sleepers);
-            }
-            // Chicken.aiStep: the wings follow the server's on-ground flag.
-            if m.species() == sunrise_client::mobs::Species::Chicken {
-                sunrise_client::mobs::farm::chicken_flap(m);
-            }
-            // Parrot.calculateFlapping: the wings follow the server's
-            // on-ground flag and the shoulder it sits on (the glide is the
-            // server's).
-            if m.species() == sunrise_client::mobs::Species::Parrot {
-                sunrise_client::mobs::parrot::flap(m);
-            }
-            // LivingEntity.updatingUsingItem: the ticks the item has been
-            // used before this one. Another player's use particles; a mob's
-            // drawn bow only needs the count (its pull follows it).
-            if player {
-                // AvatarRenderer.getArmPose: the used item's use animation
-                // poses the arm.
-                m.extra.use_animation = animation;
-            }
-            if m.extra.using_item > 0 {
-                if player {
-                    let item = if m.extra.using_off_hand {
-                        m.extra.slot_stack(sunrise_items::equipment::OFFHAND)
-                    } else {
-                        m.extra.slot_stack(sunrise_items::equipment::MAINHAND)
-                    }
-                    .map(|s| s.item.clone());
-                    if let Some(item) = item {
-                        let eye = m.eye_height();
-                        let at = [m.position.x, m.position.y, m.position.z];
-                        using.push((
-                            item,
-                            m.extra.using_item as u32 - 1,
-                            at,
-                            eye,
-                            m.head_pitch,
-                            m.yaw,
-                        ));
-                    }
-                }
-                m.extra.using_item += 1;
-            }
-            // LivingEntity.tick's tickHeadTurn: a mob's BodyRotationControl,
-            // a player's body following its walk and look.
-            if player {
-                remote_player_head_turn(m);
-                // LivingEntity.tick: the glide count, wings and swim amount.
-                m.tick_avatar_pose(m.fluids.in_water);
-                // LivingEntity.tick: a sleeper's xRot is 0.
-                if m.extra.ints[1] != 0 {
-                    m.head_pitch = 0.0;
-                    m.previous_head_pitch = 0.0;
-                }
-            } else if m.alive() {
-                m.body_rotation_tick();
-            }
-            // Squid.aiStep; WalkAnimationState.update from the horizontal distance.
-            sunrise_client::mobs::aquatic::squid_client_step(m, &mut mob_fx);
-            let d = (m.position.x - m.previous.x).hypot(m.position.z - m.previous.z) as f32;
-            let (target, factor) = if m.species() == sunrise_client::mobs::Species::Frog {
-                (sunrise_client::mobs::frog::walk_target(m, d), 0.4)
-            } else if sunrise_client::mobs::camel::is_camel(m.species()) {
-                sunrise_client::mobs::camel::walk_target(m, d)
-            } else {
-                ((d * 4.0).min(1.0), 0.4)
-            };
-            m.limb_speed += (target - m.limb_speed) * factor;
-            m.limb_position += m.limb_speed;
-            if m.species() == sunrise_client::mobs::Species::Rabbit {
-                sunrise_client::mobs::rabbit::post_tick(m);
-            }
-            if m.species() == sunrise_client::mobs::Species::Bat {
-                sunrise_client::mobs::bat::setup_animation_states(m);
-            }
-            // The animation states a server computes in its own `ai_step`,
-            // and the particles vanilla draws on the client.
-            sunrise_client::mobs::sync::client_tick(m, game_time, &mut mob_fx);
-            match m.species() {
-                // WitherBoss.aiStep: the side heads turn toward their targets.
-                sunrise_client::mobs::Species::Wither => {
-                    sunrise_client::mobs::wither::client_tick(m, |id| {
-                        wither_targets
-                            .iter()
-                            .find(|t| t.0 == id)
-                            .map(|t| (t.1, t.2))
-                    });
-                }
-                // Hoglin and piglin `isConverting` outside the Nether.
-                sunrise_client::mobs::Species::Hoglin
-                | sunrise_client::mobs::Species::Piglin
-                | sunrise_client::mobs::Species::PiglinBrute => {
-                    sunrise_client::mobs::piglin::client_converting(m, nether);
-                }
-                sunrise_client::mobs::Species::Panda => {
-                    sunrise_client::mobs::panda::client_tick(m, thundering);
-                }
-                // Shulker.tick's onPeekAmountChange: the lid moves this
-                // client's player, whose movement is its own.
-                sunrise_client::mobs::Species::Shulker => {
-                    sunrise_client::mobs::shulker::client_push(m, &mut mob_fx);
-                }
-                _ => {}
-            }
-            let section_id = m.id;
-            let section_to = m.position;
-            if let Some(player) = player_ref {
-                self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
-            }
-            if section_from != section_to {
-                self.remote_entity_section_step(section_id, section_from, section_to);
-            }
-        }
-        // ExperienceOrb.tick runs on a client too (all but the merges and the
-        // push out of a block, which are the server's): gravity, buoyancy,
-        // collisions and the pull of the nearest player between the server's
-        // updates; the server removes it on pickup.
-        let (world, facts, collision) = (&self.world, self.res.facts(), self.collision);
-        let border = Some(self.border.geometry());
-        let mut lava_random = None;
-        let mut next_float = || {
-            lava_random
-                .get_or_insert_with(random_source::entity)
-                .next_float()
-        };
-        if running {
-            self.orbs.retain_mut(|o| {
-                let distance = |feet: &[f64; 3]| -> f64 {
-                    (feet[0] - o.position.x).powi(2)
-                        + (feet[1] - o.position.y).powi(2)
-                        + (feet[2] - o.position.z).powi(2)
-                };
-                let target = followed
-                    .iter()
-                    .filter(|(feet, _)| distance(feet) < 64.0)
-                    .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
-                    .map(|(_, target)| *target);
-                // Entity.commonTick: setOldPosAndRot, then
-                // LinearInterpolationHandler.doInterpolate moves 1/remaining of
-                // the way to the server's position, so the frame draws the step
-                // from the old position.
-                let old = o.position;
-                if let Some(l) = lerps.get_mut(&(o.id as i32)).filter(|l| l.steps > 0) {
-                    let alpha = 1.0 / f64::from(l.steps);
-                    o.position = Vec3::new(
-                        o.position.x + (l.target[0] - o.position.x) * alpha,
-                        o.position.y + (l.target[1] - o.position.y) * alpha,
-                        o.position.z + (l.target[2] - o.position.z) * alpha,
-                    );
-                    l.steps -= 1;
-                }
-                let before = o.position;
-                let kept = o.tick(
-                    world,
-                    facts,
-                    collision,
-                    target,
-                    false,
-                    &mut next_float,
-                    border,
-                    &self.res.motion().fluids,
-                    &self.loop_context,
-                    &mut |_, _| {},
-                );
-                // `tick` set `previous` to the stepped position: keep the
-                // pre-step one, as `xo` is in vanilla.
-                o.previous = old;
-                // AbstractInterpolationHandler.applyPredictedMovement: the orb's
-                // own move carries the target along (vanilla also checks the
-                // moved target for collisions; that check is left out here).
-                if let Some(l) = lerps.get_mut(&(o.id as i32)).filter(|l| l.steps > 0) {
-                    l.target[0] += o.position.x - before.x;
-                    l.target[1] += o.position.y - before.y;
-                    l.target[2] += o.position.z - before.z;
-                }
-                kept
-            });
-        }
-        // ItemEntity.tick runs on a client too: gravity, collisions and
-        // friction move the item between the server's updates (every 20
-        // ticks). Ordinary removal remains server-authoritative. Mods can opt
-        // into predicting consumption at block contact.
-        self.remote
-            .as_mut()
-            .unwrap()
-            .head_lerps
-            .retain(|_, (_, steps)| *steps > 0);
-        let mut entered = Vec::new();
-        if running {
-            entity_section_steps::tick_items(self, &mut entered);
-        }
-        // Entity.doWaterSplashEffect on this window: Level.addParticle draws
-        // the bubbles and splashes. ClientLevel.playSeededSound drops
-        // Entity.playSound, so the sound stays the server's.
-        for splash in entered {
-            self.apply_item_splash(splash);
-        }
-        let _ = self.handle_mob_events_reusable(&mut mob_fx);
-        if let Some(r) = self.remote.as_mut() {
-            r.tick_fluids = fluids;
-            r.tick_rain = rain;
-            r.tick_standings = standings;
-            r.tick_water_fx = mob_fx;
-        }
-        for (item, ticks, at, eye, pitch, yaw) in using {
-            self.remote_player_eating(&item, ticks, at, eye, pitch, yaw);
-        }
-        // ClientLevel.tick: the sky flash fades in a frozen level too.
-        self.flash = self.flash.saturating_sub(1);
-        if running {
-            self.guardian_bubbles();
-            // The dragon: LivingEntity's interpolation, inside its aiStep.
-            let dragon_lerp = self
-                .dragon
-                .as_ref()
-                .and_then(|d| lerps.get_mut(&(d.id as i32)))
-                .filter(|l| l.steps > 0)
-                .map(|l| {
-                    let steps = l.steps;
-                    l.steps -= 1;
-                    (l.target, l.rotation.map(|r| r.0), steps)
-                });
-            self.tick_remote_dragon(dragon_lerp);
-            // Armor stands: ClientLevel.tickNonPassenger's setOldPosAndRot,
-            // then their SteppedInterpolationHandler's step, as the mobs'.
-            if let Some(r) = self.remote.as_mut() {
-                for a in &mut self.armor_stands {
-                    let step = r
-                        .stepped
-                        .get_mut(&(a.id as i32))
-                        .and_then(|h| h.interpolate());
-                    a.interpolate(step.map(|at| {
-                        let p = at.position;
-                        (Vec3::new(p[0], p[1], p[2]), at.yaw)
-                    }));
-                }
-            }
-            // The yaw of a boat eases toward the server's over the same steps
-            // as its position, read before `step` counts one off.
-            let turns: HashMap<i32, (f32, u32)> = lerps
-                .iter()
-                .filter(|(_, l)| l.steps > 0)
-                .filter_map(|(id, l)| l.rotation.map(|r| (*id, (r.0, l.steps))))
-                .collect();
-            // Boats, minecarts, projectiles and the rest ease toward the
-            // server's position over three ticks (`lerps`).
-            let mut step = |id: u32, at: Vec3| match lerps.get_mut(&(id as i32)) {
-                Some(l) if l.steps > 0 => {
-                    let n = f64::from(l.steps);
-                    l.steps -= 1;
-                    Vec3::new(
-                        at.x + (l.target[0] - at.x) / n,
-                        at.y + (l.target[1] - at.y) / n,
-                        at.z + (l.target[2] - at.z) / n,
-                    )
-                }
-                _ => at,
-            };
-            self.tick_remote_objects(
-                &mut step,
-                |id, yaw| {
-                    turns.get(&(id as i32)).map_or(yaw, |&(target, steps)| {
-                        super::remote_objects::lerp_yaw_step(yaw, target, steps)
-                    })
-                },
-                |c| {
-                    cart_lerps
-                        .get_mut(&(c.id as i32))
-                        .is_some_and(|l| l.tick(c))
-                },
-            );
-            self.tick_remote_projectiles(&mut step);
-            // LightningBolt.tick on a client.
-            self.tick_bolts();
-        }
-        lerps.retain(|_, l| l.steps > 0);
-        if let Some(r) = self.remote.as_mut() {
-            for (id, l) in lerps {
-                r.lerps.entry(id).or_insert(l);
-            }
-            for (id, l) in cart_lerps {
-                r.cart_lerps.entry(id).or_insert(l);
-            }
-        }
-    }
+    // tick_remote_guardian_eyes: remote/tick.rs
+
+    // tick_remote_entities: remote/tick.rs
+
     /// `AbstractMinecartRenderer.newExtractState`: sample the same weighted
     /// steps at the frame's partial tick, including corners within one tick.
     pub(super) fn remote_minecart_lerp(
@@ -8355,6 +6163,7 @@ impl Game<'_> {
         Some(([p.x, p.y, p.z], yaw, pitch))
     }
 
+<<<<<<< sync-sunrise-1
     /// `ClientPacketListener.handleMinecartAlongTrack`: the steps join the ones
     /// the minecart has queued, if it runs `NewMinecartBehavior`.
     fn remote_move_minecart(&mut self, p: play::MoveMinecartAlongTrack) {
@@ -8614,6 +6423,9 @@ impl Game<'_> {
         }
         self.remote_creative_menu_sync();
     }
+=======
+    // remote_player_eating: remote/use.rs
+>>>>>>> sunrise/main
     /// Inventory as the server last described it.
     fn remote_synced(&mut self) {
         let stacks = self.creative_stacks();
@@ -8625,6 +6437,7 @@ impl Game<'_> {
             }
         }
     }
+
     /// The slots a server packet changed since `before` are as the server has them; the
     /// others keep what was last sent, so a creative click made since still goes out.
     pub(in crate::game) fn remote_synced_since(&mut self, before: &[Option<ItemStack>]) {
@@ -8684,350 +6497,9 @@ impl Game<'_> {
         }
     }
 
-    /// `MultiPlayerGameMode.stopDestroyBlock`: aborts the break and starts the attack strength
-    /// again, if one is running (`if (!isDestroying) return;`), and says whether it did. Only the
-    /// progress goes: `destroyBlockPos` and `destroyingItem` keep the target, so a dig resumed on
-    /// the same block sends no START and the server's clock runs on (#4124).
-    pub(super) fn stop_remote_mining(&mut self) -> bool {
-        let kept = self.remote.as_mut().and_then(|r| {
-            if !std::mem::take(&mut r.is_destroying) {
-                return None;
-            }
-            let (pos, face, _) = r.destroying?;
-            r.destroying = Some((pos, face, 0.0));
-            r.destroying
-        });
-        let Some((pos, _, _)) = kept else {
-            return false;
-        };
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        self.tutorial_destroy(state, -1.0);
-        self.send(S::PlayerAction(play::PlayerAction {
-            action: 2,
-            pos,
-            direction: 0,
-            sequence: 0,
-        }));
-        self.reset_attack_strength();
-        true
-    }
+    // remote_mining: remote/use.rs
 
-    /// MultiPlayerGameMode.startDestroyBlock / continueDestroyBlock.
-    fn remote_mining(&mut self, start: bool) -> bool {
-        let debug_stick = self
-            .held()
-            .is_some_and(|stack| &*stack.item == "minecraft:debug_stick");
-        if !self
-            .res
-            .items()
-            .can_destroy_block(self.held(), self.creative)
-        {
-            self.stop_remote_mining();
-            self.mining = None;
-            return true;
-        }
-        let Some(r) = self.remote.as_mut() else {
-            return true;
-        };
-        if !start && r.destroy_delay > 0 {
-            r.destroy_delay -= 1;
-            return true;
-        }
-        let Some(hit) = self.pick() else {
-            self.mining = None;
-            return true;
-        };
-        let face = face_direction(hit.face);
-        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        if self.res.facts().is_air(state) {
-            return true;
-        }
-        // startDestroyBlock refuses a restricted break before predicting it.
-        if self.remote_break_restricted(hit.pos) {
-            self.mining = None;
-            return true;
-        }
-        if self.creative {
-            if self.veto_mining_prediction(hit.pos, hit.face, true, 1.0) {
-                return false;
-            }
-            let seq = self.next_sequence();
-            // DebugStickItem.canDestroyBlock never lets the client break the
-            // block; the server only selects the property on this START.
-            if !debug_stick {
-                self.predict_break(hit.pos, state, seq);
-            }
-            self.send(S::PlayerAction(play::PlayerAction {
-                action: 0,
-                pos: hit.pos,
-                direction: face,
-                sequence: seq,
-            }));
-            if let Some(r) = self.remote.as_mut() {
-                r.destroy_delay = 5;
-            }
-            return true;
-        }
-        // sameDestroyTarget: the same block and still the item the break began with.
-        let same = self.remote.as_ref().is_some_and(|r| {
-            r.destroying.is_some_and(|(p, _, _)| p == hit.pos)
-                && self.same_destroying_item(&r.destroying_item)
-        });
-        // startDestroyBlock leaves only a break that is still running alone (`isDestroying &&
-        // sameDestroyTarget`); a click on the block a stopped break still names starts it again,
-        // so the server re-anchors its clock. A held button carries the same target on, and that
-        // one keeps the clock (#4124).
-        let running = self.remote.as_ref().is_some_and(|r| r.is_destroying);
-        if start && same && running {
-            return true;
-        }
-        // The server's own getDestroyProgress: under water, off the ground,
-        // with haste, fatigue and efficiency, so the client stops digging
-        // when the server is done too (#1254).
-        let progress = self.destroy_progress(hit.pos);
-        if !same || start {
-            let proposed = if progress >= 1.0 { 1.0 } else { 0.0 };
-            if self.veto_mining_prediction(hit.pos, hit.face, true, proposed) {
-                return false;
-            }
-            // startDestroyBlock aborts only a break that is running; a target left by a stop that
-            // ended one is just replaced by the START below.
-            let aborted = self.remote.as_mut().and_then(|r| {
-                if !std::mem::take(&mut r.is_destroying) {
-                    return None;
-                }
-                r.destroying.take()
-            });
-            if let Some((old, _, _)) = aborted {
-                let old_state = self.world.block(old[0], old[1], old[2]);
-                self.tutorial_destroy(old_state, -1.0);
-                self.send(S::PlayerAction(play::PlayerAction {
-                    action: 2,
-                    pos: old,
-                    direction: face,
-                    sequence: 0,
-                }));
-            }
-            let seq = self.next_sequence();
-            self.send(S::PlayerAction(play::PlayerAction {
-                action: 0,
-                pos: hit.pos,
-                direction: face,
-                sequence: seq,
-            }));
-            self.tutorial_destroy(state, 0.0);
-            // startDestroyBlock: BlockState.attack on the client, so a redstone
-            // ore's dust (RedStoneOreBlock.attack) comes before the break.
-            self.redstone_ore_particles(hit.pos);
-            if progress >= 1.0 {
-                // startDestroyBlock: instant survival breaks have no destroy delay.
-                if !debug_stick {
-                    self.predict_break(hit.pos, state, seq);
-                }
-                return true;
-            }
-            let held = self.main_hand_key();
-            if let Some(r) = self.remote.as_mut() {
-                (r.destroying, r.destroying_item) = (Some((hit.pos, face, 0.0)), held);
-                r.is_destroying = true;
-            }
-            // startDestroyBlock plays the first hit and crack itself; the
-            // server's level events 2019 and 2020 do the rest.
-            self.breaking_block_effects(hit.pos, hit.face, true);
-            self.mining = Some(Mining {
-                pos: hit.pos,
-                progress: 0.0,
-                per_tick: 0.0,
-                ticks: 0,
-            });
-            return true;
-        }
-        let Some((pos, last_face, done)) = self.remote.as_ref().and_then(|r| r.destroying) else {
-            return true;
-        };
-        let done = done + progress;
-        if self.veto_mining_prediction(pos, hit.face, false, done) {
-            return false;
-        }
-        self.tutorial_destroy(state, done.clamp(0.0, 1.0));
-        let ticks = self.mining.as_ref().map_or(0, |m| m.ticks) + 1;
-        if done >= 1.0 {
-            let seq = self.next_sequence();
-            // DebugStickItem.canDestroyBlock: the server selects the property
-            // and sends the block update instead; never predict a break.
-            if !debug_stick {
-                self.predict_break(pos, state, seq);
-            }
-            self.send(S::PlayerAction(play::PlayerAction {
-                action: 3,
-                pos,
-                direction: face,
-                sequence: seq,
-            }));
-            if let Some(r) = self.remote.as_mut() {
-                // `destroyBlockPos` remains the last target after the break;
-                // if that position is filled again before the next pick, a
-                // held attack resumes it without sending a second START.
-                r.destroying = Some((pos, face, 0.0));
-                r.is_destroying = false;
-                r.destroy_delay = 5;
-            }
-            self.mining = None;
-        } else {
-            if last_face != face {
-                self.send(S::PlayerAction(play::PlayerAction {
-                    action: 1,
-                    pos,
-                    direction: face,
-                    sequence: 0,
-                }));
-            }
-            if let Some(r) = self.remote.as_mut() {
-                r.destroying = Some((pos, face, done));
-            }
-            self.mining = Some(Mining {
-                pos,
-                progress: done,
-                per_tick: 0.0,
-                ticks,
-            });
-        }
-        true
-    }
-
-    fn veto_mining_prediction(
-        &self,
-        pos: [i32; 3],
-        face: [i32; 3],
-        starting: bool,
-        progress: f32,
-    ) -> bool {
-        if !mod_api::__private::listened(mod_api::HookId::ClientMiningPredict) {
-            return false;
-        }
-        let mut canceled = false;
-        self.native_client_mining_predict(
-            mod_api::ClientMiningPrediction {
-                pos,
-                face,
-                starting,
-                progress: progress.clamp(0.0, 1.0),
-            },
-            &mut canceled,
-        );
-        canceled
-    }
-    /// `Player.blockActionRestricted` for the block at `pos`: a spectator
-    /// never breaks, an adventure player only with a main-hand item whose
-    /// `can_break` matches the block (`ItemStack.canBreakBlockInAdventureMode`).
-    /// A predicate this client could not decode (exact components) only
-    /// tells that the server gave one, and the server sends the block back
-    /// if it does not match.
-    fn remote_break_restricted(&self, pos: [i32; 3]) -> bool {
-        use sunrise_protocol::item::{WirePatch, component::CAN_BREAK};
-        if self
-            .held()
-            .and_then(|s| s.data())
-            .is_some_and(|d| d.other("minecraft:can_break").is_some())
-        {
-            return self.block_action_restricted(pos);
-        }
-        self.spectator()
-            || (!self.may_build()
-                && !self
-                    .held()
-                    .and_then(|s| s.wire_patch())
-                    .is_some_and(|p| WirePatch::adds(&p, CAN_BREAK)))
-    }
-
-    /// `Minecraft.startUseItem`'s block turn for `hand`: a use that swung drops
-    /// the hand (`LocalPlayer.itemUsed`) when it spent the held item or the
-    /// player has infinite materials.
-    fn remote_use_block(&mut self, hand: Hand) -> bool {
-        let before = self.with_hand(hand, |g| g.held().map(|s| s.count));
-        let swings = self.swings_started;
-        let done = self.remote_use_item_on(hand);
-        if done
-            && self.swings_started != swings
-            && let Some(after) = self.with_hand(hand, |g| g.held().map(|s| s.count))
-            && (Some(after) != before || self.creative)
-        {
-            self.heights.item_used(hand);
-        }
-        done
-    }
-
-    /// `Item.useOn` on this client's level for the items whose effects are
-    /// the clicker's own (`Level.levelEvent(player, ...)` and
-    /// `playSound(player, ...)`: the server sends them to the others only):
-    /// honeycomb waxing copper, and an axe, hoe or shovel transforming a
-    /// block (stripping, scraping, removing wax, tilling, making a path).
-    /// A cushion succeeds where it may be placed and spawns on the server, a
-    /// firework rocket wherever it may be used, and the server launches it.
-    /// Whether the item's use succeeded, which ends the click.
-    /// The caller has selected Item.useOn after cooldown and adventure gates.
-    fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit) -> bool {
-        // FireworkRocketItem.useOn: SUCCESS unless gliding, when Item.use
-        // boosts instead. The phase's cooldown/adventure gates already ran.
-        if &*stack.item == "minecraft:firework_rocket" {
-            return !self.player.as_ref().is_some_and(|p| p.fall_flying);
-        }
-        let at = [
-            f64::from(hit.pos[0]) + 0.5,
-            f64::from(hit.pos[1]) + 0.5,
-            f64::from(hit.pos[2]) + 0.5,
-        ];
-        if &*stack.item == "minecraft:honeycomb" {
-            // HoneycombItem.useOn.
-            let registry = self.pack.assets.registry;
-            let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-            let old = registry.state(clicked);
-            let waxes = old
-                .and_then(|old| self.res.transformers().waxed(registry, old))
-                .is_some();
-            if waxes {
-                self.level_event_at(3003, hit.pos, 0);
-                self.play_client_local_sound(
-                    LevelSound::new("minecraft:item.honeycomb.wax_on", at, 1.0, 1.0)
-                        .in_source(mod_api::SoundSource::Blocks),
-                );
-                // The other half of a double chest: its particles, and a second
-                // sound from the clicked block.
-                if let Some(other) =
-                    old.and_then(|old| super::storage::chest_connected_pos(old, hit.pos))
-                {
-                    self.level_event_at(3003, other, 0);
-                    self.play_client_local_sound(
-                        LevelSound::new("minecraft:item.honeycomb.wax_on", at, 1.0, 1.0)
-                            .in_source(mod_api::SoundSource::Blocks),
-                    );
-                }
-            }
-            waxes
-        } else if let Some((_, sound, _, _, particle, _)) = self.block_transform(stack, hit) {
-            self.transform_particle(&particle, hit.pos);
-            self.play_client_local_sound(
-                LevelSound::new(&sound, at, 1.0, 1.0).in_source(mod_api::SoundSource::Blocks),
-            );
-            true
-        } else if self
-            .res
-            .items()
-            .get(&stack.item)
-            .is_some_and(|i| i.cushion_color.is_some())
-        {
-            // CushionItem.useOn on a client level: SUCCESS once
-            // `canBePlacedAt` holds, before the server's own checks.
-            self.cushion_spawn(hit).is_some()
-        } else if &*stack.item == "minecraft:painting" {
-            // HangingEntityItem.useOn on a client level: SUCCESS once
-            // `Painting.create` finds a surviving variant, before the
-            // server spawns it.
-            self.painting_fits(hit, stack)
-        } else {
-            false
-        }
-    }
+    // remote_use_block: remote/use.rs
 
     /// `MapItem.useOn` on this client: a map used on a banner is SUCCESS
     /// whatever its data says (the server toggles the marker, or fails
@@ -9062,8 +6534,8 @@ impl Game<'_> {
     /// wooden or copper door, trapdoor or fence gate, a lever or a button;
     /// whatever else the use changes waits for the server.
     fn predict_use(&mut self, (changes, sounds): &DryUse, seq: i32) {
-        let facts = self.res.facts();
-        let predicted = |state: BlockStateId| hand_operated(&facts.get(state).name);
+        let behaviours = self.res.behaviours();
+        let predicted = |state: BlockStateId| hand_operated(behaviours, state);
         if changes.is_empty()
             || !changes
                 .iter()
@@ -9074,7 +6546,11 @@ impl Game<'_> {
         self.predict_blocks(changes, seq);
         // `level.playSound(player, ...)`: the clicker hears it from its own use; the
         // server sends it to the others only.
-        for (pos, sound, volume, pitch) in sounds {
+        self.play_predicted_sounds(sounds);
+    }
+
+    fn play_predicted_sounds(&mut self, sounds: &[DrySound]) {
+        for (pos, sound, source, volume, pitch) in sounds {
             let at = [
                 f64::from(pos.x) + 0.5,
                 f64::from(pos.y) + 0.5,
@@ -9086,36 +6562,17 @@ impl Game<'_> {
                 format!("minecraft:{sound}")
             };
             self.play_client_local_sound(
-                LevelSound::new(&name, at, *volume, *pitch).in_source(mod_api::SoundSource::Blocks),
+                LevelSound::new(&name, at, *volume, *pitch).in_source(*source),
             );
         }
     }
 
-    /// Another player of this level, whose copy passes every click (`Player.interactOn`).
-    pub(super) fn is_level_player(&self, id: i32) -> bool {
-        self.remote
-            .as_ref()
-            .is_some_and(|r| r.level_players.contains_key(&id))
-    }
+    // remote_block_reacts: remote/use.rs
+    // remote_block_template: remote/use.rs
 
-    /// Whether a main-hand right click with `held` would end on the block hit, for the gameplay
-    /// guide: what `remote_block_reacts` answers on its dry level.
-    pub(super) fn block_takes_click(&mut self, hit: &super::Hit, held: Option<&ItemStack>) -> bool {
-        self.remote_block_reacts(hit, held).0.consumes_action()
-    }
-    /// `InteractionResult.CONSUME` for this click: the block keeps it and does nothing, so the
-    /// item in hand never gets it either (an empty flower pot, a pressed button).
-    pub(super) fn block_swallows_click(
-        &mut self,
-        hit: &super::Hit,
-        held: Option<&ItemStack>,
-    ) -> bool {
-        matches!(
-            self.remote_block_reacts(hit, held).0,
-            InteractionResult::Consume
-        )
-    }
+    // remote_place_preview: remote/use.rs
 
+<<<<<<< sync-sunrise-1
     /// Whether the block hit takes a main-hand right click with `held`
     /// (`BlockState.useItemOn`, then `useWithoutItem`), once the caller let
     /// the block react (no sneaking with full hands): a door, a button, a
@@ -9166,86 +6623,15 @@ impl Game<'_> {
         }
         self.remote_block_template(hit, held, false)
     }
+=======
+    // remote_use_bucket: remote/use.rs
+>>>>>>> sunrise/main
 
-    /// The shared dry-level boundary for a normal block use or the empty
-    /// method requested by a canceled `BLOCK` phase's `TryWithEmptyHand`.
-    pub(super) fn remote_block_template(
-        &mut self,
-        hit: &super::Hit,
-        held: Option<&ItemStack>,
-        without_item: bool,
-    ) -> (InteractionResult, DryUse) {
-        use sunrise_core::geometry::Direction;
-        let face = match hit.face {
-            [0, 1, 0] => Direction::Up,
-            [0, -1, 0] => Direction::Down,
-            [0, 0, -1] => Direction::North,
-            [0, 0, 1] => Direction::South,
-            [-1, 0, 0] => Direction::West,
-            _ => Direction::East,
-        };
-        let player = self.use_context();
-        self.with_block_use_level(|b, level, _| {
-            let mut level = DryLevel::new(level);
-            let hit = sunrise_core::geometry::BlockHit {
-                block: sunrise_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
-                direction: face,
-                location: sunrise_core::geometry::Vec3::new(
-                    hit.point[0],
-                    hit.point[1],
-                    hit.point[2],
-                ),
-                inside: hit.inside,
-            };
-            let mut ticks = sunrise_world::level::Ticks::default();
-            let result = if without_item {
-                use sunrise_world::level::LevelAccess as _;
-                let state = level.block_state(hit.block);
-                b.use_without_item(&mut level, &mut ticks, state, hit, player)
-            } else {
-                b.use_item_on(&mut level, &mut ticks, hit, player, held.map(|s| &*s.item))
-            };
-            (result, (level.changed.into_iter().collect(), level.sounds))
-        })
-    }
+    // remote_start_held_use: remote/use.rs
 
-    /// MultiPlayerGameMode.useItemOn inside startPrediction, for a block item:
-    /// the blocks `BlockItem.place` set at `pos` are placed on this client's
-    /// level at once, so the next click of a fast bridge aims at them rather
-    /// than past them (the server would refuse it). Its place sound is the
-    /// placer's own (`playSound(player, ...)`: the server sends it to the
-    /// others only).
-    fn predict_place(&mut self, (pos, changes): &DryPlace, seq: i32) {
-        let ticks = self.ticks;
-        if let Some(r) = self.remote.as_mut() {
-            // set_block plays the place sound of the block at `placing`.
-            r.placing = Some(([pos.x, pos.y, pos.z], ticks));
-        }
-        self.predict_blocks(changes, seq);
-    }
-    /// The blocks a use changed, set on this client's level and kept as
-    /// predicted under the use's sequence until the server acknowledges it
-    /// (`BlockStatePredictionHandler.retainKnownServerState`): a use the
-    /// server refused goes back.
-    pub(super) fn predict_blocks(&mut self, changes: &DryChanges, seq: i32) {
-        for &(p, state) in changes {
-            let pos = [p.x, p.y, p.z];
-            let before = self.world.block(p.x, p.y, p.z);
-            let here = self.player_position();
-            if let Some(r) = self.remote.as_mut() {
-                r.predictions
-                    .entry(pos)
-                    .and_modify(|e| e.sequence = seq)
-                    .or_insert(Prediction {
-                        sequence: seq,
-                        state: before.0 as i32,
-                        player_pos: here,
-                    });
-            }
-            self.set_block(pos, state.0 as i32, true);
-        }
-    }
+    // remote_use_instrument: remote/use.rs
 
+<<<<<<< sync-sunrise-1
     /// Run BlockItem.place on a disposable level: where it placed and the
     /// blocks it set. The real level supplies collision shapes and
     /// building-blocking entities; random draws, scheduled ticks and events
@@ -9508,6 +6894,8 @@ impl Game<'_> {
             || self.blocks_attacks(stack).is_some()
             || self.patched_held_use(stack)
     }
+=======
+>>>>>>> sunrise/main
     /// Whether the server's patch gives `stack`, an item with no consumable
     /// of its own, a `consumable` with a use time or `blocks_attacks` (a
     /// sword made to block): `Item.use` starts a use of it
@@ -9523,6 +6911,7 @@ impl Game<'_> {
                 .is_none_or(|i| i.consumable.is_none())
     }
 
+<<<<<<< sync-sunrise-1
     /// The rest of Minecraft.startUseItem once the main hand's target passed:
     /// the main hand's item, then the off hand's turn (its block, its item).
     /// The server does each packet's part with that packet's hand only.
@@ -9779,19 +7168,13 @@ impl Game<'_> {
             r.input = input;
         }
     }
+=======
+    // remote_use_hands: remote/use.rs
 
-    /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
-    /// new selected slot before anything the slot acts with.
-    fn remote_send_carried(&self) {
-        if let Some(r) = &self.remote
-            && r.carried.get() != Some(self.selected)
-        {
-            r.carried.set(Some(self.selected));
-            self.send_play(S::SetCarriedItem(play::SetCarriedItem {
-                slot: self.selected as i16,
-            }));
-        }
-    }
+    // remote_complete_using: remote/use.rs
+>>>>>>> sunrise/main
+
+    // remote_send_carried: remote/sync.rs
 
     /// `MultiPlayerGameMode.attack` runs `Player.attack` on this client too: its
     /// `isSweepAttack` for a damaging hit on `target` (`living`: a
@@ -9801,17 +7184,7 @@ impl Game<'_> {
         if mod_api::__private::mods().is_empty() {
             return;
         }
-        let speed = self
-            .own_attribute("minecraft:attack_speed")
-            .unwrap_or_else(|| self.main_hand_attack_speed());
-        let scale = self.hand_strength.scale(0.5, speed);
-        let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
-        let damage = if spin > 0.0 {
-            spin
-        } else {
-            self.own_attribute("minecraft:attack_damage")
-                .map_or(1.0, |v| v as f32)
-        };
+        let (damage, scale) = self.remote_attack_damage();
         let magic = scale * (self.enchanted_damage(target, damage, None) - damage);
         if damage <= 0.0 && magic <= 0.0 {
             return;
@@ -9819,6 +7192,7 @@ impl Game<'_> {
         let crit = living && self.critical_attack(scale);
         self.sweep_decision(scale, crit, target);
     }
+
     /// The entity type of the boat, minecart, armor stand or End crystal with
     /// server id `id` that an attack reaches `Player.attack`'s sweep check on,
     /// and whether it is living. A painting or item frame is not: on this
@@ -9839,68 +7213,9 @@ impl Game<'_> {
             .any(|c| c.id == id)
             .then(|| ("minecraft:end_crystal".to_owned(), false))
     }
-    /// `MultiPlayerGameMode.attack` runs `Player.attack` on this client too.
-    /// For a mob `hurtOrSimulate` fails here (`Entity.hurtClient`), so the
-    /// hit has no attacker side; but `RemotePlayer.hurtClient` is true, so a
-    /// hit on another player with extra knockback runs the attacker's side of
-    /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
-    /// stop. Without it the next move outruns the server's player.
-    fn remote_player_attack(&mut self, mob: usize) {
-        // Java dispatches this through the target's RemotePlayer type. The
-        // level_players map is profile bookkeeping and can lag the entity;
-        // mobs must stay out because their hurtClient returns false.
-        if self.mobs[mob].kind.id != "minecraft:player" {
-            return;
-        }
-        // `getAttackStrengthScale(0.5)`: here the ticker is `hand_strength`'s
-        // (`attack_ticks` only counts in the local world), and the attack
-        // speed is the player's synced attribute, which a server may change.
-        let speed = self
-            .own_attribute("minecraft:attack_speed")
-            .unwrap_or_else(|| self.main_hand_attack_speed());
-        let strength = self.hand_strength.scale(0.5, speed);
-        // Player.attack's damage: a riptide spin's, or this client's own
-        // ATTACK_DAMAGE, which the held item and effects don't change here.
-        let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
-        let damage = if spin > 0.0 {
-            spin
-        } else {
-            self.own_attribute("minecraft:attack_damage")
-                .map_or(1.0, |v| v as f32)
-        };
-        let knockback = self
-            .own_attribute("minecraft:attack_knockback")
-            .map_or(0.0, |v| v as f32);
-        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
-        // attackVisualEffects: a RemotePlayer's hurtClient is true, so a
-        // critical hit (full strength, canCriticalAttack) with damage left
-        // after baseDamageScaleFactor runs LocalPlayer.crit, this client's
-        // own CRIT emitter beside the one the server's Animate brings.
-        // magicBoost is 0 on a client, so no ENCHANTED_HIT one.
-        if damage * (0.2 + strength * strength * 0.8) > 0.0 && self.critical_attack(strength) {
-            use sunrise_client::particles::{ParticleOptions, ParticleType};
-            let m = &self.mobs[mob];
-            self.particles.tracking_emitter(
-                ParticleOptions::simple(ParticleType::Crit),
-                TrackingTarget::Entity(m.id as i32),
-                mob_tracking_body(m),
-            );
-        }
-        if !sunrise_client::attack_strength::attacker_slows_after_hit(
-            damage, knockback, strength, sprinting,
-        ) {
-            return;
-        }
-        if let Some(p) = self.player.as_mut() {
-            let slowdown = sunrise_client::attack_strength::ATTACKER_SLOWDOWN;
-            p.velocity = Vec3::new(
-                p.velocity.x * slowdown,
-                p.velocity.y,
-                p.velocity.z * slowdown,
-            );
-        }
-        self.stop_sprint_after_extra_knockback();
-    }
+
+    // remote_player_attack: remote/ui.rs
+
     /// The latency the server's player list gives this player
     /// (`PlayerInfo.getLatency`), none before the server lists it. A new entry reads 0 until the
     /// server's first latency update (every 600 ticks).
@@ -9919,6 +7234,7 @@ impl Game<'_> {
             .ok()
     }
 
+<<<<<<< sync-sunrise-1
     /// Keys with a multiplayer meaning; returns true when consumed.
     pub(super) fn remote_key(&mut self, key: KeyCode) -> Result<bool> {
         if self.screen != Screen::Playing {
@@ -10068,18 +7384,27 @@ impl Game<'_> {
             }
         }
     }
+=======
+    // remote_key: remote/ui.rs
+
+>>>>>>> sunrise/main
     /// MultiPlayerGameMode.dropItem (key.drop): predict the removal, then send
     /// the action; swing only if a nonempty stack was removed.
     pub(super) fn remote_drop(&mut self, all: bool) {
         // ensureHasSentCarriedItem: the server drops from the slot just chosen.
         self.remote_send_carried();
+        // MultiPlayerGameMode.dropItem predicts the removal and sends only the drop: the
+        // server's stack agrees, so no creative slot edit follows at the end of the tick.
+        let before = self.creative_stacks();
         let dropped =
             sunrise_client::items::take_held_drop(&mut self.inventory[self.selected], all, false);
+        self.remote_synced_since(&before);
         self.send_action(if all { 4 } else { 5 });
         if dropped.is_some() {
             self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
         }
     }
+
     /// Minecraft.handleKeybinds, key.swapOffhand: the server swaps the hands
     /// (ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND at BlockPos.ZERO, facing down) and
     /// sends both slots back; nothing is predicted.
@@ -10092,6 +7417,7 @@ impl Game<'_> {
             r.swap_answer = [moves; 2];
         }
     }
+<<<<<<< sync-sunrise-1
     /// The server set inventory `slot` (`shield::OFFHAND_SLOT` for the off
     /// hand), `changed` from the stack this client held there. The stack
     /// that answers a swap (`setItemInHand`) is another object, which the
@@ -10683,6 +8009,11 @@ impl Game<'_> {
                 .unwrap_or_else(sunrise_client::text::Text::empty),
         ))
     }
+=======
+
+    // remote_click: remote/use.rs
+
+>>>>>>> sunrise/main
     /// ServerboundPlayerCommandPacket STOP_SLEEPING.
     pub(super) fn remote_stop_sleeping(&mut self) {
         let id = self.remote.as_ref().map_or(0, |r| r.entity_id);
@@ -10705,91 +8036,9 @@ impl Game<'_> {
                 .as_ref()
                 .is_some_and(|r| self.player.is_none() || r.level_load.is_active())
     }
-    /// Connecting / loading screens; true when it covered the frame.
-    pub(super) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
-        if !self.remote_screen_up() {
-            return false;
-        }
-        let Some(r) = &self.remote else { return false };
-        let loading = r.level_load.is_active();
-        if self.player.is_some() && !loading {
-            return false;
-        }
-        let (w, h) = (batch.width, batch.height);
-        if let Some(since) = r.reconfiguring {
-            // ServerReconfigScreen narrates its title.
-            sunrise_client::widgets::begin_screen(|| {
-                sunrise_client::widgets::ScreenInfo::new(
-                    "reconfiguring",
-                    super::screen_info::tr("connect.reconfiguring", &[]),
-                )
-            });
-            self.draw_reconfiguring(batch, since);
-            return true;
-        }
-        if r.joined || loading {
-            // LevelLoadingScreen: the world's terrain comes in. A server's
-            // chunk status view and progress are the integrated server's alone
-            // (`LevelLoadTracker.statusView`, `hasProgress`), and so is what
-            // the narrator says of it.
-            let progress = self
-                .integrated
-                .as_ref()
-                .map(|i| i.load_view())
-                .filter(|v| v.has_progress())
-                .map(|v| v.server_progress());
-            sunrise_client::widgets::begin_screen(|| {
-                super::screen_info::level_loading(progress, &super::screen_info::tr)
-            });
-            if self.draw_dimension_transition_screen(
-                batch,
-                &r.level_load,
-                progress.map(|_| self.loading_progress),
-            ) {
-                return true;
-            }
-            self.draw_level_loading_background(batch, r.level_load.reason);
-            let atlas = &self.gui.atlas;
-            match self.integrated.as_ref().map(|i| i.load_view()) {
-                Some(view) => {
-                    let status = |x: i32, z: i32| view.status(x, z);
-                    let progress = view.has_progress().then_some(self.loading_progress);
-                    sunrise_client::level_loading::draw(batch, atlas, Some(&status), progress);
-                }
-                None => sunrise_client::level_loading::draw(batch, atlas, None, None),
-            }
-            return true;
-        }
-        let cancel = self.connect_cancel((w, h)).is_some();
-        // ConnectScreen.extractRenderState: "Joining the world" every 2 s (a
-        // server's: single player's isn't joined through ConnectScreen).
-        if self.integrated.is_none()
-            && let Some(r) = self.remote.as_mut()
-            && r.joining_narrated
-                .is_none_or(|t| t.elapsed() > Duration::from_millis(2000))
-        {
-            r.joining_narrated = Some(Instant::now());
-            self.say_system_now(&sunrise_client::text::Text::translate(
-                "narrator.joining",
-                &[],
-            ));
-        }
-        let Some(r) = &self.remote else { return false };
-        // ConnectScreen: `GameNarrator.NO_TITLE`, then its Cancel; single
-        // player's server is joined under its LevelLoadingScreen.
-        let single_player = self.integrated.is_some();
-        sunrise_client::widgets::begin_screen(|| {
-            if single_player {
-                super::screen_info::level_loading(None, &super::screen_info::tr)
-            } else {
-                sunrise_client::widgets::ScreenInfo::new("connect", "")
-            }
-        });
-        let atlas = &self.gui.atlas;
-        let status = sunrise_client::text::Text::untrusted(r.status.as_str());
-        sunrise_client::level_loading::draw_connecting(batch, atlas, &status, self.cursor, cancel);
-        true
-    }
+
+    // remote_overlay: remote/ui.rs
+
     /// Connected or connecting with no player yet: `ConnectScreen`, then
     /// `LevelLoadingScreen`, over the panorama with its blur.
     pub(super) fn remote_loading(&self) -> bool {
@@ -10806,6 +8055,7 @@ impl Game<'_> {
             }
         })
     }
+
     /// `ServerReconfigScreen`: a vertical layout of cells padded by 10, the
     /// title (9 high) over Disconnect (150 x 20), centred. The title's and the
     /// button's top left corners.
@@ -10821,6 +8071,7 @@ impl Game<'_> {
             ((left + across(150)) as f32, (top + 39) as f32),
         )
     }
+
     /// `ServerReconfigScreen` over the panorama; Disconnect wakes up after
     /// `DISCONNECT_TIME` (600 ticks).
     fn draw_reconfiguring(&self, batch: &mut HudBatch, since: u64) {
@@ -10836,62 +8087,13 @@ impl Game<'_> {
         let hover = sunrise_client::ui::hovered(self.cursor, bx, by, 150.0, 20.0);
         sunrise_client::ui::button(batch, atlas, bx, by, 150.0, 20.0, &label, active, hover);
     }
-    /// `ConnectScreen`'s Cancel: a server's (single player's server isn't
-    /// joined through `ConnectScreen`), until the login is done.
-    fn connect_cancel(&self, (w, h): (f32, f32)) -> Option<(f32, f32)> {
-        let r = self.remote.as_ref()?;
-        (self.player.is_none() && !r.joined && self.integrated.is_none())
-            .then(|| sunrise_client::level_loading::connect_cancel(w, h))
-    }
-    /// A click on `ConnectScreen`: Cancel aborts the connection
-    /// (`connect.aborted`) and goes back. Escape does nothing there
-    /// (`shouldCloseOnEsc` is false).
-    pub(super) fn connect_screen_click(&mut self) -> Result<()> {
-        // ServerReconfigScreen's Disconnect, once it is active.
-        if let Some(since) = self.remote.as_ref().and_then(|r| r.reconfiguring) {
-            let (_, (x, y)) = self.reconfigure_layout(self.gui_size());
-            if self.ticks.saturating_sub(since) >= 600
-                && sunrise_client::ui::hovered(self.cursor, x, y, 150.0, 20.0)
-            {
-                self.audio.play_button_click();
-                self.leave_server(None)?;
-            }
-            return Ok(());
-        }
-        let Some((x, y)) = self.connect_cancel(self.gui_size()) else {
-            return Ok(());
-        };
-        if sunrise_client::ui::hovered(self.cursor, x, y, 200.0, 20.0) {
-            self.audio.play_button_click();
-            self.leave_server(None)?;
-        }
-        Ok(())
-    }
-    /// The server's death message; chat uses the shared ChatComponent.
-    pub(super) fn remote_hud(&self, batch: &mut HudBatch) {
-        let Some(r) = &self.remote else { return };
-        let atlas = &self.gui.atlas;
-        let w = batch.width;
-        if self.screen == Screen::Dead
-            && let Some(message) = &r.death_message
-        {
-            // DeathScreen draws the styled cause component.
-            let tw = atlas.font.width_text(message);
-            batch.text_styled(
-                atlas,
-                message,
-                ((w - tw) / 2.0).floor(),
-                85.0,
-                u32::MAX,
-                true,
-            );
-        }
-    }
+
     /// Shared flag 6 of an entity on a server's client (`None` without a server).
     pub(super) fn remote_glowing(&self, id: u32) -> Option<bool> {
         let r = self.remote.as_ref()?;
         Some(r.glowing.contains(&(id as i32)))
     }
+
     /// The profile name of another player the server sent, by entity id.
     pub(super) fn remote_player_name(&self, id: u32) -> Option<&str> {
         let r = self.remote.as_ref()?;
@@ -10905,6 +8107,7 @@ impl Game<'_> {
             remote.level_players.get(&(id as i32)).copied()
         }
     }
+
     /// Status for `sunrise-ctl status`.
     /// The other players' entities in the level and their names (their
     /// profiles', which outlive the player list's entries).
@@ -10918,91 +8121,8 @@ impl Game<'_> {
             .filter_map(|(id, uuid)| Some((*id as u32, r.level_player_name(*id, uuid)?.to_owned())))
             .collect()
     }
-    /// `ClientClockManager.tick`: the clock moves on by the game time that
-    /// passed since its last tick, at its rate. A game time the server sets
-    /// forward (its sync every second) moves the clock with it.
-    fn remote_clock_tick(&mut self) {
-        let Some(r) = self.remote.as_mut() else {
-            return;
-        };
-        let delta = self.world.game_time - r.clock_game_time;
-        r.clock_game_time = self.world.game_time;
-        for clock in r.clocks.values_mut() {
-            let _ = client_level_tick::advance_clock(clock, delta);
-        }
-        self.world.day_time = r.clock_time(r.default_clock);
-    }
-    pub(super) fn remote_status(&self) -> Option<serde_json::Value> {
-        let r = self.remote.as_ref()?;
-        Some(serde_json::json!({
-            "address": sunrise_client::net::shown_address(&r.session.address),
-            "name": r.session.name,
-            "joined": r.joined,
-            // ServerboundPlayerLoadedPacket sent: the level around the
-            // player is ready, and the client ticks and sends its moves.
-            "loaded": r.loaded_sent,
-            "status": r.status,
-            "entity_id": r.entity_id,
-            "dimension": r.dimension.name,
-            "game_mode": r.game_mode,
-            "chunks": self.world.chunks.len(),
-            "entities": r.entities.values().fold(std::collections::BTreeMap::<&str, u32>::new(), |mut m, t| {
-                *m.entry(t.kind.as_str()).or_default() += 1;
-                m
-            }),
-            "players": r.players.values().collect::<Vec<_>>(),
-            // Where the other players' entities are (harnesses check movement).
-            // What the other players hold and wear, as this client draws them.
-            "player_equipment": self
-                .mobs
-                .iter()
-                .filter(|m| r.level_players.contains_key(&(m.id as i32)))
-                .map(|m| {
-                    let e = &m.extra;
-                    let armor = sunrise_items::equipment::ARMOR.map(|slot| e.slot_id(slot));
-                    serde_json::json!({
-                        "id": m.id,
-                        "swinging": m.ai.swinging,
-                        "using": m.extra.using_item,
-                        "armor": armor,
-                        "main_hand": e.main_hand_id(),
-                        "off_hand": e.off_hand_id(),
-                    })
-                })
-                .collect::<Vec<_>>(),
-            "player_positions": r
-                .entities
-                .values()
-                .filter(|t| t.kind == "minecraft:player")
-                .map(|t| t.position)
-                .collect::<Vec<_>>(),
-            // The other players this client draws dead (lying down, after EntityEvent DEATH).
-            "dead_players": self
-                .mobs
-                .iter()
-                .filter(|m| r.level_players.contains_key(&(m.id as i32)) && !m.alive())
-                .map(|m| m.id)
-                .collect::<Vec<_>>(),
-            // The other players this client draws lying in a bed (SLEEPING_POS).
-            "lying_players": self
-                .mobs
-                .iter()
-                .filter(|m| r.level_players.contains_key(&(m.id as i32)) && m.extra.ints[1] != 0)
-                .map(|m| m.id)
-                .collect::<Vec<_>>(),
-            // The player's own model exists (third person and the inventory draw it).
-            "player_model": self.player_model.is_some(),
-            // The world view draws its body now (third person, or lying in a bed;
-            // not while invisible).
-            "own_body": self.player_model_shown() && self.own_body_visible(),
-            "text_display_vertices": self.text_display_vertices,
-            "text_displays": self.text_displays.len(),
-            "health": r.health.0,
-            "food": r.health.1,
-            "decode_errors": r.decode_errors,
-            "chat": r.chat.iter().rev().take(10).rev().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
-        }))
-    }
+
+    // remote_status: remote/status.rs
 }
 
 /// `Entity.lookAt`'s rotation from `from` towards `to`, as (yaw, pitch).
@@ -11025,7 +8145,7 @@ fn position_packet_pitch(source: f32, change: f32, relative: bool) -> f32 {
 }
 
 /// `Mth.wrapDegrees`.
-fn wrap_degrees(a: f32) -> f32 {
+pub(super) fn wrap_degrees(a: f32) -> f32 {
     let a = a % 360.0;
     if a >= 180.0 {
         a - 360.0
@@ -11039,7 +8159,7 @@ fn wrap_degrees(a: f32) -> f32 {
 /// `LivingEntity.tick`'s body target and `tickHeadTurn` for another player:
 /// the body turns toward where it walks (backwards when walking back), or to
 /// the look while the arm swings, and stays within 50 degrees of the look.
-fn remote_player_head_turn(m: &mut Mob) {
+pub(super) fn remote_player_head_turn(m: &mut Mob) {
     let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
     let mut target = m.body_yaw;
     if (dx * dx + dz * dz) as f32 > 0.002_500_000_2 {
@@ -11061,6 +8181,7 @@ fn remote_player_head_turn(m: &mut Mob) {
     }
 }
 
+<<<<<<< sync-sunrise-1
 /// A click sent to a server: its slot, button and input, the slots it
 /// changed and the carried stack after it.
 type Predicted = (
@@ -11203,6 +8324,8 @@ fn open_hash_order(keys: &[i16]) -> Vec<i16> {
     zero.then_some(0).into_iter().chain(rest).collect()
 }
 
+=======
+>>>>>>> sunrise/main
 /// ServerboundContainerClickPacket's `ContainerInput` ordinal.
 pub(super) fn input_ordinal(input: Input) -> i32 {
     match input {
@@ -11222,6 +8345,7 @@ use dry_level::DryLevel;
 type DrySound = (
     sunrise_core::position::BlockPos,
     std::sync::Arc<str>,
+    mod_api::SoundSource,
     f32,
     f32,
 );
@@ -11230,22 +8354,35 @@ type DryChanges = Vec<(sunrise_core::position::BlockPos, BlockStateId)>;
 /// What a use on the dry level changed, and the sounds it played.
 pub(super) type DryUse = (DryChanges, Vec<DrySound>);
 /// Where `BlockItem.place` on the dry level placed, and the blocks it set.
-type DryPlace = (sunrise_core::position::BlockPos, DryChanges);
+pub(super) struct DryPlace {
+    pub(super) pos: sunrise_core::position::BlockPos,
+    matches_candidate: bool,
+    pub(super) changes: DryChanges,
+}
 
 /// The blocks a guest's hand flips that its use predicts (and hears at once): a wooden or
 /// copper door, trapdoor or fence gate, a lever, a button or a cauldron, whose fill level
 /// changes as the bucket, bottle or dye lands. An iron door or trapdoor has no hand use.
-pub(super) fn hand_operated(name: &str) -> bool {
+pub(super) fn hand_operated(
+    behaviours: &sunrise_world::level::Behaviours,
+    state: BlockStateId,
+) -> bool {
+    behaviours
+        .data(state)
+        .is(sunrise_world::level::classes::Class::FenceGate)
+        || named_hand_operated(behaviours.table.name(state))
+}
+
+fn named_hand_operated(name: &str) -> bool {
     let name = name.trim_start_matches("minecraft:");
     ((name.ends_with("_door") || name.ends_with("_trapdoor")) && !name.starts_with("iron_"))
-        || name.ends_with("_fence_gate")
         || name.ends_with("_button")
         || name == "lever"
         || name.ends_with("cauldron")
 }
 
 /// `InteractionHand` on the wire.
-fn hand_id(hand: Hand) -> i32 {
+pub(super) fn hand_id(hand: Hand) -> i32 {
     match hand {
         Hand::Main => 0,
         Hand::Off => 1,
@@ -11277,7 +8414,7 @@ fn waits_for_the_view(packet: &S, steered: bool, queued: bool) -> bool {
 /// Whether `Item.use` of `info` ends `Minecraft.startUseItem`'s click, so the
 /// off hand gets no turn. `FireworkRocketItem.use` answers SUCCESS while the
 /// player glides (the rocket boosts them) and PASS otherwise.
-fn use_ends_click(info: &sunrise_client::items::ItemInfo, fall_flying: bool) -> bool {
+pub(super) fn use_ends_click(info: &sunrise_client::items::ItemInfo, fall_flying: bool) -> bool {
     item_has_use(info) || (fall_flying && &*info.id == "minecraft:firework_rocket")
 }
 
@@ -11287,7 +8424,7 @@ fn use_ends_click(info: &sunrise_client::items::ItemInfo, fall_flying: bool) -> 
 /// spear starting its charge, `ItemUtils.startUsingInstantly`'s food, drink,
 /// spyglass, shield and goat horn, and the ender eye's SUCCESS_SERVER (the
 /// server's swing source, not this client's).
-fn remote_use_swings(held: &ItemStack, consumable: bool) -> bool {
+pub(super) fn remote_use_swings(held: &ItemStack, consumable: bool) -> bool {
     let id = &*held.item;
     !matches!(
         id,
@@ -11374,7 +8511,7 @@ pub(super) fn item_has_use(info: &sunrise_client::items::ItemInfo) -> bool {
 
 /// The view distance a client asks for: its render distance, which Sunrise
 /// lets go past vanilla's 32 (a vanilla server still caps it at its own).
-fn client_view_distance(render_distance: i32) -> i8 {
+pub(super) fn client_view_distance(render_distance: i32) -> i8 {
     render_distance.clamp(2, i32::from(i8::MAX)) as i8
 }
 
@@ -11442,6 +8579,7 @@ impl sunrise_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_
         self.0.remote_use_entity(Hand::Main)
     }
     fn use_block(&mut self) -> bool {
+<<<<<<< sync-sunrise-1
         #[cfg(target_os = "android")]
         if self.0.mobile.touch_shield {
             let transformer = self
@@ -11458,9 +8596,12 @@ impl sunrise_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_
             }
         }
         self.0.remote_use_block(Hand::Main)
+=======
+        self.0.remote_use_block(Hand::Main, self.1, None)
+>>>>>>> sunrise/main
     }
     fn use_item(&mut self) {
-        self.0.remote_use_hands(self.1);
+        self.0.remote_use_hands(Hand::Main, self.1, None);
     }
 }
 
@@ -11468,19 +8609,36 @@ impl sunrise_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
     fn pick_hit_result(&mut self) {
         self.0.pick_tick_targets();
     }
+    fn handle_keys(&mut self) {
+        self.0.handle_play_keybinds();
+    }
+    fn pending_clicks(&self, button: sunrise_client::interaction_input::Button) -> u32 {
+        self.0.pending_mapping_clicks(button.mapping())
+    }
+    fn consume_click(&mut self, button: sunrise_client::interaction_input::Button) -> bool {
+        self.0.consume_mapping_click(button.mapping())
+    }
+    fn is_down(&self, button: sunrise_client::interaction_input::Button) -> bool {
+        self.0.mapped_key_down(button.mapping())
+    }
+    fn can_continue_attack(&self) -> bool {
+        !self.0.mod_mappings_screen_open()
+    }
+    fn spectator_hotbar(&mut self) {
+        while self.0.spectator() && self.0.consume_mapping_click("key.spectatorHotbar") {
+            self.0.spectator_action_key();
+        }
+    }
     fn release_hit_result(&mut self) {
         self.0.release_tick_targets();
     }
     fn using_item(&self) -> bool {
-        self.0.using.is_some()
+        self.0.client_item_use.is_some() || self.0.using.is_some()
     }
     fn release_using(&mut self) {
-        if let Some((slot, ticks)) = self.0.using
-            && self.0.mod_use_tick(slot, ticks, true)
-        {
-            return;
+        if !self.0.end_client_item_use(true) && self.0.using.is_some() {
+            self.0.release_remote_use();
         }
-        self.0.release_remote_use();
     }
     fn start_attack(&mut self) -> bool {
         self.0.remote_start_attack()
@@ -11560,6 +8718,7 @@ impl ClientMenu {
     }
 }
 
+<<<<<<< sync-sunrise-1
 impl Remote {
     pub(super) fn set_menu_title(&mut self, title: Option<sunrise_client::text::Text>) {
         self.menu_title_snapshot = title.try_into_api().ok().flatten().map(Arc::new);
@@ -11732,6 +8891,8 @@ impl Remote {
     }
 }
 
+=======
+>>>>>>> sunrise/main
 fn object_skin_changed(published: &HashMap<String, String>, key: &str, skin: &str) -> bool {
     published.get(key).is_none_or(|previous| previous != skin)
 }
@@ -11783,7 +8944,7 @@ fn snapshot_value(s: &play::AttributeSnapshot) -> f64 {
 }
 
 /// `Util.getMillis` for the level load tracker's timeouts.
-fn client_millis() -> u64 {
+pub(super) fn client_millis() -> u64 {
     static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     ORIGIN
         .get_or_init(std::time::Instant::now)
@@ -11801,22 +8962,12 @@ fn chat_after_event(message: &str, ask: impl FnOnce(&mut String, &mut bool)) -> 
 }
 /// `Entity.isOnFire` for the window's player: while the server's flag is set
 /// the predicted tick's countdown never takes `fire_ticks` below 1.
-fn hold_server_fire(fire_ticks: i32, server_on_fire: bool) -> i32 {
+pub(super) fn hold_server_fire(fire_ticks: i32, server_on_fire: bool) -> i32 {
     if server_on_fire {
         fire_ticks.max(1)
     } else {
         fire_ticks
     }
-}
-
-/// `BlockStatePredictionHandler.ServerVerifiedState`: the sequence of the action
-/// that last changed the block, the state the server last said it has, and where
-/// the player stood when this client first predicted a change there.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Prediction {
-    pub sequence: i32,
-    pub state: i32,
-    pub player_pos: [f64; 3],
 }
 
 /// `Entity.isColliding`: whether the collision `shape` of a block at `pos`
@@ -11881,982 +9032,227 @@ mod attachment_query_tests;
 #[cfg(test)]
 mod passage_cross_tests;
 #[cfg(test)]
+mod respawn_motion_tests;
+impl Remote {
+    /// Project the session address for display once, dropping the memory transport's marker.
+    pub(super) fn display_address_for(address: &str) -> Option<String> {
+        (address != "local").then(|| sunrise_client::net::shown_address(address))
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::super::api_values::TryIntoApi;
 
+    mod block_entity_state_tests {
+        include!("block_entity_state_tests.rs");
+    }
+    mod chat_decoration_tests {
+        include!("chat_decoration_tests.rs");
+    }
+    mod chat_event_tests {
+        include!("chat_event_tests.rs");
+    }
+    mod chat_window_and_input_tests {
+        include!("chat_window_and_input_tests.rs");
+    }
+    mod play_bundle_tests {
+        include!("play_bundle_tests.rs");
+    }
+    mod chunk_storage_tests {
+        include!("chunk_storage_tests.rs");
+    }
+    mod click_ending_tests {
+        include!("click_ending_tests.rs");
+    }
+    mod client_attributes_tests {
+        include!("client_attributes_tests.rs");
+    }
+    mod client_block_changed_tests {
+        include!("client_block_changed_tests.rs");
+    }
+    mod client_camera_tests {
+        include!("client_camera_tests.rs");
+    }
+    mod client_day_time_tests {
+        include!("client_day_time_tests.rs");
+    }
+    mod client_epochs_tests {
+        include!("client_epochs_tests.rs");
+    }
+    mod client_handles_tests {
+        include!("client_handles_tests.rs");
+    }
+    mod client_level_environment_tests {
+        include!("client_level_environment_tests.rs");
+    }
+    mod client_level_lifecycle_tests {
+        include!("client_level_lifecycle_tests.rs");
+    }
+    mod client_menu_tests {
+        include!("client_menu_tests.rs");
+    }
+    mod client_player_reads_tests {
+        include!("client_player_reads_tests.rs");
+    }
+    mod client_read_tests {
+        include!("client_read_tests.rs");
+    }
+    mod creative_sync_tests {
+        include!("creative_sync_tests.rs");
+    }
+    mod damage_sound_tests {
+        include!("damage_sound_tests.rs");
+    }
+    mod dig_abort_tests {
+        include!("dig_abort_tests.rs");
+    }
+    mod dimension_transition_tests {
+        include!("dimension_transition_tests.rs");
+    }
+    mod game_event_tests {
+        include!("game_event_tests.rs");
+    }
+    mod hand_operated_tests {
+        include!("hand_operated_tests.rs");
+    }
+    mod hand_swap_tests {
+        include!("hand_swap_tests.rs");
+    }
+    mod hanging_entity_age_tests {
+        include!("hanging_entity_age_tests.rs");
+    }
+    mod menu_click_order_tests {
+        include!("menu_click_order_tests.rs");
+    }
+    mod menu_generation_tests {
+        include!("menu_generation_tests.rs");
+    }
+    mod menu_packets_tests {
+        include!("menu_packets_tests.rs");
+    }
+    mod menu_title_tests {
+        include!("menu_title_tests.rs");
+    }
+    mod movement_snap_tests {
+        include!("movement_snap_tests.rs");
+    }
+    mod object_interactions_tests {
+        include!("object_interactions_tests.rs");
+    }
+    mod particle_group_tests {
+        include!("particle_group_tests.rs");
+    }
+    mod placement_preview_tests {
+        include!("placement_preview_tests.rs");
+    }
+    mod player_animation_tests {
+        include!("player_animation_tests.rs");
+    }
+    mod player_sleep_tests {
+        include!("player_sleep_tests.rs");
+    }
     mod predicted_block_notice_tests {
         include!("predicted_block_notice_tests.rs");
     }
+    mod predicted_throw_tests {
+        include!("predicted_throw_tests.rs");
+    }
+    mod remote_columns_tests {
+        include!("remote_columns_tests.rs");
+    }
+    mod server_fire_flag_tests {
+        include!("server_fire_flag_tests.rs");
+    }
+    mod slot_mapping_tests {
+        include!("slot_mapping_tests.rs");
+    }
+    mod sound_entity_tests {
+        include!("sound_entity_tests.rs");
+    }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn menu_title_snapshot_tracks_open_replacement_and_close() {
-        super::super::native_entity_refs::tests::with_client_game(|game| {
-            let (client, _server) = sunrise_protocol::connection::Pipe::pair();
-            game.connect_local(client, "menu-title-test").unwrap();
-            let remote = game.remote.as_mut().unwrap();
-            for value in [Some("first"), Some("replacement"), None] {
-                remote.set_menu_title(value.map(sunrise_client::text::Text::literal));
-                assert_eq!(
-                    remote.menu_title_snapshot(),
-                    remote.menu_title.try_into_api().unwrap().as_ref()
-                );
-            }
-        });
-    }
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn menu_title_snapshot_follows_packet_and_close_paths() {
-        use sunrise_core::nbt::Tag;
-        use sunrise_protocol::packets::play::{self, Clientbound as C};
-        use std::sync::Arc;
-
-        super::super::native_entity_refs::tests::with_client_game(|game| {
-            let (client, _server) = sunrise_protocol::connection::Pipe::pair();
-            game.connect_local(client, "menu-title-paths").unwrap();
-            let menu_id = |game: &super::Game<'_>, name: &str| {
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .builtin
-                    .get("minecraft:menu")
-                    .unwrap()
-                    .id(name)
-                    .unwrap()
-            };
-            let chest = menu_id(game, "minecraft:generic_9x3");
-            let lectern = menu_id(game, "minecraft:lectern");
-            let open = |game: &mut super::Game<'_>, menu, title: &str| {
-                game.handle_packet(C::OpenScreen(play::OpenScreen {
-                    container: 7,
-                    menu,
-                    title: Tag::String(title.into()),
-                }))
-                .unwrap();
-            };
-            let snapshot = |game: &super::Game<'_>| {
-                let shared = game
-                    .remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .unwrap();
-                let observed = game.test_observed_title().unwrap();
-                assert!(Arc::ptr_eq(&observed, &shared));
-                shared
-            };
-            open(game, chest, "first");
-            let first = snapshot(game);
-            open(game, chest, "replacement");
-            let replacement = snapshot(game);
-            assert!(!Arc::ptr_eq(&first, &replacement));
-            assert_ne!(first, replacement);
-            game.handle_packet(C::ContainerClose(play::ContainerClose { container: 7 }))
-                .unwrap();
-            assert!(
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .is_none()
-            );
-            assert!(game.test_observed_title().is_none());
-            open(game, chest, "again");
-            snapshot(game);
-            game.remote_close_container();
-            assert!(
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .is_none()
-            );
-            open(game, chest, "before reject");
-            game.remote_reject_container(7);
-            assert!(
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .is_none()
-            );
-            open(game, chest, "before dimension change");
-            spawn_menu_test(game);
-            assert!(
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .is_none()
-            );
-            open(game, chest, "before lectern");
-            snapshot(game);
-            open(game, lectern, "lectern");
-            assert!(
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .is_none()
-            );
-            game.remote_lectern_page(1);
-            assert!(
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .is_none()
-            );
-            game.handle_packet(C::ContainerClose(play::ContainerClose { container: 7 }))
-                .unwrap();
-            assert!(
-                game.remote
-                    .as_ref()
-                    .unwrap()
-                    .shared_menu_title_snapshot()
-                    .is_none()
-            );
-            assert!(game.test_observed_title().is_none());
-        });
-    }
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn stopping_a_retained_client_dig_aborts_only_once() {
-        use crate::game::{Hit, native_entity_refs::tests::with_client_game};
-        use sunrise_client::{chunk::Chunk, motion::PlayerMotion};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::connection::Pipe;
+    #[ignore = "daily"]
+    fn named_remote_players_are_told_one_by_one() {
         use mod_api::{
-            ClientHost, ClientMiningPredictEvent, ClientPacketSendEvent, Flow, Hooks, ModEntry,
+            EntityTickListenedEvent, EntityTickPostEvent, EntityTickPreEvent, Hooks, HostSide,
+            ModEntry, Mods, Registrar,
         };
-        use mod_platform::testing::with_mods;
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        };
-
-        struct CountActions {
-            packets: Arc<AtomicUsize>,
-            vetoes: Arc<AtomicUsize>,
-        }
+        use std::sync::{Arc, Mutex};
+        type Calls = Arc<Mutex<Vec<(bool, Vec<u32>)>>>;
+        struct Named(Calls);
         #[mod_api::__subscriptions]
-        impl Hooks for CountActions {
-            fn client_mining_predict(
-                &self,
-                _: &dyn ClientHost,
-                event: &mut ClientMiningPredictEvent,
-            ) -> Flow {
-                assert!(!event.prediction.starting);
-                assert_eq!(event.prediction.pos, [0, 64, 0]);
-                assert!(event.prediction.progress > 0.5);
-                self.vetoes.fetch_add(1, Ordering::Relaxed);
-                Flow::Cancel
+        impl Hooks for Named {
+            fn entity_tick_listened(&self, _: HostSide<'_>, event: &mut EntityTickListenedEvent) {
+                event.listened = true;
             }
-
-            fn client_packet_send(
-                &self,
-                _: &dyn ClientHost,
-                event: &mut ClientPacketSendEvent<'_>,
-            ) -> Flow {
-                if event.packet.id.path() == "player_action" {
-                    self.packets.fetch_add(1, Ordering::Relaxed);
-                }
-                Flow::Continue
-            }
-        }
-        let count = Arc::new(AtomicUsize::new(0));
-        let vetoes = Arc::new(AtomicUsize::new(0));
-        let mods = vec![ModEntry::new(
-            "count_actions",
-            Box::new(CountActions {
-                packets: count.clone(),
-                vetoes: vetoes.clone(),
-            }),
-        )]
-        .into();
-        with_mods(mods, || {
-            with_client_game(|game| {
-                let (client, _server) = Pipe::pair();
-                game.connect_local(client, "MiningTest").unwrap();
-                let pos = [0, 64, 0];
-                game.set_mode_id(0);
-                game.player =
-                    Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 3.5)).unwrap());
-                game.world
-                    .chunks
-                    .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-                let stone = game
-                    .pack
-                    .assets
-                    .registry
-                    .default_state("minecraft:stone")
-                    .unwrap();
-                game.world.set(0, 64, 0, stone).unwrap();
-                game.tick_hit.set(Some(Some(Hit {
-                    pos,
-                    face: [0, 1, 0],
-                    point: [0.5, 65.0, 0.5],
-                    inside: false,
-                })));
-                let held = game.main_hand_key();
-                let remote = game.remote.as_mut().unwrap();
-                remote.destroying = Some((pos, 1, 0.5));
-                remote.destroying_item = held;
-                remote.is_destroying = true;
-                game.remote_continue_attack(true);
-                assert_eq!(vetoes.load(Ordering::Relaxed), 1);
-                let remote = game.remote.as_ref().unwrap();
-                assert!(remote.is_destroying);
-                assert_eq!(remote.destroying, Some((pos, 1, 0.5)));
-                assert_eq!(count.load(Ordering::Relaxed), 0);
-                game.remote_continue_attack(false);
-                game.remote_continue_attack(false);
-                assert_eq!(
-                    game.remote.as_ref().unwrap().destroying,
-                    Some((pos, 1, 0.0))
-                );
-            })
-        });
-        assert_eq!(count.load(Ordering::Relaxed), 1);
-    }
-    /// The remote player animation uses the scoped item answer once per tick.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn remote_player_use_animation_dispatches_once() {
-        use mod_api::{ClientHost, Hooks, ItemPart, ModEntry, Mods, Registrar, UseAnimationEvent};
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        };
-        #[derive(Clone)]
-        struct Part(Arc<AtomicUsize>);
-        #[mod_api::sunrise_part]
-        impl ItemPart for Part {
-            fn use_animation(&self, _: &dyn ClientHost, event: &mut UseAnimationEvent<'_>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-                *event.animation = mod_api::UseAnimation::Drink;
-            }
-        }
-        struct Mod(Arc<AtomicUsize>);
-        #[mod_api::__subscriptions]
-        impl Hooks for Mod {
             fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
-                let item = r.item_key("minecraft:bow");
-                r.item_part(item, Part(self.0.clone()));
+                r.entity_tick_each("minecraft:player");
+            }
+            fn entity_tick_pre(&self, _: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) {
+                self.0.lock().unwrap().push((true, event.entities.to_vec()));
+            }
+            fn entity_tick_post(&self, _: HostSide<'_>, event: &mut EntityTickPostEvent<'_>) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((false, event.entities.to_vec()));
             }
         }
-        let calls = Arc::new(AtomicUsize::new(0));
+        let heard: Calls = Arc::default();
         let mods: Mods = vec![ModEntry::new(
-            "remote_animation",
-            Box::new(Mod(calls.clone())),
+            "remote-player-ticks",
+            Box::new(Named(heard.clone())),
         )]
         .into();
         crate::game::api_values::install_parts(&mods).unwrap();
         mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_client_game(|game| {
                 let (client, _server) = sunrise_protocol::connection::Pipe::pair();
-                game.connect_local(client, "animation-client").unwrap();
+                game.connect_local(client, "avatar-tick-client").unwrap();
                 let remote = game.remote.as_mut().unwrap();
-                remote.entity_id = 42;
-                remote.level_players.insert(66, 789);
                 let kind = remote.player_type.as_ref().unwrap().clone();
-                let mut mob = sunrise_client::mobs::Mob::new(
-                    66,
-                    kind,
-                    sunrise_core::geometry::Vec3::ZERO,
-                    0.0,
+                assert!(
+                    !kind.flags.tick_alone,
+                    "render model does not select tick routing"
                 );
-                mob.extra.using_item = 1;
-                mob.extra.set_slot_stack(
-                    sunrise_items::equipment::MAINHAND,
-                    Some(sunrise_client::items::ItemStack::new("minecraft:bow", 1)),
-                );
-                game.mobs.push(mob);
+                for id in [66, 67] {
+                    remote.level_players.insert(id, id as u128);
+                    game.mobs.push(sunrise_client::mobs::Mob::new(
+                        id as u32,
+                        kind.clone(),
+                        sunrise_core::geometry::Vec3::ZERO,
+                        0.0,
+                    ));
+                }
                 game.tick_remote_entities(false);
-                assert_eq!(
-                    game.mobs[0].extra.use_animation,
-                    mod_api::UseAnimation::Drink
-                );
-                assert_eq!(calls.load(Ordering::Relaxed), 1);
             });
         });
-    }
-
-    /// After `ClientboundUpdateAttributes`, the local player's `LivingRef`
-    /// reads its attribute value, base, modifiers and attribute list from the
-    /// client's own copy of the synced instances. A mob the server tracks
-    /// keeps no attribute state of its own on the client, so its reads are
-    /// `None` there.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn update_attributes_answers_the_local_players_living_reads() {
-        use super::super::native_entity_refs::tests::with_client_game;
-        use sunrise_client::{mobs::Mob, motion::PlayerMotion};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::{
-            buf::Reader,
-            connection::Pipe,
-            packets::play::{self, Clientbound as C},
-        };
-
-        with_client_game(|game| {
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "attributes-client").unwrap();
-            let zombie = game
-                .res
-                .mob_types()
-                .get("minecraft:zombie")
-                .unwrap()
-                .clone();
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
-            game.player.as_mut().unwrap().entity_id = 42;
-            game.mobs.push(Mob::new(60, zombie, Vec3::ZERO, 0.0));
-            let remote = game.remote.as_mut().unwrap();
-            remote.entity_id = 42;
-            remote.logged_in = true;
-            remote.entities.insert(
-                60,
-                super::Tracked {
-                    kind: "minecraft:zombie".into(),
-                    position: [0.0; 3],
-                    codec_base: [0.0; 3],
-                    silent: false,
-                    vehicle: None,
-                },
-            );
-
-            let health = "minecraft:max_health";
-            let living = game.living(game.entity(42).unwrap()).unwrap();
-            // Before the server says anything, the client's own map holds the
-            // type's defaults, as a vanilla client's does before its sync.
-            assert_eq!(living.attribute_value(game, health), Some(20.0));
-            assert_eq!(living.attribute_modifiers(game, health), Some(Vec::new()));
-
-            let registry_id = game.motion.attributes.id(health).unwrap().registry_id();
-            let packet = C::UpdateAttributes(play::UpdateAttributes {
-                id: 42,
-                values: vec![play::AttributeSnapshot {
-                    attribute: registry_id,
-                    base: 30.0,
-                    modifiers: vec![play::AttributeModifier {
-                        id: "test:bonus".into(),
-                        amount: 5.0,
-                        operation: 0,
-                    }],
-                }],
-            });
-            let body = packet.encode();
-            let mut reader = Reader::new(&body);
-            let id = reader.varint().unwrap();
-            game.handle_packet(C::decode(id, reader.rest()).unwrap())
-                .unwrap();
-
-            assert_eq!(living.attribute_value(game, health), Some(35.0));
-            assert_eq!(living.attribute_base(game, health), Some(30.0));
-            assert_eq!(
-                living.attribute_modifiers(game, health),
-                Some(vec![mod_api::AttributeModifier::new(
-                    mod_api::Identifier::parse("test:bonus").unwrap(),
-                    5.0,
-                    mod_api::AttributeOperation::AddValue,
-                )])
-            );
-            let listed = living.attributes(game).unwrap();
-            assert!(listed.contains(&mod_api::Identifier::parse(health).unwrap()));
-
-            // The mob's attributes are the server's business: no client state,
-            // no read.
-            let mob = mod_api::LivingRef::new(game.entity(60).unwrap());
-            assert_eq!(mob.attribute_value(game, health), None);
-            assert_eq!(mob.attribute_base(game, health), None);
-            assert_eq!(mob.attribute_modifiers(game, health), None);
-            assert_eq!(mob.attributes(game), None);
-        });
-    }
-
-    /// Sleeping metadata and the local tick use the loaded bed's shape, not
-    /// a red-bed constant. Missing client data must not replace a server pose
-    /// or decide to wake the player.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_sleep_metadata_and_tick_preserve_shape_and_authoritative_positions() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_client::{chunk::Chunk, mobs::Mob, motion::PlayerMotion};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::{
-            buf::Reader,
-            connection::Pipe,
-            entity_data::{Value, serializer},
-            packets::play::{self, Clientbound as C},
-        };
-
-        let deliver = |game: &mut super::super::Game<'_>, packet: C| {
-            let body = packet.encode();
-            let mut reader = Reader::new(&body);
-            let id = reader.varint().unwrap();
-            game.handle_packet(C::decode(id, reader.rest()).unwrap())
-                .unwrap();
-        };
-        let metadata = |id, bed: Option<[i32; 3]>| {
-            C::SetEntityData(play::SetEntityData {
-                id,
-                values: vec![
-                    (
-                        6,
-                        serializer::POSE,
-                        Value::Id(if bed.is_some() { 2 } else { 0 }),
-                    ),
-                    (14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(bed)),
-                ],
-            })
-        };
-        let teleport = |position: Vec3| {
-            C::PlayerPosition(play::PlayerPosition {
-                teleport: 1,
-                position: [position.x, position.y, position.z],
-                delta: [0.0; 3],
-                yaw: 0.0,
-                pitch: 30.0,
-                relatives: 0,
-            })
-        };
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, server) = Pipe::pair();
-            game.connect_local(client, "sleep-client").unwrap();
-            let remote = game.remote.as_mut().unwrap();
-            remote.logged_in = true;
-            remote.loaded_sent = true;
-            remote.entity_id = 42;
-            remote.level_players.insert(66, 789);
-            let kind = remote.player_type.as_ref().unwrap().clone();
-            let authoritative = Vec3::new(8.5, 70.0, 8.5);
-            game.player = Some(PlayerMotion::new(game.motion, authoritative).unwrap());
-            game.mobs.push(Mob::new(66, kind, authoritative, 0.0));
-            game.streaming
-                .insert_remote(&mut game.world, Chunk::empty(0, 0));
-            let registry = game.pack.assets.registry;
-            let air = registry.default_state("minecraft:air").unwrap();
-            let stone = registry.default_state("minecraft:stone").unwrap();
-
-            // Straw's foot is 4/16 high; red's shape is 9/16. These expected
-            // positions are independent of sleeping_position and its helpers.
-            for (name, complete, head, expected) in [
-                (
-                    "minecraft:straw_bed",
-                    true,
-                    [5, 64, 5],
-                    Some(Vec3::new(5.5, 64.375, 5.5)),
-                ),
-                (
-                    "minecraft:red_bed",
-                    true,
-                    [5, 64, 5],
-                    Some(Vec3::new(5.5, 64.6875, 5.5)),
-                ),
-                ("minecraft:straw_bed", false, [5, 64, 5], None),
-                ("minecraft:stone", false, [5, 64, 5], None),
-                ("minecraft:straw_bed", false, [37, 64, 5], None),
-            ] {
-                let case = (name, complete, head);
-                game.world.set(5, 64, 5, air).unwrap();
-                game.world.set(5, 64, 6, air).unwrap();
-                if head[0] == 5 {
-                    let state = if name == "minecraft:stone" {
-                        stone
-                    } else {
-                        registry
-                            .resolve(&sunrise_world::chunk::BlockState {
-                                name: name.into(),
-                                properties: [
-                                    ("facing", "north"),
-                                    ("occupied", "false"),
-                                    ("part", "head"),
-                                ]
-                                .into_iter()
-                                .map(|(k, v)| (k.into(), v.into()))
-                                .collect(),
-                            })
-                            .unwrap()
-                    };
-                    game.world.set(5, 64, 5, state).unwrap();
-                    if complete {
-                        let mut foot = registry.state(state).unwrap().clone();
-                        foot.properties.insert("part".into(), "foot".into());
-                        game.world
-                            .set(5, 64, 6, registry.id(&foot).unwrap())
-                            .unwrap();
-                    }
-                } else {
-                    assert!(!game.world.chunks.contains_key(&(2, 0)));
-                }
-                deliver(game, teleport(authoritative));
-                let other = game.mob_index.get_mut(&mut game.mobs, 66).unwrap();
-                other.position = authoritative;
-                other.previous = authoritative;
-                other.head_pitch = 30.0;
-                other.previous_head_pitch = 30.0;
-                game.sleep_timer = 17;
-                deliver(game, metadata(66, Some(head)));
-                deliver(game, metadata(42, Some(head)));
-                let at = expected.unwrap_or(authoritative);
-                assert_eq!(
-                    game.player.as_ref().unwrap().position,
-                    at,
-                    "own metadata: {case:?}"
-                );
-                assert_eq!(game.previous_position, at, "own old position: {case:?}");
-                let other = game.mob_index.get(&game.mobs, 66).unwrap();
-                assert_eq!(other.position, at, "other metadata: {case:?}");
-                assert_eq!(other.previous, at, "other old position: {case:?}");
-                assert_eq!((other.head_pitch, other.previous_head_pitch), (0.0, 0.0));
-                assert_eq!(game.sleeping, Some(head));
-                assert_eq!(game.sleep_timer, 0);
-
-                // A correct authoritative teleport cannot be overwritten by
-                // the next sleeping tick, even while this client's bed is absent.
-                deliver(game, teleport(at));
-                game.player.as_mut().unwrap().velocity = Vec3::new(0.3, -0.4, 0.2);
-                for timer in 1..=2 {
-                    game.tick_remote_player(true, false).unwrap();
-                    assert_eq!(game.sleep_timer, timer, "local tick must execute: {case:?}");
-                    assert_eq!(game.sleeping, Some(head));
-                    let player = game.player.as_ref().unwrap();
-                    assert_eq!(player.position, at, "own tick: {case:?}");
-                    assert_eq!(player.velocity, Vec3::ZERO);
-                    assert_eq!(player.pitch, 0.0);
-                    assert_eq!(
-                        game.mob_index.get(&game.mobs, 66).unwrap().position,
-                        at,
-                        "other tick: {case:?}"
-                    );
-                }
-
-                deliver(game, metadata(66, None));
-                deliver(game, metadata(42, None));
-                assert_eq!(game.sleeping, None);
-                assert_eq!(
-                    game.player.as_ref().unwrap().position,
-                    at,
-                    "clearing metadata does not relocate"
-                );
-                let other = game.mob_index.get(&game.mobs, 66).unwrap();
-                assert_eq!(other.position, at);
-                assert_eq!(other.extra.ints[1], 0);
-                assert_eq!(other.extra.synced_pose, 0);
-                deliver(game, C::Animate(play::Animate { id: 42, action: 0 }));
-                assert_eq!(game.sleep_timer, 100);
-                let wake = Vec3::new(9.5, 70.1, 9.5);
-                deliver(game, teleport(wake));
-                assert_eq!(game.player.as_ref().unwrap().position, wake);
-                game.tick_remote_player(true, false).unwrap();
-                assert_eq!(game.sleeping, None);
-                assert_eq!(game.sleep_timer, 101);
-                let player = game.player.as_ref().unwrap();
-                assert_eq!(
-                    (player.position.x, player.position.z),
-                    (wake.x, wake.z),
-                    "wake tick must not snap to bed: {case:?}"
-                );
-            }
-            server.shutdown();
-        });
-    }
-
-    /// `ClientChatReceivedEvent`: a mod's replacement is the line the chat
-    /// shows, a cancelled system line never shows, and a cancelled message
-    /// held by Chat Delay lets the next one through in the same tick.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn mods_replace_and_cancel_received_chat() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_core::nbt::Tag;
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{self, Clientbound as C},
-        };
-
-        struct Censor;
-        #[mod_api::__subscriptions]
-        impl mod_api::Hooks for Censor {
-            fn client_chat_received(
-                &self,
-                _: &mut dyn mod_api::ClientHost,
-                event: &mut mod_api::ClientChatReceivedEvent<'_>,
-            ) -> mod_api::Flow {
-                use mod_api::text::TextContent;
-                let text = match &event.message.content {
-                    TextContent::Literal(text) => text,
-                    // Player chat arrives decorated with the sender and message.
-                    TextContent::Translatable { key, arguments, .. } if key == "chat.type.text" => {
-                        let TextContent::Literal(text) = &arguments[1].content else {
-                            panic!("expected literal player message fixture");
-                        };
-                        text
-                    }
-                    _ => return mod_api::Flow::Continue,
-                };
-                if text.contains("drop") {
-                    return mod_api::Flow::Cancel;
-                }
-                // A system line carries no player message, so only it gets the tag.
-                if event.system && event.player_message.is_none() {
-                    *event.message = mod_api::Text::literal(format!("[server] {text}"));
-                }
-                mod_api::Flow::Continue
-            }
-        }
-        mod_platform::__private::install(std::sync::Arc::from([mod_api::ModEntry::new(
-            "test-chat-received",
-            Box::new(Censor),
-        )]));
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "ChatTest").unwrap();
-            let lines = |game: &super::super::Game| -> Vec<String> {
-                let chat = &game.remote.as_ref().unwrap().chat;
-                chat.iter().map(|(line, _)| line.clone()).collect()
-            };
-            let system = |content: &str| {
-                C::SystemChat(play::SystemChat {
-                    content: Tag::String(content.into()),
-                    overlay: false,
-                })
-            };
-            game.handle_packet(system("hello")).unwrap();
-            game.handle_packet(system("drop me")).unwrap();
-            assert_eq!(lines(game), ["[server] hello"]);
-
-            game.settings.chat_delay = 1.0;
-            let disguised = |message: &str| {
-                C::DisguisedChat(play::DisguisedChat {
-                    message: Tag::String(message.into()),
-                    chat_type: play::ChatTypeBound {
-                        chat_type: 0,
-                        name: Tag::String("Steve".into()),
-                        target: None,
-                    },
-                })
-            };
-            game.handle_packet(disguised("drop this")).unwrap();
-            game.handle_packet(disguised("hi")).unwrap();
-            assert_eq!(lines(game).len(), 1, "Chat Delay holds both");
-            game.tick_chat_queue();
-            let shown = lines(game);
-            assert_eq!(shown.len(), 2, "{shown:?}");
-            assert!(
-                shown[1].contains("hi") && !shown[1].contains("drop"),
-                "{shown:?}"
-            );
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn mod_chat_needs_a_joined_player_and_what_the_chat_option_allows() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_protocol::connection::Pipe;
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "/warp spawn").is_err());
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "ChatTest").unwrap();
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "/warp spawn").is_err());
-            game.remote.as_mut().unwrap().joined = true;
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "  ").is_err());
-            // Full, then Commands Only, then Hidden.
-            game.settings.chat_visibility = 0;
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "hello").is_ok());
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "/warp spawn").is_ok());
-            game.settings.chat_visibility = 1;
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "hello").is_err());
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "/warp spawn").is_ok());
-            game.settings.chat_visibility = 2;
-            assert!(mod_api::prelude::NetworkClientHost::send_chat(game, "/warp spawn").is_err());
-        });
-    }
-
-    /// `ChatComponent.addClientSystemMessage`: the line joins this client's
-    /// chat history and no packet leaves for the server.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn a_mod_chat_line_shows_locally_and_sends_nothing() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_protocol::connection::{Connection, Pipe};
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, server) = Pipe::pair();
-            game.connect_local(client, "ChatLineTest").unwrap();
-            // Whatever connecting wrote is not this line's; drain it until the
-            // client waits for the login answer, so the check below is about
-            // `chat_line` alone.
-            let (mut reader, _writer) = Connection::local(server).split();
-            reader
-                .set_read_timeout(Some(std::time::Duration::from_secs(1)))
-                .unwrap();
-            while reader.recv().is_ok() {}
-            mod_api::prelude::NetworkClientHost::chat_line(
-                game,
-                mod_api::Text::literal("local only"),
-            )
-            .unwrap();
-            let history: Vec<_> = game
-                .remote
-                .as_ref()
-                .unwrap()
-                .chat
-                .iter()
-                .map(|(line, _)| line.clone())
-                .collect();
-            assert_eq!(history, ["local only"]);
-            assert!(
-                reader.recv().unwrap_err().is_timed_out(),
-                "a local chat line sends nothing to the server"
-            );
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn rejected_menu_packets_retire_the_previous_client_menu() {
-        use super::super::{
-            Screen, execution_role::ExecutionRole, native_entity_refs::tests::with_game,
-        };
-        use sunrise_client::items::ItemStack;
-        use sunrise_core::nbt::Tag;
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{Clientbound as C, MountScreenOpen, OpenScreen},
-        };
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "MenuTest").unwrap();
-            for packet in [
-                C::OpenScreen(OpenScreen {
-                    container: 7,
-                    menu: -1,
-                    title: Tag::String("unsupported".into()),
-                }),
-                C::MountScreenOpen(MountScreenOpen {
-                    container: 7,
-                    columns: 0,
-                    entity: i32::MAX,
-                }),
-            ] {
-                let remote = game.remote.as_mut().unwrap();
-                remote.menu.set(Some((7, "minecraft:generic_9x3".into())));
-                let generation = remote.menu.generation;
-                game.set_screen(Screen::Inventory);
-                game.carried = Some(ItemStack::new("minecraft:stone", 1));
-                game.handle_packet(packet).unwrap();
-                let remote = game.remote.as_ref().unwrap();
-                assert!(remote.menu.as_ref().is_none());
-                assert_ne!(remote.menu.generation, generation);
-                assert!(game.carried.is_none());
-                assert!(game.screen == Screen::Playing);
-            }
-        });
-    }
-
-    /// `LivingEntity.handleEntityEvent(55)` is `swapHandItems`: the whole
-    /// stacks trade hands, not just their ids.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn the_hand_swap_event_keeps_whole_stacks() {
-        use super::super::native_entity_refs::tests::with_game;
-        use sunrise_client::{items::ItemStack, mobs::Mob};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_items::equipment::{MAINHAND, OFFHAND};
-        use sunrise_protocol::packets::play::{Clientbound as C, EntityEvent};
-
-        with_game(|game| {
-            let kind = game
-                .res
-                .mob_types()
-                .get("minecraft:zombie")
-                .unwrap()
-                .clone();
-            let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
-            sword.damage = 40;
-            sword.data_mut().custom_name = Some(sunrise_core::nbt::Tag::String("Biter".into()));
-            let mut shield = ItemStack::new("minecraft:shield", 1);
-            shield.damage = 12;
-            let mut mob = Mob::new(31, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
-            mob.extra.set_slot_stack(MAINHAND, Some(sword.clone()));
-            mob.extra.set_slot_stack(OFFHAND, Some(shield.clone()));
-            game.mobs.push(mob);
-            let swap = |game: &mut super::super::Game| {
-                game.handle_packet(C::EntityEvent(EntityEvent { id: 31, event: 55 }))
-                    .unwrap();
-            };
-            swap(game);
-            let m = game.mobs.iter().find(|m| m.id == 31).unwrap();
-            assert_eq!(m.extra.slot_stack(MAINHAND), Some(&shield));
-            assert_eq!(m.extra.slot_stack(OFFHAND), Some(&sword));
-            swap(game);
-            let m = game.mobs.iter().find(|m| m.id == 31).unwrap();
-            assert_eq!(m.extra.slot_stack(MAINHAND), Some(&sword));
-            assert_eq!(m.extra.slot_stack(OFFHAND), Some(&shield));
-        });
-    }
-
-    #[test]
-    fn client_menu_generation_changes_on_reused_window_ids() {
-        let mut menu = super::ClientMenu::default();
-        let inventory = menu.generation;
-        menu.set(Some((7, "minecraft:generic_9x3".to_owned())));
-        let first = menu.generation;
-        assert_ne!(inventory, first);
-        menu.set(None);
-        let closed = menu.generation;
-        assert_ne!(first, closed);
-        assert!(menu.as_ref().is_none());
-        menu.set(Some((7, "minecraft:generic_9x3".to_owned())));
-        assert_ne!(closed, menu.generation);
-        assert_ne!(first, menu.generation);
-        assert_eq!(menu.as_ref().map(|entry| entry.0), Some(7));
-        let before_replacement = menu.generation;
-        menu.set(Some((7, "minecraft:generic_9x3".to_owned())));
-        assert_ne!(before_replacement, menu.generation);
-    }
-
-    #[test]
-    fn client_menu_slot_mapping_covers_inventory_and_containers() {
-        for (name, count, first, last) in [
-            ("inventory", 46, 200, 504),
-            ("minecraft:crafting", 46, 200, 8),
-            ("minecraft:generic_9x3", 63, 300, 8),
-            ("minecraft:hopper", 41, 300, 8),
-            ("minecraft:furnace", 39, 300, 8),
-            ("minecraft:brewing_stand", 41, 300, 8),
-        ] {
-            assert_eq!(super::Game::inventory_screen_slot(name, 0), Some(first));
-            assert_eq!(
-                super::Game::inventory_screen_slot(name, count - 1),
-                Some(last)
-            );
-            assert_eq!(super::Game::inventory_screen_slot(name, count), None);
-        }
         assert_eq!(
-            super::Game::inventory_screen_slot("minecraft:unknown", 0),
-            None
+            *heard.lock().unwrap(),
+            [
+                (true, vec![66]),
+                (false, vec![66]),
+                (true, vec![67]),
+                (false, vec![67])
+            ]
         );
     }
 
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn transactional_bucket_hands_reach_the_owning_client() {
-        use super::super::{
-            native_entity_refs::tests::with_client_game, native_guest_turn_tests::with_guests,
-        };
-        use sunrise_client::{
-            items::ItemStack,
-            lan::{Out, PlayerSender},
-        };
-        use sunrise_protocol::{buf::Reader, packets::play::Clientbound as C};
-        use mod_api::{HostTransaction, ITEM_FLUIDS, ItemPlace, ServerHost, move_resources};
-
-        with_guests(|server| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            server.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
-                guest.sender = PlayerSender::new(tx, std::sync::Arc::default());
-                guest.selected = 2;
-                guest.inventory[2] = Some(ItemStack::new("minecraft:bucket", 1));
-                guest.offhand = Some(ItemStack::new("minecraft:water_bucket", 1));
-            });
-            let main = ItemPlace::PlayerHand {
-                player: 12,
-                hand: sunrise_client::first_person::Hand::Main,
-            };
-            let off = ItemPlace::PlayerHand {
-                player: 12,
-                hand: sunrise_client::first_person::Hand::Off,
-            };
-            with_client_game(|client| {
-                let (_reader, _writer) = connect_menu_test(client);
-                spawn_menu_test(client);
-                client.selected = 2;
-                // Consume actual server packets through the client's ordinary handler.
-                let deliver = |client: &mut super::Game<'_>| {
-                    let mut slots = Vec::new();
-                    for out in rx.try_iter() {
-                        let bodies = match out {
-                            Out::Packet(body) => vec![body],
-                            Out::Packets(bodies) => bodies,
-                            Out::Disconnect(_) => panic!("owner disconnected"),
-                        };
-                        for body in bodies {
-                            let mut reader = Reader::new(&body);
-                            let id = reader.varint().unwrap();
-                            let packet = C::decode(id, reader.rest()).unwrap();
-                            // Other tick packets concern entity/chunk state, not this contract.
-                            if let C::ContainerSetSlot(ref slot) = packet {
-                                slots.push(slot.slot);
-                                client.handle_packet(packet).unwrap();
-                            }
-                        }
-                    }
-                    slots
-                };
-                server.tick_lan(true);
-                deliver(client);
-                assert_eq!(
-                    client.inventory[2],
-                    Some(ItemStack::new("minecraft:bucket", 1))
-                );
-                assert_eq!(
-                    client.offhand,
-                    Some(ItemStack::new("minecraft:water_bucket", 1))
-                );
-
-                for commit in [false, true] {
-                    let host: &mut dyn ServerHost = server;
-                    let result = host.transaction(|host, tx| {
-                        let source = off.capability(host, &ITEM_FLUIDS).unwrap();
-                        let target = main.capability(host, &ITEM_FLUIDS).unwrap();
-                        assert_eq!(
-                            move_resources(host, &source, &target, |_| true, 1000, tx).unwrap(),
-                            1000
-                        );
-                        if commit { Ok(()) } else { Err(()) }
-                    });
-                    assert_eq!(result.is_ok(), commit);
-                    server.tick_lan(true);
-                    let slots = deliver(client);
-                    if commit {
-                        assert!(slots.contains(&38), "selected hotbar slot published");
-                        assert!(slots.contains(&45), "offhand published");
-                    } else {
-                        assert!(slots.is_empty(), "abort publishes no tentative inventory");
-                    }
-                    let (held, other) = if commit {
-                        ("minecraft:water_bucket", "minecraft:bucket")
-                    } else {
-                        ("minecraft:bucket", "minecraft:water_bucket")
-                    };
-                    assert_eq!(
-                        client.inventory[client.selected],
-                        Some(ItemStack::new(held, 1))
-                    );
-                    assert_eq!(client.offhand, Some(ItemStack::new(other, 1)));
-                    let guest = &server.lan.as_ref().unwrap().hub.guests[0];
-                    assert_eq!(guest.inventory[2], client.inventory[2]);
-                    assert_eq!(guest.offhand, client.offhand);
-                }
-                server.tick_lan(true);
-                assert!(
-                    deliver(client).is_empty(),
-                    "settled slots are not sent twice"
-                );
-            });
-        });
+    mod spear_jab_tests {
+        include!("spear_jab_tests.rs");
+    }
+    mod tab_publication_tests {
+        include!("tab_publication_tests.rs");
+    }
+    mod thrown_item_swing_tests {
+        include!("thrown_item_swing_tests.rs");
+    }
+    mod tracking_state_tests {
+        include!("tracking_state_tests.rs");
+    }
+    mod use_flag_tests {
+        include!("use_flag_tests.rs");
     }
 
     /// A client connecting through a local pipe and through configuration, as
@@ -12868,15 +9264,39 @@ pub(crate) mod tests {
         sunrise_protocol::connection::ConnReader,
         sunrise_protocol::connection::ConnWriter,
     ) {
-        use super::super::execution_role::ExecutionRole;
-        use sunrise_protocol::{
-            connection::{Connection, Pipe},
-            packets::{Empty, configuration as cfg, login},
-        };
-        game.options.execution_role = ExecutionRole::Client;
+        connect_play_test(game, |_, _| {})
+    }
+
+    pub(super) fn connect_play_test(
+        game: &mut super::Game<'_>,
+        configure: impl FnOnce(
+            &mut sunrise_protocol::connection::ConnReader,
+            &mut sunrise_protocol::connection::ConnWriter,
+        ),
+    ) -> (
+        sunrise_protocol::connection::ConnReader,
+        sunrise_protocol::connection::ConnWriter,
+    ) {
+        use sunrise_protocol::connection::{Connection, Pipe};
+        game.options.execution_role = super::super::execution_role::ExecutionRole::Client;
         let (client, server) = Pipe::pair();
         game.connect_local(client, "MenuReadTest").unwrap();
-        let (mut reader, mut writer) = Connection::local(server).split();
+        finish_play_test(game, Connection::local(server), configure)
+    }
+
+    fn finish_play_test(
+        game: &mut super::Game<'_>,
+        server: sunrise_protocol::connection::Connection,
+        configure: impl FnOnce(
+            &mut sunrise_protocol::connection::ConnReader,
+            &mut sunrise_protocol::connection::ConnWriter,
+        ),
+    ) -> (
+        sunrise_protocol::connection::ConnReader,
+        sunrise_protocol::connection::ConnWriter,
+    ) {
+        use sunrise_protocol::packets::{Empty, configuration as cfg, login};
+        let (mut reader, mut writer) = server.split();
         reader
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
@@ -12902,9 +9322,11 @@ pub(crate) mod tests {
         ));
         reader.recv().unwrap();
         reader.recv().unwrap();
+        configure(&mut reader, &mut writer);
         writer
             .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
             .unwrap();
+        game.acknowledge_test_configuration();
         let (id, body) = reader.recv().unwrap();
         assert!(matches!(
             cfg::Serverbound::decode(id, &body).unwrap(),
@@ -12913,99 +9335,36 @@ pub(crate) mod tests {
         (reader, writer)
     }
 
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn dimension_transition_screen_is_selected_at_entry_drawn_and_dropped() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_client::{hud::HudBatch, level_loading::Reason};
-        use mod_api::__private::game::RegistrationContextNew;
-        use mod_api::{DimensionTransition, DimensionTransitionScreen};
-
-        struct Arrival;
-        #[mod_api::__subscriptions]
-        impl mod_api::Hooks for Arrival {
-            fn register_dimension_transition_screen(
-                &self,
-                _: &mod_api::RegistrationContext,
-                event: &mut mod_api::RegisterDimensionTransitionScreenEvent<'_>,
-            ) {
-                event.screens.push(DimensionTransitionScreen {
-                    screen: "transition_test:arrival".into(),
-                    transition: DimensionTransition::Conditional {
-                        to: "transition_test:b".into(),
-                        from: "transition_test:a".into(),
-                    },
-                });
-            }
-            fn dimension_transition_screen_draw(
-                &self,
-                _: &dyn mod_api::ClientHost,
-                event: &mut mod_api::DimensionTransitionScreenDrawEvent<'_>,
-            ) {
-                assert_eq!(event.screen, "transition_test:arrival");
-                assert_eq!(event.reason, mod_api::DimensionTransitionReason::Other);
-                assert_eq!(event.progress, Some(0.25));
-                event.draw.fill([0.0, 0.0, 80.0, 10.0], 0xFF102030);
-            }
-        }
-        mod_platform::testing::with_mods(
-            vec![mod_api::ModEntry::new("transition_test", Box::new(Arrival))].into(),
-            || {
-                let mut registrations = Vec::new();
-                super::Game::native_register_dimension_transition_screen(
-                    &mod_api::RegistrationContext::new(),
-                    &mut registrations,
-                );
-                sunrise_client_render::dimension_transition::register(registrations);
-                with_game(|game| {
-                    game.options.execution_role = ExecutionRole::Client;
-                    let (client, _server) = sunrise_protocol::connection::Pipe::pair();
-                    game.connect_local(client, "TransitionTest").unwrap();
-                    let mut spawn = sunrise_protocol::packets::play::SpawnInfo {
-                        dimension_type: 0,
-                        dimension: "transition_test:a".into(),
-                        seed: 0,
-                        game_type: 0,
-                        previous_game_type: None,
-                        debug: false,
-                        flat: true,
-                        last_death: None,
-                        portal_cooldown: 0,
-                        sea_level: 63,
-                    };
-                    game.enter_remote_dimension(&spawn, false, Reason::Other);
-                    assert_eq!(
-                        game.remote.as_ref().unwrap().level_load.transition_screen(),
-                        None
-                    );
-                    spawn.dimension = "transition_test:b".into();
-                    game.enter_remote_dimension(&spawn, true, Reason::Other);
-                    let tracker = game.remote.as_ref().unwrap().level_load;
-                    assert!(tracker.transition_screen().is_some());
-                    let mut batch = HudBatch::scratch([320, 240]);
-                    assert!(game.draw_dimension_transition_screen(
-                        &mut batch,
-                        &tracker,
-                        Some(0.25)
-                    ));
-                    assert!(!batch.vertices.is_empty());
-                    game.remote.as_mut().unwrap().level_load.finish();
-                    let tracker = game.remote.as_ref().unwrap().level_load;
-                    assert!(!game.draw_dimension_transition_screen(&mut batch, &tracker, None));
-                    spawn.dimension = "transition_test:c".into();
-                    game.enter_remote_dimension(&spawn, true, Reason::Other);
-                    let tracker = game.remote.as_ref().unwrap().level_load;
-                    let mut vanilla = HudBatch::scratch([320, 240]);
-                    assert!(!game.draw_dimension_transition_screen(&mut vanilla, &tracker, None));
-                    game.draw_level_loading_background(&mut vanilla, tracker.reason);
-                    assert!(!vanilla.vertices.is_empty());
-                });
-            },
+    /// The test server offers its payload manifest and reads the client's offer.
+    pub(super) fn offer_test_payloads(
+        reader: &mut sunrise_protocol::connection::ConnReader,
+        writer: &mut sunrise_protocol::connection::ConnWriter,
+        manifest: &sunrise_protocol::payload_negotiation::Manifest,
+    ) {
+        use sunrise_protocol::{
+            packets::configuration as cfg,
+            payload_negotiation::{CHANNEL, Control},
+        };
+        writer
+            .send(
+                &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                    channel: CHANNEL.into(),
+                    data: Control::Offer(manifest.clone()).encode().unwrap(),
+                })
+                .encode(),
+            )
+            .unwrap();
+        let (id, body) = reader.recv().unwrap();
+        assert!(
+            matches!(cfg::Serverbound::decode(id, &body).unwrap(), cfg::Serverbound::CustomPayload(p) if p.channel == CHANNEL)
         );
     }
 
     /// Spawns the connected client in the overworld as entity 7, profile 42.
-    fn spawn_menu_test(game: &mut super::Game<'_>) -> sunrise_protocol::packets::play::SpawnInfo {
+    pub(crate) fn spawn_menu_test(
+        game: &mut super::Game<'_>,
+    ) -> sunrise_protocol::packets::play::SpawnInfo {
+        use crate::game::remote::RemoteDimensionEntry;
         use sunrise_client::level_loading::Reason;
         use sunrise_protocol::packets::play::SpawnInfo;
         let spawn = SpawnInfo {
@@ -13020,7 +9379,7 @@ pub(crate) mod tests {
             portal_cooldown: 0,
             sea_level: 63,
         };
-        game.enter_remote_dimension(&spawn, false, Reason::Other);
+        game.enter_remote_dimension(&spawn, RemoteDimensionEntry::Login, Reason::Other);
         let remote = game.remote.as_mut().unwrap();
         remote.logged_in = true;
         remote.entity_id = 7;
@@ -13028,1813 +9387,223 @@ pub(crate) mod tests {
         spawn
     }
 
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_menu_reads_follow_packets_and_lifetimes() {
-        use super::super::{
-            Screen, execution_role::ExecutionRole, native_entity_refs::tests::with_game,
-        };
-        use sunrise_client::level_loading::Reason;
-        use sunrise_core::nbt::Tag;
-        use sunrise_protocol::{
-            connection::Pipe,
-            item::Stack,
-            packets::play::{self, Clientbound as C},
-        };
-
-        with_game(|game| {
-            let (mut reader, _writer) = connect_menu_test(game);
-            assert!(
-                game.local_player()
-                    .and_then(|player| game.player_container_menu(player))
-                    .is_none()
-            );
-            let spawn = spawn_menu_test(game);
-            let menu = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            assert_eq!(game.menu_slot_count(menu), Some(46));
-            assert_eq!(game.menu_slot(menu, 46), None);
-            assert_eq!(game.menu_slot(menu, 36), Some(None));
-            let stone = Some(Stack::new(game.item_id("minecraft:stone"), 3));
-            game.handle_packet(C::SetPlayerInventory(play::SetPlayerInventory {
-                slot: 0,
-                item: stone.clone(),
-            }))
-            .unwrap();
-            assert_eq!(game.menu_slot(menu, 36).unwrap().unwrap().count, 3);
-            use mod_api::{DragKind, MenuClick, MouseButton, SwapWith};
-            let pickup = |slot| MenuClick::Pickup {
-                slot: Some(slot),
-                button: MouseButton::Left,
-            };
-            for invalid in [
-                pickup(46),
-                pickup(usize::MAX),
-                MenuClick::Swap {
-                    slot: 36,
-                    with: SwapWith::Hotbar(9),
-                },
-                MenuClick::Clone { slot: 36 },
-                MenuClick::Drag {
-                    kind: DragKind::Clone,
-                    slots: vec![36],
-                },
-                MenuClick::Drag {
-                    kind: DragKind::Split,
-                    slots: vec![36, usize::MAX],
-                },
-            ] {
-                assert!(!menu.click(game, &[invalid]));
-                assert_eq!(menu.slot(game, 36).unwrap().unwrap().count(), 3);
-                assert_eq!(menu.carried(game), Some(None));
-            }
-            game.options.execution_role = ExecutionRole::IntegratedServer;
-            assert!(!menu.click(game, &[pickup(36)]));
-            game.options.execution_role = ExecutionRole::Client;
-            let screen = game.screen;
-            game.screen = Screen::Creative;
-            assert!(!menu.click(game, &[pickup(36)]));
-            game.screen = screen;
-            game.remote.as_mut().unwrap().state_id = 17;
-            assert!(menu.click(game, &[pickup(36)]));
-            let (id, body) = reader.recv().unwrap();
-            let play::Serverbound::ContainerClick(sent) =
-                play::Serverbound::decode(id, &body).unwrap()
-            else {
-                panic!("expected the first valid click, not a refused request");
-            };
-            assert_eq!(
-                (
-                    sent.container,
-                    sent.state,
-                    sent.slot,
-                    sent.button,
-                    sent.input
-                ),
-                (0, 17, 36, 0, 0)
-            );
-            assert_eq!(sent.changed.len(), 1);
-            assert_eq!(sent.changed[0].0, 36);
-            assert!(sent.changed[0].1.is_none());
-            assert_eq!(sent.carried.unwrap().count, 3);
-            assert_eq!(menu.slot(game, 36), Some(None));
-            assert_eq!(menu.carried(game).unwrap().unwrap().count(), 3);
-            assert!(!menu.click(game, &[pickup(36), pickup(usize::MAX),]));
-            assert_eq!(menu.slot(game, 36), Some(None));
-            assert_eq!(menu.carried(game).unwrap().unwrap().count(), 3);
-            assert!(menu.click(
-                game,
-                &[MenuClick::Drag {
-                    kind: DragKind::Split,
-                    slots: vec![37]
-                },]
-            ));
-            assert_eq!(menu.slot(game, 37).unwrap().unwrap().count(), 3);
-            assert_eq!(menu.carried(game), Some(None));
-            assert!(menu.click(game, &[pickup(37)]));
-            assert!(menu.click(game, &[pickup(36)]));
-            assert_eq!(menu.carried(game), Some(None));
-            assert_eq!(menu.slot(game, 36).unwrap().unwrap().count(), 3);
-            game.handle_packet(C::SetPlayerInventory(play::SetPlayerInventory {
-                slot: 0,
-                item: Some(Stack::new(game.item_id("minecraft:stone"), 2)),
-            }))
-            .unwrap();
-            assert_eq!(menu.slot(game, 36).unwrap().unwrap().count(), 2);
-            assert!(menu.click(game, &[MenuClick::QuickMove { slot: 36 }]));
-            assert_eq!(menu.slot(game, 36), Some(None));
-            assert_eq!(menu.slot(game, 9).unwrap().unwrap().count(), 2);
-            assert!(menu.click(
-                game,
-                &[MenuClick::Swap {
-                    slot: 9,
-                    with: SwapWith::Hotbar(1)
-                }]
-            ));
-            assert_eq!(menu.slot(game, 9), Some(None));
-            assert_eq!(menu.slot(game, 37).unwrap().unwrap().count(), 2);
-            assert!(menu.click(
-                game,
-                &[MenuClick::Throw {
-                    slot: 37,
-                    whole_stack: true
-                }]
-            ));
-            assert_eq!(menu.slot(game, 37), Some(None));
-            game.handle_packet(C::SetCursorItem(play::SetCursorItem {
-                item: stone.clone(),
-            }))
-            .unwrap();
-            assert_eq!(game.menu_carried(menu).unwrap().unwrap().count, 3);
-            let crafting_id = game
-                .remote
-                .as_ref()
-                .unwrap()
-                .builtin
-                .get("minecraft:menu")
-                .unwrap()
-                .id("minecraft:crafting")
-                .unwrap();
-            let open = || {
-                C::OpenScreen(play::OpenScreen {
-                    container: 7,
-                    menu: crafting_id,
-                    title: Tag::String("Crafting".into()),
-                })
-            };
-            game.handle_packet(open()).unwrap();
-            assert_eq!(game.menu_slot_count(menu), None);
-            assert!(!menu.click(game, &[pickup(36)]));
-            let crafting = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            assert_eq!(game.menu_slot_count(crafting), Some(46));
-            game.handle_packet(C::ContainerSetSlot(play::ContainerSetSlot {
-                container: 7,
-                state: 0,
-                slot: 1,
-                item: stone.clone(),
-            }))
-            .unwrap();
-            assert_eq!(game.menu_slot(crafting, 1).unwrap().unwrap().count, 3);
-            game.handle_packet(C::ContainerSetSlot(play::ContainerSetSlot {
-                container: 7,
-                state: 0,
-                slot: 0,
-                item: stone,
-            }))
-            .unwrap();
-            assert_eq!(game.menu_slot(crafting, 0).unwrap().unwrap().count, 3);
-            game.handle_packet(open()).unwrap();
-            assert_eq!(game.menu_slot_count(crafting), None);
-            assert!(!crafting.click(game, &[pickup(1)]));
-            let crafting = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            game.handle_packet(C::Respawn(play::Respawn {
-                spawn: spawn.clone(),
-                keep: 0,
-            }))
-            .unwrap();
-            assert_eq!(game.menu_slot_count(crafting), None);
-            assert!(!crafting.click(game, &[pickup(1)]));
-            let inventory = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            assert_ne!(inventory, menu);
-            let chest_id = game
-                .remote
-                .as_ref()
-                .unwrap()
-                .builtin
-                .get("minecraft:menu")
-                .unwrap()
-                .id("minecraft:generic_9x3")
-                .unwrap();
-            game.handle_packet(C::OpenScreen(play::OpenScreen {
-                container: 7,
-                menu: chest_id,
-                title: Tag::String("Chest".into()),
-            }))
-            .unwrap();
-            let chest = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            assert_eq!(game.menu_slot_count(chest), Some(63));
-            let stone = Some(Stack::new(game.item_id("minecraft:stone"), 4));
-            game.handle_packet(C::ContainerSetSlot(play::ContainerSetSlot {
-                container: 7,
-                state: 0,
-                slot: 2,
-                item: stone,
-            }))
-            .unwrap();
-            assert_eq!(game.menu_slot(chest, 2).unwrap().unwrap().count, 4);
-            assert_eq!(game.menu_slot(chest, 3), Some(None));
-            game.handle_packet(C::SetCursorItem(play::SetCursorItem { item: None }))
-                .unwrap();
-            assert!(chest.click(game, &[pickup(2)]));
-            assert_eq!(chest.slot(game, 2), Some(None));
-            assert_eq!(chest.carried(game).unwrap().unwrap().count(), 4);
-            assert!(chest.click(game, &[pickup(2)]));
-            assert_eq!(chest.slot(game, 2).unwrap().unwrap().count(), 4);
-            assert_eq!(chest.carried(game), Some(None));
-            for expected in [
-                (0, 17, -999, 0, 5),
-                (0, 17, 37, 1, 5),
-                (0, 17, -999, 2, 5),
-                (0, 17, 37, 0, 0),
-                (0, 17, 36, 0, 0),
-                (0, 17, 36, 0, 1),
-                (0, 17, 9, 1, 2),
-                (0, 17, 37, 1, 4),
-                (7, 0, 2, 0, 0),
-                (7, 0, 2, 0, 0),
-            ] {
-                let sent = (0..32)
-                    .find_map(|_| {
-                        let (id, body) = reader.recv().unwrap();
-                        match play::Serverbound::decode(id, &body).unwrap() {
-                            play::Serverbound::ContainerClick(sent) => Some(sent),
-                            _ => None,
-                        }
-                    })
-                    .expect("expected click packet");
-                assert_eq!(
-                    (
-                        sent.container,
-                        sent.state,
-                        sent.slot,
-                        sent.button,
-                        sent.input
-                    ),
-                    expected
-                );
-                if expected == (0, 17, -999, 2, 5) {
-                    assert!(sent.carried.is_none());
-                    assert_eq!(sent.changed.len(), 1);
-                    assert_eq!(sent.changed[0].0, 37);
-                    assert_eq!(sent.changed[0].1.as_ref().unwrap().count, 3);
-                }
-            }
-            reader
-                .set_read_timeout(Some(std::time::Duration::from_millis(20)))
-                .unwrap();
-            assert!(reader.recv().unwrap_err().is_timed_out());
-            game.remote
-                .as_mut()
-                .unwrap()
-                .menu
-                .set(Some((7, "minecraft:unknown".into())));
-            assert!(
-                game.local_player()
-                    .and_then(|player| game.player_container_menu(player))
-                    .is_none()
-            );
-            assert_eq!(game.menu_slot_count(inventory), None);
-            assert_eq!(game.menu_slot_count(chest), None);
-            game.remote.as_mut().unwrap().menu.set(None);
-            let before_replacement = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            let mut other = spawn;
-            other.dimension = "test:other_overworld".into();
-            game.enter_remote_dimension(&other, true, Reason::Other);
-            assert_eq!(game.menu_slot_count(before_replacement), None);
-            assert!(!before_replacement.click(game, &[pickup(36)]));
-            let before_logout = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            game.client_logging_out();
-            assert_eq!(game.menu_slot_count(before_logout), None);
-            assert!(!before_logout.click(game, &[pickup(36)]));
-            assert!(
-                game.local_player()
-                    .and_then(|player| game.player_container_menu(player))
-                    .is_none()
-            );
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "MenuReadTest").unwrap();
-            game.enter_remote_dimension(&other, false, Reason::Other);
-            let remote = game.remote.as_mut().unwrap();
-            remote.logged_in = true;
-            remote.entity_id = 7;
-            remote.profile = 42;
-            let reconnected = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            assert_eq!(game.menu_slot_count(before_logout), None);
-            assert_eq!(game.menu_slot_count(reconnected), Some(46));
-            assert_ne!(reconnected, before_logout);
-        });
-    }
-
-    /// `MenuRef::close` and `click_button` go through the screen's own close
-    /// and the button packet, and refuse a menu that is not open or stale.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_menu_close_and_button_click_reach_the_server() {
-        use super::super::{
-            Screen, execution_role::ExecutionRole, native_entity_refs::tests::with_game,
-        };
-        use sunrise_core::nbt::Tag;
-        use sunrise_protocol::packets::play::{self, Clientbound as C};
-
-        with_game(|game| {
-            let (mut reader, _writer) = connect_menu_test(game);
-            spawn_menu_test(game);
-            let sent = |reader: &mut sunrise_protocol::connection::ConnReader| {
-                (0..32).find_map(|_| {
-                    let (id, body) = reader.recv().ok()?;
-                    match play::Serverbound::decode(id, &body).unwrap() {
-                        p @ (play::Serverbound::ContainerClose(_)
-                        | play::Serverbound::ContainerButtonClick(_)) => Some(p),
-                        _ => None,
-                    }
-                })
-            };
-            // The inventory menu while playing: no screen to close, no buttons.
-            let inventory = game
-                .local_player()
-                .and_then(|player| game.player_container_menu(player))
-                .unwrap();
-            assert_eq!(game.screen, Screen::Playing);
-            assert!(!inventory.close(game));
-            assert!(!inventory.click_button(game, 0));
-            let loom = game
-                .remote
-                .as_ref()
-                .unwrap()
-                .builtin
-                .get("minecraft:menu")
-                .unwrap()
-                .id("minecraft:loom")
-                .unwrap();
-            let open = |game: &mut super::Game<'_>| {
-                game.handle_packet(C::OpenScreen(play::OpenScreen {
-                    container: 5,
-                    menu: loom,
-                    title: Tag::String("Loom".into()),
-                }))
-                .unwrap();
-                game.local_player()
-                    .and_then(|player| game.player_container_menu(player))
-                    .unwrap()
-            };
-            let menu = open(game);
-            assert_eq!(game.screen, Screen::Inventory);
-            // The old inventory handle is stale now that the loom replaced it.
-            assert!(!inventory.close(game));
-            assert!(!inventory.click_button(game, 0));
-            game.options.execution_role = ExecutionRole::IntegratedServer;
-            assert!(!menu.click_button(game, 3));
-            assert!(!menu.close(game));
-            game.options.execution_role = ExecutionRole::Client;
-            assert_eq!(game.screen, Screen::Inventory);
-            assert!(menu.click_button(game, 3));
-            let Some(play::Serverbound::ContainerButtonClick(click)) = sent(&mut reader) else {
-                panic!("expected the button click, not a refused request");
-            };
-            assert_eq!((click.container, click.button), (5, 3));
-            assert!(menu.close(game));
-            assert_eq!(game.screen, Screen::Playing);
-            let Some(play::Serverbound::ContainerClose(close)) = sent(&mut reader) else {
-                panic!("expected the close");
-            };
-            assert_eq!(close.container, 5);
-            assert!(game.remote.as_ref().unwrap().menu.as_ref().is_none());
-            // Closed: the handle is stale and nothing more is sent.
-            assert!(!menu.close(game));
-            assert!(!menu.click_button(game, 3));
-            // A server-side close leaves a reopened menu's old handle stale too.
-            let first = open(game);
-            game.handle_packet(C::ContainerClose(play::ContainerClose { container: 5 }))
-                .unwrap();
-            let second = open(game);
-            assert!(!first.close(game));
-            assert!(!first.click_button(game, 3));
-            assert!(second.close(game));
-            reader
-                .set_read_timeout(Some(std::time::Duration::from_millis(20)))
-                .unwrap();
-            let Some(play::Serverbound::ContainerClose(close)) = sent(&mut reader) else {
-                panic!("expected the second close");
-            };
-            assert_eq!(close.container, 5);
-            assert!(sent(&mut reader).is_none());
-        });
-    }
-
-    /// A client names the level it shows by the server's key, even where `Dim` has
-    /// no name for it.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_handles_reach_a_custom_level() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_client::level_loading::Reason;
-        use sunrise_protocol::{connection::Pipe, packets::play::SpawnInfo};
-        use mod_api::{DimensionKey, LevelRef};
-        use std::sync::Arc;
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, _server) = Pipe::pair();
-            use sunrise_world::dimension_type::DimensionFacts;
-            let stale_key = sunrise_core::LevelKey::parse("test:stale_guest_facts").unwrap();
-            let mut stale = DimensionFacts::overworld().clone();
-            stale.coordinate_scale = 19.0;
-            DimensionFacts::set_levels(vec![(stale_key, stale)]);
-            game.connect_local(client, "CustomLevelTest").unwrap();
-            assert_eq!(game.dimension_facts_for(stale_key).coordinate_scale, 1.0);
-            let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
-            let json = serde_json::json!({"min_y": 0, "height": 256,
-                "coordinate_scale": 4.0, "ambient_light": 0.3,
-                "attributes": {"minecraft:gameplay/fast_lava": true}});
-            registries.registries.insert(
-                "minecraft:dimension_type".into(),
-                vec![(
-                    "test:type".into(),
-                    Some(sunrise_client::scoreboard::json_to_tag(&json)),
-                )],
-            );
-            game.set_registries(Arc::new(registries));
-            let spawn = SpawnInfo {
-                dimension_type: 0,
-                dimension: "test:pocket".into(),
-                seed: 0,
-                game_type: 1,
-                previous_game_type: None,
-                debug: false,
-                flat: true,
-                last_death: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-            };
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            game.remote.as_mut().unwrap().logged_in = true;
-
-            let level = game.level("test:pocket").unwrap();
-            assert_ne!(level.dimension(), DimensionKey::OVERWORLD);
-            assert_eq!(level.dimension().id(game).as_deref(), Some("test:pocket"));
-            assert!(game.level("minecraft:overworld").is_none());
-            assert!(level.height(game).is_some());
-            let facts = level.dimension_type(game).unwrap();
-            assert_eq!(facts.id, "test:type");
-            assert_eq!(facts.coordinate_scale, 4.0);
-            assert_eq!(facts.ambient_light, 0.3);
-            assert!(facts.fast_lava);
-            assert_eq!(game.dimension_type().coordinate_scale, 4.0);
-            let overworld = LevelRef::new(level.epoch(), DimensionKey::OVERWORLD);
-            assert_eq!(overworld.height(game), None);
-            // An equal JSON body with a different type name must not hit the old cache.
-            let mut renamed = (*game.remote.as_ref().unwrap().registries).clone();
-            renamed
-                .registries
-                .get_mut("minecraft:dimension_type")
-                .unwrap()[0]
-                .0 = "test:renamed".into();
-            game.set_registries(Arc::new(renamed));
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            assert_eq!(game.dimension_type().id, "test:renamed");
-            // Reject invalid server numbers and enums without failing the join.
-            for (field, value) in [
-                ("coordinate_scale", serde_json::json!(0.0)),
-                ("coordinate_scale", serde_json::json!("NaN")),
-                ("coordinate_scale", serde_json::Value::Null),
-                ("ambient_light", serde_json::json!("NaN")),
-                ("ambient_light", serde_json::Value::Null),
-                ("monster_spawn_block_light_limit", serde_json::json!(16)),
-                ("monster_spawn_block_light_limit", serde_json::json!(-1)),
-                ("skybox", serde_json::json!("invalid")),
-            ] {
-                let mut invalid = json.clone();
-                invalid[field] = value;
-                let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
-                registries.registries.insert(
-                    "minecraft:dimension_type".into(),
-                    vec![(
-                        "minecraft:the_nether".into(),
-                        Some(sunrise_client::scoreboard::json_to_tag(&invalid)),
-                    )],
-                );
-                game.set_registries(Arc::new(registries));
-                game.enter_remote_dimension(&spawn, false, Reason::Other);
-                assert_eq!(game.dimension_type().coordinate_scale, 8.0, "{field}");
-                assert!(game.dimension_type().fast_lava);
-            }
-            let min = f64::from(1.0E-5_f32);
-            let max = 30_000_000.0_f64;
-            for (value, valid) in [
-                (min.next_down(), false),
-                (min, true),
-                (min.next_up(), true),
-                (max.next_down(), true),
-                (max, true),
-                (max.next_up(), false),
-                (f64::from_bits(1), false),
-            ] {
-                let mut boundary = json.clone();
-                boundary["coordinate_scale"] = serde_json::json!(value);
-                // Vanilla uses Codec.FLOAT, not a unit-interval ambient-light codec.
-                boundary["ambient_light"] = serde_json::json!(1.1);
-                let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
-                registries.registries.insert(
-                    "minecraft:dimension_type".into(),
-                    vec![(
-                        "minecraft:the_nether".into(),
-                        Some(sunrise_client::scoreboard::json_to_tag(&boundary)),
-                    )],
-                );
-                game.set_registries(Arc::new(registries));
-                game.enter_remote_dimension(&spawn, false, Reason::Other);
-                assert_eq!(
-                    game.dimension_type().coordinate_scale,
-                    if valid { value } else { 8.0 }
-                );
-                if valid {
-                    assert_eq!(game.dimension_type().ambient_light, 1.1);
-                }
-            }
-            for ambient in [1.5_f32, -0.5_f32] {
-                let mut legal = json.clone();
-                legal["ambient_light"] = serde_json::json!(ambient);
-                let block_limit = if ambient > 0.0 { 15 } else { 0 };
-                legal["monster_spawn_block_light_limit"] = serde_json::json!(block_limit);
-                let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
-                registries.registries.insert(
-                    "minecraft:dimension_type".into(),
-                    vec![(
-                        "test:type".into(),
-                        Some(sunrise_client::scoreboard::json_to_tag(&legal)),
-                    )],
-                );
-                game.set_registries(Arc::new(registries));
-                game.enter_remote_dimension(&spawn, false, Reason::Other);
-                assert_eq!(game.dimension_type().coordinate_scale, 4.0);
-                assert_eq!(game.dimension_type().ambient_light, ambient);
-                assert_eq!(
-                    game.dimension_type().monster_spawn_block_light_limit,
-                    block_limit
-                );
-                let level = game.level("test:pocket").unwrap();
-                assert_eq!(level.dimension_type(game).unwrap().ambient_light, ambient);
-            }
-            // Disconnect drops the connection-owned table; the server table is untouched.
-            let lifetime =
-                Arc::downgrade(game.remote.as_ref().unwrap().level_facts.as_ref().unwrap());
-            game.leave_server(None).unwrap();
-            assert!(
-                lifetime.upgrade().is_none(),
-                "connection facts must be released"
-            );
-            assert_eq!(DimensionFacts::of_level(stale_key).coordinate_scale, 19.0);
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "SecondFactsSession").unwrap();
-            let key = sunrise_core::LevelKey::parse("test:pocket").unwrap();
-            assert_eq!(game.dimension_facts_for(key).coordinate_scale, 1.0);
-            DimensionFacts::set_levels(Vec::new());
-        });
-    }
-
-    /// The `both` handle reads answer on a client from its own copy: the local
-    /// player's health, effects, equipment and last death, the blocks and time
-    /// of day of the level it shows and the entities it tracks.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_handle_reads_answer_from_the_clients_copy() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_client::{
-            chunk::Chunk, first_person::Hand, level_loading::Reason, motion::PlayerMotion,
-        };
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{self, Clientbound as C, SpawnInfo},
-        };
-        use mod_api::{EntityRef, EquipmentSlot, GlobalPos};
-        use std::sync::Arc;
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "HandleReadTest").unwrap();
-            let spawn = SpawnInfo {
-                dimension_type: 0,
-                dimension: "minecraft:overworld".into(),
-                seed: 0,
-                game_type: 1,
-                previous_game_type: None,
-                debug: false,
-                flat: true,
-                last_death: Some(play::GlobalPos {
-                    dimension: "minecraft:the_nether".into(),
-                    pos: [4, 70, -9],
-                }),
-                portal_cooldown: 0,
-                sea_level: 63,
-            };
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            let remote = game.remote.as_mut().unwrap();
-            remote.logged_in = true;
-            remote.entity_id = 7;
-            remote.profile = 42;
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(1.5, 65.0, -2.5)).unwrap());
-            game.yaw = 90.0;
-            game.pitch = 10.0;
-
-            // The local player and the level it shows.
-            let player = game.local_player().unwrap();
-            let me = player.entity();
-            let living = game.living(me).unwrap();
-            let level = game.level("minecraft:overworld").unwrap();
-            assert!(game.level("minecraft:the_nether").is_none());
-            assert_eq!(me.position(game), Some([1.5, 65.0, -2.5]));
-            assert_eq!(me.rotation(game), Some([90.0, 10.0]));
-            game.player.as_mut().unwrap().velocity = Vec3::new(0.0, -0.5, 0.25);
-            assert_eq!(me.velocity(game), Some([0.0, -0.5, 0.25]));
-
-            // Last death: the login/respawn packet's, as a GlobalPos.
-            let died = player.last_death_location(game).unwrap();
-            assert_eq!(died.dimension().to_string(), "minecraft:the_nether");
-            let pos = died.pos();
-            assert_eq!([pos.x, pos.y, pos.z], [4, 70, -9]);
-            let _: GlobalPos = died;
-
-            // Health, maximum health, effects and equipment come from the packets.
-            game.handle_packet(C::SetHealth(play::SetHealth {
-                health: 14.0,
-                food: 20,
-                saturation: 5.0,
-            }))
-            .unwrap();
-            assert_eq!(living.health(game), Some(14.0));
-            assert_eq!(living.max_health(game), Some(20.0));
-            let speed = game
-                .remote
-                .as_ref()
-                .unwrap()
-                .builtin
-                .get("minecraft:mob_effect")
-                .unwrap()
-                .id("minecraft:speed")
-                .unwrap();
-            assert_eq!(living.effects(game), Some(Vec::new()));
-            assert!(
-                living
-                    .effect(
-                        game,
-                        mod_platform::__private::part_tests::effect_key("minecraft:speed")
-                    )
-                    .is_none()
-            );
-            game.handle_packet(C::UpdateMobEffect(play::UpdateMobEffect {
-                id: 7,
-                effect: speed,
-                amplifier: 1,
-                duration: 600,
-                flags: 2,
-            }))
-            .unwrap();
-            let effect = living
-                .effect(
-                    game,
-                    mod_platform::__private::part_tests::effect_key("minecraft:speed"),
-                )
-                .unwrap();
-            assert_eq!((effect.duration, effect.amplifier), (600, 1));
-            assert_eq!(living.effects(game).unwrap().len(), 1);
-            let stone = Some(sunrise_protocol::item::Stack::new(
-                game.item_id("minecraft:stone"),
-                3,
-            ));
-            game.handle_packet(C::SetPlayerInventory(play::SetPlayerInventory {
-                slot: 0,
-                item: stone,
-            }))
-            .unwrap();
-            let held = living.hand_item(game, Hand::Main).unwrap();
-            assert_eq!(
-                (
-                    mod_api::__private::item_key_id(held.item()).unwrap(),
-                    held.count()
-                ),
-                ("minecraft:stone", 3)
-            );
-            assert_eq!(living.equipment(game, EquipmentSlot::Head), None);
-            assert_eq!(living.hand_item(game, Hand::Off), None);
-
-            // Blocks of the chunks the client holds; nothing loads another.
-            game.world
-                .chunks
-                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-            let chunks = game.world.chunks.len();
-            let at = [3, 64, 5];
-            assert!(level.is_loaded(game, at));
-            assert!(!level.is_loaded(game, [160, 64, 0]));
-            game.handle_packet(C::BlockUpdate(play::BlockUpdate { pos: at, state: 1 }))
-                .unwrap();
-            assert_eq!(
-                level
-                    .block(game, at)
-                    .and_then(mod_api::__private::block_key_id),
-                Some("minecraft:stone")
-            );
-            assert!(level.block_state(game, at).is_some());
-            assert_eq!(level.block(game, [160, 64, 0]), None);
-            assert_eq!(level.block_property(game, [160, 64, 0], "facing"), None);
-            assert_eq!(game.world.chunks.len(), chunks);
-
-            // The time of day, as the server's clock last set it.
-            game.set_registries({
-                let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
-                registries.registries.insert(
-                    "minecraft:world_clock".into(),
-                    vec![("minecraft:overworld".into(), None)],
-                );
-                Arc::new(registries)
-            });
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 100,
-                clocks: vec![play::ClockState {
-                    clock: 0,
-                    total_ticks: 30_000,
-                    partial_tick: 0.0,
-                    rate: 1.0,
-                }],
-            }))
-            .unwrap();
-            assert_eq!(level.day_time(game), Some(30_000));
-
-            // An entity the server told the client of; others read None.
-            let pig = game
-                .remote
-                .as_ref()
-                .unwrap()
-                .builtin
-                .get("minecraft:entity_type")
-                .unwrap()
-                .id("minecraft:pig")
-                .unwrap();
-            game.handle_packet(C::AddEntity(play::AddEntity {
-                id: 31,
-                uuid: 9,
-                kind: pig,
-                position: [10.0, 64.0, 12.0],
-                velocity: [0.0; 3],
-                pitch: 0,
-                yaw: 64,
-                head_yaw: 64,
-                data: 0,
-            }))
-            .unwrap();
-            let other = game.entity(31).unwrap();
-            assert_eq!(other.position(game), Some([10.0, 64.0, 12.0]));
-            assert!(other.velocity(game).is_some());
-            assert!(other.rotation(game).is_some());
-            assert!(game.living(other).is_none(), "only the local player");
-            assert!(game.entity(99).is_none());
-            let untracked = EntityRef::new(me.epoch(), 99);
-            assert_eq!(untracked.position(game), None);
-            assert_eq!(untracked.velocity(game), None);
-
-            // A replaced level retires the handles.
-            let mut other_level = spawn.clone();
-            other_level.dimension = "test:other_overworld".into();
-            game.enter_remote_dimension(&other_level, true, Reason::Other);
-            assert_eq!(me.position(game), None);
-            assert_eq!(living.health(game), None);
-            assert_eq!(level.block(game, at), None);
-            assert!(!level.is_loaded(game, at));
-            assert_eq!(level.day_time(game), None);
-            assert_eq!(player.last_death_location(game), None);
-
-            // The server's role keeps its own reads: a client handle names nothing there.
-            game.options.execution_role = ExecutionRole::IntegratedServer;
-            assert_eq!(game.native_entity_target(untracked), None);
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_day_time_reads_overworld_clock_across_packets_and_levels() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{self, Clientbound as C},
-        };
-        use mod_api::LevelRef;
-        use std::sync::Arc;
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "ClockReadTest").unwrap();
-            let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
-            let dimensions = vec![
-                ("minecraft:overworld".into(), None),
-                ("minecraft:the_end".into(), None),
-                ("minecraft:the_nether".into(), None),
-            ];
-            registries
-                .registries
-                .insert("minecraft:world_clock".into(), dimensions[..2].to_vec());
-            registries
-                .registries
-                .insert("minecraft:dimension_type".into(), dimensions);
-            let registries = Arc::new(registries);
-            game.set_registries(registries.clone());
-            let mut spawn = play::SpawnInfo {
-                dimension_type: 1,
-                dimension: "minecraft:the_end".into(),
-                seed: 0,
-                game_type: 1,
-                previous_game_type: None,
-                debug: false,
-                flat: true,
-                last_death: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-            };
-            let login = |spawn| {
-                C::Login(play::Login {
-                    player_id: 7,
-                    hardcore: false,
-                    levels: vec!["minecraft:overworld".into(), "minecraft:the_end".into()],
-                    max_players: 1,
-                    chunk_radius: 2,
-                    simulation_distance: 2,
-                    reduced_debug_info: false,
-                    show_death_screen: true,
-                    limited_crafting: false,
-                    spawn,
-                    online_mode: false,
-                    enforces_secure_chat: false,
-                })
-            };
-            let state = |clock, total_ticks, partial_tick, rate| play::ClockState {
-                clock,
-                total_ticks,
-                partial_tick,
-                rate,
-            };
-            game.handle_packet(login(spawn.clone())).unwrap();
-            let end = game.level("minecraft:the_end").unwrap();
-            let wrong_level = LevelRef::new(end.epoch(), mod_api::DimensionKey::OVERWORLD);
-            assert_eq!(wrong_level.day_time(game), None);
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 100,
-                clocks: vec![state(0, 30_000, 0.0, 1.0), state(1, 100, 0.0, 1.0)],
-            }))
-            .unwrap();
-            assert_eq!(end.day_time(game), Some(30_000));
-            assert_eq!(
-                game.world.day_time, 100,
-                "the sky follows the End default clock"
-            );
-
-            // An Overworld-only update must not select it as the End sky clock.
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 104,
-                clocks: vec![state(0, 40_000, 0.75, 0.5)],
-            }))
-            .unwrap();
-            assert_eq!(end.day_time(game), Some(40_000));
-            assert_eq!(game.world.day_time, 104);
-            game.tick_remote_level().unwrap();
-            assert_eq!(end.day_time(game), Some(40_001));
-            assert_eq!(game.world.day_time, 105);
-            game.tick_remote_level().unwrap();
-            assert_eq!(end.day_time(game), Some(40_001));
-            assert_eq!(game.world.day_time, 106);
-
-            // Empty time syncs advance every retained clock by the game-time delta.
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 110,
-                clocks: vec![],
-            }))
-            .unwrap();
-            assert_eq!(end.day_time(game), Some(40_003));
-            assert_eq!(game.world.day_time, 110);
-            // A paused clock stays put even while the client's game time runs.
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 110,
-                clocks: vec![state(0, 50_000, 0.25, 0.0)],
-            }))
-            .unwrap();
-            game.tick_remote_level().unwrap();
-            assert_eq!(end.day_time(game), Some(50_000));
-            assert_eq!(game.world.day_time, 111);
-
-            // A frozen world ticks neither clock; packets still catch both up.
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 111,
-                clocks: vec![state(0, 60_000, 0.0, 2.0)],
-            }))
-            .unwrap();
-            game.handle_packet(C::TickingState(play::TickingState {
-                rate: 20.0,
-                frozen: true,
-            }))
-            .unwrap();
-            game.tick_remote_level().unwrap();
-            assert_eq!(game.world.game_time, 111);
-            assert_eq!(end.day_time(game), Some(60_000));
-            assert_eq!(game.world.day_time, 111);
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 114,
-                clocks: vec![],
-            }))
-            .unwrap();
-            assert_eq!(end.day_time(game), Some(60_006));
-            assert_eq!(game.world.day_time, 114);
-            // Backward corrections use the same signed delta and fractional state.
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 113,
-                clocks: vec![],
-            }))
-            .unwrap();
-            assert_eq!(end.day_time(game), Some(60_004));
-            assert_eq!(game.world.day_time, 113);
-            game.handle_packet(C::TickingState(play::TickingState {
-                rate: 20.0,
-                frozen: false,
-            }))
-            .unwrap();
-
-            // Same-level respawn keeps the epoch and clocks, but replaces the
-            // local player and its mood handler, with or without entity data.
-            for keep in [0, 2] {
-                game.ambience.moodiness = 0.375;
-                game.handle_packet(C::Respawn(play::Respawn {
-                    spawn: spawn.clone(),
-                    keep,
-                }))
-                .unwrap();
-                assert_eq!(game.ambience.moodiness, 0.0);
-                assert_eq!(end.day_time(game), Some(60_004));
-            }
-            spawn.dimension_type = 0;
-            spawn.dimension = "minecraft:overworld".into();
-            game.handle_packet(C::Respawn(play::Respawn {
-                spawn: spawn.clone(),
-                keep: 0,
-            }))
-            .unwrap();
-            assert_eq!(end.day_time(game), None);
-            let overworld = game.level("minecraft:overworld").unwrap();
-            assert_eq!(overworld.day_time(game), Some(60_004));
-            assert_eq!(
-                game.world.day_time, 60_004,
-                "select the new default from retained clocks"
-            );
-            game.tick_remote_level().unwrap();
-            assert_eq!(overworld.day_time(game), Some(60_006));
-            assert_eq!(game.world.day_time, 60_006);
-
-            // A dimension without a default clock must not select the prior one.
-            spawn.dimension_type = 2;
-            spawn.dimension = "minecraft:the_nether".into();
-            game.handle_packet(C::Respawn(play::Respawn {
-                spawn: spawn.clone(),
-                keep: 0,
-            }))
-            .unwrap();
-            let nether = game.level("minecraft:the_nether").unwrap();
-            assert_eq!(overworld.day_time(game), None);
-            assert_eq!(nether.day_time(game), Some(60_006));
-            assert_eq!(game.world.day_time, 0);
-
-            // Login starts a new listener epoch, even on the same connection.
-            game.handle_packet(login(spawn.clone())).unwrap();
-            assert_eq!(nether.day_time(game), None);
-            let fresh = game.level("minecraft:the_nether").unwrap();
-            assert_eq!(fresh.day_time(game), Some(0));
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 1,
-                clocks: vec![],
-            }))
-            .unwrap();
-            assert_eq!(
-                fresh.day_time(game),
-                Some(1),
-                "the new clock anchor and rate are fresh too"
-            );
-            game.handle_packet(C::SetTime(play::SetTime {
-                game_time: 1,
-                clocks: vec![state(0, 7_000, 0.0, 1.0)],
-            }))
-            .unwrap();
-            assert_eq!(fresh.day_time(game), Some(7_000));
-            assert_eq!(game.world.day_time, 0);
-            game.client_logging_out();
-            assert_eq!(fresh.day_time(game), None);
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "ClockReadTest").unwrap();
-            assert_eq!(fresh.day_time(game), None);
-            game.set_registries(registries);
-            game.handle_packet(login(spawn)).unwrap();
-            let reconnected = game.level("minecraft:the_nether").unwrap();
-            assert_eq!(fresh.day_time(game), None);
-            assert_eq!(reconnected.day_time(game), Some(0));
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_camera_entity_returns_to_player_after_removal() {
-        use super::super::{
-            Game, native_entity_refs::tests::with_client_game, native_lifecycle::NativeLifecycle,
-        };
-        use sunrise_client::{level_loading::Reason, motion::PlayerMotion};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{self, Clientbound as C, SpawnInfo},
-        };
-        use mod_api::ClientHost;
-
-        with_client_game(|game| {
-            let camera = |game: &Game<'_>| (game as &dyn ClientHost).camera_entity();
-            assert!(camera(game).is_none(), "the fixture has no player");
-            game.native_lifecycle = NativeLifecycle::default();
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "CameraReadTest").unwrap();
-            let mut spawn = SpawnInfo {
-                dimension_type: 0,
-                dimension: "minecraft:overworld".into(),
-                seed: 0,
-                game_type: 3,
-                previous_game_type: None,
-                debug: false,
-                flat: true,
-                last_death: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-            };
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            let remote = game.remote.as_mut().unwrap();
-            remote.logged_in = true;
-            remote.entity_id = 7;
-            assert!(camera(game).is_none(), "a level alone has no player");
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
-            let local = camera(game).unwrap();
-            assert_eq!(
-                local.id(),
-                7,
-                "use the remote identity, not PlayerMotion's default"
-            );
-            assert_eq!(local.position(game), Some([0.0; 3]));
-
-            let creeper = game
-                .remote
-                .as_ref()
-                .unwrap()
-                .builtin
-                .get("minecraft:entity_type")
-                .unwrap()
-                .id("minecraft:creeper")
-                .unwrap();
-            game.handle_packet(C::AddEntity(play::AddEntity {
-                id: 31,
-                uuid: 9,
-                kind: creeper,
-                position: [10.0, 64.0, 12.0],
-                velocity: [0.0; 3],
-                pitch: 0,
-                yaw: 0,
-                head_yaw: 0,
-                data: 0,
-            }))
-            .unwrap();
-            game.remote_set_camera(31);
-            assert!(!game.controls_camera());
-            assert!(game.hides_as_camera(31));
-            assert!(game.spectated_post_effect.is_some());
-            let attached = camera(game).unwrap();
-            game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![99] }))
-                .unwrap();
-            assert_eq!(camera(game), Some(attached));
-            assert_eq!(attached.id(), 31);
-            assert_eq!(attached.position(game), Some([10.0, 64.0, 12.0]));
-            game.handle_packet(C::SetCamera(play::SetCamera { camera_id: 99 }))
-                .unwrap();
-            assert_eq!(
-                camera(game),
-                Some(attached),
-                "unknown packet targets are ignored"
-            );
-            game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![31] }))
-                .unwrap();
-            assert_eq!(camera(game), Some(local));
-            assert!(
-                game.controls_camera(),
-                "movement input and position packets are enabled"
-            );
-            assert!(!game.hides_as_camera(31));
-            assert!(game.spectated_post_effect.is_none());
-            game.handle_packet(C::SetCamera(play::SetCamera { camera_id: 7 }))
-                .unwrap();
-            assert_eq!(camera(game), Some(local));
-
-            game.title = Some(game.new_title(game.save.root.clone()));
-            assert!(
-                camera(game).is_none(),
-                "the title screen has no camera entity"
-            );
-            game.title = None;
-            assert_eq!(camera(game), Some(local));
-
-            spawn.dimension = "test:other_overworld".into();
-            game.handle_packet(C::Respawn(play::Respawn { spawn, keep: 0 }))
-                .unwrap();
-            assert!(
-                camera(game).is_none(),
-                "replacement waits for its new player"
-            );
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
-            let fresh = camera(game).unwrap();
-            assert_eq!(fresh.id(), local.id());
-            assert_ne!(fresh.epoch(), local.epoch());
-            assert_eq!(local.position(game), None, "old level handles stay stale");
-            assert_eq!(fresh.position(game), Some([0.0; 3]));
-            game.client_logging_out();
-            assert!(camera(game).is_none());
-            assert_eq!(fresh.position(game), None);
-        });
-    }
-
-    /// The local player's own state reads answer on a client from what the
-    /// server sent it (`LocalPlayer`); another player reads None there.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_player_reads_answer_from_the_local_players_copy() {
-        use super::super::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-        use sunrise_client::{level_loading::Reason, motion::PlayerMotion};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{self, Clientbound as C, SpawnInfo},
-        };
-        use mod_api::{EntityRef, GameMode};
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "PlayerReadTest").unwrap();
-            let spawn = SpawnInfo {
-                dimension_type: 0,
-                dimension: "minecraft:overworld".into(),
-                seed: 0,
-                game_type: 0,
-                previous_game_type: None,
-                debug: false,
-                flat: true,
-                last_death: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-            };
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            let remote = game.remote.as_mut().unwrap();
-            remote.logged_in = true;
-            remote.entity_id = 7;
-            remote.profile = 42;
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 65.0, 0.5)).unwrap());
-            let player = game.local_player().unwrap();
-
-            // Survival, as the login packet left it: building allowed, no flight.
-            assert_eq!(player.game_mode(game), Some(GameMode::Survival));
-            assert_eq!(player.may_build(game), Some(true));
-            assert_eq!(player.abilities(game).map(|a| a.may_fly), Some(false));
-
-            // CHANGE_GAME_MODE to adventure: no building; then the abilities packet.
-            game.handle_packet(C::GameEvent(play::GameEvent {
-                event: 3,
-                param: 2.0,
-            }))
-            .unwrap();
-            assert_eq!(player.game_mode(game), Some(GameMode::Adventure));
-            assert_eq!(player.is_creative(game), Some(false));
-            assert_eq!(player.is_spectator(game), Some(false));
-            assert_eq!(player.may_build(game), Some(false));
-            game.handle_packet(C::PlayerAbilities(play::PlayerAbilities {
-                flags: 4 | 2,
-                flying_speed: 0.1,
-                walking_speed: 0.2,
-            }))
-            .unwrap();
-            let abilities = player.abilities(game).unwrap();
-            assert!(abilities.may_fly && abilities.flying && !abilities.invulnerable);
-            assert!(!abilities.may_build);
-            assert_eq!((abilities.fly_speed, abilities.walk_speed), (0.1, 0.2));
-
-            // Food from SetHealth; the client keeps no exhaustion.
-            game.handle_packet(C::SetHealth(play::SetHealth {
-                health: 20.0,
-                food: 5,
-                saturation: 1.5,
-            }))
-            .unwrap();
-            let food = player.food(game).unwrap();
-            assert_eq!(
-                (food.level, food.saturation, food.exhaustion),
-                (5, 1.5, 0.0)
-            );
-            assert_eq!(player.needs_food(game), Some(true));
-            assert_eq!(player.has_enough_food(game), Some(false));
-
-            // The hotbar slot and the experience the server set.
-            game.handle_packet(C::SetHeldSlot(play::SetHeldSlot { slot: 4 }))
-                .unwrap();
-            assert_eq!(player.selected_slot(game), Some(4));
-            game.handle_packet(C::SetExperience(play::SetExperience {
-                progress: 0.25,
-                level: 3,
-                total: 30,
-            }))
-            .unwrap();
-            let xp = player.experience(game).unwrap();
-            assert_eq!((xp.level, xp.progress, xp.total), (3, 0.25, 30));
-            assert_eq!(player.xp_needed_for_next_level(game), Some(13));
-
-            // The main inventory retains typed stacks and their damage, in slot order.
-            let mut stack = sunrise_client::items::ItemStack::new("minecraft:diamond_pickaxe", 1);
-            stack.damage = 7;
-            game.inventory.fill(None);
-            game.inventory[3] = Some(stack.clone());
-            game.inventory[8] = Some(sunrise_client::items::ItemStack::new("minecraft:stone", 12));
-            assert_eq!(
-                player.inventory(game),
-                Some(
-                    vec![
-                        stack,
-                        sunrise_client::items::ItemStack::new("minecraft:stone", 12)
-                    ]
-                    .try_into_api()
-                    .unwrap()
-                )
-            );
-
-            // Another player: the client isn't sent their state.
-            let epoch = player.entity().epoch();
-            let other = mod_api::__private::game::player_ref(EntityRef::new(epoch, 8), 43);
-            assert_eq!(other.game_mode(game), None);
-            assert_eq!(other.food(game), None);
-            assert_eq!(other.selected_slot(game), None);
-            assert_eq!(other.inventory(game), None);
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn client_epochs_follow_level_replacement_and_logout() {
-        use super::super::{
-            execution_role::ExecutionRole, native_entity_refs::tests::with_game,
-            native_lifecycle::NativeLifecycle,
-        };
-        use sunrise_client::{level_loading::Reason, mobs::Mob, motion::PlayerMotion};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{Clientbound, Respawn, SpawnInfo},
-        };
-        use mod_api::{CrosshairTarget, EntityRef};
-
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            game.native_lifecycle = NativeLifecycle::default();
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "EpochTest").unwrap();
-            // A transport alone has no ClientLevel yet.
-            assert!(game.native_lifecycle.epoch().is_none());
-            let mut spawn = SpawnInfo {
-                dimension_type: 0,
-                dimension: "minecraft:overworld".into(),
-                seed: 0,
-                game_type: 1,
-                previous_game_type: None,
-                debug: false,
-                flat: true,
-                last_death: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-            };
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            let joined = game.native_lifecycle.epoch().unwrap();
-            let old = EntityRef::new(joined, 12);
-            let remote = game.remote.as_mut().unwrap();
-            remote.menu.set(Some((7, "minecraft:generic_9x3".into())));
-            let open_generation = remote.menu.generation;
-            game.handle_packet(Clientbound::Respawn(Respawn {
-                spawn: spawn.clone(),
-                keep: 0,
-            }))
-            .unwrap();
-            assert_eq!(game.native_lifecycle.epoch(), Some(joined));
-            let remote = game.remote.as_mut().unwrap();
-            assert!(remote.menu.as_ref().is_none());
-            assert_ne!(remote.menu.generation, open_generation);
-            let inventory_generation = remote.menu.generation;
-            game.handle_packet(Clientbound::Respawn(Respawn {
-                spawn: spawn.clone(),
-                keep: 0,
-            }))
-            .unwrap();
-            assert_eq!(game.native_lifecycle.epoch(), Some(joined));
-            let remote = game.remote.as_mut().unwrap();
-            assert!(remote.menu.as_ref().is_none());
-            assert_ne!(remote.menu.generation, inventory_generation);
-            remote.menu.set(Some((7, "minecraft:generic_9x3".into())));
-            assert_ne!(remote.menu.generation, open_generation);
-            assert_ne!(remote.menu.generation, inventory_generation);
-
-            // A different level key replaces the world even with the same
-            // dimension type; IDs can be reused but old handles cannot.
-            spawn.dimension = "test:other_overworld".into();
-            game.enter_remote_dimension(&spawn, true, Reason::Other);
-            let replaced = game.native_lifecycle.epoch().unwrap();
-            assert_ne!(replaced, joined);
-            let current = EntityRef::new(replaced, 12);
-            let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
-            game.mobs
-                .push(Mob::new(12, kind, Vec3::new(0.0, 1.0, 2.0), 0.0));
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
-            game.yaw = 0.0;
-            game.pitch = 0.0;
-            let Some(CrosshairTarget::Entity { entity, .. }) = game.crosshair_target() else {
-                panic!("the crosshair hits the pig in front of the player");
-            };
-            assert_eq!(entity, current);
-            assert!(
-                game.native_entity_target(current).is_none(),
-                "still server-only"
-            );
-            // Isolate the existing epoch check from the logical-server guard.
-            game.options.execution_role = ExecutionRole::IntegratedServer;
-            assert!(game.native_entity_target(current).is_some());
-            assert!(game.native_entity_target(old).is_none());
-            game.options.execution_role = ExecutionRole::Client;
-
-            game.client_logging_out();
-            assert!(game.native_lifecycle.epoch().is_none());
-            assert!(game.crosshair_target().is_none());
-            game.client_logging_out();
-            assert!(game.native_lifecycle.epoch().is_none());
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "EpochTest").unwrap();
-            assert!(game.native_lifecycle.epoch().is_none());
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            assert_ne!(game.native_lifecycle.epoch(), Some(replaced));
-            game.client_logging_out();
-            assert!(game.native_lifecycle.epoch().is_none());
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn connection_and_dimension_replacement_clear_every_particle_group() {
-        use super::super::{
-            execution_role::ExecutionRole, native_entity_refs::tests::with_game,
-            native_hooks::particle_count_tests::fill,
-        };
-        use sunrise_client::level_loading::Reason;
-        use sunrise_protocol::{connection::Pipe, packets::play::SpawnInfo};
-        with_game(|game| {
-            game.options.execution_role = ExecutionRole::Client;
-            fill(game);
-            // Include pending particles as well as live groups before replacing the connection.
-            game.particles.elder_guardian();
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "ParticleReset").unwrap();
-            assert_eq!(game.client_particle_count(), 0);
-            assert!(game.pickups.live.is_empty());
-            game.tick_particles();
-            assert_eq!(game.client_particle_count(), 0);
-            let spawn = SpawnInfo {
-                dimension_type: 0,
-                dimension: "minecraft:overworld".into(),
-                seed: 0,
-                game_type: 1,
-                previous_game_type: None,
-                debug: false,
-                flat: true,
-                last_death: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-            };
-            fill(game);
-            game.particles.elder_guardian();
-            game.enter_remote_dimension(&spawn, false, Reason::Other);
-            assert_eq!(game.client_particle_count(), 0);
-            assert!(game.pickups.live.is_empty());
-            game.tick_particles();
-            assert_eq!(
-                game.client_particle_count(),
-                0,
-                "pending groups cannot return in the new level"
-            );
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn forgetting_and_closing_remote_columns_clear_their_data() {
-        use super::super::native_entity_refs::tests::with_game;
-        use sunrise_client::{chunk::Chunk, containers::BlockEntity};
-
-        with_game(|game| {
-            for x in 0..2 {
-                game.streaming
-                    .insert_remote(&mut game.world, Chunk::empty(x, 0));
-                game.world
-                    .block_entities
-                    .insert((x * 16, 64, 0), BlockEntity::Chest(vec![]));
-            }
-            // A same-position resend replaces the data without removing the column.
-            game.streaming
-                .replace_remote(&mut game.world, Chunk::empty(0, 0));
-            assert_eq!(game.world.chunks.len(), 2);
-            assert!(game.world.chunks.contains_key(&(0, 0)));
-            assert!(game.streaming.is_lit(0, 0));
-            let mut forgotten = [(0, 0)].into_iter().collect();
-            game.forget_remote_columns(&mut forgotten, true);
-            assert!(!game.world.chunks.contains_key(&(0, 0)));
-            assert!(!game.world.block_entities.contains_key(&(0, 64, 0)));
-            assert!(!game.streaming.is_lit(0, 0));
-            assert!(game.world.chunks.contains_key(&(1, 0)));
-            game.forget_remote_columns(&mut [(0, 0)].into_iter().collect(), true);
-            for x in [7, 13] {
-                game.streaming
-                    .insert_remote(&mut game.world, Chunk::empty(x, 0));
-                game.world
-                    .block_entities
-                    .insert((x * 16, 64, 0), BlockEntity::Chest(vec![]));
-            }
-            // Cache-centre packet: move to (15, 0), at radius 10.
-            game.drop_remote_chunks_out_of_range((15, 0), 10);
-            assert!(!game.world.chunks.contains_key(&(1, 0)));
-            assert!(game.world.chunks.contains_key(&(7, 0)));
-            assert!(game.world.chunks.contains_key(&(13, 0)));
-            // Cache-radius packet: shrinking to 2 keeps radius 5 around (15, 0).
-            game.drop_remote_chunks_out_of_range((15, 0), 2);
-            assert!(!game.world.chunks.contains_key(&(7, 0)));
-            assert!(game.world.chunks.contains_key(&(13, 0)));
-            assert!(!game.world.block_entities.contains_key(&(7 * 16, 64, 0)));
-            // A later forget for an evicted column is harmless.
-            game.forget_remote_columns(&mut [(7, 0)].into_iter().collect(), true);
-            game.forget_all_remote_columns();
-            assert!(game.world.chunks.is_empty());
-            assert!(game.world.block_entities.is_empty());
-        });
-    }
-
-    /// The client chunk seam (game/network/remote_chunks.rs) across every free
-    /// route, as the freed set each route returns: a forget packet, the
-    /// eager centre-move drop (a cache-centre packet), the radius-shrink
-    /// drop (a cache-radius packet) and the client level going. One freed
-    /// entry per column, in the order the routes free them, and a repeat
-    /// forget for an already-freed column frees nothing: adopting a column
-    /// is a chunk packet's doing (`remote_chunk`), not the streaming
-    /// level's.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn every_free_route_returns_the_columns_it_freed_once() {
-        use super::super::native_entity_refs::tests::with_game;
-        use sunrise_client::chunk::Chunk;
-
-        with_game(|game| {
-            for x in [0, 1] {
-                game.streaming
-                    .insert_remote(&mut game.world, Chunk::empty(x, 0));
-            }
-            // A forget packet frees its column once; the same forget again,
-            // for a column already freed, frees nothing.
-            let mut gone = [(0, 0)].into_iter().collect();
-            assert_eq!(game.forget_remote_columns(&mut gone, true), [(0, 0)]);
-            let mut gone = [(0, 0)].into_iter().collect();
-            assert!(game.forget_remote_columns(&mut gone, true).is_empty());
-            for x in [7, 13] {
-                game.streaming
-                    .insert_remote(&mut game.world, Chunk::empty(x, 0));
-            }
-            // The centre move to (15, 0) at radius 10 frees (1, 0) only.
-            assert_eq!(game.drop_remote_chunks_out_of_range((15, 0), 10), [(1, 0)]);
-            // Shrinking the radius to 2 frees (7, 0) only.
-            assert_eq!(game.drop_remote_chunks_out_of_range((15, 0), 2), [(7, 0)]);
-            // The client level going frees what is left.
-            assert_eq!(game.forget_all_remote_columns(), [(13, 0)]);
-            assert!(game.world.chunks.is_empty());
-            assert!(game.world.block_entities.is_empty());
-        });
-    }
-
-    /// The seam sits at the packet level: streaming adopting, replacing or
-    /// re-sending a column keeps it resident — a re-sent position loads
-    /// again (`remote_chunk`), never an unload and a load — so a forget
-    /// returns exactly it.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn streaming_adoption_and_resend_stay_resident_until_the_forget() {
-        use super::super::native_entity_refs::tests::with_game;
-        use sunrise_client::chunk::Chunk;
-
-        with_game(|game| {
-            game.streaming
-                .insert_remote(&mut game.world, Chunk::empty(0, 0));
-            // A re-send of a resident, lit column takes replace_remote.
-            game.streaming
-                .replace_remote(&mut game.world, Chunk::empty(0, 0));
-            assert!(game.world.chunks.contains_key(&(0, 0)));
-            let mut gone = [(0, 0)].into_iter().collect();
-            assert_eq!(game.forget_remote_columns(&mut gone, true), [(0, 0)]);
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn joining_a_server_empties_the_off_hand_too() {
-        // ClientPacketListener.handleLogin makes a new LocalPlayer, whose whole Inventory is
-        // empty: a server that never sends slot 45 must not leave the last server's item.
-        use crate::game::{
-            Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
-        };
-        use sunrise_client::items::ItemStack;
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = ExecutionRole::Client;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.clone(),
-            )),
-            None,
-        )
-        .unwrap();
-        let (first, _first_server) = sunrise_protocol::connection::Pipe::pair();
-        game.connect_local(first, "HopTest").unwrap();
-        let stack = || Some(ItemStack::new("minecraft:shield", 1));
-        game.inventory[0] = stack();
-        game.armor[0] = stack();
-        game.offhand = stack();
-        let (second, _second_server) = sunrise_protocol::connection::Pipe::pair();
-        game.connect_local(second, "HopTest").unwrap();
-        assert!(game.inventory[0].is_none() && game.armor[0].is_none());
-        assert!(game.offhand.is_none());
-    }
-
-    #[test]
-    fn the_chunk_storage_takes_any_radius_and_centre_a_server_sends() {
-        use super::in_storage_range;
-        // Vanilla's storage: radius at least 2, plus 3, each way from the centre.
-        assert!(in_storage_range(10, (0, 0), 13, -13));
-        assert!(!in_storage_range(10, (0, 0), 14, 0));
-        assert!(in_storage_range(-5, (100, 100), 105, 95));
-        assert!(!in_storage_range(0, (100, 100), 106, 100));
-        // Out of i32's range, as a server may send: no overflow, and the sums a wrap got wrong.
-        assert!(in_storage_range(i32::MAX, (0, 0), i32::MAX, i32::MIN + 1));
-        assert!(!in_storage_range(10, (i32::MIN, 0), i32::MAX, 0));
-        assert!(in_storage_range(
-            10,
-            (i32::MIN, i32::MAX),
-            i32::MIN + 13,
-            i32::MAX - 13
-        ));
-    }
-
     use super::{
-        boat_interact_passes, chat_after_event, client_has_level, hold_server_fire,
-        item_frame_interact_passes, keep_client_state, open_hash_order, remote_object_swings,
-        remote_use_swings, shape_meets, snap_target, synced_local_use,
+        boat_interact_passes, chat_after_event, item_frame_interact_passes, remote_object_swings,
     };
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
-    fn tracking_emitters_follow_the_packet_target() {
-        use crate::game::{
-            Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole,
-            load_resources, totem::TOTEM_EVENT,
+    #[ignore = "daily"]
+    fn declared_gate_uses_its_class_for_blasts_and_predicted_use() {
+        use crate::game::native_guest_turn_tests::with_guests_at;
+        use std::sync::Arc;
+        use sunrise_client::{
+            chunk::Chunk,
+            lan::{Out, PlayerSender},
+            mod_content::{ContentMod, resource_root},
         };
-        use sunrise_client::{motion::PlayerMotion, particles::ParticleType, pose::Pose};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::{
-            entity_data::{Value, serializer},
-            packets::play::{self, Clientbound as C},
+        use sunrise_core::position::BlockPos;
+        use sunrise_mod_package::{
+            content::{Block, Content, GateSound},
+            enabled::EnabledMods,
         };
+        use sunrise_protocol::{buf::Reader, packets::play::Clientbound};
 
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = ExecutionRole::Client;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.clone(),
-            )),
-            None,
-        )
-        .unwrap();
-        let (client, _server) = sunrise_protocol::connection::Pipe::pair();
-        game.connect_local(client, "EmitterTest").unwrap();
-        game.remote.as_mut().unwrap().entity_id = 7;
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.0, 64.0, 0.0)).unwrap());
-        game.particles.seed_randoms(42, 43, 44);
-
-        let check = |game: &Game<'_>, ty, feet: [f64; 3], height: f32| {
-            let mut seen = false;
-            for (options, at, velocity) in game.particles.requested.as_ref().unwrap() {
-                if options.ty != ty {
-                    continue;
-                }
-                seen = true;
-                let y = feet[1] + f64::from(height) * (0.5 + (velocity[1] - 0.2) / 4.0);
-                assert!((at[0] - feet[0]).abs() <= f64::from(0.6_f32) / 4.0);
-                assert!(
-                    (at[1] - y).abs() < 1e-10,
-                    "{ty:?} at {at:?}, expected y {y}"
-                );
-                assert!((at[2] - feet[2]).abs() <= f64::from(0.6_f32) / 4.0);
-            }
-            assert!(seen, "no {ty:?} emissions");
-        };
-        let types = [
-            ParticleType::Crit,
-            ParticleType::EnchantedHit,
-            ParticleType::TotemOfUndying,
-        ];
-        let target = 40;
-        let start = [5.0, 64.0, 7.0];
-        game.spawn_entity(target, "minecraft:player", start, [0.0; 3]);
-        game.particles.requested = Some(Vec::new());
-        for action in [1, 2] {
-            game.handle_packet(C::Animate(play::Animate { id: target, action }))
-                .unwrap();
-        }
-        game.handle_packet(C::EntityEvent(play::EntityEvent {
-            id: target,
-            event: TOTEM_EVENT,
-        }))
-        .unwrap();
-        for ty in types {
-            check(&game, ty, start, 1.8);
-        }
-
-        let moved = [15.0, 65.0, -2.0];
-        game.particles.requested = Some(Vec::new());
-        game.handle_packet(C::SetEntityData(play::SetEntityData {
-            id: target,
-            values: vec![(6, serializer::POSE, Value::Id(Pose::Crouching.id()))],
-        }))
-        .unwrap();
-        game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
-            id: target,
-            path: play::PositionPath::Linear(moved),
-            yaw: 0.0,
-            pitch: 0.0,
-            on_ground: true,
-        }))
-        .unwrap();
-        for _ in 0..4 {
-            game.tick_remote_entities(true);
-        }
-        game.tick_particles();
-        for ty in types {
-            check(&game, ty, moved, 1.5);
-        }
-
-        // The old entity moved again before unpairing. Re-pairing its id before
-        // the next particle tick keeps emitting at the old entity's final body.
-        game.particles.requested = Some(Vec::new());
-        let last = [18.0, 65.0, -2.0];
-        game.mob_index
-            .get_mut(&mut game.mobs, target as u32)
-            .unwrap()
-            .position = Vec3::new(last[0], last[1], last[2]);
-        game.handle_packet(C::RemoveEntities(play::RemoveEntities {
-            ids: vec![target],
-        }))
-        .unwrap();
-        game.spawn_entity(target, "minecraft:player", [28.0, 67.0, 1.0], [0.0; 3]);
-        game.tick_particles();
-        for ty in types {
-            check(&game, ty, last, 1.5);
-        }
-
-        game.particles.clear();
-        game.particles.requested = Some(Vec::new());
-        game.handle_packet(C::EntityEvent(play::EntityEvent {
-            id: 7,
-            event: TOTEM_EVENT,
-        }))
-        .unwrap();
-        check(&game, ParticleType::TotemOfUndying, [0.0, 64.0, 0.0], 1.8);
-        game.particles.requested = Some(Vec::new());
-        let player = game.player.as_mut().unwrap();
-        player.position = Vec3::new(-4.0, 68.0, 8.0);
-        player.set_pose(Pose::Swimming).unwrap();
-        game.tick_particles();
-        check(&game, ParticleType::TotemOfUndying, [-4.0, 68.0, 8.0], 0.6);
-    }
-
-    /// The vanilla 26.3 client's ServerboundContainerClickPacket for a shift-click from hotbar slot 37
-    /// into slot 10 listed 37 first (wire stream harness, `inventory`). The key 0 always leads.
-    #[test]
-    fn changed_slots_go_out_in_the_order_vanilla_s_hash_map_iterates() {
-        assert_eq!(open_hash_order(&[10, 37]), [37, 10]);
-        assert_eq!(open_hash_order(&[0, 1, 2, 36, 44])[0], 0);
-        // Past 24 keys the table grows; every key is still listed once.
-        let all: Vec<i16> = (0..46).collect();
-        let mut out = open_hash_order(&all);
-        out.sort_unstable();
-        assert_eq!(out, all);
-    }
-
-    #[test]
-    fn typed_chat_is_sent_as_the_client_chat_event_leaves_it() {
-        assert_eq!(chat_after_event("hello", |_, _| {}), Some("hello".into()));
-        assert_eq!(
-            chat_after_event("hello", |m, _| m.push_str(" world")),
-            Some("hello world".into())
+        let base = std::path::PathBuf::from(
+            std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
         );
-        assert_eq!(chat_after_event("hello", |_, c| *c = true), None);
-        assert_eq!(chat_after_event("hello", |m, _| m.clear()), None);
+        let scratch = tempfile::tempdir().unwrap();
+        let mut content = Content::declared("gates");
+        let use_sound = "gates:use.open";
+        let blast_sound = "gates:blast.close";
+        let wire_sound = "minecraft:entity.zombie.ambient";
+        content
+            .declare(
+                &[Block {
+                    id: "gates:sites".into(),
+                    template: "minecraft:oak_fence_gate".into(),
+                    item: false,
+                    open_sound: Some(GateSound::Sites {
+                        on_use: Some(use_sound.into()),
+                        on_explosion: None,
+                        on_redstone: Some(wire_sound.into()),
+                    }),
+                    close_sound: Some(GateSound::Sites {
+                        on_use: None,
+                        on_explosion: Some(blast_sound.into()),
+                        on_redstone: None,
+                    }),
+                    ..Default::default()
+                }],
+                &[],
+            )
+            .unwrap();
+        let root = resource_root(
+            &base,
+            scratch.path(),
+            &[ContentMod {
+                id: "gates".into(),
+                content,
+                jars: Vec::new(),
+            }],
+            scratch.path(),
+            &EnabledMods::new([("gates".into(), mod_api::Side::Both)]),
+        )
+        .unwrap();
+        with_guests_at(root, |game| {
+            let pos = [3, 64, 4];
+            let [x, y, z] = pos;
+            let hit = crate::game::Hit {
+                pos,
+                face: [0, 1, 0],
+                point: [3.5, 64.875, 4.5],
+                inside: false,
+            };
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            game.sync_tick_chunks();
+            let gate = game
+                .pack
+                .assets
+                .registry
+                .default_state("gates:sites")
+                .unwrap();
+            let open = |game: &crate::game::Game<'_>| {
+                let b = game.res.behaviours();
+                b.table.bool(game.world.block(x, y, z), b.props.open)
+            };
+
+            let [actor, other] = [12, 13].map(|conn| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .update_guest(conn, |guest| {
+                        guest.sender = PlayerSender::new(tx, Arc::default());
+                    })
+                    .unwrap();
+                rx
+            });
+            let sounds = |game: &crate::game::Game<'_>, rx: &std::sync::mpsc::Receiver<Out>| {
+                let sync = game.lan.as_ref().unwrap().hub.sync_data();
+                rx.try_iter()
+                    .flat_map(|out| match out {
+                        Out::Packet(body) => vec![body],
+                        Out::Packets(bodies) => bodies,
+                        Out::Disconnect(_) => Vec::new(),
+                    })
+                    .filter_map(|body| {
+                        let mut reader = Reader::new(&body);
+                        let id = reader.varint().unwrap();
+                        match Clientbound::decode(id, reader.rest()).unwrap() {
+                            Clientbound::Sound(packet) => {
+                                let name = packet.sound.1.map(|(id, _)| id).unwrap_or_else(|| {
+                                    sync.builtin
+                                        .get("minecraft:sound_event")
+                                        .unwrap()
+                                        .name(packet.sound.0)
+                                        .unwrap()
+                                        .to_owned()
+                                });
+                                Some((name, packet.source, packet.volume))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let blocks = mod_api::SoundSource::Blocks.index();
+            let vanilla_gate = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:oak_fence_gate")
+                .unwrap();
+            game.options.dedicated = Some(Vec::new());
+            for (state, name) in [
+                (vanilla_gate, "minecraft:block.fence_gate.open"),
+                (gate, use_sound),
+            ] {
+                game.world.set(x, y, z, state).unwrap();
+                game.audio.capture = Some(Vec::new());
+                let (answer, dry) = game.remote_block_reacts(&hit, None, true);
+                assert!(answer.consumes_action());
+                game.predict_use(&dry, 1);
+                assert!(open(game), "the gate opens without a server round trip");
+                let capture = game.audio.capture.as_mut().unwrap();
+                assert_eq!(capture.len(), 1);
+                let predicted = capture.pop().unwrap();
+                assert_eq!((predicted.event.as_str(), predicted.source), (name, blocks));
+
+                game.world.set(x, y, z, state).unwrap();
+                game.world.block_log = Some(Vec::new());
+                assert!(
+                    game.guest_use_item_on(
+                        12,
+                        game.guest_index(12).unwrap(),
+                        hit,
+                        super::Hand::Main,
+                        None,
+                    )
+                    .unwrap()
+                );
+                assert!(open(game));
+                game.lan_broadcast_effects();
+                assert!(sounds(game, &actor).is_empty(), "no echo to the clicker");
+                assert_eq!(sounds(game, &other), [(name.into(), blocks as i32, 1.0)]);
+            }
+
+            game.explosion_trigger_blocks(&mut [pos]).unwrap();
+            assert!(!open(game));
+            game.lan_broadcast_effects();
+            for listener in [&actor, &other] {
+                assert_eq!(
+                    sounds(game, listener),
+                    [(blast_sound.into(), blocks as i32, 1.0)]
+                );
+            }
+
+            let power = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:redstone_block")
+                .unwrap();
+            assert!(game.with_level(|b, level, ticks| {
+                b.set_block(level, ticks, BlockPos::new(x + 1, y, z), power, 3)
+            }));
+            game.process_level_events().unwrap();
+            assert!(open(game));
+            game.lan_broadcast_effects();
+            for listener in [&actor, &other] {
+                assert_eq!(
+                    sounds(game, listener),
+                    [(wire_sound.into(), blocks as i32, 1.0)]
+                );
+            }
+            assert_eq!(game.audio.heard.get(blast_sound), Some(&1));
+            let powered = game
+                .with_props(gate, &[("open", "true"), ("powered", "true")])
+                .unwrap();
+            game.world.set(x, y, z, powered).unwrap();
+            game.explosion_trigger_blocks(&mut [pos]).unwrap();
+            assert_eq!(game.world.block(x, y, z), powered);
+            assert_eq!(game.audio.heard.get(blast_sound), Some(&1));
+        });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn block_alias_survival_consumption_and_client_prediction() {
         use crate::game::{Audio, Game, Options, Progress, Settings, World, load_resources};
+        use std::{path::PathBuf, sync::Arc};
         use sunrise_client::{
             chunk::Chunk,
             items::ItemStack,
             mod_content::{ContentMod, build},
         };
         use sunrise_mod_package::content::{Block, Content, Item};
-        use std::{path::PathBuf, sync::Arc};
         let base = PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
         );
@@ -14934,7 +9703,7 @@ pub(crate) mod tests {
             let preview = game
                 .remote_can_place(&hit, &stack)
                 .expect("client predicts the alias");
-            assert_eq!([preview.0.x, preview.0.y, preview.0.z], pos);
+            assert_eq!([preview.pos.x, preview.pos.y, preview.pos.z], pos);
             assert_eq!(
                 game.world.block(pos[0], pos[1], pos[2]),
                 game.res.facts().air,
@@ -14977,7 +9746,7 @@ pub(crate) mod tests {
     /// runs fast (a potion drunk starts the same way). A client a tick off is what GrimAC's
     /// Simulation flagged.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_servers_client_takes_its_speed_from_the_attributes_not_the_effect() {
         use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
         use sunrise_client::motion::PlayerMotion;
@@ -15085,844 +9854,41 @@ pub(crate) mod tests {
         );
     }
 
-    /// `ItemFrame.interact`, `AbstractBoat.interact`, and `Minecart.interact`:
-    /// interactions that pass leave the click to the held item without swinging;
-    /// vehicle boarding answers CONSUME and ends the click without a predicted swing (#9120).
-    #[test]
-    fn object_interactions_pass_and_swing_vanilla() {
-        // ItemFrame: fixed frame or empty frame + empty hand passes.
-        assert!(item_frame_interact_passes(true, true, true));
-        assert!(item_frame_interact_passes(true, false, false));
-        assert!(item_frame_interact_passes(false, false, false));
-        // ItemFrame: inserting or rotating item does not pass.
-        assert!(!item_frame_interact_passes(false, true, false)); // rotates
-        assert!(!item_frame_interact_passes(false, false, true)); // inserts
-        assert!(!item_frame_interact_passes(false, true, true)); // rotates
-
-        // Boat: sneaking or out of control passes.
-        assert!(boat_interact_passes(false, true, false, true)); // sneaking
-        assert!(boat_interact_passes(false, false, true, true)); // out of control
-        // Boat: the client answers SUCCESS, room or not (startRiding is the server's).
-        assert!(!boat_interact_passes(false, false, false, true));
-        assert!(!boat_interact_passes(false, false, false, false));
-
-        // Chest boat: sneaking opens the chest; boarding answers SUCCESS.
-        assert!(!boat_interact_passes(true, true, false, true)); // opens chest
-        assert!(!boat_interact_passes(true, false, false, false)); // boards (client)
-        // Chest boat out of control: passes with room, else opens the chest.
-        assert!(boat_interact_passes(true, false, true, true));
-        assert!(!boat_interact_passes(true, false, true, false));
-
-        // Swings: boarding a rideable cart answers CONSUME (no swing).
-        assert!(!remote_object_swings(None, true));
-        // Swings: other object interactions, a boat's boarding too, answer SUCCESS.
-        assert!(remote_object_swings(None, false));
-        // Interaction entities honor response.
-        assert!(remote_object_swings(Some(true), false));
-        assert!(!remote_object_swings(Some(false), false));
-    }
-
-    /// A mod's pre-filled chat opens only over the world, with its text
-    /// typed in and nothing sent.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn mod_open_chat_fills_the_box_only_over_the_world() {
-        use super::super::{
-            Audio, Game, Options, Progress, Screen, Settings, execution_role::ExecutionRole,
-            load_resources,
-        };
-
-        let root = std::path::PathBuf::from(
-            std::env::var_os("SUNRISE_TEST_RESOURCES")
-                .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
-        );
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
-            &Progress::new(),
-            &mut |_, _| unreachable!("no menu handoff"),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = ExecutionRole::Client;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.clone(),
-            )),
-            None,
-        )
-        .unwrap();
-
-        // No player: the title screen.
-        game.player = None;
-        assert!(game.open_chat("/tp ").is_err());
-        assert!(game.ui.chat_screen.is_none());
-        game.player = Some(
-            sunrise_client::motion::PlayerMotion::new(
-                game.motion,
-                sunrise_core::geometry::Vec3::ZERO,
-            )
-            .unwrap(),
-        );
-        game.screen = Screen::Paused;
-        assert!(game.open_chat("/tp ").is_err());
-        assert!(game.ui.chat_screen.is_none());
-        game.screen = Screen::Playing;
-        assert!(game.open_chat("/tp ").is_ok());
-        assert!(game.screen == Screen::Chat);
-        assert_eq!(game.ui.chat_screen.as_ref().unwrap().input.value, "/tp ");
-        // The chat is a screen too: a second call doesn't replace what's typed.
-        assert!(game.open_chat("hello").is_err());
-        assert_eq!(game.ui.chat_screen.as_ref().unwrap().input.value, "/tp ");
-    }
-
-    /// The packet riding graph must retain invisible intermediary entities. A custom
-    /// sit plugin can use an area-effect cloud, whose server position stops updating
-    /// while it rides a player, with a player or marker stand as its own passenger.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn plugin_player_stack_follows_network_moves_and_local_carriers() {
-        use super::super::{
-            Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
-        };
-        use sunrise_client::{motion::PlayerMotion, sprint::Keys};
-        use sunrise_core::geometry::Vec3;
-        use sunrise_protocol::packets::play::{self, Clientbound as C};
-        let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            ExecutionRole::Client,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = ExecutionRole::Client;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.clone(),
-            )),
-            None,
-        )
-        .unwrap();
-        let (client, _server) = sunrise_protocol::connection::Pipe::pair();
-        game.connect_local(client, "SeatTest").unwrap();
-        game.remote.as_mut().unwrap().entity_id = 7;
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
-        game.spawn_entity(40, "minecraft:player", [2.0, 64.0, 3.0], [0.0; 3]);
-        game.spawn_entity(41, "minecraft:player", [0.0, 64.0, 0.0], [0.0; 3]);
-        game.spawn_entity(42, "minecraft:area_effect_cloud", [0.0; 3], [0.0; 3]);
-        let set = |g: &mut Game<'_>, vehicle, passengers: Vec<i32>| {
-            g.handle_packet(C::SetPassengers(play::SetPassengers {
-                vehicle,
-                passengers,
-            }))
-            .unwrap();
-        };
-        set(&mut game, 40, vec![42]);
-        set(&mut game, 42, vec![7, 41]);
-        let close = |at: Vec3, x: f64, y: f64, z: f64| {
-            assert!(
-                (at.x - x).abs() < 1e-5 && (at.y - y).abs() < 1e-5 && (at.z - z).abs() < 1e-5,
-                "position {at:?}, expected [{x}, {y}, {z}]"
-            );
-        };
-        assert!(game.remote_ride(Keys::default(), 0).unwrap());
-        close(game.player.as_ref().unwrap().position, 2.0, 65.7, 3.0);
-        close(
-            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
-            2.0,
-            65.7,
-            3.0,
-        );
-        game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
-            id: 40,
-            path: play::PositionPath::Linear([12.0, 67.0, -4.0]),
-            yaw: 45.0,
-            pitch: 0.0,
-            on_ground: true,
-        }))
-        .unwrap();
-        for _ in 0..4 {
-            game.tick_remote_entities(true);
-            game.remote_ride(Keys::default(), 0).unwrap();
-        }
-        close(game.player.as_ref().unwrap().position, 12.0, 68.7, -4.0);
-        close(
-            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
-            12.0,
-            68.7,
-            -4.0,
-        );
-        // The intermediary's packet position must remain unchanged for relative decoding.
-        assert_eq!(
-            game.remote.as_ref().unwrap().tracked(42).unwrap().1,
-            [0.0; 3]
-        );
-        // A remote player riding the local player must follow our own movement too.
-        set(&mut game, 42, vec![41]);
-        set(&mut game, 7, vec![42]);
-        game.player.as_mut().unwrap().position = Vec3::new(20.0, 70.0, 25.0);
-        game.position_riders();
-        close(
-            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
-            20.0,
-            71.7,
-            25.0,
-        );
-        // A direct stack has no intermediary's 0.5-height offset.
-        set(&mut game, 40, vec![7, 41]);
-        game.remote_ride(Keys::default(), 0).unwrap();
-        close(game.player.as_ref().unwrap().position, 12.0, 68.2, -4.0);
-        close(
-            game.mobs.iter().find(|m| m.id == 41).unwrap().position,
-            12.0,
-            68.2,
-            -4.0,
-        );
-        // Removing the carrier detaches passengers even without a final empty packet.
-        game.remove_entity(40);
-        assert_eq!(game.riding, None);
-        assert_eq!(
-            game.mobs.iter().find(|m| m.id == 41).unwrap().extra.mount,
-            None
-        );
-    }
-
-    /// `Entity.isColliding` and the snap `ClientLevel.syncBlockState` makes: a
-    /// block the server puts back where the player stands sends it to the
-    /// position the prediction remembered, and a block that comes back clear of
-    /// the player, an empty one, or one the player has been teleported since
-    /// leaves it where it is.
-    #[test]
-    fn a_block_the_server_puts_back_snaps_the_player_out_of_it() {
-        use sunrise_core::geometry::{Aabb, Vec3, VoxelShape};
-        // A player standing in block (0, 64, 0): 0.6 wide, 1.8 tall.
-        let player = Aabb::new(Vec3::new(0.2, 64.0, 0.2), Vec3::new(0.8, 65.8, 0.8));
-        let cube = VoxelShape::block();
-        assert!(
-            shape_meets(&cube, [0, 64, 0], player),
-            "the block the player is standing in"
-        );
-        assert!(!shape_meets(&cube, [0, 66, 0], player), "above its head");
-        assert!(
-            !shape_meets(&cube, [1, 64, 0], player),
-            "the block beside it"
-        );
-        assert!(!shape_meets(&VoxelShape::empty(), [0, 64, 0], player));
-
-        // The snap itself: the remembered position, unless a teleport came after
-        // the prediction (`lastTeleportSequence < sequence`).
-        let at = [0.5, 64.0, 0.5];
-        assert_eq!(snap_target(at, -1, 3, true), Some(at));
-        assert_eq!(snap_target(at, -1, 3, false), None, "a block it clears");
-        assert_eq!(snap_target(at, 3, 3, true), None, "teleported at 3");
-        assert_eq!(
-            snap_target(at, 2, 3, true),
-            Some(at),
-            "teleported before it"
-        );
-    }
-
-    /// `MultiPlayerGameMode.useItem`'s `shouldSwing`: the SUCCESS answers
-    /// swing, CONSUME's do not (#6425).
-    #[test]
-    fn a_thrown_item_swinging_on_a_server_and_a_charge_not() {
-        let stack = |id: &str| ItemStack::new(id, 1);
-        // SUCCESS: the throwables, a bucket, a boat, a bundle, a book, a map.
-        for id in [
-            "minecraft:ender_pearl",
-            "minecraft:splash_potion",
-            "minecraft:wind_charge",
-            "minecraft:snowball",
-            "minecraft:experience_bottle",
-            "minecraft:bucket",
-            "minecraft:oak_boat",
-            "minecraft:bundle",
-            "minecraft:writable_book",
-            "minecraft:map",
-        ] {
-            assert!(remote_use_swings(&stack(id), false), "{id} swings");
-        }
-        // CONSUME: the charges and startUsingInstantly's uses, a drinkable
-        // potion among them (`consumable` set).
-        for id in [
-            "minecraft:bow",
-            "minecraft:crossbow",
-            "minecraft:trident",
-            "minecraft:spyglass",
-            "minecraft:goat_horn",
-            "minecraft:ender_eye",
-        ] {
-            assert!(!remote_use_swings(&stack(id), false), "{id} does not swing");
-        }
-        // The kinetic weapons charge like a trident.
-        assert!(!remote_use_swings(&stack("minecraft:iron_spear"), false));
-        // A consumable (food, a drink) starts its use without a swing.
-        assert!(!remote_use_swings(&stack("minecraft:apple"), true));
-    }
-
-    /// Minecraft.tick: CLIENT_TICK_END only while a level exists. None before
-    /// the first Login (configuration has finished, the server has not placed
-    /// the player yet), and none from StartConfiguration until the next Login.
-    #[test]
-    fn tick_ends_need_the_level_the_login_makes() {
-        assert!(!client_has_level(false, None), "joined, waiting for Login");
-        assert!(client_has_level(true, None), "after Login");
-        assert!(!client_has_level(true, Some(40)), "reconfiguring");
-    }
-
-    /// #12148: a proxy moves the player to its next server. The last server's
-    /// columns stay until the next Login, but Reconfigured already put in the
-    /// next server's biome table, shorter when only the last server had a
-    /// biome the game lacks: the columns hold an id past it ("the len is 67
-    /// but the index is 67"). Vanilla's clearClientLevel leaves no player, so
-    /// getSituationalMusic is MENU, and ServerReconfigScreen (no
-    /// LevelLoadingScreen) lets MusicManager.tick start it.
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn a_reconfiguring_client_plays_menu_music_and_never_indexes_past_the_biomes() {
-        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
-        use sunrise_client::{chunk::Chunk, music::Music};
-        use sunrise_core::geometry::Vec3;
-        let root = std::path::PathBuf::from(
-            std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
-        );
-        let settings = Settings::default();
-        let loaded = load_resources(
-            sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            crate::game::execution_role::ExecutionRole::Client,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&sunrise_assets::resource_source::ResourceSource::directory(
-                root.clone(),
-            )),
-            None,
-        )
-        .unwrap();
-        game.init_remote_for_replay().unwrap();
-        // The last server's column at the origin: its extra biome came after
-        // the built-in ones, one past the table the next server leaves.
-        let stale = world_biomes!(game).list.len() as u16;
-        let mut column = Chunk::empty(0, 0);
-        // Quart 16 above the column's bottom at -64: block y 0.
-        column.set_biome_cell(0, 16, 0, stale);
-        game.world
-            .chunks
-            .insert((0, 0), std::sync::Arc::new(column));
-        assert_eq!(game.biome_at([0.0; 3]), "minecraft:plains");
-        assert_eq!(
-            game.biome_name_at(Vec3::new(0.5, 0.5, 0.5)).as_deref(),
-            Some("minecraft:plains")
-        );
-
-        // StartConfiguration after a Login: no player, ServerReconfigScreen.
-        let ticks = game.ticks;
-        let r = game.remote.as_mut().unwrap();
-        r.logged_in = true;
-        r.reconfiguring = Some(ticks);
-        game.player = None;
-        assert_eq!(game.situational_music().0, Some(Music::menu()));
-        // A new manager waits its first 100 ticks, then starts the menu track.
-        let menu = (0..=100).any(|_| {
-            game.tick_music();
-            game.music.current(&game.audio.engine) == Some("minecraft:music.menu")
-        });
-        assert!(menu, "the menu music starts under ServerReconfigScreen");
-
-        // With a level again the camera probe reads that column: plains' music.
-        game.remote.as_mut().unwrap().reconfiguring = None;
-        let (music, _) = game.situational_music();
-        assert!(music.is_some_and(|m| m != Music::menu()));
-    }
-
-    /// The server's on-fire flag keeps the predicted countdown (which
-    /// `fluid_base_tick` runs down) from ending the fire; a clear flag leaves
-    /// the window's own contact fire alone.
-    #[test]
-    fn the_servers_fire_flag_holds_the_burning_state_through_the_countdown() {
-        let mut ticks = 1;
-        for _ in 0..5 {
-            ticks = hold_server_fire(ticks - 1, true);
-            assert!(ticks > 0, "still burning");
-        }
-        assert_eq!(hold_server_fire(300, true), 300, "a longer fire is not cut");
-        assert_eq!(hold_server_fire(7, false), 7, "predicted lava fire stays");
-        assert_eq!(hold_server_fire(0, false), 0);
-    }
-
-    #[test]
-    fn a_beacon_update_tag_keeps_the_beam_the_client_walked() {
-        let old = BlockEntity::Beacon(Box::new(Beacon {
-            levels: 1,
-            primary: Some("minecraft:speed".into()),
-            sections: vec![(0xF9FFFE, 2)],
-            checking: vec![(0xF9FFFE, 1)],
-            last_check_y: 70,
-            ..Default::default()
-        }));
-        // BeaconBlockEntity.getUpdateTag: saveCustomOnly.
-        let tag = Tag::compound([
-            ("id", Tag::String("minecraft:beacon".into())),
-            ("x", Tag::Int(0)),
-            ("y", Tag::Int(64)),
-            ("z", Tag::Int(0)),
-            ("primary_effect", Tag::String("minecraft:haste".into())),
-            (
-                "secondary_effect",
-                Tag::String("minecraft:regeneration".into()),
-            ),
-            ("Levels", Tag::Int(4)),
-        ]);
-        let (_, mut new) = sunrise_client::save::decode_block_entity(&tag).unwrap();
-        keep_client_state(Some(&old), &mut new);
-        let BlockEntity::Beacon(b) = new else {
-            panic!("not a beacon");
-        };
-        assert_eq!(b.sections, vec![(0xF9FFFE, 2)]);
-        assert_eq!(b.checking, vec![(0xF9FFFE, 1)]);
-        assert_eq!(b.last_check_y, 70);
-        // The powers are the tag's; the levels stay the client's own (not read).
-        assert_eq!(b.primary.as_deref(), Some("minecraft:haste"));
-        assert_eq!(b.secondary.as_deref(), Some("minecraft:regeneration"));
-        assert_eq!(b.levels, 1);
-    }
-
-    #[test]
-    fn the_server_stopping_the_use_lowers_the_shield() {
-        // Player.disableShield's stopUsingItem: flags 0 or 2 while the
-        // off-hand shield is raised (LocalPlayer.onSyncedDataUpdated →
-        // stopUsingItem). stopUsingItem clears bit 0 and leaves bit 1, so a
-        // main-hand stop is 0 and an off-hand stop is 2.
-        let off = super::super::shield::OFFHAND_SLOT;
-        assert_eq!(synced_local_use(Some((off, 12)), 0, 3, |_| true), None);
-        assert_eq!(synced_local_use(Some((3, 5)), 0, 3, |_| true), None);
-        assert_eq!(synced_local_use(Some((off, 12)), 2, 3, |_| true), None);
-    }
-
-    #[test]
-    fn the_server_starting_a_use_starts_it_in_that_hand() {
-        let off = super::super::shield::OFFHAND_SLOT;
-        assert_eq!(synced_local_use(None, 1, 4, |_| true), Some((4, 0)));
-        assert_eq!(synced_local_use(None, 3, 4, |_| true), Some((off, 0)));
-        // LivingEntity.startUsingItem needs an item in the hand.
-        assert_eq!(synced_local_use(None, 1, 4, |_| false), None);
-    }
-
-    /// tooBigToInterpolate: a position sync measures from where the entity
-    /// is, a teleport from where its interpolation is headed.
-    #[test]
-    fn a_far_move_snaps_by_the_packets_own_measure() {
-        use super::{MovePacket, Path, PosRot, SteppedInterpolation};
-        let at = |x: f64| PosRot {
-            position: [x, 0.0, 0.0],
-            yaw: 0.0,
-            pitch: 0.0,
-        };
-        let mut handler = SteppedInterpolation::new(3);
-        // At x 0, headed for x 50.
-        handler.interpolate_to(at(0.0), Some(Path::Linear([50.0, 0.0, 0.0])), None);
-        let to = [100.0, 0.0, 0.0];
-        assert!(MovePacket::PositionSync.snaps(&handler, at(0.0), to));
-        assert!(!MovePacket::Teleport.snaps(&handler, at(0.0), to));
-        assert!(!MovePacket::Move.snaps(&handler, at(0.0), to));
-        // With nothing in flight, both measure from the entity.
-        let idle = SteppedInterpolation::new(3);
-        assert!(MovePacket::Teleport.snaps(&idle, at(0.0), to));
-        assert!(!MovePacket::Teleport.snaps(&idle, at(0.0), [60.0, 0.0, 0.0]));
-    }
-
-    /// A far sync puts the entity there and drops the steps it was walking;
-    /// a rotation alone keeps the position it is headed for and turns there
-    /// over the update interval.
-    #[test]
-    fn a_living_entitys_move_snaps_or_steps() {
-        use super::{MovePacket, Path, PosRot, SteppedInterpolation, stepped_move};
-        let at = |x: f64, yaw: f32| PosRot {
-            position: [x, 0.0, 0.0],
-            yaw,
-            pitch: 0.0,
-        };
-        let mut handler = SteppedInterpolation::new(3);
-        // Walking to x 5 when the far sync comes.
-        handler.interpolate_to(at(0.0, 0.0), Some(Path::Linear([5.0, 0.0, 0.0])), None);
-        assert!(handler.active());
-        let far = [100.0, 0.0, 0.0];
-        let snap = stepped_move(
-            &mut handler,
-            MovePacket::PositionSync,
-            at(0.0, 0.0),
-            far,
-            Some(Path::Linear(far)),
-            Some((90.0, 0.0)),
-        );
-        assert_eq!(snap, Some(at(100.0, 90.0)));
-        assert!(!handler.active());
-        assert_eq!(handler.interpolate(), None, "no step back toward x 5");
-        // A rotation-only move packet.
-        let turn = stepped_move(
-            &mut handler,
-            MovePacket::Move,
-            at(100.0, 90.0),
-            far,
-            None,
-            Some((180.0, 0.0)),
-        );
-        assert_eq!(turn, None);
-        let steps: Vec<_> = std::iter::from_fn(|| handler.interpolate()).collect();
-        assert_eq!(
-            steps.iter().map(|s| s.yaw).collect::<Vec<_>>(),
-            [120.0, 150.0, 180.0]
-        );
-        assert!(steps.iter().all(|s| s.position == far));
-    }
-
-    #[test]
-    fn matching_flags_leave_a_running_use_alone() {
-        assert_eq!(synced_local_use(Some((2, 7)), 1, 2, |_| true), Some((2, 7)));
-        assert_eq!(synced_local_use(None, 0, 2, |_| true), None);
-    }
-
-    /// `ChatType.Bound.decorate` and `decorateNarration`: a private message
-    /// shows as "Steve whispers to you: hi" and is narrated "Steve says hi";
-    /// a chat type the registry lacks is `minecraft:chat`'s.
-    #[test]
-    fn chat_is_narrated_with_its_chat_types_narration_decoration() {
-        use super::{Decoration, chat_type_decorate, play};
-        use sunrise_core::nbt::{JavaString, Tag, parse_snbt};
-        use serde_json::json;
-        let bound = play::ChatTypeBound {
-            chat_type: 0,
-            name: Tag::String(JavaString::from("Steve")),
-            target: None,
-        };
-        let content = json!("hi");
-        let (incoming, _) = parse_snbt(
-            r#"{chat:{translation_key:"commands.message.display.incoming",parameters:["sender","content"],style:{color:"gray",italic:1b}},narration:{translation_key:"chat.type.text.narrate",parameters:["sender","content"]}}"#,
-        )
-        .unwrap();
-        let chat = chat_type_decorate(Some(&incoming), Decoration::Chat, &bound, &content);
-        assert_eq!(chat["translate"], "commands.message.display.incoming");
-        assert_eq!(chat["color"], "gray");
-        assert_eq!(chat["with"], json!(["Steve", "hi"]));
-        assert_eq!(
-            chat_type_decorate(Some(&incoming), Decoration::Narration, &bound, &content),
-            json!({"translate": "chat.type.text.narrate", "with": ["Steve", "hi"]})
-        );
-        assert_eq!(
-            chat_type_decorate(None, Decoration::Narration, &bound, &content),
-            json!({"translate": "chat.type.text.narrate", "with": ["Steve", "hi"]})
-        );
-        assert_eq!(
-            chat_type_decorate(None, Decoration::Chat, &bound, &content)["translate"],
-            "chat.type.text"
-        );
-    }
-
-    /// A cauldron's fill level is a use this client predicts, and a guest's
-    /// host forwards its sound: every cauldron state counts, not only the
-    /// doors and levers.
-    #[test]
-    fn every_cauldron_counts_as_hand_operated() {
-        for name in [
-            "minecraft:cauldron",
-            "minecraft:water_cauldron",
-            "minecraft:lava_cauldron",
-            "minecraft:powder_snow_cauldron",
-        ] {
-            assert!(super::hand_operated(name), "{name}");
-        }
-        assert!(!super::hand_operated("minecraft:water"));
-    }
-
-    /// An NPC plugin lists the NPC, spawns it, and takes the entry off the list:
-    /// the entity keeps the skin it found; a player spawned before its entry
-    /// arrives takes the entry once it comes.
-    #[test]
-    fn a_player_entity_keeps_the_skin_its_entry_gave() {
-        use sunrise_client::skins::Textures;
-        use std::collections::HashMap;
-        let npc = Textures {
-            skin: Some("http://textures.minecraft.net/texture/npc".into()),
-            signed: true,
-            ..Textures::default()
-        };
-        let (mut listed, mut kept) = (HashMap::from([(7u128, npc.clone())]), HashMap::new());
-        let mut players = HashMap::from([(2i32, 7u128), (3, 8)]);
-        assert_eq!(
-            super::skin_entries(&players, &listed, &mut kept),
-            [(7, npc.clone())]
-        );
-        listed.remove(&7);
-        assert_eq!(
-            super::skin_entries(&players, &listed, &mut kept),
-            [(7, npc.clone())]
-        );
-        // Player 8's entry comes after its entity.
-        let late = Textures {
-            skin: Some("http://textures.minecraft.net/texture/late".into()),
-            ..npc.clone()
-        };
-        listed.insert(8, late.clone());
-        let mut entries = super::skin_entries(&players, &listed, &mut kept);
-        entries.sort_by_key(|(u, _)| *u);
-        assert_eq!(entries, [(7, npc), (8, late)]);
-        // A removed entity forgets its profile with it.
-        players.remove(&2);
-        kept.remove(&2);
-        listed.clear();
-        assert_eq!(super::skin_entries(&players, &listed, &mut kept).len(), 1);
-    }
-
-    #[test]
-    fn tab_publication_fingerprint_tracks_all_inputs() {
-        let fingerprint = |ids: &[u128], skins, atlas| {
-            (
-                ids.len(),
-                ids.iter().fold(0, |xor, uuid| xor ^ uuid),
-                skins,
-                atlas,
-            )
-        };
-        let published = fingerprint(&[7, 8], 1, 2);
-        assert_eq!(published, fingerprint(&[8, 7], 1, 2));
-        assert_ne!(published, fingerprint(&[7, 9], 1, 2));
-        assert_ne!(published, fingerprint(&[7, 8], 2, 2));
-        assert_ne!(published, fingerprint(&[7, 8], 1, 3));
-    }
-
-    #[test]
-    fn tab_object_skin_publication_tracks_changes_and_atlas_clear() {
-        let mut published = std::collections::HashMap::new();
-        let mut writes = 0;
-        for skin in ["skins/first", "skins/first", "skins/second"] {
-            for key in ["id:7", "name:player"] {
-                if super::object_skin_changed(&published, key, skin) {
-                    published.insert(key.to_owned(), skin.to_owned());
-                    writes += 1;
-                }
-            }
-        }
-        assert_eq!(writes, 4, "unchanged skins do not publish either entry");
-        published.clear();
-        assert!(super::object_skin_changed(
-            &published,
-            "id:7",
-            "skins/second"
-        ));
-        assert!(super::object_skin_changed(
-            &published,
-            "name:player",
-            "skins/second"
-        ));
-    }
-
-    /// An NPC plugin's scale: a base the plugin sets, or a modifier on 1.
-    #[test]
-    fn attribute_values_add_then_multiply_as_vanilla() {
-        use sunrise_protocol::packets::play::{AttributeModifier, AttributeSnapshot};
-        let modifier = |amount, operation| AttributeModifier {
-            id: "minecraft:proof".into(),
-            amount,
-            operation,
-        };
-        let snapshot = |base, modifiers| AttributeSnapshot {
-            attribute: 0,
-            base,
-            modifiers,
-        };
-        assert_eq!(super::snapshot_value(&snapshot(2.0, vec![])), 2.0);
-        assert_eq!(
-            super::snapshot_value(&snapshot(1.0, vec![modifier(1.0, 0)])),
-            2.0
-        );
-        // (1 + 1) * (1 + 0.5) from the base, then * (1 + 1) of the total.
-        let all = vec![modifier(1.0, 0), modifier(0.5, 1), modifier(1.0, 2)];
-        assert_eq!(super::snapshot_value(&snapshot(1.0, all)), 6.0);
-    }
-
     use super::Game;
+}
 
-    /// `Entity.lookAt`: yaw 0 faces +Z, -90 faces +X; pitch -90 looks up.
-    #[test]
-    fn look_at_turns_towards_the_target() {
-        let close = |(yaw, pitch): (f32, f32), want: (f32, f32)| {
-            assert!(
-                (yaw - want.0).abs() < 1e-3 && (pitch - want.1).abs() < 1e-3,
-                "{yaw} {pitch}, want {want:?}"
-            );
-        };
-        let at = [10.0, 64.0, -5.0];
-        let off = |d: [f64; 3]| [at[0] + d[0], at[1] + d[1], at[2] + d[2]];
-        close(
-            super::look_at_rotation(at, off([0.0, 0.0, 3.0])),
-            (0.0, 0.0),
-        );
-        close(
-            super::look_at_rotation(at, off([3.0, 0.0, 0.0])),
-            (-90.0, 0.0),
-        );
-        close(
-            super::look_at_rotation(at, off([-3.0, 0.0, 0.0])),
-            (90.0, 0.0),
-        );
-        close(
-            super::look_at_rotation(at, off([0.0, 0.0, -3.0])),
-            (-180.0, 0.0),
-        );
-        close(
-            super::look_at_rotation(at, off([0.0, 2.0, 2.0])),
-            (0.0, -45.0),
-        );
-        close(
-            super::look_at_rotation(at, off([0.0, -4.0, 4.0])),
-            (0.0, 45.0),
-        );
-    }
-
-    /// `handleMovePlayer` moves the player's pitch and the model's old pitch
-    /// (`xRotO`) alike: a relative change keeps the ease a tick began, each
-    /// end clamped on its own, and an absolute one snaps both (#3844).
-    #[test]
-    fn a_position_packet_moves_both_pitch_ends() {
-        use super::position_packet_pitch as pitch;
-        // The tick is laying the head down from 30 to 0; the packet turns 10.
-        assert_eq!(
-            (pitch(30.0, 10.0, true), pitch(0.0, 10.0, true)),
-            (40.0, 10.0)
-        );
-        // Each end clamps on its own.
-        assert_eq!(
-            (pitch(80.0, 20.0, true), pitch(60.0, 20.0, true)),
-            (90.0, 80.0)
-        );
-        // An absolute pitch ignores both ends.
-        assert_eq!(
-            (pitch(30.0, -45.0, false), pitch(0.0, -45.0, false)),
-            (-45.0, -45.0)
-        );
-        assert_eq!(pitch(0.0, 120.0, false), 90.0);
-    }
-
-    /// The hurt sound of `ClientboundDamageEventPacket` follows its damage
-    /// type (`Player.getHurtSound`: the type's effects), with the codec's
-    /// `hurt` default for an unknown type (#4149).
-    #[test]
-    fn the_hurt_sound_follows_the_damage_events_type() {
-        use super::hurt_sound_for;
-        use sunrise_protocol::registry::Dynamic;
-        use sunrise_world::damage_source::Catalog;
-        let types = [
-            ("minecraft:in_fire", "burning"),
-            ("minecraft:drown", "drowning"),
-            ("minecraft:sweet_berry_bush", "poking"),
-            ("minecraft:freeze", "freezing"),
-            ("minecraft:arrow", "hurt"),
-        ];
-        // The types the server synchronized, in registry order.
-        let mut registries = Dynamic::default();
-        registries.add(sunrise_protocol::packets::configuration::RegistryData {
-            registry: "minecraft:damage_type".into(),
-            entries: types
-                .iter()
-                .map(
-                    |(id, _)| sunrise_protocol::packets::configuration::RegistryEntry {
-                        id: (*id).into(),
-                        data: None,
-                    },
-                )
-                .collect(),
-        });
-        // The damage catalog: one entry per type above, each with its effects.
-        let bits = |f: f32| format!("{:08x}", f.to_bits());
-        let catalog = Catalog::from_json(
-            &serde_json::json!({
-                "data_version": i64::from(sunrise_world::DATA_VERSION),
-                "types": types.iter().map(|(id, effects)| serde_json::json!({
-                    "id": id,
-                    "message_id": id.trim_start_matches("minecraft:"),
-                    "exhaustion": bits(0.1),
-                    "scaling": "when_caused_by_living_non_player",
-                    "effects": effects,
-                    "death_message_type": "default",
-                })).collect::<Vec<_>>(),
-            }),
-            &serde_json::json!({}),
-        )
-        .unwrap();
-        for (id, (name, effects)) in types.iter().enumerate() {
-            assert_eq!(
-                hurt_sound_for(&registries, &catalog, id as i32),
-                sunrise_client::health::hurt_sound(effects),
-                "{name}"
-            );
+#[cfg(test)]
+mod boat_push_order_tests;
+#[cfg(test)]
+mod item_use_tick_tests;
+#[cfg(test)]
+mod movement_input_tests;
+#[cfg(test)]
+mod swim_start_tests;
+/// `Entity.baseTick`'s fluid update for a mob this window only displays (`fluids`, sampled before
+/// the tick), with the splash it draws, and the block it stands on.
+pub(super) fn client_fluid_step(
+    m: &mut sunrise_client::mobs::Mob,
+    fluids: Option<sunrise_client::mobs::living::Fluids>,
+    standing: Option<String>,
+    own: Option<i32>,
+    fx: &mut Vec<sunrise_client::mobs::MobEvent>,
+) {
+    if let Some(fluids) = fluids {
+        let was = m.fluids.in_water;
+        let first = m.first_tick;
+        // Entity.baseTick saves the preceding eye sample before the new fluid update.
+        m.was_eye_in_water = m.fluids.eye_in_water;
+        m.fluids = fluids;
+        // Entity.doWaterSplashEffect on the client copy. Particles
+        // only: ClientLevel draws addParticle, and playSeededSound
+        // drops Entity.playSound (the server broadcasts that).
+        if m.fluids.in_water && !was && !first && Some(m.id as i32) != own {
+            sunrise_client::mobs::living::client_water_splash(m, fx);
         }
-        // An unknown id falls back to the codec's default effects.
-        assert_eq!(
-            hurt_sound_for(&registries, &catalog, types.len() as i32),
-            "minecraft:entity.player.hurt"
-        );
-        // A server-defined damage type with inline NBT effects needs no entry in
-        // the client's built-in catalog.
-        let mut custom = sunrise_core::nbt::Compound::new();
-        custom.insert(
-            "effects".into(),
-            sunrise_core::nbt::Tag::String("burning".into()),
-        );
-        registries.add(sunrise_protocol::packets::configuration::RegistryData {
-            registry: "minecraft:damage_type".into(),
-            entries: vec![sunrise_protocol::packets::configuration::RegistryEntry {
-                id: "custom:lava_splash".into(),
-                data: Some(sunrise_core::nbt::Tag::Compound(custom)),
-            }],
-        });
-        assert_eq!(
-            hurt_sound_for(&registries, &catalog, 0),
-            "minecraft:entity.player.hurt_on_fire"
-        );
+        m.first_tick = false;
     }
+<<<<<<< sync-sunrise-1
     #[test]
     fn synchronized_damage_defaults_override_a_different_local_definition() {
         let local = sunrise_world::damage_source::Catalog::from_json(&serde_json::json!({
@@ -16562,11 +10528,21 @@ pub(crate) mod tests {
 
         let done = game.remote_use_block(Hand::Main);
         assert!(done, "flint and steel useOn must end the click");
+=======
+    if let Some(name) = standing {
+        m.standing_on = Some(name);
+>>>>>>> sunrise/main
     }
 }
 
 #[cfg(test)]
-mod movement_input_tests;
+mod frozen_screen_effects_tests;
+#[cfg(test)]
+mod placement_prediction_tests;
 #[cfg(test)]
 #[path = "player_tick_tests.rs"]
 mod player_tick_tests;
+#[cfg(test)]
+mod rider_tick_tests;
+#[cfg(test)]
+mod smoke_source_tests;

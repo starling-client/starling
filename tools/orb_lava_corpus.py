@@ -24,10 +24,11 @@ def orb_lava(raw=False):
                  ('15 199 3', 'stone'), ('15 205 3', 'air')]:
         out.append(cmd(f'/execute if block {p} minecraft:{b}', expect_result=1))
     out += setup('/scoreboard objectives add orb_audit dummy')
-    actors = [('lava', '9.5 201.1 3.5', 1), ('air', '15.5 205 3.5', 2)]
-    for name, pos, n in actors:
+    actors = [('lava', '9.5 201.1 3.5', 1, 5), ('air', '15.5 205 3.5', 2, 5),
+              ('zero_health', '20.5 205 3.5', 5, 0)]
+    for name, pos, n, health in actors:
         out.append(cmd(f'/summon experience_orb {pos} '
-                       f'{{UUID:[I;305,0,0,{n}],Tags:["h305_{name}"],Health:5s,Age:0s,'
+                       f'{{UUID:[I;305,0,0,{n}],Tags:["h305_{name}"],Health:{health}s,Age:0s,'
                        'Value:1s,Count:1,NoGravity:0b,Motion:[0d,0d,0d]}', expect_result=1))
     out += setup('/execute store result score start orb_audit run time query gametime')
     for at, n in [(0, 0), (1, 1), (2, 1), (5, 3), (20, 15), (40, 20)]:
@@ -37,10 +38,10 @@ def orb_lava(raw=False):
                      '/scoreboard players operation elapsed orb_audit -= start orb_audit')
         out += [cmd('/scoreboard players get elapsed orb_audit', expect_result=at),
                 cmd('/execute if entity @s[type=player,nbt={Health:20f,Pos:[24.5d,210d,24.5d],playerGameType:3}]', expect_result=1)]
-        for name, _, ident in actors:
+        for name, _, ident, initial_health in actors:
             uuid = f'00000131-0000-0000-0000-{ident:012x}'
-            alive = name == 'air' or at < 2
-            health = 1 if name == 'lava' and at == 1 else 5
+            alive = name != 'lava' or at < 2
+            health = 1 if name == 'lava' and at == 1 else initial_health
             op = cmd(f'/execute if entity {uuid}')
             op['expect_callback'] = [alive, int(alive)]
             out.append(op)

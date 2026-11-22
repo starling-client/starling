@@ -1,5 +1,6 @@
 //! BoatItem's server POV clip; deliberately separate from renderer/mining picks.
 use super::{Fluid, Game};
+use std::io;
 use sunrise_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
     position::BlockPos,
@@ -8,7 +9,6 @@ use sunrise_world::{
     registry::BlockStateId,
     world_ray::{RayBlockMode, RayFluidMode, RayWorld, clip_world},
 };
-use std::io;
 
 pub(in crate::game) struct OutlineFluidRay<'a, 'r>(pub(in crate::game) &'a Game<'r>);
 impl RayWorld for OutlineFluidRay<'_, '_> {

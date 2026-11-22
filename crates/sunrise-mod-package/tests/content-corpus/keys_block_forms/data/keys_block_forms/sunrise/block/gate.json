@@ -1,0 +1,9 @@
+{
+  "template": "minecraft:oak_fence_gate",
+  "open_sound": "keys_block_forms:gate_open",
+  "close_sound": {
+    "use": "keys_block_forms:gate_close_use",
+    "explosion": "keys_block_forms:gate_close_explosion",
+    "redstone": "keys_block_forms:gate_close_redstone"
+  }
+}

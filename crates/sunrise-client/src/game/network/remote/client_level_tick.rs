@@ -45,6 +45,14 @@ impl Game<'_> {
     }
 
     fn tick_remote_level_body(&mut self) -> Result<()> {
+        // MultiPlayerGameMode.tick, first in Minecraft.tick, before the GUI and its screens tick:
+        // the slot chosen since the last tick (the wheel, the last tick's number keys, the
+        // server's SetHeldSlot), then its Connection.tick's ClientPacketListener.tick (the key
+        // refresh and setKeyPair: a new chat session), ahead of a closing screen's packet, this
+        // tick's actions and its move.
+        self.remote_send_carried();
+        self.tick_chat_session();
+        self.tick_debug_connection();
         self.fire_pending_block_entity_loads();
         self.ticks += 1;
         // Last tick's hits and uses held back for its move (Free Direction): first in this one,

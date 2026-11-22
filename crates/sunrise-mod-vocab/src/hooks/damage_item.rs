@@ -20,6 +20,7 @@ pub trait Hooks {
     /// swapped in, so `host.players().acting_player()` answers them. Once for
     /// each wear, on a server.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
@@ -28,5 +29,11 @@ pub trait Hooks {
         version = 2,
         neoforge = "IItemExtension.damageItem"
     )]
-    fn damage_item();
+    fn damage_item(
+        stack: &ItemStack,
+        entity: Option<LivingRef>,
+        amount: &mut i32,
+        canceled: &mut bool,
+        break_now: &mut bool,
+    );
 }

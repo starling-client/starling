@@ -1,0 +1,3 @@
+ids = ["point:sunrise_client::game::native_fluid_render::fluid_visual"]
+why = "BlockEntityDrawContext::fluid_box draws any fluid with a look, so the water-and-lava-only fluid_visual is replaced by fluid_box_look, which reads the fluid's look table."
+migrate = "An [[inject]] row or [[native.mixin]] that targeted fluid_visual targets sunrise_client::game::native_fluid_render::fluid_box_look instead, with its new signature and hash."

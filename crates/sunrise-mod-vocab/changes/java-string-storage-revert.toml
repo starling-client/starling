@@ -1,0 +1,3 @@
+ids = ["type:JavaString", "handle:JavaString::units", "handle:JavaString::units_mut", "handle:JavaString::into_units"]
+why = "JavaString is back to the public tuple JavaString(pub Vec<u16>) while its private-storage rework waits for its speed bar. NBT and Wire encodings are unchanged."
+migrate = "Read or mutate the units through the .0 field instead of units() and units_mut(), and move them out with .0 instead of into_units(). Build one with JavaString(v) instead of JavaString::from(v) or collect(). Conversion from &str and to_string()/to_string_lossy() are unchanged."

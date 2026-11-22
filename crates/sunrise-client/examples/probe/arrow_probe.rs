@@ -1,6 +1,12 @@
 //! Arrows over the client's resident scene (`arrows::tick`), for
 //! tools/test_arrow_parity.py: one line of state and one of events per operation.
 #![forbid(unsafe_code)]
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, Write},
+    path::PathBuf,
+};
 use sunrise_client::{
     Result,
     arrows::{
@@ -19,12 +25,6 @@ use sunrise_client::{
 use sunrise_core::{
     geometry::{Aabb, Vec3},
     random::{LegacyRandom, RandomSource},
-};
-use serde_json::Value;
-use std::{
-    fs,
-    io::{BufRead, Write},
-    path::PathBuf,
 };
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())

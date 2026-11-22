@@ -1,4 +1,5 @@
 //! Original transport for version-specific JSON decoding comparisons.
+use std::io::{self, BufRead, Write};
 use sunrise_core::{
     density::{
         SamplerContext,
@@ -13,7 +14,6 @@ use sunrise_world::worldgen::{
     density::DensityRegistry,
     router::{NoiseRouter, RouterField},
 };
-use std::io::{self, BufRead, Write};
 
 fn bits(value: f32) -> u32 {
     if value.is_nan() {
@@ -340,11 +340,11 @@ fn settings_probe(
     Ok(())
 }
 fn aquifer_probe(line: &str, out: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use sunrise_world::{
         registry::BlockStateId,
         worldgen::aquifer::{DisabledAquifer, FluidPicker, FluidStatus, GlobalFluidPicker},
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
     #[derive(Debug)]
     struct Counted {
         picker: GlobalFluidPicker,
@@ -354,6 +354,9 @@ fn aquifer_probe(line: &str, out: &mut impl Write) -> Result<(), Box<dyn std::er
         fn compute(&self, position: [i32; 3]) -> FluidStatus {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.picker.compute(position)
+        }
+        fn level_bound(&self, min: [i32; 2], max: [i32; 2]) -> Option<i32> {
+            self.picker.level_bound(min, max)
         }
     }
     let args: Vec<_> = line.split_whitespace().collect();
@@ -388,6 +391,7 @@ fn aquifer_probe(line: &str, out: &mut impl Write) -> Result<(), Box<dyn std::er
     Ok(())
 }
 fn noise_aquifer_probe(line: &str, out: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Mutex};
     use sunrise_core::{
         density::{ConstantSampler, DensitySampler, SampleError},
         random::PositionalRandom,
@@ -399,7 +403,6 @@ fn noise_aquifer_probe(line: &str, out: &mut impl Write) -> Result<(), Box<dyn s
             FluidStatus, GlobalFluidPicker, NoiseBasedAquifer,
         },
     };
-    use std::sync::{Arc, Mutex};
     #[derive(Debug)]
     struct Traced {
         sampler: Arc<dyn DensitySampler>,
@@ -490,6 +493,9 @@ fn noise_aquifer_probe(line: &str, out: &mut impl Write) -> Result<(), Box<dyn s
                 position[0], position[1], position[2], status.level, status.state.0
             ));
             status
+        }
+        fn level_bound(&self, min: [i32; 2], max: [i32; 2]) -> Option<i32> {
+            self.inner.level_bound(min, max)
         }
     }
     struct Blocks;

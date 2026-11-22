@@ -39,6 +39,7 @@ fn meta_hub() -> sunrise_client::lan::hub::Hub {
         &Builtin::default(),
         &[],
         &[],
+        Default::default(),
     );
     let hub_config = hub::HubConfig {
         default_game_mode: 0,
@@ -53,6 +54,7 @@ fn meta_hub() -> sunrise_client::lan::hub::Hub {
         max_players: 20,
         integrated: false,
         levels: Default::default(),
+        level_seeds: Default::default(),
     };
     hub::Hub::new(
         lan,

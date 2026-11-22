@@ -10,10 +10,6 @@ use crate::{
     http::{self, Request, Response},
     panel, settings, update,
 };
-use sunrise_server_launch::{
-    Install,
-    config::{self, Config},
-};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -25,6 +21,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
+};
+use sunrise_server_launch::{
+    Install,
+    config::{self, Config},
 };
 
 const ENDPOINT: &str = ".sunrise/api.json";
@@ -74,9 +74,9 @@ pub const ROUTES: [Route; 32] = [
     Route {
         method: "GET",
         path: "/api/v1/events",
-        takes: "`?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,chat_filtered,death,log,phase` (all by default)",
+        takes: "`?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,death,log,phase` (all by default)",
         answers: "with `Accept: text/event-stream`, server-sent events as they happen (`id`, `event`: the type, `data`: JSON); otherwise `{\"next\": N, \"events\": [...]}`",
-        what: "Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat, messages the chat filter refused (`chat_filtered`, without their text) and deaths (the last 2000 kept)",
+        what: "Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat and deaths (the last 2000 kept)",
     },
     Route {
         method: "POST",
@@ -470,7 +470,7 @@ impl Shared {
             .spawn(move || {
                 let fetched = (|| {
                     let current = install.current().unwrap_or_default();
-                    let release = update::release(None)?;
+                    let release = update::newest(&current)?;
                     if !update::update_available(&release.tag, &current) {
                         return Ok(None);
                     }
@@ -935,6 +935,22 @@ fn patch_config(shared: &Shared, body: &[u8]) -> Response {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A shorter wait for the endpoint file in tests that expect it never to appear.
+    pub(crate) static ENDPOINT_WAIT: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// How long `Client::open` waits for the endpoint file of a server that holds the lock.
+fn endpoint_wait() -> Duration {
+    #[cfg(test)]
+    if let Some(wait) = ENDPOINT_WAIT.with(|w| w.get()) {
+        return wait;
+    }
+    Duration::from_secs(5)
+}
+
 /// The API of the server running in a folder, for the CLI.
 pub struct Client {
     address: SocketAddr,
@@ -949,7 +965,7 @@ impl Client {
         }
         // The supervisor writes the endpoint just after taking the lock: give it a moment.
         let path = dir.join(ENDPOINT);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + endpoint_wait();
         let text = loop {
             match std::fs::read_to_string(&path) {
                 Ok(text) => break text,

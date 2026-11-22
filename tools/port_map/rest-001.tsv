@@ -40,7 +40,7 @@ CrashReport.addCategory	skip:debug		crash-report category sections; Sunrise's re
 CrashReport.forThrowable	port	crates/sunrise-client-render/src/crash.rs::report_error	gap: minor: report_error also writes and delivers the file; forThrowable only builds the object
 CrashReport.preload	skip:java		reserves memory and warms the report code so a later crash can be written; Sunrise's panic path needs no reserve
 CrashReportCategory.formatLocation	missing		minor: crash details never print world coordinates or chunk and region locations
-CrashReportCategory.setDetail	port	crates/sunrise-client-render/src/crash.rs::set_detail	gap: minor: flat detail list with no category section
+CrashReportCategory.setDetail	port	crates/sunrise-mod-api/src/content/crash.rs::set_detail	gap: minor: flat detail list with no category section
 CrashReportCategory.fillInStackTrace	skip:debug		stack trimming for a crash category; Rust panic backtraces are filtered in stack_lines
 CrashReportCategory.validateStackTrace	skip:debug		stack trimming for a crash category; see stack_lines
 CrashReportCategory.getDetails	inline	crates/sunrise-client-render/src/crash.rs::Report::text	category sections are not kept; Report::text writes the details
@@ -62,7 +62,7 @@ SharedConstants.debugVoidTerrain	skip:debug		debug world generation switch
 SystemReport.<init>	port	crates/sunrise-client-render/src/crash.rs::system_details	the report's detail rows: Sunrise and Minecraft version, operating system, CPU and memory, then what the game set as it ran; gap: minor: no storage, process or JVM lines
 SystemReport.printMemoryUsage	skip:other		JVM heap usage text; a Rust build has no JVM heap
 SystemReport.printJvmFlags	skip:other		JVM input arguments; a Rust build has none
-SystemReport.setDetail	port	crates/sunrise-client-render/src/crash.rs::set_detail	gap: minor: flat detail list
+SystemReport.setDetail	port	crates/sunrise-mod-api/src/content/crash.rs::set_detail	gap: minor: flat detail list
 SystemReport.putHardware	inline	crates/sunrise-client-render/src/crash.rs::system_details	gap: minor: the processor, the memory and the graphics adapter; no storage or memory-slot lines
 SystemReport.putSoftware	port	crates/sunrise-client-render/src/crash.rs::operating_system	gap: minor: OS name only; no elevated flag or process details
 SystemReport.ignoreErrors	skip:debug		error isolation for diagnostic collection

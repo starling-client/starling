@@ -24,7 +24,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_server_has_time_until_its_tick_deadline_passes() {
         with_game(|game| {
             game.server_tick_deadline = None;
@@ -37,7 +37,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_level_always_has_time() {
         with_client_game(|game| {
             game.server_tick_deadline = Some(Instant::now() - Duration::from_millis(1));
@@ -66,14 +66,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn the_tick_listeners_see_the_deadline_through_the_host() {
         let heard = Arc::new(Mutex::new(Vec::new()));
         let mods = vec![ModEntry::new("spare", Box::new(Spare(heard.clone())))].into();
         mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
-                let _phase =
-                    mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
                 let context =
                     mod_api::LifecycleContext::from(mod_api::__private::built::LifecycleContext {
                         authority: mod_api::Authority::DedicatedServer,

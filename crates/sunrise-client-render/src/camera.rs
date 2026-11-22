@@ -1,6 +1,7 @@
-// `joml::Mat4::rotation`, `rotate_affine`, `transform_affine` and `invert_orthonormal`, and
-// `joml::Quat::rotation_x`/`_y`/`_z`, in this file are adapted from JOML 1.10.9's `Matrix4f`,
-// `Quaternionf` and `Vector4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
+// `joml::Mat4::rotation`, `rotate`, `rotate_affine`, `scale`, `transform_affine`,
+// `transform_position` and `invert_orthonormal`, and `joml::Quat::rotation_x`/`_y`/`_z`, `rotate_z` and
+// `rotation_zyx`, in this file are adapted from JOML 1.10.9's `Matrix4f`, `Quaternionf`,
+// `Vector3f` and `Vector4f` (https://github.com/JOML-CI/JOML, MIT; see THIRD_PARTY_NOTICES.md).
 //
 // Copyright (c) 2015-2026 Richard Greenlees
 //
@@ -29,10 +30,20 @@
 //!
 //! The float arithmetic follows vanilla and JOML's default (non-FMA,
 //! non-fast-math) code paths operation by operation.
-use sunrise_core::geometry::trig;
 pub use mod_api::client::camera::{
     CameraEntity, CameraType, FovPlayer, LivingCamera, UseItem, lerp, wrap_degrees,
 };
+use sunrise_core::geometry::trig;
+
+/// `AbstractBoat.clampRotation` for a rider that isn't a mob: the view kept
+/// within 105 degrees of the boat's yaw (`Mth.wrapDegrees`, then
+/// `yRot + targetDelta - delta` in that order, in floats). Returns the new yaw
+/// and the turn it made. The per-turn path also adds that turn to `yRotO`.
+pub fn clamp_boat_rotation(yaw: f32, boat_yaw: f32) -> (f32, f32) {
+    let delta = wrap_degrees(yaw - boat_yaw);
+    let target = delta.clamp(-105.0, 105.0);
+    (yaw + target - delta, target - delta)
+}
 
 /// `(float) Math.PI`.
 const PI: f32 = std::f32::consts::PI;
@@ -131,6 +142,25 @@ pub mod joml {
                 w: w * cz + z * sz,
             }
         }
+        /// `Quaternionf.rotationZYX(angleZ, angleY, angleX)`.
+        pub fn rotation_zyx(angle_z: f32, angle_y: f32, angle_x: f32) -> Self {
+            let sx = sin(angle_x * 0.5);
+            let cx = cos_from_sin(sx, angle_x * 0.5);
+            let sy = sin(angle_y * 0.5);
+            let cy = cos_from_sin(sy, angle_y * 0.5);
+            let sz = sin(angle_z * 0.5);
+            let cz = cos_from_sin(sz, angle_z * 0.5);
+            let cycz = cy * cz;
+            let sysz = sy * sz;
+            let sycz = sy * cz;
+            let cysz = cy * sz;
+            Self {
+                x: sx * cycz - cx * sysz,
+                y: cx * sycz + sx * cysz,
+                z: cx * cysz - sx * sycz,
+                w: cx * cycz + sx * sysz,
+            }
+        }
         /// `Quaternionf.rotationX(angle)`.
         pub fn rotation_x(angle: f32) -> Self {
             let (x, w) = Self::half_turn(angle);
@@ -159,6 +189,18 @@ pub mod joml {
                 y: 0.0,
                 z,
                 w,
+            }
+        }
+        /// `Quaternionf.rotateZ(angle)` for provider roll, with HotSpot's `Math.sin`.
+        pub(crate) fn rotate_z(self, angle: f32) -> Self {
+            let half = angle * 0.5;
+            let sin = sunrise_core::jmath::sin(f64::from(half)) as f32;
+            let cos = cos_from_sin(sin, half);
+            Self {
+                x: self.x * cos + self.y * sin,
+                y: self.y * cos - self.x * sin,
+                z: self.w * sin + self.z * cos,
+                w: self.w * cos - self.z * sin,
             }
         }
         fn half_turn(angle: f32) -> (f32, f32) {
@@ -321,6 +363,24 @@ pub mod joml {
             }
             self.properties &= !(PERSPECTIVE | IDENTITY | TRANSLATION);
         }
+        /// `Matrix4f.scale(x, y, z)`, with the identity shortcut (`scaling`).
+        pub fn scale(&mut self, x: f32, y: f32, z: f32) {
+            let one = [x, y, z].iter().all(|v| v.abs() == 1.0);
+            if self.properties & IDENTITY != 0 {
+                self.set(0, 0, x);
+                self.set(1, 1, y);
+                self.set(2, 2, z);
+                self.properties = AFFINE | if one { ORTHONORMAL } else { 0 };
+                return;
+            }
+            for (column, v) in [x, y, z].into_iter().enumerate() {
+                for row in 0..4 {
+                    self.set(column, row, self.get(column, row) * v);
+                }
+            }
+            self.properties &=
+                !(PERSPECTIVE | IDENTITY | TRANSLATION | if one { 0 } else { ORTHONORMAL });
+        }
         pub fn rotate_x(&mut self, ang: f32) {
             self.rotate_axis(0, ang);
         }
@@ -358,6 +418,38 @@ pub mod joml {
             self.set(2, 1, dyz - dxw);
             self.set(2, 2, z2 - y2 - x2 + w2);
             self.properties = AFFINE | ORTHONORMAL;
+        }
+        /// `Matrix4f.rotate(Quaternionfc)` of an affine matrix: `rotation` from the identity,
+        /// `rotateTranslation` from a pure translation (the rotation, the translation kept),
+        /// `rotateAffine` otherwise.
+        pub fn rotate(&mut self, q: Quat) {
+            if self.properties & IDENTITY != 0 {
+                self.rotation(q);
+            } else if self.properties & TRANSLATION != 0 {
+                let translation = [self.get(3, 0), self.get(3, 1), self.get(3, 2)];
+                self.m = Self::IDENTITY.m;
+                self.rotation(q);
+                for (row, v) in translation.into_iter().enumerate() {
+                    self.set(3, row, v);
+                }
+            } else {
+                self.rotate_affine(q);
+            }
+        }
+        /// `Matrix4f.transformPosition(x, y, z, dest)` (`Vector3f.mulPosition`: unchanged by
+        /// the identity, translated by a pure translation, else JOML's `Math.fma` unfused).
+        pub fn transform_position(&self, v: [f32; 3]) -> [f32; 3] {
+            let [x, y, z] = v;
+            if self.properties & IDENTITY != 0 {
+                return v;
+            }
+            if self.properties & TRANSLATION != 0 {
+                return [x + self.get(3, 0), y + self.get(3, 1), z + self.get(3, 2)];
+            }
+            std::array::from_fn(|row| {
+                self.get(0, row) * x
+                    + (self.get(1, row) * y + (self.get(2, row) * z + self.get(3, row)))
+            })
         }
         /// An affine matrix of no more specific kind, as JOML's property flags have it.
         pub fn affine(m: glam::Mat4) -> Self {
@@ -579,6 +671,12 @@ impl NearPlane {
             corner(-1.0, 1.0),
             corner(-1.0, -1.0),
         ]
+    }
+    /// `getPointOnPlane(x, y)`: `forward + up * y - left * x`.
+    pub fn point_on_plane(&self, x: f32, y: f32) -> [f64; 3] {
+        std::array::from_fn(|i| {
+            self.forward[i] + self.up[i] * f64::from(y) - self.left[i] * f64::from(x)
+        })
     }
 }
 
@@ -984,8 +1082,8 @@ pub struct HurtBob {
     pub hurt_dir: f32,
     pub death_time: Option<f32>,
 }
-/// `PoseStack.rotateDegrees` on the pose with an `Axis`.
-fn rotate_degrees(m: &mut Mat4, axis: usize, degrees: f32) {
+/// `PoseStack.rotateDegrees` on the pose with an `Axis` (0 `XP`, 1 `YP`, 2 `ZP`).
+pub fn rotate_degrees(m: &mut Mat4, axis: usize, degrees: f32) {
     let ang = degrees * DEG_TO_RAD;
     match axis {
         0 => m.rotate_x(ang),

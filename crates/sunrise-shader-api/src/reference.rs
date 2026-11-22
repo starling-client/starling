@@ -92,8 +92,8 @@ vanilla's. `blend = \"linear\"` stores linear light, so see-through draws blend 
 stages' results as they are and decodes its own draws (entities, particles, clouds, weather, the stages a pack leaves
 out), so a solid surface looks as under `\"gamma\"`. A stage sees the same values either way. Where the device can't
 draw a float frame the pack draws on an 8-bit one, in gamma. Under `\"linear\"` resource packs' `core/sky`,
-`core/stars` and `core/rendertype_lines` shaders, which write gamma, give way to Sunrise's own sky, stars and block
-outline.
+`core/stars`, `core/rendertype_lines` and `core/clouds` shaders, which write gamma, give way to Sunrise's own sky,
+stars, block outline and clouds. A resource pack's `core/lightmap` is kept: it draws the light texture, not the frame.
 
 ## `[frame] primaries`
 
@@ -102,6 +102,22 @@ returns is in BT.2020 primaries instead (D65 white, 1.0 still vanilla's white at
 It needs `blend = \"linear\"`, since a change of primaries is only right in linear light. `frame.primaries` says which
 space the pack's colours are in, and `frame.luminance` holds that space's luminance weights: compute luminance as
 `dot(color, frame.luminance)` and it is right in either. `\"bt2020\"` passes the check; the game doesn't serve it yet.
+
+";
+
+/// 0.2's `[material] coverage`, after the paragraph on what a stage is.
+const COVERAGE_0_2: &str = "\
+## `[material] coverage`
+
+Which points of terrain are drawn is the engine's unless the pack says otherwise. Under `coverage = \"engine\"` (the
+default) solid and cutout terrain keep Sunrise's alpha test on the texture's own alpha (cut below 0.5, except the
+leaves Sunrise draws opaque), and the alpha `material` returns is ignored there; translucent terrain is cut where the
+texture's alpha is below 0.01, and the returned alpha is its opacity, so water and glass still set how see-through
+they are. `material`, and every function it calls, may not `discard`: the check refuses it. A pack that cuts its own
+holes sets `coverage = \"pack\"`: the returned alpha then drives the alpha test (below 0.5 on solid and cutout
+terrain, below 0.01 on translucent) and the stage may `discard`. Normal and parallax shading that keeps the
+silhouette needs no `\"pack\"`, and neither do `[vertex]` and `[displacement]`, which move geometry, not coverage.
+The stage writes no depth of its own either way.
 
 ";
 
@@ -137,7 +153,7 @@ adds it to the light colour, and the expression above leaves it out.
 pub fn markdown(api: Api) -> String {
     let mut out = format!(
         "# Shader API reference ({api})\n\n\
-         Generated from `crates/sunrise-shader-api` (`SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-shader-api --test reference`\n\
+         Generated from `crates/sunrise-shader-api` (`SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-shader-api --test it reference::`\n\
          rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).\n\n"
     );
     if api == Api::V0_2 {
@@ -145,8 +161,11 @@ pub fn markdown(api: Api) -> String {
     }
     out += "A stage is a function your WGSL defines, with the signature below; Sunrise puts the prelude (these structs, the\n\
             resources and helpers) before your files and calls the function from its own pass. Your files declare no\n\
-            bindings and no entry points, and no names starting with `sunrise_`.\n\n\
-            ## Stages\n\n\
+            bindings and no entry points, and no names starting with `sunrise_`.\n\n";
+    if api == Api::V0_2 {
+        out += COVERAGE_0_2;
+    }
+    out += "## Stages\n\n\
             | Stage | In `sunrise-shaders.toml` | Your function |\n| --- | --- | --- |\n";
     for &kind in api.stages() {
         let key = match kind {
@@ -172,11 +191,18 @@ pub fn markdown(api: Api) -> String {
             // 0.2's lit colour is linear light and may pass white; 0.1's reference keeps its text.
             out += &match api {
                 Api::V0_1 => surface,
-                Api::V0_2 => surface.replace(
-                    "The lit colour, 0..1, with its alpha.",
-                    "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than \
-                     white); alpha its coverage.",
-                ),
+                Api::V0_2 => surface
+                    .replace(
+                        "The lit colour, 0..1, with its alpha.",
+                        "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter \
+                         than white); alpha translucent terrain's opacity, and what the alpha test reads under \
+                         `[material] coverage = \"pack\"`.",
+                    )
+                    .replace(
+                        "Sunrise then applies the alpha test (cutout and translucent) and fog.",
+                        "Sunrise then applies the alpha test (cutout and translucent; on the texture's alpha \
+                         unless `[material] coverage = \"pack\"`) and fog.",
+                    ),
             };
             out += "Under `[displacement]` the stage also defines \
                     `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the \

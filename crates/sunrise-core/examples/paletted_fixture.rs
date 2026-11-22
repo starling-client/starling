@@ -1,10 +1,10 @@
 //! Text transport for the PalettedContainer comparison: replays scripted edits
 //! and prints the same hashes as `VanillaPalettedContainerOracle`.
-use sunrise_core::paletted::{PalettedContainer, Strategy};
 use std::{
     fs,
     io::{self, Write},
 };
+use sunrise_core::paletted::{PalettedContainer, Strategy};
 const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 fn fnv(h: u64, b: u8) -> u64 {
     (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)

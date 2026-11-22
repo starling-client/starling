@@ -16,10 +16,12 @@ pub trait Hooks {
     /// and the item helpers reach them. Once for each cast, bite and reel-in,
     /// on a server.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_fish",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "none (NeoForge's ItemFishedEvent fires after the loot roll, in FishingHook.retrieve; Bukkit's PlayerFishEvent)"
     )]
-    fn player_fish();
+    fn player_fish(player: u128, name: &str, state: i32, cancel: &mut bool);
 }

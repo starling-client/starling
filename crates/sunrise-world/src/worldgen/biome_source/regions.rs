@@ -2,7 +2,7 @@
 //! saved, which the region selector reads. Design: `docs/design/mod-api/mod-biome-regions.md`.
 use crate::worldgen::climate::{IndexError, Parameter, ParameterPoint};
 
-/// The salt of the region selector's random stream (`from_hash_of`), in selector version 1.
+/// The region selector's random salt (`from_hash_of`, version 1); Horizon's name, kept so seeds give the same regions.
 pub const REGION_SALT: &str = "horizon:biome_region";
 /// The width of a region cell in quarts, in selector version 1.
 pub const REGION_CELL: u32 = 128;

@@ -8,7 +8,6 @@ description = "The game as tools/hot_paths.py measures it: sunrise-game's entry,
 
 [dependencies]
 sunrise-client = { path = "../sunrise-client", default-features = false }
-sunrise-guest-stack = { path = "../sunrise-guest-stack" }
 sunrise-mod-api = { path = "../sunrise-mod-api" }
 sunrise-mod-host = { path = "../sunrise-mod-host", default-features = false }
 sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }

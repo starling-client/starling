@@ -1,5 +1,3 @@
-// game-module-cfg: not(feature = "friends")
-// game-module-name: friends
 //! Play with Friends left out of the build (the `friends` feature off, as in the server build):
 //! no world is shared, the pause menu has no Friends button (`friends_shown` is false, as on
 //! another server) and `sunrise-ctl friends` says it isn't there. game/friends.rs is the real one.
@@ -26,7 +24,9 @@ impl Game<'_> {
         self.set_screen(Screen::Paused);
     }
 
-    pub(super) fn friends_screen_click(&mut self) {}
+    pub(super) fn friends_screen_click(&mut self) -> bool {
+        false
+    }
 
     pub(super) fn friends_shown(&self) -> bool {
         false

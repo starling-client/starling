@@ -12,10 +12,12 @@ pub trait Hooks {
     /// knockback, the frame keeps its item). Server-side, for every player of
     /// the world (`host.players().acting_player()` says who).
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_attack_entity",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "canceled",
         neoforge = "AttackEntityEvent"
     )]
-    fn attack_entity();
+    fn attack_entity(entity: i32, kind: &str, pos: [f64; 3], canceled: &mut bool);
 }

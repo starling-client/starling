@@ -1,0 +1,3 @@
+# Asset-free pixel assertions of shaders.properties' sky switches on the game's own sky, run on the daily
+# GPU hosts under with_xvfb.py; the test re-runs itself in a child process with throwaway homes.
+sunrise-client-render standard_pack_sky_switches test:standard_pack_sky_switches daily child-process

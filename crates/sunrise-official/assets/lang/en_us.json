@@ -1,0 +1,11 @@
+{
+  "sunrise.mods.screen.sunrise.authors": "The Sunrise contributors",
+  "sunrise.mods.screen.sunrise.description": "Sunrise is a Rust reimplementation of Minecraft: Java Edition. Mods in the sunrise-mods folder extend it.",
+  "sunrise.extras.mod_audio_streams": "Mod audio streams",
+  "sunrise.extras.mod_audio_streams.tooltip": "Mods can play audio they make (voice chat, a radio, a music player). Off, all of it plays on unheard.",
+  "sunrise.get_the_game.about": "This is the game the Sunrise launcher installs and starts. On its own it has none of Minecraft's files, so it can't start.",
+  "sunrise.get_the_game.button": "Download the launcher",
+  "sunrise.get_the_game.download": "Download the launcher at %s, then press Play there.",
+  "sunrise.get_the_game.minecraft": "Sunrise needs your own copy of Minecraft: Java Edition. The launcher signs you in and prepares the game files from it.",
+  "sunrise.get_the_game.title": "Start Sunrise from the launcher"
+}

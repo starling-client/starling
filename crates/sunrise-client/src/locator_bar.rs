@@ -5,13 +5,14 @@
 //! that draws a dot per waypoint within 60 degrees of the view, with an
 //! arrow when it is above or below the screen.
 use crate::hud_layout::{Blend, GuiDraw};
+use std::{borrow::Cow, collections::HashMap};
 use sunrise_assets::animation::{AnimationClip, AnimationMetadata};
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_core::geometry::trig;
+use sunrise_core::random::java_string_hash;
 use sunrise_protocol::packets::play::{
     TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation,
 };
-use std::{borrow::Cow, collections::HashMap};
 
 /// `WaypointStyle`: the sprites (under `hud/locator_bar_dot/`) from near to far.
 #[derive(Clone, Debug, PartialEq)]
@@ -271,11 +272,6 @@ fn uuid_hash(uuid: u128) -> i32 {
     let hilo = (uuid >> 64) as u64 ^ uuid as u64;
     ((hilo >> 32) as i32) ^ (hilo as i32)
 }
-/// `String.hashCode`.
-fn string_hash(s: &str) -> i32 {
-    s.encode_utf16()
-        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
-}
 
 /// `ARGB.setBrightness`.
 pub fn set_brightness(color: u32, brightness: f32) -> u32 {
@@ -431,7 +427,7 @@ impl View<'_> {
 /// `LocatorBar.extractBackground`: the nine-sliced sprite and its rectangle.
 pub fn background(gui_width: i32, gui_height: i32) -> (&'static str, [i32; 4]) {
     (
-        "gui/sprites/hud/locator_bar_background",
+        "hud/locator_bar_background",
         [gui_width / 2 - 91, gui_height - 32 + 3, 182, 5],
     )
 }
@@ -476,7 +472,7 @@ impl ClientWaypoints {
                 || {
                     let hash = match &w.id {
                         WaypointId::Uuid(u) => uuid_hash(*u),
-                        WaypointId::Name(n) => string_hash(n),
+                        WaypointId::Name(n) => java_string_hash(n.encode_utf16()),
                     };
                     set_brightness(0xFF00_0000 | hash as u32, 0.9)
                 },
@@ -669,7 +665,7 @@ mod tests {
         assert_eq!(set_brightness(0xFFFF_0000, 0.9), 0xFFE6_0000);
         assert_eq!(set_brightness(0xFF80_8080, 0.9), 0xFFE6_E6E6);
         assert_eq!(uuid_hash(0x0000_0001_0000_0000_0000_0000_0000_0002), 3);
-        assert_eq!(string_hash("ab"), 97 * 31 + 98);
+        assert_eq!(java_string_hash("ab".encode_utf16()), 97 * 31 + 98);
     }
 
     #[test]

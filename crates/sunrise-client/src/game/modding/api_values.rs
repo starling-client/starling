@@ -1,17 +1,53 @@
-// game-module-visibility: pub(crate)
 //! The game-owned conversion boundary between API records and engine values.
 //! Rust's orphan rule prevents foreign From/TryFrom implementations here.
 #[path = "api_values/ingredient.rs"]
 mod ingredient_values;
-use sunrise_core::nbt::{Compound, JavaString, Tag};
-use sunrise_items::items::{ItemStack as EngineStack, Items};
 use mod_api::item::item_stack::{ItemStack as ApiStack, StackWriteError};
+use std::num::NonZeroU32;
+use std::sync::Arc;
+#[cfg(test)]
+use sunrise_client::parallel::ListenSnapshot;
+use sunrise_client::parallel::TickThread;
+use sunrise_core::nbt::{Compound, JavaString, Tag};
+use sunrise_core::random::{LegacyRandom, RandomSource as EngineRandom};
+use sunrise_items::items::{ItemStack as EngineStack, Items};
 #[path = "api_values/aggregates.rs"]
 pub(in crate::game) mod aggregates;
 #[path = "api_values/block_edit.rs"]
 pub(in crate::game) mod block_edit;
 #[path = "api_values/block_state.rs"]
 pub(in crate::game) mod block_state;
+
+struct LiveLevelRandom<'a>(&'a mut LegacyRandom);
+
+impl mod_api::RandomSource for LiveLevelRandom<'_> {
+    fn next_int(&mut self) -> i32 {
+        self.0.next_int()
+    }
+    fn next_int_bound(&mut self, bound: i32) -> i32 {
+        self.0.next_int_bound(bound).unwrap_or(0)
+    }
+    fn next_long(&mut self) -> i64 {
+        self.0.next_long()
+    }
+    fn next_boolean(&mut self) -> bool {
+        self.0.next_boolean()
+    }
+    fn next_float(&mut self) -> f32 {
+        self.0.next_float()
+    }
+    fn next_double(&mut self) -> f64 {
+        self.0.next_double()
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        self.0.next_gaussian()
+    }
+}
+
+/// Lend the actual stream directly without unwind restoration or transaction journaling.
+pub(super) fn with_live_level_random(random: &mut LegacyRandom, draw: mod_api::RandomDraw<'_>) {
+    draw.run(&mut LiveLevelRandom(random));
+}
 
 pub(crate) fn block_jump_factor(
     context: &sunrise_world::native_load_context::LoopContext,
@@ -75,7 +111,7 @@ pub(crate) fn default_state(
 ) -> Option<sunrise_world::registry::BlockStateId> {
     use mod_api::BlockMetadata;
     let metadata = mod_api::__private::block_definitions()?;
-    let value = mod_api::BlockState::from(metadata.of(block, &[]).ok()?);
+    let value = metadata.of(block, &[]).ok()?;
     block_state::current().ok()?.to_engine(value).ok()
 }
 
@@ -87,7 +123,30 @@ pub(crate) fn behavior_block(
 }
 pub(crate) use super::native_ground::alter_ground;
 pub(in crate::game) use super::native_worldgen::prepare as prepare_block_states;
-pub(in crate::game) use block_state::install as install_block_states;
+
+/// Publish the block state index prepared for this game. Between a tick's phases only: the
+/// token is the tick thread's, which a phase's work can't take or capture.
+pub(in crate::game) fn install_block_states(_tick: &TickThread, prepared: Arc<block_state::Index>) {
+    block_state::install(prepared);
+}
+
+/// Publish the parts table prepared for this game, and with it its listen index. Between a tick's
+/// phases only, like [`install_block_states`]: a phase keeps the `ListenSnapshot` it captured.
+pub(in crate::game) fn install_resolved_parts(_tick: &TickThread, parts: Option<mod_api::Parts>) {
+    mod_api::__private::install_resolved_parts(parts);
+}
+
+/// Who listens, as the tick thread holds it now, for a phase view to keep: None before this
+/// game's block states are bound.
+#[cfg(test)]
+pub(in crate::game) fn listen_snapshot(tick: &TickThread) -> Option<ListenSnapshot> {
+    let index = block_state::current().ok()?;
+    Some(ListenSnapshot::capture(
+        tick,
+        mod_api::__private::game_listen_index(),
+        index.blocks(),
+    ))
+}
 #[path = "api_values/inside_write.rs"]
 mod inside_write;
 #[path = "api_values/landing_write.rs"]
@@ -133,6 +192,8 @@ pub(in crate::game) fn resolve_block_definitions(
         mod_platform::__private::part_tests::install_parts_fixture(&[])
             .map_err(|errors| errors.join("\n"))?;
     }
+    // A load entry point, not a phase's: the mint refuses a worker by name.
+    let _tick = TickThread::mint();
     block_state::clear();
     if mod_api::__private::block_definitions().is_some() {
         return bind_worker_blocks(registry);
@@ -337,41 +398,10 @@ pub(in crate::game) fn mod_tint_values(
     Ok(Some(crate::mesher::ModTintValues { states, metadata }))
 }
 
-fn block_metadata_table()
+pub(super) fn block_metadata_table()
 -> Result<&'static sunrise_mod_runtime::block_definitions::Blocks, mod_api::BlockStateError> {
     mod_api::__private::block_definitions().ok_or(mod_api::BlockStateError::Unavailable)
 }
-impl super::Game<'_> {
-    pub(in crate::game) fn block_metadata_name(
-        &self,
-        block: mod_api::BlockKey,
-    ) -> Result<&str, mod_api::BlockStateError> {
-        mod_api::BlockMetadata::name(block_metadata_table()?, block)
-    }
-    pub(in crate::game) fn block_metadata_property(
-        &self,
-        state: mod_api::BlockStateRecord,
-        name: &str,
-    ) -> Result<Option<&str>, mod_api::BlockStateError> {
-        mod_api::BlockMetadata::property(block_metadata_table()?, state, name)
-    }
-    pub(in crate::game) fn block_metadata_with(
-        &self,
-        state: mod_api::BlockStateRecord,
-        name: &str,
-        value: &str,
-    ) -> Result<mod_api::BlockStateRecord, mod_api::BlockStateError> {
-        mod_api::BlockMetadata::with(block_metadata_table()?, state, name, value)
-    }
-    pub(in crate::game) fn block_metadata_of(
-        &self,
-        block: mod_api::BlockKey,
-        properties: &[mod_api::StateConstraint],
-    ) -> Result<mod_api::BlockStateRecord, mod_api::BlockStateError> {
-        mod_api::BlockMetadata::of(block_metadata_table()?, block, properties)
-    }
-}
-
 /// Normalize an existing game write's answer without changing its implementation.
 /// Generated API forwarders add the checked-input refusal around successful native answers.
 pub(in crate::game) trait IntoWriteResult {
@@ -425,8 +455,10 @@ where
 /// Validate a mod value against the game's registry before admitting it to engine state.
 #[path = "api_values/content_declarations.rs"]
 mod content_declarations;
-pub(in crate::game) use content_declarations::push_reaction;
+pub(in crate::game) use content_declarations::{api_push_reaction, push_reaction};
 
+#[path = "api_values/component_edit.rs"]
+pub(in crate::game) mod component_edit;
 #[path = "api_values/stack_count.rs"]
 mod stack_count;
 pub(crate) use stack_count::TryIntoEnginePreservingCount;
@@ -437,7 +469,7 @@ pub(crate) trait TryIntoEngine<Context: ?Sized = Items> {
     fn try_into_engine(&self, context: &Context) -> Result<Self::Engine, Self::Error>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum StackReadError {
     UnknownItem,
     Empty,
@@ -473,6 +505,19 @@ where
     call_write(call)?
         .try_into_api()
         .map_err(|error| error.into_write_error().into())
+}
+
+/// Convert a successful block-state write answer; a state the registry cannot name is the
+/// write's own `InvalidState` error.
+pub(in crate::game) fn call_state_write<W>(
+    call: impl FnOnce() -> W,
+) -> Result<<W::Value as TryIntoApi>::Api, W::Error>
+where
+    W: IntoWriteResult,
+    W::Value: TryIntoApi,
+    W::Error: From<<W::Value as TryIntoApi>::Error>,
+{
+    call_write(call)?.try_into_api().map_err(Into::into)
 }
 
 macro_rules! scalar_values {
@@ -658,22 +703,28 @@ impl TryIntoEngine for mod_api::ItemDisplayContext {
     type Engine = sunrise_assets::item_model::DisplayContext;
     type Error = ();
     fn try_into_engine(&self, _: &Items) -> Result<Self::Engine, Self::Error> {
-        use sunrise_assets::item_model::DisplayContext as Engine;
-        use mod_api::ItemDisplayContext as Api;
-        Ok(match self {
-            Api::None => Engine::None,
-            Api::ThirdPersonLeftHand => Engine::ThirdPersonLeftHand,
-            Api::ThirdPersonRightHand => Engine::ThirdPersonRightHand,
-            Api::FirstPersonLeftHand => Engine::FirstPersonLeftHand,
-            Api::FirstPersonRightHand => Engine::FirstPersonRightHand,
-            Api::Head => Engine::Head,
-            Api::Gui => Engine::Gui,
-            Api::Ground => Engine::Ground,
-            Api::Fixed => Engine::Fixed,
-            Api::OnShelf => Engine::OnShelf,
-            _ => return Err(()),
-        })
+        engine_display_context(*self).ok_or(())
     }
+}
+/// The engine's display context for the API's, `None` for one this game doesn't have.
+pub(in crate::game) fn engine_display_context(
+    context: mod_api::ItemDisplayContext,
+) -> Option<sunrise_assets::item_model::DisplayContext> {
+    use mod_api::ItemDisplayContext as Api;
+    use sunrise_assets::item_model::DisplayContext as Engine;
+    Some(match context {
+        Api::None => Engine::None,
+        Api::ThirdPersonLeftHand => Engine::ThirdPersonLeftHand,
+        Api::ThirdPersonRightHand => Engine::ThirdPersonRightHand,
+        Api::FirstPersonLeftHand => Engine::FirstPersonLeftHand,
+        Api::FirstPersonRightHand => Engine::FirstPersonRightHand,
+        Api::Head => Engine::Head,
+        Api::Gui => Engine::Gui,
+        Api::Ground => Engine::Ground,
+        Api::Fixed => Engine::Fixed,
+        Api::OnShelf => Engine::OnShelf,
+        _ => return None,
+    })
 }
 
 impl TryIntoApi for sunrise_client::merchant::ItemCost {
@@ -687,9 +738,16 @@ impl TryIntoEngine for mod_api::ItemCost {
     type Engine = sunrise_client::merchant::ItemCost;
     type Error = StackWriteError;
     fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(Self::Engine {
-            stack: self.stack.try_into_engine(items)?,
-        })
+        // ItemCost's codec uses a positive Java int, not the normal stack's count limit.
+        let maximum = i32::MAX as u32;
+        if self.stack.count() > maximum {
+            return Err(StackWriteError::CountExceeded { maximum });
+        }
+        let stack = self.stack.try_into_engine_preserving_count(items)?;
+        if &*stack.item == "minecraft:air" {
+            return Err(StackWriteError::EmptyEngineStack);
+        }
+        Ok(Self::Engine { stack })
     }
 }
 impl TryIntoApi for sunrise_client::merchant::MerchantOffer {
@@ -711,23 +769,100 @@ impl TryIntoApi for sunrise_client::merchant::MerchantOffer {
         Ok(offer)
     }
 }
+#[derive(Debug)]
+pub(super) enum OfferWriteError {
+    NonFinitePrice,
+    Stack(StackWriteError),
+}
+
+impl From<StackWriteError> for OfferWriteError {
+    fn from(error: StackWriteError) -> Self {
+        Self::Stack(error)
+    }
+}
+
+/// A collect answer and a MerchantRef write admit offers through the same check. All i32
+/// fields fit `MerchantOffer.CODEC`; their arithmetic follows Java wrapping in the engine.
+pub(super) fn checked_merchant_offer(
+    offer: &mod_api::MerchantOffer,
+    items: &Items,
+) -> Result<sunrise_client::merchant::MerchantOffer, OfferWriteError> {
+    if !offer.price_multiplier.is_finite() {
+        return Err(OfferWriteError::NonFinitePrice);
+    }
+    let result = offer.result.try_into_engine(items)?;
+    if &*result.item == "minecraft:air" {
+        return Err(StackWriteError::EmptyEngineStack.into());
+    }
+    Ok(sunrise_client::merchant::MerchantOffer {
+        base_cost_a: offer.base_cost_a.try_into_engine(items)?,
+        cost_b: offer.cost_b.try_into_engine(items)?,
+        result,
+        uses: offer.uses,
+        max_uses: offer.max_uses,
+        reward_exp: offer.reward_exp,
+        special_price_diff: offer.special_price_diff,
+        demand: offer.demand,
+        price_multiplier: offer.price_multiplier,
+        xp: offer.xp,
+    })
+}
+
 impl TryIntoEngine for mod_api::MerchantOffer {
     type Engine = sunrise_client::merchant::MerchantOffer;
     type Error = StackWriteError;
     fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(Self::Engine {
-            base_cost_a: self.base_cost_a.try_into_engine(items)?,
-            cost_b: self.cost_b.try_into_engine(items)?,
-            result: self.result.try_into_engine(items)?,
-            uses: self.uses,
-            max_uses: self.max_uses,
-            reward_exp: self.reward_exp,
-            special_price_diff: self.special_price_diff,
-            demand: self.demand,
-            price_multiplier: self.price_multiplier,
-            xp: self.xp,
+        checked_merchant_offer(self, items).map_err(|error| match error {
+            // MerchantRef's existing write API returns StackWriteError; the decision coordinator
+            // uses the typed offer refusal directly.
+            OfferWriteError::NonFinitePrice => StackWriteError::InvalidMaximum,
+            OfferWriteError::Stack(error) => error,
         })
     }
+}
+
+pub(in crate::game) type StackReadMetadata = (mod_api::ItemKey, NonZeroU32, Option<u32>);
+
+/// Resolve the item and check the count without copying the stack or encoding its patch.
+pub(in crate::game) fn stack_read_metadata(
+    stack: &EngineStack,
+) -> Result<StackReadMetadata, StackReadError> {
+    let key = mod_api::__private::item_key(&stack.item).ok_or(StackReadError::UnknownItem)?;
+    let count = NonZeroU32::new(stack.count).ok_or(StackReadError::Empty)?;
+    let damage = stack
+        .carries_component(None, "minecraft:damage")
+        .then_some(stack.damage);
+    Ok((key, count, damage))
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(in crate::game) static STACK_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Encode and normalize the patch using the scalars already read from this same stack.
+pub(in crate::game) fn project_stack(
+    stack: &EngineStack,
+    metadata: StackReadMetadata,
+) -> Result<ApiStack, StackReadError> {
+    #[cfg(test)]
+    STACK_PROJECTIONS.set(STACK_PROJECTIONS.get() + 1);
+    let patch = sunrise_items::item_data::encode_extra_components(stack);
+    projected_stack(metadata, patch)
+}
+
+/// Build either a full or filtered projection with the same checked damage normalization.
+fn projected_stack(
+    (key, count, damage): StackReadMetadata,
+    patch: Option<Tag>,
+) -> Result<ApiStack, StackReadError> {
+    let mut result = ApiStack::from_scalars(key, count, damage);
+    if let Some(Tag::Compound(patch)) = patch {
+        result
+            .set_components(patch)
+            .map_err(StackReadError::InvalidComponents)?;
+    }
+    Ok(result)
 }
 
 impl TryIntoApi for EngineStack {
@@ -735,18 +870,7 @@ impl TryIntoApi for EngineStack {
     type Error = StackReadError;
 
     fn try_into_api(&self) -> Result<ApiStack, Self::Error> {
-        let key = mod_api::__private::item_key(&self.item).ok_or(StackReadError::UnknownItem)?;
-        let mut result = ApiStack::new(key, self.count).ok_or(StackReadError::Empty)?;
-        if self.carries_component(None, "minecraft:damage") {
-            result.set_damage(self.damage);
-        }
-        if let Some(Tag::Compound(patch)) = sunrise_items::item_data::encode_extra_components(self)
-        {
-            result
-                .set_components(patch)
-                .map_err(StackReadError::InvalidComponents)?;
-        }
-        Ok(result)
+        project_stack(self, stack_read_metadata(self)?)
     }
 }
 
@@ -797,10 +921,21 @@ pub(in crate::game) fn stack_value(value: &ApiStack) -> Result<EngineStack, Stac
     encode_stack(value, id.into())
 }
 
-fn encode_stack(
+pub(in crate::game) fn encode_stack(
     value: &ApiStack,
-    item: std::sync::Arc<str>,
+    item: Arc<str>,
 ) -> Result<EngineStack, StackWriteError> {
+    let stack = decode_stack_record(value, item);
+    // Check the original override even if its value failed to decode.
+    let patch = value.components().map(|patch| patch.as_nbt());
+    content_declarations::validate_decoded_components(|name| {
+        patch?.get(&JavaString::from(name)).map(|_| &stack)
+    })?;
+    Ok(stack)
+}
+
+/// Decode the record's component overrides without changing their saved keys.
+fn decode_stack_record(value: &ApiStack, item: Arc<str>) -> EngineStack {
     let mut patch = value.components().map(|patch| patch.as_nbt().clone());
     // Let the existing component codec preserve explicit zero versus prototype inheritance.
     if value.damage_component() == Some(0) {
@@ -810,14 +945,12 @@ fn encode_stack(
     }
     let patch = patch.map(Tag::Compound);
     let (_, extra) = sunrise_items::item_data::decode_components(patch.as_ref());
-    let stack = EngineStack {
+    EngineStack {
         item,
         count: value.count(),
         damage: value.damage(),
         extra,
-    };
-    content_declarations::validate_decoded_effects(patch.as_ref(), &stack)?;
-    Ok(stack)
+    }
 }
 
 impl TryIntoApi for crate::crafting::RecipeRule {
@@ -1011,6 +1144,30 @@ impl TryIntoApi for crate::crafting::FireworkShapeIngredient {
         ))
     }
 }
+/// A recipe listing crosses one entry at a time: one unrepresentable recipe must not
+/// hide the rest of its type. Other collection conversions remain all-or-nothing.
+#[derive(Default)]
+pub(in crate::game) struct RecipeListing(pub std::sync::Arc<[crate::crafting::RecipeSnapshot]>);
+impl TryIntoApi for RecipeListing {
+    type Api = std::sync::Arc<[mod_api::Recipe]>;
+    type Error = std::convert::Infallible;
+    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
+        Ok(self
+            .0
+            .iter()
+            .filter_map(|recipe| match recipe.try_into_api() {
+                Ok(recipe) => Some(recipe),
+                Err(reason) => {
+                    log::debug!(
+                        "Skipping recipe {} in the mod API listing: {reason:?}",
+                        recipe.id
+                    );
+                    None
+                }
+            })
+            .collect())
+    }
+}
 impl TryIntoApi for crate::crafting::RecipeSnapshot {
     type Api = mod_api::Recipe;
     type Error = StackReadError;
@@ -1030,16 +1187,6 @@ impl TryIntoApi for crate::crafting::RecipeSnapshot {
 /// Install the engine-facing callbacks; snapshots never enter engine storage.
 pub(crate) fn install_stack_hooks() {
     crate::native_stack_hooks::install(crate::native_stack_hooks::StackHooks {
-        ingredient_test: |context, kind, data, stack, accept| {
-            if !mod_api::__private::listened(mod_api::HookId::IngredientTest) {
-                return;
-            }
-            if let Ok(stack) = stack.try_into_api() {
-                sunrise_client::crafting::native_hooks::native_ingredient_test(
-                    context, kind, data, &stack, accept,
-                );
-            }
-        },
         enchantments: |stack, target, value| {
             if !mod_api::__private::listened(mod_api::HookId::GetEnchantmentLevel) {
                 return;
@@ -1059,359 +1206,203 @@ pub(crate) fn install_stack_hooks() {
     });
 }
 
-struct ApiSlot<'a> {
-    engine: &'a mut dyn crate::menu::SlotView,
-    invalid: bool,
-}
-impl mod_api::item::menu::SlotView for ApiSlot<'_> {
-    fn item(&self) -> Option<ApiStack> {
-        self.engine.item().and_then(|s| s.try_into_api().ok())
-    }
-    fn may_place(&self, stack: &ApiStack) -> bool {
-        stack_value(stack).is_ok_and(|s| self.engine.may_place(&s))
-    }
-    fn may_pickup(&self) -> bool {
-        self.engine.may_pickup()
-    }
-    fn allow_modification(&self) -> bool {
-        self.engine.allow_modification()
-    }
-    fn safe_insert(&mut self, stack: Option<ApiStack>, count: u32) -> Option<ApiStack> {
-        let value = match stack
-            .as_ref()
-            .map(|s| s.try_into_engine(self.engine.items()))
-            .transpose()
-        {
-            Ok(s) => s,
-            Err(_) => {
-                self.invalid = true;
-                return stack;
-            }
-        };
-        match self.engine.safe_insert(value, count).try_into_api() {
-            Ok(value) => value,
-            Err(_) => {
-                self.invalid = true;
-                None
-            }
-        }
-    }
-    fn safe_take(&mut self, count: u32, max: u32) -> Option<ApiStack> {
-        match self.engine.safe_take(count, max).try_into_api() {
-            Ok(value) => value,
-            Err(_) => {
-                self.invalid = true;
-                None
-            }
-        }
-    }
-}
-/// Adapt a player's block menu `stillValid` check; the game asks only for a menu
+/// Adapt a player's menu `stillValid` check; the game asks only for a menu
 /// whose type has a part answering it (`menu_still_valid_listens`, when it opened).
 pub(crate) fn menu_still_valid(
     context: &sunrise_world::native_load_context::LoopContext,
     player: u128,
     menu: &str,
-    pos: [i32; 3],
+    pos: Option<[i32; 3]>,
     eye: [f64; 3],
+    opening_item: Option<mod_api::MenuOpeningItem>,
     valid: &mut bool,
 ) {
     let reader = sunrise_client_render::api_context::LoopReader(context);
     let context = reader.context();
-    mod_api::dispatch_menu_still_valid(&context, player, menu, pos, eye, valid);
+    mod_api::dispatch_menu_still_valid(&context, player, menu, pos, eye, opening_item, valid);
 }
 
-pub(crate) fn stacked_on_other(
-    context: &sunrise_world::native_load_context::LoopContext,
-    event: &mut crate::menu::StackedOnOther<'_>,
-    canceled: &mut bool,
-) {
-    if !mod_api::__private::listened(mod_api::HookId::ItemStackedOnOther) {
-        return;
-    }
-    let Ok(mut carried) = event.carried.0.try_into_api() else {
-        return;
-    };
-    let mut candidate_canceled = *canceled;
-    let mut cancellation_result = event.cancellation_result;
-    let mut admitted = None;
-    let mut run = |clicked: &mut dyn crate::menu::SlotView| {
-        let mut slot = ApiSlot {
-            engine: clicked,
-            invalid: false,
-        };
-        let mut api = mod_api::item::menu::StackedOnOther {
-            player: event.player,
-            player_entity_id: event.player_entity_id,
-            slot: event.slot,
-            container: event.container,
-            container_slot: event.container_slot,
-            primary: event.primary,
-            carried: mod_api::item::menu::CarriedAccess(&mut carried),
-            clicked: &mut slot,
-            cancellation_result,
-        };
-        mod_api::dispatch_item_stacked_on_other(
-            &sunrise_client_render::api_context::LoopReader(context).context(),
-            &mut api,
-            &mut candidate_canceled,
-        );
-        cancellation_result = api.cancellation_result;
-        if slot.invalid {
-            return false;
-        }
-        let Ok(slot_value) = slot.engine.item().try_into_api() else {
-            return false;
-        };
-        if slot_value.try_into_engine(slot.engine.items()).is_err() {
-            return false;
-        }
-        match carried
-            .as_ref()
-            .map(|stack| stack.try_into_engine(slot.engine.items()))
-            .transpose()
-        {
-            Ok(value) => {
-                admitted = Some(value);
-                true
-            }
-            Err(_) => false,
-        }
-    };
-    let accepted = event.clicked.with_staged(&mut run);
-    if accepted {
-        *event.carried.0 = admitted.expect("an accepted cursor");
-        event.cancellation_result = cancellation_result;
-        *canceled = candidate_canceled;
-    }
-}
-
-impl TryIntoApi for crate::stations::AnvilResult {
-    type Api = mod_api::item::stations::AnvilResult;
+impl TryIntoApi for crate::menu::AnvilCraftSnapshot {
+    type Api = (Option<ApiStack>, Option<ApiStack>, ApiStack);
     type Error = StackReadError;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(mod_api::item::stations::AnvilResult {
-            result: self.result.try_into_api()?,
-            cost: self.cost,
-            repair_item_count_cost: self.repair_item_count_cost,
-            only_renaming: self.only_renaming,
-        })
-    }
-}
-impl TryIntoEngine for mod_api::item::stations::AnvilResult {
-    type Engine = crate::stations::AnvilResult;
-    type Error = StackWriteError;
-    fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(crate::stations::AnvilResult {
-            result: self.result.try_into_engine(items)?,
-            cost: self.cost,
-            repair_item_count_cost: self.repair_item_count_cost,
-            only_renaming: self.only_renaming,
-        })
-    }
-}
-impl TryIntoApi for crate::menu::AnvilCraft {
-    type Api = mod_api::item::menu::AnvilCraft;
-    type Error = StackReadError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(mod_api::item::menu::AnvilCraft {
-            left: self.left.try_into_api()?,
-            right: self.right.try_into_api()?,
-            output: self.output.try_into_api()?,
-        })
-    }
-}
-impl TryIntoEngine for mod_api::item::menu::AnvilCraft {
-    type Engine = crate::menu::AnvilCraft;
-    type Error = StackWriteError;
-    fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(crate::menu::AnvilCraft {
-            left: self.left.try_into_engine(items)?,
-            right: self.right.try_into_engine(items)?,
-            output: self.output.try_into_engine(items)?,
-        })
-    }
-}
-impl TryIntoApi for crate::menu::GrindstonePlace {
-    type Api = mod_api::item::menu::GrindstonePlace;
-    type Error = StackReadError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(mod_api::item::menu::GrindstonePlace {
-            top: self.top.try_into_api()?,
-            bottom: self.bottom.try_into_api()?,
-            vanilla_output: self.vanilla_output.try_into_api()?,
-            output: self.output.try_into_api()?,
-            xp: self.xp,
-        })
-    }
-}
-impl TryIntoEngine for mod_api::item::menu::GrindstonePlace {
-    type Engine = crate::menu::GrindstonePlace;
-    type Error = StackWriteError;
-    fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(crate::menu::GrindstonePlace {
-            top: self.top.try_into_engine(items)?,
-            bottom: self.bottom.try_into_engine(items)?,
-            vanilla_output: self.vanilla_output.try_into_engine(items)?,
-            output: self.output.try_into_engine(items)?,
-            xp: self.xp,
-        })
-    }
-}
-impl TryIntoApi for crate::menu::GrindstoneTake {
-    type Api = mod_api::item::menu::GrindstoneTake;
-    type Error = StackReadError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(mod_api::item::menu::GrindstoneTake {
-            top: self.top.try_into_api()?,
-            bottom: self.bottom.try_into_api()?,
-            xp: self.xp,
-            new_top: self.new_top.try_into_api()?,
-            new_bottom: self.new_bottom.try_into_api()?,
-        })
-    }
-}
-impl TryIntoEngine for mod_api::item::menu::GrindstoneTake {
-    type Engine = crate::menu::GrindstoneTake;
-    type Error = StackWriteError;
-    fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(crate::menu::GrindstoneTake {
-            top: self.top.try_into_engine(items)?,
-            bottom: self.bottom.try_into_engine(items)?,
-            xp: self.xp,
-            new_top: self.new_top.try_into_engine(items)?,
-            new_bottom: self.new_bottom.try_into_engine(items)?,
-        })
-    }
-}
-
-impl TryIntoApi for crate::menu::AnvilUpdate {
-    type Api = mod_api::item::menu::AnvilUpdate;
-    type Error = StackReadError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        let vanilla = mod_api::item::stations::AnvilResult {
-            result: self.vanilla.output.try_into_api()?,
-            cost: self.vanilla.xp_cost,
-            repair_item_count_cost: self.vanilla.material_cost.max(0) as u32,
-            only_renaming: false,
-        };
-        let mut result = mod_api::item::menu::AnvilUpdate::new(
+        Ok((
             self.left.try_into_api()?,
             self.right.try_into_api()?,
-            self.name.clone(),
-            &vanilla,
-        );
-        result.output = self.output.try_into_api()?;
-        result.xp_cost = self.xp_cost;
-        result.material_cost = self.material_cost;
-        Ok(result)
+            self.output.try_into_api()?,
+        ))
     }
 }
 
-impl TryIntoEngine for mod_api::item::menu::AnvilUpdate {
-    type Engine = crate::menu::AnvilUpdate;
-    type Error = StackWriteError;
-    fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(crate::menu::AnvilUpdate {
-            left: self.left.try_into_engine(items)?,
-            right: self.right.try_into_engine(items)?,
-            name: self.name.clone(),
-            vanilla: crate::menu::AnvilVanilla {
-                output: self.vanilla.output.try_into_engine(items)?,
-                xp_cost: self.vanilla.xp_cost,
-                material_cost: self.vanilla.material_cost,
-            },
-            output: self.output.try_into_engine(items)?,
-            xp_cost: self.xp_cost,
-            material_cost: self.material_cost,
-        })
-    }
-}
 impl super::Game<'_> {
     pub(in crate::game) fn api_anvil_update(
         &mut self,
         player: u128,
         entity: i32,
         pos: [i32; 3],
-        value: &mut crate::menu::AnvilUpdate,
-        cancel: &mut bool,
+        inputs: crate::menu::AnvilUpdateInputs<'_>,
+        result: &mut crate::stations::AnvilResult,
     ) {
-        let Ok(mut api) = value.try_into_api() else {
+        use mod_api::item::menu::{AnvilUpdateEdits, AnvilUpdateInputs, StackResult};
+
+        let Ok(left) = inputs.left.try_into_api() else {
             return;
         };
-        let original = api.clone();
-        self.native_anvil_update(player, entity, pos, &mut api, cancel);
-        if api == original {
+        let Ok(right) = inputs.right.try_into_api() else {
+            return;
+        };
+        let Ok(vanilla_output) = result.result.try_into_api() else {
+            return;
+        };
+        let inputs = AnvilUpdateInputs {
+            left: &left,
+            right: right.as_ref(),
+            name: inputs.name,
+            vanilla_output: vanilla_output.as_ref(),
+            vanilla_xp_cost: result.cost,
+            vanilla_material_cost: i32::try_from(result.repair_item_count_cost).unwrap_or(i32::MAX),
+        };
+        let mut edits = AnvilUpdateEdits {
+            output: StackResult::Keep,
+            xp_cost: inputs.vanilla_xp_cost,
+            material_cost: inputs.vanilla_material_cost,
+        };
+        let mut cancel = false;
+        self.native_anvil_update(player, entity, pos, &inputs, &mut edits, &mut cancel);
+        if cancel {
+            *result = Default::default();
             return;
         }
-        match api.try_into_engine(self.items()) {
-            Ok(result) => *value = result,
-            Err(_) => *cancel = true,
+        // An equal replacement keeps the original engine stack, even if a mod could not write it.
+        if let StackResult::Set(output) = edits.output
+            && output != vanilla_output
+        {
+            match output.try_into_engine(self.items()) {
+                Ok(output) => {
+                    result.only_renaming &= result.result == output;
+                    result.result = output;
+                }
+                Err(err) => {
+                    log::warn!(
+                        "anvil_update: ignoring invalid output replacement at {pos:?}: {err:?}"
+                    );
+                }
+            }
         }
+        result.cost = edits.xp_cost.max(0);
+        result.repair_item_count_cost = edits.material_cost.max(0) as u32;
     }
     pub(in crate::game) fn api_grindstone_place(
         &mut self,
         player: u128,
         entity: i32,
         pos: [i32; 3],
-        value: &mut crate::menu::GrindstonePlace,
+        inputs: [Option<&EngineStack>; 3],
         cancel: &mut bool,
-    ) {
-        let Ok(mut api) = value.try_into_api() else {
-            return;
+    ) -> crate::menu::GrindstonePlaceEdits {
+        use mod_api::item::menu::{GrindstonePlaceEdits, GrindstonePlaceInputs};
+
+        let Ok([top, bottom, vanilla_output]) = inputs.try_into_api() else {
+            return Default::default();
         };
-        let original = api.clone();
-        self.native_grindstone_place(player, entity, pos, &mut api, cancel);
-        if api == original {
-            return;
+        let inputs = GrindstonePlaceInputs {
+            top: top.as_ref(),
+            bottom: bottom.as_ref(),
+            vanilla_output: vanilla_output.as_ref(),
+        };
+        let mut edits = GrindstonePlaceEdits {
+            output: None,
+            xp: -1,
+        };
+        let tx_depth = self.transactions.len();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.native_grindstone_place(player, entity, pos, &inputs, &mut edits, cancel);
+        }))
+        .is_err();
+        self.abort_abandoned_transactions(tx_depth);
+        if panicked {
+            log::error!("grindstone_place: listener panicked at {pos:?}");
+            *cancel = false;
+            return Default::default();
         }
-        match api.try_into_engine(self.items()) {
-            Ok(result) => *value = result,
-            Err(_) => *cancel = true,
+        if *cancel {
+            return Default::default();
         }
+        let xp = edits.xp.max(-1);
+        let output = match edits.output.try_into_engine(self.items()) {
+            Ok(output) => output,
+            Err(err) => {
+                log::warn!(
+                    "grindstone_place: ignoring invalid output replacement at {pos:?}: {err:?}"
+                );
+                None
+            }
+        };
+        crate::menu::GrindstonePlaceEdits { output, xp }
     }
     pub(in crate::game) fn api_grindstone_take(
         &mut self,
         player: u128,
         entity: i32,
         pos: [i32; 3],
-        value: &mut crate::menu::GrindstoneTake,
+        take: &crate::menu::PendingGrindstoneTake,
         cancel: &mut bool,
-    ) {
-        let Ok(mut api) = value.try_into_api() else {
-            return;
+    ) -> crate::menu::GrindstoneTakeEdits {
+        use mod_api::item::menu::{GrindstoneTakeEdits, GrindstoneTakeInputs};
+
+        let initial_xp = if take.xp >= 0 {
+            take.xp
+        } else {
+            let amount = take.vanilla_amount(&self.menu_env());
+            self.journal_level_random();
+            crate::stations::grindstone_xp_roll(amount, &mut self.world.random) as i32
         };
-        let original = api.clone();
-        self.native_grindstone_take(player, entity, pos, &mut api, cancel);
-        if api == original {
-            return;
+        let Ok([top, bottom]) = [take.top.as_ref(), take.bottom.as_ref()].try_into_api() else {
+            return crate::menu::GrindstoneTakeEdits::initial(initial_xp);
+        };
+        let inputs = GrindstoneTakeInputs {
+            top: top.as_ref(),
+            bottom: bottom.as_ref(),
+        };
+        let mut edits = GrindstoneTakeEdits {
+            xp: initial_xp,
+            new_top: None,
+            new_bottom: None,
+        };
+        let tx_depth = self.transactions.len();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.native_grindstone_take(player, entity, pos, &inputs, &mut edits, cancel);
+        }))
+        .is_err();
+        self.abort_abandoned_transactions(tx_depth);
+        if panicked {
+            log::error!("grindstone_take: listener panicked at {pos:?}");
+            *cancel = false;
+            return crate::menu::GrindstoneTakeEdits::initial(initial_xp);
         }
-        match api.try_into_engine(self.items()) {
-            Ok(result) => *value = result,
-            Err(_) => *cancel = true,
+        if *cancel {
+            return crate::menu::GrindstoneTakeEdits::initial(initial_xp);
         }
-    }
-    pub(in crate::game) fn api_anvil_craft_pre(
-        &mut self,
-        player: u128,
-        name: &str,
-        pos: [i32; 3],
-        value: &crate::menu::AnvilCraft,
-        cancel: &mut bool,
-    ) {
-        if let Ok(api) = value.try_into_api() {
-            self.native_anvil_craft_pre(player, name, pos, &api, cancel);
-        }
-    }
-    pub(in crate::game) fn api_anvil_craft_post(
-        &mut self,
-        player: u128,
-        name: &str,
-        pos: [i32; 3],
-        value: &crate::menu::AnvilCraft,
-    ) {
-        if let Ok(api) = value.try_into_api() {
-            self.native_anvil_craft_post(player, name, pos, &api);
+        let new_top = match edits.new_top.try_into_engine(self.items()) {
+            Ok(stack) => stack,
+            Err(err) => {
+                log::warn!("grindstone_take: ignoring invalid top remainder at {pos:?}: {err:?}");
+                None
+            }
+        };
+        let new_bottom = match edits.new_bottom.try_into_engine(self.items()) {
+            Ok(stack) => stack,
+            Err(err) => {
+                log::warn!(
+                    "grindstone_take: ignoring invalid bottom remainder at {pos:?}: {err:?}"
+                );
+                None
+            }
+        };
+        crate::menu::GrindstoneTakeEdits {
+            xp: edits.xp,
+            new_top,
+            new_bottom,
         }
     }
 }
@@ -1420,13 +1411,13 @@ impl super::Game<'_> {
 mod attribute_boundary_tests {
     use super::EngineStack as ItemStack;
     use crate::item_attributes::attribute_modifiers_or;
-    use sunrise_items::item_data::ModifierRow;
     use mod_api::{
         AttributeModifier, AttributeOperation, EquipmentSlotGroup, Hooks, Identifier,
         ItemAttributeModifierEvent, ModEntry,
     };
     use mod_platform::testing::with_mods;
     use std::borrow::Cow;
+    use sunrise_items::item_data::ModifierRow;
     /// Makes a netherite chestplate heavier: +0.4 knockback resistance in
     /// the chest slot, and no armor toughness.
     struct Heavy;
@@ -1517,13 +1508,14 @@ mod attribute_boundary_tests {
     /// values are the mod's answer.
     #[test]
     fn a_servers_stack_takes_the_mods_answer_on_first_equip() {
+        use std::sync::Arc;
         use sunrise_client::living_attributes::LivingAttributes;
+        use sunrise_core::vanilla_bytes::Writer;
         use sunrise_items::equipment::{CHEST, Equipment};
-        use sunrise_protocol::buf::{Codec, Reader, Writer};
+        use sunrise_protocol::buf::{Codec, Reader};
         use sunrise_protocol::item::{Slot, component};
         use sunrise_protocol::registry::{Builtin, Dynamic, Ids};
         use sunrise_world::{attribute_map::ValueKind, attributes::entity::Catalog};
-        use std::sync::Arc;
         super::prepare_stack_boundary_tests();
         let attributes = [
             "minecraft:armor",
@@ -1674,6 +1666,11 @@ mod enchantment_boundary_tests {
 fn prepare_stack_boundary_tests() {
     install_stack_hooks();
     install_parts(&[]).unwrap();
+    resolve_stack_boundary_test_items();
+}
+
+#[cfg(test)]
+fn resolve_stack_boundary_test_items() {
     mod_api::__private::resolve_items([
         "minecraft:iron_sword",
         "minecraft:stick",
@@ -1683,6 +1680,39 @@ fn prepare_stack_boundary_tests() {
         "minecraft:potion",
     ])
     .unwrap();
+}
+
+#[cfg(test)]
+mod recipe_listing_tests {
+    use super::*;
+    #[test]
+    fn a_bad_recipe_does_not_hide_the_good_recipe_of_its_type() {
+        let mut registries = mod_api::testing::FakeRegistries::default();
+        registries
+            .resolve_items([mod_api::Identifier::parse("minecraft:stick").unwrap()])
+            .unwrap();
+        let mut good = crate::crafting::RecipeSnapshot::new(
+            "example:good",
+            "example:machine",
+            serde_json::json!({}).into(),
+        );
+        good.results = vec![EngineStack::new("minecraft:stick", 1)];
+        let mut bad = crate::crafting::RecipeSnapshot::new(
+            "example:bad",
+            "example:machine",
+            serde_json::json!({}).into(),
+        );
+        bad.results = vec![EngineStack::new("example:unknown", 1)];
+        let entries = RecipeListing(vec![good, bad].into())
+            .try_into_api()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "example:good");
+        assert_eq!(
+            mod_api::__private::item_key_id(entries[0].results[0].item()),
+            Some("minecraft:stick")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1772,8 +1802,6 @@ impl TryIntoApi for crate::containers::ModBlockEntity {
     }
 }
 
-include!("api_values/block_entity_writeback.rs");
-
 impl super::Game<'_> {
     pub(in crate::game) fn api_block_entity_update_tag(
         pos: [i32; 3],
@@ -1840,88 +1868,6 @@ impl super::Game<'_> {
             player_entity_id,
         })
     }
-
-    pub(in crate::game) fn api_menu_button(
-        &mut self,
-        context: &mod_api::item::menu::MenuButtonContext,
-        entity: &mut crate::containers::ModBlockEntity,
-        carried: &mut Option<EngineStack>,
-    ) {
-        if !mod_api::__private::has_part_hook(mod_api::HookId::MenuButton) {
-            return;
-        }
-        let (Ok(mut api), Ok(mut cursor)) = (entity.try_into_api(), carried.try_into_api()) else {
-            return;
-        };
-        let revision = api.revision();
-        let original = cursor.clone();
-        self.native_menu_button(context, &mut api, &mut cursor);
-        let cursor = if cursor == original {
-            Ok(None)
-        } else {
-            cursor
-                .try_into_engine(self.items())
-                .map(Some)
-                .map_err(|_| BlockEntitySnapshotError::InvalidStack)
-        };
-        if let Ok(Some(cursor)) = finish_block_entity_writeback(
-            entity,
-            &api,
-            revision,
-            self.items(),
-            "menu_button",
-            cursor,
-        ) {
-            *carried = cursor;
-        }
-    }
-    pub(in crate::game) fn api_menu_quick_move(
-        &mut self,
-        pos: [i32; 3],
-        entity: &mut crate::containers::ModBlockEntity,
-        container_slots: usize,
-        slot: usize,
-        stack: &mut EngineStack,
-        handled: &mut bool,
-    ) {
-        if !mod_api::__private::has_part_hook(mod_api::HookId::MenuQuickMove) {
-            return;
-        }
-        let (Ok(mut api), Ok(mut held)) = (entity.try_into_api(), stack.try_into_api()) else {
-            return;
-        };
-        let revision = api.revision();
-        let original = held.clone();
-        let mut candidate_handled = *handled;
-        self.native_menu_quick_move(
-            pos,
-            &mut api,
-            container_slots,
-            slot,
-            &mut held,
-            &mut candidate_handled,
-        );
-        let held = if held == original {
-            Ok(None)
-        } else {
-            held.try_into_engine(self.items())
-                .map(Some)
-                .map_err(|_| BlockEntitySnapshotError::InvalidStack)
-        };
-        if let Ok(held) = finish_block_entity_writeback(
-            entity,
-            &api,
-            revision,
-            self.items(),
-            "menu_quick_move",
-            held,
-        ) {
-            if let Some(held) = held {
-                *stack = held;
-            }
-            *handled = candidate_handled;
-        }
-    }
 }
 impl super::GameLevel<'_> {
     pub(in crate::game) fn api_pre_remove_side_effects(
@@ -1929,134 +1875,39 @@ impl super::GameLevel<'_> {
         pos: sunrise_core::position::BlockPos,
         state: sunrise_world::registry::BlockStateId,
         entity: &crate::containers::ModBlockEntity,
-        drops: &mut Vec<EngineStack>,
-    ) {
+    ) -> super::spill::RemovalOutputs {
+        let mut outputs = super::spill::RemovalOutputs::default();
         if !mod_api::__private::has_part_hook(mod_api::HookId::PreRemoveSideEffects) {
-            return;
+            return outputs;
         }
         let Ok(api) = entity.try_into_api() else {
-            return;
+            return outputs;
         };
-        let mut added = Vec::new();
-        self.native_pre_remove_side_effects(pos, state, &api, &mut added);
-        drops.extend(added);
-    }
-}
-
-#[cfg(test)]
-#[path = "api_values/stacked_slot_tests.rs"]
-mod stacked_slot_tests;
-
-#[cfg(test)]
-mod block_entity_snapshot_tests {
-    use super::*;
-    #[test]
-    fn rejected_writebacks_invalidate_tick() {
-        assert_rejected_writeback("block_entity_tick");
-    }
-    #[test]
-    fn rejected_writebacks_invalidate_menu_button() {
-        assert_rejected_writeback("menu_button");
-    }
-    #[test]
-    fn rejected_writebacks_invalidate_menu_quick_move() {
-        assert_rejected_writeback("menu_quick_move");
-    }
-    fn assert_rejected_writeback(hook: &'static str) {
-        let items = Items::for_tests(Default::default());
-        let mut entity =
-            crate::containers::ModBlockEntity::new("test:rejected".into(), Default::default());
-        let mut snapshot = entity.try_into_api().unwrap();
-        let before = snapshot.revision();
-        snapshot.data.push(42);
-        let claimed = snapshot.revision().changes();
-        // Tick rejection: wrong identity. Menu rejection: invalid cursor/held output.
-        let output = if hook == "block_entity_tick" {
-            snapshot = mod_api::ModBlockEntity::new("other:type".into(), Default::default());
-            Ok(())
-        } else {
-            Err(BlockEntitySnapshotError::InvalidStack)
-        };
-        assert!(
-            finish_block_entity_writeback(&mut entity, &snapshot, before, &items, hook, output)
-                .is_err()
-        );
-        assert!(entity.data.is_empty());
-        assert_eq!(
-            entity.revision().changes(),
-            if hook == "block_entity_tick" {
-                1
-            } else {
-                claimed + 1
-            }
-        );
-    }
-
-    #[test]
-    fn unchanged_snapshots_keep_revision_and_callback_writes_advance_it() {
-        let mut entity =
-            crate::containers::ModBlockEntity::new("test:machine".into(), Default::default());
-        let first = entity.try_into_api().unwrap();
-        let mut second = entity.try_into_api().unwrap();
-        assert_eq!(first.revision(), second.revision());
-        let before = second.revision();
-        second.data.push(7);
-        second.data.push(8);
-        assert_ne!(before, second.revision());
-        apply_block_entity_snapshot(
-            &mut entity,
-            &second,
-            before,
-            &Items::for_tests(Default::default()),
-        )
-        .unwrap();
-        let third = entity.try_into_api().unwrap();
-        assert_ne!(first.revision(), third.revision());
-        assert_eq!(second.revision(), third.revision());
-        assert_eq!(third.revision(), entity.try_into_api().unwrap().revision());
-        assert_eq!(entity.id(), "test:machine");
-        assert_eq!(entity.data, [7, 8]);
-        let other = mod_api::ModBlockEntity::new("test:machine".into(), Default::default());
-        assert_ne!(other.revision(), third.revision());
-        entity.data.push(9);
-        let fourth = entity.try_into_api().unwrap();
-        assert_ne!(fourth.revision(), second.revision());
-        let items = Items::for_tests(Default::default());
-        assert_eq!(
-            apply_block_entity_snapshot(&mut entity, &second, before, &items),
-            Err(BlockEntitySnapshotError::InvalidRevision)
-        );
-        assert_eq!(
-            apply_block_entity_snapshot(&mut entity, &other, before, &items),
-            Err(BlockEntitySnapshotError::InvalidRevision)
-        );
-        assert_eq!(entity.data, [7, 8, 9]);
-    }
-
-    #[test]
-    fn a_callbacks_client_update_fields_reach_the_queue_only_from_a_valid_snapshot() {
-        let items = Items::for_tests(Default::default());
-        let mut entity =
-            crate::containers::ModBlockEntity::new("test:machine".into(), Default::default());
-        let batch =
-            sunrise_core::nbt::Compound::from([("effect".into(), sunrise_core::nbt::Tag::Int(23))]);
-        let made = entity.revision();
-        let mut snapshot = entity.try_into_api().unwrap();
-        let before = snapshot.revision();
-        mod_api::ModBlockEntityView::new(&mut snapshot).set_client_update_fields(batch.clone());
-        // Nothing but the queue moved, and an unchanged snapshot still delivers.
-        apply_block_entity_snapshot(&mut entity, &snapshot, before, &items).unwrap();
-        assert_eq!(entity.revision(), made);
-        assert_eq!(entity.take_client_update_fields(), Some(batch.clone()));
-        // A snapshot naming another entity is refused whole.
-        let mut other = mod_api::ModBlockEntity::new("test:machine".into(), Default::default());
-        let before = other.revision();
-        mod_api::ModBlockEntityView::new(&mut other).set_client_update_fields(batch);
-        assert_eq!(
-            apply_block_entity_snapshot(&mut entity, &other, before, &items),
-            Err(BlockEntitySnapshotError::InvalidRevision)
-        );
-        assert!(!entity.has_client_update_fields());
+        self.native_pre_remove_side_effects(super::native_hooks::PreRemoveSideEffectsCall {
+            pos,
+            state,
+            entity: &api,
+            keep_contents: &mut outputs.keep_contents,
+            drops: &mut outputs.drops,
+            spawns: &mut outputs.spawns,
+            experience: &mut outputs.experience,
+        });
+        if outputs.drops.len() > 1024
+            || outputs.spawns.len() > 1024
+            || outputs.experience.len() > 1024
+            || outputs
+                .spawns
+                .iter()
+                .any(|(_, at)| at.iter().any(|v| !v.is_finite()))
+            || outputs
+                .experience
+                .iter()
+                .any(|(_, at)| at.iter().any(|v| !v.is_finite()))
+        {
+            log::warn!("pre_remove_side_effects outputs refused: limit or nonfinite position");
+            return Default::default();
+        }
+        outputs
     }
 }
 
@@ -2124,6 +1975,10 @@ mod stack_limit_tests {
 
     pub(super) fn catalog() -> Items {
         prepare_stack_boundary_tests();
+        fixture_catalog()
+    }
+
+    fn fixture_catalog() -> Items {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
             "sunrise-api-limits-{}-{}",
@@ -2143,25 +1998,29 @@ mod stack_limit_tests {
         items
     }
 
-    /// Vanilla stores damage above the maximum; only writes refuse it. Reads see the stack.
+    /// Vanilla `DataComponents.DAMAGE` validates non-negative ints without capping by `max_damage`.
     #[test]
-    fn a_write_refuses_damage_over_the_maximum_a_read_takes() {
+    fn a_write_preserves_damage_above_max_damage() {
         let items = catalog();
         let mut over = ApiStack::of(mod_api::__private::item_key("minecraft:iron_sword").unwrap());
         over.set_damage(1000);
-        assert_eq!(
-            over.try_into_engine(&items),
-            Err(StackWriteError::DamageExceeded { maximum: 10 })
-        );
-        let read = stack_value(&over).unwrap();
         let definition = items.items.get("minecraft:iron_sword");
+        let written = over.try_into_engine(&items).unwrap();
+        assert_eq!(written.effective_damage(definition), 1000);
+        assert!(sunrise_client::stations::is_damageable(&items, &written));
+        let read = stack_value(&over).unwrap();
         assert_eq!(read.effective_damage(definition), 1000);
-        assert!(sunrise_client::stations::is_damageable(&items, &read));
     }
 
     #[test]
-    fn strict_damage_limits_include_zero_inheritance_removal_and_nbt_int_range() {
-        let mut items = catalog();
+    fn damage_and_max_damage_follow_vanilla_int_ranges() {
+        use sunrise_core::vanilla_bytes::Writer;
+        use sunrise_protocol::{
+            buf::{Codec, Reader},
+            item::{Component, Slot, component},
+        };
+
+        let items = catalog();
         let key = |id| mod_api::__private::item_key(id).unwrap();
         let plain = ApiStack::of(key("minecraft:stick"));
         assert!(plain.try_into_engine(&items).is_ok());
@@ -2170,15 +2029,20 @@ mod stack_limit_tests {
         let engine = explicit.try_into_engine(&items).unwrap();
         assert!(engine.carries_component(None, "minecraft:damage"));
         assert_eq!(
-            sunrise_items::item_data::encode_components(&engine)
+            sunrise_items::item_data::component_snapshot(&engine)
                 .unwrap()
                 .get("minecraft:damage"),
             Some(&Tag::Int(0))
         );
+        explicit.set_damage(5);
+        let engine = explicit.try_into_engine(&items).unwrap();
+        assert_eq!(engine.damage, 5);
         explicit.set_damage(u32::MAX);
         assert_eq!(
             explicit.try_into_engine(&items),
-            Err(StackWriteError::DamageExceeded { maximum: 0 })
+            Err(StackWriteError::InvalidComponents {
+                reason: mod_api::StackError::InvalidDamage
+            })
         );
 
         let inherited = ApiStack::of(key("minecraft:iron_sword"));
@@ -2194,10 +2058,40 @@ mod stack_limit_tests {
         lower
             .set_components([(JavaString::from("minecraft:max_damage"), Tag::Int(5))].into())
             .unwrap();
+        let engine = lower.try_into_engine(&items).unwrap();
+        assert_eq!(engine.max_damage(Some(definition)), 5);
+        assert_eq!(engine.effective_damage(Some(definition)), 7);
+
+        let mut short_max = inherited.clone();
+        short_max
+            .set_components([(JavaString::from("minecraft:max_damage"), Tag::Short(20))].into())
+            .unwrap();
+        let engine = short_max.try_into_engine(&items).unwrap();
+        assert_eq!(engine.max_damage(Some(definition)), 20);
+        let packet_stack = crate::lan::guest::stack_to_network(|_| 1, |_, _| None, &Some(engine));
+        let mut writer = Writer::new();
+        Slot::write(&packet_stack, &mut writer);
+        let mut reader = Reader::new(&writer.data);
+        let decoded = Slot::read(&mut reader).unwrap().unwrap();
         assert_eq!(
-            lower.try_into_engine(&items),
-            Err(StackWriteError::DamageExceeded { maximum: 5 })
+            decoded.component(component::MAX_DAMAGE),
+            Some(&Component::Int(20))
         );
+
+        for invalid in [Tag::Int(0), Tag::Int(-1), Tag::Short(0), Tag::Short(-1)] {
+            let mut bad_max = inherited.clone();
+            bad_max
+                .set_components(
+                    [(JavaString::from("minecraft:max_damage"), invalid.clone())].into(),
+                )
+                .unwrap();
+            assert_eq!(
+                bad_max.try_into_engine(&items),
+                Err(StackWriteError::InvalidMaximum),
+                "max_damage {invalid:?}"
+            );
+        }
+
         let mut removed = inherited;
         removed
             .set_components(
@@ -2208,10 +2102,9 @@ mod stack_limit_tests {
                 .into(),
             )
             .unwrap();
-        assert_eq!(
-            removed.try_into_engine(&items),
-            Err(StackWriteError::DamageExceeded { maximum: 0 })
-        );
+        let engine = removed.try_into_engine(&items).unwrap();
+        assert_eq!(engine.max_damage(Some(definition)), 0);
+        assert_eq!(engine.effective_damage(Some(definition)), 7);
         removed.clear_damage();
         let engine = removed.try_into_engine(&items).unwrap();
         assert_eq!(engine.max_damage(Some(definition)), 0);
@@ -2219,12 +2112,12 @@ mod stack_limit_tests {
         removed.set_damage(0);
         assert!(removed.try_into_engine(&items).is_ok());
 
-        items
-            .items
-            .get_mut("minecraft:diamond_sword")
-            .unwrap()
-            .max_damage = u32::MAX;
         let mut oversized = ApiStack::of(key("minecraft:diamond_sword"));
+        oversized.set_damage(i32::MAX as u32);
+        assert_eq!(
+            oversized.try_into_engine(&items).unwrap().damage,
+            i32::MAX as u32
+        );
         oversized.set_damage(u32::MAX);
         assert_eq!(
             oversized.try_into_engine(&items),
@@ -2255,6 +2148,14 @@ mod stack_limit_tests {
                 "maximum {maximum}"
             );
         }
+        let mut short_max = ApiStack::of(key);
+        short_max
+            .set_components([("minecraft:max_stack_size".into(), Tag::Short(1))].into())
+            .unwrap();
+        assert_eq!(
+            short_max.try_into_engine(&items),
+            Err(StackWriteError::InvalidMaximum)
+        );
         for maximum in [1, 99] {
             let mut stack = ApiStack::new(key, maximum).unwrap();
             stack
@@ -2364,8 +2265,8 @@ mod stack_limit_tests {
             );
             let back = api.try_into_engine(&items).unwrap();
             assert_eq!(
-                sunrise_items::item_data::encode_components(&original),
-                sunrise_items::item_data::encode_components(&back),
+                sunrise_items::item_data::component_snapshot(&original),
+                sunrise_items::item_data::component_snapshot(&back),
                 "write {patch:?}"
             );
             assert_eq!(original, back, "round trip {patch:?}");
@@ -2440,6 +2341,30 @@ mod stack_limit_tests {
             items.items.get("minecraft:stick"),
             "minecraft:max_stack_size"
         ));
+    }
+
+    #[test]
+    fn full_stack_write_round_trips_bare_damage() {
+        mod_api::testing::with_parts_registration_probe(
+            Default::default(),
+            |_| (),
+            |_, ()| {
+                let mut registries = mod_api::testing::FakeRegistries::default();
+                registries
+                    .resolve_items([mod_api::Identifier::parse("minecraft:iron_sword").unwrap()])
+                    .unwrap();
+                let key = mod_api::__private::item_key("minecraft:iron_sword").unwrap();
+                let items = fixture_catalog();
+                let patch: Compound = [(JavaString::from("damage"), Tag::Int(4))].into();
+                let mut draft = ApiStack::of(key);
+                draft.set_components(patch.clone()).unwrap();
+
+                let written = draft.try_into_engine(&items).unwrap();
+                let round_trip = written.try_into_api().unwrap();
+                assert_eq!(round_trip.damage_component(), None);
+                assert_eq!(round_trip.components().unwrap().as_nbt(), &patch);
+            },
+        );
     }
 
     #[test]
@@ -2577,25 +2502,10 @@ impl TryIntoEngine<()> for mod_api::BlockEntityTypeDecl {
     }
 }
 pub(in crate::game) fn block_entity_declarations()
--> Vec<sunrise_mod_package::content::BlockEntityType> {
+-> impl Iterator<Item = (&'static str, sunrise_mod_package::content::BlockEntityType)> {
     mod_api::__private::block_entity_types()
         .iter()
-        .map(|decl| decl.try_into_engine(&()).unwrap())
-        .collect()
-}
-
-impl TryIntoEngine<()> for mod_api::GameRuleDecl {
-    type Engine = sunrise_client_core::gamerules::Rule;
-    type Error = std::convert::Infallible;
-    fn try_into_engine(&self, _: &()) -> Result<Self::Engine, Self::Error> {
-        Ok(Self::Engine {
-            name: self.name.clone(),
-            category: self.category.clone(),
-            default: sunrise_client_core::gamerules::Value::Bool(self.default),
-            min: 0,
-            max: 0,
-        })
-    }
+        .map(|(owner, decl)| (*owner, decl.try_into_engine(&()).unwrap()))
 }
 
 #[cfg(test)]
@@ -2619,9 +2529,10 @@ mod declaration_snapshot_tests {
             }
         }
         install_parts(&[mod_api::ModEntry::new("test", Box::new(Mod))]).unwrap();
-        let declarations = block_entity_declarations();
-        assert_eq!(declarations[0].id, "test:machine");
-        assert_eq!(declarations[0].blocks, ["test:second", "test:first"]);
+        let (owner, declaration) = block_entity_declarations().next().unwrap();
+        assert_eq!(owner, "test");
+        assert_eq!(declaration.id, "test:machine");
+        assert_eq!(declaration.blocks, ["test:second", "test:first"]);
         let registry = game_rule_registry();
         let key = *KEY.get().unwrap();
         assert_eq!(
@@ -2635,142 +2546,18 @@ mod declaration_snapshot_tests {
     }
 }
 
-macro_rules! gui_draw_value {
-    ($draw:expr, $from:ident, $to:ident, $convert:ident($($args:expr),*)) => {
-        match $draw {
-            $from::Sprite {
-                sprite,
-                x,
-                y,
-                w,
-                h,
-                region,
-                color,
-                blend,
-            } => $to::Sprite {
-                sprite: sprite.clone(),
-                x: *x,
-                y: *y,
-                w: *w,
-                h: *h,
-                region: *region,
-                color: *color,
-                blend: *blend,
-            },
-            $from::AtlasSprite {
-                sprite,
-                x,
-                y,
-                w,
-                h,
-                color,
-            } => $to::AtlasSprite {
-                sprite: sprite.clone(),
-                x: *x,
-                y: *y,
-                w: *w,
-                h: *h,
-                color: *color,
-            },
-            $from::Blit {
-                texture,
-                blend,
-                x,
-                y,
-                w,
-                h,
-                uv,
-                src,
-                tex,
-                color,
-            } => $to::Blit {
-                texture: texture.clone(),
-                blend: *blend,
-                x: *x,
-                y: *y,
-                w: *w,
-                h: *h,
-                uv: *uv,
-                src: *src,
-                tex: *tex,
-                color: *color,
-            },
-            $from::Fill {
-                x0,
-                y0,
-                x1,
-                y1,
-                color,
-            } => $to::Fill {
-                x0: *x0,
-                y0: *y0,
-                x1: *x1,
-                y1: *y1,
-                color: *color,
-            },
-            $from::Text {
-                text,
-                x,
-                y,
-                color,
-                shadow,
-            } => $to::Text {
-                text: text.$convert($($args),*)?,
-                x: *x,
-                y: *y,
-                color: *color,
-                shadow: *shadow,
-            },
-            $from::Item {
-                slot,
-                x,
-                y,
-                seed,
-                scale,
-                pivot,
-            } => $to::Item {
-                slot: *slot,
-                x: *x,
-                y: *y,
-                seed: *seed,
-                scale: *scale,
-                pivot: *pivot,
-            },
-            $from::Push(ops) => $to::Push(ops.clone()),
-            $from::Pop => $to::Pop,
-        }
-    };
-}
-
-impl TryIntoApi for sunrise_client::hud_layout::GuiDraw {
-    type Api = mod_api::client::hud_layout::GuiDraw;
-    type Error = mod_api::text::TextFormError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        use sunrise_client::hud_layout::GuiDraw as Engine;
-        use mod_api::client::hud_layout::GuiDraw as Api;
-        Ok(gui_draw_value!(self, Engine, Api, try_into_api()))
-    }
-}
-impl<C: ?Sized> TryIntoEngine<C> for mod_api::client::hud_layout::GuiDraw {
-    type Engine = sunrise_client::hud_layout::GuiDraw;
-    type Error = mod_api::text::TextFormError;
-    fn try_into_engine(&self, _: &C) -> Result<Self::Engine, Self::Error> {
-        use sunrise_client::hud_layout::GuiDraw as Engine;
-        use mod_api::client::hud_layout::GuiDraw as Api;
-        Ok(gui_draw_value!(self, Api, Engine, try_into_engine(&())))
-    }
-}
-
+#[path = "api_values/gui_draw.rs"]
+mod gui_draw;
 #[path = "api_values/text_boundary.rs"]
 mod text_boundary;
 #[cfg(test)]
 mod gui_draw_boundary_tests {
     use super::{TryIntoApi, TryIntoEngine};
+    use serde_json::json;
     use sunrise_client::{
         hud_layout::{Blend, GuiDraw as D, PoseOp},
         text::Text,
     };
-    use serde_json::json;
 
     #[test]
     fn gui_commands_keep_every_variant_field_order_and_text_source() {
@@ -2815,6 +2602,14 @@ mod gui_draw_boundary_tests {
                 y1: 34,
                 color: 35,
             },
+            D::FillGradient {
+                x0: 36,
+                y0: -37,
+                x1: 38,
+                y1: 39,
+                top: 0x8000_0040,
+                bottom: 0xFF00_0041,
+            },
             D::Text {
                 text: text.clone(),
                 x: 41,
@@ -2837,7 +2632,7 @@ mod gui_draw_boundary_tests {
         let actual: Result<Vec<D>, mod_api::text::TextFormError> = api.try_into_engine(&());
         let actual = actual.unwrap();
         assert_eq!(actual, commands);
-        let D::Text { text: actual, .. } = &actual[4] else {
+        let D::Text { text: actual, .. } = &actual[5] else {
             panic!("text command")
         };
         assert_eq!(actual.component(), text.component());
@@ -2988,19 +2783,21 @@ fn with_rule_schema<T>(f: impl FnOnce(&mod_api::__private::RuleSchema<'_>) -> T)
 pub(in crate::game) fn install_test_platform() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
-        let result = sunrise_engine_slots::install_platform(sunrise_engine_slots::Platform {
-            install_packages: mod_platform::__private::install_packages,
-            install_registration_data: mod_platform::__private::install_registration_data,
-            install_parts: mod_platform::__private::install_parts,
-            profiler_is_enabled: mod_platform::__private::profiler::is_enabled,
-            profiler_start: mod_platform::__private::profiler::start,
-            profiler_stop: mod_platform::__private::profiler::stop,
-            profiler_summary: mod_platform::__private::profiler::summary,
-            profiler_firefox_profile: mod_platform::__private::profiler::firefox_profile,
-        });
+        let result = mod_api::__private::platform::install_platform(
+            mod_api::__private::platform::Platform {
+                install_packages: mod_platform::__private::install_packages,
+                install_registration_data: mod_platform::__private::install_registration_data,
+                install_parts: mod_platform::__private::install_parts,
+                profiler_is_enabled: mod_platform::__private::profiler::is_enabled,
+                profiler_start: mod_platform::__private::profiler::start,
+                profiler_stop: mod_platform::__private::profiler::stop,
+                profiler_summary: mod_platform::__private::profiler::summary,
+                profiler_firefox_profile: mod_platform::__private::profiler::firefox_profile,
+            },
+        );
         assert!(
             result.is_ok()
-                || result == Err(sunrise_engine_slots::PlatformRefusal::AlreadyInstalled)
+                || result == Err(mod_api::__private::platform::PlatformRefusal::AlreadyInstalled)
         );
     });
 }
@@ -3008,7 +2805,7 @@ pub(in crate::game) fn install_parts(mods: &[mod_api::ModEntry]) -> Result<(), V
     #[cfg(test)]
     install_test_platform();
     with_rule_schema(|schema| {
-        (sunrise_engine_slots::platform()
+        (mod_api::__private::platform::platform()
             .map_err(|e| vec![e.to_string()])?
             .install_parts)(mods, schema, super::native_dimensions::valid_shape)
     })
@@ -3028,6 +2825,10 @@ pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>)
         |id| sunrise_client_core::potions::effect(id).map(|def| def.index),
     )
     .unwrap();
+    mod_api::__private::validate_effect_part_owners(|id| {
+        sunrise_client_core::potions::effect(id)?.owner
+    })
+    .unwrap();
     if let Some(types) = sunrise_client_core::block_entity_types::current() {
         // Registration just replaced the mod snapshot, but the process-wide engine
         // table can still belong to an earlier fixture. Include this fixture's
@@ -3036,9 +2837,10 @@ pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>)
         mod_api::__private::resolve_block_entity_types(
             types
                 .names()
-                .chain(declared.iter().map(|kind| kind.id.as_str())),
+                .chain(declared.iter().map(|(_, kind)| kind.id.as_str())),
             |id| {
-                (types.key(id).is_some() || declared.iter().any(|kind| kind.id == id)).then_some(())
+                (types.key(id).is_some() || declared.iter().any(|(_, kind)| kind.id == id))
+                    .then_some(())
             },
         )
         .unwrap();
@@ -3050,26 +2852,40 @@ pub(in crate::game) fn game_rule_registry() -> sunrise_client_core::gamerules::R
         .iter()
         .map(|rule| rule.try_into_engine(&()).unwrap())
         .collect();
-    sunrise_client_core::gamerules::RuleRegistry::with_bool_rules(
+    sunrise_client_core::gamerules::RuleRegistry::with_mod_rules(
         mod_api::__private::game_rule_categories(),
         &rules,
     )
     .expect("validated at registration")
 }
 
-#[path = "api_values/damage.rs"]
-pub(in crate::game) mod damage;
+#[path = "api_values/game_rule_values.rs"]
+mod game_rule_values;
 #[path = "api_values/item_properties.rs"]
 mod item_properties;
 #[path = "api_values/loot_values.rs"]
 pub(crate) mod loot_values;
-#[path = "api_values/particle_values.rs"]
-mod particle_values;
-pub(crate) use loot_values::{dispatch_loot_condition, dispatch_loot_function};
 #[path = "api_values/package_snapshot.rs"]
 mod package_snapshot;
+#[path = "api_values/particle_values.rs"]
+mod particle_values;
 pub(in crate::game) use package_snapshot::install_packages;
 #[path = "api_values/phase_values.rs"]
 mod phase_values;
 #[path = "api_values/small_values.rs"]
 mod small_values;
+
+impl TryIntoApi for (EngineStack, [f64; 3]) {
+    type Api = (ApiStack, [f64; 3]);
+    type Error = StackReadError;
+    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
+        Ok((self.0.try_into_api()?, self.1))
+    }
+}
+impl TryIntoEngine for (ApiStack, [f64; 3]) {
+    type Engine = (EngineStack, [f64; 3]);
+    type Error = StackWriteError;
+    fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
+        Ok((self.0.try_into_engine(items)?, self.1))
+    }
+}

@@ -1,0 +1,3 @@
+ids = ["hook:block_entity_save_additional", "hook:block_entity_save_additional.pos", "hook:block_entity_save_additional.level", "type:BlockEntitySaveAdditionalEvent.pos", "type:BlockEntitySaveAdditionalEvent.level"]
+why = "block_entity_save_additional now names the block entity's place: event.pos is its position and event.level its level, read from the instance itself, also for an unload or a removed block's loot roll when the level no longer lists it. A mod keeping live state per dimension and position can write it into the save. The hook moves from version 1 to 2."
+migrate = "Read event.pos and event.level where the save depends on the place. Destructure BlockEntitySaveAdditionalEvent with .. for the added fields. Rebuild native mods against this SDK."

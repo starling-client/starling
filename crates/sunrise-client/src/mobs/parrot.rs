@@ -220,12 +220,12 @@ pub fn register(m: &mut Mob) {
 /// decays, and `flap` turns by it. A client runs it for the parrots it only
 /// displays.
 pub fn flap(m: &mut Mob) {
-    let grounded = m.on_ground || m.extra.mount.is_some();
+    let grounded = m.ground.on_ground || m.extra.mount.is_some();
     let a = &mut m.anim;
     a.flap_o = a.flap;
     a.flap_speed_o = a.flap_speed;
     a.flap_speed = (a.flap_speed + if grounded { -1.0 } else { 4.0 } * 0.3).clamp(0.0, 1.0);
-    if !m.on_ground && a.flapping < 1.0 {
+    if !m.ground.on_ground && a.flapping < 1.0 {
         a.flapping = 1.0;
     }
     a.flapping *= 0.9;
@@ -236,7 +236,7 @@ pub fn flap(m: &mut Mob) {
 /// parrot falling through the air glides down at 0.6 of the speed.
 pub fn calculate_flapping(m: &mut Mob) {
     flap(m);
-    if !m.on_ground && m.velocity.y < 0.0 {
+    if !m.ground.on_ground && m.velocity.y < 0.0 {
         m.velocity.y *= 0.6;
     }
 }
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn a_falling_parrot_flaps_and_glides() {
         let mut m = parrot();
-        m.on_ground = false;
+        m.ground.on_ground = false;
         m.velocity = Vec3::new(0.1, -0.5, 0.0);
         calculate_flapping(&mut m);
         assert!((m.velocity.y + 0.3).abs() < 1.0e-12);
@@ -388,7 +388,7 @@ mod tests {
         calculate_flapping(&mut m);
         assert!((m.anim.flap_speed - 0.7).abs() < 1.0e-6);
         m.extra.mount = None;
-        m.on_ground = true;
+        m.ground.on_ground = true;
         m.velocity = Vec3::new(0.0, -0.0784, 0.0);
         calculate_flapping(&mut m);
         assert!((m.anim.flap_speed - 0.4).abs() < 1.0e-6);

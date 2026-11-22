@@ -10,10 +10,10 @@
 //! `effect_blend_factor` reads only there, from the fades the client ticks.
 use super::Game;
 use super::commands::Target;
+use mod_api::{ActiveEffect, EffectKey, LivingRef};
 use sunrise_client::effects::{EffectInstance, PlayerEffects};
 use sunrise_client::mobs::Mob;
 use sunrise_items::items::ItemStack;
-use mod_api::{ActiveEffect, EffectKey, LivingRef};
 
 /// A player's effect as the API's load-owned key and instance data.
 pub(super) fn active_effect(e: &EffectInstance) -> ActiveEffect {
@@ -54,25 +54,26 @@ impl Game<'_> {
         index: usize,
     ) -> Option<bool> {
         let target = self.native_living_target(living)?;
-        let effect = self
-            .items()
-            .get(&stack.item)?
-            .consumable
-            .as_ref()?
+        let effect = stack
+            .consumable(self.items().get(&stack.item))?
             .effects
             .get(index)?
             .clone();
         match target {
             t @ (Target::Player | Target::Guest(_)) => self
-                .for_player(t, |g| g.apply_consume_effect(stack, &effect, None))
+                .for_player(t, |g| {
+                    g.apply_consume_effect(stack, &effect, None, living.entity())
+                })
                 .flatten(),
-            Target::Mob(_) => self.apply_consume_effect(stack, &effect, Some(living)),
+            Target::Mob(_) => {
+                self.apply_consume_effect(stack, &effect, Some(living), living.entity())
+            }
             _ => None,
         }
     }
 
     /// Where a player's or a guest's effects are: the acting player's own
-    /// are the game's (swapped in by `enter_guest`; a player handle names
+    /// are the game's (swapped in by the entry of `guest_turn`; a player handle names
     /// the acting player, and a game without a hub keeps its single
     /// player's the same way), any other guest's are their hub record's.
     /// None for another kind.
@@ -130,10 +131,11 @@ impl Game<'_> {
                 if !self.can_be_affected_resolved(Some(id as i32), &kind, name, Some(effect.id)) {
                     return false;
                 }
-                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                let Some(changed) = self.mutate_mob_effects(id, Some(name), |mob| {
+                    mob.add_effect_instance(name, instance)
+                }) else {
                     return false;
                 };
-                let changed = m.add_effect_instance(name, instance);
                 self.mod_effect_added_resolved(effect.id, Some(id as i32), amplifier, new);
                 changed
             }
@@ -293,10 +295,10 @@ impl Game<'_> {
                 if cancel {
                     return false;
                 }
-                self.mobs
-                    .iter_mut()
-                    .find(|m| m.id == id)
-                    .is_some_and(|m| m.retain_effects(|e| e.registry_index != Some(def.index)))
+                self.mutate_mob_effects(id, Some(def.id), |mob| {
+                    mob.retain_effects(|e| e.registry_index != Some(def.index))
+                })
+                .unwrap_or(false)
             }
             _ => false,
         }
@@ -338,11 +340,12 @@ impl Game<'_> {
                     .map(|(name, _)| *name)
                     .collect();
                 // The refused removals keep their effects; the rest go.
-                self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
-                    m.retain_effects(|e| {
+                self.mutate_mob_effects(id, None, |mob| {
+                    mob.retain_effects(|e| {
                         e.registry_index.is_some_and(|index| keep.contains(&index))
                     })
                 })
+                .unwrap_or(false)
             }
             _ => false,
         }
@@ -352,9 +355,9 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
+    use mod_api::{ActiveEffect, EntityRef, LivingRef, WorldEpoch};
     use sunrise_client::mobs::Mob;
     use sunrise_core::geometry::Vec3;
-    use mod_api::{ActiveEffect, EntityRef, LivingRef, WorldEpoch};
 
     fn effect(id: &'static str, duration: i32, amplifier: i32) -> ActiveEffect {
         ActiveEffect::from(mod_api::__private::built::ActiveEffect {
@@ -368,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn active_effect_ids_are_load_owned_slots() {
         with_game(|game| {
             let kind = game
@@ -394,14 +397,14 @@ mod tests {
                 listed[0].id,
                 mod_platform::__private::part_tests::effect_key("speed")
             );
-            assert_eq!(listed[0].id.id(game), "minecraft:speed");
+            assert_eq!(listed[0].id.id(game), Some("minecraft:speed"));
         });
     }
 
     /// `MobEffectInstance.showIcon` crosses `add_effect` and the reads both ways, for a player and
     /// a mob, apart from the particle flag; adding it again with the other value changes it.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn an_effects_icon_flag_is_written_and_read_for_players_and_mobs() {
         use sunrise_client::motion::PlayerMotion;
         with_game(|game| {
@@ -425,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn resolved_keys_keep_the_mobs_hidden_effect_identity() {
         with_game(|game| {
             let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
@@ -442,8 +445,28 @@ mod tests {
         });
     }
 
+    /// A mob marked removed but still listed counts as absent, as the effect reads treat it: the
+    /// three writes return false and change nothing.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
+    fn effect_writes_on_a_removed_mob_change_nothing() {
+        with_game(|game| {
+            let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+            game.mobs.push(Mob::new(24, kind, Vec3::ZERO, 0.0));
+            let cow = game.living(game.entity(24).unwrap()).unwrap();
+            let speed = mod_platform::__private::part_tests::effect_key("speed");
+            assert!(game.living_add_effect(cow, &effect("speed", 200, 0)));
+            game.mobs[0].removed = true;
+            assert!(!game.living_add_effect(cow, &effect("slowness", 200, 0)));
+            assert!(!game.living_remove_effect(cow, speed));
+            assert!(!game.living_remove_all_effects(cow));
+            let held: Vec<_> = game.mobs[0].extra.effects.iter().map(|e| e.id).collect();
+            assert_eq!(held, ["minecraft:speed"]);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn indexed_consumable_effects_apply_to_a_mob() {
         use sunrise_client::items::ItemStack;
         use sunrise_core::random::RandomSource;
@@ -519,7 +542,7 @@ mod tests {
     /// interpolates during its first tick, a missing one reads 0, and no other
     /// entity reads.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_client_reads_the_local_players_effect_blend_factors() {
         use super::super::execution_role::ExecutionRole;
         use sunrise_client::{effects::EffectInstance, motion::PlayerMotion};
@@ -663,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_mob_takes_effects_by_the_games_own_paths() {
         with_game(|game| {
             for (id, kind) in [

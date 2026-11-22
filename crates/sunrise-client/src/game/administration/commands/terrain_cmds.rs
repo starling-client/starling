@@ -624,6 +624,8 @@ impl Game<'_> {
                     let (tag, _) = sunrise_core::nbt::parse_snbt(&table)
                         .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
                     let json = sunrise_client::scoreboard::tag_to_json(&tag);
+                    sunrise_world::loot::validate_loot_table(&json)
+                        .map_err(|e| err("argument.nbt.invalid", &[&e]))?;
                     // LootCommand's omitted fishing tool is EMPTY, not mainhand.
                     let held = if id == "loot.fish"
                         && (ctx.get("tool").is_some() || ctx.has("mainhand") || ctx.has("offhand"))
@@ -742,21 +744,11 @@ impl Game<'_> {
                 let tool = self.tool_stack(ctx)?;
                 let mut pending = crate::game::spill::Pending::default();
                 let key = (p[0], p[1], p[2]);
-                let has_block_entity = if let Some(entity) = self.world.block_entities.get(&key) {
-                    pending.record(
-                        p,
-                        entity,
-                        &name,
-                        self.world.block_names.get(&key).cloned(),
-                        self.world.block_lock(key),
-                    );
-                    true
-                } else if let Some(saved) = self.block_entity_nbt(p) {
+                if !self.world.block_entities.contains_key(&key)
+                    && let Some(saved) = self.block_entity_nbt(p)
+                {
                     pending.record_saved(p, &saved);
-                    true
-                } else {
-                    false
-                };
+                }
                 // LootCommand: the source's entity is `this`, if it has one.
                 let entity = match self.command_source.map(|s| s.entity) {
                     None | Some(Some(Target::Player)) => Some(self.native_clicker().1 as u32),
@@ -787,12 +779,10 @@ impl Game<'_> {
                     breaker: entity.is_some(),
                     ..Default::default()
                 };
-                let mut drops = self.roll_block_loot(p, state, entity, roll);
-                if has_block_entity {
-                    for drop in &mut drops {
-                        pending.attach(p, drop);
-                    }
-                }
+                let source = pending.source(p);
+                let drops = sunrise_world::loot::copy::with_block_source(source.as_deref(), || {
+                    self.roll_block_loot(p, state, entity, roll)
+                });
                 (drops, Some(table))
             }
         };
@@ -999,9 +989,9 @@ mod tests {
 mod loot_mine_component_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use std::sync::Arc;
     use sunrise_client::{chunk::Chunk, containers::BlockEntity, save};
     use sunrise_core::nbt::{Compound, Tag};
-    use std::sync::Arc;
 
     fn slot(game: &Game<'_>, index: usize) -> ItemStack {
         let Some(BlockEntity::Chest(items)) = game.world.block_entities.get(&(12, 200, 4)) else {
@@ -1013,14 +1003,14 @@ mod loot_mine_component_tests {
     }
 
     fn decorations(stack: &ItemStack) -> Option<Tag> {
-        save::item_to_nbt(stack)
+        save::item_to_nbt(stack, &Default::default())
             .get("components")?
             .get("minecraft:pot_decorations")
             .cloned()
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn loot_mine_copies_actual_empty_and_right_pot_components_into_the_chest() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
@@ -1204,7 +1194,7 @@ mod loot_mine_component_tests {
         );
     }
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn loot_mine_uses_the_actual_stand_or_server_executor_presence() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
@@ -1328,7 +1318,7 @@ mod loot_position_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn actual_loot_replacement_retains_the_emitted_zero_slot() {
         let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -1435,10 +1425,10 @@ mod loot_position_tests {
 mod loot_kill_target_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
-    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn loot_kill_uses_actual_sheep_state_without_killing_the_target() {
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required"),
@@ -1476,6 +1466,8 @@ mod loot_kill_target_tests {
         )
         .unwrap();
         game.build_registries();
+        // A real world open publishes its owned loot evaluator before commands run.
+        game.load_server_loot();
         game.set_allow_commands(true);
         game.world
             .chunks
@@ -1553,11 +1545,11 @@ mod loot_kill_target_tests {
 #[cfg(test)]
 mod loot_mine_location_tests {
     use super::*;
-    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, containers::BlockEntity};
     const TABLE: &str = r###"{"type":"minecraft:block","pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:emerald","modifier":{"type":"minecraft:set_count","count":2}}]},{"rolls":1,"condition":{"type":"minecraft:location_check","offsetX":1,"predicate":{"block":{"blocks":"minecraft:oak_log","state":{"axis":"x"}}}},"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}]}"###;
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+    #[ignore = "daily"]
     fn loot_mine_location_reads_actual_offset_block_state() {
         crate::game::native_entity_refs::tests::with_game(|game| {
             game.options.game_dir = Some(
@@ -1616,7 +1608,7 @@ mod loot_mine_location_tests {
             game.world_tables = game
                 .stage_world_tables(&stack, false, &game.options.resources.clone())
                 .unwrap()
-                .0;
+                .tables;
             assert!(game.world_tables.is_some());
             game.ensure_datapacks();
             assert!(game.run_command("scoreboard objectives add h079 dummy"));
@@ -1699,10 +1691,10 @@ mod loot_mine_location_tests {
 #[cfg(test)]
 mod loot_location_shape_tests {
     use super::*;
-    use sunrise_client::{chunk::Chunk, chunk_map::ChunkMap};
-    use sunrise_world::registry::BlockRegistry;
     use serde_json::json;
     use std::sync::Arc;
+    use sunrise_client::{chunk::Chunk, chunk_map::ChunkMap};
+    use sunrise_world::registry::BlockRegistry;
 
     #[test]
     fn location_shape_uses_loaded_facts_and_rejects_whole_unsupported_conjunctions() {

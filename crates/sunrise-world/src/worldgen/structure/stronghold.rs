@@ -1,13 +1,13 @@
 //! Strongholds: StrongholdStructure, StrongholdPieces and the concentric
 //! ring positions of ChunkGeneratorStructureState.
 use crate::{registry::BlockStateId, worldgen::biome::BiomeId};
+use std::{collections::BTreeSet, f64::consts::PI, sync::Mutex};
 use sunrise_core::nbt::Tag;
 use sunrise_core::{
     geometry::Direction,
     position::ChunkPos,
     random::{LegacyRandom, RandomSource, WorldgenRandom},
 };
-use std::{collections::BTreeSet, f64::consts::PI, sync::Mutex};
 use {
     super::legacy::{
         LegacyPiece, PieceContext, PieceFrame, Result, make_bounding_box, random_horizontal,

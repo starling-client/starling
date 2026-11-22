@@ -1,0 +1,7 @@
+id = "refused_manifest_internals_on_content"
+name = "Refused manifest internals on content"
+version = "1.2.3"
+[[internals]]
+path = "sunrise_client::game::Game"
+kind = "type"
+hash = "sample"

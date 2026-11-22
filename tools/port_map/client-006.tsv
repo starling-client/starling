@@ -40,7 +40,7 @@ CopperGolemModel.createBodyLayer	skip:data		geometry baked into entity-models.js
 CopperGolemModel.createRunningPoseBodyLayer	skip:data		geometry baked into entity-models.json, which Sunrise loads as a resource
 CopperGolemModel.createSittingPoseBodyLayer	skip:data		geometry baked into entity-models.json, which Sunrise loads as a resource
 CopperGolemModel.createStarPoseBodyLayer	skip:data		geometry baked into entity-models.json, which Sunrise loads as a resource
-CopperGolemModel.translateToHand	port	crates/sunrise-client/src/mobs/render.rs::hand_base
+CopperGolemModel.translateToHand	port	crates/sunrise-client/src/mobs/render.rs::translate_to_hand
 CopperGolemModel.translateToHead	skip:other		only CustomHeadLayer calls it, and a copper golem has no head slot (its only extra slot is the antenna)
 CopperGolemModel.applyBlockOnAntennaTransform	port	crates/sunrise-client/src/game/mobs/mob_blocks.rs::antenna_block_matrix	the unit cube's bottom centre to the antenna centre, then the 1.75 drop
 IronGolemModel.createBodyLayer	skip:data		geometry baked into entity-models.json, which Sunrise loads as a resource

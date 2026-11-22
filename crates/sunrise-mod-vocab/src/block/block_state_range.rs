@@ -1,5 +1,5 @@
 //! A validated span of API-local block state ordinals.
-use crate::{BlockKey, BlockState, BlockStateError, BlockStateRecord};
+use crate::{BlockKey, BlockState, BlockStateError};
 
 /// States of one block in immutable definition order, not world numeric ID order.
 // no wire: decoding calls new to reject spans whose last ordinal would overflow u16; zero-length spans remain valid.
@@ -40,10 +40,10 @@ impl BlockStateRange {
     /// Every state in validated local ordinal order.
     pub fn iter(self) -> impl ExactSizeIterator<Item = BlockState> + DoubleEndedIterator {
         (0..self.count).map(move |offset| {
-            BlockState::from(BlockStateRecord::new(
+            crate::__private::block_state_from_ordinal(
                 self.first.block(),
                 (self.first.ordinal() as u32 + offset) as u16,
-            ))
+            )
         })
     }
 }
@@ -58,7 +58,7 @@ pub fn block_state_range(block: BlockKey) -> Result<BlockStateRange, BlockStateE
         .get(block.0 as usize)
         .ok_or(BlockStateError::UnknownBlock)?;
     BlockStateRange::new(
-        BlockStateRecord::new(block, 0).into(),
+        crate::__private::block_state_from_ordinal(block, 0),
         definition.state_count(),
     )
 }
@@ -67,7 +67,7 @@ pub fn block_state_range(block: BlockKey) -> Result<BlockStateRange, BlockStateE
 mod tests {
     use super::*;
     fn state(block: u32, ordinal: u16) -> BlockState {
-        BlockStateRecord::new(BlockKey(block), ordinal).into()
+        crate::__private::block_state_from_ordinal(BlockKey(block), ordinal)
     }
     #[test]
     fn local_range_validates_spans_and_never_wraps_ordinals() {

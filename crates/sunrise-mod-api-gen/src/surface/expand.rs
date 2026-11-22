@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 use syn::Item;
 
 /// Macros whose module-level calls write no item a mod can name, or that the export reads by
-/// itself (`include!` through the index, `layout_fields!` through the wire forms).
-const KNOWN: &[&str] = &["include", "layout_fields", "thread_local"];
+/// itself (`include!` through the index, `layout_fields!` and `layout_via!` through the wire forms).
+const KNOWN: &[&str] = &["include", "layout_fields", "layout_via", "thread_local"];
 
 /// One element of a matcher.
 #[derive(Clone, Debug)]
@@ -340,7 +340,7 @@ pub(super) fn expand_modules(index: &mut Index<'_>, modules: &[usize]) -> Vec<St
     for &module in modules {
         let place = {
             let m = &index.modules[module];
-            std::iter::once(m.krate)
+            std::iter::once(m.krate.as_str())
                 .chain(m.path.iter().map(String::as_str))
                 .collect::<Vec<_>>()
                 .join("::")

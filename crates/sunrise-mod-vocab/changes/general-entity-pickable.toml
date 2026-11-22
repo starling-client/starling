@@ -1,0 +1,3 @@
+ids = ["method:GeneralTypesRegistrar::declare_general_entity"]
+why = "General entity types can opt their declared box into the crosshair pick, so a player can use and attack the entity. declare_general_entity takes a new pickable argument after summonable, and the declaration carries it."
+migrate = "Pass false for pickable to keep the old behaviour: the entity stays out of the crosshair pick, as vanilla's Entity.isPickable does by default."

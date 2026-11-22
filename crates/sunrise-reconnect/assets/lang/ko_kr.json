@@ -1,0 +1,4 @@
+{
+  "sunrise.extras.auto_reconnect": "자동 재연결",
+  "sunrise.extras.auto_reconnect.tooltip": "추방이나 밴이 아닌, 연결 끊김 또는 재시작 후 서버에 자동으로 다시 참여합니다."
+}

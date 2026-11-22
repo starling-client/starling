@@ -1,9 +1,9 @@
 // Test module extracted without changing its logical path.
 use super::super::native_entity_refs::tests::with_game;
 use super::super::native_item_places::tests::{guest, open_to_lan};
-use sunrise_client::items::ItemStack;
 use mod_api::{Host, HostSide, PlayerRef};
 use std::sync::{Arc, Mutex};
+use sunrise_client::items::ItemStack;
 
 #[derive(Debug, PartialEq)]
 struct Snapshot {
@@ -35,7 +35,7 @@ impl Log {
                 if host.local_player() != Some(player) {
                     assert_eq!(player.uuid(), 789);
                     assert_eq!(player.entity().id(), 66);
-                    assert!(player.inventory(host).is_none());
+                    assert_eq!(player.with_inventory(host, |_| ()), None);
                 }
                 (host, "client", None)
             }
@@ -45,14 +45,15 @@ impl Log {
             side,
             uuid: player.uuid(),
             diamonds: player
-                .inventory(host)
-                .unwrap_or_default()
-                .iter()
-                .filter(|s| {
-                    mod_api::__private::item_key_id(s.item()).unwrap() == "minecraft:diamond"
+                .with_inventory(host, |view| {
+                    let diamond = mod_api::__private::item_key("minecraft:diamond");
+                    (0..36)
+                        .filter_map(|slot| view.get(slot))
+                        .filter(|stack| Some(stack.item()) == diamond)
+                        .map(|stack| stack.count())
+                        .sum::<u32>()
                 })
-                .map(|s| s.count())
-                .sum(),
+                .unwrap_or_default(),
             xp: player.experience(host).map_or(0, |xp| xp.total),
             cooldown,
         });
@@ -80,7 +81,74 @@ impl mod_api::Hooks for Log {
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
+fn guest_ticks_before_player_loaded_and_after_its_timeout() {
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![mod_api::ModEntry::new(
+        "log",
+        Box::new(Log(Arc::clone(&heard))),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            open_to_lan(game);
+            let mut g = guest(1);
+            assert!(!g.loaded);
+            assert!(!g.client_loaded());
+            g.food = 10;
+            g.saturation = 5.0;
+            g.effects
+                .add(sunrise_client::effects::EffectInstance::new("speed", 10, 0));
+            let mut motion = sunrise_client::motion::PlayerMotion::new(
+                game.motion,
+                sunrise_core::geometry::Vec3::ZERO,
+            )
+            .unwrap();
+            motion.health.food.exhaustion = 5.0;
+            g.motion = Some(Box::new(motion));
+            let host = game.lan.as_mut().unwrap();
+            host.hub.guests.push(g);
+            host.play
+                .entry(1)
+                .or_default()
+                .cooldowns
+                .add("minecraft:ender_pearl".into(), 3);
+
+            // A new join/respawn waits 60 ticks. A dimension change preserves
+            // the connection's load timer, including an already elapsed one.
+            for (timeout, effect_ticks, cooldown) in [(60, 9, 2), (0, 8, 1)] {
+                game.lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .guests
+                    .update(0, |g| g.load_timeout = timeout);
+                heard.lock().unwrap().clear();
+                game.tick_guests();
+                let observations = heard.lock().unwrap();
+                assert_eq!(
+                    observations
+                        .iter()
+                        .map(|s| (s.phase, s.uuid))
+                        .collect::<Vec<_>>(),
+                    [("pre", 123), ("post", 123)]
+                );
+                assert_eq!(observations[0].cooldown, Some(cooldown + 1));
+                assert_eq!(observations[1].cooldown, Some(cooldown));
+                let g = &game.lan.as_ref().unwrap().hub.guests[0];
+                assert!(!g.loaded);
+                assert_eq!(g.load_timeout, timeout);
+                assert_eq!(g.client_loaded(), timeout == 0);
+                assert_eq!(g.position, [0.0; 3]);
+                assert_eq!(g.effects.get("speed").unwrap().duration, effect_ticks);
+                assert_eq!((g.food, g.saturation), (10, 4.0));
+            }
+        });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn guest_tick_brackets_sleep_cooldowns_pickups_and_death() {
     let heard = Arc::new(Mutex::new(Vec::new()));
     let mods = vec![mod_api::ModEntry::new(
@@ -143,7 +211,8 @@ fn guest_tick_brackets_sleep_cooldowns_pickups_and_death() {
             );
             assert_eq!(observations[2].diamonds, 0);
             drop(observations);
-            assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].sleep_timer, 100);
+            // The missing bed is a living-entity continuation failure: immediate wake.
+            assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].sleep_timer, 0);
             assert!(game.lan.as_ref().unwrap().hub.guests[0].bed.is_none());
             assert!(game.inventory.iter().all(Option::is_none));
             heard.lock().unwrap().clear();
@@ -186,7 +255,7 @@ fn guest_tick_brackets_sleep_cooldowns_pickups_and_death() {
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn client_player_ticks_on_the_death_screen_too() {
     let heard = Arc::new(Mutex::new(Vec::new()));
     let mods = vec![mod_api::ModEntry::new(
@@ -225,7 +294,7 @@ fn client_player_ticks_on_the_death_screen_too() {
             ));
             game.cooldowns.add("minecraft:ender_pearl".into(), 3);
             game.sleep_timer = 4;
-            // LocalPlayer.tick waits for the client load and its chunk: only
+            // LocalPlayer.tick waits for the client load: only
             // the other player's pair runs, and the level pass still ticks.
             game.tick_remote().unwrap();
             // Player.tick owns both counters, so they wait with it.
@@ -317,7 +386,7 @@ fn tags_over_steve(mods: mod_api::Mods) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn the_name_tag_over_a_player_shows_the_name_a_mod_formats() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mods = vec![mod_api::ModEntry::new(
@@ -330,7 +399,7 @@ fn the_name_tag_over_a_player_shows_the_name_a_mod_formats() {
 }
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn a_mod_that_does_not_listen_is_never_asked_for_the_name_tag() {
     struct Other;
     #[mod_api::__subscriptions]

@@ -1,7 +1,12 @@
 //! The horizon-mixins tool the launcher runs for `[[native.mixin]]` builds: the pinned source
-//! ([`REV`]), the one change carried on it until upstream takes it ([`PATCH`], which narrows the
-//! tool's "calls beneath a reference" rule from the whole function to the site a hook rewrites),
-//! and the names of its prebuilt release. `.github/workflows/prebuilt-mixins-tool.yml` builds and
+//! ([`REV`]), the changes carried on it until upstream takes them ([`PATCH`]: it narrows the
+//! tool's "calls beneath a reference" rule from the whole function to the site a hook rewrites,
+//! and compares binding types as parsed types, so `Vec<T,>` and `Vec<T>` match, and guards a
+//! `WRAP_OPERATION` call: its receiver must be a reference parameter of the target function (a
+//! computed receiver is refused) and no argument may carry a `?`, an `unsafe` block, a `const`
+//! block or a try block. A named receiver's type is compared by spelling, and an ordinary argument takes the
+//! type its binding declares; neither is guarded. Wrapping a computed receiver is future work; and plans against the cfg set of the patch library it builds, given as `--cfg` options and the one package their `feature`s belong to (`--features-of`), dropping items and statements under an inactive `cfg`; and reads a `WRAP_OPERATION` on a call whose callee declares no return type as returning `()`; and a cancellation `ControlFlow` written other than in its documented paths), and the names of its prebuilt release.
+//! `.github/workflows/prebuilt-mixins-tool.yml` builds and
 //! publishes it through `xtask mixins-tool`; the launcher downloads it, or builds the same
 //! patched source where no prebuilt exists.
 
@@ -42,7 +47,9 @@ pub fn identity(target: &str) -> String {
 }
 
 /// Applies the unified diff `patch` to the files under `root`. Every hunk must find its old
-/// lines exactly where the diff says; nothing is written unless every file's hunks apply.
+/// lines exactly where the diff says; nothing is written unless every file's hunks apply. A
+/// target path that is not plain (empty, absolute, a backslash, a colon, or an empty, `.` or
+/// `..` component) is refused.
 pub fn apply(root: &Path, patch: &str) -> Result<(), String> {
     let mut changed = Vec::new();
     let mut lines = patch.lines().peekable();
@@ -50,6 +57,9 @@ pub fn apply(root: &Path, patch: &str) -> Result<(), String> {
         let Some(path) = line.strip_prefix("+++ b/") else {
             continue;
         };
+        if !crate::manifest::plain_path(path) {
+            return Err(format!("{path:?} is not a plain path under the patch root"));
+        }
         let file = root.join(path);
         let text = fs::read_to_string(&file).map_err(|e| format!("{path}: {e}"))?;
         let old: Vec<&str> = text.lines().collect();
@@ -144,6 +154,36 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
             "one\ntwo\nTHREE\nfour\n"
+        );
+    }
+
+    #[test]
+    fn paths_that_leave_the_root_are_refused() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(outer.path().join("lib.rs"), "one\ntwo\nthree\nfour\n").unwrap();
+        for path in [
+            "",
+            "../lib.rs",
+            "/etc/lib.rs",
+            "src\\lib.rs",
+            "C:/lib.rs",
+            "src/a:b.rs",
+        ] {
+            let why = apply(
+                &root,
+                &DIFF.replace("+++ b/src/lib.rs", &format!("+++ b/{path}")),
+            )
+            .unwrap_err();
+            assert_eq!(
+                why,
+                format!("{path:?} is not a plain path under the patch root")
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(outer.path().join("lib.rs")).unwrap(),
+            "one\ntwo\nthree\nfour\n"
         );
     }
 }

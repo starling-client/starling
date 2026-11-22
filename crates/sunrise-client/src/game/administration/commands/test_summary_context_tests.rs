@@ -1,12 +1,12 @@
 //! Added after the original old-fail module: context boundaries, not new runtime breadth.
 use super::*;
+use std::sync::{Arc, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
     motion::PlayerMotion,
 };
 use sunrise_core::geometry::Vec3;
 use sunrise_protocol::packets::{configuration::ClientInformation, play::Clientbound};
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 fn chats(receiver: &mpsc::Receiver<sunrise_client::lan::Out>) -> Vec<sunrise_core::nbt::Tag> {
     let mut result = Vec::new();
@@ -28,7 +28,7 @@ fn chats(receiver: &mpsc::Receiver<sunrise_client::lan::Out>) -> Vec<sunrise_cor
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES and scratch homes/cwd"]
+#[ignore = "daily"]
 fn added_issuer_actor_missing_guest_and_restoration_controls() {
     let mut resources = None;
     let mut game = tests::server_game(&mut resources);
@@ -78,6 +78,7 @@ fn added_issuer_actor_missing_guest_and_restoration_controls() {
             max_players: 4,
             integrated: false,
             levels: Default::default(),
+            level_seeds: Default::default(),
         },
     )
     .unwrap();

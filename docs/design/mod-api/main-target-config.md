@@ -1,5 +1,9 @@
 # Design: main target configuration
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [render pipelines](../../modding/src/how-to/client/render-pipelines.md) for the current native API.
+> The main-target configuration proposal is not the current pipeline API. Its guest configuration, trap handling and test matrix are historical.
+
 Provisional answer to [#869](https://github.com/arismoko/horizon/issues/869):
 configure one renderer-owned main colour attachment and mandatory depth attachment,
 before allocation, through `configure_main_render_target` with `ClientHost`.

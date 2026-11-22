@@ -6,6 +6,9 @@ pub trait Hooks {
     /// in GUI pixels; finite positive dimensions reserve space after text and any
     /// vanilla bundle component. None keeps the vanilla tooltip unchanged.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_tooltip_component",
+        receiver = "read",
+        dispatch = "flat",
         side = "client",
         contract = "replace",
         out = "size",
@@ -13,5 +16,5 @@ pub trait Hooks {
         key = "stack",
         neoforge = "RegisterClientTooltipComponentFactoriesEvent"
     )]
-    fn tooltip_component();
+    fn tooltip_component(stack: &ItemStack, size: &mut Option<[f32; 2]>);
 }

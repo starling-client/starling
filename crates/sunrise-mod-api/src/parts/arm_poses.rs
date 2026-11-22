@@ -10,9 +10,9 @@ impl ArmPosesRegistrar for PartRegistrar {
     ) -> crate::CustomArmPose {
         if crate::Identifier::parse(name).is_err()
             || !namespaced(name)
-            || name
-                .split_once(':')
-                .is_none_or(|(namespace, _)| namespace != self.mod_id)
+            || name.split_once(':').is_none_or(|(namespace, _)| {
+                namespace == "minecraft" || !owns_namespace(self.mod_id, namespace)
+            })
             || self.arm_poses.iter().any(|pose| pose.id == name)
         {
             self.refused.push(format!(
@@ -59,26 +59,18 @@ mod tests {
     }
 
     #[test]
-    fn custom_pose_and_angles_cross_as_derived_wire_values() {
+    fn custom_pose_wire_preserves_flags_without_the_registration_table() {
         use crate::wire::{Reader, Writer};
         let pose = crate::ArmPose::Custom(mod_vocab::__private::parts_installation::arm_pose(
             37, true, false,
         ));
-        let angles = crate::ArmAngles {
-            right: [-0.71, 0.42, 0.63],
-            left: [1.2, -0.3, 2.1],
-        };
         let mut output = Writer::new();
         output.put(&pose);
-        output.put(&angles);
-        let _absent_guest_table = mod_vocab::__private::parts_installation::empty_pose_table();
-        let mut input = Reader::new(output.bytes());
-        let transported = input.take::<crate::ArmPose>().unwrap();
-        assert_eq!(transported, pose);
-        assert!(transported.two_handed());
-        assert!(!transported.affects_offhand());
-        assert_eq!(input.take::<crate::ArmAngles>().unwrap(), angles);
-        assert!(input.rest().is_empty());
+        let _empty_table = mod_vocab::__private::parts_installation::empty_pose_table();
+        let decoded = Reader::decode::<crate::ArmPose>(output.bytes()).unwrap();
+        assert_eq!(decoded, pose);
+        assert!(decoded.two_handed());
+        assert!(!decoded.affects_offhand());
         // Decoding preserves data; admission into the engine, not the codec,
         // checks membership in the load-owned registration table.
         assert!(
@@ -115,5 +107,57 @@ mod tests {
                 assert!(crate::CustomArmPose::from_slot(u32::MAX).is_none());
             },
         );
+    }
+
+    #[test]
+    fn served_by_arm_pose_delegates_to_serving_host_only() {
+        let packages = vec![
+            crate::PackageInfo::new(
+                "host".into(),
+                "1".into(),
+                crate::PackageKind::Code,
+                crate::Side::Both,
+                vec!["host".into()],
+                vec![],
+            ),
+            crate::PackageInfo::new(
+                "other".into(),
+                "1".into(),
+                crate::PackageKind::Code,
+                crate::Side::Both,
+                vec!["other".into()],
+                vec![],
+            ),
+            crate::PackageInfo::new(
+                "runes".into(),
+                "1".into(),
+                crate::PackageKind::Content,
+                crate::Side::Both,
+                vec!["runes".into()],
+                vec![],
+            )
+            .with_served_by(Some("host".into())),
+        ];
+        crate::load_state::with_test_package_inventory(packages, || {
+            let mut registrar = PartRegistrar::new("host");
+            let pose = registrar.register_arm_pose("runes:cast", true, false);
+            assert_eq!(pose.slot(), 0);
+            assert_eq!(
+                registrar
+                    .register_arm_pose("minecraft:cast", false, false)
+                    .slot(),
+                u32::MAX
+            );
+            registrar.mod_id = "other";
+            assert_eq!(
+                registrar
+                    .register_arm_pose("runes:other_cast", false, false)
+                    .slot(),
+                u32::MAX
+            );
+            assert_eq!(registrar.arm_poses.len(), 1);
+            assert_eq!(registrar.arm_poses[0].id, "runes:cast");
+            assert_eq!(registrar.refused.len(), 2);
+        });
     }
 }

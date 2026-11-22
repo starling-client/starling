@@ -1,13 +1,10 @@
 //! Engine-stack callbacks installed by the game at its API boundary.
-use sunrise_items::items::ItemStack;
-use sunrise_world::native_load_context::LoopContext;
 use mod_api::{Identifier, ItemAttributeModifiers, ItemEnchantments};
 use std::sync::OnceLock;
+use sunrise_items::items::ItemStack;
 
 /// Stack-bearing hooks whose API snapshots are made by the game.
 pub struct StackHooks {
-    pub ingredient_test:
-        fn(&LoopContext, &str, &sunrise_core::nbt::Compound, &ItemStack, &mut bool),
     pub enchantments: fn(&ItemStack, Option<&Identifier>, &mut ItemEnchantments),
     pub attributes: fn(&ItemStack, &mut ItemAttributeModifiers),
 }
@@ -15,17 +12,6 @@ static HOOKS: OnceLock<StackHooks> = OnceLock::new();
 /// Install the game conversion callbacks once.
 pub fn install(hooks: StackHooks) -> bool {
     HOOKS.set(hooks).is_ok()
-}
-pub(crate) fn ingredient_test(
-    context: &LoopContext,
-    kind: &str,
-    data: &sunrise_core::nbt::Compound,
-    stack: &ItemStack,
-    accept: &mut bool,
-) {
-    if let Some(hooks) = HOOKS.get() {
-        (hooks.ingredient_test)(context, kind, data, stack, accept);
-    }
 }
 pub(crate) fn enchantments(
     stack: &ItemStack,

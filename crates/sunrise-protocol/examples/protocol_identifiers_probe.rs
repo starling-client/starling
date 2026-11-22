@@ -1,10 +1,10 @@
 //! The packet identifier parity corpus, without a connection or game resources.
-use sunrise_protocol::buf::{Codec, Ident, Reader};
 use std::{
     error::Error,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
 };
+use sunrise_protocol::buf::{Codec, Ident, Reader};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().collect();

@@ -218,7 +218,7 @@ made:
    - **fail**: behaviour changed (or Sunrise's data reading broke); the log has the first differing case;
 
    and **newly failing** unless it fails in the baseline too: `--baseline` is a `tools/parity.py` `state.json` from
-   a run on the pinned version (the nightly audit's, or any worktree of `main`), so the known failures of `main` don't
+   a run on the pinned version (the daily's, or any worktree of `main`), so the known failures of `main` don't
    count. `--no-run` classifies the last run again against another baseline.
 
 The result is `diff-OLD-NEW/harnesses.json`, with the logs of the harnesses that don't pass copied beside it

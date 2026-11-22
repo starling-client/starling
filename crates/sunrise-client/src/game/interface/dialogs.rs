@@ -5,6 +5,7 @@
 //! buttons send back.
 use super::Game;
 use super::remote_chat::Behind;
+use std::{sync::Arc, time::Instant};
 use sunrise_client::{
     Result,
     clipboard::EditShortcut,
@@ -19,12 +20,14 @@ use sunrise_client::{
     widgets::{self, ScreenInfo},
 };
 use sunrise_core::nbt::Tag;
-use std::time::Instant;
+use sunrise_protocol::registry::Dynamic;
 use winit::keyboard::KeyCode;
 
 /// An open `DialogScreen`.
 struct Open {
     dialog: Dialog,
+    /// A configuration screen and the dialogs opened from it use the same snapshot.
+    configuration: Option<Arc<Dynamic>>,
     values: Vec<InputValue>,
     /// The box of each text input.
     fields: Vec<Option<Field>>,
@@ -101,6 +104,7 @@ pub(super) struct TypedInput {
 #[derive(Default)]
 pub(super) struct DialogState {
     open: Option<Open>,
+    revision: u64,
     /// `WaitingForResponseScreen`, since when.
     waiting: Option<Instant>,
     /// `DialogScreen.WarningScreen`, over the dialog.
@@ -151,12 +155,12 @@ impl Game<'_> {
     }
     /// What tells one dialog screen from another for a controller's focus: a new dialog is a
     /// new screen, and so are the warning and waiting screens.
-    pub(super) fn dialog_screen_key(&self) -> (bool, bool, Option<String>) {
+    pub(super) fn dialog_screen_key(&self) -> (bool, bool, Option<u64>) {
         let d = &self.dialogs;
         (
             d.warning,
             d.waiting.is_some(),
-            d.open.as_ref().map(|o| o.dialog.title.plain()),
+            d.open.as_ref().map(|_| d.revision),
         )
     }
     /// The warning icon in the dialog's corner, while the dialog itself shows.
@@ -191,6 +195,7 @@ impl Game<'_> {
             })
     }
 
+<<<<<<< sync-sunrise-1
     /// The text input that has the focus, for the keyboard's editor.
     pub(super) fn dialog_input(&self) -> Option<TypedInput> {
         if !self.dialog_typing() {
@@ -256,49 +261,66 @@ impl Game<'_> {
         }
         let rest: String = text.chars().skip(same).collect();
         edit.insert_text(font, &rest);
+=======
+    pub(super) fn decode_dialog(&self, tag: &Tag, dynamic: Option<&Dynamic>) -> Option<Dialog> {
+        let items = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.builtin.get("minecraft:item"));
+        Dialog::parse_in_registry(
+            tag,
+            &self.ui.registries,
+            &|id| {
+                items.map_or_else(
+                    || self.res.item_defaults().entries().contains_key(id),
+                    |items| items.id(id).is_some(),
+                )
+            },
+            dynamic,
+        )
+    }
+
+    pub(super) fn show_dialog(&mut self, tag: &Tag) {
+        self.show_dialog_in_phase(tag, None);
+>>>>>>> sunrise/main
     }
 
     /// `showDialog`: the dialog replaces an open one (and a waiting screen);
     /// under the warning screen, it is what Back returns to.
-    pub(super) fn show_dialog(&mut self, tag: &Tag) {
-        let Some(mut dialog) = Dialog::parse(tag) else {
+    pub(super) fn show_dialog_in_phase(&mut self, tag: &Tag, configuration: Option<Arc<Dynamic>>) {
+        let dynamic = configuration
+            .as_deref()
+            .or_else(|| self.remote.as_ref().map(|r| r.registries.as_ref()));
+        let Some(mut dialog) = self.decode_dialog(tag, dynamic) else {
             log::warn!("Sunrise: failed to show dialog for data {tag:?}");
             return;
         };
         if let Kind::DialogList { dialogs, .. } = &dialog.kind {
-            let entries = self.remote.as_ref().map(|r| {
-                let list = r.registries.registries.get("minecraft:dialog");
-                let by_id = |id: &str| {
-                    let name = if id.contains(':') {
-                        id.to_owned()
-                    } else {
-                        format!("minecraft:{id}")
-                    };
-                    list?.iter().find(|(n, _)| *n == name)?.1.clone()
+            let entries = dynamic.map(|registry| {
+                let by_id = |name: &str| {
+                    registry
+                        .data("minecraft:dialog", registry.id("minecraft:dialog", name)?)
+                        .cloned()
                 };
                 let by_tag = |name: &str| {
-                    let name = if name.contains(':') {
-                        name.to_owned()
-                    } else {
-                        format!("minecraft:{name}")
-                    };
-                    let ids = r
-                        .registries
-                        .tag("minecraft:dialog", &name)
+                    registry
+                        .tag("minecraft:dialog", name)
                         .into_iter()
-                        .flatten();
-                    ids.filter_map(|&i| list?.get(usize::try_from(i).ok()?)?.1.clone())
+                        .flatten()
+                        .filter_map(|&id| registry.data("minecraft:dialog", id).cloned())
                         .collect()
                 };
                 Dialog::list_entries(dialogs, &by_tag, &by_id)
             });
-            dialog.set_list(&entries.unwrap_or_default());
+            dialog.set_list(&entries.unwrap_or_default(), |tag| {
+                self.decode_dialog(tag, dynamic)
+            });
         }
-        self.open_dialog(dialog);
+        self.open_dialog(dialog, configuration);
     }
 
     /// The parsed dialog's screen, its inputs at their initial values.
-    fn open_dialog(&mut self, dialog: Dialog) {
+    fn open_dialog(&mut self, dialog: Dialog, configuration: Option<Arc<Dynamic>>) {
         let values = dialog.inputs.iter().map(|i| i.control.initial()).collect();
         let font = &self.gui.atlas.font;
         let fields = dialog
@@ -309,18 +331,11 @@ impl Game<'_> {
                     width,
                     initial,
                     max_length,
-                    multiline: Some((max_lines, _)),
+                    multiline: Some((max_lines, height)),
                     ..
                 } => {
-                    // TextInputHandler: the `MultiLineEditBox` with its limits.
-                    let height = text_height(Some((*max_lines, None)));
-                    let height = match &i.control {
-                        Control::Text {
-                            multiline: Some((_, Some(h))),
-                            ..
-                        } => *h as f32,
-                        _ => height,
-                    };
+                    // TextInputHandler.addControl takes an explicit height before computing a default.
+                    let height = text_height(Some((*max_lines, *height)));
                     let mut edit = MultiLineEdit::new(font, 0.0, 0.0, *width as f32, height);
                     edit.set_character_limit((*max_length).max(0) as usize);
                     if let Some(lines) = max_lines {
@@ -345,8 +360,10 @@ impl Game<'_> {
             })
             .collect();
         self.open_screen_overlay("dialog", |game| {
+            game.dialogs.revision = game.dialogs.revision.wrapping_add(1);
             game.dialogs.open = Some(Open {
                 dialog,
+                configuration,
                 values,
                 fields,
                 focus: None,
@@ -356,10 +373,10 @@ impl Game<'_> {
                 selecting: None,
             });
             game.dialogs.waiting = None;
-            game.keys.clear();
+            game.clear_device_keys();
             game.physical_keys.clear();
-            game.left = false;
-            game.right = false;
+            game.set_mapping_held("key.attack", false);
+            game.set_mapping_held("key.use", false);
             game.capture(false);
         });
     }
@@ -382,7 +399,10 @@ impl Game<'_> {
 
     /// Every dialog screen goes (a disconnect, or the level loading screen).
     pub(super) fn close_dialogs(&mut self) {
-        self.dialogs = DialogState::default();
+        self.dialogs = DialogState {
+            revision: self.dialogs.revision,
+            ..DialogState::default()
+        };
     }
 
     fn dialog_closed(&mut self) {
@@ -403,6 +423,7 @@ impl Game<'_> {
     /// The confirmation's no: the dialog again, with what was typed in it.
     pub(super) fn reopen_dialog(&mut self, dialog: ClosedDialog) {
         self.open_screen_overlay("dialog", |game| {
+            game.dialogs.revision = game.dialogs.revision.wrapping_add(1);
             game.dialogs.open = Some(*dialog.0);
             game.dialogs.waiting = None;
         });
@@ -428,6 +449,14 @@ impl Game<'_> {
             (Some(Click::RunCommand(_)), AfterAction::Close | AfterAction::WaitForResponse) => {
                 self.dialogs.open.take()
             }
+            _ => None,
+        };
+        let configuration = match click {
+            Some(Click::ShowDialog(_)) => self
+                .dialogs
+                .open
+                .as_ref()
+                .and_then(|o| o.configuration.clone()),
             _ => None,
         };
         match after {
@@ -462,7 +491,9 @@ impl Game<'_> {
                     );
                 }
             }
-            Some(Click::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
+            Some(Click::ShowDialog(dialog)) => {
+                self.show_dialog_ref_in_phase(&dialog, configuration)
+            }
             Some(Click::CopyToClipboard(value)) => {
                 use sunrise_client::clipboard::Clipboard;
                 self.clipboard.set(&value);
@@ -503,24 +534,28 @@ impl Game<'_> {
 
     /// A `show_dialog` click event's dialog: a registry id or the dialog itself.
     pub(super) fn show_dialog_ref(&mut self, dialog: &Tag) {
-        match dialog {
-            Tag::String(id) => {
-                let id = id.to_string_lossy();
-                let name = if id.contains(':') {
-                    id.clone()
-                } else {
-                    format!("minecraft:{id}")
-                };
-                let found = self.remote.as_ref().and_then(|r| {
-                    let entries = r.registries.registries.get("minecraft:dialog")?;
-                    entries.iter().find(|(n, _)| *n == name)?.1.clone()
-                });
-                match found {
-                    Some(tag) => self.show_dialog(&tag),
-                    None => log::warn!("Sunrise: unknown dialog {id}"),
-                }
+        self.show_dialog_ref_in_phase(dialog, None);
+    }
+
+    fn show_dialog_ref_in_phase(&mut self, dialog: &Tag, configuration: Option<Arc<Dynamic>>) {
+        if let Tag::String(id) = dialog {
+            let id = id.to_string_lossy();
+            let Ok(name) = sunrise_core::identifier::Identifier::parse(&id) else {
+                return;
+            };
+            let dynamic = configuration
+                .as_deref()
+                .or_else(|| self.remote.as_ref().map(|r| r.registries.as_ref()));
+            let found = dynamic.and_then(|registry| {
+                let id = registry.id("minecraft:dialog", &name.to_string())?;
+                registry.data("minecraft:dialog", id).cloned()
+            });
+            match found {
+                Some(tag) => self.show_dialog_in_phase(&tag, configuration),
+                None => log::warn!("Sunrise: unknown dialog {id}"),
             }
-            tag => self.show_dialog(tag),
+        } else {
+            self.show_dialog_in_phase(dialog, configuration);
         }
     }
 
@@ -742,10 +777,10 @@ impl Game<'_> {
                     let hover = in_area(cursor.1) && ui::hovered(cursor, x, y, cw, ch);
                     let on = open.values.get(input) == Some(&InputValue::Bool(true));
                     let sprite = match (on, hover) {
-                        (true, true) => "gui/sprites/widget/checkbox_selected_highlighted",
-                        (true, false) => "gui/sprites/widget/checkbox_selected",
-                        (false, true) => "gui/sprites/widget/checkbox_highlighted",
-                        (false, false) => "gui/sprites/widget/checkbox",
+                        (true, true) => "widget/checkbox_selected_highlighted",
+                        (true, false) => "widget/checkbox_selected",
+                        (false, true) => "widget/checkbox_highlighted",
+                        (false, false) => "widget/checkbox",
                     };
                     let Control::Boolean { label, .. } = &open.dialog.inputs[input].control else {
                         continue;
@@ -905,7 +940,7 @@ impl Game<'_> {
     }
 
     /// A left click on a dialog screen.
-    pub(super) fn dialog_click(&mut self) -> Result<()> {
+    pub(super) fn dialog_click(&mut self) -> Result<bool> {
         let cursor = self.cursor;
         if self.dialogs.warning {
             let (title, message, _) = warning_texts();
@@ -915,7 +950,8 @@ impl Game<'_> {
                 Some(true) => {
                     self.audio.play_button_click();
                     let reason = Text::translate("menu.custom_screen_info.disconnect", &[]);
-                    return self.leave_server(Some(reason.plain()));
+                    self.leave_server(Some(reason))?;
+                    return Ok(true);
                 }
                 Some(false) => {
                     self.audio.play_button_click();
@@ -926,7 +962,7 @@ impl Game<'_> {
                 }
                 None => {}
             }
-            return Ok(());
+            return Ok(answer.is_some());
         }
         if let Some(since) = self.dialogs.waiting {
             let (w, h) = self.gui_size();
@@ -939,22 +975,23 @@ impl Game<'_> {
                 self.audio.play_button_click();
                 self.dialogs.waiting = None;
                 self.dialog_closed();
+                return Ok(true);
             }
-            return Ok(());
+            return Ok(false);
         }
         let Some(layout) = self.dialog_layout() else {
-            return Ok(());
+            return Ok(false);
         };
         let [wx, wy, ww, wh] = layout.warning;
         let local = self.dialogs.open.as_ref().is_some_and(|o| o.local);
         if !local && ui::hovered(cursor, wx, wy, ww, wh) {
             self.audio.play_button_click();
             self.dialogs.warning = true;
-            return Ok(());
+            return Ok(true);
         }
         let shift = self.modifiers.shift_key();
         let Some(open) = self.dialogs.open.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         let [_, ay, _, ah] = layout.area;
         let mut action = None;
@@ -1020,7 +1057,7 @@ impl Game<'_> {
                     open.focus = Some(input);
                     open.dragging = Some(input);
                     if let Some(v) = open.values.get_mut(input) {
-                        *v = InputValue::Slider(ui::slider_value(x, w, cursor.0));
+                        *v = InputValue::Slider(ui::slider_value(x, w, cursor.0) as f32);
                     }
                 }
                 Part::Button {
@@ -1060,17 +1097,20 @@ impl Game<'_> {
                     id,
                     payload: payload.map(std::sync::Arc::unwrap_or_clone),
                 },
-                Some(ClickEvent::OpenFile(_) | ClickEvent::Profiler(_)) | None => return Ok(()),
+                Some(ClickEvent::OpenFile(_) | ClickEvent::Profiler(_)) | None => {
+                    return Ok(open.focus.is_some());
+                }
             };
             let after = open.dialog.after_action;
-            return self.run_dialog_action(Some(click), after);
+            self.run_dialog_action(Some(click), after)?;
+            return Ok(true);
         };
         self.audio.play_button_click();
         let Some(index) = action else {
-            return Ok(());
+            return Ok(true);
         };
         let Some(open) = self.dialogs.open.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         Self::dialog_values(open);
         let d = &open.dialog;
@@ -1079,7 +1119,8 @@ impl Game<'_> {
             .as_ref()
             .and_then(|a| a.click(&d.inputs, &open.values));
         let after = d.after_action;
-        self.run_dialog_action(click, after)
+        self.run_dialog_action(click, after)?;
+        Ok(true)
     }
 
     /// The mouse wheel over a dialog: a cycle button under it takes the
@@ -1167,22 +1208,24 @@ impl Game<'_> {
             _ => None,
         });
         if let (Some([sx, _, sw, _]), Some(value)) = (slider, open.values.get_mut(input)) {
-            *value = InputValue::Slider(ui::slider_value(sx, sw, x));
+            *value = InputValue::Slider(ui::slider_value(sx, sw, x) as f32);
         }
     }
 
     /// The left button released: a held slider lets go and clicks.
-    pub(super) fn dialog_release(&mut self) {
+    pub(super) fn dialog_release(&mut self) -> bool {
         if let Some(open) = self.dialogs.open.as_mut() {
-            if let Some(Some(Field::Multi(edit))) =
-                open.selecting.take().and_then(|i| open.fields.get_mut(i))
-            {
+            let selecting = open.selecting.take();
+            if let Some(Some(Field::Multi(edit))) = selecting.and_then(|i| open.fields.get_mut(i)) {
                 edit.release();
             }
             if open.dragging.take().is_some() {
                 self.audio.play_button_click();
+                return true;
             }
+            return selecting.is_some();
         }
+        false
     }
 
     /// A key pressed on a dialog screen: Escape closes what allows it, Tab
@@ -1413,11 +1456,16 @@ mod pause_tests {
 
     fn dialog(pause: bool) -> Dialog {
         let s = |value: &str| Tag::String(value.into());
-        Dialog::parse(&Tag::compound([
-            ("type", s("notice")),
-            ("title", s("Hi")),
-            ("pause", Tag::Byte(i8::from(pause))),
-        ]))
+        Dialog::parse(
+            &Tag::compound([
+                ("type", s("notice")),
+                ("title", s("Hi")),
+                ("pause", Tag::Byte(i8::from(pause))),
+            ]),
+            &Default::default(),
+            &|_| false,
+            &|_| false,
+        )
         .unwrap()
     }
 
@@ -1425,6 +1473,7 @@ mod pause_tests {
         DialogState {
             open: Some(Open {
                 dialog: dialog(pause),
+                configuration: None,
                 values: Vec::new(),
                 fields: Vec::new(),
                 focus: None,
@@ -1433,6 +1482,7 @@ mod pause_tests {
                 dragging: None,
                 selecting: None,
             }),
+            revision: 1,
             waiting: None,
             warning: false,
         }

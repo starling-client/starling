@@ -1,5 +1,9 @@
 # Design: Part instance state
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [block-entity types](../../modding/src/concepts/parts/block-entity-types.md) for the current native API.
+> Use typed attachments for persistent per-instance state. The old cross-target state proposal and its guest acceptance requirements are historical; persistence and Wire are separate contracts.
+
 **Accepted with changes** as a provisional design by the [maintainer decision](https://github.com/arismoko/horizon/pull/2328#issuecomment-6729846956). The requirements below must be satisfied before code. Attachments are owned by the world-visibility lead; that lead replaces the earlier attachment owner.
 
 Design for [#796](https://github.com/arismoko/horizon/issues/796), jointly defining the state binding needed by [#781](https://github.com/arismoko/horizon/issues/781). This is not an implemented guarantee. The acceptance is conditional on the requirements below.
@@ -24,7 +28,7 @@ Paths and lines are relative to this repository. These are current owners, not p
 | --- | --- | --- |
 | Block | `crates/sunrise-mod-runtime/src/attachments.rs:66` defines relative holders and has no block variant | A plain block has no independent attachment holder today. Plain-block chunk entries are deferred outside the first implementation stages. A separate decision must establish the block-write lifecycle owner and incarnation-preserving mutations before adding position/generation storage. |
 | Block entity | `crates/sunrise-mod-vocab/src/lib.rs:3784` defines BlockEntityRef; `crates/sunrise-client/src/game/runtime/transactions.rs:68,86` captures generation | Bind attachments to (position, generation) within the scoped level. Same-position replacement creates a new generation even with the same type. Property changes preserving the instance keep its data. |
-| Entity, including player | `crates/sunrise-mod-vocab/src/lib.rs:1610` defines EntityRef; `crates/sunrise-mod-vocab/src/entity/attachment_holder.rs:13` wraps entity/player handles | Entity handles must carry no dimension: validate world and lifecycle epoch with id, resolving the current level through the entity table. Each dimension has one attachment index. Transfer preserves the epoch, retiring attachments at committed removal and rebinding at arrival. Respawn is a new incarnation; copy only according to the declared copy policy. |
+| Entity, including player | `crates/sunrise-mod-vocab/src/lib.rs:1610` defines EntityRef; `crates/sunrise-mod-vocab/src/entity/attachment_holder.rs:13` wraps entity/player handles | Entity handles must carry no dimension: validate world and lifecycle epoch with id, resolving the current level through the entity table. Each dimension has one attachment index. Transfer is per kind: a lone mob or general row is rebuilt under a new id, so the old handle is stale and the state arrives under the new id; a vehicle a player rides keeps its id and handle. The old dimension's index keeps its rows until the root commit and the arrival rebinds. Respawn is a new incarnation; copy only according to the declared copy policy. |
 | Item | `crates/sunrise-mod-runtime/src/attachments.rs:66` has no item holder; vanilla ItemStack.copy above owns component copying | Item state belongs to the stack value through components, not an invented attachment holder. A retained slot reference identifies a versioned location, not a stack traveling through inventories. Copy/split/merge policy must be explicit; recommend copy value on split and merge only equal state. |
 
 `crates/sunrise-mod-vocab/src/entity/attachment_holder.rs:13` also includes chunk and level holders: scope them to residency/world epochs. They can own backing storage without becoming a second Part-state abstraction. Block and item support are proposed extensions, not claims of existing API support.
@@ -73,7 +77,7 @@ These are proposed implementation tests with hand-written expectations, not test
 | Inner inserts default then panics/traps | No stored default after abort; subsequent valid edit to 8 succeeds |
 | Placement replaces block entity then cancels | Original generation and counter 7 restored; tentative handle refuses |
 | Tracking joins at revision 10, update 11 then stale 10 | Client remains at revision 11 value 8; visibility loss removes replica |
-| Entity transfers X to Y | Same epoch/id handle resolves Y; old dimension index retires at commit and arrival rebinds; no dimension in handle |
+| Entity transfers X to Y | A lone mob or general row: old handle `Stale`, the value under its new id in Y. A vehicle a player rides: the same handle resolves Y. Old dimension index retires at the root commit and arrival rebinds; no dimension in handle. Inside an action rolled back after the change of level, the state stays with the entity under its new id and the old handle stays `Stale` |
 | Entity spawn/removal inside action then abort | Original bindings restored, tentative handles invalid, zero retirement/publication before commit |
 | Chunk unload with block-entity state 7 | Chunk residency owner clears live bindings; committed saved 7 survives |
 | Internal residency join changes across reload | No join in wire envelope; stable entity identity and revision govern acceptance |

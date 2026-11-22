@@ -1,11 +1,10 @@
-//! Configuration-phase mod compatibility. Only both-side ids and versions cross
+//! Configuration-phase mod compatibility. Only both-side ids and versions (and the digest of a
+//! package's runtime data files, when it has any) cross
 //! [`CHANNEL`]; client-only and server-only mods stay private. Content identity
 //! is checked separately. A vanilla client never hears the channel.
-use crate::{
-    Error, Result,
-    buf::{Reader, Writer},
-};
+use crate::{Error, Result, buf::Reader};
 use std::sync::OnceLock;
+use sunrise_core::vanilla_bytes::Writer;
 
 /// The custom payload channel, both ways.
 pub const CHANNEL: &str = "sunrise:mod_list";
@@ -13,6 +12,8 @@ pub const CHANNEL: &str = "sunrise:mod_list";
 pub const MAX_ENTRIES: usize = 128;
 /// Characters in a mod's id or version at most.
 pub const MAX_TEXT: usize = 64;
+/// Hex digits in a runtime digest.
+pub const RUNTIME_DIGEST: usize = 64;
 
 /// Where a mod runs (a manifest's `side`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +32,10 @@ pub struct Entry {
     pub id: String,
     pub version: String,
     pub side: Side,
+    /// The digest of the package's runtime data files (`[runtime]`), 64 lowercase hex digits;
+    /// `None` for a package that has none. Two installations of one version with different runtime
+    /// files differ here, so they cannot join silently.
+    pub runtime: Option<String>,
 }
 
 /// The mods this game has on, set once when they load (`game/modding/mods/mod.rs`), like
@@ -57,13 +62,27 @@ pub fn local() -> Vec<Entry> {
 
 /// Both-side ids and versions as a payload. Never truncate an identity or list:
 /// the receiver refuses an oversized list rather than comparing a partial one.
+///
+/// A mod whose package has runtime files adds its digest in a trailing section (a count, then
+/// each id and digest); a list with none is the same bytes as before runtime files existed.
 pub fn encode(entries: &[Entry]) -> Vec<u8> {
     let shared: Vec<_> = entries.iter().filter(|e| e.side == Side::Both).collect();
     let mut w = Writer::new();
     w.varint(shared.len() as i32);
-    for e in shared {
+    for e in &shared {
         w.string(&e.id);
         w.string(&e.version);
+    }
+    let runtime: Vec<_> = shared
+        .iter()
+        .filter_map(|e| e.runtime.as_deref().map(|digest| (&e.id, digest)))
+        .collect();
+    if !runtime.is_empty() {
+        w.varint(runtime.len() as i32);
+        for (id, digest) in runtime {
+            w.string(id);
+            w.string(digest);
+        }
     }
     w.data
 }
@@ -87,9 +106,35 @@ pub fn decode(data: &[u8]) -> Result<Vec<Entry>> {
                 id,
                 version,
                 side: Side::Both,
+                runtime: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let mut entries = entries;
+    if r.remaining() > 0 {
+        let count = r.varint()?;
+        if !(1..=entries.len() as i32).contains(&count) {
+            return Err(Error::new(format!("mod list: {count} runtime digests")));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..count {
+            let id = r.string(MAX_TEXT)?;
+            let digest = r.string(RUNTIME_DIGEST)?;
+            let valid = digest.len() == RUNTIME_DIGEST
+                && digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            let Some(entry) = entries.iter_mut().find(|e| e.id == id) else {
+                return Err(Error::new("mod list: a runtime digest for an unlisted mod"));
+            };
+            if !valid || !seen.insert(id) {
+                return Err(Error::new(
+                    "mod list: a malformed or repeated runtime digest",
+                ));
+            }
+            entry.runtime = Some(digest);
+        }
+    }
     if r.remaining() > 0 {
         return Err(Error::new("mod list: trailing bytes"));
     }
@@ -105,6 +150,8 @@ pub struct Difference {
     pub extra: Vec<String>,
     /// Both have it, at different versions.
     pub changed: Vec<VersionDifference>,
+    /// Both have it at one version, with different runtime data files: the ids.
+    pub runtime: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,7 +163,10 @@ pub struct VersionDifference {
 
 impl Difference {
     pub fn is_empty(&self) -> bool {
-        self.missing.is_empty() && self.extra.is_empty() && self.changed.is_empty()
+        self.missing.is_empty()
+            && self.extra.is_empty()
+            && self.changed.is_empty()
+            && self.runtime.is_empty()
     }
 }
 
@@ -133,6 +183,7 @@ pub fn compare(server: &[Entry], client: &[Entry]) -> Difference {
                 server: s.version.clone(),
                 client: c.version.clone(),
             }),
+            Some(c) if s.runtime != c.runtime => difference.runtime.push(s.id.clone()),
             Some(_) => {}
         }
     }
@@ -153,6 +204,7 @@ mod tests {
             id: id.into(),
             version: version.into(),
             side,
+            runtime: None,
         }
     }
 
@@ -167,6 +219,89 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].id, "ruby");
         assert!(compare(&list, &sent).is_empty());
+    }
+
+    fn with_runtime(mut e: Entry, digest: &str) -> Entry {
+        e.runtime = Some(digest.into());
+        e
+    }
+
+    #[test]
+    fn a_list_without_runtime_files_is_the_bytes_it_always_was() {
+        let list = [entry("ruby", "1.0", Side::Both)];
+        let mut w = Writer::new();
+        w.varint(1);
+        w.string("ruby");
+        w.string("1.0");
+        assert_eq!(encode(&list), w.data);
+    }
+
+    #[test]
+    fn runtime_digests_round_trip_and_a_difference_names_the_mod() {
+        let a = "a".repeat(RUNTIME_DIGEST);
+        let b = "b".repeat(RUNTIME_DIGEST);
+        let server = [
+            with_runtime(entry("bake", "1", Side::Both), &a),
+            entry("ruby", "1", Side::Both),
+        ];
+        let sent = decode(&encode(&server)).unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].runtime.as_deref(), Some(a.as_str()));
+        assert_eq!(sent[1].runtime, None);
+        assert!(compare(&server, &sent).is_empty());
+        let client = [
+            with_runtime(entry("bake", "1", Side::Both), &b),
+            entry("ruby", "1", Side::Both),
+        ];
+        let d = compare(&server, &client);
+        assert_eq!(d.runtime, ["bake"]);
+        assert!(!d.is_empty());
+        // One side with runtime files and the other with none also differs.
+        let none = [
+            entry("bake", "1", Side::Both),
+            entry("ruby", "1", Side::Both),
+        ];
+        assert_eq!(compare(&server, &none).runtime, ["bake"]);
+        // A different version is the version's difference alone.
+        let other = [with_runtime(entry("bake", "2", Side::Both), &b)];
+        let d = compare(&server[..1], &other);
+        assert_eq!((d.changed.len(), d.runtime.len()), (1, 0));
+    }
+
+    #[test]
+    fn a_bad_runtime_section_is_refused() {
+        let list = [
+            entry("ruby", "1", Side::Both),
+            entry("agate", "1", Side::Both),
+        ];
+        let digest = "c".repeat(RUNTIME_DIGEST);
+        let section = |count: i32, id: &str, digest: &str, repeats: usize| {
+            let mut data = encode(&list);
+            let mut w = Writer::new();
+            w.varint(count);
+            for _ in 0..repeats {
+                w.string(id);
+                w.string(digest);
+            }
+            data.extend(w.data);
+            data
+        };
+        assert!(decode(&section(1, "ruby", &digest, 1)).is_ok());
+        assert!(
+            decode(&section(0, "ruby", &digest, 0)).is_err(),
+            "an empty section"
+        );
+        assert!(
+            decode(&section(1, "other", &digest, 1)).is_err(),
+            "an unlisted mod"
+        );
+        assert!(
+            decode(&section(1, "ruby", "short", 1)).is_err(),
+            "a short digest"
+        );
+        assert!(decode(&section(1, "ruby", &"G".repeat(RUNTIME_DIGEST), 1)).is_err());
+        // Two entries are listed and the section names `ruby` twice: refused for the repeat.
+        assert!(decode(&section(2, "ruby", &digest, 2)).is_err(), "a repeat");
     }
 
     #[test]

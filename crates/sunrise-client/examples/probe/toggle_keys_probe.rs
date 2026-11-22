@@ -1,14 +1,14 @@
 #![forbid(unsafe_code)]
 //! Runs tools/test_toggle_keys_parity.py's event sequences through
 //! `ToggleKeys`, the sneak/sprint/attack/use toggle mappings.
-use sunrise_client::{
-    Result,
-    keymapping::{KeyAction, ToggleKeys},
-};
 use serde_json::Value;
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
+};
+use sunrise_client::{
+    Result,
+    keymapping::{KeyAction, ToggleKeys},
 };
 
 pub fn main() -> Result<()> {

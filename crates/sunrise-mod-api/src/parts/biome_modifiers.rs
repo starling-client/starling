@@ -110,6 +110,58 @@ pub mod tests {
                 .all(|refusal| refusal.contains("mod ruby"))
         );
     }
+
+    #[test]
+    fn served_by_biome_modifier_delegates_to_serving_host_only() {
+        let packages = vec![
+            PackageInfo::new(
+                "host".into(),
+                "1".into(),
+                PackageKind::Code,
+                Side::Both,
+                vec!["host".into()],
+                vec![],
+            ),
+            PackageInfo::new(
+                "other".into(),
+                "1".into(),
+                PackageKind::Code,
+                Side::Both,
+                vec!["other".into()],
+                vec![],
+            ),
+            PackageInfo::new(
+                "runes".into(),
+                "1".into(),
+                PackageKind::Content,
+                Side::Both,
+                vec!["runes".into()],
+                vec![],
+            )
+            .with_served_by(Some("host".into())),
+        ];
+        crate::load_state::with_test_package_inventory(packages, || {
+            let mut registrar = super::PartRegistrar::new("host");
+            registrar
+                .declare_biome_modifier("runes:no_zombies", modifier())
+                .unwrap();
+            assert_eq!(registrar.biome_modifiers[0].id, "runes:no_zombies");
+            assert_eq!(
+                registrar.biome_modifiers[0].file(),
+                "data/runes/neoforge/biome_modifier/no_zombies.json"
+            );
+            assert_eq!(
+                registrar.declare_biome_modifier("minecraft:no_zombies", modifier()),
+                Err(BiomeModifierError::InvalidId)
+            );
+            registrar.mod_id = "other";
+            assert_eq!(
+                registrar.declare_biome_modifier("runes:other_mod", modifier()),
+                Err(BiomeModifierError::InvalidId)
+            );
+            assert_eq!(registrar.biome_modifiers.len(), 1);
+        });
+    }
 }
 
 impl BiomeModifiersRegistrar for PartRegistrar {
@@ -128,7 +180,12 @@ impl BiomeModifiersRegistrar for PartRegistrar {
                 && !name.contains("//")
                 && !name.starts_with('/')
                 && !name.ends_with('/');
-            if namespace.is_empty() || name.is_empty() || namespace != self.mod_id || !path_ok {
+            if namespace.is_empty()
+                || name.is_empty()
+                || namespace == "minecraft"
+                || !owns_namespace(self.mod_id, namespace)
+                || !path_ok
+            {
                 return Err(crate::BiomeModifierError::InvalidId);
             }
             let id = format!("{namespace}:{name}");

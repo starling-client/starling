@@ -6,7 +6,6 @@
 //! vanilla's own answer.
 use super::Behaviours;
 use crate::registry::BlockStateId;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -20,13 +19,13 @@ pub struct BlockMaps {
     unwaxes_to: HashMap<String, String>,
 }
 
-/// `minecraft:` for an id written without a namespace.
-fn full(id: &str) -> String {
-    if id.contains(':') {
-        id.to_owned()
-    } else {
-        format!("minecraft:{id}")
-    }
+/// A decoded built-in block map value. Target names are resolved against the block registry
+/// before loading the layer.
+#[derive(Clone)]
+pub enum BlockMapValue {
+    Flammable { ignite_odds: i32, burn_odds: i32 },
+    Oxidizable(String),
+    Waxable(String),
 }
 
 /// Record that `from` comes back to `to` in an inverse map, keeping the lowest
@@ -67,49 +66,34 @@ fn cycles(map: &HashMap<String, String>) -> Vec<Vec<String>> {
 }
 
 impl BlockMaps {
-    /// The maps from their merged values (block id to the value a file gave
-    /// it). A value of another shape is skipped with a warning, as a codec
-    /// error leaves the entry out. The inverse maps are derived here, never
-    /// declared: where several blocks share a next stage or a waxed twin, the
-    /// one with the lowest `rank` (its block registry id) is the one scraping
-    /// or unwaxing gives back, a Sunrise choice where NeoForge keeps whichever
-    /// its map iteration met last. An oxidation chain that loops (a block its
-    /// own next stage included) is refused with an error naming the map and the
+    /// Build from decoded, merged rows. The inverse maps are derived here, never declared:
+    /// where several blocks share a next stage or a waxed twin, the one with the lowest `rank`
+    /// (its block registry id) is the one scraping or unwaxing gives back, a Sunrise choice
+    /// where NeoForge keeps whichever its map iteration met last. An oxidation chain that loops
+    /// (a block its own next stage included) is refused with an error naming the map and the
     /// blocks: its scraping steps are left out, so no walk back can hang.
-    pub fn from_values<'a>(
-        flammable: impl IntoIterator<Item = (&'a str, &'a Value)>,
-        oxidizables: impl IntoIterator<Item = (&'a str, &'a Value)>,
-        waxables: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    pub fn from_values<K: Into<String>>(
+        values: impl IntoIterator<Item = (K, BlockMapValue)>,
         rank: impl Fn(&str) -> u32,
     ) -> Self {
         let mut maps = Self::default();
-        let int = |v: &Value| v.as_i64().and_then(|n| i32::try_from(n).ok());
-        for (block, value) in flammable {
-            match (int(&value["ignite_odds"]), int(&value["burn_odds"])) {
-                (Some(ignite), Some(burn)) => {
-                    maps.flammable.insert(block.to_owned(), (ignite, burn));
+        for (block, value) in values {
+            let block = block.into();
+            match value {
+                BlockMapValue::Flammable {
+                    ignite_odds,
+                    burn_odds,
+                } => {
+                    maps.flammable.insert(block, (ignite_odds, burn_odds));
                 }
-                _ => log::warn!("Sunrise: neoforge:flammable {block}: not a Flammable, skipped"),
-            }
-        }
-        for (block, value) in oxidizables {
-            match value["next_oxidation_stage"].as_str() {
-                Some(next) => {
-                    inverse(&mut maps.scrapes_to, full(next), block, &rank);
-                    maps.oxidizes_to.insert(block.to_owned(), full(next));
+                BlockMapValue::Oxidizable(next) => {
+                    inverse(&mut maps.scrapes_to, next.clone(), &block, &rank);
+                    maps.oxidizes_to.insert(block, next);
                 }
-                None => {
-                    log::warn!("Sunrise: neoforge:oxidizables {block}: not an Oxidizable, skipped")
+                BlockMapValue::Waxable(waxed) => {
+                    inverse(&mut maps.unwaxes_to, waxed.clone(), &block, &rank);
+                    maps.waxes_to.insert(block, waxed);
                 }
-            }
-        }
-        for (block, value) in waxables {
-            match value["waxed"].as_str() {
-                Some(waxed) => {
-                    inverse(&mut maps.unwaxes_to, full(waxed), block, &rank);
-                    maps.waxes_to.insert(block.to_owned(), full(waxed));
-                }
-                None => log::warn!("Sunrise: neoforge:waxables {block}: not a Waxable, skipped"),
             }
         }
         for cycle in cycles(&maps.scrapes_to) {
@@ -202,7 +186,7 @@ impl Behaviours {
     pub fn mapped_unwaxed(&self, state: BlockStateId) -> Option<BlockStateId> {
         self.mapped(state, BlockMaps::unwaxed)
     }
-    fn mapped(
+    pub(super) fn mapped(
         &self,
         state: BlockStateId,
         to: impl for<'m> Fn(&'m BlockMaps, &str) -> Option<&'m str>,
@@ -228,22 +212,25 @@ impl Behaviours {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use BlockMapValue::{Flammable, Oxidizable, Waxable};
 
     #[test]
-    fn values_decode_and_the_inverse_maps_follow() {
-        let flammable = json!({"ignite_odds": 5, "burn_odds": 20});
-        let bad = json!({"ignite_odds": 5});
-        let oxidizes = json!({"next_oxidation_stage": "test:tin_dull"});
-        let waxes = json!({"waxed": "test:waxed_tin"});
+    fn the_inverse_maps_follow_the_forward_rows() {
         let maps = BlockMaps::from_values(
-            [("minecraft:stone", &flammable), ("minecraft:dirt", &bad)],
-            [("test:tin", &oxidizes)],
-            [("test:tin", &waxes)],
+            [
+                (
+                    "minecraft:stone",
+                    Flammable {
+                        ignite_odds: 5,
+                        burn_odds: 20,
+                    },
+                ),
+                ("test:tin", Oxidizable("test:tin_dull".into())),
+                ("test:tin", Waxable("test:waxed_tin".into())),
+            ],
             |_| 0,
         );
         assert_eq!(maps.flammable("minecraft:stone"), Some((5, 20)));
-        assert_eq!(maps.flammable("minecraft:dirt"), None);
         assert_eq!(maps.next_oxidation("test:tin"), Some("test:tin_dull"));
         assert_eq!(maps.previous_oxidation("test:tin_dull"), Some("test:tin"));
         assert_eq!(maps.waxed("test:tin"), Some("test:waxed_tin"));
@@ -253,8 +240,6 @@ mod tests {
 
     #[test]
     fn a_shared_stage_scrapes_back_to_the_lowest_registry_id() {
-        let to_dull = json!({"next_oxidation_stage": "test:dull"});
-        let to_waxed = json!({"waxed": "test:waxed"});
         let rank = |block: &str| match block {
             "test:tin" => 7,
             "test:zinc" => 3,
@@ -263,9 +248,12 @@ mod tests {
         // Whichever order the files list them, zinc (id 3) wins over tin (id 7).
         for (first, second) in [("test:tin", "test:zinc"), ("test:zinc", "test:tin")] {
             let maps = BlockMaps::from_values(
-                [],
-                [(first, &to_dull), (second, &to_dull)],
-                [(first, &to_waxed), (second, &to_waxed)],
+                [first, second].into_iter().flat_map(|block| {
+                    [
+                        (block, Oxidizable("test:dull".into())),
+                        (block, Waxable("test:waxed".into())),
+                    ]
+                }),
                 rank,
             );
             assert_eq!(maps.previous_oxidation("test:dull"), Some("test:zinc"));
@@ -276,24 +264,15 @@ mod tests {
 
     #[test]
     fn a_looping_oxidation_chain_loses_its_scraping_steps_at_load() {
-        let next = |to: &str| json!({ "next_oxidation_stage": to });
-        let (b, c, a, s) = (
-            next("test:b"),
-            next("test:c"),
-            next("test:a"),
-            next("test:self"),
-        );
         // test:a -> b -> c -> a loops, test:self is its own next stage, test:d -> a does not.
         let maps = BlockMaps::from_values(
-            [],
             [
-                ("test:a", &b),
-                ("test:b", &c),
-                ("test:c", &a),
-                ("test:self", &s),
-                ("test:d", &a),
+                ("test:a", Oxidizable("test:b".into())),
+                ("test:b", Oxidizable("test:c".into())),
+                ("test:c", Oxidizable("test:a".into())),
+                ("test:self", Oxidizable("test:self".into())),
+                ("test:d", Oxidizable("test:a".into())),
             ],
-            [],
             |_| 0,
         );
         for block in ["test:a", "test:b", "test:c", "test:self"] {

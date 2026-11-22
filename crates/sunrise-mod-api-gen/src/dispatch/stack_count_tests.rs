@@ -8,21 +8,11 @@ fn only_container_loot_filled_changes_when_stack_count_marker_is_removed() {
         .spawn(|| {
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
             let mut catalog = Catalog::load(&root).unwrap();
-            let mut methods = Vec::new();
-            for path in crate::native_hook_files(&root).unwrap() {
-                let file = syn::parse_file(&fs::read_to_string(path).unwrap()).unwrap();
-                for item in file.items {
-                    if let Item::Impl(item) = item {
-                        methods.extend(crate::impl_functions(item));
-                    }
-                }
-            }
             let generate = |catalog: &Catalog| {
                 emit(
-                    &root,
                     catalog.hooks.iter().filter(|hook| !is_render(hook)),
-                    &methods,
                     &catalog.draw_contexts,
+                    true,
                 )
                 .unwrap()
             };
@@ -61,7 +51,7 @@ fn only_container_loot_filled_changes_when_stack_count_marker_is_removed() {
             for (marked, ordinary) in marked_lines.iter().zip(&ordinary_lines) {
                 if marked != ordinary {
                     changes += 1;
-                    assert!(marked.contains("fn fire_container_loot_filled "));
+                    assert!(marked.contains("fn fire_container_loot_filled("));
                     assert!(marked.contains("try_into_engine_preserving_count"));
                     assert!(!ordinary.contains("try_into_engine_preserving_count"));
                 }
@@ -85,6 +75,7 @@ fn count_policy_applies_only_to_the_named_output() {
         "AnyCollector",
         false,
         None,
+        false,
         &Default::default(),
         Some("drops"),
     )
@@ -100,7 +91,6 @@ fn count_policy_applies_only_to_the_named_output() {
 
 #[test]
 fn declared_stack_collectors_use_the_same_count_conversion() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let hook = Hook {
         name: "any_collector".into(),
         contract: Contract::Collect,
@@ -112,10 +102,7 @@ fn declared_stack_collectors_use_the_same_count_conversion() {
             Side::Server,
         )
     };
-    let method: syn::ItemFn = syn::parse_quote! {
-        fn native_any_collector(&mut self, call: AnyCollectorCall<'_>) { let _ = (call,); }
-    };
-    let sources = emit(&root, std::iter::once(&hook), &[method], &[]).unwrap();
+    let sources = emit(std::iter::once(&hook), &[], true).unwrap();
     assert!(sources.fire.contains("try_into_engine_preserving_count"));
     assert!(
         sources

@@ -12,7 +12,7 @@ pub(super) fn sense_secondary(m: &mut Mob, w: &MobWorld) {
     // set once; the scan performs only constant-time block membership checks.
     let additions = index
         .and_then(|index| TAGS.get(index))
-        .and_then(|tag| w.block_tags.get(*tag));
+        .and_then(|tag| w.block_tags.get(tag.id));
     if !farmer
         && additions.is_none_or(|set| set.is_empty())
         && custom.is_none_or(|p| p.secondary_blocks.is_empty())
@@ -44,23 +44,8 @@ pub(super) fn sense_secondary(m: &mut Mob, w: &MobWorld) {
     mem(m).secondary_job_site.set_list(sites);
 }
 
-const TAGS: [&str; 15] = [
-    "sunrise:villager_secondary_poi/none",
-    "sunrise:villager_secondary_poi/armorer",
-    "sunrise:villager_secondary_poi/butcher",
-    "sunrise:villager_secondary_poi/cartographer",
-    "sunrise:villager_secondary_poi/cleric",
-    "sunrise:villager_secondary_poi/farmer",
-    "sunrise:villager_secondary_poi/fisherman",
-    "sunrise:villager_secondary_poi/fletcher",
-    "sunrise:villager_secondary_poi/leatherworker",
-    "sunrise:villager_secondary_poi/librarian",
-    "sunrise:villager_secondary_poi/mason",
-    "sunrise:villager_secondary_poi/nitwit",
-    "sunrise:villager_secondary_poi/shepherd",
-    "sunrise:villager_secondary_poi/toolsmith",
-    "sunrise:villager_secondary_poi/weaponsmith",
-];
+const TAGS: &[sunrise_mod_package::extension_tags::ExtensionTag] =
+    sunrise_mod_package::extension_tags::VILLAGER_SECONDARY;
 
 #[cfg(test)]
 thread_local! { static SCAN_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

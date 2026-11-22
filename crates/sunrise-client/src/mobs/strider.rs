@@ -37,13 +37,11 @@ pub fn register(m: &mut Mob) {
 pub fn suffocating(m: &Mob) -> bool {
     m.species() == Species::Strider && m.extra.flag
 }
-/// The movement speed attribute with `SUFFOCATING_MODIFIER` while cold.
-pub fn movement_speed(m: &Mob, base: f64) -> f64 {
-    if suffocating(m) {
-        base + base * SUFFOCATING
-    } else {
-        base
-    }
+/// `SUFFOCATING_MODIFIER` while cold (`ADD_MULTIPLIED_BASE`): it sums with the
+/// base before an effect's `ADD_MULTIPLIED_TOTAL` multiplies
+/// (`Mob::movement_speed`).
+pub fn suffocating_modifier(m: &Mob) -> Option<(f64, super::finalize::Op)> {
+    suffocating(m).then_some((SUFFOCATING, super::finalize::Op::AddMultipliedBase))
 }
 /// `Strider.tick` before `super.tick()`: the tempted and retreating sounds,
 /// then cold unless in or on a warm block or riding a warm strider.
@@ -90,7 +88,7 @@ pub fn float(m: &mut Mob, w: &MobWorld) {
     // the column is half a block tall.
     let above = m.position.y > f64::from(y) + 0.5 - f64::from(1.0e-5_f32);
     if above && w.fluid(x, y + 1, z) != Fluid::Lava {
-        m.on_ground = true;
+        m.ground.on_ground = true;
     } else {
         let v = m.velocity;
         m.velocity = sunrise_core::geometry::Vec3::new(v.x * 0.5, v.y * 0.5 + 0.05, v.z * 0.5);

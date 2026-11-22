@@ -20,6 +20,8 @@ pub trait Hooks {
     /// is the hit point. For an entity, `hit_block` is the cell of `hit_at`
     /// and `hit_face` is `[0, 0, 0]`.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_ender_pearl_teleport",
+        dispatch = "api_carrier",
         side = "server",
         contract = "cancel",
         version = 3,
@@ -42,9 +44,11 @@ pub trait Hooks {
     /// Entities from `chunk` finished loading into the server world. `count`
     /// is the number of saved entity records read.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_entities_load",
+        dispatch = "flat",
         side = "server",
         contract = "listen",
         neoforge = "none (NeoForge has no such event)"
     )]
-    fn entities_load();
+    fn entities_load(dimension: &str, chunk: [i32; 2], count: usize);
 }

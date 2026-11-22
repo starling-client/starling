@@ -1,11 +1,11 @@
 use crate::support::shapes::{emit, values};
-use sunrise_core::geometry::{Direction, VoxelShape};
 use serde_json::Value;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
+use sunrise_core::geometry::{Direction, VoxelShape};
 use {
     sunrise_core::{
         nbt,

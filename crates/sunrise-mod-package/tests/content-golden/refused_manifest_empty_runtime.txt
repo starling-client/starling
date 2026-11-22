@@ -1,0 +1,5 @@
+manifest:
+refused: sunrise-mod.toml: [runtime] lists no file (line 4, column 1)
+
+icon:
+unavailable

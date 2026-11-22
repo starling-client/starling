@@ -171,7 +171,7 @@ def main():
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
-    resources = lab.LOCAL / 'sunrise-client/26.3'
+    resources = lab.RESOURCES
     oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaNaturalSpawnOracle.java'
     sources = [oracle, Path(__file__), lab.ROOT / 'crates/sunrise-client/examples/probe/natural_spawn_fixture.rs',
                lab.ROOT / 'crates/sunrise-client-render/src/vault.rs',

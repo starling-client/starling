@@ -64,13 +64,28 @@ fn discovery_texture_uris(doc: &serde_json::Value) -> Option<Vec<String>> {
 /// `java.util.Base64.getDecoder().decode`.
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
     use base64::{
-        Engine,
-        engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
+        Engine, alphabet,
+        engine::{
+            DecodePaddingMode,
+            general_purpose::{GeneralPurpose, GeneralPurposeConfig},
+        },
     };
-    STANDARD
-        .decode(text)
-        .or_else(|_| STANDARD_NO_PAD.decode(text))
-        .ok()
+
+    // Java's basic decoder allows nonzero unused bits and missing padding,
+    // but if an '=' is present the padding quantum must be complete.
+    const CONFIG: GeneralPurposeConfig =
+        GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true);
+    const PADDED: GeneralPurpose = GeneralPurpose::new(&alphabet::STANDARD, CONFIG);
+    const UNPADDED: GeneralPurpose = GeneralPurpose::new(
+        &alphabet::STANDARD,
+        CONFIG.with_decode_padding_mode(DecodePaddingMode::RequireNone),
+    );
+    let engine = if text.ends_with('=') {
+        &PADDED
+    } else {
+        &UNPADDED
+    };
+    engine.decode(text).ok()
 }
 
 /// `unpackTextures(property)`: the textures of a `textures` property's
@@ -741,7 +756,7 @@ pub fn process_cape(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The cape the launcher gives an offline name (`SUNRISE_OFFLINE_CAPE`, a
-/// PNG's path; launcher/src/skins.rs), read once as `process_cape` lays it out.
+/// PNG's path), read once as `process_cape` lays it out.
 pub fn offline_cape() -> Option<&'static [u8]> {
     static CAPE: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
     CAPE.get_or_init(|| {
@@ -759,7 +774,7 @@ pub fn offline_cape() -> Option<&'static [u8]> {
 
 /// The skin the launcher gives an offline name (`SUNRISE_OFFLINE_SKIN`, a
 /// PNG's path, and `SUNRISE_OFFLINE_SKIN_MODEL`, `classic` or `slim`;
-/// launcher/src/skins.rs): its 64x64 RGBA as `process_legacy_skin` lays it
+/// the launcher sets both): its 64x64 RGBA as `process_legacy_skin` lays it
 /// out, and whether it is slim. Read once.
 pub fn offline_skin() -> Option<&'static (Vec<u8>, bool)> {
     static SKIN: std::sync::OnceLock<Option<(Vec<u8>, bool)>> = std::sync::OnceLock::new();
@@ -987,14 +1002,11 @@ const BOUNDS: Bounds = Bounds {
 /// without end; the disk cache holds everything it drops.
 const MAX_SKIN_IMAGES: usize = 1024;
 impl Downloader {
-    /// The decoded 64×64 RGBA image an atlas location holds, when it is
-    /// still in memory (3D skin layers builds its geometry from it, and the
-    /// disk cache backs whatever was dropped).
+    /// The decoded 64×64 RGBA image an atlas location holds, when it is still in memory (Realms).
     pub fn image(&self, location: &str) -> Option<&[u8]> {
         self.images.get(location).map(Vec::as_slice)
     }
-    /// Keeps a decoded image under `location` for the images read back later
-    /// (a launcher's offline skin, which skips `queue`).
+    /// Keeps the launcher's offline cape for `again`, as it skips `queue`.
     pub fn remember_image(&mut self, location: &str, rgba: &[u8]) {
         self.remember(location.to_owned(), rgba.to_vec());
     }
@@ -1892,6 +1904,20 @@ mod tests {
             texture_hash("http://textures.minecraft.net/texture/abc.png?x=1").unwrap(),
             "abc"
         );
+    }
+
+    #[test]
+    fn base64_padding_and_unused_bits_match_the_jdk_basic_decoder() {
+        // Observed with Java 25.0.5's Base64.getDecoder(). Unused low bits
+        // in the final sextet don't contribute to the decoded output.
+        for text in ["aGm=", "aGm"] {
+            assert_eq!(base64_decode(text).as_deref(), Some(b"hi".as_slice()));
+        }
+        for text in ["Zh=", "Zh===", "Z h==", "Zg==\n"] {
+            assert!(base64_decode(text).is_none(), "{text:?}");
+        }
+        assert_eq!(base64_decode("Zh==").as_deref(), Some(b"f".as_slice()));
+        assert_eq!(base64_decode("Zh").as_deref(), Some(b"f".as_slice()));
     }
 
     /// `SkinManager.registerTextures` waits on the skin, cape and elytra

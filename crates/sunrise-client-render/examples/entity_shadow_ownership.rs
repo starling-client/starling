@@ -1,8 +1,8 @@
 //! Original synthetic capability regression; no game resources or player world.
 //! Run with fresh SUNRISE_HOME, SUNRISE_LAUNCHER_HOME, XDG_DATA_HOME and XDG_CONFIG_HOME,
 //! SUNRISE_NO_AUDIO=1 and SUNRISE_LAUNCHER_NO_SELF_UPDATE=1.
-use sunrise_client_render::{gfx::Renderer, graphics::GraphicsApi};
 use std::{io::Write, sync::Arc};
+use sunrise_client_render::{gfx::Renderer, graphics::GraphicsApi};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -70,7 +70,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         GraphicsApi::Vulkan,
         false,
-        true,
+        (true, true),
         &sunrise_client_render::graphics::Graphics::default(),
         Default::default(),
         Default::default(),

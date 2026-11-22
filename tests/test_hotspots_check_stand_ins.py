@@ -11,20 +11,6 @@ HOOK = '''pub trait Hooks {
 }
 '''
 
-VOCAB_TRAITS = '''pub trait Providers {
-    fn provided(&self, name: &str) -> bool;
-    fn with_default(&self) -> u32 {
-        7
-    }
-    type Output;
-    const LIMIT: u32 = 3;
-}
-#[sunrise_mod_api_macros::host_area]
-pub trait ToolsHost {
-    fn tool(&self) -> u32;
-}
-'''
-
 
 class StandInsTest(unittest.TestCase):
     def setUp(self):
@@ -38,23 +24,6 @@ class StandInsTest(unittest.TestCase):
                    "pub(super) enum Reply {\n    A,\n}\n")
         self.write(f"{check.FIXTURES}/placed.rs", "mod api {\n    pub struct Face;\n}\n")
         self.write(f"{check.HOOKS}/placed.rs", HOOK)
-        self.write(f"{check.VOCAB}/parts/tools.rs", VOCAB_TRAITS + "pub trait ToolsCapabilityProviders {}\n")
-        self.write(f"{check.VOCAB}/parts/mod.rs", "pub trait CapabilityProviders {}\n")
-        self.write(check.LOOPBACK, '''#[test]
-fn table() {
-    struct Table;
-    impl CapabilityProviders for Table {}
-    impl ToolsCapabilityProviders for Table {}
-    impl mod_api::Providers for Table {
-        type Output = ();
-        fn provided(&self, _: &str) -> bool {
-            let _ = "fn ignored(&self);";
-            true
-        }
-    }
-    impl mod_api::ToolsHost for Table {}
-}
-''')
 
     def write(self, rel, text):
         path = self.root / rel
@@ -96,36 +65,19 @@ fn table() {
         self.assertIn("hook `placed` names type `Face`, which has no dispatch-test stand-in. Add "
                       f"{check.FIXTURES}/api/Face.rs", found[0])
 
-    def test_a_loopback_impl_lacks_a_required_item(self):
-        self.write(f"{check.VOCAB}/parts/tools.rs", VOCAB_TRAITS.replace(
-            "    type Output;", "    type Output;\n    fn added(&self) -> Vec<String>;")
-            + "pub trait ToolsCapabilityProviders {}\n")
+    def test_only_types_used_by_generated_dispatch_need_stand_ins(self):
+        self.write(f"{check.HOOKS}/engine.rs", '''pub trait Hooks {
+    #[hook(target = "mod_render::render::draw")]
+    fn draw(draw: &mut RawDraw<'_>);
+
+    #[hook(target = "game::Game::native_tick", /* target = "mod_render::render::tick" */)]
+    fn tick(#[engine] make: impl FnOnce(EngineKey, i32) -> EngineCall<'_>,
+            directory: &std::path::Path, event: Missing) -> Reply;
+}
+''')
         found = check.problems(self.root)
         self.assertEqual(len(found), 1, found)
-        self.assertIn(f"{check.LOOPBACK}:6: `impl Providers for Table` lacks `added`, required by "
-                      f"{check.VOCAB}/parts/tools.rs: add it to that impl in {check.LOOPBACK}", found[0])
-
-    def test_a_union_needs_every_member_implemented(self):
-        self.write(f"{check.VOCAB}/parts/more.rs", "pub trait MoreCapabilityProviders {\n    fn more(&self);\n}\n")
-        found = check.problems(self.root)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("`Table` implements the union `CapabilityProviders`, so it needs "
-                      "`impl MoreCapabilityProviders for Table`", found[0])
-
-    def test_child_files_of_the_loopback_are_read(self):
-        self.write(check.LOOPBACK.replace(".rs", "/child.rs"),
-                   "struct Other;\nimpl Providers for Other {\n    type Output = ();\n}\n")
-        found = check.problems(self.root)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("child.rs:2: `impl Providers for Other` lacks `provided`", found[0])
-
-
-    def test_a_missing_input_path_fails_naming_it(self):
-        (self.root / check.LOOPBACK).unlink()
-        found = check.problems(self.root)
-        self.assertEqual(found, [f"{check.LOOPBACK}: missing; tools/hotspots/check_stand_ins.py reads it. If it "
-                                 "moved, update the script's path."])
-        self.assertEqual(check.problems(self.root, "old/wire_loopback.rs")[0].split(":")[0], "old/wire_loopback.rs")
+        self.assertIn("hook `tick` names type `Missing`", found[0])
 
     def test_a_missing_shared_rs_fails_naming_it(self):
         (self.root / f"{check.FIXTURES}/shared.rs").unlink()
@@ -133,27 +85,11 @@ fn table() {
                                                      "tools/hotspots/check_stand_ins.py reads it. If it moved, "
                                                      "update the script's path."])
 
-    def test_no_hooks_or_no_union_members_fail_instead_of_passing(self):
+    def test_no_hooks_fail_instead_of_passing(self):
         self.write(f"{check.HOOKS}/placed.rs", "pub trait Hooks {}\n")
-        self.write(f"{check.VOCAB}/parts/tools.rs", VOCAB_TRAITS)
         found = check.problems(self.root)
-        self.assertEqual(len(found), 2, found)
+        self.assertEqual(len(found), 1, found)
         self.assertIn("no `#[hook(...)] fn` found", found[0])
-        self.assertIn("no `pub trait *CapabilityProviders` found", found[1])
-
-    def test_union_members_may_be_implemented_in_another_loopback_file(self):
-        self.write(check.LOOPBACK, (self.root / check.LOOPBACK).read_text().replace(
-            "    impl ToolsCapabilityProviders for Table {}\n", ""))
-        self.assertEqual(len(check.problems(self.root)), 1)
-        self.write(check.LOOPBACK.replace(".rs", "/tools.rs"), "impl ToolsCapabilityProviders for Table {}\n")
-        self.assertEqual(check.problems(self.root), [])
-
-    def test_a_cfg_gated_required_item_is_never_required(self):
-        self.write(f"{check.VOCAB}/parts/tools.rs", VOCAB_TRAITS.replace(
-            "    type Output;", "    type Output;\n    #[cfg(any())]\n    fn never(&self);")
-            + "pub trait ToolsCapabilityProviders {}\n")
-        self.assertEqual(check.problems(self.root), [])
-
 
 if __name__ == "__main__":
     unittest.main()

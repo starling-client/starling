@@ -83,11 +83,29 @@ impl DragonPartsTable {
         }
         self.slots[hole] = None;
     }
-    pub(super) fn iter(&self) -> impl Iterator<Item = u32> + '_ {
-        self.zero
-            .then_some(0)
-            .into_iter()
-            .chain(self.slots.iter().rev().filter_map(|k| *k))
+    /// Start at `None`, then resume below the last slot inspected. The zero key comes first.
+    fn next_part(&self, cursor: &mut Option<usize>) -> Option<u32> {
+        let before = match *cursor {
+            Some(before) => before,
+            None if self.zero => {
+                *cursor = Some(self.slots.len());
+                return Some(0);
+            }
+            None => self.slots.len(),
+        };
+        for slot in (0..before).rev() {
+            if let Some(id) = self.slots[slot] {
+                *cursor = Some(slot);
+                return Some(id);
+            }
+        }
+        *cursor = Some(0);
+        None
+    }
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut cursor = None;
+        std::iter::from_fn(move || self.next_part(&mut cursor))
     }
 }
 #[cfg(test)]
@@ -201,8 +219,9 @@ impl DragonSlot {
             }
         }
     }
-    pub(super) fn parts_table(&self) -> std::cell::Ref<'_, DragonPartsTable> {
-        self.table.borrow()
+    // Return a copy so the caller never runs a visitor under the table borrow.
+    pub(super) fn next_part(&self, cursor: &mut Option<usize>) -> Option<u32> {
+        self.table.borrow().next_part(cursor)
     }
     #[cfg(test)]
     fn part_ids(&self) -> Vec<u32> {

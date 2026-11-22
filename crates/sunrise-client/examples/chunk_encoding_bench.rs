@@ -1,6 +1,13 @@
 //! Chunk-send batches for separated players, without a window or sockets.
 //! cargo run --profile fast -p sunrise-client-lib --example chunk_encoding_bench -- RESOURCES
 extern crate sunrise_client_lib as sunrise_client;
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    hint::black_box,
+    path::Path,
+    sync::Arc,
+    time::Instant,
+};
 use sunrise_client::{
     assets::Assets,
     chunk::{Chunk, Section},
@@ -8,13 +15,6 @@ use sunrise_client::{
     save::SaveTables,
     spans::thread_cpu,
     world::World,
-};
-use std::{
-    hash::{DefaultHasher, Hash, Hasher},
-    hint::black_box,
-    path::Path,
-    sync::Arc,
-    time::Instant,
 };
 
 fn bodies(encoder: &ChunkEncoder, columns: &[&Chunk], world: &World) -> Vec<Vec<u8>> {
@@ -68,15 +68,21 @@ fn main() -> sunrise_client::Result<()> {
     )?;
     let biome_names: Vec<String> = biomes.list.iter().map(|b| b.name.clone()).collect();
     let defaults = sunrise_world::item_defaults::read(root)?;
+    let items = sunrise_client::items::Items::catalog(
+        root,
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )?;
     let sync = sunrise_client::lan::data::SyncData::load(
         root,
         &sunrise_world::loot::PackOverlay::NONE,
         &defaults,
-        &sunrise_client::crafting::ResolvedSources::load_or_empty(
+        &sunrise_client::crafting::ResolvedSources::load(
             root,
+            &items,
             &sunrise_world::loot::PackOverlay::NONE,
             &server_load(),
-        ),
+        )?,
     )?;
     let biome_registry: Vec<String> = sync
         .dynamic
@@ -99,7 +105,13 @@ fn main() -> sunrise_client::Result<()> {
                     || s.properties.get("waterlogged").is_some_and(|v| v == "true"),
             )
         });
-        let mut e = ChunkEncoder::new(states, &sync.builtin, &biome_names, &biome_registry);
+        let mut e = ChunkEncoder::new(
+            states,
+            &sync.builtin,
+            &biome_names,
+            &biome_registry,
+            Default::default(),
+        );
         e.tables = Some(tables.clone());
         e
     };

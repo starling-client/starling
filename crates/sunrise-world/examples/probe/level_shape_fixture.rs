@@ -1,5 +1,11 @@
 //! Rust side of `tools/test_level_shape_parity.py`: evaluates
 //! `Behaviours::update_shape` and `can_survive` for generated neighbourhoods.
+use serde_json::Value;
+use std::{
+    collections::{BTreeSet, HashMap},
+    io::{BufRead, Write},
+    path::Path,
+};
 use sunrise_core::{
     geometry::Direction,
     position::{BlockPos, ChunkPos},
@@ -8,12 +14,6 @@ use sunrise_core::{
 use sunrise_world::{
     level::{Behaviours, LevelAccess, Ticks, data::load_registry},
     registry::BlockStateId,
-};
-use serde_json::Value;
-use std::{
-    collections::{BTreeSet, HashMap},
-    io::{BufRead, Write},
-    path::Path,
 };
 
 struct Cells {

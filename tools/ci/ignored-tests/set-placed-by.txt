@@ -1,0 +1,1 @@
+sunrise-client game::native_level_placement_tests::a_post_write_placement_reads_the_stack_without_loading_its_data lib daily resources

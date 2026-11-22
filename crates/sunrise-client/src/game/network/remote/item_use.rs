@@ -34,7 +34,7 @@ impl Game<'_> {
                 if let Ok(lit_state) = registry.resolve(&state) {
                     let pos =
                         sunrise_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
-                    self.predict_blocks(&vec![(pos, lit_state)], seq);
+                    self.predict_blocks(&[(pos, lit_state)], seq);
                 }
             }
             let at = [
@@ -63,7 +63,7 @@ impl Game<'_> {
         if self.can_place_used_fire(target) {
             let pos = sunrise_core::position::BlockPos::new(target[0], target[1], target[2]);
             let state = self.with_level(|b, level, ticks| b.fire_state_for(level, ticks, pos));
-            self.predict_blocks(&vec![(pos, state)], seq);
+            self.predict_blocks(&[(pos, state)], seq);
             let sound = sunrise_client::items::fire_starter_sound(is_fire_charge);
             let pitch =
                 sunrise_client::items::fire_starter_pitch(is_fire_charge, &mut self.world.random);
@@ -92,7 +92,7 @@ mod tests {
     use sunrise_client::items::ItemStack;
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn remote_item_use_tnt_predicts_success_without_consumption_or_sound() {
         let root = std::env::var_os("SUNRISE_TEST_RESOURCES")
             .map(std::path::PathBuf::from)

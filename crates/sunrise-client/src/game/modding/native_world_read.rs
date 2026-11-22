@@ -1,6 +1,9 @@
 //! Read-only block, tag and fluid queries for native mods.
 use super::native_level_signals::ReadLevel;
 use super::{Dim, Game};
+use mod_api::BlockKey;
+use mod_api::{FluidKey, FluidState, LevelRef, LifecycleContext, UnresolvedFluid};
+use std::cell::RefCell;
 use sunrise_client::{items::Items, world::World};
 use sunrise_core::{geometry::Direction, position::BlockPos};
 use sunrise_world::{
@@ -9,8 +12,114 @@ use sunrise_world::{
     level::{Behaviours, fluid_can_be_replaced_with, fluid_tick_delay},
     registry::{BlockRegistry, BlockStateId},
 };
-use mod_api::BlockKey;
-use mod_api::{FluidKey, FluidState, LevelRef, LifecycleContext, UnresolvedFluid};
+
+/// Kinds of contextual block provider dispatched by the game.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlockProviderQuery {
+    EnchantPower,
+    LightEmission,
+}
+
+#[derive(PartialEq, Eq)]
+struct BlockQueryKey {
+    game: *const (),
+    state: BlockStateId,
+    query: BlockProviderQuery,
+}
+
+thread_local! {
+    static ACTIVE_BLOCK_QUERIES: RefCell<Vec<BlockQueryKey>> = const { RefCell::new(Vec::new()) };
+}
+
+struct PopBlockQuery;
+
+impl Drop for PopBlockQuery {
+    fn drop(&mut self) {
+        ACTIVE_BLOCK_QUERIES.with(|active| {
+            active.borrow_mut().pop();
+        });
+    }
+}
+
+impl Game<'_> {
+    /// Refuse re-entry for the same state and query kind in this game, regardless of level and
+    /// position. A provider can delegate to another state. Only actual dispatch enters here;
+    /// the vector retains its capacity between calls.
+    pub(super) fn with_block_provider_query<R>(
+        &self,
+        state: BlockStateId,
+        query: BlockProviderQuery,
+        ask: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let key = BlockQueryKey {
+            game: std::ptr::from_ref(self).cast(),
+            state,
+            query,
+        };
+        ACTIVE_BLOCK_QUERIES.with(|active| {
+            let mut active = active.borrow_mut();
+            if active.contains(&key) {
+                return None;
+            }
+            active.push(key);
+            drop(active);
+            let _pop = PopBlockQuery;
+            Some(ask())
+        })
+    }
+}
+
+/// Shared by the level handle and the restricted block-hook view.
+pub(super) fn block_face_sturdy(
+    world: &World,
+    b: &Behaviours,
+    binding: &sunrise_world::block_collision::BlockCollisionRegistry<'_>,
+    pos: [i32; 3],
+    face: mod_api::BlockFace,
+    support: mod_api::SupportType,
+) -> Option<bool> {
+    if !world.is_loaded_at(pos[0], pos[1], pos[2]) {
+        return None;
+    }
+    let state = world.block(pos[0], pos[1], pos[2]);
+    let direction = super::native_entity_refs::block_face_direction(face);
+    if !b.has_cached_support(state) || binding.publishes_shapes(state) {
+        use sunrise_client::collisions::SceneCollisions;
+        use sunrise_world::{block_support::SupportType, dynamic_support::DynamicSupport};
+        let mut scene = SceneCollisions {
+            world,
+            binding,
+            subject: None,
+        };
+        let support = match support {
+            mod_api::SupportType::Full => SupportType::Full,
+            mod_api::SupportType::Center => SupportType::Center,
+            mod_api::SupportType::Rigid => SupportType::Rigid,
+            _ => unreachable!("mod_api::SupportType: unhandled variant"),
+        };
+        // A state that may publish takes its block entity's shape, else its declared one.
+        if binding.publishes_shapes(state) {
+            let shape = binding.collision_shape(&mut scene, state, pos).ok()?;
+            return support.is_supporting(&shape, direction).ok();
+        }
+        let dynamic = DynamicSupport::from_state(binding.registry().state(state)?).ok()??;
+        return dynamic
+            .is_face_sturdy(&mut scene, pos, direction, support)
+            .ok();
+    }
+    Some(match support {
+        mod_api::SupportType::Full => b.is_face_sturdy(state, direction),
+        mod_api::SupportType::Center => b.is_face_sturdy_center(state, direction),
+        mod_api::SupportType::Rigid => b.is_face_sturdy_rigid(state, direction),
+        _ => unreachable!("mod_api::SupportType: unhandled variant"),
+    })
+}
+
+/// Read the published sky light without requiring a block or a resident column.
+pub(super) fn can_see_sky(world: &World, pos: [i32; 3]) -> bool {
+    world.shape.sky_light
+        && super::native_level_refs::world_brightness(world, mod_api::LightLayer::Sky, pos) >= 15
+}
 
 /// Why a server block cannot be read.
 #[allow(dead_code)]
@@ -397,10 +506,30 @@ fn read_block(
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::*;
-    use sunrise_client::chunk::Chunk;
-    use sunrise_client::items::TagRegistry;
     use mod_api::LevelHost;
     use std::sync::Arc;
+    use sunrise_client::chunk::{Chunk, Light};
+    use sunrise_client::items::TagRegistry;
+
+    #[test]
+    fn sky_visibility_uses_the_published_sky_layer() {
+        let mut world = World::new(BlockStateId(0), 0);
+        let y = world.shape.min_y;
+        let above = world.shape.max_y() + 16;
+        let mut chunk = Chunk::empty(0, 0);
+        Arc::make_mut(&mut chunk.sections[0]).light = Light::Uniform(0xef);
+        world.chunks.insert((0, 0), Arc::new(chunk));
+        assert!(
+            !can_see_sky(&world, [0, y, 0]),
+            "block light is not sky light"
+        );
+        assert!(can_see_sky(&world, [0, above, 0]));
+        assert!(can_see_sky(&world, [32, y, 0]));
+        world.shape.sky_light = false;
+        assert!(!can_see_sky(&world, [0, above, 0]));
+        assert!(!can_see_sky(&world, [32, y, 0]));
+        assert!(!world.loaded(32, 0));
+    }
 
     #[test]
     fn a_fluid_shape_is_full_under_the_same_fluid_and_its_own_height_otherwise() {
@@ -544,10 +673,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn recipes_of_type_answers_vanilla_types_from_the_live_table() {
         with_game(|game| {
-            let smelting = game.recipes_of_type("minecraft:smelting");
+            let smelting = game.recipes_of_type("minecraft:smelting").0;
             let iron = smelting
                 .iter()
                 .find(|recipe| recipe.id == "minecraft:iron_ingot_from_smelting_raw_iron")
@@ -558,7 +687,7 @@ mod tests {
             assert_eq!(iron.ingredients.len(), 1);
             assert!(iron.ingredients[0].items.contains("minecraft:raw_iron"));
             assert_eq!(iron.results[0].item.as_ref(), "minecraft:iron_ingot");
-            let shaped = game.recipes_of_type("minecraft:crafting");
+            let shaped = game.recipes_of_type("minecraft:crafting").0;
             let bucket = shaped
                 .iter()
                 .find(|recipe| recipe.id == "minecraft:bucket")
@@ -569,14 +698,15 @@ mod tests {
             assert!(
                 !game
                     .recipes_of_type("minecraft:campfire_cooking")
+                    .0
                     .is_empty()
             );
-            assert!(game.recipes_of_type("nope:missing").is_empty());
+            assert!(game.recipes_of_type("nope:missing").0.is_empty());
         });
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn tag_and_fluid_reads_follow_vanilla_and_load_nothing() {
         with_game(|game| {
             let dir =
@@ -620,11 +750,15 @@ mod tests {
                 let oak_tag = tags
                     .key(&mod_api::Identifier::parse("minecraft:oak_logs").unwrap())
                     .unwrap();
+                let mod_api::TagMembers::Members(keys) = tags.items(oak_tag) else {
+                    panic!("the oak logs tag is loaded");
+                };
                 assert_eq!(
-                    tags.items(oak_tag)
-                        .map(|keys| keys.into_iter().map(|key| key.id(host)).collect::<Vec<_>>())
+                    keys.into_iter()
+                        .map(|key| key.id(host))
+                        .collect::<Option<Vec<_>>>()
                         .as_deref(),
-                    Some(&oak[..])
+                    Some(&oak.each_ref().map(String::as_str)[..])
                 );
                 let item = host
                     .item_key(&mod_api::Identifier::parse("minecraft:oak_log").unwrap())
@@ -742,6 +876,7 @@ mod tests {
             );
             assert_eq!(game.level_fluid_state(level, [16, 64, 1]), None);
             assert_eq!(game.level_fluid_state(level, [1, 4000, 1]), None);
+            game.options.execution_role = super::super::execution_role::ExecutionRole::Client;
             game.with_level(|_, host, _| {
                 // Not an authoritative level: tags are not the server's, so they read None.
                 assert_eq!(
@@ -760,12 +895,14 @@ mod tests {
                     api_fluid_state(EngineFluidState::WATER)
                 );
             });
+            game.options.execution_role =
+                super::super::execution_role::ExecutionRole::IntegratedServer;
             game.options.dedicated = Some(Vec::new());
             let bounds = game.level_height(level).unwrap();
             use super::super::api_values::TryIntoApi;
             let stone = stone.try_into_api().unwrap();
             let slab = slab.try_into_api().unwrap();
-            let invalid = mod_api::BlockStateRecord::new(stone.block(), u16::MAX).into();
+            let invalid = mod_api::__private::block_state_from_ordinal(stone.block(), u16::MAX);
             let parsed = game
                 .block_state_id("minecraft:oak_slab[waterlogged=true]")
                 .try_into_api()
@@ -789,10 +926,7 @@ mod tests {
                 );
                 assert_eq!(host.block_state_id("minecraft:oak_slab[bad=true]"), None);
 
-                let wrapped = super::super::mod_api_host::LevelTicks {
-                    level: &*host,
-                    ticks,
-                };
+                let wrapped = super::super::mod_api_host::LevelTicks::new(&*host, ticks);
                 assert_eq!(
                     wrapped.block_state_id("minecraft:oak_slab[waterlogged=true]"),
                     parsed
@@ -919,7 +1053,7 @@ mod tests {
             let item = host
                 .item_key(&mod_api::Identifier::parse("minecraft:oak_log").unwrap())
                 .unwrap();
-            assert_eq!(tags.items(oak_tag), None);
+            assert_eq!(tags.items(oak_tag), mod_api::TagMembers::Unavailable);
             assert_eq!(tags.is_in_tag(item, oak_tag), None);
             game.session_lock = None;
             let _ = std::fs::remove_dir_all(dir);
@@ -929,7 +1063,7 @@ mod tests {
     /// Sources and their flowing forms are one fluid, the empty fluid has no bucket and no
     /// pickup sound, and a name no fluid has answers nothing, through a mod's `Host`.
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn fluid_sameness_buckets_and_bucket_sounds_follow_vanilla() {
         with_game(|game| {
             let host: &dyn mod_api::Host = game;

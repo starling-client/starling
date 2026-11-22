@@ -1,0 +1,7 @@
+version = 1
+doc = "A panic in Hooks::register discards the mod's pending registrations, including biome modifiers, datapack registries, and attribute widenings. Refusals already recorded by that callback are logged with its mod ID. A panic while dropping a rejected registration shares the registration callback's panic policy and does not stop later mods from registering. Other mods' registrations are unchanged."
+tests = [
+    "crates/sunrise-mod-api/src/parts/registration_refusal.rs::panic_in_hooks_register_rolls_back_only_its_owner_and_queues_report",
+    "crates/sunrise-mod-api/src/parts/registration_refusal.rs::destructor_panics_in_rejected_parts_do_not_interrupt_registration",
+    "crates/sunrise-mod-api/src/parts/registration_refusal.rs::ordinary_refusals_are_reported_even_when_register_panics",
+]

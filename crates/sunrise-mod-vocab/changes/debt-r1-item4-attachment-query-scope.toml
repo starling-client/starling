@@ -1,0 +1,79 @@
+ids = [
+    "type:AttachmentIter",
+    "type:AttachmentIterMut",
+    "type:AttachmentQuery",
+    "type:AttachmentReadScope",
+    "type:AttachmentRow",
+    "type:AttachmentWriteToken",
+    "type:AttachmentRowError",
+    "type:AttachmentRowError.OutsideTransaction",
+    "type:AttachmentRowError.Unavailable",
+    "method:prelude::ModStateHost::attachment_read_scope",
+    "method:LevelHost::attachment_read_scope",
+    "handle:AttachmentIter::try_next",
+    "handle:AttachmentIterMut::try_next",
+    "handle:AttachmentQuery::get",
+    "handle:AttachmentQuery::iter",
+    "handle:AttachmentRow::with_value",
+    "handle:AttachmentRow::write_token",
+    "handle:AttachmentQueryMut::iter",
+    "handle:AttachmentRowMut::value",
+    "handle:AttachmentRowMut::with_value",
+]
+why = """
+An attachment query could expose bindings discarded by rollback, even from a value loan whose
+own closure closed the transaction, and could still write while the holder stayed resident.
+Reads now borrow the capturing host through the whole loan; writes refuse an expired frame
+before testing residency. NeoForge TransactionManager.validateCurrentTransaction refuses a
+noncurrent frame without changing the parent, and Transaction.close makes the parent current
+again. Attachment cursors now report each scope refusal without consuming a row, so a parent
+cursor can continue when the child closes. NeoForge AttachmentHolder.getExistingDataOrNull
+reads the holder without creating a default. Vanilla Level.getBlockEntity checks the owning
+server thread, and HopperBlockEntity.tryTakeInItemFromSlot restores the source slot on a failed
+transfer. Vanilla has no attachment query API. The existing host phase check now returns a
+refusal instead of unwinding; no vanilla storage behaviour changes.
+"""
+migrate = """
+Replace `row.value`, `row.value()` or `row.with_value(read)` with
+`row.with_value(host.attachment_read_scope()?, read)?`. For example use
+`let count = row.with_value(host.attachment_read_scope()?, |value| *value)?;`
+and then pass the owned result to any write. Replace `query.get(holder)` with
+`query.get(host.attachment_read_scope()?, holder)`. A `LevelHost` view lends
+`level.attachment_read_scope()` directly. For a capture made outside any transaction,
+you can instead pass `AttachmentReadScope::default()`. An explicit runtime row or query annotation becomes
+`mod_api::AttachmentRow<'_, T>` (read-only) or `mod_api::AttachmentQuery<'_, T>`.
+`AttachmentQuery::iter()` and `AttachmentQueryMut::iter()` now return `AttachmentIter`
+and `AttachmentIterMut`, not Rust `Iterator`s. Replace `iter.next().transpose()?` or
+`for row in query.iter() { let row = row?; ... }` with
+`let mut rows = query.iter(); while let Some(row) = rows.try_next()? { ... }`.
+To count rows, increment a counter in that loop. `Ok(None)` means the cursor reached the
+end while in scope. Every `OutsideTransaction` leaves the cursor unchanged: handle the
+refusal and use the same cursor when the capturing frame is current again. A decode or
+type error is reported as `Value` and advances past only that row.
+Replace `AttachmentWriteToken::from(row.write_token())` with `row.write_token()` on a
+read-only API row. Replace `Reader::decode::<AttachmentWriteToken>(bytes)` with a local
+`host.query_mut(&KEY)?` (import `AttachmentQueriesMut`), then call `row.set(host, value)`
+or `row.remove(host)` on an issued writable row. Replace `row.write_token().parts()` by
+retaining only `row.holder` (or `row.holder()` on a writable row) and querying again with
+`host.query_mut(&KEY)?`, matching the retained holder. Do not preserve a residency generation.
+Keep `host.attachment_validate_write(token)` for direct validation, but handle its
+`Err(AttachmentRowError::Unavailable)` outside the world phase instead of expecting an unwind.
+In the world phase, handle `OutsideTransaction` for an expired token even when the host's
+dimension has no index; handle `StaleHolder` for an in-scope token without matching residency.
+Keep `row.set(host, value)` and `row.remove(host)` on writable rows, but handle
+`AttachmentRowError::Unavailable` and `AttachmentRowError::OutsideTransaction` as above,
+in addition to the existing residency errors. If the captured frame has ended, reacquire
+the row through `host.query_mut(&KEY)?` in the new frame; a committed child's query does
+not move to the parent. A scoped value read also refuses if its scope does not borrow the
+capturing host.
+`AttachmentEntry` is no longer exported. Replace `entry.read(&KEY)` with a local
+`host.query(&KEY)?` (import `AttachmentQueries`) and `query.get(scope, holder)` for a `Clone`
+value, or visit the row and use `row.with_value(scope, read)` to borrow it without cloning.
+Get `scope` from `host.attachment_read_scope()?`.
+Replace `entry.saved()` and `AttachmentEntry::from_saved(compound)` with `KEY`'s
+`AttachmentCodec { encode, decode }` for persistence or sync. Let the attachment store use
+that codec for saving and set `KEY.sync` for built-in synchronization. If your own format
+needs to encode a value, call the declared `encode(&value)` and `decode(&compound)` callbacks
+on the typed value and its encoded compound, respectively, rather than serializing the old
+entry envelope or constructing an entry.
+"""

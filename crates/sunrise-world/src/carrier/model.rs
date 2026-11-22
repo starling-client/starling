@@ -24,9 +24,9 @@
 //!   own, matching the registry's declaration contract.
 
 use super::contact::{RigidTransform, Rotation};
+use std::fmt;
 use sunrise_core::geometry::Vec3;
 use sunrise_core::identifier::Identifier;
-use std::fmt;
 
 /// Design trust-boundary limit: at most 4,096 non-air cells per carrier.
 pub const MAX_CELLS: usize = 4096;

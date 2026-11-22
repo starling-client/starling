@@ -7,8 +7,9 @@
 // exhaustive: a mod builds it with a literal, as `registerSkullModel` takes a type and its model
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct SkullModel {
-    /// The skull type, `<namespace>:<path>` in a namespace other than vanilla's, like
-    /// `mymod:goblin`: the `kind` of a `minecraft:head` item model.
+    /// The skull type, a canonical `<namespace>:<path>` identifier (any valid namespace,
+    /// excluding the seven built-in vanilla skull types), like `mymod:goblin`: the `kind` of a
+    /// `minecraft:head` item model.
     pub kind: String,
     /// The model layer the head is baked from: one the mod registered in `layer_definitions`
     /// (`mymod:goblin_head#main`) or vanilla's (`minecraft:zombie_head#main`). Its root's `head`

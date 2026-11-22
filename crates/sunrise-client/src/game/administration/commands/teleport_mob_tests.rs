@@ -3,7 +3,7 @@ use sunrise_client::mobs::{Mob, path::Path};
 use sunrise_core::geometry::Vec3;
 
 #[test]
-#[ignore = "needs prepared resources"]
+#[ignore = "daily"]
 fn command_stops_navigation_and_dismounts() {
     with_game(|game| {
         let kind = game
@@ -43,23 +43,23 @@ fn command_stops_navigation_and_dismounts() {
         assert!(!mob.extra.passenger);
         assert_eq!(mob.fall_distance, 7.0);
         assert_eq!(mob.velocity, Vec3::ZERO);
-        assert!(mob.on_ground);
+        assert!(mob.ground.on_ground);
         assert!(game.mobs[1].extra.rider.is_none());
         let mob = &mut game.mobs[0];
         mob.extra.fall_flying = true;
         mob.velocity = Vec3::new(1.0, -3.0, 2.0);
-        mob.on_ground = false;
+        mob.ground.on_ground = false;
         assert!(game.run_command("tp @e[type=minecraft:zombie] ~ 70 ~"));
         let mob = &game.mobs[0];
         assert_eq!(mob.velocity, Vec3::new(1.0, 0.0, 2.0));
-        assert!(!mob.on_ground);
+        assert!(!mob.ground.on_ground);
         game.mobs[0].velocity = Vec3::new(1.0, -3.0, 2.0);
         assert!(game.run_command("tp @e[type=minecraft:zombie] 12 ~ 12"));
         assert_eq!(game.mobs[0].velocity, Vec3::new(0.0, -3.0, 0.0));
         game.mobs[0].extra.fall_flying = false;
         assert!(game.run_command("tp @e[type=minecraft:zombie] ~ ~ ~"));
         assert_eq!(game.mobs[0].velocity.y, 0.0);
-        assert!(game.mobs[0].on_ground);
+        assert!(game.mobs[0].ground.on_ground);
         assert!(
             game.run_command("tp @e[type=minecraft:zombie] -30000000.0 -20000000.0 -30000000.0")
         );

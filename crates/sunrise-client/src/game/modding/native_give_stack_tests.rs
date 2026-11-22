@@ -1,8 +1,11 @@
 //! `player_give_stack` against a real LAN guest and `item_from_snbt` on the public host.
 
-use super::{api_values::TryIntoApi, native_guest_turn_tests::with_guests};
-use sunrise_core::nbt::parse_snbt;
+use super::{
+    api_values::TryIntoApi, native_entity_refs::tests::run_fresh_cases,
+    native_guest_turn_tests::with_guests,
+};
 use mod_api::{Host, ItemStack, PlayerDataRefusal, prelude::*};
+use sunrise_core::nbt::parse_snbt;
 
 fn api_item(game: &super::Game<'_>, snbt: &str) -> Option<ItemStack> {
     let host: &dyn Host = game;
@@ -32,7 +35,7 @@ fn an_snbt_item_goes_through_the_api_unchanged() {
             );
             let (tag, _) = parse_snbt(snbt).unwrap();
             assert_eq!(
-                sunrise_items::item_nbt::item_to_nbt_with_items(&engine, game.items()),
+                sunrise_items::item_nbt::item_to_nbt(&engine, game.items()),
                 tag,
                 "{snbt}"
             );
@@ -46,6 +49,13 @@ fn an_snbt_item_goes_through_the_api_unchanged() {
 #[test]
 #[ignore = "daily"]
 fn item_from_snbt_refuses_what_is_not_one_item_compound() {
+    if run_fresh_cases(
+        "game::native_give_stack_tests::item_from_snbt_refuses_what_is_not_one_item_compound",
+        "SUNRISE_NATIVE_GIVE_STACK_CHILD",
+        &["snbt"],
+    ) {
+        return;
+    }
     with_guests(|game| {
         let host: &dyn Host = game;
         let count = |snbt: &str| host.item_from_snbt(snbt).map(|s| s.count());
@@ -54,6 +64,8 @@ fn item_from_snbt_refuses_what_is_not_one_item_compound() {
             Some(1),
             "stone is minecraft:stone"
         );
+        assert_eq!(count(r#"{id:"minecraft:stone",Count:3}"#), Some(1));
+        assert_eq!(count(r#"{id:"minecraft:stone",count:3,Count:9}"#), Some(3));
         assert_eq!(count(r#"{id:"minecraft:stone",count:99}"#), Some(99));
         assert_eq!(count(r#"{id:"minecraft:stone",count:1}"#), Some(1));
         assert_eq!(
@@ -105,6 +117,13 @@ fn item_from_snbt_refuses_what_is_not_one_item_compound() {
 #[test]
 #[ignore = "daily"]
 fn a_given_stack_fills_the_inventory_then_drops_for_its_player() {
+    if run_fresh_cases(
+        "game::native_give_stack_tests::a_given_stack_fills_the_inventory_then_drops_for_its_player",
+        "SUNRISE_NATIVE_GIVE_STACK_CHILD",
+        &["give"],
+    ) {
+        return;
+    }
     with_guests(|game| {
         let b = game.players().server_players()[1];
         let rock = r#"{id:"minecraft:stone",count:10,components:{"minecraft:custom_name":"Rock"}}"#;
@@ -124,7 +143,7 @@ fn a_given_stack_fills_the_inventory_then_drops_for_its_player() {
             })
             .unwrap();
         let before = game.dropped.len();
-        assert_eq!(b.give_stack(game, named.clone()), Ok(()));
+        assert_eq!(b.give_stack(game, named.clone()), Ok(None));
         let g = game.lan.as_ref().unwrap().hub.guest(13).unwrap();
         assert_eq!(g.inventory[5].as_ref().map(|s| s.count), Some(64));
         assert_eq!(game.dropped.len(), before + 1);
@@ -143,10 +162,16 @@ fn a_given_stack_fills_the_inventory_then_drops_for_its_player() {
             .hub
             .update_guest(13, |g| g.inventory[7] = None)
             .unwrap();
-        assert_eq!(b.give_stack(game, named), Ok(()));
+        assert_eq!(b.give_stack(game, named), Ok(None));
         let g = game.lan.as_ref().unwrap().hub.guest(13).unwrap();
-        assert_eq!(g.inventory[7], Some(engine));
-        assert_eq!(game.dropped.len(), before + 1);
+        assert_eq!(g.inventory[7].as_ref(), Some(&engine));
+        assert_eq!(game.dropped.len(), before + 2);
+        let fake = game.dropped.last().unwrap();
+        assert_eq!(
+            fake.stack,
+            sunrise_client::items::ItemStack { count: 1, ..engine }
+        );
+        assert_eq!((fake.pickup_delay, fake.age), (32767, 5999));
     });
 }
 
@@ -165,7 +190,10 @@ fn a_dead_player_is_given_nothing() {
             .update_connection(13, |g| g.dead = true);
         let before = game.dropped.len();
         assert_eq!(b.give_stack(game, rock), Err(PlayerDataRefusal::Dead));
-        assert_eq!(b.inventory_slots(game), Some(Vec::new()));
+        assert_eq!(
+            b.with_inventory(game, |view| view.iter().next().is_none()),
+            Some(true)
+        );
         assert_eq!(game.dropped.len(), before);
     });
 }

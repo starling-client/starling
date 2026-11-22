@@ -1,13 +1,14 @@
 # Saved-world mod mismatches
 
 `Hooks::mod_mismatch` reports changed and removed saved mods, code and content mods alike,
-whenever one of the world's saved lists exists, including empty and unchanged lists; newly
-added mods and `minecraft` are excluded. It fires once per open.
+whenever a nonempty saved list exists, changed or unchanged. An empty saved list counts as
+absent and fires nothing; newly added mods and `minecraft` are excluded. It fires once per open.
 
 A world records its code mods in `level.dat`'s `fml.LoadingModList` and its content mods in
 `sunrise.ContentModList`, beside the namespaces of the mod block states registered when it was
 saved (`sunrise.BlockNamespaces`) and the game commit that last saved it
-(`sunrise.LastSavedCommit`).
+(`sunrise.LastSavedCommit`). Saves record only nonempty lists: an empty code, content or
+namespace list is omitted, and a commit marker alone does not create the `sunrise` compound.
 
 ## When a saved mod is missing
 

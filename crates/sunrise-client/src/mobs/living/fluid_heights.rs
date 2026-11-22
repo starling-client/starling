@@ -119,8 +119,8 @@ impl MobWorld<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::super::Mob;
-    use sunrise_core::geometry::{Aabb, Vec3};
     use std::sync::Arc;
+    use sunrise_core::geometry::{Aabb, Vec3};
 
     /// Lava sources fill x 0..=4 and water sources x 5..=9, z 0..=4, y 0..=2: each surface is
     /// at 2 + 8/9. A zombie (1.95 tall, 0.6 wide) standing at y 1 is that surface less 1 deep,
@@ -129,6 +129,7 @@ mod tests {
     /// raised box still measures from the passenger's bottom. Its eyes (y + 1.74) are in lava
     /// at y 1, and in air at y 2.5 while its feet stay in.
     #[test]
+    #[ignore = "daily"]
     fn a_mob_measures_fluids_from_its_bottom_and_tracks_lava_at_its_eyes() {
         let build = |world: &mut crate::world::World,
                      registry: &sunrise_world::registry::BlockRegistry| {

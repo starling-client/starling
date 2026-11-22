@@ -29,7 +29,7 @@ Wolf.getSoundSet	port	crates/sunrise-client/src/mobs/finalize.rs::variant_sound
 Wolf.createAttributes	skip:data		attribute values come from data tables
 Wolf.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	flags, variant and anger metadata sent to clients
 Wolf.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	CollarColor written
-Wolf.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	CollarColor, sound_variant and anger read; live command writes initialize the wolf remaining anger at the current level clock
+Wolf.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	CollarColor, sound_variant and anger read; live command writes initialize the wolf remaining anger at the current level clock
 Wolf.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	gap: minor: sound variant is stored but no sound uses it (see getSoundSet)
 Wolf.getAmbientSound	port	crates/sunrise-client/src/mobs/ai.rs::ambient_sound	gap: minor: angry is taken as having a target, not the anger timer
 Wolf.die	port	crates/sunrise-client/src/mobs/tame.rs::die	`drops::die` asks it first: isWet/isShaking and both shake animations are cleared
@@ -76,7 +76,7 @@ WitherBoss.createNavigation	port	crates/sunrise-client/src/mobs/wither.rs::regis
 WitherBoss.canBeAffected	port	crates/sunrise-client/src/mobs.rs::Mob::can_be_affected	the wither effect; the wither rose's own refusal is now that one
 WitherBoss.registerGoals	port	crates/sunrise-client/src/mobs/wither.rs::register
 WitherBoss.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: only heads A and B are synced; the invulnerable counter is sent at index 19, the slot of target C
-WitherBoss.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_from_nbt	Invul read; boss bar name not checked here
+WitherBoss.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Invul read; boss bar name not checked here
 WitherBoss.canDestroy	inline	crates/sunrise-client/src/mobs/wither.rs::custom_server_ai_step	air and wither-immune checks in the block loop
 WitherBoss.getHeadX	port	crates/sunrise-client/src/mobs/wither.rs::head_pos
 WitherBoss.getHeadY	port	crates/sunrise-client/src/mobs/wither.rs::head_pos

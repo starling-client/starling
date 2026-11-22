@@ -5,12 +5,12 @@
 //! server player's (#2739).
 use super::camel_jump_tests::game;
 use crate::game::Game;
-use sunrise_client::{mobs::equine, sprint::Keys};
 use mod_api::{EntityMountEvent, Flow, Hooks, ServerHost};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU32, Ordering},
 };
+use sunrise_client::{mobs::equine, sprint::Keys};
 
 /// Cancels every dismount while `keep` is set, and counts the dismounts it hears.
 struct KeepRider {
@@ -45,7 +45,8 @@ pub(in crate::game) fn with_horse(test: impl FnOnce(&mut Game<'_>, u32, &AtomicB
     )]
     .into();
     mod_platform::testing::with_mods(mods, || {
-        let mut game = game();
+        let mut resources = None;
+        let mut game = game(&mut resources);
         // A server hears its mounts' `entity_mount`.
         game.options.dedicated = Some(Vec::new());
         assert!(game.run_command("summon horse 8.5 100 8.5 {NoAI:1b,Silent:1b,Tame:1b}"));
@@ -64,7 +65,7 @@ fn rider(game: &Game<'_>, horse: u32) -> Option<equine::Rider> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn underwater_dismount_obeys_the_listener_without_sneak() {
     with_horse(|game, horse, keep, leaves| {
         game.riding = Some(horse);
@@ -89,7 +90,7 @@ fn underwater_dismount_obeys_the_listener_without_sneak() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_dead_mount_never_receives_input_even_when_dismount_is_cancelled() {
     with_horse(|game, horse, keep, leaves| {
         game.riding = Some(horse);
@@ -110,7 +111,7 @@ fn a_dead_mount_never_receives_input_even_when_dismount_is_cancelled() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_kept_local_rider_still_drives_and_sneaks() {
     with_horse(|game, horse, keep, leaves| {
         game.riding = Some(horse);
@@ -143,7 +144,7 @@ fn a_kept_local_rider_still_drives_and_sneaks() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_kept_server_player_still_drives_and_sneaks() {
     // `PlayerInput` flags: forward 1, left 4, jump 16, shift 32.
     const INPUT: u8 = 1 | 4 | 16 | 32;
@@ -173,5 +174,18 @@ fn a_kept_server_player_still_drives_and_sneaks() {
         assert_eq!(leaves.load(Ordering::SeqCst), 2);
         assert_eq!(vehicle(game), None);
         assert!(rider(game, horse).is_none(), "the mount lost its rider");
+    });
+}
+
+/// `Entity.setRemoved` offers each passenger's dismount to `entity_mount` once: a local rider the
+/// listener keeps on a destroyed vehicle is not asked a second time.
+#[test]
+#[ignore = "daily"]
+fn a_destroyed_vehicle_asks_once_to_let_its_local_rider_go() {
+    with_horse(|game, horse, _, leaves| {
+        game.start_riding(horse);
+        game.remove_mob_now(horse, false);
+        assert_eq!(leaves.load(Ordering::SeqCst), 1, "one ask for one edge");
+        assert_eq!(game.riding, Some(horse), "the listener kept the rider");
     });
 }

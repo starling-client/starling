@@ -5,6 +5,8 @@ pub trait Hooks {
     /// The Ender Dragon fight is about to place its first dragon egg at `pos`.
     /// Set `cancel` to leave the block unchanged. Server-side.
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -13,5 +15,5 @@ pub trait Hooks {
         cancellable = true,
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_dragon_egg_form"
     )]
-    fn dragon_egg_form();
+    fn dragon_egg_form(dimension: LevelDimension, pos: BlockPos, cancel: &mut bool);
 }

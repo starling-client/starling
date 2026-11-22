@@ -18,6 +18,7 @@ pub trait Hooks {
     /// doesn't show: a delayed message lets the next one through. Lines the
     /// client adds itself and validation errors are not told. Client-side.
     #[hook(
+        dispatch = "api_carrier",
         side = "client",
         contract = "cancel",
         out = "cancel",

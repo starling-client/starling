@@ -35,12 +35,21 @@ pub trait Hooks {
     /// the action. Single player uses this same server contract.
     /// Item-internal triggers (such as shears) can legitimately
     /// fire `item_used_on_block` in addition to the game mode's trigger.
+    /// A client without this mod predicts vanilla here; the server corrects it.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_right_click_block",
+        dispatch = "flat",
         side = "both",
         contract = "cancel",
         out = "canceled",
         neoforge = "PlayerInteractEvent.RightClickBlock",
         cancellable = true
     )]
-    fn right_click_block();
+    fn right_click_block(
+        click: &BlockClick<'_>,
+        use_block: &mut TriState,
+        use_item: &mut TriState,
+        cancellation_result: &mut mod_api::InteractionResult,
+        canceled: &mut bool,
+    );
 }

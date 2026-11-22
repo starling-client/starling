@@ -3,11 +3,11 @@
 //! caller's `AfterConversion` step runs on it (`Pig.thunderHit`,
 //! `MushroomCow.shear`).
 use super::super::*;
+use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 use sunrise_client::mobs::{MobEvent, Species};
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
-use std::sync::Arc;
 
 fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -> Game<'a> {
     let mut game = crate::game::game_tests::tests::server_game(resources);

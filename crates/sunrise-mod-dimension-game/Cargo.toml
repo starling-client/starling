@@ -9,7 +9,6 @@ description = "The game with a native mod that adds levels, for tools/mod_dimens
 [dependencies]
 sunrise-client = { path = "../sunrise-client" }
 sunrise-mod-api = { path = "../sunrise-mod-api" }
-sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
 log = "0.4"
 
 sunrise-mod-host = { path = "../sunrise-mod-host" }
@@ -18,6 +17,4 @@ sunrise-mod-host = { path = "../sunrise-mod-host" }
 workspace = true
 
 [dev-dependencies]
-sunrise-mod-wasm = { path = "../sunrise-mod-wasm", features = ["runtime-fixture"] }
 tempfile = "3"
-wat = "1.261"

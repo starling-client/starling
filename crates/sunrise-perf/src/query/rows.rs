@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use sunrise_bench::compare::Ab;
 use sunrise_bench::{Frames, Summary};
-use serde::{Deserialize, Serialize};
 
 use crate::wire::{
     Amount, BoundName, CounterKindName, GpuBackendName, GpuFragmentUnitName, GpuModeName,
@@ -357,7 +357,27 @@ pub struct StartInfo {
     pub game_rules: Option<GameRulesInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sunrise_options: Option<SunriseOptionsInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_settings: Option<ClientSettingsInfo>,
     pub mods: Vec<ModInfo>,
+}
+
+/// The client options that set how much world it keeps and draws; an absent one was not recorded.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientSettingsInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded_view_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub far_terrain_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub far_terrain_active: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub graphics_preset: String,
 }
 
 /// The game rules the capture recorded; an absent rule is one the game did not fill.
@@ -390,8 +410,6 @@ pub struct SunriseOptionsInfo {
     pub max_view_distance: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lod_distance: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anticheat: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -470,6 +488,8 @@ pub struct OverheadInfo {
     pub dropped_samples: u64,
     pub dropped_messages: u64,
     pub timeline_stopped_t: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_snapshot_ns: Option<u64>,
 }
 
 /// A benchmark report embedded in the capture, read back as the report holds it.

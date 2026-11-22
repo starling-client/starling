@@ -21,6 +21,11 @@ pub trait PackFormats: Send + Sync {
         None
     }
 
+    /// The connected-texture rules the overlay declares, in the order they are tried.
+    fn connected(&self, _root: &ResourceSource) -> Vec<sunrise_connected::Rule> {
+        Vec::new()
+    }
+
     /// The sky layers the overlay draws over the vanilla sky, if it has any.
     fn custom_sky(
         &self,

@@ -1,25 +1,23 @@
 //! The server's console for native mods: every logged line (`console_line`)
 //! and a console command whose feedback comes back (`run_command_with_output`).
 use super::Game;
-use sunrise_client::logging;
 use mod_api::CommandResult;
+use sunrise_client::logging;
 
 impl Game<'_> {
     /// `console_line` for each line logged since the last server tick, while
-    /// a mod listens; the lines its listeners log are not kept.
+    /// an enabled mod listens; the lines its listeners log are not kept.
     pub(super) fn native_console_lines(&mut self) {
-        let listened = mod_api::__private::listened(mod_api::HookId::ConsoleLine);
-        logging::set_tap(listened);
-        if !listened {
-            return;
-        }
-        for line in logging::take_tapped() {
-            let level = match line.level {
-                log::Level::Error => "ERROR",
-                log::Level::Warn => "WARN",
-                _ => "INFO",
-            };
-            logging::untapped(|| self.native_console_line(level, &line.thread, &line.message));
+        let listened = mod_api::__private::enabled_listened(mod_api::HookId::ConsoleLine);
+        self.dispatch_console_lines(logging::take_tapped(listened));
+    }
+
+    pub(super) fn dispatch_console_lines(&mut self, lines: Vec<logging::TappedLine>) {
+        for line in lines {
+            let level = line.level.as_str();
+            logging::untapped(|| {
+                self.native_console_line(level, &line.thread, &line.message, line.dropped);
+            });
         }
     }
 

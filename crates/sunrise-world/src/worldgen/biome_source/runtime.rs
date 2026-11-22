@@ -11,11 +11,11 @@ use crate::worldgen::{
     climate::{ClimateSampler, ClimateVolume},
     mod_biome_sources::{LevelBiomeSource, mod_biome_sources},
 };
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_core::{
     density::{DensitySampler, SampleError, SamplerContext},
     random::{PositionalRandom, RandomSource},
 };
-use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub enum BiomeSourceError {

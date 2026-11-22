@@ -1,8 +1,8 @@
 //! The camera's view frustum for particles: vanilla's always-on point test, and the section
 //! cache behind the opt-in Particle Culling setting.
 
-use super::{Particle, ParticleEngine, Vertex};
-use glam::{DVec3, Quat, Vec3 as FVec3};
+use super::{Particle, ParticleEngine, ParticleQuads, Vertex};
+use glam::{DVec3, Quat, Vec3 as FVec3, Vec4};
 use std::array;
 
 const PARTICLE_SECTION_CACHE_SIZE: usize = 128;
@@ -110,6 +110,64 @@ pub(super) fn in_view(view: &crate::gfx::JoinedFrusta, particle: &Particle, came
     view.contains_point(at.as_vec3())
 }
 
+/// Vanilla's world particle-extraction frustum. This is not the view used for drawing or
+/// the optional particle occlusion checks.
+pub struct ParticleCullView {
+    origin: DVec3,
+    planes: [Vec4; 6],
+}
+
+impl ParticleCullView {
+    /// `Camera.createProjectionMatrixForCulling`, then `LevelExtractor` offsets its origin
+    /// by -3 along `Frustum.calculateFrustum`'s transposed clip-Z row.
+    pub fn new(
+        camera: DVec3,
+        yaw_pitch: [f32; 2],
+        size: [u32; 2],
+        configured_fov: f32,
+        effective_fov: f32,
+        far: f32,
+    ) -> Self {
+        let [yaw, pitch] = yaw_pitch;
+        let projection = crate::camera::perspective(
+            configured_fov.max(effective_fov),
+            size[0] as f32,
+            size[1] as f32,
+            0.05,
+            far,
+            true,
+        );
+        let rotation = crate::camera::view_rotation_matrix(yaw, pitch).0;
+        let x = rotation.row(0) * projection[0];
+        let y = rotation.row(1) * projection[5];
+        let z = (rotation.row(2) * projection[10]).with_w(projection[14]);
+        let w = -rotation.row(2);
+        // JOML FrustumIntersection always uses both w +/- z planes, even with
+        // a zero-to-one projection. Test points after subtracting the offset in f64.
+        let origin = camera + (z.truncate() * -PARTICLE_FRUSTUM_OFFSET).as_dvec3();
+        let planes = [w + x, w - x, w + y, w - y, w + z, w - z].map(|plane| {
+            let [x, y, z, _] = plane.to_array();
+            plane * (1.0 / ((f64::from(x * x + y * y + z * z)).sqrt() as f32))
+        });
+        Self { origin, planes }
+    }
+
+    pub(super) fn contains(&self, world_position: [f64; 3]) -> bool {
+        let p = (DVec3::from_array(world_position) - self.origin).as_vec3();
+        self.planes
+            .iter()
+            .all(|plane| plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w >= 0.0)
+    }
+}
+
+/// Optional Sunrise culling of stock particle geometry. It does not decide whether the
+/// world extract callback runs or cull any explicit quads it emits.
+pub struct ParticleWorldCull<'a> {
+    pub pixel_focal_length: f32,
+    pub frustum: Option<&'a crate::gfx::JoinedFrusta>,
+    pub occluded: &'a mut dyn FnMut([f64; 3], [f64; 3]) -> bool,
+}
+
 impl ParticleEngine {
     /// [`Self::render`], keeping only the particles inside `view`, the camera's frustum pulled
     /// back [`PARTICLE_FRUSTUM_OFFSET`] blocks (vanilla's `ParticleEngine.extract` and
@@ -130,9 +188,63 @@ impl ParticleEngine {
             partial,
             0.0,
             view,
+            None,
             &mut |_, _| false,
             light_at,
             out,
         );
+    }
+
+    /// Draw the level, including provider extraction against the vanilla cull frustum.
+    /// The ordinary render entry is also used by live scenes, which have only stock quads.
+    pub fn render_world(
+        &self,
+        camera: DVec3,
+        base: Quat,
+        partial: f32,
+        providers: Option<(&ParticleCullView, &mut ParticleQuads)>,
+        stock_cull: Option<ParticleWorldCull<'_>>,
+        light_at: &dyn Fn([i32; 3]) -> u8,
+        out: &mut Vec<Vertex>,
+    ) {
+        if let Some(cull) = stock_cull {
+            self.render_inner::<true>(
+                camera,
+                base,
+                partial,
+                cull.pixel_focal_length,
+                cull.frustum,
+                providers,
+                cull.occluded,
+                light_at,
+                out,
+            );
+        } else {
+            self.render_inner::<false>(
+                camera,
+                base,
+                partial,
+                0.0,
+                None,
+                providers,
+                &mut |_, _| false,
+                light_at,
+                out,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn particle_cull_offset_uses_the_projection_derived_view_vector() {
+        let view = ParticleCullView::new(DVec3::ZERO, [0.0, 0.0], [512, 512], 70.0, 70.0, 8.0);
+        // With near .05 and far 8 the Z row length is 8/7.95, not a unit vector.
+        // The near test is w + z, so the first point falls inside only with that offset.
+        assert!(view.contains([0.0, 0.0, -2.99]));
+        assert!(!view.contains([0.0, 0.0, -3.0]));
     }
 }

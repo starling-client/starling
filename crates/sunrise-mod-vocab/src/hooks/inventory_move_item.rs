@@ -6,6 +6,9 @@ pub trait Hooks {
     /// bone meal included. Set `cancel` to leave it in its source slot. A chest
     /// boat or minecart is reported at the block it is in.
     #[hook(
+        target = "sunrise_client::game::native_hooks::base::Game<'_>::native_inventory_move_item",
+        receiver = "read",
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
@@ -13,5 +16,5 @@ pub trait Hooks {
         neoforge = "none (NeoForge has no such event; Bukkit's InventoryMoveItemEvent)",
         cancellable = true
     )]
-    fn inventory_move_item();
+    fn inventory_move_item(source: [i32; 3], destination: [i32; 3], item: &str, cancel: &mut bool);
 }

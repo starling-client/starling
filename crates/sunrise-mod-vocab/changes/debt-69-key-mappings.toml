@@ -1,0 +1,58 @@
+ids = [
+    "type:KeyMapping",
+    "type:KeyMapping.down",
+    "type:KeyMapping.label",
+    "type:MappingError.Stale",
+    "type:MappingError.Unavailable",
+    "type:MappingError.Label",
+    "type:VanillaKeyMappingRef",
+    "method:prelude::ClientInputClientHost::mapping",
+    "method:prelude::ClientInputClientHost::mapping_state",
+    "method:prelude::ClientInputClientHost::mapping_physical_down",
+    "method:prelude::ClientInputClientHost::vanilla_key_mapping",
+    "method:prelude::ClientInputClientHost::set_mapping_down",
+    "method:prelude::ClientInputClientHost::click_mapping",
+    "handle:VanillaKeyMappingRef::physical_down",
+    "handle:VanillaKeyMappingRef::binding",
+    "handle:VanillaKeyMappingRef::translated_key_message",
+    "type:ModKeyMappingRef",
+    "type:ModKeyRefusal.Stale",
+    "method:prelude::ClientInputClientHost::mod_key",
+    "method:prelude::ClientInputClientHost::is_down",
+    "method:prelude::ClientInputClientHost::consume_click",
+    "method:prelude::ClientInputClientHost::set_mod_key",
+    "method:prelude::ClientInputClientHost::reset_mod_key",
+    "method:prelude::ClientInputClientHost::mod_key_mapping",
+    "handle:ModKeyMappingRef::binding",
+    "handle:ModKeyMappingRef::translated_key_message",
+]
+why = "Resolve vanilla and mod key mappings once, then use retained handles for live reads and writes. The binding name is lent rather than copied or hashed, and Controls' current label is built only when requested. A stale handle cannot touch a different client or registration roster. Rebinding saves by owner and id without an ownership gate, matching vanilla KeyMapping and NeoForge IKeyMappingExtension."
+migrate = """
+Vanilla mappings: in `client_setup`, call `host.vanilla_key_mapping(name)` with a canonical mapping name such as `key.jump`. Keep the `VanillaKeyMappingRef` from `Ok(mapping)` in client state. Handle `MappingError::Unknown { key }` at resolution, not at every read or write, and skip use if you could not resolve it. In later callbacks, use the retained handle:
+
+| Old | New |
+| --- | --- |
+| `host.mapping(name)` / `KeyMapping` snapshot | `mapping.is_down(host)` and, if displaying the binding, `mapping.translated_key_message(host)` |
+| `host.mapping(name)?.map(|m| m.down)` | `mapping.is_down(host)` |
+| `host.mapping(name)?.map(|m| m.label)` | `mapping.translated_key_message(host)` |
+| `host.mapping_state(name)` | `mapping.is_down(host)` for held state and `mapping.binding(host)` for the current binding name, not a hash |
+| `host.mapping_physical_down(name)` | `mapping.physical_down(host)` |
+| `host.set_mapping_down(name, down)` | `mapping.set_down(host, down)` |
+| `host.click_mapping(name)` | `mapping.click(host)` |
+
+`is_down` and `physical_down` return `Result<bool, MappingError>`. Every resolved vanilla mapping tracks uniform logical held state (`KeyMapping.isDown`); `physical_down` checks only the current physical binding (an unbound key yields `Ok(false)`). `binding` returns `Result<&str, MappingError>`. Compare the borrowed name before the host borrow ends (and before taking a mutable borrow for a write); copy it explicitly if you need to keep it. `translated_key_message` returns the current Controls label as `Text`, with `MappingError::Label(error)` instead of a bare `TextFormError` on conversion failure. `set_down` and `click` accept any resolved vanilla mapping under `ClientSetup` access (returning `Unavailable` outside client-setup/world phases or `Stale` for a foreign client). See also `debt-fa-queued-vanilla-key-mappings.toml`.
+
+Registered mod mappings: still declare the binding with `Registrar::register_key_mapping`. In `client_setup`, call `host.mod_key_mapping(owner, id)` and keep the `ModKeyMappingRef` from `Ok(mapping)`. Handle `ModKeyRefusal::NotRegistered` here instead of an operation (or an old `None` or `false`). In later callbacks:
+
+| Old | New |
+| --- | --- |
+| `host.mod_key(owner, id)` | `mapping.binding(host)` |
+| `host.is_down(owner, id)` | `mapping.is_down(host)` |
+| `host.consume_click(owner, id)` | `mapping.consume_click(host)` |
+| `host.set_mod_key(owner, id, key, modifiers)` | `mapping.set_binding(host, key, modifiers)` |
+| `host.reset_mod_key(owner, id)` | `mapping.reset_binding(host)` |
+
+For a binding read, use `let Ok((key, modifiers)) = mapping.binding(host) else { return; };` in a callback that skips the operation on refusal. `key` is borrowed for the host borrow, just like a vanilla binding; `modifiers` is a `ClientModifiers` value. `is_down` and `consume_click` return `Result<bool, ModKeyRefusal>`: `Ok(false)` means not held or no queued click, not a refusal. Any mod can read, rebind or reset any registered mapping (there is no `NotOwner` refusal); handle `UnknownKey` or `UnknownModifiers` on set. Refused writes do not change the binding or its saved value. To display what Controls shows now, including modifiers, use `mapping.translated_key_message(host)`; this returns `Result<Text, MappingError>`, not `ModKeyRefusal`. See also `debt-fa-queued-mod-key-mappings.toml`.
+
+For both handles, `Stale` means the owning client or (for a mod mapping) its ordered registration roster was replaced. Discard the ref and resolve the saved name or owner/id again on the current client. `Unavailable` means the backend or phase does not offer the operation; wait for an appropriate client callback, rather than treating the mapping as missing. Rebinding or resetting alone does not require re-resolution. Persist the canonical mapping name or owner/id, not the handle. `KeyMapping` is gone and `MappingError` no longer implements `Wire`; if you sent a snapshot or refusal, define your own `Wire` payload for the data you need.
+"""

@@ -1,8 +1,8 @@
 //! Control-socket commands for menus and item components, so scripts can
 //! drive the workstation screens (`sunrise-ctl click-slot 600`, ...).
 use super::{Game, Screen};
-use sunrise_client::{Result, items::ItemStack};
 use serde_json::{Value, json};
+use sunrise_client::{Result, items::ItemStack};
 
 pub(super) const HELP: &[&str] = &[
     "xp LEVELS                      add (or remove) experience levels",
@@ -176,19 +176,17 @@ impl Game<'_> {
             }
             "effect" => {
                 if arg(1)? == "clear" {
-                    self.potions.effects.clear();
+                    self.remove_player_effects(None);
                     return ok();
                 }
                 let def = sunrise_client::brewing::effect(arg(1)?).ok_or("unknown effect")?;
                 let seconds: i32 = arg(2)?.parse()?;
                 let amp: i32 = words.get(3).map_or(Ok(0), |a| a.parse())?;
-                self.potions
-                    .effects
-                    .add(sunrise_client::effects::EffectInstance::new(
-                        def.id,
-                        seconds * 20,
-                        amp,
-                    ));
+                self.apply_player_effect(sunrise_client::effects::EffectInstance::new(
+                    def.id,
+                    seconds * 20,
+                    amp,
+                ));
                 ok()
             }
             "trade" => {

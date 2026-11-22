@@ -138,6 +138,7 @@ class ApiBoundaryCheckTests(unittest.TestCase):
             self.assertEqual([(f.rule, f.detail) for f in missing],
                              [("missing-generated", "mod_api_generated_host.rs")])
 
+<<<<<<< sync-sunrise-1
     def test_newer_cargos_build_layout_is_found_too(self):
         # `build/<package>/<hash>/out`, as `cargo +stable` writes it; another package's stays out.
         with tempfile.TemporaryDirectory() as directory:
@@ -150,6 +151,18 @@ class ApiBoundaryCheckTests(unittest.TestCase):
             out.mkdir(parents=True)
             (out / "mod_api_generated.rs").write_text('pub struct BlocksEvent { pub blocks: Vec<sunrise_mod_package::content::Block> }')
             (out / "mod_api_generated_host.rs").write_text('pub trait Host {}')
+=======
+    def test_generated_output_is_found_in_cargos_newer_build_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            out = target / "debug/build/sunrise-mod-vocab/725386e446e348f1/out"
+            out.mkdir(parents=True)
+            (out / "mod_api_generated.rs").write_text('pub struct BlocksEvent { pub blocks: Vec<sunrise_world::Block> }')
+            (out / "mod_api_generated_host.rs").write_text('pub trait Host {}')
+            fixture = target / "debug/build/sunrise-mod-api-gen-tests/fedcba/out"
+            fixture.mkdir(parents=True)
+            (fixture / "mod_api_generated.rs").write_text('pub struct Fine;')
+>>>>>>> sunrise/main
             self.assertEqual({f.rule for f in boundary.generated_findings(target)}, {"engine-type"})
 
     def test_dependency_aliases_and_target_tables(self):

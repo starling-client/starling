@@ -1,11 +1,11 @@
 //! Native terrain adapter for the API's worker context.
 use super::native_worldgen::WorkerResources;
+use mod_api::{BlockKey, BlockMetadata, BlockState, ChunkAccess, ChunkGenerator, ChunkPos};
+use std::sync::Arc;
 use sunrise_world::worldgen::mod_generators::{
     ChunkAccess as EngineChunk, ModChunkGenerator, ModChunkGenerators, VanillaStages,
     install_mod_chunk_generators,
 };
-use mod_api::{BlockKey, BlockMetadata, BlockState, ChunkAccess, ChunkGenerator, ChunkPos};
-use std::sync::Arc;
 
 /// A mod's generator with the vanilla stages it asked for at registration.
 struct Adapter {
@@ -101,7 +101,7 @@ pub(in crate::game) fn install() {
 mod tests {
     use super::*;
     use crate::game::api_values::install_parts;
-    use mod_api::{DimensionSettings, Hooks, ModEntry, Registrar, RegistrationContext};
+    use mod_api::{Hooks, ModEntry, Registrar, RegistrationContext};
 
     /// Terrain alone, with the surface and the features after it.
     struct Decorated;
@@ -150,19 +150,5 @@ mod tests {
             );
         }
         assert_eq!(ASKED.load(Ordering::Relaxed), 1);
-    }
-
-    /// A wasm mod's registrar refuses a chunk generator with vanilla stages by its name, as it
-    /// refuses any chunk generator: neither crosses to wasm.
-    #[test]
-    #[should_panic(
-        expected = "chunk generator \"chaos\": a wasm mod cannot register a chunk generator"
-    )]
-    fn a_wasm_mods_staged_generator_is_refused_by_name() {
-        struct Guest;
-        impl mod_api::DimensionsRegistrar for Guest {
-            fn add_dimension(&mut self, _: &str, _: DimensionSettings) {}
-        }
-        mod_api::DimensionsRegistrar::add_chunk_generator(&mut Guest, "chaos", Arc::new(Decorated));
     }
 }

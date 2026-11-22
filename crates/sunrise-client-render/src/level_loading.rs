@@ -1,6 +1,7 @@
 //! LevelLoadingScreen: "Loading terrain..." over the chunk status map and
 //! the server's load progress while a world opens or a portal is crossed.
 use crate::{
+    dimension_transition::ActiveTransitionScreen,
     hud::{HudAtlas, HudBatch},
     text::Text,
 };
@@ -53,6 +54,16 @@ pub enum Reason {
     Other,
 }
 
+impl From<Reason> for mod_api::DimensionTransitionReason {
+    fn from(reason: Reason) -> Self {
+        match reason {
+            Reason::NetherPortal => Self::NetherPortal,
+            Reason::EndPortal => Self::EndPortal,
+            Reason::Other => Self::Other,
+        }
+    }
+}
+
 /// `LevelLoadTracker.CLIENT_WAIT_TIMEOUT_MS`.
 pub const CLIENT_WAIT_TIMEOUT_MS: u64 = 30_000;
 /// `LevelLoadTracker.LEVEL_LOAD_CLOSE_DELAY_MS`: how long a new world's loading
@@ -82,6 +93,10 @@ enum ClientState {
     /// `WaitingForPlayerChunk`: until the section around the player is shown.
     WaitingForPlayerChunk {
         player_section_ready: bool,
+        /// Without a renderer: the player's section and when it was first
+        /// seen compiled, its `RenderSection.uploadedTime` that its fade-in
+        /// counts from (`player_section_compiled`).
+        section_compiled_at: Option<([i32; 3], u64)>,
         timeout_after: u64,
     },
     /// `ClientLevelReady`.
@@ -99,10 +114,10 @@ pub struct PlayerCheck {
 
 /// The client half of `LevelLoadTracker`: what the loading screen waits for
 /// after a login or a respawn, and the screen it is shown on.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct LevelLoadTracker {
     state: Option<ClientState>,
-    transition_screen: Option<usize>,
+    transition_screen: Option<ActiveTransitionScreen>,
     close_delay_ms: u64,
     /// `LevelLoadingScreen.reason`.
     pub reason: Reason,
@@ -117,12 +132,12 @@ impl LevelLoadTracker {
         }
     }
     /// `startClientLoad`, for the screen `reason` (`startWaitingForNewLevel`).
+    /// Restarting the tracker while the screen is open keeps its presentation.
     pub fn start_client_load(&mut self, now: u64, reason: Reason) {
         self.state = Some(ClientState::WaitingForServer {
             timeout_after: now + CLIENT_WAIT_TIMEOUT_MS,
         });
         self.reason = reason;
-        self.transition_screen = None;
     }
     /// The tracker's work is over and the screen has closed
     /// (`ClientPacketListener.tick` drops it once the level is ready).
@@ -130,15 +145,15 @@ impl LevelLoadTracker {
         self.state = None;
         self.transition_screen = None;
     }
-    /// Retain the presentation selected once at dimension entry, until this load finishes.
-    pub fn set_transition_screen(&mut self, screen: Option<usize>) {
+    /// Install the presentation chosen for a newly opened loading screen.
+    pub fn set_transition_screen(&mut self, screen: ActiveTransitionScreen) {
         if self.is_active() {
-            self.transition_screen = screen;
+            self.transition_screen = Some(screen);
         }
     }
     /// The selected presentation, absent for vanilla or after completion.
-    pub fn transition_screen(&self) -> Option<usize> {
-        self.transition_screen
+    pub fn transition_screen(&self) -> Option<&ActiveTransitionScreen> {
+        self.transition_screen.as_ref()
     }
     /// A load is under way, so its screen is up.
     pub fn is_active(&self) -> bool {
@@ -149,6 +164,7 @@ impl LevelLoadTracker {
         if let Some(ClientState::WaitingForServer { timeout_after }) = self.state {
             self.state = Some(ClientState::WaitingForPlayerChunk {
                 player_section_ready: false,
+                section_compiled_at: None,
                 timeout_after,
             });
         }
@@ -168,11 +184,50 @@ impl LevelLoadTracker {
             *player_section_ready = true;
         }
     }
+    /// `LevelRenderer`'s check before that callback, for a client without a
+    /// renderer: the player's section `section` (block coordinates of the
+    /// camera, `>> 4`) is compiled while `compiled`, and
+    /// `isSectionCompiledAndVisible` holds once `RenderSection.getVisibility`
+    /// has reached 0.3 since that section was first seen compiled (225 ms at
+    /// the default 0.75 s `chunkSectionFadeInTime`). Another section, or one
+    /// no longer compiled, starts its fade-in again.
+    pub fn player_section_compiled(
+        &mut self,
+        section: [i32; 3],
+        compiled: bool,
+        now: u64,
+        fade_ms: u64,
+    ) {
+        let Some(ClientState::WaitingForPlayerChunk {
+            player_section_ready,
+            section_compiled_at,
+            ..
+        }) = &mut self.state
+        else {
+            return;
+        };
+        if !compiled {
+            *section_compiled_at = None;
+            return;
+        }
+        let uploaded = match *section_compiled_at {
+            Some((at, uploaded)) if at == section => uploaded,
+            _ => {
+                *section_compiled_at = Some((section, now));
+                now
+            }
+        };
+        let visibility = crate::gfx::chunk_visibility(now.saturating_sub(uploaded), fade_ms);
+        if visibility >= crate::gfx::CHUNK_VISIBILITY_THRESHOLD {
+            *player_section_ready = true;
+        }
+    }
     /// `tickClientLoad`.
     pub fn tick_client_load(&mut self, now: u64, player: PlayerCheck) {
         if let Some(ClientState::WaitingForPlayerChunk {
             player_section_ready,
             timeout_after,
+            ..
         }) = self.state
         {
             let ready = if now > timeout_after {
@@ -334,6 +389,12 @@ pub fn smooth(smoothed: f32, progress: f32) -> f32 {
     smoothed + (progress - smoothed) * 0.2
 }
 
+/// `LoadingOverlay.extractRenderState`: each frame the bar moves 5% of the
+/// way to the reload's actual progress, so a jump in stages slides in.
+pub fn ease_overlay(current: f32, actual: f32) -> f32 {
+    (current * 0.95 + actual * 0.050000012).clamp(0.0, 1.0)
+}
+
 /// `ARGB.opaque` as the batch's RGBA.
 pub const fn opaque(rgb: u32) -> u32 {
     0xFF00_0000 | (rgb & 0xFF) << 16 | (rgb & 0xFF00) | (rgb >> 16 & 0xFF)
@@ -426,22 +487,74 @@ fn fill_corners(batch: &mut HudBatch, atlas: &HudAtlas, [x0, y0, x1, y1]: [i32; 
     batch.fill(atlas, left as f32, top as f32, w, h, color);
 }
 
+/// How far `LoadingOverlay` has faded: the background's alpha, the logo's
+/// opacity, and the bar's, which is gone once the fade-out's first second ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayFade {
+    pub background: u8,
+    pub logo: f32,
+    pub bar: Option<f32>,
+}
+impl OverlayFade {
+    /// The startup overlay, which does not fade in.
+    pub const OPAQUE: Self = Self {
+        background: 255,
+        logo: 1.0,
+        bar: Some(1.0),
+    };
+    /// `LoadingOverlay.extractRenderState` for an overlay that fades in
+    /// (`fadeIn`): `fade_in_ms` since its first frame (`fadeInStart`),
+    /// `fade_out_ms` since the reload finished (`fadeOutStart`). It fades in
+    /// over half a second, then on finishing fades its bar out for a second
+    /// and itself for another; `None` once gone (`setOverlay(null)`).
+    pub fn at(fade_in_ms: u64, fade_out_ms: Option<u64>) -> Option<Self> {
+        let fade_out = fade_out_ms.map_or(-1.0, |ms| ms as f32 / 1000.0);
+        if fade_out >= 2.0 {
+            return None;
+        }
+        let fade_in = fade_in_ms as f32 / 500.0;
+        let (background, logo) = if fade_out >= 1.0 {
+            let logo = 1.0 - (fade_out - 1.0).clamp(0.0, 1.0);
+            ((logo * 255.0).ceil() as u8, logo)
+        } else {
+            let background = (f64::from(fade_in).clamp(0.15, 1.0) * 255.0).ceil() as u8;
+            (background, fade_in.clamp(0.0, 1.0))
+        };
+        let bar = (fade_out < 1.0).then(|| 1.0 - fade_out.clamp(0.0, 1.0));
+        Some(Self {
+            background,
+            logo,
+            bar,
+        })
+    }
+    /// Whether the background hides the frame under it.
+    pub fn opaque(&self) -> bool {
+        self.background == 255
+    }
+}
+
+/// White with `alpha` in the batch's RGBA.
+fn white(alpha: u8) -> u32 {
+    0x00FF_FFFF | u32::from(alpha) << 24
+}
+
 /// `LoadingOverlay.extractRenderState`: fills the frame with `BRAND_BACKGROUND`
 /// (Mojang red, or black when `darkMojangStudiosBackground` is set), draws the
 /// Mojang Studios logo as its two halves side by side, and the progress bar
-/// at 83.25% of the height (`extractProgressBar`, unfaded), with the stage's
-/// line above it. The logo's `MOJANG_LOGO` pipeline adds it (`SRC_ALPHA, ONE`):
+/// at 83.25% of the height (`extractProgressBar`), each as faded as `fade`
+/// says. The logo's `MOJANG_LOGO` pipeline adds it (`SRC_ALPHA, ONE`):
 /// its texels are white, which alpha blending matches but for the red channel
 /// of the logo's soft edges, a 16/255 difference at most.
 pub fn draw_loading_overlay(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
-    line: &str,
     progress: f32,
+    fade: OverlayFade,
     dark: bool,
 ) {
     let (w, h) = (batch.width, batch.height);
-    batch.fill(atlas, 0.0, 0.0, w, h, brand_background(dark));
+    let background = brand_background(dark) & 0x00FF_FFFF | u32::from(fade.background) << 24;
+    batch.fill(atlas, 0.0, 0.0, w, h, background);
     let (x, y, half_width, logo_height) = logo_layout(w, h);
     if let Some(r) = atlas.sprites.get(MOJANG_STUDIOS_LOGO).copied() {
         // blit(.., u, v, width, height, 120, 60, 120, 120): the left half
@@ -451,6 +564,8 @@ pub fn draw_loading_overlay(
             let (u, v) = ((u / 120.0).clamp(0.0, 1.0), v / 120.0);
             (r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v)
         };
+        // `ARGB.white(logoAlpha)`.
+        let color = white((fade.logo * 255.0).floor() as u8);
         for (i, (u, v)) in [(-0.0625, 0.0), (0.0625, 60.0)].into_iter().enumerate() {
             let (u0, v0) = at(u, v);
             let (u1, v1) = at(u + 120.0, v + 60.0);
@@ -463,9 +578,12 @@ pub fn draw_loading_overlay(
             };
             let left = x + i as i32 * half_width;
             let (lw, lh) = (half_width as f32, logo_height as f32);
-            batch.rect_uv(left as f32, y as f32, lw, lh, half, u32::MAX);
+            batch.rect_uv(left as f32, y as f32, lw, lh, half, color);
         }
     }
+    let Some(bar) = fade.bar else {
+        return;
+    };
     let bar_y = (f64::from(h) * 0.8325) as i32;
     let x_center = (w as i32) / 2;
     let [x0, y0, x1, y1] = [
@@ -475,28 +593,17 @@ pub fn draw_loading_overlay(
         bar_y + 5,
     ];
     let filled = (((x1 - x0) - 2) as f32 * progress.clamp(0.0, 1.0)).ceil() as i32;
-    let white = u32::MAX;
-    fill_corners(batch, atlas, [x0 + 2, y0 + 2, x0 + filled, y1 - 2], white);
-    fill_corners(batch, atlas, [x0 + 1, y0, x1 - 1, y0 + 1], white);
-    fill_corners(batch, atlas, [x0 + 1, y1, x1 - 1, y1 - 1], white);
-    fill_corners(batch, atlas, [x0, y0, x0 + 1, y1], white);
-    fill_corners(batch, atlas, [x1, y0, x1 - 1, y1], white);
-    let text = Text::literal(line);
-    let tw = atlas.font.width_text(&text) as i32;
-    let text_top = (y0 - 9 - 3) as f32;
-    batch.text_styled(
-        atlas,
-        &text,
-        (x_center - tw / 2) as f32,
-        text_top,
-        white,
-        true,
-    );
+    let color = white((bar * 255.0).round() as u8);
+    fill_corners(batch, atlas, [x0 + 2, y0 + 2, x0 + filled, y1 - 2], color);
+    fill_corners(batch, atlas, [x0 + 1, y0, x1 - 1, y0 + 1], color);
+    fill_corners(batch, atlas, [x0 + 1, y1, x1 - 1, y1 - 1], color);
+    fill_corners(batch, atlas, [x0, y0, x0 + 1, y1], color);
+    fill_corners(batch, atlas, [x1, y0, x1 - 1, y1], color);
 }
 
 /// Mods' startup bars under the stage bar, newest first, each with its label above it, as many
 /// as fit and at most four; and their lines in the top left corner (NeoForge's
-/// `StartupNotificationManager`). Labels and lines are cut to one line.
+/// `StartupNotificationManager`). Message lines are cut to one line; labels are stored verbatim.
 pub fn draw_mod_progress(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -754,6 +861,42 @@ mod tests {
     }
 
     #[test]
+    fn the_overlay_bar_slides_toward_a_jump_in_progress() {
+        // A stage jump from 0 to 1/3: the first frame moves 5% of the way.
+        let first = ease_overlay(0.0, 1.0 / 3.0);
+        assert!((first - 1.0 / 60.0).abs() < 1e-6, "{first}");
+        // After 60 frames it covers 1 - 0.95^60, about 95% of the jump.
+        let mut bar = 0.0;
+        for _ in 0..60 {
+            bar = ease_overlay(bar, 1.0);
+        }
+        assert!((bar - 0.953_930).abs() < 1e-4, "{bar}");
+        assert_eq!(ease_overlay(1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn the_reload_overlay_fades_in_then_its_bar_then_itself() {
+        let fade = |background, logo, bar| {
+            Some(OverlayFade {
+                background,
+                logo,
+                bar,
+            })
+        };
+        // From 15% over the frame to opaque in half a second, the logo from nothing.
+        assert_eq!(OverlayFade::at(0, None), fade(39, 0.0, Some(1.0)));
+        assert_eq!(OverlayFade::at(250, None), fade(128, 0.5, Some(1.0)));
+        assert_eq!(OverlayFade::at(600, None), fade(255, 1.0, Some(1.0)));
+        // Finished: the bar fades out over a second on the full background...
+        assert_eq!(OverlayFade::at(3000, Some(500)), fade(255, 1.0, Some(0.5)));
+        // ...then the background and logo over the next, without the bar.
+        assert_eq!(OverlayFade::at(3000, Some(1500)), fade(128, 0.5, None));
+        assert_eq!(OverlayFade::at(3000, Some(2000)), None);
+        assert!(!OverlayFade::at(250, None).unwrap().opaque());
+        assert!(OverlayFade::at(600, None).unwrap().opaque());
+    }
+
+    #[test]
     fn brand_background_matches_dark_mojang_studios_setting() {
         assert_eq!(brand_background(true), LOGO_BACKGROUND_COLOR_DARK);
         assert_eq!(brand_background(false), LOGO_BACKGROUND_COLOR);
@@ -845,6 +988,54 @@ mod tracker_tests {
         assert!(tracker.is_level_ready(1_150));
         tracker.finish();
         assert!(!tracker.is_active() && !tracker.is_level_ready(2_000));
+    }
+
+    #[test]
+    fn without_a_renderer_the_section_shows_once_it_has_faded_in_to_three_tenths() {
+        // RenderSection.getVisibility(now, 750) >= 0.3: 225 ms after the upload.
+        const AT: [i32; 3] = [0, 4, 0];
+        let mut tracker = LevelLoadTracker::new(0);
+        tracker.start_client_load(0, Reason::EndPortal);
+        tracker.loading_packets_received();
+        tracker.player_section_compiled(AT, true, 1_000, 750);
+        tracker.player_section_compiled(AT, true, 1_224, 750);
+        tracker.tick_client_load(1_224, ALIVE);
+        assert!(!tracker.is_level_ready(1_224));
+        tracker.player_section_compiled(AT, true, 1_225, 750);
+        tracker.tick_client_load(1_225, ALIVE);
+        assert!(tracker.is_level_ready(1_225));
+        // With the fade off, at once.
+        let mut tracker = LevelLoadTracker::new(0);
+        tracker.start_client_load(0, Reason::Other);
+        tracker.loading_packets_received();
+        tracker.player_section_compiled(AT, true, 500, 0);
+        tracker.tick_client_load(500, ALIVE);
+        assert!(tracker.is_level_ready(500));
+    }
+
+    #[test]
+    fn without_a_renderer_a_new_section_does_not_take_the_old_ones_age() {
+        let mut tracker = LevelLoadTracker::new(0);
+        tracker.start_client_load(0, Reason::EndPortal);
+        tracker.loading_packets_received();
+        tracker.player_section_compiled([0, 4, 0], true, 1_000, 750);
+        // Teleported one section up, then 100 chunks away, while waiting.
+        tracker.player_section_compiled([0, 5, 0], true, 1_200, 750);
+        tracker.player_section_compiled([100, 5, 0], true, 1_300, 750);
+        tracker.tick_client_load(1_300, ALIVE);
+        assert!(!tracker.is_level_ready(1_300));
+        tracker.player_section_compiled([100, 5, 0], true, 1_524, 750);
+        tracker.tick_client_load(1_524, ALIVE);
+        assert!(!tracker.is_level_ready(1_524));
+        // A missing neighbour: no longer compiled, so its fade starts again.
+        tracker.player_section_compiled([100, 5, 0], false, 1_525, 750);
+        tracker.player_section_compiled([100, 5, 0], true, 1_600, 750);
+        tracker.player_section_compiled([100, 5, 0], true, 1_824, 750);
+        tracker.tick_client_load(1_824, ALIVE);
+        assert!(!tracker.is_level_ready(1_824));
+        tracker.player_section_compiled([100, 5, 0], true, 1_825, 750);
+        tracker.tick_client_load(1_825, ALIVE);
+        assert!(tracker.is_level_ready(1_825));
     }
 
     #[test]

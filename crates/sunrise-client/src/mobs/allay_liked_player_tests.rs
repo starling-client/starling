@@ -4,8 +4,8 @@
 //! `NoAI` runs no brain tick; a memory without a time to live never expires
 //! (tools/test_allay_liked_player_parity.py measures the same).
 use super::*;
-use sunrise_core::nbt::Tag;
 use std::sync::Arc;
+use sunrise_core::nbt::Tag;
 
 const OWNER: [i32; 4] = [95, 0, 0, 99];
 
@@ -46,7 +46,8 @@ fn load(types: &crate::mobs::MobTypes, tag: &Tag) -> Mob {
 
 /// The saved memory: None when absent, else its value and time to live.
 fn saved_memory(m: &Mob, raw: Option<&Tag>) -> Option<(Option<Tag>, Option<i64>)> {
-    let tag = crate::entity_nbt::mob_to_nbt(m, [95, 0, 0, 1], raw, None, |_| None);
+    let tag =
+        crate::entity_nbt::mob_to_nbt(m, [95, 0, 0, 1], raw, None, |_| None, &Default::default());
     let liked = tag
         .get("Brain")
         .and_then(|b| b.get("memories"))
@@ -67,7 +68,7 @@ fn value() -> Option<Tag> {
 /// the mob's own memory: with no raw tag at all, and over a raw tag whose
 /// time to live the mob has since counted down.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_loaded_finite_liked_player_saves_its_own_time_to_live() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -105,7 +106,7 @@ fn a_loaded_finite_liked_player_saves_its_own_time_to_live() {
 /// at 0 goes on the first tick; `NoAI` keeps it as it was; a permanent one
 /// stays. A gone memory no longer makes the Allay like its player.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_finite_liked_player_expires_only_under_ai() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -152,7 +153,7 @@ fn a_finite_liked_player_expires_only_under_ai() {
 /// never expires, over a loaded finite memory; taking the item back erases
 /// it.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn a_given_item_makes_the_liked_player_permanent_again() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],
@@ -190,7 +191,7 @@ fn a_given_item_makes_the_liked_player_permanent_again() {
 /// one. A memory that expired and is given again is permanent. A new owner
 /// replaces the old one with no time to live carried over.
 #[test]
-#[ignore = "needs prepared resources in .local/sunrise-client"]
+#[ignore = "daily"]
 fn never_expiring_readded_and_replaced_liked_players() {
     let ran = crate::mobs::world::with_built_test_world(
         &[],

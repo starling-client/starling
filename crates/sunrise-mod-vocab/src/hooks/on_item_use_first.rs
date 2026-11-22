@@ -7,6 +7,7 @@ pub trait Hooks {
     /// block's own `useItemOn`. An answer ends the click: neither the block
     /// nor the item's `useOn` runs. `Pass` goes on to the block.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "answer",
@@ -14,5 +15,9 @@ pub trait Hooks {
         key = "stack",
         neoforge = "IItemExtension.onItemUseFirst"
     )]
-    fn on_item_use_first();
+    fn on_item_use_first(
+        stack: &mod_api::ItemStack,
+        click: &BlockClick<'_>,
+        answer: &mut Option<mod_api::InteractionResult>,
+    );
 }

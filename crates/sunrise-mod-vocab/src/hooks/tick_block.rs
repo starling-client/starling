@@ -8,14 +8,27 @@ pub trait Hooks {
     /// block with `native_set_block_property` and set `handled` to skip the
     /// block's own tick; a block changed without `handled` takes its own
     /// tick as it is now, if it is still the tick's block.
+    /// If the block's owner subscribes and is disabled, the occurrence is held
+    /// before dispatch, including for any enabled Parts attached to the block.
+    /// Once re-enabled, the held occurrence is dispatched once with its original
+    /// deadline, priority and order.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "handled",
         scope = "block",
+        inert = "*handled = true;",
         key = "state",
+        version = 2,
         target = "sunrise_client::game::native_hooks::base::GameLevel<'_>::native_tick_block",
         neoforge = "none (vanilla BlockBehaviour.tick; NeoForge adds no event or extension for it)"
     )]
-    fn tick_block();
+    fn tick_block(
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockState,
+        handled: &mut bool,
+        #[engine] ticks: &mut Ticks,
+    );
 }

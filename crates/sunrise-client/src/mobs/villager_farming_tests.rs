@@ -91,7 +91,7 @@ fn put(
 }
 
 #[test]
-#[ignore = "full content root: tools/test_villager_farming_parity.py runs it"]
+#[ignore = "daily"]
 fn mod_farmland_is_a_secondary_site_and_farming_target() {
     assert!(super::super::world::with_resource_test_world(
         resources(),
@@ -130,7 +130,7 @@ fn mod_farmland_is_a_secondary_site_and_farming_target() {
 }
 
 #[test]
-#[ignore = "full content root: tools/test_villager_farming_parity.py runs it"]
+#[ignore = "daily"]
 fn mod_crops_are_harvested_only_at_their_vanilla_templates_max_age() {
     assert!(super::super::world::with_resource_test_world(
         resources(),
@@ -194,7 +194,7 @@ fn mod_crops_are_harvested_only_at_their_vanilla_templates_max_age() {
 }
 
 #[test]
-#[ignore = "full content root: tools/test_villager_farming_parity.py runs it"]
+#[ignore = "daily"]
 fn farmer_plants_a_declared_items_block() {
     assert!(super::super::world::with_resource_test_world(
         resources(),
@@ -235,7 +235,7 @@ fn farmer_plants_a_declared_items_block() {
 }
 
 #[test]
-#[ignore = "full content root: tools/test_villager_farming_parity.py runs it"]
+#[ignore = "daily"]
 fn farming_uses_the_first_tagged_block_item_and_consumes_one_seed() {
     assert!(super::super::world::with_resource_test_world(
         resources(),
@@ -378,6 +378,7 @@ fn vanilla_farming_classification_matches_the_oracle() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn planting_posts_block_place_with_villager_and_crop_state() {
     let ran = super::super::world::with_built_test_world(
         &[],
@@ -428,5 +429,5 @@ fn planting_posts_block_place_with_villager_and_crop_state() {
         },
     );
     // Without the vanilla data under .local/sunrise-client the world cannot be built: the test has nothing to check.
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }

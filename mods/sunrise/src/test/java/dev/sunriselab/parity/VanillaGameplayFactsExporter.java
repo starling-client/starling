@@ -45,6 +45,7 @@ public final class VanillaGameplayFactsExporter {
             o.addProperty("random_ticks", state.isRandomlyTicking());
             o.addProperty("block_entity", state.hasBlockEntity());
             o.addProperty("render_shape", state.getRenderShape().name());
+            o.addProperty("spawn_terrain_particles", state.shouldSpawnTerrainParticles());
             o.addProperty("liquid", state.liquid());
             o.addProperty("ignited_by_lava", state.ignitedByLava());
             o.addProperty("push", state.getPistonPushReaction().name());

@@ -1,9 +1,9 @@
 //! Binary transport for exhaustive comparison of the compiled float log sampler.
-use sunrise_core::density::{DensitySampler, SampleError, SamplerContext, UnaryOp, UnarySampler};
 use std::{
     io::{self, Write},
     sync::Arc,
 };
+use sunrise_core::density::{DensitySampler, SampleError, SamplerContext, UnaryOp, UnarySampler};
 
 #[derive(Debug)]
 struct FloatBitsInput;

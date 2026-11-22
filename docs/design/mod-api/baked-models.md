@@ -1,5 +1,9 @@
 # Design: baked models and ModelData
 
+> Historical: this design predates the removal of WebAssembly mods.
+> See [baked models and their keys](../../modding/src/how-to/client/baked-models.md) for the current native API.
+> The read-only model store exists; the old model-editing proposal and its guest adapter and tests are not current API instructions.
+
 Provisional answer to [#861](https://github.com/arismoko/horizon/issues/861):
 the engine owns immutable modified baked results for each resource generation;
 mods own bounded edit descriptions, never mutable renderer models. Evaluate

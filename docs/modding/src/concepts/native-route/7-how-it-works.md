@@ -5,7 +5,7 @@ without rebuilding the game.
 
 ## Function replacement
 
-The game is never rebuilt for a mod. When you build, the launcher downloads the prebuilt game for your
+The game is never rebuilt for a mod. When you build, the build downloads the prebuilt game for your
 `sunrise` commit and that commit's source. It copies each function your rows target out of the source. It
 applies your mixins to the copies with horizon-mixins, and adds your loop slots, bridges and modules. Then it
 compiles the copies against the prebuilt game, together with your mod's crate.
@@ -24,15 +24,16 @@ your mod's crate, which is compiled first. So they can call your crate, but your
 bridge. A bridge's method is a trait implemented for the type, imported into the module of every copied
 game-crate function.
 
-Rows of several mods on one function go into one copy, ordered by the tool (by `priority` at one place). An `[[inject]]` listener on the
-same function shares its replacement cell: head listeners run first, then the copy, then return listeners.
+Rows of several mods on one function go into one copy, ordered by the tool (by `priority` at one place).
 
 ## horizon-mixins
 
 [horizon-mixins](https://github.com/horizon-rust/horizon-mixins) is upstream's source-level mixin tool; the
-kinds and bindings are its vocabulary. The launcher applies one small patch to it,
+kinds and bindings are its vocabulary. The build applies one small patch to it,
 `tools/mixins/narrow-reference-rule.patch`, which accepts a call directly under `&` for the kinds that rewrite
-only that call. `E_MIXINS_PATCH` means that patch does not apply to the tool's source.
+only that call, and compares a binding's type with the target's as parsed types, so a trailing comma in a list
+(`Vec<T,>`) doesn't make two equal types differ. `E_MIXINS_PATCH` means that patch does not apply to the tool's
+source.
 
 Beside the docs linked from [Mixins](2-mixins.md#fields), the tool documents bridges in
 [scopes and bridges](https://github.com/horizon-rust/horizon-mixins/blob/main/docs/scopes-and-bridges.md).
@@ -40,7 +41,7 @@ Beside the docs linked from [Mixins](2-mixins.md#fields), the tool documents bri
 ## Published loops
 
 The loop's entry, `tick_block_entities`, calls a generic body, `tick_block_entities_with`, with the slots.
-With no mod, the body runs with an empty slot. With mods, the launcher compiles one
+With no mod, the body runs with an empty slot. With mods, the build compiles one
 copy of the body for the installed slot types and installs it through the entry's cell. That is why
 `OVERWRITE` on the entry is refused: it would bypass the loop.
 

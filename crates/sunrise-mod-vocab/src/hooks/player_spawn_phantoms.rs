@@ -7,11 +7,18 @@ pub trait Hooks {
     /// that check and `Deny` stops the attempt. `phantoms` starts with a randomly drawn
     /// group size; set it to override the count. Without mods the original draw order is kept.
     #[hook(
+        dispatch = "flat",
         side = "server",
         contract = "replace",
         out = "result",
         neoforge = "PlayerSpawnPhantomsEvent",
         cancellable = false
     )]
-    fn player_spawn_phantoms();
+    fn player_spawn_phantoms(
+        player: u128,
+        name: &str,
+        pos: [i32; 3],
+        result: &mut Option<PhantomSpawnResult>,
+        phantoms: &mut Option<i32>,
+    );
 }

@@ -1,12 +1,12 @@
 //! Persistent enchantment components and their displayed names.
-use sunrise_core::nbt::parse_snbt;
-use sunrise_items::{enchant::Enchantments, item_nbt::item_from_nbt};
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
     sync::Arc,
 };
+use sunrise_core::nbt::parse_snbt;
+use sunrise_items::{enchant::Enchantments, item_nbt::item_from_nbt};
 
 fn describe(enchantments: &Enchantments, levels: &[(Arc<str>, u32)]) -> String {
     let mut rows: Vec<_> = levels

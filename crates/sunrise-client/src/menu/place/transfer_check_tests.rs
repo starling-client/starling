@@ -1,10 +1,14 @@
-//! A viewer transfer worked out without moving anything (`Menu::check_transfer`),
-//! against the vanilla data the menu tests use.
-use crate::menu::{
-    Kind, Menu,
-    place::{TransferCheck, TransferError},
-    tests::{mod_crafting_table, stack, with_menu},
+//! A viewer transfer worked out without moving anything (`Menu::check_transfer`).
+use crate::{
+    crafting::{Ingredient, Recipe, Recipes, Template},
+    items::ItemStack,
+    menu::{
+        Env, Kind, Menu,
+        place::{TransferCheck, TransferError},
+        tests::{bare_env, mod_crafting_table, stack, with_menu},
+    },
 };
+use sunrise_core::nbt::Tag;
 
 fn missing(cells: Vec<usize>) -> TransferCheck {
     TransferCheck {
@@ -66,6 +70,44 @@ fn a_check_answers_as_the_transfer_would() {
             menu.clone().transfer_recipe(env, "minecraft:stick", false),
             Err(TransferError::NoRoom)
         );
+    });
+}
+
+#[test]
+fn a_renamed_plank_fills_one_stick_cell() {
+    bare_env(|base| {
+        let mut recipes = Recipes::empty();
+        let plank = Ingredient::of(vec!["minecraft:oak_planks".into()]);
+        recipes.crafting.push((
+            "stick".into(),
+            Recipe::Shaped {
+                width: 1,
+                height: 2,
+                cells: vec![Some(plank.clone()), Some(plank)],
+                result: Template {
+                    item: Some("minecraft:stick".into()),
+                    count: 4,
+                    damage: 0,
+                    extra: None,
+                    components: None,
+                },
+            },
+        ));
+        let env = Env {
+            recipes: &recipes,
+            ..*base
+        };
+        let mut menu = Menu::new(Kind::Crafting);
+        let mut named = ItemStack::new("minecraft:oak_planks", 1);
+        named.data_mut().custom_name = Some(Tag::String("Named plank".into()));
+        menu.set_player_item(0, Some(named));
+
+        assert_eq!(
+            menu.check_transfer(&env, "minecraft:stick"),
+            missing(vec![1])
+        );
+        menu.set_player_item(1, stack("oak_planks", 1));
+        assert_eq!(menu.transfer_recipe(&env, "minecraft:stick", false), Ok(()));
     });
 }
 

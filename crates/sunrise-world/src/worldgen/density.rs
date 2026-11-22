@@ -1,6 +1,7 @@
 //! Bounded decoding of density registries into the immutable core graph.
 //! Named registry holders and raw numeric tokens preserve compilation behavior.
 use super::*;
+use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::{
     density::{
         BlendedNoise, CubicSpline, DistanceMetric, RoundMode, ShiftNoiseKind, SplinePoint,
@@ -9,7 +10,6 @@ use sunrise_core::{
     },
     geometry::Axis,
 };
-use std::{collections::BTreeSet, sync::Arc};
 
 pub(super) fn identifier(name: &str) -> Result<String, DecodeError> {
     let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", name));

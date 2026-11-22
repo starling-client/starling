@@ -142,11 +142,13 @@ impl<R: StackedResource> ResourceHandler<R> for AttachedStacks<R> {
     fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
         self.at(host, index).map_or(0, |(_, amount)| amount)
     }
-    fn capacity(&self, host: &mut dyn ServerHost, index: usize, resource: &R) -> u32 {
+    fn capacity(&self, host: &mut dyn ServerHost, index: usize, resource: Option<&R>) -> u32 {
         // The physical limit of an in-range index; capacity is not permission to insert
         // (`is_valid` is), and extraction does not look at it.
         if index < self.size {
-            resource.limit(host, self.capacity)
+            resource.map_or(self.capacity, |resource| {
+                resource.limit(host, self.capacity)
+            })
         } else {
             0
         }
@@ -154,7 +156,7 @@ impl<R: StackedResource> ResourceHandler<R> for AttachedStacks<R> {
     fn is_valid(&self, _: &mut dyn ServerHost, index: usize, resource: &R) -> bool {
         index < self.size && (self.valid)(resource)
     }
-    fn insert(
+    fn insert_at(
         &self,
         host: &mut dyn ServerHost,
         _: &Transaction,
@@ -165,7 +167,7 @@ impl<R: StackedResource> ResourceHandler<R> for AttachedStacks<R> {
         if !self.is_valid(host, index, resource) {
             return 0;
         }
-        let room = self.capacity(host, index, resource);
+        let room = self.capacity(host, index, Some(resource));
         let have = match self.at(host, index) {
             Some((held, _)) if held != *resource => return 0,
             Some((_, have)) => have,
@@ -177,7 +179,7 @@ impl<R: StackedResource> ResourceHandler<R> for AttachedStacks<R> {
             _ => 0,
         }
     }
-    fn extract(
+    fn extract_at(
         &self,
         host: &mut dyn ServerHost,
         _: &Transaction,

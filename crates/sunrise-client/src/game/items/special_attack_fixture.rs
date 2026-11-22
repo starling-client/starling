@@ -5,6 +5,7 @@ use super::{
     dragon::Dragon,
     minecarts::{CartKind, Minecart},
 };
+use serde_json::Value;
 use sunrise_client::{
     Result,
     entities::{ArmorStand, ItemFrame, Painting},
@@ -12,7 +13,6 @@ use sunrise_client::{
     motion::PlayerMotion,
 };
 use sunrise_core::geometry::Vec3;
-use serde_json::Value;
 
 impl Game<'_> {
     pub(super) fn fixture_special_attack(&mut self, op: &Value) -> Result<Vec<String>> {
@@ -106,6 +106,7 @@ impl Game<'_> {
                     width: 1,
                     height: 1,
                     check_interval: 0,
+                    ticks: 0,
                 });
                 let (lo, hi) = self.paintings[0].bounds();
                 Vec3::new(
@@ -132,6 +133,7 @@ impl Game<'_> {
                     fixed: kind == "fixed_frame",
                     invisible: false,
                     check_interval: 0,
+                    ticks: 0,
                     custom_name: None,
                     random: sunrise_core::random::LegacyRandom::new(0),
                 });

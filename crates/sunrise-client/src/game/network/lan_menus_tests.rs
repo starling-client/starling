@@ -1,13 +1,10 @@
 //! A guest's menu owners live in `LanHost::menus`, outside the `GuestPlay` that a guest's turn
 //! lifts, and the hub's click runs with the host lifted out of the game. The fixtures use the
 //! LAN host with two guests (`with_guests`), which needs prepared resources.
-use super::transactions::decision::{
-    Admission,
-    engine::{Owner, Target},
-};
+use super::transactions::decision::{Admission, engine::Target};
 use crate::game::{Game, native_guest_turn_tests::with_guests};
-use sunrise_client::menu::{Kind, Menu};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use sunrise_client::menu::{Kind, Menu};
 
 /// Give guest `conn` an inventory menu carrying `count` sticks on its cursor, and some play
 /// state, as a guest who has clicked in their inventory has.
@@ -35,12 +32,12 @@ fn carried(game: &Game<'_>, conn: u32) -> Option<u32> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn menu_owners_stay_reachable_through_nested_guest_turns() {
     with_guests(|game| {
         open_inventory(game, 12, 3);
         open_inventory(game, 13, 7);
-        let outside = Target::admit(game, 12, Owner::Inventory).unwrap();
+        let outside = Target::admit(game, 12).unwrap();
         assert!(game.lan.as_ref().unwrap().play.contains_key(&12));
 
         let inside = game
@@ -49,13 +46,13 @@ fn menu_owners_stay_reachable_through_nested_guest_turns() {
                 assert!(!game.lan.as_ref().unwrap().play.contains_key(&12));
                 // ...but not the menu: the owner is found, with the same identity, and its
                 // content is the guest's own.
-                let found = Target::admit(game, 12, Owner::Inventory).unwrap();
+                let found = Target::admit(game, 12).unwrap();
                 assert_eq!(carried(game, 12), Some(3));
                 // A nested turn of another guest sees both guests' owners.
                 let nested = game.as_guest(13, |game| {
                     assert!(!game.lan.as_ref().unwrap().play.contains_key(&13));
-                    assert!(Target::admit(game, 13, Owner::Inventory).is_ok());
-                    assert!(Target::admit(game, 12, Owner::Inventory).is_ok());
+                    assert!(Target::admit(game, 13).is_ok());
+                    assert!(Target::admit(game, 12).is_ok());
                     (carried(game, 12), carried(game, 13))
                 });
                 // The same guest cannot nest in their own turn.
@@ -66,7 +63,7 @@ fn menu_owners_stay_reachable_through_nested_guest_turns() {
         assert_eq!(inside.1, Some((Some(3), Some(7))));
         // Same owner before, during and after: nothing was replaced by a placeholder.
         assert_eq!(inside.0.owner_id(), outside.owner_id());
-        let after = Target::admit(game, 12, Owner::Inventory).unwrap();
+        let after = Target::admit(game, 12).unwrap();
         assert_eq!(after.owner_id(), outside.owner_id());
         // The play state came back as it was.
         assert_eq!(game.lan.as_ref().unwrap().play[&12].chat_spam, 5);
@@ -75,11 +72,11 @@ fn menu_owners_stay_reachable_through_nested_guest_turns() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_panicking_turn_leaves_play_state_and_menus_restored() {
     with_guests(|game| {
         open_inventory(game, 12, 3);
-        let before = Target::admit(game, 12, Owner::Inventory).unwrap();
+        let before = Target::admit(game, 12).unwrap();
         let panicked = catch_unwind(AssertUnwindSafe(|| {
             game.as_guest(12, |game| {
                 let host = game.lan.as_mut().unwrap();
@@ -100,7 +97,7 @@ fn a_panicking_turn_leaves_play_state_and_menus_restored() {
         assert_eq!(host.play[&12].chat_spam, 5);
         assert!(game.lan_guest_swaps.is_empty());
         assert_eq!(carried(game, 12), None);
-        let after = Target::admit(game, 12, Owner::Inventory).unwrap();
+        let after = Target::admit(game, 12).unwrap();
         assert_eq!(after.owner_id(), before.owner_id());
         // And the next turn works.
         assert_eq!(game.as_guest(12, |_| 4), Some(4));
@@ -108,7 +105,7 @@ fn a_panicking_turn_leaves_play_state_and_menus_restored() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_lifted_host_comes_back_after_a_panic_and_is_never_lifted_twice() {
     with_guests(|game| {
         open_inventory(game, 12, 3);
@@ -139,7 +136,7 @@ fn a_lifted_host_comes_back_after_a_panic_and_is_never_lifted_twice() {
 }
 
 #[test]
-#[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn removing_a_fake_player_drops_its_menu_owners() {
     with_guests(|game| {
         let _serving = super::integrated::tests::install_serving(game, false);
@@ -166,7 +163,7 @@ fn removing_a_fake_player_drops_its_menu_owners() {
         assert!(!host.play.contains_key(&conn));
         assert_eq!(carried(game, 12), Some(3));
         assert!(matches!(
-            Target::admit(game, conn, Owner::Inventory),
+            Target::admit(game, conn),
             Err(Admission::MissingHolder)
         ));
     });

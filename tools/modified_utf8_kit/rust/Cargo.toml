@@ -1,0 +1,15 @@
+# The kit's bench program, built by run.py in .local/modified-utf8-kit/ (not a member of the game's workspace).
+[package]
+name = "modified-utf8-kit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+
+# The game's release profile: one codegen unit (thin LTO changes nothing within one crate).
+[profile.release]
+debug = false
+codegen-units = 1
+
+[workspace]

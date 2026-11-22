@@ -3,7 +3,7 @@
 //!
 //! A plate is drawn first, then the overlay's text and glyphs over it. Only the kinds the
 //! overlays use today are here; each keeps the colours its overlay always had: the notice's,
-//! shared by the controller notice and splitscreen's prompts, and the text backing the gameplay
+//! used by controller notices, and the text backing the gameplay
 //! guide's rows sit on.
 //!
 //! ```
@@ -21,7 +21,7 @@ use crate::hud::{HudAtlas, HudBatch, rgba};
 /// A plate's look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plate {
-    /// Something to read now: controller notices and splitscreen's prompts. A dark fill with a
+    /// Something to read now: a controller notice. A dark fill with a
     /// faint edge.
     Notice,
     /// Behind a hint that sits on the world, the gameplay guide's rows: black at `alpha`, the

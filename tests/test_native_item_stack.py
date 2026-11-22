@@ -5,18 +5,13 @@ import subprocess
 import tempfile
 import unittest
 
-from native_hook_sources import native_hook_sources
-
-from test_world_input_capture import method
-
-ROOT = Path(__file__).resolve().parents[1]
+from rust_items import rust_fn
 
 
 class NativeItemStackTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_stack_and_decorations_are_forwarded_and_scaled(self):
-        source = native_hook_sources()
-        actual = method(source.replace("pub(super) fn", "fn"), "native_item_stack")
+        actual = rust_fn("native_item_stack", owner="Game")
         fixture = r"""
 struct ItemStack { item: String, count: u32, damage: u32 }
 struct Items;

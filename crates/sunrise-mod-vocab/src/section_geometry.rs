@@ -53,7 +53,8 @@ pub struct SectionQuad {
     pub translucent: bool,
 }
 
-/// The renderer registry `add_section_geometry` hands out.
+/// The renderer registry `add_section_geometry` hands out. A panic or phase refusal
+/// in registration discards only that callback's renderers.
 pub trait SectionGeometryRenderers {
     /// `addRenderer(renderer)`: `renderer` adds its quads to every section the client meshes, in
     /// registration order after the section's own blocks.
@@ -75,8 +76,73 @@ impl SectionGeometryRenderers for SectionGeometryRegistry {
 }
 
 impl SectionGeometryRegistry {
+    /// Discard only the current listener's renderer registrations if it fails.
+    // hidden: the engine stages one listener at a time; mods receive only the registrar trait.
+    #[doc(hidden)]
+    pub fn register_listener(
+        &mut self,
+        listen: &mut dyn FnMut(&mut dyn SectionGeometryRenderers) -> bool,
+    ) {
+        let checkpoint = self.renderers.len();
+        if !listen(self) {
+            let site = (crate::HookId::AddSectionGeometry, "add_section_geometry");
+            let owner = crate::content::crash::current_native_mod();
+            for renderer in self.renderers.drain(checkpoint..) {
+                crate::runtime::discard_registration(site, owner, renderer);
+            }
+        }
+    }
+
     /// The renderers, in registration order.
     pub fn into_renderers(self) -> Vec<Arc<dyn SectionGeometry>> {
         self.renderers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AddSectionGeometryEvent, Hooks, ModEntry, RegistrationContext};
+
+    #[test]
+    fn a_panicking_section_registration_does_not_install_its_renderer() {
+        struct Renderer(u8);
+        impl SectionGeometry for Renderer {
+            fn add(&self, _: [i32; 3], _: &mut dyn SectionGeometryContext) {
+                std::hint::black_box(self.0);
+            }
+        }
+        struct Register(Arc<dyn SectionGeometry>, bool);
+        #[mod_api::__subscriptions]
+        impl Hooks for Register {
+            fn add_section_geometry(
+                &self,
+                _: &RegistrationContext,
+                event: &mut AddSectionGeometryEvent<'_>,
+            ) {
+                event.renderers.register(self.0.clone());
+                assert!(
+                    !self.1,
+                    "section registration failed after adding a renderer"
+                );
+            }
+        }
+        let healthy: Arc<dyn SectionGeometry> = Arc::new(Renderer(1));
+        crate::testing::with_dispatch(
+            vec![
+                ModEntry::new("failing", Box::new(Register(Arc::new(Renderer(0)), true))),
+                ModEntry::new("healthy", Box::new(Register(healthy.clone(), false))),
+            ]
+            .into(),
+            || {
+                let mut registry = SectionGeometryRegistry::default();
+                crate::dispatch_add_section_geometry(&RegistrationContext::new(), |listen| {
+                    registry.register_listener(listen);
+                });
+                let renderers = registry.into_renderers();
+                assert_eq!(renderers.len(), 1);
+                assert!(Arc::ptr_eq(&renderers[0], &healthy));
+            },
+        );
     }
 }

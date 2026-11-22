@@ -1,9 +1,9 @@
 //! `getSituationalMusic`/`getMusicVolume` through Sunrise's `Situation` for
 //! `tools/test_situational_music_parity.py`:
 //! `situational_music_fixture ROOT INPUT OUTPUT`.
+use std::io::Write;
 use sunrise_client::music::{BackgroundMusic, Music, MusicTables, Situation};
 use sunrise_client::sound_events::normalize;
-use std::io::Write;
 
 pub fn main() {
     let args: Vec<String> = crate::args().collect();

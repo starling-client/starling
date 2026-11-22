@@ -1,8 +1,8 @@
 //! Measure registry and behaviour load times using prepared client resources.
 //! `behaviour_load_profile RESOURCES [CACHE_DIR]`: with CACHE_DIR, loads use and
 //! refresh the snapshot there, as the client does with its `.sunrise-cache`.
-use sunrise_world::level::{Behaviours, data::load_registry};
 use std::{path::Path, time::Instant};
+use sunrise_world::level::{Behaviours, data::load_registry};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::args()

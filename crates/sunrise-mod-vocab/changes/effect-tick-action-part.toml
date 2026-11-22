@@ -1,0 +1,3 @@
+ids = ["hook:apply_effect_tick", "hook:apply_effect_tick.mod_id", "method:Hooks::apply_effect_tick", "type:ApplyEffectTickEvent.mod_id"]
+why = "Version 3 removes the global action listener and invokes each MobEffectPart only when its own cadence returns true. Parts share immutable snapshots, append changes in dispatch order, and stop when keep becomes false."
+migrate = "Move apply_effect_tick to the same MobEffectPart as its cadence and attach it during registration. Read event.effect instead of event.mod_id. on_effect_added stays global."

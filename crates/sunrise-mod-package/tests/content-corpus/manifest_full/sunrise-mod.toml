@@ -1,0 +1,45 @@
+id = "manifest_full"
+name = "Manifest full"
+version = "2.4-rc.1+demo"
+description = "A small display of declaration metadata."
+authors = ["Fixture author", "Fixture illustrator"]
+license = "MIT"
+license_url = "https://example.test/license"
+credits = "Thanks to the makers of the test fixtures."
+homepage = "https://example.test/manifest-full"
+issues = "http://example.test/manifest-full/issues"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+namespaces = ["mineral-lab", "lab.notes"]
+load_before = ["field_guide"]
+
+[dependencies]
+base = "^1.2"
+extras = { version = "~2.3.4", optional = true, side = "client", reason = "Adds field notes", url = "https://example.test/extras", order = "before" }
+server_tools = { version = ">=1", side = "server", order = "none" }
+common_tools = { version = "*", side = "both", order = "after" }
+
+[incompatible]
+legacy = "<2"
+experimental = { version = "=3.0.0", reason = "Claims the same atlas", url = "https://example.test/experimental", side = "server" }
+
+[discouraged]
+unused = "=1.0.0"
+older = { reason = "Outdated HUD", url = "https://example.test/older", side = "client" }
+
+[properties]
+note = "Sample display"
+levels = 3
+scale = 1.5
+visible = true
+
+[[jar]]
+id = "sample-overlay"
+version = "23-snapshot"
+sha512 = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+
+[[jar]]
+id = "base_overlay"
+version = "2.1"
+sha512 = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
